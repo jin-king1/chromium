@@ -6,6 +6,7 @@
 
 #include "ash/constants/ash_features.h"
 #include "base/memory/values_equivalent.h"
+#include "base/strings/string_util.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/values.h"
 #include "chromeos/ash/components/boca/proto/session.pb.h"
@@ -34,16 +35,18 @@ constexpr char kFullSessionResponse[] = R"(
   },
   "studentStatuses": {
     "2": {
-      "state": "ADDED"
+      "state": "ADDED",
+      "geminiEnablementState": "GEMINI_ENABLEMENT_STATE_DISABLED"
     },
     "3": {
       "state": "ACTIVE",
+      "geminiEnablementState": "GEMINI_ENABLEMENT_STATE_ENABLED",
        "devices":
         {
           "kDummyDeviceId":
          {
-            "info": {"device_id":"kDummyDeviceId"},
-            "state":"ACTIVE",
+            "info": {"deviceId":"kDummyDeviceId"},
+            "state":"INACTIVE",
             "activity": {
               "activeTab": {
                 "title": "google"
@@ -53,6 +56,17 @@ constexpr char kFullSessionResponse[] = R"(
                 "viewScreenState": "AVAILABLE",
                 "connectionParam": {
                   "connectionCode": "0123456789"
+                },
+                "viewScreenRequester": {
+                  "user": {
+                    "email": "requester@email.com",
+                    "fullName": "requester",
+                    "gaiaId": "456",
+                    "photoUrl": "data:image/456"
+                  },
+                  "serviceAccount" : {
+                    "email": "robot@email.com"
+                  }
                 }
               }
          }
@@ -126,7 +140,8 @@ constexpr char kFullSessionResponse[] = R"(
               "url": "https://youtube.com"
             }
           ],
-          "locked": true
+          "locked": true,
+          "lockToAppHome": true
         }
       }
     }
@@ -150,19 +165,25 @@ constexpr char kPartialResponse[] = R"(
     "studentStatuses": {
       "3": {
         "state": "ACTIVE",
+        "geminiEnablementState": "GEMINI_ENABLEMENT_STATE_ENABLED",
         "devices":
           {
             "kDummyDeviceId":
           {
               "info": {"device_id":"kDummyDeviceId"},
-              "state":"ACTIVE",
+              "state":"INACTIVE",
               "activity": {
                 "activeTab": {
                   "title": "google"
                   }
                 },
               "viewScreenConfig": {
-                "viewScreenState": "REQUESTED"
+                "viewScreenState": "REQUESTED",
+                "viewScreenRequester": {
+                  "serviceAccount" : {
+                    "email": "robot@email.com"
+                  }
+                }
               }
           }
           }
@@ -305,6 +326,12 @@ TEST_F(SessionParserTest, TestParseSessionConfigProtoFromJson) {
                   .active_bundle()
                   .locked());
 
+  EXPECT_TRUE(session_full->student_group_configs()
+                  .at(kMainStudentGroupName)
+                  .on_task_config()
+                  .active_bundle()
+                  .lock_to_app_home());
+
   auto content_config = std::move(session_full->student_group_configs()
                                       .at(kMainStudentGroupName)
                                       .on_task_config()
@@ -360,8 +387,12 @@ TEST_F(SessionParserTest, TestParseStudentStatusProtoFromJson) {
   ASSERT_EQ(3u, session_full->student_statuses().size());
   EXPECT_EQ(::boca::StudentStatus::ADDED,
             session_full->student_statuses().at("2").state());
+  EXPECT_EQ(::boca::GEMINI_ENABLEMENT_STATE_DISABLED,
+            session_full->student_statuses().at("2").gemini_enablement_state());
   EXPECT_EQ(::boca::StudentStatus::ACTIVE,
             session_full->student_statuses().at("3").state());
+  EXPECT_EQ(::boca::GEMINI_ENABLEMENT_STATE_ENABLED,
+            session_full->student_statuses().at("3").gemini_enablement_state());
 
   EXPECT_EQ("google", session_full->student_statuses()
                           .at("3")
@@ -370,6 +401,12 @@ TEST_F(SessionParserTest, TestParseStudentStatusProtoFromJson) {
                           .activity()
                           .active_tab()
                           .title());
+  EXPECT_EQ("kDummyDeviceId", session_full->student_statuses()
+                                  .at("3")
+                                  .devices()
+                                  .at("kDummyDeviceId")
+                                  .info()
+                                  .device_id());
   EXPECT_EQ(::boca::ViewScreenConfig::AVAILABLE,
             session_full->student_statuses()
                 .at("3")
@@ -384,12 +421,31 @@ TEST_F(SessionParserTest, TestParseStudentStatusProtoFromJson) {
                               .view_screen_config()
                               .connection_param()
                               .connection_code());
+  EXPECT_EQ("robot@email.com", session_full->student_statuses()
+                                   .at("3")
+                                   .devices()
+                                   .at("kDummyDeviceId")
+                                   .view_screen_config()
+                                   .view_screen_requester()
+                                   .service_account()
+                                   .email());
+  EXPECT_EQ("requester@email.com", session_full->student_statuses()
+                                       .at("3")
+                                       .devices()
+                                       .at("kDummyDeviceId")
+                                       .view_screen_config()
+                                       .view_screen_requester()
+                                       .user()
+                                       .email());
   EXPECT_EQ(::boca::StudentStatus::ADDED,
             session_full->student_statuses().at("22").state());
   ParseStudentStatusProtoFromJson(session_dict_partial->GetIfDict(),
                                   session_partial.get(), false);
   EXPECT_EQ(::boca::StudentStatus::ACTIVE,
             session_partial->student_statuses().at("3").state());
+  EXPECT_EQ(
+      ::boca::GEMINI_ENABLEMENT_STATE_ENABLED,
+      session_partial->student_statuses().at("3").gemini_enablement_state());
 
   EXPECT_EQ("google", session_partial->student_statuses()
                           .at("3")
@@ -398,6 +454,11 @@ TEST_F(SessionParserTest, TestParseStudentStatusProtoFromJson) {
                           .activity()
                           .active_tab()
                           .title());
+  EXPECT_EQ(::boca::StudentDevice::INACTIVE, session_partial->student_statuses()
+                                                 .at("3")
+                                                 .devices()
+                                                 .at("kDummyDeviceId")
+                                                 .state());
   EXPECT_EQ(::boca::ViewScreenConfig::REQUESTED,
             session_partial->student_statuses()
                 .at("3")
@@ -405,6 +466,94 @@ TEST_F(SessionParserTest, TestParseStudentStatusProtoFromJson) {
                 .at("kDummyDeviceId")
                 .view_screen_config()
                 .view_screen_state());
+  EXPECT_EQ("robot@email.com", session_full->student_statuses()
+                                   .at("3")
+                                   .devices()
+                                   .at("kDummyDeviceId")
+                                   .view_screen_config()
+                                   .view_screen_requester()
+                                   .service_account()
+                                   .email());
 }
+
+constexpr char kSessionResponseWithUrlTypeTemplate[] = R"(
+          {
+            "sessionId": "111",
+            "duration": {
+              "seconds": 120
+            },
+            "sessionState": "ACTIVE",
+            "studentGroupConfigs": {
+              "main": {
+                "onTaskConfig": {
+                  "activeBundle": {
+                    "contentConfigs": [
+                      {
+                        "title": "gemini",
+                        "url": "https://gemini.google.com",
+                        "urlType": "$1"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            "teacher": {
+              "gaiaId": "1"
+            }
+          }
+        )";
+
+struct SessionParserUrlTypeTestParam {
+  std::string test_name;
+  std::string url_type_str;
+  ::boca::UrlType expected_url_type;
+};
+
+class SessionParserUrlTypeTest
+    : public testing::TestWithParam<SessionParserUrlTypeTestParam> {};
+
+TEST_P(SessionParserUrlTypeTest, TestParseSessionConfigUrlType) {
+  std::string json = base::ReplaceStringPlaceholders(
+      kSessionResponseWithUrlTypeTemplate, {GetParam().url_type_str}, nullptr);
+  auto parsed_value = google_apis::ParseJson(json);
+  ASSERT_TRUE(parsed_value);
+
+  std::unique_ptr<::boca::Session> session =
+      std::make_unique<::boca::Session>();
+  ParseSessionConfigProtoFromJson(parsed_value->GetIfDict(), session.get(),
+                                  /*is_producer=*/true);
+
+  ASSERT_TRUE(session->student_group_configs().contains(kMainStudentGroupName));
+  auto content_config = std::move(session->student_group_configs()
+                                      .at(kMainStudentGroupName)
+                                      .on_task_config()
+                                      .active_bundle()
+                                      .content_configs());
+  ASSERT_EQ(1, content_config.size());
+
+  EXPECT_EQ("gemini", content_config[0].title());
+  EXPECT_EQ("https://gemini.google.com", content_config[0].url());
+  EXPECT_EQ(GetParam().expected_url_type, content_config[0].url_type());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    SessionParserUrlTypeTests,
+    SessionParserUrlTypeTest,
+    testing::Values(
+        SessionParserUrlTypeTestParam{"GeminiRegular",
+                                      "URL_TYPE_GEMINI_REGULAR",
+                                      ::boca::URL_TYPE_GEMINI_REGULAR},
+        SessionParserUrlTypeTestParam{"GeminiGuidedLearning",
+                                      "URL_TYPE_GEMINI_GUIDED_LEARNING",
+                                      ::boca::URL_TYPE_GEMINI_GUIDED_LEARNING},
+        SessionParserUrlTypeTestParam{"UrlTypeUnspecified",
+                                      "URL_TYPE_UNSPECIFIED",
+                                      ::boca::URL_TYPE_UNSPECIFIED},
+        SessionParserUrlTypeTestParam{"UrlTypeInvalid", "INVALID_TYPE",
+                                      ::boca::URL_TYPE_UNSPECIFIED}),
+    [](const testing::TestParamInfo<SessionParserUrlTypeTest::ParamType>&
+           info) { return info.param.test_name; });
+
 }  // namespace
 }  // namespace ash::boca

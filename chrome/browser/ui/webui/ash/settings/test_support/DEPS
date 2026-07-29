@@ -12,14 +12,14 @@ include_rules = [
   # Whenever possible, avoid adding new //chrome dependencies to this list.
   "+chrome/browser/ash/login/test",
   "+chrome/browser/chrome_content_browser_client.h",
-  "+chrome/browser/ui/browser_list.h",
+  "+chrome/browser/ui/browser_window/public",
   "+chrome/browser/ui/webui/ash/settings",
   "+chrome/grit",
   "+chrome/test",
 ]
 
 specific_include_rules = {
-  '.*browser_test_base\.cc': [
+  '.*browser_test_base\\.cc': [
     '+ash/auth/active_session_auth_controller_impl.h',
     '+ash/shell.h',
   ],

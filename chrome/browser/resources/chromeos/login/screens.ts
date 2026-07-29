@@ -11,7 +11,6 @@ import './screens/common/add_child.js';
 import './screens/common/ai_intro.js';
 import './screens/common/app_downloading.js';
 import './screens/common/app_launch_splash.js';
-import './screens/common/assistant_optin.js';
 import './screens/common/categories_selection.js';
 import './screens/common/choobe.js';
 import './screens/common/consolidated_consent.js';
@@ -62,10 +61,10 @@ import './screens/osauth/enter_old_password.js';
 import './screens/osauth/osauth_error.js';
 import './screens/osauth/password_selection.js';
 import './screens/osauth/pin_setup.js';
+import './screens/osauth/remove_local_auth_factors.js';
 // AUTHENTICATION SCREENS USED DURING THE LOGIN FLOW
 import './screens/osauth/cryptohome_recovery.js';
 // SCREENS USED DURING THE LOGIN FLOW
-import './screens/login/arc_vm_data_migration.js';
 import './screens/login/encryption_migration.js';
 import './screens/login/management_transition.js';
 import './screens/login/offline_login.js';
@@ -78,6 +77,11 @@ import './screens/oobe/demo_preferences.js';
 import './screens/oobe/demo_setup.js';
 import './screens/oobe/enable_debugging.js';
 import './screens/oobe/enterprise_enrollment.js';
+import './screens/oobe/fjord_fw_update.js';
+import './screens/oobe/fjord_image_download.js';
+import './screens/oobe/fjord_image_selection.js';
+import './screens/oobe/fjord_station_setup.js';
+import './screens/oobe/fjord_touch_controller.js';
 import './screens/oobe/hid_detection.js';
 import './screens/oobe/oobe_network.js';
 import './screens/oobe/packaged_license.js';
@@ -98,11 +102,6 @@ export const commonScreensList: OobeTypes.ScreensList = [
   },
   {tag: 'app-downloading-element', id: 'app-downloading'},
   {tag: 'app-launch-splash-element', id: 'app-launch-splash'},
-  {
-    tag: 'assistant-optin-element',
-    id: 'assistant-optin-flow',
-    condition: 'isOobeAssistantEnabled',
-  },
   {
     tag: 'apply-online-password-element',
     id: 'apply-online-password',
@@ -138,11 +137,7 @@ export const commonScreensList: OobeTypes.ScreensList = [
   {tag: 'error-message-element', id: 'error-message'},
   {tag: 'family-link-notice-element', id: 'family-link-notice'},
   {tag: 'fingerprint-setup-element', id: 'fingerprint-setup'},
-  {
-    tag: 'gaia-info-element',
-    id: 'gaia-info',
-    condition: 'isOobeGaiaInfoScreenEnabled',
-  },
+  {tag: 'gaia-info-element', id: 'gaia-info'},
   {tag: 'gaia-signin-element', id: 'gaia-signin'},
   {tag: 'gemini-intro-element', id: 'gemini-intro'},
   {tag: 'gesture-navigation-element', id: 'gesture-navigation'},
@@ -193,8 +188,7 @@ export const commonScreensList: OobeTypes.ScreensList = [
   {tag: 'recommend-apps-element', id: 'recommend-apps'},
   {
     tag: 'remote-activity-notification-element',
-    id: 'remote-activity-notification',
-    condition: 'isRemoteActivityNotificationEnabled',
+    id: 'remote-activity-notification'
   },
   {tag: 'saml-confirm-password-element', id: 'saml-confirm-password'},
   {tag: 'signin-fatal-error-element', id: 'signin-fatal-error'},
@@ -221,17 +215,13 @@ export const commonScreensList: OobeTypes.ScreensList = [
     id: 'user-allowlist-check-screen',
   },
   {tag: 'wrong-hwid-element', id: 'wrong-hwid'},
+  {tag: 'remove-local-auth-factors-element', id: 'remove-local-auth-factors'}
 ];
 
 /**
  * List of screens that are used during the `login` flow only.
  */
 export const loginScreensList: OobeTypes.ScreensList = [
-  {
-    tag: 'arc-vm-data-migration-element',
-    id: 'arc-vm-data-migration',
-    condition: 'isArcVmDataMigrationEnabled',
-  },
   {tag: 'cryptohome-recovery-element', id: 'cryptohome-recovery'},
   {tag: 'encryption-migration-element', id: 'encryption-migration'},
   {
@@ -262,6 +252,31 @@ export const oobeScreensList: OobeTypes.ScreensList = [
   {tag: 'demo-setup-element', id: 'demo-setup'},
   {tag: 'enable-debugging-element', id: 'debugging'},
   {tag: 'enterprise-enrollment-element', id: 'enterprise-enrollment'},
+  {
+    tag: 'fjord-fw-update-element',
+    id: 'fjord-fw-update',
+    condition: 'isFjordOobeEnabled',
+  },
+  {
+    tag: 'fjord-image-selection-element',
+    id: 'fjord-image-selection',
+    condition: 'isFjordOobeImageSwitchEnabled',
+  },
+  {
+    tag: 'fjord-image-download-element',
+    id: 'fjord-image-download',
+    condition: 'isFjordOobeImageSwitchEnabled',
+  },
+  {
+    tag: 'fjord-station-setup-element',
+    id: 'fjord-station-setup',
+    condition: 'isFjordOobeEnabled',
+  },
+  {
+    tag: 'fjord-touch-controller-element',
+    id: 'fjord-touch-controller',
+    condition: 'isFjordOobeEnabled',
+  },
   {tag: 'hid-detection-element', id: 'hid-detection'},
   {tag: 'oobe-network-element', id: 'network-selection'},
   {tag: 'packaged-license-element', id: 'packaged-license'},

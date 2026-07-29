@@ -46,7 +46,7 @@ void AppListTestBase::SetUp(bool guest_mode) {
       params.ConfigureByTestDataDirectory(data_dir().AppendASCII("app_list")));
   params.profile_is_guest = guest_mode;
   InitializeExtensionService(std::move(params));
-  service_->Init();
+  service()->Init();
 
   ConfigureWebAppProvider();
 
@@ -92,15 +92,15 @@ scoped_refptr<extensions::Extension> MakeApp(
     const std::string& name,
     const std::string& id,
     extensions::Extension::InitFromValueFlags flags) {
-  std::string err;
-  base::Value::Dict value;
+  std::u16string err;
+  base::DictValue value;
   value.Set("name", name);
   value.Set("version", "0.0");
   value.SetByDottedPath("app.launch.web_url", "http://google.com");
   scoped_refptr<extensions::Extension> app = extensions::Extension::Create(
       base::FilePath(), extensions::mojom::ManifestLocation::kInternal, value,
       flags, id, &err);
-  EXPECT_EQ(err, "");
+  EXPECT_EQ(err, u"");
   return app;
 }
 

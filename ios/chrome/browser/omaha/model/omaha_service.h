@@ -8,12 +8,12 @@
 #include <Foundation/Foundation.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "base/functional/callback.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/scoped_refptr.h"
-#include "base/memory/weak_ptr.h"
 #include "base/no_destructor.h"
 #include "base/observer_list.h"
 #include "base/observer_list_types.h"
@@ -98,7 +98,7 @@ class OmahaService {
 
   // Returns debug information about the omaha service.
   static void GetDebugInformation(
-      base::OnceCallback<void(base::Value::Dict)> callback);
+      base::OnceCallback<void(base::DictValue)> callback);
 
  private:
   // For tests:
@@ -150,7 +150,7 @@ class OmahaService {
   void ResyncTimerIfNeeded();
 
   // URL loader completion callback.
-  void OnURLLoadComplete(std::unique_ptr<std::string> response_body);
+  void OnURLLoadComplete(std::optional<std::string> response_body);
 
   // Returns whether Omaha is enabled for this build variant.
   static bool IsEnabled();
@@ -206,7 +206,7 @@ class OmahaService {
 
   // Computes debugging information and fill `result`.
   void GetDebugInformationOnIOThread(
-      base::OnceCallback<void(base::Value::Dict)> callback);
+      base::OnceCallback<void(base::DictValue)> callback);
 
   // Returns whether the next ping to send must a an install/update ping. If
   // `true`, the next ping must use `GetInstallRetryRequestId` as identifier

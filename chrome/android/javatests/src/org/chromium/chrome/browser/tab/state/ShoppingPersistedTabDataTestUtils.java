@@ -16,7 +16,8 @@ import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.supplier.ObservableSupplierImpl;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableNonNullObservableSupplier;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.MockTab;
 import org.chromium.chrome.browser.tab.Tab;
@@ -27,7 +28,6 @@ import org.chromium.url.GURL;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
-import java.util.Optional;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -98,8 +98,8 @@ public abstract class ShoppingPersistedTabDataTestUtils {
                 () -> {
                     ShoppingPersistedTabData shoppingPersistedTabData =
                             new ShoppingPersistedTabData(tab);
-                    ObservableSupplierImpl<Boolean> supplier = new ObservableSupplierImpl<>();
-                    supplier.set(true);
+                    SettableNonNullObservableSupplier<Boolean> supplier =
+                            ObservableSuppliers.createNonNull(true);
                     shoppingPersistedTabData.registerIsTabSaveEnabledSupplier(supplier);
                     shoppingPersistedTabData.enableSaving();
                     shoppingPersistedTabData.setPriceMicros(PRICE_MICROS);
@@ -148,7 +148,7 @@ public abstract class ShoppingPersistedTabDataTestUtils {
             GURL url,
             @ShoppingServiceResponse int expectedResponse) {
         doAnswer(
-                        new Answer<Void>() {
+                        new Answer<>() {
                             @Override
                             public Void answer(InvocationOnMock invocation) {
                                 ProductInfoCallback callback =
@@ -160,12 +160,12 @@ public abstract class ShoppingPersistedTabDataTestUtils {
                                                 new ProductInfo(
                                                         FAKE_PRODUCT_TITLE,
                                                         new GURL(FAKE_PRODUCT_IMAGE_URL),
-                                                        Optional.empty(),
-                                                        Optional.of(Long.parseLong(FAKE_OFFER_ID)),
+                                                        null,
+                                                        Long.parseLong(FAKE_OFFER_ID),
                                                         UNITED_STATES_CURRENCY_CODE,
                                                         PRICE_MICROS,
                                                         COUNTRY_CODE,
-                                                        Optional.empty()));
+                                                        null));
                                         break;
                                     case ShoppingServiceResponse.PRICE_DROP_1:
                                         callback.onResult(
@@ -173,12 +173,12 @@ public abstract class ShoppingPersistedTabDataTestUtils {
                                                 new ProductInfo(
                                                         FAKE_PRODUCT_TITLE,
                                                         new GURL(FAKE_PRODUCT_IMAGE_URL),
-                                                        Optional.empty(),
-                                                        Optional.of(Long.parseLong(FAKE_OFFER_ID)),
+                                                        null,
+                                                        Long.parseLong(FAKE_OFFER_ID),
                                                         UNITED_STATES_CURRENCY_CODE,
                                                         UPDATED_PRICE_MICROS,
                                                         COUNTRY_CODE,
-                                                        Optional.of(PRICE_MICROS)));
+                                                        PRICE_MICROS));
                                         break;
                                     case ShoppingServiceResponse.PRICE_DROP_2:
                                         callback.onResult(
@@ -186,12 +186,12 @@ public abstract class ShoppingPersistedTabDataTestUtils {
                                                 new ProductInfo(
                                                         FAKE_PRODUCT_TITLE_TWO,
                                                         new GURL(FAKE_PRODUCT_IMAGE_URL_TWO),
-                                                        Optional.empty(),
-                                                        Optional.of(Long.parseLong(FAKE_OFFER_ID)),
+                                                        null,
+                                                        Long.parseLong(FAKE_OFFER_ID),
                                                         UNITED_STATES_CURRENCY_CODE,
                                                         LOW_PRICE_MICROS,
                                                         COUNTRY_CODE,
-                                                        Optional.of(HIGH_PRICE_MICROS)));
+                                                        HIGH_PRICE_MICROS));
                                         break;
                                     case ShoppingServiceResponse.NONE:
                                         callback.onResult(url, null);

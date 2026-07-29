@@ -2,17 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/services/sharing/nearby/platform/ble_v2_gatt_server.h"
 
 #include "base/check.h"
-#include "base/containers/contains.h"
+#include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
+#include "base/notimplemented.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool.h"
 #include "chrome/services/sharing/nearby/platform/bluetooth_utils.h"
@@ -104,11 +100,6 @@ BleV2GattServer::BleV2GattServer(
 }
 
 BleV2GattServer::~BleV2GattServer() = default;
-
-BluetoothAdapter& BleV2GattServer::GetBlePeripheral() {
-  CHECK(bluetooth_adapter_);
-  return *bluetooth_adapter_;
-}
 
 std::optional<api::ble_v2::GattCharacteristic>
 BleV2GattServer::CreateCharacteristic(
@@ -400,7 +391,8 @@ void BleV2GattServer::OnLocalCharacteristicRead(
   }
 
   const uint8_t* bytes = reinterpret_cast<const uint8_t*>(data.data());
-  std::vector<uint8_t> read_value(bytes + offset, bytes + data.size());
+  std::vector<uint8_t> read_value(UNSAFE_TODO(bytes + offset),
+                                  UNSAFE_TODO(bytes + data.size()));
   metrics::RecordOnLocalCharacteristicReadResult(/*success=*/true);
   std::move(callback).Run(
       bluetooth::mojom::LocalCharacteristicReadResult::NewData(

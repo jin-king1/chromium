@@ -13,9 +13,10 @@
 #include "base/strings/string_util.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
-#include "chrome/browser/ui/views/web_apps/web_app_info_image_source.h"
 #include "chrome/browser/ui/views/web_apps/web_app_install_dialog_delegate.h"
 #include "chrome/browser/ui/web_applications/web_app_dialogs.h"
+#include "chrome/browser/ui/web_applications/web_app_info_image_source.h"
+#include "chrome/browser/web_applications/icons/icon_masker.h"
 #include "chrome/browser/web_applications/mojom/user_display_mode.mojom.h"
 #include "chrome/browser/web_applications/web_app_constants.h"
 #include "chrome/common/chrome_features.h"
@@ -38,6 +39,7 @@
 #include "ui/views/controls/textfield/textfield.h"
 #include "ui/views/layout/layout_provider.h"
 #include "ui/views/layout/table_layout.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/widget/widget.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -47,8 +49,6 @@
 namespace {
 
 CreateShortcutConfirmationView* g_dialog_for_testing = nullptr;
-bool g_auto_accept_web_app_for_testing = false;
-bool g_auto_check_open_in_window_for_testing = false;
 const char* g_title_to_use_for_app = nullptr;
 
 bool ShowRadioButtons() {
@@ -95,15 +95,16 @@ CreateShortcutConfirmationView::CreateShortcutConfirmationView(
                  views::TableLayout::kFixedSize,
                  views::TableLayout::ColumnSize::kFixed, textfield_width, 0)
       .AddRows(1, views::TableLayout::kFixedSize)
-      .AddPaddingRow(
-          views::TableLayout::kFixedSize,
-          layout_provider->GetDistanceMetric(DISTANCE_CONTROL_LIST_VERTICAL))
+      .AddPaddingRow(views::TableLayout::kFixedSize,
+                     layout_provider->GetDistanceMetric(
+                         views::DISTANCE_CONTROL_LIST_VERTICAL))
       .AddRows(ShowRadioButtons() ? 3 : 1, views::TableLayout::kFixedSize);
 
+  auto dialog_model_info = web_app_info_->GetIconBitmapsForSecureSurfaces();
   gfx::Size image_size(web_app::kWebAppIconSmall, web_app::kWebAppIconSmall);
   gfx::ImageSkia image(
-      std::make_unique<WebAppInfoImageSource>(web_app::kWebAppIconSmall,
-                                              web_app_info_->icon_bitmaps.any),
+      std::make_unique<WebAppInfoImageSource>(
+          web_app::kWebAppIconSmall, std::move(dialog_model_info.bitmaps)),
       image_size);
 
   // Builds the header row child views.
@@ -127,6 +128,7 @@ CreateShortcutConfirmationView::CreateShortcutConfirmationView(
               views::DialogContentType::kControl,
               views::DialogContentType::kText))
           .AddChildren(views::Builder<views::ImageView>()
+                           .CopyAddressTo(&icon_view_)
                            .SetImageSize(image_size)
                            .SetImage(ui::ImageModel::FromImageSkia(image)),
                        views::Builder<views::Textfield>()
@@ -134,10 +136,18 @@ CreateShortcutConfirmationView::CreateShortcutConfirmationView(
                            .SetText(web_app::NormalizeSuggestedAppTitle(
                                g_title_to_use_for_app != nullptr
                                    ? base::ASCIIToUTF16(g_title_to_use_for_app)
-                                   : web_app_info_->title))
+                                   : web_app_info_->title.value()))
                            .SetAccessibleName(l10n_util::GetStringUTF16(
                                IDS_BOOKMARK_APP_AX_BUBBLE_NAME_LABEL))
                            .SetController(this));
+
+  if (dialog_model_info.is_maskable) {
+    web_app::MaskIconOnOs(
+        *image.bitmap(),
+        base::BindOnce(
+            &CreateShortcutConfirmationView::OnIconMaskedShowOnDialog,
+            weak_ptr_factory_.GetWeakPtr()));
+  }
 
   const auto display_mode = web_app_info_->user_display_mode;
 
@@ -183,7 +193,8 @@ CreateShortcutConfirmationView::CreateShortcutConfirmationView(
 
   std::move(builder).BuildChildren();
 
-  if (g_auto_check_open_in_window_for_testing) {
+  if (web_app::GetCreateShortcutDialogCheckStateForTesting() ==  // IN-TEST
+      web_app::CreateShortcutDialogCheckState::kChecked) {
     if (ShowRadioButtons()) {
       open_as_window_radio_->SetChecked(true);
     } else {
@@ -240,10 +251,8 @@ void CreateShortcutConfirmationView::OnAccept() {
             : web_app::mojom::UserDisplayMode::kBrowser;
   }
 
-  if (base::FeatureList::IsEnabled(features::kDisableShortcutsEnableDiy)) {
-    web_app_info_->is_diy_app = true;
-  }
-
+  // Shortcut apps are currently installed as DIY apps as of M133.
+  web_app_info_->is_diy_app = true;
   install_tracker_->ReportResult(webapps::MlInstallUserResponse::kAccepted);
   // Some tests repeatedly create this class, and it's not guaranteed this class
   // is destroyed for subsequent calls. So reset the tracker manually here.
@@ -270,6 +279,14 @@ void CreateShortcutConfirmationView::RunCloseCallbackIfExists() {
   }
 }
 
+void CreateShortcutConfirmationView::OnIconMaskedShowOnDialog(
+    SkBitmap masked_bitmap) {
+  CHECK(icon_view_);
+  gfx::Image masked_image =
+      gfx::Image::CreateFrom1xBitmap(std::move(masked_bitmap));
+  icon_view_->SetImage(ui::ImageModel::FromImage(masked_image));
+}
+
 BEGIN_METADATA(CreateShortcutConfirmationView)
 ADD_READONLY_PROPERTY_METADATA(std::u16string, TrimmedTitle)
 END_METADATA
@@ -289,15 +306,15 @@ void ShowCreateShortcutDialog(
 
   g_dialog_for_testing = dialog;
 
-  if (g_auto_accept_web_app_for_testing) {
-    g_dialog_for_testing->Accept();
+  InstallDialogTestResponse auto_response =
+      GetPwaInstallationDialogAutoResponseForTesting();  // IN-TEST
+  if (auto_response != InstallDialogTestResponse::kNone) {
+    if (auto_response == InstallDialogTestResponse::kDeny) {
+      g_dialog_for_testing->Cancel();
+    } else {
+      g_dialog_for_testing->Accept();
+    }
   }
-}
-
-void SetAutoAcceptWebAppDialogForTesting(bool auto_accept,  // IN-TEST
-                                         bool auto_open_in_window) {
-  g_auto_accept_web_app_for_testing = auto_accept;
-  g_auto_check_open_in_window_for_testing = auto_open_in_window;
 }
 
 void SetOverrideTitleForTesting(const char* title_to_use) {

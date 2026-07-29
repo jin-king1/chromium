@@ -7,19 +7,23 @@
 #include <memory>
 #include <optional>
 
+#include "base/functional/callback_helpers.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/mock_callback.h"
 #include "base/test/test_future.h"
-#include "chrome/browser/extensions/test_extension_prefs.h"
+#include "chrome/browser/extensions/api/identity/identity_launch_web_auth_flow_function.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/signin/public/base/consent_level.h"
 #include "components/signin/public/base/signin_buildflags.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
 #include "content/public/test/browser_task_environment.h"
 #include "extensions/browser/event_router.h"
+#include "extensions/browser/test_extension_prefs.h"
 #include "google_apis/gaia/core_account_id.h"
 #include "google_apis/gaia/gaia_id.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 using testing::_;
 using testing::Mock;
@@ -33,8 +37,9 @@ class IdentityAPITest : public testing::Test {
       testing::StrictMock<base::MockRepeatingCallback<void(Event*)>>;
 
   IdentityAPITest()
-      : prefs_(base::SingleThreadTaskRunner::GetCurrentDefault()),
-        event_router_(prefs_.profile(), prefs_.prefs()),
+      : prefs_(base::SingleThreadTaskRunner::GetCurrentDefault(),
+               std::make_unique<TestingProfile>()),
+        event_router_(prefs_.browser_context(), prefs_.prefs()),
         api_(CreateIdentityAPI()) {
     // IdentityAPITest requires the extended account info callbacks to be fired
     // on account update/removal.
@@ -44,9 +49,9 @@ class IdentityAPITest : public testing::Test {
   ~IdentityAPITest() override { api_->Shutdown(); }
 
   std::unique_ptr<IdentityAPI> CreateIdentityAPI() {
-    auto identity_api = base::WrapUnique(
-        new IdentityAPI(prefs_.profile(), identity_env_.identity_manager(),
-                        prefs_.prefs(), &event_router_));
+    auto identity_api = base::WrapUnique(new IdentityAPI(
+        Profile::FromBrowserContext(prefs_.browser_context()),
+        identity_env_.identity_manager(), prefs_.prefs(), &event_router_));
     identity_api->set_on_signin_changed_callback_for_testing(
         mock_on_signin_changed_callback_.Get());
     return identity_api;
@@ -126,6 +131,32 @@ TEST_F(IdentityAPITest, GaiaIdErasedAfterSignOut) {
 
   identity_env()->RemoveRefreshTokenForAccount(account.account_id);
   EXPECT_EQ(api()->GetGaiaIdForExtension(extension_id), std::nullopt);
+}
+
+TEST_F(IdentityAPITest, StartTrackingWebAuthFlow) {
+  std::string extension_id = prefs()->AddExtensionAndReturnId("extension");
+  std::string extension_id_2 = prefs()->AddExtensionAndReturnId("extension2");
+
+  // First call should succeed and return a valid tracker.
+  base::ScopedClosureRunner tracker1 =
+      api()->StartTrackingWebAuthFlow(extension_id);
+  EXPECT_TRUE(tracker1);
+
+  // Second call for the same extension should fail.
+  base::ScopedClosureRunner tracker2 =
+      api()->StartTrackingWebAuthFlow(extension_id);
+  EXPECT_FALSE(tracker2);
+
+  // A call for a different extension should succeed.
+  base::ScopedClosureRunner tracker3 =
+      api()->StartTrackingWebAuthFlow(extension_id_2);
+  EXPECT_TRUE(tracker3);
+
+  // Releasing the first tracker should allow a new call for the same extension.
+  tracker1.RunAndReset();
+  base::ScopedClosureRunner tracker4 =
+      api()->StartTrackingWebAuthFlow(extension_id);
+  EXPECT_TRUE(tracker4);
 }
 
 #if !BUILDFLAG(IS_CHROMEOS)
@@ -289,4 +320,48 @@ TEST_F(IdentityAPITest, MaybeShowChromeSigninDialogConcurrent) {
   EXPECT_TRUE(on_complete_2.IsReady());
 }
 #endif
+
+TEST(IdentityLaunchWebAuthFlowFunctionTest, ShouldInterceptRedirect) {
+  GURL default_origin("https://abcdefghij.chromiumapp.org/");
+  std::vector<GURL> allowed_urls;
+  allowed_urls.emplace_back("https://example.com/a");
+  allowed_urls.emplace_back("https://example.com/b/");
+
+  // Default origin matching
+  EXPECT_TRUE(IdentityLaunchWebAuthFlowFunction::ShouldInterceptRedirect(
+      GURL("https://abcdefghij.chromiumapp.org/callback"), default_origin,
+      allowed_urls));
+  EXPECT_TRUE(IdentityLaunchWebAuthFlowFunction::ShouldInterceptRedirect(
+      GURL("https://abcdefghij.chromiumapp.org"), default_origin,
+      allowed_urls));
+  EXPECT_FALSE(IdentityLaunchWebAuthFlowFunction::ShouldInterceptRedirect(
+      GURL("https://other.chromiumapp.org/callback"), default_origin,
+      allowed_urls));
+
+  // Allowed URLs matching (without trailing slash)
+  EXPECT_TRUE(IdentityLaunchWebAuthFlowFunction::ShouldInterceptRedirect(
+      GURL("https://example.com/a"), default_origin, allowed_urls));
+  EXPECT_TRUE(IdentityLaunchWebAuthFlowFunction::ShouldInterceptRedirect(
+      GURL("https://example.com/a/b"), default_origin, allowed_urls));
+  EXPECT_FALSE(IdentityLaunchWebAuthFlowFunction::ShouldInterceptRedirect(
+      GURL("https://example.com/ab"), default_origin, allowed_urls));
+
+  // Allowed URLs matching (with trailing slash)
+  EXPECT_TRUE(IdentityLaunchWebAuthFlowFunction::ShouldInterceptRedirect(
+      GURL("https://example.com/b/"), default_origin, allowed_urls));
+  EXPECT_TRUE(IdentityLaunchWebAuthFlowFunction::ShouldInterceptRedirect(
+      GURL("https://example.com/b/c"), default_origin, allowed_urls));
+  EXPECT_FALSE(IdentityLaunchWebAuthFlowFunction::ShouldInterceptRedirect(
+      GURL("https://example.com/b"), default_origin, allowed_urls));
+
+  // Query parameters ignored
+  EXPECT_TRUE(IdentityLaunchWebAuthFlowFunction::ShouldInterceptRedirect(
+      GURL("https://example.com/a?code=secret"), default_origin, allowed_urls));
+
+  std::vector<GURL> allowed_urls_with_query;
+  allowed_urls_with_query.emplace_back("https://example.com/a?foo=bar");
+  EXPECT_TRUE(IdentityLaunchWebAuthFlowFunction::ShouldInterceptRedirect(
+      GURL("https://example.com/a"), default_origin, allowed_urls_with_query));
+}
+
 }  // namespace extensions

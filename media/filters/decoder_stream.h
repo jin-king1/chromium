@@ -232,7 +232,7 @@ class MEDIA_EXPORT DecoderStream {
   std::unique_ptr<DecoderStreamTraits<StreamType>> traits_;
 
   scoped_refptr<base::SequencedTaskRunner> task_runner_;
-  raw_ptr<MediaLog> media_log_;
+  const std::unique_ptr<MediaLog> media_log_;
 
   State state_;
 
@@ -306,6 +306,10 @@ class MEDIA_EXPORT DecoderStream {
   bool encryption_type_reported_ = false;
 
   int fallback_buffers_being_decoded_ = 0;
+
+  // Last timestamp seen by DecodeInternal(), used for average duration when
+  // explicit duration information is missing.
+  base::TimeDelta last_buffer_timestamp_ = kNoTimestamp;
 
   // NOTE: Weak pointers must be invalidated before all other member variables.
   base::WeakPtrFactory<DecoderStream<StreamType>> weak_factory_{this};

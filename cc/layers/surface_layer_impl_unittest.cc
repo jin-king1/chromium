@@ -9,9 +9,7 @@
 #include <utility>
 
 #include "base/test/bind.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/threading/thread.h"
-#include "cc/base/features.h"
 #include "cc/layers/append_quads_context.h"
 #include "cc/layers/append_quads_data.h"
 #include "cc/test/layer_tree_impl_test_base.h"
@@ -334,7 +332,7 @@ TEST(SurfaceLayerImplTest, WillDrawNotifiesSynchronouslyInCompositeImmediate) {
   // Note that this has to be created after the callback so that the layer is
   // destroyed first (it will call the callback in the dtor).
   LayerTreeImplTestBase impl;
-  impl.host_impl()->client()->set_is_synchronous_composite(true);
+  impl.host_impl()->delegate()->set_is_synchronous_composite(true);
 
   SurfaceLayerImpl* surface_layer_impl =
       impl.AddLayerInActiveTree<SurfaceLayerImpl>(std::move(callback));
@@ -372,7 +370,7 @@ TEST(SurfaceLayerImplTest, WillDrawNotifiesAsynchronously) {
   // Note that this has to be created after the callback so that the layer is
   // destroyed first (it will call the callback in the dtor).
   LayerTreeImplTestBase impl;
-  impl.host_impl()->client()->set_is_synchronous_composite(false);
+  impl.host_impl()->delegate()->set_is_synchronous_composite(false);
 
   SurfaceLayerImpl* surface_layer_impl =
       impl.AddLayerInActiveTree<SurfaceLayerImpl>(std::move(callback));
@@ -387,18 +385,7 @@ TEST(SurfaceLayerImplTest, WillDrawNotifiesAsynchronously) {
   EXPECT_TRUE(updated);
 }
 
-class SurfaceLayerImplAlignToPixelGridTest : public testing::Test {
- public:
-  SurfaceLayerImplAlignToPixelGridTest() {
-    scoped_feature_list_.InitWithFeatures(
-        {features::kAlignSurfaceLayerImplToPixelGrid}, {});
-  }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
-TEST_F(SurfaceLayerImplAlignToPixelGridTest, FractionalOffsetSnapsToPixelGrid) {
+TEST(SurfaceLayerImplTest, FractionalOffsetSnapsToPixelGrid) {
   gfx::Size layer_size(200, 200);
   gfx::Size viewport_size(1000, 1000);
   LayerTreeImplTestBase impl;

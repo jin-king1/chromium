@@ -10,6 +10,7 @@
 
 #include "base/json/json_reader.h"
 #include "base/memory/raw_ptr.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
@@ -19,6 +20,7 @@
 #include "base/timer/mock_timer.h"
 #include "base/unguessable_token.h"
 #include "base/values.h"
+#include "build/build_config.h"
 #include "net/base/backoff_entry.h"
 #include "net/base/features.h"
 #include "net/base/isolation_info.h"
@@ -34,6 +36,9 @@
 
 namespace net {
 namespace {
+
+using base::test::IsJson;
+using testing::Optional;
 
 constexpr char kReportingUploadHeaderTypeHistogram[] =
     "Net.Reporting.UploadHeaderType";
@@ -67,12 +72,12 @@ class ReportingDeliveryAgentTest : public ReportingTestBase {
   }
 
   void AddReportWithBody(const std::string& body) {
-    base::Value::Dict report_body;
+    base::DictValue report_body;
     report_body.Set("key", body);  // Use the provided body string
 
     cache()->AddReport(std::nullopt, kNak_, kUrl_, kUserAgent_, kGroup_, kType_,
                        std::move(report_body), /*depth=*/0,
-                       /*queued=*/tick_clock()->NowTicks(), /*attempts=*/0,
+                       /*queued=*/tick_clock()->NowTicks(),
                        ReportingTargetType::kDeveloper);
   }
 
@@ -80,22 +85,21 @@ class ReportingDeliveryAgentTest : public ReportingTestBase {
                  const NetworkAnonymizationKey& network_anonymization_key,
                  const GURL& url,
                  const std::string& group) {
-    base::Value::Dict report_body;
+    base::DictValue report_body;
     report_body.Set("key", "value");
     cache()->AddReport(reporting_source, network_anonymization_key, url,
                        kUserAgent_, group, kType_, std::move(report_body),
                        /*depth=*/0, /*queued=*/tick_clock()->NowTicks(),
-                       /*attempts=*/0, ReportingTargetType::kDeveloper);
+                       ReportingTargetType::kDeveloper);
   }
 
   void AddEnterpriseReport(const GURL& url, const std::string& group) {
-    base::Value::Dict report_body;
+    base::DictValue report_body;
     report_body.Set("key", "value");
-    cache()->AddReport(/*reporting_source=*/std::nullopt,
-                       net::NetworkAnonymizationKey(), url, kUserAgent_, group,
-                       kType_, std::move(report_body), /*depth=*/0,
-                       /*queued=*/tick_clock()->NowTicks(), /*attempts=*/0,
-                       ReportingTargetType::kEnterprise);
+    cache()->AddReport(
+        /*reporting_source=*/std::nullopt, net::NetworkAnonymizationKey(), url,
+        kUserAgent_, group, kType_, std::move(report_body), /*depth=*/0,
+        /*queued=*/tick_clock()->NowTicks(), ReportingTargetType::kEnterprise);
   }
 
   // The first report added to the cache is uploaded immediately, and a timer is
@@ -200,24 +204,14 @@ TEST_F(ReportingDeliveryAgentTest, SuccessfulImmediateUpload) {
 
   ASSERT_EQ(1u, pending_uploads().size());
   EXPECT_EQ(kEndpoint_, pending_uploads()[0]->url());
-  {
-    auto value = pending_uploads()[0]->GetValue();
-
-    ASSERT_TRUE(value->is_list());
-    ASSERT_EQ(1u, value->GetList().size());
-
-    const base::Value& report = value->GetList()[0];
-    ASSERT_TRUE(report.is_dict());
-    const base::Value::Dict& report_dict = report.GetDict();
-    EXPECT_EQ(5u, report_dict.size());
-
-    ExpectDictIntegerValue(0, report_dict, "age");
-    ExpectDictStringValue(kType_, report_dict, "type");
-    ExpectDictStringValue(kUrl_.spec(), report_dict, "url");
-    ExpectDictStringValue(kUserAgent_, report_dict, "user_agent");
-    const base::Value::Dict* body = report_dict.FindDict("body");
-    EXPECT_EQ("value", *body->FindString("key"));
-  }
+  EXPECT_THAT(pending_uploads()[0]->GetValue(),
+              Optional(IsJson(base::ListValue().Append(
+                  base::DictValue()
+                      .Set("age", 0)
+                      .Set("type", kType_)
+                      .Set("url", kUrl_.spec())
+                      .Set("user_agent", kUserAgent_)
+                      .Set("body", base::DictValue().Set("key", "value"))))));
   pending_uploads()[0]->Complete(ReportingUploader::Outcome::SUCCESS);
 
   // Successful upload should remove delivered reports.
@@ -277,23 +271,14 @@ TEST_F(ReportingDeliveryAgentTest, SuccessfulImmediateUploadDocumentReport) {
 
   ASSERT_EQ(1u, pending_uploads().size());
   EXPECT_EQ(kEndpoint_, pending_uploads()[0]->url());
-  {
-    const auto value = pending_uploads()[0]->GetValue();
-
-    ASSERT_TRUE(value->is_list());
-    ASSERT_EQ(1u, value->GetList().size());
-
-    const base::Value& report = value->GetList()[0];
-    ASSERT_TRUE(report.is_dict());
-    const base::Value::Dict& report_dict = report.GetDict();
-
-    ExpectDictIntegerValue(0, report_dict, "age");
-    ExpectDictStringValue(kType_, report_dict, "type");
-    ExpectDictStringValue(kUrl_.spec(), report_dict, "url");
-    ExpectDictStringValue(kUserAgent_, report_dict, "user_agent");
-    const base::Value::Dict* body = report_dict.FindDict("body");
-    EXPECT_EQ("value", *body->FindString("key"));
-  }
+  EXPECT_THAT(pending_uploads()[0]->GetValue(),
+              Optional(IsJson(base::ListValue().Append(
+                  base::DictValue()
+                      .Set("age", 0)
+                      .Set("type", kType_)
+                      .Set("url", kUrl_.spec())
+                      .Set("user_agent", kUserAgent_)
+                      .Set("body", base::DictValue().Set("key", "value"))))));
   pending_uploads()[0]->Complete(ReportingUploader::Outcome::SUCCESS);
 
   // Successful upload should remove delivered reports.
@@ -356,24 +341,14 @@ TEST_F(ReportingDeliveryAgentTest, SuccessfulImmediateSubdomainUpload) {
 
   ASSERT_EQ(1u, pending_uploads().size());
   EXPECT_EQ(kEndpoint_, pending_uploads()[0]->url());
-  {
-    auto value = pending_uploads()[0]->GetValue();
-
-    ASSERT_TRUE(value->is_list());
-    ASSERT_EQ(1u, value->GetList().size());
-
-    const base::Value& report = value->GetList()[0];
-    ASSERT_TRUE(report.is_dict());
-    const base::Value::Dict& report_dict = report.GetDict();
-    EXPECT_EQ(5u, report_dict.size());
-
-    ExpectDictIntegerValue(0, report_dict, "age");
-    ExpectDictStringValue(kType_, report_dict, "type");
-    ExpectDictStringValue(kSubdomainUrl_.spec(), report_dict, "url");
-    ExpectDictStringValue(kUserAgent_, report_dict, "user_agent");
-    const base::Value::Dict* body = report_dict.FindDict("body");
-    EXPECT_EQ("value", *body->FindString("key"));
-  }
+  EXPECT_THAT(pending_uploads()[0]->GetValue(),
+              Optional(IsJson(base::ListValue().Append(
+                  base::DictValue()
+                      .Set("age", 0)
+                      .Set("type", kType_)
+                      .Set("url", kSubdomainUrl_.spec())
+                      .Set("user_agent", kUserAgent_)
+                      .Set("body", base::DictValue().Set("key", "value"))))));
   pending_uploads()[0]->Complete(ReportingUploader::Outcome::SUCCESS);
 
   // Successful upload should remove delivered reports.
@@ -436,24 +411,14 @@ TEST_F(ReportingDeliveryAgentTest, SuccessfulDelayedUpload) {
 
   ASSERT_EQ(1u, pending_uploads().size());
   EXPECT_EQ(kEndpoint_, pending_uploads()[0]->url());
-  {
-    auto value = pending_uploads()[0]->GetValue();
-
-    ASSERT_TRUE(value->is_list());
-    ASSERT_EQ(1u, value->GetList().size());
-
-    const base::Value& report = value->GetList()[0];
-    ASSERT_TRUE(report.is_dict());
-    const base::Value::Dict& report_dict = report.GetDict();
-    EXPECT_EQ(5u, report_dict.size());
-
-    ExpectDictIntegerValue(0, report_dict, "age");
-    ExpectDictStringValue(kType_, report_dict, "type");
-    ExpectDictStringValue(kUrl_.spec(), report_dict, "url");
-    ExpectDictStringValue(kUserAgent_, report_dict, "user_agent");
-    const base::Value::Dict* body = report_dict.FindDict("body");
-    EXPECT_EQ("value", *body->FindString("key"));
-  }
+  EXPECT_THAT(pending_uploads()[0]->GetValue(),
+              Optional(IsJson(base::ListValue().Append(
+                  base::DictValue()
+                      .Set("age", 0)
+                      .Set("type", kType_)
+                      .Set("url", kUrl_.spec())
+                      .Set("user_agent", kUserAgent_)
+                      .Set("body", base::DictValue().Set("key", "value"))))));
   pending_uploads()[0]->Complete(ReportingUploader::Outcome::SUCCESS);
 
   {
@@ -1091,11 +1056,12 @@ TEST_F(ReportingDeliveryAgentTest, SkipUploadForReportWithLargeBody) {
   // first report. The SerializeReports method is called internally within
   // SendReports to handle the serialization process.
   EXPECT_FALSE(AreReportsProcessed());
-  EXPECT_TRUE(base::test::RunUntil([&] { return AreReportsProcessed(); }));
+  EXPECT_TRUE(base::test::RunUntil([&] {
+    return histograms.GetBucketCount("Net.Reporting.ReportsCount", 1) == 1;
+  }));
 
   histograms.ExpectBucketCount("Net.Reporting.ReportsCount", 1, 1);
   histograms.ExpectBucketCount("Net.Reporting.FilteredReportsCount", 1, 0);
-
   // Verify that the cache is now empty (report should be removed after send,
   // even if filtered)
   EXPECT_TRUE(AreReportsProcessed());

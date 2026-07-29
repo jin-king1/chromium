@@ -1,11 +1,13 @@
 *AddressBarPositionEphemeralModuleTest.*
 *AndroidHomeModuleRankerTest.*
+*AppBundlePromoEphemeralModuleTest.*
 *AutofillPasswordsEphemeralModuleTest.*
 *AuxiliarySearchPromoTest.*
 *BackgroundRecorderTest.*
 *CachedResultProviderTest.*
 *CachedResultWriterTest.*
 *CardSelectionSignalsTest.*
+*ChromeUserEngagementTest.*
 *ClientResultPrefsTest.*
 *ComposePromotionTest.*
 *ConfigParserTest.*
@@ -15,6 +17,7 @@
 *DatabaseApiClientsTest.*
 *DatabaseClientImplTest.*
 *DatabaseMaintenanceImplTest.*
+*DefaultBrowserPromoEphemeralModuleTest.*
 *DefaultBrowserPromoTest.*
 *DeviceSwitcherModelTest.*
 *DeviceSwitcherResultDispatcherTest.*
@@ -34,7 +37,9 @@
 *FrequentFeatureUserModelTest.*
 *HistogramSignalHandlerTest.*
 *HistoryDelegateImplTest.*
-*HomeModulesCardRegistryTest.*
+*HistorySyncPromoTest.*
+*HomeModulesCardRegistryAndroidTest.*
+*HomeModulesCardRegistryIOSTest.*
 *InputContextAndroidTest.*
 *IntentionalUserModelTest.*
 *IosModuleRankerTest.*
@@ -47,6 +52,7 @@
 *ModelManagerTest.*
 *ModelProviderFactoryImplTest.*
 *MostVisitedTilesUserTest.*
+*NtpThemePromoTest.*
 *OptimizationGuideSegmentationModelProviderTest.*
 *OptimizationTargetSegmentationDummyTest.*
 *PasswordManagerUserModelTest.*
@@ -66,6 +72,7 @@
 *SegmentInfoCacheTest.*
 *SegmentInfoDatabaseTest.*
 *SegmentResultProviderTest.*
+*SegmentResultProviderThreadingTest.*
 *SegmentScoreProviderTest.*
 *SegmentSelectorTest.*
 *SegmentationModelExecutorTest.*
@@ -95,6 +102,7 @@
 *TabSessionSourceTest.*
 *TabletProductivityUserModelTest.*
 *TipsManagerTest.*
+*TipsNotificationsRankerTest.*
 *TrainingDataCacheTest.*
 *TrainingDataCollectorImplTest.*
 *URLVisitResumptionRankerTest.*

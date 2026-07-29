@@ -56,6 +56,7 @@ void FakeDataSharingSDKDelegate::AddMember(const GroupId& group_id,
 
   data_sharing_pb::GroupMember member;
   member.set_gaia_id(member_gaia_id.ToString());
+  member.set_role(data_sharing_pb::MEMBER_ROLE_MEMBER);
   *group_it->second.add_members() = member;
 }
 
@@ -113,6 +114,26 @@ void FakeDataSharingSDKDelegate::ReadGroups(
       failed_group->set_failure_reason(
           data_sharing_pb::FailedReadGroupResult::GROUP_NOT_FOUND);
     }
+  }
+
+  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, base::BindOnce(std::move(callback), result));
+}
+
+void FakeDataSharingSDKDelegate::ReadGroupWithToken(
+    const data_sharing_pb::ReadGroupWithTokenParams& params,
+    base::OnceCallback<void(
+        const base::expected<data_sharing_pb::ReadGroupsResult, absl::Status>&)>
+        callback) {
+  data_sharing_pb::ReadGroupsResult result;
+  const GroupId group_id(params.group_id());
+  if (groups_.find(group_id) != groups_.end()) {
+    *result.add_group_data() = groups_[group_id];
+  } else {
+    auto* failed_group = result.add_failed_read_group_results();
+    failed_group->set_group_id(params.group_id());
+    failed_group->set_failure_reason(
+        data_sharing_pb::FailedReadGroupResult::GROUP_NOT_FOUND);
   }
 
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(

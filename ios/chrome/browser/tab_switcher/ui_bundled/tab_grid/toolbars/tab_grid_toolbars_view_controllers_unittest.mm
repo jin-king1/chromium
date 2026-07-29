@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #import "base/test/metrics/user_action_tester.h"
+#import "ios/chrome/browser/keyboard/ui_bundled/UIKeyCommand+Chrome.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/toolbars/tab_grid_bottom_toolbar.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/toolbars/tab_grid_top_toolbar.h"
 #import "ios/chrome/grit/ios_strings.h"
@@ -13,7 +14,7 @@
 class TabGridToolbarsViewControllersTest : public PlatformTest {
  protected:
   TabGridToolbarsViewControllersTest() {
-    top_toolbar_ = [[TabGridTopToolbar alloc] initWithFrame:CGRectZero];
+    top_toolbar_ = [[TabGridTopToolbar alloc] initWithLayoutGuideCenter:nil];
     bottom_toolbar_ = [[TabGridBottomToolbar alloc] initWithFrame:CGRectZero];
   }
   ~TabGridToolbarsViewControllersTest() override {}
@@ -67,7 +68,6 @@ TEST_F(TabGridToolbarsViewControllersTest, TopToolbarsImplementsActions) {
   // Load the view.
   std::ignore = top_toolbar_;
   [top_toolbar_ keyCommand_closeAll];
-  [top_toolbar_ keyCommand_undo];
   [top_toolbar_ keyCommand_find];
   [top_toolbar_ keyCommand_close];
 }
@@ -77,7 +77,6 @@ TEST_F(TabGridToolbarsViewControllersTest, BottomToolbarsImplementsActions) {
   // Load the view.
   std::ignore = bottom_toolbar_;
   [bottom_toolbar_ keyCommand_closeAll];
-  [bottom_toolbar_ keyCommand_undo];
   [bottom_toolbar_ keyCommand_close];
 }
 
@@ -87,8 +86,7 @@ TEST_F(TabGridToolbarsViewControllersTest, Metrics) {
   std::ignore = top_toolbar_;
   std::ignore = bottom_toolbar_;
   ExpectUMA(@"keyCommand_closeAll", "MobileKeyCommandCloseAll");
-  ExpectUMA(@"keyCommand_undo", "MobileKeyCommandUndo");
-  ExpectUMA(@"keyCommand_close", "MobileKeyCommandClose");
+  ExpectUMA(@"keyCommand_close", kMobileKeyCommandClose);
 
   // Check only top toolbar.
   ExpectUMA(@"keyCommand_find", "MobileKeyCommandSearchTabs", top_toolbar_);

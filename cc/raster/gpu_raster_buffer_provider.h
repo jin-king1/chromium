@@ -16,7 +16,6 @@
 #include "cc/raster/raster_buffer.h"
 #include "cc/raster/raster_buffer_provider.h"
 #include "cc/raster/raster_query_queue.h"
-#include "cc/trees/raster_capabilities.h"
 #include "components/viz/common/resources/shared_image_format.h"
 #include "gpu/command_buffer/common/sync_token.h"
 
@@ -38,11 +37,11 @@ class CC_EXPORT GpuRasterBufferProvider : public RasterBufferProvider {
  public:
   static constexpr float kRasterMetricProbability = 0.01;
   GpuRasterBufferProvider(
+      scoped_refptr<gpu::SharedImageInterface> sii,
       viz::RasterContextProvider* compositor_context_provider,
       viz::RasterContextProvider* worker_context_provider,
-      const RasterCapabilities& raster_caps,
+      bool is_overlay_candidate,
       const gfx::Size& max_tile_size,
-      bool unpremultiply_and_dither_low_bit_depth_tiles,
       RasterQueryQueue* const pending_raster_queries,
       float raster_metric_probability = kRasterMetricProbability);
   GpuRasterBufferProvider(const GpuRasterBufferProvider&) = delete;
@@ -54,12 +53,7 @@ class CC_EXPORT GpuRasterBufferProvider : public RasterBufferProvider {
   std::unique_ptr<RasterBuffer> AcquireBufferForRaster(
       const ResourcePool::InUsePoolResource& resource,
       uint64_t resource_content_id,
-      uint64_t previous_content_id,
-      bool depends_on_at_raster_decodes,
-      bool depends_on_hardware_accelerated_jpeg_candidates,
-      bool depends_on_hardware_accelerated_webp_candidates) override;
-  viz::SharedImageFormat GetFormat() const override;
-  bool IsResourcePremultiplied() const override;
+      uint64_t previous_content_id) override;
   bool CanPartialRasterIntoProvidedResource() const override;
   bool IsResourceReadyToDraw(
       const ResourcePool::InUsePoolResource& resource) override;
@@ -68,6 +62,7 @@ class CC_EXPORT GpuRasterBufferProvider : public RasterBufferProvider {
       base::OnceClosure callback,
       uint64_t pending_callback_id) override;
   void Shutdown() override;
+  void FlushTileRasterGraphiteCommands() override;
 
  protected:
   void Flush() override;
@@ -77,10 +72,7 @@ class CC_EXPORT GpuRasterBufferProvider : public RasterBufferProvider {
    public:
     RasterBufferImpl(GpuRasterBufferProvider* client,
                      const ResourcePool::InUsePoolResource& in_use_resource,
-                     bool resource_has_previous_content,
-                     bool depends_on_at_raster_decodes,
-                     bool depends_on_hardware_accelerated_jpeg_candidates,
-                     bool depends_on_hardware_accelerated_webp_candidates);
+                     bool resource_has_previous_content);
     RasterBufferImpl(const RasterBufferImpl&) = delete;
     ~RasterBufferImpl() override;
 
@@ -128,32 +120,21 @@ class CC_EXPORT GpuRasterBufferProvider : public RasterBufferProvider {
     raw_ptr<ResourcePool::Backing> backing_;
 
     // These fields are for use on the worker thread.
-    const gfx::Size resource_size_;
-    const viz::SharedImageFormat shared_image_format_;
-    const gfx::ColorSpace color_space_;
     const bool resource_has_previous_content_;
-    const bool depends_on_at_raster_decodes_;
-    const bool depends_on_hardware_accelerated_jpeg_candidates_;
-    const bool depends_on_hardware_accelerated_webp_candidates_;
-    base::TimeTicks creation_time_;
   };
 
-  bool ShouldUnpremultiplyAndDitherResource(
-      viz::SharedImageFormat format) const;
-
+  const scoped_refptr<gpu::SharedImageInterface> sii_;
   const raw_ptr<viz::RasterContextProvider> compositor_context_provider_;
   const raw_ptr<viz::RasterContextProvider> worker_context_provider_;
-  const viz::SharedImageFormat tile_format_;
   const bool tile_overlay_candidate_;
   const gfx::Size max_tile_size_;
 
-  const raw_ptr<RasterQueryQueue, DanglingUntriaged> pending_raster_queries_;
+  const raw_ptr<RasterQueryQueue> pending_raster_queries_;
 
   const double raster_metric_probability_;
-  // Accessed with the worker context lock acquired.
-  base::MetricsSubSampler metrics_subsampler_;
   const bool is_using_raw_draw_;
   bool is_using_dmsaa_ = false;
+  bool should_flush_tile_raster_commands_ = false;
 };
 
 }  // namespace cc

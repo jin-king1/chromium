@@ -7,6 +7,7 @@
 #import "base/memory/raw_ptr.h"
 #import "base/notreached.h"
 #import "base/scoped_observation.h"
+#import "base/time/time.h"
 #import "components/prefs/ios/pref_observer_bridge.h"
 #import "components/prefs/pref_change_registrar.h"
 #import "components/prefs/pref_service.h"
@@ -42,7 +43,6 @@ using ScopedWebStateListObservation =
 - (instancetype)initWithConsumer:(id<InactiveTabsInfoConsumer>)consumer
                     webStateList:(WebStateList*)webStateList
               profilePrefService:(PrefService*)prefService {
-  CHECK(IsInactiveTabsAvailable());
   // TODO(crbug.com/40923937): Reinstate this CHECK once
   // InactiveTabsButtonMediator is not created when not needed (for example when
   // a policy disables the regular tab grid).

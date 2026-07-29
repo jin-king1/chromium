@@ -2,36 +2,36 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "media/base/decoder_buffer.h"
 
 #include <stdint.h>
 #include <string.h>
 
 #include <memory>
+#include <variant>
 
+#include "base/compiler_specific.h"
 #include "base/containers/heap_array.h"
 #include "base/memory/read_only_shared_memory_region.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/unsafe_shared_memory_region.h"
 #include "base/strings/string_util.h"
+#include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "media/base/test_data_util.h"
 #include "media/base/test_helpers.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/gfx/switches.h"
 
 namespace media {
 
 TEST(DecoderBufferTest, Constructors) {
   auto buffer = base::MakeRefCounted<DecoderBuffer>(0);
-  EXPECT_FALSE(buffer->data());
-  EXPECT_EQ(0u, buffer->size());
-  EXPECT_TRUE(buffer->empty());
-  EXPECT_EQ(base::span(*buffer), base::span<const uint8_t>());
+  auto buffer_span = base::span(*buffer);
+  EXPECT_FALSE(buffer_span.data());
+  EXPECT_EQ(0u, buffer_span.size());
+  EXPECT_TRUE(buffer_span.empty());
+  EXPECT_EQ(buffer_span, base::span<const uint8_t>());
   EXPECT_FALSE(buffer->end_of_stream());
   EXPECT_FALSE(buffer->is_key_frame());
 
@@ -52,7 +52,7 @@ TEST(DecoderBufferTest, CreateEOSBuffer) {
   ASSERT_TRUE(buffer->next_config());
   {
     auto config = buffer->next_config().value();
-    auto* ac = absl::get_if<AudioDecoderConfig>(&config);
+    auto* ac = std::get_if<AudioDecoderConfig>(&config);
     ASSERT_TRUE(ac);
     EXPECT_TRUE(ac->Matches(TestAudioConfig::Normal()));
   }
@@ -62,7 +62,7 @@ TEST(DecoderBufferTest, CreateEOSBuffer) {
   ASSERT_TRUE(buffer->next_config());
   {
     auto config = buffer->next_config().value();
-    auto* vc = absl::get_if<VideoDecoderConfig>(&config);
+    auto* vc = std::get_if<VideoDecoderConfig>(&config);
     ASSERT_TRUE(vc);
     EXPECT_TRUE(vc->Matches(TestVideoConfig::Normal()));
   }
@@ -73,10 +73,11 @@ TEST(DecoderBufferTest, CopyFrom) {
   const size_t kDataSize = std::size(kData);
 
   scoped_refptr<DecoderBuffer> buffer2(DecoderBuffer::CopyFrom(kData));
+  auto buffer_span2 = base::span(*buffer2);
   ASSERT_TRUE(buffer2.get());
-  EXPECT_NE(kData, buffer2->data());
-  EXPECT_EQ(buffer2->size(), kDataSize);
-  EXPECT_EQ(base::span(*buffer2), base::span(kData));
+  EXPECT_NE(kData, buffer_span2.data());
+  EXPECT_EQ(buffer_span2.size(), kDataSize);
+  EXPECT_EQ(buffer_span2, base::span(kData));
   EXPECT_FALSE(buffer2->end_of_stream());
   EXPECT_FALSE(buffer2->is_key_frame());
 }
@@ -100,7 +101,7 @@ TEST(DecoderBufferTest, FromPlatformSharedMemoryRegion) {
   auto region = base::UnsafeSharedMemoryRegion::Create(kDataSize);
   auto mapping = region.Map();
   ASSERT_TRUE(mapping.IsValid());
-  memcpy(mapping.GetMemoryAs<uint8_t>(), kData, kDataSize);
+  UNSAFE_TODO(memcpy(mapping.GetMemoryAs<uint8_t>(), kData, kDataSize));
 
   scoped_refptr<DecoderBuffer> buffer(
       DecoderBuffer::FromSharedMemoryRegion(std::move(region), 0, kDataSize));
@@ -119,7 +120,7 @@ TEST(DecoderBufferTest, FromPlatformSharedMemoryRegion_Unaligned) {
   auto region = base::UnsafeSharedMemoryRegion::Create(kDataSize);
   auto mapping = region.Map();
   ASSERT_TRUE(mapping.IsValid());
-  memcpy(mapping.GetMemoryAs<uint8_t>(), kData, kDataSize);
+  UNSAFE_TODO(memcpy(mapping.GetMemoryAs<uint8_t>(), kData, kDataSize));
 
   scoped_refptr<DecoderBuffer> buffer(DecoderBuffer::FromSharedMemoryRegion(
       std::move(region), kDataOffset, kDataSize - kDataOffset));
@@ -137,7 +138,7 @@ TEST(DecoderBufferTest, FromPlatformSharedMemoryRegion_ZeroSize) {
   auto region = base::UnsafeSharedMemoryRegion::Create(kDataSize);
   auto mapping = region.Map();
   ASSERT_TRUE(mapping.IsValid());
-  memcpy(mapping.memory(), kData, kDataSize);
+  UNSAFE_TODO(memcpy(mapping.memory(), kData, kDataSize));
 
   scoped_refptr<DecoderBuffer> buffer(
       DecoderBuffer::FromSharedMemoryRegion(std::move(region), 0, 0));
@@ -150,7 +151,8 @@ TEST(DecoderBufferTest, FromSharedMemoryRegion) {
 
   auto mapping_region = base::ReadOnlySharedMemoryRegion::Create(kDataSize);
   ASSERT_TRUE(mapping_region.IsValid());
-  memcpy(mapping_region.mapping.GetMemoryAs<uint8_t>(), kData, kDataSize);
+  UNSAFE_TODO(
+      memcpy(mapping_region.mapping.GetMemoryAs<uint8_t>(), kData, kDataSize));
 
   scoped_refptr<DecoderBuffer> buffer(DecoderBuffer::FromSharedMemoryRegion(
       std::move(mapping_region.region), 0, kDataSize));
@@ -168,7 +170,8 @@ TEST(DecoderBufferTest, FromSharedMemoryRegion_Unaligned) {
 
   auto mapping_region = base::ReadOnlySharedMemoryRegion::Create(kDataSize);
   ASSERT_TRUE(mapping_region.IsValid());
-  memcpy(mapping_region.mapping.GetMemoryAs<uint8_t>(), kData, kDataSize);
+  UNSAFE_TODO(
+      memcpy(mapping_region.mapping.GetMemoryAs<uint8_t>(), kData, kDataSize));
 
   scoped_refptr<DecoderBuffer> buffer(DecoderBuffer::FromSharedMemoryRegion(
       std::move(mapping_region.region), kDataOffset, kDataSize - kDataOffset));
@@ -185,7 +188,8 @@ TEST(DecoderBufferTest, FromSharedMemoryRegion_ZeroSize) {
   const size_t kDataSize = std::size(kData);
 
   auto mapping_region = base::ReadOnlySharedMemoryRegion::Create(kDataSize);
-  memcpy(mapping_region.mapping.GetMemoryAs<uint8_t>(), kData, kDataSize);
+  UNSAFE_TODO(
+      memcpy(mapping_region.mapping.GetMemoryAs<uint8_t>(), kData, kDataSize));
 
   scoped_refptr<DecoderBuffer> buffer(DecoderBuffer::FromSharedMemoryRegion(
       std::move(mapping_region.region), 0, 0));
@@ -194,15 +198,14 @@ TEST(DecoderBufferTest, FromSharedMemoryRegion_ZeroSize) {
 }
 
 TEST(DecoderBufferTest, FromExternalMemory) {
-  constexpr uint8_t kData[] = "hello";
-  constexpr size_t kDataSize = std::size(kData);
+  static constexpr uint8_t kData[] = "hello";
+  static constexpr base::span<const uint8_t> kDataSpan(kData);
 
-  auto external_memory = std::make_unique<ExternalMemoryAdapterForTesting>(
-      base::span(kData, kDataSize));
-  auto buffer = DecoderBuffer::FromExternalMemory(std::move(external_memory));
+  const auto buffer = DecoderBuffer::FromExternalMemory(
+      std::make_unique<ExternalMemoryAdapterForTesting>(kDataSpan));
   ASSERT_TRUE(buffer.get());
-  EXPECT_EQ(buffer->size(), kDataSize);
-  EXPECT_EQ(base::span(*buffer), base::span(kData));
+  EXPECT_EQ(buffer->size(), kDataSpan.size());
+  EXPECT_EQ(base::span(*buffer), kDataSpan);
   EXPECT_FALSE(buffer->end_of_stream());
   EXPECT_FALSE(buffer->is_key_frame());
 }
@@ -217,8 +220,8 @@ TEST(DecoderBufferTest, ReadingWriting) {
   uint8_t* data = buffer->writable_data();
   ASSERT_TRUE(data);
   ASSERT_EQ(kDataSize, buffer->size());
-  base::span(data, buffer->size()).copy_from(kData);
-  const uint8_t* read_only_data = buffer->data();
+  UNSAFE_TODO(base::span(data, buffer->size())).copy_from(kData);
+  const uint8_t* read_only_data = base::span(*buffer).data();
   ASSERT_EQ(data, read_only_data);
   EXPECT_EQ(base::span(*buffer), base::span(kData));
   EXPECT_FALSE(buffer->end_of_stream());
@@ -256,21 +259,26 @@ TEST(DecoderBufferTest, IsKeyFrame) {
 }
 
 TEST(DecoderBufferTest, SideData) {
+  base::test::ScopedFeatureList scoped_feature_list(features::kHdrAgtm);
+
   auto buffer = base::MakeRefCounted<DecoderBuffer>(0);
   EXPECT_FALSE(buffer->side_data());
 
   constexpr uint64_t kSecureHandle = 42;
   const std::vector<uint32_t> kSpatialLayers = {1, 2, 3};
   const std::vector<uint8_t> kAlphaData = {9, 8, 7};
+  const std::vector<uint8_t> kAgtmData = {0x00, 0x80, 0x07, 0xd0};
 
   buffer->WritableSideData().secure_handle = kSecureHandle;
   buffer->WritableSideData().spatial_layers = kSpatialLayers;
   buffer->WritableSideData().alpha_data =
       base::HeapArray<uint8_t>::CopiedFrom(kAlphaData);
+  buffer->WritableSideData().hdr_metadata.SetSerializedAgtm(kAgtmData);
   EXPECT_TRUE(buffer->side_data());
   EXPECT_EQ(buffer->side_data()->secure_handle, kSecureHandle);
   EXPECT_EQ(buffer->side_data()->spatial_layers, kSpatialLayers);
   EXPECT_EQ(buffer->side_data()->alpha_data.as_span(), base::span(kAlphaData));
+  EXPECT_TRUE(buffer->side_data()->hdr_metadata.HasAgtm());
 
   auto cloned_side_data = buffer->side_data()->Clone();
 
@@ -280,6 +288,9 @@ TEST(DecoderBufferTest, SideData) {
             cloned_side_data->spatial_layers);
   EXPECT_EQ(buffer->side_data()->alpha_data.as_span(),
             cloned_side_data->alpha_data.as_span());
+  ASSERT_TRUE(buffer->side_data()->hdr_metadata.HasAgtm());
+  EXPECT_EQ(buffer->side_data()->hdr_metadata.GetAgtm().fHdrReferenceWhite,
+            400.f);
 
   buffer->set_side_data(nullptr);
   EXPECT_FALSE(buffer->side_data());

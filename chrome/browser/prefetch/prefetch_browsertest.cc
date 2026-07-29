@@ -13,7 +13,6 @@
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
-#include "components/network_session_configurator/common/network_switches.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
@@ -67,12 +66,10 @@ class PrefetchBrowserTest : public InProcessBrowserTest {
     // Set a dummy variation ID to send X-Client-Data header to Google hosts
     // in RedirectedPrefetch test.
     command_line->AppendSwitchASCII("force-variation-ids", "42");
-    // Need to ignore cert errors to use a HTTPS server for the test domains.
-    command_line->AppendSwitch(switches::kIgnoreCertificateErrors);
   }
 
   void SetPreference(prefetch::PreloadPagesState value) {
-    prefetch::SetPreloadPagesState(browser()->profile()->GetPrefs(), value);
+    prefetch::SetPreloadPagesState(browser()->GetProfile()->GetPrefs(), value);
   }
 
   bool RunPrefetchExperiment(bool expect_success, Browser* browser) {
@@ -124,20 +121,20 @@ IN_PROC_BROWSER_TEST_F(PrefetchBrowserTest, PreferenceWorks) {
 // uninitialized preference member. Verify that it no longer does.
 IN_PROC_BROWSER_TEST_F(PrefetchBrowserTest, IncognitoTest) {
   Profile* incognito_profile =
-      browser()->profile()->GetPrimaryOTRProfile(/*create_if_needed=*/true);
+      browser()->GetProfile()->GetPrimaryOTRProfile(/*create_if_needed=*/true);
   Browser* incognito_browser =
       Browser::Create(Browser::CreateParams(incognito_profile, true));
 
   // Navigate just to have a tab in this window, otherwise there is no
   // WebContents for the incognito browser.
-  OpenURLOffTheRecord(browser()->profile(), GURL("about:blank"));
+  OpenURLOffTheRecord(browser()->GetProfile(), GURL("about:blank"));
 
   EXPECT_TRUE(RunPrefetchExperiment(true, incognito_browser));
 }
 
-// https://crbug.com/922362: When the prefetched request is redirected, DCHECKs
-// in PrefetchURLLoader::FollowRedirect() failed due to "X-Client-Data" in
-// removed_headers. Verify that it no longer does, and the header is removed
+// https://crbug.com/40609665: When the prefetched request is redirected,
+// DCHECKs in PrefetchURLLoader::FollowRedirect() failed due to "X-Client-Data"
+// in removed_headers. Verify that it no longer does, and the header is removed
 // when redirected to non-Google host.
 IN_PROC_BROWSER_TEST_F(PrefetchBrowserTest, RedirectedPrefetch) {
   std::vector<net::test_server::HttpRequest> requests;
@@ -159,7 +156,7 @@ IN_PROC_BROWSER_TEST_F(PrefetchBrowserTest, RedirectedPrefetch) {
           response->set_code(net::HTTP_MOVED_PERMANENTLY);
           response->AddCustomHeader(
               "Location", base::StringPrintf("https://example.com:%s%s",
-                                             request.GetURL().port().c_str(),
+                                             request.GetURL().GetPort().c_str(),
                                              kRedirectedPrefetchUrl));
           return response;
         } else if (request.relative_url ==
@@ -171,6 +168,7 @@ IN_PROC_BROWSER_TEST_F(PrefetchBrowserTest, RedirectedPrefetch) {
       }));
 
   https_server.ServeFilesFromSourceDirectory(GetChromeTestDataDir());
+  https_server.SetCertHostnames({"www.google.com", "example.com"});
   ASSERT_TRUE(https_server.Start());
 
   GURL url = https_server.GetURL("www.google.com", kRedirectPrefetchPage);

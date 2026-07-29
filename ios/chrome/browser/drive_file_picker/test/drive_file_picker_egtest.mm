@@ -2,10 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#import "ios/chrome/browser/authentication/ui_bundled/signin_earl_grey.h"
-#import "ios/chrome/browser/authentication/ui_bundled/signin_earl_grey_ui_test_util.h"
+#import "base/ios/ios_util.h"
+#import "ios/chrome/browser/authentication/test/signin_earl_grey.h"
+#import "ios/chrome/browser/authentication/test/signin_earl_grey_ui_test_util.h"
+#import "ios/chrome/browser/authentication/test/signin_matchers.h"
+#import "ios/chrome/browser/authentication/ui_bundled/signin/signin_constants.h"
+#import "ios/chrome/browser/drive_file_picker/coordinator/drive_file_picker_metrics_constants.h"
 #import "ios/chrome/browser/drive_file_picker/test/drive_file_picker_app_interface.h"
 #import "ios/chrome/browser/drive_file_picker/ui/drive_file_picker_constants.h"
+#import "ios/chrome/browser/metrics/model/metrics_app_interface.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/grit/ios_strings.h"
@@ -64,6 +69,18 @@ id<GREYMatcher> IdentityButtonMatcher(NSString* email) {
                     grey_enabled(), nil);
 }
 
+// Matcher for consistency sign-in promo.
+id<GREYMatcher> SigninPromo() {
+  return grey_allOf(
+      grey_accessibilityID(kConsistencySigninAccessibilityIdentifier),
+      grey_sufficientlyVisible(), nil);
+}
+
+// Matcher for consistency sign-in promo primary button.
+id<GREYMatcher> SigninPromoPrimaryButton() {
+  return chrome_test_util::ConsistencySigninPrimaryButtonMatcher();
+}
+
 }  // namespace
 
 @interface DriveFilePickerTestCase : ChromeTestCase
@@ -71,9 +88,22 @@ id<GREYMatcher> IdentityButtonMatcher(NSString* email) {
 
 @implementation DriveFilePickerTestCase
 
+- (void)setUp {
+  [super setUp];
+  chrome_test_util::GREYAssertErrorNil(
+      [MetricsAppInterface setupHistogramTester]);
+}
+
 - (AppLaunchConfiguration)appConfigurationForTestCase {
   AppLaunchConfiguration config;
   config.features_enabled.push_back(kIOSChooseFromDrive);
+
+  if ([self isRunningTest:@selector(testMultifileSelection)] ||
+      [self isRunningTest:@selector(testFileSelectionSignedOut)] ||
+      [self isRunningTest:@selector(testSignedOutNoAccountMetrics)]) {
+    config.features_enabled.push_back(kIOSChooseFromDriveSignedOut);
+  }
+
   return config;
 }
 
@@ -87,8 +117,7 @@ id<GREYMatcher> IdentityButtonMatcher(NSString* email) {
 // Tests the presence of the different buttons in the drive file picker.
 - (void)testDriveFilePicker {
   FakeSystemIdentity* fakeIdentity = [FakeSystemIdentity fakeIdentity1];
-  [SigninEarlGrey addFakeIdentity:fakeIdentity];
-  [SigninEarlGreyUI signinWithFakeIdentity:fakeIdentity];
+  [SigninEarlGrey signinWithFakeIdentity:fakeIdentity];
   [DriveFilePickerAppInterface startChoosingSingleFileInCurrentWebState];
   [DriveFilePickerAppInterface showDriveFilePicker];
   [ChromeEarlGrey waitForUIElementToAppearWithMatcher:
@@ -107,8 +136,7 @@ id<GREYMatcher> IdentityButtonMatcher(NSString* email) {
 // Tests identity change from the root.
 - (void)testIdentityChangeFromTheRoot {
   FakeSystemIdentity* primaryIdentity = [FakeSystemIdentity fakeIdentity1];
-  [SigninEarlGrey addFakeIdentity:primaryIdentity];
-  [SigninEarlGreyUI signinWithFakeIdentity:primaryIdentity];
+  [SigninEarlGrey signinWithFakeIdentity:primaryIdentity];
 
   FakeSystemIdentity* secondaryIdentity = [FakeSystemIdentity fakeIdentity2];
   [SigninEarlGrey addFakeIdentity:secondaryIdentity];
@@ -121,6 +149,7 @@ id<GREYMatcher> IdentityButtonMatcher(NSString* email) {
   [[EarlGrey
       selectElementWithMatcher:IdentityButtonMatcher(primaryIdentity.userEmail)]
       performAction:grey_tap()];
+
   [[EarlGrey selectElementWithMatcher:
                  chrome_test_util::ContextMenuItemWithAccessibilityLabel(
                      secondaryIdentity.userEmail)] performAction:grey_tap()];
@@ -133,8 +162,7 @@ id<GREYMatcher> IdentityButtonMatcher(NSString* email) {
 // Tests identity change when browsing a drive folder.
 - (void)testIdentityChangeAfterBrowsing {
   FakeSystemIdentity* primaryIdentity = [FakeSystemIdentity fakeIdentity1];
-  [SigninEarlGrey addFakeIdentity:primaryIdentity];
-  [SigninEarlGreyUI signinWithFakeIdentity:primaryIdentity];
+  [SigninEarlGrey signinWithFakeIdentity:primaryIdentity];
 
   FakeSystemIdentity* secondaryIdentity = [FakeSystemIdentity fakeIdentity2];
   [SigninEarlGrey addFakeIdentity:secondaryIdentity];
@@ -152,6 +180,7 @@ id<GREYMatcher> IdentityButtonMatcher(NSString* email) {
   [[EarlGrey
       selectElementWithMatcher:IdentityButtonMatcher(primaryIdentity.userEmail)]
       performAction:grey_tap()];
+
   [[EarlGrey selectElementWithMatcher:
                  chrome_test_util::ContextMenuItemWithAccessibilityLabel(
                      secondaryIdentity.userEmail)] performAction:grey_tap()];
@@ -167,8 +196,7 @@ id<GREYMatcher> IdentityButtonMatcher(NSString* email) {
 // Tests the sort button context menu options are present.
 - (void)testSortButtonContextMenuItems {
   FakeSystemIdentity* fakeIdentity = [FakeSystemIdentity fakeIdentity1];
-  [SigninEarlGrey addFakeIdentity:fakeIdentity];
-  [SigninEarlGreyUI signinWithFakeIdentity:fakeIdentity];
+  [SigninEarlGrey signinWithFakeIdentity:fakeIdentity];
   [DriveFilePickerAppInterface startChoosingSingleFileInCurrentWebState];
   [DriveFilePickerAppInterface showDriveFilePicker];
   [ChromeEarlGrey waitForUIElementToAppearWithMatcher:
@@ -199,8 +227,7 @@ id<GREYMatcher> IdentityButtonMatcher(NSString* email) {
 // Tests the filter button context menu options are present.
 - (void)testFilterButtonContextMenuItems {
   FakeSystemIdentity* fakeIdentity = [FakeSystemIdentity fakeIdentity1];
-  [SigninEarlGrey addFakeIdentity:fakeIdentity];
-  [SigninEarlGreyUI signinWithFakeIdentity:fakeIdentity];
+  [SigninEarlGrey signinWithFakeIdentity:fakeIdentity];
   [DriveFilePickerAppInterface startChoosingSingleFileInCurrentWebState];
   [DriveFilePickerAppInterface showDriveFilePicker];
   [ChromeEarlGrey waitForUIElementToAppearWithMatcher:
@@ -253,10 +280,14 @@ id<GREYMatcher> IdentityButtonMatcher(NSString* email) {
 
 // Tests that toolbar items are still interactable when search bar is focused.
 - (void)testToolbarAboveKeyboardDuringSearch {
+  // TODO(crbug.com/437314913): Re-enable the test on iOS26.
+  if (base::ios::IsRunningOnIOS26OrLater()) {
+    EARL_GREY_TEST_DISABLED(@"Test disabled on iOS 26.");
+  }
+
   // Initialize the Drive file picker.
   FakeSystemIdentity* fakeIdentity = [FakeSystemIdentity fakeIdentity1];
-  [SigninEarlGrey addFakeIdentity:fakeIdentity];
-  [SigninEarlGreyUI signinWithFakeIdentity:fakeIdentity];
+  [SigninEarlGrey signinWithFakeIdentity:fakeIdentity];
   [DriveFilePickerAppInterface startChoosingSingleFileInCurrentWebState];
   [DriveFilePickerAppInterface showDriveFilePicker];
   [ChromeEarlGrey waitForUIElementToAppearWithMatcher:
@@ -282,8 +313,7 @@ id<GREYMatcher> IdentityButtonMatcher(NSString* email) {
 - (void)testMultifileSelection {
   // Initialize the Drive file picker.
   FakeSystemIdentity* fakeIdentity = [FakeSystemIdentity fakeIdentity1];
-  [SigninEarlGrey addFakeIdentity:fakeIdentity];
-  [SigninEarlGreyUI signinWithFakeIdentity:fakeIdentity];
+  [SigninEarlGrey signinWithFakeIdentity:fakeIdentity];
   [DriveFilePickerAppInterface startChoosingMultipleFilesInCurrentWebState];
   [DriveFilePickerAppInterface showDriveFilePicker];
   [ChromeEarlGrey waitForUIElementToAppearWithMatcher:
@@ -333,6 +363,96 @@ id<GREYMatcher> IdentityButtonMatcher(NSString* email) {
   // Tap the "Confirm" button.
   [[EarlGrey selectElementWithMatcher:ConfirmButtonMatcher(/* enabled= */ YES)]
       performAction:grey_tap()];
+
+  // Check that the sign-in status histogram records kSignedIn.
+  GREYAssertNil(
+      [MetricsAppInterface
+          expectUniqueSampleWithCount:1
+                            forBucket:
+                                static_cast<int>(
+                                    FilePickerDriveSignInStatus::kSignedIn)
+                         forHistogram:@("IOS.FilePicker.Drive.SignIn.Status")],
+      @"Unexpected histogram error for sign in status.");
+}
+
+// Tests that a single file can be selected and submitted to the page when not
+// signed in.
+- (void)testFileSelectionSignedOut {
+  // Initialize the Drive file picker.
+  FakeSystemIdentity* fakeIdentity = [FakeSystemIdentity fakeIdentity1];
+  [SigninEarlGrey addFakeIdentity:fakeIdentity];
+
+  [DriveFilePickerAppInterface startChoosingMultipleFilesInCurrentWebState];
+  [DriveFilePickerAppInterface showDriveFilePicker];
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:SigninPromo()];
+  [[EarlGrey selectElementWithMatcher:SigninPromoPrimaryButton()]
+      performAction:grey_tap()];
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:
+                      DriveFilePickerNavigationViewControllerMatcher()];
+
+  // Create a test drive file.
+  [DriveFilePickerAppInterface beginDriveListResult];
+  [DriveFilePickerAppInterface addDriveItemWithIdentifier:@"kTestDriveFile1"
+                                                     name:@"File 1"
+                                                 isFolder:NO
+                                                 mimeType:nil
+                                              canDownload:YES];
+  [DriveFilePickerAppInterface endDriveListResult];
+
+  // Open "My Drive".
+  [[EarlGrey
+      selectElementWithMatcher:grey_accessibilityID(
+                                   kDriveFilePickerMyDriveItemIdentifier)]
+      performAction:grey_tap()];
+
+  // Select a file.
+  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(@"kTestDriveFile1")]
+      performAction:grey_tap()];
+
+  // Check that the file appears as selected.
+  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(@"kTestDriveFile1")]
+      assertWithMatcher:grey_selected()];
+
+  // Tap the "Confirm" button.
+  [[EarlGrey selectElementWithMatcher:ConfirmButtonMatcher(/* enabled= */ YES)]
+      performAction:grey_tap()];
+
+  // Check that the sign-in status histogram records
+  // kSignedOutWithAccountOnDevice.
+  GREYAssertNil(
+      [MetricsAppInterface
+          expectUniqueSampleWithCount:1
+                            forBucket:static_cast<int>(
+                                          FilePickerDriveSignInStatus::
+                                              kSignedOutWithAccountOnDevice)
+                         forHistogram:@("IOS.FilePicker.Drive.SignIn.Status")],
+      @"Unexpected histogram error for sign in status.");
+  // Check that the sign-in result histogram records kSignInSuccess.
+  GREYAssertNil(
+      [MetricsAppInterface
+          expectUniqueSampleWithCount:1
+                            forBucket:
+                                static_cast<int>(
+                                    FilePickerDriveSignInResult::kSignInSuccess)
+                         forHistogram:@("IOS.FilePicker.Drive.SignIn.Result")],
+      @"Unexpected histogram error for sign in result.");
+}
+
+// Tests that the sign-in status histogram records
+// kSignedOutWithoutAccountOnDevice when the user is not signed in and no
+// accounts are available on the device.
+- (void)testSignedOutNoAccountMetrics {
+  [DriveFilePickerAppInterface startChoosingMultipleFilesInCurrentWebState];
+  [DriveFilePickerAppInterface showDriveFilePicker];
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:SigninPromo()];
+  GREYAssertNil(
+      [MetricsAppInterface
+          expectUniqueSampleWithCount:1
+                            forBucket:static_cast<int>(
+                                          FilePickerDriveSignInStatus::
+                                              kSignedOutWithoutAccountOnDevice)
+                         forHistogram:@("IOS.FilePicker.Drive.SignIn.Status")],
+      @"Unexpected histogram error for sign in status.");
 }
 
 @end

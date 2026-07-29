@@ -23,6 +23,7 @@ class PageSpecificContentSettings;
 namespace permissions {
 class ObjectPermissionContextBase;
 class PermissionDecisionAutoBlocker;
+class PermissionActionsHistory;
 }  // namespace permissions
 
 namespace safe_browsing {
@@ -30,8 +31,21 @@ class PasswordProtectionService;
 class ChromePasswordProtectionService;
 }  // namespace safe_browsing
 
+#if !BUILDFLAG(IS_ANDROID)
+namespace infobars {
+class BrowserInfoBarManager;
+}
+#endif
+
 class ChromePageInfoDelegate : public PageInfoDelegate {
  public:
+#if !BUILDFLAG(IS_ANDROID)
+  // Registers the Page Info InfoBar specification in the centralized
+  // infobar framework.
+  static void RegisterPageInfoInfoBar(
+      infobars::BrowserInfoBarManager* infobar_manager);
+#endif
+
   explicit ChromePageInfoDelegate(content::WebContents* web_contents);
   ~ChromePageInfoDelegate() override = default;
 
@@ -54,17 +68,20 @@ class ChromePageInfoDelegate : public PageInfoDelegate {
       const std::optional<url::Origin>& requesting_origin) override;
 #if !BUILDFLAG(IS_ANDROID)
   std::optional<std::u16string> GetRwsOwner(const GURL& site_url) override;
-  bool IsRwsManaged() override;
+  bool IsRwsManaged(const GURL& site_url) override;
   bool CreateInfoBarDelegate() override;
   std::unique_ptr<content_settings::CookieControlsController>
   CreateCookieControlsController() override;
   bool IsIsolatedWebApp() override;
+  bool IsSubApp() override;
+  bool HasSubApps() override;
   // In Chrome's case, this may show the site settings page or an app settings
   // page, depending on context.
   void ShowSiteSettings(const GURL& site_url) override;
   void ShowCookiesSettings() override;
   void ShowAllSitesSettingsFilteredByRwsOwner(
       const std::u16string& rws_owner) override;
+  void ShowSyncSettings() override;
   void OpenCookiesDialog() override;
   void OpenCertificateDialog(net::X509Certificate* certificate) override;
   void OpenConnectionHelpCenterPage(const ui::Event& event) override;
@@ -79,6 +96,7 @@ class ChromePageInfoDelegate : public PageInfoDelegate {
   std::u16string GetSubjectName(const GURL& url) override;
   permissions::PermissionDecisionAutoBlocker* GetPermissionDecisionAutoblocker()
       override;
+  permissions::PermissionActionsHistory* GetPermissionActionsHistory() override;
   StatefulSSLHostStateDelegate* GetStatefulSSLHostStateDelegate() override;
   HostContentSettingsMap* GetContentSettings() override;
   bool IsSubresourceFilterActivated(const GURL& site_url) override;
@@ -94,8 +112,12 @@ class ChromePageInfoDelegate : public PageInfoDelegate {
   const std::u16string GetClientApplicationName() override;
 #endif
 
-  bool IsHttpsFirstModeEnabled() override;
+  bool IsHttpsFirstModeEnabledForUrl(const GURL& url) override;
   bool IsIncognitoProfile() override;
+
+#if BUILDFLAG(IS_CHROMEOS)
+  bool ShouldSyncCookiesForUrl(const GURL& url) override;
+#endif
 
  private:
   Profile* GetProfile() const;

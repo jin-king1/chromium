@@ -15,12 +15,9 @@
 #include "base/at_exit.h"
 #include "base/check.h"
 #include "base/memory/raw_ptr.h"
+#include "base/test/tracing/trace_to_file.h"
 #include "base/tracing_buildflags.h"
 #include "build/build_config.h"
-
-#if BUILDFLAG(ENABLE_BASE_TRACING)
-#include "base/test/trace_to_file.h"
-#endif  // BUILDFLAG(ENABLE_BASE_TRACING)
 
 #if BUILDFLAG(IS_WIN)
 #include <vector>
@@ -67,6 +64,11 @@ class TestSuite {
   // Disables checks for certain global objects being leaked across tests.
   void DisableCheckForLeakedGlobals();
 
+  // Resets the ScopedFeatureList instance that is initialized for each test.
+  // This may be needed in cases where there's an exit() in the middle of a test
+  // that has its own ScopedFeatureList, such as fuzz tests.
+  static void ResetScopedFeatureListInstance();
+
  protected:
   // By default fatal log messages (e.g. from DCHECKs) result in error dialogs
   // which gum up buildbots. Use a minimalistic assert handler which just
@@ -96,9 +98,7 @@ class TestSuite {
 
   void AddTestLauncherResultPrinter();
 
-#if BUILDFLAG(ENABLE_BASE_TRACING)
   test::TraceToFile trace_to_file_;
-#endif  // BUILDFLAG(ENABLE_BASE_TRACING)
 
   raw_ptr<XmlUnitTestResultPrinter, DanglingUntriaged> printer_ = nullptr;
 

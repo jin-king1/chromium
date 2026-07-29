@@ -53,10 +53,8 @@ class DeviceBoundSessionManager;
 }  // namespace network
 
 namespace storage {
-class DatabaseTracker;
 class QuotaManager;
 struct QuotaSettings;
-class SharedStorageManager;
 class SpecialStoragePolicy;
 }  // namespace storage
 
@@ -66,24 +64,21 @@ class Origin;
 
 namespace content {
 
-class AttributionDataModel;
 class BackgroundSyncContext;
 class BrowserContext;
 class BrowsingDataFilterBuilder;
 class BrowsingTopicsSiteDataManager;
 class CdmStorageDataModel;
 class ContentIndexContext;
-class CookieDeprecationLabelManager;
 class DedicatedWorkerService;
 class DevToolsBackgroundServicesContext;
 class DOMStorageContext;
 class FileSystemAccessEntryFactory;
 class GeneratedCodeCacheContext;
+struct GlobalRenderFrameHostId;
 class HostZoomLevelContext;
 class HostZoomMap;
-class InterestGroupManager;
 class PlatformNotificationContext;
-class PrivateAggregationDataModel;
 class ServiceWorkerContext;
 class SharedWorkerService;
 class StoragePartitionConfig;
@@ -110,10 +105,6 @@ class CONTENT_EXPORT StoragePartition {
 
   virtual cert_verifier::mojom::CertVerifierServiceUpdater*
   GetCertVerifierServiceUpdater() = 0;
-
-  // Returns the SharedStorageManager for the StoragePartition, or nullptr if it
-  // doesn't exist because the feature is disabled.
-  virtual storage::SharedStorageManager* GetSharedStorageManager() = 0;
 
   // Returns a pointer/info to a URLLoaderFactory/CookieManager owned by
   // the storage partition. Prefer to use this instead of creating a new
@@ -142,8 +133,8 @@ class CONTENT_EXPORT StoragePartition {
       const url::Origin& top_frame_origin) = 0;
 
   virtual mojo::PendingRemote<network::mojom::URLLoaderNetworkServiceObserver>
-  CreateURLLoaderNetworkObserverForFrame(int process_id,
-                                         int frame_routing_id) = 0;
+  CreateURLLoaderNetworkObserverForFrame(
+      const content::GlobalRenderFrameHostId& frame_id) = 0;
 
   virtual mojo::PendingRemote<network::mojom::URLLoaderNetworkServiceObserver>
   CreateURLLoaderNetworkObserverForNavigationRequest(
@@ -152,7 +143,6 @@ class CONTENT_EXPORT StoragePartition {
   virtual storage::QuotaManager* GetQuotaManager() = 0;
   virtual BackgroundSyncContext* GetBackgroundSyncContext() = 0;
   virtual storage::FileSystemContext* GetFileSystemContext() = 0;
-  virtual storage::DatabaseTracker* GetDatabaseTracker() = 0;
   virtual DOMStorageContext* GetDOMStorageContext() = 0;
   virtual storage::mojom::LocalStorageControl* GetLocalStorageControl() = 0;
   virtual storage::mojom::IndexedDBControl& GetIndexedDBControl() = 0;
@@ -169,11 +159,7 @@ class CONTENT_EXPORT StoragePartition {
   virtual HostZoomLevelContext* GetHostZoomLevelContext() = 0;
   virtual ZoomLevelDelegate* GetZoomLevelDelegate() = 0;
   virtual PlatformNotificationContext* GetPlatformNotificationContext() = 0;
-  virtual InterestGroupManager* GetInterestGroupManager() = 0;
   virtual BrowsingTopicsSiteDataManager* GetBrowsingTopicsSiteDataManager() = 0;
-  virtual AttributionDataModel* GetAttributionDataModel() = 0;
-  virtual PrivateAggregationDataModel* GetPrivateAggregationDataModel() = 0;
-  virtual CookieDeprecationLabelManager* GetCookieDeprecationLabelManager() = 0;
 #if BUILDFLAG(ENABLE_LIBRARY_CDMS)
   virtual CdmStorageDataModel* GetCdmStorageDataModel() = 0;
 #endif  // BUILDFLAG(ENABLE_LIBRARY_CDMS)
@@ -199,12 +185,11 @@ class CONTENT_EXPORT StoragePartition {
     REMOVE_DATA_MASK_INDEXEDDB = 1 << 3,
     REMOVE_DATA_MASK_LOCAL_STORAGE = 1 << 4,
     REMOVE_DATA_MASK_SHADER_CACHE = 1 << 5,
-    REMOVE_DATA_MASK_WEBSQL = 1 << 6,
+    REMOVE_DATA_MASK_WEBSQL_DEPRECATED = 1 << 6,
     REMOVE_DATA_MASK_SERVICE_WORKERS = 1 << 7,
     REMOVE_DATA_MASK_CACHE_STORAGE = 1 << 8,
     REMOVE_DATA_MASK_MEDIA_LICENSES = 1 << 9,
     REMOVE_DATA_MASK_BACKGROUND_FETCH = 1 << 10,
-    REMOVE_DATA_MASK_ATTRIBUTION_REPORTING_SITE_CREATED = 1 << 11,
     // Interest groups are stored as part of the Interest Group API experiment
     // Public explainer here:
     // https://github.com/WICG/turtledove/blob/main/FLEDGE.md
@@ -219,27 +204,29 @@ class CONTENT_EXPORT StoragePartition {
     // https://github.com/WICG/turtledove/blob/main/FLEDGE.md
     REMOVE_DATA_MASK_INTEREST_GROUP_PERMISSIONS_CACHE = 1 << 15,
 
-    REMOVE_DATA_MASK_ATTRIBUTION_REPORTING_INTERNAL = 1 << 16,
     REMOVE_DATA_MASK_PRIVATE_AGGREGATION_INTERNAL = 1 << 17,
     REMOVE_DATA_MASK_INTEREST_GROUPS_INTERNAL = 1 << 18,
     // Device bound sessions. Public explainer:
     // https://github.com/WICG/dbsc/blob/main/README.md
     REMOVE_DATA_MASK_DEVICE_BOUND_SESSIONS = 1 << 19,
 
-    REMOVE_DATA_MASK_ALL = 0xFFFFFFFF,
+    // Things in interest groups that should only be removed as part of
+    // user-initiated clearing.
+    REMOVE_DATA_MASK_INTEREST_GROUPS_USER_CLEAR = 1 << 20,
 
-    // Corresponds to storage::kStorageTypeTemporary.
-    QUOTA_MANAGED_STORAGE_MASK_TEMPORARY = 1 << 0,
-    // Corresponds to storage::kStorageTypePersistent.
-    // Deprecated since crbug.com/1233525.
-    // QUOTA_MANAGED_STORAGE_MASK_PERSISTENT = 1 << 1,
-    // Corresponds to storage::kStorageTypeSyncable.
-    QUOTA_MANAGED_STORAGE_MASK_SYNCABLE = 1 << 2,
-    QUOTA_MANAGED_STORAGE_MASK_ALL = 0xFFFFFFFF,
+    // Keepalive loads might be kept around in memory for a long time when
+    // waiting for a chance to retry. They should be removed as part of
+    // user-initiated clearing.
+    REMOVE_KEEPALIVE_LOADS_ATTEMPTING_RETRY = 1 << 21,
+
+    // Declarative Performance Observer data.
+    REMOVE_DATA_MASK_DECLARATIVE_PERFORMANCE_OBSERVER = 1 << 22,
+
+    REMOVE_DATA_MASK_ALL = 0xFFFFFFFF,
   };
 
   // Starts an asynchronous task that does a best-effort clear the data
-  // corresponding to the given |remove_mask| and |quota_storage_remove_mask|
+  // corresponding to the given |remove_mask|
   // inside this StoragePartition for the given |storage_origin|.
   // |callback| is called when data deletion is done or at least the deletion is
   // scheduled.
@@ -253,7 +240,6 @@ class CONTENT_EXPORT StoragePartition {
   // http://crbug.com/159193. Remove |request_context_getter| when that bug
   // is fixed.
   virtual void ClearDataForOrigin(uint32_t remove_mask,
-                                  uint32_t quota_storage_remove_mask,
                                   const GURL& storage_origin,
                                   base::OnceClosure callback) = 0;
 
@@ -295,7 +281,6 @@ class CONTENT_EXPORT StoragePartition {
   // opaque. |callback| is called when data deletion is done or at least the
   // deletion is scheduled.
   virtual void ClearData(uint32_t remove_mask,
-                         uint32_t quota_storage_remove_mask,
                          const blink::StorageKey& storage_key,
                          const base::Time begin,
                          const base::Time end,
@@ -324,7 +309,6 @@ class CONTENT_EXPORT StoragePartition {
   // selectively. You don't want to break the web.
   virtual void ClearData(
       uint32_t remove_mask,
-      uint32_t quota_storage_remove_mask,
       BrowsingDataFilterBuilder* filter_builder,
       StorageKeyPolicyMatcherFunction storage_key_policy_matcher,
       network::mojom::CookieDeletionFilterPtr cookie_deletion_filter,
@@ -368,9 +352,6 @@ class CONTENT_EXPORT StoragePartition {
 
   // Wait until all deletions tasks are finished. For test use only.
   virtual void WaitForDeletionTasksForTesting() = 0;
-
-  // Wait until code cache's shutdown is complete. For test use only.
-  virtual void WaitForCodeCacheShutdownForTesting() = 0;
 
   virtual void SetNetworkContextForTesting(
       mojo::PendingRemote<network::mojom::NetworkContext>

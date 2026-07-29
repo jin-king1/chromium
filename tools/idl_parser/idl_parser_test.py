@@ -281,6 +281,17 @@ class TestExtendedAttribute(unittest.TestCase):
     self.assertEqual('Window', identifierList[0])
     self.assertEqual('Worker', identifierList[1])
 
+  def testIntegerValueInExtendedAttribute(self):
+    extended_attribute_text = '[ReflectDefault=2]'
+    attributes = self._ParseIdlWithExtendedAttributes(extended_attribute_text)
+    self.assertEqual('ExtAttributes', attributes.GetClass())
+    self.assertEqual(1, len(attributes.GetChildren()))
+    attribute = attributes.GetChildren()[0]
+    self.assertEqual('ExtAttribute', attribute.GetClass())
+    self.assertEqual('ReflectDefault', attribute.GetName())
+    value = attribute.GetProperty('VALUE')
+    self.assertEqual('2', value)
+
   def testErrorTrailingComma(self):
     extended_attribute_text = '[Replacable, Exposed=(Window,Worker),]'
     error = self._ParseIdlWithExtendedAttributes(extended_attribute_text)
@@ -398,6 +409,18 @@ class TestDefaultValue(unittest.TestCase):
     self._CheckTypeNode(argument_type, 'Typeref', 'Node')
     default_value = argument.GetChildren()[1]
     self._CheckDefaultValue(default_value, 'NULL', 'NULL')
+
+class TestLineNumbers(unittest.TestCase):
+  def setUp(self):
+    self.parser = IDLParser(IDLLexer(), mute_error=True)
+
+  def testTypedefLineNumbers(self):
+    idl_text = '\n\ntypedef byte MyByte;'
+    file_node = self.parser.ParseText(filename='', data=idl_text)
+    type_node = file_node.GetChildren()[0].GetChildren()[0];
+    self.assertEqual('Type', type_node.GetClass())
+    self.assertEqual(3, type_node.GetProperty('LINENO'))
+
 
 if __name__ == '__main__':
   unittest.main(verbosity=2)

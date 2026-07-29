@@ -10,13 +10,16 @@
 
 #include "ash/public/cpp/app_list/app_list_metrics.h"
 #include "ash/public/cpp/app_list/app_list_types.h"
+#include "base/byte_size.h"
 #include "base/files/file.h"
 #include "base/files/file_util.h"
 #include "base/path_service.h"
 #include "base/strings/strcat.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/system/sys_info.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_running_on_chromeos.h"
+#include "base/threading/thread_restrictions.h"
 #include "base/timer/mock_timer.h"
 #include "chrome/browser/ash/app_list/search/test/test_search_controller.h"
 #include "chrome/browser/ash/file_manager/path_util.h"
@@ -34,7 +37,6 @@
 #include "chromeos/ash/components/system_info/system_info_util.h"
 #include "chromeos/ash/experiences/arc/session/arc_service_manager.h"
 #include "chromeos/ash/services/cros_healthd/public/cpp/fake_cros_healthd.h"
-#include "chromeos/ash/services/cros_healthd/public/mojom/cros_healthd_probe.mojom-forward.h"
 #include "chromeos/ash/services/cros_healthd/public/mojom/cros_healthd_probe.mojom.h"
 #include "chromeos/dbus/power/fake_power_manager_client.h"
 #include "chromeos/dbus/power_manager/power_supply_properties.pb.h"
@@ -79,7 +81,7 @@ void SetProbeTelemetryInfoResponse(healthd_mojom::BatteryInfoPtr battery_info,
   }
 
   ash::cros_healthd::FakeCrosHealthd::Get()
-      ->SetProbeTelemetryInfoResponseForTesting(info);
+      ->SetProbeTelemetryInfoResponseForTesting(std::move(info));
 }
 
 void SetCrosHealthdCpuResponse(
@@ -516,7 +518,7 @@ TEST_F(SystemInfoCardProviderTest, CpuProbeError) {
       CreateProbeError(healthd_mojom::ErrorType::kFileReadError));
   info->cpu_result = std::move(cpu_result);
   ash::cros_healthd::FakeCrosHealthd::Get()
-      ->SetProbeTelemetryInfoResponseForTesting(info);
+      ->SetProbeTelemetryInfoResponseForTesting(std::move(info));
 
   StartSearch(u"cpu");
   Wait();
@@ -608,7 +610,7 @@ TEST_F(SystemInfoCardProviderTest, MemoryProbeError) {
       CreateProbeError(healthd_mojom::ErrorType::kSystemUtilityError));
   info->memory_result = std::move(memory_result);
   ash::cros_healthd::FakeCrosHealthd::Get()
-      ->SetProbeTelemetryInfoResponseForTesting(info);
+      ->SetProbeTelemetryInfoResponseForTesting(std::move(info));
 
   StartSearch(u"memory");
   Wait();
@@ -745,7 +747,7 @@ TEST_F(SystemInfoCardProviderTest, BatteryProbeError) {
       CreateProbeError(healthd_mojom::ErrorType::kParseError));
   info->battery_result = std::move(battery_result);
   ash::cros_healthd::FakeCrosHealthd::Get()
-      ->SetProbeTelemetryInfoResponseForTesting(info);
+      ->SetProbeTelemetryInfoResponseForTesting(std::move(info));
 
   const auto power_source =
       power_manager::PowerSupplyProperties_ExternalPower_AC;
@@ -860,13 +862,17 @@ TEST_F(SystemInfoCardProviderTest, Storage) {
   // [android files]/Download.
   AddFile("video.ogv", kDownloadsPathBytes, downloads_path);  // ~55.4 KB
 
-  int64_t total_bytes = base::SysInfo::AmountOfTotalDiskSpace(mount_path);
-  int64_t available_bytes = base::SysInfo::AmountOfFreeDiskSpace(mount_path);
+  int64_t total_bytes =
+      base::SysInfo::AmountOfTotalDiskSpace(mount_path).value_or(-1);
+  int64_t available_bytes =
+      base::SysInfo::AmountOfFreeDiskSpace(mount_path).value_or(-1);
   int64_t rounded_total_size = ash::settings::RoundByteSize(total_bytes);
 
   int64_t in_use_bytes = rounded_total_size - available_bytes;
-  std::u16string in_use_size = ui::FormatBytes(in_use_bytes);
-  std::u16string total_size = ui::FormatBytes(rounded_total_size);
+  std::u16string in_use_size = ui::FormatBytes(
+      base::ByteSize(base::checked_cast<uint64_t>(in_use_bytes)));
+  std::u16string total_size = ui::FormatBytes(
+      base::ByteSize(base::checked_cast<uint64_t>(rounded_total_size)));
   std::u16string result_description = base::StrCat(
       {u"Storage ", in_use_size, u" in use | ", total_size, u" total"});
 

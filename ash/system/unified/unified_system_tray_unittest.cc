@@ -48,6 +48,8 @@
 #include "ash/test_shell_delegate.h"
 #include "ash/wm/tablet_mode/tablet_mode_controller.h"
 #include "base/command_line.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/simple_test_clock.h"
@@ -60,11 +62,13 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/chromeos/devicetype_utils.h"
 #include "ui/chromeos/styles/cros_tokens_color_mappings.h"
+#include "ui/compositor/layer.h"
 #include "ui/display/display.h"
 #include "ui/display/screen.h"
 #include "ui/events/event_constants.h"
 #include "ui/message_center/message_center.h"
 #include "ui/views/accessibility/view_accessibility.h"
+#include "ui/views/controls/image_view.h"
 
 namespace ash {
 
@@ -299,7 +303,7 @@ TEST_P(UnifiedSystemTrayTest, SliderBubbleMovesOnShelfAutohide) {
   widget->Show();
 
   // Start off the mouse nowhere near the shelf; the shelf should be hidden.
-  display::Display display = display::Screen::GetScreen()->GetPrimaryDisplay();
+  display::Display display = display::Screen::Get()->GetPrimaryDisplay();
   auto center = display.bounds().CenterPoint();
   auto bottom_center = display.bounds().bottom_center();
   bottom_center.set_y(bottom_center.y() - 1);
@@ -356,7 +360,7 @@ TEST_P(UnifiedSystemTrayTest, SliderBubbleMovesOnShelfAutohide) {
 TEST_P(UnifiedSystemTrayTest, ShowBubble_MultipleDisplays_OpenedOnSameDisplay) {
   // Initialize two displays with 800x700 resolution.
   UpdateDisplay("400+400-800x600,1220+400-800x600");
-  auto* screen = display::Screen::GetScreen();
+  auto* screen = display::Screen::Get();
   EXPECT_EQ(2, screen->GetNumDisplays());
 
   // The tray bubble for each display should be opened on the same display.
@@ -714,16 +718,16 @@ TEST_P(UnifiedSystemTrayTest, TrayBackgroundColorAfterSwitchToTabletMode) {
       Shell::Get()->tablet_mode_controller();
 
   tablet_mode_controller->SetEnabledForTest(false);
-  EXPECT_EQ(tray->layer()->background_color(),
+  EXPECT_EQ(tray->layer()->AsSolidColor()->background_color().toSkColor(),
             ShelfConfig::Get()->GetShelfControlButtonColor(widget));
 
   tablet_mode_controller->SetEnabledForTest(true);
-  EXPECT_EQ(tray->layer()->background_color(),
+  EXPECT_EQ(tray->layer()->AsSolidColor()->background_color().toSkColor(),
             widget->GetColorProvider()->GetColor(
                 cros_tokens::kCrosSysSystemBaseElevated));
 
   tablet_mode_controller->SetEnabledForTest(false);
-  EXPECT_EQ(tray->layer()->background_color(),
+  EXPECT_EQ(tray->layer()->AsSolidColor()->background_color().toSkColor(),
             ShelfConfig::Get()->GetShelfControlButtonColor(widget));
 }
 
@@ -864,7 +868,7 @@ TEST_P(UnifiedSystemTrayTest, BubbleViewSizeChangeWithBigMainPage) {
 
 // Tests that there's no bubble in the kiosk mode.
 TEST_P(UnifiedSystemTrayTest, NoBubbleAndNoDetailedViewInKioskMode) {
-  SimulateKioskMode(user_manager::UserType::kKioskApp);
+  SimulateKioskMode(user_manager::UserType::kKioskChromeApp);
 
   auto* tray = GetPrimaryUnifiedSystemTray();
   tray->ShowBubble();
@@ -1014,7 +1018,8 @@ class UnifiedSystemTrayAccessibilityTest : public AshTestBase {
     std::unique_ptr<TestShellDelegate> shell_delegate =
         std::make_unique<TestShellDelegate>();
     shell_delegate->set_channel(version_info::Channel::BETA);
-    AshTestBase::SetUp(std::move(shell_delegate));
+    set_shell_delegate(std::move(shell_delegate));
+    AshTestBase::SetUp();
 
     scoped_fake_power_status_ = std::make_unique<ScopedFakePowerStatus>();
 
@@ -1191,10 +1196,12 @@ TEST_F(UnifiedSystemTrayAccessibilityTest, NameWithFullBatteryPower) {
   std::vector<std::u16string> status;
   CreateDefaultStatusForTesting(&status);
 
-  // The default state of the battery is FULL so no need to manually set that.
+  // The default state of the battery is FULL, but the battery percentage needs
+  // to be near 100% for the UI to consider the battery actually full.
   power_manager::PowerSupplyProperties prop;
   FakePowerStatus* fake_power_status = GetFakePowerStatus();
   fake_power_status->SetProtoForTesting(prop);
+  fake_power_status->SetBatteryPercent(100.0);
 
   // `OnPowerStatusChanged` is called in an asynchronous method, but for the
   // purpose of this test, it is called explicitly.
@@ -1399,6 +1406,42 @@ TEST_F(UnifiedSystemTrayAccessibilityTest, NameWithBatterySaverDisabled) {
               l10n_util::GetStringFUTF16(
                   IDS_ASH_STATUS_TRAY_ACCESSIBLE_DESCRIPTION, status, nullptr));
   }
+}
+
+// This tests the logic in `PowerStatus::GetAccessibleNameString` where
+// `IsBatteryChargeLimited()` is true.
+TEST_F(UnifiedSystemTrayAccessibilityTest, NameWithBatteryChargeLimitEnabled) {
+  std::vector<std::u16string> status;
+  CreateDefaultStatusForTesting(&status);
+
+  power_manager::PowerSupplyProperties prop;
+  prop.set_battery_state(
+      power_manager::PowerSupplyProperties_BatteryState_FULL);
+  prop.set_charge_limited(true);
+
+  FakePowerStatus* fake_power_status = GetFakePowerStatus();
+  fake_power_status->SetProtoForTesting(prop);
+  fake_power_status->SetBatteryPercent(80.0);
+
+  // `OnPowerStatusChanged` is called in an asynchronous method, but for the
+  // purpose of this test, it is called explicitly.
+  GetPrimaryUnifiedSystemTray()->OnPowerStatusChanged();
+
+  // The new logic should return just the percentage accessible string, not a
+  // full description with time, etc.
+  UpdatePartOfStatus(
+      &status,
+      FormatPowerPercentageString(
+          IDS_ASH_STATUS_TRAY_BATTERY_PERCENT_CHARGING_ON_HOLD_ACCESSIBLE,
+          fake_power_status),
+      StatusType::kBattery);
+
+  ui::AXNodeData data;
+  GetPrimaryUnifiedSystemTray()->GetViewAccessibility().GetAccessibleNodeData(
+      &data);
+  EXPECT_EQ(data.GetString16Attribute(ax::mojom::StringAttribute::kName),
+            l10n_util::GetStringFUTF16(
+                IDS_ASH_STATUS_TRAY_ACCESSIBLE_DESCRIPTION, status, nullptr));
 }
 
 TEST_F(UnifiedSystemTrayAccessibilityTest, ChannelIndicatorUpdatesName) {

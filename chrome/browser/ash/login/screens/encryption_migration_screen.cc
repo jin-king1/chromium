@@ -9,11 +9,13 @@
 #include <utility>
 
 #include "ash/constants/ash_switches.h"
+#include "base/byte_size.h"
 #include "base/check.h"
 #include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
 #include "base/system/sys_info.h"
@@ -22,8 +24,6 @@
 #include "base/time/time.h"
 #include "chrome/browser/ash/arc/arc_migration_constants.h"
 #include "chrome/browser/ash/login/wizard_controller.h"
-#include "chrome/browser/browser_process.h"
-#include "chrome/browser/lifetime/application_lifetime.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
 #include "chrome/browser/ui/ash/login/login_feedback.h"
@@ -303,11 +303,17 @@ void EncryptionMigrationScreen::PowerChanged(
 }
 
 void EncryptionMigrationScreen::OnStartMigration() {
+  if (is_hidden()) {
+    return;
+  }
   RecordUserChoice(UserChoice::USER_CHOICE_UPDATE);
   WaitBatteryAndMigrate();
 }
 
 void EncryptionMigrationScreen::OnSkipMigration() {
+  if (is_hidden()) {
+    return;
+  }
   RecordUserChoice(UserChoice::USER_CHOICE_SKIP);
   // If the user skips migration, we mount the cryptohome without performing the
   // migration by reusing UserContext and LoginPerformer which were used in the
@@ -321,6 +327,9 @@ void EncryptionMigrationScreen::OnSkipMigration() {
 }
 
 void EncryptionMigrationScreen::OnRequestRestartOnLowStorage() {
+  if (is_hidden()) {
+    return;
+  }
   RecordUserChoice(UserChoice::USER_CHOICE_RESTART_ON_LOW_STORAGE);
   chromeos::PowerManagerClient::Get()->RequestRestart(
       power_manager::REQUEST_RESTART_OTHER,
@@ -328,6 +337,9 @@ void EncryptionMigrationScreen::OnRequestRestartOnLowStorage() {
 }
 
 void EncryptionMigrationScreen::OnRequestRestartOnFailure() {
+  if (is_hidden()) {
+    return;
+  }
   RecordUserChoice(UserChoice::USER_CHOICE_RESTART_ON_FAILURE);
   chromeos::PowerManagerClient::Get()->RequestRestart(
       power_manager::REQUEST_RESTART_OTHER,
@@ -335,9 +347,12 @@ void EncryptionMigrationScreen::OnRequestRestartOnFailure() {
 }
 
 void EncryptionMigrationScreen::OnOpenFeedbackDialog() {
+  if (is_hidden()) {
+    return;
+  }
   RecordUserChoice(UserChoice::USER_CHOICE_REPORT_AN_ISSUE);
   const std::string description = base::StringPrintf(
-      "Auto generated feedback for http://crbug.com/719266.\n"
+      "Auto generated feedback for http://crbug.com/40519275.\n"
       "(uniquifier:%s)",
       base::NumberToString(base::Time::Now().ToInternalValue()).c_str());
   login_feedback_ = std::make_unique<LoginFeedback>(Profile::FromWebUI(
@@ -393,8 +408,12 @@ void EncryptionMigrationScreen::CheckAvailableStorage() {
                      weak_ptr_factory_.GetWeakPtr()));
 }
 
-void EncryptionMigrationScreen::OnGetAvailableStorage(int64_t size) {
-  if (size >= arc::kMigrationMinimumAvailableStorage || IsTestingUI()) {
+void EncryptionMigrationScreen::OnGetAvailableStorage(
+    std::optional<int64_t> size) {
+  if ((size.has_value() &&
+       base::checked_cast<uint64_t>(size.value()) >=
+           arc::kMigrationMinimumAvailableStorage.InBytes()) ||
+      IsTestingUI()) {
     RecordFirstScreen(GetFirstScreenForMode(mode_));
     if (IsStartImmediately()) {
       WaitBatteryAndMigrate();
@@ -407,7 +426,8 @@ void EncryptionMigrationScreen::OnGetAvailableStorage(int64_t size) {
     if (GetRemote()->is_bound()) {
       (*GetRemote())
           ->SetSpaceInfoInString(
-              ui::FormatBytes(size),
+              ui::FormatBytes(
+                  base::ByteSize(base::checked_cast<uint64_t>(size.value()))),
               ui::FormatBytes(arc::kMigrationMinimumAvailableStorage));
       UpdateUIState(screens_login::mojom::EncryptionMigrationPage::UIState::
                         kNotEnoughStorage);

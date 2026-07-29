@@ -29,6 +29,8 @@ enum class GetAssertionOutcome {
   kEnclaveError = 12,
   kUiTimeout = 13,
   kOtherFailure = 14,
+  kBlockedByEmbedder = 15,
+  kCrossDeviceFallback = 16,
 };
 
 // MakeCredentialOutcome corresponds to metrics enum
@@ -56,7 +58,11 @@ enum class MakeCredentialOutcome {
   kEnclaveError = 15,
   kUiTimeout = 16,
   kOtherFailure = 17,
+  kConditionalCreateFailure = 18,
+  kBlockedByEmbedder = 19,
 };
+
+// LINT.IfChange(AuthenticationRequestMode)
 
 // This must match the `WebAuthenticationRequestMode` in
 // tools/metrics/histograms/metadata/webauthn/enums.xml. These must not be
@@ -68,7 +74,54 @@ enum class AuthenticationRequestMode {
   kConditional = 1,
   kPayment = 2,
   kPasskeyUpgrade = 3,
+  kImmediate = 4,
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/webauthn/enums.xml:WebAuthenticationRequestMode)
+
+// LINT.IfChange(CredentialRequestResult)
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// GENERATED_JAVA_ENUM_PACKAGE: org.chromium.components.webauthn
+// GENERATED_JAVA_PREFIX_TO_STRIP: k
+enum class CredentialRequestResult {
+  kTimeout = 0,
+  kUserCancelled = 1,
+
+  kWinNativeSuccess = 2,
+  kWinNativeError = 3,
+
+  kTouchIDSuccess = 4,
+  kTouchIDError = 5,
+
+  kChromeOSSuccess = 6,
+  kChromeOSError = 7,
+
+  kPhoneSuccess = 8,
+  kPhoneError = 9,
+
+  kICloudKeychainSuccess = 10,
+  kICloudKeychainError = 11,
+
+  kEnclaveSuccess = 12,
+  kEnclaveError = 13,
+
+  kOtherSuccess = 14,
+  kOtherError = 15,
+
+  kAndroidFido2Success = 16,
+  kAndroidFido2Error = 17,
+  kAndroidCredManSuccess = 18,
+  kAndroidCredManError = 19,
+  kAndroidFido2HybridSuccess = 20,
+  kAndroidFido2HybridError = 21,
+  kAndroidFido2LegacySuccess = 22,
+  kAndroidFido2LegacyError = 23,
+  kAndroidIdentityCredentialsSuccess = 24,
+  kAndroidIdentityCredentialsError = 25,
+
+  kMaxValue = kAndroidIdentityCredentialsError,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/webauthn/enums.xml:WebAuthenticationCredentialRequestResult)
 
 }  // namespace content
 

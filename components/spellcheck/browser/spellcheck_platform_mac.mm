@@ -12,10 +12,11 @@
 #include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
-#include "base/notreached.h"
+#include "base/notimplemented.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/time/time.h"
 #include "components/spellcheck/common/spellcheck_common.h"
+#include "components/spellcheck/common/spellcheck_decoration.h"
 #include "components/spellcheck/common/spellcheck_result.h"
 #include "content/public/browser/browser_thread.h"
 
@@ -255,6 +256,12 @@ void RemoveWord(PlatformSpellChecker* spell_checker_instance,
   [SharedSpellChecker() unlearnWord:word_to_remove];
 }
 
+bool IsUserAddedWord(PlatformSpellChecker* spell_checker_instance,
+                     const std::u16string& word) {
+  NSString* word_to_check = base::SysUTF16ToNSString(word);
+  return [SharedSpellChecker() hasLearnedWord:word_to_check];
+}
+
 int GetDocumentTag() {
   NSInteger doc_tag = [NSSpellChecker uniqueSpellDocumentTag];
   return static_cast<int>(doc_tag);
@@ -299,7 +306,7 @@ void RequestTextCheck(PlatformSpellChecker* spell_checker_instance,
 
             // In this use case, the spell checker should never
             // return anything but a single range per result.
-            check_results.emplace_back(SpellCheckResult::SPELLING,
+            check_results.emplace_back(spellcheck::Decoration::SPELLING,
                                        result.range.location,
                                        result.range.length);
           }

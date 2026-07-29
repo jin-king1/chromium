@@ -6,9 +6,12 @@
 #define CHROME_BROWSER_WEBAUTHN_ENCLAVE_MANAGER_INTERFACE_H_
 
 #include "base/functional/callback_forward.h"
+#include "base/observer_list.h"
 #include "components/keyed_service/core/keyed_service.h"
+#include "components/trusted_vault/trusted_vault_connection.h"
 
 class EnclaveManager;
+class GaiaId;
 
 class EnclaveManagerInterface : public KeyedService {
  public:
@@ -17,6 +20,59 @@ class EnclaveManagerInterface : public KeyedService {
   // These callbacks never hairpin. (I.e. are never called before the function
   // that they were passed to returns.)
   using Callback = base::OnceCallback<void(bool)>;
+
+  // LINT.IfChange(GpmPinAvailability)
+  //
+  // An enum that expresses whether a GPM PIN is set on an account.
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  enum class GpmPinAvailability {
+    // The PIN is set but not usable (there are 0 remaining attempts for
+    // entering the pin).
+    kGpmPinSetButNotUsable = 0,
+    // The PIN is set and usable (there are > 0 remaining attempts for entering
+    // the pin).
+    kGpmPinSetAndUsable = 1,
+    // The PIN is unset.
+    kGpmPinUnset = 2,
+    kMaxValue = kGpmPinUnset,
+  };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/webauthn/enums.xml:GpmPinAvailability)
+
+  using GpmPinAvailabilityCallback =
+      base::OnceCallback<void(GpmPinAvailability)>;
+
+  // An enum that expresses the outcome of the operation of storing the
+  // opportunistically retrieved keys.
+  enum class OutOfContextRecoveryOutcome {
+    // The key has been successfully stored and the device has been added to
+    // account.
+    kStoreKeysFromOpportunisticFlowSucceeded,
+    // There was a failure while adding the device to account.
+    kStoreKeysFromOpportunisticFlowFailed,
+    // The key has been ignored because the device has been already registered
+    // with the enclave.
+    kStoreKeysFromOpportunisticFlowIgnoredRedundant,
+  };
+
+  class Observer : public base::CheckedObserver {
+   public:
+    // `OnKeysStored` is called when MagicArch provides keys to the
+    // EnclaveManager by calling `StoreKeys`. `gaia_id` is the account
+    // identifier for the keys that were stored. Clients should verify this
+    // matches the account they expect.
+    virtual void OnKeysStored(const GaiaId& gaia_id) {}
+
+    // `OnStateUpdated` is called from `EnclaveManager::Stopped()` - indicating
+    // that the state machine reached its final state (so the state of the
+    // enclave manager might be updated now, e.g. it might become ready).
+    virtual void OnStateUpdated() {}
+
+    // `OnOutOfContextRecoveryCompletion` informs observers about the outcome of
+    // the operation of storing the opportunistically retrieved keys.
+    virtual void OnOutOfContextRecoveryCompletion(
+        OutOfContextRecoveryOutcome outcome) {}
+  };
 
   EnclaveManagerInterface() = default;
   EnclaveManagerInterface(const EnclaveManagerInterface&) = delete;
@@ -29,12 +85,34 @@ class EnclaveManagerInterface : public KeyedService {
   virtual EnclaveManager* GetEnclaveManager();
 
   // Returns true if the current user has been registered with the enclave.
-  virtual bool is_registered() const = 0;
+  virtual bool IsRegistered() const = 0;
+
+  // Returns true if the persistent state has been loaded from the disk. (Or
+  // else the loading failed and an empty state is being used.)
+  virtual bool IsLoaded() const = 0;
+
+  // Returns true if the current user has joined the security domain and has one
+  // or more wrapped security domain secrets available. (This implies
+  // `IsRegistered`.)
+  virtual bool IsReady() const = 0;
 
   // Send a request to the enclave to delete the registration for the current
   // user, erase local keys, and erase local state for the user. Safe to call in
   // any state and is a no-op if no registration exists.
   virtual void Unenroll(Callback callback) = 0;
+
+  // Asynchronously checks if the current user has a GPM PIN. The caller must
+  // keep the returned Request object alive until the callback is run.
+  // Destroying the Request object will cancel the operation.
+  [[nodiscard]] virtual std::unique_ptr<
+      trusted_vault::TrustedVaultConnection::Request>
+  CheckGpmPinAvailability(GpmPinAvailabilityCallback callback) = 0;
+
+  virtual void LoadAfterDelay(base::TimeDelta delay,
+                              base::OnceClosure closure) = 0;
+
+  virtual void AddObserver(Observer* observer) = 0;
+  virtual void RemoveObserver(Observer* observer) = 0;
 };
 
 #endif  // CHROME_BROWSER_WEBAUTHN_ENCLAVE_MANAGER_INTERFACE_H_

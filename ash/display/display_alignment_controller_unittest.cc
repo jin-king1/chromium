@@ -80,6 +80,12 @@ class DisplayAlignmentControllerTest : public AshTestBase {
     display_alignment_controller()->SetTimerForTesting(std::move(mock_timer));
   }
 
+  // AshTestBase:
+  void TearDown() override {
+    mock_timer_ptr_ = nullptr;
+    AshTestBase::TearDown();
+  }
+
   void DragDisplay(int64_t id, int32_t delta_x, int32_t delta_y) {
     display_alignment_controller()->DisplayDragged(id, delta_x, delta_y);
   }
@@ -151,7 +157,7 @@ class DisplayAlignmentControllerTest : public AshTestBase {
     EXPECT_TRUE(indicator_widget.IsVisible());
   }
 
-  raw_ptr<base::MockOneShotTimer, DanglingUntriaged> mock_timer_ptr_ = nullptr;
+  raw_ptr<base::MockOneShotTimer> mock_timer_ptr_ = nullptr;
 
  private:
   base::test::ScopedFeatureList scoped_feature_list_;
@@ -249,7 +255,7 @@ TEST_F(DisplayAlignmentControllerTest, TriggerTwoDisplayOnSameEdge) {
   //      +-------------------+
   //
 
-  int64_t primary_id = display::Screen::GetScreen()->GetPrimaryDisplay().id();
+  int64_t primary_id = display::Screen::Get()->GetPrimaryDisplay().id();
   display::DisplayIdList list =
       display::test::CreateDisplayIdListN(primary_id, 3);
   display::DisplayLayoutBuilder builder(primary_id);

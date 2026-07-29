@@ -7,6 +7,8 @@
 #include "third_party/blink/renderer/core/html/html_anchor_element.h"
 #include "third_party/blink/renderer/core/speculation_rules/speculation_rule_set.h"
 #include "third_party/blink/renderer/platform/heap/visitor.h"
+#include "third_party/blink/renderer/platform/network/http_parsers.h"
+#include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 
 namespace blink {
 
@@ -19,8 +21,10 @@ SpeculationCandidate::SpeculationCandidate(
     mojom::blink::SpeculationEagerness eagerness,
     network::mojom::blink::NoVarySearchPtr no_vary_search,
     mojom::blink::SpeculationInjectionType injection_type,
+    Vector<String> tags,
     SpeculationRuleSet* rule_set,
-    HTMLAnchorElementBase* anchor)
+    HTMLAnchorElementBase* anchor,
+    SpeculationRule::FormSubmission form_submission)
     : url_(url),
       action_(action),
       referrer_(std::move(referrer)),
@@ -30,10 +34,12 @@ SpeculationCandidate::SpeculationCandidate(
       eagerness_(eagerness),
       no_vary_search_(std::move(no_vary_search)),
       injection_type_(injection_type),
+      tags_(std::move(tags)),
       rule_set_(rule_set),
-      anchor_(anchor) {
+      anchor_(anchor),
+      form_submission_(form_submission) {
   DCHECK(rule_set);
-  DCHECK(url.ProtocolIsInHTTPFamily());
+  DCHECK(url.ProtocolIsInHttpFamily());
 }
 
 void SpeculationCandidate::Trace(Visitor* visitor) const {
@@ -47,7 +53,29 @@ mojom::blink::SpeculationCandidatePtr SpeculationCandidate::ToMojom() const {
       mojom::blink::Referrer::New(KURL(referrer_.referrer),
                                   referrer_.referrer_policy),
       requires_anonymous_client_ip_when_cross_origin_, target_hint_, eagerness_,
-      no_vary_search_.Clone(), injection_type_);
+      no_vary_search_.Clone(), injection_type_, tags_, form_submission_);
+}
+
+bool SpeculationCandidate::IsSimilarFromAuthorPerspective(
+    const SpeculationCandidate& other) const {
+  if (!no_vary_search_ && url_ != other.url_) {
+    return false;
+  }
+  if (no_vary_search_ &&
+      !AreUrlsEquivalentUnderNoVarySearch(url_, other.url_, no_vary_search_)) {
+    return false;
+  }
+
+  // Then compare all other fields (including the hint itself, so two
+  // candidates with different hints are never considered similar).
+  auto as_tie = [](const SpeculationCandidate& candidate) {
+    return std::tie(candidate.action_, candidate.referrer_,
+                    candidate.requires_anonymous_client_ip_when_cross_origin_,
+                    candidate.target_hint_, candidate.eagerness_,
+                    candidate.no_vary_search_, candidate.injection_type_,
+                    candidate.tags_, candidate.form_submission_);
+  };
+  return as_tie(*this) == as_tie(other);
 }
 
 }  // namespace blink

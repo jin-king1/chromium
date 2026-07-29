@@ -45,11 +45,12 @@ class MockPlatformWindowDelegate : public PlatformWindowDelegate {
   MOCK_METHOD0(OnWillDestroyAcceleratedWidget, void());
   MOCK_METHOD0(OnAcceleratedWidgetDestroyed, void());
   MOCK_METHOD1(OnActivationChanged, void(bool active));
+  MOCK_METHOD1(OnPaintAsActiveChanged, void(bool paint_as_active));
   MOCK_CONST_METHOD0(GetMinimumSizeForWindow, std::optional<gfx::Size>());
   MOCK_CONST_METHOD0(GetMaximumSizeForWindow, std::optional<gfx::Size>());
   MOCK_METHOD0(GetOwnedWindowAnchorAndRectInDIP,
                std::optional<OwnedWindowAnchor>());
-  MOCK_METHOD0(OnMouseEnter, void());
+  MOCK_METHOD0(OnCursorUpdate, void());
   MOCK_METHOD1(OnOcclusionStateChanged,
                void(PlatformWindowOcclusionState occlusion_state));
   MOCK_METHOD2(OnStateUpdate, int64_t(const State& old, const State& latest));

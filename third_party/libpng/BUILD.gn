@@ -2,9 +2,11 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//third_party/libpng/visibility.gni")
+
 import("//build/config/arm.gni")
-import("//build/config/mips.gni")
 import("//build/config/loongarch64.gni")
+import("//build/config/mips.gni")
 
 if (build_with_chromium) {
   import("//testing/libfuzzer/fuzzer_test.gni")
@@ -74,7 +76,7 @@ source_set("libpng_sources") {
       "intel/intel_init.c",
     ]
     defines += [ "PNG_INTEL_SSE_OPT=1" ]
-  } else if ((current_cpu == "arm" || current_cpu == "arm64") && arm_use_neon) {
+  } else if (current_cpu == "arm" || current_cpu == "arm64") {
     sources += [
       "arm/arm_init.c",
       "arm/filter_neon_intrinsics.c",
@@ -92,11 +94,17 @@ source_set("libpng_sources") {
       "mips/filter_msa_intrinsics.c",
       "mips/mips_init.c",
     ]
-  } else if (current_cpu == "loong64" && loongarch64_use_lsx) {
-    sources += [
-      "loongarch/filter_lsx_intrinsics.c",
-      "loongarch/loongarch_lsx_init.c",
-    ]
+  } else if (current_cpu == "loong64") {
+    if (loongarch64_use_lsx) {
+      sources += [
+        "loongarch/filter_lsx_intrinsics.c",
+        "loongarch/loongarch_lsx_init.c",
+      ]
+    } else {
+      defines += ["PNG_LOONGARCH_LSX_OPT=0"]
+    }
+  } else if (current_cpu == "ppc64") {
+    defines += ["PNG_POWERPC_VSX_OPT=0"]
   }
 
   configs -= [ "//build/config/compiler:chromium_code" ]
@@ -126,6 +134,14 @@ if (is_win) {
   group("libpng") {
     public_deps = [ ":libpng_sources" ]
   }
+}
+
+group("libpng_for_testonly") {
+  testonly = true
+  public_deps = [ ":libpng" ]
+
+  visibility = []
+  visibility = libpng_testonly_visibility
 }
 
 if (build_with_chromium) {

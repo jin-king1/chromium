@@ -8,10 +8,12 @@
 #import "components/omnibox/common/omnibox_features.h"
 #import "ui/base/device_form_factor.h"
 
-BASE_FEATURE(kOmniboxActionsInSuggest,
-             "OmniboxIOSActionsInSuggest",
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
 bool IsRichAutocompletionEnabled() {
   return base::FeatureList::IsEnabled(omnibox::kRichAutocompletion);
+}
+
+BASE_FEATURE(kOmniboxZPSOnClobber, base::FEATURE_ENABLED_BY_DEFAULT);
+
+bool IsZPSOnClobberEnabled() {
+  return base::FeatureList::IsEnabled(kOmniboxZPSOnClobber);
 }

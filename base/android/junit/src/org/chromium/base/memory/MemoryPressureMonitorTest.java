@@ -18,10 +18,10 @@ import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.base.MemoryPressureLevel;
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.supplier.Supplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 /** Test for MemoryPressureMonitor. */
 @RunWith(BaseRobolectricTestRunner.class)
@@ -53,7 +53,7 @@ public class MemoryPressureMonitorTest {
     }
 
     private static class TestPressureSupplier implements Supplier<Integer> {
-        private @MemoryPressureLevel Integer mPressure;
+        private final @MemoryPressureLevel Integer mPressure;
         private boolean mIsCalled;
 
         public TestPressureSupplier(@MemoryPressureLevel Integer pressure) {
@@ -84,7 +84,6 @@ public class MemoryPressureMonitorTest {
         ThreadUtils.setUiThread(Looper.getMainLooper());
 
         // Pause main thread to get control over when tasks are run (see runUiThreadFor()).
-        ShadowLooper.pauseMainLooper();
 
         mMonitor = new MemoryPressureMonitor(THROTTLING_INTERVAL_MS);
         mMonitor.setCurrentPressureSupplierForTesting(null);

@@ -9,8 +9,9 @@
 
 #include "base/containers/span.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_uchar.h"
+#include "third_party/blink/renderer/platform/wtf/wtf_export.h"
 
-namespace WTF {
+namespace blink {
 
 // U16_GET() for base::span.
 //  - If text[offset] is a leading surrogate and text[offset + 1] is a
@@ -40,9 +41,36 @@ UChar32 CodePointAtAndNext(base::span<const LChar> text, T& offset) {
   return text[offset++];
 }
 
-}  // namespace WTF
+// This is U16_PREV() for base::span.
+// Returns a code point ending with text[offset - 1].  That is to say,
+//  - Returns a code point computed from text[offset - 2] and text[offset - 1]
+//    if offset-1 is greater than start_offset and text[offset - 2] is a
+//    leading surrogate and text[offset - 1] is a trailing surrogate.
+//  - Otherwise, text[offset - 1] is returned.
+//
+// `offset` argument is updated to point the first code unit of the read
+//  character.  `offset` won't be smaller than `start_offset`.
+template <typename T>
+UChar32 CodePointAtAndPrevious(base::span<const UChar> text,
+                               T start_offset,
+                               T& offset) {
+  DCHECK_LT(start_offset, offset);
+  UChar32 code_point;
+  U16_PREV(text, start_offset, offset, code_point);
+  return code_point;
+}
 
-using WTF::CodePointAt;
-using WTF::CodePointAtAndNext;
+// True if `text` only contains Latin1 characters [0,255].
+WTF_EXPORT
+bool ContainsOnlyLatin1(base::span<const UChar> text);
+
+// True if `text` is well-formed UTF-16, i.e. it contains no unpaired
+// surrogates: every leading surrogate is immediately followed by a trailing
+// surrogate, and there are no lone trailing surrogates. This mirrors the
+// JavaScript String.prototype.isWellFormed() notion of well-formedness.
+WTF_EXPORT
+bool IsWellFormed(base::span<const UChar> text);
+
+}  // namespace blink
 
 #endif  // THIRD_PARTY_BLINK_RENDERER_PLATFORM_WTF_TEXT_UTF16_H_

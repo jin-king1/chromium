@@ -9,13 +9,6 @@
 
 namespace remoting::features {
 
-// Enable the V2 feature development related to launching CRD remote admin
-// to GA.
-BASE_DECLARE_FEATURE(kEnableCrdAdminRemoteAccessV2);
-
-// Enable to allow file transfer in CRD video streaming to Kiosk devices.
-BASE_DECLARE_FEATURE(kEnableCrdFileTransferForKiosk);
-
 // Enable to allow shared CRD session to the login/lock screen.
 BASE_DECLARE_FEATURE(kEnableCrdSharedSessionToUnattendedDevice);
 

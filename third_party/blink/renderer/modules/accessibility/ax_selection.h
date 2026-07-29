@@ -14,6 +14,7 @@
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/editing/forward.h"
 #include "third_party/blink/renderer/core/html/forms/text_control_element.h"
+#include "third_party/blink/renderer/modules/accessibility/ax_object_cache_impl.h"
 #include "third_party/blink/renderer/modules/accessibility/ax_position.h"
 #include "third_party/blink/renderer/modules/modules_export.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
@@ -40,14 +41,20 @@ class MODULES_EXPORT AXSelection final {
 
   static void ClearCurrentSelection(Document&);
 
+  // These constructors will use the default AXObjectCache for the
+  // document unless a different one is passed in.
   static AXSelection FromCurrentSelection(
       const Document&,
+      const AXObjectCacheImpl& ax_object_cache,
       const AXSelectionBehavior = AXSelectionBehavior::kExtendToValidRange);
 
-  static AXSelection FromCurrentSelection(const TextControlElement&);
+  static AXSelection FromCurrentSelection(
+      const TextControlElement&,
+      const AXObjectCacheImpl& ax_object_cache);
 
   static AXSelection FromSelection(
-      const SelectionInDOMTree&,
+      const SelectionInDomTree&,
+      const AXObjectCacheImpl& ax_object_cache,
       const AXSelectionBehavior = AXSelectionBehavior::kExtendToValidRange);
 
   AXSelection(const AXSelection&) = default;
@@ -63,7 +70,7 @@ class MODULES_EXPORT AXSelection final {
 
   operator bool() const { return IsValid(); }
 
-  const SelectionInDOMTree AsSelection(
+  const SelectionInDomTree AsSelection(
       const AXSelectionBehavior =
           AXSelectionBehavior::kExtendToValidRange) const;
 
@@ -123,21 +130,22 @@ class MODULES_EXPORT AXSelection::Builder final {
   STACK_ALLOCATED();
 
  public:
-  Builder() = default;
+  Builder(const AXObjectCacheImpl& ax_object_cache)
+      : ax_object_cache_(ax_object_cache) {}
   ~Builder() = default;
   Builder& SetAnchor(const AXPosition&);
   Builder& SetAnchor(const Position&);
   Builder& SetFocus(const AXPosition&);
   Builder& SetFocus(const Position&);
-  Builder& SetSelection(const SelectionInDOMTree&);
+  Builder& SetSelection(const SelectionInDomTree&);
   const AXSelection Build();
 
  private:
   AXSelection selection_;
+  const AXObjectCacheImpl& ax_object_cache_;
 };
 
 MODULES_EXPORT bool operator==(const AXSelection&, const AXSelection&);
-MODULES_EXPORT bool operator!=(const AXSelection&, const AXSelection&);
 MODULES_EXPORT std::ostream& operator<<(std::ostream&, const AXSelection&);
 
 }  // namespace blink

@@ -30,6 +30,7 @@ class MockSigninUI : public SigninUI {
   MOCK_METHOD(void, StartManagementTransition, (), (override));
   MOCK_METHOD(void, ShowTosForExistingUser, (), (override));
   MOCK_METHOD(void, ShowNewTermsForFlexUsers, (), (override));
+  MOCK_METHOD(void, ShowPasswordSelectionScreen, (), (override));
   MOCK_METHOD(void,
               StartEncryptionMigration,
               (std::unique_ptr<UserContext>,
@@ -53,10 +54,16 @@ class MockSigninUI : public SigninUI {
               ShowSigninError,
               (SigninError, const std::string&),
               (override));
+  MOCK_METHOD(void, ShowOobeNotCompletedError, (), (override));
   MOCK_METHOD(void,
               SAMLConfirmPassword,
               (::login::StringList, std::unique_ptr<UserContext>),
               (override));
+  MOCK_METHOD(void,
+              ShowSamlConfirmPassword,
+              (std::unique_ptr<UserContext>),
+              (override));
+  MOCK_METHOD(void, ShowRemoveLocalAuthFactorsScreen, (), (override));
 };
 
 }  // namespace ash

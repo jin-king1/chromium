@@ -19,14 +19,14 @@
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "components/cronet/android/cronet_jni_headers/CronetUploadDataStream_jni.h"
 
-using base::android::JavaParamRef;
+using base::android::JavaRef;
 
 namespace cronet {
 
 CronetUploadDataStreamAdapter::CronetUploadDataStreamAdapter(
     JNIEnv* env,
-    jobject jupload_data_stream) {
-  jupload_data_stream_.Reset(env, jupload_data_stream);
+    const JavaRef<jobject>& jupload_data_stream) {
+  jupload_data_stream_.Reset(jupload_data_stream);
 }
 
 CronetUploadDataStreamAdapter::~CronetUploadDataStreamAdapter() {
@@ -81,11 +81,9 @@ void CronetUploadDataStreamAdapter::OnUploadDataStreamDestroyed() {
   // |this| is invalid here since the Java call above effectively destroys it.
 }
 
-void CronetUploadDataStreamAdapter::OnReadSucceeded(
-    JNIEnv* env,
-    const JavaParamRef<jobject>& jcaller,
-    int bytes_read,
-    bool final_chunk) {
+void CronetUploadDataStreamAdapter::OnReadSucceeded(JNIEnv* env,
+                                                    int bytes_read,
+                                                    bool final_chunk) {
   DCHECK(bytes_read > 0 || (final_chunk && bytes_read == 0));
 
   network_task_runner_->PostTask(
@@ -93,9 +91,7 @@ void CronetUploadDataStreamAdapter::OnReadSucceeded(
                                 upload_data_stream_, bytes_read, final_chunk));
 }
 
-void CronetUploadDataStreamAdapter::OnRewindSucceeded(
-    JNIEnv* env,
-    const JavaParamRef<jobject>& jcaller) {
+void CronetUploadDataStreamAdapter::OnRewindSucceeded(JNIEnv* env) {
   network_task_runner_->PostTask(
       FROM_HERE, base::BindOnce(&CronetUploadDataStream::OnRewindSuccess,
                                 upload_data_stream_));
@@ -105,11 +101,11 @@ void CronetUploadDataStreamAdapter::Destroy(JNIEnv* env) {
   delete this;
 }
 
-static jlong JNI_CronetUploadDataStream_AttachUploadDataToRequest(
+static int64_t JNI_CronetUploadDataStream_AttachUploadDataToRequest(
     JNIEnv* env,
-    const JavaParamRef<jobject>& jupload_data_stream,
-    jlong jcronet_url_request_adapter,
-    jlong jlength) {
+    const base::android::JavaRef<jobject>& jupload_data_stream,
+    int64_t jcronet_url_request_adapter,
+    int64_t jlength) {
   CronetURLRequestAdapter* request_adapter =
       reinterpret_cast<CronetURLRequestAdapter*>(jcronet_url_request_adapter);
   DCHECK(request_adapter != nullptr);
@@ -122,27 +118,29 @@ static jlong JNI_CronetUploadDataStream_AttachUploadDataToRequest(
 
   request_adapter->SetUpload(std::move(upload_data_stream));
 
-  return reinterpret_cast<jlong>(adapter);
+  return reinterpret_cast<int64_t>(adapter);
 }
 
-static jlong JNI_CronetUploadDataStream_CreateAdapterForTesting(
+static int64_t JNI_CronetUploadDataStream_CreateAdapterForTesting(
     JNIEnv* env,
-    const JavaParamRef<jobject>& jupload_data_stream) {
+    const base::android::JavaRef<jobject>& jupload_data_stream) {
   CronetUploadDataStreamAdapter* adapter =
       new CronetUploadDataStreamAdapter(env, jupload_data_stream);
-  return reinterpret_cast<jlong>(adapter);
+  return reinterpret_cast<int64_t>(adapter);
 }
 
-static jlong JNI_CronetUploadDataStream_CreateUploadDataStreamForTesting(
+static int64_t JNI_CronetUploadDataStream_CreateUploadDataStreamForTesting(
     JNIEnv* env,
-    const JavaParamRef<jobject>& jupload_data_stream,
-    jlong jlength,
-    jlong jadapter) {
+    const base::android::JavaRef<jobject>& jupload_data_stream,
+    int64_t jlength,
+    int64_t jadapter) {
   CronetUploadDataStreamAdapter* adapter =
       reinterpret_cast<CronetUploadDataStreamAdapter*>(jadapter);
   CronetUploadDataStream* upload_data_stream =
       new CronetUploadDataStream(adapter, jlength);
-  return reinterpret_cast<jlong>(upload_data_stream);
+  return reinterpret_cast<int64_t>(upload_data_stream);
 }
 
 }  // namespace cronet
+
+DEFINE_JNI(CronetUploadDataStream)

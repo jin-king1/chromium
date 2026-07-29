@@ -21,7 +21,6 @@ import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bu
 import {DeepLinkingMixin} from '../common/deep_linking_mixin.js';
 import {RouteObserverMixin} from '../common/route_observer_mixin.js';
 import {Section} from '../mojom-webui/routes.mojom-webui.js';
-import {Setting} from '../mojom-webui/setting.mojom-webui.js';
 import type {Route} from '../router.js';
 import {routes} from '../router.js';
 
@@ -49,21 +48,11 @@ export class SettingsPersonalizationPageElement extends
         value: Section.kPersonalization,
         readOnly: true,
       },
-
-      /**
-       * Used by DeepLinkingMixin to focus this page's deep links.
-       */
-      supportedSettingIds: {
-        type: Object,
-        value: () => new Set<Setting>([
-          Setting.kSnapWindowSuggestions,
-        ]),
-      },
     };
   }
 
   private personalizationHubBrowserProxy_: PersonalizationHubBrowserProxy;
-  private section_: Section;
+  declare private section_: Section;
 
   constructor() {
     super();

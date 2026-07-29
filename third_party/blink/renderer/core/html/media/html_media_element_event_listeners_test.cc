@@ -69,7 +69,7 @@ class FakeWebMediaPlayer final : public EmptyWebMediaPlayer {
     playing_ = true;
     ScheduleTimeIncrement();
   }
-  void Pause() override { playing_ = false; }
+  void Pause(PauseReason pause_reason) override { playing_ = false; }
   bool Paused() const override { return !playing_; }
   bool IsEnded() const override { return current_time_ == duration_; }
 
@@ -98,11 +98,12 @@ class FakeWebMediaPlayer final : public EmptyWebMediaPlayer {
     }
 
     context_->GetTaskRunner(TaskType::kInternalMediaRealTime)
-        ->PostDelayedTask(FROM_HERE,
-                          WTF::BindOnce(&FakeWebMediaPlayer::AutoTimeIncrement,
-                                        WTF::Unretained(this),
-                                        auto_time_increment_delta_.value()),
-                          auto_time_increment_delta_.value());
+        ->PostDelayedTask(
+            FROM_HERE,
+            blink::BindOnce(&FakeWebMediaPlayer::AutoTimeIncrement,
+                            Unretained(this),
+                            auto_time_increment_delta_.value()),
+            auto_time_increment_delta_.value());
     scheduled_time_increment_ = true;
   }
 
@@ -209,7 +210,8 @@ class HTMLMediaElementEventListenersTest : public PageTestBase {
 
 TEST_F(HTMLMediaElementEventListenersTest, RemovingFromDocumentCollectsAll) {
   EXPECT_EQ(Video(), nullptr);
-  GetDocument().body()->setInnerHTML("<video controls></video>");
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(
+      "<video controls></video>");
   EXPECT_NE(Video(), nullptr);
   EXPECT_TRUE(Video()->HasEventListeners());
   EXPECT_NE(Controls(), nullptr);
@@ -219,7 +221,7 @@ TEST_F(HTMLMediaElementEventListenersTest, RemovingFromDocumentCollectsAll) {
   WeakPersistent<MediaControls> weak_persistent_controls = Controls();
   {
     Persistent<HTMLVideoElement> persistent_video = Video();
-    GetDocument().body()->setInnerHTML("");
+    GetDocument().body()->SetInnerHTMLWithoutTrustedTypes("");
 
     // When removed from the document, the event listeners should have been
     // dropped.
@@ -241,7 +243,8 @@ TEST_F(HTMLMediaElementEventListenersTest, RemovingFromDocumentCollectsAll) {
 TEST_F(HTMLMediaElementEventListenersTest,
        ReInsertingInDocumentCollectsControls) {
   EXPECT_EQ(Video(), nullptr);
-  GetDocument().body()->setInnerHTML("<video controls></video>");
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(
+      "<video controls></video>");
   EXPECT_NE(Video(), nullptr);
   EXPECT_TRUE(Video()->HasEventListeners());
   EXPECT_NE(Controls(), nullptr);
@@ -270,7 +273,7 @@ TEST_F(HTMLMediaElementEventListenersTest,
 TEST_F(HTMLMediaElementEventListenersTest,
        FullscreenDetectorTimerCancelledOnContextDestroy) {
   EXPECT_EQ(Video(), nullptr);
-  GetDocument().body()->setInnerHTML("<video></video>");
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes("<video></video>");
   Video()->SetSrc(AtomicString("http://example.com"));
 
   test::RunPendingTasks();
@@ -295,10 +298,10 @@ TEST_F(HTMLMediaElementEventListenersTest,
   Vector<blink::WebFullscreenVideoStatus> observed_results;
 
   ON_CALL(*WebMediaPlayer(), SetIsEffectivelyFullscreen(_))
-      .WillByDefault(testing::Invoke(
+      .WillByDefault(
           [&](blink::WebFullscreenVideoStatus fullscreen_video_status) {
             observed_results.push_back(fullscreen_video_status);
-          }));
+          });
 
   DestroyDocument();
 
@@ -353,7 +356,7 @@ class HTMLMediaElementWithMockSchedulerTest
 
 TEST_F(HTMLMediaElementWithMockSchedulerTest, OneTimeupdatePerSeek) {
   testing::InSequence dummy;
-  GetDocument().body()->setInnerHTML("<video></video>");
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes("<video></video>");
 
   // Set a src to trigger WebMediaPlayer creation.
   Video()->SetSrc(AtomicString("http://example.com"));
@@ -411,7 +414,7 @@ TEST_F(HTMLMediaElementWithMockSchedulerTest, OneTimeupdatePerSeek) {
 
 TEST_F(HTMLMediaElementWithMockSchedulerTest, PeriodicTimeupdateAfterSeek) {
   testing::InSequence dummy;
-  GetDocument().body()->setInnerHTML("<video></video>");
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes("<video></video>");
 
   // Set a src to trigger WebMediaPlayer creation.
   Video()->SetSrc(AtomicString("http://example.com"));
@@ -485,7 +488,7 @@ TEST_F(HTMLMediaElementWithMockSchedulerTest, ShowPosterFlag_FalseAfterLoop) {
   SetMediaDuration(10.0);
 
   // Create a looping video with a source
-  GetDocument().body()->setInnerHTML(
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(
       "<video loop src=\"http://example.com\"></video>");
   platform()->RunUntilIdle();
   EXPECT_NE(WebMediaPlayer(), nullptr);
@@ -525,7 +528,7 @@ TEST_F(HTMLMediaElementWithMockSchedulerTest, ShowPosterFlag_FalseAfterEnded) {
   SetMediaDuration(10.0);
 
   // Create a video with a source
-  GetDocument().body()->setInnerHTML(
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(
       "<video src=\"http://example.com\"></video>");
   platform()->RunUntilIdle();
   EXPECT_NE(WebMediaPlayer(), nullptr);
@@ -575,17 +578,17 @@ class CueEventListener final : public NativeEventListener {
  public:
   void Invoke(ExecutionContext* ctx, Event* event) override {
     if (event->type() == event_type_names::kEnter) {
-      EXPECT_TRUE(event->target()->GetWrapperTypeInfo()->Equals(
+      EXPECT_TRUE(event->RawTarget()->GetWrapperTypeInfo()->Equals(
           VTTCue::GetStaticWrapperTypeInfo()));
-      auto* const cue = static_cast<VTTCue*>(event->target());
+      auto* const cue = static_cast<VTTCue*>(event->RawTarget());
       auto* const media_element = cue->track()->MediaElement();
 
       OnCueEnter(media_element, cue);
       return;
     } else if (event->type() == event_type_names::kExit) {
-      EXPECT_TRUE(event->target()->GetWrapperTypeInfo()->Equals(
+      EXPECT_TRUE(event->RawTarget()->GetWrapperTypeInfo()->Equals(
           VTTCue::GetStaticWrapperTypeInfo()));
-      auto* const cue = static_cast<VTTCue*>(event->target());
+      auto* const cue = static_cast<VTTCue*>(event->RawTarget());
       auto* const media_element = cue->track()->MediaElement();
 
       OnCueExit(media_element, cue);
@@ -647,7 +650,7 @@ class CueEventListener final : public NativeEventListener {
 
 TEST_F(HTMLMediaElementWithMockSchedulerTest, CueEnterExitEventLatency) {
   testing::InSequence dummy;
-  GetDocument().body()->setInnerHTML("<video></video>");
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes("<video></video>");
 
   // Set a src to trigger WebMediaPlayer creation.
   Video()->SetSrc(AtomicString("http://example.com"));

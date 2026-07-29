@@ -29,11 +29,6 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "third_party/blink/renderer/core/frame/navigator_id.h"
 
 #include "base/feature_list.h"
@@ -60,7 +55,7 @@ String NavigatorID::appName() {
 String NavigatorID::appVersion() {
   // Version is everything in the user agent string past the "Mozilla/" prefix.
   const String& agent = userAgent();
-  return agent.Substring(agent.find('/') + 1);
+  return agent.substr(agent.find('/') + 1);
 }
 
 String NavigatorID::platform() const {

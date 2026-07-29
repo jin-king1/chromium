@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_UI_WEBUI_CHROME_URLS_CHROME_URLS_HANDLER_H_
 
 #include "base/gtest_prod_util.h"
+#include "base/memory/raw_ptr.h"
 #include "components/webui/chrome_urls/mojom/chrome_urls.mojom.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
@@ -23,7 +24,6 @@ class ChromeUrlsHandler : public chrome_urls::mojom::PageHandler {
  public:
   ChromeUrlsHandler(
       mojo::PendingReceiver<chrome_urls::mojom::PageHandler> receiver,
-      mojo::PendingRemote<chrome_urls::mojom::Page> page,
       content::BrowserContext* browser_context);
   ~ChromeUrlsHandler() override;
   ChromeUrlsHandler(const ChromeUrlsHandler&) = delete;
@@ -40,7 +40,6 @@ class ChromeUrlsHandler : public chrome_urls::mojom::PageHandler {
   // These are located at the end of the list of member variables to ensure the
   // WebUI page is disconnected before other members are destroyed.
   mojo::Receiver<chrome_urls::mojom::PageHandler> receiver_;
-  mojo::Remote<chrome_urls::mojom::Page> page_;
   raw_ptr<content::BrowserContext> browser_context_;
 };
 

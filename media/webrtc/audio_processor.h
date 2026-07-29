@@ -10,8 +10,10 @@
 #include <string_view>
 
 #include "base/component_export.h"
+#include "base/containers/span.h"
 #include "base/files/file.h"
 #include "base/functional/callback.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/sequence_checker.h"
 #include "base/thread_annotations.h"
@@ -20,10 +22,18 @@
 #include "media/base/audio_processing.h"
 #include "media/base/audio_push_fifo.h"
 #include "media/webrtc/audio_delay_stats_reporter.h"
+#include "media/webrtc/ml_model_handle.h"
 #include "media/webrtc/webrtc_features.h"
 #include "third_party/webrtc/api/task_queue/task_queue_base.h"
 #include "third_party/webrtc/modules/audio_processing/include/audio_processing.h"
 #include "third_party/webrtc/modules/audio_processing/include/audio_processing_statistics.h"
+
+// third_party/flatbuffers/ used by third_party/tflite has 64-bit truncation
+// issues on 32-bit platforms.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wshorten-64-to-32"
+#include "third_party/tflite/src/tensorflow/lite/model_builder.h"
+#pragma clang diagnostic pop
 
 namespace media {
 class AudioBus;
@@ -76,7 +86,8 @@ class COMPONENT_EXPORT(MEDIA_WEBRTC) AudioProcessor {
       LogCallback log_callback,
       const AudioProcessingSettings& settings,
       const media::AudioParameters& input_format,
-      const media::AudioParameters& output_format);
+      const media::AudioParameters& output_format,
+      scoped_refptr<media::MlModelHandle> neural_residual_echo_estimator_model);
 
   // See Create() for details.
   AudioProcessor(
@@ -84,8 +95,10 @@ class COMPONENT_EXPORT(MEDIA_WEBRTC) AudioProcessor {
       LogCallback log_callback,
       const media::AudioParameters& input_format,
       const media::AudioParameters& output_format,
-      rtc::scoped_refptr<webrtc::AudioProcessing> webrtc_audio_processing,
-      bool needs_playout_reference);
+      scoped_refptr<media::MlModelHandle> neural_residual_echo_estimator_model,
+      webrtc::scoped_refptr<webrtc::AudioProcessing> webrtc_audio_processing,
+      bool needs_playout_reference,
+      base::TimeDelta added_aec_delay);
 
   ~AudioProcessor();
 
@@ -180,12 +193,12 @@ class COMPONENT_EXPORT(MEDIA_WEBRTC) AudioProcessor {
   // to the highest observed value of num_preferred_channels as long as it does
   // not exceed the number of channels of the output format.
   // Called on the capture thread.
-  std::optional<double> ProcessData(const float* const* process_ptrs,
+  std::optional<double> ProcessData(base::span<const float* const> process_ptrs,
                                     int process_frames,
                                     base::TimeDelta capture_delay,
                                     double volume,
                                     int num_preferred_channels,
-                                    float* const* output_ptrs);
+                                    AudioProcessorCaptureBus* output_bus);
 
   // Used as callback from |playout_fifo_| in OnPlayoutData().
   // Called on the playout thread.
@@ -196,9 +209,13 @@ class COMPONENT_EXPORT(MEDIA_WEBRTC) AudioProcessor {
 
   SEQUENCE_CHECKER(owning_sequence_);
 
+  // ML model used for echo estimation.
+  // If not null, must outlive |webrtc_audio_processing_|.
+  const scoped_refptr<media::MlModelHandle> residual_echo_estimation_model_;
+
   // The WebRTC audio processing module (APM). Performs the bulk of the audio
   // processing and resampling algorithms.
-  const rtc::scoped_refptr<webrtc::AudioProcessing> webrtc_audio_processing_;
+  const webrtc::scoped_refptr<webrtc::AudioProcessing> webrtc_audio_processing_;
 
   // If true, `OnPlayoutData()` should be called.
   const bool needs_playout_reference_;
@@ -213,6 +230,12 @@ class COMPONENT_EXPORT(MEDIA_WEBRTC) AudioProcessor {
   // any aecdump recording in |webrtc_audio_processing_|.
   std::unique_ptr<webrtc::TaskQueueBase, webrtc::TaskQueueDeleter> worker_queue_
       GUARDED_BY_CONTEXT(owning_sequence_);
+
+  // Cached value for an extra delay which is added if system loopback AEC is
+  // utilized. Each audio capture timestamp for processed audio frames is
+  // reduced by this value to ensure that delay stats are correct. Stored on the
+  // owning sequence during construction and read on the capture thread.
+  const base::TimeDelta added_aec_delay_;
 
   // Cached value for the playout delay latency. Updated on the playout thread
   // and read on the capture thread.

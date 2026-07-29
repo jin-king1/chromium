@@ -59,152 +59,156 @@ _HEADER = '''
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 
 import("//build/config/android/config.gni")
+import("//build_overrides/build.gni")
+if (build_with_chromium) {
+  import("//components/optimization_guide/features.gni")
+}
+import("//third_party/xnnpack/build_defs.gni")
 
-config("xnnpack_config") {
+config("xnnpack_public_config") {
   include_dirs = [
     "//third_party/pthreadpool/src/include",
-    "src/deps/clog/include",
     "src/include",
     "src/src",
     "src",
   ]
 
-  cflags=[
-    "-Wno-unused-function",
-    "-Wno-deprecated-comma-subscript",
-  ]
+  if (is_android && current_cpu == "arm64") {
+    asmflags = [ "-mmark-bti-property" ]
+  }
 
   defines = [
     "CHROMIUM",
-    "XNN_ENABLE_ASSEMBLY=1",
-    "XNN_ENABLE_GEMM_M_SPECIALIZATION=1",
-    "XNN_ENABLE_MEMOPT=1",
-    "XNN_ENABLE_CPUINFO=1",
-    "XNN_ENABLE_SPARSE=1",
     "XNN_LOG_LEVEL=0",
     "XNN_LOG_TO_STDIO=0",
-    "XNN_ENABLE_AVX512BF16=0",
+  ] + xnn_defines
+}
+
+config("xnnpack_private_config") {
+  cflags = [
+    "-Wno-unused-function",
+    "-Wno-deprecated-comma-subscript",
+    "-Wno-gcc-compat",
   ]
-
-  if (current_cpu == "arm64") {
-    defines += [
-      "XNN_ENABLE_ARM_DOTPROD=1",
-      "XNN_ENABLE_ARM_I8MM=1",
-    ]
-  }
-
-  if (current_cpu == "x86" || current_cpu == "x64") {
-    defines += [
-      "XNN_ENABLE_AVXVNNI=1",
-    ]
-  }
 }
 '''.strip()
 
 _MAIN_TMPL = '''
-source_set("xnnpack") {
-  public = [ "src/include/xnnpack.h" ]
+if (build_with_chromium) {
+  source_set("xnnpack") {
+    public = [ "src/include/xnnpack.h" ]
 
-  configs -= [ "//build/config/compiler:chromium_code" ]
-  configs += [ "//build/config/compiler:no_chromium_code" ]
-  configs += [ "//build/config/sanitizers:cfi_icall_generalize_pointers" ]
+    configs -= [ "//build/config/compiler:chromium_code" ]
+    configs += [ "//build/config/compiler:no_chromium_code" ]
+    configs += [ "//build/config/sanitizers:cfi_icall_generalize_pointers" ]
+    configs += [ ":xnnpack_private_config" ]
 
-  sources = [
-  "src/include/xnnpack.h",
-  "build_identifier.c",
-%SRCS%
-  ]
+    sources = [
+    "src/include/xnnpack.h",
+    "build_identifier.c",
+  %SRCS%
+    ]
 
-  deps = xnnpack_deps + [
-    "//third_party/cpuinfo",
-    "//third_party/fp16",
-    "//third_party/fxdiv",
-    "//third_party/pthreadpool",
-  ]
+    deps = xnnpack_deps + [
+      "//third_party/cpuinfo",
+      "//third_party/fp16",
+      "//third_party/fxdiv",
+      "//third_party/pthreadpool",
+    ]
 
-  public_configs = [ ":xnnpack_config" ]
+    public_configs = [ ":xnnpack_public_config" ]
+  }
 }
 
 # This is a target that cannot depend on //base.
-source_set("xnnpack_standalone") {
-  public = [ "src/include/xnnpack.h" ]
+if (build_with_internal_optimization_guide) {
+  source_set("xnnpack_standalone") {
+    public = [ "src/include/xnnpack.h" ]
 
-  configs -= [ "//build/config/compiler:chromium_code" ]
-  configs += [ "//build/config/compiler:no_chromium_code" ]
-  configs += [ "//build/config/sanitizers:cfi_icall_generalize_pointers" ]
+    configs -= [ "//build/config/compiler:chromium_code" ]
+    configs += [ "//build/config/compiler:no_chromium_code" ]
+    configs += [ "//build/config/sanitizers:cfi_icall_generalize_pointers" ]
+    configs += [ ":xnnpack_private_config" ]
 
-  sources = [
-  "src/include/xnnpack.h",
-  "build_identifier.c",
-%SRCS%
-  ]
+    sources = [
+    "src/include/xnnpack.h",
+    "build_identifier.c",
+  %SRCS%
+    ]
 
-  deps = xnnpack_standalone_deps + [
-    "//third_party/cpuinfo",
-    "//third_party/fp16",
-    "//third_party/fxdiv",
-    "//third_party/pthreadpool:pthreadpool_standalone",
-  ]
+    deps = xnnpack_standalone_deps + [
+      "//third_party/cpuinfo",
+      "//third_party/fp16",
+      "//third_party/fxdiv",
+      "//third_party/pthreadpool:pthreadpool_standalone",
+    ]
 
-  public_configs = [ ":xnnpack_config" ]
+    public_configs = [ ":xnnpack_public_config" ]
 
-  if (!(is_android && use_order_profiling)) {
-    assert_no_deps = [ "//base" ]
+    if (!(is_android && use_order_profiling)) {
+      assert_no_deps = [ "//base" ]
+    }
   }
 }
 '''.strip()
 
 _TARGET_TMPL = '''
-source_set("%TARGET_NAME%") {
-  cflags = [
-%CFLAGS%
-  ]
-%ASMFLAGS%
-  sources = [
-    "src/include/xnnpack.h",
-%SRCS%
-  ]
+if (build_with_chromium) {
+  source_set("%TARGET_NAME%") {
+    cflags = [
+  %CFLAGS%
+    ]
+  %ASMFLAGS%
+    sources = [
+      "src/include/xnnpack.h",
+  %SRCS%
+    ]
 
-  configs -= [ "//build/config/compiler:chromium_code" ]
-  configs += [ "//build/config/compiler:no_chromium_code" ]
-  configs += [ "//build/config/sanitizers:cfi_icall_generalize_pointers" ]
+    configs -= [ "//build/config/compiler:chromium_code" ]
+    configs += [ "//build/config/compiler:no_chromium_code" ]
+    configs += [ "//build/config/sanitizers:cfi_icall_generalize_pointers" ]
+    configs += [ ":xnnpack_private_config" ]
 
-  deps = [
-    "//third_party/cpuinfo",
-    "//third_party/fp16",
-    "//third_party/fxdiv",
-    "//third_party/pthreadpool",
-  ]
+    deps = [
+      "//third_party/cpuinfo",
+      "//third_party/fp16",
+      "//third_party/fxdiv",
+      "//third_party/pthreadpool",
+    ]
 
-  public_configs = [ ":xnnpack_config" ]
+    public_configs = [ ":xnnpack_public_config" ]
+  }
 }
 
 # This is a target that cannot depend on //base.
-source_set("%TARGET_NAME%_standalone") {
-  cflags = [
-%CFLAGS%
-  ]
-%ASMFLAGS%
-  sources = [
-    "src/include/xnnpack.h",
-%SRCS%
-  ]
+if (build_with_internal_optimization_guide) {
+  source_set("%TARGET_NAME%_standalone") {
+    cflags = [
+  %CFLAGS%
+    ]
+  %ASMFLAGS%
+    sources = [
+      "src/include/xnnpack.h",
+  %SRCS%
+    ]
 
-  configs -= [ "//build/config/compiler:chromium_code" ]
-  configs += [ "//build/config/compiler:no_chromium_code" ]
-  configs += [ "//build/config/sanitizers:cfi_icall_generalize_pointers" ]
+    configs -= [ "//build/config/compiler:chromium_code" ]
+    configs += [ "//build/config/compiler:no_chromium_code" ]
+    configs += [ "//build/config/sanitizers:cfi_icall_generalize_pointers" ]
+    configs += [ ":xnnpack_private_config" ]
 
-  deps = [
-    "//third_party/cpuinfo",
-    "//third_party/fp16",
-    "//third_party/fxdiv",
-    "//third_party/pthreadpool:pthreadpool_standalone",
-  ]
+    deps = [
+      "//third_party/cpuinfo",
+      "//third_party/fp16",
+      "//third_party/fxdiv",
+      "//third_party/pthreadpool:pthreadpool_standalone",
+    ]
 
-  public_configs = [ ":xnnpack_config" ]
+    public_configs = [ ":xnnpack_public_config" ]
 
-  if (!(is_android && use_order_profiling)) {
-    assert_no_deps = [ "//base" ]
+    if (!(is_android && use_order_profiling)) {
+      assert_no_deps = [ "//base" ]
+    }
   }
 }
 '''.strip()
@@ -226,11 +230,16 @@ class _Platform:
             return f'current_cpu == "{self.gn_cpu}"'
 
 
+# N.B. that XNNPACK's Bazel doesn't know about these platforms yet, they're
+# purely for the dummy toolchain in bazelroot/ to pull the file list out.
 _PLATFORMS = [
     _Platform(gn_cpu='x64', bazel_cpu='k8', bazel_platform='//:linux_x64'),
     _Platform(gn_cpu='arm64',
               bazel_cpu='aarch64',
               bazel_platform='//:linux_aarch64'),
+    _Platform(gn_cpu='riscv64',
+              bazel_cpu='riscv64',
+              bazel_platform='//:linux_riscv64')
 ]
 
 
@@ -321,11 +330,17 @@ def _objectbuild_from_bazel_log(action, platform: _Platform) -> ObjectBuild:
     else:
         dir = src_path[2]
 
-    if dir == 'bf16-f32-gemm':
-        # TODO: crbug.com/395969334 - This target breaks windows builds.
-        return None
     args = [arg for arg in action_args if arg.startswith('-m')]
-    return ObjectBuild(platform=platform, src=src, dir=dir, args=args)
+    ob = ObjectBuild(platform=platform, src=src, dir=dir, args=args)
+    if ob.GnName() in (
+            'bf16-f32-gemm_f16c-fma-avx512f-avx512cd-avx512bw-avx512dq-avx512vl-avx512vnni-gfni',
+            'f32-gemm_f16c-fma-avx512f-avx512cd-avx512bw-avx512dq-avx512vl-avx512vnni-gfni',
+            'qd8-f32-qc8w-gemm_f16c-fma-avx512f-avx512cd-avx512bw-avx512dq-avx512vl-avx512vnni-gfni',
+            'qs8-qc4w-gemm_f16c-fma-avx512f-avx512cd-avx512bw-avx512dq-avx512vl-avx512vnni-gfni',
+    ):
+        # TODO: crbug.com/395969334 - These target breaks windows builds.
+        return None
+    return ob
 
 
 def _run_bazel_cmd(args: list[str]) -> str:
@@ -336,18 +351,21 @@ def _run_bazel_cmd(args: list[str]) -> str:
     Raises:
       Exception if the command failed.
     """
-    # Use standard Bazel install instead of the one included with depot_tools.
-    exec_path = "/usr/bin/bazel"
-    if not exec_path:
-        raise Exception(
-            "bazel is not installed. Please run `sudo apt-get install " +
-            "bazel` or put the bazel executable in $PATH")
+    # Use bazelisk so that we can select a specific bazel version. We need a
+    # version prior to 9.0.0 since that version no longer has built-in support
+    # for cc_* rules, and XNNPACK doesn't have the necessary load statements to
+    # load those rules.
+    exec_path = "/google/bin/releases/bazel-infra/bazelisk/gbazelisk"
+
     cmd = [exec_path]
     cmd.extend(args)
     logging.info('Running: %s', cmd)
+    env = dict(os.environ)
+    env['USE_BAZEL_VERSION'] = '8.x'
     proc = subprocess.Popen(cmd,
                             text=True,
                             cwd=_bazelroot(),
+                            env=env,
                             stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE)
     stdout, stderr = proc.communicate()
@@ -367,15 +385,16 @@ def _query_object_builds(platform: _Platform) -> list[ObjectBuild]:
         ObjectBuilds for each compile command on XNNPACK sources.
     """
     logging.info('Querying xnnpack compile commands '
-                 'for {platform.bazel_platform} with bazel...')
+                 f'for {platform.bazel_platform} with bazel...')
     # Make sure we have a clean start, this is important if the Android NDK
     # version changed.
     _run_bazel_cmd(['clean'])
+
     logs = _run_bazel_cmd([
         'aquery',
         f'--platforms={platform.bazel_platform}',
         f'--cpu={platform.bazel_cpu}',
-        'mnemonic("CppCompile", filter("//:", deps(@xnnpack//:XNNPACK)))',
+        'mnemonic("CppCompile", deps(@xnnpack//:XNNPACK))',
         "--output=jsonproto",
     ])
     logging.info('parsing actions from bazel aquery...')
@@ -417,8 +436,8 @@ def _generate_supporting_source_set(ss: SourceSet) -> str:
     target = target.replace(
         '%CFLAGS%', ',\n'.join(['    "%s"' % arg for arg in sorted(ss.args)]))
     have_asm_files = any(src.endswith('.S') for src in ss.srcs)
-    target = target.replace('%ASMFLAGS%',
-                            '\n  asmflags = cflags\n' if have_asm_files else '')
+    target = target.replace(
+        '%ASMFLAGS%', '\n  asmflags = cflags\n' if have_asm_files else '')
     target = target.replace(
         '%SRCS%', ',\n'.join(['    "%s"' % src for src in sorted(ss.srcs)]))
     target = target.replace('%TARGET_NAME%', ss.GnName())
@@ -446,18 +465,24 @@ def _generate_per_platform_dep_lists(
         xnnpack_standalone_deps = ',\n'.join(
             ['    ":%s_standalone"' % t for t in targets])
         deps_list += f'''
-  xnnpack_deps = [
+  if (build_with_chromium) {{
+    xnnpack_deps = [
 {xnnpack_deps}
-  ]
+    ]
+  }}
 
-  xnnpack_standalone_deps = [
+  if (build_with_internal_optimization_guide) {{
+    xnnpack_standalone_deps = [
 {xnnpack_standalone_deps}
-  ]
+    ]
+  }}
 '''
     deps_list += '} else {\n'
     deps_list += '  xnnpack_deps = []\n'
-    deps_list += '  xnnpack_standalone_deps = []\n'
-    deps_list += '}'
+    deps_list += '  if (build_with_internal_optimization_guide) {\n'
+    deps_list += '    xnnpack_standalone_deps = []\n'
+    deps_list += '  }\n'
+    deps_list += '}\n'
 
     return deps_list
 

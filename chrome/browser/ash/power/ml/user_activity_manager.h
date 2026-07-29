@@ -10,6 +10,7 @@
 #include "base/cancelable_callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/scoped_observation.h"
+#include "base/sequence_checker.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
 #include "chrome/browser/ash/power/ml/boot_clock.h"
@@ -118,8 +119,12 @@ class UserActivityManager : public ui::UserActivityObserver,
 
   // Converts a Smart Dim model |prediction| into a yes/no decision about
   // whether to defer the screen dim and provides the result via |callback|.
-  void HandleSmartDimDecision(base::OnceCallback<void(bool)> callback,
-                              UserActivityEvent::ModelPrediction prediction);
+  // |prediction| should be empty if Smart Dim made no decision (e.g. call was
+  // canceled). In this case, |callback| is invoked with default decision of
+  // |false| (i.e. allow screen dim).
+  void HandleSmartDimDecision(
+      base::OnceCallback<void(bool)> callback,
+      std::optional<UserActivityEvent::ModelPrediction> prediction);
 
   // session_manager::SessionManagerObserver overrides:
   void OnSessionStateChanged() override;

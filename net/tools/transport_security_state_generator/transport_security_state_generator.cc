@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40284755): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include <iostream>
 #include <map>
 #include <set>
@@ -15,9 +10,12 @@
 
 #include "base/at_exit.h"
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
 #include "base/files/file_util.h"
 #include "base/logging.h"
+#include "base/logging/logging_settings.h"
 #include "base/path_service.h"
+#include "base/strings/string_view_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
@@ -26,9 +24,10 @@
 #include "net/tools/transport_security_state_generator/preloaded_state_generator.h"
 #include "net/tools/transport_security_state_generator/transport_security_state_entry.h"
 
-using net::transport_security_state::TransportSecurityStateEntries;
+using net::transport_security_state::PinEntries;
 using net::transport_security_state::Pinsets;
 using net::transport_security_state::PreloadedStateGenerator;
+using net::transport_security_state::TransportSecurityStateEntries;
 
 namespace {
 
@@ -41,25 +40,24 @@ void PrintHelp() {
 
 // Checks if there are pins with the same name or the same hash.
 bool CheckForDuplicatePins(const Pinsets& pinsets) {
-  std::set<std::string> seen_names;
-  std::map<std::string, std::string> seen_hashes;
+  std::set<std::string_view> seen_names;
+  std::map<std::string_view, std::string> seen_hashes;
 
   for (const auto& pin : pinsets.spki_hashes()) {
     if (seen_names.find(pin.first) != seen_names.cend()) {
       LOG(ERROR) << "Duplicate pin name " << pin.first << " in pins file";
       return false;
     }
-    seen_names.insert(pin.first);
+    seen_names.emplace(pin.first);
 
-    std::string hash =
-        std::string(pin.second.data(), pin.second.data() + pin.second.size());
+    const std::string_view hash = base::as_string_view(pin.second.span());
     auto it = seen_hashes.find(hash);
     if (it != seen_hashes.cend()) {
       LOG(ERROR) << "Duplicate pin hash for " << pin.first
                  << ", already seen as " << it->second;
       return false;
     }
-    seen_hashes.insert(std::pair<std::string, std::string>(hash, pin.first));
+    seen_hashes.emplace(hash, pin.first);
   }
 
   return true;
@@ -68,43 +66,44 @@ bool CheckForDuplicatePins(const Pinsets& pinsets) {
 // Checks if there are pinsets that reference non-existing pins, if two
 // pinsets share the same name, or if there are unused pins.
 bool CheckCertificatesInPinsets(const Pinsets& pinsets) {
-  std::set<std::string> pin_names;
+  std::set<std::string_view> pin_names;
   for (const auto& pin : pinsets.spki_hashes()) {
-    pin_names.insert(pin.first);
+    pin_names.emplace(pin.first);
   }
 
-  std::set<std::string> used_pin_names;
-  std::set<std::string> pinset_names;
+  std::set<std::string_view> used_pin_names;
+  std::set<std::string_view> pinset_names;
   for (const auto& pinset : pinsets.pinsets()) {
     if (pinset_names.find(pinset.second->name()) != pinset_names.cend()) {
       LOG(ERROR) << "Duplicate pinset name " << pinset.second->name();
       return false;
     }
-    pinset_names.insert(pinset.second->name());
+    pinset_names.emplace(pinset.second->name());
 
     const std::vector<std::string>& good_hashes =
         pinset.second->static_spki_hashes();
     const std::vector<std::string>& bad_hashes =
         pinset.second->bad_static_spki_hashes();
 
-    std::vector<std::string> all_pin_names;
-    all_pin_names.reserve(good_hashes.size() + bad_hashes.size());
-    all_pin_names.insert(all_pin_names.end(), good_hashes.begin(),
-                         good_hashes.end());
-    all_pin_names.insert(all_pin_names.end(), bad_hashes.begin(),
-                         bad_hashes.end());
-
-    for (const auto& pin_name : all_pin_names) {
+    for (const auto& pin_name : good_hashes) {
       if (pin_names.find(pin_name) == pin_names.cend()) {
         LOG(ERROR) << "Pinset " << pinset.second->name()
                    << " references pin " + pin_name << " which doesn't exist";
         return false;
       }
-      used_pin_names.insert(pin_name);
+      used_pin_names.emplace(pin_name);
+    }
+    for (const auto& pin_name : bad_hashes) {
+      if (pin_names.find(pin_name) == pin_names.cend()) {
+        LOG(ERROR) << "Pinset " << pinset.second->name()
+                   << " references pin " + pin_name << " which doesn't exist";
+        return false;
+      }
+      used_pin_names.emplace(pin_name);
     }
   }
 
-  for (const auto& pin_name : pin_names) {
+  for (const std::string_view pin_name : pin_names) {
     if (used_pin_names.find(pin_name) == used_pin_names.cend()) {
       LOG(ERROR) << "Pin " << pin_name << " is unused.";
       return false;
@@ -116,14 +115,28 @@ bool CheckCertificatesInPinsets(const Pinsets& pinsets) {
 
 // Checks if there are two or more entries for the same hostname.
 bool CheckDuplicateEntries(const TransportSecurityStateEntries& entries) {
-  std::set<std::string> seen_entries;
+  std::set<std::string_view> seen_entries;
   bool has_duplicates = false;
   for (const auto& entry : entries) {
     if (seen_entries.find(entry->hostname) != seen_entries.cend()) {
       LOG(ERROR) << "Duplicate entry for " << entry->hostname;
       has_duplicates = true;
     }
-    seen_entries.insert(entry->hostname);
+    seen_entries.emplace(entry->hostname);
+  }
+  return !has_duplicates;
+}
+
+// Checks if there are two or more entries for the same hostname.
+bool CheckDuplicatePinEntries(const PinEntries& entries) {
+  std::set<std::string_view> seen_entries;
+  bool has_duplicates = false;
+  for (const auto& entry : entries) {
+    if (seen_entries.find(entry->hostname) != seen_entries.cend()) {
+      LOG(ERROR) << "Duplicate pin entry for " << entry->hostname;
+      has_duplicates = true;
+    }
+    seen_entries.emplace(entry->hostname);
   }
   return !has_duplicates;
 }
@@ -131,7 +144,7 @@ bool CheckDuplicateEntries(const TransportSecurityStateEntries& entries) {
 // Checks for entries which have no effect.
 bool CheckNoopEntries(const TransportSecurityStateEntries& entries) {
   for (const auto& entry : entries) {
-    if (!entry->force_https && entry->pinset.empty()) {
+    if (!entry->force_https) {
       if (entry->hostname == "learn.doubleclick.net") {
         // This entry is deliberately used as an exclusion.
         continue;
@@ -149,39 +162,55 @@ bool IsLowercaseAlphanumeric(char c) {
   return ((c >= 'a') && (c <= 'z')) || ((c >= '0') && (c <= '9'));
 }
 
+bool CheckHostname(std::string_view hostname) {
+  bool in_component = false;
+  bool most_recent_component_started_alphanumeric = false;
+  for (const char& c : hostname) {
+    if (!in_component) {
+      most_recent_component_started_alphanumeric = IsLowercaseAlphanumeric(c);
+      if (!most_recent_component_started_alphanumeric && (c != '-') &&
+          (c != '_')) {
+        LOG(ERROR) << hostname << " is not in canonicalized form";
+        return false;
+      }
+      in_component = true;
+    } else if (c == '.') {
+      in_component = false;
+    } else if (!IsLowercaseAlphanumeric(c) && (c != '-') && (c != '_')) {
+      LOG(ERROR) << hostname << " is not in canonicalized form";
+      return false;
+    }
+  }
+
+  if (!most_recent_component_started_alphanumeric) {
+    LOG(ERROR) << "The last label of " << hostname
+               << " must start with a lowercase alphanumeric character";
+    return false;
+  }
+
+  if (!in_component) {
+    LOG(ERROR) << hostname << " must not end with a \".\"";
+    return false;
+  }
+
+  return true;
+}
+
 // Checks the well-formedness of the hostnames. All hostnames should be in their
 // canonicalized form because they will be matched against canonicalized input.
 bool CheckHostnames(const TransportSecurityStateEntries& entries) {
   for (const auto& entry : entries) {
-    const std::string& hostname = entry->hostname;
-
-    bool in_component = false;
-    bool most_recent_component_started_alphanumeric = false;
-    for (const char& c : hostname) {
-      if (!in_component) {
-        most_recent_component_started_alphanumeric = IsLowercaseAlphanumeric(c);
-        if (!most_recent_component_started_alphanumeric && (c != '-') &&
-            (c != '_')) {
-          LOG(ERROR) << hostname << " is not in canonicalized form";
-          return false;
-        }
-        in_component = true;
-      } else if (c == '.') {
-        in_component = false;
-      } else if (!IsLowercaseAlphanumeric(c) && (c != '-') && (c != '_')) {
-        LOG(ERROR) << hostname << " is not in canonicalized form";
-        return false;
-      }
-    }
-
-    if (!most_recent_component_started_alphanumeric) {
-      LOG(ERROR) << "The last label of " << hostname
-                 << " must start with a lowercase alphanumeric character";
+    if (!CheckHostname(entry->hostname)) {
       return false;
     }
+  }
 
-    if (!in_component) {
-      LOG(ERROR) << hostname << " must not end with a \".\"";
+  return true;
+}
+
+bool CheckPinHostnames(const PinEntries& entries) {
+  for (const auto& entry : entries) {
+    if (!CheckHostname(entry->hostname)) {
       return false;
     }
   }
@@ -248,18 +277,21 @@ int main(int argc, char* argv[]) {
   }
 
   TransportSecurityStateEntries entries;
+  PinEntries pin_entries;
   Pinsets pinsets;
   base::Time timestamp;
 
   if (!ParseCertificatesFile(certs_input, &pinsets, &timestamp) ||
-      !ParseJSON(hsts_json_input, pins_json_input, &entries, &pinsets)) {
+      !ParseJSON(hsts_json_input, pins_json_input, &entries, &pin_entries,
+                 &pinsets)) {
     LOG(ERROR) << "Error while parsing the input files.";
     return 1;
   }
 
   if (!CheckDuplicateEntries(entries) || !CheckNoopEntries(entries) ||
+      !CheckDuplicatePinEntries(pin_entries) ||
       !CheckForDuplicatePins(pinsets) || !CheckCertificatesInPinsets(pinsets) ||
-      !CheckHostnames(entries)) {
+      !CheckHostnames(entries) || !CheckPinHostnames(pin_entries)) {
     LOG(ERROR) << "Checks failed. Aborting.";
     return 1;
   }
@@ -279,7 +311,8 @@ int main(int argc, char* argv[]) {
 
   std::string output;
   PreloadedStateGenerator generator;
-  output = generator.Generate(preload_template, entries, pinsets, timestamp);
+  output = generator.Generate(preload_template, entries, pin_entries, pinsets,
+                              timestamp);
   if (output.empty()) {
     LOG(ERROR) << "Trie generation failed.";
     return 1;

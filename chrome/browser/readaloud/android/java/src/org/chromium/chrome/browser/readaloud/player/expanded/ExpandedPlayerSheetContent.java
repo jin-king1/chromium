@@ -3,12 +3,13 @@
 // found in the LICENSE file.
 
 package org.chromium.chrome.browser.readaloud.player.expanded;
-
 import android.content.Context;
 import android.content.res.Configuration;
 import android.content.res.Resources;
 import android.text.format.DateUtils;
 import android.view.LayoutInflater;
+import android.view.MotionEvent;
+import android.view.TouchDelegate;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.accessibility.AccessibilityEvent;
@@ -18,22 +19,31 @@ import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
 
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 import androidx.annotation.StringRes;
 import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.Log;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.readaloud.player.Colors;
 import org.chromium.chrome.browser.readaloud.player.InteractionHandler;
 import org.chromium.chrome.browser.readaloud.player.PlayerProperties;
 import org.chromium.chrome.browser.readaloud.player.R;
 import org.chromium.chrome.browser.readaloud.player.TouchDelegateUtil;
+import org.chromium.chrome.modules.readaloud.Feedback.FeedbackType;
+import org.chromium.chrome.modules.readaloud.PlaybackArgs.PlaybackMode;
+import org.chromium.chrome.modules.readaloud.PlaybackArgs.PlaybackModeSelectionEnablementStatus;
 import org.chromium.chrome.modules.readaloud.PlaybackListener;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.ui.modelutil.PropertyModel;
+import org.chromium.ui.widget.Toast;
 
+import java.util.ArrayList;
+import java.util.List;
+
+@NullMarked
 public class ExpandedPlayerSheetContent implements BottomSheetContent {
     private static final String TAG = "RAPlayerSheet";
     // Note: if these times need to change, the "back 10" and "forward 10" icons
@@ -47,29 +57,51 @@ public class ExpandedPlayerSheetContent implements BottomSheetContent {
     private final SeekBar mSeekBar;
     private final ScrollView mScrollView;
     private final LinearLayout mPlayerControls;
-    private View mContentView;
+    private final ImageView mModeSelectorButton;
+    private boolean mIsModeActive;
+    private final View mContentView;
     // Effectively final and non null, can be null only in tests
     private OptionsMenuSheetContent mOptionsMenu;
+    private final NegativeFeedbackMenuSheetContent mNegativeFeedbackMenu;
     private SpeedMenuSheetContent mSpeedMenu;
-    private TextView mSpeedButton;
+    private final TextView mSpeedButton;
 
-    private LinearLayout mNormalLayout;
-    private LinearLayout mErrorLayout;
+    private final TextView mLoadingTextView;
+
+    private final ImageView mPlayPauseButton;
+    private final ImageView mRewindButton;
+    private final ImageView mForwardButton;
+
+    private final ImageView mMoreOptionsButton;
+    private final ImageView mThumbUpButton;
+    private final ImageView mThumbDownButton;
+
+    private final LinearLayout mNormalLayout;
+    private final LinearLayout mErrorLayout;
+    private final LinearLayout mLoadingLayout;
+
+    private final PlaybackModeIphController mPlaybackModeIphController;
+
+    private int mElapsedSeconds;
+    private int mTotalDurationSeconds;
+    private @Nullable TouchDelegate mTouchDelegate;
 
     public ExpandedPlayerSheetContent(
-            Context context, BottomSheetController bottomSheetController, PropertyModel model) {
+            Context context,
+            BottomSheetController bottomSheetController,
+            PropertyModel model,
+            PlaybackModeIphController playbackModeIphController) {
         this(
                 context,
                 bottomSheetController,
                 LayoutInflater.from(context)
-                        .inflate(R.layout.readaloud_expanded_player_layout, null),
-                model);
-        mOptionsMenu =
-                new OptionsMenuSheetContent(
-                        mContext, /* parent= */ this, mBottomSheetController, mModel);
-        mSpeedMenu =
-                new SpeedMenuSheetContent(
-                        mContext, /* parent= */ this, mBottomSheetController, mModel);
+                        .inflate(
+                                ChromeFeatureList.isEnabled(ChromeFeatureList.FEED_AUDIO_OVERVIEWS)
+                                        ? R.layout.readaloud_expanded_player_with_navigation_layout
+                                        : R.layout.readaloud_expanded_player_layout,
+                                null),
+                model,
+                playbackModeIphController);
     }
 
     @VisibleForTesting
@@ -77,11 +109,14 @@ public class ExpandedPlayerSheetContent implements BottomSheetContent {
             Context context,
             BottomSheetController bottomSheetController,
             View contentView,
-            PropertyModel model) {
+            PropertyModel model,
+            PlaybackModeIphController playbackModeIphController) {
         mContext = context;
         mBottomSheetController = bottomSheetController;
         mContentView = contentView;
         mModel = model;
+        mPlaybackModeIphController = playbackModeIphController;
+
         Resources res = mContext.getResources();
         mSpeedButton = (TextView) mContentView.findViewById(R.id.readaloud_playback_speed);
         mContentView
@@ -90,10 +125,34 @@ public class ExpandedPlayerSheetContent implements BottomSheetContent {
         mContentView
                 .findViewById(R.id.readaloud_seek_forward_button)
                 .setContentDescription(res.getString(R.string.readaloud_forward, FORWARD_SECONDS));
+
+        mOptionsMenu =
+                new OptionsMenuSheetContent(
+                        mContext, /* parent= */ this, mBottomSheetController, mModel);
+        mNegativeFeedbackMenu =
+                new NegativeFeedbackMenuSheetContent(
+                        mContext, /* parent= */ this, mBottomSheetController);
+        mSpeedMenu =
+                new SpeedMenuSheetContent(
+                        mContext, /* parent= */ this, mBottomSheetController, mModel);
         mNormalLayout = (LinearLayout) mContentView.findViewById(R.id.normal_layout);
+        mLoadingLayout = (LinearLayout) mContentView.findViewById(R.id.readaloud_loading_overlay);
         mErrorLayout = (LinearLayout) mContentView.findViewById(R.id.error_layout);
         mSeekBar = (SeekBar) mContentView.findViewById(R.id.readaloud_expanded_player_seek_bar);
         mScrollView = (ScrollView) mContentView.findViewById(R.id.scroll_view);
+        mModeSelectorButton = mContentView.findViewById(R.id.readaloud_mode_selector);
+        mModeSelectorButton.setSelected(mIsModeActive);
+        mPlaybackModeIphController.setAnchorView(mModeSelectorButton);
+
+        mLoadingTextView = mContentView.findViewById(R.id.readaloud_loading_text);
+
+        mPlayPauseButton = mContentView.findViewById(R.id.readaloud_play_pause_button);
+        mRewindButton = mContentView.findViewById(R.id.readaloud_seek_back_button);
+        mForwardButton = mContentView.findViewById(R.id.readaloud_seek_forward_button);
+
+        mThumbUpButton = mContentView.findViewById(R.id.readaloud_thumb_up_button);
+        mThumbDownButton = mContentView.findViewById(R.id.readaloud_thumb_down_button);
+        mMoreOptionsButton = mContentView.findViewById(R.id.readaloud_more_button);
 
         View publisherButton = mContentView.findViewById(R.id.readaloud_player_publisher_button);
         publisherButton.addOnLayoutChangeListener(
@@ -109,7 +168,20 @@ public class ExpandedPlayerSheetContent implements BottomSheetContent {
                             int oldTop,
                             int oldRight,
                             int oldBottom) {
-                        TouchDelegateUtil.setBiggerTouchTarget(publisherButton);
+                        if (mTouchDelegate == null) {
+                            mTouchDelegate =
+                                    TouchDelegateUtil.createTouchDelegate(
+                                            mContentView, publisherButton);
+                        }
+                    }
+                });
+        mContentView.setOnTouchListener(
+                new View.OnTouchListener() {
+                    @Override
+                    public boolean onTouch(View v, MotionEvent event) {
+                        return v == publisherButton
+                                && mTouchDelegate != null
+                                && mTouchDelegate.onTouchEvent(event);
                     }
                 });
 
@@ -136,32 +208,132 @@ public class ExpandedPlayerSheetContent implements BottomSheetContent {
     }
 
     public void onPlaybackStateChanged(@PlaybackListener.State int state) {
-        setPlaying(state == PlaybackListener.State.PLAYING);
-        if (state == PlaybackListener.State.ERROR) {
-            showOnly(mErrorLayout);
-        } else {
-            showOnly(mNormalLayout);
-        }
+      setPlaying(state == PlaybackListener.State.PLAYING);
+      switch (state) {
+        case PlaybackListener.State.ERROR:
+          showErrorLayout();
+          break;
+         case PlaybackListener.State.PLAYBACK_CREATION:
+           showLoadingLayout();
+           break;
+        default:
+          showNormalLayout();
+          break;
+      }
     }
 
-    // Show `layout` and hide the other layouts.
-    private void showOnly(LinearLayout layout) {
-        setVisibleIfMatch(mNormalLayout, layout);
-        setVisibleIfMatch(mErrorLayout, layout);
+    private void showLoadingLayout() {
+      mErrorLayout.setVisibility(View.GONE);
+      mLoadingLayout.setVisibility(View.VISIBLE);
+      mNormalLayout.setAlpha(0.3f);
+
+      mSpeedButton.setVisibility(View.GONE);
+      mLoadingTextView.setVisibility(View.VISIBLE);
+
+      setPlaybackControlsEnabled(false);
     }
 
-    private static void setVisibleIfMatch(LinearLayout a, LinearLayout b) {
-        a.setVisibility(a == b ? View.VISIBLE : View.GONE);
+    private void showErrorLayout() {
+      mNormalLayout.setVisibility(View.GONE);
+      mLoadingLayout.setVisibility(View.GONE);
+      mErrorLayout.setVisibility(View.VISIBLE);
+      mLoadingTextView.setVisibility(View.GONE);
+    }
+
+    private void showNormalLayout() {
+      mNormalLayout.setVisibility(View.VISIBLE);
+      mLoadingLayout.setVisibility(View.GONE);
+      mErrorLayout.setVisibility(View.GONE);
+      mLoadingTextView.setVisibility(View.GONE);
+
+      mNormalLayout.setAlpha(1f);
+
+      mSpeedButton.setVisibility(View.VISIBLE);
+      setPlaybackControlsEnabled(true);
+    }
+
+    private void setPlaybackControlsEnabled(boolean enabled) {
+      mModeSelectorButton.setEnabled(enabled);
+      mModeSelectorButton.setClickable(enabled);
+      mSeekBar.setEnabled(enabled);
+
+      mPlayPauseButton.setEnabled(enabled);
+      mPlayPauseButton.setClickable(enabled);
+
+      mRewindButton.setEnabled(enabled);
+      mRewindButton.setClickable(enabled);
+      mForwardButton.setEnabled(enabled);
+      mForwardButton.setClickable(enabled);
     }
 
     public void show() {
-        mBottomSheetController.requestShowContent(this, /* animate= */ true);
+        boolean shown = mBottomSheetController.requestShowContent(this, /* animate= */ true);
         // Reset scrolling if needed.
         mScrollView.scrollTo(0, 0);
+
+        if (shown) {
+          mPlaybackModeIphController.maybeShowPlaybackModeIph();
+        }
     }
 
     public void hide() {
         mBottomSheetController.hideContent(this, /* animate= */ true);
+    }
+
+    void setPlaybackMode(PlaybackMode playbackMode) {
+      TextView chromeNowPlaying = mContentView.findViewById(R.id.chrome_now_playing_text);
+      if (playbackMode == PlaybackMode.OVERVIEW) {
+            mIsModeActive = true;
+            mModeSelectorButton.setSelected(true);
+            mModeSelectorButton.setContentDescription(mContext.getString(R.string.readaloud_playback_mode_selector_classic));
+            chromeNowPlaying.setText(
+                    mContext.getString(R.string.readaloud_chrome_now_playing_audio_overview));
+            showFeedbackButtons();
+            hideMoreOptions();
+        } else {
+            mIsModeActive = false;
+            mModeSelectorButton.setSelected(false);
+            mModeSelectorButton.setContentDescription(mContext.getString(R.string.readaloud_playback_mode_selector_overview));
+            chromeNowPlaying.setText(mContext.getString(R.string.readaloud_chrome_now_playing));
+            hideFeedbackButtons();
+            showMoreOptions();
+        }
+    }
+
+    void setRequestedPlaybackMode(PlaybackMode playbackMode) {
+      if  (playbackMode == PlaybackMode.OVERVIEW) {
+        mLoadingTextView.setText(mContext.getString(R.string.readaloud_mini_player_loading_ai_playback));
+        mLoadingTextView.setContentDescription(mContext.getString(R.string.readaloud_mini_player_loading_ai_playback));
+      } else {
+        mLoadingTextView.setText(mContext.getString(R.string.readaloud_playback_loading));
+        mLoadingTextView.setContentDescription(mContext.getString(R.string.readaloud_playback_loading));
+      }
+    }
+
+    void showFeedbackButtons() {
+        mThumbUpButton.setVisibility(View.VISIBLE);
+        mThumbDownButton.setVisibility(View.VISIBLE);
+    }
+
+    void hideFeedbackButtons() {
+        mThumbUpButton.setVisibility(View.GONE);
+        mThumbDownButton.setVisibility(View.GONE);
+    }
+
+    void showMoreOptions() {
+        mMoreOptionsButton.setVisibility(View.VISIBLE);
+    }
+
+    void hideMoreOptions() {
+        mMoreOptionsButton.setVisibility(View.GONE);
+    }
+
+    void setPlaybackModeSelectionEnabled(PlaybackModeSelectionEnablementStatus status) {
+        if (status == PlaybackModeSelectionEnablementStatus.MODE_SELECTION_ENABLED) {
+          mModeSelectorButton.setVisibility(View.VISIBLE);
+        } else {
+          mModeSelectorButton.setVisibility(View.GONE);
+        }
     }
 
     void setTitle(String title) {
@@ -173,12 +345,32 @@ public class ExpandedPlayerSheetContent implements BottomSheetContent {
                 .setText(publisher);
     }
 
+    void setSentFeedback(FeedbackType feedbackType) {
+      if (feedbackType == FeedbackType.NONE) {
+        mThumbUpButton.setSelected(false);
+        mThumbDownButton.setSelected(false);
+        return;
+      }
+      Toast.makeText(mContentView.getContext(), R.string.readaloud_feedback_toast_message, Toast.LENGTH_SHORT).show();
+      if (feedbackType == FeedbackType.POSITIVE) {
+        mThumbUpButton.setSelected(true);
+        mThumbDownButton.setSelected(false);
+        return;
+      }
+      if (feedbackType == FeedbackType.NEGATIVE) {
+        mThumbUpButton.setSelected(false);
+        mThumbDownButton.setSelected(true);
+      }
+    }
+
     void setElapsed(Long nanos) {
+        mElapsedSeconds = (int) (nanos / 1_000_000_000L);
         ((TextView) mContentView.findViewById(R.id.readaloud_player_time))
                 .setText(formatTimeNanos(nanos));
     }
 
     void setDuration(Long nanos) {
+        mTotalDurationSeconds = (int) (nanos / 1_000_000_000L);
         ((TextView) mContentView.findViewById(R.id.readaloud_player_duration))
                 .setText(formatTimeNanos(nanos));
     }
@@ -196,15 +388,23 @@ public class ExpandedPlayerSheetContent implements BottomSheetContent {
         setOnClickListener(R.id.readaloud_play_pause_button, handler::onPlayPauseClick);
         setOnClickListener(R.id.readaloud_seek_back_button, handler::onSeekBackClick);
         setOnClickListener(R.id.readaloud_seek_forward_button, handler::onSeekForwardClick);
-        setOnClickListener(R.id.readaloud_expanded_player_publisher, handler::onPublisherClick);
-        setOnClickListener(R.id.readaloud_playback_speed, this::showSpeedMenu);
+        setOnClickListener(R.id.readaloud_player_publisher_container, handler::onPublisherClick);
+        setOnClickListener(R.id.readaloud_playback_speed_container, this::showSpeedMenu);
         setOnClickListener(R.id.readaloud_more_button, this::showOptionsMenu);
+        setOnClickListener(R.id.readaloud_mode_selector, () -> onPlaybackModeChangeClick(handler));
+        setOnClickListener(R.id.readaloud_thumb_down_button, () -> showNegativeFeedbackMenu());
+        setOnClickListener(R.id.readaloud_thumb_up_button, () -> handlePositiveFeedback(handler));
+        if (ChromeFeatureList.isEnabled(ChromeFeatureList.FEED_AUDIO_OVERVIEWS)) {
+            setOnClickListener(R.id.readaloud_previous_button, handler::onMoveToPreviousClick);
+            setOnClickListener(R.id.readaloud_next_button, handler::onMoveToNextClick);
+        }
 
         SeekBar seekBar =
                 (SeekBar) mContentView.findViewById(R.id.readaloud_expanded_player_seek_bar);
         seekBar.setOnSeekBarChangeListener(handler.getSeekBarChangeListener());
         mSpeedMenu.setInteractionHandler(handler);
         mOptionsMenu.setInteractionHandler(handler);
+        mNegativeFeedbackMenu.setInteractionHandler(handler);
     }
 
     public void setSpeed(float speed) {
@@ -221,6 +421,14 @@ public class ExpandedPlayerSheetContent implements BottomSheetContent {
 
     void setHighlightingEnabled(boolean enabled) {
         mOptionsMenu.setHighlightingEnabled(enabled);
+    }
+
+    void handlePositiveFeedback(InteractionHandler handler) {
+      if (mThumbUpButton.isSelected()) {
+        // Positive feedback was already sent.
+        return;
+      }
+      handler.onPositiveFeedback();
     }
 
     public void setPlaying(boolean playing) {
@@ -241,11 +449,58 @@ public class ExpandedPlayerSheetContent implements BottomSheetContent {
      */
     public void setProgress(float percent) {
         mSeekBar.setProgress((int) (percent * mSeekBar.getMax()), true);
+        mSeekBar.setContentDescription(mContext.getString(R.string.readaloud_seek_bar, formatDuration(mElapsedSeconds), formatDuration(mTotalDurationSeconds)));
     }
+
+    @VisibleForTesting
+    static String formatDuration(int totalSeconds) {
+        if (totalSeconds < 0) {
+            return "Invalid duration";
+        }
+        if (totalSeconds == 0) {
+            return "0 seconds";
+        }
+
+        int hours = totalSeconds / 3600;
+        int minutes = (totalSeconds % 3600) / 60;
+        int seconds = totalSeconds % 60;
+
+        List<String> parts = new ArrayList<>();
+
+        if (hours > 0) {
+            parts.add(hours + (hours == 1 ? " hour" : " hours"));
+        }
+        if (minutes > 0) {
+            parts.add(minutes + (minutes == 1 ? " minute" : " minutes"));
+        }
+        if (seconds > 0 || parts.isEmpty()) {
+            parts.add(seconds + (seconds == 1 ? " second" : " seconds"));
+        }
+
+        if (parts.size() == 1) {
+            return parts.get(0);
+        }
+
+        String lastPart = parts.remove(parts.size() - 1);
+        // String.join is available in Java 8+ (or with Android desugaring)
+        return String.join(", ", parts) + " and " + lastPart;
+    }
+
 
     @Nullable
     OptionsMenuSheetContent getOptionsMenu() {
         return mOptionsMenu;
+    }
+
+    private void onPlaybackModeChangeClick(InteractionHandler interactionHandler) {
+        mIsModeActive = !mIsModeActive;
+        mModeSelectorButton.setSelected(mIsModeActive);
+
+        if (mIsModeActive) {
+            interactionHandler.onPlaybackModeChanged(PlaybackMode.OVERVIEW);
+        } else {
+            interactionHandler.onPlaybackModeChanged(PlaybackMode.CLASSIC);
+        }
     }
 
     public void showOptionsMenu() {
@@ -253,6 +508,12 @@ public class ExpandedPlayerSheetContent implements BottomSheetContent {
         mModel.set(PlayerProperties.SHOW_MINI_PLAYER_ON_DISMISS, false);
         mBottomSheetController.hideContent(this, /* animate= */ false);
         mBottomSheetController.requestShowContent(mOptionsMenu, /* animate= */ false);
+    }
+
+    public void showNegativeFeedbackMenu() {
+        mModel.set(PlayerProperties.SHOW_MINI_PLAYER_ON_DISMISS, false);
+        mBottomSheetController.hideContent(this, /* animate= */ false);
+        mBottomSheetController.requestShowContent(mNegativeFeedbackMenu, /* animate= */ false);
     }
 
     @Nullable
@@ -266,6 +527,7 @@ public class ExpandedPlayerSheetContent implements BottomSheetContent {
     public void notifySheetClosed(BottomSheetContent contentClosed) {
         mOptionsMenu.notifySheetClosed(contentClosed);
         mSpeedMenu.notifySheetClosed(contentClosed);
+        mNegativeFeedbackMenu.notifySheetClosed(contentClosed);
     }
 
     public void showSpeedMenu() {
@@ -323,12 +585,6 @@ public class ExpandedPlayerSheetContent implements BottomSheetContent {
     }
 
     @Override
-    public int getPeekHeight() {
-        // Only full height mode enabled.
-        return HeightMode.DISABLED;
-    }
-
-    @Override
     public float getHalfHeightRatio() {
         // Only full height mode enabled.
         return HeightMode.DISABLED;
@@ -340,7 +596,7 @@ public class ExpandedPlayerSheetContent implements BottomSheetContent {
     }
 
     @Override
-    public @NonNull String getSheetContentDescription(Context context) {
+    public String getSheetContentDescription(Context context) {
         // "'Listen to this page' player."
         // Automatically appended: "Swipe down to close."
         return context.getString(R.string.readaloud_player_name);
@@ -368,9 +624,9 @@ public class ExpandedPlayerSheetContent implements BottomSheetContent {
     }
 
     @Override
-    public boolean canSuppressInAnyState() {
+    public boolean canBeSuppressed(BottomSheetContent nextContent) {
         // Always immediately hide if a higher-priority sheet content wants to show.
-        return true;
+        return nextContent.getPriority() <= ContentPriority.HIGH;
     }
 
     private void setOnClickListener(int id, Runnable onClick) {
@@ -386,6 +642,9 @@ public class ExpandedPlayerSheetContent implements BottomSheetContent {
     public void onOrientationChange(int orientation) {
         if (mOptionsMenu != null) {
             mOptionsMenu.onOrientationChange(orientation);
+        }
+        if (mNegativeFeedbackMenu != null) {
+            mNegativeFeedbackMenu.onOrientationChange(orientation);
         }
         if (mSpeedMenu != null) {
             mSpeedMenu.onOrientationChange(orientation);

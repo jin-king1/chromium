@@ -2,13 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
-#include "chrome/browser/error_reporting/chrome_js_error_report_processor.h"
-
+#include <optional>
+#include <string>
 #include <utility>
 
 #include "base/containers/span.h"
@@ -16,17 +11,20 @@
 #include "base/files/file_path.h"
 #include "base/functional/callback_helpers.h"
 #include "base/path_service.h"
-#include "base/strings/escape.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_util.h"
 #include "base/system/sys_info.h"
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
+#include "chrome/browser/error_reporting/chrome_js_error_report_processor.h"
 #include "chrome/common/chrome_paths.h"
 #include "components/upload_list/crash_upload_list.h"
+#include "net/base/url_util.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/simple_url_loader.h"
+#include "services/network/public/mojom/fetch_api.mojom-shared.h"
 #include "url/gurl.h"
 
 namespace {
@@ -41,7 +39,7 @@ void ChromeJsErrorReportProcessor::OnRequestComplete(
     std::unique_ptr<network::SimpleURLLoader> url_loader,
     base::ScopedClosureRunner callback_runner,
     base::Time report_time,
-    std::unique_ptr<std::string> response_body) {
+    std::optional<std::string> response_body) {
   if (response_body) {
     DVLOG(1) << "Uploaded crash report. ID: " << *response_body;
     base::ThreadPool::PostTaskAndReply(
@@ -54,17 +52,6 @@ void ChromeJsErrorReportProcessor::OnRequestComplete(
   }
   // callback_runner may implicitly run the callback when we reach this line if
   // we didn't add a task to update the report database.
-}
-
-std::string ChromeJsErrorReportProcessor::BuildPostRequestQueryString(
-    const ParameterMap& params) {
-  std::vector<std::string> query_parts;
-  for (const auto& kv : params) {
-    query_parts.push_back(base::StrCat(
-        {kv.first, "=",
-         base::EscapeQueryParamValue(kv.second, /*use_plus=*/false)}));
-  }
-  return base::JoinString(query_parts, "&");
 }
 
 void ChromeJsErrorReportProcessor::UpdateReportDatabase(
@@ -114,11 +101,15 @@ void ChromeJsErrorReportProcessor::SendReport(
                                           ? GetCrashEndpoint()
                                           : GetCrashEndpointStaging();
 
-  const GURL url(base::StrCat(
-      {crash_endpoint_string, "?", BuildPostRequestQueryString(params)}));
+  GURL url(crash_endpoint_string);
+  for (const auto& [key, value] : params) {
+    url = net::AppendQueryParameter(url, key, value);
+  }
+
   auto resource_request = std::make_unique<network::ResourceRequest>();
   resource_request->method = "POST";
   resource_request->url = url;
+  resource_request->credentials_mode = network::mojom::CredentialsMode::kOmit;
 
   const auto traffic_annotation =
       net::DefineNetworkTrafficAnnotation("javascript_report_error", R"(

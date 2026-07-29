@@ -17,6 +17,7 @@
 #include "base/callback_list.h"
 #include "base/check.h"
 #include "third_party/skia/include/core/SkPath.h"
+#include "third_party/skia/include/core/SkPathBuilder.h"
 #include "third_party/skia/include/core/SkRRect.h"
 #include "third_party/skia/include/core/SkRect.h"
 #include "ui/aura/window.h"
@@ -77,7 +78,7 @@ std::vector<gfx::RectF> GetHelpBubbleAnchorBoundsInRootWindow(
 class MaskLayerOwner : public ui::LayerOwner, public ui::LayerDelegate {
  public:
   explicit MaskLayerOwner(const aura::Window* root_window)
-      : ui::LayerOwner(std::make_unique<ui::Layer>(ui::LAYER_TEXTURED)),
+      : ui::LayerOwner(std::make_unique<ui::LayerTextured>()),
         root_window_(root_window) {
     Init();
   }
@@ -97,8 +98,8 @@ class MaskLayerOwner : public ui::LayerOwner, public ui::LayerDelegate {
     // In the absence of help bubble anchor views, the scrim should be fully
     // visible. As such, the mask layer for the scrim should be fully opaque.
     gfx::SizeF size(layer()->size());
-    SkPath path(SkPath::Rect(gfx::RectFToSkRect(gfx::RectF(size)),
-                             SkPathDirection::kCW));
+    SkPathBuilder path;
+    path.addRect(gfx::RectFToSkRect(gfx::RectF(size)), SkPathDirection::kCW);
 
     // Clip the otherwise fully opaque mask layer around help bubble anchor
     // views so that they are emphasized by the scrim and not obstructed by it.
@@ -120,7 +121,7 @@ class MaskLayerOwner : public ui::LayerOwner, public ui::LayerDelegate {
     flags.setStyle(cc::PaintFlags::kFill_Style);
 
     // Draw `path`.
-    canvas->DrawPath(path, flags);
+    canvas->DrawPath(path.detach(), flags);
   }
 
   // Invoked once to initialize `this`.
@@ -170,7 +171,7 @@ class WelcomeTourScrim::Scrim : public aura::WindowObserver,
  public:
   explicit Scrim(aura::Window* root_window)
       : root_window_(root_window),
-        layer_owner_(std::make_unique<ui::Layer>(ui::LAYER_SOLID_COLOR)),
+        layer_owner_(std::make_unique<ui::LayerSolidColor>()),
         mask_layer_owner_(root_window) {
     Init();
   }
@@ -257,10 +258,11 @@ class WelcomeTourScrim::Scrim : public aura::WindowObserver,
 
   // Invoked to update color of the scrim layer.
   void UpdateColor() {
-    layer_owner_.layer()->SetColor(GetRootWindowController()
-                                       ->color_provider_source()
-                                       ->GetColorProvider()
-                                       ->GetColor(cros_tokens::kCrosSysScrim));
+    layer_owner_.layer()->AsSolidColor()->SetColor(
+        SkColor4f::FromColor(GetRootWindowController()
+                                 ->color_provider_source()
+                                 ->GetColorProvider()
+                                 ->GetColor(cros_tokens::kCrosSysScrim)));
   }
 
   // Pointer to the root window associated with `this` scrim.

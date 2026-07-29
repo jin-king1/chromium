@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "skia/ext/skcolorspace_primaries.h"
 
@@ -14,6 +10,7 @@
 
 #include "third_party/skia/include/core/SkColorSpace.h"
 
+#if !defined(SKIA_COLOR_SPACE_PRIMARIES_OPERATOR_EQUAL)
 bool operator==(const SkColorSpacePrimaries& a,
                 const SkColorSpacePrimaries& b) {
   return a.fRX == b.fRX && a.fRY == b.fRY && a.fGX == b.fGX && a.fGY == b.fGY &&
@@ -24,6 +21,7 @@ bool operator!=(const SkColorSpacePrimaries& a,
                 const SkColorSpacePrimaries& b) {
   return !(a == b);
 }
+#endif
 
 namespace skia {
 

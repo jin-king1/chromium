@@ -8,7 +8,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <map>
 #include <memory>
 #include <string>
 
@@ -18,7 +17,6 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/time/time.h"
-#include "ipc/ipc_listener.h"
 #include "mojo/public/cpp/bindings/pending_associated_remote.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/receiver.h"
@@ -40,7 +38,6 @@
 #include "third_party/blink/public/mojom/service_worker/service_worker_provider.mojom-forward.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_registration.mojom-forward.h"
 #include "third_party/blink/public/mojom/worker/subresource_loader_updater.mojom-forward.h"
-#include "third_party/blink/public/mojom/worker/worker_content_settings_proxy.mojom-forward.h"
 #include "third_party/blink/public/mojom/worker/worker_content_settings_proxy.mojom.h"
 #include "third_party/blink/public/platform/modules/service_worker/web_service_worker_error.h"
 #include "third_party/blink/public/web/modules/service_worker/web_service_worker_context_client.h"
@@ -186,7 +183,8 @@ class ServiceWorkerContextClient
                               blink::CrossVariantMojoReceiver<
                                   network::mojom::URLLoaderClientInterfaceBase>
                                   preload_url_loader_client_receiver) override;
-  void RequestTermination(RequestTerminationCallback callback) override;
+  void RequestTermination(uint64_t observed_keepalive_sequence_number,
+                          RequestTerminationCallback callback) override;
   bool ShouldNotifyServiceWorkerOnWebSocketActivity(
       v8::Local<v8::Context> context) override;
   scoped_refptr<blink::WebServiceWorkerFetchContext>

@@ -46,6 +46,7 @@
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
 
 #include <cstdint>
+#include <optional>
 #include <ostream>
 #include <string_view>
 
@@ -55,11 +56,13 @@
 #include "base/no_destructor.h"
 #include "base/notreached.h"
 #include "base/numerics/safe_conversions.h"
+#include "base/rand_util.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/synchronization/lock.h"
 #include "net/base/lookup_string_in_fixed_set.h"
-#include "net/base/net_module.h"
+#include "net/base/registry_controlled_domain_constants.h"
+#include "net/base/registry_controlled_domains/effective_tld_names-reversed-inc.cc"
 #include "net/base/url_util.h"
 #include "url/gurl.h"
 #include "url/origin.h"
@@ -69,10 +72,8 @@
 namespace net::registry_controlled_domains {
 
 namespace {
-#include "net/base/registry_controlled_domains/effective_tld_names-reversed-inc.cc"
 
 // See make_dafsa.py for documentation of the generated dafsa byte array.
-
 // This is mutable so that it can be overridden for testing.
 base::span<const uint8_t> g_graph = kDafsa;
 
@@ -116,9 +117,14 @@ class RegistryLookupCache {
         }
       }
     }
-    UMA_HISTOGRAM_BOOLEAN(
-        "Net.RegistryControlledDomains.GetDomainAndRegistry.CacheHit",
-        result.has_value());
+
+    // This method is called frequently, so we only record a small fraction of
+    // the results to avoid excessive overhead.
+    if (base::ShouldRecordSubsampledMetric(0.00001)) {
+      UMA_HISTOGRAM_BOOLEAN(
+          "Net.RegistryControlledDomains.GetDomainAndRegistry.CacheHit.Sampled",
+          result.has_value());
+    }
     return result;
   }
 
@@ -175,13 +181,13 @@ RegistryLengthOutput GetRegistryLengthInTrimmedHost(
     UnknownRegistryFilter unknown_filter,
     PrivateRegistryFilter private_filter) {
   size_t length;
-  int type = LookupSuffixInReversedSet(
+  std::optional<DomainRuleTags> type = LookupSuffixInReversedSet(
       g_graph, private_filter == INCLUDE_PRIVATE_REGISTRIES, host, &length);
 
   CHECK_LE(length, host.size());
 
   // No rule found in the registry.
-  if (type == kDafsaNotFound) {
+  if (!type.has_value()) {
     // If we allow unknown registries, return the length of last subcomponent.
     if (unknown_filter == INCLUDE_UNKNOWN_REGISTRIES) {
       const size_t last_dot = host.find_last_of('.');
@@ -195,7 +201,7 @@ RegistryLengthOutput GetRegistryLengthInTrimmedHost(
 
   // Exception rules override wildcard rules when the domain is an exact
   // match, but wildcards take precedence when there's a subdomain.
-  if (type & kDafsaWildcardRule) {
+  if (type.value().Has(DomainRuleTag::kWildcard)) {
     // If the complete host matches, then the host is the wildcard suffix, so
     // return 0.
     if (length == host.size()) {
@@ -218,7 +224,7 @@ RegistryLengthOutput GetRegistryLengthInTrimmedHost(
     return {host.size() - preceding_dot - 1, false};
   }
 
-  if (type & kDafsaExceptionRule) {
+  if (type.value().Has(DomainRuleTag::kException)) {
     size_t first_dot = host.find_first_of('.', host.size() - length);
     if (first_dot == std::string_view::npos) {
       // If we get here, we had an exception rule with no dots (e.g.
@@ -233,8 +239,6 @@ RegistryLengthOutput GetRegistryLengthInTrimmedHost(
     }
     return {host.length() - first_dot - 1, false};
   }
-
-  CHECK_NE(type, kDafsaNotFound);
 
   // If a complete match, then the host is the registry itself, so return 0.
   if (length == host.size()) {
@@ -378,12 +382,10 @@ size_t DoPermissiveGetHostRegistryLength(T host,
     mapping.is_canonical = true;
 
     // Try to append the canonicalized version of this component.
-    int current_len = static_cast<int>(current - begin);
-    if (!url::CanonicalizeHostSubstring(
-            host.data(), url::Component(static_cast<int>(begin), current_len),
-            &canon_output)) {
+    T host_view = host.substr(begin, current - begin);
+    if (!url::CanonicalizeHostSubstring(host_view, &canon_output)) {
       // Failed to canonicalize this component; append as-is.
-      AppendInvalidString(host.substr(begin, current_len), &canon_output);
+      AppendInvalidString(host_view, &canon_output);
       mapping.is_canonical = false;
     }
 
@@ -454,10 +456,7 @@ size_t DoPermissiveGetHostRegistryLength(T host,
       url::StdStringCanonOutput try_output(&try_string);
 
       if (!url::CanonicalizeHostSubstring(
-              host.data(),
-              url::Component(
-                  current_try,
-                  static_cast<int>(mapping.original_end) - current_try),
+              host.substr(current_try, mapping.original_end - current_try),
               &try_output)) {
         continue;  // Invalid substring, skip.
       }
@@ -499,8 +498,7 @@ bool SameDomainOrHost(std::string_view host1,
 
 std::string GetDomainAndRegistry(const GURL& gurl,
                                  PrivateRegistryFilter filter) {
-  return std::string(
-      GetDomainAndRegistryAsStringPiece(gurl.host_piece(), filter));
+  return std::string(GetDomainAndRegistryAsStringPiece(gurl.host(), filter));
 }
 
 std::string GetDomainAndRegistry(const url::Origin& origin,
@@ -527,7 +525,7 @@ std::string_view GetDomainAndRegistryAsStringPiece(
 bool SameDomainOrHost(const GURL& gurl1,
                       const GURL& gurl2,
                       PrivateRegistryFilter filter) {
-  return SameDomainOrHost(gurl1.host_piece(), gurl2.host_piece(), filter);
+  return SameDomainOrHost(gurl1.host(), gurl2.host(), filter);
 }
 
 bool SameDomainOrHost(const url::Origin& origin1,
@@ -546,14 +544,13 @@ bool SameDomainOrHost(const url::Origin& origin1,
 bool SameDomainOrHost(const GURL& gurl,
                       const url::Origin& origin,
                       PrivateRegistryFilter filter) {
-  return SameDomainOrHost(gurl.host_piece(), origin.host(), filter);
+  return SameDomainOrHost(gurl.host(), origin.host(), filter);
 }
 
 size_t GetRegistryLength(const GURL& gurl,
                          UnknownRegistryFilter unknown_filter,
                          PrivateRegistryFilter private_filter) {
-  return GetRegistryLengthImpl(gurl.host_piece(), unknown_filter,
-                               private_filter)
+  return GetRegistryLengthImpl(gurl.host(), unknown_filter, private_filter)
       .registry_length;
 }
 

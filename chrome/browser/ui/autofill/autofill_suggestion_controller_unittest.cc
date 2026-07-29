@@ -17,7 +17,6 @@
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
-#include "chrome/browser/accessibility/accessibility_state_utils.h"
 #include "chrome/browser/ui/autofill/autofill_popup_controller_impl.h"
 #include "chrome/browser/ui/autofill/autofill_popup_view.h"
 #include "chrome/browser/ui/autofill/autofill_suggestion_controller_test_base.h"
@@ -72,7 +71,6 @@ using base::WeakPtr;
 using ::testing::_;
 using ::testing::AtLeast;
 using ::testing::Field;
-using ::testing::Invoke;
 using ::testing::Mock;
 using ::testing::Optional;
 using ::testing::Return;
@@ -84,37 +82,6 @@ using TestAutofillSuggestionControllerAutofillClient =
     TestAutofillPopupControllerAutofillClient<>;
 #endif
 
-content::RenderFrameHost* CreateAndNavigateChildFrame(
-    content::RenderFrameHost* parent,
-    const GURL& url,
-    std::string_view name) {
-  content::RenderFrameHost* rfh =
-      content::RenderFrameHostTester::For(parent)->AppendChild(
-          std::string(name));
-  // ContentAutofillDriverFactory::DidFinishNavigation() creates a driver for
-  // subframes only if
-  // `NavigationHandle::HasSubframeNavigationEntryCommitted()` is true. This
-  // is not the case for the first navigation. (In non-unit-tests, the first
-  // navigation creates a driver in
-  // ContentAutofillDriverFactory::BindAutofillDriver().) Therefore,
-  // we simulate *two* navigations here, and explicitly set the transition
-  // type for the second navigation.
-  std::unique_ptr<content::NavigationSimulator> simulator;
-  // First navigation: `HasSubframeNavigationEntryCommitted() == false`.
-  // Must be a different URL from the second navigation.
-  GURL about_blank("about:blank");
-  CHECK_NE(about_blank, url);
-  simulator =
-      content::NavigationSimulator::CreateRendererInitiated(about_blank, rfh);
-  simulator->Commit();
-  rfh = simulator->GetFinalRenderFrameHost();
-  // Second navigation: `HasSubframeNavigationEntryCommitted() == true`.
-  // Must set the transition type to ui::PAGE_TRANSITION_MANUAL_SUBFRAME.
-  simulator = content::NavigationSimulator::CreateRendererInitiated(url, rfh);
-  simulator->SetTransition(ui::PAGE_TRANSITION_MANUAL_SUBFRAME);
-  simulator->Commit();
-  return simulator->GetFinalRenderFrameHost();
-}
 
 content::RenderFrameHost* NavigateAndCommitFrame(content::RenderFrameHost* rfh,
                                                  const GURL& url) {
@@ -127,7 +94,7 @@ content::RenderFrameHost* NavigateAndCommitFrame(content::RenderFrameHost* rfh,
 using AutofillSuggestionControllerTest = AutofillSuggestionControllerTestBase<
     TestAutofillSuggestionControllerAutofillClient>;
 
-// Regression test for (crbug.com/1513574): Showing an Autofill Compose
+// Regression test for (crbug.com/41486145): Showing an Autofill Compose
 // suggestion twice does not crash.
 TEST_F(AutofillSuggestionControllerTest, ShowTwice) {
   ShowSuggestions(manager(), {Suggestion(u"Help me write",
@@ -146,33 +113,37 @@ TEST_F(AutofillSuggestionControllerTest, UpdateDataListValues) {
   ShowSuggestions(manager(), {SuggestionType::kAddressEntry});
   std::vector<SelectOption> options = {
       {.value = u"data list value 1", .text = u"data list label 1"}};
-  client().popup_controller(manager()).UpdateDataListValues(options);
+  client().suggestion_controller(manager()).UpdateDataListValues(options);
 
-  ASSERT_EQ(3, client().popup_controller(manager()).GetLineCount());
+  ASSERT_EQ(3, client().suggestion_controller(manager()).GetLineCount());
 
-  Suggestion result0 = client().popup_controller(manager()).GetSuggestionAt(0);
+  Suggestion result0 =
+      client().suggestion_controller(manager()).GetSuggestionAt(0);
   EXPECT_EQ(options[0].value, result0.main_text.value);
-  EXPECT_EQ(
-      options[0].value,
-      client().popup_controller(manager()).GetSuggestionAt(0).main_text.value);
+  EXPECT_EQ(options[0].value, client()
+                                  .suggestion_controller(manager())
+                                  .GetSuggestionAt(0)
+                                  .main_text.value);
   ASSERT_EQ(1u, result0.labels.size());
   ASSERT_EQ(1u, result0.labels[0].size());
   EXPECT_EQ(options[0].text, result0.labels[0][0].value);
   EXPECT_EQ(std::u16string(), result0.additional_label);
   EXPECT_EQ(options[0].text, client()
-                                 .popup_controller(manager())
+                                 .suggestion_controller(manager())
                                  .GetSuggestionAt(0)
                                  .labels[0][0]
                                  .value);
   EXPECT_EQ(SuggestionType::kDatalistEntry, result0.type);
 
-  Suggestion result1 = client().popup_controller(manager()).GetSuggestionAt(1);
+  Suggestion result1 =
+      client().suggestion_controller(manager()).GetSuggestionAt(1);
   EXPECT_EQ(std::u16string(), result1.main_text.value);
   EXPECT_TRUE(result1.labels.empty());
   EXPECT_EQ(std::u16string(), result1.additional_label);
   EXPECT_EQ(SuggestionType::kSeparator, result1.type);
 
-  Suggestion result2 = client().popup_controller(manager()).GetSuggestionAt(2);
+  Suggestion result2 =
+      client().suggestion_controller(manager()).GetSuggestionAt(2);
   EXPECT_EQ(std::u16string(), result2.main_text.value);
   EXPECT_TRUE(result2.labels.empty());
   EXPECT_EQ(std::u16string(), result2.additional_label);
@@ -181,60 +152,72 @@ TEST_F(AutofillSuggestionControllerTest, UpdateDataListValues) {
   // Add two data list entries (which should replace the current one).
   options.push_back(
       {.value = u"data list value 1", .text = u"data list label 1"});
-  client().popup_controller(manager()).UpdateDataListValues(options);
-  ASSERT_EQ(4, client().popup_controller(manager()).GetLineCount());
+  client().suggestion_controller(manager()).UpdateDataListValues(options);
+  ASSERT_EQ(4, client().suggestion_controller(manager()).GetLineCount());
 
   // Original one first, followed by new one, then separator.
-  EXPECT_EQ(
-      options[0].value,
-      client().popup_controller(manager()).GetSuggestionAt(0).main_text.value);
-  EXPECT_EQ(
-      options[0].value,
-      client().popup_controller(manager()).GetSuggestionAt(0).main_text.value);
-  ASSERT_EQ(
-      1u,
-      client().popup_controller(manager()).GetSuggestionAt(0).labels.size());
-  ASSERT_EQ(
-      1u,
-      client().popup_controller(manager()).GetSuggestionAt(0).labels[0].size());
+  EXPECT_EQ(options[0].value, client()
+                                  .suggestion_controller(manager())
+                                  .GetSuggestionAt(0)
+                                  .main_text.value);
+  EXPECT_EQ(options[0].value, client()
+                                  .suggestion_controller(manager())
+                                  .GetSuggestionAt(0)
+                                  .main_text.value);
+  ASSERT_EQ(1u, client()
+                    .suggestion_controller(manager())
+                    .GetSuggestionAt(0)
+                    .labels.size());
+  ASSERT_EQ(1u, client()
+                    .suggestion_controller(manager())
+                    .GetSuggestionAt(0)
+                    .labels[0]
+                    .size());
   EXPECT_EQ(options[0].text, client()
-                                 .popup_controller(manager())
+                                 .suggestion_controller(manager())
                                  .GetSuggestionAt(0)
                                  .labels[0][0]
                                  .value);
-  EXPECT_EQ(
-      std::u16string(),
-      client().popup_controller(manager()).GetSuggestionAt(0).additional_label);
-  EXPECT_EQ(
-      options[1].value,
-      client().popup_controller(manager()).GetSuggestionAt(1).main_text.value);
-  EXPECT_EQ(
-      options[1].value,
-      client().popup_controller(manager()).GetSuggestionAt(1).main_text.value);
-  ASSERT_EQ(
-      1u,
-      client().popup_controller(manager()).GetSuggestionAt(1).labels.size());
-  ASSERT_EQ(
-      1u,
-      client().popup_controller(manager()).GetSuggestionAt(1).labels[0].size());
+  EXPECT_EQ(std::u16string(), client()
+                                  .suggestion_controller(manager())
+                                  .GetSuggestionAt(0)
+                                  .additional_label);
+  EXPECT_EQ(options[1].value, client()
+                                  .suggestion_controller(manager())
+                                  .GetSuggestionAt(1)
+                                  .main_text.value);
+  EXPECT_EQ(options[1].value, client()
+                                  .suggestion_controller(manager())
+                                  .GetSuggestionAt(1)
+                                  .main_text.value);
+  ASSERT_EQ(1u, client()
+                    .suggestion_controller(manager())
+                    .GetSuggestionAt(1)
+                    .labels.size());
+  ASSERT_EQ(1u, client()
+                    .suggestion_controller(manager())
+                    .GetSuggestionAt(1)
+                    .labels[0]
+                    .size());
   EXPECT_EQ(options[1].text, client()
-                                 .popup_controller(manager())
+                                 .suggestion_controller(manager())
                                  .GetSuggestionAt(1)
                                  .labels[0][0]
                                  .value);
-  EXPECT_EQ(
-      std::u16string(),
-      client().popup_controller(manager()).GetSuggestionAt(1).additional_label);
+  EXPECT_EQ(std::u16string(), client()
+                                  .suggestion_controller(manager())
+                                  .GetSuggestionAt(1)
+                                  .additional_label);
   EXPECT_EQ(SuggestionType::kSeparator,
-            client().popup_controller(manager()).GetSuggestionAt(2).type);
+            client().suggestion_controller(manager()).GetSuggestionAt(2).type);
 
   // Clear all data list values.
   options.clear();
-  client().popup_controller(manager()).UpdateDataListValues(options);
+  client().suggestion_controller(manager()).UpdateDataListValues(options);
 
-  ASSERT_EQ(1, client().popup_controller(manager()).GetLineCount());
+  ASSERT_EQ(1, client().suggestion_controller(manager()).GetLineCount());
   EXPECT_EQ(SuggestionType::kAddressEntry,
-            client().popup_controller(manager()).GetSuggestionAt(0).type);
+            client().suggestion_controller(manager()).GetSuggestionAt(0).type);
 }
 
 TEST_F(AutofillSuggestionControllerTest, PopupsWithOnlyDataLists) {
@@ -244,44 +227,50 @@ TEST_F(AutofillSuggestionControllerTest, PopupsWithOnlyDataLists) {
   // Replace the datalist element with a new one.
   std::vector<SelectOption> options = {
       {.value = u"data list value 1", .text = u"data list label 1"}};
-  client().popup_controller(manager()).UpdateDataListValues(options);
+  client().suggestion_controller(manager()).UpdateDataListValues(options);
 
-  ASSERT_EQ(1, client().popup_controller(manager()).GetLineCount());
-  EXPECT_EQ(
-      options[0].value,
-      client().popup_controller(manager()).GetSuggestionAt(0).main_text.value);
-  ASSERT_EQ(
-      1u,
-      client().popup_controller(manager()).GetSuggestionAt(0).labels.size());
-  ASSERT_EQ(
-      1u,
-      client().popup_controller(manager()).GetSuggestionAt(0).labels[0].size());
+  ASSERT_EQ(1, client().suggestion_controller(manager()).GetLineCount());
+  EXPECT_EQ(options[0].value, client()
+                                  .suggestion_controller(manager())
+                                  .GetSuggestionAt(0)
+                                  .main_text.value);
+  ASSERT_EQ(1u, client()
+                    .suggestion_controller(manager())
+                    .GetSuggestionAt(0)
+                    .labels.size());
+  ASSERT_EQ(1u, client()
+                    .suggestion_controller(manager())
+                    .GetSuggestionAt(0)
+                    .labels[0]
+                    .size());
   EXPECT_EQ(options[0].text, client()
-                                 .popup_controller(manager())
+                                 .suggestion_controller(manager())
                                  .GetSuggestionAt(0)
                                  .labels[0][0]
                                  .value);
-  EXPECT_EQ(
-      std::u16string(),
-      client().popup_controller(manager()).GetSuggestionAt(0).additional_label);
+  EXPECT_EQ(std::u16string(), client()
+                                  .suggestion_controller(manager())
+                                  .GetSuggestionAt(0)
+                                  .additional_label);
   EXPECT_EQ(SuggestionType::kDatalistEntry,
-            client().popup_controller(manager()).GetSuggestionAt(0).type);
+            client().suggestion_controller(manager()).GetSuggestionAt(0).type);
 
   // Clear datalist values and check that the popup becomes hidden.
-  EXPECT_CALL(client().popup_controller(manager()),
+  EXPECT_CALL(client().suggestion_controller(manager()),
               Hide(SuggestionHidingReason::kNoSuggestions));
   options.clear();
-  client().popup_controller(manager()).UpdateDataListValues(options);
+  client().suggestion_controller(manager()).UpdateDataListValues(options);
 }
 
 TEST_F(AutofillSuggestionControllerTest, GetOrCreate) {
   auto create_controller = [&](gfx::RectF bounds) {
     return AutofillSuggestionController::GetOrCreate(
-        client().popup_controller(manager()).GetWeakPtr(),
-        manager().external_delegate().GetWeakPtrForTest(), nullptr,
-        PopupControllerCommon(std::move(bounds), base::i18n::UNKNOWN_DIRECTION,
-                              nullptr),
-        /*form_control_ax_id=*/0);
+        client().suggestion_controller(manager()).GetWeakPtr(),
+        manager().external_delegate().GetWeakPtrForTest(), web_contents(),
+        PopupControllerCommon(LocalFrameToken(*main_frame()->GetFrameToken()),
+                              std::move(bounds), base::i18n::UNKNOWN_DIRECTION),
+        /*form_control_ax_id=*/0,
+        AutofillSuggestionTriggerSource::kUnspecified);
   };
   WeakPtr<AutofillSuggestionController> controller =
       create_controller(gfx::RectF());
@@ -301,33 +290,33 @@ TEST_F(AutofillSuggestionControllerTest, GetOrCreate) {
   EXPECT_FALSE(controller);
   EXPECT_FALSE(controller2);
 
-  EXPECT_CALL(client().popup_controller(manager()),
+  EXPECT_CALL(client().suggestion_controller(manager()),
               Hide(SuggestionHidingReason::kViewDestroyed));
   gfx::RectF bounds(0.f, 0.f, 1.f, 2.f);
   base::WeakPtr<AutofillSuggestionController> controller3 =
       create_controller(bounds);
-  EXPECT_EQ(&client().popup_controller(manager()), controller3.get());
+  EXPECT_EQ(&client().suggestion_controller(manager()), controller3.get());
   EXPECT_EQ(bounds,
             static_cast<AutofillSuggestionController*>(controller3.get())
                 ->element_bounds());
   controller3->Hide(SuggestionHidingReason::kViewDestroyed);
 
-  client().popup_controller(manager()).DoHide();
+  client().suggestion_controller(manager()).DoHide();
 
   const base::WeakPtr<AutofillSuggestionController> controller4 =
       create_controller(bounds);
-  EXPECT_EQ(&client().popup_controller(manager()), controller4.get());
+  EXPECT_EQ(&client().suggestion_controller(manager()), controller4.get());
   EXPECT_EQ(bounds,
             static_cast<const AutofillSuggestionController*>(controller4.get())
                 ->element_bounds());
 
-  client().popup_controller(manager()).DoHide();
+  client().suggestion_controller(manager()).DoHide();
 }
 
 // Tests that the controller does not have a UI session id if it has no view.
 TEST_F(AutofillSuggestionControllerTest, EmptyUiSessionIdAfterCreation) {
-  test_api(client().popup_controller(manager())).SetView(nullptr);
-  EXPECT_EQ(client().popup_controller(manager()).GetUiSessionId(),
+  test_api(client().suggestion_controller(manager())).SetView(nullptr);
+  EXPECT_EQ(client().suggestion_controller(manager()).GetUiSessionId(),
             std::nullopt);
 }
 
@@ -336,7 +325,7 @@ TEST_F(AutofillSuggestionControllerTest, NonEmptyUiSessionIdAfterShow) {
   ShowSuggestions(manager(), {SuggestionType::kAutocompleteEntry,
                               SuggestionType::kAutocompleteEntry});
   EXPECT_TRUE(
-      client().popup_controller(manager()).GetUiSessionId().has_value());
+      client().suggestion_controller(manager()).GetUiSessionId().has_value());
 }
 
 TEST_F(AutofillSuggestionControllerTest, ProperlyResetController) {
@@ -346,31 +335,39 @@ TEST_F(AutofillSuggestionControllerTest, ProperlyResetController) {
   // Now show a new popup with the same controller, but with fewer items.
   base::WeakPtr<AutofillSuggestionController> controller =
       AutofillSuggestionController::GetOrCreate(
-          client().popup_controller(manager()).GetWeakPtr(),
-          manager().external_delegate().GetWeakPtrForTest(), nullptr,
-          PopupControllerCommon(gfx::RectF(), base::i18n::UNKNOWN_DIRECTION,
-                                nullptr),
-          /*form_control_ax_id=*/0);
+          client().suggestion_controller(manager()).GetWeakPtr(),
+          manager().external_delegate().GetWeakPtrForTest(), web_contents(),
+          PopupControllerCommon(LocalFrameToken(*main_frame()->GetFrameToken()),
+                                gfx::RectF(), base::i18n::UNKNOWN_DIRECTION),
+          /*form_control_ax_id=*/0,
+          AutofillSuggestionTriggerSource::kUnspecified);
   EXPECT_EQ(0, controller->GetLineCount());
+  if (controller) {
+    controller->Hide(SuggestionHidingReason::kViewDestroyed);
+  }
+  task_environment()->RunUntilIdle();
 }
 
 TEST_F(AutofillSuggestionControllerTest, HidingClearsPreview) {
   EXPECT_CALL(manager().external_delegate(), ClearPreviewedForm());
-  EXPECT_CALL(manager().external_delegate(), OnSuggestionsHidden());
-  client().popup_controller(manager()).DoHide();
+  EXPECT_CALL(manager().external_delegate(), OnSuggestionsHidden);
+  client().suggestion_controller(manager()).DoHide();
 }
 
 TEST_F(AutofillSuggestionControllerTest, ShouldReportHidingPopupReason) {
   base::HistogramTester histogram_tester;
   ShowSuggestions(manager(), {Suggestion(u"Autocomplete entry",
                                          SuggestionType::kAutocompleteEntry)});
-  client().popup_controller(manager()).DoHide(SuggestionHidingReason::kTabGone);
+  client().suggestion_controller(manager()).DoHide(
+      SuggestionHidingReason::kTabGone);
   ShowSuggestions(
       manager(), {Suggestion(u"Address entry", SuggestionType::kAddressEntry)});
-  client().popup_controller(manager()).DoHide(SuggestionHidingReason::kTabGone);
+  client().suggestion_controller(manager()).DoHide(
+      SuggestionHidingReason::kTabGone);
   ShowSuggestions(manager(), {Suggestion(u"Credit Card entry",
                                          SuggestionType::kCreditCardEntry)});
-  client().popup_controller(manager()).DoHide(SuggestionHidingReason::kTabGone);
+  client().suggestion_controller(manager()).DoHide(
+      SuggestionHidingReason::kTabGone);
 
   histogram_tester.ExpectTotalCount("Autofill.PopupHidingReason", 3);
   histogram_tester.ExpectBucketCount("Autofill.PopupHidingReason",
@@ -403,11 +400,11 @@ TEST_F(AutofillSuggestionControllerTest,
 TEST_F(AutofillSuggestionControllerTest,
        DoeNotHideOnFieldChangeForNonComposeEntries) {
   ShowSuggestions(manager(), {SuggestionType::kAutocompleteEntry});
-  EXPECT_CALL(client().popup_controller(manager()), Hide).Times(0);
+  EXPECT_CALL(client().suggestion_controller(manager()), Hide).Times(0);
   manager().NotifyObservers(
       &AutofillManager::Observer::OnBeforeTextFieldValueChanged, FormGlobalId(),
       FieldGlobalId());
-  Mock::VerifyAndClearExpectations(&client().popup_controller(manager()));
+  Mock::VerifyAndClearExpectations(&client().suggestion_controller(manager()));
 }
 
 class AutofillSuggestionControllerTestHidingLogic
@@ -436,10 +433,10 @@ TEST_F(AutofillSuggestionControllerTestHidingLogic,
        KeepOpenInMainFrameOnSubFrameDestruction) {
   ShowSuggestions(manager(), {SuggestionType::kAddressEntry});
   test::GenerateTestAutofillPopup(&manager().external_delegate());
-  EXPECT_CALL(client().popup_controller(manager()), Hide).Times(0);
+  EXPECT_CALL(client().suggestion_controller(manager()), Hide).Times(0);
   content::RenderFrameHostTester::For(sub_frame())->Detach();
   // Verify and clear before TearDown() closes the popup.
-  Mock::VerifyAndClearExpectations(&client().popup_controller(manager()));
+  Mock::VerifyAndClearExpectations(&client().suggestion_controller(manager()));
 }
 
 // Tests that if the popup is shown in the *main frame*, a navigation in the
@@ -448,10 +445,10 @@ TEST_F(AutofillSuggestionControllerTestHidingLogic,
        KeepOpenInMainFrameOnSubFrameNavigation) {
   ShowSuggestions(manager(), {SuggestionType::kAddressEntry});
   test::GenerateTestAutofillPopup(&manager().external_delegate());
-  EXPECT_CALL(client().popup_controller(manager()), Hide).Times(0);
+  EXPECT_CALL(client().suggestion_controller(manager()), Hide).Times(0);
   NavigateAndCommitFrame(sub_frame(), GURL("https://bar.com/"));
   // Verify and clear before TearDown() closes the popup.
-  Mock::VerifyAndClearExpectations(&client().popup_controller(manager()));
+  Mock::VerifyAndClearExpectations(&client().suggestion_controller(manager()));
 }
 
 // Tests that if the popup is shown, destruction of the WebContents hides the
@@ -460,7 +457,7 @@ TEST_F(AutofillSuggestionControllerTestHidingLogic,
        HideOnWebContentsDestroyed) {
   ShowSuggestions(manager(), {SuggestionType::kAddressEntry});
   test::GenerateTestAutofillPopup(&manager().external_delegate());
-  EXPECT_CALL(client().popup_controller(manager()),
+  EXPECT_CALL(client().suggestion_controller(manager()),
               Hide(SuggestionHidingReason::kRendererEvent));
   DeleteContents();
 }
@@ -471,7 +468,7 @@ TEST_F(AutofillSuggestionControllerTestHidingLogic,
        HideInMainFrameOnDestruction) {
   ShowSuggestions(manager(), {SuggestionType::kAddressEntry});
   test::GenerateTestAutofillPopup(&manager().external_delegate());
-  EXPECT_CALL(client().popup_controller(manager()),
+  EXPECT_CALL(client().suggestion_controller(manager()),
               Hide(SuggestionHidingReason::kRendererEvent));
 }
 
@@ -481,11 +478,12 @@ TEST_F(AutofillSuggestionControllerTestHidingLogic,
        HideInSubFrameOnDestruction) {
   ShowSuggestions(sub_manager(), {SuggestionType::kAddressEntry});
   test::GenerateTestAutofillPopup(&sub_manager().external_delegate());
-  EXPECT_CALL(client().popup_controller(sub_manager()),
+  EXPECT_CALL(client().suggestion_controller(sub_manager()),
               Hide(SuggestionHidingReason::kRendererEvent));
   content::RenderFrameHostTester::For(sub_frame())->Detach();
   // Verify and clear before TearDown() closes the popup.
-  Mock::VerifyAndClearExpectations(&client().popup_controller(sub_manager()));
+  Mock::VerifyAndClearExpectations(
+      &client().suggestion_controller(sub_manager()));
 }
 
 // Tests that if the popup is shown in the *main frame*, a navigation in the
@@ -495,19 +493,11 @@ TEST_F(AutofillSuggestionControllerTestHidingLogic,
   ShowSuggestions(manager(), {SuggestionType::kAddressEntry});
   test::GenerateTestAutofillPopup(&manager().external_delegate());
   // The navigation generates a PrimaryMainFrameWasResized callback.
-  SuggestionHidingReason reason;
-  // On Android, keyboard accessory is not hidden if the Chrome native widget
-  // changes its size. The keyboard accessory is still hidden because the input
-  // field looses.
-  if constexpr (BUILDFLAG(IS_ANDROID)) {
-    reason = SuggestionHidingReason::kNavigation;
-  } else {
-    reason = SuggestionHidingReason::kWidgetChanged;
-  }
-  EXPECT_CALL(client().popup_controller(manager()), Hide(reason));
+  SuggestionHidingReason reason = SuggestionHidingReason::kRendererEvent;
+  EXPECT_CALL(client().suggestion_controller(manager()), Hide(reason));
   NavigateAndCommitFrame(main_frame(), GURL("https://bar.com/"));
   // Verify and clear before TearDown() closes the popup.
-  Mock::VerifyAndClearExpectations(&client().popup_controller(manager()));
+  Mock::VerifyAndClearExpectations(&client().suggestion_controller(manager()));
 }
 
 // Tests that if the popup is shown in the *sub frame*, a navigation in the
@@ -516,17 +506,12 @@ TEST_F(AutofillSuggestionControllerTestHidingLogic,
        HideInSubFrameOnSubFrameNavigation) {
   ShowSuggestions(sub_manager(), {SuggestionType::kAddressEntry});
   test::GenerateTestAutofillPopup(&sub_manager().external_delegate());
-  if (sub_frame()->ShouldChangeRenderFrameHostOnSameSiteNavigation()) {
-    // If the RenderFrameHost changes, a RenderFrameDeleted will fire first.
-    EXPECT_CALL(client().popup_controller(sub_manager()),
-                Hide(SuggestionHidingReason::kRendererEvent));
-  } else {
-    EXPECT_CALL(client().popup_controller(sub_manager()),
-                Hide(SuggestionHidingReason::kNavigation));
-  }
+  EXPECT_CALL(client().suggestion_controller(sub_manager()),
+              Hide(SuggestionHidingReason::kRendererEvent));
   NavigateAndCommitFrame(sub_frame(), GURL("https://bar.com/"));
   // Verify and clear before TearDown() closes the popup.
-  Mock::VerifyAndClearExpectations(&client().popup_controller(sub_manager()));
+  Mock::VerifyAndClearExpectations(
+      &client().suggestion_controller(sub_manager()));
 }
 
 // Tests that if the popup is shown in the *sub frame*, a navigation in the
@@ -540,16 +525,8 @@ TEST_F(AutofillSuggestionControllerTestHidingLogic,
        HideInSubFrameOnMainFrameNavigation) {
   ShowSuggestions(sub_manager(), {SuggestionType::kAddressEntry});
   test::GenerateTestAutofillPopup(&sub_manager().external_delegate());
-  SuggestionHidingReason reason;
-  // On Android, keyboard accessory is not hidden if the Chrome native widget
-  // changes its size. The keyboard accessory is still hidden because the input
-  // field looses.
-  if constexpr (BUILDFLAG(IS_ANDROID)) {
-    reason = SuggestionHidingReason::kRendererEvent;
-  } else {
-    reason = SuggestionHidingReason::kWidgetChanged;
-  }
-  EXPECT_CALL(client().popup_controller(sub_manager()), Hide(reason));
+  SuggestionHidingReason reason = SuggestionHidingReason::kRendererEvent;
+  EXPECT_CALL(client().suggestion_controller(sub_manager()), Hide(reason));
   NavigateAndCommitFrame(main_frame(), GURL("https://bar.com/"));
 }
 

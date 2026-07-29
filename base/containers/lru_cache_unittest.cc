@@ -6,19 +6,18 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <functional>
 #include <iterator>
 #include <memory>
 #include <string>
 
+#include "base/containers/hashing_lru_cache.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/trace_event/memory_usage_estimator.h"
 #include "base/tracing_buildflags.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-
-#if BUILDFLAG(ENABLE_BASE_TRACING)
-#include "base/trace_event/memory_usage_estimator.h"  // no-presubmit-check
-#endif  // BUILDFLAG(ENABLE_BASE_TRACING)
 
 namespace base {
 
@@ -430,6 +429,71 @@ TYPED_TEST(LRUCacheTest, Swap) {
   }
 }
 
+TYPED_TEST(LRUCacheTest, UpdateMaxSize) {
+  using Cache =
+      typename TypeParam::template Type<int, std::unique_ptr<CachedItem>>;
+  static const typename Cache::size_type kInitialMaxSize = 3;
+
+  int initial_count = cached_item_live_count;
+
+  {
+    Cache cache(kInitialMaxSize);
+
+    static const int kItem1Key = 1, kItem2Key = 2, kItem3Key = 3;
+    cache.Put(kItem1Key, std::make_unique<CachedItem>(20));
+    cache.Put(kItem2Key, std::make_unique<CachedItem>(21));
+    cache.Put(kItem3Key, std::make_unique<CachedItem>(22));
+
+    EXPECT_EQ(3U, cache.size());
+    EXPECT_EQ(kInitialMaxSize, cache.max_size());
+
+    // Increase max size.
+    static const typename Cache::size_type kLargerMaxSize = 5;
+    cache.UpdateMaxSize(kLargerMaxSize);
+    EXPECT_EQ(kLargerMaxSize, cache.max_size());
+    EXPECT_EQ(3U, cache.size());
+
+    static const int kItem4Key = 4, kItem5Key = 5;
+    cache.Put(kItem4Key, std::make_unique<CachedItem>(23));
+    cache.Put(kItem5Key, std::make_unique<CachedItem>(24));
+
+    EXPECT_EQ(5U, cache.size());
+
+    // Decrease max size.
+    static const typename Cache::size_type kSmallerMaxSize = 2;
+    cache.UpdateMaxSize(kSmallerMaxSize);
+    EXPECT_EQ(kSmallerMaxSize, cache.max_size());
+    EXPECT_EQ(2U, cache.size());
+
+    // Verify that the oldest items were evicted.
+    EXPECT_TRUE(cache.Get(kItem1Key) == cache.end());
+    EXPECT_TRUE(cache.Get(kItem2Key) == cache.end());
+    EXPECT_TRUE(cache.Get(kItem3Key) == cache.end());
+    EXPECT_TRUE(cache.Get(kItem4Key) != cache.end());
+    EXPECT_TRUE(cache.Get(kItem5Key) != cache.end());
+
+    // Set to zero.
+    cache.UpdateMaxSize(0);
+    EXPECT_EQ(0U, cache.max_size());
+    EXPECT_EQ(0U, cache.size());
+
+    // All evicted.
+    EXPECT_TRUE(cache.Get(kItem1Key) == cache.end());
+    EXPECT_TRUE(cache.Get(kItem2Key) == cache.end());
+    EXPECT_TRUE(cache.Get(kItem3Key) == cache.end());
+    EXPECT_TRUE(cache.Get(kItem4Key) == cache.end());
+    EXPECT_TRUE(cache.Get(kItem5Key) == cache.end());
+
+    // Inserting fails.
+    static const int kItem6Key = 6;
+    cache.Put(kItem6Key, std::make_unique<CachedItem>(25));
+    EXPECT_TRUE(cache.Get(kItem6Key) == cache.end());
+  }
+
+  // There should be no objects leaked.
+  EXPECT_EQ(initial_count, cached_item_live_count);
+}
+
 TYPED_TEST(LRUCacheSetTest, SetTest) {
   typedef typename TypeParam::template Type<std::string> Cache;
   Cache cache(Cache::NO_AUTO_EVICT);
@@ -587,7 +651,6 @@ TYPED_TEST(LRUCacheSetTest, ReplacementIdentity) {
   EXPECT_EQ(iter, cache.end());
 }
 
-#if BUILDFLAG(ENABLE_BASE_TRACING)
 TYPED_TEST(LRUCacheTest, EstimateMemory) {
   typedef typename TypeParam::template Type<std::string, int> Cache;
   Cache cache(10);
@@ -598,7 +661,6 @@ TYPED_TEST(LRUCacheTest, EstimateMemory) {
   EXPECT_GT(trace_event::EstimateMemoryUsage(cache),
             trace_event::EstimateMemoryUsage(key));
 }
-#endif  // BUILDFLAG(ENABLE_BASE_TRACING)
 
 TEST(LRUCacheIndexOrderTest, IndexIteration) {
   using OrderedCache = LRUCache<int, CachedItem>;
@@ -642,6 +704,13 @@ TEST(LRUCacheIndexOrderTest, IndexIteration) {
       [](const auto& key_value_pair) -> int { return key_value_pair.first; });
   EXPECT_THAT(unordered_keys, testing::UnorderedElementsAre(
                                   kItem1Key, kItem2Key, kItem3Key, kItem4Key));
+}
+
+TEST(LRUCacheSimpleTest, TransparentLookup) {
+  LRUCache<std::string, int, std::less<>> cache(10);
+  cache.Put("some string", 4);
+  EXPECT_EQ(cache.Get(std::string_view("some string"))->second, 4);
+  EXPECT_EQ(cache.Peek(std::string_view("some string"))->second, 4);
 }
 
 }  // namespace base

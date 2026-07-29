@@ -21,6 +21,7 @@
         <string>IDS_IOS_SAFE_MODE_CRASH_REPORT_SENT</string>
         <string>IDS_IOS_SAFE_MODE_RELOAD_CHROME</string>
         <string>IDS_IOS_SAFE_MODE_AW_SNAP</string>
+        <string>IDS_IOS_SAFE_MODE_NEEDS_OS_UPDATE</string>
         <string>IDS_IOS_FIRST_RUN_LAUNCH_SCREEN_ENTERPRISE</string>
         <string>IDS_IOS_KEYBOARD_BOOKMARKS</string>
         <string>IDS_IOS_KEYBOARD_HISTORY</string>
@@ -43,6 +44,7 @@
         <string>IDS_IOS_KEYBOARD_HISTORY_FORWARD</string>
         <string>IDS_IOS_KEYBOARD_SHOW_HISTORY</string>
         <string>IDS_IOS_KEYBOARD_VOICE_SEARCH</string>
+        <string>IDS_IOS_KEYBOARD_SETTINGS</string>
         <string>IDS_IOS_KEYBOARD_SHOW_SETTINGS</string>
         <string>IDS_IOS_KEYBOARD_STOP</string>
         <string>IDS_IOS_KEYBOARD_SHOW_HELP</string>

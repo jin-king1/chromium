@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include "base/memory/raw_ptr.h"
+#include "build/branding_buildflags.h"
 #include "chrome/browser/about_flags.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
@@ -13,6 +14,7 @@
 #include "chrome/browser/ui/views/frame/test_with_browser_view.h"
 #include "chrome/browser/ui/views/toolbar/chrome_labs/chrome_labs_bubble_view.h"
 #include "chrome/browser/ui/views/toolbar/chrome_labs/chrome_labs_coordinator.h"
+#include "chrome/browser/ui/views/toolbar/pinned_toolbar_actions.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/browser/unexpire_flags.h"
 #include "components/webui/flags/feature_entry_macros.h"
@@ -72,8 +74,9 @@ class ChromeLabsButtonTest : public TestWithBrowserView {
         chrome_labs_prefs::kBrowserLabsEnabledEnterprisePolicy, true);
 
     browser_view()
-        ->toolbar()
-        ->pinned_toolbar_actions_container()
+        ->browser()
+        ->GetFeatures()
+        .pinned_toolbar_actions()
         ->ShowActionEphemerallyInToolbar(kActionShowChromeLabs, true);
   }
 
@@ -88,7 +91,7 @@ class ChromeLabsButtonTest : public TestWithBrowserView {
 TEST_F(ChromeLabsButtonTest, ShowAndHideChromeLabsBubbleOnPress) {
   views::Button* labs_button = browser_view()->toolbar()->GetChromeLabsButton();
   ChromeLabsCoordinator* coordinator =
-      browser_view()->browser()->GetFeatures().chrome_labs_coordinator();
+      ChromeLabsCoordinator::From(browser_view()->browser());
 
 #if BUILDFLAG(IS_CHROMEOS)
   ash::OwnerSettingsServiceAsh* service_ =
@@ -129,10 +132,40 @@ TEST_F(ChromeLabsButtonTest, ShouldButtonShowTest) {
   EXPECT_FALSE(browser_view()->toolbar()->GetChromeLabsButton()->GetVisible());
 }
 
+TEST_F(ChromeLabsButtonTest, ShouldButtonShowEphemerallyTest) {
+  // Reset the value set during setup to ensure the button doesn't artificially
+  // show ephemerally during this test.
+  browser_view()
+      ->browser()
+      ->GetFeatures()
+      .pinned_toolbar_actions()
+      ->ShowActionEphemerallyInToolbar(kActionShowChromeLabs, false);
+
+  EXPECT_EQ(browser_view()->toolbar()->GetChromeLabsButton(), nullptr);
+
+  ChromeLabsCoordinator* coordinator =
+      ChromeLabsCoordinator::From(browser_view()->browser());
+  coordinator->Show();
+
+  // Showing the bubble when the button was not previously showing should cause
+  // it to show.
+  EXPECT_TRUE(coordinator->BubbleExists());
+  EXPECT_NE(browser_view()->toolbar()->GetChromeLabsButton(), nullptr);
+  EXPECT_TRUE(browser_view()->toolbar()->GetChromeLabsButton()->GetVisible());
+
+  views::test::WidgetDestroyedWaiter destroyed_waiter(
+      coordinator->GetChromeLabsBubbleView()->GetWidget());
+  coordinator->Hide();
+  destroyed_waiter.Wait();
+
+  // Hiding the bubble should cause the ephemeral button to hide.
+  EXPECT_EQ(browser_view()->toolbar()->GetChromeLabsButton(), nullptr);
+}
+
 TEST_F(ChromeLabsButtonTest, DotIndicatorTest) {
   views::Button* labs_button = browser_view()->toolbar()->GetChromeLabsButton();
   ChromeLabsCoordinator* coordinator =
-      browser_view()->browser()->GetFeatures().chrome_labs_coordinator();
+      ChromeLabsCoordinator::From(browser_view()->browser());
   coordinator->MaybeInstallDotIndicator();
   views::DotIndicator* dot_indicator = coordinator->GetDotIndicator();
   EXPECT_TRUE(dot_indicator->GetVisible());

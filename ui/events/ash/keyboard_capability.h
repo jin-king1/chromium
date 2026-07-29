@@ -11,9 +11,9 @@
 
 #include "ash/constants/ash_features.h"
 #include "base/containers/fixed_flat_map.h"
-#include "base/containers/fixed_flat_set.h"
 #include "base/containers/flat_map.h"
 #include "base/files/scoped_file.h"
+#include "base/functional/callback.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/events/ash/mojom/meta_key.mojom-shared.h"
 #include "ui/events/ash/mojom/modifier_key.mojom-shared.h"
@@ -325,6 +325,10 @@ class KeyboardCapability : public InputDeviceEventObserver {
   // to potentially exist on external keyboards.
   bool HasMediaKeys(const KeyboardDevice& keyboard) const;
   bool HasMediaKeysOnAnyKeyboard() const;
+
+  // Check if the given keyboard has a key to toggle access to the camera.
+  bool HasCameraAccessKey(const KeyboardDevice& keyboard) const;
+  bool HasCameraAccessKeyOnAnyKeyboard() const;
 
   // Check if the assistant key exists on the given keyboard.
   bool HasAssistantKey(const KeyboardDevice& keyboard) const;

@@ -7,14 +7,16 @@
 #include <set>
 #include <vector>
 
-#include "base/containers/contains.h"
 #include "base/feature_list.h"
+#include "base/notimplemented.h"
 #include "base/observer_list.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "build/build_config.h"
 #include "components/device_event_log/device_event_log.h"
+#include "components/viz/common/resources/shared_image_format.h"
+#include "components/viz/common/resources/shared_image_format_utils.h"
 #include "ui/base/linux/linux_desktop.h"
 #include "ui/base/pointer/touch_ui_controller.h"
 #include "ui/base/ui_base_features.h"
@@ -23,12 +25,11 @@
 #include "ui/display/display_list.h"
 #include "ui/display/util/display_util.h"
 #include "ui/display/util/gpu_info_util.h"
-#include "ui/gfx/buffer_types.h"
 #include "ui/gfx/display_color_spaces.h"
 #include "ui/gfx/font_render_params.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/linux/linux_ui.h"
 #include "ui/ozone/platform/wayland/host/dump_util.h"
 #include "ui/ozone/platform/wayland/host/org_kde_kwin_idle.h"
@@ -38,8 +39,7 @@
 #include "ui/ozone/platform/wayland/host/wayland_output.h"
 #include "ui/ozone/platform/wayland/host/wayland_output_manager.h"
 #include "ui/ozone/platform/wayland/host/wayland_window.h"
-#include "ui/ozone/platform/wayland/host/wayland_zcr_color_management_output.h"
-#include "ui/ozone/platform/wayland/host/wayland_zcr_color_manager.h"
+#include "ui/ozone/platform/wayland/host/wayland_wp_color_management_output.h"
 #include "ui/ozone/platform/wayland/host/zwp_idle_inhibit_manager.h"
 
 #if BUILDFLAG(USE_DBUS)
@@ -82,23 +82,25 @@ WaylandScreen::WaylandScreen(WaylandConnection* connection)
   // which one is supported and use that. If RGBX_8888 is not supported, the
   // format that |have_format_alpha| uses will be used by default (RGBA_8888 or
   // BGRA_8888).
-  auto buffer_formats =
-      connection_->buffer_manager_host()->GetSupportedBufferFormats();
-  for (const auto& buffer_format : buffer_formats) {
-    auto format = buffer_format.first;
-
+  auto format_modifiers_map =
+      connection_->buffer_manager_host()->GetSupportedSharedImageFormats();
+  for (const auto& [format, modifiers] : format_modifiers_map) {
     // RGBA_8888 is the preferred format.
-    if (format == gfx::BufferFormat::RGBA_8888)
-      image_format_alpha_ = gfx::BufferFormat::RGBA_8888;
+    if (format == viz::SinglePlaneFormat::kRGBA_8888) {
+      image_format_alpha_ = viz::SinglePlaneFormat::kRGBA_8888;
+    }
 
-    if (format == gfx::BufferFormat::RGBA_F16)
-      image_format_hdr_ = format;
+    if (format == viz::SinglePlaneFormat::kRGBA_F16) {
+      image_format_hdr_ = viz::SinglePlaneFormat::kRGBA_F16;
+    }
 
-    if (!image_format_hdr_ && format == gfx::BufferFormat::RGBA_1010102)
-      image_format_hdr_ = format;
+    if (!image_format_hdr_ && format == viz::SinglePlaneFormat::kRGBA_1010102) {
+      image_format_hdr_ = viz::SinglePlaneFormat::kRGBA_1010102;
+    }
 
-    if (!image_format_alpha_ && format == gfx::BufferFormat::BGRA_8888)
-      image_format_alpha_ = gfx::BufferFormat::BGRA_8888;
+    if (!image_format_alpha_ && format == viz::SinglePlaneFormat::kBGRA_8888) {
+      image_format_alpha_ = viz::SinglePlaneFormat::kBGRA_8888;
+    }
 
     if (image_format_alpha_ && image_format_hdr_) {
       break;
@@ -110,7 +112,7 @@ WaylandScreen::WaylandScreen(WaylandConnection* connection)
   // RGBA_8888 is used by default. On Wayland, that seems to be the most
   // supported.
   if (!image_format_alpha_)
-    image_format_alpha_ = gfx::BufferFormat::RGBA_8888;
+    image_format_alpha_ = viz::SinglePlaneFormat::kRGBA_8888;
 
   // TODO(crbug.com/40719968): |image_format_no_alpha_| should use RGBX_8888
   // when it's available, but for some reason Chromium gets broken when it's
@@ -229,9 +231,29 @@ void WaylandScreen::AddOrUpdateDisplay(const WaylandOutput::Metrics& metrics) {
   changed_display.UpdateWorkAreaFromInsets(metrics.insets);
 
   gfx::DisplayColorSpaces color_spaces;
-  color_spaces.SetOutputBufferFormats(image_format_no_alpha_.value(),
-                                      image_format_alpha_.value());
-  changed_display.SetColorSpaces(color_spaces);
+  if (auto* wayland_output =
+          connection_->wayland_output_manager()->GetOutput(metrics.output_id)) {
+    if (auto* output = wayland_output->wp_color_management_output()) {
+      if (auto* output_color_spaces = output->GetDisplayColorSpaces()) {
+        color_spaces = *output_color_spaces;
+      }
+    }
+  }
+  color_spaces.SetOutputFormats(image_format_no_alpha_.value(),
+                                image_format_alpha_.value());
+  if (color_spaces.SupportsHDR() && image_format_hdr_) {
+    color_spaces.SetOutputColorSpaceAndFormat(
+        gfx::ContentColorUsage::kHDR, /*needs_alpha=*/false,
+        color_spaces.GetOutputColorSpace(gfx::ContentColorUsage::kHDR,
+                                         /*needs_alpha=*/false),
+        image_format_hdr_.value());
+    color_spaces.SetOutputColorSpaceAndFormat(
+        gfx::ContentColorUsage::kHDR, /*needs_alpha=*/true,
+        color_spaces.GetOutputColorSpace(gfx::ContentColorUsage::kHDR,
+                                         /*needs_alpha=*/true),
+        image_format_hdr_.value());
+  }
+  changed_display.SetColorSpaces(std::move(color_spaces));
 
   // There are 2 cases where |changed_display| must be set as primary:
   // 1. When it is the first one being added to the |display_list_|. Or
@@ -262,6 +284,10 @@ void WaylandScreen::AddOrUpdateDisplay(const WaylandOutput::Metrics& metrics) {
   display_list_.AddOrUpdateDisplay(changed_display, type);
 }
 
+void WaylandScreen::ResetConnection() {
+  connection_ = nullptr;
+}
+
 WaylandOutput::Id WaylandScreen::GetOutputIdForDisplayId(int64_t display_id) {
   auto iter = std::find_if(
       display_id_map_.begin(), display_id_map_.end(),
@@ -278,6 +304,11 @@ WaylandOutput* WaylandScreen::GetWaylandOutputForDisplayId(int64_t display_id) {
 
   auto* output_manager = connection_->wayland_output_manager();
   return output_manager->GetOutput(GetOutputIdForDisplayId(display_id));
+}
+
+viz::SharedImageFormat WaylandScreen::GetHDRImageFormat() const {
+  CHECK(image_format_hdr_);
+  return image_format_hdr_.value();
 }
 
 WaylandOutput::Id WaylandScreen::GetOutputIdMatching(const gfx::Rect& bounds) {
@@ -374,8 +405,8 @@ gfx::AcceleratedWidget WaylandScreen::GetLocalProcessWidgetAtPoint(
     const gfx::Point& point,
     const std::set<gfx::AcceleratedWidget>& ignore) const {
   auto widget = GetAcceleratedWidgetAtScreenPoint(point);
-  return !widget || base::Contains(ignore, widget) ? gfx::kNullAcceleratedWidget
-                                                   : widget;
+  return !widget || ignore.contains(widget) ? gfx::kNullAcceleratedWidget
+                                            : widget;
 }
 
 display::Display WaylandScreen::GetDisplayNearestPoint(
@@ -433,31 +464,19 @@ bool WaylandScreen::SetScreenSaverSuspended(bool suspend) {
     return false;
 
   if (suspend) {
-    // Wayland inhibits idle behaviour on certain output, and implies that a
-    // surface bound to that output should obtain the inhibitor and hold it
-    // until it no longer needs to prevent the output to go idle.
-    // We assume that the idle lock is initiated by the user, and therefore the
-    // surface that we should use is the one owned by the window that is focused
-    // currently.
-    const auto* window_manager = connection_->window_manager();
-    DCHECK(window_manager);
-    const auto* current_window = window_manager->GetCurrentFocusedWindow();
-    if (!current_window) {
-      LOG(WARNING) << "Cannot inhibit going idle when no window is focused";
-      return false;
-    }
-    DCHECK(current_window->root_surface());
-    idle_inhibitor_ = connection_->zwp_idle_inhibit_manager()->CreateInhibitor(
-        current_window->root_surface()->surface());
+    connection_->zwp_idle_inhibit_manager()->CreateInhibitor();
   } else {
-    idle_inhibitor_.reset();
+    connection_->zwp_idle_inhibit_manager()->RemoveInhibitor();
   }
 
   return true;
 }
 
 bool WaylandScreen::IsScreenSaverActive() const {
-  return idle_inhibitor_ != nullptr;
+  // idle_inhibitor prevents screen saver from engaging, but does not indicate
+  // whether screen saver is active or not. Assume not here.
+  NOTIMPLEMENTED_LOG_ONCE();
+  return false;
 }
 
 base::TimeDelta WaylandScreen::CalculateIdleTime() const {
@@ -492,7 +511,7 @@ void WaylandScreen::RemoveObserver(display::DisplayObserver* observer) {
   display_list_.RemoveObserver(observer);
 }
 
-base::Value::List WaylandScreen::GetGpuExtraInfo(
+base::ListValue WaylandScreen::GetGpuExtraInfo(
     const gfx::GpuExtraInfo& gpu_extra_info) {
   auto values = GetDesktopEnvironmentInfo();
   std::vector<std::string> protocols;

@@ -4,93 +4,340 @@
 
 #include "components/autofill/core/browser/single_field_fillers/autocomplete/autocomplete_history_manager.h"
 
+#include <algorithm>
+#include <functional>
+#include <memory>
 #include <string>
-#include <unordered_map>
 #include <utility>
+#include <variant>
 #include <vector>
 
+#include "base/check.h"
+#include "base/check_deref.h"
+#include "base/check_op.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/strings/string_util.h"
-#include "base/strings/utf_string_conversions.h"
+#include "base/time/time.h"
+#include "base/version_info/version_info.h"
+#include "components/autofill/core/browser/at_memory/at_memory_enablement_utils.h"
 #include "components/autofill/core/browser/data_quality/validation.h"
+#include "components/autofill/core/browser/field_types.h"
+#include "components/autofill/core/browser/filling/filling_product.h"
+#include "components/autofill/core/browser/form_structure.h"
+#include "components/autofill/core/browser/foundations/autofill_client.h"
 #include "components/autofill/core/browser/metrics/autofill_metrics.h"
+#include "components/autofill/core/browser/single_field_fillers/single_field_fill_router.h"
 #include "components/autofill/core/browser/studies/autofill_experiments.h"
+#include "components/autofill/core/browser/suggestions/autocomplete_suggestion_generator.h"
 #include "components/autofill/core/browser/suggestions/suggestion.h"
+#include "components/autofill/core/browser/suggestions/suggestion_generator.h"
+#include "components/autofill/core/browser/suggestions/suggestion_type.h"
 #include "components/autofill/core/browser/webdata/autocomplete/autocomplete_entry.h"
+#include "components/autofill/core/browser/webdata/autofill_webdata_service.h"
 #include "components/autofill/core/common/autofill_clock.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_prefs.h"
 #include "components/autofill/core/common/autofill_regexes.h"
 #include "components/autofill/core/common/credit_card_number_validation.h"
 #include "components/autofill/core/common/form_data.h"
+#include "components/autofill/core/common/form_field_data.h"
+#include "components/autofill/core/common/unique_ids.h"
 #include "components/prefs/pref_service.h"
-#include "components/version_info/version_info.h"
+#include "components/webdata/common/web_data_results.h"
+#include "components/webdata/common/web_data_service_base.h"
 
 namespace autofill {
 
 namespace {
+// Returns true if the field type is eligible to be saved in the autocomplete
+// history. Some types (promo codes, IBANs, CCs, CVCs) are excluded. Loyalty
+// card IDs are also excluded if they were autofilled.
+bool IsFieldTypeSaveable(const FormStructure* form, FieldGlobalId field_id) {
+  const AutofillField* field = form ? form->GetFieldById(field_id) : nullptr;
+  if (!field) {
+    return true;
+  }
+  for (const FieldType field_type : field->Type().GetTypes()) {
+    switch (field_type) {
+      case MERCHANT_PROMO_CODE:
+      case IBAN_VALUE:
+      case CREDIT_CARD_VERIFICATION_CODE:
+      case CREDIT_CARD_STANDALONE_VERIFICATION_CODE:
+      case CREDIT_CARD_NUMBER:
+        return false;
+      case LOYALTY_MEMBERSHIP_ID:
+        if (field->last_modifier() == FieldModifier::kAutofill &&
+            !base::FeatureList::IsEnabled(
+                features::kAutofillPreventAutofillFromSavingToAutocomplete)) {
+          return false;
+        }
+        break;
+      case NO_SERVER_DATA:
+      case UNKNOWN_TYPE:
+      case EMPTY_TYPE:
+      case NAME_FIRST:
+      case NAME_MIDDLE:
+      case NAME_LAST:
+      case NAME_MIDDLE_INITIAL:
+      case NAME_FULL:
+      case NAME_SUFFIX:
+      case EMAIL_ADDRESS:
+      case PHONE_HOME_NUMBER:
+      case PHONE_HOME_CITY_CODE:
+      case PHONE_HOME_COUNTRY_CODE:
+      case PHONE_HOME_CITY_AND_NUMBER:
+      case PHONE_HOME_WHOLE_NUMBER:
+      case ADDRESS_HOME_LINE1:
+      case ADDRESS_HOME_LINE2:
+      case ADDRESS_HOME_APT_NUM:
+      case ADDRESS_HOME_CITY:
+      case ADDRESS_HOME_STATE:
+      case ADDRESS_HOME_ZIP:
+      case ADDRESS_HOME_COUNTRY:
+      case CREDIT_CARD_NAME_FULL:
+      case CREDIT_CARD_EXP_MONTH:
+      case CREDIT_CARD_EXP_2_DIGIT_YEAR:
+      case CREDIT_CARD_EXP_4_DIGIT_YEAR:
+      case CREDIT_CARD_EXP_DATE_2_DIGIT_YEAR:
+      case CREDIT_CARD_EXP_DATE_4_DIGIT_YEAR:
+      case CREDIT_CARD_TYPE:
+      case COMPANY_NAME:
+      case MERCHANT_EMAIL_SIGNUP:
+      case PASSWORD:
+      case ACCOUNT_CREATION_PASSWORD:
+      case ADDRESS_HOME_STREET_ADDRESS:
+      case ADDRESS_HOME_SORTING_CODE:
+      case ADDRESS_HOME_DEPENDENT_LOCALITY:
+      case ADDRESS_HOME_LINE3:
+      case NOT_ACCOUNT_CREATION_PASSWORD:
+      case USERNAME:
+      case USERNAME_AND_EMAIL_ADDRESS:
+      case NEW_PASSWORD:
+      case PROBABLY_NEW_PASSWORD:
+      case NOT_NEW_PASSWORD:
+      case CREDIT_CARD_NAME_FIRST:
+      case CREDIT_CARD_NAME_LAST:
+      case PHONE_HOME_EXTENSION:
+      case CONFIRMATION_PASSWORD:
+      case AMBIGUOUS_TYPE:
+      case SEARCH_TERM:
+      case PRICE:
+      case NOT_PASSWORD:
+      case SINGLE_USERNAME:
+      case NOT_USERNAME:
+      case ADDRESS_HOME_STREET_NAME:
+      case ADDRESS_HOME_HOUSE_NUMBER:
+      case ADDRESS_HOME_SUBPREMISE:
+      case ADDRESS_HOME_OTHER_SUBUNIT:
+      case NAME_LAST_FIRST:
+      case NAME_LAST_CONJUNCTION:
+      case NAME_LAST_SECOND:
+      case NAME_HONORIFIC_PREFIX:
+      case ADDRESS_HOME_ADDRESS:
+      case ADDRESS_HOME_ADDRESS_WITH_NAME:
+      case ADDRESS_HOME_FLOOR:
+      case PHONE_HOME_CITY_CODE_WITH_TRUNK_PREFIX:
+      case PHONE_HOME_CITY_AND_NUMBER_WITHOUT_TRUNK_PREFIX:
+      case PHONE_HOME_NUMBER_PREFIX:
+      case PHONE_HOME_NUMBER_SUFFIX:
+      case NUMERIC_QUANTITY:
+      case ONE_TIME_CODE:
+      case DELIVERY_INSTRUCTIONS:
+      case ADDRESS_HOME_OVERFLOW:
+      case ADDRESS_HOME_LANDMARK:
+      case ADDRESS_HOME_OVERFLOW_AND_LANDMARK:
+      case ADDRESS_HOME_ADMIN_LEVEL2:
+      case ADDRESS_HOME_STREET_LOCATION:
+      case ADDRESS_HOME_BETWEEN_STREETS:
+      case ADDRESS_HOME_BETWEEN_STREETS_OR_LANDMARK:
+      case ADDRESS_HOME_STREET_LOCATION_AND_LOCALITY:
+      case ADDRESS_HOME_STREET_LOCATION_AND_LANDMARK:
+      case ADDRESS_HOME_DEPENDENT_LOCALITY_AND_LANDMARK:
+      case ADDRESS_HOME_BETWEEN_STREETS_1:
+      case ADDRESS_HOME_BETWEEN_STREETS_2:
+      case ADDRESS_HOME_HOUSE_NUMBER_AND_APT:
+      case SINGLE_USERNAME_FORGOT_PASSWORD:
+      case ADDRESS_HOME_APT:
+      case ADDRESS_HOME_APT_TYPE:
+      case SINGLE_USERNAME_WITH_INTERMEDIATE_VALUES:
+      case ALTERNATIVE_FULL_NAME:
+      case ALTERNATIVE_GIVEN_NAME:
+      case ALTERNATIVE_FAMILY_NAME:
+      case PASSPORT_NUMBER:
+      case PASSPORT_ISSUING_COUNTRY:
+      case PASSPORT_EXPIRATION_DATE:
+      case PASSPORT_ISSUE_DATE:
+      case LOYALTY_MEMBERSHIP_PROGRAM:
+      case LOYALTY_MEMBERSHIP_PROVIDER:
+      case VEHICLE_LICENSE_PLATE:
+      case VEHICLE_VIN:
+      case VEHICLE_MAKE:
+      case VEHICLE_MODEL:
+      case DRIVERS_LICENSE_REGION:
+      case DRIVERS_LICENSE_NUMBER:
+      case DRIVERS_LICENSE_EXPIRATION_DATE:
+      case DRIVERS_LICENSE_ISSUE_DATE:
+      case VEHICLE_YEAR:
+      case VEHICLE_PLATE_STATE:
+      case EMAIL_OR_LOYALTY_MEMBERSHIP_ID:
+      case NATIONAL_ID_CARD_NUMBER:
+      case NATIONAL_ID_CARD_EXPIRATION_DATE:
+      case NATIONAL_ID_CARD_ISSUE_DATE:
+      case NATIONAL_ID_CARD_ISSUING_COUNTRY:
+      case KNOWN_TRAVELER_NUMBER:
+      case KNOWN_TRAVELER_NUMBER_EXPIRATION_DATE:
+      case REDRESS_NUMBER:
+      case ADDRESS_HOME_ZIP_PREFIX:
+      case ADDRESS_HOME_ZIP_SUFFIX:
+      case FLIGHT_RESERVATION_FLIGHT_NUMBER:
+      case FLIGHT_RESERVATION_CONFIRMATION_CODE:
+      case FLIGHT_RESERVATION_TICKET_NUMBER:
+      case FLIGHT_RESERVATION_DEPARTURE_AIRPORT:
+      case FLIGHT_RESERVATION_ARRIVAL_AIRPORT:
+      case FLIGHT_RESERVATION_DEPARTURE_DATE:
+      case ADDRESS_HOME_ZIP_AND_CITY:
+      case ORDER_ID:
+      case ORDER_DATE:
+      case ORDER_MERCHANT_NAME:
+      case SHIPMENT_TRACKING_NUMBER:
+      case MAX_VALID_FIELD_TYPE:
+        break;
+    }
+  }
+  return true;
+}
 
-// Limit on the number of suggestions to appear in the pop-up menu under an
-// text input element in a form.
-const int kMaxAutocompleteMenuItems = 6;
+// Returns true if the given `field` in `form` and its value are valid to be
+// saved as a new or updated Autocomplete entry.
+// We put the following restriction on stored FormFields:
+//  - non-empty name
+//  - neither empty nor whitespace-only value
+//  - text field
+//  - autocomplete is not disabled
+//  - field type is eligible (e.g. not a CVC, promo code, or autofilled loyalty
+//    card)
+//  - field was not autofilled by a structured product (e.g., Address,
+//    Payments), when
+//    `features::kAutofillPreventAutofillFromSavingToAutocomplete` is enabled.
+//  - value is not a credit card number, IBAN, or Social Security Number (SSN)
+//  - field has user-typed input or is focusable (this is a mild criterion but
+//    this way it is consistent for all platforms)
+//  - not a presentation field
+bool IsFieldValueSaveable(const FormFieldData& field,
+                          const FormStructure* form) {
+  // Only save values from text-like input elements that are not password
+  // or number inputs.
+  if (!field.IsTextInputElement() || field.IsPasswordInputElement() ||
+      field.form_control_type() == FormControlType::kInputNumber) {
+    return false;
+  }
 
-// Returns true if the field has a meaningful name.
-// An input field name 'field_2' bears no semantic meaning and there is a chance
-// that a different website or different form uses the same field name for a
-// totally different purpose.
-bool IsMeaningfulFieldName(const std::u16string& name) {
-  static constexpr char16_t kRegex[] =
-      u"^(((field|input|mat-input)(_|-)?\\d+)|title|otp|tan)$|"
-      u"(cvc|cvn|cvv|captcha)";
-  return !MatchesRegex<kRegex>(name);
+  // Only save values if the page allows autocomplete for the field.
+  if (!field.should_autocomplete()) {
+    return false;
+  }
+
+  // Reject fields with empty names or names that are not meaningful for
+  // autocomplete (e.g., placeholder names generated by frameworks).
+  if (!AutocompleteHistoryManager::IsFieldNameMeaningfulForAutocomplete(
+          field.name()) ||
+      field.name().empty()) {
+    return false;
+  }
+
+  // We don't want to save a trimmed string, but we want to make sure that the
+  // value is neither empty nor only whitespaces.
+  if (std::ranges::none_of(field.value(),
+                           std::not_fn(base::IsUnicodeWhitespace<char16_t>))) {
+    return false;
+  }
+
+  // Reject fields with types that are ineligible for autocomplete such as
+  // credit card numbers, CVCs, IBANs, promo codes, or autofilled loyalty cards.
+  if (!IsFieldTypeSaveable(form, field.global_id())) {
+    return false;
+  }
+
+  if (base::FeatureList::IsEnabled(
+          features::kAutofillPreventAutofillFromSavingToAutocomplete)) {
+    const AutofillField* autofill_field =
+        form ? form->GetFieldById(field.global_id()) : nullptr;
+    if (autofill_field &&
+        autofill_field->all_modifiers().contains(FieldModifier::kAutofill) &&
+        (autofill_field->last_modifier() != FieldModifier::kUser ||
+         autofill_field->filling_product() != FillingProduct::kAutocomplete)) {
+      // If a field has been autofilled by a structured product (e.g. Address,
+      // Payments, Autofill AI), we avoid saving the submitted value to
+      // Autocomplete, even if the user edited it.
+      //
+      // However, if the field was filled by Autocomplete and then edited by
+      // the user, we should save the edited value as it represents a new
+      // user-edited autocomplete value.
+      return false;
+    }
+  }
+
+  // Do not save sensitive values like credit card numbers, IBANs, or Social
+  // Security Numbers.
+  if (IsValidCreditCardNumber(field.value()) ||
+      IsInternationalBankAccountNumber(field.value()) || IsSSN(field.value())) {
+    return false;
+  }
+
+  // Reject fields that the user did not type into and are not currently
+  // focusable, or fields that have a presentation role (ARIA
+  // role="presentation").
+  if ((!(field.properties_mask() & kUserTyped) && !field.is_focusable()) ||
+      field.role() == FormFieldData::RoleAttribute::kPresentation) {
+    return false;
+  }
+
+  return true;
 }
 
 }  // namespace
 
 AutocompleteHistoryManager::AutocompleteHistoryManager() = default;
 
-AutocompleteHistoryManager::~AutocompleteHistoryManager() {
-  CancelAllPendingQueries();
-}
+AutocompleteHistoryManager::~AutocompleteHistoryManager() = default;
 
-bool AutocompleteHistoryManager::OnGetSingleFieldSuggestions(
-    const FormFieldData& field,
-    const AutofillClient& client,
-    SingleFieldFillRouter::OnSuggestionsReturnedCallback&
+void AutocompleteHistoryManager::OnGetSingleFieldSuggestions(
+    const FormData& form,
+    const FormStructure* form_structure,
+    const FormFieldData& trigger_field,
+    const AutofillField* trigger_autofill_field,
+    AutofillClient& client,
+    SingleFieldFillRouter::OnSuggestionsReturnedCallback
         on_suggestions_returned) {
-  if (!field.should_autocomplete()) {
-    return false;
+  // Cancel the pending query if there is one.
+  suggestion_generator_ = nullptr;
+  if (!profile_database_) {
+    std::move(on_suggestions_returned).Run(trigger_field.global_id(), {});
+    return;
   }
+  suggestion_generator_ =
+      std::make_unique<AutocompleteSuggestionGenerator>(profile_database_);
 
-  CancelPendingQueries();
+  auto on_suggestions_generated = base::BindOnce(
+      [](SingleFieldFillRouter::OnSuggestionsReturnedCallback callback,
+         FieldGlobalId field_id,
+         SuggestionGenerator::ReturnedSuggestions returned_suggestions) {
+        std::move(callback).Run(field_id,
+                                std::move(returned_suggestions.second));
+      },
+      std::move(on_suggestions_returned), trigger_field.global_id());
 
-  if (!IsMeaningfulFieldName(field.name()) || !client.IsAutocompleteEnabled() ||
-      field.form_control_type() == FormControlType::kTextArea ||
-      field.form_control_type() == FormControlType::kContentEditable ||
-      IsInAutofillSuggestionsDisabledExperiment()) {
-    SendSuggestions({}, QueryHandler(field.global_id(), field.value(),
-                                     std::move(on_suggestions_returned)));
-    return true;
-  }
-
-  if (profile_database_) {
-    auto query_handle = profile_database_->GetFormValuesForElementName(
-        field.name(), field.value(), kMaxAutocompleteMenuItems,
-        base::BindOnce(&AutocompleteHistoryManager::OnWebDataServiceRequestDone,
-                       weak_ptr_factory_.GetWeakPtr()));
-
-    // We can simply insert, since |query_handle| is always unique.
-    pending_queries_.insert(
-        {query_handle, QueryHandler(field.global_id(), field.value(),
-                                    std::move(on_suggestions_returned))});
-    return true;
-  }
-  return false;
+  suggestion_generator_->GenerateSuggestions(
+      form, trigger_field, form_structure, trigger_autofill_field, client,
+      std::move(on_suggestions_generated));
 }
 
 void AutocompleteHistoryManager::OnWillSubmitFormWithFields(
     const std::vector<FormFieldData>& fields,
+    const FormStructure* form,
     bool is_autocomplete_enabled) {
   if (!is_autocomplete_enabled || is_off_the_record_) {
     return;
@@ -98,7 +345,7 @@ void AutocompleteHistoryManager::OnWillSubmitFormWithFields(
   std::vector<FormFieldData> autocomplete_saveable_fields;
   autocomplete_saveable_fields.reserve(fields.size());
   for (const FormFieldData& field : fields) {
-    if (IsFieldValueSaveable(field)) {
+    if (IsFieldValueSaveable(field, form)) {
       autocomplete_saveable_fields.push_back(field);
     }
   }
@@ -107,51 +354,42 @@ void AutocompleteHistoryManager::OnWillSubmitFormWithFields(
   }
 }
 
-void AutocompleteHistoryManager::CancelPendingQueries() {
-  if (profile_database_) {
-    for (const auto& [handle, query_handler] : pending_queries_) {
-      profile_database_->CancelRequest(handle);
-    }
+void AutocompleteHistoryManager::CancelPendingQuery() {
+  if (suggestion_generator_) {
+    suggestion_generator_->CancelPendingQuery();
   }
-  pending_queries_.clear();
 }
 
 void AutocompleteHistoryManager::OnRemoveCurrentSingleFieldSuggestion(
     const std::u16string& field_name,
+    const std::u16string& field_label,
     const std::u16string& value,
     SuggestionType type) {
   if (profile_database_) {
-    profile_database_->RemoveFormValueForElementName(field_name, value);
+    profile_database_->RemoveFormValueForElementNameAndLabel(
+        field_name, field_label, value);
   }
 }
 
 void AutocompleteHistoryManager::OnSingleFieldSuggestionSelected(
     const Suggestion& suggestion) {
-  // Try to find the AutofillEntry associated with the given suggestion.
-  auto last_entries_iter = last_entries_.find(suggestion.main_text.value);
-  if (last_entries_iter == last_entries_.end()) {
-    // Not found, therefore nothing to do. Most likely there was a race
-    // condition, but it's not that big of a deal in the current scenario
-    // (logging metrics).
-    DUMP_WILL_BE_NOTREACHED();
-    return;
-  }
-
+  CHECK_EQ(suggestion.type, SuggestionType::kAutocompleteEntry);
+  const AutocompleteEntry& entry =
+      CHECK_DEREF(std::get_if<AutocompleteEntry>(&suggestion.payload));
   // The AutocompleteEntry was found, use it to log the DaysSinceLastUsed.
-  base::TimeDelta time_delta =
-      base::Time::Now() - last_entries_iter->second.date_last_used();
+  base::TimeDelta time_delta = base::Time::Now() - entry.date_last_used();
   AutofillMetrics::LogAutocompleteDaysSinceLastUse(time_delta.InDays());
 
-  // Log metric to give details on how likely users are to ignore an
-  // autocomplete suggestion based on when it was last used.
-  for (const auto& entry : last_entries_) {
-    if (entry.first == suggestion.main_text.value) {
-      continue;
-    }
-    base::TimeDelta unaccepted_suggestion_time_delta =
-        base::Time::Now() - entry.second.date_last_used();
-    AutofillMetrics::LogUnacceptedAutocompleteSuggestionDaysSinceLastUse(
-        unaccepted_suggestion_time_delta.InDays());
+  if (profile_database_ &&
+      base::FeatureList::IsEnabled(
+          features::kAutofillPreventAutofillFromSavingToAutocomplete)) {
+    // When the feature is enabled, form submission will skip saving any fields
+    // that were autofilled. Therefore, we must update the autocomplete entry's
+    // metadata immediately when the suggestion is selected.
+    FormFieldData field;
+    field.set_name(entry.key().name());
+    field.set_value(entry.key().value());
+    profile_database_->AddFormFields({field});
   }
 }
 
@@ -174,109 +412,30 @@ void AutocompleteHistoryManager::Init(
     // stored in this pref.
     int last_cleaned_version = pref_service_->GetInteger(
         prefs::kAutocompleteLastVersionRetentionPolicy);
-    if (CHROME_VERSION_MAJOR > last_cleaned_version) {
+    if (version_info::GetMajorVersionNumberAsInt() > last_cleaned_version) {
       // Trigger the cleanup.
-      profile_database_->RemoveExpiredAutocompleteEntries(base::BindOnce(
-          &AutocompleteHistoryManager::OnWebDataServiceRequestDone,
-          weak_ptr_factory_.GetWeakPtr()));
+      profile_database_->RemoveExpiredAutocompleteEntries(
+          base::BindOnce(&AutocompleteHistoryManager::OnAutofillCleanupReturned,
+                         weak_ptr_factory_.GetWeakPtr()));
     }
   }
 }
 
-void AutocompleteHistoryManager::OnWebDataServiceRequestDone(
-    WebDataServiceBase::Handle current_handle,
-    std::unique_ptr<WDTypedResult> result) {
-  DCHECK(current_handle);
-
-  if (!result) {
-    // Returning early here if |result| is null.  We've seen this happen on
-    // Linux due to NFS dismounting and causing sql failures.
-    // See http://crbug.com/68783.
-    return;
-  }
-
-  WDResultType result_type = result->GetType();
-  switch (result_type) {
-    case AUTOFILL_VALUE_RESULT:
-      OnAutofillValuesReturned(current_handle, std::move(result));
-      break;
-    case AUTOFILL_CLEANUP_RESULT:
-      OnAutofillCleanupReturned(current_handle, std::move(result));
-      break;
-    default:
-      break;
-  }
-}
-
-AutocompleteHistoryManager::QueryHandler::QueryHandler(
-    FieldGlobalId field_id,
-    std::u16string prefix,
-    SingleFieldFillRouter::OnSuggestionsReturnedCallback
-        on_suggestions_returned)
-    : field_id_(field_id),
-      prefix_(std::move(prefix)),
-      on_suggestions_returned_(std::move(on_suggestions_returned)) {}
-
-AutocompleteHistoryManager::QueryHandler::QueryHandler(QueryHandler&&) =
-    default;
-
-AutocompleteHistoryManager::QueryHandler::~QueryHandler() = default;
-
-void AutocompleteHistoryManager::SendSuggestions(
-    const std::vector<AutocompleteEntry>& entries,
-    QueryHandler query_handler) {
-  // If there is only one suggestion that is the exact same string as
-  // what is in the input box, then don't show the suggestion.
-  bool hide_suggestions =
-      entries.size() == 1 && query_handler.prefix_ == entries[0].key().value();
-
-  std::vector<Suggestion> suggestions;
-  last_entries_.clear();
-
-  if (!hide_suggestions) {
-    for (const AutocompleteEntry& entry : entries) {
-      suggestions.push_back(Suggestion(entry.key().value()));
-      last_entries_.insert({entry.key().value(), AutocompleteEntry(entry)});
-    }
-  }
-
-  std::move(query_handler.on_suggestions_returned_)
-      .Run(query_handler.field_id_, suggestions);
-}
-
-void AutocompleteHistoryManager::CancelAllPendingQueries() {
-  if (profile_database_) {
-    for (const auto& [handle, query_handler] : pending_queries_) {
-      profile_database_->CancelRequest(handle);
-    }
-  }
-
-  pending_queries_.clear();
-}
-
-void AutocompleteHistoryManager::OnAutofillValuesReturned(
-    WebDataServiceBase::Handle current_handle,
-    std::unique_ptr<WDTypedResult> result) {
-  DCHECK(result);
-  DCHECK_EQ(AUTOFILL_VALUE_RESULT, result->GetType());
-
-  auto pending_queries_iter = pending_queries_.find(current_handle);
-  if (pending_queries_iter == pending_queries_.end()) {
-    // There's no handler for this query, hence nothing to do.
-    return;
-  }
-
-  // Moving the handler since we're erasing the entry.
-  auto query_handler = std::move(pending_queries_iter->second);
-
-  // Removing the query, as it is no longer pending.
-  pending_queries_.erase(pending_queries_iter);
-
-  const WDResult<std::vector<AutocompleteEntry>>* autocomplete_result =
-      static_cast<const WDResult<std::vector<AutocompleteEntry>>*>(
-          result.get());
-  std::vector<AutocompleteEntry> entries = autocomplete_result->GetValue();
-  SendSuggestions(entries, std::move(query_handler));
+bool AutocompleteHistoryManager::IsFieldNameMeaningfulForAutocomplete(
+    const std::u16string& name) {
+  static constexpr char16_t kRegex[] =
+      // Full matches.
+      u"^(?:(?:field|input|mat-input)[-_]?\\d+|title|tan|mfa_text_box|pw|pin)$"
+      // Prefix and suffix matches.
+      u"|^otp|otp$"
+      // Infix matches.
+      u"|\\botp\\b|captcha|passw|pass2|passcode|pwd|senha|pincode|"
+      // Suppress flight verification fields.
+      u"flight[-_]?verification|"
+      // Suppress CVC fields.
+      u"csc|cvd|ccv|cvc|cvn|cvv|card[-_]?verification|verification[-_]?code|"
+      u"verify[-_]?(?:card|code)|security[-_]?(?:code|value|number)";
+  return !MatchesRegex<kRegex>(name);
 }
 
 void AutocompleteHistoryManager::OnAutofillCleanupReturned(
@@ -284,35 +443,13 @@ void AutocompleteHistoryManager::OnAutofillCleanupReturned(
     std::unique_ptr<WDTypedResult> result) {
   DCHECK(result);
   DCHECK_EQ(AUTOFILL_CLEANUP_RESULT, result->GetType());
+  if (!static_cast<const WDResult<bool>*>(result.get())->GetValue()) {
+    DLOG(WARNING) << "Autofill cleanup returned false. This should not happen.";
+  }
 
   // Cleanup was successful, update the latest run milestone.
   pref_service_->SetInteger(prefs::kAutocompleteLastVersionRetentionPolicy,
-                            CHROME_VERSION_MAJOR);
-}
-
-// We put the following restriction on stored FormFields:
-//  - non-empty name
-//  - neither empty nor whitespace-only value
-//  - text field
-//  - autocomplete is not disabled
-//  - value is not a credit card number
-//  - field has user typed input or is focusable (this is a mild criteria but
-//    this way it is consistent for all platforms)
-//  - not a presentation field
-bool AutocompleteHistoryManager::IsFieldValueSaveable(
-    const FormFieldData& field) {
-  // We don't want to save a trimmed string, but we want to make sure that the
-  // value is neither empty nor only whitespaces.
-  bool is_value_valid = std::ranges::any_of(
-      field.value(), std::not_fn(base::IsUnicodeWhitespace<char16_t>));
-  return is_value_valid && IsMeaningfulFieldName(field.name()) &&
-         !field.name().empty() && field.IsTextInputElement() &&
-         !field.IsPasswordInputElement() &&
-         field.form_control_type() != FormControlType::kInputNumber &&
-         field.should_autocomplete() &&
-         !IsValidCreditCardNumber(field.value()) && !IsSSN(field.value()) &&
-         (field.properties_mask() & kUserTyped || field.is_focusable()) &&
-         field.role() != FormFieldData::RoleAttribute::kPresentation;
+                            version_info::GetMajorVersionNumberAsInt());
 }
 
 }  // namespace autofill

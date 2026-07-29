@@ -4,6 +4,8 @@
 
 package org.chromium.net;
 
+import android.annotation.SuppressLint;
+
 /**
  * {@link BidirectionalStream} that exposes experimental features. To obtain an instance of this
  * class, cast a {@code BidirectionalStream} to this type. Every instance of {@code
@@ -12,9 +14,8 @@ package org.chromium.net;
  * use, but instead only to access experimental features. Experimental features may be deprecated in
  * the future. Use at your own risk.
  *
- * <p>{@hide for consistency with other experimental classes}
- *
  * @deprecated scheduled for deletion, don't use in new code.
+ * @hide
  */
 @Deprecated
 public abstract class ExperimentalBidirectionalStream extends BidirectionalStream {
@@ -26,11 +27,11 @@ public abstract class ExperimentalBidirectionalStream extends BidirectionalStrea
      * not meant for general use, but instead only to access experimental features. Experimental
      * features may be deprecated in the future. Use at your own risk.
      *
-     * <p>{@hide for consistency with other experimental classes}
-     *
      * @deprecated scheduled for deletion, don't use in new code.
+     * @hide
      */
     @Deprecated
+    @SuppressLint("ReferencesHidden")
     public abstract static class Builder extends BidirectionalStream.Builder {
         // To support method chaining, override superclass methods to return an
         // instance of this class instead of the parent.

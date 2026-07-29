@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "chrome/browser/resource_coordinator/tab_manager.h"
 
 #include <stddef.h>
@@ -21,10 +16,8 @@
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
-#include "base/memory/memory_pressure_monitor.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/field_trial.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/process/process.h"
 #include "base/rand_util.h"
 #include "base/strings/string_number_conversions.h"
@@ -40,21 +33,18 @@
 #include "chrome/browser/media/webrtc/media_capture_devices_dispatcher.h"
 #include "chrome/browser/media/webrtc/media_stream_capture_indicator.h"
 #include "chrome/browser/memory/oom_memory_details.h"
+#include "chrome/browser/performance_manager/policies/discard_eligibility_policy.h"
+#include "chrome/browser/performance_manager/policies/page_discarding_helper.h"
 #include "chrome/browser/resource_coordinator/resource_coordinator_parts.h"
 #include "chrome/browser/resource_coordinator/tab_lifecycle_unit_external.h"
-#include "chrome/browser/resource_coordinator/tab_manager_features.h"
 #include "chrome/browser/resource_coordinator/tab_manager_resource_coordinator_signal_observer.h"
 #include "chrome/browser/resource_coordinator/time.h"
 #include "chrome/browser/sessions/session_restore.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_list.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/tab_contents/tab_contents_iterator.h"
-#include "chrome/browser/ui/tab_ui_helper.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "chrome/browser/ui/tabs/tab_utils.h"
 #include "chrome/common/chrome_constants.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/common/url_constants.h"
 #include "components/performance_manager/public/features.h"
 #include "components/performance_manager/public/graph/graph.h"
@@ -86,30 +76,7 @@ using LoadingState = TabLoadTracker::LoadingState;
 ////////////////////////////////////////////////////////////////////////////////
 // TabManager
 
-class TabManager::TabManagerSessionRestoreObserver final
-    : public SessionRestoreObserver {
- public:
-  explicit TabManagerSessionRestoreObserver(TabManager* tab_manager)
-      : tab_manager_(tab_manager) {
-    SessionRestore::AddObserver(this);
-  }
-
-  ~TabManagerSessionRestoreObserver() { SessionRestore::RemoveObserver(this); }
-
-  // SessionRestoreObserver implementation:
-  void OnWillRestoreTab(WebContents* web_contents) override {
-    tab_manager_->OnWillRestoreTab(web_contents);
-  }
-
- private:
-  raw_ptr<TabManager> tab_manager_;
-};
-
-TabManager::TabManager() {
-  session_restore_observer_ =
-      std::make_unique<TabManagerSessionRestoreObserver>(this);
-}
-
+TabManager::TabManager() = default;
 TabManager::~TabManager() = default;
 
 void TabManager::Start() {
@@ -129,22 +96,6 @@ void TabManager::Start() {
       ->Start();
 }
 
-LifecycleUnitVector TabManager::GetSortedLifecycleUnits() {
-  LifecycleUnitVector sorted_lifecycle_units(lifecycle_units_.begin(),
-                                             lifecycle_units_.end());
-  // Sort lifecycle_units with ascending importance.
-  std::sort(sorted_lifecycle_units.begin(), sorted_lifecycle_units.end(),
-            [](LifecycleUnit* a, LifecycleUnit* b) {
-              return a->GetSortKey() < b->GetSortKey();
-            });
-  return sorted_lifecycle_units;
-}
-
-void TabManager::DiscardTab(LifecycleUnitDiscardReason reason,
-                            TabDiscardDoneCB tab_discard_done) {
-  DiscardTabImpl(reason, std::move(tab_discard_done));
-}
-
 WebContents* TabManager::DiscardTabByExtension(content::WebContents* contents) {
   if (contents) {
     TabLifecycleUnitExternal* tab_lifecycle_unit_external =
@@ -160,14 +111,6 @@ WebContents* TabManager::DiscardTabByExtension(content::WebContents* contents) {
   return DiscardTabImpl(LifecycleUnitDiscardReason::EXTERNAL);
 }
 
-void TabManager::AddObserver(TabLifecycleObserver* observer) {
-  TabLifecycleUnitExternal::AddTabLifecycleObserver(observer);
-}
-
-void TabManager::RemoveObserver(TabLifecycleObserver* observer) {
-  TabLifecycleUnitExternal::RemoveTabLifecycleObserver(observer);
-}
-
 ///////////////////////////////////////////////////////////////////////////////
 // TabManager, private:
 
@@ -181,46 +124,27 @@ bool TabManager::IsInternalPage(const GURL& url) {
       chrome::kChromeUINewTabURL,
       chrome::kChromeUISettingsURL,
   });
-  // Prefix-match against the table above. Use strncmp to avoid allocating
-  // memory to convert the URL prefix constants into std::strings.
-  for (size_t i = 0; i < std::size(kInternalPagePrefixes); ++i) {
-    if (!strncmp(url.spec().c_str(), kInternalPagePrefixes[i],
-                 strlen(kInternalPagePrefixes[i])))
+  // Prefix-match against the table above.
+  for (const char* prefix : kInternalPagePrefixes) {
+    if (base::StartsWith(url.spec(), prefix)) {
       return true;
+    }
   }
   return false;
 }
 
-// TODO(jamescook): This should consider tabs with references to other tabs,
-// such as tabs created with JavaScript window.open(). Potentially consider
-// discarding the entire set together, or use that in the priority computation.
 content::WebContents* TabManager::DiscardTabImpl(
     LifecycleUnitDiscardReason reason,
-    TabDiscardDoneCB tab_discard_done) {
+    bool ignore_recent_visibility) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 
-  for (LifecycleUnit* lifecycle_unit : GetSortedLifecycleUnits()) {
-    DecisionDetails decision_details;
-    if (lifecycle_unit->CanDiscard(reason, &decision_details) &&
-        lifecycle_unit->Discard(reason)) {
-      TabLifecycleUnitExternal* tab_lifecycle_unit_external =
-          lifecycle_unit->AsTabLifecycleUnitExternal();
-      // For now, all LifecycleUnits are TabLifecycleUnitExternals.
-      DCHECK(tab_lifecycle_unit_external);
-
-      return tab_lifecycle_unit_external->GetWebContents();
-    }
-  }
-
-  return nullptr;
-}
-
-void TabManager::OnWillRestoreTab(WebContents* contents) {
-  // TabUIHelper is initialized in TabHelpers::AttachTabHelpers. But this place
-  // gets called earlier than that. So for restored tabs, also initialize their
-  // TabUIHelper here.
-  TabUIHelper::CreateForWebContents(contents);
-  TabUIHelper::FromWebContents(contents)->set_created_by_session_restore(true);
+  performance_manager::Graph* graph =
+      performance_manager::PerformanceManager::GetGraph();
+  CHECK(graph);
+  return performance_manager::policies::PageDiscardingHelper::GetFromGraph(
+             graph)
+      ->DiscardAPage(reason, ignore_recent_visibility)
+      .first_content_after_discard;
 }
 
 void TabManager::OnLifecycleUnitDestroyed(LifecycleUnit* lifecycle_unit) {

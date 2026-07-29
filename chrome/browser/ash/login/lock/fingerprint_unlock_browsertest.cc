@@ -2,17 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "base/memory/raw_ptr.h"
-#include "chrome/browser/ash/login/lock/screen_locker.h"
-
 #include "ash/constants/ash_pref_names.h"
 #include "ash/login/ui/lock_contents_view.h"
 #include "ash/login/ui/lock_contents_view_test_api.h"
 #include "ash/login/ui/lock_screen.h"
+#include "base/memory/raw_ptr.h"
 #include "base/power_monitor/power_monitor_device_source.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/simple_test_clock.h"
 #include "base/test/simple_test_tick_clock.h"
+#include "chrome/browser/ash/login/lock/screen_locker.h"
 #include "chrome/browser/ash/login/lock/screen_locker_tester.h"
 #include "chrome/browser/ash/login/quick_unlock/fingerprint_storage.h"
 #include "chrome/browser/ash/login/quick_unlock/quick_unlock_factory.h"
@@ -29,7 +28,7 @@
 #include "content/public/test/browser_test.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/compositor/scoped_animation_duration_scale_mode.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 
 namespace ash {
 namespace {
@@ -79,8 +78,8 @@ class FingerprintUnlockTest : public InProcessBrowserTest {
 
   void SetUpInProcessBrowserTestFixture() override {
     zero_duration_mode_ =
-        std::make_unique<ui::ScopedAnimationDurationScaleMode>(
-            ui::ScopedAnimationDurationScaleMode::ZERO_DURATION);
+        std::make_unique<gfx::ScopedAnimationDurationScaleMode>(
+            gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION);
   }
 
   void SetUpOnMainThread() override {
@@ -103,7 +102,7 @@ class FingerprintUnlockTest : public InProcessBrowserTest {
                               true /* is_complete */,
                               -1 /* percent_complete */);
 
-    browser()->profile()->GetPrefs()->SetInteger(
+    browser()->GetProfile()->GetPrefs()->SetInteger(
         prefs::kQuickUnlockFingerprintRecord, 1);
   }
 
@@ -115,7 +114,7 @@ class FingerprintUnlockTest : public InProcessBrowserTest {
   }
 
   base::TimeDelta GetExpirationTime() {
-    int frequency = browser()->profile()->GetPrefs()->GetInteger(
+    int frequency = browser()->GetProfile()->GetPrefs()->GetInteger(
         prefs::kQuickUnlockTimeout);
     return quick_unlock::PasswordConfirmationFrequencyToTimeDelta(
         static_cast<quick_unlock::PasswordConfirmationFrequency>(frequency));
@@ -234,7 +233,7 @@ class FingerprintUnlockTest : public InProcessBrowserTest {
 
   raw_ptr<QuickUnlockStorage, DanglingUntriaged> quick_unlock_storage_;
 
-  std::unique_ptr<ui::ScopedAnimationDurationScaleMode> zero_duration_mode_;
+  std::unique_ptr<gfx::ScopedAnimationDurationScaleMode> zero_duration_mode_;
   std::unique_ptr<quick_unlock::TestApi> test_api_;
 };
 
@@ -339,7 +338,7 @@ IN_PROC_BROWSER_TEST_F(FingerprintUnlockEnrollTest,
   // Emulate another biod restart giving us a different number of records so
   // `ScreenLocker::UpdateFingerprintStateForUser` can be triggered and so we
   // can check that the state indeed remains the same.
-  browser()->profile()->GetPrefs()->SetInteger(
+  browser()->GetProfile()->GetPrefs()->SetInteger(
       prefs::kQuickUnlockFingerprintRecord, 2);
   base::RunLoop().RunUntilIdle();
 
@@ -376,7 +375,7 @@ IN_PROC_BROWSER_TEST_F(FingerprintUnlockEnrollTest,
   EXPECT_EQ(state_after_bad_session, FingerprintState::UNAVAILABLE);
 
   // Emulate another biod restart, giving a record this time.
-  browser()->profile()->GetPrefs()->SetInteger(
+  browser()->GetProfile()->GetPrefs()->SetInteger(
       prefs::kQuickUnlockFingerprintRecord, 1);
 
   FingerprintState state_after_restart =
@@ -388,13 +387,13 @@ IN_PROC_BROWSER_TEST_F(InProcessBrowserTest, PRE_FingerprintRecordsGone) {
   // Pretend that user has a fingerprint enrolled. Number of enrolled
   // fingerprints is cached in the prefs. But the actual fingerprint records
   // are gone.
-  Profile* profile = browser()->profile();
+  Profile* profile = browser()->GetProfile();
   profile->GetPrefs()->SetInteger(prefs::kQuickUnlockFingerprintRecord, 1);
 }
 
 IN_PROC_BROWSER_TEST_F(InProcessBrowserTest, FingerprintRecordsGone) {
   base::RunLoop().RunUntilIdle();
-  Profile* profile = browser()->profile();
+  Profile* profile = browser()->GetProfile();
   EXPECT_EQ(
       profile->GetPrefs()->GetInteger(prefs::kQuickUnlockFingerprintRecord), 0);
 }

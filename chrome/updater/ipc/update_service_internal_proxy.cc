@@ -9,9 +9,11 @@
 
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/memory/scoped_refptr.h"
+#include "build/build_config.h"
 
 #if BUILDFLAG(IS_POSIX)
-#include "chrome/updater/ipc/update_service_internal_proxy_posix.h"
+#include "chrome/updater/ipc/update_service_internal_proxy_mojo.h"
 #elif BUILDFLAG(IS_WIN)
 #include "chrome/updater/ipc/update_service_internal_proxy_win.h"
 #endif

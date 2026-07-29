@@ -20,6 +20,7 @@
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
 #include "third_party/blink/renderer/platform/heap/visitor.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
+#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 
 namespace mojo {
 
@@ -35,31 +36,34 @@ TypeConverter<blink::ContactInfo*, blink::mojom::blink::ContactInfoPtr>::
   blink::ContactInfo* contact_info = blink::ContactInfo::Create();
 
   if (contact->name) {
-    Vector<String> names;
+    blink::Vector<blink::String> names;
     names.ReserveInitialCapacity(contact->name->size());
 
-    for (const String& name : *contact->name)
+    for (const blink::String& name : *contact->name) {
       names.push_back(name);
+    }
 
     contact_info->setName(names);
   }
 
   if (contact->email) {
-    Vector<String> emails;
+    blink::Vector<blink::String> emails;
     emails.ReserveInitialCapacity(contact->email->size());
 
-    for (const String& email : *contact->email)
+    for (const blink::String& email : *contact->email) {
       emails.push_back(email);
+    }
 
     contact_info->setEmail(emails);
   }
 
   if (contact->tel) {
-    Vector<String> numbers;
+    blink::Vector<blink::String> numbers;
     numbers.ReserveInitialCapacity(contact->tel->size());
 
-    for (const String& number : *contact->tel)
+    for (const blink::String& number : *contact->tel) {
       numbers.push_back(number);
+    }
 
     contact_info->setTel(numbers);
   }
@@ -185,8 +189,8 @@ ScriptPromise<IDLSequence<ContactInfo>> ContactsManager::select(
         (property == V8ContactProperty::Enum::kAddress ||
          property == V8ContactProperty::Enum::kIcon)) {
       exception_state.ThrowTypeError(
-          "The provided value '" + property.AsString() +
-          "' is not a valid enum value of type ContactProperty");
+          StrCat({"The provided value '", property.AsStringView(),
+                  "' is not a valid enum value of type ContactProperty"}));
       return ScriptPromise<IDLSequence<ContactInfo>>();
     }
 
@@ -218,8 +222,8 @@ ScriptPromise<IDLSequence<ContactInfo>> ContactsManager::select(
   GetContactsManager(script_state)
       ->Select(options->multiple(), include_names, include_emails, include_tel,
                include_addresses, include_icons,
-               WTF::BindOnce(&ContactsManager::OnContactsSelected,
-                             WrapPersistent(this), WrapPersistent(resolver)));
+               BindOnce(&ContactsManager::OnContactsSelected,
+                        WrapPersistent(this), WrapPersistent(resolver)));
 
   return promise;
 }

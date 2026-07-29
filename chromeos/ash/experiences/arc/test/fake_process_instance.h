@@ -5,13 +5,10 @@
 #ifndef CHROMEOS_ASH_EXPERIENCES_ARC_TEST_FAKE_PROCESS_INSTANCE_H_
 #define CHROMEOS_ASH_EXPERIENCES_ARC_TEST_FAKE_PROCESS_INSTANCE_H_
 
-#include <deque>
 #include <optional>
 #include <utility>
 
 #include "chromeos/ash/experiences/arc/mojom/process.mojom.h"
-#include "mojo/public/cpp/bindings/pending_remote.h"
-#include "mojo/public/cpp/bindings/remote.h"
 
 namespace arc {
 

@@ -15,13 +15,15 @@
 #include "ash/system/privacy_hub/sensor_disabled_notification_delegate.h"
 #include "ash/webui/settings/public/constants/routes.mojom-forward.h"
 #include "base/check.h"
+#include "base/check_deref.h"
 #include "base/functional/callback_helpers.h"
 #include "chrome/browser/ash/privacy_hub/privacy_hub_util.h"
-#include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/browser/ui/settings_window_manager_chromeos.h"
-#include "chrome/grit/branded_strings.h"
+#include "chromeos/ash/experiences/settings_ui/settings_app_manager.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/prefs/pref_service.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
+#include "components/user_manager/user_manager.h"
 #include "services/device/public/cpp/geolocation/geolocation_system_permission_manager.h"
 #include "ui/base/l10n/l10n_util.h"
 
@@ -32,11 +34,6 @@ SystemGeolocationSource::SystemGeolocationSource()
   DCHECK(Shell::Get());
   DCHECK(Shell::Get()->session_controller());
   observer_.Observe(Shell::Get()->session_controller());
-  PrefService* last_active_user_pref_service =
-      Shell::Get()->session_controller()->GetLastActiveUserPrefService();
-  if (last_active_user_pref_service) {
-    OnActiveUserPrefServiceChanged(last_active_user_pref_service);
-  }
 }
 
 SystemGeolocationSource::~SystemGeolocationSource() = default;
@@ -51,25 +48,40 @@ SystemGeolocationSource::CreateGeolocationSystemPermissionManagerOnAsh() {
 void SystemGeolocationSource::RegisterPermissionUpdateCallback(
     PermissionUpdateCallback callback) {
   permission_update_callback_ = std::move(callback);
-  if (pref_change_registrar_) {
+  if (primary_user_pref_change_registrar_) {
     OnPrefChanged(prefs::kUserGeolocationAccessLevel);
   }
 }
 
 void SystemGeolocationSource::OpenSystemPermissionSetting() {
-  chrome::SettingsWindowManager::GetInstance()->ShowOSSettings(
-      ProfileManager::GetActiveUserProfile(),
-      chromeos::settings::mojom::kPrivacyHubGeolocationSubpagePath);
+  auto* session = session_manager::SessionManager::Get()->GetActiveSession();
+  if (!session) {
+    // TODO(crbug.com/447287122): Revisit to check if there already should be
+    // an active user session.
+    return;
+  }
+  ash::SettingsAppManager::Get()->Open(
+      CHECK_DEREF(
+          user_manager::UserManager::Get()->FindUser(session->account_id())),
+      {.sub_page =
+           chromeos::settings::mojom::kPrivacyHubGeolocationSubpagePath});
 }
 
 void SystemGeolocationSource::OnActiveUserPrefServiceChanged(
     PrefService* pref_service) {
-  // Subscribing to pref changes.
-  pref_change_registrar_ = std::make_unique<PrefChangeRegistrar>();
-  pref_change_registrar_->Init(pref_service);
+  // The primary user has an exclusive control over the system geolocation
+  // setting. Stop observation immediately as this class should only observe the
+  // primary user pref service.
+  CHECK(!primary_user_pref_change_registrar_);
+  observer_.Reset();
+
+  // At this point the `pref_service` belongs to the primary user of the
+  // seession. Subscribing to pref changes.
+  primary_user_pref_change_registrar_ = std::make_unique<PrefChangeRegistrar>();
+  primary_user_pref_change_registrar_->Init(pref_service);
   // value might have changed, hence we trigger the update function
   OnPrefChanged(prefs::kUserGeolocationAccessLevel);
-  pref_change_registrar_->Add(
+  primary_user_pref_change_registrar_->Add(
       prefs::kUserGeolocationAccessLevel,
       base::BindRepeating(&SystemGeolocationSource::OnPrefChanged,
                           base::Unretained(this)));
@@ -77,14 +89,14 @@ void SystemGeolocationSource::OnActiveUserPrefServiceChanged(
 
 void SystemGeolocationSource::OnPrefChanged(const std::string& pref_name) {
   DCHECK_EQ(pref_name, prefs::kUserGeolocationAccessLevel);
-  DCHECK(pref_change_registrar_);
+  DCHECK(primary_user_pref_change_registrar_);
   // Get the actual permission status from CrOS by directly accessing pref
   // service.
   device::LocationSystemPermissionStatus status =
       device::LocationSystemPermissionStatus::kNotDetermined;
 
   if (ash::features::IsCrosPrivacyHubLocationEnabled()) {
-    PrefService* pref_service = pref_change_registrar_->prefs();
+    PrefService* pref_service = primary_user_pref_change_registrar_->prefs();
     if (pref_service) {
       status = (static_cast<GeolocationAccessLevel>(pref_service->GetInteger(
                     prefs::kUserGeolocationAccessLevel)) ==

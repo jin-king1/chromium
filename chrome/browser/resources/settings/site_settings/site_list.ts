@@ -23,7 +23,7 @@ import type {CrTooltipElement} from 'chrome://resources/cr_elements/cr_tooltip/c
 import {I18nMixin} from 'chrome://resources/cr_elements/i18n_mixin.js';
 import {ListPropertyUpdateMixin} from 'chrome://resources/cr_elements/list_property_update_mixin.js';
 import {WebUiListenerMixin} from 'chrome://resources/cr_elements/web_ui_listener_mixin.js';
-import {assert} from 'chrome://resources/js/assert.js';
+import {assert, assertNotReachedCase} from 'chrome://resources/js/assert.js';
 import {focusWithoutInk} from 'chrome://resources/js/focus_without_ink.js';
 import {sanitizeInnerHtml} from 'chrome://resources/js/parse_html_subset.js';
 import type {SanitizeInnerHtmlOpts} from 'chrome://resources/js/parse_html_subset.js';
@@ -33,9 +33,9 @@ import {TooltipMixin} from '../tooltip_mixin.js';
 
 import {ContentSetting, ContentSettingsTypes, CookiesExceptionType, INVALID_CATEGORY_SUBTYPE, SITE_EXCEPTION_WILDCARD} from './constants.js';
 import {getTemplate} from './site_list.html.js';
+import type {RawSiteException, SiteException, SiteSettingsBrowserProxy} from './site_settings_browser_proxy.js';
+import {SiteSettingsBrowserProxyImpl} from './site_settings_browser_proxy.js';
 import {SiteSettingsMixin} from './site_settings_mixin.js';
-import type {RawSiteException, SiteException, SiteSettingsPrefsBrowserProxy} from './site_settings_prefs_browser_proxy.js';
-import {SiteSettingsPrefsBrowserProxyImpl} from './site_settings_prefs_browser_proxy.js';
 
 export interface SiteListElement {
   $: {
@@ -153,20 +153,6 @@ export class SiteListElement extends SiteListElementBase {
        */
       showSessionOnlyAction_: Boolean,
 
-      /**
-       * All possible actions in the action menu.
-       */
-      actions_: {
-        readOnly: true,
-        type: Object,
-        values: {
-          ALLOW: 'Allow',
-          BLOCK: 'Block',
-          RESET: 'Reset',
-          SESSION_ONLY: 'SessionOnly',
-        },
-      },
-
       lastFocused_: Object,
       listBlurred_: Boolean,
       tooltipText_: String,
@@ -178,28 +164,28 @@ export class SiteListElement extends SiteListElementBase {
     return ['configureWidget_(category, categorySubtype)'];
   }
 
-  readOnlyList: boolean;
-  categoryHeader: string;
-  private systemPermissionWarningKey_: string|null;
-  private actionMenuSite_: SiteException|null;
-  private showEditExceptionDialog_: boolean;
-  sites: SiteException[];
-  categorySubtype: ContentSetting;
-  private hasIncognito_: boolean;
-  private showAddSiteButton_: boolean;
-  private showAddSiteDialog_: boolean;
-  private showAllowAction_: boolean;
-  private showBlockAction_: boolean;
-  private showSessionOnlyAction_: boolean;
-  private lastFocused_: HTMLElement;
-  private listBlurred_: boolean;
-  private tooltipText_: string;
-  searchFilter: string;
-  cookiesExceptionType: CookiesExceptionType;
+  declare readOnlyList: boolean;
+  declare categoryHeader: string;
+  declare private systemPermissionWarningKey_: string|null;
+  declare private actionMenuSite_: SiteException|null;
+  declare private showEditExceptionDialog_: boolean;
+  declare sites: SiteException[];
+  declare categorySubtype: ContentSetting;
+  declare private hasIncognito_: boolean;
+  declare private showAddSiteButton_: boolean;
+  declare private showAddSiteDialog_: boolean;
+  declare private showAllowAction_: boolean;
+  declare private showBlockAction_: boolean;
+  declare private showSessionOnlyAction_: boolean;
+  declare private lastFocused_: HTMLElement;
+  declare private listBlurred_: boolean;
+  declare private tooltipText_: string;
+  declare searchFilter: string;
+  declare cookiesExceptionType: CookiesExceptionType;
 
   private activeDialogAnchor_: HTMLElement|null;
-  private browserProxy_: SiteSettingsPrefsBrowserProxy =
-      SiteSettingsPrefsBrowserProxyImpl.getInstance();
+  private browserProxy_: SiteSettingsBrowserProxy =
+      SiteSettingsBrowserProxyImpl.getInstance();
 
   constructor() {
     super();
@@ -276,9 +262,7 @@ export class SiteListElement extends SiteListElementBase {
    * @param category The category of the site that changed.
    */
   private siteWithinCategoryChanged_(category: ContentSettingsTypes) {
-    if (category === this.category ||
-        (this.category === ContentSettingsTypes.TRACKING_PROTECTION &&
-         category === ContentSettingsTypes.COOKIES)) {
+    if (category === this.category) {
       this.configureWidget_();
     }
   }
@@ -432,9 +416,10 @@ export class SiteListElement extends SiteListElementBase {
    */
   private processExceptions_(exceptionList: RawSiteException[]) {
     const sites = exceptionList
-                      .filter(
-                          site => site.setting !== ContentSetting.DEFAULT &&
-                              site.setting === this.categorySubtype)
+                      .filter(site => {
+                        return site.setting !== ContentSetting.DEFAULT &&
+                            site.setting === this.categorySubtype;
+                      })
                       .filter(site => {
                         if (this.category !== ContentSettingsTypes.COOKIES) {
                           return true;
@@ -454,9 +439,12 @@ export class SiteListElement extends SiteListElementBase {
                             // any filters and show exceptions with both pattern
                             // types.
                             return true;
+                          default:
+                            assertNotReachedCase(this.cookiesExceptionType);
                         }
                       })
                       .map(site => this.expandSiteException(site));
+
     this.updateList('sites', x => x.origin, sites);
   }
 
@@ -495,7 +483,7 @@ export class SiteListElement extends SiteListElementBase {
 
   private onAllowClick_() {
     // Removing the last visible item should focus the list's header.
-    const shouldMoveFocus = this.getFilteredSites_().length === 1;
+    const shouldMoveFocus = this.hasOneFilteredSite_();
     this.setContentSettingForActionMenuSite_(ContentSetting.ALLOW);
     this.closeActionMenu_();
     if (shouldMoveFocus) {
@@ -505,7 +493,7 @@ export class SiteListElement extends SiteListElementBase {
 
   private onBlockClick_() {
     // Removing the last visible item should focus the list's header.
-    const shouldMoveFocus = this.getFilteredSites_().length === 1;
+    const shouldMoveFocus = this.hasOneFilteredSite_();
     this.setContentSettingForActionMenuSite_(ContentSetting.BLOCK);
     this.closeActionMenu_();
     if (shouldMoveFocus) {
@@ -536,7 +524,7 @@ export class SiteListElement extends SiteListElementBase {
 
   private onResetClick_() {
     // Removing the last visible item should focus the list's header.
-    const shouldMoveFocus = this.getFilteredSites_().length === 1;
+    const shouldMoveFocus = this.hasOneFilteredSite_();
     assert(this.actionMenuSite_);
     this.browserProxy.resetCategoryPermissionForPattern(
         this.actionMenuSite_.origin, this.actionMenuSite_.embeddingOrigin,
@@ -557,7 +545,7 @@ export class SiteListElement extends SiteListElementBase {
 
   private onResetEntry_() {
     // Removing the last visible item should focus the list's header.
-    if (this.getFilteredSites_().length === 1) {
+    if (this.hasOneFilteredSite_()) {
       this.$.listHeader.focus();
     }
   }
@@ -583,6 +571,10 @@ export class SiteListElement extends SiteListElementBase {
     return this.sites.filter(
         site => propNames.some(
             propName => site[propName].toLowerCase().includes(searchFilter)));
+  }
+
+  private hasOneFilteredSite_(): boolean {
+    return this.getFilteredSites_().length === 1;
   }
 
   private getAddButtonLabel_(): string {

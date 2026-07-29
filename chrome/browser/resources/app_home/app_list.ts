@@ -11,11 +11,11 @@ import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 import {assert} from 'chrome://resources/js/assert.js';
 
 import type {AppInfo, PageCallbackRouter} from './app_home.mojom-webui.js';
+import {browserProxyFactory} from './app_home.mojom-webui.js';
 import {AppHomeUserAction, recordUserAction} from './app_home_utils.js';
 import type {AppItemElement} from './app_item.js';
 import {getCss} from './app_list.css.js';
 import {getHtml} from './app_list.html.js';
-import {BrowserProxy} from './browser_proxy.js';
 
 export interface ActionMenuModel {
   appItem: AppItemElement;
@@ -44,31 +44,25 @@ export class AppListElement extends CrLitElement {
     };
   }
 
-  protected apps_: AppInfo[] = [];
-  private boundContextMenuListener_: any;
-  private boundKeydownListener_: any;
+  protected accessor apps_: AppInfo[] = [];
+  private boundContextMenuListener_: (e: Event) => void;
+  private boundKeydownListener_: (e: KeyboardEvent) => void;
   private listenerIds_: number[] = [];
   private mojoEventTarget_: PageCallbackRouter;
   // The app item that has the context menu click opened by user.
-  private selectedAppItem_: AppItemElement|null = null;
+  private accessor selectedAppItem_: AppItemElement|null = null;
 
   constructor() {
     super();
 
-    this.mojoEventTarget_ = BrowserProxy.getInstance().callbackRouter;
+    this.mojoEventTarget_ = browserProxyFactory.getInstance().callbackRouter;
 
-    BrowserProxy.getInstance().handler.getApps().then(result => {
+    browserProxyFactory.getInstance().handler.getApps().then(result => {
       this.apps_ = result.appList;
     });
 
     this.boundKeydownListener_ = this.handleKeyDown.bind(this);
     this.boundContextMenuListener_ = this.closeCurrentAppMenu.bind(this);
-  }
-
-  override firstUpdated() {
-    this.addEventListener('on-menu-open-triggered', this.switchActiveMenu_);
-    this.addEventListener('on-menu-closed', this.clearActiveMenu_);
-    recordUserAction(AppHomeUserAction.APP_HOME_INIT);
   }
 
   override connectedCallback() {
@@ -77,6 +71,7 @@ export class AppListElement extends CrLitElement {
     this.listenerIds_ = [
       this.mojoEventTarget_.addApp.addListener(this.addApp_.bind(this)),
       this.mojoEventTarget_.removeApp.addListener(this.removeApp_.bind(this)),
+      this.mojoEventTarget_.updateApp.addListener(this.updateApp_.bind(this)),
     ];
     document.addEventListener('contextmenu', this.boundContextMenuListener_);
     document.addEventListener('keydown', this.boundKeydownListener_);
@@ -90,6 +85,12 @@ export class AppListElement extends CrLitElement {
     this.listenerIds_ = [];
     document.removeEventListener('contextmenu', this.boundContextMenuListener_);
     document.removeEventListener('keydown', this.boundKeydownListener_);
+  }
+
+  override firstUpdated() {
+    this.addEventListener('on-menu-open-triggered', this.switchActiveMenu_);
+    this.addEventListener('on-menu-closed', this.clearActiveMenu_);
+    recordUserAction(AppHomeUserAction.APP_HOME_INIT);
   }
 
   private handleKeyDown(e: KeyboardEvent) {
@@ -109,7 +110,8 @@ export class AppListElement extends CrLitElement {
     const activeElementId = this.shadowRoot.activeElement?.id;
     if (activeElementId !== undefined &&
         this.apps_.some(app => activeElementId === app.id)) {
-      BrowserProxy.getInstance().handler.launchApp(activeElementId, null);
+      browserProxyFactory.getInstance().handler.launchApp(
+          activeElementId, null);
     }
   }
 
@@ -208,6 +210,18 @@ export class AppListElement extends CrLitElement {
       this.apps_.splice(index, 1);
       this.requestUpdate();
     }
+  }
+
+  private updateApp_(appInfo: AppInfo) {
+    const currIndex = this.apps_.findIndex(app => app.id === appInfo.id);
+    // If the app is found in the existing grid, remove it.
+    if (currIndex !== -1) {
+      this.apps_.splice(currIndex, 1);
+    }
+
+    // Add the current app in the correct place in the "grid" to
+    // show the app. This will call `requestUpdate()` under the hood.
+    this.addApp_(appInfo);
   }
 
   private closeCurrentAppMenu() {

@@ -8,9 +8,12 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/cancelable_task_tracker.h"
+#include "base/test/scoped_feature_list.h"
+#include "build/branding_buildflags.h"
 #include "chrome/browser/ui/autofill/autofill_popup_controller.h"
 #include "chrome/browser/ui/autofill/mock_autofill_popup_controller.h"
 #include "chrome/browser/ui/browser.h"
@@ -19,8 +22,10 @@
 #include "chrome/browser/ui/views/autofill/popup/mock_selection_delegate.h"
 #include "chrome/browser/ui/views/autofill/popup/password_favicon_loader.h"
 #include "chrome/browser/ui/views/autofill/popup/popup_row_view.h"
+#include "components/autofill/core/browser/data_model/payments/bnpl_issuer.h"
 #include "components/autofill/core/browser/suggestions/suggestion.h"
 #include "components/autofill/core/browser/suggestions/suggestion_type.h"
+#include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/compose/core/browser/compose_features.h"
 #include "components/user_education/common/new_badge/new_badge_controller.h"
 #include "components/user_education/common/user_education_features.h"
@@ -39,6 +44,8 @@ namespace {
 using ::testing::NiceMock;
 using ::testing::Return;
 
+std::vector<std::u16string> minor_texts = {u"Minor text"};
+
 Suggestion CreatePasswordSuggestion(const std::u16string& main_text) {
   Suggestion suggestion(main_text, SuggestionType::kPasswordEntry);
   suggestion.icon = Suggestion::Icon::kKey;
@@ -46,41 +53,122 @@ Suggestion CreatePasswordSuggestion(const std::u16string& main_text) {
   return suggestion;
 }
 
+Suggestion CreateTryThisRecoverySuggestion(const std::u16string& main_text) {
+  Suggestion suggestion(main_text, SuggestionType::kBackupPasswordEntry);
+  suggestion.icon = Suggestion::Icon::kRecoveryPassword;
+  suggestion.additional_label = u"******";
+  suggestion.additional_label_alignment_right = true;
+  return suggestion;
+}
+
+Suggestion CreateTroubleSigninInSuggestion(const std::u16string& main_text) {
+  Suggestion suggestion(main_text, SuggestionType::kBackupPasswordEntry);
+  suggestion.icon = Suggestion::Icon::kQuestionMark;
+  suggestion.main_text.is_primary = Suggestion::Text::IsPrimary(false);
+  return suggestion;
+}
+
+Suggestion CreateBackupPasswordSuggestion(const std::u16string& main_text) {
+  Suggestion suggestion(main_text, SuggestionType::kBackupPasswordEntry);
+  suggestion.icon = Suggestion::Icon::kRecoveryPassword;
+  suggestion.labels = {{Suggestion::Text(u"*****")}};
+  suggestion.additional_label = u"Recovery";
+  return suggestion;
+}
+
+Suggestion CreateFreeformFooter() {
+  const std::u16string kMainText =
+      u"You recently changed a password found in a public data breach. In case "
+      "of trouble, Google Password Manager can help you sign in.";
+  Suggestion suggestion(kMainText, SuggestionType::kFreeformFooter);
+  suggestion.acceptability =
+      Suggestion::Acceptability::kUnacceptableWithDeactivatedStyle;
+  return suggestion;
+}
+
 Suggestion CreateSuggestionWithChildren(const std::u16string& main_text,
+                                        SuggestionType type,
                                         std::vector<Suggestion> children) {
-  Suggestion suggestion(main_text, SuggestionType::kAddressEntry);
+  Suggestion suggestion(main_text, type);
   suggestion.children = std::move(children);
+  return suggestion;
+}
+
+Suggestion CreateAllLoyaltyCardsEntry() {
+  Suggestion suggestion = CreateSuggestionWithChildren(
+      u"All_loyalty_cards_entry", SuggestionType::kAllLoyaltyCardsEntry,
+      {Suggestion(u"CVS", SuggestionType::kLoyaltyCardEntry)});
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
+  suggestion.icon = Suggestion::Icon::kGoogleWalletMonochrome;
+#endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING)
+  return suggestion;
+}
+
+Suggestion CreateBnplSuggestion(const std::u16string& main_text,
+                                bool linked,
+                                bool deactivated) {
+  Suggestion suggestion(main_text, SuggestionType::kBnplEntry);
+  BnplIssuer issuer(linked ? std::optional<int64_t>(1234) : std::nullopt,
+                    BnplIssuer::IssuerId::kBnplZip, {});
+  suggestion.payload = Suggestion::BnplIssuer(issuer);
+  if (deactivated) {
+    suggestion.acceptability =
+        Suggestion::Acceptability::kUnacceptableWithDeactivatedStyle;
+  }
   return suggestion;
 }
 
 // Suggestion main text (Suggestion::main_text) is used for the test and
 // screenshot names, avoid special symbols and keep them unique.
 const Suggestion kSuggestions[] = {
-    Suggestion("Address_entry",
-               "Minor text",
-               "label",
+    Suggestion(u"Address_entry",
+               minor_texts,
+               u"label",
                Suggestion::Icon::kLocation,
                SuggestionType::kAddressEntry),
     CreatePasswordSuggestion(u"Password_entry"),
-    Suggestion("Autofill_options",
-               "Minor text",
-               "label",
+    CreateTryThisRecoverySuggestion(u"Try_this_recovery_password"),
+    CreateTroubleSigninInSuggestion(u"Trouble_signing_in_entry"),
+    CreateBackupPasswordSuggestion(u"Backup_password_entry"),
+    Suggestion(u"Autofill_options",
+               minor_texts,
+               u"label",
                Suggestion::Icon::kSettings,
                SuggestionType::kManageAddress),
-    Suggestion(u"Autocomplete", SuggestionType::kAutocompleteEntry),
-    Suggestion("Compose",
-               "Minor text",
-               "label",
+    Suggestion(u"Autocomplete",
+               u"",
+               Suggestion::Icon::kNoIcon,
+               SuggestionType::kAutocompleteEntry),
+    Suggestion(u"Compose",
+               minor_texts,
+               u"label",
                Suggestion::Icon::kMagic,
                SuggestionType::kComposeResumeNudge),
-    Suggestion("Promo_code",
-               "label",
+    Suggestion(u"Promo_code",
+               u"label",
                Suggestion::Icon::kGlobe,
                SuggestionType::kSeePromoCodeDetails)};
 
-const Suggestion kExpandableSuggestions[] = {CreateSuggestionWithChildren(
-    u"Address_entry",
-    {Suggestion(u"Username", SuggestionType::kPasswordEntry)})};
+const Suggestion kExpandableSuggestions[] = {
+    CreateSuggestionWithChildren(
+        u"Address_entry",
+        SuggestionType::kDevtoolsTestAddresses,
+        {Suggestion(u"Address", SuggestionType::kAddressEntry)}),
+    CreateAllLoyaltyCardsEntry()};
+
+const Suggestion kBnplSuggestions[] = {
+    CreateBnplSuggestion(u"Bnpl_linked",
+                         /*linked=*/true,
+                         /*deactivated=*/false),
+    CreateBnplSuggestion(u"Bnpl_unlinked",
+                         /*linked=*/false,
+                         /*deactivated=*/false),
+    CreateBnplSuggestion(u"Bnpl_linked_deactivated",
+                         /*linked=*/true,
+                         /*deactivated=*/true),
+    CreateBnplSuggestion(u"Bnpl_unlinked_deactivated",
+                         /*linked=*/false,
+                         /*deactivated=*/true)};
 
 class MockPasswordFaviconLoader : public PasswordFaviconLoader {
  public:
@@ -200,13 +288,7 @@ class CreatePopupRowViewTest : public BaseCreatePopupRowViewTest {
       user_education::NewBadgeController::DisableNewBadgesForTesting();
 };
 
-// TODO(crbug.com/40261456): Re-enable failing test on Windows.
-#if BUILDFLAG(IS_WIN)
-#define MAYBE_SuggestionRowUiTest DISABLED_SuggestionRowUiTest
-#else
-#define MAYBE_SuggestionRowUiTest SuggestionRowUiTest
-#endif
-IN_PROC_BROWSER_TEST_P(CreatePopupRowViewTest, MAYBE_SuggestionRowUiTest) {
+IN_PROC_BROWSER_TEST_P(CreatePopupRowViewTest, SuggestionRowUiTest) {
   CreateRowView(std::get<Suggestion>(GetParam()),
                 std::get<std::optional<PopupRowView::CellType>>(GetParam()));
   ShowAndVerifyUi();
@@ -235,11 +317,18 @@ INSTANTIATE_TEST_SUITE_P(
 
 IN_PROC_BROWSER_TEST_F(CreatePopupRowViewTest, FilterMatchHighlighting) {
   CreateRowView(
-      Suggestion("Address_entry", "Minor text", "label",
+      Suggestion(u"Address_entry", minor_texts, u"label",
                  Suggestion::Icon::kLocation, SuggestionType::kAddressEntry),
       /*selected_cell=*/std::nullopt,
       AutofillPopupController::SuggestionFilterMatch{.main_text_match =
                                                          gfx::Range(1, 5)});
+  ShowAndVerifyUi();
+}
+
+IN_PROC_BROWSER_TEST_F(CreatePopupRowViewTest, FreeformFooter) {
+  CreateRowView(CreateFreeformFooter(),
+                /*selected_cell=*/std::nullopt,
+                /*filter_match=*/std::nullopt);
   ShowAndVerifyUi();
 }
 
@@ -263,7 +352,7 @@ IN_PROC_BROWSER_TEST_F(CreatePopupRowViewTest, PasswordCustomIconLoader) {
                 IDR_DISABLE));
       });
 
-  Suggestion suggestion("Password_entry", "Minor text", "label",
+  Suggestion suggestion(u"Password_entry", minor_texts, u"label",
                         Suggestion::Icon::kKey, SuggestionType::kPasswordEntry);
   suggestion.custom_icon =
       Suggestion::FaviconDetails(/*domain_url=*/GURL("https://google.com"));
@@ -271,6 +360,32 @@ IN_PROC_BROWSER_TEST_F(CreatePopupRowViewTest, PasswordCustomIconLoader) {
                 /*selected_cell=*/std::nullopt, /*filter_match=*/std::nullopt);
   ShowAndVerifyUi();
 }
+
+class BnplCreatePopupRowViewTest : public BaseCreatePopupRowViewTest {
+ public:
+  BnplCreatePopupRowViewTest() {
+    scoped_feature_list_.InitAndEnableFeature(
+        features::kAutofillEnablePayNowPayLaterTabs);
+  }
+  ~BnplCreatePopupRowViewTest() override = default;
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_P(BnplCreatePopupRowViewTest, SuggestionRowUiTest) {
+  CreateRowView(std::get<Suggestion>(GetParam()),
+                std::get<std::optional<PopupRowView::CellType>>(GetParam()));
+  ShowAndVerifyUi();
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    BnplSuggestions,
+    BnplCreatePopupRowViewTest,
+    ::testing::Combine(::testing::ValuesIn(kBnplSuggestions),
+                       ::testing::Values(std::nullopt,
+                                         PopupRowView::CellType::kContent)),
+    BnplCreatePopupRowViewTest::GetTestName);
 
 class CreatePopupRowViewWithNoUserEducationRateLimitTest
     : public BaseCreatePopupRowViewTest {
@@ -286,7 +401,7 @@ class CreatePopupRowViewWithNoUserEducationRateLimitTest
 
 IN_PROC_BROWSER_TEST_F(CreatePopupRowViewWithNoUserEducationRateLimitTest,
                        ComposeWithNewBadge) {
-  Suggestion suggestion("Compose with a badge", "Minor text", "label",
+  Suggestion suggestion(u"Compose with a badge", minor_texts, u"label",
                         Suggestion::Icon::kMagic,
                         SuggestionType::kComposeProactiveNudge);
   suggestion.feature_for_new_badge =

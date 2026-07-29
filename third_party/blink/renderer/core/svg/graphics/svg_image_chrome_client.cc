@@ -85,7 +85,7 @@ void SVGImageChromeClient::ResumeAnimation() {
   // suspended, schedule a new animation frame.
   if (!have_pending_animation)
     return;
-  ScheduleAnimation(nullptr);
+  ChromeClient::ScheduleAnimation(nullptr);
 }
 
 void SVGImageChromeClient::RestoreAnimationIfNeeded() {
@@ -95,8 +95,14 @@ void SVGImageChromeClient::RestoreAnimationIfNeeded() {
   image_->RestoreAnimation();
 }
 
+void SVGImageChromeClient::SetDidEncounterXSL() {
+  image_->SetDidEncounterXSL();
+}
+
 void SVGImageChromeClient::ScheduleAnimation(const LocalFrameView*,
-                                             base::TimeDelta fire_time) {
+                                             cc::BeginMainFrameReason,
+                                             base::TimeDelta fire_time,
+                                             bool urgent) {
   DCHECK(animation_timer_);
   // Because a single SVGImage can be shared by multiple pages, we can't key
   // our svg image layout on the page's real animation frame. Therefore, we

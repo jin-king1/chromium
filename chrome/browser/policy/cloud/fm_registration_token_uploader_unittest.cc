@@ -57,7 +57,7 @@ class FmRegistrationTokenUploaderTest : public testing::Test {
  public:
   FmRegistrationTokenUploaderTest()
       : task_environment_(base::test::TaskEnvironment::TimeSource::MOCK_TIME),
-        core_(dm_protocol::kChromeDevicePolicyType,
+        core_(dm_protocol::kChromeMachineLevelUserCloudPolicyType,
               std::string(),
               &mock_store_,
               task_environment_.GetMainThreadTaskRunner(),
@@ -75,7 +75,8 @@ class FmRegistrationTokenUploaderTest : public testing::Test {
 
   base::test::SingleThreadTaskEnvironment task_environment_;
   testing::NiceMock<MockInvalidationListener> mock_invalidation_listener_;
-  testing::NiceMock<MockCloudPolicyStore> mock_store_;
+  testing::NiceMock<MockCloudPolicyStore> mock_store_{
+      dm_protocol::kChromeMachineLevelUserCloudPolicyType};
   CloudPolicyCore core_;
 };
 
@@ -222,6 +223,21 @@ TEST_F(FmRegistrationTokenUploaderTest,
           MockInvalidationListener::RegistrationTokenUploadStatus::kFailed));
   uploader.OnRegistrationTokenReceived(kFakeRegistrationToken,
                                        kFakeTokenEndOfLife);
+  testing::Mock::VerifyAndClearExpectations(&mock_invalidation_listener_);
+
+  // The first retry should be scheduled in about 5 minutes.
+  // Let's wait for less (4 minutes) and check that no updates have been sent to
+  // the listener.
+
+  EXPECT_CALL(mock_invalidation_listener_, SetRegistrationUploadStatus(_))
+      .Times(0);
+
+  task_environment_.FastForwardBy(base::Minutes(4));
+  testing::Mock::VerifyAndClearExpectations(&mock_invalidation_listener_);
+
+  // Now setup up the actual expectations for a successful request and wait for
+  // the remaining minute.
+
   // Make next registration token upload requests successful.
   SetRegistrationTokenUploadState(
       *client_ptr,
@@ -243,6 +259,28 @@ TEST_F(FmRegistrationTokenUploaderTest,
           MockInvalidationListener::RegistrationTokenUploadStatus::kSucceeded));
 
   task_environment_.FastForwardBy(base::Minutes(1));
+}
+
+TEST_F(FmRegistrationTokenUploaderTest,
+       CoreDisconnectBeforeClientIsRegistered) {
+  auto client = std::make_unique<MockCloudPolicyClient>();
+  MockCloudPolicyClient* client_ptr = client.get();
+
+  // Connect cloud policy client without registration.
+  core_.Connect(std::move(client));
+  FmRegistrationTokenUploader uploader(PolicyInvalidationScope::kDevice,
+                                       &mock_invalidation_listener_, &core_);
+
+  // Expect that `UploadFmRegistrationToken()` will be never be called.
+  EXPECT_CALL(*client_ptr, UploadFmRegistrationToken(_, _)).Times(0);
+  EXPECT_CALL(mock_invalidation_listener_, SetRegistrationUploadStatus(_))
+      .Times(0);
+
+  uploader.OnRegistrationTokenReceived(kFakeRegistrationToken,
+                                       kFakeTokenEndOfLife);
+
+  // Disconnect cloud policy core should not cleanup everything properly.
+  core_.Disconnect();
 }
 
 }  // namespace policy

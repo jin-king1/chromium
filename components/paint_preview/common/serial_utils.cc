@@ -2,13 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "components/paint_preview/common/serial_utils.h"
 
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/trace_event/common/trace_event_common.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
@@ -19,7 +16,7 @@
 #include "third_party/skia/include/codec/SkCodec.h"
 #include "third_party/skia/include/codec/SkGifDecoder.h"
 #include "third_party/skia/include/codec/SkJpegDecoder.h"
-#include "third_party/skia/include/codec/SkPngDecoder.h"
+#include "third_party/skia/include/codec/SkPngRustDecoder.h"
 #include "third_party/skia/include/codec/SkWebpDecoder.h"
 #include "third_party/skia/include/core/SkCanvas.h"
 #include "third_party/skia/include/core/SkData.h"
@@ -28,6 +25,7 @@
 #include "third_party/skia/include/core/SkImageInfo.h"
 #include "third_party/skia/include/core/SkMatrix.h"
 #include "third_party/skia/include/core/SkPictureRecorder.h"
+#include "third_party/skia/include/core/SkStream.h"
 #include "third_party/skia/include/core/SkString.h"
 #include "third_party/skia/include/core/SkTypeface.h"
 #include "third_party/skia/include/private/chromium/Slug.h"
@@ -54,7 +52,8 @@ struct SerializedRectData {
 #pragma pack(pop)
 
 // Serializes a SkPicture representing a subframe as a custom data placeholder.
-sk_sp<SkData> SerializePictureAsRectData(SkPicture* picture, void* ctx) {
+SkSerialReturnType SerializePictureAsRectData(SkPicture* picture, void* ctx) {
+  TRACE_EVENT0("paint_preview", "SerializePictureAsRectData");
   const PictureSerializationContext* context =
       reinterpret_cast<PictureSerializationContext*>(ctx);
 
@@ -77,7 +76,7 @@ sk_sp<SkData> SerializePictureAsRectData(SkPicture* picture, void* ctx) {
 // De-duplicates and subsets used typefaces and discards any unused typefaces.
 // If subsetting fails (or on Android) this returns data only for non-system
 // fonts. This means the resulting SkPicture is not portable across devices.
-sk_sp<SkData> SerializeTypeface(SkTypeface* typeface, void* ctx) {
+SkSerialReturnType SerializeTypeface(SkTypeface* typeface, void* ctx) {
   TRACE_EVENT0("paint_preview", "SerializeTypeface");
   TypefaceSerializationContext* context =
       reinterpret_cast<TypefaceSerializationContext*>(ctx);
@@ -115,33 +114,27 @@ sk_sp<SkData> SerializeTypeface(SkTypeface* typeface, void* ctx) {
   return subset_data;
 }
 
-static sk_sp<SkTypeface> DeserializeTypeface(const void* data,
-                                             size_t length,
-                                             void* ctx) {
-  // TODO(bungeman,kjlubick) This should not be how the Skia deserial proc
-  // works.
-  SkStream* stream = *(reinterpret_cast<SkStream**>(const_cast<void*>(data)));
-  if (length < sizeof(stream)) {
-    return nullptr;
-  }
+static sk_sp<SkTypeface> DeserializeTypeface(SkStream& stream, void* ctx) {
   // The default implementation of SkPicture deserialization of SkTypeface
   // does not use a fallback (system) font manager, but this is necessary
   // on Android due to the above behavior w/r to system fonts. Thus, we
   // call the underlying SkTypeface::MakeDeserialize and pass in the
   // system font manager ourselves.
-  return SkTypeface::MakeDeserialize(stream, skia::DefaultFontMgr());
+  return SkTypeface::MakeDeserialize(&stream, skia::DefaultFontMgr(),
+                                     &skia::SanitizeTypefaceStream);
 }
 
-static bool is_supported_codec(sk_sp<SkData> data) {
+static bool is_supported_codec(sk_sp<const SkData> data) {
   CHECK(data);
   return SkBmpDecoder::IsBmp(data->data(), data->size()) ||
          SkGifDecoder::IsGif(data->data(), data->size()) ||
-         SkPngDecoder::IsPng(data->data(), data->size()) ||
+         SkPngRustDecoder::IsPng(data->data(), data->size()) ||
          SkJpegDecoder::IsJpeg(data->data(), data->size()) ||
          SkWebpDecoder::IsWebp(data->data(), data->size());
 }
 
-sk_sp<SkData> SerializeImage(SkImage* image, void* ctx) {
+SkSerialReturnType SerializeImage(SkImage* image, void* ctx) {
+  TRACE_EVENT0("paint_preview", "SerializeImage");
   ImageSerializationContext* context =
       reinterpret_cast<ImageSerializationContext*>(ctx);
   // Ignore texture backed content if any slipped through. This shouldn't occur
@@ -161,7 +154,7 @@ sk_sp<SkData> SerializeImage(SkImage* image, void* ctx) {
   }
 
   // If there already exists encoded data use it directly.
-  sk_sp<SkData> encoded_data = image->refEncodedData();
+  auto encoded_data = image->refEncodedData();
   if (!encoded_data || !is_supported_codec(encoded_data)) {
     // Use the default PNG at quality 100 as it is safe.
     // TODO(crbug.com/40177283): Investigate supporting JPEG at quality 100 for
@@ -184,15 +177,21 @@ sk_sp<SkData> SerializeImage(SkImage* image, void* ctx) {
     }
     context->remaining_image_size -= encoded_data->size();
   }
-
   return encoded_data;
 }
 
-sk_sp<SkImage> DeserializeImage(const void* bytes, size_t length, void*) {
+sk_sp<SkImage> DeserializeImage(sk_sp<SkData> data,
+                                std::optional<SkAlphaType>,
+                                void*) {
+  TRACE_EVENT0("paint_preview", "DeserializeImage");
+  if (!data) {
+    return nullptr;
+  }
   // Although we usually serialize images to the PNG format, if an image was
   // already encoded as a JPEG or WEBP, those bytes are written to the
   // SKP as-is, so we should try to decode those as well.
-  sk_sp<SkData> data = SkData::MakeWithoutCopy(bytes, length);
+  const void* bytes = data->data();
+  size_t length = data->size();
   const auto get_image = [](std::unique_ptr<SkCodec> codec) -> sk_sp<SkImage> {
     if (!codec) {
       return nullptr;
@@ -202,8 +201,9 @@ sk_sp<SkImage> DeserializeImage(const void* bytes, size_t length, void*) {
         codec->getInfo().makeAlphaType(kPremul_SkAlphaType);
     return std::get<0>(codec->getImage(targetInfo));
   };
-  if (SkPngDecoder::IsPng(bytes, length)) {
-    return get_image(SkPngDecoder::Decode(data, nullptr));
+  if (SkPngRustDecoder::IsPng(bytes, length)) {
+    return get_image(SkPngRustDecoder::Decode(
+        std::make_unique<SkMemoryStream>(std::move(data)), nullptr));
   }
   if (SkBmpDecoder::IsBmp(bytes, length)) {
     return get_image(SkBmpDecoder::Decode(data, nullptr));
@@ -225,11 +225,16 @@ sk_sp<SkImage> DeserializeImage(const void* bytes, size_t length, void*) {
 sk_sp<SkPicture> DeserializePictureAsRectData(const void* data,
                                               size_t length,
                                               void* ctx) {
+  TRACE_EVENT0("paint_preview", "DeserializePictureAsRectData");
   SerializedRectData rect_data;
   if (length < sizeof(rect_data)) {
     return MakeEmptyPicture();
   }
-  memcpy(&rect_data, data, sizeof(rect_data));
+  // SAFETY: We checked that `length` is at least `sizeof(rect_data)`.
+  base::byte_span_from_ref(base::allow_nonunique_obj, rect_data)
+      .copy_from(
+          UNSAFE_BUFFERS(base::span(static_cast<const uint8_t*>(data), length))
+              .first<sizeof(SerializedRectData)>());
   auto* context = reinterpret_cast<DeserializationContext*>(ctx);
   context->insert(
       {rect_data.content_id,
@@ -247,11 +252,16 @@ sk_sp<SkPicture> DeserializePictureAsRectData(const void* data,
 sk_sp<SkPicture> GetPictureFromDeserialContext(const void* data,
                                                size_t length,
                                                void* ctx) {
+  TRACE_EVENT0("paint_preview", "GetPictureFromDeserialContext");
   SerializedRectData rect_data;
   if (length < sizeof(rect_data)) {
     return MakeEmptyPicture();
   }
-  memcpy(&rect_data, data, sizeof(rect_data));
+  // SAFETY: We checked that `length` is at least `sizeof(rect_data)`.
+  base::byte_span_from_ref(base::allow_nonunique_obj, rect_data)
+      .copy_from(
+          UNSAFE_BUFFERS(base::span(static_cast<const uint8_t*>(data), length))
+              .first<sizeof(SerializedRectData)>());
   auto* context = reinterpret_cast<LoadedFramesDeserialContext*>(ctx);
 
   auto it = context->find(rect_data.content_id);
@@ -320,8 +330,8 @@ SkDeserialProcs MakeDeserialProcs(DeserializationContext* ctx) {
   SkDeserialProcs procs;
   procs.fPictureProc = DeserializePictureAsRectData;
   procs.fPictureCtx = ctx;
-  procs.fImageProc = DeserializeImage;
-  procs.fTypefaceProc = DeserializeTypeface;
+  procs.fImageDataProc = DeserializeImage;
+  procs.fTypefaceStreamProc = DeserializeTypeface;
   sktext::gpu::Slug::AddDeserialProcs(&procs, nullptr);
   return procs;
 }
@@ -330,8 +340,8 @@ SkDeserialProcs MakeDeserialProcs(LoadedFramesDeserialContext* ctx) {
   SkDeserialProcs procs;
   procs.fPictureProc = GetPictureFromDeserialContext;
   procs.fPictureCtx = ctx;
-  procs.fImageProc = DeserializeImage;
-  procs.fTypefaceProc = DeserializeTypeface;
+  procs.fImageDataProc = DeserializeImage;
+  procs.fTypefaceStreamProc = DeserializeTypeface;
   return procs;
 }
 

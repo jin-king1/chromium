@@ -5,6 +5,7 @@
 #import "ios/chrome/app/profile/post_restore_profile_agent.h"
 
 #import "base/memory/raw_ptr.h"
+#import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
 #import "components/signin/public/identity_manager/objc/identity_manager_observer_bridge.h"
 #import "ios/chrome/app/profile/profile_init_stage.h"
@@ -19,12 +20,14 @@
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
 #import "ios/chrome/browser/signin/model/signin_util.h"
 
-@interface PostRestoreProfileAgent () <IdentityManagerObserverBridgeDelegate>
+@interface PostRestoreProfileAgent () <IdentityManagerObserving>
 @end
 
 @implementation PostRestoreProfileAgent {
   // The identity manager.
   raw_ptr<signin::IdentityManager> _identityManager;
+  std::unique_ptr<signin::IdentityManagerObserverBridge>
+      _identityObserverBridge;
 
   // The PromosManager used to register promos.
   raw_ptr<PromosManager> _promosManager;
@@ -32,10 +35,6 @@
   // Profile pref service used to retrieve and/or clear the pre-restore
   // identity.
   raw_ptr<PrefService> _prefService;
-
-  // Observes changes in identity.
-  std::unique_ptr<signin::IdentityManagerObserverBridge>
-      _identityObserverBridge;
 
   // Stores whether we have pre-restore account info.
   BOOL _hasAccountInfo;
@@ -54,22 +53,23 @@
   ProfileIOS* profile = profileState.profile;
   _promosManager = PromosManagerFactory::GetForProfile(profile);
   _identityManager = IdentityManagerFactory::GetForProfile(profile);
+  _identityObserverBridge =
+      std::make_unique<signin::IdentityManagerObserverBridge>(_identityManager,
+                                                              self);
   _prefService = profile->GetPrefs();
   _hasAccountInfo = GetPreRestoreIdentity(_prefService).has_value();
+  // TODO(crbug.com/442982538): This dialog should be skipped if sign-in is
+  // disabled.
   [self maybeRegisterPromo];
-  if (_hasAccountInfo && _identityManager) {
-    _identityObserverBridge =
-        std::make_unique<signin::IdentityManagerObserverBridge>(
-            _identityManager, self);
-  } else {
+  if (!_hasAccountInfo) {
     [self shutdown];
   }
 }
 
-#pragma mark - IdentityManagerObserverBridgeDelegate
+#pragma mark - IdentityManagerObserving
 
 // Called when a user adds a primary account.
-- (void)onPrimaryAccountChanged:
+- (void)primaryAccountDidChange:
     (const signin::PrimaryAccountChangeEvent&)event {
   switch (event.GetEventTypeFor(signin::ConsentLevel::kSignin)) {
     case signin::PrimaryAccountChangeEvent::Type::kSet:
@@ -86,7 +86,7 @@
   }
 }
 
-- (void)onIdentityManagerShutdown:(signin::IdentityManager*)identityManager {
+- (void)identityManagerDidShutdown:(signin::IdentityManager*)identityManager {
   [self shutdown];
 }
 

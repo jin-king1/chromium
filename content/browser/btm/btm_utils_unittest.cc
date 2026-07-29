@@ -4,10 +4,7 @@
 
 #include "content/browser/btm/btm_utils.h"
 
-#include "base/test/scoped_feature_list.h"
 #include "base/time/time.h"
-#include "content/public/browser/cookie_access_details.h"
-#include "services/network/public/cpp/features.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -152,52 +149,13 @@ TEST(UpdateTimestampTest, ReplaceAfterIntervalPasses) {
   EXPECT_THAT(time, testing::Optional(new_value));
 }
 
-TEST(IsAdTaggedCookieForHeuristics, ReturnsCorrectlyInExperiment) {
-  base::test::ScopedFeatureList features;
-  features.InitAndEnableFeatureWithParameters(
-      network::features::kSkipTpcdMitigationsForAds,
-      {{"SkipTpcdMitigationsForAdsHeuristics", "true"}});
-
-  CookieAccessDetails details;
-  EXPECT_EQ(IsAdTaggedCookieForHeuristics(details), OptionalBool::kFalse);
-
-  details.cookie_setting_overrides.Put(
-      net::CookieSettingOverride::kSkipTPCDHeuristicsGrant);
-  EXPECT_EQ(IsAdTaggedCookieForHeuristics(details), OptionalBool::kTrue);
-}
-
-TEST(IsAdTaggedCookieForHeuristics, ReturnsCorrectlyWithoutExperimentFeature) {
-  base::test::ScopedFeatureList features;
-  features.InitAndDisableFeature(network::features::kSkipTpcdMitigationsForAds);
-
-  CookieAccessDetails details;
-  EXPECT_EQ(IsAdTaggedCookieForHeuristics(details), OptionalBool::kUnknown);
-
-  details.cookie_setting_overrides.Put(
-      net::CookieSettingOverride::kSkipTPCDHeuristicsGrant);
-  EXPECT_EQ(IsAdTaggedCookieForHeuristics(details), OptionalBool::kUnknown);
-}
-
-TEST(IsAdTaggedCookieForHeuristics, ReturnsCorrectlyWithoutExperimentParam) {
-  base::test::ScopedFeatureList features;
-  features.InitAndEnableFeatureWithParameters(
-      network::features::kSkipTpcdMitigationsForAds,
-      {{"SkipTpcdMitigationsForAdsHeuristics", "false"}});
-
-  CookieAccessDetails details;
-  EXPECT_EQ(IsAdTaggedCookieForHeuristics(details), OptionalBool::kUnknown);
-
-  details.cookie_setting_overrides.Put(
-      net::CookieSettingOverride::kSkipTPCDHeuristicsGrant);
-  EXPECT_EQ(IsAdTaggedCookieForHeuristics(details), OptionalBool::kUnknown);
-}
-
 TEST(HasCHIPS, TrueOnlyWhenHasAtLeastOnePartitionedCookie) {
   auto unpartitioned_cookie = net::CanonicalCookie::CreateForTesting(
-      GURL("https://example.com"), "name=value;", base::Time::Now());
+      GURL("https://example.com"), "name=value;", base::Time::Now(),
+      net::CookieSourceType::kOther);
   auto partitioned_cookie = net::CanonicalCookie::CreateForTesting(
       GURL("https://example.com"), "name=value; Partitioned; Path=/; Secure",
-      base::Time::Now(), std::nullopt,
+      base::Time::Now(), net::CookieSourceType::kOther, std::nullopt,
       net::CookiePartitionKey::FromURLForTesting(GURL("https://example.org")));
 
   net::CookieAccessResultList cookie_access_result_list_without_partitioned{

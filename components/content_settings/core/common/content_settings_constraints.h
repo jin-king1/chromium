@@ -6,6 +6,7 @@
 #define COMPONENTS_CONTENT_SETTINGS_CORE_COMMON_CONTENT_SETTINGS_CONSTRAINTS_H_
 
 #include "base/time/time.h"
+#include "base/values.h"
 #include "components/content_settings/core/common/content_settings_enums.mojom.h"
 
 namespace content_settings {
@@ -21,14 +22,16 @@ class ContentSettingConstraints {
   explicit ContentSettingConstraints(base::Time now);
 
   ContentSettingConstraints(ContentSettingConstraints&& other);
-  ContentSettingConstraints(const ContentSettingConstraints& other);
   ContentSettingConstraints& operator=(ContentSettingConstraints&& other);
-  ContentSettingConstraints& operator=(const ContentSettingConstraints& other);
+  ContentSettingConstraints& operator=(const ContentSettingConstraints& other) =
+      delete;
 
   ~ContentSettingConstraints();
 
-  bool operator==(const ContentSettingConstraints& other) const;
-  bool operator!=(const ContentSettingConstraints& other) const;
+  friend bool operator==(const ContentSettingConstraints&,
+                         const ContentSettingConstraints&) = default;
+
+  ContentSettingConstraints Clone() const;
 
   base::Time expiration() const {
     if (lifetime_.is_zero()) {
@@ -63,7 +66,17 @@ class ContentSettingConstraints {
     decided_by_related_website_sets_ = granted_by_related_website_sets;
   }
 
+  void set_ephemeral_clears_persistent_grant(
+      bool ephemeral_clears_persistent_grant) {
+    ephemeral_clears_persistent_grant_ = ephemeral_clears_persistent_grant;
+  }
+  bool ephemeral_clears_persistent_grant() const {
+    return ephemeral_clears_persistent_grant_;
+  }
+
  private:
+  ContentSettingConstraints(const ContentSettingConstraints& other) = default;
+
   // Tracks the base::Time that this instance was constructed. Copies and moves
   // reuse this time.
   base::Time created_at_;
@@ -72,11 +85,6 @@ class ContentSettingConstraints {
   // constraints. This controls when the setting expires.
   //
   // If the lifetime is zero, then the setting does not expire.
-  //
-  // TODO(crbug.com/40270137): created_at_ and lifetime_ need to be
-  // persisted (likely in/by content_settings::RuleMetaData) and recreated in
-  // order be useful. Otherwise, everything still operates in terms of
-  // expirations.
   base::TimeDelta lifetime_;
 
   // Used to specify the lifetime model that should be used.
@@ -89,6 +97,13 @@ class ContentSettingConstraints {
 
   // Set to true if the storage access was decided by a Related Website Set.
   bool decided_by_related_website_sets_ = false;
+
+  // Set to true if by setting an ephemeral grant we should not clear the
+  // corresponding persistent grant. This only makes sense if `session_model_ ==
+  // mojom::SessionModel::ONE_TIME`. Note that if this is set to false, setting
+  // an ephemeral grant will anyway remove blocked persistent permissions using
+  // PermissionSettingsInfo::RemoveBlockedPermissionsForEphemeralGrant.
+  bool ephemeral_clears_persistent_grant_ = false;
 };
 
 }  // namespace content_settings

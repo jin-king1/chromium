@@ -4,6 +4,7 @@
 
 #include "third_party/blink/renderer/platform/media/video_frame_compositor.h"
 
+#include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/run_loop.h"
@@ -18,7 +19,6 @@
 #include "components/viz/common/surfaces/frame_sink_id.h"
 #include "gpu/command_buffer/client/test_shared_image_interface.h"
 #include "media/base/video_frame.h"
-#include "media/video/fake_gpu_memory_buffer.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/platform/web_video_frame_submitter.h"
@@ -51,6 +51,9 @@ class MockWebVideoFrameSubmitter : public WebVideoFrameSubmitter {
   MOCK_METHOD1(SetForceSubmit, void(bool));
   MOCK_METHOD1(SetForceBeginFrames, void(bool));
   void DidReceiveFrame() override { ++did_receive_frame_count_; }
+  std::optional<base::TimeTicks> GetExpectedDisplayTime() const override {
+    return std::nullopt;
+  }
 
   int did_receive_frame_count() { return did_receive_frame_count_; }
 
@@ -104,8 +107,8 @@ class VideoFrameCompositorTest
   VideoFrameCompositor* compositor() { return compositor_.get(); }
 
   VideoFrameCompositor::OnNewFramePresentedCB GetNewFramePresentedCB() {
-    return WTF::BindOnce(&VideoFrameCompositorTest::OnNewFramePresented,
-                         WTF::Unretained(this));
+    return BindOnce(&VideoFrameCompositorTest::OnNewFramePresented,
+                    Unretained(this));
   }
 
  protected:

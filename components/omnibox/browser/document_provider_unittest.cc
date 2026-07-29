@@ -24,6 +24,7 @@
 #include "base/values.h"
 #include "build/blink_buildflags.h"
 #include "build/build_config.h"
+#include "components/omnibox/browser/autocomplete_enums.h"
 #include "components/omnibox/browser/autocomplete_match_type.h"
 #include "components/omnibox/browser/autocomplete_provider.h"
 #include "components/omnibox/browser/autocomplete_provider_listener.h"
@@ -123,7 +124,7 @@ class DocumentProviderTest : public testing::Test,
   }
 
   base::test::SingleThreadTaskEnvironment task_environment_{
-    base::test::TaskEnvironment::TimeSource::MOCK_TIME};
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME};
   // Not enabled by default on mobile, so have to enable it explicitly.
   base::test::ScopedFeatureList feature_list_{omnibox::kDocumentProvider};
   std::unique_ptr<FakeAutocompleteProviderClient> client_;
@@ -135,6 +136,7 @@ DocumentProviderTest::DocumentProviderTest() = default;
 
 void DocumentProviderTest::SetUp() {
   client_ = std::make_unique<FakeAutocompleteProviderClient>();
+  client_->GetDocumentSuggestionsService()->SetAccountStateForTesting(true);
 
   TemplateURLService* turl_model = client_->GetTemplateURLService();
   turl_model->Load();
@@ -175,7 +177,6 @@ void DocumentProviderTest::InitClient() {
   EXPECT_CALL(*client_.get(), SearchSuggestEnabled())
       .WillRepeatedly(Return(true));
   EXPECT_CALL(*client_.get(), IsAuthenticated()).WillRepeatedly(Return(true));
-  EXPECT_CALL(*client_.get(), IsSyncActive()).WillRepeatedly(Return(true));
   EXPECT_CALL(*client_.get(), IsOffTheRecord()).WillRepeatedly(Return(false));
 }
 
@@ -199,9 +200,11 @@ TEST_F(DocumentProviderTest, IsDocumentProviderAllowed) {
   }
 
   // Search suggestions must be enabled.
-  EXPECT_CALL(*client_.get(), IsSyncActive()).WillRepeatedly(Return(false));
+  EXPECT_CALL(*client_.get(), SearchSuggestEnabled())
+      .WillRepeatedly(Return(false));
   EXPECT_FALSE(provider_->IsDocumentProviderAllowed(ac_input));
-  EXPECT_CALL(*client_.get(), IsSyncActive()).WillRepeatedly(Return(true));
+  EXPECT_CALL(*client_.get(), SearchSuggestEnabled())
+      .WillRepeatedly(Return(true));
   EXPECT_TRUE(provider_->IsDocumentProviderAllowed(ac_input));
 
   // Should not be an incognito window.
@@ -209,25 +212,6 @@ TEST_F(DocumentProviderTest, IsDocumentProviderAllowed) {
   EXPECT_FALSE(provider_->IsDocumentProviderAllowed(ac_input));
   EXPECT_CALL(*client_.get(), IsOffTheRecord()).WillRepeatedly(Return(false));
   EXPECT_TRUE(provider_->IsDocumentProviderAllowed(ac_input));
-
-  // Sync should be enabled.
-  EXPECT_CALL(*client_.get(), IsSyncActive()).WillRepeatedly(Return(false));
-  EXPECT_FALSE(provider_->IsDocumentProviderAllowed(ac_input));
-  EXPECT_CALL(*client_.get(), IsSyncActive()).WillRepeatedly(Return(true));
-  EXPECT_TRUE(provider_->IsDocumentProviderAllowed(ac_input));
-
-  // Unless the "no sync requirement" Feature is enabled, in which case the Sync
-  // state shouldn't matter.
-  {
-    base::test::ScopedFeatureList feature_list;
-    feature_list.InitAndEnableFeature(
-        omnibox::kDocumentProviderNoSyncRequirement);
-
-    EXPECT_CALL(*client_.get(), IsSyncActive()).WillRepeatedly(Return(false));
-    EXPECT_TRUE(provider_->IsDocumentProviderAllowed(ac_input));
-    EXPECT_CALL(*client_.get(), IsSyncActive()).WillRepeatedly(Return(true));
-    EXPECT_TRUE(provider_->IsDocumentProviderAllowed(ac_input));
-  }
 
   // Backoff state should be respected.
   provider_->backoff_for_this_instance_only_ = true;
@@ -299,7 +283,6 @@ TEST_F(DocumentProviderTest, IsInputLikelyURL) {
   EXPECT_TRUE(IsInputLikelyURL_Wrapper("https://"));
   EXPECT_TRUE(IsInputLikelyURL_Wrapper("http://web.site"));
   EXPECT_TRUE(IsInputLikelyURL_Wrapper("https://web.site"));
-  EXPECT_TRUE(IsInputLikelyURL_Wrapper("https://web.site"));
   EXPECT_TRUE(IsInputLikelyURL_Wrapper("w"));
   EXPECT_TRUE(IsInputLikelyURL_Wrapper("www."));
   EXPECT_TRUE(IsInputLikelyURL_Wrapper("www.web.site"));
@@ -332,8 +315,8 @@ TEST_F(DocumentProviderTest, ParseDocumentSearchResults) {
      })",
       kSampleOriginalURL);
 
-  std::optional<base::Value> response =
-      base::JSONReader::Read(kGoodJSONResponse);
+  std::optional<base::Value> response = base::JSONReader::Read(
+      kGoodJSONResponse, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(response);
   ASSERT_TRUE(response->is_dict());
 
@@ -418,8 +401,8 @@ TEST_F(DocumentProviderTest,
      })",
       kSampleOriginalURL);
 
-  std::optional<base::Value> response =
-      base::JSONReader::Read(kGoodJSONResponseWithMimeTypes);
+  std::optional<base::Value> response = base::JSONReader::Read(
+      kGoodJSONResponseWithMimeTypes, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(response);
   ASSERT_TRUE(response->is_dict());
 
@@ -429,19 +412,19 @@ TEST_F(DocumentProviderTest,
 
   // match.destination_url is used as the match's temporary text in the Omnibox.
   EXPECT_EQ(AutocompleteMatchType::ToAccessibilityLabel(
-                matches[0],
+                matches[0], u"",
                 base::ASCIIToUTF16(matches[0].destination_url.spec()), 1, 4),
             u"My Google Doc, 10/15/07 - Google Docs, "
             u"https://documentprovider.tld/doc?id=1, 2 of 4");
   // Unhandled MIME Type falls back to "Google Drive" where the file was stored.
   EXPECT_EQ(AutocompleteMatchType::ToAccessibilityLabel(
-                matches[1],
+                matches[1], u"",
                 base::ASCIIToUTF16(matches[1].destination_url.spec()), 2, 4),
             u"My File in Drive, 10/10/10 - Google Drive, "
             "https://documentprovider.tld/doc?id=2, 3 of 4");
   // No modified time was specified for the last file.
   EXPECT_EQ(AutocompleteMatchType::ToAccessibilityLabel(
-                matches[2],
+                matches[2], u"",
                 base::ASCIIToUTF16(matches[2].destination_url.spec()), 3, 4),
             u"Shared Spreadsheet, Google Sheets, "
             "https://documentprovider.tld/doc?id=3, 4 of 4");
@@ -511,8 +494,8 @@ TEST_F(DocumentProviderTest, MatchDescriptionString) {
     })",
       kSampleOriginalURL);
 
-  std::optional<base::Value> response =
-      base::JSONReader::Read(kGoodJSONResponseWithMimeTypes);
+  std::optional<base::Value> response = base::JSONReader::Read(
+      kGoodJSONResponseWithMimeTypes, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(response);
   ASSERT_TRUE(response->is_dict());
   provider_->input_.UpdateText(u"input", 0, {});
@@ -561,8 +544,8 @@ TEST_F(DocumentProviderTest, ParseDocumentSearchResultsBreakTies) {
      })",
       kSampleOriginalURL);
 
-  std::optional<base::Value> response =
-      base::JSONReader::Read(kGoodJSONResponseWithTies);
+  std::optional<base::Value> response = base::JSONReader::Read(
+      kGoodJSONResponseWithTies, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(response);
   ASSERT_TRUE(response->is_dict());
 
@@ -617,8 +600,8 @@ TEST_F(DocumentProviderTest, ParseDocumentSearchResultsBreakTiesCascade) {
      })",
       kSampleOriginalURL);
 
-  std::optional<base::Value> response =
-      base::JSONReader::Read(kGoodJSONResponseWithTies);
+  std::optional<base::Value> response = base::JSONReader::Read(
+      kGoodJSONResponseWithTies, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(response);
   ASSERT_TRUE(response->is_dict());
 
@@ -675,8 +658,8 @@ TEST_F(DocumentProviderTest, ParseDocumentSearchResultsBreakTiesZeroLimit) {
      })",
       kSampleOriginalURL);
 
-  std::optional<base::Value> response =
-      base::JSONReader::Read(kGoodJSONResponseWithTies);
+  std::optional<base::Value> response = base::JSONReader::Read(
+      kGoodJSONResponseWithTies, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(response);
   ASSERT_TRUE(response->is_dict());
 
@@ -1043,7 +1026,7 @@ TEST_F(DocumentProviderTest, Logging) {
   {
     SCOPED_TRACE("Case: Stop() before Run().");
     base::HistogramTester histogram_tester;
-    provider_->Stop(false, false);
+    provider_->Stop(AutocompleteStopReason::kClobbered);
     histogram_tester.ExpectTotalCount("Omnibox.DocumentSuggest.Requests", 0);
     histogram_tester.ExpectTotalCount("Omnibox.DocumentSuggest.TotalTime", 0);
     histogram_tester.ExpectTotalCount(
@@ -1061,7 +1044,7 @@ TEST_F(DocumentProviderTest, Logging) {
     SCOPED_TRACE("Case: Stop() before request.");
     base::HistogramTester histogram_tester;
     provider_->time_run_invoked_ = base::TimeTicks::Now();
-    provider_->Stop(false, false);
+    provider_->Stop(AutocompleteStopReason::kClobbered);
     histogram_tester.ExpectTotalCount("Omnibox.DocumentSuggest.Requests", 0);
     histogram_tester.ExpectTotalCount("Omnibox.DocumentSuggest.TotalTime", 1);
     histogram_tester.ExpectTotalCount(
@@ -1083,7 +1066,7 @@ TEST_F(DocumentProviderTest, Logging) {
         network::SimpleURLLoader::Create(
             std::make_unique<network::ResourceRequest>(),
             net::DefineNetworkTrafficAnnotation("test", "test")));
-    provider_->Stop(false, false);
+    provider_->Stop(AutocompleteStopReason::kClobbered);
     histogram_tester.ExpectTotalCount("Omnibox.DocumentSuggest.Requests", 2);
     histogram_tester.ExpectBucketCount("Omnibox.DocumentSuggest.Requests", 1,
                                        1);
@@ -1109,7 +1092,8 @@ TEST_F(DocumentProviderTest, LowQualitySuggestions) {
   auto test = [&](const std::string& response_str,
                   const std::string& input_text,
                   const std::vector<int> expected_scores) {
-    std::optional<base::Value> response = base::JSONReader::Read(response_str);
+    std::optional<base::Value> response = base::JSONReader::Read(
+        response_str, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
     provider_->input_.UpdateText(base::UTF8ToUTF16(input_text), 0, {});
     ACMatches matches = provider_->ParseDocumentSearchResults(*response);
 
@@ -1182,24 +1166,26 @@ TEST_F(DocumentProviderTest, Backoff) {
 
   {
     omnibox_feature_configs::ScopedConfigForTesting<
-        omnibox_feature_configs::DocumentProvider> scoped_config;
+        omnibox_feature_configs::DocumentProvider>
+        scoped_config;
     scoped_config.Get().enabled = true;
     scoped_config.Get().scope_backoff_to_profile = false;
 
     EXPECT_FALSE(provider_->backoff_for_this_instance_only_);
 
     provider_->done_ = false;
-    provider_->OnURLLoadComplete(nullptr, 200, nullptr);
+    provider_->OnURLLoadComplete(nullptr, 200, std::nullopt);
     EXPECT_FALSE(provider_->backoff_for_this_instance_only_);
 
     provider_->done_ = false;
-    provider_->OnURLLoadComplete(nullptr, 400, nullptr);
+    provider_->OnURLLoadComplete(nullptr, 400, std::nullopt);
     EXPECT_TRUE(provider_->backoff_for_this_instance_only_);
   }
 
   {
     omnibox_feature_configs::ScopedConfigForTesting<
-        omnibox_feature_configs::DocumentProvider> scoped_config;
+        omnibox_feature_configs::DocumentProvider>
+        scoped_config;
     scoped_config.Get().enabled = true;
     scoped_config.Get().scope_backoff_to_profile = true;
     scoped_config.Get().backoff_duration = base::Minutes(30);
@@ -1207,11 +1193,11 @@ TEST_F(DocumentProviderTest, Backoff) {
     EXPECT_FALSE(client_->GetDocumentSuggestionsService()->should_backoff());
 
     provider_->done_ = false;
-    provider_->OnURLLoadComplete(nullptr, 200, nullptr);
+    provider_->OnURLLoadComplete(nullptr, 200, std::nullopt);
     EXPECT_FALSE(client_->GetDocumentSuggestionsService()->should_backoff());
 
     provider_->done_ = false;
-    provider_->OnURLLoadComplete(nullptr, 400, nullptr);
+    provider_->OnURLLoadComplete(nullptr, 400, std::nullopt);
     EXPECT_TRUE(client_->GetDocumentSuggestionsService()->should_backoff());
 
     // After 20 minutes, the backoff state should still be active.

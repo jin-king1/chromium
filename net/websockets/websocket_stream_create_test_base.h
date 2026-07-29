@@ -39,7 +39,6 @@ namespace net {
 class HttpRequestHeaders;
 class HttpResponseHeaders;
 class IsolationInfo;
-class SiteForCookies;
 class URLRequest;
 class WebSocketStream;
 class WebSocketStreamRequest;
@@ -63,7 +62,6 @@ class WebSocketStreamCreateTestBase : public WithTaskEnvironment {
   void CreateAndConnectStream(const GURL& socket_url,
                               const std::vector<std::string>& sub_protocols,
                               const url::Origin& origin,
-                              const SiteForCookies& site_for_cookies,
                               StorageAccessApiStatus storage_access_api_status,
                               const IsolationInfo& isolation_info,
                               const HttpRequestHeaders& additional_headers,
@@ -85,6 +83,10 @@ class WebSocketStreamCreateTestBase : public WithTaskEnvironment {
   // Runs |run_loop_waiting_for_on_auth_required_| until OnAuthRequired() is
   // called.
   void WaitUntilOnAuthRequired();
+
+  // Runs |run_loop_waiting_on_url_request_connected_| until
+  // OnURLRequestConnected() is called.
+  void WaitUntilOnURLRequestConnected();
 
   // A simple function to make the tests more readable.
   std::vector<std::string> NoSubProtocols();
@@ -112,6 +114,12 @@ class WebSocketStreamCreateTestBase : public WithTaskEnvironment {
   std::optional<AuthCredentials> auth_credentials_;
   // OnAuthRequired returns this value.
   int on_auth_required_rv_ = OK;
+
+  // Used to control the behaviour of OnURLRequestConnected()
+  CompletionOnceCallback on_url_request_connected_callback_;
+  int on_url_request_connected_rv_ = OK;
+
+  base::RunLoop run_loop_waiting_on_url_request_connected_;
 
   base::RunLoop connect_run_loop_;
 

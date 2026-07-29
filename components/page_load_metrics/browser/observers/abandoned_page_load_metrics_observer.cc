@@ -8,6 +8,7 @@
 
 #include "base/metrics/histogram_functions.h"
 #include "base/no_destructor.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
 #include "base/time/time.h"
 #include "components/page_load_metrics/browser/page_load_metrics_util.h"
@@ -106,6 +107,7 @@ const char kMilestoneNonRedirectResponseLoaderCallback[] =
     "NonRedirectResponseLoaderCallback";
 const char kMilestoneCommitSent[] = "CommitSent";
 const char kMilestoneCommitReceived[] = "CommitReceived";
+const char kMilestoneCommitReplySent[] = "CommitReplySent";
 const char kMilestoneDidCommit[] = "DidCommit";
 const char kMilestoneParseStart[] = "ParseStart";
 const char kFirstContentfulPaint[] = "FirstContentfulPaint";
@@ -210,6 +212,8 @@ std::string AbandonedPageLoadMetricsObserver::NavigationMilestoneToString(
       return internal::kMilestoneCommitSent;
     case NavigationMilestone::kCommitReceived:
       return internal::kMilestoneCommitReceived;
+    case NavigationMilestone::kCommitReplySent:
+      return internal::kMilestoneCommitReplySent;
     case NavigationMilestone::kDidCommit:
       return internal::kMilestoneDidCommit;
     case NavigationMilestone::kParseStart:
@@ -390,6 +394,9 @@ void AbandonedPageLoadMetricsObserver::LogMilestoneHistogram(
     NavigationMilestone milestone,
     base::TimeTicks event_time,
     base::TimeTicks relative_start_time) {
+  if (!IsAllowedToLogUMA()) {
+    return;
+  }
   std::string base_suffix = GetHistogramSuffix(milestone, event_time);
   for (std::string additional_suffix : GetAdditionalSuffixes()) {
     std::string suffix = base_suffix + additional_suffix;
@@ -538,6 +545,7 @@ void AbandonedPageLoadMetricsObserver::LogUKMHistograms(
       case NavigationMilestone::kNonRedirectResponseLoaderCallback:
       case NavigationMilestone::kCommitSent:
       case NavigationMilestone::kCommitReceived:
+      case NavigationMilestone::kCommitReplySent:
       case NavigationMilestone::kDidCommit:
       case NavigationMilestone::kSecondRedirectResponseStart:
       case NavigationMilestone::kSecondRedirectedRequestStart:
@@ -695,10 +703,18 @@ AbandonedPageLoadMetricsObserver::OnCommit(
                         navigation_handle->GetNavigationHandleTiming()
                             .navigation_commit_received_time,
                         navigation_start_time_);
+  LogMilestoneHistogram(NavigationMilestone::kCommitReplySent,
+                        navigation_handle->GetNavigationHandleTiming()
+                            .navigation_commit_reply_sent_time,
+                        navigation_start_time_);
   LogMilestoneHistogram(
       NavigationMilestone::kDidCommit,
       navigation_handle->GetNavigationHandleTiming().navigation_did_commit_time,
       navigation_start_time_);
+
+  // Update the navigation handle timings explicitly here since it is not
+  // triggered when we update the commit timings.
+  OnNavigationHandleTimingUpdated(navigation_handle);
 
   // If there's any previous hiding/backgrounding that hasn't been logged (e.g.
   // if the navigation didn't allow logging when these abandonments happen),

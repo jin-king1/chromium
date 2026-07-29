@@ -6,12 +6,16 @@ package org.chromium.android_webview;
 
 import org.jni_zero.CalledByNative;
 
+import org.chromium.build.annotations.NullMarked;
+
 /** Util methods which may be needed by native class of the same name. */
+@NullMarked
 public class AwBrowserMainParts {
     // This is set by WebViewChromiumFactoryProvider for the WebView separate resource context
     // experiment. The value is read by aw_browser_main_parts.cc.
     private static boolean sUseWebViewContext;
     private static boolean sPartitionedCookiesDefaultState;
+    private static boolean sRunStartupTasksAsync;
 
     public static void setUseWebViewContext(boolean enabled) {
         sUseWebViewContext = enabled;
@@ -19,6 +23,10 @@ public class AwBrowserMainParts {
 
     public static void setPartitionedCookiesDefaultState(boolean enabled) {
         sPartitionedCookiesDefaultState = enabled;
+    }
+
+    public static void setRunStartupTasksAsync(boolean enabled) {
+        sRunStartupTasksAsync = enabled;
     }
 
     @CalledByNative
@@ -29,6 +37,11 @@ public class AwBrowserMainParts {
     @CalledByNative
     private static boolean getPartitionedCookiesDefaultState() {
         return sPartitionedCookiesDefaultState;
+    }
+
+    @CalledByNative
+    private static boolean runStartupTasksAsync() {
+        return sRunStartupTasksAsync;
     }
 
     private AwBrowserMainParts() {}

@@ -17,6 +17,8 @@ interface State {
   dictation: FacialGesture|undefined;
   heldMacros: string[];
   precision: FacialGesture|undefined;
+  isFaceLandmarkerResultValid: boolean|undefined;
+  isCameraMuted: boolean;
 }
 
 /** Handles setting the text content of the FaceGaze bubble UI. */
@@ -57,7 +59,19 @@ export class BubbleController {
       dictation,
       heldMacros,
       precision,
+      isFaceLandmarkerResultValid,
+      isCameraMuted,
     } = this.getState_();
+
+
+    if (isFaceLandmarkerResultValid !== undefined &&
+        !isFaceLandmarkerResultValid) {
+      this.baseText_.push(chrome.i18n.getMessage('facegaze_invalid_result'));
+    }
+
+    if (isCameraMuted) {
+      this.baseText_.push(chrome.i18n.getMessage('facegaze_camera_muted'));
+    }
 
     if (heldMacros) {
       heldMacros.forEach((displayText) => {
@@ -89,8 +103,18 @@ export class BubbleController {
           BubbleController.getDisplayTextForGesture_(dictation)));
     }
 
+    const isWarning = this.baseText_.length > 0;
+
+    if (this.baseText_.length === 0) {
+      // If there is no other text to show in the bubble, then show the
+      // 'Face control active' message. This is gives users, who may be
+      // unfamiliar with FaceGaze, an understanding of why their computer
+      // can be controlled without touching the device.
+      this.baseText_.push(chrome.i18n.getMessage('facegaze_active'));
+    }
+
     chrome.accessibilityPrivate.updateFaceGazeBubble(
-        this.baseText_.join(', '), /*isWarning=*/ this.baseText_.length > 0);
+        this.baseText_.join(', '), isWarning);
   }
 
   static getDisplayText(gesture: FacialGesture, macro: Macro): string

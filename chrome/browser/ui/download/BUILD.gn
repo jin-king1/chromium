@@ -2,7 +2,12 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-assert(is_win || is_mac || is_linux || is_chromeos)
+# Download bubble UI is not used on ChromeOS.
+assert(is_win || is_mac || is_linux)
+
+source_set("download_display") {
+  public = [ "download_display.h" ]
+}
 
 source_set("download") {
   sources = [
@@ -12,12 +17,11 @@ source_set("download") {
     "download_bubble_row_list_view_info.h",
     "download_bubble_row_view_info.h",
     "download_bubble_security_view_info.h",
-    "download_display.h",
     "download_item_mode.h",
-    "download_started_animation.h",
   ]
 
   public_deps = [
+    ":download_display",
     "//base",
     "//chrome/browser/download",
     "//components/download/public/common:public",
@@ -37,7 +41,6 @@ source_set("impl") {
     "download_bubble_security_view_info.cc",
     "download_display.cc",
     "download_item_mode.cc",
-    "download_started_animation.h",
   ]
   deps = [
     ":download",
@@ -61,6 +64,7 @@ source_set("impl") {
 source_set("unit_tests") {
   testonly = true
   sources = [
+    "download_bubble_info_unittest.cc",
     "download_bubble_row_list_view_info_unittest.cc",
     "download_bubble_row_view_info_unittest.cc",
     "download_bubble_security_view_info_unittest.cc",
@@ -70,6 +74,7 @@ source_set("unit_tests") {
     ":download",
     "//base/test:test_support",
     "//chrome/browser/safe_browsing",
+    "//chrome/browser/signin",
     "//chrome/test:test_support",
     "//components/download/public/common:test_support",
     "//components/prefs",

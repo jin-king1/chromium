@@ -17,6 +17,7 @@ import org.chromium.android_webview.gfx.RectUtils;
 import org.chromium.base.Log;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
+import org.chromium.build.annotations.NullMarked;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -26,6 +27,7 @@ import java.util.Map;
 /** Tracks and reports the percentage of coverage of AwContents on the root view. */
 @VisibleForTesting(otherwise = VisibleForTesting.PACKAGE_PRIVATE)
 @JNINamespace("android_webview")
+@NullMarked
 public class AwWindowCoverageTracker {
     private static final long RECALCULATION_DELAY_MS = 200;
     private static final String TAG = "AwContents";
@@ -149,7 +151,7 @@ public class AwWindowCoverageTracker {
             for (AwContents content : mAwContentsList) {
                 Rect contentRect = content.getRectForWindowCoverage();
 
-                if (contentRect == null) continue;
+                if (contentRect == null || contentRect.isEmpty()) continue;
 
                 // If the intersect method returns true then it may have modified
                 // contentRect. A Rect with area 0 will not intersect with anything.

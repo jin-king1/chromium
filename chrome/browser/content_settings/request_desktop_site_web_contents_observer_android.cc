@@ -4,9 +4,19 @@
 
 #include "chrome/browser/content_settings/request_desktop_site_web_contents_observer_android.h"
 
-#include "base/android/build_info.h"
+#include <algorithm>
+
+#include "base/android/android_info.h"
+#include "base/android/device_info.h"
 #include "base/command_line.h"
+#include "base/feature_list.h"
+#include "base/metrics/field_trial_params.h"
+#include "base/metrics/histogram_functions.h"
+#include "base/strings/string_split.h"
+#include "base/strings/string_util.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
+#include "chrome/browser/flags/android/chrome_feature_list.h"
+#include "chrome/browser/preferences/android/chrome_shared_preferences.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/chrome_switches.h"
 #include "components/content_settings/core/common/content_settings_utils.h"
@@ -15,6 +25,7 @@
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/common/content_features.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
+#include "ui/display/screen.h"
 
 namespace rds_web_contents_observer {
 // Keep in sync with UserAgentRequestType in tools/metrics/histograms/enums.xml.
@@ -23,6 +34,8 @@ enum class UserAgentRequestType {
   RequestMobile = 1,
 };
 }  // namespace rds_web_contents_observer
+
+static std::optional<bool> s_is_oem_allowlisted_for_external_display_desktop_ua;
 
 RequestDesktopSiteWebContentsObserverAndroid::
     RequestDesktopSiteWebContentsObserverAndroid(content::WebContents* contents)
@@ -42,9 +55,10 @@ RequestDesktopSiteWebContentsObserverAndroid::
 void RequestDesktopSiteWebContentsObserverAndroid::DidStartNavigation(
     content::NavigationHandle* navigation_handle) {
   // A webpage could contain multiple frames, which will trigger this observer
-  // multiple times. Only need to override user agent for the main frame of the
-  // webpage; since the child iframes inherit from the main frame.
-  if (!navigation_handle->IsInMainFrame()) {
+  // multiple times. Only need to override user agent for outermost main frames
+  // of the webpage; since child iframes inherit from the main frame, and fenced
+  // frames should maintain a privacy boundary.
+  if (!navigation_handle->IsInOutermostMainFrame()) {
     return;
   }
 
@@ -65,7 +79,7 @@ void RequestDesktopSiteWebContentsObserverAndroid::DidStartNavigation(
   bool is_global_setting = setting_info.primary_pattern.MatchesAllHosts();
 
   // RDS Window Setting support.
-  if (!base::android::BuildInfo::GetInstance()->is_automotive() &&
+  if (!base::android::device_info::is_automotive() &&
       pref_service_->GetBoolean(prefs::kDesktopSiteWindowSettingEnabled) &&
       desktop_mode && !always_request_desktop_site && is_global_setting) {
     int web_contents_width_dp =
@@ -76,9 +90,14 @@ void RequestDesktopSiteWebContentsObserverAndroid::DidStartNavigation(
     }
   }
 
+  // RDS External Display support.
+  bool should_allow_on_external_display =
+      ShouldAllowOnExternalDisplay(is_global_setting);
+  desktop_mode |= should_allow_on_external_display;
+
   // Override UA for renderer initiated navigation only. UA override for browser
   // initiated navigation is handled on Java side. This is to workaround known
-  // issues crbug.com/1265751 and crbug.com/1261939.
+  // issues crbug.com/40801643 and crbug.com/40799177.
   if (navigation_handle->IsRendererInitiated()) {
     navigation_handle->SetIsOverridingUserAgent(desktop_mode);
   }
@@ -103,3 +122,55 @@ void RequestDesktopSiteWebContentsObserverAndroid::DidStartNavigation(
 }
 
 WEB_CONTENTS_USER_DATA_KEY_IMPL(RequestDesktopSiteWebContentsObserverAndroid);
+
+bool RequestDesktopSiteWebContentsObserverAndroid::ShouldAllowOnExternalDisplay(
+    bool is_global_setting) {
+  // Disallow if feature is disabled.
+  if (!base::FeatureList::IsEnabled(
+          chrome::android::kDesktopUAOnConnectedDisplay)) {
+    return false;
+  }
+  // Disallow if user has explicitly set preference ie. not a global setting or
+  // default global setting has been changed.
+  base::android::SharedPreferencesManager shared_prefs =
+      android::shared_preferences::GetChromeSharedPreferences();
+  if (!is_global_setting ||
+      shared_prefs.ContainsKey(
+          prefs::kRequestDesktopSiteGlobalSettingUserEnabled)) {
+    return false;
+  }
+  // Disallow if not on an large external display.
+  display::Display display = display::Screen::Get()->GetDisplayNearestWindow(
+      web_contents()->GetTopLevelNativeWindow());
+  // Compute the display's diagonal length in inches.
+  float width_inches = static_cast<float>(display.GetSizeInPixel().width()) /
+                       display.GetPixelsPerInchX();
+  float height_inches = static_cast<float>(display.GetSizeInPixel().height()) /
+                        display.GetPixelsPerInchY();
+  double diagonal_inches =
+      std::sqrt(std::pow(width_inches, 2) + std::pow(height_inches, 2));
+  bool is_on_eligible_external_display =
+      display.id() != kPrimaryDisplayId &&
+      diagonal_inches >= kDesktopSiteDisplaySizeThresholdInches;
+  if (!is_on_eligible_external_display) {
+    return false;
+  }
+  // Disallow if OEM is not allowlisted.
+  if (!s_is_oem_allowlisted_for_external_display_desktop_ua.has_value()) {
+    std::string oemAllowlistStr = base::GetFieldTrialParamByFeatureAsString(
+        chrome::android::kDesktopUAOnConnectedDisplay,
+        "ext_display_desktop_ua_oem_allowlist", "");
+    if (oemAllowlistStr.empty()) {
+      s_is_oem_allowlisted_for_external_display_desktop_ua = true;
+    } else {
+      std::vector<std::string> allowlist =
+          base::SplitString(oemAllowlistStr, ",", base::TRIM_WHITESPACE,
+                            base::SPLIT_WANT_NONEMPTY);
+      std::string manufacturer = base::android::android_info::manufacturer();
+      base::ToLowerASCII(manufacturer);
+      s_is_oem_allowlisted_for_external_display_desktop_ua =
+          std::ranges::contains(allowlist, manufacturer);
+    }
+  }
+  return s_is_oem_allowlisted_for_external_display_desktop_ua.value();
+}

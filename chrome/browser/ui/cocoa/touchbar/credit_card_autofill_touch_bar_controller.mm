@@ -9,7 +9,6 @@
 #include "base/memory/raw_ptr.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/time/time.h"
-#include "base/types/cxx23_to_underlying.h"
 #include "chrome/app/vector_icons/vector_icons.h"
 #import "chrome/browser/ui/autofill/autofill_popup_controller.h"
 #include "components/autofill/core/browser/filling/filling_product.h"
@@ -20,6 +19,8 @@
 #include "components/grit/components_scaled_resources.h"
 #import "ui/base/cocoa/touch_bar_util.h"
 #include "ui/base/resource/resource_bundle.h"
+#include "ui/base/ui_base_features.h"
+#include "ui/gfx/image/image_skia.h"
 #include "ui/gfx/image/image_skia_util_mac.h"
 #include "ui/gfx/paint_vector_icon.h"
 
@@ -43,8 +44,10 @@ NSImage* GetCreditCardTouchBarImage(int iconId) {
 
   // If it's a generic card image, use the vector icon instead.
   if (iconId == IDR_AUTOFILL_CC_GENERIC) {
-    return NSImageFromImageSkia(
-        gfx::CreateVectorIcon(kCreditCardIcon, 16, SK_ColorWHITE));
+    return NSImageFromImageSkia(gfx::CreateVectorIcon(
+        features::IsRoundedIconsEnabled() ? kCreditCardIcon
+                                          : kCreditCardOldIcon,
+        16, SK_ColorWHITE));
   }
 
   return ui::ResourceBundle::GetSharedInstance()
@@ -188,7 +191,8 @@ NSImage* GetCreditCardTouchBarImage(int iconId) {
 }
 
 - (void)acceptCreditCard:(id)sender {
-  _controller->AcceptSuggestion([sender tag]);
+  _controller->AcceptSuggestion(
+      [sender tag], autofill::AutofillMetrics::SuggestionAcceptedMethod::kTap);
 }
 
 - (void)setIsCreditCardPopup:(bool)is_credit_card_popup {

@@ -2,8 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/chromeos/ui_mode.gni")
-
 assert(is_chromeos)
 
 static_library("os_updates") {
@@ -14,12 +12,12 @@ static_library("os_updates") {
 
   deps = [
     "//base",
-    "//chrome/browser:browser_process",
     "//chrome/browser/ash/policy/core",
     "//chrome/browser/ash/policy/reporting",
     "//chrome/browser/ash/policy/reporting/event_based_logs:utils",
     "//chrome/browser/policy/messaging_layer/proto:os_events_proto",
-    "//chrome/common:channel_info",
+    "//chrome/browser/upgrade_detector",
+    "//chromeos/ash/components/channel",
     "//chromeos/ash/components/dbus/session_manager",
     "//chromeos/ash/components/dbus/update_engine",
     "//chromeos/ash/components/settings",
@@ -100,4 +98,8 @@ source_set("browser_tests") {
     "//testing/gmock",
     "//testing/gtest",
   ]
+
+  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+  # enable the diagnostic by removing this line.
+  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }

@@ -7,8 +7,24 @@
 
 #import <UIKit/UIKit.h>
 
+// Large height for the keyboard accessory.
+extern const CGFloat kLargeKeyboardAccessoryHeight;
+
 @class FormInputAccessoryView;
 @class FormInputAccessoryViewTextData;
+
+// Enum for groups of subitems (UIButtons for now) in `FormInputAccessoryView`.
+enum class FormInputAccessoryViewSubitemGroup {
+  // Empty group, the default uninitialized value.
+  kEmpty = 0,
+  // The expand button.
+  kExpandButton,
+  // Manual fill buttons: the password button, the credit card button and the
+  // address button.
+  kManualFillButtons,
+  // Navigation buttons: the previous button and the next button.
+  kNavigationButtons
+};
 
 // Informs the receiver of actions in the accessory view.
 @protocol FormInputAccessoryViewDelegate
@@ -45,9 +61,18 @@
 - (void)formInputAccessoryViewDidTapAddressManualFillButton:
     (FormInputAccessoryView*)sender;
 
+// This method is called when the AtMemory manual fill button is tapped.
+// TODO(crbug.com/522326512): Verify this interface.
+- (void)formInputAccessoryViewDidTapAtMemoryManualFillButton:
+    (FormInputAccessoryView*)sender;
+
 @end
 
 extern NSString* const kFormInputAccessoryViewAccessibilityID;
+
+extern NSString* const
+    kFormInputAccessoryViewAtMemoryButtonAccessibilityIdentifier;
+
 extern NSString* const
     kFormInputAccessoryViewOmniboxTypingShieldAccessibilityID;
 
@@ -80,11 +105,23 @@ extern NSString* const
 // "addressManualFillSymbol". Nil otherwise.
 @property(nonatomic, readonly, weak) UIButton* addressManualFillButton;
 
+// The AtMemory button if the view was set up with a navigation delegate and a
+// "atMemoryManualFillSymbol". Nil otherwise.
+// TODO(crbug.com/522326512): Verify this property.
+@property(nonatomic, readonly, weak) UIButton* atMemoryManualFillButton;
+
 // The leading view.
 @property(nonatomic, readonly, weak) UIView* leadingView;
 
-// The trailing view. Can be nil.
+// The trailing view. Can be nil. It is the parent view of all manual fill
+// buttons, and the close button when split view is not enabled.
 @property(nonatomic, readonly, weak) UIView* trailingView;
+
+// Hides or shows the AtMemory button.
+@property(nonatomic, assign) BOOL atMemoryButtonHidden;
+
+// Whether touches in blank areas should pass through to the underlying UI.
+@property(nonatomic, assign) BOOL passThroughTouchesEnabled;
 
 // Sets up the view with the given `leadingView`. Navigation controls are shown
 // on the trailing side and use `delegate` for actions.
@@ -94,12 +131,13 @@ extern NSString* const
 // Sets up the view with the given `leadingView`. Navigation controls are shown
 // on the trailing side and use `delegate` for actions.
 // This initializer modifies multiple UI elements:
-// - The manual fill buttons are added, using *manualFillSymbol as their images.
+// - The manual fill buttons are added, using the supplied symbols as their
+// images.
 // - The previous and next buttons are removed.
 // - The accessory height is increased.
 // - The background color is set to grey.
 // If `closeButtonSymbol` is nil, the close button will use the default text.
-// Otherwise, it will use closeButtonSymbol as the image instead.
+// Otherwise, it will use `closeButtonSymbol` as the image instead.
 // `isTabletFormFactor` modifies the appearance of the manual fill button.
 - (void)setUpWithLeadingView:(UIView*)leadingView
             navigationDelegate:(id<FormInputAccessoryViewDelegate>)delegate
@@ -107,13 +145,9 @@ extern NSString* const
       passwordManualFillSymbol:(UIImage*)passwordManualFillSymbol
     creditCardManualFillSymbol:(UIImage*)creditCardManualFillSymbol
        addressManualFillSymbol:(UIImage*)addressManualFillSymbol
+      atMemoryManualFillSymbol:(UIImage*)atMemoryManualFillSymbol
              closeButtonSymbol:(UIImage*)closeButtonSymbol
             isTabletFormFactor:(BOOL)isTabletFormFactor;
-
-// Sets up the view with the given `leadingView`. Navigation controls are
-// replaced with `customTrailingView`.
-- (void)setUpWithLeadingView:(UIView*)leadingView
-          customTrailingView:(UIView*)customTrailingView;
 
 // Sets the height of the omnibox typing shield. Set a height of 0 to hide the
 // typing shield. The omnibox typing shield is a transparent view on the top
@@ -124,6 +158,17 @@ extern NSString* const
 // Sets whether the UI is in compact mode, so that the keyboard accessory can
 // adapt to the compact size class if necessary.
 - (void)setIsCompact:(BOOL)isCompact;
+
+// Shows the group passed in, and hides other elements. If it is already the
+// current group, then it simply returns.
+- (void)showGroup:(FormInputAccessoryViewSubitemGroup)group;
+
+// Returns the group of buttons currently being shown.
+- (FormInputAccessoryViewSubitemGroup)currentGroup;
+
+// Overrides the interface style of subviews, such as the trailing view and
+// close button.
+- (void)setSubviewsOverrideUserInterfaceStyle:(UIUserInterfaceStyle)style;
 
 @end
 

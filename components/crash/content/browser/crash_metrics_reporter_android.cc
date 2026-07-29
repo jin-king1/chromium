@@ -7,6 +7,7 @@
 #include <string_view>
 
 #include "base/check.h"
+#include "base/check_is_test.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/metrics/user_metrics.h"
@@ -18,19 +19,11 @@
 namespace crash_reporter {
 namespace {
 
-// These values are persisted to logs. Entries should not be renumbered and
-// numeric values should never be reused.
-enum class BindingStateCombo {
-  kNoWaivedNoModerateNoStrong = 0,
-  kNoWaivedNoModerateHasStrong = 1,
-  kNoWaivedHasModerateNoStrong = 2,
-  kNoWaivedHasModerateHasStrong = 3,
-  kHasWaivedNoModerateNoStrong = 4,
-  kHasWaivedNoModerateHasStrong = 5,
-  kHasWaivedHasModerateNoStrong = 6,
-  kHasWaivedHasModerateHasStrong = 7,
-  kMaxValue = kHasWaivedHasModerateHasStrong
-};
+constexpr char kKillSpareRendererAvailabilityIntentionalKillUMAName[] =
+    "Stability.Android.KillSpareRendererAvailability.IntentionalKill";
+
+constexpr char kKillSpareRendererAvailabilityOOMUMAName[] =
+    "Stability.Android.KillSpareRendererAvailability.OOM";
 
 void ReportCrashCount(CrashMetricsReporter::ProcessedCrashCounts crash_type,
                       CrashMetricsReporter::ReportedCrashTypeSet* counts) {
@@ -59,6 +52,104 @@ void RecordSystemExitReason(
   if (!suffix.empty()) {
     ProcessExitReasonFromSystem::RecordExitReasonToUma(
         pid, base::StrCat({"Stability.Android.SystemExitReason.", suffix}));
+  }
+}
+
+void RecordSpareRendererAvailability(bool is_oom_kill,
+                                     bool is_intentioal_kill,
+                                     bool is_spare_renderer_killed,
+                                     bool has_spare_renderer) {
+  if (!is_oom_kill && !is_intentioal_kill) {
+    return;
+  }
+  using SpareRendererAvailabilityWhenKilled =
+      CrashMetricsReporter::SpareRendererAvailabilityWhenKilled;
+  SpareRendererAvailabilityWhenKilled availability;
+  if (is_spare_renderer_killed) {
+    availability = SpareRendererAvailabilityWhenKilled::kKillSpareRenderer;
+  } else if (has_spare_renderer) {
+    availability = SpareRendererAvailabilityWhenKilled::
+        kKillNonSpareRendererWithSpareRender;
+  } else {
+    availability = SpareRendererAvailabilityWhenKilled::
+        kKillNonSpareRendererWithoutSpareRenderer;
+  }
+  const char* target_uma_name =
+      is_oom_kill ? kKillSpareRendererAvailabilityOOMUMAName
+                  : kKillSpareRendererAvailabilityIntentionalKillUMAName;
+  base::UmaHistogramEnumeration(target_uma_name, availability);
+}
+
+void RecordMemoryPressureMetricsOnProcessKill(
+    const ChildExitObserver::TerminationInfo& info) {
+  if (!info.memory_pressure_metrics) {
+    return;
+  }
+
+  std::string_view process_type_suffix;
+  if (info.process_type == content::PROCESS_TYPE_GPU) {
+    process_type_suffix = "Gpu";
+  } else if (info.process_type == content::PROCESS_TYPE_RENDERER &&
+             info.renderer_has_visible_clients) {
+    process_type_suffix = "VisibleRenderer";
+  } else {
+    return;
+  }
+
+  base::UmaHistogramMemoryLargeMB(
+      base::StrCat({"Browser.Memory.Experimental.MemoryPressureOnProcessKill.",
+                    process_type_suffix, ".AvailableMemory"}),
+      info.memory_pressure_metrics->available_memory.InMiB());
+  base::UmaHistogramMemoryLargeMB(
+      base::StrCat({"Browser.Memory.Experimental.MemoryPressureOnProcessKill.",
+                    process_type_suffix, ".TotalPrivateFootprint"}),
+      info.memory_pressure_metrics->total_private_footprint.InMiB());
+  base::UmaHistogramCounts100(
+      base::StrCat({"Browser.Memory.Experimental.MemoryPressureOnProcessKill.",
+                    process_type_suffix, ".TotalProcessCount"}),
+      info.memory_pressure_metrics->total_process_count);
+  base::UmaHistogramCounts100(
+      base::StrCat({"Browser.Memory.Experimental.MemoryPressureOnProcessKill.",
+                    process_type_suffix, ".VisibleRendererCount"}),
+      info.memory_pressure_metrics->visible_renderer_count);
+}
+
+void RecordProcessKillSinceSpareCreation(
+    const ChildExitObserver::TerminationInfo& info) {
+  if (!info.last_spare_renderer_creation_info) {
+    return;
+  }
+  base::TimeDelta time_since_creation =
+      base::TimeTicks::Now() -
+      info.last_spare_renderer_creation_info->creation_time;
+  int available_memory =
+      info.last_spare_renderer_creation_info->available_memory_mb;
+  std::string_view suffix;
+  if (info.process_type == content::PROCESS_TYPE_GPU) {
+    suffix = "Gpu";
+  } else if (info.process_type == content::PROCESS_TYPE_RENDERER &&
+             info.renderer_has_visible_clients) {
+    suffix = "Visible";
+  } else if (info.process_type == content::PROCESS_TYPE_RENDERER &&
+             info.binding_state == base::android::ChildBindingState::WAIVED) {
+    suffix = "Waived";
+  }
+
+  if (suffix.empty()) {
+    return;
+  }
+
+  if (time_since_creation < base::Seconds(1)) {
+    base::UmaHistogramMemoryLargeMB(
+        base::StrCat({"BrowserRenderProcessHost.AvailableMemory.SpareRenderer.",
+                      suffix, "ProcessKillWithin1s"}),
+        available_memory);
+  }
+  if (time_since_creation < base::Seconds(5)) {
+    base::UmaHistogramMemoryLargeMB(
+        base::StrCat({"BrowserRenderProcessHost.AvailableMemory.SpareRenderer.",
+                      suffix, "ProcessKillWithin5s"}),
+        available_memory);
   }
 }
 
@@ -104,9 +195,15 @@ void CrashMetricsReporter::ChildProcessExited(
   const bool renderer_subframe = info.renderer_was_subframe;
   const bool renderer_allocation_failed =
       info.blink_oom_metrics.allocation_failed;
-  const uint64_t available_memory_kb =
-      info.blink_oom_metrics.current_available_memory_kb;
-  const uint64_t swap_free_kb = info.blink_oom_metrics.current_swap_free_kb;
+  const base::ByteSize available_memory =
+      info.blink_oom_metrics.current_available_memory;
+  const base::ByteSize swap_free = info.blink_oom_metrics.current_swap_free;
+
+  RecordSpareRendererAvailability(android_oom_kill, intentional_kill,
+                                  info.is_spare_renderer,
+                                  info.has_spare_renderer);
+  RecordProcessKillSinceSpareCreation(info);
+  RecordMemoryPressureMetricsOnProcessKill(info);
 
   if (app_foreground && android_oom_kill) {
     if (info.process_type == content::PROCESS_TYPE_GPU) {
@@ -123,10 +220,11 @@ void CrashMetricsReporter::ChildProcessExited(
       renderer_allocation_failed) {
     ReportCrashCount(ProcessedCrashCounts::kRendererAllocationFailureAll,
                      &reported_counts);
-    if (app_foreground && renderer_visible)
+    if (app_foreground && renderer_visible) {
       ReportCrashCount(
           ProcessedCrashCounts::kRendererForegroundVisibleAllocationFailure,
           &reported_counts);
+    }
   }
 
   if (info.process_type == content::PROCESS_TYPE_RENDERER && app_foreground) {
@@ -161,23 +259,20 @@ void CrashMetricsReporter::ChildProcessExited(
           base::RecordAction(
               base::UserMetricsAction("RendererForegroundMainFrameOOM"));
         }
-        base::SystemMemoryInfoKB meminfo;
+        base::SystemMemoryInfo meminfo;
         base::GetSystemMemoryInfo(&meminfo);
         base::UmaHistogramMemoryLargeMB(
-            "Memory.Experimental.Renderer.TotalMemoryAfterOOM",
-            meminfo.total / 1024);
+            "Memory.Experimental.Renderer.TotalMemoryAfterOOM", meminfo.total);
         base::UmaHistogramMemoryLargeMB(
             "Memory.Experimental.Renderer.AvailableMemoryAfterOOM",
-            meminfo.available / 1024);
+            meminfo.available);
         base::UmaHistogramMemoryLargeMB(
-            "Memory.Experimental.Renderer.SwapFreeAfterOOM",
-            meminfo.swap_free / 1024);
+            "Memory.Experimental.Renderer.SwapFreeAfterOOM", meminfo.swap_free);
         base::UmaHistogramMemoryLargeMB(
             "Memory.Experimental.Renderer.AvailableMemoryBeforeOOM",
-            available_memory_kb / 1024);
+            available_memory);
         base::UmaHistogramMemoryLargeMB(
-            "Memory.Experimental.Renderer.SwapFreeBeforeOOM",
-            swap_free_kb / 1024);
+            "Memory.Experimental.Renderer.SwapFreeBeforeOOM", swap_free);
       }
     } else if (!crashed) {
       // Record stats when renderer is not visible, but the process has oom

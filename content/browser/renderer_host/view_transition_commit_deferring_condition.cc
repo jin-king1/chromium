@@ -19,11 +19,6 @@ namespace content {
 std::unique_ptr<CommitDeferringCondition>
 ViewTransitionCommitDeferringCondition::MaybeCreate(
     NavigationRequest& navigation_request) {
-  if (!base::FeatureList::IsEnabled(
-          blink::features::kViewTransitionOnNavigation)) {
-    return nullptr;
-  }
-
   // If we already have a transition animation, we should skip the view
   // transition.
   if (navigation_request.was_initiated_by_animated_transition()) {
@@ -50,11 +45,6 @@ ViewTransitionCommitDeferringCondition::MaybeCreate(
       navigation_request.frame_tree_node()->current_frame_host();
 
   if (!navigation_request.IsInMainFrame()) {
-    if (!base::FeatureList::IsEnabled(
-            blink::features::kViewTransitionOnNavigationForIframes)) {
-      return nullptr;
-    }
-
     // We will not have a RFH if this navigation is not committing a new
     // Document.
     auto* new_rfh = navigation_request.GetRenderFrameHost();
@@ -156,9 +146,14 @@ ViewTransitionCommitDeferringCondition::WillCommitNavigation(
       navigation_request->WillDispatchPageSwap();
   CHECK(page_swap_event_params);
 
+  RenderProcessHost* const render_process_host =
+      render_frame_host->GetProcess();
+  CHECK(render_process_host);
+
   blink::ViewTransitionToken transition_token;
-  resources_ =
-      std::make_unique<ScopedViewTransitionResources>(transition_token);
+  resources_ = std::make_unique<ScopedViewTransitionResources>(
+      transition_token, *render_process_host,
+      /*delay_layer_tree_view_deletion=*/false);
   resume_navigation_ = std::move(resume);
   old_rfh_ = render_frame_host->GetWeakPtr();
 
@@ -208,11 +203,11 @@ void ViewTransitionCommitDeferringCondition::OnSnapshotAckFromRenderer(
 
   base::ScopedClosureRunner runner(std::move(resume_navigation_));
 
-  if (view_transition_state.HasSubframeSnapshot()) {
-    if (!old_rfh_) {
-      return;
-    }
+  if (!old_rfh_) {
+    return;
+  }
 
+  if (view_transition_state.HasSubframeSnapshot()) {
     // The subframe snapshot is only used for in-process iframes which don't own
     // a widget.
     if (old_rfh_->is_local_root()) {
@@ -233,8 +228,11 @@ void ViewTransitionCommitDeferringCondition::OnSnapshotAckFromRenderer(
   }
 
   if (view_transition_state.IsValid()) {
+    resources_->set_delay_layer_tree_view_deletion(
+        view_transition_state.IsDelayLayerTreeViewDeletionEnabled());
     NavigationRequest::From(&GetNavigationHandle())
-        ->SetViewTransitionState(std::move(resources_),
+        ->SetViewTransitionState(old_rfh_->GetLastCommittedOrigin(),
+                                 std::move(resources_),
                                  std::move(view_transition_state));
   }
 }

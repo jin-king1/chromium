@@ -2,14 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "media/gpu/windows/mf_video_encoder_util.h"
 
 #include "base/check.h"
+#include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/hash/hash.h"
 #include "base/native_library.h"
@@ -23,45 +19,6 @@
 #include "media/gpu/windows/mf_video_encoder_switches.h"
 
 namespace media {
-
-// AVEncVideoEncodeQP maps QP to libvpx qp tuning parameter
-// and thus the range is 0-63.
-uint8_t QindextoAVEncQP(VideoCodec codec, uint8_t q_index) {
-  if (codec == VideoCodec::kAV1 || codec == VideoCodec::kVP9) {
-    // The following computation is based on the table in
-    // //third_party/libvpx/source/libvpx/vp9/encoder/vp9_quantize.c.
-    // //third_party/libaom/source/libaom/av1/encoder/av1_quantize.c
-    // {
-    //   0,   4,   8,   12,  16,  20,  24,  28,  32,  36,  40,  44,  48,
-    //   52,  56,  60,  64,  68,  72,  76,  80,  84,  88,  92,  96,  100,
-    //   104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144, 148, 152,
-    //   156, 160, 164, 168, 172, 176, 180, 184, 188, 192, 196, 200, 204,
-    //   208, 212, 216, 220, 224, 228, 232, 236, 240, 244, 249, 255,
-    // };
-    if (q_index <= 244) {
-      return (q_index + 3) / 4;
-    }
-    if (q_index <= 249) {
-      return 62;
-    }
-    return 63;
-  }
-  return q_index;
-}
-
-// This is the inverse of QindextoAVEncQP() function.
-uint8_t AVEncQPtoQindex(VideoCodec codec, uint8_t avenc_qp) {
-  if (codec == VideoCodec::kAV1 || codec == VideoCodec::kVP9) {
-    uint8_t q_index = avenc_qp * 4;
-    if (q_index == 248) {
-      q_index = 249;
-    } else if (q_index == 252) {
-      q_index = 255;
-    }
-    return q_index;
-  }
-  return avenc_qp;
-}
 
 // According to AV1/VP9's bitstream specification, the valid range of qp
 // value (defined as base_q_idx) should be 0-255.
@@ -364,18 +321,20 @@ EnumerateHardwareEncodersLegacy(VideoCodec codec) {
   }
 
   for (UINT32 i = 0; i < count; i++) {
-    if (codec == VideoCodec::kAV1 && IsIntelHybridAV1Encoder(pp_activates[i])) {
+    if (codec == VideoCodec::kAV1 &&
+        IsIntelHybridAV1Encoder(UNSAFE_TODO(pp_activates[i]))) {
       continue;
     }
 
     // We can still infer the MFT's adapter LUID if there's only one adapter
     // in the system.
     if (num_adapters == 1) {
-      pp_activates[i]->SetBlob(MFT_ENUM_ADAPTER_LUID,
-                               reinterpret_cast<BYTE*>(&single_adapter_luid),
-                               sizeof(LUID));
+      UNSAFE_TODO(pp_activates[i])
+          ->SetBlob(MFT_ENUM_ADAPTER_LUID,
+                    reinterpret_cast<BYTE*>(&single_adapter_luid),
+                    sizeof(LUID));
     }
-    encoders.push_back(pp_activates[i]);
+    encoders.push_back(UNSAFE_TODO(pp_activates[i]));
   }
 
   if (pp_activates) {
@@ -392,13 +351,6 @@ std::vector<Microsoft::WRL::ComPtr<IMFActivate>> EnumerateHardwareEncoders(
   if (!InitializeMediaFoundation()) {
     return encoders;
   }
-#if defined(ARCH_CPU_ARM64)
-  // TODO (crbug.com/1509117): Temporarily disable video encoding on arm64
-  // until we figure out what OS reports all codecs as supported.
-  if (!base::FeatureList::IsEnabled(kMediaFoundationAcceleratedEncodeOnArm64)) {
-    return encoders;
-  }
-#endif
 
   MFTEnum2Type mftenum2_func = GetMFTEnum2Function();
   if (!mftenum2_func) {
@@ -456,17 +408,17 @@ std::vector<Microsoft::WRL::ComPtr<IMFActivate>> EnumerateHardwareEncoders(
 
     for (UINT32 i = 0; i < count; i++) {
       if (codec == VideoCodec::kAV1 &&
-          IsIntelHybridAV1Encoder(pp_activates[i])) {
+          IsIntelHybridAV1Encoder(UNSAFE_TODO(pp_activates[i]))) {
         continue;
       }
       // It's safe to ignore return value here.
       // if SetBlob fails, the IMFActivate won't have a valid adapter LUID
       // which will fail the check for preferred adapter LUID, so the
       // MFDXGIDeviceManager will not be set for MFT, which is a safe option.
-      pp_activates[i]->SetBlob(MFT_ENUM_ADAPTER_LUID,
-                               reinterpret_cast<BYTE*>(&desc.AdapterLuid),
-                               sizeof(LUID));
-      encoders.push_back(pp_activates[i]);
+      UNSAFE_TODO(pp_activates[i])
+          ->SetBlob(MFT_ENUM_ADAPTER_LUID,
+                    reinterpret_cast<BYTE*>(&desc.AdapterLuid), sizeof(LUID));
+      encoders.push_back(UNSAFE_TODO(pp_activates[i]));
     }
 
     if (pp_activates) {
@@ -564,6 +516,13 @@ std::vector<FramerateAndResolution> GetMaxFramerateAndResolutionsFromMFT(
   if (codec == VideoCodec::kH264) {
     max_framerate_and_resolutions.push_back(kLegacy2KMaxFramerateAndResolution);
     max_framerate_and_resolutions.push_back(kLegacy4KMaxFramerateAndResolution);
+  } else if (codec == VideoCodec::kVP9) {
+    max_framerate_and_resolutions.push_back(
+        kVP9Modern2KMaxFramerateAndResolution);
+    max_framerate_and_resolutions.push_back(
+        kVP9Modern4KMaxFramerateAndResolution);
+    max_framerate_and_resolutions.push_back(
+        kVP9Modern8KMaxFramerateAndResolution);
   } else {
     max_framerate_and_resolutions.push_back(kModern2KMaxFramerateAndResolution);
     max_framerate_and_resolutions.push_back(kModern4KMaxFramerateAndResolution);
@@ -696,6 +655,12 @@ size_t GetMFTGuidHash(IMFActivate* activate) {
   activate->GetGUID(MFT_TRANSFORM_CLSID_Attribute, &mft_guid);
   return base::FastHash(
       base::as_byte_span(base::win::WStringFromGUID(mft_guid)));
+}
+
+bool IsMediaFoundationD3DVideoProcessingEnabled(
+    const gpu::GpuDriverBugWorkarounds& workarounds) {
+  return base::FeatureList::IsEnabled(kMediaFoundationD3DVideoProcessing) &&
+         !workarounds.disable_media_foundation_d3d_video_processing;
 }
 
 }  // namespace media

@@ -11,6 +11,7 @@
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_storage_bucket_options.h"
 #include "third_party/blink/renderer/core/dom/dom_exception.h"
+#include "third_party/blink/renderer/core/dom/quota_exceeded_error.h"
 #include "third_party/blink/renderer/core/execution_context/navigator_base.h"
 #include "third_party/blink/renderer/modules/buckets/storage_bucket.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
@@ -25,11 +26,11 @@ namespace blink {
 namespace {
 
 bool IsValidName(const String& name) {
-  if (!name.IsLowerASCII()) {
+  if (!name.ContainsNoAsciiUpper()) {
     return false;
   }
 
-  if (!name.ContainsOnlyASCIIOrEmpty()) {
+  if (!name.ContainsOnlyAsciiOrEmpty()) {
     return false;
   }
 
@@ -40,7 +41,7 @@ bool IsValidName(const String& name) {
   // | name | must only contain lowercase latin letters, digits 0-9, or special
   // characters '-' & '_' in the middle of the name, but not at the beginning.
   for (wtf_size_t i = 0; i < name.length(); i++) {
-    if (!IsASCIIAlphanumeric(name[i]) &&
+    if (!IsAsciiAlphanumeric(name[i]) &&
         (i == 0 || (name[i] != '_' && name[i] != '-'))) {
       return false;
     }
@@ -63,9 +64,10 @@ mojom::blink::BucketPoliciesPtr ToMojoBucketPolicies(
   }
 
   if (options->hasDurability()) {
-    policies->durability = options->durability() == "strict"
-                               ? mojom::blink::BucketDurability::kStrict
-                               : mojom::blink::BucketDurability::kRelaxed;
+    policies->durability =
+        options->durability() == V8StorageBucketDurability::Enum::kStrict
+            ? mojom::blink::BucketDurability::kStrict
+            : mojom::blink::BucketDurability::kRelaxed;
     policies->has_durability = true;
   }
 
@@ -123,7 +125,7 @@ ScriptPromise<StorageBucket> StorageBucketManager::open(
   if (!IsValidName(name)) {
     resolver->Reject(V8ThrowException::CreateTypeError(
         script_state->GetIsolate(),
-        "The bucket name '" + name + "' is not a valid name."));
+        StrCat({"The bucket name '", name, "' is not a valid name."})));
     return promise;
   }
 
@@ -138,8 +140,8 @@ ScriptPromise<StorageBucket> StorageBucketManager::open(
   GetBucketManager(script_state)
       ->OpenBucket(
           name, std::move(bucket_policies),
-          WTF::BindOnce(&StorageBucketManager::DidOpen, WrapPersistent(this),
-                        WrapPersistent(resolver), name));
+          BindOnce(&StorageBucketManager::DidOpen, WrapPersistent(this),
+                   WrapPersistent(resolver), name));
   return promise;
 }
 
@@ -164,8 +166,8 @@ ScriptPromise<IDLSequence<IDLString>> StorageBucketManager::keys(
   }
 
   GetBucketManager(script_state)
-      ->Keys(WTF::BindOnce(&StorageBucketManager::DidGetKeys,
-                           WrapPersistent(this), WrapPersistent(resolver)));
+      ->Keys(BindOnce(&StorageBucketManager::DidGetKeys, WrapPersistent(this),
+                      WrapPersistent(resolver)));
   return promise;
 }
 
@@ -192,14 +194,14 @@ ScriptPromise<IDLUndefined> StorageBucketManager::Delete(
   if (!IsValidName(name)) {
     resolver->Reject(V8ThrowException::CreateTypeError(
         script_state->GetIsolate(),
-        "The bucket name " + name + " is not a valid name."));
+        StrCat({"The bucket name ", name, " is not a valid name."})));
     return promise;
   }
 
   GetBucketManager(script_state)
       ->DeleteBucket(
-          name, WTF::BindOnce(&StorageBucketManager::DidDelete,
-                              WrapPersistent(this), WrapPersistent(resolver)));
+          name, BindOnce(&StorageBucketManager::DidDelete, WrapPersistent(this),
+                         WrapPersistent(resolver)));
   return promise;
 }
 
@@ -235,9 +237,7 @@ void StorageBucketManager::DidOpen(
             "Unknown error occured while creating a bucket."));
         return;
       case mojom::blink::BucketError::kQuotaExceeded:
-        resolver->Reject(MakeGarbageCollected<DOMException>(
-            DOMExceptionCode::kQuotaExceededError,
-            "Too many buckets created."));
+        QuotaExceededError::Reject(resolver, "Too many buckets created.");
         return;
       case mojom::blink::BucketError::kInvalidExpiration:
         resolver->Reject(V8ThrowException::CreateTypeError(

@@ -10,8 +10,8 @@
 #include <set>
 #include <string>
 
+#include "base/containers/span.h"
 #include "base/files/file_path.h"
-#include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
@@ -25,6 +25,7 @@
 #include "components/omnibox/browser/autocomplete_match.h"
 #include "components/omnibox/browser/shortcuts_database.h"
 #include "components/search_engines/search_terms_data.h"
+#include "components/search_engines/template_url_service_observer.h"
 #include "url/gurl.h"
 
 class ShortcutsBackend;
@@ -33,15 +34,15 @@ struct TestShortcutData;
 
 void PopulateShortcutsBackendWithTestData(
     scoped_refptr<ShortcutsBackend> backend,
-    TestShortcutData* db,
-    size_t db_size);
+    base::span<TestShortcutData> db);
 
 class ShortcutsDatabase;
 
 // This class manages the shortcut provider backend - access to database on the
 // db thread, etc.
 class ShortcutsBackend : public RefcountedKeyedService,
-                         public history::HistoryServiceObserver {
+                         public history::HistoryServiceObserver,
+                         public TemplateURLServiceObserver {
  public:
   typedef std::multimap<std::u16string, const ShortcutsDatabase::Shortcut>
       ShortcutMap;
@@ -112,11 +113,10 @@ class ShortcutsBackend : public RefcountedKeyedService,
 
  private:
   friend class base::RefCountedThreadSafe<ShortcutsBackend>;
-  friend class ShortcutsBackendTest;
+  friend class FakeShortcutsBackend;
   friend void PopulateShortcutsBackendWithTestData(
       scoped_refptr<ShortcutsBackend> backend,
-      TestShortcutData* db,
-      size_t db_size);
+      base::span<TestShortcutData> db);
 
   enum CurrentState {
     NOT_INITIALIZED,  // Backend created but not initialized.
@@ -140,6 +140,10 @@ class ShortcutsBackend : public RefcountedKeyedService,
   // history::HistoryServiceObserver:
   void OnHistoryDeletions(history::HistoryService* history_service,
                           const history::DeletionInfo& deletion_info) override;
+
+  // TemplateURLServiceObserver:
+  void OnTemplateURLServiceChanged() override;
+  void OnTemplateURLServiceShuttingDown() override;
 
   // Internal initialization of the back-end. Posted by Init() to the DB thread.
   // On completion posts InitCompleted() back to UI thread.
@@ -167,20 +171,29 @@ class ShortcutsBackend : public RefcountedKeyedService,
   // true, only shortcuts from exactly |url| are deleted.
   bool DeleteShortcutsWithURL(const GURL& url, bool exact_match);
 
+  // Deletes all shortcuts whose `keyword` no longer exists in the
+  // `template_url_service_` or whose `keyword` is inactive.
+  // This is called once on initialization by `DeleteOldShortcuts()` and
+  // whenever the `template_url_service_` is updated.
+  void DeleteShortcutsWithDeletedOrInactiveKeywords();
+  ShortcutsDatabase::ShortcutIDs GetShortcutsWithDeletedOrInactiveKeywords()
+      const;
+
   // Deletes all of the shortcuts.
   bool DeleteAllShortcuts();
 
   // Deletes all shortcuts whose `last_access_time` is older than the threshold
-  // defined by HistoryBackend.
-  //
-  // This is called once on initialization after a short delay in order to
-  // remove any shortcuts that have not been removed by calls to
-  // `OnHistoryDeletions()`. That method is called from `HistoryService`, which
-  // can be initialized and running before `ShortcutsBackend` is created since
-  // the former is created at browser startup but the latter is not created
-  // until a browser window has been created, leading to the initialization of
-  // the autocomplete system.
+  // defined by `HistoryBackend` and all shortcuts whose `keyword` no longer
+  // exists in the `template_url_service_` or whose `keyword` is inactive. This
+  // is called once on initialization after a short delay in order to remove any
+  // shortcuts that have not been removed by calls to `OnHistoryDeletions()` and
+  // `OnTemplateURLServiceChanged()`. `OnHistoryDeletions()` is called from
+  // `HistoryService`, which can be initialized and running before
+  // `ShortcutsBackend` is created since the former is created at browser
+  // startup but the latter is not created until a browser window has been
+  // created, leading to the initialization of the autocomplete system.
   bool DeleteOldShortcuts();
+  ShortcutsDatabase::ShortcutIDs GetShortcutsWithExpiredTime() const;
 
   raw_ptr<TemplateURLService> template_url_service_;
   std::unique_ptr<SearchTermsData> search_terms_data_;
@@ -202,6 +215,8 @@ class ShortcutsBackend : public RefcountedKeyedService,
   base::ScopedObservation<history::HistoryService,
                           history::HistoryServiceObserver>
       history_service_observation_{this};
+  base::ScopedObservation<TemplateURLService, TemplateURLServiceObserver>
+      template_url_service_observation_{this};
 
   scoped_refptr<base::SequencedTaskRunner> main_runner_;
   scoped_refptr<base::SequencedTaskRunner> db_runner_;

@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/browser/ash/policy/reporting/metrics_reporting/fatal_crash/fatal_crash_events_observer.h"
 
 #include <atomic>
@@ -19,11 +14,13 @@
 #include <vector>
 
 #include "ash/test/ash_test_base.h"
+#include "base/compiler_specific.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/notreached.h"
 #include "base/run_loop.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/task/thread_pool.h"
 #include "base/test/bind.h"
@@ -231,41 +228,15 @@ class FatalCrashEventsObserverTestBase : public ::ash::NoSessionAshTestBase {
   void SimulateUserLogin(std::string_view user_email,
                          user_manager::UserType user_type,
                          bool is_user_affiliated) {
-    if (is_user_affiliated) {
-      SimulateAffiliatedUserLogin(user_email, user_type);
-    } else {
-      // Calls the proxy of the parent's `SimulateUserLogin`.
-      SimulateUserLogin(std::string(user_email), user_type);
-    }
+    NoSessionAshTestBase::SimulateUserLogin(
+        {.display_email = user_email,
+         .user_type = user_type,
+         .is_account_managed = is_user_affiliated});
   }
 
   FatalCrashEventsObserver::TestEnvironment fatal_crash_test_environment_;
 
  private:
-  // Similar to `AshTestBase::SimulateUserLogin`, except the user is
-  // affiliated.
-  void SimulateAffiliatedUserLogin(std::string_view user_email,
-                                   user_manager::UserType user_type) {
-    const auto account_id = AccountId::FromUserEmail(std::string(user_email));
-    GetSessionControllerClient()->AddUserSession(
-        {.display_email = account_id.GetUserEmail(),
-         .user_type = user_type,
-         .is_account_managed = true},
-        account_id);
-    GetSessionControllerClient()->SwitchActiveUser(account_id);
-    GetSessionControllerClient()->SetSessionState(
-        session_manager::SessionState::ACTIVE);
-  }
-
-  // A proxy of parent's `AshTestBase::SimulateUserLogin`. This is to make it
-  // private so that it won't be accidentally called, because every user login
-  // simulation in the tests should specify whether the user is affiliated. Use
-  // `SimulateUserLogin` defined in this class instead.
-  void SimulateUserLogin(const std::string& user_email,
-                         user_manager::UserType user_type) {
-    NoSessionAshTestBase::SimulateUserLogin({user_email, user_type});
-  }
-
   ::ash::mojo_service_manager::FakeMojoServiceManager fake_service_manager_;
 };
 
@@ -664,7 +635,7 @@ TEST_P(FatalCrashEventsObserverWithUserAffiliationParamTest,
        .session_type = FatalCrashTelemetry::SESSION_TYPE_GUEST}};
 
   for (size_t i = 0; i < std::size(kSessionTypes); ++i) {
-    SimulateUserLogin(kUserEmail, kSessionTypes[i].user_type,
+    SimulateUserLogin(kUserEmail, UNSAFE_TODO(kSessionTypes[i]).user_type,
                       is_user_affiliated());
     auto crash_event_info = NewCrashEventInfo(is_uploaded());
     if (is_uploaded()) {
@@ -678,8 +649,8 @@ TEST_P(FatalCrashEventsObserverWithUserAffiliationParamTest,
     const auto fatal_crash_telemetry =
         WaitForFatalCrashTelemetry(std::move(crash_event_info));
     ASSERT_TRUE(fatal_crash_telemetry.has_session_type());
-    EXPECT_EQ(fatal_crash_telemetry.session_type(),
-              kSessionTypes[i].session_type);
+    UNSAFE_TODO(EXPECT_EQ(fatal_crash_telemetry.session_type(),
+                          kSessionTypes[i].session_type));
     ClearLogin();
   }
 }

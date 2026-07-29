@@ -17,7 +17,9 @@
 #include "base/test/gmock_move_support.h"
 #include "base/test/test_future.h"
 #include "base/types/expected.h"
+#include "build/build_config.h"
 #include "chrome/browser/web_applications/locks/web_app_lock_manager.h"
+#include "chrome/browser/web_applications/test/fake_os_integration_manager.h"
 #include "chrome/browser/web_applications/test/fake_web_app_provider.h"
 #include "chrome/browser/web_applications/test/fake_web_contents_manager.h"
 #include "chrome/browser/web_applications/test/web_app_icon_test_utils.h"
@@ -30,6 +32,8 @@
 #include "chrome/browser/web_applications/web_app_install_info.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/web_applications/web_app_registrar.h"
+#include "chrome/browser/web_applications/web_app_registry_update.h"
+#include "chrome/browser/web_applications/web_app_sync_bridge.h"
 #include "chrome/browser/web_applications/web_app_utils.h"
 #include "chrome/browser/web_applications/web_contents/web_app_data_retriever.h"
 #include "components/services/app_service/public/cpp/icon_info.h"
@@ -37,7 +41,6 @@
 #include "components/webapps/browser/installable/installable_logging.h"
 #include "components/webapps/browser/installable/installable_manager.h"
 #include "components/webapps/common/web_app_id.h"
-#include "components/webapps/common/web_page_metadata.mojom-forward.h"
 #include "components/webapps/common/web_page_metadata.mojom.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_user_data.h"
@@ -70,12 +73,12 @@ class InstallFromSyncTest : public WebAppTest {
   const int kIconSize = 96;
   const GURL kWebAppStartUrl = GURL("https://example.com/path/index.html");
   const webapps::ManifestId kWebAppManifestId =
-      GURL("https://example.com/path/index.html");
+      webapps::ManifestId(GURL("https://example.com/path/index.html"));
 
   const GURL kOtherWebAppStartUrl =
       GURL("https://example.com/path2/index.html");
   const webapps::ManifestId kOtherWebAppManifestId =
-      GURL("https://example.com/path2/index.html");
+      webapps::ManifestId(GURL("https://example.com/path2/index.html"));
 
   const std::u16string kManifestName = u"Manifest Name";
   const GURL kWebAppManifestUrl =
@@ -88,6 +91,11 @@ class InstallFromSyncTest : public WebAppTest {
   const GURL kFallbackIconUrl =
       GURL("https://example.com/path/fallback_icon.png");
   const SkColor kFallbackIconColor = SK_ColorBLUE;
+
+  const GURL kTrustedIconUrl =
+      GURL("https://example.com/path/trusted_icon.png");
+  const SkColor kTrustedIconColor = SK_ColorYELLOW;
+  const int kTrustedIconSize = 128;
 
   const std::u16string kDocumentTitle = u"Document Title";
   const GURL kDocumentIconUrl =
@@ -115,25 +123,49 @@ class InstallFromSyncTest : public WebAppTest {
     std::optional<webapps::InstallResultCode> install_code_before_fallback;
   };
 
-  InstallFromSyncCommand::Params CreateParams(webapps::AppId app_id,
-                                              webapps::ManifestId manifest_id,
-                                              GURL start_url) {
+  // On ChromeOS, even with trusted icons enabled, sync installs always fetch
+  // the manifest.
+  bool UseFallbackModeForTrustedInstalls() {
+#if BUILDFLAG(IS_CHROMEOS)
+    return false;
+#else
+    return true;
+#endif  // BUILDFLAG(IS_CHROMEOS)
+  }
+
+  InstallFromSyncCommand::Params CreateParams(
+      webapps::AppId app_id,
+      webapps::ManifestId manifest_id,
+      GURL start_url,
+      std::optional<webapps::ManifestId> migrated_from_manifest_id =
+          std::nullopt) {
+    // In production, trusted icons are a subset of manifest icons, so mimic
+    // that behavior here.
     return InstallFromSyncCommand::Params(
         app_id, manifest_id, start_url, kFallbackTitle,
         start_url.GetWithoutFilename(), /*theme_color=*/std::nullopt,
-        mojom::UserDisplayMode::kStandalone, /*icons=*/
-        {apps::IconInfo(kFallbackIconUrl, kIconSize)});
+        mojom::UserDisplayMode::kStandalone,
+        /*manifest_icons=*/
+        {apps::IconInfo(kFallbackIconUrl, kIconSize)},
+        /*trusted_icons=*/
+        {apps::IconInfo(kTrustedIconUrl, kTrustedIconSize)},
+        migrated_from_manifest_id);
   }
 
-  InstallResult InstallFromSyncAndWait(GURL start_url,
-                                       webapps::ManifestId manifest_id) {
+  InstallResult InstallFromSyncAndWait(
+      GURL start_url,
+      webapps::ManifestId manifest_id,
+      std::optional<webapps::ManifestId> migrated_from_manifest_id =
+          std::nullopt) {
     const webapps::AppId app_id = GenerateAppIdFromManifestId(manifest_id);
     InstallResult result;
     base::test::TestFuture<const webapps::AppId&, webapps::InstallResultCode>
         future;
     std::unique_ptr<InstallFromSyncCommand> command =
         std::make_unique<InstallFromSyncCommand>(
-            profile(), CreateParams(app_id, manifest_id, start_url),
+            profile(),
+            CreateParams(app_id, manifest_id, start_url,
+                         migrated_from_manifest_id),
             future.GetCallback());
     command->SetFallbackTriggeredForTesting(
         base::BindLambdaForTesting([&](webapps::InstallResultCode code) {
@@ -168,7 +200,7 @@ class InstallFromSyncTest : public WebAppTest {
     blink::mojom::ManifestPtr manifest = blink::mojom::Manifest::New();
     manifest->name = kManifestName;
     manifest->start_url = start_url;
-    manifest->id = manifest_id;
+    manifest->id = manifest_id.value();
     if (icons) {
       blink::Manifest::ImageResource primary_icon;
       primary_icon.type = u"image/png";
@@ -186,6 +218,123 @@ class InstallFromSyncTest : public WebAppTest {
   }
 };
 
+TEST_F(InstallFromSyncTest, MigrationFromSourceApp) {
+  const webapps::AppId source_app_id =
+      GenerateAppIdFromManifestId(kOtherWebAppManifestId);
+  const webapps::AppId target_app_id =
+      GenerateAppIdFromManifestId(kWebAppManifestId);
+
+  // Install source app with OS integration (simulated)
+  test::InstallWebApp(
+      profile(),
+      WebAppInstallInfo::CreateWithStartUrlForTesting(kOtherWebAppStartUrl),
+      /*overwrite_existing_manifest_fields=*/true,
+      webapps::WebappInstallSource::SYNC);
+  {
+    ScopedRegistryUpdate update =
+        provider()->sync_bridge_unsafe().BeginUpdate();
+    WebApp* source_app = update->UpdateApp(source_app_id);
+    source_app->SetInstallState(
+        proto::InstallState::INSTALLED_WITH_OS_INTEGRATION);
+  }
+
+  // Setup fake OS integration data
+  auto* fake_os_manager =
+      provider()->os_integration_manager().AsTestOsIntegrationManager();
+  ShortcutLocations locations;
+  locations.on_desktop = true;
+  locations.in_quick_launch_bar = true;
+  fake_os_manager->SetAppExistingShortcuts(kOtherWebAppStartUrl, locations);
+  fake_os_manager->SetShortcutInfoForApp(source_app_id,
+                                         std::make_unique<ShortcutInfo>());
+
+  // Page setup for target app
+  auto& fake_page_state =
+      web_contents_manager().GetOrCreatePageState(kWebAppStartUrl);
+  fake_page_state.url_load_result = webapps::WebAppUrlLoaderResult::kUrlLoaded;
+  fake_page_state.opt_metadata =
+      FakeWebContentsManager::CreateMetadataWithIconAndTitle(
+          kDocumentTitle, kDocumentIconUrl, kIconSize);
+  fake_page_state.manifest_before_default_processing =
+      CreateManifest(kWebAppStartUrl, kWebAppManifestId, /*icons=*/true);
+
+  // Icons
+  web_contents_manager().GetOrCreateIconState(kManifestIconUrl).bitmaps = {
+      gfx::test::CreateBitmap(kIconSize, kManifestIconColor)};
+  web_contents_manager().GetOrCreateIconState(kTrustedIconUrl).bitmaps = {
+      gfx::test::CreateBitmap(kTrustedIconSize, kTrustedIconColor)};
+
+  base::test::TestFuture<const webapps::AppId&, const webapps::AppId&> future;
+  WebAppInstallManagerObserverAdapter observer(&provider()->install_manager());
+  observer.SetWebAppMigratedDelegate(future.GetRepeatingCallback());
+
+  // Install target app from sync with migration
+  InstallResult result = InstallFromSyncAndWait(
+      kWebAppStartUrl, kWebAppManifestId, kOtherWebAppManifestId);
+  ASSERT_TRUE(result.callback_triggered);
+  EXPECT_EQ(webapps::InstallResultCode::kSuccessNewInstall,
+            result.install_code);
+
+  EXPECT_TRUE(future.Wait());
+  EXPECT_EQ(future.Get<0>(), source_app_id);
+  EXPECT_EQ(future.Get<1>(), target_app_id);
+
+  // Verify target app installed with OS integration
+  EXPECT_EQ(registrar().GetInstallState(target_app_id),
+            proto::InstallState::INSTALLED_WITH_OS_INTEGRATION);
+}
+
+TEST_F(InstallFromSyncTest, MigrationFromSourceAppNotInstalledLocally) {
+  const webapps::AppId source_app_id =
+      GenerateAppIdFromManifestId(kOtherWebAppManifestId);
+  const webapps::AppId target_app_id =
+      GenerateAppIdFromManifestId(kWebAppManifestId);
+
+  // Install source app WITHOUT OS integration (simulated sync suggested app)
+  test::InstallWebApp(
+      profile(),
+      WebAppInstallInfo::CreateWithStartUrlForTesting(kOtherWebAppStartUrl),
+      /*overwrite_existing_manifest_fields=*/true,
+      webapps::WebappInstallSource::SYNC);
+  {
+    ScopedRegistryUpdate update =
+        provider()->sync_bridge_unsafe().BeginUpdate();
+    WebApp* source_app = update->UpdateApp(source_app_id);
+    source_app->SetInstallState(
+        proto::InstallState::SUGGESTED_FROM_ANOTHER_DEVICE);
+  }
+
+  // Setup page setup for target app
+  auto& fake_page_state =
+      web_contents_manager().GetOrCreatePageState(kWebAppStartUrl);
+  fake_page_state.url_load_result = webapps::WebAppUrlLoaderResult::kUrlLoaded;
+  fake_page_state.opt_metadata =
+      FakeWebContentsManager::CreateMetadataWithIconAndTitle(
+          kDocumentTitle, kDocumentIconUrl, kIconSize);
+  fake_page_state.manifest_before_default_processing =
+      CreateManifest(kWebAppStartUrl, kWebAppManifestId, /*icons=*/true);
+
+  // Icons
+  web_contents_manager().GetOrCreateIconState(kManifestIconUrl).bitmaps = {
+      gfx::test::CreateBitmap(kIconSize, kManifestIconColor)};
+  web_contents_manager().GetOrCreateIconState(kTrustedIconUrl).bitmaps = {
+      gfx::test::CreateBitmap(kTrustedIconSize, kTrustedIconColor)};
+
+  // Install target app from sync with migration
+  InstallResult result = InstallFromSyncAndWait(
+      kWebAppStartUrl, kWebAppManifestId, kOtherWebAppManifestId);
+  ASSERT_TRUE(result.callback_triggered);
+  EXPECT_EQ(webapps::InstallResultCode::kSuccessNewInstall,
+            result.install_code);
+
+  // Verify target app is NOT fully installed (matching source app state)
+  // unless AreAppsLocallyInstalledBySync() is true (ChromeOS).
+  EXPECT_EQ(registrar().GetInstallState(target_app_id),
+            AreAppsLocallyInstalledBySync()
+                ? proto::InstallState::INSTALLED_WITH_OS_INTEGRATION
+                : proto::InstallState::SUGGESTED_FROM_ANOTHER_DEVICE);
+}
+
 TEST_F(InstallFromSyncTest, SuccessWithManifest) {
   const webapps::AppId app_id = GenerateAppIdFromManifestId(kWebAppManifestId);
 
@@ -202,12 +351,17 @@ TEST_F(InstallFromSyncTest, SuccessWithManifest) {
   // Icon state.
   web_contents_manager().GetOrCreateIconState(kManifestIconUrl).bitmaps = {
       gfx::test::CreateBitmap(kIconSize, kManifestIconColor)};
+  web_contents_manager().GetOrCreateIconState(kTrustedIconUrl).bitmaps = {
+      gfx::test::CreateBitmap(kTrustedIconSize, kTrustedIconColor)};
 
   InstallResult result =
       InstallFromSyncAndWait(kWebAppStartUrl, kWebAppManifestId);
   ASSERT_TRUE(result.callback_triggered);
 
-  EXPECT_FALSE(result.install_code_before_fallback.has_value());
+  if (UseFallbackModeForTrustedInstalls()) {
+    EXPECT_EQ(webapps::InstallResultCode::kFallbackInstallUsingTrustedIcons,
+              result.install_code_before_fallback);
+  }
   EXPECT_EQ(webapps::InstallResultCode::kSuccessNewInstall,
             result.install_code);
   EXPECT_EQ(result.installed_app_id, app_id);
@@ -217,12 +371,19 @@ TEST_F(InstallFromSyncTest, SuccessWithManifest) {
                 : proto::InstallState::SUGGESTED_FROM_ANOTHER_DEVICE);
 
   // Check that the manifest info was installed.
-  EXPECT_THAT(GetAppName(app_id), Eq(kManifestName));
-  EXPECT_THAT(registrar().GetAppIconInfos(app_id),
-              ElementsAre(apps::IconInfo(kManifestIconUrl, kIconSize)));
   SkColor icon_color = IconManagerReadAppIconPixel(provider()->icon_manager(),
                                                    app_id, kIconSize);
-  EXPECT_THAT(icon_color, Eq(kManifestIconColor));
+  if (UseFallbackModeForTrustedInstalls()) {
+    EXPECT_THAT(GetAppName(app_id), Eq(base::UTF8ToUTF16(kFallbackTitle)));
+    EXPECT_THAT(registrar().GetAppIconInfos(app_id),
+                ElementsAre(apps::IconInfo(kFallbackIconUrl, kIconSize)));
+    EXPECT_THAT(icon_color, Eq(kTrustedIconColor));
+  } else {
+    EXPECT_THAT(GetAppName(app_id), Eq(kManifestName));
+    EXPECT_THAT(registrar().GetAppIconInfos(app_id),
+                ElementsAre(apps::IconInfo(kManifestIconUrl, kIconSize)));
+    EXPECT_THAT(icon_color, Eq(kManifestIconColor));
+  }
 }
 
 TEST_F(InstallFromSyncTest, SuccessWithoutManifest) {
@@ -239,12 +400,17 @@ TEST_F(InstallFromSyncTest, SuccessWithoutManifest) {
   // Icon state.
   web_contents_manager().GetOrCreateIconState(kDocumentIconUrl).bitmaps = {
       gfx::test::CreateBitmap(kIconSize, kDocumentIconColor)};
+  web_contents_manager().GetOrCreateIconState(kTrustedIconUrl).bitmaps = {
+      gfx::test::CreateBitmap(kTrustedIconSize, kTrustedIconColor)};
 
   InstallResult result =
       InstallFromSyncAndWait(kWebAppStartUrl, kWebAppManifestId);
   ASSERT_TRUE(result.callback_triggered);
 
-  EXPECT_FALSE(result.install_code_before_fallback.has_value());
+  if (UseFallbackModeForTrustedInstalls()) {
+    EXPECT_EQ(webapps::InstallResultCode::kFallbackInstallUsingTrustedIcons,
+              result.install_code_before_fallback);
+  }
   EXPECT_EQ(webapps::InstallResultCode::kSuccessNewInstall,
             result.install_code);
   EXPECT_EQ(result.installed_app_id, app_id);
@@ -257,11 +423,17 @@ TEST_F(InstallFromSyncTest, SuccessWithoutManifest) {
 
   // Check that the document & fallback info was installed.
   EXPECT_THAT(registrar().GetAppShortName(app_id), Eq(kFallbackTitle));
-  EXPECT_THAT(registrar().GetAppIconInfos(app_id),
-              ElementsAre(apps::IconInfo(kDocumentIconUrl, kIconSize)));
   SkColor icon_color = IconManagerReadAppIconPixel(provider()->icon_manager(),
                                                    app_id, kIconSize);
-  EXPECT_THAT(icon_color, Eq(kDocumentIconColor));
+  if (UseFallbackModeForTrustedInstalls()) {
+    EXPECT_THAT(registrar().GetAppIconInfos(app_id),
+                ElementsAre(apps::IconInfo(kFallbackIconUrl, kIconSize)));
+    EXPECT_THAT(icon_color, Eq(kTrustedIconColor));
+  } else {
+    EXPECT_THAT(registrar().GetAppIconInfos(app_id),
+                ElementsAre(apps::IconInfo(kDocumentIconUrl, kIconSize)));
+    EXPECT_THAT(icon_color, Eq(kDocumentIconColor));
+  }
 }
 
 TEST_F(InstallFromSyncTest, SuccessManifestNoIcons) {
@@ -280,12 +452,19 @@ TEST_F(InstallFromSyncTest, SuccessManifestNoIcons) {
   // Document icon state.
   web_contents_manager().GetOrCreateIconState(kDocumentIconUrl).bitmaps = {
       gfx::test::CreateBitmap(kIconSize, kDocumentIconColor)};
+  web_contents_manager().GetOrCreateIconState(kFallbackIconUrl).bitmaps = {
+      gfx::test::CreateBitmap(kIconSize, kFallbackIconColor)};
+  web_contents_manager().GetOrCreateIconState(kTrustedIconUrl).bitmaps = {
+      gfx::test::CreateBitmap(kTrustedIconSize, kTrustedIconColor)};
 
   InstallResult result =
       InstallFromSyncAndWait(kWebAppStartUrl, kWebAppManifestId);
   ASSERT_TRUE(result.callback_triggered);
 
-  EXPECT_FALSE(result.install_code_before_fallback.has_value());
+  if (UseFallbackModeForTrustedInstalls()) {
+    EXPECT_EQ(webapps::InstallResultCode::kFallbackInstallUsingTrustedIcons,
+              result.install_code_before_fallback);
+  }
   EXPECT_EQ(webapps::InstallResultCode::kSuccessNewInstall,
             result.install_code);
   EXPECT_EQ(result.installed_app_id, app_id);
@@ -296,13 +475,20 @@ TEST_F(InstallFromSyncTest, SuccessManifestNoIcons) {
 
   );
 
-  // Check that the manifest was used & document icons were used.
-  EXPECT_THAT(GetAppName(app_id), Eq(kManifestName));
-  EXPECT_THAT(registrar().GetAppIconInfos(app_id),
-              ElementsAre(apps::IconInfo(kDocumentIconUrl, kIconSize)));
   SkColor icon_color = IconManagerReadAppIconPixel(provider()->icon_manager(),
                                                    app_id, kIconSize);
-  EXPECT_THAT(icon_color, Eq(kDocumentIconColor));
+  if (UseFallbackModeForTrustedInstalls()) {
+    EXPECT_THAT(GetAppName(app_id), Eq(base::UTF8ToUTF16(kFallbackTitle)));
+    EXPECT_THAT(registrar().GetAppIconInfos(app_id),
+                ElementsAre(apps::IconInfo(kFallbackIconUrl, kIconSize)));
+    EXPECT_THAT(icon_color, Eq(kTrustedIconColor));
+  } else {
+    // Check that the manifest was used & document icons were used.
+    EXPECT_THAT(GetAppName(app_id), Eq(kManifestName));
+    EXPECT_THAT(registrar().GetAppIconInfos(app_id),
+                ElementsAre(apps::IconInfo(kDocumentIconUrl, kIconSize)));
+    EXPECT_THAT(icon_color, Eq(kDocumentIconColor));
+  }
 }
 
 TEST_F(InstallFromSyncTest, UrlRedirectUseFallback) {
@@ -317,15 +503,20 @@ TEST_F(InstallFromSyncTest, UrlRedirectUseFallback) {
   // Fallback icon state.
   web_contents_manager().GetOrCreateIconState(kFallbackIconUrl).bitmaps = {
       gfx::test::CreateBitmap(kIconSize, kFallbackIconColor)};
+  if (UseFallbackModeForTrustedInstalls()) {
+    web_contents_manager().GetOrCreateIconState(kTrustedIconUrl).bitmaps = {
+        gfx::test::CreateBitmap(kTrustedIconSize, kTrustedIconColor)};
+  }
 
   InstallResult result =
       InstallFromSyncAndWait(kWebAppStartUrl, kWebAppManifestId);
   ASSERT_TRUE(result.callback_triggered);
 
-  // Error occurred.
-  ASSERT_TRUE(result.install_code_before_fallback.has_value());
-  EXPECT_EQ(webapps::InstallResultCode::kInstallURLRedirected,
-            result.install_code_before_fallback.value());
+  webapps::InstallResultCode fallback_result_code =
+      UseFallbackModeForTrustedInstalls()
+          ? webapps::InstallResultCode::kFallbackInstallUsingTrustedIcons
+          : webapps::InstallResultCode::kInstallURLRedirected;
+  EXPECT_EQ(fallback_result_code, result.install_code_before_fallback.value());
   EXPECT_EQ(webapps::InstallResultCode::kSuccessNewInstall,
             result.install_code);
   EXPECT_EQ(result.installed_app_id, app_id);
@@ -333,7 +524,6 @@ TEST_F(InstallFromSyncTest, UrlRedirectUseFallback) {
             AreAppsLocallyInstalledBySync()
                 ? proto::InstallState::INSTALLED_WITH_OS_INTEGRATION
                 : proto::InstallState::SUGGESTED_FROM_ANOTHER_DEVICE
-
   );
 
   // Check that the fallback info was installed.
@@ -342,7 +532,15 @@ TEST_F(InstallFromSyncTest, UrlRedirectUseFallback) {
               ElementsAre(apps::IconInfo(kFallbackIconUrl, kIconSize)));
   SkColor icon_color = IconManagerReadAppIconPixel(provider()->icon_manager(),
                                                    app_id, kIconSize);
-  EXPECT_THAT(icon_color, Eq(kFallbackIconColor));
+  SkColor expected_icon_color = UseFallbackModeForTrustedInstalls()
+                                    ? kTrustedIconColor
+                                    : kFallbackIconColor;
+  EXPECT_THAT(icon_color, Eq(expected_icon_color));
+
+  // Trusted app icons are also obtained, at least as part of the fallback
+  // installation flow.
+  EXPECT_THAT(registrar().GetTrustedAppIconsMetadata(app_id),
+              ElementsAre(apps::IconInfo(kTrustedIconUrl, kTrustedIconSize)));
 }
 
 TEST_F(InstallFromSyncTest, FallbackWebAppInstallInfo) {
@@ -358,14 +556,24 @@ TEST_F(InstallFromSyncTest, FallbackWebAppInstallInfo) {
   web_contents_manager().GetOrCreateIconState(kFallbackIconUrl).bitmaps = {
       gfx::test::CreateBitmap(kIconSize, kFallbackIconColor)};
 
+  // Force the test to use the fallback icon since the trusted icons won't
+  // exist.
+  if (UseFallbackModeForTrustedInstalls()) {
+    web_contents_manager().GetOrCreateIconState(kTrustedIconUrl).bitmaps = {
+        gfx::test::CreateBitmap(kTrustedIconSize, kTrustedIconColor)};
+  }
+
   InstallResult result =
       InstallFromSyncAndWait(kWebAppStartUrl, kWebAppManifestId);
   ASSERT_TRUE(result.callback_triggered);
 
-  // Error occurred.
+  webapps::InstallResultCode fallback_result_code =
+      UseFallbackModeForTrustedInstalls()
+          ? webapps::InstallResultCode::kFallbackInstallUsingTrustedIcons
+          : webapps::InstallResultCode::kGetWebAppInstallInfoFailed;
+
   ASSERT_TRUE(result.install_code_before_fallback.has_value());
-  EXPECT_EQ(webapps::InstallResultCode::kGetWebAppInstallInfoFailed,
-            result.install_code_before_fallback.value());
+  EXPECT_EQ(fallback_result_code, result.install_code_before_fallback.value());
   EXPECT_EQ(webapps::InstallResultCode::kSuccessNewInstall,
             result.install_code);
   EXPECT_EQ(result.installed_app_id, app_id);
@@ -382,7 +590,16 @@ TEST_F(InstallFromSyncTest, FallbackWebAppInstallInfo) {
               ElementsAre(apps::IconInfo(kFallbackIconUrl, kIconSize)));
   SkColor icon_color = IconManagerReadAppIconPixel(provider()->icon_manager(),
                                                    app_id, kIconSize);
-  EXPECT_THAT(icon_color, Eq(kFallbackIconColor));
+
+  SkColor expected_icon_color = UseFallbackModeForTrustedInstalls()
+                                    ? kTrustedIconColor
+                                    : kFallbackIconColor;
+  EXPECT_THAT(icon_color, Eq(expected_icon_color));
+
+  // Trusted app icons are also obtained, at least as part of the fallback
+  // installation flow.
+  EXPECT_THAT(registrar().GetTrustedAppIconsMetadata(app_id),
+              ElementsAre(apps::IconInfo(kTrustedIconUrl, kTrustedIconSize)));
 }
 
 TEST_F(InstallFromSyncTest, FallbackManifestIdMismatch) {
@@ -398,20 +615,32 @@ TEST_F(InstallFromSyncTest, FallbackManifestIdMismatch) {
   fake_page_state.manifest_before_default_processing =
       CreateManifest(kWebAppStartUrl, kWebAppManifestId, /*icons=*/true);
   fake_page_state.manifest_before_default_processing->id =
-      kOtherWebAppManifestId;
+      kOtherWebAppManifestId.value();
 
   // Icon state.
   web_contents_manager().GetOrCreateIconState(kDocumentIconUrl).bitmaps = {
       gfx::test::CreateBitmap(kIconSize, kDocumentIconColor)};
 
+  // Force the test to use the document icon when the fallback icon and the
+  // trusted icons do not exist.
+  if (UseFallbackModeForTrustedInstalls()) {
+    web_contents_manager().GetOrCreateIconState(kFallbackIconUrl).bitmaps = {
+        gfx::test::CreateBitmap(kIconSize, kFallbackIconColor)};
+    web_contents_manager().GetOrCreateIconState(kTrustedIconUrl).bitmaps = {
+        gfx::test::CreateBitmap(kTrustedIconSize, kTrustedIconColor)};
+  }
+
   InstallResult result =
       InstallFromSyncAndWait(kWebAppStartUrl, kWebAppManifestId);
   ASSERT_TRUE(result.callback_triggered);
 
-  // Error occurred.
+  webapps::InstallResultCode fallback_result_code =
+      UseFallbackModeForTrustedInstalls()
+          ? webapps::InstallResultCode::kFallbackInstallUsingTrustedIcons
+          : webapps::InstallResultCode::kExpectedAppIdCheckFailed;
+
   ASSERT_TRUE(result.install_code_before_fallback.has_value());
-  EXPECT_EQ(webapps::InstallResultCode::kExpectedAppIdCheckFailed,
-            result.install_code_before_fallback.value());
+  EXPECT_EQ(fallback_result_code, result.install_code_before_fallback.value());
   EXPECT_EQ(webapps::InstallResultCode::kSuccessNewInstall,
             result.install_code);
   EXPECT_EQ(result.installed_app_id, app_id);
@@ -424,11 +653,23 @@ TEST_F(InstallFromSyncTest, FallbackManifestIdMismatch) {
 
   // Check that the fallback info was installed.
   EXPECT_THAT(registrar().GetAppShortName(app_id), Eq(kFallbackTitle));
-  EXPECT_THAT(registrar().GetAppIconInfos(app_id),
-              ElementsAre(apps::IconInfo(kDocumentIconUrl, kIconSize)));
+
   SkColor icon_color = IconManagerReadAppIconPixel(provider()->icon_manager(),
                                                    app_id, kIconSize);
-  EXPECT_THAT(icon_color, Eq(kDocumentIconColor));
+  if (UseFallbackModeForTrustedInstalls()) {
+    EXPECT_THAT(registrar().GetAppIconInfos(app_id),
+                ElementsAre(apps::IconInfo(kFallbackIconUrl, kIconSize)));
+    EXPECT_THAT(icon_color, Eq(kTrustedIconColor));
+  } else {
+    EXPECT_THAT(registrar().GetAppIconInfos(app_id),
+                ElementsAre(apps::IconInfo(kDocumentIconUrl, kIconSize)));
+    EXPECT_THAT(icon_color, Eq(kDocumentIconColor));
+  }
+
+  // Trusted app icons are also obtained, at least as part of the fallback
+  // installation flow.
+  EXPECT_THAT(registrar().GetTrustedAppIconsMetadata(app_id),
+              ElementsAre(apps::IconInfo(kTrustedIconUrl, kTrustedIconSize)));
 }
 
 TEST_F(InstallFromSyncTest, TwoInstalls) {
@@ -554,6 +795,13 @@ TEST_F(InstallFromSyncTest, Shutdown) {
   fake_page_state.on_manifest_fetch =
       base::BindLambdaForTesting([&]() { command_manager().Shutdown(); });
 
+  FakeWebContentsManager::FakeIconState& trusted_icon_state =
+      web_contents_manager().GetOrCreateIconState(kTrustedIconUrl);
+  trusted_icon_state.bitmaps = {
+      gfx::test::CreateBitmap(kTrustedIconSize, kTrustedIconColor)};
+  trusted_icon_state.on_icon_fetched =
+      base::BindLambdaForTesting([&]() { command_manager().Shutdown(); });
+
   base::test::TestFuture<const webapps::AppId&, webapps::InstallResultCode>
       future;
   std::unique_ptr<InstallFromSyncCommand> command =
@@ -564,7 +812,66 @@ TEST_F(InstallFromSyncTest, Shutdown) {
   ASSERT_TRUE(future.Wait());
   EXPECT_EQ(future.Get<webapps::InstallResultCode>(),
             webapps::InstallResultCode::kCancelledOnWebAppProviderShuttingDown);
-  EXPECT_FALSE(registrar().IsInRegistrar(app_id));
+  EXPECT_FALSE(registrar().GetInstallState(app_id).has_value());
+}
+
+TEST_F(InstallFromSyncTest, TrustedIconInstallsFromFallback) {
+  const webapps::AppId app_id = GenerateAppIdFromManifestId(kWebAppManifestId);
+
+  // Set the page states so that even if the feature flag is enabled, CrOS can
+  // still do a sync install flow by fetching from the manifest.
+  auto& fake_page_state =
+      web_contents_manager().GetOrCreatePageState(kWebAppStartUrl);
+  fake_page_state.url_load_result = webapps::WebAppUrlLoaderResult::kUrlLoaded;
+  fake_page_state.opt_metadata =
+      FakeWebContentsManager::CreateMetadataWithIconAndTitle(
+          kDocumentTitle, kDocumentIconUrl, kIconSize);
+  fake_page_state.manifest_before_default_processing =
+      CreateManifest(kWebAppStartUrl, kWebAppManifestId, /*icons=*/true);
+
+  // Set all icon states.
+  web_contents_manager().GetOrCreateIconState(kManifestIconUrl).bitmaps = {
+      gfx::test::CreateBitmap(kIconSize, kManifestIconColor)};
+  web_contents_manager().GetOrCreateIconState(kFallbackIconUrl).bitmaps = {
+      gfx::test::CreateBitmap(kIconSize, kManifestIconColor)};
+  web_contents_manager().GetOrCreateIconState(kTrustedIconUrl).bitmaps = {
+      gfx::test::CreateBitmap(kTrustedIconSize, kTrustedIconColor)};
+
+  InstallResult result =
+      InstallFromSyncAndWait(kWebAppStartUrl, kWebAppManifestId);
+  ASSERT_TRUE(result.callback_triggered);
+
+  if (UseFallbackModeForTrustedInstalls()) {
+    EXPECT_EQ(webapps::InstallResultCode::kFallbackInstallUsingTrustedIcons,
+              result.install_code_before_fallback);
+  }
+  EXPECT_EQ(webapps::InstallResultCode::kSuccessNewInstall,
+            result.install_code);
+  EXPECT_EQ(result.installed_app_id, app_id);
+  EXPECT_EQ(registrar().GetInstallState(app_id),
+            AreAppsLocallyInstalledBySync()
+                ? proto::InstallState::INSTALLED_WITH_OS_INTEGRATION
+                : proto::InstallState::SUGGESTED_FROM_ANOTHER_DEVICE);
+
+  SkColor icon_color = IconManagerReadAppIconPixel(provider()->icon_manager(),
+                                                   app_id, kIconSize);
+  if (UseFallbackModeForTrustedInstalls()) {
+    EXPECT_THAT(registrar().GetAppShortName(app_id), Eq(kFallbackTitle));
+    EXPECT_THAT(registrar().GetAppIconInfos(app_id),
+                ElementsAre(apps::IconInfo(kFallbackIconUrl, kIconSize)));
+    EXPECT_THAT(registrar().GetTrustedAppIconsMetadata(app_id),
+                ElementsAre(apps::IconInfo(kTrustedIconUrl, kTrustedIconSize)));
+    EXPECT_THAT(icon_color, Eq(kTrustedIconColor));
+  } else {
+    // On ChromeOS, sync installs always happen from the manifest provided
+    // entries.
+    EXPECT_THAT(GetAppName(app_id), Eq(kManifestName));
+    EXPECT_THAT(registrar().GetAppIconInfos(app_id),
+                ElementsAre(apps::IconInfo(kManifestIconUrl, kIconSize)));
+    EXPECT_THAT(registrar().GetTrustedAppIconsMetadata(app_id),
+                ElementsAre(apps::IconInfo(kManifestIconUrl, kIconSize)));
+    EXPECT_THAT(icon_color, Eq(kManifestIconColor));
+  }
 }
 
 }  // namespace

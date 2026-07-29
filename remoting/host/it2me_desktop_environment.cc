@@ -10,10 +10,12 @@
 
 #include "base/check.h"
 #include "base/functional/bind.h"
+#include "base/json/values_util.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/time/time.h"
 #include "build/build_config.h"
 #include "remoting/host/base/desktop_environment_options.h"
 #include "remoting/host/basic_desktop_environment.h"
@@ -74,11 +76,13 @@ It2MeDesktopEnvironment::It2MeDesktopEnvironment(
   enable_user_interface = getuid() != 0;
 #endif  // BUILDFLAG(IS_APPLE)
 
-  // Create the continue window.  The implication of this window is that the
-  // session length will be limited.  If the user interface is disabled,
-  // then sessions will not have a maximum length enforced by the continue
-  // window timer.
-  if (enable_user_interface) {
+  // If a specific session duration limit is configured, the ContinueWindow
+  // mechanism should not require re-authentication for the ongoing session.
+  if (enable_user_interface && options.maximum_session_duration().is_zero()) {
+    // Create the continue window.  The implication of this window is that the
+    // session length will be limited.  If the user interface is disabled,
+    // then sessions will not have a maximum length enforced by the continue
+    // window timer.
     continue_window_ = HostWindow::CreateContinueWindow();
     continue_window_ = std::make_unique<HostWindowProxy>(
         caller_task_runner, ui_task_runner, std::move(continue_window_));
@@ -131,12 +135,16 @@ void It2MeDesktopEnvironmentFactory::Create(
          scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner,
          base::WeakPtr<ClientSessionControl> client_session_control,
          const DesktopEnvironmentOptions& options,
-         std::unique_ptr<DesktopInteractionStrategy> interaction_strategy) {
-        return base::WrapUnique(new It2MeDesktopEnvironment(
-            std::move(caller_task_runner), std::move(ui_task_runner),
-            std::move(interaction_strategy), std::move(client_session_control),
-            options));
-      };
+         std::unique_ptr<DesktopInteractionStrategy> interaction_strategy)
+      -> std::unique_ptr<DesktopEnvironment> {
+    if (!interaction_strategy) {
+      return nullptr;
+    }
+    return base::WrapUnique(new It2MeDesktopEnvironment(
+        std::move(caller_task_runner), std::move(ui_task_runner),
+        std::move(interaction_strategy), std::move(client_session_control),
+        options));
+  };
 
   CreateInteractionStrategy(
       options, base::BindOnce(create_with_interaction_strategy,

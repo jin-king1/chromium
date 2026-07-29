@@ -11,11 +11,13 @@
 #include <utility>
 #include <vector>
 
+#include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
 #include "base/run_loop.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/types/expected.h"
 #include "chrome/browser/ash/fileapi/file_system_backend.h"
 #include "content/public/test/browser_task_environment.h"
 #include "net/base/io_buffer.h"
@@ -65,14 +67,14 @@ class FakeFileStreamReader : public storage::FileStreamReader {
     }
 
     const std::string fake_data(buf_len, 'X');
-    memcpy(buf->data(), fake_data.c_str(), buf_len);
+    UNSAFE_TODO(memcpy(buf->data(), fake_data.c_str(), buf_len));
 
     base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, base::BindOnce(std::move(callback), buf_len));
     return net::ERR_IO_PENDING;
   }
 
-  int64_t GetLength(net::Int64CompletionOnceCallback callback) override {
+  int64_t GetLength(GetLengthCallback callback) override {
     DCHECK_EQ(net::OK, return_error_);
     base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, base::BindOnce(std::move(callback), kFileSize));
@@ -321,6 +323,24 @@ TEST_F(FileSystemProviderBufferingFileStreamReaderTest,
   EXPECT_EQ(read_bytes, read_log[0]);
 }
 
+TEST_F(FileSystemProviderBufferingFileStreamReaderTest, Read_NegativeLength) {
+  std::vector<int> inner_read_log;
+  BufferingFileStreamReader reader(
+      std::unique_ptr<storage::FileStreamReader>(
+          new FakeFileStreamReader(&inner_read_log, net::ERR_ACCESS_DENIED)),
+      kPreloadingBufferLength, kFileSize);
+
+  auto buffer = base::MakeRefCounted<net::IOBufferWithSize>(kChunkSize);
+  std::vector<int> read_log;
+  const int result = reader.Read(buffer.get(), -123456,
+                                 base::BindOnce(&LogValue<int>, &read_log));
+  base::RunLoop().RunUntilIdle();
+
+  EXPECT_EQ(net::ERR_INVALID_ARGUMENT, result);
+  ASSERT_EQ(0u, inner_read_log.size());
+  ASSERT_EQ(0u, read_log.size());
+}
+
 TEST_F(FileSystemProviderBufferingFileStreamReaderTest, Read_WithError) {
   std::vector<int> inner_read_log;
   BufferingFileStreamReader reader(
@@ -347,14 +367,15 @@ TEST_F(FileSystemProviderBufferingFileStreamReaderTest, GetLength) {
           new FakeFileStreamReader(nullptr, net::OK)),
       kPreloadingBufferLength, kFileSize);
 
-  std::vector<int64_t> get_length_log;
-  const int64_t result =
-      reader.GetLength(base::BindOnce(&LogValue<int64_t>, &get_length_log));
+  std::vector<base::expected<int64_t, net::Error>> get_length_log;
+  const int64_t result = reader.GetLength(base::BindOnce(
+      &LogValue<base::expected<int64_t, net::Error>>, &get_length_log));
   base::RunLoop().RunUntilIdle();
 
   EXPECT_EQ(net::ERR_IO_PENDING, result);
   ASSERT_EQ(1u, get_length_log.size());
-  EXPECT_EQ(kFileSize, get_length_log[0]);
+  ASSERT_TRUE(get_length_log[0].has_value());
+  EXPECT_EQ(kFileSize, get_length_log[0].value());
 }
 
 }  // namespace ash::file_system_provider

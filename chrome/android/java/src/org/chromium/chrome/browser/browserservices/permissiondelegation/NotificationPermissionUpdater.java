@@ -8,17 +8,17 @@ import android.content.ComponentName;
 import android.os.Build;
 import android.text.TextUtils;
 
-import androidx.annotation.Nullable;
-
 import org.chromium.base.Callback;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.browserservices.TrustedWebActivityClient;
 import org.chromium.chrome.browser.browserservices.metrics.TrustedWebActivityUmaRecorder;
 import org.chromium.chrome.browser.browserservices.metrics.WebApkUmaRecorder;
 import org.chromium.chrome.browser.webapps.ChromeWebApkHost;
 import org.chromium.chrome.browser.webapps.WebApkServiceClient;
-import org.chromium.components.content_settings.ContentSettingValues;
+import org.chromium.components.content_settings.ContentSetting;
 import org.chromium.components.content_settings.ContentSettingsType;
 import org.chromium.components.embedder_support.util.Origin;
 import org.chromium.components.webapk.lib.client.WebApkValidator;
@@ -30,6 +30,7 @@ import org.chromium.components.webapk.lib.client.WebApkValidator;
  *
  * <p>TODO(peconn): Add a README.md for Notification Delegation.
  */
+@NullMarked
 public class NotificationPermissionUpdater {
     private static final String TAG = "PermissionUpdater";
 
@@ -87,7 +88,7 @@ public class NotificationPermissionUpdater {
                         new TrustedWebActivityClient.PermissionCallback() {
                             @Override
                             public void onPermission(
-                                    ComponentName app, @ContentSettingValues int settingValue) {
+                                    ComponentName app, @ContentSetting int settingValue) {
                                 updatePermission(
                                         origin,
                                         /* callback= */ 0,
@@ -119,7 +120,7 @@ public class NotificationPermissionUpdater {
 
                             @Override
                             public void onPermission(
-                                    ComponentName app, @ContentSettingValues int settingValue) {
+                                    ComponentName app, @ContentSetting int settingValue) {
                                 if (mCalled) return;
                                 mCalled = true;
                                 TrustedWebActivityUmaRecorder
@@ -145,7 +146,7 @@ public class NotificationPermissionUpdater {
             Origin origin, long callback, @Nullable String packageName) {
         if (TextUtils.isEmpty(packageName)) {
             InstalledWebappPermissionManager.resetStoredPermission(origin, TYPE);
-            InstalledWebappBridge.runPermissionCallback(callback, ContentSettingValues.BLOCK);
+            InstalledWebappBridge.runPermissionCallback(callback, ContentSetting.BLOCK);
             return;
         }
 
@@ -165,7 +166,8 @@ public class NotificationPermissionUpdater {
      * which may contain a path. An origin has no path and would not fall within such a scope. So,
      * you must pass a more complete URL into this method to get matches for those cases.
      */
-    private static void findWebApkPackageName(String url, Callback<String> packageNameCallback) {
+    private static void findWebApkPackageName(
+            String url, Callback<@Nullable String> packageNameCallback) {
         String webApkPackageName =
                 WebApkValidator.queryFirstWebApkPackage(ContextUtils.getApplicationContext(), url);
         if (webApkPackageName == null) {
@@ -180,10 +182,7 @@ public class NotificationPermissionUpdater {
     }
 
     private static void updatePermission(
-            Origin origin,
-            long callback,
-            String packageName,
-            @ContentSettingValues int settingValue) {
+            Origin origin, long callback, String packageName, @ContentSetting int settingValue) {
         Log.d(TAG, "Updating notification permission to: %d", settingValue);
         InstalledWebappPermissionManager.updatePermission(origin, packageName, TYPE, settingValue);
         InstalledWebappBridge.runPermissionCallback(callback, settingValue);

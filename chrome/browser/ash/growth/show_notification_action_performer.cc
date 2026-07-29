@@ -13,6 +13,7 @@
 #include "ash/system/notification_center/message_view_factory.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
+#include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "chrome/browser/ash/growth/metrics.h"
@@ -56,7 +57,7 @@ struct ShowNotificationParams {
 };
 
 std::unique_ptr<ShowNotificationParams>
-ParseShowNotificationActionPerformerParams(const base::Value::Dict* params) {
+ParseShowNotificationActionPerformerParams(const base::DictValue* params) {
   if (!params) {
     CAMPAIGNS_LOG(ERROR)
         << "Empty parameter to ShowNotificationActionPerformer.";
@@ -136,7 +137,7 @@ std::string GetNotificationId(int campaign_id) {
 
 HandleNotificationClickAndCloseDelegate::
     HandleNotificationClickAndCloseDelegate(
-        const base::Value::Dict* params,
+        const base::DictValue* params,
         const ButtonClickCallback& click_callback,
         const CloseCallback& close_callback)
     :  // Copy ctor and assignment of Dict are not allowed. Need to use Clone()
@@ -193,7 +194,7 @@ ShowNotificationActionPerformer::~ShowNotificationActionPerformer() = default;
 void ShowNotificationActionPerformer::Run(
     int campaign_id,
     std::optional<int> group_id,
-    const base::Value::Dict* params,
+    const base::DictValue* params,
     growth::ActionPerformer::Callback callback) {
   // Cache the campaign ID
   current_campaign_id_ = campaign_id;
@@ -277,7 +278,7 @@ void ShowNotificationActionPerformer::HandleNotificationClicked(
     int campaign_id,
     std::optional<int> group_id,
     bool should_log_cros_events,
-    base::Value::Dict params,
+    base::DictValue params,
     std::optional<int> button_index) {
   if (!button_index) {
     // Notification message body clicked.

@@ -35,8 +35,7 @@ std::u16string WebUIIOS::GetJavascriptCall(
       parameters += u',';
     }
 
-    base::JSONWriter::Write(arg_list[i], &json);
-    parameters += base::UTF8ToUTF16(json);
+    parameters += base::UTF8ToUTF16(base::WriteJson(arg_list[i]).value_or(""));
   }
   return base::ASCIIToUTF16(function_name) + u'(' + parameters + u");";
 }
@@ -98,7 +97,7 @@ void WebUIIOSImpl::RegisterMessageCallback(std::string_view message,
 
 void WebUIIOSImpl::ProcessWebUIIOSMessage(const GURL& source_url,
                                           std::string_view message,
-                                          const base::Value::List& args) {
+                                          const base::ListValue& args) {
   if (controller_->OverrideHandleWebUIIOSMessage(source_url, message)) {
     return;
   }

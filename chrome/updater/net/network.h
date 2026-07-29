@@ -7,12 +7,22 @@
 
 #include <memory>
 #include <optional>
+#include <string>
 
+#include "base/containers/flat_map.h"
+#include "base/functional/callback_forward.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/sequence_checker.h"
 #include "build/build_config.h"
+#include "chrome/updater/event_logger.h"
 #include "chrome/updater/policy/service.h"
 #include "components/update_client/network.h"
+
+class GURL;
+
+namespace base {
+class FilePath;
+}
 
 namespace updater {
 
@@ -21,8 +31,9 @@ namespace updater {
 // outlive the lives of the network fetchers it creates.
 class NetworkFetcherFactory : public update_client::NetworkFetcherFactory {
  public:
-  explicit NetworkFetcherFactory(std::optional<PolicyServiceProxyConfiguration>
-                                     policy_service_proxy_configuration);
+  NetworkFetcherFactory(std::optional<PolicyServiceProxyConfiguration>
+                            policy_service_proxy_configuration,
+                        scoped_refptr<UpdaterEventLogger> event_logger);
   NetworkFetcherFactory(const NetworkFetcherFactory&) = delete;
   NetworkFetcherFactory& operator=(const NetworkFetcherFactory&) = delete;
 
@@ -36,6 +47,34 @@ class NetworkFetcherFactory : public update_client::NetworkFetcherFactory {
 
   SEQUENCE_CHECKER(sequence_checker_);
   std::unique_ptr<Impl> impl_;
+};
+
+// Wraps a NetworkFetcher to provide event history logging.
+class LoggingNetworkFetcher final : public update_client::NetworkFetcher {
+ public:
+  explicit LoggingNetworkFetcher(
+      std::unique_ptr<update_client::NetworkFetcher> impl);
+  ~LoggingNetworkFetcher() override;
+
+  void PostRequest(
+      const GURL& url,
+      const std::string& post_data,
+      const std::string& content_type,
+      const base::flat_map<std::string, std::string>& post_additional_headers,
+      ResponseStartedCallback response_started_callback,
+      ProgressCallback progress_callback,
+      PostRequestCompleteCallback post_request_complete_callback) override;
+
+  base::OnceClosure DownloadToFile(
+      const GURL& url,
+      const base::FilePath& file_path,
+      ResponseStartedCallback response_started_callback,
+      ProgressCallback progress_callback,
+      DownloadToFileCompleteCallback download_to_file_complete_callback)
+      override;
+
+ private:
+  std::unique_ptr<update_client::NetworkFetcher> impl_;
 };
 
 }  // namespace updater

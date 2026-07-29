@@ -25,7 +25,6 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_STYLE_FILL_LAYER_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_STYLE_FILL_LAYER_H_
 
-#include "base/memory/scoped_refptr.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/style/computed_style_constants.h"
 #include "third_party/blink/renderer/core/style/style_image.h"
@@ -47,7 +46,6 @@ struct FillSize {
   bool operator==(const FillSize& o) const {
     return type == o.type && size == o.size;
   }
-  bool operator!=(const FillSize& o) const { return !(*this == o); }
 
   EFillSizeType type;
   LengthSize size;
@@ -58,7 +56,6 @@ struct FillRepeat {
   EFillRepeat y{EFillRepeat::kRepeatFill};
 
   bool operator==(const FillRepeat& r) const { return x == r.x && y == r.y; }
-  bool operator!=(const FillRepeat& r) const { return !(*this == r); }
 };
 
 class FillLayerWrapper;
@@ -213,12 +210,15 @@ class CORE_EXPORT FillLayer {
   FillLayer(const FillLayer&);
 
   bool operator==(const FillLayer&) const;
-  bool operator!=(const FillLayer& o) const { return !(*this == o); }
 
   bool VisuallyEqual(const FillLayer&) const;
 
   bool ImageOccludesNextLayers(const Document&, const ComputedStyle&) const;
   bool ClipOccludesNextLayers() const;
+  bool AllImagesAreInvalid() const;
+  // True if the fill layers contain at least one still-loading image.
+  // Errored loads are terminal and thus not considered loading.
+  bool AnyImageIsLoading() const;
 
   EFillLayerType GetType() const { return static_cast<EFillLayerType>(type_); }
 
@@ -303,6 +303,18 @@ class CORE_EXPORT FillLayer {
   }
   static StyleImage* InitialFillImage(EFillLayerType) { return nullptr; }
 
+  template <typename Callback>
+  static void IterateFillLayersInReverseOrder(const FillLayer* start,
+                                              const FillLayer* end,
+                                              Callback callback) {
+    if (start != end) {
+      IterateFillLayersInReverseOrder(start->Next(), end, callback);
+    }
+    if (start) {
+      callback(*start);
+    }
+  }
+
  private:
   friend class ComputedStyle;
 
@@ -328,8 +340,8 @@ class CORE_EXPORT FillLayer {
   FillRepeat repeat_;
 
   unsigned attachment_ : 2;            // EFillAttachment
-  unsigned clip_ : 3;                  // EFillBox
-  unsigned origin_ : 3;                // EFillBox
+  unsigned clip_ : 4;                  // EFillBox
+  unsigned origin_ : 4;                // EFillBox
   unsigned compositing_operator_ : 4;  // CompositingOperator
   unsigned size_type_ : 2;             // EFillSizeType
   unsigned blend_mode_ : 5;            // BlendMode
@@ -352,7 +364,7 @@ class CORE_EXPORT FillLayer {
   unsigned type_ : 1;  // EFillLayerType
 
   // EFillBox, maximum clip_ value from this to bottom layer
-  mutable unsigned layers_clip_max_ : 3;
+  mutable unsigned layers_clip_max_ : 4;
   // True if any of this or subsequent layers has content-box clip or origin.
   mutable unsigned any_layer_uses_content_box_ : 1;
   // True if any of this or subsequent layers has image.

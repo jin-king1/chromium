@@ -5,15 +5,16 @@
 #include "sandbox/win/src/filesystem_policy.h"
 
 #include <windows.h>
+#include <winternl.h>
 
 #include <ntstatus.h>
 #include <stdint.h>
-#include <winternl.h>
 
 #include <string>
 
 #include "base/notreached.h"
 #include "base/win/scoped_handle.h"
+#include "base/win/windows_handle_util.h"
 #include "sandbox/win/src/internal_types.h"
 #include "sandbox/win/src/ipc_tags.h"
 #include "sandbox/win/src/nt_internals.h"
@@ -64,6 +65,8 @@ NTSTATUS NtCreateFileInTarget(HANDLE* target_file_handle,
     return status;
   }
 
+  // `local_handle` must be valid from CreateFile() call, `target_process` is
+  // trusted and `target_file_handle` is an outparam.
   if (!::DuplicateHandle(::GetCurrentProcess(), local_handle, target_process,
                          target_file_handle, 0, false,
                          DUPLICATE_CLOSE_SOURCE | DUPLICATE_SAME_ACCESS)) {
@@ -74,7 +77,7 @@ NTSTATUS NtCreateFileInTarget(HANDLE* target_file_handle,
 
 }  // namespace.
 
-bool FileSystemPolicy::GenerateRules(const wchar_t* name,
+bool FileSystemPolicy::GenerateRules(std::wstring_view name,
                                      FileSemantics semantics,
                                      LowLevelPolicy* policy) {
   std::wstring mod_name(name);
@@ -113,22 +116,23 @@ bool FileSystemPolicy::GenerateRules(const wchar_t* name,
   }
 
   if (!create.AddStringMatch(IF, OpenFile::NAME, name) ||
-      !policy->AddRule(IpcTag::NTCREATEFILE, &create)) {
+      !policy->AddRule(IpcTag::NTCREATEFILE, std::move(create))) {
     return false;
   }
 
   if (!open.AddStringMatch(IF, OpenFile::NAME, name) ||
-      !policy->AddRule(IpcTag::NTOPENFILE, &open)) {
+      !policy->AddRule(IpcTag::NTOPENFILE, std::move(open))) {
     return false;
   }
 
   if (!query.AddStringMatch(IF, OpenFile::NAME, name) ||
-      !policy->AddRule(IpcTag::NTQUERYATTRIBUTESFILE, &query)) {
+      !policy->AddRule(IpcTag::NTQUERYATTRIBUTESFILE, std::move(query))) {
     return false;
   }
 
   if (!query_full.AddStringMatch(IF, OpenFile::NAME, name) ||
-      !policy->AddRule(IpcTag::NTQUERYFULLATTRIBUTESFILE, &query_full)) {
+      !policy->AddRule(IpcTag::NTQUERYFULLATTRIBUTESFILE,
+                       std::move(query_full))) {
     return false;
   }
 
@@ -136,7 +140,7 @@ bool FileSystemPolicy::GenerateRules(const wchar_t* name,
   if (semantics == FileSemantics::kAllowAny && !is_pipe) {
     PolicyRule rename(result);
     if (!rename.AddStringMatch(IF, OpenFile::NAME, name) ||
-        !policy->AddRule(IpcTag::NTSETINFO_RENAME, &rename)) {
+        !policy->AddRule(IpcTag::NTSETINFO_RENAME, std::move(rename))) {
       return false;
     }
   }
@@ -256,6 +260,13 @@ bool FileSystemPolicy::SetInformationFileAction(EvalResult eval_result,
   // file as specified.
   if (ASK_BROKER != eval_result) {
     *nt_status = STATUS_ACCESS_DENIED;
+    return false;
+  }
+
+  // `target_file_handle` is not trustworthy, providing a pseudohandle here
+  // will cause it to be sent to SetInformationFile which is likely harmless,
+  // but ok to reject before duplication.
+  if (base::win::IsPseudoHandle(target_file_handle)) {
     return false;
   }
 

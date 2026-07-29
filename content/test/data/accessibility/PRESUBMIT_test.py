@@ -630,45 +630,110 @@ class AccessibilityHtmlFileTestTest(unittest.TestCase):
         self.assertIn("dump_accessibility_events_browsertest.cc", results[0].items[1])
         self.assertNotIn("WebContentsAccessibilityEventsTest.java", results[0].items[1])
 
-    # Test warning when no filename added in interesting directories for Android
+    # Test warning when a HTML file in an Android interesting directory is not added to WebContentsAccessibilityTreeTest.java
     def testMissingReferenceForInterestingAndroidFolder(self):
         mock_input_api = MockInputApi()
-        mock_input_api.files = [
-            MockFile("content/test/data/accessibility/accname/foo.html", [], action='A'),
-            MockFile("content/test/data/accessibility/accname/foo-expected-android-external.txt", [], action='A'),
-            MockFile("content/browser/accessibility/dump_accessibility_node_browsertest.cc", [
-                "foo.html",
-            ], action='A'),
-            MockFile("content/test/data/accessibility/css/bar.html", [], action='A'),
-            MockFile("content/test/data/accessibility/css/bar-expected-android-external.txt", [], action='A'),
-            MockFile("content/test/data/accessibility/aria/baz.html", [], action='A'),
-            MockFile("content/test/data/accessibility/aria/baz-expected-android-assist-data.txt", [], action='A'),
-            MockFile("content/test/data/accessibility/html/beep.html", [], action='A'),
-            MockFile("content/test/data/accessibility/html/beep-expected-android-external.txt", [], action='A'),
-            MockFile("content/browser/accessibility/dump_accessibility_tree_browsertest.cc", [
-                "foo.html",
-                "bar.html",
-                "baz.html",
-                "beep.html",
-            ]),
-            MockFile("content/public/android/javatests/src/org/chromium/content/browser/accessibility/WebContentsAccessibilityTreeTest.java", []),
-        ]
+        mock_input_api.InitFiles([
+            MockFile("content/test/data/accessibility/accname/foo.html", [],
+                     action='A'),
+            MockFile(
+                "content/test/data/accessibility/accname/foo-expected-android-external.txt",
+                [],
+                action='A'),
+            MockFile(
+                "content/browser/accessibility/dump_accessibility_node_browsertest.cc",
+                [
+                    "foo.html",
+                ],
+                action='A'),
+            MockFile("content/test/data/accessibility/css/bar.html", [],
+                     action='A'),
+            MockFile(
+                "content/test/data/accessibility/css/bar-expected-android-external.txt",
+                [],
+                action='A'),
+            MockFile("content/test/data/accessibility/aria/baz.html", [],
+                     action='A'),
+            MockFile(
+                "content/test/data/accessibility/aria/baz-expected-android-assist-data.txt",
+                [],
+                action='A'),
+            MockFile("content/test/data/accessibility/html/beep.html", [],
+                     action='A'),
+            MockFile(
+                "content/test/data/accessibility/html/beep-expected-android-external.txt",
+                [],
+                action='A'),
+            MockFile(
+                "content/browser/accessibility/dump_accessibility_tree_browsertest.cc",
+                [
+                    "foo.html",
+                    "bar.html",
+                    "baz.html",
+                    "beep.html",
+                ]),
+            MockFile(
+                "content/public/android/javatests/src/org/chromium/content/browser/accessibility/WebContentsAccessibilityTreeTest.java",
+                []),
+        ])
         results = PRESUBMIT.CheckAccessibilityHtmlFileTest(mock_input_api, MockOutputApi())
         self.assertEqual(1, len(results))
         self.assertEqual(4, len(results[0].items))
-        self.assertIn("foo.html", results[0].items[0])
-        self.assertNotIn("dump_accessibility_tree_browsertest.cc", results[0].items[0])
-        self.assertIn("WebContentsAccessibilityTreeTest.java", results[0].items[0])
-        self.assertIn("bar.html", results[0].items[1])
-        self.assertNotIn("dump_accessibility_tree_browsertest.cc", results[0].items[1])
-        self.assertIn("WebContentsAccessibilityTreeTest.java", results[0].items[1])
-        self.assertIn("baz.html", results[0].items[2])
-        self.assertNotIn("dump_accessibility_tree_browsertest.cc", results[0].items[2])
-        self.assertIn("WebContentsAccessibilityTreeTest.java", results[0].items[2])
-        self.assertIn("beep.html", results[0].items[3])
-        self.assertNotIn("dump_accessibility_tree_browsertest.cc", results[0].items[3])
-        self.assertIn("WebContentsAccessibilityTreeTest.java", results[0].items[3])
+        self.assertErrorIsAboutStringMissingFromTreeTestJava(
+            results[0].items[0], "foo.html")
+        self.assertErrorIsAboutStringMissingFromTreeTestJava(
+            results[0].items[1], "bar.html")
+        self.assertErrorIsAboutStringMissingFromTreeTestJava(
+            results[0].items[2], "baz.html")
+        self.assertErrorIsAboutStringMissingFromTreeTestJava(
+            results[0].items[3], "beep.html")
 
+    # Test how HTML file name is computed based on txt expectation file name in :func:`CheckAccessibilityHtmlFileTest()`.
+    def testMissingReferenceForAndroidFeatureTest(self):
+        mock_input_api = MockInputApi()
+        mock_input_api.InitFiles([
+            MockFile("content/test/data/accessibility/html/foo.html", [],
+                     action='A'),
+            MockFile(
+                "content/test/data/accessibility/html/foo-super-amazing-feature-expected-android-external.txt",
+                [],
+                action='A'),
+            MockFile(
+                "content/test/data/accessibility/html/foo-expanded-expected-android-external.txt",
+                [],
+                action='A'),
+            MockFile(
+                "content/browser/accessibility/dump_accessibility_tree_browsertest.cc",
+                [
+                    "foo.html",
+                    "bar.html",
+                    "baz.html",
+                    "beep.html",
+                ]),
+            MockFile(
+                "content/public/android/javatests/src/org/chromium/content/browser/accessibility/WebContentsAccessibilityTreeTest.java",
+                []),
+        ])
+        results = PRESUBMIT.CheckAccessibilityHtmlFileTest(
+            mock_input_api, MockOutputApi())
+        self.assertEqual(1, len(results))
+        self.assertEqual(3, len(results[0].items))
+        self.assertErrorIsAboutStringMissingFromTreeTestJava(
+            results[0].items[0], "foo.html")
+        # Should have error about foo-expanded.html not existing.
+        self.assertIn("foo-expanded.html", results[0].items[1])
+        self.assertIn("No such file", results[0].items[1])
+        self.assertErrorIsAboutStringMissingFromTreeTestJava(
+            results[0].items[2], "foo-expanded.html")
+
+    # Assert that the error is about `expected_substring` not being found in
+    # WebContentsAccessibilityTreeTest.java
+    def assertErrorIsAboutStringMissingFromTreeTestJava(
+            self, error_string, expected_substring):
+        self.assertIn(expected_substring, error_string)
+        self.assertNotIn("dump_accessibility_tree_browsertest.cc",
+                         error_string)
+        self.assertIn("WebContentsAccessibilityTreeTest.java", error_string)
 
 class CheckAccessibilityHtmlExpectationsPairTest(unittest.TestCase):
 
@@ -732,8 +797,8 @@ class CheckAccessibilityHtmlExpectationsPairTest(unittest.TestCase):
         results = PRESUBMIT.CheckAccessibilityHtmlExpectationsPair(mock_input_api, MockOutputApi())
         self.assertEqual(0, len(results))
 
-     # Test no warnings for frames, which are referenced in other tests but
-     # are not tested directly themselves.
+    # Test no warnings for frames, which are referenced in other tests but
+    # are not tested directly themselves.
     def testFrameFiles(self):
         mock_input_api = MockInputApi()
         mock_input_api.files = [
@@ -784,6 +849,75 @@ class CheckFrameHtmlFilesDontHaveExpectations(unittest.TestCase):
         results = PRESUBMIT.CheckFrameHtmlFilesDontHaveExpectations(mock_input_api, MockOutputApi())
         self.assertEqual(0, len(results))
 
+class CheckAccessibilityCrashRelatedTest(unittest.TestCase):
+
+    # Test no warning if crash related test HTML is placed in the crash folder
+    def testCrashHtmlCorrectlyHandled(self):
+        mock_input_api = MockInputApi()
+        mock_input_api.files = [
+            MockFile("content/test/data/accessibility/crash/page-crash.html", [])
+        ]
+        results = PRESUBMIT.CheckAccessibilityHtmlExpectationsPair(mock_input_api, MockOutputApi())
+        self.assertEqual(0, len(results))
+
+    # Test warning raised if crash related test HTML is placed in the wrong folder
+    def testCrashHtmlWrongFolder(self):
+        mock_input_api = MockInputApi()
+        mock_input_api.files = [
+            MockFile("content/test/data/accessibility/html/page-crash.html", [])
+        ]
+        results = PRESUBMIT.CheckAccessibilityHtmlExpectationsPair(mock_input_api, MockOutputApi())
+        self.assertEqual(1, len(results),
+            "Expected one PresubmitError object for crash related warning." +
+            f"Found {len(results)}: {results}")
+        self.assertEqual(1, len(results[0].items),
+            "Expected 1 warning item for crash related warning." +
+            f"Found {len(results[0].items)}: {results[0].items}")
+        self.assertIn("page-crash.html", results[0].items[0])
+        self.assertIn("has the name suggesting crash test but is not in", results[0].items[0])
+        self.assertIn("'content/test/data/accessibility/crash/' directory)", results[0].items[0])
+
+    # Test warning raised if non-crash related test HTML is placed in the crash folder
+    def testNonCrashHtmlInCrashFolder(self):
+        mock_input_api = MockInputApi()
+        mock_input_api.files = [
+            MockFile("content/test/data/accessibility/crash/normal-test.html", [])
+        ]
+        results = PRESUBMIT.CheckAccessibilityHtmlExpectationsPair(mock_input_api, MockOutputApi())
+        self.assertEqual(1, len(results),
+            "Expected one PresubmitError object for crash related warning." +
+            f"Found {len(results)}: {results}")
+        self.assertEqual(1, len(results[0].items),
+            "Expected 1 warning item for crash related warning." +
+            f"Found {len(results[0].items)}: {results[0].items}")
+        self.assertIn("normal-test.html", results[0].items[0])
+        self.assertIn("is in 'content/test/data/accessibility/crash/' directory", results[0].items[0])
+        self.assertIn("but the name suggests it is not a crash test)", results[0].items[0])
+
+    # Test warning raised if crash expectation file is found
+    def testCrashTxtFileFound(self):
+        mock_input_api = MockInputApi()
+        mock_input_api.files = [
+            MockFile("content/test/data/accessibility/crash/page-crash-expected-android.txt", [])
+        ]
+        results = PRESUBMIT.CheckAccessibilityHtmlExpectationsPair(mock_input_api, MockOutputApi())
+        self.assertEqual(1, len(results),
+            "Expected one PresubmitError object for crash related warning." +
+            f"Found {len(results)}: {results}")
+        self.assertEqual(1, len(results[0].items),
+            "Expected 1 warning item for crash related warning." +
+            f"Found {len(results[0].items)}: {results[0].items}")
+        self.assertIn("page-crash-expected-android.txt", results[0].items[0])
+        self.assertIn("Unexpected crash related expectation file found:", results[0].items[0])
+
+    # Test crash files outside the //content/test/data/accessibility directory are not relevant
+    def testCrashNonMatchingFiles(self):
+        mock_input_api = MockInputApi()
+        mock_input_api.files = [
+            MockFile("content/test/data/crash/page-crash.html", [])
+        ]
+        results = PRESUBMIT.CheckAccessibilityHtmlExpectationsPair(mock_input_api, MockOutputApi())
+        self.assertEqual(0, len(results))
 
 if __name__ == '__main__':
     unittest.main()

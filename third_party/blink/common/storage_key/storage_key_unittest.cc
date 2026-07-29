@@ -13,7 +13,9 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/unguessable_token.h"
 #include "net/base/features.h"
+#include "net/base/isolation_info.h"
 #include "net/base/schemeful_site.h"
+#include "net/cookies/cookie_partition_key.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/mojom/storage_key/ancestor_chain_bit.mojom.h"
 #include "url/gurl.h"
@@ -1098,6 +1100,25 @@ TEST_F(StorageKeyTest, NonceRequiresMatchingOriginSiteAndCrossSite) {
     EXPECT_EQ(key.ancestor_chain_bit(),
               blink::mojom::AncestorChainBit::kCrossSite);
     EXPECT_EQ(key.top_level_site(), opaque_site);
+  }
+}
+
+TEST_F(StorageKeyTest, NoncedKeyForbidsUnpartitionedAccess) {
+  const url::Origin origin = url::Origin::Create(GURL("https://foo.com"));
+  const net::SchemefulSite site(origin);
+  base::UnguessableToken nonce = base::UnguessableToken::Create();
+
+  for (const bool toggle : {false, true}) {
+    base::test::ScopedFeatureList scope_feature_list;
+    scope_feature_list.InitWithFeatureState(
+        net::features::kThirdPartyStoragePartitioning, toggle);
+
+    StorageKey key =
+        StorageKey::Create(origin, site, mojom::AncestorChainBit::kSameSite);
+    EXPECT_FALSE(key.ForbidsUnpartitionedStorageAccess());
+
+    key = StorageKey::CreateWithNonce(origin, nonce);
+    EXPECT_TRUE(key.ForbidsUnpartitionedStorageAccess());
   }
 }
 

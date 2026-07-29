@@ -7,17 +7,27 @@
 
 #import <UIKit/UIKit.h>
 
-#include <string>
+#import <string>
 
-#include "base/containers/flat_map.h"
-#include "components/signin/public/identity_manager/account_capabilities.h"
-#include "components/signin/public/identity_manager/account_capabilities_test_mutator.h"
-#include "ios/chrome/browser/signin/model/capabilities_types.h"
+#import "base/containers/flat_map.h"
+#import "base/functional/callback_forward.h"
+#import "components/signin/public/identity_manager/account_capabilities.h"
+#import "components/signin/public/identity_manager/account_capabilities_test_mutator.h"
+#import "ios/chrome/browser/signin/model/capabilities_types.h"
+#import "ios/chrome/browser/signin/model/refresh_access_token_error.h"
+#import "ios/chrome/browser/signin/model/system_identity_manager.h"
 
 @class FakeRefreshAccessTokenError;
 @class FakeSystemIdentity;
 
 using FakeSystemIdentityCapabilitiesMap = base::flat_map<std::string, bool>;
+
+using GetAccessTokenCallback =
+    base::RepeatingCallback<id<RefreshAccessTokenError>(
+        SystemIdentityManager::AccessTokenCallback)>;
+
+using GetAccessTokenRequestCallback = base::RepeatingCallback<void(
+    SystemIdentityManager::AccessTokenRequestCallback)>;
 
 // Helper object used by FakeSystemIdentityManager to attach state to
 // a SystemIdentity object via an association.
@@ -33,10 +43,20 @@ using FakeSystemIdentityCapabilitiesMap = base::flat_map<std::string, bool>;
 // The avatar cached for the associated SystemIdentity. May be nil.
 @property(nonatomic, strong) UIImage* cachedAvatar;
 
+// Returns YES when `cachedAvatar` has been updated. This property needs to be
+// reset to NO after the avatar has been fetched (see
+// `FakeSystemIdentityManager`).
+@property(nonatomic, assign) BOOL avatarUpdatedFromLastFetch;
+
 // If non-nil, fetching access token for the associated SystemIdentity
 // will be considered as failing, and the `error` value will be passed
 // to the observers.
 @property(nonatomic, strong) FakeRefreshAccessTokenError* error;
+
+@property(nonatomic) GetAccessTokenCallback getAccessTokenCallback;
+
+@property(nonatomic)
+    GetAccessTokenRequestCallback getAccessTokenRequestCallback;
 
 // Allows callers to modify internal capability state mappings for tests.
 @property(nonatomic, readonly)

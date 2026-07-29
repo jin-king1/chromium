@@ -36,9 +36,9 @@ export class EligibilityListElement extends CrLitElement {
     };
   }
 
-  protected country_: string = '';
-  protected details_: EligibilityDetail[] = [];
-  protected locale_: string = '';
+  protected accessor country_: string = '';
+  protected accessor details_: EligibilityDetail[] = [];
+  protected accessor locale_: string = '';
 
   private commerceInternalsApi_: CommerceInternalsApiProxy =
       CommerceInternalsApiProxy.getInstance();
@@ -57,7 +57,11 @@ export class EligibilityListElement extends CrLitElement {
     this.refreshDetails_();
   }
 
-  protected async refreshDetails_() {
+  protected onRefreshDetailsClick_() {
+    this.refreshDetails_();
+  }
+
+  private async refreshDetails_() {
     const details =
         (await this.commerceInternalsApi_.getShoppingEligibilityDetails())
             .details;
@@ -65,6 +69,20 @@ export class EligibilityListElement extends CrLitElement {
     this.country_ = details.country;
     this.locale_ = details.locale;
     this.details_ = details.details;
+  }
+
+  protected getColor_(detail: EligibilityDetail): string {
+    return detail.value === detail.expectedValue ? 'green' : 'red';
+  }
+
+  protected getMark_(detail: EligibilityDetail): string {
+    return detail.value === detail.expectedValue ? '✔' : '✖';
+  }
+}
+
+declare global {
+  interface HTMLElementTagNameMap {
+    'commerce-internals-eligibility-list': EligibilityListElement;
   }
 }
 

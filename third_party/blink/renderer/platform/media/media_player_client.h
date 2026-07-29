@@ -34,7 +34,6 @@
 #include <memory>
 
 #include "base/time/time.h"
-#include "third_party/blink/public/common/media/display_type.h"
 #include "third_party/blink/public/platform/web_common.h"
 #include "third_party/blink/public/platform/web_media_player.h"
 #include "third_party/blink/public/platform/web_media_player_client.h"
@@ -49,14 +48,15 @@ namespace media {
 enum class MediaContentType;
 enum class VideoCodec;
 enum class AudioCodec;
-class MediaTrack;
+struct CdmConfig;
 }  // namespace media
 
 namespace blink {
 
 class WebMediaSource;
 
-class PLATFORM_EXPORT MediaPlayerClient : public WebMediaPlayerClient {
+class PLATFORM_EXPORT MediaPlayerClient : public WebMediaPlayerClient,
+                                          public media::TrackManager {
  public:
   enum VideoTrackKind {
     kVideoTrackKindNone,
@@ -78,15 +78,6 @@ class PLATFORM_EXPORT MediaPlayerClient : public WebMediaPlayerClient {
     kAudioTrackKindCommentary
   };
 
-  // Reason for a PausePlayback call, for better diagnostic messages.
-  enum class PauseReason {
-    kUnknown,
-    kPageHidden,
-    kSuspendedPlayerIdleTimeout,
-    kRemotePlayStateChange,
-    kFrameHidden,
-  };
-
   static const int kMediaRemotingStopNoText = -1;
 
   virtual void NetworkStateChanged() = 0;
@@ -96,9 +87,6 @@ class PLATFORM_EXPORT MediaPlayerClient : public WebMediaPlayerClient {
   virtual void DurationChanged() = 0;
   virtual void SizeChanged() = 0;
   virtual void SetCcLayer(cc::Layer*) = 0;
-
-  virtual void AddMediaTrack(const media::MediaTrack&) = 0;
-  virtual void RemoveMediaTrack(const media::MediaTrack&) = 0;
 
   virtual void MediaSourceOpened(std::unique_ptr<WebMediaSource>) = 0;
   virtual void RemotePlaybackCompatibilityChanged(const KURL&,
@@ -134,7 +122,7 @@ class PLATFORM_EXPORT MediaPlayerClient : public WebMediaPlayerClient {
   virtual bool IsAudioElement() = 0;
 
   // Returns the current display type of the media element.
-  virtual DisplayType GetDisplayType() const = 0;
+  virtual WebMediaPlayer::DisplayType GetDisplayType() const = 0;
 
   // Returns the color space to render media into if.
   // Rendering media into this color space may avoid some conversions.
@@ -159,7 +147,7 @@ class PLATFORM_EXPORT MediaPlayerClient : public WebMediaPlayerClient {
   virtual void ResumePlayback() = 0;
 
   // Request the player to pause playback.
-  virtual void PausePlayback(PauseReason) = 0;
+  virtual void PausePlayback(WebMediaPlayer::PauseReason) = 0;
 
   // Notify the client that the media player started playing content.
   virtual void DidPlayerStartPlaying() = 0;
@@ -193,7 +181,7 @@ class PLATFORM_EXPORT MediaPlayerClient : public WebMediaPlayerClient {
   virtual void DidUseAudioServiceChange(bool uses_audio_service) = 0;
 
   // Notify the client that the size of the media player has changed.
-  // TODO(crbug.com/1039252): Remove by merging this method into SizeChanged().
+  // TODO(crbug.com/40113516): Remove by merging this method into SizeChanged().
   virtual void DidPlayerSizeChange(const gfx::Size& size) = 0;
 
   virtual void OnFirstFrame(base::TimeTicks first_frame,
@@ -216,8 +204,11 @@ class PLATFORM_EXPORT MediaPlayerClient : public WebMediaPlayerClient {
   // Notify the client that the RemotePlayback has been disabled/enabled.
   virtual void OnRemotePlaybackDisabled(bool disabled) = 0;
 
+  // Called when a ContentDecryptionModule is attached.
+  virtual void OnCdmAttached(const media::CdmConfig& cdm_config) {}
+
  protected:
-  ~MediaPlayerClient() = default;
+  ~MediaPlayerClient() override = default;
 };
 
 }  // namespace blink

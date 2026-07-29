@@ -4,6 +4,9 @@
 
 #include "chrome/browser/media/webrtc/webrtc_event_log_uploader.h"
 
+#include <optional>
+#include <string>
+
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
@@ -12,6 +15,7 @@
 #include "base/task/sequenced_task_runner.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/media/webrtc/webrtc_event_log_manager_common.h"
 #include "chrome/browser/media/webrtc/webrtc_log_uploader.h"
 #include "components/version_info/version_info.h"
 #include "content/public/browser/browser_task_traits.h"
@@ -20,11 +24,11 @@
 #include "mojo/public/cpp/bindings/remote.h"
 #include "net/base/load_flags.h"
 #include "net/base/mime_util.h"
+#include "net/base/schemeful_site.h"
 #include "net/http/http_status_code.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/simple_url_loader.h"
-#include "ui/base/text/bytes_formatting.h"
 
 namespace webrtc_event_logging {
 
@@ -45,9 +49,9 @@ constexpr net::NetworkTrafficAnnotationTag
           "will not contain private information. They will be used to "
           "improve WebRTC (fix bugs, tune performance, etc.)."
         trigger:
-          "A Google service (e.g. Hangouts/Meet) has requested a peer "
-          "connection to be logged, and the resulting event log to be uploaded "
-          "at a time deemed to cause the least interference to the user (i.e., "
+          "A Web application has requested a peer connection to be logged, "
+          "and the resulting event log to be uploaded at a time deemed to "
+          "cause the least interference to the user (i.e., "
           "when the user is not busy making other VoIP calls)."
         data:
           "WebRTC events such as the timing of audio playout (but not the "
@@ -61,6 +65,11 @@ constexpr net::NetworkTrafficAnnotationTag
         chrome_policy {
           WebRtcEventLogCollectionAllowed {
             WebRtcEventLogCollectionAllowed: false
+          }
+          WebRtcDiagnosticLogCollectionAllowedForOrigins {
+            WebRtcDiagnosticLogCollectionAllowedForOrigins: {
+              entries: 'example.com'
+            }
           }
         }
       })");
@@ -102,15 +111,15 @@ void BindURLLoaderFactoryReceiver(
 }
 
 void OnURLLoadUploadProgress(uint64_t current, uint64_t total) {
-  ui::DataUnits unit = ui::GetByteDisplayUnits(total);
-  VLOG(1) << "WebRTC event log upload progress: "
-          << FormatBytesWithUnits(current, unit, false) << " / "
-          << FormatBytesWithUnits(total, unit, true) << ".";
+  VLOG(1) << "WebRTC event log upload progress: " << base::ByteSize(current)
+          << " / " << base::ByteSize(total) << ".";
 }
 }  // namespace
 
-const char WebRtcEventLogUploaderImpl::kUploadURL[] =
-    "https://clients2.google.com/cr/report";
+bool IsOriginSameSiteWithUploadEndpoint(const url::Origin& origin) {
+  return net::SchemefulSite::IsSameSite(origin,
+                                        url::Origin::Create(GURL(kUploadURL)));
+}
 
 WebRtcEventLogUploaderImpl::Factory::Factory(
     scoped_refptr<base::SequencedTaskRunner> task_runner)
@@ -247,7 +256,14 @@ bool WebRtcEventLogUploaderImpl::PrepareUploadData(std::string* upload_data) {
 
   const char* filename = filename_str.c_str();
 
-  net::AddMultipartValueForUpload("prod", GetLogUploadProduct(), kBoundary,
+  size_t web_app_id =
+      ExtractRemoteBoundWebRtcEventLogWebAppIdFromPath(log_file_.path);
+  WebRtcLogUploadSite site =
+      (web_app_id == webrtc_event_logging::kCrossSiteWebAppId)
+          ? WebRtcLogUploadSite::kCrossSite
+          : WebRtcLogUploadSite::kSameSite;
+
+  net::AddMultipartValueForUpload("prod", GetLogUploadProduct(site), kBoundary,
                                   std::string(), upload_data);
   net::AddMultipartValueForUpload("ver", GetLogUploadVersion(), kBoundary,
                                   std::string(), upload_data);
@@ -292,17 +308,16 @@ void WebRtcEventLogUploaderImpl::StartUpload(const std::string& upload_data) {
 }
 
 void WebRtcEventLogUploaderImpl::OnURLLoadComplete(
-    std::unique_ptr<std::string> response_body) {
+    std::optional<std::string> response_body) {
   DCHECK(task_runner_->RunsTasksInCurrentSequence());
   DCHECK(url_loader_);
 
-  if (response_body.get() != nullptr && response_body->empty()) {
+  if (response_body && response_body->empty()) {
     LOG(WARNING) << "SimpleURLLoader reported upload successful, "
                  << "but report ID unknown.";
   }
 
-  const bool upload_successful =
-      (response_body.get() != nullptr && !response_body->empty());
+  const bool upload_successful = (response_body && !response_body->empty());
 
   // NetError() is 0 when no error occurred.
   UmaRecordWebRtcEventLoggingNetErrorType(url_loader_->NetError());

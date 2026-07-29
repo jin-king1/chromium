@@ -6,26 +6,25 @@
 
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/user_education/browser_user_education_interface.h"
-#include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
 #include "chrome/browser/ui/views/performance_controls/battery_saver_bubble_view.h"
 #include "chrome/grit/generated_resources.h"
-#include "components/feature_engagement/public/event_constants.h"
 #include "components/feature_engagement/public/feature_constants.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
-#include "ui/base/ui_base_features.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/bubble/bubble_border.h"
 #include "ui/views/controls/button/button_controller.h"
 #include "ui/views/view_class_properties.h"
 
-BatterySaverButton::BatterySaverButton(BrowserView* browser_view)
+BatterySaverButton::BatterySaverButton(BrowserWindowInterface* browser)
     : ToolbarButton(base::BindRepeating(&BatterySaverButton::OnClicked,
                                         base::Unretained(this))),
-      browser_view_(browser_view) {
-  SetVectorIcon(kBatterySaverRefreshIcon);
+      browser_(browser) {
+  // We use a custom version of the energy saver left icon.
+  SetVectorIcon(kBatterySaverRefreshCustomIcon);
   button_controller()->set_notify_action(
       views::ButtonController::NotifyAction::kOnPress);
 
@@ -107,13 +106,13 @@ void BatterySaverButton::OnClicked() {
   } else {
     CloseFeaturePromo(/*engaged=*/true);
     bubble_ = BatterySaverBubbleView::CreateBubble(
-        browser_view_->browser(), this, views::BubbleBorder::TOP_RIGHT, this);
+        views::BubbleAnchor(this), views::BubbleBorder::TOP_RIGHT, this);
   }
 }
 
 void BatterySaverButton::MaybeShowFeaturePromo() {
   pending_promo_ = false;
-  browser_view_->MaybeShowStartupFeaturePromo(
+  BrowserUserEducationInterface::From(browser_)->MaybeShowFeaturePromo(
       feature_engagement::kIPHBatterySaverModeFeature);
 }
 
@@ -122,11 +121,12 @@ void BatterySaverButton::CloseFeaturePromo(bool engaged) {
   // attempting to close the promo bubble
   pending_promo_ = false;
   if (engaged) {
-    browser_view_->NotifyFeaturePromoFeatureUsed(
-        feature_engagement::kIPHBatterySaverModeFeature,
-        FeaturePromoFeatureUsedAction::kClosePromoIfPresent);
+    BrowserUserEducationInterface::From(browser_)
+        ->NotifyFeaturePromoFeatureUsed(
+            feature_engagement::kIPHBatterySaverModeFeature,
+            FeaturePromoFeatureUsedAction::kClosePromoIfPresent);
   } else {
-    browser_view_->AbortFeaturePromo(
+    BrowserUserEducationInterface::From(browser_)->AbortFeaturePromo(
         feature_engagement::kIPHBatterySaverModeFeature);
   }
 }

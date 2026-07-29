@@ -34,7 +34,6 @@
 namespace em = enterprise_management;
 
 using testing::_;
-using testing::Invoke;
 using testing::Mock;
 
 namespace policy {
@@ -88,9 +87,9 @@ class CloudPolicyRefreshSchedulerTest : public testing::Test {
 
     // Remove mock observer from any scheduler that is being destroyed.
     ON_CALL(mock_observer_, OnRefreshSchedulerDestruction)
-        .WillByDefault(Invoke([&](CloudPolicyRefreshScheduler* scheduler) {
+        .WillByDefault([&](CloudPolicyRefreshScheduler* scheduler) {
           scheduler->RemoveObserver(&mock_observer_);
-        }));
+        });
   }
 
   CloudPolicyRefreshScheduler* CreateRefreshScheduler() {
@@ -107,7 +106,7 @@ class CloudPolicyRefreshSchedulerTest : public testing::Test {
 
   void NotifyConnectionChanged() {
     network::TestNetworkConnectionTracker::GetInstance()->SetConnectionType(
-        network::mojom::ConnectionType::CONNECTION_WIFI);
+        net::NetworkChangeNotifier::ConnectionType::CONNECTION_WIFI);
     base::RunLoop().RunUntilIdle();
   }
 
@@ -216,7 +215,7 @@ class CloudPolicyRefreshSchedulerTest : public testing::Test {
 
   base::test::SingleThreadTaskEnvironment task_environment_;
   MockCloudPolicyClient client_;
-  MockCloudPolicyStore store_;
+  MockCloudPolicyStore store_{dm_protocol::GetChromeUserPolicyType()};
   em::PolicyData policy_data_;
   std::unique_ptr<MockCloudPolicyService> service_;
   scoped_refptr<base::TestSimpleTaskRunner> task_runner_;
@@ -265,7 +264,7 @@ TEST_F(CloudPolicyRefreshSchedulerTest, InitialRefreshManagedNotYetFetched) {
 
 TEST_F(CloudPolicyRefreshSchedulerTest, InitialRefreshManagedAlreadyFetched) {
   SetLastUpdateToNow();
-  client_.SetPolicy(dm_protocol::kChromeUserPolicyType, std::string(),
+  client_.SetPolicy(dm_protocol::GetChromeUserPolicyType(), std::string(),
                     em::PolicyFetchResponse());
   auto scheduler = base::WrapUnique(CreateRefreshScheduler());
   CheckTiming(scheduler.get(), kPolicyRefreshRate);
@@ -311,7 +310,7 @@ TEST_F(CloudPolicyRefreshSchedulerTest, RefreshSoonOverriding) {
 
   // The refresh scheduled for soon is not overridden by the notification on the
   // already fetched policy.
-  client_.SetPolicy(dm_protocol::kChromeUserPolicyType, std::string(),
+  client_.SetPolicy(dm_protocol::GetChromeUserPolicyType(), std::string(),
                     em::PolicyFetchResponse());
   store_.NotifyStoreLoaded();
   CheckTiming(scheduler.get(), 0);
@@ -470,7 +469,7 @@ TEST_F(CloudPolicyRefreshSchedulerTest, OnConnectionChangedUnregistered) {
 
   auto closure = EmulateSleepThroughLastRefreshTime();
   scheduler->OnConnectionChanged(
-      network::mojom::ConnectionType::CONNECTION_WIFI);
+      net::NetworkChangeNotifier::ConnectionType::CONNECTION_WIFI);
   EXPECT_FALSE(task_runner_->HasPendingTask());
 }
 
@@ -481,14 +480,14 @@ TEST_F(CloudPolicyRefreshSchedulerTest, OnConnectionChangedUnregistered) {
 TEST_F(CloudPolicyRefreshSchedulerTest, OnConnectionChangedAfterSleep) {
   auto scheduler = base::WrapUnique(CreateRefreshScheduler());
 
-  client_.SetPolicy(dm_protocol::kChromeUserPolicyType, std::string(),
+  client_.SetPolicy(dm_protocol::GetChromeUserPolicyType(), std::string(),
                     em::PolicyFetchResponse());
   task_runner_->RunPendingTasks();
   EXPECT_FALSE(task_runner_->HasPendingTask());
 
   auto closure = EmulateSleepThroughLastRefreshTime();
   scheduler->OnConnectionChanged(
-      network::mojom::ConnectionType::CONNECTION_WIFI);
+      net::NetworkChangeNotifier::ConnectionType::CONNECTION_WIFI);
   EXPECT_TRUE(task_runner_->HasPendingTask());
   task_runner_->ClearPendingTasks();
 }
@@ -595,7 +594,7 @@ TEST_F(CloudPolicyRefreshSchedulerSteadyStateTest, OnConnectionChanged) {
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 TEST_F(CloudPolicyRefreshSchedulerSteadyStateTest,
        SignatureValidationFailedAndRetry) {
-  MockUserCloudPolicyStore store;
+  MockUserCloudPolicyStore store{dm_protocol::GetChromeUserPolicyType()};
   refresh_scheduler_ = std::make_unique<CloudPolicyRefreshScheduler>(
       &client_, &store, service_.get(), task_runner_,
       network::TestNetworkConnectionTracker::CreateGetter());

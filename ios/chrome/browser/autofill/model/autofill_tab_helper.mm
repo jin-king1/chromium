@@ -6,6 +6,7 @@
 
 #import "base/check.h"
 #import "base/memory/ptr_util.h"
+#import "components/autofill/core/common/autofill_features.h"
 #import "components/autofill/ios/browser/autofill_agent.h"
 #import "components/autofill/ios/browser/autofill_driver_ios.h"
 #import "components/autofill/ios/browser/autofill_driver_ios_factory.h"
@@ -39,11 +40,19 @@ void AutofillTabHelper::SetAutofillHandler(
   autofill_client_->set_commands_handler(autofill_handler);
 }
 
-void AutofillTabHelper::SetSnackbarHandler(
-    id<SnackbarCommands> snackbar_handler) {
-  if (snackbar_handler) {
-    autofill_agent_delegate_ =
-        [[AutofillAgentDelegate alloc] initWithCommandHandler:snackbar_handler];
+void AutofillTabHelper::SetCommandHandlers(
+    id<SnackbarCommands> snackbar_handler,
+    id<AtMemoryCommands> at_memory_handler) {
+  snackbar_handler_ = snackbar_handler;
+  at_memory_handler_ = at_memory_handler;
+  UpdateAutofillAgentDelegate();
+}
+
+void AutofillTabHelper::UpdateAutofillAgentDelegate() {
+  if (snackbar_handler_) {
+    autofill_agent_delegate_ = [[AutofillAgentDelegate alloc]
+        initWithSnackbarHandler:snackbar_handler_
+                atMemoryHandler:at_memory_handler_];
     autofill_agent_.delegate = autofill_agent_delegate_;
   } else {
     autofill_agent_delegate_ = nil;
@@ -55,30 +64,29 @@ id<FormSuggestionProvider> AutofillTabHelper::GetSuggestionProvider() {
   return autofill_agent_;
 }
 
+autofill::AutofillClientIOS* AutofillTabHelper::autofill_client() {
+  return autofill_client_.get();
+}
+
 AutofillTabHelper::AutofillTabHelper(web::WebState* web_state)
-    : profile_(ProfileIOS::FromBrowserState(web_state->GetBrowserState())),
-      autofill_agent_([[AutofillAgent alloc]
-          initWithPrefService:profile_->GetPrefs()
-                     webState:web_state]),
-      web_state_(web_state) {
-  web_state->AddObserver(this);
+    : web_state_(web_state) {
+  CHECK(web_state_->IsRealized());
+  web_state_observation_.Observe(web_state_);
+
+  ProfileIOS* profile =
+      ProfileIOS::FromBrowserState(web_state_->GetBrowserState());
+  autofill_agent_ =
+      [[AutofillAgent alloc] initWithPrefService:profile->GetPrefs()
+                                        webState:web_state];
 
   infobars::InfoBarManager* infobar_manager =
       InfoBarManagerImpl::FromWebState(web_state);
   DCHECK(infobar_manager);
-  auto from_web_state_impl =
-      [](web::WebState* web_state) -> autofill::AutofillClientIOS* {
-    if (auto* ath = AutofillTabHelper::FromWebState(web_state)) {
-      return ath->autofill_client();
-    }
-    return nullptr;
-  };
   autofill_client_ = std::make_unique<autofill::ChromeAutofillClientIOS>(
-      from_web_state_impl, profile_, web_state, infobar_manager,
-      autofill_agent_);
+      profile, web_state_, infobar_manager, autofill_agent_);
 
   if (IsAutofillAcrossIframesEnabled()) {
-    autofill::ChildFrameRegistrar::GetOrCreateForWebState(web_state)
+    autofill::ChildFrameRegistrar::GetOrCreateForWebState(web_state_)
         ->AddObserver(this);
   }
 }
@@ -86,11 +94,10 @@ AutofillTabHelper::AutofillTabHelper(web::WebState* web_state)
 void AutofillTabHelper::WebStateDestroyed(web::WebState* web_state) {
   CHECK_EQ(web_state, web_state_);
 
+  web_state_observation_.Reset();
   autofill_agent_ = nil;
-  web_state->RemoveObserver(this);
-
   if (IsAutofillAcrossIframesEnabled()) {
-    auto* registrar = autofill::ChildFrameRegistrar::FromWebState(web_state);
+    auto* registrar = autofill::ChildFrameRegistrar::FromWebState(web_state_);
     CHECK(registrar);
     registrar->RemoveObserver(this);
   }
@@ -109,5 +116,3 @@ void AutofillTabHelper::OnDidDoubleRegistration(
     driver->Unregister();
   }
 }
-
-WEB_STATE_USER_DATA_KEY_IMPL(AutofillTabHelper)

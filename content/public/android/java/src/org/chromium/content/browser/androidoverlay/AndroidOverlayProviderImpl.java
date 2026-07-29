@@ -37,7 +37,7 @@ public class AndroidOverlayProviderImpl implements AndroidOverlayProvider {
     private int mNumOverlays;
 
     // Runnable that notifies us that a client has been released.
-    private Runnable mNotifyReleasedRunnable =
+    private final Runnable mNotifyReleasedRunnable =
             new Runnable() {
                 @Override
                 public void run() {
@@ -104,7 +104,7 @@ public class AndroidOverlayProviderImpl implements AndroidOverlayProvider {
     }
 
     /** Mojo factory. */
-    public static class Factory implements InterfaceFactory<AndroidOverlayProvider> {
+    public static class Factory implements InterfaceFactory<@Nullable AndroidOverlayProvider> {
         private static @Nullable AndroidOverlayProviderImpl sImpl;
 
         public Factory() {}

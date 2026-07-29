@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "base/trace_event/process_memory_dump.h"
 
 #include <stddef.h>
@@ -16,6 +11,8 @@
 #include <optional>
 #include <string_view>
 
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/memory/aligned_memory.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/shared_memory_tracker.h"
@@ -275,7 +272,7 @@ TEST(ProcessMemoryDumpTest, Suballocations) {
   ASSERT_TRUE(found_edge[1]);
 
   // Check that calling serialization routines doesn't cause a crash.
-  std::unique_ptr<TracedValue> traced_value(new TracedValue);
+  auto traced_value = std::make_unique<TracedValue>();
   pmd->SerializeAllocatorDumpsInto(traced_value.get());
 
   pmd.reset();
@@ -430,7 +427,6 @@ TEST(ProcessMemoryDumpTest, GuidsTest) {
   ASSERT_EQ(mad1->guid(), pmd1.GetDumpId("foo"));
 }
 
-#if defined(COUNT_RESIDENT_BYTES_SUPPORTED)
 #if BUILDFLAG(IS_FUCHSIA)
 // TODO(crbug.com/42050620): Counting resident bytes is not supported on
 // Fuchsia.
@@ -444,7 +440,7 @@ TEST(ProcessMemoryDumpTest, MAYBE_CountResidentBytes) {
   // Allocate few page of dirty memory and check if it is resident.
   const size_t size1 = 5 * page_size;
   void* memory1 = Map(size1);
-  memset(memory1, 0, size1);
+  UNSAFE_TODO(memset(memory1, 0, size1));
   std::optional<size_t> res1 =
       ProcessMemoryDump::CountResidentBytes(memory1, size1);
   ASSERT_TRUE(res1.has_value());
@@ -454,7 +450,7 @@ TEST(ProcessMemoryDumpTest, MAYBE_CountResidentBytes) {
   // Allocate a large memory segment (> 8Mib).
   const size_t kVeryLargeMemorySize = 15 * 1024 * 1024;
   void* memory2 = Map(kVeryLargeMemorySize);
-  memset(memory2, 0, kVeryLargeMemorySize);
+  UNSAFE_TODO(memset(memory2, 0, kVeryLargeMemorySize));
   std::optional<size_t> res2 =
       ProcessMemoryDump::CountResidentBytes(memory2, kVeryLargeMemorySize);
   ASSERT_TRUE(res2.has_value());
@@ -524,6 +520,5 @@ TEST(ProcessMemoryDumpTest, MAYBE_CountResidentBytesInSharedMemory) {
     ASSERT_EQ(res3.value(), kTouchedMemorySize);
   }
 }
-#endif  // defined(COUNT_RESIDENT_BYTES_SUPPORTED)
 
 }  // namespace base::trace_event

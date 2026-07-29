@@ -13,7 +13,6 @@
 #import "components/prefs/pref_service.h"
 #import "components/security_state/ios/security_state_utils.h"
 #import "ios/chrome/browser/autocomplete/model/autocomplete_scheme_classifier_impl.h"
-#import "ios/chrome/browser/reading_list/model/offline_page_tab_helper.h"
 #import "ios/chrome/browser/search_engines/model/template_url_service_factory.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
@@ -27,14 +26,14 @@
 #import "ios/web/public/web_state.h"
 
 LocationBarModelDelegateIOS::LocationBarModelDelegateIOS(
-    WebStateList* web_state_list,
+    id<LocationBarModelDelegateWebStateProvider> web_state_provider,
     ProfileIOS* profile)
-    : web_state_list_(web_state_list), profile_(profile) {}
+    : web_state_provider_(web_state_provider), profile_(profile) {}
 
 LocationBarModelDelegateIOS::~LocationBarModelDelegateIOS() {}
 
 web::WebState* LocationBarModelDelegateIOS::GetActiveWebState() const {
-  return web_state_list_->GetActiveWebState();
+  return [web_state_provider_ webStateForLocationBarModelDelegate:this];
 }
 
 web::NavigationItem* LocationBarModelDelegateIOS::GetNavigationItem() const {
@@ -87,7 +86,7 @@ bool LocationBarModelDelegateIOS::ShouldDisplayURL() const {
       if (!url.SchemeIs(kChromeUIScheme)) {
         url = virtual_url;
       }
-      std::string_view host = url.host_piece();
+      std::string_view host = url.host();
       return host != kChromeUINewTabHost;
     }
   }
@@ -118,15 +117,6 @@ LocationBarModelDelegateIOS::GetCertificate() const {
 const gfx::VectorIcon* LocationBarModelDelegateIOS::GetVectorIconOverride()
     const {
   return nullptr;
-}
-
-bool LocationBarModelDelegateIOS::IsOfflinePage() const {
-  web::WebState* web_state = GetActiveWebState();
-  if (!web_state) {
-    return false;
-  }
-  return OfflinePageTabHelper::FromWebState(web_state)
-      ->presenting_offline_page();
 }
 
 bool LocationBarModelDelegateIOS::IsNewTabPage() const {

@@ -9,6 +9,8 @@
 #include <wchar.h>
 #include <winstring.h>
 
+#include <string_view>
+
 #include "base/check_op.h"
 #include "base/numerics/safe_conversions.h"
 
@@ -17,7 +19,7 @@ namespace base::win {
 HStringReference::HStringReference(const wchar_t* str) {
   // String must be null terminated for WindowsCreateStringReference.
   // nullptr str is OK so long as the length is 0.
-  size_t length = str ? wcslen(str) : 0;
+  size_t length = str ? std::wstring_view(str).size() : 0;
   const HRESULT hr = ::WindowsCreateStringReference(
       str, checked_cast<UINT32>(length), &hstring_header_, &hstring_);
   DCHECK_EQ(hr, S_OK);

@@ -21,6 +21,7 @@
 #include "content/public/renderer/render_frame_observer.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
+#include "pdf/buildflags.h"
 #include "url/gurl.h"
 
 namespace blink {
@@ -47,10 +48,10 @@ class TranslateAgent : public content::RenderFrameObserver,
   // Updates page registration in translate driver.
   void RenewPageRegistration();
 
-  // Lets the translation system know that we are preparing to navigate to
-  // the specified URL. If there is anything that can or should be done before
-  // this URL loads, this is the time to prepare for it.
-  void PrepareForUrl(const GURL& url);
+  // Lets the translation system know that we are preparing to navigate.
+  // If there is anything that can or should be done before
+  // this document loads, this is the time to prepare for it.
+  void PrepareForNewDocument();
 
   // mojom::TranslateAgent implementation.
   void TranslateFrame(const std::string& translate_script,
@@ -58,6 +59,11 @@ class TranslateAgent : public content::RenderFrameObserver,
                       const std::string& target_lang,
                       TranslateFrameCallback callback) override;
   void RevertTranslation() override;
+#if BUILDFLAG(ENABLE_PDF)
+  void PdfPageCaptured(const std::u16string& contents,
+                       const std::string& pdf_lang,
+                       const GURL& url) override;
+#endif
 
   // Set the language detection model for used by |this|. For testing only.
   void SeedLanguageDetectionModelForTesting(base::File model_file);
@@ -132,6 +138,10 @@ class TranslateAgent : public content::RenderFrameObserver,
 
   const mojo::Remote<mojom::ContentTranslateDriver>& GetTranslateHandler();
 
+  // Helper to send the page registration Mojo call to the browser.
+  void RegisterPageInternal(LanguageDetectionDetails details,
+                            bool page_level_translation_criteria_met);
+
   // Cleanups all states and pending callbacks associated with the current
   // running page translation.
   void ResetPage();
@@ -142,6 +152,13 @@ class TranslateAgent : public content::RenderFrameObserver,
   // Cancels any translation that is currently being performed.  This does not
   // revert existing translations.
   void CancelPendingTranslation();
+
+  // Runs language detection on the provided contents and registers the page.
+  void RunLanguageDetectionAndRegisterPage(const std::u16string& contents,
+                                           const std::string& content_language,
+                                           const std::string& html_lang,
+                                           const GURL& url,
+                                           bool has_notranslate);
 
   // Checks if the current running page translation is finished or errored and
   // notifies the browser accordingly.  If the translation has not terminated,

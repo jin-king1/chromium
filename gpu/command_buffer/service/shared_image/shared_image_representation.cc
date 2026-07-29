@@ -6,12 +6,15 @@
 
 #include <tuple>
 
+#include "base/notreached.h"
 #include "base/strings/stringprintf.h"
 #include "build/build_config.h"
 #include "components/viz/common/resources/shared_image_format_utils.h"
 #include "gpu/command_buffer/service/shared_context_state.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_format_service_utils.h"
+#include "gpu/command_buffer/service/shared_image/shared_image_manager.h"
 #include "gpu/command_buffer/service/texture_manager.h"
+#include "gpu/config/gpu_finch_features.h"
 #include "third_party/skia/include/core/SkColorSpace.h"
 #include "third_party/skia/include/core/SkImage.h"
 #include "third_party/skia/include/gpu/MutableTextureState.h"
@@ -25,6 +28,10 @@
 
 #if BUILDFLAG(ENABLE_VULKAN)
 #include "gpu/vulkan/vulkan_fence_helper.h"
+#endif
+
+#if BUILDFLAG(IS_WIN)
+#include "ui/gfx/win/d3d_shared_fence.h"
 #endif
 
 namespace gpu {
@@ -71,6 +78,13 @@ CreateGraphiteSkImageReleaseProc(
 }
 }  // namespace
 
+SkiaImageRepresentation::GraphiteTextureHolder::GraphiteTextureHolder(
+    skgpu::graphite::BackendTexture texture)
+    : texture_(std::move(texture)) {}
+
+SkiaImageRepresentation::GraphiteTextureHolder::~GraphiteTextureHolder() =
+    default;
+
 ///////////////////////////////////////////////////////////////////////////////
 // SharedImageRepresentation
 
@@ -99,12 +113,33 @@ SharedImageRepresentation::~SharedImageRepresentation() {
   }
 }
 
+void SharedImageRepresentation::OnContextLost() {
+  has_context_ = false;
+  backing_->OnContextLost();
+}
+
 size_t SharedImageRepresentation::NumPlanesExpected() const {
   if (format().PrefersExternalSampler()) {
     return 1;
   }
 
   return static_cast<size_t>(format().NumberOfPlanes());
+}
+
+bool SharedImageRepresentation::IsCleared() const {
+  return ClearedRect() == gfx::Rect(size());
+}
+
+void SharedImageRepresentation::SetCleared() {
+  SetClearedRect(gfx::Rect(size()));
+}
+
+gfx::Rect SharedImageRepresentation::ClearedRect() const {
+  return backing_->ClearedRect();
+}
+
+void SharedImageRepresentation::SetClearedRect(const gfx::Rect& cleared_rect) {
+  backing_->SetClearedRect(cleared_rect);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -151,7 +186,7 @@ bool GLTextureImageRepresentationBase::SupportsMultipleConcurrentReadAccess() {
 // GLTextureImageRepresentation
 
 gpu::TextureBase* GLTextureImageRepresentation::GetTextureBase(
-    int plane_index) {
+    size_t plane_index) {
   return GetTexture(plane_index);
 }
 
@@ -184,7 +219,7 @@ void GLTextureImageRepresentation::UpdateClearedStateOnBeginAccess() {
 // GLTexturePassthroughImageRepresentation
 
 gpu::TextureBase* GLTexturePassthroughImageRepresentation::GetTextureBase(
-    int plane_index) {
+    size_t plane_index) {
   return GetTexturePassthrough(plane_index).get();
 }
 
@@ -204,13 +239,37 @@ bool GLTexturePassthroughImageRepresentation::
 
 SkiaImageRepresentation::SkiaImageRepresentation(SharedImageManager* manager,
                                                  SharedImageBacking* backing,
-                                                 MemoryTypeTracker* tracker)
-    : SharedImageRepresentation(manager, backing, tracker) {}
+                                                 MemoryTypeTracker* tracker,
+                                                 bool is_graphite)
+    : SharedImageRepresentation(manager, backing, tracker),
+      is_graphite_(is_graphite) {}
 
 SkiaImageRepresentation::~SkiaImageRepresentation() = default;
 
 bool SkiaImageRepresentation::SupportsMultipleConcurrentReadAccess() {
   return false;
+}
+
+bool SkiaImageRepresentation::SupportsDeferredGraphiteSubmit() {
+  return false;
+}
+
+bool SkiaImageRepresentation::NeedGraphiteContextSubmitBeforeEndAccess() {
+  // If this is not a Graphite representation, we don't need to submit to a
+  // Graphite context. It is important to not check the feature param here
+  // if we are not using Graphite to avoid unwanted feature study registration.
+  if (!is_graphite_) {
+    return false;
+  }
+
+  if (!features::SkiaGraphiteEnableDeferredSubmit()) {
+    // If deferred submit is disabled, then a submit is always required.
+    return true;
+  }
+
+  //  If the backing can support deferred submissions, then we don't need to
+  //  submit before EndAccess().
+  return !SupportsDeferredGraphiteSubmit();
 }
 
 SkiaImageRepresentation::ScopedWriteAccess::ScopedWriteAccess(
@@ -284,13 +343,8 @@ SkiaGaneshImageRepresentation::SkiaGaneshImageRepresentation(
     SharedImageManager* manager,
     SharedImageBacking* backing,
     MemoryTypeTracker* tracker)
-    : SkiaImageRepresentation(manager, backing, tracker),
+    : SkiaImageRepresentation(manager, backing, tracker, /*is_graphite=*/false),
       gr_context_(gr_context) {}
-
-bool SkiaGaneshImageRepresentation::NeedGraphiteContextSubmitBeforeEndAccess() {
-  // Ganesh shouldn't need a Graphite context submit.
-  return false;
-}
 
 SkiaGaneshImageRepresentation::ScopedGaneshWriteAccess::ScopedGaneshWriteAccess(
     base::PassKey<SkiaGaneshImageRepresentation> /* pass_key */,
@@ -491,7 +545,7 @@ SkiaGaneshImageRepresentation::ScopedGaneshReadAccess::CreateSkImage(
 
 sk_sp<SkImage>
 SkiaGaneshImageRepresentation::ScopedGaneshReadAccess::CreateSkImageForPlane(
-    int plane_index,
+    size_t plane_index,
     SharedContextState* context_state,
     SkImages::TextureReleaseProc texture_release_proc,
     SkImages::ReleaseContext release_context) {
@@ -564,12 +618,7 @@ SkiaGraphiteImageRepresentation::SkiaGraphiteImageRepresentation(
     SharedImageManager* manager,
     SharedImageBacking* backing,
     MemoryTypeTracker* tracker)
-    : SkiaImageRepresentation(manager, backing, tracker) {}
-
-bool SkiaGraphiteImageRepresentation::
-    NeedGraphiteContextSubmitBeforeEndAccess() {
-  // As default, assume Graphite context submit is needed.
-  return true;
+    : SkiaImageRepresentation(manager, backing, tracker, /*is_graphite=*/true) {
 }
 
 SkiaGraphiteImageRepresentation::ScopedGraphiteWriteAccess::
@@ -728,7 +777,7 @@ SkiaGraphiteImageRepresentation::ScopedGraphiteReadAccess::CreateSkImage(
       backend_textures[i] = graphite_texture_holders_[i]->texture();
     }
     skgpu::graphite::YUVABackendTextures yuva_backend_textures(
-        recorder, yuva_info, backend_textures);
+        yuva_info, backend_textures);
     return SkImages::TextureFromYUVATextures(
         recorder, yuva_backend_textures, sk_color_space, wrapped_release_proc,
         wrapped_release_context);
@@ -736,7 +785,7 @@ SkiaGraphiteImageRepresentation::ScopedGraphiteReadAccess::CreateSkImage(
 }
 
 sk_sp<SkImage> SkiaGraphiteImageRepresentation::ScopedGraphiteReadAccess::
-    CreateSkImageForPlane(int plane_index,
+    CreateSkImageForPlane(size_t plane_index,
                           SharedContextState* context_state,
                           SkImages::TextureReleaseProc texture_release_proc,
                           SkImages::ReleaseContext release_context) {
@@ -805,6 +854,61 @@ std::string SkiaGraphiteImageRepresentation::WrappedTextureDebugLabel(
 }
 
 ///////////////////////////////////////////////////////////////////////////////
+// WebNNTensorRepresentation
+
+WebNNTensorRepresentation::ScopedAccess::ScopedAccess(
+    base::PassKey<WebNNTensorRepresentation> /* pass_key */,
+    WebNNTensorRepresentation* representation,
+    AccessMode access_mode)
+    : ScopedAccessBase(representation, access_mode) {}
+
+WebNNTensorRepresentation::ScopedAccess::~ScopedAccess() {
+  representation()->EndAccess();
+}
+
+#if BUILDFLAG(IS_WIN)
+scoped_refptr<gfx::D3DSharedFence>
+WebNNTensorRepresentation::ScopedAccess::GetAcquireFence() const {
+  return representation()->GetAcquireFence();
+}
+void WebNNTensorRepresentation::ScopedAccess::SetReleaseFence(
+    scoped_refptr<gfx::D3DSharedFence> release_fence) {
+  representation()->SetReleaseFence(std::move(release_fence));
+}
+#endif
+
+std::unique_ptr<WebNNTensorRepresentation::ScopedAccess>
+WebNNTensorRepresentation::BeginScopedAccess() {
+  if (!BeginAccess()) {
+    return nullptr;
+  }
+  return std::make_unique<ScopedAccess>(
+      base::PassKey<WebNNTensorRepresentation>(), this, AccessMode::kWrite);
+}
+
+bool WebNNTensorRepresentation::is_thread_safe() const {
+  return backing()->is_thread_safe();
+}
+
+#if BUILDFLAG(IS_WIN)
+Microsoft::WRL::ComPtr<ID3D12Resource>
+WebNNTensorRepresentation::GetD3D12Buffer() const {
+  NOTREACHED();
+}
+
+base::win::ScopedHandle WebNNTensorRepresentation::GetD3D12HeapHandle() const {
+  NOTREACHED();
+}
+
+#endif
+
+#if BUILDFLAG(IS_APPLE)
+IOSurfaceRef WebNNTensorRepresentation::GetIOSurface() const {
+  NOTREACHED();
+}
+#endif  // BUILDFLAG(IS_APPLE)
+
+///////////////////////////////////////////////////////////////////////////////
 // OverlayImageRepresentation
 
 #if BUILDFLAG(IS_ANDROID)
@@ -827,6 +931,10 @@ OverlayImageRepresentation::GetDCLayerOverlayImage() {
 #elif BUILDFLAG(IS_APPLE)
 gfx::ScopedIOSurface OverlayImageRepresentation::GetIOSurface() const {
   return gfx::ScopedIOSurface();
+}
+std::vector<gfx::MTLSharedEventFence>
+OverlayImageRepresentation::GetBackpressureFences() const {
+  return {};
 }
 bool OverlayImageRepresentation::IsInUseByWindowServer() const {
   return false;
@@ -989,7 +1097,6 @@ SharedImageRepresentationFactoryRef::SharedImageRepresentationFactoryRef(
 SharedImageRepresentationFactoryRef::~SharedImageRepresentationFactoryRef() {
   // Only primary refs provide link to the owning SharedImageFactory.
   if (is_primary_) {
-    backing()->UnregisterImageFactory();
     backing()->MarkForDestruction();
   }
 }
@@ -1057,14 +1164,33 @@ RasterImageRepresentation::BeginScopedWriteAccess(
     const SkSurfaceProps& surface_props,
     const std::optional<SkColor4f>& clear_color,
     bool visible) {
-  return std::make_unique<ScopedWriteAccess>(
-      base::PassKey<RasterImageRepresentation>(), this,
+  auto* paint_op_buffer =
       BeginWriteAccess(std::move(context_state), final_msaa_count,
-                       surface_props, clear_color, visible));
+                       surface_props, clear_color, visible);
+  if (!paint_op_buffer) {
+    return nullptr;
+  }
+  return std::make_unique<ScopedWriteAccess>(
+      base::PassKey<RasterImageRepresentation>(), this, paint_op_buffer);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 // VideoImageRepresentation
+
+#if BUILDFLAG(IS_WIN)
+D3D11TextureAndArrayIndex::D3D11TextureAndArrayIndex(
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> texture,
+    size_t array_index)
+    : texture(std::move(texture)), array_index(array_index) {}
+
+D3D11TextureAndArrayIndex::D3D11TextureAndArrayIndex(
+    const D3D11TextureAndArrayIndex& other) = default;
+
+D3D11TextureAndArrayIndex::D3D11TextureAndArrayIndex(
+    D3D11TextureAndArrayIndex&& other) = default;
+
+D3D11TextureAndArrayIndex::~D3D11TextureAndArrayIndex() = default;
+#endif  // BUILDFLAG(IS_WIN)
 
 VideoImageRepresentation::VideoImageRepresentation(SharedImageManager* manager,
                                                    SharedImageBacking* backing,
@@ -1139,11 +1265,11 @@ VulkanImageRepresentation::ScopedAccess::ScopedAccess(
     VkSemaphore end_semaphore)
     : ScopedAccessBase(representation, access_mode),
       is_read_only_(access_mode == AccessMode::kRead),
-      begin_semaphores_(begin_semaphores),
-      end_semaphore_(end_semaphore) {}
+      begin_semaphores_(std::move(begin_semaphores)),
+      end_semaphore_(std::move(end_semaphore)) {}
 
 VulkanImageRepresentation::ScopedAccess::~ScopedAccess() {
-  representation()->EndScopedAccess(is_read_only_, end_semaphore_);
+  representation()->EndAccess(is_read_only_, end_semaphore_);
 
   auto* fence_helper = representation()->vulkan_device_queue_->GetFenceHelper();
   fence_helper->EnqueueSemaphoresCleanupForSubmittedWork(
@@ -1151,8 +1277,39 @@ VulkanImageRepresentation::ScopedAccess::~ScopedAccess() {
   fence_helper->EnqueueSemaphoreCleanupForSubmittedWork(end_semaphore_);
 }
 
+gpu::VulkanImage& VulkanImageRepresentation::GetVulkanImage() {
+  return *vulkan_image_;
+}
+
 gpu::VulkanImage& VulkanImageRepresentation::ScopedAccess::GetVulkanImage() {
-  return *representation()->vulkan_image_;
+  return representation()->GetVulkanImage();
+}
+
+std::unique_ptr<VulkanImageRepresentation::ScopedAccess>
+VulkanImageRepresentation::BeginScopedAccess(
+    AccessMode access_mode,
+    std::vector<VkSemaphore>& begin_semaphores,
+    std::vector<VkSemaphore>& end_semaphores) {
+  std::vector<VkSemaphore> local_begin_semaphores;
+  std::vector<VkSemaphore> local_end_semaphores;
+  if (!BeginAccess(access_mode, local_begin_semaphores, local_end_semaphores)) {
+    return nullptr;
+  }
+  // Append all semaphores from local_* to the passed vectors.
+  begin_semaphores.insert(begin_semaphores.end(),
+                          local_begin_semaphores.begin(),
+                          local_begin_semaphores.end());
+  end_semaphores.insert(end_semaphores.end(), local_end_semaphores.begin(),
+                        local_end_semaphores.end());
+
+  VkSemaphore end_semaphore = VK_NULL_HANDLE;
+  if (!local_end_semaphores.empty()) {
+    end_semaphore = local_end_semaphores.back();
+  }
+
+  return std::make_unique<ScopedAccess>(this, access_mode,
+                                        std::move(local_begin_semaphores),
+                                        std::move(end_semaphore));
 }
 #endif
 

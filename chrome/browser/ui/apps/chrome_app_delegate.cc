@@ -24,10 +24,10 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/shell_integration.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_navigator.h"
-#include "chrome/browser/ui/browser_navigator_params.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/scoped_tabbed_browser_displayer.h"
 #include "components/keep_alive_registry/keep_alive_types.h"
 #include "components/keep_alive_registry/scoped_keep_alive.h"
@@ -58,7 +58,7 @@
 namespace {
 
 // Time to wait for an app window to show before allowing Chrome to quit.
-int kAppWindowFirstShowTimeoutSeconds = 10;
+constexpr int kAppWindowFirstShowTimeoutSeconds = 10;
 
 bool disable_external_open_for_testing_ = false;
 
@@ -81,10 +81,10 @@ content::WebContents* OpenURLFromTabInternal(
     // it would not be acceptable to open in a new tab of a non-incognito
     // window.
     new_tab_params.disposition = WindowOpenDisposition::OFF_THE_RECORD;
-    new_tab_params.window_action = NavigateParams::SHOW_WINDOW;
+    new_tab_params.window_action = NavigateParams::WindowAction::kShowWindow;
   } else {
     new_tab_params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
-    new_tab_params.window_action = NavigateParams::SHOW_WINDOW;
+    new_tab_params.window_action = NavigateParams::WindowAction::kShowWindow;
   }
 
   new_tab_params.initiating_profile = Profile::FromBrowserContext(context);
@@ -263,14 +263,14 @@ void ChromeAppDelegate::RenderFrameCreated(
     // can incorrectly have host level zoom settings. These aren't wanted as
     // apps cannot be zoomed, so are removed. This should be removed if apps
     // can be made to zoom again.
-    // See http://crbug.com/446759 for more details.
+    // See http://crbug.com/40400194 for more details.
     content::WebContents* web_contents =
         content::WebContents::FromRenderFrameHost(frame_host);
     DCHECK(web_contents);
     content::HostZoomMap* zoom_map =
         content::HostZoomMap::GetForWebContents(web_contents);
     DCHECK(zoom_map);
-    zoom_map->SetZoomLevelForHost(web_contents->GetURL().host(), 0);
+    zoom_map->SetZoomLevelForHost(web_contents->GetURL().GetHost(), 0);
   }
 }
 
@@ -313,8 +313,9 @@ void ChromeAppDelegate::AddNewContents(
   disposition = disposition == WindowOpenDisposition::NEW_BACKGROUND_TAB
                     ? disposition
                     : WindowOpenDisposition::NEW_FOREGROUND_TAB;
-  chrome::AddWebContents(displayer.browser(), nullptr, std::move(new_contents),
-                         target_url, disposition, window_features);
+  chrome::AddWebContents(displayer.browser_window_interface(), nullptr,
+                         std::move(new_contents), target_url, disposition,
+                         window_features);
 }
 
 void ChromeAppDelegate::RunFileChooser(

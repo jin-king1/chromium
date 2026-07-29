@@ -4,8 +4,10 @@
 
 #import "ios/chrome/browser/settings/ui_bundled/password/password_sharing/sharing_status_mediator.h"
 
+#import "base/strings/string_number_conversions.h"
 #import "base/strings/sys_string_conversions.h"
 #import "components/password_manager/core/browser/sharing/recipients_fetcher.h"
+#import "components/sync/test/test_sync_service.h"
 #import "ios/chrome/browser/authentication/ui_bundled/authentication_constants.h"
 #import "ios/chrome/browser/favicon/model/ios_chrome_favicon_loader_factory.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/password_sharing/recipient_info.h"
@@ -16,11 +18,14 @@
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
+#import "ios/chrome/browser/signin/model/avatar/avatar_provider.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service_factory.h"
 #import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
+#import "ios/chrome/browser/sync/model/sync_service_factory.h"
+#import "ios/chrome/browser/sync/model/test_sync_service_utils.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/web/public/test/web_task_environment.h"
@@ -55,8 +60,8 @@ NSArray<RecipientInfoForIOSDisplay*>* CreateRecipients(int amount) {
 
 @property(nonatomic, strong) UIImage* senderImage;
 @property(nonatomic, strong) UIImage* recipientImage;
-@property(nonatomic, strong) NSString* subtitleString;
-@property(nonatomic, strong) NSString* footerString;
+@property(nonatomic, copy) NSString* subtitleString;
+@property(nonatomic, copy) NSString* footerString;
 @property(nonatomic, readonly) GURL URL;
 
 @end
@@ -72,11 +77,11 @@ NSArray<RecipientInfoForIOSDisplay*>* CreateRecipients(int amount) {
 }
 
 - (void)setSubtitleString:(NSString*)subtitleString {
-  _subtitleString = subtitleString;
+  _subtitleString = [subtitleString copy];
 }
 
 - (void)setFooterString:(NSString*)footerString {
-  _footerString = footerString;
+  _footerString = [footerString copy];
 }
 
 - (void)setURL:(const GURL&)URL {
@@ -99,6 +104,8 @@ class SharingStatusMediatorTest : public PlatformTest {
         AuthenticationServiceFactory::GetInstance(),
         AuthenticationServiceFactory::GetFactoryWithDelegate(
             std::make_unique<FakeAuthenticationServiceDelegate>()));
+    builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
+                              base::BindRepeating(&CreateTestSyncService));
 
     profile_ = std::move(builder).Build();
   }
@@ -126,7 +133,7 @@ class SharingStatusMediatorTest : public PlatformTest {
 
 TEST_F(SharingStatusMediatorTest, NotifiesSignedInConsumerAboutTheirAvatar) {
   GetAuthenticationService()->SignIn(fake_identity(),
-                                     signin_metrics::AccessPoint::kUnknown);
+                                     signin_metrics::AccessPoint::kStartPage);
 
   auto* consumer = [[FakeSharingStatusConsumer alloc] init];
   auto* mediator = [[SharingStatusMediator alloc]
@@ -139,11 +146,13 @@ TEST_F(SharingStatusMediatorTest, NotifiesSignedInConsumerAboutTheirAvatar) {
           changePasswordURL:std::nullopt];
   mediator.consumer = consumer;
 
-  EXPECT_NSEQ(UIImagePNGRepresentation(CircularImageFromImage(
-                  GetAccountManagerService()->GetIdentityAvatarWithIdentity(
-                      fake_identity(), IdentityAvatarSize::Large),
-                  kProfileImageSize)),
-              UIImagePNGRepresentation(consumer.senderImage));
+  EXPECT_NSEQ(
+      UIImagePNGRepresentation(CircularImageFromImage(
+          GetApplicationContext()
+              ->GetIdentityAvatarProvider()
+              ->GetIdentityAvatar(fake_identity(), IdentityAvatarSize::Large),
+          kProfileImageSize)),
+      UIImagePNGRepresentation(consumer.senderImage));
 }
 
 TEST_F(SharingStatusMediatorTest, NotifiesSignedOutConsumerWithDefaultAvatar) {
@@ -158,8 +167,8 @@ TEST_F(SharingStatusMediatorTest, NotifiesSignedOutConsumerWithDefaultAvatar) {
           changePasswordURL:std::nullopt];
   mediator.consumer = consumer;
 
-  EXPECT_NSEQ(UIImagePNGRepresentation(DefaultSymbolTemplateWithPointSize(
-                  kPersonCropCircleSymbol, kProfileImageSize)),
+  EXPECT_NSEQ(UIImagePNGRepresentation(SymbolTemplateWithPointSize(
+                  SymbolPersonCropCircle, kProfileImageSize)),
               UIImagePNGRepresentation(consumer.senderImage));
 }
 
@@ -176,8 +185,8 @@ TEST_F(SharingStatusMediatorTest, NotifiesConsumerWithRecipientImage) {
   mediator.consumer = consumer;
 
   EXPECT_NSEQ(UIImagePNGRepresentation(CircularImageFromImage(
-                  DefaultSymbolTemplateWithPointSize(
-                      kPersonCropCircleSymbol, kAccountProfilePhotoDimension),
+                  SymbolTemplateWithPointSize(SymbolPersonCropCircle,
+                                              kAccountProfilePhotoDimension),
                   60.0)),
               UIImagePNGRepresentation(consumer.recipientImage));
 }

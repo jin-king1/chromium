@@ -8,7 +8,9 @@
 #import <utility>
 
 #import "base/memory/raw_ptr.h"
+#import "base/strings/string_number_conversions.h"
 #import "base/strings/sys_string_conversions.h"
+#import "components/application_locale_storage/application_locale_storage.h"
 #import "components/google/core/common/google_util.h"
 #import "components/password_manager/core/browser/ui/insecure_credentials_manager.h"
 #import "components/password_manager/core/browser/ui/saved_passwords_presenter.h"
@@ -166,12 +168,6 @@ NSInteger GetDismissedWarningsCount(
   // Last number of dismissed warnings passed to the consumer.
   // Used to only update the consumer when the data it displays changed.
   NSInteger _dismissedWarningsCount;
-
-  // Object storing the time of the previous successful re-authentication.
-  // This is meant to be used by the `ReauthenticationModule` for keeping
-  // re-authentications valid for a certain time interval within the scope
-  // of the Password Issues Screen.
-  __strong NSDate* _successfulReauthTime;
 
   // FaviconLoader is a keyed service that uses LargeIconService to retrieve
   // favicon images.
@@ -342,7 +338,8 @@ NSInteger GetDismissedWarningsCount(
           ? [[CrURL alloc] initWithGURL:google_util::AppendGoogleLocaleParam(
                                             headerURL.value(),
                                             GetApplicationContext()
-                                                ->GetApplicationLocale())]
+                                                ->GetApplicationLocaleStorage()
+                                                ->Get())]
           : nil;
 
   [self.consumer setHeader:headerText URL:localizedHeaderURL];
@@ -362,20 +359,11 @@ NSInteger GetDismissedWarningsCount(
          _insecureCredentials.value() != *insecureCredentials;
 }
 
-#pragma mark SuccessfulReauthTimeAccessor
-
-- (void)updateSuccessfulReauthTime {
-  _successfulReauthTime = [[NSDate alloc] init];
-}
-
-- (NSDate*)lastSuccessfulReauthTime {
-  return _successfulReauthTime;
-}
-
 #pragma mark - TableViewFaviconDataSource
 
 - (void)faviconForPageURL:(CrURL*)URL
-               completion:(void (^)(FaviconAttributes*))completion {
+               completion:(void (^)(FaviconAttributes* attributes,
+                                    bool cached))completion {
   BOOL fallbackToGoogleServer =
       password_manager_util::IsSavingPasswordsToAccountWithNormalEncryption(
           _syncService);

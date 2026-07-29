@@ -4,9 +4,12 @@
 
 package org.chromium.components.webxr;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
+import android.view.KeyEvent;
 import android.view.Surface;
 
 import androidx.annotation.IntDef;
@@ -18,28 +21,39 @@ import org.jni_zero.NativeMethods;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.supplier.NonNullObservableSupplier;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableNonNullObservableSupplier;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.content_public.browser.ImeAdapter;
+import org.chromium.content_public.browser.InputMethodManagerWrapper;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.base.WindowAndroid;
 
+import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
 import java.lang.ref.WeakReference;
 
 /**
- * Provides static methods called by the XrDelegateImpl as well as JNI methods to the C/C++ code
- * in order to interact with the various bits of the Java side of a session. This includes the
- * responsibility to standup/create any needed overlays/SurfaceViews and forwarding events both
- * from them and elsewhere within Chrome (forwarded/registered for via XrDelegate). This class is
- * also responsible for ensuring that there is only one active session at a time and answering
- * questions about that session; mainly via communication of its static members.
+ * Provides static methods called by the XrDelegateImpl as well as JNI methods to the C/C++ code in
+ * order to interact with the various bits of the Java side of a session. This includes the
+ * responsibility to standup/create any needed overlays/SurfaceViews and forwarding events both from
+ * them and elsewhere within Chrome (forwarded/registered for via XrDelegate). This class is also
+ * responsible for ensuring that there is only one active session at a time and answering questions
+ * about that session; mainly via communication of its static members.
  */
 @JNINamespace("webxr")
+@NullMarked
 public class XrSessionCoordinator {
     private static final String TAG = "XrSessionCoordinator";
     private static final boolean DEBUG_LOGS = false;
 
     @IntDef({SessionType.NONE, SessionType.AR, SessionType.VR})
     @Retention(RetentionPolicy.SOURCE)
+    @Target(ElementType.TYPE_USE)
     public @interface SessionType {
         int NONE = 0;
         int AR = 1;
@@ -51,11 +65,11 @@ public class XrSessionCoordinator {
     // in progress, and reset to null on session end. The XrImmersiveOverlay member has a strong
     // reference to the ChromeActivity, and that shouldn't be retained beyond the duration of a
     // session.
-    private static XrSessionCoordinator sActiveSessionInstance;
+    private static @Nullable XrSessionCoordinator sActiveSessionInstance;
 
     /** Whether there is a non-null valid {@link #sActiveSessionInstance}. */
-    private static XrSessionTypeSupplier sActiveSessionAvailableSupplier =
-            new XrSessionTypeSupplier(SessionType.NONE);
+    private static final SettableNonNullObservableSupplier<@SessionType Integer>
+            sActiveSessionAvailableSupplier = ObservableSuppliers.createNonNull(SessionType.NONE);
 
     private long mNativeXrSessionCoordinator;
 
@@ -63,20 +77,24 @@ public class XrSessionCoordinator {
     // and keeps a strong reference to it for the lifetime of the device. It creates and
     // owns an XrImmersiveOverlay for the duration of an immersive session, which in
     // turn contains a reference to XrSessionCoordinator for making JNI calls back to the device.
-    private XrImmersiveOverlay mImmersiveOverlay;
+    private @Nullable XrImmersiveOverlay mImmersiveOverlay;
 
     private @SessionType int mActiveSessionType = SessionType.NONE;
 
     // The WebContents that triggered the currently active session.
-    private WebContents mWebContents;
+    private @Nullable WebContents mWebContents;
 
-    private WeakReference<Activity> mXrHostActivity;
+    private @Nullable InputMethodManagerWrapper mOriginalInputMethodManagerWrapper;
+
+    private @Nullable XrInputMethodManagerWrapper mXrInputMethodManagerWrapper;
+
+    private @Nullable WeakReference<Activity> mXrHostActivity;
 
     // Helper, obtains android Activity out of passed in WebContents instance.
     // Equivalent to ChromeActivity.fromWebContents(), but does not require that
     // the resulting instance is a ChromeActivity.
     @CalledByNative
-    public static Activity getActivity(final WebContents webContents) {
+    public static @Nullable Activity getActivity(final WebContents webContents) {
         if (webContents == null) return null;
         WindowAndroid window = webContents.getTopLevelNativeWindow();
         if (window == null) return null;
@@ -96,7 +114,7 @@ public class XrSessionCoordinator {
      * @return Context The current activity as a Context.
      */
     @CalledByNative
-    private static Context getCurrentActivityContext() {
+    private static @Nullable Context getCurrentActivityContext() {
         if (sActiveSessionInstance == null || sActiveSessionInstance.mWebContents == null) {
             return null;
         }
@@ -155,6 +173,7 @@ public class XrSessionCoordinator {
                         webContents,
                         useOverlay,
                         canRenderDomContent);
+        assumeNonNull(overlayDelegate);
         startSession(SessionType.AR, overlayDelegate, webContents);
     }
 
@@ -167,9 +186,13 @@ public class XrSessionCoordinator {
         // active session going on.
         assert (sActiveSessionInstance == null);
 
+        Activity activity = getActivity(webContents);
+        assumeNonNull(activity);
+
         XrImmersiveOverlay.Delegate overlayDelegate =
                 CardboardClassProvider.getOverlayDelegate(
-                        compositorDelegateProvider.create(webContents), getActivity(webContents));
+                        compositorDelegateProvider.create(webContents), activity);
+        assumeNonNull(overlayDelegate);
         startSession(SessionType.VR, overlayDelegate, webContents);
     }
 
@@ -183,18 +206,17 @@ public class XrSessionCoordinator {
         // The active session must be set before creating the host activity, since it will be
         // notified once the activity is ready.
         sActiveSessionInstance = this;
+        mWebContents = webContents;
         mActiveSessionType = SessionType.VR;
         sActiveSessionAvailableSupplier.set(SessionType.VR);
 
         if (needsSeparateActivity) {
             Intent intent = XrHostActivity.createIntent(getApplicationContext());
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             getApplicationContext().startActivity(intent);
         } else {
             XrSessionCoordinatorJni.get()
-                    .onXrHostActivityReady(
-                            mNativeXrSessionCoordinator,
-                            XrSessionCoordinator.this,
-                            getActivity(webContents));
+                    .onXrHostActivityReady(mNativeXrSessionCoordinator, getActivity(webContents));
         }
     }
 
@@ -224,6 +246,8 @@ public class XrSessionCoordinator {
             mXrHostActivity = null;
             return;
         }
+
+        restoreBrowserInput();
 
         if (mImmersiveOverlay != null) {
             mImmersiveOverlay.cleanupAndExit();
@@ -267,15 +291,30 @@ public class XrSessionCoordinator {
     }
 
     public static boolean hasActiveArSession() {
+        assumeNonNull(sActiveSessionInstance);
         return sActiveSessionInstance.mActiveSessionType == SessionType.AR;
     }
 
-    public static XrSessionTypeSupplier getActiveSessionTypeSupplier() {
+    public static NonNullObservableSupplier<@SessionType Integer> getActiveSessionTypeSupplier() {
         return sActiveSessionAvailableSupplier;
     }
 
     public static void onActiveXrSessionButtonTouched() {
+        assumeNonNull(sActiveSessionInstance);
         sActiveSessionInstance.onXrSessionButtonTouched();
+    }
+
+    public static boolean dispatchKeyEvent(KeyEvent event) {
+        if (sActiveSessionInstance == null || sActiveSessionInstance.mWebContents == null) {
+            return false;
+        }
+
+        Activity activity = getActivity(sActiveSessionInstance.mWebContents);
+        if (activity == null) {
+            return false;
+        }
+
+        return activity.dispatchKeyEvent(event);
     }
 
     public void onDrawingSurfaceReady(
@@ -284,16 +323,10 @@ public class XrSessionCoordinator {
         if (mNativeXrSessionCoordinator == 0) return;
         XrSessionCoordinatorJni.get()
                 .onDrawingSurfaceReady(
-                        mNativeXrSessionCoordinator,
-                        XrSessionCoordinator.this,
-                        surface,
-                        rootWindow,
-                        rotation,
-                        width,
-                        height);
+                        mNativeXrSessionCoordinator, surface, rootWindow, rotation, width, height);
     }
 
-    public static XrSessionCoordinator getActiveInstanceForTesting() {
+    public static @Nullable XrSessionCoordinator getActiveInstanceForTesting() {
         return sActiveSessionInstance;
     }
 
@@ -303,13 +336,7 @@ public class XrSessionCoordinator {
         if (mNativeXrSessionCoordinator == 0) return;
         XrSessionCoordinatorJni.get()
                 .onDrawingSurfaceTouch(
-                        mNativeXrSessionCoordinator,
-                        XrSessionCoordinator.this,
-                        isPrimary,
-                        isTouching,
-                        pointerId,
-                        x,
-                        y);
+                        mNativeXrSessionCoordinator, isPrimary, isTouching, pointerId, x, y);
     }
 
     public void onDrawingSurfaceDestroyed() {
@@ -320,15 +347,13 @@ public class XrSessionCoordinator {
     private void onJavaShutdown() {
         if (DEBUG_LOGS) Log.i(TAG, "onJavaShutdown");
         if (mNativeXrSessionCoordinator == 0) return;
-        XrSessionCoordinatorJni.get()
-                .onJavaShutdown(mNativeXrSessionCoordinator, XrSessionCoordinator.this);
+        XrSessionCoordinatorJni.get().onJavaShutdown(mNativeXrSessionCoordinator);
     }
 
     public void onXrSessionButtonTouched() {
         if (DEBUG_LOGS) Log.i(TAG, "onXrSessionButtonTouched");
         if (mNativeXrSessionCoordinator == 0) return;
-        XrSessionCoordinatorJni.get()
-                .onXrSessionButtonTouched(mNativeXrSessionCoordinator, XrSessionCoordinator.this);
+        XrSessionCoordinatorJni.get().onXrSessionButtonTouched(mNativeXrSessionCoordinator);
     }
 
     /**
@@ -348,10 +373,62 @@ public class XrSessionCoordinator {
 
     private void handleXrHostActivityReady(Activity activity) {
         if (mNativeXrSessionCoordinator == 0) return;
-        mXrHostActivity = new WeakReference(activity);
-        XrSessionCoordinatorJni.get()
-                .onXrHostActivityReady(
-                        mNativeXrSessionCoordinator, XrSessionCoordinator.this, activity);
+        mXrHostActivity = new WeakReference<>(activity);
+
+        // Some test code calls us with the default ChromeActivity, and so we don't need to run this
+        // code in that case.
+        if (activity instanceof XrHostActivity) {
+            setupWebXrInput((XrHostActivity) activity);
+        }
+
+        XrSessionCoordinatorJni.get().onXrHostActivityReady(mNativeXrSessionCoordinator, activity);
+    }
+
+    /**
+     * Sets up WebXR input routing by redirecting the browser's soft keyboard interactions to the
+     * proxy view in {@link XrHostActivity}. Because WebXR on AndroidXR runs in a separate activity
+     * (XrHostActivity) that is at the top of the task stack, the browser's 2D activity and its
+     * views lose window focus and cannot receive IME interactions directly. We redirect the IME
+     * wrapper to target our proxy view in the active XrHostActivity, which then forwards the
+     * connection creation back to the browser's adapter.
+     */
+    private void setupWebXrInput(XrHostActivity xrActivity) {
+        if (mWebContents == null) return;
+        if (!WebXrAndroidFeatureMap.isOpenXrAndroidSystemKeyboardEnabled()) return;
+        XrHostProxyInputView proxyView = xrActivity.getProxyInputView();
+        ImeAdapter imeAdapter = ImeAdapter.fromWebContents(mWebContents);
+        if (imeAdapter != null && proxyView != null) {
+            assert (mOriginalInputMethodManagerWrapper == null);
+            assert (mXrInputMethodManagerWrapper == null);
+            proxyView.setImeAdapter(imeAdapter);
+            mOriginalInputMethodManagerWrapper = imeAdapter.getInputMethodManagerWrapper();
+            mXrInputMethodManagerWrapper =
+                    new XrInputMethodManagerWrapper(mOriginalInputMethodManagerWrapper, proxyView);
+            imeAdapter.setInputMethodManagerWrapper(mXrInputMethodManagerWrapper);
+            // Force focus on WebContents so the renderer believes the page is active
+            // and allows IME interactions. This is necessary because our new activity may have
+            // caused the WebContents to become unfocused.
+            mWebContents.setFocus(true);
+        }
+    }
+
+    /** Restores the original input routing and focus state when the XR session ends. */
+    private void restoreBrowserInput() {
+        if (mWebContents != null && mOriginalInputMethodManagerWrapper != null) {
+            ImeAdapter imeAdapter = ImeAdapter.fromWebContents(mWebContents);
+            if (imeAdapter != null) {
+                assert (imeAdapter.getInputMethodManagerWrapper() == mXrInputMethodManagerWrapper);
+                imeAdapter.setInputMethodManagerWrapper(mOriginalInputMethodManagerWrapper);
+            }
+            android.view.View containerView =
+                    mWebContents.getViewAndroidDelegate() != null
+                            ? mWebContents.getViewAndroidDelegate().getContainerView()
+                            : null;
+            boolean hasRealFocus = containerView != null && containerView.hasWindowFocus();
+            mWebContents.setFocus(hasRealFocus);
+        }
+        mOriginalInputMethodManagerWrapper = null;
+        mXrInputMethodManagerWrapper = null;
     }
 
     @CalledByNative
@@ -368,7 +445,6 @@ public class XrSessionCoordinator {
     interface Natives {
         void onDrawingSurfaceReady(
                 long nativeXrSessionCoordinator,
-                XrSessionCoordinator caller,
                 Surface surface,
                 WindowAndroid rootWindow,
                 int rotation,
@@ -377,18 +453,16 @@ public class XrSessionCoordinator {
 
         void onDrawingSurfaceTouch(
                 long nativeXrSessionCoordinator,
-                XrSessionCoordinator caller,
                 boolean primary,
                 boolean touching,
                 int pointerId,
                 float x,
                 float y);
 
-        void onJavaShutdown(long nativeXrSessionCoordinator, XrSessionCoordinator caller);
+        void onJavaShutdown(long nativeXrSessionCoordinator);
 
-        void onXrSessionButtonTouched(long nativeXrSessionCoordinator, XrSessionCoordinator caller);
+        void onXrSessionButtonTouched(long nativeXrSessionCoordinator);
 
-        void onXrHostActivityReady(
-                long nativeXrSessionCoordinator, XrSessionCoordinator caller, Activity activity);
+        void onXrHostActivityReady(long nativeXrSessionCoordinator, @Nullable Activity activity);
     }
 }

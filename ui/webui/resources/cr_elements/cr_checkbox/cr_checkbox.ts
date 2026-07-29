@@ -25,6 +25,7 @@
  *  --cr-checkbox-size
  *  --cr-checkbox-unchecked-box-color
  */
+import {isMac} from '//resources/js/platform.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
 
@@ -74,20 +75,11 @@ export class CrCheckboxElement extends CrCheckboxElementBase {
     };
   }
 
-  checked: boolean = false;
-  disabled: boolean = false;
-  override ariaDescription: string|null = null;
-  ariaLabelOverride?: string;
-  override tabIndex: number = 0;
-
-  override firstUpdated() {
-    this.addEventListener('click', this.onClick_.bind(this));
-    this.addEventListener('pointerup', this.hideRipple_.bind(this));
-    this.$.labelContainer.addEventListener(
-        'pointerdown', this.showRipple_.bind(this));
-    this.$.labelContainer.addEventListener(
-        'pointerleave', this.hideRipple_.bind(this));
-  }
+  accessor checked: boolean = false;
+  accessor disabled: boolean = false;
+  override accessor ariaDescription: string|null = null;
+  accessor ariaLabelOverride: string|undefined;
+  override accessor tabIndex: number = 0;
 
   override willUpdate(changedProperties: PropertyValues<this>) {
     super.willUpdate(changedProperties);
@@ -100,6 +92,19 @@ export class CrCheckboxElement extends CrCheckboxElementBase {
         this.tabIndex = this.disabled ? -1 : 0;
       }
     }
+  }
+
+  override firstUpdated() {
+    this.addEventListener('click', this.onClick_.bind(this));
+    this.addEventListener('pointerup', this.hideRipple_.bind(this));
+    this.$.labelContainer.addEventListener(
+        'pointerdown', this.showRipple_.bind(this));
+    this.$.labelContainer.addEventListener(
+        'pointerleave', this.hideRipple_.bind(this));
+
+    // <if expr="is_win">
+    this.$.checkbox.addEventListener('click', this.onCheckboxClick_.bind(this));
+    // </if>
   }
 
   override updated(changedProperties: PropertyValues<this>) {
@@ -139,6 +144,18 @@ export class CrCheckboxElement extends CrCheckboxElementBase {
     this.getRipple().clear();
   }
 
+  // <if expr="is_win">
+  // This click handler just forwards clicks to the host to fix a bug in NVDA
+  // where the lack of a click handler on a focusable element does not
+  // propagate clicks to a host element.
+  // See https://github.com/nvaccess/nvda/issues/17855.
+  private onCheckboxClick_(e: Event) {
+    e.stopPropagation();
+    e.preventDefault();
+    this.click();
+  }
+  // </if>
+
   private async onClick_(e: Event) {
     if (this.disabled || (e.target as HTMLElement).tagName === 'A') {
       return;
@@ -154,8 +171,8 @@ export class CrCheckboxElement extends CrCheckboxElementBase {
     this.fire('change', this.checked);
   }
 
-  protected onKeyDown_(e: KeyboardEvent) {
-    if (e.key !== ' ' && e.key !== 'Enter') {
+  protected onKeydown_(e: KeyboardEvent) {
+    if (e.key !== ' ' && (e.key !== 'Enter' || (isMac && e.ctrlKey))) {
       return;
     }
 
@@ -170,8 +187,8 @@ export class CrCheckboxElement extends CrCheckboxElementBase {
     }
   }
 
-  protected onKeyUp_(e: KeyboardEvent) {
-    if (e.key === ' ' || e.key === 'Enter') {
+  protected onKeyup_(e: KeyboardEvent) {
+    if (e.key === ' ' || (e.key === 'Enter' && !(isMac && e.ctrlKey))) {
       e.preventDefault();
       e.stopPropagation();
     }

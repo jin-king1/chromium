@@ -8,17 +8,18 @@
 #include <string>
 
 #include "ash/constants/ash_features.h"
-#include "base/functional/callback_forward.h"
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "components/live_caption/caption_bubble_context.h"
 #include "components/live_caption/caption_bubble_controller.h"
 #include "components/live_caption/pref_names.h"
+#include "components/live_caption/views/translation_view_wrapper_base.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/testing_pref_service.h"
 #include "components/soda/constants.h"
+#include "components/soda/mock_soda_installer.h"
 #include "components/soda/soda_installer.h"
 #include "media/mojo/mojom/speech_recognition_result.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -29,35 +30,6 @@
 namespace captions {
 namespace {
 
-class MockSodaInstaller : public speech::SodaInstaller {
- public:
-  MockSodaInstaller() = default;
-  MockSodaInstaller(const MockSodaInstaller&) = delete;
-  MockSodaInstaller& operator=(const MockSodaInstaller&) = delete;
-  ~MockSodaInstaller() override = default;
-
-  MOCK_METHOD(base::FilePath, GetSodaBinaryPath, (), (const, override));
-  MOCK_METHOD(base::FilePath,
-              GetLanguagePath,
-              (const std::string&),
-              (const, override));
-  MOCK_METHOD(void,
-              InstallLanguage,
-              (const std::string&, PrefService*),
-              (override));
-  MOCK_METHOD(void,
-              UninstallLanguage,
-              (const std::string&, PrefService*),
-              (override));
-  MOCK_METHOD(std::vector<std::string>,
-              GetAvailableLanguages,
-              (),
-              (const, override));
-  MOCK_METHOD(void, InstallSoda, (PrefService*), (override));
-  MOCK_METHOD(void, UninstallSoda, (PrefService*), (override));
-  MOCK_METHOD(void, Init, (PrefService*, PrefService*), (override));
-};
-
 class MockCaptionControllerDelgate : public CaptionControllerBase::Delegate {
  public:
   MockCaptionControllerDelgate() = default;
@@ -65,7 +37,9 @@ class MockCaptionControllerDelgate : public CaptionControllerBase::Delegate {
 
   MOCK_METHOD(std::unique_ptr<CaptionBubbleController>,
               CreateCaptionBubbleController,
-              (CaptionBubbleSettings*, const std::string&),
+              (CaptionBubbleSettings*,
+               const std::string&,
+               std::unique_ptr<TranslationViewWrapperBase>),
               (override));
 
   void AddCaptionStyleObserver(ui::NativeThemeObserver*) override {}
@@ -115,6 +89,8 @@ class LiveCaptionControllerTest : public testing::Test {
         static_cast<user_prefs::PrefRegistrySyncable*>(
             testing_pref_service_.registry()));
     RegisterStylePrefs(&testing_pref_service_);
+    speech::SodaInstaller::RegisterLocalStatePrefs(
+        testing_pref_service_.registry());
 
     // Set up soda Installer
     soda_installer_.NeverDownloadSodaForTesting();
@@ -142,7 +118,7 @@ class LiveCaptionControllerTest : public testing::Test {
   }
 
   TestingPrefServiceSimple testing_pref_service_;
-  MockSodaInstaller soda_installer_;
+  speech::MockSodaInstaller soda_installer_;
   views::LayoutProvider layout_provider_;
   base::test::ScopedFeatureList scoped_feature_list_;
 };
@@ -198,11 +174,11 @@ TEST_F(LiveCaptionControllerTest,
 
   auto mock_delegate = std::make_unique<MockCaptionControllerDelgate>();
   auto* mock_delegate_ptr = mock_delegate.get();
+  EXPECT_CALL(*mock_delegate_ptr, CreateCaptionBubbleController).Times(1);
   LiveCaptionController controller_under_test = LiveCaptionController(
       &testing_pref_service_, &testing_pref_service_, speech::kUsEnglishLocale,
       /*browser_context=*/nullptr, std::move(mock_delegate));
 
-  EXPECT_CALL(*mock_delegate_ptr, CreateCaptionBubbleController).Times(1);
   speech::SodaInstaller::GetInstance()->NotifySodaInstalledForTesting(
       speech::GetLanguageCode(speech::kUsEnglishLocale));
   NotifySodaBinaryInstalled();

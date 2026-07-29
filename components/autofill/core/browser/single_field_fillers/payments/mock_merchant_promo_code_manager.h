@@ -5,7 +5,6 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_SINGLE_FIELD_FILLERS_PAYMENTS_MOCK_MERCHANT_PROMO_CODE_MANAGER_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_SINGLE_FIELD_FILLERS_PAYMENTS_MOCK_MERCHANT_PROMO_CODE_MANAGER_H_
 
-#include "base/memory/weak_ptr.h"
 #include "components/autofill/core/browser/single_field_fillers/payments/merchant_promo_code_manager.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
@@ -13,8 +12,7 @@ namespace autofill {
 
 class MockMerchantPromoCodeManager : public MerchantPromoCodeManager {
  public:
-  explicit MockMerchantPromoCodeManager(
-      PaymentsDataManager* payments_data_manager);
+  MockMerchantPromoCodeManager();
   ~MockMerchantPromoCodeManager() override;
 
   MOCK_METHOD(bool,
@@ -22,7 +20,7 @@ class MockMerchantPromoCodeManager : public MerchantPromoCodeManager {
               (const FormStructure& form_structure,
                const FormFieldData& field,
                const AutofillField& autofill_field,
-               const AutofillClient& client,
+               AutofillClient& client,
                SingleFieldFillRouter::OnSuggestionsReturnedCallback& callback),
               (override));
   MOCK_METHOD(void,

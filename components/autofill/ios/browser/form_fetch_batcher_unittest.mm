@@ -41,6 +41,10 @@ autofill::FormData MakeTestFormData(const std::u16string& name) {
 
 }  // namespace
 
+namespace autofill {
+class Section;
+}
+
 // AutofillDriverIosBridge used for testing. Provides a simple implementation of
 // the methods that are used during testing, e.g. call the completion block upon
 // calling -fetchFormsFiltered.
@@ -67,16 +71,17 @@ autofill::FormData MakeTestFormData(const std::u16string& name) {
   return self;
 }
 
-- (void)fillData:(const std::vector<autofill::FormFieldData::FillData>&)form
-         inFrame:(web::WebFrame*)frame {
+- (void)fillData:(const std::vector<autofill::FormFieldData::FillData>&)fields
+           section:(const autofill::Section&)section
+           inFrame:(web::WebFrame*)frame
+    withActionType:(autofill::mojom::FormActionType)actionType {
 }
 - (void)fillSpecificFormField:(const autofill::FieldRendererId&)field
                     withValue:(const std::u16string)value
                       inFrame:(web::WebFrame*)frame {
 }
 - (void)handleParsedForms:
-            (const std::vector<
-                raw_ptr<autofill::FormStructure, VectorExperimental>>&)forms
+            (const std::vector<raw_ref<const autofill::FormStructure>>&)forms
                   inFrame:(web::WebFrame*)frame {
 }
 - (void)fillFormDataPredictions:
@@ -86,11 +91,10 @@ autofill::FormData MakeTestFormData(const std::u16string& name) {
 - (void)scanFormsInWebState:(web::WebState*)webState
                     inFrame:(web::WebFrame*)webFrame {
 }
-- (void)notifyFormsSeen:(const std::vector<autofill::FormData>&)updatedForms
+- (void)notifyFormsSeen:(std::vector<autofill::FormData>)updatedForms
                 inFrame:(web::WebFrame*)frame {
 }
-- (void)fetchFormsFiltered:(BOOL)filtered
-                  withName:(const std::u16string&)formName
+- (void)fetchFormsFiltered:(std::optional<std::u16string>)formNameFilter
                    inFrame:(web::WebFrame*)frame
          completionHandler:(FormFetchCompletion)completionHandler {
   if (self.async) {

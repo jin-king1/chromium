@@ -5,6 +5,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_SCHEDULER_MAIN_THREAD_PAGE_SCHEDULER_IMPL_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_SCHEDULER_MAIN_THREAD_PAGE_SCHEDULER_IMPL_H_
 
+#include <array>
 #include <memory>
 #include <optional>
 
@@ -26,6 +27,7 @@
 #include "third_party/blink/renderer/platform/scheduler/public/page_scheduler.h"
 #include "third_party/blink/renderer/platform/scheduler/public/post_cancellable_task.h"
 #include "third_party/blink/renderer/platform/scheduler/public/thread_scheduler.h"
+#include "third_party/blink/renderer/platform/scheduler/public/widget_scheduler.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/hash_set.h"
 #include "third_party/perfetto/include/perfetto/tracing/traced_value_forward.h"
@@ -77,14 +79,15 @@ class PLATFORM_EXPORT PageSchedulerImpl : public PageScheduler {
 
   std::unique_ptr<FrameScheduler> CreateFrameScheduler(
       FrameScheduler::Delegate* delegate,
+      const LocalFrameToken& frame_token,
       bool is_in_embedded_frame_tree,
       FrameScheduler::FrameType) override;
   void AudioStateChanged(bool is_audio_playing) override;
   bool IsAudioPlaying() const override;
   bool IsExemptFromBudgetBasedThrottling() const override;
   bool OptedOutFromAggressiveThrottlingForTest() const override;
-  bool RequestBeginMainFrameNotExpected(bool new_state) override;
-  scoped_refptr<scheduler::WidgetScheduler> CreateWidgetScheduler() override;
+  scoped_refptr<WidgetScheduler> CreateWidgetScheduler(
+      WidgetScheduler::Delegate*) override;
 
   bool IsFrozen() const;
   bool OptedOutFromAggressiveThrottling() const;
@@ -113,7 +116,6 @@ class PLATFORM_EXPORT PageSchedulerImpl : public PageScheduler {
   // Virtual for testing.
   virtual bool IsWaitingForMainFrameContentfulPaint() const;
   virtual bool IsWaitingForMainFrameMeaningfulPaint() const;
-  virtual bool IsMainFrameLoading() const;
 
   // Return a number of child web frame schedulers for this PageScheduler.
   size_t FrameCount() const;

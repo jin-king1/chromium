@@ -10,6 +10,8 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sync/glue/synced_window_delegates_getter_android.h"
 #include "chrome/browser/sync/glue/web_contents_state_synced_tab_delegate.h"
+#include "chrome/browser/ui/android/tab_model/tab_model.h"
+#include "chrome/browser/ui/android/tab_model/tab_model_list.h"
 #include "chrome/browser/ui/sync/tab_contents_synced_tab_delegate.h"
 #include "components/sync_sessions/features.h"
 #include "components/sync_sessions/sync_sessions_client.h"
@@ -74,8 +76,8 @@ SyncedTabDelegateAndroid::ReadPlaceholderTabSnapshotIfItShouldSync(
     // This is duplicating the navigation entry extraction, but it's still far
     // cheaper than creating an empty WebContents.
     bool success = WebContentsState::ExtractNavigationEntries(
-        web_contents_byte_buffer->backing_buffer,
-        web_contents_byte_buffer->state_version, &is_off_the_record,
+        web_contents_byte_buffer->GetBuffer(),
+        web_contents_byte_buffer->state_version(), &is_off_the_record,
         &current_entry_index, &navigations);
 
     if (!success || !ContainsURLThatShouldSync(navigations, sessions_client)) {
@@ -83,8 +85,13 @@ SyncedTabDelegateAndroid::ReadPlaceholderTabSnapshotIfItShouldSync(
     }
   }
 
+  TabModel* tab_model = TabModelList::FindTabModelWithWindowSessionId(
+      tab_android_data_provider_->GetWindowId());
+  DCHECK(tab_model);
+  Profile* profile = tab_model->GetProfile();
+
   return browser_sync::WebContentsStateSyncedTabDelegate::Create(
-      tab_android_data_provider_, std::move(web_contents_byte_buffer));
+      profile, tab_android_data_provider_, std::move(web_contents_byte_buffer));
 }
 
 void SyncedTabDelegateAndroid::SetWebContents(

@@ -39,6 +39,9 @@ public abstract class ChromeSwitches {{
     /** Disable promos shown on startup. */
     public static final String DISABLE_STARTUP_PROMOS = "disable-startup-promos-for-testing";
 
+    /** Sets the test type (e.g. "browser" or "ui"). Used to enable appropriate testing features. */
+    public static final String TEST_TYPE = "test-type";
+
     /** Force the crash dump to be uploaded regardless of preferences. */
     public static final String FORCE_CRASH_DUMP_UPLOAD = "force-dump-upload";
 
@@ -81,14 +84,14 @@ public abstract class ChromeSwitches {{
     public static final String DISABLE_NATIVE_INITIALIZATION = "disable-native-initialization";
 
     /**
-     * Force enable the popup context menu to unblock drag and drop from web contents on phones.
-     */
-    public static final String FORCE_CONTEXT_MENU_POPUP = "force-context-menu-popup";
-
-    /**
      * Force the app to turn off windowOptOutEdgeToEdgeEnforcement.
      */
     public static final String DISABLE_OPT_OUT_EDGE_TO_EDGE = "disable-opt-out-edge-to-edge";
+
+    /**
+     * Override the tab strip height transition threshold in DP.
+     */
+    public static final String TAB_STRIP_HEIGHT_TRANSITION_THRESHOLD = "tab-strip-height-transition-threshold";
 
     ///////////////////////////////////////////////////////////////////////////////////////////////
     // Native Switches
@@ -136,10 +139,6 @@ public abstract class ChromeSwitches {{
     /** Switch for enabling the Chrome Survey. Only works when UMA is accepted. */
     public static final String CHROME_FORCE_ENABLE_SURVEY = "force-enable-chrome-survey";
 
-    /** Switch to enable incognito tabs to be seen in Android Recents. */
-    public static final String ENABLE_INCOGNITO_SNAPSHOTS_IN_ANDROID_RECENTS =
-            "enable-incognito-snapshots-in-android-recents";
-
     /** Open all custom tabs in a new task. Used only for experimental purposes. */
     public static final String OPEN_CUSTOM_TABS_IN_NEW_TASK = "open-custom-tabs-in-new-task";
 
@@ -172,10 +171,6 @@ public abstract class ChromeSwitches {{
     /** Set the configuration to trigger the feed header menu IPH. */
     public static final String FEED_HEADER_MENU_IPH_TRIGGER_CONFIG =
             "feed-header-menu-iph-trigger-config";
-
-    /** Debug Chime notifications. */
-    public static final String DEBUG_CHIME_NOTIFICATION =
-            "debug-chime-notification";
 
     /** b/323252296: Force enable Revenue Stats tracking for testing purposes. */
     public static final String FORCE_REVENUE_STATS_REPORTING = "force-revenue-stats-reporting";

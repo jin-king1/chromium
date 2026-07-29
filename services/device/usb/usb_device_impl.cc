@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "services/device/usb/usb_device_impl.h"
 
 #include <fcntl.h>
@@ -14,6 +9,7 @@
 
 #include <algorithm>
 
+#include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/posix/eintr_wrapper.h"
@@ -82,7 +78,12 @@ void UsbDeviceImpl::ReadAllConfigurations() {
         continue;
       }
 
-      if (!usb_descriptor.Parse(base::span(buffer, static_cast<size_t>(rv)))) {
+      // SAFETY: `buffer` and `rv` are values returned by an external C function
+      // in `//third_party/libusb`, i.e. `libusb_get_raw_config_descriptor`. On
+      // success (`rv > 0`), it guarantees that buffer points to a dynamically
+      // allocated memory block of `rv` bytes.
+      if (!usb_descriptor.Parse(
+              UNSAFE_BUFFERS(base::span(buffer, static_cast<size_t>(rv))))) {
         USB_LOG(EVENT) << "Config descriptor index " << i << " was corrupt.";
       }
       free(buffer);

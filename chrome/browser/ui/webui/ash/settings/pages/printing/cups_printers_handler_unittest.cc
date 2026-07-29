@@ -16,6 +16,7 @@
 #include "base/functional/callback_helpers.h"
 #include "base/json/json_string_value_serializer.h"
 #include "base/memory/raw_ptr.h"
+#include "base/strings/stringprintf.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/values_test_util.h"
@@ -25,7 +26,7 @@
 #include "chrome/browser/download/download_core_service_factory.h"
 #include "chrome/browser/download/download_core_service_impl.h"
 #include "chrome/browser/download/download_prefs.h"
-#include "chrome/browser/ui/chrome_select_file_policy.h"
+#include "chrome/browser/ui/select_file_policy/chrome_select_file_policy.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chromeos/ash/components/dbus/concierge/concierge_client.h"
 #include "chromeos/ash/components/dbus/printscanmgr/fake_printscanmgr_client.h"
@@ -215,7 +216,7 @@ class CupsPrintersHandlerTest : public testing::Test {
     printers_handler_->SetWebUIForTest(&web_ui_);
     printers_handler_->RegisterMessages();
     printers_handler_->AllowJavascriptForTesting();
-    printing::PrintBackend::SetPrintBackendForTesting(print_backend_.get());
+    ::printing::PrintBackend::SetPrintBackendForTesting(print_backend_.get());
     PrintscanmgrClient::InitializeFake();
 
     DownloadCoreServiceFactory::GetForBrowserContext(profile_.get())
@@ -231,13 +232,13 @@ class CupsPrintersHandlerTest : public testing::Test {
 
   void TearDown() override {
     PrintscanmgrClient::Shutdown();
-    printing::PrintBackend::SetPrintBackendForTesting(nullptr);
+    ::printing::PrintBackend::SetPrintBackendForTesting(nullptr);
   }
 
   void CallRetrieveCupsPpd(const std::string& printer_id,
                            const std::string& license_url = "",
                            const std::string& printer_name = kPpdPrinterName) {
-    base::Value::List args;
+    base::ListValue args;
     args.Append(printer_id);
     args.Append(printer_name);
     args.Append(license_url);
@@ -247,7 +248,7 @@ class CupsPrintersHandlerTest : public testing::Test {
   }
 
   void CallGetCupsSavedPrintersList() {
-    base::Value::List args;
+    base::ListValue args;
     args.Append(kHandlerFunctionName);
     web_ui_.HandleReceivedMessage("getCupsSavedPrintersList", args);
   }
@@ -273,8 +274,8 @@ class CupsPrintersHandlerTest : public testing::Test {
   FakeCupsPrintersManager printers_manager_;
   std::unique_ptr<CupsPrintersHandler> printers_handler_;
   base::RunLoop run_loop_;
-  scoped_refptr<printing::TestPrintBackend> print_backend_ =
-      base::MakeRefCounted<printing::TestPrintBackend>();
+  scoped_refptr<::printing::TestPrintBackend> print_backend_ =
+      base::MakeRefCounted<::printing::TestPrintBackend>();
   base::ScopedTempDir download_dir_;
   base::HistogramTester histogram_tester_;
 
@@ -322,7 +323,7 @@ TEST_F(CupsPrintersHandlerTest, VerifyOnlyPpdFilesAllowed) {
   ui::SelectFileDialog::SetFactory(
       std::make_unique<TestSelectFileDialogFactory>(&expected_file_type_info));
 
-  base::Value::List args;
+  base::ListValue args;
   args.Append("handleFunctionName");
   web_ui_.HandleReceivedMessage("selectPPDFile", args);
 }
@@ -337,7 +338,7 @@ TEST_F(CupsPrintersHandlerTest, ViewPPD) {
 
   print_backend_->AddValidPrinter(
       printer.id(),
-      std::make_unique<printing::PrinterSemanticCapsAndDefaults>(), nullptr);
+      std::make_unique<::printing::PrinterSemanticCapsAndDefaults>(), nullptr);
 
   EXPECT_CALL(new_window_delegate(),
               OpenUrl(testing::Property(&GURL::ExtractFileName,
@@ -365,7 +366,7 @@ TEST_F(CupsPrintersHandlerTest, ViewPPDWithLicense) {
 
   print_backend_->AddValidPrinter(
       printer.id(),
-      std::make_unique<printing::PrinterSemanticCapsAndDefaults>(), nullptr);
+      std::make_unique<::printing::PrinterSemanticCapsAndDefaults>(), nullptr);
 
   EXPECT_CALL(new_window_delegate(),
               OpenUrl(testing::Property(&GURL::ExtractFileName,
@@ -386,8 +387,8 @@ TEST_F(CupsPrintersHandlerTest, ViewPPDWithLicense) {
 
 TEST_F(CupsPrintersHandlerTest, ViewPPDUnsanitizedFilename) {
   // Test the nominal case where the printer has a name that needs sanitized.
-  const std::string printer_name("bad/name");
-  const std::string sanitized_name("bad_name");
+  const std::string printer_name("bad/name#with?bad%chars\\");
+  const std::string sanitized_name("bad_name_with_bad_chars_");
 
   AddPrinterToPrintScanManager("id", kDefaultPpdData);
 
@@ -396,7 +397,7 @@ TEST_F(CupsPrintersHandlerTest, ViewPPDUnsanitizedFilename) {
 
   print_backend_->AddValidPrinter(
       printer.id(),
-      std::make_unique<printing::PrinterSemanticCapsAndDefaults>(), nullptr);
+      std::make_unique<::printing::PrinterSemanticCapsAndDefaults>(), nullptr);
 
   EXPECT_CALL(new_window_delegate(),
               OpenUrl(testing::Property(&GURL::ExtractFileName,
@@ -413,6 +414,45 @@ TEST_F(CupsPrintersHandlerTest, ViewPPDUnsanitizedFilename) {
   EXPECT_EQ(contents, kDefaultPpdData);
 }
 
+TEST_F(CupsPrintersHandlerTest, ViewPPDWithPathNeedingEscaping) {
+  // Since the filename gets sanitized, a test won't be able to validate the
+  // FilePathToFileURL method in DisplayPpdFile with a bad filename. Instead,
+  // create a bogus download directory that needs special handling.
+  const std::string dir_name("dir#name?here");
+  const std::string sanitized_name("dir%23name%3Fhere");
+  base::FilePath download_path = download_dir_.GetPath().Append(dir_name);
+  ASSERT_TRUE(base::CreateDirectory(download_path));
+
+  DownloadPrefs* prefs =
+      DownloadPrefs::FromDownloadManager(profile_->GetDownloadManager());
+  prefs->SetDownloadPath(download_path);
+
+  AddPrinterToPrintScanManager("id", kDefaultPpdData);
+
+  Printer printer("id");
+  printers_manager_.SavePrinter(printer);
+
+  print_backend_->AddValidPrinter(
+      printer.id(),
+      std::make_unique<::printing::PrinterSemanticCapsAndDefaults>(), nullptr);
+
+  // Verify that the URL passed to OpenUrl contains the expected escaped
+  // characters.
+  EXPECT_CALL(new_window_delegate(),
+              OpenUrl(testing::Property(&GURL::spec,
+                                        testing::HasSubstr(sanitized_name)),
+                      ash::NewWindowDelegate::OpenUrlFrom::kUserInteraction,
+                      ash::NewWindowDelegate::Disposition::kSwitchToTab))
+      .WillOnce(testing::InvokeWithoutArgs(&run_loop_, &base::RunLoop::Quit));
+
+  CallRetrieveCupsPpd(printer.id());
+
+  // Check for the downloaded PPD file.
+  std::string contents;
+  EXPECT_TRUE(GetDownloadedPpdContents(contents));
+  EXPECT_EQ(contents, kDefaultPpdData);
+}
+
 TEST_F(CupsPrintersHandlerTest, ViewPPDWithLicenseBadPpd) {
   // Try to view a PPD that contains a license, but the PPD doesn't start with
   // the expected PPD string, so the license can't be inserted, and the PPD
@@ -425,7 +465,7 @@ TEST_F(CupsPrintersHandlerTest, ViewPPDWithLicenseBadPpd) {
 
   print_backend_->AddValidPrinter(
       printer.id(),
-      std::make_unique<printing::PrinterSemanticCapsAndDefaults>(), nullptr);
+      std::make_unique<::printing::PrinterSemanticCapsAndDefaults>(), nullptr);
 
   EXPECT_CALL(new_window_delegate(),
               OpenUrl(testing::Property(&GURL::ExtractFileName,
@@ -472,7 +512,7 @@ TEST_F(CupsPrintersHandlerTest, ViewPPDPrinterNotSetup) {
 
   print_backend_->AddValidPrinter(
       printer.id(),
-      std::make_unique<printing::PrinterSemanticCapsAndDefaults>(), nullptr);
+      std::make_unique<::printing::PrinterSemanticCapsAndDefaults>(), nullptr);
 
   EXPECT_CALL(new_window_delegate(),
               OpenUrl(testing::Property(&GURL::ExtractFileName,
@@ -499,7 +539,7 @@ TEST_F(CupsPrintersHandlerTest, ViewPPDEmptyPPD) {
 
   print_backend_->AddValidPrinter(
       printer.id(),
-      std::make_unique<printing::PrinterSemanticCapsAndDefaults>(), nullptr);
+      std::make_unique<::printing::PrinterSemanticCapsAndDefaults>(), nullptr);
 
   EXPECT_CALL(new_window_delegate(),
               OpenUrl(testing::Property(&GURL::ExtractFileName,

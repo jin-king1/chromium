@@ -53,6 +53,12 @@ SVGLayoutResult LayoutSVGContainer::UpdateSVGLayout(
     const SVGLayoutInfo& layout_info) {
   NOT_DESTROYED();
   DCHECK(NeedsLayout());
+  if (layout_info.viewport_changed && HasViewportDependence() &&
+      IsSVGTransformableContainer()) {
+    // TODO: This will be called if any descendant has a viewport dependency,
+    // not just if this container has one.
+    SetNeedsTransformUpdate();
+  }
 
   SVGTransformChange transform_change = SVGTransformChange::kNone;
   // Update the local transform in subclasses.
@@ -76,11 +82,13 @@ SVGLayoutResult LayoutSVGContainer::UpdateSVGLayout(
     bounds_changed = true;
   }
 
-  const bool has_viewport_dependence =
-      content_result.has_viewport_dependence ||
+  self_has_viewport_dependence_ =
       GetElement()->SelfHasRelativeLengths() ||
       (transform_uses_reference_box_ &&
        StyleRef().TransformBox() == ETransformBox::kViewBox);
+
+  const bool has_viewport_dependence =
+      content_result.has_viewport_dependence || self_has_viewport_dependence_;
 
   DCHECK(!needs_transform_update_);
   ClearNeedsLayout();
@@ -108,37 +116,20 @@ bool LayoutSVGContainer::UpdateAfterSVGLayout(
     needs_transform_update_ = false;
   }
 
-  if (!RuntimeEnabledFeatures::SvgViewportOptimizationEnabled()) {
-    // Reset the viewport dependency flag based on the state for this container.
-    TransformHelper::UpdateReferenceBoxDependency(
-        *this, transform_uses_reference_box_);
-  }
-
   if (!IsSVGHiddenContainer()) {
     SetTransformAffectsVectorEffect(false);
-    ClearSVGDescendantMayHaveTransformRelatedAnimation();
+    ClearSVGDescendantMayHaveTransformRelatedOperations();
     for (auto* child = FirstChild(); child; child = child->NextSibling()) {
       if (child->TransformAffectsVectorEffect())
         SetTransformAffectsVectorEffect(true);
       if (child->StyleRef().HasCurrentTransformRelatedAnimation() ||
-          child->SVGDescendantMayHaveTransformRelatedAnimation()) {
-        SetSVGDescendantMayHaveTransformRelatedAnimation();
-      }
-      if (!RuntimeEnabledFeatures::SvgViewportOptimizationEnabled()) {
-        if (child->SVGSelfOrDescendantHasViewportDependency()) {
-          SetSVGSelfOrDescendantHasViewportDependency();
-        }
-      }
-    }
-  } else if (!RuntimeEnabledFeatures::SvgViewportOptimizationEnabled()) {
-    // Hidden containers can depend on the viewport as well.
-    for (auto* child = FirstChild(); child; child = child->NextSibling()) {
-      if (child->SVGSelfOrDescendantHasViewportDependency()) {
-        SetSVGSelfOrDescendantHasViewportDependency();
-        break;
+          child->SVGDescendantMayHaveTransformRelatedOperations() ||
+          child->StyleRef().HasNonIdentityTransformOperation()) {
+        SetSVGDescendantMayHaveTransformRelatedOperations();
       }
     }
   }
+
   return transform_change != SVGTransformChange::kNone;
 }
 
@@ -167,10 +158,12 @@ void LayoutSVGContainer::RemoveChild(LayoutObject* child) {
     DescendantIsolationRequirementsChanged(kDescendantIsolationNeedsUpdate);
 }
 
-void LayoutSVGContainer::StyleDidChange(StyleDifference diff,
-                                        const ComputedStyle* old_style) {
+void LayoutSVGContainer::StyleDidChange(
+    StyleDifference diff,
+    const ComputedStyle* old_style,
+    const StyleChangeContext& style_change_context) {
   NOT_DESTROYED();
-  LayoutSVGModelObject::StyleDidChange(diff, old_style);
+  LayoutSVGModelObject::StyleDidChange(diff, old_style, style_change_context);
 
   if (IsSVGHiddenContainer()) {
     return;
@@ -251,13 +244,19 @@ bool LayoutSVGContainer::NodeAtPoint(HitTestResult& result,
       content_.HitTest(result, *local_location, phase))
     return true;
 
-  // pointer-events: bounding-box makes it possible for containers to be direct
-  // targets.
-  if (StyleRef().UsedPointerEvents() == EPointerEvents::kBoundingBox) {
-    // Check for a valid bounding box because it will be invalid for empty
-    // containers.
-    if (IsObjectBoundingBoxValid() &&
-        local_location->Intersects(ObjectBoundingBox())) {
+  if (IsObjectBoundingBoxValid()) {
+    bool is_visual_overflow =
+        result.GetHitTestRequest().IsHitTestVisualOverflow();
+    gfx::RectF bounds = is_visual_overflow
+                            ? SVGLayoutSupport::ApplyFiltersToRect(
+                                  *this, DecoratedBoundingBox())
+                            : ObjectBoundingBox();
+
+    // pointer-events: bounding-box makes it possible for containers to be
+    // direct targets.
+    if ((is_visual_overflow ||
+         StyleRef().UsedPointerEvents() == EPointerEvents::kBoundingBox) &&
+        local_location->Intersects(bounds)) {
       UpdateHitTestResult(result, PhysicalOffset::FromPointFRound(
                                       local_location->TransformedPoint()));
       if (result.AddNodeToListBasedTestResult(GetElement(), *local_location) ==

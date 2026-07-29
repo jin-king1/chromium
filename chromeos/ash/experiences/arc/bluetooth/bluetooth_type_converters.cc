@@ -9,6 +9,7 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include "base/json/json_reader.h"
@@ -942,41 +943,11 @@ bluez::BluetoothServiceRecordBlueZ TypeConverter<
 bluez::BluetoothServiceRecordBlueZ
 TypeConverter<bluez::BluetoothServiceRecordBlueZ, floss::BtSdpRecord>::Convert(
     const floss::BtSdpRecord& record) {
-  if (absl::holds_alternative<floss::BtSdpHeaderOverlay>(record)) {
-    return TypeConverter<bluez::BluetoothServiceRecordBlueZ,
-                         floss::BtSdpHeaderOverlay>::
-        Convert(absl::get<floss::BtSdpHeaderOverlay>(record));
-  } else if (absl::holds_alternative<floss::BtSdpMasRecord>(record)) {
-    return TypeConverter<bluez::BluetoothServiceRecordBlueZ,
-                         floss::BtSdpMasRecord>::
-        Convert(absl::get<floss::BtSdpMasRecord>(record));
-  } else if (absl::holds_alternative<floss::BtSdpMnsRecord>(record)) {
-    return TypeConverter<bluez::BluetoothServiceRecordBlueZ,
-                         floss::BtSdpMnsRecord>::
-        Convert(absl::get<floss::BtSdpMnsRecord>(record));
-  } else if (absl::holds_alternative<floss::BtSdpPseRecord>(record)) {
-    return TypeConverter<bluez::BluetoothServiceRecordBlueZ,
-                         floss::BtSdpPseRecord>::
-        Convert(absl::get<floss::BtSdpPseRecord>(record));
-  } else if (absl::holds_alternative<floss::BtSdpPceRecord>(record)) {
-    return TypeConverter<bluez::BluetoothServiceRecordBlueZ,
-                         floss::BtSdpPceRecord>::
-        Convert(absl::get<floss::BtSdpPceRecord>(record));
-  } else if (absl::holds_alternative<floss::BtSdpOpsRecord>(record)) {
-    return TypeConverter<bluez::BluetoothServiceRecordBlueZ,
-                         floss::BtSdpOpsRecord>::
-        Convert(absl::get<floss::BtSdpOpsRecord>(record));
-  } else if (absl::holds_alternative<floss::BtSdpSapRecord>(record)) {
-    return TypeConverter<bluez::BluetoothServiceRecordBlueZ,
-                         floss::BtSdpSapRecord>::
-        Convert(absl::get<floss::BtSdpSapRecord>(record));
-  } else if (absl::holds_alternative<floss::BtSdpDipRecord>(record)) {
-    return TypeConverter<bluez::BluetoothServiceRecordBlueZ,
-                         floss::BtSdpDipRecord>::
-        Convert(absl::get<floss::BtSdpDipRecord>(record));
-  } else {
-    return bluez::BluetoothServiceRecordBlueZ();
-  }
+  return std::visit(
+      [](const auto& r) {
+        return ConvertTo<bluez::BluetoothServiceRecordBlueZ>(r);
+      },
+      record);
 }
 
 }  // namespace mojo

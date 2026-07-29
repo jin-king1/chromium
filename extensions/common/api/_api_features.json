@@ -18,13 +18,17 @@
     "channel": "stable",
     "contexts": ["privileged_extension"],
     "extension_types": ["platform_app"],
-    "noparent": true
+    "noparent": true,
+    // "desktop_android" is not supported.
+    "platforms": ["chromeos", "linux", "mac", "win"]
   }, {
     "channel": "stable",
     "component_extensions_auto_granted": false,
     "contexts": ["privileged_extension"],
     "extension_types": ["extension"],
     "noparent": true,
+    // "desktop_android" is not supported.
+    "platforms": ["chromeos", "linux", "mac", "win"],
     "allowlist": [
       "2FC374607C2DF285634B67C64A2E356C607091C3",  // Quickoffice
       "3727DD3E564B6055387425027AD74C58784ACC15",  // Quickoffice internal
@@ -35,13 +39,17 @@
     "channel": "stable",
     "contexts": ["privileged_extension"],
     "extension_types": ["platform_app"],
-    "noparent": true
+    "noparent": true,
+    // "desktop_android" is not supported.
+    "platforms": ["chromeos", "linux", "mac", "win"]
   }, {
     "channel": "stable",
     "contexts": ["privileged_extension"],
     "extension_types": ["extension"],
     "noparent": true,
     "component_extensions_auto_granted": false,
+    // "desktop_android" is not supported.
+    "platforms": ["chromeos", "linux", "mac", "win"],
     "allowlist": [
       "B9EF10DDFEA11EF77873CC5009809E5037FC4C7A",  // Google input tools
       "06BE211D5F014BAB34BC22D9DDA09C63A81D828E",  // Official xkb extension
@@ -52,7 +60,9 @@
     "noparent": true,
     "internal": true,
     "channel": "stable",
-    "contexts": ["privileged_extension"]
+    "contexts": ["privileged_extension"],
+    // "desktop_android" is not supported.
+    "platforms": ["chromeos", "linux", "mac", "win"]
   },
   "app.currentWindowInternal.setShape": {
     "dependencies": ["permission:app.window.shape"],
@@ -63,7 +73,8 @@
   "appViewEmbedderInternal": {
     "internal": true,
     "contexts": ["privileged_extension"],
-    "dependencies": ["permission:appview"]
+    "dependencies": ["permission:appview"],
+    "platforms": ["chromeos"]
   },
   // Note that exposing this doesn't necessarily expose AppView,
   // appViewEmbedderInternal is required for that.
@@ -71,7 +82,8 @@
   "appViewGuestInternal": {
     "internal": true,
     "channel": "stable",
-    "contexts": ["privileged_extension"]
+    "contexts": ["privileged_extension"],
+    "platforms": ["chromeos"]
   },
   "audio": {
     "dependencies": ["permission:audio"],
@@ -80,27 +92,33 @@
   "automationInternal": {
     "internal": true,
     "dependencies": ["manifest:automation"],
-    "contexts": ["privileged_extension"]
+    "contexts": ["privileged_extension"],
+    // "desktop_android" is not supported.
+    "platforms": ["chromeos", "linux", "mac", "win"]
   },
   "automation": {
     "dependencies": ["manifest:automation"],
-    "contexts": ["privileged_extension"]
+    "contexts": ["privileged_extension"],
+    // "desktop_android" is not supported.
+    "platforms": ["chromeos", "linux", "mac", "win"]
   },
   "bluetooth": [{
     "dependencies": ["manifest:bluetooth"],
-    "contexts": ["privileged_extension"]
+    "contexts": ["privileged_extension"],
+    "platforms": ["chromeos"]
   }, {
     "channel": "stable",
     "contexts": ["webui"],
     "matches": [
       "chrome://bluetooth-pairing/*",
       "chrome://os-settings/*"
-    ]
+    ],
+    "platforms": ["chromeos"]
   }],
   "bluetoothLowEnergy": {
     "dependencies": ["manifest:bluetooth"],
     "contexts": ["privileged_extension"],
-    "platforms": ["chromeos", "linux"]
+    "platforms": ["chromeos"]
   },
   "bluetoothPrivate": [{
     "dependencies": ["permission:bluetoothPrivate"],
@@ -115,7 +133,8 @@
   }],
   "bluetoothSocket": {
     "dependencies": ["manifest:bluetooth"],
-    "contexts": ["privileged_extension"]
+    "contexts": ["privileged_extension"],
+    "platforms": ["chromeos"]
   },
   "cecPrivate": {
     "dependencies": ["permission:cecPrivate"],
@@ -166,6 +185,10 @@
     "dependencies": ["permission:dns"],
     "contexts": ["privileged_extension"]
   },
+  "dom": {
+    "channel": "stable",
+    "contexts": ["privileged_extension", "content_script"]
+  },
   // This is not a real API, only here for documentation purposes.
   // See http://crbug.com/275944 for background.
   "extensionTypes": {
@@ -194,7 +217,9 @@
         "chrome://feedback/*",
         "chrome://cast-feedback/*",
         "chrome://os-feedback/*"
-      ]
+      ],
+      // "desktop_android" is not supported.
+      "platforms": ["chromeos", "linux", "mac", "win"]
     }
   ],
   "feedbackPrivate.openFeedback": {
@@ -230,17 +255,20 @@
     {
       "internal": true,
       "channel": "stable",
-      "contexts": ["privileged_extension"]
+      "contexts": ["privileged_extension"],
+      // "desktop_android" is not supported.
+      "platforms": ["chromeos", "linux", "mac", "win"]
     }, {
       "internal": true,
       "channel": "stable",
       "contexts": ["webui"],
       "matches": [
         "chrome://add-supervision/*",
-        "chrome://assistant-optin/*",
+        "chrome://contextual-tasks/*",
         "chrome://extensions/*",
         "chrome://glic/*",
         "chrome://glic-fre/*",
+        "chrome://glic-experimental-opt-in/*",
         "chrome://graduation/*",
         "chrome://home/*",
         "chrome://chrome-signin/*",
@@ -249,7 +277,8 @@
         "chrome://os-settings/*",
         "chrome://parent-access/*",
         "chrome://password-change/*",
-        "chrome://lock-reauth/*"
+        "chrome://lock-reauth/*",
+        "chrome://skills/*"
       ]
     }, {
       "internal": true,
@@ -258,8 +287,10 @@
         "webui_untrusted"
       ],
       "matches": [
-        "chrome-untrusted://boca-app/*"
-      ]
+        "chrome-untrusted://lens/*"
+      ],
+      // "desktop_android" is not supported.
+      "platforms": ["chromeos", "linux", "mac", "win"]
     }, {
       // This feature is used by the Controlled Frame API and is specifically
       // enabled by //chrome.
@@ -271,7 +302,9 @@
       ],
       // This feature is only enabled if the embedder's delegated check returns
       // true.
-      "requires_delegated_availability_check": true
+      "requires_delegated_availability_check": true,
+      // "desktop_android" is not supported.
+      "platforms": ["chromeos", "linux", "mac", "win"]
     }
   ],
   "hid": {
@@ -330,8 +363,9 @@
   },
   "management.installReplacementWebApp": {
     "dependencies": ["manifest:replacement_web_app"],
-    "channel": "stable",
-    "extension_types": ["extension", "platform_app"]
+    "extension_types": ["extension", "platform_app"],
+    // "desktop_android" is not supported. http://crbug.com/371332103
+    "platforms": ["chromeos", "linux", "mac", "win"]
   },
   "management.uninstallSelf": {
     "dependencies": [],
@@ -356,15 +390,20 @@
       "chrome://bookmarks-side-panel.top-chrome/*",
       "chrome://certificate-manager/*",
       "chrome://compare/*",
+      "chrome://contextual-tasks/*",
       "chrome://customize-chrome-side-panel.top-chrome/*",
       "chrome://shopping-insights-side-panel.top-chrome/*",
       "chrome://eche-app/*",
       "chrome://extensions/*",
+      "chrome://extensions-zero-state/*",
       "chrome://file-manager/*",
       "chrome://glic/*",
+      "chrome://glic-fre/*",
       "chrome://help-app/*",
       "chrome://history/*",
       "chrome://new-tab-page/*",
+      "chrome://newtab-footer/*",
+      "chrome://omnibox-popup.top-chrome/*",
       "chrome://oobe/*",
       "chrome://os-settings/*",
       "chrome://password-manager/*",
@@ -375,7 +414,6 @@
       "chrome://sync-confirmation/*",
       "chrome://tab-search.top-chrome/*",
       "chrome://tab-strip.top-chrome/*",
-      "chrome://welcome/*",
       "chrome://vc-background/*",
       "chrome://app-settings/*",
       "chrome://search-engine-choice/*"
@@ -392,7 +430,8 @@
       "chrome-untrusted://mako/*",
       "chrome-untrusted://projector/*",
       "chrome-untrusted://read-anything-side-panel.top-chrome/*",
-      "chrome-untrusted://data-sharing/*"
+      "chrome-untrusted://data-sharing/*",
+      "chrome-untrusted://class-tools-remote-display/*"
     ]
   }],
   "metricsPrivateIndividualApis": {
@@ -400,6 +439,16 @@
     "channel": "stable",
     "source": "metricsPrivate"
    },
+  "metricsPrivate.getHistogram": {
+    "allowlist": [
+      // The Autotest extension is loaded with --allowlisted-extension-id, so it
+      // technically bypasses this check, but this entry is included anyway to
+      // restrict access to this function under normal circumstances.
+      // TODO(crbug.com/508312478): getHistogram should be moved back to the
+      // autotestPrivate namespace.
+      "0D209B5E4401BB8E7873B5AB5B1346A1CB067015"  // ChromeOS Autotest extension
+    ]
+  },
   "metricsPrivate.getIsCrashReportingEnabled": {
     "allowlist": [
       // This function inherits the extension restrictions of metricsPrivate,
@@ -457,9 +506,26 @@
       "chrome-untrusted://demo-mode-app/*"
     ]
   },
+  "mimeHandler": [{
+    "dependencies": ["manifest:mime_types_handler"],
+    "contexts": ["privileged_extension"],
+    // "desktop_android" is not supported.
+    "platforms": ["chromeos", "linux", "mac", "win"],
+    "channel": "dev",
+    "requires_delegated_availability_check": true
+  }, {
+    "dependencies": ["manifest:mime_types_handler"],
+    "contexts": ["privileged_extension"],
+    // "desktop_android" is not supported.
+    "platforms": ["chromeos", "linux", "mac", "win"],
+    "channel": "stable",
+    "feature_flag": "ApiMimeHandler"
+  }],
   "mimeHandlerPrivate": {
     "dependencies": ["manifest:mime_types_handler"],
-    "contexts": ["privileged_extension"]
+    "contexts": ["privileged_extension"],
+    // "desktop_android" is not supported.
+    "platforms": ["chromeos", "linux", "mac", "win"]
   },
   "mojoPrivate": {
     "contexts": ["privileged_extension"],
@@ -518,6 +584,10 @@
     "dependencies": ["permission:printerProvider"],
     "contexts": ["privileged_extension"]
   },
+  "proxy": {
+    "dependencies": ["permission:proxy"],
+    "contexts": ["privileged_extension"]
+  },
   "runtime": {
     "channel": "stable",
     "extension_types": [
@@ -538,6 +608,13 @@
     "disallow_for_service_workers": true
   },
   "runtime.getManifest": {
+    "contexts": [
+      "privileged_extension",
+      "unprivileged_extension",
+      "content_script"
+    ]
+  },
+  "runtime.getVersion": {
     "contexts": [
       "privileged_extension",
       "unprivileged_extension",
@@ -654,7 +731,6 @@
   },{
     "contexts": ["webui"],
     "matches": [
-      "chrome://password-change/*",
       "chrome://file-manager/*"
     ]
   },{
@@ -668,6 +744,15 @@
     "dependencies": ["permission:nativeMessaging"],
     "contexts": ["privileged_extension"]
   },
+  "scripting": {
+    "dependencies": ["permission:scripting"],
+    "contexts": ["privileged_extension"]
+  },
+  "scripting.globalParams": {
+    "channel": "trunk",
+    "dependencies": ["permission:scripting"],
+    "contexts": ["content_script"]
+  },
   "serial": {
     "dependencies": ["permission:serial"],
     "contexts": ["privileged_extension"]
@@ -678,33 +763,45 @@
   },
   "sockets.tcp": [{
     "dependencies": ["manifest:sockets"],
-    "contexts": ["privileged_extension"]
+    "contexts": ["privileged_extension"],
+    // "desktop_android" is not supported.
+    "platforms": ["chromeos", "linux", "mac", "win"]
   },{
     "channel": "stable",
     "contexts": ["webui_untrusted"],
     "matches": [
       "chrome-untrusted://terminal/*"
-    ]
+    ],
+    // "desktop_android" is not supported.
+    "platforms": ["chromeos", "linux", "mac", "win"]
   }],
   "sockets.tcpServer": [{
     "dependencies": ["manifest:sockets"],
-    "contexts": ["privileged_extension"]
+    "contexts": ["privileged_extension"],
+    // "desktop_android" is not supported.
+    "platforms": ["chromeos", "linux", "mac", "win"]
   },{
     "channel": "stable",
     "contexts": ["webui_untrusted"],
     "matches": [
       "chrome-untrusted://terminal/*"
-    ]
+    ],
+    // "desktop_android" is not supported.
+    "platforms": ["chromeos", "linux", "mac", "win"]
   }],
   "sockets.udp": [{
     "dependencies": ["manifest:sockets"],
-    "contexts": ["privileged_extension"]
+    "contexts": ["privileged_extension"],
+    // "desktop_android" is not supported.
+    "platforms": ["chromeos", "linux", "mac", "win"]
   },{
     "channel": "stable",
     "contexts": ["webui_untrusted"],
     "matches": [
       "chrome-untrusted://terminal/*"
-    ]
+    ],
+    // "desktop_android" is not supported.
+    "platforms": ["chromeos", "linux", "mac", "win"]
   }],
   "storage": {
     "dependencies": ["permission:storage"],
@@ -793,32 +890,13 @@
   },
   "usb": {
     "dependencies": ["permission:usb"],
-    "contexts": ["privileged_extension"]
+    "contexts": ["privileged_extension"],
+    "platforms": ["chromeos"]
   },
   "userScripts": {
     "dependencies": [ "permission:userScripts" ],
     "contexts": [ "privileged_extension" ],
-    // TODO(crbug.com/390138269): Remove developer mode only restriction once
-    // per extension toggle is launched.
-    "developer_mode_only": true
-  },
-  "userScripts.getWorldConfigurations": {
-    "dependencies": [ "permission:userScripts" ],
-    "contexts": [ "privileged_extension" ],
-    "developer_mode_only": true,
-    "feature_flag": "ApiUserScriptsMultipleWorlds"
-  },
-  "userScripts.resetWorldConfiguration": {
-    "dependencies": [ "permission:userScripts" ],
-    "contexts": [ "privileged_extension" ],
-    "developer_mode_only": true,
-    "feature_flag": "ApiUserScriptsMultipleWorlds"
-  },
-  "userScripts.execute": {
-    "dependencies": [ "permission:userScripts" ],
-    "contexts": [ "privileged_extension" ],
-    "developer_mode_only": true,
-    "feature_flag": "ApiUserScriptsExecute"
+    "requires_delegated_availability_check": true
   },
   "virtualKeyboard": {
     "dependencies": ["permission:virtualKeyboard"],
@@ -843,11 +921,11 @@
     "contexts": ["webui"],
     "matches": [
       "chrome://add-supervision/*",
-      "chrome://assistant-optin/*",
       "chrome://chrome-signin/*",
-      "chrome://discards/*",
+      "chrome://contextual-tasks/*",
       "chrome://glic/*",
       "chrome://glic-fre/*",
+      "chrome://glic-experimental-opt-in/*",
       "chrome://graduation/*",
       "chrome://home/*",
       "chrome://mobilesetup/*",
@@ -855,7 +933,8 @@
       "chrome://os-settings/*",
       "chrome://parent-access/*",
       "chrome://password-change/*",
-      "chrome://lock-reauth/*"
+      "chrome://lock-reauth/*",
+      "chrome://skills/*"
     ]
   }, {
     "internal": true,
@@ -864,7 +943,7 @@
       "webui_untrusted"
     ],
     "matches": [
-      "chrome-untrusted://boca-app/*"
+      "chrome-untrusted://lens/*"
     ]
   }, {
     // This feature is used by the Controlled Frame API and is specifically
@@ -879,6 +958,18 @@
     // true.
     "requires_delegated_availability_check": true
   }],
+  "webstorePrivate": [{
+    "channel": "stable",
+    "contexts": ["web_page"],
+    "matches": ["https://chromewebstore.google.com/*"]
+  }, {
+    // Used for webstore testing. See comment in
+    // chrome/common/extensions/webstore_override.cc
+    "channel": "stable",
+    "contexts": ["web_page"],
+    "requires_delegated_availability_check": true,
+    "matches": ["<all_urls>"]
+  }],
   "webViewInternal": [{
     "internal": true,
     "dependencies": ["permission:webview"],
@@ -889,11 +980,11 @@
     "contexts": ["webui"],
     "matches": [
       "chrome://add-supervision/*",
-      "chrome://assistant-optin/*",
       "chrome://chrome-signin/*",
-      "chrome://discards/*",
+      "chrome://contextual-tasks/*",
       "chrome://glic/*",
       "chrome://glic-fre/*",
+      "chrome://glic-experimental-opt-in/*",
       "chrome://graduation/*",
       "chrome://home/*",
       "chrome://mobilesetup/*",
@@ -901,7 +992,8 @@
       "chrome://os-settings/*",
       "chrome://parent-access/*",
       "chrome://password-change/*",
-      "chrome://lock-reauth/*"
+      "chrome://lock-reauth/*",
+      "chrome://skills/*"
     ]
   }, {
     "internal": true,
@@ -910,7 +1002,7 @@
       "webui_untrusted"
     ],
     "matches": [
-      "chrome-untrusted://boca-app/*"
+      "chrome-untrusted://lens/*"
     ]
   }, {
     // This feature is used by the Controlled Frame API and is specifically
@@ -933,16 +1025,16 @@
     "contexts": ["webui"],
     "matches": [
       "chrome://add-supervision/*",
-      "chrome://assistant-optin/*",
       "chrome://chrome-signin/*",
-      "chrome://discards/*",
+      "chrome://contextual-tasks/*",
       "chrome://glic/*",
       "chrome://graduation/*",
       "chrome://home/*",
       "chrome://mobilesetup/*",
       "chrome://oobe/*",
       "chrome://os-settings/*",
-      "chrome://parent-access/*"
+      "chrome://parent-access/*",
+      "chrome://skills/*"
     ]
   }, {
     "channel": "stable",
@@ -950,7 +1042,7 @@
       "webui_untrusted"
     ],
     "matches": [
-      "chrome-untrusted://boca-app/*"
+      "chrome-untrusted://lens/*"
     ]
   }]
 }

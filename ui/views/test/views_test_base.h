@@ -109,10 +109,6 @@ class ViewsTestBase : public PlatformTest {
   void SimulateDesktopNativeDestroy(Widget* widget);
 #endif
 
-  // Get the system reserved height at the top of the screen. On Mac, this
-  // includes the menu bar and title bar.
-  static int GetSystemReservedHeightAtTopOfScreen();
-
  protected:
   base::test::TaskEnvironment* task_environment() {
     return task_environment_.get();
@@ -173,6 +169,10 @@ class ViewsTestBase : public PlatformTest {
           views::Widget::InitParams::TYPE_WINDOW_FRAMELESS);
 
  private:
+#if BUILDFLAG(IS_WIN)
+  ui::ScopedOleInitializer ole_initializer_;
+#endif
+
   std::unique_ptr<base::test::TaskEnvironment> task_environment_;
   std::optional<ui::AXPlatformForTest> ax_platform_;
 
@@ -189,10 +189,6 @@ class ViewsTestBase : public PlatformTest {
   bool interactive_setup_called_ = false;
   bool setup_called_ = false;
   bool teardown_called_ = false;
-
-#if BUILDFLAG(IS_WIN)
-  ui::ScopedOleInitializer ole_initializer_;
-#endif
 };
 
 // A helper that makes it easier to declare basic views tests that want to test

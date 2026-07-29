@@ -20,7 +20,6 @@
 #include "base/win/scoped_variant.h"
 #include "chrome/browser/win/automation_controller.h"
 #include "chrome/browser/win/ui_automation_util.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/installer/util/install_util.h"
 
 namespace {
@@ -138,8 +137,7 @@ class SettingsAppMonitor::AutomationControllerDelegate
                            IUIAutomationElement* sender) const override;
 
  private:
-  // Invokes the |browser_button| if the Win10AcceleratedDefaultBrowserFlow
-  // feature is enabled.
+  // Tries to invokes the `browser_button` (which only exists in Win 10).
   void MaybeInvokeChooser(IUIAutomationElement* browser_button) const;
 
   // The task runner on which the SettingsAppMonitor lives.
@@ -274,11 +272,6 @@ void SettingsAppMonitor::AutomationControllerDelegate::OnFocusChangedEvent(
 
 void SettingsAppMonitor::AutomationControllerDelegate::MaybeInvokeChooser(
     IUIAutomationElement* browser_button) const {
-  if (!base::FeatureList::IsEnabled(
-          features::kWin10AcceleratedDefaultBrowserFlow)) {
-    return;
-  }
-
   {
     // Only invoke the browser chooser once.
     base::AutoLock auto_lock(browser_chooser_invoked_lock_);

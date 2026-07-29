@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "media/gpu/windows/scoped_d3d_buffers.h"
 
@@ -52,7 +48,7 @@ TEST_F(ScopedD3DBufferTest, D3DInputBuffer) {
 TEST_F(ScopedD3DBufferTest, ScopedRandomAccessD3DInputBuffer) {
   ScopedRandomAccessD3DInputBuffer buffer(
       std::unique_ptr<ScopedD3DBuffer>(new MemoryBuffer(size_)));
-  EXPECT_NE(buffer.data(), nullptr);
+  EXPECT_FALSE(buffer.data().empty());
   EXPECT_TRUE(buffer.Commit());
 }
 

@@ -18,6 +18,7 @@
 #include "base/timer/timer.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/interaction/browser_elements.h"
 #include "chrome/test/base/test_switches.h"
 #include "components/constrained_window/constrained_window_views.h"
 #include "content/public/test/browser_test.h"
@@ -29,7 +30,7 @@
 #include "ui/base/test/ui_controls.h"
 #include "ui/base/ui_base_types.h"
 #include "ui/gfx/geometry/size.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/window/dialog_delegate.h"
 #include "url/gurl.h"
@@ -97,9 +98,38 @@ class InteractiveBrowserTestBrowsertest : public InteractiveBrowserTest {
 IN_PROC_BROWSER_TEST_F(InteractiveBrowserTestBrowsertest, DumpElements) {
   auto* const incog = CreateIncognitoBrowser();
   RunTestSequence(InstrumentTab(kWebContentsId),
-                  InContext(incog->window()->GetElementContext(),
+                  InContext(BrowserElements::From(incog)->GetContext(),
                             PressButton(kToolbarAppMenuButtonElementId)),
                   DumpElements());
+}
+
+IN_PROC_BROWSER_TEST_F(InteractiveBrowserTestBrowsertest, DumpWebContents) {
+  const GURL url = embedded_test_server()->GetURL(kDocumentWithNamedElement);
+  RunTestSequence(
+      InstrumentTab(kWebContentsId), NavigateWebContents(kWebContentsId, url),
+      ExecuteJsAt(kWebContentsId, DeepQuery({"#select"}), "(el) => el.focus()"),
+      DumpWebContents(kWebContentsId));
+}
+
+IN_PROC_BROWSER_TEST_F(InteractiveBrowserTestBrowsertest, DumpWebContentsAt) {
+  const GURL url = embedded_test_server()->GetURL(kDocumentWithNamedElement);
+  RunTestSequence(InstrumentTab(kWebContentsId),
+                  NavigateWebContents(kWebContentsId, url),
+                  DumpWebContentsAt(kWebContentsId, DeepQuery({"#select"})));
+}
+
+IN_PROC_BROWSER_TEST_F(InteractiveBrowserTestBrowsertest, DumpWebUiPage) {
+  const GURL url("chrome://history");
+  RunTestSequence(InstrumentTab(kWebContentsId),
+                  NavigateWebContents(kWebContentsId, url),
+                  DumpWebContents(kWebContentsId));
+}
+
+IN_PROC_BROWSER_TEST_F(InteractiveBrowserTestBrowsertest,
+                       DumpWebContentsWithEverything) {
+  const GURL url("chrome://history");
+  RunTestSequence(InstrumentTab(kWebContentsId),
+                  NavigateWebContents(kWebContentsId, url), DumpElements());
 }
 
 IN_PROC_BROWSER_TEST_F(InteractiveBrowserTestBrowsertest,
@@ -122,6 +152,35 @@ IN_PROC_BROWSER_TEST_F(InteractiveBrowserTestBrowsertest,
       RunTestSequence(InstrumentTab(kWebContentsId),
                       NavigateWebContents(kWebContentsId, url),
                       EnsureNotPresent(kWebContentsId, DeepQuery{"#select"})));
+}
+
+IN_PROC_BROWSER_TEST_F(InteractiveBrowserTestBrowsertest, EnsureNotVisible) {
+  const GURL url = embedded_test_server()->GetURL(kDocumentWithNamedElement);
+  RunTestSequence(
+      InstrumentTab(kWebContentsId), NavigateWebContents(kWebContentsId, url),
+      // Element that is set to display: none.
+      ExecuteJsAt(kWebContentsId, DeepQuery{"#select"},
+                  "el => el.style.display = 'none'"),
+      EnsureNotVisible(kWebContentsId, DeepQuery({"#select"})),
+      // Element that has zero size.
+      ExecuteJsAt(kWebContentsId, DeepQuery{"p"},
+                  "el => { el.style.width = '0'; el.style.height = '0'; }"),
+      EnsureNotVisible(kWebContentsId, DeepQuery({"p"})),
+      // Element that is not present at all.
+      EnsureNotVisible(kWebContentsId, DeepQuery{"#doesNotExist"}));
+}
+
+IN_PROC_BROWSER_TEST_F(InteractiveBrowserTestBrowsertest,
+                       EnsureNotVisible_Fails) {
+  UNCALLED_MOCK_CALLBACK(ui::InteractionSequence::AbortedCallback, aborted);
+  private_test_impl().set_aborted_callback_for_testing(aborted.Get());
+
+  const GURL url = embedded_test_server()->GetURL(kDocumentWithNamedElement);
+  EXPECT_CALL_IN_SCOPE(
+      aborted, Run,
+      RunTestSequence(InstrumentTab(kWebContentsId),
+                      NavigateWebContents(kWebContentsId, url),
+                      EnsureNotVisible(kWebContentsId, DeepQuery{"#select"})));
 }
 
 IN_PROC_BROWSER_TEST_F(InteractiveBrowserTestBrowsertest, EnsurePresent_Fails) {
@@ -524,13 +583,13 @@ IN_PROC_BROWSER_TEST_F(InteractiveBrowserTestBrowsertest,
       // Instrument the next tab in any browser, then insert the tab and verify
       // it's there.
       InstrumentNextTab(kIncognito1Id, AnyBrowser()),
-      NameView(kIncognitoNtbName,
-               base::BindLambdaForTesting([incognito_browser]() {
-                 return AsView(
-                     ui::ElementTracker::GetElementTracker()->GetUniqueElement(
-                         kNewTabButtonElementId,
-                         incognito_browser->window()->GetElementContext()));
-               })),
+      NameView(
+          kIncognitoNtbName, base::BindLambdaForTesting([incognito_browser]() {
+            return AsView(
+                ui::ElementTracker::GetElementTracker()->GetUniqueElement(
+                    kNewTabButtonElementId,
+                    BrowserElements::From(incognito_browser)->GetContext()));
+          })),
       PressButton(kIncognitoNtbName),
       InAnyContext(verify_is_at_tab_index(incognito_browser, kIncognito1Id, 1)),
 
@@ -1124,7 +1183,9 @@ INSTANTIATE_TEST_SUITE_P(,
                                          CoverageConfig{true, true}));
 
 // TODO(crbug.com/390224186) Re-enable the test after fixing the flakiness.
-#if BUILDFLAG(IS_LINUX)
+// TODO(crbug.com/430147700) Re-enable after fixing flakiness on ChromeOS.
+// TODO(crbug.com/478925583) Re-enable after fixing flakiness on Windows.
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_WIN)
 #define MAYBE_TestCoverageEmits DISABLED_TestCoverageEmits
 #else
 #define MAYBE_TestCoverageEmits TestCoverageEmits
@@ -1137,14 +1198,14 @@ IN_PROC_BROWSER_TEST_P(InteractiveBrowserTestCodeCoverageBrowsertest,
       NavigateWebContents(kWebContentsId, GURL("chrome://history")));
 }
 
-namespace {
-
-class TestDialog : public views::DialogDelegateView {
+class InteractiveBrowserTestDialog : public views::DialogDelegateView {
  public:
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kElementId);
 
-  TestDialog() { SetProperty(views::kElementIdentifierKey, kElementId); }
-  ~TestDialog() override = default;
+  InteractiveBrowserTestDialog() {
+    SetProperty(views::kElementIdentifierKey, kElementId);
+  }
+  ~InteractiveBrowserTestDialog() override = default;
 
   gfx::Size CalculatePreferredSize(
       const views::SizeBounds& available_size) const override {
@@ -1152,13 +1213,13 @@ class TestDialog : public views::DialogDelegateView {
   }
 
   static views::Widget* Show(Browser* parent, ui::mojom::ModalType modal_type) {
-    auto dialog = std::make_unique<TestDialog>();
+    auto dialog = std::make_unique<InteractiveBrowserTestDialog>();
     dialog->SetModalType(modal_type);
     views::Widget* widget = nullptr;
     switch (modal_type) {
       case ui::mojom::ModalType::kWindow:
         widget = constrained_window::CreateBrowserModalDialogViews(
-            std::move(dialog), parent->window()->GetNativeWindow());
+            std::move(dialog), parent->GetWindow()->GetNativeWindow());
         break;
       case ui::mojom::ModalType::kChild:
         widget = constrained_window::CreateWebModalDialogViews(
@@ -1168,7 +1229,7 @@ class TestDialog : public views::DialogDelegateView {
       case ui::mojom::ModalType::kSystem:
       case ui::mojom::ModalType::kNone:
         widget = views::DialogDelegate::CreateDialogWidget(
-            std::move(dialog), nullptr,
+            std::move(dialog), gfx::NativeWindow(),
             BrowserView::GetBrowserViewForBrowser(parent)
                 ->GetWidget()
                 ->GetNativeView());
@@ -1178,6 +1239,10 @@ class TestDialog : public views::DialogDelegateView {
     return widget;
   }
 };
+
+DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(InteractiveBrowserTestDialog, kElementId);
+
+namespace {
 
 // Scoped object that closes a widget it does not own.
 class SafeWidgetRef {
@@ -1207,8 +1272,6 @@ class SafeWidgetRef {
  private:
   raw_ptr<views::Widget> widget_ = nullptr;
 };
-
-DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(TestDialog, kElementId);
 
 }  // namespace
 
@@ -1251,16 +1314,16 @@ IN_PROC_BROWSER_TEST_P(InteractiveBrowserTestDialogBrowsertest,
   SafeWidgetRef widget;
   RunTestSequence(
       Do([this, &widget]() {
-        widget = TestDialog::Show(browser(), GetParam());
+        widget = InteractiveBrowserTestDialog::Show(browser(), GetParam());
       }),
-      InAnyContext(WaitForShow(TestDialog::kElementId)),
+      InAnyContext(WaitForShow(InteractiveBrowserTestDialog::kElementId)),
       InSameContext(
           CheckView(
-              TestDialog::kElementId,
+              InteractiveBrowserTestDialog::kElementId,
               [](views::View* view) { return view->GetWidget()->parent(); },
               BrowserView::GetBrowserViewForBrowser(browser())->GetWidget()),
           CheckElement(
-              TestDialog::kElementId,
+              InteractiveBrowserTestDialog::kElementId,
               [](ui::TrackedElement* el) { return el->context(); },
-              browser()->window()->GetElementContext())));
+              private_test_impl().default_context())));
 }

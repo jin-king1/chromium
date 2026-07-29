@@ -20,8 +20,7 @@ class TabGroupSyncServiceFactory : public ProfileKeyedServiceFactoryIOS {
   static TabGroupSyncService* GetForProfile(ProfileIOS* profile);
   static TabGroupSyncServiceFactory* GetInstance();
 
-  // Returns the default factory used to build TabGroupSyncService-s. Can be
-  // registered with SetTestingFactory to use real instances during testing.
+  // Return the default factory.
   static TestingFactory GetDefaultFactory();
 
  private:
@@ -31,7 +30,7 @@ class TabGroupSyncServiceFactory : public ProfileKeyedServiceFactoryIOS {
   ~TabGroupSyncServiceFactory() override;
 
   std::unique_ptr<KeyedService> BuildServiceInstanceFor(
-      web::BrowserState* context) const override;
+      ProfileIOS* profile) const override;
 
   // Called to report synthetic field trial on whether the client had a sync
   // tabgroup.

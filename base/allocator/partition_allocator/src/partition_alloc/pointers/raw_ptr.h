@@ -21,15 +21,11 @@
 #include "partition_alloc/partition_alloc_base/augmentations/compiler_specific.h"
 #include "partition_alloc/partition_alloc_base/compiler_specific.h"
 #include "partition_alloc/partition_alloc_base/component_export.h"
-#include "partition_alloc/partition_alloc_base/cxx20_is_constant_evaluated.h"
 #include "partition_alloc/partition_alloc_base/types/same_as_any.h"
 #include "partition_alloc/partition_alloc_config.h"
 #include "partition_alloc/partition_alloc_forward.h"
 #include "partition_alloc/pointers/instance_tracer.h"
-
-#if PA_HAVE_SPACESHIP_OPERATOR
-#include <compare>
-#endif
+#include "partition_alloc/pointers/raw_ptr_noop_impl.h"
 
 #if PA_BUILDFLAG(IS_WIN)
 #include "partition_alloc/partition_alloc_base/win/win_handle_types.h"
@@ -60,8 +56,6 @@
 #include "partition_alloc/pointers/raw_ptr_asan_unowned_impl.h"
 #elif PA_BUILDFLAG(USE_RAW_PTR_HOOKABLE_IMPL)
 #include "partition_alloc/pointers/raw_ptr_hookable_impl.h"
-#else
-#include "partition_alloc/pointers/raw_ptr_noop_impl.h"
 #endif
 
 namespace cc {
@@ -128,15 +122,29 @@ enum class RawPtrTraits : unsigned {
   // Don't use directly, use AllowPtrArithmetic instead.
   kAllowPtrArithmetic = (1 << 3),
 
-  // This pointer has BRP disabled for experimental rewrites of containers.
-  //
-  // Don't use directly.
-  kDisableBRP = (1 << 4),
-
   // Uninitialized pointers are discouraged and disabled by default.
   //
   // Don't use directly, use AllowUninitialized instead.
   kAllowUninitialized = (1 << 5),
+
+  // Forces RawPtrNoOpImpl regardless of the compile-time raw_ptr
+  // implementation.
+  //
+  // Don't use directly, use UnprotectedInRelease instead.
+  kNoOpImpl = (1 << 6),
+
+  // Marks the pointer as unprotected-in-release: it gets no protection in
+  // builds that ship to users (it resolves to RawPtrNoOpImpl), but it stays
+  // instrumented in builds that enable
+  // PA_BUILDFLAG(ENABLE_BRP_FOR_UNPROTECTED_IN_RELEASE_RAW_PTR) (debug/dcheck
+  // and BRP-ASan) so that dangling-pointer detection still covers it.
+  //
+  // Unlike kNoOpImpl, this trait is preserved on the type even when the pointer
+  // is instrumented, so the instrumentation (e.g. BRP-ASan) can tell that the
+  // field is *not* protected in a release build and report accordingly.
+  //
+  // Don't use directly, use UnprotectedInRelease instead.
+  kIsUnprotectedInRelease = (1 << 7),
 
   // *** ForTest traits below ***
 
@@ -153,8 +161,9 @@ enum class RawPtrTraits : unsigned {
   // Test only.
   kDummyForTest = (1 << 11),
 
-  kAllMask = kMayDangle | kDisableHooks | kAllowPtrArithmetic | kDisableBRP |
-             kAllowUninitialized | kUseCountingImplForTest | kDummyForTest,
+  kAllMask = kMayDangle | kDisableHooks | kAllowPtrArithmetic |
+             kAllowUninitialized | kNoOpImpl | kIsUnprotectedInRelease |
+             kUseCountingImplForTest | kDummyForTest,
 };
 // Template specialization to use |PA_DEFINE_OPERATORS_FOR_FLAGS| without
 // |kMaxValue| declaration.
@@ -199,7 +208,7 @@ struct IsSupportedType {
 #endif  // __OBJC__
 
       // Specific disallowed types.
-      !partition_alloc::internal::base::kSameAsAny<
+      !partition_alloc::internal::base::SameAsAny<
           T,
 #if PA_BUILDFLAG(IS_WIN)
 // raw_ptr<HWND__> is unsafe at runtime - if the handle happens to also
@@ -246,10 +255,7 @@ template <RawPtrTraits Traits>
 using UnderlyingImplForTraits = internal::RawPtrBackupRefImpl<
     /*AllowDangling=*/partition_alloc::internal::ContainsFlags(
         Traits,
-        RawPtrTraits::kMayDangle),
-    /*DisableBRP=*/partition_alloc::internal::ContainsFlags(
-        Traits,
-        RawPtrTraits::kDisableBRP)>;
+        RawPtrTraits::kMayDangle)>;
 
 #elif PA_BUILDFLAG(USE_RAW_PTR_ASAN_UNOWNED_IMPL)
 template <RawPtrTraits Traits>
@@ -263,7 +269,10 @@ template <RawPtrTraits Traits>
 using UnderlyingImplForTraits = internal::RawPtrHookableImpl<
     /*EnableHooks=*/!partition_alloc::internal::ContainsFlags(
         Traits,
-        RawPtrTraits::kDisableHooks)>;
+        RawPtrTraits::kDisableHooks),
+    /*IsUnprotectedInRelease=*/partition_alloc::internal::ContainsFlags(
+        Traits,
+        RawPtrTraits::kIsUnprotectedInRelease)>;
 
 #else
 template <RawPtrTraits Traits>
@@ -283,13 +292,27 @@ constexpr bool IsPtrArithmeticAllowed([[maybe_unused]] RawPtrTraits Traits) {
 // raw_ptr as a thin wrapper, that directs calls to ImplForTraits. ImplForTraits
 // may be different from UnderlyingImplForTraits, because it may select a
 // test impl instead.
+// A pointer marked kIsUnprotectedInRelease falls back to RawPtrNoOpImpl unless
+// this build opted into instrumenting such pointers. This mirrors what release
+// builds ship, while leaving the pointer instrumented (and the trait visible to
+// the instrumentation) in debug/dcheck and BRP-ASan builds.
+constexpr bool UnprotectedInReleaseResolvesToNoOp(RawPtrTraits Traits) {
+  return partition_alloc::internal::ContainsFlags(
+             Traits, RawPtrTraits::kIsUnprotectedInRelease) &&
+         !PA_BUILDFLAG(ENABLE_BRP_FOR_UNPROTECTED_IN_RELEASE_RAW_PTR);
+}
+
 template <RawPtrTraits Traits>
-using ImplForTraits =
-    std::conditional_t<partition_alloc::internal::ContainsFlags(
-                           Traits,
-                           RawPtrTraits::kUseCountingImplForTest),
-                       test::RawPtrCountingImplForTest,
-                       UnderlyingImplForTraits<Traits>>;
+using ImplForTraits = std::conditional_t<
+    partition_alloc::internal::ContainsFlags(
+        Traits,
+        RawPtrTraits::kUseCountingImplForTest),
+    test::RawPtrCountingImplForTest,
+    std::conditional_t<partition_alloc::internal::
+                               ContainsFlags(Traits, RawPtrTraits::kNoOpImpl) ||
+                           UnprotectedInReleaseResolvesToNoOp(Traits),
+                       internal::RawPtrNoOpImpl,
+                       UnderlyingImplForTraits<Traits>>>;
 
 // `kTypeTraits` is a customization interface to accosiate `T` with some
 // `RawPtrTraits`. Users may create specialization of this variable
@@ -445,7 +468,7 @@ class PA_TRIVIAL_ABI PA_GSL_POINTER raw_ptr {
     PA_BUILDFLAG(USE_RAW_PTR_ASAN_UNOWNED_IMPL) || \
     PA_BUILDFLAG(USE_RAW_PTR_HOOKABLE_IMPL) ||     \
     PA_BUILDFLAG(RAW_PTR_ZERO_ON_DESTRUCT)
-  PA_ALWAYS_INLINE PA_CONSTEXPR_DTOR ~raw_ptr() noexcept {
+  PA_ALWAYS_INLINE constexpr ~raw_ptr() noexcept {
     Impl::ReleaseWrappedPtr(wrapped_ptr_);
     Impl::Untrace(tracer_.owner_id());
     // Work around external issues where raw_ptr is used after destruction.
@@ -454,7 +477,9 @@ class PA_TRIVIAL_ABI PA_GSL_POINTER raw_ptr {
     }
   }
 #else
-  PA_ALWAYS_INLINE ~raw_ptr() noexcept = default;
+  PA_ALWAYS_INLINE constexpr ~raw_ptr() noexcept {
+    // Not =default because we want MSan use-after-dtor instrumentation.
+  }
   static_assert(!kZeroOnDestruct);
 #endif  // PA_BUILDFLAG(USE_RAW_PTR_BACKUP_REF_IMPL) ||
         // PA_BUILDFLAG(USE_RAW_PTR_ASAN_UNOWNED_IMPL) ||
@@ -630,7 +655,7 @@ class PA_TRIVIAL_ABI PA_GSL_POINTER raw_ptr {
     EphemeralRawAddr& operator=(const EphemeralRawAddr&) = delete;
     void* operator new(size_t) = delete;
     void* operator new(size_t, void*) = delete;
-    PA_ALWAYS_INLINE PA_CONSTEXPR_DTOR ~EphemeralRawAddr() { original = copy; }
+    PA_ALWAYS_INLINE constexpr ~EphemeralRawAddr() { original = copy; }
 
     PA_ALWAYS_INLINE constexpr T** operator&() && PA_LIFETIME_BOUND {
       return &copy;
@@ -647,7 +672,7 @@ class PA_TRIVIAL_ABI PA_GSL_POINTER raw_ptr {
     T* copy;
     raw_ptr& original;  // Original pointer.
   };
-  PA_ALWAYS_INLINE PA_CONSTEXPR_DTOR EphemeralRawAddr AsEphemeralRawAddr() & {
+  PA_ALWAYS_INLINE constexpr EphemeralRawAddr AsEphemeralRawAddr() & {
     return EphemeralRawAddr(*this);
   }
 
@@ -675,21 +700,25 @@ class PA_TRIVIAL_ABI PA_GSL_POINTER raw_ptr {
     return static_cast<U*>(GetForExtraction());
   }
 
-  PA_ALWAYS_INLINE constexpr raw_ptr& operator++() {
+  // PRECONDITIONS: `this` must not be at the end of the range.
+  PA_UNSAFE_BUFFER_USAGE PA_ALWAYS_INLINE constexpr raw_ptr& operator++() {
     static_assert(
         raw_ptr_traits::IsPtrArithmeticAllowed(Traits),
         "cannot increment raw_ptr unless AllowPtrArithmetic trait is present.");
-    wrapped_ptr_ = Impl::Advance(wrapped_ptr_, 1, true);
+    wrapped_ptr_ = PA_UNSAFE_TODO(Impl::Advance(wrapped_ptr_, 1, true));
     return *this;
   }
-  PA_ALWAYS_INLINE constexpr raw_ptr& operator--() {
+  // PRECONDITIONS: `this` must not be at the start of the range.
+  PA_UNSAFE_BUFFER_USAGE PA_ALWAYS_INLINE constexpr raw_ptr& operator--() {
     static_assert(
         raw_ptr_traits::IsPtrArithmeticAllowed(Traits),
         "cannot decrement raw_ptr unless AllowPtrArithmetic trait is present.");
-    wrapped_ptr_ = Impl::Retreat(wrapped_ptr_, 1, true);
+    wrapped_ptr_ = PA_UNSAFE_TODO(Impl::Retreat(wrapped_ptr_, 1, true));
     return *this;
   }
-  PA_ALWAYS_INLINE constexpr raw_ptr operator++(int /* post_increment */) {
+  // PRECONDITIONS: `this` must not be at the end of the range.
+  PA_UNSAFE_BUFFER_USAGE PA_ALWAYS_INLINE constexpr raw_ptr operator++(
+      int /* post_increment */) {
     static_assert(
         raw_ptr_traits::IsPtrArithmeticAllowed(Traits),
         "cannot increment raw_ptr unless AllowPtrArithmetic trait is present.");
@@ -697,7 +726,9 @@ class PA_TRIVIAL_ABI PA_GSL_POINTER raw_ptr {
     ++(*this);
     return result;
   }
-  PA_ALWAYS_INLINE constexpr raw_ptr operator--(int /* post_decrement */) {
+  // PRECONDITIONS: `this` must not be at the start of the range.
+  PA_UNSAFE_BUFFER_USAGE PA_ALWAYS_INLINE constexpr raw_ptr operator--(
+      int /* post_decrement */) {
     static_assert(
         raw_ptr_traits::IsPtrArithmeticAllowed(Traits),
         "cannot decrement raw_ptr unless AllowPtrArithmetic trait is present.");
@@ -705,40 +736,48 @@ class PA_TRIVIAL_ABI PA_GSL_POINTER raw_ptr {
     --(*this);
     return result;
   }
+  // PRECONDITIONS: `this` must be at least `delta_elems` before range end.
   template <
       typename Z,
       typename = std::enable_if_t<partition_alloc::internal::is_offset_type<Z>>>
-  PA_ALWAYS_INLINE constexpr raw_ptr& operator+=(Z delta_elems) {
+  PA_UNSAFE_BUFFER_USAGE PA_ALWAYS_INLINE constexpr raw_ptr& operator+=(
+      Z delta_elems) {
     static_assert(
         raw_ptr_traits::IsPtrArithmeticAllowed(Traits),
         "cannot increment raw_ptr unless AllowPtrArithmetic trait is present.");
-    wrapped_ptr_ = Impl::Advance(wrapped_ptr_, delta_elems, true);
+    wrapped_ptr_ =
+        PA_UNSAFE_TODO(Impl::Advance(wrapped_ptr_, delta_elems, true));
     return *this;
   }
+  // PRECONDITIONS: `this` must be at least `delta_elems` after range start.
   template <
       typename Z,
       typename = std::enable_if_t<partition_alloc::internal::is_offset_type<Z>>>
-  PA_ALWAYS_INLINE constexpr raw_ptr& operator-=(Z delta_elems) {
+  PA_UNSAFE_BUFFER_USAGE PA_ALWAYS_INLINE constexpr raw_ptr& operator-=(
+      Z delta_elems) {
     static_assert(
         raw_ptr_traits::IsPtrArithmeticAllowed(Traits),
         "cannot decrement raw_ptr unless AllowPtrArithmetic trait is present.");
-    wrapped_ptr_ = Impl::Retreat(wrapped_ptr_, delta_elems, true);
+    wrapped_ptr_ =
+        PA_UNSAFE_TODO(Impl::Retreat(wrapped_ptr_, delta_elems, true));
     return *this;
   }
 
+  // PRECONDITIONS: `delta_elems` must be an index inside the range.
   template <typename Z,
             typename U = T,
             typename = std::enable_if_t<
                 !std::is_void_v<typename std::remove_cv<U>::type> &&
                 partition_alloc::internal::is_offset_type<Z>>>
-  PA_ALWAYS_INLINE constexpr U& operator[](Z delta_elems) const {
+  PA_UNSAFE_BUFFER_USAGE PA_ALWAYS_INLINE constexpr U& operator[](
+      Z delta_elems) const {
     static_assert(
         raw_ptr_traits::IsPtrArithmeticAllowed(Traits),
         "cannot index raw_ptr unless AllowPtrArithmetic trait is present.");
     // Call SafelyUnwrapPtrForDereference() to simulate what GetForDereference()
     // does, but without creating a temporary.
     return *Impl::SafelyUnwrapPtrForDereference(
-        Impl::Advance(wrapped_ptr_, delta_elems, false));
+        PA_UNSAFE_TODO(Impl::Advance(wrapped_ptr_, delta_elems, false)));
   }
 
   // Do not disable operator+() and operator-().
@@ -754,31 +793,40 @@ class PA_TRIVIAL_ABI PA_GSL_POINTER raw_ptr {
   // operators for Z=uint64_t on 32-bit systems. The compiler instead would
   // generate code that converts `raw_ptr<T>` to `T*` and adds uint64_t to that,
   // bypassing the OOB protection entirely.
+  //
+  // PRECONDITIONS: `this` must be at least `delta_elems` before range end.
   template <typename Z>
-  PA_ALWAYS_INLINE friend constexpr raw_ptr operator+(const raw_ptr& p,
-                                                      Z delta_elems) {
+  PA_UNSAFE_BUFFER_USAGE PA_ALWAYS_INLINE friend constexpr raw_ptr operator+(
+      const raw_ptr& p,
+      Z delta_elems) {
     // Don't check `is_offset_type<Z>` here, as existence of `Advance` is
     // already gated on that, and we'd get double errors.
     static_assert(
         raw_ptr_traits::IsPtrArithmeticAllowed(Traits),
         "cannot add to raw_ptr unless AllowPtrArithmetic trait is present.");
-    raw_ptr result = Impl::Advance(p.wrapped_ptr_, delta_elems, false);
+    raw_ptr result =
+        PA_UNSAFE_TODO(Impl::Advance(p.wrapped_ptr_, delta_elems, false));
     return result;
   }
+  // PRECONDITIONS: `this` must be at least `delta_elems` before range end.
   template <typename Z>
-  PA_ALWAYS_INLINE friend constexpr raw_ptr operator+(Z delta_elems,
-                                                      const raw_ptr& p) {
+  PA_UNSAFE_BUFFER_USAGE PA_ALWAYS_INLINE friend constexpr raw_ptr operator+(
+      Z delta_elems,
+      const raw_ptr& p) {
     return p + delta_elems;
   }
+  // PRECONDITIONS: `this` must be at least `delta_elems` after range start.
   template <typename Z>
-  PA_ALWAYS_INLINE friend constexpr raw_ptr operator-(const raw_ptr& p,
-                                                      Z delta_elems) {
+  PA_UNSAFE_BUFFER_USAGE PA_ALWAYS_INLINE friend constexpr raw_ptr operator-(
+      const raw_ptr& p,
+      Z delta_elems) {
     // Don't check `is_offset_type<Z>` here, as existence of `Retreat` is
     // already gated on that, and we'd get double errors.
     static_assert(raw_ptr_traits::IsPtrArithmeticAllowed(Traits),
                   "cannot subtract from raw_ptr unless AllowPtrArithmetic "
                   "trait is present.");
-    raw_ptr result = Impl::Retreat(p.wrapped_ptr_, delta_elems, false);
+    raw_ptr result =
+        PA_UNSAFE_TODO(Impl::Retreat(p.wrapped_ptr_, delta_elems, false));
     return result;
   }
 
@@ -866,24 +914,9 @@ class PA_TRIVIAL_ABI PA_GSL_POINTER raw_ptr {
   template <typename U, typename V, RawPtrTraits R1, RawPtrTraits R2>
   friend constexpr bool operator!=(const raw_ptr<U, R1>& lhs,
                                    const raw_ptr<V, R2>& rhs);
-#if PA_HAVE_SPACESHIP_OPERATOR
   template <typename U, typename V, RawPtrTraits R1, RawPtrTraits R2>
   friend constexpr auto operator<=>(const raw_ptr<U, R1>& lhs,
                                     const raw_ptr<V, R2>& rhs);
-#else
-  template <typename U, typename V, RawPtrTraits R1, RawPtrTraits R2>
-  friend constexpr bool operator<(const raw_ptr<U, R1>& lhs,
-                                  const raw_ptr<V, R2>& rhs);
-  template <typename U, typename V, RawPtrTraits R1, RawPtrTraits R2>
-  friend constexpr bool operator>(const raw_ptr<U, R1>& lhs,
-                                  const raw_ptr<V, R2>& rhs);
-  template <typename U, typename V, RawPtrTraits R1, RawPtrTraits R2>
-  friend constexpr bool operator<=(const raw_ptr<U, R1>& lhs,
-                                   const raw_ptr<V, R2>& rhs);
-  template <typename U, typename V, RawPtrTraits R1, RawPtrTraits R2>
-  friend constexpr bool operator>=(const raw_ptr<U, R1>& lhs,
-                                   const raw_ptr<V, R2>& rhs);
-#endif
 
   // Comparisons with U*. These operators also handle the case where the RHS is
   // T*. Because these only call `raw_ptr::GetForComparison()`, they can be
@@ -908,7 +941,6 @@ class PA_TRIVIAL_ABI PA_GSL_POINTER raw_ptr {
                                                     const raw_ptr& rhs) {
     return rhs != lhs;  // Reverse order to call the operator above.
   }
-#if PA_HAVE_SPACESHIP_OPERATOR
   template <typename U>
   PA_ALWAYS_INLINE friend constexpr auto operator<=>(const raw_ptr& lhs,
                                                      U* rhs) {
@@ -919,44 +951,6 @@ class PA_TRIVIAL_ABI PA_GSL_POINTER raw_ptr {
                                                      const raw_ptr& rhs) {
     return lhs <=> rhs.GetForComparison();
   }
-#else
-  template <typename U>
-  PA_ALWAYS_INLINE friend constexpr bool operator<(const raw_ptr& lhs, U* rhs) {
-    return lhs.GetForComparison() < rhs;
-  }
-  template <typename U>
-  PA_ALWAYS_INLINE friend constexpr bool operator<=(const raw_ptr& lhs,
-                                                    U* rhs) {
-    return lhs.GetForComparison() <= rhs;
-  }
-  template <typename U>
-  PA_ALWAYS_INLINE friend constexpr bool operator>(const raw_ptr& lhs, U* rhs) {
-    return lhs.GetForComparison() > rhs;
-  }
-  template <typename U>
-  PA_ALWAYS_INLINE friend constexpr bool operator>=(const raw_ptr& lhs,
-                                                    U* rhs) {
-    return lhs.GetForComparison() >= rhs;
-  }
-  template <typename U>
-  PA_ALWAYS_INLINE friend constexpr bool operator<(U* lhs, const raw_ptr& rhs) {
-    return lhs < rhs.GetForComparison();
-  }
-  template <typename U>
-  PA_ALWAYS_INLINE friend constexpr bool operator<=(U* lhs,
-                                                    const raw_ptr& rhs) {
-    return lhs <= rhs.GetForComparison();
-  }
-  template <typename U>
-  PA_ALWAYS_INLINE friend constexpr bool operator>(U* lhs, const raw_ptr& rhs) {
-    return lhs > rhs.GetForComparison();
-  }
-  template <typename U>
-  PA_ALWAYS_INLINE friend constexpr bool operator>=(U* lhs,
-                                                    const raw_ptr& rhs) {
-    return lhs >= rhs.GetForComparison();
-  }
-#endif
 
   // Comparisons with `std::nullptr_t`.
   PA_ALWAYS_INLINE friend constexpr bool operator==(const raw_ptr& lhs,
@@ -1033,37 +1027,11 @@ PA_ALWAYS_INLINE constexpr bool operator!=(const raw_ptr<U, Traits1>& lhs,
   return !(lhs == rhs);
 }
 
-#if PA_HAVE_SPACESHIP_OPERATOR
 template <typename U, typename V, RawPtrTraits Traits1, RawPtrTraits Traits2>
 PA_ALWAYS_INLINE constexpr auto operator<=>(const raw_ptr<U, Traits1>& lhs,
                                             const raw_ptr<V, Traits2>& rhs) {
   return lhs.GetForComparison() <=> rhs.GetForComparison();
 }
-#else
-template <typename U, typename V, RawPtrTraits Traits1, RawPtrTraits Traits2>
-PA_ALWAYS_INLINE constexpr bool operator<(const raw_ptr<U, Traits1>& lhs,
-                                          const raw_ptr<V, Traits2>& rhs) {
-  return lhs.GetForComparison() < rhs.GetForComparison();
-}
-
-template <typename U, typename V, RawPtrTraits Traits1, RawPtrTraits Traits2>
-PA_ALWAYS_INLINE constexpr bool operator>(const raw_ptr<U, Traits1>& lhs,
-                                          const raw_ptr<V, Traits2>& rhs) {
-  return lhs.GetForComparison() > rhs.GetForComparison();
-}
-
-template <typename U, typename V, RawPtrTraits Traits1, RawPtrTraits Traits2>
-PA_ALWAYS_INLINE constexpr bool operator<=(const raw_ptr<U, Traits1>& lhs,
-                                           const raw_ptr<V, Traits2>& rhs) {
-  return lhs.GetForComparison() <= rhs.GetForComparison();
-}
-
-template <typename U, typename V, RawPtrTraits Traits1, RawPtrTraits Traits2>
-PA_ALWAYS_INLINE constexpr bool operator>=(const raw_ptr<U, Traits1>& lhs,
-                                           const raw_ptr<V, Traits2>& rhs) {
-  return lhs.GetForComparison() >= rhs.GetForComparison();
-}
-#endif
 
 template <typename T>
 inline constexpr bool IsRawPtr = false;
@@ -1092,6 +1060,20 @@ struct RemovePointer<raw_ptr<T, Traits>> {
 };
 template <typename T>
 using RemovePointerT = typename RemovePointer<T>::type;
+
+// Like `raw_ptr<RemovePointerT<T>>` but handles the case where T might
+// not be a pointer type without introducing another layer of indirection.
+template <typename T, RawPtrTraits Traits>
+struct RawPtrIfPtr {
+  using type = T;
+};
+template <typename T, RawPtrTraits Traits>
+  requires(!std::is_same_v<T, RemovePointerT<T>>)
+struct RawPtrIfPtr<T, Traits> {
+  using type = raw_ptr<RemovePointerT<T>, Traits>;
+};
+template <typename T, RawPtrTraits Traits = RawPtrTraits::kEmpty>
+using RawPtrIfPtrT = typename RawPtrIfPtr<T, Traits>::type;
 
 }  // namespace base
 
@@ -1176,6 +1158,17 @@ constexpr inline auto SetExperimental = base::RawPtrTraits::kMayDangle;
 // DanglingUntriaged where necessary.
 constexpr inline auto CtnExperimental = base::RawPtrTraits::kMayDangle;
 
+// Marks the pointer as unprotected-in-release. The trait is always present on
+// the type; how it resolves depends on the
+// ENABLE_BRP_FOR_UNPROTECTED_IN_RELEASE_RAW_PTR build flag (see
+// `raw_ptr_traits::ImplForTraits`):
+//   - flag off (release): resolves to RawPtrNoOpImpl, i.e. no protection.
+//   - flag on (debug/dcheck and BRP-ASan): stays instrumented so dangling
+//     pointer detection still covers it, while the instrumentation can tell
+//     that the field is unprotected in a release build.
+constexpr inline auto UnprotectedInRelease =
+    base::RawPtrTraits::kIsUnprotectedInRelease;
+
 // Public verson used in callbacks arguments when it is known that they might
 // receive dangling pointers. In any other cases, please
 // use one of:
@@ -1210,13 +1203,17 @@ struct less<raw_ptr<T, Traits>> {
   }
 };
 
+// Override so flat_hash_set/flat_hash_map lookups do not create extra raw_ptr.
+// This also allows dangling pointers to be used for lookup.
 template <typename T, base::RawPtrTraits Traits>
 struct hash<raw_ptr<T, Traits>> {
-  typedef raw_ptr<T, Traits> argument_type;
-  typedef std::size_t result_type;
-  result_type operator()(argument_type const& ptr) const {
+  using is_transparent = void;
+
+  size_t operator()(const raw_ptr<T, Traits>& ptr) const {
     return hash<T*>()(ptr.get());
   }
+
+  size_t operator()(T* ptr) const { return hash<T*>()(ptr); }
 };
 
 // Define for cases where raw_ptr<T> holds a pointer to an array of type T.
@@ -1255,7 +1252,6 @@ struct pointer_traits<::raw_ptr<T, Traits>> {
   }
 };
 
-#if PA_BUILDFLAG(ASSERT_CPP_20)
 // Mark `raw_ptr<T>` and `T*` as having a common reference type (the type to
 // which both can be converted or bound) of `T*`. This makes them satisfy
 // `std::equality_comparable`, which allows usage like:
@@ -1281,7 +1277,6 @@ template <typename T,
 struct basic_common_reference<T*, raw_ptr<T, Traits>, TQ, UQ> {
   using type = T*;
 };
-#endif  // PA_BUILDFLAG(ASSERT_CPP_20)
 
 }  // namespace std
 

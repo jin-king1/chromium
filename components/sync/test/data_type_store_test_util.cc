@@ -4,17 +4,21 @@
 
 #include "components/sync/test/data_type_store_test_util.h"
 
+#include <memory>
 #include <utility>
 
 #include "base/debug/leak_annotations.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/run_loop.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/test/bind.h"
 #include "components/sync/base/data_type.h"
 #include "components/sync/model/blocking_data_type_store_impl.h"
 #include "components/sync/model/data_type_store_backend.h"
 #include "components/sync/model/data_type_store_impl.h"
+#include "components/sync/model/metadata_change_list.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace syncer {
@@ -55,13 +59,21 @@ class ForwardingDataTypeStore : public DataTypeStore {
     return other_->CreateWriteBatch();
   }
 
+  std::unique_ptr<WriteBatch> CreateWriteBatch(
+      std::unique_ptr<MetadataChangeList> metadata_change_list) override {
+    return other_->CreateWriteBatch(std::move(metadata_change_list));
+  }
+
   void CommitWriteBatch(std::unique_ptr<WriteBatch> write_batch,
                         CallbackWithResult callback) override {
     other_->CommitWriteBatch(std::move(write_batch), std::move(callback));
   }
 
-  void DeleteAllDataAndMetadata(CallbackWithResult callback) override {
-    other_->DeleteAllDataAndMetadata(std::move(callback));
+  void DeleteAllDataAndMetadata(
+      std::unique_ptr<MetadataChangeList> metadata_change_list,
+      CallbackWithResult callback) override {
+    other_->DeleteAllDataAndMetadata(std::move(metadata_change_list),
+                                     std::move(callback));
   }
 
  private:
@@ -121,6 +133,54 @@ RepeatingDataTypeStoreFactory DataTypeStoreTestUtil::FactoryForForwardingStore(
             std::make_unique<ForwardingDataTypeStore>(target));
       },
       base::Unretained(target));
+}
+
+// static
+DataTypeStore::RecordList DataTypeStoreTestUtil::ReadAllDataAndWait(
+    DataTypeStore& store) {
+  DataTypeStore::RecordList result;
+  base::RunLoop loop;
+  store.ReadAllData(base::BindLambdaForTesting(
+      [&result, &loop](
+          const std::optional<ModelError>& error,
+          std::unique_ptr<DataTypeStore::RecordList> data_records) {
+        if (error.has_value()) {
+          ADD_FAILURE() << error->ToString();
+        } else if (!data_records) {
+          ADD_FAILURE() << "data_records is null";
+        } else {
+          result = std::move(*data_records);
+        }
+        loop.Quit();
+      }));
+  loop.Run();
+  return result;
+}
+
+// static
+void DataTypeStoreTestUtil::WriteDataTypeStateAndWait(
+    DataTypeStore& store,
+    const sync_pb::DataTypeState& data_type_state) {
+  std::unique_ptr<DataTypeStore::WriteBatch> batch = store.CreateWriteBatch();
+  batch->GetMetadataChangeList()->UpdateDataTypeState(data_type_state);
+  base::RunLoop run_loop;
+  store.CommitWriteBatch(
+      std::move(batch),
+      base::BindLambdaForTesting([&](const std::optional<ModelError>& error) {
+        if (error.has_value()) {
+          ADD_FAILURE() << error->ToString();
+        }
+        run_loop.Quit();
+      }));
+  run_loop.Run();
+}
+
+// static
+void DataTypeStoreTestUtil::WriteInitialSyncDoneAndWait(DataTypeStore& store) {
+  sync_pb::DataTypeState data_type_state;
+  data_type_state.set_initial_sync_state(
+      sync_pb::DataTypeState_InitialSyncState_INITIAL_SYNC_DONE);
+  WriteDataTypeStateAndWait(store, data_type_state);
 }
 
 }  // namespace syncer

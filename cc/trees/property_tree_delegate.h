@@ -9,7 +9,7 @@
 
 #include "cc/input/scroll_snap_data.h"
 #include "cc/paint/element_id.h"
-#include "cc/trees/mutator_host_client.h"
+#include "cc/trees/mutator_host_delegate.h"
 
 namespace gfx {
 class Vector2dF;
@@ -20,8 +20,9 @@ namespace cc {
 
 class LayerTreeHost;
 struct ViewportPropertyIds;
+enum class ScrollSourceType;
 
-// This is an interface that LayerTreeHosts and LayerTreeHostClients can
+// This is an interface that LayerTreeHosts and LayerTreeHostDelegates can
 // implement to control how the host's property trees are kept up to date.
 // There are two default implementations, in PropertyTreeLayerListDelegate and
 // PropertyTreeLayerTreeDelegate, depending on whether the LayerTreeHost is in
@@ -47,6 +48,7 @@ class PropertyTreeDelegate {
   virtual void UpdateScrollOffsetFromImpl(
       const ElementId& id,
       const gfx::Vector2dF& delta,
+      ScrollSourceType type,
       const std::optional<TargetSnapAreaElementIds>& snap_target_ids) = 0;
 
   virtual void OnAnimateLayers() = 0;

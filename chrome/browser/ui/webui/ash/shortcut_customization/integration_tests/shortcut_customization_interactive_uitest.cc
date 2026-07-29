@@ -8,11 +8,11 @@
 #include "ash/public/cpp/accelerator_actions.h"
 #include "ash/shell.h"
 #include "ash/webui/settings/public/constants/routes.mojom-forward.h"
+#include "ash/webui/settings/public/constants/routes_util.h"
 #include "ash/webui/shortcut_customization_ui/url_constants.h"
 #include "base/json/json_writer.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
-#include "base/test/scoped_feature_list.h"
-#include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/test/base/ash/interactive/interactive_ash_test.h"
 #include "device/udev_linux/fake_udev_loader.h"
 #include "ui/base/accelerators/accelerator.h"
@@ -35,7 +35,7 @@ constexpr char kKbdTopRowLayout1Tag[] = "1";
 
 std::string ConvertVectorToJsonList(const std::vector<std::string>& expected) {
   // Safely convert the selector list in `where` to a JSON/JS list.
-  base::Value::List selector_list;
+  base::ListValue selector_list;
   for (const auto& selector : expected) {
     selector_list.Append(selector);
   }
@@ -49,11 +49,6 @@ class ShortcutCustomizationInteractiveUiTest : public InteractiveAshTest {
   ShortcutCustomizationInteractiveUiTest() {
     DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kShortcutAppWebContentsId);
     webcontents_id_ = kShortcutAppWebContentsId;
-
-    feature_list_.InitWithFeatures(
-        {ash::features::kInputDeviceSettingsSplit,
-         ash::features::kEnableKeyboardBacklightControlInSettings},
-        {});
   }
   // InteractiveAshTest:
   void SetUpOnMainThread() override {
@@ -129,10 +124,7 @@ class ShortcutCustomizationInteractiveUiTest : public InteractiveAshTest {
   ui::test::InteractiveTestApi::StepBuilder SendKeyPressEvent(
       ui::KeyboardCode key,
       int modifier) {
-    return Do([key, modifier]() {
-      ui::test::EventGenerator(Shell::GetPrimaryRootWindow())
-          .PressKey(key, modifier);
-    });
+    return SendKeyPress(webcontents_id_, key, modifier);
   }
 
   auto OpenEditShortcutDialog(const DeepQuery& query) {
@@ -346,7 +338,6 @@ class ShortcutCustomizationInteractiveUiTest : public InteractiveAshTest {
  protected:
   testing::FakeUdevLoader fake_udev_;
   std::vector<ui::KeyboardDevice> fake_keyboard_devices_;
-  base::test::ScopedFeatureList feature_list_;
   ui::ElementIdentifier webcontents_id_;
 };
 
@@ -461,26 +452,6 @@ IN_PROC_BROWSER_TEST_F(ShortcutCustomizationInteractiveUiTest,
 }
 
 IN_PROC_BROWSER_TEST_F(ShortcutCustomizationInteractiveUiTest,
-                       SearchShortcutUsingCtrlF) {
-  const DeepQuery kSearchRowActionQuery{
-      "shortcut-customization-app",
-      "#searchBoxWrapper > search-box",
-      "#frb0",
-      "#searchResultRowInner",
-  };
-
-  RunTestSequence(
-      LaunchShortcutCustomizationApp(),
-      InAnyContext(
-          Log("Use Ctrl + F to focus search box"),
-          SendKeyPressEvent(ui::VKEY_F, ui::EF_CONTROL_DOWN),
-          Log("Searching for 'Redo last action' shortcut"),
-          EnterLowerCaseText("redo"),
-          Log("Verifying that 'Redo last action' search result row is visible"),
-          WaitForElementExists(webcontents_id_, kSearchRowActionQuery)));
-}
-
-IN_PROC_BROWSER_TEST_F(ShortcutCustomizationInteractiveUiTest,
                        OpenKeyboardSettings) {
   const DeepQuery kKeyboardSettingsLink{
       "shortcut-customization-app",
@@ -495,7 +466,7 @@ IN_PROC_BROWSER_TEST_F(ShortcutCustomizationInteractiveUiTest,
       ClickElement(webcontents_id_, kKeyboardSettingsLink),
       WaitForWebContentsReady(
           kSettingsWebContentsId,
-          GURL(chrome::GetOSSettingsUrl(
+          GURL(chromeos::settings::GetOSSettingsUrl(
               chromeos::settings::mojom::kPerDeviceKeyboardSubpagePath))));
 }
 

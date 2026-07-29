@@ -23,22 +23,17 @@
 #include "mojo/public/cpp/bindings/associated_receiver.h"
 #include "mojo/public/cpp/bindings/associated_receiver_set.h"
 #include "mojo/public/cpp/bindings/associated_remote.h"
-#include "mojo/public/cpp/bindings/receiver.h"
-#include "mojo/public/cpp/bindings/remote.h"
 #include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/public/mojom/frame/frame_replication_state.mojom-forward.h"
-#include "third_party/blink/public/mojom/shared_storage/shared_storage_worklet_service.mojom-forward.h"
 #include "third_party/blink/public/mojom/worker/worklet_global_scope_creation_params.mojom-forward.h"
 
 namespace IPC {
 class ChannelProxy;
-class Message;
 }  // namespace IPC
 
 namespace content {
 
 class AgentSchedulingGroupHostFactory;
-class BrowserMessageFilter;
 class RenderProcessHost;
 class SiteInstanceGroup;
 
@@ -76,10 +71,6 @@ class CONTENT_EXPORT AgentSchedulingGroupHost
   explicit AgentSchedulingGroupHost(RenderProcessHost& process);
   ~AgentSchedulingGroupHost() override;
 
-#if BUILDFLAG(CONTENT_ENABLE_LEGACY_IPC)
-  void AddFilter(BrowserMessageFilter* filter);
-#endif
-
   RenderProcessHost* GetProcess();
   // Ensure that the process this AgentSchedulingGroupHost belongs to is alive.
   // Returns |false| if any part of the initialization failed.
@@ -94,8 +85,6 @@ class CONTENT_EXPORT AgentSchedulingGroupHost
   // the future they will be handled directly by the AgentSchedulingGroupHost.
   // IPC:
   IPC::ChannelProxy* GetChannel();
-  // This is marked virtual for use in tests by `MockAgentSchedulingGroupHost`.
-  virtual bool Send(IPC::Message* message);
   void AddRoute(int32_t routing_id, IPC::Listener* listener);
   void RemoveRoute(int32_t routing_id);
 
@@ -103,10 +92,6 @@ class CONTENT_EXPORT AgentSchedulingGroupHost
   mojom::RouteProvider* GetRemoteRouteProvider();
   void CreateFrame(mojom::CreateFrameParamsPtr params);
   void CreateView(mojom::CreateViewParamsPtr params);
-  void CreateSharedStorageWorkletService(
-      mojo::PendingReceiver<blink::mojom::SharedStorageWorkletService> receiver,
-      blink::mojom::WorkletGlobalScopeCreationParamsPtr
-          global_scope_creation_params);
 
   static void set_agent_scheduling_group_host_factory_for_testing(
       AgentSchedulingGroupHostFactory* asgh_factory);
@@ -136,8 +121,7 @@ class CONTENT_EXPORT AgentSchedulingGroupHost
   friend std::ostream& operator<<(std::ostream& os, LifecycleState state);
 
   // IPC::Listener
-  bool OnMessageReceived(const IPC::Message& message) override;
-  void OnBadMessageReceived(const IPC::Message& message) override;
+  void OnBadMessageReceived() override;
   void OnAssociatedInterfaceRequest(
       const std::string& interface_name,
       mojo::ScopedInterfaceEndpointHandle handle) override;
@@ -157,10 +141,7 @@ class CONTENT_EXPORT AgentSchedulingGroupHost
   static int32_t GetNextID();
 
   // The RenderProcessHost this AgentSchedulingGroup is assigned to.
-  //
-  // TODO(crbug.com/40061679): Change back to `raw_ref` after the ad-hoc
-  // debugging is no longer needed to investigate the bug.
-  const base::SafeRef<RenderProcessHost> process_;
+  const raw_ref<RenderProcessHost> process_;
 
   int32_t id_for_debugging_{GetNextID()};
 

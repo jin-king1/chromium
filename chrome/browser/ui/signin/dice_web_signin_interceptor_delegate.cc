@@ -13,18 +13,26 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/strcat.h"
 #include "base/task/single_thread_task_runner.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/chrome_signin_client_factory.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/signin/signin_util.h"
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/themes/theme_service_factory.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+#include "chrome/browser/ui/signin/signin_view_controller.h"
+#include "chrome/browser/ui/webui/signin/login_ui_service.h"
+#include "chrome/browser/ui/webui/signin/login_ui_service_factory.h"
 #include "chrome/browser/ui/webui/signin/signin_utils.h"
 #include "components/signin/public/base/signin_metrics.h"
 #include "components/signin/public/base/signin_switches.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
+#include "components/signin/public/identity_manager/tribool.h"
+#include "components/tabs/public/tab_interface.h"
 #include "google_apis/gaia/core_account_id.h"
 #include "google_apis/gaia/gaia_auth_util.h"
 
@@ -64,31 +72,35 @@ class OidcEnterpriseSigninInterceptionHandle
     DCHECK(callback_);
     CHECK(bubble_parameters.interception_type ==
           WebSigninInterceptor::SigninInterceptionType::kEnterpriseOIDC);
-    browser_->signin_view_controller()->ShowModalManagedUserNoticeDialog(
-        std::make_unique<signin::EnterpriseProfileCreationDialogParams>(
-            bubble_parameters.intercepted_account,
-            /*is_OIDC_account=*/true,
-            /*turn_sync_on_signed_profile=*/false,
-            /*profile_creation_required_by_policy=*/true,
-            /*show_link_data_option=*/false,
-            /*process_user_choice_callback=*/
-            base::BindOnce(&OidcEnterpriseSigninInterceptionHandle::
-                               OnEnterpriseInterceptionUserChoice,
-                           weak_ptr_factory_.GetWeakPtr()),
-            /*done_callback=*/
-            base::BindOnce(&SigninViewController::CloseModalSignin,
-                           browser_->signin_view_controller()->AsWeakPtr())
-                .Then(std::move(dialog_closed_closure)),
-            /*retry_callback=*/std::move(retry_callback)));
+    browser_->GetFeatures()
+        .signin_view_controller()
+        ->ShowModalManagedUserNoticeDialog(
+            std::make_unique<signin::EnterpriseProfileCreationDialogParams>(
+                bubble_parameters.intercepted_account,
+                /*is_OIDC_account=*/true,
+                /*user_already_signed_in=*/false,
+                /*profile_creation_required_by_policy=*/true,
+                /*show_link_data_option=*/false,
+                /*process_user_choice_callback=*/
+                base::BindOnce(&OidcEnterpriseSigninInterceptionHandle::
+                                   OnEnterpriseInterceptionUserChoice,
+                               weak_ptr_factory_.GetWeakPtr()),
+                /*done_callback=*/
+                base::BindOnce(&SigninViewController::CloseModalSignin,
+                               browser_->GetFeatures()
+                                   .signin_view_controller()
+                                   ->AsWeakPtr())
+                    .Then(std::move(dialog_closed_closure)),
+                /*retry_callback=*/std::move(retry_callback)));
   }
 
   ~OidcEnterpriseSigninInterceptionHandle() override {
     if (browser_) {
-      browser_->signin_view_controller()->CloseModalSignin();
+      browser_->GetFeatures().signin_view_controller()->CloseModalSignin();
     }
     if (callback_) {
       DiceWebSigninInterceptorDelegate::RecordInterceptionResult(
-          bubble_parameters_, browser_->profile(),
+          bubble_parameters_, browser_->GetProfile(),
           SigninInterceptionResult::kDeclined);
       std::move(callback_).Run(signin::SIGNIN_CHOICE_CANCEL, base::DoNothing(),
                                base::DoNothing());
@@ -115,7 +127,7 @@ class OidcEnterpriseSigninInterceptionHandle
         NOTREACHED();
     }
     DiceWebSigninInterceptorDelegate::RecordInterceptionResult(
-        bubble_parameters_, browser_->profile(), interception_result);
+        bubble_parameters_, browser_->GetProfile(), interception_result);
     std::move(callback_).Run(result, std::move(done_callback),
                              std::move(retry_callback));
   }
@@ -143,30 +155,34 @@ class ForcedEnterpriseSigninInterceptionHandle
         callback_(std::move(callback)) {
     DCHECK(browser_);
     DCHECK(callback_);
-    browser_->signin_view_controller()->ShowModalManagedUserNoticeDialog(
-        std::make_unique<signin::EnterpriseProfileCreationDialogParams>(
-            bubble_parameters.intercepted_account,
-            /*is_OIDC_account=*/bubble_parameters.interception_type ==
-                WebSigninInterceptor::SigninInterceptionType::kEnterpriseOIDC,
-            /*turn_sync_on_signed_profile=*/false,
-            profile_creation_required_by_policy_, show_link_data_option_,
-            /*process_user_choice_callback=*/
-            base::BindOnce(&ForcedEnterpriseSigninInterceptionHandle::
-                               OnEnterpriseInterceptionDialogClosed,
-                           weak_ptr_factory_.GetWeakPtr()),
-            /*done_callback=*/
-            base::BindOnce(&SigninViewController::CloseModalSignin,
-                           browser_->signin_view_controller()->AsWeakPtr())));
+    browser_->GetFeatures()
+        .signin_view_controller()
+        ->ShowModalManagedUserNoticeDialog(
+            std::make_unique<signin::EnterpriseProfileCreationDialogParams>(
+                bubble_parameters.intercepted_account,
+                /*is_OIDC_account=*/bubble_parameters.interception_type ==
+                    WebSigninInterceptor::SigninInterceptionType::
+                        kEnterpriseOIDC,
+                /*user_already_signed_in=*/false,
+                profile_creation_required_by_policy_, show_link_data_option_,
+                /*process_user_choice_callback=*/
+                base::BindOnce(&ForcedEnterpriseSigninInterceptionHandle::
+                                   OnEnterpriseInterceptionDialogClosed,
+                               weak_ptr_factory_.GetWeakPtr()),
+                base::BindOnce(&SigninViewController::CloseModalSignin,
+                               browser_->GetFeatures()
+                                   .signin_view_controller()
+                                   ->AsWeakPtr())));
   }
 
   ~ForcedEnterpriseSigninInterceptionHandle() override {
     if (!browser_) {
       return;
     }
-    browser_->signin_view_controller()->CloseModalSignin();
+    browser_->GetFeatures().signin_view_controller()->CloseModalSignin();
     if (callback_) {
       DiceWebSigninInterceptorDelegate::RecordInterceptionResult(
-          bubble_parameters_, browser_->profile(),
+          bubble_parameters_, browser_->GetProfile(),
           SigninInterceptionResult::kDeclined);
       std::move(callback_).Run(SigninInterceptionResult::kDeclined);
     }
@@ -193,7 +209,7 @@ class ForcedEnterpriseSigninInterceptionHandle
         NOTREACHED();
     }
     DiceWebSigninInterceptorDelegate::RecordInterceptionResult(
-        bubble_parameters_, browser_->profile(), interception_result);
+        bubble_parameters_, browser_->GetProfile(), interception_result);
     std::move(callback_).Run(interception_result);
   }
 
@@ -214,7 +230,8 @@ DiceWebSigninInterceptorDelegate::~DiceWebSigninInterceptorDelegate() = default;
 
 bool DiceWebSigninInterceptorDelegate::IsSigninInterceptionSupported(
     const content::WebContents& web_contents) {
-  Browser* browser = chrome::FindBrowserWithTab(&web_contents);
+  BrowserWindowInterface* browser =
+      GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(&web_contents);
   // The profile creation flow has no browser.
   if (!browser) {
     return false;
@@ -245,13 +262,26 @@ DiceWebSigninInterceptorDelegate::ShowSigninInterceptionBubble(
       bubble_parameters.interception_type ==
           WebSigninInterceptor::SigninInterceptionType::
               kEnterpriseAcceptManagement) {
+    BrowserWindowInterface* browser =
+        GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
+            web_contents);
+    if (!browser) {
+      std::move(callback).Run(SigninInterceptionResult::kNotDisplayed);
+      return nullptr;
+    }
     return std::make_unique<ForcedEnterpriseSigninInterceptionHandle>(
-        chrome::FindBrowserWithTab(web_contents), bubble_parameters,
+        browser->GetBrowserForMigrationOnly(), bubble_parameters,
         std::move(callback));
   }
 
+  BrowserWindowInterface* browser =
+      GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(web_contents);
+  if (!browser) {
+    std::move(callback).Run(SigninInterceptionResult::kNotDisplayed);
+    return nullptr;
+  }
   return ShowSigninInterceptionBubbleInternal(
-      chrome::FindBrowserWithTab(web_contents), bubble_parameters,
+      browser->GetBrowserForMigrationOnly(), bubble_parameters,
       std::move(callback));
 }
 
@@ -264,9 +294,11 @@ DiceWebSigninInterceptorDelegate::ShowOidcInterceptionDialog(
     base::RepeatingClosure retry_callback) {
   CHECK_EQ(bubble_parameters.interception_type,
            WebSigninInterceptor::SigninInterceptionType::kEnterpriseOIDC);
+  BrowserWindowInterface* browser =
+      GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(web_contents);
   return std::make_unique<OidcEnterpriseSigninInterceptionHandle>(
-      chrome::FindBrowserWithTab(web_contents), bubble_parameters,
-      std::move(callback), std::move(dialog_closed_closure),
+      browser ? browser->GetBrowserForMigrationOnly() : nullptr,
+      bubble_parameters, std::move(callback), std::move(dialog_closed_closure),
       std::move(retry_callback));
 }
 
@@ -274,14 +306,35 @@ void DiceWebSigninInterceptorDelegate::ShowFirstRunExperienceInNewProfile(
     Browser* browser,
     const CoreAccountId& account_id,
     WebSigninInterceptor::SigninInterceptionType interception_type) {
-  browser->signin_view_controller()->ShowModalInterceptFirstRunExperienceDialog(
-      account_id,
-      interception_type ==
-          WebSigninInterceptor::SigninInterceptionType::kEnterpriseForced);
+  browser->GetFeatures()
+      .signin_view_controller()
+      ->ShowModalInterceptFirstRunExperienceDialog(
+          account_id,
+          interception_type ==
+              WebSigninInterceptor::SigninInterceptionType::kEnterpriseForced);
+}
+
+void DiceWebSigninInterceptorDelegate::ShowSigninError(
+    content::WebContents* web_contents,
+    const SigninUIError& error) {
+  if (!web_contents) {
+    return;
+  }
+
+  Browser* browser = tabs::TabInterface::GetFromContents(web_contents)
+                         ->GetBrowserWindowInterface()
+                         ->GetBrowserForMigrationOnly();
+  if (!browser) {
+    return;
+  }
+
+  LoginUIServiceFactory::GetForProfile(
+      Profile::FromBrowserContext(web_contents->GetBrowserContext()))
+      ->DisplayLoginResult(browser->GetFeatures(), error);
 }
 
 // static
-std::string DiceWebSigninInterceptorDelegate::GetHistogramSuffix(
+std::string_view DiceWebSigninInterceptorDelegate::GetHistogramSuffix(
     WebSigninInterceptor::SigninInterceptionType interception_type) {
   switch (interception_type) {
     case WebSigninInterceptor::SigninInterceptionType::kEnterprise:
@@ -341,11 +394,13 @@ void DiceWebSigninInterceptorDelegate::RecordInterceptionResult(
   // For Enterprise, slice per enterprise status for each account.
   if (bubble_parameters.interception_type ==
       WebSigninInterceptor::SigninInterceptionType::kEnterprise) {
-    if (bubble_parameters.intercepted_account.IsManaged()) {
+    if (bubble_parameters.intercepted_account.IsManaged() ==
+        signin::Tribool::kTrue) {
       base::UmaHistogramEnumeration(
           base::StrCat({histogram_base_name, ".NewIsEnterprise"}), result);
     }
-    if (bubble_parameters.primary_account.IsManaged()) {
+    if (bubble_parameters.primary_account.IsManaged() ==
+        signin::Tribool::kTrue) {
       base::UmaHistogramEnumeration(
           base::StrCat({histogram_base_name, ".PrimaryIsEnterprise"}), result);
     }

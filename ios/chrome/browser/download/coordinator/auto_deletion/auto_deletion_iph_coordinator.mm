@@ -8,7 +8,6 @@
 #import "ios/chrome/browser/download/coordinator/auto_deletion/auto_deletion_mediator.h"
 #import "ios/chrome/browser/download/ui/auto_deletion/auto_deletion_iph_view_controller.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
-#import "ios/web/public/download/download_task.h"
 #import "ui/base/device_form_factor.h"
 
 @implementation AutoDeletionIPHCoordinator {
@@ -16,19 +15,8 @@
   AutoDeletionIPHViewController* _viewController;
   // The mediator for auto-deletion.
   AutoDeletionMediator* _mediator;
-  // The task that is downloading the content to the device.
-  raw_ptr<web::DownloadTask> _downloadTask;
-}
-
-- (instancetype)initWithBaseViewController:(UIViewController*)baseViewController
-                                   browser:(Browser*)browser
-                              downloadTask:(web::DownloadTask*)task {
-  self = [super initWithBaseViewController:baseViewController browser:browser];
-  if (self) {
-    _downloadTask = task;
-  }
-
-  return self;
+  // The navigation controller containing the View Controller.
+  UINavigationController* _navigationController;
 }
 
 - (void)start {
@@ -36,17 +24,32 @@
       [[AutoDeletionIPHViewController alloc] initWithBrowser:self.browser];
   PrefService* localState = GetApplicationContext()->GetLocalState();
   _mediator = [[AutoDeletionMediator alloc] initWithLocalState:localState
-                                                       browser:self.browser
-                                                  downloadTask:_downloadTask];
+                                                       browser:self.browser];
   _viewController.mutator = _mediator;
-  [self.baseViewController presentViewController:_viewController
+
+  _navigationController = [[UINavigationController alloc]
+      initWithRootViewController:_viewController];
+
+  _navigationController.modalPresentationStyle = UIModalPresentationPageSheet;
+  UISheetPresentationController* presentationController =
+      _navigationController.sheetPresentationController;
+  presentationController.prefersEdgeAttachedInCompactHeight = YES;
+  presentationController.detents = @[
+    [UISheetPresentationControllerDetent mediumDetent],
+    [UISheetPresentationControllerDetent largeDetent]
+  ];
+
+  [self.baseViewController presentViewController:_navigationController
                                         animated:YES
                                       completion:nil];
 }
 
 - (void)stop {
-  [_viewController dismissViewControllerAnimated:YES completion:nil];
+  [_navigationController.presentingViewController
+      dismissViewControllerAnimated:YES
+                         completion:nil];
   _viewController = nullptr;
+  _navigationController = nil;
 }
 
 @end

@@ -10,6 +10,7 @@ import android.app.backup.BackupDataOutput;
 import android.content.Context;
 import android.os.ParcelFileDescriptor;
 
+import org.chromium.base.ContextUtils;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 
@@ -21,7 +22,7 @@ import java.io.IOException;
  */
 @NullMarked
 public class SplitCompatBackupAgent extends BackupAgent {
-    private String mBackupAgentClassName;
+    private final String mBackupAgentClassName;
     private Impl mImpl;
 
     public SplitCompatBackupAgent(String backupAgentClassName) {
@@ -30,6 +31,12 @@ public class SplitCompatBackupAgent extends BackupAgent {
 
     @Override
     protected void attachBaseContext(Context baseContext) {
+        if (ContextUtils.getApplicationContextUnsafe() == null) {
+            // In restricted mode, a BackupAgent may skip initializing our Application class and
+            // instead just instantiate the base android.app.Application. This means it would skip
+            // our normal spot where we set the application context.
+            ContextUtils.initApplicationContext(getApplicationContext());
+        }
         mImpl =
                 (Impl)
                         SplitCompatUtils.loadClassAndAdjustContextChrome(
@@ -67,7 +74,9 @@ public class SplitCompatBackupAgent extends BackupAgent {
         }
 
         public abstract void onBackup(
-                ParcelFileDescriptor oldState, BackupDataOutput data, ParcelFileDescriptor newState)
+                @Nullable ParcelFileDescriptor oldState,
+                BackupDataOutput data,
+                ParcelFileDescriptor newState)
                 throws IOException;
 
         public abstract void onRestore(

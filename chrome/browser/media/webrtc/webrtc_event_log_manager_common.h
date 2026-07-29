@@ -12,7 +12,9 @@
 #include "base/files/file_path.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
-#include "ipc/ipc_message.h"
+#include "components/webrtc_logging/browser/text_log_list.h"
+#include "content/public/common/child_process_id.h"
+#include "ipc/constants.mojom-forward.h"
 
 class Profile;
 
@@ -30,8 +32,11 @@ namespace webrtc_event_logging {
 
 extern const size_t kWebRtcEventLogManagerUnlimitedFileSize;
 
-extern const size_t kDefaultMaxLocalLogFileSizeBytes;
+extern const size_t kDefaultMaxLocalEventLogFileSizeBytes;
 extern const size_t kMaxNumberLocalWebRtcEventLogFiles;
+
+extern const size_t kDefaultMaxLocalDataChannelFileSizeBytes;
+extern const size_t kMaxNumberLocalWebRtcDataChannelLogFiles;
 
 extern const size_t kMaxRemoteLogFileSizeBytes;
 
@@ -47,6 +52,9 @@ extern const size_t kWebRtcEventLogIdLength;
 extern const size_t kMinWebRtcEventLogWebAppId;
 extern const size_t kMaxWebRtcEventLogWebAppId;
 
+extern const size_t kSameSiteWebAppId;
+extern const size_t kCrossSiteWebAppId;
+
 // Sentinel value, guaranteed not to fall inside the range of min-max valid IDs.
 extern const size_t kInvalidWebRtcEventLogWebAppId;
 
@@ -55,13 +63,13 @@ extern const size_t kInvalidWebRtcEventLogWebAppId;
 // applied globally (all browser contexts are limited together).
 extern const size_t kMaxActiveRemoteBoundWebRtcEventLogs;
 
-// Limit over the number of pending logs (logs stored on disk and awaiting to
-// be uploaded to a remote server). This limit avoids excessive storage. If a
+// Limit over the number of logs stored on disk, local-only or awaiting to
+// be uploaded to a remote server. This limit avoids excessive storage. If a
 // user chooses to have multiple profiles (and hence browser contexts) on a
 // system, it is assumed that the user has enough storage to accommodate
 // the increased storage consumption that comes with it. Therefore, this
 // limit is applied per browser context.
-extern const size_t kMaxPendingRemoteBoundWebRtcEventLogs;
+extern const size_t kMaxPendingAndLocalOnlyRemoteBoundWebRtcEventLogs;
 
 // Max number of history files that may be kept; after this number is exceeded,
 // the oldest logs should be pruned.
@@ -97,7 +105,7 @@ extern const base::TimeDelta kRemoteBoundWebRtcEventLogsMaxRetention;
 
 // These are made globally visible so that unit tests may check for them.
 extern const char kStartRemoteLoggingFailureAlreadyLogging[];
-extern const char kStartRemoteLoggingFailureDeadRenderProcessHost[];
+// extern const char OBSOLETE_kStartRemoteLoggingFailureDeadRenderProcessHost[];
 extern const char kStartRemoteLoggingFailureFeatureDisabled[];
 extern const char kStartRemoteLoggingFailureFileCreationError[];
 extern const char kStartRemoteLoggingFailureFilePathUsedHistory[];
@@ -110,6 +118,9 @@ extern const char kStartRemoteLoggingFailureNoAdditionalActiveLogsAllowed[];
 extern const char kStartRemoteLoggingFailureOutputPeriodMsTooLarge[];
 extern const char kStartRemoteLoggingFailureUnknownOrInactivePeerConnection[];
 extern const char kStartRemoteLoggingFailureUnlimitedSizeDisallowed[];
+extern const char kBrowserContextNotFound[];
+
+enum class StopLoggingAction { kStore, kDelete };
 
 // Values for the histogram for the result of the API call to collect
 // a WebRTC event log.
@@ -118,7 +129,7 @@ extern const char kStartRemoteLoggingFailureUnlimitedSizeDisallowed[];
 // numeric values should never be reused.
 enum class WebRtcEventLoggingApiUma {
   kSuccess = 0,                         // Log successfully collected.
-  kDeadRph = 1,                         // Log not collected.
+  kDeadRph_OBSOLETE = 1,                // Log not collected.
   kFeatureDisabled = 2,                 // Log not collected.
   kIncognito = 3,                       // Log not collected.
   kInvalidArguments = 4,                // Log not collected.
@@ -130,7 +141,8 @@ enum class WebRtcEventLoggingApiUma {
   kLogPathNotAvailable = 10,            // Log not collected.
   kHistoryPathNotAvailable = 11,        // Log not collected.
   kFileCreationError = 12,              // Log not collected.
-  kMaxValue = kFileCreationError
+  kBrowserContextNotFound = 13,         // Log not collected.
+  kMaxValue = kBrowserContextNotFound
 };
 
 void UmaRecordWebRtcEventLoggingApi(WebRtcEventLoggingApiUma result);
@@ -173,7 +185,7 @@ struct WebRtcEventLogPeerConnectionKey {
             /*render_process_id=*/0,
             /*lid=*/0,
             reinterpret_cast<BrowserContextId>(nullptr),
-            /*render_frame_id=*/MSG_ROUTING_NONE) {}
+            /*render_frame_id=*/IPC::mojom::kRoutingIdNone) {}
 
   constexpr WebRtcEventLogPeerConnectionKey(int render_process_id,
                                             int lid,
@@ -270,9 +282,15 @@ struct WebRtcLogFileInfo {
 // the paths which will be used for these logs.
 class WebRtcLocalEventLogsObserver {
  public:
-  virtual void OnLocalLogStarted(WebRtcEventLogPeerConnectionKey key,
-                                 const base::FilePath& file_path) = 0;
-  virtual void OnLocalLogStopped(WebRtcEventLogPeerConnectionKey key) = 0;
+  virtual void OnLocalEventLogStarted(WebRtcEventLogPeerConnectionKey key,
+                                      const base::FilePath& file_path) = 0;
+  virtual void OnLocalEventLogStopped(WebRtcEventLogPeerConnectionKey key) = 0;
+
+  virtual void OnLocalDataChannelLogStarted(
+      WebRtcEventLogPeerConnectionKey key,
+      const base::FilePath& file_path) = 0;
+  virtual void OnLocalDataChannelLogStopped(
+      WebRtcEventLogPeerConnectionKey key) = 0;
 
  protected:
   virtual ~WebRtcLocalEventLogsObserver() = default;
@@ -523,7 +541,18 @@ WebRtcEventLogPeerConnectionKey::BrowserContextId GetBrowserContextId(
 // it would have no BrowserContext associated, so the ID associated with a
 // null BrowserContext will be returned.)
 WebRtcEventLogPeerConnectionKey::BrowserContextId GetBrowserContextId(
-    int render_process_id);
+    content::ChildProcessId render_process_id);
+
+// Fetches the BrowserContext associated with the render process ID, then
+// returns its BrowserContextId. (If the render process has already died,
+// it would have no BrowserContext associated, so the ID associated with a
+// null BrowserContext will be returned.)
+inline WebRtcEventLogPeerConnectionKey::BrowserContextId GetBrowserContextId(
+    int render_process_id) {
+  // TODO(crbug.com/379869738) Remove FromUnsafeValue.
+  return GetBrowserContextId(
+      content::ChildProcessId::FromUnsafeValue(render_process_id));
+}
 
 // Given a BrowserContext's directory, return the path to the directory where
 // we store the pending remote-bound logs associated with this BrowserContext.
@@ -543,6 +572,10 @@ base::FilePath WebRtcEventLogPath(const base::FilePath& remote_logs_dir,
 bool IsValidRemoteBoundLogFilename(const std::string& filename);
 bool IsValidRemoteBoundLogFilePath(const base::FilePath& path);
 
+// Checks whether the path/filename refers to a local-only remote-bound log.
+bool IsLocalOnlyRemoteBoundLogFilename(const std::string& filename);
+bool IsLocalOnlyRemoteBoundLogFilePath(const base::FilePath& path);
+
 // Given WebRTC event log's path, return the path to the history file that
 // is, or would be, associated with it.
 base::FilePath GetWebRtcEventLogHistoryFilePath(const base::FilePath& path);
@@ -558,7 +591,8 @@ size_t ExtractRemoteBoundWebRtcEventLogWebAppIdFromPath(
     const base::FilePath& path);
 
 // Used to determine the default value for the policy controlling event logging.
-bool DoesProfileDefaultToLoggingEnabled(const Profile* const profile);
+bool DoesProfileDefaultToLoggingEnabled(const Profile* const profile,
+                                        webrtc_logging::ApiType api_type);
 
 }  // namespace webrtc_event_logging
 

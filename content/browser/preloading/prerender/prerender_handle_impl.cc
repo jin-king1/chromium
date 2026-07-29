@@ -6,21 +6,18 @@
 
 #include <limits>
 
+#include "base/debug/dump_without_crashing.h"
 #include "content/browser/preloading/prerender/prerender_final_status.h"
 #include "content/browser/preloading/prerender/prerender_host.h"
 #include "content/browser/preloading/prerender/prerender_host_registry.h"
+#include "content/public/browser/navigation_handle.h"
+#include "content/public/browser/preloading_data.h"
 #include "content/public/browser/preloading_trigger_type.h"
 #include "url/gurl.h"
 
 namespace content {
 
 namespace {
-
-int32_t GetNextHandleId() {
-  static int32_t next_handle_id = 1;
-  CHECK_LT(next_handle_id, std::numeric_limits<int32_t>::max());
-  return next_handle_id++;
-}
 
 // Returns true when the error callback should be fired. The callback does not
 // need to be fired when prerendering succeed but is never activated, or it is
@@ -39,7 +36,6 @@ bool ShouldFireErrorCallback(PrerenderFinalStatus status) {
     case PrerenderFinalStatus::kInvalidSchemeRedirect:
     case PrerenderFinalStatus::kInvalidSchemeNavigation:
     case PrerenderFinalStatus::kNavigationRequestBlockedByCsp:
-    case PrerenderFinalStatus::kMainFrameNavigation:
     case PrerenderFinalStatus::kMojoBinderPolicy:
     case PrerenderFinalStatus::kRendererProcessCrashed:
     case PrerenderFinalStatus::kRendererProcessKilled:
@@ -112,8 +108,8 @@ bool ShouldFireErrorCallback(PrerenderFinalStatus status) {
       return true;
 
     // These are used for speculation rules, not for embedder triggers.
-    case PrerenderFinalStatus::kMaxNumOfRunningEagerPrerendersExceeded:
-    case PrerenderFinalStatus::kMaxNumOfRunningNonEagerPrerendersExceeded:
+    case PrerenderFinalStatus::kMaxNumOfRunningImmediatePrerendersExceeded:
+    case PrerenderFinalStatus::kMaxNumOfRunningNonImmediatePrerendersExceeded:
       NOTREACHED();
 
     case PrerenderFinalStatus::kMaxNumOfRunningEmbedderPrerendersExceeded:
@@ -142,6 +138,28 @@ bool ShouldFireErrorCallback(PrerenderFinalStatus status) {
     // option or with Clear-Site-Data response headers.
     case PrerenderFinalStatus::kBrowsingDataRemoved:
       return false;
+    // The PrerenderHost is reused by another prerender request.
+    case PrerenderFinalStatus::kPrerenderHostReused:
+      return false;
+    case PrerenderFinalStatus::kFormSubmitWhenPrerendering:
+    case PrerenderFinalStatus::kCrossDocumentRestart:
+      return false;
+  }
+}
+
+PrerenderLifecycleStatus ToPrerenderLifecycleStatus(
+    PrerenderFinalStatus status) {
+  if (!ShouldFireErrorCallback(status)) {
+    return PrerenderLifecycleStatus::kCancelled;
+  }
+
+  switch (status) {
+    case PrerenderFinalStatus::kNavigationBadHttpStatus:
+      return PrerenderLifecycleStatus::kHttpBadResponse;
+    case PrerenderFinalStatus::kStop:
+      return PrerenderLifecycleStatus::kStop;
+    default:
+      return PrerenderLifecycleStatus::kOtherFailure;
   }
 }
 
@@ -149,38 +167,41 @@ bool ShouldFireErrorCallback(PrerenderFinalStatus status) {
 
 PrerenderHandleImpl::PrerenderHandleImpl(
     base::WeakPtr<PrerenderHostRegistry> prerender_host_registry,
-    FrameTreeNodeId frame_tree_node_id,
-    const GURL& prerendering_url)
-    : handle_id_(GetNextHandleId()),
+    PrerenderHostId prerender_host_id,
+    const GURL& prerendering_url,
+    std::optional<net::HttpNoVarySearchData> no_vary_search_hint)
+    : prerender_host_id_(prerender_host_id),
       prerender_host_registry_(std::move(prerender_host_registry)),
-      frame_tree_node_id_(frame_tree_node_id),
-      prerendering_url_(prerendering_url) {
+      prerendering_url_(prerendering_url),
+      no_vary_search_hint_(std::move(no_vary_search_hint)) {
   CHECK(!prerendering_url_.is_empty());
   // PrerenderHandleImpl is now designed only for embedder triggers. If you use
   // this handle for other triggers, please make sure to update the logging etc.
-  auto* prerender_host = GetPrerenderHost();
+  auto* prerender_host =
+      prerender_host_registry_->FindNonReservedHostById(prerender_host_id_);
   CHECK(prerender_host);
   CHECK_EQ(prerender_host->trigger_type(), PreloadingTriggerType::kEmbedder);
-  prerender_host->AddObserver(this);
+  obs_.Observe(prerender_host);
 }
 
 PrerenderHandleImpl::~PrerenderHandleImpl() {
-  PrerenderHost* prerender_host = GetPrerenderHost();
-  if (!prerender_host) {
-    return;
+  if (prerender_host_registry_) {
+    prerender_host_registry_->CancelHost(
+        prerender_host_id_, PrerenderFinalStatus::kTriggerDestroyed);
   }
-  prerender_host->RemoveObserver(this);
-
-  prerender_host_registry_->CancelHost(frame_tree_node_id_,
-                                       PrerenderFinalStatus::kTriggerDestroyed);
 }
 
-int32_t PrerenderHandleImpl::GetHandleId() const {
-  return handle_id_;
+PrerenderHostId PrerenderHandleImpl::GetPrerenderHostId() const {
+  return prerender_host_id_;
 }
 
 const GURL& PrerenderHandleImpl::GetInitialPrerenderingUrl() const {
   return prerendering_url_;
+}
+
+const std::optional<net::HttpNoVarySearchData>&
+PrerenderHandleImpl::GetNoVarySearchHint() const {
+  return no_vary_search_hint_;
 }
 
 base::WeakPtr<PrerenderHandle> PrerenderHandleImpl::GetWeakPtr() {
@@ -189,29 +210,25 @@ base::WeakPtr<PrerenderHandle> PrerenderHandleImpl::GetWeakPtr() {
 
 void PrerenderHandleImpl::SetPreloadingAttemptFailureReason(
     PreloadingFailureReason reason) {
-  auto* prerender_host = GetPrerenderHost();
+  auto* prerender_host = obs_.GetSource();
   if (!prerender_host || !prerender_host->preloading_attempt()) {
     return;
   }
   prerender_host->preloading_attempt()->SetFailureReason(reason);
 }
 
-void PrerenderHandleImpl::AddActivationCallback(
-    base::OnceClosure activation_callback) {
-  CHECK_EQ(State::kValid, state_);
-  CHECK(activation_callback);
-  activation_callbacks_.push_back(std::move(activation_callback));
+void PrerenderHandleImpl::AddObserver(PrerenderHandle::Observer* observer) {
+  observers_.AddObserver(observer);
 }
 
-void PrerenderHandleImpl::AddErrorCallback(base::OnceClosure error_callback) {
-  CHECK_EQ(State::kValid, state_);
-  CHECK(error_callback);
-  error_callbacks_.push_back(std::move(error_callback));
+void PrerenderHandleImpl::RemoveObserver(PrerenderHandle::Observer* observer) {
+  observers_.RemoveObserver(observer);
 }
 
 bool PrerenderHandleImpl::IsValid() const {
   switch (state_) {
-    case State::kValid:
+    case State::kLoading:
+    case State::kReady:
       return true;
     case State::kActivated:
     case State::kCanceled:
@@ -219,54 +236,51 @@ bool PrerenderHandleImpl::IsValid() const {
   }
 }
 
+bool PrerenderHandleImpl::IsWaitingForResponseHeaders() const {
+  CHECK(IsValid());
+  return state_ == State::kLoading;
+}
+
 void PrerenderHandleImpl::OnActivated() {
-  CHECK_EQ(State::kValid, state_);
+  CHECK_EQ(State::kReady, state_);
   state_ = State::kActivated;
 
-  // An error should not be reported after activation.
-  error_callbacks_.clear();
-
-  std::vector<base::OnceClosure> callbacks;
-  callbacks.swap(activation_callbacks_);
-  // Don't touch `this` after this line, as a callback could destroy `this`.
-  for (auto& callback : callbacks) {
-    std::move(callback).Run();
+  for (auto& observer : observers_) {
+    observer.OnLifecycleStateChanged(PrerenderLifecycleStatus::kActivated);
   }
 }
 
 void PrerenderHandleImpl::OnFailed(PrerenderFinalStatus status) {
-  CHECK_EQ(State::kValid, state_);
+  CHECK(IsValid());
   state_ = State::kCanceled;
 
-  // An activation never happen after cancellation.
-  activation_callbacks_.clear();
+  PrerenderLifecycleStatus result = ToPrerenderLifecycleStatus(status);
 
-  if (!ShouldFireErrorCallback(status)) {
-    error_callbacks_.clear();
-    return;
-  }
-
-  // TODO(crbug.com/41490450): Pass a cancellation reason to the callback.
-  // Note that we should not expose detailed reasons to prevent embedders from
-  // depending on them. Such an implicit contract with embedders would impair
-  // flexibility of internal implementation.
-  std::vector<base::OnceClosure> callbacks;
-  callbacks.swap(error_callbacks_);
-  // Don't touch `this` after this line, as a callback could destroy `this`.
-  for (auto& callback : callbacks) {
-    std::move(callback).Run();
+  // Notify observers to unthrottle other requests anyway.
+  for (auto& observer : observers_) {
+    observer.OnLifecycleStateChanged(result);
   }
 }
 
-PrerenderHost* PrerenderHandleImpl::GetPrerenderHost() {
-  auto* prerender_frame_tree_node =
-      FrameTreeNode::GloballyFindByID(frame_tree_node_id_);
-  if (!prerender_frame_tree_node) {
-    return nullptr;
+void PrerenderHandleImpl::OnHostDestroyed(PrerenderFinalStatus status) {
+  obs_.Reset();
+}
+
+void PrerenderHandleImpl::OnHeadersReceived(
+    NavigationHandle& navigation_handle) {
+  // There is a small chance that the headers received callback
+  // will be called for a cancelled prerender host because the
+  // deferred destruction of the PrerenderHost.
+  if (state_ == State::kCanceled) {
+    return;
   }
-  PrerenderHost& prerender_host =
-      PrerenderHost::GetFromFrameTreeNode(*prerender_frame_tree_node);
-  return &prerender_host;
+  CHECK_EQ(state_, State::kLoading);
+  state_ = State::kReady;
+
+  for (auto& observer : observers_) {
+    observer.OnLifecycleStateChanged(
+        PrerenderLifecycleStatus::kHTTPSuccessResponse);
+  }
 }
 
 }  // namespace content

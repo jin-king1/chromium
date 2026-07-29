@@ -7,6 +7,7 @@
 
 #include "base/functional/callback_forward.h"
 #include "base/types/expected.h"
+#include "build/build_config.h"
 #include "components/data_sharing/public/protocol/data_sharing_sdk.pb.h"
 #include "third_party/abseil-cpp/absl/status/status.h"
 
@@ -44,8 +45,9 @@ class DataSharingSDKDelegate {
   virtual void Initialize(
       DataSharingNetworkLoader* data_sharing_network_loader) = 0;
 
-  // Implemented only for android. Normally initialize method will lazily intiialize the SDK to
-  // avoid overhead. This will force the loading of delegate.
+  // Implemented only for android. Normally initialize method will lazily
+  // initialize the SDK to avoid overhead. This will force the loading of
+  // delegate.
   virtual void ForceInitialize(
       DataSharingNetworkLoader* data_sharing_network_loader) {}
 
@@ -55,8 +57,19 @@ class DataSharingSDKDelegate {
           void(const base::expected<data_sharing_pb::CreateGroupResult,
                                     absl::Status>&)> callback) = 0;
 
+  // Read group data for groups that the user is already part of. Use
+  // ReadGroupWithToken() to read group that the user may not be part of.
   virtual void ReadGroups(
       const data_sharing_pb::ReadGroupsParams& params,
+      base::OnceCallback<
+          void(const base::expected<data_sharing_pb::ReadGroupsResult,
+                                    absl::Status>&)> callback) = 0;
+
+  // Read group where the user may or may not be a member of, using token
+  // secret. Returns the group if the user is already a member, or has access
+  // using the token.
+  virtual void ReadGroupWithToken(
+      const data_sharing_pb::ReadGroupWithTokenParams& params,
       base::OnceCallback<
           void(const base::expected<data_sharing_pb::ReadGroupsResult,
                                     absl::Status>&)> callback) = 0;

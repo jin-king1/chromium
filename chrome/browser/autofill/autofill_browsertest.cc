@@ -5,6 +5,7 @@
 #include <stddef.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -27,10 +28,11 @@
 #include "chrome/browser/autofill/personal_data_manager_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_navigator_params.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/webdata_services/web_data_service_factory.h"
+#include "chrome/test/base/chrome_test_utils.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/test_switches.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -114,7 +116,7 @@ class AutofillTest : public InProcessBrowserTest {
     InProcessBrowserTest::SetUpOnMainThread();
     // Wait for Personal Data Manager to be fully loaded to prevent that
     // spurious notifications deceive the tests.
-    WaitForPersonalDataManagerToBeLoaded(browser()->profile());
+    WaitForPersonalDataManagerToBeLoaded(browser()->GetProfile());
 
     ASSERT_TRUE(embedded_test_server()->Start());
   }
@@ -130,7 +132,8 @@ class AutofillTest : public InProcessBrowserTest {
         web_contents()->GetPrimaryMainFrame())
         ->GetAutofillManager()
         .client()
-        .HideAutofillSuggestions(SuggestionHidingReason::kTabGone);
+        .HideSuggestions(SuggestionHidingReason::kTabGone,
+                         /*product=*/std::nullopt);
     InProcessBrowserTest::TearDownOnMainThread();
   }
 
@@ -142,7 +145,7 @@ class AutofillTest : public InProcessBrowserTest {
 
   PersonalDataManager* personal_data_manager() {
     return PersonalDataManagerFactory::GetForBrowserContext(
-        browser()->profile());
+        browser()->GetProfile());
   }
 
   typedef std::map<std::string, std::string> FormMap;
@@ -159,17 +162,15 @@ class AutofillTest : public InProcessBrowserTest {
 
   // Navigate to the form, input values into the fields, and submit the form.
   // The function returns after the PersonalDataManager is updated.
-  void FillFormAndSubmit(const std::string& filename, const FormMap& data) {
-    FillFormAndSubmitWithHandler(filename, data, kDocumentClickHandlerSubmitJS,
-                                 true);
-  }
-
-  // Helper where the actual submit JS code can be specified, as well as whether
-  // the test should `simulate_click` on the document.
-  void FillFormAndSubmitWithHandler(const std::string& filename,
-                                    const FormMap& data,
-                                    const std::string& submit_js,
-                                    bool simulate_click) {
+  //
+  // The optional `submit_js` parameter specifies the JS code to be used for
+  // form submission, and `simulate_click` specifies whether to simulate a
+  // mouse-click on the document.
+  void FillFormAndSubmit(
+      const std::string& filename,
+      const FormMap& data,
+      const std::string& submit_js = kDocumentClickHandlerSubmitJS,
+      bool simulate_click = true) {
     GURL url = embedded_test_server()->GetURL("/autofill/" + filename);
     NavigateParams params(browser(), url, ui::PAGE_TRANSITION_LINK);
     params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
@@ -180,31 +181,32 @@ class AutofillTest : public InProcessBrowserTest {
     test_api(personal_data_manager()->address_data_manager())
         .set_auto_accept_address_imports(true);
     TestAutofillManagerSingleEventWaiter submission_waiter(
-        *autofill_manager(), &AutofillManager::Observer::OnFormSubmitted);
+        *autofill_manager(), &AutofillManager::Observer::OnAfterFormSubmitted);
     ASSERT_TRUE(
         content::ExecJs(web_contents(), GetJSToFillForm(data) + submit_js));
     if (simulate_click) {
       // Simulate a mouse click to submit the form because form submissions not
-      // triggered by user gestures are ignored.
-      content::SimulateMouseClick(
-          browser()->tab_strip_model()->GetActiveWebContents(), 0,
-          blink::WebMouseEvent::Button::kLeft);
+      // triggered by user gestures are ignored.  Before that, an end of
+      // paint-holding is simulated to enable input event processing.
+      content::SimulateEndOfPaintHoldingOnPrimaryMainFrame(web_contents());
+      content::SimulateMouseClick(web_contents(), 0,
+                                  blink::WebMouseEvent::Button::kLeft);
     }
     ASSERT_TRUE(std::move(submission_waiter).Wait());
     // Form submission might have triggered an import. The imported data is only
     // available through the PDM after it has asynchronously updated the
     // database. Wait for all pending DB tasks to complete.
     WaitForPendingDBTasks(*WebDataServiceFactory::GetAutofillWebDataForProfile(
-        browser()->profile(), ServiceAccessType::EXPLICIT_ACCESS));
+        browser()->GetProfile(), ServiceAccessType::EXPLICIT_ACCESS));
   }
 
   // Aggregate profiles from forms into Autofill preferences. Returns the number
   // of parsed profiles.
   int AggregateProfilesIntoAutofillPrefs(const std::string& filename) {
     std::string data;
-    base::FilePath data_file =
-        ui_test_utils::GetTestFilePath(base::FilePath().AppendASCII("autofill"),
-                                       base::FilePath().AppendASCII(filename));
+    base::FilePath data_file = chrome_test_utils::GetTestFilePath(
+        base::FilePath().AppendASCII("autofill"),
+        base::FilePath().AppendASCII(filename));
     {
       base::ScopedAllowBlockingForTesting allow_blocking;
       CHECK(base::ReadFileToString(data_file, &data));
@@ -260,7 +262,7 @@ class AutofillTest : public InProcessBrowserTest {
     return WaitForMatchingForm(autofill_manager(),
                                base::BindRepeating(
                                    [](size_t n, const FormStructure& form) {
-                                     return form.active_field_count() == n;
+                                     return form.fields().size() == n;
                                    },
                                    n));
   }
@@ -299,8 +301,7 @@ IN_PROC_BROWSER_TEST_F(AutofillTest, AggregatesMinValidProfileDifferentJS) {
   data["ADDRESS_HOME_ZIP"] = "94043";
 
   std::string submit("document.forms[0].submit();");
-  FillFormAndSubmitWithHandler("duplicate_profiles_test.html", data, submit,
-                               false);
+  FillFormAndSubmit("duplicate_profiles_test.html", data, submit, false);
 
   ASSERT_EQ(
       1u, personal_data_manager()->address_data_manager().GetProfiles().size());
@@ -321,8 +322,7 @@ IN_PROC_BROWSER_TEST_F(AutofillTest, ProfilesAggregatedWithSubmitHandler) {
       "var preventFunction = function(event) { event.preventDefault(); };"
       "document.forms[0].addEventListener('submit', preventFunction);"
       "document.querySelector('input[type=submit]').click();");
-  FillFormAndSubmitWithHandler("duplicate_profiles_test.html", data, submit,
-                               false);
+  FillFormAndSubmit("duplicate_profiles_test.html", data, submit, false);
 
   // The BrowserAutofillManager will update the user's profile.
   EXPECT_EQ(
@@ -377,7 +377,15 @@ IN_PROC_BROWSER_TEST_F(AutofillTest, ProfilesNotAggregatedWithInvalidEmail) {
 // country. The data file contains two profiles with valid phone numbers and two
 // profiles with invalid phone numbers from their respective country.
 // Profiles with an invalid number are imported, but their number is removed.
-IN_PROC_BROWSER_TEST_F(AutofillTest, ProfileSavedWithValidCountryPhone) {
+// TODO(https://crbug.com/418932421): Flaky on Mac 13 Tests.
+#if BUILDFLAG(IS_MAC)
+#define MAYBE_ProfileSavedWithValidCountryPhone \
+  DISABLED_ProfileSavedWithValidCountryPhone
+#else
+#define MAYBE_ProfileSavedWithValidCountryPhone \
+  ProfileSavedWithValidCountryPhone
+#endif
+IN_PROC_BROWSER_TEST_F(AutofillTest, MAYBE_ProfileSavedWithValidCountryPhone) {
   std::vector<FormMap> profiles = {
       {{"NAME_FIRST", "Bob"},
        {"NAME_LAST", "Smith"},
@@ -469,7 +477,15 @@ IN_PROC_BROWSER_TEST_F(AutofillTest, AppendCountryCodeForAggregatedPhones) {
 //   The phone number does not have a leading '+'.
 //   The phone number has a leading international direct dialing (IDD) code.
 // This does not apply to US numbers. For US numbers, '+' is removed.
-IN_PROC_BROWSER_TEST_F(AutofillTest, UsePlusSignForInternationalNumber) {
+// TODO(https://crbug.com/418932421): Flaky on Mac 13 Tests.
+#if BUILDFLAG(IS_MAC)
+#define MAYBE_UsePlusSignForInternationalNumber \
+  DISABLED_UsePlusSignForInternationalNumber
+#else
+#define MAYBE_UsePlusSignForInternationalNumber \
+  UsePlusSignForInternationalNumber
+#endif
+IN_PROC_BROWSER_TEST_F(AutofillTest, MAYBE_UsePlusSignForInternationalNumber) {
   std::vector<FormMap> profiles;
 
   FormMap data1;
@@ -567,7 +583,7 @@ IN_PROC_BROWSER_TEST_F(AutofillTest, ProfileWithEmailInOtherFieldNotSaved) {
 // 'Address Line 1' and 'City' data match. When two profiles are merged, any
 // remaining address fields are expected to be overwritten. Any non-address
 // fields should accumulate multi-valued data.
-// DISABLED: http://crbug.com/281541
+// DISABLED: http://crbug.com/41043304
 IN_PROC_BROWSER_TEST_F(AutofillTest,
                        DISABLED_MergeAggregatedProfilesWithSameAddress) {
   AggregateProfilesIntoAutofillPrefs("dataset_same_address.txt");
@@ -580,7 +596,16 @@ IN_PROC_BROWSER_TEST_F(AutofillTest,
 // Minimum address values needed during aggregation are: address line 1, city,
 // state, and zip code.
 // Profiles are merged when data for address line 1 and city match.
-IN_PROC_BROWSER_TEST_F(AutofillTest, ProfilesNotMergedWhenNoMinAddressData) {
+// TODO(https://crbug.com/418932421): Flaky on Mac 13 Tests.
+#if BUILDFLAG(IS_MAC)
+#define MAYBE_ProfilesNotMergedWhenNoMinAddressData \
+  DISABLED_ProfilesNotMergedWhenNoMinAddressData
+#else
+#define MAYBE_ProfilesNotMergedWhenNoMinAddressData \
+  ProfilesNotMergedWhenNoMinAddressData
+#endif
+IN_PROC_BROWSER_TEST_F(AutofillTest,
+                       MAYBE_ProfilesNotMergedWhenNoMinAddressData) {
   AggregateProfilesIntoAutofillPrefs("dataset_no_address.txt");
 
   ASSERT_EQ(
@@ -589,7 +614,7 @@ IN_PROC_BROWSER_TEST_F(AutofillTest, ProfilesNotMergedWhenNoMinAddressData) {
 
 // Test Autofill ability to merge duplicate profiles and throw away junk.
 // TODO(isherman): this looks redundant, consider removing.
-// DISABLED: http://crbug.com/281541
+// DISABLED: http://crbug.com/41043304
 // This tests opens and submits over 240 forms which does not finish within the
 // allocated time of browser_tests. This should be converted into a unittest.
 IN_PROC_BROWSER_TEST_F(AutofillTest,
@@ -601,29 +626,6 @@ IN_PROC_BROWSER_TEST_F(AutofillTest,
                                                   ->address_data_manager()
                                                   .GetProfiles()
                                                   .size()));
-}
-
-class AutofillElementRemovalDetectionTest : public AutofillTest {
-  base::test::ScopedFeatureList scoped_feature_list_{
-      features::kAutofillDetectRemovedFormControls};
-};
-
-IN_PROC_BROWSER_TEST_F(AutofillElementRemovalDetectionTest,
-                       DynamicForm_DiscoverRemovedFormFields) {
-  // Load a form that contains 3 fields.
-  GURL url = embedded_test_server()->GetURL(
-      "/autofill/dynamic_form_element_removed.html");
-  NavigateParams params(browser(), url, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
-  ui_test_utils::NavigateToURL(&params);
-  ASSERT_TRUE(WaitForFormWithNFields(3))
-      << "Waiting for form before field removal";
-
-  // Remove one field via JavaScript and expect that the AutofillManager learns
-  // about this.
-  ASSERT_TRUE(content::ExecJs(web_contents(), "RemoveCity();"));
-  EXPECT_TRUE(WaitForFormWithNFields(2))
-      << "Waiting for after before field removal";
 }
 
 // Accessibility Tests
@@ -655,7 +657,7 @@ class AutofillAccessibilityTest : public AutofillTest {
 };
 
 // Test that autofill available state is correctly set on accessibility node.
-// Test is flaky: https://crbug.com/1239099
+// Test is flaky: https://crbug.com/40784571
 IN_PROC_BROWSER_TEST_F(AutofillAccessibilityTest,
                        DISABLED_TestAutofillSuggestionAvailability) {
   content::ScopedAccessibilityModeOverride mode_override(ui::kAXModeComplete);
@@ -665,7 +667,7 @@ IN_PROC_BROWSER_TEST_F(AutofillAccessibilityTest,
       embedded_test_server()->GetURL("/autofill/duplicate_profiles_test.html");
   NavigateParams params(browser(), url, ui::PAGE_TRANSITION_LINK);
   content::AccessibilityNotificationWaiter layout_waiter_one(
-      web_contents(), ui::kAXModeComplete, ax::mojom::Event::kLoadComplete);
+      web_contents(), ax::mojom::Event::kLoadComplete);
   ui_test_utils::NavigateToURL(&params);
   ASSERT_TRUE(layout_waiter_one.WaitForNotification());
 
@@ -706,7 +708,7 @@ IN_PROC_BROWSER_TEST_F(AutofillAccessibilityTest,
 
   // Reload page.
   content::AccessibilityNotificationWaiter layout_waiter_two(
-      web_contents(), ui::kAXModeComplete, ax::mojom::Event::kLoadComplete);
+      web_contents(), ax::mojom::Event::kLoadComplete);
   ui_test_utils::NavigateToURL(&params);
   ASSERT_TRUE(layout_waiter_two.WaitForNotification());
 
@@ -728,7 +730,7 @@ IN_PROC_BROWSER_TEST_F(AutofillAccessibilityTest,
 // Test that autocomplete available string attribute is correctly set on
 // accessibility node. Test autocomplete in this file since it uses the same
 // infrastructure as autofill.
-// Test is flaky: http://crbug.com/1239099
+// Test is flaky: http://crbug.com/40784571
 IN_PROC_BROWSER_TEST_F(AutofillAccessibilityTest,
                        DISABLED_TestAutocompleteState) {
   content::ScopedAccessibilityModeOverride mode_override(ui::kAXModeComplete);
@@ -737,7 +739,7 @@ IN_PROC_BROWSER_TEST_F(AutofillAccessibilityTest,
       embedded_test_server()->GetURL("/autofill/duplicate_profiles_test.html");
   NavigateParams params(browser(), url, ui::PAGE_TRANSITION_LINK);
   content::AccessibilityNotificationWaiter layout_waiter_one(
-      web_contents(), ui::kAXModeComplete, ax::mojom::Event::kLoadComplete);
+      web_contents(), ax::mojom::Event::kLoadComplete);
   ui_test_utils::NavigateToURL(&params);
   ASSERT_TRUE(layout_waiter_one.WaitForNotification());
 
@@ -774,7 +776,7 @@ IN_PROC_BROWSER_TEST_F(AutofillAccessibilityTest,
 
   // Reload page.
   content::AccessibilityNotificationWaiter layout_waiter_two(
-      web_contents(), ui::kAXModeComplete, ax::mojom::Event::kLoadComplete);
+      web_contents(), ax::mojom::Event::kLoadComplete);
   ui_test_utils::NavigateToURL(&params);
   ASSERT_TRUE(layout_waiter_two.WaitForNotification());
 
@@ -812,8 +814,9 @@ class AutofillTestPrerendering : public InProcessBrowserTest {
     }
     MOCK_METHOD(void,
                 OnFormsSeen,
-                (const std::vector<FormData>&,
-                 const std::vector<FormGlobalId>&),
+                (std::vector<FormData>,
+                 std::vector<FormGlobalId>,
+                 RendererEventPassKey),
                 (override));
     MOCK_METHOD(void,
                 OnFocusOnFormFieldImpl,
@@ -870,7 +873,7 @@ IN_PROC_BROWSER_TEST_F(AutofillTestPrerendering, DeferWhilePrerendering) {
   GURL initial_url = embedded_test_server()->GetURL("/empty.html");
   prerender_helper().NavigatePrimaryPage(initial_url);
 
-  content::FrameTreeNodeId host_id =
+  content::PrerenderHostId host_id =
       prerender_helper().AddPrerender(prerender_url);
   auto* rfh = prerender_helper().GetPrerenderedMainFrameHost(host_id);
   MockAutofillManager* mock = autofill_manager(rfh);

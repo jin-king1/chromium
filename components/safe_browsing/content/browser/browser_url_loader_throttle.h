@@ -8,7 +8,6 @@
 #include <memory>
 
 #include "base/functional/callback.h"
-#include "base/memory/ref_counted.h"
 #include "base/strings/strcat.h"
 #include "base/time/time.h"
 #include "components/safe_browsing/content/browser/url_checker_holder.h"
@@ -80,7 +79,8 @@ class BrowserURLLoaderThrottle : public blink::URLLoaderThrottle {
       base::WeakPtr<HashRealTimeService> hash_realtime_service,
       hash_realtime_utils::HashRealTimeSelection hash_realtime_selection,
       base::WeakPtr<AsyncCheckTracker> async_check_tracker,
-      std::optional<internal::ReferringAppInfo> referring_app_info);
+      std::optional<internal::ReferringAppInfo> referring_app_info,
+      base::WeakPtr<V5GetHashProtocolManager> v5_get_hash_protocol_manager);
 
   BrowserURLLoaderThrottle(const BrowserURLLoaderThrottle&) = delete;
   BrowserURLLoaderThrottle& operator=(const BrowserURLLoaderThrottle&) = delete;
@@ -94,9 +94,7 @@ class BrowserURLLoaderThrottle : public blink::URLLoaderThrottle {
       net::RedirectInfo* redirect_info,
       const network::mojom::URLResponseHead& response_head,
       bool* defer,
-      std::vector<std::string>* to_be_removed_headers,
-      net::HttpRequestHeaders* modified_headers,
-      net::HttpRequestHeaders* modified_cors_exempt_headers) override;
+      network::HttpRequestHeadersUpdateParams* headers_update_params) override;
   void WillProcessResponse(const GURL& response_url,
                            network::mojom::URLResponseHead* response_head,
                            bool* defer) override;
@@ -120,7 +118,8 @@ class BrowserURLLoaderThrottle : public blink::URLLoaderThrottle {
       base::WeakPtr<HashRealTimeService> hash_realtime_service,
       hash_realtime_utils::HashRealTimeSelection hash_realtime_selection,
       base::WeakPtr<AsyncCheckTracker> async_check_tracker,
-      std::optional<internal::ReferringAppInfo> referring_app_info);
+      std::optional<internal::ReferringAppInfo> referring_app_info,
+      base::WeakPtr<V5GetHashProtocolManager> v5_get_hash_protocol_manager);
 
   void OnSkipCheckCompleteOnOriginalUrl(
       const net::HttpRequestHeaders& headers,
@@ -193,9 +192,6 @@ class BrowserURLLoaderThrottle : public blink::URLLoaderThrottle {
   // Whether real time URL lookup is enabled for the user.
   bool url_real_time_lookup_enabled_;
 
-  // Tracks how many times |WillProcessResponse| is called.
-  int will_process_response_count_ = 0;
-
   // In progress async SB checker will be transferred to this object.
   base::WeakPtr<AsyncCheckTracker> async_check_tracker_;
 
@@ -216,6 +212,9 @@ class BrowserURLLoaderThrottle : public blink::URLLoaderThrottle {
   base::RepeatingCallback<content::WebContents*()> web_contents_getter_;
   SessionID tab_id_ = SessionID::InvalidValue();
 
+  // The current URL of the request, updated on redirects.
+  GURL current_url_;
+
   // Checkers used to perform Safe Browsing checks. |sync_sb_checker_| may defer
   // the URL loader. |async_sb_checker_| doesn't defer the URL loader and may
   // be transferred to |skip_check_checker_| if it is not completed.
@@ -226,6 +225,9 @@ class BrowserURLLoaderThrottle : public blink::URLLoaderThrottle {
 
   // The Android app that launched Chrome.
   std::optional<internal::ReferringAppInfo> referring_app_info_;
+
+  // The protocol manager used for Safe Browsing v5 get hash requests.
+  base::WeakPtr<V5GetHashProtocolManager> v5_get_hash_protocol_manager_;
 
   base::OnceClosure on_sync_sb_checker_created_callback_for_testing_;
   base::OnceClosure on_async_sb_checker_created_callback_for_testing_;

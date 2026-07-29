@@ -21,6 +21,7 @@
 #include "content/public/browser/certificate_request_result_type.h"
 #include "content/public/browser/content_browser_client.h"
 #include "content/public/browser/frame_tree_node_id.h"
+#include "content/public/browser/navigation_throttle_registry.h"
 #include "media/mojo/buildflags.h"
 #include "media/mojo/mojom/media_service.mojom.h"
 #include "media/mojo/mojom/renderer.mojom.h"
@@ -57,6 +58,10 @@ class MetricsService;
 namespace net {
 class SSLPrivateKey;
 class X509Certificate;
+}  // namespace net
+
+namespace os_crypt_async {
+class OSCryptAsync;
 }
 
 namespace chromecast {
@@ -66,8 +71,6 @@ class CastWebService;
 class CastWindowManager;
 class CastFeatureListCreator;
 class DisplaySettingsManager;
-class GeneralAudienceBrowsingService;
-class MemoryPressureControllerImpl;
 class ServiceConnector;
 
 namespace media {
@@ -76,10 +79,9 @@ class CmaBackendFactory;
 class MediaPipelineBackendManager;
 class MediaResourceTracker;
 class VideoGeometrySetterService;
-class VideoPlaneController;
 class VideoModeSwitcher;
 class VideoResolutionPolicy;
-}
+}  // namespace media
 
 namespace shell {
 class CastBrowserMainParts;
@@ -115,7 +117,6 @@ class CastContentBrowserClient
       CastSystemMemoryPressureEvaluatorAdjuster*
           cast_system_memory_pressure_evaluator_adjuster,
       PrefService* pref_service,
-      media::VideoPlaneController* video_plane_controller,
       CastWindowManager* window_manager,
       CastWebService* web_service,
       DisplaySettingsManager* display_settings_manager);
@@ -240,8 +241,6 @@ class CastContentBrowserClient
   std::unique_ptr<content::NavigationUIData> GetNavigationUIData(
       content::NavigationHandle* navigation_handle) override;
   bool ShouldEnableStrictSiteIsolation() override;
-  std::vector<std::unique_ptr<content::NavigationThrottle>>
-  CreateThrottlesForNavigation(content::NavigationHandle* handle) override;
   void RegisterNonNetworkSubresourceURLLoaderFactories(
       int render_process_id,
       int render_frame_id,
@@ -260,15 +259,14 @@ class CastContentBrowserClient
   bool DoesSiteRequireDedicatedProcess(content::BrowserContext* browser_context,
                                        const GURL& effective_site_url) override;
   bool IsWebUIAllowedToMakeNetworkRequests(const url::Origin& origin) override;
-  PrivateNetworkRequestPolicyOverride ShouldOverridePrivateNetworkRequestPolicy(
+  LocalNetworkAccessRequestPolicyOverride
+  ShouldOverrideLocalNetworkAccessRequestPolicy(
       content::BrowserContext* browser_context,
       const url::Origin& origin) override;
 
   CastFeatureListCreator* GetCastFeatureListCreator() {
     return cast_feature_list_creator_;
   }
-
-  void CreateGeneralAudienceBrowsingService();
 
   virtual std::unique_ptr<::media::CdmFactory> CreateCdmFactory(
       ::media::mojom::FrameInterfaceFactory* frame_interfaces);
@@ -288,9 +286,6 @@ class CastContentBrowserClient
   CastBrowserMainParts* browser_main_parts() {
     return cast_browser_main_parts_;
   }
-
-  void BindMediaRenderer(
-      mojo::PendingReceiver<::media::mojom::Renderer> receiver);
 
   void GetApplicationMediaInfo(std::string* application_session_id,
                                bool* mixer_audio_enabled,
@@ -332,10 +327,6 @@ class CastContentBrowserClient
 
   // A static cache to hold crash_handlers for each process_type
   std::map<std::string, breakpad::CrashHandlerHostLinux*> crash_handlers_;
-
-  // Notify renderers of memory pressure (Android renderers register directly
-  // with OS for this).
-  std::unique_ptr<MemoryPressureControllerImpl> memory_pressure_controller_;
 #endif  // !BUILDFLAG(IS_ANDROID)
 #endif  // !BUILDFLAG(IS_FUCHSIA)
 
@@ -361,10 +352,9 @@ class CastContentBrowserClient
 
   // Created by CastContentBrowserClient but owned by BrowserMainLoop.
   CastBrowserMainParts* cast_browser_main_parts_;
+  std::unique_ptr<os_crypt_async::OSCryptAsync> os_crypt_async_;
   std::unique_ptr<CastNetworkContexts> cast_network_contexts_;
   std::unique_ptr<media::CmaBackendFactory> cma_backend_factory_;
-  std::unique_ptr<GeneralAudienceBrowsingService>
-      general_audience_browsing_service_;
 
   CastFeatureListCreator* cast_feature_list_creator_;
 };

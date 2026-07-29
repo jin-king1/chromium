@@ -30,6 +30,10 @@ std::string GetStateSuffix(StateSuffix suffix) {
       return "_SingleProfile";
     case StateSuffix::kUponDeletion:
       return "_UponDeletion";
+    case StateSuffix::kManagementDisclaimerAccepted:
+      return "_ManagementDisclaimerAccepted";
+    case StateSuffix::kManagementDisclaimerNotAccepted:
+      return "_ManagementDisclaimerNotAccepted";
   }
 }
 
@@ -79,10 +83,6 @@ void LogProfileDeletionContext(bool is_last_profile, bool no_browser_windows) {
     }
   }
   base::UmaHistogramEnumeration("Profile.DeleteProfileContext", context);
-}
-
-void LogProfileAllAccountsNames(AllAccountsNames names) {
-  base::UmaHistogramEnumeration("Profile.AllAccounts.Names", names);
 }
 
 }  // namespace profile_metrics

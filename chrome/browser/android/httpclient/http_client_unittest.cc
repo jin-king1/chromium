@@ -10,6 +10,7 @@
 #include <string>
 #include <type_traits>
 
+#include "base/byte_size.h"
 #include "base/functional/bind.h"
 #include "base/strings/string_number_conversions.h"
 #include "content/public/browser/browser_task_traits.h"
@@ -157,7 +158,7 @@ class HttpClientTest : public testing::Test {
         head->headers->SetHeader(key, value);
       }
 
-      status.decoded_body_length = response.body.length();
+      status.decoded_body_length = base::ByteSize(response.body.length());
     }
 
     test_url_loader_factory_.AddResponse(
@@ -255,8 +256,9 @@ TEST_F(HttpClientTest, TestSendDifferentRequestMethod) {
       auto pendingRequest = GetLastPendingRequest()->request;
       EXPECT_EQ(pendingRequest.method, method);
 
-      EXPECT_EQ(pendingRequest.headers.GetHeader("Content-Type"), content_type);
-      EXPECT_EQ(pendingRequest.headers.GetHeader("TestMethod"), method);
+      EXPECT_EQ(pendingRequest.headers.GetHeaderView("Content-Type"),
+                content_type);
+      EXPECT_EQ(pendingRequest.headers.GetHeaderView("TestMethod"), method);
     }
 
     Respond(GURL(request.url), TestHttpResponse());

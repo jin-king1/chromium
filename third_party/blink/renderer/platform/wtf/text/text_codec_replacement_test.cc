@@ -12,7 +12,7 @@
 #include "third_party/blink/renderer/platform/wtf/text/text_encoding_registry.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
-namespace WTF {
+namespace blink {
 
 namespace {
 
@@ -35,7 +35,7 @@ TEST(TextCodecReplacement, DecodesToFFFD) {
 
   const String result =
       codec->Decode(base::byte_span_from_cstring("hello world"),
-                    FlushBehavior::kDataEOF, false, saw_error);
+                    FlushBehavior::kDataEof, false, saw_error);
   EXPECT_TRUE(saw_error);
   ASSERT_EQ(1u, result.length());
   EXPECT_EQ(0xFFFDU, result[0]);
@@ -47,11 +47,12 @@ TEST(TextCodecReplacement, EncodesToUTF8) {
 
   // "Kanji" in Chinese characters.
   const UChar kTestCase[] = {0x6F22, 0x5B57};
-  std::string result = codec->Encode(kTestCase, kEntitiesForUnencodables);
+  std::string result =
+      codec->Encode(kTestCase, UnencodableHandling::kXmlCharRef);
 
   EXPECT_EQ("\xE6\xBC\xA2\xE5\xAD\x97", result);
 }
 
 }  // namespace
 
-}  // namespace WTF
+}  // namespace blink

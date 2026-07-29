@@ -8,6 +8,9 @@
 #import "base/memory/ptr_util.h"
 #import "base/strings/string_number_conversions.h"
 #import "base/time/time.h"
+#import "components/application_locale_storage/application_locale_storage.h"
+#import "components/enterprise/connectors/core/features.h"
+#import "components/enterprise/connectors/core/reporting_event_router.h"
 #import "components/feature_engagement/public/event_constants.h"
 #import "components/feature_engagement/public/feature_list.h"
 #import "components/feature_engagement/public/tracker.h"
@@ -20,6 +23,7 @@
 #import "components/security_interstitials/core/base_safe_browsing_error_ui.h"
 #import "components/security_interstitials/core/metrics_helper.h"
 #import "components/security_interstitials/core/safe_browsing_loud_error_ui.h"
+#import "ios/chrome/browser/enterprise/connectors/reporting/ios_reporting_event_router_factory.h"
 #import "ios/chrome/browser/feature_engagement/model/tracker_factory.h"
 #import "ios/chrome/browser/safe_browsing/model/safe_browsing_metrics_collector_factory.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
@@ -47,6 +51,7 @@ std::unique_ptr<IOSBlockingPageMetricsHelper> CreateMetricsHelper(
   return std::make_unique<IOSBlockingPageMetricsHelper>(
       resource.weak_web_state.get(), resource.url, reporting_info);
 }
+
 // Returns the default safe browsing error display options.
 BaseSafeBrowsingErrorUI::SBErrorDisplayOptions GetDefaultDisplayOptions(
     const UnsafeResource& resource) {
@@ -62,7 +67,8 @@ BaseSafeBrowsingErrorUI::SBErrorDisplayOptions GetDefaultDisplayOptions(
             SECURITY_SENSITIVE_SAFE_BROWSING_INTERSTITIAL);
   }
   return BaseSafeBrowsingErrorUI::SBErrorDisplayOptions(
-      UnsafeResource::IsMainPageLoadPendingWithSyncCheck(resource.threat_type),
+      UnsafeResource::IsMainPageLoadPendingWithSyncCheck(
+          resource.threat_type, resource.threat_source),
       /*is_extended_reporting_opt_in_allowed=*/false,
       /*is_off_the_record=*/false,
       /*is_extended_reporting=*/false,
@@ -74,6 +80,26 @@ BaseSafeBrowsingErrorUI::SBErrorDisplayOptions GetDefaultDisplayOptions(
       /*is_enhanced_protection_message_enabled=*/true,
       /*is_safe_browsing_managed=*/false, "cpn_safe_browsing");
 }
+
+// Trigger event reporting for unsafe site visits when user chooses to proceed
+// after the warning window.
+void ReportOnSecurityInterstitialProceeded(
+    ProfileIOS* profile,
+    GURL url,
+    safe_browsing::SBThreatType threat_type) {
+    enterprise_connectors::ReportingEventRouter* router =
+        enterprise_connectors::IOSReportingEventRouterFactory::GetForProfile(
+            profile);
+    if (!router) {
+      return;
+    }
+    google::protobuf::RepeatedPtrField<safe_browsing::ReferrerChainEntry>
+        referrer_chain;
+    router->OnSecurityInterstitialProceeded(
+        url, safe_browsing::GetThreatTypeStringForInterstitial(threat_type),
+        /*net_error_code=*/0, referrer_chain);
+}
+
 }  // namespace
 
 #pragma mark - SafeBrowsingBlockingPage
@@ -97,7 +123,8 @@ SafeBrowsingBlockingPage::SafeBrowsingBlockingPage(
                                   client),
       is_main_page_load_blocked_(
           UnsafeResource::IsMainPageLoadPendingWithSyncCheck(
-              resource.threat_type)),
+              resource.threat_type,
+              resource.threat_source)),
       error_ui_(std::make_unique<SafeBrowsingLoudErrorUI>(
           resource.url,
           GetUnsafeResourceInterstitialReason(resource),
@@ -105,7 +132,10 @@ SafeBrowsingBlockingPage::SafeBrowsingBlockingPage(
           client->GetApplicationLocale(),
           base::Time::NowFromSystemTime(),
           client,
-          is_main_page_load_blocked_)) {}
+          is_main_page_load_blocked_)) {
+  SafeBrowsingTabHelper::ReportSecurityInterstitialShown(
+      resource.weak_web_state.get(), resource);
+}
 
 SafeBrowsingBlockingPage::~SafeBrowsingBlockingPage() = default;
 
@@ -115,7 +145,7 @@ void SafeBrowsingBlockingPage::SetClient(
 }
 
 std::string SafeBrowsingBlockingPage::GetHtmlContents() const {
-  base::Value::Dict load_time_data;
+  base::DictValue load_time_data;
   PopulateInterstitialStrings(load_time_data);
   webui::SetLoadTimeDataDefaults(client_->GetApplicationLocale(),
                                  &load_time_data);
@@ -142,7 +172,7 @@ bool SafeBrowsingBlockingPage::ShouldCreateNewNavigation() const {
 }
 
 void SafeBrowsingBlockingPage::PopulateInterstitialStrings(
-    base::Value::Dict& load_time_data) const {
+    base::DictValue& load_time_data) const {
   load_time_data.Set("url_to_reload", request_url().spec());
   error_ui_->PopulateStringsForHtml(load_time_data);
 }
@@ -154,11 +184,6 @@ void SafeBrowsingBlockingPage::ShowInfobar() {
       feature_engagement::TrackerFactory::GetForProfile(profile);
   tracker->NotifyEvent(
       feature_engagement::events::kEnhancedSafeBrowsingPromoCriterionMet);
-
-  if (!base::FeatureList::IsEnabled(
-          safe_browsing::kEnhancedSafeBrowsingPromo)) {
-    return;
-  }
 
   client_->ShowEnhancedSafeBrowsingInfobar();
 }
@@ -175,7 +200,7 @@ SafeBrowsingBlockingPage::SafeBrowsingControllerClient::
     : IOSBlockingPageControllerClient(
           resource.weak_web_state.get(),
           CreateMetricsHelper(resource),
-          GetApplicationContext()->GetApplicationLocale()),
+          GetApplicationContext()->GetApplicationLocaleStorage()->Get()),
       url_(SafeBrowsingUrlAllowList::GetDecisionUrl(resource)),
       threat_type_(resource.threat_type),
       threat_source_(resource.threat_source) {}
@@ -199,6 +224,7 @@ void SafeBrowsingBlockingPage::SafeBrowsingControllerClient::Proceed() {
     if (metrics_collector) {
       metrics_collector->AddBypassEventToPref(threat_source_);
     }
+    ReportOnSecurityInterstitialProceeded(profile, url_, threat_type_);
   }
   Reload();
 }

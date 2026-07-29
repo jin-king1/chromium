@@ -16,6 +16,7 @@
 #include "base/functional/callback_forward.h"
 #include "base/memory/ref_counted.h"
 #include "base/time/time.h"
+#include "build/branding_buildflags.h"
 
 class GURL;
 class PrefService;
@@ -26,6 +27,7 @@ class Version;
 
 namespace update_client {
 
+class CrxCache;
 class CrxDownloaderFactory;
 class NetworkFetcherFactory;
 class PatcherFactory;
@@ -142,9 +144,13 @@ class Configurator : public base::RefCountedThreadSafe<Configurator> {
   // embedder includes an updater. Returns a null callback otherwise.
   virtual UpdaterStateProvider GetUpdaterStateProvider() const = 0;
 
-  // Returns the filepath where installed crx's should be cached for
-  // puffin patches.
-  virtual std::optional<base::FilePath> GetCrxCachePath() const = 0;
+  // Returns the CrxCache.
+  virtual scoped_refptr<CrxCache> GetCrxCache() const = 0;
+
+#if BUILDFLAG(CHROME_FOR_TESTING)
+  // Returns required component names.
+  virtual std::vector<std::string> GetRequiredComponents() const = 0;
+#endif
 
   virtual bool IsConnectionMetered() const = 0;
 

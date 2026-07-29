@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "media/capture/video/fake_video_capture_device.h"
 
 #include <stddef.h>
@@ -18,6 +13,7 @@
 #include <utility>
 
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/scoped_refptr.h"
@@ -35,7 +31,6 @@
 #include "media/capture/video/video_capture_device.h"
 #include "media/capture/video/video_capture_gpu_channel_host.h"
 #include "media/capture/video_capture_types.h"
-#include "media/video/fake_gpu_memory_buffer.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -47,7 +42,7 @@ namespace media {
 
 bool operator==(const FakePhotoDeviceConfig& lhs,
                 const FakePhotoDeviceConfig& rhs) {
-  return std::memcmp(&lhs, &rhs, sizeof(lhs)) == 0;
+  return UNSAFE_TODO(std::memcmp(&lhs, &rhs, sizeof(lhs))) == 0;
 }
 
 namespace {
@@ -100,7 +95,6 @@ class FakeVideoCaptureDeviceTestBase : public ::testing::Test {
   void SetUp() override {
     EXPECT_CALL(*client_, OnError(_, _, _)).Times(0);
     test_sii_ = base::MakeRefCounted<gpu::TestSharedImageInterface>();
-    test_sii_->UseTestGMBInSharedImageCreationWithBufferUsage();
     VideoCaptureGpuChannelHost::GetInstance().SetSharedImageInterface(
         test_sii_);
   }
@@ -171,8 +165,7 @@ TEST_P(FakeVideoCaptureDeviceTest, CaptureUsing) {
 
   std::unique_ptr<VideoCaptureDevice> device =
       FakeVideoCaptureDeviceFactory::CreateDeviceWithDefaultResolutions(
-          pixel_format, delivery_mode, frame_rate,
-          std::make_unique<FakeGpuMemoryBufferSupport>());
+          pixel_format, delivery_mode, frame_rate);
   ASSERT_TRUE(device);
 
   // First: Requested, Second: Expected
@@ -381,29 +374,25 @@ TEST_F(FakeVideoCaptureDeviceTest, GetAndSetCapabilities) {
   EXPECT_GE(state->zoom->max, state->zoom->current);
   EXPECT_TRUE(state->fill_light_mode.empty());
 
-  ASSERT_TRUE(state->supported_background_blur_modes);
-  EXPECT_EQ(2u, state->supported_background_blur_modes->size());
-  EXPECT_EQ(1, std::ranges::count(*state->supported_background_blur_modes,
+  EXPECT_EQ(2u, state->supported_background_blur_modes.size());
+  EXPECT_EQ(1, std::ranges::count(state->supported_background_blur_modes,
                                   mojom::BackgroundBlurMode::OFF));
-  EXPECT_EQ(1, std::ranges::count(*state->supported_background_blur_modes,
+  EXPECT_EQ(1, std::ranges::count(state->supported_background_blur_modes,
                                   mojom::BackgroundBlurMode::BLUR));
   EXPECT_EQ(mojom::BackgroundBlurMode::OFF, state->background_blur_mode);
 
-  ASSERT_TRUE(state->supported_background_segmentation_mask_states);
-  EXPECT_EQ(2u, state->supported_background_segmentation_mask_states->size());
+  EXPECT_EQ(2u, state->supported_background_segmentation_mask_states.size());
   EXPECT_EQ(1,
             std::ranges::count(
-                *state->supported_background_segmentation_mask_states, false));
-  EXPECT_EQ(1,
-            std::ranges::count(
-                *state->supported_background_segmentation_mask_states, true));
+                state->supported_background_segmentation_mask_states, false));
+  EXPECT_EQ(1, std::ranges::count(
+                   state->supported_background_segmentation_mask_states, true));
   EXPECT_FALSE(state->current_background_segmentation_mask_state);
 
-  ASSERT_TRUE(state->supported_eye_gaze_correction_modes);
-  EXPECT_EQ(2u, state->supported_eye_gaze_correction_modes->size());
-  EXPECT_EQ(1, std::ranges::count(*state->supported_eye_gaze_correction_modes,
+  EXPECT_EQ(2u, state->supported_eye_gaze_correction_modes.size());
+  EXPECT_EQ(1, std::ranges::count(state->supported_eye_gaze_correction_modes,
                                   mojom::EyeGazeCorrectionMode::OFF));
-  EXPECT_EQ(1, std::ranges::count(*state->supported_eye_gaze_correction_modes,
+  EXPECT_EQ(1, std::ranges::count(state->supported_eye_gaze_correction_modes,
                                   mojom::EyeGazeCorrectionMode::ON));
   EXPECT_EQ(mojom::EyeGazeCorrectionMode::OFF,
             state->current_eye_gaze_correction_mode);

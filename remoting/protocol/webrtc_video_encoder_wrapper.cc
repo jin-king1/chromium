@@ -7,18 +7,22 @@
 #include <stdint.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
+#include "base/notimplemented.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/task/bind_post_task.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
+#include "base/timer/timer.h"
 #include "build/build_config.h"
 #include "remoting/base/constants.h"
 #include "remoting/base/session_options.h"
@@ -30,6 +34,7 @@
 #include "third_party/webrtc/api/video_codecs/sdp_video_format.h"
 #include "third_party/webrtc/api/video_codecs/vp9_profile.h"
 #include "third_party/webrtc/modules/desktop_capture/desktop_frame.h"
+#include "third_party/webrtc/modules/desktop_capture/shared_desktop_frame.h"
 #include "third_party/webrtc/modules/video_coding/include/video_codec_interface.h"
 #include "third_party/webrtc/modules/video_coding/include/video_error_codes.h"
 
@@ -264,7 +269,8 @@ int32_t WebrtcVideoEncoderWrapper::Encode(
       base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
           FROM_HERE,
           base::BindOnce(&WebrtcVideoEncoderWrapper::NotifyFrameDropped,
-                         weak_factory_.GetWeakPtr()));
+                         weak_factory_.GetWeakPtr(),
+                         pending_frame_->rtp_timestamp()));
     }
     pending_frame_ = std::make_unique<webrtc::VideoFrame>(frame);
 
@@ -281,9 +287,12 @@ int32_t WebrtcVideoEncoderWrapper::Encode(
   auto* video_frame_adapter =
       static_cast<WebrtcVideoFrameAdapter*>(frame.video_frame_buffer().get());
 
-  // Store RTP timestamp and FrameStats so they can be added to the
-  // EncodedImage and EncodedFrame when encoding is complete.
+  // Store RTP timestamp, capture timestamps, and FrameStats so they can be
+  // added to the EncodedImage and EncodedFrame when encoding is complete, and
+  // used for top-off extrapolation.
   rtp_timestamp_ = frame.rtp_timestamp();
+  capture_time_ms_ = frame.render_time_ms();
+  ntp_time_ms_ = frame.ntp_time_ms();
   frame_stats_ = video_frame_adapter->TakeFrameStats();
   if (!frame_stats_) {
     // This could happen if WebRTC tried to encode the same frame twice.
@@ -302,7 +311,13 @@ int32_t WebrtcVideoEncoderWrapper::Encode(
 
   frame_stats_->encode_started_time = encode_start;
 
-  auto desktop_frame = video_frame_adapter->TakeDesktopFrame();
+  auto desktop_frame =
+      webrtc::SharedDesktopFrame::Wrap(video_frame_adapter->TakeDesktopFrame());
+
+  last_capturer_fed_frame_ = desktop_frame->Share();
+  // Clear the updated region since the extrapolated frames are exactly the same
+  // as the last frame.
+  last_capturer_fed_frame_->mutable_updated_region()->Clear();
 
   // If any frames were dropped by WebRTC or by this class, the
   // original DesktopFrame's updated-region should not be used as-is
@@ -349,37 +364,12 @@ int32_t WebrtcVideoEncoderWrapper::Encode(
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE,
         base::BindOnce(&WebrtcVideoEncoderWrapper::NotifyFrameDropped,
-                       weak_factory_.GetWeakPtr()));
+                       weak_factory_.GetWeakPtr(), frame.rtp_timestamp()));
     return WEBRTC_VIDEO_CODEC_OK;
   }
   latest_frame_encode_start_time_ = encode_start;
 
-  WebrtcVideoEncoder::FrameParams frame_params;
-
-  // SetRates() must be called prior to Encode(), with a non-zero bitrate.
-  DCHECK_NE(0, bitrate_kbps_);
-  frame_params.bitrate_kbps = bitrate_kbps_;
-  frame_params.duration = current_frame_interval_;
-  frame_params.fps = current_frame_interval_.ToHz();
-
-  frame_params.vpx_min_quantizer =
-      ShouldDropQualityForLargeFrame(*desktop_frame) ? kMaxQuantizer
-                                                     : kMinQuantizer;
-  frame_params.vpx_max_quantizer = kMaxQuantizer;
-  frame_params.clear_active_map = !top_off_active_;
-
-  frame_params.key_frame = pending_key_frame_request_;
-  pending_key_frame_request_ = false;
-
-  encode_pending_ = true;
-
-  auto encode_callback = base::BindPostTaskToCurrentDefault(base::BindOnce(
-      &WebrtcVideoEncoderWrapper::OnFrameEncoded, weak_factory_.GetWeakPtr()));
-  encode_task_runner_->PostTask(
-      FROM_HERE,
-      base::BindOnce(&WebrtcVideoEncoder::Encode,
-                     base::Unretained(encoder_.get()), std::move(desktop_frame),
-                     frame_params, std::move(encode_callback)));
+  EncodeDesktopFrame(std::move(desktop_frame));
   return WEBRTC_VIDEO_CODEC_OK;
 }
 
@@ -418,6 +408,8 @@ WebrtcVideoEncoderWrapper::ReturnEncodedFrame(
                                  ? webrtc::VideoFrameType::kVideoFrameKey
                                  : webrtc::VideoFrameType::kVideoFrameDelta;
   encoded_image.SetRtpTimestamp(frame.rtp_timestamp);
+  encoded_image.capture_time_ms_ = frame.capture_time_ms;
+  encoded_image.ntp_time_ms_ = frame.ntp_time_ms;
   encoded_image.SetPlayoutDelay(webrtc::VideoPlayoutDelay::Minimal());
   encoded_image.content_type_ = webrtc::VideoContentType::SCREENSHARE;
 
@@ -490,9 +482,11 @@ void WebrtcVideoEncoderWrapper::OnFrameEncoded(
     // WebrtcFrameSchedulerConstantRate cannot estimate this delay. Set it to 0
     // so the client can still calculate the derived stats.
     frame_stats_->send_pending_delay = base::TimeDelta();
-    frame->stats = std::move(frame_stats_);
+    frame->stats = frame_stats_->Clone();
 
     frame->rtp_timestamp = rtp_timestamp_;
+    frame->capture_time_ms = capture_time_ms_;
+    frame->ntp_time_ms = ntp_time_ms_;
   }
 
   if (encode_result != WebrtcVideoEncoder::EncodeResult::SUCCEEDED) {
@@ -501,20 +495,20 @@ void WebrtcVideoEncoderWrapper::OnFrameEncoded(
     // return any error, but hardware-decoders such as H264 may fail.
     LOG(ERROR) << "Video encoder returned error "
                << EncodeResultToString(encode_result);
-    NotifyFrameDropped();
     DropPendingFrame();
     return;
   }
 
   if (!frame || !frame->data || !frame->data->size()) {
     top_off_active_ = false;
-    NotifyFrameDropped();
+    UpdateTopOffExtrapolationTimer();
     DropPendingFrame();
     return;
   }
 
   // Top-off until the best quantizer value is reached.
   top_off_active_ = (frame->quantizer > kMinQuantizer);
+  UpdateTopOffExtrapolationTimer();
 
   // If there was a successful capture while the encoder was working then there
   // will be a frame waiting to be encoded. Send it to the encoder now that its
@@ -540,11 +534,11 @@ void WebrtcVideoEncoderWrapper::OnFrameEncoded(
                                 send_result, std::ref(*frame)));
 }
 
-void WebrtcVideoEncoderWrapper::NotifyFrameDropped() {
+void WebrtcVideoEncoderWrapper::NotifyFrameDropped(uint32_t rtp_timestamp) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(encoded_callback_);
-  encoded_callback_->OnDroppedFrame(
-      webrtc::EncodedImageCallback::DropReason::kDroppedByEncoder);
+  encoded_callback_->OnFrameDropped(rtp_timestamp, /*spatial_id=*/0,
+                                    /*is_end_of_temporal_unit=*/true);
 }
 
 bool WebrtcVideoEncoderWrapper::ShouldDropQualityForLargeFrame(
@@ -586,9 +580,113 @@ void WebrtcVideoEncoderWrapper::SchedulePendingFrame() {
 void WebrtcVideoEncoderWrapper::DropPendingFrame() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (pending_frame_) {
+    uint32_t rtp_timestamp = pending_frame_->rtp_timestamp();
     pending_frame_.reset();
-    NotifyFrameDropped();
+    NotifyFrameDropped(rtp_timestamp);
   }
+}
+
+void WebrtcVideoEncoderWrapper::EncodeDesktopFrame(
+    std::unique_ptr<webrtc::DesktopFrame> desktop_frame) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  DCHECK(!encode_pending_);
+
+  if (keep_alive_timer_.IsRunning()) {
+    keep_alive_timer_.Reset();
+  } else {
+    keep_alive_timer_.Start(FROM_HERE, kKeepAliveInterval, this,
+                            &WebrtcVideoEncoderWrapper::ExtrapolateFrame);
+  }
+  if (top_off_active_) {
+    top_off_timer_.Reset();
+  }
+
+  WebrtcVideoEncoder::FrameParams frame_params;
+
+  // SetRates() must be called prior to Encode(), with a non-zero bitrate.
+  DCHECK_NE(0, bitrate_kbps_);
+  frame_params.bitrate_kbps = bitrate_kbps_;
+  frame_params.duration = current_frame_interval_;
+  frame_params.fps = current_frame_interval_.ToHz();
+
+  frame_params.vpx_min_quantizer =
+      ShouldDropQualityForLargeFrame(*desktop_frame) ? kMaxQuantizer
+                                                     : kMinQuantizer;
+  frame_params.vpx_max_quantizer = kMaxQuantizer;
+  frame_params.clear_active_map = !top_off_active_;
+
+  frame_params.key_frame = pending_key_frame_request_;
+  pending_key_frame_request_ = false;
+
+  encode_pending_ = true;
+
+  auto encode_callback = base::BindPostTaskToCurrentDefault(base::BindOnce(
+      &WebrtcVideoEncoderWrapper::OnFrameEncoded, weak_factory_.GetWeakPtr()));
+  encode_task_runner_->PostTask(
+      FROM_HERE,
+      base::BindOnce(&WebrtcVideoEncoder::Encode,
+                     base::Unretained(encoder_.get()), std::move(desktop_frame),
+                     frame_params, std::move(encode_callback)));
+}
+
+void WebrtcVideoEncoderWrapper::UpdateTopOffExtrapolationTimer() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (top_off_active_) {
+    // For constant rate capturers, top-off frames are extrapolated in a
+    // frequency slightly lower than the targeted frame rate so that it can be
+    // suppressed by capturer-fed frames. For push-based capturers, the top-off
+    // frequency is slightly lower than the minimal frame rate
+    // (1 / kMaxFrameDuration).
+    base::TimeDelta top_off_interval =
+        std::max(current_frame_interval_ * 1.1,
+                 current_frame_interval_ + base::Milliseconds(2));
+    top_off_timer_.Start(FROM_HERE, top_off_interval, this,
+                         &WebrtcVideoEncoderWrapper::ExtrapolateFrame);
+  } else {
+    top_off_timer_.Stop();
+  }
+}
+
+void WebrtcVideoEncoderWrapper::ExtrapolateFrame() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (encode_pending_ || pending_frame_) {
+    VLOG(1) << "Top-off frame not extrapolated because encoder is busy.";
+    return;
+  }
+  if (!last_capturer_fed_frame_) {
+    LOG(ERROR) << "No top-off frame is available.";
+    return;
+  }
+  base::TimeTicks now = base::TimeTicks::Now();
+  base::TimeDelta time_since_last_frame;
+  if (!latest_frame_encode_start_time_.is_null()) {
+    time_since_last_frame = now - latest_frame_encode_start_time_;
+  }
+  latest_frame_encode_start_time_ = now;
+  frame_stats_->ResetTimestamps(latest_frame_encode_start_time_);
+
+  // Advance RTP and capture timestamps based on elapsed time.
+  // Video RTP timestamp uses a 90 kHz clock (90 ticks per millisecond).
+  // Note: The intermediate diff is calculated in 64-bit space to prevent
+  // overflow, then assigned to uint32_t so that adding to rtp_timestamp_
+  // relies on guaranteed C++ unsigned 32-bit wrapping arithmetic.
+  uint32_t rtp_time_diff = static_cast<uint32_t>(
+      std::max<int64_t>(1, (time_since_last_frame.InMicroseconds() * 90) /
+                               base::Time::kMicrosecondsPerMillisecond));
+  rtp_timestamp_ += rtp_time_diff;
+  if (capture_time_ms_ > 0) {
+    capture_time_ms_ += time_since_last_frame.InMilliseconds();
+  }
+  if (ntp_time_ms_ > 0) {
+    ntp_time_ms_ += time_since_last_frame.InMilliseconds();
+  }
+
+  EncodeDesktopFrame(last_capturer_fed_frame_->Share());
+}
+
+// static
+base::TimeDelta WebrtcVideoEncoderWrapper::GetKeepAliveIntervalForTesting() {
+  return kKeepAliveInterval;
 }
 
 }  // namespace remoting::protocol

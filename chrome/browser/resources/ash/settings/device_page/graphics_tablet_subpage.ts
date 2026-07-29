@@ -8,7 +8,6 @@
  * tablet settings for each device in system settings.
  */
 
-import '../icons.html.js';
 import '../settings_shared.css.js';
 import './input_device_settings_shared.css.js';
 import './per_device_app_installed_row.js';
@@ -82,11 +81,11 @@ export class SettingsGraphicsTabletSubpageElement extends
     };
   }
 
-  prefs: PrefsState;
-  graphicsTablets: GraphicsTablet[];
-  private currentPenChanged: boolean;
-  private currentTabletChanged: boolean;
-  private deviceId: number;
+  declare prefs: PrefsState;
+  declare graphicsTablets: GraphicsTablet[];
+  declare private currentPenChanged: boolean;
+  declare private currentTabletChanged: boolean;
+  declare private deviceId: number;
   private inputDeviceSettingsProvider: InputDeviceSettingsProviderInterface =
       getInputDeviceSettingsProvider();
 

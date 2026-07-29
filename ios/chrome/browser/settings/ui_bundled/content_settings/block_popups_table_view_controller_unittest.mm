@@ -9,7 +9,6 @@
 #import <memory>
 
 #import "base/apple/foundation_util.h"
-#import "base/containers/contains.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/test/ios/wait_util.h"
 #import "components/content_settings/core/browser/host_content_settings_map.h"
@@ -41,34 +40,38 @@ class BlockPopupsTableViewControllerTest
   }
 
   LegacyChromeTableViewController* InstantiateController() override {
-    return
-        [[BlockPopupsTableViewController alloc] initWithProfile:profile_.get()];
+    return [[BlockPopupsTableViewController alloc]
+        initWithHostContentSettingsMap:settings_map()
+                           prefService:pref_service()];
   }
 
   void SetDisallowPopups() {
-    ios::HostContentSettingsMapFactory::GetForProfile(profile_.get())
-        ->SetDefaultContentSetting(ContentSettingsType::POPUPS,
-                                   CONTENT_SETTING_BLOCK);
+    settings_map()->SetDefaultContentSetting(ContentSettingsType::POPUPS,
+                                             CONTENT_SETTING_BLOCK);
   }
 
   void SetAllowPopups() {
-    ios::HostContentSettingsMapFactory::GetForProfile(profile_.get())
-        ->SetDefaultContentSetting(ContentSettingsType::POPUPS,
-                                   CONTENT_SETTING_ALLOW);
+    settings_map()->SetDefaultContentSetting(ContentSettingsType::POPUPS,
+                                             CONTENT_SETTING_ALLOW);
   }
 
   void AddAllowedPattern(const std::string& pattern, const GURL& url) {
     ContentSettingsPattern allowed_pattern =
         ContentSettingsPattern::FromString(pattern);
 
-    ios::HostContentSettingsMapFactory::GetForProfile(profile_.get())
-        ->SetContentSettingCustomScope(
-            allowed_pattern, ContentSettingsPattern::Wildcard(),
-            ContentSettingsType::POPUPS, CONTENT_SETTING_ALLOW);
+    settings_map()->SetContentSettingCustomScope(
+        allowed_pattern, ContentSettingsPattern::Wildcard(),
+        ContentSettingsType::POPUPS, CONTENT_SETTING_ALLOW);
     EXPECT_EQ(CONTENT_SETTING_ALLOW,
               ios::HostContentSettingsMapFactory::GetForProfile(profile_.get())
                   ->GetContentSetting(url, url, ContentSettingsType::POPUPS));
   }
+
+  HostContentSettingsMap* settings_map() {
+    return ios::HostContentSettingsMapFactory::GetForProfile(profile_.get());
+  }
+
+  PrefService* pref_service() { return profile_->GetPrefs(); }
 
   web::WebTaskEnvironment task_environment_;
   std::unique_ptr<TestProfileIOS> profile_;
@@ -212,7 +215,7 @@ TEST_F(BlockPopupsTableViewControllerTest, TestMultipleAllowedItemsDeleted) {
   std::vector<std::string> blocked_urls;
   std::vector<std::string> allowed_urls;
   for (const auto& [pattern, url] : patterns_to_url) {
-    if (base::Contains(deleted_patterns, pattern)) {
+    if (deleted_patterns.contains(pattern)) {
       blocked_urls.push_back(url);
     } else {
       allowed_urls.push_back(url);

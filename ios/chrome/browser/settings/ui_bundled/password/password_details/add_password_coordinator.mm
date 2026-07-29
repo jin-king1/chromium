@@ -8,28 +8,30 @@
 #import "base/memory/scoped_refptr.h"
 #import "base/metrics/histogram_functions.h"
 #import "base/strings/sys_string_conversions.h"
+#import "components/password_manager/core/browser/password_requirements_service.h"
 #import "components/strings/grit/components_strings.h"
 #import "ios/chrome/browser/passwords/model/ios_chrome_password_check_manager.h"
 #import "ios/chrome/browser/passwords/model/ios_chrome_password_check_manager_factory.h"
+#import "ios/chrome/browser/passwords/model/ios_password_requirements_service_factory.h"
 #import "ios/chrome/browser/passwords/model/metrics/ios_password_manager_metrics.h"
 #import "ios/chrome/browser/passwords/model/metrics/ios_password_manager_visits_recorder.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/password_details/add_password_coordinator_delegate.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/password_details/add_password_mediator.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/password_details/add_password_mediator_delegate.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/password_details/add_password_view_controller.h"
-#import "ios/chrome/browser/settings/ui_bundled/password/reauthentication/reauthentication_coordinator.h"
+#import "ios/chrome/browser/settings/ui_bundled/password/reauthentication/local_reauthentication_coordinator.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
-#import "ios/chrome/browser/shared/public/commands/application_commands.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/open_new_tab_command.h"
+#import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ui/base/l10n/l10n_util.h"
 #import "url/gurl.h"
 
 @interface AddPasswordCoordinator () <AddPasswordMediatorDelegate,
-                                      ReauthenticationCoordinatorDelegate,
+                                      LocalReauthenticationCoordinatorDelegate,
                                       UIAdaptivePresentationControllerDelegate>
 
 // Main view controller for this coordinator.
@@ -39,11 +41,12 @@
 @property(nonatomic, strong) AddPasswordMediator* mediator;
 
 // Dispatcher.
-@property(nonatomic, weak) id<ApplicationCommands, BrowserCommands> dispatcher;
+@property(nonatomic, weak) id<SceneCommands, BrowserCommands> dispatcher;
 
 // Used for requiring authentication after the browser comes from the background
 // with Add Password open.
-@property(nonatomic, strong) ReauthenticationCoordinator* reauthCoordinator;
+@property(nonatomic, strong)
+    LocalReauthenticationCoordinator* reauthCoordinator;
 
 @end
 
@@ -59,24 +62,25 @@
   self = [super initWithBaseViewController:viewController browser:browser];
   if (self) {
     DCHECK(viewController);
-    _dispatcher = static_cast<id<BrowserCommands, ApplicationCommands>>(
+    _dispatcher = static_cast<id<BrowserCommands, SceneCommands>>(
         browser->GetCommandDispatcher());
   }
   return self;
 }
 
 - (void)start {
-  ProfileIOS* profile = self.browser->GetProfile();
+  ProfileIOS* profile = self.profile;
   self.viewController = [[AddPasswordViewController alloc] init];
   self.viewController.presentationController.delegate = self;
 
   self.mediator = [[AddPasswordMediator alloc]
-          initWithDelegate:self
-      passwordCheckManager:IOSChromePasswordCheckManagerFactory::GetForProfile(
-                               profile)
-                               .get()
-               prefService:profile->GetPrefs()
-               syncService:SyncServiceFactory::GetForProfile(profile)];
+                 initWithDelegate:self
+             passwordCheckManager:IOSChromePasswordCheckManagerFactory::
+                                      GetForProfile(profile)
+                                          .get()
+                      syncService:SyncServiceFactory::GetForProfile(profile)
+      passwordRequirementsService:IOSPasswordRequirementsServiceFactory::
+                                      GetForProfile(profile)];
   self.mediator.consumer = self.viewController;
   self.viewController.delegate = self.mediator;
 
@@ -147,15 +151,15 @@
                                                     coordinator:self];
 }
 
-#pragma mark - ReauthenticationCoordinatorDelegate
+#pragma mark - LocalReauthenticationCoordinatorDelegate
 
 - (void)successfulReauthenticationWithCoordinator:
-    (ReauthenticationCoordinator*)coordinator {
+    (LocalReauthenticationCoordinator*)coordinator {
   // No-op.
 }
 
 - (void)dismissUIAfterFailedReauthenticationWithCoordinator:
-    (ReauthenticationCoordinator*)coordinator {
+    (LocalReauthenticationCoordinator*)coordinator {
   CHECK_EQ(_reauthCoordinator, coordinator);
   [_delegate dismissPasswordManagerAfterFailedReauthentication];
 }
@@ -170,10 +174,9 @@
 // Local authentication is required every time the current
 // scene is backgrounded and foregrounded until reauthCoordinator is stopped.
 - (void)startReauthCoordinator {
-  _reauthCoordinator = [[ReauthenticationCoordinator alloc]
+  _reauthCoordinator = [[LocalReauthenticationCoordinator alloc]
       initWithBaseNavigationController:_baseNavigationController
                                browser:self.browser
-                reauthenticationModule:nil
                            authOnStart:NO];
 
   _reauthCoordinator.delegate = self;

@@ -6,6 +6,8 @@
 
 #include <string>
 
+#include "base/strings/stringprintf.h"
+#include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/device_notifications/device_pinned_notification_unittest.h"
 #include "chrome/browser/hid/hid_connection_tracker.h"
 #include "chrome/browser/hid/hid_connection_tracker_factory.h"
@@ -28,7 +30,8 @@ class HidPinnedNotificationTest : public DevicePinnedNotificationTestBase {
             /*device_content_settings_label=*/u"HID settings") {}
 
   void ResetTestingBrowserProcessSystemTrayIcon() override {
-    TestingBrowserProcess::GetGlobal()->SetHidSystemTrayIcon(nullptr);
+    TestingBrowserProcess::GetGlobal()->set_hid_system_tray_icon_for_test(
+        nullptr);
   }
 
   std::u16string GetExpectedTitle(size_t num_origins,

@@ -16,7 +16,13 @@ std::string AudioProcessingSettings::ToString() const {
        ", ns: ", bool_to_yes_no(noise_suppression),
        ", gain control: ", bool_to_yes_no(automatic_gain_control),
        ", multichannel capture processing: ",
-       bool_to_yes_no(multi_channel_capture_processing)});
+       bool_to_yes_no(multi_channel_capture_processing),
+       ", loopback aec: ", bool_to_yes_no(use_loopback_aec_reference)
+#if BUILDFLAG(CHROME_WIDE_ECHO_CANCELLATION)
+                               ,
+       ", voice isolation: ", bool_to_yes_no(voice_isolation)
+#endif
+      });
 }
 
 }  // namespace media

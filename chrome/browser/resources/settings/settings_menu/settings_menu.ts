@@ -16,16 +16,21 @@ import 'chrome://resources/cr_elements/icons.html.js';
 import 'chrome://resources/cr_elements/cr_icon/cr_icon.js';
 import '../settings_vars.css.js';
 import '../icons.html.js';
+// <if expr="_google_chrome">
+import '../internal/icons.html.js';
 
-import type {CrMenuSelector} from 'chrome://resources/cr_elements/cr_menu_selector/cr_menu_selector.js';
+// </if>
+
+import type {CrMenuSelectorElement} from 'chrome://resources/cr_elements/cr_menu_selector/cr_menu_selector.js';
 import {assert} from 'chrome://resources/js/assert.js';
 import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
 import {loadTimeData} from '../i18n_setup.js';
 import type {MetricsBrowserProxy} from '../metrics_browser_proxy.js';
-import {MetricsBrowserProxyImpl} from '../metrics_browser_proxy.js';
+import {AutofillSettingsReferrer, MetricsBrowserProxyImpl} from '../metrics_browser_proxy.js';
+import {pageVisibility} from '../page_visibility.js';
 import type {PageVisibility} from '../page_visibility.js';
-import type {Route, SettingsRoutes} from '../router.js';
+import type {Route} from '../router.js';
 import {RouteObserverMixin, Router} from '../router.js';
 
 import {getTemplate} from './settings_menu.html.js';
@@ -33,8 +38,9 @@ import {getTemplate} from './settings_menu.html.js';
 export interface SettingsMenuElement {
   $: {
     autofill: HTMLLinkElement,
-    menu: CrMenuSelector,
+    menu: CrMenuSelectorElement,
     people: HTMLLinkElement,
+    yourSavedInfo: HTMLLinkElement,
   };
 }
 
@@ -54,58 +60,26 @@ export class SettingsMenuElement extends SettingsMenuElementBase {
       /**
        * Dictionary defining page visibility.
        */
-      pageVisibility: Object,
+      pageVisibility_: {
+        type: Object,
+        value: () => pageVisibility,
+      },
 
-      enableAiSettingsPageRefresh_: {
+      showAiPage_: {
         type: Boolean,
-        value: () => loadTimeData.getBoolean('enableAiSettingsPageRefresh'),
-      },
-
-      showAdvancedFeaturesMainControl_: {
-        type: Boolean,
-        value: () => loadTimeData.getBoolean('showAdvancedFeaturesMainControl'),
-      },
-
-      aiPageIcon_: {
-        type: String,
-        computed: 'computeAiPageIcon_(enableAiSettingsPageRefresh_)',
-      },
-
-      aiPageTitle_: {
-        type: String,
-        computed: 'computeAiPageTitle_(enableAiSettingsPageRefresh_)',
+        value: () => loadTimeData.getBoolean('showAiPage'),
       },
     };
   }
 
-  pageVisibility?: PageVisibility;
-  private enableAiSettingsPageRefresh_: boolean;
-  private showAdvancedFeaturesMainControl_: boolean;
-  private routes_: SettingsRoutes;
-  private aiPageIcon_: string;
-  private aiPageTitle_: string;
+  declare private pageVisibility_?: PageVisibility;
+  declare private showAiPage_: boolean;
   private metricsBrowserProxy_: MetricsBrowserProxy =
       MetricsBrowserProxyImpl.getInstance();
 
-  override ready() {
-    super.ready();
-    this.routes_ = Router.getInstance().getRoutes();
-  }
-
-  private showExperimentalMenuItem_(): boolean {
-    return this.showAdvancedFeaturesMainControl_ &&
-        (!this.pageVisibility || this.pageVisibility.ai !== false);
-  }
-
-  private computeAiPageIcon_(): string {
-    return this.enableAiSettingsPageRefresh_ ? 'settings20:magic' :
-                                               'settings20:ai';
-  }
-
-  private computeAiPageTitle_(): string {
-    return loadTimeData.getString(
-        this.enableAiSettingsPageRefresh_ ? 'aiInnovationsPageTitle' :
-                                            'aiPageTitle');
+  private showAiPageMenuItem_(): boolean {
+    return this.showAiPage_ &&
+        (!this.pageVisibility_ || this.pageVisibility_.ai !== false);
   }
 
   override currentRouteChanged(newRoute: Route) {
@@ -156,7 +130,7 @@ export class SettingsMenuElement extends SettingsMenuElementBase {
     this.setSelectedPath_(path);
 
     const route = Router.getInstance().getRouteForPath(path);
-    assert(route, 'settings-menu has an entry with an invalid route.');
+    assert(route, `settings-menu encountered invalid path '${path}'`);
     Router.getInstance().navigateTo(
         route, /* dynamicParams */ undefined, /* removeSearch */ true);
   }
@@ -166,11 +140,32 @@ export class SettingsMenuElement extends SettingsMenuElementBase {
         'SettingsMenu_ExtensionsLinkClicked');
   }
 
+  private onAutofillClick_() {
+    this.metricsBrowserProxy_.recordAutofillSettingsReferrer(
+        'Autofill.YourSavedInfoSettingsPage.VisitReferrer',
+        AutofillSettingsReferrer.SETTINGS_MENU);
+  }
+
   private onAiPageClick_() {
-    if (this.enableAiSettingsPageRefresh_) {
-      this.metricsBrowserProxy_.recordAction(
-          'SettingsMenu_AiPageEntryPointClicked');
+    this.metricsBrowserProxy_.recordAction(
+        'SettingsMenu_AiPageEntryPointClicked');
+  }
+
+  private hideBottomMenuSeparator_(): boolean {
+    if (!this.pageVisibility_) {
+      return false;
     }
+
+    const visibilities = [
+      this.pageVisibility_.languages,
+      this.pageVisibility_.downloads,
+      this.pageVisibility_.a11y,
+      // <if expr="not is_chromeos">
+      this.pageVisibility_.system,
+      // </if>
+      this.pageVisibility_.reset,
+    ];
+    return visibilities.every(visibility => visibility === false);
   }
 }
 

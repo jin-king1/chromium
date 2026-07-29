@@ -20,6 +20,7 @@
 #include "base/logging.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/string_util.h"
+#include "base/strings/string_view_util.h"
 #include "base/sys_byteorder.h"
 #include "base/types/optional_util.h"
 #include "net/base/io_buffer.h"
@@ -61,10 +62,13 @@ DnsResourceRecord::DnsResourceRecord(DnsResourceRecord&& other)
       klass(other.klass),
       ttl(other.ttl),
       owned_rdata(std::move(other.owned_rdata)) {
-  if (!owned_rdata.empty())
+  if (!owned_rdata.empty()) {
     rdata = owned_rdata;
-  else
+  } else {
     rdata = other.rdata;
+  }
+  // Ensure the moved-from object has no dangling reference.
+  other.rdata = base::span<const uint8_t>();
 }
 
 DnsResourceRecord::~DnsResourceRecord() = default;
@@ -92,28 +96,41 @@ DnsResourceRecord& DnsResourceRecord::operator=(DnsResourceRecord&& other) {
   ttl = other.ttl;
   owned_rdata = std::move(other.owned_rdata);
 
-  if (!owned_rdata.empty())
+  if (!owned_rdata.empty()) {
     rdata = owned_rdata;
-  else
+  } else {
     rdata = other.rdata;
+  }
+  // Ensure the moved-from object has no dangling reference.
+  other.rdata = base::span<const uint8_t>();
 
   return *this;
 }
 
-void DnsResourceRecord::SetOwnedRdata(std::string value) {
+void DnsResourceRecord::SetOwnedRdata(base::span<const uint8_t> value) {
   DCHECK(!value.empty());
-  owned_rdata = std::move(value);
+  owned_rdata.assign(value.begin(), value.end());
   rdata = owned_rdata;
   DCHECK_EQ(owned_rdata.data(), rdata.data());
 }
 
 size_t DnsResourceRecord::CalculateRecordSize() const {
-  bool has_final_dot = name.back() == '.';
-  // Depending on if |name| in the dotted format has the final dot for the root
-  // domain or not, the corresponding wire data in the DNS domain name format is
-  // 1 byte (with dot) or 2 bytes larger in size. See RFC 1035, Section 3.1 and
-  // DNSDomainFromDot.
-  return name.size() + (has_final_dot ? 1 : 2) +
+  size_t name_size;
+  if (type == dns_protocol::kTypeOPT) {
+    // Per RFC 6891, OPT pseudo-RR name field must be the root domain (encoded
+    // as a single zero byte).
+    CHECK(name.empty());
+    name_size = 1;
+  } else {
+    CHECK(!name.empty());
+    bool has_final_dot = name.back() == '.';
+    // Depending on if |name| in the dotted format has the final dot for the
+    // root domain or not, the corresponding wire data in the DNS domain name
+    // format is 1 byte (with dot) or 2 bytes larger in size. See RFC 1035,
+    // Section 3.1 and `dns_names_util::DottedNameToNetwork()`.
+    name_size = name.size() + (has_final_dot ? 1 : 2);
+  }
+  return name_size +
          net::dns_protocol::kResourceRecordSizeInBytesWithoutNameAndRData +
          (owned_rdata.empty() ? rdata.size() : owned_rdata.size());
 }
@@ -229,9 +246,7 @@ unsigned DnsRecordParser::ReadName(const void* const vpos,
         if (out) {
           if (!out->empty())
             out->append(".");
-          // TODO(danakj): Use append_range() in C++23.
-          auto range = packet_.subspan(offset, label_len);
-          out->append(range.begin(), range.end());
+          out->append_range(packet_.subspan(offset, label_len));
           CHECK_LE(out->size(), dns_protocol::kMaxCharNameLength);
         }
         offset += label_len;
@@ -263,9 +278,7 @@ bool DnsRecordParser::ReadRecord(DnsResourceRecord* out) {
       reader.ReadU16BigEndian(out->klass) &&
       reader.ReadU32BigEndian(out->ttl) &&  //
       reader.ReadU16BigEndian(rdlen) &&
-      base::OptionalUnwrapTo(reader.Read(rdlen), out->rdata, [](auto span) {
-        return base::as_string_view(span);
-      })) {
+      base::OptionalUnwrapTo(reader.Read(rdlen), out->rdata)) {
     cur_ += consumed + 2u + 2u + 4u + 2u + rdlen;
     ++num_records_parsed_;
     return true;
@@ -462,7 +475,7 @@ bool DnsResponse::InitParse(size_t nbytes, const DnsQuery& query) {
   // Construct the parser. Only allow parsing up to `num_records` records. If
   // more records are present in the buffer, it's just garbage extra data after
   // the formal end of the response and should be ignored.
-  parser_ = DnsRecordParser(io_buffer_->span().first(nbytes),
+  parser_ = DnsRecordParser(io_buffer_->first(nbytes),
                             kHeaderSize + question.size(), num_records);
   return true;
 }
@@ -483,10 +496,16 @@ bool DnsResponse::InitParseWithoutQuery(size_t nbytes) {
   // Only allow parsing up to `num_records` records. If more records are present
   // in the buffer, it's just garbage extra data after the formal end of the
   // response and should be ignored.
-  parser_ = DnsRecordParser(io_buffer_->span().first(nbytes), kHeaderSize,
-                            num_records);
+  parser_ =
+      DnsRecordParser(io_buffer_->first(nbytes), kHeaderSize, num_records);
 
   unsigned qdcount = base::NetToHost16(header()->qdcount);
+
+  std::vector<std::string> parsed_qnames;
+  std::vector<uint16_t> parsed_qtypes;
+  parsed_qnames.reserve(qdcount);
+  parsed_qtypes.reserve(qdcount);
+
   for (unsigned i = 0; i < qdcount; ++i) {
     std::string dotted_qname;
     uint16_t qtype;
@@ -494,9 +513,12 @@ bool DnsResponse::InitParseWithoutQuery(size_t nbytes) {
       parser_ = DnsRecordParser();  // Make parser invalid again.
       return false;
     }
-    dotted_qnames_.push_back(std::move(dotted_qname));
-    qtypes_.push_back(qtype);
+    parsed_qnames.push_back(std::move(dotted_qname));
+    parsed_qtypes.push_back(qtype);
   }
+
+  dotted_qnames_ = std::move(parsed_qnames);
+  qtypes_ = std::move(parsed_qtypes);
 
   return true;
 }
@@ -581,20 +603,26 @@ bool DnsResponse::WriteRecord(base::SpanWriter<uint8_t>* writer,
                               const DnsResourceRecord& record,
                               bool validate_record,
                               bool validate_name_as_internet_hostname) {
-  if (record.rdata != std::string_view(record.owned_rdata)) {
-    VLOG(1) << "record.rdata should point to record.owned_rdata.";
-    return false;
-  }
+  CHECK_EQ(record.rdata.data(), record.owned_rdata.data());
 
   if (validate_record &&
-      !RecordRdata::HasValidSize(record.owned_rdata, record.type)) {
-    VLOG(1) << "Invalid RDATA size for a record.";
+      !RecordRdata::HasValidSize(base::as_byte_span(record.owned_rdata),
+                                 record.type)) {
+    DVLOG(1) << "Mismatch between rdata size (" << record.rdata.size()
+             << ") and owned_rdata size (" << record.owned_rdata.size() << ").";
     return false;
   }
 
-  std::optional<std::vector<uint8_t>> domain_name =
-      dns_names_util::DottedNameToNetwork(record.name,
-                                          validate_name_as_internet_hostname);
+  // Per RFC 6891, OPT pseudo-RR name field must be the root domain (empty
+  // name encoded as a single zero byte).
+  std::optional<std::vector<uint8_t>> domain_name;
+  if (record.type == dns_protocol::kTypeOPT) {
+    CHECK(record.name.empty());
+    domain_name = std::vector<uint8_t>{0};
+  } else {
+    domain_name = dns_names_util::DottedNameToNetwork(
+        record.name, validate_name_as_internet_hostname);
+  }
   if (!domain_name.has_value()) {
     VLOG(1) << "Invalid dotted name (as "
             << (validate_name_as_internet_hostname ? "Internet hostname)."

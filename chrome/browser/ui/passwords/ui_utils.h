@@ -10,7 +10,6 @@
 
 #include "build/build_config.h"
 #include "components/password_manager/core/browser/manage_passwords_referrer.h"
-#include "components/password_manager/core/browser/origin_credential_store.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "services/network/public/mojom/url_loader_factory.mojom.h"
 #include "ui/gfx/vector_icon_types.h"
@@ -25,7 +24,20 @@ class ImageSkia;
 
 namespace password_manager {
 struct PasswordForm;
+class UiCredential;
 }  // namespace password_manager
+
+namespace signin {
+class IdentityManager;
+}  // namespace signin
+
+namespace syncer {
+class SyncService;
+}  // namespace syncer
+
+namespace url {
+class Origin;
+}  // namespace url
 
 class GURL;
 
@@ -35,12 +47,12 @@ enum class PasswordTitleType {
   UPDATE_PASSWORD,  // update plain password
 };
 
-class Browser;
+class BrowserWindowInterface;
 class Profile;
 struct AccountInfo;
 
 // The desired width and height in pixels for an account avatar.
-constexpr int kAvatarImageSize = 32;
+inline constexpr int kAvatarImageSize = 32;
 
 // Crops and scales |image_skia| to the desired size for an account avatar.
 gfx::ImageSkia ScaleImageForAccountAvatar(gfx::ImageSkia image_skia);
@@ -104,13 +116,13 @@ std::string GetGooglePasswordManagerSubPageURLStr();
 #if !BUILDFLAG(IS_ANDROID)
 // Navigates to the Google Password Manager page.
 void NavigateToManagePasswordsPage(
-    Browser* browser,
+    BrowserWindowInterface* browser,
     password_manager::ManagePasswordsReferrer referrer);
 
 // Navigates to the Google Password Manager subpage to show the credential
 // details for the `password_domain_name`.
 void NavigateToPasswordDetailsPage(
-    Browser* browser,
+    BrowserWindowInterface* browser,
     const std::string& password_domain_name,
     password_manager::ManagePasswordsReferrer referrer);
 

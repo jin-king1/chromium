@@ -4,9 +4,11 @@
 
 #include "chrome/browser/component_updater/pki_metadata_component_installer.h"
 
+#include <string>
 #include <vector>
 
 #include "base/base64.h"
+#include "base/containers/to_vector.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
@@ -14,6 +16,7 @@
 #include "base/values.h"
 #include "base/version.h"
 #include "chrome/browser/browser_features.h"
+#include "chrome/browser/component_updater/pki_metadata_component_installer_policy.h"
 #include "chrome/browser/net/key_pinning.pb.h"
 #include "components/certificate_transparency/certificate_transparency_config.pb.h"
 #include "components/certificate_transparency/ct_known_logs.h"
@@ -22,6 +25,7 @@
 #include "content/public/browser/network_service_instance.h"
 #include "content/public/test/browser_task_environment.h"
 #include "net/base/features.h"
+#include "net/base/hash_value.h"
 #include "net/cert/cert_verify_proc.h"
 #include "net/http/transport_security_state.h"
 #include "net/net_buildflags.h"
@@ -84,7 +88,7 @@ constexpr uint8_t kSpkiHash2[] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 
-constexpr uint64_t kMaxSupportedCTCompatibilityVersion = 3;
+constexpr uint64_t kMaxSupportedCTCompatibilityVersion = 4;
 constexpr uint64_t kMaxSupportedKPCompatibilityVersion = 1;
 
 }  // namespace
@@ -235,19 +239,27 @@ class PKIMetadataComponentInstallerTest : public testing::Test {
 };
 
 TEST_F(PKIMetadataComponentInstallerTest, TestProtoBytesConversion) {
-  std::vector<std::vector<uint8_t>> test_bytes = {
+  std::vector<net::SHA256HashValue> test_hashes = {
       {0xec, 0x72, 0x29, 0x69, 0xcb, 0x64, 0x20, 0x0a, 0xb6, 0x63, 0x8f,
        0x68, 0xac, 0x53, 0x8e, 0x40, 0xab, 0xab, 0x5b, 0x19, 0xa6, 0x48,
        0x56, 0x61, 0x04, 0x2a, 0x10, 0x61, 0xc4, 0x61, 0x27, 0x76}};
+  std::vector<std::vector<uint8_t>> test_bytes = {
+      base::ToVector(test_hashes[0])};
 
   std::string bytes_as_string(std::begin(test_bytes[0]),
                               std::end(test_bytes[0]));
   std::vector<std::string> repeated_bytes = {bytes_as_string};
 
-  EXPECT_EQ(PKIMetadataComponentInstallerPolicy::BytesArrayFromProtoBytes(
-                google::protobuf::RepeatedPtrField<std::string>(
-                    repeated_bytes.begin(), repeated_bytes.end())),
-            test_bytes);
+  EXPECT_EQ(
+      PKIMetadataComponentInstallerService::BytesArrayFromProtoBytesForTesting(
+          google::protobuf::RepeatedPtrField<std::string>(
+              repeated_bytes.begin(), repeated_bytes.end())),
+      test_bytes);
+  EXPECT_EQ(PKIMetadataComponentInstallerService::
+                SHA256HashValueArrayFromProtoBytesForTesting(
+                    google::protobuf::RepeatedPtrField<std::string>(
+                        repeated_bytes.begin(), repeated_bytes.end())),
+            test_hashes);
 }
 
 // Tests that the installation is verified iff the component install directory
@@ -255,22 +267,22 @@ TEST_F(PKIMetadataComponentInstallerTest, TestProtoBytesConversion) {
 TEST_F(PKIMetadataComponentInstallerTest, VerifyInstallation) {
   WriteCTConfigToFile();
   base::FilePath path = component_install_dir_.GetPath();
-  EXPECT_TRUE(policy_->VerifyInstallation(base::Value::Dict(), path));
+  EXPECT_TRUE(policy_->VerifyInstallation(base::DictValue(), path));
   ASSERT_TRUE(component_install_dir_.Delete());
-  EXPECT_FALSE(policy_->VerifyInstallation(base::Value::Dict(), path));
+  EXPECT_FALSE(policy_->VerifyInstallation(base::DictValue(), path));
 
   WriteKPConfigToFile();
   path = component_install_dir_.GetPath();
-  EXPECT_TRUE(policy_->VerifyInstallation(base::Value::Dict(), path));
+  EXPECT_TRUE(policy_->VerifyInstallation(base::DictValue(), path));
   ASSERT_TRUE(component_install_dir_.Delete());
-  EXPECT_FALSE(policy_->VerifyInstallation(base::Value::Dict(), path));
+  EXPECT_FALSE(policy_->VerifyInstallation(base::DictValue(), path));
 }
 
 // Tests that the PKI Metadata component is registered if the features are
 // enabled.
 TEST_F(PKIMetadataComponentInstallerTest, RegisterComponent) {
   EXPECT_CALL(mock_component_update_, RegisterComponent)
-      .Times(1)
+
       .WillOnce(testing::Return(true));
   component_updater::MaybeRegisterPKIMetadataComponent(&mock_component_update_);
   task_environment_.RunUntilIdle();
@@ -286,8 +298,7 @@ TEST_F(PKIMetadataComponentInstallerTest, CTEnforcementKillSwitch) {
   ct_config_.set_disable_ct_enforcement(true);
   WriteCTConfigToFile();
   policy_->ComponentReady(base::Version("1.2.3.4"),
-                          component_install_dir_.GetPath(),
-                          base::Value::Dict());
+                          component_install_dir_.GetPath(), base::DictValue());
   task_environment_.RunUntilIdle();
 
   network::NetworkService* network_service =
@@ -310,8 +321,7 @@ TEST_F(PKIMetadataComponentInstallerTest,
   task_environment_.RunUntilIdle();
   WriteKPConfigToFile();
   policy_->ComponentReady(base::Version("1.2.3.4"),
-                          component_install_dir_.GetPath(),
-                          base::Value::Dict());
+                          component_install_dir_.GetPath(), base::DictValue());
   task_environment_.RunUntilIdle();
 
   network::NetworkService* network_service =
@@ -350,8 +360,7 @@ TEST_F(PKIMetadataComponentInstallerTest, InstallComponentInvalidKPProto) {
   ASSERT_TRUE(base::WriteFile(file_path, "mismatch"));
 
   policy_->ComponentReady(base::Version("1.2.3.4"),
-                          component_install_dir_.GetPath(),
-                          base::Value::Dict());
+                          component_install_dir_.GetPath(), base::DictValue());
   task_environment_.RunUntilIdle();
 
   network::NetworkService* network_service =
@@ -381,8 +390,7 @@ TEST_F(PKIMetadataComponentInstallerTest,
   WriteKPConfigToFile();
 
   policy_->ComponentReady(base::Version("1.2.3.4"),
-                          component_install_dir_.GetPath(),
-                          base::Value::Dict());
+                          component_install_dir_.GetPath(), base::DictValue());
   task_environment_.RunUntilIdle();
 
   network::NetworkService* network_service =
@@ -417,8 +425,7 @@ TEST_F(PKIMetadataComponentInstallerTest,
   WriteKPConfigToFile();
 
   policy_->ComponentReady(base::Version("1.2.3.4"),
-                          component_install_dir_.GetPath(),
-                          base::Value::Dict());
+                          component_install_dir_.GetPath(), base::DictValue());
   task_environment_.RunUntilIdle();
 
   network::NetworkService* network_service =
@@ -442,8 +449,7 @@ TEST_F(PKIMetadataComponentInstallerTest, InstallComponentUpdatesCTConfig) {
 
   WriteCTConfigToFile();
   policy_->ComponentReady(base::Version("1.2.3.4"),
-                          component_install_dir_.GetPath(),
-                          base::Value::Dict());
+                          component_install_dir_.GetPath(), base::DictValue());
   task_environment_.RunUntilIdle();
 
   network::NetworkService* network_service =
@@ -515,8 +521,7 @@ TEST_F(PKIMetadataComponentInstallerTest, InstallComponentInvalidCTProto) {
   ASSERT_TRUE(base::WriteFile(file_path, "mismatch"));
 
   policy_->ComponentReady(base::Version("1.2.3.4"),
-                          component_install_dir_.GetPath(),
-                          base::Value::Dict());
+                          component_install_dir_.GetPath(), base::DictValue());
   task_environment_.RunUntilIdle();
 
   network::NetworkService* network_service =
@@ -552,8 +557,7 @@ TEST_F(PKIMetadataComponentInstallerTest,
   WriteCTConfigToFile();
 
   policy_->ComponentReady(base::Version("1.2.3.4"),
-                          component_install_dir_.GetPath(),
-                          base::Value::Dict());
+                          component_install_dir_.GetPath(), base::DictValue());
   task_environment_.RunUntilIdle();
 
   network::NetworkService* network_service =
@@ -592,8 +596,7 @@ TEST_F(PKIMetadataComponentInstallerTest,
   WriteCTConfigToFile();
 
   policy_->ComponentReady(base::Version("1.2.3.4"),
-                          component_install_dir_.GetPath(),
-                          base::Value::Dict());
+                          component_install_dir_.GetPath(), base::DictValue());
   task_environment_.RunUntilIdle();
 
   network::NetworkService* network_service =
@@ -658,7 +661,7 @@ TEST_F(PKIMetadataComponentInstallerDisabledTest,
   // component will always be registered even if the other feature flags are
   // disabled.
   EXPECT_CALL(mock_component_update_, RegisterComponent)
-      .Times(1)
+
       .WillOnce(testing::Return(true));
 #else
   EXPECT_CALL(mock_component_update_, RegisterComponent).Times(0);

@@ -25,7 +25,6 @@
 
 #include "third_party/blink/renderer/core/dom/class_collection.h"
 #include "third_party/blink/renderer/core/dom/element_traversal.h"
-#include "third_party/blink/renderer/core/dom/node_rare_data.h"
 #include "third_party/blink/renderer/core/html/collection_type.h"
 #include "third_party/blink/renderer/core/html/document_all_name_collection.h"
 #include "third_party/blink/renderer/core/html/document_name_collection.h"
@@ -37,6 +36,7 @@
 #include "third_party/blink/renderer/core/html/forms/html_option_element.h"
 #include "third_party/blink/renderer/core/html/forms/html_options_collection.h"
 #include "third_party/blink/renderer/core/html/html_element.h"
+#include "third_party/blink/renderer/core/html/html_menu_item_element.h"
 #include "third_party/blink/renderer/core/html/html_object_element.h"
 #include "third_party/blink/renderer/core/html/html_tag_collection.h"
 #include "third_party/blink/renderer/core/html/window_name_collection.h"
@@ -206,14 +206,6 @@ void HTMLCollection::InvalidateCache(Document* old_document) const {
   InvalidateIdNameCacheMaps(old_document);
 }
 
-unsigned HTMLCollection::length() const {
-  return collection_items_cache_.NodeCount(*this);
-}
-
-Element* HTMLCollection::item(unsigned offset) const {
-  return collection_items_cache_.NodeAt(*this, offset);
-}
-
 static inline bool IsMatchingHTMLElement(const HTMLCollection& html_collection,
                                          const HTMLElement& element) {
   switch (html_collection.GetType()) {
@@ -239,8 +231,10 @@ static inline bool IsMatchingHTMLElement(const HTMLCollection& html_collection,
     case kSelectOptions:
       return To<HTMLOptionsCollection>(html_collection).ElementMatches(element);
     case kSelectedOptions: {
-      auto* option_element = DynamicTo<HTMLOptionElement>(element);
-      return option_element && option_element->Selected();
+      if (auto* option = DynamicTo<HTMLOptionElement>(element)) {
+        return option->Selected() && option->OwnerSelectElement() == html_collection.ownerNode();
+      }
+      return false;
     }
     case kDataListOptions:
       return To<HTMLDataListOptionsCollection>(html_collection)
@@ -274,7 +268,11 @@ static inline bool IsMatchingHTMLElement(const HTMLCollection& html_collection,
     case kCommandInvokers:
       if (auto* invoker =
               DynamicTo<HTMLButtonElement>(const_cast<HTMLElement&>(element))) {
-        return invoker->commandForElement() != nullptr;
+        return invoker->commandForElement();
+      }
+      if (auto* invoker = DynamicTo<HTMLMenuItemElement>(
+              const_cast<HTMLElement&>(element))) {
+        return invoker->commandForElement();
       }
       return false;
     case kClassCollectionType:
@@ -559,9 +557,9 @@ void HTMLCollection::NamedItems(const AtomicString& name,
 
   const NamedItemCache& cache = GetNamedItemCache();
   if (const auto* id_results = cache.GetElementsById(name))
-    result.AppendVector(*id_results);
+    result.append_range(*id_results);
   if (const auto* name_results = cache.GetElementsByName(name))
-    result.AppendVector(*name_results);
+    result.append_range(*name_results);
 }
 
 bool HTMLCollection::HasNamedItems(const AtomicString& name) const {

@@ -13,8 +13,8 @@
 
 #include "base/callback_list.h"
 #include "base/functional/callback.h"
-#include "base/metrics/field_trial_params.h"
 #include "base/time/time.h"
+#include "build/build_config.h"
 #include "components/metrics/metrics_log_store.h"
 #include "components/metrics/metrics_log_uploader.h"
 #include "components/metrics/metrics_reporting_default_state.h"
@@ -25,8 +25,16 @@ namespace ukm {
 class UkmService;
 }
 
+namespace regional_capabilities {
+class CountryIdHolder;
+}
+
 namespace metrics::dwa {
 class DwaService;
+}
+
+namespace metrics::private_metrics {
+class PumaService;
 }
 
 namespace network_time {
@@ -36,8 +44,6 @@ class NetworkTimeTracker;
 namespace variations {
 class SyntheticTrialRegistry;
 }
-
-class IdentifiabilityStudyState;
 
 namespace metrics {
 
@@ -75,17 +81,13 @@ class MetricsServiceClient {
   // Returns the DwaService instance that this client is associated with.
   virtual metrics::dwa::DwaService* GetDwaService();
 
-  // Returns the IdentifiabilityStudyState instance that this client is
-  // associated with. Might be nullptr.
-  virtual IdentifiabilityStudyState* GetIdentifiabilityStudyState();
+  // Returns the PumaService instance that this client is associated with.
+  virtual metrics::private_metrics::PumaService* GetPumaService();
 
   // Returns the StructuredMetricsService instance that this client is
   // associated with.
   virtual structured::StructuredMetricsService* GetStructuredMetricsService();
 
-  // Returns true if metrics should be uploaded for the given |user_id|, which
-  // corresponds to the |user_id| field in ChromeUserMetricsExtension.
-  virtual bool ShouldUploadMetricsForUserId(uint64_t user_id);
 
   // Registers the client id with other services (e.g. crash reporting), called
   // when metrics recording gets enabled.
@@ -97,6 +99,9 @@ class MetricsServiceClient {
   virtual int32_t GetProduct() = 0;
 
   // Returns the current application locale (e.g. "en-US").
+  // This is a virtual method because //components/metrics should not depend on
+  // the components that provide the application locale (e.g.,
+  // //components/language) to avoid unnecessary bloat.
   virtual std::string GetApplicationLocale() = 0;
 
   // Return a NetworkTimeTracker for access to a server-provided clock.
@@ -146,6 +151,15 @@ class MetricsServiceClient {
       metrics::MetricsLogUploader::MetricServiceType service_type,
       const MetricsLogUploader::UploadCallback& on_upload_complete) = 0;
 
+#if BUILDFLAG(IS_ANDROID)
+  // Determines whether background tasks can be scheduled with the Android OS
+  // through JobScheduler. Currently, "background tasks" only consist of log
+  // uploads (starting from Android 15, network requests while the app is
+  // backgrounded is only supported when the task is scheduled through
+  // JobScheduler).
+  virtual bool IsJobSchedulerSupported() const;
+#endif  // BUILDFLAG(IS_ANDROID)
+
   // Returns the interval between upload attempts. Checks if debugging flags
   // have been set, if there the is a custom interval, otherwise defaults to
   // GetStandardUploadInterval().
@@ -161,10 +175,9 @@ class MetricsServiceClient {
 
   // Whether or not the MetricsService should start up quickly and upload the
   // initial report quickly. By default, this work may be delayed by some
-  // amount. Only the default behavior should be used in production, but clients
-  // can override this in tests if tests need to make assertions on the log
-  // data.
-  virtual bool ShouldStartUpFastForTesting() const;
+  // amount. This should be overridden very sparingly in production and the
+  // default behavior should be used in most cases.
+  virtual bool ShouldStartUpFast() const;
 
   // Called when loading state changed, e.g. start/stop loading.
   virtual void LoadingStateChanged(bool is_loading) {}
@@ -219,20 +232,23 @@ class MetricsServiceClient {
   // Checks if the user has forced metrics collection on via the override flag.
   bool IsMetricsReportingForceEnabled() const;
 
+// If expanding user-level metrics to other platforms, then, in addition to
+// implementing the functions below, remember to modify the callers of the
+// functions. Currently the callers have #if blocks that make them not call
+// these functions on other platforms.
+#if BUILDFLAG(IS_CHROMEOS)
+  // Returns true if metrics should be uploaded for the given |user_id|, which
+  // corresponds to the |user_id| field in ChromeUserMetricsExtension.
+  virtual bool ShouldUploadMetricsForUserId(uint64_t user_id);
+
   // Initializes per-user metrics collection. For more details what per-user
   // metrics collection is, refer to MetricsService::InitPerUserMetrics.
-  //
-  // Since the concept of a user is only applicable in Ash Chrome, this function
-  // should no-op for other platforms.
   virtual void InitPerUserMetrics() {}
 
   // Updates the current user's metrics consent. This allows embedders to update
   // the user consent. If there is no current user, then this function will
   // no-op.
-  //
-  // Since the concept of a user is only applicable on Ash Chrome, this function
-  // should no-op for other platforms.
-  virtual void UpdateCurrentUserMetricsConsent(bool user_metrics_consent) {}
+  virtual void UpdateCurrentUserMetricsChoice(bool user_choice) {}
 
   // Returns the current user metrics consent if it should be applied to decide
   // the current metrics reporting state. This allows embedders to determine
@@ -241,19 +257,19 @@ class MetricsServiceClient {
   //
   // Will return std::nullopt if there is no current user or current user
   // metrics consent should not be applied to determine metrics reporting state.
-  //
-  // Not all platforms support per-user consent. If per-user consent is not
-  // supported, this function should return std::nullopt.
-  virtual std::optional<bool> GetCurrentUserMetricsConsent() const;
+  virtual std::optional<bool> GetCurrentUserMetricsChoice() const;
 
   // Returns the current user id.
   //
   // Will return std::nullopt if there is no current user, metrics reporting is
   // disabled, or current user should not have a user id.
-  //
-  // Not all platforms support per-user consent. If per-user consent is not
-  // supported, this function should return std::nullopt.
   virtual std::optional<std::string> GetCurrentUserId() const;
+#endif  // BUILDFLAG(IS_CHROMEOS)
+
+  // Returns the country ID associated with the profile used for metrics.
+  // Returns std::nullopt if it's not available.
+  virtual std::optional<regional_capabilities::CountryIdHolder>
+  GetProfileCountryIdForPrivateMetricsReporting();
 
  private:
   base::RepeatingClosure update_running_services_;

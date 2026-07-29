@@ -8,13 +8,14 @@
 #include <utility>
 
 #include "base/containers/span.h"
+#include "base/logging.h"
 #include "base/strings/utf_string_conversions.h"
 #include "components/crash/core/common/crash_key.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "pdf/pdf.h"
 #include "printing/emf_win.h"
 #include "printing/mojom/print.mojom.h"
-#include "ui/gfx/gdi_util.h"
+#include "ui/gfx/win/gdi_util.h"
 
 namespace printing {
 

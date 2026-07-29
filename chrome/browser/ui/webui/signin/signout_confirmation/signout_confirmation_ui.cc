@@ -5,18 +5,20 @@
 #include "chrome/browser/ui/webui/signin/signout_confirmation/signout_confirmation_ui.h"
 
 #include "base/check_is_test.h"
+#include "base/feature_list.h"
 #include "base/functional/callback_helpers.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/webui/plural_string_handler.h"
 #include "chrome/browser/ui/webui/signin/signout_confirmation/signout_confirmation_handler.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/grit/signin_signout_confirmation_resources.h"
 #include "chrome/grit/signin_signout_confirmation_resources_map.h"
+#include "components/sync/base/features.h"
 #include "content/public/browser/web_ui_data_source.h"
-#include "ui/webui/color_change_listener/color_change_handler.h"
 #include "ui/webui/webui_util.h"
 
 SignoutConfirmationUI::SignoutConfirmationUI(content::WebUI* web_ui)
@@ -25,13 +27,16 @@ SignoutConfirmationUI::SignoutConfirmationUI(content::WebUI* web_ui)
   content::WebUIDataSource* source = content::WebUIDataSource::CreateAndAdd(
       Profile::FromWebUI(web_ui), chrome::kChromeUISignoutConfirmationHost);
 
+  source->AddBoolean("isUnoPhase2FollowUpEnabled",
+                     base::FeatureList::IsEnabled(syncer::kUnoPhase2FollowUp));
+
   webui::SetupWebUIDataSource(
       source, kSigninSignoutConfirmationResources,
       IDR_SIGNIN_SIGNOUT_CONFIRMATION_SIGNOUT_CONFIRMATION_HTML);
 
   static constexpr webui::LocalizedString kLocalizedStrings[] = {
-      {"extensionsSectionTooltipAriaLabel",
-       IDS_SIGNOUT_CONFIRMATION_EXTENSIONS_SECTION_TOOLTIP_ICON_ARIA_LABEL},
+      {"unsyncedDataWithAccountExtensions",
+       IDS_SIGNOUT_CONFIRMATION_UNSYNCED_DATA_WITH_ACCOUNT_EXTENSIONS},
   };
   source->AddLocalizedStrings(kLocalizedStrings);
 
@@ -47,24 +52,22 @@ SignoutConfirmationUI::SignoutConfirmationUI(content::WebUI* web_ui)
   web_ui->AddMessageHandler(std::move(plural_string_handler));
 }
 
-SignoutConfirmationUI::~SignoutConfirmationUI() = default;
+SignoutConfirmationUI::~SignoutConfirmationUI() {
+  for (Observer& observer : observers_) {
+    observer.OnSignoutConfirmationUIDestroying(this);
+  }
+}
 
 WEB_UI_CONTROLLER_TYPE_IMPL(SignoutConfirmationUI)
 
 void SignoutConfirmationUI::Initialize(
     Browser* browser,
     ChromeSignoutConfirmationPromptVariant variant,
+    size_t unsynced_data_count,
     SignoutConfirmationCallback callback) {
   initialize_handler_callback_ = base::BindOnce(
       &SignoutConfirmationUI::OnMojoHandlersReady, base::Unretained(this),
-      browser, variant, std::move(callback));
-}
-
-void SignoutConfirmationUI::BindInterface(
-    mojo::PendingReceiver<color_change_listener::mojom::PageHandler>
-        pending_receiver) {
-  color_provider_handler_ = std::make_unique<ui::ColorChangeHandler>(
-      web_ui()->GetWebContents(), std::move(pending_receiver));
+      browser, variant, unsynced_data_count, std::move(callback));
 }
 
 void SignoutConfirmationUI::BindInterface(
@@ -92,6 +95,11 @@ void SignoutConfirmationUI::CancelDialogForTesting() {
   handler_->Cancel(/*uninstall_account_extensions=*/false);
 }
 
+void SignoutConfirmationUI::CancelDialogAndReauthForTesting() {
+  CHECK(handler_);
+  handler_->PerformReauth();
+}
+
 void SignoutConfirmationUI::CreateSignoutConfirmationHandler(
     mojo::PendingRemote<signout_confirmation::mojom::Page> page,
     mojo::PendingReceiver<signout_confirmation::mojom::PageHandler> receiver) {
@@ -100,9 +108,11 @@ void SignoutConfirmationUI::CreateSignoutConfirmationHandler(
   // handler with sample data.
   if (!initialize_handler_callback_) {
     CHECK_IS_TEST();
-    Browser* browser = chrome::FindLastActive();
-    Initialize(browser, ChromeSignoutConfirmationPromptVariant::kNoUnsyncedData,
-               base::DoNothing());
+    BrowserWindowInterface* browser =
+        GlobalBrowserCollection::GetInstance()->GetLastActiveBrowser();
+    Initialize(browser->GetBrowserForMigrationOnly(),
+               ChromeSignoutConfirmationPromptVariant::kNoUnsyncedData,
+               /*unsynced_data_count=*/0, base::DoNothing());
   }
 
   CHECK(initialize_handler_callback_);
@@ -110,14 +120,28 @@ void SignoutConfirmationUI::CreateSignoutConfirmationHandler(
       .Run(std::move(page), std::move(receiver));
 }
 
+void SignoutConfirmationUI::AddObserver(Observer* observer) {
+  CHECK(observer);
+  observers_.AddObserver(observer);
+}
+
+void SignoutConfirmationUI::RemoveObserver(Observer* observer) {
+  observers_.RemoveObserver(observer);
+}
+
 void SignoutConfirmationUI::OnMojoHandlersReady(
     Browser* browser,
     ChromeSignoutConfirmationPromptVariant variant,
+    size_t unsynced_data_count,
     SignoutConfirmationCallback callback,
     mojo::PendingRemote<signout_confirmation::mojom::Page> page,
     mojo::PendingReceiver<signout_confirmation::mojom::PageHandler> receiver) {
   CHECK(!handler_);
   handler_ = std::make_unique<SignoutConfirmationHandler>(
       std::move(receiver), std::move(page), browser, variant,
-      std::move(callback));
+      unsynced_data_count, std::move(callback));
+
+  for (Observer& observer : observers_) {
+    observer.OnSignoutConfirmationUIHandlerReady();
+  }
 }

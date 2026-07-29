@@ -7,8 +7,8 @@ import './toggle_row.js';
 
 import {assert, assertNotReached} from '//resources/js/assert.js';
 import type {App} from 'chrome://resources/cr_components/app_management/app_management.mojom-webui.js';
-import {BrowserProxy} from 'chrome://resources/cr_components/app_management/browser_proxy.js';
-import {AppManagementUserAction, RunOnOsLoginMode} from 'chrome://resources/cr_components/app_management/constants.js';
+import {browserProxyFactory, RunOnOsLoginMode} from 'chrome://resources/cr_components/app_management/app_management.mojom-webui.js';
+import {AppManagementUserAction} from 'chrome://resources/cr_components/app_management/constants.js';
 import {recordAppManagementUserAction} from 'chrome://resources/cr_components/app_management/util.js';
 import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
@@ -56,8 +56,8 @@ export class RunOnOsLoginItemElement extends CrLitElement {
     };
   }
 
-  loginModeLabel: string = '';
-  app: App = createDummyApp();
+  accessor loginModeLabel: string = '';
+  accessor app: App = createDummyApp();
 
   override firstUpdated() {
     this.addEventListener('click', this.onClick_);
@@ -98,7 +98,7 @@ export class RunOnOsLoginItemElement extends CrLitElement {
           (currentRunOnOsLoginMode === RunOnOsLoginMode.kNotRun) ?
           RunOnOsLoginMode.kWindowed :
           RunOnOsLoginMode.kNotRun;
-      BrowserProxy.getInstance().handler.setRunOnOsLoginMode(
+      browserProxyFactory.getInstance().handler.setRunOnOsLoginMode(
           this.app.id,
           newRunOnOsLoginMode,
       );

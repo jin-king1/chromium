@@ -13,13 +13,13 @@
 #include <utility>
 #include <vector>
 
+#include "ash/constants/ash_pref_names.h"
 #include "ash/session/session_controller_impl.h"
 #include "ash/shell.h"
 #include "base/check.h"
 #include "base/check_deref.h"
 #include "base/check_is_test.h"
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
 #include "base/location.h"
 #include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
@@ -32,18 +32,19 @@
 #include "chrome/browser/ash/policy/remote_commands/crd/crd_remote_command_utils.h"
 #include "chrome/browser/ash/policy/remote_commands/crd/crd_session_observer.h"
 #include "chrome/browser/ash/policy/remote_commands/crd/crd_support_host_observer_proxy.h"
+#include "chrome/browser/ash/policy/remote_commands/crd/public/crd_session_result_codes.h"
 #include "chrome/browser/ash/policy/remote_commands/crd/remote_activity_notification_controller.h"
 #include "chrome/browser/device_identity/device_oauth2_token_service_factory.h"
-#include "chrome/common/pref_names.h"
 #include "chromeos/ash/components/dbus/userdataauth/userdataauth_client.h"
 #include "chromeos/ash/components/login/auth/auth_factor_editor.h"
 #include "chromeos/ash/components/login/auth/public/authentication_error.h"
 #include "chromeos/ash/components/login/auth/public/user_context.h"
+#include "components/crash/core/common/crash_key.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
 #include "components/user_manager/user_manager.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
-#include "remoting/host/chromeos/features.h"
+#include "remoting/host/chromeos/chromeos_enterprise_params.h"
 #include "remoting/host/chromeos/remote_support_host_ash.h"
 #include "remoting/host/chromeos/remoting_service.h"
 #include "remoting/host/chromeos/session_id.h"
@@ -56,7 +57,6 @@ using AccessCodeCallback = StartCrdSessionJobDelegate::AccessCodeCallback;
 using ErrorCallback = StartCrdSessionJobDelegate::ErrorCallback;
 using SessionEndCallback = StartCrdSessionJobDelegate::SessionEndCallback;
 using SessionParameters = StartCrdSessionJobDelegate::SessionParameters;
-using remoting::features::kEnableCrdAdminRemoteAccessV2;
 
 namespace {
 
@@ -117,6 +117,16 @@ void DeleteSoon(std::unique_ptr<T> value) {
                                                              std::move(value));
 }
 
+crash_reporter::ScopedCrashKeyString CreateCrdCrashKey(
+    CrdSessionType crd_session_type,
+    UserSessionType user_session_type) {
+  static crash_reporter::CrashKeyString<72> enterprise_crd_crash_key(
+      kCrdCrashKeyName);
+  return crash_reporter::ScopedCrashKeyString(
+      &enterprise_crd_crash_key,
+      GetCrdCrashKeyValue(crd_session_type, user_session_type));
+}
+
 // Default implementation of the `RemotingService`, which will contact the real
 // remoting service.
 class DefaultRemotingService
@@ -173,6 +183,8 @@ std::ostream& operator<<(std::ostream& os,
             << ", allow_troubleshooting_tools "
             << parameters.allow_troubleshooting_tools
             << ", allow_reconnections " << parameters.allow_reconnections
+            << ", allow_remote_input " << parameters.allow_remote_input
+            << ", allow_clipboard_sync " << parameters.allow_clipboard_sync
             << "}";
 }
 
@@ -240,29 +252,24 @@ class HostLaunchObserver : public CrdSessionObserver {
   base::OnceClosure launch_done_;
 };
 
-class SessionDurationObserver : public CrdSessionObserver {
+class SessionDisconnectObserver : public CrdSessionObserver {
  public:
-  explicit SessionDurationObserver(SessionEndCallback callback)
+  explicit SessionDisconnectObserver(SessionEndCallback callback)
       : callback_(std::move(callback)) {}
-  SessionDurationObserver(const SessionDurationObserver&) = delete;
-  SessionDurationObserver& operator=(const SessionDurationObserver&) = delete;
-  ~SessionDurationObserver() override = default;
+  SessionDisconnectObserver(const SessionDisconnectObserver&) = delete;
+  SessionDisconnectObserver& operator=(const SessionDisconnectObserver&) =
+      delete;
+  ~SessionDisconnectObserver() override = default;
 
   // `CrdSessionObserver` implementation:
-  void OnClientConnected() override {
-    session_connected_time_ = base::Time::Now();
-  }
-
   void OnClientDisconnected() override {
-    if (session_connected_time_.has_value() && callback_) {
-      std::move(callback_).Run(base::Time::Now() -
-                               session_connected_time_.value());
+    if (callback_) {
+      std::move(callback_).Run();
     }
   }
 
  private:
   SessionEndCallback callback_;
-  std::optional<base::Time> session_connected_time_;
 };
 
 // Rejects incoming sessions when there is more than 10 minutes between
@@ -360,8 +367,17 @@ remoting::ChromeOsEnterpriseParams GetEnterpriseParameters(
   params.allow_reconnections = parameters.allow_reconnections;
   params.allow_file_transfer = parameters.allow_file_transfer;
   params.connection_dialog_required = parameters.show_confirmation_dialog;
-  // TODO(b:397902801): Add `connection_auto_accept_timeout` when the dialog is
-  // auto-approved.
+  params.request_origin =
+      ConvertToChromeOsEnterpriseRequestOrigin(parameters.request_origin);
+  params.audio_playback =
+      ConvertToChromeOsEnterpriseAudioPlayback(parameters.audio_playback);
+  params.connection_auto_accept_timeout =
+      parameters.connection_auto_accept_timeout.value_or(base::TimeDelta());
+  params.maximum_session_duration =
+      parameters.maximum_session_duration.value_or(base::TimeDelta());
+  params.allow_remote_input = parameters.allow_remote_input;
+  params.allow_clipboard_sync = parameters.allow_clipboard_sync;
+
   return params;
 }
 
@@ -397,7 +413,10 @@ class CrdAdminSessionController::SessionLauncher {
 
 class CrdAdminSessionController::CrdHostSession {
  public:
-  CrdHostSession() = default;
+  CrdHostSession(CrdSessionType crd_session_type,
+                 UserSessionType user_session_type)
+      : crd_crash_key_(CreateCrdCrashKey(crd_session_type, user_session_type)) {
+  }
   CrdHostSession(const CrdHostSession&) = delete;
   CrdHostSession& operator=(const CrdHostSession&) = delete;
   ~CrdHostSession() = default;
@@ -442,6 +461,7 @@ class CrdAdminSessionController::CrdHostSession {
     observer_proxy_.Bind(std::move(std::move(parameters.host_observer)));
   }
 
+  crash_reporter::ScopedCrashKeyString crd_crash_key_;
   SupportHostObserverProxy observer_proxy_;
   std::unique_ptr<SessionLauncher> launcher_;
   bool is_curtained_ = false;
@@ -658,19 +678,15 @@ void CrdAdminSessionController::Init(
     base::OnceClosure done_callback) {
   curtain_controller_ = &curtain_controller;
 
-  if (base::FeatureList::IsEnabled(kEnableCrdAdminRemoteAccessV2)) {
-    CHECK(!notification_controller_);
-    notification_controller_ =
-        std::make_unique<RemoteActivityNotificationController>(
-            CHECK_DEREF(local_state),
-            base::BindRepeating(
-                &CrdAdminSessionController::IsCurrentSessionCurtained,
-                base::Unretained(this)));
+  CHECK(!notification_controller_);
+  notification_controller_ =
+      std::make_unique<RemoteActivityNotificationController>(
+          CHECK_DEREF(local_state),
+          base::BindRepeating(
+              &CrdAdminSessionController::IsCurrentSessionCurtained,
+              base::Unretained(this)));
 
-    TryToReconnect(std::move(done_callback));
-  } else {
-    std::move(done_callback).Run();
-  }
+  TryToReconnect(std::move(done_callback));
 }
 
 void CrdAdminSessionController::Shutdown() {
@@ -718,7 +734,8 @@ void CrdAdminSessionController::TryToReconnect(
     base::OnceClosure done_callback) {
   CHECK(!HasActiveSession());
 
-  active_session_ = CreateCrdHostSession();
+  active_session_ = CreateCrdHostSession(CrdSessionType::REMOTE_ACCESS_SESSION,
+                                         UserSessionType::NO_SESSION);
   active_session_->AddOwnedObserver(
       std::make_unique<HostLaunchObserver>(std::move(done_callback)));
 
@@ -736,11 +753,15 @@ void CrdAdminSessionController::StartCrdHostAndGetCode(
 
   CRD_VLOG(3) << "Starting CRD host session";
 
-  active_session_ = CreateCrdHostSession();
+  active_session_ =
+      CreateCrdHostSession(parameters.curtain_local_user_session
+                               ? CrdSessionType::REMOTE_ACCESS_SESSION
+                               : CrdSessionType::REMOTE_SUPPORT_SESSION,
+                           GetCurrentUserSessionType());
 
   active_session_->AddOwnedObserver(std::make_unique<AccessCodeObserver>(
       std::move(success_callback), std::move(error_callback)));
-  active_session_->AddOwnedObserver(std::make_unique<SessionDurationObserver>(
+  active_session_->AddOwnedObserver(std::make_unique<SessionDisconnectObserver>(
       std::move(session_finished_callback)));
 
   active_session_->Launch(std::make_unique<NewSessionLauncher>(
@@ -750,8 +771,11 @@ void CrdAdminSessionController::StartCrdHostAndGetCode(
 }
 
 std::unique_ptr<CrdAdminSessionController::CrdHostSession>
-CrdAdminSessionController::CreateCrdHostSession() {
-  auto result = std::make_unique<CrdHostSession>();
+CrdAdminSessionController::CreateCrdHostSession(
+    CrdSessionType crd_session_type,
+    UserSessionType user_session_type) {
+  auto result =
+      std::make_unique<CrdHostSession>(crd_session_type, user_session_type);
 
   result->AddOwnedObserver(std::make_unique<IdleHostTtlChecker>(base::BindOnce(
       &CrdAdminSessionController::TerminateSession, base::Unretained(this))));
@@ -760,10 +784,8 @@ CrdAdminSessionController::CreateCrdHostSession() {
                      base::Unretained(this))));
   result->AddObserver(this);
 
-  if (base::FeatureList::IsEnabled(kEnableCrdAdminRemoteAccessV2)) {
-    CHECK(notification_controller_);
-    result->AddObserver(notification_controller_.get());
-  }
+  CHECK(notification_controller_);
+  result->AddObserver(notification_controller_.get());
 
   return result;
 }
@@ -775,11 +797,12 @@ bool CrdAdminSessionController::IsCurrentSessionCurtained() const {
 // static
 void CrdAdminSessionController::RegisterLocalStatePrefs(
     PrefRegistrySimple* registry) {
-  registry->RegisterBooleanPref(prefs::kRemoteAdminWasPresent, false);
+  registry->RegisterBooleanPref(ash::prefs::kRemoteAdminWasPresent, false);
   registry->RegisterBooleanPref(
-      prefs::kRemoteAccessHostAllowEnterpriseRemoteSupportConnections, true);
+      ash::prefs::kRemoteAccessHostAllowEnterpriseRemoteSupportConnections,
+      true);
   registry->RegisterBooleanPref(
-      prefs::kDeviceAllowEnterpriseRemoteAccessConnections, true);
+      ash::prefs::kDeviceAllowEnterpriseRemoteAccessConnections, true);
 }
 
 }  // namespace policy

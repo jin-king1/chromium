@@ -5,9 +5,6 @@
 package org.chromium.chrome.browser.vr;
 
 import static org.chromium.chrome.browser.vr.WebXrArTestFramework.PAGE_LOAD_TIMEOUT_S;
-import static org.chromium.chrome.browser.vr.XrTestFramework.POLL_TIMEOUT_SHORT_MS;
-
-import android.os.Build;
 
 import androidx.test.filters.LargeTest;
 import androidx.test.filters.MediumTest;
@@ -42,16 +39,13 @@ import java.util.concurrent.Callable;
     "enable-features=WebXRIncubations,LogJsConsoleMessages"
 })
 public class WebXrArSanityTest {
-    public static final boolean ENABLE_CAMERA_ACCESS =
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.O;
-
     @ClassParameter
-    private static List<ParameterSet> sClassParams =
+    private static final List<ParameterSet> sClassParams =
             ArTestRuleUtils.generateDefaultTestRuleParameters();
 
     @Rule public RuleChain mRuleChain;
 
-    private ChromeActivityTestRule mTestRule;
+    private final ChromeActivityTestRule mTestRule;
     private WebXrArTestFramework mWebXrArTestFramework;
 
     public WebXrArSanityTest(Callable<ChromeActivityTestRule> callable) throws Exception {
@@ -71,18 +65,12 @@ public class WebXrArSanityTest {
     @MediumTest
     @XrActivityRestriction({XrActivityRestriction.SupportedActivity.ALL})
     @ArPlaybackFile("chrome/test/data/xr/ar_playback_datasets/floor_session_12s_30fps.mp4")
-    @DisabledTest(message = "https://crbug.com/1515317")
+    @DisabledTest(message = "https://crbug.com/41487869")
     public void testShortRecording() {
         mWebXrArTestFramework.loadFileAndAwaitInitialization(
                 "webxr_test_basic_all_ar_features", PAGE_LOAD_TIMEOUT_S);
 
-        if (!ENABLE_CAMERA_ACCESS) {
-            mWebXrArTestFramework.runJavaScriptOrFail(
-                    "disableCameraAccess()", POLL_TIMEOUT_SHORT_MS);
-        }
-
-        mWebXrArTestFramework.enterSessionWithUserGestureOrFail(
-                /* needsCameraPermission= */ ENABLE_CAMERA_ACCESS);
+        mWebXrArTestFramework.enterSessionWithUserGestureOrFail(/* needsCameraPermission= */ true);
 
         // The recording is 12 seconds long, let's tell the test to run for 10 seconds and wait for
         // a bit more than that before timing out.
@@ -96,18 +84,12 @@ public class WebXrArSanityTest {
     @XrActivityRestriction({XrActivityRestriction.SupportedActivity.ALL})
     @ArPlaybackFile(
             "chrome/test/data/xr/ar_playback_datasets/floor_session_with_tracking_loss_37s_30fps.mp4")
-    @DisabledTest(message = "https://crbug.com/1502764")
+    @DisabledTest(message = "https://crbug.com/40943150")
     public void testLongRecording() {
         mWebXrArTestFramework.loadFileAndAwaitInitialization(
                 "webxr_test_basic_all_ar_features", PAGE_LOAD_TIMEOUT_S);
 
-        if (!ENABLE_CAMERA_ACCESS) {
-            mWebXrArTestFramework.runJavaScriptOrFail(
-                    "disableCameraAccess()", POLL_TIMEOUT_SHORT_MS);
-        }
-
-        mWebXrArTestFramework.enterSessionWithUserGestureOrFail(
-                /* needsCameraPermission= */ ENABLE_CAMERA_ACCESS);
+        mWebXrArTestFramework.enterSessionWithUserGestureOrFail(/* needsCameraPermission= */ true);
 
         // The recording is 37 seconds long, let's tell the test to run for 30 seconds and wait for
         // a bit more than that before timing out.

@@ -2,15 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "sandbox/linux/bpf_dsl/test_trap_registry.h"
 
 #include <stddef.h>
 
+#include <array>
+
+#include "base/compiler_specific.h"
 #include "base/memory/raw_ptr.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -28,15 +26,17 @@ intptr_t TestTrapFuncTwo(const arch_seccomp_data& data, void* aux) {
 
 // Test that TestTrapRegistry correctly assigns trap IDs to trap handlers.
 TEST(TestTrapRegistry, TrapIDs) {
-  struct {
+  struct Funcs {
     TrapRegistry::TrapFnc fnc;
     raw_ptr<const void> aux;
-  } funcs[] = {
+  };
+  int dummy = 0;
+  auto funcs = std::to_array<Funcs>({
       {TestTrapFuncOne, nullptr},
       {TestTrapFuncTwo, nullptr},
-      {TestTrapFuncOne, funcs},
-      {TestTrapFuncTwo, funcs},
-  };
+      {TestTrapFuncOne, &dummy},
+      {TestTrapFuncTwo, &dummy},
+  });
 
   TestTrapRegistry traps;
 

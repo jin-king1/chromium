@@ -52,6 +52,20 @@ static WebFeature AlgorithmIdToFeature(WebCryptoAlgorithmId id) {
       return WebFeature::kCryptoAlgorithmEd25519;
     case kWebCryptoAlgorithmIdX25519:
       return WebFeature::kCryptoAlgorithmX25519;
+    case kWebCryptoAlgorithmIdChaCha20Poly1305:
+      return WebFeature::kCryptoAlgorithmChaCha20Poly1305;
+    case kWebCryptoAlgorithmIdMlDsa44:
+      return WebFeature::kCryptoAlgorithmMlDsa44;
+    case kWebCryptoAlgorithmIdMlDsa65:
+      return WebFeature::kCryptoAlgorithmMlDsa65;
+    case kWebCryptoAlgorithmIdMlDsa87:
+      return WebFeature::kCryptoAlgorithmMlDsa87;
+    case kWebCryptoAlgorithmIdMlKem768:
+      return WebFeature::kCryptoAlgorithmMlKem768;
+    case kWebCryptoAlgorithmIdMlKem1024:
+      return WebFeature::kCryptoAlgorithmMlKem1024;
+    case kWebCryptoAlgorithmIdMlKem768X25519:
+      return WebFeature::kCryptoAlgorithmMlKem768X25519;
   }
 
   NOTREACHED();
@@ -95,7 +109,7 @@ void HistogramAlgorithm(ExecutionContext* context,
     case kWebCryptoAlgorithmParamsTypeEcdhKeyDeriveParams:
     case kWebCryptoAlgorithmParamsTypeNone:
     case kWebCryptoAlgorithmParamsTypeAesCbcParams:
-    case kWebCryptoAlgorithmParamsTypeAesGcmParams:
+    case kWebCryptoAlgorithmParamsTypeAeadParams:
     case kWebCryptoAlgorithmParamsTypeAesKeyGenParams:
     case kWebCryptoAlgorithmParamsTypeRsaOaepParams:
     case kWebCryptoAlgorithmParamsTypeAesCtrParams:
@@ -103,6 +117,7 @@ void HistogramAlgorithm(ExecutionContext* context,
     case kWebCryptoAlgorithmParamsTypeEcKeyGenParams:
     case kWebCryptoAlgorithmParamsTypeEcKeyImportParams:
     case kWebCryptoAlgorithmParamsTypeAesDerivedKeyParams:
+    case kWebCryptoAlgorithmParamsTypeContextParams:
       break;
   }
 }

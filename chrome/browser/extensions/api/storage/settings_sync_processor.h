@@ -6,14 +6,17 @@
 #define CHROME_BROWSER_EXTENSIONS_API_STORAGE_SETTINGS_SYNC_PROCESSOR_H_
 
 #include <optional>
-#include <set>
 #include <string>
 
 #include "base/memory/raw_ptr.h"
 #include "base/values.h"
 #include "components/sync/base/data_type.h"
 #include "components/value_store/value_store_change.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension_id.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace syncer {
 class ModelError;
@@ -40,13 +43,13 @@ class SettingsSyncProcessor {
   ~SettingsSyncProcessor();
 
   // Initializes this with the initial state of sync.
-  void Init(const base::Value::Dict& initial_state);
+  void Init(const base::DictValue& initial_state);
 
-  // Sends |changes| to sync.
+  // Sends `changes` to sync.
   std::optional<syncer::ModelError> SendChanges(
       const value_store::ValueStoreChangeList& changes);
 
-  // Informs this that |changes| have been receieved from sync. No action will
+  // Informs this that `changes` have been received from sync. No action will
   // be taken, but this must be notified for internal bookkeeping.
   void NotifyChanges(const value_store::ValueStoreChangeList& changes);
 
@@ -67,7 +70,7 @@ class SettingsSyncProcessor {
 
   // Keys of the settings that are currently being synced. Used to decide what
   // kind of action (ADD, UPDATE, REMOVE) to send to sync.
-  std::set<std::string> synced_keys_;
+  absl::flat_hash_set<std::string> synced_keys_;
 };
 
 }  // namespace extensions

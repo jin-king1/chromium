@@ -9,12 +9,9 @@
 
 #include <optional>
 
-#include "base/functional/callback.h"
 #include "base/process/kill.h"
 #include "content/browser/dom_storage/session_storage_namespace_impl.h"
-#include "mojo/public/cpp/bindings/pending_remote.h"
 #include "net/base/load_states.h"
-#include "services/network/public/mojom/attribution.mojom-forward.h"
 #include "third_party/blink/public/common/page/color_provider_color_maps.h"
 #include "third_party/skia/include/core/SkColor.h"
 
@@ -116,12 +113,6 @@ class RenderViewHostDelegate {
   virtual std::optional<SkColor> GetBaseBackgroundColor();
 
   virtual const base::Location& GetCreatorLocation() = 0;
-
-  // Returns whether attribution reporting is supported
-  // for the WebContents associated with this RenderViewHost.
-  // This method takes into account global support as well as
-  // WebContents specific support.
-  virtual network::mojom::AttributionSupport GetAttributionSupport() = 0;
 
  protected:
   virtual ~RenderViewHostDelegate() {}

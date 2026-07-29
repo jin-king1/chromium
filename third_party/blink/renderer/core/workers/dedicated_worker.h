@@ -12,8 +12,8 @@
 #include "base/memory/scoped_refptr.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "services/network/public/mojom/content_security_policy.mojom-blink-forward.h"
-#include "services/network/public/mojom/url_loader_factory.mojom-blink.h"
 #include "third_party/blink/public/common/loader/worker_main_script_load_parameters.h"
+#include "third_party/blink/public/common/permissions_policy/document_policy.h"
 #include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/public/mojom/browser_interface_broker.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/frame/back_forward_cache_controller.mojom-blink-forward.h"
@@ -45,9 +45,10 @@ class ExceptionState;
 class ExecutionContext;
 class PostMessageOptions;
 class ScriptState;
+class V8UnionTrustedScriptURLOrUSVString;
 class WebContentSettingsClient;
-class WorkerClassicScriptLoader;
 struct GlobalScopeCreationParams;
+struct WebPolicyContainer;
 
 // Implementation of the Worker interface defined in the WebWorker HTML spec:
 // https://html.spec.whatwg.org/C/#worker
@@ -67,7 +68,7 @@ class CORE_EXPORT DedicatedWorker final
 
  public:
   static DedicatedWorker* Create(ExecutionContext*,
-                                 const String& url,
+                                 const V8UnionTrustedScriptURLOrUSVString* url,
                                  const WorkerOptions*,
                                  ExceptionState&);
 
@@ -126,6 +127,7 @@ class CORE_EXPORT DedicatedWorker final
       CrossVariantMojoRemote<
           mojom::blink::BackForwardCacheControllerHostInterfaceBase>
           back_forward_cache_controller_host,
+      std::unique_ptr<WebPolicyContainer> policy_container,
       CrossVariantMojoReceiver<mojom::blink::ReportingObserverInterfaceBase>
           coep_reporting_observer,
       CrossVariantMojoReceiver<mojom::blink::ReportingObserverInterfaceBase>
@@ -142,7 +144,8 @@ class CORE_EXPORT DedicatedWorker final
 
   DEFINE_ATTRIBUTE_EVENT_LISTENER(message, kMessage)
 
-  void ContextLifecycleStateChanged(mojom::FrameLifecycleState state) override;
+  void ContextLifecycleStateChanged(
+      mojom::blink::FrameLifecycleState state) override;
   void Trace(Visitor*) const override;
 
  private:
@@ -157,10 +160,10 @@ class CORE_EXPORT DedicatedWorker final
       network::mojom::ReferrerPolicy,
       Vector<network::mojom::blink::ContentSecurityPolicyPtr>
           response_content_security_policies,
-      const String& source_code,
-      RejectCoepUnsafeNone reject_coep_unsafe_none,
+      DocumentPolicy::DocumentPolicyBundle response_document_policy,
       mojo::PendingRemote<mojom::blink::BackForwardCacheControllerHost>
           back_forward_cache_controller_host,
+      std::unique_ptr<WebPolicyContainer> policy_container,
       mojo::PendingReceiver<mojom::blink::ReportingObserver>
           coep_reporting_observer,
       mojo::PendingReceiver<mojom::blink::ReportingObserver>
@@ -172,10 +175,10 @@ class CORE_EXPORT DedicatedWorker final
       network::mojom::ReferrerPolicy,
       Vector<network::mojom::blink::ContentSecurityPolicyPtr>
           response_content_security_policies,
-      const String& source_code,
-      RejectCoepUnsafeNone reject_coep_unsafe_none,
+      DocumentPolicy::DocumentPolicyBundle response_document_policy,
       mojo::PendingRemote<mojom::blink::BackForwardCacheControllerHost>
           back_forward_cache_controller_host,
+      std::unique_ptr<WebPolicyContainer> policy_container,
       mojo::PendingReceiver<mojom::blink::ReportingObserver>
           coep_reporting_observer,
       mojo::PendingReceiver<mojom::blink::ReportingObserver>
@@ -185,6 +188,7 @@ class CORE_EXPORT DedicatedWorker final
       network::mojom::ReferrerPolicy,
       Vector<network::mojom::blink::ContentSecurityPolicyPtr>
           response_content_security_policies,
+      DocumentPolicy::DocumentPolicyBundle response_document_policy,
       mojo::PendingReceiver<mojom::blink::ReportingObserver>
           coep_reporting_observer,
       mojo::PendingReceiver<mojom::blink::ReportingObserver>
@@ -193,20 +197,6 @@ class CORE_EXPORT DedicatedWorker final
   scoped_refptr<WebWorkerFetchContext> CreateWebWorkerFetchContext();
   // May return nullptr.
   std::unique_ptr<WebContentSettingsClient> CreateWebContentSettingsClient();
-
-  void OnHostCreated(
-      mojo::PendingRemote<network::mojom::blink::URLLoaderFactory>
-          blob_url_loader_factory,
-      const network::CrossOriginEmbedderPolicy& parent_coep,
-      CrossVariantMojoRemote<
-          mojom::blink::BackForwardCacheControllerHostInterfaceBase>
-          back_forward_cache_controller_host);
-
-  // Callbacks for |classic_script_loader_|.
-  void OnResponse();
-  void OnFinished(
-      mojo::PendingRemote<mojom::blink::BackForwardCacheControllerHost>
-          back_forward_cache_controller_host);
 
   // Implements EventTarget (via AbstractWorker -> EventTarget).
   const AtomicString& InterfaceName() const final;
@@ -221,8 +211,6 @@ class CORE_EXPORT DedicatedWorker final
   Member<const FetchClientSettingsObjectSnapshot>
       outside_fetch_client_settings_object_;
   const Member<DedicatedWorkerMessagingProxy> context_proxy_;
-
-  Member<WorkerClassicScriptLoader> classic_script_loader_;
 
   std::unique_ptr<WebDedicatedWorkerHostFactoryClient> factory_client_;
 

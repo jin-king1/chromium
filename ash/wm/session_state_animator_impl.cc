@@ -13,7 +13,6 @@
 #include "ash/wm/desks/desks_util.h"
 #include "ash/wm/window_animations.h"
 #include "base/barrier_closure.h"
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
 #include "ui/aura/client/aura_constants.h"
 #include "ui/compositor/layer_animation_observer.h"
@@ -359,9 +358,7 @@ void SessionStateAnimatorImpl::GetContainers(
     GetContainersInRootWindow(container_mask, root_window, containers);
 
   // Some of containers may be null in some tests.
-  containers->erase(
-      std::remove(containers->begin(), containers->end(), nullptr),
-      containers->end());
+  std::erase(*containers, nullptr);
 }
 
 void SessionStateAnimatorImpl::StartAnimation(int container_mask,

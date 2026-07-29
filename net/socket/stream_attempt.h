@@ -9,12 +9,14 @@
 
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/trace_event/trace_event.h"
 #include "base/values.h"
 #include "net/base/completion_once_callback.h"
 #include "net/base/ip_endpoint.h"
 #include "net/base/load_states.h"
 #include "net/base/load_timing_info.h"
 #include "net/base/net_export.h"
+#include "net/base/network_handle.h"
 #include "net/log/net_log_event_type.h"
 #include "net/log/net_log_with_source.h"
 #include "net/socket/stream_socket_close_reason.h"
@@ -55,6 +57,8 @@ class NET_EXPORT_PRIVATE StreamAttempt {
   // `params` must outlive `this`.
   StreamAttempt(const StreamAttemptParams* params,
                 IPEndPoint ip_endpoint,
+                handles::NetworkHandle target_network,
+                perfetto::Track track,
                 NetLogSourceType net_log_source_type,
                 NetLogEventType net_log_attempt_event_type,
                 const NetLogWithSource* net_log = nullptr);
@@ -72,7 +76,7 @@ class NET_EXPORT_PRIVATE StreamAttempt {
   // Returns the load state of this attempt.
   virtual LoadState GetLoadState() const = 0;
 
-  virtual base::Value::Dict GetInfoAsValue() const = 0;
+  virtual base::DictValue GetInfoAsValue() const = 0;
 
   // If the attempt failed with ERR_SSL_CLIENT_AUTH_CERT_NEEDED, returns the
   // SSLCertRequestInfo received. Otherwise, returns nullptr.
@@ -83,6 +87,8 @@ class NET_EXPORT_PRIVATE StreamAttempt {
   std::unique_ptr<StreamSocket> ReleaseStreamSocket();
 
   const IPEndPoint& ip_endpoint() const { return ip_endpoint_; }
+
+  handles::NetworkHandle target_network() const { return target_network_; }
 
   const NetLogWithSource& net_log() const { return net_log_; }
 
@@ -99,7 +105,7 @@ class NET_EXPORT_PRIVATE StreamAttempt {
 
   // Called when `this` is started. Subclasses should implement this method
   // to record a useful NetLog event.
-  virtual base::Value::Dict GetNetLogStartParams() = 0;
+  virtual base::DictValue GetNetLogStartParams() = 0;
 
   const StreamAttemptParams& params() { return *params_; }
 
@@ -113,11 +119,15 @@ class NET_EXPORT_PRIVATE StreamAttempt {
     return connect_timing_;
   }
 
+  perfetto::Track track() const { return track_; }
+
  private:
   void LogCompletion(int rv);
 
   const raw_ptr<const StreamAttemptParams> params_;
   const IPEndPoint ip_endpoint_;
+  handles::NetworkHandle target_network_;
+  perfetto::Track track_;
 
   NetLogWithSource net_log_;
   NetLogEventType net_log_attempt_event_type_;

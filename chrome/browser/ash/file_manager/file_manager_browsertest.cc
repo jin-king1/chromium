@@ -6,6 +6,7 @@
 
 #include <memory>
 
+#include "ash/constants/ash_pref_names.h"
 #include "ash/public/cpp/keyboard/keyboard_switches.h"
 #include "base/check_op.h"
 #include "base/files/file_path.h"
@@ -23,6 +24,7 @@
 #include "base/test/mock_callback.h"
 #include "base/threading/thread_restrictions.h"
 #include "base/values.h"
+#include "build/branding_buildflags.h"
 #include "build/config/coverage/buildflags.h"
 #include "chrome/browser/ash/file_manager/file_manager_browsertest_base.h"
 #include "chrome/browser/ash/file_manager/file_manager_browsertest_utils.h"
@@ -30,18 +32,16 @@
 #include "chrome/browser/ash/file_manager/io_task.h"
 #include "chrome/browser/ash/login/test/device_state_mixin.h"
 #include "chrome/browser/ash/login/test/logged_in_user_mixin.h"
-#include "chrome/browser/ash/settings/scoped_testing_cros_settings.h"
-#include "chrome/browser/ash/settings/stub_cros_settings_provider.h"
 #include "chrome/browser/extensions/component_loader.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_paths.h"
-#include "chrome/common/pref_names.h"
 #include "chrome/test/base/fake_gaia_mixin.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "chromeos/ash/components/policy/device_policy/cached_device_policy_updater.h"
 #include "chromeos/ash/components/settings/cros_settings_names.h"
+#include "chromeos/ash/components/settings/device_settings_cache_test_support.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "components/account_id/account_id.h"
 #include "components/download/public/common/download_item.h"
@@ -58,10 +58,11 @@
 
 using file_manager::test::TestCase;
 
+namespace em = enterprise_management;
+
 namespace file_manager {
 namespace {
 constexpr char kOwnerEmail[] = "owner@example.com";
-
 }  // namespace
 
 // FilesApp browser test.
@@ -121,6 +122,10 @@ class LoggedInUserFilesAppBrowserTest : public FilesAppBrowserTest {
         LogInTypeFor(GetOptions().test_account_type),
         /*include_initial_user=*/true,
         AccountIdFor(GetOptions().test_account_type));
+  }
+
+  void SetUpLocalStatePrefService(PrefService* local_state) override {
+    FilesAppBrowserTest::SetUpLocalStatePrefService(local_state);
 
     // Set up owner email of a device. We set up owner email only if a device is
     // kConsumerOwned. If a device is enrolled, an account cannot be an owner of
@@ -141,8 +146,14 @@ class LoggedInUserFilesAppBrowserTest : public FilesAppBrowserTest {
           break;
       }
 
-      scoped_testing_cros_settings_.device_settings()->Set(
-          ash::kDeviceOwner, base::Value(owner_email));
+      ash::device_settings_cache::Update(
+          local_state,
+          [&](em::PolicyData& policy) { policy.set_username(owner_email); });
+
+      policy::CachedDevicePolicyUpdater updater;
+      updater.policy_data().set_username(owner_email);
+      updater.policy_data().set_management_mode(em::PolicyData::LOCAL_OWNER);
+      updater.Commit();
     }
   }
 
@@ -171,8 +182,6 @@ class LoggedInUserFilesAppBrowserTest : public FilesAppBrowserTest {
 
   std::unique_ptr<ash::LoggedInUserMixin> logged_in_user_mixin_;
   std::unique_ptr<ash::DeviceStateMixin> device_state_mixin_;
-
-  ash::ScopedTestingCrosSettings scoped_testing_cros_settings_;
 };
 
 IN_PROC_BROWSER_TEST_P(LoggedInUserFilesAppBrowserTest, Test) {
@@ -191,7 +200,7 @@ class ExtendedFilesAppBrowserTest : public FilesAppBrowserTest {
 };
 
 IN_PROC_BROWSER_TEST_P(ExtendedFilesAppBrowserTest, PRE_Test) {
-  profile()->GetPrefs()->SetBoolean(prefs::kNetworkFileSharesAllowed,
+  profile()->GetPrefs()->SetBoolean(ash::prefs::kNetworkFileSharesAllowed,
                                     GetOptions().native_smb);
 }
 
@@ -214,7 +223,7 @@ class QuickOfficeBrowserTestBase : public InProcessBrowserTest {
   // extensions::ExtensionApiTest:
   void SetUpOnMainThread() override {
     file_manager::test::AddDefaultComponentExtensionsOnMainThread(
-        browser()->profile());
+        browser()->GetProfile());
 
     embedded_test_server()->ServeFilesFromDirectory(GetTestDataDirectory());
     ASSERT_TRUE(embedded_test_server()->Start());
@@ -249,7 +258,7 @@ IN_PROC_BROWSER_TEST_F(QuickOfficeForceFileDownloadEnabledBrowserTest,
       embedded_test_server()->GetURL("/chromeos/file_manager/text.docx");
 
   content::DownloadManager* download_manager =
-      browser()->profile()->GetDownloadManager();
+      browser()->GetProfile()->GetDownloadManager();
   std::unique_ptr<content::DownloadTestObserver> download_observer(
       new content::DownloadTestObserverTerminal(
           download_manager, /*num_downloads=*/1,
@@ -586,12 +595,17 @@ WRAPPED_INSTANTIATE_TEST_SUITE_P(
         TestCase("openQuickViewImageClick"),
         TestCase("openQuickViewVideo"),
         TestCase("openQuickViewVideoOnDrive"),
-        TestCase("openQuickViewPdf"),
-        TestCase("openQuickViewPdfPopup"),
+#if BUILDFLAG(ENABLE_PDF)
+        TestCase("openQuickViewPdf").SetEnableOopifPdf(false),
+        TestCase("openQuickViewPdf").SetEnableOopifPdf(true),
+        TestCase("openQuickViewPdfPopup").SetEnableOopifPdf(false),
+        TestCase("openQuickViewPdfPopup").SetEnableOopifPdf(true),
 #if !defined(ADDRESS_SANITIZER) || !defined(NDEBUG)
-        // TODO(http://crbug.com/1291090): Flaky on ASan non-DEBUG.
-        TestCase("openQuickViewPdfPreviewsDisabled"),
-#endif
+        // TODO(http://crbug.com/40818544): Flaky on ASan non-DEBUG.
+        TestCase("openQuickViewPdfPreviewsDisabled").SetEnableOopifPdf(false),
+        TestCase("openQuickViewPdfPreviewsDisabled").SetEnableOopifPdf(true),
+#endif  // !defined(ADDRESS_SANITIZER) || !defined(NDEBUG)
+#endif  // BUILDFLAG(ENABLE_PDF)
         TestCase("openQuickViewKeyboardUpDownChangesView"),
         TestCase("openQuickViewKeyboardLeftRightChangesView"),
         TestCase("openQuickViewSniffedText"),
@@ -665,9 +679,9 @@ WRAPPED_INSTANTIATE_TEST_SUITE_P(
         TestCase("directoryTreeExpandFolderOnDelayExpansionVolume"),
         TestCase("directoryTreeExpandAndSelectedOnDragMove"),
         TestCase("directoryTreeClickDriveRootWhenMyDriveIsActive"),
-#if !defined(ADDRESS_SANITIZER) || !defined(NDEBUG)
+#if !defined(ADDRESS_SANITIZER) && defined(NDEBUG)
         // TODO(crbug.com/339374326): Flaking on
-        // "Linux Chromium OS ASan LSan Tests (1)"
+        // "Linux Chromium OS ASan LSan Tests (1)" and on several dbg bots.
         TestCase("directoryTreeHideExpandIconWhenLastSubFolderIsRemoved"),
 #endif
         TestCase("directoryTreeKeepDriveOrderAfterReconnected")));
@@ -704,7 +718,7 @@ WRAPPED_INSTANTIATE_TEST_SUITE_P(
         TestCase("dirRenameToEmptyString").InGuestMode(),
         TestCase("dirRenameToExisting"),
 #if !defined(ADDRESS_SANITIZER) || !defined(NDEBUG)
-        // TODO(http://crbug.com/1230054): Flaky on ASan non-DEBUG.
+        // TODO(http://crbug.com/40778782): Flaky on ASan non-DEBUG.
         TestCase("dirRenameToExisting").InGuestMode(),
 #endif
         TestCase("dirRenameRemovableWithKeyboard"),
@@ -1280,12 +1294,6 @@ WRAPPED_INSTANTIATE_TEST_SUITE_P(
         TestCase("pluginVmFileDropFailErrorDialog")));
 
 WRAPPED_INSTANTIATE_TEST_SUITE_P(
-    MaterializedViews, /* materialized_views.ts */
-    FilesAppBrowserTest,
-    ::testing::Values(TestCase("mvDisplayInTree").EnableMaterializedViews(),
-                      TestCase("mvScanner").EnableMaterializedViews()));
-
-WRAPPED_INSTANTIATE_TEST_SUITE_P(
     MyFiles, /* my_files.ts */
     FilesAppBrowserTest,
     ::testing::Values(
@@ -1305,11 +1313,6 @@ WRAPPED_INSTANTIATE_TEST_SUITE_P(
     Navigation, /* navigation.ts */
     FilesAppBrowserTest,
     ::testing::Values(TestCase("navigateToParent")));
-
-WRAPPED_INSTANTIATE_TEST_SUITE_P(
-    InstallLinuxPackageDialog, /* install_linux_package_dialog.ts */
-    FilesAppBrowserTest,
-    ::testing::Values(TestCase("installLinuxPackageDialog")));
 
 WRAPPED_INSTANTIATE_TEST_SUITE_P(
     Recents, /* recents.ts */
@@ -1556,7 +1559,7 @@ WRAPPED_INSTANTIATE_TEST_SUITE_P(
     FilesAppBrowserTest,
     ::testing::Values(TestCase("fakesListed"),
                       TestCase("listUpdatedWhenGuestsChanged")
-// TODO(http://crbug.com/1486453): Flaky on ASan.
+// TODO(http://crbug.com/40933722): Flaky on ASan.
 #if !defined(ADDRESS_SANITIZER) && !defined(LEAK_SANITIZER) && \
     !defined(MEMORY_SANITIZER)
                           ,

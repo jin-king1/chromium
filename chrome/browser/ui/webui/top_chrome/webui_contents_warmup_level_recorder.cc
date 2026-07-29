@@ -4,10 +4,11 @@
 
 #include "chrome/browser/ui/webui/top_chrome/webui_contents_warmup_level_recorder.h"
 
-#include "base/containers/contains.h"
+#include <algorithm>
+
 #include "chrome/browser/ui/webui/top_chrome/webui_contents_preload_manager.h"
 #include "chrome/browser/ui/webui/top_chrome/webui_contents_warmup_level.h"
-#include "chrome/browser/ui/webui/top_chrome/webui_url_utils.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/spare_render_process_host_manager.h"
 #include "content/public/browser/web_contents.h"
@@ -24,13 +25,13 @@ bool IsFirstWebContentsOnProcess(
     return false;
   }
 
-  // Count the number of top-level Top Chrome documents on the process.
+  // Count all top-level frames on this process. Top Chrome WebUIs share a
+  // dedicated process (enforced by process lock and WebUI bindings checks), so
+  // any top-level frame on this process is a Top Chrome document.
   size_t top_chrome_frames = 0;
   web_contents->GetPrimaryMainFrame()->GetProcess()->ForEachRenderFrameHost(
       [&top_chrome_frames](content::RenderFrameHost* rfh) {
-        top_chrome_frames +=
-            rfh->GetOutermostMainFrame() == rfh &&
-            IsTopChromeWebUIURL(rfh->GetSiteInstance()->GetSiteURL());
+        top_chrome_frames += rfh->GetOutermostMainFrame() == rfh;
       });
   const size_t has_preloaded_contents =
       WebUIContentsPreloadManager::GetInstance()->preloaded_web_contents() ? 1
@@ -61,7 +62,7 @@ void WebUIContentsWarmupLevelRecorder::BeforeContentsCreation() {
     pre_condition_->preloaded_contents = preloaded_contents->GetWeakPtr();
     pre_condition_->preloaded_process =
         preloaded_contents->GetPrimaryMainFrame()->GetProcess();
-    pre_condition_->preloaded_host = preloaded_contents->GetURL().host();
+    pre_condition_->preloaded_host = preloaded_contents->GetURL().GetHost();
   }
 }
 
@@ -70,7 +71,7 @@ void WebUIContentsWarmupLevelRecorder::AfterContentsCreation(
   CHECK(pre_condition_) << "You must call BeforeContentsCreation()";
   CHECK(web_contents);
 
-  if (base::Contains(
+  if (std::ranges::contains(
           pre_condition_->spare_process_ids,
           web_contents->GetPrimaryMainFrame()->GetProcess()->GetID())) {
     level_ = WebUIContentsWarmupLevel::kSpareRenderer;
@@ -78,7 +79,7 @@ void WebUIContentsWarmupLevelRecorder::AfterContentsCreation(
   }
 
   if (pre_condition_->preloaded_contents.get() == web_contents) {
-    level_ = pre_condition_->preloaded_host == web_contents->GetURL().host()
+    level_ = pre_condition_->preloaded_host == web_contents->GetURL().GetHost()
                  ? WebUIContentsWarmupLevel::kPreloadedWebContents
                  : WebUIContentsWarmupLevel::kRedirectedWebContents;
     return;

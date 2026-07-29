@@ -35,7 +35,9 @@ class CORE_EXPORT CookieJar : public GarbageCollected<CookieJar> {
   virtual ~CookieJar();
   void Trace(Visitor* visitor) const;
 
-  void SetCookie(const String& value);
+  // Sets a cookie in the cookie jar. Returns true if the cookie was set
+  // successfully, false otherwise.
+  bool SetCookie(const String& value);
   String Cookies();
   bool CookiesEnabled();
   void SetCookieManager(
@@ -52,7 +54,24 @@ class CORE_EXPORT CookieJar : public GarbageCollected<CookieJar> {
   void InvalidateCache();
 
  private:
-  void RequestRestrictedCookieManagerIfNeeded();
+  // The state of the CookieManager Mojo pipe when
+  // RequestRestrictedCookieManagerIfNeeded() was called.
+  //
+  // TODO(crbug.com/414748254): These were added specifically to help
+  // investigate a specific renderer hang. Remove once the investigation is
+  // done.
+  enum class RequestCookieManagerPipeState {
+    // There was no preexisting Mojo pipe, so a new one was created.
+    kNoOldPipe = 0,
+    // There was a connected preexisting Mojo pipe, but it was no longer
+    // connected, so a new one was created.
+    kDisconnectedOldPipe = 1,
+    // There was a connected preexisting Mojo pipe that was still connected, so
+    // it was reused.
+    kConnectedOldPipe = 2,
+  };
+
+  RequestCookieManagerPipeState RequestRestrictedCookieManagerIfNeeded();
   void OnBackendDisconnect();
 
   // Returns true if last_cookies_ is not guaranteed to be up to date and an IPC
@@ -113,6 +132,12 @@ class CORE_EXPORT CookieJar : public GarbageCollected<CookieJar> {
   // be empty since that is a valid cookie string.
   String last_cookies_;
   bool is_first_operation_ = true;
+
+  // The number of required writes (via SetCookieFomString) that should be
+  // observed by the network service in order to skip an IPC in Cookies().
+  // This number increments when calling SetCookieFromString asynchronously
+  // and it is compared with the committed_writes_count in shared memory.
+  mojo::CountType required_committed_writes_ = 0;
 };
 
 }  // namespace blink

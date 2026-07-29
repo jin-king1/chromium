@@ -6,6 +6,7 @@
 
 #import <UIKit/UIKit.h>
 
+#include "base/apple/foundation_util.h"
 #include "base/check.h"
 #include "base/command_line.h"
 #include "base/debug/debugger.h"
@@ -40,21 +41,17 @@ namespace {
 void PopulateUIWindow(UIWindow* window) {
   window.backgroundColor = UIColor.whiteColor;
   [window makeKeyAndVisible];
-  CGRect bounds = UIScreen.mainScreen.bounds;
+  CGRect bounds = window.windowScene.screen.bounds;
   // Add a label with the app name.
   UILabel* label = [[UILabel alloc] initWithFrame:bounds];
   label.text = NSProcessInfo.processInfo.processName;
   label.textAlignment = NSTextAlignmentCenter;
+  label.textColor = UIColor.blackColor;
   [window addSubview:label];
 
   // An NSInternalInconsistencyException is thrown if the app doesn't have a
   // root view controller. Set an empty one here.
   window.rootViewController = [[UIViewController alloc] init];
-}
-
-bool IsSceneStartupEnabled() {
-  return [NSBundle.mainBundle.infoDictionary
-      objectForKey:@"UIApplicationSceneManifest"];
 }
 }  // namespace
 
@@ -62,7 +59,7 @@ bool IsSceneStartupEnabled() {
 - (void)_terminateWithStatus:(int)status;
 @end
 
-#if TARGET_IPHONE_SIMULATOR
+#if TARGET_OS_SIMULATOR
 // Xcode 6 introduced behavior in the iOS Simulator where the software
 // keyboard does not appear if a hardware keyboard is connected. The following
 // declaration allows this behavior to be overridden when the app starts up.
@@ -71,7 +68,7 @@ bool IsSceneStartupEnabled() {
 - (void)setAutomaticMinimizationEnabled:(BOOL)enabled;
 - (void)setSoftwareKeyboardShownByTouch:(BOOL)enabled;
 @end
-#endif  // TARGET_IPHONE_SIMULATOR
+#endif  // TARGET_OS_SIMULATOR
 
 // Can be used to easily check if the current application is being used for
 // running tests.
@@ -95,9 +92,7 @@ bool IsSceneStartupEnabled() {
 
 @end
 
-@interface ChromeUnitTestDelegate : NSObject <GoogleTestRunnerDelegate> {
-  UIWindow* __strong _window;
-}
+@interface ChromeUnitTestDelegate : NSObject <GoogleTestRunnerDelegate>
 - (void)runTests;
 @end
 
@@ -122,24 +117,13 @@ bool IsSceneStartupEnabled() {
 
 - (BOOL)application:(UIApplication*)application
     didFinishLaunchingWithOptions:(NSDictionary*)launchOptions {
-#if TARGET_IPHONE_SIMULATOR
+#if TARGET_OS_SIMULATOR
   // Xcode 6 introduced behavior in the iOS Simulator where the software
   // keyboard does not appear if a hardware keyboard is connected. The following
   // calls override this behavior by ensuring that the software keyboard is
   // always shown.
   [[UIKeyboardImpl sharedInstance] setAutomaticMinimizationEnabled:NO];
-  if (@available(iOS 15, *)) {
-  } else {
-    [[UIKeyboardImpl sharedInstance] setSoftwareKeyboardShownByTouch:YES];
-  }
-#endif  // TARGET_IPHONE_SIMULATOR
-
-  if (!IsSceneStartupEnabled()) {
-    CGRect bounds = UIScreen.mainScreen.bounds;
-
-    _window = [[UIWindow alloc] initWithFrame:bounds];
-    PopulateUIWindow(_window);
-  }
+#endif  // TARGET_OS_SIMULATOR
 
   if ([self shouldRedirectOutputToFile]) {
     [self redirectOutput];
@@ -160,14 +144,14 @@ bool IsSceneStartupEnabled() {
 // output to stdout, but results must be written to NSLog in order to show up in
 // the device log that is retrieved from the device by the host.
 - (BOOL)shouldRedirectOutputToFile {
-#if !TARGET_IPHONE_SIMULATOR
+#if !TARGET_OS_SIMULATOR
   // Tests in XCTest mode don't need to redirect output to a file because the
   // test result parser analyzes console output.
   return !base::ShouldRunIOSUnittestsWithXCTest() &&
          !base::debug::BeingDebugged();
 #else
   return NO;
-#endif  // TARGET_IPHONE_SIMULATOR
+#endif  // TARGET_OS_SIMULATOR
 }
 
 // Returns the path to the directory to store gtest output files.
@@ -244,7 +228,6 @@ bool IsSceneStartupEnabled() {
   // a chance to initialize and no test results will be seen.
   [NSThread sleepUntilDate:[NSDate dateWithTimeIntervalSinceNow:2.0]];
 #endif
-  _window = nil;
 
 #if !BUILDFLAG(IS_IOS_APP_EXTENSION)
   // Use the hidden selector to try and cleanly take down the app (otherwise
@@ -262,7 +245,7 @@ namespace {
 
 std::unique_ptr<base::MessagePump> CreateMessagePumpForUIForTests() {
   // A basic MessagePump will do quite nicely in tests.
-  return std::unique_ptr<base::MessagePump>(new base::MessagePumpCFRunLoop());
+  return std::make_unique<base::MessagePumpCFRunLoop>();
 }
 
 }  // namespace

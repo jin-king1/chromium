@@ -7,7 +7,6 @@
 #include <memory>
 #include <utility>
 
-#include "ash/constants/ash_features.h"
 #include "ash/constants/notifier_catalogs.h"
 #include "ash/public/cpp/notification_utils.h"
 #include "ash/public/cpp/system_tray_client.h"
@@ -22,7 +21,6 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chromeos/ash/components/multidevice/logging/logging.h"
-#include "chromeos/ash/components/phonehub/util/histogram_util.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/chromeos/devicetype_utils.h"
 #include "ui/message_center/message_center.h"
@@ -100,14 +98,6 @@ MultiDeviceNotificationPresenter::~MultiDeviceNotificationPresenter() {
 void MultiDeviceNotificationPresenter::OnPotentialHostExistsForNewUser() {
   int title_message_id =
       IDS_ASH_MULTI_DEVICE_SETUP_NEW_USER_POTENTIAL_HOST_EXISTS_TITLE;
-  if (features::IsPhoneHubOnboardingNotifierRevampEnabled() &&
-      !features::kPhoneHubOnboardingNotifierUseNudge.Get()) {
-    title_message_id =
-        features::kPhoneHubNotifierTextGroup.Get() ==
-                features::PhoneHubNotifierTextGroup::kNotifierTextGroupA
-            ? IDS_ASH_MULTI_DEVICE_SETUP_NOTIFIER_TEXT_WITH_PHONE_HUB
-            : IDS_ASH_MULTI_DEVICE_SETUP_NOTIFIER_TEXT_WITHOUT_PHONE_HUB;
-  }
   std::u16string title = l10n_util::GetStringUTF16(title_message_id);
   std::u16string message = l10n_util::GetStringFUTF16(
       IDS_ASH_MULTI_DEVICE_SETUP_NEW_USER_POTENTIAL_HOST_EXISTS_MESSAGE,
@@ -255,9 +245,6 @@ void MultiDeviceNotificationPresenter::OnNotificationClicked(
   switch (notification_status_) {
     case Status::kNewUserNotificationVisible:
       Shell::Get()->system_tray_model()->client()->ShowMultiDeviceSetup();
-      phonehub::util::LogMultiDeviceSetupDialogEntryPoint(
-          ash::phonehub::util::MultiDeviceSetupDialogEntrypoint::
-              kSetupNotification);
       // If user has not interacted with Phone Hub icon when the notification is
       // visible, log MultiDeviceSetup.NotificationInteracted event when
       // notification is clicked.

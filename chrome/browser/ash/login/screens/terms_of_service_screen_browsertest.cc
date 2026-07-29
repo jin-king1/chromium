@@ -9,6 +9,7 @@
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_base.h"
 #include "base/run_loop.h"
+#include "base/strings/string_util.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/threading/thread_restrictions.h"
 #include "chrome/browser/ash/login/existing_user_controller.h"
@@ -26,7 +27,6 @@
 #include "chrome/browser/ash/login/test/user_policy_mixin.h"
 #include "chrome/browser/ash/login/wizard_context.h"
 #include "chrome/browser/ash/login/wizard_controller.h"
-#include "chrome/browser/ash/policy/core/device_policy_builder.h"
 #include "chrome/browser/ash/policy/core/device_policy_cros_browser_test.h"
 #include "chrome/browser/ash/policy/test_support/embedded_policy_test_server_mixin.h"
 #include "chrome/browser/browser_process.h"
@@ -39,8 +39,9 @@
 #include "chrome/browser/ui/webui/ash/login/sync_consent_screen_handler.h"
 #include "chrome/browser/ui/webui/ash/login/terms_of_service_screen_handler.h"
 #include "chromeos/ash/components/dbus/session_manager/fake_session_manager_client.h"
+#include "chromeos/ash/components/policy/device_local_account/device_local_account_type.h"
+#include "chromeos/ash/components/policy/device_policy/device_policy_builder.h"
 #include "components/policy/core/common/cloud/test/policy_builder.h"
-#include "components/policy/core/common/device_local_account_type.h"
 #include "components/policy/proto/chrome_device_policy.pb.h"
 #include "components/prefs/pref_service.h"
 #include "components/user_manager/known_user.h"
@@ -492,20 +493,19 @@ OobeScreenId PendingScreenToId(PendingScreen pending_screen) {
 
 class ManagedUserTosOnboardingResumeTest
     : public ManagedUserTosScreenTest,
-      public LocalStateMixin::Delegate,
       public ::testing::WithParamInterface<PendingScreen> {
  public:
-  ManagedUserTosOnboardingResumeTest() { pending_screen_param_ = GetParam(); }
+  ManagedUserTosOnboardingResumeTest() : pending_screen_param_(GetParam()) {}
 
-  void SetUpLocalState() override {
-    auto pending_screen_param = GetParam();
+  void SetUpLocalStatePrefService(PrefService* local_state) override {
+    ManagedUserTosScreenTest::SetUpLocalStatePrefService(local_state);
     if (pending_screen_param_ == PendingScreen::kEmpty) {
       return;
     }
-    user_manager::KnownUser(g_browser_process->local_state())
+    user_manager::KnownUser(local_state)
         .SetPendingOnboardingScreen(
             managed_user_.account_id,
-            PendingScreenToId(pending_screen_param).name);
+            PendingScreenToId(pending_screen_param_).name);
   }
 
   void EnsurePendingScreenIsEmpty() {
@@ -515,10 +515,7 @@ class ManagedUserTosOnboardingResumeTest
   }
 
  protected:
-  PendingScreen pending_screen_param_;
-
- private:
-  LocalStateMixin local_state_mixin_{&mixin_host_, this};
+  const PendingScreen pending_screen_param_;
 };
 
 IN_PROC_BROWSER_TEST_P(ManagedUserTosOnboardingResumeTest, ResumeOnboarding) {

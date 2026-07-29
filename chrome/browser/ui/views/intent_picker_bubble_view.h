@@ -16,8 +16,9 @@
 #include "chrome/browser/apps/link_capturing/intent_picker_info.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_bubble_delegate_view.h"
 #include "ui/base/accelerators/accelerator.h"
-#include "ui/gfx/image/image.h"
+#include "ui/base/interaction/element_identifier.h"
 #include "ui/views/animation/ink_drop_state.h"
+#include "ui/views/bubble/bubble_anchor.h"
 #include "ui/views/controls/scroll_view.h"
 #include "url/origin.h"
 
@@ -26,7 +27,6 @@ class WebContents;
 }  // namespace content
 
 namespace views {
-class Button;
 class Checkbox;
 class Widget;
 }  // namespace views
@@ -68,7 +68,7 @@ class IntentPickerBubbleView : public LocationBarBubbleDelegateView {
     kRememberCheckbox,
   };
 
-  IntentPickerBubbleView(views::View* anchor_view,
+  IntentPickerBubbleView(views::BubbleAnchor bubble_anchor,
                          BubbleType bubble_type,
                          std::vector<AppInfo> app_info,
                          IntentPickerResponse intent_picker_cb,
@@ -83,8 +83,8 @@ class IntentPickerBubbleView : public LocationBarBubbleDelegateView {
   ~IntentPickerBubbleView() override;
 
   static views::Widget* ShowBubble(
-      views::View* anchor_view,
-      views::Button* highlighted_button,
+      views::BubbleAnchor bubble_anchor,
+      std::optional<ui::ElementIdentifier> highlighted_element,
       BubbleType bubble_type,
       content::WebContents* web_contents,
       std::vector<AppInfo> app_info,
@@ -97,6 +97,8 @@ class IntentPickerBubbleView : public LocationBarBubbleDelegateView {
   }
 
   static base::AutoReset<bool> SetAutoAcceptIntentPickerBubbleForTesting();
+
+  static base::AutoReset<bool> SetAutoCancelIntentPickerBubbleForTesting();
 
   static void CloseCurrentBubble();
 

@@ -17,7 +17,6 @@
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/metrics/field_trial.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/path_service.h"
 #include "base/strings/stringprintf.h"
 #include "base/task/sequenced_task_runner.h"
@@ -42,7 +41,6 @@
 #include "chrome/common/pref_names.h"
 #include "chrome/grit/branded_strings.h"
 #include "chrome/grit/browser_resources.h"
-#include "chrome/grit/generated_resources.h"
 #include "components/component_updater/pref_names.h"
 #include "components/policy/core/browser/configuration_policy_pref_store.h"
 #include "components/pref_registry/pref_registry_syncable.h"
@@ -61,6 +59,7 @@
 #include "components/search_engines/search_engines_pref_names.h"
 #include "components/signin/public/base/signin_pref_names.h"
 #include "components/signin/public/base/signin_switches.h"
+#include "components/supervised_user/core/browser/device_parental_controls.h"
 #include "components/supervised_user/core/browser/supervised_user_pref_store.h"
 #include "components/sync/base/data_type.h"
 #include "components/sync/base/features.h"
@@ -75,6 +74,7 @@
 #include "rlz/buildflags/buildflags.h"
 #include "services/preferences/public/cpp/tracked/configuration.h"
 #include "services/preferences/public/cpp/tracked/pref_names.h"
+#include "services/preferences/tracked/pref_hash_filter.h"
 #include "sql/error_delegate_util.h"
 #include "ui/base/resource/resource_bundle.h"
 
@@ -82,15 +82,13 @@
 #include "base/files/file_util.h"
 #endif
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 #include "extensions/browser/pref_names.h"
 #endif
 
 #if BUILDFLAG(IS_WIN)
 #include "base/enterprise_util.h"
-#if BUILDFLAG(ENABLE_RLZ)
-#include "rlz/lib/machine_id.h"  // nogncheck crbug.com/1125897
-#endif  // BUILDFLAG(ENABLE_RLZ)
+#include "services/preferences/tracked/features.h"
 #endif  // BUILDFLAG(IS_WIN)
 
 using content::BrowserContext;
@@ -128,7 +126,7 @@ const auto kTrackedPrefs = std::to_array<prefs::TrackedPreferenceMetadata>({
      PrefTrackingStrategy::ATOMIC, ValueType::IMPERSONAL},
     {4, prefs::kURLsToRestoreOnStartup, EnforcementLevel::ENFORCE_ON_LOAD,
      PrefTrackingStrategy::ATOMIC, ValueType::IMPERSONAL},
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
     {5, extensions::pref_names::kExtensions, EnforcementLevel::NO_ENFORCEMENT,
      PrefTrackingStrategy::SPLIT, ValueType::IMPERSONAL},
 #endif
@@ -164,11 +162,6 @@ const auto kTrackedPrefs = std::to_array<prefs::TrackedPreferenceMetadata>({
      PrefTrackingStrategy::ATOMIC, ValueType::PERSONAL},
     {29, prefs::kMediaStorageIdSalt, EnforcementLevel::ENFORCE_ON_LOAD,
      PrefTrackingStrategy::ATOMIC, ValueType::IMPERSONAL},
-#if BUILDFLAG(IS_WIN) && BUILDFLAG(GOOGLE_CHROME_BRANDING)
-    {30, prefs::kModuleBlocklistCacheMD5Digest,
-     EnforcementLevel::ENFORCE_ON_LOAD, PrefTrackingStrategy::ATOMIC,
-     ValueType::IMPERSONAL},
-#endif
 #if BUILDFLAG(IS_WIN)
     {32, prefs::kMediaCdmOriginData, EnforcementLevel::ENFORCE_ON_LOAD,
      PrefTrackingStrategy::ATOMIC, ValueType::IMPERSONAL},
@@ -179,9 +172,20 @@ const auto kTrackedPrefs = std::to_array<prefs::TrackedPreferenceMetadata>({
     {34, enterprise_signin::prefs::kPolicyRecoveryToken,
      EnforcementLevel::ENFORCE_ON_LOAD, PrefTrackingStrategy::ATOMIC,
      ValueType::IMPERSONAL},
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
     {35, prefs::kExtensionsUIDeveloperMode, EnforcementLevel::ENFORCE_ON_LOAD,
      PrefTrackingStrategy::ATOMIC, ValueType::IMPERSONAL},
+#endif
+    // Allows it to trigger a write to the protected pref store.
+    {36, user_prefs::kScheduleToFlushToDisk, EnforcementLevel::ENFORCE_ON_LOAD,
+     PrefTrackingStrategy::ATOMIC, ValueType::IMPERSONAL},
+#if BUILDFLAG(ENABLE_EXTENSIONS)
+    {37, extensions::pref_names::kInitialInstallList,
+     EnforcementLevel::ENFORCE_ON_LOAD, PrefTrackingStrategy::ATOMIC,
+     ValueType::IMPERSONAL},
+    {38, extensions::pref_names::kInitialInstallProviderName,
+     EnforcementLevel::ENFORCE_ON_LOAD, PrefTrackingStrategy::ATOMIC,
+     ValueType::IMPERSONAL},
 #endif
 
     // See note at top, new items added here also need to be added to
@@ -210,8 +214,11 @@ SettingsEnforcementGroup GetSettingsEnforcementGroup() {
 #if BUILDFLAG(IS_WIN)
   if (!g_disable_domain_check_for_testing) {
     static const bool is_domain_joined = base::IsEnterpriseDevice();
-    if (is_domain_joined)
+    if (is_domain_joined &&
+        !base::FeatureList::IsEnabled(
+            tracked::kEnableEncryptedTrackedPrefOnEnterprise)) {
       return GROUP_NO_ENFORCEMENT;
+    }
   }
 #endif
 
@@ -249,7 +256,7 @@ GetTrackingConfiguration() {
       data->enforcement_level = EnforcementLevel::ENFORCE_ON_LOAD;
     }
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
     if (enforcement_group >= GROUP_ENFORCE_ALWAYS_WITH_EXTENSIONS_AND_DSE &&
         data->name == extensions::pref_names::kExtensions) {
       // Specifically enable extension settings enforcement.
@@ -274,21 +281,13 @@ GetTrackingConfiguration() {
 
 std::unique_ptr<ProfilePrefStoreManager> CreateProfilePrefStoreManager(
     const base::FilePath& profile_path) {
-  std::string legacy_device_id;
-#if BUILDFLAG(IS_WIN) && BUILDFLAG(ENABLE_RLZ)
-  // This was used by the musicManagerPrivate API, and remains here for backward
-  // compatibility so ProfilePrefStoreManager can continue to calculate the same
-  // hashes as before.
-  rlz_lib::GetMachineId(&legacy_device_id);
-#endif
   std::string seed;
   CHECK(ui::ResourceBundle::HasSharedInstance());
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
   seed = std::string(ui::ResourceBundle::GetSharedInstance().GetRawDataResource(
       IDR_PREF_HASH_SEED_BIN));
 #endif
-  return std::make_unique<ProfilePrefStoreManager>(profile_path, seed,
-                                                   legacy_device_id);
+  return std::make_unique<ProfilePrefStoreManager>(profile_path, seed);
 }
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -311,24 +310,15 @@ void CleanupObsoleteStandaloneBrowserPrefsFile(
 }
 #endif
 
-void PrepareFactory(
-    sync_preferences::PrefServiceSyncableFactory* factory,
-    const base::FilePath& pref_filename,
-    policy::PolicyService* policy_service,
-    supervised_user::SupervisedUserSettingsService* supervised_user_settings,
-    scoped_refptr<PersistentPrefStore> user_pref_store,
-    scoped_refptr<PrefStore> extension_prefs,
-    bool async,
-    policy::BrowserPolicyConnector* policy_connector) {
+void PrepareFactory(sync_preferences::PrefServiceSyncableFactory* factory,
+                    const base::FilePath& pref_filename,
+                    policy::PolicyService* policy_service,
+                    scoped_refptr<PersistentPrefStore> user_pref_store,
+                    scoped_refptr<PrefStore> extension_prefs,
+                    bool async,
+                    policy::BrowserPolicyConnector* policy_connector) {
   factory->SetManagedPolicies(policy_service, policy_connector);
   factory->SetRecommendedPolicies(policy_service, policy_connector);
-  if (supervised_user_settings) {
-    scoped_refptr<PrefStore> supervised_user_prefs =
-        base::MakeRefCounted<SupervisedUserPrefStore>(supervised_user_settings);
-    DCHECK(async || supervised_user_prefs->IsInitializationComplete());
-    factory->set_supervised_user_prefs(supervised_user_prefs);
-  }
-
   factory->set_async(async);
   factory->set_extension_prefs(std::move(extension_prefs));
   factory->set_command_line_prefs(
@@ -339,6 +329,27 @@ void PrepareFactory(
   factory->set_user_prefs(std::move(user_pref_store));
   factory->SetPrefModelAssociatorClient(
       base::MakeRefCounted<ChromePrefModelAssociatorClient>());
+}
+
+void PrepareFactory(
+    sync_preferences::PrefServiceSyncableFactory* factory,
+    const base::FilePath& pref_filename,
+    policy::PolicyService* policy_service,
+    supervised_user::FamilyLinkSettingsService* family_link_settings_service,
+    supervised_user::DeviceParentalControls& device_parental_controls,
+    scoped_refptr<PersistentPrefStore> user_pref_store,
+    scoped_refptr<PrefStore> extension_prefs,
+    bool async,
+    policy::BrowserPolicyConnector* policy_connector) {
+  PrepareFactory(factory, pref_filename, policy_service,
+                 std::move(user_pref_store), std::move(extension_prefs), async,
+                 policy_connector);
+
+  scoped_refptr<PrefStore> supervised_user_prefs =
+      base::MakeRefCounted<SupervisedUserPrefStore>(
+          family_link_settings_service, device_parental_controls);
+  DCHECK(async || supervised_user_prefs->IsInitializationComplete());
+  factory->set_supervised_user_prefs(supervised_user_prefs);
 }
 
 class ResetOnLoadObserverImpl : public prefs::mojom::ResetOnLoadObserver {
@@ -377,12 +388,9 @@ std::unique_ptr<PrefService> CreateLocalState(
     scoped_refptr<PrefRegistry> pref_registry,
     policy::BrowserPolicyConnector* policy_connector) {
   sync_preferences::PrefServiceSyncableFactory factory;
-  PrepareFactory(&factory, pref_filename, policy_service,
-                 nullptr,  // supervised_user_settings
-                 pref_store,
-                 nullptr,  // extension_prefs
+  PrepareFactory(&factory, pref_filename, policy_service, pref_store,
+                 /*extension_prefs=*/nullptr,
                  /*async=*/false, policy_connector);
-
   return factory.Create(std::move(pref_registry));
 }
 
@@ -391,12 +399,14 @@ std::unique_ptr<sync_preferences::PrefServiceSyncable> CreateProfilePrefs(
     mojo::PendingRemote<prefs::mojom::TrackedPreferenceValidationDelegate>
         validation_delegate,
     policy::PolicyService* policy_service,
-    supervised_user::SupervisedUserSettingsService* supervised_user_settings,
+    supervised_user::FamilyLinkSettingsService* family_link_settings_service,
+    supervised_user::DeviceParentalControls& device_parental_controls,
     scoped_refptr<PrefStore> extension_prefs,
     scoped_refptr<user_prefs::PrefRegistrySyncable> pref_registry,
     policy::BrowserPolicyConnector* connector,
     bool async,
-    scoped_refptr<base::SequencedTaskRunner> io_task_runner) {
+    scoped_refptr<base::SequencedTaskRunner> io_task_runner,
+    os_crypt_async::OSCryptAsync* os_crypt_async) {
   TRACE_EVENT0("browser", "chrome_prefs::CreateProfilePrefs");
 
   mojo::PendingRemote<prefs::mojom::ResetOnLoadObserver> reset_on_load_observer;
@@ -410,7 +420,7 @@ std::unique_ptr<sync_preferences::PrefServiceSyncable> CreateProfilePrefs(
           ->CreateProfilePrefStore(
               GetTrackingConfiguration(), kTrackedPrefsReportingIDsCount,
               io_task_runner, std::move(reset_on_load_observer),
-              std::move(validation_delegate));
+              std::move(validation_delegate), os_crypt_async);
 
 #if BUILDFLAG(IS_CHROMEOS)
   io_task_runner->PostTask(
@@ -418,92 +428,112 @@ std::unique_ptr<sync_preferences::PrefServiceSyncable> CreateProfilePrefs(
       base::BindOnce(&CleanupObsoleteStandaloneBrowserPrefsFile, profile_path));
 #endif
 
-  PrepareFactory(&factory, profile_path, policy_service,
-                 supervised_user_settings, user_pref_store,
-                 std::move(extension_prefs), async, connector);
+  if (family_link_settings_service) {
+    PrepareFactory(&factory, profile_path, policy_service,
+                   family_link_settings_service, device_parental_controls,
+                   user_pref_store, std::move(extension_prefs), async,
+                   connector);
+  } else {
+    PrepareFactory(&factory, profile_path, policy_service, user_pref_store,
+                   std::move(extension_prefs), async, connector);
+  }
+
+#if !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_ANDROID)
+  // Get raw pointers to the filters before moving user_pref_store.
+  PrefFilter* default_filter = nullptr;
+  PrefFilter* selected_filter = nullptr;
+  if (user_pref_store) {
+    // Get the underlying segregated pref store filters if possible, otherwise
+    // the functions will return nullptr.
+    default_filter = user_pref_store->GetDefaultStoreFilter();
+    selected_filter = user_pref_store->GetSelectedStoreFilter();
+
+    // JsonPrefStore will not have the two getters implemented, it will fall
+    // back to this block below. The user_pref_store itself will have the
+    // filter.
+    if (!default_filter && !selected_filter) {
+      default_filter = user_pref_store->GetFilter();
+    }
+  }
+#endif  // !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_ANDROID)
 
   if (base::FeatureList::IsEnabled(
           switches::kEnablePreferencesAccountStorage)) {
-    // Desktop and Mobile platforms have different implementation for account
-    // preferences. Mobile platforms have a separate file to store account
-    // preferences. Whereas, desktop platforms would store account preferences
-    // as a dictionary in the main preference file.
 #if BUILDFLAG(IS_ANDROID)
-    if (!base::FeatureList::IsEnabled(syncer::kMigrateAccountPrefs)) {
-      // Mobile platforms do not require preference protection. Hence pref
-      // filters and ProfilePrefStoreManager::CreateProfilePrefStore() can be
-      // avoided.
-      factory.SetAccountPrefStore(base::MakeRefCounted<JsonPrefStore>(
-          /*pref_filename=*/profile_path.Append(
-              chrome::kAccountPreferencesFilename),
-          /*pref_filter=*/nullptr,
-          /*file_task_runner=*/io_task_runner));
-    } else
+    // Delete account preference file on Mobile platforms.
+    // TODO(crbug.com/346508597): Remove this after a year, consistent with
+    // the pref migration process.
+    io_task_runner->PostTask(
+        FROM_HERE, base::BindOnce(IgnoreResult(&base::DeleteFile),
+                                  profile_path.Append(
+                                      chrome::kAccountPreferencesFilename)));
 #endif  // BUILDFLAG(IS_ANDROID)
-    {
-#if BUILDFLAG(IS_ANDROID)
-      // Delete account preference file on Mobile platforms.
-      // TODO(crbug.com/346508597): Remove this after an year, consistent with
-      // the pref migration process.
-      io_task_runner->PostTask(
-          FROM_HERE, base::BindOnce(IgnoreResult(&base::DeleteFile),
-                                    profile_path.Append(
-                                        chrome::kAccountPreferencesFilename)));
-#endif  // BUILDFLAG(IS_ANDROID)
-      /**
-       * Account values will live under `kAccountPreferencesPrefix` as a
-       * dictionary in the main preference file and will be operated upon by a
-       * WrapWithPrefixPrefStore.
-       * {
-       *   "A": ...
-       *   "B": ...
-       *   "C": ...
-       *   "account_values": {
-       *     "A": ...
-       *     "B": ...
-       *     "D": ...
-       *   }
-       * }
-       *
-       * To achieve the above, a WrapWithPrefixPrefStore is used to prefix the
-       * prefs with `kAccountPreferencesPrefix` to allow easy access to the
-       * account values. A DualLayerUserPrefStore then wraps this pref store
-       * along with the main pref store. The callers of the
-       * DualLayerUserPrefStore will be unaware of where a preference value is
-       * coming from, the local store or the account store.
-       *
-       * +---------------------+   +------------------+   +-------------+
-       * | DualLayerUserPref   |   | SegregatedPref   |   | Secure      |
-       * | Store               |   | Store            |   | Preferences |
-       * | +------------+      |   | +--------------+ |   | .json       |
-       * | | Local Pref |      |   | |Protected Pref|-|-->|             |
-       * | | Store      |---- -|-->| |Store         | |   |             |
-       * | +------------+      |   | +--------------+ |   |             |
-       * |                     |   |                  |   +-------------+
-       * | +-----------------+ |   |                  |   +-------------+
-       * | | WrapWithPrefix  | |   |                  |   | Preferences |
-       * | | PrefStore       | |   | +-------------+  |   | .json       |
-       * | | +-------------+ | |   | |Unprotected  |--|-->|             |
-       * | | | Local Pref  | | |   | |Pref Store   |  |   |             |
-       * | | | Store (same | | |
-       * | | | as above)   | | |   | +-------------+  |   |             |
-       * | | +-------------+ | |   +------------------+   +-------------+
-       * | +-----------------+ |
-       * +---------------------+
-       *
-       * NOTE: Mobile platforms do not require preference protection and hence,
-       * the SegregatedPrefStore layer above does not actually get created,
-       * thus keeping only a single preference file on Mobile platforms.
-       */
-      factory.SetAccountPrefStore(base::MakeRefCounted<WrapWithPrefixPrefStore>(
-          std::move(user_pref_store), kAccountPreferencesPrefix));
-      // Register `kAccountPreferencesPrefix` as dictionary pref. This prevents
-      // others from using the prefix as a preference.
-      pref_registry->RegisterDictionaryPref(kAccountPreferencesPrefix);
-    }
+    /**
+     * Account values will live under `kAccountPreferencesPrefix` as a
+     * dictionary in the main preference file and will be operated upon by a
+     * WrapWithPrefixPrefStore.
+     * {
+     *   "A": ...
+     *   "B": ...
+     *   "C": ...
+     *   "account_values": {
+     *     "A": ...
+     *     "B": ...
+     *     "D": ...
+     *   }
+     * }
+     *
+     * To achieve the above, a WrapWithPrefixPrefStore is used to prefix the
+     * prefs with `kAccountPreferencesPrefix` to allow easy access to the
+     * account values. A DualLayerUserPrefStore then wraps this pref store
+     * along with the main pref store. The callers of the
+     * DualLayerUserPrefStore will be unaware of where a preference value is
+     * coming from, the local store or the account store.
+     *
+     * +---------------------+   +------------------+   +-------------+
+     * | DualLayerUserPref   |   | SegregatedPref   |   | Secure      |
+     * | Store               |   | Store            |   | Preferences |
+     * | +------------+      |   | +--------------+ |   | .json       |
+     * | | Local Pref |      |   | |Protected Pref|-|-->|             |
+     * | | Store      |---- -|-->| |Store         | |   |             |
+     * | +------------+      |   | +--------------+ |   |             |
+     * |                     |   |                  |   +-------------+
+     * | +-----------------+ |   |                  |   +-------------+
+     * | | WrapWithPrefix  | |   |                  |   | Preferences |
+     * | | PrefStore       | |   | +-------------+  |   | .json       |
+     * | | +-------------+ | |   | |Unprotected  |--|-->|             |
+     * | | | Local Pref  | | |   | |Pref Store   |  |   |             |
+     * | | | Store (same | | |
+     * | | | as above)   | | |   | +-------------+  |   |             |
+     * | | +-------------+ | |   +------------------+   +-------------+
+     * | +-----------------+ |
+     * +---------------------+
+     *
+     * NOTE: Mobile platforms do not require preference protection and hence,
+     * the SegregatedPrefStore layer above does not actually get created,
+     * thus keeping only a single preference file on Mobile platforms.
+     */
+    factory.SetAccountPrefStore(base::MakeRefCounted<WrapWithPrefixPrefStore>(
+        std::move(user_pref_store), kAccountPreferencesPrefix));
+    // Register `kAccountPreferencesPrefix` as dictionary pref. This prevents
+    // others from using the prefix as a preference.
+    pref_registry->RegisterDictionaryPref(kAccountPreferencesPrefix);
   }
 
-  return factory.CreateSyncable(std::move(pref_registry));
+  std::unique_ptr<sync_preferences::PrefServiceSyncable> pref_service =
+      factory.CreateSyncable(std::move(pref_registry));
+
+// The PrefService is created, set the weakptr for the filters.
+#if !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_ANDROID)
+  if (default_filter) {
+    default_filter->SetPrefService(pref_service.get());
+  }
+  if (selected_filter) {
+    selected_filter->SetPrefService(pref_service.get());
+  }
+#endif  // !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_ANDROID)
+
+  return pref_service;
 }
 
 void DisableDomainCheckForTesting() {
@@ -512,12 +542,14 @@ void DisableDomainCheckForTesting() {
 #endif  // BUILDFLAG(IS_WIN)
 }
 
-bool InitializePrefsFromMasterPrefs(const base::FilePath& profile_path,
-                                    base::Value::Dict master_prefs) {
+bool InitializePrefsFromMasterPrefs(
+    const base::FilePath& profile_path,
+    base::DictValue master_prefs,
+    os_crypt_async::OSCryptAsync* os_crypt_async) {
   return CreateProfilePrefStoreManager(profile_path)
       ->InitializePrefsFromMasterPrefs(GetTrackingConfiguration(),
                                        kTrackedPrefsReportingIDsCount,
-                                       std::move(master_prefs));
+                                       std::move(master_prefs), os_crypt_async);
 }
 
 base::Time GetResetTime(Profile* profile) {
@@ -526,6 +558,14 @@ base::Time GetResetTime(Profile* profile) {
 
 void ClearResetTime(Profile* profile) {
   ProfilePrefStoreManager::ClearResetTime(profile->GetPrefs());
+}
+
+const base::ListValue& GetTamperedPrefList(Profile* profile) {
+  return profile->GetPrefs()->GetList(user_prefs::kTrackedPreferencesReset);
+}
+
+void ClearTamperedPrefList(Profile* profile) {
+  profile->GetPrefs()->ClearPref(user_prefs::kTrackedPreferencesReset);
 }
 
 void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry) {

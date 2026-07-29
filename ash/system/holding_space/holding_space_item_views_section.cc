@@ -13,7 +13,6 @@
 #include "ash/system/holding_space/holding_space_util.h"
 #include "ash/system/holding_space/holding_space_view_delegate.h"
 #include "base/auto_reset.h"
-#include "base/containers/contains.h"
 #include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -111,10 +110,12 @@ class HoldingSpaceScrollView : public views::ScrollView,
   }
 
   void OnViewVisibilityChanged(views::View* observed_view,
-                               views::View* starting_view) override {
+                               views::View* starting_view,
+                               bool visible) override {
     // Sync scroll view visibility with contents visibility.
-    if (GetVisible() != observed_view->GetVisible())
+    if (GetVisible() != observed_view->GetVisible()) {
       SetVisible(observed_view->GetVisible());
+    }
   }
 
   void OnViewIsDeleting(View* observed_view) override {
@@ -294,7 +295,7 @@ void HoldingSpaceItemViewsSection::OnHoldingSpaceItemsAdded(
   const bool needs_update =
       std::ranges::any_of(items, [this](const HoldingSpaceItem* item) {
         return item->IsInitialized() &&
-               base::Contains(section_->supported_types, item->type());
+               section_->supported_types.contains(item->type());
       });
   if (needs_update)
     MaybeAnimateOut();
@@ -304,7 +305,7 @@ void HoldingSpaceItemViewsSection::OnHoldingSpaceItemsRemoved(
     const std::vector<const HoldingSpaceItem*>& items) {
   const bool needs_update =
       std::ranges::any_of(items, [this](const HoldingSpaceItem* item) {
-        return base::Contains(views_by_item_id_, item->id());
+        return views_by_item_id_.contains(item->id());
       });
   if (needs_update)
     MaybeAnimateOut();
@@ -312,7 +313,7 @@ void HoldingSpaceItemViewsSection::OnHoldingSpaceItemsRemoved(
 
 void HoldingSpaceItemViewsSection::OnHoldingSpaceItemInitialized(
     const HoldingSpaceItem* item) {
-  if (base::Contains(section_->supported_types, item->type()))
+  if (section_->supported_types.contains(item->type()))
     MaybeAnimateOut();
 }
 
@@ -327,19 +328,6 @@ void HoldingSpaceItemViewsSection::RemoveAllHoldingSpaceItemViews() {
 
 std::unique_ptr<views::View> HoldingSpaceItemViewsSection::CreatePlaceholder() {
   return nullptr;
-}
-
-void HoldingSpaceItemViewsSection::DestroyPlaceholder() {
-  if (!placeholder_)
-    return;
-
-  RemoveChildViewT(placeholder_.get());
-  placeholder_ = nullptr;
-
-  // In the absence of `placeholder_`, the `header_` should only be visible
-  // when `container_` is non-empty.
-  if (header_->GetVisible() && container_->children().empty())
-    header_->SetVisible(false);
 }
 
 bool HoldingSpaceItemViewsSection::IsExpanded() {
@@ -521,8 +509,8 @@ void HoldingSpaceItemViewsSection::OnAnimateOutCompleted(
 
   for (const auto& item : model->items()) {
     if (item->IsInitialized() &&
-        base::Contains(section_->supported_types, item->type())) {
-      DCHECK(!base::Contains(views_by_item_id_, item->id()));
+        section_->supported_types.contains(item->type())) {
+      DCHECK(!views_by_item_id_.contains(item->id()));
 
       // Remove the last holding space item view if already at max capacity.
       if (max_visible_item_count == container_->children().size()) {

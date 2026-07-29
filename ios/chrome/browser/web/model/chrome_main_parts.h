@@ -14,6 +14,10 @@
 #include "ios/chrome/browser/flags/ios_chrome_field_trials.h"
 #include "ios/web/public/init/web_main_parts.h"
 
+namespace display {
+class ScopedNativeScreen;
+}  // namespace display
+
 class ApplicationContextImpl;
 class PrefService;
 class IOSThreadProfiler;
@@ -41,12 +45,8 @@ class IOSChromeMainParts : public web::WebMainParts {
   void PostDestroyThreads() override;
 
   // Sets up the field trials and related initialization. Call only after
-  // about:flags have been converted to switches. However,
-  // `command_line_variation_ids` should be the value of the
-  // "--force-variation-ids" switch before it is mutated. See
-  // VariationsFieldTrialCreator::SetUpFieldTrials() for the format of
-  // `command_line_variation_ids`.
-  void SetUpFieldTrials(const std::string& command_line_variation_ids);
+  // about:flags have been converted to switches.
+  void SetUpFieldTrials();
 
   // Constructs the metrics service and initializes metrics recording.
   void SetupMetrics();
@@ -72,6 +72,8 @@ class IOSChromeMainParts : public web::WebMainParts {
   // A profiler that periodically samples stack traces. Used to understand
   // thread and process startup and normal behavior.
   std::unique_ptr<IOSThreadProfiler> sampling_profiler_;
+
+  std::unique_ptr<display::ScopedNativeScreen> screen_;
 
   memory_system::MemorySystem memory_system_;
 };

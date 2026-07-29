@@ -6,29 +6,50 @@
 
 #include <functional>
 #include <set>
+#include <string>
 
 #include "base/base64.h"
+#include "base/containers/extend.h"
 #include "base/feature_list.h"
 #include "base/i18n/case_conversion.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "components/affiliations/core/browser/affiliation_utils.h"
+#include "components/autofill/core/browser/field_types.h"
+#include "components/autofill/core/browser/integrators/identity_credential/identity_credential_delegate.h"
+#include "components/autofill/core/browser/suggestions/identity_credential_suggestion_utils.h"
 #include "components/autofill/core/browser/suggestions/suggestion.h"
+#include "components/autofill/core/browser/suggestions/suggestion_type.h"
+#include "components/autofill/core/common/password_form_fill_data.h"
 #include "components/password_manager/core/browser/features/password_features.h"
+#include "components/password_manager/core/browser/passkey_credential.h"
 #include "components/password_manager/core/browser/password_manager_client.h"
 #include "components/password_manager/core/browser/password_manager_driver.h"
 #include "components/password_manager/core/browser/password_manager_util.h"
 #include "components/password_manager/core/browser/password_sync_util.h"
 #include "components/password_manager/core/browser/password_ui_utils.h"
 #include "components/password_manager/core/browser/ui/credential_ui_entry.h"
+#include "components/password_manager/core/browser/undo_password_change_controller.h"
 #include "components/password_manager/core/browser/webauthn_credentials_delegate.h"
 #include "components/password_manager/core/common/password_manager_constants.h"
+#include "components/signin/public/base/consent_level.h"
+#include "components/signin/public/base/signin_switches.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/sync/base/features.h"
 #include "components/sync/service/sync_service.h"
 #include "components/sync/service/sync_user_settings.h"
+#include "google_apis/gaia/gaia_auth_util.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "url/gurl.h"
+#include "url/url_constants.h"
 
 namespace password_manager {
+
+const char kReauthPromoHistogramName[] =
+    "PasswordManager.PasswordFilling.ReauthPromo";
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+const char kPasswordManagerHost[] = "password-manager";
+#endif
 
 namespace {
 
@@ -50,129 +71,179 @@ std::u16string ReplaceEmptyUsername(const std::u16string& username,
 
 #if !BUILDFLAG(IS_ANDROID)
 Suggestion CreatePasskeyFromAnotherDeviceEntry(bool listed_passkeys) {
-  return Suggestion(
-      l10n_util::GetStringUTF8(listed_passkeys
-                                   ? IDS_PASSWORD_MANAGER_USE_DIFFERENT_PASSKEY
-                                   : IDS_PASSWORD_MANAGER_USE_PASSKEY),
-      /*label=*/"", Suggestion::Icon::kDevice,
-      SuggestionType::kWebauthnSignInWithAnotherDevice);
+  int title_id;
+#if !BUILDFLAG(IS_IOS)
+  title_id = IDS_PASSWORD_MANAGER_USE_PASSKEY_OTHER_DEVICE;
+#else
+  title_id = listed_passkeys ? IDS_PASSWORD_MANAGER_USE_DIFFERENT_PASSKEY
+                             : IDS_PASSWORD_MANAGER_USE_PASSKEY;
+#endif  // !BUILDFLAG(IS_IOS)
+  return Suggestion(l10n_util::GetStringUTF16(title_id),
+                    /*label=*/u"", Suggestion::Icon::kDevice,
+                    SuggestionType::kWebauthnSignInWithAnotherDevice);
 }
 #endif  // !BUILDFLAG(IS_ANDROID)
 
 Suggestion CreateGenerationEntry() {
   // The UI code will pick up an icon from the resources based on the string.
   return Suggestion(
-      l10n_util::GetStringUTF8(IDS_PASSWORD_MANAGER_GENERATE_PASSWORD),
-      /*label=*/"", Suggestion::Icon::kKey,
+      l10n_util::GetStringUTF16(IDS_PASSWORD_MANAGER_GENERATE_PASSWORD),
+      /*label=*/u"", Suggestion::Icon::kKey,
       SuggestionType::kGeneratePasswordEntry);
 }
 
-void MaybeAppendManagePasswordsEntry(std::vector<Suggestion>* suggestions) {
-  bool has_no_fillable_suggestions = std::ranges::none_of(
-      *suggestions,
-      [](SuggestionType id) {
-        return id == SuggestionType::kPasswordEntry ||
-               id == SuggestionType::kAccountStoragePasswordEntry ||
-               id == SuggestionType::kGeneratePasswordEntry ||
-               id == SuggestionType::kWebauthnCredential;
-      },
-      &Suggestion::type);
-  if (has_no_fillable_suggestions) {
-    return;
-  }
+Suggestion::PasswordSuggestionDetails GetSuggestionDetailsForRecoveryFlow(
+    const autofill::PasswordAndMetadata& credential) {
+  CHECK(credential.backup_password_value);
 
-  bool has_webauthn_credential = std::ranges::any_of(
-      *suggestions,
-      [](SuggestionType type) {
-        return type == SuggestionType::kWebauthnCredential;
-      },
-      &Suggestion::type);
+  return Suggestion::PasswordSuggestionDetails(
+      credential.username_value, credential.password_value,
+      credential.backup_password_value.value(), credential.realm,
+      credential.is_grouped_affiliation);
+}
 
-  // Add a separator before the manage option unless there are no suggestions
-  // yet.
-  if (!suggestions->empty()) {
-    Suggestion separator(SuggestionType::kSeparator);
-    separator.filtration_policy = Suggestion::FiltrationPolicy::kStatic;
-    suggestions->push_back(std::move(separator));
-  }
 
-  Suggestion suggestion(
-      l10n_util::GetStringUTF8(
-          has_webauthn_credential
-              ? IDS_PASSWORD_MANAGER_MANAGE_PASSWORDS_AND_PASSKEYS
-              : IDS_PASSWORD_MANAGER_MANAGE_PASSWORDS),
-      /*label=*/"", Suggestion::Icon::kSettings,
-      SuggestionType::kAllSavedPasswordsEntry);
-  // The UI code will pick up an icon from the resources based on the string.
-  suggestion.trailing_icon = Suggestion::Icon::kGooglePasswordManager;
-  suggestion.filtration_policy = Suggestion::FiltrationPolicy::kStatic;
+
+void AppendBackupSuggestion(const autofill::PasswordAndMetadata& credential,
+                            std::vector<Suggestion>* suggestions) {
+  CHECK(credential.backup_password_value);
+
+  Suggestion suggestion(credential.username_value,
+                        SuggestionType::kBackupPasswordEntry);
+  suggestion.payload = GetSuggestionDetailsForRecoveryFlow(credential);
+  suggestion.icon = Suggestion::Icon::kRecoveryPassword;
+  suggestion.labels = {{autofill::Suggestion::Text(
+      std::u16string(credential.backup_password_value->size(),
+                     constants::kPasswordReplacementChar))}};
+  suggestion.additional_label =
+      l10n_util::GetStringUTF16(IDS_PASSWORD_MANAGER_UI_BACKUP_PASSWORD_TAG);
   suggestions->emplace_back(std::move(suggestion));
 }
 
-// If |field_suggestion| matches |field_content|, creates a Suggestion out of it
-// and appends to |suggestions|.
-void AppendSuggestionIfMatching(const std::u16string& field_suggestion,
-                                const std::u16string& field_contents,
-                                const gfx::Image& custom_icon,
-                                const std::string& signon_realm,
-                                bool from_account_store,
-                                size_t password_length,
-                                std::vector<Suggestion>* suggestions) {
-  std::u16string lower_suggestion = base::i18n::ToLower(field_suggestion);
+// If |credential.username_value| matches |field_content|, creates a Suggestion
+// out of it and appends to |suggestions|.
+void AppendSuggestionIfMatching(
+    const UndoPasswordChangeController& undo_password_change_controller,
+    const autofill::PasswordAndMetadata& credential,
+    const std::u16string& field_contents,
+    const gfx::Image& custom_icon,
+    std::vector<Suggestion>* suggestions) {
+  std::u16string lower_suggestion =
+      base::i18n::ToLower(credential.username_value);
   std::u16string lower_contents = base::i18n::ToLower(field_contents);
   if (base::StartsWith(lower_suggestion, lower_contents,
                        base::CompareCase::SENSITIVE)) {
     bool replaced_username;
     Suggestion suggestion(
-        ReplaceEmptyUsername(field_suggestion, &replaced_username));
+        ReplaceEmptyUsername(credential.username_value, &replaced_username),
+        credential.uses_account_store
+            ? SuggestionType::kAccountStoragePasswordEntry
+            : SuggestionType::kPasswordEntry);
     suggestion.main_text.is_primary =
         Suggestion::Text::IsPrimary(!replaced_username);
     suggestion.labels = {{autofill::Suggestion::Text(
-        std::u16string(password_length, constants::kPasswordReplacementChar))}};
+        std::u16string(credential.password_value.size(),
+                       constants::kPasswordReplacementChar))}};
     suggestion.voice_over = l10n_util::GetStringFUTF16(
         IDS_PASSWORD_MANAGER_PASSWORD_FOR_ACCOUNT, suggestion.main_text.value);
-    if (!signon_realm.empty()) {
+    if (!credential.realm.empty()) {
       // The domainname is only shown for passwords with a common eTLD+1
       // but different subdomain.
       suggestion.additional_label =
-          password_manager_util::GetHumanReadableRealm(signon_realm);
+          password_manager_util::GetHumanReadableRealm(credential.realm);
       *suggestion.voice_over += u", ";
       *suggestion.voice_over += suggestion.additional_label;
     }
-    suggestion.type = from_account_store
-                          ? SuggestionType::kAccountStoragePasswordEntry
-                          : SuggestionType::kPasswordEntry;
     suggestion.custom_icon = custom_icon;
     // The UI code will pick up an icon from the resources based on the string.
     suggestion.icon = Suggestion::Icon::kGlobe;
     suggestions->emplace_back(std::move(suggestion));
+
+#if BUILDFLAG(IS_ANDROID)
+    // Backup password is displayed every time on Android.
+    bool show_recovery_password = true;
+#else
+    // Backup password is displayed only after the first attempt to login on
+    // Desktop.
+    bool show_recovery_password =
+        undo_password_change_controller.GetState(credential.username_value) ==
+        PasswordRecoveryState::kIncludeBackup;
+#endif
+    if (credential.backup_password_value && show_recovery_password) {
+      AppendBackupSuggestion(credential, suggestions);
+    }
   }
 }
 
+#if !BUILDFLAG(IS_ANDROID)
+void AppendTroubleSigningInSuggestion(
+    const autofill::PasswordAndMetadata& credential,
+    std::vector<Suggestion>* suggestions) {
+  Suggestion suggestion(
+      l10n_util::GetStringUTF16(IDS_PASSWORD_MANAGER_UI_TROUBLE_SIGNING_IN),
+      SuggestionType::kTroubleSigningInEntry);
+  suggestion.payload = GetSuggestionDetailsForRecoveryFlow(credential);
+  suggestion.main_text.is_primary = Suggestion::Text::IsPrimary(false);
+  suggestion.icon = Suggestion::Icon::kQuestionMark;
+  suggestions->emplace_back(std::move(suggestion));
+}
+
+void MaybeAppendTroubleSigningInSuggestion(
+    const UndoPasswordChangeController& undo_password_change_controller,
+    const autofill::PasswordFormFillData& fill_data,
+    std::vector<Suggestion>* suggestions) {
+  auto try_append_suggestion =
+      [&](const autofill::PasswordAndMetadata& login_data) {
+        if (login_data.backup_password_value &&
+            undo_password_change_controller.GetState(
+                login_data.username_value) ==
+                PasswordRecoveryState::kTroubleSigningIn) {
+          AppendTroubleSigningInSuggestion(login_data, suggestions);
+          return true;
+        }
+        return false;
+      };
+
+  if (try_append_suggestion(fill_data.preferred_login)) {
+    return;
+  }
+
+  for (const autofill::PasswordAndMetadata& additional_login :
+       fill_data.additional_logins) {
+    if (try_append_suggestion(additional_login)) {
+      return;  // Suggestion appended for an additional login
+    }
+  }
+}
+#endif  // BUILDFLAG(IS_ANDROID)
+
 // This function attempts to fill |suggestions| from |fill_data| based on
 // |current_username| that is the current value of the field.
-void GetSuggestions(const autofill::PasswordFormFillData& fill_data,
-                    const std::u16string& current_username,
-                    const gfx::Image& custom_icon,
-                    std::vector<Suggestion>* suggestions) {
-  AppendSuggestionIfMatching(
-      fill_data.preferred_login.username_value, current_username, custom_icon,
-      fill_data.preferred_login.realm,
-      fill_data.preferred_login.uses_account_store,
-      fill_data.preferred_login.password_value.size(), suggestions);
+void GetSuggestions(
+    const UndoPasswordChangeController& undo_password_change_controller,
+    const autofill::PasswordFormFillData& fill_data,
+    const std::u16string& current_username,
+    const gfx::Image& custom_icon,
+    std::vector<Suggestion>* suggestions) {
+  AppendSuggestionIfMatching(undo_password_change_controller,
+                             fill_data.preferred_login, current_username,
+                             custom_icon, suggestions);
 
   int prefered_match = suggestions->size();
 
   for (const auto& login : fill_data.additional_logins) {
-    AppendSuggestionIfMatching(
-        login.username_value, current_username, custom_icon, login.realm,
-        login.uses_account_store, login.password_value.size(), suggestions);
+    AppendSuggestionIfMatching(undo_password_change_controller, login,
+                               current_username, custom_icon, suggestions);
   }
 
   std::sort(suggestions->begin() + prefered_match, suggestions->end(),
             [](const Suggestion& a, const Suggestion& b) {
               return a.main_text.value < b.main_text.value;
             });
+#if !BUILDFLAG(IS_ANDROID)
+  MaybeAppendTroubleSigningInSuggestion(undo_password_change_controller,
+                                        fill_data, suggestions);
+#endif  // !BUILDFLAG(IS_ANDROID)
 }
 
 Suggestion CreateFillPasswordChildSuggestion(
@@ -215,7 +286,7 @@ void AppendManualFallbackSuggestions(
   // websites.
   for (const CredentialUIEntry::DomainInfo& domain_info :
        credential.GetAffiliatedDomains()) {
-    Suggestion suggestion(domain_info.name, /*label=*/"",
+    Suggestion suggestion(base::UTF8ToUTF16(domain_info.name), /*label=*/u"",
                           Suggestion::Icon::kGlobe,
                           SuggestionType::kPasswordEntry);
     bool replaced;
@@ -231,15 +302,18 @@ void AppendManualFallbackSuggestions(
                                    ? Suggestion::Acceptability::kAcceptable
                                    : Suggestion::Acceptability::kUnacceptable;
     if (FacetURI::FromPotentiallyInvalidSpec(domain_info.signon_realm)
-            .IsValidWebFacetURI()) {
+            .IsValidWebFacetURI() &&
+        domain_info.url.SchemeIs(url::kHttpsScheme)) {
       suggestion.custom_icon = Suggestion::FaviconDetails(
           domain_info.url, favicon_can_be_requested_from_google);
     }
     suggestion.filtration_policy = filtration_policy;
 
     if (!replaced) {
-      suggestion.children.emplace_back(
-          maybe_username, SuggestionType::kPasswordFieldByFieldFilling);
+      Suggestion fill_username_suggestion{
+          maybe_username, SuggestionType::kPasswordFieldByFieldFilling};
+      fill_username_suggestion.payload = payload;
+      suggestion.children.emplace_back(std::move(fill_username_suggestion));
     }
     suggestion.children.push_back(
         CreateFillPasswordChildSuggestion(credential, is_cross_origin));
@@ -251,21 +325,128 @@ void AppendManualFallbackSuggestions(
   }
 }
 
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+// Entry that prompts users in pending state to signin to access passwords
+// in their account
+void CreateEntryForPendingStateSignin(std::vector<Suggestion>& suggestions) {
+  if (!suggestions.empty()) {
+    Suggestion separator(SuggestionType::kSeparator);
+    suggestions.push_back(std::move(separator));
+  }
+
+  Suggestion suggestion(SuggestionType::kPendingStateSignin);
+  suggestion.main_text = Suggestion::Text(
+      l10n_util::GetStringUTF16(IDS_PASSWORD_MANAGER_PENDING_STATE),
+      Suggestion::Text::IsPrimary(true),
+      Suggestion::Text::ShouldTruncate(false));
+  suggestion.icon = Suggestion::Icon::kGoogle;
+
+  suggestions.emplace_back(std::move(suggestion));
+}
+
+bool CanShowPendingStatePromo(const PasswordManagerClient& password_client) {
+  const bool is_sync_passwords_enabled =
+      password_client.GetSyncService() &&
+      password_manager::sync_util::HasChosenToSyncPasswords(
+          password_client.GetSyncService());
+
+  // Pending state promo should not be shown on the gaia sign in page or in the
+  // password manager
+  const bool is_external_url =
+      !gaia::HasGaiaSchemeHostPort(password_client.GetLastCommittedURL()) &&
+      password_client.GetLastCommittedURL().host() != kPasswordManagerHost;
+
+  return password_client.GetIdentityManager()
+             ->HasAccountWithRefreshTokenInPersistentErrorState(
+                 password_client.GetIdentityManager()->GetPrimaryAccountId(
+                     signin::ConsentLevel::kSignin)) &&
+         is_sync_passwords_enabled && is_external_url;
+}
+
+void RecordPendingStatePromoHistogram(FillingReauthPromoShown sample) {
+  base::UmaHistogramEnumeration(kReauthPromoHistogramName, sample);
+}
+
+#endif
+
 }  // namespace
 
 PasswordSuggestionGenerator::PasswordSuggestionGenerator(
     PasswordManagerDriver* password_manager_driver,
-    PasswordManagerClient* password_client)
+    PasswordManagerClient* password_client,
+    autofill::AutofillClient* autofill_client)
     : password_manager_driver_(password_manager_driver),
-      password_client_{password_client} {}
+      password_client_(password_client),
+      autofill_client_(autofill_client) {}
+
+void PasswordSuggestionGenerator::AppendOptionalFooterSection(
+    std::vector<autofill::Suggestion>* suggestions) const {
+  bool has_webauthn_credential = std::ranges::any_of(
+      *suggestions,
+      [](SuggestionType type) {
+        return type == SuggestionType::kWebauthnCredential;
+      },
+      &Suggestion::type);
+
+  bool has_no_fillable_suggestions = std::ranges::none_of(
+      *suggestions,
+      [](SuggestionType id) {
+        return id == SuggestionType::kPasswordEntry ||
+               id == SuggestionType::kAccountStoragePasswordEntry ||
+               id == SuggestionType::kGeneratePasswordEntry ||
+               id == SuggestionType::kWebauthnCredential;
+      },
+      &Suggestion::type);
+
+  std::optional<autofill::Suggestion> inline_qr_suggestion =
+      GetWebauthnInlineQrCodeSuggestion();
+  std::optional<autofill::Suggestion> hybrid_suggestion =
+      GetWebauthnSignInWithAnotherDeviceSuggestion();
+
+  if (has_no_fillable_suggestions && !inline_qr_suggestion &&
+      !hybrid_suggestion) {
+    return;
+  }
+
+  // Add a separator before the manage option unless there are no suggestions
+  // yet.
+  if (!suggestions->empty()) {
+    Suggestion separator(SuggestionType::kSeparator);
+    separator.filtration_policy = Suggestion::FiltrationPolicy::kStatic;
+    suggestions->push_back(std::move(separator));
+  }
+
+  if (inline_qr_suggestion) {
+    suggestions->push_back(std::move(*inline_qr_suggestion));
+  }
+
+  // Add "Use a passkey" or "Use a different passkey" button.
+  if (hybrid_suggestion) {
+    suggestions->push_back(std::move(*hybrid_suggestion));
+  }
+
+  Suggestion suggestion(
+      l10n_util::GetStringUTF16(
+          has_webauthn_credential
+              ? IDS_PASSWORD_MANAGER_MANAGE_PASSWORDS_AND_PASSKEYS
+              : IDS_PASSWORD_MANAGER_MANAGE_PASSWORDS),
+      /*label=*/u"", Suggestion::Icon::kSettings,
+      SuggestionType::kAllSavedPasswordsEntry);
+  // The UI code will pick up an icon from the resources based on the string.
+  suggestion.trailing_icon = Suggestion::Icon::kGooglePasswordManager;
+  suggestion.filtration_policy = Suggestion::FiltrationPolicy::kStatic;
+  suggestions->emplace_back(std::move(suggestion));
+}
 
 std::vector<Suggestion> PasswordSuggestionGenerator::GetSuggestionsForDomain(
+    const UndoPasswordChangeController& undo_password_change_controller,
     base::optional_ref<const autofill::PasswordFormFillData> fill_data,
     const gfx::Image& page_favicon,
     const std::u16string& username_filter,
     OffersGeneration offers_generation,
     ShowPasswordSuggestions show_password_suggestions,
-    ShowWebAuthnCredentials show_webauthn_credentials) const {
+    ShowWebAuthnCredentials show_webauthn_credentials,
+    ShowIdentityCredentials show_identity_credentials) const {
   std::vector<Suggestion> suggestions;
 
   // Add WebAuthn credentials suitable for an ongoing request if available.
@@ -285,10 +466,9 @@ std::vector<Suggestion> PasswordSuggestionGenerator::GetSuggestionsForDomain(
       std::ranges::transform(
           *delegate->GetPasskeys().value(), std::back_inserter(suggestions),
           [&page_favicon](const auto& passkey) {
-            Suggestion suggestion(
-                base::UTF16ToUTF8(ToUsernameString(passkey.username())),
-                /*label=*/"", Suggestion::Icon::kGlobe,
-                SuggestionType::kWebauthnCredential);
+            Suggestion suggestion(ToUsernameString(passkey.username()),
+                                  /*label=*/u"", Suggestion::Icon::kGlobe,
+                                  SuggestionType::kWebauthnCredential);
             suggestion.custom_icon = page_favicon;
             suggestion.payload =
                 Suggestion::Guid(base::Base64Encode(passkey.credential_id()));
@@ -299,42 +479,111 @@ std::vector<Suggestion> PasswordSuggestionGenerator::GetSuggestionsForDomain(
     }
   }
 
-  if (!fill_data.has_value() && !uses_passkeys && suggestions.empty()) {
+  // Add federated identity credentials.
+  const autofill::IdentityCredentialDelegate* identity_credential_delegate =
+      autofill_client_->GetIdentityCredentialDelegate();
+  if (show_identity_credentials && identity_credential_delegate) {
+    base::Extend(suggestions,
+                 autofill::GetIdentityCredentialSuggestionsForType(
+                     identity_credential_delegate, *autofill_client_,
+                     autofill::FieldType::PASSWORD));
+  }
+
+  bool has_qr = false;
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+  has_qr =
+      password_client_->IsChromeSigninPage() &&
+      switches::IsMagiChromePasskeyAutofillEnabled() &&
+      password_client_->GetWebAuthnCredentialsDelegateForDriver(
+          password_manager_driver_) &&
+      password_client_
+          ->GetWebAuthnCredentialsDelegateForDriver(password_manager_driver_)
+          ->GetCableQrString()
+          .has_value();
+#endif
+
+  // Don't return early if there is a QR code suggestion. It still needs to be
+  // appended later in the footer section.
+  if (!fill_data.has_value() && !uses_passkeys && !has_qr &&
+      suggestions.empty()) {
     // Probably the credential was deleted in the mean time.
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+    if (CanShowPendingStatePromo(*password_client_)) {
+      RecordPendingStatePromoHistogram(FillingReauthPromoShown::kShownAlone);
+      CreateEntryForPendingStateSignin(suggestions);
+    }
+#endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
+
     return suggestions;
   }
 
   // Add password suggestions if they exist and were requested.
   if (show_password_suggestions && fill_data.has_value()) {
-    GetSuggestions(*fill_data, username_filter, page_favicon, &suggestions);
+    GetSuggestions(undo_password_change_controller, *fill_data, username_filter,
+                   page_favicon, &suggestions);
   }
-
-#if !BUILDFLAG(IS_ANDROID)
-  // Add "Use a passkey" or "Use a different passkey" button.
-  if (uses_passkeys && delegate->IsSecurityKeyOrHybridFlowAvailable()) {
-#if !BUILDFLAG(IS_IOS)
-    const bool passkey_from_another_device_in_autofill =
-        !(base::FeatureList::IsEnabled(
-            features::kWebAuthnUsePasskeyFromAnotherDeviceInContextMenu));
-#else
-    const bool passkey_from_another_device_in_autofill = true;
-#endif  //! BUILDFLAG(IS_IOS)
-    if (passkey_from_another_device_in_autofill) {
-      bool listed_passkeys = delegate->GetPasskeys().has_value() &&
-                             delegate->GetPasskeys().value()->size() > 0;
-      suggestions.emplace_back(
-          CreatePasskeyFromAnotherDeviceEntry(listed_passkeys));
-    }
-  }
-#endif  // !BUILDFLAG(IS_ANDROID)
 
   // Add password generation entry, if available.
   if (offers_generation) {
     suggestions.emplace_back(CreateGenerationEntry());
   }
 
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+  if (CanShowPendingStatePromo(*password_client_)) {
+    RecordPendingStatePromoHistogram(
+        suggestions.empty()
+            ? FillingReauthPromoShown::kShownAlone
+            : FillingReauthPromoShown::kShownWithOtherSuggestions);
+
+    CreateEntryForPendingStateSignin(suggestions);
+  } else if (!suggestions.empty()) {
+    RecordPendingStatePromoHistogram(FillingReauthPromoShown::kNotShown);
+  }
+#endif
+
   // Add "Manage all passwords" link to settings.
-  MaybeAppendManagePasswordsEntry(&suggestions);
+  AppendOptionalFooterSection(&suggestions);
+
+  return suggestions;
+}
+
+std::vector<autofill::Suggestion>
+PasswordSuggestionGenerator::GetProactiveRecoverySuggestions(
+    const autofill::Suggestion::PasswordSuggestionDetails& payload) {
+  CHECK(payload.backup_password);
+
+  std::vector<Suggestion> suggestions;
+  Suggestion suggestion(
+      l10n_util::GetStringUTF16(
+          IDS_PASSWORD_MANAGER_UI_PROACTIVE_RECOVERY_SUGGESTION),
+      SuggestionType::kBackupPasswordEntry);
+  suggestion.payload = payload;
+  suggestion.icon = Suggestion::Icon::kRecoveryPassword;
+  suggestion.additional_label = std::u16string(
+      payload.backup_password->size(), constants::kPasswordReplacementChar);
+  suggestion.additional_label_alignment_right = true;
+
+  std::u16string footer_text = l10n_util::GetStringUTF16(
+      UsesPasswordManagerGoogleBranding()
+          ? IDS_PASSWORD_MANAGER_UI_PROACTIVE_RECOVERY_FOOTER_BRANDED
+          : IDS_PASSWORD_MANAGER_UI_PROACTIVE_RECOVERY_FOOTER_NON_BRANDED);
+  // This prevents the label from including the masked password string.
+  suggestion.voice_over = l10n_util::GetStringUTF16(
+      IDS_PASSWORD_MANAGER_UI_PROACTIVE_RECOVERY_SUGGESTION);
+  // TODO(crbug.com/439981762): Once it's possible to read out disabled
+  // suggestions, remove this.
+  *suggestion.voice_over += u"\n" + footer_text;
+  suggestions.emplace_back(std::move(suggestion));
+
+  Suggestion separator(SuggestionType::kSeparator);
+  separator.filtration_policy = Suggestion::FiltrationPolicy::kStatic;
+  suggestions.emplace_back(std::move(separator));
+
+  Suggestion footer(footer_text, SuggestionType::kFreeformFooter);
+  footer.filtration_policy = Suggestion::FiltrationPolicy::kStatic;
+  footer.acceptability =
+      autofill::Suggestion::Acceptability::kUnacceptableWithDeactivatedStyle;
+  suggestions.emplace_back(std::move(footer));
 
   return suggestions;
 }
@@ -367,14 +616,21 @@ PasswordSuggestionGenerator::GetManualFallbackSuggestions(
       sync_service->GetUserSettings()->IsUsingExplicitPassphrase();
   std::set<std::string> suggested_signon_realms;
   for (const auto& form : suggested_credentials) {
-    suggested_signon_realms.insert(form.signon_realm);
     const CredentialUIEntry ui_entry = CredentialUIEntry(form);
     const bool is_from_account =
         ui_entry.stored_in.contains(PasswordForm::Store::kAccountStore);
     const bool favicon_can_be_requested_from_google =
         (is_sync_passwords_enabled || is_from_account) && !is_passphrase_user;
+    const bool is_cross_domain =
+        form.match_type.has_value() &&
+        password_manager_util::GetMatchType(form) ==
+            password_manager_util::GetLoginMatchType::kGrouped;
+    if (!is_cross_domain) {
+      // Insert only same site or affiliated signon realms.
+      suggested_signon_realms.insert(form.signon_realm);
+    }
     AppendManualFallbackSuggestions(
-        ui_entry, on_password_form, IsCrossDomain(false),
+        ui_entry, on_password_form, IsCrossDomain(is_cross_domain),
         favicon_can_be_requested_from_google, &suggestions,
         Suggestion::FiltrationPolicy::kPresentOnlyWithoutFilter);
   }
@@ -416,9 +672,57 @@ PasswordSuggestionGenerator::GetManualFallbackSuggestions(
       [](const Suggestion& suggestion) { return suggestion.main_text.value; });
 
   // Add "Manage all passwords" link to settings.
-  MaybeAppendManagePasswordsEntry(&suggestions);
+  AppendOptionalFooterSection(&suggestions);
 
   return suggestions;
+}
+
+std::optional<autofill::Suggestion>
+PasswordSuggestionGenerator::GetWebauthnSignInWithAnotherDeviceSuggestion()
+    const {
+#if BUILDFLAG(IS_ANDROID)
+  return std::nullopt;
+#else   // BUILDFLAG(IS_ANDROID)
+  WebAuthnCredentialsDelegate* delegate =
+      password_client_->GetWebAuthnCredentialsDelegateForDriver(
+          password_manager_driver_);
+  if (!delegate) {
+    return std::nullopt;
+  }
+  if (!delegate->GetPasskeys().has_value() ||
+      !delegate->IsSecurityKeyOrHybridFlowAvailable()) {
+    return std::nullopt;
+  }
+  return CreatePasskeyFromAnotherDeviceEntry(
+      /*listed_passkeys=*/delegate->GetPasskeys().value()->size() > 0);
+#endif  // BUILDFLAG(IS_ANDROID)
+}
+
+std::optional<autofill::Suggestion>
+PasswordSuggestionGenerator::GetWebauthnInlineQrCodeSuggestion() const {
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+  if (!password_client_->IsChromeSigninPage() ||
+      !switches::IsMagiChromePasskeyAutofillEnabled()) {
+    return std::nullopt;
+  }
+  WebAuthnCredentialsDelegate* delegate =
+      password_client_->GetWebAuthnCredentialsDelegateForDriver(
+          password_manager_driver_);
+  if (!delegate) {
+    return std::nullopt;
+  }
+  std::optional<std::string> qr_string = delegate->GetCableQrString();
+  if (qr_string.has_value()) {
+    autofill::Suggestion suggestion(
+        l10n_util::GetStringUTF16(IDS_PASSWORD_MANAGER_PASSKEY_QR_CODE_TITLE),
+        autofill::SuggestionType::kWebauthnPasskeyQrCode);
+    suggestion.payload = autofill::Suggestion::Guid(*qr_string);
+    suggestion.filtration_policy =
+        autofill::Suggestion::FiltrationPolicy::kStatic;
+    return suggestion;
+  }
+#endif
+  return std::nullopt;
 }
 
 }  // namespace password_manager

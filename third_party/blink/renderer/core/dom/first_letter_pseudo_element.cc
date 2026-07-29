@@ -49,12 +49,12 @@ namespace {
 // (Pe), "initial" (Pi). "final" (Pf) and "other" (Po) punctuation classes),
 // that precedes or follows the first letter should be included"
 inline bool IsPunctuationForFirstLetter(UChar32 c) {
-  WTF::unicode::CharCategory char_category = WTF::unicode::Category(c);
-  return char_category == WTF::unicode::kPunctuation_Open ||
-         char_category == WTF::unicode::kPunctuation_Close ||
-         char_category == WTF::unicode::kPunctuation_InitialQuote ||
-         char_category == WTF::unicode::kPunctuation_FinalQuote ||
-         char_category == WTF::unicode::kPunctuation_Other;
+  unicode::CharCategory char_category = unicode::Category(c);
+  return char_category == unicode::kPunctuation_Open ||
+         char_category == unicode::kPunctuation_Close ||
+         char_category == unicode::kPunctuation_InitialQuote ||
+         char_category == unicode::kPunctuation_FinalQuote ||
+         char_category == unicode::kPunctuation_Other;
 }
 
 bool IsPunctuationForFirstLetter(const String& string, unsigned offset) {
@@ -74,12 +74,12 @@ inline bool IsSpace(UChar c) {
     return false;
   }
 
-  return IsSpaceOrNewline(c);
+  return unicode::IsSpaceOrNewline(c);
 }
 
 inline bool IsSpaceForFirstLetter(UChar c, bool preserve_breaks) {
-  return (preserve_breaks ? IsSpace(c) : IsSpaceOrNewline(c)) ||
-         c == WTF::unicode::kNoBreakSpaceCharacter;
+  return (preserve_breaks ? IsSpace(c) : unicode::IsSpaceOrNewline(c)) ||
+         c == uchar::kNoBreakSpace;
 }
 
 bool IsParentInlineLayoutObject(const LayoutObject* layout_object) {
@@ -219,7 +219,7 @@ LayoutText* FirstLetterPseudoElement::FirstLetterTextLayoutObject(
   LayoutObject* parent_layout_object = nullptr;
 
   if (element.IsFirstLetterPseudoElement()) {
-    // If the passed-in element is a ::first-letter pseudo element we need to
+    // If the passed-in element is a ::first-letter pseudo-element we need to
     // start from the originating element.
     parent_layout_object =
         element.ParentOrShadowHostElement()->GetLayoutObject();
@@ -303,8 +303,7 @@ LayoutText* FirstLetterPseudoElement::FirstLetterTextLayoutObject(
           // typographic character unit for ::first-letter.
           return nullptr;
         }
-      } else if (inline_child->IsAtomicInlineLevel() ||
-                 inline_child->IsMenuList()) {
+      } else if (inline_child->IsAtomicInline() || inline_child->IsMenuList()) {
         return nullptr;
       }
       inline_child = inline_child->NextInPreOrder(stay_inside);
@@ -340,8 +339,7 @@ void FirstLetterPseudoElement::UpdateTextFragments() {
   unsigned length = FirstLetterPseudoElement::FirstLetterLength(
       old_text, preserve_breaks, punctuation);
   remaining_text_layout_object_->SetTextFragment(
-      old_text.Impl()->Substring(length, old_text.length()), length,
-      old_text.length() - length);
+      old_text.substr(length), length, old_text.length() - length);
   remaining_text_layout_object_->InvalidateInlineItems();
 
   for (auto* child = GetLayoutObject()->SlowFirstChild(); child;
@@ -352,8 +350,7 @@ void FirstLetterPseudoElement::UpdateTextFragments() {
     if (child_fragment->GetFirstLetterPseudoElement() != this)
       continue;
 
-    child_fragment->SetTextFragment(old_text.Impl()->Substring(0, length), 0,
-                                    length);
+    child_fragment->SetTextFragment(old_text.substr(0, length), 0, length);
     child_fragment->InvalidateInlineItems();
 
     // Make sure the first-letter layoutObject is set to require a layout as it
@@ -442,7 +439,7 @@ const ComputedStyle* FirstLetterPseudoElement::CustomStyleForLayoutObject(
   return ParentOrShadowHostElement()->StyleForPseudoElement(
       style_recalc_context,
       StyleRequest(GetPseudoId(),
-                   first_letter_text->Parent()->FirstLineStyle()));
+                   &first_letter_text->Parent()->FirstLineStyleRef()));
 }
 
 void FirstLetterPseudoElement::AttachFirstLetterTextLayoutObjects(
@@ -555,7 +552,7 @@ Node* FirstLetterPseudoElement::InnerNodeForHitTesting() {
     return FlatTreeTraversal::Parent(*node);
   }
   if (node->IsPseudoElement()) {
-    // ::first-letter in generated content for ::before/::after. Use pseudo
+    // ::first-letter in generated content for ::before/::after. Use pseudo-
     // element parent.
     return node->ParentOrShadowHostNode();
   }

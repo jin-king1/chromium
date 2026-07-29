@@ -34,6 +34,7 @@
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "mojo/public/cpp/bindings/shared_remote.h"
+#include "third_party/perfetto/include/perfetto/tracing/track.h"
 
 namespace media {
 
@@ -60,22 +61,24 @@ class MojoVideoFrameHandleReleaser
       delete;
 
   void ReleaseVideoFrame(const base::UnguessableToken& release_token,
+                         scoped_refptr<gpu::ClientSharedImage> shared_image,
                          const gpu::SyncToken& release_sync_token) {
     TRACE_EVENT1("media", "MojoVideoFrameHandleReleaser::ReleaseVideoFrame",
                  "release_token", release_token.ToString());
     DVLOG(3) << __func__ << "(" << release_token << ")";
-    video_frame_handle_releaser_->ReleaseVideoFrame(release_token,
-                                                    release_sync_token);
+    video_frame_handle_releaser_->ReleaseVideoFrame(
+        release_token, shared_image->EndImport(release_sync_token));
   }
 
   // Create a ReleaseMailboxCB that calls Release(). Since the callback holds a
   // reference to |this|, |this| will remain alive as long as there are
   // outstanding VideoFrames.
   VideoFrame::ReleaseMailboxCB CreateReleaseMailboxCB(
-      const base::UnguessableToken& release_token) {
+      const base::UnguessableToken& release_token,
+      scoped_refptr<gpu::ClientSharedImage> shared_image) {
     DVLOG(3) << __func__ << "(" << release_token.ToString() << ")";
     return base::BindOnce(&MojoVideoFrameHandleReleaser::ReleaseVideoFrame,
-                          this, release_token);
+                          this, release_token, std::move(shared_image));
   }
 
  private:
@@ -96,7 +99,7 @@ MojoVideoDecoder::MojoVideoDecoder(
     : task_runner_(task_runner),
       pending_remote_decoder_(std::move(pending_remote_decoder)),
       gpu_factories_(gpu_factories),
-      media_log_(media_log),
+      media_log_(media_log->Clone()),
       timestamps_(128),
       writer_capacity_(
           GetDefaultDecoderBufferConverterCapacity(DemuxerStream::VIDEO)),
@@ -110,7 +113,7 @@ MojoVideoDecoder::MojoVideoDecoder(
 MojoVideoDecoder::~MojoVideoDecoder() {
   DVLOG(1) << __func__;
   if (request_overlay_info_cb_ && overlay_info_requested_)
-    request_overlay_info_cb_.Run(false, base::NullCallback());
+    request_overlay_info_cb_.Run(base::NullCallback());
 }
 
 bool MojoVideoDecoder::IsPlatformDecoder() const {
@@ -144,6 +147,11 @@ void MojoVideoDecoder::Initialize(const VideoDecoderConfig& config,
                                   const WaitingCB& waiting_cb) {
   DVLOG(1) << __func__;
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  if (!config.IsValidConfig()) {
+    FailInit(std::move(init_cb), DecoderStatus::Codes::kUnsupportedConfig);
+    return;
+  }
 
   if (gpu_factories_)
     decoder_type_ = gpu_factories_->GetDecoderType();
@@ -199,7 +207,8 @@ void MojoVideoDecoder::InitializeRemoteDecoder(
   }
 
   remote_decoder_->Initialize(
-      config, low_delay, cdm_id,
+      config, low_delay,
+      cdm_id ? mojom::Cdm::NewCdmId(cdm_id.value()) : nullptr,
       base::BindOnce(&MojoVideoDecoder::OnInitializeDone,
                      base::Unretained(this)));
 }
@@ -207,9 +216,9 @@ void MojoVideoDecoder::InitializeRemoteDecoder(
 void MojoVideoDecoder::OnInitializeDone(const DecoderStatus& status,
                                         bool needs_bitstream_conversion,
                                         int32_t max_decode_requests,
-                                        VideoDecoderType decoder_type) {
-  DVLOG(1) << __func__ << ": status = " << status.group() << ":"
-           << static_cast<int>(status.code());
+                                        VideoDecoderType decoder_type,
+                                        bool needs_transcryption) {
+  status.DebugLog(1);
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   initialized_ = status.is_ok();
   needs_bitstream_conversion_ = needs_bitstream_conversion;
@@ -271,7 +280,7 @@ void MojoVideoDecoder::OnVideoFrameDecoded(
   if (release_token) {
     frame->SetReleaseMailboxCB(
         mojo_video_frame_handle_releaser_->CreateReleaseMailboxCB(
-            release_token.value()));
+            release_token.value(), frame->shared_image()));
   }
   const int64_t timestamp = frame->timestamp().InMilliseconds();
   const auto timestamp_it = timestamps_.Peek(timestamp);
@@ -279,11 +288,10 @@ void MojoVideoDecoder::OnVideoFrameDecoded(
     const auto decode_start_time = timestamp_it->second;
     const auto decode_end_time = base::TimeTicks::Now();
 
-    TRACE_EVENT_NESTABLE_ASYNC_BEGIN_WITH_TIMESTAMP0(
-        "media", "MojoVideoDecoder::Decode", timestamp, decode_start_time);
-    TRACE_EVENT_NESTABLE_ASYNC_END_WITH_TIMESTAMP1(
-        "media", "MojoVideoDecoder::Decode", timestamp, decode_end_time,
-        "timestamp", timestamp);
+    TRACE_EVENT_BEGIN("media", "MojoVideoDecoder::Decode",
+                      perfetto::Track(timestamp), decode_start_time);
+    TRACE_EVENT_END("media", perfetto::Track(timestamp), decode_end_time,
+                    "timestamp", timestamp);
     UMA_HISTOGRAM_TIMES("Media.MojoVideoDecoder.Decode",
                         decode_end_time - decode_start_time);
   }
@@ -431,14 +439,13 @@ void MojoVideoDecoder::OnWaiting(WaitingReason reason) {
   waiting_cb_.Run(reason);
 }
 
-void MojoVideoDecoder::RequestOverlayInfo(bool restart_for_transitions) {
+void MojoVideoDecoder::RequestOverlayInfo() {
   DVLOG(2) << __func__;
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(request_overlay_info_cb_);
 
   overlay_info_requested_ = true;
   request_overlay_info_cb_.Run(
-      restart_for_transitions,
       base::BindPostTaskToCurrentDefault(base::BindRepeating(
           &MojoVideoDecoder::OnOverlayInfoChanged, weak_this_)));
 }
@@ -460,26 +467,30 @@ void MojoVideoDecoder::Stop() {
 
   // |init_cb_| is likely to reentrantly destruct |this|, so we check for that
   // using an on-stack WeakPtr.
-  // TODO(sandersd): Update the VideoDecoder API to be explicit about what
-  // reentrancy is allowed, and therefore which callbacks must be posted.
-  base::WeakPtr<MojoVideoDecoder> weak_this = weak_this_;
+  auto weak_this = weak_this_;
 
-  if (init_cb_)
+  if (init_cb_) {
     std::move(init_cb_).Run(DecoderStatus::Codes::kDisconnected);
-
-  if (!weak_this)
-    return;
+    if (!weak_this) {
+      return;
+    }
+  }
 
   for (auto& pending_decode : pending_decodes_) {
     // It would be ideal if we could get a reason for the interruption.
     std::move(pending_decode.second).Run(DecoderStatus::Codes::kDisconnected);
-    if (!weak_this)
+    if (!weak_this) {
       return;
+    }
   }
   pending_decodes_.clear();
 
-  if (reset_cb_)
+  if (reset_cb_) {
     std::move(reset_cb_).Run();
+    if (!weak_this) {
+      return;
+    }
+  }
 
   // Drop any outstanding callbacks.
   weak_factory_.InvalidateWeakPtrs();

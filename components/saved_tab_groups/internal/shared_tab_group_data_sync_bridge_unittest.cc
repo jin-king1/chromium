@@ -15,6 +15,7 @@
 #include "base/rand_util.h"
 #include "base/run_loop.h"
 #include "base/scoped_observation.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/protobuf_matchers.h"
 #include "base/test/task_environment.h"
@@ -26,11 +27,13 @@
 #include "components/saved_tab_groups/internal/saved_tab_group_model.h"
 #include "components/saved_tab_groups/internal/saved_tab_group_model_observer.h"
 #include "components/saved_tab_groups/internal/sync_bridge_tab_group_model_wrapper.h"
+#include "components/saved_tab_groups/proto/shared_tab_group_data.pb.h"
 #include "components/saved_tab_groups/public/pref_names.h"
 #include "components/saved_tab_groups/public/saved_tab_group.h"
 #include "components/saved_tab_groups/public/saved_tab_group_tab.h"
 #include "components/saved_tab_groups/public/types.h"
 #include "components/saved_tab_groups/public/utils.h"
+#include "components/saved_tab_groups/test_support/extended_shared_tab_group_data_specifics.pb.h"
 #include "components/saved_tab_groups/test_support/saved_tab_group_test_utils.h"
 #include "components/sync/base/client_tag_hash.h"
 #include "components/sync/base/data_type.h"
@@ -60,6 +63,7 @@ void PrintTo(const SavedTabGroupTab& tab, std::ostream* os) {
 namespace {
 
 using base::test::EqualsProto;
+using syncer::CollaborationId;
 using tab_groups::test::HasSharedGroupMetadata;
 using tab_groups::test::HasTabMetadata;
 using testing::_;
@@ -67,18 +71,33 @@ using testing::AllOf;
 using testing::Each;
 using testing::ElementsAre;
 using testing::Eq;
-using testing::Invoke;
 using testing::InvokeWithoutArgs;
+using testing::IsEmpty;
 using testing::IsNull;
+using testing::Not;
 using testing::NotNull;
+using testing::Pair;
 using testing::Pointee;
+using testing::Property;
 using testing::Return;
+using testing::ReturnRef;
 using testing::Sequence;
 using testing::SizeIs;
 using testing::UnorderedElementsAre;
 using testing::WithArg;
 
 constexpr GaiaId::Literal kDefaultGaiaId("1234567890");
+
+// Returns the extra (unsupported) field from `specifics` which don't have a
+// corresponding field in proto.
+std::string GetGroupExtraFieldFromSpecifics(
+    const sync_pb::SharedTabGroupDataSpecifics& specifics) {
+  sync_pb::test_utils::SharedTabGroupDataSpecifics extended_specifics;
+  bool success =
+      extended_specifics.ParseFromString(specifics.SerializeAsString());
+  CHECK(success);
+  return extended_specifics.tab_group().extra_field_for_testing();
+}
 
 // Creator is not verified for the local changes because this field is not used
 // in the processor for updates.
@@ -103,14 +122,27 @@ MATCHER_P2(HasSharedAttribution, created_by, updated_by, "") {
 }
 
 MATCHER_P3(HasGroupEntityData, title, color, collaboration_id, "") {
-  const sync_pb::SharedTabGroup& arg_tab_group =
-      arg.specifics.shared_tab_group_data().tab_group();
+  const sync_pb::SharedTabGroupDataSpecifics& arg_specifics =
+      arg.specifics.shared_tab_group_data();
+  const sync_pb::SharedTabGroup& arg_tab_group = arg_specifics.tab_group();
   const std::optional<syncer::CollaborationMetadata>& collab_metadata =
       arg.collaboration_metadata;
-  return arg_tab_group.title() == title && arg_tab_group.color() == color &&
+  return arg_specifics.version() ==
+             kCurrentSharedTabGroupDataSpecificsProtoVersion &&
+         arg_tab_group.title() == title && arg_tab_group.color() == color &&
          collab_metadata.has_value() &&
          CollaborationId(collab_metadata->collaboration_id()) ==
              CollaborationId(collaboration_id);
+}
+
+MATCHER_P(EntityDataHasGroupUnsupportedFields, extra_field, "") {
+  const sync_pb::SharedTabGroupDataSpecifics& arg_specifics =
+      arg.specifics.shared_tab_group_data();
+  return GetGroupExtraFieldFromSpecifics(arg_specifics) == extra_field;
+}
+
+MATCHER_P(GroupSpecificsHasUnsupportedField, extra_field, "") {
+  return GetGroupExtraFieldFromSpecifics(arg) == extra_field;
 }
 
 MATCHER_P(HasCreationTime, time, "") {
@@ -124,13 +156,39 @@ MATCHER_P(HasGroupEntityDataWithOriginatingGroup, originating_group_guid, "") {
          originating_group_guid.AsLowercaseString();
 }
 
+MATCHER(EntityDataHasOriginatingGroup, "") {
+  const sync_pb::SharedTabGroup& arg_tab_group =
+      arg.specifics.shared_tab_group_data().tab_group();
+  return arg_tab_group.has_originating_tab_group_guid();
+}
+
 MATCHER_P3(HasTabEntityData, title, url, collaboration_id, "") {
-  const sync_pb::SharedTab& arg_tab =
-      arg.specifics.shared_tab_group_data().tab();
+  const sync_pb::SharedTabGroupDataSpecifics& arg_specifics =
+      arg.specifics.shared_tab_group_data();
+  const sync_pb::SharedTab& arg_tab = arg_specifics.tab();
   const std::optional<syncer::CollaborationMetadata>& collab_metadata =
       arg.collaboration_metadata;
-  return arg_tab.title() == title && arg_tab.url() == url &&
+  return arg_specifics.version() ==
+             kCurrentSharedTabGroupDataSpecificsProtoVersion &&
+         arg_tab.title() == title && arg_tab.url() == url &&
          collab_metadata.has_value() &&
+         CollaborationId(collab_metadata->collaboration_id()) ==
+             CollaborationId(collaboration_id);
+}
+
+MATCHER_P4(HasTabEntityDataWithVersion,
+           title,
+           url,
+           collaboration_id,
+           version,
+           "") {
+  const sync_pb::SharedTabGroupDataSpecifics& arg_specifics =
+      arg.specifics.shared_tab_group_data();
+  const sync_pb::SharedTab& arg_tab = arg_specifics.tab();
+  const std::optional<syncer::CollaborationMetadata>& collab_metadata =
+      arg.collaboration_metadata;
+  return arg_specifics.version() == version && arg_tab.title() == title &&
+         arg_tab.url() == url && collab_metadata.has_value() &&
          CollaborationId(collab_metadata->collaboration_id()) ==
              CollaborationId(collaboration_id);
 }
@@ -234,6 +292,24 @@ sync_pb::SharedTabGroupDataSpecifics MakeTabGroupSpecifics(
   return specifics;
 }
 
+sync_pb::SharedTabGroupDataSpecifics MakeTabGroupSpecificsWithUnknownFields(
+    const std::string& title,
+    sync_pb::SharedTabGroup::Color color,
+    const base::Uuid& originating_group_id,
+    const std::string& extra_field) {
+  sync_pb::SharedTabGroupDataSpecifics specifics =
+      MakeTabGroupSpecifics(title, color);
+  sync_pb::test_utils::SharedTabGroupDataSpecifics extended_specifics;
+  extended_specifics.mutable_tab_group()->set_extra_field_for_testing(
+      extra_field);
+  sync_pb::SharedTabGroupDataSpecifics specifics_with_unknown_fields;
+  bool success = specifics_with_unknown_fields.ParseFromString(
+      extended_specifics.SerializeAsString());
+  CHECK(success);
+  specifics.MergeFrom(specifics_with_unknown_fields);
+  return specifics;
+}
+
 sync_pb::SharedTabGroupDataSpecifics MakeTabSpecifics(
     const std::string& title,
     const GURL& url,
@@ -254,7 +330,8 @@ syncer::EntityData CreateEntityData(
     const CollaborationId& collaboration_id,
     const GaiaId& created_by,
     const GaiaId& updated_by,
-    base::Time creation_time = base::Time::Now()) {
+    base::Time creation_time = base::Time::Now(),
+    base::Time modification_time = base::Time::Now()) {
   syncer::EntityData entity_data;
   *entity_data.specifics.mutable_shared_tab_group_data() = specifics;
   sync_pb::SyncEntity::CollaborationMetadata collaboration_metadata_proto;
@@ -268,34 +345,41 @@ syncer::EntityData CreateEntityData(
           collaboration_metadata_proto);
   entity_data.name = specifics.guid();
   entity_data.creation_time = creation_time;
+  entity_data.modification_time = modification_time;
   return entity_data;
 }
 
 std::unique_ptr<syncer::EntityChange> CreateAddEntityChange(
     const sync_pb::SharedTabGroupDataSpecifics& specifics,
     const CollaborationId& collaboration_id,
-    base::Time creation_time = base::Time::Now()) {
+    base::Time creation_time = base::Time::Now(),
+    base::Time modification_time = base::Time::Now()) {
   const std::string& storage_key = specifics.guid();
   return syncer::EntityChange::CreateAdd(
-      storage_key,
-      CreateEntityData(specifics, collaboration_id, kDefaultGaiaId,
-                       /*updated_by=*/kDefaultGaiaId, creation_time));
+      storage_key, CreateEntityData(specifics, collaboration_id, kDefaultGaiaId,
+                                    /*updated_by=*/kDefaultGaiaId,
+                                    creation_time, modification_time));
 }
 
 std::unique_ptr<syncer::EntityChange> CreateUpdateEntityChange(
     const sync_pb::SharedTabGroupDataSpecifics& specifics,
     const CollaborationId& collaboration_id,
-    base::Time creation_time = base::Time::Now()) {
+    base::Time creation_time = base::Time::Now(),
+    base::Time modification_time = base::Time::Now()) {
   const std::string& storage_key = specifics.guid();
   return syncer::EntityChange::CreateUpdate(
-      storage_key,
-      CreateEntityData(specifics, collaboration_id, kDefaultGaiaId,
-                       /*updated_by=*/kDefaultGaiaId, creation_time));
+      storage_key, CreateEntityData(specifics, collaboration_id, kDefaultGaiaId,
+                                    /*updated_by=*/kDefaultGaiaId,
+                                    creation_time, modification_time));
 }
 
 std::unique_ptr<syncer::EntityChange> CreateDeleteEntityChange(
-    const std::string& storage_key) {
-  return syncer::EntityChange::CreateDelete(storage_key, syncer::EntityData());
+    const std::string& storage_key,
+    const CollaborationId& collaboration_id) {
+  return syncer::EntityChange::CreateDelete(
+      storage_key, CreateEntityData(sync_pb::SharedTabGroupDataSpecifics(),
+                                    collaboration_id, kDefaultGaiaId,
+                                    /*updated_by=*/kDefaultGaiaId));
 }
 
 std::vector<syncer::EntityData> ExtractEntityDataFromBatch(
@@ -343,8 +427,9 @@ class SharedTabGroupDataSyncBridgeTest : public testing::Test {
 
   // Creates the bridges and initializes the model. Returns true when succeeds.
   bool InitializeBridgeAndModel() {
-    ON_CALL(processor_, IsTrackingMetadata())
-        .WillByDefault(testing::Return(true));
+    ON_CALL(processor_, IsTrackingMetadata()).WillByDefault(Return(true));
+    ON_CALL(processor_, GetPossiblyTrimmedRemoteSpecifics(_))
+        .WillByDefault(ReturnRef(sync_pb::EntitySpecifics::default_instance()));
 
     CHECK(!saved_tab_group_model_) << "InitializeBridgeAndModel must not be "
                                       "called when the model is initialized";
@@ -381,17 +466,12 @@ class SharedTabGroupDataSyncBridgeTest : public testing::Test {
   }
 
   size_t GetNumEntriesInStore() {
-    std::unique_ptr<syncer::DataTypeStore::RecordList> entries;
-    base::RunLoop run_loop;
-    store_->ReadAllData(base::BindLambdaForTesting(
-        [&run_loop, &entries](
-            const std::optional<syncer::ModelError>& error,
-            std::unique_ptr<syncer::DataTypeStore::RecordList> data) {
-          entries = std::move(data);
-          run_loop.Quit();
-        }));
-    run_loop.Run();
-    return entries->size();
+    return syncer::DataTypeStoreTestUtil::ReadAllDataAndWait(store()).size();
+  }
+
+  std::map<std::string, proto::SharedTabGroupData> GetAllLocalDataFromStore() {
+    return syncer::DataTypeStoreTestUtil::ReadAllDataAsProtoAndWait<
+        proto::SharedTabGroupData>(store());
   }
 
   // Generates and mocks unique positions for all the tabs in the `group`.
@@ -508,6 +588,22 @@ class SharedTabGroupDataSyncBridgeTest : public testing::Test {
     store().CommitWriteBatch(std::move(write_batch), base::DoNothing());
   }
 
+  // Stores sync metadata for the tab. Used to store metadata for tabs missing
+  // their group (which are not present in the model).
+  void StoreMetadataForTabSpecifics(
+      const sync_pb::SharedTabGroupDataSpecifics& tab_specifics,
+      const syncer::CollaborationId& collaboration_id) {
+    std::unique_ptr<syncer::DataTypeStore::WriteBatch> write_batch =
+        store().CreateWriteBatch();
+    syncer::MetadataChangeList* metadata_change_list =
+        write_batch->GetMetadataChangeList();
+    metadata_change_list->UpdateMetadata(
+        tab_specifics.guid(),
+        CreateMetadata(collaboration_id, SharedAttribution(),
+                       tab_specifics.tab().unique_position()));
+    store().CommitWriteBatch(std::move(write_batch), base::DoNothing());
+  }
+
   SharedTabGroupDataSyncBridge* bridge() { return bridge_.get(); }
   testing::NiceMock<syncer::MockDataTypeLocalChangeProcessor>&
   mock_processor() {
@@ -551,7 +647,7 @@ TEST_F(SharedTabGroupDataSyncBridgeTest, ShouldReturnClientTag) {
 }
 
 TEST_F(SharedTabGroupDataSyncBridgeTest, ShouldCallModelReadyToSync) {
-  EXPECT_CALL(mock_processor(), ModelReadyToSync).WillOnce(Invoke([]() {}));
+  EXPECT_CALL(mock_processor(), ModelReadyToSync).WillOnce([]() {});
 
   // This already invokes RunUntilIdle, so the call above is expected to happen.
   ASSERT_TRUE(InitializeBridgeAndModel());
@@ -575,9 +671,9 @@ TEST_F(SharedTabGroupDataSyncBridgeTest, ShouldAddRemoteGroupsAtInitialSync) {
       mock_model_observer(),
       OnSyncBridgeUpdateTypeChanged(Eq(SyncBridgeUpdateType::kInitialMerge)))
       .InSequence(s);
-  EXPECT_CALL(
-      mock_model_observer(),
-      OnSyncBridgeUpdateTypeChanged(Eq(SyncBridgeUpdateType::kDefaultState)))
+  EXPECT_CALL(mock_model_observer(),
+              OnSyncBridgeUpdateTypeChanged(
+                  Eq(SyncBridgeUpdateType::kCompletedInitialMergeThisSession)))
       .InSequence(s);
   bridge()->MergeFullSyncData(bridge()->CreateMetadataChangeList(),
                               std::move(change_list));
@@ -808,8 +904,9 @@ TEST_F(SharedTabGroupDataSyncBridgeTest,
           .SetCollaborationId(CollaborationId("collaboration 2")));
   ASSERT_EQ(model()->Count(), 2);
 
-  ApplySingleEntityChange(CreateDeleteEntityChange(
-      group_to_delete.saved_guid().AsLowercaseString()));
+  ApplySingleEntityChange(
+      CreateDeleteEntityChange(group_to_delete.saved_guid().AsLowercaseString(),
+                               CollaborationId("collaboration")));
 
   EXPECT_THAT(
       model()->saved_tab_groups(),
@@ -835,7 +932,8 @@ TEST_F(SharedTabGroupDataSyncBridgeTest,
   ASSERT_THAT(model()->saved_tab_groups().front().saved_tabs(), SizeIs(2));
 
   ApplySingleEntityChange(CreateDeleteEntityChange(
-      tab_to_delete.saved_tab_guid().AsLowercaseString()));
+      tab_to_delete.saved_tab_guid().AsLowercaseString(),
+      CollaborationId("collaboration")));
 
   ASSERT_EQ(model()->Count(), 1);
   EXPECT_THAT(
@@ -906,9 +1004,9 @@ TEST_F(SharedTabGroupDataSyncBridgeTest, ShouldNotifyObserversOnDisableSync) {
       .InSequence(s);
   EXPECT_CALL(mock_model_observer(), SavedTabGroupRemovedFromSync)
       .InSequence(s);
-  EXPECT_CALL(
-      mock_model_observer(),
-      OnSyncBridgeUpdateTypeChanged(Eq(SyncBridgeUpdateType::kDefaultState)))
+  EXPECT_CALL(mock_model_observer(),
+              OnSyncBridgeUpdateTypeChanged(
+                  Eq(SyncBridgeUpdateType::kCompletedDisableSyncThisSession)))
       .InSequence(s);
   bridge()->ApplyDisableSyncChanges(bridge()->CreateMetadataChangeList());
 }
@@ -1023,7 +1121,8 @@ TEST_F(SharedTabGroupDataSyncBridgeTest, ShouldSendToSyncNewGroupWithTabs) {
   SavedTabGroup group(u"title", tab_groups::TabGroupColorId::kGrey,
                       /*urls=*/{}, /*position=*/std::nullopt);
   group.SetCollaborationId(CollaborationId("collaboration"));
-  group.SetOriginatingTabGroupGuid(kOriginatingSavedTabGroupGuid);
+  group.SetOriginatingTabGroupGuid(kOriginatingSavedTabGroupGuid,
+                                   /*use_originating_tab_group_guid=*/true);
   SavedTabGroupTab tab1 = test::CreateSavedTabGroupTab(
       "http://google.com/1", u"tab 1", group.saved_guid(), /*position=*/0);
   SavedTabGroupTab tab2 = test::CreateSavedTabGroupTab(
@@ -1077,11 +1176,11 @@ TEST_F(SharedTabGroupDataSyncBridgeTest, ShouldSendToSyncUpdatedGroupMetadata) {
 
   syncer::EntityData captured_entity_data;
   EXPECT_CALL(mock_processor(), Put)
-      .WillOnce(WithArg<1>(
-          Invoke([&captured_entity_data](
-                     std::unique_ptr<syncer::EntityData> entity_data) {
+      .WillOnce(
+          WithArg<1>([&captured_entity_data](
+                         std::unique_ptr<syncer::EntityData> entity_data) {
             captured_entity_data = std::move(*entity_data);
-          })));
+          }));
   tab_groups::TabGroupVisualData visual_data(
       u"new title", tab_groups::TabGroupColorId::kYellow);
   model()->UpdateVisualDataLocally(group.local_group_id().value(),
@@ -1112,11 +1211,11 @@ TEST_F(SharedTabGroupDataSyncBridgeTest, ShouldSendToSyncNewLocalTab) {
 
   syncer::EntityData captured_entity_data;
   EXPECT_CALL(mock_processor(), Put)
-      .WillOnce(WithArg<1>(
-          Invoke([&captured_entity_data](
-                     std::unique_ptr<syncer::EntityData> entity_data) {
+      .WillOnce(
+          WithArg<1>([&captured_entity_data](
+                         std::unique_ptr<syncer::EntityData> entity_data) {
             captured_entity_data = std::move(*entity_data);
-          })));
+          }));
   model()->AddTabToGroupLocally(group.saved_guid(), new_tab);
 
   EXPECT_THAT(
@@ -1167,11 +1266,11 @@ TEST_F(SharedTabGroupDataSyncBridgeTest, ShouldSendToSyncUpdatedLocalTab) {
 
   syncer::EntityData captured_entity_data;
   EXPECT_CALL(mock_processor(), Put)
-      .WillOnce(WithArg<1>(
-          Invoke([&captured_entity_data](
-                     std::unique_ptr<syncer::EntityData> entity_data) {
+      .WillOnce(
+          WithArg<1>([&captured_entity_data](
+                         std::unique_ptr<syncer::EntityData> entity_data) {
             captured_entity_data = std::move(*entity_data);
-          })));
+          }));
   tab_to_update.SetURL(GURL("http://google.com/updated"));
   tab_to_update.SetTitle(u"updated tab");
   model()->UpdateTabInGroup(group.saved_guid(), tab_to_update,
@@ -1199,15 +1298,12 @@ TEST_F(SharedTabGroupDataSyncBridgeTest, ShouldSendToSyncRemovedLocalGroup) {
   ASSERT_TRUE(model()->Contains(group.saved_guid()));
   ASSERT_EQ(model()->Get(group.saved_guid())->saved_tabs().size(), 2u);
 
-  // Only the group is removed, its tabs remain orphaned.
   EXPECT_CALL(mock_processor(),
               Delete(group.saved_guid().AsLowercaseString(), _, _));
   EXPECT_CALL(mock_processor(),
-              Delete(tab1.saved_tab_guid().AsLowercaseString(), _, _))
-      .Times(0);
+              Delete(tab1.saved_tab_guid().AsLowercaseString(), _, _));
   EXPECT_CALL(mock_processor(),
-              Delete(tab2.saved_tab_guid().AsLowercaseString(), _, _))
-      .Times(0);
+              Delete(tab2.saved_tab_guid().AsLowercaseString(), _, _));
   model()->RemovedLocally(group.saved_guid());
 }
 
@@ -1767,8 +1863,8 @@ TEST_F(SharedTabGroupDataSyncBridgeTest,
   syncer::EntityChangeList change_list;
   change_list.push_back(
       CreateUpdateEntityChange(tab_1_specifics, kCollaborationId));
-  change_list.push_back(
-      CreateDeleteEntityChange(StorageKeyForTab(group.saved_tabs()[0])));
+  change_list.push_back(CreateDeleteEntityChange(
+      StorageKeyForTab(group.saved_tabs()[0]), kCollaborationId));
 
   bridge()->ApplyIncrementalSyncChanges(bridge()->CreateMetadataChangeList(),
                                         std::move(change_list));
@@ -1837,8 +1933,8 @@ TEST_F(SharedTabGroupDataSyncBridgeTest,
   EXPECT_CALL(mock_processor(), Put).Times(0);
 
   syncer::EntityChangeList change_list;
-  change_list.push_back(
-      CreateDeleteEntityChange(StorageKeyForTab(group.saved_tabs()[0])));
+  change_list.push_back(CreateDeleteEntityChange(
+      StorageKeyForTab(group.saved_tabs()[0]), kCollaborationId));
   bridge()->ApplyIncrementalSyncChanges(bridge()->CreateMetadataChangeList(),
                                         std::move(change_list));
 
@@ -1913,6 +2009,8 @@ TEST_F(SharedTabGroupDataSyncBridgeTest,
       "http://google.com/1", u"tab", group.saved_guid(), /*position=*/0));
   model()->AddedLocally(group);
 
+  // Update the group with an unexpected collaboration ID, the group should not
+  // be updated.
   sync_pb::SharedTabGroupDataSpecifics group_update_specifics =
       MakeTabGroupSpecifics("title", sync_pb::SharedTabGroup::BLUE);
   group_update_specifics.set_guid(group.saved_guid().AsLowercaseString());
@@ -1920,9 +2018,13 @@ TEST_F(SharedTabGroupDataSyncBridgeTest,
                 group_update_specifics,
                 CollaborationId("unexpected_collaboration_id"))),
             std::nullopt);
+  EXPECT_EQ(model()->Get(group.saved_guid())->color(),
+            tab_groups::TabGroupColorId::kGrey);
 
+  // Update the tab with an unexpected collaboration ID, the tab should not be
+  // updated.
   sync_pb::SharedTabGroupDataSpecifics tab_update_specifics = MakeTabSpecifics(
-      "tab", GURL("http://google.com/1"),
+      "new tab title", GURL("http://google.com/new"),
       /*group_id=*/group.saved_guid(), GenerateRandomUniquePosition());
   tab_update_specifics.set_guid(
       group.saved_tabs()[0].saved_tab_guid().AsLowercaseString());
@@ -1930,6 +2032,7 @@ TEST_F(SharedTabGroupDataSyncBridgeTest,
                 tab_update_specifics,
                 CollaborationId("unexpected_collaboration_id"))),
             std::nullopt);
+  EXPECT_EQ(model()->Get(group.saved_guid())->saved_tabs()[0].title(), u"tab");
 }
 
 TEST_F(SharedTabGroupDataSyncBridgeTest, ShouldStoreLocalIdOnRemoteUpdate) {
@@ -1945,9 +2048,9 @@ TEST_F(SharedTabGroupDataSyncBridgeTest, ShouldStoreLocalIdOnRemoteUpdate) {
 
   // Simulate a reentrant call during applying remote updates.
   EXPECT_CALL(mock_model_observer(), SavedTabGroupAddedFromSync)
-      .WillOnce(Invoke([this, &kLocalGroupId](const base::Uuid& group_guid) {
+      .WillOnce([this, &kLocalGroupId](const base::Uuid& group_guid) {
         model()->OnGroupOpenedInTabStrip(group_guid, kLocalGroupId);
-      }));
+      });
   ApplySingleEntityChange(CreateAddEntityChange(
       MakeTabGroupSpecifics("title", sync_pb::SharedTabGroup::RED),
       kCollaborationId));
@@ -1988,8 +2091,8 @@ TEST_F(SharedTabGroupDataSyncBridgeTest,
   ASSERT_THAT(group.saved_tabs(), SizeIs(1));
   const SavedTabGroupTab& tab = group.saved_tabs()[0];
 
-  EXPECT_EQ(group.creation_time_windows_epoch_micros(), kCreationTime);
-  EXPECT_EQ(tab.creation_time_windows_epoch_micros(), kCreationTime);
+  EXPECT_EQ(group.creation_time(), kCreationTime);
+  EXPECT_EQ(tab.creation_time(), kCreationTime);
 }
 
 TEST_F(SharedTabGroupDataSyncBridgeTest,
@@ -2004,17 +2107,54 @@ TEST_F(SharedTabGroupDataSyncBridgeTest,
       "http://google.com/1", u"tab", group.saved_guid(), /*position=*/0);
   group.AddTabLocally(tab);
 
-  EXPECT_CALL(
-      mock_processor(),
-      Put(StorageKeyForTab(tab),
-          Pointee(HasCreationTime(tab.creation_time_windows_epoch_micros())),
-          _));
-  EXPECT_CALL(
-      mock_processor(),
-      Put(StorageKeyForGroup(group),
-          Pointee(HasCreationTime(group.creation_time_windows_epoch_micros())),
-          _));
+  EXPECT_CALL(mock_processor(),
+              Put(StorageKeyForTab(tab),
+                  Pointee(HasCreationTime(tab.creation_time())), _));
+  EXPECT_CALL(mock_processor(),
+              Put(StorageKeyForGroup(group),
+                  Pointee(HasCreationTime(group.creation_time())), _));
   model()->AddedLocally(group);
+}
+
+TEST_F(SharedTabGroupDataSyncBridgeTest,
+       ShouldPropagateNavigationTimeOnRemoteUpdate) {
+  const CollaborationId kCollaborationId("collaboration");
+  ASSERT_TRUE(InitializeBridgeAndModel());
+
+  const base::Time kCreationTime = base::Time::Now() - base::Hours(4);
+  const base::Time kModificationTime = base::Time::Now() - base::Hours(3);
+
+  // Add a group with a single tab from sync. Check navigation time.
+  sync_pb::SharedTabGroupDataSpecifics group_specifics =
+      MakeTabGroupSpecifics("title", sync_pb::SharedTabGroup::RED);
+  ApplySingleEntityChange(CreateAddEntityChange(
+      group_specifics, kCollaborationId, kCreationTime, kModificationTime));
+
+  sync_pb::SharedTabGroupDataSpecifics tab_specifics =
+      MakeTabSpecifics("title", GURL("http://url.com"),
+                       base::Uuid::ParseLowercase(group_specifics.guid()),
+                       GenerateRandomUniquePosition());
+  ApplySingleEntityChange(CreateAddEntityChange(
+      tab_specifics, kCollaborationId, kCreationTime, kModificationTime));
+
+  ASSERT_THAT(model()->saved_tab_groups(), SizeIs(1));
+  SavedTabGroup group = model()->saved_tab_groups().front();
+  ASSERT_THAT(group.saved_tabs(), SizeIs(1));
+  SavedTabGroupTab tab = group.saved_tabs()[0];
+
+  EXPECT_EQ(group.creation_time(), kCreationTime);
+  EXPECT_EQ(tab.creation_time(), kCreationTime);
+  EXPECT_EQ(tab.navigation_time(), kModificationTime);
+
+  // Update the tab again from sync. Verify the updated navigation time.
+  const base::Time kModificationTime2 = base::Time::Now() - base::Hours(2);
+  ApplySingleEntityChange(CreateUpdateEntityChange(
+      tab_specifics, kCollaborationId, kCreationTime, kModificationTime2));
+  group = model()->saved_tab_groups().front();
+  tab = group.saved_tabs()[0];
+  EXPECT_EQ(group.creation_time(), kCreationTime);
+  EXPECT_EQ(tab.creation_time(), kCreationTime);
+  EXPECT_EQ(tab.navigation_time(), kModificationTime2);
 }
 
 TEST_F(SharedTabGroupDataSyncBridgeTest,
@@ -2131,7 +2271,8 @@ TEST_F(SharedTabGroupDataSyncBridgeTest, ShouldKeepGroupWhenAllTabsAreUpdated) {
       MakeTabSpecifics("Tab 2", GURL("http://google.com/2"), group.saved_guid(),
                        GenerateRandomUniquePosition());
   syncer::EntityChangeList change_list;
-  change_list.push_back(CreateDeleteEntityChange(StorageKeyForTab(tab)));
+  change_list.push_back(
+      CreateDeleteEntityChange(StorageKeyForTab(tab), kCollaborationId));
   change_list.push_back(
       CreateUpdateEntityChange(new_tab_specifics, kCollaborationId));
   bridge()->ApplyIncrementalSyncChanges(bridge()->CreateMetadataChangeList(),
@@ -2224,6 +2365,43 @@ TEST_F(SharedTabGroupDataSyncBridgeTest,
                                         syncer::EntityChangeList());
 }
 
+TEST_F(SharedTabGroupDataSyncBridgeTest, ShouldReturnTabsMissingGroups) {
+  const CollaborationId kCollaborationId("collaboration");
+  const base::Time kCreationTime = base::Time::Now();
+  const base::Uuid kMissingGroupGuid = base::Uuid::GenerateRandomV4();
+  ASSERT_TRUE(InitializeBridgeAndModel());
+
+  sync_pb::SharedTabGroupDataSpecifics tab_specifics =
+      MakeTabSpecifics("tab title", GURL("http://google.com/1"),
+                       kMissingGroupGuid, GenerateRandomUniquePosition());
+
+  syncer::EntityChangeList change_list;
+  change_list.push_back(
+      CreateAddEntityChange(tab_specifics, kCollaborationId, kCreationTime));
+  bridge()->ApplyIncrementalSyncChanges(bridge()->CreateMetadataChangeList(),
+                                        std::move(change_list));
+
+  std::vector<syncer::EntityData> entity_data_list =
+      ExtractEntityDataFromBatch(bridge()->GetAllDataForDebugging());
+
+  EXPECT_THAT(entity_data_list,
+              UnorderedElementsAre(HasTabEntityDataWithVersion(
+                  "tab title", "http://google.com/1", kCollaborationId, 0)));
+
+  // Simulate browser restart and verify that the tab missing group is loaded.
+  StoreMetadataAndReset();
+
+  // Store the metadata for the tab missing group explicitly.
+  StoreMetadataForTabSpecifics(tab_specifics, kCollaborationId);
+
+  ASSERT_TRUE(InitializeBridgeAndModel());
+  entity_data_list =
+      ExtractEntityDataFromBatch(bridge()->GetAllDataForDebugging());
+  EXPECT_THAT(entity_data_list,
+              UnorderedElementsAre(HasTabEntityDataWithVersion(
+                  "tab title", "http://google.com/1", kCollaborationId, 0)));
+}
+
 TEST_F(SharedTabGroupDataSyncBridgeTest, UntrackEntitiesForCollaboration) {
   ASSERT_TRUE(InitializeBridgeAndModel());
   CollaborationId collaboration("collaboration");
@@ -2244,14 +2422,471 @@ TEST_F(SharedTabGroupDataSyncBridgeTest, UntrackEntitiesForCollaboration) {
       "http://google.com/2", u"tab 2", group2.saved_guid(), /*position=*/0);
   model()->AddedLocally(group2);
 
+  StoreSharedSyncMetadataBasedOnModel();
+  std::string group_key = group.saved_guid().AsLowercaseString();
+  std::string tab_key = tab1.saved_tab_guid().AsLowercaseString();
+  base::RunLoop run_loop;
+  store().ReadAllMetadata(base::BindLambdaForTesting(
+      [&run_loop, &group_key, &tab_key](
+          const std::optional<syncer::ModelError>& error,
+          std::unique_ptr<syncer::MetadataBatch> metadata_batch) {
+        syncer::EntityMetadataMap metadata_map =
+            metadata_batch->TakeAllMetadata();
+        ASSERT_TRUE(metadata_map.find(group_key) != metadata_map.end());
+        ASSERT_TRUE(metadata_map.find(tab_key) != metadata_map.end());
+        run_loop.Quit();
+      }));
+  run_loop.Run();
+
   // Only group 1 and its tab will be untracked.
-  EXPECT_CALL(mock_processor(), UntrackEntityForStorageKey(
-                                    group.saved_guid().AsLowercaseString()))
-      .Times(1);
-  EXPECT_CALL(mock_processor(), UntrackEntityForStorageKey(
-                                    tab1.saved_tab_guid().AsLowercaseString()))
-      .Times(1);
+  EXPECT_CALL(mock_processor(), UntrackEntityForStorageKey(group_key)).Times(1);
+  EXPECT_CALL(mock_processor(), UntrackEntityForStorageKey(tab_key)).Times(1);
   bridge()->UntrackEntitiesForCollaboration(collaboration);
+
+  base::RunLoop run_loop2;
+  store().ReadAllMetadata(base::BindLambdaForTesting(
+      [&run_loop2, &group_key, &tab_key](
+          const std::optional<syncer::ModelError>& error,
+          std::unique_ptr<syncer::MetadataBatch> metadata_batch) {
+        syncer::EntityMetadataMap metadata_map =
+            metadata_batch->TakeAllMetadata();
+        EXPECT_TRUE(metadata_map.find(group_key) == metadata_map.end());
+        EXPECT_TRUE(metadata_map.find(tab_key) == metadata_map.end());
+        run_loop2.Quit();
+      }));
+  run_loop2.Run();
+}
+
+TEST_F(SharedTabGroupDataSyncBridgeTest,
+       ShouldIgnoreCrossCollaborationGroupDeletion) {
+  const CollaborationId kCollaborationId1("collaboration 1");
+  const CollaborationId kCollaborationId2("collaboration 2");
+  ASSERT_TRUE(InitializeBridgeAndModel());
+
+  // Add a group and a tab in collaboration 1.
+  sync_pb::SharedTabGroupDataSpecifics group_specifics =
+      MakeTabGroupSpecifics("title", sync_pb::SharedTabGroup::BLUE);
+  const base::Uuid group_id =
+      base::Uuid::ParseLowercase(group_specifics.guid());
+  sync_pb::SharedTabGroupDataSpecifics tab_specifics =
+      MakeTabSpecifics("tab title 1", GURL("https://google.com/1"), group_id,
+                       GenerateRandomUniquePosition());
+
+  syncer::EntityChangeList change_list;
+  change_list.push_back(
+      CreateAddEntityChange(group_specifics, kCollaborationId1));
+  change_list.push_back(
+      CreateAddEntityChange(tab_specifics, kCollaborationId1));
+  bridge()->ApplyIncrementalSyncChanges(bridge()->CreateMetadataChangeList(),
+                                        std::move(change_list));
+
+  ASSERT_THAT(model()->saved_tab_groups(), SizeIs(1));
+  ASSERT_THAT(model()->saved_tab_groups().front().saved_tabs(), SizeIs(1));
+
+  // Try to delete the group from collaboration 2 (cross-collaboration
+  // deletion).
+  syncer::EntityChangeList delete_group_list;
+  delete_group_list.push_back(syncer::EntityChange::CreateDelete(
+      group_specifics.guid(),
+      CreateEntityData(group_specifics, kCollaborationId2, kDefaultGaiaId,
+                       /*updated_by=*/kDefaultGaiaId)));
+  EXPECT_FALSE(
+      bridge()
+          ->ApplyIncrementalSyncChanges(bridge()->CreateMetadataChangeList(),
+                                        std::move(delete_group_list))
+          .has_value());
+
+  // Group and tab should remain intact.
+  ASSERT_THAT(model()->saved_tab_groups(), SizeIs(1));
+  ASSERT_THAT(model()->saved_tab_groups().front().saved_tabs(), SizeIs(1));
+}
+
+TEST_F(SharedTabGroupDataSyncBridgeTest,
+       ShouldIgnoreCrossCollaborationTabDeletion) {
+  const CollaborationId kCollaborationId1("collaboration 1");
+  const CollaborationId kCollaborationId2("collaboration 2");
+  ASSERT_TRUE(InitializeBridgeAndModel());
+
+  // Add a group and a tab in collaboration 1.
+  sync_pb::SharedTabGroupDataSpecifics group_specifics =
+      MakeTabGroupSpecifics("title", sync_pb::SharedTabGroup::BLUE);
+  const base::Uuid group_id =
+      base::Uuid::ParseLowercase(group_specifics.guid());
+  sync_pb::SharedTabGroupDataSpecifics tab_specifics =
+      MakeTabSpecifics("tab title 1", GURL("https://google.com/1"), group_id,
+                       GenerateRandomUniquePosition());
+
+  syncer::EntityChangeList change_list;
+  change_list.push_back(
+      CreateAddEntityChange(group_specifics, kCollaborationId1));
+  change_list.push_back(
+      CreateAddEntityChange(tab_specifics, kCollaborationId1));
+  bridge()->ApplyIncrementalSyncChanges(bridge()->CreateMetadataChangeList(),
+                                        std::move(change_list));
+
+  ASSERT_THAT(model()->saved_tab_groups(), SizeIs(1));
+  ASSERT_THAT(model()->saved_tab_groups().front().saved_tabs(), SizeIs(1));
+
+  // Try to delete the tab from collaboration 2 (cross-collaboration deletion).
+  syncer::EntityChangeList delete_tab_list;
+  delete_tab_list.push_back(syncer::EntityChange::CreateDelete(
+      tab_specifics.guid(),
+      CreateEntityData(tab_specifics, kCollaborationId2, kDefaultGaiaId,
+                       /*updated_by=*/kDefaultGaiaId)));
+  EXPECT_FALSE(
+      bridge()
+          ->ApplyIncrementalSyncChanges(bridge()->CreateMetadataChangeList(),
+                                        std::move(delete_tab_list))
+          .has_value());
+
+  // Group and tab should still remain intact.
+  ASSERT_THAT(model()->saved_tab_groups(), SizeIs(1));
+  ASSERT_THAT(model()->saved_tab_groups().front().saved_tabs(), SizeIs(1));
+}
+
+TEST_F(SharedTabGroupDataSyncBridgeTest,
+       ShouldIgnoreCrossCollaborationTabMissingGroupDeletion) {
+  const CollaborationId kCollaborationId1("collaboration 1");
+  const CollaborationId kCollaborationId2("collaboration 2");
+  const base::Uuid kMissingGroupGuid = base::Uuid::GenerateRandomV4();
+  ASSERT_TRUE(InitializeBridgeAndModel());
+
+  // Add a tab missing group in collaboration 1.
+  sync_pb::SharedTabGroupDataSpecifics tab_specifics =
+      MakeTabSpecifics("tab title", GURL("http://google.com/1"),
+                       kMissingGroupGuid, GenerateRandomUniquePosition());
+
+  ApplySingleEntityChange(
+      CreateAddEntityChange(tab_specifics, kCollaborationId1));
+
+  // Verify that the tab missing group is present.
+  ASSERT_THAT(ExtractEntityDataFromBatch(bridge()->GetAllDataForDebugging()),
+              SizeIs(1));
+
+  // Try to delete the tab missing group from collaboration 2
+  // (cross-collaboration deletion).
+  syncer::EntityChangeList delete_tab_list;
+  delete_tab_list.push_back(syncer::EntityChange::CreateDelete(
+      tab_specifics.guid(),
+      CreateEntityData(tab_specifics, kCollaborationId2, kDefaultGaiaId,
+                       /*updated_by=*/kDefaultGaiaId)));
+  EXPECT_FALSE(
+      bridge()
+          ->ApplyIncrementalSyncChanges(bridge()->CreateMetadataChangeList(),
+                                        std::move(delete_tab_list))
+          .has_value());
+
+  // The tab missing group should still remain intact.
+  EXPECT_THAT(ExtractEntityDataFromBatch(bridge()->GetAllDataForDebugging()),
+              SizeIs(1));
+}
+
+TEST_F(SharedTabGroupDataSyncBridgeTest,
+       ShouldResolveTabsMissingGroupsOnRemoteUpdate) {
+  const CollaborationId kCollaborationId("collaboration");
+  const base::Uuid kMissingGroupGuid = base::Uuid::GenerateRandomV4();
+  ASSERT_TRUE(InitializeBridgeAndModel());
+
+  // Add a tab missing group remotely.
+  sync_pb::SharedTabGroupDataSpecifics tab_specifics =
+      MakeTabSpecifics("tab title", GURL("http://google.com/1"),
+                       kMissingGroupGuid, GenerateRandomUniquePosition());
+  tab_specifics.set_version(999);
+
+  ApplySingleEntityChange(
+      CreateAddEntityChange(tab_specifics, kCollaborationId));
+
+  std::vector<syncer::EntityData> entity_data_list =
+      ExtractEntityDataFromBatch(bridge()->GetAllDataForDebugging());
+
+  // Verify that the model is still empty but the tab missing group is stored.
+  ASSERT_THAT(entity_data_list,
+              UnorderedElementsAre(HasTabEntityDataWithVersion(
+                  "tab title", "http://google.com/1", kCollaborationId, 999)));
+  ASSERT_THAT(model()->saved_tab_groups(), IsEmpty());
+
+  // Add the missing group entry remotely.
+  sync_pb::SharedTabGroupDataSpecifics group_specifics =
+      MakeTabGroupSpecifics("group title", sync_pb::SharedTabGroup::CYAN);
+  group_specifics.set_guid(kMissingGroupGuid.AsLowercaseString());
+  ApplySingleEntityChange(
+      CreateAddEntityChange(group_specifics, kCollaborationId));
+
+  // Both the group and the tab should be present in the model.
+  ASSERT_THAT(model()->saved_tab_groups(),
+              ElementsAre(HasSharedGroupMetadata(
+                  "group title", tab_groups::TabGroupColorId::kCyan,
+                  kCollaborationId)));
+  EXPECT_THAT(model()->saved_tab_groups().front().saved_tabs(),
+              ElementsAre(HasTabMetadata("tab title", "http://google.com/1")));
+}
+
+TEST_F(SharedTabGroupDataSyncBridgeTest,
+       ShouldRemoveResolvedTabsFromMissingGroups) {
+  const CollaborationId kCollaborationId("collaboration");
+  const base::Uuid kMissingGroupGuid = base::Uuid::GenerateRandomV4();
+  const base::Uuid kTabGuid = base::Uuid::GenerateRandomV4();
+  ASSERT_TRUE(InitializeBridgeAndModel());
+
+  // 1. Add a tab missing its group remotely.
+  sync_pb::SharedTabGroupDataSpecifics tab_specifics =
+      MakeTabSpecifics("tab title", GURL("http://google.com/1"),
+                       kMissingGroupGuid, GenerateRandomUniquePosition());
+  tab_specifics.set_guid(kTabGuid.AsLowercaseString());
+  tab_specifics.set_version(999);
+
+  ApplySingleEntityChange(
+      CreateAddEntityChange(tab_specifics, kCollaborationId));
+
+  // 2. Add the missing group entry remotely. This resolves the tab and should
+  // remove it from `tabs_missing_groups_`.
+  sync_pb::SharedTabGroupDataSpecifics group_specifics =
+      MakeTabGroupSpecifics("group title", sync_pb::SharedTabGroup::CYAN);
+  group_specifics.set_guid(kMissingGroupGuid.AsLowercaseString());
+  ApplySingleEntityChange(
+      CreateAddEntityChange(group_specifics, kCollaborationId));
+
+  // Verify the tab is added to the group in the model.
+  const SavedTabGroup* group = model()->Get(kMissingGroupGuid);
+  ASSERT_TRUE(group);
+  EXPECT_THAT(group->saved_tabs(),
+              ElementsAre(HasTabMetadata("tab title", "http://google.com/1")));
+
+  // 3. Update the tab locally (simulate a user changing the tab title).
+  SavedTabGroupTab updated_tab = *group->saved_tabs().begin();
+  updated_tab.SetTitle(u"updated local title");
+  model()->UpdateTabInGroup(kMissingGroupGuid, updated_tab,
+                            /*notify_observers=*/true);
+
+  // 4. Trigger a completely unrelated remote update.
+  const base::Uuid kUnrelatedGroupGuid = base::Uuid::GenerateRandomV4();
+  sync_pb::SharedTabGroupDataSpecifics unrelated_group_specifics =
+      MakeTabGroupSpecifics("unrelated group", sync_pb::SharedTabGroup::RED);
+  unrelated_group_specifics.set_guid(kUnrelatedGroupGuid.AsLowercaseString());
+  ApplySingleEntityChange(
+      CreateAddEntityChange(unrelated_group_specifics, kCollaborationId));
+
+  // 5. Verify the tab title was not reverted to the original remote title.
+  // If the bug was present (tab left in `tabs_missing_groups_`), the unrelated
+  // update would trigger `ResolveTabsMissingGroups` and overwrite the local
+  // title.
+  group = model()->Get(kMissingGroupGuid);
+  ASSERT_TRUE(group);
+  EXPECT_THAT(group->saved_tabs(),
+              ElementsAre(HasTabMetadata("updated local title",
+                                         "http://google.com/1")));
+}
+
+TEST_F(SharedTabGroupDataSyncBridgeTest,
+       ShouldTrimAllSupportedFieldsFromRemoteTabGroupSpecifics) {
+  ASSERT_TRUE(InitializeBridgeAndModel());
+
+  sync_pb::EntitySpecifics remote_tab_group_specifics;
+  sync_pb::SharedTabGroupDataSpecifics* tab_group_specifics =
+      remote_tab_group_specifics.mutable_shared_tab_group_data();
+  tab_group_specifics->set_guid("guid");
+  tab_group_specifics->set_update_time_windows_epoch_micros(1234567890);
+  tab_group_specifics->mutable_tab_group()->set_title("title");
+  tab_group_specifics->mutable_tab_group()->set_color(
+      sync_pb::SharedTabGroup::BLUE);
+  tab_group_specifics->mutable_tab_group()->set_originating_tab_group_guid(
+      "originating_guid");
+
+  EXPECT_THAT(bridge()->TrimAllSupportedFieldsFromRemoteSpecifics(
+                  remote_tab_group_specifics),
+              EqualsProto(sync_pb::EntitySpecifics()));
+}
+
+TEST_F(SharedTabGroupDataSyncBridgeTest,
+       ShouldKeepUnknownFieldsFromRemoteTabGroupSpecifics) {
+  ASSERT_TRUE(InitializeBridgeAndModel());
+
+  // Serialize and deserialize the proto to get unknown fields.
+  sync_pb::EntitySpecifics remote_tab_group_specifics;
+  *remote_tab_group_specifics.mutable_shared_tab_group_data() =
+      MakeTabGroupSpecificsWithUnknownFields(
+          "title", sync_pb::SharedTabGroup::CYAN,
+          /*originating_group_id=*/base::Uuid::GenerateRandomV4(),
+          "extra_field_for_testing");
+
+  sync_pb::EntitySpecifics trimmed_specifics =
+      bridge()->TrimAllSupportedFieldsFromRemoteSpecifics(
+          remote_tab_group_specifics);
+  EXPECT_THAT(trimmed_specifics, Not(EqualsProto(sync_pb::EntitySpecifics())));
+
+  // Verify that deserialized proto keeps unknown fields.
+  sync_pb::test_utils::SharedTabGroupDataSpecifics
+      deserialized_extended_specifics;
+  ASSERT_TRUE(deserialized_extended_specifics.ParseFromString(
+      trimmed_specifics.shared_tab_group_data().SerializeAsString()));
+  EXPECT_EQ(
+      deserialized_extended_specifics.tab_group().extra_field_for_testing(),
+      "extra_field_for_testing");
+}
+
+TEST_F(SharedTabGroupDataSyncBridgeTest,
+       ShouldTrimAllSupportedFieldsFromRemoteTabSpecifics) {
+  ASSERT_TRUE(InitializeBridgeAndModel());
+
+  sync_pb::EntitySpecifics remote_tab_specifics;
+  sync_pb::SharedTabGroupDataSpecifics* tab_specifics =
+      remote_tab_specifics.mutable_shared_tab_group_data();
+  tab_specifics->set_guid("guid");
+  tab_specifics->set_update_time_windows_epoch_micros(1234567890);
+  tab_specifics->mutable_tab()->set_url("http://google.com/1");
+  tab_specifics->mutable_tab()->set_title("title");
+  tab_specifics->mutable_tab()->set_shared_tab_group_guid("group_guid");
+  *tab_specifics->mutable_tab()->mutable_unique_position() =
+      GenerateRandomUniquePosition().ToProto();
+
+  EXPECT_THAT(
+      bridge()->TrimAllSupportedFieldsFromRemoteSpecifics(remote_tab_specifics),
+      EqualsProto(sync_pb::EntitySpecifics()));
+}
+
+TEST_F(SharedTabGroupDataSyncBridgeTest,
+       ShouldKeepUnknownFieldsFromRemoteTabSpecifics) {
+  ASSERT_TRUE(InitializeBridgeAndModel());
+
+  sync_pb::test_utils::SharedTabGroupDataSpecifics extended_tab_specifics;
+  extended_tab_specifics.set_guid("guid");
+  extended_tab_specifics.set_update_time_windows_epoch_micros(1234567890);
+  extended_tab_specifics.mutable_tab()->set_url("http://google.com/1");
+  extended_tab_specifics.mutable_tab()->set_title("title");
+  extended_tab_specifics.mutable_tab()->set_shared_tab_group_guid("group_guid");
+  *extended_tab_specifics.mutable_tab()->mutable_unique_position() =
+      GenerateRandomUniquePosition().ToProto();
+  extended_tab_specifics.mutable_tab()->set_extra_field_for_testing(
+      "extra_field_for_testing");
+
+  // Serialize and deserialize the proto to get unknown fields.
+  sync_pb::EntitySpecifics remote_tab_specifics;
+  ASSERT_TRUE(
+      remote_tab_specifics.mutable_shared_tab_group_data()->ParseFromString(
+          extended_tab_specifics.SerializeAsString()));
+
+  sync_pb::EntitySpecifics trimmed_specifics =
+      bridge()->TrimAllSupportedFieldsFromRemoteSpecifics(remote_tab_specifics);
+
+  EXPECT_THAT(trimmed_specifics, Not(EqualsProto(sync_pb::EntitySpecifics())));
+
+  // Verify that deserialized proto keeps unknown fields.
+  sync_pb::test_utils::SharedTabGroupDataSpecifics
+      deserialized_extended_specifics;
+  ASSERT_TRUE(deserialized_extended_specifics.ParseFromString(
+      trimmed_specifics.shared_tab_group_data().SerializeAsString()));
+  EXPECT_EQ(deserialized_extended_specifics.tab().extra_field_for_testing(),
+            "extra_field_for_testing");
+}
+
+TEST_F(SharedTabGroupDataSyncBridgeTest,
+       ShouldPopulateUnknownFieldsOnLocalChanges) {
+  const CollaborationId kCollaborationId("collaboration");
+  ASSERT_TRUE(InitializeBridgeAndModel());
+
+  sync_pb::EntitySpecifics remote_tab_group_specifics;
+  *remote_tab_group_specifics.mutable_shared_tab_group_data() =
+      MakeTabGroupSpecificsWithUnknownFields(
+          "title", sync_pb::SharedTabGroup::CYAN,
+          /*originating_group_id=*/base::Uuid::GenerateRandomV4(),
+          "extra_field");
+  sync_pb::EntitySpecifics trimmed_specifics =
+      bridge()->TrimAllSupportedFieldsFromRemoteSpecifics(
+          remote_tab_group_specifics);
+  ON_CALL(mock_processor(), GetPossiblyTrimmedRemoteSpecifics(_))
+      .WillByDefault(ReturnRef(trimmed_specifics));
+
+  ApplySingleEntityChange(CreateAddEntityChange(
+      remote_tab_group_specifics.shared_tab_group_data(), kCollaborationId));
+
+  ASSERT_THAT(
+      model()->saved_tab_groups(),
+      ElementsAre(HasSharedGroupMetadata(
+          "title", tab_groups::TabGroupColorId::kCyan, kCollaborationId)));
+
+  // Simulate opening the group in the tab strip to make local changes.
+  const base::Uuid group_guid =
+      model()->saved_tab_groups().front().saved_guid();
+  const tab_groups::LocalTabGroupID local_tab_group_id =
+      test::GenerateRandomTabGroupID();
+  model()->OnGroupOpenedInTabStrip(group_guid, local_tab_group_id);
+
+  // Make local changes to the group. The bridge should make a local change
+  // with the unknown fields populated.
+  EXPECT_CALL(
+      mock_processor(),
+      Put(_, Pointee(EntityDataHasGroupUnsupportedFields("extra_field")), _));
+  tab_groups::TabGroupVisualData visual_data(
+      u"new title", tab_groups::TabGroupColorId::kYellow);
+  model()->UpdateVisualDataLocally(local_tab_group_id, &visual_data);
+}
+
+TEST_F(SharedTabGroupDataSyncBridgeTest,
+       ShouldStoreUnsupportedFieldsInLocalStorage) {
+  const CollaborationId kCollaborationId("collaboration");
+  ASSERT_TRUE(InitializeBridgeAndModel());
+
+  sync_pb::EntitySpecifics remote_tab_group_specifics;
+  *remote_tab_group_specifics.mutable_shared_tab_group_data() =
+      MakeTabGroupSpecificsWithUnknownFields(
+          "title", sync_pb::SharedTabGroup::CYAN,
+          /*originating_group_id=*/base::Uuid::GenerateRandomV4(),
+          "extra_field");
+
+  ApplySingleEntityChange(CreateAddEntityChange(
+      remote_tab_group_specifics.shared_tab_group_data(), kCollaborationId));
+
+  const std::string group_guid =
+      remote_tab_group_specifics.shared_tab_group_data().guid();
+  EXPECT_THAT(GetAllLocalDataFromStore(),
+              ElementsAre(Pair(
+                  group_guid,
+                  Property(&proto::SharedTabGroupData::specifics,
+                           GroupSpecificsHasUnsupportedField("extra_field")))));
+}
+
+TEST_F(SharedTabGroupDataSyncBridgeTest, ShouldNotPopulateKnownClearedFields) {
+  const CollaborationId kCollaborationId("collaboration");
+  ASSERT_TRUE(InitializeBridgeAndModel());
+
+  ApplySingleEntityChange(CreateAddEntityChange(
+      MakeTabGroupSpecifics("title", sync_pb::SharedTabGroup::CYAN),
+      kCollaborationId));
+  ASSERT_THAT(
+      model()->saved_tab_groups(),
+      ElementsAre(HasSharedGroupMetadata(
+          "title", tab_groups::TabGroupColorId::kCyan, kCollaborationId)));
+
+  // Simulate that `originating_tab_group_guid` field was unknown on the client.
+  // But now, the field is known and needs to be cleared.
+  sync_pb::EntitySpecifics trimmed_specifics;
+  base::Uuid originating_group_guid = base::Uuid::GenerateRandomV4();
+  trimmed_specifics.mutable_shared_tab_group_data()
+      ->mutable_tab_group()
+      ->set_originating_tab_group_guid(
+          originating_group_guid.AsLowercaseString());
+  ON_CALL(mock_processor(), GetPossiblyTrimmedRemoteSpecifics(_))
+      .WillByDefault(ReturnRef(trimmed_specifics));
+
+  // Simulate opening the group in the tab strip to make local changes.
+  const base::Uuid group_guid =
+      model()->saved_tab_groups().front().saved_guid();
+  const tab_groups::LocalTabGroupID local_tab_group_id =
+      test::GenerateRandomTabGroupID();
+  model()->OnGroupOpenedInTabStrip(group_guid, local_tab_group_id);
+
+  ASSERT_EQ(model()->saved_tab_groups().front().GetOriginatingTabGroupGuid(
+                /*for_sync=*/true),
+            std::nullopt);
+
+  // Make local changes to the group. The bridge should make a local change
+  // without the originating group guid (which was unsupported and is stored in
+  // possibly trimmed specifics in sync metadata).
+  EXPECT_CALL(mock_processor(),
+              Put(_, Pointee(Not(EntityDataHasOriginatingGroup())), _));
+  tab_groups::TabGroupVisualData visual_data(
+      u"new title", tab_groups::TabGroupColorId::kYellow);
+  model()->UpdateVisualDataLocally(local_tab_group_id, &visual_data);
 }
 
 // The number of tabs to test the correct ordering of remote updates.

@@ -4,6 +4,8 @@
 
 package org.chromium.chrome.browser.browserservices.verification;
 
+import static com.google.common.truth.Truth.assertThat;
+
 import static org.robolectric.Shadows.shadowOf;
 
 import android.os.Process;
@@ -44,8 +46,8 @@ public class ChromeOriginVerifierJunitTest {
     public static final String TEST_BATCH_NAME = "chrome_origin_verifier";
 
     private static final String PACKAGE_NAME = "org.chromium.com";
-    private int mUid = Process.myUid();
-    private Origin mHttpsOrigin = Origin.create("https://www.example.com");
+    private final int mUid = Process.myUid();
+    private final Origin mHttpsOrigin = Origin.create("https://www.example.com");
 
     private ChromeOriginVerifier mChromeVerifier;
 
@@ -57,10 +59,10 @@ public class ChromeOriginVerifierJunitTest {
 
     @Mock private ChromeOriginVerifier.Natives mMockChromeOriginVerifierJni;
 
-    private CountDownLatch mVerificationResultLatch = new CountDownLatch(1);
+    private final CountDownLatch mVerificationResultLatch = new CountDownLatch(1);
 
     private static class TestOriginVerificationListener implements OriginVerificationListener {
-        private CountDownLatch mLatch;
+        private final CountDownLatch mLatch;
         private boolean mVerified;
 
         TestOriginVerificationListener(CountDownLatch latch) {
@@ -105,8 +107,8 @@ public class ChromeOriginVerifierJunitTest {
                                 return false;
                             }
                             // Ensure parsing of signature works.
-                            assert fingerprints.length == 1;
-                            assert fingerprints[0] != null;
+                            assertThat(fingerprints.length).isEqualTo(1);
+                            assertThat(fingerprints[0]).isNotNull();
                             mChromeVerifier.onOriginVerificationResult(
                                     args.getArgument(4), RelationshipCheckResult.SUCCESS);
                             return true;
@@ -114,12 +116,11 @@ public class ChromeOriginVerifierJunitTest {
                 .when(mMockOriginVerifierJni)
                 .verifyOrigin(
                         ArgumentMatchers.anyLong(),
-                        Mockito.any(),
                         ArgumentMatchers.anyString(),
-                        Mockito.any(),
+                        ArgumentMatchers.any(),
                         ArgumentMatchers.anyString(),
                         ArgumentMatchers.anyString(),
-                        Mockito.any());
+                        ArgumentMatchers.any());
     }
 
     @Test

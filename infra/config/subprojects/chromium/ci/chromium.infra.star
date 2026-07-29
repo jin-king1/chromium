@@ -3,21 +3,23 @@
 # found in the LICENSE file.
 """Definitions of builders in the chromium.infra builder group."""
 
-load("//lib/branches.star", "branches")
-load("//lib/builder_health_indicators.star", "health_spec")
-load("//lib/builders.star", "cpu", "gardener_rotations", "os")
-load("//lib/ci.star", "ci")
-load("//lib/consoles.star", "consoles")
+load("@chromium-luci//branches.star", "branches")
+load("@chromium-luci//builder_health_indicators.star", "health_spec")
+load("@chromium-luci//builders.star", "cpu", "os")
+load("@chromium-luci//ci.star", "ci")
+load("@chromium-luci//consoles.star", "consoles")
+load("//lib/ci_constants.star", "ci_constants")
+load("//lib/gardener_rotations.star", "gardener_rotations")
 
 ci.defaults.set(
     builder_group = "chromium.infra",
-    pool = ci.DEFAULT_POOL,
+    pool = ci_constants.DEFAULT_POOL,
     cores = 8,
     os = os.LINUX_DEFAULT,
-    execution_timeout = ci.DEFAULT_EXECUTION_TIMEOUT,
-    health_spec = health_spec.DEFAULT,
-    service_account = ci.DEFAULT_SERVICE_ACCOUNT,
-    shadow_service_account = ci.DEFAULT_SHADOW_SERVICE_ACCOUNT,
+    execution_timeout = ci_constants.DEFAULT_EXECUTION_TIMEOUT,
+    health_spec = health_spec.default(),
+    service_account = ci_constants.DEFAULT_SERVICE_ACCOUNT,
+    shadow_service_account = ci_constants.DEFAULT_SHADOW_SERVICE_ACCOUNT,
 )
 
 consoles.console_view(
@@ -51,12 +53,13 @@ packager_builder(
     # Every 6 hours starting at 5am UTC.
     schedule = "0 5/6 * * * *",
     triggered_by = [],
+    pool = "luci.chromium.provenance.ci",
     builderless = False,
     console_view_entry = consoles.console_view_entry(
         category = "packager|3pp|linux",
         short_name = "amd64",
     ),
-    execution_timeout = 5 * time.hour,
+    execution_timeout = 7 * time.hour,
     notifies = ["chromium-infra"],
     properties = {
         "$build/chromium_3pp": {
@@ -66,7 +69,6 @@ packager_builder(
                 "cmd": [
                     "{CHECKOUT}/src/third_party/android_deps/fetch_all.py",
                     "-v",
-                    "--ignore-vulnerabilities",
                 ],
             }],
             "gclient_config": "chromium",
@@ -151,6 +153,7 @@ packager_builder(
     executable = "recipe:android/androidx_packager",
     schedule = "0 7,14,22 * * * *",
     triggered_by = [],
+    pool = "luci.chromium.provenance.ci",
     gardener_rotations = gardener_rotations.ANDROID,
     console_view_entry = consoles.console_view_entry(
         category = "packager|android",
@@ -180,27 +183,15 @@ packager_builder(
                 "tools/android/avd/proto_creation/android_30_google_apis_x86.textpb",
                 "tools/android/avd/proto_creation/android_31_google_apis_x64.textpb",
                 "tools/android/avd/proto_creation/android_32_google_apis_x64_foldable.textpb",
-                "tools/android/avd/proto_creation/android_32_google_apis_x64_foldable_landscape.textpb",
                 "tools/android/avd/proto_creation/android_33_google_apis_x64.textpb",
                 "tools/android/avd/proto_creation/android_34_google_apis_x64.textpb",
                 "tools/android/avd/proto_creation/android_35_google_apis_x64.textpb",
+                "tools/android/avd/proto_creation/android_36_google_apis_x64.textpb",
 
                 # google_apis_tablet system images
                 "tools/android/avd/proto_creation/android_35_google_apis_tablet_x64.textpb",
 
-                # google_atd system images
-                "tools/android/avd/proto_creation/android_30_google_atd_x86.textpb",
-                "tools/android/avd/proto_creation/android_30_google_atd_x64.textpb",
-                "tools/android/avd/proto_creation/android_31_google_atd_x64.textpb",
-                "tools/android/avd/proto_creation/android_32_google_atd_x64_foldable.textpb",
-                "tools/android/avd/proto_creation/android_33_google_atd_x64.textpb",
-
                 # TODO(hypan): Using more specific names for the configs below.
-                "tools/android/avd/proto_creation/generic_android19.textpb",
-                "tools/android/avd/proto_creation/generic_android22.textpb",
-                "tools/android/avd/proto_creation/generic_android23.textpb",
-                "tools/android/avd/proto_creation/generic_android24.textpb",
-                "tools/android/avd/proto_creation/generic_android25.textpb",
                 "tools/android/avd/proto_creation/generic_android26.textpb",
                 "tools/android/avd/proto_creation/generic_android27.textpb",
             ],
@@ -230,22 +221,45 @@ packager_builder(
                 "cipd_yaml": "third_party/android_sdk/cipd/build-tools/35.0.0.yaml",
             },
             {
+                "sdk_package_name": "build-tools;36.0.0",
+                "cipd_yaml": "third_party/android_sdk/cipd/build-tools/36.0.0.yaml",
+            },
+            {
+                "sdk_package_name": "build-tools;36.1.0",
+                "cipd_yaml": "third_party/android_sdk/cipd/build-tools/36.1.0.yaml",
+            },
+            {
+                "sdk_package_name": "build-tools;37.0.0",
+                "cipd_yaml": "third_party/android_sdk/cipd/build-tools/37.0.0.yaml",
+            },
+            {
                 "sdk_package_name": "cmdline-tools;latest",
-                "cipd_yaml": "third_party/android_sdk/cipd/cmdline-tools.yaml",
+                "cipd_yaml": "third_party/android_sdk/cipd/cmdline-tools/linux.yaml",
+            },
+            {
+                "sdk_package_name": "cmdline-tools;latest",
+                "cipd_yaml": "third_party/android_sdk/cipd/cmdline-tools/mac.yaml",
+                "target_os": "mac",
             },
             {
                 "sdk_package_name": "emulator",
-                "cipd_yaml": "third_party/android_sdk/cipd/emulator.yaml",
+                "cipd_yaml": "third_party/android_sdk/cipd/emulator/linux-amd64.yaml",
             },
             {
                 "sdk_package_name": "emulator",
-                "cipd_yaml": "third_party/android_sdk/cipd/emulator.yaml",
+                "cipd_yaml": "third_party/android_sdk/cipd/emulator/linux-amd64.yaml",
                 "sdk_channel": "BETA",
             },
             {
                 "sdk_package_name": "emulator",
-                "cipd_yaml": "third_party/android_sdk/cipd/emulator.yaml",
+                "cipd_yaml": "third_party/android_sdk/cipd/emulator/linux-amd64.yaml",
                 "sdk_channel": "CANARY",
+            },
+            {
+                "sdk_package_name": "emulator",
+                "cipd_yaml": "third_party/android_sdk/cipd/emulator/mac-arm64.yaml",
+                "target_os": "mac",
+                "target_arch": "arm64",
             },
             {
                 "sdk_package_name": "platforms;android-34",
@@ -254,6 +268,18 @@ packager_builder(
             {
                 "sdk_package_name": "platforms;android-35",
                 "cipd_yaml": "third_party/android_sdk/cipd/platforms/android-35.yaml",
+            },
+            {
+                "sdk_package_name": "platforms;android-36",
+                "cipd_yaml": "third_party/android_sdk/cipd/platforms/android-36.yaml",
+            },
+            {
+                "sdk_package_name": "platforms;android-36.1",
+                "cipd_yaml": "third_party/android_sdk/cipd/platforms/android-36.1.yaml",
+            },
+            {
+                "sdk_package_name": "platforms;android-37.0",
+                "cipd_yaml": "third_party/android_sdk/cipd/platforms/android-37.0.yaml",
             },
             {
                 "sdk_package_name": "platform-tools",
@@ -299,14 +325,6 @@ packager_builder(
                 "sdk_package_name": "system-images;android-30;google_apis;x86",
                 "cipd_yaml": "third_party/android_sdk/cipd/system_images/android-30/google_apis/x86.yaml",
             },
-            {
-                "sdk_package_name": "system-images;android-30;google_atd;x86",
-                "cipd_yaml": "third_party/android_sdk/cipd/system_images/android-30/google_atd/x86.yaml",
-            },
-            {
-                "sdk_package_name": "system-images;android-30;google_atd;x86_64",
-                "cipd_yaml": "third_party/android_sdk/cipd/system_images/android-30/google_atd/x86_64.yaml",
-            },
             # use x86_64 since sdkmanager don't ship x86 for android-31 and above.
             {
                 "sdk_package_name": "system-images;android-31;google_apis;arm64-v8a",
@@ -317,28 +335,20 @@ packager_builder(
                 "cipd_yaml": "third_party/android_sdk/cipd/system_images/android-31/google_apis/x86_64.yaml",
             },
             {
-                "sdk_package_name": "system-images;android-31;google_atd;x86_64",
-                "cipd_yaml": "third_party/android_sdk/cipd/system_images/android-31/google_atd/x86_64.yaml",
-            },
-            {
                 "sdk_package_name": "system-images;android-32;google_apis;x86_64",
                 "cipd_yaml": "third_party/android_sdk/cipd/system_images/android-32/google_apis/x86_64.yaml",
-            },
-            {
-                "sdk_package_name": "system-images;android-32;google_atd;x86_64",
-                "cipd_yaml": "third_party/android_sdk/cipd/system_images/android-32/google_atd/x86_64.yaml",
             },
             {
                 "sdk_package_name": "system-images;android-33;google_apis;x86_64",
                 "cipd_yaml": "third_party/android_sdk/cipd/system_images/android-33/google_apis/x86_64.yaml",
             },
             {
-                "sdk_package_name": "system-images;android-33;google_atd;x86_64",
-                "cipd_yaml": "third_party/android_sdk/cipd/system_images/android-33/google_atd/x86_64.yaml",
-            },
-            {
                 "sdk_package_name": "system-images;android-34;google_apis;x86_64",
                 "cipd_yaml": "third_party/android_sdk/cipd/system_images/android-34/google_apis/x86_64.yaml",
+            },
+            {
+                "sdk_package_name": "system-images;android-34-ext9;android-automotive;x86_64",
+                "cipd_yaml": "third_party/android_sdk/cipd/system_images/android-34/android-automotive/x86_64.yaml",
             },
             {
                 "sdk_package_name": "system-images;android-35;google_apis;x86_64",
@@ -347,11 +357,71 @@ packager_builder(
             {
                 "sdk_package_name": "system-images;android-35;google_apis_tablet;x86_64",
                 "cipd_yaml": "third_party/android_sdk/cipd/system_images/android-35/google_apis_tablet/x86_64.yaml",
-                "sdk_channel": "CANARY",
             },
             {
-                "sdk_package_name": "system-images;android-Baklava;google_apis;x86_64",
-                "cipd_yaml": "third_party/android_sdk/cipd/system_images/android-Baklava/google_apis/x86_64.yaml",
+                "sdk_package_name": "system-images;android-36;google_apis;arm64-v8a",
+                "cipd_yaml": "third_party/android_sdk/cipd/system_images/android-36/google_apis/arm64-v8a.yaml",
+            },
+            {
+                "sdk_package_name": "system-images;android-36.1;google_apis;arm64-v8a",
+                "cipd_yaml": "third_party/android_sdk/cipd/system_images/android-36.1/google_apis/arm64-v8a.yaml",
+            },
+            {
+                "sdk_package_name": "system-images;android-37.0;google_apis_ps16k;arm64-v8a",
+                "cipd_yaml": "third_party/android_sdk/cipd/system_images/android-37.0/google_apis_ps16k/arm64-v8a.yaml",
+            },
+            {
+                "sdk_package_name": "system-images;android-36;google_apis;x86_64",
+                "cipd_yaml": "third_party/android_sdk/cipd/system_images/android-36/google_apis/x86_64.yaml",
+            },
+            {
+                "sdk_package_name": "system-images;android-36.1;google_apis;x86_64",
+                "cipd_yaml": "third_party/android_sdk/cipd/system_images/android-36.1/google_apis/x86_64.yaml",
+            },
+            {
+                "sdk_package_name": "system-images;android-37.0;google_apis_ps16k;x86_64",
+                "cipd_yaml": "third_party/android_sdk/cipd/system_images/android-37.0/google_apis_ps16k/x86_64.yaml",
+            },
+        ],
+    },
+)
+
+ci.builder(
+    name = "android-device-flasher",
+    executable = "recipe:android/device_flasher",
+    schedule = "0 9 * * 1,3",  # at 9am UTC every Monday and Wednesday.
+    triggered_by = [],
+    console_view_entry = consoles.console_view_entry(
+        short_name = "flash",
+    ),
+    notifies = ["chromium-android-device-flasher"],
+    properties = {
+        "flash_criteria": [
+            # Used by ci/android-14-arm64-rel
+            # This is mirrored by the CQ builder android-arm64-rel
+            {
+                "pool": "chromium.tests",
+                "device_type": "panther",
+                "device_os": "AP2A.240705.004",
+                "max_uid_threshold": 18000,
+                "min_disk_free_threshold": 10,
+            },
+            # Used by ci/Android Release (Pixel 2)
+            # This is mirrored by the CQ builder android-arm64-rel
+            {
+                "pool": "chromium.tests",
+                "device_type": "walleye",
+                "device_os": "QQ1A.191205.008",
+                "max_uid_threshold": 18000,
+                "min_disk_free_threshold": 10,
+            },
+            # Used by GPU team
+            {
+                "pool": "chromium.tests.gpu",
+                "device_type": "oriole",
+                "device_os": "TP1A.220624.021",
+                "max_uid_threshold": 18000,
+                "min_disk_free_threshold": 10,
             },
         ],
     },
@@ -359,6 +429,7 @@ packager_builder(
 
 packager_builder(
     name = "rts-model-packager",
+    description_html = "Builds and packages the Regression Test Selection (RTS) model daily.",
     executable = "recipe:chromium_rts/create_model",
     schedule = "0 9 * * *",  # at 1AM or 2AM PT (depending on DST), once a day.
     triggered_by = [],
@@ -368,73 +439,15 @@ packager_builder(
         category = "packager|rts",
         short_name = "create-model",
     ),
+    contact_team_email = "chrome-test-infra-mx@google.com",
     execution_timeout = 10 * time.hour,
     notifies = [
         luci.notifier(
             name = "rts-model-packager-notifier",
-            notify_emails = ["chrome-browser-infra-team@google.com"],
+            notify_emails = ["chrome-test-infra-mx+alerts@google.com"],
             on_occurrence = ["FAILURE", "INFRA_FAILURE"],
         ),
     ],
-)
-
-ci.builder(
-    name = "android-device-flasher",
-    executable = "recipe:android/device_flasher",
-    # TODO(crbug.com/40201767): Find the sweet spot for the frequency.
-    schedule = "0 9 * * 1",  # at 9am UTC every Monday.
-    triggered_by = [],
-    console_view_entry = consoles.console_view_entry(
-        short_name = "flash",
-    ),
-    notifies = ["chromium-infra"],
-    properties = {
-        "flash_criteria": [
-            # Used by ci/Android Release (Nexus 5X)
-            # This is mirrored by the CQ builder android-arm64-rel
-            {
-                "pool": "chromium.tests",
-                "device_type": "bullhead",
-                "device_os": "N2G48C",
-                "max_uid_threshold": 18000,
-            },
-            {
-                "pool": "chromium.tests",
-                "device_type": "walleye",
-                "device_os": "OPM4.171019.021.P2",
-                "max_uid_threshold": 18000,
-            },
-            # Used by ci/android-pie-arm64-rel
-            # This is mirrored by the CQ builder android-arm64-rel
-            {
-                "pool": "chromium.tests",
-                "device_type": "walleye",
-                "device_os": "PQ3A.190801.002",
-                "max_uid_threshold": 18000,
-            },
-            # Used by ci/android-pie-arm64-rel
-            # This is mirrored by the CQ builder android-arm64-rel
-            {
-                "pool": "chromium.tests",
-                "device_type": "sailfish",
-                "device_os": "PQ3A.190801.002",
-                "max_uid_threshold": 18000,
-            },
-            {
-                "pool": "chromium.tests",
-                "device_type": "walleye",
-                "device_os": "QQ1A.191205.008",
-                "max_uid_threshold": 18000,
-            },
-            # Used by GPU team
-            {
-                "pool": "chromium.tests.gpu",
-                "device_type": "oriole",
-                "device_os": "TP1A.220624.021",
-                "max_uid_threshold": 18000,
-            },
-        ],
-    },
 )
 
 ci.builder(
@@ -450,4 +463,56 @@ ci.builder(
     ),
     execution_timeout = 10 * time.hour,
     service_account = "chromium-cipd-builder@chops-service-accounts.iam.gserviceaccount.com",
+)
+
+luci.bucket(
+    name = "ssci",
+    acls = [
+        acl.entry(
+            roles = [
+                acl.BUILDBUCKET_READER,
+                acl.SCHEDULER_READER,
+            ],
+            groups = "all",
+        ),
+        acl.entry(
+            roles = [
+                acl.BUILDBUCKET_TRIGGERER,
+                acl.SCHEDULER_TRIGGERER,
+            ],
+            groups = ["mdb/chrome-troopers", "mdb/chops-security-oncallers"],
+        ),
+    ],
+)
+
+ci.builder(
+    name = "chromium-ssci-linux-amd64",
+    # TODO(b/464370790): Move this to CI bucket when recipe development is complete.
+    bucket = "ssci",
+    description_html = "Triggers Crowbar workflows on chromium/src.",
+    executable = "recipe:infra/crowbar",
+    # TODO(b/464370790): Make this a routine job (regular update) and CI
+    # triggered job (after submitting a CL modifying Crowbar spec) in the prod
+    # pool when recipe development is complete.
+    schedule = "triggered",
+    triggered_by = [],
+    pool = "luci.chromium.provenance.ci",
+    builderless = False,
+    cores = None,
+    os = os.LINUX_ANY,
+    console_view_entry = consoles.console_view_entry(
+        category = "packager|crowbar",
+        short_name = "ssci",
+    ),
+    contact_team_email = "chops-security-core@google.com",
+    properties = {
+        "repos": [
+            {
+                "repo": "https://chromium.googlesource.com/chromium/src",
+            },
+        ],
+    },
+    service_account = "chromium-roller@chops-crowbar.iam.gserviceaccount.com",
+    shadow_pool = None,
+    shadow_service_account = None,
 )

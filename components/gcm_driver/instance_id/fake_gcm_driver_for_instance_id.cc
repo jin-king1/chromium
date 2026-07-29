@@ -55,7 +55,8 @@ FakeGCMDriverForInstanceID::FakeGCMDriverForInstanceID(
     return;
   }
 
-  std::optional<base::Value> data = base::JSONReader::Read(encoded_data);
+  std::optional<base::Value> data = base::JSONReader::Read(
+      encoded_data, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   DCHECK(data.has_value() && data->is_dict())
       << "Failed to read data from stored FCM tokens file";
 
@@ -67,6 +68,11 @@ FakeGCMDriverForInstanceID::FakeGCMDriverForInstanceID(
 }
 
 FakeGCMDriverForInstanceID::~FakeGCMDriverForInstanceID() = default;
+
+base::WeakPtr<FakeGCMDriverForInstanceID>
+FakeGCMDriverForInstanceID::GetWeakPtr() {
+  return weak_ptr_factory_.GetWeakPtr();
+}
 
 gcm::InstanceIDHandler*
 FakeGCMDriverForInstanceID::GetInstanceIDHandlerInternal() {
@@ -218,7 +224,7 @@ void FakeGCMDriverForInstanceID::StoreTokensIfNeeded() {
     return;
   }
 
-  base::Value::Dict value;
+  base::DictValue value;
   for (const auto& key_and_token : tokens_) {
     value.Set(key_and_token.first, key_and_token.second);
   }

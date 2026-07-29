@@ -1,7 +1,6 @@
 noparent = True
 
 include_rules = [
-  "+ash/public/cpp",
   "+ash/constants",
   "+chromeos/ash/components/cryptohome",
   "+base",
@@ -10,7 +9,6 @@ include_rules = [
   "+chromeos/ash/components/login/auth",
   "+components/prefs",
   "+components/user_manager",
-  "+content/public/browser",
 
   # Abseil is allowed by default, but some features are banned. See
   # //styleguide/c++/c++-features.md.
@@ -38,4 +36,10 @@ include_rules = [
   '-third_party/abseil-cpp/absl/types/any.h',
   '-third_party/abseil-cpp/absl/types/optional.h',
   '-third_party/abseil-cpp/absl/types/span.h',
+  '-third_party/abseil-cpp/absl/types/variant.h',
+  '-third_party/abseil-cpp/absl/utility/utility.h',
+
+  # TODO(crbug.com/402346171): Components should not have dependencies to //ash.
+  # Resolve it.
+  "+ash/public/cpp/session/session_controller.h",
 ]

@@ -26,7 +26,9 @@ import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabObserver;
 import org.chromium.chrome.browser.tab.TabTestUtils;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandler;
 import org.chromium.content_public.browser.SelectionPopupController;
 import org.chromium.content_public.browser.test.util.DOMUtils;
@@ -38,11 +40,14 @@ import java.util.concurrent.TimeoutException;
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({
     ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE,
+    // long press triggers contextual search
+    ChromeSwitches.DISABLE_CONTEXTUAL_SEARCH,
 })
 @Batch(Batch.PER_CLASS)
 public class SelectionPopupBackPressTest {
     @Rule
-    public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
+    public FreshCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.freshChromeTabbedActivityRule();
 
     private static final String TEST_PAGE =
             UrlUtils.encodeHtmlDataUri(
@@ -61,14 +66,14 @@ public class SelectionPopupBackPressTest {
     @MediumTest
     @Feature({"TextInput", "SmartSelection"})
     public void testBackPressHandlerOnTabSwitched() {
-        mActivityTestRule.startMainActivityOnBlankPage();
-        final ChromeTabbedActivity activity = mActivityTestRule.getActivity();
+        WebPageStation page = mActivityTestRule.startOnBlankPage();
+        final ChromeTabbedActivity activity = page.getActivity();
         final BackPressHandler selectionPopupHandler =
                 activity.getBackPressManagerForTesting()
                         .getHandlersForTesting()[BackPressHandler.Type.SELECTION_POPUP];
         Assert.assertNotNull(
                 "Back press handler should be initialized and registered.", selectionPopupHandler);
-        Tab tab1 = activity.getActivityTab();
+        Tab tab1 = mActivityTestRule.getActivityTab();
         var observers = ThreadUtils.runOnUiThreadBlocking(() -> TabTestUtils.getTabObservers(tab1));
         boolean found = find(observers, selectionPopupHandler);
         Assert.assertTrue("Tab should be observed.", found);
@@ -79,7 +84,7 @@ public class SelectionPopupBackPressTest {
         found = find(observers, selectionPopupHandler);
         Assert.assertFalse("Observer should be removed.", found);
 
-        Tab currentTab = activity.getActivityTab();
+        Tab currentTab = mActivityTestRule.getActivityTab();
         observers =
                 ThreadUtils.runOnUiThreadBlocking(() -> TabTestUtils.getTabObservers(currentTab));
         found = find(observers, selectionPopupHandler);
@@ -90,15 +95,15 @@ public class SelectionPopupBackPressTest {
     @MediumTest
     @Feature({"TextInput", "SmartSelection"})
     public void testBackPressHandlerOnWebContentChanged() {
-        mActivityTestRule.startMainActivityOnBlankPage();
-        final ChromeTabbedActivity activity = mActivityTestRule.getActivity();
+        WebPageStation page = mActivityTestRule.startOnBlankPage();
+        final ChromeTabbedActivity activity = page.getActivity();
         final SelectionPopupBackPressHandler selectionPopupHandler =
                 (SelectionPopupBackPressHandler)
                         activity.getBackPressManagerForTesting()
                                 .getHandlersForTesting()[BackPressHandler.Type.SELECTION_POPUP];
         Assert.assertNotNull(
                 "Back press handler should be initialized and registered.", selectionPopupHandler);
-        Tab tab1 = activity.getActivityTab();
+        Tab tab1 = mActivityTestRule.getActivityTab();
         var observers = ThreadUtils.runOnUiThreadBlocking(() -> TabTestUtils.getTabObservers(tab1));
         boolean found = find(observers, selectionPopupHandler);
         Assert.assertTrue("Tab should be observed.", found);
@@ -115,10 +120,10 @@ public class SelectionPopupBackPressTest {
     }
 
     private void testBackPressClearSelectionInternal() throws TimeoutException {
-        mActivityTestRule.startMainActivityWithURL(TEST_PAGE);
-        DOMUtils.longPressNodeByJs(
-                mActivityTestRule.getWebContents(),
-                "document.getElementById('selection_popup_text')");
+        mActivityTestRule.startOnUrl(TEST_PAGE);
+        DOMUtils.waitForNonZeroNodeBounds(
+                mActivityTestRule.getWebContents(), "selection_popup_text");
+        DOMUtils.longPressNode(mActivityTestRule.getWebContents(), "selection_popup_text");
         SelectionPopupController controller =
                 ThreadUtils.runOnUiThreadBlocking(
                         () -> {
@@ -144,6 +149,7 @@ public class SelectionPopupBackPressTest {
                 () -> {
                     BackPressManager backPressManager =
                             mActivityTestRule.getActivity().getBackPressManagerForTesting();
+                    // suppress handlers of high priorities
                     if (backPressManager.has(BackPressHandler.Type.TEXT_BUBBLE)) {
                         mActivityTestRule
                                 .getActivity()
@@ -153,17 +159,14 @@ public class SelectionPopupBackPressTest {
                 });
 
         ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    mActivityTestRule.getActivity().getOnBackPressedDispatcher().onBackPressed();
-                });
+                () -> mActivityTestRule.getActivity().getOnBackPressedDispatcher().onBackPressed());
 
         CriteriaHelper.pollUiThread(
-                () -> {
-                    Criteria.checkThat(
-                            "Selection popup should be dismissed after long press",
-                            controller.isSelectActionBarShowing(),
-                            Matchers.is(false));
-                });
+                () ->
+                        Criteria.checkThat(
+                                "Selection popup should be dismissed after back press",
+                                controller.isSelectActionBarShowing(),
+                                Matchers.is(false)));
         Assert.assertFalse(
                 "Selection popup should be dismissed on back press.", controller.hasSelection());
         Assert.assertFalse(

@@ -8,7 +8,6 @@
 #include <set>
 
 #include "base/base_paths.h"
-#include "base/containers/contains.h"
 #include "base/files/file_enumerator.h"
 #include "base/files/file_path_watcher.h"
 #include "base/files/file_util.h"
@@ -22,6 +21,7 @@
 #include "base/threading/thread_restrictions.h"
 #include "chrome/browser/shortcuts/shortcut_creation_test_support.h"
 #include "chrome/test/interaction/interaction_test_util_browser.h"
+#include "ui/base/interaction/interactive_test_internal.h"
 
 namespace shortcuts {
 
@@ -88,7 +88,7 @@ class TrackedShortcut : public ui::TrackedElement {
     ui::ElementTracker::GetFrameworkDelegate()->NotifyElementShown(this);
   }
 
-  DECLARE_FRAMEWORK_SPECIFIC_METADATA()
+  DECLARE_SAFE_CAST_TARGET()
  private:
   void ContentChanged(const base::FilePath& path, bool error) {
     EXPECT_FALSE(error);
@@ -106,9 +106,11 @@ class TrackedShortcut : public ui::TrackedElement {
   base::WeakPtrFactory<TrackedShortcut> weak_ptr_factory_{this};
 };
 
-DEFINE_FRAMEWORK_SPECIFIC_METADATA(TrackedShortcut)
+DEFINE_SAFE_CAST_TARGET(TrackedShortcut)
 
 }  // namespace
+
+DEFINE_SAFE_CAST_TARGET(ShortcutIntegrationInteractionTestPrivate)
 
 // This class monitors a specified directory, creating (and destroying)
 // `TrackedShortcut` instances for any files created and removed from the
@@ -168,7 +170,7 @@ class ShortcutIntegrationInteractionTestPrivate::ShortcutTracker {
     // `TrackedShortcut` instance.
     std::vector<TrackedShortcut*> new_shortcuts;
     for (const base::FilePath& path : current_paths) {
-      if (base::Contains(shortcuts_, path)) {
+      if (shortcuts_.contains(path)) {
         continue;
       }
       std::unique_ptr<TrackedShortcut> shortcut;
@@ -177,7 +179,8 @@ class ShortcutIntegrationInteractionTestPrivate::ShortcutTracker {
                   << " while not expecting new files.";
       } else {
         shortcut = std::make_unique<TrackedShortcut>(
-            next_shortcut_identifier_, ui::ElementContext(this), path);
+            next_shortcut_identifier_,
+            ui::ElementContext::CreateFakeContextForTesting(this), path);
       }
       const auto [it, inserted] = shortcuts_.emplace(path, std::move(shortcut));
       next_shortcut_identifier_ = {};
@@ -189,7 +192,7 @@ class ShortcutIntegrationInteractionTestPrivate::ShortcutTracker {
     // Remove any paths from `shortcuts_` that no longer exist, notifying
     // `ElementTracker` of any that were tracked.
     std::erase_if(shortcuts_, [&](const auto& item) {
-      bool should_erase = !base::Contains(current_paths, item.first);
+      bool should_erase = !current_paths.contains(item.first);
       if (should_erase) {
         ui::ElementTracker::GetFrameworkDelegate()->NotifyElementHidden(
             item.second.get());
@@ -222,15 +225,14 @@ class ShortcutIntegrationInteractionTestPrivate::ShortcutTracker {
 };
 
 ShortcutIntegrationInteractionTestPrivate ::
-    ShortcutIntegrationInteractionTestPrivate()
-    : internal::InteractiveBrowserTestPrivate(
-          std::make_unique<InteractionTestUtilBrowser>()) {}
+    ShortcutIntegrationInteractionTestPrivate(
+        ui::test::internal::InteractiveTestPrivate& test_impl)
+    : InteractiveTestPrivateFrameworkBase(test_impl) {}
 
 ShortcutIntegrationInteractionTestPrivate::
     ~ShortcutIntegrationInteractionTestPrivate() = default;
 
 void ShortcutIntegrationInteractionTestPrivate::DoTestSetUp() {
-  internal::InteractiveBrowserTestPrivate::DoTestSetUp();
   test_support_ = std::make_unique<ShortcutCreationTestSupport>();
   shortcut_tracker_ = std::make_unique<ShortcutTracker>(
       base::PathService::CheckedGet(base::DIR_USER_DESKTOP));
@@ -239,7 +241,6 @@ void ShortcutIntegrationInteractionTestPrivate::DoTestSetUp() {
 void ShortcutIntegrationInteractionTestPrivate::DoTestTearDown() {
   shortcut_tracker_.reset();
   test_support_.reset();
-  internal::InteractiveBrowserTestPrivate::DoTestTearDown();
 }
 
 void ShortcutIntegrationInteractionTestPrivate::SetNextShortcutIdentifier(

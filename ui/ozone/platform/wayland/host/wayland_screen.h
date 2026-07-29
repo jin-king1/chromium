@@ -38,7 +38,8 @@ class WaylandConnection;
 class OrgGnomeMutterIdleMonitor;
 #endif
 
-// A PlatformScreen implementation for Wayland.
+// A PlatformScreen implementation for Wayland. Note that this object outlives
+// WaylandConnection.
 class WaylandScreen : public PlatformScreen, public DeviceScaleFactorObserver {
  public:
   explicit WaylandScreen(WaylandConnection* connection);
@@ -51,6 +52,7 @@ class WaylandScreen : public PlatformScreen, public DeviceScaleFactorObserver {
 
   WaylandOutput::Id GetOutputIdForDisplayId(int64_t display_id);
   WaylandOutput* GetWaylandOutputForDisplayId(int64_t display_id);
+  viz::SharedImageFormat GetHDRImageFormat() const;
 
   // Returns id of the output that matches the bounds in screen coordinates.
   WaylandOutput::Id GetOutputIdMatching(const gfx::Rect& match_rect);
@@ -78,7 +80,7 @@ class WaylandScreen : public PlatformScreen, public DeviceScaleFactorObserver {
   base::TimeDelta CalculateIdleTime() const override;
   void AddObserver(display::DisplayObserver* observer) override;
   void RemoveObserver(display::DisplayObserver* observer) override;
-  base::Value::List GetGpuExtraInfo(
+  base::ListValue GetGpuExtraInfo(
       const gfx::GpuExtraInfo& gpu_extra_info) override;
   std::optional<float> GetPreferredScaleFactorForAcceleratedWidget(
       gfx::AcceleratedWidget widget) const override;
@@ -91,6 +93,8 @@ class WaylandScreen : public PlatformScreen, public DeviceScaleFactorObserver {
   // True if the internal representations for output objects is consistent for
   // the screen.
   bool VerifyOutputStateConsistentForTesting() const;
+
+  void ResetConnection();
 
  protected:
   // Suspends or un-suspends the platform-specific screensaver, and returns
@@ -125,16 +129,15 @@ class WaylandScreen : public PlatformScreen, public DeviceScaleFactorObserver {
   base::flat_map<WaylandOutput::Id, int64_t> display_id_map_;
   display::DisplayList display_list_;
 
-  std::optional<gfx::BufferFormat> image_format_alpha_;
-  std::optional<gfx::BufferFormat> image_format_no_alpha_;
-  std::optional<gfx::BufferFormat> image_format_hdr_;
+  std::optional<viz::SharedImageFormat> image_format_alpha_;
+  std::optional<viz::SharedImageFormat> image_format_no_alpha_;
+  std::optional<viz::SharedImageFormat> image_format_hdr_;
 
 #if BUILDFLAG(USE_DBUS)
   mutable std::unique_ptr<OrgGnomeMutterIdleMonitor>
       org_gnome_mutter_idle_monitor_;
 #endif
 
-  wl::Object<zwp_idle_inhibitor_v1> idle_inhibitor_;
   uint32_t screen_saver_suspension_count_ = 0;
 
   base::ScopedObservation<ui::LinuxUi, DeviceScaleFactorObserver>

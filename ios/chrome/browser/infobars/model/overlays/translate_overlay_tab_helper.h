@@ -51,7 +51,6 @@ class TranslateOverlayTabHelper
 
  private:
   friend class web::WebStateUserData<TranslateOverlayTabHelper>;
-  WEB_STATE_USER_DATA_KEY_DECL();
 
   // Observes a Translate InfoBar for changes to the TranslateStep.
   class TranslateStepObserver
@@ -93,7 +92,7 @@ class TranslateOverlayTabHelper
    private:
     // infobars::InfoBarManager::Observer:
     void OnInfoBarAdded(infobars::InfoBar* infobar) override;
-    void OnManagerShuttingDown(infobars::InfoBarManager* manager) override;
+    void OnManagerWillBeDestroyed(infobars::InfoBarManager* manager) override;
 
     // Scoped observer that facilitates observing an InfoBarManager
     base::ScopedObservation<infobars::InfoBarManager,
@@ -131,7 +130,8 @@ class TranslateOverlayTabHelper
   // Observer::TranslationFinished() to cancel the placeholder if one exists.
   void TranslateDidFinish(infobars::InfoBar* infobar, bool success);
   // Indicates the addition of a Translate infobar.
-  void TranslateInfoBarAdded(InfoBarIOS* infobar);
+  void TranslateInfoBarAdded(InfoBarIOS* infobar,
+                             translate::TranslateStep step);
   // Indicates that this TabHelper's WebState has been destroyed.
   void UpdateForWebStateDestroyed();
 

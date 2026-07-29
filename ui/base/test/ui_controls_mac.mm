@@ -2,19 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "ui/base/test/ui_controls.h"
 
 #import <Cocoa/Cocoa.h>
 
+#include <array>
 #include <vector>
 
 #import "base/apple/foundation_util.h"
 #import "base/apple/scoped_objc_class_swizzler.h"
+#include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/task/current_thread.h"
@@ -63,11 +60,26 @@ namespace {
 // when firing keyboard and mouse click events.
 NSPoint g_mouse_location = { 0, 0 };
 
+// Stores the most recently-entered window so that exit and enter events can be
+// sent correctly.
+__weak NSWindow* g_last_window_weak = nullptr;
+
 // Stores the current pressed mouse buttons. Indexed by
 // ui_controls::MouseButton.
-bool g_mouse_button_down[3] = {false, false, false};
+std::array<bool, 3> g_mouse_button_down = {false, false, false};
 
 bool g_ui_controls_enabled = false;
+
+void CheckUIControlsEnabled() {
+  CHECK(g_ui_controls_enabled)
+      << "In order to use ui_controls methods, you must be in a test "
+         "executable that enables UI Controls. Currently, this is "
+         "interactive_ui_tests and some fuzzing tests.\n"
+         "This limitation prevents attempting to send input that might require "
+         "the test process to be active and focused in an environment where "
+         "the process is not guaranteed to be running exclusively, which can "
+         "lead to flaky tests.";
+}
 
 // Creates the proper sequence of autoreleased key events for a key down + up.
 void SynthesizeKeyEventsSequence(NSWindow* window,
@@ -142,7 +154,7 @@ void SynthesizeKeyEventsSequence(NSWindow* window,
 
 // A helper function to watch for the event queue. The specific task will be
 // fired when there is no more event in the queue.
-void EventQueueWatcher(base::OnceClosure task) {
+void PostWhenEventQueueIsEmpty(base::OnceClosure task) {
   NSEvent* event = [NSApp nextEventMatchingMask:NSEventMaskAny
                                       untilDate:nil
                                          inMode:NSDefaultRunLoopMode
@@ -150,7 +162,7 @@ void EventQueueWatcher(base::OnceClosure task) {
   // If there is still event in the queue, then we need to check again.
   if (event) {
     base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
-        FROM_HERE, base::BindOnce(&EventQueueWatcher, std::move(task)));
+        FROM_HERE, base::BindOnce(&PostWhenEventQueueIsEmpty, std::move(task)));
   } else {
     base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, std::move(task));
@@ -189,6 +201,38 @@ NSWindow* WindowAtCurrentMouseLocation() {
   return nil;
 }
 
+// Makes a mouse event for `event_type`.
+NSEvent* MakeMouseEvent(NSEventType event_type, NSWindow* window) {
+  NSTimeInterval timestamp = TimeIntervalSinceSystemStartup();
+  NSPoint point_in_window = g_mouse_location;
+  if (window) {
+    point_in_window = [window convertPointFromScreen:point_in_window];
+  }
+  const bool is_move = event_type == NSEventTypeMouseMoved;
+  const bool is_enter_exit = event_type == NSEventTypeMouseEntered ||
+                             event_type == NSEventTypeMouseExited;
+  if (is_enter_exit) {
+    return [NSEvent enterExitEventWithType:event_type
+                                  location:point_in_window
+                             modifierFlags:0
+                                 timestamp:timestamp
+                              windowNumber:[window windowNumber]
+                                   context:nil
+                               eventNumber:0
+                            trackingNumber:0
+                                  userData:nullptr];
+  }
+  return [NSEvent mouseEventWithType:event_type
+                            location:point_in_window
+                       modifierFlags:0
+                           timestamp:timestamp
+                        windowNumber:[window windowNumber]
+                             context:nil
+                         eventNumber:0
+                          clickCount:is_move ? 0 : 1
+                            pressure:is_move ? 0.0 : 1.0];
+}
+
 }  // namespace
 
 // Donates testing implementations of NSEvent methods.
@@ -202,11 +246,17 @@ NSWindow* WindowAtCurrentMouseLocation() {
 
 + (NSUInteger)pressedMouseButtons {
   NSUInteger result = 0;
-  const int buttons[3] = {
-      ui_controls::LEFT, ui_controls::RIGHT, ui_controls::MIDDLE};
-  for (size_t i = 0; i < std::size(buttons); ++i) {
-    if (g_mouse_button_down[buttons[i]])
+  const std::array buttons = {
+      ui_controls::LEFT,
+      ui_controls::RIGHT,
+      ui_controls::MIDDLE,
+  };
+  int i = 0;
+  for (int button : buttons) {
+    if (g_mouse_button_down[button]) {
       result |= (1 << i);
+    }
+    i++;
   }
   return result;
 }
@@ -263,7 +313,7 @@ bool SendKeyPress(gfx::NativeWindow window,
                   bool shift,
                   bool alt,
                   bool command) {
-  CHECK(g_ui_controls_enabled);
+  CheckUIControlsEnabled();
   return SendKeyPressNotifyWhenDone(window, key, control, shift, alt, command,
                                     base::OnceClosure());
 }
@@ -281,7 +331,7 @@ bool SendKeyPressNotifyWhenDone(gfx::NativeWindow window,
   // This doesn't time out if `window` is deleted before the key release events
   // are dispatched, so it's fine to ignore `wait_for` and always wait for key
   // release events.
-  CHECK(g_ui_controls_enabled);
+  CheckUIControlsEnabled();
   return SendKeyEventsNotifyWhenDone(
       window, key, kKeyPress | kKeyRelease, std::move(task),
       GenerateAcceleratorState(control, shift, alt, command));
@@ -291,7 +341,7 @@ bool SendKeyEvents(gfx::NativeWindow window,
                    ui::KeyboardCode key,
                    int key_event_types,
                    int accelerator_state) {
-  CHECK(g_ui_controls_enabled);
+  CheckUIControlsEnabled();
   return SendKeyEventsNotifyWhenDone(window, key, key_event_types,
                                      base::OnceClosure(), accelerator_state);
 }
@@ -301,7 +351,7 @@ bool SendKeyEventsNotifyWhenDone(gfx::NativeWindow window,
                                  int key_event_types,
                                  base::OnceClosure task,
                                  int accelerator_state) {
-  CHECK(g_ui_controls_enabled);
+  CheckUIControlsEnabled();
   DCHECK(base::CurrentUIThread::IsSet());
 
   std::vector<NSEvent*> events;
@@ -319,14 +369,14 @@ bool SendKeyEventsNotifyWhenDone(gfx::NativeWindow window,
 
   if (!task.is_null()) {
     base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
-        FROM_HERE, base::BindOnce(&EventQueueWatcher, std::move(task)));
+        FROM_HERE, base::BindOnce(&PostWhenEventQueueIsEmpty, std::move(task)));
   }
 
   return true;
 }
 
 bool SendMouseMove(int x, int y, gfx::NativeWindow window_hint) {
-  CHECK(g_ui_controls_enabled);
+  CheckUIControlsEnabled();
   return SendMouseMoveNotifyWhenDone(x, y, base::OnceClosure(), window_hint);
 }
 
@@ -338,17 +388,25 @@ bool SendMouseMoveNotifyWhenDone(int x,
                                  int y,
                                  base::OnceClosure task,
                                  gfx::NativeWindow window_hint) {
-  CHECK(g_ui_controls_enabled);
-  g_mouse_location = gfx::ScreenPointToNSPoint(gfx::Point(x, y));  // flip!
+  CheckUIControlsEnabled();
 
+  g_mouse_location = gfx::ScreenPointToNSPoint(gfx::Point(x, y));  // flip!
   NSWindow* window = window_hint ? window_hint.GetNativeNSWindow()
                                  : WindowAtCurrentMouseLocation();
 
-  NSPoint pointInWindow = g_mouse_location;
-  if (window) {
-    pointInWindow = [window convertPointFromScreen:pointInWindow];
+  // Possibly send exit and enter events.
+  if (g_last_window_weak != window) {
+    if (g_last_window_weak) {
+      NSEvent* event =
+          MakeMouseEvent(NSEventTypeMouseExited, g_last_window_weak);
+      [g_last_window_weak.contentView mouseExited:event];
+    }
+    if (window) {
+      NSEvent* event = MakeMouseEvent(NSEventTypeMouseEntered, window);
+      [g_last_window_weak.contentView mouseEntered:event];
+    }
   }
-  NSTimeInterval timestamp = TimeIntervalSinceSystemStartup();
+  g_last_window_weak = window;
 
   NSEventType event_type = NSEventTypeMouseMoved;
   if (g_mouse_button_down[LEFT]) {
@@ -359,21 +417,35 @@ bool SendMouseMoveNotifyWhenDone(int x,
     event_type = NSEventTypeOtherMouseDragged;
   }
 
-  NSEvent* event = [NSEvent
-      mouseEventWithType:event_type
-                location:pointInWindow
-           modifierFlags:0
-               timestamp:timestamp
-            windowNumber:[window windowNumber]
-                 context:nil
-             eventNumber:0
-              clickCount:event_type == NSEventTypeMouseMoved ? 0 : 1
-                pressure:event_type == NSEventTypeMouseMoved ? 0.0 : 1.0];
-  [[NSApplication sharedApplication] postEvent:event atStart:NO];
+  // In production, mouse entered/exited/move events are sent to the owner of
+  // the NSTrackingArea that they are in. Unlike other mouse events, they bypass
+  // the NSApplication event loop.
+  //
+  // This test utility simulates that by sending the mouse move
+  // to the target NSView directly.
+  // TODO(crbug.com/503006742): mouse enter and exit events are not generated
+  // for subviews. Fix it.
+  NSEvent* event = MakeMouseEvent(event_type, window);
+  if (window_hint && event_type == NSEventTypeMouseMoved) {
+    if (window) {
+      NSPoint point_in_window = [event locationInWindow];
+      // `target_view` might be the contentView or a subview (e.g. a
+      // WebView's native view). hitTest: will find that target.
+      NSView* target_view = [window.contentView hitTest:point_in_window];
+      if (target_view) {
+        [target_view mouseMoved:event];
+      } else {
+        [window.contentView mouseMoved:event];
+      }
+    }
+  } else {
+    [[NSApplication sharedApplication] postEvent:event atStart:NO];
+  }
 
+  // Maybe post the follow-up task.
   if (!task.is_null()) {
     base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
-        FROM_HERE, base::BindOnce(&EventQueueWatcher, std::move(task)));
+        FROM_HERE, base::BindOnce(&PostWhenEventQueueIsEmpty, std::move(task)));
   }
 
   return true;
@@ -383,7 +455,7 @@ bool SendMouseEvents(MouseButton type,
                      int button_state,
                      int accelerator_state,
                      gfx::NativeWindow window_hint) {
-  CHECK(g_ui_controls_enabled);
+  CheckUIControlsEnabled();
   return SendMouseEventsNotifyWhenDone(type, button_state, base::OnceClosure(),
                                        accelerator_state, window_hint);
 }
@@ -393,7 +465,7 @@ bool SendMouseEventsNotifyWhenDone(MouseButton type,
                                    base::OnceClosure task,
                                    int accelerator_state,
                                    gfx::NativeWindow window_hint) {
-  CHECK(g_ui_controls_enabled);
+  CheckUIControlsEnabled();
   // Handle the special case of mouse clicking (UP | DOWN) case.
   if (button_state == (UP | DOWN)) {
     return (SendMouseEventsNotifyWhenDone(type, DOWN, base::OnceClosure(),
@@ -457,14 +529,14 @@ bool SendMouseEventsNotifyWhenDone(MouseButton type,
 
   if (!task.is_null()) {
     base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
-        FROM_HERE, base::BindOnce(&EventQueueWatcher, std::move(task)));
+        FROM_HERE, base::BindOnce(&PostWhenEventQueueIsEmpty, std::move(task)));
   }
 
   return true;
 }
 
 bool SendMouseClick(MouseButton type, gfx::NativeWindow window_hint) {
-  CHECK(g_ui_controls_enabled);
+  CheckUIControlsEnabled();
   return SendMouseEventsNotifyWhenDone(type, UP | DOWN, base::OnceClosure(),
                                        kNoAccelerator, window_hint);
 }

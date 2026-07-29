@@ -38,19 +38,25 @@ import org.mockito.junit.MockitoRule;
 import org.chromium.base.MathUtils;
 import org.chromium.base.Token;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.chrome.browser.data_sharing.ui.shared_image_tiles.SharedImageTilesConfig;
 import org.chromium.components.collaboration.CollaborationService;
 import org.chromium.components.collaboration.ServiceStatus;
 import org.chromium.components.data_sharing.DataSharingService;
 import org.chromium.components.data_sharing.DataSharingUIDelegate;
 import org.chromium.components.data_sharing.SharedGroupTestHelper;
+import org.chromium.components.tab_group_sync.EitherId.EitherGroupId;
 import org.chromium.components.tab_group_sync.LocalTabGroupId;
 import org.chromium.components.tab_group_sync.SavedTabGroup;
 import org.chromium.components.tab_group_sync.TabGroupSyncService;
 import org.chromium.components.tab_groups.TabGroupColorId;
+import org.chromium.components.tab_groups.TabGroupColorPickerUtils;
+import org.chromium.components.tab_groups.TabGroupsFeatureMap;
 import org.chromium.ui.base.TestActivity;
 
 /** Unit tests for {@link TabGroupColorViewProvider}. */
 @RunWith(BaseRobolectricTestRunner.class)
+@DisableFeatures({TabGroupsFeatureMap.UPDATE_TAB_GROUP_COLORS})
 public class TabGroupColorViewProviderUnitTest {
     private static final Token REGULAR_TAB_GROUP_ID = new Token(3L, 4L);
     private static final Token INCOGNITO_TAB_GROUP_ID = new Token(5L, 6L);
@@ -89,7 +95,7 @@ public class TabGroupColorViewProviderUnitTest {
         mRegularColorViewProvider =
                 new TabGroupColorViewProvider(
                         activity,
-                        REGULAR_TAB_GROUP_ID,
+                        EitherGroupId.createLocalId(new LocalTabGroupId(REGULAR_TAB_GROUP_ID)),
                         /* isIncognito= */ false,
                         TabGroupColorId.RED,
                         mTabGroupSyncService,
@@ -101,7 +107,7 @@ public class TabGroupColorViewProviderUnitTest {
         mIncognitoColorViewProvider =
                 new TabGroupColorViewProvider(
                         activity,
-                        INCOGNITO_TAB_GROUP_ID,
+                        EitherGroupId.createLocalId(new LocalTabGroupId(INCOGNITO_TAB_GROUP_ID)),
                         /* isIncognito= */ true,
                         TabGroupColorId.BLUE,
                         /* tabGroupSyncService= */ null,
@@ -120,11 +126,18 @@ public class TabGroupColorViewProviderUnitTest {
 
     @Test
     public void testSetAndGetTabGroupId() {
-        assertEquals(REGULAR_TAB_GROUP_ID, mRegularColorViewProvider.getTabGroupIdForTesting());
-        assertEquals(INCOGNITO_TAB_GROUP_ID, mIncognitoColorViewProvider.getTabGroupIdForTesting());
+        assertEquals(
+                REGULAR_TAB_GROUP_ID,
+                mRegularColorViewProvider.getTabGroupIdForTesting().getLocalId().tabGroupId);
+        assertEquals(
+                INCOGNITO_TAB_GROUP_ID,
+                mIncognitoColorViewProvider.getTabGroupIdForTesting().getLocalId().tabGroupId);
 
-        mRegularColorViewProvider.setTabGroupId(OTHER_TAB_GROUP_ID);
-        assertEquals(OTHER_TAB_GROUP_ID, mRegularColorViewProvider.getTabGroupIdForTesting());
+        mRegularColorViewProvider.setTabGroupId(
+                EitherGroupId.createLocalId(new LocalTabGroupId(OTHER_TAB_GROUP_ID)));
+        assertEquals(
+                OTHER_TAB_GROUP_ID,
+                mRegularColorViewProvider.getTabGroupIdForTesting().getLocalId().tabGroupId);
     }
 
     @Test
@@ -187,7 +200,8 @@ public class TabGroupColorViewProviderUnitTest {
 
         verifyColorViewCollaboration(TabGroupColorId.CYAN);
 
-        mRegularColorViewProvider.setTabGroupId(OTHER_TAB_GROUP_ID);
+        mRegularColorViewProvider.setTabGroupId(
+                EitherGroupId.createLocalId(new LocalTabGroupId(OTHER_TAB_GROUP_ID)));
         assertFalse(mRegularColorViewProvider.hasCollaborationId());
 
         // Verify the view is back to the unshared state.
@@ -200,7 +214,8 @@ public class TabGroupColorViewProviderUnitTest {
 
     @Test
     public void testColorView_NotSharedToSharedIdChange() {
-        mRegularColorViewProvider.setTabGroupId(OTHER_TAB_GROUP_ID);
+        mRegularColorViewProvider.setTabGroupId(
+                EitherGroupId.createLocalId(new LocalTabGroupId(OTHER_TAB_GROUP_ID)));
 
         verifyColorView(
                 mRegularColorViewProvider,
@@ -211,7 +226,8 @@ public class TabGroupColorViewProviderUnitTest {
         createCollaboration();
         assertFalse(mRegularColorViewProvider.hasCollaborationId());
 
-        mRegularColorViewProvider.setTabGroupId(REGULAR_TAB_GROUP_ID);
+        mRegularColorViewProvider.setTabGroupId(
+                EitherGroupId.createLocalId(new LocalTabGroupId(REGULAR_TAB_GROUP_ID)));
         assertTrue(mRegularColorViewProvider.hasCollaborationId());
 
         verifyColorViewCollaboration(TabGroupColorId.CYAN);
@@ -262,7 +278,7 @@ public class TabGroupColorViewProviderUnitTest {
         assertNotNull(drawable);
 
         assertEquals(
-                ColorPickerUtils.getTabGroupColorPickerItemColor(
+                TabGroupColorPickerUtils.getTabGroupColorPickerItemColor(
                         mContext, initialColorId, isIncognito),
                 drawable.getColor().getDefaultColor());
 
@@ -270,7 +286,7 @@ public class TabGroupColorViewProviderUnitTest {
         assertEquals(colorView, viewProvider.getLazyView());
 
         assertEquals(
-                ColorPickerUtils.getTabGroupColorPickerItemColor(
+                TabGroupColorPickerUtils.getTabGroupColorPickerItemColor(
                         mContext, finalColorId, isIncognito),
                 drawable.getColor().getDefaultColor());
         float radii = res.getDimension(R.dimen.tab_group_color_icon_item_radius);
@@ -282,16 +298,17 @@ public class TabGroupColorViewProviderUnitTest {
         assertEquals(1, colorView.getChildCount());
 
         Resources res = mContext.getResources();
-        @Px
-        int expectedMarginStart =
-                res.getDimensionPixelSize(R.dimen.tab_group_color_icon_stroke) / 2;
-        int marginStart =
-                ((FrameLayout.LayoutParams) colorView.getChildAt(0).getLayoutParams())
-                        .getMarginStart();
-        assertEquals(expectedMarginStart, marginStart);
+        final @Px int stroke = res.getDimensionPixelSize(R.dimen.tab_group_color_icon_stroke);
+        FrameLayout.LayoutParams params =
+                (FrameLayout.LayoutParams) colorView.getChildAt(0).getLayoutParams();
+        assertEquals(stroke, params.getMarginStart());
+        assertEquals(stroke, params.topMargin);
 
-        @Px
-        int size = res.getDimensionPixelSize(R.dimen.tab_group_color_icon_with_avatar_item_size);
+        SharedImageTilesConfig config =
+                SharedImageTilesConfig.Builder.createForTabGroupColorContext(
+                                mContext, currentColorId)
+                        .build();
+        final @Px int size = config.getBorderAndTotalIconSizes(res).second + 2 * stroke;
         assertEquals(size, colorView.getMinimumWidth());
         assertEquals(size, colorView.getMinimumHeight());
 
@@ -299,10 +316,11 @@ public class TabGroupColorViewProviderUnitTest {
         assertNotNull(drawable);
 
         assertEquals(
-                ColorPickerUtils.getTabGroupColorPickerItemColor(mContext, currentColorId, false),
+                TabGroupColorPickerUtils.getTabGroupColorPickerItemColor(
+                        mContext, currentColorId, false),
                 drawable.getColor().getDefaultColor());
-        float radius = res.getDimension(R.dimen.tab_group_color_icon_with_avatar_item_radius);
-        assertAllCornerRadiiAre(radius, drawable);
+        int radius = (size + 1) / 2;
+        assertAllCornerRadiiAre((float) radius, drawable);
     }
 
     void assertAllCornerRadiiAre(float radius, GradientDrawable drawable) {

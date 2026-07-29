@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "base/json/json_reader.h"
+#include "base/logging.h"
 #include "base/threading/platform_thread.h"
 #include "base/time/time.h"
 #include "chrome/test/chromedriver/chrome/devtools_client_impl.h"
@@ -68,7 +69,8 @@ bool DevToolsHttpClient::FetchUrlAndLog(const std::string& url,
 
 Status DevToolsHttpClient::ParseWebViewsInfo(const std::string& data,
                                              WebViewsInfo& views_info) {
-  std::optional<base::Value> value = base::JSONReader::Read(data);
+  std::optional<base::Value> value =
+      base::JSONReader::Read(data, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   if (!value) {
     return Status(kUnknownError, "DevTools returned invalid JSON");
   }

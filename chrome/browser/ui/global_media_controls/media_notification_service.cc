@@ -8,20 +8,23 @@
 #include <memory>
 
 #include "base/callback_list.h"
+#include "base/functional/bind.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/unguessable_token.h"
 #include "chrome/browser/feature_engagement/tracker_factory.h"
+#include "chrome/browser/glic/host/guest_util.h"
 #include "chrome/browser/media/router/media_router_feature.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
-#include "chrome/browser/ui/browser_list.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/global_media_controls/cast_device_list_host.h"
 #include "chrome/browser/ui/global_media_controls/media_notification_device_provider_impl.h"
 #include "chrome/browser/ui/global_media_controls/presentation_request_notification_producer.h"
 #include "chrome/browser/ui/media_router/cast_dialog_controller.h"
 #include "chrome/browser/ui/media_router/media_router_ui.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/common/buildflags.h"
 #include "components/feature_engagement/public/tracker.h"
 #include "components/global_media_controls/public/media_dialog_delegate.h"
 #include "components/global_media_controls/public/media_item_manager.h"
@@ -34,6 +37,7 @@
 #include "content/public/browser/audio_service.h"
 #include "content/public/browser/media_session.h"
 #include "content/public/browser/media_session_service.h"
+#include "content/public/browser/render_frame_host.h"
 #include "media/base/media_switches.h"
 #include "media/remoting/device_capability_checker.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
@@ -43,9 +47,14 @@
 #include "services/metrics/public/cpp/ukm_recorder.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
-#include "chrome/browser/ash/crosapi/crosapi_ash.h"
-#include "chrome/browser/ash/crosapi/crosapi_manager.h"
-#include "chrome/browser/ash/crosapi/media_ui_ash.h"
+#include "ash/session/session_controller_impl.h"
+#include "ash/shell.h"
+#include "ash/system/media/media_notification_provider.h"
+#include "ash/system/media/media_tray.h"
+#include "ash/system/status_area_widget.h"
+#include "ash/system/unified/unified_system_tray.h"
+#include "ash/system/unified/unified_system_tray_bubble.h"
+#include "ash/system/unified/unified_system_tray_controller.h"
 #endif
 
 namespace mojom {
@@ -73,29 +82,19 @@ void CancelRequest(
 // focused.
 bool IsWebContentsFocused(content::WebContents* web_contents) {
   DCHECK(web_contents);
-  Browser* browser = chrome::FindBrowserWithTab(web_contents);
+  BrowserWindowInterface* browser =
+      GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(web_contents);
   if (!browser) {
     return false;
   }
   // If the given WebContents is not in the focused window, then it's not
   // focused. Note that we know a Browser is focused because otherwise the user
   // could not interact with the MediaDialogView.
-  if (BrowserList::GetInstance()->GetLastActive() != browser) {
+  if (GetLastActiveBrowserWindowInterfaceWithAnyProfile() != browser) {
     return false;
   }
-  return browser->tab_strip_model()->GetActiveWebContents() == web_contents;
+  return browser->GetTabStripModel()->GetActiveWebContents() == web_contents;
 }
-
-#if BUILDFLAG(IS_CHROMEOS)
-crosapi::mojom::MediaUI* GetMediaUI() {
-  // TODO(crbug.com/373971535): Figure how to call `media_ui_ash()` once crosapi
-  // is gone.
-  if (crosapi::CrosapiManager::IsInitialized()) {
-    return crosapi::CrosapiManager::Get()->crosapi_ash()->media_ui_ash();
-  }
-  return nullptr;
-}
-#endif  // BUILDFLAG(IS_CHROMEOS)
 
 bool ShouldInitializeWithRemotePlaybackSource(
     content::WebContents* web_contents,
@@ -127,12 +126,19 @@ bool ShouldInitializeWithRemotePlaybackSource(
 
   return true;
 }
+
 }  // namespace
 
 MediaNotificationService::MediaNotificationService(Profile* profile,
                                                    bool show_from_all_profiles)
     : profile_(profile), receiver_(this) {
   item_manager_ = global_media_controls::MediaItemManager::Create();
+
+#if BUILDFLAG(IS_CHROMEOS)
+  if (auto* provider = ash::MediaNotificationProvider::Get(); provider) {
+    provider_observation_.Observe(provider);
+  }
+#endif
 
   std::optional<base::UnguessableToken> source_id;
   if (!show_from_all_profiles) {
@@ -157,6 +163,11 @@ MediaNotificationService::MediaNotificationService(Profile* profile,
           std::move(audio_focus_remote), std::move(controller_manager_remote),
           item_manager_.get(), source_id);
 
+  // It is safe to use `base::Unretained` here because
+  // `media_session_item_producer_` is owned by `this`.
+  media_session_item_producer_->SetIsIdBlockedCallback(base::BindRepeating(
+      &MediaNotificationService::IsIdBlocked, base::Unretained(this)));
+
   media_session_item_producer_->AddObserver(this);
   item_manager_->AddItemProducer(media_session_item_producer_.get());
 
@@ -179,23 +190,14 @@ MediaNotificationService::MediaNotificationService(Profile* profile,
               &MediaNotificationService::HasActiveNotificationsForWebContents,
               base::Unretained(this)),
           content::MediaSession::GetSourceId(profile));
-#if !BUILDFLAG(IS_CHROMEOS)
-  supplemental_device_picker_producer_ =
-      std::make_unique<SupplementalDevicePickerProducer>(item_manager_.get());
-  item_manager_->AddItemProducer(supplemental_device_picker_producer_.get());
-  // On Chrome OS, SetDevicePickerProvider() gets called by Ash via the
-  // crosapi.
-  SetDevicePickerProvider(supplemental_device_picker_producer_->PassRemote());
-#endif  // !BUILDFLAG(IS_CHROMEOS)
 
-#if BUILDFLAG(IS_CHROMEOS)
-  // The Ash instance manages Casting from System Web Apps.
-  if (GetMediaUI()) {
-    GetMediaUI()->RegisterDeviceService(
-        content::MediaSession::GetSourceId(profile),
-        receiver_.BindNewPipeAndPassRemote());
+  auto* item_manager = GetMediaItemManagerForSupplementalDevicePickerProducer();
+  if (item_manager) {
+    supplemental_device_picker_producer_ = std::make_unique<
+        global_media_controls::SupplementalDevicePickerProducer>(item_manager);
+    item_manager->AddItemProducer(supplemental_device_picker_producer_.get());
+    SetDevicePickerProvider(supplemental_device_picker_producer_->PassRemote());
   }
-#endif  // BUILDFLAG(IS_CHROMEOS)
 }
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -216,15 +218,55 @@ void MediaNotificationService::ShowDialogAsh(
     item_id = content::MediaSession::GetRequestIdFromWebContents(web_contents)
                   .ToString();
   }
-  if (GetMediaUI()) {
-    GetMediaUI()->ShowDevicePicker(item_id);
+
+  // Keep Media Tray pinned to use a separate widget in kiosk sessions because
+  // the Unified System Tray bubble is not available.
+  if (ash::Shell::Get()->session_controller()->IsRunningInAppMode()) {
+    ash::MediaTray::SetPinnedToShelf(true);
   }
+
+  if (ash::MediaTray::IsPinnedToShelf()) {
+    ash::StatusAreaWidget::ForWindow(ash::Shell::Get()->GetPrimaryRootWindow())
+        ->media_tray()
+        ->ShowBubbleWithItem(item_id);
+  } else {
+    ash::UnifiedSystemTray* tray =
+        ash::StatusAreaWidget::ForWindow(
+            ash::Shell::Get()->GetPrimaryRootWindow())
+            ->unified_system_tray();
+    tray->ShowBubble();
+    tray->bubble()
+        ->unified_system_tray_controller()
+        ->ShowMediaControlsDetailedView(
+            global_media_controls::GlobalMediaControlsEntryPoint::kPresentation,
+            item_id);
+  }
+}
+
+void MediaNotificationService::OnMediaNotificationProviderWillBeDestroyed() {
+  if (supplemental_device_picker_producer_) {
+    if (auto* item_manager =
+            GetMediaItemManagerForSupplementalDevicePickerProducer()) {
+      item_manager->RemoveItemProducer(
+          supplemental_device_picker_producer_.get());
+    }
+    supplemental_device_picker_producer_.reset();
+  }
+  provider_observation_.Reset();
 }
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 MediaNotificationService::~MediaNotificationService() {
   media_session_item_producer_->RemoveObserver(this);
   item_manager_->RemoveItemProducer(media_session_item_producer_.get());
+
+  if (supplemental_device_picker_producer_) {
+    if (auto* item_manager =
+            GetMediaItemManagerForSupplementalDevicePickerProducer()) {
+      item_manager->RemoveItemProducer(
+          supplemental_device_picker_producer_.get());
+    }
+  }
 }
 
 void MediaNotificationService::Shutdown() {
@@ -340,8 +382,9 @@ void MediaNotificationService::SetDialogDelegateForWebContents(
   // notification items and Remote Playback presentation routes should be shown
   // as media session notification items.
   std::optional<std::string> cast_presentation_route_id;
-  for (auto route : media_router::WebContentsPresentationManager::Get(contents)
-                        ->GetMediaRoutes()) {
+  for (const auto& route :
+       media_router::WebContentsPresentationManager::Get(contents)
+           ->GetMediaRoutes()) {
     if (route.media_source().IsCastPresentationUrl()) {
       cast_presentation_route_id = route.media_route_id();
       break;
@@ -355,9 +398,10 @@ void MediaNotificationService::SetDialogDelegateForWebContents(
   } else if (HasActiveControllableSessionForWebContents(contents)) {
     item_id = GetActiveControllableSessionForWebContents(contents);
   } else {
-    const SupplementalDevicePickerItem& supplemental_item =
-        supplemental_device_picker_producer_->GetOrCreateNotificationItem(
-            content::MediaSession::GetSourceId(profile_));
+    const global_media_controls::SupplementalDevicePickerItem&
+        supplemental_item =
+            supplemental_device_picker_producer_->GetOrCreateNotificationItem(
+                content::MediaSession::GetSourceId(profile_));
     item_id = supplemental_item.id();
     DCHECK(presentation_request_notification_producer_->GetWebContents() ==
            contents);
@@ -403,6 +447,8 @@ void MediaNotificationService::OnStartPresentationContextCreated(
       return;
     }
 
+    ResetPresentationContext();
+
     // If there exists a media session notification associated with
     // |web_contents|, hold onto the context for later use.
     context_ = std::move(context);
@@ -412,8 +458,15 @@ void MediaNotificationService::OnStartPresentationContextCreated(
     // the top frame.
     std::string item_id =
         GetActiveControllableSessionForWebContents(web_contents);
+    context_item_id_ = item_id;
     media_session_item_producer_->UpdateMediaItemSourceOrigin(
         item_id, context_->presentation_request().frame_origin);
+#if BUILDFLAG(IS_CHROMEOS)
+    if (auto* provider = ash::MediaNotificationProvider::Get(); provider) {
+      provider->UpdateMediaItemSourceOrigin(
+          item_id, context_->presentation_request().frame_origin);
+    }
+#endif
   } else if (presentation_request_notification_producer_) {
     // If there do not exist active notifications, pass |context| to
     // |presentation_request_notification_producer_| to create a dummy
@@ -433,11 +486,11 @@ void MediaNotificationService::GetDeviceListHostForSession(
   // `remoting_session_id` is used to construct the MediaRemotingCallback for
   // CastDeviceListHost to request Media Remoting for a MediaSession. This is
   // used for Media Remoting sessions started from the GMC dialog. However, when
-  // the dialog is opened for RemotePlayback#prompt() (when `context_` is not
-  // nullptr), the Remote Playback API on the blink side handles sending Media
-  // Remoting request and there's no need for requesting Media Remoting from
-  // MNS.
-  if (context_ == nullptr) {
+  // the dialog is opened for RemotePlayback#prompt() (when there is a matching
+  // presentation context), the Remote Playback API on the blink side handles
+  // sending the Media Remoting request and there's no need for requesting Media
+  // Remoting from MNS.
+  if (!HasPresentationContextForSession(session_id)) {
     remoting_session_id = session_id;
   }
   CreateCastDeviceListHost(CreateCastDialogControllerForSession(session_id),
@@ -468,9 +521,12 @@ MediaNotificationService::CreateCastDialogControllerForSession(
     return nullptr;
   }
 
-  if (context_) {
-    return media_router::MediaRouterUI::CreateWithStartPresentationContext(
-        web_contents, std::move(context_));
+  if (HasPresentationContextForSession(id)) {
+    auto dialog_controller =
+        media_router::MediaRouterUI::CreateWithStartPresentationContext(
+            web_contents, std::move(context_));
+    ResetPresentationContext();
+    return dialog_controller;
   }
 
   auto remote_playback_metadata =
@@ -544,6 +600,37 @@ void MediaNotificationService::CreateCastDeviceListHost(
   host_receivers_.emplace(host_id, std::move(host_receiver));
 }
 
+bool MediaNotificationService::HasPresentationContextForSession(
+    const std::string& session_id) {
+  if (!context_) {
+    return false;
+  }
+  auto* initiator_rfh = content::RenderFrameHost::FromID(
+      context_->presentation_request().render_frame_host_id);
+  if (!initiator_rfh || !initiator_rfh->IsActive()) {
+    ResetPresentationContext();
+    return false;
+  }
+  auto* web_contents =
+      content::MediaSession::GetWebContentsFromRequestId(session_id);
+  return web_contents && content::WebContents::FromRenderFrameHost(
+                             initiator_rfh) == web_contents;
+}
+
+void MediaNotificationService::ResetPresentationContext() {
+  context_.reset();
+  if (!context_item_id_.empty()) {
+    media_session_item_producer_->UpdateMediaItemSourceOrigin(context_item_id_,
+                                                              std::nullopt);
+#if BUILDFLAG(IS_CHROMEOS)
+    if (auto* provider = ash::MediaNotificationProvider::Get(); provider) {
+      provider->UpdateMediaItemSourceOrigin(context_item_id_, std::nullopt);
+    }
+#endif
+    context_item_id_.clear();
+  }
+}
+
 void MediaNotificationService::set_device_provider_for_testing(
     std::unique_ptr<MediaNotificationDeviceProvider> device_provider) {
   device_provider_ = std::move(device_provider);
@@ -612,4 +699,21 @@ void MediaNotificationService::RemoveDeviceListHost(int host_id) {
   if (!shutdown_has_started_) {
     host_receivers_.erase(host_id);
   }
+}
+
+bool MediaNotificationService::IsIdBlocked(
+    const std::string& request_id) const {
+  return glic::IsMediaRequestFromGlic(profile_, request_id);
+}
+
+global_media_controls::MediaItemManager* MediaNotificationService::
+    GetMediaItemManagerForSupplementalDevicePickerProducer() {
+#if BUILDFLAG(IS_CHROMEOS)
+  auto* media_notification_provider = ash::MediaNotificationProvider::Get();
+  return media_notification_provider
+             ? media_notification_provider->GetMediaItemManager()
+             : nullptr;
+#else
+  return item_manager_.get();
+#endif
 }

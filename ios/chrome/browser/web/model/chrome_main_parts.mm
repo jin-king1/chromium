@@ -10,6 +10,7 @@
 
 #import "base/allocator/partition_alloc_support.h"
 #import "base/check_op.h"
+#import "base/debug/asan_service.h"
 #import "base/feature_list.h"
 #import "base/features.h"
 #import "base/files/file_path.h"
@@ -24,11 +25,11 @@
 #import "base/task/task_traits.h"
 #import "base/task/thread_pool.h"
 #import "base/time/default_tick_clock.h"
+#import "base/trace_event/named_trigger.h"
 #import "build/blink_buildflags.h"
 #import "components/content_settings/core/common/content_settings_pattern.h"
 #import "components/crash/core/common/crash_key.h"
 #import "components/crash/core/common/reporter_running_ios.h"
-#import "components/keyed_service/ios/browser_state_dependency_manager.h"
 #import "components/memory_system/initializer.h"
 #import "components/memory_system/parameters.h"
 #import "components/metrics/call_stacks/call_stack_profile_builder.h"
@@ -37,14 +38,15 @@
 #import "components/metrics/expired_histogram_util.h"
 #import "components/metrics/metrics_service.h"
 #import "components/metrics_services_manager/metrics_services_manager.h"
+#import "components/omnibox/browser/omnibox_pref_names.h"
 #import "components/open_from_clipboard/clipboard_recent_content.h"
-#import "components/os_crypt/sync/os_crypt.h"
 #import "components/prefs/json_pref_store.h"
 #import "components/prefs/pref_service.h"
 #import "components/previous_session_info/previous_session_info.h"
 #import "components/sampling_profiler/process_type.h"
 #import "components/signin/public/identity_manager/tribool.h"
 #import "components/variations/field_trial_config/field_trial_util.h"
+#import "components/variations/service/variations_network_clock.h"
 #import "components/variations/service/variations_service.h"
 #import "components/variations/synthetic_trial_registry.h"
 #import "components/variations/synthetic_trials.h"
@@ -67,6 +69,8 @@
 #import "ios/chrome/browser/segmentation_platform/model/ukm_database_client.h"
 #import "ios/chrome/browser/shared/model/paths/paths.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
+#import "ios/chrome/browser/shared/model/profile/profile_dependency_manager_ios.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/signin_util.h"
 #import "ios/chrome/browser/translate/model/translate_service_ios.h"
 #import "ios/chrome/browser/web/model/ios_thread_profiler.h"
@@ -82,6 +86,7 @@
 #import "ui/base/l10n/l10n_util.h"
 #import "ui/base/l10n/l10n_util_mac.h"
 #import "ui/base/resource/resource_bundle.h"
+#import "ui/display/screen.h"
 
 #if DCHECK_IS_ON()
 #import "ui/display/screen_base.h"
@@ -91,34 +96,17 @@
 #import "components/heap_profiling/in_process/heap_profiler_controller.h"
 #endif
 
-namespace {
+#if !BUILDFLAG(USE_BLINK)
+#import "ios/chrome/browser/tracing/ios_tracing_controller.h"
+#endif
 
-// Sets `level` value for NSURLFileProtectionKey key for the URL with given
-// `local_state_path`.
-void SetProtectionLevel(const base::FilePath& file_path, id level) {
-  NSString* file_path_string = base::SysUTF8ToNSString(file_path.value());
-  NSURL* file_path_url = [NSURL fileURLWithPath:file_path_string
-                                    isDirectory:NO];
-  NSError* error = nil;
-  BOOL protection_set = [file_path_url setResourceValue:level
-                                                 forKey:NSURLFileProtectionKey
-                                                  error:&error];
-  DCHECK(protection_set) << base::SysNSStringToUTF8(error.localizedDescription);
-}
-
-// Initializes OSCrypt.
-void EnsureOSCryptInitialized() {
-  // There is no public API to initialize OSCrypt. It is performed one the
-  // first call to the library, so call `OSCrypt::IsEncryptionAvailable()`
-  // and discard the result to perform the initialisation.
-  std::ignore = OSCrypt::IsEncryptionAvailable();
-}
-
-}  // namespace
+namespace {}  // namespace
 
 IOSChromeMainParts::IOSChromeMainParts(
     const base::CommandLine& parsed_command_line)
-    : parsed_command_line_(parsed_command_line), local_state_(nullptr) {
+    : parsed_command_line_(parsed_command_line),
+      local_state_(nullptr),
+      screen_(std::make_unique<display::ScopedNativeScreen>()) {
   // Chrome disallows cookies by default. All code paths that want to use
   // cookies need to go through one of Chrome's URLRequestContexts which have
   // a ChromeNetworkDelegate attached that selectively allows cookies again.
@@ -127,10 +115,8 @@ IOSChromeMainParts::IOSChromeMainParts(
 
 IOSChromeMainParts::~IOSChromeMainParts() {
 #if DCHECK_IS_ON()
-  // The screen object is never deleted on IOS. Make sure that all display
-  // observers are removed at the end.
   display::ScreenBase* screen =
-      static_cast<display::ScreenBase*>(display::Screen::GetScreen());
+      static_cast<display::ScreenBase*>(display::Screen::Get());
   DCHECK(!screen->HasDisplayObservers());
 #endif
 }
@@ -188,19 +174,6 @@ void IOSChromeMainParts::ApplyFeatureList() {
   // local state, in case any of the settings affect policy.
   AppendSwitchesFromExperimentalSettings(command_line);
 
-  // Get the variation IDs passed through the command line. This is done early
-  // on because ConvertFlagsToSwitches() will append to the command line
-  // the variation IDs from flags (so that they are visible in about://version).
-  // This will be passed on to `VariationsService::SetUpFieldTrials()`, which
-  // will manually fetch the variation IDs from flags (hence the reason we do
-  // not pass the mutated command line, otherwise the IDs will be duplicated).
-  // It also distinguishes between variation IDs coming from the command line
-  // and from flags, so we cannot rely on simply putting them all in the
-  // command line.
-  const std::string command_line_variation_ids =
-      command_line->GetSwitchValueASCII(
-          variations::switches::kForceVariationIds);
-
   // Initialize local state.
   local_state_ = application_context_->GetLocalState();
   DCHECK(local_state_);
@@ -213,15 +186,27 @@ void IOSChromeMainParts::ApplyFeatureList() {
   // initialize field trials. The field trials are needed by IOThread's
   // initialization which happens in BrowserProcess:PreCreateThreads. Metrics
   // initialization is handled in PreMainMessageLoopRun since it posts tasks.
-  SetUpFieldTrials(command_line_variation_ids);
+  SetUpFieldTrials();
 
-  // Initialize //base features that depend on the `FeatureList`. Don't force
-  // emitting profiler metadata since the profiler doesn't run on iOS.
-  base::features::Init(
-      base::features::EmitThreadControllerProfilerMetadata::kFeatureDependent);
+  // Initialize //base features that depend on the `FeatureList`.
+  base::features::Init();
+
+  if (IsDefaultBottomOmniboxOnIOSEnabled()) {
+    // Set the default value after the feature list is started as the pref is
+    // registered before the feature is set.
+    local_state_->SetDefaultPrefValue(omnibox::kIsOmniboxInBottomPosition,
+                                      base::Value(true));
+  }
 }
 
 void IOSChromeMainParts::PreCreateThreads() {
+#if !BUILDFLAG(USE_BLINK)
+  // Initialize Perfetto tracing before threads are spawned so the
+  // TrackNameRecorder can capture and name the new background threads.
+  // For Blink, the content layer handles Perfetto initialization.
+  IOSTracingController::CreateInstance();
+#endif
+
   // Create and start the stack sampling profiler if CANARY or DEV. The warning
   // below doesn't apply.
   const version_info::Channel channel = ::GetChannel();
@@ -283,6 +268,7 @@ void IOSChromeMainParts::PreCreateThreads() {
   // consistency with other main delegates where the browser process is denoted
   // this way.
   memory_system::Initializer()
+      .SetGwpAsanParameters(true, "")
       .SetProfilingClientParameters(
           channel, sampling_profiler::ProfilerProcessType::kBrowser)
       .SetDispatcherParameters(memory_system::DispatcherParameters::
@@ -295,22 +281,6 @@ void IOSChromeMainParts::PreCreateThreads() {
   variations::InitCrashKeys();
 
   metrics::EnableExpiryChecker(::kExpiredHistogramsHashes);
-
-  // TODO(crbug.com/40163579): Remove code below some time after February 2021.
-  NSString* const kRemoveProtectionFromPrefFileKey =
-      @"RemoveProtectionFromPrefKey";
-  if ([NSUserDefaults.standardUserDefaults
-          boolForKey:kRemoveProtectionFromPrefFileKey]) {
-    base::FilePath local_state_path;
-    CHECK(base::PathService::Get(ios::FILE_LOCAL_STATE, &local_state_path));
-
-    // Restore default protection level when user is no longer in the
-    // experimental group.
-    SetProtectionLevel(local_state_path,
-                       NSFileProtectionCompleteUntilFirstUserAuthentication);
-    [NSUserDefaults.standardUserDefaults
-        removeObjectForKey:kRemoveProtectionFromPrefFileKey];
-  }
 
   application_context_->PreCreateThreads();
 }
@@ -327,15 +297,9 @@ void IOSChromeMainParts::PreMainMessageLoopRun() {
       FROM_HERE, {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
       base::BindOnce(&FirstRun::LoadSentinelInfo));
 
-  // Force the initialisation of the OSCrypt library early in the application
-  // startup sequence. See https://crbug.com/383661630 for why this is needed.
-  base::ThreadPool::PostTask(
-      FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
-      base::BindOnce(&EnsureOSCryptInitialized));
-
   // ContentSettingsPattern need to be initialized before creating the
   // ProfileIOS.
-  ContentSettingsPattern::SetNonWildcardDomainNonPortSchemes(nullptr, 0);
+  ContentSettingsPattern::SetNonWildcardDomainNonPortSchemes({});
 
   // Ensure ClipboadRecentContentIOS is created.
   ClipboardRecentContent::SetInstance(CreateClipboardRecentContentIOS());
@@ -356,9 +320,14 @@ void IOSChromeMainParts::PreMainMessageLoopRun() {
   // Now that the file thread has been started, start recording.
   StartMetricsRecording();
 
+  // This must happen after `SetupFieldTracingFromFieldTrial()`, which is
+  // triggered by `SetupMetrics()` above.
+  base::trace_event::EmitNamedTrigger(
+      base::trace_event::kStartupTracingTriggerName);
+
   // Ensure that the KeyedService factories are registered.
   EnsureProfileKeyedServiceFactoriesBuilt();
-  BrowserStateDependencyManager::GetInstance()
+  ProfileDependencyManagerIOS::GetInstance()
       ->DisallowKeyedServiceFactoryRegistration(
           "EnsureProfileKeyedServiceFactoriesBuilt()");
 
@@ -374,11 +343,19 @@ void IOSChromeMainParts::PreMainMessageLoopRun() {
   segmentation_platform::UkmDatabaseClientHolder::GetClientInstance(nullptr)
       .StartObservation();
 
+  // The AsanService causes ASAN errors to emit additional information. It is
+  // helpful on its own. It is also required by ASAN BackupRefPtr when
+  // reconfiguring PartitionAlloc below.
+#if defined(ADDRESS_SANITIZER)
+  base::debug::AsanService::GetInstance()->Initialize();
+#endif
+
 #if PA_BUILDFLAG(USE_PARTITION_ALLOC)
   base::allocator::PartitionAllocSupport::Get()
       ->ReconfigureAfterFeatureListInit("");
   base::allocator::PartitionAllocSupport::Get()->ReconfigureAfterTaskRunnerInit(
       "");
+  crash_helper::CacheCorruptionDetectedMemoryRangesKillSwitch();
 #endif  // PA_BUILDFLAG(USE_PARTITION_ALLOC)
 
   TranslateServiceIOS::Initialize();
@@ -413,15 +390,16 @@ void IOSChromeMainParts::PostDestroyThreads() {
 }
 
 // This will be called after the command-line has been mutated by about:flags
-void IOSChromeMainParts::SetUpFieldTrials(
-    const std::string& command_line_variation_ids) {
+void IOSChromeMainParts::SetUpFieldTrials() {
   base::SetRecordActionTaskRunner(web::GetUIThreadTaskRunner({}));
 
 // This will occur inside //content for blink.
 #if !BUILDFLAG(USE_BLINK)
   // FeatureList requires VariationsIdsProvider to be created.
-  variations::VariationsIdsProvider::Create(
-      variations::VariationsIdsProvider::Mode::kUseSignedInState);
+  variations::VariationsIdsProvider::CreateInstance(
+      variations::VariationsIdsProvider::Mode::kUseSignedInState,
+      std::make_unique<variations::VariationsNetworkClock>(
+          application_context_->GetNetworkTimeTrackerMaybeUninitialized()));
 #endif
 
   // Initialize FieldTrialList to support FieldTrials that use one-time
@@ -443,8 +421,7 @@ void IOSChromeMainParts::SetUpFieldTrials(
   additional_features_controller->RegisterFeatureList(feature_list.get());
 
   application_context_->GetVariationsService()->SetUpFieldTrials(
-      variation_ids, command_line_variation_ids,
-      std::vector<base::FeatureList::FeatureOverrideInfo>(),
+      variation_ids, std::vector<base::FeatureList::FeatureOverrideInfo>(),
       std::move(feature_list), &ios_field_trials_);
   additional_features_controller->FeatureListDidCompleteSetup();
 }
@@ -476,8 +453,7 @@ void IOSChromeMainParts::StartMetricsRecording() {
   }
 #endif
 
-  // TODO(crbug.com/40894426) Add an EG2 test for cloned install detection.
+  // TODO(crbug.com/467355112): Add an EG2 test for cloned install detection.
   application_context_->GetMetricsService()->CheckForClonedInstall();
-  application_context_->GetMetricsServicesManager()->UpdateUploadPermissions(
-      true);
+  application_context_->GetMetricsServicesManager()->UpdateUploadPermissions();
 }

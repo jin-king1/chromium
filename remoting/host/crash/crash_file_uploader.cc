@@ -24,6 +24,7 @@
 #include "net/base/load_flags.h"
 #include "net/base/mime_util.h"
 #include "net/base/net_errors.h"
+#include "net/http/http_response_headers.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "remoting/base/crash/breakpad_utils.h"
 #include "services/network/public/cpp/resource_request.h"
@@ -129,7 +130,7 @@ base::FilePath GetMetadataFilePath(const base::FilePath& crash_guid) {
 
 bool RetrieveCrashReportDetails(const base::FilePath& crash_guid,
                                 std::string& minidump_file_contents,
-                                base::Value::Dict& metadata,
+                                base::DictValue& metadata,
                                 std::string& error_reason) {
   base::FilePath minidump_file_path = GetDumpFilePath(crash_guid);
   if (!base::PathExists(minidump_file_path)) {
@@ -155,8 +156,8 @@ bool RetrieveCrashReportDetails(const base::FilePath& crash_guid,
     return false;
   }
 
-  std::optional<base::Value::Dict> opt_metadata =
-      base::JSONReader::ReadDict(metadata_file_contents);
+  std::optional<base::DictValue> opt_metadata = base::JSONReader::ReadDict(
+      metadata_file_contents, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   if (!opt_metadata.has_value()) {
     error_reason = "Failed to parse metadata file contents";
     return false;
@@ -216,7 +217,7 @@ std::unique_ptr<network::SimpleURLLoader> CreateSimpleUrlLoader() {
   return simple_url_loader;
 }
 
-void GenerateMultiPartPostData(const base::Value::Dict& metadata,
+void GenerateMultiPartPostData(const base::DictValue& metadata,
                                const std::string& minidump_data,
                                std::string& post_data,
                                std::string& content_type) {
@@ -307,7 +308,7 @@ class CrashFileUploader::Core {
       std::list<std::unique_ptr<network::SimpleURLLoader>>;
   void OnUploadComplete(SimpleURLLoaderList::iterator it,
                         base::FilePath crash_guid,
-                        std::unique_ptr<std::string> response_body);
+                        std::optional<std::string> response_body);
 
   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
   SimpleURLLoaderList simple_url_loaders_;
@@ -345,7 +346,7 @@ void CrashFileUploader::Core::Upload(const base::FilePath& crash_guid) {
     return;
   }
 
-  base::Value::Dict metadata;
+  base::DictValue metadata;
   std::string minidump_data;
   std::string error;
   if (!RetrieveCrashReportDetails(crash_guid, minidump_data, metadata, error)) {
@@ -377,13 +378,13 @@ void CrashFileUploader::Core::Upload(const base::FilePath& crash_guid) {
 void CrashFileUploader::Core::OnUploadComplete(
     SimpleURLLoaderList::iterator it,
     base::FilePath crash_guid,
-    std::unique_ptr<std::string> response_body) {
+    std::optional<std::string> response_body) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
 
   std::string upload_result;
   base::FilePath crash_dump = crash_guid.AddExtension(kDumpExtension);
   if ((*it)->NetError() == net::OK) {
-    std::string report_id = (response_body ? *response_body : "empty");
+    std::string report_id = std::move(response_body).value_or("empty");
     // Result file format looks like:
     // report_id: <id_from_crash_service>
     // go/crash/<id_from_crash_service>

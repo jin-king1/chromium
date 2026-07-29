@@ -33,6 +33,7 @@ class ChromeWebClient : public web::WebClient {
   std::string GetApplicationLocale() const override;
   bool IsAppSpecificURL(const GURL& url) const override;
   std::string GetUserAgent(web::UserAgentType type) const override;
+  std::string GetMainThreadName() const override;
   std::u16string GetLocalizedString(int message_id) const override;
   std::string_view GetDataResource(
       int resource_id,
@@ -71,6 +72,18 @@ class ChromeWebClient : public web::WebClient {
       web::BrowserState* browser_state) const override;
   void BuildEditMenu(web::WebState* web_state,
                      id<UIMenuBuilder>) const override;
+  bool CanRunOpenPanel(web::WebState* web_state) const override
+      API_AVAILABLE(ios(18.4));
+  void RunOpenPanel(web::WebState* web_state,
+                    WKOpenPanelParameters* parameters,
+                    WKFrameInfo* frame,
+                    base::OnceCallback<void(NSArray<NSURL*>*)> completion)
+      const override API_AVAILABLE(ios(18.4));
+  web::JSErrorReportLoggingLevel GetJSErrorReportLoggingLevel(
+      web::BrowserState* browser_state) const override;
+  web::CobaltController* GetCobaltController(
+      web::BrowserState* browser_state) const override;
+  bool IsSmoothScrollingSupported() const override;
 
  private:
   // Reference to a view that is attached to a window.

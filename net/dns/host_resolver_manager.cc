@@ -18,12 +18,12 @@
 #include <tuple>
 #include <unordered_set>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "base/check_op.h"
 #include "base/compiler_specific.h"
 #include "base/containers/circular_deque.h"
-#include "base/containers/contains.h"
 #include "base/containers/flat_set.h"
 #include "base/containers/linked_list.h"
 #include "base/debug/debugger.h"
@@ -40,11 +40,11 @@
 #include "base/metrics/field_trial.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/no_destructor.h"
-#include "base/not_fatal_until.h"
+#include "base/notimplemented.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/observer_list.h"
+#include "base/rand_util.h"
 #include "base/sequence_checker.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
@@ -58,6 +58,7 @@
 #include "base/threading/scoped_blocking_call.h"
 #include "base/time/default_tick_clock.h"
 #include "base/time/time.h"
+#include "base/trace_event/trace_event.h"
 #include "base/types/optional_util.h"
 #include "base/values.h"
 #include "build/build_config.h"
@@ -75,7 +76,6 @@
 #include "net/base/prioritized_dispatcher.h"
 #include "net/base/request_priority.h"
 #include "net/base/trace_constants.h"
-#include "net/base/tracing.h"
 #include "net/base/url_util.h"
 #include "net/dns/dns_alias_utility.h"
 #include "net/dns/dns_client.h"
@@ -117,7 +117,6 @@
 #include "net/log/net_log_with_source.h"
 #include "net/socket/client_socket_factory.h"
 #include "net/url_request/url_request_context.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 #include "url/scheme_host_port.h"
 #include "url/url_constants.h"
 
@@ -133,12 +132,14 @@
 #if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
 #include <net/if.h>
 #include "net/base/sys_addrinfo.h"
-#if BUILDFLAG(IS_ANDROID)
-#include "base/android/build_info.h"
-#else  // !BUILDFLAG(IS_ANDROID)
+#if !BUILDFLAG(IS_ANDROID)
 #include <ifaddrs.h>
-#endif  // BUILDFLAG(IS_ANDROID)
+#endif  // !BUILDFLAG(IS_ANDROID)
 #endif  // BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+
+#if BUILDFLAG(IS_ANDROID)
+#include "base/android/android_info.h"
+#endif  // BUILDFLAG(IS_ANDROID)
 
 namespace net {
 
@@ -178,8 +179,8 @@ bool ConfigureAsyncDnsNoFallbackFieldTrial() {
   return kDefault;
 }
 
-base::Value::Dict NetLogIPv6AvailableParams(bool ipv6_available, bool cached) {
-  base::Value::Dict dict;
+base::DictValue NetLogIPv6AvailableParams(bool ipv6_available, bool cached) {
+  base::DictValue dict;
   dict.Set("ipv6_available", ipv6_available);
   dict.Set("cached", cached);
   return dict;
@@ -232,7 +233,7 @@ PrioritizedDispatcher::Limits GetDispatcherLimits(
   parsed.pop_back();
 
   const size_t total_reserved_slots =
-      std::accumulate(parsed.begin(), parsed.end(), 0u);
+      std::accumulate(parsed.begin(), parsed.end(), size_t{0});
 
   // There must be some unreserved slots available for the all priorities.
   if (total_reserved_slots > total_jobs ||
@@ -245,20 +246,20 @@ PrioritizedDispatcher::Limits GetDispatcherLimits(
   return limits;
 }
 
-base::Value::Dict NetLogResults(const HostCache::Entry& results) {
-  base::Value::Dict dict;
+base::DictValue NetLogResults(const HostCache::Entry& results) {
+  base::DictValue dict;
   dict.Set("results", results.NetLogParams());
   return dict;
 }
 
-base::Value::Dict NetLogResults(
+base::DictValue NetLogResults(
     const std::set<std::unique_ptr<HostResolverInternalResult>>& results) {
-  auto list = base::Value::List::with_capacity(results.size());
+  auto list = base::ListValue::with_capacity(results.size());
   for (const std::unique_ptr<HostResolverInternalResult>& result : results) {
     list.Append(result->ToValue());
   }
 
-  base::Value::Dict dict;
+  base::DictValue dict;
   dict.Set("results", std::move(list));
   return dict;
 }
@@ -398,9 +399,17 @@ class HostResolverManager::ProbeRequestImpl
   }
 
   void CancelRunner() {
-    runner_.reset();
+    if (runner_) {
+      // Destroy the runner asynchronously to prevent its destructor from
+      // causing reentrant modifications to HostResolverManager::jobs_
+      // during InvalidateCaches().
+      base::SequencedTaskRunner::GetCurrentDefault()->DeleteSoon(
+          FROM_HERE, std::move(runner_));
+    }
 
-    // Cancel any asynchronous StartRunner() calls.
+    // Synchronously invalidate WeakPtrs to ensure that any previously posted
+    // asynchronous StartRunner() tasks (e.g., from the old session) are
+    // cancelled and do not execute unexpectedly in the new session.
     weak_ptr_factory_.InvalidateWeakPtrs();
   }
 
@@ -437,6 +446,8 @@ HostResolverManager::HostResolverManager(
       check_ipv6_on_wifi_(options.check_ipv6_on_wifi),
       ipv6_reachability_override_(base::FeatureList::IsEnabled(
           features::kEnableIPv6ReachabilityOverride)),
+      is_happy_eyeballs_v3_enabled_(
+          base::FeatureList::IsEnabled(features::kHappyEyeballsV3)),
       tick_clock_(base::DefaultTickClock::GetInstance()),
       https_svcb_options_(
           options.https_svcb_options
@@ -471,9 +482,18 @@ HostResolverManager::HostResolverManager(
   UpdateConnectionType(connection_type);
 
 #if defined(ENABLE_BUILT_IN_DNS)
+  InsecureDnsMode initial_insecure_dns_mode = InsecureDnsMode::kDisabled;
+  if (options.insecure_dns_client_enabled) {
+    initial_insecure_dns_mode = options.insecure_dns_via_platform_apis_enabled
+                                    ? InsecureDnsMode::kEnabledPlatform
+                                    : InsecureDnsMode::kEnabledBuiltIn;
+  }
+  CHECK(initial_insecure_dns_mode != InsecureDnsMode::kEnabledPlatform ||
+        features::IsDnsPlatformSupported());
+
   dns_client_ = DnsClient::CreateClient(net_log_);
   dns_client_->SetInsecureEnabled(
-      options.insecure_dns_client_enabled,
+      initial_insecure_dns_mode,
       options.additional_types_via_insecure_dns_enabled);
   dns_client_->SetConfigOverrides(options.dns_config_overrides);
 #else
@@ -518,20 +538,23 @@ HostResolverManager::CreateNetworkBoundHostResolverManager(
 
 std::unique_ptr<HostResolver::ResolveHostRequest>
 HostResolverManager::CreateRequest(
-    absl::variant<url::SchemeHostPort, HostPortPair> host,
+    std::variant<url::SchemeHostPort, HostPortPair> host,
     NetworkAnonymizationKey network_anonymization_key,
+    handles::NetworkHandle target_network,
     NetLogWithSource net_log,
     std::optional<ResolveHostParameters> optional_parameters,
     ResolveContext* resolve_context) {
   return CreateRequest(HostResolver::Host(std::move(host)),
-                       std::move(network_anonymization_key), std::move(net_log),
-                       std::move(optional_parameters), resolve_context);
+                       std::move(network_anonymization_key), target_network,
+                       std::move(net_log), std::move(optional_parameters),
+                       resolve_context);
 }
 
 std::unique_ptr<HostResolver::ResolveHostRequest>
 HostResolverManager::CreateRequest(
     HostResolver::Host host,
     NetworkAnonymizationKey network_anonymization_key,
+    handles::NetworkHandle target_network,
     NetLogWithSource net_log,
     std::optional<ResolveHostParameters> optional_parameters,
     ResolveContext* resolve_context) {
@@ -542,11 +565,20 @@ HostResolverManager::CreateRequest(
   // ResolveContexts must register (via RegisterResolveContext()) before use to
   // ensure cached data is invalidated on network and configuration changes.
   DCHECK(registered_contexts_.HasObserver(resolve_context));
+  // Multi-network support for Cronet and CCT was originally implemented by
+  // creating multiple URLRequestContexts/HostResolverManagers. Until this
+  // historical artifact is removed, make sure these two mechanisms are not used
+  // at the same time.
+  // TODO(crbug.com/495684670): Clean this up once multi-network Cronet and CCT
+  // no longer depend on network-bound URLRequestContexts.
+  CHECK(target_network_ == handles::kInvalidNetworkHandle ||
+        target_network == handles::kInvalidNetworkHandle);
 
   return std::make_unique<RequestImpl>(
       std::move(net_log), std::move(host), std::move(network_anonymization_key),
-      std::move(optional_parameters), resolve_context->GetWeakPtr(),
-      weak_ptr_factory_.GetWeakPtr(), tick_clock_);
+      target_network, std::move(optional_parameters),
+      resolve_context->GetWeakPtr(), weak_ptr_factory_.GetWeakPtr(),
+      tick_clock_);
 }
 
 std::unique_ptr<HostResolver::ProbeRequest>
@@ -581,8 +613,9 @@ HostResolverManager::CreateMdnsListener(const HostPortPair& host,
 
 std::unique_ptr<HostResolver::ServiceEndpointRequest>
 HostResolverManager::CreateServiceEndpointRequest(
-    url::SchemeHostPort scheme_host_port,
+    HostResolver::Host host,
     NetworkAnonymizationKey network_anonymization_key,
+    handles::NetworkHandle target_network,
     NetLogWithSource net_log,
     ResolveHostParameters parameters,
     ResolveContext* resolve_context) {
@@ -593,17 +626,28 @@ HostResolverManager::CreateServiceEndpointRequest(
     DCHECK(registered_contexts_.HasObserver(resolve_context));
   }
 
+  // Multi-network support for Cronet and CCT was originally implemented by
+  // creating multiple URLRequestContexts/HostResolverManagers. Until this
+  // historical artifact is removed, make sure these two mechanisms are not used
+  // at the same time.
+  // TODO(crbug.com/495684670): Clean this up once multi-network Cronet and CCT
+  // no longer depend on network-bound URLRequestContexts.
+  CHECK(target_network_ == handles::kInvalidNetworkHandle ||
+        target_network == handles::kInvalidNetworkHandle);
+
   return std::make_unique<ServiceEndpointRequestImpl>(
-      std::move(scheme_host_port), std::move(network_anonymization_key),
+      std::move(host), std::move(network_anonymization_key), target_network,
       std::move(net_log), std::move(parameters),
       resolve_context ? resolve_context->GetWeakPtr() : nullptr,
       weak_ptr_factory_.GetWeakPtr(), tick_clock_);
 }
 
 void HostResolverManager::SetInsecureDnsClientEnabled(
-    bool enabled,
+    InsecureDnsMode mode,
     bool additional_dns_types_enabled) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  CHECK(mode != InsecureDnsMode::kEnabledPlatform ||
+        features::IsDnsPlatformSupported());
 
   if (!dns_client_)
     return;
@@ -611,7 +655,7 @@ void HostResolverManager::SetInsecureDnsClientEnabled(
   bool enabled_before = dns_client_->CanUseInsecureDnsTransactions();
   bool additional_types_before =
       enabled_before && dns_client_->CanQueryAdditionalTypesViaInsecureDns();
-  dns_client_->SetInsecureEnabled(enabled, additional_dns_types_enabled);
+  dns_client_->SetInsecureEnabled(mode, additional_dns_types_enabled);
 
   // Abort current tasks if `CanUseInsecureDnsTransactions()` changes or if
   // insecure transactions are enabled and
@@ -626,10 +670,10 @@ void HostResolverManager::SetInsecureDnsClientEnabled(
   }
 }
 
-base::Value::Dict HostResolverManager::GetDnsConfigAsValue() const {
+base::DictValue HostResolverManager::GetDnsConfigAsValue() const {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   return dns_client_ ? dns_client_->GetDnsConfigAsValueForNetLog()
-                     : base::Value::Dict();
+                     : base::DictValue();
 }
 
 void HostResolverManager::SetDnsConfigOverrides(DnsConfigOverrides overrides) {
@@ -683,6 +727,14 @@ void HostResolverManager::SetTickClockForTesting(
 void HostResolverManager::SetIPv6ReachabilityOverride(
     bool reachability_override) {
   ipv6_reachability_override_ = reachability_override;
+}
+
+void HostResolverManager::SetIsHappyEyeballsV3Enabled(bool enabled) {
+  is_happy_eyeballs_v3_enabled_ = enabled;
+}
+
+bool HostResolverManager::IsHappyEyeballsV3Enabled() const {
+  return is_happy_eyeballs_v3_enabled_;
 }
 
 void HostResolverManager::SetMaxQueuedJobsForTesting(size_t value) {
@@ -780,20 +832,21 @@ void HostResolverManager::InitializeJobKeyAndIPAddress(
   // query, so the code requesting the resolution should be amenable to
   // receiving an IPv6 resolution.
   if (!use_local_ipv6 && !is_ip && !last_ipv6_probe_result_ &&
-      !ipv6_reachability_override_) {
+      !ipv6_reachability_override_ &&
+      // TODO(crbug.com/519138300): Until we support non-default network
+      // IPv6 connectivity checks, always assume IPv6 connectivity.
+      out_job_key.GetTargetNetwork() == handles::kInvalidNetworkHandle) {
     out_job_key.flags |= HOST_RESOLVER_DEFAULT_FAMILY_SET_DUE_TO_NO_IPV6;
     effective_types.Remove(DnsQueryType::AAAA);
   }
 
-  // Optimistically enable feature-controlled queries. These queries may be
-  // skipped at a later point.
-
-  // `https_svcb_options_.enable` has precedence, so if enabled, ignore any
-  // other related features.
-  if (https_svcb_options_.enable && out_job_key.host.HasScheme()) {
-    static const char* const kSchemesForHttpsQuery[] = {
+  // Optimistically enable HTTPS record. It may be skipped at a later point.
+  if (base::FeatureList::IsEnabled(features::kUseDnsHttpsSvcb) &&
+      out_job_key.host.HasScheme()) {
+    static constexpr std::string_view kSchemesForHttpsQuery[] = {
         url::kHttpScheme, url::kHttpsScheme, url::kWsScheme, url::kWssScheme};
-    if (base::Contains(kSchemesForHttpsQuery, out_job_key.host.GetScheme())) {
+    if (std::ranges::contains(kSchemesForHttpsQuery,
+                              out_job_key.host.GetScheme())) {
       effective_types.Put(DnsQueryType::HTTPS);
     }
   }
@@ -816,6 +869,14 @@ HostCache::Entry HostResolverManager::ResolveLocally(
   *out_stale_info = std::nullopt;
 
   CreateTaskSequence(job_key, cache_usage, secure_dns_policy, out_tasks);
+  source_net_log.AddEvent(
+      NetLogEventType::HOST_RESOLVER_MANAGER_TASK_SEQUENCE_CREATED, [&] {
+        base::ListValue tasks_list;
+        for (TaskType task : *out_tasks) {
+          tasks_list.Append(static_cast<int>(task));
+        }
+        return base::DictValue().Set("tasks", std::move(tasks_list));
+      });
 
   if (!ip_address.IsValid()) {
     // Check that the caller supplied a valid hostname to resolve. For
@@ -1064,6 +1125,11 @@ std::optional<HostCache::Entry> HostResolverManager::MaybeReadFromConfig(
   if (filtered_addresses.empty())
     return std::nullopt;
 
+  if (base::FeatureList::IsEnabled(
+          features::kEnableBootstrapIPRandomizationForDoh)) {
+    base::RandomShuffle(filtered_addresses.begin(), filtered_addresses.end());
+  }
+
   return HostCache::Entry(OK, std::move(filtered_addresses), /*aliases=*/{},
                           HostCache::Entry::SOURCE_CONFIG);
 }
@@ -1152,12 +1218,14 @@ HostResolverManager::ServeFromHosts(std::string_view hostname,
     }
   }
 
-  // If got only loopback addresses and the family was restricted, resolve
-  // again, without restrictions. See SystemHostResolverCall for rationale.
+  // If got only loopback addresses (or no addresses) and the family was
+  // restricted, resolve again, without restrictions. See SystemHostResolverCall
+  // for rationale.
   if (default_family_due_to_no_ipv6 && ipv4_result &&
-      ipv4_result->type() == HostResolverInternalResult::Type::kData &&
-      std::ranges::all_of(ipv4_result->AsData().endpoints(),
-                          &IPAddress::IsLoopback, &IPEndPoint::address)) {
+      (ipv4_result->type() == HostResolverInternalResult::Type::kError ||
+       (ipv4_result->type() == HostResolverInternalResult::Type::kData &&
+        std::ranges::all_of(ipv4_result->AsData().endpoints(),
+                            &IPAddress::IsLoopback, &IPEndPoint::address)))) {
     CHECK(!ipv6_result) << "Requesting AAAA is incompatible with "
                            "`default_family_due_to_no_ipv6`.";
     query_types.Put(DnsQueryType::AAAA);
@@ -1210,7 +1278,7 @@ void HostResolverManager::CacheResult(HostCache* cache,
 
 std::unique_ptr<HostResolverManager::Job> HostResolverManager::RemoveJob(
     JobMap::iterator job_it) {
-  CHECK(job_it != jobs_.end(), base::NotFatalUntil::M130);
+  CHECK(job_it != jobs_.end());
   CHECK(job_it->second);
   CHECK(jobs_.find(job_it->first) != jobs_.end());
 
@@ -1261,7 +1329,7 @@ bool HostResolverManager::ShouldForceSystemResolverDueToTestOverride() const {
 
 void HostResolverManager::PushDnsTasks(bool system_task_allowed,
                                        SecureDnsMode secure_dns_mode,
-                                       bool insecure_tasks_allowed,
+                                       InsecureDnsMode insecure_dns_mode,
                                        bool allow_cache,
                                        bool prioritize_local_lookups,
                                        ResolveContext* resolve_context,
@@ -1273,6 +1341,12 @@ void HostResolverManager::PushDnsTasks(bool system_task_allowed,
   // DnsTasks. It is still necessary to call this method, however, so that the
   // correct cache tasks for the secure dns mode are added.
   const bool dns_tasks_allowed = !ShouldForceSystemResolverDueToTestOverride();
+  const bool insecure_tasks_allowed =
+      (insecure_dns_mode != InsecureDnsMode::kDisabled);
+  const TaskType dns_task_type =
+      (insecure_dns_mode == InsecureDnsMode::kEnabledPlatform)
+          ? TaskType::DNS_PLATFORM
+          : TaskType::DNS;
   // Upgrade the insecure DnsTask depending on the secure dns mode.
   switch (secure_dns_mode) {
     case SecureDnsMode::kSecure:
@@ -1289,7 +1363,7 @@ void HostResolverManager::PushDnsTasks(bool system_task_allowed,
               resolve_context)) {
         // Don't run a secure DnsTask if there are no available DoH servers.
         if (dns_tasks_allowed && insecure_tasks_allowed)
-          out_tasks->push_back(TaskType::DNS);
+          out_tasks->push_back(dns_task_type);
       } else if (prioritize_local_lookups) {
         // If local lookups are prioritized, the cache should be checked for
         // both secure and insecure results prior to running a secure DnsTask.
@@ -1297,7 +1371,7 @@ void HostResolverManager::PushDnsTasks(bool system_task_allowed,
         if (dns_tasks_allowed) {
           out_tasks->push_back(TaskType::SECURE_DNS);
           if (insecure_tasks_allowed)
-            out_tasks->push_back(TaskType::DNS);
+            out_tasks->push_back(dns_task_type);
         }
       } else {
         if (allow_cache) {
@@ -1311,26 +1385,28 @@ void HostResolverManager::PushDnsTasks(bool system_task_allowed,
         if (allow_cache)
           out_tasks->push_back(TaskType::INSECURE_CACHE_LOOKUP);
         if (dns_tasks_allowed && insecure_tasks_allowed)
-          out_tasks->push_back(TaskType::DNS);
+          out_tasks->push_back(dns_task_type);
       }
       break;
     case SecureDnsMode::kOff:
       DCHECK(!allow_cache || IsLocalTask(out_tasks->front()));
       if (dns_tasks_allowed && insecure_tasks_allowed)
-        out_tasks->push_back(TaskType::DNS);
+        out_tasks->push_back(dns_task_type);
       break;
     default:
       NOTREACHED();
   }
 
-  constexpr TaskType kWantTasks[] = {TaskType::DNS, TaskType::SECURE_DNS};
-  const bool no_dns_or_secure_tasks =
-      std::ranges::find_first_of(*out_tasks, kWantTasks) == out_tasks->end();
+  constexpr TaskType kBuiltinTasks[] = {TaskType::DNS, TaskType::SECURE_DNS,
+                                        TaskType::DNS_PLATFORM};
+  const bool no_builtin_tasks =
+      std::ranges::find_first_of(*out_tasks, kBuiltinTasks) == out_tasks->end();
   // The system resolver can be used as a fallback for a non-existent or
-  // failing DnsTask if allowed by the request parameters.
+  // failing builtin resolver task, if allowed by the request parameters.
   if (system_task_allowed &&
-      (no_dns_or_secure_tasks || allow_fallback_to_systemtask_))
+      (no_builtin_tasks || allow_fallback_to_systemtask_)) {
     out_tasks->push_back(TaskType::SYSTEM);
+  }
 }
 
 void HostResolverManager::CreateTaskSequence(
@@ -1387,13 +1463,15 @@ void HostResolverManager::CreateTaskSequence(
             has_address_type &&
             job_key.secure_dns_mode != SecureDnsMode::kSecure;
         if (dns_client_ && dns_client_->GetEffectiveConfig()) {
-          bool insecure_allowed =
-              dns_client_->CanUseInsecureDnsTransactions() &&
+          InsecureDnsMode insecure_dns_mode = InsecureDnsMode::kDisabled;
+          if (dns_client_->CanUseInsecureDnsTransactions() &&
               !dns_client_->FallbackFromInsecureTransactionPreferred() &&
               (has_address_type ||
-               dns_client_->CanQueryAdditionalTypesViaInsecureDns());
+               dns_client_->CanQueryAdditionalTypesViaInsecureDns())) {
+            insecure_dns_mode = dns_client_->GetInsecureDnsMode();
+          }
           PushDnsTasks(system_task_allowed, job_key.secure_dns_mode,
-                       insecure_allowed, allow_cache, prioritize_local_lookups,
+                       insecure_dns_mode, allow_cache, prioritize_local_lookups,
                        &*job_key.resolve_context, out_tasks);
         } else if (system_task_allowed) {
           out_tasks->push_back(TaskType::SYSTEM);
@@ -1412,12 +1490,14 @@ void HostResolverManager::CreateTaskSequence(
       break;
     case HostResolverSource::DNS:
       if (dns_client_ && dns_client_->GetEffectiveConfig()) {
-        bool insecure_allowed =
-            dns_client_->CanUseInsecureDnsTransactions() &&
+        InsecureDnsMode insecure_dns_mode = InsecureDnsMode::kDisabled;
+        if (dns_client_->CanUseInsecureDnsTransactions() &&
             (has_address_type ||
-             dns_client_->CanQueryAdditionalTypesViaInsecureDns());
+             dns_client_->CanQueryAdditionalTypesViaInsecureDns())) {
+          insecure_dns_mode = dns_client_->GetInsecureDnsMode();
+        }
         PushDnsTasks(false /* system_task_allowed */, job_key.secure_dns_mode,
-                     insecure_allowed, allow_cache, prioritize_local_lookups,
+                     insecure_dns_mode, allow_cache, prioritize_local_lookups,
                      &*job_key.resolve_context, out_tasks);
       }
       break;
@@ -1432,6 +1512,8 @@ void HostResolverManager::CreateTaskSequence(
   // `HOST_RESOLVER_CANONNAME` is only supported through system resolution.
   if (job_key.flags & HOST_RESOLVER_CANONNAME) {
     DCHECK(std::ranges::find(*out_tasks, TaskType::DNS) == out_tasks->end());
+    DCHECK(std::ranges::find(*out_tasks, TaskType::DNS_PLATFORM) ==
+           out_tasks->end());
     DCHECK(std::ranges::find(*out_tasks, TaskType::MDNS) == out_tasks->end());
   }
 }
@@ -1453,7 +1535,7 @@ bool RequestWillUseWiFi(handles::NetworkHandle network) {
 void HostResolverManager::FinishIPv6ReachabilityCheck(
     CompletionOnceCallback callback,
     int rv) {
-  SetLastIPv6ProbeResult((rv == OK) ? true : false);
+  SetLastIPv6ProbeResult(rv == OK);
   std::move(callback).Run(OK);
   if (!ipv6_request_callbacks_.empty()) {
     std::vector<CompletionOnceCallback> tmp_request_callbacks;
@@ -1465,12 +1547,33 @@ void HostResolverManager::FinishIPv6ReachabilityCheck(
 }
 
 int HostResolverManager::StartIPv6ReachabilityCheck(
+    handles::NetworkHandle target_network,
     const NetLogWithSource& net_log,
     ClientSocketFactory* client_socket_factory,
     CompletionOnceCallback callback) {
+  // Multi-network support for Cronet and CCT was originally implemented by
+  // creating multiple URLRequestContexts/HostResolverManagers. Until this
+  // historical artifact is removed, make sure these two mechanisms are not used
+  // at the same time.
+  // TODO(crbug.com/495684670): Clean this up once multi-network Cronet and CCT
+  // no longer depend on network-bound URLRequestContexts.
+  CHECK(target_network_ == handles::kInvalidNetworkHandle ||
+        target_network == handles::kInvalidNetworkHandle);
+
+  if (target_network != handles::kInvalidNetworkHandle) {
+    // TODO(crbug.com/519138300): Start caching results for non-default
+    // networks. Until then, we don't run the probe because we have no way to
+    // store or use the result without clobbering the default network cache.
+    // Instead, always assume IPv6 connectivity.
+    return OK;
+  }
+
   // Don't bother checking if the request will use WiFi and IPv6 is assumed to
   // not work on WiFi.
-  if (!check_ipv6_on_wifi_ && RequestWillUseWiFi(target_network_)) {
+  if (!check_ipv6_on_wifi_ &&
+      // TODO(crbug.com/519138300): Once results for non-default networks are
+      // correctly cached, pass `target_network` instead.
+      RequestWillUseWiFi(target_network_)) {
     probing_ipv6_ = false;
     last_ipv6_probe_result_ = false;
     last_ipv6_probe_time_ = base::TimeTicks();
@@ -1490,11 +1593,17 @@ int HostResolverManager::StartIPv6ReachabilityCheck(
           kIPv6ProbePeriodMs) {
     probing_ipv6_ = true;
     rv = StartGloballyReachableCheck(
-        IPAddress(kIPv6ProbeAddress), net_log, client_socket_factory,
+        IPAddress(kIPv6ProbeAddress),
+        // This intentionally passes `target_network` instead of
+        // `target_network_`. This codepath should only be used by the new way
+        // of doing multi-networking (i.e., with a single URLRequestContext).
+        // TODO(crbug.com/519138300): remove this comment once the old way
+        // of doing multi-networking is no longer supported.
+        target_network, net_log, client_socket_factory,
         base::BindOnce(&HostResolverManager::FinishIPv6ReachabilityCheck,
                        weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
     if (rv != ERR_IO_PENDING) {
-      SetLastIPv6ProbeResult((rv == OK) ? true : false);
+      SetLastIPv6ProbeResult(rv == OK);
       rv = OK;
     }
     cached = false;
@@ -1514,12 +1623,14 @@ void HostResolverManager::SetLastIPv6ProbeResult(bool last_ipv6_probe_result) {
 
 int HostResolverManager::StartGloballyReachableCheck(
     const IPAddress& dest,
+    handles::NetworkHandle target_network,
     const NetLogWithSource& net_log,
     ClientSocketFactory* client_socket_factory,
     CompletionOnceCallback callback) {
   std::unique_ptr<DatagramClientSocket> probing_socket =
       client_socket_factory->CreateDatagramClientSocket(
-          DatagramSocket::DEFAULT_BIND, net_log.net_log(), net_log.source());
+          DatagramSocket::DEFAULT_BIND, target_network, net_log.net_log(),
+          net_log.source());
   DatagramClientSocket* probing_socket_ptr = probing_socket.get();
   auto refcounted_socket = base::MakeRefCounted<
       base::RefCountedData<std::unique_ptr<DatagramClientSocket>>>(
@@ -1579,14 +1690,20 @@ void HostResolverManager::RunLoopbackProbeJob() {
 }
 
 void HostResolverManager::RemoveAllJobs(const ResolveContext* context) {
+  // Job destructor can re-enter jobs_.erase() (e.g., via HostResolverNat64Task
+  // destructor destroying a nested RequestImpl whose CancelRequest
+  // synchronously removes a different Job). Collect the Jobs first and destroy
+  // them after the iteration loop to prevent iterator invalidation.
+  std::vector<std::unique_ptr<Job>> jobs_to_destroy;
   for (auto it = jobs_.begin(); it != jobs_.end();) {
     const JobKey& key = it->first;
     if (&*key.resolve_context == context) {
-      RemoveJob(it++);
+      jobs_to_destroy.push_back(RemoveJob(it++));
     } else {
       ++it;
     }
   }
+  jobs_to_destroy.clear();
 }
 
 void HostResolverManager::AbortJobsWithoutTargetNetwork(bool in_progress_only) {
@@ -1663,7 +1780,8 @@ void HostResolverManager::TryServingAllJobsFromHosts() {
   }
 }
 
-void HostResolverManager::OnIPAddressChanged() {
+void HostResolverManager::OnIPAddressChanged(
+    NetworkChangeNotifier::IPAddressChangeType change_type) {
   DCHECK(!IsBoundToNetwork());
   last_ipv6_probe_time_ = base::TimeTicks();
   // Abandon all ProbeJobs.

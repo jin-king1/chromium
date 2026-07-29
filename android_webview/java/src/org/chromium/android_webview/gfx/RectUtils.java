@@ -61,7 +61,7 @@ public final class RectUtils {
             if (mX == other.mX) {
                 return compareSegmentTypes(mSegmentType, other.mSegmentType);
             }
-            return mX - other.mX;
+            return Integer.compare(mX, other.mX);
         }
     }
 
@@ -87,7 +87,7 @@ public final class RectUtils {
             if (mY == other.mY) {
                 return compareSegmentTypes(mSegmentType, other.mSegmentType);
             }
-            return mY - other.mY;
+            return Integer.compare(mY, other.mY);
         }
     }
 
@@ -139,8 +139,8 @@ public final class RectUtils {
 
     private static HorizontalSegment sHorizontalSegments[];
     private static VerticalSegment sVerticalSegments[];
-    private static VerticalSegment sVerticalSegment1 = new VerticalSegment();
-    private static VerticalSegment sVerticalSegment2 = new VerticalSegment();
+    private static final VerticalSegment sVerticalSegment1 = new VerticalSegment();
+    private static final VerticalSegment sVerticalSegment2 = new VerticalSegment();
     private static Rect sClippedRects[];
 
     /*

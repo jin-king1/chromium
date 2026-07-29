@@ -55,10 +55,10 @@ policies:
   54: DefaultGeolocationSetting
   55: Disable3DAPIs
   56: PolicyRefreshRate
-  57: ChromeFrameRendererSettings
-  58: RenderInChromeFrameList
-  59: RenderInHostList
-  60: ChromeFrameContentTypes
+  57: ''
+  58: ''
+  59: ''
+  60: ''
   61: ChromeOsLockOnIdleSuspend
   62: InstantEnabled
   63: UserDataDir
@@ -85,7 +85,7 @@ policies:
   84: AllowFileSelectionDialogs
   85: DisabledSchemes
   86: AlwaysAuthorizePlugins
-  87: GCFUserDataDir
+  87: ''
   88: DiskCacheDir
   89: AllowCrossOriginAuthPrompt
   90: DevicePolicyRefreshRate
@@ -139,7 +139,7 @@ policies:
   138: BackgroundModeEnabled
   139: DriveDisabled
   140: DriveDisabledOverCellular
-  141: AdditionalLaunchParameters
+  141: ''
   142: DeviceTargetVersionPrefix
   143: ReportDeviceLocation
   144: PinnedLauncherApps
@@ -219,7 +219,7 @@ policies:
   218: DeviceLoginScreenDefaultScreenMagnifierType
   219: SupervisedUsersEnabled
   220: PresentationScreenDimDelayScale
-  221: SuppressChromeFrameTurndownPrompt
+  221: ''
   222: IdleActionBattery
   223: SupervisedUserCreationEnabled
   224: ReportDeviceNetworkInterfaces
@@ -236,7 +236,7 @@ policies:
   235: RequireOnlineRevocationChecksForLocalAnchors
   236: SystemUse24HourClock
   237: DefaultSearchProviderNewTabURL
-  238: SkipMetadataCheck
+  238: ''
   239: AttestationForContentProtectionEnabled
   240: FullscreenAllowed
   241: DataCompressionProxyEnabled
@@ -1260,7 +1260,7 @@ policies:
   1259: ExtensibleEnterpriseSSOBlocklist
   1260: CSSCustomStateDeprecatedSyntaxEnabled
   1261: MemorySaverModeSavings
-  1262: KioskVisionTelemetryEnabled
+  1262: ''
   1263: GenAIWallpaperSettings
   1264: GenAIVcBackgroundSettings
   1265: DynamicCodeSettings
@@ -1285,7 +1285,7 @@ policies:
   1284: SystemShortcutBehavior
   1285: DeletingUndecryptablePasswordsEnabled
   1286: StandardizedBrowserZoomEnabled
-  1287: ReportingEndpoints
+  1287: ''
   1288: PrintingLPACSandboxEnabled
   1289: ShowGeminiIntroScreenEnabled
   1290: DeviceRestrictionSchedule
@@ -1313,7 +1313,7 @@ policies:
   1312: NTPSharepointCardVisible
   1313: SharedWorkerBlobURLFixEnabled
   1314: DeviceNativeClientForceAllowed
-  1315: GenAiLensOverlaySettings
+  1315: ''
   1316: PasswordManagerPasskeysEnabled
   1317: FilePickerChooseFromDriveSettings
   1318: LiveTranslateEnabled
@@ -1336,6 +1336,145 @@ policies:
   1335: GeminiSettings
   1336: GenAISmartGroupingSettings
   1337: GenAiChromeOsSmartActionsSettings
+  1338: RelaunchFastIfOutdated
+  1339: ClassManagementCaptionsEnabled
+  1340: ClassManagementClassroomIntegrationEnabled
+  1341: ClassManagementNetworkRestrictionEnabled
+  1342: ''
+  1343: ClassManagementViewScreenEnabled
+  1344: KioskChromeAppsForceAllowed
+  1345: ReduceAcceptLanguageEnabled
+  1346: GenAIInlineImageSettings
+  1347: UserSecuritySignalsReporting
+  1348: UserSecurityAuthenticatedReporting
+  1349: HappyEyeballsV3Enabled
+  1350: FaceGazeEnabled
+  1351: ProvisionalNotificationsAllowed
+  1352: DeviceLoginScreenFaceGazeEnabled
+  1353: EnterpriseLogoUrlForBrowser
+  1354: EnterpriseCustomLabelForBrowser
+  1355: DefaultSmartCardConnectSetting
+  1356: DeviceUserInitiatedFirmwareUpdatesEnabled
+  1357: BuiltInAIAPIsEnabled
+  1358: TabGroupSharingSettings
+  1359: NTPFooterManagementNoticeEnabled
+  1360: NTPFooterExtensionAttributionEnabled
+  1361: ClearWindowNameForNewBrowsingContextGroup
+  1362: PasswordManagerBlocklist
+  1363: TLS13EarlyDataEnabled
+  1364: LocalNetworkAccessRestrictionsEnabled
+  1365: PrefetchWithServiceWorkerEnabled
+  1366: ''
+  1367: AIModeSettings
+  1368: WatermarkStyle
+  1369: KioskApplicationLogCollectionEnabled
+  1370: EnableUnsafeSwiftShader
+  1371: LocalNetworkAccessAllowedForUrls
+  1372: LocalNetworkAccessBlockedForUrls
+  1373: DeviceBluetoothJustWorksPairingEnabled
+  1374: LiveCaptionEnabled
+  1375: DeviceUserInitiatedFlexSystemFirmwareUpdatesEnabled
+  1376: AutomatedPasswordChangeSettings
+  1377: DefaultDeviceAttributesSetting
+  1378: DeviceAttributesBlockedForOrigins
+  1379: FloatingSsoSessionCookiesIncluded
+  1380: ServiceWorkerAutoPreloadEnabled
+  1381: ProtectedContentIdentifiersAllowed
+  1382: LegacyCookieScopeEnabled
+  1383: LegacyCookieScopeEnabledForDomainList
+  1384: WebRtcPostQuantumKeyAgreement
+  1385: DeviceLoginScreenSecurityKeyPermitAttestation
+  1386: RestrictCoreSharingOnRenderer
+  1387: OriginKeyedProcessesEnabled
+  1388: NTPShortcuts
+  1389: AutoSignOutEnabled
+  1390: ExtensionInstallCloudPolicyChecksEnabled
+  1391: DevToolsGoogleDeveloperProgramProfileAvailability
+  1392: IncognitoModeUrlBlocklist
+  1393: IncognitoModeUrlAllowlist
+  1394: PreferSlowKexAlgorithms
+  1395: ExtensionForceInstallWithNonMalwareViolationsEnabled
+  1396: CacheEncryptionEnabled
+  1397: SilentPrintingEnabled
+  1398: PreferSlowCiphers
+  1399: DeveloperToolsAvailabilityAllowlist
+  1400: DeveloperToolsAvailabilityBlocklist
+  1401: LocalNetworkAccessRestrictionsTemporaryOptOut
+  1402: GeminiActOnWebSettings
+  1403: LocalAuthFactorsComplexity
+  1404: ProxyOverrideRules
+  1405: AllowedLocalAuthFactors
+  1406: EnableProxyOverrideRulesForAllUsers
+  1407: DefaultIdleDetectionSetting
+  1408: IdleDetectionAllowedForUrls
+  1409: IdleDetectionBlockedForUrls
+  1410: PreciseGeolocationAllowedForUrls
+  1411: GeolocationBlockedForUrls
+  1412: PdfXfaFormsEnabled
+  1413: CameraSaveLocation
+  1414: DeviceLoginScreenPreferSlowKexAlgorithms
+  1415: DeviceLoginScreenPreferSlowCiphers
+  1416: SearchContentSharingSettings
+  1417: StaticStorageQuotaEnabled
+  1418: SaasUsageReportingDomainUrlsForBrowsers
+  1419: SaasUsageReportingDomainUrlsForProfiles
+  1420: GeminiActOnWebAllowedForURLs
+  1421: GeminiActOnWebBlockedForURLs
+  1422: WebAppInstallByUserEnabled
+  1423: LocalNetworkAccessIpAddressSpaceOverrides
+  1424: RestrictPdfSaveToGoogleDriveAccountsToPattern
+  1425: LocalNetworkAllowedForUrls
+  1426: LocalNetworkBlockedForUrls
+  1427: LoopbackNetworkAllowedForUrls
+  1428: LoopbackNetworkBlockedForUrls
+  1429: XSLTEnabled
+  1430: LocalNetworkAccessPermissionsPolicyDefaultEnabled
+  1431: ForceForegroundPriorityForAllTabs
+  1432: WebRtcDiagnosticLogCollectionAllowedForOrigins
+  1433: IsolatedWebAppUserInstallationEnabled
+  1434: ExtensionDOMActivityLoggingEnabled
+  1435: SharedWorkerExtendedLifetimeEnabled
+  1436: MaxConnectionsPerProxyForWebSocket
+  1437: KrispNoiseCancellationEnabled
+  1438: AndroidEntraSsoEnabled
+  1439: FindsSettings
+  1440: ''
+  1441: ''
+  1442: CpuPerformanceTierOverride
+  1443: ForceForegroundPriorityForUrls
+  1444: DataUrlInWebWorkerOpaqueOriginEnabled
+  1445: KioskPinchToZoomAllowed
+  1446: SecuritySignalsClientCertificatesSelectors
+  1447: AllowSocketPoolSizeRandomizationForProxies
+  1448: DefaultSubAppsWithoutPromptsSetting
+  1449: SubAppsWithoutPromptsAllowedForOrigins
+  1450: SubAppsWithoutPromptsBlockedForOrigins
+  1451: IsolatedModeSettings
+  1452: GeminiSparkSettings
+  1453: SmartTabSharingSettings
+  1454: HttpHeaderInjection
+  1455: ChromeSuggestionsSettings
+  1456: RestrictBackgroundFetchFromServiceWorkerEnabled
+  1457: GeminiEnterpriseSettings
+  1458: RestrictYouTubeCookiesDeletion
+  1459: AutofillSettings
+  1460: IsolateOriginsShortlist
+  1461: DeviceWeeklyScheduledResuspendDelayMs
+  1462: DefaultAutomaticDownloadsSetting
+  1463: AutomaticDownloadsAllowedForUrls
+  1464: AutomaticDownloadsBlockedForUrls
+  1465: VoiceTypingSettings
+  1466: ProxyProvisioningDomains
+  1467: ThirdPartyAiChatSettings
+  1468: ProcessIsolationEnabled
+  1469: Indigo
+  1470: DeviceOnlinePasswordMismatchBehavior
+  1471: UpdateOnZeroWindowEnabled
+  1472: BackForwardCacheForWebSocketsAllowed
+  1473: GeminiChromeFileUploadSettings
+  1474: FindAndFillWithGeminiSettings
+  1475: OnNetworkRequestEnterpriseConnector
+  1476: EnterprisePublishedSkills
 
 atomic_groups:
   1: Homepage
@@ -1391,7 +1530,15 @@ atomic_groups:
   51: WebPrintingSettings
   52: DirectSocketsSettings
   53: SkyVaultSettings
-  54: BrowserEventReporting
+  54: ''
   55: SmartCardConnectSettings
   56: WebRtc
   57: ControlledFrameSettings
+  58: LocalNetworkAccessSettings
+  59: DeviceAttributesSettings
+  60: ProtectedContent
+  61: LegacyCookieScopeSettings
+  62: GeolocationSettings
+  63: SocketPoolSizeSettings
+  64: SubAppsWithoutPromptsSettings
+  65: AutomaticDownloadsSettings

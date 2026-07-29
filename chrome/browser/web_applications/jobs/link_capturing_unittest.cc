@@ -10,7 +10,6 @@
 #include "chrome/browser/web_applications/web_app_install_info.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/web_applications/web_app_registrar.h"
-#include "chrome/common/chrome_features.h"
 #include "components/webapps/common/web_app_id.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
@@ -71,7 +70,7 @@ TEST_P(LinkCapturingJobTest, SingleAppEnabled) {
                 ->registrar_unsafe()
                 .GetAppById(app_id)
                 ->user_link_capturing_preference(),
-            proto::LinkCapturingUserPreference::CAPTURE_SUPPORTED_LINKS);
+            proto::NAVIGATION_CAPTURING_PREFERENCE_CAPTURE);
 
   EXPECT_TRUE(provider()->registrar_unsafe().IsLinkCapturableByApp(
       app_id, kTestAppCapturablePage));
@@ -94,7 +93,7 @@ TEST_P(LinkCapturingJobTest, SingleAppDisabled) {
                 ->registrar_unsafe()
                 .GetAppById(app_id)
                 ->user_link_capturing_preference(),
-            proto::LinkCapturingUserPreference::DO_NOT_CAPTURE_SUPPORTED_LINKS);
+            proto::NAVIGATION_CAPTURING_PREFERENCE_DO_NOT_CAPTURE);
   EXPECT_TRUE(provider()->registrar_unsafe().IsLinkCapturableByApp(
       app_id, kTestAppCapturablePage));
   EXPECT_FALSE(provider()->registrar_unsafe().CapturesLinksInScope(app_id));

@@ -8,9 +8,13 @@
 #include <set>
 #include <utility>
 
+#include "base/check.h"
+#include "base/check_op.h"
 #include "base/functional/bind.h"
+#include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/notreached.h"
 #include "base/observer_list.h"
 #include "base/one_shot_event.h"
 #include "base/strings/string_number_conversions.h"
@@ -66,7 +70,7 @@ class BackgroundApplicationListModel::Application final {
   Application(BackgroundApplicationListModel* model,
               const Extension* an_extension);
 
-  virtual ~Application();
+  ~Application();
 
   // Invoked when a request icon is available.
   void OnImageLoaded(const gfx::Image& image);

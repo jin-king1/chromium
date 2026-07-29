@@ -46,7 +46,6 @@
 #include "ui/base/ime/text_input_type.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/color/color_provider.h"
-#include "ui/compositor/scoped_animation_duration_scale_mode.h"
 #include "ui/display/display_switches.h"
 #include "ui/display/manager/display_manager.h"
 #include "ui/events/event.h"
@@ -55,6 +54,7 @@
 #include "ui/gfx/color_palette.h"
 #include "ui/gfx/image/image_unittest_util.h"
 #include "ui/gfx/paint_vector_icon.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/controls/image_view.h"
 #include "ui/wm/core/window_util.h"
@@ -122,7 +122,7 @@ class DictationButtonTrayTest : public AshTestBase {
 
  protected:
   views::ImageView* GetImageView(DictationButtonTray* tray) {
-    return tray->icon_;
+    return tray->image_view();
   }
   void CheckDictationStatusAndUpdateIcon(DictationButtonTray* tray) {
     tray->CheckDictationStatusAndUpdateIcon();
@@ -301,9 +301,9 @@ class DictationButtonTraySodaTest : public DictationButtonTrayTest {
   }
 
   bool IsImageVisible() {
-    DCHECK(GetTray()->icon_);
+    DCHECK(GetImageView(GetTray()));
 
-    ui::Layer* const layer = GetTray()->icon_->layer();
+    ui::Layer* const layer = GetImageView(GetTray())->layer();
     if (!layer)
       return true;
 

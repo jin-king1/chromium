@@ -23,6 +23,7 @@
 #include "third_party/omnibox_proto/entity_info.pb.h"
 #include "third_party/omnibox_proto/navigational_intent.pb.h"
 #include "third_party/omnibox_proto/rich_answer_template.pb.h"
+#include "third_party/omnibox_proto/suggest_template_info.pb.h"
 #include "third_party/omnibox_proto/types.pb.h"
 #include "url/gurl.h"
 
@@ -171,6 +172,24 @@ class SearchSuggestionParser {
                   bool should_prefetch,
                   bool should_prerender,
                   const std::u16string& input_text);
+    SuggestResult(
+        const std::u16string& suggestion,
+        AutocompleteMatchType::Type type,
+        omnibox::SuggestType suggest_type,
+        std::vector<int> subtypes,
+        const std::u16string& match_contents,
+        const std::u16string& match_contents_prefix,
+        const std::u16string& annotation,
+        omnibox::EntityInfo entity_info,
+        const std::string& deletion_url,
+        bool from_keyword,
+        omnibox::NavigationalIntent navigational_intent,
+        int relevance,
+        bool relevance_from_server,
+        bool should_prefetch,
+        bool should_prerender,
+        const std::u16string& input_text,
+        std::optional<omnibox::SuggestTemplateInfo> suggest_template_info);
     SuggestResult(const SuggestResult& result);
     ~SuggestResult() override;
 
@@ -201,6 +220,16 @@ class SearchSuggestionParser {
 
     void SetEntityInfo(const omnibox::EntityInfo&);
     const omnibox::EntityInfo& entity_info() const { return entity_info_; }
+
+    void SetSuggestTemplateInfo(
+        const omnibox::SuggestTemplateInfo& suggest_template_info);
+    const std::optional<omnibox::SuggestTemplateInfo>& suggest_template_info()
+        const {
+      return suggest_template_info_;
+    }
+
+    void SetMatchContents(const std::u16string& match_contents);
+    void SetAnnotation(const std::u16string& annotation);
 
     bool should_prefetch() const { return should_prefetch_; }
     bool should_prerender() const { return should_prerender_; }
@@ -243,6 +272,9 @@ class SearchSuggestionParser {
 
     // Proto containing various pieces of data related to entity suggestions.
     omnibox::EntityInfo entity_info_;
+
+    // Proto containing generalized suggestion information.
+    std::optional<omnibox::SuggestTemplateInfo> suggest_template_info_;
 
     // Should this result be prefetched?
     bool should_prefetch_;
@@ -361,32 +393,49 @@ class SearchSuggestionParser {
 
     // The map of suggestion group IDs to suggestion group information.
     omnibox::GroupConfigMap suggestion_groups_map;
+
+    // The smart compose inline hint.
+    std::string smart_compose_inline_hint;
   };
 
   // Converts JSON loaded by a SimpleURLLoader into UTF-8 and returns the
   // result.
   //
-  // |source| must be the SimpleURLLoader that loaded the data; it is used to
+  // `source` must be the SimpleURLLoader that loaded the data; it is used to
   // lookup the body's encoding from response headers.
   // Note: It can be nullptr in tests.
   //
-  // |response_body| must be the body of the response; it may be null.
-  static std::string ExtractJsonData(
-      const network::SimpleURLLoader* source,
-      std::unique_ptr<std::string> response_body);
+  // `response_body` must be the body of the response; it may be empty.
+  static std::string ExtractJsonData(const network::SimpleURLLoader* source,
+                                     std::optional<std::string> response_body);
 
   // Parses JSON response received from the provider, stripping XSSI
   // protection if needed. Returns the parsed data if successful, NULL
   // otherwise.
-  static std::optional<base::Value::List> DeserializeJsonData(
+  static std::optional<base::ListValue> DeserializeJsonData(
       std::string_view json_data);
+
+  // The options struct for ParseSuggestResultsWithOptions
+  struct ParseSuggestResultsOptions {
+    bool allow_empty_suggestion = false;
+  };
 
   // Parses results from the suggest server and updates the appropriate suggest
   // and navigation result lists in |results|. |is_keyword_result| indicates
   // whether the response was received from the keyword provider.
   // Returns whether the appropriate result list members were updated.
   static bool ParseSuggestResults(
-      const base::Value::List& root_list,
+      const base::ListValue& root_list,
+      const AutocompleteInput& input,
+      const AutocompleteSchemeClassifier& scheme_classifier,
+      int default_result_relevance,
+      bool is_keyword_result,
+      const ParseSuggestResultsOptions& options,
+      Results* results);
+
+  // ParseSuggestResultsWithOptions with optional values set to their default
+  static bool ParseSuggestResults(
+      const base::ListValue& root_list,
       const AutocompleteInput& input,
       const AutocompleteSchemeClassifier& scheme_classifier,
       int default_result_relevance,

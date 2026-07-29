@@ -67,7 +67,7 @@ scoped_refptr<TransportContext> TransportContext::ForTests(TransportRole role) {
 
 TransportContext::TransportContext(
     std::unique_ptr<PortAllocatorFactory> port_allocator_factory,
-    rtc::SocketFactory* socket_factory,
+    webrtc::SocketFactory* socket_factory,
     std::unique_ptr<IceConfigFetcher> ice_config_fetcher,
     TransportRole role)
     : port_allocator_factory_(std::move(port_allocator_factory)),
@@ -100,8 +100,8 @@ void TransportContext::EnsureFreshIceConfig() {
     return;
   }
 
-  if (last_request_completion_time_.is_max()) {
-    HOST_LOG << "Skipping ICE Config request as refreshing is disabled";
+  if (!ice_config_fetcher_) {
+    LOG(WARNING) << "No ICE Config fetcher available.";
     return;
   }
 

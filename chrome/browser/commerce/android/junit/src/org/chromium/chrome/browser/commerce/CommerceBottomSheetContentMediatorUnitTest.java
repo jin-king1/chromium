@@ -11,6 +11,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
+import android.app.Activity;
 import android.view.View;
 
 import org.junit.Before;
@@ -20,6 +21,7 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.robolectric.Robolectric;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
@@ -33,24 +35,32 @@ public class CommerceBottomSheetContentMediatorUnitTest {
     @Mock View mContentItemCustomView;
     @Mock BottomSheetController mBottomSheetController;
     @Mock View mContentView;
+
+    private Activity mActivity;
     private ModelList mModelList;
     private CommerceBottomSheetContentMediator mMediator;
 
     @Before
     public void setup() {
+        mActivity = Robolectric.buildActivity(Activity.class).setup().get();
         mModelList = new ModelList();
     }
 
     private void setupMediator(int expectedContentCount) {
         mMediator =
                 new CommerceBottomSheetContentMediator(
-                        mModelList, expectedContentCount, mBottomSheetController, mContentView);
+                        mActivity,
+                        mModelList,
+                        expectedContentCount,
+                        mBottomSheetController,
+                        mContentView);
     }
 
     private PropertyModel createPropertyModel(int type) {
         return new PropertyModel.Builder(CommerceBottomSheetContentProperties.ALL_KEYS)
                 .with(CommerceBottomSheetContentProperties.TYPE, type)
                 .with(CommerceBottomSheetContentProperties.HAS_TITLE, true)
+                .with(CommerceBottomSheetContentProperties.HAS_CUSTOM_PADDING, true)
                 .with(CommerceBottomSheetContentProperties.TITLE, "title")
                 .with(CommerceBottomSheetContentProperties.CUSTOM_VIEW, mContentItemCustomView)
                 .build();
@@ -141,5 +151,18 @@ public class CommerceBottomSheetContentMediatorUnitTest {
 
         mMediator.onBottomSheetClosed();
         assertEquals(0, mModelList.size());
+    }
+
+    @Test
+    public void testAccessibilityDelegateSetAndUnset() {
+        setupMediator(/* expectedContentCount= */ 2);
+        PropertyModel model0 = createPropertyModel(0);
+        PropertyModel model1 = createPropertyModel(1);
+        mMediator.onContentReady(model1);
+        mMediator.onContentReady(model0);
+        verify(mContentView, times(1)).setAccessibilityDelegate(any());
+
+        mMediator.onBottomSheetClosed();
+        verify(mContentView, times(1)).setAccessibilityDelegate(eq(null));
     }
 }

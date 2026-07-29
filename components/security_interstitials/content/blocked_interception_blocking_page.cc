@@ -4,6 +4,7 @@
 
 #include "components/security_interstitials/content/blocked_interception_blocking_page.h"
 
+#include "base/strings/string_number_conversions.h"
 #include "components/security_interstitials/content/security_interstitial_controller_client.h"
 #include "components/security_interstitials/content/security_interstitial_page.h"
 #include "components/security_interstitials/core/metrics_helper.h"
@@ -31,21 +32,20 @@ namespace {}  // namespace
 // it leaks memory, so don't create it here.
 BlockedInterceptionBlockingPage::BlockedInterceptionBlockingPage(
     content::WebContents* web_contents,
-    int cert_error,
+    net::Error cert_error,
     const GURL& request_url,
     bool can_show_enhanced_protection_message,
     const net::SSLInfo& ssl_info,
     std::unique_ptr<
         security_interstitials::SecurityInterstitialControllerClient>
         controller_client)
-    : SSLBlockingPageBase(
-          web_contents,
-          ssl_info,
-          request_url,
-          true /* overridable */,
-          base::Time::Now(),
-          can_show_enhanced_protection_message,
-          std::move(controller_client)),
+    : SSLBlockingPageBase(web_contents,
+                          ssl_info,
+                          request_url,
+                          true /* overridable */,
+                          base::Time::Now(),
+                          can_show_enhanced_protection_message,
+                          std::move(controller_client)),
       ssl_info_(ssl_info),
       blocked_interception_ui_(
           new security_interstitials::BlockedInterceptionUI(request_url,
@@ -61,7 +61,7 @@ BlockedInterceptionBlockingPage::GetTypeForTesting() {
 }
 
 void BlockedInterceptionBlockingPage::PopulateInterstitialStrings(
-    base::Value::Dict& load_time_data) {
+    base::DictValue& load_time_data) {
   blocked_interception_ui_->PopulateStringsForHTML(load_time_data);
 
   PopulateEnhancedProtectionMessage(load_time_data);

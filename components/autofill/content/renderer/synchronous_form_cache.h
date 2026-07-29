@@ -5,9 +5,10 @@
 #ifndef COMPONENTS_AUTOFILL_CONTENT_RENDERER_SYNCHRONOUS_FORM_CACHE_H_
 #define COMPONENTS_AUTOFILL_CONTENT_RENDERER_SYNCHRONOUS_FORM_CACHE_H_
 
+#include <map>
 #include <memory>
 
-#include "base/containers/flat_set.h"
+#include "base/compiler_specific.h"
 #include "base/types/optional_ref.h"
 #include "components/autofill/content/renderer/form_autofill_util.h"
 #include "components/autofill/core/common/form_data.h"
@@ -17,6 +18,7 @@ namespace blink {
 class WebDocument;
 class WebFormElement;
 }  // namespace blink
+
 namespace autofill {
 
 struct CallTimerState;
@@ -30,8 +32,6 @@ class FieldDataManager;
 // extract a FormData from the same given FormElement, and A calls B
 // synchronously. In that case, only A would extract the form and then B would
 // use the cached version and save a redundant operation.
-// When `AutofillOptimizeFormExtraction` is disabled, the cache should always be
-// empty.
 class SynchronousFormCache {
  public:
   SynchronousFormCache();
@@ -39,7 +39,7 @@ class SynchronousFormCache {
   SynchronousFormCache(SynchronousFormCache&&) = delete;
   // The two constructors below create a singleton cache (or cache with a single
   // form).
-  explicit SynchronousFormCache(FormData& form);
+  explicit SynchronousFormCache(const FormData& form LIFETIME_BOUND);
   SynchronousFormCache(FormRendererId form_id,
                        base::optional_ref<const FormData> form);
   explicit SynchronousFormCache(
@@ -54,21 +54,15 @@ class SynchronousFormCache {
       const blink::WebFormElement& form_element,
       const FieldDataManager& field_data_manager,
       const CallTimerState& timer_state,
-      DenseSet<form_util::ExtractOption> extract_options = {}) const;
-
-  void insert(const FormData& form) { insert(form.renderer_id(), form); }
+      form_util::ButtonTitlesCache* button_titles_cache) const;
 
  private:
   // Stores for a given FormRendererId the last result of trying to extract the
   // FormElement with the given ID. Note that this could be std::nullopt since
   // extraction might fail, and this would still be useful because knowing that
   // would allow avoiding a future failing attempt at extraction.
-  void insert(FormRendererId form_id, base::optional_ref<const FormData> form);
+  void Insert(FormRendererId form_id, const FormData* form);
 
-  // TODO(crbug.com/40947729): Convert to
-  // base::flat_map<FormRendererId, std::unique_ptr<FormData>> for better memory
-  // safety when the class stops being dependent on
-  // `AutofillOptimizeFormExtraction`.
   std::map<FormRendererId, base::optional_ref<const FormData>> cache_;
 };
 

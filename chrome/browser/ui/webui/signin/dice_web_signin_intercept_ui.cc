@@ -8,11 +8,13 @@
 #include "chrome/browser/profiles/profile_attributes_entry.h"
 #include "chrome/browser/profiles/profile_avatar_icon_util.h"
 #include "chrome/browser/ui/webui/signin/dice_web_signin_intercept_handler.h"
+#include "chrome/browser/ui/webui/theme_source.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/branded_strings.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/grit/signin_resources.h"
-#include "components/signin/public/identity_manager/signin_constants.h"
+#include "components/signin/public/base/signin_switches.h"
+#include "content/public/browser/url_data_source.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_data_source.h"
@@ -26,8 +28,6 @@
 #include "ui/webui/webui_util.h"
 #include "url/gurl.h"
 
-using signin::constants::kNoHostedDomainFound;
-
 namespace {
 
 // Helper to create parameters used for testing, when loading the intercept
@@ -40,22 +40,24 @@ CreateSampleBubbleParameters() {
       "png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAIAQMAAAD+wSzIAAAABlBMVEX///"
       "+/v7+jQ3Y5AAAADklEQVQI12P4AIX8EAgALgAD/aNpbtEAAAAASUVORK5CYII";
 
-  AccountInfo intercepted_account;
-  intercepted_account.account_id =
-      CoreAccountId::FromGaiaId(GaiaId("intercepted_ID"));
-  intercepted_account.given_name = "Sam";
-  intercepted_account.full_name = "Sam Sample";
-  intercepted_account.email = "sam.sample@intercepted.com";
-  intercepted_account.picture_url = small_png;
-  intercepted_account.hosted_domain = kNoHostedDomainFound;
+  AccountInfo intercepted_account =
+      AccountInfo::Builder(GaiaId("intercepted_ID"),
+                           "sam.sample@intercepted.com")
+          .SetAccountId(CoreAccountId::FromGaiaId(GaiaId("intercepted_ID")))
+          .SetFullName("Sam Sample")
+          .SetGivenName("Sam")
+          .SetHostedDomain(std::string())
+          .SetAvatarUrl(small_png)
+          .Build();
 
-  AccountInfo primary_account;
-  primary_account.account_id = CoreAccountId::FromGaiaId(GaiaId("primary_ID"));
-  primary_account.given_name = "Tessa";
-  primary_account.full_name = "Tessa Tester";
-  primary_account.email = "tessa.tester@primary.com";
-  primary_account.picture_url = small_png;
-  primary_account.hosted_domain = kNoHostedDomainFound;
+  AccountInfo primary_account =
+      AccountInfo::Builder(GaiaId("primary_ID"), "tessa.tester@primary.com")
+          .SetAccountId(CoreAccountId::FromGaiaId(GaiaId("primary_ID")))
+          .SetFullName("Tessa Tester")
+          .SetGivenName("Tessa")
+          .SetHostedDomain(std::string())
+          .SetAvatarUrl(small_png)
+          .Build();
 
   return WebSigninInterceptor::Delegate::BubbleParameters(
       WebSigninInterceptor::SigninInterceptionType::kMultiUser,
@@ -66,8 +68,10 @@ CreateSampleBubbleParameters() {
 
 DiceWebSigninInterceptUI::DiceWebSigninInterceptUI(content::WebUI* web_ui)
     : content::WebUIController(web_ui) {
+  Profile* profile = Profile::FromWebUI(web_ui);
   content::WebUIDataSource* source = content::WebUIDataSource::CreateAndAdd(
-      Profile::FromWebUI(web_ui), chrome::kChromeUIDiceWebSigninInterceptHost);
+      profile, chrome::kChromeUIDiceWebSigninInterceptHost);
+  content::URLDataSource::Add(profile, std::make_unique<ThemeSource>(profile));
   source->SetDefaultResource(
       IDR_SIGNIN_DICE_WEB_SIGNIN_INTERCEPT_DICE_WEB_SIGNIN_INTERCEPT_HTML);
 
@@ -84,6 +88,8 @@ DiceWebSigninInterceptUI::DiceWebSigninInterceptUI(content::WebUI* web_ui)
       {"signin_vars.css.js", IDR_SIGNIN_SIGNIN_VARS_CSS_JS},
       {"images/split_header.svg",
        IDR_SIGNIN_DICE_WEB_SIGNIN_INTERCEPT_IMAGES_SPLIT_HEADER_SVG},
+      {"images/v2_profile_switch.svg",
+       IDR_SIGNIN_DICE_WEB_SIGNIN_INTERCEPT_IMAGES_V2_PROFILE_SWITCH_SVG},
       // Resources for testing.
       {"test_loader.js", IDR_WEBUI_JS_TEST_LOADER_JS},
       {"test_loader_util.js", IDR_WEBUI_JS_TEST_LOADER_UTIL_JS},
@@ -114,12 +120,16 @@ DiceWebSigninInterceptUI::DiceWebSigninInterceptUI(content::WebUI* web_ui)
   source->UseStringsJs();
   source->EnableReplaceI18nInJS();
 
+  source->AddBoolean("usePrimaryAndTonalButtonsForPromos",
+                     base::FeatureList::IsEnabled(
+                         switches::kUsePrimaryAndTonalButtonsForPromos));
+
   source->OverrideContentSecurityPolicy(
       network::mojom::CSPDirectiveName::ScriptSrc,
       "script-src chrome://resources chrome://webui-test 'self';");
   webui::EnableTrustedTypesCSP(source);
 
-  if (web_ui->GetWebContents()->GetVisibleURL().query() == "debug") {
+  if (web_ui->GetWebContents()->GetVisibleURL().GetQuery() == "debug") {
     // Not intended to be hooked to anything. The bubble will not initialize it
     // so we force it here.
     Initialize(CreateSampleBubbleParameters(), base::DoNothing(),

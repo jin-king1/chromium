@@ -21,7 +21,6 @@
 #include "base/i18n/char_iterator.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/third_party/icu/icu_utf.h"
 #include "base/time/default_clock.h"
 #include "ui/base/ime/ash/ime_bridge.h"
 #include "ui/base/ime/ash/ime_keyboard.h"
@@ -73,12 +72,6 @@ AutocapitalizationMode ConvertAutocapitalizationMode(int flags) {
     return AutocapitalizationMode::kSentences;
   }
   return AutocapitalizationMode::kUnspecified;
-}
-
-// Returns whether `url` refers to Terminal/crosh.
-bool IsTerminalOrCrosh(const GURL& url) {
-  return url.spec().starts_with("chrome-untrusted://terminal") ||
-         url.spec().starts_with("chrome-untrusted://crosh");
 }
 
 }  // namespace
@@ -180,9 +173,7 @@ ui::EventDispatchDetails InputMethodAsh::DispatchKeyEvent(ui::KeyEvent* event) {
   // Simply forward the key event if there's no focused TextInputClient.
   // Dead keys cannot be supported in this case because composition and commit
   // are not supported.
-  if (base::FeatureList::IsEnabled(
-          features::kInputMethodDeadKeyFixForNoInputField) &&
-      GetTextInputClient() == nullptr) {
+  if (GetTextInputClient() == nullptr) {
     return DispatchKeyEventPostIME(event);
   }
 
@@ -716,9 +707,7 @@ ui::EventDispatchDetails InputMethodAsh::ProcessFilteredKeyPressEvent(
     // TODO(b/289319217): Investigate if we need to distinguish between a dead
     // key that is handled by the character composer or is handled by the input
     // method.
-    if ((base::FeatureList::IsEnabled(features::kInputMethodDeadKeyFix) ||
-         (focused_url_.is_valid() && IsTerminalOrCrosh(focused_url_))) &&
-        event->GetDomKey().IsDeadKey()) {
+    if (event->GetDomKey().IsDeadKey()) {
       return DispatchKeyEventPostIME(event);
     }
   }
@@ -962,11 +951,14 @@ TextInputMethod::InputContext InputMethodAsh::GetInputContext() const {
     return TextInputMethod::InputContext(ui::TEXT_INPUT_TYPE_NONE);
   }
 
+  ui::TextInputType input_type = client->GetTextInputType();
   const int flags = client->GetTextInputFlags();
-  TextInputMethod::InputContext input_context(
-      flags & ui::TEXT_INPUT_FLAG_HAS_BEEN_PASSWORD
-          ? ui::TEXT_INPUT_TYPE_PASSWORD
-          : client->GetTextInputType());
+  if (flags & ui::TEXT_INPUT_FLAG_HAS_BEEN_PASSWORD ||
+      flags & ui::TEXT_INPUT_FLAG_HAS_BEEN_CUSTOM_PASSWORD) {
+    input_type = ui::TEXT_INPUT_TYPE_PASSWORD;
+  }
+
+  TextInputMethod::InputContext input_context(input_type);
   input_context.mode = client->GetTextInputMode();
   input_context.autocompletion_mode =
       ConvertTextInputFlagToEnum<AutocompletionMode>(

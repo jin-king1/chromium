@@ -19,4 +19,11 @@ void ShowSafeBrowsingSettings(ui::WindowAndroid* window,
       static_cast<int>(access_point));
 }
 
+void ShowAdvancedProtectionSettings(ui::WindowAndroid* window) {
+  Java_SafeBrowsingSettingsNavigation_showAdvancedProtectionSettings(
+      base::android::AttachCurrentThread(), window->GetJavaObject());
+}
+
 }  // namespace safe_browsing
+
+DEFINE_JNI(SafeBrowsingSettingsNavigation)

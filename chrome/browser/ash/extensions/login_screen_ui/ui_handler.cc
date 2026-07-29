@@ -36,10 +36,12 @@ using ::ash::login_screen_extension_ui::WindowFactory;
 const char kErrorWindowAlreadyExists[] =
     "Login screen extension UI already in use.";
 const char kErrorNoExistingWindow[] = "No open window to close.";
+const char kErrorInvalidURL[] = "Login screen URL is not valid.";
 const char kErrorNotOnLoginOrLockScreen[] =
     "Windows can only be created on the login and lock screen.";
 
-const char kExtensionNameImprivata[] = "Imprivata OneSign";
+const char kExtensionNameAuthX[] = "AuthX Security LLC";
+const char kExtensionNameImprivata[] = "Imprivata Enterprise Access Management";
 const char kExtensionNameImprivataTest[] = "LoginScreenUi test extension";
 
 std::string GetHardcodedExtensionName(const extensions::Extension* extension) {
@@ -47,12 +49,15 @@ std::string GetHardcodedExtensionName(const extensions::Extension* extension) {
       extensions::FeatureProvider::GetBehaviorFeature(
           extensions::behavior_feature::kImprivataLoginScreenExtension);
 
-  if (imprivata_login_screen_extension->IsAvailableToExtension(extension)
-          .is_available()) {
-    return kExtensionNameImprivata;
+  if (extension->id() == "cgfejmnibdpmonndkkmfghicnokiomoi") {
+    return kExtensionNameAuthX;
   }
   if (extension->id() == "oclffehlkdgibkainkilopaalpdobkan") {
     return kExtensionNameImprivataTest;
+  }
+  if (imprivata_login_screen_extension->IsAvailableToExtension(extension)
+          .is_available()) {
+    return kExtensionNameImprivata;
   }
   NOTREACHED();
 }
@@ -119,12 +124,17 @@ bool UiHandler::Show(const extensions::Extension* extension,
     return false;
   }
 
+  const GURL resource_url = extension->ResolveExtensionURL(resource_path);
+  if (!resource_url.is_valid()) {
+    *error = kErrorInvalidURL;
+    return false;
+  }
+
   ash::LoginScreen::Get()->GetModel()->NotifyOobeDialogState(
       ash::OobeDialogState::EXTENSION_LOGIN);
 
   CreateOptions create_options(
-      GetHardcodedExtensionName(extension),
-      extension->GetResourceURL(resource_path), can_be_closed_by_user,
+      GetHardcodedExtensionName(extension), resource_url, can_be_closed_by_user,
       base::BindOnce(base::IgnoreResult(&UiHandler::OnWindowClosed),
                      weak_ptr_factory_.GetWeakPtr(), extension->id()));
 

@@ -7,14 +7,17 @@
 
 #include <map>
 #include <memory>
+#include <string_view>
 
 #include "base/component_export.h"
 #include "base/containers/lru_cache.h"
 #include "base/containers/unique_ptr_adapters.h"
 #include "base/functional/callback.h"
-#include "base/memory/memory_pressure_listener.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/memory_coordinator/async_memory_consumer_registration.h"
+#include "base/memory_coordinator/memory_consumer.h"
+#include "base/memory_coordinator/traits.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "net/disk_cache/disk_cache.h"
@@ -41,9 +44,23 @@ enum class RequestDestination;
 
 class SharedDictionaryStorage;
 
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+//
+// LINT.IfChange(SharedDictionaryStorageEvictionReason)
+enum class SharedDictionaryStorageEvictionReason {
+  kNotEvicted,
+  kMemoryPressureModerate,
+  kMemoryPressureCritical,
+  kCacheFull,
+  kMaxValue = kCacheFull
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/net/enums.xml:SharedDictionaryStorageEvictionReason)
+
 // This class is attached to NetworkContext and manages the dictionaries for
 // CompressionDictionaryTransport feature.
-class COMPONENT_EXPORT(NETWORK_SERVICE) SharedDictionaryManager {
+class COMPONENT_EXPORT(NETWORK_SERVICE) SharedDictionaryManager
+    : public base::MemoryConsumer {
  public:
   // Returns a SharedDictionaryManager which keeps the whole dictionary
   // information in memory.
@@ -67,7 +84,7 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) SharedDictionaryManager {
   SharedDictionaryManager(const SharedDictionaryManager&) = delete;
   SharedDictionaryManager& operator=(const SharedDictionaryManager&) = delete;
 
-  virtual ~SharedDictionaryManager();
+  ~SharedDictionaryManager() override;
 
   // Returns a SharedDictionaryStorage for the `isolation_key`.
   scoped_refptr<SharedDictionaryStorage> GetStorage(
@@ -109,12 +126,18 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) SharedDictionaryManager {
   bool HasPreloadedSharedDictionaryInfo() const;
 
  protected:
-  SharedDictionaryManager();
+  SharedDictionaryManager(std::string_view consumer_name,
+                          const base::MemoryConsumerTraits& traits);
+
+  // base::MemoryConsumer:
+  void OnReleaseMemory() override;
+  void OnUpdateMemoryLimit() override;
 
   // Called to create a SharedDictionaryStorage for the `isolation_key`. This is
   // called only when there is no matching storage in `storages_`.
   virtual scoped_refptr<SharedDictionaryStorage> CreateStorage(
-      const net::SharedDictionaryIsolationKey& isolation_key) = 0;
+      const net::SharedDictionaryIsolationKey& isolation_key,
+      SharedDictionaryStorageEvictionReason previous_eviction_reason) = 0;
 
   scoped_refptr<net::SharedDictionary> GetDictionaryImpl(
       mojom::RequestDestination request_destination,
@@ -134,23 +157,23 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) SharedDictionaryManager {
 
   size_t GetStorageCountForTesting();
 
-  void OnMemoryPressure(
-      base::MemoryPressureListener::MemoryPressureLevel level);
-
   void DeletePreloadedDictionaries(
       PreloadedDictionaries* preloaded_dictionaries);
 
   base::LRUCache<net::SharedDictionaryIsolationKey,
                  scoped_refptr<SharedDictionaryStorage>>
       cached_storages_;
-  std::unique_ptr<base::MemoryPressureListener> memory_pressure_listener_;
-  base::MemoryPressureListener::MemoryPressureLevel memory_pressure_level_ =
-      base::MemoryPressureListener::MEMORY_PRESSURE_LEVEL_NONE;
 
   std::map<net::SharedDictionaryIsolationKey, raw_ptr<SharedDictionaryStorage>>
       storages_;
   std::set<std::unique_ptr<PreloadedDictionaries>, base::UniquePtrComparator>
       preloaded_dictionaries_set_;
+
+  std::map<net::SharedDictionaryIsolationKey,
+           SharedDictionaryStorageEvictionReason>
+      previously_evicted_keys_;
+
+  base::AsyncMemoryConsumerRegistration memory_consumer_registration_;
 
   base::WeakPtrFactory<SharedDictionaryManager> weak_factory_{this};
 };

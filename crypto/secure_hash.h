@@ -1,6 +1,9 @@
 // Copyright 2012 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
+//
+// This interface is deprecated and being removed: https://crbug.com/374310081.
+// New users should use crypto/hash instead.
 
 #ifndef CRYPTO_SECURE_HASH_H_
 #define CRYPTO_SECURE_HASH_H_
@@ -18,8 +21,7 @@ namespace crypto {
 // be used when the full input is not known in advance. The end result will the
 // same as if we have the full input in advance.
 //
-// TODO(https://issues.chromium.org/issues/374310081): Move this into
-// crypto/hash.h along with the oneshot functions.
+// TODO(https://issues.chromium.org/issues/374310081): Delete this.
 class CRYPTO_EXPORT SecureHash {
  public:
   enum Algorithm {
@@ -38,12 +40,6 @@ class CRYPTO_EXPORT SecureHash {
   virtual void Finish(base::span<uint8_t> output) = 0;
 
   virtual size_t GetHashLength() const = 0;
-
-  // Deprecated non-span APIs - do not add new uses of them, and please remove
-  // existing uses.
-  // TODO(https://crbug.com/364687923): Delete these.
-  void Update(const void* input, size_t len);
-  void Finish(void* output, size_t len);
 
   // Create a clone of this SecureHash. The returned clone and this both
   // represent the same hash state. But from this point on, calling

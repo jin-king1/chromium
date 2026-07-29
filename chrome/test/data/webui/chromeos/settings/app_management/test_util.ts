@@ -3,10 +3,12 @@
 // found in the LICENSE file.
 
 import type {AppManagementToggleRowElement, CrToggleElement} from 'chrome://os-settings/os_settings.js';
-import {AppManagementBrowserProxy, AppManagementComponentBrowserProxy} from 'chrome://os-settings/os_settings.js';
+import {appManagementBrowserProxyFactory} from 'chrome://os-settings/os_settings.js';
 import type {App} from 'chrome://resources/cr_components/app_management/app_management.mojom-webui.js';
-import {PageCallbackRouter, PermissionType} from 'chrome://resources/cr_components/app_management/app_management.mojom-webui.js';
+import {PermissionType} from 'chrome://resources/cr_components/app_management/app_management.mojom-webui.js';
+import type {MetricsBrowserProxy} from 'chrome://resources/cr_components/app_management/metrics_browser_proxy.js';
 import type {PermissionTypeIndex} from 'chrome://resources/cr_components/app_management/permission_constants.js';
+import {assertNotReachedCase} from 'chrome://resources/js/assert.js';
 import {assertNotReached, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
 import {TestBrowserProxy} from 'chrome://webui-test/test_browser_proxy.js';
@@ -19,23 +21,16 @@ import {TestAppManagementStore} from './test_store.js';
 
 type AppConfig = Partial<App>;
 
-export class TestAppManagementBrowserProxy extends TestBrowserProxy implements
-    AppManagementComponentBrowserProxy {
-  callbackRouter: PageCallbackRouter;
-  handler: FakePageHandler;
-
-  constructor(handler: FakePageHandler) {
+export class TestMetricsBrowserProxy extends TestBrowserProxy implements
+    MetricsBrowserProxy {
+  constructor() {
     super(['recordEnumerationValue']);
-    this.handler = handler;
-    this.callbackRouter = new PageCallbackRouter();
   }
 
   recordEnumerationValue(metricName: string, value: number, enumSize: number) {
     this.methodCalled('recordEnumerationValue', metricName, value, enumSize);
   }
 }
-
-export let fakeComponentBrowserProxy: TestAppManagementBrowserProxy|null = null;
 
 /**
  * Create an app for testing purpose.
@@ -45,13 +40,10 @@ export function createApp(id: string, config?: AppConfig): App {
 }
 
 export function setupFakeHandler(): FakePageHandler {
-  const browserProxy = AppManagementBrowserProxy.getInstance();
+  const browserProxy = appManagementBrowserProxyFactory.getInstance();
   const fakeHandler = new FakePageHandler(
       browserProxy.callbackRouter.$.bindNewPipeAndPassRemote());
-  browserProxy.handler = fakeHandler.getRemote();
-
-  fakeComponentBrowserProxy = new TestAppManagementBrowserProxy(fakeHandler);
-  AppManagementComponentBrowserProxy.setInstance(fakeComponentBrowserProxy);
+  browserProxy.handler = fakeHandler;
   return fakeHandler;
 }
 
@@ -136,6 +128,8 @@ export async function addFakeSensor(
     case PermissionType.kPrinting:
     case PermissionType.kFileHandling:
       assertNotReached();
+    default:
+      assertNotReachedCase(PermissionType[permissionType]);
   }
   await flushTasks();
 }

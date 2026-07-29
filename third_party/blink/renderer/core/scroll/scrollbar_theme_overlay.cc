@@ -25,7 +25,10 @@
 
 #include "third_party/blink/renderer/core/scroll/scrollbar_theme_overlay.h"
 
+#include <algorithm>
+
 #include "third_party/blink/public/platform/web_theme_engine.h"
+#include "third_party/blink/renderer/core/paint/paint_info.h"
 #include "third_party/blink/renderer/core/scroll/scrollable_area.h"
 #include "third_party/blink/renderer/core/scroll/scrollbar.h"
 #include "third_party/blink/renderer/platform/graphics/graphics_context.h"
@@ -33,8 +36,6 @@
 #include "third_party/blink/renderer/platform/theme/web_theme_engine_helper.h"
 #include "third_party/blink/renderer/platform/wtf/math_extras.h"
 #include "ui/gfx/geometry/transform.h"
-
-#include <algorithm>
 
 namespace blink {
 
@@ -108,20 +109,6 @@ base::TimeDelta ScrollbarThemeOverlay::OverlayScrollbarFadeOutDuration() const {
   return style.fade_out_duration;
 }
 
-int ScrollbarThemeOverlay::ThumbLength(const Scrollbar& scrollbar) const {
-  int track_len = TrackLength(scrollbar);
-
-  if (!scrollbar.TotalSize())
-    return track_len;
-
-  float proportion =
-      static_cast<float>(scrollbar.VisibleSize()) / scrollbar.TotalSize();
-  int length = round(proportion * track_len);
-  int min_len = std::min(MinimumThumbLength(scrollbar), track_len);
-  length = ClampTo(length, min_len, track_len);
-  return length;
-}
-
 int ScrollbarThemeOverlay::ThumbThickness(
     float scale_from_dip,
     EScrollbarWidth scrollbar_width) const {
@@ -171,37 +158,19 @@ gfx::Rect ScrollbarThemeOverlay::ThumbRect(const Scrollbar& scrollbar) const {
   return rect;
 }
 
-void ScrollbarThemeOverlay::PaintThumb(GraphicsContext& context,
+void ScrollbarThemeOverlay::PaintThumb(const PaintInfo& paint_info,
                                        const Scrollbar& scrollbar,
                                        const gfx::Rect& rect) {
-  if (DrawingRecorder::UseCachedDrawingIfPossible(context, scrollbar,
-                                                  DisplayItem::kScrollbarThumb))
+  GraphicsContext& context = paint_info.context;
+  if (DrawingRecorder::UseCachedDrawingIfPossible(
+          context, scrollbar, DisplayItem::kScrollbarThumb)) {
     return;
+  }
 
   DrawingRecorder recorder(context, scrollbar, DisplayItem::kScrollbarThumb,
                            rect);
 
-  WebThemeEngine::State state = WebThemeEngine::kStateNormal;
-
-  if (!scrollbar.Enabled())
-    state = WebThemeEngine::kStateDisabled;
-  else if (scrollbar.PressedPart() == kThumbPart)
-    state = WebThemeEngine::kStatePressed;
-  else if (scrollbar.HoveredPart() == kThumbPart)
-    state = WebThemeEngine::kStateHover;
-
   cc::PaintCanvas* canvas = context.Canvas();
-
-  WebThemeEngine::Part part = WebThemeEngine::kPartScrollbarHorizontalThumb;
-  if (scrollbar.Orientation() == kVerticalScrollbar)
-    part = WebThemeEngine::kPartScrollbarVerticalThumb;
-
-  blink::WebThemeEngine::ScrollbarThumbExtraParams scrollbar_thumb;
-  if (scrollbar.ScrollbarThumbColor().has_value()) {
-    scrollbar_thumb.thumb_color =
-        scrollbar.ScrollbarThumbColor().value().toSkColor4f().toSkColor();
-  }
-
   // Horizontally flip the canvas if it is left vertical scrollbar.
   if (scrollbar.IsLeftSideVerticalScrollbar()) {
     canvas->save();
@@ -209,15 +178,28 @@ void ScrollbarThemeOverlay::PaintThumb(GraphicsContext& context,
     canvas->scale(-1, 1);
   }
 
+  const WebThemeEngine::Part part =
+      (scrollbar.Orientation() == kVerticalScrollbar)
+          ? WebThemeEngine::kPartScrollbarVerticalThumb
+          : WebThemeEngine::kPartScrollbarHorizontalThumb;
+
+  blink::WebThemeEngine::ScrollbarThumbExtraParams scrollbar_thumb;
+  if (scrollbar.ScrollbarThumbColor().has_value()) {
+    scrollbar_thumb.thumb_color =
+        scrollbar.ScrollbarThumbColor().value().toSkColor4f().toSkColor();
+  }
   blink::WebThemeEngine::ExtraParams params(scrollbar_thumb);
 
-  mojom::blink::ColorScheme color_scheme = scrollbar.UsedColorScheme();
+  const mojom::blink::ColorScheme color_scheme = scrollbar.UsedColorScheme();
   WebThemeEngineHelper::GetNativeThemeEngine()->Paint(
-      canvas, part, state, rect, &params, color_scheme,
-      scrollbar.InForcedColorsMode(), scrollbar.GetColorProvider(color_scheme));
+      canvas, part, scrollbar.GetStateForPart(kThumbPart), rect, &params,
+      scrollbar.InForcedColorsMode(), color_scheme,
+      scrollbar.GetPreferredContrast(),
+      scrollbar.GetColorProvider(color_scheme));
 
-  if (scrollbar.IsLeftSideVerticalScrollbar())
+  if (scrollbar.IsLeftSideVerticalScrollbar()) {
     canvas->restore();
+  }
 }
 
 ScrollbarPart ScrollbarThemeOverlay::HitTest(const Scrollbar& scrollbar,

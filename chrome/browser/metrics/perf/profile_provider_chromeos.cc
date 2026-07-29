@@ -12,6 +12,7 @@
 #include "chrome/browser/metrics/perf/metric_provider.h"
 #include "chrome/browser/metrics/perf/perf_events_collector.h"
 #include "chrome/browser/metrics/perf/windowed_incognito_observer.h"
+#include "chrome/browser/sessions/session_restore.h"
 #include "chromeos/ash/components/dbus/dbus_thread_manager.h"
 #include "components/services/heap_profiling/public/cpp/settings.h"
 #include "content/public/common/content_switches.h"
@@ -55,8 +56,6 @@ ProfileProvider::ProfileProvider()
 }
 
 ProfileProvider::~ProfileProvider() {
-  ash::LoginState::Get()->RemoveObserver(this);
-  chromeos::PowerManagerClient::Get()->RemoveObserver(this);
   base::PowerMonitor::GetInstance()->RemovePowerThermalObserver(this);
   if (jank_monitor_) {
     jank_monitor_->RemoveObserver(this);
@@ -70,10 +69,10 @@ void ProfileProvider::Init() {
   }
 
   // Register as an observer of login state changes.
-  ash::LoginState::Get()->AddObserver(this);
+  login_state_observer_.Observe(ash::LoginState::Get());
 
   // Register as an observer of power manager events.
-  chromeos::PowerManagerClient::Get()->AddObserver(this);
+  power_manager_client_observer_.Observe(chromeos::PowerManagerClient::Get());
 
   // Register as an observer of session restore.
   on_session_restored_callback_subscription_ =

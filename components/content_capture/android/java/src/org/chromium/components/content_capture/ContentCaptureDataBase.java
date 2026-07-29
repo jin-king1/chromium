@@ -17,7 +17,7 @@ import java.util.List;
 @NullMarked
 public abstract class ContentCaptureDataBase {
     private final long mId;
-    private Rect mBounds;
+    private final Rect mBounds;
     private @Nullable ArrayList<ContentCaptureDataBase> mChildren;
 
     public ContentCaptureDataBase(long id, Rect bounds) {
@@ -43,7 +43,7 @@ public abstract class ContentCaptureDataBase {
     }
 
     public void addChild(ContentCaptureDataBase data) {
-        if (mChildren == null) mChildren = new ArrayList<ContentCaptureDataBase>();
+        if (mChildren == null) mChildren = new ArrayList<>();
         mChildren.add(data);
     }
 

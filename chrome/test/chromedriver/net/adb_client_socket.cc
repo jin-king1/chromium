@@ -2,14 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/test/chromedriver/net/adb_client_socket.h"
 
 #include <stddef.h>
+
 #include <memory>
 #include <utility>
 
@@ -20,11 +16,13 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
+#include "base/strings/string_view_util.h"
 #include "base/strings/stringprintf.h"
 #include "net/base/address_list.h"
 #include "net/base/completion_repeating_callback.h"
 #include "net/base/ip_address.h"
 #include "net/base/net_errors.h"
+#include "net/base/network_handle.h"
 #include "net/log/net_log_source.h"
 #include "net/socket/tcp_client_socket.h"
 #include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
@@ -55,8 +53,8 @@ std::string EncodeMessage(const std::string& message) {
   CHECK_LE(length, 0xffffu);
   std::string result;
   result.reserve(4);
-  base::AppendHexEncodedByte(reinterpret_cast<const uint8_t*>(&length)[1],
-                             result);
+  base::AppendHexEncodedByte(
+      UNSAFE_TODO(reinterpret_cast<const uint8_t*>(&length)[1]), result);
   base::AppendHexEncodedByte(reinterpret_cast<const uint8_t*>(&length)[0],
                              result);
   return result + message;
@@ -387,7 +385,8 @@ class AdbSendFileSocket : AdbClientSocket {
     size_t offset = current_offset_;
     size_t length = std::min(content_.length() - offset, kAdbDataChunkSize);
     current_offset_ += length;
-    SendPayload(kDataCommand, length, content_.c_str() + offset, length,
+    SendPayload(kDataCommand, length, UNSAFE_TODO(content_.c_str() + offset),
+                length,
                 base::BindOnce(&AdbSendFileSocket::SendContent,
                                base::Unretained(this)));
   }
@@ -508,7 +507,15 @@ void AdbClientSocket::Connect(net::CompletionOnceCallback callback) {
       ip_list, port_);
 
   socket_ = std::make_unique<net::TCPClientSocket>(
-      address_list, nullptr, nullptr, nullptr, net::NetLogSource());
+      address_list,
+      /*socket_performance_watcher=*/nullptr,
+      /*network_quality_estimator=*/nullptr,
+      /*net_log=*/nullptr,
+      /*net_log_source=*/net::NetLogSource(),
+      // This is used only for testing in scenarios that do not involve multiple
+      // networks. With that in mind, it's safe to always use the default
+      // network.
+      /*target_network=*/net::handles::kInvalidNetworkHandle);
 
   auto split_callback = base::SplitOnceCallback(std::move(callback));
   int result = socket_->Connect(std::move(split_callback.first));

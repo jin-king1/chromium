@@ -12,21 +12,21 @@ import {flushTasks} from 'chrome-untrusted://webui-test/polymer_test_util.js';
 
 import {normalizeBoxInElement} from './selection_utils.js';
 
-/**
- * Adds empty text to the `callbackRouterRemote` provided.
- */
-export async function addEmptyTextToPage(callbackRouterRemote: LensPageRemote) {
-  const text = createText([]);
-  callbackRouterRemote.textReceived(text);
-  await flushTasks();
-}
+const GENERIC_NORMALIZED_TEXT: Text = createText([
+  createParagraph([
+    createLine([
+      createWord('hello', {x: 0.1, y: 0.1, width: 0.1, height: 0.1}),
+      createWord('there', {x: 0.11, y: 0.11, width: 0.1, height: 0.1}),
+    ]),
+  ]),
+  createParagraph([
+    createLine([createWord('test', {x: 0.3, y: 0.3, width: 0.1, height: 0.1})]),
+  ]),
+]);
 
-/**
- * Adds generic text to the `callbackRouterRemote` provided.
- */
-export async function addGenericWordsToPage(
-    callbackRouterRemote: LensPageRemote, element: Element) {
-  const text = createText([
+
+function createGenericText(element: Element): Text {
+  return createText([
     createParagraph([
       createLine([
         createWord(
@@ -48,7 +48,80 @@ export async function addGenericWordsToPage(
       ]),
     ]),
   ]);
+}
+
+/**
+ * Adds empty full screenshot text to the `callbackRouterRemote` provided.
+ */
+export async function addEmptyTextToPage(callbackRouterRemote: LensPageRemote) {
+  await addTextToPage(callbackRouterRemote, createText([]));
+}
+
+/**
+ * Adds empty region text to the `callbackRouterRemote` provided.
+ */
+export async function addEmptyRegionTextToPage(
+    callbackRouterRemote: LensPageRemote, isInjectedImage = false) {
+  await addRegionTextToPage(
+      callbackRouterRemote, createText([]), isInjectedImage);
+}
+
+
+/**
+ * Adds generic text to the `callbackRouterRemote` provided.
+ */
+export async function addGenericWordsToPage(
+    callbackRouterRemote: LensPageRemote, element: Element) {
+  await addTextToPage(callbackRouterRemote, createGenericText(element));
+}
+
+/**
+ * Adds generic region text to the `callbackRouterRemote` provided.
+ */
+export async function addGenericRegionWordsToPage(
+    callbackRouterRemote: LensPageRemote, element: Element,
+    isInjectedImage = false) {
+  await addRegionTextToPage(
+      callbackRouterRemote, createGenericText(element), isInjectedImage);
+}
+
+/**
+ * Adds generic text to the `callbackRouterRemote` provided. Text is already
+ * normalized without the need for a rendered element.
+ */
+export async function addGenericWordsToPageNormalized(
+    callbackRouterRemote: LensPageRemote) {
+  await addTextToPage(callbackRouterRemote, GENERIC_NORMALIZED_TEXT);
+}
+
+/**
+ * Adds generic region text to the `callbackRouterRemote` provided. Text is
+ * already normalized without the need for a rendered element.
+ */
+export async function addGenericRegionWordsToPageNormalized(
+    callbackRouterRemote: LensPageRemote, isInjectedImage = false) {
+  await addRegionTextToPage(
+      callbackRouterRemote, GENERIC_NORMALIZED_TEXT, isInjectedImage);
+}
+
+/**
+ * Adds `text` provided in function to the overlay via the
+ * `callbackRouterRemote`.
+ */
+export async function addTextToPage(
+    callbackRouterRemote: LensPageRemote, text: Text) {
   callbackRouterRemote.textReceived(text);
+  await flushTasks();
+}
+
+/**
+ * Adds `text` provided in function to the overlay via the
+ * `callbackRouterRemote`. It is sent as region text and also with a boolean to
+ * indicate if the text was received from an injected image.
+ */
+export async function addRegionTextToPage(
+    callbackRouterRemote: LensPageRemote, text: Text, isInjectedImage = false) {
+  callbackRouterRemote.regionTextReceived(text, isInjectedImage);
   await flushTasks();
 }
 
@@ -129,12 +202,13 @@ export function createLine(words: Word[]): Line {
 }
 
 export function createWord(
-    plainText: string, wordBoundingBox?: RectF, textSeparator: string = ' ',
-    writingDirection = WritingDirection.kLeftToRight): Word {
+    plainText: string, wordBoundingBox?: RectF, rotation: number = 0,
+    writingDirection = WritingDirection.kLeftToRight,
+    textSeparator: string = ' '): Word {
   const geometry = wordBoundingBox ? {
     boundingBox: {
       box: wordBoundingBox,
-      rotation: 0,
+      rotation,
       coordinateType: CenterRotatedBox_CoordinateType.kNormalized,
     },
     segmentationPolygon: [],

@@ -9,58 +9,84 @@
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/enterprise/connectors/analysis/content_analysis_info.h"
 #include "chrome/browser/enterprise/connectors/analysis/files_request_handler.h"
+#include "components/enterprise/connectors/core/cloud_content_scanning/binary_upload_request.h"
+#include "components/enterprise/connectors/core/cloud_content_scanning/common.h"
 
 namespace enterprise_connectors::test {
 
-class FakeFilesRequestHandler : public FilesRequestHandler {
+class FakeFilesRequestHandler : public FilesRequestHandlerBase {
  public:
   using FakeFileRequestCallback =
       base::OnceCallback<void(base::FilePath path,
-                              safe_browsing::BinaryUploadService::Result result,
+                              ScanRequestUploadResult result,
                               ContentAnalysisResponse response)>;
 
-  using FakeFileUploadCallback = base::RepeatingCallback<void(
-      safe_browsing::BinaryUploadService::Result result,
-      const base::FilePath& path,
-      std::unique_ptr<safe_browsing::BinaryUploadService::Request> request,
-      FakeFileRequestCallback callback)>;
+  using FakeFileUploadCallback =
+      base::RepeatingCallback<void(ScanRequestUploadResult result,
+                                   const base::FilePath& path,
+                                   std::unique_ptr<BinaryUploadRequest> request,
+                                   FakeFileRequestCallback callback)>;
 
   FakeFilesRequestHandler(FakeFileUploadCallback fake_file_upload_callback,
                           ContentAnalysisInfo* content_analysis_info,
-                          safe_browsing::BinaryUploadService* upload_service,
+                          BinaryUploadService* upload_service,
                           Profile* profile,
                           GURL url,
                           const std::string& source,
                           const std::string& destination,
                           const std::string& content_transfer_method,
-                          safe_browsing::DeepScanAccessPoint access_point,
+                          DeepScanAccessPoint access_point,
                           const std::vector<base::FilePath>& paths,
-                          CompletionCallback callback);
+                          FilesRequestHandler::CompletionCallback callback);
+
+  FakeFilesRequestHandler(FakeFileUploadCallback fake_file_upload_callback,
+                          ContentAnalysisInfo* content_analysis_info,
+                          BinaryUploadService* upload_service,
+                          GURL url,
+                          const std::string& content_transfer_method,
+                          DeepScanAccessPoint access_point,
+                          const std::vector<base::FilePath>& paths,
+                          std::unique_ptr<Delegate> delegate);
 
   ~FakeFilesRequestHandler() override;
 
-  static std::unique_ptr<FilesRequestHandler> Create(
+  static std::unique_ptr<FilesRequestHandlerBase> Create(
       FakeFileUploadCallback fake_file_upload_callback,
       ContentAnalysisInfo* content_analysis_info,
-      safe_browsing::BinaryUploadService* upload_service,
+      BinaryUploadService* upload_service,
       Profile* profile,
       GURL url,
       const std::string& source,
       const std::string& destination,
       const std::string& content_transfer_method,
-      safe_browsing::DeepScanAccessPoint access_point,
+      DeepScanAccessPoint access_point,
       const std::vector<base::FilePath>& paths,
       FilesRequestHandler::CompletionCallback callback);
+
+  static std::unique_ptr<FilesRequestHandlerBase> CreateWithDelegate(
+      FakeFileUploadCallback fake_file_upload_callback,
+      ContentAnalysisInfo* content_analysis_info,
+      BinaryUploadService* upload_service,
+      GURL url,
+      const std::string& content_transfer_method,
+      DeepScanAccessPoint access_point,
+      const std::vector<base::FilePath>& paths,
+      std::unique_ptr<Delegate> delegate);
 
   base::WeakPtr<FakeFilesRequestHandler> GetWeakPtr();
 
  private:
   void UploadFileForDeepScanning(
-      safe_browsing::BinaryUploadService::Result result,
+      ScanRequestUploadResult result,
       const base::FilePath& path,
-      std::unique_ptr<safe_browsing::BinaryUploadService::Request> request)
-      override;
+      std::unique_ptr<BinaryUploadRequest> request) override;
 
+  void FileRequestCallbackForTesting(
+      base::FilePath path,
+      ScanRequestUploadResult result,
+      enterprise_connectors::ContentAnalysisResponse response);
+
+  std::vector<base::FilePath> paths_;
   FakeFileUploadCallback fake_file_upload_callback_;
   base::WeakPtrFactory<FakeFilesRequestHandler> weak_ptr_factory_{this};
 };

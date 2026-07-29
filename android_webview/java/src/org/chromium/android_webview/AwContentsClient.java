@@ -21,9 +21,9 @@ import android.view.View;
 import android.webkit.WebChromeClient;
 
 import androidx.annotation.IntDef;
-import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
+import org.chromium.android_webview.common.AwFeatureMap;
 import org.chromium.android_webview.common.AwFeatures;
 import org.chromium.android_webview.common.Lifetime;
 import org.chromium.android_webview.permission.AwPermissionRequest;
@@ -31,7 +31,7 @@ import org.chromium.android_webview.safe_browsing.AwSafeBrowsingResponse;
 import org.chromium.base.Callback;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
-import org.chromium.base.metrics.ScopedSysTraceEvent;
+import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.components.embedder_support.util.WebResourceResponseInfo;
 import org.chromium.content_public.common.ContentUrlConstants;
@@ -45,14 +45,32 @@ import java.util.Map;
 import java.util.regex.Pattern;
 
 /**
- * Base-class that an AwContents embedder derives from to receive callbacks.
- * For any other callbacks we need to make transformations of (e.g. adapt parameters
- * or perform filtering) we can provide final overrides for methods here, and then introduce
- * new abstract methods that the our own client must implement.
- * i.e.: all methods in this class should either be final, or abstract.
+ * Base-class that an AwContents embedder derives from to receive callbacks. For any other callbacks
+ * we need to make transformations of (e.g. adapt parameters or perform filtering) we can provide
+ * final overrides for methods here, and then introduce new abstract methods that the our own client
+ * must implement. i.e.: all methods in this class should either be final, or abstract.
  */
 @Lifetime.WebView
 public abstract class AwContentsClient {
+
+    // LINT.IfChange(SendIntentState)
+    @IntDef({
+        SendIntentState.SKIPPED,
+        SendIntentState.INVOKED,
+        SendIntentState.ACTIVITY_STARTED,
+        SendIntentState.MAX_VALUE
+    })
+    private @interface SendIntentState {
+        // These values are persisted to logs. Entries should not be renumbered and
+        // numeric values should never be reused.
+        int SKIPPED = 0;
+        int INVOKED = 1;
+        int ACTIVITY_STARTED = 2;
+        int MAX_VALUE = ACTIVITY_STARTED;
+    }
+
+    // LINT.ThenChange(//tools/metrics/histograms/metadata/android/enums.xml:WebViewSendIntentState)
+
     private static final String TAG = "AwContentsClient";
     private final AwContentsClientCallbackHelper mCallbackHelper;
 
@@ -71,22 +89,32 @@ public abstract class AwContentsClient {
     private static final Pattern FILE_ANDROID_ASSET_PATTERN =
             Pattern.compile("^file:///android_(asset|res)/.*");
 
+    // A mask of flags that are safe for untrusted content to use when starting an Activity.
+    // This list is not exhaustive and flags not listed here are not necessarily unsafe.
+    private static final int ALLOWED_INTENT_FLAGS =
+            Intent.FLAG_EXCLUDE_STOPPED_PACKAGES
+                    | Intent.FLAG_ACTIVITY_CLEAR_TOP
+                    | Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    | Intent.FLAG_ACTIVITY_MATCH_EXTERNAL
+                    | Intent.FLAG_ACTIVITY_NEW_TASK
+                    | Intent.FLAG_ACTIVITY_MULTIPLE_TASK
+                    | Intent.FLAG_ACTIVITY_NEW_DOCUMENT
+                    | Intent.FLAG_ACTIVITY_RETAIN_IN_RECENTS
+                    | Intent.FLAG_ACTIVITY_LAUNCH_ADJACENT;
+
     public AwContentsClient() {
         this(Looper.myLooper());
     }
 
-    /**
-     *
-     * See {@link android.webkit.WebChromeClient}. */
+    /** See {@link android.webkit.WebChromeClient}. */
     public interface CustomViewCallback {
-        /* See {@link android.webkit.WebChromeClient}. */
-        public void onCustomViewHidden();
+        /** See {@link android.webkit.WebChromeClient}. */
+        void onCustomViewHidden();
     }
 
     // Alllow injection of the callback thread, for testing.
     public AwContentsClient(Looper looper) {
-        try (ScopedSysTraceEvent e =
-                ScopedSysTraceEvent.scoped("AwContentsClient.constructorOneArg")) {
+        try (DualTraceEvent e = DualTraceEvent.scoped("AwContentsClient.constructorOneArg")) {
             mCallbackHelper = new AwContentsClientCallbackHelper(looper, this);
         }
     }
@@ -113,64 +141,6 @@ public abstract class AwContentsClient {
     // --------------------------------------------------------------------------------------------
     //             WebView specific methods that map directly to WebViewClient / WebChromeClient
     // --------------------------------------------------------------------------------------------
-
-    /** Parameters for the {@link AwContentsClient#shouldInterceptRequest} method. */
-    public static class AwWebResourceRequest {
-        // Prefer using other constructors over this one.
-        public AwWebResourceRequest() {}
-
-        public AwWebResourceRequest(
-                String url,
-                boolean isOutermostMainFrame,
-                boolean hasUserGesture,
-                String method,
-                @Nullable HashMap<String, String> requestHeaders) {
-            this.url = url;
-            this.isOutermostMainFrame = isOutermostMainFrame;
-            this.hasUserGesture = hasUserGesture;
-            // Note: we intentionally let isRedirect default initialize to false. This is because we
-            // don't always know if this request is associated with a redirect or not.
-            this.method = method;
-            this.requestHeaders = requestHeaders;
-        }
-
-        public AwWebResourceRequest(
-                String url,
-                boolean isOutermostMainFrame,
-                boolean hasUserGesture,
-                String method,
-                @NonNull String[] requestHeaderNames,
-                @NonNull String[] requestHeaderValues) {
-            this(
-                    url,
-                    isOutermostMainFrame,
-                    hasUserGesture,
-                    method,
-                    new HashMap<String, String>(requestHeaderValues.length));
-            for (int i = 0; i < requestHeaderNames.length; ++i) {
-                this.requestHeaders.put(requestHeaderNames[i], requestHeaderValues[i]);
-            }
-        }
-
-        // Url of the request.
-        public String url;
-        // Is this for the outermost main frame or a subframe?
-        public boolean isOutermostMainFrame;
-        // Was a gesture associated with the request? Don't trust can easily be spoofed.
-        public boolean hasUserGesture;
-        // Was it a result of a server-side redirect?
-        public boolean isRedirect;
-        // Method used (GET/POST/OPTIONS)
-        public String method;
-        // Headers that would have been sent to server.
-        public HashMap<String, String> requestHeaders;
-    }
-
-    /** Parameters for {@link AwContentsClient#onReceivedError} method. */
-    public static class AwWebResourceError {
-        public @WebviewErrorCode int errorCode = WebviewErrorCode.ERROR_UNKNOWN;
-        public String description;
-    }
 
     /** Allow default implementations in chromium code. */
     public abstract boolean hasWebViewClient();
@@ -228,11 +198,16 @@ public abstract class AwContentsClient {
         if (poller != null && poller.shouldCancelAllCallbacks()) return false;
 
         if (hasWebViewClient()) {
+            recordSendBrowsingIntentState(SendIntentState.SKIPPED);
             // Note: only GET requests can be overridden, so we hardcode the method.
             AwWebResourceRequest request =
                     new AwWebResourceRequest(
-                            url, isOutermostMainFrame, hasUserGesture, "GET", requestHeaders);
-            request.isRedirect = isRedirect;
+                            url,
+                            isOutermostMainFrame,
+                            hasUserGesture,
+                            isRedirect,
+                            "GET",
+                            requestHeaders);
             return shouldOverrideUrlLoading(request);
         }
 
@@ -241,6 +216,7 @@ public abstract class AwContentsClient {
 
     private static boolean sendBrowsingIntent(
             Context context, String url, boolean hasUserGesture, boolean isRedirect) {
+        recordSendBrowsingIntentState(SendIntentState.INVOKED);
         if (!hasUserGesture && !isRedirect) {
             Log.w(TAG, "Denied starting an intent without a user gesture, URI %s", url);
             return true;
@@ -266,13 +242,13 @@ public abstract class AwContentsClient {
         }
         // Sanitize the Intent, ensuring web pages can not bypass browser
         // security (only access to BROWSABLE activities).
+        intent.setFlags(intent.getFlags() & ALLOWED_INTENT_FLAGS);
         intent.addCategory(Intent.CATEGORY_BROWSABLE);
         intent.setComponent(null);
-        Intent selector = intent.getSelector();
-        if (selector != null) {
-            selector.addCategory(Intent.CATEGORY_BROWSABLE);
-            selector.setComponent(null);
-        }
+
+        // Intent Selectors allow intents to bypass the intent filter and potentially send apps URIs
+        // they were not expecting to handle. https://crbug.com/1254422
+        intent.setSelector(null);
 
         // Pass the package name as application ID so that the intent from the
         // same application can be opened in the same tab.
@@ -285,6 +261,7 @@ public abstract class AwContentsClient {
         }
 
         try {
+            recordSendBrowsingIntentState(SendIntentState.ACTIVITY_STARTED);
             context.startActivity(intent);
             return true;
         } catch (ActivityNotFoundException ex) {
@@ -298,6 +275,11 @@ public abstract class AwContentsClient {
         }
 
         return false;
+    }
+
+    private static void recordSendBrowsingIntentState(@SendIntentState int activityStarted) {
+        RecordHistogram.recordEnumeratedHistogram(
+                "Android.WebView.SendBrowsingIntent", activityStarted, SendIntentState.MAX_VALUE);
     }
 
     public static Uri[] parseFileChooserResult(int resultCode, Intent intent) {
@@ -316,12 +298,12 @@ public abstract class AwContentsClient {
 
     /** Type adaptation class for {@link android.webkit.FileChooserParams}. */
     public static class FileChooserParamsImpl {
-        private int mMode;
-        private boolean mOpenWritable;
-        private String mAcceptTypes;
-        private String mTitle;
-        private String mDefaultFilename;
-        private boolean mCapture;
+        private final int mMode;
+        private final boolean mOpenWritable;
+        private final String mAcceptTypes;
+        private final String mTitle;
+        private final String mDefaultFilename;
+        private final boolean mCapture;
         private static final Map<String, String> sAcceptTypesMapping;
 
         // TODO(crbug.com/40101963): Use WebChromeClient.FileChooserParams.MODE_* when available.

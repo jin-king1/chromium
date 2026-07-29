@@ -10,12 +10,12 @@
 import '../cr_lazy_list/cr_lazy_list.js';
 
 import {assert} from '//resources/js/assert.js';
-import {CrLitElement, html, render} from '//resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues, TemplateResult} from '//resources/lit/v3_0/lit.rollup.js';
+import {CrLitElement, html, render} from '//resources/lit/v3_0/lit.rollup.js';
 
 import {getCss} from './cr_infinite_list.css.js';
 
-export class CrInfiniteListElement<T = object> extends CrLitElement {
+export class CrInfiniteListElement<T> extends CrLitElement {
   static get is() {
     return 'cr-infinite-list';
   }
@@ -63,21 +63,21 @@ export class CrInfiniteListElement<T = object> extends CrLitElement {
     };
   }
 
-  chunkSize: number = 0;
-  scrollOffset: number = 0;
-  scrollTarget: HTMLElement = this;
-  usingDefaultScrollTarget: boolean = true;
-  items: T[] = [];
-  itemSize: number = 100;
+  accessor chunkSize: number = 0;
+  accessor scrollOffset: number = 0;
+  accessor scrollTarget: HTMLElement = this;
+  accessor usingDefaultScrollTarget: boolean = true;
+  accessor items: T[] = [];
+  accessor itemSize: number|undefined = undefined;
   // Unlike cr-lazy-list, cr-infinite-list provides a tabindex parameter for
   // clients as is provided by iron-list. Like iron-list, cr-infinite-list will
   // pass 0 for this parameter if the list item should be keyboard focusable,
   // and -1 otherwise.
-  template:
+  accessor template:
       (item: T, index: number,
        tabindex: number) => TemplateResult = () => html``;
-  focusedIndex: number = -1;
-  private focusedItem_: HTMLElement|null = null;
+  accessor focusedIndex: number = -1;
+  private accessor focusedItem_: HTMLElement|null = null;
 
   override willUpdate(changedProperties: PropertyValues<this>) {
     super.willUpdate(changedProperties);
@@ -101,6 +101,18 @@ export class CrInfiniteListElement<T = object> extends CrLitElement {
     if (changedProperties.has('focusedIndex')) {
       this.updateFocusedItem_();
     }
+  }
+
+  fillCurrentViewport(): Promise<void> {
+    const list = this.querySelector('cr-lazy-list');
+    assert(list);
+    return list.fillCurrentViewport();
+  }
+
+  ensureItemRendered(index: number): Promise<HTMLElement> {
+    const list = this.querySelector('cr-lazy-list');
+    assert(list);
+    return list.ensureItemRendered(index);
   }
 
   private updateFocusedItem_() {
@@ -156,7 +168,7 @@ export class CrInfiniteListElement<T = object> extends CrLitElement {
 
 declare global {
   interface HTMLElementTagNameMap {
-    'cr-infinite-list': CrInfiniteListElement;
+    'cr-infinite-list': CrInfiniteListElement<unknown>;
   }
 }
 

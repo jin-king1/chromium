@@ -7,6 +7,7 @@
 #include <functional>
 
 #include "base/numerics/safe_conversions.h"
+#include "base/strings/strcat.h"
 #include "base/types/expected_macros.h"
 #include "services/webnn/public/cpp/graph_validation_utils.h"
 #include "services/webnn/public/cpp/operand_descriptor.h"
@@ -22,19 +23,26 @@ namespace blink {
 base::expected<MLOperand*, String> MLOperand::ValidateAndCreateInput(
     const webnn::ContextProperties& context_properties,
     MLGraphBuilder* builder,
-    V8MLOperandDataType::Enum data_type,
+    V8MLOperandDataType::Enum v8_data_type,
     Vector<uint32_t> dimensions,
     String name) {
   if (name.empty()) {
     return base::unexpected("The name is empty.");
   }
 
+  const webnn::OperandDataType data_type = FromBlinkDataType(v8_data_type);
+
   ASSIGN_OR_RETURN(
       webnn::OperandDescriptor descriptor,
       webnn::OperandDescriptor::Create(
-          context_properties, FromBlinkDataType(data_type), dimensions,
+          context_properties, data_type, dimensions,
           webnn::GetErrorLabelPrefix(base::StrCat({"input ", name.Utf8()}))),
       [](std::string error) { return String(error); });
+
+  if (!context_properties.data_type_limits.input.Supports(descriptor)) {
+    return base::unexpected(String(webnn::NotSupportedInputError(
+        name.Utf8(), descriptor, context_properties.data_type_limits.input)));
+  }
 
   auto* input = MakeGarbageCollected<MLOperand>(
       builder, webnn::mojom::blink::Operand::Kind::kInput,
@@ -46,7 +54,7 @@ base::expected<MLOperand*, String> MLOperand::ValidateAndCreateInput(
 // static
 MLOperand* MLOperand::CreateOutput(MLGraphBuilder* builder,
                                    webnn::OperandDescriptor descriptor,
-                                   const MLOperator* ml_operator) {
+                                   MLOperator* ml_operator) {
   CHECK(ml_operator);
 
   auto* output = MakeGarbageCollected<MLOperand>(
@@ -76,13 +84,12 @@ const String& MLOperand::Name() const {
   return name_;
 }
 
-const MLOperator* MLOperand::Operator() const {
+MLOperator* MLOperand::Operator() const {
   CHECK_EQ(kind_, webnn::mojom::blink::Operand::Kind::kOutput);
   return operator_.Get();
 }
 
-const HeapHashSet<Member<const MLOperator>>& MLOperand::DependentOperators()
-    const {
+HeapHashSet<Member<MLOperator>>& MLOperand::DependentOperators() {
   return dependent_operators_;
 }
 
@@ -119,12 +126,12 @@ V8MLOperandDataType MLOperand::dataType() const {
   return ToBlinkDataType(descriptor_.data_type());
 }
 
-MLConstantOperand const* MLOperand::AsConstantOperand() const {
+MLConstantOperand* MLOperand::AsConstantOperand() {
   CHECK_EQ(kind_, webnn::mojom::blink::Operand::Kind::kConstant);
-  return static_cast<MLConstantOperand const*>(this);
+  return static_cast<MLConstantOperand*>(this);
 }
 
-void MLOperand::AddDependentOperator(const MLOperator* ml_operator) {
+void MLOperand::AddDependentOperator(MLOperator* ml_operator) {
   dependent_operators_.insert(ml_operator);
 }
 

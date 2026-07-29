@@ -16,6 +16,7 @@ import org.jni_zero.JNINamespace;
 import org.junit.Assert;
 import org.mockito.ArgumentCaptor;
 
+import org.chromium.base.Callback;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.Token;
 import org.chromium.components.tab_groups.TabGroupColorId;
@@ -41,11 +42,11 @@ public class TabGroupSyncServiceAndroidUnitTest {
     private static final int LOCAL_TAB_ID_1 = 2;
     private static final int LOCAL_TAB_ID_2 = 4;
     private static final int TAB_POSITION = 3;
-
     private TabGroupSyncService mService;
     private TabGroupSyncService.Observer mObserver;
-    private ArgumentCaptor<SavedTabGroup> mTabGroupCaptor =
+    private final ArgumentCaptor<SavedTabGroup> mTabGroupCaptor =
             ArgumentCaptor.forClass(SavedTabGroup.class);
+    private Callback<Boolean> mCallback;
 
     @CalledByNative
     private TabGroupSyncServiceAndroidUnitTest() {
@@ -75,6 +76,7 @@ public class TabGroupSyncServiceAndroidUnitTest {
         Assert.assertEquals(3, group.savedTabs.size());
         Assert.assertEquals("creator_cache_guid", group.creatorCacheGuid);
         Assert.assertEquals("last_updater_cache_guid", group.lastUpdaterCacheGuid);
+        Assert.assertNotNull(group.archivalTimeMs);
 
         SavedTabGroupTab tab1 = group.savedTabs.get(0);
         Assert.assertNotNull(tab1.syncId);
@@ -153,7 +155,8 @@ public class TabGroupSyncServiceAndroidUnitTest {
 
     @CalledByNative
     public void testMakeTabGroupShared(String collaborationId) {
-        mService.makeTabGroupShared(LOCAL_TAB_GROUP_ID_1, collaborationId);
+        mService.makeTabGroupShared(
+                LOCAL_TAB_GROUP_ID_1, collaborationId, /* tabGroupSharingCallback= */ null);
     }
 
     @CalledByNative
@@ -224,6 +227,12 @@ public class TabGroupSyncServiceAndroidUnitTest {
     }
 
     @CalledByNative
+    public void testGetArchivedGroupCount() {
+        int count = mService.getArchivedGroupCount();
+        Assert.assertEquals(1, count);
+    }
+
+    @CalledByNative
     public void testGetDeletedGroupIds() {
         List<LocalTabGroupId> groupIds = mService.getDeletedGroupIds();
         Assert.assertEquals(1, groupIds.size());
@@ -249,5 +258,50 @@ public class TabGroupSyncServiceAndroidUnitTest {
     public void testOnTabSelected(
             LocalTabGroupId localTabGroupId, int localTabId, String tabTitle) {
         mService.onTabSelected(localTabGroupId, localTabId, tabTitle);
+    }
+
+    @CalledByNative
+    public void testUpdateArchivalStatus(String uuid, boolean archivalStatus) {
+        mService.updateArchivalStatus(uuid, archivalStatus);
+    }
+
+    @CalledByNative
+    public void testIsInitialized() {
+        Assert.assertTrue(mService.getVersioningMessageController().isInitialized());
+    }
+
+    @CalledByNative
+    public void testShouldShowMessageUi() {
+        Assert.assertTrue(
+                mService.getVersioningMessageController()
+                        .shouldShowMessageUi(MessageType.VERSION_OUT_OF_DATE_INSTANT_MESSAGE));
+        Assert.assertFalse(
+                mService.getVersioningMessageController()
+                        .shouldShowMessageUi(MessageType.VERSION_OUT_OF_DATE_PERSISTENT_MESSAGE));
+        Assert.assertTrue(
+                mService.getVersioningMessageController()
+                        .shouldShowMessageUi(MessageType.VERSION_UPDATED_MESSAGE));
+    }
+
+    @CalledByNative
+    @SuppressWarnings("unchecked") // mock(Callback.class) returns raw Callback.
+    public void testShouldShowMessageUiAsync() {
+        mCallback = mock(Callback.class);
+        mService.getVersioningMessageController()
+                .shouldShowMessageUiAsync(
+                        MessageType.VERSION_OUT_OF_DATE_INSTANT_MESSAGE, mCallback);
+        verify(mCallback).onResult(true);
+    }
+
+    @CalledByNative
+    public void testOnMessageUiShown() {
+        mService.getVersioningMessageController()
+                .onMessageUiShown(MessageType.VERSION_OUT_OF_DATE_INSTANT_MESSAGE);
+    }
+
+    @CalledByNative
+    public void testOnMessageUiDismissed() {
+        mService.getVersioningMessageController()
+                .onMessageUiDismissed(MessageType.VERSION_OUT_OF_DATE_PERSISTENT_MESSAGE);
     }
 }

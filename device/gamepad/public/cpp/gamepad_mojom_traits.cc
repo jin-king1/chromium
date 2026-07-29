@@ -2,14 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "device/gamepad/public/cpp/gamepad_mojom_traits.h"
 
+#include <cstdint>
+
+#include "base/compiler_specific.h"
 #include "base/containers/span.h"
+#include "base/notreached.h"
 
 namespace mojo {
 
@@ -17,7 +16,7 @@ namespace mojo {
 void StructTraits<
     device::mojom::GamepadQuaternionDataView,
     device::GamepadQuaternion>::SetToNull(device::GamepadQuaternion* out) {
-  memset(out, 0, sizeof(device::GamepadQuaternion));
+  *out = {};
   out->not_null = false;
 }
 
@@ -38,7 +37,7 @@ bool StructTraits<device::mojom::GamepadQuaternionDataView,
 void StructTraits<device::mojom::GamepadVectorDataView,
                   device::GamepadVector>::SetToNull(device::GamepadVector*
                                                         out) {
-  memset(out, 0, sizeof(device::GamepadVector));
+  *out = {};
   out->not_null = false;
 }
 
@@ -54,13 +53,45 @@ bool StructTraits<device::mojom::GamepadVectorDataView, device::GamepadVector>::
 }
 
 // static
+device::mojom::GamepadButtonType EnumTraits<
+    device::mojom::GamepadButtonType,
+    device::GamepadButtonType>::ToMojom(device::GamepadButtonType input) {
+  switch (input) {
+    case device::GamepadButtonType::kNonStandard:
+      return device::mojom::GamepadButtonType::GamepadButtonTypeNonStandard;
+    case device::GamepadButtonType::kStandard:
+      return device::mojom::GamepadButtonType::GamepadButtonTypeStandard;
+    case device::GamepadButtonType::kTrackpad:
+      return device::mojom::GamepadButtonType::GamepadButtonTypeTrackpad;
+  }
+
+  NOTREACHED();
+}
+
+// static
+device::GamepadButtonType
+EnumTraits<device::mojom::GamepadButtonType, device::GamepadButtonType>::
+    FromMojom(device::mojom::GamepadButtonType input) {
+  switch (input) {
+    case device::mojom::GamepadButtonType::GamepadButtonTypeNonStandard:
+      return device::GamepadButtonType::kNonStandard;
+    case device::mojom::GamepadButtonType::GamepadButtonTypeStandard:
+      return device::GamepadButtonType::kStandard;
+    case device::mojom::GamepadButtonType::GamepadButtonTypeTrackpad:
+      return device::GamepadButtonType::kTrackpad;
+  }
+
+  NOTREACHED();
+}
+
+// static
 bool StructTraits<device::mojom::GamepadButtonDataView, device::GamepadButton>::
     Read(device::mojom::GamepadButtonDataView data,
          device::GamepadButton* out) {
   out->pressed = data.pressed();
   out->touched = data.touched();
   out->value = data.value();
-  return true;
+  return data.ReadType(&out->type);
 }
 
 // static
@@ -84,23 +115,20 @@ EnumTraits<device::mojom::GamepadHapticActuatorType,
 }
 
 // static
-bool EnumTraits<device::mojom::GamepadHapticActuatorType,
-                device::GamepadHapticActuatorType>::
-    FromMojom(device::mojom::GamepadHapticActuatorType input,
-              device::GamepadHapticActuatorType* output) {
+device::GamepadHapticActuatorType
+EnumTraits<device::mojom::GamepadHapticActuatorType,
+           device::GamepadHapticActuatorType>::
+    FromMojom(device::mojom::GamepadHapticActuatorType input) {
   switch (input) {
     case device::mojom::GamepadHapticActuatorType::
         GamepadHapticActuatorTypeVibration:
-      *output = device::GamepadHapticActuatorType::kVibration;
-      return true;
+      return device::GamepadHapticActuatorType::kVibration;
     case device::mojom::GamepadHapticActuatorType::
         GamepadHapticActuatorTypeDualRumble:
-      *output = device::GamepadHapticActuatorType::kDualRumble;
-      return true;
+      return device::GamepadHapticActuatorType::kDualRumble;
     case device::mojom::GamepadHapticActuatorType::
         GamepadHapticActuatorTypeTriggerRumble:
-      *output = device::GamepadHapticActuatorType::kTriggerRumble;
-      return true;
+      return device::GamepadHapticActuatorType::kTriggerRumble;
   }
 
   NOTREACHED();
@@ -110,7 +138,7 @@ bool EnumTraits<device::mojom::GamepadHapticActuatorType,
 void StructTraits<device::mojom::GamepadHapticActuatorDataView,
                   device::GamepadHapticActuator>::
     SetToNull(device::GamepadHapticActuator* out) {
-  memset(out, 0, sizeof(device::GamepadHapticActuator));
+  *out = {};
   out->not_null = false;
 }
 
@@ -142,7 +170,7 @@ bool StructTraits<device::mojom::GamepadTouchDataView, device::GamepadTouch>::
 // static
 void StructTraits<device::mojom::GamepadPoseDataView,
                   device::GamepadPose>::SetToNull(device::GamepadPose* out) {
-  memset(out, 0, sizeof(device::GamepadPose));
+  *out = {};
   out->not_null = false;
 }
 
@@ -192,19 +220,16 @@ EnumTraits<device::mojom::GamepadMapping, device::GamepadMapping>::ToMojom(
 }
 
 // static
-bool EnumTraits<device::mojom::GamepadMapping, device::GamepadMapping>::
-    FromMojom(device::mojom::GamepadMapping input,
-              device::GamepadMapping* output) {
+device::GamepadMapping
+EnumTraits<device::mojom::GamepadMapping, device::GamepadMapping>::FromMojom(
+    device::mojom::GamepadMapping input) {
   switch (input) {
     case device::mojom::GamepadMapping::GamepadMappingNone:
-      *output = device::GamepadMapping::kNone;
-      return true;
+      return device::GamepadMapping::kNone;
     case device::mojom::GamepadMapping::GamepadMappingStandard:
-      *output = device::GamepadMapping::kStandard;
-      return true;
+      return device::GamepadMapping::kStandard;
     case device::mojom::GamepadMapping::GamepadMappingXRStandard:
-      *output = device::GamepadMapping::kXrStandard;
-      return true;
+      return device::GamepadMapping::kXrStandard;
   }
 
   NOTREACHED();
@@ -227,19 +252,16 @@ EnumTraits<device::mojom::GamepadHand, device::GamepadHand>::ToMojom(
 }
 
 // static
-bool EnumTraits<device::mojom::GamepadHand, device::GamepadHand>::FromMojom(
-    device::mojom::GamepadHand input,
-    device::GamepadHand* output) {
+device::GamepadHand
+EnumTraits<device::mojom::GamepadHand, device::GamepadHand>::FromMojom(
+    device::mojom::GamepadHand input) {
   switch (input) {
     case device::mojom::GamepadHand::GamepadHandNone:
-      *output = device::GamepadHand::kNone;
-      return true;
+      return device::GamepadHand::kNone;
     case device::mojom::GamepadHand::GamepadHandLeft:
-      *output = device::GamepadHand::kLeft;
-      return true;
+      return device::GamepadHand::kLeft;
     case device::mojom::GamepadHand::GamepadHandRight:
-      *output = device::GamepadHand::kRight;
-      return true;
+      return device::GamepadHand::kRight;
   }
 
   NOTREACHED();
@@ -253,7 +275,7 @@ StructTraits<device::mojom::GamepadDataView, device::Gamepad>::id(
   while (id_length < device::Gamepad::kIdLengthCap && r.id[id_length] != 0) {
     id_length++;
   }
-  return base::span(reinterpret_cast<const uint16_t*>(r.id), id_length);
+  return base::span(r.id).first(id_length);
 }
 
 // static
@@ -262,9 +284,7 @@ bool StructTraits<device::mojom::GamepadDataView, device::Gamepad>::Read(
     device::Gamepad* out) {
   out->connected = data.connected();
 
-  memset(out->id, 0, sizeof(out->id));
-  base::span<uint16_t> id(reinterpret_cast<uint16_t*>(out->id),
-                          device::Gamepad::kIdLengthCap);
+  base::span<uint16_t> id(out->id);
   if (!data.ReadId(&id)) {
     return false;
   }
@@ -275,15 +295,16 @@ bool StructTraits<device::mojom::GamepadDataView, device::Gamepad>::Read(
   if (!data.ReadAxes(&axes)) {
     return false;
   }
-  // static_cast is safe when "data.ReadAxes(&axes)" above returns true.
-  out->axes_length = static_cast<unsigned>(axes.size());
+  out->axes_length = axes.size();
 
-  base::span<device::GamepadButton> buttons(out->buttons);
-  if (!data.ReadButtons(&buttons)) {
+  std::vector<device::GamepadButton> buttons_vector;
+  if (!data.ReadButtons(&buttons_vector)) {
     return false;
   }
-  // static_cast is safe when "data.ReadButtons(&buttons)" above returns true.
-  out->buttons_length = static_cast<unsigned>(buttons.size());
+  out->buttons_length = buttons_vector.size();
+  base::span(out->buttons)
+      .first(buttons_vector.size())
+      .copy_from(buttons_vector);
 
   if (!data.ReadVibrationActuator(&out->vibration_actuator))
     return false;
@@ -296,11 +317,14 @@ bool StructTraits<device::mojom::GamepadDataView, device::Gamepad>::Read(
     return false;
   }
 
-  base::span<device::GamepadTouch> touch_events(out->touch_events);
-  if (!data.ReadTouchEvents(&touch_events)) {
+  std::vector<device::GamepadTouch> touch_events_vector;
+  if (!data.ReadTouchEvents(&touch_events_vector)) {
     return false;
   }
-  out->touch_events_length = static_cast<uint32_t>(touch_events.size());
+  out->touch_events_length = touch_events_vector.size();
+  base::span(out->touch_events)
+      .first(touch_events_vector.size())
+      .copy_from(touch_events_vector);
 
   device::GamepadHand hand;
   if (!data.ReadHand(&hand)) {

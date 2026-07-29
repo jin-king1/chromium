@@ -3,22 +3,26 @@
 # found in the LICENSE file.
 """Definitions of builders in the tryserver.chromium.accessibility builder group."""
 
-load("//lib/builders.star", "os", "siso")
-load("//lib/try.star", "try_")
-load("//lib/consoles.star", "consoles")
-load("//lib/gn_args.star", "gn_args")
+load("@chromium-luci//builders.star", "os")
+load("@chromium-luci//consoles.star", "consoles")
+load("@chromium-luci//gn_args.star", "gn_args")
+load("@chromium-luci//try.star", "try_")
+load("//lib/siso.star", "siso")
+load("//lib/try_constants.star", "try_constants")
 
 try_.defaults.set(
-    executable = try_.DEFAULT_EXECUTABLE,
+    executable = try_constants.DEFAULT_EXECUTABLE,
     builder_group = "tryserver.chromium.accessibility",
-    pool = try_.DEFAULT_POOL,
+    pool = try_constants.DEFAULT_POOL,
     cores = 8,
     os = os.LINUX_DEFAULT,
     compilator_cores = 16,
-    execution_timeout = try_.DEFAULT_EXECUTION_TIMEOUT,
-    reclient_enabled = False,
-    service_account = try_.DEFAULT_SERVICE_ACCOUNT,
-    siso_enabled = True,
+    execution_timeout = try_constants.DEFAULT_EXECUTION_TIMEOUT,
+    experiments = {
+        "chromium_tests.resultdb_module": 100,
+    },
+    service_account = try_constants.DEFAULT_SERVICE_ACCOUNT,
+    siso_keep_going = siso.KEEP_GOING,
     siso_project = siso.project.DEFAULT_UNTRUSTED,
     siso_remote_jobs = siso.remote_jobs.LOW_JOBS_FOR_CQ,
 )
@@ -35,7 +39,7 @@ try_.builder(
             "ci/fuchsia-x64-accessibility-rel",
         ],
     ),
-    tryjob = try_.job(
+    cq_settings = try_.cq_settings(
         location_filters = [
             "third_party/blink/renderer/modules/accessibility/.+",
             "content/renderer/accessibility/.+",
@@ -43,6 +47,9 @@ try_.builder(
             "ui/accessibility/.+",
         ],
     ),
+    experiments = {
+        "luci.buildbucket.run_in_turboci": 100,
+    },
 )
 
 try_.builder(
@@ -55,7 +62,7 @@ try_.builder(
     ),
     check_for_flakiness = False,
     check_for_flakiness_with_resultdb = False,
-    tryjob = try_.job(
+    cq_settings = try_.cq_settings(
         location_filters = [
             "third_party/blink/renderer/modules/accessibility/.+",
             "content/renderer/accessibility/.+",
@@ -64,4 +71,7 @@ try_.builder(
             "ui/views/accessibility/.+",
         ],
     ),
+    experiments = {
+        "luci.buildbucket.run_in_turboci": 100,
+    },
 )

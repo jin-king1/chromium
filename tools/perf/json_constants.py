@@ -3,6 +3,7 @@
 # found in the LICENSE file.
 """Constants for json results file."""
 
+AVERAGE = 'average'
 BENCHMARK = 'benchmark'
 BENCHMARKS = 'benchmarks'
 BOT = 'bot'
@@ -12,6 +13,7 @@ BUILD_PAGE = 'Build Page'
 CHROMIUM_COMMIT_POSITION = 'Chromium Commit Position'
 COUNT = 'count'
 DIAGNOSTICS = 'diagnostics'
+EXPERIMENT_GCS_BUCKET = 'chrome-perf-experiment-non-public'
 ERROR = 'error'
 GENERIC_SET = 'GenericSet'
 GIT_HASH = 'git_hash'
@@ -39,13 +41,14 @@ SUM = 'sum'
 SUMMARY_OPTIONS = 'summaryOptions'
 TEST = 'test'
 TRACE_URLS = 'traceUrls'
+TRACING_URI = 'Tracing uri'
 TYPE = 'type'
 UNIT = 'unit'
-V8_GIT_HASH = 'V8 Git Hash'
+V8_GIT_HASH = 'V8'
 VALUE = 'value'
 VALUES = 'values'
 VERSION = 'version'
-WEBRTC_GIT_HASH = 'WebRTC Git Hash'
+WEBRTC_GIT_HASH = 'WebRTC'
 REPOSITORY_PROPERTY_MAP = {
   'chromium': {
     'masters': ['ChromeFYIInternal', 'ChromiumAndroid', 'ChromiumChrome',

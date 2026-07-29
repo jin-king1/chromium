@@ -2,26 +2,24 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "media/gpu/vaapi/vp9_vaapi_video_encoder_delegate.h"
 
 #include <va/va.h>
 
 #include <algorithm>
+#include <array>
 #include <bitset>
 #include <memory>
 #include <numeric>
 #include <optional>
 #include <tuple>
 
+#include "base/compiler_specific.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/numerics/safe_conversions.h"
 #include "media/gpu/gpu_video_encode_accelerator_helpers.h"
 #include "media/gpu/svc_layers.h"
@@ -43,11 +41,12 @@ namespace {
 
 constexpr size_t kDefaultMaxNumRefFrames = kVp9NumRefsPerFrame;
 
-constexpr int kSpatialLayersResolutionScaleDenom[][3] = {
-    {1, 0, 0},  // For one spatial layer.
-    {2, 1, 0},  // For two spatial layers.
-    {4, 2, 1},  // For three spatial layers.
-};
+constexpr auto kSpatialLayersResolutionScaleDenom =
+    std::to_array<std::array<int, 3>>({
+        {1, 0, 0},  // For one spatial layer.
+        {2, 1, 0},  // For two spatial layers.
+        {4, 2, 1},  // For three spatial layers.
+    });
 constexpr uint8_t kTemporalLayerPattern[][4] = {
     {0, 0, 0, 0},
     {0, 1, 0, 1},
@@ -102,7 +101,8 @@ void GetTemporalLayer(bool keyframe,
       }
 
       {
-        *temporal_layer_id = kTemporalLayerPattern[1][frame_num % 4];
+        *temporal_layer_id =
+            UNSAFE_TODO(kTemporalLayerPattern[1][frame_num % 4]);
         *ref_frames_used = kRefFramesUsedForInterFrameInTemporalLayer;
       }
       break;
@@ -114,7 +114,8 @@ void GetTemporalLayer(bool keyframe,
       }
 
       {
-        *temporal_layer_id = kTemporalLayerPattern[2][frame_num % 4];
+        *temporal_layer_id =
+            UNSAFE_TODO(kTemporalLayerPattern[2][frame_num % 4]);
         *ref_frames_used = kRefFramesUsedForInterFrameInTemporalLayer;
       }
       break;
@@ -198,14 +199,17 @@ MATCHER_P4(MatchRtcConfigWithRates,
     for (size_t tid = 0; tid < num_temporal_layers; ++tid) {
       size_t idx = sid * num_temporal_layers + tid;
       bitrate_sum += bitrate_allocation.GetBitrateBps(sid, tid);
-      if (arg.layer_target_bitrate[idx] != bitrate_sum / 1000)
+      if (UNSAFE_TODO(arg.layer_target_bitrate[idx]) != bitrate_sum / 1000) {
         return false;
-      if (arg.ts_rate_decimator[tid] != (1 << (num_temporal_layers - tid - 1)))
+      }
+      if (UNSAFE_TODO(arg.ts_rate_decimator[tid]) !=
+          (1 << (num_temporal_layers - tid - 1))) {
         return false;
+      }
     }
 
-    if (arg.scaling_factor_num[sid] != 1 ||
-        arg.scaling_factor_den[sid] !=
+    if (UNSAFE_TODO(arg.scaling_factor_num[sid]) != 1 ||
+        UNSAFE_TODO(arg.scaling_factor_den[sid]) !=
             kSpatialLayersResolutionScaleDenom[num_spatial_layers - 1][sid]) {
       return false;
     }
@@ -418,8 +422,8 @@ void VP9VaapiVideoEncoderDelegateTest::
   InSequence seq;
 
   constexpr VASurfaceID kDummyVASurfaceID = 123;
-  scoped_refptr<VP9Picture> picture(new VaapiVP9Picture(
-      std::make_unique<VASurfaceHandle>(kDummyVASurfaceID, base::DoNothing())));
+  auto picture = base::MakeRefCounted<VaapiVP9Picture>(
+      std::make_unique<VASurfaceHandle>(kDummyVASurfaceID, base::DoNothing()));
 
   auto encode_job =
       CreateEncodeJob(force_key, expected_spatial_layer_id, end_of_picture,
@@ -584,19 +588,19 @@ void VP9VaapiVideoEncoderDelegateTest::UpdateRatesTest(
       DefaultVideoEncodeAcceleratorConfig().bitrate.target_bps();
   const uint32_t kFramerate = DefaultVideoEncodeAcceleratorConfig().framerate;
   const uint8_t* expected_temporal_ids =
-      kTemporalLayerPattern[num_temporal_layers - 1];
+      UNSAFE_TODO(kTemporalLayerPattern[num_temporal_layers - 1]);
   // Call UpdateRates before Encode.
   update_rates_and_encode(true, expected_temporal_ids[0], kBitrate / 2,
                           kFramerate);
   // Bitrate change only.
-  update_rates_and_encode(false, expected_temporal_ids[1], kBitrate,
-                          kFramerate);
+  update_rates_and_encode(false, UNSAFE_TODO(expected_temporal_ids[1]),
+                          kBitrate, kFramerate);
   // Framerate change only.
-  update_rates_and_encode(false, expected_temporal_ids[2], kBitrate,
-                          kFramerate + 2);
+  update_rates_and_encode(false, UNSAFE_TODO(expected_temporal_ids[2]),
+                          kBitrate, kFramerate + 2);
   // Bitrate + Frame changes.
-  update_rates_and_encode(false, expected_temporal_ids[3], kBitrate * 3 / 4,
-                          kFramerate - 5);
+  update_rates_and_encode(false, UNSAFE_TODO(expected_temporal_ids[3]),
+                          kBitrate * 3 / 4, kFramerate - 5);
 }
 
 struct VP9VaapiVideoEncoderDelegateTestParam {
@@ -716,7 +720,7 @@ TEST_P(VP9VaapiVideoEncoderDelegateTest,
   size_t frame_num = 0;
   for (size_t i = 0; i < kEncodeFrames; ++i) {
     base::TimeDelta timestamp = base::Milliseconds(i);
-    const bool drop_frame = base::Contains(kDropFrameIndices, i);
+    const bool drop_frame = std::ranges::contains(kDropFrameIndices, i);
     for (size_t sid = 0; sid < num_spatial_layers; ++sid) {
       const bool is_keyframe = (frame_num == 0 && sid == 0);
       const bool end_of_picture = sid == num_spatial_layers - 1;
@@ -761,7 +765,7 @@ TEST_P(VP9VaapiVideoEncoderDelegateTest, DeactivateActivateSpatialLayers) {
     size_t num_temporal_layers;
     std::vector<size_t> active_layers;
   };
-  std::vector<ActivationQuery> kQueries[2] = {
+  std::array<std::vector<ActivationQuery>, 2> kQueries = {{
       {
           // Two spatial layers.
           {num_temporal_layers, {0}},     // Deactivate the top layer.
@@ -792,7 +796,7 @@ TEST_P(VP9VaapiVideoEncoderDelegateTest, DeactivateActivateSpatialLayers) {
           {1, {0}},                          // L1T1
           {1, {0, 1, 2}},                    // L3T1
       },
-  };
+  }};
 
   // Allocate a default bitrate allocation with the maximum temporal layers so
   // that it has non-zero bitrate up to the maximum supported temporal layers.

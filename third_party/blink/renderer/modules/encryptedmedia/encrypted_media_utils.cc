@@ -58,7 +58,7 @@ String EncryptedMediaUtils::ConvertFromInitDataType(
 
 // static
 WebEncryptedMediaSessionType EncryptedMediaUtils::ConvertToSessionType(
-    const String& session_type) {
+    StringView session_type) {
   if (session_type == kTemporary)
     return WebEncryptedMediaSessionType::kTemporary;
   if (session_type == kPersistentLicense)
@@ -102,6 +102,8 @@ V8MediaKeyStatus EncryptedMediaUtils::ConvertKeyStatusToEnum(
       return V8MediaKeyStatus(V8MediaKeyStatus::Enum::kStatusPending);
     case WebEncryptedMediaKeyInformation::KeyStatus::kInternalError:
       return V8MediaKeyStatus(V8MediaKeyStatus::Enum::kInternalError);
+    case WebEncryptedMediaKeyInformation::KeyStatus::kUsableInFuture:
+      return V8MediaKeyStatus(V8MediaKeyStatus::Enum::kUsableInFuture);
   }
   NOTREACHED();
 }

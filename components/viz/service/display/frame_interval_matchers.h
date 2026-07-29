@@ -7,6 +7,8 @@
 
 #include <optional>
 #include <string>
+#include <variant>
+#include <vector>
 
 #include "base/containers/flat_map.h"
 #include "base/containers/flat_set.h"
@@ -17,13 +19,14 @@
 #include "components/viz/common/quads/frame_interval_inputs.h"
 #include "components/viz/common/surfaces/surface_id.h"
 #include "components/viz/service/viz_service_export.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
+#include "services/viz/privileged/mojom/compositing/display_private.mojom.h"
 #include "third_party/perfetto/include/perfetto/tracing/traced_value_forward.h"
 
 namespace viz {
 
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
+// LINT.IfChange(FrameIntervalMatcherType)
 enum class FrameIntervalMatcherType {
   kNone = 0,
   kInputBoost = 1,
@@ -31,8 +34,11 @@ enum class FrameIntervalMatcherType {
   kVideoConference = 3,
   kOnlyAnimatingImage = 4,
   kOnlyScrollBarFadeOut = 5,
-  kMaxValue = kOnlyScrollBarFadeOut,
+  kUserInputBoost = 6,
+  kSlowScrollThrottle = 7,
+  kMaxValue = kSlowScrollThrottle,
 };
+// LINT.ThenChange(//base/tracing/protos/chrome_track_event.proto:FrameIntervalMatcherType)
 
 // Works with `FrameIntervalDecider` to compute the ideal frame interval.
 // Matchers are independent and each matcher matches a specific scenario. Note
@@ -44,13 +50,29 @@ class VIZ_SERVICE_EXPORT FrameIntervalMatcher {
  public:
   // Result can either be an interval class or a specific frame interval,
   // depending on setting and the inputs.
+
+  // LINT.IfChange(FrameIntervalClass)
   enum class FrameIntervalClass {
     // These are ordered from lowest frame interval to highest.
     kBoost,    // Used for latency or smoothness sensitive situation such as
                // scrolling.
     kDefault,  // Used if nothing matched.
   };
-  using Result = absl::variant<FrameIntervalClass, base::TimeDelta>;
+  // LINT.ThenChange(//base/tracing/protos/chrome_track_event.proto:FrameIntervalClass)
+
+  // LINT.IfChange(ResultIntervalType)
+  enum class ResultIntervalType {
+    kExact,
+    kAtLeast,
+  };
+  // LINT.ThenChange(//base/tracing/protos/chrome_track_event.proto:ResultIntervalType)
+
+  struct ResultInterval {
+    base::TimeDelta interval;
+    ResultIntervalType type = ResultIntervalType::kExact;
+    bool operator==(const ResultInterval& other) const;
+  };
+  using Result = std::variant<FrameIntervalClass, ResultInterval>;
   using ResultCallback =
       base::RepeatingCallback<void(Result, FrameIntervalMatcherType)>;
 
@@ -95,9 +117,8 @@ class VIZ_SERVICE_EXPORT FrameIntervalMatcher {
     // FrameIntervalClass result, and instead should pick one of the
     // supported intervals. If this is set to `monostate`, then
     // `FrameIntervalClass` as well as any frame interval can be returned.
-    absl::
-        variant<absl::monostate, FixedIntervalSettings, ContinuousRangeSettings>
-            interval_settings;
+    std::variant<std::monostate, FixedIntervalSettings, ContinuousRangeSettings>
+        interval_settings;
 
     // Timeout to wait for when increasing frame interval, to avoid blip when
     // rapidly switching frame intervals..
@@ -116,7 +137,7 @@ class VIZ_SERVICE_EXPORT FrameIntervalMatcher {
   };
 
   struct VIZ_SERVICE_EXPORT Inputs {
-    explicit Inputs(const Settings& settings);
+    Inputs(const Settings& settings, uint64_t frame_id);
     ~Inputs();
 
     Inputs(const Inputs& other);
@@ -126,6 +147,8 @@ class VIZ_SERVICE_EXPORT FrameIntervalMatcher {
     void WriteIntoTrace(perfetto::TracedValue trace_context) const;
 
     base::raw_ref<const Settings> settings;
+    // Increasing id for each viz frame.
+    uint64_t frame_id;
     base::TimeTicks aggregated_frame_time;
     base::flat_map<FrameSinkId, FrameIntervalInputs> inputs_map;
   };
@@ -163,8 +186,24 @@ DECLARE_SIMPLE_FRAME_INTERVAL_MATCHER(OnlyVideoMatcher);
 DECLARE_SIMPLE_FRAME_INTERVAL_MATCHER(VideoConferenceMatcher);
 DECLARE_SIMPLE_FRAME_INTERVAL_MATCHER(OnlyAnimatingImageMatcher);
 DECLARE_SIMPLE_FRAME_INTERVAL_MATCHER(OnlyScrollBarFadeOutAnimationMatcher);
+DECLARE_SIMPLE_FRAME_INTERVAL_MATCHER(UserInputBoostMatcher);
 
 #undef DECLARE_SIMPLE_FRAME_INTERVAL_MATCHER
+
+class VIZ_SERVICE_EXPORT SlowScrollThrottleMatcher
+    : public FrameIntervalMatcher {
+ public:
+  SlowScrollThrottleMatcher(
+      float device_scale_factor,
+      std::vector<mojom::FrameRateVelocityPoint> velocity_points);
+  ~SlowScrollThrottleMatcher() override;
+  std::optional<Result> Match(const Inputs& matcher_inputs) override;
+
+ private:
+  const float device_scale_factor_;
+  std::vector<mojom::FrameRateVelocityPoint> velocity_points_;
+  uint64_t last_frame_id_matched_without_extra_update_ = 0u;
+};
 
 }  // namespace viz
 

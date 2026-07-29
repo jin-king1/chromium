@@ -18,13 +18,16 @@ import org.junit.runner.RunWith;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Feature;
 import org.chromium.chrome.browser.background_sync.BackgroundSyncBackgroundTaskScheduler.BackgroundSyncTask;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.chrome.test.util.browser.TabTitleObserver;
 import org.chromium.chrome.test.util.browser.signin.AccountManagerTestRule;
@@ -51,10 +54,11 @@ import java.util.concurrent.atomic.AtomicInteger;
             + "min_periodic_sync_events_interval_sec/1/"
             + "skip_permissions_check_for_testing/true"
 })
+@DoNotBatch(reason = "Shared state in BackgroundSyncManager/Scheduler")
 public final class PeriodicBackgroundSyncTest {
     @Rule
-    public final ChromeTabbedActivityTestRule mActivityTestRule =
-            new ChromeTabbedActivityTestRule();
+    public final FreshCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.freshChromeTabbedActivityRule();
 
     // loadNativeLibraryNoBrowserProcess will access AccountManagerFacade, so we need
     // to mock AccountManagerFacade
@@ -73,12 +77,13 @@ public final class PeriodicBackgroundSyncTest {
     private AtomicInteger mScheduleCount;
 
     private BackgroundSyncBackgroundTaskScheduler.Observer mSchedulerObserver;
+    private WebPageStation mPage;
 
     @Before
     public void setUp() throws InterruptedException, TimeoutException {
         // This is necessary because our test devices don't have Google Play Services up to date,
-        // and Periodic Background Sync requires that. Remove this once https://crbug.com/514449 has
-        // been fixed.
+        // and Periodic Background Sync requires that. Remove this once https://crbug.com/40428648
+        // has been fixed.
         // Note that this should be done before the startMainActivityOnBlankPage(), because Chrome
         // will otherwise run this check on startup and disable Periodic Background Sync code.
         if (!ExternalAuthUtils.getInstance().canUseGooglePlayServices()) {
@@ -86,7 +91,7 @@ public final class PeriodicBackgroundSyncTest {
             disableGooglePlayServicesVersionCheck();
         }
 
-        mActivityTestRule.startMainActivityOnBlankPage();
+        mPage = mActivityTestRule.startOnBlankPage();
 
         // Periodic Background Sync only works with HTTPS.
         mTestServer =
@@ -94,7 +99,7 @@ public final class PeriodicBackgroundSyncTest {
                         InstrumentationRegistry.getInstrumentation().getContext(),
                         ServerCertificate.CERT_OK);
 
-        mActivityTestRule.loadUrl(mTestServer.getURL(TEST_PAGE));
+        mPage = mPage.loadWebPageProgrammatically(mTestServer.getURL(TEST_PAGE));
         runJavaScript("SetupReplyForwardingForTests();");
     }
 
@@ -205,7 +210,7 @@ public final class PeriodicBackgroundSyncTest {
 
     @SuppressWarnings("MissingFail")
     private void assertTitleBecomes(String expectedTitle) throws InterruptedException {
-        Tab tab = mActivityTestRule.getActivity().getActivityTab();
+        Tab tab = mActivityTestRule.getActivityTab();
         TabTitleObserver titleObserver = new TabTitleObserver(tab, expectedTitle);
         try {
             titleObserver.waitForTitleUpdate(TITLE_UPDATE_TIMEOUT_SECONDS);
@@ -233,7 +238,7 @@ public final class PeriodicBackgroundSyncTest {
     private void resetEngagementForUrl(final String url, final double engagement) {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    // TODO (https://crbug.com/1063807):  Add incognito mode tests.
+                    // TODO (https://crbug.com/40680929):  Add incognito mode tests.
                     SiteEngagementService.getForBrowserContext(
                                     ProfileManager.getLastUsedRegularProfile())
                             .resetBaseScoreForUrl(url, engagement);

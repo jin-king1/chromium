@@ -16,7 +16,7 @@
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/views/test/test_views.h"
 #include "ui/views/test/views_test_base.h"
 #include "ui/views/widget/widget.h"
@@ -44,7 +44,7 @@ class TestConstrainedWindowViewsClient
     return nullptr;
   }
   gfx::NativeView GetDialogHostView(gfx::NativeWindow parent) override {
-    return nullptr;
+    return gfx::NativeView();
   }
 };
 
@@ -96,8 +96,8 @@ class ConstrainedWindowViewsTest : public views::ViewsTestBase {
     auto contents = std::make_unique<views::StaticSizedView>();
     contents_ = delegate_->SetContentsView(std::move(contents));
 
-    dialog_ = views::DialogDelegate::CreateDialogWidget(delegate_.get(),
-                                                        GetContext(), nullptr);
+    dialog_ = views::DialogDelegate::CreateDialogWidget(
+        delegate_.get(), GetContext(), gfx::NativeView());
 
     // Create a dialog host sufficiently large enough to accommodate dialog
     // size changes during testing.
@@ -120,7 +120,7 @@ class ConstrainedWindowViewsTest : public views::ViewsTestBase {
     dialog_host_widget_->CloseNow();
     dialog_host_widget_.reset();
     dialog_host_.reset();
-    dialog_->CloseNow();
+    dialog_.ExtractAsDangling()->CloseNow();
     ViewsTestBase::TearDown();
   }
 
@@ -129,7 +129,7 @@ class ConstrainedWindowViewsTest : public views::ViewsTestBase {
   }
 
   gfx::Rect GetPrimaryDisplayWorkArea() const {
-    return display::Screen::GetScreen()->GetPrimaryDisplay().work_area();
+    return display::Screen::Get()->GetPrimaryDisplay().work_area();
   }
 
   views::DialogDelegate* delegate() { return delegate_.get(); }
@@ -145,7 +145,7 @@ class ConstrainedWindowViewsTest : public views::ViewsTestBase {
   raw_ptr<views::View> contents_ = nullptr;
   std::unique_ptr<web_modal::TestWebContentsModalDialogHost> dialog_host_;
   std::unique_ptr<views::Widget> dialog_host_widget_;
-  raw_ptr<Widget, DanglingUntriaged> dialog_ = nullptr;
+  raw_ptr<Widget> dialog_ = nullptr;
 };
 
 }  // namespace
@@ -229,7 +229,7 @@ TEST_F(ConstrainedWindowViewsTest, MAYBE_NullModalParent) {
   auto delegate = std::make_unique<views::DialogDelegate>();
   delegate->SetModalType(ui::mojom::ModalType::kWindow);
   views::Widget* widget =
-      CreateBrowserModalDialogViews(delegate.get(), nullptr);
+      CreateBrowserModalDialogViews(delegate.get(), gfx::NativeWindow());
   widget->Show();
   EXPECT_TRUE(widget->IsVisible());
   widget->CloseNow();
@@ -251,7 +251,7 @@ TEST_F(ConstrainedWindowViewsTest, ClampDialogHostWindowToNearestDisplay) {
   // First, make sure the host and dialog are sized and positioned.
   UpdateWebContentsModalDialogPosition(dialog(), dialog_host());
 
-  const display::Screen* screen = display::Screen::GetScreen();
+  const display::Screen* screen = display::Screen::Get();
   const display::Display display = screen->GetPrimaryDisplay();
   // Within the tests there is only 1 display. Error if that ever changes.
   EXPECT_EQ(screen->GetNumDisplays(), 1);

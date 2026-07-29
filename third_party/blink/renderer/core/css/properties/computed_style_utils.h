@@ -19,6 +19,7 @@
 #include "third_party/blink/renderer/core/style/computed_style.h"
 #include "third_party/blink/renderer/core/style/computed_style_constants.h"
 #include "third_party/blink/renderer/core/style/superellipse.h"
+#include "third_party/blink/renderer/core/style/text_overflow_data.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 
 namespace blink {
@@ -27,12 +28,15 @@ class ComputedStyle;
 class CSSNumericLiteralValue;
 class CSSStyleValue;
 class CSSValue;
+class FlowTolerance;
 class FontFamily;
 class PositionArea;
 class StyleColor;
 class StyleIntrinsicLength;
 class StylePropertyShorthand;
 class StyleTimeline;
+
+enum class CSSGapDecorationPropertyDirection : int;
 
 namespace cssvalue {
 class CSSContentDistributionValue;
@@ -48,7 +52,8 @@ class CORE_EXPORT ComputedStyleUtils {
     if (length.IsAuto()) {
       return CSSIdentifierValue::Create(CSSValueID::kAuto);
     }
-    return ZoomAdjustedPixelValue(length.Value(), style);
+    DCHECK(length.IsFixed());
+    return ZoomAdjustedPixelValue(length.Pixels(), style);
   }
 
   static const CSSValue* ValueForColor(const StyleColor&,
@@ -71,8 +76,8 @@ class CORE_EXPORT ComputedStyleUtils {
                                                     CSSValuePhase value_phase);
   static const CSSValue* ValueForFillSize(const FillSize&,
                                           const ComputedStyle&);
-  static const CSSValue* BackgroundImageOrMaskSize(const ComputedStyle&,
-                                                   const FillLayer&);
+  static const CSSValue* BackgroundSizeOrMaskSize(const ComputedStyle&,
+                                                  const FillLayer&);
   static const CSSValueList* CreatePositionListForLayer(const CSSProperty&,
                                                         const FillLayer&,
                                                         const ComputedStyle&);
@@ -100,7 +105,8 @@ class CORE_EXPORT ComputedStyleUtils {
       const ComputedStyle&,
       const FillLayer*);
   static cssvalue::CSSBorderImageSliceValue* ValueForNinePieceImageSlice(
-      const NinePieceImage&);
+      const NinePieceImage&,
+      float zoom);
   static CSSQuadValue* ValueForNinePieceImageQuad(const BorderImageLengthBox&,
                                                   const ComputedStyle&);
   static CSSValue* ValueForNinePieceImageRepeat(const NinePieceImage&);
@@ -149,10 +155,11 @@ class CORE_EXPORT ComputedStyleUtils {
   static CSSIdentifierValue* ValueForFontOpticalSizing(const ComputedStyle&);
   static CSSValue* ValueForFontFeatureSettings(const ComputedStyle&);
   static CSSValue* ValueForFontVariationSettings(const ComputedStyle&);
-  static CSSValue* ValueForFontPalette(const ComputedStyle&);
+  static const CSSValue* ValueForFontPalette(const ComputedStyle&);
+  static CSSValue* ValueForFontLanguageOverride(const ComputedStyle&);
   static CSSValue* SpecifiedValueForGridTrackSize(const GridTrackSize&,
                                                   const ComputedStyle&);
-  static CSSValue* ValueForGridAutoTrackList(const NGGridTrackList&,
+  static CSSValue* ValueForGridAutoTrackList(GridTrackSizingDirection,
                                              const LayoutObject*,
                                              const ComputedStyle&);
   static CSSValue* ValueForGridTrackList(GridTrackSizingDirection,
@@ -160,18 +167,19 @@ class CORE_EXPORT ComputedStyleUtils {
                                          const ComputedStyle&,
                                          bool force_computed_value = false);
   static CSSValue* ValueForGridPosition(const GridPosition&);
-  static CSSValue* ValueForMasonrySlack(const std::optional<Length>&,
-                                        const ComputedStyle&);
-  static CSSValue* ValueForMasonryTrackList(const LayoutObject*,
-                                            const ComputedStyle&);
-  static gfx::SizeF UsedBoxSize(const LayoutObject&);
+  static CSSValue* ValueForFlowTolerance(const FlowTolerance&,
+                                         const ComputedStyle&);
+  static CSSValue* ValueForGridLanesDirection(const GridLanesDirection&,
+                                              const ComputedStyle&);
+  static std::optional<gfx::SizeF> UsedBoxSize(const LayoutObject&);
   static CSSValue* RenderTextDecorationFlagsToCSSValue(TextDecorationLine);
   static CSSValue* ValueForTextDecorationStyle(ETextDecorationStyle);
   static CSSValue* ValueForTextDecorationSkipInk(ETextDecorationSkipInk);
+  static CSSValue* ValueForTextDecorationSkipSpaces(TextDecorationSkipSpaces);
+  static CSSValue* ValueForTextOverflow(const TextOverflowData&,
+                                        const ComputedStyle&);
   static CSSValue* TouchActionFlagsToCSSValue(TouchAction);
-  static CSSValue* ValueForWillChange(const Vector<CSSPropertyID>&,
-                                      bool will_change_contents,
-                                      bool will_change_scroll_position);
+  static CSSValue* ValueForWillChange(const StyleWillChangeData*);
 
   static CSSValue* ValueForAnimationDelay(const Timing::Delay& delay);
   static CSSValue* ValueForAnimationDirection(Timing::PlaybackDirection);
@@ -182,12 +190,12 @@ class CORE_EXPORT ComputedStyleUtils {
   static CSSValue* ValueForAnimationPlayState(EAnimPlayState);
   static CSSValue* ValueForAnimationRangeList(
       const Vector<std::optional<TimelineOffset>>& range_list,
-      const CSSAnimationData* animation_data,
       const ComputedStyle& style,
       const Length& default_offset);
   static CSSValue* ValueForAnimationTimingFunction(
       const scoped_refptr<TimingFunction>&);
-  static CSSValue* ValueForAnimationTimeline(const StyleTimeline&);
+  static CSSValue* ValueForAnimationTimeline(const StyleTimeline&,
+                                             const ComputedStyle&);
 
   static CSSValue* ValueForAnimationDelayList(const CSSTimingData*);
   static CSSValue* ValueForAnimationDirectionList(const CSSAnimationData*);
@@ -206,35 +214,57 @@ class CORE_EXPORT ComputedStyleUtils {
   static CSSValue* ValueForAnimationRangeEndList(const CSSAnimationData*,
                                                  const ComputedStyle&);
   static CSSValue* ValueForAnimationTimingFunctionList(const CSSTimingData*);
-  static CSSValue* ValueForAnimationTimelineList(const CSSAnimationData*);
+  static CSSValue* ValueForAnimationTimelineList(const CSSAnimationData*,
+                                                 const ComputedStyle&);
 
   static CSSValue* ValueForTimelineInset(const TimelineInset&,
                                          const ComputedStyle&);
-  static CSSValue* SingleValueForTimelineShorthand(const ScopedCSSName* name,
+  static CSSValue* SingleValueForTimelineShorthand(const AtomicString& name,
                                                    TimelineAxis,
                                                    std::optional<TimelineInset>,
                                                    const ComputedStyle&);
-  static CSSValue* ValueForAnimationTriggerRangeStartList(
+  static CSSValue* ValueForAnimationRangeOrAuto(
+      const TimelineOffsetOrAuto& offset,
+      const ComputedStyle& style,
+      const Length& default_offset);
+  static CSSValue* ValueForTimelineTriggerActiveRangeList(
+      const Vector<TimelineOffsetOrAuto>& range_list,
+      const ComputedStyle& style,
+      const Length& default_offset);
+  static CSSValue* ValueForAnimationTriggerBehavior(
+      const EAnimationTriggerBehavior);
+  static CSSValue* ValueForAnimationTriggerBehaviorList(
+      const Vector<EAnimationTriggerBehavior>& behavior_list);
+  static CSSValue* ValueForTimelineTriggerActivationRangeStartList(
       const CSSAnimationData* animation_data,
       const ComputedStyle& style);
-  static CSSValue* ValueForAnimationTriggerRangeEndList(
+  static CSSValue* ValueForTimelineTriggerActivationRangeEndList(
       const CSSAnimationData* animation_data,
       const ComputedStyle& style);
-  static CSSValue* ValueForAnimationTriggerExitRangeStartList(
+  static CSSValue* ValueForTimelineTriggerActiveRangeStartList(
       const CSSAnimationData* animation_data,
       const ComputedStyle& style);
-  static CSSValue* ValueForAnimationTriggerExitRangeEndList(
+  static CSSValue* ValueForTimelineTriggerActiveRangeEndList(
       const CSSAnimationData* animation_data,
       const ComputedStyle& style);
-  static CSSValue* ValueForAnimationTriggerType(const EAnimationTriggerType);
-  static CSSValue* ValueForAnimationTriggerTypeList(const CSSAnimationData*);
-  static CSSValue* ValueForAnimationTriggerTimelineList(
-      const CSSAnimationData*);
+  static CSSValue* ValueForTimelineTriggerTimelineList(const CSSAnimationData*,
+                                                       const ComputedStyle&);
+  static CSSValue* ValueForAnimationName(const AtomicString&);
+  static CSSValue* ValueForAnimationNameList(const CSSAnimationData*,
+                                             const ComputedStyle&);
+  static bool AnimationNameIsTimingFunction(const AtomicString&);
+  static bool AnimationNameIsFillMode(const AtomicString&);
+  static bool AnimationNameIsDirection(const AtomicString&);
+  static bool AnimationNameIsPlayState(const AtomicString&);
+
   static CSSValueList* ValuesForBorderRadiusCorner(const LengthSize&,
                                                    const ComputedStyle&);
   static CSSValue* ValueForBorderRadiusCorner(const LengthSize&,
                                               const ComputedStyle&);
   static CSSValue* ValueForCornerShape(const Superellipse&);
+  static CSSValueList* ValueForCornerShapeEdgeShorthand(
+      const StylePropertyShorthand&,
+      const ComputedStyle&);
 
   // Serializes a gfx::Transform into a matrix() or matrix3d() transform
   // function value. If force_matrix3d is true, it will always give a matrix3d
@@ -282,7 +312,7 @@ class CORE_EXPORT ComputedStyleUtils {
                                  CSSValuePhase value_phase);
   static CSSValueList* ValueForBorderRadiusShorthand(const ComputedStyle&);
   static CSSValueList* ValueForCornerShapeShorthand(const ComputedStyle&);
-  static CSSValue* StrokeDashArrayToCSSValueList(const SVGDashArray&,
+  static CSSValue* StrokeDashArrayToCSSValueList(const SVGDashArray*,
                                                  const ComputedStyle&);
   static const CSSValue* ValueForSVGPaint(const SVGPaint&,
                                           const ComputedStyle&);
@@ -317,12 +347,39 @@ class CORE_EXPORT ComputedStyleUtils {
   static CSSValue* ValueForWebkitColumnBreakBetween(EBreakBetween);
   static CSSValue* ValueForPageBreakInside(EBreakInside);
   static CSSValue* ValueForWebkitColumnBreakInside(EBreakInside);
-  static bool WidthOrHeightShouldReturnUsedValue(const LayoutObject*);
   static CSSValueList* ValuesForShorthandProperty(const StylePropertyShorthand&,
                                                   const ComputedStyle&,
                                                   const LayoutObject*,
                                                   bool allow_visited_style,
                                                   CSSValuePhase value_phase);
+  static CSSValueList* ValuesForGapDecorationRuleInsetCapJunctionShorthand(
+      const StylePropertyShorthand&,
+      const ComputedStyle&,
+      const LayoutObject*,
+      bool allow_visited_style,
+      bool is_cap,
+      CSSValuePhase value_phase,
+      CSSGapDecorationPropertyDirection direction);
+  static const CSSValue* ValuesForGapDecorationRuleInsetStartEndShorthand(
+      const StylePropertyShorthand&,
+      const ComputedStyle&,
+      const LayoutObject*,
+      bool allow_visited_style,
+      CSSValuePhase value_phase);
+  static CSSValueList* ValuesForGapDecorationRuleInsetShorthand(
+      const StylePropertyShorthand&,
+      const ComputedStyle&,
+      const LayoutObject*,
+      bool allow_visited_style,
+      CSSValuePhase value_phase,
+      CSSGapDecorationPropertyDirection direction);
+  static CSSValueList* ValueForGapDecorationRuleShorthand(
+      const StylePropertyShorthand&,
+      const ComputedStyle&,
+      const LayoutObject*,
+      bool allow_visited_style,
+      CSSValuePhase value_phase,
+      CSSGapDecorationPropertyDirection direction);
   static CSSValuePair* ValuesForGapShorthand(const StylePropertyShorthand&,
                                              const ComputedStyle&,
                                              const LayoutObject*,
@@ -349,6 +406,35 @@ class CORE_EXPORT ComputedStyleUtils {
       const LayoutObject*,
       bool allow_visited_style,
       CSSValuePhase value_phase);
+
+  static const CSSValue* ValuesForBidirectionalGapRuleInsetCapJunctionShorthand(
+      const StylePropertyShorthand&,
+      const ComputedStyle&,
+      const LayoutObject*,
+      bool allow_visited_style,
+      CSSValuePhase value_phase);
+
+  static const CSSValue* ValuesForBidirectionalGapRuleInsetStartEndShorthand(
+      const StylePropertyShorthand&,
+      const ComputedStyle&,
+      const LayoutObject*,
+      bool allow_visited_style,
+      CSSValuePhase value_phase);
+
+  static const CSSValue* ValuesForBidirectionalGapRuleInsetShorthand(
+      const StylePropertyShorthand&,
+      const ComputedStyle&,
+      const LayoutObject*,
+      bool allow_visited_style,
+      CSSValuePhase value_phase);
+
+  static const CSSValue* ValuesForBidirectionalGapRuleShorthand(
+      const StylePropertyShorthand&,
+      const ComputedStyle&,
+      const LayoutObject*,
+      bool allow_visited_style,
+      CSSValuePhase value_phase);
+
   static CSSValueList* ValuesForSidesShorthand(const StylePropertyShorthand&,
                                                const ComputedStyle&,
                                                const LayoutObject*,
@@ -365,11 +451,10 @@ class CORE_EXPORT ComputedStyleUtils {
                                                const LayoutObject*,
                                                bool allow_visited_style,
                                                CSSValuePhase value_phase);
-  static CSSValue* ValuesForInterestTargetDelayShorthand(
-      const ComputedStyle&,
-      const LayoutObject*,
-      bool allow_visited_style,
-      CSSValuePhase value_phase);
+  static CSSValue* ValuesForInterestDelayShorthand(const ComputedStyle&,
+                                                   const LayoutObject*,
+                                                   bool allow_visited_style,
+                                                   CSSValuePhase value_phase);
   static CSSValue* ValuesForFontVariantProperty(const ComputedStyle&,
                                                 const LayoutObject*,
                                                 bool allow_visited_style,
@@ -391,14 +476,23 @@ class CORE_EXPORT ComputedStyleUtils {
   static const CSSValue* ValueForStyleAutoColor(const ComputedStyle&,
                                                 const StyleAutoColor&,
                                                 CSSValuePhase);
+
+  static CSSValue* ValueForHangingPunctuation(
+      HangingPunctuation hanging_punctuation);
   static CSSValue* ValueForIntrinsicLength(const ComputedStyle&,
                                            const StyleIntrinsicLength&);
-  static CSSValue* ValueForScrollStart(const ComputedStyle&,
-                                       const ScrollStartData&);
   static CSSValue* ValueForPositionArea(const blink::PositionArea&);
   static CSSValue* ValueForPositionTryFallbacks(const PositionTryFallbacks&);
+  static CSSValue* ValueForTextFit(const ComputedStyle&, const TextFit&);
+  static CSSValueList* ValuesForGridLanesShorthand(
+      const StylePropertyShorthand&,
+      const ComputedStyle&,
+      const LayoutObject*,
+      bool allow_visited_style,
+      CSSValuePhase value_phase);
   static std::unique_ptr<CrossThreadStyleValue>
   CrossThreadStyleValueFromCSSStyleValue(CSSStyleValue* style_value);
+  static CSSValue* ValueForNameScope(const StyleNameScope& name_scope);
 
   // Returns the computed CSSValue of the given property from the style,
   // which may different than the resolved value returned by

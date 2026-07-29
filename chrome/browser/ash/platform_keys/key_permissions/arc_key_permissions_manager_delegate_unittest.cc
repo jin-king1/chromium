@@ -30,6 +30,7 @@ namespace {
 
 constexpr char kTestArcPackageName1[] = "com.example.app1";
 constexpr char kTestArcPackageName2[] = "com.example.app2";
+constexpr char kChromeExtensionId[] = "abcdefghijklmnopabcdefghijklmnop";
 
 }  // namespace
 
@@ -68,11 +69,13 @@ class ArcKeyPermissionsManagerDelegateTest : public testing::Test {
     auto policy_service_ =
         std::make_unique<policy::PolicyServiceImpl>(providers);
 
+    arc_app_test_.PreProfileSetUp();
+
     TestingProfile::Builder builder;
     builder.SetPolicyService(std::move(policy_service_));
     profile_ = builder.Build();
 
-    arc_app_test_.SetUp(profile_.get());
+    arc_app_test_.PostProfileSetUp(profile_.get());
     app_instance_ = std::make_unique<arc::FakeAppInstance>(
         arc_app_test_.arc_app_list_prefs());
 
@@ -84,12 +87,13 @@ class ArcKeyPermissionsManagerDelegateTest : public testing::Test {
   }
 
   void TearDown() override {
-    arc_app_test_.TearDown();
+    arc_app_test_.PreProfileTearDown();
     if (primary_user_delegate_) {
       ShutDownPrimaryUserDelegate();
     }
     system_delegate_.reset();
     profile_.reset();
+    arc_app_test_.PostProfileTearDown();
   }
 
  protected:
@@ -105,10 +109,10 @@ class ArcKeyPermissionsManagerDelegateTest : public testing::Test {
 
   void SetCorporateUsageInPolicyForPackage(const std::string& package_name,
                                            bool allowed) {
-    base::Value::Dict corporate_key_usage;
+    base::DictValue corporate_key_usage;
     corporate_key_usage.SetByDottedPath("allowCorporateKeyUsage", allowed);
 
-    base::Value::Dict policy_value;
+    base::DictValue policy_value;
     policy_value.Set(package_name, base::Value(std::move(corporate_key_usage)));
 
     policy::PolicyMap policy_map;
@@ -296,6 +300,20 @@ TEST_F(ArcKeyPermissionsManagerDelegateTest, NoPrimaryDelegate) {
   ShutDownPrimaryUserDelegate();
 
   EXPECT_EQ(system_delegate()->AreCorporateKeysAllowedForArcUsage(), false);
+}
+
+TEST_F(ArcKeyPermissionsManagerDelegateTest, ExtensionIdsAreFilteredOut) {
+  SetCorporateUsageInPolicyForPackage(kChromeExtensionId, /*allowed=*/true);
+  ASSERT_FALSE(user_delegate()->AreCorporateKeysAllowedForArcUsage());
+  ASSERT_FALSE(system_delegate()->AreCorporateKeysAllowedForArcUsage());
+
+  EXPECT_CALL(mock_arc_kpm_delegate_observer_,
+              OnArcUsageAllowanceForCorporateKeysChanged(true))
+      .Times(0);
+  InstallArcPackage(kChromeExtensionId);
+
+  EXPECT_FALSE(user_delegate()->AreCorporateKeysAllowedForArcUsage());
+  EXPECT_FALSE(system_delegate()->AreCorporateKeysAllowedForArcUsage());
 }
 
 }  // namespace platform_keys

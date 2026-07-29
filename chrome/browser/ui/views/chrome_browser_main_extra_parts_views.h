@@ -15,10 +15,6 @@ namespace views {
 class ViewsDelegate;
 }
 
-namespace ui_devtools {
-class UiDevToolsServer;
-}
-
 #if defined(USE_AURA)
 #if !BUILDFLAG(IS_CHROMEOS)
 namespace display {
@@ -30,7 +26,6 @@ class WMState;
 }
 #endif
 
-class DevtoolsProcessObserver;
 class RelaunchNotificationController;
 
 class ChromeBrowserMainExtraPartsViews : public ChromeBrowserMainExtraParts {
@@ -51,21 +46,16 @@ class ChromeBrowserMainExtraPartsViews : public ChromeBrowserMainExtraParts {
   void ToolkitInitialized() override;
   void PreCreateThreads() override;
   void PreProfileInit() override;
+  void PostProfileInit(Profile* profile, bool is_initial_profile) override;
   void PostBrowserStart() override;
   void PostMainMessageLoopRun() override;
 
-  // Manipulate UiDevTools.
-  void CreateUiDevTools();
-  const ui_devtools::UiDevToolsServer* GetUiDevToolsServerInstance();
-  void DestroyUiDevTools();
-
  private:
+
+  // An owning pointer to the views delegate. This may be nullptr if another
+  // class creates the global ViewsDelegate instance before us (test only).
   std::unique_ptr<views::ViewsDelegate> views_delegate_;
   std::unique_ptr<views::LayoutProvider> layout_provider_;
-
-  // Only used when running in --enable-ui-devtools.
-  std::unique_ptr<ui_devtools::UiDevToolsServer> devtools_server_;
-  std::unique_ptr<DevtoolsProcessObserver> devtools_process_observer_;
 
 #if defined(USE_AURA)
 #if !BUILDFLAG(IS_CHROMEOS)

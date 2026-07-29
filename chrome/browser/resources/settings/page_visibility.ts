@@ -9,7 +9,6 @@ import {loadTimeData} from './i18n_setup.js';
  */
 export interface PageVisibility {
   a11y?: boolean;
-  advancedSettings?: boolean;
   ai?: boolean;
   appearance?: boolean|AppearancePageVisibility;
   autofill?: boolean;
@@ -24,6 +23,7 @@ export interface PageVisibility {
   reset?: boolean;
   safetyHub?: boolean;
   system?: boolean;
+  yourSavedInfo?: boolean;
 }
 
 export interface AppearancePageVisibility {
@@ -50,7 +50,6 @@ function createPageVisibility(): PageVisibility|undefined {
   // <if expr="not is_chromeos">
   const pageVisibility = {
     a11y: false,
-    advancedSettings: false,
     ai: false,
     appearance: false,
     autofill: false,
@@ -65,6 +64,7 @@ function createPageVisibility(): PageVisibility|undefined {
     reset: false,
     safetyHub: false,
     system: false,
+    yourSavedInfo: false,
   };
   // </if>
   // <if expr="is_chromeos">
@@ -83,7 +83,6 @@ function createPageVisibility(): PageVisibility|undefined {
       pageZoom: false,
       sidePanel: false,
     },
-    advancedSettings: true,
     privacy: {
       searchPrediction: false,
       networkPrediction: false,
@@ -93,6 +92,7 @@ function createPageVisibility(): PageVisibility|undefined {
     extensions: false,
     languages: true,
     performance: false,
+    yourSavedInfo: false,
   };
   // </if>
 

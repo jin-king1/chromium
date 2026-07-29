@@ -7,13 +7,18 @@
 #include <memory>
 #include <optional>
 
+#include "base/command_line.h"
+#include "base/synchronization/lock.h"
 #include "build/branding_buildflags.h"
 #include "build/build_config.h"
+#include "chrome/browser/feature_engagement/tracker_factory.h"
 #include "chrome/browser/headless/headless_mode_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profiles_state.h"
 #include "chrome/browser/user_education/browser_user_education_storage_service.h"
 #include "chrome/browser/user_education/user_education_service.h"
+#include "chrome/common/chrome_switches.h"
+#include "components/feature_engagement/public/tracker.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
 #include "components/user_education/common/session/user_education_idle_observer.h"
 #include "components/user_education/common/session/user_education_idle_policy.h"
@@ -22,6 +27,10 @@
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chromeos/components/mgs/managed_guest_session_utils.h"
+#endif
+
+#if BUILDFLAG(CHROME_FOR_TESTING)
+#include "chrome/browser/chrome_for_testing/config.h"
 #endif
 
 namespace {
@@ -87,8 +96,7 @@ UserEducationServiceFactory::BuildServiceInstanceForBrowserContextImpl(
 
   // Create the user education service.
   auto result = std::make_unique<UserEducationService>(
-      std::make_unique<BrowserUserEducationStorageService>(profile),
-      ProfileAllowsUserEducation(profile));
+      profile, ProfileAllowsUserEducation(profile));
 
   // Set up the session manager.
   result->user_education_session_manager().Init(
@@ -110,25 +118,48 @@ UserEducationServiceFactory::BuildServiceInstanceForBrowserContextImpl(
 // static
 bool UserEducationServiceFactory::ProfileAllowsUserEducation(Profile* profile) {
 #if BUILDFLAG(CHROME_FOR_TESTING)
-  // IPH is always disabled in Chrome for Testing.
-  return false;
-#else
+  if (!chrome_for_testing::IsEnableUserEducationUI()) {
+    return false;
+  }
+#endif
+
   // In order to do user education, the browser must have a UI and not be an
   // "off-the-record" or in a demo or guest mode.
+
   if (profile->IsIncognitoProfile() || profile->IsGuestSession() ||
       profiles::IsDemoSession() || profiles::IsChromeAppKioskSession()) {
     return false;
   }
+
 #if BUILDFLAG(IS_CHROMEOS)
   if (chromeos::IsManagedGuestSession()) {
     return false;
   }
 #endif
+
   if (headless::IsHeadlessMode()) {
     return false;
   }
+
+  // If `--no-first-run` is enabled and we have not put IPH into test mode, User
+  // Education is not eligible. (No FRE implies no startup bubbles, which
+  // precludes any IPH that might show, as it may be used for performance
+  // testing.)
+  //
+  // If IPH is in test mode (all features blocked, or all but a specific feature
+  // is blocked) then zero or more IPH are under test and all other IPH are
+  // already blocked. Since tests are no-FRE, not making this additional check
+  // would break all IPH tests.
+  const bool no_first_run =
+      base::CommandLine::ForCurrentProcess()->HasSwitch(switches::kNoFirstRun);
+  const bool in_feature_test_mode =
+      feature_engagement::TrackerFactory::GetForBrowserContext(profile)
+          ->IsInFeatureTestMode();
+  if (no_first_run && !in_feature_test_mode) {
+    return false;
+  }
+
   return true;
-#endif  // BUILDFLAG(CHROME_FOR_TESTING)
 }
 
 std::unique_ptr<KeyedService>

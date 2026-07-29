@@ -21,13 +21,13 @@ class SvgTextLayoutAlgorithm {
 
   // Apply SVG specific text layout algorithm to |items|.
   // Text items in |items| will be converted to kSVGText type.
-  PhysicalSize Layout(const String& ifc_text_content,
+  PhysicalSize Layout(const FragmentItemsBuilder& builder,
                       FragmentItemsBuilder::ItemWithOffsetList& items);
 
  private:
   // Returns false if we should skip the following steps.
   bool Setup(wtf_size_t approximate_count);
-  void SetFlags(const String& ifc_text_content,
+  void SetFlags(const FragmentItemsBuilder& builder,
                 const FragmentItemsBuilder::ItemWithOffsetList& items);
   void AdjustPositionsDxDy(
       const FragmentItemsBuilder::ItemWithOffsetList& items);
@@ -83,7 +83,7 @@ class SvgTextLayoutAlgorithm {
     float length_adjust_scale = 1.0f;
     float text_length_shift_x = 0.0f;
     float text_length_shift_y = 0.0f;
-    wtf_size_t item_index = WTF::kNotFound;
+    wtf_size_t item_index = kNotFound;
   };
   // This data member represents "result" defined in the specification, but it
   // contains only addressable characters.

@@ -35,6 +35,7 @@
 #include "content/public/browser/web_contents_media_capture_id.h"
 #include "media/audio/audio_device_description.h"
 #include "media/base/audio_parameters.h"
+#include "media/mojo/mojom/audio_processing.mojom.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "third_party/blink/public/common/mediastream/media_stream_request.h"
@@ -249,12 +250,18 @@ void RenderFrameAudioInputStreamFactory::Core::CreateStream(
   if (!forwarding_factory_)
     return;
 
+  if (!media_stream_manager_->ValidateAudioSession(
+          session_id, GlobalRenderFrameHostId(process_id_, frame_id_))) {
+    mojo::ReportBadMessage("Unauthorized audio capture session.");
+    return;
+  }
+
   const blink::MediaStreamDevice* device =
       media_stream_manager_->audio_input_device_manager()->GetOpenedDeviceById(
           session_id);
 
   if (!device) {
-    TRACE_EVENT_INSTANT0("audio", "device not found", TRACE_EVENT_SCOPE_THREAD);
+    TRACE_EVENT_INSTANT("audio", "device not found");
     return;
   }
 

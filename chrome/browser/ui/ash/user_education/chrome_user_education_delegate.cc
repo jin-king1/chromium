@@ -11,6 +11,7 @@
 #include "ash/user_education/user_education_types.h"
 #include "ash/user_education/user_education_util.h"
 #include "base/check.h"
+#include "base/compiler_specific.h"
 #include "base/values.h"
 #include "chrome/browser/ash/app_list/app_list_syncable_service.h"
 #include "chrome/browser/ash/app_list/app_list_syncable_service_factory.h"
@@ -78,13 +79,13 @@ ChromeUserEducationDelegate::~ChromeUserEducationDelegate() = default;
 std::optional<ui::ElementIdentifier>
 ChromeUserEducationDelegate::GetElementIdentifierForAppId(
     const std::string& app_id) const {
-  if (!strcmp(file_manager::kFileManagerSwaAppId, app_id.c_str())) {
+  if (app_id == file_manager::kFileManagerSwaAppId) {
     return ash::kFilesAppElementId;
   }
-  if (!strcmp(ash::kHelpAppId, app_id.c_str())) {
+  if (app_id == ash::kHelpAppId) {
     return ash::kExploreAppElementId;
   }
-  if (!strcmp(ash::kOsSettingsAppId, app_id.c_str())) {
+  if (app_id == ash::kOsSettingsAppId) {
     return ash::kSettingsAppElementId;
   }
   return std::nullopt;

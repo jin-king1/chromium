@@ -45,7 +45,7 @@ bool VulkanImage::InitializeFromGpuMemoryBufferHandle(
   }
 
   queue_family_index_ = queue_family_index;
-  auto& native_pixmap_handle = gmb_handle.native_pixmap_handle;
+  auto native_pixmap_handle = std::move(gmb_handle).native_pixmap_handle();
 
   auto& scoped_fd = native_pixmap_handle.planes[0].fd;
   if (!scoped_fd.is_valid()) {
@@ -111,12 +111,12 @@ bool VulkanImage::InitializeFromGpuMemoryBufferHandle(
 
   VkMemoryRequirements* requirements = nullptr;
   // TODO support multiple plane
-  bool result = InitializeSingleOrJointPlanes(
+  auto result = InitializeSingleOrJointPlanes(
       device_queue, size, format, usage, flags, image_tiling,
       &external_image_create_info, &import_memory_fd_info, requirements);
-  // If Initialize successfully, the fd in scoped_fd should be owned by vulkan,
-  // otherwise take the ownership of the fd back.
-  if (!result) {
+  // If vkAllocateMemory() returned successfully, the fd in scoped_fd should be
+  // owned by vulkan, otherwise take the ownership of the fd back.
+  if (result == kFailedBeforeAllocateMemory) {
     scoped_fd.reset(memory_fd);
   }
 

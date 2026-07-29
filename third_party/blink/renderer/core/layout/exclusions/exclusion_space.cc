@@ -155,7 +155,7 @@ LayoutOpportunity CreateLayoutOpportunity(
 }  // namespace
 
 ExclusionSpaceInternal::ExclusionSpaceInternal()
-    : exclusions_(MakeGarbageCollected<ExclusionAreaPtrArray>()),
+    : exclusions_(MakeGarbageCollected<GCedExclusionAreaPtrArray>()),
       track_shape_exclusions_(false),
       has_break_before_left_float_(false),
       has_break_before_right_float_(false),
@@ -173,7 +173,6 @@ ExclusionSpaceInternal::ExclusionSpaceInternal(
           other.initial_letter_left_clear_offset_),
       initial_letter_right_clear_offset_(
           other.initial_letter_right_clear_offset_),
-      non_hidden_clear_offset_(other.non_hidden_clear_offset_),
       track_shape_exclusions_(other.track_shape_exclusions_),
       has_break_before_left_float_(other.has_break_before_left_float_),
       has_break_before_right_float_(other.has_break_before_right_float_),
@@ -201,7 +200,6 @@ void ExclusionSpaceInternal::CopyFrom(const ExclusionSpaceInternal& other) {
   last_float_block_start_ = other.last_float_block_start_;
   initial_letter_left_clear_offset_ = other.initial_letter_left_clear_offset_;
   initial_letter_right_clear_offset_ = other.initial_letter_right_clear_offset_;
-  non_hidden_clear_offset_ = other.non_hidden_clear_offset_;
   track_shape_exclusions_ = other.track_shape_exclusions_;
   has_break_before_left_float_ = other.has_break_before_left_float_;
   has_break_before_right_float_ = other.has_break_before_right_float_;
@@ -216,7 +214,7 @@ void ExclusionSpace::CopyFrom(const ExclusionSpace& other) {
     exclusion_space_ = nullptr;
     return;
   }
-  exclusion_space_ = std::make_unique<ExclusionSpaceInternal>();
+  exclusion_space_ = MakeGarbageCollected<ExclusionSpaceInternal>();
   exclusion_space_->CopyFrom(*other.exclusion_space_);
 }
 
@@ -242,8 +240,8 @@ void ExclusionSpaceInternal::Add(const ExclusionArea* exclusion) {
     } else {
       // Perform a copy-on-write if the number of exclusions has gone out of
       // sync.
-      auto* exclusions = MakeGarbageCollected<ExclusionAreaPtrArray>();
-      exclusions->AppendSpan(base::span(*exclusions_).first(num_exclusions_));
+      auto* exclusions = MakeGarbageCollected<GCedExclusionAreaPtrArray>();
+      exclusions->append_range(base::span(*exclusions_).first(num_exclusions_));
       exclusions_ = exclusions;
     }
   }
@@ -276,16 +274,11 @@ void ExclusionSpaceInternal::Add(const ExclusionArea* exclusion) {
           std::max(initial_letter_right_clear_offset_, clear_offset);
     }
 
-    if (!exclusion->is_hidden_for_paint) {
-      non_hidden_clear_offset_ =
-          std::max(non_hidden_clear_offset_, clear_offset);
-    }
-
     if (!already_exists) {
       // Perform a copy-on-write if the number of exclusions has gone out of
       // sync.
       const auto& source_exclusions = *exclusions_;
-      exclusions_ = MakeGarbageCollected<ExclusionAreaPtrArray>();
+      exclusions_ = MakeGarbageCollected<GCedExclusionAreaPtrArray>();
       exclusions_->resize(num_exclusions_ + 1);
       const auto source_span =
           base::span(source_exclusions).first(num_exclusions_);
@@ -325,10 +318,6 @@ void ExclusionSpaceInternal::Add(const ExclusionArea* exclusion) {
     left_clear_offset_ = std::max(left_clear_offset_, clear_offset);
   else if (exclusion->type == EFloat::kRight)
     right_clear_offset_ = std::max(right_clear_offset_, clear_offset);
-
-  if (!exclusion->is_hidden_for_paint) {
-    non_hidden_clear_offset_ = std::max(non_hidden_clear_offset_, clear_offset);
-  }
 
   if (derived_geometry_)
     derived_geometry_->Add(*exclusion);

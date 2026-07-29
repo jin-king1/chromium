@@ -35,9 +35,8 @@
 #include "chrome/browser/ui/ash/login/login_display_host.h"
 #include "chrome/browser/ui/ash/login/login_web_dialog.h"
 #include "chrome/browser/ui/ash/login/webui_login_view.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
-#include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/webui/ash/system_web_dialog/system_web_dialog_delegate.h"
 #include "chromeos/ui/base/window_properties.h"
@@ -128,12 +127,14 @@ void FindRuntimeContext(gfx::NativeWindow owner_window,
   *web_contents = nullptr;
   // To get the base_window and web contents, either a Browser or AppWindow is
   // needed.
-  Browser* owner_browser = nullptr;
+  BrowserWindowInterface* owner_browser = nullptr;
   AppWindow* app_window = nullptr;
 
   // If owner_window is supplied, use that to find a browser or a app window.
   if (owner_window) {
-    owner_browser = chrome::FindBrowserWithWindow(owner_window);
+    owner_browser =
+        GlobalBrowserCollection::GetInstance()->FindBrowserWithWindow(
+            owner_window);
     if (!owner_browser) {
       // If an owner_window was supplied but we couldn't find a browser, this
       // could be for a app window.
@@ -149,11 +150,12 @@ void FindRuntimeContext(gfx::NativeWindow owner_window,
     // If the owning window is still unknown, this could be a background page or
     // and extension popup. Use the last active browser.
     if (!owner_browser) {
-      owner_browser = chrome::FindLastActive();
+      owner_browser =
+          GlobalBrowserCollection::GetInstance()->GetLastActiveBrowser();
     }
     if (owner_browser) {
-      *base_window = owner_browser->window();
-      *web_contents = owner_browser->tab_strip_model()->GetActiveWebContents();
+      *base_window = owner_browser->GetWindow();
+      *web_contents = owner_browser->GetTabStripModel()->GetActiveWebContents();
     }
   }
 
@@ -203,6 +205,10 @@ class SystemFilesAppDialogDelegate : public ash::SystemWebDialogDelegate {
     RegisterOnDialogClosedCallback(
         base::BindOnce(&SystemFilesAppDialogDelegate::OnDialogClosing,
                        base::Unretained(this)));
+    // Disable early accelerator processing to give the webcontent the first
+    // chance to handle keyboard events (e.g. Ctrl+F). Unhandled events will be
+    // forwarded back to the widget.
+    set_allow_accelerators(false);
   }
   ~SystemFilesAppDialogDelegate() override = default;
 
@@ -315,7 +321,7 @@ void SelectFileDialogExtension::OnFileSelected(RoutingID routing_id,
   if (!dialog.get()) {
     return;
   }
-  dialog->selection_type_ = SINGLE_FILE;
+  dialog->selection_type_ = SelectionType::kSingleFile;
   dialog->selection_files_.clear();
   dialog->selection_files_.push_back(file);
   dialog->selection_index_ = index;
@@ -330,7 +336,7 @@ void SelectFileDialogExtension::OnMultiFilesSelected(
   if (!dialog.get()) {
     return;
   }
-  dialog->selection_type_ = MULTIPLE_FILES;
+  dialog->selection_type_ = SelectionType::kMultipleFiles;
   dialog->selection_files_ = files;
   dialog->selection_index_ = 0;
 }
@@ -342,7 +348,7 @@ void SelectFileDialogExtension::OnFileSelectionCanceled(RoutingID routing_id) {
   if (!dialog.get()) {
     return;
   }
-  dialog->selection_type_ = CANCEL;
+  dialog->selection_type_ = SelectionType::kCancel;
   dialog->selection_files_.clear();
   dialog->selection_index_ = 0;
 }
@@ -392,9 +398,9 @@ GURL SelectFileDialogExtension::MakeDialogURL(
           profile, selection_path, file_manager::util::GetFileManagerURL(),
           &selection_url)) {
     // Due to the current design, an invalid temporal cache file path may passed
-    // as |default_path| (crbug.com/178013 #9-#11). In such a case, we use the
+    // as |default_path| (crbug.com/40302893 #9-#11). In such a case, we use the
     // last selected directory as a workaround. Real fix is tracked at
-    // crbug.com/110119.
+    // crbug.com/40138234.
     base::FilePath base_name = default_path.BaseName();
     if (!file_manager::util::ConvertAbsoluteFilePathToFileSystemUrl(
             profile,
@@ -458,8 +464,7 @@ void SelectFileDialogExtension::SelectFileWithFileManagerParams(
   const bool skip_finding_browser =
       is_for_capture_mode || owner.android_task_id.has_value();
 
-  can_resize_ =
-      !display::Screen::GetScreen()->InTabletMode() && !is_for_capture_mode;
+  can_resize_ = !display::Screen::Get()->InTabletMode() && !is_for_capture_mode;
 
   // Obtain BaseWindow and WebContents if the owner window is browser.
   if (!skip_finding_browser) {
@@ -581,7 +586,7 @@ void SelectFileDialogExtension::ApplyPolicyAndNotifyListener(
                std::vector<ui::SelectedFileInfo> selection_files,
                bool is_allowed) {
               if (!is_allowed) {
-                weak_ptr->selection_type_ = SelectionType::CANCEL;
+                weak_ptr->selection_type_ = SelectionType::kCancel;
               }
               weak_ptr->NotifyListener(std::move(selection_files));
             },
@@ -594,7 +599,7 @@ void SelectFileDialogExtension::ApplyPolicyAndNotifyListener(
             [](base::WeakPtr<SelectFileDialogExtension> weak_ptr,
                std::vector<ui::SelectedFileInfo> allowed_files) {
               if (allowed_files.empty()) {
-                weak_ptr->selection_type_ = SelectionType::CANCEL;
+                weak_ptr->selection_type_ = SelectionType::kCancel;
               }
               weak_ptr->NotifyListener(std::move(allowed_files));
             },
@@ -610,13 +615,13 @@ void SelectFileDialogExtension::NotifyListener(
     return;
   }
   switch (selection_type_) {
-    case CANCEL:
+    case SelectionType::kCancel:
       listener_->FileSelectionCanceled();
       break;
-    case SINGLE_FILE:
+    case SelectionType::kSingleFile:
       listener_->FileSelected(selection_files[0], selection_index_);
       break;
-    case MULTIPLE_FILES:
+    case SelectionType::kMultipleFiles:
       listener_->MultiFilesSelected(selection_files);
       break;
     default:

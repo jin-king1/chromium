@@ -4,11 +4,10 @@
 
 #include "chrome/browser/ash/login/screens/packaged_license_screen.h"
 
+#include "base/check_deref.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/ash/policy/core/browser_policy_connector_ash.h"
 #include "chrome/browser/ash/policy/enrollment/enrollment_config.h"
-#include "chrome/browser/browser_process.h"
-#include "chrome/browser/browser_process_platform_part_ash.h"
 #include "chrome/browser/ui/webui/ash/login/mojom/screens_oobe.mojom.h"
 #include "chrome/browser/ui/webui/ash/login/packaged_license_screen_handler.h"
 
@@ -31,10 +30,12 @@ std::string PackagedLicenseScreen::GetResultString(Result result) {
 }
 
 PackagedLicenseScreen::PackagedLicenseScreen(
+    PrefService* local_state,
     base::WeakPtr<PackagedLicenseView> view,
     const ScreenExitCallback& exit_callback)
     : BaseScreen(PackagedLicenseView::kScreenId, OobeScreenPriority::DEFAULT),
       OobeMojoBinder(this),
+      local_state_(CHECK_DEREF(local_state)),
       view_(std::move(view)),
       exit_callback_(exit_callback) {}
 
@@ -42,7 +43,8 @@ PackagedLicenseScreen::~PackagedLicenseScreen() = default;
 
 bool PackagedLicenseScreen::MaybeSkip(WizardContext& context) {
   policy::EnrollmentConfig config =
-      policy::EnrollmentConfig::GetPrescribedEnrollmentConfig();
+      policy::EnrollmentConfig::GetPrescribedEnrollmentConfig(
+          local_state_.get());
   // License screen should be shown when device packed with license and other
   // enrollment flows are not triggered by the device state.
   if (config.is_license_packaged_with_device && !config.should_enroll()) {

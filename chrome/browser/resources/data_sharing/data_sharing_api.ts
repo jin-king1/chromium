@@ -2,12 +2,18 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// clang-format off
 // <if expr="_google_chrome">
 import './data_sharing_sdk.js';
+
+import {SHAREKIT_SDK_VERSION} from './data_sharing_sdk_version.js';
 // </if>
 // <if expr="not _google_chrome">
-import './dummy_data_sharing_sdk.js';
+import {SHAREKIT_SDK_VERSION} from './dummy_data_sharing_sdk.js';
 // </if>
+// clang-format on
+
+
 
 import '/strings.m.js';
 
@@ -15,7 +21,7 @@ import {loadTimeData} from 'chrome-untrusted://resources/js/load_time_data.js';
 
 import type {BrowserProxy} from './browser_proxy.js';
 import {BrowserProxyImpl} from './browser_proxy.js';
-import type {ReadGroupsParams as MojomReadGroupsParams} from './data_sharing.mojom-webui.js';
+
 import type {DataSharingSdk, ReadGroupParams} from './data_sharing_sdk_types.js';
 import type {GroupData} from './group_data.mojom-webui.js';
 import {toMojomGroupData} from './mojom_conversion_utils.js';
@@ -26,10 +32,13 @@ const dataSharingSdk: DataSharingSdk =
 
 const browserProxy: BrowserProxy = BrowserProxyImpl.getInstance();
 
+dataSharingSdk.setClientVersionAndResetPeopleStore(
+    loadTimeData.getStringF('currentClientVersion'),
+    parseInt(SHAREKIT_SDK_VERSION));
 dataSharingSdk.updateClearcut(
     {enabled: loadTimeData.getBoolean('metricsReportingEnabled')});
 browserProxy.callbackRouter.onAccessTokenFetched.addListener(
-    (accessToken: string) => {
+    accessToken => {
       dataSharingSdk.setOauthAccessToken({accessToken});
       if (!initialized) {
         browserProxy.handler!.apiInitComplete();
@@ -38,8 +47,22 @@ browserProxy.callbackRouter.onAccessTokenFetched.addListener(
     },
 );
 
+browserProxy.callbackRouter.readGroupWithToken.addListener(
+    mojomParam => {
+      const groupId = mojomParam.groupId;
+      const accessToken = mojomParam.accessToken;
+      return new Promise((resolve) => {
+        dataSharingSdk.readGroup({groupId}, {accessToken})
+            .then(({result, status}) => {
+              const group =
+                  status ? undefined : toMojomGroupData(result!.groupData);
+              resolve({result: {group, statusCode: status}});
+            });
+      });
+    });
+
 browserProxy.callbackRouter.readGroups.addListener(
-    (mojomParams: MojomReadGroupsParams) => {
+    mojomParams => {
       const params: ReadGroupParams[] = [];
       for (const mojomParam of mojomParams.params) {
         params.push({
@@ -56,7 +79,7 @@ browserProxy.callbackRouter.readGroups.addListener(
       });
     });
 
-browserProxy.callbackRouter.leaveGroup.addListener((groupId: string) => {
+browserProxy.callbackRouter.leaveGroup.addListener(groupId => {
   return new Promise((resolve) => {
     dataSharingSdk.leaveGroup({groupId}).then(({status}) => {
       resolve({statusCode: status});
@@ -64,7 +87,7 @@ browserProxy.callbackRouter.leaveGroup.addListener((groupId: string) => {
   });
 });
 
-browserProxy.callbackRouter.deleteGroup.addListener((groupId: string) => {
+browserProxy.callbackRouter.deleteGroup.addListener(groupId => {
   return new Promise((resolve) => {
     dataSharingSdk.deleteGroup({groupId}).then(({status}) => {
       resolve({statusCode: status});

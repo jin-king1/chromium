@@ -18,9 +18,9 @@
 #include "remoting/host/desktop_resizer.h"
 #include "remoting/host/input_injector.h"
 #include "remoting/host/keyboard_layout_monitor.h"
-#include "remoting/protocol/desktop_capturer.h"
+#include "remoting/host/polling_desktop_display_info_monitor.h"
+#include "remoting/protocol/mouse_cursor_monitor.h"
 #include "third_party/webrtc/modules/desktop_capture/desktop_capture_types.h"
-#include "third_party/webrtc/modules/desktop_capture/mouse_cursor_monitor.h"
 
 namespace remoting {
 
@@ -39,16 +39,19 @@ class LegacyInteractionStrategy : public DesktopInteractionStrategy {
   std::unique_ptr<DesktopResizer> CreateDesktopResizer() override;
   std::unique_ptr<DesktopCapturer> CreateVideoCapturer(
       webrtc::ScreenId id) override;
-  std::unique_ptr<webrtc::MouseCursorMonitor> CreateMouseCursorMonitor()
+  std::unique_ptr<protocol::MouseCursorMonitor> CreateMouseCursorMonitor()
       override;
   std::unique_ptr<KeyboardLayoutMonitor> CreateKeyboardLayoutMonitor(
       base::RepeatingCallback<void(const protocol::KeyboardLayout&)> callback)
       override;
   std::unique_ptr<ActiveDisplayMonitor> CreateActiveDisplayMonitor(
       base::RepeatingCallback<void(webrtc::ScreenId)> callback) override;
+
   std::unique_ptr<DesktopDisplayInfoMonitor> CreateDisplayInfoMonitor()
       override;
   std::unique_ptr<LocalInputMonitor> CreateLocalInputMonitor() override;
+  std::unique_ptr<CurtainMode> CreateCurtainMode(
+      base::WeakPtr<ClientSessionControl> client_session_control) override;
 
  protected:
   LegacyInteractionStrategy(
@@ -64,6 +67,7 @@ class LegacyInteractionStrategy : public DesktopInteractionStrategy {
   scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner_;
   scoped_refptr<base::SingleThreadTaskRunner> video_capture_task_runner_;
   scoped_refptr<base::SingleThreadTaskRunner> input_task_runner_;
+  PollingDesktopDisplayInfoMonitor display_info_monitor_;
 
   friend class LegacyInteractionStrategyFactory;
 };

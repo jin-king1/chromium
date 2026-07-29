@@ -82,11 +82,15 @@ class CORE_EXPORT PerformanceEntry : public ScriptWrappable {
     kSoftNavigation = 1 << 14,
     kLongAnimationFrame = 1 << 15,
     kScript = 1 << 16,
+    kContainer = 1 << 17,
+    kInteractionContentfulPaint = 1 << 18,
+    kScroll = 1 << 19,
+    kMarkConditional = 1 << 20,
   };
 
   const AtomicString& name() const { return name_; }
   DOMHighResTimeStamp startTime() const;
-  String navigationId() const;
+  uint64_t navigationId() const;
   // source() will return null if the PerformanceEntry did not originate from a
   // Window context.
   DOMWindow* source() const;
@@ -147,8 +151,6 @@ class CORE_EXPORT PerformanceEntry : public ScriptWrappable {
     return (entry_type & kTimelineEntryMask) != 0;
   }
 
-  static String GetNavigationId(ScriptState* script_state);
-
   // PerformanceMark/Measure override this and it returns Mojo structure pointer
   // which has all members of PerformanceMark/Measure. Common data members are
   // set by PerformanceMark/Measure calling
@@ -156,15 +158,16 @@ class CORE_EXPORT PerformanceEntry : public ScriptWrappable {
   virtual mojom::blink::PerformanceMarkOrMeasurePtr
   ToMojoPerformanceMarkOrMeasure();
 
-  bool IsTriggeredBySoftNavigation() const {
-    return is_triggered_by_soft_navigation_;
-  }
-
   // PaintTimingMixin. It's implemented here for simplicity.
   // If an interface doesn't have PaintTimingMixin, these functions
   // would not be exposed by WebIDL.
   DOMHighResTimeStamp paintTime() const;
   std::optional<DOMHighResTimeStamp> presentationTime() const;
+
+  const DOMPaintTimingInfo& GetPaintTimingInfo() const {
+    CHECK(paint_timing_info_.has_value());
+    return paint_timing_info_.value();
+  }
 
   void Trace(Visitor*) const override;
 
@@ -177,12 +180,12 @@ class CORE_EXPORT PerformanceEntry : public ScriptWrappable {
                    double start_time,
                    double finish_time,
                    DOMWindow* source,
-                   bool is_triggered_by_soft_navigation = false);
+                   uint64_t navigation_id);
   PerformanceEntry(double duration,
                    const AtomicString& name,
                    double start_time,
                    DOMWindow* source,
-                   bool is_triggered_by_soft_navigation = false);
+                   uint64_t navigation_id);
 
   virtual void BuildJSONValue(V8ObjectBuilder&) const;
 
@@ -193,13 +196,12 @@ class CORE_EXPORT PerformanceEntry : public ScriptWrappable {
   const AtomicString name_;
   const double start_time_;
   const int index_;
-  const String navigation_id_;
   // source_ will be null if the PerformanceEntry did not originate from a
   // Window context.
   const WeakMember<DOMWindow> source_;
+  const uint64_t navigation_id_;
   // For entries implementing PaintTimingMixin.
   std::optional<DOMPaintTimingInfo> paint_timing_info_;
-  const bool is_triggered_by_soft_navigation_;
 };
 
 }  // namespace blink

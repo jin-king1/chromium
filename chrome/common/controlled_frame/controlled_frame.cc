@@ -4,29 +4,44 @@
 
 #include "chrome/common/controlled_frame/controlled_frame.h"
 
+#include <algorithm>
 #include <string>
 
-#include "base/containers/contains.h"
 #include "base/containers/span.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/initialize_extensions_client.h"
-#include "chrome/common/url_constants.h"
 #include "components/version_info/version_info.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/features/feature.h"
 #include "extensions/common/features/feature_channel.h"
 #include "extensions/common/mojom/context_type.mojom.h"
 #include "third_party/blink/public/common/features.h"
 
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
+    BUILDFLAG(IS_CHROMEOS)
+#include "components/webapps/isolated_web_apps/scheme.h"
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) ||
+        // BUILDFLAG(IS_CHROMEOS)
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
+
+namespace controlled_frame {
+namespace {
+
 base::span<const char* const> GetControlledFrameFeatureList() {
   static constexpr const char* feature_list[] = {
+      // LINT.IfChange
       "controlledFrameInternal", "chromeWebViewInternal", "guestViewInternal",
       "webRequestInternal",      "webViewInternal",
+      // LINT.ThenChange(chrome/common/extensions/extension_test_util.cc)
   };
   return base::span(feature_list);
 }
 
-namespace controlled_frame {
+}  // namespace
 
 // |AvailabilityCheck()| inspects the current environment to determine whether
 // ControlledFrame or its dependencies should be made available to that
@@ -61,6 +76,11 @@ namespace controlled_frame {
 //  * The frame is a child frame that *is* an Isolated Context but was not
 //    delegated either the "cross-origin-isolated" or "controlled-frame"
 //    Permissions Policies.
+//  * Controlled Frame is disabled by a set of content settings generated from
+//    admin policies (DefaultControlledFrameSetting,
+//    ControlledFrameAllowedForUrls, ControlledFrameBlockedForUrls).
+//    These checks need to happen in the browser context, so look for them in
+//    the BrowserFrameContextData::HasControlledFrameCapability method.
 bool AvailabilityCheck(const std::string& api_full_name,
                        const extensions::Extension* extension,
                        extensions::mojom::ContextType context,
@@ -76,12 +96,19 @@ bool AvailabilityCheck(const std::string& api_full_name,
     return false;
   }
 
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
+    BUILDFLAG(IS_CHROMEOS)
   // Verify that the current context is an Isolated Web App and the API name is
   // in our expected list.
-  return (extension == nullptr) && url.SchemeIs(chrome::kIsolatedAppScheme) &&
+  return (extension == nullptr) && url.SchemeIs(webapps::kIsolatedAppScheme) &&
          context == extensions::mojom::ContextType::kWebPage &&
          context_data.HasControlledFrameCapability() &&
-         base::Contains(GetControlledFrameFeatureList(), api_full_name);
+         std::ranges::contains(GetControlledFrameFeatureList(), api_full_name);
+#else   // !(BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) ||
+        // BUILDFLAG(IS_CHROMEOS))
+  return false;
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) ||
+        // BUILDFLAG(IS_CHROMEOS)
 }
 
 extensions::Feature::FeatureDelegatedAvailabilityCheckMap

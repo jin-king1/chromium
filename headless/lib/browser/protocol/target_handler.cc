@@ -8,6 +8,9 @@
 #include <string_view>
 
 #include "build/build_config.h"
+#include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/render_process_host.h"
+#include "content/public/browser/web_contents.h"
 #include "headless/lib/browser/headless_browser_context_impl.h"
 #include "headless/lib/browser/headless_browser_impl.h"
 #include "headless/lib/browser/headless_web_contents_impl.h"
@@ -27,6 +30,17 @@ void TargetHandler::Wire(UberDispatcher* dispatcher) {
 }
 
 Response TargetHandler::Disable() {
+  while (!hidden_web_contents_.empty()) {
+    // Destroy all existing hidden targets when session is closed. Some of them
+    // can be already closed.
+    auto target_id = *hidden_web_contents_.begin();
+    auto agent_host = content::DevToolsAgentHost::GetForId(target_id);
+    if (agent_host) {
+      // The target is still alive, so destroy it.
+      agent_host->Close();
+    }
+    hidden_web_contents_.erase(hidden_web_contents_.begin());
+  }
   return Response::Success();
 }
 
@@ -42,6 +56,8 @@ Response TargetHandler::CreateTarget(
     std::optional<bool> new_window,
     std::optional<bool> background,
     std::optional<bool> for_tab,
+    std::optional<bool> hidden,
+    std::optional<bool> focus,
     std::string* out_target_id) {
 #if BUILDFLAG(IS_MAC)
   if (enable_begin_frame_control.value_or(false)) {
@@ -79,6 +95,45 @@ Response TargetHandler::CreateTarget(
     gurl = GURL(url::kAboutBlankURL);
   }
 
+  if (hidden.value_or(false)) {
+    if (for_tab.value_or(false)) {
+      return protocol::Response::InvalidParams(
+          "Hidden target cannot be created for tab");
+    }
+    if (new_window) {
+      return protocol::Response::InvalidParams(
+          "Hidden target cannot be created in a new window");
+    }
+    if (!background.value_or(true)) {
+      return protocol::Response::InvalidParams(
+          "Hidden target can be created only in background");
+    }
+
+    // Create a hidden target.
+    HeadlessWebContentsImpl* web_contents_impl =
+        HeadlessWebContentsImpl::From(context->CreateWebContents(gurl));
+    if (!web_contents_impl) {
+      return Response::ServerError("Failed to create web contents");
+    }
+
+    // Mark the process used so IsSuitableHost() rejects it for sites that
+    // require a dedicated process. (Mirrors content::HiddenTargetManager, which
+    // the headless embedder layer bypasses by handling Target.createTarget
+    // itself.)
+    web_contents_impl->web_contents()
+        ->GetPrimaryMainFrame()
+        ->GetProcess()
+        ->SetIsUsed();
+
+    *out_target_id = content::DevToolsAgentHost::GetOrCreateFor(
+                         web_contents_impl->web_contents())
+                         ->GetId();
+    // Keep hidden target's ID in the hidden_web_contents_ to close it when the
+    // session is closed.
+    hidden_web_contents_.insert(*out_target_id);
+    return Response::Success();
+  }
+
   const gfx::Rect target_window_bounds(
       left.value_or(0), top.value_or(0),
       width.value_or(browser_->options()->window_size.width()),
@@ -87,14 +142,16 @@ Response TargetHandler::CreateTarget(
   const HeadlessWindowState target_window_state =
       headless_window_state.value_or(HeadlessWindowState::kNormal);
 
-  HeadlessWebContentsImpl* web_contents_impl = HeadlessWebContentsImpl::From(
-      context->CreateWebContentsBuilder()
-          .SetInitialURL(gurl)
-          .SetWindowBounds(target_window_bounds)
-          .SetWindowState(target_window_state)
-          .SetEnableBeginFrameControl(
-              enable_begin_frame_control.value_or(false))
-          .Build());
+  HeadlessWebContents::CreateParams create_params(context, gurl);
+  create_params.window_bounds = target_window_bounds;
+  create_params.window_state = target_window_state;
+  create_params.enable_begin_frame_control =
+      enable_begin_frame_control.value_or(false);
+  HeadlessWebContentsImpl* web_contents_impl =
+      HeadlessWebContentsImpl::From(context->CreateWebContents(create_params));
+  if (!web_contents_impl) {
+    return Response::ServerError("Failed to create web contents");
+  }
 
   content::WebContents* wc = web_contents_impl->web_contents();
   auto devtools_agent_host =

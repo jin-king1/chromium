@@ -42,6 +42,7 @@
 #include "third_party/blink/renderer/bindings/core/v8/v8_compile_hints_consumer.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_compile_hints_producer.h"
 #include "third_party/blink/renderer/core/dom/document.h"
+#include "third_party/blink/renderer/core/loader/modulescript/module_script_creation_params.h"
 #include "third_party/blink/renderer/platform/instrumentation/tracing/web_memory_allocator_dump.h"
 #include "third_party/blink/renderer/platform/instrumentation/tracing/web_process_memory_dump.h"
 #include "third_party/blink/renderer/platform/loader/fetch/cached_metadata.h"
@@ -61,6 +62,7 @@
 #include "third_party/blink/renderer/platform/weborigin/scheme_registry.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/wtf/shared_buffer.h"
+#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 
 namespace blink {
 
@@ -86,6 +88,8 @@ bool IsRequestContextSupported(
     case mojom::blink::RequestContextType::JSON:
     // style
     case mojom::blink::RequestContextType::STYLE:
+    // text
+    case mojom::blink::RequestContextType::TEXT:
       return true;
     default:
       break;
@@ -121,7 +125,7 @@ ScriptResource* ScriptResource::Fetch(
 ScriptResource* ScriptResource::CreateForTest(
     v8::Isolate* isolate,
     const KURL& url,
-    const WTF::TextEncoding& encoding,
+    const TextEncoding& encoding,
     mojom::blink::ScriptType script_type) {
   ResourceRequest request(url);
   request.SetCredentialsMode(network::mojom::CredentialsMode::kOmit);
@@ -132,7 +136,7 @@ ScriptResource* ScriptResource::CreateForTest(
       request, options, decoder_options, isolate, kNoStreaming,
       /*v8_compile_hints_producer=*/nullptr,
       /*v8_compile_hints_consumer=*/nullptr,
-      v8_compile_hints::MagicCommentMode::kNever, script_type);
+      v8_compile_hints::MagicCommentMode::kNone, script_type);
 }
 
 ScriptResource::ScriptResource(
@@ -176,7 +180,7 @@ ScriptResource::ScriptResource(
         ScriptStreamer::NotStreamingReason::kDisabledByFeatureList);
   } else if (streaming_allowed == kNoStreaming) {
     DisableStreaming(ScriptStreamer::NotStreamingReason::kStreamingDisabled);
-  } else if (!Url().ProtocolIsInHTTPFamily() &&
+  } else if (!Url().ProtocolIsInHttpFamily() &&
              !script_streaming_for_non_http_enabled) {
     DisableStreaming(ScriptStreamer::NotStreamingReason::kNotHTTP);
   }
@@ -204,31 +208,63 @@ void ScriptResource::Trace(Visitor* visitor) const {
   TextResource::Trace(visitor);
 }
 
+// TODO(https://crbug.com/42204365): Investigate if we need special support for
+// Wasm resources.
 void ScriptResource::OnMemoryDump(WebMemoryDumpLevelOfDetail level_of_detail,
                                   WebProcessMemoryDump* memory_dump) const {
   Resource::OnMemoryDump(level_of_detail, memory_dump);
   {
-    const String name = GetMemoryDumpName() + "/decoded_script";
+    const String name = StrCat({GetMemoryDumpName(), "/decoded_script"});
     source_text_.OnMemoryDump(memory_dump, name);
   }
   if (cached_metadata_handler_) {
-    const String name = GetMemoryDumpName() + "/code_cache";
+    const String name = StrCat({GetMemoryDumpName(), "/code_cache"});
     cached_metadata_handler_->OnMemoryDump(memory_dump, name);
   }
 }
 
-const ParkableString& ScriptResource::SourceText() {
+const ParkableString& ScriptResource::GetSourceText() {
   CHECK(IsLoaded());
 
   if (source_text_.IsNull() && Data()) {
     SCOPED_UMA_HISTOGRAM_TIMER_MICROS("Blink.Script.SourceTextTime");
     String source_text = DecodedText();
-    ClearData();
+    if (!(base::FeatureList::IsEnabled(
+              blink::features::kJavaScriptSourcePhaseImports) &&
+          MIMETypeRegistry::IsWasmMIMEType(GetResponse().HttpContentType()))) {
+      // It is possible for a Wasm resource to be used for classic JS
+      // script load and for a Wasm module load (via blink MemoryCache). When
+      // loaded as a Wasm module, the source is not decoded nor stored in a
+      // ParkableString and expects the shared buffer to not be cleared.
+      ClearData();
+    }
+
     SetDecodedSize(source_text.CharactersSizeInBytes());
     source_text_ = ParkableString(source_text.ReleaseImpl());
   }
 
   return source_text_;
+}
+
+std::variant<ParkableString, base::HeapArray<uint8_t>>
+ScriptResource::GetSourceTextOrWasmSource(ResolvedModuleType module_type) {
+  if (module_type == ResolvedModuleType::kWasm) {
+    return GetWasmSource();
+  }
+  return GetSourceText();
+}
+
+base::HeapArray<uint8_t> ScriptResource::GetWasmSource() {
+  // Data is not cleared for Wasm resources.
+  // TODO(https://crbug.com/425682456): Currently this assumption doesn't hold.
+  CHECK(IsLoaded());
+  CHECK(base::FeatureList::IsEnabled(
+      blink::features::kJavaScriptSourcePhaseImports));
+  CHECK(MIMETypeRegistry::IsWasmMIMEType(GetResponse().HttpContentType()));
+  CHECK(Data());
+  auto data_array = base::HeapArray<uint8_t>::Uninit(Data()->size());
+  CHECK(Data()->GetBytes(data_array));
+  return data_array;
 }
 
 String ScriptResource::TextForInspector() const {
@@ -247,6 +283,9 @@ String ScriptResource::TextForInspector() const {
   // ... or we either haven't started loading and haven't received data yet, or
   // we finished loading with an error/cancellation, and thus don't have data.
   // In both cases, we can treat the resource as empty.
+  //
+  // Also Wasm resources are not decoded, so we return an empty string.
+  // TODO(https://crbug.com/42204365): Investigate if we need inspector support.
   return "";
 }
 
@@ -374,8 +413,8 @@ void ScriptResource::ResponseReceived(const ResourceResponse& response) {
   cached_metadata_handler_ = nullptr;
   // Currently we support the metadata caching only for HTTP family and any
   // schemes defined by SchemeRegistry as requiring a hash check.
-  bool http_family = GetResourceRequest().Url().ProtocolIsInHTTPFamily() &&
-                     response.CurrentRequestUrl().ProtocolIsInHTTPFamily();
+  bool http_family = GetResourceRequest().Url().ProtocolIsInHttpFamily() &&
+                     response.CurrentRequestUrl().ProtocolIsInHttpFamily();
   bool code_cache_with_hashing_supported =
       SchemeRegistry::SchemeSupportsCodeCacheWithHashing(
           GetResourceRequest().Url().Protocol()) &&
@@ -431,7 +470,7 @@ void ScriptResource::ResponseBodyReceived(
   CHECK_EQ(streaming_state_, StreamingState::kWaitingForDataPipe);
 
   // Checked in the constructor.
-  CHECK(Url().ProtocolIsInHTTPFamily() ||
+  CHECK(Url().ProtocolIsInHttpFamily() ||
         base::FeatureList::IsEnabled(features::kScriptStreamingForNonHTTP));
   CHECK(base::FeatureList::IsEnabled(features::kScriptStreaming));
 
@@ -455,7 +494,7 @@ void ScriptResource::ResponseBodyReceived(
 
 void ScriptResource::DidReceiveDecodedData(
     const String& data,
-    std::unique_ptr<ParkableStringImpl::SecureDigest> digest) {
+    std::unique_ptr<SecureStringDigest> digest) {
   source_text_ = ParkableString(data.Impl(), std::move(digest));
   SetDecodedSize(source_text_.CharactersSizeInBytes());
 }
@@ -496,7 +535,11 @@ void ScriptResource::NotifyFinished() {
   if (!source_text_.IsNull() && Data()) {
     // Wait to call ClearData() here instead of in DidReceiveDecodedData() since
     // the integrity check requires Data() to not be null.
-    ClearData();
+    if (!(base::FeatureList::IsEnabled(
+              blink::features::kJavaScriptSourcePhaseImports) &&
+          MIMETypeRegistry::IsWasmMIMEType(GetResponse().HttpContentType()))) {
+      ClearData();
+    }
   }
 
   TextResource::NotifyFinished();
@@ -506,7 +549,7 @@ void ScriptResource::SetEncoding(const String& chs) {
   TextResource::SetEncoding(chs);
   if (stream_text_decoder_) {
     stream_text_decoder_->SetEncoding(
-        WTF::TextEncoding(chs), TextResourceDecoder::kEncodingFromHTTPHeader);
+        TextEncoding(chs), TextResourceDecoder::kEncodingFromHTTPHeader);
   }
 }
 

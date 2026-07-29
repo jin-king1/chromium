@@ -11,13 +11,11 @@
 #include <string_view>
 
 #include "base/functional/bind.h"
-#include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_variant.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
-#include "ui/gfx/image/image_skia.h"
 #include "ui/views/controls/button/button.h"
 #include "ui/views/controls/button/label_button_image_container.h"
 #include "ui/views/controls/button/label_button_label.h"
@@ -30,16 +28,20 @@
 #include "ui/views/metadata/view_factory.h"
 #include "ui/views/native_theme_delegate.h"
 #include "ui/views/style/typography.h"
-#include "ui/views/widget/widget.h"
 
 namespace actions {
 class ActionItem;
+}
+
+namespace gfx {
+class ImageSkia;
 }
 
 namespace views {
 
 class InkDropContainerView;
 class LabelButtonBorder;
+enum class PropertyEffects;
 
 // LabelButton is a button with text and an icon.
 class VIEWS_EXPORT LabelButton : public Button,
@@ -327,6 +329,9 @@ class VIEWS_EXPORT LabelButton : public Button,
 
   bool appear_disabled_in_inactive_widget_ = false;
 
+  // Updates the icon when ink drop highlight changes (forced-colors mode).
+  base::CallbackListSubscription ink_drop_highlighted_subscription_;
+
   base::CallbackListSubscription flip_canvas_on_paint_subscription_ =
       AddFlipCanvasOnPaintForRTLUIChangedCallback(
           base::BindRepeating(&LabelButton::FlipCanvasOnPaintForRTLUIChanged,
@@ -357,6 +362,7 @@ VIEW_BUILDER_PROPERTY(bool, IsDefault)
 VIEW_BUILDER_PROPERTY(int, ImageLabelSpacing)
 VIEW_BUILDER_PROPERTY(bool, ImageCentered)
 VIEW_BUILDER_METHOD(SetImageModel, Button::ButtonState, const ui::ImageModel&)
+VIEW_BUILDER_METHOD(SetFocusRingCornerRadius, float)
 VIEW_BUILDER_METHOD(SetTextColor, Button::ButtonState, ui::ColorVariant)
 END_VIEW_BUILDER
 

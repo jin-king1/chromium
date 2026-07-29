@@ -39,18 +39,12 @@ namespace tracing {
 inline constexpr size_t kDefaultSharedMemorySizeBytes =
     4 * 1024 * 1024;  // 4 MB
 
-// TODO(crbug.com/40574593): Find a good compromise between performance and
-// data granularity (mainly relevant to running with small buffer sizes
-// when we use background tracing) on Android.
-#if BUILDFLAG(IS_ANDROID)
 inline constexpr size_t kDefaultSMBPageSizeBytes = 4 * 1024;
-#else
-inline constexpr size_t kDefaultSMBPageSizeBytes = 32 * 1024;
-#endif
 
 // Returns true if the system tracing Perfetto producer should be setup. This
 // can be influenced by the feature above or other situations (like debug
 // android builds).
+// This function is safe to call even if feature flags are not yet initialized.
 bool COMPONENT_EXPORT(TRACING_CPP) ShouldSetupSystemTracing();
 
 // Returns true if the system tracing backend is available for background

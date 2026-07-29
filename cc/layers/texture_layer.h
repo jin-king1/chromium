@@ -12,6 +12,7 @@
 
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
 #include "base/synchronization/lock.h"
 #include "base/task/sequenced_task_runner.h"
@@ -80,9 +81,12 @@ class CC_EXPORT TextureLayer : public Layer {
     bool is_lost_ = false;
   };
 
-  // Used when mailbox names are specified instead of texture IDs.
-  static scoped_refptr<TextureLayer> CreateForMailbox(
-      TextureLayerClient* client);
+  enum class PrepareResourceBehavior { kDuringLayerUpdate, kAfterPaintEvent };
+
+  static scoped_refptr<TextureLayer> Create(
+      TextureLayerClient* client,
+      PrepareResourceBehavior prepare_resource_behavior =
+          PrepareResourceBehavior::kDuringLayerUpdate);
 
   TextureLayer(const TextureLayer&) = delete;
   TextureLayer& operator=(const TextureLayer&) = delete;
@@ -98,10 +102,6 @@ class CC_EXPORT TextureLayer : public Layer {
 
   // Sets a UV transform to be used at draw time. Defaults to (0, 0) and (1, 1).
   void SetUV(const gfx::PointF& top_left, const gfx::PointF& bottom_right);
-
-  // Sets whether the alpha channel is premultiplied or unpremultiplied.
-  // Defaults to true.
-  void SetPremultipliedAlpha(bool premultiplied_alpha);
 
   // Sets whether the texture should be blended with the background color
   // at draw time. Defaults to false.
@@ -119,6 +119,8 @@ class CC_EXPORT TextureLayer : public Layer {
   void SetLayerTreeHost(LayerTreeHost* layer_tree_host) override;
   bool RequiresSetNeedsDisplayOnHdrHeadroomChange() const override;
   bool Update() override;
+  bool MayUpdateAfterPaintEvent() const override;
+  bool UpdateAfterPaintEvent() override;
   bool IsSnappedToPixelGridInTarget() const override;
 
   const viz::TransferableResource current_transferable_resource() const {
@@ -132,13 +134,12 @@ class CC_EXPORT TextureLayer : public Layer {
   }
 
  protected:
-  explicit TextureLayer(TextureLayerClient* client);
+  explicit TextureLayer(TextureLayerClient* client,
+                        PrepareResourceBehavior prepare_resource_behavior);
   ~TextureLayer() override;
-  void PushDirtyPropertiesTo(
-      LayerImpl* layer,
-      uint8_t dirty_flag,
-      const CommitState& commit_state,
-      const ThreadUnsafeCommitState& unsafe_state) override;
+  void PushDirtyPropertiesTo(LayerImpl* layer,
+                             uint8_t dirty_flag,
+                             CommitState& commit_state) override;
   bool HasDrawableContent() const override;
 
  private:
@@ -155,9 +156,10 @@ class CC_EXPORT TextureLayer : public Layer {
   ProtectedSequenceReadable<gfx::PointF> uv_top_left_;
   ProtectedSequenceReadable<gfx::PointF> uv_bottom_right_;
   // [bottom left, top left, top right, bottom right]
-  ProtectedSequenceReadable<bool> premultiplied_alpha_;
   ProtectedSequenceReadable<bool> blend_background_color_;
   ProtectedSequenceReadable<bool> force_texture_to_opaque_;
+
+  const PrepareResourceBehavior prepare_resource_behavior_;
 
   ProtectedSequenceWritable<scoped_refptr<TransferableResourceHolder>>
       resource_holder_;

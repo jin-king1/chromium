@@ -4,17 +4,23 @@
 
 #include "components/autofill/core/browser/ui/payments/card_unmask_authentication_selection_dialog_controller_impl.h"
 
+#include <algorithm>
 #include <string>
+#include <utility>
+#include <vector>
 
+#include "base/check.h"
 #include "base/check_is_test.h"
-#include "base/not_fatal_until.h"
+#include "base/functional/callback.h"
+#include "base/functional/callback_forward.h"
+#include "base/memory/weak_ptr.h"
+#include "base/notreached.h"
+#include "build/buildflag.h"
 #include "components/autofill/core/browser/metrics/autofill_metrics.h"
 #include "components/autofill/core/browser/payments/card_unmask_challenge_option.h"
 #include "components/autofill/core/browser/ui/payments/card_unmask_authentication_selection_dialog.h"
-#include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/strings/grit/components_strings.h"
 #include "ui/base/l10n/l10n_util.h"
-#include "ui/base/models/image_model.h"
 
 namespace autofill {
 
@@ -71,18 +77,15 @@ void CardUnmaskAuthenticationSelectionDialogControllerImpl::
 void CardUnmaskAuthenticationSelectionDialogControllerImpl::OnDialogClosed(
     bool user_closed_dialog,
     bool server_success) {
+  using enum AutofillMetrics::
+      CardUnmaskAuthenticationSelectionDialogResultMetric;
   if (user_closed_dialog) {
     // `user_closed_dialog` is only true when the user clicked cancel on the
     // dialog.
     AutofillMetrics::LogCardUnmaskAuthenticationSelectionDialogResultMetric(
-        challenge_option_selected_
-            ? AutofillMetrics::
-                  CardUnmaskAuthenticationSelectionDialogResultMetric::
-                      kCanceledByUserAfterSelection
-            : AutofillMetrics::
-                  CardUnmaskAuthenticationSelectionDialogResultMetric::
-                      kCanceledByUserBeforeSelection);
-    // |cancel_unmasking_closure_| can be null in tests.
+        challenge_option_selected_ ? kCanceledByUserAfterSelection
+                                   : kCanceledByUserBeforeSelection);
+    // `cancel_unmasking_closure_` can be null in tests.
     if (cancel_unmasking_closure_)
       std::move(cancel_unmasking_closure_).Run();
   } else if (selected_challenge_option_type_ ==
@@ -97,13 +100,8 @@ void CardUnmaskAuthenticationSelectionDialogControllerImpl::OnDialogClosed(
     // request is sent to the payments server to generate an OTP with the bank
     // or issuer and send it to the user.
     AutofillMetrics::LogCardUnmaskAuthenticationSelectionDialogResultMetric(
-        server_success
-            ? AutofillMetrics::
-                  CardUnmaskAuthenticationSelectionDialogResultMetric::
-                      kDismissedByServerRequestSuccess
-            : AutofillMetrics::
-                  CardUnmaskAuthenticationSelectionDialogResultMetric::
-                      kDismissedByServerRequestFailure);
+        server_success ? kDismissedByServerRequestSuccess
+                       : kDismissedByServerRequestFailure);
   } else if (selected_challenge_option_type_ ==
              CardUnmaskChallengeOptionType::kCvc) {
     // If we have a CVC challenge selected and `user_closed_dialog` is false,
@@ -113,16 +111,14 @@ void CardUnmaskAuthenticationSelectionDialogControllerImpl::OnDialogClosed(
     // selected, since we do not need to send the user any type of OTP. Thus, we
     // immediately render the CVC input dialog.
     AutofillMetrics::LogCardUnmaskAuthenticationSelectionDialogResultMetric(
-        AutofillMetrics::CardUnmaskAuthenticationSelectionDialogResultMetric::
-            kDismissedByUserAcceptanceNoServerRequestNeeded);
+        kDismissedByUserAcceptanceNoServerRequestNeeded);
   }
 
   challenge_option_selected_ = false;
   dialog_view_ = nullptr;
   confirm_unmasking_method_callback_.Reset();
   cancel_unmasking_closure_.Reset();
-  selected_challenge_option_id_ =
-      CardUnmaskChallengeOption::ChallengeOptionId();
+  selected_challenge_option_id_ = {};
   selected_challenge_option_type_ = CardUnmaskChallengeOptionType::kUnknownType;
 }
 

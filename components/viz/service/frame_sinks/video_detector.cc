@@ -20,6 +20,7 @@
 #include "mojo/public/cpp/bindings/remote.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rect_conversions.h"
+#include "ui/latency/latency_info.h"
 
 namespace viz {
 
@@ -39,7 +40,7 @@ class VideoDetector::ClientInfo {
   // Called when a Surface belonging to this client is drawn. Returns true if we
   // determine that video is playing in this client.
   bool ReportDrawnAndCheckForVideo(Surface* surface, base::TimeTicks now) {
-    uint64_t frame_index = surface->GetActiveFrameIndex();
+    uint32_t frame_index = surface->GetActiveFrameIndex();
 
     // If |frame_index| hasn't increased, then no new frame was submitted since
     // the last draw.
@@ -114,7 +115,7 @@ class VideoDetector::ClientInfo {
   // Frame index of the last drawn Surface. We use this number to determine
   // whether a new frame was submitted since the last time the Surface was
   // drawn.
-  uint64_t last_drawn_frame_index_ = 0;
+  uint32_t last_drawn_frame_index_ = 0;
 };
 
 VideoDetector::VideoDetector(
@@ -137,7 +138,7 @@ VideoDetector::~VideoDetector() {
 }
 
 void VideoDetector::OnVideoActivityEnded() {
-  DCHECK(video_is_playing_);
+  CHECK(video_is_playing_);
   video_is_playing_ = false;
   for (auto& observer : observers_) {
     observer->OnVideoActivityEnded();
@@ -154,7 +155,7 @@ void VideoDetector::AddObserver(
 }
 
 void VideoDetector::OnFrameSinkIdRegistered(const FrameSinkId& frame_sink_id) {
-  DCHECK(!client_infos_.count(frame_sink_id));
+  CHECK(!client_infos_.count(frame_sink_id));
   client_infos_[frame_sink_id] = std::make_unique<ClientInfo>();
 }
 
@@ -162,9 +163,11 @@ void VideoDetector::OnFrameSinkIdInvalidated(const FrameSinkId& frame_sink_id) {
   client_infos_.erase(frame_sink_id);
 }
 
-bool VideoDetector::OnSurfaceDamaged(const SurfaceId& surface_id,
-                                     const BeginFrameAck& ack,
-                                     HandleInteraction handle_interaction) {
+bool VideoDetector::OnSurfaceDamaged(
+    const SurfaceId& surface_id,
+    const BeginFrameAck& ack,
+    HandleInteraction handle_interaction,
+    const std::vector<ui::LatencyInfo>& latency_info) {
   return false;
 }
 

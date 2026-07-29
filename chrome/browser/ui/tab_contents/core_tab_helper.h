@@ -6,9 +6,9 @@
 #define CHROME_BROWSER_UI_TAB_CONTENTS_CORE_TAB_HELPER_H_
 
 #include <string>
+#include <vector>
 
 #include "base/functional/callback.h"
-#include "base/gtest_prod_util.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
 #include "chrome/common/chrome_render_frame.mojom.h"

@@ -19,17 +19,17 @@
 #import "components/feature_engagement/public/feature_list.h"
 #import "components/feature_engagement/public/tracker.h"
 #import "components/handoff/pref_names_ios.h"
+#import "components/password_manager/core/common/password_manager_pref_names.h"
 #import "components/prefs/ios/pref_observer_bridge.h"
 #import "components/prefs/pref_change_registrar.h"
 #import "components/prefs/pref_service.h"
+#import "components/safe_browsing/core/common/features.h"
 #import "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #import "components/signin/public/identity_manager/account_info.h"
 #import "components/strings/grit/components_strings.h"
 #import "components/sync/service/sync_service.h"
-#import "ios/chrome/browser/browsing_data/model/browsing_data_features.h"
 #import "ios/chrome/browser/feature_engagement/model/tracker_factory.h"
 #import "ios/chrome/browser/incognito_interstitial/ui_bundled/incognito_interstitial_constants.h"
-#import "ios/chrome/browser/incognito_reauth/ui_bundled/features.h"
 #import "ios/chrome/browser/incognito_reauth/ui_bundled/incognito_reauth_util.h"
 #import "ios/chrome/browser/net/model/crurl.h"
 #import "ios/chrome/browser/policy/model/policy_util.h"
@@ -37,12 +37,13 @@
 #import "ios/chrome/browser/settings/ui_bundled/elements/info_popover_view_controller.h"
 #import "ios/chrome/browser/settings/ui_bundled/elements/supervised_user_info_popover_view_controller.h"
 #import "ios/chrome/browser/settings/ui_bundled/privacy/privacy_constants.h"
-#import "ios/chrome/browser/settings/ui_bundled/privacy/privacy_guide/features.h"
 #import "ios/chrome/browser/settings/ui_bundled/privacy/privacy_navigation_commands.h"
+#import "ios/chrome/browser/settings/ui_bundled/privacy/safe_browsing/safe_browsing_constants.h"
 #import "ios/chrome/browser/settings/ui_bundled/settings_navigation_controller.h"
 #import "ios/chrome/browser/settings/ui_bundled/settings_table_view_controller_constants.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
+#import "ios/chrome/browser/shared/model/browser/browser_observer_bridge.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_backed_boolean.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
@@ -51,17 +52,14 @@
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/list_model/list_model.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_detail_icon_item.h"
-#import "ios/chrome/browser/shared/ui/table_view/cells/table_view_info_button_cell.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_info_button_item.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_link_header_footer_item.h"
-#import "ios/chrome/browser/shared/ui/table_view/cells/table_view_switch_cell.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_switch_item.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_text_header_footer_item.h"
 #import "ios/chrome/browser/shared/ui/table_view/table_view_utils.h"
 #import "ios/chrome/browser/supervised_user/model/supervised_user_capabilities.h"
 #import "ios/chrome/browser/sync/model/sync_observer_bridge.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
-#import "ios/chrome/browser/web/model/features.h"
 #import "ios/chrome/common/string_util.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/reauthentication/reauthentication_protocol.h"
@@ -78,11 +76,11 @@ typedef NS_ENUM(NSInteger, SectionIdentifier) {
   SectionIdentifierPrivacyContent = kSectionIdentifierEnumZero,
   SectionIdentifierSafeBrowsing,
   SectionIdentifierHTTPSOnlyMode,
+  SectionIdentifierPasswordLeakCheck,
   SectionIdentifierWebServices,
   SectionIdentifierIncognitoAuth,
   SectionIdentifierIncognitoInterstitial,
   SectionIdentifierLockdownMode,
-  SectionIdentifierPrivacyGuide,
 };
 
 typedef NS_ENUM(NSInteger, ItemType) {
@@ -96,10 +94,10 @@ typedef NS_ENUM(NSInteger, ItemType) {
   ItemTypeIncognitoLock,
   ItemTypeIncognitoLockDisabled,
   ItemTypeHTTPSOnlyMode,
+  ItemTypePasswordLeakCheck,
   ItemTypeIncognitoInterstitial,
   ItemTypeIncognitoInterstitialDisabled,
   ItemTypeLockdownMode,
-  ItemTypePrivacyGuide,
 };
 
 // Used to open the Sync and Google Services settings.
@@ -110,10 +108,13 @@ const char kSyncSettingsURL[] = "settings://open_sync";
 }  // namespace
 
 @interface PrivacyTableViewController () <BooleanObserver,
-                                          PrefObserverDelegate,
+                                          BrowserObserving,
                                           PopoverLabelViewControllerDelegate,
+                                          PrefObserverDelegate,
                                           SyncObserverModelBridge> {
   raw_ptr<ProfileIOS> _profile;  // weak
+
+  std::unique_ptr<BrowserObserverBridge> _browserObserverBridge;
 
   // Pref observer to track changes to prefs.
   std::unique_ptr<PrefObserverBridge> _prefObserverBridge;
@@ -128,7 +129,7 @@ const char kSyncSettingsURL[] = "settings://open_sync";
   TableViewDetailIconItem* _safeBrowsingDetailItem;
   // Incognito Lock item.
   TableViewDetailIconItem* _incognitoLockItem;
-  // Locdown Mode item.
+  // Lockdown Mode item.
   TableViewDetailIconItem* _lockdownModeDetailItem;
 
   // Whether Settings have been dismissed.
@@ -156,6 +157,12 @@ const char kSyncSettingsURL[] = "settings://open_sync";
 // The item related to the switch for the "HTTPS Only Mode" setting.
 @property(nonatomic, strong) TableViewSwitchItem* HTTPSOnlyModeItem;
 
+// Accessor for the Password leak check pref.
+@property(nonatomic, strong) PrefBackedBoolean* passwordLeakCheckPref;
+
+// The item related to the switch for the "Password leak check" setting.
+@property(nonatomic, strong) TableViewSwitchItem* passwordLeakCheckItem;
+
 // Accessor for the Incognito interstitial pref.
 @property(nonatomic, strong) PrefBackedBoolean* incognitoInterstitialPref;
 
@@ -176,6 +183,8 @@ const char kSyncSettingsURL[] = "settings://open_sync";
   if (self) {
     _reauthModule = reauthModule;
     _profile = browser->GetProfile();
+    _browserObserverBridge =
+        std::make_unique<BrowserObserverBridge>(browser, self);
     self.title = l10n_util::GetNSString(IDS_IOS_SETTINGS_PRIVACY_TITLE);
 
     PrefService* prefService = _profile->GetPrefs();
@@ -184,7 +193,7 @@ const char kSyncSettingsURL[] = "settings://open_sync";
     _localStateChangeRegistrar.Init(GetApplicationContext()->GetLocalState());
 
     _prefObserverBridge.reset(new PrefObserverBridge(self));
-    // Register to observe any changes on Perf backed values displayed by the
+    // Register to observe any changes on pref-backed values displayed by the
     // screen.
     _prefObserverBridge->ObserveChangesForPreference(
         prefs::kIosHandoffToOtherDevices, &_prefChangeRegistrar);
@@ -213,6 +222,15 @@ const char kSyncSettingsURL[] = "settings://open_sync";
                    prefName:prefs::kHttpsOnlyModeEnabled];
     [_HTTPSOnlyModePref setObserver:self];
 
+    if (base::FeatureList::IsEnabled(
+            safe_browsing::kMovePasswordLeakDetectionToggleIos)) {
+      _passwordLeakCheckPref = [[PrefBackedBoolean alloc]
+          initWithPrefService:prefService
+                     prefName:password_manager::prefs::
+                                  kPasswordLeakDetectionEnabled];
+      [_passwordLeakCheckPref setObserver:self];
+    }
+
     _incognitoInterstitialPref = [[PrefBackedBoolean alloc]
         initWithPrefService:GetApplicationContext()->GetLocalState()
                    prefName:prefs::kIncognitoInterstitialEnabled];
@@ -237,6 +255,48 @@ const char kSyncSettingsURL[] = "settings://open_sync";
   }
 }
 
+#pragma mark - Public
+
+- (void)disconnect {
+  // Stop observable prefs.
+  [_incognitoReauthPref stop];
+  _incognitoReauthPref.observer = nil;
+  _incognitoReauthPref = nil;
+
+  if (IsIOSSoftLockEnabled()) {
+    [_incognitoSoftLockPref stop];
+    _incognitoSoftLockPref.observer = nil;
+    _incognitoSoftLockPref = nil;
+  }
+
+  [_HTTPSOnlyModePref stop];
+  _HTTPSOnlyModePref.observer = nil;
+  _HTTPSOnlyModePref = nil;
+  if (base::FeatureList::IsEnabled(
+          safe_browsing::kMovePasswordLeakDetectionToggleIos)) {
+    [_passwordLeakCheckPref stop];
+    _passwordLeakCheckPref.observer = nil;
+    _passwordLeakCheckPref = nil;
+  }
+  [_incognitoInterstitialPref stop];
+  _incognitoInterstitialPref.observer = nil;
+  _incognitoInterstitialPref = nil;
+
+  // Remove pref changes registrations.
+  _prefChangeRegistrar.RemoveAll();
+  _localStateChangeRegistrar.Reset();
+
+  // Remove observer bridges.
+  _prefObserverBridge.reset();
+  _browserObserverBridge.reset();
+
+  // Remove sync observer.
+  _syncObserver.reset();
+
+  // Clear C++ ivars.
+  _profile = nullptr;
+}
+
 #pragma mark - LegacyChromeTableViewController
 
 - (void)loadModel {
@@ -247,15 +307,17 @@ const char kSyncSettingsURL[] = "settings://open_sync";
 
   TableViewModel* model = self.tableViewModel;
   [model addSectionWithIdentifier:SectionIdentifierPrivacyContent];
-  if (IsPrivacyGuideIosEnabled()) {
-    [model addSectionWithIdentifier:SectionIdentifierPrivacyGuide];
-  }
   [model addSectionWithIdentifier:SectionIdentifierSafeBrowsing];
 
   [model addSectionWithIdentifier:SectionIdentifierHTTPSOnlyMode];
   [model addItem:self.HTTPSOnlyModeItem
       toSectionWithIdentifier:SectionIdentifierHTTPSOnlyMode];
-
+  if (base::FeatureList::IsEnabled(
+          safe_browsing::kMovePasswordLeakDetectionToggleIos)) {
+    [model addSectionWithIdentifier:SectionIdentifierPasswordLeakCheck];
+    [model addItem:self.passwordLeakCheckItem
+        toSectionWithIdentifier:SectionIdentifierPasswordLeakCheck];
+  }
   [model addSectionWithIdentifier:SectionIdentifierWebServices];
   [model addSectionWithIdentifier:SectionIdentifierIncognitoAuth];
   [model addSectionWithIdentifier:SectionIdentifierIncognitoInterstitial];
@@ -264,12 +326,6 @@ const char kSyncSettingsURL[] = "settings://open_sync";
   // Clear Browsing item.
   [model addItem:[self clearBrowsingDetailItem]
       toSectionWithIdentifier:SectionIdentifierPrivacyContent];
-
-  // Privacy Guide item.
-  if (IsPrivacyGuideIosEnabled()) {
-    [model addItem:[self privacyGuideDetailItem]
-        toSectionWithIdentifier:SectionIdentifierPrivacyGuide];
-  }
 
   // Privacy Safe Browsing item.
   [model addItem:[self safeBrowsingDetailItem]
@@ -331,9 +387,31 @@ const char kSyncSettingsURL[] = "settings://open_sync";
     _HTTPSOnlyModeItem.detailText =
         l10n_util::GetNSString(IDS_IOS_SETTINGS_HTTPS_ONLY_MODE_DESCRIPTION);
     _HTTPSOnlyModeItem.on = [self.HTTPSOnlyModePref value];
+    _HTTPSOnlyModeItem.target = self;
+    _HTTPSOnlyModeItem.selector = @selector(HTTPSOnlyModeSwitchToggled:);
     _HTTPSOnlyModeItem.accessibilityIdentifier = kSettingsHttpsOnlyModeCellId;
   }
   return _HTTPSOnlyModeItem;
+}
+
+- (TableViewSwitchItem*)passwordLeakCheckItem {
+  if (!_passwordLeakCheckItem) {
+    _passwordLeakCheckItem =
+        [[TableViewSwitchItem alloc] initWithType:ItemTypePasswordLeakCheck];
+
+    _passwordLeakCheckItem.text = l10n_util::GetNSString(
+        IDS_IOS_SAFE_BROWSING_STANDARD_PROTECTION_LEAK_CHECK_TITLE);
+    _passwordLeakCheckItem.detailText = l10n_util::GetNSString(
+        IDS_IOS_SAFE_BROWSING_STANDARD_PROTECTION_LEAK_CHECK_FRIENDLIER_SUMMARY);
+    _passwordLeakCheckItem.on = [self.passwordLeakCheckPref value];
+    _passwordLeakCheckItem.enabled = YES;
+    _passwordLeakCheckItem.target = self;
+    _passwordLeakCheckItem.selector =
+        @selector(PasswordLeakCheckSwitchToggled:);
+    _passwordLeakCheckItem.accessibilityIdentifier =
+        kSafeBrowsingStandardProtectionPasswordLeakCellId;
+  }
+  return _passwordLeakCheckItem;
 }
 
 - (TableViewSwitchItem*)incognitoInterstitialItem {
@@ -343,6 +421,9 @@ const char kSyncSettingsURL[] = "settings://open_sync";
     _incognitoInterstitialItem.text =
         l10n_util::GetNSString(IDS_IOS_OPTIONS_ENABLE_INCOGNITO_INTERSTITIAL);
     _incognitoInterstitialItem.on = self.incognitoInterstitialPref.value;
+    _incognitoInterstitialItem.target = self;
+    _incognitoInterstitialItem.selector =
+        @selector(incognitoInterstitialSwitchToggled:);
     _incognitoInterstitialItem.enabled = YES;
     _incognitoInterstitialItem.accessibilityIdentifier =
         kSettingsIncognitoInterstitialId;
@@ -360,6 +441,9 @@ const char kSyncSettingsURL[] = "settings://open_sync";
       kSettingsIncognitoInterstitialDisabledId;
   itemDisabled.iconTintColor = [UIColor colorNamed:kGrey300Color];
   itemDisabled.textColor = [UIColor colorNamed:kTextSecondaryColor];
+  itemDisabled.target = self;
+  itemDisabled.selector =
+      @selector(didTapIncognitoInterstitialDisabledInfoButton:);
   return itemDisabled;
 }
 
@@ -390,24 +474,15 @@ const char kSyncSettingsURL[] = "settings://open_sync";
       SyncServiceFactory::GetForProfile(_profile);
 
   NSMutableArray* urls = [[NSMutableArray alloc] init];
-  // TODO(crbug.com/40066949): Remove IsSyncFeatureEnabled() usage after kSync
-  // users are migrated to kSignin in phase 3. See ConsentLevel::kSync for more
-  // details.
-  if (syncService->IsSyncFeatureEnabled()) {
-    privacyFooterText =
-        l10n_util::GetNSString(IDS_IOS_PRIVACY_SYNC_AND_GOOGLE_SERVICES_FOOTER);
+  if (!syncService->GetAccountInfo().IsEmpty()) {
+    // Footer for signed in users.
+    privacyFooterText = l10n_util::GetNSString(
+        IDS_IOS_PRIVACY_ACCOUNT_SETTINGS_AND_GOOGLE_SERVICES_FOOTER);
     [urls addObject:[[CrURL alloc] initWithGURL:GURL(kSyncSettingsURL)]];
   } else {
-    if (!syncService->GetAccountInfo().IsEmpty()) {
-      // Footer for signed in users.
-      privacyFooterText = l10n_util::GetNSString(
-          IDS_IOS_PRIVACY_ACCOUNT_SETTINGS_AND_GOOGLE_SERVICES_FOOTER);
-      [urls addObject:[[CrURL alloc] initWithGURL:GURL(kSyncSettingsURL)]];
-    } else {
-      // Footer for signed out users.
-      privacyFooterText =
-          l10n_util::GetNSString(IDS_IOS_PRIVACY_SIGNED_OUT_FOOTER);
-    }
+    // Footer for signed out users.
+    privacyFooterText =
+        l10n_util::GetNSString(IDS_IOS_PRIVACY_SIGNED_OUT_FOOTER);
   }
   [urls
       addObject:[[CrURL alloc] initWithGURL:GURL(kGoogleServicesSettingsURL)]];
@@ -464,6 +539,8 @@ const char kSyncSettingsURL[] = "settings://open_sync";
   itemDisabled.statusText = l10n_util::GetNSString(IDS_IOS_SETTING_OFF);
   itemDisabled.iconTintColor = [UIColor colorNamed:kGrey300Color];
   itemDisabled.textColor = [UIColor colorNamed:kTextSecondaryColor];
+  itemDisabled.target = self;
+  itemDisabled.selector = @selector(didTapIncognitoLockDisabledInfoButton:);
   return itemDisabled;
 }
 
@@ -480,13 +557,6 @@ const char kSyncSettingsURL[] = "settings://open_sync";
   return _lockdownModeDetailItem;
 }
 
-- (TableViewItem*)privacyGuideDetailItem {
-  return [self detailItemWithType:ItemTypePrivacyGuide
-                          titleId:IDS_IOS_PRIVACY_GUIDE_TITLE
-                       detailText:nil
-          accessibilityIdentifier:kSettingsPrivacyGuideCellId];
-}
-
 - (TableViewSwitchItem*)incognitoReauthItem {
   if (_incognitoReauthItem) {
     return _incognitoReauthItem;
@@ -497,6 +567,8 @@ const char kSyncSettingsURL[] = "settings://open_sync";
       l10n_util::GetNSString(IDS_IOS_INCOGNITO_REAUTH_SETTING_NAME);
   _incognitoReauthItem.on = self.incognitoReauthPref.value;
   _incognitoReauthItem.enabled = YES;
+  _incognitoReauthItem.target = self;
+  _incognitoReauthItem.selector = @selector(incognitoReauthSwitchToggled:);
   return _incognitoReauthItem;
 }
 
@@ -508,6 +580,8 @@ const char kSyncSettingsURL[] = "settings://open_sync";
   itemDisabled.statusText = l10n_util::GetNSString(IDS_IOS_SETTING_OFF);
   itemDisabled.iconTintColor = [UIColor colorNamed:kGrey300Color];
   itemDisabled.textColor = [UIColor colorNamed:kTextSecondaryColor];
+  itemDisabled.target = self;
+  itemDisabled.selector = @selector(didTapIncognitoReauthDisabledInfoButton:);
   return itemDisabled;
 }
 
@@ -540,36 +614,7 @@ const char kSyncSettingsURL[] = "settings://open_sync";
 - (void)settingsWillBeDismissed {
   DCHECK(!_settingsAreDismissed);
 
-  // Stop observable prefs.
-  [_incognitoReauthPref stop];
-  _incognitoReauthPref.observer = nil;
-  _incognitoReauthPref = nil;
-
-  if (IsIOSSoftLockEnabled()) {
-    [_incognitoSoftLockPref stop];
-    _incognitoSoftLockPref.observer = nil;
-    _incognitoSoftLockPref = nil;
-  }
-
-  [_HTTPSOnlyModePref stop];
-  _HTTPSOnlyModePref.observer = nil;
-  _HTTPSOnlyModePref = nil;
-  [_incognitoInterstitialPref stop];
-  _incognitoInterstitialPref.observer = nil;
-  _incognitoInterstitialPref = nil;
-
-  // Remove pref changes registrations.
-  _prefChangeRegistrar.RemoveAll();
-  _localStateChangeRegistrar.Reset();
-
-  // Remove observer bridges.
-  _prefObserverBridge.reset();
-
-  // Remove sync observer.
-  _syncObserver.reset();
-
-  // Clear C++ ivars.
-  _profile = nullptr;
+  [self disconnect];
 
   _settingsAreDismissed = YES;
 }
@@ -610,68 +655,10 @@ const char kSyncSettingsURL[] = "settings://open_sync";
     case ItemTypeIncognitoLock:
       [self.handler showIncognitoLock];
       break;
-    case ItemTypePrivacyGuide:
-      [self.handler showPrivacyGuide];
-      break;
     default:
       break;
   }
   [tableView deselectRowAtIndexPath:indexPath animated:YES];
-}
-
-#pragma mark - UITableViewDataSource
-
-- (UITableViewCell*)tableView:(UITableView*)tableView
-        cellForRowAtIndexPath:(NSIndexPath*)indexPath {
-  UITableViewCell* cell = [super tableView:tableView
-                     cellForRowAtIndexPath:indexPath];
-
-  ItemType itemType = static_cast<ItemType>(
-      [self.tableViewModel itemTypeForIndexPath:indexPath]);
-
-  if (itemType == ItemTypeIncognitoReauth) {
-    TableViewSwitchCell* switchCell =
-        base::apple::ObjCCastStrict<TableViewSwitchCell>(cell);
-    [switchCell.switchView addTarget:self
-                              action:@selector(switchTapped:)
-                    forControlEvents:UIControlEventTouchUpInside];
-  } else if (itemType == ItemTypeIncognitoReauthDisabled) {
-    TableViewInfoButtonCell* managedCell =
-        base::apple::ObjCCastStrict<TableViewInfoButtonCell>(cell);
-    [managedCell.trailingButton
-               addTarget:self
-                  action:@selector(didTapIncognitoReauthDisabledInfoButton:)
-        forControlEvents:UIControlEventTouchUpInside];
-  } else if (itemType == ItemTypeHTTPSOnlyMode) {
-    TableViewSwitchCell* switchCell =
-        base::apple::ObjCCastStrict<TableViewSwitchCell>(cell);
-    [switchCell.switchView addTarget:self
-                              action:@selector(HTTPSOnlyModeTapped:)
-                    forControlEvents:UIControlEventTouchUpInside];
-  } else if (itemType == ItemTypeIncognitoInterstitial) {
-    TableViewSwitchCell* switchCell =
-        base::apple::ObjCCastStrict<TableViewSwitchCell>(cell);
-    [switchCell.switchView
-               addTarget:self
-                  action:@selector(incognitoInterstitialSwitchTapped:)
-        forControlEvents:UIControlEventTouchUpInside];
-  } else if (itemType == ItemTypeIncognitoInterstitialDisabled) {
-    TableViewInfoButtonCell* managedCell =
-        base::apple::ObjCCastStrict<TableViewInfoButtonCell>(cell);
-    [managedCell.trailingButton
-               addTarget:self
-                  action:@selector
-                  (didTapIncognitoInterstitialDisabledInfoButton:)
-        forControlEvents:UIControlEventTouchUpInside];
-  } else if (itemType == ItemTypeIncognitoLockDisabled) {
-    TableViewInfoButtonCell* managedCell =
-        base::apple::ObjCCastStrict<TableViewInfoButtonCell>(cell);
-    [managedCell.trailingButton
-               addTarget:self
-                  action:@selector(didTapIncognitoLockDisabledInfoButton:)
-        forControlEvents:UIControlEventTouchUpInside];
-  }
-  return cell;
 }
 
 #pragma mark - PrefObserverDelegate
@@ -724,6 +711,12 @@ const char kSyncSettingsURL[] = "settings://open_sync";
   self.HTTPSOnlyModeItem.on = self.HTTPSOnlyModePref.value;
   [self reconfigureCellsForItems:@[ self.HTTPSOnlyModeItem ]];
 
+  if (base::FeatureList::IsEnabled(
+          safe_browsing::kMovePasswordLeakDetectionToggleIos)) {
+    self.passwordLeakCheckItem.on = self.passwordLeakCheckPref.value;
+    [self reconfigureCellsForItems:@[ self.passwordLeakCheckItem ]];
+  }
+
   self.incognitoInterstitialItem.on = self.incognitoInterstitialPref.value;
   [self reconfigureCellsForItems:@[ self.incognitoInterstitialItem ]];
 }
@@ -732,11 +725,11 @@ const char kSyncSettingsURL[] = "settings://open_sync";
 
 - (void)view:(TableViewLinkHeaderFooterView*)view didTapLinkURL:(CrURL*)URL {
   if (URL.gurl == GURL(kGoogleServicesSettingsURL)) {
-    // kGoogleServicesSettingsURL is not a realy link. It should be handled
+    // kGoogleServicesSettingsURL is not a real link. It should be handled
     // with a special case.
     [self.settingsHandler showGoogleServicesSettingsFromViewController:self];
   } else if (URL.gurl == GURL(kSyncSettingsURL)) {
-    [self.settingsHandler showSyncSettingsFromViewController:self];
+    [self.presentationDelegate showSyncSettingsWithViewController:self];
   } else {
     [super view:view didTapLinkURL:URL];
   }
@@ -752,6 +745,12 @@ const char kSyncSettingsURL[] = "settings://open_sync";
 
 - (void)onSyncStateChanged {
   [self updatePrivacyFooterItem];
+}
+
+#pragma mark - BrowserObserving
+
+- (void)browserDestroyed:(Browser*)browser {
+  [self disconnect];
 }
 
 #pragma mark - Private
@@ -840,22 +839,37 @@ const char kSyncSettingsURL[] = "settings://open_sync";
   [self presentViewController:popover animated:YES completion:nil];
 }
 
-// Called from the HTTPS-Only Mode setting's UIControlEventTouchUpInside.
+// Called from the HTTPS-Only Mode setting's UIControlEventValueChanged.
 // When this is called, `switchView` already has the updated value:
 // If the switch was off, and user taps it, when this method is called,
 // switchView.on is YES.
-- (void)HTTPSOnlyModeTapped:(UISwitch*)switchView {
+- (void)HTTPSOnlyModeSwitchToggled:(UISwitch*)switchView {
   BOOL isOn = switchView.isOn;
   [_HTTPSOnlyModePref setValue:isOn];
+  self.HTTPSOnlyModeItem.on = isOn;
+  [self reconfigureCellsForItems:@[ self.HTTPSOnlyModeItem ]];
   [self enhancedSafeBrowsingInlinePromoTriggerCriteriaMet];
 }
 
-// Called from the Incognito interstitial setting's UIControlEventTouchUpInside.
+// Called from the Password Leak toggle setting's UIControlEventValueChanged.
 // When this is called, `switchView` already has the updated value:
 // If the switch was off, and user taps it, when this method is called,
 // switchView.on is YES.
-- (void)incognitoInterstitialSwitchTapped:(UISwitch*)switchView {
+- (void)PasswordLeakCheckSwitchToggled:(UISwitch*)switchView {
+  BOOL isOn = switchView.isOn;
+  [_passwordLeakCheckPref setValue:isOn];
+  self.passwordLeakCheckItem.on = isOn;
+  [self reconfigureCellsForItems:@[ self.passwordLeakCheckItem ]];
+}
+
+// Called from the Incognito interstitial setting's UIControlEventValueChanged.
+// When this is called, `switchView` already has the updated value:
+// If the switch was off, and user taps it, when this method is called,
+// switchView.on is YES.
+- (void)incognitoInterstitialSwitchToggled:(UISwitch*)switchView {
   self.incognitoInterstitialPref.value = switchView.on;
+  self.incognitoInterstitialItem.on = switchView.on;
+  [self reconfigureCellsForItems:@[ self.incognitoInterstitialItem ]];
   UMA_HISTOGRAM_ENUMERATION(
       kIncognitoInterstitialSettingsActionsHistogram,
       switchView.on ? IncognitoInterstitialSettingsActions::kEnabled
@@ -863,11 +877,11 @@ const char kSyncSettingsURL[] = "settings://open_sync";
   [self enhancedSafeBrowsingInlinePromoTriggerCriteriaMet];
 }
 
-// Called from the reauthentication setting's UIControlEventTouchUpInside.
+// Called from the reauthentication setting's UIControlEventValueChanged.
 // When this is called, `switchView` already has the updated value:
 // If the switch was off, and user taps it, when this method is called,
 // switchView.on is YES.
-- (void)switchTapped:(UISwitch*)switchView {
+- (void)incognitoReauthSwitchToggled:(UISwitch*)switchView {
   if (switchView.isOn && ![self.reauthModule canAttemptReauth]) {
     // This should normally not happen: the switch should not even be enabled.
     // Fallback behaviour added just in case.
@@ -891,6 +905,10 @@ const char kSyncSettingsURL[] = "settings://open_sync";
                                  }
                                  [switchView setOn:enabled animated:YES];
                                  weakSelf.incognitoReauthPref.value = enabled;
+                                 weakSelf.incognitoReauthItem.on = enabled;
+                                 [weakSelf reconfigureCellsForItems:@[
+                                   weakSelf.incognitoReauthItem
+                                 ]];
                                  [weakSelf
                                      enhancedSafeBrowsingInlinePromoTriggerCriteriaMet];
                                }];
@@ -939,6 +957,7 @@ const char kSyncSettingsURL[] = "settings://open_sync";
   }
   feature_engagement::Tracker* tracker =
       feature_engagement::TrackerFactory::GetForProfile(_profile);
+  // TODO(crbug.com/427478234): This event should be fired by the mediator.
   tracker->NotifyEvent(
       feature_engagement::events::kEnhancedSafeBrowsingPromoCriterionMet);
 }

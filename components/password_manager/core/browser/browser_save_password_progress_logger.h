@@ -10,14 +10,16 @@
 
 #include "base/containers/flat_map.h"
 #include "base/memory/raw_ptr.h"
-#include "components/autofill/core/browser/autofill_type.h"
 #include "components/autofill/core/browser/proto/password_requirements.pb.h"
 #include "components/autofill/core/common/mojom/autofill_types.mojom.h"
 #include "components/autofill/core/common/save_password_progress_logger.h"
+#include "components/password_manager/core/browser/password_form.h"
+#include "components/password_manager/core/browser/password_manager_metrics_recorder.h"
 #include "components/password_manager/core/browser/votes_uploader.h"
 #include "url/gurl.h"
 
 namespace autofill {
+struct AutofillServerPrediction;
 class FormStructure;
 class LogManager;
 
@@ -40,13 +42,14 @@ class BrowserSavePasswordProgressLogger
       const BrowserSavePasswordProgressLogger&) = delete;
   ~BrowserSavePasswordProgressLogger() override;
 
+  void LogValue(StringID label, const base::Value& log);
+
   // Sanitizes `form` input and passes it to `SendLog` to display with matching
   // server `predictions`.
   void LogFormDataWithServerPredictions(
       const autofill::FormData& form,
       const base::flat_map<autofill::FieldGlobalId,
-                           autofill::AutofillType::ServerPrediction>&
-          predictions);
+                           autofill::AutofillServerPrediction>& predictions);
 
   // Sanitizes `form` input and passes it to `SendLog` to display with matching
   // model `predictions`.
@@ -60,6 +63,7 @@ class BrowserSavePasswordProgressLogger
   void LogFormStructure(
       StringID label,
       const autofill::FormStructure& form,
+      const autofill::EncodeUploadRequestOptions& vote_metadata,
       std::optional<PasswordAttributesMetadata> password_attributes);
 
   // Browser-specific addition to the base class' Log* methods. The input is
@@ -71,6 +75,12 @@ class BrowserSavePasswordProgressLogger
   // Browser-specific addition to the base class' Log* methods. The input is
   // passed to SendLog for display.
   void LogString(StringID label, const std::string& s);
+
+  // Logs a save or update decision along with the specific store details.
+  void LogPasswordSaveAndUpdate(StringID label, PasswordForm::Store store);
+
+  // Logs the number of results fetched from a specific store.
+  void LogNumberResultsForStore(PasswordForm::Store store, size_t count);
 
   // Log a password successful submission event.
   void LogSuccessfulSubmissionIndicatorEvent(
@@ -84,6 +94,11 @@ class BrowserSavePasswordProgressLogger
                                autofill::FieldSignature field_signature,
                                const autofill::PasswordRequirementsSpec& spec);
 
+  void LogProvisionalSaveFailure(
+      PasswordManagerMetricsRecorder::ProvisionalSaveFailure failure,
+      std::optional<GURL> main_frame_url = std::nullopt,
+      std::optional<GURL> form_origin = std::nullopt);
+
  protected:
   // autofill::SavePasswordProgressLogger:
   void SendLog(const std::string& log) override;
@@ -91,14 +106,15 @@ class BrowserSavePasswordProgressLogger
  private:
   // The LogManager to which logs can be sent for display. The log_manager must
   // outlive this logger.
-  const raw_ptr<autofill::LogManager> log_manager_;
+  const raw_ptr<autofill::LogManager> log_manager_ = nullptr;
 
   // TODO(crbug.com/40276395): Move the below functions to stand-alone helper
   // functions in an anonymous namespace.
 
   // Returns the string representation of `form`.
   static std::string FormStructureToFieldsLogString(
-      const autofill::FormStructure& form);
+      const autofill::FormStructure& form,
+      const autofill::EncodeUploadRequestOptions& vote_metadata);
 
   // Returns the string representation of votes related password attributes from
   // the `password_attributes`.

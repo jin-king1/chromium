@@ -7,6 +7,7 @@
 #import <UIKit/UIKit.h>
 #import <stdint.h>
 
+#import <optional>
 #import <string>
 #import <string_view>
 #import <utility>
@@ -15,31 +16,37 @@
 #import "base/base64.h"
 #import "base/check.h"
 #import "base/command_line.h"
-#import "base/debug/dump_without_crashing.h"
+#import "base/feature_list.h"
 #import "base/files/file_path.h"
 #import "base/functional/bind.h"
 #import "base/functional/callback.h"
+#import "base/functional/callback_helpers.h"
+#import "base/ios/device_util.h"
 #import "base/metrics/histogram_functions.h"
 #import "base/metrics/histogram_macros.h"
 #import "base/metrics/persistent_histogram_allocator.h"
 #import "base/path_service.h"
 #import "base/process/process_metrics.h"
 #import "base/rand_util.h"
-#import "base/strings/safe_sprintf.h"
 #import "base/task/thread_pool.h"
 #import "base/threading/platform_thread.h"
-#import "components/crash/core/common/crash_key.h"
+#import "components/application_locale_storage/application_locale_storage.h"
+#import "components/country_codes/country_codes.h"
 #import "components/crash/core/common/crash_keys.h"
 #import "components/history/core/browser/history_service.h"
 #import "components/keyed_service/core/service_access_type.h"
+#import "components/language/core/browser/locale_util.h"
 #import "components/metrics/call_stacks/call_stack_profile_metrics_provider.h"
 #import "components/metrics/cpu_metrics_provider.h"
 #import "components/metrics/demographics/demographic_metrics_provider.h"
 #import "components/metrics/drive_metrics_provider.h"
+#import "components/metrics/dwa/dwa_recorder.h"
 #import "components/metrics/dwa/dwa_service.h"
 #import "components/metrics/entropy_state_provider.h"
 #import "components/metrics/field_trials_provider.h"
+#import "components/metrics/install_date_provider.h"
 #import "components/metrics/metrics_data_validation.h"
+#import "components/metrics/metrics_features.h"
 #import "components/metrics/metrics_log_uploader.h"
 #import "components/metrics/metrics_pref_names.h"
 #import "components/metrics/metrics_reporting_default_state.h"
@@ -49,21 +56,29 @@
 #import "components/metrics/net/net_metrics_log_uploader.h"
 #import "components/metrics/net/network_metrics_provider.h"
 #import "components/metrics/persistent_histograms.h"
+#import "components/metrics/private_metrics/puma_service.h"
 #import "components/metrics/stability_metrics_helper.h"
 #import "components/metrics/ui/form_factor_metrics_provider.h"
 #import "components/metrics/ui/screen_info_metrics_provider.h"
 #import "components/metrics/version_utils.h"
 #import "components/omnibox/browser/omnibox_metrics_provider.h"
+#import "components/policy/core/common/enterprise_management_metrics_provider.h"
 #import "components/prefs/pref_registry_simple.h"
 #import "components/prefs/pref_service.h"
+#import "components/regional_capabilities/regional_capabilities_country_id.h"
+#import "components/regional_capabilities/regional_capabilities_service.h"
+#import "components/regional_capabilities/regional_capabilities_switches.h"
 #import "components/sync/service/passphrase_type_metrics_provider.h"
 #import "components/sync/service/sync_service.h"
 #import "components/sync_device_info/device_count_metrics_provider.h"
+#import "components/ukm/field_trials_provider_helper.h"
 #import "components/ukm/ukm_service.h"
 #import "components/variations/synthetic_trial_registry.h"
 #import "components/variations/variations_associated_data.h"
 #import "components/version_info/version_info.h"
 #import "google_apis/google_api_keys.h"
+#import "ios/chrome/browser/crash_report/model/crash_helper.h"
+#import "ios/chrome/browser/first_run/public/features.h"
 #import "ios/chrome/browser/history/model/history_service_factory.h"
 #import "ios/chrome/browser/metrics/model/demographics_client.h"
 #import "ios/chrome/browser/metrics/model/ios_chrome_default_browser_metrics_provider.h"
@@ -71,10 +86,15 @@
 #import "ios/chrome/browser/metrics/model/ios_chrome_stability_metrics_provider.h"
 #import "ios/chrome/browser/metrics/model/ios_family_link_user_metrics_provider.h"
 #import "ios/chrome/browser/metrics/model/ios_feed_activity_metrics_provider.h"
-#import "ios/chrome/browser/metrics/model/ios_feed_enabled_metrics_provider.h"
 #import "ios/chrome/browser/metrics/model/ios_profile_session_metrics_provider.h"
 #import "ios/chrome/browser/metrics/model/ios_push_notifications_metrics_provider.h"
+#import "ios/chrome/browser/metrics/model/mobile_session_crash_helper_metrics_provider.h"
 #import "ios/chrome/browser/metrics/model/mobile_session_shutdown_metrics_provider.h"
+#import "ios/chrome/browser/policy/model/browser_management_service.h"
+#import "ios/chrome/browser/policy/model/browser_management_service_factory.h"
+#import "ios/chrome/browser/policy/model/profile_policy_connector.h"
+#import "ios/chrome/browser/regional_capabilities/model/ios_regional_capabilities_metrics_provider.h"
+#import "ios/chrome/browser/regional_capabilities/model/regional_capabilities_service_factory.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/browser/browser_list.h"
@@ -83,10 +103,13 @@
 #import "ios/chrome/browser/shared/model/profile/incognito_session_tracker.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/profile/profile_manager_ios.h"
+#import "ios/chrome/browser/shared/model/utils/first_run_util.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
+#import "ios/chrome/browser/subscription_eligibility/model/ios_subscription_eligibility_metrics_provider.h"
 #import "ios/chrome/browser/sync/model/device_info_sync_service_factory.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
+#import "ios/chrome/browser/tracing/ios_chrome_background_tracing_metrics_provider.h"
 #import "ios/chrome/browser/translate/model/translate_ranker_metrics_provider.h"
 #import "ios/chrome/common/channel_info.h"
 #import "ios/public/provider/chrome/browser/app_distribution/app_distribution_api.h"
@@ -108,8 +131,8 @@ std::unique_ptr<metrics::FileMetricsProvider> CreateFileMetricsProvider(
     bool metrics_reporting_enabled) {
   // Create an object to monitor files of metrics and include them in reports.
   std::unique_ptr<metrics::FileMetricsProvider> file_metrics_provider(
-      new metrics::FileMetricsProvider(
-          GetApplicationContext()->GetLocalState()));
+      new metrics::FileMetricsProvider(GetApplicationContext()->GetLocalState(),
+                                       IsFirstRun()));
 
   base::FilePath user_data_dir;
   if (base::PathService::Get(ios::DIR_USER_DATA, &user_data_dir)) {
@@ -127,10 +150,28 @@ std::unique_ptr<metrics::FileMetricsProvider> CreateFileMetricsProvider(
   return file_metrics_provider;
 }
 
-}  // namespace
+std::vector<policy::EnterpriseManagementMetricsProvider::ProfileState>
+GetEnterpriseManagementProfileStates() {
+  std::vector<policy::EnterpriseManagementMetricsProvider::ProfileState> states;
+  ApplicationContext* context = GetApplicationContext();
+  if (context && context->GetProfileManager()) {
+    for (ProfileIOS* profile :
+         context->GetProfileManager()->GetLoadedProfiles()) {
+      if (profile->IsOffTheRecord()) {
+        continue;
+      }
+      ProfilePolicyConnector* connector =
+          profile->GetPolicyConnector();
+      states.push_back({
+          policy::BrowserManagementServiceFactory::GetForProfile(profile),
+          connector ? connector->GetPolicyService() : nullptr
+      });
+    }
+  }
+  return states;
+}
 
-// UKM suffix for field trial recording.
-const char kUKMFieldTrialSuffix[] = "UKM";
+}  // namespace
 
 IOSChromeMetricsServiceClient::IOSChromeMetricsServiceClient(
     metrics::MetricsStateManager* state_manager,
@@ -182,6 +223,7 @@ void IOSChromeMetricsServiceClient::RegisterPrefs(
   metrics::RegisterMetricsReportingStatePrefs(registry);
   ukm::UkmService::RegisterPrefs(registry);
   metrics::dwa::DwaService::RegisterPrefs(registry);
+  metrics::private_metrics::PumaService::RegisterPrefs(registry);
 }
 
 variations::SyntheticTrialRegistry*
@@ -201,6 +243,43 @@ metrics::dwa::DwaService* IOSChromeMetricsServiceClient::GetDwaService() {
   return dwa_service_.get();
 }
 
+metrics::private_metrics::PumaService*
+IOSChromeMetricsServiceClient::GetPumaService() {
+  return puma_service_.get();
+}
+
+std::optional<regional_capabilities::CountryIdHolder>
+IOSChromeMetricsServiceClient::GetProfileCountryIdForPrivateMetricsReporting() {
+  std::vector<ProfileIOS*> profiles =
+      GetApplicationContext()->GetProfileManager()->GetLoadedProfiles();
+  if (profiles.empty()) {
+    return std::nullopt;
+  }
+
+  std::optional<regional_capabilities::CountryIdHolder> first_country_id;
+  for (ProfileIOS* profile : profiles) {
+    if (profile->IsOffTheRecord()) {
+      continue;
+    }
+    regional_capabilities::RegionalCapabilitiesService* service =
+        ios::RegionalCapabilitiesServiceFactory::GetForProfile(profile);
+    if (!service) {
+      continue;
+    }
+
+    regional_capabilities::CountryIdHolder current_id = service->GetCountryId();
+
+    if (!first_country_id.has_value()) {
+      first_country_id = current_id;
+    } else if (first_country_id.value() != current_id) {
+      // Mismatched IDs.
+      return std::nullopt;
+    }
+  }
+
+  return first_country_id;
+}
+
 void IOSChromeMetricsServiceClient::SetMetricsClientId(
     const std::string& client_id) {
   crash_keys::SetMetricsClientIdFromGUID(client_id);
@@ -211,7 +290,12 @@ int32_t IOSChromeMetricsServiceClient::GetProduct() {
 }
 
 std::string IOSChromeMetricsServiceClient::GetApplicationLocale() {
-  return GetApplicationContext()->GetApplicationLocale();
+  if (base::FeatureList::IsEnabled(
+          metrics::features::kConsolidateMetricsServiceLocales)) {
+    return language::GetApplicationLocale(
+        GetApplicationContext()->GetLocalState());
+  }
+  return GetApplicationContext()->GetApplicationLocaleStorage()->Get();
 }
 
 const network_time::NetworkTimeTracker*
@@ -281,9 +365,15 @@ void IOSChromeMetricsServiceClient::Initialize() {
     RegisterUKMProviders();
   }
 
-  if (base::FeatureList::IsEnabled(metrics::dwa::kDwaFeature)) {
-    dwa_service_ =
-        std::make_unique<metrics::dwa::DwaService>(this, local_state);
+  if (metrics::dwa::DwaRecorder::IsDwaOrPrivateMetricsFeatureEnabled()) {
+    dwa_service_ = std::make_unique<metrics::dwa::DwaService>(
+        this, local_state,
+        GetApplicationContext()->GetSharedURLLoaderFactory());
+  }
+
+  if (metrics::private_metrics::PumaService::IsPumaEnabled()) {
+    puma_service_ = std::make_unique<metrics::private_metrics::PumaService>(
+        this, local_state);
   }
 }
 
@@ -323,7 +413,8 @@ void IOSChromeMetricsServiceClient::RegisterMetricsServiceProviders() {
       std::make_unique<metrics::ScreenInfoMetricsProvider>());
 
   metrics_service_->RegisterMetricsProvider(
-      std::make_unique<metrics::DriveMetricsProvider>(ios::FILE_LOCAL_STATE));
+      std::make_unique<metrics::DriveMetricsProvider>(ios::FILE_LOCAL_STATE,
+                                                      local_state));
 
   metrics_service_->RegisterMetricsProvider(
       std::make_unique<metrics::CallStackProfileMetricsProvider>());
@@ -344,15 +435,6 @@ void IOSChromeMetricsServiceClient::RegisterMetricsServiceProviders() {
 
   metrics_service_->RegisterMetricsProvider(
       std::make_unique<syncer::PassphraseTypeMetricsProvider>(
-          syncer::PassphraseTypeMetricsProvider::HistogramVersion::kV2,
-          base::BindRepeating(&SyncServiceFactory::GetAllSyncServices)));
-  metrics_service_->RegisterMetricsProvider(
-      std::make_unique<syncer::PassphraseTypeMetricsProvider>(
-          syncer::PassphraseTypeMetricsProvider::HistogramVersion::kV4,
-          base::BindRepeating(&SyncServiceFactory::GetAllSyncServices)));
-  metrics_service_->RegisterMetricsProvider(
-      std::make_unique<syncer::PassphraseTypeMetricsProvider>(
-          syncer::PassphraseTypeMetricsProvider::HistogramVersion::kV5,
           base::BindRepeating(&SyncServiceFactory::GetAllSyncServices)));
 
   metrics_service_->RegisterMetricsProvider(
@@ -370,14 +452,32 @@ void IOSChromeMetricsServiceClient::RegisterMetricsServiceProviders() {
       std::make_unique<IOSFeedActivityMetricsProvider>());
 
   metrics_service_->RegisterMetricsProvider(
-      std::make_unique<IOSFeedEnabledMetricsProvider>());
+      std::make_unique<IOSPushNotificationsMetricsProvider>());
 
   metrics_service_->RegisterMetricsProvider(
-      std::make_unique<IOSPushNotificationsMetricsProvider>());
+      std::make_unique<
+          regional_capabilities::IOSRegionalCapabilitiesMetricsProvider>());
+
+  metrics_service_->RegisterMetricsProvider(
+      std::make_unique<tracing::IOSChromeBackgroundTracingMetricsProvider>(
+          synthetic_trial_registry_));
+
+  metrics_service_->RegisterMetricsProvider(
+      std::make_unique<policy::EnterpriseManagementMetricsProvider>(
+          policy::BrowserManagementServiceFactory::GetForPlatform(),
+          base::BindRepeating(&GetEnterpriseManagementProfileStates)));
+
+  metrics_service_->RegisterMetricsProvider(
+      std::make_unique<subscription_eligibility::
+                           IOSSubscriptionEligibilityMetricsProvider>());
 }
 
 void IOSChromeMetricsServiceClient::RegisterUKMProviders() {
+  // LINT.IfChange(UkmProviders)
   PrefService* local_state = GetApplicationContext()->GetLocalState();
+
+  ukm_service_->RegisterMetricsProvider(
+      std::make_unique<metrics::InstallDateProvider>(local_state));
 
   ukm_service_->RegisterMetricsProvider(
       std::make_unique<metrics::CPUMetricsProvider>());
@@ -389,23 +489,20 @@ void IOSChromeMetricsServiceClient::RegisterUKMProviders() {
       std::make_unique<metrics::ScreenInfoMetricsProvider>());
 
   ukm_service_->RegisterMetricsProvider(
-      std::make_unique<variations::FieldTrialsProvider>(
-          synthetic_trial_registry_.get(), kUKMFieldTrialSuffix));
+      ukm::CreateFieldTrialsProviderForUkm(synthetic_trial_registry_.get()));
 
   ukm_service_->RegisterMetricsProvider(
       std::make_unique<metrics::EntropyStateProvider>(local_state));
+  // LINT.ThenChange(/chrome/browser/metrics/chrome_metrics_service_client.cc:UkmProviders)
 }
 
 void IOSChromeMetricsServiceClient::CollectFinalHistograms() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-
-  task_vm_info task_info_data;
-  mach_msg_type_number_t count = sizeof(task_vm_info) / sizeof(natural_t);
-  kern_return_t kr =
-      task_info(mach_task_self(), TASK_VM_INFO,
-                reinterpret_cast<task_info_t>(&task_info_data), &count);
-  if (kr == KERN_SUCCESS) {
-    mach_vm_size_t footprint_mb = task_info_data.phys_footprint / 1024 / 1024;
+  auto result = ios::device_util::GetTaskVMInfo();
+  if (result.has_value()) {
+    task_vm_info task_vm_info_data = result.value();
+    mach_vm_size_t footprint_mb =
+        task_vm_info_data.phys_footprint / 1024 / 1024;
     base::UmaHistogramMemoryLargeMB("Memory.Browser.MemoryFootprint",
                                     footprint_mb);
     // The pseudo metric of Memory.Browser.MemoryFootprint. Only used to
@@ -413,7 +510,8 @@ void IOSChromeMetricsServiceClient::CollectFinalHistograms() {
     base::UmaHistogramMemoryLargeMB(
         "UMA.Pseudo.Memory.Browser.MemoryFootprint",
         metrics::GetPseudoMetricsSample(
-            static_cast<double>(task_info_data.phys_footprint) / 1024 / 1024));
+            static_cast<double>(task_vm_info_data.phys_footprint) / 1024 /
+            1024));
 
     switch (UIApplication.sharedApplication.applicationState) {
       case UIApplicationStateActive:
@@ -435,17 +533,6 @@ void IOSChromeMetricsServiceClient::CollectFinalHistograms() {
             "Memory.Browser.MemoryFootprint.Background", footprint_mb);
         break;
     }
-  } else {
-    // Max kern_return_t is 0x100 = 256, plus trailing null.
-    // (https://opensource.apple.com/source/xnu/xnu-792.25.20/osfmk/mach/kern_return.h)
-    // TODO(crbug.com/40866217): Remove this when done debugging the uncaught
-    // memory regression.
-    static crash_reporter::CrashKeyString<4> task_info_kern_return(
-        "task-info-kern-return");
-    char kr_buf[4];
-    base::strings::SafeSPrintf(kr_buf, "%d", kr);
-    task_info_kern_return.Set(kr_buf);
-    base::debug::DumpWithoutCrashing();
   }
 
   int open_tabs_count = 0;
@@ -468,6 +555,10 @@ void IOSChromeMetricsServiceClient::CollectFinalHistograms() {
 }
 
 void IOSChromeMetricsServiceClient::RegisterForNotifications() {
+  crash_helper_subscription_ =
+      crash_helper::AddProcessIntermediateDumpsFinishedCallback(
+          base::BindRepeating(
+              &mobile_session_metrics::OnProcessIntermediateDumpsFinished));
   omnibox_url_opened_subscription_ =
       OmniboxEventGlobalTracker::GetInstance()->RegisterCallback(
           base::BindRepeating(
@@ -570,6 +661,12 @@ void IOSChromeMetricsServiceClient::OnUkmAllowedStateChanged(
 
   // Signal service manager to enable/disable UKM/DWA based on new states.
   UpdateRunningServices();
+}
+
+void IOSChromeMetricsServiceClient::OnProfileManagerWillBeDestroyed(
+    ProfileManagerIOS* manager) {
+  // Nothing to do, IOSChromeMetricsServiceClient does not keep any profile
+  // alive.
 }
 
 void IOSChromeMetricsServiceClient::OnProfileManagerDestroyed(
@@ -727,6 +824,12 @@ std::string IOSChromeMetricsServiceClient::GetUploadSigningKey() {
   std::string decoded_key;
   base::Base64Decode(google_apis::GetMetricsKey(), &decoded_key);
   return decoded_key;
+}
+
+bool IOSChromeMetricsServiceClient::ShouldStartUpFast() const {
+  return base::FeatureList::IsEnabled(first_run::kManualLogUploadsInTheFRE)
+             ? IsFirstRun()
+             : false;
 }
 
 void IOSChromeMetricsServiceClient::StartObservingBrowserList(

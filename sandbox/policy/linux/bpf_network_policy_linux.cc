@@ -112,28 +112,32 @@ ResultExpr RestrictSetSockoptForNetworkService() {
   // glibc's getaddrinfo() needs to enable icmp with IP[V6]_RECVERR, for both
   // ipv4 and ipv6.
   //
-  // A number of optnames are for APIs of pepper and extensions. These include:
+  // A number of optnames are for APIs of extensions. These include:
   // * IP[V6[_MULTICAST_LOOP for UDPSocketPosix::SetMulticastOptions().
   // * IP_MULTICAST_TTL, IPV6_MULTICAST_HOPS for
   //   UDPSocketPosix::SetMulticastOptions().
   //
   // IP[V6]_MULTICAST_IF, IP_ADD_MEMBERSHIP, IP_DROP_MEMBERSHIP,
-  // IPV6_JOIN_GROUP, IPV6_LEAVE_GROUP are for mDNS, as well as Pepper and
-  // extensions.
+  // IPV6_JOIN_GROUP, IPV6_LEAVE_GROUP are for mDNS and extensions.
   //
   // IP_TOS and IPV6_TCLASS are for P2P sockets.
+  //
+  // MCAST_JOIN_SOURCE_GROUP, MCAST_LEAVE_SOURCE_GROUP are for source-specific
+  // multicast (SSM/IGMPv3) used by the Direct Sockets API.
   ResultExpr ipv4_optname_switch =
       Switch(optname)
           .Cases({IP_RECVERR, IP_MTU_DISCOVER, IP_MULTICAST_LOOP,
                   IP_MULTICAST_TTL, IP_MULTICAST_IF, IP_ADD_MEMBERSHIP,
-                  IP_DROP_MEMBERSHIP, IP_TOS, IP_RECVTOS},
+                  IP_DROP_MEMBERSHIP, IP_TOS, IP_RECVTOS,
+                  MCAST_JOIN_SOURCE_GROUP, MCAST_LEAVE_SOURCE_GROUP},
                  Allow())
           .Default(CrashSIGSYSSockopt());
   ResultExpr ipv6_optname_switch =
       Switch(optname)
           .Cases({IPV6_RECVERR, IPV6_MTU_DISCOVER, IPV6_MULTICAST_LOOP,
                   IPV6_MULTICAST_HOPS, IPV6_MULTICAST_IF, IPV6_JOIN_GROUP,
-                  IPV6_LEAVE_GROUP, IPV6_TCLASS, IPV6_V6ONLY, IPV6_RECVTCLASS},
+                  IPV6_LEAVE_GROUP, IPV6_TCLASS, IPV6_V6ONLY, IPV6_RECVTCLASS,
+                  MCAST_JOIN_SOURCE_GROUP, MCAST_LEAVE_SOURCE_GROUP},
                  Allow())
           .Default(CrashSIGSYSSockopt());
   ResultExpr tcp_optname_switch =
@@ -271,8 +275,7 @@ ResultExpr NetworkProcessPolicy::EvaluateSyscall(int sysno) const {
       return RestrictGetSockoptForNetworkService();
     case __NR_setsockopt:
       return RestrictSetSockoptForNetworkService();
-    case __NR_listen:  // Used by extension and pepper APIs, and also the
-                       // devtools server.
+    case __NR_listen:  // Used by extension APIs, and also the devtools server.
 #if defined(__NR_accept)
     case __NR_accept:  // Same as listen().
 #endif
@@ -280,6 +283,8 @@ ResultExpr NetworkProcessPolicy::EvaluateSyscall(int sysno) const {
     case __NR_connect:
     case __NR_bind:
     case __NR_getsockname:
+      // TODO(crbug.com/40052246): restrict sendmmsg() for the network service,
+      // probably with RestrictSockSendFlags().
     case __NR_sendmmsg:
       return Allow();
     case __NR_socket:

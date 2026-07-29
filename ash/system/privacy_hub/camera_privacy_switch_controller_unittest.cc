@@ -116,6 +116,10 @@ class MockFrontendAPI : public PrivacyHubDelegate {
  public:
   MOCK_METHOD(void, MicrophoneHardwareToggleChanged, (bool), (override));
   MOCK_METHOD(void, SetForceDisableCameraSwitch, (bool), (override));
+  MOCK_METHOD(void,
+              SystemGeolocationAccessLevelChanged,
+              (GeolocationAccessLevel),
+              (override));
 };
 
 }  // namespace
@@ -162,6 +166,7 @@ class PrivacyHubCameraTestBase : public AshTestBase,
   void TearDown() override {
     // We need to destroy the delegate while the Ash still exists.
     scoped_delegate_.reset();
+    mock_switch_ = nullptr;
     AshTestBase::TearDown();
   }
 
@@ -180,7 +185,7 @@ class PrivacyHubCameraTestBase : public AshTestBase,
   }
 
  protected:
-  raw_ptr<::testing::NiceMock<MockSwitchAPI>, DanglingUntriaged> mock_switch_;
+  raw_ptr<::testing::NiceMock<MockSwitchAPI>> mock_switch_;
 
  private:
   base::test::ScopedFeatureList scoped_feature_list_;
@@ -291,6 +296,11 @@ class NotificationTestBase : public PrivacyHubCameraTestBase {
     controller_ = CameraPrivacySwitchController::Get();
   }
 
+  void TearDown() override {
+    controller_ = nullptr;
+    PrivacyHubCameraTestBase::TearDown();
+  }
+
   void LaunchAppAccessingCamera(const std::u16string& app_name) {
     delegate()->LaunchAppAccessingCamera(app_name);
     controller_->ActiveApplicationsChanged(/*application_added=*/true);
@@ -312,7 +322,7 @@ class NotificationTestBase : public PrivacyHubCameraTestBase {
             ->sensor_disabled_notification_delegate());
   }
 
-  raw_ptr<CameraPrivacySwitchController, DanglingUntriaged> controller_;
+  raw_ptr<CameraPrivacySwitchController> controller_;
   const base::HistogramTester histogram_tester_;
 };
 
@@ -829,7 +839,8 @@ TEST_P(PrivacyHubCameraControllerTest,
 TEST_P(PrivacyHubCameraControllerTest,
        ForceDisableAccessShouldDisableUiSwitch) {
   ::testing::StrictMock<MockFrontendAPI> mock_frontend;
-  Shell::Get()->privacy_hub_controller()->SetFrontend(&mock_frontend);
+  Shell::Get()->privacy_hub_controller()->camera_controller()->SetFrontend(
+      &mock_frontend);
   auto& controller = *CameraPrivacySwitchController::Get();
 
   EXPECT_CALL(mock_frontend, SetForceDisableCameraSwitch(true));
@@ -842,7 +853,8 @@ TEST_P(PrivacyHubCameraControllerTest,
 TEST_P(PrivacyHubCameraControllerTest,
        StoppingForceDisableAccessShouldReenableUiSwitch) {
   ::testing::StrictMock<MockFrontendAPI> mock_frontend;
-  Shell::Get()->privacy_hub_controller()->SetFrontend(&mock_frontend);
+  Shell::Get()->privacy_hub_controller()->camera_controller()->SetFrontend(
+      &mock_frontend);
   auto& controller = *CameraPrivacySwitchController::Get();
 
   EXPECT_CALL(mock_frontend, SetForceDisableCameraSwitch(false));
@@ -1060,5 +1072,40 @@ INSTANTIATE_TEST_SUITE_P(All,
 INSTANTIATE_TEST_SUITE_P(All,
                          VideoConferenceCameraControllerTest,
                          /*IsVideoConferenceEnabled=*/testing::Bool());
+
+using PrivacyHubCameraEarlyQueryTest = AshTestBase;
+
+// Tests that querying the camera switch state early before the active user pref
+// service is registered does not crash, and successfully falls back to
+// retrieving the PrefService directly from the SessionController.
+TEST_F(PrivacyHubCameraEarlyQueryTest,
+       QueryAllowedBeforeActiveUserPrefServiceChangedFallbackToDirectBlocked) {
+  PrefService* active_prefs =
+      Shell::Get()->session_controller()->GetActivePrefService();
+  ASSERT_TRUE(active_prefs);
+
+  // Set the camera preference to FALSE.
+  active_prefs->SetBoolean(prefs::kUserCameraAllowed, false);
+
+  CameraPrivacySwitchController controller;
+
+  // It should safely read the false (blocked) value.
+  EXPECT_FALSE(controller.IsCameraUsageAllowed());
+}
+
+TEST_F(PrivacyHubCameraEarlyQueryTest,
+       QueryAllowedBeforeActiveUserPrefServiceChangedFallbackToDirectAllowed) {
+  PrefService* active_prefs =
+      Shell::Get()->session_controller()->GetActivePrefService();
+  ASSERT_TRUE(active_prefs);
+
+  // Set the camera preference to TRUE.
+  active_prefs->SetBoolean(prefs::kUserCameraAllowed, true);
+
+  CameraPrivacySwitchController controller;
+
+  // It should safely read the true (allowed) value.
+  EXPECT_TRUE(controller.IsCameraUsageAllowed());
+}
 
 }  // namespace ash

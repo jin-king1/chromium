@@ -4,13 +4,16 @@
 
 #include "ash/wm/drag_window_controller.h"
 
+#include <optional>
+
 #include "ash/public/cpp/shell_window_ids.h"
 #include "ash/public/cpp/window_properties.h"
 #include "ash/shell.h"
 #include "ash/wm/window_mirror_view.h"
 #include "ash/wm/window_properties.h"
-#include "ash/wm/window_util.h"
+#include "ash/wm/wm_constants.h"
 #include "base/memory/raw_ptr.h"
+#include "chromeos/ui/frame/frame_utils.h"
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/client/screen_position_client.h"
 #include "ui/aura/window.h"
@@ -22,6 +25,7 @@
 #include "ui/compositor/paint_context.h"
 #include "ui/compositor_extra/shadow.h"
 #include "ui/display/display.h"
+#include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/gfx/geometry/transform_util.h"
 #include "ui/views/view.h"
 #include "ui/views/widget/widget.h"
@@ -47,10 +51,9 @@ float GetDragWindowOpacity(aura::Window* root_window,
   // in the constructor and reverted in the destructor.
   DCHECK(!is_touch_dragging || dragged_window->GetRootWindow() != root_window);
   // For mouse dragging, if the mouse is in |root_window|, then return 1.
-  if (!is_touch_dragging && Shell::Get()->cursor_manager()->GetDisplay().id() ==
-                                display::Screen::GetScreen()
-                                    ->GetDisplayNearestWindow(root_window)
-                                    .id()) {
+  if (!is_touch_dragging &&
+      Shell::Get()->cursor_manager()->GetDisplay().id() ==
+          display::Screen::Get()->GetDisplayNearestWindow(root_window).id()) {
     return 1.f;
   }
 
@@ -68,16 +71,23 @@ float GetDragWindowOpacity(aura::Window* root_window,
          dragged_window_bounds.size().GetArea();
 }
 
-float GetDragWindowCornerRadius(const aura::Window* original_window) {
+std::optional<gfx::RoundedCornersF> GetDragWindowRoundedCorners(
+    const aura::Window* original_window) {
   // In overview mode, the `original_window` is square. Therefore,
-  // `kWindowCornerRadiusKey` is zero for the `original_window`.
+  // `kWindowRoundedCornersKey` is zero for the `original_window`.
   // However the mini-window view has rounded corners and the shadow
   // associated with the mini-window should be rounded as well.
   if (original_window->GetProperty(kIsOverviewItemKey)) {
-    return window_util::GetMiniWindowRoundedCornerRadius();
+    return gfx::RoundedCornersF(kWindowMiniViewCornerRadius);
   }
 
-  return original_window->GetProperty(aura::client::kWindowCornerRadiusKey);
+  const auto window_radii =
+      original_window->GetProperty(aura::client::kWindowRoundedCornersKey);
+  if (window_radii) {
+    return *window_radii;
+  }
+
+  return std::nullopt;
 }
 
 }  // namespace
@@ -98,7 +108,6 @@ class DragWindowController::DragWindowDetails {
     const float opacity =
         GetDragWindowOpacity(root_window_, original_window, is_touch_dragging);
     if (opacity == 0.f) {
-      shadow_.reset();
       widget_.reset();
       return;
     }
@@ -140,7 +149,7 @@ class DragWindowController::DragWindowDetails {
       params.shadow_type = views::Widget::InitParams::ShadowType::kNone;
     }
 
-    params.corner_radius = GetDragWindowCornerRadius(original_window);
+    params.rounded_corners = GetDragWindowRoundedCorners(original_window);
 
     widget_ = std::make_unique<views::Widget>();
     widget_->set_focus_on_creation(false);
@@ -160,7 +169,6 @@ class DragWindowController::DragWindowDetails {
     gfx::Rect bounds = original_window->bounds();
     wm::ConvertRectToScreen(original_window->parent(), &bounds);
     window->SetBounds(bounds);
-    wm::SetShadowElevation(window, wm::kShadowElevationActiveWindow);
 
     // Show the widget the setup is done.
     widget_->Show();
@@ -171,9 +179,6 @@ class DragWindowController::DragWindowDetails {
 
   // Contains a WindowMirrorView which is a copy of the original window.
   std::unique_ptr<views::Widget> widget_;
-
-  // Optional custom shadow if one is given.
-  std::unique_ptr<ui::Shadow> shadow_;
 };
 
 DragWindowController::DragWindowController(aura::Window* window,
@@ -186,7 +191,7 @@ DragWindowController::DragWindowController(aura::Window* window,
   window->layer()->SetOpacity(1.f);
 
   DCHECK(drag_windows_.empty());
-  display::Screen* screen = display::Screen::GetScreen();
+  display::Screen* screen = display::Screen::Get();
   display::Display current = screen->GetDisplayNearestWindow(window_);
   for (const display::Display& display : screen->GetAllDisplays()) {
     if (current.id() == display.id())
@@ -229,18 +234,6 @@ const aura::Window* DragWindowController::GetDragWindowForTest(
     if (details->widget_) {
       if (index == 0)
         return details->widget_->GetNativeWindow();
-      index--;
-    }
-  }
-  return nullptr;
-}
-
-const ui::Shadow* DragWindowController::GetDragWindowShadowForTest(
-    size_t index) const {
-  for (const std::unique_ptr<DragWindowDetails>& details : drag_windows_) {
-    if (details->widget_) {
-      if (index == 0)
-        return details->shadow_.get();
       index--;
     }
   }

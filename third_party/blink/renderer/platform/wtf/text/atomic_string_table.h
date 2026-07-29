@@ -7,13 +7,14 @@
 
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/hash_set.h"
+#include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string_encoding.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_hash.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_impl.h"
 #include "third_party/blink/renderer/platform/wtf/threading.h"
 #include "third_party/blink/renderer/platform/wtf/wtf_export.h"
 
-namespace WTF {
+namespace blink {
 
 // The underlying storage that keeps the map of unique AtomicStrings. This is
 // thread safe and there is a single table for all threads. Adding and removing
@@ -39,19 +40,15 @@ class WTF_EXPORT AtomicStringTable final {
   // Inserting strings into the table. Note that the return value from adding
   // a UChar string may be an LChar string as the table will attempt to
   // convert the string to save memory if possible.
-  scoped_refptr<StringImpl> Add(StringImpl*);
-  scoped_refptr<StringImpl> Add(scoped_refptr<StringImpl>&&);
-  scoped_refptr<StringImpl> Add(const LChar* chars, unsigned length);
-  scoped_refptr<StringImpl> Add(const UChar* chars,
-                                unsigned length,
-                                AtomicStringUCharEncoding encoding);
-  scoped_refptr<StringImpl> Add(const StringView& string_view);
+  String Add(StringImpl*);
+  String Add(String&&);
+  String Add(base::span<const LChar> chars);
+  String Add(base::span<const UChar> chars, AtomicStringUCharEncoding encoding);
+  String Add(const StringView& string_view);
 
-  // Adding UTF8.
-  // Returns null if the characters contain invalid utf8 sequences.
-  // Pass null as `characters_end` to automatically detect the length.
-  scoped_refptr<StringImpl> AddUTF8(const uint8_t* characters_start,
-                                    const uint8_t* characters_end);
+  // Adding a UTF-8 string.
+  // Returns the null string if the characters contain invalid UTF-8 sequences.
+  String AddUtf8(base::span<const uint8_t> characters_span);
 
   // Returned as part of the WeakFind*() APIs below. Represents the result of
   // the non-creating lookup within the AtomicStringTable. See the WeakFind*()
@@ -110,7 +107,7 @@ class WTF_EXPORT AtomicStringTable final {
 
  private:
   template <typename T, typename HashTranslator>
-  inline scoped_refptr<StringImpl> AddToStringTable(const T& value);
+  inline String AddToStringTable(const T& value);
 
   // AddNoLock does not take the lock itself but expects every caller to
   // do it before calling it.
@@ -158,8 +155,6 @@ inline bool operator==(const AtomicString& lhs,
   return lhs.Impl() == rhs;
 }
 
-}  // namespace WTF
-
-using WTF::AtomicStringTable;
+}  // namespace blink
 
 #endif  // THIRD_PARTY_BLINK_RENDERER_PLATFORM_WTF_TEXT_ATOMIC_STRING_TABLE_H_

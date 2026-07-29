@@ -34,8 +34,10 @@
 #include <memory>
 #include <optional>
 
+#include "base/notimplemented.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/types/optional_ref.h"
+#include "components/subresource_filter/core/common/scoped_rule.h"
 #include "third_party/blink/public/common/subresource_load_metrics.h"
 #include "third_party/blink/public/mojom/fetch/fetch_api_request.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/loader/request_context_frame_type.mojom-blink-forward.h"
@@ -43,8 +45,10 @@
 #include "third_party/blink/public/platform/resource_load_info_notifier_wrapper.h"
 #include "third_party/blink/public/platform/resource_request_blocked_reason.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/loader/fetch/ad_tagging_utils.h"
 #include "third_party/blink/renderer/platform/loader/fetch/fetch_initiator_info.h"
 #include "third_party/blink/renderer/platform/loader/fetch/fetch_parameters.h"
+#include "third_party/blink/renderer/platform/loader/fetch/guardrail_policy_asset_type.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_load_priority.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_request.h"
 #include "third_party/blink/renderer/platform/network/content_security_policy_parsers.h"
@@ -108,6 +112,8 @@ class PLATFORM_EXPORT FetchContext : public GarbageCollected<FetchContext> {
                               WebScopedVirtualTimePauser& virtual_time_pauser,
                               ResourceType);
 
+  virtual void FillInitiatorInfo(FetchInitiatorInfo& initiator_info) {}
+
   virtual void AddResourceTiming(mojom::blink::ResourceTimingInfoPtr,
                                  const AtomicString& initiator_type);
   virtual bool AllowImage() const { return false; }
@@ -159,6 +165,21 @@ class PLATFORM_EXPORT FetchContext : public GarbageCollected<FetchContext> {
     return ResourceRequestBlockedReason::kOther;
   }
 
+  // Check for guardrails policy state and report large asset violation if
+  // necessary.
+  virtual void CheckGuardrailsPolicyForAssetSize(
+      GuardrailPolicyAssetType asset_type,
+      size_t bytes,
+      const KURL& url) {}
+
+  // Check for policy on the resource and report if necessary, per the explainer
+  // here: https://aka.ms/webembeddedperf
+  virtual void CheckGuardrailsPolicyForRequest(
+      ResourceType resource_type,
+      mojom::blink::RequestContextType request_context,
+      const ResourceResponse& response,
+      const KURL& url) {}
+
   // Called from RequestResource() to upgrade insecure ResourceRequests if
   // necessary and prepare them for checking CSP. A mutable ResourceRequest is
   // passed as the URL may be modified. After this call returns, it is not
@@ -187,8 +208,7 @@ class PLATFORM_EXPORT FetchContext : public GarbageCollected<FetchContext> {
       ResourceRequest&,
       const ResourceLoaderOptions&);
 
-  virtual bool StartSpeculativeImageDecode(Resource* resource,
-                                           base::OnceClosure callback);
+  virtual bool StartSpeculativeImageDecode(Resource* resource);
 
   // Called when the underlying context is detached. Note that some
   // FetchContexts continue working after detached (e.g., for fetch() operations
@@ -205,14 +225,17 @@ class PLATFORM_EXPORT FetchContext : public GarbageCollected<FetchContext> {
   virtual const FeatureContext* GetFeatureContext() const { return nullptr; }
 
   // Determine if the request is on behalf of an advertisement. If so, return
-  // true. Checks `resource_request.Url()` unless `alias_url` is non-null, in
-  // which case it checks the latter.
-  virtual bool CalculateIfAdSubresource(
+  // the associated `AdProvenance`. Checks `resource_request.Url()` unless
+  // `alias_url` is non-null, in which case it checks the latter.
+  // `scan_javascript_stack` should be true once per request, and should be
+  // called while the v8 stack that triggered this request is still available.
+  virtual ResourceAnnotations CalculateResourceAnnotations(
       const ResourceRequestHead& resource_request,
       base::optional_ref<const KURL> alias_url,
       ResourceType type,
-      const FetchInitiatorInfo& initiator_info) {
-    return false;
+      const FetchInitiatorInfo& initiator_info,
+      bool scan_javascript_stack) {
+    return {};
   }
 
   // Returns a wrapper of ResourceLoadInfoNotifier to notify loading stats.
@@ -258,6 +281,8 @@ class PLATFORM_EXPORT FetchContext : public GarbageCollected<FetchContext> {
   virtual void AddCSPHashReport(
       const String& url,
       const HashMap<HashAlgorithm, String>& integrity_hashes) {}
+
+  virtual String GetSVGCacheIdentifier() const { return String(); }
 
  protected:
   const Vector<KURL> empty_unused_preloads_;

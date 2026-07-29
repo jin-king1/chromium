@@ -2,16 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/browser/ash/file_system_provider/fileapi/buffering_file_stream_reader.h"
 
 #include <algorithm>
 #include <utility>
 
+#include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "net/base/io_buffer.h"
 #include "net/base/net_errors.h"
@@ -37,6 +33,10 @@ BufferingFileStreamReader::~BufferingFileStreamReader() = default;
 int BufferingFileStreamReader::Read(net::IOBuffer* buffer,
                                     int buffer_length,
                                     net::CompletionOnceCallback callback) {
+  if (!buffer || (buffer_length < 0)) {
+    return net::ERR_INVALID_ARGUMENT;
+  }
+
   // Return as much as available in the internal buffer. It may be less than
   // |buffer_length|, what is valid.
   const int bytes_read =
@@ -67,8 +67,7 @@ int BufferingFileStreamReader::Read(net::IOBuffer* buffer,
   return net::ERR_IO_PENDING;
 }
 
-int64_t BufferingFileStreamReader::GetLength(
-    net::Int64CompletionOnceCallback callback) {
+int64_t BufferingFileStreamReader::GetLength(GetLengthCallback callback) {
   const int64_t result = file_stream_reader_->GetLength(std::move(callback));
   DCHECK_EQ(net::ERR_IO_PENDING, result);
 
@@ -78,11 +77,13 @@ int64_t BufferingFileStreamReader::GetLength(
 int BufferingFileStreamReader::CopyFromPreloadingBuffer(
     scoped_refptr<net::IOBuffer> buffer,
     int buffer_length) {
+  DCHECK_LE(0, buffer_length);
+  DCHECK_LE(static_cast<size_t>(buffer_length), buffer->span().size());
   const int read_bytes = std::min(buffer_length, preloaded_bytes_);
 
-  memcpy(buffer->data(),
-         preloading_buffer_->data() + preloading_buffer_offset_,
-         read_bytes);
+  UNSAFE_TODO(memcpy(buffer->data(),
+                     preloading_buffer_->data() + preloading_buffer_offset_,
+                     read_bytes));
   preloading_buffer_offset_ += read_bytes;
   preloaded_bytes_ -= read_bytes;
 

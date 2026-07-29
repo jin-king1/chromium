@@ -15,13 +15,16 @@ source_set("pdf") {
   ]
   deps = [
     "//chrome/browser/download",
+    "//chrome/browser/glic",
     "//chrome/browser/pdf",
     "//chrome/browser/screen_ai:screen_ai_install_state",
     "//chrome/browser/ui/tab_contents",
     "//chrome/browser/ui/user_education",
     "//chrome/common",
     "//components/pdf/browser",
+    "//components/tabs:public",
     "//extensions/browser",
+    "//extensions/browser/mime_handler",
     "//pdf:features",
   ]
 }

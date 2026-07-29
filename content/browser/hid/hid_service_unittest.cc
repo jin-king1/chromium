@@ -11,6 +11,7 @@
 #include "base/barrier_closure.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/bind.h"
 #include "base/test/gmock_callback_support.h"
@@ -18,6 +19,7 @@
 #include "base/test/test_future.h"
 #include "content/browser/hid/hid_test_utils.h"
 #include "content/browser/service_worker/embedded_worker_test_helper.h"
+#include "content/browser/service_worker/service_worker_context_core.h"
 #include "content/public/browser/content_browser_client.h"
 #include "content/public/browser/hid_delegate.h"
 #include "content/public/browser/render_frame_host.h"
@@ -53,7 +55,6 @@ using ::testing::_;
 using ::testing::ByMove;
 using ::testing::ElementsAre;
 using ::testing::Expectation;
-using ::testing::Invoke;
 using ::testing::Return;
 
 enum HidServiceCreationType {
@@ -197,6 +198,18 @@ class HidServiceTestHelper {
     return device::CreateDeviceFromReportDescriptor(
         /*vendor_id=*/0x1234, /*product_id=*/0xabcd,
         device::TestReportDescriptors::FidoU2fHid());
+  }
+
+  device::mojom::HidDeviceInfoPtr CreateNestedFidoDevice() {
+    return device::CreateDeviceFromReportDescriptor(
+        /*vendor_id=*/0x1234, /*product_id=*/0xabcd,
+        device::TestReportDescriptors::VendorWithNestedFido());
+  }
+
+  device::mojom::HidDeviceInfoPtr CreateNestedKeyboardDevice() {
+    return device::CreateDeviceFromReportDescriptor(
+        /*vendor_id=*/0x1234, /*product_id=*/0xabcd,
+        device::TestReportDescriptors::VendorWithNestedKeyboard());
   }
 
   device::mojom::HidDeviceInfoPtr CreateTitanFidoDevice() {
@@ -352,7 +365,8 @@ class HidServiceFidoTest : public HidServiceBaseTest,
  public:
   void SetUp() override {
     scoped_feature_list_.InitWithFeatures(
-        /*enabled_features=*/{features::kSecurityKeyHidInterfacesAreFido},
+        /*enabled_features=*/{features::kSecurityKeyHidInterfacesAreFido,
+                              features::kWebHidRecursiveFiltering},
         /*disabled_features=*/{});
   }
 
@@ -1373,6 +1387,147 @@ TEST_P(HidServiceFidoTest, TitanDeviceAllowedWithPrivilegedOrigin) {
       EXPECT_EQ(device_info.collections[0]->feature_reports.size(), 0u);
     }
   }
+}
+
+TEST_P(HidServiceFidoTest, NestedFidoDeviceAllowedWithPrivilegedOrigin) {
+  auto service_creation_type = std::get<0>(GetParam());
+  const auto& service = GetService(service_creation_type);
+  const bool is_fido_allowed = std::get<1>(GetParam());
+
+  url::Origin origin = url::Origin::Create(GURL(kTestUrl));
+  EXPECT_CALL(hid_delegate(), IsFidoAllowedForOrigin(_, origin))
+      .WillRepeatedly(Return(is_fido_allowed));
+  EXPECT_CALL(hid_delegate(), HasDevicePermission).WillRepeatedly(Return(true));
+
+  TestFuture<std::vector<device::mojom::HidDeviceInfoPtr>> get_devices_future;
+  service->GetDevices(get_devices_future.GetCallback());
+  EXPECT_TRUE(get_devices_future.Get().empty());
+
+  auto device_info = CreateNestedFidoDevice();
+  ASSERT_EQ(device_info->collections.size(), 1u);
+  EXPECT_EQ(device_info->collections[0]->usage->usage_page,
+            device::mojom::kPageVendor);
+  ASSERT_EQ(device_info->collections[0]->children.size(), 1u);
+  EXPECT_EQ(device_info->collections[0]->children[0]->usage->usage_page,
+            device::mojom::kPageFido);
+
+  TestFuture<device::mojom::HidDeviceInfoPtr> device_added_future;
+  if (is_fido_allowed) {
+    EXPECT_CALL(hid_manager_client(), DeviceAdded)
+        .WillOnce(InvokeFuture(device_added_future));
+  } else {
+    EXPECT_CALL(hid_manager_client(), DeviceAdded).Times(0);
+  }
+  ConnectDevice(*device_info);
+  if (is_fido_allowed) {
+    const auto& d = *device_added_future.Get();
+    ASSERT_EQ(d.collections.size(), 1u);
+    ASSERT_EQ(d.collections[0]->children.size(), 1u);
+    EXPECT_EQ(d.collections[0]->children[0]->input_reports.size(), 1u);
+    EXPECT_EQ(d.collections[0]->children[0]->output_reports.size(), 1u);
+  } else {
+    FlushHidServicePipe(service_);
+  }
+
+  TestFuture<device::mojom::HidDeviceInfoPtr> device_changed_future;
+  EXPECT_CALL(hid_manager_client(), DeviceChanged)
+      .WillOnce(InvokeFuture(device_changed_future));
+
+  auto joystick = device::mojom::HidCollectionInfo::New();
+  joystick->usage = device::mojom::HidUsageAndPage::New(
+      device::mojom::kGenericDesktopJoystick,
+      device::mojom::kPageGenericDesktop);
+  joystick->collection_type = device::mojom::kHIDCollectionTypeApplication;
+  joystick->feature_reports.push_back(
+      device::mojom::HidReportDescription::New());
+
+  auto updated_device_info = device_info.Clone();
+  updated_device_info->collections.push_back(std::move(joystick));
+  UpdateDevice(*updated_device_info);
+  const auto& changed_d = *device_changed_future.Get();
+  if (is_fido_allowed) {
+    ASSERT_EQ(changed_d.collections.size(), 2u);
+    EXPECT_EQ(changed_d.collections[0]->usage->usage_page,
+              device::mojom::kPageVendor);
+    ASSERT_EQ(changed_d.collections[0]->children.size(), 1u);
+    EXPECT_EQ(changed_d.collections[1]->usage->usage_page,
+              device::mojom::kPageGenericDesktop);
+    EXPECT_EQ(changed_d.collections[1]->usage->usage,
+              device::mojom::kGenericDesktopJoystick);
+  } else {
+    ASSERT_EQ(changed_d.collections.size(), 1u);
+    EXPECT_EQ(changed_d.collections[0]->usage->usage_page,
+              device::mojom::kPageGenericDesktop);
+    EXPECT_EQ(changed_d.collections[0]->usage->usage,
+              device::mojom::kGenericDesktopJoystick);
+  }
+
+  TestFuture<device::mojom::HidDeviceInfoPtr> device_removed_future;
+  EXPECT_CALL(hid_manager_client(), DeviceRemoved)
+      .WillOnce(InvokeFuture(device_removed_future));
+  DisconnectDevice(*updated_device_info);
+  const auto& removed_d = *device_removed_future.Get();
+  if (is_fido_allowed) {
+    EXPECT_EQ(removed_d.collections.size(), 2u);
+  } else {
+    EXPECT_EQ(removed_d.collections.size(), 1u);
+  }
+}
+
+TEST_P(HidServiceTest, NestedKeyboardDeviceBlocked) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(features::kWebHidRecursiveFiltering);
+
+  auto service_creation_type = GetParam();
+  GetService(service_creation_type);
+
+  // Set up global expectations for the delegate.
+  EXPECT_CALL(hid_delegate(), HasDevicePermission).WillRepeatedly(Return(true));
+
+  auto device_info = CreateNestedKeyboardDevice();
+  ASSERT_EQ(device_info->collections.size(), 1u);
+  EXPECT_EQ(device_info->collections[0]->usage->usage_page,
+            device::mojom::kPageVendor);
+  ASSERT_EQ(device_info->collections[0]->children.size(), 1u);
+  EXPECT_EQ(device_info->collections[0]->children[0]->usage->usage_page,
+            device::mojom::kPageGenericDesktop);
+  EXPECT_EQ(device_info->collections[0]->children[0]->usage->usage,
+            device::mojom::kGenericDesktopKeyboard);
+
+  EXPECT_CALL(hid_manager_client(), DeviceAdded).Times(0);
+  ConnectDevice(*device_info);
+  FlushHidServicePipe(service_);
+
+  base::RunLoop device_changed_loop;
+  EXPECT_CALL(hid_manager_client(), DeviceChanged).WillOnce([&](auto d) {
+    EXPECT_EQ(d->collections.size(), 1u);
+    EXPECT_EQ(d->collections[0]->usage->usage_page,
+              device::mojom::kPageGenericDesktop);
+    EXPECT_EQ(d->collections[0]->usage->usage,
+              device::mojom::kGenericDesktopJoystick);
+    device_changed_loop.Quit();
+  });
+
+  auto joystick = device::mojom::HidCollectionInfo::New();
+  joystick->usage = device::mojom::HidUsageAndPage::New(
+      device::mojom::kGenericDesktopJoystick,
+      device::mojom::kPageGenericDesktop);
+  joystick->collection_type = device::mojom::kHIDCollectionTypeApplication;
+  joystick->feature_reports.push_back(
+      device::mojom::HidReportDescription::New());
+
+  auto updated_device_info = device_info.Clone();
+  updated_device_info->collections.push_back(std::move(joystick));
+  UpdateDevice(*updated_device_info);
+  device_changed_loop.Run();
+
+  base::RunLoop device_removed_loop;
+  EXPECT_CALL(hid_manager_client(), DeviceRemoved).WillOnce([&](auto d) {
+    EXPECT_EQ(d->collections.size(), 1u);
+    device_removed_loop.Quit();
+  });
+  DisconnectDevice(*updated_device_info);
+  device_removed_loop.Run();
 }
 
 INSTANTIATE_TEST_SUITE_P(

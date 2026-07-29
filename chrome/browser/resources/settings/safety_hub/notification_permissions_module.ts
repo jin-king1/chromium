@@ -17,6 +17,7 @@ import 'chrome://resources/cr_elements/cr_tooltip/cr_tooltip.js';
 import '../settings_shared.css.js';
 import '../i18n_setup.js';
 import '../icons.html.js';
+import './safety_hub_module.js';
 
 import type {CrActionMenuElement} from 'chrome://resources/cr_elements/cr_action_menu/cr_action_menu.js';
 import type {CrToastElement} from 'chrome://resources/cr_elements/cr_toast/cr_toast.js';
@@ -94,9 +95,6 @@ export class SettingsSafetyHubNotificationPermissionsModuleElement extends
       // Text below primary header label.
       subheaderString_: String,
 
-      // The icon next to primary header label.
-      headerIconString_: String,
-
       // The text that will be shown in the undo toast element.
       toastText_: String,
 
@@ -104,7 +102,10 @@ export class SettingsSafetyHubNotificationPermissionsModuleElement extends
       lastUserAction_: String,
 
       // The last origins that the user interacted with.
-      lastOrigins_: Array,
+      lastOrigins_: {
+        type: Array,
+        value: () => [],
+      },
 
       // List of domains that sends a lot of notifications.
       sites_: {
@@ -127,15 +128,14 @@ export class SettingsSafetyHubNotificationPermissionsModuleElement extends
     ];
   }
 
-  private headerString_: string;
-  private subheaderString_: string;
-  private headerIconString_: string;
-  private toastText_: string|null;
-  private sites_: NotificationPermissionsDisplay[]|null;
-  private shouldShowCompletionInfo_: boolean;
-  private lastOrigins_: string[] = [];
+  declare private headerString_: string;
+  declare private subheaderString_: string;
+  declare private toastText_: string|null;
+  declare private sites_: NotificationPermissionsDisplay[]|null;
+  declare private shouldShowCompletionInfo_: boolean;
+  declare private lastOrigins_: string[];
   private renderedOrigins_: string[] = [];
-  private lastUserAction_: Actions|null;
+  declare private lastUserAction_: Actions|null;
   private eventTracker_: EventTracker = new EventTracker();
   private browserProxy_: SafetyHubBrowserProxy =
       SafetyHubBrowserProxyImpl.getInstance();
@@ -191,7 +191,6 @@ export class SettingsSafetyHubNotificationPermissionsModuleElement extends
     assert(this.toastText_);
     this.headerString_ = this.toastText_!;
     this.subheaderString_ = '';
-    this.headerIconString_ = 'cr:check';
   }
 
   private async onSitesChanged_() {
@@ -218,7 +217,6 @@ export class SettingsSafetyHubNotificationPermissionsModuleElement extends
         await PluralStringProxyImpl.getInstance().getPluralString(
             'safetyHubNotificationPermissionsSecondaryLabel',
             this.sites_.length);
-    this.headerIconString_ = 'settings:notifications-none';
   }
 
   /** Clears all the changes made by a previous action. */

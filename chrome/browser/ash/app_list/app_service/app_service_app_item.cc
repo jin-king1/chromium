@@ -50,7 +50,7 @@ bool IsNewInstall(const apps::AppUpdate& app_update) {
     case apps::AppType::kUnknown:
     case apps::AppType::kSystemWeb:
     case apps::AppType::kRemote:
-      // Chrome, Lacros, Settings, etc. are built-in.
+      // Chrome, Settings, etc. are built-in.
       return false;
     case apps::AppType::kArc:
     case apps::AppType::kCrostini:
@@ -242,7 +242,7 @@ void AppServiceAppItem::ResetIsNewInstall() {
 
   // Record metric for approximate time from installation to launch.
   base::TimeDelta time_since_install = base::TimeTicks::Now() - creation_time_;
-  if (display::Screen::GetScreen()->InTabletMode()) {
+  if (display::Screen::Get()->InTabletMode()) {
     base::UmaHistogramCustomTimes(
         "Apps.TimeBetweenAppInstallAndLaunch.TabletMode", time_since_install,
         kTimeMetricsMin, kTimeMetricsMax, kTimeMetricsBucketCount);

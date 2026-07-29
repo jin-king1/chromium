@@ -8,7 +8,7 @@
 
 #include "base/at_exit.h"
 #include "base/command_line.h"
-#include "base/functional/callback_forward.h"
+#include "base/functional/callback_helpers.h"
 #include "base/strings/string_util.h"
 #include "base/test/bind.h"
 #include "base/test/scoped_run_loop_timeout.h"
@@ -20,6 +20,7 @@
 #include "content/public/renderer/render_frame.h"
 #include "content/public/renderer/render_frame_observer.h"
 #include "content/public/test/test_launcher.h"
+#include "partition_alloc/buildflags.h"
 #include "third_party/blink/public/web/web_testing_support.h"
 
 #if BUILDFLAG(IS_WIN)
@@ -135,7 +136,7 @@ void InProcessFuzzer::SetUpOnMainThread() {
 #if BUILDFLAG(IS_POSIX)
   signal(SIGTERM, SIG_DFL);
   signal(SIGINT, SIG_DFL);
-#if defined(MEMORY_TOOL_REPLACES_ALLOCATOR)
+#if PA_BUILDFLAG(MEMORY_TOOL_REPLACES_ALLOCATOR)
   // In case we're being built with a memory tool (asan, msan...), we should
   // let it handle this signal so that we get better reporting.
   // As of now, since both in-process stack traces and the crashpad handler are
@@ -143,7 +144,7 @@ void InProcessFuzzer::SetUpOnMainThread() {
   // being set in
   // https://source.chromium.org/chromium/chromium/src/+/main:content/public/test/browser_test_base.cc?q=SignalHandler
   signal(SIGSEGV, SIG_DFL);
-#endif  // BUILDFLAG(MEMORY_TOOL_REPLACES_ALLOCATOR)
+#endif  // PA_BUILDFLAG(MEMORY_TOOL_REPLACES_ALLOCATOR)
 #endif  // BUILDFLAG(IS_POSIX)
 }
 
@@ -192,8 +193,7 @@ class FuzzerTestLauncherDelegate : public content::TestLauncherDelegate {
   FuzzerTestLauncherDelegate(std::unique_ptr<InProcessFuzzer>&& fuzzer,
                              std::vector<std::string>&& libfuzzer_arguments)
       : fuzzer_(std::move(fuzzer)),
-        libfuzzer_arguments_(std::move(libfuzzer_arguments)) {
-  }
+        libfuzzer_arguments_(std::move(libfuzzer_arguments)) {}
 
   int RunTestSuite(int argc, char** argv) override {
     fuzzer_->Run(libfuzzer_arguments_);
@@ -225,12 +225,17 @@ void InProcessFuzzer::RunTestOnMainThread() {
   int argc = argv.size() - 1;
   char** argv2 = argv.data();
   g_test = this;
-  base::IgnoreResult(LLVMFuzzerRunDriver(&argc, &argv2, fuzz_callback));
+  auto res = LLVMFuzzerRunDriver(&argc, &argv2, fuzz_callback);
   if (exit_after_fuzz_case_) {
     LOG(INFO) << "Early exit requested - exiting after LLVMFuzzerRunDriver.";
     exit(0);
   }
-  g_test = nullptr;
+  // Performing exit here allows us to skip the browser shutdown phase thus
+  // avoid potential hangs. This is the behaviour already observed in libfuzzer
+  // which performs exits within LLVMFuzzerRunDriver. It is important to use the
+  // LLVMFuzzerRunDriver return value for the exit value since this helps
+  // centipede determine which input crashed when rerunning inputs one-by-one.
+  exit(res);
 }
 
 int InProcessFuzzer::DoFuzz(const uint8_t* data, size_t size) {
@@ -252,7 +257,14 @@ class ChildProcessTestLauncherDelegate : public content::TestLauncherDelegate {
  public:
   ChildProcessTestLauncherDelegate() = default;
   int RunTestSuite(int argc, char** argv) override {
-    LOG(FATAL) << "Trying to run tests in child";
+    LOG(FATAL)
+        << "Trying to run tests in child.\n"
+        << "It looks like you may be trying to pass Chromium command line "
+           "arguments to the fuzzer. This fuzzer does not accept "
+           "Chromium arguments on its command line (subclasses can "
+           "override InProcessFuzzer::GetChromiumCommandLineArguments() "
+           "to modify these). The command line arguments passed to the "
+           "fuzzing engine should use single dashes (e.g. -runs=1).";
   }
 #if !BUILDFLAG(IS_ANDROID)
   // Android browser tests set the ContentMainDelegate itself for the test
@@ -346,7 +358,7 @@ int main(int argc, char** argv) {
   chromium_arguments.push_back(FILE_PATH_LITERAL("--disable-gpu"));
   chromium_arguments.push_back(
       FILE_PATH_LITERAL("--enable-unsafe-swiftshader"));
-#if defined(MEMORY_TOOL_REPLACES_ALLOCATOR)
+#if PA_BUILDFLAG(MEMORY_TOOL_REPLACES_ALLOCATOR)
   // We disable in-process stack trace handling in case we're using memory
   // tools so that we get better reporting on what happened in case of
   // SIGSEGV.

@@ -12,31 +12,32 @@
 #import "base/strings/sys_string_conversions.h"
 #import "base/time/time.h"
 #import "components/prefs/pref_service.h"
+#import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
 #import "components/signin/public/identity_manager/objc/identity_manager_observer_bridge.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin_promo_view_mediator.h"
 #import "ios/chrome/browser/content_notification/model/content_notification_util.h"
+#import "ios/chrome/browser/content_suggestions/set_up_list/public/set_up_list_utils.h"
 #import "ios/chrome/browser/ntp/ui_bundled/feed_top_section/feed_top_section_consumer.h"
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_delegate.h"
-#import "ios/chrome/browser/push_notification/model/provisional_push_notification_util.h"
+#import "ios/chrome/browser/push_notification/coordinator/notifications_alert_presenter.h"
+#import "ios/chrome/browser/push_notification/model/provisional_push_notification_service.h"
 #import "ios/chrome/browser/push_notification/model/push_notification_client_id.h"
 #import "ios/chrome/browser/push_notification/model/push_notification_service.h"
 #import "ios/chrome/browser/push_notification/model/push_notification_settings_util.h"
 #import "ios/chrome/browser/push_notification/model/push_notification_util.h"
-#import "ios/chrome/browser/push_notification/ui_bundled/notifications_alert_presenter.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/public/features/system_flags.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
-#import "ios/chrome/browser/ui/content_suggestions/set_up_list/utils.h"
 
 using base::RecordAction;
 using base::UmaHistogramEnumeration;
 using base::UserMetricsAction;
 
-@interface FeedTopSectionMediator () <IdentityManagerObserverBridgeDelegate> {
+@interface FeedTopSectionMediator () <IdentityManagerObserving> {
   // Observes changes in identity.
   std::unique_ptr<signin::IdentityManagerObserverBridge>
       _identityObserverBridge;
@@ -44,7 +45,7 @@ using base::UserMetricsAction;
 
 @property(nonatomic, assign) AuthenticationService* authenticationService;
 @property(nonatomic, assign) signin::IdentityManager* identityManager;
-@property(nonatomic, assign) BOOL isIncognito;
+@property(nonatomic, assign) BOOL incognito;
 @property(nonatomic, assign) PrefService* prefService;
 
 // Consumer for this mediator.
@@ -52,23 +53,30 @@ using base::UserMetricsAction;
 
 @end
 
-@implementation FeedTopSectionMediator
+@implementation FeedTopSectionMediator {
+  raw_ptr<ProvisionalPushNotificationService>
+      _provisionalPushNotificationService;
+}
 
 // FeedTopSectionViewControllerDelegate
 @synthesize signinPromoConfigurator = _signinPromoConfigurator;
 
 - (instancetype)initWithConsumer:(id<FeedTopSectionConsumer>)consumer
-                 identityManager:(signin::IdentityManager*)identityManager
-                     authService:(AuthenticationService*)authenticationService
-                     isIncognito:(BOOL)isIncognito
-                     prefService:(PrefService*)prefService {
+                       identityManager:(signin::IdentityManager*)identityManager
+                           authService:
+                               (AuthenticationService*)authenticationService
+    provisionalPushNotificationService:
+        (ProvisionalPushNotificationService*)provisionalPushNotificationService
+                             incognito:(BOOL)incognito
+                           prefService:(PrefService*)prefService {
   self = [super init];
   if (self) {
     _authenticationService = authenticationService;
     _identityManager = identityManager;
+    _provisionalPushNotificationService = provisionalPushNotificationService;
     _identityObserverBridge.reset(
         new signin::IdentityManagerObserverBridge(_identityManager, self));
-    _isIncognito = isIncognito;
+    _incognito = incognito;
     _prefService = prefService;
     _consumer = consumer;
   }
@@ -85,6 +93,7 @@ using base::UserMetricsAction;
 
 - (void)shutdown {
   _identityObserverBridge.reset();
+  _provisionalPushNotificationService = nullptr;
   self.authenticationService = nullptr;
   self.identityManager = nullptr;
   self.prefService = nullptr;
@@ -107,10 +116,10 @@ using base::UserMetricsAction;
   return _signinPromoConfigurator;
 }
 
-#pragma mark - IdentityManagerObserverBridgeDelegate
+#pragma mark - IdentityManagerObserving
 
 // Called when a user changes the syncing state.
-- (void)onPrimaryAccountChanged:
+- (void)primaryAccountDidChange:
     (const signin::PrimaryAccountChangeEvent&)event {
   switch (event.GetEventTypeFor(signin::ConsentLevel::kSignin)) {
     case signin::PrimaryAccountChangeEvent::Type::kSet:
@@ -201,12 +210,12 @@ using base::UserMetricsAction;
 // Returns true if notifications are enabled in Chime or at the OS level.
 - (BOOL)isNotificationsEnabled {
   DCHECK([self isUserSignedIn]);
-  id<SystemIdentity> identity = self.authenticationService->GetPrimaryIdentity(
-      signin::ConsentLevel::kSignin);
+  id<SystemIdentity> identity =
+      self.authenticationService->GetPrimaryIdentity();
   // Check if user has notifications enabled at the Chime level.
   BOOL isChimeEnabled =
       push_notification_settings::IsMobileNotificationsEnabledForAnyClient(
-          GaiaId(identity.gaiaID), self.prefService);
+          identity.gaiaId, self.prefService);
   if (isChimeEnabled) {
     return true;
   }
@@ -230,8 +239,7 @@ using base::UserMetricsAction;
     return true;
   }
 
-  if (!IsContentNotificationExperimentEnabled() ||
-      !IsContentNotificationPromoEnabled([self isUserSignedIn],
+  if (!IsContentNotificationPromoEnabled([self isUserSignedIn],
                                          self.isDefaultSearchEngine,
                                          self.prefService)) {
     return false;
@@ -296,7 +304,7 @@ using base::UserMetricsAction;
                                           prefService:self.prefService]) {
     isAccountEligibleForSignInPromo = ![self isUserSignedIn];
   }
-  return !self.isIncognito && ![self.NTPDelegate isStartSurface] &&
+  return !self.incognito && ![self.NTPDelegate isStartSurface] &&
          self.isSignInPromoEnabled && isAccountEligibleForSignInPromo;
 }
 
@@ -329,14 +337,14 @@ using base::UserMetricsAction;
 - (void)enrollUserToProvisionalNotificationsFromEntrypoint:
     (ContentNotificationPromoProvisionalEntrypoint)entrypoint {
   [self logHistogramForEntrypoint:entrypoint];
-  [ProvisionalPushNotificationUtil
-      enrollUserToProvisionalNotificationsForClientIds:
-          {PushNotificationClientId::kContent,
-           PushNotificationClientId::kSports}
-                           clientEnabledForProvisional:YES
-                                       withAuthService:
-                                           self.authenticationService
-                                 deviceInfoSyncService:nil];
+  if (_provisionalPushNotificationService) {
+    _provisionalPushNotificationService->EnrollUserToProvisionalNotifications(
+        ProvisionalPushNotificationService::ClientIdState::kEnabled,
+        {
+            PushNotificationClientId::kContent,
+            PushNotificationClientId::kSports,
+        });
+  }
 }
 
 #pragma mark - Metrics

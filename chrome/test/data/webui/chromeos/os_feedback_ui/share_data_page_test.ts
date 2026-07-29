@@ -53,7 +53,7 @@ suite('shareDataPageTestSuite', () => {
 
   function getElementContent(selector: string): string {
     const element = page.shadowRoot!.querySelector(selector);
-    return element!.textContent!.trim();
+    return element!.textContent.trim();
   }
 
   function verifyRecordPreSubmitActionCallCount(
@@ -238,12 +238,12 @@ suite('shareDataPageTestSuite', () => {
     assertEquals(2, emailDropdown.options.length);
 
     const firstOption = emailDropdown.options.item(0) as HTMLOptionElement;
-    assertEquals('test.user2@test.com', firstOption.textContent!.trim());
+    assertEquals('test.user2@test.com', firstOption.textContent.trim());
     assertEquals('test.user2@test.com', firstOption.value.trim());
 
     const secondOption = emailDropdown.options.item(1);
     assertEquals(
-        'Don\'t include email address', secondOption!.textContent!.trim());
+        'Don\'t include email address', secondOption!.textContent.trim());
     assertEquals('', secondOption!.value.trim());
 
     // The user email section should be visible.
@@ -288,7 +288,7 @@ suite('shareDataPageTestSuite', () => {
   // Test that the pageUrl section is hidden when the url is empty string.
   test('pageUrlHidden', async () => {
     await initializePage();
-    fakeFeedbackContext.pageUrl!.url = '';
+    fakeFeedbackContext.pageUrl = '';
     page.feedbackContext = fakeFeedbackContext;
 
     // The pageUrl section should be hidden
@@ -297,7 +297,7 @@ suite('shareDataPageTestSuite', () => {
     assertFalse(isVisible(pageUrl));
 
     // Change it back otherwise it will effect other tests.
-    fakeFeedbackContext.pageUrl!.url = 'chrome://tab/';
+    fakeFeedbackContext.pageUrl = 'chrome://tab/';
   });
 
   // Test that the performanceTraceContainer section is hidden when the trace id
@@ -350,7 +350,7 @@ suite('shareDataPageTestSuite', () => {
 
     const report = (await clickSendAndWait(page)).detail.report;
 
-    assertEquals('chrome://tab/', report!.feedbackContext.pageUrl!.url);
+    assertEquals('chrome://tab/', report!.feedbackContext.pageUrl!);
     assertFalse(report!.includeSystemLogsAndHistograms);
   });
 
@@ -510,94 +510,6 @@ suite('shareDataPageTestSuite', () => {
     const report = (await clickSendAndWait(page)).detail.report;
 
     assertEquals(0, report!.feedbackContext.traceId);
-  });
-
-  /**
-   * Test that when the send button is clicked, an on-continue is fired.
-   * Case 7: Report won't have assistant log flags if isInternalAccount
-   * and fromAssistant flag in feedbackContext is false.
-   */
-  test('ReportWillNotHaveAssistantLogIfFromAssistantSetFalse', async () => {
-    await initializePage();
-    page.feedbackContext = fakeFeedbackContext;
-
-    // The report should not have assistant logs by default.
-    strictQuery('#assistantLogsContainer', page.shadowRoot, HTMLElement)
-        .hidden = true;
-    assertTrue(strictQuery(
-                   '#assiatantLogsCheckbox', page.shadowRoot, CrCheckboxElement)
-                   .checked);
-    const report = (await clickSendAndWait(page)).detail.report;
-
-    assertFalse(report!.feedbackContext.assistantDebugInfoAllowed);
-    assertFalse(report!.feedbackContext.fromAssistant);
-  });
-
-  /**
-   * Test that when the send button is clicked, an on-continue is fired.
-   * Case 8: Send assistant log if assistant log checkbox is checked,
-   * the report should show assistant Debug Info allowed.
-   */
-  test('SendAssistantLogWithReport', async () => {
-    await initializePage();
-    page.feedbackContext = fakeInternalUserFeedbackContext;
-
-    assertTrue(
-        !!strictQuery('#assistantLogsContainer', page.shadowRoot, HTMLElement));
-    strictQuery('#assistantLogsContainer', page.shadowRoot, HTMLElement)
-        .hidden = false;
-    strictQuery('#assiatantLogsCheckbox', page.shadowRoot, CrCheckboxElement)
-        .checked = true;
-
-    const report = (await clickSendAndWait(page)).detail.report;
-    assertTrue(report!.feedbackContext.assistantDebugInfoAllowed);
-    assertTrue(report!.feedbackContext.fromAssistant);
-  });
-
-  /**
-   * Test that when the send button is clicked, an on-continue is fired.
-   * Case 9: Don't include assistant log if assistant log checkbox is unchecked,
-   * the report should show assistant Debug Info not allowed.
-   */
-  test('SendAssistantLogWithReport', async () => {
-    await initializePage();
-    page.feedbackContext = fakeInternalUserFeedbackContext;
-
-    assertTrue(
-        !!strictQuery('#assistantLogsContainer', page.shadowRoot, HTMLElement));
-    strictQuery('#assistantLogsContainer', page.shadowRoot, HTMLElement)
-        .hidden = false;
-
-    // Uncheck the assistant logs checkbox.
-    strictQuery('#assiatantLogsCheckbox', page.shadowRoot, CrCheckboxElement)
-        .checked = false;
-
-    const report = (await clickSendAndWait(page)).detail.report;
-
-    assertFalse(report!.feedbackContext.assistantDebugInfoAllowed);
-    assertTrue(report!.feedbackContext.fromAssistant);
-  });
-
-  /**
-   * Case 10: Test when user using internal account but feedback is not called
-   * from Assistant, and the report should not have fromAssistant and
-   * assistantDebugInfoAllowed flags set true.
-   */
-  test('SendReportWithInternalAccountButNotFromAssistant', async () => {
-    await initializePage();
-    page.feedbackContext = fakeInternalUserFeedbackContext;
-    page.feedbackContext.fromAssistant = false;
-
-    assertTrue(isVisible(
-        strictQuery('#assistantLogsContainer', page.shadowRoot, HTMLElement)));
-    assertTrue(strictQuery(
-                   '#assiatantLogsCheckbox', page.shadowRoot, CrCheckboxElement)
-                   .checked);
-
-    const report = (await clickSendAndWait(page)).detail.report;
-
-    assertFalse(report!.feedbackContext.assistantDebugInfoAllowed);
-    assertFalse(report!.feedbackContext.fromAssistant);
   });
 
   /**
@@ -954,15 +866,6 @@ suite('shareDataPageTestSuite', () => {
     await initializePage();
     page.feedbackContext = fakeEmptyFeedbackContext;
 
-    // Uncheck the "Link Cross Device Dogfood Feedback" checkbox so that only
-    // the Bluetooth-specific categoryTag is added to the report.
-    const linkCrossDeviceDogfoodFeedbackCheckbox = strictQuery(
-        '#linkCrossDeviceDogfoodFeedbackCheckbox', page.shadowRoot,
-        CrCheckboxElement);
-    assertTrue(!!linkCrossDeviceDogfoodFeedbackCheckbox);
-    linkCrossDeviceDogfoodFeedbackCheckbox.checked = false;
-    assertFalse(linkCrossDeviceDogfoodFeedbackCheckbox.checked);
-
     // Uncheck the bluetooth logs checkbox.
     const bluetoothLogsCheckbox = strictQuery(
         '#bluetoothLogsCheckbox', page.shadowRoot, CrCheckboxElement);
@@ -997,100 +900,6 @@ suite('shareDataPageTestSuite', () => {
         'BluetoothReportWithLogs',
         reportWithCategoryTagAndBluetoothFlag!.feedbackContext.categoryTag);
   });
-
-  /**
-   * Test that when feedback context contains categoryTag matching value
-   * is set on report.
-   */
-  test(
-      'AdditionalContext_CategoryTag_LinkCrossDeviceDogfoodFeedback',
-      async () => {
-        await initializePage();
-        page.feedbackContext = fakeEmptyFeedbackContext;
-
-        // Uncheck the bluetooth logs checkbox so that only the "Link Cross
-        // Device Dogfood Feedback"-specific categoryTag is added to the report.
-        const bluetoothLogsCheckbox = strictQuery(
-            '#bluetoothLogsCheckbox', page.shadowRoot, CrCheckboxElement);
-        assertTrue(!!bluetoothLogsCheckbox);
-        bluetoothLogsCheckbox.checked = false;
-        assertFalse(bluetoothLogsCheckbox.checked);
-
-        // Uncheck the "Link Cross Device Dogfood Feedback" checkbox.
-        const linkCrossDeviceDogfoodFeedbackCheckbox = strictQuery(
-            '#linkCrossDeviceDogfoodFeedbackCheckbox', page.shadowRoot,
-            CrCheckboxElement);
-        assertTrue(!!linkCrossDeviceDogfoodFeedbackCheckbox);
-        linkCrossDeviceDogfoodFeedbackCheckbox.checked = false;
-        assertFalse(linkCrossDeviceDogfoodFeedbackCheckbox.checked);
-
-        const reportWithoutCategoryTag =
-            (await clickSendAndWait(page)).detail.report;
-        assertFalse(!!reportWithoutCategoryTag!.feedbackContext.categoryTag);
-
-        page.reEnableSendReportButton();
-        page.feedbackContext = fakeFeedbackContext;
-        assertTrue(!!page.feedbackContext.categoryTag);
-        await flushTasks();
-
-        const reportWithCategoryTag =
-            (await clickSendAndWait(page)).detail.report;
-        assertEquals(
-            fakeFeedbackContext.categoryTag,
-            reportWithCategoryTag!.feedbackContext.categoryTag);
-
-        // Check the Link Cross Device Dogfood Feedback checkbox. The
-        // categoryTag should be
-        // 'linkCrossDeviceDogfoodFeedbackWithoutBluetoothLogs'.
-        page.reEnableSendReportButton();
-        assertTrue(!!linkCrossDeviceDogfoodFeedbackCheckbox);
-        linkCrossDeviceDogfoodFeedbackCheckbox.checked = true;
-        assertTrue(linkCrossDeviceDogfoodFeedbackCheckbox.checked);
-
-        page.reEnableSendReportButton();
-
-        const reportWithCrossDeviceWithoutBluetoothLogsTag =
-            (await clickSendAndWait(page)).detail.report;
-        assertEquals(
-            'linkCrossDeviceDogfoodFeedbackWithoutBluetoothLogs',
-            reportWithCrossDeviceWithoutBluetoothLogsTag!.feedbackContext
-                .categoryTag);
-      });
-
-  /**
-   * Test that when feedback context contains categoryTag matching value
-   * is set on report.
-   */
-  test(
-      'AdditionalContext_CategoryTag_BluetoothLogsAndLinkCrossDeviceDogfoodFeedback',
-      async () => {
-        await initializePage();
-        page.feedbackContext = fakeFeedbackContext;
-
-        // Check both the "Link Cross Device Dogfood Feedback" and Bluetooth
-        // logs checkboxes. The categoryTag should then be
-        // 'linkCrossDeviceDogfoodFeedbackWithBluetoothLogs'.
-        const linkCrossDeviceDogfoodFeedbackCheckbox = strictQuery(
-            '#linkCrossDeviceDogfoodFeedbackCheckbox', page.shadowRoot,
-            CrCheckboxElement);
-        linkCrossDeviceDogfoodFeedbackCheckbox.checked = true;
-        assertTrue(linkCrossDeviceDogfoodFeedbackCheckbox.checked);
-
-        const bluetoothLogsCheckbox = strictQuery(
-            '#bluetoothLogsCheckbox', page.shadowRoot, CrCheckboxElement);
-        assertTrue(!!bluetoothLogsCheckbox);
-        bluetoothLogsCheckbox.checked = true;
-        assertTrue(bluetoothLogsCheckbox.checked);
-
-        await flushTasks();
-
-        const reportWithCrossDeviceWithBluetoothLogsTag =
-            (await clickSendAndWait(page)).detail.report;
-        assertEquals(
-            'linkCrossDeviceDogfoodFeedbackWithBluetoothLogs',
-            reportWithCrossDeviceWithBluetoothLogsTag!.feedbackContext
-                .categoryTag);
-      });
 
   /**
    * Test that openMetricsDialog and recordPreSubmitAction are called when
@@ -1226,71 +1035,6 @@ suite('shareDataPageTestSuite', () => {
   });
 
   /**
-   * Test that clicking the #linkCrossDeviceDogfoodFeedbackInfoLink will open
-   * the dialog and set the focus on the close dialog icon button.
-   */
-  test('openLinkCrossDeviceDogfoodFeedbackDialog', async () => {
-    await initializePage();
-    page.feedbackContext = fakeFeedbackContext;
-
-    // The "Link Cross Device Dogfood Feedback" dialog is not visible as
-    // default.
-    const closeDialogButton = strictQuery(
-        '#linkCrossDeviceDogfoodFeedbackDialogDoneButton', page.shadowRoot,
-        CrButtonElement);
-    assertFalse(isVisible(closeDialogButton));
-
-    // After clicking the #linkCrossDeviceDogfoodFeedbackLink, the dialog pops
-    // up.
-    strictQuery(
-        '#linkCrossDeviceDogfoodFeedbackInfoLink', page.shadowRoot,
-        HTMLAnchorElement)
-        .click();
-    assertTrue(isVisible(closeDialogButton));
-
-    // The preview dialog's close icon button is focused.
-    assertEquals(closeDialogButton, getDeepActiveElement());
-
-    // Press enter should close the preview dialog.
-    closeDialogButton.dispatchEvent(
-        new KeyboardEvent('keydown', {key: 'Enter'}));
-    await flushTasks();
-
-    // The preview dialog's close icon button is not visible now.
-    assertFalse(isVisible(closeDialogButton));
-  });
-
-  /**
-   * Test that clicking the #assistantLogsLink will open the dialog and set the
-   * focus on the close dialog icon button.
-   */
-  test('openAssistantLogsDialog', async () => {
-    await initializePage();
-    page.feedbackContext = fakeFeedbackContext;
-
-    // The assistant dialog is not visible as default.
-    const closeDialogButton = strictQuery(
-        '#assistantDialogDoneButton', page.shadowRoot, CrButtonElement);
-    assertFalse(isVisible(closeDialogButton));
-
-    // After clicking the #bluetoothLogsLink, the dialog pops up.
-    strictQuery('#assistantLogsLink', page.shadowRoot, HTMLAnchorElement)
-        .click();
-    assertTrue(isVisible(closeDialogButton));
-
-    // The preview dialog's close icon button is focused.
-    assertEquals(closeDialogButton, getDeepActiveElement());
-
-    // Press enter should close the preview dialog.
-    closeDialogButton.dispatchEvent(
-        new KeyboardEvent('keydown', {key: 'Enter'}));
-    await flushTasks();
-
-    // The preview dialog's close icon button is not visible now.
-    assertFalse(isVisible(closeDialogButton));
-  });
-
-  /**
    * Test that sendBluetoothLogs flag is true and categoryTag is marked as
    * 'BluetoothReportWithLogs' when bluetooth logs checkbox is checked.
    */
@@ -1310,19 +1054,10 @@ suite('shareDataPageTestSuite', () => {
 
     const bluetoothLogsCheckbox = strictQuery(
         '#bluetoothLogsCheckbox', page.shadowRoot, CrCheckboxElement);
-    const linkCrossDeviceDogfoodFeedbackCheckbox = strictQuery(
-        '#linkCrossDeviceDogfoodFeedbackCheckbox', page.shadowRoot,
-        CrCheckboxElement);
 
     // Check the bluetoothLogs checkbox, it is default to be checked.
     assertTrue(!!bluetoothLogsCheckbox);
     assertTrue(bluetoothLogsCheckbox.checked);
-
-    // Uncheck the "Link Cross Device Dogfood Feedback" checkbox so that only
-    // the Bluetooth-specific categoryTag is added to the report.
-    assertTrue(!!linkCrossDeviceDogfoodFeedbackCheckbox);
-    linkCrossDeviceDogfoodFeedbackCheckbox.checked = false;
-    assertFalse(linkCrossDeviceDogfoodFeedbackCheckbox.checked);
 
     // Report should have sendBluetoothLogs flag true, and category marked as
     // "BluetoothReportWithLogs".
@@ -1359,15 +1094,6 @@ suite('shareDataPageTestSuite', () => {
         '#bluetoothLogsCheckbox', page.shadowRoot, CrCheckboxElement);
     assertTrue(!!bluetoothLogsCheckbox);
     assertTrue(bluetoothLogsCheckbox.checked);
-
-    // Uncheck the "Link Cross Device Dogfood Feedback" checkbox so that only
-    // the Bluetooth-specific categoryTag is added to the report.
-    const linkCrossDeviceDogfoodFeedbackCheckbox = strictQuery(
-        '#linkCrossDeviceDogfoodFeedbackCheckbox', page.shadowRoot,
-        CrCheckboxElement);
-    assertTrue(!!linkCrossDeviceDogfoodFeedbackCheckbox);
-    linkCrossDeviceDogfoodFeedbackCheckbox.checked = false;
-    assertFalse(linkCrossDeviceDogfoodFeedbackCheckbox.checked);
 
     // Verify that unchecking the checkbox will remove the flag in the report.
     bluetoothLogsCheckbox.click();

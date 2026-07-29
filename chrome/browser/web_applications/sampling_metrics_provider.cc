@@ -4,23 +4,26 @@
 
 #include "chrome/browser/web_applications/sampling_metrics_provider.h"
 
-#include "base/containers/contains.h"
 #include "base/metrics/histogram_macros.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
-#include "chrome/browser/ui/tabs/public/tab_interface.h"
+#include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/browser/web_applications/daily_metrics_helper.h"
 #include "chrome/browser/web_applications/mojom/user_display_mode.mojom.h"
+#include "chrome/browser/web_applications/web_app_filter.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/web_applications/web_app_registrar.h"
 #include "chrome/browser/web_applications/web_app_tab_helper.h"
+#include "chrome/browser/web_applications/web_app_ui_manager.h"
 #include "chrome/browser/web_applications/web_app_utils.h"
 #include "components/services/app_service/public/cpp/preferred_apps_list.h"
+#include "components/tabs/public/tab_interface.h"
 #include "components/webapps/browser/banners/app_banner_manager.h"
 #include "components/webapps/browser/banners/installable_web_app_check_result.h"
 #include "components/webapps/browser/banners/web_app_banner_data.h"
+#include "components/webapps/browser/installable/installable_metrics.h"
 
 namespace web_app {
 
@@ -49,17 +52,15 @@ void EmitUkmMetricsForTab(tabs::TabInterface* tab) {
   DailyInteraction interaction;
 
   interaction.start_url = registrar.GetAppStartUrl(*app_id);
-  interaction.installed = registrar.IsInstallState(
-      *app_id, {proto::INSTALLED_WITHOUT_OS_INTEGRATION,
-                proto::INSTALLED_WITH_OS_INTEGRATION});
+  interaction.installed =
+      registrar.AppMatches(*app_id, WebAppFilter::InstalledInChrome());
   auto install_source =
       provider->registrar_unsafe().GetLatestAppInstallSource(*app_id);
   if (install_source) {
     interaction.install_source = static_cast<int>(*install_source);
   }
-  DisplayMode display_mode =
-      provider->registrar_unsafe().GetAppEffectiveDisplayMode(*app_id);
-  interaction.effective_display_mode = static_cast<int>(display_mode);
+  interaction.effective_display_mode = static_cast<int>(
+      provider->registrar_unsafe().GetAppEffectiveDisplayMode(*app_id));
 
 #if BUILDFLAG(IS_CHROMEOS)
   if (apps::AppServiceProxyFactory::IsAppServiceAvailableForProfile(profile)) {
@@ -70,7 +71,8 @@ void EmitUkmMetricsForTab(tabs::TabInterface* tab) {
 #else
   interaction.captures_links = registrar.CapturesLinksInScope(*app_id);
 #endif
-  interaction.promotable = !registrar.IsDiyApp(*app_id);
+  interaction.promotable =
+      registrar.AppMatches(*app_id, WebAppFilter::IsCraftedApp());
 
   if (tab->IsActivated() && browser->IsActive()) {
     interaction.foreground_duration = base::Seconds(kTimerIntervalInSeconds);
@@ -101,7 +103,7 @@ void MaybeEmitUkmMetricsForTab(tabs::TabInterface* tab, IdSet& emitted_ids) {
   }
 
   // We only emit UKM metrics a single time for a given AppId.
-  if (base::Contains(emitted_ids, *app_id)) {
+  if (emitted_ids.contains(*app_id)) {
     return;
   }
 
@@ -124,7 +126,7 @@ void MaybeEmitUkmMetricsForTab(tabs::TabInterface* tab, IdSet& emitted_ids) {
     case mojom::UserDisplayMode::kStandalone:
       // Emit metrics only if the app is configured to run in a standalone
       // window, and is running in a standalone window.
-      if (tab->GetBrowserWindowInterface()->GetAppBrowserController()) {
+      if (AppBrowserController::IsWebApp(tab->GetBrowserWindowInterface())) {
         emitted_ids.insert(*app_id);
         EmitUkmMetricsForTab(tab);
       }
@@ -142,7 +144,7 @@ void MaybeEmitUkmMetricsForPromotable(
     const webapps::WebAppBannerData& banner_data,
     IdSet& emitted_ids) {
   const GURL& url = banner_data.manifest().start_url;
-  if (base::Contains(emitted_ids, url.spec())) {
+  if (emitted_ids.contains(url.spec())) {
     return;
   }
 
@@ -152,7 +154,7 @@ void MaybeEmitUkmMetricsForPromotable(
   interaction.installed = false;
   if (!banner_data.manifest().display_override.empty()) {
     interaction.effective_display_mode =
-        static_cast<int>(banner_data.manifest().display_override[0]);
+        static_cast<int>(banner_data.manifest().display_override[0].display());
   } else {
     interaction.effective_display_mode =
         static_cast<int>(banner_data.manifest().display);
@@ -190,16 +192,32 @@ void SamplingMetricsProvider::EmitMetrics() {
   int tabbed_pwas_display_mode_standalone_installed_by_user_count = 0;
 
   IdSet emitted_ukm_ids;
+  bool is_migration_suggested_in_menu = false;
+  bool is_migration_dialog_showing = false;
+
   for (BrowserWindowInterface* browser : GetAllBrowserWindowInterfaces()) {
     if (!AreWebAppsEnabled(browser->GetProfile())) {
       continue;
     }
+
+    auto* provider = WebAppProvider::GetForWebApps(browser->GetProfile());
+    CHECK(provider);
+
     // If this is a standalone app window.
-    if (browser->GetAppBrowserController()) {
+    if (AppBrowserController::IsWebApp(browser)) {
       // A browser may be being closed due to empty tabs. See
       // https://crbug.com/378020140.
-      if (!browser->GetActiveTabInterface()) {
+      tabs::TabInterface* active_tab = browser->GetActiveTabInterface();
+      if (!active_tab) {
         continue;
+      }
+
+      if (provider->ui_manager().IsAppMigrationSuggested(browser)) {
+        is_migration_suggested_in_menu = true;
+      }
+
+      if (provider->ui_manager().IsAppMigrationDialogShowing(browser)) {
+        is_migration_dialog_showing = true;
       }
 
       ++standalone_pwas_count;
@@ -210,14 +228,11 @@ void SamplingMetricsProvider::EmitMetrics() {
         standalone_pwas_in_active_use = true;
       }
 
-      MaybeEmitUkmMetricsForTab(browser->GetActiveTabInterface(),
-                                emitted_ukm_ids);
+      MaybeEmitUkmMetricsForTab(active_tab, emitted_ukm_ids);
     }
 
     // If this is a PWA-tab in a normal browser window.
     if (browser->GetType() == BrowserWindowInterface::Type::TYPE_NORMAL) {
-      auto* provider =
-          web_app::WebAppProvider::GetForWebApps(browser->GetProfile());
       auto& registrar = provider->registrar_unsafe();
 
       for (tabs::TabInterface* tab : browser->GetAllTabInterfaces()) {
@@ -232,7 +247,8 @@ void SamplingMetricsProvider::EmitMetrics() {
 
           std::optional<mojom::UserDisplayMode> user_display_mode =
               registrar.GetAppUserDisplayMode(*app_id);
-          bool installed_by_user = registrar.WasInstalledByUser(*app_id);
+          bool installed_by_user =
+              registrar.AppMatches(*app_id, WebAppFilter::InstalledByUser());
           if (user_display_mode == mojom::UserDisplayMode::kBrowser) {
             ++tabbed_pwas_user_display_mode_browser_count;
             if (installed_by_user) {
@@ -297,6 +313,11 @@ void SamplingMetricsProvider::EmitMetrics() {
       "WebApp.Engagement2.Tabbed.UserDisplayModeStandaloneInstalledByUser."
       "Count",
       tabbed_pwas_display_mode_standalone_installed_by_user_count);
+
+  UMA_HISTOGRAM_BOOLEAN("WebApp.Engagement2.Standalone.MigrationSuggested",
+                        is_migration_suggested_in_menu);
+  UMA_HISTOGRAM_BOOLEAN("WebApp.Engagement2.Standalone.MigrationDialogShowing",
+                        is_migration_dialog_showing);
 }
 
 }  // namespace web_app

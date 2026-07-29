@@ -35,9 +35,12 @@ import sys
 import tempfile
 import time
 import urllib
+import urllib.error
+import urllib.request
 
 from update import (CDS_URL, CHROMIUM_DIR, CLANG_REVISION, LLVM_BUILD_DIR,
-                    FORCE_HEAD_REVISION_FILE, PACKAGE_VERSION, RELEASE_VERSION,
+                    FORCE_HEAD_REVISION_FILENAME, FORCE_HEAD_REVISION_FILE,
+                    PACKAGE_VERSION, RELEASE_VERSION, STAMP_FILENAME,
                     STAMP_FILE, THIS_DIR, DownloadUrl, DownloadAndUnpack,
                     DownloadAndUnpackPackage, EnsureDirExists, GetDefaultHostOs,
                     ReadStampFile, RmTree, WriteStampFile)
@@ -71,6 +74,11 @@ BUG_REPORT_URL = ('https://crbug.com in the Tools>LLVM component,'
 
 LIBXML2_VERSION = 'libxml2-v2.9.12'
 ZSTD_VERSION = 'zstd-1.5.5'
+
+# This must be less than or equal to the lowest target used in Chromium. See
+# e.g. mac_deployment_target in //build/config/mac/mac_sdk.gni and min_version
+# in //chrome/installer/gcapi_mac/BUILD.gn.
+DEFAULT_MACOSX_DEPLOYMENT_TARGET = '10.12'
 
 win_sdk_dir = None
 def GetWinSDKDir():
@@ -182,34 +190,95 @@ def CheckoutGitRepo(name, git_url, commit, dir):
   print('CheckoutGitRepo failed.')
   sys.exit(1)
 
+# Git commits include timing and author metadata in their hash.
+# To ensure we get a consistent hash when applying local changes,
+# set everything to fixed values via environment variable
+GIT_METADATA_OVERRIDES = {
+    'GIT_AUTHOR_NAME': 'Dummy Author',
+    'GIT_AUTHOR_EMAIL': 'none@none.com',
+    'GIT_AUTHOR_DATE': '2099-01-01 10:10:10',
+    'GIT_COMMITTER_NAME': 'Dummy Committer',
+    'GIT_COMMITTER_EMAIL': 'none@none.com',
+    'GIT_COMMITTER_DATE': '2099-01-01 10:10:10',
+}
 
-def GitCherryPick(git_repository, git_remote, commit, git_remote_name='github'):
+
+def IsGitAncestorToHead(git_repository, commit):
+  """Returns if commit is an ancestor of HEAD."""
+  return RunCommand([
+      'git', '-C', git_repository, 'merge-base', '--is-ancestor', commit, 'HEAD'
+  ],
+                           fail_hard=False)
+
+
+def GitCherryPick(git_repository,
+                  commit,
+                  git_remote=None,
+                  git_remote_name='github'):
   print(f'Cherry-picking {commit} in {git_repository} from {git_remote}')
   git_cmd = ['git', '-C', git_repository]
-  RunCommand(git_cmd + ['remote', 'add', git_remote_name, git_remote],
-             fail_hard=False)
-  RunCommand(git_cmd +
-             ['fetch', '--recurse-submodules=no', git_remote_name, commit])
-  is_ancestor = RunCommand(git_cmd +
-                           ['merge-base', '--is-ancestor', commit, 'HEAD'],
-                           fail_hard=False)
-  if is_ancestor:
+  if git_remote is not None:
+    RunCommand(git_cmd + ['remote', 'add', git_remote_name, git_remote],
+               fail_hard=False)
+    RunCommand(git_cmd +
+               ['fetch', '--recurse-submodules=no', git_remote_name, commit])
+
+  if IsGitAncestorToHead(git_repository, commit):
     print('Commit already an ancestor; skipping.')
     return
+
+  env = os.environ.copy()
+  env.update(GIT_METADATA_OVERRIDES)
   RunCommand([
       'git', '-C', git_repository, 'cherry-pick', '--keep-redundant-commits',
       commit
-  ])
+  ],
+             env=env)
+
+
+def GitRevert(git_repository, commit):
+  print(f'Reverting {commit} in {git_repository}')
+  if not IsGitAncestorToHead(git_repository, commit):
+    print('Commit not an ancestor; skipping.')
+    return
+  env = os.environ.copy()
+  env.update(GIT_METADATA_OVERRIDES)
+  RunCommand(['git', '-C', git_repository, 'revert', '--no-edit', commit],
+             env=env)
+
+
+def FetchUrl(url, max_tries=5, delay_seconds=1):
+  """Fetch content from a URL. If the fetch fails, retry several times after a
+     short delay."""
+  for i in range(max_tries):
+    try:
+      with urllib.request.urlopen(url) as response:
+        return response.read()
+    except (ConnectionError, urllib.error.URLError) as e:
+      # If this was the last try or a permanent 404 client error, re-raise.
+      if i >= max_tries - 1 or (isinstance(e, urllib.error.HTTPError)
+                                and e.code == 404):
+        raise e
+
+      reason = getattr(e, 'reason', e)
+      print(f"Failed to fetch {url}: {reason} (attempt {i + 1}/{max_tries}). "
+            f"Retrying in {delay_seconds}s...")
+      time.sleep(delay_seconds)
+      delay_seconds *= 2
+
+
+def GetLatestCommit(url):
+  """Get the latest commit hash from a git repository's JSON output. If the
+     fetch fails, retry several times after a short delay."""
+  main = json.loads(FetchUrl(url).decode("utf-8").replace(")]}'", ""))
+  return main['commit']
 
 
 def GetLatestLLVMCommit():
   """Get the latest commit hash in the LLVM monorepo."""
-  main = json.loads(
-      urllib.request.urlopen('https://chromium.googlesource.com/external/' +
-                             'github.com/llvm/llvm-project/' +
-                             '+/refs/heads/main?format=JSON').read().decode(
-                                 "utf-8").replace(")]}'", ""))
-  return main['commit']
+  url = ('https://chromium.googlesource.com/external/' +
+         'github.com/llvm/llvm-project/+/refs/heads/main?format=JSON')
+  return GetLatestCommit(url)
 
 
 def GetCommitDescription(commit):
@@ -318,7 +387,7 @@ def GetLibXml2Dirs():
   return LibXmlDirs()
 
 
-def BuildLibXml2():
+def BuildLibXml2(cc, cxx, cmake_sysroot, mac_deployment_target):
   """Download and build libxml2"""
   # The .tar.gz on GCS was uploaded as follows.
   # The gitlab page has more up-to-date packages than http://xmlsoft.org/,
@@ -340,10 +409,9 @@ def BuildLibXml2():
   # Disable everything except WITH_TREE and WITH_OUTPUT, both needed by LLVM's
   # WindowsManifestMerger.
   # Also enable WITH_THREADS, else libxml doesn't compile on Linux.
-  RunCommand(
-      [
-          'cmake',
-          '-GNinja',
+  cmake_args = [
+          '-DCMAKE_C_COMPILER=' + cc,
+          '-DCMAKE_CXX_COMPILER=' + cxx,
           '-DCMAKE_BUILD_TYPE=Release',
           '-DCMAKE_INSTALL_PREFIX=install',
           '-DCMAKE_INSTALL_LIBDIR=lib',
@@ -384,9 +452,13 @@ def BuildLibXml2():
           '-DLIBXML2_WITH_XPATH=OFF',
           '-DLIBXML2_WITH_XPTR=OFF',
           '-DLIBXML2_WITH_ZLIB=OFF',
-          '..',
-      ],
-      setenv=True)
+      ]
+  if cmake_sysroot:
+    cmake_args.append('-DCMAKE_SYSROOT=' + cmake_sysroot)
+  if sys.platform == 'darwin':
+    cmake_args.append('-DCMAKE_OSX_DEPLOYMENT_TARGET=' + mac_deployment_target)
+
+  RunCommand(['cmake', '-GNinja'] + cmake_args + ['..'], setenv=True)
   RunCommand(['ninja', 'install'], setenv=True)
 
   if sys.platform == 'win32':
@@ -432,7 +504,7 @@ class ZStdDirs:
     self.lib_dir = os.path.join(self.install_dir, 'lib')
 
 
-def BuildZStd():
+def BuildZStd(cc, cxx, cmake_sysroot, mac_deployment_target):
   """Download and build zstd lib"""
   # The zstd-1.5.5.tar.gz was downloaded from
   #   https://github.com/facebook/zstd/releases/
@@ -448,18 +520,20 @@ def BuildZStd():
   os.mkdir(dirs.build_dir)
   os.chdir(dirs.build_dir)
 
-  RunCommand(
-      [
-          'cmake',
-          '-GNinja',
+  cmake_args = [
+          '-DCMAKE_C_COMPILER=' + cc,
+          '-DCMAKE_CXX_COMPILER=' + cxx,
           '-DCMAKE_BUILD_TYPE=Release',
           '-DCMAKE_INSTALL_PREFIX=install',
           '-DCMAKE_INSTALL_LIBDIR=lib',
           '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded',  # /MT to match LLVM.
           '-DZSTD_BUILD_SHARED=OFF',
-          '../build/cmake',
-      ],
-      setenv=True)
+      ]
+  if cmake_sysroot:
+    cmake_args.append('-DCMAKE_SYSROOT=' + cmake_sysroot)
+  if sys.platform == 'darwin':
+    cmake_args.append('-DCMAKE_OSX_DEPLOYMENT_TARGET=' + mac_deployment_target)
+  RunCommand(['cmake', '-GNinja'] + cmake_args + ['../build/cmake'], setenv=True)
   RunCommand(['ninja', 'install'], setenv=True)
 
   if sys.platform == 'win32':
@@ -478,7 +552,7 @@ def BuildZStd():
 
 
 def DownloadPinnedClang():
-  PINNED_CLANG_VERSION = 'llvmorg-17-init-16420-g0c545a44-1'
+  PINNED_CLANG_VERSION = 'llvmorg-21-init-5118-g52cd27e6-4'
   DownloadAndUnpackPackage('clang', PINNED_CLANG_DIR, GetDefaultHostOs(),
                            PINNED_CLANG_VERSION)
 
@@ -567,9 +641,16 @@ def DownloadDebianSysroot(platform_name, skip_download=False):
       'arm': 'fe81e7114b97440262bce004caf02c1514732e2fa7f99693b2836932ad1c4626',
       # hash from https://chromium-review.googlesource.com/c/chromium/src/+/5506275/1/build/linux/sysroot_scripts/sysroots.json#21
       'arm64': '308e23faba3174bd01accfe358467b8a40fad4db4c49ef629da30219f65a275f',
+      # hash from https://chromium-review.googlesource.com/c/chromium/src/+/6603953/1/build/linux/sysroot_scripts/sysroots.json#45
+      'riscv64': '6c924a8f88bb4731f3c2334c6ae5b5da47d5ca196ff571a91071f104dbacecad',
   }
 
-  toolchain_name = f'debian_bullseye_{platform_name}_sysroot'
+  releases = {
+      'riscv64': 'trixie',
+  }
+
+  release = releases.get(platform_name, 'bullseye')
+  toolchain_name = f'debian_{release}_{platform_name}_sysroot'
   output = os.path.join(LLVM_BUILD_TOOLS_DIR, toolchain_name)
   stamp_file = os.path.join(output, 'stamp')
   version = hashes[platform_name]
@@ -724,17 +805,30 @@ def main():
                       help='don\'t build Fuchsia clang_rt runtime (linux/mac)',
                       dest='with_fuchsia',
                       default=sys.platform in ('linux2', 'darwin'))
-  parser.add_argument('--with-ccache',
-                      action='store_true',
-                      help='Use ccache to build the stage 1 compiler')
+  parser.add_argument('--with-compiler-wrapper',
+                      metavar='WRAPPER',
+                      help='Use a compiler wrapper (like ccache) to build the '
+                      'stage 1 compiler')
   parser.add_argument('--without-zstd',
                       dest='with_zstd',
                       action='store_false',
                       help='Disable zstd in the build')
+  parser.add_argument('--preserve-gcs-signature',
+                      action='store_true',
+                      help='By default, this script removes gcs hash files '
+                      'so that third_party/llvm-build is clobbered on the next'
+                      'run of gclient sync. This disables that, so that the'
+                      'directory will be preserved when syncing. Useful for'
+                      'local development.')
 
   args = parser.parse_args()
 
-  global CLANG_REVISION, PACKAGE_VERSION, LLVM_BUILD_DIR
+  global CLANG_REVISION, PACKAGE_VERSION, LLVM_BUILD_DIR, STAMP_FILE, FORCE_HEAD_REVISION_FILE
+
+  # TODO(crbug.com/534655507): Remove in next Clang roll.
+  if args.llvm_force_head_revision:
+    global RELEASE_VERSION
+    RELEASE_VERSION = '24'
 
   if (args.pgo or args.thinlto) and not args.bootstrap:
     print('--pgo/--thinlto requires --bootstrap')
@@ -780,7 +874,14 @@ def main():
 
 
   if args.build_dir:
+    args.build_dir = os.path.abspath(args.build_dir)
     LLVM_BUILD_DIR = args.build_dir
+    # These files record that we've done a local build of clang, and may be
+    # checked by the build system to validate the compiler. If we have a custom
+    # build directory, make sure they appear there instead of the default one.
+    STAMP_FILE = os.path.normpath(os.path.join(LLVM_BUILD_DIR, STAMP_FILENAME))
+    FORCE_HEAD_REVISION_FILE = os.path.normpath(
+        os.path.join(LLVM_BUILD_DIR, "..", FORCE_HEAD_REVISION_FILENAME))
 
   if args.llvm_force_head_revision:
     checkout_revision = GetLatestLLVMCommit()
@@ -790,22 +891,29 @@ def main():
   if not args.skip_checkout:
     with timer.time('checkout llvm'):
       CheckoutGitRepo('LLVM monorepo', LLVM_GIT_URL, checkout_revision, LLVM_DIR)
+      # TODO(crbug.com/461828767): remove once we roll past this revision
+      GitCherryPick(LLVM_DIR, '10e97641f53a6eba5ad9430dc25f1ad6e5e8abed')
 
   if args.llvm_force_head_revision:
     CLANG_REVISION = GetCommitDescription(checkout_revision)
     PACKAGE_VERSION = '%s-0' % CLANG_REVISION
 
   print('Locally building clang %s...' % PACKAGE_VERSION)
-  WriteStampFile('', STAMP_FILE)
-  WriteStampFile('', FORCE_HEAD_REVISION_FILE)
+  WriteStampFile('',
+                 STAMP_FILE,
+                 preserve_hash_files=args.preserve_gcs_signature)
+  WriteStampFile('',
+                 FORCE_HEAD_REVISION_FILE,
+                 preserve_hash_files=args.preserve_gcs_signature)
 
   if not args.use_system_cmake:
     AddCMakeToPath()
 
-  if sys.platform == 'win32':
-    # CMake on Windows doesn't like depot_tools's ninja.bat wrapper.
-    ninja_dir = os.path.join(THIRD_PARTY_DIR, 'ninja')
-    os.environ['PATH'] = ninja_dir + os.pathsep + os.environ.get('PATH', '')
+  # CMake on Windows doesn't like depot_tools's ninja.bat wrapper.
+  # Using depot_tools's ninja wrapper also significantly slows down CMake
+  # compiler flag checks, so directly use the native ninja binary.
+  ninja_dir = os.path.join(THIRD_PARTY_DIR, 'ninja')
+  os.environ['PATH'] = ninja_dir + os.pathsep + os.environ.get('PATH', '')
 
   if sys.platform.startswith('linux'):
     with timer.time('get sysroots'):
@@ -813,6 +921,7 @@ def main():
       sysroot_i386 = DownloadDebianSysroot('i386', args.skip_checkout)
       sysroot_arm = DownloadDebianSysroot('arm', args.skip_checkout)
       sysroot_arm64 = DownloadDebianSysroot('arm64', args.skip_checkout)
+      sysroot_riscv64 = DownloadDebianSysroot('riscv64', args.skip_checkout)
 
   if args.skip_build:
     return 0
@@ -822,7 +931,8 @@ def main():
   # while elsewhere it's called through the compiler driver, and we pass
   # -fuse-ld=lld there to make the compiler driver call the linker (by setting
   # LLVM_ENABLE_LLD).
-  cc, cxx, lld = None, None, None
+  cc, cxx, lld, libtool = None, None, None, None
+  cmake_sysroot = None
 
   cflags = []
   cxxflags = []
@@ -848,11 +958,11 @@ def main():
       '-GNinja',
       '-DCMAKE_BUILD_TYPE=Release',
       '-DLLVM_ENABLE_ASSERTIONS=%s' % ('OFF' if args.disable_asserts else 'ON'),
+      '-DLLVM_ENABLE_IO_SANDBOX=OFF',
       f'-DLLVM_ENABLE_PROJECTS={projects}',
       f'-DLLVM_ENABLE_RUNTIMES={runtimes}',
       f'-DLLVM_TARGETS_TO_BUILD={targets}',
       f'-DLLVM_ENABLE_PIC={pic_mode}',
-      '-DLLVM_ENABLE_TERMINFO=OFF',
       '-DLLVM_ENABLE_Z3_SOLVER=OFF',
       '-DCLANG_PLUGIN_SUPPORT=OFF',
       '-DCLANG_ENABLE_STATIC_ANALYZER=OFF',
@@ -882,12 +992,16 @@ def main():
   if sys.platform == 'darwin':
     isysroot = subprocess.check_output(['xcrun', '--show-sdk-path'],
                                        universal_newlines=True).rstrip()
+    # TODO(crbug.com/522267458): Remove this when class stub is implemented for lld.
+    base_cmake_args.append('-DHOST_LINK_VERSION=1249')
   base_cmake_args += ['-DLLVM_ENABLE_UNWIND_TABLES=OFF']
 
-  ccache_cmake_args = []
-  if args.with_ccache:
-    ccache_cmake_args.append('-DCMAKE_C_COMPILER_LAUNCHER=ccache')
-    ccache_cmake_args.append('-DCMAKE_CXX_COMPILER_LAUNCHER=ccache')
+  compiler_wrapper_cmake_args = []
+  if args.with_compiler_wrapper:
+    compiler_wrapper_cmake_args.append('-DCMAKE_C_COMPILER_LAUNCHER=' +
+                                       args.with_compiler_wrapper)
+    compiler_wrapper_cmake_args.append('-DCMAKE_CXX_COMPILER_LAUNCHER=' +
+                                       args.with_compiler_wrapper)
 
   if args.host_cc or args.host_cxx:
     assert args.host_cc and args.host_cxx, \
@@ -916,10 +1030,11 @@ def main():
   if sys.platform.startswith('linux'):
     # Add the sysroot to base_cmake_args.
     if platform.machine() == 'aarch64':
-      base_cmake_args.append('-DCMAKE_SYSROOT=' + sysroot_arm64)
+      cmake_sysroot = sysroot_arm64
     else:
       # amd64 is the default toolchain.
-      base_cmake_args.append('-DCMAKE_SYSROOT=' + sysroot_amd64)
+      cmake_sysroot = sysroot_amd64
+    base_cmake_args.append('-DCMAKE_SYSROOT=' + cmake_sysroot)
 
   if sys.platform == 'win32':
     AddGitForWindowsToPath()
@@ -939,11 +1054,14 @@ def main():
     base_cmake_args.append('-DLLVM_WINSYSROOT="%s"' %
                            os.path.dirname(os.path.dirname(GetWinSDKDir())))
 
+  deployment_target = DEFAULT_MACOSX_DEPLOYMENT_TARGET
+
   # Statically link libxml2 to make lld-link not require mt.exe on Windows,
   # and to make sure lld-link output on other platforms is identical to
   # lld-link on Windows (for cross-builds).
   with timer.time('libxml2 build'):
-    libxml_cmake_args, libxml_cflags = BuildLibXml2()
+    libxml_cmake_args, libxml_cflags = BuildLibXml2(cc, cxx, cmake_sysroot,
+                                                    deployment_target)
   base_cmake_args += libxml_cmake_args
   cflags += libxml_cflags
   cxxflags += libxml_cflags
@@ -951,7 +1069,8 @@ def main():
   if args.with_zstd:
     # Statically link zstd to make lld support zstd compression for debug info.
     with timer.time('zstd build'):
-      zstd_cmake_args, zstd_cflags = BuildZStd()
+      zstd_cmake_args, zstd_cflags = BuildZStd(cc, cxx, cmake_sysroot,
+                                               deployment_target)
     base_cmake_args += zstd_cmake_args
     cflags += zstd_cflags
     cxxflags += zstd_cflags
@@ -968,27 +1087,39 @@ def main():
     ]
   elif sys.platform == 'darwin':
     lit_excludes += [
-        # Fails on macOS 14, crbug.com/332589870
-        '^.*Sanitizer.*Darwin/malloc_zone.cpp$',
         # Fails with a recent ld, crbug.com/332589870
-        '^.*ContinuousSyncMode/darwin-proof-of-concept.c$',
         '^.*instrprof-darwin-exports.c$',
-        # Fails on our mac builds, crbug.com/346289767
-        '^.*Interpreter/pretty-print.c$',
     ]
     if platform.machine() == 'arm64':
       lit_excludes += [
           # TODO(https://crbug.com/40270881): fix and re-enable
-          '^.*tools/dsymutil.*$',
           '^.*AddressSanitizer-arm64-darwin.*$',
           '^.*SanitizerCommon-lsan-arm64-Darwin.*$',
           '^.*SanitizerCommon-ubsan-arm64-Darwin.*Posix/dedup_token_length_test.cpp$',
       ]
+  elif sys.platform == 'win32':
+    lit_excludes += [
+        # TODO(https://crbug.com/404547503): fix and re-enable
+        '^.*Profile-x86_64.*ContinuousSyncMode/online-merging-windows.c$',
+    ]
+  if not sys.platform.startswith('linux'):
+    lit_excludes += [
+        # TODO(https://crbug.com/474402846): fix and re-enable
+        '^Builtins-.*ctor_dtor.c$',
+        '^Builtins-.*dso_handle.cpp$',
+        '^Builtins-i386-windows.*$',
+    ]
 
-  test_env = None
+  test_env = os.environ.copy()
+  # Dump all FileCheck input on test failure.
+  test_env['FILECHECK_OPTS'] = '--dump-input-filter=all'
+  test_env['LIT_OPTS'] = '--show-flakypass'
   if lit_excludes:
-    test_env = os.environ.copy()
     test_env['LIT_FILTER_OUT'] = '|'.join(lit_excludes)
+
+  crash_diagnostics_dir = os.path.join(CHROMIUM_DIR, 'out', 'clang-crashreports')
+  cflags.append('-fcrash-diagnostics-dir=' + crash_diagnostics_dir)
+  cxxflags.append('-fcrash-diagnostics-dir=' + crash_diagnostics_dir)
 
   if args.bootstrap:
     print('Building bootstrap compiler')
@@ -1010,7 +1141,7 @@ def main():
     if sys.platform == 'darwin':
       # Need ARM and AArch64 for building the ios clang_rt.
       bootstrap_targets += ';ARM;AArch64'
-    bootstrap_args = base_cmake_args + ccache_cmake_args + [
+    bootstrap_args = base_cmake_args + compiler_wrapper_cmake_args + [
         '-DLLVM_TARGETS_TO_BUILD=' + bootstrap_targets,
         '-DLLVM_ENABLE_PROJECTS=clang;lld',
         '-DLLVM_ENABLE_RUNTIMES=' + ';'.join(runtimes),
@@ -1067,6 +1198,8 @@ def main():
     else:
       cc = os.path.join(LLVM_BOOTSTRAP_INSTALL_DIR, 'bin', 'clang')
       cxx = os.path.join(LLVM_BOOTSTRAP_INSTALL_DIR, 'bin', 'clang++')
+      if sys.platform == 'darwin':
+        libtool = os.path.join(LLVM_BOOTSTRAP_INSTALL_DIR, 'bin', 'llvm-libtool-darwin')
 
     print('Bootstrap compiler installed.')
 
@@ -1096,6 +1229,7 @@ def main():
     if cc is not None:  instrument_args.append('-DCMAKE_C_COMPILER=' + cc)
     if cxx is not None: instrument_args.append('-DCMAKE_CXX_COMPILER=' + cxx)
     if lld is not None: instrument_args.append('-DCMAKE_LINKER=' + lld)
+    if libtool is not None: instrument_args.append('-DCMAKE_LIBTOOL=' + libtool)
 
     with timer.time('pgo cmake'):
       RunCommand(['cmake'] + instrument_args + [os.path.join(LLVM_DIR, 'llvm')],
@@ -1106,7 +1240,7 @@ def main():
 
     # Train by building some C++ code.
     #
-    # pgo_training-1.ii is a preprocessed (on Linux) version of
+    # pgo_training-3.ii is a preprocessed (on Linux) version of
     # src/third_party/blink/renderer/core/layout/layout_object.cc, selected
     # because it's a large translation unit in Blink, which is normally the
     # slowest part of Chromium to compile. Using this, we get ~20% shorter
@@ -1127,11 +1261,11 @@ def main():
     # from PGO as well. Perhaps the training could be done asynchronously by
     # dedicated buildbots that upload profiles to the cloud.
     with timer.time('pgo training'):
-      training_source = 'pgo_training-1.ii'
+      training_source = 'pgo_training-3.ii'
       with open(training_source, 'wb') as f:
         DownloadUrl(CDS_URL + '/' + training_source, f)
       train_cmd = [os.path.join(LLVM_INSTRUMENTED_DIR, 'bin', 'clang++'),
-                  '-target', 'x86_64-unknown-unknown', '-O2', '-g', '-std=c++14',
+                  '-target', 'x86_64-unknown-unknown', '-O2', '-g', '-std=c++23',
                    '-fno-exceptions', '-fno-rtti', '-w', '-c', training_source]
       if sys.platform == 'darwin':
         train_cmd.extend(['-isysroot', isysroot])
@@ -1144,8 +1278,6 @@ def main():
           glob.glob(os.path.join(LLVM_INSTRUMENTED_DIR, 'profiles', '*.profraw')),
           setenv=True)
       print('Profile generated.')
-
-  deployment_target = '10.12'
 
   # If building at head, define a macro that plugins can use for #ifdefing
   # out code that builds at head, but not at CLANG_REVISION or vice versa.
@@ -1182,6 +1314,7 @@ def main():
   if cc is not None:  base_cmake_args.append('-DCMAKE_C_COMPILER=' + cc)
   if cxx is not None: base_cmake_args.append('-DCMAKE_CXX_COMPILER=' + cxx)
   if lld is not None: base_cmake_args.append('-DCMAKE_LINKER=' + lld)
+  if libtool is not None: base_cmake_args.append('-DCMAKE_LIBTOOL=' + libtool)
   final_install_dir = args.install_dir if args.install_dir else LLVM_BUILD_DIR
   cmake_args = base_cmake_args + [
       '-DCMAKE_C_FLAGS=' + ' '.join(cflags),
@@ -1252,6 +1385,11 @@ def main():
     runtimes_triples_args['x86_64-unknown-linux-gnu'] = {
         "args": [
             'CMAKE_SYSROOT=%s' % sysroot_amd64,
+            # Enable CET IBT so that binaries compiled with
+            # -fcf-protection=branch can enable kernel IBT enforcement.
+            'CMAKE_C_FLAGS=-fcf-protection=branch',
+            'CMAKE_CXX_FLAGS=-fcf-protection=branch',
+            'CMAKE_ASM_FLAGS=-fcf-protection=branch',
         ],
         "profile": True,
         "sanitizers": True,
@@ -1277,6 +1415,22 @@ def main():
     runtimes_triples_args['aarch64-unknown-linux-gnu'] = {
         "args": [
             'CMAKE_SYSROOT=%s' % sysroot_arm64,
+            # Can't run tests on x86 host.
+            'LLVM_INCLUDE_TESTS=OFF',
+
+            # Make sure libraries are compiled with PAC/BTI enabled
+            'CMAKE_C_FLAGS=-mbranch-protection=standard',
+            'CMAKE_CXX_FLAGS=-mbranch-protection=standard',
+            'CMAKE_ASM_FLAGS=-mbranch-protection=standard',
+        ],
+        "profile":
+        True,
+        "sanitizers":
+        True,
+    }
+    runtimes_triples_args['riscv64-unknown-linux-gnu'] = {
+        "args": [
+            'CMAKE_SYSROOT=%s' % sysroot_riscv64,
             # Can't run tests on x86 host.
             'LLVM_INCLUDE_TESTS=OFF',
         ],
@@ -1353,7 +1507,7 @@ def main():
         target_triple = 'armv7'
       api_level = '21'
       if target_arch == 'riscv64':
-        api_level = '35'
+        api_level = '36'
       target_triple += '-linux-android' + api_level
       android_cflags = [
           '--sysroot=%s/sysroot' % toolchain_dir,
@@ -1481,7 +1635,10 @@ def main():
   cmake_args.append('-DLLVM_RUNTIME_TARGETS=' + all_triples)
 
   if not args.bootstrap:
-    cmake_args.extend(ccache_cmake_args)
+    cmake_args.extend(compiler_wrapper_cmake_args)
+
+  if args.install_dir and os.path.exists(args.install_dir):
+    RmTree(args.install_dir)
 
   if os.path.exists(LLVM_BUILD_DIR):
     RmTree(LLVM_BUILD_DIR)
@@ -1584,8 +1741,12 @@ def main():
     with timer.time('install'):
       RunCommand(['ninja', 'install'], setenv=True)
 
-  WriteStampFile(PACKAGE_VERSION, STAMP_FILE)
-  WriteStampFile(PACKAGE_VERSION, FORCE_HEAD_REVISION_FILE)
+  WriteStampFile(PACKAGE_VERSION,
+                 STAMP_FILE,
+                 preserve_hash_files=args.preserve_gcs_signature)
+  WriteStampFile(PACKAGE_VERSION,
+                 FORCE_HEAD_REVISION_FILE,
+                 preserve_hash_files=args.preserve_gcs_signature)
 
   print('Clang build was successful.')
 

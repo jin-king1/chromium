@@ -56,11 +56,6 @@ export class SettingsLiveCaptionElement extends SettingsLiveCaptionElementBase {
 
   static get properties() {
     return {
-      prefs: {
-        type: Object,
-        notify: true,
-      },
-
       /**
        * The subtitle to display under the Live Caption heading. Generally, this
        * is a generic subtitle describing the feature. While the SODA model is
@@ -114,18 +109,18 @@ export class SettingsLiveCaptionElement extends SettingsLiveCaptionElementBase {
     };
   }
 
-  languages: LanguagesModel;
-  languageHelper: LanguageHelper;
+  declare languages: LanguagesModel;
+  declare languageHelper: LanguageHelper;
 
-  private availableLanguagePacks_: LiveCaptionLanguageList;
+  declare private availableLanguagePacks_: LiveCaptionLanguageList;
   private browserProxy_: CaptionsBrowserProxy =
       CaptionsBrowserProxyImpl.getInstance();
-  private enableLiveCaptionSubtitle_: string;
-  private enableLiveCaptionMultiLanguage_: boolean;
-  private enableLiveTranslate_: boolean;
-  private installedLanguagePacks_: LiveCaptionLanguageList;
-  private detailLanguage_?: LiveCaptionLanguage;
-  private showAddLanguagesDialog_: boolean;
+  declare private enableLiveCaptionSubtitle_: string;
+  declare private enableLiveCaptionMultiLanguage_: boolean;
+  declare private enableLiveTranslate_: boolean;
+  declare private installedLanguagePacks_: LiveCaptionLanguageList;
+  declare private detailLanguage_?: LiveCaptionLanguage;
+  declare private showAddLanguagesDialog_: boolean;
 
   override ready(): void {
     super.ready();
@@ -157,11 +152,16 @@ export class SettingsLiveCaptionElement extends SettingsLiveCaptionElementBase {
   private onLiveCaptionEnabledChanged_(event: Event): void {
     const liveCaptionEnabled =
         (event.target as SettingsToggleButtonElement).checked;
+    const defaultLanguageInstalled =
+        this.installedLanguagePacks_.findIndex(
+            (language: LiveCaptionLanguage) =>
+                this.isDefaultLanguage_(language.code)) !== -1;
     chrome.metricsPrivate.recordBoolean(
         'Accessibility.LiveCaption.EnableFromSettings', liveCaptionEnabled);
-    if (this.installedLanguagePacks_.length === 0) {
+    if (liveCaptionEnabled && !defaultLanguageInstalled) {
       this.installLanguagePacks_(
-          [this.getPref('accessibility.captions.live_caption_language').value]);
+          [this.getPref<string>('accessibility.captions.live_caption_language')
+               .value]);
     }
   }
 
@@ -189,7 +189,8 @@ export class SettingsLiveCaptionElement extends SettingsLiveCaptionElementBase {
     }
 
     return languageCode ===
-        this.prefs.accessibility.captions.live_caption_language.value;
+        this.getPref<string>('accessibility.captions.live_caption_language')
+            .value;
   }
 
   private onMakeDefaultClick_(): void {
@@ -214,7 +215,8 @@ export class SettingsLiveCaptionElement extends SettingsLiveCaptionElementBase {
     }
 
     const liveCapLanguage =
-        this.getPref('accessibility.captions.live_caption_language').value;
+        this.getPref<string>('accessibility.captions.live_caption_language')
+            .value;
     if (!this.installedLanguagePacks_.some(
             languagePack => languagePack.code === liveCapLanguage)) {
       this.setPrefValue(

@@ -12,13 +12,14 @@
 #include "base/memory/raw_ptr.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/app/chrome_command_ids.h"
-#include "chrome/browser/optimization_guide/mock_optimization_guide_keyed_service.h"
+#include "chrome/browser/actor/actor_keyed_service_factory.h"
+#include "chrome/browser/actor/actor_keyed_service_fake.h"
+#include "chrome/browser/actor/ui/test_support/mock_actor_ui_state_manager.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
-#include "chrome/browser/password_manager/chrome_password_change_service.h"
-#include "chrome/browser/password_manager/password_change_service_factory.h"
+#include "chrome/browser/password_manager/factories/account_password_store_factory.h"
+#include "chrome/browser/password_manager/factories/profile_password_store_factory.h"
 #include "chrome/browser/password_manager/password_manager_test_base.h"
-#include "chrome/browser/password_manager/profile_password_store_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/sync/sync_service_factory.h"
@@ -40,6 +41,7 @@
 #include "components/password_manager/core/browser/password_manager_metrics_util.h"
 #include "components/password_manager/core/browser/password_manager_test_utils.h"
 #include "components/password_manager/core/browser/password_save_manager_impl.h"
+#include "components/password_manager/core/browser/password_store/password_form_converters.h"
 #include "components/password_manager/core/browser/password_store/test_password_store.h"
 #include "components/password_manager/core/browser/possible_username_data.h"
 #include "components/password_manager/core/browser/stub_form_saver.h"
@@ -73,8 +75,6 @@ ManagePasswordsTest::~ManagePasswordsTest() = default;
 
 void ManagePasswordsTest::SetUpOnMainThread() {
   InteractiveBrowserTest::SetUpOnMainThread();
-  mock_optimization_service_ =
-      std::make_unique<testing::NiceMock<MockOptimizationGuideKeyedService>>();
   ASSERT_TRUE(embedded_test_server()->Start());
   GURL test_url = embedded_test_server()->GetURL("/empty.html");
 
@@ -87,7 +87,6 @@ void ManagePasswordsTest::SetUpOnMainThread() {
 }
 
 void ManagePasswordsTest::TearDownOnMainThread() {
-  mock_optimization_service_ = nullptr;
   InteractiveBrowserTest::TearDownOnMainThread();
 }
 
@@ -105,18 +104,46 @@ void ManagePasswordsTest::SetUpInProcessBrowserTestFixture() {
                                         content::BrowserContext,
                                         password_manager::TestPasswordStore>));
 
+                AccountPasswordStoreFactory::GetInstance()->SetTestingFactory(
+                    context, base::BindRepeating(
+                                 &password_manager::BuildPasswordStoreWithArgs<
+                                     content::BrowserContext,
+                                     password_manager::TestPasswordStore,
+                                     password_manager::IsAccountStore>,
+                                 password_manager::IsAccountStore(true)));
+
                 SyncServiceFactory::GetInstance()->SetTestingFactory(
                     context,
                     base::BindRepeating([](content::BrowserContext*)
                                             -> std::unique_ptr<KeyedService> {
                       return std::make_unique<syncer::TestSyncService>();
                     }));
+
+                actor::ActorKeyedServiceFactory::GetInstance()
+                    ->SetTestingFactory(
+                        context,
+                        base::BindRepeating([](content::BrowserContext* context)
+                                                -> std::unique_ptr<
+                                                    KeyedService> {
+                          Profile* profile =
+                              Profile::FromBrowserContext(context);
+                          auto actor_keyed_service =
+                              std::make_unique<actor::ActorKeyedServiceFake>(
+                                  profile);
+                          std::unique_ptr<actor::ui::MockActorUiStateManager>
+                              ausm = std::make_unique<
+                                  actor::ui::MockActorUiStateManager>();
+                          actor_keyed_service->SetActorUiStateManagerForTesting(
+                              std::move(ausm));
+
+                          return std::move(actor_keyed_service);
+                        }));
               }));
 }
 
 void ManagePasswordsTest::ExecuteManagePasswordsCommand() {
   // Show the window to ensure that it's active.
-  browser()->window()->Show();
+  browser()->GetWindow()->Show();
 
   CommandUpdater* updater = browser()->command_controller();
   EXPECT_TRUE(updater->IsCommandEnabled(IDC_MANAGE_PASSWORDS_FOR_PAGE));
@@ -141,40 +168,8 @@ void ManagePasswordsTest::SetupManagingPasswords(
   std::vector<password_manager::PasswordForm> forms = {password_form_,
                                                        federated_form};
   GetController()->OnPasswordAutofilled(
-      forms, embedded_test_server()->GetOrigin(), {});
-}
-
-void ManagePasswordsTest::SetupPasswordChange() {
-  affiliations::MockAffiliationService mock_affiliation_service;
-  PasswordChangeServiceFactory::GetInstance()->SetTestingFactory(
-      browser()->profile(),
-      base::BindLambdaForTesting([this, &mock_affiliation_service](
-                                     content::BrowserContext* context)
-                                     -> std::unique_ptr<KeyedService> {
-        auto feature_manager =
-            std::make_unique<password_manager::MockPasswordFeatureManager>();
-        ON_CALL(*feature_manager.get(), IsGenerationEnabled)
-            .WillByDefault(testing::Return(true));
-        return std::make_unique<ChromePasswordChangeService>(
-            &mock_affiliation_service, mock_optimization_service_.get(),
-            std::move(feature_manager));
-      }));
-  mock_optimization_service_.reset();
-
-  const GURL kUrl = GURL("https://example.com/");
-  ON_CALL(mock_affiliation_service, GetChangePasswordURL(kUrl))
-      .WillByDefault(testing::Return(embedded_test_server()->GetURL(
-          "/password/update_form_empty_fields.html")));
-  GetController()->OnCredentialLeak(password_manager::LeakedPasswordDetails(
-      password_manager::CreateLeakType(
-          password_manager::IsSaved(true), password_manager::IsReused(false),
-          password_manager::IsSyncing(true),
-          password_manager::HasChangePasswordUrl(true)),
-      kUrl, u"new_username", u"new_password",
-      /*in_account_store=*/true));
-  static_cast<PasswordsModelDelegate*>(GetController())
-      ->GetPasswordChangeDelegate()
-      ->StartPasswordChangeFlow();
+      password_manager::FromPasswordForms(forms),
+      embedded_test_server()->GetOrigin(), {});
 }
 
 void ManagePasswordsTest::SetupPendingPassword() {
@@ -195,14 +190,14 @@ void ManagePasswordsTest::SetupAutoSignin(
 }
 
 void ManagePasswordsTest::SetupSafeState() {
-  browser()->profile()->GetPrefs()->SetDouble(
+  browser()->GetProfile()->GetPrefs()->SetDouble(
       password_manager::prefs::kLastTimePasswordCheckCompleted,
       (base::Time::Now() - base::Minutes(1)).InSecondsFSinceUnixEpoch());
   SetupPendingPassword();
   scoped_refptr<password_manager::PasswordStoreInterface> password_store =
       ProfilePasswordStoreFactory::GetForProfile(
-          browser()->profile(), ServiceAccessType::IMPLICIT_ACCESS);
-  password_store->AddLogin(password_form_);
+          browser()->GetProfile(), ServiceAccessType::IMPLICIT_ACCESS);
+  password_store->AddLogin(password_manager::FromPasswordForm(password_form_));
   GetController()->SavePassword(password_form_.username_value,
                                 password_form_.password_value);
   GetController()->OnBubbleHidden();
@@ -213,19 +208,19 @@ void ManagePasswordsTest::SetupSafeState() {
 }
 
 void ManagePasswordsTest::SetupMoreToFixState() {
-  browser()->profile()->GetPrefs()->SetDouble(
+  browser()->GetProfile()->GetPrefs()->SetDouble(
       password_manager::prefs::kLastTimePasswordCheckCompleted,
       (base::Time::Now() - base::Minutes(1)).InSecondsFSinceUnixEpoch());
   scoped_refptr<password_manager::PasswordStoreInterface> password_store =
       ProfilePasswordStoreFactory::GetForProfile(
-          browser()->profile(), ServiceAccessType::IMPLICIT_ACCESS);
+          browser()->GetProfile(), ServiceAccessType::IMPLICIT_ACCESS);
   // This is an unrelated insecure credential that should still be fixed.
   password_manager::PasswordForm to_be_fixed = password_form_;
   to_be_fixed.signon_realm = "https://somesite.com/";
   to_be_fixed.password_issues.insert({password_manager::InsecureType::kLeaked,
                                       password_manager::InsecurityMetadata()});
-  password_store->AddLogin(to_be_fixed);
-  password_store->AddLogin(password_form_);
+  password_store->AddLogin(password_manager::FromPasswordForm(to_be_fixed));
+  password_store->AddLogin(password_manager::FromPasswordForm(password_form_));
   SetupPendingPassword();
   GetController()->SavePassword(password_form_.username_value,
                                 password_form_.password_value);
@@ -241,12 +236,16 @@ void ManagePasswordsTest::SetupMovingPasswords() {
       testing::NiceMock<password_manager::MockPasswordFormManagerForUI>>();
   password_manager::MockPasswordFormManagerForUI* form_manager_ptr =
       form_manager.get();
-  std::vector<password_manager::PasswordForm> best_matches = {*test_form()};
-  EXPECT_CALL(*form_manager, GetBestMatches).WillOnce(Return(best_matches));
+  best_matches_ = password_manager::FromPasswordForms(
+      std::vector<password_manager::PasswordForm>{*test_form()});
+  EXPECT_CALL(*form_manager, GetBestMatches)
+      .WillOnce(Return(
+          base::span<const password_manager::StoredCredential>(best_matches_)));
   ON_CALL(*form_manager, GetPendingCredentials)
       .WillByDefault(ReturnRef(*test_form()));
   ON_CALL(*form_manager, GetFederatedMatches)
-      .WillByDefault(Return(std::vector<password_manager::PasswordForm>{}));
+      .WillByDefault(
+          Return(base::span<const password_manager::StoredCredential>()));
   ON_CALL(*form_manager, GetURL).WillByDefault(ReturnRef(test_form()->url));
   GetController()->OnShowMoveToAccountBubble(std::move(form_manager));
   // Clearing the mock here ensures that |GetBestMatches| won't be called with a
@@ -257,9 +256,9 @@ void ManagePasswordsTest::SetupMovingPasswords() {
 void ManagePasswordsTest::ConfigurePasswordSync(
     SyncConfiguration configuration) {
   signin::IdentityManager* identity_manager =
-      IdentityManagerFactory::GetForProfile(browser()->profile());
+      IdentityManagerFactory::GetForProfile(browser()->GetProfile());
   syncer::TestSyncService* sync_service = static_cast<syncer::TestSyncService*>(
-      SyncServiceFactory::GetForProfile(browser()->profile()));
+      SyncServiceFactory::GetForProfile(browser()->GetProfile()));
   switch (configuration) {
     case SyncConfiguration::kNotSyncing: {
       sync_service->SetSignedOut();
@@ -288,6 +287,14 @@ std::unique_ptr<base::HistogramSamples> ManagePasswordsTest::GetSamples(
 ManagePasswordsUIController* ManagePasswordsTest::GetController() {
   return ManagePasswordsUIController::FromWebContents(
       browser()->tab_strip_model()->GetActiveWebContents());
+}
+
+password_manager::TestPasswordStore*
+ManagePasswordsTest::GetAccountPasswordStore() {
+  return static_cast<password_manager::TestPasswordStore*>(
+      AccountPasswordStoreFactory::GetForProfile(
+          browser()->GetProfile(), ServiceAccessType::EXPLICIT_ACCESS)
+          .get());
 }
 
 std::unique_ptr<PasswordFormManager> ManagePasswordsTest::CreateFormManager(

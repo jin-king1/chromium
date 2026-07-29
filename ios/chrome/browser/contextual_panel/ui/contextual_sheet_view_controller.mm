@@ -4,11 +4,13 @@
 
 #import "ios/chrome/browser/contextual_panel/ui/contextual_sheet_view_controller.h"
 
+#import "base/feature_list.h"
 #import "base/metrics/histogram_functions.h"
 #import "ios/chrome/browser/contextual_panel/ui/contextual_panel_view_constants.h"
 #import "ios/chrome/browser/contextual_panel/ui/trait_collection_change_delegate.h"
 #import "ios/chrome/browser/contextual_panel/utils/contextual_panel_metrics.h"
 #import "ios/chrome/browser/shared/public/commands/contextual_sheet_commands.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
@@ -68,12 +70,8 @@ const CGFloat kTopCornerRadius = 10;
       kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner;
   self.view.clipsToBounds = YES;
 
-  if (@available(iOS 17, *)) {
-    NSArray<UITrait>* traits =
-        TraitCollectionSetForTraits(@[ UITraitVerticalSizeClass.class ]);
-    [self registerForTraitChanges:traits
-                       withAction:@selector(updateUIOnTraitChange)];
-  }
+  [self registerForTraitChanges:@[ UITraitVerticalSizeClass.class ]
+                     withAction:@selector(updateUIOnTraitChange)];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -121,20 +119,32 @@ const CGFloat kTopCornerRadius = 10;
   _heightConstraint.active = YES;
 }
 
-#if !defined(__IPHONE_17_0) || __IPHONE_OS_VERSION_MIN_REQUIRED < __IPHONE_17_0
-- (void)traitCollectionDidChange:(UITraitCollection*)previousTraitCollection {
-  [super traitCollectionDidChange:previousTraitCollection];
-  if (@available(iOS 17, *)) {
+- (void)viewWillTransitionToSize:(CGSize)size
+       withTransitionCoordinator:
+           (id<UIViewControllerTransitionCoordinator>)coordinator {
+  [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
+
+  if (!IsUseSceneViewControllerEnabled()) {
     return;
   }
 
-  [self updateUIOnTraitChange];
+  __weak __typeof(self) weakSelf = self;
+  [coordinator
+      animateAlongsideTransition:^(
+          id<UIViewControllerTransitionCoordinatorContext> context) {
+        [weakSelf updateLayout];
+      }
+                      completion:nil];
 }
-#endif
 
-- (BOOL)accessibilityPerformEscape {
-  [self closeSheet];
-  return YES;
+// Updates the layout based on the superview's size.
+- (void)updateLayout {
+  CGFloat newHeight = [self restingHeightWithSheetVelocity:0];
+  _widthConstraint.active =
+      self.traitCollection.verticalSizeClass != UIUserInterfaceSizeClassCompact;
+  _compactHeightWidthConstraint.active =
+      self.traitCollection.verticalSizeClass == UIUserInterfaceSizeClassCompact;
+  [self setHeightConstraintToConstant:newHeight];
 }
 
 // Returns the calculated detent of the medium height sheet. If the content
@@ -245,13 +255,12 @@ const CGFloat kTopCornerRadius = 10;
                         delay:0
                       options:UIViewAnimationOptionCurveEaseOut
                    animations:^{
-                     [weakSelf
-                         blockForAnimatingHeightConstraintToConstant:constant];
+                     [weakSelf setHeightConstraintToConstant:constant];
                    }
                    completion:nil];
 }
 
-- (void)blockForAnimatingHeightConstraintToConstant:(CGFloat)constant {
+- (void)setHeightConstraintToConstant:(CGFloat)constant {
   _heightConstraint.constant = constant;
   [self.view.superview layoutIfNeeded];
 }
@@ -260,6 +269,13 @@ const CGFloat kTopCornerRadius = 10;
   base::UmaHistogramEnumeration("IOS.ContextualPanel.DismissedReason",
                                 ContextualPanelDismissedReason::UserDismissed);
   [self.contextualSheetHandler closeContextualSheet];
+}
+
+#pragma mark - UIAccessibilityAction
+
+- (BOOL)accessibilityPerformEscape {
+  [self closeSheet];
+  return YES;
 }
 
 #pragma mark - ContextualSheetDisplayController
@@ -313,6 +329,14 @@ const CGFloat kTopCornerRadius = 10;
 // UITrait set is detected.
 - (void)updateUIOnTraitChange {
   [self.traitCollectionDelegate traitCollectionDidChangeForViewController:self];
+
+  // Return early if kUseSceneViewController is enabled. SceneViewController
+  // uses constraints rather than auto layout and the superview's frame will not
+  // be updated until a layout pass, which will happen after the trait change.
+  // When enabled, size changes will be handled in `viewWillTransitionToSize`.
+  if (IsUseSceneViewControllerEnabled()) {
+    return;
+  }
 
   // It's possible that changing the trait collection removes this view from
   // the view hierarchy, so only do the remaining updates if it's still here.

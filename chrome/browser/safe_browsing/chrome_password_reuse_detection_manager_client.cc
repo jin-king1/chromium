@@ -12,21 +12,25 @@
 #include "base/metrics/histogram_functions.h"
 #include "build/buildflag.h"
 #include "chrome/browser/password_manager/chrome_password_manager_client.h"
-#include "chrome/browser/password_manager/password_reuse_manager_factory.h"
+#include "chrome/browser/password_manager/factories/password_reuse_manager_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/safe_browsing/chrome_password_protection_service.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
+#include "chrome/browser/signin/signin_util.h"
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/ui/autofill/autofill_client_provider.h"
 #include "chrome/browser/ui/autofill/autofill_client_provider_factory.h"
 #include "components/autofill/core/browser/logging/log_router.h"
 #include "components/password_manager/content/browser/password_manager_log_router_factory.h"
 #include "components/password_manager/core/browser/password_form.h"
+#include "components/password_manager/core/browser/password_manager_metrics_util.h"
 #include "components/password_manager/core/browser/password_sync_util.h"
 #include "components/safe_browsing/core/common/features.h"
-#include "components/sync/base/data_type.h"
+#include "components/sync/base/user_selectable_type.h"
 #include "components/sync/service/sync_service.h"
+#include "components/sync/service/sync_user_settings.h"
 #include "components/url_formatter/url_formatter.h"
+#include "content/public/browser/page.h"
 #include "content/public/browser/web_contents.h"
 #include "extensions/buildflags/buildflags.h"
 #include "ui/base/clipboard/clipboard.h"
@@ -103,6 +107,16 @@ void ChromePasswordReuseDetectionManagerClient::
   if (FromWebContents(contents)) {
     return;
   }
+  // For some SSO users that enforce browser sign-in, Chrome crashes.
+  // This early exit should be removed once a suitable test environment has been
+  // established and fix verified. crbug.com/405438533 tracks this.
+  if (signin_util::IsForceSigninEnabled()) {
+    base::UmaHistogramBoolean(
+        "PasswordProtection.SkipProfilePickerPasswordHashSaveAttempt", true);
+    return;
+  }
+  base::UmaHistogramBoolean(
+      "PasswordProtection.SkipProfilePickerPasswordHashSaveAttempt", false);
   // ChromePasswordReuseDetectionManagerClient depends on
   // ChromePasswordManagerClient for obtaining objects it needs to attempt
   // saving password hashes. ChromePasswordManagerClient depends on
@@ -152,7 +166,9 @@ void ChromePasswordReuseDetectionManagerClient::InternalOnPrimaryAccountChanged(
       return;
     }
     password_manager_client->GetPasswordReuseManager()->MaybeSavePasswordHash(
-        &password_form.value(), password_manager_client);
+        &password_form.value(), password_manager_client,
+        password_manager::metrics_util::GaiaPasswordHashChange::
+            SAVED_ON_CHROME_SIGNIN);
     base::UmaHistogramBoolean(
         "PasswordProtection.AttemptsToSavePasswordHashFromProfilePicker", true);
   }
@@ -224,8 +240,8 @@ bool ChromePasswordReuseDetectionManagerClient::IsHistorySyncAccountEmail(
   // Password reuse detection is tied to history sync.
   syncer::SyncService* sync_service =
       SyncServiceFactory::GetForProfile(original_profile);
-  if (!sync_service || !sync_service->GetPreferredDataTypes().Has(
-                           syncer::HISTORY_DELETE_DIRECTIVES)) {
+  if (!sync_service || !sync_service->GetUserSettings()->GetSelectedTypes().Has(
+                           syncer::UserSelectableType::kHistory)) {
     return false;
   }
   return password_manager::sync_util::IsSyncAccountEmail(
@@ -294,7 +310,7 @@ void ChromePasswordReuseDetectionManagerClient::CheckProtectedPasswordEntry(
 
   // Extract the host part of an extension domain, which will be the extension
   // ID.
-  std::string host = domain_gurl.host();
+  std::string host = domain_gurl.GetHost();
   auto password_reuse_signal =
       std::make_unique<safe_browsing::PasswordReuseSignal>(host,
                                                            password_reuse_info);
@@ -352,7 +368,6 @@ void ChromePasswordReuseDetectionManagerClient::RenderFrameCreated(
 }
 
 void ChromePasswordReuseDetectionManagerClient::OnPaste() {
-  std::u16string text;
   ui::Clipboard* clipboard = ui::Clipboard::GetForCurrentThread();
   // Given that this clipboard data read happens in the background and not
   // initiated by a user gesture, then the user shouldn't see a notification
@@ -360,15 +375,22 @@ void ChromePasswordReuseDetectionManagerClient::OnPaste() {
   // policy.
   ui::DataTransferEndpoint data_dst = ui::DataTransferEndpoint(
       ui::EndpointType::kDefault, {.notify_if_restricted = false});
-  clipboard->ReadText(ui::ClipboardBuffer::kCopyPaste, &data_dst, &text);
+  clipboard->ReadText(
+      ui::ClipboardBuffer::kCopyPaste, std::move(data_dst),
+      base::BindOnce(&ChromePasswordReuseDetectionManagerClient::OnTextRead,
+                     weak_factory_.GetWeakPtr()));
+}
 
+void ChromePasswordReuseDetectionManagerClient::OnTextRead(
+    std::u16string text) {
   password_reuse_detection_manager_.OnPaste(std::move(text));
   phishy_interaction_tracker_.HandlePasteEvent();
 }
 
 void ChromePasswordReuseDetectionManagerClient::OnInputEvent(
     const content::RenderWidgetHost& widget,
-    const blink::WebInputEvent& event) {
+    const blink::WebInputEvent& event,
+    input::InputEventSource source) {
   phishy_interaction_tracker_.HandleInputEvent(event);
 #if BUILDFLAG(IS_ANDROID)
   // On Android, key down events are triggered if a user types in through a

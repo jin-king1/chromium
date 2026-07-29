@@ -23,6 +23,7 @@ import {castExists} from '../assert_extras.js';
 import {DeepLinkingMixin} from '../common/deep_linking_mixin.js';
 import {isChild} from '../common/load_time_booleans.js';
 import {RouteObserverMixin} from '../common/route_observer_mixin.js';
+import type {PrefsState} from '../common/types.js';
 import {Setting} from '../mojom-webui/setting.mojom-webui.js';
 import type {SettingsUsersAddUserDialogElement} from '../os_people_page/add_user_dialog.js';
 import type {Route} from '../router.js';
@@ -72,26 +73,23 @@ export class SettingsManageUsersSubpageElement extends
           return isChild();
         },
       },
-
-      /**
-       * Used by DeepLinkingMixin to focus this page's deep links.
-       */
-      supportedSettingIds: {
-        type: Object,
-        value: () => new Set<Setting>([
-          Setting.kGuestBrowsingV2,
-          Setting.kShowUsernamesAndPhotosAtSignInV2,
-          Setting.kRestrictSignInV2,
-          Setting.kAddToUserAllowlistV2,
-          Setting.kRemoveFromUserAllowlistV2,
-        ]),
-      },
     };
   }
 
-  private isOwner_: boolean;
-  private isUserListManaged_: boolean;
-  private isChild_: boolean;
+  declare prefs: PrefsState;
+
+  // DeepLinkingMixin override
+  override supportedSettingIds = new Set<Setting>([
+    Setting.kGuestBrowsingV2,
+    Setting.kShowUsernamesAndPhotosAtSignInV2,
+    Setting.kRestrictSignInV2,
+    Setting.kAddToUserAllowlistV2,
+    Setting.kRemoveFromUserAllowlistV2,
+  ]);
+
+  declare private isOwner_: boolean;
+  declare private isUserListManaged_: boolean;
+  declare private isChild_: boolean;
 
   constructor() {
     super();

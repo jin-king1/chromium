@@ -4,7 +4,15 @@
 
 package org.chromium.components.browser_ui.modaldialog;
 
+import static androidx.test.espresso.Espresso.onView;
+import static androidx.test.espresso.assertion.ViewAssertions.matches;
+import static androidx.test.espresso.matcher.RootMatchers.isDialog;
+import static androidx.test.espresso.matcher.ViewMatchers.hasChildCount;
+import static androidx.test.espresso.matcher.ViewMatchers.hasDescendant;
+import static androidx.test.espresso.matcher.ViewMatchers.isAssignableFrom;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
+
+import static org.hamcrest.Matchers.allOf;
 
 import android.app.Activity;
 import android.content.res.Resources;
@@ -14,7 +22,8 @@ import androidx.annotation.Nullable;
 import org.junit.Assert;
 
 import org.chromium.base.ThreadUtils;
-import org.chromium.components.browser_ui.modaldialog.test.R;
+import org.chromium.base.test.transit.ViewElement;
+import org.chromium.base.test.transit.ViewFinder;
 import org.chromium.ui.modaldialog.DialogDismissalCause;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modaldialog.ModalDialogManager.ModalDialogType;
@@ -186,8 +195,10 @@ public class ModalDialogTestUtils {
     public static void showDialogInRoot(
             ModalDialogManager manager, PropertyModel model, @ModalDialogType int dialogType) {
         ThreadUtils.runOnUiThreadBlocking(() -> manager.showDialog(model, dialogType));
-        ViewUtils.waitForDialogViewCheckingState(
-                withId(R.id.modal_dialog_view), ViewUtils.VIEW_VISIBLE);
+        ViewFinder.waitForView(
+                ModalDialogView.class,
+                withId(R.id.modal_dialog_view),
+                ViewElement.inDialogOption());
     }
 
     /** Checks whether the number of pending dialogs of a specified type is as expected. */
@@ -243,5 +254,21 @@ public class ModalDialogTestUtils {
                     PropertyModelChangeProcessor.create(model, view, new ModalDialogViewBinder());
                     return model;
                 });
+    }
+
+    /**
+     * Asserts the number of message paragraphs shown in a {@link ModalDialogView}.
+     *
+     * @param expectedCount The expected number of child views in the message paragraph container.
+     */
+    public static void assertMessageParagraphCount(int expectedCount) {
+        onView(isAssignableFrom(ModalDialogView.class))
+                .inRoot(isDialog())
+                .check(
+                        matches(
+                                hasDescendant(
+                                        allOf(
+                                                withId(R.id.message_paragraphs_container),
+                                                hasChildCount(expectedCount)))));
     }
 }

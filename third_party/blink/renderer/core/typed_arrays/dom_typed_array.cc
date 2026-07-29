@@ -54,13 +54,15 @@ v8::Local<v8::Value> DOMTypedArray<T, V8TypedArray, clamped>::Wrap(
   template <>                                                                  \
   const WrapperTypeInfo                                                        \
       DOMTypedArray<val_t, v8::Type##Array, clamped>::wrapper_type_info_body_{ \
-          gin::kEmbedderBlink,                                                 \
+          {gin::kEmbedderBlink},                                               \
           nullptr,                                                             \
           nullptr,                                                             \
           #Type "Array",                                                       \
           nullptr,                                                             \
-          kDOMWrappersTag,                                                     \
-          kDOMWrappersTag,                                                     \
+          static_cast<v8::CppHeapPointerTag>(                                  \
+              ScriptWrappableArrayTag::kDOM##Type##ArrayTag),                  \
+          static_cast<v8::CppHeapPointerTag>(                                  \
+              ScriptWrappableArrayTag::kDOM##Type##ArrayTag),                  \
           WrapperTypeInfo::kWrapperTypeObjectPrototype,                        \
           WrapperTypeInfo::kObjectClassId,                                     \
           WrapperTypeInfo::kIdlOtherType,                                      \

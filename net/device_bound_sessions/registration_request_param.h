@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "net/base/net_export.h"
+#include "net/device_bound_sessions/session_params.h"
 #include "url/gurl.h"
 
 namespace net::device_bound_sessions {
@@ -32,14 +33,11 @@ class NET_EXPORT RegistrationRequestParam {
       RegistrationFetcherParam&& fetcher_param);
   static RegistrationRequestParam CreateForRefresh(const Session& session);
 
-  const GURL& registration_endpoint() const { return registration_endpoint_; }
-  const std::optional<std::string>& session_identifier() const {
-    return session_identifier_;
-  }
   const std::optional<std::string>& challenge() const { return challenge_; }
   const std::optional<std::string>& authorization() const {
     return authorization_;
   }
+  AttestationMode attestation_mode() const { return attestation_mode_; }
 
   GURL TakeRegistrationEndpoint() { return std::move(registration_endpoint_); }
   std::optional<std::string> TakeSessionIdentifier() {
@@ -53,18 +51,22 @@ class NET_EXPORT RegistrationRequestParam {
   static RegistrationRequestParam CreateForTesting(
       const GURL& registration_endpoint,
       std::optional<std::string> session_identifier,
-      std::optional<std::string> challenge);
+      std::optional<std::string> challenge,
+      std::optional<std::string> authorization,
+      AttestationMode attestation_mode = AttestationMode::kNone);
 
  private:
   RegistrationRequestParam(const GURL& registration_endpoint,
                            std::optional<std::string> session_identifier,
                            std::optional<std::string> challenge,
-                           std::optional<std::string> authorization);
+                           std::optional<std::string> authorization,
+                           AttestationMode attestation_mode);
 
   GURL registration_endpoint_;
   std::optional<std::string> session_identifier_;
   std::optional<std::string> challenge_;
   std::optional<std::string> authorization_;
+  AttestationMode attestation_mode_ = AttestationMode::kNone;
 };
 
 }  // namespace net::device_bound_sessions

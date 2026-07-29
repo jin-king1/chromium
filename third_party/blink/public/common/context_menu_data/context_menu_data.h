@@ -36,10 +36,11 @@
 
 #include "services/network/public/mojom/referrer_policy.mojom-shared.h"
 #include "third_party/blink/public/common/context_menu_data/menu_item_info.h"
-#include "third_party/blink/public/common/input/web_menu_source_type.h"
-#include "third_party/blink/public/common/navigation/impression.h"
+#include "third_party/blink/public/common/dom/dom_node_id.h"
+#include "third_party/blink/public/mojom/annotation/annotation.mojom-shared.h"
 #include "third_party/blink/public/mojom/context_menu/context_menu.mojom-shared.h"
 #include "third_party/blink/public/mojom/forms/form_control_type.mojom-shared.h"
+#include "ui/base/mojom/menu_source_type.mojom-shared.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect.h"
 #include "url/gurl.h"
@@ -72,6 +73,9 @@ struct ContextMenuData {
   // The encoding for the frame in context.
   std::string frame_encoding;
 
+  // A Java counterpart will be generated for this enum.
+  // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.blink_public.common
+  // GENERATED_JAVA_CLASS_NAME_OVERRIDE: ContextMenuDataMediaFlags
   enum MediaFlags {
     kMediaNone = 0,
     kMediaInError = 1,
@@ -98,10 +102,6 @@ struct ContextMenuData {
   // The text of the link that is in the context.
   std::string link_text;
 
-  // If the node is a link, the impression declared by the link's conversion
-  // measurement attributes.
-  std::optional<Impression> impression;
-
   // The raw text of the selection in context.
   std::string selected_text;
 
@@ -117,7 +117,7 @@ struct ContextMenuData {
   // Suggested filename for saving file.
   std::string suggested_filename;
 
-  // The editable (possibily) misspelled word.
+  // The editable (possibly) misspelled word.
   std::u16string misspelled_word;
 
   // If misspelledWord is not empty, holds suggestions from the dictionary.
@@ -158,11 +158,18 @@ struct ContextMenuData {
   // the current webpage.
   int selection_start_offset;
 
-  WebMenuSourceType source_type;
+  ui::mojom::MenuSourceType source_type;
 
-  // True when the context contains text selected by a text fragment. See
-  // TextFragmentAnchor.
-  bool opened_from_highlight = false;
+  // Set when the context contains text selected by an annotation (see
+  // third_party/blink/renderer/core/annotation/README.md).
+  std::optional<mojom::AnnotationType> annotation_type;
+
+  // True when the context menu was opened from an element with the
+  // `interestfor` attribute.
+  bool opened_from_interest_for = false;
+  // If opened_from_interest_for is true, this will contain the DOMNodeID of the
+  // link that generated the context menu.
+  int interest_for_node_id = 0;
 
   // The type of the form control element on which the context menu is invoked,
   // if any.
@@ -176,13 +183,11 @@ struct ContextMenuData {
   // Identifies the element the context menu was invoked on if either
   // `form_control_type` is engaged or `is_content_editable_for_autofill` is
   // true.
-  // See `autofill::FieldRendererId` for the semantics of renderer IDs.
-  uint64_t field_renderer_id = 0;
+  DOMNodeIdType field_renderer_id;
 
   // Identifies form to which the field identified by `field_renderer_id` is
   // associated.
-  // See `autofill::FormRendererId` for the semantics of renderer IDs.
-  uint64_t form_renderer_id = 0;
+  DOMNodeIdType form_renderer_id;
 
   ContextMenuData()
       : media_type(blink::mojom::ContextMenuDataMediaType::kNone),

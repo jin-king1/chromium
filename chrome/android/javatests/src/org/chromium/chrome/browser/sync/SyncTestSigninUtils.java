@@ -13,22 +13,24 @@ import org.chromium.chrome.test.util.browser.signin.LiveSigninTestUtil;
 import org.chromium.chrome.test.util.browser.signin.SigninTestRule;
 import org.chromium.components.signin.AccountManagerFacade;
 import org.chromium.components.signin.AccountManagerFacadeProvider;
+import org.chromium.components.signin.base.AccountInfo;
 
 /** Utility class for sign-in functionalities in native Sync browser tests. */
 @JNINamespace("sync_test_utils_android")
 final class SyncTestSigninUtils {
-    private static final SigninTestRule sSigninTestRule = new SigninTestRule();
+    private static SigninTestRule sSigninTestRule;
 
-    /** Sets up the test account and signs in, but does not enable Sync. */
+    /** Sets up the test account and signs in. */
+    // TODO(crbug.com/40066949): Remove param `withSyncConsent` once native tests for
+    // sync-the-feature are removed.
     @CalledByNative
-    private static void setUpAccountAndSignInForTesting() {
-        sSigninTestRule.addTestAccountThenSignin();
-    }
-
-    /** Sets up the test account, signs in, and enables Sync-the-feature. */
-    @CalledByNative
-    private static void setUpAccountAndSignInAndEnableSyncForTesting() {
-        sSigninTestRule.addTestAccountThenSigninAndEnableSync();
+    private static void setUpAccountAndSignInForTesting(
+            @JniType("AccountInfo") AccountInfo accountInfo, boolean withSyncConsent) {
+        if (!withSyncConsent) {
+            sSigninTestRule.addAccountThenSignin(accountInfo);
+        } else {
+            sSigninTestRule.addAccountThenSigninWithConsentLevelSync(accountInfo);
+        }
     }
 
     /** Signs out from the current test account. */
@@ -39,7 +41,8 @@ final class SyncTestSigninUtils {
 
     /** Sets up the fake authentication environment. */
     @CalledByNative
-    private static void setUpFakeAuthForTesting() {
+    private static void setUpFakeAuthForTesting(boolean isNativeTest) {
+        sSigninTestRule = new SigninTestRule(isNativeTest);
         sSigninTestRule.setUpRule();
     }
 
@@ -48,21 +51,24 @@ final class SyncTestSigninUtils {
     private static void tearDownFakeAuthForTesting() {
         // The seeded account is removed automatically when user signs out
         sSigninTestRule.tearDownRule();
+        sSigninTestRule = null;
     }
 
-    /** Add an account to the device and signs in for live testing, but does not enable Sync. */
+    /** Add an account to the device and signs in for live testing. */
+    // TODO(crbug.com/40066949): Remove param `withSyncConsent` once native tests for
+    // sync-the-feature are removed.
     @CalledByNative
     private static void setUpLiveAccountAndSignInForTesting(
-            @JniType("std::string") String accountName, @JniType("std::string") String password) {
-        LiveSigninTestUtil.getInstance().addAccountWithPasswordThenSignin(accountName, password);
-    }
-
-    /** Add an account to the device and signs in for live testing, and enables Sync-the-feature. */
-    @CalledByNative
-    private static void setUpLiveAccountAndSignInAndEnableSyncForTesting(
-            @JniType("std::string") String accountName, @JniType("std::string") String password) {
-        LiveSigninTestUtil.getInstance()
-                .addAccountWithPasswordThenSigninAndEnableSync(accountName, password);
+            @JniType("std::string") String accountName,
+            @JniType("std::string") String password,
+            boolean withSyncConsent) {
+        if (!withSyncConsent) {
+            LiveSigninTestUtil.getInstance()
+                    .addAccountWithPasswordThenSignin(accountName, password);
+        } else {
+            LiveSigninTestUtil.getInstance()
+                    .addAccountWithPasswordThenSigninWithConsentLevelSync(accountName, password);
+        }
     }
 
     /**

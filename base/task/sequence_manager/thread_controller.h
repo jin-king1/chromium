@@ -5,6 +5,7 @@
 #ifndef BASE_TASK_SEQUENCE_MANAGER_THREAD_CONTROLLER_H_
 #define BASE_TASK_SEQUENCE_MANAGER_THREAD_CONTROLLER_H_
 
+#include <array>
 #include <optional>
 #include <stack>
 #include <string>
@@ -19,7 +20,6 @@
 #include "base/memory/raw_ref.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/message_loop/message_pump.h"
-#include "base/profiler/sample_metadata.h"
 #include "base/rand_util.h"
 #include "base/run_loop.h"
 #include "base/task/common/lazy_now.h"
@@ -28,7 +28,7 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/thread_annotations.h"
 #include "base/time/time.h"
-#include "base/trace_event/base_tracing.h"
+#include "base/trace_event/trace_event.h"
 #include "base/tracing_buildflags.h"
 #include "build/build_config.h"
 
@@ -147,8 +147,7 @@ class BASE_EXPORT ThreadController {
 #endif
 
   // Initializes features for this class. See `base::features::Init()`.
-  static void InitializeFeatures(
-      features::EmitThreadControllerProfilerMetadata emit_profiler_metadata);
+  static void InitializeFeatures();
 
   // Enables TimeKeeper metrics. `thread_name` will be used as a suffix.
   // Setting `wall_time_based_metrics_enabled_for_testing` adds wall-time
@@ -160,7 +159,8 @@ class BASE_EXPORT ThreadController {
   // Sets the SingleThreadTaskRunner that will be returned by
   // SingleThreadTaskRunner::GetCurrentDefault on the thread controlled by this
   // ThreadController.
-  virtual void SetDefaultTaskRunner(scoped_refptr<SingleThreadTaskRunner>) = 0;
+  virtual void SetDefaultTaskRunner(scoped_refptr<SingleThreadTaskRunner>,
+                                    ThreadType thread_type) = 0;
 
   // TODO(altimin): Get rid of the methods below.
   // These methods exist due to current integration of SequenceManager
@@ -169,7 +169,6 @@ class BASE_EXPORT ThreadController {
   virtual bool RunsTasksInCurrentSequence() = 0;
   void SetTickClock(const TickClock* clock);
   virtual scoped_refptr<SingleThreadTaskRunner> GetDefaultTaskRunner() = 0;
-  virtual void RestoreDefaultTaskRunner() = 0;
   virtual void AddNestingObserver(RunLoop::NestingObserver* observer) = 0;
   virtual void RemoveNestingObserver(RunLoop::NestingObserver* observer) = 0;
 
@@ -375,12 +374,7 @@ class BASE_EXPORT ThreadController {
 
       // non-null when recording is enabled.
       raw_ptr<HistogramBase> histogram_ = nullptr;
-#if BUILDFLAG(ENABLE_BASE_TRACING)
-      std::optional<perfetto::Track> perfetto_track_;
-
-      // True if tracing was enabled during the last pass of RecordTimeInPhase.
-      bool was_tracing_enabled_ = false;
-#endif
+      std::optional<perfetto::NamedTrack> perfetto_track_;
       const raw_ref<const RunLevelTracker> outer_;
     } time_keeper_{*this};
 
@@ -426,12 +420,9 @@ class BASE_EXPORT ThreadController {
       base::TimeDelta accumulated_active_time_;
       base::TimeDelta accumulated_active_on_cpu_time_;
       base::TimeDelta accumulated_active_off_cpu_time_;
-      MetricsSubSampler metrics_sub_sampler_;
 
       State state_ = kIdle;
       bool is_nested_;
-
-      bool ShouldRecordSampleMetadata();
 
       // Get full suffix for histogram logging purposes. |duration| should equal
       // TimeDelta() when not applicable.
@@ -443,9 +434,6 @@ class BASE_EXPORT ThreadController {
       const raw_ref<TimeKeeper> time_keeper_;
       // Must be set shortly before ~RunLevel.
       raw_ptr<LazyNow> exit_lazy_now_ = nullptr;
-
-      SampleMetadata thread_controller_sample_metadata_;
-      size_t thread_controller_active_id_ = 0;
 
       // Toggles to true when used as RunLevel&& input to construct another
       // RunLevel. This RunLevel's destructor will then no-op.

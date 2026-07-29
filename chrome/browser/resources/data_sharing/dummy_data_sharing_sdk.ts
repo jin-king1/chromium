@@ -3,8 +3,10 @@
 // found in the LICENSE file.
 
 // Dummy implementation of data_sharing_sdk.js for non-branded build.
-import type {AddAccessTokenParams, AddAccessTokenResult, AddMemberParams, CreateGroupParams, CreateGroupResult, DataSharingSdk, DataSharingSdkResponse, DeleteGroupParams, LeaveGroupParams, ReadGroupsParams, ReadGroupsResult, RunCloseFlowParams, RunDeleteFlowParams, RunInviteFlowParams, RunJoinFlowParams, RunManageFlowParams} from './data_sharing_sdk_types.js';
+import type {AddAccessTokenParams, AddAccessTokenResult, AddMemberParams, CreateGroupParams, CreateGroupResult, DataSharingSdk, DataSharingSdkGroupData, DataSharingSdkResponse, DeleteGroupParams, LeaveGroupParams, ReadGroupOptions, ReadGroupParams, ReadGroupResult, ReadGroupsParams, ReadGroupsResult, RunCloseFlowParams, RunDeleteFlowParams, RunInviteFlowParams, RunJoinFlowParams, RunManageFlowParams} from './data_sharing_sdk_types.js';
 import {Code} from './data_sharing_sdk_types.js';
+
+export const SHAREKIT_SDK_VERSION = '42';
 
 // Add something to the dialog to tell which flow it is.
 function appendTextForTesting(text: string) {
@@ -21,6 +23,36 @@ window.data_sharing_sdk = {
   buildDataSharingSdk,
 };
 
+const groupMemberMapFunction =
+    (param: ReadGroupParams): DataSharingSdkGroupData => ({
+      groupId: param.groupId,
+      displayName: 'GROUP_NAME',
+      members: [
+        {
+          focusObfuscatedGaiaId: 'GAIA_ID',
+          displayName: 'MEMBER_NAME',
+          email: 'test@gmail.com',
+          role: 'member',
+          avatarUrl: 'http://example.com',
+          givenName: 'MEMBER_NAME',
+          createdAtTimeMs: 0,
+          lastUpdatedAtTimeMs: 0,
+        },
+      ],
+      formerMembers: [
+        {
+          focusObfuscatedGaiaId: 'GAIA_ID2',
+          displayName: 'MEMBER_NAME2',
+          email: 'test2@gmail.com',
+          role: 'former_member',
+          avatarUrl: 'http://example2.com',
+          givenName: 'MEMBER_NAME2',
+          createdAtTimeMs: 0,
+          lastUpdatedAtTimeMs: 0,
+        },
+      ],
+    });
+
 export class DataSharingSdkImpl implements DataSharingSdk {
   createGroup(
       _params: CreateGroupParams,
@@ -30,6 +62,15 @@ export class DataSharingSdkImpl implements DataSharingSdk {
       status: Code.OK,
     });
   }
+  readGroup(_param: ReadGroupParams, _options: ReadGroupOptions):
+      Promise<{result?: ReadGroupResult, status: Code}> {
+    return new Promise((resolve) => {
+      resolve({
+        status: Code.OK,
+        result: {groupData: groupMemberMapFunction(_param)},
+      });
+    });
+  }
   readGroups(
       _params: ReadGroupsParams,
       ): Promise<{result?: ReadGroupsResult, status: Code}> {
@@ -37,30 +78,7 @@ export class DataSharingSdkImpl implements DataSharingSdk {
       resolve({
         status: Code.OK,
         result: {
-          groupData: _params.params.map(param => ({
-                                          groupId: param.groupId,
-                                          displayName: 'GROUP_NAME',
-                                          members: [
-                                            {
-                                              focusObfuscatedGaiaId: 'GAIA_ID',
-                                              displayName: 'MEMBER_NAME',
-                                              email: 'test@gmail.com',
-                                              role: 'member',
-                                              avatarUrl: 'http://example.com',
-                                              givenName: 'MEMBER_NAME',
-                                            },
-                                          ],
-                                          formerMembers: [
-                                            {
-                                              focusObfuscatedGaiaId: 'GAIA_ID2',
-                                              displayName: 'MEMBER_NAME2',
-                                              email: 'test2@gmail.com',
-                                              role: 'former_member',
-                                              avatarUrl: 'http://example2.com',
-                                              givenName: 'MEMBER_NAME2',
-                                            },
-                                          ],
-                                        })),
+          groupData: _params.params.map(groupMemberMapFunction),
         },
       });
     });
@@ -104,6 +122,10 @@ export class DataSharingSdkImpl implements DataSharingSdk {
   // Setup Helpers
   setOauthAccessToken(_params: {accessToken: string}): void {}
   updateClearcut(_params: {enabled: boolean}): void {}
+  setClientVersionAndResetPeopleStore(
+      _versionString: string,
+      _baselineCl: number,
+      ): void {}
 
   static getInstance(): DataSharingSdk {
     return dataSharingSdkInstance ||

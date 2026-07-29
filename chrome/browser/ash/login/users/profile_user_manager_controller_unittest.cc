@@ -7,7 +7,6 @@
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/ash/settings/scoped_cros_settings_test_helper.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/test/base/scoped_testing_local_state.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
@@ -15,6 +14,7 @@
 #include "components/account_id/account_id.h"
 #include "components/user_manager/fake_user_manager.h"
 #include "components/user_manager/scoped_user_manager.h"
+#include "components/user_manager/test_helper.h"
 #include "components/user_manager/user.h"
 #include "content/public/test/browser_task_environment.h"
 #include "google_apis/gaia/gaia_id.h"
@@ -42,15 +42,14 @@ class ProfileUserManagerControllerTest : public testing::Test {
  private:
   content::BrowserTaskEnvironment task_environment_;
   ScopedCrosSettingsTestHelper settings_helper_;
-  ScopedTestingLocalState local_state_{TestingBrowserProcess::GetGlobal()};
   user_manager::TypedScopedUserManager<user_manager::FakeUserManager>
-      user_manager_{
-          std::make_unique<user_manager::FakeUserManager>(local_state_.Get())};
+      user_manager_{std::make_unique<user_manager::FakeUserManager>(
+          TestingBrowserProcess::GetGlobal()->local_state())};
   // To follow the destruction order in the production, declare controller's
   // pointer first.
   std::unique_ptr<ProfileUserManagerController> controller_;
   TestingProfileManager testing_profile_manager_{
-      TestingBrowserProcess::GetGlobal(), &local_state_};
+      TestingBrowserProcess::GetGlobal()};
 };
 
 TEST_F(ProfileUserManagerControllerTest, GetProfilePrefs) {
@@ -61,8 +60,7 @@ TEST_F(ProfileUserManagerControllerTest, GetProfilePrefs) {
   user_manager().AddGaiaUser(kOwnerAccountId, user_manager::UserType::kRegular);
   user_manager().UserLoggedIn(
       kOwnerAccountId,
-      user_manager::FakeUserManager::GetFakeUsernameHash(kOwnerAccountId),
-      /*browser_restart=*/false, /*is_child=*/false);
+      user_manager::TestHelper::GetFakeUsernameHash(kOwnerAccountId));
   user_manager::User* user = user_manager().GetActiveUser();
   ASSERT_FALSE(user->GetProfilePrefs());
 
@@ -86,9 +84,7 @@ TEST_F(ProfileUserManagerControllerTest, AnnotateAccountId) {
   // Log in the user and create the profile.
   user_manager().AddGaiaUser(kAccountId, user_manager::UserType::kRegular);
   user_manager().UserLoggedIn(
-      kAccountId,
-      user_manager::FakeUserManager::GetFakeUsernameHash(kAccountId),
-      /*browser_restart=*/false, /*is_child=*/false);
+      kAccountId, user_manager::TestHelper::GetFakeUsernameHash(kAccountId));
   user_manager::User* user = user_manager().GetActiveUser();
   ASSERT_FALSE(user->GetProfilePrefs());
 

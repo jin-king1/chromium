@@ -6,11 +6,15 @@
 
 #include <memory>
 
+#include "base/files/file_path.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/values.h"
 #include "chrome/browser/extensions/extension_api_unittest.h"
 #include "chrome/common/chrome_constants.h"
 #include "chrome/test/base/testing_profile.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_types.h"
+#include "components/session_manager/core/fake_session_manager_delegate.h"
+#include "components/session_manager/core/session_manager.h"
 #include "components/session_manager/session_manager_types.h"
 #include "extensions/browser/api_test_utils.h"
 #include "extensions/common/extension.h"
@@ -42,6 +46,9 @@ class LoginStateApiUnittest : public ExtensionApiUnittest {
         ExtensionBuilder(kExtensionName).SetID(kExtensionId).Build();
     set_extension(extension);
   }
+
+ protected:
+  std::unique_ptr<session_manager::SessionManager> session_manager_;
 };
 
 // Test that |loginState.getProfileType()| returns |USER_PROFILE| for
@@ -68,6 +75,23 @@ TEST_F(LoginStateApiUnittest, GetProfileType_SigninProfile) {
                                   ->GetString());
 }
 
+// Test that |loginState.getProfileType()| returns |LOCK_PROFILE| for
+// extensions running in the lock profile.
+TEST_F(LoginStateApiUnittest, GetProfileType_LockProfile) {
+  // |ash::ProfileHelper::GetLockScreenProfile()| cannot be used as the
+  // |TestingProfileManager| set up by |BrowserWithTestWindowTest| has an empty
+  // user data directory.
+  TestingProfile::Builder builder;
+  builder.SetPath(base::FilePath(
+      FILE_PATH_LITERAL(ash::kLockScreenBrowserContextBaseName)));
+  std::unique_ptr<Profile> profile = builder.Build();
+
+  auto function = base::MakeRefCounted<LoginStateGetProfileTypeFunction>();
+  EXPECT_EQ("LOCK_PROFILE", api_test_utils::RunFunctionAndReturnSingleResult(
+                                function.get(), "[]", profile.get())
+                                ->GetString());
+}
+
 class LoginStateApiAshUnittest : public LoginStateApiUnittest {
  public:
   LoginStateApiAshUnittest() = default;
@@ -77,7 +101,11 @@ class LoginStateApiAshUnittest : public LoginStateApiUnittest {
 
   ~LoginStateApiAshUnittest() override = default;
 
-  void SetUp() override { LoginStateApiUnittest::SetUp(); }
+  void SetUp() override {
+    session_manager_ = std::make_unique<session_manager::SessionManager>(
+        std::make_unique<session_manager::FakeSessionManagerDelegate>());
+    LoginStateApiUnittest::SetUp();
+  }
 };
 
 // Test that calling |loginState.getSessionState()| returns the correctly mapped

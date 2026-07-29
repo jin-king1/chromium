@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ash/app_list/search/local_image_search/image_content_annotator.h"
 
+#include "base/containers/span.h"
 #include "base/files/file_path.h"
 #include "base/files/memory_mapped_file.h"
 #include "base/logging.h"
@@ -38,8 +39,9 @@ void LogStatusUma(Status status) {
 
 }  // namespace
 
-ImageContentAnnotator::ImageContentAnnotator() {
+ImageContentAnnotator::ImageContentAnnotator(IcaDisconnectedCallback callback) {
   DETACH_FROM_SEQUENCE(sequence_checker_);
+  ica_disconnected_callback_ = std::move(callback);
 }
 
 ImageContentAnnotator::~ImageContentAnnotator() = default;
@@ -63,7 +65,9 @@ void ImageContentAnnotator::EnsureAnnotatorIsConnected() {
 
   if (!image_content_annotator_.is_bound()) {
     ConnectToImageAnnotator();
-    image_content_annotator_.reset_on_disconnect();
+    image_content_annotator_.set_disconnect_handler(
+        base::BindOnce(&ImageContentAnnotator::OnIcaDisconnected,
+                       weak_ptr_factory_.GetWeakPtr()));
   }
 }
 
@@ -117,6 +121,14 @@ void ImageContentAnnotator::DisconnectAnnotator() {
   image_content_annotator_.reset();
 }
 
+void ImageContentAnnotator::OnIcaDisconnected() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  image_content_annotator_.reset();
+
+  // Informs `image_annotation_worker` ica is disconnected.
+  ica_disconnected_callback_.Run();
+}
+
 void ImageContentAnnotator::AnnotateEncodedImage(
     const base::FilePath& image_path,
     base::OnceCallback<void(ImageAnnotationResultPtr)> callback) {
@@ -130,14 +142,16 @@ void ImageContentAnnotator::AnnotateEncodedImage(
                   "image file to generate annotations";
   }
   base::MappedReadOnlyRegion mapped_region =
-      base::ReadOnlySharedMemoryRegion::Create(data.length());
-  // It's safe to early return here as the caller function
-  // `ImageAnnotationWorker::OnDecodeImageFile()` has started the
-  // `timeout_timer_` and it will continue the process when the timer gets
-  // timeout.
+      base::ReadOnlySharedMemoryRegion::Create(data.bytes().size());
+  // It's safe to early return here as we have triggered
+  // `ica_disconnected_callback_` and `image_annotation_worker` will continue
+  // the process.
   if (!mapped_region.IsValid()) {
     LogIcaUma(IcaStatus::kMappedRegionInvalid);
     LOG(ERROR) << "Mapped region is not valid";
+
+    // Informs `image_annotation_worker`.
+    ica_disconnected_callback_.Run();
     return;
   }
   base::span(mapped_region.mapping).copy_from(data.bytes());

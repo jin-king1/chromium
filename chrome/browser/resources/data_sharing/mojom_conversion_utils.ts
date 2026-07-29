@@ -41,10 +41,12 @@ function toMojomGroupMember(member: DataSharingSdkGroupMember): GroupMember {
     displayName: member.displayName,
     email: member.email,
     role: toMojomRole(member.role),
-    avatarUrl: {url: member.avatarUrl},
+    avatarUrl: member.avatarUrl,
     // Bandage for crbug.com/372249284, clean this up after the root cause is
     // addressed.
     givenName: member.givenName || '',
+    creationTime: new Date(member.createdAtTimeMs),
+    lastUpdatedTime: new Date(member.lastUpdatedAtTimeMs),
   };
 }
 

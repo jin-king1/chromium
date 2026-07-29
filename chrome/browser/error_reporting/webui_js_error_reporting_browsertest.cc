@@ -4,18 +4,19 @@
 
 #include <memory>
 
-#include "base/containers/contains.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/error_reporting/mock_chrome_js_error_report_processor.h"
 #include "chrome/browser/prefs/session_startup_pref.h"
+#include "chrome/browser/profiles/keep_alive/profile_keep_alive_types.h"
+#include "chrome/browser/profiles/keep_alive/scoped_profile_keep_alive.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sessions/session_service_factory.h"
 #include "chrome/browser/sessions/session_service_test_helper.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
-#include "chrome/browser/ui/browser_navigator_params.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -45,10 +46,9 @@ using ::testing::SizeIs;
 
 namespace {
 // Must match message in
-// chrome/browser/resources/webui_js_error/webui_js_error.js, but with URL
-// escapes.
+// chrome/browser/resources/webui_js_error/webui_js_error.js.
 constexpr char kPageLoadMessage[] =
-    "WebUI%20JS%20Error%3A%20printing%20error%20on%20page%20load";
+    "WebUI JS Error: printing error on page load";
 
 // A simple webpage that generates a JavaScript error on load.
 constexpr char kJavaScriptErrorPage[] = R"(
@@ -112,7 +112,7 @@ class ScopedLogMessageWatcher {
                              size_t message_start,
                              const std::string& str) {
     CHECK(current_handler_ != nullptr);
-    if (base::Contains(str, kWebpageErrorMessage)) {
+    if (str.contains(kWebpageErrorMessage)) {
       current_handler_->callback_.Run();
     }
     if (current_handler_->previous_handler_ != nullptr) {
@@ -169,10 +169,12 @@ IN_PROC_BROWSER_TEST_F(WebUIJSErrorReportingTest, ReportsErrors) {
   // Look for page load error report.
   MockCrashEndpoint::Report report = endpoint.WaitForReport();
   EXPECT_THAT(endpoint.all_reports(), SizeIs(1));
-  EXPECT_THAT(report.query, HasSubstr(kPageLoadMessage)) << report;
+  EXPECT_THAT(report.GetQueryParam("error_message").value_or(""),
+              HasSubstr(kPageLoadMessage));
   // Expect that we get a good stack trace as well
-  EXPECT_THAT(report.content, AllOf(HasSubstr("logsErrorDuringPageLoadOuter"),
-                                    HasSubstr("logsErrorDuringPageLoadInner")))
+  EXPECT_THAT(report.content(),
+              AllOf(HasSubstr("logsErrorDuringPageLoadOuter"),
+                    HasSubstr("logsErrorDuringPageLoadInner")))
       << report;
 
   endpoint.clear_last_report();
@@ -188,11 +190,11 @@ IN_PROC_BROWSER_TEST_F(WebUIJSErrorReportingTest, ReportsErrors) {
                             /*alt=*/true, /*command=*/false);
   report = endpoint.WaitForReport();
   EXPECT_THAT(endpoint.all_reports(), SizeIs(2));
-  constexpr char kExceptionButtonMessage[] =
-      "WebUI%20JS%20Error%3A%20exception%20button%20clicked";
-  EXPECT_THAT(report.query, HasSubstr(kExceptionButtonMessage)) << report;
-  EXPECT_THAT(report.content, AllOf(HasSubstr("throwExceptionHandler"),
-                                    HasSubstr("throwExceptionInner")))
+  EXPECT_THAT(report.GetQueryParam("error_message").value_or(""),
+              HasSubstr("WebUI JS Error: exception button clicked"))
+      << report;
+  EXPECT_THAT(report.content(), AllOf(HasSubstr("throwExceptionHandler"),
+                                      HasSubstr("throwExceptionInner")))
       << report;
 
   endpoint.clear_last_report();
@@ -202,10 +204,10 @@ IN_PROC_BROWSER_TEST_F(WebUIJSErrorReportingTest, ReportsErrors) {
                             /*alt=*/true, /*command=*/false);
   report = endpoint.WaitForReport();
   EXPECT_THAT(endpoint.all_reports(), SizeIs(3));
-  constexpr char kTriggeredErrorMessage[] =
-      "WebUI%20JS%20Error%3A%20printing%20error%20on%20button%20click";
-  EXPECT_THAT(report.query, HasSubstr(kTriggeredErrorMessage)) << report;
-  EXPECT_THAT(report.content,
+  EXPECT_THAT(report.GetQueryParam("error_message").value_or(""),
+              HasSubstr("WebUI JS Error: printing error on button click"))
+      << report;
+  EXPECT_THAT(report.content(),
               AllOf(HasSubstr("logsErrorFromButtonClickHandler"),
                     HasSubstr("logsErrorFromButtonClickInner")))
       << report;
@@ -217,9 +219,8 @@ IN_PROC_BROWSER_TEST_F(WebUIJSErrorReportingTest, ReportsErrors) {
                             /*alt=*/true, /*command=*/false);
   report = endpoint.WaitForReport();
   EXPECT_THAT(endpoint.all_reports(), SizeIs(4));
-  constexpr char kUnhandledPromiseRejectionMessage[] =
-      "WebUI%20JS%20Error%3A%20The%20rejector%20always%20rejects!";
-  EXPECT_THAT(report.query, HasSubstr(kUnhandledPromiseRejectionMessage))
+  EXPECT_THAT(report.GetQueryParam("error_message").value_or(""),
+              HasSubstr("WebUI JS Error: The rejector always rejects!"))
       << report;
   // V8 doesn't produce stacks for unhandle promise rejections.
 }
@@ -233,12 +234,11 @@ IN_PROC_BROWSER_TEST_F(WebUIJSErrorReportingTest,
   auto mock_processor =
       std::make_unique<ScopedMockChromeJsErrorReportProcessor>(endpoint);
 
-  Profile* profile = browser()->profile();
+  Profile* profile = browser()->GetProfile();
   SessionStartupPref pref(SessionStartupPref::LAST);
   SessionStartupPref::SetStartupPref(profile, pref);
-  profile->GetPrefs()->SetBoolean(prefs::kHasSeenWelcomePage, true);
 
-  chrome::NewTab(browser());
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), error_url_));
   endpoint.WaitForReport();
   endpoint.clear_last_report();
@@ -250,6 +250,8 @@ IN_PROC_BROWSER_TEST_F(WebUIJSErrorReportingTest,
   {
     ScopedKeepAlive keep_alive(KeepAliveOrigin::SESSION_RESTORE,
                                KeepAliveRestartOption::DISABLED);
+    ScopedProfileKeepAlive profile_keep_alive(
+        profile, ProfileKeepAliveOrigin::kBrowserWindow);
     CloseBrowserSynchronously(browser());
 
     // Create a new error processor to reset the list of already seen reports,
@@ -268,7 +270,9 @@ IN_PROC_BROWSER_TEST_F(WebUIJSErrorReportingTest,
   MockCrashEndpoint::Report report = endpoint.WaitForReport();
 
   EXPECT_THAT(endpoint.all_reports(), SizeIs(2));
-  EXPECT_THAT(report.query, HasSubstr(kPageLoadMessage)) << report;
+  EXPECT_THAT(report.GetQueryParam("error_message").value_or(""),
+              HasSubstr(kPageLoadMessage))
+      << report;
 }
 
 // Show that navigating from a WebUI page to a http page that produces
@@ -321,6 +325,6 @@ IN_PROC_BROWSER_TEST_F(WebUIJSErrorReportingTest, ExperimentListSmokeTest) {
   ui_test_utils::NavigateToURL(&navigate);
 
   MockCrashEndpoint::Report report = endpoint.WaitForReport();
-  EXPECT_THAT(report.query, HasSubstr("num-experiments=")) << report;
-  EXPECT_THAT(report.query, HasSubstr("variations=")) << report;
+  EXPECT_TRUE(report.GetQueryParam("num-experiments")) << report;
+  EXPECT_TRUE(report.GetQueryParam("variations")) << report;
 }

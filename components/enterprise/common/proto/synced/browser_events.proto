@@ -23,6 +23,8 @@ enum EventResult {
   EVENT_RESULT_DETECTED = 5;
   EVENT_RESULT_DATA_MASKED = 6;
   EVENT_RESULT_DATA_UNMASKED = 7;
+  EVENT_RESULT_FORCED_SAVE_TO_CLOUD = 8;
+  EVENT_RESULT_CANCELLED_BY_USER = 9;
 }
 
 // The reporting target of the events.
@@ -39,6 +41,7 @@ enum ContentTransferMethod {
   CONTENT_TRANSFER_METHOD_FILE_PICKER = 1;
   CONTENT_TRANSFER_METHOD_DRAG_AND_DROP = 2;
   CONTENT_TRANSFER_METHOD_FILE_PASTE = 3;
+  CONTENT_TRANSFER_METHOD_CLIPBOARD_COPY = 4;
 }
 
 message CrowdstrikeAgent {
@@ -179,7 +182,7 @@ message Snippet {
 }
 
 // Information about the triggered rule.
-// Next ID: 14
+// Next ID: 15
 message TriggeredRuleInfo {
   // The unique identifier for this rule.
   int64 rule_id = 1;
@@ -206,6 +209,8 @@ message TriggeredRuleInfo {
     REPORT_ONLY = 1;
     WARN = 2;
     BLOCK = 3;
+    FORCE_SAVE_TO_CLOUD = 4;
+    KEEP_IN_MANAGED_CHROME = 5;
   }
 
   Action action = 5;
@@ -233,6 +238,9 @@ message TriggeredRuleInfo {
 
   // Whether the rule has screenshot protection enabled.
   bool has_screenshot_protection = 13;
+
+  // URL categories in the iframes.
+  repeated string iframe_url_categories = 14;
 }
 
 // Risk level for a url/ip/file
@@ -268,6 +276,8 @@ message RiskInfo {
     DATA_LOSS = 4;
     // Violates URL filtering rules.
     URL_FILTERING = 5;
+    // Brand abuse detected by customer submitted screenshots.
+    ENTERPRISE_BRAND_ABUSE = 6;
   }
   ThreatType threat_type = 1;
 
@@ -355,7 +365,7 @@ message UrlInfo {
 }
 
 // A message for reporting password reuse events.
-// Next ID: 16.
+// Next ID: 18.
 message SafeBrowsingPasswordReuseEvent {
   reserved 5, 6, 7, 8, 9, 10;
 
@@ -395,6 +405,13 @@ message SafeBrowsingPasswordReuseEvent {
 
   // Security agent installed on the device
   repeated SecurityAgent security_agents = 15;
+
+  // URL info of the URL that triggered the event.
+  UrlInfo url_info = 16;
+
+  // The referrers of the webpage that sent the user to the url that triggered
+  // the event.
+  repeated UrlInfo referrers = 17;
 }
 
 // A message for reporting password change events.
@@ -423,8 +440,8 @@ message SafeBrowsingPasswordChangedEvent {
   repeated SecurityAgent security_agents = 4;
 }
 
-// A message for reporting dangerous download events.
-// Next ID: 40.
+// A message for reporting dangerous download events (malware transfer events).
+// Next ID: 41.
 message SafeBrowsingDangerousDownloadEvent {
   reserved 5, 11, 12, 13, 14, 15, 16;
 
@@ -444,7 +461,7 @@ message SafeBrowsingDangerousDownloadEvent {
   // The file name.
   string file_name = 2;
 
-  // SHA256 digest of this download.
+  // The file hashes, not limited to downloaded files.
   string download_digest_sha256 = 3;
 
   // Username of the profile. This will be an email address.
@@ -459,6 +476,7 @@ message SafeBrowsingDangerousDownloadEvent {
     UNKNOWN = 5;
     DANGEROUS_FILE_TYPE = 6;
     DANGEROUS_URL = 7;
+    DANGEROUS_ACCOUNT_COMPROMISE = 8;
   }
 
   // Category of dangerous download.
@@ -479,7 +497,8 @@ message SafeBrowsingDangerousDownloadEvent {
   // Size of downloaded content (in bytes).
   uint64 content_size = 9;
 
-  // Which direction the dangerous file was transferred.
+  // Which direction the dangerous file was transferred, can be upload,
+  // download, file transfer (CrOS only).
   DataTransferEventTrigger trigger = 10;
 
   // The address of the webpages that sent the user to this url.
@@ -558,6 +577,15 @@ message SafeBrowsingDangerousDownloadEvent {
 
   // Whether the content is encrypted.
   bool is_encrypted = 39;
+
+  // URLs in the iframes.
+  repeated string iframe_urls = 40
+      // copybara:datapol_begin
+      // [
+      //   (datapol.semantic_type) = ST_USER_CONTENT
+      // ]
+      // copybara:datapol_end
+      ;
 }
 
 // Types of data transferring operations that may have triggered the event to
@@ -571,6 +599,7 @@ enum DataTransferEventTrigger {
   PAGE_PRINT = 4;
   URL_VISITED = 6;
   CLIPBOARD_COPY = 7;
+  NETWORK_REQUEST = 11;
 
   // Trigger for file transfers on ChromeOS.
   FILE_TRANSFER = 5;
@@ -653,7 +682,7 @@ message SafeBrowsingInterstitialEvent {
 }
 
 // A DLP (Data Loss Prevention) event where sensitive data may have leaked.
-// Next ID: 34.
+// Next ID: 40.
 message DlpSensitiveDataEvent {
   reserved 6, 9, 10, 11, 12, 13, 15, 25;
 
@@ -753,11 +782,63 @@ message DlpSensitiveDataEvent {
   // The referrers of the webpage that sent the user to the url that triggered
   // the event.
   repeated UrlInfo referrers = 33;
+
+  // URL info of the URL of the tab.
+  UrlInfo tab_url_info = 37;
+
+  // URLs in the iframes.
+  repeated string iframe_urls = 34
+      // copybara:datapol_begin
+      // [
+      //   (datapol.semantic_type) = ST_USER_CONTENT
+      // ]
+      // copybara:datapol_end
+      ;
+
+  // The web app signed-in account email. Only populated for Workspace sites.
+  string web_app_signed_in_account = 35
+      // copybara:datapol_begin
+      // [
+      //   (datapol.semantic_type) = ST_IDENTIFYING_ID
+      // ]
+      // copybara:datapol_end
+      ;
+
+  // Copy origin webp app signed-in account for paste event only. Only populated
+  // for Workspace sites.
+  string source_web_app_signed_in_account = 36
+      // copybara:datapol_begin
+      // [
+      //   (datapol.semantic_type) = ST_IDENTIFYING_ID
+      // ]
+      // copybara:datapol_end
+      ;
+
+  // The Microsoft sensitivity (MIP) label for the file associated with the URL
+  // in the request. Only present for Microsoft M365 sites.
+  string microsoft_sensitivity_label_name = 38
+      // copybara:datapol_begin
+      // [
+      //   (datapol.semantic_type) = ST_UNSTRUCTURED_ADMIN_SETTING
+      // ]
+      // copybara:datapol_end
+      ;
+
+  // The Microsoft sensitivity (MIP) label for the file associated with the URL
+  // of the copied text in the request for paste event only. Only present for
+  // Microsoft M365 sites.
+  string source_microsoft_sensitivity_label_name = 39
+      // copybara:datapol_begin
+      // [
+      //   (datapol.semantic_type) = ST_UNSTRUCTURED_ADMIN_SETTING
+      // ]
+      // copybara:datapol_end
+      ;
 }
 
 // Event where a large file could not be scanned for analysis e.g. malware or
 // DLP.
-// Next ID: 25.
+// Next ID: 29.
 message UnscannedFileEvent {
   reserved 6, 9, 10, 11, 12, 14;
 
@@ -772,6 +853,10 @@ message UnscannedFileEvent {
 
   // SHA256 hash of large unscanned file.
   string download_digest_sha_256 = 4;
+
+  // The id of the scan. This will be shared by all events that are triggered
+  // from a single scan, and may be empty unless a metadata scan was performed.
+  string scan_id = 25;
 
   // Trigger category that generated this event.
   DataTransferEventTrigger trigger = 5;
@@ -812,6 +897,7 @@ message UnscannedFileEvent {
     SERVICE_UNAVAILABLE = 7;
     TOO_MANY_REQUESTS = 8;
     TIMEOUT = 9;
+    USER_CANCELLED = 10;
   }
 
   UnscannedReason unscanned_reason = 18;
@@ -842,11 +928,21 @@ message UnscannedFileEvent {
 
   // The user action led to a content transfer event.
   ContentTransferMethod content_transfer_method = 24;
+
+  // URL info of the URL that triggered the event.
+  UrlInfo url_info = 26;
+
+  // The referrers of the webpage that sent the user to the url that triggered
+  // the event.
+  repeated UrlInfo referrers = 27;
+
+  // URL info of the URL of the tab.
+  UrlInfo tab_url_info = 28;
 }
 
 // Event that indicates that content was transferred.
 //
-// Next ID: 22.
+// Next ID: 26.
 message ContentTransferEvent {
   // The id of the scan. This will be shared by all events that are triggered
   // from a single scan.
@@ -944,12 +1040,43 @@ message ContentTransferEvent {
 
   // Whether the content is encrypted.
   bool is_encrypted = 21;
+
+  // Evidence locker filepath in Google Cloud Storage.
+  string evidence_locker_filepath = 22;
+
+  // URLs in the iframes.
+  repeated string iframe_urls = 23
+      // copybara:datapol_begin
+      // [
+      //   (datapol.semantic_type) = ST_USER_CONTENT
+      // ]
+      // copybara:datapol_end
+      ;
+
+  // The web app signed-in account email. Only populated for Workspace sites.
+  string web_app_signed_in_account = 24
+      // copybara:datapol_begin
+      // [
+      //   (datapol.semantic_type) = ST_IDENTIFYING_ID
+      // ]
+      // copybara:datapol_end
+      ;
+
+  // Copy origin webp app signed-in account for paste event only. Only populated
+  // for Workspace sites.
+  string source_web_app_signed_in_account = 25
+      // copybara:datapol_begin
+      // [
+      //   (datapol.semantic_type) = ST_IDENTIFYING_ID
+      // ]
+      // copybara:datapol_end
+      ;
 }
 
 // Event sent when a user successfully logs in to a website, as determined by
 // Chrome's password manager.
 //
-// Next ID: 8.
+// Next ID: 10.
 message LoginEvent {
   // The URL on which the login took place.
   string url = 1;
@@ -981,6 +1108,13 @@ message LoginEvent {
 
   // Security agent installed on the device
   repeated SecurityAgent security_agents = 7;
+
+  // URL info of the URL that triggered the event.
+  UrlInfo url_info = 8;
+
+  // The referrers of the webpage that sent the user to the url that triggered
+  // the event.
+  repeated UrlInfo referrers = 9;
 }
 
 // Event sent when the Chrome Password Manager detects that a user's password
@@ -1101,6 +1235,9 @@ message BrowserExtensionInstallEvent {
 
     // Installed from outside the Chrome Web Store.
     EXTERNAL = 2;
+
+    // Component extension built into Chrome.
+    COMPONENT = 3;
   }
 
   ExtensionSource extension_source = 10;
@@ -1143,7 +1280,7 @@ message BrowserCrashEvent {
   repeated SecurityAgent security_agents = 7;
 }
 
-// Next ID: 13
+// Next ID: 15.
 message UrlFilteringInterstitialEvent {
   // Top level URL that triggers this interstitial.
   string url = 1;
@@ -1201,6 +1338,19 @@ message UrlFilteringInterstitialEvent {
   // The referrers of the webpage that sent the user to the url that triggered
   // the event.
   repeated UrlInfo referrers = 12;
+
+  // The account email of the content area. Only populated for Workspace sites.
+  string web_app_signed_in_account = 13
+      // copybara:datapol_begin
+      // [
+      //   (datapol.semantic_type) = ST_IDENTIFYING_ID
+      // ]
+      // copybara:datapol_end
+      ;
+
+  // The total scan time in milliseconds on the server side before reporting
+  // this event.
+  int64 server_scan_latency_millis = 14;
 }
 
 // Next ID: 5
@@ -1264,7 +1414,7 @@ message UrlNavigationEvent {
       ;
 
   // Security agent installed on the device
-  repeated SecurityAgent security_agents = 5;
+  repeated SecurityAgent security_agents = 5 [deprecated = true];
 }
 
 // Event for suspicious site visits.
@@ -1291,5 +1441,32 @@ message SuspiciousURLEvent {
       ;
 
   // Security agent installed on the device
-  repeated SecurityAgent security_agents = 5;
+  repeated SecurityAgent security_agents = 5 [deprecated = true];
+}
+
+message TelomereEvent {
+  message TelomereLog {
+    // The event log_type if it needs to be specified.
+    string log_type = 1;
+
+    // The event log_message that will be forwarded to partners as is.
+    string log_data = 2
+        // copybara:datapol_begin
+        // [(datapol.semantic_type) = ST_USER_CONTENT]
+        // copybara:datapol_end
+        ;
+  }
+
+  // List of telomere events.
+  repeated TelomereLog logs = 1;
+}
+
+// Event sent when a browser is launched.
+// Next ID: 3.
+message BrowserLaunchEvent {
+  // Timestamp of the browser launch in milliseconds since Unix epoch.
+  int64 launch_time_millis = 1;
+
+  // List of CLI switch keys used to launch the browser.
+  repeated string command_line_switch_keys = 2;
 }

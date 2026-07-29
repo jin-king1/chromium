@@ -4,15 +4,7 @@
 
 #include "services/on_device_model/public/cpp/text_safety_assets.h"
 
-#include <cstdint>
-#include <string_view>
-
 #include "base/files/file.h"
-#include "base/files/file_util.h"
-#include "base/task/thread_pool.h"
-#include "build/build_config.h"
-#include "mojo/public/cpp/bindings/associated_remote.h"
-#include "services/on_device_model/public/mojom/on_device_model_service.mojom-forward.h"
 #include "services/on_device_model/public/mojom/on_device_model_service.mojom.h"
 
 namespace on_device_model {
@@ -37,18 +29,13 @@ mojom::TextSafetyModelParamsPtr LoadTextSafetyParams(
     TextSafetyLoaderParams params) {
   auto result = mojom::TextSafetyModelParams::New();
   if (params.language_paths) {
-    result->language_assets = mojom::LanguageModelAssets::New();
-    result->language_assets->model =
+    result->language_model =
         base::File(params.language_paths->model,
                    base::File::FLAG_OPEN | base::File::FLAG_READ);
   }
   if (params.ts_paths) {
-    result->ts_assets = mojom::TextSafetyModelAssets::New();
-    result->ts_assets->data = base::File(
-        params.ts_paths->data, base::File::FLAG_OPEN | base::File::FLAG_READ);
-    result->ts_assets->sp_model =
-        base::File(params.ts_paths->sp_model,
-                   base::File::FLAG_OPEN | base::File::FLAG_READ);
+    result->safety_model = base::File(
+        params.ts_paths->model, base::File::FLAG_OPEN | base::File::FLAG_READ);
   }
   return result;
 }

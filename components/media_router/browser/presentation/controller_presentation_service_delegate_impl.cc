@@ -12,7 +12,6 @@
 #include <utility>
 #include <vector>
 
-#include "base/containers/contains.h"
 #include "base/containers/small_map.h"
 #include "base/functional/bind.h"
 #include "base/memory/ptr_util.h"
@@ -264,7 +263,7 @@ void PresentationFrame::ConnectToPresentation(
         std::move(receiver_connection_receiver), pid_route_it->second);
   } else {
     MediaRoute::Id route_id = pid_route_it->second.media_route_id();
-    if (base::Contains(browser_connection_proxies_, route_id)) {
+    if (browser_connection_proxies_.contains(route_id)) {
       return;
     }
 
@@ -307,16 +306,6 @@ void PresentationFrame::ListenForConnectionStateChange(
   connection_state_subscriptions_.emplace(
       route_id, router_->AddPresentationConnectionStateChangedCallback(
                     route_id, state_changed_cb));
-}
-
-ControllerPresentationServiceDelegateImpl*
-ControllerPresentationServiceDelegateImpl::GetOrCreateForWebContents(
-    content::WebContents* web_contents) {
-  DCHECK(web_contents);
-  // CreateForWebContents does nothing if the delegate instance already exists.
-  ControllerPresentationServiceDelegateImpl::CreateForWebContents(web_contents);
-  return ControllerPresentationServiceDelegateImpl::FromWebContents(
-      web_contents);
 }
 
 ControllerPresentationServiceDelegateImpl::
@@ -521,6 +510,13 @@ void ControllerPresentationServiceDelegateImpl::ReconnectPresentation(
     return;
   }
 
+  if (!std::ranges::all_of(presentation_urls, IsValidPresentationUrl)) {
+    std::move(error_cb).Run(
+        PresentationError(PresentationErrorType::NO_PRESENTATION_FOUND,
+                          "Invalid presentation URL."));
+    return;
+  }
+
   auto* local_presentation_manager =
       LocalPresentationManagerFactory::GetOrCreateForWebContents(
           &GetWebContents());
@@ -528,8 +524,8 @@ void ControllerPresentationServiceDelegateImpl::ReconnectPresentation(
   if (local_presentation_manager->IsLocalPresentation(presentation_id)) {
     auto* route = local_presentation_manager->GetRoute(presentation_id);
 
-    if (!route ||
-        !base::Contains(presentation_urls, route->media_source().url())) {
+    if (!route || !std::ranges::contains(presentation_urls,
+                                         route->media_source().url())) {
       return;
     }
 
@@ -638,8 +634,9 @@ void ControllerPresentationServiceDelegateImpl::OnPresentationResponse(
     const content::PresentationRequest& presentation_request,
     mojom::RoutePresentationConnectionPtr connection,
     const RouteRequestResult& result) {
-  if (!result.route() || !base::Contains(presentation_request.presentation_urls,
-                                         result.presentation_url())) {
+  if (!result.route() ||
+      !std::ranges::contains(presentation_request.presentation_urls,
+                             result.presentation_url())) {
     return;
   }
 

@@ -18,6 +18,10 @@ NSString* AppGroupUserDefaultsCredentialProviderManagedUserID();
 // Key for the app group user defaults containing the current user ID.
 NSString* AppGroupUserDefaultsCredentialProviderUserID();
 
+// Key for the app group user defaults containing whether multiple profiles are
+// currently in use.
+NSString* AppGroupUserDefaultsCredentialProviderMultiProfileSetting();
+
 // Key for the app group user defaults containing the current user email.
 NSString* AppGroupUserDefaultsCredentialProviderUserEmail();
 
@@ -48,13 +52,9 @@ NSString* AppGroupUserDefaultsCredentialProviderPasswordSyncSetting();
 // upgrade is currently enabled.
 NSString* AppGroupUserDefaulsCredentialProviderAutomaticPasskeyUpgradeEnabled();
 
-// Key for the app group user defaults containing whether passkey PRF support is
-// currently enabled.
-NSString* AppGroupUserDefaulsCredentialProviderPasskeyPRFEnabled();
-
-// Key for the app group user defaults containing whether the passkeys M2
-// feature is currently enabled.
-NSString* AppGroupUserDefaultsCredentialProviderPasskeysM2Enabled();
+// Key for the app group user defaults containing whether passkey Large Blob
+// support is currently enabled.
+NSString* AppGroupUserDefaulsCredentialProviderPasskeyLargeBlobEnabled();
 
 // Key for the app group user defaults indicating if the credentials have been
 // synced with iOS via AuthenticationServices.

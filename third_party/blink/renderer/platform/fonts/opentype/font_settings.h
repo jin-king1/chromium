@@ -44,6 +44,9 @@ class FontTagValuePair {
   bool operator==(const FontTagValuePair& other) const {
     return tag_ == other.tag_ && value_ == other.value_;
   }
+  bool operator<(const FontTagValuePair& other) const {
+    return tag_ < other.tag_;
+  }
 
   uint32_t Tag() const { return tag_; }
   AtomicString TagString() const { return FourByteTagToAtomicString(tag_); }
@@ -67,7 +70,6 @@ class FontSettings {
   bool operator==(const FontSettings& other) const {
     return list_ == other.list_;
   }
-  bool operator!=(const FontSettings& other) const { return !(*this == other); }
   String ToString() const {
     StringBuilder builder;
     wtf_size_t num_features = size();

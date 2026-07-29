@@ -16,6 +16,7 @@ source_set("network_impl") {
   deps = [
     ":update_client",
     "//base",
+    "//build:branding_buildflags",
     "//net",
     "//services/network/public/cpp",
     "//url",
@@ -27,10 +28,12 @@ source_set("in_process_unzipper") {
     "unzip/in_process_unzipper.cc",
     "unzip/in_process_unzipper.h",
   ]
+  public_deps = [ "//third_party/zlib/google:zip" ]
   deps = [
     ":update_client",
     "//base",
-    "//third_party/zlib/google:zip",
+    "//components/services/unzip:in_process",
+    "//components/services/unzip/public/cpp",
   ]
 }
 
@@ -42,6 +45,8 @@ source_set("in_process_patcher") {
   deps = [
     ":update_client",
     "//base",
+    "//components/zucchini:zucchini_io",
+    "//components/zucchini:zucchini_lib",
     "//third_party/puffin:libpuffpatch",
   ]
   include_dirs = [ "//third_party/puffin/src/include" ]
@@ -67,6 +72,7 @@ source_set("patch_impl") {
     ":update_client",
     "//components/services/patch/public/cpp",
     "//components/services/patch/public/mojom",
+    "//components/zucchini:zucchini_lib",
     "//mojo/public/cpp/bindings",
   ]
 }
@@ -99,7 +105,8 @@ static_library("update_client") {
     "crx_downloader_factory.cc",
     "crx_downloader_factory.h",
     "crx_update_item.h",
-    "network.cc",
+    "delta_patch_operation.cc",
+    "delta_patch_operation.h",
     "network.h",
     "op_download.cc",
     "op_download.h",
@@ -107,6 +114,12 @@ static_library("update_client") {
     "op_install.h",
     "op_puffin.cc",
     "op_puffin.h",
+    "op_space_check.cc",
+    "op_space_check.h",
+    "op_xz.cc",
+    "op_xz.h",
+    "op_zucchini.cc",
+    "op_zucchini.h",
     "patcher.h",
     "persisted_data.cc",
     "persisted_data.h",
@@ -114,6 +127,8 @@ static_library("update_client") {
     "ping_manager.h",
     "pipeline.cc",
     "pipeline.h",
+    "pipeline_util.cc",
+    "pipeline_util.h",
     "protocol_definition.cc",
     "protocol_definition.h",
     "protocol_handler.cc",
@@ -136,6 +151,7 @@ static_library("update_client") {
     "task_traits.h",
     "task_update.cc",
     "task_update.h",
+    "timed_callback.h",
     "unpacker.cc",
     "unpacker.h",
     "unzipper.h",
@@ -166,6 +182,7 @@ static_library("update_client") {
     "//components/crx_file",
     "//components/prefs",
     "//components/version_info",
+    "//components/zucchini:zucchini_lib",
     "//crypto",
     "//third_party/zlib/google:compression_utils",
     "//url",
@@ -209,11 +226,6 @@ if (is_mac) {
 
 source_set("test_support") {
   testonly = true
-  visibility = [
-    ":unit_tests",
-    "//chrome/test:test_support",
-    "//components/component_updater:unit_tests",
-  ]
   sources = [
     "net/url_loader_post_interceptor.cc",
     "net/url_loader_post_interceptor.h",
@@ -234,6 +246,7 @@ source_set("test_support") {
     ":patch_impl",
     ":unzip_impl",
     "//base",
+    "//build:branding_buildflags",
     "//components/prefs",
     "//components/services/patch:in_process",
     "//components/services/unzip:in_process",
@@ -253,6 +266,8 @@ bundle_data("unit_tests_bundle_data") {
     "//components/test/data/update_client/binary_input.bin",
     "//components/test/data/update_client/binary_output.bin",
     "//components/test/data/update_client/empty_file",
+    "//components/test/data/update_client/file1",
+    "//components/test/data/update_client/file1.xz",
     "//components/test/data/update_client/gndmhdcefbhlchkhipcnnbkcmicncehk_22_314.crx3",
     "//components/test/data/update_client/ihfokbkgjpifnbbojhneepfflplebdkc_1.crx",
     "//components/test/data/update_client/ihfokbkgjpifnbbojhneepfflplebdkc_1to2.crx",
@@ -269,13 +284,19 @@ bundle_data("unit_tests_bundle_data") {
     "//components/test/data/update_client/updatecheck_reply_noupdate.json",
     "//components/test/data/update_client/updatecheck_reply_parse_error.json",
     "//components/test/data/update_client/updatecheck_reply_unknownapp.json",
+    "//components/test/data/update_client/zucchini_patch_test/app1.zip",
+    "//components/test/data/update_client/zucchini_patch_test/app1_to_app2.zucchini",
+    "//components/test/data/update_client/zucchini_patch_test/app2.zip",
   ]
   outputs = [ "{{bundle_resources_dir}}/" +
               "{{source_root_relative_dir}}/{{source_file_part}}" ]
 }
 
 bundle_data("recovery_component_tests_bundle_data") {
-  visibility = [ "//chrome/test:unit_tests" ]
+  visibility = [
+    "//chrome/browser/component_updater:unit_tests",
+    "//chrome/test:unit_tests",
+  ]
   testonly = true
   sources = [ "//components/test/data/update_client/ChromeRecovery.crx3" ]
   outputs = [ "{{bundle_resources_dir}}/" +
@@ -290,12 +311,17 @@ source_set("unit_tests") {
     "crx_cache_unittest.cc",
     "op_download_unittest.cc",
     "op_puffin_unittest.cc",
+    "op_space_check_unittest.cc",
+    "op_xz_unittest.cc",
+    "op_zucchini_unittest.cc",
+    "patch/patch_impl_unittest.cc",
     "persisted_data_unittest.cc",
     "ping_manager_unittest.cc",
     "protocol_parser_json_unittest.cc",
     "protocol_serializer_json_unittest.cc",
     "protocol_serializer_unittest.cc",
     "request_sender_unittest.cc",
+    "timed_callback_unittest.cc",
     "unpacker_unittest.cc",
     "update_checker_unittest.cc",
     "update_client_unittest.cc",
@@ -316,6 +342,7 @@ source_set("unit_tests") {
   }
 
   deps = [
+    ":in_process_unzipper",
     ":network_impl",
     ":patch_impl",
     ":test_support",
@@ -324,10 +351,12 @@ source_set("unit_tests") {
     ":update_client",
     "//base",
     "//build:branding_buildflags",
+    "//components/client_update_protocol",
     "//components/crx_file",
     "//components/prefs",
     "//components/prefs:test_support",
     "//components/services/patch:in_process",
+    "//components/services/patch/public/mojom",
     "//components/services/unzip:in_process",
     "//components/version_info",
     "//net:test_support",

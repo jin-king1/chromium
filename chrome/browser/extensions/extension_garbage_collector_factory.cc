@@ -13,10 +13,13 @@
 #include "chrome/browser/extensions/install_tracker_factory.h"
 #include "extensions/browser/extension_system_provider.h"
 #include "extensions/browser/extensions_browser_client.h"
+#include "extensions/buildflags/buildflags.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/extensions/extension_garbage_collector_chromeos.h"
 #endif
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace extensions {
 
@@ -40,8 +43,6 @@ ExtensionGarbageCollectorFactory::ExtensionGarbageCollectorFactory()
           "ExtensionGarbageCollector",
           ProfileSelections::Builder()
               .WithRegular(ProfileSelection::kOriginalOnly)
-              // TODO(crbug.com/40257657): Check if this service is needed in
-              // Guest mode.
               .WithGuest(ProfileSelection::kOriginalOnly)
               // TODO(crbug.com/41488885): Check if this service is needed for
               // Ash Internals.

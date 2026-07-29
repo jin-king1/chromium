@@ -5,25 +5,22 @@
 package org.chromium.chrome.browser.readaloud;
 
 import static org.mockito.Mockito.anyInt;
-import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import org.junit.After;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.modules.readaloud.Playback;
 import org.chromium.chrome.modules.readaloud.Playback.PlaybackTextPart;
 import org.chromium.chrome.modules.readaloud.Playback.PlaybackTextType;
@@ -33,14 +30,9 @@ import org.chromium.url.JUnitTestGURLs;
 /** Unit tests for {@link TapToSeekHandler} */
 @RunWith(BaseRobolectricTestRunner.class)
 @Config(manifest = Config.NONE)
-@EnableFeatures({
-    ChromeFeatureList.READALOUD,
-    ChromeFeatureList.READALOUD_PLAYBACK,
-    ChromeFeatureList.READALOUD_TAP_TO_SEEK
-})
 public class TapToSeekHandlerUnitTest {
 
-    @Mock private Profile mProfile;
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock private Playback mPlayback;
     @Mock private Playback.Metadata mMetadata;
     private static final GURL sTestGURL = JUnitTestGURLs.EXAMPLE_URL;
@@ -48,15 +40,8 @@ public class TapToSeekHandlerUnitTest {
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
-        doReturn(false).when(mProfile).isOffTheRecord();
         when(mPlayback.getMetadata()).thenReturn(mMetadata);
         ReadAloudFeaturesJni.setInstanceForTesting(mReadAloudFeaturesNatives);
-    }
-
-    @After
-    public void tearDown() {
-        ReadAloudFeatures.shutdown();
     }
 
     @Test

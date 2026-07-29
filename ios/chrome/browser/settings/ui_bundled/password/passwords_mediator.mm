@@ -8,6 +8,7 @@
 #import "components/feature_engagement/public/event_constants.h"
 #import "components/feature_engagement/public/feature_constants.h"
 #import "components/feature_engagement/public/tracker.h"
+#import "components/password_manager/core/browser/features/password_manager_features_util.h"
 #import "components/password_manager/core/browser/leak_detection_dialog_utils.h"
 #import "components/password_manager/core/browser/password_manager_client.h"
 #import "components/password_manager/core/browser/password_sync_util.h"
@@ -18,8 +19,8 @@
 #import "ios/chrome/browser/passwords/model/password_check_observer_bridge.h"
 #import "ios/chrome/browser/passwords/model/password_checkup_utils.h"
 #import "ios/chrome/browser/passwords/model/password_manager_util_ios.h"
-#import "ios/chrome/browser/passwords/model/save_passwords_consumer.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/account_storage_utils.h"
+#import "ios/chrome/browser/settings/ui_bundled/password/password_manager_ui_features.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/passwords_consumer.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/passwords_mediator+Testing.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/passwords_table_view_constants.h"
@@ -87,33 +88,22 @@ struct PasswordManagerActiveWidgetPromoData
   // Sync observer.
   std::unique_ptr<SyncObserverBridge> _syncObserver;
 
-  // Object storing the time of the previous successful re-authentication.
-  // This is meant to be used by the `ReauthenticationModule` for keeping
-  // re-authentications valid for a certain time interval within the scope
-  // of the Passwords Screen.
-  __strong NSDate* _successfulReauthTime;
-
   // FaviconLoader is a keyed service that uses LargeIconService to retrieve
   // favicon images.
   raw_ptr<FaviconLoader> _faviconLoader;
 
   // Service to know whether passwords are synced.
   raw_ptr<syncer::SyncService> _syncService;
-
-  // The user pref service.
-  raw_ptr<PrefService> _prefService;
 }
 
 - (instancetype)initWithPasswordCheckManager:
                     (scoped_refptr<IOSChromePasswordCheckManager>)
                         passwordCheckManager
                                faviconLoader:(FaviconLoader*)faviconLoader
-                                 syncService:(syncer::SyncService*)syncService
-                                 prefService:(PrefService*)prefService {
+                                 syncService:(syncer::SyncService*)syncService {
   self = [super init];
   if (self) {
     _syncService = syncService;
-    _prefService = prefService;
     _faviconLoader = faviconLoader;
 
     _syncObserver = std::make_unique<SyncObserverBridge>(self, syncService);
@@ -138,6 +128,9 @@ struct PasswordManagerActiveWidgetPromoData
   }
   _consumer = consumer;
 
+  [self.consumer
+      setUserEmail:base::UTF8ToUTF16(_syncService->GetAccountInfo().email)];
+  [self displayOrHideTrustedVaultPasswordManagerWidgetPromo];
   [self providePasswordsToConsumer];
 
   _currentState = _passwordCheckManager->GetPasswordCheckState();
@@ -159,11 +152,15 @@ struct PasswordManagerActiveWidgetPromoData
   _passwordCheckManager.reset();
   _savedPasswordsPresenter = nullptr;
   _faviconLoader = nullptr;
-  _prefService = nullptr;
   _syncService = nullptr;
 }
 
 - (void)askFETToShowPasswordManagerWidgetPromo {
+  if ([self shouldTrustedVaultPromoBeShown]) {
+    // We don't display the password manager widget promo because the trusted
+    // vault promo should be shown.
+    return;
+  }
   if (self.tracker && !_shouldNotifyFETToDismissPasswordManagerWidgetPromo) {
     [self.consumer setShouldShowPasswordManagerWidgetPromo:
                        [self shouldShowPasswordManagerWidgetPromo]];
@@ -353,8 +350,8 @@ struct PasswordManagerActiveWidgetPromoData
 
 // Compute whether user is capable to run password check in Google Account.
 - (BOOL)canUseAccountPasswordCheckup {
-  return password_manager::sync_util::GetAccountForSaving(_prefService,
-                                                          _syncService) &&
+  return password_manager::features_util::IsAccountStorageActive(
+             _syncService) &&
          !_syncService->GetUserSettings()->IsEncryptEverythingEnabled();
 }
 
@@ -406,26 +403,36 @@ struct PasswordManagerActiveWidgetPromoData
   }
 }
 
+// LINT.IfChange(IsTrustedVaultKeyRequiredForPreferredDataTypes)
+// Decides whether the Trusted Vault widget promo should be displayed.
+- (BOOL)shouldTrustedVaultPromoBeShown {
+  CHECK(_syncService);
+  return _syncService->GetUserSettings()
+      ->IsTrustedVaultKeyRequiredForPreferredDataTypes();
+}
+// LINT.ThenChange(ios/chrome/browser/popup_menu/overflow_menu/coordinator/overflow_menu_mediator.mm:IsTrustedVaultKeyRequiredForPreferredDataTypes)
+
+// Decides whether the Trusted Vault widget promo should be displayed and asks
+// consumer to do so. This code should be in sync with the code that decides
+// whether the error badge should be displayed for the GPM icon in the overflow
+// menu.
+- (void)displayOrHideTrustedVaultPasswordManagerWidgetPromo {
+  [self.consumer
+      setShouldShowTrustedVaultWidgetPromo:[self
+                                               shouldTrustedVaultPromoBeShown]];
+}
+
 #pragma mark - SavedPasswordsPresenterObserver
 
 - (void)savedPasswordsDidChange {
   [self providePasswordsToConsumer];
 }
 
-#pragma mark SuccessfulReauthTimeAccessor
-
-- (void)updateSuccessfulReauthTime {
-  _successfulReauthTime = [[NSDate alloc] init];
-}
-
-- (NSDate*)lastSuccessfulReauthTime {
-  return _successfulReauthTime;
-}
-
 #pragma mark - TableViewFaviconDataSource
 
 - (void)faviconForPageURL:(CrURL*)URL
-               completion:(void (^)(FaviconAttributes*))completion {
+               completion:(void (^)(FaviconAttributes* attributes,
+                                    bool cached))completion {
   BOOL fallbackToGoogleServer =
       password_manager_util::IsSavingPasswordsToAccountWithNormalEncryption(
           _syncService);
@@ -441,6 +448,8 @@ struct PasswordManagerActiveWidgetPromoData
       setSavingPasswordsToAccount:
           password_manager::sync_util::GetPasswordSyncState(_syncService) !=
           password_manager::sync_util::SyncState::kNotActive];
+  [self displayOrHideTrustedVaultPasswordManagerWidgetPromo];
+  [self askFETToShowPasswordManagerWidgetPromo];
 }
 
 @end

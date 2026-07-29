@@ -6,7 +6,7 @@ package org.chromium.components.browser_ui.bottomsheet;
 
 import org.jni_zero.CalledByNative;
 
-import org.chromium.base.UnownedUserData;
+import org.chromium.base.ResettersForTesting;
 import org.chromium.base.UnownedUserDataKey;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -19,10 +19,12 @@ import org.chromium.ui.base.WindowAndroid;
 @NullMarked
 public class BottomSheetControllerProvider {
     /** An interface that allows a controller to be associated with an unowned data host. */
-    interface Unowned extends BottomSheetController, UnownedUserData {}
+    interface Unowned extends BottomSheetController {}
 
     /** The key used to bind the controller to the unowned data host. */
-    private static final UnownedUserDataKey<Unowned> KEY = new UnownedUserDataKey<>(Unowned.class);
+    private static final UnownedUserDataKey<Unowned> KEY = new UnownedUserDataKey<>();
+
+    private static @Nullable BottomSheetController sInstanceForTesting;
 
     /**
      * Get the shared {@link BottomSheetController} from the provided {@link WindowAndroid}.
@@ -32,7 +34,13 @@ public class BottomSheetControllerProvider {
      */
     @CalledByNative
     public static @Nullable BottomSheetController from(WindowAndroid windowAndroid) {
+        if (sInstanceForTesting != null) return sInstanceForTesting;
         return KEY.retrieveDataFromHost(windowAndroid.getUnownedUserDataHost());
+    }
+
+    public static void setInstanceForTesting(@Nullable BottomSheetController controller) {
+        sInstanceForTesting = controller;
+        ResettersForTesting.register(() -> sInstanceForTesting = null);
     }
 
     static void attach(WindowAndroid windowAndroid, Unowned controller) {

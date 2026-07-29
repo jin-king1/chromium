@@ -36,6 +36,10 @@ public class ThreadUtilsWrapper {
         return sInstance;
     }
 
+    public void assertOnBackgroundThread() {
+        ThreadUtils.assertOnBackgroundThread();
+    }
+
     public void runOnUiThread(Runnable r) {
         ThreadUtils.runOnUiThread(r);
     }
@@ -53,7 +57,7 @@ public class ThreadUtilsWrapper {
      * ThreadUtilsWrapper.getInstance().
      */
     public interface Factory {
-        public ThreadUtilsWrapper create();
+        ThreadUtilsWrapper create();
     }
 
     /**

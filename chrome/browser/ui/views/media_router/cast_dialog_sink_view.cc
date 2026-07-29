@@ -6,27 +6,22 @@
 
 #include <utility>
 
-#include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/media/router/discovery/access_code/access_code_cast_feature.h"
-#include "chrome/browser/media/router/media_router_feature.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/media_router/cast_dialog_helper.h"
 #include "chrome/browser/ui/views/media_router/cast_dialog_sink_button.h"
 #include "chrome/grit/generated_resources.h"
-#include "components/vector_icons/vector_icons.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/ui_base_types.h"
-#include "ui/gfx/paint_vector_icon.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/background.h"
 #include "ui/views/border.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/flex_layout.h"
 #include "ui/views/style/typography.h"
-#include "ui/views/vector_icons.h"
 #include "ui/views/view_class_properties.h"
 
 namespace {
@@ -116,7 +111,7 @@ std::unique_ptr<views::View> CastDialogSinkView::CreateLabelView(
   const int icon_label_spacing = ChromeLayoutProvider::Get()->GetDistanceMetric(
       views::DISTANCE_RELATED_LABEL_HORIZONTAL);
   const int vertical_spacing = ChromeLayoutProvider::Get()->GetDistanceMetric(
-                                   DISTANCE_CONTROL_LIST_VERTICAL) /
+                                   views::DISTANCE_CONTROL_LIST_VERTICAL) /
                                2;
 
   auto label_container = std::make_unique<views::View>();
@@ -172,7 +167,7 @@ std::unique_ptr<views::View> CastDialogSinkView::CreateButtonsView(
   button_container->SetProperty(
       views::kMarginsKey,
       gfx::Insets::TLBR(-ChromeLayoutProvider::Get()->GetDistanceMetric(
-                            DISTANCE_CONTROL_LIST_VERTICAL) /
+                            views::DISTANCE_CONTROL_LIST_VERTICAL) /
                             2,
                         0, 0, button_spacing));
 

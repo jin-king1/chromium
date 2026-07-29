@@ -5,17 +5,15 @@
 #ifndef CHROME_UPDATER_WIN_TASK_SCHEDULER_H_
 #define CHROME_UPDATER_WIN_TASK_SCHEDULER_H_
 
-#include <stdint.h>
-
+#include <cstdint>
 #include <memory>
 #include <ostream>
 #include <string>
 #include <vector>
 
 #include "base/files/file_path.h"
-#include "base/functional/callback.h"
+#include "base/functional/function_ref.h"
 #include "base/memory/ref_counted.h"
-#include "base/memory/scoped_refptr.h"
 
 namespace base {
 class CommandLine;

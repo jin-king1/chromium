@@ -11,9 +11,10 @@
 #include <string_view>
 
 #include "base/apple/foundation_util.h"
+#include "base/callback_list.h"
 #include "base/component_export.h"
-#include "base/gtest_prod_util.h"
 #include "ui/base/clipboard/clipboard.h"
+#include "ui/base/clipboard/clipboard_change_notifier.h"
 
 @class NSPasteboard;
 
@@ -23,10 +24,16 @@ namespace ui {
 // available at https://developer.apple.com/documentation/appkit/nspasteboard
 // and
 // https://developer.apple.com/library/archive/documentation/General/Conceptual/Devpedia-CocoaApp/Pasteboard.html.
-class COMPONENT_EXPORT(UI_BASE_CLIPBOARD) ClipboardMac : public Clipboard {
+class COMPONENT_EXPORT(UI_BASE_CLIPBOARD) ClipboardMac
+    : public Clipboard,
+      public ClipboardChangeNotifier {
  public:
   ClipboardMac(const ClipboardMac&) = delete;
   ClipboardMac& operator=(const ClipboardMac&) = delete;
+
+  // ClipboardChangeNotifier overrides:
+  void StartNotifying() override;
+  void StopNotifying() override;
 
  private:
   friend class Clipboard;
@@ -37,55 +44,54 @@ class COMPONENT_EXPORT(UI_BASE_CLIPBOARD) ClipboardMac : public Clipboard {
 
   // Clipboard overrides:
   void OnPreShutdown() override;
-  std::optional<DataTransferEndpoint> GetSource(
-      ClipboardBuffer buffer) const override;
+  void GetSource(ClipboardBuffer buffer,
+                 GetSourceCallback callback) const override;
   const ClipboardSequenceNumberToken& GetSequenceNumber(
       ClipboardBuffer buffer) const override;
-  std::vector<std::u16string> GetStandardFormats(
+  void GetStandardFormats(ClipboardBuffer buffer,
+                          const std::optional<DataTransferEndpoint>& data_dst,
+                          GetStandardFormatsCallback callback) const override;
+  void GetAllAvailableFormats(
       ClipboardBuffer buffer,
-      const DataTransferEndpoint* data_dst) const override;
-  bool IsFormatAvailable(const ClipboardFormatType& format,
-                         ClipboardBuffer buffer,
-                         const DataTransferEndpoint* data_dst) const override;
+      const std::optional<DataTransferEndpoint>& data_dst,
+      base::OnceCallback<void(base::flat_set<ClipboardFormatType>)> callback)
+      const override;
   bool IsMarkedByOriginatorAsConfidential() const override;
   void Clear(ClipboardBuffer buffer) override;
   void ReadAvailableTypes(ClipboardBuffer buffer,
-                          const DataTransferEndpoint* data_dst,
-                          std::vector<std::u16string>* types) const override;
+                          const std::optional<DataTransferEndpoint>& data_dst,
+                          ReadAvailableTypesCallback callback) const override;
   void ReadText(ClipboardBuffer buffer,
-                const DataTransferEndpoint* data_dst,
-                std::u16string* result) const override;
+                const std::optional<DataTransferEndpoint>& data_dst,
+                ReadTextCallback callback) const override;
   void ReadAsciiText(ClipboardBuffer buffer,
-                     const DataTransferEndpoint* data_dst,
-                     std::string* result) const override;
+                     const std::optional<DataTransferEndpoint>& data_dst,
+                     ReadAsciiTextCallback callback) const override;
   void ReadHTML(ClipboardBuffer buffer,
-                const DataTransferEndpoint* data_dst,
-                std::u16string* markup,
-                std::string* src_url,
-                uint32_t* fragment_start,
-                uint32_t* fragment_end) const override;
+                const std::optional<DataTransferEndpoint>& data_dst,
+                ReadHtmlCallback callback) const override;
   void ReadSvg(ClipboardBuffer buffer,
-               const DataTransferEndpoint* data_dst,
-               std::u16string* result) const override;
+               const std::optional<DataTransferEndpoint>& data_dst,
+               ReadSvgCallback callback) const override;
   void ReadRTF(ClipboardBuffer buffer,
-               const DataTransferEndpoint* data_dst,
-               std::string* result) const override;
+               const std::optional<DataTransferEndpoint>& data_dst,
+               ReadRTFCallback callback) const override;
   void ReadPng(ClipboardBuffer buffer,
-               const DataTransferEndpoint* data_dst,
+               const std::optional<DataTransferEndpoint>& data_dst,
                ReadPngCallback callback) const override;
-  void ReadDataTransferCustomData(ClipboardBuffer buffer,
-                                  const std::u16string& type,
-                                  const DataTransferEndpoint* data_dst,
-                                  std::u16string* result) const override;
+  void ReadDataTransferCustomData(
+      ClipboardBuffer buffer,
+      const std::u16string& type,
+      const std::optional<DataTransferEndpoint>& data_dst,
+      ReadDataTransferCustomDataCallback callback) const override;
   void ReadFilenames(ClipboardBuffer buffer,
-                     const DataTransferEndpoint* data_dst,
-                     std::vector<ui::FileInfo>* result) const override;
-  void ReadBookmark(const DataTransferEndpoint* data_dst,
-                    std::u16string* title,
-                    std::string* url) const override;
+                     const std::optional<DataTransferEndpoint>& data_dst,
+                     ReadFilenamesCallback callback) const override;
+  void ReadURL(const std::optional<DataTransferEndpoint>& data_dst,
+               ReadUrlCallback callback) const override;
   void ReadData(const ClipboardFormatType& format,
-                const DataTransferEndpoint* data_dst,
-                std::string* result) const override;
+                const std::optional<DataTransferEndpoint>& data_dst,
+                ReadDataCallback callback) const override;
   void WritePortableAndPlatformRepresentations(
       ClipboardBuffer buffer,
       const ObjectMap& objects,
@@ -99,22 +105,19 @@ class COMPONENT_EXPORT(UI_BASE_CLIPBOARD) ClipboardMac : public Clipboard {
   void WriteSvg(std::string_view markup) override;
   void WriteRTF(std::string_view rtf) override;
   void WriteFilenames(std::vector<ui::FileInfo> filenames) override;
-  void WriteBookmark(std::string_view title, std::string_view url) override;
+  void WriteURL(const ClipboardUrlInfo& url_info) override;
   void WriteWebSmartPaste() override;
   void WriteBitmap(const SkBitmap& bitmap) override;
   void WriteData(const ClipboardFormatType& format,
                  base::span<const uint8_t> data) override;
-  void WriteClipboardHistory() override;
-  void WriteUploadCloudClipboard() override;
-  void WriteConfidentialDataForPassword() override;
 
   void WriteBitmapInternal(const SkBitmap& bitmap, NSPasteboard* pasteboard);
   void ReadPngInternal(ClipboardBuffer buffer,
                        NSPasteboard* pasteboard,
                        ReadPngCallback callback) const;
-  std::optional<DataTransferEndpoint> GetSourceInternal(
-      ClipboardBuffer buffer,
-      NSPasteboard* pasteboard) const;
+  void GetSourceInternal(ClipboardBuffer buffer,
+                         NSPasteboard* pasteboard,
+                         GetSourceCallback callback) const;
   void ClearInternal(ClipboardBuffer buffer, NSPasteboard* pasteboard);
   void WritePortableAndPlatformRepresentationsInternal(
       ClipboardBuffer buffer,
@@ -124,12 +127,16 @@ class COMPONENT_EXPORT(UI_BASE_CLIPBOARD) ClipboardMac : public Clipboard {
       std::unique_ptr<DataTransferEndpoint> data_src,
       NSPasteboard* pasteboard,
       uint32_t privacy_types);
+  void ClipboardChanged();
 
   // Mapping of OS-provided sequence number to a unique token.
   mutable struct {
     NSInteger sequence_number;
     ClipboardSequenceNumberToken token;
   } clipboard_sequence_;
+
+  base::CallbackListSubscription clipboard_change_subscription_;
+  NSInteger last_known_sequence_number_ = 0;
 };
 
 }  // namespace ui

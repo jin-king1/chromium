@@ -2,14 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "third_party/blink/renderer/modules/webcodecs/audio_decoder.h"
 
+#include <memory>
+#include <vector>
+
 #include "base/metrics/histogram_functions.h"
+#include "base/types/to_address.h"
 #include "media/base/audio_codecs.h"
 #include "media/base/audio_decoder.h"
 #include "media/base/audio_decoder_config.h"
@@ -34,9 +33,6 @@
 #include "third_party/blink/renderer/modules/webcodecs/encoded_audio_chunk.h"
 #include "third_party/blink/renderer/platform/audio/audio_utilities.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
-
-#include <memory>
-#include <vector>
 
 namespace blink {
 
@@ -93,7 +89,7 @@ AudioDecoderConfig* CopyConfig(const AudioDecoderConfig& config) {
 }
 
 std::optional<media::AudioCodec> TryGetPcmCodec(const String& codec) {
-  String codecs_str = codec.LowerASCII();
+  String codecs_str = codec.ToAsciiLower();
   if (codecs_str == "ulaw") {
     return media::AudioCodec::kPCM_MULAW;
   }
@@ -112,7 +108,7 @@ std::optional<media::AudioCodec> TryGetPcmCodec(const String& codec) {
 }
 
 media::SampleFormat PcmCodecToSampleFormat(const String& codec) {
-  String codecs_str = codec.LowerASCII();
+  String codecs_str = codec.ToAsciiLower();
 
   if (codecs_str == "pcm-u8") {
     return media::SampleFormat::kSampleFormatU8;
@@ -246,17 +242,14 @@ std::optional<media::AudioType> AudioDecoder::IsValidAudioDecoderConfig(
     return std::nullopt;
   }
 
-  media::AudioCodec codec = media::AudioCodec::kUnknown;
-  bool is_codec_ambiguous = true;
-  const bool parse_succeeded = ParseAudioCodecString(
-      "", config.codec().Utf8(), &is_codec_ambiguous, &codec);
-
-  if (!parse_succeeded || is_codec_ambiguous) {
+  std::optional<media::AudioType> audio_type =
+      media::ParseAudioCodecString("", config.codec().Utf8());
+  if (!audio_type) {
     *js_error_message = "Unknown or ambiguous codec name.";
     return media::AudioType{.codec = media::AudioCodec::kUnknown};
   }
 
-  return media::AudioType{.codec = codec};
+  return audio_type;
 }
 
 // static
@@ -284,18 +277,24 @@ AudioDecoder::MakeMediaAudioDecoderConfig(const ConfigType& config,
       return std::nullopt;
     }
 
+    if (config.codec() == "opus") {
+      // A size of 19 bytes corresponds to the minimum length of an Opus
+      // Identification Header for a standard mono or stereo stream.
+      constexpr size_t kMinDescriptionSize = 19;
+      if (desc_wrapper.size() < kMinDescriptionSize) {
+        *js_error_message = "Invalid config; description is too short.";
+        return std::nullopt;
+      }
+    }
+
     if (!desc_wrapper.empty()) {
-      const uint8_t* start = desc_wrapper.data();
-      const size_t size = desc_wrapper.size();
-      extra_data.assign(start, start + size);
+      extra_data.assign(base::to_address(desc_wrapper.begin()),
+                        base::to_address(desc_wrapper.end()));
     }
   }
 
-  media::ChannelLayout channel_layout =
-      config.numberOfChannels() > 8
-          // GuesschannelLayout() doesn't know how to guess above 8 channels.
-          ? media::CHANNEL_LAYOUT_DISCRETE
-          : media::GuessChannelLayout(config.numberOfChannels());
+  media::ChannelLayoutConfig channel_layout =
+      media::ChannelLayoutConfig::Guess(config.numberOfChannels());
 
   auto encryption_scheme = media::EncryptionScheme::kUnencrypted;
   if (config.hasEncryptionScheme()) {
@@ -319,12 +318,18 @@ AudioDecoder::MakeMediaAudioDecoderConfig(const ConfigType& config,
       return std::nullopt;
     }
     format = PcmCodecToSampleFormat(config.codec());
+
+    // Both FFmpeg and Symphonia exclusively output S16 decoded buffers for ALAW
+    // and MULAW.
+  } else if (audio_type->codec == media::AudioCodec::kPCM_ALAW ||
+             audio_type->codec == media::AudioCodec::kPCM_MULAW) {
+    format = media::SampleFormat::kSampleFormatS16;
   }
 
   media_config.Initialize(audio_type->codec, format, channel_layout,
                           config.sampleRate(), extra_data, encryption_scheme,
-                          base::TimeDelta() /* seek preroll */,
-                          0 /* codec delay */);
+                          /*seek_preroll=*/base::TimeDelta(),
+                          /*codec_delay=*/0);
   if (!media_config.IsValidConfig()) {
     *js_error_message = "Unsupported config.";
     return std::nullopt;

@@ -10,15 +10,25 @@
 #include "base/memory/raw_ptr.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/mock_callback.h"
+#include "base/test/scoped_feature_list.h"
+#include "base/time/time.h"
 #include "chrome/browser/picture_in_picture/auto_pip_setting_overlay_view.h"
+#include "chrome/test/base/testing_profile.h"
+#include "chrome/test/views/chrome_views_test_base.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
+#include "components/content_settings/core/common/content_settings.h"
+#include "components/content_settings/core/common/content_settings_types.h"
+#include "components/permissions/features.h"
 #include "components/permissions/permission_decision_auto_blocker.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
+#include "content/public/test/test_renderer_host.h"
+#include "content/public/test/web_contents_tester.h"
 #include "media/base/picture_in_picture_events_info.h"
 #include "testing/gmock/include/gmock/gmock.h"
-#include "ui/views/test/views_test_base.h"
+#include "ui/views/view_tracker.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_utils.h"
+#include "url/gurl.h"
 
 using testing::_;
 using testing::AtLeast;
@@ -35,6 +45,9 @@ const char kVideoConferencingHistogram[] =
 const char kMediaPlaybackHistogram[] =
     "Media.AutoPictureInPicture.EnterPictureInPicture.AutomaticReason."
     "MediaPlayback.PromptResultV2";
+const char kBrowserInitiatedHistogram[] =
+    "Media.AutoPictureInPicture.EnterPictureInPicture.AutomaticReasonV2."
+    "BrowserInitiated.PromptResultV2";
 
 struct TestParams {
   AutoPipReason auto_pip_reason;
@@ -63,13 +76,22 @@ class MockAutoBlocker : public permissions::PermissionDecisionAutoBlockerBase {
 };
 
 class AutoPipSettingHelperTest
-    : public views::ViewsTestBase,
+    : public ChromeViewsTestBase,
       public testing::WithParamInterface<TestParams> {
  public:
   AutoPipSettingHelperTest() = default;
 
   void SetUp() override {
-    ViewsTestBase::SetUp();
+    ChromeViewsTestBase::SetUp();
+
+    profile_ = std::make_unique<TestingProfile>();
+    rvh_test_enabler_ = std::make_unique<content::RenderViewHostTestEnabler>();
+
+    test_web_contents_ = content::WebContentsTester::CreateTestWebContents(
+        profile_.get(), nullptr);
+    content::WebContentsTester::For(test_web_contents_.get())
+        ->NavigateAndCommit(origin_);
+
     widget_ =
         CreateTestWidget(views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET);
     widget_->Show();
@@ -90,22 +112,28 @@ class AutoPipSettingHelperTest
         false /* restore_session */, true /* should_record_metrics */);
 
     setting_helper_ = std::make_unique<AutoPipSettingHelper>(
-        origin_, settings_map_.get(), &auto_blocker());
+        test_web_contents_.get(), settings_map_.get(), &auto_blocker());
   }
 
   void TearDown() override {
+    setting_overlay_tracker_.SetView(nullptr);
+    setting_helper_.reset();
     anchor_view_widget_.reset();
     parent_widget_.reset();
-    setting_overlay_ = nullptr;
     widget_.reset();
-    setting_helper_.reset();
-    ViewsTestBase::TearDown();
+    test_web_contents_.reset();
+    profile_.reset();
+    ChromeViewsTestBase::TearDown();
     settings_map_->ShutdownOnUIThread();
   }
 
+  HostContentSettingsMap* settings_map() { return settings_map_.get(); }
+
   AutoPipSettingHelper* setting_helper() { return setting_helper_.get(); }
   AutoPipSettingOverlayView* setting_overlay() const {
-    return setting_overlay_;
+    return const_cast<AutoPipSettingOverlayView*>(
+        static_cast<const AutoPipSettingOverlayView*>(
+            setting_overlay_tracker_.view()));
   }
 
   AutoPipSettingView* setting_view() const {
@@ -124,17 +152,18 @@ class AutoPipSettingHelperTest
       AutoPipReason auto_pip_reason = AutoPipReason::kUnknown) {
     auto* anchor_view =
         anchor_view_widget_->SetContentsView(std::make_unique<views::View>());
-    auto setting_overlay = setting_helper_->CreateOverlayViewIfNeeded(
+    auto overlay_view = setting_helper_->CreateOverlayViewIfNeeded(
         close_cb_.Get(), auto_pip_reason, std::nullopt, anchor_view,
         views::BubbleBorder::TOP_CENTER);
-    if (setting_overlay) {
-      setting_overlay_ = static_cast<AutoPipSettingOverlayView*>(
-          widget_->SetContentsView(std::move(setting_overlay)));
+    if (overlay_view) {
+      auto* overlay_ptr = overlay_view.get();
+      widget_->SetContentsView(std::move(overlay_view));
+      setting_overlay_tracker_.SetView(overlay_ptr);
     } else {
-      setting_overlay_ = nullptr;
+      setting_overlay_tracker_.SetView(nullptr);
     }
 
-    return setting_overlay_;
+    return setting_overlay();
   }
 
   void set_content_setting(ContentSetting new_setting) {
@@ -174,8 +203,12 @@ class AutoPipSettingHelperTest
  private:
   base::MockOnceCallback<void()> close_cb_;
 
+  std::unique_ptr<TestingProfile> profile_;
+  std::unique_ptr<content::RenderViewHostTestEnabler> rvh_test_enabler_;
+  std::unique_ptr<content::WebContents> test_web_contents_;
+
   std::unique_ptr<views::Widget> widget_;
-  raw_ptr<AutoPipSettingOverlayView> setting_overlay_ = nullptr;
+  views::ViewTracker setting_overlay_tracker_;
   std::unique_ptr<views::Widget> parent_widget_;
   std::unique_ptr<views::Widget> anchor_view_widget_;
 
@@ -250,6 +283,100 @@ TEST_F(AutoPipSettingHelperTest, AllowOnEveryVisitDoesNotCallCloseCb) {
   setting_view()->simulate_button_press_for_testing(
       UiResult::kAllowOnEveryVisit);
   EXPECT_EQ(get_content_setting(), CONTENT_SETTING_ALLOW);
+}
+
+// Verify AUTO_PICTURE_IN_PICTURE permission granted through AutoPipSettingView
+// bubble is correctly marked as eligible (i.e. `last_visited` timestamp
+// is tracked) for Safety Hub auto-revocation when the
+// kSafetyHubUnusedPermissionRevocationForAllSurfaces flag is enabled.
+TEST_F(AutoPipSettingHelperTest, UpdateContentSetting_LastVisited_Tracked) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      permissions::features::
+          kSafetyHubUnusedPermissionRevocationForAllSurfaces);
+
+  // Show AutoPipSettingView bubble for the user to choose a setting for
+  // Automatic Picture in Picture.
+  set_content_setting(CONTENT_SETTING_DEFAULT);
+  SetupNoEmbargo();
+  ASSERT_TRUE(AttachOverlayView());
+  setting_overlay()->ShowBubble(widget()->GetNativeView());
+
+  // Simulate the user choosing "ALLOW on every visit".
+  setting_view()->simulate_button_press_for_testing(
+      UiResult::kAllowOnEveryVisit);
+  EXPECT_EQ(get_content_setting(), CONTENT_SETTING_ALLOW);
+
+  // Verify that `last_visited` was recorded and lies within the past 7 days.
+  //
+  // The `last_visited` is coarsed by `GetCoarseVisitedTime` [1] due to privacy.
+  // It rounds given timestamp down to the nearest multiple of 7 in the past.
+  // [1] components/content_settings/core/browser/content_settings_utils.cc
+  base::Time now = base::Time::Now();
+  content_settings::SettingInfo info;
+  settings_map()->GetWebsiteSetting(
+      origin(), GURL(), ContentSettingsType::AUTO_PICTURE_IN_PICTURE, &info);
+  EXPECT_GE(info.metadata.last_visited(), now - base::Days(7));
+  EXPECT_LE(info.metadata.last_visited(), now);
+}
+
+// Verify AUTO_PICTURE_IN_PICTURE permission blocked through AutoPipSettingView
+// bubble is not marked as eligible (i.e. `last_visited` timestamp
+// is tracked) for Safety Hub auto-revocation even when the
+// kSafetyHubUnusedPermissionRevocationForAllSurfaces flag is enabled.
+TEST_F(AutoPipSettingHelperTest,
+       UpdateContentSetting_LastVisited_NotTracked_WrongValue) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      permissions::features::
+          kSafetyHubUnusedPermissionRevocationForAllSurfaces);
+
+  // Show AutoPipSettingView bubble for the user to choose a setting for
+  // Automatic Picture in Picture.
+  set_content_setting(CONTENT_SETTING_DEFAULT);
+  SetupNoEmbargo();
+  ASSERT_TRUE(AttachOverlayView());
+  setting_overlay()->ShowBubble(widget()->GetNativeView());
+
+  // Simulate the user choosing "BLOCK".
+  setting_view()->simulate_button_press_for_testing(UiResult::kBlock);
+  EXPECT_EQ(get_content_setting(), CONTENT_SETTING_BLOCK);
+
+  // Verify that `last_visited` is not recorded unless the value is ALLOW.
+  content_settings::SettingInfo info;
+  settings_map()->GetWebsiteSetting(
+      origin(), GURL(), ContentSettingsType::AUTO_PICTURE_IN_PICTURE, &info);
+  EXPECT_EQ(base::Time(), info.metadata.last_visited());
+}
+
+// Verify AUTO_PICTURE_IN_PICTURE permission granted through AutoPipSettingView
+// bubble is not marked as eligible (i.e. `last_visited` timestamp
+// is tracked) for Safety Hub auto-revocation because the
+// kSafetyHubUnusedPermissionRevocationForAllSurfaces flag is disabled.
+TEST_F(AutoPipSettingHelperTest,
+       UpdateContentSetting_LastVisited_NotTracked_FeatureOff) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      permissions::features::
+          kSafetyHubUnusedPermissionRevocationForAllSurfaces);
+
+  // Show AutoPipSettingView bubble for the user to choose a setting for
+  // Automatic Picture in Picture.
+  set_content_setting(CONTENT_SETTING_DEFAULT);
+  SetupNoEmbargo();
+  ASSERT_TRUE(AttachOverlayView());
+  setting_overlay()->ShowBubble(widget()->GetNativeView());
+
+  // Simulate the user choosing "ALLOW on every visit".
+  setting_view()->simulate_button_press_for_testing(
+      UiResult::kAllowOnEveryVisit);
+  EXPECT_EQ(get_content_setting(), CONTENT_SETTING_ALLOW);
+
+  // Verify that `last_visited` is not recorded when the feature is off.
+  content_settings::SettingInfo info;
+  settings_map()->GetWebsiteSetting(
+      origin(), GURL(), ContentSettingsType::AUTO_PICTURE_IN_PICTURE, &info);
+  EXPECT_EQ(base::Time(), info.metadata.last_visited());
 }
 
 TEST_F(AutoPipSettingHelperTest, BlockDoesCallCloseCb) {
@@ -343,7 +470,8 @@ TEST_F(AutoPipSettingHelperTest,
 const struct TestParams kTestHistogramNameParams[] = {
     {AutoPipReason::kUnknown},
     {AutoPipReason::kVideoConferencing},
-    {AutoPipReason::kMediaPlayback}};
+    {AutoPipReason::kMediaPlayback},
+    {AutoPipReason::kBrowserInitiated}};
 
 INSTANTIATE_TEST_SUITE_P(AllHistogramNames,
                          AutoPipSettingHelperTest,
@@ -366,17 +494,26 @@ TEST_P(AutoPipSettingHelperTest, HistogramExpectedCounts) {
       histograms.GetHistogramSamplesSinceCreation(kVideoConferencingHistogram);
   auto media_playback_samples =
       histograms.GetHistogramSamplesSinceCreation(kMediaPlaybackHistogram);
+  auto browser_initiated_samples =
+      histograms.GetHistogramSamplesSinceCreation(kBrowserInitiatedHistogram);
 
   const auto auto_pip_reason = GetParam().auto_pip_reason;
   if (auto_pip_reason == AutoPipReason::kUnknown) {
     EXPECT_EQ(0, video_conferencing_samples->TotalCount());
     EXPECT_EQ(0, media_playback_samples->TotalCount());
+    EXPECT_EQ(0, browser_initiated_samples->TotalCount());
   } else if (auto_pip_reason == AutoPipReason::kVideoConferencing) {
     EXPECT_EQ(1, video_conferencing_samples->TotalCount());
     EXPECT_EQ(0, media_playback_samples->TotalCount());
+    EXPECT_EQ(0, browser_initiated_samples->TotalCount());
   } else if (auto_pip_reason == AutoPipReason::kMediaPlayback) {
     EXPECT_EQ(0, video_conferencing_samples->TotalCount());
     EXPECT_EQ(1, media_playback_samples->TotalCount());
+    EXPECT_EQ(0, browser_initiated_samples->TotalCount());
+  } else if (auto_pip_reason == AutoPipReason::kBrowserInitiated) {
+    EXPECT_EQ(0, video_conferencing_samples->TotalCount());
+    EXPECT_EQ(0, media_playback_samples->TotalCount());
+    EXPECT_EQ(1, browser_initiated_samples->TotalCount());
   } else {
     FAIL() << "Unhandled auto picture in picture reason: "
            << static_cast<int>(auto_pip_reason);

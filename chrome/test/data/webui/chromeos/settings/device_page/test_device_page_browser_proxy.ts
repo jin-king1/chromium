@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import type {BatteryStatus, DevicePageBrowserProxy, IdleBehavior, LidClosedBehavior, NoteAppInfo} from 'chrome://os-settings/os_settings.js';
+import type {BatteryStatus, DevicePageBrowserProxy, IdleBehavior, LidClosedBehavior, NoteAppInfo, OptimizedChargingStrategy} from 'chrome://os-settings/os_settings.js';
 import {assert} from 'chrome://resources/js/assert.js';
 import {webUIListenerCallback} from 'chrome://resources/js/cr.js';
 import {TestBrowserProxy} from 'chrome://webui-test/test_browser_proxy.js';
@@ -23,8 +23,9 @@ export class TestDevicePageBrowserProxy extends TestBrowserProxy implements
   private hasPointingStick_ = true;
   private hasTouchpad_ = true;
   private fakeBatteryStatus_: BatteryStatus = {} as BatteryStatus;
-  private onNoteTakingAppsUpdated_!:
-      (apps: NoteAppInfo[], waitingForAndroid: boolean) => void;
+  private onNoteTakingAppsUpdated_:
+      (apps: NoteAppInfo[],
+       waitingForAndroid: boolean) => void = (_apps, _waitingForAndroid) => {};
 
   constructor() {
     super([
@@ -33,6 +34,8 @@ export class TestDevicePageBrowserProxy extends TestBrowserProxy implements
       'requestPowerManagementSettings',
       'setPreferredNoteTakingApp',
       'showShortcutCustomizationApp',
+      'setAdaptiveCharging',
+      'setOptimizedCharging',
       'showPlayStore',
       'updatePowerStatus',
     ]);
@@ -149,6 +152,10 @@ export class TestDevicePageBrowserProxy extends TestBrowserProxy implements
   openBrowsingDataSettings() {}
 
   setAdaptiveCharging() {}
+
+  setOptimizedCharging(strategy: OptimizedChargingStrategy, enabled: boolean) {
+    this.methodCalled('setOptimizedCharging', strategy, enabled);
+  }
 
   setExternalStoragesUpdatedCallback() {}
 

@@ -11,10 +11,10 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 #include "base/base64.h"
-#include "base/containers/contains.h"
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
@@ -38,24 +38,19 @@
 #include "base/time/time.h"
 #include "base/types/expected.h"
 #include "components/content_settings/core/common/features.h"
-#include "components/network_session_configurator/common/network_switches.h"
 #include "components/ukm/content/source_url_recorder.h"
 #include "content/browser/btm/btm_browsertest_utils.h"
 #include "content/browser/btm/btm_service_impl.h"
 #include "content/browser/btm/btm_storage.h"
 #include "content/browser/btm/btm_test_utils.h"
 #include "content/browser/btm/btm_utils.h"
-#include "content/browser/tpcd_heuristics/opener_heuristic_tab_helper.h"
-#include "content/browser/tpcd_heuristics/redirect_heuristic_tab_helper.h"
 #include "content/common/features.h"
-#include "content/public/browser/attribution_data_model.h"
 #include "content/public/browser/back_forward_cache.h"
 #include "content/public/browser/browser_context.h"
-#include "content/public/browser/btm_redirect_info.h"
+#include "content/public/browser/btm_redirect.h"
 #include "content/public/browser/btm_service.h"
 #include "content/public/browser/cookie_access_details.h"
 #include "content/public/browser/global_routing_id.h"
-#include "content/public/browser/interest_group_manager.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/network_service_instance.h"
 #include "content/public/browser/render_frame_host.h"
@@ -114,36 +109,34 @@ using testing::Eq;
 using testing::Gt;
 using testing::IsEmpty;
 using testing::Pair;
-using ukm::builders::DIPS_Redirect;
 
 namespace content {
 
 namespace {
 
-using AttributionData = std::set<AttributionDataModel::DataKey>;
 using blink::mojom::StorageTypeAccessed;
 
 // Returns a simplified URL representation for ease of comparison in tests.
 // Just host+path.
 std::string FormatURL(const GURL& url) {
-  return base::StrCat({url.host_piece(), url.path_piece()});
+  return base::StrCat({url.host(), url.path()});
 }
 
 void AppendRedirect(std::vector<std::string>* redirects,
-                    const BtmRedirectInfo& redirect,
-                    const BtmRedirectChainInfo& chain,
+                    const BtmRedirect& redirect,
+                    const BtmRedirectChain& chain,
                     size_t redirect_index) {
   redirects->push_back(base::StringPrintf(
       "[%zu/%zu] %s -> %s (%s) -> %s", redirect_index + 1, chain.length,
-      FormatURL(chain.initial_url.url).c_str(),
-      FormatURL(redirect.redirecting_url.url).c_str(),
+      FormatURL(chain.initial_url).c_str(),
+      FormatURL(redirect.redirector_url).c_str(),
       std::string(BtmDataAccessTypeToString(redirect.access_type)).c_str(),
-      FormatURL(chain.final_url.url).c_str()));
+      FormatURL(chain.final_url).c_str()));
 }
 
 void AppendRedirects(std::vector<std::string>* vec,
-                     std::vector<BtmRedirectInfoPtr> redirects,
-                     BtmRedirectChainInfoPtr chain) {
+                     std::vector<BtmRedirectPtr> redirects,
+                     BtmRedirectChainPtr chain) {
   size_t redirect_index = chain->length - redirects.size();
   for (const auto& redirect : redirects) {
     AppendRedirect(vec, *redirect, *chain, redirect_index);
@@ -157,13 +150,6 @@ void AppendSitesInReport(std::vector<std::string>* reports,
       std::vector<std::string_view>(sites.begin(), sites.end()), ", "));
 }
 
-std::vector<url::Origin> GetOrigins(const AttributionData& data) {
-  std::vector<url::Origin> origins;
-  std::ranges::transform(data, std::back_inserter(origins),
-                         &AttributionDataModel::DataKey::reporting_origin);
-  return origins;
-}
-
 bool ContainsWrite(BtmDataAccessType access) {
   using enum BtmDataAccessType;
   return access == kWrite || access == kReadWrite;
@@ -171,7 +157,7 @@ bool ContainsWrite(BtmDataAccessType access) {
 
 // Waits for BTM to know that a cookie was written by a redirect at
 // `redirect_url`, which must be the last redirect that was performed in the
-// currenly-in-progress redirect chain.
+// currently-in-progress redirect chain.
 testing::AssertionResult WaitForRedirectCookieWrite(WebContents* web_contents,
                                                     const GURL& redirect_url) {
   RedirectChainDetector* detector =
@@ -182,13 +168,13 @@ testing::AssertionResult WaitForRedirectCookieWrite(WebContents* web_contents,
   }
 
   // Make sure the last redirect was at the expected URL.
-  const BtmRedirectInfo& redirect =
+  const BtmRedirect& redirect =
       detector->CommittedRedirectContext()
           [detector->CommittedRedirectContext().size() - 1];
-  if (redirect.redirecting_url.url != redirect_url) {
+  if (redirect.redirector_url != redirect_url) {
     return testing::AssertionFailure()
            << "Expected redirect at " << redirect_url << "; found "
-           << redirect.redirecting_url.url;
+           << redirect.redirector_url;
   }
 
   if (!ContainsWrite(redirect.access_type)) {
@@ -250,7 +236,7 @@ class WCOCallbackLogger : public WebContentsObserver,
   void OnClientAdded(const blink::SharedWorkerToken& token,
                      GlobalRenderFrameHostId render_frame_host_id) override;
   void OnWorkerCreated(const blink::SharedWorkerToken& token,
-                       int worker_process_id,
+                       ChildProcessId worker_process_id,
                        const url::Origin& security_origin,
                        const base::UnguessableToken& dev_tools_token) override {
   }
@@ -263,7 +249,7 @@ class WCOCallbackLogger : public WebContentsObserver,
 
   // Start DedicatedWorkerService.Observer overrides:
   void OnWorkerCreated(const blink::DedicatedWorkerToken& worker_token,
-                       int worker_process_id,
+                       ChildProcessId worker_process_id,
                        const url::Origin& security_origin,
                        DedicatedWorkerCreator creator) override;
   void OnBeforeWorkerDestroyed(const blink::DedicatedWorkerToken& worker_token,
@@ -293,7 +279,7 @@ void WCOCallbackLogger::OnCookiesAccessed(RenderFrameHost* render_frame_host,
                                           const CookieAccessDetails& details) {
   // Callbacks for favicons are ignored only in testing logs because their
   // ordering is variable and would cause flakiness
-  if (details.url.path() == "/favicon.ico") {
+  if (details.url.GetPath() == "/favicon.ico") {
     return;
   }
 
@@ -334,7 +320,10 @@ void WCOCallbackLogger::OnClientAdded(
     GlobalRenderFrameHostId render_frame_host_id) {
   RenderFrameHost* render_frame_host =
       RenderFrameHost::FromID(render_frame_host_id);
-  GURL scope = GetFirstPartyURL(render_frame_host).value_or(GURL());
+  GURL scope;
+  if (render_frame_host) {
+    scope = GetFirstPartyURL(*render_frame_host);
+  }
 
   log_.push_back(base::StringPrintf("OnSharedWorkerClientAdded(%s)",
                                     FormatURL(scope).c_str()));
@@ -342,14 +331,17 @@ void WCOCallbackLogger::OnClientAdded(
 
 void WCOCallbackLogger::OnWorkerCreated(
     const blink::DedicatedWorkerToken& worker_token,
-    int worker_process_id,
+    ChildProcessId worker_process_id,
     const url::Origin& security_origin,
     DedicatedWorkerCreator creator) {
   const GlobalRenderFrameHostId& render_frame_host_id =
-      absl::get<GlobalRenderFrameHostId>(creator);
+      std::get<GlobalRenderFrameHostId>(creator);
   RenderFrameHost* render_frame_host =
       RenderFrameHost::FromID(render_frame_host_id);
-  GURL scope = GetFirstPartyURL(render_frame_host).value_or(GURL());
+  GURL scope;
+  if (render_frame_host) {
+    scope = GetFirstPartyURL(*render_frame_host);
+  }
 
   log_.push_back(base::StringPrintf("OnDedicatedWorkerCreated(%s)",
                                     FormatURL(scope).c_str()));
@@ -357,7 +349,7 @@ void WCOCallbackLogger::OnWorkerCreated(
 
 void WCOCallbackLogger::DidFinishNavigation(
     NavigationHandle* navigation_handle) {
-  if (!IsInPrimaryPage(navigation_handle)) {
+  if (!IsInPrimaryPage(*navigation_handle)) {
     return;
   }
 
@@ -389,11 +381,7 @@ class BtmBounceDetectorBrowserTest : public ContentBrowserTest {
   BtmBounceDetectorBrowserTest()
       : prerender_test_helper_(base::BindRepeating(
             &BtmBounceDetectorBrowserTest::GetActiveWebContents,
-            base::Unretained(this))) {
-    enabled_features_.push_back(
-        {network::features::kSkipTpcdMitigationsForAds,
-         {{"SkipTpcdMitigationsForAdsHeuristics", "true"}}});
-  }
+            base::Unretained(this))) {}
 
   void SetUp() override {
     scoped_feature_list_.InitWithFeaturesAndParameters(enabled_features_,
@@ -413,6 +401,14 @@ class BtmBounceDetectorBrowserTest : public ContentBrowserTest {
     net::test_server::RegisterDefaultHandlers(embedded_test_server());
     ASSERT_TRUE(embedded_test_server()->Start());
     host_resolver()->AddRule("*", "127.0.0.1");
+
+    // Set third-party cookies to be blocked by default. If they're not blocked
+    // by default, BTM will not run.
+    browser_client().SetBlockThirdPartyCookiesByDefault(true);
+    WebContents* web_contents = GetActiveWebContents();
+    ASSERT_FALSE(btm::Are3PcsGenerallyEnabled(web_contents->GetBrowserContext(),
+                                              web_contents));
+
     SetUpBtmWebContentsObserver();
   }
 
@@ -448,7 +444,7 @@ class BtmBounceDetectorBrowserTest : public ContentBrowserTest {
         BtmService::Get(web_contents->GetBrowserContext());
     GURL expected_url = web_contents->GetLastCommittedURL();
 
-    DipsRedirectChainObserver chain_observer(btm_service, expected_url);
+    BtmRedirectChainObserver chain_observer(btm_service, expected_url);
     // Performing a browser-based navigation terminates the current redirect
     // chain.
     ASSERT_TRUE(NavigateToURL(
@@ -623,8 +619,8 @@ IN_PROC_BROWSER_TEST_F(BtmBounceDetectorBrowserTest,
 
   CloseTab(GetActiveWebContents());
   EXPECT_THAT(redirects,
-              ElementsAre(("[1/1] blank -> a.test/page_with_blank_iframe.html "
-                           "(Write) -> d.test/title1.html")));
+              ElementsAre("[1/1] blank -> a.test/page_with_blank_iframe.html "
+                          "(Write) -> d.test/title1.html"));
 }
 
 IN_PROC_BROWSER_TEST_F(BtmBounceDetectorBrowserTest,
@@ -764,8 +760,8 @@ IN_PROC_BROWSER_TEST_F(BtmBounceDetectorBrowserTest,
 
   CloseTab(GetActiveWebContents());
   EXPECT_THAT(redirects,
-              ElementsAre(("[1/1] blank -> a.test/page_with_blank_iframe.html "
-                           "(Write) -> d.test/title1.html")));
+              ElementsAre("[1/1] blank -> a.test/page_with_blank_iframe.html "
+                          "(Write) -> d.test/title1.html"));
 }
 
 IN_PROC_BROWSER_TEST_F(BtmBounceDetectorBrowserTest,
@@ -938,7 +934,7 @@ IN_PROC_BROWSER_TEST_F(BtmBounceDetectorBrowserTest,
 
   const GURL prerendering_url =
       embedded_test_server()->GetURL("a.test", "/title2.html");
-  const FrameTreeNodeId host_id =
+  const PrerenderHostId host_id =
       prerender_test_helper()->AddPrerender(prerendering_url);
   prerender_test_helper()->WaitForPrerenderLoadCompletion(prerendering_url);
   test::PrerenderHostObserver observer(*GetActiveWebContents(), host_id);
@@ -979,7 +975,7 @@ IN_PROC_BROWSER_TEST_F(BtmBounceDetectorBrowserTest,
       embedded_test_server()->GetURL("a.test", "/set_cookie_header.html");
   URLCookieAccessObserver observer(GetActiveWebContents(), prerendering_url,
                                    CookieOperation::kChange);
-  const FrameTreeNodeId host_id =
+  const PrerenderHostId host_id =
       prerender_test_helper()->AddPrerender(prerendering_url);
   prerender_test_helper()->WaitForPrerenderLoadCompletion(prerendering_url);
   observer.Wait();
@@ -1214,7 +1210,7 @@ IN_PROC_BROWSER_TEST_F(BtmBounceDetectorBrowserTest,
 
   // Verify interaction was recorded for d.test, before proceeding.
   std::optional<StateValue> state =
-      GetBtmState(GetDipsService(web_contents), url);
+      GetBtmState(GetBtmService(web_contents), url);
   ASSERT_TRUE(state.has_value());
   ASSERT_TRUE(state->user_activation_times.has_value());
 
@@ -1238,17 +1234,19 @@ IN_PROC_BROWSER_TEST_F(BtmBounceDetectorBrowserTest,
   AccessCookieViaJSIn(web_contents, web_contents->GetPrimaryMainFrame());
 
   // Navigate without a click (i.e. by C-redirecting) to e.test, which
-  // statefully S-redirects to f.test, which statefully S-redirects to g.test.
+  // statelessly S-redirects to f.test, which statefully S-redirects to g.test.
   ASSERT_TRUE(NavigateToURLFromRendererWithoutUserGesture(
       web_contents,
       embedded_test_server()->GetURL(
           "e.test",
-          "/cross-site-with-cookie/f.test/cross-site-with-cookie/g.test/"
+          "/cross-site/f.test/cross-site-with-cookie/g.test/"
           "title1.html"),
       embedded_test_server()->GetURL("g.test", "/title1.html")));
   EndRedirectChain();
-  WaitOnStorage(GetDipsService(web_contents));
+  WaitOnStorage(GetBtmService(web_contents));
 
+  // Verify that d.test is not reported (because it had previous user
+  // interaction), but the rest of the chain is reported.
   EXPECT_THAT(reports, ElementsAre(("b.test"), ("c.test"), ("e.test, f.test")));
 }
 
@@ -1572,572 +1570,6 @@ IN_PROC_BROWSER_TEST_F(BtmBounceDetectorBrowserTest,
                   "c.test/title1.html")));
 }
 
-class RedirectHeuristicBrowserTest : public ContentBrowserTest {
- public:
-  void SetUpOnMainThread() override {
-    ContentBrowserTest::SetUpOnMainThread();
-    ASSERT_TRUE(embedded_test_server()->Start());
-    host_resolver()->AddRule("*", "127.0.0.1");
-  }
-
-  void PreRunTestOnMainThread() override {
-    ContentBrowserTest::PreRunTestOnMainThread();
-    ukm::InitializeSourceUrlRecorderForWebContents(GetActiveWebContents());
-    browser_client_.emplace();
-  }
-
-  WebContents* GetActiveWebContents() { return shell()->web_contents(); }
-
-  // Perform a browser-based navigation to terminate the current redirect chain.
-  void EndRedirectChain() {
-    ASSERT_TRUE(NavigateToURL(
-        GetActiveWebContents(),
-        embedded_test_server()->GetURL("endthechain.test", "/title1.html")));
-  }
-
-  void SimulateMouseClick() {
-    SimulateMouseClickAndWait(GetActiveWebContents());
-  }
-
-  void SimulateWebAuthnAssertion() {
-    WebAuthnAssertionRequestSucceeded(
-        GetActiveWebContents()->GetPrimaryMainFrame());
-  }
-
-  TpcBlockingBrowserClient& browser_client() { return browser_client_->impl(); }
-
- private:
-  std::optional<ContentBrowserTestTpcBlockingBrowserClient> browser_client_;
-};
-
-// Tests the conditions for recording RedirectHeuristic_CookieAccess2 and
-// RedirectHeuristic_CookieAccessThirdParty2 UKM events.
-// TODO(crbug.com/369920781): Flaky
-IN_PROC_BROWSER_TEST_F(RedirectHeuristicBrowserTest,
-                       DISABLED_RecordsRedirectHeuristicCookieAccessEvent) {
-  ukm::TestAutoSetUkmRecorder ukm_recorder;
-  WebContents* web_contents = GetActiveWebContents();
-
-  // We host the "image" on an HTTPS server, because for it to write a
-  // cookie, the cookie needs to be SameSite=None and Secure.
-  net::EmbeddedTestServer https_server(net::EmbeddedTestServer::TYPE_HTTPS);
-  https_server.SetSSLConfig(net::EmbeddedTestServer::CERT_TEST_NAMES);
-  https_server.AddDefaultHandlers(GetTestDataFilePath());
-  ASSERT_TRUE(https_server.Start());
-
-  GURL initial_url = embedded_test_server()->GetURL("a.test", "/title1.html");
-
-  GURL tracker_url_pre_target_redirect =
-      embedded_test_server()->GetURL("b.test", "/title1.html");
-  GURL image_url_pre_target_redirect =
-      https_server.GetURL("sub.b.test", "/favicon/icon.png");
-
-  GURL target_url = embedded_test_server()->GetURL("d.test", "/title1.html");
-  GURL target_image_url =
-      https_server.GetURL("sub.d.test", "/favicon/icon.png");
-
-  GURL tracker_url_post_target_redirect =
-      embedded_test_server()->GetURL("c.test", "/title1.html");
-  GURL image_url_post_target_redirect =
-      https_server.GetURL("sub.c.test", "/favicon/icon.png");
-
-  GURL final_url = embedded_test_server()->GetURL("f.test", "/title1.html");
-
-  browser_client().AllowThirdPartyCookiesOnSite(target_url);
-
-  // Set cookies on image URLs.
-  ASSERT_TRUE(NavigateToSetCookie(web_contents, &https_server, "sub.b.test",
-                                  /*is_secure_cookie_set=*/true,
-                                  /*is_ad_tagged=*/false));
-  ASSERT_TRUE(NavigateToSetCookie(web_contents, &https_server, "sub.c.test",
-                                  /*is_secure_cookie_set=*/true,
-                                  /*is_ad_tagged=*/false));
-  ASSERT_TRUE(NavigateToSetCookie(web_contents, &https_server, "sub.d.test",
-                                  /*is_secure_cookie_set=*/true,
-                                  /*is_ad_tagged=*/false));
-
-  // Visit initial page.
-  ASSERT_TRUE(NavigateToURL(web_contents, initial_url));
-  // Redirect to tracking URL.
-  ASSERT_TRUE(NavigateToURLFromRendererWithoutUserGesture(
-      web_contents, tracker_url_pre_target_redirect));
-
-  // Redirect to target URL.
-  ASSERT_TRUE(
-      NavigateToURLFromRendererWithoutUserGesture(web_contents, target_url));
-  // Read a cookie from the tracking URL.
-  CreateImageAndWaitForCookieAccess(web_contents,
-                                    image_url_pre_target_redirect);
-  // Read a cookie from the second tracking URL.
-  CreateImageAndWaitForCookieAccess(web_contents,
-                                    image_url_post_target_redirect);
-  // Read a cookie from an image with the same domain as the target URL.
-  CreateImageAndWaitForCookieAccess(web_contents, target_image_url);
-
-  // Redirect to second tracking URL. (This has no effect since the cookie
-  // accesses already happened.)
-  ASSERT_TRUE(NavigateToURLFromRendererWithoutUserGesture(
-      web_contents, tracker_url_post_target_redirect));
-  // Redirect to final URL.
-  ASSERT_TRUE(
-      NavigateToURLFromRendererWithoutUserGesture(web_contents, final_url));
-
-  EndRedirectChain();
-
-  std::vector<ukm::TestUkmRecorder::HumanReadableUkmEntry>
-      ukm_first_party_entries =
-          ukm_recorder.GetEntries("RedirectHeuristic.CookieAccess2", {});
-
-  // Expect one UKM entry.
-
-  // Include the cookies read where a tracking site read cookies while embedded
-  // on a site later in the redirect chain.
-
-  // Exclude the cookies reads where:
-  // - The tracking site did not appear in the prior redirect chain.
-  // - The tracking and target sites had the same domain.
-  ASSERT_EQ(1u, ukm_first_party_entries.size());
-  EXPECT_THAT(
-      ukm_recorder.GetSourceForSourceId(ukm_first_party_entries[0].source_id)
-          ->url(),
-      Eq(target_url));
-
-  // Expect one corresponding UKM entry for CookieAccessThirdParty.
-  std::vector<ukm::TestUkmRecorder::HumanReadableUkmEntry>
-      ukm_third_party_entries = ukm_recorder.GetEntries(
-          "RedirectHeuristic.CookieAccessThirdParty2", {});
-  ASSERT_EQ(1u, ukm_third_party_entries.size());
-  EXPECT_THAT(
-      ukm_recorder.GetSourceForSourceId(ukm_third_party_entries[0].source_id)
-          ->url(),
-      Eq(tracker_url_pre_target_redirect));
-}
-
-// Tests setting different metrics for the RedirectHeuristic_CookieAccess2 UKM
-// event.
-// TODO(crbug.com/40934961): Flaky on multiple platforms.
-IN_PROC_BROWSER_TEST_F(RedirectHeuristicBrowserTest,
-                       DISABLED_RedirectHeuristicCookieAccessEvent_AllMetrics) {
-  ukm::TestAutoSetUkmRecorder ukm_recorder;
-  WebContents* web_contents = GetActiveWebContents();
-
-  // We host the "image" on an HTTPS server, because for it to write a
-  // cookie, the cookie needs to be SameSite=None and Secure.
-  net::EmbeddedTestServer https_server(net::EmbeddedTestServer::TYPE_HTTPS);
-  https_server.SetSSLConfig(net::EmbeddedTestServer::CERT_TEST_NAMES);
-  https_server.AddDefaultHandlers(GetTestDataFilePath());
-  ASSERT_TRUE(https_server.Start());
-
-  GURL final_url = embedded_test_server()->GetURL("a.test", "/title1.html");
-
-  GURL tracker_url_with_user_activation_interaction =
-      embedded_test_server()->GetURL("b.test", "/title1.html");
-  GURL image_url_with_user_activation_interaction =
-      https_server.GetURL("sub.b.test", "/favicon/icon.png");
-
-  GURL tracker_url_in_iframe =
-      embedded_test_server()->GetURL("c.test", "/title1.html");
-  GURL image_url_in_iframe =
-      https_server.GetURL("sub.c.test", "/favicon/icon.png");
-
-  GURL tracker_url_with_authentication_interaction =
-      embedded_test_server()->GetURL("d.test", "/title1.html");
-  GURL image_url_with_authentication_interaction =
-      https_server.GetURL("sub.d.test", "/favicon/icon.png");
-
-  GURL target_url_3pc_allowed =
-      embedded_test_server()->GetURL("e.test", "/title1.html");
-  GURL target_url_3pc_blocked =
-      embedded_test_server()->GetURL("f.test", "/page_with_blank_iframe.html");
-
-  browser_client().AllowThirdPartyCookiesOnSite(target_url_3pc_allowed);
-  browser_client().BlockThirdPartyCookiesOnSite(target_url_3pc_blocked);
-
-  // Set cookies on image URLs.
-  ASSERT_TRUE(NavigateToSetCookie(web_contents, &https_server, "sub.b.test",
-                                  /*is_secure_cookie_set=*/true,
-                                  /*is_ad_tagged=*/true));
-  ASSERT_TRUE(NavigateToSetCookie(web_contents, &https_server, "sub.c.test",
-                                  /*is_secure_cookie_set=*/true,
-                                  /*is_ad_tagged=*/false));
-  ASSERT_TRUE(NavigateToSetCookie(web_contents, &https_server, "sub.d.test",
-                                  /*is_secure_cookie_set=*/true,
-                                  /*is_ad_tagged=*/false));
-
-  // Start on `tracker_url_with_user_activation_interaction` and record a
-  // current user activation interaction.
-  ASSERT_TRUE(NavigateToURL(web_contents,
-                            tracker_url_with_user_activation_interaction));
-  SimulateMouseClick();
-
-  // Redirect to on `tracker_url_with_authentication_interaction` and record a
-  // current authentication interaction.
-  ASSERT_TRUE(
-      NavigateToURL(web_contents, tracker_url_with_authentication_interaction));
-  SimulateWebAuthnAssertion();
-
-  // Redirect to one of the target URLs, to set DoesFirstPartyPrecedeThirdParty.
-  ASSERT_TRUE(NavigateToURLFromRendererWithoutUserGesture(
-      web_contents, target_url_3pc_blocked));
-  // Redirect to all tracking URLs.
-  ASSERT_TRUE(NavigateToURLFromRendererWithoutUserGesture(
-      web_contents, tracker_url_in_iframe));
-  ASSERT_TRUE(NavigateToURLFromRendererWithoutUserGesture(
-      web_contents, tracker_url_with_user_activation_interaction));
-  ASSERT_TRUE(NavigateToURLFromRendererWithoutUserGesture(
-      web_contents, tracker_url_with_authentication_interaction));
-
-  // Redirect to target URL with cookies allowed.
-  ASSERT_TRUE(NavigateToURLFromRendererWithoutUserGesture(
-      web_contents, target_url_3pc_allowed));
-  // Read a cookie from the tracking URL with user activation interaction.
-  CreateImageAndWaitForCookieAccess(
-      web_contents,
-      https_server.GetURL("sub.b.test", "/favicon/icon.png?isad=1"));
-
-  // Read a cookie from the tracking URL with authentication interaction.
-  CreateImageAndWaitForCookieAccess(web_contents,
-                                    image_url_with_authentication_interaction);
-
-  // Redirect to target URL with cookies blocked.
-  ASSERT_TRUE(NavigateToURLFromRendererWithoutUserGesture(
-      web_contents, target_url_3pc_blocked));
-  // Open an iframe of the tracking URL on the target URL.
-  ASSERT_TRUE(NavigateIframeToURL(web_contents,
-                                  /*iframe_id=*/"test_iframe",
-                                  image_url_in_iframe));
-  // Read a cookie from the tracking URL in an iframe on the target page.
-  CreateImageAndWaitForCookieAccess(web_contents, image_url_in_iframe);
-
-  // Redirect to final URL.
-  ASSERT_TRUE(
-      NavigateToURLFromRendererWithoutUserGesture(web_contents, final_url));
-
-  EndRedirectChain();
-
-  std::vector<ukm::TestUkmRecorder::HumanReadableUkmEntry> ukm_entries =
-      ukm_recorder.GetEntries(
-          "RedirectHeuristic.CookieAccess2",
-          {"AccessId", "AccessAllowed", "IsAdTagged",
-           "HoursSinceLastInteraction", "MillisecondsSinceRedirect",
-           "OpenerHasSameSiteIframe", "SitesPassedCount",
-           "DoesFirstPartyPrecedeThirdParty", "IsCurrentInteraction",
-           "InteractionType"});
-
-  // Expect UKM entries from all three cookie accesses.
-  ASSERT_EQ(3u, ukm_entries.size());
-
-  // Expect reasonable delays between the redirect and cookie access.
-  for (const auto& entry : ukm_entries) {
-    EXPECT_GT(entry.metrics.at("MillisecondsSinceRedirect"), 0);
-    EXPECT_LT(entry.metrics.at("MillisecondsSinceRedirect"), 1000);
-  }
-
-  // The first cookie access was from a tracking site with a user activation
-  // interaction within the last hour, on a site with 3PC access allowed.
-
-  // 2 site were passed: tracker_url_with_user_activation_interaction ->
-  // tracker_url_with_authentication_interaction -> target_url_3pc_allowed
-  auto access_id_1 = ukm_entries[0].metrics.at("AccessId");
-  EXPECT_THAT(
-      ukm_recorder.GetSourceForSourceId(ukm_entries[0].source_id)->url(),
-      Eq(target_url_3pc_allowed));
-  EXPECT_EQ(ukm_entries[0].metrics.at("AccessAllowed"), true);
-  EXPECT_EQ(ukm_entries[0].metrics.at("IsAdTagged"),
-            static_cast<int32_t>(OptionalBool::kTrue));
-  EXPECT_EQ(ukm_entries[0].metrics.at("HoursSinceLastInteraction"), 0);
-  EXPECT_EQ(ukm_entries[0].metrics.at("OpenerHasSameSiteIframe"),
-            static_cast<int32_t>(OptionalBool::kFalse));
-  EXPECT_EQ(ukm_entries[0].metrics.at("SitesPassedCount"), 2);
-  EXPECT_EQ(ukm_entries[0].metrics.at("DoesFirstPartyPrecedeThirdParty"),
-            false);
-  EXPECT_EQ(ukm_entries[0].metrics.at("IsCurrentInteraction"), 1);
-  EXPECT_EQ(ukm_entries[0].metrics.at("InteractionType"),
-            static_cast<int32_t>(BtmInteractionType::UserActivation));
-
-  // The second cookie access was from a tracking site with an authentication
-  // within the last hour, on a site with 3PC access allowed.
-
-  // 1 site was passed: tracker_url_with_authentication_interaction ->
-  // target_url_3pc_allowed
-  auto access_id_2 = ukm_entries[1].metrics.at("AccessId");
-  EXPECT_THAT(
-      ukm_recorder.GetSourceForSourceId(ukm_entries[1].source_id)->url(),
-      Eq(target_url_3pc_allowed));
-  EXPECT_EQ(ukm_entries[1].metrics.at("AccessAllowed"), true);
-  EXPECT_EQ(ukm_entries[0].metrics.at("IsAdTagged"),
-            static_cast<int32_t>(OptionalBool::kFalse));
-  EXPECT_EQ(ukm_entries[1].metrics.at("HoursSinceLastInteraction"), 0);
-  EXPECT_EQ(ukm_entries[1].metrics.at("OpenerHasSameSiteIframe"),
-            static_cast<int32_t>(OptionalBool::kFalse));
-  EXPECT_EQ(ukm_entries[1].metrics.at("SitesPassedCount"), 1);
-  EXPECT_EQ(ukm_entries[1].metrics.at("DoesFirstPartyPrecedeThirdParty"),
-            false);
-  EXPECT_EQ(ukm_entries[1].metrics.at("IsCurrentInteraction"), 1);
-  EXPECT_EQ(ukm_entries[1].metrics.at("InteractionType"),
-            static_cast<int32_t>(BtmInteractionType::Authentication));
-
-  // The third cookie access was from a tracking site in an iframe of the
-  // target, on a site with 3PC access blocked.
-
-  // 4 sites were passed: tracker_url_in_iframe ->
-  // tracker_url_with_user_activation_interaction
-  // -> tracker_url_with_authentication_interaction -> target_url_3pc_allowed ->
-  // target_url_3pc_blocked
-  auto access_id_3 = ukm_entries[2].metrics.at("AccessId");
-  EXPECT_THAT(
-      ukm_recorder.GetSourceForSourceId(ukm_entries[2].source_id)->url(),
-      Eq(target_url_3pc_blocked));
-  EXPECT_EQ(ukm_entries[2].metrics.at("AccessAllowed"), false);
-  EXPECT_EQ(ukm_entries[2].metrics.at("IsAdTagged"),
-            static_cast<int32_t>(OptionalBool::kFalse));
-  EXPECT_EQ(ukm_entries[2].metrics.at("HoursSinceLastInteraction"), -1);
-  EXPECT_EQ(ukm_entries[2].metrics.at("OpenerHasSameSiteIframe"),
-            static_cast<int32_t>(OptionalBool::kTrue));
-  EXPECT_EQ(ukm_entries[2].metrics.at("SitesPassedCount"), 4);
-  EXPECT_EQ(ukm_entries[2].metrics.at("DoesFirstPartyPrecedeThirdParty"), true);
-  EXPECT_EQ(ukm_entries[2].metrics.at("IsCurrentInteraction"), 0);
-  EXPECT_EQ(ukm_entries[2].metrics.at("InteractionType"),
-            static_cast<int32_t>(BtmInteractionType::NoInteraction));
-
-  // Verify there are 3 corresponding CookieAccessThirdParty entries with
-  // matching access IDs.
-  std::vector<ukm::TestUkmRecorder::HumanReadableUkmEntry>
-      ukm_third_party_entries = ukm_recorder.GetEntries(
-          "RedirectHeuristic.CookieAccessThirdParty2", {"AccessId"});
-  ASSERT_EQ(3u, ukm_third_party_entries.size());
-
-  EXPECT_THAT(
-      ukm_recorder.GetSourceForSourceId(ukm_third_party_entries[0].source_id)
-          ->url(),
-      Eq(tracker_url_with_user_activation_interaction));
-  EXPECT_EQ(ukm_third_party_entries[0].metrics.at("AccessId"), access_id_1);
-
-  EXPECT_THAT(
-      ukm_recorder.GetSourceForSourceId(ukm_third_party_entries[1].source_id)
-          ->url(),
-      Eq(tracker_url_with_authentication_interaction));
-  EXPECT_EQ(ukm_third_party_entries[1].metrics.at("AccessId"), access_id_2);
-
-  EXPECT_THAT(
-      ukm_recorder.GetSourceForSourceId(ukm_third_party_entries[2].source_id)
-          ->url(),
-      Eq(tracker_url_in_iframe));
-  EXPECT_EQ(ukm_third_party_entries[2].metrics.at("AccessId"), access_id_3);
-}
-
-struct RedirectHeuristicFlags {
-  bool write_redirect_grants = false;
-  bool require_aba_flow = true;
-  bool require_current_interaction = true;
-  bool user_activation_interaction = true;
-};
-
-// chrome/browser/ui/browser.h (for changing profile prefs) is not available on
-// Android.
-#if !BUILDFLAG(IS_ANDROID)
-class RedirectHeuristicGrantTest
-    : public RedirectHeuristicBrowserTest,
-      public testing::WithParamInterface<RedirectHeuristicFlags> {
- public:
-  RedirectHeuristicGrantTest() {
-    std::string grant_time_string =
-        GetParam().write_redirect_grants ? "60s" : "0s";
-    std::string require_aba_flow_string =
-        base::ToString(GetParam().require_aba_flow);
-    std::string require_current_interaction_string =
-        base::ToString(GetParam().require_current_interaction);
-
-    enabled_features_.push_back(
-        {content_settings::features::kTpcdHeuristicsGrants,
-         {{"TpcdReadHeuristicsGrants", "true"},
-          {"TpcdWriteRedirectHeuristicGrants", grant_time_string},
-          {"TpcdRedirectHeuristicRequireABAFlow", require_aba_flow_string},
-          {"TpcdRedirectHeuristicRequireCurrentInteraction",
-           require_current_interaction_string}}});
-  }
-
-  void SetUp() override {
-    scoped_feature_list_.InitWithFeaturesAndParameters(enabled_features_,
-                                                       disabled_features_);
-    RedirectHeuristicBrowserTest::SetUp();
-  }
-
-  void SetUpCommandLine(base::CommandLine* command_line) override {
-    // Prevents flakiness by handling clicks even before content is drawn.
-    command_line->AppendSwitch(blink::switches::kAllowPreCommitInput);
-  }
-
-  void SetUpOnMainThread() override {
-    RedirectHeuristicBrowserTest::SetUpOnMainThread();
-
-    browser_client_.emplace();
-    browser_client().SetBlockThirdPartyCookiesByDefault(true);
-  }
-
-  TpcBlockingBrowserClient& browser_client() { return browser_client_->impl(); }
-
-  base::test::ScopedFeatureList scoped_feature_list_;
-  std::vector<base::test::FeatureRefAndParams> enabled_features_;
-  std::vector<base::test::FeatureRef> disabled_features_;
-
- private:
-  std::optional<ContentBrowserTestTpcBlockingBrowserClient> browser_client_;
-};
-
-IN_PROC_BROWSER_TEST_P(RedirectHeuristicGrantTest,
-                       CreatesRedirectHeuristicGrantsWithSatisfyingURL) {
-  WebContents* web_contents = GetActiveWebContents();
-
-  // Initialize first party URL and two trackers.
-  GURL first_party_url =
-      embedded_test_server()->GetURL("a.test", "/title1.html");
-  GURL aba_current_interaction_url =
-      embedded_test_server()->GetURL("b.test", "/title1.html");
-  GURL no_interaction_url =
-      embedded_test_server()->GetURL("c.test", "/title1.html");
-
-  // Start on `first_party_url`.
-  ASSERT_TRUE(NavigateToURL(web_contents, first_party_url));
-
-  // Navigate to `aba_current_interaction_url` and record a current interaction.
-  ASSERT_TRUE(NavigateToURL(web_contents, aba_current_interaction_url));
-  SimulateMouseClick();
-
-  // Redirect through `first_party_url`, `aba_current_interaction_url`, and
-  // `no_interaction_url` before committing and ending on `first_party_url`.
-  ASSERT_TRUE(NavigateToURLFromRendererWithoutUserGesture(web_contents,
-                                                          first_party_url));
-  ASSERT_TRUE(NavigateToURLFromRendererWithoutUserGesture(
-      web_contents, aba_current_interaction_url));
-  ASSERT_TRUE(NavigateToURLFromRendererWithoutUserGesture(web_contents,
-                                                          no_interaction_url));
-  ASSERT_TRUE(NavigateToURLFromRendererWithoutUserGesture(web_contents,
-                                                          first_party_url));
-  EndRedirectChain();
-
-  // Wait on async tasks for the grants to be created.
-  WaitOnStorage(GetDipsService(web_contents));
-
-  // Expect some cookie grants on `first_party_url` based on flags and criteria.
-  EXPECT_EQ(browser_client().IsFullCookieAccessAllowed(
-                web_contents->GetBrowserContext(), web_contents,
-                aba_current_interaction_url,
-                blink::StorageKey::CreateFirstParty(
-                    url::Origin::Create(first_party_url))),
-            GetParam().write_redirect_grants);
-
-  EXPECT_FALSE(browser_client().IsFullCookieAccessAllowed(
-      web_contents->GetBrowserContext(), web_contents, no_interaction_url,
-      blink::StorageKey::CreateFirstParty(
-          url::Origin::Create(first_party_url))));
-}
-
-IN_PROC_BROWSER_TEST_P(
-    RedirectHeuristicGrantTest,
-    CreatesRedirectHeuristicGrantsWithPartiallySatisfyingURL) {
-  WebContents* web_contents = GetActiveWebContents();
-
-  // Initialize first party URL and two trackers.
-  GURL first_party_url =
-      embedded_test_server()->GetURL("a.test", "/title1.html");
-  GURL aba_past_interaction_url =
-      embedded_test_server()->GetURL("b.test", "/title1.html");
-  GURL no_aba_current_interaction_url =
-      embedded_test_server()->GetURL("c.test", "/title1.html");
-
-  // Record a past interaction on `aba_past_interaction_url`.
-  ASSERT_TRUE(NavigateToURL(web_contents, aba_past_interaction_url));
-  SimulateMouseClick();
-
-  // Start redirect chain on `no_aba_current_interaction_url` and record a
-  // current interaction.
-  ASSERT_TRUE(NavigateToURL(web_contents, no_aba_current_interaction_url));
-  SimulateMouseClick();
-
-  // Redirect through `no_aba_current_interaction_url`, `first_party_url`, and
-  // `aba_past_interaction_url` before committing and ending on
-  // `first_party_url`.
-  ASSERT_TRUE(NavigateToURLFromRendererWithoutUserGesture(
-      web_contents, no_aba_current_interaction_url));
-  ASSERT_TRUE(NavigateToURLFromRendererWithoutUserGesture(web_contents,
-                                                          first_party_url));
-  ASSERT_TRUE(NavigateToURLFromRendererWithoutUserGesture(
-      web_contents, aba_past_interaction_url));
-  ASSERT_TRUE(NavigateToURLFromRendererWithoutUserGesture(web_contents,
-                                                          first_party_url));
-  EndRedirectChain();
-
-  // Wait on async tasks for the grants to be created.
-  WaitOnStorage(GetDipsService(web_contents));
-
-  // Expect some cookie grants on `first_party_url` based on flags and criteria.
-  EXPECT_EQ(browser_client().IsFullCookieAccessAllowed(
-                web_contents->GetBrowserContext(), web_contents,
-                aba_past_interaction_url,
-                blink::StorageKey::CreateFirstParty(
-                    url::Origin::Create(first_party_url))),
-            GetParam().write_redirect_grants &&
-                !GetParam().require_current_interaction);
-  EXPECT_EQ(browser_client().IsFullCookieAccessAllowed(
-                web_contents->GetBrowserContext(), web_contents,
-                no_aba_current_interaction_url,
-                blink::StorageKey::CreateFirstParty(
-                    url::Origin::Create(first_party_url))),
-            GetParam().write_redirect_grants && !GetParam().require_aba_flow);
-}
-
-IN_PROC_BROWSER_TEST_P(RedirectHeuristicGrantTest,
-                       CreatesRedirectHeuristicGrantsWithWebAuthnInteractions) {
-  WebContents* web_contents = GetActiveWebContents();
-
-  // Initialize first party URL and two trackers.
-  GURL first_party_url =
-      embedded_test_server()->GetURL("a.test", "/title1.html");
-  GURL past_interaction_url =
-      embedded_test_server()->GetURL("b.test", "/title1.html");
-  GURL current_interaction_url =
-      embedded_test_server()->GetURL("c.test", "/title1.html");
-
-  // Record a past web authentication interaction on `past_interaction_url`.
-  ASSERT_TRUE(NavigateToURL(web_contents, past_interaction_url));
-  SimulateWebAuthnAssertion();
-
-  // Start redirect chain on `first_party_url` with an interaction that simulate
-  // a user starting the authentication process
-  ASSERT_TRUE(NavigateToURL(web_contents, first_party_url));
-  SimulateMouseClick();
-
-  // Navigate through 'past_interaction_url', 'current_interaction_url' with a
-  // web authentication interaction, and back to 'first_party_url'
-  ASSERT_TRUE(NavigateToURLFromRendererWithoutUserGesture(
-      web_contents, past_interaction_url));
-  ASSERT_TRUE(NavigateToURLFromRendererWithoutUserGesture(
-      web_contents, current_interaction_url));
-  SimulateWebAuthnAssertion();
-  ASSERT_TRUE(NavigateToURLFromRendererWithoutUserGesture(web_contents,
-                                                          first_party_url));
-  EndRedirectChain();
-
-  // Wait on async tasks for the grants to be created.
-  WaitOnStorage(GetDipsService(web_contents));
-
-  // Expect some cookie grants on `first_party_url` based on flags and criteria.
-  EXPECT_EQ(
-      browser_client().IsFullCookieAccessAllowed(
-          web_contents->GetBrowserContext(), web_contents, past_interaction_url,
-          blink::StorageKey::CreateFirstParty(
-              url::Origin::Create(first_party_url))),
-      GetParam().write_redirect_grants &&
-          !GetParam().require_current_interaction);
-  EXPECT_EQ(browser_client().IsFullCookieAccessAllowed(
-                web_contents->GetBrowserContext(), web_contents,
-                current_interaction_url,
-                blink::StorageKey::CreateFirstParty(
-                    url::Origin::Create(first_party_url))),
-            GetParam().write_redirect_grants && !GetParam().require_aba_flow);
-}
-
 IN_PROC_BROWSER_TEST_F(BtmBounceDetectorBrowserTest,
                        RedirectInfoHttpStatusPersistence) {
   WebContents* const web_contents = GetActiveWebContents();
@@ -2174,38 +1606,6 @@ IN_PROC_BROWSER_TEST_F(BtmBounceDetectorBrowserTest,
   EXPECT_EQ(context[2].response_code, 0);
   EXPECT_EQ(context[3].response_code, 303);
 }
-
-const RedirectHeuristicFlags kRedirectHeuristicTestCases[] = {
-    {
-        .write_redirect_grants = false,
-    },
-    {
-        .write_redirect_grants = true,
-        .require_aba_flow = true,
-        .require_current_interaction = true,
-    },
-    {
-        .write_redirect_grants = true,
-        .require_aba_flow = false,
-        .require_current_interaction = true,
-    },
-    {
-        .write_redirect_grants = true,
-        .require_aba_flow = true,
-        .require_current_interaction = false,
-    },
-    {
-        .write_redirect_grants = true,
-        .require_aba_flow = false,
-        .require_current_interaction = false,
-        .user_activation_interaction = false,
-    },
-};
-
-INSTANTIATE_TEST_SUITE_P(All,
-                         RedirectHeuristicGrantTest,
-                         ::testing::ValuesIn(kRedirectHeuristicTestCases));
-#endif  // !BUILDFLAG(IS_ANDROID)
 
 class BtmSiteDataAccessDetectorTest
     : public BtmBounceDetectorBrowserTest,
@@ -2359,7 +1759,7 @@ IN_PROC_BROWSER_TEST_P(BtmSiteDataAccessDetectorTest,
 
   const GURL prerendering_url =
       embedded_https_test_server().GetURL("a.test", "/title2.html");
-  const FrameTreeNodeId host_id =
+  const PrerenderHostId host_id =
       prerender_test_helper()->AddPrerender(prerendering_url);
   prerender_test_helper()->WaitForPrerenderLoadCompletion(prerendering_url);
   test::PrerenderHostObserver observer(*GetActiveWebContents(), host_id);
@@ -2424,7 +1824,6 @@ class BtmWebAuthnBrowserTest : public ContentBrowserTest {
     mock_cert_verifier_.SetUpCommandLine(command_line);
     command_line->AppendSwitch(
         switches::kEnableExperimentalWebPlatformFeatures);
-    command_line->AppendSwitch(switches::kIgnoreCertificateErrors);
   }
 
   void SetUpInProcessBrowserTestFixture() override {
@@ -2445,6 +1844,7 @@ class BtmWebAuthnBrowserTest : public ContentBrowserTest {
     https_server_.ServeFilesFromSourceDirectory(GetTestDataFilePath());
     https_server_.RegisterDefaultHandler(base::BindRepeating(
         &HandleCrossSiteSameSiteNoneCookieRedirect, &https_server_));
+    https_server_.SetSSLConfig(net::EmbeddedTestServer::CERT_TEST_NAMES);
     ASSERT_TRUE(https_server_.Start());
 
     auto virtual_device_factory =
@@ -2562,17 +1962,17 @@ IN_PROC_BROWSER_TEST_F(BtmWebAuthnBrowserTest,
   ASSERT_TRUE(NavigateToURLFromRendererWithoutUserGesture(
       GetActiveWebContents(), final_url));
 
-  EXPECT_THAT(
-      logger->log(),
-      testing::ElementsAre(
-          "DidStartNavigation(a.test/title1.html)",
-          "DidFinishNavigation(a.test/title1.html)",
-          "DidStartNavigation(b.test/title1.html)",
-          "DidFinishNavigation(b.test/title1.html)",
-          "OnCookiesAccessed(RenderFrameHost, Change: b.test/title1.html)",
-          "WebAuthnAssertionRequestSucceeded(b.test/title1.html)",
-          "DidStartNavigation(d.test/title1.html)",
-          "DidFinishNavigation(d.test/title1.html)"));
+  std::vector<std::string> expected_log = {
+      "DidStartNavigation(a.test/title1.html)",
+      "DidFinishNavigation(a.test/title1.html)",
+      "DidStartNavigation(b.test/title1.html)",
+      "DidFinishNavigation(b.test/title1.html)",
+      "OnCookiesAccessed(RenderFrameHost, Change: b.test/title1.html)",
+      "WebAuthnAssertionRequestSucceeded(b.test/title1.html)",
+      "DidStartNavigation(d.test/title1.html)",
+      "DidFinishNavigation(d.test/title1.html)"};
+
+  EXPECT_THAT(logger->log(), testing::ContainerEq(expected_log));
 
   EndRedirectChain();
 
@@ -2614,7 +2014,7 @@ IN_PROC_BROWSER_TEST_F(
   // Verify web authn assertion was recorded for `authn_hostname`, before
   // proceeding.
   std::optional<StateValue> state =
-      GetBtmState(GetDipsService(web_contents), url);
+      GetBtmState(GetBtmService(web_contents), url);
   ASSERT_TRUE(state.has_value());
   ASSERT_FALSE(state->user_activation_times.has_value());
   ASSERT_TRUE(state->web_authn_assertion_times.has_value());
@@ -2645,9 +2045,10 @@ IN_PROC_BROWSER_TEST_F(
       TestServer()->GetURL("g.test", "/title1.html")));
 
   EndRedirectChain();
-  WaitOnStorage(GetDipsService(web_contents));
+  WaitOnStorage(GetBtmService(web_contents));
 
-  EXPECT_THAT(reports, ElementsAre(("d.test"), ("c.test"), ("e.test, f.test")));
+  EXPECT_THAT(reports, ElementsAre(("a.test"), ("d.test"), ("c.test"),
+                                   ("e.test, f.test")));
 }
 #endif  // !BUILDFLAG(IS_ANDROID)
 
@@ -2692,16 +2093,10 @@ IN_PROC_BROWSER_TEST_F(BtmBounceDetectorBrowserTest,
                                      " 127.0.0.1/service_worker/)"}));
 }
 
-// TODO(crbug.com/40290702): Shared workers are not available on Android.
-#if BUILDFLAG(IS_ANDROID)
-#define MAYBE_SharedWorkerAccess_Storages DISABLED_SharedWorkerAccess_Storages
-#else
-#define MAYBE_SharedWorkerAccess_Storages SharedWorkerAccess_Storages
-#endif
 // Verifies that adding a shared worker to a frame is tracked as a storage
 // access.
 IN_PROC_BROWSER_TEST_F(BtmBounceDetectorBrowserTest,
-                       MAYBE_SharedWorkerAccess_Storages) {
+                       SharedWorkerAccess_Storages) {
   // Start logging `WebContentsObserver` callbacks.
   WCOCallbackLogger::CreateForWebContents(GetActiveWebContents());
   auto* logger = WCOCallbackLogger::FromWebContents(GetActiveWebContents());
@@ -2835,6 +2230,9 @@ class BtmBounceTriggerBrowserTest : public BtmBounceDetectorBrowserTest {
     BtmBounceDetectorBrowserTest::SetUpOnMainThread();
     // BTM will only record bounces if 3PCs are blocked.
     browser_client().SetBlockThirdPartyCookiesByDefault(true);
+    WebContents* web_contents = GetActiveWebContents();
+    ASSERT_FALSE(btm::Are3PcsGenerallyEnabled(web_contents->GetBrowserContext(),
+                                              web_contents));
   }
 };
 
@@ -2845,7 +2243,7 @@ IN_PROC_BROWSER_TEST_F(BtmBounceTriggerBrowserTest, NoContent) {
   GURL committed_url = embedded_test_server()->GetURL("a.test", "/title1.html");
   ASSERT_TRUE(NavigateToURL(web_contents, committed_url));
 
-  DipsRedirectChainObserver observer(
+  BtmRedirectChainObserver observer(
       BtmService::Get(web_contents->GetBrowserContext()), committed_url);
   GURL nocontent_url = embedded_test_server()->GetURL("b.test", "/nocontent");
   ASSERT_TRUE(NavigateToURL(web_contents, nocontent_url, committed_url));
@@ -2879,7 +2277,7 @@ IN_PROC_BROWSER_TEST_F(BtmThrottlingBrowserTest,
   SimulateMouseClick();
   // Verify the interaction was recorded in the BTM DB.
   std::optional<StateValue> state =
-      GetBtmState(GetDipsService(web_contents), url);
+      GetBtmState(GetBtmService(web_contents), url);
   ASSERT_THAT(state->user_activation_times,
               testing::Optional(testing::Pair(start_time, start_time)));
 
@@ -2887,7 +2285,7 @@ IN_PROC_BROWSER_TEST_F(BtmThrottlingBrowserTest,
   test_clock_.Advance(kBtmTimestampUpdateInterval - base::Seconds(1));
   SimulateMouseClick();
   // Verify the second interaction was NOT recorded, due to throttling.
-  state = GetBtmState(GetDipsService(web_contents), url);
+  state = GetBtmState(GetBtmService(web_contents), url);
   ASSERT_THAT(state->user_activation_times,
               testing::Optional(testing::Pair(start_time, start_time)));
 
@@ -2896,7 +2294,7 @@ IN_PROC_BROWSER_TEST_F(BtmThrottlingBrowserTest,
   test_clock_.Advance(base::Seconds(1));
   SimulateMouseClick();
   // Verify the third interaction WAS recorded.
-  state = GetBtmState(GetDipsService(web_contents), url);
+  state = GetBtmState(GetBtmService(web_contents), url);
   ASSERT_THAT(state->user_activation_times,
               testing::Optional(testing::Pair(
                   start_time, start_time + kBtmTimestampUpdateInterval)));
@@ -2913,7 +2311,7 @@ IN_PROC_BROWSER_TEST_F(BtmThrottlingBrowserTest,
   SimulateMouseClick();
   // Verify the interaction was recorded in the BTM DB.
   std::optional<StateValue> state =
-      GetBtmState(GetDipsService(web_contents), url);
+      GetBtmState(GetBtmService(web_contents), url);
   ASSERT_THAT(state->user_activation_times,
               testing::Optional(testing::Pair(start_time, start_time)));
 
@@ -2923,699 +2321,12 @@ IN_PROC_BROWSER_TEST_F(BtmThrottlingBrowserTest,
   ASSERT_TRUE(NavigateToURL(web_contents, url2));
   SimulateMouseClick();
   // Verify the second interaction was also recorded (not throttled).
-  state = GetBtmState(GetDipsService(web_contents), url2);
+  state = GetBtmState(GetBtmService(web_contents), url2);
   ASSERT_THAT(state->user_activation_times,
               testing::Optional(testing::Pair(start_time + base::Seconds(1),
                                               start_time + base::Seconds(1))));
 }
 
-// TODO(crbug.com/325196134): Re-enable the test.
-IN_PROC_BROWSER_TEST_F(BtmThrottlingBrowserTest,
-                       DISABLED_StorageRecording_Throttled) {
-  WebContents* web_contents = GetActiveWebContents();
-  const base::Time start_time = test_clock_.Now();
-
-  // Record client-side storage access on a.test.
-  const GURL url = embedded_test_server()->GetURL("a.test", "/title1.html");
-  ASSERT_TRUE(NavigateToURL(web_contents, url));
-  SimulateCookieWrite();
-  // Verify the write was recorded in the BTM DB.
-  std::optional<StateValue> state =
-      GetBtmState(GetDipsService(web_contents), url);
-  ASSERT_THAT(state->site_storage_times,
-              testing::Optional(testing::Pair(start_time, start_time)));
-
-  // Write a cookie again, just before kBtmTimestampUpdateInterval elapses.
-  test_clock_.Advance(kBtmTimestampUpdateInterval - base::Seconds(1));
-  SimulateCookieWrite();
-  // Verify the second write was NOT recorded, due to throttling.
-  state = GetBtmState(GetDipsService(web_contents), url);
-  ASSERT_THAT(state->site_storage_times,
-              testing::Optional(testing::Pair(start_time, start_time)));
-
-  // Write a third time, after kBtmTimestampUpdateInterval has passed since the
-  // first write.
-  test_clock_.Advance(base::Seconds(1));
-  SimulateCookieWrite();
-  // Verify the third write WAS recorded.
-  state = GetBtmState(GetDipsService(web_contents), url);
-  ASSERT_THAT(state->site_storage_times,
-              testing::Optional(testing::Pair(
-                  start_time, start_time + kBtmTimestampUpdateInterval)));
-}
-
-// TODO(crbug.com/325196134): Re-enable the test.
-IN_PROC_BROWSER_TEST_F(BtmThrottlingBrowserTest,
-                       DISABLED_StorageRecording_NotThrottled_AfterRefresh) {
-  WebContents* web_contents = GetActiveWebContents();
-  const base::Time start_time = test_clock_.Now();
-
-  // Record client-side storage access on a.test.
-  const GURL url = embedded_test_server()->GetURL("a.test", "/title1.html");
-  ASSERT_TRUE(NavigateToURL(web_contents, url));
-  SimulateCookieWrite();
-  // Verify the write was recorded in the BTM DB.
-  std::optional<StateValue> state =
-      GetBtmState(GetDipsService(web_contents), url);
-  ASSERT_THAT(state->site_storage_times,
-              testing::Optional(testing::Pair(start_time, start_time)));
-
-  // Navigate to a new page and write cookies again, only a second after the
-  // previous write.
-  test_clock_.Advance(base::Seconds(1));
-  const GURL url2 = embedded_test_server()->GetURL("b.test", "/title1.html");
-  ASSERT_TRUE(NavigateToURL(web_contents, url2));
-  SimulateCookieWrite();
-  // Verify the second write was also recorded (not throttled).
-  state = GetBtmState(GetDipsService(web_contents), url2);
-  ASSERT_THAT(state->site_storage_times,
-              testing::Optional(testing::Pair(start_time + base::Seconds(1),
-                                              start_time + base::Seconds(1))));
-}
-
-class AllSitesFollowingFirstPartyTest : public ContentBrowserTest {
- public:
-  void SetUpOnMainThread() override {
-    ContentBrowserTest::SetUpOnMainThread();
-    ASSERT_TRUE(embedded_test_server()->Start());
-    host_resolver()->AddRule("*", "127.0.0.1");
-
-    first_party_url_ = embedded_test_server()->GetURL("a.test", "/title1.html");
-    third_party_url_ = embedded_test_server()->GetURL("b.test", "/title1.html");
-    other_url_ = embedded_test_server()->GetURL("c.test", "/title1.html");
-  }
-
-  WebContents* GetActiveWebContents() { return shell()->web_contents(); }
-
- protected:
-  GURL first_party_url_;
-  GURL third_party_url_;
-  GURL other_url_;
-};
-
-IN_PROC_BROWSER_TEST_F(AllSitesFollowingFirstPartyTest,
-                       SiteFollowingFirstPartyIncluded) {
-  ASSERT_TRUE(NavigateToURL(GetActiveWebContents(), other_url_));
-  ASSERT_TRUE(NavigateToURL(GetActiveWebContents(), first_party_url_));
-  ASSERT_TRUE(NavigateToURL(GetActiveWebContents(), third_party_url_));
-  ASSERT_TRUE(NavigateToURL(GetActiveWebContents(), third_party_url_));
-  ASSERT_TRUE(NavigateToURL(GetActiveWebContents(), other_url_));
-
-  EXPECT_THAT(RedirectHeuristicTabHelper::AllSitesFollowingFirstParty(
-                  GetActiveWebContents(), first_party_url_),
-              testing::ElementsAre(GetSiteForBtm(third_party_url_)));
-}
-
-IN_PROC_BROWSER_TEST_F(AllSitesFollowingFirstPartyTest,
-                       SiteNotFollowingFirstPartyNotIncluded) {
-  ASSERT_TRUE(NavigateToURL(GetActiveWebContents(), first_party_url_));
-  ASSERT_TRUE(NavigateToURL(GetActiveWebContents(), third_party_url_));
-  ASSERT_TRUE(NavigateToURL(GetActiveWebContents(), other_url_));
-  ASSERT_TRUE(NavigateToURL(GetActiveWebContents(), third_party_url_));
-
-  EXPECT_THAT(RedirectHeuristicTabHelper::AllSitesFollowingFirstParty(
-                  GetActiveWebContents(), first_party_url_),
-              testing::ElementsAre(GetSiteForBtm(third_party_url_)));
-}
-
-IN_PROC_BROWSER_TEST_F(AllSitesFollowingFirstPartyTest, MultipleSitesIncluded) {
-  ASSERT_TRUE(NavigateToURL(GetActiveWebContents(), first_party_url_));
-  ASSERT_TRUE(NavigateToURL(GetActiveWebContents(), third_party_url_));
-  ASSERT_TRUE(NavigateToURL(GetActiveWebContents(), first_party_url_));
-  ASSERT_TRUE(NavigateToURL(GetActiveWebContents(), other_url_));
-
-  EXPECT_THAT(RedirectHeuristicTabHelper::AllSitesFollowingFirstParty(
-                  GetActiveWebContents(), first_party_url_),
-              testing::ElementsAre(GetSiteForBtm(third_party_url_),
-                                   GetSiteForBtm(other_url_)));
-}
-
-IN_PROC_BROWSER_TEST_F(AllSitesFollowingFirstPartyTest,
-                       NoFirstParty_NothingIncluded) {
-  ASSERT_TRUE(NavigateToURL(GetActiveWebContents(), third_party_url_));
-  ASSERT_TRUE(NavigateToURL(GetActiveWebContents(), other_url_));
-
-  EXPECT_THAT(RedirectHeuristicTabHelper::AllSitesFollowingFirstParty(
-                  GetActiveWebContents(), first_party_url_),
-              testing::IsEmpty());
-}
-
-IN_PROC_BROWSER_TEST_F(AllSitesFollowingFirstPartyTest,
-                       NothingAfterFirstParty_NothingIncluded) {
-  ASSERT_TRUE(NavigateToURL(GetActiveWebContents(), other_url_));
-  ASSERT_TRUE(NavigateToURL(GetActiveWebContents(), third_party_url_));
-  ASSERT_TRUE(NavigateToURL(GetActiveWebContents(), first_party_url_));
-
-  EXPECT_THAT(RedirectHeuristicTabHelper::AllSitesFollowingFirstParty(
-                  GetActiveWebContents(), first_party_url_),
-              testing::IsEmpty());
-}
-
-class BtmPrivacySandboxApiInteractionTest : public ContentBrowserTest {
- public:
-  BtmPrivacySandboxApiInteractionTest()
-      : embedded_https_test_server_(net::EmbeddedTestServer::TYPE_HTTPS) {
-    std::vector<base::test::FeatureRefAndParams> enabled_features;
-    std::vector<base::test::FeatureRef> disabled_features;
-
-    enabled_features.push_back({features::kPrivacySandboxAdsAPIsOverride, {}});
-    enabled_features.push_back(
-        {features::kBtm, {{"triggering_action", "stateful_bounce"}}});
-    scoped_feature_list_.InitWithFeaturesAndParameters(enabled_features,
-                                                       disabled_features);
-  }
-
-  void SetUpOnMainThread() override {
-    host_resolver()->AddRule("*", "127.0.0.1");
-    embedded_https_test_server_.AddDefaultHandlers(
-        base::FilePath(FILE_PATH_LITERAL("content/test/data")));
-    RegisterTrustTokenTestHandler(&trust_token_request_handler_);
-    embedded_https_test_server_.SetSSLConfig(
-        net::EmbeddedTestServer::CERT_TEST_NAMES);
-    ASSERT_TRUE(embedded_https_test_server_.Start());
-    browser_client_.emplace();
-    browser_client().SetBlockThirdPartyCookiesByDefault(true);
-  }
-
-  WebContents* GetActiveWebContents() { return shell()->web_contents(); }
-
-  void EndRedirectChain() {
-    WebContents* web_contents = GetActiveWebContents();
-    BtmService* btm_service = GetDipsService(web_contents);
-    GURL expected_url = web_contents->GetLastCommittedURL();
-
-    DipsRedirectChainObserver chain_observer(btm_service, expected_url);
-    // Performing a browser-based navigation terminates the current redirect
-    // chain.
-    ASSERT_TRUE(NavigateToURL(
-        web_contents, embedded_https_test_server_.GetURL("end-the-chain.d.test",
-                                                         "/title1.html")));
-    chain_observer.Wait();
-  }
-
-  base::expected<std::vector<url::Origin>, std::string>
-  WaitForInterestGroupData() {
-    WebContents* web_contents = GetActiveWebContents();
-    InterestGroupManager* interest_group_manager =
-        web_contents->GetBrowserContext()
-            ->GetDefaultStoragePartition()
-            ->GetInterestGroupManager();
-    if (!interest_group_manager) {
-      return base::unexpected("null interest group manager");
-    }
-    // Poll until data appears, failing if action_timeout() passes
-    base::Time deadline = base::Time::Now() + TestTimeouts::action_timeout();
-    while (base::Time::Now() < deadline) {
-      base::test::TestFuture<std::vector<url::Origin>> future;
-      interest_group_manager->GetAllInterestGroupJoiningOrigins(
-          future.GetCallback());
-      std::vector<url::Origin> data = future.Get();
-      if (!data.empty()) {
-        return data;
-      }
-      Sleep(TestTimeouts::tiny_timeout());
-    }
-    return base::unexpected("timed out waiting for interest group data");
-  }
-
-  base::expected<AttributionData, std::string> WaitForAttributionData() {
-    WebContents* web_contents = GetActiveWebContents();
-    AttributionDataModel* model = web_contents->GetBrowserContext()
-                                      ->GetDefaultStoragePartition()
-                                      ->GetAttributionDataModel();
-    if (!model) {
-      return base::unexpected("null attribution data model");
-    }
-    // Poll until data appears, failing if action_timeout() passes
-    base::Time deadline = base::Time::Now() + TestTimeouts::action_timeout();
-    while (base::Time::Now() < deadline) {
-      base::test::TestFuture<AttributionData> future;
-      model->GetAllDataKeys(future.GetCallback());
-      AttributionData data = future.Get();
-      if (!data.empty()) {
-        return data;
-      }
-      Sleep(TestTimeouts::tiny_timeout());
-    }
-    return base::unexpected("timed out waiting for attribution data");
-  }
-
-  void ProvideRequestHandlerKeyCommitmentsToNetworkService(
-      std::vector<std::string_view> hosts) {
-    base::flat_map<url::Origin, std::string_view> origins_and_commitments;
-    std::string key_commitments =
-        trust_token_request_handler_.GetKeyCommitmentRecord();
-
-    for (std::string_view host : hosts) {
-      origins_and_commitments.insert_or_assign(
-          embedded_https_test_server_.GetOrigin(std::string(host)),
-          key_commitments);
-    }
-
-    if (origins_and_commitments.empty()) {
-      origins_and_commitments = {
-          {embedded_https_test_server_.GetOrigin(), key_commitments}};
-    }
-
-    base::RunLoop run_loop;
-    GetNetworkService()->SetTrustTokenKeyCommitments(
-        network::WrapKeyCommitmentsForIssuers(
-            std::move(origins_and_commitments)),
-        run_loop.QuitClosure());
-    run_loop.Run();
-  }
-
-  // TODO: crbug.com/1509946 - When embedded_https_test_server() is added to
-  // AndroidBrowserTest, switch to using
-  // PlatformBrowserTest::embedded_https_test_server() and delete this.
-  net::EmbeddedTestServer embedded_https_test_server_;
-
-  TpcBlockingBrowserClient& browser_client() { return browser_client_->impl(); }
-
- protected:
-  base::test::ScopedFeatureList scoped_feature_list_;
-
- private:
-  static void Sleep(base::TimeDelta delay) {
-    base::RunLoop run_loop;
-    base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
-        FROM_HERE, run_loop.QuitClosure(), delay);
-    run_loop.Run();
-  }
-
-  void RegisterTrustTokenTestHandler(
-      network::test::TrustTokenRequestHandler* handler) {
-    embedded_https_test_server_.RegisterRequestHandler(
-        base::BindLambdaForTesting(
-            [handler, this](const net::test_server::HttpRequest& request)
-                -> std::unique_ptr<net::test_server::HttpResponse> {
-              if (request.relative_url != "/issue") {
-                return nullptr;
-              }
-              if (!base::Contains(request.headers, "Sec-Private-State-Token") ||
-                  !base::Contains(request.headers,
-                                  "Sec-Private-State-Token-Crypto-Version")) {
-                return MakeTrustTokenFailureResponse();
-              }
-
-              std::optional<std::string> operation_result =
-                  handler->Issue(request.headers.at("Sec-Private-State-Token"));
-
-              if (!operation_result) {
-                return MakeTrustTokenFailureResponse();
-              }
-
-              return MakeTrustTokenResponse(*operation_result);
-            }));
-  }
-
-  std::unique_ptr<net::test_server::HttpResponse>
-  MakeTrustTokenFailureResponse() {
-    // No need to report a failure HTTP code here: returning a vanilla OK should
-    // fail the Trust Tokens operation client-side.
-    auto response = std::make_unique<net::test_server::BasicHttpResponse>();
-    response->AddCustomHeader("Access-Control-Allow-Origin", "*");
-    return response;
-  }
-
-  // Constructs and returns an HTTP response bearing the given base64-encoded
-  // Trust Tokens issuance or redemption protocol response message.
-  std::unique_ptr<net::test_server::HttpResponse> MakeTrustTokenResponse(
-      std::string_view contents) {
-    std::string temp;
-    CHECK(base::Base64Decode(contents, &temp));
-
-    auto response = std::make_unique<net::test_server::BasicHttpResponse>();
-    response->AddCustomHeader("Sec-Private-State-Token", std::string(contents));
-    response->AddCustomHeader("Access-Control-Allow-Origin", "*");
-    return response;
-  }
-
-  network::test::TrustTokenRequestHandler trust_token_request_handler_;
-  std::optional<ContentBrowserTestTpcBlockingBrowserClient> browser_client_;
-};
-
-// Verify that accessing storage via the PAT Protected Audience API doesn't
-// trigger BTM deletion for the accessing site.
-IN_PROC_BROWSER_TEST_F(BtmPrivacySandboxApiInteractionTest,
-                       DontTriggerDeletionOnProtectedAudienceApiStorageAccess) {
-  WebContents* web_contents = GetActiveWebContents();
-
-  const char* source_host = "source.a.test";
-  const char* pat_using_host = "pat.b.test";
-
-  // Write a secure cookie for PAT-using site, to represent site data written
-  // through non-BTM-triggering means.
-  ASSERT_TRUE(NavigateToSetCookie(web_contents, &embedded_https_test_server_,
-                                  pat_using_host, true, false));
-
-  // Visit source site.
-  GURL source_url =
-      embedded_https_test_server_.GetURL(source_host, "/title1.html");
-  ASSERT_TRUE(NavigateToURL(web_contents, source_url));
-
-  // Navigate from source site to PAT-using site.
-  GURL bounce_url =
-      embedded_https_test_server_.GetURL(pat_using_host, "/title1.html");
-  ASSERT_TRUE(NavigateToURLFromRenderer(web_contents, bounce_url));
-
-  // Have PAT-using site perform an interest groups API action that accesses
-  // storage, without accessing storage in any other way.
-  ASSERT_TRUE(ExecJs(web_contents->GetPrimaryMainFrame(),
-                     JsReplace(R"(
-                                  const pageOrigin = new URL($1).origin;
-                                  const interestGroup = {
-                                    name: "exampleInterestGroup",
-                                    owner: pageOrigin,
-                                  };
-
-                                  navigator.joinAdInterestGroup(
-                                      interestGroup,
-                                      // Pick an arbitrarily high duration to
-                                      // guarantee that we never leave the ad
-                                      // interest group while the test runs.
-                                      /*durationSeconds=*/3000000);
-                              )",
-                               bounce_url),
-                     EXECUTE_SCRIPT_NO_USER_GESTURE));
-
-  // Wait for interest group data to be written to storage.
-  ASSERT_OK_AND_ASSIGN(std::vector<url::Origin> interest_group_joining_origins,
-                       WaitForInterestGroupData());
-  ASSERT_THAT(interest_group_joining_origins,
-              ElementsAre(url::Origin::Create(bounce_url)));
-
-  // Have the PAT-using site client-side-redirect back to the source site and
-  // end the redirect chain.
-  GURL bounce_back_url =
-      embedded_https_test_server_.GetURL(source_host, "/title1.html?unique");
-  ASSERT_TRUE(NavigateToURLFromRendererWithoutUserGesture(web_contents,
-                                                          bounce_back_url));
-  EndRedirectChain();
-
-  // Expect BTM to not have recorded user activation.
-  std::optional<StateValue> state =
-      GetBtmState(GetDipsService(web_contents), bounce_url);
-  ASSERT_TRUE(state.has_value());
-  EXPECT_EQ(state->user_activation_times, std::nullopt);
-
-  // Expect BTM to have classified the bounce to the PAT-using site as
-  // stateless (i.e., to have recorded a bounce, but no stateful bounce).
-  EXPECT_EQ(state->stateful_bounce_times, std::nullopt);
-  EXPECT_TRUE(state->bounce_times.has_value());
-
-  // Trigger BTM deletion, and expect BTM to not have deleted data for the
-  // PAT-using site.
-  BtmService* btm_service = GetDipsService(web_contents);
-  base::test::TestFuture<const std::vector<std::string>&> deleted_sites;
-  btm_service->DeleteEligibleSitesImmediately(deleted_sites.GetCallback());
-  EXPECT_THAT(deleted_sites.Get(), IsEmpty());
-
-  // Make sure that the cookie we wrote for the PAT-using site is still there.
-  EXPECT_EQ(GetCookies(web_contents->GetBrowserContext(), bounce_url),
-            "name=value");
-}
-
-// Verify that accessing storage via the PAT Attribution Reporting API doesn't
-// trigger BTM deletion for the accessing site.
-IN_PROC_BROWSER_TEST_F(
-    BtmPrivacySandboxApiInteractionTest,
-    DontTriggerDeletionOnAttributionReportingApiStorageAccess) {
-  WebContents* web_contents = GetActiveWebContents();
-
-  const char* source_host = "source.a.test";
-  const char* pat_using_host = "pat.b.test";
-  const char* attribution_host = "attribution.c.test";
-
-  // Write a secure cookie for PAT-using site, to represent site data written
-  // through non-BTM-triggering means.
-  ASSERT_TRUE(NavigateToSetCookie(web_contents, &embedded_https_test_server_,
-                                  pat_using_host, true, false));
-
-  // Visit source site.
-  GURL source_url =
-      embedded_https_test_server_.GetURL(source_host, "/title1.html");
-  ASSERT_TRUE(NavigateToURL(web_contents, source_url));
-
-  // Navigate from source site to PAT-using site.
-  GURL bounce_url =
-      embedded_https_test_server_.GetURL(pat_using_host, "/title1.html");
-  ASSERT_TRUE(NavigateToURLFromRenderer(web_contents, bounce_url));
-
-  // Have PAT-using site perform an attribution reporting action that accesses
-  // storage, without accessing storage in any other way.
-  GURL attribution_url = embedded_https_test_server_.GetURL(
-      attribution_host, "/attribution_reporting/register_source_headers.html");
-  ASSERT_TRUE(ExecJs(web_contents,
-                     JsReplace(
-                         R"(
-                                  let img = document.createElement('img');
-                                  img.attributionSrc = $1;
-                                  document.body.appendChild(img);)",
-                         attribution_url),
-                     EXECUTE_SCRIPT_NO_USER_GESTURE));
-
-  // Wait for attribution data to be written to storage.
-  ASSERT_OK_AND_ASSIGN(AttributionData data, WaitForAttributionData());
-  ASSERT_THAT(GetOrigins(data),
-              ElementsAre(url::Origin::Create(attribution_url)));
-
-  // Have the PAT-using site client-side-redirect back to the source site and
-  // end the redirect chain.
-  GURL bounce_back_url =
-      embedded_https_test_server_.GetURL(source_host, "/title1.html?unique");
-  ASSERT_TRUE(NavigateToURLFromRendererWithoutUserGesture(web_contents,
-                                                          bounce_back_url));
-  EndRedirectChain();
-
-  // Expect BTM to not have recorded user activation.
-  std::optional<StateValue> state =
-      GetBtmState(GetDipsService(web_contents), bounce_url);
-  ASSERT_TRUE(state.has_value());
-  EXPECT_EQ(state->user_activation_times, std::nullopt);
-
-  // Expect BTM to have classified the bounce to the PAT-using site as
-  // stateless (= to have recorded a bounce but no stateful bounce).
-  EXPECT_EQ(state->stateful_bounce_times, std::nullopt);
-  EXPECT_TRUE(state->bounce_times.has_value());
-
-  // Trigger BTM deletion, and expect BTM to not have deleted data for the
-  // PAT-using site.
-  BtmService* btm_service = GetDipsService(web_contents);
-  base::test::TestFuture<const std::vector<std::string>&> deleted_sites;
-  btm_service->DeleteEligibleSitesImmediately(deleted_sites.GetCallback());
-  EXPECT_THAT(deleted_sites.Get(), IsEmpty());
-
-  // Make sure that the cookie we wrote for the PAT-using site is still there.
-  EXPECT_EQ(GetCookies(web_contents->GetBrowserContext(), bounce_url),
-            "name=value");
-}
-
-// Verify that accessing storage via the PAT Private State Tokens API doesn't
-// trigger BTM deletion for the accessing site.
-IN_PROC_BROWSER_TEST_F(
-    BtmPrivacySandboxApiInteractionTest,
-    DontTriggerDeletionOnPrivateStateTokensApiStorageAccess) {
-  WebContents* web_contents = GetActiveWebContents();
-
-  const char* source_host = "source.a.test";
-  const char* pat_using_host = "pat.b.test";
-  ProvideRequestHandlerKeyCommitmentsToNetworkService({pat_using_host});
-
-  // Write a secure cookie for PAT-using site, to represent site data written
-  // through non-BTM-triggering means.
-  ASSERT_TRUE(NavigateToSetCookie(web_contents, &embedded_https_test_server_,
-                                  pat_using_host, true, false));
-
-  // Visit source site.
-  GURL source_url =
-      embedded_https_test_server_.GetURL(source_host, "/title1.html");
-  ASSERT_TRUE(NavigateToURL(web_contents, source_url));
-
-  // Navigate from source site to PAT-using site.
-  GURL bounce_url =
-      embedded_https_test_server_.GetURL(pat_using_host, "/title1.html");
-  ASSERT_TRUE(NavigateToURLFromRenderer(web_contents, bounce_url));
-
-  // Have PAT-using site perform a Private State Tokens API action that accesses
-  // storage, without accessing storage in any other way, and wait for the
-  // private state token to be written to storage.
-  const std::string pat_using_site_origin =
-      embedded_https_test_server_.GetOrigin(pat_using_host).Serialize();
-  ASSERT_TRUE(ExecJs(web_contents,
-                     JsReplace(
-                         R"(
-                                    (async () => {
-                                      await fetch("/issue", {
-                                        privateToken: {
-                                          operation: "token-request",
-                                          version: 1
-                                        }
-                                      });
-                                      return await document.hasPrivateToken($1);
-                                    })();
-                                  )",
-                         pat_using_site_origin),
-                     EXECUTE_SCRIPT_NO_USER_GESTURE));
-
-  // Have the PAT-using site client-side-redirect back to the source site and
-  // end the redirect chain.
-  GURL bounce_back_url =
-      embedded_https_test_server_.GetURL(source_host, "/title1.html?unique");
-  ASSERT_TRUE(NavigateToURLFromRendererWithoutUserGesture(web_contents,
-                                                          bounce_back_url));
-  EndRedirectChain();
-
-  // Expect BTM to not have recorded user activation.
-  std::optional<StateValue> state =
-      GetBtmState(GetDipsService(web_contents), bounce_url);
-  ASSERT_TRUE(state.has_value());
-  EXPECT_EQ(state->user_activation_times, std::nullopt);
-
-  // Expect BTM to have classified the bounce to the PAT-using site as
-  // stateless (= to have recorded a bounce but no stateful bounce).
-  EXPECT_EQ(state->stateful_bounce_times, std::nullopt);
-  EXPECT_TRUE(state->bounce_times.has_value());
-
-  // Trigger BTM deletion, and expect BTM to not have deleted data for the
-  // PAT-using site.
-  BtmService* btm_service = GetDipsService(web_contents);
-  base::test::TestFuture<const std::vector<std::string>&> deleted_sites;
-  btm_service->DeleteEligibleSitesImmediately(deleted_sites.GetCallback());
-  EXPECT_THAT(deleted_sites.Get(), IsEmpty());
-
-  // Make sure that the cookie we wrote for the PAT-using site is still there.
-  EXPECT_EQ(GetCookies(web_contents->GetBrowserContext(), bounce_url),
-            "name=value");
-}
-
-// Verify that accessing storage via the PAT Topics API doesn't trigger BTM
-// deletion for the accessing site.
-IN_PROC_BROWSER_TEST_F(BtmPrivacySandboxApiInteractionTest,
-                       DontTriggerDeletionOnTopicsApiStorageAccess) {
-  WebContents* web_contents = GetActiveWebContents();
-
-  const char* source_host = "source.a.test";
-  const char* pat_using_host = "pat.b.test";
-
-  // Write a secure cookie for PAT-using site, to represent site data written
-  // through non-BTM-triggering means.
-  ASSERT_TRUE(NavigateToSetCookie(web_contents, &embedded_https_test_server_,
-                                  pat_using_host, true, false));
-
-  // Visit source site.
-  GURL source_url =
-      embedded_https_test_server_.GetURL(source_host, "/title1.html");
-  ASSERT_TRUE(NavigateToURL(web_contents, source_url));
-
-  // Navigate from source site to PAT-using site.
-  GURL bounce_url =
-      embedded_https_test_server_.GetURL(pat_using_host, "/title1.html");
-  ASSERT_TRUE(NavigateToURLFromRenderer(web_contents, bounce_url));
-
-  // Have PAT-using site perform a Topics API action that accesses storage,
-  // without accessing storage in any other way.
-  ASSERT_TRUE(ExecJs(web_contents,
-                     R"(
-                                (async () => {
-                                  await document.browsingTopics();
-                                })();
-                              )",
-                     EXECUTE_SCRIPT_NO_USER_GESTURE));
-
-  // Have the PAT-using site client-side-redirect back to the source site and
-  // end the redirect chain.
-  GURL bounce_back_url =
-      embedded_https_test_server_.GetURL(source_host, "/title1.html?unique");
-  ASSERT_TRUE(NavigateToURLFromRendererWithoutUserGesture(web_contents,
-                                                          bounce_back_url));
-  EndRedirectChain();
-
-  // Expect BTM to not have recorded user activation.
-  std::optional<StateValue> state =
-      GetBtmState(GetDipsService(web_contents), bounce_url);
-  ASSERT_TRUE(state.has_value());
-  EXPECT_EQ(state->user_activation_times, std::nullopt);
-
-  // Expect BTM to have classified the bounce to the PAT-using site as
-  // stateless (= to have recorded a bounce but no stateful bounce).
-  EXPECT_EQ(state->stateful_bounce_times, std::nullopt);
-  EXPECT_TRUE(state->bounce_times.has_value());
-
-  // Trigger BTM deletion, and expect BTM to not have deleted data for the
-  // PAT-using site.
-  BtmService* btm_service = GetDipsService(web_contents);
-  base::test::TestFuture<const std::vector<std::string>&> deleted_sites;
-  btm_service->DeleteEligibleSitesImmediately(deleted_sites.GetCallback());
-  EXPECT_THAT(deleted_sites.Get(), IsEmpty());
-
-  // Make sure that the cookie we wrote for the PAT-using site is still there.
-  EXPECT_EQ(GetCookies(web_contents->GetBrowserContext(), bounce_url),
-            "name=value");
-}
-
-class BtmPrivacySandboxDataPreservationTest
-    : public BtmPrivacySandboxApiInteractionTest {
- public:
-  BtmPrivacySandboxDataPreservationTest() {
-    std::vector<base::test::FeatureRef> enabled_features;
-    std::vector<base::test::FeatureRef> disabled_features;
-
-    enabled_features.emplace_back(features::kPrivacySandboxAdsAPIsOverride);
-    scoped_feature_list_.Reset();
-    scoped_feature_list_.InitWithFeatures(enabled_features, disabled_features);
-  }
-};
-
-IN_PROC_BROWSER_TEST_F(BtmPrivacySandboxDataPreservationTest,
-                       DontClearAttributionReportingApiData) {
-  WebContents* web_contents = GetActiveWebContents();
-
-  GURL toplevel_url =
-      embedded_https_test_server_.GetURL("a.test", "/title1.html");
-  ASSERT_TRUE(NavigateToURL(web_contents, toplevel_url));
-
-  // Create image that registers an attribution source.
-  GURL attribution_url = embedded_https_test_server_.GetURL(
-      "b.test", "/attribution_reporting/register_source_headers.html");
-  ASSERT_TRUE(ExecJs(web_contents, JsReplace(
-                                       R"(
-    let img = document.createElement('img');
-    img.attributionSrc = $1;
-    document.body.appendChild(img);)",
-                                       attribution_url)));
-
-  // Wait for the AttributionDataModel to show that source.
-  ASSERT_OK_AND_ASSIGN(AttributionData data, WaitForAttributionData());
-  ASSERT_THAT(GetOrigins(data),
-              ElementsAre(url::Origin::Create(attribution_url)));
-
-  // Make the attribution site eligible for BTM deletion.
-  BtmServiceImpl* btm_service =
-      BtmServiceImpl::Get(web_contents->GetBrowserContext());
-  ASSERT_TRUE(btm_service != nullptr);
-  base::test::TestFuture<void> record_bounce;
-  btm_service->storage()
-      ->AsyncCall(&BtmStorage::RecordBounce)
-      .WithArgs(attribution_url, base::Time::Now(), /*stateful=*/true)
-      .Then(record_bounce.GetCallback());
-  ASSERT_TRUE(record_bounce.Wait());
-
-  // Trigger BTM deletion.
-  base::test::TestFuture<const std::vector<std::string>&> deleted_sites;
-  btm_service->DeleteEligibleSitesImmediately(deleted_sites.GetCallback());
-  EXPECT_THAT(deleted_sites.Get(), ElementsAre(GetSiteForBtm(attribution_url)));
-
-  base::test::TestFuture<AttributionData> post_deletion_data;
-  web_contents->GetBrowserContext()
-      ->GetDefaultStoragePartition()
-      ->GetAttributionDataModel()
-      ->GetAllDataKeys(post_deletion_data.GetCallback());
-
-  // Confirm the attribution data was not deleted.
-  EXPECT_THAT(GetOrigins(post_deletion_data.Get()),
-              ElementsAre(url::Origin::Create(attribution_url)));
-}
 
 namespace {
 
@@ -3637,8 +2348,8 @@ class CookieStorage : public SiteStorage {
       RenderFrameHost* frame) const override {
     EvalJsResult result =
         EvalJs(frame, "document.cookie", EXECUTE_SCRIPT_NO_USER_GESTURE);
-    if (!result.error.empty()) {
-      return base::unexpected(result.error);
+    if (!result.is_ok()) {
+      return base::unexpected(result.ExtractError());
     }
     return base::ok(result.ExtractString());
   }
@@ -3670,10 +2381,10 @@ class LocalStorage : public SiteStorage {
       RenderFrameHost* frame) const override {
     EvalJsResult result = EvalJs(frame, "localStorage.getItem('value')",
                                  EXECUTE_SCRIPT_NO_USER_GESTURE);
-    if (!result.error.empty()) {
-      return base::unexpected(result.error);
+    if (!result.is_ok()) {
+      return base::unexpected(result.ExtractError());
     }
-    if (result.value.is_none()) {
+    if (result == base::Value()) {
       return base::ok("");
     }
     return base::ok(result.ExtractString());
@@ -3708,6 +2419,9 @@ class BtmDataDeletionBrowserTest
     ASSERT_TRUE(https_server_.Start());
 
     browser_client().SetBlockThirdPartyCookiesByDefault(true);
+    WebContents* web_contents = GetActiveWebContents();
+    ASSERT_FALSE(btm::Are3PcsGenerallyEnabled(web_contents->GetBrowserContext(),
+                                              web_contents));
   }
 
   const net::EmbeddedTestServer& https_server() const { return https_server_; }
@@ -3837,6 +2551,33 @@ class BtmDataDeletionBrowserTest
 
   net::EmbeddedTestServer https_server_{net::EmbeddedTestServer::TYPE_HTTPS};
 };
+
+IN_PROC_BROWSER_TEST_P(BtmDataDeletionBrowserTest, DontDeleteIfTpcsEnabled) {
+  // Do not block third-party cookies by default. This should make it such that
+  // BTM deletion does not run.
+  browser_client().SetBlockThirdPartyCookiesByDefault(false);
+  WebContents* web_contents = GetActiveWebContents();
+  ASSERT_TRUE(btm::Are3PcsGenerallyEnabled(web_contents->GetBrowserContext(),
+                                           web_contents));
+
+  // Perform a stateful bounce on b.test to make it eligible for deletion.
+  ASSERT_TRUE(DoStatefulBounce("a.test", "b.test", "c.test"));
+  // Confirm unpartitioned storage was written on b.test.
+  EXPECT_THAT(ReadFromStorage("b.test"), base::test::ValueIs("bounce=yes"));
+  // Navigate away from b.test since BTM won't delete its state while loaded.
+  ASSERT_TRUE(NavigateToURL(web_contents,
+                            https_server().GetURL("a.test", "/title1.html")));
+
+  // Trigger BTM deletion.
+  base::test::TestFuture<const std::vector<std::string>&> deleted_sites;
+  BtmService::Get(web_contents->GetBrowserContext())
+      ->DeleteEligibleSitesImmediately(deleted_sites.GetCallback());
+
+  // Confirm that nothing was deleted.
+  EXPECT_THAT(deleted_sites.Get(), IsEmpty());
+  // Confirm b.test storage has not changed.
+  EXPECT_THAT(ReadFromStorage("b.test"), base::test::ValueIs("bounce=yes"));
+}
 
 IN_PROC_BROWSER_TEST_P(BtmDataDeletionBrowserTest, DeleteDomain) {
   WebContents* web_contents = GetActiveWebContents();
@@ -4022,9 +2763,16 @@ class BtmBounceDetectorBFCacheTest : public BtmBounceDetectorBrowserTest,
   }
 };
 
-// Confirm that BTM records a bounce that writes a cookie as stateful, even if
-// the user immediately navigates away.
-IN_PROC_BROWSER_TEST_P(BtmBounceDetectorBFCacheTest, LateCookieAccessTest) {
+// Confirm that BTM records a bounce, even if the user immediately navigates
+// away.
+// TODO(https://crbug.com/425717555): Very flaky if BF Cache is disabled.
+#if BUILDFLAG(IS_ANDROID)
+#define MAYBE_LateCookieAccessTest DISABLED_LateCookieAccessTest
+#else
+#define MAYBE_LateCookieAccessTest LateCookieAccessTest
+#endif
+IN_PROC_BROWSER_TEST_P(BtmBounceDetectorBFCacheTest,
+                       MAYBE_LateCookieAccessTest) {
   const GURL bounce_url =
       embedded_test_server()->GetURL("b.test", "/empty.html");
   const GURL final_url =
@@ -4054,42 +2802,13 @@ IN_PROC_BROWSER_TEST_P(BtmBounceDetectorBFCacheTest, LateCookieAccessTest) {
 
   const BtmRedirectContext& context = wco->CommittedRedirectContext();
   ASSERT_EQ(context.size(), 1u);
-  const BtmRedirectInfo& redirect = context[0];
-  EXPECT_EQ(redirect.redirecting_url.url, bounce_url);
+  const BtmRedirect& redirect = context[0];
+  EXPECT_EQ(redirect.redirector_url, bounce_url);
   // A request to /favicon.ico may cause a cookie read in addition to the write
   // we explicitly performed.
   EXPECT_THAT(
       redirect.access_type,
       testing::AnyOf(BtmDataAccessType::kWrite, BtmDataAccessType::kReadWrite));
-}
-
-// Confirm that BTM records a bounce that writes a cookie as stateful, even if
-// the chain ends immediately afterwards.
-IN_PROC_BROWSER_TEST_P(BtmBounceDetectorBFCacheTest, QuickEndChainTest) {
-  // Block 3PCs so BTM will record bounces.
-  browser_client().SetBlockThirdPartyCookiesByDefault(true);
-
-  const GURL initial_url =
-      embedded_test_server()->GetURL("a.test", "/empty.html");
-  const GURL bounce_url =
-      embedded_test_server()->GetURL("b.test", "/empty.html");
-  const GURL final_url =
-      embedded_test_server()->GetURL("c.test", "/empty.html");
-  WebContents* const web_contents = GetActiveWebContents();
-
-  ASSERT_TRUE(NavigateToURL(web_contents, initial_url));
-  ASSERT_TRUE(NavigateToURLFromRenderer(web_contents, bounce_url));
-  ASSERT_TRUE(ExecJs(web_contents, "document.cookie = 'bounce=true';",
-                     EXECUTE_SCRIPT_NO_USER_GESTURE));
-  ASSERT_TRUE(
-      NavigateToURLFromRendererWithoutUserGesture(web_contents, final_url));
-  // End the redirect chain without waiting for the cookie access notification.
-  EndRedirectChain();
-
-  std::optional<StateValue> state =
-      GetBtmState(GetDipsService(web_contents), bounce_url);
-  ASSERT_TRUE(state.has_value());
-  ASSERT_TRUE(state->stateful_bounce_times.has_value());
 }
 
 // Confirm that WCO::OnCookiesAccessed() is always called even if the user
@@ -4169,8 +2888,8 @@ IN_PROC_BROWSER_TEST_P(BtmBounceDetectorBFCacheTest,
 
   const BtmRedirectContext& context = wco->CommittedRedirectContext();
   ASSERT_EQ(context.size(), 1u);
-  const BtmRedirectInfo& redirect = context[0];
-  EXPECT_EQ(redirect.redirecting_url.url, bounce_url);
+  const BtmRedirect& redirect = context[0];
+  EXPECT_EQ(redirect.redirector_url, bounce_url);
   EXPECT_THAT(redirect.has_sticky_activation, true);
 }
 
@@ -4180,8 +2899,8 @@ IN_PROC_BROWSER_TEST_P(BtmBounceDetectorBFCacheTest, IsOrWasInPrimaryPage) {
   ASSERT_TRUE(NavigateToURL(
       web_contents, embedded_test_server()->GetURL("a.test", "/empty.html")));
   RenderFrameHost* rfh = web_contents->GetPrimaryMainFrame();
-  EXPECT_TRUE(IsInPrimaryPage(rfh));
-  EXPECT_TRUE(btm::IsOrWasInPrimaryPage(rfh));
+  EXPECT_TRUE(IsInPrimaryPage(*rfh));
+  EXPECT_TRUE(btm::IsOrWasInPrimaryPage(*rfh));
   const GlobalRenderFrameHostId rfh_id = rfh->GetGlobalId();
 
   ASSERT_TRUE(NavigateToURL(
@@ -4194,8 +2913,8 @@ IN_PROC_BROWSER_TEST_P(BtmBounceDetectorBFCacheTest, IsOrWasInPrimaryPage) {
     EXPECT_TRUE(rfh->IsInLifecycleState(
         RenderFrameHost::LifecycleState::kInBackForwardCache));
     // The page is no longer primary, but it used to be:
-    EXPECT_FALSE(IsInPrimaryPage(rfh));
-    EXPECT_TRUE(btm::IsOrWasInPrimaryPage(rfh));
+    EXPECT_FALSE(IsInPrimaryPage(*rfh));
+    EXPECT_TRUE(btm::IsOrWasInPrimaryPage(*rfh));
   } else {
     // If the bfcache is disabled, the RFH may or may not be in memory. If it
     // still is, it's only because it's pending deletion.
@@ -4203,8 +2922,8 @@ IN_PROC_BROWSER_TEST_P(BtmBounceDetectorBFCacheTest, IsOrWasInPrimaryPage) {
       EXPECT_TRUE(rfh->IsInLifecycleState(
           RenderFrameHost::LifecycleState::kPendingDeletion));
       // The page is no longer primary, but it used to be:
-      EXPECT_FALSE(IsInPrimaryPage(rfh));
-      EXPECT_TRUE(btm::IsOrWasInPrimaryPage(rfh));
+      EXPECT_FALSE(IsInPrimaryPage(*rfh));
+      EXPECT_TRUE(btm::IsOrWasInPrimaryPage(*rfh));
     }
   }
 }
@@ -4262,7 +2981,7 @@ IN_PROC_BROWSER_TEST_P(BtmBounceDetectorBFCacheTest,
 
   RenderFrameHost* rfh = RenderFrameHost::FromID(observer.rfh_id());
   ASSERT_TRUE(rfh);
-  EXPECT_FALSE(btm::IsOrWasInPrimaryPage(rfh));
+  EXPECT_FALSE(btm::IsOrWasInPrimaryPage(*rfh));
 
   // Navigating to another site may trigger destruction of the frame.
   ASSERT_TRUE(NavigateToURL(
@@ -4271,7 +2990,7 @@ IN_PROC_BROWSER_TEST_P(BtmBounceDetectorBFCacheTest,
   rfh = RenderFrameHost::FromID(observer.rfh_id());
   if (rfh) {
     // Even if it's still in memory, it was never primary.
-    EXPECT_FALSE(btm::IsOrWasInPrimaryPage(rfh));
+    EXPECT_FALSE(btm::IsOrWasInPrimaryPage(*rfh));
   }
 }
 
@@ -4300,7 +3019,7 @@ IN_PROC_BROWSER_TEST_P(BtmBounceDetectorBFCacheTest,
 
   RenderFrameHost* rfh = RenderFrameHost::FromID(observer.rfh_id());
   ASSERT_TRUE(rfh);
-  EXPECT_FALSE(btm::IsOrWasInPrimaryPage(rfh));
+  EXPECT_FALSE(btm::IsOrWasInPrimaryPage(*rfh));
 
   // Navigate to the prerendered page.
   ASSERT_TRUE(NavigateToURLFromRenderer(
@@ -4312,8 +3031,8 @@ IN_PROC_BROWSER_TEST_P(BtmBounceDetectorBFCacheTest,
 
   rfh = RenderFrameHost::FromID(observer.rfh_id());
   if (rfh) {
-    EXPECT_FALSE(IsInPrimaryPage(rfh));
-    EXPECT_TRUE(btm::IsOrWasInPrimaryPage(rfh));
+    EXPECT_FALSE(IsInPrimaryPage(*rfh));
+    EXPECT_TRUE(btm::IsOrWasInPrimaryPage(*rfh));
   }
 }
 

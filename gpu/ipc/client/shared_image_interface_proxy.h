@@ -7,8 +7,6 @@
 
 #include <unordered_map>
 
-#include "base/containers/flat_map.h"
-#include "base/containers/flat_set.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/read_only_shared_memory_region.h"
 #include "base/synchronization/lock.h"
@@ -19,6 +17,8 @@
 #include "gpu/command_buffer/common/shared_image_capabilities.h"
 #include "gpu/command_buffer/common/shared_image_usage.h"
 #include "gpu/ipc/common/gpu_memory_buffer_handle_info.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 
 #if BUILDFLAG(IS_WIN)
 namespace gfx {
@@ -84,16 +84,14 @@ class SharedImageInterfaceProxy {
   void UpdateSharedImage(const SyncToken& sync_token,
                          scoped_refptr<gfx::D3DSharedFence> d3d_shared_fence,
                          const Mailbox& mailbox);
-  void CopyNativeGmbToSharedMemorySync(
-      gfx::GpuMemoryBufferHandle buffer_handle,
-      base::UnsafeSharedMemoryRegion memory_region,
-      bool* status);
+#endif  // BUILDFLAG(IS_WIN)
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_ANDROID)
   void CopyNativeGmbToSharedMemoryAsync(
       gfx::GpuMemoryBufferHandle buffer_handle,
       base::UnsafeSharedMemoryRegion memory_region,
       base::OnceCallback<void(bool)> callback);
-  bool IsConnected();
-#endif  // BUILDFLAG(IS_WIN)
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_ANDROID)
 
   void UpdateSharedImage(const SyncToken& sync_token, const Mailbox& mailbox);
   void UpdateSharedImage(const SyncToken& sync_token,
@@ -107,16 +105,9 @@ class SharedImageInterfaceProxy {
   SyncToken GenVerifiedSyncToken();
   SyncToken GenUnverifiedSyncToken();
   void VerifySyncToken(SyncToken& sync_token);
+  bool CanVerifySyncToken(const gpu::SyncToken& sync_token);
+  void VerifyFlush();
   void WaitSyncToken(const SyncToken& sync_token);
-  void Flush();
-
-  SwapChainMailboxes CreateSwapChain(viz::SharedImageFormat format,
-                                     const gfx::Size& size,
-                                     const gfx::ColorSpace& color_space,
-                                     GrSurfaceOrigin surface_origin,
-                                     SkAlphaType alpha_type,
-                                     gpu::SharedImageUsageSet usage);
-  void PresentSwapChain(const SyncToken& sync_token, const Mailbox& mailbox);
 
 #if BUILDFLAG(IS_FUCHSIA)
   void RegisterSysmemBufferCollection(zx::eventpair service_handle,
@@ -160,12 +151,13 @@ class SharedImageInterfaceProxy {
   // The offset into |upload_buffer_| at which data is no longer used.
   size_t upload_buffer_offset_ GUARDED_BY(lock_) = 0;
 
-  base::flat_map<Mailbox, SharedImageRefData> mailbox_infos_ GUARDED_BY(lock_);
+  absl::flat_hash_map<Mailbox, SharedImageRefData> mailbox_infos_
+      GUARDED_BY(lock_);
 
   const gpu::SharedImageCapabilities capabilities_;
 
 #if BUILDFLAG(IS_WIN)
-  base::flat_set<gfx::DXGIHandleToken> registered_fence_tokens_
+  absl::flat_hash_set<gfx::DXGIHandleToken> registered_fence_tokens_
       GUARDED_BY(lock_);
 #endif
 };

@@ -19,26 +19,20 @@
  *
  */
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_WTF_TEXT_STRING_HASHER_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_WTF_TEXT_STRING_HASHER_H_
 
+#include <stdint.h>
+
+#include <concepts>
 #include <cstring>
-#include <type_traits>
 
 #include "base/containers/span.h"
-#include "base/dcheck_is_on.h"
-#include "base/logging.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
-#include "third_party/blink/renderer/platform/wtf/text/wtf_uchar.h"
 #include "third_party/rapidhash/rapidhash.h"
 
-namespace WTF {
-
+namespace blink {
 
 class StringHasher {
   DISALLOW_NEW();
@@ -57,8 +51,7 @@ class StringHasher {
   // that is not 8-bit elements, and do _not_ use compression factors or
   // similar, you'll need to multiply by sizeof(T) to get all data read.
   template <class Reader = PlainHashReader>
-  static unsigned ComputeHashAndMaskTop8Bits(const char* data,
-                                             unsigned length) {
+  static unsigned ComputeHashAndMaskTop8Bits(const char* data, size_t length) {
     return MaskTop8Bits(
         rapidhash<Reader>(reinterpret_cast<const uint8_t*>(data), length));
   }
@@ -84,19 +77,27 @@ class StringHasher {
   // HashReader.
   template <class Reader = PlainHashReader>
   ALWAYS_INLINE static unsigned ComputeHashAndMaskTop8BitsInline(
-      const char* data,
-      unsigned length) {
-    return MaskTop8Bits(
-        rapidhash<Reader>(reinterpret_cast<const uint8_t*>(data), length));
+      base::span<const uint8_t> data) {
+    return MaskTop8Bits(rapidhash<Reader>(data.data(), data.size()));
   }
 
-  static uint64_t HashMemory(base::span<const uint8_t> data) {
+  // TODO(crbug.com/458429790): Once clang is better able to optimize this,
+  // simplify this to a single overload that accepts a base::span<const
+  // uint8_t>.
+  template <typename T>
+    requires(std::convertible_to<T, base::span<const uint8_t>>)
+  static uint64_t HashMemory64(const T& t) {
+    base::span data = t;
+    static_assert(std::same_as<typename decltype(data)::value_type, uint8_t>);
     return rapidhash(data.data(), data.size());
   }
-
-  template <size_t Extent>
-  static uint64_t HashMemory(base::span<const uint8_t, Extent> data) {
-    return rapidhash(data.data(), data.size());
+  // TODO(crbug.com/458429790): Once clang is better able to optimize this,
+  // simplify this to a single overload that accepts a base::span<const
+  // uint8_t>.
+  template <typename T>
+    requires(std::convertible_to<T, base::span<const uint8_t>>)
+  static uint32_t HashMemory32(const T& t) {
+    return static_cast<uint32_t>(HashMemory64(t));
   }
 
  private:
@@ -117,8 +118,6 @@ class StringHasher {
   }
 };
 
-}  // namespace WTF
-
-using WTF::StringHasher;
+}  // namespace blink
 
 #endif  // THIRD_PARTY_BLINK_RENDERER_PLATFORM_WTF_TEXT_STRING_HASHER_H_

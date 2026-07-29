@@ -9,8 +9,8 @@
 
 #include "ash/quick_pair/proto/fastpair.pb.h"
 #include "ash/quick_pair/repository/fast_pair/footprints_fetcher.h"
+#include "base/containers/flat_map.h"
 #include "base/functional/callback.h"
-#include "base/memory/weak_ptr.h"
 
 namespace ash {
 namespace quick_pair {

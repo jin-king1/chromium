@@ -13,8 +13,6 @@ namespace cc {
 
 std::string TileResolutionToString(TileResolution resolution) {
   switch (resolution) {
-  case LOW_RESOLUTION:
-    return "LOW_RESOLUTION";
   case HIGH_RESOLUTION:
     return "HIGH_RESOLUTION";
   case NON_IDEAL_RESOLUTION:
@@ -112,6 +110,7 @@ void GlobalStateThatImpactsTilePriority::AsValueInto(
   state->SetInteger("num_resources_limit",
                     base::saturated_cast<int>(num_resources_limit));
   state->SetString("tree_priority", TreePriorityToString(tree_priority));
+  MathUtil::AddToTracedValue("viewport_size", viewport_size, state);
 }
 
 }  // namespace cc

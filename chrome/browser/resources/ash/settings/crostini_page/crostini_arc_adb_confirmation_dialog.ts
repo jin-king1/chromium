@@ -19,7 +19,8 @@ import {recordSettingChange} from '../metrics_recorder.js';
 import {Setting} from '../mojom-webui/setting.mojom-webui.js';
 
 import {getTemplate} from './crostini_arc_adb_confirmation_dialog.html.js';
-import {type CrostiniBrowserProxy, CrostiniBrowserProxyImpl} from './crostini_browser_proxy.js';
+import {CrostiniBrowserProxyImpl} from './crostini_browser_proxy.js';
+import type {CrostiniBrowserProxy} from './crostini_browser_proxy.js';
 
 interface SettingsCrostiniArcAdbConfirmationDialogElement {
   $: {
@@ -45,7 +46,7 @@ class SettingsCrostiniArcAdbConfirmationDialogElement extends PolymerElement {
     };
   }
 
-  action: string;
+  declare action: string;
   private browserProxy_: CrostiniBrowserProxy;
 
   constructor() {

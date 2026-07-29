@@ -61,8 +61,6 @@ struct CompositorRenderPassQuadState {
   // original primitive. This used to correctly position crop rects, lights,
   // etc.
   gfx.mojom.PointF filters_origin;
-  // Render surface's non-normalized texture rect.
-  gfx.mojom.RectF tex_coord_rect;
 
   bool force_anti_aliasing_off;
   float backdrop_filter_quality;
@@ -88,17 +86,14 @@ struct SurfaceQuadState {
 
 struct TextureQuadState {
   ResourceId resource_id;
-  gfx.mojom.Size resource_size_in_pixels;
-  bool premultiplied_alpha;
-  gfx.mojom.PointF uv_top_left;
-  gfx.mojom.PointF uv_bottom_right;
+  gfx.mojom.RectF tex_coord_rect;
   skia.mojom.SkColor4f background_color;
   cc.mojom.DynamicRangeLimit dynamic_range_limit;
   bool nearest_neighbor;
   bool secure_output_only;
-  bool is_stream_video;
   bool is_video_frame;
   bool force_rgbx;
+  bool is_normalized_coords;
   ProtectedVideoState protected_video_type;
   gfx.mojom.Rect? damage_rect;
   OverlayPriority overlay_priority_hint;
@@ -107,8 +102,6 @@ struct TextureQuadState {
 
 struct TileQuadState {
   gfx.mojom.RectF tex_coord_rect;
-  gfx.mojom.Size texture_size;
-  bool is_premultiplied;
   ResourceId resource_id;
   bool nearest_neighbor;
   bool force_anti_aliasing_off;

@@ -4,22 +4,22 @@
 
 package org.chromium.chrome.browser.tab_group_sync;
 
+import static org.chromium.chrome.browser.url_constants.UrlConstantResolver.getOriginalNtpGurl;
+
 import android.text.TextUtils;
 import android.util.Pair;
 
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.Token;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.chrome.browser.tabmodel.TabGroupModelFilter;
 import org.chromium.chrome.browser.tabmodel.TabModel;
-import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.components.embedder_support.util.UrlUtilities;
 import org.chromium.components.tab_group_sync.ClosingSource;
 import org.chromium.components.tab_group_sync.EventDetails;
@@ -31,44 +31,49 @@ import org.chromium.content_public.browser.NavigationHandle;
 import org.chromium.content_public.common.ContentUrlConstants;
 import org.chromium.url.GURL;
 
+import java.util.Collections;
 import java.util.List;
 
 /** Utility methods for tab group sync. */
+@NullMarked
 public final class TabGroupSyncUtils {
     // The URL written to sync when the local URL isn't in a syncable format, i.e. HTTP or HTTPS.
-    public static final GURL UNSAVEABLE_URL_OVERRIDE = new GURL(UrlConstants.NTP_NON_NATIVE_URL);
+    public static final GURL UNSAVEABLE_URL_OVERRIDE = getOriginalNtpGurl();
     public static final String UNSAVEABLE_TAB_TITLE = "Unsavable tab";
-    public static final GURL NTP_URL = new GURL(UrlConstants.NTP_NON_NATIVE_URL);
+    public static final GURL NTP_URL = getOriginalNtpGurl();
     public static final String NEW_TAB_TITLE = "New tab";
 
     /**
      * Whether the given {@param localId} corresponds to a tab group in the current window
-     * corresponding to {@param tabGroupModelFilter}.
+     * corresponding to {@param tabModel}.
      *
-     * @param tabGroupModelFilter The tab group model filter in which to find the tab group.
+     * @param tabModel The tab model in which to find the tab group.
      * @param localId The ID of the tab group.
      */
-    public static boolean isInCurrentWindow(
-            TabGroupModelFilter tabGroupModelFilter, LocalTabGroupId localId) {
-        int rootId = tabGroupModelFilter.getRootIdFromTabGroupId(localId.tabGroupId);
-        return rootId != Tab.INVALID_TAB_ID;
+    public static boolean isInCurrentWindow(TabModel tabModel, LocalTabGroupId localId) {
+        return tabModel.tabGroupExists(localId.tabGroupId);
+    }
+
+    private static boolean isInAnyWindow(LocalTabGroupId localId, List<TabModel> tabModelList) {
+        for (TabModel tabModel : tabModelList) {
+            if (isInCurrentWindow(tabModel, localId)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Conversion method to get a {@link LocalTabGroupId} from a root ID. */
-    public static LocalTabGroupId getLocalTabGroupId(TabGroupModelFilter filter, int rootId) {
-        Token tabGroupId = filter.getTabGroupIdFromRootId(rootId);
-        return tabGroupId == null ? null : new LocalTabGroupId(tabGroupId);
-    }
-
-    /** Conversion method to get a root ID from a {@link LocalTabGroupId}. */
-    public static int getRootId(TabGroupModelFilter filter, LocalTabGroupId localTabGroupId) {
-        assert localTabGroupId != null;
-        return filter.getRootIdFromTabGroupId(localTabGroupId.tabGroupId);
+    public static @Nullable LocalTabGroupId getLocalTabGroupId(
+            TabModel tabModel, @Nullable Token tabGroupId) {
+        if (tabGroupId == null || !tabModel.tabGroupExists(tabGroupId)) return null;
+        return new LocalTabGroupId(tabGroupId);
     }
 
     /** Util method to get a {@link LocalTabGroupId} from a tab. */
-    public static LocalTabGroupId getLocalTabGroupId(Tab tab) {
-        return new LocalTabGroupId(tab.getTabGroupId());
+    public static @Nullable LocalTabGroupId getLocalTabGroupId(Tab tab) {
+        Token tabGroupId = tab.getTabGroupId();
+        return tabGroupId == null ? null : new LocalTabGroupId(tabGroupId);
     }
 
     /** Utility method to filter out URLs not suitable for tab group sync. */
@@ -89,7 +94,7 @@ public final class TabGroupSyncUtils {
     }
 
     @VisibleForTesting
-    static boolean isNtpOrAboutBlankUrl(GURL url) {
+    public static boolean isNtpOrAboutBlankUrl(GURL url) {
         String urlString = url.getValidSpecOrEmpty();
         return UrlUtilities.isNtpUrl(url)
                 || TextUtils.equals(urlString, ContentUrlConstants.ABOUT_BLANK_DISPLAY_URL)
@@ -98,21 +103,29 @@ public final class TabGroupSyncUtils {
 
     /**
      * Removes all tab groups mappings found in the {@link TabGroupSyncService} that don't have
-     * corresponding local IDs in the {@link TabGroupModelFilter}.
+     * corresponding local IDs in the {@link TabModel}.
      *
      * @param tabGroupSyncService The {@link TabGroupSyncService} to remove tabs from.
-     * @param filter The {@link TabGroupModelFilter} to check for tab groups.
+     * @param tabModel The {@link TabModel} to check for tab groups.
      */
-    public static void unmapLocalIdsNotInTabGroupModelFilter(
-            TabGroupSyncService tabGroupSyncService, TabGroupModelFilter filter) {
-        assert !filter.isIncognito();
+    public static void unmapLocalIdsNotInTabModel(
+            TabGroupSyncService tabGroupSyncService, TabModel tabModel) {
+        unmapLocalIdsNotInTabModelList(tabGroupSyncService, Collections.singletonList(tabModel));
+    }
+
+    /** Same as {@Link #unmapLocalIdsNotInTabModel} only with a list of tab models. */
+    public static void unmapLocalIdsNotInTabModelList(
+            TabGroupSyncService tabGroupSyncService, List<TabModel> tabModelList) {
+        for (TabModel tabModel : tabModelList) {
+            assert !tabModel.isOffTheRecord();
+        }
 
         for (String syncGroupId : tabGroupSyncService.getAllGroupIds()) {
             SavedTabGroup savedTabGroup = tabGroupSyncService.getGroup(syncGroupId);
             // If there is no local ID the group is already hidden so this is a no-op.
-            if (savedTabGroup.localId == null) continue;
+            if (savedTabGroup == null || savedTabGroup.localId == null) continue;
 
-            if (!isInCurrentWindow(filter, savedTabGroup.localId)) {
+            if (!isInAnyWindow(savedTabGroup.localId, tabModelList)) {
                 tabGroupSyncService.removeLocalTabGroupMapping(
                         savedTabGroup.localId, ClosingSource.CLEANED_UP_ON_LAST_INSTANCE_CLOSURE);
             }
@@ -145,10 +158,8 @@ public final class TabGroupSyncUtils {
      * @param tabGroupSyncService The sync service to get tab group data form.
      * @return The group data object.
      */
-    public static SavedTabGroup getSavedTabGroupFromTabId(
-            int tabId,
-            @NonNull TabModel tabModel,
-            @NonNull TabGroupSyncService tabGroupSyncService) {
+    public static @Nullable SavedTabGroup getSavedTabGroupFromTabId(
+            int tabId, TabModel tabModel, TabGroupSyncService tabGroupSyncService) {
         @Nullable Tab tab = tabModel.getTabById(tabId);
         if (tab == null || tab.getTabGroupId() == null) return null;
         LocalTabGroupId localTabGroupId = new LocalTabGroupId(tab.getTabGroupId());
@@ -160,13 +171,11 @@ public final class TabGroupSyncUtils {
      * across all of its tabs.
      *
      * @param tabGroupId The local tab group ID.
-     * @param tabGroupModelFilter The tab group model filter.
+     * @param tabModel The tab model.
      * @return The last access time of the tab group.
      */
-    public static long getTabGroupLastAccessTime(
-            Token tabGroupId, TabGroupModelFilter tabGroupModelFilter) {
-        int rootId = tabGroupModelFilter.getRootIdFromTabGroupId(tabGroupId);
-        List<Tab> tabs = tabGroupModelFilter.getRelatedTabListForRootId(rootId);
+    public static long getTabGroupLastAccessTime(Token tabGroupId, TabModel tabModel) {
+        List<Tab> tabs = tabModel.getTabsInGroup(tabGroupId);
         long mostRecentAccessTime = 0;
         for (Tab tab : tabs) {
             mostRecentAccessTime = Math.max(mostRecentAccessTime, tab.getTimestampMillis());
@@ -182,11 +191,12 @@ public final class TabGroupSyncUtils {
      * @param navigationHandle Navigation handle to retrieve the redirect chain from.
      */
     public static void onDidFinishNavigation(Tab tab, NavigationHandle navigationHandle) {
-        if (tab.getTabGroupId() == null) return;
+        LocalTabGroupId localTabGroupId = getLocalTabGroupId(tab);
+        if (localTabGroupId == null) return;
         TabGroupSyncUtilsJni.get()
                 .onDidFinishNavigation(
                         tab.getProfile(),
-                        getLocalTabGroupId(tab),
+                        localTabGroupId,
                         tab.getId(),
                         navigationHandle.nativeNavigationHandlePtr());
     }
@@ -198,11 +208,12 @@ public final class TabGroupSyncUtils {
      * @param navigationHandle Navigation handle to retrieve the redirect chain from.
      */
     public static void updateTabRedirectChain(Tab tab, NavigationHandle navigationHandle) {
-        if (tab.getTabGroupId() == null) return;
+        LocalTabGroupId localTabGroupId = getLocalTabGroupId(tab);
+        if (localTabGroupId == null) return;
         TabGroupSyncUtilsJni.get()
                 .updateTabRedirectChain(
                         tab.getProfile(),
-                        getLocalTabGroupId(tab),
+                        localTabGroupId,
                         tab.getId(),
                         navigationHandle.nativeNavigationHandlePtr());
     }
@@ -215,10 +226,23 @@ public final class TabGroupSyncUtils {
      * @return true if the URL belongs to the tab's redirect chain, or false otherwise.
      */
     public static boolean isUrlInTabRedirectChain(Tab tab, GURL url) {
-        if (tab.getTabGroupId() == null) return false;
+        LocalTabGroupId localTabGroupId = getLocalTabGroupId(tab);
+        if (localTabGroupId == null) return false;
         return TabGroupSyncUtilsJni.get()
-                .isUrlInTabRedirectChain(
-                        tab.getProfile(), getLocalTabGroupId(tab), tab.getId(), url);
+                .isUrlInTabRedirectChain(tab.getProfile(), localTabGroupId, tab.getId(), url);
+    }
+
+    /**
+     * Called to check whether the navigation can be saved to sync.
+     *
+     * @param isExtensionNavigationAllowed Whether navigation from extension is allowed.
+     * @param navigationHandle Navigation handle associated with the navigation.
+     */
+    public static boolean isSaveableNavigation(
+            boolean isExtensionNavigationAllowed, NavigationHandle navigationHandle) {
+        return TabGroupSyncUtilsJni.get()
+                .isSaveableNavigation(
+                        isExtensionNavigationAllowed, navigationHandle.nativeNavigationHandlePtr());
     }
 
     @NativeMethods
@@ -240,5 +264,8 @@ public final class TabGroupSyncUtils {
                 LocalTabGroupId groupId,
                 int tabId,
                 @JniType("GURL") GURL url);
+
+        boolean isSaveableNavigation(
+                boolean isExtensionNavigationAllowed, long navigationHandlePtr);
     }
 }

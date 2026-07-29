@@ -13,8 +13,11 @@
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
-#include "ui/webui/color_change_listener/color_change_handler.h"
-#include "ui/webui/resources/cr_components/color_change_listener/color_change_listener.mojom.h"
+#include "ui/webui/resources/cr_components/help_bubble/help_bubble.mojom.h"
+
+namespace user_education {
+class HelpBubbleHandler;
+}
 
 class ReadAnythingUntrustedPageHandler;
 class ReadAnythingUntrustedUI;
@@ -34,16 +37,13 @@ class ReadAnythingUIUntrustedConfig
 //
 class ReadAnythingUntrustedUI
     : public UntrustedTopChromeWebUIController,
-      public read_anything::mojom::UntrustedPageHandlerFactory {
+      public read_anything::mojom::UntrustedPageHandlerFactory,
+      public help_bubble::mojom::HelpBubbleHandlerFactory {
  public:
   explicit ReadAnythingUntrustedUI(content::WebUI* web_ui);
   ReadAnythingUntrustedUI(const ReadAnythingUntrustedUI&) = delete;
   ReadAnythingUntrustedUI& operator=(const ReadAnythingUntrustedUI&) = delete;
   ~ReadAnythingUntrustedUI() override;
-
-  void BindInterface(
-      mojo::PendingReceiver<color_change_listener::mojom::PageHandler>
-          pending_receiver);
 
   // Instantiates the implementor of the mojom::UntrustedPageHandlerFactory mojo
   // interface passing the pending receiver that will be internally bound.
@@ -51,12 +51,22 @@ class ReadAnythingUntrustedUI
       mojo::PendingReceiver<read_anything::mojom::UntrustedPageHandlerFactory>
           receiver);
 
-  static constexpr std::string GetWebUIName() {
+  void BindInterface(
+      mojo::PendingReceiver<help_bubble::mojom::HelpBubbleHandlerFactory>
+          receiver);
+
+  static constexpr std::string_view GetWebUIName() {
     return "ReadAnythingUntrusted";
   }
 
   // read_anything::mojom::UntrustedPageHandlerFactory:
   void ShouldShowUI() override;
+
+  // help_bubble::mojom::HelpBubbleHandlerFactory:
+  void CreateHelpBubbleHandler(
+      mojo::PendingRemote<help_bubble::mojom::HelpBubbleClient> client,
+      mojo::PendingReceiver<help_bubble::mojom::HelpBubbleHandler> handler)
+      override;
 
  private:
   void CreateUntrustedPageHandler(
@@ -66,9 +76,12 @@ class ReadAnythingUntrustedUI
 
   std::unique_ptr<ReadAnythingUntrustedPageHandler>
       read_anything_untrusted_page_handler_;
-  std::unique_ptr<ui::ColorChangeHandler> color_provider_handler_;
   mojo::Receiver<read_anything::mojom::UntrustedPageHandlerFactory>
       read_anything_page_factory_receiver_{this};
+
+  std::unique_ptr<user_education::HelpBubbleHandler> help_bubble_handler_;
+  mojo::Receiver<help_bubble::mojom::HelpBubbleHandlerFactory>
+      help_bubble_handler_factory_receiver_{this};
 
   WEB_UI_CONTROLLER_TYPE_DECL();
 };

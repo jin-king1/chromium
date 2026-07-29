@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "remoting/host/linux/unicode_to_keysym.h"
 
@@ -48,7 +44,7 @@ TEST(GetKeySymsForUnicode, Map) {
     std::vector<uint32_t> expected(
         kTests[i].expected_keysyms,
         std::ranges::find(kTests[i].expected_keysyms, 0u));
-    EXPECT_EQ(expected, keysyms);
+    EXPECT_EQ(keysyms, expected);
   }
 }
 

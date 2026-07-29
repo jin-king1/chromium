@@ -7,6 +7,10 @@ package org.chromium.chrome.browser.app.bluetooth;
 import android.content.Intent;
 import android.os.IBinder;
 
+import org.chromium.base.SplitCompatService;
+import org.chromium.build.annotations.Initializer;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.IntentHandler;
 import org.chromium.chrome.browser.bluetooth.BluetoothNotificationManager;
 import org.chromium.chrome.browser.bluetooth.BluetoothNotificationManagerDelegate;
@@ -15,8 +19,9 @@ import org.chromium.chrome.browser.bluetooth.BluetoothNotificationManagerDelegat
  * Service that manages the Web Bluetooth notification when a website is either connected to a
  * Bluetooth device or scanning for nearby Bluetooth devices.
  */
-public class BluetoothNotificationServiceImpl extends BluetoothNotificationService.Impl {
-    private BluetoothNotificationManagerDelegate mManagerDelegate =
+@NullMarked
+public class BluetoothNotificationServiceImpl extends SplitCompatService.Impl {
+    private final BluetoothNotificationManagerDelegate mManagerDelegate =
             new BluetoothNotificationManagerDelegate() {
                 @Override
                 public Intent createTrustedBringTabToFrontIntent(int tabId) {
@@ -37,6 +42,7 @@ public class BluetoothNotificationServiceImpl extends BluetoothNotificationServi
 
     private BluetoothNotificationManager mManager;
 
+    @Initializer
     @Override
     public void onCreate() {
         mManager = new BluetoothNotificationManager(mManagerDelegate);
@@ -44,7 +50,7 @@ public class BluetoothNotificationServiceImpl extends BluetoothNotificationServi
     }
 
     @Override
-    public int onStartCommand(Intent intent, int flags, int startId) {
+    public int onStartCommand(@Nullable Intent intent, int flags, int startId) {
         mManager.onStartCommand(intent, flags, startId);
         return super.onStartCommand(intent, flags, startId);
     }
@@ -62,7 +68,7 @@ public class BluetoothNotificationServiceImpl extends BluetoothNotificationServi
     }
 
     @Override
-    public IBinder onBind(Intent intent) {
+    public @Nullable IBinder onBind(Intent intent) {
         return null;
     }
 }

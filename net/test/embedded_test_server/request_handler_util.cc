@@ -84,7 +84,8 @@ bool ShouldHandle(const HttpRequest& request, const std::string& path_prefix) {
   }
 
   GURL url = request.GetURL();
-  return url.path() == path_prefix || url.path().starts_with(path_prefix + "/");
+  return url.GetPath() == path_prefix ||
+         url.GetPath().starts_with(path_prefix + "/");
 }
 
 std::unique_ptr<HttpResponse> HandlePrefixedRequest(
@@ -113,8 +114,10 @@ std::string GetFilePathWithReplacements(
   for (const auto& replacement : text_to_replace) {
     const std::string& old_text = replacement.first;
     const std::string& new_text = replacement.second;
-    std::string base64_old = base::Base64Encode(old_text);
-    std::string base64_new = base::Base64Encode(new_text);
+    std::string base64_old = base::EscapeQueryParamValue(
+        base::Base64Encode(old_text), /*use_plus=*/true);
+    std::string base64_new = base::EscapeQueryParamValue(
+        base::Base64Encode(new_text), /*use_plus=*/true);
     if (new_file_path == original_file_path)
       new_file_path += "?";
     else
@@ -162,7 +165,7 @@ std::unique_ptr<HttpResponse> HandleFileRequest(
   // A proxy request will have an absolute path. Simulate the proxy by stripping
   // the scheme, host, and port.
   GURL request_url = request.GetURL();
-  std::string relative_path(request_url.path());
+  std::string relative_path(request_url.GetPath());
 
   std::string_view post_prefix("/post/");
   if (relative_path.starts_with(post_prefix)) {

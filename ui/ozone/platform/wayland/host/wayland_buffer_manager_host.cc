@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "ui/ozone/platform/wayland/host/wayland_buffer_manager_host.h"
 
 #include <sys/ioctl.h>
@@ -17,11 +12,13 @@
 #include <utility>
 
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/i18n/number_formatting.h"
 #include "base/logging.h"
 #include "base/posix/eintr_wrapper.h"
 #include "base/strings/strcat.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/system/sys_info.h"
 #include "base/task/current_thread.h"
 #include "base/trace_event/trace_event.h"
 #include "ui/gfx/geometry/size.h"
@@ -38,6 +35,7 @@
 #include "ui/ozone/platform/wayland/host/wayland_buffer_handle.h"
 #include "ui/ozone/platform/wayland/host/wayland_connection.h"
 #include "ui/ozone/platform/wayland/host/wayland_window.h"
+#include "ui/ozone/platform/wayland/host/wayland_wp_color_manager.h"
 
 namespace ui {
 
@@ -47,37 +45,10 @@ std::string NumberToString(uint32_t number) {
   return base::UTF16ToUTF8(base::FormatNumber(number));
 }
 
-struct KernelVersion {
-  int32_t major;
-  int32_t minor;
-  int32_t bugfix;
-};
-
-KernelVersion KernelVersionNumbers() {
-  KernelVersion ver;
-  struct utsname info;
-  if (uname(&info) < 0) {
-    NOTREACHED();
-  }
-  int num_read =
-      sscanf(info.release, "%d.%d.%d", &ver.major, &ver.minor, &ver.bugfix);
-  if (num_read < 1) {
-    ver.major = 0;
-  }
-  if (num_read < 2) {
-    ver.minor = 0;
-  }
-  if (num_read < 3) {
-    ver.bugfix = 0;
-  }
-  return ver;
-}
-
 bool CheckImportExportFence() {
-  KernelVersion ver = KernelVersionNumbers();
-
   // DMA_BUF_IOCTL_{IMPORT,EXPORT}_SYNC_FILE was added in 6.0
-  return ver.major >= 6;
+  return base::SysInfo::KernelVersionNumber::Current() >=
+         base::SysInfo::KernelVersionNumber(6, 0);
 }
 
 }  // namespace
@@ -110,8 +81,14 @@ void WaylandBufferManagerHost::OnChannelDestroyed() {
 
   buffer_backings_.clear();
   dma_buffers_.clear();
-  for (auto* window : connection_->window_manager()->GetAllWindows())
-    window->OnChannelDestroyed();
+  for (auto window : connection_->window_manager()->GetAllWindowsAsWeakPtr()) {
+    // OnChannelDestroyed() may RequestState() from window delegate and close
+    // its child windows. This can happen if `should_ack_swap_without_commit_`
+    // in the frame manager.
+    if (window) {
+      window->OnChannelDestroyed();
+    }
+  }
 
   buffer_manager_gpu_associated_.reset();
   receiver_.reset();
@@ -123,9 +100,9 @@ void WaylandBufferManagerHost::OnCommitOverlayError(
   TerminateGpuProcess();
 }
 
-wl::BufferFormatsWithModifiersMap
-WaylandBufferManagerHost::GetSupportedBufferFormats() const {
-  return connection_->buffer_factory()->GetSupportedBufferFormats();
+wl::SharedImageFormatsWithModifiersMap
+WaylandBufferManagerHost::GetSupportedSharedImageFormats() const {
+  return connection_->buffer_factory()->GetSupportedSharedImageFormats();
 }
 
 bool WaylandBufferManagerHost::SupportsDmabuf() const {
@@ -163,6 +140,8 @@ void WaylandBufferManagerHost::CreateDmabufBasedBuffer(
     const std::vector<uint64_t>& modifiers,
     uint32_t format,
     uint32_t planes_count,
+    const gfx::ColorSpace& color_space,
+    const gfx::HDRMetadata& hdr_metadata,
     uint32_t buffer_id) {
   DCHECK(base::CurrentUIThread::IsSet());
   DCHECK(error_message_.empty());
@@ -182,6 +161,13 @@ void WaylandBufferManagerHost::CreateDmabufBasedBuffer(
 
   if (connection_->UseImplicitSyncInterop()) {
     dma_buffers_.emplace(buffer_id, dup(fd.get()));
+  }
+
+  if (auto* color_manager = connection_->wp_color_manager()) {
+    // Cache the image description early so it's available when the
+    // surface is initialized.
+    color_manager->GetImageDescription(color_space, hdr_metadata,
+                                       base::DoNothing());
   }
 
   // Check if any of the surfaces has already had a buffer with the same id.
@@ -302,18 +288,6 @@ WaylandBufferHandle* WaylandBufferManagerHost::GetBufferHandle(
   return it->second->GetBufferHandle(requestor);
 }
 
-uint32_t WaylandBufferManagerHost::GetBufferFormat(WaylandSurface* requestor,
-                                                   uint32_t buffer_id) {
-  DCHECK(base::CurrentUIThread::IsSet());
-  DCHECK(requestor);
-
-  auto it = buffer_backings_.find(buffer_id);
-  if (it == buffer_backings_.end())
-    return DRM_FORMAT_INVALID;
-
-  return it->second.get()->format();
-}
-
 void WaylandBufferManagerHost::CommitOverlays(
     gfx::AcceleratedWidget widget,
     uint32_t frame_id,
@@ -388,8 +362,9 @@ bool WaylandBufferManagerHost::ValidateDataFromGpu(
       reason = "Strides are invalid";
   }
 
-  if (!IsValidBufferFormat(format))
-    reason = "Buffer format is invalid";
+  if (!IsValidDrmFormat(format)) {
+    reason = "Drm format is invalid";
+  }
 
   if (!reason.empty()) {
     error_message_ = std::move(reason);

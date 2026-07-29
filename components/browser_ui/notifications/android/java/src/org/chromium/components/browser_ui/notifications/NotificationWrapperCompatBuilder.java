@@ -4,6 +4,8 @@
 
 package org.chromium.components.browser_ui.notifications;
 
+import static org.chromium.components.browser_ui.notifications.BitmapUtils.resizeBitmap;
+
 import android.app.Notification;
 import android.app.PendingIntent;
 import android.content.Context;
@@ -14,6 +16,7 @@ import android.os.Bundle;
 import android.support.v4.media.session.MediaSessionCompat;
 import android.widget.RemoteViews;
 
+import androidx.annotation.NonNull;
 import androidx.core.app.NotificationCompat;
 import androidx.core.graphics.drawable.IconCompat;
 
@@ -30,6 +33,7 @@ public class NotificationWrapperCompatBuilder implements NotificationWrapperBuil
     private final NotificationCompat.Builder mBuilder;
     private final @Nullable NotificationMetadata mMetadata;
     private final Context mContext;
+    private boolean mIsSilent;
 
     public NotificationWrapperCompatBuilder(
             Context context,
@@ -247,7 +251,7 @@ public class NotificationWrapperCompatBuilder implements NotificationWrapperBuil
     }
 
     @Override
-    public NotificationWrapperBuilder setSound(Uri sound) {
+    public NotificationWrapperBuilder setSound(@Nullable Uri sound) {
         mBuilder.setSound(sound);
         return this;
     }
@@ -255,6 +259,7 @@ public class NotificationWrapperCompatBuilder implements NotificationWrapperBuil
     @Override
     public NotificationWrapperBuilder setSilent(boolean silent) {
         mBuilder.setSilent(silent);
+        mIsSilent = silent;
         return this;
     }
 
@@ -284,7 +289,11 @@ public class NotificationWrapperCompatBuilder implements NotificationWrapperBuil
 
     @Override
     public NotificationWrapperBuilder setBigPictureStyle(
-            Bitmap bigPicture, @Nullable CharSequence summaryText) {
+            @NonNull Bitmap bigPicture, @Nullable CharSequence summaryText) {
+        if (bigPicture.getAllocationByteCount() / 1000 > BIG_PICTURE_BITMAP_MAX_SIZE_IN_KB) {
+            bigPicture = resizeBitmap(bigPicture, BIG_PICTURE_BITMAP_MAX_SIZE_IN_KB);
+        }
+
         NotificationCompat.BigPictureStyle style =
                 new NotificationCompat.BigPictureStyle().bigPicture(bigPicture);
         // Android N doesn't show content text when expanded, so duplicate body text as a  summary
@@ -325,7 +334,8 @@ public class NotificationWrapperCompatBuilder implements NotificationWrapperBuil
     @Override
     public NotificationWrapper buildWithBigContentView(RemoteViews view) {
         assert mMetadata != null;
-        return new NotificationWrapper(mBuilder.setCustomBigContentView(view).build(), mMetadata);
+        return new NotificationWrapper(
+                mBuilder.setCustomBigContentView(view).build(), mMetadata, mIsSilent);
     }
 
     @Override
@@ -335,7 +345,7 @@ public class NotificationWrapperCompatBuilder implements NotificationWrapperBuil
         bigTextStyle.bigText(bigText);
 
         assert mMetadata != null;
-        return new NotificationWrapper(bigTextStyle.build(), mMetadata);
+        return new NotificationWrapper(bigTextStyle.build(), mMetadata, mIsSilent);
     }
 
     @Override
@@ -357,7 +367,7 @@ public class NotificationWrapperCompatBuilder implements NotificationWrapperBuil
     @Override
     public NotificationWrapper buildNotificationWrapper() {
         assert mMetadata != null;
-        return new NotificationWrapper(build(), mMetadata);
+        return new NotificationWrapper(build(), mMetadata, mIsSilent);
     }
 
     protected NotificationCompat.Builder getBuilder() {

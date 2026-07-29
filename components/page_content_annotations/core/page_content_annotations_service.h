@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "base/cancelable_callback.h"
+#include "base/containers/hashing_lru_cache.h"
 #include "base/containers/lru_cache.h"
 #include "base/files/file_path.h"
 #include "base/functional/callback_forward.h"
@@ -29,12 +30,13 @@
 #include "components/history/core/browser/url_row.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/omnibox/common/zero_suggest_cache_service_interface.h"
-#include "components/optimization_guide/core/model_info.h"
-#include "components/optimization_guide/core/optimization_guide_decision.h"
-#include "components/optimization_guide/machine_learning_tflite_buildflags.h"
+#include "components/optimization_guide/core/delivery/model_info.h"
+#include "components/optimization_guide/core/hints/optimization_guide_decision.h"
 #include "components/optimization_guide/proto/hints.pb.h"
 #include "components/optimization_guide/proto/page_entities_metadata.pb.h"
 #include "components/optimization_guide/proto/salient_image_metadata.pb.h"
+#include "components/page_content_annotations/core/on_device_category_classifier.h"
+#include "components/page_content_annotations/core/page_category_classifier_bridge.h"
 #include "components/page_content_annotations/core/page_content_annotations_common.h"
 #include "components/page_content_annotations/core/page_content_annotator.h"
 #include "components/search_engines/template_url_service.h"
@@ -49,6 +51,10 @@ class HistoryService;
 namespace leveldb_proto {
 class ProtoDatabaseProvider;
 }  // namespace leveldb_proto
+
+namespace passage_embeddings {
+class EmbedderMetadataProvider;
+}  // namespace passage_embeddings
 
 namespace optimization_guide {
 class OptimizationGuideDecider;
@@ -74,7 +80,7 @@ struct HistoryVisit {
   base::Time nav_entry_timestamp;
   GURL url;
   int64_t navigation_id = 0;
-  std::optional<history::VisitID> visit_id;
+  history::VisitID visit_id = history::kInvalidVisitID;
   std::optional<std::string> text_to_annotate;
 
   struct Comp {
@@ -86,12 +92,8 @@ struct HistoryVisit {
       if (lhs.nav_entry_timestamp != rhs.nav_entry_timestamp) {
         return lhs.nav_entry_timestamp < rhs.nav_entry_timestamp;
       }
-      if (lhs.visit_id && rhs.visit_id) {
-        return *lhs.visit_id < *rhs.visit_id;
-      }
-      if (lhs.visit_id) {
-        // If we get here, this means that |rhs| does not have a visit ID.
-        return false;
+      if (lhs.visit_id != rhs.visit_id) {
+        return lhs.visit_id < rhs.visit_id;
       }
       return lhs.url < rhs.url;
     }
@@ -121,7 +123,8 @@ enum class PageContentAnnotationsType {
 class PageContentAnnotationsService
     : public KeyedService,
       public history::HistoryServiceObserver,
-      public ZeroSuggestCacheServiceInterface::Observer {
+      public ZeroSuggestCacheServiceInterface::Observer,
+      public OnDeviceCategoryClassifier::Observer {
  public:
   // Observer interface to listen for PageContentAnnotations for page loads.
   // Annotations will be sent for each page load for the registered annotation
@@ -129,7 +132,7 @@ class PageContentAnnotationsService
   class PageContentAnnotationsObserver : public base::CheckedObserver {
    public:
     virtual void OnPageContentAnnotated(
-        const GURL& url,
+        const HistoryVisit& visit,
         const PageContentAnnotationsResult& result) = 0;
   };
 
@@ -145,11 +148,15 @@ class PageContentAnnotationsService
       const base::FilePath& database_dir,
       OptimizationGuideLogger* optimization_guide_logger,
       optimization_guide::OptimizationGuideDecider* optimization_guide_decider,
+      passage_embeddings::EmbedderMetadataProvider* embedder_metadata_provider,
       scoped_refptr<base::SequencedTaskRunner> background_task_runner);
   ~PageContentAnnotationsService() override;
   PageContentAnnotationsService(const PageContentAnnotationsService&) = delete;
   PageContentAnnotationsService& operator=(
       const PageContentAnnotationsService&) = delete;
+
+  // KeyedService implementation.
+  void Shutdown() override;
 
   // This is the main entry point for page content annotations by external
   // callers. Callers must call |RequestAndNotifyWhenModelAvailable| as close to
@@ -177,9 +184,7 @@ class PageContentAnnotationsService
                       const history::URLRows& changed_urls) override;
   void OnURLVisitedWithNavigationId(
       history::HistoryService* history_service,
-      const history::URLRow& url_row,
-      const history::VisitRow& visit_row,
-      std::optional<int64_t> local_navigation_id) override;
+      const history::VisitedURLInfo& visited_url_info) override;
 
   // Overrides the PageContentAnnotator for testing. See
   // test_page_content_annotator.h for an implementation designed for testing.
@@ -216,8 +221,22 @@ class PageContentAnnotationsService
     return optimization_guide_logger_;
   }
 
+  // Sets the bridge that connects the on-device category classifier to the
+  // page embeddings service.
+  void SetPageCategoryClassifierBridge(
+      std::unique_ptr<PageCategoryClassifierBridge>
+          page_category_classifier_bridge);
+
+  OnDeviceCategoryClassifier* on_device_category_classifier() const {
+    return on_device_category_classifier_.get();
+  }
+
+  // OnDeviceCategoryClassifier::Observer:
+  void OnCategoriesClassified(const GURL& url,
+                              ukm::SourceId source_id,
+                              const std::vector<Category>& categories) override;
+
  private:
-#if BUILDFLAG(BUILD_WITH_TFLITE_LIB)
   // Callback invoked when a single |visit| has been annotated.
   void OnPageContentAnnotated(
       const HistoryVisit& visit,
@@ -253,7 +272,14 @@ class PageContentAnnotationsService
 
   std::unique_ptr<PageContentAnnotationsModelManager> model_manager_;
 
-#endif
+  std::unique_ptr<OnDeviceCategoryClassifier> on_device_category_classifier_;
+
+  // A bridge that allows page category classification. The functionality of the
+  // bridge is type-erased at the 'core' level, but it's stored on this object
+  // because it shares the same lifetime -- hence it has an interface that only
+  // exposes a virtual destructor.
+  std::unique_ptr<PageCategoryClassifierBridge>
+      page_category_classifier_bridge_;
 
   // The annotator to use for requests to |BatchAnnotate| and |Annotate|. In
   // prod, this is simply |model_manager_.get()| but is set as a separate
@@ -311,13 +337,13 @@ class PageContentAnnotationsService
   void OnURLQueried(const HistoryVisit& visit,
                     PersistAnnotationsCallback callback,
                     PageContentAnnotationsType annotation_type,
-                    history::QueryURLResult url_result);
+                    history::QueryURLAndVisitsResult url_result);
 
   // Notifies the PageContentAnnotationsResult to the observers for
   // |annotation_type|.
   void NotifyPageContentAnnotatedObservers(
       AnnotationType annotation_type,
-      const GURL& url,
+      const page_content_annotations::HistoryVisit& visit,
       const PageContentAnnotationsResult& page_content_annotations_result);
 
   // Callback invoked when a response for |optimization_type| has been received
@@ -377,6 +403,9 @@ class PageContentAnnotationsService
   base::HashingLRUCache<std::string, history::VisitContentModelAnnotations>
       annotated_text_cache_;
 
+  // A LRU cache from URL to the latest history visit for that URL.
+  base::LRUCache<GURL, HistoryVisit> last_visit_for_url_;
+
   // The set of visits to be annotated, this is added to by Annotate requests
   // from the web content observer. These will be annotated when the set is full
   // and annotations can be scheduled with minimal impact to browsing.
@@ -398,12 +427,6 @@ class PageContentAnnotationsService
   std::unique_ptr<PageContentAnnotationsValidator> validator_;
 
   raw_ptr<OptimizationGuideLogger> optimization_guide_logger_ = nullptr;
-
-  // Whether fetching for remote page metadata enabled.
-  bool is_remote_page_metadata_fetching_enabled_ = false;
-
-  // Whether fetching for salient image metadata is enabled.
-  bool is_salient_image_metadata_fetching_enabled_ = false;
 
   // Not owned and must outlive |this|.
   raw_ptr<optimization_guide::OptimizationGuideDecider>

@@ -4,64 +4,131 @@
 
 package org.chromium.chrome.browser.safety_hub;
 
-import static org.chromium.chrome.browser.password_manager.PasswordManagerUtilBridge.usesSplitStoresAndUPMForLocal;
+import static org.chromium.build.NullUtil.assertNonNull;
+import static org.chromium.build.NullUtil.assumeNonNull;
 
+import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
 
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
-
-import org.chromium.base.supplier.Supplier;
+import org.chromium.base.supplier.OneshotSupplierImpl;
+import org.chromium.base.supplier.SupplierUtils;
 import org.chromium.build.BuildConfig;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.password_manager.PasswordManagerHelper;
 import org.chromium.chrome.browser.password_manager.PasswordManagerUtilBridge;
 import org.chromium.chrome.browser.password_manager.PasswordStoreBridge;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.sync.SyncServiceFactory;
+import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.signin.BottomSheetSigninAndHistorySyncConfig;
 import org.chromium.chrome.browser.ui.signin.BottomSheetSigninAndHistorySyncConfig.NoAccountSigninMode;
 import org.chromium.chrome.browser.ui.signin.BottomSheetSigninAndHistorySyncConfig.WithAccountSigninMode;
+import org.chromium.chrome.browser.ui.signin.BottomSheetSigninAndHistorySyncCoordinator;
 import org.chromium.chrome.browser.ui.signin.SigninAndHistorySyncActivityLauncher;
 import org.chromium.chrome.browser.ui.signin.account_picker.AccountPickerBottomSheetStrings;
 import org.chromium.chrome.browser.ui.signin.history_sync.HistorySyncConfig;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
+import org.chromium.components.browser_ui.device_lock.DeviceLockActivityLauncher;
+import org.chromium.components.browser_ui.settings.SettingsCustomTabLauncher;
+import org.chromium.components.signin.SigninFeatureMap;
 import org.chromium.components.signin.metrics.SigninAccessPoint;
 import org.chromium.components.sync.SyncService;
-import org.chromium.components.user_prefs.UserPrefs;
 import org.chromium.content_public.common.ContentUrlConstants;
+import org.chromium.ui.base.ActivityResultTracker;
+import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 
+import java.util.function.Supplier;
+
 /** An implementation of {@link SafetyHubModuleDelegate} */
-public class SafetyHubModuleDelegateImpl implements SafetyHubModuleDelegate {
+@NullMarked
+public class SafetyHubModuleDelegateImpl
+        implements SafetyHubModuleDelegate, BottomSheetSigninAndHistorySyncCoordinator.Delegate {
     private static final int INVALID_PASSWORD_COUNT = -1;
-    private final @NonNull Profile mProfile;
-    private final @NonNull Supplier<ModalDialogManager> mModalDialogManagerSupplier;
-    private final @NonNull SigninAndHistorySyncActivityLauncher mSigninLauncher;
+    private final Profile mProfile;
+    private final Supplier<@Nullable ModalDialogManager> mModalDialogManagerSupplier;
+    private final SigninAndHistorySyncActivityLauncher mSigninLauncher;
+    private final SettingsCustomTabLauncher mSettingsCustomTabLauncher;
+    private @Nullable BottomSheetSigninAndHistorySyncCoordinator mSigninCoordinator;
 
     /**
-     * @param profile A supplier for {@link Profile} that owns the data being deleted.
+     * @param windowAndroid The {@link WindowAndroid} that hosts the sign-in & history opt-in flow.
+     * @param activity The {@link Activity} that hosts the sign-in & opt-in flow.
+     *     TODO(crbug.com/475144764): Use Context instead of Activity once sign-in launcher is
+     *     refactored.
+     * @param activityResultTracker The {@link ActivityResultTracker} for launching new activities
+     *     and watching for their result.
+     * @param deviceLockActivityLauncher The launcher to start up the device lock page.
+     * @param profile The current profile.
+     * @param snackbarManager The manager for displaying snackbars.
+     * @param bottomSheetControllerSupplier The supplier of the sign-in bottomsheet controller.
      * @param modalDialogManagerSupplier A supplier for {@link ModalDialogManager} that will be used
      *     to launch the password check UI.
+     * @param signinLauncher Launcher for the sign-in flow.
+     * @param settingsCustomTabLauncher Used by the password manager dialogs to open a help center
+     *     article in a CCT.
      */
     public SafetyHubModuleDelegateImpl(
-            @NonNull Profile profile,
-            @NonNull Supplier<ModalDialogManager> modalDialogManagerSupplier,
-            @NonNull SigninAndHistorySyncActivityLauncher signinLauncher) {
+            Supplier<@Nullable WindowAndroid> windowAndroidSupplier,
+            Activity activity,
+            ActivityResultTracker activityResultTracker,
+            DeviceLockActivityLauncher deviceLockActivityLauncher,
+            Profile profile,
+            Supplier<@Nullable SnackbarManager> snackbarManagerSupplier,
+            Supplier<@Nullable BottomSheetController> bottomSheetControllerSupplier,
+            Supplier<@Nullable ModalDialogManager> modalDialogManagerSupplier,
+            SigninAndHistorySyncActivityLauncher signinLauncher,
+            SettingsCustomTabLauncher settingsCustomTabLauncher) {
         mProfile = profile;
         mModalDialogManagerSupplier = modalDialogManagerSupplier;
         mSigninLauncher = signinLauncher;
+        mSettingsCustomTabLauncher = settingsCustomTabLauncher;
+
+        if (SigninFeatureMap.getInstance().isActivitylessSigninAllEntryPointEnabled()) {
+            SupplierUtils.waitForAll(
+                    () -> {
+                        OneshotSupplierImpl<Profile> profileSupplier = new OneshotSupplierImpl<>();
+                        profileSupplier.set(mProfile);
+                        mSigninCoordinator =
+                                mSigninLauncher
+                                        .createBottomSheetSigninCoordinatorAndObserveAddAccountResult(
+                                                assertNonNull(windowAndroidSupplier.get()),
+                                                activity,
+                                                activityResultTracker,
+                                                this,
+                                                deviceLockActivityLauncher,
+                                                profileSupplier,
+                                                SupplierUtils.asNonNull(
+                                                        bottomSheetControllerSupplier),
+                                                assertNonNull(modalDialogManagerSupplier.get()),
+                                                assertNonNull(snackbarManagerSupplier.get()),
+                                                SigninAccessPoint.SAFETY_CHECK);
+                    },
+                    windowAndroidSupplier,
+                    modalDialogManagerSupplier,
+                    snackbarManagerSupplier);
+        }
     }
 
     @Override
     public void showPasswordCheckUi(Context context) {
-        SafetyHubUtils.showPasswordCheckUi(context, mProfile, mModalDialogManagerSupplier);
+        SafetyHubUtils.showPasswordCheckUi(
+                context,
+                mProfile,
+                SupplierUtils.asNonNull(mModalDialogManagerSupplier),
+                mSettingsCustomTabLauncher);
     }
 
     @Override
     public void showLocalPasswordCheckUi(Context context) {
-        SafetyHubUtils.showLocalPasswordCheckUi(context, mProfile, mModalDialogManagerSupplier);
+        SafetyHubUtils.showLocalPasswordCheckUi(
+                context,
+                mProfile,
+                SupplierUtils.asNonNull(mModalDialogManagerSupplier),
+                mSettingsCustomTabLauncher);
     }
 
     @Override
@@ -87,23 +154,10 @@ public class SafetyHubModuleDelegateImpl implements SafetyHubModuleDelegate {
             return INVALID_PASSWORD_COUNT;
         }
 
-        if (ChromeFeatureList.isEnabled(ChromeFeatureList.LOGIN_DB_DEPRECATION_ANDROID)) {
-            if (PasswordManagerUtilBridge.isPasswordManagerAvailable(UserPrefs.get(mProfile))) {
-                return passwordStoreBridge.getPasswordStoreCredentialsCountForAccountStore();
-            }
-            return INVALID_PASSWORD_COUNT;
-        }
-
-        PasswordManagerHelper passwordManagerHelper = PasswordManagerHelper.getForProfile(mProfile);
-        if (!passwordManagerHelper.canUseUpm()) {
-            return INVALID_PASSWORD_COUNT;
-        }
-
-        if (usesSplitStoresAndUPMForLocal(UserPrefs.get(mProfile))) {
+        if (PasswordManagerUtilBridge.isPasswordManagerAvailable()) {
             return passwordStoreBridge.getPasswordStoreCredentialsCountForAccountStore();
         }
-        // If using split stores is disabled, all passwords reside in the profile store.
-        return passwordStoreBridge.getPasswordStoreCredentialsCountForProfileStore();
+        return INVALID_PASSWORD_COUNT;
     }
 
     @Override
@@ -112,27 +166,10 @@ public class SafetyHubModuleDelegateImpl implements SafetyHubModuleDelegate {
             return INVALID_PASSWORD_COUNT;
         }
 
-        if (ChromeFeatureList.isEnabled(ChromeFeatureList.LOGIN_DB_DEPRECATION_ANDROID)) {
-            if (PasswordManagerUtilBridge.isPasswordManagerAvailable(UserPrefs.get(mProfile))) {
-                return passwordStoreBridge.getPasswordStoreCredentialsCountForProfileStore();
-            }
-            return INVALID_PASSWORD_COUNT;
-        }
-
-        // There are two cases where a user has local passwords in the profile store:
-        //    1. If split stores are in use for local passwords, then profile store stores local
-        // passwords.
-        //    2. If they're not in use, but the user is not syncing, then profile store stores
-        // local passwords.
-        SyncService syncService = SyncServiceFactory.getForProfile(mProfile);
-        boolean isSyncingPasswords = PasswordManagerHelper.hasChosenToSyncPasswords(syncService);
-        if (usesSplitStoresAndUPMForLocal(UserPrefs.get(mProfile)) || !isSyncingPasswords) {
+        if (PasswordManagerUtilBridge.isPasswordManagerAvailable()) {
             return passwordStoreBridge.getPasswordStoreCredentialsCountForProfileStore();
         }
-
-        // If split stores for local passwords are not in use and the user is syncing, then the
-        // profile store doesn't store local passwords.
-        return 0;
+        return INVALID_PASSWORD_COUNT;
     }
 
     @Override
@@ -140,23 +177,40 @@ public class SafetyHubModuleDelegateImpl implements SafetyHubModuleDelegate {
         assert !SafetyHubUtils.isSignedIn(mProfile);
         AccountPickerBottomSheetStrings strings =
                 new AccountPickerBottomSheetStrings.Builder(
-                                R.string.signin_account_picker_bottom_sheet_title)
-                        .setSubtitleStringId(R.string.safety_check_passwords_error_signed_out)
+                                context.getString(
+                                        R.string.signin_account_picker_bottom_sheet_title))
+                        .setSubtitleString(
+                                context.getString(R.string.safety_check_passwords_error_signed_out))
                         .build();
         BottomSheetSigninAndHistorySyncConfig config =
                 new BottomSheetSigninAndHistorySyncConfig.Builder(
                                 strings,
                                 NoAccountSigninMode.BOTTOM_SHEET,
                                 WithAccountSigninMode.DEFAULT_ACCOUNT_BOTTOM_SHEET,
-                                HistorySyncConfig.OptInMode.NONE)
+                                HistorySyncConfig.OptInMode.NONE,
+                                context.getString(R.string.history_sync_title),
+                                context.getString(R.string.history_sync_subtitle))
                         .build();
+
+        if (SigninFeatureMap.getInstance().isActivitylessSigninAllEntryPointEnabled()) {
+            assumeNonNull(mSigninCoordinator).startSigninFlow(config);
+            return;
+        }
+
         // Open the sign-in page.
-        @Nullable
-        Intent intent =
+        @Nullable Intent intent =
                 mSigninLauncher.createBottomSheetSigninIntentOrShowError(
                         context, mProfile, config, SigninAccessPoint.SAFETY_CHECK);
         if (intent != null) {
             context.startActivity(intent);
+        }
+    }
+
+    @Override
+    public void destroy() {
+        if (mSigninCoordinator != null) {
+            mSigninCoordinator.destroy();
+            mSigninCoordinator = null;
         }
     }
 }

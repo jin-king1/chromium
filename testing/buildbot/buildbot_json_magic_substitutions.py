@@ -20,6 +20,9 @@ import collections
 MAGIC_SUBSTITUTION_PREFIX = '$$MAGIC_SUBSTITUTION_'
 
 GpuDevice = collections.namedtuple('GpuDevice', ['vendor', 'device'])
+ANDROID_DESKTOP_BOARD_GPUS = {
+    'brya': GpuDevice('8086', '46a8'),
+}
 CROS_BOARD_GPUS = {
     'volteer': GpuDevice('8086', '9a49'),
 }
@@ -31,21 +34,51 @@ VENDOR_SUBSTITUTIONS = {
 DEVICE_SUBSTITUTIONS = {
     'm1': '0',
     'm2': '0',
+    'm3': '0',
     # Qualcomm Adreno 680/685/690 and 741 on Windows arm64. The approach
     # swarming uses to find GPUs (looking for all Win32_VideoController WMI
     # objects) results in different output than what Chrome sees.
-    # 043a = Adreno 680/685/690 GPU (such as Surface Pro X, Dell trybots)
     # 0636 = Adreno 690 GPU (such as Surface Pro 9 5G)
     # 0c36 = Adreno 741 GPU (such as Surface Pro 11th Edition)
-    '043a': '41333430',
     '0636': '36333630',
     '0c36': '36334330',
 }
 ANDROID_VULKAN_DEVICES = {
     # Pixel 6 phones map to multiple GPU models.
     'oriole': GpuDevice('13b5', '92020010,92020000'),
-    'a23xq': GpuDevice('5143', '6010901'),
+    'frankel': GpuDevice('1010', '71061212'),
 }
+
+
+def AndroidDesktopForceMainUser(test_config, _, tester_config):
+  """Automatically adds --force-main-user to gtests on Android Desktop."""
+  assert _IsAndroid(tester_config)
+  if not _GetAndroidDesktopBoardName(test_config):
+    return []
+  return ['--force-main-user']
+
+
+def AndroidDesktopGtestRemote(test_config, _, tester_config):
+  """Substitutes the correct Android Desktop remote gtest arguments."""
+  assert _IsAndroid(tester_config)
+  if not _GetAndroidDesktopBoardName(test_config):
+    return []
+  return [
+      '--device=variable_lab_dut_hostname',
+      '--connect-over-network',
+  ]
+
+
+def AndroidDesktopTelemetryRemote(test_config, _, tester_config):
+  """Substitutes the correct Android Desktop remote Telemetry arguments."""
+  assert _IsAndroid(tester_config)
+  if not _GetAndroidDesktopBoardName(test_config):
+    return []
+  return [
+      '--device=variable_lab_dut_hostname',
+      '--connect-to-device-over-network',
+  ]
+
 
 def ChromeOSTelemetryRemote(test_config, _, tester_config):
   """Substitutes the correct CrOS remote Telemetry arguments.
@@ -93,6 +126,13 @@ def ChromeOSGtestFilterFile(test_config, _, tester_config):
   ]
 
 
+def _GetAndroidDesktopBoardName(test_config):
+  """Helper function to determine what Android Desktop board is being used."""
+  dimensions = test_config.get('swarming', {}).get('dimensions')
+  assert dimensions is not None
+  return dimensions.get('label-board')
+
+
 def _GetChromeOSBoardName(test_config):
   """Helper function to determine what ChromeOS board is being used."""
 
@@ -120,6 +160,11 @@ def _GetChromeOSBoardName(test_config):
   return dimensions.get('device_type', 'amd64-generic')
 
 
+def _IsAndroidDesktopBot(test_config, tester_config):
+  """Helper function to determine if a bot is an Android Desktop bot."""
+  return _IsAndroid(tester_config) and _GetAndroidDesktopBoardName(test_config)
+
+
 def _IsSkylabBot(tester_config):
   """Helper function to determine if a bot is a Skylab ChromeOS bot."""
   return (tester_config.get('browser_config') == 'cros-chrome'
@@ -142,6 +187,8 @@ def GPUExpectedVendorId(test_config, _, tester_config):
     tester_config: A dict containing the configuration for the builder
         that |test_config| is for.
   """
+  if _IsAndroidDesktopBot(test_config, tester_config):
+    return _GPUExpectedVendorIdAndroidDesktop(test_config)
   if _IsSkylabBot(tester_config):
     return _GPUExpectedVendorIdSkylab(test_config)
   dimensions = test_config.get('swarming', {}).get('dimensions')
@@ -173,6 +220,13 @@ def GPUExpectedVendorId(test_config, _, tester_config):
   return ['--expected-vendor-id', vendor_ids.pop()]
 
 
+def _GPUExpectedVendorIdAndroidDesktop(test_config):
+  board = _GetAndroidDesktopBoardName(test_config)
+  assert board is not None
+  gpu_device = ANDROID_DESKTOP_BOARD_GPUS.get(board, GpuDevice('0', '0'))
+  return ['--expected-vendor-id', gpu_device.vendor]
+
+
 def _GPUExpectedVendorIdSkylab(test_config):
   cros_board = test_config.get('cros_board')
   assert cros_board is not None
@@ -192,6 +246,8 @@ def GPUExpectedDeviceId(test_config, _, tester_config):
     tester_config: A dict containing the configuration for the builder
         that |test_config| is for.
   """
+  if _IsAndroidDesktopBot(test_config, tester_config):
+    return _GPUExpectedDeviceIdAndroidDesktop(test_config)
   if _IsSkylabBot(tester_config):
     return _GPUExpectedDeviceIdSkylab(test_config)
   dimensions = test_config.get('swarming', {}).get('dimensions')
@@ -227,6 +283,13 @@ def GPUExpectedDeviceId(test_config, _, tester_config):
   for device_id in sorted(device_ids):
     retval.extend(['--expected-device-id', device_id])
   return retval
+
+
+def _GPUExpectedDeviceIdAndroidDesktop(test_config):
+  board = _GetAndroidDesktopBoardName(test_config)
+  assert board is not None
+  gpu_device = ANDROID_DESKTOP_BOARD_GPUS.get(board, GpuDevice('0', '0'))
+  return ['--expected-device-id', gpu_device.device]
 
 
 def _GPUExpectedDeviceIdSkylab(test_config):
@@ -312,6 +375,15 @@ def GPUParallelJobs(test_config, tester_name, tester_config):
       if gpu.startswith('10de'):
         return ['--jobs=1']
 
+  # trace_test flakily hangs Win NVIDIA GTX 1660 machines crbug.com/406454932.
+  # Speculatively disable parallelism to check if it is related.
+  is_trace_test = (test_name.startswith('trace_test')
+                   or test_config.get('telemetry_test_name') == 'trace_test')
+  if os_type == 'win' and is_trace_test:
+    for gpu in _GetGpusFromTestConfig(test_config):
+      if gpu.startswith('10de:2184'):
+        return ['--jobs=1']
+
   if os_type in ['lacros', 'linux', 'mac', 'win']:
     return ['--jobs=4']
   return ['--jobs=1']
@@ -338,6 +410,7 @@ def GPUTelemetryNoRootForUnrootedDevices(test_config, _, tester_config):
       'a23xq',
       'dm1q',  # Samsung S23.
       'devonn',  # Motorola Moto G Power 5G.
+      's5e9945',  # Samsung S24
   }
   dimensions = test_config.get('swarming', {}).get('dimensions')
   assert dimensions is not None
@@ -371,7 +444,15 @@ def GPUWebGLRuntimeFile(test_config, _, tester_config):
       f'../../content/test/data/gpu/{suite}_{chosen_os}_runtimes.json')
   return [f'--read-abbreviated-json-results-from={runtime_filepath}']
 
-# LINT.ThenChange(//infra/config/lib/targets-internal/magic_args.star)
+# LINT.ThenChange(//infra/config/PACKAGE.star)
+#
+# Adding a new substitution or changing the implementation of one requires a
+# corresponding change to the magic_args.star file, which is now located at
+# chromium.googlesource.com/infra/chromium/+/HEAD/starlark-libs/chromium-luci
+#
+# First a change to update magic_args.star should be submitted, then a CL can be
+# made that updates the @chromium-luci pin in PACKAGE.star to use the new
+# revision of infra/chromium and updates this file
 
 def TestOnlySubstitution(_, __, ___):
   """Magic substitution used for unittests."""

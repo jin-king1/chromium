@@ -33,9 +33,7 @@ constexpr char kSharedStorageWorkletScriptFirstStatement[] =
 
 using Response = protocol::Response;
 
-InspectorEventBreakpointsAgent::InspectorEventBreakpointsAgent(
-    v8_inspector::V8InspectorSession* v8_session)
-    : v8_session_(v8_session) {}
+InspectorEventBreakpointsAgent::InspectorEventBreakpointsAgent() = default;
 
 InspectorEventBreakpointsAgent::~InspectorEventBreakpointsAgent() = default;
 
@@ -68,7 +66,7 @@ void InspectorEventBreakpointsAgent::DidFireWebGLWarning() {
 
 void InspectorEventBreakpointsAgent::DidFireWebGLErrorOrWarning(
     const String& message) {
-  if (message.FindIgnoringASCIICase("error") != WTF::kNotFound) {
+  if (message.FindIgnoringAsciiCase("error") != kNotFound) {
     DidFireWebGLError(String());
   } else {
     DidFireWebGLWarning();
@@ -108,7 +106,7 @@ void InspectorEventBreakpointsAgent::Will(const probe::UserCallback& probe) {
   if (probe.event_target) {
     return;
   }
-  if (auto data = MaybeBuildBreakpointData(String(probe.name) + ".callback")) {
+  if (auto data = MaybeBuildBreakpointData(StrCat({probe.name, ".callback"}))) {
     ScheduleAsyncBreakpoint(*data);
   }
 }
@@ -202,7 +200,7 @@ InspectorEventBreakpointsAgent::MaybeBuildBreakpointData(
 
   auto event_data = protocol::DictionaryValue::create();
   const String full_event_name =
-      String(kInstrumentationEventCategoryType) + event_name;
+      StrCat({kInstrumentationEventCategoryType, event_name});
   event_data->setString("eventName", full_event_name);
 
   return event_data;
@@ -222,7 +220,7 @@ std::vector<uint8_t> JsonFromDictionary(const protocol::DictionaryValue& dict) {
 void InspectorEventBreakpointsAgent::TriggerSyncBreakpoint(
     const protocol::DictionaryValue& breakpoint_data) {
   std::vector<uint8_t> json = JsonFromDictionary(breakpoint_data);
-  v8_session_->breakProgram(
+  V8Session()->breakProgram(
       ToV8InspectorStringView(v8_inspector::protocol::Debugger::API::Paused::
                                   ReasonEnum::EventListener),
       v8_inspector::StringView(json.data(), json.size()));
@@ -231,14 +229,14 @@ void InspectorEventBreakpointsAgent::TriggerSyncBreakpoint(
 void InspectorEventBreakpointsAgent::ScheduleAsyncBreakpoint(
     const protocol::DictionaryValue& breakpoint_data) {
   std::vector<uint8_t> json = JsonFromDictionary(breakpoint_data);
-  v8_session_->schedulePauseOnNextStatement(
+  V8Session()->schedulePauseOnNextStatement(
       ToV8InspectorStringView(v8_inspector::protocol::Debugger::API::Paused::
                                   ReasonEnum::EventListener),
       v8_inspector::StringView(json.data(), json.size()));
 }
 
 void InspectorEventBreakpointsAgent::UnscheduleAsyncBreakpoint() {
-  v8_session_->cancelPauseOnNextStatement();
+  V8Session()->cancelPauseOnNextStatement();
 }
 
 }  // namespace blink

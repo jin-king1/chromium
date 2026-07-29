@@ -27,6 +27,12 @@
            SAME CONDITIONALS. -->
       <if expr="toolkit_views and not is_macosx">
         <structure type="chrome_scaled_image" name="IDR_ACCESSIBILITY_CAPTIONS_PREVIEW_BACKGROUND" file="common/captions-preview-bg.png" />
+      </if>
+      <if expr="not is_android">
+        <structure type="chrome_scaled_image" name="IDR_AI_ON_IOS" file="common/ai_on_ios.png" />
+        <structure type="chrome_scaled_image" name="IDR_AI_ON_IOS_DARK" file="common/ai_on_ios_dark.png" />
+      </if>
+      <if expr="toolkit_views and not is_macosx">
         <structure type="chrome_scaled_image" name="IDR_APP_WINDOW_CLOSE" file="common/app_window_close.png" />
         <structure type="chrome_scaled_image" name="IDR_APP_WINDOW_CLOSE_H" file="common/app_window_close_hover.png" />
         <structure type="chrome_scaled_image" name="IDR_APP_WINDOW_CLOSE_P" file="common/app_window_close_active.png" />
@@ -54,9 +60,6 @@
         <structure type="chrome_scaled_image" name="IDR_AUTOFILL_OFFERS" file="common/autofill_offers.png" />
         <structure type="chrome_scaled_image" name="IDR_AUTOFILL_OFFERS_DARK_CHROME_REFRESH_2023" file="common/autofill_offers_dark_chrome_refresh_2023.png" />
         <structure type="chrome_scaled_image" name="IDR_AUTOFILL_OFFERS_LIGHT_CHROME_REFRESH_2023" file="common/autofill_offers_light_chrome_refresh_2023.png" />
-        <structure type="chrome_scaled_image" name="IDR_DISCOUNTS_BUBBLE_HEADER_DARK" file="common/discounts_bubble_header_dark.png" />
-        <structure type="chrome_scaled_image" name="IDR_DISCOUNTS_BUBBLE_HEADER_LIGHT" file="common/discounts_bubble_header_light.png" />
-
       </if>
       <if expr="is_chromeos">
         <structure type="chrome_scaled_image" name="IDR_AVATAR_HOLDER" file="cros/avatar_holder.png" />
@@ -67,6 +70,10 @@
         <structure type="chrome_scaled_image" name="IDR_BACK_D" file="common/browser_back_disabled.png" />
         <structure type="chrome_scaled_image" name="IDR_BACK_H" file="common/browser_back_hover.png" />
         <structure type="chrome_scaled_image" name="IDR_BACK_P" file="common/browser_back_pressed.png" />
+      </if>
+      <if expr="_google_chrome">
+        <structure type="chrome_scaled_image" name="IDR_BEST_OF_GOOGLE_ON_IOS" file="google_chrome/best_of_google_on_ios.png" />
+        <structure type="chrome_scaled_image" name="IDR_BEST_OF_GOOGLE_ON_IOS_DARK" file="google_chrome/best_of_google_on_ios_dark.png" />
       </if>
       <structure type="chrome_scaled_image" name="IDR_BIOMETRIC_AUTHENTICATION_PROMPT_LIGHT" file="common/biometric_password_auth_light.png" />
       <structure type="chrome_scaled_image" name="IDR_BIOMETRIC_AUTHENTICATION_PROMPT_DARK" file="common/biometric_password_auth_dark.png" />
@@ -84,8 +91,8 @@
       </if>
       <if expr="not is_android">
         <structure type="chrome_scaled_image" name="IDR_BOOKMARK_BAR_APPS_SHORTCUT" file="common/apps_bookmark_bar_icon.png" />
-        <structure type="chrome_scaled_image" name="IDR_BOOKMARKS_FAVICON" file="common/favicon_bookmarks.png" />
       </if>
+      <structure type="chrome_scaled_image" name="IDR_BOOKMARKS_FAVICON" file="common/favicon_bookmarks.png" />
       <if expr="not is_android">
         <structure type="chrome_scaled_image" name="IDR_CLOSE_BUTTON_MASK" file="common/close_button_mask.png" />
       </if>
@@ -95,6 +102,7 @@
       <structure type="chrome_scaled_image" name="IDR_COOKIE_STORAGE_ICON" file="common/cookie_storage.png" />
       <if expr="not is_android">
         <structure type="chrome_scaled_image" name="IDR_DOWNLOADS_FAVICON" file="common/favicon_downloads.png" />
+        <structure type="chrome_scaled_image" name="IDR_ENHANCED_BROWSING_ON_IOS" file="common/enhanced_browsing_on_ios.png" />
       </if>
       <if expr="enable_extensions_core">
         <structure type="chrome_scaled_image" name="IDR_EXTENSIONS_RATING_STAR_HALF_LEFT" file="common/extensions_rating_star_half_left.png" />
@@ -107,6 +115,12 @@
         <structure type="chrome_scaled_image" name="IDR_FORWARD_H" file="common/browser_forward_hover.png" />
         <structure type="chrome_scaled_image" name="IDR_FORWARD_P" file="common/browser_forward_pressed.png" />
       </if>
+      <if expr="_google_chrome">
+          <structure type="chrome_scaled_image" name="IDR_GOOGLE_G_GRADIENT_16" file="google_chrome/google_g_gradient_16.png" />
+          <structure type="chrome_scaled_image" name="IDR_GOOGLE_G_GRADIENT_16_ALT" file="google_chrome/google_g_gradient_16_alt.png" />
+          <structure type="chrome_scaled_image" name="IDR_GOOGLE_G_GRADIENT_20" file="google_chrome/google_g_gradient_20.png" />
+          <structure type="chrome_scaled_image" name="IDR_GOOGLE_G" file="google_chrome/google_icon.png" />
+      </if>
       <if expr="not is_android">
         <structure type="chrome_scaled_image" name="IDR_HELP_MENU" file="common/help_16.png" />
       </if>
@@ -118,9 +132,9 @@
       <structure type="chrome_scaled_image" name="IDR_INCOGNITO_WHITE_CIRCLE" file="common/incognito_white_circle.png" />
       <structure type="chrome_scaled_image" name="IDR_INPUT_ALERT" file="common/input_alert.png" />
       <structure type="chrome_scaled_image" name="IDR_INPUT_ALERT_MENU" file="common/input_alert_menu.png" />
-      <if expr="not is_android">
+      <structure type="chrome_scaled_image" name="IDR_MANAGEMENT_FAVICON" file="common/favicon_management.png" />
+      <if expr="not is_android or enable_extensions_core">
         <structure type="chrome_scaled_image" name="IDR_IWA_INSTALL_SUCCESS" file="common/iwa_install_success.png" />
-        <structure type="chrome_scaled_image" name="IDR_MANAGEMENT_FAVICON" file="common/favicon_management.png" />
         <structure type="chrome_scaled_image" name="IDR_MAXIMIZE_BUTTON_MASK" file="common/maximize_button_mask.png" />
         <structure type="chrome_scaled_image" name="IDR_MINIMIZE_BUTTON_MASK" file="common/minimize_button_mask.png" />
       </if>
@@ -128,13 +142,19 @@
         <structure type="chrome_scaled_image" name="IDR_ARC_PLAY_STORE_OPTIN_IN_PROGRESS_NOTIFICATION" file="cros/notification_play_store_optin_in_progress.png" />
         <structure type="chrome_scaled_image" name="IDR_NOTIFICATION_EASYUNLOCK_ENABLED" file="cros/notification_easyunlock_enabled.png" />
       </if>
+      <if expr="enable_webui_ntp">
+        <structure type="chrome_scaled_image" name="IDR_NTP_FAVICON" file="common/favicon_ntp.png" />
+      </if>
       <if expr="not is_android">
         <if expr="_google_chrome">
             <structure type="chrome_scaled_image" name="IDR_LENS_PERMISSION_MODAL_IMAGE" file="google_chrome/lens_permission_modal_image.png" />
+            <structure type="chrome_scaled_image" name="IDR_LENS_PERMISSION_MODAL_IMAGE_ALT" file="google_chrome/lens_permission_modal_image_alt.png" />
+            <structure type="chrome_scaled_image" name="IDR_LENS_ON_IOS_ICON" file="google_chrome/lens_on_ios_icon.png" />
+            <structure type="chrome_scaled_image" name="IDR_FEATURE_SHOWCASE_GOOGLE_LENS_ILLUSTRATION_LIGHT" file="google_chrome/google_lens_illustration_light.png" />
+            <structure type="chrome_scaled_image" name="IDR_FEATURE_SHOWCASE_GOOGLE_LENS_ILLUSTRATION_DARK" file="google_chrome/google_lens_illustration_dark.png" />
         </if>
         <structure type="chrome_scaled_image" name="IDR_NTP_CART_DISCOUNT_CONSENT_DARK" file="common/ntp_cart_discount_consent_dark.png" />
         <structure type="chrome_scaled_image" name="IDR_NTP_CART_DISCOUNT_CONSENT_LIGHT" file="common/ntp_cart_discount_consent_light.png" />
-        <structure type="chrome_scaled_image" name="IDR_NTP_FAVICON" file="common/favicon_ntp.png" />
         <structure type="chrome_scaled_image" name="IDR_PASSWORD_CHECK" file="common/password_check.png" />
         <structure type="chrome_scaled_image" name="IDR_PASSWORD_CHECK_DARK" file="common/password_check_dark.png" />
         <if expr="_google_chrome">
@@ -156,6 +176,9 @@
       <structure type="chrome_scaled_image" name="IDR_PLUGINS_FAVICON" file="common/favicon_plugins.png" />
       <structure type="chrome_scaled_image" name="IDR_PRERENDER" file="common/prerender_succeed_icon.png" />
       <structure type="chrome_scaled_image" name="IDR_PRODUCT_LOGO_32" file="${branding_path_component}/product_logo_32.png" />
+      <if expr="not is_android">
+          <structure type="chrome_scaled_image" name="IDR_PRICE_TRACKING_ON_IOS_ICON" file="common/price_tracking_on_ios.png" />
+      </if>
       <if expr="_google_chrome">
         <then>
           <if expr="is_linux">
@@ -260,12 +283,31 @@
         <structure type="chrome_scaled_image" name="IDR_PROFILE_AVATAR_55" file="common/modern_avatars/abstract/avatar_sandwich.png" />
       </if>
       <structure type="chrome_scaled_image" name="IDR_PROFILE_AVATAR_PLACEHOLDER_LARGE" file="common/profile_avatar_placeholder_large.png" />
+      <if expr="_google_chrome">
+        <structure type="chrome_scaled_image" name="IDR_REMOTE_ACTOR_SHARING_ILLUSTRATION" file="google_chrome/remote_actor_sharing_illustration.png" />
+      </if>
       <if expr="is_chromeos">
         <structure type="chrome_scaled_image" name="IDR_RESET_WARNING" file="cros/reset_warning.png" />
         <structure type="chrome_scaled_image" name="IDR_ENABLE_DEBUGGING_SUCCESS" file="cros/enable_debugging_success.png" />
       </if>
       <structure type="chrome_scaled_image" name="IDR_RESTORE_BUTTON_MASK" file="common/restore_button_mask.png" />
       <if expr="not is_android">
+        <structure type="chrome_scaled_image" name="IDR_AUTOFILL_AI_FFR_BANNER" file="common/autofill_ai_ffr_banner.png" />
+        <structure type="chrome_scaled_image" name="IDR_AUTOFILL_AI_FFR_BANNER_DARK" file="common/autofill_ai_ffr_banner_dark.png" />
+        <if expr="_google_chrome">
+          <then>
+            <structure type="chrome_scaled_image" name="IDR_DICTATION_ONBOARDING_BANNER" file="google_chrome/dictation_onboarding_banner.png" />
+            <structure type="chrome_scaled_image" name="IDR_DICTATION_ONBOARDING_BANNER_DARK" file="google_chrome/dictation_onboarding_banner_dark.png" />
+          </then>
+          <else>
+            <structure type="chrome_scaled_image" name="IDR_DICTATION_ONBOARDING_BANNER" file="common/dictation_onboarding_banner.png" />
+            <structure type="chrome_scaled_image" name="IDR_DICTATION_ONBOARDING_BANNER_DARK" file="common/dictation_onboarding_banner_dark.png" />
+          </else>
+        </if>
+        <if expr="_google_chrome">
+          <structure type="chrome_scaled_image" name="IDR_SAFETY_ON_IOS" file="google_chrome/safety_on_ios.png" />
+          <structure type="chrome_scaled_image" name="IDR_SAFETY_ON_IOS_DARK" file="google_chrome/safety_on_ios_dark.png" />
+        </if>
         <structure type="chrome_scaled_image" name="IDR_SAFETY_TIP_ILLUSTRATION_DARK" file="common/safety_tip_illustration_dark.png" />
         <structure type="chrome_scaled_image" name="IDR_SAFETY_TIP_ILLUSTRATION_LIGHT" file="common/safety_tip_illustration_light.png" />
         <structure type="chrome_scaled_image" name="IDR_SAVED_PASSWORDS_NEUTRAL_STATE" file="common/passwords_neutral_state.png" />
@@ -274,6 +316,12 @@
         <structure type="chrome_scaled_image" name="IDR_SAVED_PASSWORDS_SAFE_STATE_DARK" file="common/passwords_safe_state_dark.png" />
         <structure type="chrome_scaled_image" name="IDR_SAVE_ADDRESS" file="common/save_address.png" />
         <structure type="chrome_scaled_image" name="IDR_SAVE_ADDRESS_DARK" file="common/save_address_dark.png" />
+        <structure type="chrome_scaled_image" name="IDR_SAVE_PASSPORT" file="common/save_passport.png" />
+        <structure type="chrome_scaled_image" name="IDR_SAVE_PASSPORT_DARK" file="common/save_passport_dark.png" />
+        <structure type="chrome_scaled_image" name="IDR_SAVE_DRIVERS_LICENSE" file="common/save_drivers_license.png" />
+        <structure type="chrome_scaled_image" name="IDR_SAVE_DRIVERS_LICENSE_DARK" file="common/save_drivers_license_dark.png" />
+        <structure type="chrome_scaled_image" name="IDR_SAVE_VEHICLE" file="common/save_vehicle.png" />
+        <structure type="chrome_scaled_image" name="IDR_SAVE_VEHICLE_DARK" file="common/save_vehicle_dark.png" />
         <structure type="chrome_scaled_image" name="IDR_SAVE_PASSWORD" file="common/save_password.png" />
         <structure type="chrome_scaled_image" name="IDR_SAVE_PASSWORD_DARK" file="common/save_password_dark.png" />
         <structure type="chrome_scaled_image" name="IDR_SAVE_CARD" file="common/save_card.png" />
@@ -284,12 +332,6 @@
         <structure type="chrome_scaled_image" name="IDR_SAVE_CVC_DARK" file="common/save_cvc_dark.png" />
         <structure type="chrome_scaled_image" name="IDR_MIGRATE_ADDRESS_AVATAR50_X135_Y54" file="common/migrate_address_avatar50_x135_y54.png" />
         <structure type="chrome_scaled_image" name="IDR_MIGRATE_ADDRESS_AVATAR50_X135_Y54_DARK" file="common/migrate_address_avatar50_x135_y54_dark.png" />
-        <structure type="chrome_scaled_image" name="IDR_PASSWORD_CHANGE_NEUTRAL" file="common/password_change_neutral.png" />
-        <structure type="chrome_scaled_image" name="IDR_PASSWORD_CHANGE_WARNING" file="common/password_change_failure.png" />
-        <structure type="chrome_scaled_image" name="IDR_PASSWORD_CHANGE_SUCCESS" file="common/password_change_success.png" />
-        <structure type="chrome_scaled_image" name="IDR_PASSWORD_CHANGE_NEUTRAL_DARK" file="common/password_change_neutral_dark.png" />
-        <structure type="chrome_scaled_image" name="IDR_PASSWORD_CHANGE_WARNING_DARK" file="common/password_change_failure_dark.png" />
-        <structure type="chrome_scaled_image" name="IDR_PASSWORD_CHANGE_SUCCESS_DARK" file="common/password_change_success_dark.png" />
         <structure type="chrome_scaled_image" name="IDR_PRIVACY_SANDBOX_CONFIRMATION_BANNER" file="common/privacy_sandbox_confirmation_banner.png" />
         <structure type="chrome_scaled_image" name="IDR_PRIVACY_SANDBOX_CONFIRMATION_BANNER_DARK" file="common/privacy_sandbox_confirmation_banner_dark.png" />
         <structure type="chrome_scaled_image" name="IDR_AUTOFILL_MANDATORY_REAUTH_OPT_IN" file="common/autofill_mandatory_reauth_opt_in.png" />
@@ -302,6 +344,8 @@
             <structure type="chrome_scaled_image" name="IDR_SHARED_TAB_GROUPS_DARK" file="${branding_path_component}/shared_tab_groups_dark.png" />
             <structure type="chrome_scaled_image" name="IDR_SHARED_TAB_GROUPS_LIGHT" file="${branding_path_component}/shared_tab_groups_light.png" />
         </if> <!-- _google_chrome -->
+        <structure type="chrome_scaled_image" name="IDR_SHOPPING_ON_IOS" file="common/shopping_on_ios.png" />
+        <structure type="chrome_scaled_image" name="IDR_SHOPPING_ON_IOS_DARK" file="common/shopping_on_ios_dark.png" />
       </if> <!-- not is_android -->
       <if expr="is_chromeos">
         <structure type="chrome_scaled_image" name="IDR_LOGO_AVATAR_CIRCLE_BLUE_COLOR" file="cros/logo_avatar_circle_blue_color.png" />
@@ -310,6 +354,8 @@
       <if expr="is_macosx">
         <structure type="chrome_scaled_image" name="IDR_SWIPE_BACK" file="mac/back_large.png" />
         <structure type="chrome_scaled_image" name="IDR_SWIPE_FORWARD" file="mac/forward_large.png" />
+        <structure type="chrome_scaled_image" name="IDR_ARROW_BACKWARD" file="mac/arrow_back.png" />
+        <structure type="chrome_scaled_image" name="IDR_ARROW_FORWARD" file="mac/arrow_forward.png" />
       </if>
       <!-- Used by ChromeOS login page. -->
       <if expr="is_chromeos">
@@ -321,6 +367,11 @@
       </if>
       <structure type="chrome_scaled_image" name="IDR_TAB_DROP_DOWN" file="tab_drop_down.png" />
       <structure type="chrome_scaled_image" name="IDR_TAB_DROP_UP" file="tab_drop_up.png" />
+      <structure type="chrome_scaled_image" name="IDR_TAB_DROP_LEFT" file="tab_drop_left.png" />
+      <structure type="chrome_scaled_image" name="IDR_TAB_DROP_RIGHT" file="tab_drop_right.png" />
+      <if expr="not is_android">
+          <structure type="chrome_scaled_image" name="IDR_TAB_GROUPS_ON_IOS_ICON" file="common/tab_groups_on_ios.png" />
+      </if>
       <structure type="chrome_scaled_image" name="IDR_THEME_BUTTON_BACKGROUND" file="notused.png" />
       <structure type="chrome_scaled_image" name="IDR_THEME_FRAME" file="notused.png" />
       <structure type="chrome_scaled_image" name="IDR_THEME_FRAME_INACTIVE" file="notused.png" />
@@ -364,7 +415,8 @@
         <structure type="chrome_scaled_image" name="IDR_UPLOAD_VIOLATION_DARK" file="common/upload_violation_dark.png" />
       </if>
       <if expr="not _google_chrome">
-        <if expr="not is_android">
+        <if expr="not is_android or is_desktop_android">
+          <!-- Desktop Android supports extensions and the web store. -->
           <structure type="chrome_scaled_image" name="IDR_WEBSTORE_ICON" file="chromium/webstore_icon.png" />
           <structure type="chrome_scaled_image" name="IDR_WEBSTORE_ICON_16" file="chromium/webstore_icon_16.png" />
           <structure type="chrome_scaled_image" name="IDR_WEBSTORE_ICON_24" file="chromium/webstore_icon_24.png" />
@@ -372,11 +424,14 @@
         </if>
       </if>
       <if expr="_google_chrome">
-        <if expr="not is_android">
+        <if expr="not is_android or is_desktop_android">
+          <!-- Desktop Android supports extensions and the web store. -->
           <structure type="chrome_scaled_image" name="IDR_WEBSTORE_ICON" file="google_chrome/webstore_icon.png" />
           <structure type="chrome_scaled_image" name="IDR_WEBSTORE_ICON_16" file="google_chrome/webstore_icon_16.png" />
           <structure type="chrome_scaled_image" name="IDR_WEBSTORE_ICON_24" file="google_chrome/webstore_icon_24.png" />
           <structure type="chrome_scaled_image" name="IDR_WEBSTORE_ICON_32" file="google_chrome/webstore_icon_32.png" />
+        </if>
+        <if expr="not is_android">
           <structure type="chrome_scaled_image" name="IDR_TRANSLATE_TAB_WORDMARK" file="google_chrome/translate_tab_wordmark.png" />
           <structure type="chrome_scaled_image" name="IDR_TAILORED_SECURITY_UNCONSENTED_NOTIFICATION" file="google_chrome/safer_with_google_blue_shield.png" />
         </if>
@@ -388,6 +443,8 @@
       </if>
       <if expr="not is_android">
         <structure type="chrome_scaled_image" name="IDR_SUCCESS_GREEN_CHECKMARK" file="common/success_green_checkmark.png" />
+        <structure type="chrome_scaled_image" name="IDR_YOUR_CHROME_ON_IOS" file="common/your_chrome_on_ios.png" />
+        <structure type="chrome_scaled_image" name="IDR_YOUR_CHROME_ON_IOS_DARK" file="common/your_chrome_on_ios_dark.png" />
       </if>
     </structures>
   </release>

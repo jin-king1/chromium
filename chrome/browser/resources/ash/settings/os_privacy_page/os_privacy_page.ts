@@ -104,19 +104,6 @@ export class OsSettingsPrivacyPageElement extends
       syncStatus: Object,
 
       /**
-       * Used by DeepLinkingMixin to focus this page's deep links.
-       */
-      supportedSettingIds: {
-        type: Object,
-        value: () => new Set<Setting>([
-          Setting.kVerifiedAccess,
-          Setting.kNonSplitSyncEncryptionOptions,
-          Setting.kImproveSearchSuggestions,
-          Setting.kMakeSearchesAndBrowsingBetter,
-        ]),
-      },
-
-      /**
        * True if fingerprint settings should be displayed on this machine.
        */
       fingerprintUnlockEnabled_: {
@@ -231,33 +218,42 @@ export class OsSettingsPrivacyPageElement extends
     return ['onDataAccessFlagsSet_(isThunderboltSupported_.*)'];
   }
 
-  syncStatus: SyncStatus;
-  private authTokenInfo_: chrome.quickUnlockPrivate.TokenInfo|undefined;
+  declare syncStatus: SyncStatus;
+
+  // DeepLinkingMixin override
+  override supportedSettingIds = new Set<Setting>([
+    Setting.kVerifiedAccess,
+    Setting.kNonSplitSyncEncryptionOptions,
+    Setting.kImproveSearchSuggestions,
+    Setting.kMakeSearchesAndBrowsingBetter,
+  ]);
+
+  declare private authTokenInfo_: chrome.quickUnlockPrivate.TokenInfo|undefined;
   private browserProxy_: PeripheralDataAccessBrowserProxy;
-  private authTokenReply_: RequestTokenReply|undefined|null;
+  declare private authTokenReply_: RequestTokenReply|undefined|null;
 
   /**
    * The timeout ID to pass to clearTimeout() to cancel auth token
    * invalidation.
    */
   private clearAccountPasswordTimeoutId_: number|undefined = undefined;
-  private dataAccessProtectionPrefName_: string;
-  private dataAccessShiftTabPressed_: boolean;
-  private fingerprintUnlockEnabled_: boolean;
-  private isAccountManagerEnabled_: boolean;
-  private isAuthPanelInSessionEnabled_: boolean;
-  private isGuestMode_: boolean;
-  private isRevenBranding_: boolean;
-  private isSmartPrivacyEnabled_: boolean;
-  private isThunderboltSupported_: boolean;
-  private isUserConfigurable_: boolean;
-  private profileLabel_: string;
-  private section_: Section;
-  private showDisableProtectionDialog_: boolean;
-  private showPasswordPromptDialog_: boolean;
-  private showSecureDnsSetting_: boolean;
+  declare private dataAccessProtectionPrefName_: string;
+  declare private dataAccessShiftTabPressed_: boolean;
+  declare private fingerprintUnlockEnabled_: boolean;
+  declare private isAccountManagerEnabled_: boolean;
+  declare private isAuthPanelInSessionEnabled_: boolean;
+  declare private isGuestMode_: boolean;
+  declare private isRevenBranding_: boolean;
+  declare private isSmartPrivacyEnabled_: boolean;
+  declare private isThunderboltSupported_: boolean;
+  declare private isUserConfigurable_: boolean;
+  declare private profileLabel_: string;
+  declare private section_: Section;
+  declare private showDisableProtectionDialog_: boolean;
+  declare private showPasswordPromptDialog_: boolean;
+  declare private showSecureDnsSetting_: boolean;
   private syncBrowserProxy_: SyncBrowserProxy;
-  private isAuthenticating_: boolean;
+  declare private isAuthenticating_: boolean;
 
   constructor() {
     super();
@@ -359,6 +355,10 @@ export class OsSettingsPrivacyPageElement extends
     if (newRoute === routes.OS_SYNC_SETUP || newRoute === this.route) {
       this.attemptDeepLink();
     }
+
+    if (newRoute === this.route) {
+      this.initializeLockState();
+    }
   }
 
   /**
@@ -371,16 +371,7 @@ export class OsSettingsPrivacyPageElement extends
     return this.i18n('lockScreenTitleLock');
   }
 
-  private getPasswordState_(hasPin: boolean, enableScreenLock: boolean):
-      string {
-    if (!enableScreenLock) {
-      return this.i18n('lockScreenNone');
-    }
-    if (hasPin) {
-      return this.i18n('lockScreenPinOrPassword');
-    }
-    return this.i18n('lockScreenPasswordOnly');
-  }
+
 
   private getSyncAndGoogleServicesSubtext_(): string {
     if (this.syncStatus && this.syncStatus.hasError &&

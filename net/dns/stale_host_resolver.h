@@ -90,24 +90,29 @@ class StaleHostResolver : public HostResolver {
   std::unique_ptr<ResolveHostRequest> CreateRequest(
       url::SchemeHostPort host,
       NetworkAnonymizationKey network_anonymization_key,
+      handles::NetworkHandle target_network,
       NetLogWithSource net_log,
       std::optional<ResolveHostParameters> optional_parameters) override;
   std::unique_ptr<ResolveHostRequest> CreateRequest(
       const HostPortPair& host,
       const NetworkAnonymizationKey& network_anonymization_key,
+      handles::NetworkHandle target_network,
       const NetLogWithSource& net_log,
       const std::optional<ResolveHostParameters>& optional_parameters) override;
   std::unique_ptr<ServiceEndpointRequest> CreateServiceEndpointRequest(
       Host host,
       NetworkAnonymizationKey network_anonymization_key,
+      handles::NetworkHandle target_network,
       NetLogWithSource net_log,
       ResolveHostParameters parameters) override;
 
   // The remaining public methods pass through to the inner resolver:
 
   HostCache* GetHostCache() override;
-  base::Value::Dict GetDnsConfigAsValue() const override;
+  base::DictValue GetDnsConfigAsValue() const override;
   void SetRequestContext(URLRequestContext* request_context) override;
+  bool IsHappyEyeballsV3Enabled() const override;
+  std::unique_ptr<HostResolver::ProbeRequest> CreateDohProbeRequest() override;
 
   // Set `tick_clock_` for testing. Must be set before issuing any requests.
   NET_EXPORT void SetTickClockForTesting(const base::TickClock* tick_clock);

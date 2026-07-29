@@ -35,6 +35,22 @@
 
 namespace {
 
+#if !BUILDFLAG(IS_ANDROID)
+// Convert a vector from TrustedVaultKey mojo structs to
+// TrustedVaultKeyAndVersion.
+std::vector<trusted_vault::TrustedVaultKeyAndVersion> ConvertFromMojomVaultKeys(
+    const std::vector<chrome::mojom::TrustedVaultKeyPtr>& keys) {
+  std::vector<trusted_vault::TrustedVaultKeyAndVersion> converted_keys;
+  converted_keys.reserve(keys.size());
+  std::ranges::transform(keys, std::back_inserter(converted_keys),
+                         [](const auto& key) {
+                           return trusted_vault::TrustedVaultKeyAndVersion(
+                               key->bytes, key->version);
+                         });
+  return converted_keys;
+}
+#endif  // !BUILDFLAG(IS_ANDROID)
+
 // EncryptionKeyApi represents the actual exposure of the Mojo API (i.e.
 // chrome::mojom::TrustedVaultEncryptionKeysExtension) to the renderer.
 // Instantiated only for allowed origins.
@@ -61,7 +77,7 @@ class EncryptionKeyApi
           trusted_vault_keys,
       SetEncryptionKeysCallback callback) override {
     // Extra safeguard.
-    if (receivers_.GetCurrentTargetFrame()->GetLastCommittedOrigin() !=
+    if (receivers_.CurrentTargetFrame().GetLastCommittedOrigin() !=
         GetAllowedGoogleAccountsOrigin()) {
       return;
     }
@@ -96,7 +112,7 @@ class EncryptionKeyApi
       int method_type_hint,
       AddTrustedRecoveryMethodCallback callback) override {
     // Extra safeguard.
-    if (receivers_.GetCurrentTargetFrame()->GetLastCommittedOrigin() !=
+    if (receivers_.CurrentTargetFrame().GetLastCommittedOrigin() !=
         GetAllowedGoogleAccountsOrigin()) {
       return;
     }
@@ -120,9 +136,12 @@ class EncryptionKeyApi
  private:
   // Null `trusted_vault_service` is interpreted as incognito (when it comes to
   // metrics).
-  EncryptionKeyApi(content::RenderFrameHost* rfh,
-                   EnclaveManager* enclave_manager,
-                   trusted_vault::TrustedVaultService* trusted_vault_service)
+  EncryptionKeyApi(
+      content::RenderFrameHost* rfh,
+      EnclaveManager* enclave_manager,
+      trusted_vault::TrustedVaultService* trusted_vault_service,
+      std::optional<trusted_vault::TrustedVaultUserActionTriggerForUMA>
+          user_action_trigger)
       : DocumentUserData<EncryptionKeyApi>(rfh),
         is_off_the_record_for_uma_(
             content::WebContents::FromRenderFrameHost(rfh)
@@ -130,6 +149,7 @@ class EncryptionKeyApi
                 ->IsOffTheRecord()),
         trusted_vault_service_(trusted_vault_service),
         enclave_manager_(enclave_manager),
+        user_action_trigger_(user_action_trigger),
         receivers_(content::WebContents::FromRenderFrameHost(rfh), this) {}
 
 #if !BUILDFLAG(IS_ANDROID)
@@ -143,6 +163,14 @@ class EncryptionKeyApi
         "Sync.TrustedVaultJavascriptSetEncryptionKeysIsIncognito",
         trusted_vault_service_ == nullptr);
 
+    if (security_domain == trusted_vault::SecurityDomainId::kPasskeys) {
+      if (enclave_manager_) {
+        enclave_manager_->StoreKeys(gaia_id, ConvertFromMojomVaultKeys(keys),
+                                    user_action_trigger_);
+      }
+      return;
+    }
+
     // Guard against incognito (where `trusted_vault_service_` is null).
     if (!trusted_vault_service_) {
       return;
@@ -154,14 +182,6 @@ class EncryptionKeyApi
                            &chrome::mojom::TrustedVaultKey::bytes);
     const int32_t last_key_version = keys.back()->version;
 
-    if (security_domain == trusted_vault::SecurityDomainId::kPasskeys) {
-      if (enclave_manager_) {
-        enclave_manager_->StoreKeys(gaia_id, std::move(keys_as_bytes),
-                                    last_key_version);
-      }
-      return;
-    }
-
     trusted_vault::TrustedVaultClient* trusted_vault_client =
         trusted_vault_service_->GetTrustedVaultClient(security_domain);
     if (!trusted_vault_client) {
@@ -169,7 +189,8 @@ class EncryptionKeyApi
                   << static_cast<int>(security_domain);
       return;
     }
-    trusted_vault_client->StoreKeys(gaia_id, keys_as_bytes, last_key_version);
+    trusted_vault_client->StoreKeys(gaia_id, keys_as_bytes, last_key_version,
+                                    user_action_trigger_);
   }
 #endif
 
@@ -180,6 +201,8 @@ class EncryptionKeyApi
 
   const raw_ptr<trusted_vault::TrustedVaultService> trusted_vault_service_;
   const raw_ptr<EnclaveManager> enclave_manager_;
+  const std::optional<trusted_vault::TrustedVaultUserActionTriggerForUMA>
+      user_action_trigger_;
 
   content::RenderFrameHostReceiverSet<
       chrome::mojom::TrustedVaultEncryptionKeysExtension>
@@ -246,10 +269,16 @@ TrustedVaultEncryptionKeysTabHelper::TrustedVaultEncryptionKeysTabHelper(
           *web_contents),
       content::WebContentsObserver(web_contents),
       trusted_vault_service_(trusted_vault_service),
-      enclave_manager_(enclave_manager) {}
+      enclave_manager_(enclave_manager),
+      user_action_trigger_(std::nullopt) {}
 
 TrustedVaultEncryptionKeysTabHelper::~TrustedVaultEncryptionKeysTabHelper() =
     default;
+
+void TrustedVaultEncryptionKeysTabHelper::SetUserActionTrigger(
+    trusted_vault::TrustedVaultUserActionTriggerForUMA trigger) {
+  user_action_trigger_ = trigger;
+}
 
 void TrustedVaultEncryptionKeysTabHelper::DidFinishNavigation(
     content::NavigationHandle* navigation_handle) {
@@ -260,7 +289,7 @@ void TrustedVaultEncryptionKeysTabHelper::DidFinishNavigation(
   if (ShouldExposeGoogleAccountsPrivateApi(navigation_handle)) {
     EncryptionKeyApi::CreateForCurrentDocument(
         navigation_handle->GetRenderFrameHost(), enclave_manager_,
-        trusted_vault_service_);
+        trusted_vault_service_, user_action_trigger_);
   } else {
     // NavigationHandle::GetRenderFrameHost() can only be accessed after a
     // response has been delivered for processing, or after the navigation fails

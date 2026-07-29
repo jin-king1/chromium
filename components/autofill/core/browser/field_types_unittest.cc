@@ -9,13 +9,16 @@
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace autofill {
+namespace {
+
+using ::testing::Optional;
 
 TEST(FieldTypesTest, TypeStringConversion) {
   EXPECT_EQ(TypeNameToFieldType(FieldTypeToStringView(NO_SERVER_DATA)),
             NO_SERVER_DATA);
   for (int i = 0; i < MAX_VALID_FIELD_TYPE; ++i) {
-    if (FieldType raw_value = static_cast<FieldType>(i);
-        ToSafeFieldType(raw_value, NO_SERVER_DATA) != NO_SERVER_DATA) {
+    if (FieldType raw_value = static_cast<FieldType>(i);  // nocheck
+        ToSafeFieldType(raw_value).has_value()) {
       EXPECT_EQ(TypeNameToFieldType(FieldTypeToStringView(raw_value)),
                 raw_value);
     }
@@ -66,7 +69,6 @@ TEST(FieldTypesTest, IsValidFieldType) {
       CREDIT_CARD_TYPE,
       CREDIT_CARD_VERIFICATION_CODE,
       COMPANY_NAME,
-      FIELD_WITH_DEFAULT_VALUE,
       MERCHANT_EMAIL_SIGNUP,
       MERCHANT_PROMO_CODE,
       PASSWORD,
@@ -97,8 +99,6 @@ TEST(FieldTypesTest, IsValidFieldType) {
       ADDRESS_HOME_HOUSE_NUMBER_AND_APT,
       ADDRESS_HOME_SUBPREMISE,
       ADDRESS_HOME_OTHER_SUBUNIT,
-      NAME_LAST_PREFIX,
-      NAME_LAST_CORE,
       NAME_LAST_FIRST,
       NAME_LAST_CONJUNCTION,
       NAME_LAST_SECOND,
@@ -123,47 +123,83 @@ TEST(FieldTypesTest, IsValidFieldType) {
       ADDRESS_HOME_DEPENDENT_LOCALITY_AND_LANDMARK,
       SINGLE_USERNAME_FORGOT_PASSWORD,
       SINGLE_USERNAME_WITH_INTERMEDIATE_VALUES,
-      IMPROVED_PREDICTION,
-      PASSPORT_NAME_TAG,
       PASSPORT_NUMBER,
-      PASSPORT_ISSUING_COUNTRY_TAG,
-      PASSPORT_EXPIRATION_DATE_TAG,
-      PASSPORT_ISSUE_DATE_TAG,
+      PASSPORT_ISSUING_COUNTRY,
+      PASSPORT_EXPIRATION_DATE,
+      PASSPORT_ISSUE_DATE,
       LOYALTY_MEMBERSHIP_PROGRAM,
       LOYALTY_MEMBERSHIP_PROVIDER,
       LOYALTY_MEMBERSHIP_ID,
-      VEHICLE_OWNER_TAG,
       VEHICLE_LICENSE_PLATE,
       VEHICLE_VIN,
       VEHICLE_MAKE,
       VEHICLE_MODEL,
-      DRIVERS_LICENSE_NAME_TAG,
       DRIVERS_LICENSE_REGION,
       DRIVERS_LICENSE_NUMBER,
-      DRIVERS_LICENSE_EXPIRATION_DATE_TAG,
-      DRIVERS_LICENSE_ISSUE_DATE_TAG,
+      DRIVERS_LICENSE_EXPIRATION_DATE,
+      DRIVERS_LICENSE_ISSUE_DATE,
+      VEHICLE_YEAR,
+      VEHICLE_PLATE_STATE,
+      EMAIL_OR_LOYALTY_MEMBERSHIP_ID,
+      NATIONAL_ID_CARD_NUMBER,
+      NATIONAL_ID_CARD_EXPIRATION_DATE,
+      NATIONAL_ID_CARD_ISSUE_DATE,
+      NATIONAL_ID_CARD_ISSUING_COUNTRY,
+      REDRESS_NUMBER,
+      KNOWN_TRAVELER_NUMBER,
+      KNOWN_TRAVELER_NUMBER_EXPIRATION_DATE,
+      ADDRESS_HOME_ZIP_PREFIX,
+      ADDRESS_HOME_ZIP_SUFFIX,
+      FLIGHT_RESERVATION_FLIGHT_NUMBER,
+      FLIGHT_RESERVATION_CONFIRMATION_CODE,
+      FLIGHT_RESERVATION_TICKET_NUMBER,
+      FLIGHT_RESERVATION_DEPARTURE_AIRPORT,
+      FLIGHT_RESERVATION_ARRIVAL_AIRPORT,
+      FLIGHT_RESERVATION_DEPARTURE_DATE,
+      ADDRESS_HOME_ZIP_AND_CITY,
+      ORDER_ID,
+      ORDER_DATE,
+      ORDER_MERCHANT_NAME,
+      SHIPMENT_TRACKING_NUMBER,
   };
+  static_assert(FieldType::MAX_VALID_FIELD_TYPE == 220,
+                "New field type needs to be added to kValidFieldTypes.");
   FieldType kInvalidValue = static_cast<FieldType>(123456);
   ASSERT_FALSE(kValidFieldTypes.count(kInvalidValue));
   for (int i = -10; i < MAX_VALID_FIELD_TYPE + 10; ++i) {
     FieldType raw_value = static_cast<FieldType>(i);
-    EXPECT_EQ(ToSafeFieldType(raw_value, kInvalidValue),
-              kValidFieldTypes.count(raw_value) ? raw_value : kInvalidValue);
+    if (kValidFieldTypes.contains(raw_value)) {
+      EXPECT_THAT(ToSafeFieldType(raw_value), Optional(raw_value));
+    } else {
+      EXPECT_EQ(ToSafeFieldType(raw_value), std::nullopt);
+    }
   }
 }
 
 TEST(FieldTypesTest, TestWith2DigitExpirationYear) {
   FieldType assumed_field_type =
-      ToSafeFieldType(CREDIT_CARD_EXP_2_DIGIT_YEAR, NO_SERVER_DATA);
+      ToSafeFieldType(CREDIT_CARD_EXP_2_DIGIT_YEAR).value_or(NO_SERVER_DATA);
   size_t result = DetermineExpirationYearLength(assumed_field_type);
   EXPECT_EQ(result, static_cast<size_t>(2));
 }
 
 TEST(FieldTypesTest, TestWith4DigitExpirationYear) {
   FieldType assumed_field_type =
-      ToSafeFieldType(CREDIT_CARD_EXP_4_DIGIT_YEAR, NO_SERVER_DATA);
+      ToSafeFieldType(CREDIT_CARD_EXP_4_DIGIT_YEAR).value_or(NO_SERVER_DATA);
   size_t result = DetermineExpirationYearLength(assumed_field_type);
   EXPECT_EQ(result, static_cast<size_t>(4));
 }
 
+// Tests that ToSafeHtmlFieldType() (which is constexpr) is equivalent to
+// mojom::IsKnownEnumValue().
+TEST(FieldTypesTest, ToSafeHtmlFieldType) {
+  for (auto raw = std::to_underlying(HtmlFieldType::kMinValue) - 1;
+       raw <= std::to_underlying(HtmlFieldType::kMaxValue) + 1; ++raw) {
+    EXPECT_EQ(
+        ToSafeHtmlFieldType(raw).has_value(),
+        mojom::IsKnownEnumValue(static_cast<HtmlFieldType>(raw)));  // nocheck
+  }
+}
+
+}  // namespace
 }  // namespace autofill

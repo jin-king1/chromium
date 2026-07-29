@@ -4,14 +4,16 @@
 
 package org.chromium.chrome.browser.tasks.tab_management;
 
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
+import static org.chromium.build.NullUtil.assumeNonNull;
 
 import org.chromium.base.Token;
 import org.chromium.base.lifetime.Destroyable;
-import org.chromium.base.supplier.ObservableSupplier;
-import org.chromium.base.supplier.ObservableSupplierImpl;
-import org.chromium.base.supplier.TransitiveObservableSupplier;
+import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.base.supplier.NullableObservableSupplier;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableNullableObservableSupplier;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.components.collaboration.CollaborationService;
 import org.chromium.components.data_sharing.DataSharingService;
 import org.chromium.components.data_sharing.GroupMember;
@@ -20,16 +22,22 @@ import org.chromium.components.tab_group_sync.TabGroupSyncService;
 import java.util.List;
 import java.util.Objects;
 
-/** A wrapper for {@link SharedGroupObserver} that supports changing the observed tab group id. */
+/**
+ * A wrapper for {@link SharedGroupObserver} that supports changing the observed tab group id while
+ * continuing to observe a single set of {@link MonotonicObservableSupplier} for updates. If only a single
+ * tab group is of interest, prefer {@link SharedGroupObserver}.
+ *
+ * <p>This class abstracts away the record keeping that would otherwise be required to register and
+ * unregister observers and create a new {@link SharedGroupObserver} whenever a different tab group
+ * id needs to be observed.
+ */
+@NullMarked
 public class TransitiveSharedGroupObserver implements Destroyable {
-    private final ObservableSupplierImpl<SharedGroupObserver> mCurrentSharedGroupObserverSupplier =
-            new ObservableSupplierImpl<>();
-    private final TransitiveObservableSupplier<SharedGroupObserver, Integer>
-            mGroupSharedStateSupplier;
-    private final TransitiveObservableSupplier<SharedGroupObserver, List<GroupMember>>
-            mGroupMembersSupplier;
-    private final TransitiveObservableSupplier<SharedGroupObserver, String>
-            mCollaborationIdSupplier;
+    private final SettableNullableObservableSupplier<SharedGroupObserver>
+            mCurrentSharedGroupObserverSupplier = ObservableSuppliers.createNullable();
+    private final NullableObservableSupplier<Integer> mGroupSharedStateSupplier;
+    private final NullableObservableSupplier<List<GroupMember>> mGroupMembersSupplier;
+    private final NullableObservableSupplier<String> mCollaborationIdSupplier;
     private final TabGroupSyncService mTabGroupSyncService;
     private final DataSharingService mDataSharingService;
     private final CollaborationService mCollaborationService;
@@ -41,29 +49,24 @@ public class TransitiveSharedGroupObserver implements Destroyable {
      * @param dataSharingService Used to observe current share data.
      * @param collaborationService Used to fetch current shared data.
      */
+    @SuppressWarnings("NullAway") // https://github.com/uber/NullAway/issues/1128
     public TransitiveSharedGroupObserver(
-            @NonNull TabGroupSyncService tabGroupSyncService,
-            @NonNull DataSharingService dataSharingService,
-            @NonNull CollaborationService collaborationService) {
+            TabGroupSyncService tabGroupSyncService,
+            DataSharingService dataSharingService,
+            CollaborationService collaborationService) {
         mTabGroupSyncService = tabGroupSyncService;
         mDataSharingService = dataSharingService;
         mCollaborationService = collaborationService;
 
         mGroupSharedStateSupplier =
-                new TransitiveObservableSupplier<>(
-                        mCurrentSharedGroupObserverSupplier,
-                        sharedGroupStateObserver ->
-                                sharedGroupStateObserver.getGroupSharedStateSupplier());
+                mCurrentSharedGroupObserverSupplier.createTransitiveNullable(
+                        SharedGroupObserver::getGroupSharedStateSupplier);
         mGroupMembersSupplier =
-                new TransitiveObservableSupplier<>(
-                        mCurrentSharedGroupObserverSupplier,
-                        sharedGroupStateObserver ->
-                                sharedGroupStateObserver.getGroupMembersSupplier());
+                mCurrentSharedGroupObserverSupplier.createTransitiveNullable(
+                        SharedGroupObserver::getGroupMembersSupplier);
         mCollaborationIdSupplier =
-                new TransitiveObservableSupplier<>(
-                        mCurrentSharedGroupObserverSupplier,
-                        sharedGroupStateObserver ->
-                                sharedGroupStateObserver.getCollaborationIdSupplier());
+                mCurrentSharedGroupObserverSupplier.createTransitiveNullable(
+                        SharedGroupObserver::getCollaborationIdSupplier);
     }
 
     @Override
@@ -78,8 +81,7 @@ public class TransitiveSharedGroupObserver implements Destroyable {
 
         mCurrentTabGroupId = tabGroupId;
 
-        @Nullable
-        SharedGroupObserver newObserver =
+        @Nullable SharedGroupObserver newObserver =
                 tabGroupId == null
                         ? null
                         : new SharedGroupObserver(
@@ -92,23 +94,24 @@ public class TransitiveSharedGroupObserver implements Destroyable {
     }
 
     /** The held value corresponds to {@link GroupSharedState}. */
-    public ObservableSupplier<Integer> getGroupSharedStateSupplier() {
+    public NullableObservableSupplier<Integer> getGroupSharedStateSupplier() {
         return mGroupSharedStateSupplier;
     }
 
     /** The held value corresponds to the list of {@link GroupMember} for the group. */
-    public ObservableSupplier<List<GroupMember>> getGroupMembersSupplier() {
+    public NullableObservableSupplier<List<GroupMember>> getGroupMembersSupplier() {
         return mGroupMembersSupplier;
     }
 
     /** The held value corresponds to the collaboration id for the group. */
-    public ObservableSupplier<String> getCollaborationIdSupplier() {
+    public NullableObservableSupplier<String> getCollaborationIdSupplier() {
         return mCollaborationIdSupplier;
     }
 
     private void swapSharedGroupObserver(@Nullable SharedGroupObserver newObserver) {
-        if (mCurrentSharedGroupObserverSupplier.hasValue()) {
-            mCurrentSharedGroupObserverSupplier.get().destroy();
+        var currentSharedGroupObserver = mCurrentSharedGroupObserverSupplier.get();
+        if (currentSharedGroupObserver != null) {
+            assumeNonNull(currentSharedGroupObserver).destroy();
         }
 
         mCurrentSharedGroupObserverSupplier.set(newObserver);

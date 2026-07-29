@@ -140,7 +140,7 @@ void AddEntryToDataBase(sql::Database* db,
   sql::Statement statement_insert(
       db->GetCachedStatement(SQL_FROM_HERE, kSqlInsert));
   statement_insert.BindString(0, host_name);
-  statement_insert.BindInt64(1, (now - base::Time()).InMicroseconds());
+  statement_insert.BindTime(1, now);
   statement_insert.BindBool(2, opt_out);
   statement_insert.BindInt(3, type);
   statement_insert.Run();
@@ -320,8 +320,8 @@ void ClearBlockListSync(sql::Database* db,
       "DELETE FROM " OPT_OUT_TABLE_NAME " WHERE time >= ? and time <= ?";
 
   sql::Statement statement(db->GetUniqueStatement(kSql));
-  statement.BindInt64(0, (begin_time - base::Time()).InMicroseconds());
-  statement.BindInt64(1, (end_time - base::Time()).InMicroseconds());
+  statement.BindTime(0, begin_time);
+  statement.BindTime(1, end_time);
   statement.Run();
 }
 
@@ -394,7 +394,6 @@ void OptOutStoreSQL::LoadBlockList(
             // in their top 20 hosts. It should be closer to 32 * 100 * 20 for
             // most users, which is about 4096 * 15. The total size of the
             // database will be capped at 3200 entries.
-            .set_page_size(4096)
             .set_cache_size(250),
         // TODO(crbug.com/40134470): Migrate to OptOutBlocklist and update any
         // backend code that may depend on this tag.

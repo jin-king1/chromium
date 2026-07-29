@@ -17,8 +17,10 @@
 #include "chromeos/components/mahi/public/cpp/mahi_manager.h"
 #include "components/vector_icons/vector_icons.h"
 #include "third_party/skia/include/core/SkPath.h"
+#include "third_party/skia/include/core/SkPathBuilder.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/chromeos/styles/cros_tokens_color_mappings.h"
 #include "ui/compositor/layer.h"
 #include "ui/compositor/layer_animator.h"
@@ -26,10 +28,12 @@
 #include "ui/gfx/text_constants.h"
 #include "ui/views/animation/animation_builder.h"
 #include "ui/views/background.h"
+#include "ui/views/controls/focus_ring.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/layout/flex_layout_types.h"
 #include "ui/views/layout/flex_layout_view.h"
 #include "ui/views/layout/layout_types.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/view_class_properties.h"
 
 namespace ash {
@@ -60,7 +64,7 @@ SkPath GetClipPath(gfx::Size size) {
       SkPoint::Make(0.f, mahi_constants::kRefreshBannerStackDepth - 1);
   const auto bottom_horizontal_offset = SkPoint::Make(bottom_radius, 0.f);
 
-  return SkPath()
+  return SkPathBuilder()
       // Start just before the curve of the top-left corner.
       .moveTo(radius, 0.f)
       // Draw the top-left rounded corner.
@@ -76,7 +80,8 @@ SkPath GetClipPath(gfx::Size size) {
       .arcTo(bottom_right - bottom_vertical_offset, bottom_right, bottom_radius)
       .lineTo(bottom_right)
       .lineTo(top_right)
-      .close();
+      .close()
+      .detach();
 }
 
 }  // namespace
@@ -208,7 +213,9 @@ std::unique_ptr<IconButton> RefreshBannerView::CreateRefreshButton() {
               // Using `base::Unretained()` is safe here since
               // `ui_controller` outlives this `RefreshBannerView`.
               base::Unretained(ui_controller_)))
-          .SetVectorIcon(&vector_icons::kReloadChromeRefreshIcon)
+          .SetVectorIcon(&(::features::IsRoundedIconsEnabled()
+                               ? vector_icons::kRefreshIcon
+                               : vector_icons::kReloadChromeRefreshOldIcon))
           .SetType(IconButton::Type::kSmallProminentFloating)
           .SetAccessibleName(l10n_util::GetStringUTF16(
               IDS_ASH_MAHI_REFRESH_BANNER_BUTTON_ACCESSIBLE_NAME))

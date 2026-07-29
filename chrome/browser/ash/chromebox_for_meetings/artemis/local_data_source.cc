@@ -7,6 +7,7 @@
 #include "base/hash/hash.h"
 #include "base/i18n/time_formatting.h"
 #include "base/process/launch.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
@@ -32,20 +33,17 @@ constexpr LazyRE2 kFullLogLineRegex = {
 // Number of characters to ingest per log line to create unique hash.
 constexpr size_t kLogMsgHashSize = 50;
 
-// Dangerous internal buffer size in bytes. In practice, we should never hit
-// this limit due to previous memory-related mitigations, but let's add safety
-// tracking just in case.
-constexpr size_t kDangerousBufferSize = 2 * 1000 * 1000;  // 2Mb
-
 }  // namespace
 
-LocalDataSource::LocalDataSource(base::TimeDelta poll_rate,
+LocalDataSource::LocalDataSource(size_t data_buffer_size_limit,
+                                 base::TimeDelta poll_rate,
                                  bool data_needs_redacting,
                                  bool is_incremental)
-    : poll_rate_(poll_rate),
+    : data_buffer_size_limit_(data_buffer_size_limit),
+      poll_rate_(poll_rate),
       data_needs_redacting_(data_needs_redacting),
       is_incremental_(is_incremental),
-      redactor_(nullptr) {}
+      redactor_() {}
 
 inline LocalDataSource::~LocalDataSource() = default;
 
@@ -88,8 +86,8 @@ void LocalDataSource::AddWatchDog(
     // Pattern is guaranteed to be populated based on the
     // results of IsWatchDogFilterValid().
     const std::string& pattern = filter->pattern.value();
-    if (regex_cache_.count(pattern) == 0) {
-      regex_cache_[pattern] = std::make_unique<RE2>(pattern);
+    if (std::unique_ptr<RE2>& regex = regex_cache_[pattern]; regex == nullptr) {
+      regex = std::make_unique<RE2>(pattern);
     }
 
     regex_based_watchdogs_[pattern].Add(std::move(remote));
@@ -123,10 +121,6 @@ void LocalDataSource::FillDataBuffer() {
   // so there must be some kind of mojom hang-up. We'll resume when
   // the problem is corrected.
   if (IsDataBufferOverMaxLimit()) {
-    if (data_buffer_size_ >= kDangerousBufferSize) {
-      LOG(WARNING) << GetDisplayName() << " has reached a dangerously high "
-                   << "buffer allocation of " << data_buffer_size_ << " bytes.";
-    }
     return;
   }
 
@@ -185,7 +179,13 @@ void LocalDataSource::FillDataBuffer() {
 }
 
 bool LocalDataSource::IsDataBufferOverMaxLimit() {
-  return data_buffer_size_ > kMaxInternalBufferSize;
+  // In practice, we should never hit this limit due to previous memory-related
+  // mitigations, but let's add safety tracking just in case.
+  if (data_buffer_size_ >= data_buffer_size_limit_ * 2) {
+    LOG(WARNING) << GetDisplayName() << " has reached a dangerously high "
+                 << "buffer allocation of " << data_buffer_size_ << " bytes.";
+  }
+  return data_buffer_size_ > data_buffer_size_limit_;
 }
 
 void LocalDataSource::RedactDataBuffer(std::vector<std::string>& buffer) {
@@ -270,14 +270,15 @@ void LocalDataSource::BuildLogEntryFromLogLine(
     entry.set_timestamp_micros(time_since_epoch);
     entry.set_severity(severity.empty() ? default_severity
                                         : SeverityStringToEnum(severity));
-    entry.set_text_payload(log_msg);
+    entry.set_text_payload(base::StrCat(
+        {(severity.empty() ? "DEFAULT" : severity), " ", log_msg}));
   }
 }
 
-const std::string LocalDataSource::GetUniqueInsertId(
-    const std::string& log_msg) {
-  std::string to_be_hashed = device_id_ + ":" + GetDisplayName() + ":" +
-                             log_msg.substr(0, kLogMsgHashSize);
+const std::string LocalDataSource::GetUniqueInsertId(std::string_view log_msg) {
+  std::string to_be_hashed =
+      base::StrCat({device_id_, ":", GetDisplayName(), ":",
+                    log_msg.substr(0, kLogMsgHashSize)});
   size_t hash = base::FastHash(to_be_hashed);
   return base::NumberToString(hash);
 }
@@ -306,7 +307,7 @@ bool LocalDataSource::AreTimestampsExpected() const {
 }
 
 proto::LogSeverity LocalDataSource::SeverityStringToEnum(
-    const std::string& severity) {
+    std::string_view severity) {
   if (severity == "EMERGENCY" || severity == "EMERG") {
     return proto::LOG_SEVERITY_EMERGENCY;
   } else if (severity == "ALERT") {

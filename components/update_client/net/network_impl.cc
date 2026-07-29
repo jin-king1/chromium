@@ -11,7 +11,9 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
+#include "base/memory/weak_ptr.h"
 #include "base/numerics/safe_conversions.h"
+#include "build/branding_buildflags.h"
 #include "components/update_client/net/network_chromium.h"
 #include "net/base/load_flags.h"
 #include "net/http/http_response_headers.h"
@@ -22,6 +24,10 @@
 #include "services/network/public/cpp/simple_url_loader.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "url/gurl.h"
+
+#if BUILDFLAG(CHROME_FOR_TESTING)
+#include "net/base/request_priority.h"
+#endif
 
 namespace {
 
@@ -82,7 +88,7 @@ std::string GetStringHeader(const network::SimpleURLLoader* simple_url_loader,
 }
 
 // Returns the integral value of a header of the server response or -1 if
-// if the header is not available or a conversion error has occured.
+// if the header is not available or a conversion error has occurred.
 int64_t GetInt64Header(const network::SimpleURLLoader* simple_url_loader,
                        const char* header_name) {
   CHECK(simple_url_loader);
@@ -92,7 +98,7 @@ int64_t GetInt64Header(const network::SimpleURLLoader* simple_url_loader,
     return -1;
   }
 
-  return response_info->headers->GetInt64HeaderValue(header_name);
+  return response_info->headers->GetInt64HeaderValue(header_name).value_or(-1);
 }
 
 }  // namespace
@@ -132,23 +138,24 @@ void NetworkFetcherImpl::PostRequest(
   // `Content-Type` header present in the |ResourceRequest| above.
   simple_url_loader->AttachStringForUpload(post_data, content_type);
   simple_url_loader->SetOnResponseStartedCallback(base::BindOnce(
-      &NetworkFetcherImpl::OnResponseStartedCallback, base::Unretained(this),
-      std::move(response_started_callback)));
+      &NetworkFetcherImpl::OnResponseStartedCallback,
+      weak_ptr_factory_.GetWeakPtr(), std::move(response_started_callback)));
   simple_url_loader->SetOnDownloadProgressCallback(base::BindRepeating(
-      &NetworkFetcherImpl::OnProgressCallback, base::Unretained(this),
+      &NetworkFetcherImpl::OnProgressCallback, weak_ptr_factory_.GetWeakPtr(),
       std::move(progress_callback)));
-  constexpr size_t kMaxResponseSize = 1024 * 1024;
+  static constexpr size_t kMaxResponseSize = 1024 * 1024;
   simple_url_loader->DownloadToString(
       shared_url_network_factory_.get(),
       base::BindOnce(
           [](std::unique_ptr<network::SimpleURLLoader> simple_url_loader,
              PostRequestCompleteCallback post_request_complete_callback,
-             std::unique_ptr<std::string> response_body) {
+             std::optional<std::string> response_body) {
             std::move(post_request_complete_callback)
                 .Run(std::move(response_body), simple_url_loader->NetError(),
                      GetStringHeader(simple_url_loader.get(), kHeaderEtag),
                      GetStringHeader(simple_url_loader.get(),
                                      kHeaderXCupServerProof),
+                     /*header_set_cookie=*/"",
                      GetInt64Header(simple_url_loader.get(),
                                     kHeaderXRetryAfter));
           },
@@ -166,6 +173,17 @@ base::OnceClosure NetworkFetcherImpl::DownloadToFile(
   auto resource_request = std::make_unique<network::ResourceRequest>();
   resource_request->url = url;
   resource_request->method = "GET";
+#if BUILDFLAG(CHROME_FOR_TESTING)
+  // Chrome for Testing disables component updates by default, but it can
+  // optionally install required components prior to browser startup. In such
+  // cases, we must bump the request priority to avoid a deadlock in
+  // ComponentUpdateService::EnsureRequiredComponentsReady().
+  // If left at the default net::IDLE priority, download requests are not
+  // serviced when Chrome creates a new user data directory from scratch (a
+  // common scenario in test automation) and update progress gets stuck after
+  // the first OnEvent() call with ComponentState::kDownloading state.
+  resource_request->priority = net::LOW;
+#endif
   resource_request->load_flags = net::LOAD_DISABLE_CACHE;
   if (!cookie_predicate_.Run(url) ||
       !network::IsUrlPotentiallyTrustworthy(url)) {
@@ -181,10 +199,10 @@ base::OnceClosure NetworkFetcherImpl::DownloadToFile(
       network::SimpleURLLoader::RetryMode::RETRY_ON_NETWORK_CHANGE);
   simple_url_loader->SetAllowPartialResults(true);
   simple_url_loader->SetOnResponseStartedCallback(base::BindOnce(
-      &NetworkFetcherImpl::OnResponseStartedCallback, base::Unretained(this),
-      std::move(response_started_callback)));
+      &NetworkFetcherImpl::OnResponseStartedCallback,
+      weak_ptr_factory_.GetWeakPtr(), std::move(response_started_callback)));
   simple_url_loader->SetOnDownloadProgressCallback(base::BindRepeating(
-      &NetworkFetcherImpl::OnProgressCallback, base::Unretained(this),
+      &NetworkFetcherImpl::OnProgressCallback, weak_ptr_factory_.GetWeakPtr(),
       std::move(progress_callback)));
   simple_url_loader->DownloadToFile(
       shared_url_network_factory_.get(),

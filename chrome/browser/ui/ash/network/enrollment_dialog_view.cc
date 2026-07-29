@@ -9,12 +9,12 @@
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/utf_string_conversions.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/browser/ui/browser_navigator.h"
-#include "chrome/browser/ui/browser_navigator_params.h"
+#include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/grit/generated_resources.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_types.h"
 #include "chromeos/ash/components/login/login_state/login_state.h"
 #include "chromeos/ash/components/network/client_cert_util.h"
 #include "chromeos/ash/components/network/managed_network_configuration_handler.h"
@@ -33,12 +33,6 @@
 #include "ui/views/window/dialog_delegate.h"
 
 namespace ash::enrollment {
-
-namespace {
-
-// Default width/height of the dialog.
-const int kDefaultWidth = 350;
-const int kDefaultHeight = 100;
 
 ////////////////////////////////////////////////////////////////////////////////
 // Dialog for certificate enrollment. This displays the content from the
@@ -136,17 +130,19 @@ void EnrollmentDialogView::WindowClosing() {
   }
   NavigateParams params(profile_, GURL(target_uri_), ui::PAGE_TRANSITION_LINK);
   params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
-  params.window_action = NavigateParams::SHOW_WINDOW;
+  params.window_action = NavigateParams::WindowAction::kShowWindow;
   Navigate(&params);
 }
 
 gfx::Size EnrollmentDialogView::CalculatePreferredSize(
     const views::SizeBounds& available_size) const {
-  return gfx::Size(kDefaultWidth, kDefaultHeight);
+  return gfx::Size(350, 100);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 // Handler for certificate enrollment.
+
+namespace {
 
 // Find the first usable URL from `enrollment_uri_list`, then show the "enroll a
 // client certificate for `network_name`" dialog which will offer to open that
@@ -159,7 +155,7 @@ bool ShowEnrollmentDialog(const std::string& network_guid,
            enrollment_uri_list.begin();
        iter != enrollment_uri_list.end(); ++iter) {
     GURL uri(*iter);
-    if (uri.IsStandard() || uri.scheme() == extensions::kExtensionScheme) {
+    if (uri.IsStandard() || uri.GetScheme() == extensions::kExtensionScheme) {
       // If this is a "standard" scheme, like http, ftp, etc., then open that in
       // the enrollment dialog.
       NET_LOG(EVENT) << "Showing enrollment dialog for: "
@@ -181,7 +177,7 @@ bool ShowEnrollmentDialog(const std::string& network_guid,
 bool EnrollmentDialogAllowed(Profile* profile) {
   // Enrollment dialog is currently not supported on the sign-in profile.
   // This also applies to lock screen,
-  if (ProfileHelper::IsSigninProfile(profile)) {
+  if (IsSigninBrowserContext(profile)) {
     return false;
   }
 
@@ -223,7 +219,7 @@ bool CreateEnrollmentDialog(const std::string& network_id) {
   }
 
   onc::ONCSource onc_source = onc::ONC_SOURCE_NONE;
-  const base::Value::Dict* policy =
+  const base::DictValue* policy =
       NetworkHandler::Get()
           ->managed_network_configuration_handler()
           ->FindPolicyByGuidAndProfile(

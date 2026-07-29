@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #ifndef CHROME_BROWSER_ASH_POLICY_REPORTING_INSTALL_EVENT_LOG_H_
 #define CHROME_BROWSER_ASH_POLICY_REPORTING_INSTALL_EVENT_LOG_H_
@@ -19,6 +15,7 @@
 #include <string>
 #include <utility>
 
+#include "base/containers/span.h"
 #include "base/files/file_path.h"
 #include "base/logging.h"
 #include "chrome/browser/ash/policy/reporting/single_install_event_log.h"

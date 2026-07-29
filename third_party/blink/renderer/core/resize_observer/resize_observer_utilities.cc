@@ -36,39 +36,41 @@ gfx::SizeF ResizeObserverUtilities::ComputeZoomAdjustedBox(
     const LayoutBox& layout_box,
     const ComputedStyle& style) {
   switch (box_option) {
-    case ResizeObserverBoxOptions::kContentBox:
-      return gfx::SizeF(AdjustForAbsoluteZoom::AdjustLayoutUnit(
-                            layout_box.ContentLogicalWidth(), style),
-                        AdjustForAbsoluteZoom::AdjustLayoutUnit(
-                            layout_box.ContentLogicalHeight(), style));
-
+    case ResizeObserverBoxOptions::kContentBox: {
+      const LogicalSize size = ToLogicalSize(
+          layout_box.PhysicalContentBoxRect().size, style.GetWritingMode());
+      return gfx::SizeF(
+          AdjustForAbsoluteZoom::AdjustLayoutUnit(size.inline_size, style),
+          AdjustForAbsoluteZoom::AdjustLayoutUnit(size.block_size, style));
+    }
     case ResizeObserverBoxOptions::kBorderBox:
       return gfx::SizeF(AdjustForAbsoluteZoom::AdjustLayoutUnit(
                             layout_box.LogicalWidth(), style),
                         AdjustForAbsoluteZoom::AdjustLayoutUnit(
                             layout_box.LogicalHeight(), style));
     case ResizeObserverBoxOptions::kDevicePixelContentBox: {
-      LogicalSize box_size = {layout_box.ContentLogicalWidth(),
-                              layout_box.ContentLogicalHeight()};
-      return ComputeSnappedDevicePixelContentBox(box_size, layout_box, style);
+      const LogicalSize size = ToLogicalSize(
+          layout_box.PhysicalContentBoxRect().size, style.GetWritingMode());
+      return gfx::SizeF(
+          ComputeSnappedDevicePixelContentBox(size, layout_box, style));
     }
     default:
       NOTREACHED();
   }
 }
 
-gfx::SizeF ResizeObserverUtilities::ComputeSnappedDevicePixelContentBox(
+gfx::Size ResizeObserverUtilities::ComputeSnappedDevicePixelContentBox(
     LogicalSize box_size,
     const LayoutObject& layout_object,
     const ComputedStyle& style) {
   LogicalOffset paint_offset = ComputePaintOffset(layout_object, style);
-  return gfx::SizeF(
+  return gfx::Size(
       SnapSizeToPixel(box_size.inline_size, paint_offset.inline_offset),
       SnapSizeToPixel(box_size.block_size, paint_offset.block_offset));
 }
 
 // static
-gfx::SizeF ResizeObserverUtilities::ComputeSnappedDevicePixelContentBox(
+gfx::Size ResizeObserverUtilities::ComputeSnappedDevicePixelContentBox(
     const gfx::SizeF& box_size,
     const LayoutObject& layout_object,
     const ComputedStyle& style) {

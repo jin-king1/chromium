@@ -2,12 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "components/exo/wayland/wayland_protocol_logger.h"
+
+#include "base/compiler_specific.h"
 
 // We need wl_object declared below.
 #undef WL_HIDE_DEPRECATED
@@ -15,11 +12,19 @@
 
 #include <string>
 
+#include "base/containers/span.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/trace_event/typed_macros.h"
 
 namespace {
+
+base::span<const uint8_t> WaylandArrayAsSpan(const wl_array* array) {
+  // SAFETY: `array.data` points to a valid, contiguous memory region of size
+  // `array.size` bytes.
+  return UNSAFE_BUFFERS(
+      base::span(reinterpret_cast<const uint8_t*>(array->data), array->size));
+}
 
 std::string StringifyWaylandArgument(const wl_interface* type,
                                      const wl_argument& arg,
@@ -29,7 +34,7 @@ std::string StringifyWaylandArgument(const wl_interface* type,
 
     // Always advance the pointer before returning, so that the next
     // call to this function will look at the next argument's signature.
-    (*signature_ptr)++;
+    UNSAFE_TODO((*signature_ptr)++);
 
     // The type of `arg` is indicated by this character of the signature.
     switch (s) {
@@ -54,16 +59,17 @@ std::string StringifyWaylandArgument(const wl_interface* type,
         return arg.n ? base::StrCat({"new id ", type ? type->name : "[unknown]",
                                      "@", base::NumberToString(arg.n)})
                      : "nil";
-      case 'a':
+      case 'a': {
         // Improve on WAYLAND_DEBUG by printing array contents as hex data.
         // If the array is "too long", truncate.
-        static const size_t max_printed_bytes = 48;
-        return base::StrCat(
-            {"array[", base::NumberToString(arg.a->size), " bytes]{",
-             base::HexEncode(arg.a->data,
-                             std::min(arg.a->size, max_printed_bytes)),
-             // Append an ellipsis if the content was truncated.
-             max_printed_bytes < arg.a->size ? "...}" : "}"});
+        constexpr size_t kMaxPrintedBytes = 48;
+        return base::StrCat({"array[", base::NumberToString(arg.a->size),
+                             " bytes]{",
+                             base::HexEncode(WaylandArrayAsSpan(arg.a).first(
+                                 std::min(arg.a->size, kMaxPrintedBytes))),
+                             // Append an ellipsis if the content was truncated.
+                             kMaxPrintedBytes < arg.a->size ? "...}" : "}"});
+      }
       case 'h':
         return base::StrCat({"fd ", base::NumberToString(arg.h)});
       case '?':
@@ -136,7 +142,8 @@ std::vector<std::string> WaylandProtocolLogger::FormatMessage(
   const char* signature = message->message->signature;
   for (int i = 0; i < message->arguments_count && *signature; i++) {
     return_value.push_back(StringifyWaylandArgument(
-        message->message->types[i], message->arguments[i], &signature));
+        UNSAFE_TODO(message->message->types[i]),
+        UNSAFE_TODO(message->arguments[i]), &signature));
   }
   return return_value;
 }

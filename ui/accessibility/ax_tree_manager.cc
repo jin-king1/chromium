@@ -4,8 +4,13 @@
 
 #include "ui/accessibility/ax_tree_manager.h"
 
-#include "base/lazy_instance.h"
+#include "base/check.h"
+#include "base/check_op.h"
+#include "base/debug/crash_logging.h"
+#include "base/functional/callback.h"
+#include "base/logging.h"
 #include "base/no_destructor.h"
+#include "base/notreached.h"
 #include "ui/accessibility/ax_common.h"
 #include "ui/accessibility/ax_export.h"
 #include "ui/accessibility/ax_node.h"
@@ -67,8 +72,10 @@ AXTreeManager::AXTreeManager()
       ax_tree_(nullptr),
       event_generator_(ax_tree()) {}
 
-AXTreeManager::AXTreeManager(std::unique_ptr<AXTree> tree)
-    : connected_to_parent_tree_node_(false),
+AXTreeManager::AXTreeManager(std::unique_ptr<AXTree> tree,
+                             bool is_platform_tree_manager)
+    : is_platform_tree_manager_(is_platform_tree_manager),
+      connected_to_parent_tree_node_(false),
       ax_tree_(std::move(tree)),
       event_generator_(ax_tree()) {
   // Do not register the tree in the map if it has no ID. It will be registered
@@ -145,10 +152,6 @@ const AXTreeData& AXTreeManager::GetTreeData() const {
 
 AXTreeID AXTreeManager::GetParentTreeID() const {
   return ax_tree_ ? ax_tree_->data().parent_tree_id : AXTreeIDUnknown();
-}
-
-bool AXTreeManager::IsPlatformTreeManager() const {
-  return false;
 }
 
 AXNode* AXTreeManager::GetRoot() const {
@@ -319,10 +322,11 @@ void AXTreeManager::OnNodeWillBeDeleted(AXTree* tree, AXNode* node) {
   if (node == GetLastFocusedNode())
     SetLastFocusedNode(nullptr);
 
-  // We fire these here, immediately, to ensure we can send platform
-  // notifications prior to the actual destruction of the object.
-  if (node->GetRole() == ax::mojom::Role::kMenu)
+  // If an exposed menu is deleted, close it before its platform object goes
+  // away. Menus hidden first already closed when their ignored state changed.
+  if (node->GetRole() == ax::mojom::Role::kMenu && !node->IsIgnored()) {
     FireGeneratedEvent(AXEventGenerator::Event::MENU_POPUP_END, node);
+  }
 }
 
 void AXTreeManager::OnAtomicUpdateFinished(

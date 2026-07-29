@@ -27,17 +27,20 @@ struct FormFieldDataPredictions {
   std::string host_form_signature;
   std::string signature;
   std::string heuristic_type;
+  std::string pwm_ml_type;
   // std::nullopt if the server response has not arrived yet.
   std::optional<std::string> server_type;
   std::string html_type;
   std::string overall_type;
+  std::string attribute_types;
+  std::string format_string;
   std::string parseable_name;
-  std::string parseable_label;
   std::string section;
   size_t rank = 0;
   size_t rank_in_signature_group = 0;
   size_t rank_in_host_form = 0;
   size_t rank_in_host_form_signature_group = 0;
+  bool did_trigger_javascript_autofill = false;
 };
 
 }  // namespace autofill

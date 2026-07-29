@@ -117,8 +117,8 @@ void FatalCrashEventsObserver::UploadedCrashInfoManager::ResumeLoadingSaveFile(
     return;
   }
 
-  const auto parsed_result =
-      base::JSONReader::ReadAndReturnValueWithError(content.value());
+  const auto parsed_result = base::JSONReader::ReadAndReturnValueWithError(
+      content.value(), base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   if (!parsed_result.has_value()) {
     LOG(ERROR) << "Failed to parse the save file " << save_file_.value()
                << " as JSON: " << parsed_result.error().ToString();
@@ -182,7 +182,7 @@ Status FatalCrashEventsObserver::UploadedCrashInfoManager::WriteSaveFile()
     const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  base::Value::Dict info;
+  base::DictValue info;
   info.Set(kCreationTimestampMsJsonKey,
            base::NumberToString(
                uploads_log_creation_time_.InMillisecondsSinceUnixEpoch()));

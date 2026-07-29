@@ -6,17 +6,15 @@ package org.chromium.chrome.browser.notifications.channels;
 
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
-import android.os.Build.VERSION;
-import android.os.Build.VERSION_CODES;
+import android.os.Build;
 import android.text.TextUtils;
 
 import androidx.annotation.StringDef;
 
+import org.chromium.base.ContextUtils;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.notifications.R;
-import org.chromium.components.browser_ui.notifications.NotificationManagerProxy;
-import org.chromium.components.browser_ui.notifications.NotificationManagerProxyImpl;
 import org.chromium.components.browser_ui.notifications.channels.ChannelDefinitions;
 
 import java.lang.annotation.Retention;
@@ -48,10 +46,10 @@ public class ChromeChannelDefinitions extends ChannelDefinitions {
      * set of channels returned by {@link #getStartupChannelIds()} or {@link #getLegacyChannelIds()}
      * changes.
      */
-    static final int CHANNELS_VERSION = 4;
+    static final int CHANNELS_VERSION = 8;
 
     private static class LazyHolder {
-        private static ChromeChannelDefinitions sInstance = new ChromeChannelDefinitions();
+        private static final ChromeChannelDefinitions sInstance = new ChromeChannelDefinitions();
     }
 
     public static ChromeChannelDefinitions getInstance() {
@@ -73,8 +71,10 @@ public class ChromeChannelDefinitions extends ChannelDefinitions {
      * and add the ID to the LEGACY_CHANNELS_ID array below. See the README in this directory for
      * more detailed instructions.
      */
+    // LINT.IfChange(ChannelId)
     @StringDef({
         ChannelId.BROWSER,
+        ChannelId.ACTOR,
         ChannelId.COLLABORATION,
         ChannelId.DOWNLOADS,
         ChannelId.INCOGNITO,
@@ -93,15 +93,20 @@ public class ChromeChannelDefinitions extends ChannelDefinitions {
         ChannelId.WEBAPPS,
         ChannelId.WEBAPPS_QUIET,
         ChannelId.WEBRTC_CAM_AND_MIC,
-        ChannelId.PRICE_DROP,
+        ChannelId.PRICE_DROP, // Deprecated, use PRICE_DROP_DEFAULT.
         ChannelId.PRICE_DROP_DEFAULT,
         ChannelId.SECURITY_KEY,
         ChannelId.BLUETOOTH,
-        ChannelId.USB
+        ChannelId.USB,
+        ChannelId.SERIAL,
+        ChannelId.TIPS,
+        ChannelId.TIPS_V2,
+        ChannelId.CHROME_FINDS,
     })
     @Retention(RetentionPolicy.SOURCE)
     public @interface ChannelId {
         String BROWSER = "browser";
+        String ACTOR = "actor";
         String COLLABORATION = "collaboration";
         String DOWNLOADS = "downloads";
         String INCOGNITO = "incognito";
@@ -131,7 +136,18 @@ public class ChromeChannelDefinitions extends ChannelDefinitions {
         String SECURITY_KEY = "security_key";
         String BLUETOOTH = "bluetooth";
         String USB = "usb";
+        String SERIAL = "serial";
+        String TIPS = "tips";
+        String TIPS_V2 = "tips_v2";
+        String CHROME_FINDS = "chrome_finds";
     }
+
+    // clang-format off
+    // LINT.ThenChange(
+    //   //tools/metrics/histograms/metadata/mobile/histograms.xml:NotificationChannelId,
+    //   //chrome/browser/notifications/android/java/src/org/chromium/chrome/browser/notifications/NotificationUmaTracker.java:NotificationChannelId
+    // )
+    // clang-format on
 
     @StringDef({ChannelGroupId.GENERAL, ChannelGroupId.SITES})
     @Retention(RetentionPolicy.SOURCE)
@@ -169,6 +185,14 @@ public class ChromeChannelDefinitions extends ChannelDefinitions {
                             NotificationManager.IMPORTANCE_LOW,
                             ChannelGroupId.GENERAL));
             startup.add(ChannelId.BROWSER);
+
+            map.put(
+                    ChannelId.ACTOR,
+                    PredefinedChannel.create(
+                            ChannelId.ACTOR,
+                            R.string.notification_category_actor,
+                            NotificationManager.IMPORTANCE_HIGH,
+                            ChannelGroupId.GENERAL));
 
             map.put(
                     ChannelId.COLLABORATION,
@@ -317,35 +341,11 @@ public class ChromeChannelDefinitions extends ChannelDefinitions {
             // Not added to startup channels because we want this channel to be created on the first
             // use.
             map.put(
-                    ChannelId.PRICE_DROP,
-                    PredefinedChannel.create(
-                            ChannelId.PRICE_DROP,
-                            R.string.notification_category_price_drop,
-                            NotificationManager.IMPORTANCE_DEFAULT,
-                            ChannelGroupId.GENERAL));
-            // TODO(crbug.com/40244973): Make the new channel's behavior consistent with the old
-            // channel's if it's created and modified by the user. Clean this up after one or two
-            // milestones.
-            int priceDropDefaultChannelImportance = NotificationManager.IMPORTANCE_DEFAULT;
-            if (VERSION.SDK_INT >= VERSION_CODES.O) {
-                NotificationManagerProxy notificationManager =
-                        NotificationManagerProxyImpl.getInstance();
-                NotificationChannel priceDropChannel =
-                        notificationManager.getNotificationChannel(ChannelId.PRICE_DROP);
-                if (priceDropChannel != null) {
-                    startup.add(ChannelId.PRICE_DROP_DEFAULT);
-                    if (priceDropChannel.getImportance() != NotificationManager.IMPORTANCE_LOW) {
-                        priceDropDefaultChannelImportance = priceDropChannel.getImportance();
-                    }
-                    notificationManager.deleteNotificationChannel(ChannelId.PRICE_DROP);
-                }
-            }
-            map.put(
                     ChannelId.PRICE_DROP_DEFAULT,
                     PredefinedChannel.create(
                             ChannelId.PRICE_DROP_DEFAULT,
                             R.string.notification_category_price_drop,
-                            priceDropDefaultChannelImportance,
+                            NotificationManager.IMPORTANCE_DEFAULT,
                             ChannelGroupId.GENERAL));
 
             // The security key notification channel will only appear for users
@@ -378,6 +378,61 @@ public class ChromeChannelDefinitions extends ChannelDefinitions {
                             NotificationManager.IMPORTANCE_LOW,
                             ChannelGroupId.GENERAL));
 
+            // The serial notification channel will only appear for users
+            // who are targeted for this feature.
+            map.put(
+                    ChannelId.SERIAL,
+                    PredefinedChannel.create(
+                            ChannelId.SERIAL,
+                            R.string.notification_category_serial,
+                            NotificationManager.IMPORTANCE_LOW,
+                            ChannelGroupId.GENERAL));
+
+            // Temporary migration logic from the old tips notification channel to the new tips
+            // notification channel. To be removed in a follow up task.
+            // TODO(crbug.com/509668849): Fully deprecate the ChannelId.TIPS channel after a few
+            // milestones from M150 when this migration code is landed to consolidate the tips
+            // notifications channel to be solely using ChannelId.TIPS_V2.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                NotificationManager notificationManager =
+                        ContextUtils.getApplicationContext()
+                                .getSystemService(NotificationManager.class);
+                if (notificationManager != null) {
+                    NotificationChannel tipsChannel =
+                            notificationManager.getNotificationChannel(ChannelId.TIPS);
+                    if (tipsChannel != null) {
+                        NotificationChannel tipsV2Channel =
+                                new NotificationChannel(
+                                        ChannelId.TIPS_V2,
+                                        ContextUtils.getApplicationContext()
+                                                .getString(R.string.notification_category_tips),
+                                        tipsChannel.getImportance());
+                        tipsV2Channel.setGroup(ChannelGroupId.GENERAL);
+                        notificationManager.createNotificationChannel(tipsV2Channel);
+                        notificationManager.deleteNotificationChannel(ChannelId.TIPS);
+                    }
+                }
+            }
+            // The tips notification channel will appear for users who opted in.
+            // For new users, it will be created when they explicitly opt in.
+            map.put(
+                    ChannelId.TIPS_V2,
+                    PredefinedChannel.create(
+                            ChannelId.TIPS_V2,
+                            R.string.notification_category_tips,
+                            NotificationManager.IMPORTANCE_DEFAULT,
+                            ChannelGroupId.GENERAL));
+
+            // The finds notification channel will be added to the notification settings when a user
+            // explicitly accepts or declines the opt-in promo for the first time.
+            map.put(
+                    ChannelId.CHROME_FINDS,
+                    PredefinedChannel.create(
+                            ChannelId.CHROME_FINDS,
+                            R.string.notification_category_finds,
+                            NotificationManager.IMPORTANCE_DEFAULT,
+                            ChannelGroupId.GENERAL));
+
             MAP = Collections.unmodifiableMap(map);
             STARTUP = Collections.unmodifiableSet(startup);
         }
@@ -392,6 +447,7 @@ public class ChromeChannelDefinitions extends ChannelDefinitions {
         ChromeChannelDefinitions.ChannelId.SITES,
         ChromeChannelDefinitions.ChannelId.PERMISSION_REQUESTS,
         ChromeChannelDefinitions.ChannelId.PERMISSION_REQUESTS_HIGH,
+        ChromeChannelDefinitions.ChannelId.TIPS,
     };
 
     // Map defined in static inner class so it's only initialized lazily.

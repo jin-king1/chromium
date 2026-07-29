@@ -8,27 +8,32 @@
 
 #import "base/apple/foundation_util.h"
 #import "base/feature_list.h"
+#import "base/functional/callback_helpers.h"
 #import "base/memory/raw_ptr.h"
-#import "base/metrics/histogram_functions.h"
 #import "base/not_fatal_until.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/strings/utf_string_conversions.h"
+#import "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
 #import "components/autofill/core/browser/ui/autofill_suggestion_delegate.h"
+#import "components/autofill/core/common/autofill_features.h"
+#import "components/autofill/core/common/autofill_prefs.h"
+#import "components/autofill/ios/browser/autofill_java_script_feature.h"
 #import "components/autofill/ios/browser/form_suggestion.h"
 #import "components/autofill/ios/browser/form_suggestion_provider.h"
+#import "components/autofill/ios/common/features.h"
 #import "components/autofill/ios/form_util/form_activity_params.h"
-#import "components/plus_addresses/features.h"
 #import "components/prefs/pref_service.h"
+#import "ios/chrome/browser/autofill/autofill_ai/public/autofill_ai_ui_util.h"
+#import "ios/chrome/browser/autofill/model/autofill_ai_util.h"
 #import "ios/chrome/browser/autofill/model/features.h"
 #import "ios/chrome/browser/autofill/model/form_input_navigator.h"
 #import "ios/chrome/browser/autofill/model/form_input_suggestions_provider.h"
-#import "ios/chrome/browser/autofill/model/form_suggestion_controller.mm"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
-#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/web/common/url_scheme_util.h"
+#import "ios/web/public/js_messaging/web_frame.h"
 #import "ios/web/public/js_messaging/web_frames_manager.h"
 #import "ios/web/public/ui/crw_web_view_proxy.h"
 #import "ios/web/public/web_state.h"
@@ -94,26 +99,69 @@ void RunSearchPipeline(NSArray<PipelineBlock>* blocks,
 }
 
 // Returns the default icon for the suggestion type.
-UIImage* defaultIconForType(autofill::SuggestionType type) {
-  switch (type) {
+UIImage* DefaultIconForType(FormSuggestion* suggestion,
+                            web::WebState* web_state) {
+  switch (suggestion.type) {
+    case autofill::SuggestionType::kUndoOrClear:
+      if (suggestion.suggestionIconType == SuggestionIconType::kUndoAutofill &&
+          base::FeatureList::IsEnabled(kAutofillUndoIos)) {
+        return SymbolWithPalette(SymbolWithPointSize(SymbolArrowUTurnBackward,
+                                                     kSymbolActionPointSize),
+                                 @[
+                                   [UIColor colorNamed:kTextPrimaryColor],
+                                 ]);
+      } else {
+        return nil;
+      }
     case autofill::SuggestionType::kGeneratePasswordEntry:
       return MakeSymbolMulticolor(
-          CustomSymbolWithPointSize(kPasswordManagerSymbol, kSymbolPointSize));
-    case autofill::SuggestionType::kCreateNewPlusAddress:
-    case autofill::SuggestionType::kFillExistingPlusAddress: {
-      BOOL isPlusAddressFeaturesEnabled = base::FeatureList::IsEnabled(
-          plus_addresses::features::kPlusAddressesEnabled);
-#if BUILDFLAG(IOS_USE_BRANDED_SYMBOLS)
-      return isPlusAddressFeaturesEnabled
-                 ? CustomSymbolWithPointSize(kGooglePlusAddressSymbol,
-                                             kSymbolPointSize)
-                 : nil;
-#else
-      return isPlusAddressFeaturesEnabled
-                 ? DefaultSymbolWithPointSize(kMailFillSymbol, kSymbolPointSize)
-                 : nil;
-#endif
+          SymbolWithPointSize(SymbolPasswordManager, kSymbolPointSize));
+    case autofill::SuggestionType::kAddressEntry: {
+      switch (suggestion.suggestionIconType) {
+        case SuggestionIconType::kAccountHome:
+          return SymbolWithPalette(
+              SymbolWithPointSize(SymbolHome, kSymbolPointSize), @[
+                [UIColor colorNamed:kTextPrimaryColor],
+              ]);
+        case SuggestionIconType::kAccountWork:
+          return SymbolWithPalette(
+              SymbolWithPointSize(SymbolWork, kSymbolPointSize), @[
+                [UIColor colorNamed:kTextPrimaryColor],
+              ]);
+        default:
+          return nil;
+      }
     }
+    case autofill::SuggestionType::kFillAutofillAi: {
+      if (!web_state) {
+        return nil;
+      }
+
+      if (base::FeatureList::IsEnabled(
+              autofill::features::kAutofillAiNoFillingIconsExperiment)) {
+        return nil;
+      }
+
+      base::optional_ref<const autofill::EntityInstance> entity =
+          autofill::GetEntityInstance(
+              ProfileIOS::FromBrowserState(web_state->GetBrowserState()),
+              suggestion.payload);
+      if (!entity.has_value()) {
+        return nil;
+      }
+
+      const bool isPersonalContext =
+          entity->record_type() ==
+          autofill::EntityInstance::RecordType::kPersonalContext;
+
+      return autofill::DefaultIconForAutofillAiEntityType(
+          entity->type().name(), isPersonalContext, kSymbolPointSize,
+          /*tint_color=*/nil);
+    }
+    case autofill::SuggestionType::kAutocompleteAtMemoryButton:
+      return SymbolWithPalette(SymbolWithPointSize(SymbolMagnifyingglassSpark,
+                                                   kSymbolActionPointSize),
+                               @[ [UIColor colorNamed:kTextPrimaryColor] ]);
     case autofill::SuggestionType::kAutocompleteEntry:
     default:
       return nil;
@@ -138,6 +186,13 @@ NSArray<FormSuggestion*>* SetParamsAndProviderInSuggestions(
 // Returns true if the form suggestion controller is stateless.
 bool IsStateless() {
   return base::FeatureList::IsEnabled(kStatelessFormSuggestionController);
+}
+
+// Returns true if deduping requests is allowed.
+bool IsRequestDedupingAllowed() {
+  return !IsStateless() ||
+         base::FeatureList::IsEnabled(
+             kStatelessFormSuggestionControllerWithRequestDeduping);
 }
 
 }  // namespace
@@ -301,9 +356,9 @@ bool IsStateless() {
 
   // Once a provider is found, use it to retrieve suggestions.
   PipelineCompletionBlock completion = ^(NSUInteger providerIndex) {
-    // Ignore outdated results. As `_requestIdentifier` is useless when the
-    // suggestion controller is stateless, complete all requests.
-    if (weakSelf.requestIdentifier != requestIdentifier && !IsStateless()) {
+    // Ignore outdated results if allowed.
+    if (weakSelf.requestIdentifier != requestIdentifier &&
+        IsRequestDedupingAllowed()) {
       return;
     }
     if (providerIndex == NSNotFound) {
@@ -409,32 +464,44 @@ bool IsStateless() {
 #pragma mark - FormSuggestionClient
 
 - (void)didSelectSuggestion:(FormSuggestion*)suggestion
-                    atIndex:(NSInteger)index {
+                    atIndex:(NSInteger)index
+                 completion:(ProceduralBlock)completion {
   if (IsStateless()) {
     // Check that there are always params attached to the suggestion when no
     // params are provided by the -didSelectSuggestion caller itself.
-    CHECK(suggestion.params, base::NotFatalUntil::M134);
+    CHECK(suggestion.params);
     if (!suggestion.params) {
       // Just skip if the check isn't triggered. This is to handle the absence
       // of params when the CHECK isn't fatal.
+      if (completion) {
+        completion();
+      }
       return;
     }
 
     [self didSelectSuggestion:suggestion
                       atIndex:index
-                        state:AutofillSuggestionState(*suggestion.params)];
+                        state:AutofillSuggestionState(*suggestion.params)
+                   completion:completion];
   } else if (_suggestionState) {
     [self didSelectSuggestion:suggestion
                       atIndex:index
-                        state:(*_suggestionState)];
+                        state:*_suggestionState
+                   completion:completion];
+  } else if (completion) {
+    completion();
   }
 }
 
 - (void)didSelectSuggestion:(FormSuggestion*)suggestion
                     atIndex:(NSInteger)index
-                     params:(const autofill::FormActivityParams&)params {
+                     params:(const autofill::FormActivityParams&)params
+                 completion:(ProceduralBlock)completion {
   AutofillSuggestionState suggestionState(params);
-  [self didSelectSuggestion:suggestion atIndex:index state:suggestionState];
+  [self didSelectSuggestion:suggestion
+                    atIndex:index
+                      state:suggestionState
+                 completion:completion];
 }
 
 #pragma mark - FormInputSuggestionsProvider
@@ -458,35 +525,16 @@ bool IsStateless() {
 // Copies the incoming suggestions, making adjustments if necessary.
 - (NSArray<FormSuggestion*>*)copyAndAdjustSuggestions:
     (NSArray<FormSuggestion*>*)suggestions {
-  BOOL isPlusAddressFeaturesEnabled = base::FeatureList::IsEnabled(
-      plus_addresses::features::kPlusAddressesEnabled);
-
-  if (!IsKeyboardAccessoryUpgradeEnabled() && !isPlusAddressFeaturesEnabled) {
-    return [suggestions copy];
-  }
-
   NSMutableArray<FormSuggestion*>* suggestionsCopy = [NSMutableArray array];
   for (FormSuggestion* suggestion : suggestions) {
-    BOOL isPlusAddressSuggestion =
-        (suggestion.type == autofill::SuggestionType::kCreateNewPlusAddress) ||
-        (suggestion.type == autofill::SuggestionType::kFillExistingPlusAddress);
-
-    UIImage* defaultIcon = defaultIconForType(suggestion.type);
+    UIImage* defaultIcon = DefaultIconForType(suggestion, _webState);
 
     // If there are no icons, but we have a default icon for this suggestion,
-    // copy the suggestion and add the default icon. If
-    // `IsKeyboardAccessoryUpgradeEnabled()`, update the icon for this
-    // suggestion. Otherwise, only update the icons for the plus address
-    // suggestions.
-    BOOL shouldUpdateIcon =
-        (IsKeyboardAccessoryUpgradeEnabled() || isPlusAddressSuggestion) &&
-        !suggestion.icon && defaultIcon;
+    // copy the suggestion and add the default icon, otherwise, update the icon
+    // for this suggestion.
+    BOOL shouldUpdateIcon = !suggestion.icon && defaultIcon;
 
     if (shouldUpdateIcon) {
-      // If we ever get suggestions with metadata here, we'll need to use a
-      // different [FormSuggestion suggestionWithValue:...] to perform the copy.
-      CHECK(!suggestion.metadata.is_single_username_form);
-
       FormSuggestion* suggestionCopy = [FormSuggestion
                   suggestionWithValue:suggestion.value
                            minorValue:suggestion.minorValue
@@ -496,10 +544,12 @@ bool IsStateless() {
                               payload:suggestion.payload
           fieldByFieldFillingTypeUsed:suggestion.fieldByFieldFillingTypeUsed
                        requiresReauth:suggestion.requiresReauth
-           acceptanceA11yAnnouncement:suggestion.acceptanceA11yAnnouncement];
-      // TODO(crbug.com/353663764): Include `featureForIPH` in the
+           acceptanceA11yAnnouncement:suggestion.acceptanceA11yAnnouncement
+                             metadata:suggestion.metadata];
+      // TODO(crbug.com/452315148): Include `featureForIPH` in the
       // `FormSuggestion` constructor.
       suggestionCopy.featureForIPH = suggestion.featureForIPH;
+      suggestionCopy.suggestionIconType = suggestion.suggestionIconType;
       [suggestionsCopy addObject:suggestionCopy];
     } else {
       [suggestionsCopy addObject:suggestion];
@@ -512,13 +562,14 @@ bool IsStateless() {
 // provided `suggestionState`.
 - (void)didSelectSuggestion:(FormSuggestion*)suggestion
                     atIndex:(NSInteger)index
-                      state:(const AutofillSuggestionState&)suggestionState {
+                      state:(const AutofillSuggestionState&)suggestionState
+                 completion:(ProceduralBlock)completion {
   id<FormSuggestionProvider> provider = suggestion.provider ?: _provider;
 
-  // If a password related suggestion was selected, reset the password bottom
+  // If a password related suggestion was selected, reset the credential bottom
   // sheet dismiss count to 0.
   if (provider.type == SuggestionProviderTypePassword) {
-    [self resetPasswordBottomSheetDismissCount];
+    [self resetCredentialBottomSheetDismissCount];
   }
 
   // Send the suggestion to the provider. Upon completion advance the cursor
@@ -536,29 +587,20 @@ bool IsStateless() {
                               suggestionState.frame_identifier)
         completionHandler:^{
           [[weakSelf formInputNavigator] closeKeyboardWithoutButtonPress];
+          if (completion) {
+            completion();
+          }
         }];
 }
 
-// Resets the password bottom sheet dismiss count to 0.
-- (void)resetPasswordBottomSheetDismissCount {
+// Resets the credential bottom sheet dismiss count to 0.
+- (void)resetCredentialBottomSheetDismissCount {
   ProfileIOS* profile =
       _webState ? ProfileIOS::FromBrowserState(_webState->GetBrowserState())
                 : nullptr;
   if (profile) {
-    int dismissCount = profile->GetPrefs()->GetInteger(
-        prefs::kIosPasswordBottomSheetDismissCount);
     profile->GetPrefs()->SetInteger(prefs::kIosPasswordBottomSheetDismissCount,
                                     0);
-    if (dismissCount > 0) {
-      // Log how many times the bottom sheet had been dismissed before being
-      // re-enabled.
-      static constexpr int kHistogramMin = 1;
-      static constexpr int kHistogramMax = 4;
-      static constexpr size_t kHistogramBuckets = 3;
-      base::UmaHistogramCustomCounts(
-          "IOS.ResetDismissCount.Password.BottomSheet", dismissCount,
-          kHistogramMin, kHistogramMax, kHistogramBuckets);
-    }
   }
 }
 

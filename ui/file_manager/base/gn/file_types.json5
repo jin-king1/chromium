@@ -468,6 +468,14 @@
   },
   {
     "type": "hosted",
+    "icon": "gproject",
+    "translationKey": "GPROJECT_DOCUMENT_FILE_TYPE",
+    "subtype": "project",
+    "extensions": [".gprj"],
+    "mime": "application/vnd.google-apps.project"
+  },
+  {
+    "type": "hosted",
     "icon": "gsite",
     "translationKey": "GSITE_DOCUMENT_FILE_TYPE",
     "subtype": "site",
@@ -561,5 +569,12 @@
     "translationKey": "TINI_FILE_TYPE",
     "subtype": "TGZ",
     "extensions": [".tini"]
+  },
+  {
+    "type": "archive",
+    "icon": "signed_web_bundle",
+    "translationKey": "SWBN_FILE_TYPE",
+    "subtype": "SWBN",
+    "extensions": [".swbn"]
   }
 ]

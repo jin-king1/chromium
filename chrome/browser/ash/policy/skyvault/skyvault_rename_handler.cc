@@ -4,14 +4,15 @@
 
 #include "chrome/browser/ash/policy/skyvault/skyvault_rename_handler.h"
 
+#include "ash/constants/chrome_pref_names.h"
 #include "base/files/file_util.h"
 #include "chrome/browser/ash/drive/drive_integration_service.h"
+#include "chrome/browser/ash/drive/drive_integration_service_factory.h"
 #include "chrome/browser/ash/file_manager/fileapi_util.h"
 #include "chrome/browser/ash/policy/skyvault/drive_upload_observer.h"
 #include "chrome/browser/ash/policy/skyvault/odfs_skyvault_uploader.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/chrome_features.h"
-#include "chrome/common/pref_names.h"
 #include "components/download/public/common/download_item.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/download_item_utils.h"
@@ -42,6 +43,7 @@ bool ShouldUploadFile(Profile* profile,
 
 // static
 std::unique_ptr<SkyvaultRenameHandler> SkyvaultRenameHandler::CreateIfNeeded(
+    const PrefService& local_state,
     download::DownloadItem* download_item) {
   if (!base::FeatureList::IsEnabled(features::kSkyVault)) {
     return nullptr;
@@ -53,8 +55,8 @@ std::unique_ptr<SkyvaultRenameHandler> SkyvaultRenameHandler::CreateIfNeeded(
     return nullptr;
   }
 
-  const auto downloads_path =
-      profile->GetPrefs()->GetFilePath(::prefs::kDownloadDefaultDirectory);
+  const auto downloads_path = profile->GetPrefs()->GetFilePath(
+      ash::chrome_prefs::kDownloadDefaultDirectory);
 
   size_t position = downloads_path.value().find(
       local_user_files::kOneDrivePolicyVariableName);
@@ -66,7 +68,7 @@ std::unique_ptr<SkyvaultRenameHandler> SkyvaultRenameHandler::CreateIfNeeded(
   position = downloads_path.value().find(
       local_user_files::kGoogleDrivePolicyVariableName);
   if (position != base::FilePath::StringType::npos &&
-      !local_user_files::LocalUserFilesAllowed()) {
+      !local_user_files::LocalUserFilesAllowed(local_state)) {
     return std::make_unique<SkyvaultRenameHandler>(
         profile, CloudProvider::kGoogleDrive, download_item);
   }

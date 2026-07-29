@@ -99,7 +99,7 @@ interface VideoEncodeAcceleratorProvider {
 // 3) The browser process calls CreateVideoEncodeAcceleratorProvider() passing
 //    the pending_receiver<VideoEncodeAcceleratorProvider> received from the
 //    renderer process.
-[EnableIf=is_chromeos|is_linux,
+[EnableIf=allow_linux_video_acceleration,
     ServiceSandbox=sandbox.mojom.Sandbox.kHardwareVideoEncoding]
 interface VideoEncodeAcceleratorProviderFactory {
   // Creates a VideoEncodeAcceleratorProvider and should be called by the
@@ -195,6 +195,10 @@ struct VideoEncodeAcceleratorConfig {
   SVCInterLayerPredMode inter_layer_pred;
   bool require_low_delay;
   EncoderType required_encoder_type;
+  // When true, requires the frame reference structure to be specified per
+  // frame by application, and ignores config item specified by `spatial_layers`
+  // and `inter_layer_pred`.
+  bool manual_reference_buffer_control;
 };
 
 // Options for encoding a single frame by VideoEncodeAccelerator.
@@ -204,12 +208,15 @@ struct VideoEncodeOptions {
   // If True, next frame must be encoded as I-frame (random access point)
   bool force_keyframe;
 
-  // Quantizer(QP) value for encoding of the given frame.
-  // This value is only heeded if VEA configured with external rate control mode
-  // TODO(crbug.com/40489779): All negative values mean "ignore this field",
-  // we don't use proper optional field because Java bindgen doesn't support
-  // optional primitive types.
-  int32 quantizer;
+  // Quantizer(QP) value for encoding of the given frame. This value is only
+  // heeded if VEA configured with external rate control mode.
+  int32? quantizer;
+
+  // The buffer ID to be updated after encoding.
+  uint8? update_buffer;
+
+  // The buffer ID to be referenced for encoding.
+  array<uint8> reference_buffers;
 };
 
 // The interface to access the hardware video encoding accelerator.
@@ -218,7 +225,7 @@ interface VideoEncodeAccelerator {
   [Sync]
   Initialize(VideoEncodeAcceleratorConfig config,
              pending_associated_remote<VideoEncodeAcceleratorClient> client,
-             pending_remote<MediaLog> media_log) => (bool result);
+             pending_remote<MediaLog> media_log) => (EncoderStatus result);
 
   // Encodes a |frame|, being completely done with it after its callback.
   Encode(VideoFrame frame, VideoEncodeOptions options) => ();
@@ -318,6 +325,16 @@ union OptionalMetadata {
   Vp9Metadata vp9;
 };
 
+// PSNR (peak signal-to-noise ratio) for each YUV plane, in dB. Valid values
+// must be >= 0 dB. There's no hard upper limit, but values > 100 dB are far
+// beyond what's visually lossless. May be generated as part of the encoding
+// process for some video encoder implementations. Output for stats purposes.
+struct YuvPsnr {
+  double y;
+  double u;
+  double v;
+};
+
 struct BitstreamBufferMetadata {
   uint32 payload_size_bytes;
   bool key_frame;
@@ -327,6 +344,7 @@ struct BitstreamBufferMetadata {
   SVCGenericMetadata? svc_generic;
   gfx.mojom.Size? encoded_size;
   gfx.mojom.ColorSpace? encoded_color_space;
+  YuvPsnr? yuv_psnr;
 };
 
 interface VideoEncodeAcceleratorClient {

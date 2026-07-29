@@ -11,15 +11,16 @@
 #include "base/memory/raw_ptr.h"
 #include "chrome/browser/ui/views/webid/account_selection_view_base.h"
 #include "components/image_fetcher/core/image_fetcher.h"
-#include "content/public/browser/identity_request_account.h"
-#include "content/public/browser/identity_request_dialog_controller.h"
+#include "content/public/browser/webid/identity_request_account.h"
+#include "content/public/browser/webid/identity_request_dialog_controller.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
-#include "third_party/blink/public/mojom/webid/federated_auth_request.mojom.h"
+#include "third_party/blink/public/mojom/webid/federated_request.mojom.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/views/controls/button/button.h"
 #include "ui/views/controls/button/md_text_button.h"
 #include "ui/views/controls/progress_bar.h"
 #include "ui/views/controls/throbber.h"
+#include "ui/views/layout/box_layout_view.h"
 #include "ui/views/window/dialog_delegate.h"
 
 namespace views {
@@ -28,15 +29,37 @@ class BoxLayoutView;
 
 namespace webid {
 
-// This view is used for the "active" flow for fedCM. This is only ever shown as
-// a result of user action (e.g. clicking a button).
-class AccountSelectionModalView : public views::DialogDelegateView,
+class AccountSelectionModalView;
+
+class AccountSelectionModalDelegate : public views::DialogDelegate {
+ public:
+  explicit AccountSelectionModalDelegate(
+      std::unique_ptr<AccountSelectionModalView> account_selection_modal_view);
+  ~AccountSelectionModalDelegate() override;
+
+  AccountSelectionModalDelegate(const AccountSelectionModalDelegate&) = delete;
+  AccountSelectionModalDelegate& operator=(
+      const AccountSelectionModalDelegate&) = delete;
+
+  // views::DialogDelegate:
+  views::View* GetInitiallyFocusedView() override;
+  // TODO (kylixrd): Investigate removal of these overrides.
+  views::Widget* GetWidget() override;
+  const views::Widget* GetWidget() const override;
+
+ private:
+  AccountSelectionModalView* GetAccountSelectionView();
+};
+
+// This view is used for the "active" flow for fedCM. This is only ever
+// shown as a result of user action (e.g. clicking a button).
+class AccountSelectionModalView : public views::BoxLayoutView,
                                   public AccountSelectionViewBase {
-  METADATA_HEADER(AccountSelectionModalView, views::DialogDelegateView)
+  METADATA_HEADER(AccountSelectionModalView, views::BoxLayoutView)
 
  public:
   AccountSelectionModalView(
-      const std::u16string& rp_for_display,
+      const content::RelyingPartyData& rp_data,
       const std::optional<std::u16string>& idp_title,
       blink::mojom::RpContext rp_context,
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
@@ -50,8 +73,8 @@ class AccountSelectionModalView : public views::DialogDelegateView,
   void ShowMultiAccountPicker(
       const std::vector<IdentityRequestAccountPtr>& accounts,
       const std::vector<IdentityProviderDataPtr>& idp_list,
-      bool show_back_button,
-      bool is_choose_an_account) override;
+      const gfx::Image& rp_icon,
+      bool show_back_button) override;
 
   void ShowVerifyingSheet(const IdentityRequestAccountPtr& account,
                           const std::u16string& title) override;
@@ -72,15 +95,18 @@ class AccountSelectionModalView : public views::DialogDelegateView,
   void ShowRequestPermissionDialog(
       const IdentityRequestAccountPtr& account) override;
 
-  void ShowSingleReturningAccountDialog(
-      const std::vector<IdentityRequestAccountPtr>& accounts,
-      const std::vector<IdentityProviderDataPtr>& idp_list) override;
-
   std::string GetDialogTitle() const override;
+  std::optional<std::string> GetDialogSubtitle() const override;
 
-  // views::DialogDelegateView:
-  views::View* GetInitiallyFocusedView() override;
+  std::u16string dialog_title() const { return title_; }
+
+  // views::BoxLayoutView:
   void VisibilityChanged(View* starting_from, bool is_visible) override;
+
+  views::View* GetInitiallyFocusedView();
+
+  void UpdateTitleAndSubtitle(
+      const content::RelyingPartyData& rp_data) override;
 
   std::u16string GetQueuedAnnouncementForTesting();
 
@@ -135,13 +161,13 @@ class AccountSelectionModalView : public views::DialogDelegateView,
   // that order, horizontally.
   std::unique_ptr<views::BoxLayoutView> CreateCombinedIconsView();
 
-  // Hides `header_icon_spinner_` and shows `idp_brand_icon_` upon successful
-  // IDP icon fetch.
-  void OnIdpBrandIconFetched();
+  // Hides `header_icon_spinner_` and shows `idp_brand_icon_` upon successfully
+  // setting the IDP icon.
+  void OnIdpBrandIconSet();
 
   // Hides `header_icon_spinner_`, `idp_brand_icon_` and shows `combined_icons_`
-  // upon successful IDP and RP icon fetches.
-  void OnCombinedIconsFetched();
+  // upon successfully setting the IDP and RP icons.
+  void OnCombinedIconsSet();
 
   // Removes all child views and dangling pointers and adjust header with
   // progress bar and body label if needed.
@@ -224,8 +250,17 @@ class AccountSelectionModalView : public views::DialogDelegateView,
   // turned on.
   std::u16string queued_announcement_;
 
+  // The IDP for use in the title; nullopt in case of multi-IDP.
+  std::optional<std::u16string> idp_title_;
+
+  // The RP context to use in the title (e.g. "Sign In", "Use").
+  blink::mojom::RpContext rp_context_;
+
   // The title for the modal dialog.
   std::u16string title_;
+
+  // The subtitle for the modal dialog.
+  std::u16string subtitle_;
 
   // Used to ensure that callbacks are not run if the AccountSelectionModalView
   // is destroyed.

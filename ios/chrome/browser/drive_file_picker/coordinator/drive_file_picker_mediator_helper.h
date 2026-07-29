@@ -12,6 +12,7 @@
 
 #import "base/files/file_path.h"
 #import "ios/chrome/browser/drive_file_picker/ui/drive_file_picker_constants.h"
+#import "ios/chrome/browser/drive_file_picker/ui/drive_file_picker_options.h"
 #import "ios/web/public/web_state_id.h"
 
 struct ChooseFileEvent;
@@ -25,10 +26,11 @@ struct DriveListQuery;
 NSArray<UTType*>* UTTypesAcceptedForEvent(const ChooseFileEvent& event);
 
 // Sets the `order_by` field in `query` to account for sorting parameters`.
-void ApplySortToDriveListQuery(DriveItemsSortingType sorting_criteria,
-                               DriveItemsSortingOrder sorting_direction,
-                               bool folders_first,
-                               DriveListQuery& query);
+void ApplySortToDriveListQuery(
+    DriveFilePickerSortingCriterion sorting_criterion,
+    DriveFilePickerSortingDirection sorting_direction,
+    bool folders_first,
+    DriveListQuery& query);
 
 // Appends an extra term in `query` to account for `filter`.
 void ApplyFilterToDriveListQuery(DriveFilePickerFilter filter,
@@ -36,14 +38,11 @@ void ApplyFilterToDriveListQuery(DriveFilePickerFilter filter,
                                  DriveListQuery& query);
 
 // Creates a query accounting for `collection_type`, `folder_identifier`,
-// `filter`, `sorting_criteria`, `sorting_direction`, `search_text` and
-// `page_token`.
+// `options`, `search_text` and `page_token`.
 DriveListQuery CreateDriveListQuery(
     DriveFilePickerCollectionType collection_type,
     NSString* folder_identifier,
-    DriveFilePickerFilter filter,
-    DriveItemsSortingType sorting_criteria,
-    DriveItemsSortingOrder sorting_direction,
+    DriveFilePickerOptions options,
     BOOL should_show_search_items,
     NSString* search_text,
     NSString* page_token);
@@ -51,7 +50,8 @@ DriveListQuery CreateDriveListQuery(
 // Returns whether an item can be selected in the picker.
 bool DriveFilePickerItemShouldBeEnabled(const DriveItem& item,
                                         NSArray<UTType*>* accepted_types,
-                                        BOOL ignore_accepted_types);
+                                        BOOL ignore_accepted_types,
+                                        BOOL for_composebox);
 
 // Returns the subtitle which contains the last modified date for `item`.
 NSString* DriveFilePickerItemSubtitleModified(const DriveItem& item);
@@ -76,7 +76,7 @@ NSString* DriveFilePickerItemSubtitleRecent(const DriveItem& item);
 NSString* DriveFilePickerItemSubtitle(
     const DriveItem& item,
     DriveFilePickerCollectionType collection_type,
-    DriveItemsSortingType sorting_criteria,
+    DriveFilePickerSortingCriterion sorting_criterion,
     BOOL should_show_search_items,
     NSString* search_text);
 
@@ -84,11 +84,9 @@ NSString* DriveFilePickerItemSubtitle(
 DriveFilePickerItem* DriveItemToDriveFilePickerItem(
     const DriveItem& item,
     DriveFilePickerCollectionType collection_type,
-    DriveItemsSortingType sorting_criteria,
+    DriveFilePickerSortingCriterion sorting_criterion,
     BOOL should_show_search_items,
-    NSString* search_text,
-    UIImage* fetched_icon,
-    NSString* fetched_icon_link);
+    NSString* search_text);
 
 // Finds a DriveItem within the provided vector based on its identifier.
 std::optional<DriveItem> FindDriveItemFromIdentifier(
@@ -102,11 +100,8 @@ std::optional<base::FilePath> DriveFilePickerGenerateDownloadFilePath(
     NSString* download_file_identifier,
     NSString* download_file_name);
 
-// Returns the placeholder icon for `item`.
-UIImage* GetPlaceholderIconForDriveItem(const DriveItem& item);
-
-// Returns the appropriate image link to use for a given `item`.
-// If there is no such link, returns nil instead.
-NSString* GetImageLinkForDriveItem(const DriveItem& item);
+// Returns a string to display next to a file input when `file_urls` is
+// submitted.
+NSString* GetDisplayStringForFileUrls(NSArray<NSURL*>* file_urls);
 
 #endif  // IOS_CHROME_BROWSER_DRIVE_FILE_PICKER_COORDINATOR_DRIVE_FILE_PICKER_MEDIATOR_HELPER_H_

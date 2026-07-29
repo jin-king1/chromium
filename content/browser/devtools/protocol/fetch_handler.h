@@ -5,19 +5,28 @@
 #ifndef CONTENT_BROWSER_DEVTOOLS_PROTOCOL_FETCH_HANDLER_H_
 #define CONTENT_BROWSER_DEVTOOLS_PROTOCOL_FETCH_HANDLER_H_
 
+#include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/unguessable_token.h"
 #include "content/browser/devtools/protocol/devtools_domain_handler.h"
 #include "content/browser/devtools/protocol/fetch.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/system/data_pipe.h"
+
+namespace net {
+class CanonicalCookie;
+}  // namespace net
 
 namespace network {
 namespace mojom {
 class URLLoaderFactoryOverride;
+class TrustedURLLoaderHeaderClient;
 }
 }  // namespace network
 
 namespace content {
+class DevToolsAgentHostClient;
 class DevToolsAgentHostImpl;
 class DevToolsIOContext;
 class DevToolsURLLoaderInterceptor;
@@ -32,7 +41,10 @@ class FetchHandler : public DevToolsDomainHandler, public Fetch::Backend {
       base::RepeatingCallback<void(base::OnceClosure)>;
 
   FetchHandler(DevToolsIOContext* io_context,
-               UpdateLoaderFactoriesCallback update_loader_factories_callback);
+               DevToolsAgentHostClient* client,
+               UpdateLoaderFactoriesCallback update_loader_factories_callback,
+               base::OnceClosure cleanup_after_modifications_callback =
+                   base::OnceClosure());
 
   FetchHandler(const FetchHandler&) = delete;
   FetchHandler& operator=(const FetchHandler&) = delete;
@@ -47,7 +59,9 @@ class FetchHandler : public DevToolsDomainHandler, public Fetch::Backend {
       const base::UnguessableToken& frame_token,
       bool is_navigation,
       bool is_download,
-      network::mojom::URLLoaderFactoryOverride* intercepting_factory);
+      network::mojom::URLLoaderFactoryOverride* intercepting_factory,
+      mojo::PendingRemote<network::mojom::TrustedURLLoaderHeaderClient>*
+          header_client);
 
  private:
   // DevToolsDomainHandler
@@ -103,12 +117,17 @@ class FetchHandler : public DevToolsDomainHandler, public Fetch::Backend {
       mojo::ScopedDataPipeConsumerHandle pipe,
       const std::string& mime_type);
 
+  bool CanAccessCookie(const net::CanonicalCookie& cookie) const;
+
   void RequestIntercepted(std::unique_ptr<InterceptedRequestInfo> info);
 
   const raw_ptr<DevToolsIOContext> io_context_;
   std::unique_ptr<Fetch::Frontend> frontend_;
   std::unique_ptr<DevToolsURLLoaderInterceptor> interceptor_;
   UpdateLoaderFactoriesCallback update_loader_factories_callback_;
+  raw_ptr<DevToolsAgentHostClient> client_;
+  bool did_modifications_ = false;
+  base::OnceClosure cleanup_after_modifications_callback_;
   base::WeakPtrFactory<FetchHandler> weak_factory_{this};
 };
 

@@ -16,6 +16,7 @@
 #include "base/functional/callback_helpers.h"
 #include "base/i18n/char_iterator.h"
 #include "base/memory/raw_ptr.h"
+#include "base/notimplemented.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
@@ -428,10 +429,23 @@ TEST_F(InputMethodAshTest, OnTextInputTypeChangedChangesInputType) {
   ime.SetFocusedTextInputClient(nullptr);
 }
 
-TEST_F(InputMethodAshTest, HasBeenPasswordShouldTriggerPassowrd) {
+TEST_F(InputMethodAshTest, HasBeenPasswordShouldTriggerPassword) {
   InputMethodAsh ime(this);
   FakeTextInputClient fake_text_input_client(ui::TEXT_INPUT_TYPE_TEXT);
   fake_text_input_client.SetFlags(ui::TEXT_INPUT_FLAG_HAS_BEEN_PASSWORD);
+
+  ime.SetFocusedTextInputClient(&fake_text_input_client);
+
+  EXPECT_EQ(mock_ime_engine_handler_->last_text_input_context().type,
+            ui::TEXT_INPUT_TYPE_PASSWORD);
+
+  ime.SetFocusedTextInputClient(nullptr);
+}
+
+TEST_F(InputMethodAshTest, HasBeenCustomPasswordShouldTriggerPassword) {
+  InputMethodAsh ime(this);
+  FakeTextInputClient fake_text_input_client(ui::TEXT_INPUT_TYPE_TEXT);
+  fake_text_input_client.SetFlags(ui::TEXT_INPUT_FLAG_HAS_BEEN_CUSTOM_PASSWORD);
 
   ime.SetFocusedTextInputClient(&fake_text_input_client);
 
@@ -1215,7 +1229,6 @@ TEST_F(InputMethodAshKeyEventTest, StopPropagationTest) {
 }
 
 TEST_F(InputMethodAshKeyEventTest, DeadKeyPressTest) {
-  base::test::ScopedFeatureList feature_list(features::kInputMethodDeadKeyFix);
   input_type_ = ui::TEXT_INPUT_TYPE_TEXT;
   input_method_ash_->OnTextInputTypeChanged(this);
 
@@ -1238,8 +1251,6 @@ TEST_F(InputMethodAshKeyEventTest, DeadKeyPressTest) {
 }
 
 TEST_F(InputMethodAshTest, UnhandledDeadKeyForNonTerminalSendsDeadKeys) {
-  base::test::ScopedFeatureList feature_list(features::kInputMethodDeadKeyFix);
-
   for (const GURL& url : {
            GURL("chrome-untrusted://emoji"),
            GURL("chrome://crosh"),

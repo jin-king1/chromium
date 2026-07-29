@@ -8,6 +8,7 @@
 #include <optional>
 #include <tuple>
 
+#include "base/notimplemented.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "components/input/render_widget_host_input_event_router.h"
@@ -32,6 +33,7 @@
 #include "content/test/test_page_broadcast.h"
 #include "content/test/test_render_frame_host.h"
 #include "content/test/test_web_contents.h"
+#include "ipc/constants.mojom.h"
 #include "media/base/video_frame.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -77,17 +79,19 @@ TestRenderWidgetHostView::TestRenderWidgetHostView(RenderWidgetHost* rwh)
   SetIsFrameSinkIdOwner(true);
 
 #if defined(USE_AURA)
+  constexpr gfx::Rect kBounds = gfx::Rect(0, 0, 20, 20);
   window_ = std::make_unique<aura::Window>(
       aura::test::TestWindowDelegate::CreateSelfDestroyingDelegate());
   window_->set_owned_by_parent(false);
   window_->Init(ui::LayerType::LAYER_NOT_DRAWN);
+  window_->SetBounds(kBounds);
 #endif
 }
 
 TestRenderWidgetHostView::~TestRenderWidgetHostView() {
   viz::HostFrameSinkManager* manager = GetHostFrameSinkManager();
   if (manager)
-    manager->InvalidateFrameSinkId(frame_sink_id_, this);
+    manager->InvalidateFrameSinkId(frame_sink_id_, this, {});
 }
 
 gfx::NativeView TestRenderWidgetHostView::GetNativeView() {
@@ -99,7 +103,7 @@ gfx::NativeView TestRenderWidgetHostView::GetNativeView() {
 }
 
 gfx::NativeViewAccessible TestRenderWidgetHostView::GetNativeViewAccessible() {
-  return nullptr;
+  return gfx::NativeViewAccessible();
 }
 
 ui::TextInputClient* TestRenderWidgetHostView::GetTextInputClient() {
@@ -123,8 +127,9 @@ void TestRenderWidgetHostView::ShowWithVisibility(
 }
 
 void TestRenderWidgetHostView::Hide() {
-  if (!host()->is_hidden())
+  if (!host()->IsHidden()) {
     host()->WasHidden();
+  }
   is_showing_ = false;
 }
 
@@ -132,25 +137,11 @@ bool TestRenderWidgetHostView::IsShowing() {
   return is_showing_;
 }
 
-void TestRenderWidgetHostView::WasUnOccluded() {
-  // Can't be unoccluded unless the page is visible.
-  page_visibility_ = PageVisibilityState::kVisible;
-  OnShowWithPageVisibility(page_visibility_);
-  is_occluded_ = false;
-}
-
 void TestRenderWidgetHostView::WasOccluded() {
-  if (!host()->is_hidden())
+  if (!host()->IsHidden()) {
     host()->WasHidden();
+  }
   is_occluded_ = true;
-}
-
-void TestRenderWidgetHostView::EnsureSurfaceSynchronizedForWebTest() {
-  ++latest_capture_sequence_number_;
-}
-
-uint32_t TestRenderWidgetHostView::GetCaptureSequenceNumber() const {
-  return latest_capture_sequence_number_;
 }
 
 void TestRenderWidgetHostView::UpdateCursor(const ui::Cursor& cursor) {
@@ -169,8 +160,16 @@ void TestRenderWidgetHostView::Destroy() {
   delete this;
 }
 
+void TestRenderWidgetHostView::SetSize(const gfx::Size& size) {
+  bounds_.set_size(size);
+}
+
+void TestRenderWidgetHostView::SetBounds(const gfx::Rect& rect) {
+  bounds_ = rect;
+}
+
 gfx::Rect TestRenderWidgetHostView::GetViewBounds() {
-  return gfx::Rect();
+  return bounds_;
 }
 
 #if BUILDFLAG(IS_MAC)
@@ -186,7 +185,7 @@ void TestRenderWidgetHostView::SetWindowFrameInScreen(const gfx::Rect& rect) {}
 void TestRenderWidgetHostView::ShowSharePicker(
     const std::string& title,
     const std::string& text,
-    const std::string& url,
+    const GURL& url,
     const std::vector<std::string>& file_paths,
     blink::mojom::ShareService::ShareCallback callback) {}
 
@@ -195,7 +194,13 @@ uint64_t TestRenderWidgetHostView::GetNSViewId() const {
 }
 #endif
 
-gfx::Rect TestRenderWidgetHostView::GetBoundsInRootWindow() {
+#if BUILDFLAG(IS_ANDROID)
+bool TestRenderWidgetHostView::IsTouchSequencePotentiallyActiveOnViz() {
+  return false;
+}
+#endif
+
+gfx::Rect TestRenderWidgetHostView::GetBoundsInScreen() {
   return gfx::Rect();
 }
 
@@ -207,6 +212,10 @@ TestRenderWidgetHostView::IncrementSurfaceIdForNavigation() {
 
 void TestRenderWidgetHostView::ClearFallbackSurfaceForCommitPending() {
   clear_fallback_surface_for_commit_pending_called_ = true;
+}
+
+void TestRenderWidgetHostView::OnUnconfirmedTapConvertedToTap() {
+  NOTREACHED();
 }
 
 void TestRenderWidgetHostView::TakeFallbackContentFrom(
@@ -238,6 +247,10 @@ viz::SurfaceId TestRenderWidgetHostView::GetCurrentSurfaceId() const {
   return viz::SurfaceId();
 }
 
+bool TestRenderWidgetHostView::HasSavedCompositorFrame() const {
+  return false;
+}
+
 void TestRenderWidgetHostView::OnFirstSurfaceActivation(
     const viz::SurfaceInfo& surface_info) {
   // TODO(fsamuel): Once surface synchronization is turned on, the fallback
@@ -263,7 +276,11 @@ TestRenderWidgetHostView::CreateSyntheticGestureTarget() {
 
 void TestRenderWidgetHostView::UpdateBackgroundColor() {}
 
-void TestRenderWidgetHostView::SetDisplayFeatureForTesting(
+void TestRenderWidgetHostView::DisableDisplayFeatureOverrideForEmulation() {
+  display_feature_ = std::nullopt;
+}
+
+void TestRenderWidgetHostView::OverrideDisplayFeatureForEmulation(
     const DisplayFeature* display_feature) {
   if (display_feature)
     display_feature_ = *display_feature;
@@ -272,7 +289,8 @@ void TestRenderWidgetHostView::SetDisplayFeatureForTesting(
 }
 
 void TestRenderWidgetHostView::NotifyHostAndDelegateOnWasShown(
-    blink::mojom::RecordContentToVisibleTimeRequestPtr visible_time_request) {
+    std::optional<blink::RecordContentToVisibleTimeRequest>
+        visible_time_request) {
   // Should only be called if the view was not already shown.
   EXPECT_TRUE(!is_showing_ || is_occluded_);
   switch (page_visibility_) {
@@ -286,21 +304,20 @@ void TestRenderWidgetHostView::NotifyHostAndDelegateOnWasShown(
       ADD_FAILURE();
       break;
   }
-  if (host()->is_hidden()) {
+  if (host()->IsHidden()) {
     // Do not pass on `visible_time_request` because there is no compositing to
     // measure.
-    host()->WasShown({});
+    host()->WasShown(std::nullopt);
   }
 }
 
 void TestRenderWidgetHostView::
     RequestSuccessfulPresentationTimeFromHostOrDelegate(
-        blink::mojom::RecordContentToVisibleTimeRequestPtr
-            visible_time_request) {
+        blink::RecordContentToVisibleTimeRequest visible_time_request) {
   // Should only be called if the view was already shown.
 #if !BUILDFLAG(IS_ANDROID)
   // TODO(jonross): Update the constructor to determine showing state
-  // `is_showing_ = !host()->is_hidden()` this will match production code. Also
+  // `is_showing_ = !host()->IsHidden()` this will match production code. Also
   // update various tests not prepared for this to also match production.
   //
   // In tests TestRenderViewHostFactory::CreateRenderViewHost creates all hosts
@@ -312,7 +329,6 @@ void TestRenderWidgetHostView::
 #endif
   EXPECT_FALSE(is_occluded_);
   EXPECT_EQ(page_visibility_, PageVisibilityState::kVisible);
-  EXPECT_TRUE(visible_time_request);
 }
 
 void TestRenderWidgetHostView::
@@ -401,13 +417,17 @@ TestRenderViewHost::~TestRenderViewHost() {
 }
 
 bool TestRenderViewHost::CreateTestRenderView() {
-  return CreateRenderView(std::nullopt, MSG_ROUTING_NONE, false);
+  return CreateRenderView(/*opener_frame_token=*/std::nullopt,
+                          /*proxy_route_id=*/IPC::mojom::kRoutingIdNone,
+                          /*window_was_created_with_opener=*/false,
+                          /*navigation_metrics_token=*/std::nullopt);
 }
 
 bool TestRenderViewHost::CreateRenderView(
     const std::optional<blink::FrameToken>& opener_frame_token,
     int proxy_route_id,
-    bool window_was_created_with_opener) {
+    bool window_was_created_with_opener,
+    const std::optional<base::UnguessableToken>& navigation_metrics_token) {
   DCHECK(!IsRenderViewLive());
   // Mark the `blink::WebView` as live, though there's nothing to do here since
   // we don't yet use mojo to talk to the RenderView.
@@ -418,16 +438,12 @@ bool TestRenderViewHost::CreateRenderView(
   // creating the mojo connections and calling RenderFrameCreated().
   RenderFrameHostImpl* main_frame = nullptr;
   RenderFrameProxyHost* proxy_host = nullptr;
-  if (main_frame_routing_id_ != MSG_ROUTING_NONE) {
+  if (main_frame_routing_id_ != IPC::mojom::kRoutingIdNone) {
     main_frame = RenderFrameHostImpl::FromID(GetProcess()->GetDeprecatedID(),
                                              main_frame_routing_id_);
   } else {
     proxy_host = RenderFrameProxyHost::FromID(GetProcess()->GetDeprecatedID(),
                                               proxy_route_id);
-  }
-
-  if (!GetWidget()->view_is_frame_sink_id_owner()) {
-    main_frame->NotifyWillCreateRenderWidgetOnCommit();
   }
 
   DCHECK_EQ(!!main_frame, is_active());
@@ -525,7 +541,11 @@ void TestRenderViewHost::TestOnUpdateStateWithFile(
 
 RenderViewHostImplTestHarness::RenderViewHostImplTestHarness()
     : RenderViewHostTestHarness(
-          base::test::TaskEnvironment::TimeSource::MOCK_TIME) {}
+          base::test::TaskEnvironment::TimeSource::MOCK_TIME) {
+  // Disable IgnoreDuplicateNavs to ensure tests run with predictable navigation
+  // behavior and don't have navigations unintentionally ignored.
+  scoped_feature_list_.InitAndDisableFeature(features::kIgnoreDuplicateNavs);
+}
 
 RenderViewHostImplTestHarness::~RenderViewHostImplTestHarness() = default;
 

@@ -13,8 +13,10 @@ android_library("helper_java") {
     ":factory_java",
     ":java",
     "//base:base_java",
+    "//base:base_shared_preferences_java",
     "//chrome/browser/feature_engagement:java",
     "//chrome/browser/flags:java",
+    "//chrome/browser/preferences:java",
     "//chrome/browser/profiles/android:java",
     "//chrome/browser/recent_tabs/internal:java",
     "//chrome/browser/tabmodel:java",
@@ -22,13 +24,13 @@ android_library("helper_java") {
     "//components/feature_engagement/public:public_java",
     "//content/public/android:content_java",
     "//third_party/androidx:androidx_annotation_annotation_java",
+    "//ui/android:ui_no_recycler_view_java",
   ]
 }
 
 android_library("java") {
   srcjar_deps = [ ":jni_headers" ]
   sources = [
-    "android/java/src/org/chromium/chrome/browser/recent_tabs/CrossDevicePane.java",
     "android/java/src/org/chromium/chrome/browser/recent_tabs/ForeignSessionHelper.java",
     "android/java/src/org/chromium/chrome/browser/recent_tabs/RestoreTabsController.java",
     "android/java/src/org/chromium/chrome/browser/recent_tabs/RestoreTabsControllerDelegate.java",
@@ -40,6 +42,7 @@ android_library("java") {
     "//chrome/browser/hub:java",
     "//chrome/browser/profiles/android:java",
     "//chrome/browser/tab:java",
+    "//chrome/browser/tab_ui/android:java",
     "//chrome/browser/tabmodel:java",
     "//components/sync_device_info:sync_device_info_java",
     "//content/public/android:content_java",
@@ -58,10 +61,12 @@ android_library_factory("factory_java") {
   deps = [
     ":java",
     "//base:supplier_java",
+    "//chrome/browser/hub:java",
     "//chrome/browser/profiles/android:java",
     "//chrome/browser/tabmodel:java",
     "//chrome/browser/ui/android/edge_to_edge:java",
     "//components/browser_ui/bottomsheet/android:java",
+    "//ui/android:ui_no_recycler_view_java",
   ]
 }
 
@@ -77,8 +82,10 @@ robolectric_library("junit") {
     "//base:base_java",
     "//base:base_java_test_support",
     "//base:base_junit_test_support",
+    "//base:base_shared_preferences_java",
     "//base/test:test_support_java",
     "//chrome/browser/feature_engagement:java",
+    "//chrome/browser/preferences:java",
     "//chrome/browser/profiles/android:java",
     "//chrome/browser/recent_tabs:java",
     "//chrome/browser/tabmodel:java",
@@ -90,7 +97,7 @@ robolectric_library("junit") {
     "//third_party/androidx:androidx_test_runner_java",
     "//third_party/hamcrest:hamcrest_library_java",
     "//third_party/jni_zero:jni_zero_java",
-    "//third_party/junit:junit",
+    "//third_party/junit",
     "//third_party/mockito:mockito_java",
     "//ui/android:ui_java",
     "//url:gurl_java",

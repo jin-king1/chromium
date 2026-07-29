@@ -6,7 +6,6 @@
 
 #include <memory>
 
-#include "base/functional/callback_forward.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/test/mock_callback.h"
@@ -24,8 +23,10 @@ namespace {
 
 // Placeholder ID and context for test elements.
 DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kTestElementIdentifier);
-const ui::ElementContext kTestElementContext(1U);
-const ui::ElementContext kTestElementContext2(2U);
+constexpr ui::ElementContext kTestElementContext =
+    ui::ElementContext::CreateFakeContextForTesting(1U);
+constexpr ui::ElementContext kTestElementContext2 =
+    ui::ElementContext::CreateFakeContextForTesting(2U);
 
 }  // namespace
 
@@ -110,7 +111,7 @@ TEST_F(HelpBubbleFactoryRegistryTest, CloseBubble) {
   auto bubble = help_bubble_factory_registry_.CreateHelpBubble(
       &test_element_, std::move(params));
 
-  bubble->Close();
+  bubble->Close(HelpBubble::CloseReason::kProgrammaticallyClosed);
   EXPECT_FALSE(bubble->is_open());
   EXPECT_FALSE(help_bubble_factory_registry_.is_any_bubble_showing());
 }
@@ -227,9 +228,9 @@ TEST_F(HelpBubbleFactoryRegistryTest, CloseTwoBubbles) {
       &test_element_, GetBubbleParams());
   auto bubble2 = help_bubble_factory_registry_.CreateHelpBubble(
       &test_element_, GetBubbleParams());
-  bubble->Close();
+  bubble->Close(HelpBubble::CloseReason::kProgrammaticallyClosed);
   EXPECT_TRUE(help_bubble_factory_registry_.is_any_bubble_showing());
-  bubble2->Close();
+  bubble2->Close(HelpBubble::CloseReason::kProgrammaticallyClosed);
   EXPECT_FALSE(help_bubble_factory_registry_.is_any_bubble_showing());
 }
 
@@ -237,13 +238,24 @@ TEST_F(HelpBubbleFactoryRegistryTest, OpenSecondBubbleAfterClose) {
   auto bubble = help_bubble_factory_registry_.CreateHelpBubble(
       &test_element_, GetBubbleParams());
   EXPECT_TRUE(help_bubble_factory_registry_.is_any_bubble_showing());
-  bubble->Close();
+  bubble->Close(HelpBubble::CloseReason::kProgrammaticallyClosed);
   EXPECT_FALSE(help_bubble_factory_registry_.is_any_bubble_showing());
   auto bubble2 = help_bubble_factory_registry_.CreateHelpBubble(
       &test_element_, GetBubbleParams());
   EXPECT_TRUE(help_bubble_factory_registry_.is_any_bubble_showing());
-  bubble2->Close();
+  bubble2->Close(HelpBubble::CloseReason::kProgrammaticallyClosed);
   EXPECT_FALSE(help_bubble_factory_registry_.is_any_bubble_showing());
+}
+
+TEST_F(HelpBubbleFactoryRegistryTest, AddAndCloseExternalBubble) {
+  auto bubble =
+      std::make_unique<test::TestHelpBubble>(&test_element_, GetBubbleParams());
+  help_bubble_factory_registry_.AddHelpBubble(bubble.get());
+  EXPECT_EQ(bubble.get(), help_bubble_factory_registry_.GetHelpBubble(
+                              test_element_.context()));
+  bubble->Close(HelpBubble::CloseReason::kProgrammaticallyClosed);
+  EXPECT_EQ(nullptr, help_bubble_factory_registry_.GetHelpBubble(
+                         test_element_.context()));
 }
 
 }  // namespace user_education

@@ -13,6 +13,7 @@ import org.chromium.build.annotations.NullMarked;
 @NullMarked
 @JNINamespace("base")
 public class UiThreadTaskRunnerImpl extends TaskRunnerImpl implements SequencedTaskRunner {
+
     /**
      * @param traits The TaskTraits associated with this TaskRunner.
      */
@@ -20,14 +21,29 @@ public class UiThreadTaskRunnerImpl extends TaskRunnerImpl implements SequencedT
         super(traits, "UiThreadTaskRunner", TaskRunnerType.SINGLE_THREAD);
     }
 
+    /**
+     * Tasks are only removed from the pre-native task queue once run. So we can safely ignore them
+     * if preNativeUiTasks are disabled. They will be sent off to native task runners when native is
+     * initialized, where they will be scheduled as normal.
+     */
     @Override
     protected void schedulePreNativeTask() {
-        ThreadUtils.getUiThreadHandler().post(mRunPreNativeTaskClosure);
+        if (PostTask.canRunUiTaskBeforeNativeInit(mTaskTraits)) {
+            ThreadUtils.getUiThreadHandler().post(mRunPreNativeTaskClosure);
+        }
     }
 
+    /**
+     * Tasks are only removed from the pre-native task queue once run. So we can safely ignore them
+     * if preNativeUiTasks are disabled. They will be sent off to native task runners when native is
+     * initialized, where they will be scheduled as normal.
+     */
     @Override
     protected boolean schedulePreNativeDelayedTask(Runnable task, long delay) {
-        ThreadUtils.getUiThreadHandler().postDelayed(task, delay);
-        return true;
+        if (PostTask.canRunUiTaskBeforeNativeInit(mTaskTraits)) {
+            ThreadUtils.getUiThreadHandler().postDelayed(task, delay);
+            return true;
+        }
+        return false;
     }
 }

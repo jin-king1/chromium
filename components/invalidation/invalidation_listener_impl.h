@@ -14,6 +14,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
+#include "base/sequence_checker.h"
 #include "base/time/time.h"
 #include "components/gcm_driver/gcm_app_handler.h"
 #include "components/gcm_driver/instance_id/instance_id.h"
@@ -48,6 +49,10 @@ class InvalidationListenerImpl : public InvalidationListener,
                            int64_t project_number,
                            std::string log_prefix);
   ~InvalidationListenerImpl() override;
+
+  InvalidationListenerImpl(const InvalidationListenerImpl& other) = delete;
+  InvalidationListenerImpl& operator=(const InvalidationListenerImpl& other) =
+      delete;
 
   // `InvalidationListener`:
   void AddObserver(Observer* handler) override;

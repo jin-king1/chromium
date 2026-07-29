@@ -10,15 +10,14 @@
 
 #include <memory>
 
-#include "base/functional/callback_helpers.h"
+#include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
-#include "base/memory/raw_ptr_exclusion.h"
+#include "base/memory/ref_counted.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/types/pass_key.h"
 #include "build/build_config.h"
 #include "gpu/command_buffer/common/shared_image_usage.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_backing.h"
-#include "gpu/command_buffer/service/shared_image/shared_image_manager.h"
 #include "gpu/gpu_gles2_export.h"
 #include "gpu/vulkan/buildflags.h"
 #include "skia/buildflags.h"
@@ -41,26 +40,26 @@ class VulkanDeviceQueue;
 class VulkanImage;
 class VulkanImplementation;
 }  // namespace gpu
-#endif
+#endif  // BUILDFLAG(ENABLE_VULKAN)
 
 #if BUILDFLAG(IS_WIN)
+#include <d3d11.h>
+#include <d3d12.h>
+#include <wrl/client.h>
+
 #include "ui/gl/dc_layer_overlay_image.h"
-#endif
+#endif  // BUILDFLAG(IS_WIN)
 
 #if BUILDFLAG(IS_APPLE)
 #include "ui/gfx/mac/io_surface.h"
-#endif
+#include "ui/gfx/mac/mtl_shared_event_fence.h"
+#endif  // BUILDFLAG(IS_APPLE)
 
 #if BUILDFLAG(IS_ANDROID)
 #include "base/android/scoped_hardware_buffer_fence_sync.h"
 
 extern "C" typedef struct AHardwareBuffer AHardwareBuffer;
-#endif
-
-#if BUILDFLAG(IS_WIN)
-#include <d3d11.h>
-#include <wrl/client.h>
-#endif
+#endif  // BUILDFLAG(IS_ANDROID)
 
 typedef unsigned int GLenum;
 namespace skgpu {
@@ -76,6 +75,7 @@ class NativePixmap;
 }  // namespace gfx
 
 namespace gpu {
+class SharedImageManager;
 class TextureBase;
 
 namespace gles2 {
@@ -116,19 +116,14 @@ class GPU_GLES2_EXPORT SharedImageRepresentation {
   const std::string& debug_label() const { return backing_->debug_label(); }
   const char* backing_name() const { return backing_->GetName(); }
   MemoryTypeTracker* tracker() { return tracker_; }
-  bool IsCleared() const { return backing_->IsCleared(); }
-  void SetCleared() { backing_->SetCleared(); }
-  gfx::Rect ClearedRect() const { return backing_->ClearedRect(); }
-  void SetClearedRect(const gfx::Rect& cleared_rect) {
-    backing_->SetClearedRect(cleared_rect);
-  }
+  bool IsCleared() const;
+  void SetCleared();
+  virtual gfx::Rect ClearedRect() const;
+  virtual void SetClearedRect(const gfx::Rect& cleared_rect);
 
   // Indicates that the underlying graphics context has been lost, and the
   // backing should be treated as destroyed.
-  void OnContextLost() {
-    has_context_ = false;
-    backing_->OnContextLost();
-  }
+  virtual void OnContextLost();
 
   // Returns the number of image planes expected based on the backing format.
   size_t NumPlanesExpected() const;
@@ -165,15 +160,19 @@ class GPU_GLES2_EXPORT SharedImageRepresentation {
     }
 
    private:
-    // RAW_PTR_EXCLUSION: Performance reasons (based on analysis of MotionMark).
-    RAW_PTR_EXCLUSION RepresentationClass* const representation_ = nullptr;
+    // Uses UnprotectedInRelease for performance reasons (based on analysis of
+    // MotionMark).
+    const raw_ptr<RepresentationClass, UnprotectedInRelease> representation_ =
+        nullptr;
   };
 
  private:
-  // RAW_PTR_EXCLUSION: Performance reasons (based on analysis of MotionMark).
-  RAW_PTR_EXCLUSION SharedImageManager* const manager_ = nullptr;
-  RAW_PTR_EXCLUSION SharedImageBacking* backing_ = nullptr;
-  RAW_PTR_EXCLUSION MemoryTypeTracker* const tracker_ = nullptr;
+  // Uses UnprotectedInRelease for performance reasons (based on analysis of
+  // MotionMark).
+  const raw_ptr<SharedImageManager, UnprotectedInRelease> manager_ = nullptr;
+  raw_ptr<SharedImageBacking, DanglingUntriaged | UnprotectedInRelease>
+      backing_ = nullptr;
+  const raw_ptr<MemoryTypeTracker, UnprotectedInRelease> tracker_ = nullptr;
   bool has_context_ = true;
   AccessMode access_mode_ = AccessMode::kNone;
 };
@@ -190,27 +189,14 @@ class SharedImageRepresentationFactoryRef : public SharedImageRepresentation {
   ~SharedImageRepresentationFactoryRef() override;
 
   const Mailbox& mailbox() const { return backing()->mailbox(); }
-  void Update(std::unique_ptr<gfx::GpuFence> in_fence) {
-    backing()->Update(std::move(in_fence));
-  }
-  void SetPurgeable(bool purgeable) { backing()->SetPurgeable(purgeable); }
   bool CopyToGpuMemoryBuffer() { return backing()->CopyToGpuMemoryBuffer(); }
   void CopyToGpuMemoryBufferAsync(base::OnceCallback<void(bool)> callback) {
     backing()->CopyToGpuMemoryBufferAsync(std::move(callback));
   }
   void GetGpuMemoryBufferHandleInfo(gfx::GpuMemoryBufferHandle& handle,
-                                    viz::SharedImageFormat& format,
-                                    gfx::Size& size,
                                     gfx::BufferUsage& buffer_usage) {
     handle = backing()->GetGpuMemoryBufferHandle();
-    format = backing()->format();
-    size = backing()->size();
-    buffer_usage = backing()->buffer_usage();
-  }
-  bool PresentSwapChain() { return backing()->PresentSwapChain(); }
-  void RegisterImageFactory(SharedImageFactory* factory) {
-    DCHECK(is_primary_);
-    backing()->RegisterImageFactory(factory);
+    buffer_usage = backing()->buffer_usage().value();
   }
   void SetSharedImagePoolId(SharedImagePoolId pool_id) {
     backing()->SetSharedImagePoolId(std::move(pool_id));
@@ -251,7 +237,7 @@ class GPU_GLES2_EXPORT GLTextureImageRepresentationBase
       AllowUnclearedAccess allow_uncleared);
 
   // Gets the texture associated with the `plane_index` for SharedImageFormat.
-  virtual gpu::TextureBase* GetTextureBase(int plane_index) = 0;
+  virtual gpu::TextureBase* GetTextureBase(size_t plane_index) = 0;
   // Calls GetTextureBase with `plane_index` = 0 for single planar formats eg.
   // RGB.
   gpu::TextureBase* GetTextureBase();
@@ -285,11 +271,11 @@ class GPU_GLES2_EXPORT GLTextureImageRepresentation
       : GLTextureImageRepresentationBase(manager, backing, tracker) {}
 
   // Gets the texture associated with the `plane_index` for SharedImageFormat.
-  virtual gles2::Texture* GetTexture(int plane_index) = 0;
+  virtual gles2::Texture* GetTexture(size_t plane_index) = 0;
   // Calls GetTexture with `plane_index` = 0 for single planar formats eg. RGB.
   gles2::Texture* GetTexture();
 
-  gpu::TextureBase* GetTextureBase(int plane_index) override;
+  gpu::TextureBase* GetTextureBase(size_t plane_index) override;
 
  protected:
   friend class WrappedGLTextureCompoundImageRepresentation;
@@ -312,12 +298,12 @@ class GPU_GLES2_EXPORT GLTexturePassthroughImageRepresentation
   // Gets the passthrough texture associated with the `plane_index` for
   // SharedImageFormat.
   virtual const scoped_refptr<gles2::TexturePassthrough>& GetTexturePassthrough(
-      int plane_index) = 0;
+      size_t plane_index) = 0;
   // Calls GetTexturePassthrough with `plane_index` = 0 for single planar
   // formats eg. RGB.
   const scoped_refptr<gles2::TexturePassthrough>& GetTexturePassthrough();
 
-  gpu::TextureBase* GetTextureBase(int plane_index) override;
+  gpu::TextureBase* GetTextureBase(size_t plane_index) override;
 
   // Returns true if access must be suspended in between GL decoder tasks due to
   // DXGI keyed mutex. Only implemented for D3D GL representation.
@@ -337,14 +323,13 @@ class GPU_GLES2_EXPORT SkiaImageRepresentation
   class GPU_GLES2_EXPORT GraphiteTextureHolder
       : public base::RefCountedThreadSafe<GraphiteTextureHolder> {
    public:
-    explicit GraphiteTextureHolder(skgpu::graphite::BackendTexture texture)
-        : texture_(std::move(texture)) {}
+    explicit GraphiteTextureHolder(skgpu::graphite::BackendTexture texture);
 
     const skgpu::graphite::BackendTexture& texture() { return texture_; }
 
    protected:
     friend class base::RefCountedThreadSafe<GraphiteTextureHolder>;
-    virtual ~GraphiteTextureHolder() = default;
+    virtual ~GraphiteTextureHolder();
 
     skgpu::graphite::BackendTexture texture_;
   };
@@ -362,20 +347,20 @@ class GPU_GLES2_EXPORT SkiaImageRepresentation
       CHECK(representation()->format().is_single_plane());
       return surface(0);
     }
-    SkSurface* surface(int plane_index) const {
+    SkSurface* surface(size_t plane_index) const {
       return surfaces_[plane_index].get();
     }
 
-    GrPromiseImageTexture* promise_image_texture(int plane_index) const {
+    GrPromiseImageTexture* promise_image_texture(size_t plane_index) const {
       return promise_image_textures_[plane_index].get();
     }
 
-    skgpu::graphite::BackendTexture graphite_texture(int plane_index) const {
+    skgpu::graphite::BackendTexture graphite_texture(size_t plane_index) const {
       return graphite_texture_holder(plane_index)->texture();
     }
 
     const scoped_refptr<GraphiteTextureHolder>& graphite_texture_holder(
-        int plane_index) const {
+        size_t plane_index) const {
       return graphite_texture_holders_[plane_index];
     }
 
@@ -418,7 +403,7 @@ class GPU_GLES2_EXPORT SkiaImageRepresentation
       CHECK_EQ(representation()->NumPlanesExpected(), 1u);
       return promise_image_texture(0);
     }
-    GrPromiseImageTexture* promise_image_texture(int plane_index) const {
+    GrPromiseImageTexture* promise_image_texture(size_t plane_index) const {
       return promise_image_textures_[plane_index].get();
     }
 
@@ -426,12 +411,12 @@ class GPU_GLES2_EXPORT SkiaImageRepresentation
       CHECK_EQ(representation()->NumPlanesExpected(), 1u);
       return graphite_texture(0);
     }
-    skgpu::graphite::BackendTexture graphite_texture(int plane_index) const {
+    skgpu::graphite::BackendTexture graphite_texture(size_t plane_index) const {
       return graphite_texture_holder(plane_index)->texture();
     }
 
     const scoped_refptr<GraphiteTextureHolder>& graphite_texture_holder(
-        int plane_index) const {
+        size_t plane_index) const {
       return graphite_texture_holders_[plane_index];
     }
 
@@ -448,7 +433,7 @@ class GPU_GLES2_EXPORT SkiaImageRepresentation
     // Creates an SkImage for the given `plane_index` for
     // multiplanar formats.
     virtual sk_sp<SkImage> CreateSkImageForPlane(
-        int plane_index,
+        size_t plane_index,
         SharedContextState* context_state,
         SkImages::TextureReleaseProc texture_release_proc = nullptr,
         SkImages::ReleaseContext release_context = nullptr) = 0;
@@ -477,7 +462,8 @@ class GPU_GLES2_EXPORT SkiaImageRepresentation
 
   SkiaImageRepresentation(SharedImageManager* manager,
                           SharedImageBacking* backing,
-                          MemoryTypeTracker* tracker);
+                          MemoryTypeTracker* tracker,
+                          bool is_graphite);
   ~SkiaImageRepresentation() override;
 
   // Note: See BeginWriteAccess below for a description of the semaphore
@@ -511,13 +497,19 @@ class GPU_GLES2_EXPORT SkiaImageRepresentation
 
   // Return whether we need to submit graphite's commands before EndAccess.
   // NOTE: Implemented only for Graphite.
-  virtual bool NeedGraphiteContextSubmitBeforeEndAccess() = 0;
+  bool NeedGraphiteContextSubmitBeforeEndAccess();
 
   virtual bool SupportsMultipleConcurrentReadAccess();
 
  protected:
+  // Return whether the graphite context submission can be deferred even after
+  // the backing is destroyed.
+  virtual bool SupportsDeferredGraphiteSubmit();
+
   virtual void EndWriteAccess() = 0;
   virtual void EndReadAccess() = 0;
+
+  const bool is_graphite_;
 };
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -573,7 +565,7 @@ class GPU_GLES2_EXPORT SkiaGaneshImageRepresentation
     // Creates an SkImage for the given `plane_index` from GrBackendTexture for
     // multiplanar formats.
     sk_sp<SkImage> CreateSkImageForPlane(
-        int plane_index,
+        size_t plane_index,
         SharedContextState* context_state,
         SkImages::TextureReleaseProc texture_release_proc = nullptr,
         SkImages::ReleaseContext release_context = nullptr) override;
@@ -629,9 +621,6 @@ class GPU_GLES2_EXPORT SkiaGaneshImageRepresentation
   std::unique_ptr<ScopedReadAccess> BeginScopedReadAccess(
       std::vector<GrBackendSemaphore>* begin_semaphores,
       std::vector<GrBackendSemaphore>* end_semaphores) override;
-
-  // Return false for ganesh.
-  bool NeedGraphiteContextSubmitBeforeEndAccess() final;
 
  protected:
   friend class WrappedSkiaGaneshCompoundImageRepresentation;
@@ -725,7 +714,7 @@ class GPU_GLES2_EXPORT SkiaGraphiteImageRepresentation
     // Creates an SkImage for the given `plane_index` from BackendTexture for
     // multiplanar formats.
     sk_sp<SkImage> CreateSkImageForPlane(
-        int plane_index,
+        size_t plane_index,
         SharedContextState* context_state,
         SkImages::TextureReleaseProc texture_release_proc = nullptr,
         SkImages::ReleaseContext release_context = nullptr) override;
@@ -768,8 +757,6 @@ class GPU_GLES2_EXPORT SkiaGraphiteImageRepresentation
   std::unique_ptr<ScopedReadAccess> BeginScopedReadAccess(
       std::vector<GrBackendSemaphore>* begin_semaphores,
       std::vector<GrBackendSemaphore>* end_semaphores) override;
-
-  bool NeedGraphiteContextSubmitBeforeEndAccess() override;
 
  protected:
   friend class WrappedSkiaGraphiteCompoundImageRepresentation;
@@ -911,8 +898,57 @@ class GPU_GLES2_EXPORT DawnBufferRepresentation
   // Allows passing usages to the created Dawn buffer.
   std::unique_ptr<ScopedAccess> BeginScopedAccess(wgpu::BufferUsage usage);
 
- private:
+ protected:
+  friend class WrappedDawnBufferCompoundImageRepresentation;
   virtual wgpu::Buffer BeginAccess(wgpu::BufferUsage usage) = 0;
+  virtual void EndAccess() = 0;
+};
+
+///////////////////////////////////////////////////////////////////////////////
+// WebNNTensorRepresentation
+
+class GPU_GLES2_EXPORT WebNNTensorRepresentation
+    : public SharedImageRepresentation {
+ public:
+  WebNNTensorRepresentation(SharedImageManager* manager,
+                            SharedImageBacking* backing,
+                            MemoryTypeTracker* tracker)
+      : SharedImageRepresentation(manager, backing, tracker) {}
+
+  class GPU_GLES2_EXPORT ScopedAccess
+      : public ScopedAccessBase<WebNNTensorRepresentation> {
+   public:
+    ScopedAccess(base::PassKey<WebNNTensorRepresentation> pass_key,
+                 WebNNTensorRepresentation* representation,
+                 AccessMode access_mode);
+    ~ScopedAccess();
+
+#if BUILDFLAG(IS_WIN)
+    scoped_refptr<gfx::D3DSharedFence> GetAcquireFence() const;
+    void SetReleaseFence(scoped_refptr<gfx::D3DSharedFence> release_fence);
+#endif
+  };
+
+  bool is_thread_safe() const;
+
+  std::unique_ptr<ScopedAccess> BeginScopedAccess();
+
+#if BUILDFLAG(IS_WIN)
+  virtual Microsoft::WRL::ComPtr<ID3D12Resource> GetD3D12Buffer() const;
+  virtual base::win::ScopedHandle GetD3D12HeapHandle() const;
+#endif  // BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_APPLE)
+  virtual IOSurfaceRef GetIOSurface() const;
+#endif  // BUILDFLAG(IS_APPLE)
+ protected:
+  friend class WrappedWebNNTensorCompoundImageRepresentation;
+
+#if BUILDFLAG(IS_WIN)
+  virtual scoped_refptr<gfx::D3DSharedFence> GetAcquireFence() const = 0;
+  virtual void SetReleaseFence(
+      scoped_refptr<gfx::D3DSharedFence> release_fence) = 0;
+#endif  // BUILDFLAG(IS_WIN)
+  virtual bool BeginAccess() = 0;
   virtual void EndAccess() = 0;
 };
 
@@ -957,6 +993,9 @@ class GPU_GLES2_EXPORT OverlayImageRepresentation
 #elif BUILDFLAG(IS_APPLE)
     gfx::ScopedIOSurface GetIOSurface() const {
       return representation()->GetIOSurface();
+    }
+    std::vector<gfx::MTLSharedEventFence> GetBackpressureFences() const {
+      return representation()->GetBackpressureFences();
     }
     bool IsInUseByWindowServer() const {
       return representation()->IsInUseByWindowServer();
@@ -1005,6 +1044,7 @@ class GPU_GLES2_EXPORT OverlayImageRepresentation
   virtual std::optional<gl::DCLayerOverlayImage> GetDCLayerOverlayImage();
 #elif BUILDFLAG(IS_APPLE)
   virtual gfx::ScopedIOSurface GetIOSurface() const;
+  virtual std::vector<gfx::MTLSharedEventFence> GetBackpressureFences() const;
   // Return true if the macOS WindowServer is currently using the underlying
   // storage for the image.
   virtual bool IsInUseByWindowServer() const;
@@ -1061,6 +1101,8 @@ class GPU_GLES2_EXPORT MemoryImageRepresentation
   std::unique_ptr<ScopedReadAccess> BeginScopedReadAccess();
 
  protected:
+  friend class WrappedMemoryCompoundImageRepresentation;
+
   virtual SkPixmap BeginReadAccess() = 0;
 };
 
@@ -1146,6 +1188,21 @@ class GPU_GLES2_EXPORT RasterImageRepresentation
 ///////////////////////////////////////////////////////////////////////////////
 // VideoImageRepresentation
 
+#if BUILDFLAG(IS_WIN)
+// Holds a D3D11 texture array, and index into it.
+struct GPU_GLES2_EXPORT D3D11TextureAndArrayIndex {
+  D3D11TextureAndArrayIndex(Microsoft::WRL::ComPtr<ID3D11Texture2D> texture,
+                            size_t array_index);
+  D3D11TextureAndArrayIndex(const D3D11TextureAndArrayIndex& other);
+  D3D11TextureAndArrayIndex(D3D11TextureAndArrayIndex&& other);
+
+  ~D3D11TextureAndArrayIndex();
+
+  Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+  size_t array_index = 0;
+};
+#endif  // BUILDFLAG(IS_WIN)
+
 class GPU_GLES2_EXPORT VideoImageRepresentation
     : public SharedImageRepresentation {
  public:
@@ -1157,7 +1214,7 @@ class GPU_GLES2_EXPORT VideoImageRepresentation
     ~ScopedWriteAccess();
 
 #if BUILDFLAG(IS_WIN)
-    Microsoft::WRL::ComPtr<ID3D11Texture2D> GetD3D11Texture() const {
+    D3D11TextureAndArrayIndex GetD3D11Texture() const {
       return representation()->GetD3D11Texture();
     }
 #endif  // BUILDFLAG(IS_WIN)
@@ -1171,10 +1228,16 @@ class GPU_GLES2_EXPORT VideoImageRepresentation
     ~ScopedReadAccess();
 
 #if BUILDFLAG(IS_WIN)
-    Microsoft::WRL::ComPtr<ID3D11Texture2D> GetD3D11Texture() const {
+    D3D11TextureAndArrayIndex GetD3D11Texture() const {
       return representation()->GetD3D11Texture();
     }
 #endif  // BUILDFLAG(IS_WIN)
+
+#if BUILDFLAG(IS_ANDROID)
+    AHardwareBuffer* GetAHardwareBuffer() const {
+      return representation()->GetAHardwareBuffer();
+    }
+#endif  // BUILDFLAG(IS_ANDROID)
   };
 
   VideoImageRepresentation(SharedImageManager* manager,
@@ -1186,9 +1249,16 @@ class GPU_GLES2_EXPORT VideoImageRepresentation
   virtual std::unique_ptr<ScopedReadAccess> BeginScopedReadAccess();
 
  protected:
+  friend class WrappedVideoCompoundImageRepresentation;
+
 #if BUILDFLAG(IS_WIN)
-  virtual Microsoft::WRL::ComPtr<ID3D11Texture2D> GetD3D11Texture() const = 0;
+  virtual D3D11TextureAndArrayIndex GetD3D11Texture() const = 0;
 #endif  // BUILDFLAG(IS_WIN)
+
+#if BUILDFLAG(IS_ANDROID)
+  virtual AHardwareBuffer* GetAHardwareBuffer() const = 0;
+#endif  // BUILDFLAG(IS_ANDROID)
+
   virtual bool BeginWriteAccess() = 0;
   virtual void EndWriteAccess() = 0;
   virtual bool BeginReadAccess() = 0;
@@ -1226,14 +1296,21 @@ class GPU_GLES2_EXPORT VulkanImageRepresentation
     VkSemaphore end_semaphore_;
   };
 
-  virtual std::unique_ptr<ScopedAccess> BeginScopedAccess(
+  std::unique_ptr<ScopedAccess> BeginScopedAccess(
       AccessMode access_mode,
       std::vector<VkSemaphore>& begin_semaphores,
-      std::vector<VkSemaphore>& end_semaphores) = 0;
+      std::vector<VkSemaphore>& end_semaphores);
+
+  virtual bool BeginAccess(AccessMode access_mode,
+                           std::vector<VkSemaphore>& begin_semaphores,
+                           std::vector<VkSemaphore>& end_semaphores) = 0;
+
+  virtual void EndAccess(bool is_read_only, VkSemaphore end_semaphore) = 0;
+
+  virtual gpu::VulkanImage& GetVulkanImage();
 
  protected:
-  virtual void EndScopedAccess(bool is_read_only,
-                               VkSemaphore end_semaphore) = 0;
+  friend class WrappedVulkanCompoundImageRepresentation;
 
   std::unique_ptr<gpu::VulkanImage> vulkan_image_;
   raw_ptr<gpu::VulkanDeviceQueue> vulkan_device_queue_;

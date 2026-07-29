@@ -5,35 +5,26 @@
 #include "components/safe_browsing/content/renderer/phishing_classifier/phishing_classifier_delegate.h"
 
 #include <memory>
-#include <set>
 #include <utility>
 
-#include "base/debug/stack_trace.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
-#include "base/lazy_instance.h"
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/no_destructor.h"
 #include "base/notreached.h"
 #include "base/task/single_thread_task_runner.h"
-#include "components/safe_browsing/content/common/safe_browsing.mojom-forward.h"
 #include "components/safe_browsing/content/common/safe_browsing.mojom-shared.h"
-#include "components/safe_browsing/content/renderer/phishing_classifier/features.h"
 #include "components/safe_browsing/content/renderer/phishing_classifier/phishing_classifier.h"
-#include "components/safe_browsing/content/renderer/phishing_classifier/scorer.h"
+#include "components/safe_browsing/core/common/features.h"
+#include "components/safe_browsing/core/common/phishing_classifier/scorer.h"
 #include "components/safe_browsing/core/common/proto/csd.pb.h"
 #include "content/public/renderer/render_frame.h"
 #include "content/public/renderer/render_thread.h"
 #include "mojo/public/cpp/base/proto_wrapper.h"
-#include "mojo/public/cpp/bindings/self_owned_receiver.h"
-#include "services/service_manager/public/cpp/interface_provider.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_registry.h"
-#include "third_party/blink/public/platform/web_url.h"
 #include "third_party/blink/public/web/web_document.h"
 #include "third_party/blink/public/web/web_local_frame.h"
-#include "third_party/blink/public/web/web_view.h"
 
 using content::RenderThread;
 
@@ -47,9 +38,49 @@ GURL StripRef(const GURL& url) {
   return url.ReplaceComponents(replacements);
 }
 
+GURL StripQueryAndRef(const GURL& url) {
+  GURL::Replacements replacements;
+  replacements.ClearQuery();
+  replacements.ClearRef();
+  return url.ReplaceComponents(replacements);
+}
+
 void LogClassificationRetryWithinTimeout(bool success) {
   base::UmaHistogramBoolean(
       "SBClientPhishing.Classifier.ReadyAfterRetryTimeout", success);
+}
+
+std::string_view GetRequestTypeName(
+    safe_browsing::mojom::ClientSideDetectionType client_side_detection_type) {
+  switch (client_side_detection_type) {
+    case safe_browsing::mojom::ClientSideDetectionType::kForceRequest:
+      return "ForceRequest";
+    case safe_browsing::mojom::ClientSideDetectionType::
+        kNotificationPermissionPrompt:
+      return "NotificationPermissionPrompt";
+    case safe_browsing::mojom::ClientSideDetectionType::kTriggerModels:
+      return "TriggerModel";
+    case safe_browsing::mojom::ClientSideDetectionType::kKeyboardLock:
+      return "KeyboardLockRequested";
+    case safe_browsing::mojom::ClientSideDetectionType::kPointerLock:
+      return "PointerLockRequested";
+    case safe_browsing::mojom::ClientSideDetectionType::kVibrationApi:
+      return "VibrationApi";
+    case safe_browsing::mojom::ClientSideDetectionType::kFullscreen:
+      return "FullscreenApi";
+    case safe_browsing::mojom::ClientSideDetectionType::kPasswordProtection:
+      return "PasswordProtection";
+    case safe_browsing::mojom::ClientSideDetectionType::kClipboardCopyApi:
+      return "ClipboardCopyApi";
+    case safe_browsing::mojom::ClientSideDetectionType::kCreditCardForm:
+      return "CreditCardForm";
+    case safe_browsing::mojom::ClientSideDetectionType::kImageEmbeddingMatch:
+      return "ImageEmbeddingMatch";
+    case safe_browsing::mojom::ClientSideDetectionType::kUserReport:
+      return "UserReport";
+    case safe_browsing::mojom::ClientSideDetectionType::kUnfamiliarLoginPage:
+      return "UnfamiliarLoginPage";
+  }
 }
 
 }  // namespace
@@ -76,7 +107,7 @@ PhishingClassifierDelegate::PhishingClassifierDelegate(
 }
 
 PhishingClassifierDelegate::~PhishingClassifierDelegate() {
-  CancelPendingClassification();
+  CancelPendingClassification(CancelClassificationReason::kShutdown);
 }
 
 // static
@@ -96,87 +127,183 @@ void PhishingClassifierDelegate::PhishingDetectorReceiver(
 
 void PhishingClassifierDelegate::StartPhishingDetection(
     const GURL& url,
+    safe_browsing::mojom::ClientSideDetectionType request_type,
     StartPhishingDetectionCallback callback) {
-  RecordEvent(SBPhishingClassifierEvent::kPhishingDetectionRequested);
-
-  if (!callback_.is_null())
+  if (!callback_.is_null()) {
     std::move(callback_).Run(mojom::PhishingDetectorResult::CANCELLED,
                              std::nullopt);
+  }
+  CancelPendingClassification(
+      CancelClassificationReason::kNewRequestFromBrowser);
   is_phishing_detection_running_ = true;
   awaiting_retry_ = false;
   last_url_received_from_browser_ = StripRef(url);
   callback_ = std::move(callback);
-  // Start classifying the current page if all conditions are met.
-  // See MaybeStartClassification() for details.
-  MaybeStartClassification();
+  request_type_ = request_type;
+  classifier_->SetClientSideDetectionType(request_type);
+  RecordEvent(SBPhishingClassifierEvent::kPhishingDetectionRequested);
+
+  if (base::FeatureList::IsEnabled(kClientSideDetectionNewObservers)) {
+    // Browser request has come in, but renderer has not fully loaded, so leave
+    // it up for renderer load to start the classification.
+    if (!renderer_layout_finished_) {
+      return;
+    }
+
+    if (request_type_ == mojom::ClientSideDetectionType::kImageEmbeddingMatch ||
+        request_type_ == mojom::ClientSideDetectionType::kTriggerModels) {
+      base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
+          FROM_HERE,
+          base::BindOnce(&PhishingClassifierDelegate::MaybeStartClassification,
+                         weak_factory_.GetWeakPtr()),
+          base::Seconds(kCsdClassificationDelay.Get()));
+    } else {
+      MaybeStartClassification();
+    }
+
+  } else {
+    // Start classifying the current page if all conditions are met.
+    // See MaybeStartClassification() for details.
+    MaybeStartClassification();
+  }
 }
 
 void PhishingClassifierDelegate::DidCommitProvisionalLoad(
     ui::PageTransition transition) {
   blink::WebLocalFrame* frame = render_frame()->GetWebFrame();
-  // A new page is starting to load, so cancel classificaiton.
-  CancelPendingClassification();
+  // A new page is starting to load, and if we had a browser request waiting, we
+  // log that if it never got the chance to classify.
+  if (is_phishing_detection_running_ && !is_classifying_) {
+    RecordEvent(
+        SBPhishingClassifierEvent::kNewPageLoadWhileBrowserRequestWaitsForLoad);
+  }
+  // A new page is starting to load, so cancel classificaiton, and reset URL.
+  CancelPendingClassification(CancelClassificationReason::kNavigateAway);
+  renderer_layout_finished_ = false;
+  last_finished_load_url_ = GURL();
   if (!frame->Parent())
     last_main_frame_transition_ = transition;
-}
-
-void PhishingClassifierDelegate::DidFinishSameDocumentNavigation() {
-  // TODO(bryner): We shouldn't need to cancel classification if the navigation
-  // is within the same document.  However, if we let classification continue in
-  // this case, we need to properly deal with the fact that PageCaptured will
-  // be called again for the same-document navigation.  We need to be sure not
-  // to swap out the page text while the term feature extractor is still
-  // running.
-  CancelPendingClassification();
 }
 
 bool PhishingClassifierDelegate::is_ready() {
   return classifier_->is_ready();
 }
 
-void PhishingClassifierDelegate::PageCaptured(
-    scoped_refptr<const base::RefCountedString16> page_text,
-    bool preliminary_capture) {
-  RecordEvent(SBPhishingClassifierEvent::kPageTextCaptured);
+void PhishingClassifierDelegate::PageCaptured(bool preliminary_capture) {
+  if (!base::FeatureList::IsEnabled(kClientSideDetectionNewObservers)) {
+    RecordEvent(SBPhishingClassifierEvent::kPageTextCaptured);
 
-  if (preliminary_capture) {
-    return;
+    if (preliminary_capture) {
+      return;
+    }
+
+    RecordEvent(
+        SBPhishingClassifierEvent::kPhishingClassifierPageFinishedLoading);
+
+    renderer_layout_finished_ = true;
+    last_finished_load_url_ =
+        render_frame()->GetWebFrame()->GetDocument().Url();
+
+    // Browser side has not made a request yet, so no need to try to start the
+    // classification. If browser side makes the request for the same URL, it
+    // will start the classification then.
+    if (!is_phishing_detection_running_) {
+      return;
+    }
+
+    GURL stripped_last_load_url(StripRef(last_finished_load_url_));
+    // If we're classifying at the moment and there's a new finished load on the
+    // page, do not attempt to start a new classification. We will only restart
+    // classification by cancelling an ongoing when there's a new browser side
+    // request.
+    if (is_classifying_ &&
+        stripped_last_load_url == StripRef(last_url_sent_to_classifier_)) {
+      RecordEvent(
+          SBPhishingClassifierEvent::
+              kPhishingClassifierPageFinishedLoadingAgainDuringClassification);
+      return;
+    }
+
+    MaybeStartClassification();
+  } else {
+    // This is true if layout_type == kWebMeaningfulLayout::kFinishedParsing.
+    // We are looking for kWebMeaningfulLayout::kFinishedLoading only.
+    // PageCaptured is not called for any other cases of kWebMeaningfulLayout.
+    if (preliminary_capture) {
+      return;
+    }
+    renderer_layout_finished_ = true;
+    RecordEvent(
+        SBPhishingClassifierEvent::kPhishingClassifierPageFinishedLoading);
+    // Note: Currently, if the url hasn't changed, we won't restart
+    // classification in this case.  We may want to adjust this.
+    last_finished_load_url_ =
+        render_frame()->GetWebFrame()->GetDocument().Url();
+
+    // Browser side has not made a request yet, so no need to try to start the
+    // classification. If browser side makes the request for the same URL, it
+    // will start the classification then.
+    if (!is_phishing_detection_running_) {
+      return;
+    }
+
+    GURL stripped_last_load_url(StripRef(last_finished_load_url_));
+    // If we're classifying at the moment and there's a new finished load on the
+    // page, do not attempt to start a new classification. We will only restart
+    // classification by cancelling an ongoing when there's a new browser side
+    // request.
+    if (is_classifying_ &&
+        stripped_last_load_url == StripRef(last_url_sent_to_classifier_)) {
+      RecordEvent(
+          SBPhishingClassifierEvent::
+              kPhishingClassifierPageFinishedLoadingAgainDuringClassification);
+      return;
+    }
+
+    if (request_type_ == mojom::ClientSideDetectionType::kTriggerModels ||
+        request_type_ == mojom::ClientSideDetectionType::kImageEmbeddingMatch) {
+      base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
+          FROM_HERE,
+          base::BindOnce(&PhishingClassifierDelegate::MaybeStartClassification,
+                         weak_factory_.GetWeakPtr()),
+          base::Seconds(kCsdClassificationDelay.Get()));
+    } else {
+      MaybeStartClassification();
+    }
   }
-  // Make sure there's no classification in progress.  We don't want to swap
-  // out the page text string from underneath the term feature extractor.
-  //
-  // Note: Currently, if the url hasn't changed, we won't restart
-  // classification in this case.  We may want to adjust this.
-  CancelPendingClassification();
-  last_finished_load_url_ = render_frame()->GetWebFrame()->GetDocument().Url();
-  classifier_page_text_ = std::move(page_text);
-
-  GURL stripped_last_load_url(StripRef(last_finished_load_url_));
-  // Check if toplevel URL has changed.
-  if (stripped_last_load_url == StripRef(last_url_sent_to_classifier_)) {
-    return;
-  }
-
-  MaybeStartClassification();
 }
 
-void PhishingClassifierDelegate::CancelPendingClassification() {
+void PhishingClassifierDelegate::CancelPendingClassification(
+    CancelClassificationReason reason) {
   if (is_classifying_) {
     is_classifying_ = false;
+    base::UmaHistogramEnumeration("SBClientPhishing.CancelClassificationReason",
+                                  reason);
+    if (request_type_.has_value()) {
+      base::UmaHistogramEnumeration(
+          base::StrCat({"SBClientPhishing.CancelClassificationReason.",
+                        GetRequestTypeName(request_type_.value())}),
+          reason);
+    }
   }
-  if (classifier_->is_ready()) {
-    classifier_->CancelPendingClassification();
-  }
-  classifier_page_text_ = nullptr;
+  classifier_->CancelPendingClassification();
+  is_phishing_detection_running_ = false;
+  last_url_received_from_browser_ = GURL();
   awaiting_retry_ = false;
+  request_type_ = std::nullopt;
 }
 
 void PhishingClassifierDelegate::ClassificationDone(
     const ClientPhishingRequest& verdict,
     PhishingClassifier::Result phishing_classifier_result) {
+  RecordEvent(SBPhishingClassifierEvent::kClassificationComplete);
+  is_classifying_ = false;
   is_phishing_detection_running_ = false;
-  if (callback_.is_null())
+  if (callback_.is_null()) {
+    RecordEvent(
+        SBPhishingClassifierEvent::kPhishingClasifierCallbackEmptyOnCompletion);
     return;
+  }
 
   mojom::PhishingDetectorResult result = mojom::PhishingDetectorResult::SUCCESS;
 
@@ -208,31 +335,62 @@ void PhishingClassifierDelegate::ClassificationDone(
     }
   }
 
+  // In the process of classifiation, especially on pages that are single page
+  // applications (SPAs), the URL could change due to pushState, etc. Check once
+  // more that the URL still matches, ignoring ref and query.
   if (result == mojom::PhishingDetectorResult::SUCCESS) {
-    DCHECK_EQ(last_url_sent_to_classifier_.spec(), verdict.url());
+    DCHECK(StripQueryAndRef(last_url_sent_to_classifier_) ==
+           StripQueryAndRef(GURL(verdict.url())))
+        << "URL mismatch: " << last_url_sent_to_classifier_.spec() << " vs "
+        << verdict.url();
   }
-
+  request_type_ = std::nullopt;
+  RecordEvent(SBPhishingClassifierEvent::kPhishingClassifierRequestResponded);
   std::move(callback_).Run(result, mojo_base::ProtoWrapper(verdict));
 }
 
 void PhishingClassifierDelegate::MaybeStartClassification() {
   // We can begin phishing classification when the following conditions are
   // met:
-  //  1. A Scorer has been created
-  //  2. The browser has sent a StartPhishingDetection message for the
+  //  1. We still actually have a request to answer.
+  //  2. There's no current classification going on.
+  //  3. A Scorer has been created.
+  //  4. The browser has sent a StartPhishingDetection message for the
   //     current toplevel URL.
-  //  3. The page has finished loading and the page text has been extracted.
-  //  4. The load is a new navigation (not a session history navigation).
-  //  5. The toplevel URL has not already been classified.
-  //
-  // Note that if we determine that this particular navigation should not be
-  // classified at all (as opposed to deferring it until we get an IPC or
-  // the load completes), we discard the page text since it won't be needed.
+  //  5. The page has finished loading.
+  //  6. The load is a new navigation (not a session history navigation).
+  //  7. The toplevel URL has not already been classified.
+
+  // It is possible that these two variables are reset when
+  // MaybeStartClassification() is called after a delay with the feature study
+  // ClientSideDetectionNewObservers. Check again that there is actually a
+  // request to respond to.
+  if (!is_phishing_detection_running_ || !renderer_layout_finished_) {
+    return;
+  }
+
+  // We shouldn't hit this ever, but for sanity check, we should return when
+  // this hits.
+  if (is_classifying_) {
+    RecordEvent(SBPhishingClassifierEvent::
+                    kOngoingClassificationAtAnotherClassificationRequest);
+    return;
+  }
+
   if (!classifier_->is_ready()) {
     // We should only retry if a phishing detection has been requested, which
-    // is tracked by |is_phishing_detection_running_|.
+    // is tracked by |is_phishing_detection_running_|. Otherwise, there's no
+    // browser side request to respond to.
     if (base::FeatureList::IsEnabled(kClientSideDetectionRetryLimit) &&
-        is_phishing_detection_running_ && !awaiting_retry_) {
+        is_phishing_detection_running_) {
+      // If there's a browser side request and a retry has been submitted, this
+      // is only possible if the page has been recaptured. If there's a new
+      // browser side request, the |awaiting_retry_| and
+      // |is_phishing_detection_running_| would have been set to false so we'd
+      // retry again on a fresh browser request.
+      if (awaiting_retry_) {
+        return;
+      }
       awaiting_retry_ = true;
 
       base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
@@ -242,7 +400,6 @@ void PhishingClassifierDelegate::MaybeStartClassification() {
           base::Seconds(kClientSideDetectionRetryLimitTime.Get()));
     } else {
       is_phishing_detection_running_ = false;
-      // Keep classifier_page_text_, in case a Scorer is set later.
       if (!callback_.is_null()) {
         std::move(callback_).Run(
             mojom::PhishingDetectorResult::CLASSIFIER_NOT_READY, std::nullopt);
@@ -256,7 +413,6 @@ void PhishingClassifierDelegate::MaybeStartClassification() {
     // last URL sent to the classifier, so that we'll properly detect
     // same-document navigations.
     last_url_sent_to_classifier_ = last_finished_load_url_;
-    classifier_page_text_ = nullptr;  // we won't need this.
     is_phishing_detection_running_ = false;
     if (!callback_.is_null())
       std::move(callback_).Run(
@@ -264,20 +420,26 @@ void PhishingClassifierDelegate::MaybeStartClassification() {
     return;
   }
 
-  if (!classifier_page_text_) {
-    RecordEvent(SBPhishingClassifierEvent::kPageTextNotLoaded);
-    return;
-  }
-
   GURL stripped_last_load_url(StripRef(last_finished_load_url_));
   if (last_url_received_from_browser_ != stripped_last_load_url) {
+    bool match_on_stripped_empty_path =
+        last_url_received_from_browser_.GetWithEmptyPath() ==
+        stripped_last_load_url.GetWithEmptyPath();
+    base::UmaHistogramBoolean(
+        "SBClientPhishing.PhishingClassifierMatchOnStrippedEmptyPath",
+        match_on_stripped_empty_path);
+    if (request_type_.has_value()) {
+      base::UmaHistogramBoolean(
+          base::StrCat(
+              {"SBClientPhishing.PhishingClassifierMatchOnStrippedEmptyPath.",
+               GetRequestTypeName(request_type_.value())}),
+          match_on_stripped_empty_path);
+    }
     RecordEvent(SBPhishingClassifierEvent::kUrlShouldNotBeClassified);
     // The browser has not yet confirmed that this URL should be classified,
     // so defer classification for now.  Note: the ref does not affect
     // any of the browser's preclassification checks, so we don't require it
     // to match.
-    // Keep classifier_page_text_, in case the browser notifies us later that
-    // we should classify the URL.
     return;
   }
 
@@ -289,10 +451,9 @@ void PhishingClassifierDelegate::MaybeStartClassification() {
   }
 
   is_classifying_ = true;
-  classifier_->BeginClassification(
-      classifier_page_text_,
-      base::BindOnce(&PhishingClassifierDelegate::ClassificationDone,
-                     base::Unretained(this)));
+  RecordEvent(SBPhishingClassifierEvent::kClassificationBegin);
+  classifier_->BeginClassification(base::BindOnce(
+      &PhishingClassifierDelegate::ClassificationDone, base::Unretained(this)));
 }
 
 void PhishingClassifierDelegate::OnRetryTimeout() {
@@ -312,7 +473,13 @@ void PhishingClassifierDelegate::OnRetryTimeout() {
 }
 
 void PhishingClassifierDelegate::RecordEvent(SBPhishingClassifierEvent event) {
-  UMA_HISTOGRAM_ENUMERATION("SBClientPhishing.Classifier.Event", event);
+  base::UmaHistogramEnumeration("SBClientPhishing.Classifier.Event", event);
+  if (request_type_.has_value()) {
+    base::UmaHistogramEnumeration(
+        base::StrCat({"SBClientPhishing.Classifier.Event.",
+                      GetRequestTypeName(request_type_.value())}),
+        event);
+  }
 }
 
 void PhishingClassifierDelegate::OnDestruct() {
@@ -328,14 +495,15 @@ void PhishingClassifierDelegate::OnScorerChanged() {
   if (!scorer) {
     // If the scorer is reset, we should clear pending classification if there
     // is one going on, which is checked by the function below.
-    CancelPendingClassification();
+    CancelPendingClassification(CancelClassificationReason::kScorerCleared);
     return;
   }
 
   // We check |is_classifying_| here because |CancelPendingClassification|
-  // clears the page text, and we do not want that if we are awaiting retry.
+  // clears the request type, and we do not want that if we are awaiting retry.
   if (is_classifying_) {
-    CancelPendingClassification();
+    CancelPendingClassification(
+        CancelClassificationReason::kNewPhishingScorerUpdate);
   } else if (awaiting_retry_) {
     // If a classificiation is not going on right now, a retry has been
     // attempted, and we're still within the timeout, call the classification

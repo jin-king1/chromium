@@ -11,8 +11,10 @@
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
+#include "chrome/browser/global_features.h"
 #include "chrome/browser/ui/ash/quick_answers/quick_answers_controller_impl.h"
 #include "chrome/browser/ui/ash/read_write_cards/read_write_cards_ui_controller.h"
+#include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
 #include "chromeos/components/quick_answers/test/fake_quick_answers_state.h"
@@ -67,9 +69,7 @@ user_manager::User* ChromeQuickAnswersTestBase::StartUserSession() {
   // TODO(crbug.com/278643115): Use SessionManager.
   user_manager_->UserLoggedIn(
       user->GetAccountId(),
-      user_manager::FakeUserManager::GetFakeUsernameHash(user->GetAccountId()),
-      /*browser_restart=*/false,
-      /*is_child=*/false);
+      user_manager::TestHelper::GetFakeUsernameHash(user->GetAccountId()));
   return user;
 }
 
@@ -92,28 +92,18 @@ void ChromeQuickAnswersTestBase::SetUp() {
   profile_builder.SetProfileName(user->GetAccountId().GetUserEmail());
   profile_ = profile_builder.Build();
 
-  // To inject PrefService created outside of AshTestBase, we must not call
-  // SimulateUserLogin, because it forces to instantiate PrefService inside
-  // AshTestBase or requires the ownership of the PrefService instance.
-  // Instead, directly notify TestSessionController to inject PrefService.
   // TODO(crbug.com/383442863): the strategy of preference handling needs to be
   // redesigned.
-  auto* test_session_controller_client =
-      ash_test_helper()->test_session_controller_client();
+  auto* test_session_controller_client = GetSessionControllerClient();
   test_session_controller_client->SetUnownedUserPrefService(
       user->GetAccountId(), profile_->GetPrefs());
-  test_session_controller_client->AddUserSession(
-      {.display_email = user->GetDisplayEmail(),
-       .user_type = user->GetType(),
-       .given_name = base::UTF16ToUTF8(user->GetGivenName())},
-      user->GetAccountId());
+  SimulateUserLogin({.display_email = user->GetDisplayEmail(),
+                     .user_type = user->GetType(),
+                     .given_name = base::UTF16ToUTF8(user->GetGivenName())},
+                    user->GetAccountId());
   CHECK(
       profile_->GetPrefs() ==
       test_session_controller_client->GetUserPrefService(user->GetAccountId()));
-  test_session_controller_client->SwitchActiveUser(user->GetAccountId());
-  test_session_controller_client->SetSessionState(
-      session_manager::SessionState::ACTIVE);
-
   SetUpInitialPrefValues();
   quick_answers_controller_ =
       CreateQuickAnswersControllerImpl(read_write_cards_ui_controller_);
@@ -146,6 +136,9 @@ std::unique_ptr<QuickAnswersControllerImpl>
 ChromeQuickAnswersTestBase::CreateQuickAnswersControllerImpl(
     chromeos::ReadWriteCardsUiController& read_write_cards_ui_controller) {
   return std::make_unique<QuickAnswersControllerImpl>(
+      TestingBrowserProcess::GetGlobal()
+          ->GetFeatures()
+          ->application_locale_storage(),
       read_write_cards_ui_controller);
 }
 

@@ -1,7 +1,8 @@
 Name: AppSearch
 Short Name: appsearch
-URL: https://developer.android.com/jetpack/androidx/releases/appsearch#1.1.0-SNAPSHOT
-Version: 1.1.0-SNAPSHOT
+URL: https://androidx.dev/snapshots/builds/15963504/artifacts/repository/androidx/appsearch/appsearch/1.2.0-SNAPSHOT/appsearch-1.2.0-20260728.210420-1.aar
+Version: 1.2.0-SNAPSHOT
+Update Mechanism: Autoroll
 License: Apache-2.0
 License File: LICENSE
 CPEPrefix: unknown
@@ -11,6 +12,9 @@ License Android Compatible: yes
 
 Description:
 AndroidX AppSearch - App Indexing
+
+See also: https://developer.android.com/jetpack/androidx/releases/appsearch#1.2.0-SNAPSHOT
+
 
 Local Modifications:
 No modifications.

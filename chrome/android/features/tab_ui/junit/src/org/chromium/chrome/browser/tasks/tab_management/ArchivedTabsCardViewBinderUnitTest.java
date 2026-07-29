@@ -7,7 +7,6 @@ package org.chromium.chrome.browser.tasks.tab_management;
 import static org.junit.Assert.assertEquals;
 
 import static org.chromium.chrome.browser.tasks.tab_management.ArchivedTabsCardViewProperties.ALL_KEYS;
-import static org.chromium.chrome.browser.tasks.tab_management.ArchivedTabsCardViewProperties.ARCHIVE_TIME_DELTA_DAYS;
 import static org.chromium.chrome.browser.tasks.tab_management.ArchivedTabsCardViewProperties.CLICK_HANDLER;
 import static org.chromium.chrome.browser.tasks.tab_management.ArchivedTabsCardViewProperties.NUMBER_OF_ARCHIVED_TABS;
 
@@ -16,17 +15,19 @@ import android.view.LayoutInflater;
 import android.view.View;
 import android.widget.TextView;
 
+import androidx.test.ext.junit.rules.ActivityScenarioRule;
+
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.Robolectric;
 import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.CallbackHelper;
+import org.chromium.ui.base.TestActivity;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
 
@@ -43,6 +44,10 @@ public class ArchivedTabsCardViewBinderUnitTest {
 
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
+    @Rule
+    public final ActivityScenarioRule<TestActivity> mActivityScenarioRule =
+            new ActivityScenarioRule<>(TestActivity.class);
+
     private Activity mActivity;
     private View mArchivedTabsCardView;
     private PropertyModel mModel;
@@ -50,7 +55,7 @@ public class ArchivedTabsCardViewBinderUnitTest {
 
     @Before
     public void setUp() throws Exception {
-        mActivity = Robolectric.buildActivity(Activity.class).setup().get();
+        mActivityScenarioRule.getScenario().onActivity(activity -> mActivity = activity);
         mArchivedTabsCardView =
                 LayoutInflater.from(mActivity)
                         .inflate(R.layout.archived_tabs_message_card_view, /* root= */ null);
@@ -58,7 +63,6 @@ public class ArchivedTabsCardViewBinderUnitTest {
         mModel =
                 new PropertyModel.Builder(ALL_KEYS)
                         .with(NUMBER_OF_ARCHIVED_TABS, ARCHIVED_TABS)
-                        .with(ARCHIVE_TIME_DELTA_DAYS, TIME_DELTA)
                         .with(
                                 CLICK_HANDLER,
                                 () -> {
@@ -72,24 +76,23 @@ public class ArchivedTabsCardViewBinderUnitTest {
     }
 
     @Test
-    public void testSingular() {
+    public void testSingularWithGroups() {
         mModel.set(NUMBER_OF_ARCHIVED_TABS, 1);
-        mModel.set(ARCHIVE_TIME_DELTA_DAYS, 1);
 
         TextView titleView = mArchivedTabsCardView.findViewById(R.id.title);
-        assertEquals("Inactive tab (1)", titleView.getText());
+        assertEquals("(1) inactive item", titleView.getText());
 
         TextView subtitleView = mArchivedTabsCardView.findViewById(R.id.subtitle);
-        assertEquals("Not used for 1 day or more", subtitleView.getText());
+        assertEquals("Unused or duplicate tabs and groups", subtitleView.getText());
     }
 
     @Test
-    public void testPlural() throws TimeoutException {
+    public void testPluralWithGroups() throws TimeoutException {
         TextView titleView = mArchivedTabsCardView.findViewById(R.id.title);
-        assertEquals("Inactive tabs (10)", titleView.getText());
+        assertEquals("(10) inactive items", titleView.getText());
 
         TextView subtitleView = mArchivedTabsCardView.findViewById(R.id.subtitle);
-        assertEquals("Not used for 14 days or more", subtitleView.getText());
+        assertEquals("Unused or duplicate tabs and groups", subtitleView.getText());
 
         mArchivedTabsCardView.callOnClick();
         mCallbackHelper.waitForOnly();

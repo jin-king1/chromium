@@ -7,7 +7,6 @@
 #include <memory>
 #include <utility>
 
-#include "base/functional/bind.h"
 #include "base/run_loop.h"
 #include "base/test/task_environment.h"
 #include "mojo/public/cpp/bindings/receiver.h"
@@ -61,7 +60,7 @@ struct ExpectedElement {
                               uint64_t length,
                               base::Time time) {
     return ExpectedElement{DataElement::NewFile(
-        DataElementFile::New(WebStringToFilePath(path), offset, length, time))};
+        DataElementFile::New(StringToFilePath(path), offset, length, time))};
   }
 
   static ExpectedElement Blob(const String& uuid,
@@ -161,13 +160,13 @@ class BlobDataHandleTest : public testing::Test {
         Vector<uint8_t> received_bytes;
         mojo::Remote<mojom::blink::BytesProvider> actual_data(
             std::move(actual->get_bytes()->data));
-        actual_data->RequestAsReply(WTF::BindOnce(
+        actual_data->RequestAsReply(blink::BindOnce(
             [](base::RepeatingClosure quit_closure, Vector<uint8_t>* bytes_out,
                const Vector<uint8_t>& bytes) {
               *bytes_out = bytes;
               quit_closure.Run();
             },
-            loop.QuitClosure(), WTF::Unretained(&received_bytes)));
+            loop.QuitClosure(), blink::Unretained(&received_bytes)));
         loop.Run();
         if (expected->get_bytes()->embedded_data)
           EXPECT_EQ(expected->get_bytes()->embedded_data, received_bytes);
@@ -189,13 +188,13 @@ class BlobDataHandleTest : public testing::Test {
         String received_uuid;
         mojo::Remote<mojom::blink::Blob> blob(
             std::move(actual->get_blob()->blob));
-        blob->GetInternalUUID(base::BindOnce(
+        blob->GetInternalUUID(blink::BindOnce(
             [](base::RepeatingClosure quit_closure, String* uuid_out,
                const String& uuid) {
               *uuid_out = uuid;
               quit_closure.Run();
             },
-            loop.QuitClosure(), &received_uuid));
+            loop.QuitClosure(), blink::Unretained(&received_uuid)));
         loop.Run();
         EXPECT_EQ(expected_elements[i].blob_uuid, received_uuid);
       }
@@ -271,7 +270,7 @@ TEST_F(BlobDataHandleTest, CreateFromFile) {
   const auto& reg = file_factory.registrations[0];
   EXPECT_EQ(handle->Uuid(), reg.uuid);
   EXPECT_EQ(kType, reg.content_type);
-  EXPECT_EQ(WebStringToFilePath(kPath), reg.file->path);
+  EXPECT_EQ(StringToFilePath(kPath), reg.file->path);
   EXPECT_EQ(kSize, reg.file->length);
   EXPECT_EQ(kOffset, reg.file->offset);
   EXPECT_EQ(kModificationTime, reg.file->expected_modification_time);
@@ -312,7 +311,7 @@ TEST_F(BlobDataHandleTest, CreateFromMergedBytes) {
   EXPECT_EQ(1u, data->ElementsForTesting().size());
 
   Vector<uint8_t> expected_data = medium_test_data_;
-  expected_data.AppendVector(small_test_data_);
+  expected_data.append_range(small_test_data_);
 
   Vector<ExpectedElement> expected_elements;
   expected_elements.push_back(
@@ -328,7 +327,7 @@ TEST_F(BlobDataHandleTest, CreateFromMergedLargeAndSmallBytes) {
   EXPECT_EQ(1u, data->ElementsForTesting().size());
 
   Vector<uint8_t> expected_data = large_test_data_;
-  expected_data.AppendVector(small_test_data_);
+  expected_data.append_range(small_test_data_);
 
   Vector<ExpectedElement> expected_elements;
   expected_elements.push_back(
@@ -344,7 +343,7 @@ TEST_F(BlobDataHandleTest, CreateFromMergedSmallAndLargeBytes) {
   EXPECT_EQ(1u, data->ElementsForTesting().size());
 
   Vector<uint8_t> expected_data = small_test_data_;
-  expected_data.AppendVector(large_test_data_);
+  expected_data.append_range(large_test_data_);
 
   Vector<ExpectedElement> expected_elements;
   expected_elements.push_back(
@@ -373,7 +372,7 @@ TEST_F(BlobDataHandleTest, CreateFromBlobsAndBytes) {
   data->AppendBytes(large_test_data_);
 
   Vector<uint8_t> expected_data = medium_test_data_;
-  expected_data.AppendVector(small_test_data_);
+  expected_data.append_range(small_test_data_);
 
   Vector<ExpectedElement> expected_elements;
   expected_elements.push_back(ExpectedElement::Blob(test_blob_uuid_, 10, 10));
@@ -404,7 +403,7 @@ TEST_F(BlobDataHandleTest, CreateFromManyMergedBytes) {
   Vector<uint8_t> merged_data;
   while (merged_data.size() <= DataElementBytes::kMaximumEmbeddedDataSize) {
     data->AppendBytes(medium_test_data_);
-    merged_data.AppendVector(medium_test_data_);
+    merged_data.append_range(medium_test_data_);
   }
   data->AppendBlob(test_blob_, 0, 10);
   data->AppendBytes(medium_test_data_);

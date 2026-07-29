@@ -5,7 +5,6 @@
 #ifndef COMPONENTS_SAVED_TAB_GROUPS_INTERNAL_SAVED_TAB_GROUP_SYNC_BRIDGE_H_
 #define COMPONENTS_SAVED_TAB_GROUPS_INTERNAL_SAVED_TAB_GROUP_SYNC_BRIDGE_H_
 
-#include <map>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -55,8 +54,6 @@ class SavedTabGroupSyncBridge : public syncer::DataTypeSyncBridge {
   // syncer::DataTypeSyncBridge:
   void OnSyncStarting(
       const syncer::DataTypeActivationRequest& request) override;
-  std::unique_ptr<syncer::MetadataChangeList> CreateMetadataChangeList()
-      override;
   std::optional<syncer::ModelError> MergeFullSyncData(
       std::unique_ptr<syncer::MetadataChangeList> metadata_change_list,
       syncer::EntityChangeList entity_changes) override;
@@ -68,12 +65,16 @@ class SavedTabGroupSyncBridge : public syncer::DataTypeSyncBridge {
   syncer::ConflictResolution ResolveConflict(
       const std::string& storage_key,
       const syncer::EntityData& remote_data) const override;
-  std::string GetStorageKey(const syncer::EntityData& entity_data) override;
-  std::string GetClientTag(const syncer::EntityData& entity_data) override;
+  std::string GetStorageKey(
+      const syncer::EntityData& entity_data) const override;
+  std::string GetClientTag(
+      const syncer::EntityData& entity_data) const override;
   std::unique_ptr<syncer::DataBatch> GetDataForCommit(
       StorageKeyList storage_keys) override;
   std::unique_ptr<syncer::DataBatch> GetAllDataForDebugging() override;
   bool IsEntityDataValid(const syncer::EntityData& entity_data) const override;
+  sync_pb::EntitySpecifics TrimAllSupportedFieldsFromRemoteSpecifics(
+      const sync_pb::EntitySpecifics& entity_specifics) const override;
 
   void SavedTabGroupAddedLocally(const base::Uuid& guid);
   void SavedTabGroupRemovedLocally(const SavedTabGroup& removed_group);
@@ -96,7 +97,7 @@ class SavedTabGroupSyncBridge : public syncer::DataTypeSyncBridge {
 
   // Returns the account ID from the change processor if metadata is tracked,
   // otherwise returns a nullopt.
-  std::optional<GaiaId> GetTrackedAccountId() const;
+  std::optional<GaiaId> GetTrackedGaiaId() const;
 
   // Whether the sync is currently enabled and syncing for saved tab groups.
   // False before bridge initialization is completed.
@@ -153,6 +154,18 @@ class SavedTabGroupSyncBridge : public syncer::DataTypeSyncBridge {
   void DeleteDataFromLocalStorage(
       const base::Uuid& guid,
       syncer::DataTypeStore::WriteBatch* write_batch);
+
+  // Converts a `group` to a `SavedTabGroupSpecifics` proto. The returned
+  // specifics also contains unsupported fields that are stored in sync
+  // metadata.
+  proto::SavedTabGroupData SavedTabGroupToData(
+      const SavedTabGroup& group) const;
+
+  // Converts a `tab` to a `SavedTabGroupSpecifics` proto. The returned
+  // specifics also contains unsupported fields that are stored in sync
+  // metadata.
+  proto::SavedTabGroupData SavedTabGroupTabToData(
+      const SavedTabGroupTab& tab) const;
 
   // Attempts to add the tabs found in `tabs_missing_groups_` to local storage.
   void ResolveTabsMissingGroups(syncer::DataTypeStore::WriteBatch* write_batch);
@@ -213,9 +226,12 @@ class SavedTabGroupSyncBridge : public syncer::DataTypeSyncBridge {
   // committed to the store when destroyed, and the caller is responsible for
   // committing it when needed by calling CommitOngoingWriteBatch().
   // `commit_write_batch_on_destroy` has no impact if there is an ongoing write
-  // batch (i.e. this method is called reentrantly).
+  // batch (i.e. this method is called reentrantly). Data from the
+  // `metadata_change_list` is transferred to the ongoing write batch if
+  // provided.
   base::ScopedClosureRunner MaybeCreateScopedWriteBatch(
-      bool commit_write_batch_on_destroy);
+      bool commit_write_batch_on_destroy,
+      std::unique_ptr<syncer::MetadataChangeList> metadata_change_list);
 
   // Commits the ongoing write batch to the store. This method should only be
   // called after `MaybeCreateScopedWriteBatch()` and when the current scope is

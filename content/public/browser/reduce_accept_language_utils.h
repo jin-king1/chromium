@@ -24,14 +24,20 @@ class FrameTreeNode;
 // https://github.com/Tanych/accept-language.
 class CONTENT_EXPORT ReduceAcceptLanguageUtils {
  public:
-  explicit ReduceAcceptLanguageUtils(
-      ReduceAcceptLanguageControllerDelegate& delegate);
   ~ReduceAcceptLanguageUtils();
 
   // No copy constructor and no copy assignment operator.
   ReduceAcceptLanguageUtils(const ReduceAcceptLanguageUtils&) = delete;
   ReduceAcceptLanguageUtils& operator=(const ReduceAcceptLanguageUtils&) =
       delete;
+  // Movable.
+  ReduceAcceptLanguageUtils(ReduceAcceptLanguageUtils&& other) = default;
+  ReduceAcceptLanguageUtils& operator=(ReduceAcceptLanguageUtils&& other) =
+      default;
+
+  // Allow test class to create mock delegate to test.
+  static ReduceAcceptLanguageUtils CreateForTesting(
+      ReduceAcceptLanguageControllerDelegate& delegate);
 
   // Create and return a ReduceAcceptLanguageUtils instance based on provided
   // `browser_context`.
@@ -53,6 +59,10 @@ class CONTENT_EXPORT ReduceAcceptLanguageUtils {
   static std::optional<std::string> GetFirstMatchPreferredLanguage(
       const std::vector<std::string>& preferred_languages,
       const std::vector<std::string>& available_languages);
+
+  // Given a comma separated list of locales, return the top number of language
+  // based on the setting.
+  static std::string GetLanguagesWithMaxCount(const std::string& language_list);
 
   // Returns whether reduce accept language can happen for the given URL.
   // This is true only if the URL is eligible.
@@ -119,6 +129,11 @@ class CONTENT_EXPORT ReduceAcceptLanguageUtils {
                                    FrameTreeNode* frame_tree_node);
 
  private:
+  // Make constructor as private, call Create method and return objects of the
+  // class.
+  explicit ReduceAcceptLanguageUtils(
+      ReduceAcceptLanguageControllerDelegate& delegate);
+
   // Captures the state used in applying persist accept language.
   struct PersistLanguageResult {
     PersistLanguageResult();

@@ -20,8 +20,8 @@
 #include "base/time/time.h"
 #include "base/version.h"
 #include "build/build_config.h"
+#include "gpu/config/gpu_config_export.h"
 #include "gpu/config/gpu_preferences.h"
-#include "gpu/gpu_export.h"
 #include "gpu/vulkan/buildflags.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gl/gl_implementation.h"
@@ -34,15 +34,15 @@
 #endif
 
 #if BUILDFLAG(ENABLE_VULKAN)
-#include "gpu/config/vulkan_info.h"
+#include "gpu/vulkan/vulkan_info.h"
 #endif
 
 namespace gpu {
 
 // These values are persistent to logs. Entries should not be renumbered and
 // numeric values should never be reused.
-// This should match enum IntelGpuSeriesType in
-//  \tools\metrics\histograms\metadata\gpu\enums.xml
+//
+// LINT.IfChange(IntelGpuSeriesType)
 enum class IntelGpuSeriesType {
   kUnknown = 0,
   // Intel 4th gen
@@ -88,11 +88,17 @@ enum class IntelGpuSeriesType {
   kBattlemage = 31,
   // Intel Xe3
   kPantherlake = 32,
-  // Please also update |gpu_series_map| in process_json.py.
+  // Please also update `gpu_series_map` in process_json.py.
   kMaxValue = kPantherlake,
 };
+// clang-format off
+// LINT.ThenChange(//tools/metrics/histograms/metadata/gpu/enums.xml:IntelGpuSeriesType, ./process_json.py)
+// clang-format on
 
-// Video profile.  This *must* match media::VideoCodecProfile.
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+//
+// LINT.IfChange(VideoCodecProfile)
 enum VideoCodecProfile {
   VIDEO_CODEC_PROFILE_UNKNOWN = -1,
   VIDEO_CODEC_PROFILE_MIN = VIDEO_CODEC_PROFILE_UNKNOWN,
@@ -133,26 +139,16 @@ enum VideoCodecProfile {
   HEVCPROFILE_SCREEN_EXTENDED = 34,
   HEVCPROFILE_SCALABLE_REXT = 35,
   HEVCPROFILE_HIGH_THROUGHPUT_SCREEN_EXTENDED = 36,
-  VVCPROFILE_MAIN10 = 37,
-  VVCPROFILE_MAIN12 = 38,
-  VVCPROFILE_MAIN12_INTRA = 39,
-  VVCPROIFLE_MULTILAYER_MAIN10 = 40,
-  VVCPROFILE_MAIN10_444 = 41,
-  VVCPROFILE_MAIN12_444 = 42,
-  VVCPROFILE_MAIN16_444 = 43,
-  VVCPROFILE_MAIN12_444_INTRA = 44,
-  VVCPROFILE_MAIN16_444_INTRA = 45,
-  VVCPROFILE_MULTILAYER_MAIN10_444 = 46,
-  VVCPROFILE_MAIN10_STILL_PICTURE = 47,
-  VVCPROFILE_MAIN12_STILL_PICTURE = 48,
-  VVCPROFILE_MAIN10_444_STILL_PICTURE = 49,
-  VVCPROFILE_MAIN12_444_STILL_PICTURE = 50,
-  VVCPROFILE_MAIN16_444_STILL_PICTURE = 51,
-  VIDEO_CODEC_PROFILE_MAX = VVCPROFILE_MAIN16_444_STILL_PICTURE,
+  DOLBYVISION_PROFILE10 = 37,
+  DOLBYVISION_PROFILE20 = 38,
+  VIDEO_CODEC_PROFILE_MAX = DOLBYVISION_PROFILE20,
 };
+// clang-format off
+// LINT.ThenChange(//media/base/video_codecs.h:VideoCodecProfile, //tools/metrics/histograms/enums.xml:VideoCodecProfile)
+// clang-format on
 
 // Specification of a decoding profile supported by a hardware decoder.
-struct GPU_EXPORT VideoDecodeAcceleratorSupportedProfile {
+struct GPU_CONFIG_EXPORT VideoDecodeAcceleratorSupportedProfile {
   VideoCodecProfile profile;
   gfx::Size max_resolution;
   gfx::Size min_resolution;
@@ -162,7 +158,7 @@ struct GPU_EXPORT VideoDecodeAcceleratorSupportedProfile {
 using VideoDecodeAcceleratorSupportedProfiles =
     std::vector<VideoDecodeAcceleratorSupportedProfile>;
 
-struct GPU_EXPORT VideoDecodeAcceleratorCapabilities {
+struct GPU_CONFIG_EXPORT VideoDecodeAcceleratorCapabilities {
   VideoDecodeAcceleratorCapabilities();
   VideoDecodeAcceleratorCapabilities(
       const VideoDecodeAcceleratorCapabilities& other);
@@ -172,7 +168,7 @@ struct GPU_EXPORT VideoDecodeAcceleratorCapabilities {
 };
 
 // Specification of an encoding profile supported by a hardware encoder.
-struct GPU_EXPORT VideoEncodeAcceleratorSupportedProfile {
+struct GPU_CONFIG_EXPORT VideoEncodeAcceleratorSupportedProfile {
   VideoCodecProfile profile;
   gfx::Size min_resolution;
   gfx::Size max_resolution;
@@ -183,47 +179,6 @@ struct GPU_EXPORT VideoEncodeAcceleratorSupportedProfile {
 using VideoEncodeAcceleratorSupportedProfiles =
     std::vector<VideoEncodeAcceleratorSupportedProfile>;
 
-enum class ImageDecodeAcceleratorType {
-  kUnknown = 0,
-  kJpeg = 1,
-  kWebP = 2,
-  kMaxValue = kWebP,
-};
-
-enum class ImageDecodeAcceleratorSubsampling {
-  k420 = 0,
-  k422 = 1,
-  k444 = 2,
-  kMaxValue = k444,
-};
-
-// Specification of an image decoding profile supported by a hardware decoder.
-struct GPU_EXPORT ImageDecodeAcceleratorSupportedProfile {
-  ImageDecodeAcceleratorSupportedProfile();
-  ImageDecodeAcceleratorSupportedProfile(
-      const ImageDecodeAcceleratorSupportedProfile& other);
-  ImageDecodeAcceleratorSupportedProfile(
-      ImageDecodeAcceleratorSupportedProfile&& other);
-  ~ImageDecodeAcceleratorSupportedProfile();
-  ImageDecodeAcceleratorSupportedProfile& operator=(
-      const ImageDecodeAcceleratorSupportedProfile& other);
-  ImageDecodeAcceleratorSupportedProfile& operator=(
-      ImageDecodeAcceleratorSupportedProfile&& other);
-
-  // Fields common to all image types.
-  // Type of image to which this profile applies, e.g., JPEG.
-  ImageDecodeAcceleratorType image_type;
-  // Minimum and maximum supported pixel dimensions of the encoded image.
-  gfx::Size min_encoded_dimensions;
-  gfx::Size max_encoded_dimensions;
-
-  // Fields specific to |image_type| == kJpeg.
-  // The supported chroma subsampling formats, e.g. 4:2:0.
-  std::vector<ImageDecodeAcceleratorSubsampling> subsamplings;
-};
-using ImageDecodeAcceleratorSupportedProfiles =
-    std::vector<ImageDecodeAcceleratorSupportedProfile>;
-
 #if BUILDFLAG(IS_WIN)
 enum class OverlaySupport {
   kNone = 0,
@@ -232,9 +187,9 @@ enum class OverlaySupport {
   kSoftware = 3
 };
 
-GPU_EXPORT const char* OverlaySupportToString(OverlaySupport support);
+GPU_CONFIG_EXPORT const char* OverlaySupportToString(OverlaySupport support);
 
-struct GPU_EXPORT OverlayInfo {
+struct GPU_CONFIG_EXPORT OverlayInfo {
   OverlayInfo() = default;
   OverlayInfo(const OverlayInfo& other) = default;
   OverlayInfo& operator=(const OverlayInfo& other) = default;
@@ -264,11 +219,11 @@ struct GPU_EXPORT OverlayInfo {
 #endif
 
 #if BUILDFLAG(IS_MAC)
-GPU_EXPORT bool ValidateMacOSSpecificTextureTarget(int target);
+GPU_CONFIG_EXPORT bool ValidateMacOSSpecificTextureTarget(int target);
 #endif  // BUILDFLAG(IS_MAC)
 
-struct GPU_EXPORT GPUInfo {
-  struct GPU_EXPORT GPUDevice {
+struct GPU_CONFIG_EXPORT GPUInfo {
+  struct GPU_CONFIG_EXPORT GPUDevice {
     GPUDevice();
     GPUDevice(const GPUDevice& other);
     GPUDevice(GPUDevice&& other) noexcept;
@@ -349,6 +304,10 @@ struct GPU_EXPORT GPUInfo {
 #if BUILDFLAG(IS_WIN)
   GPUDevice* FindGpuByLuid(DWORD low_part, LONG high_part);
 #endif  // BUILDFLAG(IS_WIN)
+
+#if BUILDFLAG(ENABLE_VULKAN)
+  std::vector<uint8_t> SerializeVulkanInfo() const;
+#endif
 
   // The amount of time taken to get from the process starting to the message
   // loop being pumped.
@@ -471,8 +430,11 @@ struct GPU_EXPORT GPUInfo {
   // The supported DirectML feature level in the gpu driver;
   uint32_t directml_feature_level = 0;
 
-  // The supported d3d feature level in the gpu driver;
+  // The supported d3d12 feature level in the gpu driver;
   uint32_t d3d12_feature_level = 0;
+
+  // The supported d3d11 feature level in the gpu driver;
+  uint32_t d3d11_feature_level = 0;
 
   // The support Vulkan API version in the gpu driver;
   uint32_t vulkan_version = 0;
@@ -491,9 +453,6 @@ struct GPU_EXPORT GPUInfo {
   VideoEncodeAcceleratorSupportedProfiles
       video_encode_accelerator_supported_profiles;
   bool jpeg_decode_accelerator_supported;
-
-  ImageDecodeAcceleratorSupportedProfiles
-      image_decode_accelerator_supported_profiles;
 
   bool subpixel_font_rendering;
 
@@ -540,11 +499,6 @@ struct GPU_EXPORT GPUInfo {
     // being described.
     virtual void BeginVideoEncodeAcceleratorSupportedProfile() = 0;
     virtual void EndVideoEncodeAcceleratorSupportedProfile() = 0;
-
-    // Markers indicating that an ImageDecodeAcceleratorSupportedProfile is
-    // being described.
-    virtual void BeginImageDecodeAcceleratorSupportedProfile() = 0;
-    virtual void EndImageDecodeAcceleratorSupportedProfile() = 0;
 
     // Markers indicating that "auxiliary" attributes of the GPUInfo
     // (according to the DevTools protocol) are being described.

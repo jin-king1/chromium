@@ -6,6 +6,7 @@
 #define COMPONENTS_PRIVACY_SANDBOX_PRIVACY_SANDBOX_PREFS_H_
 
 class PrefRegistrySimple;
+class PrefService;
 
 namespace prefs {
 
@@ -145,33 +146,26 @@ inline constexpr char kPrivacySandboxTopicsConsentLastUpdateReason[] =
 inline constexpr char kPrivacySandboxTopicsConsentTextAtLastUpdate[] =
     "privacy_sandbox.topics_consent.text_at_last_update";
 
-// Pref which contains a list of the activity type from recent chrome launches.
-// Version 2 after enum values changed.
-inline constexpr char kPrivacySandboxActivityTypeRecord2[] =
-    "privacy_sandbox.activity_type.record2";
-
-// Pref that records when a generic prompt is shown to understand the behavior
-// of synced prefs.
-inline constexpr char kPrivacySandboxFakeNoticePromptShownTimeSync[] =
-    "privacy_sandbox.fake_notice.prompt_shown_time_sync";
-
-// Pref that records when a generic prompt is shown to compare against synced
-// pref behavior.
-inline constexpr char kPrivacySandboxFakeNoticePromptShownTime[] =
-    "privacy_sandbox.fake_notice.prompt_shown_time";
-
-// Pref that records the timestamp of when a profile first signed in to its
-// primary account.
-inline constexpr char kPrivacySandboxFakeNoticeFirstSignInTime[] =
-    "privacy_sandbox.fake_notice.first_sign_in_time";
-
-// Pref that records the timestamp of when a profile first signed out of its
-// primary account.
-inline constexpr char kPrivacySandboxFakeNoticeFirstSignOutTime[] =
-    "privacy_sandbox.fake_notice.first_sign_out_time";
-
 inline constexpr char kPrivacySandboxAllowNoticeFor3PCBlockedTrial[] =
     "privacy_sandbox.allow_notice_for_3PC_blocked_trial";
+
+// Mode B prefs start
+
+// Unsynced boolean that controls showing the Mode B rollback UI.
+inline constexpr char kShowRollbackUiModeB[] =
+    "tracking_protection.show_rollback_ui_mode_b";
+
+// Unsynced boolean that indicates whether 3PCD tracking protection (prefs + UI)
+// are enabled on the current device.
+inline constexpr char kTrackingProtection3pcdEnabled[] =
+    "tracking_protection.tracking_protection_3pcd_enabled";
+
+// Synced boolean that indicates whether the "block all 3pc" toggle on the
+// tracking protection page is enabled.
+inline constexpr char kBlockAll3pcToggleEnabled[] =
+    "tracking_protection.block_all_3pc_toggle_enabled";
+
+// Mode B prefs end
 
 }  // namespace prefs
 
@@ -187,6 +181,10 @@ enum class TopicsConsentUpdateSource {
 
 // Registers user preferences related to privacy sandbox.
 void RegisterProfilePrefs(PrefRegistrySimple* registry);
+
+// If the Ad Privacy Deprecation feature is enabled, this function will set all
+// the Ad API prefs to it's default value.
+void MaybeClearAdPrivacyPrefs(PrefService* pref_service);
 
 }  // namespace privacy_sandbox
 

@@ -6,17 +6,27 @@
 
 #import <memory>
 
+#import "base/functional/callback_helpers.h"
 #import "base/run_loop.h"
+#import "base/test/scoped_feature_list.h"
 #import "base/test/test_future.h"
-#import "ios/chrome/browser/authentication/ui_bundled/authentication_flow/authentication_flow_performer.h"
+#import "ios/chrome/app/change_profile_continuation.h"
+#import "ios/chrome/browser/authentication/ui_bundled/authentication_flow/authentication_flow_in_profile_performer.h"
+#import "ios/chrome/browser/authentication/ui_bundled/authentication_flow/authentication_flow_in_profile_performer_delegate.h"
+#import "ios/chrome/browser/authentication/ui_bundled/signin/signin_constants.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/browser/test/test_browser.h"
+#import "ios/chrome/browser/shared/model/profile/features.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
+#import "ios/chrome/browser/shared/model/profile/test/test_profile_manager_ios.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
 #import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
+#import "ios/chrome/browser/signin/model/identity_manager_factory.h"
+#import "ios/chrome/browser/sync/model/sync_service_factory.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/web/public/test/web_task_environment.h"
 #import "testing/gtest_mac.h"
@@ -38,7 +48,9 @@ class AuthenticationFlowInProfileTest : public PlatformTest {
         AuthenticationServiceFactory::GetInstance(),
         AuthenticationServiceFactory::GetFactoryWithDelegate(
             std::make_unique<FakeAuthenticationServiceDelegate>()));
-    profile_ = std::move(builder).Build();
+    builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
+                              SyncServiceFactory::GetDefaultFactory());
+    profile_ = profile_manager_.AddProfileWithBuilder(std::move(builder));
     browser_ = std::make_unique<TestBrowser>(profile_.get());
 
     FakeSystemIdentityManager* fake_system_identity_manager =
@@ -50,8 +62,30 @@ class AuthenticationFlowInProfileTest : public PlatformTest {
     fake_system_identity_manager->AddIdentity(identity2_);
     managed_identity_ = [FakeSystemIdentity fakeManagedIdentity];
     fake_system_identity_manager->AddIdentity(managed_identity_);
-    performer_mock_ = OCMStrictClassMock([AuthenticationFlowPerformer class]);
+
+    performer_mock_ =
+        OCMStrictClassMock([AuthenticationFlowInProfilePerformer class]);
     OCMExpect([(id)performer_mock_ alloc]).andReturn(performer_mock_);
+
+    // Force explicit instantiation of the AuthenticationService, to ensure
+    // accounts get synced over to IdentityManager.
+    std::ignore = AuthenticationServiceFactory::GetForProfile(profile_.get());
+
+    signin::IdentityManager* identity_manager =
+        IdentityManagerFactory::GetForProfile(profile_.get());
+
+    // For the purpose of these tests, ensure that the managed identity is
+    // assigned to the personal profile. "Personal" vs "managed" profile
+    // doesn't really matter here (AuthenticationFlowInProfile, as its name
+    // says, doesn't deal with other profiles); it's just important that all
+    // required identities are available in the current/single profile.
+    CHECK_EQ(identity_manager->GetAccountsWithRefreshTokens().size(), 2UL);
+    GetApplicationContext()
+        ->GetAccountProfileMapper()
+        ->MoveManagedAccountToPersonalProfileForTesting(
+            managed_identity_.gaiaId);
+
+    CHECK_EQ(identity_manager->GetAccountsWithRefreshTokens().size(), 3UL);
   }
 
   void TearDown() override {
@@ -63,36 +97,39 @@ class AuthenticationFlowInProfileTest : public PlatformTest {
   void CreateAuthenticationFlowInProfile(
       PostSignInActionSet post_sign_in_actions,
       id<SystemIdentity> identity,
-      signin_metrics::AccessPoint access_point) {
+      signin_metrics::AccessPoint access_point,
+      bool preceding_history_sync = false) {
     BOOL is_managed_identity = identity == managed_identity_;
     authentication_flow_in_profile_ = [[AuthenticationFlowInProfile alloc]
-          initWithBrowser:browser_.get()
-                 identity:identity
-        isManagedIdentity:is_managed_identity
-              accessPoint:access_point
-        postSignInActions:post_sign_in_actions];
-    id<AuthenticationFlowPerformerDelegate> performer_delegate =
-        GetAuthenticationFlowPerformerDelegate();
-    OCMExpect([performer_mock_ initWithDelegate:performer_delegate
-                           changeProfileHandler:nil])
+             initWithBrowser:browser_.get()
+                    identity:identity
+           isManagedIdentity:is_managed_identity
+                 accessPoint:access_point
+        precedingHistorySync:preceding_history_sync
+           postSignInActions:post_sign_in_actions];
+    id<AuthenticationFlowInProfilePerformerDelegate> performer_delegate =
+        GetAuthenticationFlowInProfilePerformerDelegate();
+    OCMExpect([performer_mock_ initWithInProfileDelegate:performer_delegate
+                                    changeProfileHandler:[OCMArg any]])
         .andReturn(performer_mock_);
   }
 
-  id<AuthenticationFlowPerformerDelegate>
-  GetAuthenticationFlowPerformerDelegate() {
-    return static_cast<id<AuthenticationFlowPerformerDelegate>>(
+  id<AuthenticationFlowInProfilePerformerDelegate>
+  GetAuthenticationFlowInProfilePerformerDelegate() {
+    return static_cast<id<AuthenticationFlowInProfilePerformerDelegate>>(
         authentication_flow_in_profile_);
   }
 
   web::WebTaskEnvironment task_environment_;
   IOSChromeScopedTestingLocalState scoped_testing_local_state_;
-  AuthenticationFlowInProfile* authentication_flow_in_profile_ = nil;
-  std::unique_ptr<TestProfileIOS> profile_;
+  TestProfileManagerIOS profile_manager_;
+  raw_ptr<TestProfileIOS> profile_;
   std::unique_ptr<Browser> browser_;
+  AuthenticationFlowInProfile* authentication_flow_in_profile_ = nil;
   id<SystemIdentity> identity1_ = nil;
   id<SystemIdentity> identity2_ = nil;
   id<SystemIdentity> managed_identity_ = nil;
-  AuthenticationFlowPerformer* performer_mock_ = nil;
+  AuthenticationFlowInProfilePerformer* performer_mock_ = nil;
 };
 
 // Tests the regular sign-in case.
@@ -102,19 +139,14 @@ TEST_F(AuthenticationFlowInProfileTest, TestSignIn) {
   CreateAuthenticationFlowInProfile(PostSignInActionSet(), identity1_,
                                     access_point);
   // Start `authentication_flow_in_profile_` for `identity1_`.
-  base::test::TestFuture<SigninCoordinatorResult> future;
+  base::test::TestFuture<signin_ui::CancelationReason> future;
   [authentication_flow_in_profile_
       startSignInWithCompletion:base::CallbackToBlock(future.GetCallback())];
   // Expect to call the performer to sign-in.
   OCMExpect([performer_mock_ signInIdentity:identity1_
                               atAccessPoint:access_point
                              currentProfile:profile_.get()]);
-  // Expect sign-in completed while running the run loop.
-  OCMExpect([performer_mock_ completePostSignInActions:PostSignInActionSet()
-                                          withIdentity:identity1_
-                                               browser:browser_.get()]);
-  EXPECT_EQ(future.Take(),
-            SigninCoordinatorResult::SigninCoordinatorResultSuccess);
+  EXPECT_TRUE(future.Wait());
 }
 
 // Tests sign-in flow with a profile that is already signed-in with the right
@@ -129,18 +161,13 @@ TEST_F(AuthenticationFlowInProfileTest, TestSignInWhileBeingSignedIn) {
   CreateAuthenticationFlowInProfile(PostSignInActionSet(), identity1_,
                                     access_point);
   // Start `authentication_flow_in_profile_` for `identity1_`.
-  base::test::TestFuture<SigninCoordinatorResult> future;
+  base::test::TestFuture<signin_ui::CancelationReason> future;
   [authentication_flow_in_profile_
       startSignInWithCompletion:base::CallbackToBlock(future.GetCallback())];
-  // Expect sign-in completed while running the run loop.
-  OCMExpect([performer_mock_ completePostSignInActions:PostSignInActionSet()
-                                          withIdentity:identity1_
-                                               browser:browser_.get()]);
-  // Note: No call to `-[AuthenticationFlowPerformer
+  // Note: No call to `-[AuthenticationFlowInProfilePerformer
   // signInIdentity:atAccessPoint:currentProfile:]` since the profile is already
   // signed in with the right identity.
-  EXPECT_EQ(future.Take(),
-            SigninCoordinatorResult::SigninCoordinatorResultSuccess);
+  EXPECT_TRUE(future.Wait());
 }
 
 // Tests sign-in flow with a profile that is already signed-in with a different
@@ -157,7 +184,7 @@ TEST_F(AuthenticationFlowInProfileTest, TestSignOutAndSignIn) {
   CreateAuthenticationFlowInProfile(PostSignInActionSet(), identity1_,
                                     access_point);
   // Start `authentication_flow_in_profile_` for `identity1_`.
-  base::test::TestFuture<SigninCoordinatorResult> future;
+  base::test::TestFuture<signin_ui::CancelationReason> future;
   [authentication_flow_in_profile_
       startSignInWithCompletion:base::CallbackToBlock(future.GetCallback())];
   // Expect sign-out request.
@@ -179,13 +206,9 @@ TEST_F(AuthenticationFlowInProfileTest, TestSignOutAndSignIn) {
   OCMExpect([performer_mock_ signInIdentity:identity1_
                               atAccessPoint:access_point
                              currentProfile:profile_.get()]);
-  // Expect sign-in completed while running the run loop.
-  OCMExpect([performer_mock_ completePostSignInActions:PostSignInActionSet()
-                                          withIdentity:identity1_
-                                               browser:browser_.get()]);
-  [GetAuthenticationFlowPerformerDelegate() didSignOutForAccountSwitch];
-  EXPECT_EQ(future.Take(),
-            SigninCoordinatorResult::SigninCoordinatorResultSuccess);
+  [GetAuthenticationFlowInProfilePerformerDelegate()
+      didSignOutForAccountSwitch];
+  EXPECT_TRUE(future.Wait());
 }
 
 // Tests sign-in flow with an identity that is not available in the profile.
@@ -195,13 +218,16 @@ TEST_F(AuthenticationFlowInProfileTest, TestSignInWithUnknownIdentity) {
   FakeSystemIdentity* unknown_identity = [FakeSystemIdentity fakeIdentity3];
   CreateAuthenticationFlowInProfile(PostSignInActionSet(), unknown_identity,
                                     access_point);
+  OCMExpect([performer_mock_ showAuthenticationError:[OCMArg any]
+                                      withCompletion:[OCMArg invokeBlock]
+                                      viewController:[OCMArg any]
+                                             browser:browser_.get()]);
   // Start `authentication_flow_in_profile_` for `unknown_identity`.
-  base::test::TestFuture<SigninCoordinatorResult> future;
+  base::test::TestFuture<signin_ui::CancelationReason> future;
   [authentication_flow_in_profile_
       startSignInWithCompletion:base::CallbackToBlock(future.GetCallback())];
   // Expect to `authentication_flow_in_profile_` to fail.
-  EXPECT_EQ(future.Take(),
-            SigninCoordinatorResult::SigninCoordinatorResultInterrupted);
+  EXPECT_TRUE(future.Wait());
 }
 
 // Tests sign-in flow with a managed identity. The managed identity is assigned
@@ -212,7 +238,7 @@ TEST_F(AuthenticationFlowInProfileTest, TestSignInWithManagedIdentity) {
   CreateAuthenticationFlowInProfile(PostSignInActionSet(), managed_identity_,
                                     access_point);
   // Start `authentication_flow_in_profile_` for `managed_identity_`.
-  base::test::TestFuture<SigninCoordinatorResult> future;
+  base::test::TestFuture<signin_ui::CancelationReason> future;
   [authentication_flow_in_profile_
       startSignInWithCompletion:base::CallbackToBlock(future.GetCallback())];
   // Expect to call the performer to sign-in.
@@ -235,18 +261,133 @@ TEST_F(AuthenticationFlowInProfileTest, TestSignInWithManagedIdentity) {
                           userAffiliationIDs:@[ kFakeUserAffiliationID ]
                                     identity:managed_identity_]);
   // Simulate the user policy register request.
-  [GetAuthenticationFlowPerformerDelegate()
+  [GetAuthenticationFlowInProfilePerformerDelegate()
       didRegisterForUserPolicyWithDMToken:kFakeDMToken
                                  clientID:kFakeClientID
                        userAffiliationIDs:@[ kFakeUserAffiliationID ]];
-  // Expect sign-in completed while running the run loop.
-  OCMExpect([performer_mock_ completePostSignInActions:PostSignInActionSet()
-                                          withIdentity:managed_identity_
-                                               browser:browser_.get()]);
-  // Simulate the user policy fetch request.
-  [GetAuthenticationFlowPerformerDelegate() didFetchUserPolicyWithSuccess:YES];
-  EXPECT_EQ(future.Take(),
-            SigninCoordinatorResult::SigninCoordinatorResultSuccess);
+  EXPECT_TRUE(future.Wait());
+}
+
+// Tests that there is no crash if the browser is destroyed in the middle of the
+// flow, during `registerForUserPolicyIfNeededStep`.
+TEST_F(AuthenticationFlowInProfileTest,
+       BrowserDestroyedDuringRegisterForUserPolicy) {
+  const signin_metrics::AccessPoint access_point =
+      signin_metrics::AccessPoint::kStartPage;
+  CreateAuthenticationFlowInProfile(PostSignInActionSet(), managed_identity_,
+                                    access_point);
+  // Start `authentication_flow_in_profile_` for `managed_identity_`.
+  base::test::TestFuture<signin_ui::CancelationReason> future;
+  [authentication_flow_in_profile_
+      startSignInWithCompletion:base::CallbackToBlock(future.GetCallback())];
+  // Expect to call the performer to sign-in.
+  OCMExpect([performer_mock_ signInIdentity:managed_identity_
+                              atAccessPoint:access_point
+                             currentProfile:profile_.get()]);
+  // Expect user policy register request.
+  __block auto run_loop = std::make_unique<base::RunLoop>();
+  OCMExpect([performer_mock_ registerUserPolicy:profile_.get()
+                                    forIdentity:managed_identity_])
+      .andDo(^(NSInvocation* invocation) {
+        // While the policy registration is ongoing, the browser gets destroyed.
+        browser_ = nil;
+        run_loop->Quit();
+      });
+  run_loop->Run();
+  // Simulate the user policy register request finishing.
+  [GetAuthenticationFlowInProfilePerformerDelegate()
+      didRegisterForUserPolicyWithDMToken:kFakeDMToken
+                                 clientID:kFakeClientID
+                       userAffiliationIDs:@[ kFakeUserAffiliationID ]];
+  // Since the browser was destroyed, no other steps should happen (e.g. no
+  // policy fetch, no post-signin actions).
+  EXPECT_TRUE(future.Wait());
+  EXPECT_EQ(future.Get(), signin_ui::CancelationReason::kFailed);
+}
+
+// Tests that there is no crash if the browser is destroyed in the middle of the
+// flow, during `fetchUserPolicyIfNeededStep`.
+TEST_F(AuthenticationFlowInProfileTest, BrowserDestroyedDuringFetchUserPolicy) {
+  const signin_metrics::AccessPoint access_point =
+      signin_metrics::AccessPoint::kStartPage;
+  CreateAuthenticationFlowInProfile(PostSignInActionSet(), managed_identity_,
+                                    access_point);
+  // Start `authentication_flow_in_profile_` for `managed_identity_`.
+  base::test::TestFuture<signin_ui::CancelationReason> future;
+  [authentication_flow_in_profile_
+      startSignInWithCompletion:base::CallbackToBlock(future.GetCallback())];
+  // Expect to call the performer to sign-in.
+  OCMExpect([performer_mock_ signInIdentity:managed_identity_
+                              atAccessPoint:access_point
+                             currentProfile:profile_.get()]);
+  // Expect user policy register request.
+  __block auto run_loop = std::make_unique<base::RunLoop>();
+  OCMExpect([performer_mock_ registerUserPolicy:profile_.get()
+                                    forIdentity:managed_identity_])
+      .andDo(^(NSInvocation* invocation) {
+        run_loop->Quit();
+      });
+  run_loop->Run();
+
+  // Expect user policy fetch request.
+  OCMExpect([performer_mock_ fetchUserPolicy:profile_.get()
+                                 withDmToken:kFakeDMToken
+                                    clientID:kFakeClientID
+                          userAffiliationIDs:@[ kFakeUserAffiliationID ]
+                                    identity:managed_identity_])
+      .andDo(^(NSInvocation* invocation) {
+        // While the policy fetch is ongoing, the browser gets destroyed.
+        browser_ = nil;
+      });
+
+  // Simulate the user policy register request finishing.
+  [GetAuthenticationFlowInProfilePerformerDelegate()
+      didRegisterForUserPolicyWithDMToken:kFakeDMToken
+                                 clientID:kFakeClientID
+                       userAffiliationIDs:@[ kFakeUserAffiliationID ]];
+
+  // Since the browser was destroyed, no other steps should happen (e.g. no
+  // post-signin actions).
+  EXPECT_TRUE(future.Wait());
+  EXPECT_EQ(future.Get(), signin_ui::CancelationReason::kFailed);
+}
+
+// Tests that there is no crash if the browser is destroyed in the middle of the
+// flow, during `fetchCapabilitiesIfNeededStep`.
+TEST_F(AuthenticationFlowInProfileTest,
+       BrowserDestroyedDuringFetchCapabilities) {
+  const signin_metrics::AccessPoint access_point =
+      signin_metrics::AccessPoint::kStartPage;
+  CreateAuthenticationFlowInProfile(PostSignInActionSet(), identity1_,
+                                    access_point,
+                                    /*preceding_history_sync=*/true);
+  // Start `authentication_flow_in_profile_` for `identity1_`.
+  base::test::TestFuture<signin_ui::CancelationReason> future;
+  [authentication_flow_in_profile_
+      startSignInWithCompletion:base::CallbackToBlock(future.GetCallback())];
+  // Expect to call the performer to sign-in.
+  OCMExpect([performer_mock_ signInIdentity:identity1_
+                              atAccessPoint:access_point
+                             currentProfile:profile_.get()]);
+
+  // Expect capabilities fetch request, and grab the completion callback.
+  __block auto run_loop = std::make_unique<base::RunLoop>();
+  OCMExpect([performer_mock_ fetchAccountCapabilities:profile_.get()])
+      .andDo(^(NSInvocation* invocation) {
+        // While the capabilities fetch is ongoing, the browser gets destroyed.
+        browser_ = nil;
+        run_loop->Quit();
+      });
+  run_loop->Run();
+
+  // Simulate the capabilities fetch request finishing.
+  [GetAuthenticationFlowInProfilePerformerDelegate()
+      didFetchAccountCapabilities];
+
+  // Since the browser was destroyed, no other steps should happen (e.g. no
+  // post-signin actions).
+  EXPECT_TRUE(future.Wait());
+  EXPECT_EQ(future.Get(), signin_ui::CancelationReason::kFailed);
 }
 
 }  // namespace

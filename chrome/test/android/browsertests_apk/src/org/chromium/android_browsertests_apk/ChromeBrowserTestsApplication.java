@@ -9,6 +9,8 @@ import android.content.Context;
 import org.chromium.base.PathUtils;
 import org.chromium.base.library_loader.LibraryLoader;
 import org.chromium.base.library_loader.LibraryProcessType;
+import org.chromium.chrome.browser.ProductConfig;
+import org.chromium.chrome.browser.app.notifications.ContextualNotificationPermissionRequesterImpl;
 import org.chromium.chrome.browser.metrics.UmaUtils;
 import org.chromium.native_test.NativeBrowserTestApplication;
 import org.chromium.ui.base.ResourceBundle;
@@ -32,9 +34,12 @@ public class ChromeBrowserTestsApplication extends NativeBrowserTestApplication 
         if (isBrowserProcess) {
             // Test-only stuff, see also NativeUnitTest.java.
             PathUtils.setPrivateDataDirectorySuffix(PRIVATE_DATA_DIRECTORY_SUFFIX);
-            // ResourceBundle asserts that locale paks have been given to it.
-            // In test targets there is no list of paks generated.
-            ResourceBundle.setNoAvailableLocalePaks();
+            ResourceBundle.setAvailablePakLocales(ProductConfig.LOCALES);
+            // Some browser tests trigger access to ContextualNotificationPermissionRequester. It
+            // is normally initialized as part of Chrome startup.
+            // TODO(crbug.com/454692653): This class should share more code with the production
+            // ChromeApplicationImpl so test startup would be more similar to production.
+            ContextualNotificationPermissionRequesterImpl.initialize();
         }
     }
 }

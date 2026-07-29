@@ -5,7 +5,6 @@
 #ifndef COMPONENTS_PERMISSIONS_PERMISSION_MANAGER_H_
 #define COMPONENTS_PERMISSIONS_PERMISSION_MANAGER_H_
 
-#include <map>
 #include <unordered_map>
 
 #include "base/containers/flat_map.h"
@@ -15,7 +14,7 @@
 #include "components/content_settings/core/browser/content_settings_observer.h"
 #include "components/content_settings/core/common/content_settings.h"
 #include "components/keyed_service/core/keyed_service.h"
-#include "components/permissions/permission_context_base.h"
+#include "components/permissions/content_setting_permission_context_base.h"
 #include "components/permissions/permission_decision_auto_blocker.h"
 #include "components/permissions/permission_request_id.h"
 #include "components/permissions/permission_util.h"
@@ -37,7 +36,7 @@ class RenderProcessHost;
 class WebContents;
 struct PermissionRequestDescription;
 struct PermissionResult;
-}
+}  // namespace content
 
 class GeolocationPermissionContextDelegateTests;
 class SubscriptionInterceptingPermissionManager;
@@ -98,52 +97,55 @@ class PermissionManager : public KeyedService,
   PermissionContextBase* GetPermissionContext(ContentSettingsType type);
 
   // content::PermissionControllerDelegate implementation.
-  void RequestPermissions(
-      content::RenderFrameHost* render_frame_host,
-      const content::PermissionRequestDescription& request_description,
-      base::OnceCallback<void(const std::vector<PermissionStatus>&)> callback)
-      override;
   void RequestPermissionsInternal(
       content::RenderFrameHost* render_frame_host,
       const content::PermissionRequestDescription& request_description,
-      base::OnceCallback<void(const std::vector<PermissionStatus>&)> callback);
+      base::OnceCallback<void(const std::vector<content::PermissionResult>&)>
+          callback);
   void ResetPermission(blink::PermissionType permission,
                        const GURL& requesting_origin,
                        const GURL& embedding_origin) override;
   void RequestPermissionsFromCurrentDocument(
       content::RenderFrameHost* render_frame_host,
       const content::PermissionRequestDescription& request_description,
-      base::OnceCallback<void(const std::vector<PermissionStatus>&)> callback)
-      override;
-  PermissionStatus GetPermissionStatus(blink::PermissionType permission,
-                                       const GURL& requesting_origin,
-                                       const GURL& embedding_origin) override;
+      base::OnceCallback<void(const std::vector<content::PermissionResult>&)>
+          callback) override;
+  PermissionStatus GetPermissionStatus(
+      const blink::mojom::PermissionDescriptorPtr& permission_descriptor,
+      const GURL& requesting_origin,
+      const GURL& embedding_origin) override;
   content::PermissionResult GetPermissionResultForOriginWithoutContext(
-      blink::PermissionType permission,
+      const blink::mojom::PermissionDescriptorPtr& permission_descriptor,
       const url::Origin& requesting_origin,
       const url::Origin& embedding_origin) override;
-  PermissionStatus GetPermissionStatusForCurrentDocument(
-      blink::PermissionType permission,
-      content::RenderFrameHost* render_frame_host,
-      bool should_include_device_status) override;
   content::PermissionResult GetPermissionResultForCurrentDocument(
-      blink::PermissionType permission,
+      const blink::mojom::PermissionDescriptorPtr& permission_descriptor,
       content::RenderFrameHost* render_frame_host,
       bool should_include_device_status) override;
-  PermissionStatus GetPermissionStatusForWorker(
-      blink::PermissionType permission,
+  content::PermissionResult GetPermissionResultForWorker(
+      const blink::mojom::PermissionDescriptorPtr& permission_descriptor,
       content::RenderProcessHost* render_process_host,
       const GURL& worker_origin) override;
-  PermissionStatus GetPermissionStatusForEmbeddedRequester(
-      blink::PermissionType permission,
+  content::PermissionResult GetPermissionResultForEmbeddedRequester(
+      const blink::mojom::PermissionDescriptorPtr& permission_descriptor,
       content::RenderFrameHost* render_frame_host,
       const url::Origin& requesting_origin) override;
   bool IsPermissionOverridable(
       blink::PermissionType permission,
-      const std::optional<url::Origin>& origin) override;
+      base::optional_ref<const url::Origin> requesting_origin,
+      base::optional_ref<const url::Origin> embedding_origin) override;
   void OnPermissionStatusChangeSubscriptionAdded(
       content::PermissionController::SubscriptionId subscription_id) override;
-  void UnsubscribeFromPermissionStatusChange(
+  void UnsubscribeFromPermissionResultChange(
+      content::PermissionController::SubscriptionId subscription_id) override;
+  content::PermissionController::SubscriptionId
+  SubscribeToContentSettingsTypeChange(
+      ContentSettingsType content_settings_type,
+      const GURL& requesting_origin,
+      const GURL& embedding_origin,
+      base::RepeatingCallback<void(const PermissionSetting&)> callback)
+      override;
+  void UnsubscribeFromContentSettingsTypeChange(
       content::PermissionController::SubscriptionId subscription_id) override;
   std::optional<gfx::Rect> GetExclusionAreaBoundsInScreen(
       content::WebContents* web_contents) const override;
@@ -154,10 +156,10 @@ class PermissionManager : public KeyedService,
   // than one permission, it will wait for the remaining permissions to be
   // resolved. When all the permissions have been resolved, the PendingRequest's
   // callback is run.
-  void OnPermissionsRequestResponseStatus(
+  void OnPermissionsRequestResponse(
       PendingRequestLocalId request_local_id,
       int permission_id,
-      ContentSetting status);
+      content::PermissionResult permission_result);
 
   // permissions::Observer:
   void OnPermissionChanged(const ContentSettingsPattern& primary_pattern,
@@ -167,7 +169,7 @@ class PermissionManager : public KeyedService,
   // Only one of |render_process_host| and |render_frame_host| should be set,
   // or neither. RenderProcessHost will be inferred from |render_frame_host|.
   content::PermissionResult GetPermissionStatusInternal(
-      ContentSettingsType permission,
+      const blink::mojom::PermissionDescriptorPtr& permission_descriptor,
       content::RenderProcessHost* render_process_host,
       content::RenderFrameHost* render_frame_host,
       const GURL& requesting_origin,
@@ -189,6 +191,23 @@ class PermissionManager : public KeyedService,
   PermissionContextMap permission_contexts_;
 
   bool is_shutting_down_ = false;
+
+  struct ContentSettingsTypeSubscription {
+    ContentSettingsTypeSubscription();
+    ~ContentSettingsTypeSubscription();
+
+    ContentSettingsType content_settings_type;
+    GURL requesting_origin;
+    GURL embedding_origin;
+    base::RepeatingCallback<void(const PermissionSetting&)> callback;
+    PermissionSetting last_setting;
+  };
+
+  base::IDMap<std::unique_ptr<ContentSettingsTypeSubscription>,
+              content::PermissionController::SubscriptionId>
+      content_settings_subscriptions_;
+  content::PermissionController::SubscriptionId::Generator
+      subscription_id_generator_;
 
   base::WeakPtrFactory<PermissionManager> weak_factory_{this};
 };

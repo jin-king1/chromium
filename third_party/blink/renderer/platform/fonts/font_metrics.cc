@@ -29,9 +29,12 @@
 
 #include "third_party/blink/renderer/platform/fonts/font_metrics.h"
 
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "build/build_config.h"
 #include "third_party/blink/renderer/platform/fonts/font_platform_data.h"
 #include "third_party/blink/renderer/platform/fonts/vdmx_parser.h"
+#include "third_party/blink/renderer/platform/wtf/math_extras.h"
 #include "third_party/skia/include/core/SkFont.h"
 #include "third_party/skia/include/core/SkFontMetrics.h"
 #include "third_party/skia/include/core/SkTypeface.h"
@@ -72,21 +75,25 @@ void FontMetrics::AscentDescentWithHacks(
   // using FreeType.  With DirectWrite or CoreText, no bytecode hinting is ever
   // done.  This code should be pushed into FreeType (hinted font metrics).
   static const uint32_t kVdmxTag = SkSetFourByteTag('V', 'D', 'M', 'X');
-  int pixel_size = platform_data.size() + 0.5;
+  int pixel_size = ClampTo<int>(platform_data.size() + 0.5);
   // TODO(xiaochengh): How do we support ascent/descent override with VDMX?
   if (!ascent_override && !descent_override && !font.isForceAutoHinting() &&
       (font.getHinting() == SkFontHinting::kFull ||
        font.getHinting() == SkFontHinting::kNormal)) {
     size_t vdmx_size = face->getTableSize(kVdmxTag);
     if (vdmx_size && vdmx_size < kMaxVDMXTableSize) {
-      uint8_t* vdmx_table = (uint8_t*)WTF::Partitions::FastMalloc(
+      uint8_t* vdmx_table = (uint8_t*)Partitions::FastMalloc(
           vdmx_size, WTF_HEAP_PROFILER_TYPE_NAME(FontMetrics));
-      if (vdmx_table &&
-          face->getTableData(kVdmxTag, 0, vdmx_size, vdmx_table) == vdmx_size &&
-          ParseVDMX(&vdmx_ascent, &vdmx_descent, vdmx_table, vdmx_size,
-                    pixel_size))
-        is_vdmx_valid = true;
-      WTF::Partitions::FastFree(vdmx_table);
+      if (vdmx_table) {
+        // SAFETY: FastMalloc allocated vdmx_size bytes for vdmx_table.
+        auto vdmx_span = UNSAFE_BUFFERS(base::span(vdmx_table, vdmx_size));
+        if (face->getTableData(kVdmxTag, 0, vdmx_size, vdmx_table) ==
+                vdmx_size &&
+            ParseVDMX(&vdmx_ascent, &vdmx_descent, vdmx_span, pixel_size)) {
+          is_vdmx_valid = true;
+        }
+        Partitions::FastFree(vdmx_table);
+      }
     }
   }
 #endif
@@ -167,7 +174,7 @@ float FontMetrics::FloatAscentInternal(
       // in TrueType AAT.
       return float_ascent_ * 0.5f;
     case kHangingBaseline:
-      if (hanging_baseline_position_.has_value(), apply_baseline_table) {
+      if (hanging_baseline_position_.has_value() && apply_baseline_table) {
         return float_ascent_ - hanging_baseline_position_.value();
       }
       return float_ascent_ * 0.2f;

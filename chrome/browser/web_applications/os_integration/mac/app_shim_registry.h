@@ -8,23 +8,37 @@
 #include <map>
 #include <set>
 #include <string>
+#include <vector>
 
 #include "base/callback_list.h"
 #include "base/files/file_path.h"
+#include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/no_destructor.h"
 #include "base/values.h"
 #include "chrome/services/mac_notifications/public/mojom/mac_notifications.mojom.h"
+
+namespace os_crypt_async {
+class Encryptor;
+}  // namespace os_crypt_async
 
 class PrefService;
 class PrefRegistrySimple;
 
 // This class is used to store information about which app shims have been
-// installed for which profiles in local storage. This is used to:
+// installed for which profiles in local storage. This is needed to reason
+// about the state of installed PWAs in all profiles without loading those
+// profiles into memory. For this purpose, `AppShimRegistry` stores the needed
+// information in Chrome's "Local State" (global preferences).
+// This is used to:
 //  - Open the last active profile when an app shim is launched.
 //  - Populate the profile switcher menu in the app with only those profile
 //    for which the app is installed.
 //  - Only delete the app shim when it has been uninstalled for all profiles.
+//  - Store what file and protocol handlers are enabled for a web app in each
+//    profile it is installed in (to make sure all file and protocol handlers
+//    for the app are accounted for when updating the App Shim).
 // All base::FilePath arguments to functions are expected to be full profile
 // paths (e.g, the result of calling Profile::GetPath).
 //
@@ -33,6 +47,42 @@ class PrefRegistrySimple;
 // because apps are in the process of being disentangled from extensions.
 class AppShimRegistry {
  public:
+  // The result of loading the HMAC key (used to encrypt the code signatures for
+  // app shims) from prefs.
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  enum class GetHmacKeyResult {
+    kSuccess = 0,
+    kNotFound = 1,
+    kBase64DecodeFailed = 2,
+    kDecryptFailed_Permanent = 3,
+    kDecryptFailed_Temporary = 4,
+    kInvalidLength = 5,
+    kMaxValue = kInvalidLength,
+  };
+
+  // The result of saving the HMAC key to prefs after generating a new key.
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  enum class SaveHmacKeyResult {
+    kSuccess = 0,
+    kEncryptionFailed = 1,
+    kMaxValue = kEncryptionFailed,
+  };
+
+  // The result of verifying the code directory hash for an app.
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  enum class VerifyCdHashResult {
+    kSuccess = 0,
+    kNoAppInfo = 1,
+    kNoCdHash = 2,
+    kDecodeFailure = 3,
+    kUnexpectedSize = 4,
+    kVerificationFailed = 5,
+    kMaxValue = kVerificationFailed,
+  };
+
   AppShimRegistry(const AppShimRegistry& other) = delete;
   AppShimRegistry& operator=(const AppShimRegistry& other) = delete;
 
@@ -118,12 +168,14 @@ class AppShimRegistry {
 
   // Associate the given code directory hash with a given app.
   void SaveCdHashForApp(const std::string& app_id,
-                        base::span<const uint8_t> cd_hash);
+                        base::span<const uint8_t> cd_hash,
+                        base::OnceClosure callback);
 
   // Verify that the given code directory hash matches the one previously
   // associated with the given app.
-  bool VerifyCdHashForApp(const std::string& app_id,
-                          base::span<const uint8_t> cd_hash);
+  void VerifyCdHashForApp(const std::string& app_id,
+                          base::span<const uint8_t> cd_hash,
+                          base::OnceCallback<void(bool)> callback);
 
   // Called when changes to the system level notification permission status for
   // the given app have been detected.
@@ -147,7 +199,7 @@ class AppShimRegistry {
       const base::FilePath& user_data_dir);
 
   // For logging and debug purposes.
-  base::Value::Dict AsDebugDict() const;
+  base::DictValue AsDebugDict() const;
 
  protected:
   friend class base::NoDestructor<AppShimRegistry>;
@@ -169,17 +221,20 @@ class AppShimRegistry {
 
   // Retrieve the key used to create HMACs of app's code directory hashes,
   // generating a new key if needed.
-  HmacKey GetCdHashHmacKey();
+  HmacKey GetCdHashHmacKey(const os_crypt_async::Encryptor& encryptor);
 
   // Helper function used by GetCdHashHmacKey
   // Retrieve the existing key used to create HMACs of app's code directory
   // hashes. Returns nullopt if no key was found or the existing key could not
   // be decoded or decrypted.
-  std::optional<HmacKey> GetExistingCdHashHmacKey();
+  std::optional<HmacKey> GetExistingCdHashHmacKey(
+      const os_crypt_async::Encryptor& encryptor);
 
   // Helper function used by GetCdHashHmacKey
-  // Encode and encrypt the given HMAC key and save it to preferences.
-  void SaveCdHashHmacKey(const HmacKey& key);
+  // Encode and encrypt the given HMAC key and save it to preferences. Returns
+  // true on success.
+  bool SaveCdHashHmacKey(const os_crypt_async::Encryptor& encryptor,
+                         const HmacKey& key);
 
   // Update the local storage for |app_id|. Update |installed_profiles| and
   // |last_active_profiles| only if they are non-nullptr. If
@@ -192,6 +247,22 @@ class AppShimRegistry {
                   const std::string* cd_hash_hmac_base64,
                   const mac_notifications::mojom::PermissionStatus*
                       notification_permission_status);
+
+ private:
+  void DoSaveCdHashForApp(const std::string& app_id,
+                          std::vector<uint8_t> cd_hash,
+                          scoped_refptr<os_crypt_async::Encryptor> encryptor);
+  bool DoVerifyCdHashForApp(const std::string& app_id,
+                            std::vector<uint8_t> cd_hash,
+                            scoped_refptr<os_crypt_async::Encryptor> encryptor);
+
+  // An in-memory cache of the HMAC key.
+  std::optional<HmacKey> hmac_key_;
+  // Whether `hmac_key_` has been saved to (or loaded from) prefs. As long as
+  // this is false we'll retry storing the key, as it is possible for saving
+  // to temporarily fail (if the keychain is temporarily unavailable for
+  // example).
+  bool hmac_key_saved_to_prefs_ = false;
 
   raw_ptr<PrefService> override_pref_service_ = nullptr;
   base::FilePath override_user_data_dir_;

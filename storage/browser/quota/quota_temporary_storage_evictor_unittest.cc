@@ -9,7 +9,6 @@
 #include <memory>
 #include <utility>
 
-#include "base/containers/contains.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
@@ -24,8 +23,6 @@
 #include "storage/browser/quota/quota_manager_impl.h"
 #include "storage/browser/quota/quota_temporary_storage_evictor.h"
 #include "testing/gtest/include/gtest/gtest.h"
-
-using ::blink::mojom::StorageType;
 
 namespace storage {
 
@@ -124,13 +121,13 @@ class MockQuotaEvictionHandler : public QuotaEvictionHandler {
   }
 
   bool HasBucket(const EvictionBucket& bucket) {
-    return base::Contains(buckets_, bucket.locator.id);
+    return buckets_.contains(bucket.locator.id);
   }
 
  private:
   int64_t EnsureBucketRemoved(const BucketLocator& bucket) {
     int64_t bucket_usage;
-    if (!base::Contains(buckets_, bucket.id))
+    if (!buckets_.contains(bucket.id))
       return -1;
     else
       bucket_usage = buckets_[bucket.id];
@@ -204,7 +201,7 @@ class QuotaTemporaryStorageEvictorTest : public testing::Test {
   BucketLocator CreateBucket(const std::string& url, bool is_default) {
     return BucketLocator(bucket_id_generator_.GenerateNextId(),
                          blink::StorageKey::CreateFromStringForTesting(url),
-                         blink::mojom::StorageType::kTemporary, is_default);
+                         is_default);
   }
 
   EvictionBucket CreateEvictionBucket(const std::string& url,

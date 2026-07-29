@@ -42,6 +42,7 @@
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/box_layout_view.h"
 #include "ui/views/layout/layout_manager.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/view_utils.h"
 
@@ -102,7 +103,9 @@ QuickInsertSearchResultsView::QuickInsertSearchResultsView(
   SetProperty(views::kElementIdentifierKey,
               kQuickInsertSearchResultsPageElementId);
   GetViewAccessibility().SetRole(ax::mojom::Role::kStatus);
-  GetViewAccessibility().SetContainerLiveStatus("polite");
+  GetViewAccessibility().SetLiveRegionContainer(
+      views::ViewAccessibility::LiveRegionStatus::kPolite,
+      views::ViewAccessibility::kLiveRegionRelevantText);
 
   section_list_view_ =
       AddChildView(std::make_unique<QuickInsertSectionListView>(
@@ -361,8 +364,6 @@ void QuickInsertSearchResultsView::UpdateAccessibleName() {
     return;
   }
   GetViewAccessibility().SetName(std::move(accessible_name));
-  NotifyAccessibilityEventDeprecated(ax::mojom::Event::kLiveRegionChanged,
-                                     true);
 }
 
 BEGIN_METADATA(QuickInsertSearchResultsView)

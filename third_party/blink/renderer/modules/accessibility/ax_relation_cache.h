@@ -5,6 +5,11 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_ACCESSIBILITY_AX_RELATION_CACHE_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_ACCESSIBILITY_AX_RELATION_CACHE_H_
 
+#include <stdint.h>
+
+#include <utility>
+
+#include "base/containers/span.h"
 #include "third_party/blink/renderer/core/html/forms/html_label_element.h"
 #include "third_party/blink/renderer/modules/accessibility/ax_object_cache_impl.h"
 #include "third_party/blink/renderer/platform/graphics/dom_node_id.h"
@@ -154,6 +159,7 @@ class AXRelationCache {
   // Pass |force=true| when the mappings must be updated even though the
   // owned ids have not changed, e.g. when an object has been refreshed.
   void UpdateAriaOwnsWithCleanLayout(AXObject* owner, bool force = false);
+  void QueueOwnerToUpdate(AXObject* owner);
 
   // Is there work to be done when layout becomes clean?
   bool IsDirty() const;
@@ -271,7 +277,7 @@ class AXRelationCache {
   // exist in the DOM, and are a descendant of a shadow including ancestor.
   void UpdateAriaOwnsFromAttrAssociatedElementsWithCleanLayout(
       AXObject* owner,
-      const HeapVector<Member<Element>>& attr_associated_elements,
+      const GCedHeapVector<Member<Element>>& attr_associated_elements,
       HeapVector<Member<AXObject>>& owned_children,
       bool force);
 
@@ -279,8 +285,10 @@ class AXRelationCache {
   // aria-describedby or aria-labeledby, update the text for the related object.
   void UpdateRelatedText(Node*);
 
-  static Vector<QualifiedName>& GetTextRelationAttributes();
-  static Vector<QualifiedName>& GetOtherRelationAttributes();
+  static base::span<std::pair<QualifiedName, Element::TinyBloomFilter>>
+  GetTextRelationAttributes();
+  static base::span<std::pair<QualifiedName, Element::TinyBloomFilter>>
+  GetOtherRelationAttributes();
 
   bool IsValidOwnsRelation(AXObject* owner, Node& child_node) const;
   void UnmapOwnedChildrenWithCleanLayout(const AXObject* owner,

@@ -18,7 +18,6 @@
 #include "remoting/base/logging.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/simple_url_loader.h"
-#include "services/network/public/mojom/shared_storage.mojom.h"
 #include "url/gurl.h"
 
 namespace remoting {
@@ -120,12 +119,15 @@ void UrlLoaderNetworkServiceObserver::OnAuthRequired(
     mojo::PendingRemote<network::mojom::AuthChallengeResponder>
         auth_challenge_responder) {}
 
-void UrlLoaderNetworkServiceObserver::OnPrivateNetworkAccessPermissionRequired(
-    const GURL& url,
-    const net::IPAddress& ip_address,
-    const std::optional<std::string>& private_network_device_id,
-    const std::optional<std::string>& private_network_device_name,
-    OnPrivateNetworkAccessPermissionRequiredCallback callback) {}
+void UrlLoaderNetworkServiceObserver::OnLocalNetworkAccessPermissionRequired(
+    network::mojom::TransportType type,
+    network::mojom::IPAddressSpace ip_address_space,
+    OnLocalNetworkAccessPermissionRequiredCallback callback) {}
+
+void UrlLoaderNetworkServiceObserver::OnPlatformLocalNetworkPermissionRequired(
+    OnPlatformLocalNetworkPermissionRequiredCallback callback) {
+  std::move(callback).Run(/*granted=*/false);
+}
 
 void UrlLoaderNetworkServiceObserver::OnClearSiteData(
     const GURL& url,
@@ -145,17 +147,9 @@ void UrlLoaderNetworkServiceObserver::OnLoadingStateUpdate(
 
 void UrlLoaderNetworkServiceObserver::OnDataUseUpdate(
     int32_t network_traffic_annotation_id_hash,
-    int64_t recv_bytes,
-    int64_t sent_bytes) {}
+    base::ByteSize recv_bytes,
+    base::ByteSize sent_bytes) {}
 
-void UrlLoaderNetworkServiceObserver::OnSharedStorageHeaderReceived(
-    const url::Origin& request_origin,
-    std::vector<network::mojom::SharedStorageModifierMethodWithOptionsPtr>
-        methods_with_options,
-    const std::optional<std::string>& with_lock,
-    OnSharedStorageHeaderReceivedCallback callback) {
-  std::move(callback).Run();
-}
 
 void UrlLoaderNetworkServiceObserver::Clone(
     mojo::PendingReceiver<network::mojom::URLLoaderNetworkServiceObserver>
@@ -163,10 +157,11 @@ void UrlLoaderNetworkServiceObserver::Clone(
   receivers_.Add(this, std::move(observer));
 }
 
-void UrlLoaderNetworkServiceObserver::OnWebSocketConnectedToPrivateNetwork(
+void UrlLoaderNetworkServiceObserver::OnWebSocketConnectedToLocalNetwork(
+    const GURL& request_url,
     network::mojom::IPAddressSpace ip_address_space) {}
 
-void UrlLoaderNetworkServiceObserver::OnUrlLoaderConnectedToPrivateNetwork(
+void UrlLoaderNetworkServiceObserver::OnUrlLoaderConnectedToLocalNetwork(
     const GURL& request_url,
     network::mojom::IPAddressSpace response_address_space,
     network::mojom::IPAddressSpace client_address_space,

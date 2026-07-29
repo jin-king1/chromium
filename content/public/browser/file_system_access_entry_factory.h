@@ -11,7 +11,7 @@
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/file_system_access_permission_context.h"
 #include "content/public/browser/global_routing_id.h"
-#include "ipc/ipc_message.h"
+#include "ipc/constants.mojom-forward.h"
 #include "storage/browser/file_system/file_system_url.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
 #include "third_party/blink/public/mojom/file_system_access/file_system_access_directory_handle.mojom-forward.h"
@@ -50,13 +50,16 @@ class CONTENT_EXPORT FileSystemAccessEntryFactory
                    int worker_process_id)
         : storage_key(storage_key),
           url(url),
-          frame_id(worker_process_id, MSG_ROUTING_NONE),
+          frame_id(worker_process_id, IPC::mojom::kRoutingIdNone),
           is_worker(true) {}
     blink::StorageKey storage_key;
     GURL url;
     GlobalRenderFrameHostId frame_id;
     bool is_worker;
-    int process_id() const { return frame_id.child_id; }
+    int process_id() const {
+      // TODO(crbug.com/379869738) Remove GetUnsafeValue.
+      return frame_id.child_id.GetUnsafeValue();
+    }
   };
 
   // Creates a new FileSystemAccessEntryPtr from the path to a file. Assumes the

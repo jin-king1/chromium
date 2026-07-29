@@ -26,21 +26,20 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_BINDINGS_V8_PER_ISOLATE_DATA_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_BINDINGS_V8_PER_ISOLATE_DATA_H_
 
+#include <array>
 #include <memory>
 
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "gin/public/gin_embedders.h"
 #include "gin/public/isolate_holder.h"
-#include "third_party/blink/renderer/platform/bindings/active_script_wrappable_manager.h"
-#include "third_party/blink/renderer/platform/bindings/dom_wrapper_world.h"
 #include "third_party/blink/renderer/platform/bindings/runtime_call_stats.h"
-#include "third_party/blink/renderer/platform/bindings/script_regexp.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/heap/persistent.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
 #include "third_party/blink/renderer/platform/wtf/forward.h"
 #include "third_party/blink/renderer/platform/wtf/hash_map.h"
+#include "third_party/blink/renderer/platform/wtf/vector.h"
 #include "v8/include/v8-callbacks.h"
 #include "v8/include/v8-forward.h"
 #include "v8/include/v8-isolate.h"
@@ -193,23 +192,6 @@ class PLATFORM_EXPORT V8PerIsolateData final {
   void SetPasswordRegexp(ScriptRegexp*);
   ScriptRegexp* GetPasswordRegexp();
 
-  ActiveScriptWrappableManager* GetActiveScriptWrappableManager() const {
-    return active_script_wrappable_manager_;
-  }
-
-  void SetActiveScriptWrappableManager(ActiveScriptWrappableManager* manager) {
-    DCHECK(manager);
-    active_script_wrappable_manager_ = manager;
-  }
-
-  void SetGCCallbacks(v8::Isolate* isolate,
-                      v8::Isolate::GCCallback prologue_callback,
-                      v8::Isolate::GCCallback epilogue_callback);
-
-  void EnterGC() { gc_callback_depth_++; }
-
-  void LeaveGC() { gc_callback_depth_--; }
-
   // Set the factory function used to initialize task attribution for the
   // isolate upon creating main thread `V8PerIsolateData`. This should be set
   // once per process before creating any isolates.
@@ -217,6 +199,10 @@ class PLATFORM_EXPORT V8PerIsolateData final {
       std::unique_ptr<scheduler::TaskAttributionTracker> (*)(v8::Isolate*);
   static void SetTaskAttributionTrackerFactory(
       TaskAttributionTrackerFactoryPtr factory);
+
+  // If not on the main thread,`task_attribution_tracker_` can be initialized
+  // lazily on selected threads.
+  void InitializeTaskAttributionTrackerOnWorkerThread();
 
   // Returns the `scheduler::TaskAttributionTracker` associated with the
   // associated `v8::Isolate`. Returns null if the
@@ -266,6 +252,18 @@ class PLATFORM_EXPORT V8PerIsolateData final {
     return omit_exception_context_information_;
   }
 
+  void EnterWrapperConstructor() {
+    DCHECK(!is_in_wrapper_constructor_);
+    is_in_wrapper_constructor_ = true;
+  }
+
+  void LeaveWrapperConstructor() {
+    DCHECK(is_in_wrapper_constructor_);
+    is_in_wrapper_constructor_ = false;
+  }
+
+  bool InWrapperConstructor() const { return is_in_wrapper_constructor_; }
+
  private:
   V8PerIsolateData(scoped_refptr<base::SingleThreadTaskRunner>,
                    scoped_refptr<base::SingleThreadTaskRunner>,
@@ -314,10 +312,6 @@ class PLATFORM_EXPORT V8PerIsolateData final {
   V8TemplateMap v8_template_map_for_main_world_;
   V8TemplateMap v8_template_map_for_non_main_worlds_;
 
-  using V8DictTemplateMap = HashMap<const void*,
-                                    v8::Eternal<v8::DictionaryTemplate>,
-                                    SimplePtrHashTraits>;
-
   HashMap<const void*, v8::Eternal<v8::DictionaryTemplate>, SimplePtrHashTraits>
       v8_dict_template_map_;
 
@@ -328,8 +322,7 @@ class PLATFORM_EXPORT V8PerIsolateData final {
   std::unique_ptr<V8PrivateProperty> private_property_;
   Persistent<ScriptState> script_regexp_script_state_;
 
-  bool constructor_mode_;
-  friend class ConstructorMode;
+  bool is_in_wrapper_constructor_ = false;
 
   bool use_counter_disabled_ = false;
   friend class UseCounterDisabledScope;
@@ -337,16 +330,11 @@ class PLATFORM_EXPORT V8PerIsolateData final {
   bool is_handling_recursion_level_error_ = false;
 
   Persistent<ScriptRegexp> password_regexp_;
-  Persistent<UserData>
-      user_data_[static_cast<size_t>(UserData::Key::kNumberOfKeys)];
-
-  Persistent<ActiveScriptWrappableManager> active_script_wrappable_manager_;
+  std::array<Persistent<UserData>,
+             static_cast<size_t>(UserData::Key::kNumberOfKeys)>
+      user_data_;
 
   RuntimeCallStats runtime_call_stats_;
-
-  v8::Isolate::GCCallback prologue_callback_;
-  v8::Isolate::GCCallback epilogue_callback_;
-  size_t gc_callback_depth_ = 0;
 
   Persistent<DOMWrapperWorld> main_world_;
 

@@ -126,7 +126,34 @@ enum class LensOverlayDismissalSource {
   // overlay to close.
   kSearchWithCameraRequested = 31,
 
-  kMaxValue = kSearchWithCameraRequested
+  // The user tapped the "next" button on the FRE promo. Only used on iOS.
+  kFREPromoNextButton = 32,
+
+  // The user activated reader mode. Only used on iOS.
+  kReaderModeActivated = 33,
+
+  // The tab was backgrounded while the overlay was initializing. Only used on
+  // Desktop.
+  kTabBackgroundedWhileInitializing = 34,
+
+  // The query was submitted from the Contextual Tasks composebox. Only used on
+  // Desktop.
+  kContextualTasksQuerySubmitted = 35,
+
+  // The context was cleared from the Contextual Tasks composebox. Only used on
+  // Desktop.
+  kContextualTasksContextCleared = 36,
+
+  // The user clicked the Lens button in the Contextual Tasks composebox while
+  // the overlay was showing. Only used on Desktop.
+  kContextualTasksComposeboxLensButtonClick = 37,
+
+  // The input state in the Contextual Tasks composebox changed to disable
+  // image uploads. Only used on Desktop.
+  kContextualTasksImageUploadsDisabled = 38,
+
+  kMaxValue = kContextualTasksImageUploadsDisabled,
+
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/lens/enums.xml:LensOverlayDismissalSource)
 

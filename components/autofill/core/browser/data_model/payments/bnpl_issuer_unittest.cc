@@ -10,6 +10,7 @@
 #include "components/autofill/core/browser/data_model/payments/payment_instrument.h"
 #include "components/autofill/core/browser/payments/constants.h"
 #include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/grit/components_scaled_resources.h"
 #include "components/strings/grit/components_strings.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -19,8 +20,8 @@ namespace autofill {
 // Test for getting and setting the issuer id for the BNPL issuer data model.
 TEST(BnplIssuerTest, GetAndSetIssuerId) {
   BnplIssuer issuer = test::GetTestLinkedBnplIssuer();
-  issuer.set_issuer_id("new_issuer");
-  EXPECT_EQ(issuer.issuer_id(), "new_issuer");
+  issuer.set_issuer_id(BnplIssuer::IssuerId::kBnplAffirm);
+  EXPECT_EQ(issuer.issuer_id(), BnplIssuer::IssuerId::kBnplAffirm);
 }
 
 // Test for getting and setting the payment instrument for the BNPL issuer data
@@ -41,7 +42,7 @@ TEST(BnplIssuerTest, SetAndGetPaymentInstrument) {
 // model.
 TEST(BnplIssuerTest, SetAndGetPriceLowerBound) {
   BnplIssuer issuer = test::GetTestLinkedBnplIssuer();
-  uint64_t price_lower_bound = 20'000'000;
+  int64_t price_lower_bound = 20'000'000;
   ASSERT_NE(issuer.eligible_price_ranges()[0].price_lower_bound,
             price_lower_bound);
   BnplIssuer::EligiblePriceRange price_range(
@@ -56,7 +57,7 @@ TEST(BnplIssuerTest, SetAndGetPriceLowerBound) {
 // model.
 TEST(BnplIssuerTest, SetAndGetPriceUpperBound) {
   BnplIssuer issuer = test::GetTestLinkedBnplIssuer();
-  uint64_t price_upper_bound = 300'000'000;
+  int64_t price_upper_bound = 300'000'000;
   ASSERT_NE(issuer.eligible_price_ranges()[0].price_upper_bound,
             price_upper_bound);
   BnplIssuer::EligiblePriceRange price_range(
@@ -78,7 +79,7 @@ TEST(BnplIssuerTest, GetEligiblePriceRangeForCurrency_WithRangeInUsd) {
   const base::optional_ref<const BnplIssuer::EligiblePriceRange> usd_range =
       issuer.GetEligiblePriceRangeForCurrency("USD");
   ASSERT_TRUE(usd_range.has_value());
-  EXPECT_EQ("USD", usd_range.value().currency);
+  EXPECT_EQ(usd_range.value().currency, "USD");
   EXPECT_EQ(issuer.eligible_price_ranges()[0].price_upper_bound,
             usd_range.value().price_upper_bound);
   EXPECT_EQ(issuer.eligible_price_ranges()[0].price_lower_bound,
@@ -126,15 +127,15 @@ TEST(BnplIssuerTest, IsEligibleAmount) {
 
 TEST(BnplIssuerTest, GetDisplayName) {
   BnplIssuer issuer = test::GetTestLinkedBnplIssuer();
-  issuer.set_issuer_id(std::string{kBnplAffirmIssuerId});
+  issuer.set_issuer_id(BnplIssuer::IssuerId::kBnplAffirm);
   EXPECT_EQ(issuer.GetDisplayName(),
             l10n_util::GetStringUTF16(IDS_AUTOFILL_BNPL_AFFIRM));
-  issuer.set_issuer_id(std::string{kBnplZipIssuerId});
+  issuer.set_issuer_id(BnplIssuer::IssuerId::kBnplZip);
   EXPECT_EQ(issuer.GetDisplayName(),
             l10n_util::GetStringUTF16(IDS_AUTOFILL_BNPL_ZIP));
-  issuer.set_issuer_id("unknown_issuer");
-  EXPECT_CHECK_DEATH_WITH(issuer.GetDisplayName(),
-                          "Unknown issuer_id_ unknown_issuer");
+  issuer.set_issuer_id(BnplIssuer::IssuerId::kBnplKlarna);
+  EXPECT_EQ(issuer.GetDisplayName(),
+            l10n_util::GetStringUTF16(IDS_AUTOFILL_BNPL_KLARNA));
 }
 
 // Test for the equality operator for the BNPL issuer data model.
@@ -144,7 +145,7 @@ TEST(BnplIssuerTest, EqualityOperator) {
 
   EXPECT_TRUE(issuer1 == issuer2);
 
-  issuer2.set_issuer_id("different_issuer");
+  issuer2.set_issuer_id(BnplIssuer::IssuerId::kBnplAfterpay);
   EXPECT_FALSE(issuer1 == issuer2);
 
   issuer2 = test::GetTestLinkedBnplIssuer();
@@ -170,6 +171,86 @@ TEST(BnplIssuerTest, EqualityOperator) {
   price_range.price_upper_bound = 10'000'000'000;
   issuer2.set_eligible_price_ranges({price_range});
   EXPECT_FALSE(issuer1 == issuer2);
+}
+
+TEST(BnplIssuerTest, BnplIssuerIdToDisplayName) {
+  EXPECT_EQ(BnplIssuerIdToDisplayName(BnplIssuer::IssuerId::kBnplAffirm),
+            l10n_util::GetStringUTF16(IDS_AUTOFILL_BNPL_AFFIRM));
+  EXPECT_EQ(BnplIssuerIdToDisplayName(BnplIssuer::IssuerId::kBnplZip),
+            l10n_util::GetStringUTF16(IDS_AUTOFILL_BNPL_ZIP));
+  EXPECT_EQ(BnplIssuerIdToDisplayName(BnplIssuer::IssuerId::kBnplAfterpay),
+            l10n_util::GetStringUTF16(IDS_AUTOFILL_BNPL_AFTER_PAY));
+  EXPECT_EQ(BnplIssuerIdToDisplayName(BnplIssuer::IssuerId::kBnplKlarna),
+            l10n_util::GetStringUTF16(IDS_AUTOFILL_BNPL_KLARNA));
+}
+
+TEST(BnplIssuerTest, ConvertToBnplIssuerIdEnum) {
+  EXPECT_EQ(ConvertToBnplIssuerIdEnum(kBnplAffirmIssuerId),
+            BnplIssuer::IssuerId::kBnplAffirm);
+  EXPECT_EQ(ConvertToBnplIssuerIdEnum(kBnplZipIssuerId),
+            BnplIssuer::IssuerId::kBnplZip);
+  EXPECT_EQ(ConvertToBnplIssuerIdEnum(kBnplAfterpayIssuerId),
+            BnplIssuer::IssuerId::kBnplAfterpay);
+  EXPECT_EQ(ConvertToBnplIssuerIdEnum(kBnplKlarnaIssuerId),
+            BnplIssuer::IssuerId::kBnplKlarna);
+}
+
+TEST(BnplIssuerTest, ConvertToBnplIssuerIdString) {
+  EXPECT_EQ(ConvertToBnplIssuerIdString(BnplIssuer::IssuerId::kBnplAffirm),
+            kBnplAffirmIssuerId);
+  EXPECT_EQ(ConvertToBnplIssuerIdString(BnplIssuer::IssuerId::kBnplZip),
+            kBnplZipIssuerId);
+  EXPECT_EQ(ConvertToBnplIssuerIdString(BnplIssuer::IssuerId::kBnplAfterpay),
+            kBnplAfterpayIssuerId);
+  EXPECT_EQ(ConvertToBnplIssuerIdString(BnplIssuer::IssuerId::kBnplKlarna),
+            kBnplKlarnaIssuerId);
+}
+
+TEST(BnplIssuerTest, GetBnplIssuerIconIds) {
+  EXPECT_EQ(GetBnplIssuerIconIds(BnplIssuer::IssuerId::kBnplAffirm,
+                                 /*issuer_linked=*/true),
+            std::make_pair(
+                BnplIssuer::LightModeImageId(IDR_AUTOFILL_AFFIRM_LINKED),
+                BnplIssuer::DarkModeImageId(IDR_AUTOFILL_AFFIRM_LINKED_DARK)));
+  EXPECT_EQ(
+      GetBnplIssuerIconIds(BnplIssuer::IssuerId::kBnplAffirm,
+                           /*issuer_linked=*/false),
+      std::make_pair(
+          BnplIssuer::LightModeImageId(IDR_AUTOFILL_AFFIRM_UNLINKED),
+          BnplIssuer::DarkModeImageId(IDR_AUTOFILL_AFFIRM_UNLINKED_DARK)));
+  EXPECT_EQ(GetBnplIssuerIconIds(BnplIssuer::IssuerId::kBnplZip,
+                                 /*issuer_linked=*/true),
+            std::make_pair(
+                BnplIssuer::LightModeImageId(IDR_AUTOFILL_ZIP_LINKED),
+                BnplIssuer::DarkModeImageId(IDR_AUTOFILL_ZIP_LINKED_DARK)));
+  EXPECT_EQ(GetBnplIssuerIconIds(BnplIssuer::IssuerId::kBnplZip,
+                                 /*issuer_linked=*/false),
+            std::make_pair(
+                BnplIssuer::LightModeImageId(IDR_AUTOFILL_ZIP_UNLINKED),
+                BnplIssuer::DarkModeImageId(IDR_AUTOFILL_ZIP_UNLINKED_DARK)));
+  EXPECT_EQ(
+      GetBnplIssuerIconIds(BnplIssuer::IssuerId::kBnplAfterpay,
+                           /*issuer_linked=*/true),
+      std::make_pair(
+          BnplIssuer::LightModeImageId(IDR_AUTOFILL_AFTERPAY_LINKED),
+          BnplIssuer::DarkModeImageId(IDR_AUTOFILL_AFTERPAY_LINKED_DARK)));
+  EXPECT_EQ(
+      GetBnplIssuerIconIds(BnplIssuer::IssuerId::kBnplAfterpay,
+                           /*issuer_linked=*/false),
+      std::make_pair(
+          BnplIssuer::LightModeImageId(IDR_AUTOFILL_AFTERPAY_UNLINKED),
+          BnplIssuer::DarkModeImageId(IDR_AUTOFILL_AFTERPAY_UNLINKED_DARK)));
+  EXPECT_EQ(GetBnplIssuerIconIds(BnplIssuer::IssuerId::kBnplKlarna,
+                                 /*issuer_linked=*/true),
+            std::make_pair(
+                BnplIssuer::LightModeImageId(IDR_AUTOFILL_KLARNA_LINKED),
+                BnplIssuer::DarkModeImageId(IDR_AUTOFILL_KLARNA_LINKED_DARK)));
+  EXPECT_EQ(
+      GetBnplIssuerIconIds(BnplIssuer::IssuerId::kBnplKlarna,
+                           /*issuer_linked=*/false),
+      std::make_pair(
+          BnplIssuer::LightModeImageId(IDR_AUTOFILL_KLARNA_UNLINKED),
+          BnplIssuer::DarkModeImageId(IDR_AUTOFILL_KLARNA_UNLINKED_DARK)));
 }
 
 }  // namespace autofill

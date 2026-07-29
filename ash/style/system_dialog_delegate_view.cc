@@ -150,10 +150,9 @@ class SystemDialogDelegateView::ButtonContainer : public views::FlexLayoutView {
         ViewID::VIEW_ID_STYLE_SYSTEM_DIALOG_DELEGATE_CANCEL_BUTTON);
     cancel_button_->SetProperty(views::kElementIdentifierKey,
                                 kCancelButtonIdForTesting);
-    cancel_button_->SetBackgroundColorId(cros_tokens::kCrosSysPrimaryContainer);
-    cancel_button_->SetButtonTextColorId(
-        cros_tokens::kCrosSysOnPrimaryContainer);
-    cancel_button_->SetIconColorId(cros_tokens::kCrosSysOnPrimaryContainer);
+    cancel_button_->SetBackgroundColor(cros_tokens::kCrosSysPrimaryContainer);
+    cancel_button_->SetButtonTextColor(cros_tokens::kCrosSysOnPrimaryContainer);
+    cancel_button_->SetIconColor(cros_tokens::kCrosSysOnPrimaryContainer);
 
     accept_button_->SetID(
         ViewID::VIEW_ID_STYLE_SYSTEM_DIALOG_DELEGATE_ACCEPT_BUTTON);
@@ -282,8 +281,8 @@ SystemDialogDelegateView::SystemDialogDelegateView() {
   SetInitiallyFocusedView(button_container_->accept_button());
 
   // Register the close callback.
-  RegisterWindowClosingCallback(
-      base::BindOnce(&SystemDialogDelegateView::Close, base::Unretained(this)));
+  RegisterWindowClosingCallback(base::BindOnce(&SystemDialogDelegateView::Close,
+                                               weak_ptr_factory_.GetWeakPtr()));
 }
 
 SystemDialogDelegateView::~SystemDialogDelegateView() = default;

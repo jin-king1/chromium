@@ -7,13 +7,15 @@
 #include <optional>
 #include <string>
 
-#include "ash/public/cpp/style/color_provider.h"
+#include "ash/constants/ash_features.h"
 #include "ash/style/ash_color_id.h"
 #include "ash/style/typography.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/weak_ptr.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_util.h"
+#include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/ash/policy/dlp/dialogs/files_policy_dialog.h"
 #include "chrome/browser/ash/policy/dlp/dialogs/files_policy_dialog_utils.h"
 #include "chrome/browser/ash/policy/dlp/files_policy_string_util.h"
@@ -21,7 +23,6 @@
 #include "chrome/browser/chromeos/policy/dlp/dlp_file_destination.h"
 #include "chrome/browser/chromeos/policy/dlp/dlp_files_controller.h"
 #include "chrome/browser/chromeos/policy/dlp/dlp_files_utils.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/enterprise/data_controls/core/browser/component.h"
 #include "components/enterprise/data_controls/core/browser/dlp_histogram_helper.h"
@@ -51,7 +52,7 @@ std::u16string GetDestinationURL(DlpFileDestination destination) {
   DCHECK(destination.url()->is_valid());
   GURL gurl = *destination.url();
   if (gurl.has_host()) {
-    return base::UTF8ToUTF16(gurl.host());
+    return base::UTF8ToUTF16(gurl.GetHost());
   }
   return base::UTF8ToUTF16(gurl.spec());
 }
@@ -179,7 +180,7 @@ std::u16string FilesPolicyWarnDialog::GetCancelButton() {
 }
 
 std::u16string FilesPolicyWarnDialog::GetTitle() {
-  if (base::FeatureList::IsEnabled(features::kNewFilesPolicyUX)) {
+  if (base::FeatureList::IsEnabled(ash::features::kNewFilesPolicyUX)) {
     switch (action_) {
       case dlp::FileAction::kDownload:
         return l10n_util::GetStringUTF16(
@@ -233,7 +234,7 @@ std::u16string FilesPolicyWarnDialog::GetTitle() {
 }
 
 std::u16string FilesPolicyWarnDialog::GetMessage() {
-  if (base::FeatureList::IsEnabled(features::kNewFilesPolicyUX)) {
+  if (base::FeatureList::IsEnabled(ash::features::kNewFilesPolicyUX)) {
     return dialog_info_.GetMessage();
   }
   CHECK(destination_.has_value());
@@ -319,9 +320,7 @@ void FilesPolicyWarnDialog::MaybeAddJustificationPanel() {
   justification_field_label->SetFontList(
       ash::TypographyProvider::Get()->ResolveTypographyToken(
           ash::TypographyToken::kCrosLabel1));
-  justification_field_label->SetEnabledColor(
-      ash::ColorProvider::Get()->GetContentLayerColor(
-          ash::ColorProvider::ContentLayerType::kTextColorPrimary));
+  justification_field_label->SetEnabledColor(cros_tokens::kTextColorPrimary);
 
   // Setting a themed rounded background does not work for text areas. As a
   // workaround we set it for an external container and set the text area

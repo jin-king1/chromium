@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "media/audio/simple_sources.h"
 
 #include <stddef.h>
@@ -26,6 +21,7 @@
 #include "build/build_config.h"
 #include "media/audio/wav_audio_handler.h"
 #include "media/base/audio_bus.h"
+#include "media/base/audio_sample_types.h"
 
 namespace media {
 namespace {
@@ -142,14 +138,14 @@ int SineWaveAudioSource::OnMoreData(base::TimeDelta /* delay */,
     }
 
     if (max_frames > 0) {
-      auto first_channel_frames = dest->channel_span(0).first(max_frames);
+      auto first_channel_frames = dest->channel(0).first(max_frames);
 
       for (float& sample : first_channel_frames) {
         sample = sin(2.0 * std::numbers::pi * f_ * pos_samples_++);
       }
 
       for (int ch = 1; ch < dest->channels(); ++ch) {
-        dest->channel_span(ch)
+        dest->channel(ch)
             .first(max_frames)
             .copy_from_nonoverlapping(first_channel_frames);
       }
@@ -284,7 +280,7 @@ int BeepingSource::OnMoreData(base::TimeDelta /* delay */,
   // Accumulate the time from the last beep.
   interval_from_last_beep_ += base::TimeTicks::Now() - last_callback_time_;
 
-  memset(buffer_.data(), 128, buffer_.size());
+  std::ranges::fill(buffer_, 128);
   bool should_beep = false;
   BeepContext* beep_context = GetBeepContext();
   if (beep_context->automatic_beep()) {
@@ -304,15 +300,17 @@ int BeepingSource::OnMoreData(base::TimeDelta /* delay */,
   if (should_beep || beep_generated_in_buffers_) {
     // Compute the number of frames to output high value. Then compute the
     // number of bytes based on channels.
-    int high_frames = beep_period_in_frames_ / 2;
-    int high_bytes = high_frames * params_.channels();
+    const size_t high_frames =
+        base::checked_cast<size_t>(beep_period_in_frames_ / 2);
+    const size_t high_bytes =
+        high_frames * base::checked_cast<size_t>(params_.channels());
 
     // Separate high and low with the same number of bytes to generate a
     // square wave.
     size_t position = 0;
     while (position + high_bytes <= buffer_.size()) {
       // Write high values first.
-      memset(buffer_.data() + position, 255, high_bytes);
+      std::ranges::fill(buffer_.subspan(position, high_bytes), 255);
       // Then leave low values in the buffer with |high_bytes|.
       position += high_bytes * 2;
     }
@@ -323,8 +321,7 @@ int BeepingSource::OnMoreData(base::TimeDelta /* delay */,
   }
 
   last_callback_time_ = base::TimeTicks::Now();
-  dest->FromInterleaved<UnsignedInt8SampleTypeTraits>(buffer_.data(),
-                                                      dest->frames());
+  dest->FromInterleaved<UnsignedInt8SampleTypeTraits>(buffer_);
   return dest->frames();
 }
 

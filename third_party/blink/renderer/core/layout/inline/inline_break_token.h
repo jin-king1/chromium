@@ -10,7 +10,6 @@
 #include "third_party/blink/renderer/core/layout/break_token.h"
 #include "third_party/blink/renderer/core/layout/inline/inline_item_text_index.h"
 #include "third_party/blink/renderer/core/layout/inline/inline_node.h"
-#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/casting.h"
 
 namespace blink {
@@ -54,6 +53,7 @@ class CORE_EXPORT InlineBreakToken final : public BreakToken {
     kHasClonedBoxDecorations = 1 << 3,
     kIsInParallelBlockFlow = 1 << 4,
     kIsPastFirstFormattedLine = 1 << 5,
+    kIsLineClampDisplacedLine = 1 << 6,
     // When adding values, ensure |flags_| has enough storage.
   };
 
@@ -92,6 +92,12 @@ class CORE_EXPORT InlineBreakToken final : public BreakToken {
     return flags_ & kUseFirstLineStyle;
   }
 
+  // Were the contents of this line completely displaced by the line-clamp
+  // ellipsis?
+  bool IsLineClampDisplacedLine() const {
+    return flags_ & kIsLineClampDisplacedLine;
+  }
+
   bool IsForcedBreak() const {
     return flags_ & kIsForcedBreak;
   }
@@ -116,9 +122,6 @@ class CORE_EXPORT InlineBreakToken final : public BreakToken {
   // least one line with actual inline content (as opposed to e.g. "lines"
   // consisting only of floats).
   bool IsPastFirstFormattedLine() const {
-    if (!RuntimeEnabledFeatures::LineBoxBelowLeadingFloatsEnabled()) {
-      return !Start().IsZero();
-    }
     return flags_ & kIsPastFirstFormattedLine;
   }
 

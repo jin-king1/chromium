@@ -5,112 +5,208 @@
 package org.chromium.chrome.test.transit.hub;
 
 import static androidx.test.espresso.matcher.ViewMatchers.hasDescendant;
-import static androidx.test.espresso.matcher.ViewMatchers.withClassName;
+import static androidx.test.espresso.matcher.ViewMatchers.isDescendantOfA;
+import static androidx.test.espresso.matcher.ViewMatchers.withEffectiveVisibility;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
 import static androidx.test.espresso.matcher.ViewMatchers.withParentIndex;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
 
-import static org.hamcrest.CoreMatchers.containsString;
 import static org.hamcrest.Matchers.allOf;
+import static org.hamcrest.Matchers.instanceOf;
 
+import static org.chromium.base.test.transit.ViewElement.unscopedOption;
 import static org.chromium.base.test.transit.ViewSpec.viewSpec;
 
 import android.view.KeyEvent;
 import android.view.View;
 
-import org.hamcrest.Matcher;
+import androidx.core.util.Pair;
+import androidx.test.espresso.action.ViewActions;
+import androidx.test.espresso.matcher.ViewMatchers;
 
-import org.chromium.base.test.transit.Elements;
+import org.hamcrest.Matcher;
+import org.hamcrest.Matchers;
+
+import org.chromium.base.test.transit.Facility;
 import org.chromium.base.test.transit.Station;
+import org.chromium.base.test.transit.ViewElement;
 import org.chromium.base.test.transit.ViewSpec;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.R;
+import org.chromium.chrome.browser.ChromeTabbedActivity;
+import org.chromium.chrome.browser.omnibox.LocationBarLayout;
+import org.chromium.chrome.browser.omnibox.UrlBar;
+import org.chromium.chrome.browser.omnibox.suggestions.base.BaseSuggestionView;
 import org.chromium.chrome.browser.searchwidget.SearchActivity;
-import org.chromium.chrome.test.R;
-import org.chromium.chrome.test.util.OmniboxTestUtils;
-import org.chromium.ui.KeyboardUtils;
-import org.chromium.ui.test.util.ViewUtils;
+import org.chromium.chrome.test.transit.page.WebPageStation;
+import org.chromium.chrome.test.util.OmniboxTestUtils.InputMethodManagerIsActiveCondition;
+import org.chromium.chrome.test.util.OmniboxTestUtils.SuggestionsNotShownCondition;
+import org.chromium.chrome.test.util.OmniboxTestUtils.SuggestionsShownCondition;
+import org.chromium.chrome.test.util.OmniboxTestUtils.UrlBarHasFocusCondition;
+import org.chromium.components.omnibox.OmniboxCapabilities;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /** The base station for Hub tab switcher stations. */
 public class TabSwitcherSearchStation extends Station<SearchActivity> {
-    public static final ViewSpec URL_BAR = viewSpec(withId(R.id.url_bar));
-    public static final ViewSpec SUGGESTIONS_LIST =
-            viewSpec(withId(R.id.omnibox_results_container));
+    private static final ViewSpec<View> SUGGESTIONS_LIST =
+            viewSpec(
+                    allOf(
+                            withId(R.id.search_activity_suggestions_container),
+                            withEffectiveVisibility(ViewMatchers.Visibility.VISIBLE)));
 
     private final boolean mIsIncognito;
-    private OmniboxTestUtils mOmniboxTestUtils;
+    public ViewElement<LocationBarLayout> locationBarElement;
+    public ViewElement<View> backButtonElement;
+    public ViewElement<UrlBar> urlBarElement;
 
     public TabSwitcherSearchStation(boolean isIncognito) {
         super(SearchActivity.class);
         mIsIncognito = isIncognito;
-    }
 
-    @Override
-    public void declareElements(Elements.Builder elements) {
-        super.declareElements(elements);
-        elements.declareView(URL_BAR);
+        getActivityElement().expectActivityDestroyed();
+
+        locationBarElement = declareView(LocationBarLayout.class, withId(R.id.search_location_bar));
+        backButtonElement = declareView(withId(R.id.location_bar_status), unscopedOption());
+        urlBarElement = declareView(UrlBar.class, withId(R.id.url_bar));
     }
 
     public boolean isIncognito() {
         return mIsIncognito;
     }
 
-    public SearchActivity getSearchActivity() {
-        return mActivityElement.get();
+    public RegularTabSwitcherStation pressBackToRegularTabSwitcher(ChromeTabbedActivity activity) {
+        assert !mIsIncognito;
+        return backButtonElement
+                .clickTo()
+                .arriveAt(RegularTabSwitcherStation.from(activity.getTabModelSelector()));
     }
 
-    public void focusAndDropSoftKeyboard() {
-        maybeInitSearchUtils();
-        mOmniboxTestUtils.requestFocus();
-        mOmniboxTestUtils.checkFocus(true);
-        URL_BAR.onView().check((v, nve) -> KeyboardUtils.hideAndroidSoftKeyboard(v));
+    public IncognitoTabSwitcherStation pressBackToIncognitoTabSwitcher(
+            ChromeTabbedActivity activity) {
+        assert mIsIncognito;
+        return backButtonElement
+                .clickTo()
+                .arriveAt(IncognitoTabSwitcherStation.from(activity.getTabModelSelector()));
     }
 
     public void typeInOmnibox(String query) {
-        maybeInitSearchUtils();
-        mOmniboxTestUtils.typeText(query, /* execute= */ false);
-        mOmniboxTestUtils.checkSuggestionsShown(true);
+        noopTo().waitFor(
+                        new UrlBarHasFocusCondition(urlBarElement.value()),
+                        new InputMethodManagerIsActiveCondition(urlBarElement.value()));
+        urlBarElement
+                .typeTextTo(query)
+                .withPossiblyAlreadyFulfilled()
+                .waitFor(new SuggestionsShownCondition(locationBarElement.value()));
     }
 
-    public void checkSuggestionsShown(boolean shown) {
-        maybeInitSearchUtils();
-        mOmniboxTestUtils.checkSuggestionsShown(shown);
+    public void checkSuggestionsShown() {
+        noopTo().waitFor(new SuggestionsShownCondition(locationBarElement.value()));
     }
 
-    /** Returns a matcher for the matching index/title combo. */
-    public Matcher<View> getSuggestionAtIndexWithTitleText(int index, String title) {
-        return SUGGESTIONS_LIST
-                .descendant(
-                        allOf(
-                                withParentIndex(index),
-                                withClassName(containsString("BaseSuggestionView")),
-                                hasDescendant(
-                                        allOf(
-                                                withId(R.id.line_1),
-                                                withText(containsString(title))))))
-                .getViewMatcher();
+    public void checkSuggestionsNotShown() {
+        noopTo().waitFor(new SuggestionsNotShownCondition(locationBarElement.value()));
     }
 
-    /** Waits for the suggestion with the index/title combo. */
-    public void waitForSuggestionAtIndexWithTitleText(int index, String title) {
+    /** Expect a suggestion with the given |index|, |title| and |text| combination. */
+    public SuggestionFacility findSuggestion(
+            @Nullable Integer index, @Nullable String title, @Nullable String text) {
         SUGGESTIONS_LIST.printFromRoot();
-        ViewUtils.waitForVisibleView(getSuggestionAtIndexWithTitleText(index, title));
+        return noopTo().enterFacility(new SuggestionFacility(index, title, text));
     }
 
-    public void waitForSectionAtIndexWithText(int index, String text) {
+    /** Expect suggestions with all the given |texts|. */
+    public void findSuggestionsByText(List<String> texts, String prefix) {
         SUGGESTIONS_LIST.printFromRoot();
-        ViewUtils.waitForVisibleView(
-                SUGGESTIONS_LIST
-                        .descendant(allOf(withParentIndex(index), withText(containsString(text))))
-                        .getViewMatcher());
+        List<Facility<?>> allSuggestionFacilities = new ArrayList<>();
+        for (String text : texts) {
+            allSuggestionFacilities.add(
+                    new SuggestionFacility(/* index= */ null, /* title= */ null, prefix + text));
+        }
+        noopTo().enterFacilities(allSuggestionFacilities.toArray(new Facility[0]));
     }
 
-    public void pressEnter() {
-        maybeInitSearchUtils();
-        mOmniboxTestUtils.sendKey(KeyEvent.KEYCODE_ENTER);
-    }
+    /** A suggestion in the search results. */
+    public class SuggestionFacility extends Facility<TabSwitcherSearchStation> {
+        private final @Nullable String mText;
+        public ViewElement<BaseSuggestionView> suggestionElement;
 
-    private void maybeInitSearchUtils() {
-        if (mOmniboxTestUtils == null) {
-            mOmniboxTestUtils = new OmniboxTestUtils(getSearchActivity());
+        public SuggestionFacility(
+                @Nullable Integer index, @Nullable String title, @Nullable String text) {
+            assert index != null || title != null || text != null;
+            mText = text;
+
+            List<Matcher<View>> matchers = new ArrayList<>();
+            if (index != null) {
+                matchers.add(withParentIndex(index));
+            }
+            if (title != null) {
+                var titleMatcher =
+                        OmniboxCapabilities.isDesktopPlatform()
+                                ? Matchers.startsWith(title)
+                                : Matchers.equalTo(title);
+
+                matchers.add(
+                        hasDescendant(
+                                allOf(
+                                        withId(R.id.line_1),
+                                        withText(titleMatcher),
+                                        withEffectiveVisibility(ViewMatchers.Visibility.VISIBLE))));
+            }
+            if (text != null) {
+                matchers.add(
+                        hasDescendant(
+                                allOf(
+                                        withId(R.id.line_2),
+                                        withText(text),
+                                        withEffectiveVisibility(ViewMatchers.Visibility.VISIBLE))));
+            }
+            matchers.add(instanceOf(BaseSuggestionView.class));
+            matchers.add(
+                    isDescendantOfA(
+                            allOf(
+                                    withId(R.id.search_activity_suggestions_container),
+                                    withEffectiveVisibility(ViewMatchers.Visibility.VISIBLE))));
+
+            // Generic array creation is not permitted in Java; suppress the unchecked warning.
+            @SuppressWarnings("unchecked")
+            Matcher<View>[] matchersArray = new Matcher[matchers.size()];
+            matchers.toArray(matchersArray);
+
+            suggestionElement = declareView(viewSpec(BaseSuggestionView.class, matchersArray));
+        }
+
+        public WebPageStation openPage() {
+            return suggestionElement.clickTo().arriveAt(buildDestinationPageStation());
+        }
+
+        public Pair<RegularTabSwitcherStation, TabGroupDialogFacility> openTabGroup(
+                ChromeTabbedActivity activity, List<Integer> tabIdsInGroup, String title) {
+            RegularTabSwitcherStation tabSwitcher =
+                    RegularTabSwitcherStation.from(activity.getTabModelSelector());
+            TabGroupDialogFacility dialog =
+                    new TabGroupDialogFacility<>(tabIdsInGroup, title, null);
+            suggestionElement.clickTo().arriveAtAnd(tabSwitcher).enterFacility(dialog);
+            return new Pair<>(tabSwitcher, dialog);
+        }
+
+        public WebPageStation openPagePressingEnter() {
+            UrlBar urlBar = urlBarElement.value();
+            noopTo().waitFor(
+                            new UrlBarHasFocusCondition(urlBar),
+                            new InputMethodManagerIsActiveCondition(urlBar));
+            return urlBarElement
+                    .performViewActionTo(ViewActions.pressKey(KeyEvent.KEYCODE_ENTER))
+                    .arriveAt(buildDestinationPageStation());
+        }
+
+        private WebPageStation buildDestinationPageStation() {
+            return WebPageStation.newBuilder()
+                    .withIncognito(mIsIncognito)
+                    .withEntryPoint()
+                    .withExpectedUrlSubstring(mText)
+                    .build();
         }
     }
 }

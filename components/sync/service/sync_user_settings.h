@@ -10,29 +10,14 @@
 #include <vector>
 
 #include "base/time/time.h"
-#include "components/signin/public/base/gaia_id_hash.h"
 #include "components/sync/base/data_type.h"
 #include "components/sync/base/passphrase_enums.h"
 #include "components/sync/base/user_selectable_type.h"
+#include "google_apis/gaia/gaia_id.h"
 
 namespace syncer {
 
 class Nigori;
-
-// GENERATED_JAVA_ENUM_PACKAGE: org.chromium.components.sync
-// These values are persisted to logs. Entries should not be renumbered and
-// numeric values should never be reused.
-#if !BUILDFLAG(IS_CHROMEOS)
-enum class SyncFirstSetupCompleteSource {
-  BASIC_FLOW = 0,
-  ADVANCED_FLOW_CONFIRM = 1,
-  ADVANCED_FLOW_INTERRUPTED_TURN_SYNC_ON = 2,
-  ADVANCED_FLOW_INTERRUPTED_LEAVE_SYNC_OFF = 3,
-  // Deprecated: ENGINE_INITIALIZED_WITH_AUTO_START = 4,
-  ANDROID_BACKUP_RESTORE = 5,
-  kMaxValue = ANDROID_BACKUP_RESTORE,
-};
-#endif  // !BUILDFLAG(IS_CHROMEOS)
 
 // This class encapsulates all the user-configurable bits of Sync.
 class SyncUserSettings {
@@ -56,8 +41,7 @@ class SyncUserSettings {
   virtual bool IsInitialSyncFeatureSetupComplete() const = 0;
 
 #if !BUILDFLAG(IS_CHROMEOS)
-  virtual void SetInitialSyncFeatureSetupComplete(
-      SyncFirstSetupCompleteSource source) = 0;
+  virtual void SetInitialSyncFeatureSetupComplete() = 0;
 #endif  // !BUILDFLAG(IS_CHROMEOS)
 
   // Getting selected types, for both Sync-the-feature and Sync-the-transport
@@ -96,7 +80,7 @@ class SyncUserSettings {
   // Clears per account prefs for all users *except* the ones in the passed-in
   // `available_gaia_ids`.
   virtual void KeepAccountSettingsPrefsOnlyForUsers(
-      const std::vector<signin::GaiaIdHash>& available_gaia_ids) = 0;
+      const std::vector<GaiaId>& available_gaia_ids) = 0;
 
   // Registered user selectable types are derived from registered data types.
   // A UserSelectableType is registered if any of its DataTypes is registered.
@@ -107,6 +91,11 @@ class SyncUserSettings {
   // Returns if sync-the-feature is disabled because the user cleared data from
   // the Sync dashboard.
   virtual bool IsSyncFeatureDisabledViaDashboard() const = 0;
+
+  // Causes `IsSyncFeatureDisabledViaDashboard()` above to return false,
+  // usually representing that the user took some action to confirm it is OK
+  // to resume Sync.
+  virtual void ClearSyncFeatureDisabledViaDashboard() = 0;
 
   // As above, but for Chrome OS-specific data types. These are controlled by
   // toggles in the OS Settings UI.
@@ -156,6 +145,8 @@ class SyncUserSettings {
   // that Sync might still be working fine if the user has disabled all
   // encrypted data types.
   virtual bool IsTrustedVaultKeyRequired() const = 0;
+  // Whether keystore keys are required for encryption or decryption to proceed.
+  virtual bool IsKeystoreKeyRequiredForTesting() const = 0;
   // Whether trusted vault keys are required for encryption or decryption to
   // proceed for currently enabled data types.
   virtual bool IsTrustedVaultKeyRequiredForPreferredDataTypes() const = 0;
@@ -174,17 +165,6 @@ class SyncUserSettings {
   // called when passphrase isn't required.
   [[nodiscard]] virtual bool SetDecryptionPassphrase(
       const std::string& passphrase) = 0;
-
-  // Asynchronously decrypts pending keys using `nigori`. `nigori` must not be
-  // null. It's safe to call this method with wrong `nigori` and, unlike
-  // SetDecryptionPassphrase(), when passphrase isn't required.
-  virtual void SetExplicitPassphraseDecryptionNigoriKey(
-      std::unique_ptr<Nigori> nigori) = 0;
-  // Returns stored decryption key, corresponding to the last successfully
-  // decrypted explicit passphrase Nigori. Returns nullptr if there is no such
-  // stored decryption key.
-  virtual std::unique_ptr<Nigori> GetExplicitPassphraseDecryptionNigoriKey()
-      const = 0;
 };
 
 }  // namespace syncer

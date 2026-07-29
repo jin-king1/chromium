@@ -5,6 +5,7 @@
 #ifndef COMPONENTS_PAYMENTS_CONTENT_BROWSER_BINDING_BROWSER_BOUND_KEY_STORE_ANDROID_H_
 #define COMPONENTS_PAYMENTS_CONTENT_BROWSER_BINDING_BROWSER_BOUND_KEY_STORE_ANDROID_H_
 
+#include <optional>
 #include <vector>
 
 #include "components/payments/content/browser_binding/browser_bound_key_store.h"
@@ -17,16 +18,23 @@ class BrowserBoundKeyStoreAndroid : public BrowserBoundKeyStore {
  public:
   explicit BrowserBoundKeyStoreAndroid(
       jni_zero::ScopedJavaLocalRef<jobject> java_object);
-  ~BrowserBoundKeyStoreAndroid() override;
 
   std::unique_ptr<BrowserBoundKey> GetOrCreateBrowserBoundKeyForCredentialId(
       const std::vector<uint8_t>& credential_id,
       const std::vector<device::PublicKeyCredentialParams::CredentialInfo>&
           allowed_credentials) override;
 
+  void DeleteBrowserBoundKey(std::vector<uint8_t> bbk_id) override;
+
+  bool GetDeviceSupportsHardwareKeys() override;
+
+ protected:
+  ~BrowserBoundKeyStoreAndroid() override;
+
  private:
   // The implementation Java object.
   jni_zero::ScopedJavaGlobalRef<jobject> impl_;
+  std::optional<bool> device_supports_hardware_keys_;
 };
 
 }  // namespace payments

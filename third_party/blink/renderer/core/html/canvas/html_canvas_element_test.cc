@@ -6,21 +6,24 @@
 
 #include "base/run_loop.h"
 #include "base/strings/strcat.h"
-#include "base/test/test_trace_processor.h"
-#include "base/test/trace_test_utils.h"
 #include "build/buildflag.h"
 #include "cc/paint/paint_op.h"
 #include "cc/test/paint_op_matchers.h"
+#include "components/viz/test/test_context_provider.h"
+#include "components/viz/test/test_raster_interface.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "third_party/abseil-cpp/absl/status/status.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_evaluation_result.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_function.h"
+#include "third_party/blink/renderer/core/dom/shadow_root.h"
 #include "third_party/blink/renderer/core/html/canvas/canvas_rendering_context.h"
 #include "third_party/blink/renderer/core/html/canvas/recording_test_utils.h"
 #include "third_party/blink/renderer/core/page/page_animator.h"
 #include "third_party/blink/renderer/core/paint/paint_layer.h"
 #include "third_party/blink/renderer/core/script/classic_script.h"
 #include "third_party/blink/renderer/core/testing/core_unit_test_helper.h"
+#include "third_party/blink/renderer/platform/graphics/test/gpu_compositing_test_platform.h"
+#include "third_party/blink/renderer/platform/graphics/test/gpu_test_utils.h"
 #include "third_party/blink/renderer/platform/testing/paint_test_configurations.h"
 
 using ::blink_testing::ClearRectFlags;
@@ -28,10 +31,6 @@ using ::blink_testing::FillFlags;
 using ::blink_testing::RecordedOpsAre;
 using ::cc::DrawRectOp;
 using ::cc::PaintOpEq;
-using ::testing::Contains;
-using ::testing::ElementsAre;
-using ::testing::Eq;
-using ::testing::StartsWith;
 
 namespace blink {
 
@@ -50,32 +49,7 @@ INSTANTIATE_PAINT_TEST_SUITE_P(HTMLCanvasElementTest);
 void HTMLCanvasElementTest::TearDown() {
   RenderingTest::TearDown();
   CanvasRenderingContext::GetCanvasPerformanceMonitor().ResetForTesting();
-}
-
-// This test enforces that there is no eager creation of
-// CanvasResourceProvider for html canvas with 2d context when its
-// Canvas2DLayerBridge is initially set up. This enforcement might be changed
-// in the future refactoring; but change is seriously warned against because
-// certain code paths in canvas 2d (that depend on the existence of
-// CanvasResourceProvider) will be changed too, causing bad regressions.
-TEST_P(HTMLCanvasElementTest,
-       NoResourceProviderAfterCanvas2DLayerBridgeCreation) {
-  SetBodyInnerHTML("<canvas id='c' width='10' height='20'></canvas>");
-
-  // The canvas having a 2D context is a prerequisite for calling
-  // GetOrCreateCanvas2DLayerBridge().
-  GetDocument().GetSettings()->SetScriptEnabled(true);
-  Element* script = GetDocument().CreateRawElement(html_names::kScriptTag);
-  script->setTextContent(R"JS(
-    var canvas = document.getElementById('c');
-    var ctx = canvas.getContext('2d');
-  )JS");
-  GetDocument().body()->appendChild(script);
-
-  auto* canvas =
-      To<HTMLCanvasElement>(GetDocument().getElementById(AtomicString("c")));
-  EXPECT_TRUE(canvas->GetOrCreateCanvas2DLayerBridge());
-  EXPECT_FALSE(canvas->ResourceProvider());
+  SharedGpuContext::Reset();
 }
 
 TEST_P(HTMLCanvasElementTest, CleanCanvasResizeDoesntClearFrameBuffer) {
@@ -97,12 +71,10 @@ TEST_P(HTMLCanvasElementTest, CleanCanvasResizeDoesntClearFrameBuffer) {
 
   auto* canvas =
       To<HTMLCanvasElement>(GetDocument().getElementById(AtomicString("c")));
-  CanvasResourceProvider* provider =
-      canvas->GetOrCreateCanvasResourceProvider(RasterModeHint::kPreferGPU);
 
   cc::PaintFlags fill_flags = FillFlags();
   fill_flags.setColor(SkColors::kBlue);
-  EXPECT_THAT(provider->LastRecording(),
+  EXPECT_THAT(canvas->RenderingContext()->GetLastRecording(),
               Optional(RecordedOpsAre(PaintOpEq<DrawRectOp>(
                   SkRect::MakeXYWH(0, 0, 5, 5), fill_flags))));
 }
@@ -131,13 +103,11 @@ TEST_P(HTMLCanvasElementTest, CanvasResizeClearsFrameBuffer) {
 
   auto* canvas =
       To<HTMLCanvasElement>(GetDocument().getElementById(AtomicString("c")));
-  CanvasResourceProvider* provider =
-      canvas->GetOrCreateCanvasResourceProvider(RasterModeHint::kPreferGPU);
 
   cc::PaintFlags fill_flags = FillFlags();
   fill_flags.setColor(SkColors::kBlue);
   EXPECT_THAT(
-      provider->LastRecording(),
+      canvas->RenderingContext()->GetLastRecording(),
       Optional(RecordedOpsAre(
           PaintOpEq<DrawRectOp>(SkRect::MakeXYWH(0, 0, 10, 20),
                                 ClearRectFlags()),
@@ -170,6 +140,89 @@ TEST_P(HTMLCanvasElementTest, CreateLayerUpdatesCompositing) {
                    ->FirstFragment()
                    .PaintProperties()
                    ->PaintOffsetTranslation());
+}
+
+TEST_P(HTMLCanvasElementTest, CanvasMemoryUsage) {
+  // Enable script so that the canvas will create a LayoutHTMLCanvas.
+  GetDocument().GetSettings()->SetScriptEnabled(true);
+
+  SetBodyInnerHTML("<canvas id='canvas' width='10px' height='10px'></canvas>");
+  auto* canvas = To<HTMLCanvasElement>(
+      GetDocument().getElementById(AtomicString("canvas")));
+  EXPECT_TRUE(canvas->GetMemoryUsage().is_zero());
+
+  auto* script = GetDocument().CreateRawElement(html_names::kScriptTag);
+  script->setTextContent(R"JS(
+    var canvas = document.getElementById('canvas');
+    var ctx = canvas.getContext('2d');
+    ctx.fillStyle = 'green';
+    ctx.fillRect(0, 0, 10, 10);
+  )JS");
+  GetDocument().body()->appendChild(script);
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_EQ(
+      base::ByteSize(10 * 10 * /* Buffer Count */ 1 * /* Bytes per pixel */ 4),
+      canvas->GetMemoryUsage());
+
+  canvas->NotifyGpuContextLost();
+  EXPECT_TRUE(canvas->GetMemoryUsage().is_zero());
+}
+
+TEST_P(HTMLCanvasElementTest, CanvasMemoryUsageGpuAccelerated) {
+  // Enable script so that the canvas will create a LayoutHTMLCanvas.
+  GetDocument().GetSettings()->SetScriptEnabled(true);
+
+  auto raster_context_provider = viz::TestContextProvider::CreateRaster();
+  InitializeSharedGpuContext(raster_context_provider.get());
+  ScopedTestingPlatformSupport<GpuCompositingTestPlatform> accelerated_platform;
+  GetDocument().GetSettings()->SetAcceleratedCompositingEnabled(true);
+
+  SetBodyInnerHTML("<canvas id='canvas' width='10px' height='10px'></canvas>");
+  auto* canvas = To<HTMLCanvasElement>(
+      GetDocument().getElementById(AtomicString("canvas")));
+  EXPECT_TRUE(canvas->GetMemoryUsage().is_zero());
+
+  auto* script = GetDocument().CreateRawElement(html_names::kScriptTag);
+  script->setTextContent(R"JS(
+    var canvas = document.getElementById('canvas');
+    var ctx = canvas.getContext('2d');
+    ctx.fillStyle = 'green';
+    ctx.fillRect(0, 0, 10, 10);
+  )JS");
+  GetDocument().body()->appendChild(script);
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_EQ(
+      base::ByteSize(10 * 10 * /* Buffer Count */ 1 * /* Bytes per pixel */ 4),
+      canvas->GetMemoryUsage());
+
+  canvas->NotifyGpuContextLost();
+  EXPECT_TRUE(canvas->GetMemoryUsage().is_zero());
+}
+
+TEST_P(HTMLCanvasElementTest, CanvasMemoryUsageInvalidContext) {
+  // Enable script so that the canvas will create a LayoutHTMLCanvas.
+  GetDocument().GetSettings()->SetScriptEnabled(true);
+
+  SetBodyInnerHTML("<canvas id='canvas' width='10px' height='10px'></canvas>");
+  auto* canvas = To<HTMLCanvasElement>(
+      GetDocument().getElementById(AtomicString("canvas")));
+  EXPECT_TRUE(canvas->GetMemoryUsage().is_zero());
+
+  // Create a canvas that too big to allocate, causing invalid context.
+  auto* script = GetDocument().CreateRawElement(html_names::kScriptTag);
+  script->setTextContent(R"JS(
+    var canvas = document.getElementById('canvas');
+    canvas.width = 1000000;
+    canvas.height = 1000000;
+    var ctx = canvas.getContext('%s');
+    ctx.fillStyle = 'green';
+    ctx.fillRect(0, 0, 10, 10);
+  )JS");
+  GetDocument().body()->appendChild(script);
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_TRUE(canvas->RenderingContext() == nullptr ||
+              canvas->RenderingContext()->isContextLost());
+  EXPECT_TRUE(canvas->GetMemoryUsage().is_zero());
 }
 
 TEST_P(HTMLCanvasElementTest, CanvasInvalidation) {
@@ -229,6 +282,162 @@ TEST_P(HTMLCanvasElementTest, CanvasNotInvalidatedOnFirstPaint) {
       GetDocument().GetPage()->Animator().has_canvas_invalidation_for_test());
 }
 
+TEST_P(HTMLCanvasElementTest, IsCanvasOrInCanvasSubtreeInIframe) {
+  SetBodyInnerHTML(R"HTML(
+    <div id="div"></div>
+    <canvas id="canvas">
+      <iframe id="iframe"></iframe>
+    </canvas>
+  )HTML");
+  SetChildFrameHTML(R"HTML(
+    <div id="inner_div"></div>
+    <canvas id="inner_canvas"></canvas>
+  )HTML");
+  auto* div = GetDocument().getElementById(AtomicString("div"));
+  auto* canvas = GetDocument().getElementById(AtomicString("canvas"));
+  auto* iframe = GetDocument().getElementById(AtomicString("iframe"));
+  auto* inner_div = ChildDocument().getElementById(AtomicString("inner_div"));
+  auto* inner_canvas =
+      ChildDocument().getElementById(AtomicString("inner_canvas"));
+
+  EXPECT_TRUE(iframe->IsCanvasOrInCanvasSubtree());
+  EXPECT_TRUE(inner_div->IsCanvasOrInCanvasSubtree());
+  EXPECT_TRUE(inner_div->IsInCanvasSubtree());
+  EXPECT_TRUE(inner_canvas->IsCanvasOrInCanvasSubtree());
+  EXPECT_TRUE(inner_canvas->IsInCanvasSubtree());
+
+  GetDocument().SetStatePreservingAtomicMoveInProgress(true);
+  div->AppendChild(iframe);
+  GetDocument().SetStatePreservingAtomicMoveInProgress(false);
+  EXPECT_FALSE(iframe->IsCanvasOrInCanvasSubtree());
+  EXPECT_FALSE(inner_div->IsCanvasOrInCanvasSubtree());
+  EXPECT_FALSE(inner_div->IsInCanvasSubtree());
+  EXPECT_TRUE(inner_canvas->IsCanvasOrInCanvasSubtree());
+  EXPECT_FALSE(inner_canvas->IsInCanvasSubtree());
+
+  GetDocument().SetStatePreservingAtomicMoveInProgress(true);
+  canvas->AppendChild(iframe);
+  GetDocument().SetStatePreservingAtomicMoveInProgress(false);
+  EXPECT_TRUE(iframe->IsCanvasOrInCanvasSubtree());
+  EXPECT_TRUE(inner_div->IsCanvasOrInCanvasSubtree());
+  EXPECT_TRUE(inner_div->IsInCanvasSubtree());
+  EXPECT_TRUE(inner_canvas->IsCanvasOrInCanvasSubtree());
+  EXPECT_TRUE(inner_canvas->IsInCanvasSubtree());
+
+  auto* detached_div = ChildDocument().CreateRawElement(html_names::kDivTag);
+  EXPECT_FALSE(detached_div->IsInCanvasSubtree());
+
+  auto* fragment = ChildDocument().createDocumentFragment();
+  auto* fragment_div = ChildDocument().CreateRawElement(html_names::kDivTag);
+  fragment->AppendChild(fragment_div);
+  EXPECT_FALSE(fragment_div->IsCanvasOrInCanvasSubtree());
+}
+
+TEST_P(HTMLCanvasElementTest, IsCanvasOrInCanvasSubtreeInShadowInIframe) {
+  SetBodyInnerHTML(R"HTML(
+    <div id="div"></div>
+    <canvas id="canvas">
+      <iframe id="iframe"></iframe>
+    </canvas>
+  )HTML");
+  SetChildFrameHTML(R"HTML(
+    <div id="host"></div>
+  )HTML");
+  auto* div = GetDocument().getElementById(AtomicString("div"));
+  auto* canvas = GetDocument().getElementById(AtomicString("canvas"));
+  auto* iframe = GetDocument().getElementById(AtomicString("iframe"));
+  auto* host = ChildDocument().getElementById(AtomicString("host"));
+  ShadowRoot& shadow_root =
+      host->AttachShadowRootForTesting(ShadowRootMode::kOpen);
+  shadow_root.SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <div id="inner_div"></div>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+
+  auto* inner_div = shadow_root.getElementById(AtomicString("inner_div"));
+
+  EXPECT_TRUE(iframe->IsCanvasOrInCanvasSubtree());
+  EXPECT_TRUE(host->IsCanvasOrInCanvasSubtree());
+  EXPECT_TRUE(host->IsInCanvasSubtree());
+  EXPECT_TRUE(inner_div->IsCanvasOrInCanvasSubtree());
+  EXPECT_TRUE(inner_div->IsInCanvasSubtree());
+
+  // Move iframe out of canvas.
+  GetDocument().SetStatePreservingAtomicMoveInProgress(true);
+  div->AppendChild(iframe);
+  GetDocument().SetStatePreservingAtomicMoveInProgress(false);
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(iframe->IsCanvasOrInCanvasSubtree());
+  EXPECT_FALSE(host->IsCanvasOrInCanvasSubtree());
+  EXPECT_FALSE(host->IsInCanvasSubtree());
+  EXPECT_FALSE(inner_div->IsCanvasOrInCanvasSubtree());
+  EXPECT_FALSE(inner_div->IsInCanvasSubtree());
+
+  // Move iframe back into canvas.
+  GetDocument().SetStatePreservingAtomicMoveInProgress(true);
+  canvas->AppendChild(iframe);
+  GetDocument().SetStatePreservingAtomicMoveInProgress(false);
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_TRUE(iframe->IsCanvasOrInCanvasSubtree());
+  EXPECT_TRUE(host->IsCanvasOrInCanvasSubtree());
+  EXPECT_TRUE(host->IsInCanvasSubtree());
+  EXPECT_TRUE(inner_div->IsCanvasOrInCanvasSubtree());
+  EXPECT_TRUE(inner_div->IsInCanvasSubtree());
+}
+
+TEST_P(HTMLCanvasElementTest, IsCanvasOrInCanvasSubtreeInNestedShadowInIframe) {
+  SetBodyInnerHTML(R"HTML(
+    <div id="div"></div>
+    <canvas id="canvas">
+      <iframe id="iframe"></iframe>
+    </canvas>
+  )HTML");
+  SetChildFrameHTML(R"HTML(
+    <div id="host1"></div>
+  )HTML");
+  auto* div = GetDocument().getElementById(AtomicString("div"));
+  auto* canvas = GetDocument().getElementById(AtomicString("canvas"));
+  auto* iframe = GetDocument().getElementById(AtomicString("iframe"));
+  auto* host1 = ChildDocument().getElementById(AtomicString("host1"));
+
+  ShadowRoot& shadow_root1 =
+      host1->AttachShadowRootForTesting(ShadowRootMode::kOpen);
+  auto* host2 = ChildDocument().CreateRawElement(html_names::kDivTag);
+  shadow_root1.AppendChild(host2);
+
+  ShadowRoot& shadow_root2 =
+      host2->AttachShadowRootForTesting(ShadowRootMode::kOpen);
+  auto* inner_div = ChildDocument().CreateRawElement(html_names::kDivTag);
+  shadow_root2.AppendChild(inner_div);
+
+  UpdateAllLifecyclePhasesForTest();
+
+  EXPECT_TRUE(iframe->IsCanvasOrInCanvasSubtree());
+  EXPECT_TRUE(host1->IsCanvasOrInCanvasSubtree());
+  EXPECT_TRUE(host2->IsCanvasOrInCanvasSubtree());
+  EXPECT_TRUE(inner_div->IsCanvasOrInCanvasSubtree());
+
+  // Move iframe out of canvas.
+  GetDocument().SetStatePreservingAtomicMoveInProgress(true);
+  div->AppendChild(iframe);
+  GetDocument().SetStatePreservingAtomicMoveInProgress(false);
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(iframe->IsCanvasOrInCanvasSubtree());
+  EXPECT_FALSE(host1->IsCanvasOrInCanvasSubtree());
+  EXPECT_FALSE(host2->IsCanvasOrInCanvasSubtree());
+  EXPECT_FALSE(inner_div->IsCanvasOrInCanvasSubtree());
+
+  // Move iframe back into canvas.
+  GetDocument().SetStatePreservingAtomicMoveInProgress(true);
+  canvas->AppendChild(iframe);
+  GetDocument().SetStatePreservingAtomicMoveInProgress(false);
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_TRUE(iframe->IsCanvasOrInCanvasSubtree());
+  EXPECT_TRUE(host1->IsCanvasOrInCanvasSubtree());
+  EXPECT_TRUE(host2->IsCanvasOrInCanvasSubtree());
+  EXPECT_TRUE(inner_div->IsCanvasOrInCanvasSubtree());
+}
+
 TEST_P(HTMLCanvasElementTest, CanvasInvalidationInFrame) {
   SetBodyInnerHTML(R"HTML(
     <iframe id='iframe'></iframe>
@@ -261,211 +470,171 @@ TEST_P(HTMLCanvasElementTest, BrokenCanvasHighRes) {
   EXPECT_EQ(HTMLCanvasElement::BrokenCanvas(1.0).second, 1.0);
 }
 
+TEST_P(HTMLCanvasElementTest, FallbackContentUseCounter) {
+  SetBodyInnerHTML(R"HTML(
+    <canvas></canvas>
+  )HTML");
+  EXPECT_FALSE(GetDocument().IsUseCounted(WebFeature::kCanvasFallbackContent));
+  EXPECT_FALSE(
+      GetDocument().IsUseCounted(WebFeature::kCanvasFallbackElementContent));
 
-class HTMLCanvasElementWithTracingTest : public RenderingTest {
- public:
-  HTMLCanvasElementWithTracingTest()
-      : RenderingTest(MakeGarbageCollected<SingleChildLocalFrameClient>()) {}
+  SetBodyInnerHTML(R"HTML(
+    <canvas>fallback</canvas>
+  )HTML");
+  EXPECT_TRUE(GetDocument().IsUseCounted(WebFeature::kCanvasFallbackContent));
+  EXPECT_FALSE(
+      GetDocument().IsUseCounted(WebFeature::kCanvasFallbackElementContent));
 
- protected:
-  void TearDown() override {
-    RenderingTest::TearDown();
-    CanvasRenderingContext::GetCanvasPerformanceMonitor().ResetForTesting();
-  }
+  GetDocument().ClearUseCounterForTesting(WebFeature::kCanvasFallbackContent);
 
-  base::test::TracingEnvironment tracing_environment_;
-};
-
-class HTMLCanvasElementWithTracingSyncTest
-    : public HTMLCanvasElementWithTracingTest,
-      public testing::WithParamInterface<const char*> {};
-
-INSTANTIATE_TEST_SUITE_P(All,
-                         HTMLCanvasElementWithTracingSyncTest,
-                         testing::ValuesIn({R"JS(
-          let canvas = document.getElementById('canvas');
-          let ctx = canvas.getContext('2d');
-          ctx.fillText("abc", 0, 10);
-          canvas.toDataURL();)JS",
-                                            R"JS(
-          let canvas = document.getElementById('canvas');
-          let ctx = canvas.getContext('2d');
-          ctx.fillText("abc", 0, 10);
-          ctx.getImageData(0, 0, 10, 10);)JS"}));
-
-TEST_P(HTMLCanvasElementWithTracingSyncTest,
-       CanvasReadbackEmitsIdentifiabilityTraces) {
-  // Enable script so that the canvas will create a LayoutHTMLCanvas.
-  GetDocument().GetSettings()->SetScriptEnabled(true);
-
-  SetBodyInnerHTML("<canvas id='canvas'></canvas>");
-
-  base::test::TestTraceProcessor test_trace_processor;
-  test_trace_processor.StartTrace(
-      base::test::DefaultTraceConfig(
-          "disabled-by-default-identifiability.high_entropy_api", false),
-      perfetto::kInProcessBackend);
-  auto* script = GetDocument().CreateRawElement(html_names::kScriptTag);
-  script->setTextContent(String(GetParam()));
-  GetDocument().body()->appendChild(script);
-
-  absl::Status status = test_trace_processor.StopAndParseTrace();
-  ASSERT_TRUE(status.ok()) << status.message();
-  std::string query = R"sql(
-    SELECT slice.name, args.display_value FROM slice
-      LEFT JOIN args USING (arg_set_id)
-      WHERE slice.category =
-        'disabled-by-default-identifiability.high_entropy_api'
-      AND args.key = 'debug.data_url'
-  )sql";
-  auto result = test_trace_processor.RunQuery(query);
-  ASSERT_TRUE(result.has_value()) << result.error();
-  EXPECT_THAT(result.value(),
-              Contains(ElementsAre(Eq("CanvasReadback"), StartsWith("data:"))));
+  SetBodyInnerHTML(R"HTML(
+    <canvas><div>hello</div></canvas>
+  )HTML");
+  EXPECT_TRUE(GetDocument().IsUseCounted(WebFeature::kCanvasFallbackContent));
+  EXPECT_TRUE(
+      GetDocument().IsUseCounted(WebFeature::kCanvasFallbackElementContent));
 }
 
-class HTMLCanvasElementWithTracingAsyncTest
-    : public HTMLCanvasElementWithTracingTest,
-      public testing::WithParamInterface<std::pair<const char*, const char*>> {
-};
+TEST_P(HTMLCanvasElementTest, IsCanvasOrInCanvasSubtree) {
+  SetBodyInnerHTML(R"HTML(
+    <div id=div></div>
+    <canvas id=canvas>
+      <div id=nested_div></div>
+        <canvas id=nested_canvas></canvas>
+      <input id=nested_input>
+    </canvas>
+  )HTML");
+  auto* div = GetDocument().getElementById(AtomicString("div"));
+  EXPECT_FALSE(div->IsCanvasOrInCanvasSubtree());
+  EXPECT_FALSE(div->IsInCanvasSubtree());
+  auto* canvas = GetDocument().getElementById(AtomicString("canvas"));
+  EXPECT_TRUE(canvas->IsCanvasOrInCanvasSubtree());
+  EXPECT_FALSE(canvas->IsInCanvasSubtree());
+  auto* nested_div = GetDocument().getElementById(AtomicString("nested_div"));
+  EXPECT_TRUE(nested_div->IsCanvasOrInCanvasSubtree());
+  EXPECT_TRUE(nested_div->IsInCanvasSubtree());
+  auto* nested_canvas =
+      GetDocument().getElementById(AtomicString("nested_canvas"));
+  EXPECT_TRUE(nested_canvas->IsCanvasOrInCanvasSubtree());
+  EXPECT_TRUE(nested_canvas->IsInCanvasSubtree());
+  auto* nested_input =
+      GetDocument().getElementById(AtomicString("nested_input"));
+  EXPECT_TRUE(nested_input->IsCanvasOrInCanvasSubtree());
+  EXPECT_TRUE(nested_input->IsInCanvasSubtree());
+  auto* nested_input_shadow =
+      To<Element>(nested_input->UserAgentShadowRoot()->firstChild());
+  EXPECT_TRUE(nested_input_shadow->IsCanvasOrInCanvasSubtree());
+  EXPECT_TRUE(nested_input_shadow->IsInCanvasSubtree());
 
-INSTANTIATE_TEST_SUITE_P(
-    All,
-    HTMLCanvasElementWithTracingAsyncTest,
-    testing::ValuesIn({std::make_pair(
-                           R"JS(
-          (async () => {
-            let canvas = document.getElementById('canvas');
-            let ctx = canvas.getContext('2d');
-            ctx.fillText("abc", 0, 10);
-            await new Promise(resolve => {canvas.toBlob(resolve)});
-          })()
-         )JS",
-                           "HTMLCanvasElement.toBlob"),
-                       std::make_pair(
-                           R"JS(
-          (async () => {
-            let offscreen = new OffscreenCanvas(10, 10);
-            let ctx = offscreen.getContext('2d');
-            ctx.fillText("abc", 0, 10);
-            await new Promise(resolve => {
-              offscreen.convertToBlob().then(resolve);
-            });
-          })()
-         )JS",
-                           "OffscreenCanvas.convertToBlob")}));
+  // Check `IsCanvasOrInCanvasSubtree` after a dynamic change where the nested
+  // elements are individually moved out of the canvas subtree.
+  div->appendChild(nested_div);
+  EXPECT_FALSE(nested_div->IsCanvasOrInCanvasSubtree());
+  EXPECT_FALSE(nested_div->IsInCanvasSubtree());
+  div->appendChild(nested_canvas);
+  EXPECT_TRUE(nested_canvas->IsCanvasOrInCanvasSubtree());
+  EXPECT_FALSE(nested_canvas->IsInCanvasSubtree());
+  EXPECT_TRUE(nested_input->IsCanvasOrInCanvasSubtree());
+  EXPECT_TRUE(nested_input->IsInCanvasSubtree());
+  EXPECT_TRUE(nested_input_shadow->IsCanvasOrInCanvasSubtree());
+  EXPECT_TRUE(nested_input_shadow->IsInCanvasSubtree());
+  div->appendChild(nested_input);
+  EXPECT_FALSE(nested_input->IsCanvasOrInCanvasSubtree());
+  EXPECT_FALSE(nested_input->IsInCanvasSubtree());
+  EXPECT_FALSE(nested_input_shadow->IsCanvasOrInCanvasSubtree());
+  EXPECT_FALSE(nested_input_shadow->IsInCanvasSubtree());
 
-class Resolve final : public ThenCallable<IDLAny, Resolve> {
- public:
-  explicit Resolve(base::RepeatingClosure callback)
-      : callback_(std::move(callback)) {}
+  // Check `IsCanvasOrInCanvasSubtree` after a dynamic change where an
+  // entire subtree is moved under canvas.
+  canvas->appendChild(div);
+  EXPECT_TRUE(nested_div->IsCanvasOrInCanvasSubtree());
+  EXPECT_TRUE(nested_div->IsInCanvasSubtree());
+  EXPECT_TRUE(nested_canvas->IsCanvasOrInCanvasSubtree());
+  EXPECT_TRUE(nested_canvas->IsInCanvasSubtree());
+  EXPECT_TRUE(nested_input->IsCanvasOrInCanvasSubtree());
+  EXPECT_TRUE(nested_input->IsInCanvasSubtree());
+  EXPECT_TRUE(nested_input_shadow->IsCanvasOrInCanvasSubtree());
+  EXPECT_TRUE(nested_input_shadow->IsInCanvasSubtree());
+}
 
-  void React(ScriptState*, ScriptValue) { callback_.Run(); }
+TEST_P(HTMLCanvasElementTest, IsCanvasOrInCanvasSubtreeSlotted) {
+  GetDocument().body()->SetHTMLUnsafeWithoutTrustedTypes(R"(
+    <div id=slotHost>
+      <template shadowrootmode=open>
+        <canvas layoutsubtree>
+          <slot name="slot1"></slot>
+        </canvas>
+      </template>
+      <div id=slotted slot="slot1">
+        <p id=slotchild>Hello</p>
+      </div>
+    </div>
+  )");
+  UpdateAllLifecyclePhasesForTest();
 
- private:
-  base::RepeatingClosure callback_;
-};
+  auto* slotted = GetDocument().getElementById(AtomicString("slotted"));
+  EXPECT_TRUE(slotted->IsCanvasOrInCanvasSubtree());
+  EXPECT_TRUE(slotted->IsInCanvasSubtree());
 
-TEST_P(HTMLCanvasElementWithTracingAsyncTest,
-       CanvasReadbackEmitsIdentifiabilityTraces) {
-  // Enable script so that the canvas will create a LayoutHTMLCanvas.
+  auto* slotted_child = GetDocument().getElementById(AtomicString("slotchild"));
+  EXPECT_TRUE(slotted_child->IsCanvasOrInCanvasSubtree());
+  EXPECT_TRUE(slotted_child->IsInCanvasSubtree());
+}
+
+TEST_P(HTMLCanvasElementTest, LayoutsubtreeInvalidation) {
+  SetBodyInnerHTML(R"HTML(<canvas id=canvas></canvas>)HTML");
+  auto* canvas = GetDocument().getElementById(AtomicString("canvas"));
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(canvas->NeedsStyleRecalc());
+
+  // Adding layoutsubtree should cause a style recalc.
+  canvas->setAttribute(html_names::kLayoutsubtreeAttr, AtomicString("true"));
+  EXPECT_TRUE(canvas->NeedsStyleRecalc());
+
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(canvas->NeedsStyleRecalc());
+
+  // Setting layoutsubtree to the same value should not cause a style recalc.
+  canvas->setAttribute(html_names::kLayoutsubtreeAttr, AtomicString("true"));
+  EXPECT_FALSE(canvas->NeedsStyleRecalc());
+
+  // Setting layoutsubtree to any other value should not cause a style recalc.
+  canvas->setAttribute(html_names::kLayoutsubtreeAttr, AtomicString(""));
+  EXPECT_FALSE(canvas->NeedsStyleRecalc());
+
+  // Removing layoutsubtree should cause a style recalc.
+  canvas->removeAttribute(html_names::kLayoutsubtreeAttr);
+  EXPECT_TRUE(canvas->NeedsStyleRecalc());
+
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(canvas->NeedsStyleRecalc());
+
+  // Adding layoutsubtree back should cause a style recalc.
+  canvas->setAttribute(html_names::kLayoutsubtreeAttr, AtomicString(""));
+  EXPECT_TRUE(canvas->NeedsStyleRecalc());
+}
+
+TEST_P(HTMLCanvasElementTest, HTMLInCanvasUseCounter) {
+  ScopedCanvasDrawElementForTest forced_canvas_draw_element_feature(true);
   GetDocument().GetSettings()->SetScriptEnabled(true);
 
-  SetBodyInnerHTML("<canvas id='canvas'></canvas>");
+  SetBodyInnerHTML(R"HTML(
+    <canvas id=cvs layoutsubtree>
+      <div id=target>hello world</div>
+    </canvas>
+  )HTML");
+  RunDocumentLifecycle();
 
-  base::test::TestTraceProcessor test_trace_processor;
-  test_trace_processor.StartTrace(
-      base::test::DefaultTraceConfig(
-          "disabled-by-default-identifiability.high_entropy_api", false),
-      perfetto::kInProcessBackend);
+  // Metrics should not be recorded until the feature is actually used.
+  EXPECT_FALSE(GetDocument().IsUseCounted(WebFeature::kHTMLInCanvas));
 
-  ScriptState* script_state = ToScriptStateForMainWorld(&GetFrame());
-  ScriptState::Scope script_state_scope(script_state);
-
-  base::RunLoop run_loop;
-  auto* resolve = MakeGarbageCollected<Resolve>(run_loop.QuitClosure());
-
-  ClassicScript* script = ClassicScript::CreateUnspecifiedScript(
-      GetParam().first, ScriptSourceLocationType::kUnknown,
-      SanitizeScriptErrors::kSanitize);
-
-  ScriptEvaluationResult script_result =
-      script->RunScriptOnScriptStateAndReturnValue(script_state);
-
-  auto promise =
-      ToResolvedPromise<IDLAny>(script_state, script_result.GetSuccessValue());
-  promise.Then(script_state, resolve, resolve);
-
-  // Avoid the NOTREACHED in CanvasPerformanceMonitor::WillProcessTask().
-  CanvasRenderingContext::GetCanvasPerformanceMonitor().ResetForTesting();
-
-  run_loop.Run();
-
-  absl::Status status = test_trace_processor.StopAndParseTrace();
-  ASSERT_TRUE(status.ok()) << status.message();
-
-  {
-    // Check that there is a flow connecting the CanvasReadback traces emitted
-    // by CanvasAsyncBlobCreator.
-    std::string query = R"sql(
-      SELECT s_in.name, s_out.name
-        FROM flow
-        LEFT JOIN slice AS s_in ON slice_in = s_in.id
-        LEFT JOIN slice AS s_out ON slice_out = s_out.id
-        WHERE s_in.category =
-            'disabled-by-default-identifiability.high_entropy_api'
-          AND s_out.category =
-            'disabled-by-default-identifiability.high_entropy_api'
-    )sql";
-    auto result = test_trace_processor.RunQuery(query);
-    ASSERT_TRUE(result.has_value()) << result.error();
-    EXPECT_THAT(result.value(), Contains(ElementsAre(Eq("CanvasReadback"),
-                                                     Eq("CanvasReadback")))
-                                    .Times(2));
-  }
-
-  {
-    // Check that it is possible to join the canvas readback data emitted by
-    // CanvasAsyncBlobCreator with the HighEntropyJavaScriptAPICall that was
-    // responsible for it.
-    std::string query = R"sql(
-      WITH RECURSIVE canvas_readback AS (
-        SELECT slice_out AS flow_start_id,
-          args.display_value AS canvas_data
-        FROM flow
-        INNER JOIN slice ON slice.id = flow.slice_in
-        LEFT JOIN args ON slice.arg_set_id = args.arg_set_id
-        WHERE
-          slice.category =
-            'disabled-by-default-identifiability.high_entropy_api'
-          AND slice.name = 'CanvasReadback'
-          AND args.key = 'debug.data_url'
-      ), ancestors AS (
-          SELECT slice.id, slice.parent_id
-          FROM slice
-          INNER JOIN canvas_readback ON slice.id = canvas_readback.flow_start_id
-          UNION ALL
-          SELECT ancestors.id, slice.parent_id
-          FROM slice
-          JOIN ancestors ON slice.id = ancestors.parent_id
-          WHERE slice.parent_id IS NOT NULL
-      ), data_with_ancestors AS (
-        SELECT args.display_value, canvas_data FROM canvas_readback
-        LEFT JOIN ancestors ON (canvas_readback.flow_start_id = ancestors.id)
-        LEFT JOIN slice on (ancestors.parent_id = slice.id)
-        LEFT JOIN args ON args.arg_set_id = slice.arg_set_id
-        WHERE
-          slice.category =
-            'disabled-by-default-identifiability.high_entropy_api'
-          AND slice.name =  'HighEntropyJavaScriptAPICall'
-          AND args.key = 'high_entropy_api.called_api.identifier'
-      ) SELECT * FROM data_with_ancestors
-    )sql";
-    auto result = test_trace_processor.RunQuery(query);
-    ASSERT_TRUE(result.has_value()) << result.error();
-    EXPECT_THAT(result.value(), Contains(ElementsAre(Eq(GetParam().second),
-                                                     StartsWith("data:"))));
-  }
+  Element* script = GetDocument().CreateRawElement(html_names::kScriptTag);
+  script->setTextContent(R"JS(
+    cvs.getContext('2d').drawElementImage(target, 0, 0);
+  )JS");
+  GetDocument().body()->appendChild(script);
+  RunDocumentLifecycle();
+  EXPECT_TRUE(GetDocument().IsUseCounted(WebFeature::kHTMLInCanvas));
 }
 
 }  // namespace blink

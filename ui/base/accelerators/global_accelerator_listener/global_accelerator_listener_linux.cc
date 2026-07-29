@@ -7,110 +7,132 @@
 #include <algorithm>
 #include <string>
 #include <utility>
+#include <vector>
 
-#include "base/containers/contains.h"
+#include "base/containers/flat_set.h"
+#include "base/environment.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/nix/xdg_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
-#include "components/dbus/properties/types.h"
 #include "components/dbus/thread_linux/dbus_thread_linux.h"
-#include "components/dbus/utils/check_for_service_and_start.h"
+#include "components/dbus/xdg/portal.h"
 #include "components/dbus/xdg/request.h"
-#include "components/dbus/xdg/systemd.h"
+#include "components/dbus/xdg/session.h"
 #include "crypto/sha2.h"
 #include "dbus/message.h"
 #include "dbus/object_path.h"
-#include "ui/base/accelerators/accelerator.h"
 #include "ui/base/accelerators/command.h"
 #include "ui/base/linux/xdg_shortcut.h"
+#include "ui/base/ui_base_features.h"
+#include "ui/linux/linux_ui_delegate.h"
 
 namespace ui {
 
-using DbusShortcut = DbusStruct<DbusString, DbusDictionary>;
-using DbusShortcuts = DbusArray<DbusShortcut>;
+namespace {
+
+template <typename T>
+std::optional<T> TakeFromDict(dbus_xdg::Dictionary& dict,
+                              const std::string& key) {
+  auto it = dict.find(key);
+  if (it == dict.end()) {
+    return std::nullopt;
+  }
+  auto result = std::move(it->second).Take<T>();
+  dict.erase(it);
+  return result;
+}
+
+std::string GetShortcutPrefix(const std::string& accelerator_group_id,
+                              const std::string& profile_id) {
+  return base::HexEncode(
+             crypto::SHA256HashString(accelerator_group_id + profile_id))
+      .substr(0, 32);
+}
+
+bool ShouldSetPreferredTrigger() {
+  auto env = base::Environment::Create();
+  const base::nix::DesktopEnvironment desktop_environment =
+      base::nix::GetDesktopEnvironment(env.get());
+  const bool default_preferred_trigger =
+      desktop_environment != base::nix::DESKTOP_ENVIRONMENT_GNOME;
+  return base::FeatureList::GetStateIfOverridden(
+             features::kGlobalShortcutsPortalPreferredTrigger)
+      .value_or(default_preferred_trigger);
+}
+
+}  // namespace
+
+GlobalAcceleratorListenerLinux::BoundCommand::BoundCommand() = default;
+GlobalAcceleratorListenerLinux::BoundCommand::~BoundCommand() = default;
+GlobalAcceleratorListenerLinux::BoundCommand::BoundCommand(
+    const BoundCommand&) = default;
+GlobalAcceleratorListenerLinux::BoundCommand&
+GlobalAcceleratorListenerLinux::BoundCommand::operator=(const BoundCommand&) =
+    default;
+GlobalAcceleratorListenerLinux::BoundCommand::BoundCommand(BoundCommand&&) =
+    default;
+GlobalAcceleratorListenerLinux::BoundCommand&
+GlobalAcceleratorListenerLinux::BoundCommand::operator=(BoundCommand&&) =
+    default;
 
 GlobalAcceleratorListenerLinux::GlobalAcceleratorListenerLinux(
-    scoped_refptr<dbus::Bus> bus)
-    : bus_(std::move(bus)) {
+    scoped_refptr<dbus::Bus> bus,
+    const std::string& session_token)
+    : bus_(std::move(bus)),
+      session_token_(session_token),
+      set_preferred_trigger_(ShouldSetPreferredTrigger()) {
   if (!bus_) {
     bus_ = dbus_thread_linux::GetSharedSessionBus();
+  }
+
+  dbus_xdg::RequestXdgDesktopPortal(
+      bus_.get(),
+      base::BindOnce(&GlobalAcceleratorListenerLinux::OnServiceStarted,
+                     weak_ptr_factory_.GetWeakPtr()));
+}
+
+GlobalAcceleratorListenerLinux::~GlobalAcceleratorListenerLinux() {
+  CloseSession();
+}
+
+void GlobalAcceleratorListenerLinux::OnServiceStarted(uint32_t version) {
+  service_started_ = (version != 0);
+
+  if (!*service_started_) {
+    bound_commands_.clear();
+    return;
   }
 
   global_shortcuts_proxy_ = bus_->GetObjectProxy(
       kPortalServiceName, dbus::ObjectPath(kPortalObjectPath));
 
-  global_shortcuts_proxy_->ConnectToSignal(
-      kGlobalShortcutsInterface, kSignalActivated,
+  dbus_utils::ConnectToSignal<"osta{sv}">(
+      global_shortcuts_proxy_, kGlobalShortcutsInterface, kSignalActivated,
       base::BindRepeating(&GlobalAcceleratorListenerLinux::OnActivatedSignal,
                           weak_ptr_factory_.GetWeakPtr()),
       base::BindOnce(&GlobalAcceleratorListenerLinux::OnSignalConnected,
                      weak_ptr_factory_.GetWeakPtr()));
 
-  dbus_xdg::SetSystemdScopeUnitNameForXdgPortal(
-      bus_.get(),
-      base::BindOnce(&GlobalAcceleratorListenerLinux::OnSystemdUnitStarted,
-                     weak_ptr_factory_.GetWeakPtr()));
-}
-
-GlobalAcceleratorListenerLinux::~GlobalAcceleratorListenerLinux() {
-  // Normally GlobalShortcutListener outlives the browser process, so this
-  // destructor won't normally get called. It's okay for the sessions not to be
-  // closed explicitly, but this destructor is left here for testing purposes,
-  // and in case this object ever does need to be destructed.
-  for (auto& entry : session_map_) {
-    dbus::MethodCall method_call(kSessionInterface, kMethodCloseSession);
-    entry.second->session_proxy->CallMethod(
-        &method_call, dbus::ObjectProxy::TIMEOUT_USE_DEFAULT,
-        base::DoNothing());
-  }
-  session_map_.clear();
-}
-
-void GlobalAcceleratorListenerLinux::OnSystemdUnitStarted(
-    dbus_xdg::SystemdUnitStatus) {
-  // Intentionally ignoring the status.
-  dbus_utils::CheckForServiceAndStart(
-      bus_.get(), kPortalServiceName,
-      base::BindOnce(&GlobalAcceleratorListenerLinux::OnServiceStarted,
-                     weak_ptr_factory_.GetWeakPtr()));
-}
-
-void GlobalAcceleratorListenerLinux::OnServiceStarted(
-    std::optional<bool> service_started) {
-  service_started_ = service_started.value_or(false);
-
-  if (!*service_started_) {
-    session_map_.clear();
-    return;
-  }
-
-  for (auto& pair : session_map_) {
-    CreateSession(pair);
+  if (HasGlobalShortcuts()) {
+    CreateSession();
   }
 }
 
-void GlobalAcceleratorListenerLinux::CreateSession(SessionMapPair& pair) {
+void GlobalAcceleratorListenerLinux::CreateSession() {
   CHECK(!bus_->GetConnectionName().empty());
 
-  const SessionKey& session_key = pair.first;
-  SessionContext& session_context = *pair.second;
-
-  std::string session_token = session_key.GetTokenKey();
-  std::string session_path_str = base::nix::XdgDesktopPortalSessionPath(
-      bus_->GetConnectionName(), session_token);
-  dbus::ObjectPath session_path(session_path_str);
-  session_context.session_proxy =
-      bus_->GetObjectProxy(kPortalServiceName, session_path);
-  session_context.bus = bus_;
-
-  session_context.request = std::make_unique<dbus_xdg::Request>(
+  dbus_xdg::Dictionary options;
+  options["session_handle_token"] =
+      dbus_utils::Variant::Wrap<"s">(session_token_);
+  session_ = dbus_xdg::Session::CreateWithRequest(
       bus_, global_shortcuts_proxy_, kGlobalShortcutsInterface,
-      kMethodCreateSession, DbusParameters(),
-      MakeDbusDictionary("session_handle_token", DbusString(session_token)),
-      base::BindOnce(&GlobalAcceleratorListenerLinux::OnCreateSession,
-                     weak_ptr_factory_.GetWeakPtr(), session_key));
+      std::move(options),
+      base::BindOnce(&GlobalAcceleratorListenerLinux::OnCreateSessionResponse,
+                     weak_ptr_factory_.GetWeakPtr()));
 }
 
 void GlobalAcceleratorListenerLinux::StartListening() {}
@@ -124,22 +146,7 @@ bool GlobalAcceleratorListenerLinux::StartListeningForAccelerator(
 }
 
 void GlobalAcceleratorListenerLinux::StopListeningForAccelerator(
-    const ui::Accelerator& accelerator) {
-  // Shortcut unregistration is now handled per extension
-}
-
-void GlobalAcceleratorListenerLinux::UnregisterAccelerators(
-    Observer* observer) {
-  std::vector<SessionKey> remove;
-  for (const auto& [key, context] : session_map_) {
-    if (context->observer == observer) {
-      remove.push_back(key);
-    }
-  }
-  for (const auto& key : remove) {
-    session_map_.erase(key);
-  }
-}
+    const ui::Accelerator& accelerator) {}
 
 bool GlobalAcceleratorListenerLinux::IsRegistrationHandledExternally() const {
   return true;
@@ -149,197 +156,229 @@ void GlobalAcceleratorListenerLinux::OnCommandsChanged(
     const std::string& accelerator_group_id,
     const std::string& profile_id,
     const ui::CommandMap& commands,
-    Observer* observer) {
+    gfx::AcceleratedWidget widget,
+    base::RepeatingCallback<void(const std::string&, const std::string&)>
+        execute_command) {
   // If starting the service failed, there's no need to add the command list.
   if (!service_started_.value_or(true)) {
     return;
   }
 
-  SessionKey session_key = {accelerator_group_id, profile_id};
-  auto it = session_map_.find(session_key);
-  if (it != session_map_.end()) {
-    auto& session_context = *it->second;
-    session_context.commands = commands;
+  context_window_ = widget;
 
-    // BindShortcuts can only be called once per session.
-    if (session_context.bind_shortcuts_called) {
-      // If BindShortcuts was already called then recreate the session.
-      dbus::MethodCall method_call(kSessionInterface, kMethodCloseSession);
-      session_context.session_proxy->CallMethod(
-          &method_call, dbus::ObjectProxy::TIMEOUT_USE_DEFAULT,
-          base::BindOnce(
-              &GlobalAcceleratorListenerLinux::RecreateSessionOnClosed,
-              weak_ptr_factory_.GetWeakPtr(), session_key));
+  const std::string prefix =
+      GetShortcutPrefix(accelerator_group_id, profile_id);
+  const std::string id_prefix = prefix + "-";
+
+  // Build incoming IDs so we can drop stale entries for this prefix.
+  std::vector<std::string> incoming_command_ids;
+  incoming_command_ids.reserve(commands.size());
+  for (const auto& [_, command] : commands) {
+    incoming_command_ids.push_back(id_prefix + command.command_name());
+  }
+
+  base::flat_set<std::string> incoming_command_id_set(
+      std::move(incoming_command_ids));
+
+  // Replace the command set for this prefix instead of only inserting. This
+  // avoids retaining stale commands after command updates.
+  std::erase_if(bound_commands_, [&](const auto& pair) {
+    return pair.first.starts_with(id_prefix) &&
+           !incoming_command_id_set.contains(pair.first);
+  });
+
+  for (const auto& [_, command] : commands) {
+    std::string id = id_prefix + command.command_name();
+    auto& bc = bound_commands_[id];
+    bc.command = command;
+    bc.accelerator_group_id = accelerator_group_id;
+    bc.execute_command = execute_command;
+  }
+
+  // Only proceed if there is at least one global command.
+  if (!HasGlobalShortcuts()) {
+    if (session_) {
+      CloseSession();
     }
     return;
   }
 
-  it = session_map_.emplace_hint(
-      it, session_key, std::make_unique<SessionContext>(observer, commands));
+  // Wait until the service has started.
+  if (!service_started_.value_or(false)) {
+    return;
+  }
 
-  if (service_started_.has_value()) {
-    CreateSession(*it);
+  // If there is no session yet, create one.
+  if (!session_) {
+    CreateSession();
+    return;
+  }
+
+  // If session creation is still in progress, wait for it to complete.
+  if (!session_->path().IsValid()) {
+    return;
+  }
+
+  if (bind_state_ == BindState::kBindCalled) {
+    // Wait for an existing bind to finish before re-binding. This is required
+    // since GNOME has a quirk where the shortcut dialogs need to be dismissed
+    // in the order they're created, otherwise the portal interface will
+    // indicate an error.
+    bind_state_ = BindState::kNeedsRebind;
+  } else if (bind_state_ == BindState::kBound) {
+    CloseSession();
+    CreateSession();
   }
 }
 
-void GlobalAcceleratorListenerLinux::OnCreateSession(
-    const SessionKey& session_key,
-    base::expected<DbusDictionary, dbus_xdg::ResponseError> results) {
-  if (!results.has_value()) {
-    VLOG(1) << "Failed to call CreateSession (error code "
-            << static_cast<int>(results.error()) << ").";
-    session_map_.erase(session_key);
+void GlobalAcceleratorListenerLinux::OnCreateSessionResponse(
+    dbus_xdg::Session* session) {
+  if (!session) {
+    VLOG(1) << "Failed to create portal session.";
+    session_.reset();
     return;
   }
 
-  auto session_it = session_map_.find(session_key);
-  if (session_it == session_map_.end()) {
-    LOG(ERROR) << "Unknown session path.";
-    return;
-  }
-  const auto& session_context = session_it->second;
-
-  auto* session_handle = results->GetAs<DbusString>("session_handle");
-  if (!session_handle ||
-      session_context->session_proxy->object_path().value() !=
-          session_handle->value()) {
-    LOG(ERROR) << "Expected session handle does not match.";
-    session_map_.erase(session_key);
-    return;
-  }
-
-  // Check the list of registered shortcuts using ListShortcuts so that
-  // BindShortcuts can be avoided if the registered shortcuts are the same,
-  // otherwise a settings window will open each time the extension is loaded
-  // (likely on browser start).
-  session_context->request = std::make_unique<dbus_xdg::Request>(
+  // Now that the session is created, bind all accumulated shortcuts.
+  request_ = std::make_unique<dbus_xdg::Request>(
       bus_, global_shortcuts_proxy_, kGlobalShortcutsInterface,
-      kMethodListShortcuts,
-      DbusObjectPath(session_context->session_proxy->object_path()),
-      DbusDictionary(),
+      kMethodListShortcuts, dbus_xdg::Dictionary(),
       base::BindOnce(&GlobalAcceleratorListenerLinux::OnListShortcuts,
-                     weak_ptr_factory_.GetWeakPtr(), session_key));
+                     weak_ptr_factory_.GetWeakPtr()),
+      session->path());
 }
 
 void GlobalAcceleratorListenerLinux::OnListShortcuts(
-    const SessionKey& session_key,
-    base::expected<DbusDictionary, dbus_xdg::ResponseError> results) {
+    base::expected<dbus_xdg::Dictionary, dbus_xdg::ResponseError> results) {
   if (!results.has_value()) {
     LOG(ERROR) << "Failed to call ListShortcuts (error code "
                << static_cast<int>(results.error()) << ").";
-    session_map_.erase(session_key);
     return;
   }
 
-  auto session_it = session_map_.find(session_key);
-  if (session_it == session_map_.end()) {
-    LOG(ERROR) << "Unknown session path.";
-    return;
-  }
-  const auto& session_context = session_it->second;
-
-  auto* shortcuts = results->GetAs<DbusShortcuts>("shortcuts");
+  auto shortcuts = TakeFromDict<DbusShortcuts>(*results, "shortcuts");
   if (!shortcuts) {
-    LOG(ERROR) << "No shortcuts in ListShortcuts response.";
-    session_map_.erase(session_key);
+    LOG(ERROR) << "Failed to parse shortcuts from ListShortcuts response.";
     return;
   }
 
-  std::set<std::string> registered_shortcut_ids;
-  for (const DbusShortcut& shortcut : shortcuts->value()) {
-    const DbusString& id = std::get<0>(shortcut.value());
-    registered_shortcut_ids.insert(id.value());
+  std::vector<std::string> registered_ids_list;
+  registered_ids_list.reserve(shortcuts->size());
+  for (const DbusShortcut& shortcut : *shortcuts) {
+    registered_ids_list.push_back(std::get<0>(shortcut));
   }
+  base::flat_set<std::string> registered_ids(std::move(registered_ids_list));
 
-  // Only call BindShortcuts if necessary since it opens a settings window.
-  // The GlobalShortcuts interface doesn't provide a way to unregister
-  // shortcuts, so only check for new shortcuts that need registration.
-  for (const auto& command : session_context->commands) {
-    const std::string& id = command.first;
-    if (!base::Contains(registered_shortcut_ids, id)) {
-      BindShortcuts(*session_it->second);
+  // If any bound command is not found among the registered shortcuts, bind
+  // them.
+  for (const auto& [modified_id, bound_cmd] : bound_commands_) {
+    if (!registered_ids.contains(modified_id)) {
+      auto* delegate = ui::LinuxUiDelegate::GetInstance();
+      if (delegate && context_window_ != gfx::kNullAcceleratedWidget) {
+        delegate->ExportWindowHandle(
+            context_window_,
+            base::BindOnce(&GlobalAcceleratorListenerLinux::BindShortcuts,
+                           weak_ptr_factory_.GetWeakPtr(),
+                           std::move(*shortcuts)));
+      } else {
+        BindShortcuts(std::move(*shortcuts), "");
+      }
       return;
     }
   }
 }
 
-void GlobalAcceleratorListenerLinux::BindShortcuts(
-    SessionContext& session_context) {
-  dbus::MethodCall method_call(kGlobalShortcutsInterface, kMethodBindShortcuts);
-  dbus::MessageWriter writer(&method_call);
-
-  writer.AppendObjectPath(session_context.session_proxy->object_path());
-
+void GlobalAcceleratorListenerLinux::BindShortcuts(DbusShortcuts old_shortcuts,
+                                                   std::string parent_handle) {
   DbusShortcuts shortcuts;
-  for (const auto& cmd_pair : session_context.commands) {
-    const auto& command = cmd_pair.second;
-
-    auto props = MakeDbusDictionary(
-        "description", DbusString(base::UTF16ToUTF8(command.description())));
-    if (command.accelerator().key_code()) {
-      props.PutAs(
-          "preferred_trigger",
-          DbusString(ui::AcceleratorToXdgShortcut(command.accelerator())));
+  for (auto& old_shortcut : old_shortcuts) {
+    const std::string& id = std::get<0>(old_shortcut);
+    dbus_xdg::Dictionary& properties = std::get<1>(old_shortcut);
+    dbus_xdg::Dictionary new_props;
+    auto description = TakeFromDict<std::string>(properties, "description");
+    if (description) {
+      new_props["description"] =
+          dbus_utils::Variant::Wrap<"s">(std::move(*description));
     }
-    shortcuts.value().push_back(
-        MakeDbusStruct(DbusString(command.command_name()), std::move(props)));
+    auto preferred_trigger =
+        TakeFromDict<std::string>(properties, "preferred_trigger");
+    if (preferred_trigger) {
+      new_props["preferred_trigger"] =
+          dbus_utils::Variant::Wrap<"s">(std::move(*preferred_trigger));
+    }
+    shortcuts.emplace_back(id, std::move(new_props));
   }
 
-  DbusString empty_parent_window;
-  session_context.request = std::make_unique<dbus_xdg::Request>(
+  for (const auto& [modified_id, bound_cmd] : bound_commands_) {
+    dbus_xdg::Dictionary props;
+    props["description"] = dbus_utils::Variant::Wrap<"s">(
+        base::UTF16ToUTF8(bound_cmd.command.description()));
+    std::string trigger =
+        AcceleratorToXdgShortcut(bound_cmd.command.accelerator());
+    if (set_preferred_trigger_ && !trigger.empty()) {
+      props["preferred_trigger"] =
+          dbus_utils::Variant::Wrap<"s">(std::move(trigger));
+    }
+    shortcuts.emplace_back(modified_id, std::move(props));
+  }
+
+  bind_state_ = BindState::kBindCalled;
+  request_ = std::make_unique<dbus_xdg::Request>(
       bus_, global_shortcuts_proxy_, kGlobalShortcutsInterface,
-      kMethodBindShortcuts,
-      MakeDbusParameters(
-          DbusObjectPath(session_context.session_proxy->object_path()),
-          std::move(shortcuts), std::move(empty_parent_window)),
-      DbusDictionary(),
+      kMethodBindShortcuts, dbus_xdg::Dictionary(),
       base::BindOnce(&GlobalAcceleratorListenerLinux::OnBindShortcuts,
-                     weak_ptr_factory_.GetWeakPtr()));
-  session_context.bind_shortcuts_called = true;
+                     weak_ptr_factory_.GetWeakPtr()),
+      session_->path(), std::move(shortcuts), std::move(parent_handle));
+}
+
+void GlobalAcceleratorListenerLinux::CloseSession() {
+  if (!session_) {
+    return;
+  }
+  session_.reset();
+  request_.reset();
+  bind_state_ = BindState::kNotBound;
 }
 
 void GlobalAcceleratorListenerLinux::OnBindShortcuts(
-    base::expected<DbusDictionary, dbus_xdg::ResponseError> results) {
+    base::expected<dbus_xdg::Dictionary, dbus_xdg::ResponseError> results) {
   if (!results.has_value()) {
     LOG(ERROR) << "Failed to call BindShortcuts (error code "
                << static_cast<int>(results.error()) << ").";
     return;
   }
-
-  // Shortcuts successfully bound. The signal also includes information about
-  // the bound shortcuts, but it's currently not needed.
-}
-
-void GlobalAcceleratorListenerLinux::RecreateSessionOnClosed(
-    const SessionKey& session_key,
-    dbus::Response* response) {
-  auto session_it = session_map_.find(session_key);
-  if (session_it == session_map_.end()) {
-    return;
+  // Shortcuts successfully bound.
+  if (bind_state_ == BindState::kNeedsRebind) {
+    CloseSession();
+    CreateSession();
+  } else {
+    CHECK_EQ(bind_state_, BindState::kBindCalled);
+    bind_state_ = BindState::kBound;
   }
-  CreateSession(*session_it);
 }
 
-void GlobalAcceleratorListenerLinux::OnActivatedSignal(dbus::Signal* signal) {
-  dbus::MessageReader reader(signal);
-  dbus::ObjectPath session_handle;
-  std::string shortcut_id;
-  uint64_t timestamp;
-
-  if (!reader.PopObjectPath(&session_handle) ||
-      !reader.PopString(&shortcut_id) || !reader.PopUint64(&timestamp)) {
+void GlobalAcceleratorListenerLinux::OnActivatedSignal(
+    dbus_utils::ConnectToSignalResultSig<"osta{sv}"> result) {
+  if (!result.has_value()) {
     LOG(ERROR) << "Failed to parse Activated signal.";
     return;
   }
 
-  // Find the corresponding accelerator
-  for (const auto& [session_key, session_context] : session_map_) {
-    if (session_context->session_proxy->object_path() == session_handle) {
-      session_context->observer->ExecuteCommand(
-          session_key.accelerator_group_id, shortcut_id);
-      break;
-    }
+  auto [session_handle, shortcut_id, timestamp, options] =
+      std::move(result.value());
+
+  // Only process the signal if it comes from our current session.
+  if (!session_ || session_->path() != session_handle) {
+    return;
   }
+
+  auto it = bound_commands_.find(shortcut_id);
+  if (it == bound_commands_.end()) {
+    return;
+  }
+
+  const auto& cmd = it->second;
+  cmd.execute_command.Run(cmd.accelerator_group_id, cmd.command.command_name());
 }
 
 void GlobalAcceleratorListenerLinux::OnSignalConnected(
@@ -352,23 +391,16 @@ void GlobalAcceleratorListenerLinux::OnSignalConnected(
   }
 }
 
-std::string GlobalAcceleratorListenerLinux::SessionKey::GetTokenKey() const {
-  return kSessionTokenPrefix +
-         base::HexEncode(
-             crypto::SHA256HashString(accelerator_group_id + profile_id))
-             .substr(0, 32);
+void GlobalAcceleratorListenerLinux::PruneStaleCommands() {
+  std::erase_if(bound_commands_, [](const auto& pair) {
+    return pair.second.execute_command.IsCancelled();
+  });
 }
 
-GlobalAcceleratorListenerLinux::SessionContext::SessionContext(
-    Observer* observer,
-    const ui::CommandMap& commands)
-    : observer(observer), commands(commands) {}
-
-GlobalAcceleratorListenerLinux::SessionContext::~SessionContext() {
-  if (session_proxy) {
-    bus->RemoveObjectProxy(kPortalServiceName, session_proxy->object_path(),
-                           base::DoNothing());
-  }
+bool GlobalAcceleratorListenerLinux::HasGlobalShortcuts() const {
+  return std::ranges::any_of(bound_commands_, [](const auto& pair) {
+    return pair.second.command.global();
+  });
 }
 
 }  // namespace ui

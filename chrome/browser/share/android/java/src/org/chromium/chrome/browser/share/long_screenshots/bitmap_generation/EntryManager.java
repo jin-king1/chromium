@@ -4,6 +4,8 @@
 
 package org.chromium.chrome.browser.share.long_screenshots.bitmap_generation;
 
+import static org.chromium.build.NullUtil.assertNonNull;
+
 import android.content.Context;
 import android.graphics.Point;
 import android.graphics.Rect;
@@ -12,6 +14,7 @@ import android.util.Size;
 import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.ObserverList;
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.share.long_screenshots.bitmap_generation.LongScreenshotsEntry.EntryStatus;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.components.paintpreview.player.CompositorStatus;
@@ -24,16 +27,17 @@ import java.util.List;
  * to generate and retrieve the needed bitmaps. Currently we generate the screenshot in one pass; to
  * obtain it call {@link generateFullpageEntry}.
  */
+@NullMarked
 public class EntryManager {
     // List of all entries in correspondence of the webpage.
-    private List<LongScreenshotsEntry> mEntries;
+    private final List<LongScreenshotsEntry> mEntries;
     // List of entries that are queued to generate the bitmap. Entries should only be queued
     // while the capture is in progress.
-    private List<LongScreenshotsEntry> mQueuedEntries;
+    private final List<LongScreenshotsEntry> mQueuedEntries;
     private BitmapGenerator mGenerator;
-    private ObserverList<BitmapGeneratorObserver> mGeneratorObservers;
+    private final ObserverList<BitmapGeneratorObserver> mGeneratorObservers;
     private @EntryStatus int mGeneratorStatus;
-    private ScreenshotBoundsManager mBoundsManager;
+    private final ScreenshotBoundsManager mBoundsManager;
 
     /**
      * Users of the {@link EntryManager} can implement this interface to be notified of changes to
@@ -69,14 +73,17 @@ public class EntryManager {
      * @param inMemory Use memory buffers to store the capture rather than temporary files.
      */
     public EntryManager(ScreenshotBoundsManager boundsManager, Tab tab, boolean inMemory) {
-        mEntries = new ArrayList<LongScreenshotsEntry>();
-        mQueuedEntries = new ArrayList<LongScreenshotsEntry>();
+        mEntries = new ArrayList<>();
+        mQueuedEntries = new ArrayList<>();
         mGeneratorObservers = new ObserverList<>();
         mBoundsManager = boundsManager;
 
         mGenerator = new BitmapGenerator(tab, mBoundsManager, createBitmapGeneratorCallback());
-        mGenerator.captureTab(inMemory);
+        // We need to set the status to CAPTURE_IN_PROGRESS before calling captureTab. captureTab
+        // will set the status based on its outcome, and setting the status to CAPTURE_IN_PROGRESS
+        // afterwards would overwrite the status, leading to race conditions in observers.
         updateGeneratorStatus(EntryStatus.CAPTURE_IN_PROGRESS);
+        mGenerator.captureTab(inMemory);
     }
 
     public BitmapGenerator getBitmapGeneratorForTesting() {
@@ -158,7 +165,9 @@ public class EntryManager {
 
         observer.onStatusChange(mGeneratorStatus);
         if (mGeneratorStatus == EntryStatus.CAPTURE_COMPLETE) {
-            observer.onCompositorReady(mGenerator.getContentSize(), mGenerator.getScrollOffset());
+            observer.onCompositorReady(
+                    assertNonNull(mGenerator.getContentSize()),
+                    assertNonNull(mGenerator.getScrollOffset()));
         }
     }
 
@@ -183,6 +192,7 @@ public class EntryManager {
 
                     Size contentSize = mGenerator.getContentSize();
                     Point scrollOffset = mGenerator.getScrollOffset();
+                    assert contentSize != null && scrollOffset != null;
                     for (BitmapGeneratorObserver observer : mGeneratorObservers) {
                         observer.onCompositorReady(contentSize, scrollOffset);
                     }
@@ -202,6 +212,7 @@ public class EntryManager {
         };
     }
 
+    @SuppressWarnings("NullAway")
     public void destroy() {
         if (mGenerator != null) {
             mGenerator.destroy();

@@ -8,9 +8,11 @@
 
 #include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/common/pref_names.h"
+#include "components/prefs/pref_service.h"
 #include "content/public/browser/browser_accessibility_state.h"
 #include "content/public/browser/focused_node_details.h"
 #include "ui/compositor/compositor.h"
@@ -86,7 +88,8 @@ AccessibilityFocusHighlight::AccessibilityFocusHighlight(
   DCHECK(browser_view);
 
   // Listen for preference changes.
-  profile_pref_registrar_.Init(browser_view_->browser()->profile()->GetPrefs());
+  profile_pref_registrar_.Init(
+      browser_view_->browser()->GetProfile()->GetPrefs());
   profile_pref_registrar_.Add(
       prefs::kAccessibilityFocusHighlightEnabled,
       base::BindRepeating(&AccessibilityFocusHighlight::AddOrRemoveObservers,
@@ -156,7 +159,7 @@ void AccessibilityFocusHighlight::CreateOrUpdateLayer(gfx::Rect node_bounds) {
 
   // Create the layer if needed.
   if (!layer_) {
-    layer_ = std::make_unique<ui::Layer>(ui::LAYER_TEXTURED);
+    layer_ = std::make_unique<ui::LayerTextured>();
     layer_->SetName("AccessibilityFocusHighlight");
     layer_->SetFillsBoundsOpaquely(false);
     root_layer->Add(layer_.get());
@@ -194,7 +197,7 @@ void AccessibilityFocusHighlight::CreateOrUpdateLayer(gfx::Rect node_bounds) {
 
   // Schedule the animation observer, or update it if needed.
   display::Display display =
-      display::Screen::GetScreen()->GetDisplayMatching(layer_bounds);
+      display::Screen::Get()->GetDisplayMatching(layer_bounds);
   ui::Compositor* compositor = root_layer->GetCompositor();
   if (compositor != compositor_) {
     if (compositor_ && compositor_->HasAnimationObserver(this)) {
@@ -221,7 +224,7 @@ void AccessibilityFocusHighlight::RemoveLayer() {
 
 void AccessibilityFocusHighlight::AddOrRemoveObservers() {
   Browser* browser = browser_view_->browser();
-  PrefService* prefs = browser->profile()->GetPrefs();
+  PrefService* prefs = browser->GetProfile()->GetPrefs();
   TabStripModel* tab_strip_model = browser->tab_strip_model();
 
   if (prefs->GetBoolean(prefs::kAccessibilityFocusHighlightEnabled)) {

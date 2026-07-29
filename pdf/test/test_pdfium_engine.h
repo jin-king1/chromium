@@ -9,6 +9,7 @@
 
 #include <vector>
 
+#include "base/containers/span.h"
 #include "base/values.h"
 #include "pdf/buildflags.h"
 #include "pdf/document_attachment_info.h"
@@ -59,7 +60,7 @@ class TestPDFiumEngine : public PDFiumEngine {
 
   MOCK_METHOD(std::vector<uint8_t>,
               PrintPages,
-              (const std::vector<int>&, const blink::WebPrintParams&),
+              (base::span<const int>, const blink::WebPrintParams&),
               (override));
 
   MOCK_METHOD(void, ZoomUpdated, (double), (override));
@@ -94,13 +95,24 @@ class TestPDFiumEngine : public PDFiumEngine {
               (const override));
 
   // Returns an empty bookmark list.
-  base::Value::List GetBookmarks() override;
+  base::ListValue GetBookmarks() override;
 
   MOCK_METHOD(void, SetGrayscale, (bool), (override));
 
-  uint32_t GetLoadedByteSize() override;
+  MOCK_METHOD(bool, IsPDFDocTagged, (), (const override));
 
-  bool ReadLoadedBytes(uint32_t length, void* buffer) override;
+  MOCK_METHOD(bool, HasMeaningfulText, (), (const override));
+
+  MOCK_METHOD(bool, HasJavaScript, (), (const override));
+
+  MOCK_METHOD(bool, IsPasswordProtected, (), (const override));
+
+  MOCK_METHOD(uint32_t, GetLoadedByteSize, (), (override));
+
+  MOCK_METHOD(bool,
+              ReadLoadedBytes,
+              (uint32_t, base::span<uint8_t>),
+              (override));
 
   MOCK_METHOD(void,
               RequestThumbnail,
@@ -108,6 +120,23 @@ class TestPDFiumEngine : public PDFiumEngine {
               (override));
 
 #if BUILDFLAG(ENABLE_PDF_INK2)
+  MOCK_METHOD(void,
+              AddFont,
+              (FontId, const std::string&, base::span<const uint8_t>),
+              (override));
+
+  MOCK_METHOD(void,
+              DrawText,
+              (int,
+               InkTextId,
+               base::span<const InkTextInfo>,
+               float,
+               double,
+               const InkTextBoxAttributes&),
+              (override));
+
+  MOCK_METHOD(void, UpdateTextActiveAndInvalidate, (TextId, bool), (override));
+
   MOCK_METHOD(gfx::Size, GetThumbnailSize, (int, float), (override));
 
   MOCK_METHOD(void,
@@ -119,9 +148,11 @@ class TestPDFiumEngine : public PDFiumEngine {
 
   MOCK_METHOD(void, DiscardStroke, (int, InkStrokeId), (override));
 
-  MOCK_METHOD(PDFLoadedWithV2InkAnnotations,
-              ContainsV2InkPath,
-              (const base::TimeDelta&),
+  MOCK_METHOD(void, DiscardText, (InkTextId), (override));
+
+  MOCK_METHOD(InkIdentifiers,
+              ScanForInkAnnotations,
+              (base::TimeDelta),
               (const override));
 
   MOCK_METHOD((std::map<InkModeledShapeId, ink::PartitionedMesh>),
@@ -133,9 +164,28 @@ class TestPDFiumEngine : public PDFiumEngine {
               UpdateShapeActive,
               (int, InkModeledShapeId, bool),
               (override));
+
+  MOCK_METHOD(bool, ExtendSelectionByPoint, (const gfx::PointF&), (override));
+
+  MOCK_METHOD(gfx::Transform, GetCanonicalToPdfTransform, (int), (override));
+
+  MOCK_METHOD((std::map<int, std::vector<PdfRect>>),
+              GetSelectionRectMap,
+              (),
+              (override));
+
+  MOCK_METHOD(bool,
+              IsSelectableTextOrLinkArea,
+              (const gfx::PointF&),
+              (override));
+
+  MOCK_METHOD(void,
+              OnTextOrLinkAreaClick,
+              (const gfx::PointF&, int),
+              (override));
 #endif  // BUILDFLAG(ENABLE_PDF_INK2)
 
-  std::vector<uint8_t> GetSaveData() override;
+  MOCK_METHOD(std::vector<uint8_t>, GetSaveData, (), (override));
 
   MOCK_METHOD(void, SetCaretPosition, (const gfx::Point&), (override));
 
@@ -143,12 +193,20 @@ class TestPDFiumEngine : public PDFiumEngine {
 
   MOCK_METHOD(void, SetFormHighlight, (bool), (override));
 
-  MOCK_METHOD(void,
-              HighlightTextFragments,
-              (const base::span<const std::string>),
+  MOCK_METHOD(bool,
+              FindAndHighlightTextFragments,
+              (base::span<const std::string>),
               (override));
 
+  MOCK_METHOD(void, ScrollToFirstTextFragment, (bool), (override));
+
+  MOCK_METHOD(void, RemoveTextFragments, (), (override));
+
   MOCK_METHOD(void, ClearTextSelection, (), (override));
+
+  MOCK_METHOD(void, SetCaretBrowsingEnabled, (bool), (override));
+
+  MOCK_METHOD(void, SetCaretBlinkInterval, (base::TimeDelta), (override));
 
  protected:
   std::vector<DocumentAttachmentInfo>& doc_attachment_info_list() {

@@ -14,13 +14,13 @@
 #include "ash/constants/ash_constants.h"
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
+#include "ash/constants/url_constants.h"
 #include "ash/public/cpp/accessibility_controller_enums.h"
 #include "ash/public/cpp/tablet_mode.h"
 #include "base/command_line.h"
 #include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "base/metrics/histogram_functions.h"
-#include "chrome/browser/accessibility/accessibility_state_utils.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/speech/extension_api/tts_engine_extension_observer_chromeos.h"
 #include "chrome/browser/speech/extension_api/tts_engine_extension_observer_chromeos_factory.h"
@@ -34,7 +34,6 @@
 #include "chrome/browser/ui/webui/settings/captions_handler.h"
 #include "chrome/browser/ui/webui/settings/font_handler.h"
 #include "chrome/browser/ui/webui/settings/shared_settings_localized_strings_provider.h"
-#include "chrome/common/url_constants.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/live_caption/caption_util.h"
 #include "components/prefs/pref_service.h"
@@ -44,10 +43,10 @@
 #include "extensions/browser/extension_system.h"
 #include "ui/accessibility/accessibility_features.h"
 #include "ui/accessibility/accessibility_switches.h"
+#include "ui/accessibility/platform/ax_platform.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/webui/web_ui_util.h"
 #include "ui/events/ash/keyboard_layout_util.h"
-#include "ui/native_theme/features/native_theme_features.h"
 #include "ui/webui/webui_util.h"
 
 namespace ash::settings {
@@ -328,6 +327,12 @@ base::span<const SearchConcept> GetA11ySearchConcepts() {
        {IDS_OS_SETTINGS_TAG_A11Y_REDUCED_ANIMATIONS_ALT1,
         IDS_OS_SETTINGS_TAG_A11Y_REDUCED_ANIMATIONS_ALT2,
         SearchConcept::kAltTagEnd}},
+      {IDS_OS_SETTINGS_TAG_A11Y_ALWAYS_SHOW_SCROLLBARS,
+       mojom::kDisplayAndMagnificationSubpagePath,
+       mojom::SearchResultIcon::kAlwaysShowScrollbars,
+       mojom::SearchResultDefaultRank::kMedium,
+       mojom::SearchResultType::kSetting,
+       {.setting = mojom::Setting::kAlwaysShowScrollbarsEnabled}},
   });
   return tags;
 }
@@ -605,16 +610,8 @@ bool IsAccessibilityReducedAnimationsEnabled() {
   return ::features::IsAccessibilityReducedAnimationsEnabled();
 }
 
-bool isAccessibilityAlwaysShowScrollbarsEnabled() {
-  return ::features::IsOverlayScrollbarOSSettingEnabled();
-}
-
 bool IsAccessibilityMagnifierFollowsChromeVoxEnabled() {
   return ::features::IsAccessibilityMagnifierFollowsChromeVoxEnabled();
-}
-
-bool IsAccessibilityFaceGazeEnabled() {
-  return ::features::IsAccessibilityFaceGazeEnabled();
 }
 
 bool IsAccessibilityMouseKeysEnabled() {
@@ -627,14 +624,6 @@ bool IsAccessibilityDisableTouchpadEnabled() {
 
 bool IsAccessibilityFlashNotificationFeatureEnabled() {
   return ::features::IsAccessibilityFlashScreenFeatureEnabled();
-}
-
-bool IsAccessibilityBounceKeysEnabled() {
-  return ::features::IsAccessibilityBounceKeysEnabled();
-}
-
-bool IsAccessibilitySlowKeysEnabled() {
-  return ::features::IsAccessibilitySlowKeysEnabled();
 }
 
 }  // namespace
@@ -757,6 +746,8 @@ void AccessibilitySection::AddLoadTimeData(
        IDS_OS_SETTINGS_ACCESSIBILITY_BOUNCE_KEYS_DELAY_SLIDER_SHORT},
       {"bounceKeysDelaySliderLong",
        IDS_OS_SETTINGS_ACCESSIBILITY_BOUNCE_KEYS_DELAY_SLIDER_LONG},
+      {"disabilitySupportTitle",
+       IDS_SETTINGS_ACCESSIBILITY_DISABILITY_SUPPORT_TITLE},
       {"mouseKeysLabel", IDS_OS_SETTINGS_ACCESSIBILITY_MOUSE_KEYS_LABEL},
       {"mouseKeysDescription",
        IDS_OS_SETTINGS_ACCESSIBILITY_MOUSE_KEYS_DESCRIPTION},
@@ -939,6 +930,7 @@ void AccessibilitySection::AddLoadTimeData(
       {"cursorColorMagenta", IDS_SETTINGS_CURSOR_COLOR_MAGENTA},
       {"cursorColorOptionsLabel", IDS_SETTINGS_CURSOR_COLOR_OPTIONS_LABEL},
       {"cursorColorPink", IDS_SETTINGS_CURSOR_COLOR_PINK},
+      {"cursorColorInverted", IDS_SETTINGS_CURSOR_COLOR_INVERTED},
       {"cursorColorRed", IDS_SETTINGS_CURSOR_COLOR_RED},
       {"cursorColorYellow", IDS_SETTINGS_CURSOR_COLOR_YELLOW},
       {"cursorHighlightLabel",
@@ -1567,10 +1559,10 @@ void AccessibilitySection::AddLoadTimeData(
   html_source->AddLocalizedStrings(kLocalizedStrings);
 
   html_source->AddString("a11yLearnMoreUrl",
-                         chrome::kChromeAccessibilityHelpURL);
+                         ash::external_urls::kAccessibilityHelpURL);
 
   html_source->AddString("selectToSpeakLearnMoreUrl",
-                         chrome::kSelectToSpeakLearnMoreURL);
+                         ash::external_urls::kSelectToSpeakLearnMoreURL);
 
   html_source->AddString(
       "displayAndMagnificationLinkDescription",
@@ -1596,21 +1588,16 @@ void AccessibilitySection::AddLoadTimeData(
                           AreTabletNavigationButtonsAllowed());
 
   html_source->AddString("tabletModeShelfNavigationButtonsLearnMoreUrl",
-                         chrome::kTabletModeGesturesLearnMoreURL);
+                         ash::external_urls::kTabletModeGesturesLearnMoreURL);
 
   html_source->AddBoolean("isAccessibilityReducedAnimationsEnabled",
                           IsAccessibilityReducedAnimationsEnabled());
 
-  html_source->AddBoolean("isAccessibilityAlwaysShowScrollbarsEnabled",
-                          isAccessibilityAlwaysShowScrollbarsEnabled());
-
   html_source->AddBoolean("isAccessibilityMagnifierFollowsChromeVoxEnabled",
                           IsAccessibilityMagnifierFollowsChromeVoxEnabled());
 
-  html_source->AddBoolean("isAccessibilityFaceGazeEnabled",
-                          IsAccessibilityFaceGazeEnabled());
-
-  html_source->AddString("faceGazeLearnMoreUrl", chrome::kFaceGazeLearnMoreURL);
+  html_source->AddString("faceGazeLearnMoreUrl",
+                         ash::external_urls::kFaceGazeLearnMoreURL);
 
   html_source->AddBoolean("isAccessibilityDisableTouchpadEnabled",
                           IsAccessibilityDisableTouchpadEnabled());
@@ -1621,14 +1608,14 @@ void AccessibilitySection::AddLoadTimeData(
   html_source->AddBoolean("isAccessibilityFlashNotificationFeatureEnabled",
                           IsAccessibilityFlashNotificationFeatureEnabled());
 
-  html_source->AddBoolean("isAccessibilityBounceKeysEnabled",
-                          IsAccessibilityBounceKeysEnabled());
+  html_source->AddBoolean(
+      "isAccessibilityInvertedMouseCursorEnabled",
+      ::features::IsAccessibilityInvertedMouseCursorEnabled());
+
   html_source->AddInteger(
       "defaultBounceKeysDelayMillis",
       kDefaultAccessibilityBounceKeysDelay.InMilliseconds());
 
-  html_source->AddBoolean("isAccessibilitySlowKeysEnabled",
-                          IsAccessibilitySlowKeysEnabled());
   html_source->AddInteger("defaultSlowKeysDelayMillis",
                           kDefaultAccessibilitySlowKeysDelay.InMilliseconds());
 
@@ -2042,7 +2029,7 @@ void AccessibilitySection::UpdateTextToSpeechEnginesSearchTags() {
 void AccessibilitySection::UpdateSearchTags() {
   SearchTagRegistry::ScopedTagUpdater updater = registry()->StartUpdate();
 
-  if (accessibility_state_utils::IsScreenReaderEnabled()) {
+  if (ui::AXPlatform::GetInstance().IsScreenReaderActive()) {
     updater.AddSearchTags(GetA11yLabelsSearchConcepts());
   } else {
     updater.RemoveSearchTags(GetA11yLabelsSearchConcepts());
@@ -2082,17 +2069,10 @@ void AccessibilitySection::UpdateSearchTags() {
     updater.AddSearchTags(GetA11yFlashNotificationsSearchConcepts());
   }
 
-  if (IsAccessibilityFaceGazeEnabled()) {
-    updater.AddSearchTags(GetA11yFaceGazeSearchConcepts());
-  }
+  updater.AddSearchTags(GetA11yFaceGazeSearchConcepts());
 
-  if (IsAccessibilityBounceKeysEnabled()) {
-    updater.AddSearchTags(GetA11yBounceKeysSearchConcepts());
-  }
-
-  if (IsAccessibilitySlowKeysEnabled()) {
-    updater.AddSearchTags(GetA11ySlowKeysSearchConcepts());
-  }
+  updater.AddSearchTags(GetA11yBounceKeysSearchConcepts());
+  updater.AddSearchTags(GetA11ySlowKeysSearchConcepts());
 
   if (IsAccessibilityMouseKeysEnabled()) {
     updater.AddSearchTags(GetA11yMouseKeysSearchConcepts());

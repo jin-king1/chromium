@@ -6,23 +6,24 @@
 
 #include "base/apple/foundation_util.h"
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
 #include "base/mac/mac_util.h"
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/run_loop.h"
 #include "base/strings/escape.h"
 #include "base/strings/sys_string_conversions.h"
+#include "base/threading/hang_watcher.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/global_keyboard_shortcuts_mac.h"
 #include "chrome/browser/platform_util.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
-#include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #import "chrome/browser/ui/cocoa/accelerators_cocoa.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/omnibox/browser/location_bar_model.h"
 #include "net/base/apple/url_conversions.h"
@@ -31,6 +32,7 @@
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/image/image.h"
 #include "ui/gfx/mac/coordinate_conversion.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/snapshot/snapshot.h"
 #include "ui/views/view.h"
 
@@ -47,11 +49,14 @@ NSString* const kRemindersSharingServiceName =
     @"com.apple.reminders.RemindersShareExtension";
 
 bool CanShare() {
-  Browser* last_active_browser = chrome::FindLastActive();
+  BrowserWindowInterface* last_active_browser =
+      GlobalBrowserCollection::GetInstance()->GetLastActiveBrowser();
   return last_active_browser &&
-         last_active_browser->location_bar_model()->ShouldDisplayURL() &&
-         last_active_browser->tab_strip_model()->GetActiveWebContents() &&
-         last_active_browser->tab_strip_model()
+         last_active_browser->GetFeatures()
+             .location_bar_model()
+             ->ShouldDisplayURL() &&
+         last_active_browser->GetTabStripModel()->GetActiveWebContents() &&
+         last_active_browser->GetTabStripModel()
              ->GetActiveWebContents()
              ->GetLastCommittedURL()
              .is_valid();
@@ -80,7 +85,17 @@ bool CanShare() {
                       action:(SEL*)action {
   // Load the menu if it hasn't loaded already.
   if (!menu.numberOfItems) {
-    [self menuNeedsUpdate:menu];
+    // Only populate the "Email Link" item, as it is the only item with a key
+    // equivalent. We defer the expensive population of sharing services until
+    // the menu is actually opened (see menuNeedsUpdate:).
+    // This prevents hangs on key presses when the menu is not open.
+    // See https://crbug.com/40829755.
+    NSMenuItem* email = [[NSMenuItem alloc]
+        initWithTitle:l10n_util::GetNSString(IDS_EMAIL_LINK_MAC)
+               action:@selector(emailLink:)
+        keyEquivalent:[self keyEquivalentForMail]];
+    email.target = self;
+    [menu addItem:email];
   }
   // Per tapted@'s comment in BookmarkMenuCocoaController, it's fine
   // to return NO here if an item will handle this. This is why it's
@@ -91,24 +106,37 @@ bool CanShare() {
 - (void)menuNeedsUpdate:(NSMenu*)menu {
   [menu removeAllItems];
 
+  // Fetching sharing services can take unbounded time since ShareKit enumerates
+  // sharing service plugins from the filesystem. This can hang due to TCC
+  // (Transparency, Consent, and Control) permissions or slow disk I/O. Never
+  // consider the current WatchHangsInScope as hung. HangWatching will resume
+  // when the next task is pumped. See https://crbug.com/40829755.
+  base::HangWatcher::InvalidateActiveExpectations();
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
   // Using a real URL instead of empty string to avoid system log about relative
   // URLs in the pasteboard. This URL will not actually be shared to, just used
   // to fetch sharing services that can handle the NSURL type.
+  //
+  // +[NSSharingService sharingServicesForItems:] is deprecated in macOS 13, but
+  // the replacement is not adequate for our usage. It creates a menu item that
+  // shows a picker that we're not in control of, and conflicts with existing
+  // menu items. See https://crbug.com/40846334 for the investigation into the
+  // replacement API and why it can't be used.
   NSArray* services = [NSSharingService
       sharingServicesForItems:@[ [NSURL URLWithString:@"https://google.com"] ]];
-  bool directMail =
-      base::FeatureList::IsEnabled(features::kMacDirectEmailShare);
-  if (directMail) {
-    NSMenuItem* email = [[NSMenuItem alloc]
-        initWithTitle:l10n_util::GetNSString(IDS_EMAIL_LINK_MAC)
-               action:@selector(emailLink:)
-        keyEquivalent:[self keyEquivalentForMail]];
-    email.target = self;
-    [menu addItem:email];
-  }
+#pragma clang diagnostic pop
+  NSMenuItem* email = [[NSMenuItem alloc]
+      initWithTitle:l10n_util::GetNSString(IDS_EMAIL_LINK_MAC)
+             action:@selector(emailLink:)
+      keyEquivalent:[self keyEquivalentForMail]];
+  email.target = self;
+  [menu addItem:email];
   for (NSSharingService* service in services) {
-    if (directMail &&
-        [service.name isEqualToString:NSSharingServiceNameComposeEmail]) {
+    // Email share service causes mysterious crashes, so share directly.
+    // See https://crbug.com/356643975
+    if ([service.name isEqualToString:NSSharingServiceNameComposeEmail]) {
       continue;
     }
     // Don't include "Add to Reading List".
@@ -175,9 +203,9 @@ bool CanShare() {
 
 // Saves details required by delegate methods for the transition animation, and
 // calls the provided closure when done.
-- (void)saveTransitionDataFromBrowser:(Browser*)browser
+- (void)saveTransitionDataFromBrowser:(BrowserWindowInterface*)browser
                          whenComplete:(base::OnceClosure)closure {
-  _windowForShare = browser->window()->GetNativeWindow().GetNativeNSWindow();
+  _windowForShare = browser->GetWindow()->GetNativeWindow().GetNativeNSWindow();
   BrowserView* browserView = BrowserView::GetBrowserViewForBrowser(browser);
   if (!browserView) {
     return;
@@ -195,7 +223,7 @@ bool CanShare() {
 
   gfx::Rect rectInWidget =
       browserView->ConvertRectToWidget(contentsView->bounds());
-  ui::GrabWindowSnapshot(_windowForShare, rectInWidget,
+  ui::GrabWindowSnapshot(gfx::NativeWindow(_windowForShare), rectInWidget,
                          base::BindOnce(
                              [](ShareMenuController* controller,
                                 base::OnceClosure closure, gfx::Image image) {
@@ -219,11 +247,12 @@ bool CanShare() {
 // Performs the share action using the sharing service represented by |sender|.
 - (void)performShare:(NSMenuItem*)sender {
   CHECK(CanShare());
-  Browser* browser = chrome::FindLastActive();
+  BrowserWindowInterface* browser =
+      GlobalBrowserCollection::GetInstance()->GetLastActiveBrowser();
   CHECK(browser);
 
   content::WebContents* contents =
-      browser->tab_strip_model()->GetActiveWebContents();
+      browser->GetTabStripModel()->GetActiveWebContents();
   CHECK(contents);
   NSURL* url = net::NSURLWithGURL(contents->GetLastCommittedURL());
   NSString* title = base::SysUTF16ToNSString(contents->GetTitle());
@@ -256,16 +285,17 @@ bool CanShare() {
 // Opens the "Sharing" subpane of the "Extensions" macOS preference pane.
 - (void)openSharingPrefs:(NSMenuItem*)sender {
   base::mac::OpenSystemSettingsPane(
-      base::mac::SystemSettingsPane::kPrivacySecurity_Extensions_Sharing);
+      base::mac::SystemSettingsPane::kGeneral_LoginItems_Extensions_Sharing);
 }
 
 - (void)emailLink:(id)sender {
   CHECK(CanShare());
-  Browser* browser = chrome::FindLastActive();
+  BrowserWindowInterface* browser =
+      GlobalBrowserCollection::GetInstance()->GetLastActiveBrowser();
   CHECK(browser);
 
   content::WebContents* contents =
-      browser->tab_strip_model()->GetActiveWebContents();
+      browser->GetTabStripModel()->GetActiveWebContents();
   CHECK(contents);
   std::string title = base::EscapeQueryParamValue(
       base::UTF16ToUTF8(contents->GetTitle()), false);
@@ -289,13 +319,9 @@ bool CanShare() {
 
 // Creates a menu item that calls |service| when invoked.
 - (NSMenuItem*)menuItemForService:(NSSharingService*)service {
-  BOOL isMail = [service.name isEqual:NSSharingServiceNameComposeEmail];
-  NSString* keyEquivalent = isMail ? [self keyEquivalentForMail] : @"";
-  NSString* title = isMail ? l10n_util::GetNSString(IDS_EMAIL_LINK_MAC)
-                           : service.menuItemTitle;
-  NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:title
+  NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:service.menuItemTitle
                                                 action:@selector(performShare:)
-                                         keyEquivalent:keyEquivalent];
+                                         keyEquivalent:@""];
   item.target = self;
   item.image = service.image;
   item.representedObject = service;

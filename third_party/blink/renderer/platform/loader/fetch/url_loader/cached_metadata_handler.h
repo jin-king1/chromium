@@ -46,7 +46,7 @@ class PLATFORM_EXPORT CachedMetadataSender {
 
   static void SendToCodeCacheHost(CodeCacheHost*,
                                   mojom::blink::CodeCacheType,
-                                  WTF::String,
+                                  String,
                                   base::Time,
                                   const String&,
                                   base::span<const uint8_t>);
@@ -194,8 +194,9 @@ class CachedMetadataHandler : public GarbageCollected<CachedMetadataHandler> {
     // Do nothing.
   }
 
-  // Called if the code cache data was used. Intended for logging.
-  virtual void DidUseCodeCache() {}
+  // Called if the code cache data was used. `was_rejected` is true if V8
+  // consumed but rejected the code cache. Intended for logging.
+  virtual void DidUseCodeCache(bool was_rejected) {}
 
   // Called when a code cache will eventually be generated. It won't necessarily
   // be generated immediately. Intended for logging.

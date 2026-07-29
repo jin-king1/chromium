@@ -6,6 +6,7 @@
 
 #import "base/memory/ptr_util.h"
 #import "base/no_destructor.h"
+#import "components/application_locale_storage/application_locale_storage.h"
 #import "ios/chrome/browser/autofill/model/validation_rules_storage_factory.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "services/network/public/cpp/shared_url_loader_factory.h"
@@ -17,13 +18,13 @@ namespace autofill {
 namespace {
 
 std::unique_ptr<::i18n::addressinput::Source> GetAddressInputSource() {
-  return base::WrapUnique(new autofill::ChromeMetadataSource(
+  return base::WrapUnique(new ChromeMetadataSource(
       I18N_ADDRESS_VALIDATION_DATA_URL,
       GetApplicationContext()->GetSharedURLLoaderFactory()));
 }
 
 std::unique_ptr<::i18n::addressinput::Storage> GetAddressInputStorage() {
-  return autofill::ValidationRulesStorageFactory::CreateStorage();
+  return ValidationRulesStorageFactory::CreateStorage();
 }
 
 }  // namespace
@@ -35,9 +36,10 @@ AddressNormalizer* AddressNormalizerFactory::GetInstance() {
 }
 
 AddressNormalizerFactory::AddressNormalizerFactory()
-    : address_normalizer_(GetAddressInputSource(),
-                          GetAddressInputStorage(),
-                          GetApplicationContext()->GetApplicationLocale()) {}
+    : address_normalizer_(
+          GetAddressInputSource(),
+          GetAddressInputStorage(),
+          GetApplicationContext()->GetApplicationLocaleStorage()->Get()) {}
 
 AddressNormalizerFactory::~AddressNormalizerFactory() {}
 

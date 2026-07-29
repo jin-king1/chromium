@@ -15,9 +15,13 @@
 #include "base/trace_event/trace_event.h"
 #include "media/base/audio_bus.h"
 #include "media/base/audio_glitch_info.h"
+#include "media/base/audio_sample_types.h"
 #include "third_party/blink/public/platform/modules/webrtc/webrtc_logging.h"
 
 namespace blink {
+
+BASE_FEATURE(kPropagateEnabledEventForWebRtcAudioTrack,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 namespace {
 // Used as an identifier for the down-casters.
@@ -62,12 +66,17 @@ void PeerConnectionRemoteAudioTrack::SetEnabled(bool enabled) {
       "PCRAT::SetEnabled([id=%s] {enabled=%s})", track_interface_->id().c_str(),
       base::ToString(enabled).c_str()));
 
-  // TODO(crbug.com/40849402): AudioTrackInterface::set_enabled() is not called
-  // because doing so would set the volume to 0 for the source level in the
-  // receiving audio in the WebRTC side.
-  // For now, we skip calling AudioTrackInterface::set_enabled() to avoid these
-  // issues. We need to monitor this approach to ensure that skipping
-  // set_enabled() does not introduce regressions.
+  if (!base::FeatureList::IsEnabled(
+          kPropagateEnabledEventForWebRtcAudioTrack)) {
+    // This affects the shared state of the source for whether or not it's a
+    // part of the mixed audio that's rendered for remote tracks from WebRTC.
+    // All tracks from the same source will share this state and thus can step
+    // on each other's toes.
+    // This is also why we can't check the enabled state for equality with
+    // |enabled| before setting the mixing enabled state. This track's enabled
+    // state and the shared state might not be the same.
+    track_interface_->set_enabled(enabled);
+  }
 
   MediaStreamAudioTrack::SetEnabled(enabled);
 }
@@ -153,9 +162,16 @@ void PeerConnectionRemoteAudioSource::OnData(const void* audio_data,
 
   // Only 16 bits per sample is ever used. The FromInterleaved() call should
   // be updated if that is no longer the case.
-  DCHECK_EQ(bits_per_sample, 16);
-  audio_bus_->FromInterleaved<media::SignedInt16SampleTypeTraits>(
-      reinterpret_cast<const int16_t*>(audio_data), frames_int);
+  CHECK_EQ(bits_per_sample, 16);
+
+  size_t total_samples =
+      base::CheckMul(number_of_channels, number_of_frames).ValueOrDie();
+
+  // SAFETY: Per interface contract, `data` should contain `number_of_frames` *
+  // `number_of_channels` samples, each sample being `sizeof(int16_t)` wide.
+  auto source = UNSAFE_BUFFERS(
+      base::span(reinterpret_cast<const int16_t*>(audio_data), total_samples));
+  audio_bus_->FromInterleaved<media::SignedInt16SampleTypeTraits>(source);
 
   media::AudioParameters params = MediaStreamAudioSource::GetAudioParameters();
   if (!params.IsValid() ||

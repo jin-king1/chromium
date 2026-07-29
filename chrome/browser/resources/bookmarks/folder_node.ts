@@ -14,12 +14,12 @@ import type {PropertyValues} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
 import {changeFolderOpen, selectFolder} from './actions.js';
 import {BookmarksCommandManagerElement} from './command_manager.js';
-import {FOLDER_OPEN_BY_DEFAULT_DEPTH, MenuSource, ROOT_NODE_ID} from './constants.js';
+import {LOCAL_HEADING_NODE_ID, MenuSource, ROOT_NODE_ID} from './constants.js';
 import {getCss} from './folder_node.css.js';
 import {getHtml} from './folder_node.html.js';
 import {StoreClientMixinLit} from './store_client_mixin_lit.js';
 import type {BookmarkNode, BookmarksPageState} from './types.js';
-import {hasChildFolders, isShowingSearch} from './util.js';
+import {hasChildFolders, isRootNode, isShowingSearch} from './util.js';
 
 const BookmarksFolderNodeElementBase = StoreClientMixinLit(CrLitElement);
 
@@ -62,20 +62,15 @@ export class BookmarksFolderNodeElement extends BookmarksFolderNodeElementBase {
     };
   }
 
-  depth: number = -1;
-  isOpen: boolean = false;
-  itemId: string = '';
-  protected item_?: BookmarkNode;
-  private openState_: boolean|null = null;
-  private selectedFolder_: string = '';
-  private searchActive_: boolean = false;
-  protected isSelectedFolder_: boolean = false;
-  protected hasChildFolder_: boolean = false;
-
-  override firstUpdated(changedProperties: PropertyValues<this>) {
-    super.firstUpdated(changedProperties);
-    this.addEventListener('keydown', e => this.onKeydown_(e));
-  }
+  accessor depth: number = -1;
+  accessor isOpen: boolean = false;
+  accessor itemId: string = '';
+  protected accessor item_: BookmarkNode|undefined;
+  private accessor openState_: boolean|null = null;
+  private accessor selectedFolder_: string = '';
+  private accessor searchActive_: boolean = false;
+  protected accessor isSelectedFolder_: boolean = false;
+  protected accessor hasChildFolder_: boolean = false;
 
   override connectedCallback() {
     super.connectedCallback();
@@ -93,9 +88,12 @@ export class BookmarksFolderNodeElement extends BookmarksFolderNodeElementBase {
         changedProperties as Map<PropertyKey, unknown>;
     if (changedProperties.has('depth') ||
         changedPrivateProperties.has('openState_')) {
-      this.isOpen = this.openState_ !== null ?
-          this.openState_ :
-          this.depth <= FOLDER_OPEN_BY_DEFAULT_DEPTH;
+      // If account nodes exist, the permanent account nodes should be visible,
+      // while the local ones are collapsed.
+      const defaultOpenState =
+          isRootNode(this.itemId) && this.itemId !== LOCAL_HEADING_NODE_ID;
+      this.isOpen =
+          this.openState_ !== null ? this.openState_ : defaultOpenState;
     }
 
     if (changedProperties.has('itemId') ||
@@ -113,6 +111,11 @@ export class BookmarksFolderNodeElement extends BookmarksFolderNodeElementBase {
       this.hasChildFolder_ =
           hasChildFolders(this.itemId, this.getState().nodes);
     }
+  }
+
+  override firstUpdated(changedProperties: PropertyValues<this>) {
+    super.firstUpdated(changedProperties);
+    this.addEventListener('keydown', e => this.onKeydown_(e));
   }
 
   override updated(changedProperties: PropertyValues<this>) {
@@ -281,7 +284,7 @@ export class BookmarksFolderNodeElement extends BookmarksFolderNodeElementBase {
       // A child node's predecessor is either the previous child's last visible
       // descendant, or this node, which is its immediate parent.
       newFocus =
-          index === 0 ? null : children[index - 1].getLastVisibleDescendant();
+          index === 0 ? null : children[index - 1]!.getLastVisibleDescendant();
     } else if (index < children.length - 1) {
       // A successor to a child is the next child.
       newFocus = children[index + 1]!;
@@ -313,15 +316,23 @@ export class BookmarksFolderNodeElement extends BookmarksFolderNodeElementBase {
     return children.pop()!.getLastVisibleDescendant();
   }
 
-  protected selectFolder_() {
+  protected onFolderClick_() {
+    this.selectFolder_();
+  }
+
+  private selectFolder_() {
     if (!this.isSelectedFolder_) {
       this.dispatch(selectFolder(this.itemId, this.getState().nodes));
     }
   }
 
-  protected onContextMenu_(e: MouseEvent) {
+  protected onContextmenu_(e: MouseEvent) {
     e.preventDefault();
     this.selectFolder_();
+    // Disable the context menu for root nodes.
+    if (isRootNode(this.itemId)) {
+      return;
+    }
     BookmarksCommandManagerElement.getInstance().openCommandMenuAtPosition(
         e.clientX, e.clientY, MenuSource.TREE, new Set([this.itemId]));
   }
@@ -334,12 +345,20 @@ export class BookmarksFolderNodeElement extends BookmarksFolderNodeElementBase {
   /**
    * Toggles whether the folder is open.
    */
-  protected toggleFolder_(e: Event) {
+  private toggleFolder_(e: Event) {
     this.dispatch(changeFolderOpen(this.itemId, !this.isOpen));
     e.stopPropagation();
   }
 
-  protected preventDefault_(e: Event) {
+  protected onFolderDblclick_(e: Event) {
+    this.toggleFolder_(e);
+  }
+
+  protected onArrowClick_(e: Event) {
+    this.toggleFolder_(e);
+  }
+
+  protected onArrowMousedown_(e: Event) {
     e.preventDefault();
   }
 
@@ -348,10 +367,14 @@ export class BookmarksFolderNodeElement extends BookmarksFolderNodeElementBase {
   }
 
   protected getFolderChildren_(): string[] {
-    return !this.item_?.children ?
-        [] :
-        this.item_.children.filter(
-            itemId => !this.getState().nodes[itemId].url);
+    const children = this.item_?.children;
+    const nodes = this.getState()?.nodes;
+    if (!Array.isArray(children) || !nodes) {
+      return [];
+    }
+    return children.filter(itemId => {
+      return !nodes[itemId]?.url;  // safely access .url only if node exists
+    });
   }
 
   protected isRootFolder_(): boolean {
@@ -363,6 +386,11 @@ export class BookmarksFolderNodeElement extends BookmarksFolderNodeElementBase {
     // search is active, even though this node is not technically selected. This
     // allows the sidebar to be focusable during a search.
     return this.selectedFolder_ === this.itemId ? '0' : '-1';
+  }
+
+  protected getAriaLevel_(): number {
+    // Converts (-1)-indexed depth to 1-based ARIA level.
+    return this.depth + 2;
   }
 
   /**
@@ -385,9 +413,6 @@ export class BookmarksFolderNodeElement extends BookmarksFolderNodeElementBase {
     this.$.container.scrollIntoViewIfNeeded();
   }
 }
-
-// Exported for the autogenerated Lit .html.ts template file.
-export type FolderNodeElement = BookmarksFolderNodeElement;
 
 declare global {
   interface HTMLElementTagNameMap {

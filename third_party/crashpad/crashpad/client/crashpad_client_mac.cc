@@ -64,13 +64,13 @@ std::string FormatArgumentInt(const std::string& name, int value) {
 // reasons, an EXC_CRASH exception will be sent. See 10.9.5
 // xnu-2422.115.4/bsd/kern/kern_exit.c proc_prepareexit().
 //
-// EXC_RESOURCE and EXC_GUARD do not become signals or EXC_CRASH exceptions. The
-// host-level exception handler in the kernel does not receive these exception
-// types, and even if it did, it would not map them to signals. Instead, the
-// first Mach service loaded by the root (process ID 1) launchd with a boolean
-// “ExceptionServer” property in its job dictionary (regardless of its value) or
-// with any subdictionary property will become the host-level exception handler
-// for EXC_CRASH, EXC_RESOURCE, and EXC_GUARD. See 10.9.5
+// EXC_RESOURCE and EXC_GUARD (pre-macOS 13) do not become signals or EXC_CRASH
+// exceptions. The host-level exception handler in the kernel does not receive
+// these exception types, and even if it did, it would not map them to signals.
+// Instead, the first Mach service loaded by the root (process ID 1) launchd
+// with a boolean “ExceptionServer” property in its job dictionary (regardless
+// of its value) or with any subdictionary property will become the host-level
+// exception handler for EXC_CRASH, EXC_RESOURCE, and EXC_GUARD. See 10.9.5
 // launchd-842.92.1/src/core.c job_setup_exception_port(). Normally, this job is
 // com.apple.ReportCrash.Root, the systemwide Apple Crash Reporter. Since it is
 // impossible to receive EXC_RESOURCE and EXC_GUARD exceptions through the
@@ -83,8 +83,15 @@ std::string FormatArgumentInt(const std::string& name, int value) {
 // so AND them with ExcMaskValid(). EXC_MASK_CRASH is always supported.
 bool SetCrashExceptionPorts(exception_handler_t exception_handler) {
   ExceptionPorts exception_ports(ExceptionPorts::kTargetTypeTask, TASK_NULL);
+
+  exception_mask_t mask = EXC_MASK_CRASH | EXC_MASK_RESOURCE;
+  if (MacOSVersionNumber() < 13'00'00) {
+    // EXC_GUARD is delivered as an EXC_CRASH macOS 13 and later.
+    mask |= EXC_MASK_GUARD;
+  }
+
   return exception_ports.SetExceptionPort(
-      (EXC_MASK_CRASH | EXC_MASK_RESOURCE | EXC_MASK_GUARD) & ExcMaskValid(),
+      mask & ExcMaskValid(),
       exception_handler,
       EXCEPTION_STATE_IDENTITY | MACH_EXCEPTION_CODES,
       MACHINE_THREAD_STATE);
@@ -130,7 +137,8 @@ class HandlerStarter final : public NotifyServer::DefaultInterface {
       const std::string& url,
       const std::map<std::string, std::string>& annotations,
       const std::vector<std::string>& arguments,
-      bool restartable) {
+      bool restartable,
+      const std::vector<base::FilePath>& attachments) {
     base::apple::ScopedMachReceiveRight receive_right(
         NewMachPort(MACH_PORT_RIGHT_RECEIVE));
     if (!receive_right.is_valid()) {
@@ -171,13 +179,14 @@ class HandlerStarter final : public NotifyServer::DefaultInterface {
                      arguments,
                      std::move(receive_right),
                      handler_restarter.get(),
-                     false)) {
+                     false,
+                     attachments)) {
       return base::apple::ScopedMachSendRight();
     }
 
-    if (handler_restarter &&
-        handler_restarter->StartRestartThread(
-            handler, database, metrics_dir, url, annotations, arguments)) {
+    if (handler_restarter && handler_restarter->StartRestartThread(
+                                 handler, database, metrics_dir, url,
+                                 annotations, arguments, attachments)) {
       // The thread owns the object now.
       std::ignore = handler_restarter.release();
     }
@@ -214,7 +223,8 @@ class HandlerStarter final : public NotifyServer::DefaultInterface {
                 arguments_,
                 base::apple::ScopedMachReceiveRight(rights),
                 this,
-                true);
+                true,
+                attachments_);
 
     return KERN_SUCCESS;
   }
@@ -259,7 +269,8 @@ class HandlerStarter final : public NotifyServer::DefaultInterface {
                           const std::vector<std::string>& arguments,
                           base::apple::ScopedMachReceiveRight receive_right,
                           HandlerStarter* handler_restarter,
-                          bool restart) {
+                          bool restart,
+                          const std::vector<base::FilePath>& attachments) {
     DCHECK(!restart || handler_restarter);
 
     if (handler_restarter) {
@@ -337,6 +348,9 @@ class HandlerStarter final : public NotifyServer::DefaultInterface {
       argv.push_back(
           FormatArgumentString("annotation", kv.first + '=' + kv.second));
     }
+    for (const auto& attachment : attachments) {
+      argv.push_back(FormatArgumentString("attachment", attachment.value()));
+    }
     argv.push_back(FormatArgumentInt("handshake-fd", server_write_fd.get()));
 
     // When restarting, reset the system default crash handler first. Otherwise,
@@ -372,13 +386,15 @@ class HandlerStarter final : public NotifyServer::DefaultInterface {
                           const base::FilePath& metrics_dir,
                           const std::string& url,
                           const std::map<std::string, std::string>& annotations,
-                          const std::vector<std::string>& arguments) {
+                          const std::vector<std::string>& arguments,
+                          const std::vector<base::FilePath>& attachments) {
     handler_ = handler;
     database_ = database;
     metrics_dir_ = metrics_dir;
     url_ = url;
     annotations_ = annotations;
     arguments_ = arguments;
+    attachments_ = attachments;
 
     pthread_attr_t pthread_attr;
     errno = pthread_attr_init(&pthread_attr);
@@ -431,6 +447,7 @@ class HandlerStarter final : public NotifyServer::DefaultInterface {
   std::string url_;
   std::map<std::string, std::string> annotations_;
   std::vector<std::string> arguments_;
+  std::vector<base::FilePath> attachments_;
   base::apple::ScopedMachReceiveRight notify_port_;
   uint64_t last_start_time_;
 };
@@ -453,9 +470,6 @@ bool CrashpadClient::StartHandler(
     bool restartable,
     bool asynchronous_start,
     const std::vector<base::FilePath>& attachments) {
-  // Attachments are not implemented on MacOS yet.
-  DCHECK(attachments.empty());
-
   // The “restartable” behavior can only be selected on OS X 10.10 and later. In
   // previous OS versions, if the initial client were to crash while attempting
   // to restart the handler, it would become an unkillable process.
@@ -467,7 +481,8 @@ bool CrashpadClient::StartHandler(
       annotations,
       arguments,
       restartable && (__MAC_OS_X_VERSION_MIN_REQUIRED >= __MAC_10_10 ||
-                      MacOSVersionNumber() >= 10'10'00)));
+                      MacOSVersionNumber() >= 10'10'00),
+      attachments));
   if (!exception_port.is_valid()) {
     return false;
   }

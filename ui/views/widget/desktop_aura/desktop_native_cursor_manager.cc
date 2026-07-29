@@ -4,6 +4,7 @@
 
 #include "ui/views/widget/desktop_aura/desktop_native_cursor_manager.h"
 
+#include "base/notimplemented.h"
 #include "base/trace_event/trace_event.h"
 #include "ui/aura/client/cursor_shape_client.h"
 #include "ui/aura/window_event_dispatcher.h"
@@ -101,7 +102,7 @@ void DesktopNativeCursorManager::SetMouseEventsEnabled(
   }
 }
 
-void DesktopNativeCursorManager::InitCursorSizeObserver(
+void DesktopNativeCursorManager::InitSystemCursorObservers(
     wm::NativeCursorManagerDelegate* delegate) {
   NOTREACHED();
 }

@@ -23,7 +23,9 @@
 #import "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
 #import "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #import "components/autofill/core/browser/data_manager/personal_data_manager_test_utils.h"
+#import "components/autofill/core/browser/data_model/addresses/autofill_i18n_api.h"
 #import "components/autofill/core/browser/form_structure.h"
+#import "components/autofill/core/browser/foundations/autofill_manager_test_api.h"
 #import "components/autofill/core/browser/foundations/browser_autofill_manager.h"
 #import "components/autofill/core/browser/foundations/test_autofill_manager_waiter.h"
 #import "components/autofill/core/browser/geo/alternative_state_name_map_updater.h"
@@ -44,21 +46,26 @@
 #import "components/autofill/ios/browser/test_autofill_client_ios.h"
 #import "components/autofill/ios/browser/test_autofill_manager_injector.h"
 #import "components/autofill/ios/common/field_data_manager_factory_ios.h"
+#import "components/autofill/ios/form_util/form_activity_tab_helper.h"
 #import "components/infobars/core/confirm_infobar_delegate.h"
 #import "components/infobars/core/infobar.h"
 #import "components/infobars/core/infobar_manager.h"
 #import "components/keyed_service/core/service_access_type.h"
 #import "components/password_manager/core/browser/password_manager_test_utils.h"
 #import "components/password_manager/core/browser/password_store/mock_password_store_interface.h"
+#import "ios/chrome/browser/autofill/form_input_accessory/coordinator/form_input_accessory_mediator.h"
+#import "ios/chrome/browser/autofill/model/bottom_sheet/autofill_bottom_sheet_tab_helper.h"
+#import "ios/chrome/browser/autofill/model/bottom_sheet/save_card_bottom_sheet_model.h"
+#import "ios/chrome/browser/autofill/model/features.h"
 #import "ios/chrome/browser/autofill/model/form_suggestion_controller.h"
 #import "ios/chrome/browser/autofill/model/personal_data_manager_factory.h"
 #import "ios/chrome/browser/autofill/ui_bundled/chrome_autofill_client_ios.h"
-#import "ios/chrome/browser/autofill/ui_bundled/form_input_accessory/form_input_accessory_mediator.h"
 #import "ios/chrome/browser/infobars/model/infobar_manager_impl.h"
 #import "ios/chrome/browser/passwords/model/ios_chrome_profile_password_store_factory.h"
 #import "ios/chrome/browser/passwords/model/password_controller.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
+#import "ios/chrome/browser/shared/public/commands/autofill_commands.h"
 #import "ios/chrome/browser/web/model/chrome_web_client.h"
 #import "ios/chrome/browser/webdata_services/model/web_data_service_factory.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
@@ -73,6 +80,8 @@
 #import "ios/web/public/web_state.h"
 #import "testing/gtest_mac.h"
 #import "testing/platform_test.h"
+#import "third_party/ocmock/OCMock/OCMock.h"
+#import "third_party/ocmock/OCMock/OCMockMacros.h"
 
 using base::test::ScopedFeatureList;
 
@@ -96,16 +105,36 @@ using base::test::ScopedFeatureList;
           accessoryViewUpdateBlock:
               (FormSuggestionsReadyCompletion)accessoryViewUpdateBlock {
   self.suggestionRetrievalStarted = YES;
+
+  __weak __typeof(self) weakSelf = self;
+  FormSuggestionsReadyCompletion wrappedBlock =
+      ^(NSArray<FormSuggestion*>* suggestions,
+        id<FormInputSuggestionsProvider> provider) {
+        // This is the key change: update the test's state regardless of whether
+        // the controller is stateful or stateless.
+        weakSelf.suggestions = suggestions;
+        weakSelf.suggestionRetrievalComplete = YES;
+
+        // Call the original completion block to ensure the mediator's logic
+        // still runs.
+        if (accessoryViewUpdateBlock) {
+          accessoryViewUpdateBlock(suggestions, provider);
+        }
+      };
+
   [super retrieveSuggestionsForForm:params
                            webState:webState
-           accessoryViewUpdateBlock:accessoryViewUpdateBlock];
+           accessoryViewUpdateBlock:wrappedBlock];
 }
 
+// -updateKeyboardWithSuggestions: is only called in the stateful path.
+// The new wrapped block above handles the stateless path.
 - (void)updateKeyboardWithSuggestions:(NSArray*)suggestions {
   self.suggestions = suggestions;
   self.suggestionRetrievalComplete = YES;
 }
 
+// -onNoSuggestionsAvailable is only called in the stateful path.
 - (void)onNoSuggestionsAvailable {
   self.suggestionRetrievalComplete = YES;
 }
@@ -238,11 +267,19 @@ class AutofillControllerTest : public PlatformTest {
  public:
   AutofillControllerTest() : web_client_(std::make_unique<ChromeWebClient>()) {
     TestProfileIOS::Builder builder;
+    // TODO(crbug.com/533826510): Remove this override when
+    // kAutofillEnableBottomSheetScanCardAndFill is cleaned up. These credit
+    // card import tests need to be updated to support the save-and-fill flow.
+    scoped_feature_list_2_.InitWithFeatures(
+        /*enabled_features=*/{kStatelessFormSuggestionController},
+        /*disabled_features=*/{
+            autofill::features::kAutofillEnableBottomSheetScanCardAndFill});
+
     builder.AddTestingFactory(
         IOSChromeProfilePasswordStoreFactory::GetInstance(),
-        base::BindRepeating(&password_manager::BuildPasswordStoreInterface<
-                            web::BrowserState,
-                            password_manager::MockPasswordStoreInterface>));
+        base::BindOnce(
+            &password_manager::BuildPasswordStoreInterface<
+                ProfileIOS, password_manager::MockPasswordStoreInterface>));
     // Profile import requires a PersonalDataManager which itself needs the
     // WebDataService; this is not initialized on a TestProfileIOS by
     // default.
@@ -306,9 +343,14 @@ class AutofillControllerTest : public PlatformTest {
 
   void WaitForCondition(ConditionBlock condition);
 
+  // Focuses the field with 'field_id' and dispatches a focus event.
+  void FocusElement(NSString* field_id);
+
   // Simulates a text input event by focusing the field with 'field_id' and
   // dispatching a TextEvent with value 'field_value'.
   void SimulateTextInputEvent(NSString* field_id, NSString* field_value);
+
+  void LoadAndFillCreditCardForm();
 
   // Returns the AutofillManager for the main frame.
   BrowserAutofillManager* autofill_manager_for_main_frame() {
@@ -329,7 +371,7 @@ class AutofillControllerTest : public PlatformTest {
 
   web::ScopedTestingWebClient web_client_;
   web::WebTaskEnvironment task_environment_;
-  autofill::test::AutofillUnitTestEnvironment autofill_test_environment_{
+  test::AutofillUnitTestEnvironment autofill_test_environment_{
       {.disable_server_communication = true}};
   IOSChromeScopedTestingLocalState scoped_testing_local_state_;
   std::unique_ptr<TestProfileIOS> profile_;
@@ -337,9 +379,12 @@ class AutofillControllerTest : public PlatformTest {
   bool processed_a_task_ = false;
   // Histogram tester for these tests.
   std::unique_ptr<base::HistogramTester> histogram_tester_;
+  raw_ptr<AutofillBottomSheetTabHelper> bottomsheet_tab_helper_;
+  id<AutofillCommands> autofill_commands_handler_;
+  ScopedFeatureList scoped_feature_list_2_;
 
  private:
-  std::unique_ptr<autofill::AutofillClient> autofill_client_;
+  std::unique_ptr<AutofillClient> autofill_client_;
 
   AutofillAgent* autofill_agent_;
 
@@ -377,11 +422,6 @@ void AutofillControllerTest::SetUp() {
       std::make_unique<WithFakedFromWebState<ChromeAutofillClientIOS>>(
           profile_.get(), web_state(), infobar_manager, autofill_agent_);
 
-  autofill_client_->GetPersonalDataManager()
-      .address_data_manager()
-      .get_alternative_state_name_map_updater_for_testing()
-      ->set_local_state_for_testing(local_state());
-
   autofill_manager_injector_ =
       std::make_unique<TestAutofillManagerInjector<TestAutofillManager>>(
           web_state());
@@ -400,12 +440,29 @@ void AutofillControllerTest::SetUp() {
   [accessory_mediator_ injectWebState:web_state()];
   [accessory_mediator_ injectProvider:suggestion_controller_];
 
+  AutofillBottomSheetTabHelper::CreateForWebState(web_state());
+  bottomsheet_tab_helper_ =
+      AutofillBottomSheetTabHelper::FromWebState(web_state_.get());
+  autofill_commands_handler_ = OCMProtocolMock(@protocol(AutofillCommands));
+  bottomsheet_tab_helper_->SetAutofillBottomSheetHandler(
+      autofill_commands_handler_);
+
+  autofill::FormActivityTabHelper::GetOrCreateForWebState(web_state())
+      ->SetForceSubmittedByUserForTesting(true);
+
   histogram_tester_ = std::make_unique<base::HistogramTester>();
 }
 
 void AutofillControllerTest::TearDown() {
-  [accessory_mediator_ disconnect];
-  [suggestion_controller_ detachFromWebState];
+  @autoreleasepool {
+    [accessory_mediator_ disconnect];
+    [suggestion_controller_ detachFromWebState];
+
+    autofill_manager_injector_.reset();
+
+    bottomsheet_tab_helper_ = nullptr;
+    autofill_agent_ = nil;
+  }
 
   web::test::WaitForBackgroundTasks();
   web_state_.reset();
@@ -438,7 +495,8 @@ bool AutofillControllerTest::LoadHtmlAndWaitForFormFetched(
   TestAutofillManager* autofill_manager =
       autofill_manager_injector_->GetForMainFrame();
   return autofill_manager->waiter().Wait(expected_number_of_calls) &&
-         autofill_manager->form_structures().size() == expected_number_of_forms;
+         test_api(*autofill_manager).form_structures().size() ==
+             expected_number_of_forms;
 }
 
 void AutofillControllerTest::ExpectMetric(const std::string& histogram_name,
@@ -451,20 +509,43 @@ void AutofillControllerTest::WaitForCondition(ConditionBlock condition) {
                                                            true, condition));
 }
 
-void AutofillControllerTest::SimulateTextInputEvent(NSString* field_id,
-                                                    NSString* field_value) {
-  // First focus the field, otherwise the input event does not get delivered to
-  // the browser process.
-  // Then create and dispatch a TextEvent from the field with the given id.
+void AutofillControllerTest::FocusElement(NSString* field_id) {
   web::test::ExecuteJavaScript(
       [NSString
           stringWithFormat:
-              @"document.getElementById('%@').focus();"
+              @"var el = document.getElementById('%@') || "
+              @"document.forms[0]['%@'];"
+              @"if (el) { el.focus(); el.dispatchEvent(new Event('focus', "
+              @"{bubbles: true})); }",
+              field_id, field_id],
+      web_state());
+}
+
+void AutofillControllerTest::SimulateTextInputEvent(NSString* field_id,
+                                                    NSString* field_value) {
+  FocusElement(field_id);
+  web::test::ExecuteJavaScript(
+      [NSString
+          stringWithFormat:
+              @"var el = document.getElementById('%@') || "
+              @"document.forms[0]['%@'];"
               @"var event = document.createEvent('TextEvent');"
               @"event.initTextEvent('textInput', true, true, window, '%@');"
-              @"document.getElementById('%@').dispatchEvent(event);",
-              field_id, field_value, field_id],
+              @"if (el) { el.dispatchEvent(event); }",
+              field_id, field_id, field_value],
       web_state());
+}
+
+void AutofillControllerTest::LoadAndFillCreditCardForm() {
+  ASSERT_TRUE(LoadHtmlAndWaitForFormFetched(kCreditCardFormHtml, 1));
+
+  // Simulate entering a credit card in the form.
+  SimulateTextInputEvent(/*field_id=*/@"name", /*field_value=*/@"Superman");
+  SimulateTextInputEvent(/*field_id=*/@"CCNo",
+                         /*field_value=*/@"4000-4444-4444-4444");
+  SimulateTextInputEvent(/*field_id=*/@"CCExpiresMonth", /*field_value=*/@"11");
+  SimulateTextInputEvent(/*field_id=*/@"CCExpiresYear",
+                         /*field_value=*/@"2999");
 }
 
 // Checks that viewing an HTML page containing a form results in the form being
@@ -478,8 +559,8 @@ TEST_F(AutofillControllerTest, ReadForm) {
   BrowserAutofillManager& autofill_manager =
       AutofillDriverIOS::FromWebStateAndWebFrame(web_state(), main_frame)
           ->GetAutofillManager();
-  const auto& forms = autofill_manager.form_structures();
-  const auto& form = *(forms.begin()->second);
+  const FormStructure& form =
+      *test_api(autofill_manager).form_structures().front();
   CheckField(form, NAME_FULL, "name");
   CheckField(form, ADDRESS_HOME_LINE1, "address");
   CheckField(form, ADDRESS_HOME_CITY, "city");
@@ -491,9 +572,6 @@ TEST_F(AutofillControllerTest, ReadForm) {
 // Checks that when autofill across iframes is enabled the child frames are
 // carried over for their parent form.
 TEST_F(AutofillControllerTest, ReadForm_WithChildFrames) {
-  ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(features::kAutofillAcrossIframesIos);
-
   // A form with iframes and inputs where some of the iframes have predecessors.
   NSString* const test_page =
       @"<form id='form1'>"
@@ -512,11 +590,9 @@ TEST_F(AutofillControllerTest, ReadForm_WithChildFrames) {
                                             /*expected_number_of_calls=*/5));
 
   // Verify that the child frames are present in the form data.
-  std::vector<FormData> form_data;
-  for (const auto& [_, form] :
-       autofill_manager_for_main_frame()->form_structures()) {
-    form_data.push_back(form->ToFormData());
-  }
+  std::vector<FormData> form_data = base::ToVector(
+      test_api(*autofill_manager_for_main_frame()).form_structures(),
+      &FormStructure::ToFormData);
   EXPECT_THAT(
       form_data,
       ElementsAre(AllOf(
@@ -529,9 +605,6 @@ TEST_F(AutofillControllerTest, ReadForm_WithChildFrames) {
 // Checks that when autofill across iframes is enabled the child frames are
 // carried over for their synthetic form.
 TEST_F(AutofillControllerTest, ReadForm_WithChildFrames_Synthetic) {
-  ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(features::kAutofillAcrossIframesIos);
-
   // A syntethic form with iframes and inputs where some of the iframes have
   // predecessors.
   NSString* const test_page =
@@ -551,11 +624,9 @@ TEST_F(AutofillControllerTest, ReadForm_WithChildFrames_Synthetic) {
                                             /*expected_number_of_calls=*/3));
 
   // Verify that the child frames are present in the form data.
-  std::vector<FormData> form_data;
-  for (const auto& [_, form] :
-       autofill_manager_for_main_frame()->form_structures()) {
-    form_data.push_back(form->ToFormData());
-  }
+  std::vector<FormData> form_data = base::ToVector(
+      test_api(*autofill_manager_for_main_frame()).form_structures(),
+      &FormStructure::ToFormData);
   EXPECT_THAT(
       form_data,
       ElementsAre(AllOf(
@@ -570,12 +641,6 @@ TEST_F(AutofillControllerTest, ReadForm_WithChildFrames_Synthetic) {
 // reached.
 TEST_F(AutofillControllerTest,
        ReadForm_WithChildFrames_Throttling_AcrossForms) {
-  ScopedFeatureList feature_list;
-  feature_list.InitWithFeatures(
-      /*enabled_features=*/{features::kAutofillAcrossIframesIos,
-                            features::kAutofillAcrossIframesIosThrottling},
-      /*disabled_features=*/{});
-
   // A form with iframes and inputs where some of the iframes have predecessors.
   NSString* const test_page =
       @"<form id='form1'>"
@@ -628,11 +693,9 @@ TEST_F(AutofillControllerTest,
   // Verify that the form data is correctly filled with the child frames data
   // by respecting the child frames limit, where the first form has its 20 child
   // frames then the follow up forms don't have any child frames.
-  std::vector<FormData> form_data;
-  for (const auto& [_, form] :
-       autofill_manager_for_main_frame()->form_structures()) {
-    form_data.push_back(form->ToFormData());
-  }
+  std::vector<FormData> form_data = base::ToVector(
+      test_api(*autofill_manager_for_main_frame()).form_structures(),
+      &FormStructure::ToFormData);
   auto form1_matcher = AllOf(Property(&FormData::renderer_id, IsTrue()),
                              Property(&FormData::child_frames, SizeIs(20)));
   auto following_forms_matcher =
@@ -647,12 +710,6 @@ TEST_F(AutofillControllerTest,
 // reached.
 TEST_F(AutofillControllerTest,
        ReadForm_WithChildFrames_Throttling_AcrossForms_Synthetic) {
-  ScopedFeatureList feature_list;
-  feature_list.InitWithFeatures(
-      /*enabled_features=*/{features::kAutofillAcrossIframesIos,
-                            features::kAutofillAcrossIframesIosThrottling},
-      /*disabled_features=*/{});
-
   // A form with iframes and inputs where some of the iframes have predecessors.
   NSString* const test_page =
       @"<form id='form1'>"
@@ -696,11 +753,9 @@ TEST_F(AutofillControllerTest,
   // by respecting the child frames limit, where the first form has its 4 child
   // frames then the follow up synthetic form hasn't any child frame because it
   // busted the xform limit.
-  std::vector<FormData> form_data;
-  for (const auto& [_, form] :
-       autofill_manager_for_main_frame()->form_structures()) {
-    form_data.push_back(form->ToFormData());
-  }
+  std::vector<FormData> form_data = base::ToVector(
+      test_api(*autofill_manager_for_main_frame()).form_structures(),
+      &FormStructure::ToFormData);
   auto form1_matcher = AllOf(Property(&FormData::renderer_id, IsTrue()),
                              Property(&FormData::child_frames, SizeIs(4)));
   auto synthetic_form_matcher =
@@ -713,12 +768,6 @@ TEST_F(AutofillControllerTest,
 // frames will not be extracted on a form that exceeds the limit of child
 // frames.
 TEST_F(AutofillControllerTest, ReadForm_WithChildFrames_Throttling_SingleForm) {
-  ScopedFeatureList feature_list;
-  feature_list.InitWithFeatures(
-      /*enabled_features=*/{features::kAutofillAcrossIframesIos,
-                            features::kAutofillAcrossIframesIosThrottling},
-      /*disabled_features=*/{});
-
   // A form with iframes and inputs where some of the iframes have predecessors.
   NSString* const test_page =
       @"<form id='form1'>"
@@ -755,11 +804,9 @@ TEST_F(AutofillControllerTest, ReadForm_WithChildFrames_Throttling_SingleForm) {
 
   // Verify that the form data doesn't have child frames when the form exceeds
   // the child frame limit.
-  std::vector<FormData> form_data;
-  for (const auto& [_, form] :
-       autofill_manager_for_main_frame()->form_structures()) {
-    form_data.push_back(form->ToFormData());
-  }
+  std::vector<FormData> form_data = base::ToVector(
+      test_api(*autofill_manager_for_main_frame()).form_structures(),
+      &FormStructure::ToFormData);
   auto form_matcher = AllOf(Property(&FormData::renderer_id, IsTrue()),
                             Property(&FormData::child_frames, IsEmpty()));
   EXPECT_THAT(form_data, ElementsAre(form_matcher));
@@ -770,12 +817,6 @@ TEST_F(AutofillControllerTest, ReadForm_WithChildFrames_Throttling_SingleForm) {
 // child frames.
 TEST_F(AutofillControllerTest,
        ReadForm_WithChildFrames_Throttling_SingleForm_Synthetic) {
-  ScopedFeatureList feature_list;
-  feature_list.InitWithFeatures(
-      /*enabled_features=*/{features::kAutofillAcrossIframesIos,
-                            features::kAutofillAcrossIframesIosThrottling},
-      /*disabled_features=*/{});
-
   // A synthetic form with too many child frames exceeding the limit.
   NSString* const test_page =
       @"<html><body><div id='div'>"
@@ -812,11 +853,9 @@ TEST_F(AutofillControllerTest,
 
   // Verify that the synthetic form data doesn't have child frames when the form
   // exceeds the child frame limit.
-  std::vector<FormData> form_data;
-  for (const auto& [_, form] :
-       autofill_manager_for_main_frame()->form_structures()) {
-    form_data.push_back(form->ToFormData());
-  }
+  std::vector<FormData> form_data = base::ToVector(
+      test_api(*autofill_manager_for_main_frame()).form_structures(),
+      &FormStructure::ToFormData);
   auto form_matcher =
       AllOf(Property(&FormData::renderer_id, Eq(FormRendererId(0))),
             Property(&FormData::child_frames, IsEmpty()));
@@ -835,8 +874,8 @@ TEST_F(AutofillControllerTest, ReadFormName) {
   BrowserAutofillManager& autofill_manager =
       AutofillDriverIOS::FromWebStateAndWebFrame(web_state(), main_frame)
           ->GetAutofillManager();
-  const auto& forms = autofill_manager.form_structures();
-  const auto& form = *(forms.begin()->second);
+  const FormStructure& form =
+      *test_api(autofill_manager).form_structures().front();
   EXPECT_EQ(u"form1", form.ToFormData().name());
 }
 
@@ -845,8 +884,7 @@ TEST_F(AutofillControllerTest, ReadFormName) {
 // successfully imported into the PersonalDataManager.
 TEST_F(AutofillControllerTest, ProfileImport) {
   PersonalDataManager* personal_data_manager =
-      PersonalDataManagerFactory::GetForProfile(
-          ProfileIOS::FromBrowserState(profile_.get()));
+      PersonalDataManagerFactory::GetForProfile(profile_.get());
   test_api(personal_data_manager->address_data_manager())
       .set_auto_accept_address_imports(true);
   // Check there are no registered profiles already.
@@ -884,10 +922,8 @@ void AutofillControllerTest::SetUpForSuggestions(
     NSString* data,
     size_t expected_number_of_forms) {
   PersonalDataManager* personal_data_manager =
-      PersonalDataManagerFactory::GetForProfile(
-          ProfileIOS::FromBrowserState(profile_.get()));
-  AutofillProfile profile(
-      autofill::i18n_model_definition::kLegacyHierarchyCountryCode);
+      PersonalDataManagerFactory::GetForProfile(profile_.get());
+  AutofillProfile profile(i18n_model_definition::kLegacyHierarchyCountryCode);
   profile.SetRawInfo(NAME_FULL, u"Homer Simpson");
   profile.SetRawInfo(ADDRESS_HOME_LINE1, u"123 Main Street");
   profile.SetRawInfo(ADDRESS_HOME_CITY, u"Springfield");
@@ -974,20 +1010,17 @@ TEST_F(AutofillControllerTest, MultipleProfileSuggestions) {
   }
 
   PersonalDataManager* personal_data_manager =
-      PersonalDataManagerFactory::GetForProfile(
-          ProfileIOS::FromBrowserState(profile_.get()));
+      PersonalDataManagerFactory::GetForProfile(profile_.get());
   personal_data_manager->SetSyncServiceForTest(nullptr);
 
-  AutofillProfile profile(
-      autofill::i18n_model_definition::kLegacyHierarchyCountryCode);
+  AutofillProfile profile(i18n_model_definition::kLegacyHierarchyCountryCode);
   profile.SetRawInfo(NAME_FULL, u"Homer Simpson");
   profile.SetRawInfo(ADDRESS_HOME_LINE1, u"123 Main Street");
   profile.SetRawInfo(ADDRESS_HOME_CITY, u"Springfield");
   profile.SetRawInfo(ADDRESS_HOME_STATE, u"IL");
   profile.SetRawInfo(ADDRESS_HOME_ZIP, u"55123");
 
-  AutofillProfile profile2(
-      autofill::i18n_model_definition::kLegacyHierarchyCountryCode);
+  AutofillProfile profile2(i18n_model_definition::kLegacyHierarchyCountryCode);
   profile2.SetRawInfo(NAME_FULL, u"Larry Page");
   profile2.SetRawInfo(ADDRESS_HOME_LINE1, u"1600 Amphitheatre Parkway");
   profile2.SetRawInfo(ADDRESS_HOME_CITY, u"Mountain View");
@@ -1087,8 +1120,7 @@ TEST_F(AutofillControllerTest, KeyValueSuggestions) {
   // Focus element.
   web::test::ExecuteJavaScript(@"document.forms[0].greeting.value='B'",
                                web_state());
-  web::test::ExecuteJavaScript(@"document.forms[0].greeting.focus()",
-                               web_state());
+  FocusElement(@"greeting");
   WaitForSuggestionRetrieval(/*wait_for_trigger=*/YES);
   EXPECT_EQ(1U, [suggestion_controller() suggestions].count);
   FormSuggestion* suggestion = [suggestion_controller() suggestions][0];
@@ -1101,8 +1133,7 @@ TEST_F(AutofillControllerTest, KeyValueSuggestions) {
 TEST_F(AutofillControllerTest, KeyValueTypedSuggestions) {
   SetUpKeyValueData();
   ResetWaitForSuggestionRetrieval();
-  web::test::ExecuteJavaScript(@"document.forms[0].greeting.focus()",
-                               web_state());
+  FocusElement(@"greeting");
   WaitForSuggestionRetrieval(/*wait_for_trigger=*/YES);
   ResetWaitForSuggestionRetrieval();
   SimulateTextInputEvent(/*field_id=*/@"greeting", /*field_value=*/@"B");
@@ -1120,7 +1151,7 @@ TEST_F(AutofillControllerTest, KeyValueFocusChange) {
 
   // Focus the dummy field and confirm no suggestions are presented.
   ResetWaitForSuggestionRetrieval();
-  web::test::ExecuteJavaScript(@"document.forms[0].dummy.focus()", web_state());
+  FocusElement(@"dummy");
   WaitForSuggestionRetrieval(/*wait_for_trigger=*/YES);
   ASSERT_EQ(0U, [suggestion_controller() suggestions].count);
   ResetWaitForSuggestionRetrieval();
@@ -1134,8 +1165,7 @@ TEST_F(AutofillControllerTest, KeyValueFocusChange) {
 
   // Enter 'B' in the greeting field and confirm that one suggestion ("Bonjour")
   // is presented.
-  web::test::ExecuteJavaScript(@"document.forms[0].greeting.focus()",
-                               web_state());
+  FocusElement(@"greeting");
   WaitForSuggestionRetrieval(/*wait_for_trigger=*/YES);
   ResetWaitForSuggestionRetrieval();
   web::test::ExecuteJavaScript(
@@ -1152,64 +1182,40 @@ TEST_F(AutofillControllerTest, KeyValueFocusChange) {
   EXPECT_NSEQ(@"Bonjour", suggestion.value);
 }
 
-// Checks that focusing on an element of a key/value type form without typing
-// won't result in suggestions being sent to the AutofillAgent, once data has
-// been loaded into a test data manager.
-TEST_F(AutofillControllerTest, NoKeyValueSuggestionsWithoutTyping) {
-  SetUpKeyValueData();
-  ResetWaitForSuggestionRetrieval();
-  // Focus element.
-  web::test::ExecuteJavaScript(@"document.forms[0].greeting.focus()",
-                               web_state());
-  WaitForSuggestionRetrieval(/*wait_for_trigger=*/YES);
-  EXPECT_EQ(0U, [suggestion_controller() suggestions].count);
-}
-
 // Checks that an HTML page containing a credit card-type form which is
 // submitted with scripts (simulating user form submission) results in a credit
 // card being successfully imported into the PersonalDataManager.
 TEST_F(AutofillControllerTest, CreditCardImport) {
-  InfoBarManagerImpl::CreateForWebState(web_state());
   PersonalDataManager* personal_data_manager =
-      PersonalDataManagerFactory::GetForProfile(
-          ProfileIOS::FromBrowserState(profile_.get()));
+      PersonalDataManagerFactory::GetForProfile(profile_.get());
   personal_data_manager->SetSyncServiceForTest(nullptr);
 
   // Check there are no registered profiles already.
   EXPECT_EQ(
       0U,
       personal_data_manager->payments_data_manager().GetCreditCards().size());
-  ASSERT_TRUE(LoadHtmlAndWaitForFormFetched(kCreditCardFormHtml, 1));
-  web::test::ExecuteJavaScript(@"document.forms[0].name.value = 'Superman'",
-                               web_state());
-  web::test::ExecuteJavaScript(
-      @"document.forms[0].CCNo.value = '4000-4444-4444-4444'", web_state());
-  web::test::ExecuteJavaScript(@"document.forms[0].CCExpiresMonth.value = '11'",
-                               web_state());
-  web::test::ExecuteJavaScript(
-      @"document.forms[0].CCExpiresYear.value = '2999'", web_state());
-  web::test::ExecuteJavaScript(@"submit.click()", web_state());
-  infobars::InfoBarManager* infobar_manager =
-      InfoBarManagerImpl::FromWebState(web_state());
-  WaitForCondition(^bool() {
-    return infobar_manager->infobars().size();
-  });
-  ExpectMetric("Autofill.CreditCardInfoBar.Local",
-               AutofillMetrics::INFOBAR_SHOWN);
-  ExpectMetric("Autofill.SaveCreditCardPromptResult.IOS.Local.Banner."
-               "NumStrikes.0.NoFixFlow",
-               static_cast<int>(
-                   autofill_metrics::SaveCreditCardPromptResultIOS::kShown));
-  ASSERT_EQ(1U, infobar_manager->infobars().size());
-  infobars::InfoBarDelegate* infobar =
-      infobar_manager->infobars()[0]->delegate();
-  ConfirmInfoBarDelegate* confirm_infobar = infobar->AsConfirmInfoBarDelegate();
 
-  // This call cause a modification of the PersonalDataManager, so wait until
-  // the asynchronous task complete in addition to waiting for the UI update.
-  PersonalDataChangedWaiter waiter(*personal_data_manager);
-  confirm_infobar->Accept();
-  std::move(waiter).Wait();
+  LoadAndFillCreditCardForm();
+
+  __block bool save_card_bottomsheet_shown = false;
+  OCMStub([autofill_commands_handler_
+              showSaveCardBottomSheetOnOriginWebState:web_state()])
+      .andDo(^(NSInvocation* invocation) {
+        save_card_bottomsheet_shown = true;
+      });
+  web::test::ExecuteJavaScript(@"submit.click()", web_state());
+  WaitForCondition(^bool() {
+    return save_card_bottomsheet_shown;
+  });
+  ASSERT_TRUE(save_card_bottomsheet_shown);
+
+  {
+    // This call cause a modification of the PersonalDataManager, so wait until
+    // the asynchronous task completes in addition to waiting for the UI update.
+    PersonalDataChangedWaiter waiter(*personal_data_manager);
+    bottomsheet_tab_helper_->GetSaveCardBottomSheetModel()->OnAccepted();
+    std::move(waiter).Wait();
+  }
 
   const std::vector<const CreditCard*>& credit_cards =
       personal_data_manager->payments_data_manager().GetCreditCards();
@@ -1232,10 +1238,8 @@ TEST_F(AutofillControllerTest, CreditCardImport) {
 // submitted with scripts (simulating form removal) results in a credit
 // card being successfully imported into the PersonalDataManager.
 TEST_F(AutofillControllerTest, CreditCardImportAfterFormRemoval) {
-  InfoBarManagerImpl::CreateForWebState(web_state());
   PersonalDataManager* personal_data_manager =
-      PersonalDataManagerFactory::GetForProfile(
-          ProfileIOS::FromBrowserState(profile_.get()));
+      PersonalDataManagerFactory::GetForProfile(profile_.get());
   personal_data_manager->SetSyncServiceForTest(nullptr);
 
   // Check there are no registered profiles already.
@@ -1243,15 +1247,14 @@ TEST_F(AutofillControllerTest, CreditCardImportAfterFormRemoval) {
       0U,
       personal_data_manager->payments_data_manager().GetCreditCards().size());
 
-  ASSERT_TRUE(LoadHtmlAndWaitForFormFetched(kCreditCardFormHtml, 1));
+  LoadAndFillCreditCardForm();
 
-  // Simulate entering a credit card in the form.
-  SimulateTextInputEvent(/*field_id=*/@"name", /*field_value=*/@"Superman");
-  SimulateTextInputEvent(/*field_id=*/@"CCNo",
-                         /*field_value=*/@"4000-4444-4444-4444");
-  SimulateTextInputEvent(/*field_id=*/@"CCExpiresMonth", /*field_value=*/@"11");
-  SimulateTextInputEvent(/*field_id=*/@"CCExpiresYear",
-                         /*field_value=*/@"2999");
+  __block bool save_card_bottomsheet_shown = false;
+  OCMStub([autofill_commands_handler_
+              showSaveCardBottomSheetOnOriginWebState:web_state()])
+      .andDo(^(NSInvocation* invocation) {
+        save_card_bottomsheet_shown = true;
+      });
 
   // Deleting the form should be detected as a submission because it had user
   // input. Adding a delay is necessary or the event above might not be
@@ -1260,27 +1263,18 @@ TEST_F(AutofillControllerTest, CreditCardImportAfterFormRemoval) {
                                @"   document.forms[0].remove();"
                                @"}, 30);",
                                web_state());
-  infobars::InfoBarManager* infobar_manager =
-      InfoBarManagerImpl::FromWebState(web_state());
   WaitForCondition(^bool() {
-    return infobar_manager->infobars().size();
+    return save_card_bottomsheet_shown;
   });
-  ExpectMetric("Autofill.CreditCardInfoBar.Local",
-               AutofillMetrics::INFOBAR_SHOWN);
-  ExpectMetric("Autofill.SaveCreditCardPromptResult.IOS.Local.Banner."
-               "NumStrikes.0.NoFixFlow",
-               static_cast<int>(
-                   autofill_metrics::SaveCreditCardPromptResultIOS::kShown));
-  ASSERT_EQ(1U, infobar_manager->infobars().size());
-  infobars::InfoBarDelegate* infobar =
-      infobar_manager->infobars()[0]->delegate();
-  ConfirmInfoBarDelegate* confirm_infobar = infobar->AsConfirmInfoBarDelegate();
+  ASSERT_TRUE(save_card_bottomsheet_shown);
 
-  // This call cause a modification of the PersonalDataManager, so wait until
-  // the asynchronous task complete in addition to waiting for the UI update.
-  PersonalDataChangedWaiter waiter(*personal_data_manager);
-  confirm_infobar->Accept();
-  std::move(waiter).Wait();
+  {
+    // This call cause a modification of the PersonalDataManager, so wait until
+    // the asynchronous task completes in addition to waiting for the UI update.
+    PersonalDataChangedWaiter waiter(*personal_data_manager);
+    bottomsheet_tab_helper_->GetSaveCardBottomSheetModel()->OnAccepted();
+    std::move(waiter).Wait();
+  }
 
   const std::vector<const CreditCard*>& credit_cards =
       personal_data_manager->payments_data_manager().GetCreditCards();
@@ -1306,10 +1300,8 @@ TEST_F(AutofillControllerTest, CreditCardImportAfterFormRemoval) {
 // the submitted form.
 TEST_F(AutofillControllerTest,
        CreditCardImportWithFieldDataManagerValuesAfterFormRemoval) {
-  InfoBarManagerImpl::CreateForWebState(web_state());
   PersonalDataManager* personal_data_manager =
-      PersonalDataManagerFactory::GetForProfile(
-          ProfileIOS::FromBrowserState(profile_.get()));
+      PersonalDataManagerFactory::GetForProfile(profile_.get());
   personal_data_manager->SetSyncServiceForTest(nullptr);
 
   // Check there are no registered profiles already.
@@ -1317,15 +1309,7 @@ TEST_F(AutofillControllerTest,
       0U,
       personal_data_manager->payments_data_manager().GetCreditCards().size());
 
-  ASSERT_TRUE(LoadHtmlAndWaitForFormFetched(kCreditCardFormHtml, 1));
-
-  // Simulate entering a credit card in the form.
-  SimulateTextInputEvent(/*field_id=*/@"name", /*field_value=*/@"Superman");
-  SimulateTextInputEvent(/*field_id=*/@"CCNo",
-                         /*field_value=*/@"4000-4444-4444-4444");
-  SimulateTextInputEvent(/*field_id=*/@"CCExpiresMonth", /*field_value=*/@"11");
-  SimulateTextInputEvent(/*field_id=*/@"CCExpiresYear",
-                         /*field_value=*/@"2999");
+  LoadAndFillCreditCardForm();
 
   // Update the form fields in `FieldDataManager`.
   // When detecting a submission, the imported credit card should include the
@@ -1334,8 +1318,7 @@ TEST_F(AutofillControllerTest,
       AutofillJavaScriptFeature::GetInstance()->GetWebFramesManager(
           web_state());
   auto* main_frame = frames_manager->GetMainWebFrame();
-  auto* fieldDataManager =
-      autofill::FieldDataManagerFactoryIOS::FromWebFrame(main_frame);
+  auto* fieldDataManager = FieldDataManagerFactoryIOS::FromWebFrame(main_frame);
   // Name.
   fieldDataManager->UpdateFieldDataMap(FieldRendererId(2), u"Chuck",
                                        FieldPropertiesFlags::kAutofilled);
@@ -1350,6 +1333,13 @@ TEST_F(AutofillControllerTest,
   fieldDataManager->UpdateFieldDataMap(FieldRendererId(5), u"2998",
                                        FieldPropertiesFlags::kAutofilled);
 
+  __block bool save_card_bottomsheet_shown = false;
+  OCMStub([autofill_commands_handler_
+              showSaveCardBottomSheetOnOriginWebState:web_state()])
+      .andDo(^(NSInvocation* invocation) {
+        save_card_bottomsheet_shown = true;
+      });
+
   // Deleting the form should be detected as a submission because it had user
   // input. Adding a delay is necessary or the event above might not be
   // dispatched.
@@ -1358,27 +1348,18 @@ TEST_F(AutofillControllerTest,
                                @"}, 30);",
                                web_state());
 
-  infobars::InfoBarManager* infobar_manager =
-      InfoBarManagerImpl::FromWebState(web_state());
   WaitForCondition(^bool() {
-    return infobar_manager->infobars().size();
+    return save_card_bottomsheet_shown;
   });
-  ExpectMetric("Autofill.CreditCardInfoBar.Local",
-               AutofillMetrics::INFOBAR_SHOWN);
-  ExpectMetric("Autofill.SaveCreditCardPromptResult.IOS.Local.Banner."
-               "NumStrikes.0.NoFixFlow",
-               static_cast<int>(
-                   autofill_metrics::SaveCreditCardPromptResultIOS::kShown));
-  ASSERT_EQ(1U, infobar_manager->infobars().size());
-  infobars::InfoBarDelegate* infobar =
-      infobar_manager->infobars()[0]->delegate();
-  ConfirmInfoBarDelegate* confirm_infobar = infobar->AsConfirmInfoBarDelegate();
+  ASSERT_TRUE(save_card_bottomsheet_shown);
 
-  // This call cause a modification of the PersonalDataManager, so wait until
-  // the asynchronous task complete in addition to waiting for the UI update.
-  PersonalDataChangedWaiter waiter(*personal_data_manager);
-  confirm_infobar->Accept();
-  std::move(waiter).Wait();
+  {
+    // This call cause a modification of the PersonalDataManager, so wait until
+    // the asynchronous task completes in addition to waiting for the UI update.
+    PersonalDataChangedWaiter waiter(*personal_data_manager);
+    bottomsheet_tab_helper_->GetSaveCardBottomSheetModel()->OnAccepted();
+    std::move(waiter).Wait();
+  }
 
   const std::vector<const CreditCard*>& credit_cards =
       personal_data_manager->payments_data_manager().GetCreditCards();
@@ -1398,8 +1379,7 @@ TEST_F(AutofillControllerTest,
 // successfully imported into the PersonalDataManager.
 TEST_F(AutofillControllerTest, ProfileImportAfterFormlessFormRemoval) {
   PersonalDataManager* personal_data_manager =
-      PersonalDataManagerFactory::GetForProfile(
-          ProfileIOS::FromBrowserState(profile_.get()));
+      PersonalDataManagerFactory::GetForProfile(profile_.get());
   test_api(personal_data_manager->address_data_manager())
       .set_auto_accept_address_imports(true);
   // Check there are no registered profiles already.

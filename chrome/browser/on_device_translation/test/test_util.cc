@@ -9,35 +9,84 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/threading/thread_restrictions.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/on_device_translation/language_pack_util.h"
-#include "chrome/browser/on_device_translation/pref_names.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "components/on_device_translation/public/language_pack.h"
+#include "components/on_device_translation/public/pref_names.h"
+#include "components/on_device_translation/service/test/test_util.h"
 #include "components/prefs/pref_service.h"
-#include "components/services/on_device_translation/test/test_util.h"
 #include "content/public/test/browser_test_utils.h"
 
 using ::testing::_;
-using ::testing::Invoke;
 
 namespace on_device_translation {
 
 MockComponentManager::MockComponentManager(const base::FilePath& package_dir)
-    : package_dir_(package_dir) {
-  ComponentManager::SetForTesting(this);
+    : package_dir_(package_dir),
+      mock_component_manager_(ComponentManager::SetForTesting(this)) {}
+
+MockComponentManager::~MockComponentManager() = default;
+
+TestInstallerAdapter::TestInstallerAdapter() = default;
+TestInstallerAdapter::~TestInstallerAdapter() = default;
+
+bool TestInstallerAdapter::IsInit() const {
+  return OnDeviceTranslationInstaller::GetInstance()->IsInit();
 }
 
-MockComponentManager::~MockComponentManager() {
-  ComponentManager::SetForTesting(nullptr);
+std::set<LanguagePackKey> TestInstallerAdapter::RegisteredLanguagePacks()
+    const {
+  return OnDeviceTranslationInstaller::GetInstance()->RegisteredLanguagePacks();
 }
 
+std::set<LanguagePackKey> TestInstallerAdapter::InstalledLanguagePacks() const {
+  return OnDeviceTranslationInstaller::GetInstance()->InstalledLanguagePacks();
+}
+
+base::FilePath TestInstallerAdapter::GetLibraryPath() const {
+  return g_browser_process->local_state()->GetFilePath(
+      prefs::kTranslateKitBinaryPath);
+}
+
+base::FilePath TestInstallerAdapter::GetLanguagePackPath(
+    LanguagePackKey language_pack) const {
+  const LanguagePackComponentConfig* config =
+      kLanguagePackComponentConfigMap.at(language_pack);
+  return g_browser_process->local_state()->GetFilePath(
+      GetComponentPathPrefName(*config));
+}
+
+void TestInstallerAdapter::Init(base::RepeatingClosure on_ready_callback) {
+  ComponentManager::GetInstance().RegisterTranslateKitComponent();
+  on_ready_callback.Run();
+}
+
+void TestInstallerAdapter::InstallLanguagePack(LanguagePackKey language_pack) {
+  ComponentManager::GetInstance().RegisterTranslateKitLanguagePackComponent(
+      language_pack);
+}
+
+void TestInstallerAdapter::UnInstallLanguagePack(
+    LanguagePackKey language_pack) {
+  ComponentManager::GetInstance().UninstallTranslateKitLanguagePackComponent(
+      language_pack);
+}
+
+void TestInstallerAdapter::AddObserver(Observer* observer) {
+  OnDeviceTranslationInstaller::GetInstance()->AddObserver(observer);
+}
+
+void TestInstallerAdapter::RemoveObserver(Observer* observer) {
+  OnDeviceTranslationInstaller::GetInstance()->RemoveObserver(observer);
+}
 void MockComponentManager::DoNotExpectCallRegisterTranslateKitComponent() {
   EXPECT_CALL(*this, RegisterTranslateKitComponentImpl()).Times(0);
 }
 
 void MockComponentManager::ExpectCallRegisterTranslateKitComponentAndInstall() {
-  EXPECT_CALL(*this, RegisterTranslateKitComponentImpl())
-      .WillOnce(Invoke([&]() { InstallMockTranslateKitComponentLater(); }));
+  EXPECT_CALL(*this, RegisterTranslateKitComponentImpl()).WillOnce([&]() {
+    InstallMockTranslateKitComponentLater();
+  });
 }
 
 void MockComponentManager::DoNotExpectCallRegisterLanguagePackComponent() {
@@ -49,10 +98,10 @@ void MockComponentManager::ExpectCallRegisterLanguagePackComponentAndInstall(
   auto& expectation =
       EXPECT_CALL(*this, RegisterTranslateKitLanguagePackComponent(_));
   for (const auto expected_key : language_pack_keys) {
-    expectation.WillOnce(Invoke([&, expected_key](LanguagePackKey key) {
+    expectation.WillOnce([&, expected_key](LanguagePackKey key) {
       EXPECT_EQ(key, expected_key);
       InstallMockLanguagePackLater(key);
-    }));
+    });
   }
 }
 
@@ -83,6 +132,9 @@ void MockComponentManager::InstallComponent(base::FilePath library_path) {
   CHECK(base::CopyFile(library_path, binary_path));
   g_browser_process->local_state()->SetFilePath(prefs::kTranslateKitBinaryPath,
                                                 binary_path);
+  if (on_installation_changed_callback_) {
+    on_installation_changed_callback_.Run();
+  }
 }
 
 void MockComponentManager::InstallMockLanguagePack(
@@ -119,6 +171,9 @@ void MockComponentManager::InstallMockLanguagePack(
       GetRegisteredFlagPrefName(*config), true);
   g_browser_process->local_state()->SetFilePath(
       GetComponentPathPrefName(*config), dict_dir_path);
+  if (on_installation_changed_callback_) {
+    on_installation_changed_callback_.Run();
+  }
 }
 
 void MockComponentManager::InstallMockTranslateKitComponentLater() {
@@ -140,6 +195,20 @@ void MockComponentManager::InstallMockLanguagePackLater(
                      },
                      weak_ptr_factory_.GetWeakPtr(), language_pack_key));
 }
+
+MockTranslationManagerImpl::MockTranslationManagerImpl(
+    content::RenderProcessHost* process_host,
+    content::BrowserContext* browser_context,
+    const url::Origin& origin,
+    component_updater::ComponentUpdateService* component_update_service)
+    : TranslationManagerImpl(process_host,
+                             browser_context,
+                             origin,
+                             component_update_service),
+      mock_translation_manager_impl_(
+          TranslationManagerImpl::SetForTesting(this)) {}
+
+MockTranslationManagerImpl::~MockTranslationManagerImpl() = default;
 
 std::string CreateFakeDictionaryData(const std::string_view sourceLang,
                                      const std::string_view targetLang) {
@@ -163,7 +232,7 @@ void TestSimpleTranslationWorks(Browser* browser,
                    base::StringPrintf(R"(
         (async () => {
           try {
-            const translator = await ai.translator.create({
+            const translator = await Translator.create({
               sourceLanguage: '%s',
               targetLanguage: '%s',
             });
@@ -194,7 +263,7 @@ void TestCreateTranslator(Browser* browser,
                    base::StringPrintf(R"(
   (async () => {
     try {
-      await ai.translator.create({
+      await Translator.create({
           sourceLanguage: '%s',
           targetLanguage: '%s',
         });
@@ -209,48 +278,8 @@ void TestCreateTranslator(Browser* browser,
             result);
 }
 
-// Tests that the AITranslatorCapabilities.available returns the expected
-// result.
-void TestTranslatorCapabilitiesAvailable(Browser* browser,
-                                         const std::string_view result) {
-  ASSERT_EQ(EvalJs(browser->tab_strip_model()->GetActiveWebContents(),
-                   R"(
-  (async () => {
-    try {
-      return (await ai.translator.capabilities()).available;
-    } catch (e) {
-      return e.toString();
-    }
-    })();
-  )")
-                .ExtractString(),
-            result);
-}
-
-// Tests that the AITranslatorCapabilities.languagePairAvailable() returns the
-// expected result.
-void TestLanguagePairAvailable(Browser* browser,
-                               const std::string_view sourceLang,
-                               const std::string_view targetLang,
-                               const std::string_view result) {
-  ASSERT_EQ(EvalJs(browser->tab_strip_model()->GetActiveWebContents(),
-                   base::StringPrintf(R"(
-  (async () => {
-    try {
-      const capabilities = await ai.translator.capabilities();
-      return capabilities.languagePairAvailable('%s','%s');
-    } catch (e) {
-      return e.toString();
-    }
-    })();
-  )",
-                                      sourceLang, targetLang))
-                .ExtractString(),
-            result);
-}
-
-// Tests that the capabilities availability() method returns the expected
-// result for the given languages.
+// Tests that availability() method returns the expected result for the given
+// languages.
 void TestTranslationAvailable(Browser* browser,
                               const std::string_view sourceLang,
                               const std::string_view targetLang,
@@ -259,7 +288,7 @@ void TestTranslationAvailable(Browser* browser,
                    base::StringPrintf(R"(
   (async () => {
     try {
-      return await ai.translator.availability({
+      return await Translator.availability({
           sourceLanguage: '%s',
           targetLanguage: '%s',
         });
@@ -271,6 +300,10 @@ void TestTranslationAvailable(Browser* browser,
                                       sourceLang, targetLang))
                 .ExtractString(),
             result);
+}
+
+bool MockTranslationManagerImpl::CrashesAllowed() {
+  return crashes_allowed_;
 }
 
 }  // namespace on_device_translation

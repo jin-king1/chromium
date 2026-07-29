@@ -14,7 +14,6 @@
 #include "chrome/browser/ash/arc/arc_util.h"
 #include "chrome/browser/ash/arc/session/arc_session_manager.h"
 #include "chrome/browser/consent_auditor/consent_auditor_factory.h"
-#include "chrome/browser/prefs/pref_service_syncable_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/ash/shelf/chrome_shelf_controller.h"
@@ -141,8 +140,10 @@ void ArcPlayStoreEnabledPreferenceHandler::OnPreferenceChanged() {
       //            signin::ConsentLevel::kSignin));
       if (identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSignin)) {
         // This class doesn't care about browser sync consent.
-        const CoreAccountId account_id = identity_manager->GetPrimaryAccountId(
-            signin::ConsentLevel::kSignin);
+        const GaiaId gaia_id =
+            identity_manager
+                ->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin)
+                .gaia;
 
         UserConsentTypes::ArcPlayTermsOfServiceConsent play_consent;
         play_consent.set_status(UserConsentTypes::NOT_GIVEN);
@@ -153,7 +154,7 @@ void ArcPlayStoreEnabledPreferenceHandler::OnPreferenceChanged() {
         play_consent.set_consent_flow(
             UserConsentTypes::ArcPlayTermsOfServiceConsent::SETTING_CHANGE);
         ConsentAuditorFactory::GetForProfile(profile_)->RecordArcPlayConsent(
-            account_id, play_consent);
+            gaia_id, play_consent);
       }
     }
   }

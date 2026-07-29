@@ -33,7 +33,6 @@
 #include "chrome/browser/ash/login/users/avatar/user_image_manager_test_util.h"
 #include "chrome/browser/ash/login/users/default_user_image/default_user_images.h"
 #include "chrome/browser/ash/ownership/owner_settings_service_ash_factory.h"
-#include "chrome/browser/ash/policy/core/device_policy_builder.h"
 #include "chrome/browser/ash/policy/core/user_cloud_policy_manager_ash.h"
 #include "chrome/browser/ash/policy/external_data/cloud_external_data_manager_base_test_util.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
@@ -44,13 +43,13 @@
 #include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/fake_gaia_mixin.h"
 #include "chrome/test/base/in_process_browser_test.h"
-#include "chrome/test/base/testing_browser_process.h"
 #include "chromeos/ash/components/cryptohome/cryptohome_parameters.h"
 #include "chromeos/ash/components/dbus/session_manager/fake_session_manager_client.h"
 #include "chromeos/ash/components/dbus/session_manager/session_manager_client.h"
 #include "chromeos/ash/components/dbus/userdataauth/userdataauth_client.h"
 #include "chromeos/ash/components/login/auth/public/auth_types.h"
 #include "chromeos/ash/components/login/auth/public/user_context.h"
+#include "chromeos/ash/components/policy/device_policy/device_policy_builder.h"
 #include "chromeos/dbus/constants/dbus_paths.h"
 #include "components/account_id/account_id.h"
 #include "components/ownership/mock_owner_key_util.h"
@@ -66,12 +65,12 @@
 #include "components/signin/public/identity_manager/identity_test_utils.h"
 #include "components/signin/public/identity_manager/signin_constants.h"
 #include "components/user_manager/scoped_user_manager.h"
+#include "components/user_manager/test_helper.h"
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_image/user_image.h"
 #include "components/user_manager/user_manager.h"
 #include "components/user_manager/user_type.h"
 #include "content/public/test/browser_test.h"
-#include "crypto/rsa_private_key.h"
 #include "google_apis/gaia/gaia_id.h"
 #include "google_apis/gaia/gaia_urls.h"
 #include "net/test/embedded_test_server/controllable_http_response.h"
@@ -196,17 +195,16 @@ class UserImageManagerTestBase : public LoginManagerTest,
   // Logs in `account_id`.
   void LogIn(const AccountId& account_id) {
     user_manager::UserManager::Get()->UserLoggedIn(
-        account_id, account_id.GetUserEmail(), false /* browser_restart */,
-        false /* is_child */);
+        account_id, user_manager::TestHelper::GetFakeUsernameHash(account_id));
   }
 
   // Verifies user image info.
   void ExpectUserImageInfo(const AccountId& account_id,
                            int image_index,
                            const base::FilePath& image_path) {
-    const base::Value::Dict& images_pref =
+    const base::DictValue& images_pref =
         local_state_->GetDict(UserImageManagerImpl::kUserImageProperties);
-    const base::Value::Dict* image_properties =
+    const base::DictValue* image_properties =
         images_pref.FindDict(account_id.GetUserEmail());
     ASSERT_TRUE(image_properties);
     std::optional<int> actual_image_index =
@@ -232,18 +230,14 @@ class UserImageManagerTestBase : public LoginManagerTest,
         identity_manager->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin);
     signin::SetRefreshTokenForAccount(identity_manager, core_info.account_id,
                                       kRandomTokenStrForTesting);
-    AccountInfo account_info;
-    account_info.email = core_info.email;
-    account_info.gaia = core_info.gaia;
-    account_info.account_id = core_info.account_id;
-    account_info.is_under_advanced_protection =
-        core_info.is_under_advanced_protection;
-    account_info.full_name = account_info.email;
-    account_info.given_name = account_info.email;
-    account_info.hosted_domain = kNoHostedDomainFound;
-    account_info.locale = account_info.email;
-    account_info.picture_url =
-        embedded_test_server()->GetURL("/avatar.jpg").spec();
+    AccountInfo account_info =
+        AccountInfo::Builder(core_info)
+            .SetFullName(core_info.email)
+            .SetGivenName(core_info.email)
+            .SetHostedDomain(std::string())
+            .SetLocale(core_info.email)
+            .SetAvatarUrl(embedded_test_server()->GetURL("/avatar.jpg").spec())
+            .Build();
     signin::UpdateAccountInfoForAccount(identity_manager, account_info);
   }
 
@@ -591,8 +585,8 @@ class UserImageManagerPolicyTest : public UserImageManagerTestBase,
         UserDataAuthClient::GetStubSanitizedUsername(cryptohome_id_);
     const base::FilePath user_key_file =
         user_keys_dir.AppendASCII(sanitized_username).AppendASCII("policy.pub");
-    std::vector<uint8_t> user_key_bits;
-    ASSERT_TRUE(user_policy_.GetSigningKey()->ExportPublicKey(&user_key_bits));
+    std::vector<uint8_t> user_key_bits =
+        user_policy_.GetSigningKey()->ToSubjectPublicKeyInfo();
     ASSERT_TRUE(base::CreateDirectory(user_key_file.DirName()));
     ASSERT_TRUE(base::WriteFile(user_key_file, user_key_bits));
     user_policy_.policy_data().set_username(
@@ -626,14 +620,11 @@ class UserImageManagerPolicyTest : public UserImageManagerTestBase,
                                 &image_data)) {
       ADD_FAILURE();
     }
-    std::string policy;
-    base::JSONWriter::Write(policy::test::ConstructExternalDataReference(
-                                embedded_test_server()
-                                    ->GetURL(std::string("/") + relative_path)
-                                    .spec(),
-                                image_data),
-                            &policy);
-    return policy;
+    std::string path = std::string("/") + relative_path;
+    std::string url = embedded_test_server()->GetURL(path).spec();
+    return base::WriteJson(
+               policy::test::ConstructExternalDataReference(url, image_data))
+        .value_or("");
   }
 
   DeviceStateMixin device_state_{
@@ -669,8 +660,9 @@ IN_PROC_BROWSER_TEST_F(UserImageManagerPolicyTest, SetAndClear) {
   user_policy_.payload().mutable_useravatarimage()->set_value(
       ConstructPolicy(test::kUserAvatarImage2RelativePath));
   user_policy_.Build();
-  FakeSessionManagerClient::Get()->set_user_policy(cryptohome_id_,
-                                                   user_policy_.GetBlob());
+  FakeSessionManagerClient::Get()->set_user_policy(
+      cryptohome_id_, login_manager::POLICY_DOMAIN_CHROME,
+      user_policy_.GetBlob());
   run_loop_ = std::make_unique<base::RunLoop>();
   store->Load();
   run_loop_->Run();
@@ -695,8 +687,9 @@ IN_PROC_BROWSER_TEST_F(UserImageManagerPolicyTest, SetAndClear) {
   // image.
   user_policy_.payload().Clear();
   user_policy_.Build();
-  FakeSessionManagerClient::Get()->set_user_policy(cryptohome_id_,
-                                                   user_policy_.GetBlob());
+  FakeSessionManagerClient::Get()->set_user_policy(
+      cryptohome_id_, login_manager::POLICY_DOMAIN_CHROME,
+      user_policy_.GetBlob());
   run_loop_ = std::make_unique<base::RunLoop>();
   store->AddObserver(this);
   store->Load();
@@ -761,8 +754,9 @@ IN_PROC_BROWSER_TEST_F(UserImageManagerPolicyTest, PolicyOverridesUser) {
   user_policy_.payload().mutable_useravatarimage()->set_value(
       ConstructPolicy(test::kUserAvatarImage2RelativePath));
   user_policy_.Build();
-  FakeSessionManagerClient::Get()->set_user_policy(cryptohome_id_,
-                                                   user_policy_.GetBlob());
+  FakeSessionManagerClient::Get()->set_user_policy(
+      cryptohome_id_, login_manager::POLICY_DOMAIN_CHROME,
+      user_policy_.GetBlob());
   run_loop_ = std::make_unique<base::RunLoop>();
   store->Load();
   run_loop_->Run();
@@ -801,8 +795,9 @@ IN_PROC_BROWSER_TEST_F(UserImageManagerPolicyTest, UserDoesNotOverridePolicy) {
   user_policy_.payload().mutable_useravatarimage()->set_value(
       ConstructPolicy(test::kUserAvatarImage2RelativePath));
   user_policy_.Build();
-  FakeSessionManagerClient::Get()->set_user_policy(cryptohome_id_,
-                                                   user_policy_.GetBlob());
+  FakeSessionManagerClient::Get()->set_user_policy(
+      cryptohome_id_, login_manager::POLICY_DOMAIN_CHROME,
+      user_policy_.GetBlob());
   run_loop_ = std::make_unique<base::RunLoop>();
   store->Load();
   run_loop_->Run();

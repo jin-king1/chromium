@@ -10,8 +10,9 @@
 
 #include "base/apple/foundation_util.h"
 #include "base/check.h"
+#include "base/compiler_specific.h"
 #include "base/files/file_path.h"
-#include "base/notreached.h"
+#include "base/notimplemented.h"
 #include "base/strings/sys_string_conversions.h"
 #include "rlz/lib/assert.h"
 #include "rlz/lib/lib_values.h"
@@ -112,7 +113,7 @@ bool RlzValueStoreMac::ReadAccessPointRlz(AccessPoint access_point,
       ASSERT_STRING("GetAccessPointRlz: Insufficient buffer size");
       return false;
     }
-    strncpy(rlz, s.c_str(), rlz_size);
+    UNSAFE_TODO(strncpy(rlz, s.c_str(), rlz_size));
     return true;
   }
   if (rlz_size > 0) {
@@ -231,19 +232,19 @@ int g_lock_depth = 0;
 RlzValueStoreMac* g_store_object = nullptr;
 
 NSURL* CreateRlzDirectory() {
-  NSArray* paths = NSSearchPathForDirectoriesInDomains(
-      NSApplicationSupportDirectory, NSUserDomainMask, /*expandTilde=*/YES);
   NSString* folder = nil;
-  if (paths.count > 0) {
-    folder = ObjCCast<NSString>(paths[0]);
-  }
-  if (!folder) {
-    folder = [@"~/Library/Application Support" stringByStandardizingPath];
-  }
-  folder = [folder stringByAppendingPathComponent:@"Google/RLZ"];
-
   if (g_test_folder) {
-    folder = [g_test_folder stringByAppendingPathComponent:folder];
+    folder = [g_test_folder stringByAppendingPathComponent:@"Google/RLZ"];
+  } else {
+    NSArray* paths = NSSearchPathForDirectoriesInDomains(
+        NSApplicationSupportDirectory, NSUserDomainMask, /*expandTilde=*/YES);
+    if (paths.count > 0) {
+      folder = ObjCCast<NSString>(paths[0]);
+    }
+    if (!folder) {
+      folder = [@"~/Library/Application Support" stringByStandardizingPath];
+    }
+    folder = [folder stringByAppendingPathComponent:@"Google/RLZ"];
   }
 
   [NSFileManager.defaultManager createDirectoryAtPath:folder

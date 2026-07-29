@@ -15,22 +15,41 @@
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "base/values.h"
-#include "build/branding_buildflags.h"
 #include "build/build_config.h"
 #include "chrome/browser/policy/policy_value_and_status_aggregator.h"
 #include "components/policy/core/common/schema_registry.h"
+#include "components/policy/resources/webui/mojom/policy.mojom.h"
 #include "content/public/browser/web_ui_data_source.h"
 #include "content/public/browser/web_ui_message_handler.h"
 #include "extensions/buildflags/buildflags.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/receiver.h"
+#include "mojo/public/cpp/bindings/remote.h"
+
+#if !BUILDFLAG(IS_ANDROID)
+#include "components/enterprise/browser/promotion/promotion_eligibility_checker.h"
+#endif  // !BUILDFLAG(IS_ANDROID)
 
 class PrefChangeRegistrar;
 
+namespace enterprise_management {
+class GetUserEligiblePromotionsResponse;
+}  // namespace enterprise_management
+
 // The JavaScript message handler for the chrome://policy page.
 class PolicyUIHandler : public content::WebUIMessageHandler,
+                        public policy::mojom::PolicyPageHandler,
                         public policy::PolicyValueAndStatusAggregator::Observer,
                         public policy::SchemaRegistry::Observer {
  public:
-  PolicyUIHandler();
+  // Constructs legacy WebUIMessageHandler.
+  explicit PolicyUIHandler(Profile* profile);
+
+  // Constructs mojo handler.
+  PolicyUIHandler(
+      mojo::PendingReceiver<policy::mojom::PolicyPageHandler> receiver,
+      mojo::PendingRemote<policy::mojom::PolicyPageClient> client,
+      Profile* profile);
 
   PolicyUIHandler(const PolicyUIHandler&) = delete;
   PolicyUIHandler& operator=(const PolicyUIHandler&) = delete;
@@ -51,25 +70,65 @@ class PolicyUIHandler : public content::WebUIMessageHandler,
 
   void set_web_ui_for_test(content::WebUI* web_ui) { set_web_ui(web_ui); }
 
- private:
-  void HandleExportPoliciesJson(const base::Value::List& args);
-  void HandleListenPoliciesUpdates(const base::Value::List& args);
-  void HandleReloadPolicies(const base::Value::List& args);
-  void HandleCopyPoliciesJson(const base::Value::List& args);
-  void HandleSetLocalTestPolicies(const base::Value::List& args);
-  void HandleRevertLocalTestPolicies(const base::Value::List& args);
-  void HandleRestartBrowser(const base::Value::List& args);
-  void HandleSetUserAffiliated(const base::Value::List& args);
-  void HandleGetAppliedTestPolicies(const base::Value::List& args);
-  void HandleShouldShowPromotion(const base::Value::List& args);
-  void HandleSetBannerDismissed(const base::Value::List& args);
-  void HandleRecordBannerRedirected(const base::Value::List& args);
-#if !BUILDFLAG(IS_CHROMEOS)
-  void HandleUploadReport(const base::Value::List& args);
+  // policy::mojom::PolicyPageHandler implementation.
+  void GetDebugString(GetDebugStringCallback callback) override;
+  void RestartBrowser(const std::string& policies) override;
+  void SetUserAffiliated(bool affiliated,
+                         SetUserAffiliatedCallback callback) override;
+  void GetAppliedTestPolicies(GetAppliedTestPoliciesCallback callback) override;
+  void RevertLocalTestPolicies() override;
+  void SetLocalTestPolicies(
+      const std::string& policies,
+      const std::string& profile_separation_policy_response,
+      SetLocalTestPoliciesCallback callback) override;
+  void GetPolicyLogs(GetPolicyLogsCallback callback) override;
+
+#if !BUILDFLAG(IS_ANDROID)
+  void CheckPromotionEligibility(
+      CheckPromotionEligibilityCallback callback) override;
+  void SetBannerDismissed() override;
+  void RecordBannerRedirected() override;
 #endif
 
+  void GetPoliciesJson(policy::mojom::GetPoliciesReason reason,
+                       GetPoliciesJsonCallback callback) override;
+
+ private:
+  void HandleListenPoliciesUpdates(const base::ListValue& args);
+  void HandleReloadPolicies(const base::ListValue& args);
+  void HandleSetLocalTestPolicies(const base::ListValue& args);
+  void HandleRevertLocalTestPolicies(const base::ListValue& args);
+  void HandleRestartBrowser(const base::ListValue& args);
+  void HandleSetUserAffiliated(const base::ListValue& args);
+  void HandleGetAppliedTestPolicies(const base::ListValue& args);
+#if !BUILDFLAG(IS_ANDROID)
+  void HandleShouldShowPromotion(const base::ListValue& args);
+  void HandleSetBannerDismissed(const base::ListValue& args);
+  void HandleRecordBannerRedirected(const base::ListValue& args);
+#endif
+  void HandleGetPoliciesJson(const base::ListValue& args);
+#if !BUILDFLAG(IS_CHROMEOS)
+  void HandleUploadReport(const base::ListValue& args);
+#endif
+
+  // Core logic for setting the user affiliation status for test policies.
+  // This is used to simulate user affiliation for testing purposes.
+  void SetUserAffiliatedImpl(bool affiliated);
+
+  // Core logic for retrieving the currently applied local test policies as a
+  // JSON string. Returns the current set of policies loaded in the
+  // LocalTestPolicyProvider.
+  const std::string& GetAppliedTestPoliciesImpl();
+
+  // Core logic for setting local test policies from a JSON string.
+  // This function is the core implementation for applying test policies
+  // to the LocalTestPolicyProvider.
+  void SetLocalTestPoliciesImpl(
+      const std::string& policies,
+      const std::string& profile_separation_policy_response);
+
   // Handler functions for chrome://policy/logs.
-  void HandleGetPolicyLogs(const base::Value::List& args);
+  void HandleGetPolicyLogs(const base::ListValue& args);
 
   // Send information about the current policy values to the UI. Information is
   // sent in two parts to the UI:
@@ -95,8 +154,22 @@ class PolicyUIHandler : public content::WebUIMessageHandler,
   void OnReportUploaded(const std::string& callback_id);
 #endif
 
-  // Build a JSON string of all the policies.
-  std::string GetPoliciesAsJson();
+#if !BUILDFLAG(IS_ANDROID)
+  void OnPromotionEligibilityFetchedWebUiWrapper(base::Value callback_id,
+                                                 bool response);
+
+  void OnPromotionEligibilityFetched(
+      CheckPromotionEligibilityCallback callback,
+      enterprise_management::GetUserEligiblePromotionsResponse response);
+
+  std::unique_ptr<enterprise_promotion::PromotionEligibilityChecker>
+      promotion_eligibility_checker_;
+#endif
+
+  // Builds a raw JSON string representation of all the policies.
+  std::string GetPoliciesJsonImpl(policy::mojom::GetPoliciesReason reason);
+
+  inline bool IsMojoMigrationEnabled() const { return client_.is_bound(); }
 
   std::unique_ptr<policy::PolicyValueAndStatusAggregator>
       policy_value_and_status_aggregator_;
@@ -114,6 +187,12 @@ class PolicyUIHandler : public content::WebUIMessageHandler,
   uint32_t export_to_json_count_ = 0;
   uint32_t copy_to_json_count_ = 0;
   uint32_t upload_report_count_ = 0;
+
+  const mojo::Receiver<policy::mojom::PolicyPageHandler> receiver_{this};
+  const mojo::Remote<policy::mojom::PolicyPageClient> client_{
+      mojo::NullRemote()};
+
+  raw_ref<Profile> profile_;
 
   base::WeakPtrFactory<PolicyUIHandler> weak_factory_{this};
 };

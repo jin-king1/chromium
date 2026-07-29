@@ -66,13 +66,15 @@ class SecurityInterstitialPage {
   virtual void CreatedPostCommitErrorPageNavigation(
       content::NavigationHandle* error_page_navigation_handle) {}
 
+  // Returns the controller client handling this page.
+  SecurityInterstitialControllerClient* controller() const;
+
   // Return the interstitial type for testing.
   virtual TypeID GetTypeForTesting();
 
  protected:
   // Populates the strings used to generate the HTML from the template.
-  virtual void PopulateInterstitialStrings(
-      base::Value::Dict& load_time_data) = 0;
+  virtual void PopulateInterstitialStrings(base::DictValue& load_time_data) = 0;
 
   virtual int GetHTMLTemplateId();
 
@@ -81,8 +83,6 @@ class SecurityInterstitialPage {
 
   content::WebContents* web_contents() const;
   GURL request_url() const;
-
-  SecurityInterstitialControllerClient* controller() const;
 
   // Update metrics when the interstitial is closed.
   void UpdateMetricsAfterSecurityInterstitial();

@@ -52,9 +52,8 @@ class StreamCreator : public GarbageCollected<StreamCreator> {
 
     auto* script_state = scope.GetScriptState();
     stream_wrapper_ = MakeGarbageCollected<TCPReadableStreamWrapper>(
-        script_state,
-        WTF::BindOnce(&StreamCreator::Close, WrapWeakPersistent(this)),
-        std::move(data_pipe_consumer));
+        script_state, BindOnce(&StreamCreator::Close, WrapWeakPersistent(this)),
+        std::move(data_pipe_consumer), /*inspector_id=*/0);
 
     scope.PerformMicrotaskCheckpoint();
     test::RunPendingTasks();
@@ -80,7 +79,7 @@ class StreamCreator : public GarbageCollected<StreamCreator> {
       ADD_FAILURE() << "chunk is not an Uint8Array";
       return ret;
     }
-    ret.AppendSpan(value->ByteSpan());
+    ret.append_range(value->ByteSpan());
     return ret;
   }
 
@@ -128,7 +127,7 @@ class StreamCreator : public GarbageCollected<StreamCreator> {
   void Cleanup() { data_pipe_producer_.reset(); }
 
  private:
-  void Close(v8::Local<v8::Value> exception) {
+  void Close(v8::Local<v8::Value> exception, int net_error) {
     close_called_with_ = !exception.IsEmpty();
   }
 

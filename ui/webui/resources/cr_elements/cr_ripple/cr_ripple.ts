@@ -36,9 +36,9 @@ export class CrRippleElement extends CrLitElement {
     };
   }
 
-  holdDown: boolean = false;
-  recenters: boolean = false;
-  noink: boolean = false;
+  accessor holdDown: boolean = false;
+  accessor recenters: boolean = false;
+  accessor noink: boolean = false;
 
   private ripples_: Element[] = [];
   private eventTracker_: EventTracker = new EventTracker();
@@ -215,8 +215,7 @@ export class CrRippleElement extends CrLitElement {
     }
 
     this.ripples_.forEach(function(ripple) {
-      const opacity =
-          ripple.computedStyleMap().get('opacity') as CSSUnitValue | null;
+      const opacity = (ripple.computedStyleMap().get('opacity') ?? null) as CSSUnitValue | null;
       if (opacity === null) {
         ripple.remove();
         return;

@@ -4,6 +4,8 @@
 
 #include "chrome/browser/ui/views/permissions/exclusive_access_permission_prompt_view.h"
 
+#include <string_view>
+
 #include "chrome/browser/platform_util.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
@@ -12,9 +14,8 @@
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/chrome_widget_sublevel.h"
 #include "chrome/grit/generated_resources.h"
-#include "components/permissions/features.h"
+#include "components/permissions/permission_uma_util.h"
 #include "components/strings/grit/components_strings.h"
-#include "components/vector_icons/vector_icons.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -55,14 +56,26 @@ void AddElementIdentifierToLabel(views::Label& label, size_t index) {
   label.SetProperty(views::kElementIdentifierKey, id);
 }
 
+std::string_view GetPermissionActionString(
+    ExclusiveAccessPermissionPromptView::ButtonType button) {
+  switch (button) {
+    case ExclusiveAccessPermissionPromptView::ButtonType::kAlwaysAllow:
+      return "Accepted";
+    case ExclusiveAccessPermissionPromptView::ButtonType::kAllowThisTime:
+      return "AcceptedOnce";
+    case ExclusiveAccessPermissionPromptView::ButtonType::kNeverAllow:
+      return "Denied";
+    default:
+      NOTREACHED();
+  }
+}
+
 }  // namespace
 
 ExclusiveAccessPermissionPromptView::ExclusiveAccessPermissionPromptView(
-    Browser* browser,
+    content::WebContents* web_contents,
     base::WeakPtr<permissions::PermissionPrompt::Delegate> delegate)
-    : PermissionPromptBaseView(browser, delegate),
-      browser_(browser),
-      delegate_(delegate) {
+    : PermissionPromptBaseView(web_contents, delegate), delegate_(delegate) {
   SetProperty(views::kElementIdentifierKey, kMainViewId);
 }
 
@@ -99,12 +112,15 @@ void ExclusiveAccessPermissionPromptView::RunButtonCallback(int button_id) {
     return;
   }
   ButtonType button = GetButtonType(button_id);
+  permissions::PermissionUmaUtil::RecordActionBrowserAlwaysActive(
+      request_type(), GetPermissionActionString(button),
+      record_host_always_active_value());
   if (button == ButtonType::kAllowThisTime) {
-    delegate_->AcceptThisTime();
+    delegate_->AcceptThisTime(/*prompt_options=*/std::monostate());
   } else if (button == ButtonType::kAlwaysAllow) {
-    delegate_->Accept();
+    delegate_->Accept(/*prompt_options=*/std::monostate());
   } else if (button == ButtonType::kNeverAllow) {
-    delegate_->Deny();
+    delegate_->Deny(/*prompt_options=*/std::monostate());
   }
 }
 
@@ -114,7 +130,7 @@ void ExclusiveAccessPermissionPromptView::Show() {
 }
 
 void ExclusiveAccessPermissionPromptView::CreateWidget() {
-  DCHECK(browser_->window());
+  DCHECK(GetNativeWindow());
   views::Widget* widget = views::BubbleDialogDelegateView::CreateBubble(this);
 
   widget->SetZOrderSublevel(ChromeWidgetSublevel::kSublevelSecurity);
@@ -155,8 +171,9 @@ void ExclusiveAccessPermissionPromptView::ShowWidget() {
 
 void ExclusiveAccessPermissionPromptView::UpdateAnchor(views::Widget* widget) {
   SetAnchorView(widget->GetContentsView());
-  set_parent_window(
-      platform_util::GetViewForWindow(browser_->window()->GetNativeWindow()));
+  if (GetNativeWindow()) {
+    set_parent_window(platform_util::GetViewForWindow(GetNativeWindow()));
+  }
   SetArrow(views::BubbleBorder::Arrow::FLOAT);
 }
 
@@ -178,7 +195,7 @@ void ExclusiveAccessPermissionPromptView::Init() {
                      base::Unretained(this)));
 
   int index = 0;
-  for (permissions::PermissionRequest* request : delegate_->Requests()) {
+  for (const auto& request : delegate_->Requests()) {
     AddRequestLine(&permissions::GetIconId(request->request_type()),
                    request->GetMessageTextFragment(), index++);
   }
@@ -194,13 +211,9 @@ void ExclusiveAccessPermissionPromptView::InitButtons() {
       views::BoxLayout::Orientation::kVertical, gfx::Insets(),
       kButtonVerticalDistance));
 
-  if (permissions::feature_params::kShowAllowAlwaysAsFirstButton.Get()) {
-    AddAlwaysAllowButton(*buttons_container);
-    AddAllowThisTimeButton(*buttons_container);
-  } else {
-    AddAllowThisTimeButton(*buttons_container);
-    AddAlwaysAllowButton(*buttons_container);
-  }
+  AddAlwaysAllowButton(*buttons_container);
+  AddAllowThisTimeButton(*buttons_container);
+
   AddButton(*buttons_container,
             l10n_util::GetStringUTF16(IDS_PERMISSION_NEVER_ALLOW),
             ButtonType::kNeverAllow, ui::ButtonStyle::kTonal, kNeverAllowId);
@@ -283,7 +296,9 @@ void ExclusiveAccessPermissionPromptView::AddAllowThisTimeButton(
 
 void ExclusiveAccessPermissionPromptView::ClosingPermission() {
   if (delegate_) {
-    delegate_->Dismiss();
+    permissions::PermissionUmaUtil::RecordActionBrowserAlwaysActive(
+        request_type(), "Dismissed", record_host_always_active_value());
+    delegate_->Dismiss(/*prompt_options=*/std::monostate());
   }
 }
 

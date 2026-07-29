@@ -54,14 +54,10 @@ interface CanvasRenderingContext2D {
     void drawFocusIfNeeded(Element element);
     void drawFocusIfNeeded(Path2D path, Element element);
 
-    // placeElement: https://github.com/Igalia/explainers/blob/main/canvas-formatted-text/html-in-canvas.md
-    [RuntimeEnabled=CanvasPlaceElement, RaisesException] void placeElement(Element element, unrestricted double x,
-                                        unrestricted double y);
-
     [MeasureAs=GetCanvas2DContextAttributes] CanvasRenderingContext2DSettings getContextAttributes();
 };
 
 CanvasRenderingContext2D includes BaseRenderingContext2D;
 CanvasRenderingContext2D includes CanvasPath;
-CanvasRenderingContext2D includes Canvas2dGPUTransfer;
-CanvasRenderingContext2D includes CanvasRecordingContext2D;
+CanvasRenderingContext2D includes CanvasDrawElementImage;
+CanvasRenderingContext2D includes Canvas2DRecorderContext;

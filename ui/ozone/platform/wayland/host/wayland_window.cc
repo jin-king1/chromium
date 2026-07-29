@@ -13,14 +13,15 @@
 #include <utility>
 
 #include "base/auto_reset.h"
-#include "base/containers/contains.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
+#include "base/logging.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/notimplemented.h"
 #include "base/notreached.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/run_loop.h"
+#include "base/strings/string_util.h"
 #include "base/task/single_thread_task_runner.h"
 #include "ui/base/cursor/cursor.h"
 #include "ui/base/cursor/mojom/cursor_type.mojom.h"
@@ -39,11 +40,12 @@
 #include "ui/gfx/geometry/rect_conversions.h"
 #include "ui/gfx/geometry/rrect_f.h"
 #include "ui/gfx/geometry/size.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/gfx/overlay_priority_hint.h"
 #include "ui/ozone/common/bitmap_cursor.h"
 #include "ui/ozone/common/features.h"
 #include "ui/ozone/platform/wayland/common/wayland_overlay_config.h"
+#include "ui/ozone/platform/wayland/host/begin_frame_source_wayland.h"
 #include "ui/ozone/platform/wayland/host/dump_util.h"
 #include "ui/ozone/platform/wayland/host/wayland_async_cursor.h"
 #include "ui/ozone/platform/wayland/host/wayland_bubble.h"
@@ -98,6 +100,12 @@ WaylandWindow::WaylandWindow(PlatformWindowDelegate* delegate,
       ui_task_runner_(base::SingleThreadTaskRunner::GetCurrentDefault()) {
   // Set a class property key, which allows |this| to be used for drag action.
   SetWmDragHandler(this, this);
+
+  if (base::FeatureList::IsEnabled(
+          features::kWaylandExternalBeginFrameSource)) {
+    begin_frame_source_ =
+        std::make_unique<BeginFrameSourceWayland>(this, frame_manager_.get());
+  }
 }
 
 WaylandWindow::~WaylandWindow() {
@@ -135,6 +143,13 @@ WaylandWindow::~WaylandWindow() {
   for (auto bubble : child_bubbles_) {
     bubble->set_parent_window(nullptr);
   }
+
+  if (focus_client_) {
+    focus_client_->OnKeyboardFocusChanged(false);
+    if (connection_->SupportsTextInputFocus()) {
+      focus_client_->OnTextInputFocusChanged(false);
+    }
+  }
 }
 
 void WaylandWindow::OnWindowLostCapture() {
@@ -155,7 +170,11 @@ void WaylandWindow::UpdateWindowScale(bool update_bounds) {
   const auto window_scale = connection_->UsePerSurfaceScaling()
                                 ? GetPreferredScaleFactor()
                                 : GetScaleFactorFromEnteredOutputs();
+  auto weak_this = AsWeakPtr();
   SetWindowScale(window_scale.value_or(1.0f));
+  if (!weak_this) {
+    return;
+  }
 
   // Propagate update to the popups.
   if (child_popup_) {
@@ -190,29 +209,55 @@ void WaylandWindow::RemoveBubble(WaylandBubble* window) {
   if (active_bubble_ == window) {
     active_bubble_ = nullptr;
     if (IsActive()) {
+      auto weak_this = AsWeakPtr();
       delegate()->OnActivationChanged(true);
+      if (!weak_this) {
+        return;
+      }
     }
   }
-  child_bubbles_.erase(
-      std::find(child_bubbles_.begin(), child_bubbles_.end(), window));
+  auto it = std::find(child_bubbles_.begin(), child_bubbles_.end(), window);
+  if (it != child_bubbles_.end()) {
+    child_bubbles_.erase(it);
+  }
 }
 
 void WaylandWindow::ActivateBubble(WaylandBubble* window) {
-  CHECK(!window || base::Contains(child_bubbles_, window));
+  CHECK(!window || std::ranges::contains(child_bubbles_, window));
   CHECK(!window || (window->AsWaylandBubble() &&
                     window->AsWaylandBubble()->activatable()));
   if (active_bubble_ == window) {
     return;
   }
+
+  base::WeakPtr<WaylandWindow> weak_window =
+      window ? window->AsWeakPtr() : nullptr;
+
   if (active_bubble_) {
+    auto weak_this = AsWeakPtr();
     active_bubble_->delegate()->OnActivationChanged(false);
+    if (!weak_this) {
+      return;
+    }
   }
+
+  if (window && !weak_window) {
+    return;
+  }
+
   active_bubble_ = window;
 
   if (active_bubble_) {
+    auto weak_this = AsWeakPtr();
     delegate()->OnActivationChanged(false);
-    active_bubble_->delegate()->OnActivationChanged(true);
+    if (!weak_this) {
+      return;
+    }
+    if (active_bubble_) {
+      active_bubble_->delegate()->OnActivationChanged(true);
+    }
   } else {
+    auto weak_this = AsWeakPtr();
     delegate()->OnActivationChanged(IsActive());
   }
 }
@@ -319,6 +364,18 @@ void WaylandWindow::OnPointerFocusChanged(bool focused) {
   }
 }
 
+void WaylandWindow::OnKeyboardFocusChanged(bool focused) {
+  if (focus_client_) {
+    focus_client_->OnKeyboardFocusChanged(focused);
+  }
+}
+
+void WaylandWindow::OnTextInputFocusChanged(bool focused) {
+  if (focus_client_) {
+    focus_client_->OnTextInputFocusChanged(focused);
+  }
+}
+
 bool WaylandWindow::HasPointerFocus() const {
   return this ==
          connection_->window_manager()->GetCurrentPointerFocusedWindow();
@@ -396,6 +453,37 @@ void WaylandWindow::Hide() {
     subsurface->Hide();
   }
   frame_manager_->Hide();
+
+  // Per https://wayland.app/protocols/xdg-shell#xdg_surface, the process of
+  // mapping a shell surface comprises the following steps:
+  //
+  // (1) Ensuring no buffer is attached to its associated wl_surface.
+  // (2) Creating the xdg_surface and its specific role surface (eg:
+  //     xdg_toplevel), and set its metadata (eg: app_id, title, etc).
+  // (3) Committing its wl_surface state; and then
+  // (4) Waiting for the initial configure sequence. After that, a non-null
+  //     buffer can be produced and attached to its underlying wl_surface.
+  //
+  // As `root_surface_` is reused for the whole WaylandWindow's lifetime, a
+  // null buffer must be attached here and no buffer should be attached to it
+  // until it is shown again.
+  //
+  // Note: `wl_surface_attach` is used directly here to ensure that the null
+  // buffer attach request is actually issued. This is required for 2 reasons:
+  //
+  // - There are synchronization issues in interactive ui tests (eg: tab drag),
+  // which lead to dnd start before a non-null buffer is attached to the origin
+  // surface, i.e: `root_surface_->buffer_id() == 0` here.
+  // - Weston, used in interactive ui infra, does not properly handle wl_surface
+  // reuse, and raises a protocol error when no buffer is attached before a
+  // previous surface unmapping.
+  //
+  // TODO(crbug.com/400894502): Investigate the issues described above.
+
+  if (root_surface_) {
+    wl_surface_attach(root_surface_->surface(), nullptr, 0, 0);
+    root_surface_->Commit(false);
+  }
 }
 
 void WaylandWindow::ClearInFlightRequestsSerial() {
@@ -434,6 +522,11 @@ void WaylandWindow::OnChannelDestroyed() {
 void WaylandWindow::OnFontScaleFactorChanged() {
   CHECK(connection_->IsUiScaleEnabled());
   UpdateWindowScale(/*update_bounds=*/false);
+}
+
+void WaylandWindow::OnDisplayColorSpacesChanged(
+    scoped_refptr<gfx::DisplayColorSpacesRef> display_color_spaces) {
+  delegate_->OnDisplayColorSpacesChanged(std::move(display_color_spaces));
 }
 
 void WaylandWindow::DumpState(std::ostream& out) const {
@@ -855,16 +948,23 @@ void WaylandWindow::OnDragSessionClose(DragOperation operation) {
     // is about to shut down. Do nothing and return.
     return;
   }
+  // Running `drag_finished_callback_` and dispatching the synthetic pointer
+  // release below may spin a nested run loop in which `this` gets destroyed,
+  // so move the quit closure onto the stack to ensure the drag loop is still
+  // quit in that case.
+  base::OnceClosure quit_closure = std::move(drag_loop_quit_closure_);
+  auto alive = AsWeakPtr();
   std::move(drag_finished_callback_).Run(operation);
   // Skip releasing any pointer buttons for the case of a window drag driven by
   // the data drag controller.
   // TODO: crbug.com/40238145 - Refactor this per discussion at
   // crrev.com/c/5570335/comment/0b8811fc_818028c9/.
-  if (!connection()->data_drag_controller()->IsWindowDragSessionRunning()) {
+  if (alive &&
+      !connection()->data_drag_controller()->IsWindowDragSessionRunning()) {
     connection()->event_source()->ReleasePressedPointerButtons(
         this, EventTimeForNow());
   }
-  std::move(drag_loop_quit_closure_).Run();
+  std::move(quit_closure).Run();
 }
 
 bool WaylandWindow::Initialize(PlatformWindowInitProperties properties) {
@@ -890,7 +990,7 @@ bool WaylandWindow::Initialize(PlatformWindowInitProperties properties) {
   if (state.bounds_dip.IsEmpty()) {
     // If bounds are not specified, place the window on the appropriate display,
     // if supported.
-    auto* screen = display::Screen::GetScreen();
+    auto* screen = display::Screen::Get();
     DCHECK(screen) << "A TestScreen must be instantiated for tests creating "
                       "windows with no initial bounds.";
     state.bounds_dip = gfx::Rect({0, 0}, {1, 1});
@@ -1086,7 +1186,7 @@ bool WaylandWindow::CommitOverlays(
   }
 
   // Wayland submits from front to back. A simple reverse can avoid a full sort.
-  std::reverse(overlays.begin(), overlays.end());
+  std::ranges::reverse(overlays);
   if (!std::is_sorted(overlays.begin(), overlays.end(),
                       OverlayStackOrderCompare)) {
     // |overlays| is sorted from bottom to top.
@@ -1241,6 +1341,9 @@ void WaylandWindow::ProcessPendingConfigureState(uint32_t serial) {
   if (pending_configure_state_.size_px.has_value()) {
     state.size_px = pending_configure_state_.size_px.value();
   }
+  if (pending_configure_state_.tiled_edges.has_value()) {
+    state.tiled_edges = pending_configure_state_.tiled_edges.value();
+  }
 
   if (state.bounds_dip.IsEmpty() &&
       GetPlatformWindowState() == PlatformWindowState::kMinimized &&
@@ -1257,16 +1360,23 @@ void WaylandWindow::ProcessPendingConfigureState(uint32_t serial) {
     }
   }
 
+  // RequestStateFromServer transitively calls delegate()->OnStateUpdate(),
+  // which may synchronously delete |this|.
+  auto weak_this = AsWeakPtr();
   RequestStateFromServer(state, serial);
+  if (!weak_this) {
+    return;
+  }
 
   // Reset values.
   pending_configure_state_ = PendingConfigureState();
 
   // If we get a configure which is immediately applied and latched (meaning
   // that the configure does nothing), we will have immediately acked it, and we
-  // can immediately commit it. See crbug.com/340500574.
+  // can immediately commit it if the window is already mapped. See
+  // crbug.com/340500574.
   if (state == applied_state_ && state == latched_state_ &&
-      in_flight_requests_.empty()) {
+      in_flight_requests_.empty() && root_surface()->has_buffer()) {
     root_surface_->Commit(/*flush=*/true);
   }
 }
@@ -1471,9 +1581,11 @@ void WaylandWindow::LatchStateRequest(const StateRequest& req) {
   auto old_state = latched_state_;
   latched_state_ = req.state;
 
-  // Update the geometry if the bounds or the insets are changed since the last
-  // latched request.
+  // Update the geometry if:
+  // - either bounds, tiling or insets has changed since the latest latched
+  //   request.
   if (req.state.bounds_dip.size() != old_state.bounds_dip.size() ||
+      req.state.tiled_edges != old_state.tiled_edges ||
       delegate()->CalculateInsetsInDIP(req.state.window_state) !=
           delegate()->CalculateInsetsInDIP(old_state.window_state)) {
     SetWindowGeometry(req.state);
@@ -1490,10 +1602,10 @@ void WaylandWindow::MaybeApplyLatestStateRequest(bool force) {
   // `in_flight_requests_`.
   CHECK(!applying_state_)
       << "MaybeApplyLatestStateRequest called re-entrantly.";
-  auto setter =
-      std::make_optional<base::AutoReset<bool>>(&applying_state_, true);
+  applying_state_ = true;
 
   if (in_flight_requests_.empty()) {
+    applying_state_ = false;
     return;
   }
 
@@ -1505,12 +1617,14 @@ void WaylandWindow::MaybeApplyLatestStateRequest(bool force) {
     // Allow at most 3 configure requests to be waited on at a time.
     constexpr int MAX_IN_FLIGHT_REQUESTS = 3;
     if (in_flight_applied >= MAX_IN_FLIGHT_REQUESTS) {
+      applying_state_ = false;
       return;
     }
   }
 
   auto& latest = in_flight_requests_.back();
   if (latest.applied) {
+    applying_state_ = false;
     return;
   }
   latest.applied = true;
@@ -1524,7 +1638,12 @@ void WaylandWindow::MaybeApplyLatestStateRequest(bool force) {
   // frame to be considered synchronized. For example, this can happen if the
   // old and new states are the same, or it only changes the origin of the
   // bounds.
-  latest.viz_seq = delegate()->OnStateUpdate(old, latest.state);
+  auto weak_this = AsWeakPtr();
+  int64_t viz_seq = delegate()->OnStateUpdate(old, latest.state);
+  if (!weak_this) {
+    return;
+  }
+  latest.viz_seq = viz_seq;
 
   if (UseTestConfigForPlatformWindows()) {
     latest_applied_viz_seq_for_testing_ = std::max(
@@ -1537,7 +1656,7 @@ void WaylandWindow::MaybeApplyLatestStateRequest(bool force) {
   // `ProcessSequencePoint` may re-entrantly call
   // `MaybeApplyLatestStateRequest`. This is safe as long as we do not hold
   // references to `in_flight_requests_` after here.
-  setter.reset();
+  applying_state_ = false;
 
   // Process any requests added re-entrantly. We need to move the requests out
   // of `reentrant_requests_` here because each re-entrant request may also add

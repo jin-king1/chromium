@@ -123,17 +123,21 @@ all_platforms="-DCONFIG_SIZE_LIMIT=1"
 all_platforms+=" -DDECODE_HEIGHT_LIMIT=16384 -DDECODE_WIDTH_LIMIT=16384"
 all_platforms+=" -DCONFIG_AV1_ENCODER=1"
 all_platforms+=" -DCONFIG_AV1_DECODER=0"
-all_platforms+=" -DCONFIG_LIBYUV=0"
 # Use low bit depth.
 all_platforms+=" -DCONFIG_AV1_HIGHBITDEPTH=0"
 # Use real-time only build.
 all_platforms+=" -DCONFIG_REALTIME_ONLY=1"
-all_platforms+=" -DCONFIG_AV1_TEMPORAL_DENOISING=1"
+all_platforms+=" -DCONFIG_AV1_TEMPORAL_DENOISING=0"
+all_platforms+=" -DCONFIG_DENOISE=0"
 # Disable Quantization Matrix.
 all_platforms+=" -DCONFIG_QUANT_MATRIX=0"
 # avx2 optimizations account for ~0.3mb of the decoder.
 #all_platforms+=" -DENABLE_AVX2=0"
-toolchain="-DCMAKE_TOOLCHAIN_FILE=${SRC}/build/cmake/toolchains"
+toolchain="-DCMAKE_TOOLCHAIN_FILE=${SRC}/cmake/toolchains"
+# chromium has required sse3 for x86 since 2020:
+# http://crrev.com/5bb2864fdd57e45c84459520234b37a01e7a015a
+x86_flags="-DAOM_RTCD_FLAGS="
+x86_flags+="--require-mmx;--require-sse;--require-sse2;--require-sse3"
 
 reset_dirs linux/generic
 gen_config_files linux/generic "-DAOM_TARGET_CPU=generic ${all_platforms}"
@@ -151,10 +155,10 @@ reset_dirs linux/ia32
 gen_config_files linux/ia32 "${toolchain}/i686-linux-gcc.cmake \
   ${all_platforms} \
   -DCONFIG_PIC=1 \
-  -DAOM_RTCD_FLAGS=--require-mmx;--require-sse;--require-sse2"
+  ${x86_flags}"
 
 reset_dirs linux/x64
-gen_config_files linux/x64 "${all_platforms}"
+gen_config_files linux/x64 "${all_platforms} ${x86_flags}"
 
 # Copy linux configurations and modify for Windows.
 reset_dirs win/ia32
@@ -172,18 +176,10 @@ egrep \
   "#define [A-Z0-9_]+[[:space:]]+[01]" "${CFG}/win/x64/config/aom_config.h" \
   | awk '{print "%define " $2 " " $3}' > "${CFG}/win/x64/config/aom_config.asm"
 
-reset_dirs linux/arm
-gen_config_files linux/arm \
-  "${toolchain}/armv7-linux-gcc.cmake -DENABLE_NEON=0 ${all_platforms}"
-
 reset_dirs linux/arm-neon
 gen_config_files linux/arm-neon \
   "${toolchain}/armv7-linux-gcc.cmake -DCONFIG_RUNTIME_CPU_DETECT=0 \
    ${all_platforms}"
-
-reset_dirs linux/arm-neon-cpu-detect
-gen_config_files linux/arm-neon-cpu-detect \
-  "${toolchain}/armv7-linux-gcc.cmake ${all_platforms}"
 
 reset_dirs linux/arm64-cpu-detect
 # Note clang is use to allow detection of SVE/SVE2; gcc as of version 13 is

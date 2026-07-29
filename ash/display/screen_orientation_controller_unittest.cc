@@ -40,6 +40,8 @@
 #include "ui/wm/public/activation_client.h"
 
 namespace ash {
+
+using chromeos::AppType;
 namespace {
 
 using base::kMeanGravityFloat;
@@ -129,8 +131,8 @@ class ScreenOrientationControllerTest : public AshTestBase {
 
  protected:
   aura::Window* CreateAppWindowInShellWithId(int id) {
-    aura::Window* window = CreateTestWindowInShellWithId(id);
-    window->SetProperty(chromeos::kAppTypeKey, chromeos::AppType::CHROME_APP);
+    aura::Window* window = CreateTestWindowInShell({.window_id = id}).release();
+    window->SetProperty(chromeos::kAppTypeKey, AppType::CHROME_APP);
     return window;
   }
 
@@ -183,7 +185,7 @@ TEST_F(ScreenOrientationControllerTest, LockOrientation) {
   EXPECT_EQ(display::Display::ROTATE_0, GetCurrentInternalDisplayRotation());
   EXPECT_TRUE(RotationLocked());
 
-  auto modal = CreateTestWindow(gfx::Rect(0, 0, 400, 400));
+  auto modal = CreateWindowWithAppType(chromeos::AppType::NON_APP, {400, 400});
   modal->SetProperty(aura::client::kModalKey, ui::mojom::ModalType::kSystem);
   EXPECT_EQ(display::Display::ROTATE_0, GetCurrentInternalDisplayRotation());
   EXPECT_TRUE(RotationLocked());
@@ -733,7 +735,7 @@ TEST_F(ScreenOrientationControllerTest, ClamshellPhysicalTabletState) {
   // Once the device goes into tablet mode, it becomes possible to auto-rotate.
   tablet_mode_controller_test_api.OpenLidToAngle(270);
   EXPECT_TRUE(tablet_mode_controller_test_api.IsInPhysicalTabletState());
-  EXPECT_TRUE(display::Screen::GetScreen()->InTabletMode());
+  EXPECT_TRUE(display::Screen::Get()->InTabletMode());
   TriggerLidUpdate(gfx::Vector3dF(kMeanGravityFloat, 0.0f, 0.0f));
   EXPECT_EQ(display::Display::ROTATE_90, GetCurrentInternalDisplayRotation());
 
@@ -742,7 +744,7 @@ TEST_F(ScreenOrientationControllerTest, ClamshellPhysicalTabletState) {
   // still possible.
   tablet_mode_controller_test_api.AttachExternalMouse();
   EXPECT_TRUE(tablet_mode_controller_test_api.IsInPhysicalTabletState());
-  EXPECT_FALSE(display::Screen::GetScreen()->InTabletMode());
+  EXPECT_FALSE(display::Screen::Get()->InTabletMode());
   TriggerLidUpdate(gfx::Vector3dF(0.0f, -kMeanGravityFloat, 0.0f));
   EXPECT_EQ(display::Display::ROTATE_180, GetCurrentInternalDisplayRotation());
 }
@@ -760,7 +762,7 @@ TEST_F(ScreenOrientationControllerTest,
 
   tablet_mode_controller_test_api.OpenLidToAngle(270);
   EXPECT_TRUE(tablet_mode_controller_test_api.IsInPhysicalTabletState());
-  EXPECT_TRUE(display::Screen::GetScreen()->InTabletMode());
+  EXPECT_TRUE(display::Screen::Get()->InTabletMode());
   EXPECT_EQ(display::Display::ROTATE_0, GetCurrentInternalDisplayRotation());
 
   ScreenOrientationController* orientation_controller =
@@ -778,7 +780,7 @@ TEST_F(ScreenOrientationControllerTest,
   // should restore the user rotation lock, and ignore the app-requested one.
   tablet_mode_controller_test_api.AttachExternalMouse();
   EXPECT_TRUE(tablet_mode_controller_test_api.IsInPhysicalTabletState());
-  EXPECT_FALSE(display::Screen::GetScreen()->InTabletMode());
+  EXPECT_FALSE(display::Screen::Get()->InTabletMode());
   EXPECT_TRUE(orientation_controller->user_rotation_locked());
   EXPECT_EQ(display::Display::ROTATE_0, GetCurrentInternalDisplayRotation());
   EXPECT_EQ(chromeos::OrientationType::kLandscapePrimary,
@@ -794,21 +796,21 @@ TEST_F(ScreenOrientationControllerTest,
   // orientation lock for the active window will be applied.
   tablet_mode_controller_test_api.DetachAllMice();
   EXPECT_TRUE(tablet_mode_controller_test_api.IsInPhysicalTabletState());
-  EXPECT_TRUE(display::Screen::GetScreen()->InTabletMode());
+  EXPECT_TRUE(display::Screen::Get()->InTabletMode());
   EXPECT_EQ(display::Display::ROTATE_90, GetCurrentInternalDisplayRotation());
 
   // Orientation should be restored once the device exits the physical tablet
   // state.
   tablet_mode_controller_test_api.OpenLidToAngle(90);
   EXPECT_FALSE(tablet_mode_controller_test_api.IsInPhysicalTabletState());
-  EXPECT_FALSE(display::Screen::GetScreen()->InTabletMode());
+  EXPECT_FALSE(display::Screen::Get()->InTabletMode());
   EXPECT_EQ(display::Display::ROTATE_0, GetCurrentInternalDisplayRotation());
 }
 
 TEST_F(ScreenOrientationControllerTest, GetCurrentAppRequestedOrientationLock) {
   UpdateDisplay("0+0-400x300,+400+0-500x400");
-  auto win0 = CreateAppWindow(gfx::Rect{100, 200});
-  auto win1 = CreateAppWindow(gfx::Rect{460, 10, 100, 200});
+  auto win0 = CreateWindowWithAppType(AppType::SYSTEM_APP, {100, 200});
+  auto win1 = CreateWindowWithAppType(AppType::SYSTEM_APP, {460, 10, 100, 200});
   auto roots = Shell::GetAllRootWindows();
   ASSERT_EQ(2u, roots.size());
   EXPECT_EQ(win0->GetRootWindow(), roots[0]);
@@ -901,7 +903,7 @@ TEST_F(ScreenOrientationControllerTest,
   ASSERT_EQ(2u, roots.size());
 
   // Create a window that locks the orientation to portriat-primary.
-  auto win0 = CreateAppWindow(gfx::Rect{100, 200});
+  auto win0 = CreateWindowWithAppType(AppType::SYSTEM_APP, {100, 200});
   EXPECT_EQ(win0->GetRootWindow(), roots[0]);
   EXPECT_EQ(win0.get(), window_util::GetActiveWindow());
   auto* screen_orientation_controller =
@@ -957,7 +959,8 @@ TEST_F(ScreenOrientationControllerTest, IgnoreFloatWindowOrientationLock) {
   EnableTabletMode(true);
 
   std::unique_ptr<aura::Window> child_window = CreateControlWindow();
-  std::unique_ptr<aura::Window> focus_window(CreateAppWindow());
+  std::unique_ptr<aura::Window> focus_window =
+      CreateWindowWithAppType(AppType::SYSTEM_APP);
   ASSERT_EQ(display::Display::ROTATE_0, GetCurrentInternalDisplayRotation());
   ASSERT_FALSE(RotationLocked());
 
@@ -993,7 +996,7 @@ class SupportsClamshellAutoRotation : public ScreenOrientationControllerTest {
 // kSupportsClamshellAutoRotation is set.
 TEST_F(SupportsClamshellAutoRotation, ScreenRotation) {
   TabletModeControllerTestApi tablet_mode_controller_test_api;
-  ASSERT_FALSE(display::Screen::GetScreen()->InTabletMode());
+  ASSERT_FALSE(display::Screen::Get()->InTabletMode());
 
   // Test rotating in all directions are supported.
   TriggerLidUpdate(gfx::Vector3dF(kMeanGravityFloat, 0.0f, 0.0f));

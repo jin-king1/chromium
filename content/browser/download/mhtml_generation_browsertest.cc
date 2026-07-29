@@ -27,7 +27,6 @@
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/mhtml_extra_parts.h"
-#include "content/public/browser/mhtml_generation_result.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/web_contents.h"
@@ -39,8 +38,6 @@
 #include "content/public/test/content_browser_test_utils.h"
 #include "content/public/test/test_utils.h"
 #include "content/shell/browser/shell.h"
-#include "crypto/secure_hash.h"
-#include "crypto/sha2.h"
 #include "mojo/public/cpp/bindings/associated_receiver.h"
 #include "mojo/public/cpp/bindings/pending_associated_receiver.h"
 #include "net/base/filename_util.h"
@@ -283,57 +280,60 @@ class RespondAndDisconnectMockWriter
   void SerializeAsMHTML(mojom::SerializeAsMHTMLParamsPtr params,
                         SerializeAsMHTMLCallback callback) override {
     // Upon using the overridden mock interface implementation, this will be
-    // handled by the product code as illustrated below.  (1), (2), (3) depict
-    // points in time when product code runs on UI thread and download sequence.
-    // For the repro, the message pipe disconnection needs to happen between (1)
-    // and (3).
+    // handled by the product code as illustrated below. (1), (2), (3), (4)
+    // depict points in time when product code runs on UI thread and download
+    // sequence. For the repro, the message pipe disconnection needs to happen
+    // after the browser has completed writing to disk (2) and before the job is
+    // destroyed in OnFinished (4).
     //
-    //   Test instance     UI thread         download sequence
-    //     ---------       ---------           -----------
-    //        |                |                     |
-    //    WE ARE HERE          |                     |
-    //        |                |                     |
-    //        |                |                     |
-    //        +--------------->+                     |
-    //        |                |                     |
-    //        |                |                     |
-    //        |                |                     |
-    //        |                |                     |
-    //        |                |                     |
-    //        |                |                     |
-    // (1)    |      MHTMLGenerationManager::Job     |
-    //        |      ::SerializeAsMHTMLResponse      |
-    //        |                +-------------------->+
-    //        |                |                     |
-    //        |                |                     |
-    //        |                |                     |
-    // (2)    |                |          MHTMLGenerationManager::Job
-    //        |                |          ::CloseFileOnFileThread
-    //        |                |                     |
-    //        |                |                     |
-    //        |           test needs to              |
-    //        |       disconnect message pipe        |
-    //        |      HERE - between (1) and (3)      |
-    //        |                |                     |
-    //        |                |                     |
-    //        |                +<--------------------+
-    //        |                |                     |
-    // (3)    |      MHTMLGenerationManager          |
-    //        |      Job::OnFinished                 |
-    //        |                |                     |
+    //   Test instance      UI thread          download sequence
+    //     ---------        ---------            -----------
+    //        |                 |                      |
+    //    WE ARE HERE           |                      |
+    //        |                 |                      |
+    //        +---------------->+                      |
+    //        |                 |                      |
+    //        |                 |                      |
+    // (1)    |       MHTMLGenerationManager::Job      |
+    //        |       ::SerializeAsMHTMLResponse       |
+    //        |                 |                      |
+    //        |                 |                      |
+    //        |                 |               [Streams MHTML data]
+    //        |                 |                      +
+    // (2)    |                 +<---------------------+
+    //        |       MHTMLGenerationManager::Job      |
+    //        |       ::DoneWritingToDisk              |
+    //        |                 +-------------------->+
+    //        |                 |                      |
+    // (3)    |                 |           MHTMLGenerationManager::Job
+    //        |                 |           ::FinalizeOnFileThread
+    //        |                 |                      |
+    //        |                 |                      |
+    //        |            test needs to               |
+    //        |       disconnect message pipe          |
+    //        |       HERE - between (2) and (4)       |
+    //        |                 |                      |
+    //        |                 |                      |
+    //        |                 +<---------------------+
+    //        |                 |                      |
+    // (4)    |       MHTMLGenerationManager           |
+    //        |       Job::OnFinished                  |
+    //        |                 |                      |
     //
-    // We hope that the error handler is invoked between (1) and (3) by doing
+    // We ensure the disconnect handler is invoked between (2) and (4) by doing
     // the following:
     // - From here, run the callback response to the UI thread. This queues
     //   the response message onto the bound message pipe.
-    // - After running the callback response, immediately unbind the message
-    //   pipe in order to queue a message onto the bound message pipe to notify
-    //   the Browser the connection was closed and invoke the error handler.
-    // - Upon resuming operation, the FIFO ordering property of associated
-    //   interfaces guarantees the execution of (1) before the error handler.
-    //   (1) posts (2) to the download sequence and terminates. The client end
-    //   then accepts the error notification and invokes the connection error
-    //   handler, guaranteeing its execution before (3).
+    // - After running the callback response, we post a sequence of tasks to
+    //   the download thread (DelayDisconnectionStep1 -> Step2 -> Step3 ->
+    //   DisconnectMojoReceiver) to delay resetting the Mojo connection until
+    //   after the data pipe streaming has completed and DoneWritingToDisk (2)
+    //   has run on the UI thread.
+    // - Upon resuming operation, the FIFO ordering property of Mojo interfaces
+    //   guarantees that (1) executes before the error handler. In parallel,
+    //   the data pipe is drained, posting (2) which then posts (3). The client
+    //   end then accepts the error notification and invokes the connection
+    //   error handler, guaranteeing its execution before (4).
 
     bool compute_contents_hash = params->output_handle->is_producer_handle();
 
@@ -362,31 +362,39 @@ class RespondAndDisconnectMockWriter
     // we must ensure the write complete notification arrives before the
     // connection error notification, otherwise the Browser will report
     // an MhtmlSaveStatus != kSuccess. We can guarantee this by potentially
-    // running tasks after each watcher invocation to send notifications that
-    // it has been completed. We need at least two tasks to guarantee this,
-    // as there can be at most two watcher invocations to write a block of
-    // data smaller than the data pipe buffer to file.
+    // running tasks sequentially on the download thread to delay the Mojo
+    // connection reset. We need three task hops on the download sequence to
+    // ensure that the reader has completed reading the EOF, and the completion
+    // task has been posted to the UI thread (DoneWritingToDisk) before the
+    // receiver is reset.
     download::GetDownloadTaskRunner()->PostTask(
         FROM_HERE,
-        base::BindOnce(&RespondAndDisconnectMockWriter::TaskX,
+        base::BindOnce(&RespondAndDisconnectMockWriter::DelayDisconnectionStep1,
                        scoped_refptr<RespondAndDisconnectMockWriter>(this)));
   }
 
-  void TaskX() {
+  void DelayDisconnectionStep1() {
     download::GetDownloadTaskRunner()->PostTask(
         FROM_HERE,
-        base::BindOnce(&RespondAndDisconnectMockWriter::TaskY,
+        base::BindOnce(&RespondAndDisconnectMockWriter::DelayDisconnectionStep2,
                        scoped_refptr<RespondAndDisconnectMockWriter>(this)));
   }
 
-  void TaskY() {
+  void DelayDisconnectionStep2() {
+    download::GetDownloadTaskRunner()->PostTask(
+        FROM_HERE,
+        base::BindOnce(&RespondAndDisconnectMockWriter::DelayDisconnectionStep3,
+                       scoped_refptr<RespondAndDisconnectMockWriter>(this)));
+  }
+
+  void DelayDisconnectionStep3() {
     GetUIThreadTaskRunner({})->PostTask(
         FROM_HERE,
-        base::BindOnce(&RespondAndDisconnectMockWriter::TaskZ,
+        base::BindOnce(&RespondAndDisconnectMockWriter::DisconnectMojoReceiver,
                        scoped_refptr<RespondAndDisconnectMockWriter>(this)));
   }
 
-  void TaskZ() { receiver_.reset(); }
+  void DisconnectMojoReceiver() { receiver_.reset(); }
 
  private:
   friend base::RefCountedThreadSafe<RespondAndDisconnectMockWriter>;
@@ -451,8 +459,8 @@ class MHTMLGenerationTest : public ContentBrowserTest,
   // that should be equivalent in the original and saved pages.
   base::Value GetPageInfo() {
     auto result = EvalJs(shell(), kGetPageInfoScript);
-    EXPECT_EQ(result.error, "");
-    return result.value.Clone();
+    EXPECT_TRUE(result.is_ok());
+    return std::move(result).TakeValue();
   }
 
   MHTMLFileInfo GenerateMHTMLForCurrentPage() {
@@ -464,19 +472,9 @@ class MHTMLGenerationTest : public ContentBrowserTest,
     base::RunLoop run_loop;
     histogram_tester_ = std::make_unique<base::HistogramTester>();
 
-    bool use_result_callback = GetParam();
-
-    if (use_result_callback) {
-      shell()->web_contents()->GenerateMHTMLWithResult(
-          params,
-          base::BindOnce(&MHTMLGenerationTest::MHTMLGeneratedWithResult,
-                         base::Unretained(this), run_loop.QuitClosure()));
-    } else {
-      shell()->web_contents()->GenerateMHTML(
-          params,
-          base::BindOnce(&MHTMLGenerationTest::MHTMLGenerated,
-                         base::Unretained(this), run_loop.QuitClosure()));
-    }
+    shell()->web_contents()->GenerateMHTML(
+        params, base::BindOnce(&MHTMLGenerationTest::MHTMLGenerated,
+                               base::Unretained(this), run_loop.QuitClosure()));
 
     // Block until the MHTML is generated.
     run_loop.Run();
@@ -486,11 +484,6 @@ class MHTMLGenerationTest : public ContentBrowserTest,
     if (!has_mhtml_callback_run()) {
       return MHTMLFileInfo(params.file_path);
     }
-
-    // TODO(crbug.com/40641976): Add tests which will let MHTMLGeneration
-    // manager fail during file write operation. This will allow us to actually
-    // test if we receive a bogus hash instead of a std::nullopt.
-    EXPECT_EQ(std::nullopt, file_digest());
 
     MHTMLFileInfo info(params.file_path);
 
@@ -590,32 +583,6 @@ class MHTMLGenerationTest : public ContentBrowserTest,
     }
   }
 
-  // Tests that the result of setting compute_contents_hash is the same as
-  // manually hashing the file. Because MHTMLGenerationManager depends on
-  // net::GenerateMimeMultipartBoundary() to write the boundary, we cannot
-  // compute the digest in advance. Therefore, we must compute the hash of the
-  // whole file and assert that the computed hash is the same as the hash
-  // produced here.
-  void TestComputeContentsHash(base::FilePath& path) {
-    base::ScopedAllowBlockingForTesting allow_blocking;
-
-    // Reload the file to an mhtml string for hashing
-    std::string test_mhtml;
-    ASSERT_TRUE(base::ReadFileToString(path, &test_mhtml));
-
-    // Hash the file in one big step. This is not recommended to do outside of
-    // tests because the files being hashed could be too large.
-    std::unique_ptr<crypto::SecureHash> secure_hash =
-        crypto::SecureHash::Create(crypto::SecureHash::Algorithm::SHA256);
-    secure_hash->Update(test_mhtml.c_str(), test_mhtml.size());
-    std::string expected_digest(secure_hash->GetHashLength(), 0);
-    secure_hash->Finish(&(expected_digest[0]), expected_digest.size());
-    secure_hash.reset();
-
-    ASSERT_TRUE(file_digest());
-    EXPECT_EQ(file_digest().value(), expected_digest);
-  }
-
   // In the case that we are using a pre-generated .mhtml file, we do
   // not have any control over the final mhtml_boundary_marker write
   // operation. This results in the post-generation verification tests
@@ -630,7 +597,6 @@ class MHTMLGenerationTest : public ContentBrowserTest,
 
   bool has_mhtml_callback_run() const { return has_mhtml_callback_run_; }
   int64_t file_size() const { return file_size_; }
-  std::optional<std::string> file_digest() const { return file_digest_; }
   base::HistogramTester* histogram_tester() { return histogram_tester_.get(); }
 
   base::ScopedTempDir temp_dir_;
@@ -641,17 +607,9 @@ class MHTMLGenerationTest : public ContentBrowserTest,
     file_size_ = size;
     std::move(quit_closure).Run();
   }
-  void MHTMLGeneratedWithResult(base::OnceClosure quit_closure,
-                                const MHTMLGenerationResult& result) {
-    has_mhtml_callback_run_ = true;
-    file_size_ = result.file_size;
-    file_digest_ = result.file_digest;
-    std::move(quit_closure).Run();
-  }
 
   bool has_mhtml_callback_run_ = false;
   int64_t file_size_ = 0;
-  std::optional<std::string> file_digest_;
   bool well_formedness_check_ = true;
   std::unique_ptr<base::HistogramTester> histogram_tester_;
 };
@@ -670,7 +628,7 @@ class MHTMLGenerationImprovedTest : public MHTMLGenerationTest {
 // Note that the actual content of the file is not tested, the purpose of this
 // test is to ensure we were successful in creating the MHTML data from the
 // renderer.
-IN_PROC_BROWSER_TEST_P(MHTMLGenerationTest, GenerateMHTML) {
+IN_PROC_BROWSER_TEST_F(MHTMLGenerationTest, GenerateMHTML) {
   MHTMLFileInfo info =
       GenerateMHTML(embedded_test_server()->GetURL("/simple_page.html"));
 
@@ -684,7 +642,7 @@ IN_PROC_BROWSER_TEST_P(MHTMLGenerationTest, GenerateMHTML) {
 // not in the temp directory and not in the user data dir. This is to test that
 // the mojo security constraints correctly allow this writeable handle to a
 // renderer process. See `mojo/core/platform_handle_security_util_win.cc`.
-IN_PROC_BROWSER_TEST_P(MHTMLGenerationTest, GenerateMHTMLInNonTempDir) {
+IN_PROC_BROWSER_TEST_F(MHTMLGenerationTest, GenerateMHTMLInNonTempDir) {
   base::FilePath local_app_data;
   // This test creates a temporary directory in %LocalAppData% then deletes it
   // afterwards.
@@ -720,7 +678,7 @@ IN_PROC_BROWSER_TEST_P(MHTMLGenerationTest, GenerateMHTMLInNonTempDir) {
 #else
 #define MAYBE_GenerateMHTMLAndCloseConnection GenerateMHTMLAndCloseConnection
 #endif
-IN_PROC_BROWSER_TEST_P(MHTMLGenerationTest,
+IN_PROC_BROWSER_TEST_F(MHTMLGenerationTest,
                        MAYBE_GenerateMHTMLAndCloseConnection) {
   scoped_refptr<RespondAndDisconnectMockWriter> mock_writer =
       base::MakeRefCounted<RespondAndDisconnectMockWriter>();
@@ -747,7 +705,7 @@ IN_PROC_BROWSER_TEST_P(MHTMLGenerationTest,
 #else
 #define MAYBE_InvalidPath InvalidPath
 #endif
-IN_PROC_BROWSER_TEST_P(MHTMLGenerationTest, MAYBE_InvalidPath) {
+IN_PROC_BROWSER_TEST_F(MHTMLGenerationTest, MAYBE_InvalidPath) {
   base::FilePath path(FILE_PATH_LITERAL("/invalid/file/path"));
   DisableWellformednessCheck();
 
@@ -759,7 +717,7 @@ IN_PROC_BROWSER_TEST_P(MHTMLGenerationTest, MAYBE_InvalidPath) {
 // Tests that MHTML generated using the default 'quoted-printable' encoding does
 // not contain the 'binary' Content-Transfer-Encoding header, and generates
 // base64 encoding for the image part.
-IN_PROC_BROWSER_TEST_P(MHTMLGenerationTest, GenerateNonBinaryMHTMLWithImage) {
+IN_PROC_BROWSER_TEST_F(MHTMLGenerationTest, GenerateNonBinaryMHTMLWithImage) {
   GURL url(embedded_test_server()->GetURL("/page_with_image.html"));
   MHTMLFileInfo info = GenerateMHTML(url);
 
@@ -774,7 +732,7 @@ IN_PROC_BROWSER_TEST_P(MHTMLGenerationTest, GenerateNonBinaryMHTMLWithImage) {
 // Tests that MHTML generated using the binary encoding contains the 'binary'
 // Content-Transfer-Encoding header, and does not contain any base64 encoded
 // parts.
-IN_PROC_BROWSER_TEST_P(MHTMLGenerationTest, GenerateBinaryMHTMLWithImage) {
+IN_PROC_BROWSER_TEST_F(MHTMLGenerationTest, GenerateBinaryMHTMLWithImage) {
   GURL url(embedded_test_server()->GetURL("/page_with_image.html"));
   MHTMLGenerationParams params = DefaultGenerationParams();
   params.use_binary_encoding = true;
@@ -789,7 +747,7 @@ IN_PROC_BROWSER_TEST_P(MHTMLGenerationTest, GenerateBinaryMHTMLWithImage) {
   EXPECT_THAT(info.content(), HasSubstr("\r\n------MultipartBoundary"));
 }
 
-IN_PROC_BROWSER_TEST_P(MHTMLGenerationTest, GenerateMHTMLIgnoreNoStore) {
+IN_PROC_BROWSER_TEST_F(MHTMLGenerationTest, GenerateMHTMLIgnoreNoStore) {
   GURL url(embedded_test_server()->GetURL("/nostore.html"));
 
   // Generate MHTML without specifying the FailForNoStoreMainFrame policy.
@@ -811,7 +769,7 @@ IN_PROC_BROWSER_TEST_P(MHTMLGenerationTest, GenerateMHTMLIgnoreNoStore) {
   ViewedMHTMLContainsNoStoreContent
 #endif
 
-IN_PROC_BROWSER_TEST_P(MHTMLGenerationTest,
+IN_PROC_BROWSER_TEST_F(MHTMLGenerationTest,
                        MAYBE_ViewedMHTMLContainsNoStoreContent) {
   // Generate MHTML.
   CompareOptions options;
@@ -854,7 +812,7 @@ class MHTMLGenerationSitePerProcessTest : public MHTMLGenerationTest {
 };
 
 // Test for crbug.com/538766.
-IN_PROC_BROWSER_TEST_P(MHTMLGenerationSitePerProcessTest, GenerateMHTML) {
+IN_PROC_BROWSER_TEST_F(MHTMLGenerationSitePerProcessTest, GenerateMHTML) {
   base::FilePath path =
       temp_dir_.GetPath().Append(FILE_PATH_LITERAL("test.mht"));
 
@@ -875,7 +833,7 @@ IN_PROC_BROWSER_TEST_P(MHTMLGenerationSitePerProcessTest, GenerateMHTML) {
                              EndsWith("/title1.html")}));
 }
 
-IN_PROC_BROWSER_TEST_P(MHTMLGenerationTest, RemovePopupOverlay) {
+IN_PROC_BROWSER_TEST_F(MHTMLGenerationTest, RemovePopupOverlay) {
   base::FilePath path(temp_dir_.GetPath());
   path = path.Append(FILE_PATH_LITERAL("test.mht"));
 
@@ -891,7 +849,7 @@ IN_PROC_BROWSER_TEST_P(MHTMLGenerationTest, RemovePopupOverlay) {
   EXPECT_THAT(info.content(), Not(HasSubstr("class=3D\"modal")));
 }
 
-IN_PROC_BROWSER_TEST_P(MHTMLGenerationTest, GenerateMHTMLWithExtraData) {
+IN_PROC_BROWSER_TEST_F(MHTMLGenerationTest, GenerateMHTMLWithExtraData) {
   const char kFakeSignalData1[] = "FakeSignalData1";
   const char kFakeSignalData2[] = "OtherMockDataForSignals";
   const char kFakeContentType[] = "text/plain";
@@ -926,7 +884,7 @@ IN_PROC_BROWSER_TEST_P(MHTMLGenerationTest, GenerateMHTMLWithExtraData) {
   EXPECT_THAT(info.content(), HasSubstr(kFakeSignalData2));
 }
 
-IN_PROC_BROWSER_TEST_P(MHTMLGenerationTest, GenerateMHTMLWithMultipleFrames) {
+IN_PROC_BROWSER_TEST_F(MHTMLGenerationTest, GenerateMHTMLWithMultipleFrames) {
   CompareOptions options;
   options.expected_number_of_frames = 11;
   CompareResult result = TestOriginalVsSavedPage(
@@ -945,7 +903,7 @@ IN_PROC_BROWSER_TEST_P(MHTMLGenerationTest, GenerateMHTMLWithMultipleFrames) {
                              EndsWith("/page_with_iframe_and_link.html")}));
 }
 
-IN_PROC_BROWSER_TEST_P(MHTMLGenerationImprovedTest, CustomElement) {
+IN_PROC_BROWSER_TEST_F(MHTMLGenerationImprovedTest, CustomElement) {
   CompareOptions options;
   options.expected_number_of_frames = 1;
   options.expected_substrings =
@@ -968,7 +926,7 @@ IN_PROC_BROWSER_TEST_P(MHTMLGenerationImprovedTest, CustomElement) {
   EXPECT_EQ(result.original_info, result.saved_info);
 }
 
-IN_PROC_BROWSER_TEST_P(MHTMLGenerationImprovedTest, CustomElementInFrame) {
+IN_PROC_BROWSER_TEST_F(MHTMLGenerationImprovedTest, CustomElementInFrame) {
   // Note this has all the same string assertions from
   // `GenerateMHTMLWithCustomElement`.
   CompareOptions options;
@@ -995,7 +953,7 @@ IN_PROC_BROWSER_TEST_P(MHTMLGenerationImprovedTest, CustomElementInFrame) {
   EXPECT_EQ(result.original_info, result.saved_info);
 }
 
-IN_PROC_BROWSER_TEST_P(MHTMLGenerationImprovedTest, Styles) {
+IN_PROC_BROWSER_TEST_F(MHTMLGenerationImprovedTest, Styles) {
   CompareOptions options;
   options.expected_number_of_frames = 1;
   options.expected_substrings = {"hidden1", "hidden4",
@@ -1006,7 +964,7 @@ IN_PROC_BROWSER_TEST_P(MHTMLGenerationImprovedTest, Styles) {
   EXPECT_EQ(result.original_info, result.saved_info);
 }
 
-IN_PROC_BROWSER_TEST_P(MHTMLGenerationImprovedTest, Fonts) {
+IN_PROC_BROWSER_TEST_F(MHTMLGenerationImprovedTest, Fonts) {
   CompareResult result = TestOriginalVsSavedPage(
       embedded_test_server()->GetURL("/mhtml/fonts.html"));
   EXPECT_THAT(result.saved_info.GetDict().FindList("fonts"),
@@ -1014,7 +972,7 @@ IN_PROC_BROWSER_TEST_P(MHTMLGenerationImprovedTest, Fonts) {
   EXPECT_EQ(result.original_info, result.saved_info);
 }
 
-IN_PROC_BROWSER_TEST_P(MHTMLGenerationImprovedTest, Elements) {
+IN_PROC_BROWSER_TEST_F(MHTMLGenerationImprovedTest, Elements) {
   CompareResult result = TestOriginalVsSavedPage(
       embedded_test_server()->GetURL("/mhtml/elements.html"), {});
 
@@ -1023,18 +981,6 @@ IN_PROC_BROWSER_TEST_P(MHTMLGenerationImprovedTest, Elements) {
               AllOf(Contains(EndsWith("/image-inline.png?img")),
                     Contains(EndsWith("/image-inline.png?svg"))));
 }
-
-// We instantiate the MHTML Generation Tests both using and not using the
-// GenerateMHTMLWithResults callback.
-INSTANTIATE_TEST_SUITE_P(MHTMLGenerationTest,
-                         MHTMLGenerationTest,
-                         testing::Bool());
-INSTANTIATE_TEST_SUITE_P(MHTMLGenerationSitePerProcessTest,
-                         MHTMLGenerationSitePerProcessTest,
-                         testing::Bool());
-INSTANTIATE_TEST_SUITE_P(MHTMLGenerationImprovedTest,
-                         MHTMLGenerationImprovedTest,
-                         testing::Bool());
 
 }  // namespace
 }  // namespace content

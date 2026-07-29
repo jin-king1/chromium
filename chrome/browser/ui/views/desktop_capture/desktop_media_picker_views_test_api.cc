@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "chrome/browser/ui/views/desktop_capture/desktop_media_picker_views_test_api.h"
 
 #include <algorithm>
@@ -17,10 +12,11 @@
 #include "chrome/browser/ui/views/desktop_capture/desktop_media_picker_views.h"
 #include "chrome/browser/ui/views/desktop_capture/desktop_media_tab_list.h"
 #include "ui/events/base_event_utils.h"
-#include "ui/views/controls/button/checkbox.h"
+#include "ui/views/controls/button/md_text_button.h"
 #include "ui/views/controls/tabbed_pane/tabbed_pane.h"
 #include "ui/views/controls/table/table_view.h"
 #include "ui/views/controls/table/table_view_observer.h"
+#include "ui/views/test/button_test_api.h"
 
 namespace {
 
@@ -152,15 +148,60 @@ std::u16string_view DesktopMediaPickerViewsTestApi::GetAudioLabelText() const {
 }
 
 void DesktopMediaPickerViewsTestApi::SetAudioSharingApprovedByUser(bool allow) {
-  GetActivePane()->SetAudioSharingApprovedByUser(allow);
+  views::ToggleButton* toggle =
+      GetActivePane() ? GetActivePane()->GetAudioToggleButtonForTesting()
+                      : nullptr;
+  if (toggle && toggle->GetIsOn() != allow) {
+    views::test::ButtonTestApi(toggle).NotifyDefaultMouseClick();
+  }
 }
 
 bool DesktopMediaPickerViewsTestApi::IsAudioSharingApprovedByUser() const {
   return picker_->dialog_->IsAudioSharingApprovedByUser();
 }
 
+bool DesktopMediaPickerViewsTestApi::IsScreenAudioOffered() const {
+  return picker_->dialog_->is_screen_audio_offered_;
+}
+bool DesktopMediaPickerViewsTestApi::IsWindowAudioOffered() const {
+  return picker_->dialog_->window_audio_type_offered_ !=
+         content::DesktopMediaID::AudioType::kNone;
+}
+content::DesktopMediaID::AudioType
+DesktopMediaPickerViewsTestApi::GetWindowAudioType() const {
+  return picker_->dialog_->window_audio_type_offered_;
+}
+
 views::MdTextButton* DesktopMediaPickerViewsTestApi::GetReselectButton() {
   return picker_->dialog_->reselect_button_;
+}
+
+std::u16string DesktopMediaPickerViewsTestApi::GetOkButtonLabelText() const {
+  return std::u16string(picker_->dialog_->GetOkButton()->GetText());
+}
+
+bool DesktopMediaPickerViewsTestApi::IsOkButtonEnabled() const {
+  return picker_->dialog_->GetOkButton()->GetEnabled();
+}
+
+bool DesktopMediaPickerViewsTestApi::IsAudioRecommendationVisible() const {
+  return GetActivePane() && GetActivePane()->IsAudioRecommendationVisible();
+}
+
+std::u16string DesktopMediaPickerViewsTestApi::GetDelegatedButtonText() const {
+#if BUILDFLAG(IS_MAC)
+  views::View* list_view = picker_->dialog_->GetSelectedController()->view_;
+  if (!list_view) {
+    return std::u16string();
+  }
+  for (views::View* child : list_view->children()) {
+    if (child->GetClassName() == "MdTextButton") {
+      return std::u16string(
+          static_cast<views::MdTextButton*>(child)->GetText());
+    }
+  }
+#endif
+  return std::u16string();
 }
 
 const DesktopMediaPaneView* DesktopMediaPickerViewsTestApi::GetActivePane()

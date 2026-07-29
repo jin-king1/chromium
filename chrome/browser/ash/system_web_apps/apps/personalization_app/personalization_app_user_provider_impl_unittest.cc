@@ -36,6 +36,7 @@
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/testing_pref_service.h"
 #include "components/user_manager/scoped_user_manager.h"
+#include "components/user_manager/test_helper.h"
 #include "components/user_manager/user_image/user_image.h"
 #include "components/user_manager/user_manager.h"
 #include "content/public/browser/video_capture_service.h"
@@ -165,10 +166,6 @@ class FakeVideoCaptureService
       mojo::PendingReceiver<cros::mojom::CameraAppDeviceBridge> receiver)
       override {}
 
-  void BindVideoCaptureDeviceFactory(
-      mojo::PendingReceiver<crosapi::mojom::VideoCaptureDeviceFactory> receiver)
-      override {}
-
   void ConnectToVideoSourceProvider(
       mojo::PendingReceiver<video_capture::mojom::VideoSourceProvider> receiver)
       override {
@@ -219,9 +216,7 @@ class PersonalizationAppUserProviderImplTest : public testing::Test {
     user_manager_->SaveUserDisplayName(
         account_id, base::UTF8ToUTF16(std::string(kFakeTestName)));
     user_manager_->UserLoggedIn(
-        account_id,
-        user_manager::FakeUserManager::GetFakeUsernameHash(account_id),
-        /*browser_restart=*/false, /*is_child=*/false);
+        account_id, user_manager::TestHelper::GetFakeUsernameHash(account_id));
 
     // Create a profile and set it as User profile.
     profile_ = profile_manager_.CreateTestingProfile(kFakeTestEmail);
@@ -312,15 +307,16 @@ class PersonalizationAppUserProviderImplTest : public testing::Test {
   }
 
  private:
-  ScopedTestingLocalState local_state_{TestingBrowserProcess::GetGlobal()};
   base::test::ScopedFeatureList scoped_feature_list_;
   content::BrowserTaskEnvironment task_environment_;
   FakeVideoCaptureService fake_video_capture_service_;
   user_manager::TypedScopedUserManager<ash::FakeChromeUserManager>
       user_manager_{std::make_unique<ash::FakeChromeUserManager>()};
-  UserImageManagerRegistry user_image_manager_registry_{user_manager_.Get()};
-  TestingProfileManager profile_manager_{TestingBrowserProcess::GetGlobal(),
-                                         &local_state_};
+  UserImageManagerRegistry user_image_manager_registry_{
+      TestingBrowserProcess::GetGlobal()->local_state(),
+      TestingBrowserProcess::GetGlobal()->shared_url_loader_factory(),
+      user_manager_.Get()};
+  TestingProfileManager profile_manager_{TestingBrowserProcess::GetGlobal()};
   data_decoder::test::InProcessDataDecoder data_decoder_;
   content::TestWebUI web_ui_;
   std::unique_ptr<content::WebContents> web_contents_;

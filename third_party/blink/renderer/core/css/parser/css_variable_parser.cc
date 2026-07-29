@@ -4,20 +4,25 @@
 
 #include "third_party/blink/renderer/core/css/parser/css_variable_parser.h"
 
+#include <algorithm>
 #include <optional>
 
-#include "base/containers/contains.h"
+#include "base/compiler_specific.h"
 #include "third_party/blink/renderer/core/css/css_attr_type.h"
 #include "third_party/blink/renderer/core/css/css_syntax_component.h"
 #include "third_party/blink/renderer/core/css/css_syntax_definition.h"
 #include "third_party/blink/renderer/core/css/css_unparsed_declaration_value.h"
 #include "third_party/blink/renderer/core/css/if_condition.h"
 #include "third_party/blink/renderer/core/css/parser/css_if_parser.h"
+#include "third_party/blink/renderer/core/css/parser/css_parser_context.h"
+#include "third_party/blink/renderer/core/css/parser/css_parser_local_context.h"
 #include "third_party/blink/renderer/core/css/parser/css_parser_token.h"
+#include "third_party/blink/renderer/core/css/parser/css_property_parser.h"
 #include "third_party/blink/renderer/core/css/properties/css_parsing_utils.h"
 #include "third_party/blink/renderer/core/css/resolver/style_cascade.h"
 #include "third_party/blink/renderer/core/css_value_keywords.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
+#include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/html/parser/html_parser_idioms.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
@@ -32,7 +37,21 @@ bool CSSVariableParser::IsValidVariableName(const CSSParserToken& token) {
 }
 
 bool CSSVariableParser::IsValidVariableName(StringView string) {
-  return string.length() >= 3 && string[0] == '-' && string[1] == '-';
+  // SAFETY: insufficiently long string short-circuited in &&-expression.
+  return string.length() >= 3 && UNSAFE_BUFFERS(string[0]) == '-' &&
+         UNSAFE_BUFFERS(string[1]) == '-';
+}
+
+bool CSSVariableParser::StartsCustomPropertyDeclaration(
+    CSSParserTokenStream& stream) {
+  if (!CSSVariableParser::IsValidVariableName(stream.Peek())) {
+    return false;
+  }
+  CSSParserTokenStream::State state = stream.Save();
+  stream.ConsumeIncludingWhitespace();  // <ident>
+  bool result = stream.Peek().GetType() == kColonToken;
+  stream.Restore(state);
+  return result;
 }
 
 const CSSValue* CSSVariableParser::ParseDeclarationIncludingCSSWide(
@@ -42,7 +61,8 @@ const CSSValue* CSSVariableParser::ParseDeclarationIncludingCSSWide(
   stream.EnsureLookAhead();
   bool important_ignored;
   if (const CSSValue* css_wide = CSSPropertyParser::ConsumeCSSWideKeyword(
-          stream, /*allow_important_annotation=*/true, important_ignored)) {
+          stream, context, /*allow_important_annotation=*/true,
+          important_ignored)) {
     return css_wide;
   }
   CSSVariableData* variable_data = ConsumeUnparsedDeclaration(
@@ -81,26 +101,85 @@ CSSUnparsedDeclarationValue* CSSVariableParser::ParseDeclarationValue(
 
 static bool ConsumeUnparsedValue(CSSParserTokenStream& stream,
                                  bool restricted_value,
-                                 bool comma_ends_declaration,
-                                 bool& has_references,
-                                 bool& has_font_units,
-                                 bool& has_root_font_units,
-                                 bool& has_line_height_units,
-                                 bool& has_dashed_functions,
+                                 CSSParserTokenType stop_type,
+                                 VariableDataFeatures& features,
                                  const CSSParserContext& context);
 
+// Consumes the following sequence of tokens:
+// <declaration-value> <separator-token> <declaration-value>?
+static bool ConsumeCommonArgumentGrammarContent(
+    CSSParserTokenStream& stream,
+    VariableDataFeatures& features,
+    CSSParserTokenType separator_type,
+    bool separator_required,
+    const CSSParserContext& context) {
+  stream.ConsumeWhitespace();
+
+  wtf_size_t start_offset = stream.Offset();
+  // Parse first <declaration-value>.
+  if (!ConsumeUnparsedValue(stream, /*restricted_value=*/false,
+                            /*stop_type=*/separator_type, features, context) ||
+      stream.Offset() == start_offset) {
+    return false;
+  }
+
+  if (stream.AtEnd() && !separator_required) {
+    // Second <declaration-value> is optional.
+    return true;
+  }
+
+  if (stream.Peek().GetType() != separator_type) {
+    return false;
+  }
+  stream.ConsumeIncludingWhitespace();
+
+  if (stream.AtEnd()) {
+    // Second <declaration-value> may be empty.
+    return true;
+  }
+
+  // Parse second <declaration-value>.
+  if (!ConsumeUnparsedValue(stream, /*restricted_value=*/false,
+                            /*stop_type=*/kEOFToken, features, context)) {
+    return false;
+  }
+  return stream.AtEnd();
+}
+
+// Argument grammar:
+// ( <declaration-value>, <declaration-value>? )
+// Used for var(), attr(), env(), inherit() and <if-args-branch> in if().
+static bool ConsumeCommonArgumentGrammar(CSSParserTokenStream& stream,
+                                         VariableDataFeatures& features,
+                                         const CSSParserContext& context) {
+  CSSParserTokenStream::BlockGuard guard(stream);
+  return ConsumeCommonArgumentGrammarContent(
+      stream, features, /*separator_type=*/kCommaToken,
+      /*separator_required=*/false, context);
+}
+
 static bool ConsumeVariableReference(CSSParserTokenStream& stream,
-                                     bool& has_references,
-                                     bool& has_font_units,
-                                     bool& has_root_font_units,
-                                     bool& has_line_height_units,
-                                     bool& has_dashed_functions,
+                                     VariableDataFeatures& features,
                                      const CSSParserContext& context) {
   CSSParserTokenStream::BlockGuard guard(stream);
   stream.ConsumeWhitespace();
-  if (stream.Peek().GetType() != kIdentToken ||
-      !CSSVariableParser::IsValidVariableName(
-          stream.ConsumeIncludingWhitespace())) {
+  if (stream.Peek().GetType() == kIdentToken) {
+    if (!CSSVariableParser::IsValidVariableName(
+            stream.ConsumeIncludingWhitespace())) {
+      return false;
+    }
+  } else if (stream.Peek().GetType() == kFunctionToken &&
+             RuntimeEnabledFeatures::CSSIdentFunctionEnabled()) {
+    if (!css_parsing_utils::ConsumeIdentFunction(stream, context)) {
+      // It's a bit wasteful to create a CSSCustomIdentValue just to discard it,
+      // but with the new "argument grammar" parsing approach described in
+      // Issue 11500 we will eventually end up accepting any
+      // <declaration-value>, so it should not be for long.
+      //
+      // https://github.com/w3c/csswg-drafts/issues/11500
+      return false;
+    }
+  } else {
     return false;
   }
   if (stream.AtEnd()) {
@@ -114,21 +193,14 @@ static bool ConsumeVariableReference(CSSParserTokenStream& stream,
 
   // Parse the fallback value.
   if (!ConsumeUnparsedValue(stream, /*restricted_value=*/false,
-                            /*comma_ends_declaration=*/false, has_references,
-                            has_font_units, has_root_font_units,
-                            has_line_height_units, has_dashed_functions,
-                            context)) {
+                            /*stop_type=*/kEOFToken, features, context)) {
     return false;
   }
   return stream.AtEnd();
 }
 
 static bool ConsumeEnvVariableReference(CSSParserTokenStream& stream,
-                                        bool& has_references,
-                                        bool& has_font_units,
-                                        bool& has_root_font_units,
-                                        bool& has_line_height_units,
-                                        bool& has_dashed_functions,
+                                        VariableDataFeatures& features,
                                         const CSSParserContext& context) {
   CSSParserTokenStream::BlockGuard guard(stream);
   stream.ConsumeWhitespace();
@@ -169,26 +241,23 @@ static bool ConsumeEnvVariableReference(CSSParserTokenStream& stream,
 
   // Parse the fallback value.
   if (!ConsumeUnparsedValue(stream, /*restricted_value=*/false,
-                            /*comma_ends_declaration=*/false, has_references,
-                            has_font_units, has_root_font_units,
-                            has_line_height_units, has_dashed_functions,
-                            context)) {
+                            /*stop_type=*/kEOFToken, features, context)) {
     return false;
   }
   return stream.AtEnd();
 }
 
 // attr() = attr( <attr-name> [ type(<syntax>) | string | <unit> ]?,
-// <declaration-value>?) https://drafts.csswg.org/css-values-5/#attr-notation
+// <declaration-value>?)
+// Argument grammar:
+// <attr-args> = attr( <declaration-value>, <declaration-value>? )
+// https://drafts.csswg.org/css-values-5/#attr-notation
 static bool ConsumeAttributeReference(CSSParserTokenStream& stream,
-                                      bool& has_references,
-                                      bool& has_font_units,
-                                      bool& has_root_font_units,
-                                      bool& has_line_height_units,
-                                      bool& has_dashed_functions,
+                                      VariableDataFeatures& features,
                                       const CSSParserContext& context) {
   CSSParserTokenStream::BlockGuard guard(stream);
   stream.ConsumeWhitespace();
+
   // Parse <attr-name>.
   if (stream.Peek().GetType() != kIdentToken) {
     return false;
@@ -201,27 +270,23 @@ static bool ConsumeAttributeReference(CSSParserTokenStream& stream,
 
   std::optional<CSSAttrType> attr_type = CSSAttrType::Consume(stream);
   if (stream.AtEnd() && attr_type.has_value()) {
-    // attr = attr(<attr-name> [ type(<syntax>) | string | <unit> ]) is
-    // allowed, so return true.
+    // The fallback is optional.
     return true;
   }
 
   if (stream.Peek().GetType() != kCommaToken) {
     return false;
   }
-  stream.Consume();
+  stream.ConsumeIncludingWhitespace();
+
   if (stream.AtEnd()) {
-    // attr = attr(<attr-name> [ type(<syntax>) | string | <unit> ]?,) is
-    // allowed, so return true.
+    // The fallback may be empty.
     return true;
   }
 
   // Parse the fallback value.
   if (!ConsumeUnparsedValue(stream, /*restricted_value=*/false,
-                            /*comma_ends_declaration=*/false, has_references,
-                            has_font_units, has_root_font_units,
-                            has_line_height_units, has_dashed_functions,
-                            context)) {
+                            /*stop_type=*/kEOFToken, features, context)) {
     return false;
   }
   return stream.AtEnd();
@@ -235,13 +300,9 @@ static bool ConsumeAttributeReference(CSSParserTokenStream& stream,
 //   media( <media-query> ) |
 //   style( <style-query> )
 // https://www.w3.org/TR/css-values-5/#if-notation
-static bool ConsumeIfReference(CSSParserTokenStream& stream,
-                               bool& has_references,
-                               bool& has_font_units,
-                               bool& has_root_font_units,
-                               bool& has_line_height_units,
-                               bool& has_dashed_functions,
-                               const CSSParserContext& context) {
+static bool ConsumeIf(CSSParserTokenStream& stream,
+                      VariableDataFeatures& features,
+                      const CSSParserContext& context) {
   CSSParserTokenStream::BlockGuard guard(stream);
   CSSIfParser parser(context);
 
@@ -253,10 +314,7 @@ static bool ConsumeIfReference(CSSParserTokenStream& stream,
     stream.ConsumeIncludingWhitespace();
     // Parse <declaration-value>
     if (!ConsumeUnparsedValue(stream, /*restricted_value=*/false,
-                              /*comma_ends_declaration=*/false, has_references,
-                              has_font_units, has_root_font_units,
-                              has_line_height_units, has_dashed_functions,
-                              context)) {
+                              /*stop_type=*/kEOFToken, features, context)) {
       return false;
     }
     if (stream.AtEnd()) {
@@ -274,20 +332,13 @@ static bool ConsumeIfReference(CSSParserTokenStream& stream,
 }
 
 static bool ConsumeInternalAutoBase(CSSParserTokenStream& stream,
-                                    bool& has_references,
-                                    bool& has_font_units,
-                                    bool& has_root_font_units,
-                                    bool& has_line_height_units,
-                                    bool& has_dashed_functions,
+                                    VariableDataFeatures& features,
                                     const CSSParserContext& context) {
   CSSParserTokenStream::BlockGuard guard(stream);
   stream.ConsumeWhitespace();
 
   if (!ConsumeUnparsedValue(stream, /*restricted_value=*/false,
-                            /*comma_ends_declaration=*/true, has_references,
-                            has_font_units, has_root_font_units,
-                            has_line_height_units, has_line_height_units,
-                            context)) {
+                            /*stop_type=*/kCommaToken, features, context)) {
     return false;
   }
 
@@ -297,10 +348,7 @@ static bool ConsumeInternalAutoBase(CSSParserTokenStream& stream,
   stream.ConsumeIncludingWhitespace();
 
   if (!ConsumeUnparsedValue(stream, /*restricted_value=*/false,
-                            /*comma_ends_declaration=*/true, has_references,
-                            has_font_units, has_root_font_units,
-                            has_line_height_units, has_line_height_units,
-                            context)) {
+                            /*stop_type=*/kCommaToken, features, context)) {
     return false;
   }
   return stream.AtEnd();
@@ -311,12 +359,9 @@ static bool IsCustomFunction(const CSSParserToken& token) {
          css_parsing_utils::IsDashedFunctionName(token);
 }
 
+// Keep in sync with ConsumeMixinArguments() below.
 static bool ConsumeCustomFunction(CSSParserTokenStream& stream,
-                                  bool& has_references,
-                                  bool& has_font_units,
-                                  bool& has_root_font_units,
-                                  bool& has_line_height_units,
-                                  bool& has_dashed_functions,
+                                  VariableDataFeatures& features,
                                   const CSSParserContext& context) {
   CSSParserTokenStream::BlockGuard guard(stream);
   stream.ConsumeWhitespace();
@@ -336,19 +381,20 @@ static bool ConsumeCustomFunction(CSSParserTokenStream& stream,
         return false;
       }
       if (!ConsumeUnparsedValue(stream, /*restricted_value=*/false,
-                                /*comma_ends_declaration=*/false,
-                                has_references, has_font_units,
-                                has_root_font_units, has_line_height_units,
-                                has_dashed_functions, context)) {
+                                /*stop_type=*/kEOFToken, features, context)) {
         return false;
       }
     } else {
+      // Arguments that look like custom property declarations are reserved
+      // for named arguments.
+      //
+      // https://github.com/w3c/csswg-drafts/issues/11749
+      if (CSSVariableParser::StartsCustomPropertyDeclaration(stream)) {
+        return false;
+      }
       // Passing restricted_value=true effectively disallows "{}".
       if (!ConsumeUnparsedValue(stream, /*restricted_value=*/true,
-                                /*comma_ends_declaration=*/true, has_references,
-                                has_font_units, has_root_font_units,
-                                has_line_height_units, has_dashed_functions,
-                                context)) {
+                                /*stop_type=*/kCommaToken, features, context)) {
         return false;
       }
     }
@@ -368,6 +414,80 @@ static bool ConsumeCustomFunction(CSSParserTokenStream& stream,
     return false;
   }
   return true;
+}
+
+// Keep in sync with ConsumeCustomFunction() above. The only real difference
+// between the two is that this one calls ConsumeUnparsedDeclaration() instead
+// of ConsumeUnparsedValue(), and stores the result.
+bool CSSVariableParser::ConsumeMixinArguments(
+    CSSParserTokenStream& stream,
+    const CSSParserContext& context,
+    HeapVector<Member<CSSVariableData>>& result) {
+  bool important_ignored;
+
+  CSSParserTokenStream::BlockGuard guard(stream);
+  stream.ConsumeWhitespace();
+
+  // Consume the arguments.
+  while (!stream.AtEnd()) {
+    // Commas and "{}" blocks are normally not allowed in argument values
+    // (at the top level), unless the whole value is wrapped in a "{}" block.
+    //
+    // https://drafts.csswg.org/css-values-5/#component-function-commas
+    if (stream.Peek().GetType() == kLeftBraceToken) {
+      CSSParserTokenStream::BlockGuard brace_guard(stream);
+      stream.ConsumeWhitespace();
+      if (stream.AtEnd()) {
+        // Empty values are not allowed. (The "{}" wrapper is not part
+        // of the value.)
+        return false;
+      }
+      CSSVariableData* variable_data = ConsumeUnparsedDeclaration(
+          stream, /*allow_important_annotation=*/false,
+          /*is_animation_tainted=*/false,
+          /*must_contain_variable_reference=*/false,
+          /*restricted_value=*/false,
+          /*comma_ends_declaration=*/false, important_ignored, context);
+      if (!variable_data) {
+        return false;
+      }
+      result.push_back(variable_data);
+    } else {
+      // Arguments that look like custom property declarations are reserved
+      // for named arguments.
+      //
+      // https://github.com/w3c/csswg-drafts/issues/11749
+      if (CSSVariableParser::StartsCustomPropertyDeclaration(stream)) {
+        return false;
+      }
+      // Passing restricted_value=true effectively disallows "{}".
+      CSSVariableData* variable_data = ConsumeUnparsedDeclaration(
+          stream, /*allow_important_annotation=*/false,
+          /*is_animation_tainted=*/false,
+          /*must_contain_variable_reference=*/false,
+          /*restricted_value=*/true,
+          /*comma_ends_declaration=*/true, important_ignored, context);
+      if (!variable_data) {
+        return false;
+      }
+      result.push_back(variable_data);
+    }
+    if (stream.Peek().GetType() == kCommaToken) {
+      stream.ConsumeIncludingWhitespace();  // kCommaToken
+      if (stream.AtEnd() || stream.Peek().GetType() == kCommaToken) {
+        // Empty values are not allowed. (ConsumeUnparsedValue returns true
+        // in that case.)
+        return false;
+      }
+      continue;
+    } else if (stream.AtEnd()) {
+      // No further arguments.
+      break;
+    }
+    // Unexpected token, e.g. '!'.
+    return false;
+  }
+  return stream.AtEnd();
 }
 
 // Utility function for ConsumeUnparsedDeclaration().
@@ -408,12 +528,8 @@ static bool ConsumeCustomFunction(CSSParserTokenStream& stream,
 // [3] https://github.com/w3c/csswg-drafts/issues/9317
 static bool ConsumeUnparsedValue(CSSParserTokenStream& stream,
                                  bool restricted_value,
-                                 bool comma_ends_declaration,
-                                 bool& has_references,
-                                 bool& has_font_units,
-                                 bool& has_root_font_units,
-                                 bool& has_line_height_units,
-                                 bool& has_dashed_functions,
+                                 CSSParserTokenType stop_type,
+                                 VariableDataFeatures& features,
                                  const CSSParserContext& context) {
   size_t block_stack_size = 0;
 
@@ -428,9 +544,7 @@ static bool ConsumeUnparsedValue(CSSParserTokenStream& stream,
       break;
     }
 
-    CSSVariableData::ExtractFeatures(token, has_font_units, has_root_font_units,
-                                     has_line_height_units,
-                                     has_dashed_functions);
+    features |= CSSVariableData::ExtractFeatures(token);
 
     // Save this, since we'll change it below.
     const bool at_top_level = block_stack_size == 0;
@@ -447,61 +561,61 @@ static bool ConsumeUnparsedValue(CSSParserTokenStream& stream,
           if (!IsCustomFunction(token)) {
             break;
           }
-          if (!ConsumeCustomFunction(stream, has_references, has_font_units,
-                                     has_root_font_units, has_line_height_units,
-                                     has_dashed_functions, context)) {
+          if (!ConsumeCustomFunction(stream, features, context)) {
             error = true;
           }
-          has_references = true;
+          features |= static_cast<VariableDataFeatures>(
+              VariableDataFeature::kHasReferences);
           continue;
+        case CSSValueID::kInherit:
+          if (!RuntimeEnabledFeatures::CSSInheritFunctionEnabled()) {
+            return false;
+          }
+          [[fallthrough]];
         case CSSValueID::kVar:
-          if (!ConsumeVariableReference(
-                  stream, has_references, has_font_units, has_root_font_units,
-                  has_line_height_units, has_dashed_functions, context)) {
+          if (!ConsumeVariableReference(stream, features, context)) {
             error = true;
           }
-          has_references = true;
+          features |= static_cast<VariableDataFeatures>(
+              VariableDataFeature::kHasReferences);
           continue;
         case CSSValueID::kEnv:
-          if (!ConsumeEnvVariableReference(
-                  stream, has_references, has_font_units, has_root_font_units,
-                  has_line_height_units, has_dashed_functions, context)) {
+          if (!ConsumeEnvVariableReference(stream, features, context)) {
             error = true;
           }
-          has_references = true;
+          features |= static_cast<VariableDataFeatures>(
+              VariableDataFeature::kHasReferences);
           continue;
         case CSSValueID::kAttr:
-          if (!RuntimeEnabledFeatures::CSSAdvancedAttrFunctionEnabled()) {
-            break;
-          }
-          if (!ConsumeAttributeReference(
-                  stream, has_references, has_font_units, has_root_font_units,
-                  has_line_height_units, has_dashed_functions, context)) {
+          if (RuntimeEnabledFeatures::CSSArgumentGrammarEnabled()) {
+            if (!ConsumeCommonArgumentGrammar(stream, features, context)) {
+              error = true;
+            }
+          } else if (!ConsumeAttributeReference(stream, features, context)) {
             error = true;
           }
-          has_references = true;
+          features |= static_cast<VariableDataFeatures>(
+              VariableDataFeature::kHasReferences);
           continue;
         case CSSValueID::kInternalAutoBase:
           if (context.GetMode() != kUASheetMode) {
             break;
           }
-          if (!ConsumeInternalAutoBase(
-                  stream, has_references, has_font_units, has_root_font_units,
-                  has_line_height_units, has_dashed_functions, context)) {
+          if (!ConsumeInternalAutoBase(stream, features, context)) {
             error = true;
           }
-          has_references = true;
+          features |= static_cast<VariableDataFeatures>(
+              VariableDataFeature::kHasReferences);
           continue;
         case CSSValueID::kIf:
-          if (!RuntimeEnabledFeatures::CSSInlineIfForStyleQueriesEnabled()) {
-            break;
-          }
-          if (!ConsumeIfReference(stream, has_references, has_font_units,
-                                  has_root_font_units, has_line_height_units,
-                                  has_dashed_functions, context)) {
+          if (!ConsumeIf(stream, features, context)) {
             error = true;
           }
-          has_references = true;
+          if (!error) {
+            context.Count(WebDXFeature::kIf);
+          }
+          features |= static_cast<VariableDataFeatures>(
+              VariableDataFeature::kHasReferences);
           continue;
         default:
           break;
@@ -515,6 +629,8 @@ static bool ConsumeUnparsedValue(CSSParserTokenStream& stream,
         break;
       }
       --block_stack_size;
+    } else if (token.GetType() == stop_type && block_stack_size == 0) {
+      return !error;
     } else {
       switch (token.GetType()) {
         case kDelimiterToken: {
@@ -532,11 +648,6 @@ static bool ConsumeUnparsedValue(CSSParserTokenStream& stream,
           break;
         case kSemicolonToken:
           if (block_stack_size == 0) {
-            return !error;
-          }
-          break;
-        case kCommaToken:
-          if (comma_ends_declaration && block_stack_size == 0) {
             return !error;
           }
           break;
@@ -586,19 +697,18 @@ CSSVariableData* CSSVariableParser::ConsumeUnparsedDeclaration(
   stream.EnsureLookAhead();
   wtf_size_t value_start_offset = stream.LookAheadOffset();
 
-  bool has_references = false;
-  bool has_font_units = false;
-  bool has_root_font_units = false;
-  bool has_line_height_units = false;
-  bool has_dashed_functions = false;
-  if (!ConsumeUnparsedValue(stream, restricted_value, comma_ends_declaration,
-                            has_references, has_font_units, has_root_font_units,
-                            has_line_height_units, has_dashed_functions,
+  VariableDataFeatures features =
+      static_cast<VariableDataFeatures>(VariableDataFeature::kNone);
+  CSSParserTokenType stop_type =
+      comma_ends_declaration ? kCommaToken : kEOFToken;
+  if (!ConsumeUnparsedValue(stream, restricted_value, stop_type, features,
                             context)) {
     return nullptr;
   }
 
-  if (must_contain_variable_reference && !has_references) {
+  if (must_contain_variable_reference &&
+      !(features & static_cast<VariableDataFeatures>(
+                       VariableDataFeature::kHasReferences))) {
     return nullptr;
   }
 
@@ -622,9 +732,7 @@ CSSVariableData* CSSVariableParser::ConsumeUnparsedDeclaration(
       CSSVariableParser::StripTrailingWhitespaceAndComments(original_text);
 
   return CSSVariableData::Create(original_text, is_animation_tainted, false,
-                                 /*needs_variable_resolution=*/has_references,
-                                 has_font_units, has_root_font_units,
-                                 has_line_height_units, has_dashed_functions);
+                                 features);
 }
 
 CSSUnparsedDeclarationValue* CSSVariableParser::ParseUniversalSyntaxValue(
@@ -636,7 +744,7 @@ CSSUnparsedDeclarationValue* CSSVariableParser::ParseUniversalSyntaxValue(
 
   bool important;
   if (CSSPropertyParser::ConsumeCSSWideKeyword(
-          stream, /*allow_important_annotation=*/false, important)) {
+          stream, context, /*allow_important_annotation=*/false, important)) {
     return nullptr;
   }
 
@@ -664,32 +772,76 @@ StringView CSSVariableParser::StripTrailingWhitespaceAndComments(
   // (i.e. not CSSOM, where we just get a string), we know we can't
   // have unfinished comments, so consider piping that knowledge all
   // the way through here.
-  if (text.Is8Bit() && !base::Contains(text.Span8(), '/')) {
+  if (text.Is8Bit() && !std::ranges::contains(text.Span8(), '/')) {
     // No comments, so we can strip whitespace only.
-    while (!text.empty() && IsHTMLSpace(text[text.length() - 1])) {
+    // SAFETY: empty strings short-circuited in &&-expression means that
+    // the last character is valid.
+    while (!text.empty() &&
+           IsHTMLSpace(UNSAFE_BUFFERS(text[text.length() - 1]))) {
       text = StringView(text, 0, text.length() - 1);
     }
     return text;
   }
 
   wtf_size_t string_len = 0;
-  bool in_comment = false;
+  enum {
+    kDefault,
+    kInSingleQuote,
+    kInDoubleQuote,
+    kInComment
+  } state = kDefault;
   for (wtf_size_t i = 0; i < text.length(); ++i) {
-    if (in_comment) {
+    // SAFETY: `i` checked in loop body.
+    UChar ch = UNSAFE_BUFFERS(text[i]);
+    if (state == kInComment) {
       // See if we can end this comment.
-      if (text[i] == '*' && i + 1 < text.length() && text[i + 1] == '/') {
+      // SAFETY: `i + 1` checked in &&-expression before use.
+      if (ch == '*' && i + 1 < text.length() &&
+          UNSAFE_BUFFERS(text[i + 1]) == '/') {
         ++i;
-        in_comment = false;
+        state = kDefault;
       }
-    } else {
-      // See if we must start a comment.
-      if (text[i] == '/' && i + 1 < text.length() && text[i + 1] == '*') {
-        ++i;
-        in_comment = true;
-      } else if (!IsHTMLSpace(text[i])) {
-        // A non-space outside a comment, so the string
-        // must go at least to here.
+      continue;
+    }
+    if (state == kDefault && IsHTMLSpace(ch)) {
+      continue;
+    }
+    if (ch == '\\' && i + 1 < text.length()) {
+      // Ignore the next character for purposes of changing states.
+      ++i;
+      if (state == kDefault) {
         string_len = i + 1;
+      }
+      continue;
+    }
+
+    // See if we must start a comment.
+    // SAFETY: `i + 1` checked in &&-expression before use.
+    if (state == kDefault && ch == '/' && i + 1 < text.length() &&
+        UNSAFE_BUFFERS(text[i + 1]) == '*') {
+      ++i;
+      state = kInComment;
+      continue;
+    }
+
+    // A non-space outside a comment, so the string
+    // must go at least to here.
+    string_len = i + 1;
+
+    // See if we are entering or leaving quotes.
+    if (state == kDefault) {
+      if (ch == '\'') {
+        state = kInSingleQuote;
+      } else if (ch == '"') {
+        state = kInDoubleQuote;
+      }
+    } else if (state == kInSingleQuote) {
+      if (ch == '\'') {
+        state = kDefault;
+      }
+    } else if (state == kInDoubleQuote) {
+      if (ch == '"') {
+        state = kDefault;
       }
     }
   }
@@ -699,7 +851,8 @@ StringView CSSVariableParser::StripTrailingWhitespaceAndComments(
   // Leading whitespace should already have been stripped.
   // (This test needs to be after we stripped trailing spaces,
   // or we could look at trailing space believing it was leading.)
-  DCHECK(ret.empty() || !IsHTMLSpace(ret[0]));
+  // SAFETY: ret is checked for emptiness before access.
+  DCHECK(ret.empty() || !IsHTMLSpace(UNSAFE_BUFFERS(ret[0])));
 
   return ret;
 }
@@ -729,6 +882,49 @@ void CSSVariableParser::CollectDashedFunctions(CSSParserTokenStream& stream,
         return;
     }
   }
+}
+
+template <CSSParserTokenType... Types>
+StringView ConsumeUntilPeekedTypeIs(CSSParserTokenStream& stream) {
+  wtf_size_t value_start_offset = stream.LookAheadOffset();
+  stream.SkipUntilPeekedTypeIs<Types...>();
+  wtf_size_t value_end_offset = stream.LookAheadOffset();
+  return stream.StringRangeAt(value_start_offset,
+                              value_end_offset - value_start_offset);
+}
+
+HeapVector<String> CSSVariableParser::ConsumeFunctionArguments(
+    CSSParserTokenStream& stream,
+    unsigned max_arguments) {
+  HeapVector<String> arguments;
+
+  while (arguments.size() < max_arguments) {
+    stream.ConsumeWhitespace();
+
+    if (!stream.AtEnd() &&
+        (arguments.empty() || stream.Peek().GetType() == kCommaToken)) {
+      if (stream.Peek().GetType() == kCommaToken) {
+        stream.ConsumeIncludingWhitespace();
+      }
+      StringView argument_string;
+      // Handle {}-wrapper.
+      // https://drafts.csswg.org/css-values-5/#component-function-commas
+      if (stream.Peek().GetType() == kLeftBraceToken) {
+        CSSParserTokenStream::BlockGuard guard(stream);
+        stream.ConsumeWhitespace();
+        DCHECK(!stream.AtEnd());
+        argument_string = ConsumeUntilPeekedTypeIs<>(stream);
+      } else {
+        argument_string = ConsumeUntilPeekedTypeIs<kCommaToken>(stream);
+      }
+      DCHECK(!argument_string.empty());  // Handled parse-time.
+      arguments.push_back(argument_string.ToString());
+    } else {
+      break;
+    }
+  }
+
+  return arguments;
 }
 
 }  // namespace blink

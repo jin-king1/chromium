@@ -62,6 +62,8 @@ class HTMLCollectionIterator {
     return iterator;
   }
 
+  bool AtEnd() const { return index_ == collection_->length(); }
+
  private:
   const CollectionType* collection_;
   unsigned index_ = 0;
@@ -86,8 +88,14 @@ class CORE_EXPORT HTMLCollection : public ScriptWrappable,
   void InvalidateCacheForAttribute(const QualifiedName*) const;
 
   // DOM API
-  unsigned length() const;
-  Element* item(unsigned offset) const;
+  // Inline so the V8 binding callbacks can inline the cache-hit
+  // fast path (flag check + load).
+  unsigned length() const {
+    return collection_items_cache_.NodeCount(*this);
+  }
+  Element* item(unsigned offset) const {
+    return collection_items_cache_.NodeAt(*this, offset);
+  }
   virtual Element* namedItem(const AtomicString& name) const;
   bool NamedPropertyQuery(const AtomicString&, ExceptionState&);
   void NamedPropertyEnumerator(Vector<String>& names, ExceptionState&);
@@ -128,14 +136,14 @@ class CORE_EXPORT HTMLCollection : public ScriptWrappable,
    public:
     NamedItemCache();
 
-    const HeapVector<Member<Element>>* GetElementsById(
+    const GCedHeapVector<Member<Element>>* GetElementsById(
         const AtomicString& id) const {
       auto it = id_cache_.find(id);
       if (it == id_cache_.end())
         return nullptr;
       return it->value.Get();
     }
-    const HeapVector<Member<Element>>* GetElementsByName(
+    const GCedHeapVector<Member<Element>>* GetElementsByName(
         const AtomicString& name) const {
       auto it = name_cache_.find(name);
       if (it == name_cache_.end())
@@ -157,13 +165,14 @@ class CORE_EXPORT HTMLCollection : public ScriptWrappable,
     bool empty() const { return id_cache_.empty() && name_cache_.empty(); }
 
    private:
-    typedef HeapHashMap<AtomicString, Member<HeapVector<Member<Element>>>>
+    typedef HeapHashMap<AtomicString, Member<GCedHeapVector<Member<Element>>>>
         StringToElementsMap;
     static void AddElementToMap(StringToElementsMap& map,
                                 const AtomicString& key,
                                 Element* element) {
-      HeapVector<Member<Element>>* vector =
-          map.insert(key, MakeGarbageCollected<HeapVector<Member<Element>>>())
+      GCedHeapVector<Member<Element>>* vector =
+          map.insert(key,
+                     MakeGarbageCollected<GCedHeapVector<Member<Element>>>())
               .stored_value->value.Get();
       vector->push_back(element);
     }

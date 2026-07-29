@@ -8,7 +8,7 @@
 #include "components/omnibox/browser/autocomplete_match.h"
 #include "components/omnibox/browser/autocomplete_match_type.h"
 #include "third_party/omnibox_proto/answer_type.pb.h"
-#include "third_party/omnibox_proto/entity_info.pb.h"
+#include "third_party/omnibox_proto/suggest_template_info.pb.h"
 
 AutocompleteMatch CreateAutocompleteMatch(std::string name,
                                           AutocompleteMatchType::Type type,
@@ -17,11 +17,24 @@ AutocompleteMatch CreateAutocompleteMatch(std::string name,
                                           int traditional_relevance,
                                           std::optional<float> ml_output);
 
-AutocompleteMatch CreateHistoryURLMatch(std::string destination_url);
+AutocompleteMatch CreateHistoryURLMatch(std::string destination_url,
+                                        bool is_zero_prefix = false);
 
 AutocompleteMatch CreateCompanyEntityMatch(std::string website_uri);
 
 AutocompleteMatch CreateSearchMatch(std::u16string contents = u"text");
+
+AutocompleteMatch CreateContextualSearchMatch(
+    std::u16string contents = u"text");
+
+AutocompleteMatch CreateZeroSuggestContextualSearchMatch(
+    std::u16string contents = u"text");
+
+AutocompleteMatch CreateLensActionMatch(
+  std::u16string contents = u"text");
+
+AutocompleteMatch CreateZeroPrefixSearchMatch(
+    std::u16string contents = u"text");
 
 AutocompleteMatch CreateStarterPackMatch(std::u16string keyword);
 
@@ -29,7 +42,8 @@ AutocompleteMatch CreateFeaturedEnterpriseSearch(std::u16string keyword);
 
 AutocompleteMatch CreateActionInSuggestMatch(
     std::u16string description,
-    std::vector<omnibox::ActionInfo::ActionType> action_types);
+    std::vector<omnibox::SuggestTemplateInfo::TemplateAction::ActionType>
+        action_types);
 
 AutocompleteMatch CreateSearchMatch(std::string name,
                                     bool allowed_to_be_default_match,
@@ -65,9 +79,6 @@ AutocompleteMatch CreateMlScoredMatch(std::string name,
 AutocompleteMatch CreateBoostedShortcutMatch(std::string name,
                                              int traditional_relevance,
                                              float ml_output);
-AutocompleteMatch CreateKeywordHintMatch(std::string name,
-                                         int traditional_relevance);
-
 AutocompleteMatch CreateHistoryClusterMatch(std::string name,
                                             int traditional_relevance);
 

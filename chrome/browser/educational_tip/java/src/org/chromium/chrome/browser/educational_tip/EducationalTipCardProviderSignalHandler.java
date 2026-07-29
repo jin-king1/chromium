@@ -4,20 +4,23 @@
 
 package org.chromium.chrome.browser.educational_tip;
 
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import androidx.annotation.VisibleForTesting;
 
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.magic_stack.ModuleDelegate.ModuleType;
+import org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.chrome.browser.tab_group_sync.TabGroupSyncFeatures;
 import org.chromium.chrome.browser.tab_group_sync.TabGroupSyncServiceFactory;
-import org.chromium.chrome.browser.tabmodel.TabGroupModelFilter;
-import org.chromium.chrome.browser.tabmodel.TabGroupModelFilterProvider;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.ui.default_browser_promo.DefaultBrowserPromoUtils;
+import org.chromium.chrome.browser.ui.signin.history_sync.HistorySyncHelper;
 import org.chromium.components.feature_engagement.FeatureConstants;
 import org.chromium.components.feature_engagement.Tracker;
 import org.chromium.components.segmentation_platform.InputContext;
@@ -25,15 +28,18 @@ import org.chromium.components.segmentation_platform.ProcessedValue;
 import org.chromium.components.tab_group_sync.TabGroupSyncService;
 
 /** Provides information about the signals of cards in the educational tip module. */
+@NullMarked
 public class EducationalTipCardProviderSignalHandler {
     /** Creates an instance of InputContext. */
     @VisibleForTesting
     static InputContext createInputContext(
             @ModuleType int moduleType,
             EducationTipModuleActionDelegate actionDelegate,
-            @NonNull Profile profile,
+            Profile profile,
             Tracker tracker) {
         InputContext inputContext = new InputContext();
+        inputContext.addEntry(
+                "is_user_signed_in", ProcessedValue.fromFloat(isUserSignedIn(profile)));
         switch (moduleType) {
             case ModuleType.DEFAULT_BROWSER_PROMO:
                 inputContext.addEntry(
@@ -60,8 +66,31 @@ public class EducationalTipCardProviderSignalHandler {
                 return inputContext;
             case ModuleType.QUICK_DELETE_PROMO:
                 return inputContext;
+            case ModuleType.NTP_THEME_PROMO:
+                inputContext.addEntry(
+                        "has_customized_ntp_background",
+                        ProcessedValue.fromBoolean(
+                                NtpCustomizationUtils.getNtpBackgroundType()
+                                        != NtpCustomizationUtils.NtpBackgroundType.DEFAULT));
+                inputContext.addEntry(
+                        "support_customized_ntp_theme",
+                        ProcessedValue.fromBoolean(actionDelegate.supportCustomizedNtpTheme()));
+                boolean isBottomSheetDisabled =
+                        !ChromeFeatureList.sNewTabPageCustomizationV2ShowTipBottomSheet.getValue();
+                boolean hasThemeTipBottomSheetBeenShown =
+                        NtpCustomizationUtils.isThemeTipBottomSheetShownFromSharedPreference();
+                inputContext.addEntry(
+                        "has_theme_tip_bottom_sheet_been_shown",
+                        ProcessedValue.fromBoolean(
+                                isBottomSheetDisabled || hasThemeTipBottomSheetBeenShown));
+                return inputContext;
+            case ModuleType.HISTORY_SYNC_PROMO:
+                inputContext.addEntry(
+                        "is_eligible_to_history_opt_in",
+                        ProcessedValue.fromFloat(isEligibleToHistoryOptIn(profile)));
+                return inputContext;
             default:
-                assert false : "Card type not supported!";
+                assert false : "Card type not supported: " + moduleType;
                 return inputContext;
         }
     }
@@ -88,9 +117,13 @@ public class EducationalTipCardProviderSignalHandler {
      * function returns 0.0f.
      */
     private static float hasDefaultBrowserPromoShownInOtherSurface(Tracker tracker) {
-        return tracker.wouldTriggerHelpUi(FeatureConstants.DEFAULT_BROWSER_PROMO_MAGIC_STACK)
-                ? 0.0f
-                : 1.0f;
+        if (tracker.isInitialized()) {
+            return tracker.wouldTriggerHelpUi(FeatureConstants.DEFAULT_BROWSER_PROMO_MAGIC_STACK)
+                    ? 0.0f
+                    : 1.0f;
+        }
+
+        return DefaultBrowserPromoUtils.hasPromoShownRecently() ? 1.0f : 0.0f;
     }
 
     /**
@@ -98,13 +131,22 @@ public class EducationalTipCardProviderSignalHandler {
      * Otherwise, it returns 0.0f.
      */
     private static float tabGroupExists(EducationTipModuleActionDelegate actionDelegate) {
-        TabGroupModelFilterProvider provider =
-                actionDelegate.getTabModelSelector().getTabGroupModelFilterProvider();
-        TabGroupModelFilter normalFilter =
-                provider.getTabGroupModelFilter(/* isIncognito= */ false);
-        TabGroupModelFilter incognitoFilter =
-                provider.getTabGroupModelFilter(/* isIncognito= */ true);
-        int groupCount = normalFilter.getTabGroupCount() + incognitoFilter.getTabGroupCount();
+        TabModelSelector tabModelSelector = actionDelegate.getTabModelSelector();
+        if (!tabModelSelector.isTabStateInitialized()
+                || tabModelSelector.isReparentingInProgress()) {
+            return 0.0f;
+        }
+
+        if (tabModelSelector.getCurrentModel().getTabById(tabModelSelector.getCurrentTabId())
+                == null) {
+            return 0.0f;
+        }
+
+        TabModel normalModel = tabModelSelector.getModel(/* incognito= */ false);
+
+        TabModel incognitoModel = tabModelSelector.getModel(/* incognito= */ true);
+
+        int groupCount = normalModel.getTabGroupCount() + incognitoModel.getTabGroupCount();
         return groupCount > 0 ? 1.0f : 0.0f;
     }
 
@@ -118,7 +160,7 @@ public class EducationalTipCardProviderSignalHandler {
             return normalModel.getCount() + incognitoModel.getCount();
         }
 
-        return actionDelegate.getTabCountForRelaunchFromSharedPrefs();
+        return actionDelegate.getTabCountForRelaunchFromPersistentStore();
     }
 
     /** Returns a value of 1.0f if a synced tab group exists. Otherwise, it returns 0.0f. */
@@ -134,5 +176,28 @@ public class EducationalTipCardProviderSignalHandler {
 
         int syncedGroupCount = tabGroupSyncService.getAllGroupIds().length;
         return syncedGroupCount > 0 ? 1.0f : 0.0f;
+    }
+
+    /**
+     * Returns a value of 1.0f if the user is eligible to history sync. Otherwise, it returns 0.0f.
+     */
+    private static float isEligibleToHistoryOptIn(Profile profile) {
+        if (assumeNonNull(IdentityServicesProvider.get().getIdentityManager(profile))
+                .hasPrimaryAccount()) {
+            HistorySyncHelper helper = HistorySyncHelper.getForProfile(profile);
+            return !helper.shouldDisplayHistorySync() || helper.isDeclinedOften() ? 0.0f : 1.0f;
+        }
+
+        return 0.0f;
+    }
+
+    /** Returns a value of 1.0f if the user has signed in. Otherwise, it returns 0.0f. */
+    private static float isUserSignedIn(Profile profile) {
+        if (assumeNonNull(IdentityServicesProvider.get().getIdentityManager(profile))
+                .hasPrimaryAccount()) {
+            return 1.0f;
+        }
+
+        return 0.0f;
     }
 }

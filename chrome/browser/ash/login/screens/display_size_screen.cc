@@ -5,11 +5,12 @@
 #include "chrome/browser/ash/login/screens/display_size_screen.h"
 
 #include "ash/constants/ash_features.h"
+#include "ash/constants/ash_login_pref_names.h"
 #include "ash/constants/ash_pref_names.h"
 #include "ash/shell.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/numerics/ranges.h"
-#include "chrome/browser/ash/login/login_pref_names.h"
+#include "base/strings/string_number_conversions.h"
 #include "chrome/browser/ash/login/users/chrome_user_manager_util.h"
 #include "chrome/browser/ash/login/wizard_context.h"
 #include "chrome/browser/ash/login/wizard_controller.h"
@@ -30,8 +31,7 @@ constexpr const char kUserActionNext[] = "next";
 constexpr const char kUserActionReturn[] = "return";
 
 std::vector<float> GetZoomFactors() {
-  const auto display_id =
-      display::Screen::GetScreen()->GetPrimaryDisplay().id();
+  const auto display_id = display::Screen::Get()->GetPrimaryDisplay().id();
   const auto& info =
       ash::Shell::Get()->display_manager()->GetDisplayInfo(display_id);
   auto factors = display::GetDisplayZoomFactors(info.display_modes()[0]);
@@ -44,8 +44,7 @@ float GetCurrentZoomFactor(PrefService* prefs) {
     return prefs->GetDouble(prefs::kOobeDisplaySizeFactorDeferred);
   }
 
-  const auto display_id =
-      display::Screen::GetScreen()->GetPrimaryDisplay().id();
+  const auto display_id = display::Screen::Get()->GetPrimaryDisplay().id();
   const auto& info =
       ash::Shell::Get()->display_manager()->GetDisplayInfo(display_id);
   return info.zoom_factor();
@@ -122,7 +121,7 @@ void DisplaySizeScreen::MaybeUpdateZoomFactor(Profile* profile) {
     }
   }
 
-  auto display_id_ = display::Screen::GetScreen()->GetPrimaryDisplay().id();
+  auto display_id_ = display::Screen::Get()->GetPrimaryDisplay().id();
   display::DisplayManager* display_manager = Shell::Get()->display_manager();
   display_manager->UpdateZoomFactor(display_id_, selected_zoom_factor);
 }
@@ -156,7 +155,7 @@ bool DisplaySizeScreen::ShouldBeSkipped(const WizardContext& context) const {
   // Skip the screen if the `recommended` value in `DeviceDisplayResolution`
   // policy is set to false.
   if (ash::InstallAttributes::Get()->IsEnterpriseManaged()) {
-    const base::Value::Dict* resolution_pref = nullptr;
+    const base::DictValue* resolution_pref = nullptr;
     ash::CrosSettings::Get()->GetDictionary(ash::kDeviceDisplayResolution,
                                             &resolution_pref);
     if (resolution_pref && !resolution_pref->empty()) {
@@ -195,12 +194,12 @@ void DisplaySizeScreen::ShowImpl() {
   }
 
   auto factors = GetZoomFactors();
-  base::Value::List factors_list;
+  base::ListValue factors_list;
   for (auto factor : factors) {
     factors_list.Append(base::Value(factor));
   }
 
-  base::Value::Dict data;
+  base::DictValue data;
   data.Set("availableSizes", std::move(factors_list));
   data.Set(
       "currentSize",
@@ -214,7 +213,7 @@ void DisplaySizeScreen::ShowImpl() {
 
 void DisplaySizeScreen::HideImpl() {}
 
-void DisplaySizeScreen::OnUserAction(const base::Value::List& args) {
+void DisplaySizeScreen::OnUserAction(const base::ListValue& args) {
   const std::string& action_id = args[0].GetString();
   if (action_id == kUserActionNext) {
     CHECK_EQ(args.size(), 2u);

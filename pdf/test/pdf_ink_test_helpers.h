@@ -5,19 +5,35 @@
 #ifndef PDF_TEST_PDF_INK_TEST_HELPERS_H_
 #define PDF_TEST_PDF_INK_TEST_HELPERS_H_
 
+#include <stdint.h>
+
+#include <iosfwd>
 #include <optional>
+#include <string>
 #include <string_view>
 
 #include "base/containers/span.h"
 #include "base/files/file_path.h"
 #include "base/time/time.h"
 #include "base/values.h"
+#include "pdf/pdf_ink_annotation_mode.h"
+#include "pdf/pdf_ink_text.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "third_party/ink/src/ink/geometry/affine_transform.h"
 #include "third_party/ink/src/ink/strokes/input/stroke_input_batch.h"
 #include "ui/gfx/geometry/point_f.h"
+#include "ui/gfx/geometry/rect_f.h"
+
+using SkColor = uint32_t;
 
 namespace chrome_pdf {
+
+// A possible configuration of Ink feature parameters.
+// This had multiple fields at one point. Keep the struct since it will be used
+// again in the future.
+struct InkTestVariation {
+  bool use_text_annotations;
+};
 
 enum class TestAnnotationUndoRedoMessageType {
   kUndo,
@@ -27,9 +43,7 @@ enum class TestAnnotationUndoRedoMessageType {
 // Optional parameters that the `setAnnotationBrushMessage` may have, depending
 // on the brush type.
 struct TestAnnotationBrushMessageParams {
-  int color_r;
-  int color_g;
-  int color_b;
+  SkColor color;
   double size;
 };
 
@@ -44,13 +58,14 @@ struct PdfInkInputData {
 std::optional<ink::StrokeInputBatch> CreateInkInputBatch(
     base::span<const PdfInkInputData> inputs);
 
-base::Value::Dict CreateSetAnnotationModeMessageForTesting(bool enable);
+base::DictValue CreateSetAnnotationModeMessageForTesting(
+    InkAnnotationMode mode);
 
-base::Value::Dict CreateSetAnnotationBrushMessageForTesting(
+base::DictValue CreateSetAnnotationBrushMessageForTesting(
     std::string_view type,
     const TestAnnotationBrushMessageParams* params);
 
-base::Value::Dict CreateSetAnnotationUndoRedoMessageForTesting(
+base::DictValue CreateSetAnnotationUndoRedoMessageForTesting(
     TestAnnotationUndoRedoMessageType type);
 
 MATCHER_P6(InkAffineTransformEq,
@@ -71,8 +86,78 @@ MATCHER_P6(InkAffineTransformEq,
          Matches(FloatEq(expected_f))(arg.F());
 }
 
+MATCHER_P10(InkTextBoxAttributesEq,
+            rect,
+            color,
+            css_font_size,
+            typeface,
+            alignment,
+            orientation,
+            viewport_orientation,
+            is_bold,
+            is_italic,
+            text,
+            testing::PrintToString(InkTextBoxAttributes(rect,
+                                                        color,
+                                                        css_font_size,
+                                                        typeface,
+                                                        alignment,
+                                                        orientation,
+                                                        viewport_orientation,
+                                                        /*is_bold=*/is_bold,
+                                                        /*is_italic=*/is_italic,
+                                                        text))) {
+  return arg.rect == rect && arg.color == color &&
+         arg.css_font_size == css_font_size && arg.typeface == typeface &&
+         arg.alignment == alignment && arg.orientation == orientation &&
+         arg.viewport_orientation == viewport_orientation &&
+         arg.is_bold == is_bold && arg.is_italic == is_italic &&
+         arg.text == text;
+}
+
+bool InkTextInfoEquals(const InkTextInfo& lhs, const InkTextInfo& rhs);
+
+MATCHER_P6(InkTextInfoWithTextEq,
+           font_id,
+           glyphs,
+           glyph_positions,
+           location,
+           is_horizontal,
+           text,
+           testing::PrintToString(InkTextInfo(font_id,
+                                              glyphs,
+                                              glyph_positions,
+                                              location,
+                                              is_horizontal,
+                                              text))) {
+  return InkTextInfoEquals(arg, InkTextInfo(font_id, glyphs, glyph_positions,
+                                            location, is_horizontal, text));
+}
+
+MATCHER_P5(InkTextInfoEq,
+           font_id,
+           glyphs,
+           glyph_positions,
+           location,
+           is_horizontal,
+           testing::PrintToString(InkTextInfo(font_id,
+                                              glyphs,
+                                              glyph_positions,
+                                              location,
+                                              is_horizontal,
+                                              u""))) {
+  return InkTextInfoEquals(arg, InkTextInfo(font_id, glyphs, glyph_positions,
+                                            location, is_horizontal, u""));
+}
+
+void PrintTo(const InkTextInfo& info, std::ostream* os);
+void PrintTo(const InkTextBoxAttributes& info, std::ostream* os);
+
 // Generate the path for test files specific to Ink.
-base::FilePath GetInkTestDataFilePath(std::string_view filename);
+base::FilePath GetInkTestDataFilePath(base::FilePath::StringViewType filename);
+
+// Returns all variations of Ink tests to cover all features in development.
+base::span<const InkTestVariation> GetAllInkTestVariations();
 
 }  // namespace chrome_pdf
 

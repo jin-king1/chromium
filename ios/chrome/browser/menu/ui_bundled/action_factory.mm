@@ -8,19 +8,33 @@
 #import "base/metrics/histogram_functions.h"
 #import "base/metrics/user_metrics.h"
 #import "base/strings/sys_string_conversions.h"
+#import "components/strings/grit/components_strings.h"
 #import "ios/chrome/browser/menu/ui_bundled/menu_action_type.h"
 #import "ios/chrome/browser/net/model/crurl.h"
 #import "ios/chrome/browser/shared/model/web_state_list/tab_group.h"
-#import "ios/chrome/browser/shared/public/commands/application_commands.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
+#import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
+#import "ios/chrome/browser/shared/ui/util/color_palette/tab_group_color_palette.h"
 #import "ios/chrome/browser/shared/ui/util/pasteboard_util.h"
 #import "ios/chrome/browser/signin/model/system_identity.h"
+#import "ios/chrome/grit/ios_branded_strings.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/public/provider/chrome/browser/context_menu/context_menu_api.h"
 #import "ui/base/l10n/l10n_util_mac.h"
 #import "url/gurl.h"
+
+namespace {
+
+// The emoji that is drawn into a UIImage for the Gemini entry point action.
+constexpr NSString* kGeminiActionImageEmoji = @"🍌";
+
+// The ratio of canvas to font point size to allow for the canvas to have some
+// padding around the emoji, which fixes clipping.
+constexpr CGFloat kEmojiCanvasPaddingRatio = 1.3;
+
+}  // namespace
 
 @interface ActionFactory ()
 
@@ -56,15 +70,19 @@
 }
 
 - (UIAction*)actionToCopyURL:(CrURL*)URL {
+  return [self actionToCopyURLWithBlock:^{
+    StoreURLInPasteboard(URL.gurl);
+  }];
+}
+
+- (UIAction*)actionToCopyURLWithBlock:(ProceduralBlock)block {
   UIImage* image =
-      DefaultSymbolWithPointSize(kLinkActionSymbol, kSymbolActionPointSize);
+      SymbolWithPointSize(SymbolLinkAction, kSymbolActionPointSize);
   return [self
       actionWithTitle:l10n_util::GetNSString(IDS_IOS_COPY_LINK_ACTION_TITLE)
                 image:image
                  type:MenuActionType::CopyURL
-                block:^{
-                  StoreURLInPasteboard(URL.gurl);
-                }];
+                block:block];
 }
 
 - (UIAction*)actionToShowFullURL:(NSString*)URLString
@@ -81,8 +99,7 @@
 }
 
 - (UIAction*)actionToShareWithBlock:(ProceduralBlock)block {
-  UIImage* image =
-      DefaultSymbolWithPointSize(kShareSymbol, kSymbolActionPointSize);
+  UIImage* image = SymbolWithPointSize(SymbolShare, kSymbolActionPointSize);
   return
       [self actionWithTitle:l10n_util::GetNSString(IDS_IOS_SHARE_BUTTON_LABEL)
                       image:image
@@ -91,8 +108,7 @@
 }
 
 - (UIAction*)actionToPinTabWithBlock:(ProceduralBlock)block {
-  UIImage* image =
-      DefaultSymbolWithPointSize(kPinSymbol, kSymbolActionPointSize);
+  UIImage* image = SymbolWithPointSize(SymbolPin, kSymbolActionPointSize);
   return [self
       actionWithTitle:l10n_util::GetNSString(IDS_IOS_CONTENT_CONTEXT_PINTAB)
                 image:image
@@ -101,8 +117,7 @@
 }
 
 - (UIAction*)actionToUnpinTabWithBlock:(ProceduralBlock)block {
-  UIImage* image =
-      DefaultSymbolWithPointSize(kPinSlashSymbol, kSymbolActionPointSize);
+  UIImage* image = SymbolWithPointSize(SymbolPinSlash, kSymbolActionPointSize);
   return [self
       actionWithTitle:l10n_util::GetNSString(IDS_IOS_CONTENT_CONTEXT_UNPINTAB)
                 image:image
@@ -112,7 +127,7 @@
 
 - (UIAction*)actionToDeleteWithBlock:(ProceduralBlock)block {
   UIImage* image =
-      DefaultSymbolWithPointSize(kDeleteActionSymbol, kSymbolActionPointSize);
+      SymbolWithPointSize(SymbolDeleteAction, kSymbolActionPointSize);
   UIAction* action =
       [self actionWithTitle:l10n_util::GetNSString(IDS_IOS_DELETE_ACTION_TITLE)
                       image:image
@@ -124,7 +139,7 @@
 
 - (UIAction*)actionToOpenInNewTabWithBlock:(ProceduralBlock)block {
   UIImage* image =
-      DefaultSymbolWithPointSize(kNewTabActionSymbol, kSymbolActionPointSize);
+      SymbolWithPointSize(SymbolNewTabAction, kSymbolActionPointSize);
   ProceduralBlock completionBlock =
       [self recordMobileWebContextMenuOpenTabActionWithBlock:block];
 
@@ -136,19 +151,20 @@
 }
 
 - (UIAction*)actionToOpenAllTabsWithBlock:(ProceduralBlock)block {
-  return [self actionWithTitle:l10n_util::GetNSString(
-                                   IDS_IOS_CONTENT_CONTEXT_OPEN_ALL_LINKS)
-                         image:DefaultSymbolWithPointSize(
-                                   kPlusSymbol, kSymbolActionPointSize)
-                          type:MenuActionType::OpenAllInNewTabs
-                         block:block];
+  return [self
+      actionWithTitle:l10n_util::GetNSString(
+                          IDS_IOS_CONTENT_CONTEXT_OPEN_ALL_LINKS)
+                image:SymbolWithPointSize(SymbolPlus, kSymbolActionPointSize)
+                 type:MenuActionType::OpenAllInNewTabs
+                block:block];
 }
 
 - (UIAction*)actionToRemoveWithBlock:(ProceduralBlock)block {
   UIImage* image =
-      DefaultSymbolWithPointSize(kHideActionSymbol, kSymbolActionPointSize);
+      SymbolWithPointSize(SymbolHideAction, kSymbolActionPointSize);
   UIAction* action =
-      [self actionWithTitle:l10n_util::GetNSString(IDS_IOS_REMOVE_ACTION_TITLE)
+      [self actionWithTitle:l10n_util::GetNSString(
+                                IDS_IOS_CONTENT_SUGGESTIONS_NEVER_SHOW_SITE)
                       image:image
                        type:MenuActionType::Remove
                       block:block];
@@ -158,7 +174,7 @@
 
 - (UIAction*)actionToEditWithBlock:(ProceduralBlock)block {
   UIImage* image =
-      DefaultSymbolWithPointSize(kEditActionSymbol, kSymbolActionPointSize);
+      SymbolWithPointSize(SymbolEditAction, kSymbolActionPointSize);
   return [self actionWithTitle:l10n_util::GetNSString(IDS_IOS_EDIT_ACTION_TITLE)
                          image:image
                           type:MenuActionType::Edit
@@ -167,7 +183,7 @@
 
 - (UIAction*)actionToHideWithBlock:(ProceduralBlock)block {
   UIImage* image =
-      DefaultSymbolWithPointSize(kHideActionSymbol, kSymbolActionPointSize);
+      SymbolWithPointSize(SymbolHideAction, kSymbolActionPointSize);
   UIAction* action =
       [self actionWithTitle:l10n_util::GetNSString(
                                 IDS_IOS_RECENT_TABS_HIDE_MENU_OPTION)
@@ -181,7 +197,7 @@
 - (UIAction*)actionToMoveFolderWithBlock:(ProceduralBlock)block {
   // Use multi color to make sure the arrow is visible.
   UIImage* image = MakeSymbolMulticolor(
-      CustomSymbolWithPointSize(kMoveFolderSymbol, kSymbolActionPointSize));
+      SymbolWithPointSize(SymbolMoveFolder, kSymbolActionPointSize));
   return [self
       actionWithTitle:l10n_util::GetNSString(IDS_IOS_BOOKMARK_CONTEXT_MENU_MOVE)
                 image:image
@@ -190,8 +206,8 @@
 }
 
 - (UIAction*)actionToMarkAsReadWithBlock:(ProceduralBlock)block {
-  UIImage* image = DefaultSymbolWithPointSize(kMarkAsReadActionSymbol,
-                                              kSymbolActionPointSize);
+  UIImage* image =
+      SymbolWithPointSize(SymbolMarkAsReadAction, kSymbolActionPointSize);
   return [self actionWithTitle:l10n_util::GetNSString(
                                    IDS_IOS_READING_LIST_MARK_AS_READ_ACTION)
                          image:image
@@ -200,8 +216,8 @@
 }
 
 - (UIAction*)actionToMarkAsUnreadWithBlock:(ProceduralBlock)block {
-  UIImage* image = DefaultSymbolWithPointSize(kMarkAsUnreadActionSymbol,
-                                              kSymbolActionPointSize);
+  UIImage* image =
+      SymbolWithPointSize(SymbolMarkAsUnreadAction, kSymbolActionPointSize);
   return [self actionWithTitle:l10n_util::GetNSString(
                                    IDS_IOS_READING_LIST_MARK_AS_UNREAD_ACTION)
                          image:image
@@ -211,8 +227,8 @@
 
 - (UIAction*)actionToOpenOfflineVersionInNewTabWithBlock:
     (ProceduralBlock)block {
-  UIImage* image = DefaultSymbolWithPointSize(kCheckmarkCircleSymbol,
-                                              kSymbolActionPointSize);
+  UIImage* image =
+      SymbolWithPointSize(SymbolCheckmarkCircle, kSymbolActionPointSize);
   ProceduralBlock completionBlock =
       [self recordMobileWebContextMenuOpenTabActionWithBlock:block];
 
@@ -224,8 +240,8 @@
 }
 
 - (UIAction*)actionToAddToReadingListWithBlock:(ProceduralBlock)block {
-  UIImage* image = DefaultSymbolWithPointSize(kReadLaterActionSymbol,
-                                              kSymbolActionPointSize);
+  UIImage* image =
+      SymbolWithPointSize(SymbolReadLaterAction, kSymbolActionPointSize);
   return [self actionWithTitle:l10n_util::GetNSString(
                                    IDS_IOS_CONTENT_CONTEXT_ADDTOREADINGLIST)
                          image:image
@@ -234,8 +250,8 @@
 }
 
 - (UIAction*)actionToBookmarkWithBlock:(ProceduralBlock)block {
-  UIImage* image = DefaultSymbolWithPointSize(kAddBookmarkActionSymbol,
-                                              kSymbolActionPointSize);
+  UIImage* image =
+      SymbolWithPointSize(SymbolAddBookmarkAction, kSymbolActionPointSize);
   return [self actionWithTitle:l10n_util::GetNSString(
                                    IDS_IOS_CONTENT_CONTEXT_ADDTOBOOKMARKS)
                          image:image
@@ -245,7 +261,7 @@
 
 - (UIAction*)actionToEditBookmarkWithBlock:(ProceduralBlock)block {
   UIImage* image =
-      DefaultSymbolWithPointSize(kEditActionSymbol, kSymbolActionPointSize);
+      SymbolWithPointSize(SymbolEditAction, kSymbolActionPointSize);
   return [self
       actionWithTitle:l10n_util::GetNSString(IDS_IOS_BOOKMARK_CONTEXT_MENU_EDIT)
                 image:image
@@ -267,8 +283,7 @@
 - (UIAction*)actionToCloseAllOtherTabsWithBlock:(ProceduralBlock)block {
   NSString* title =
       l10n_util::GetNSString(IDS_IOS_CONTENT_CONTEXT_CLOSEOTHERTABS);
-  UIImage* image =
-      DefaultSymbolWithPointSize(kXMarkSymbol, kSymbolActionPointSize);
+  UIImage* image = SymbolWithPointSize(SymbolXMark, kSymbolActionPointSize);
   UIAction* action = [self actionWithTitle:title
                                      image:image
                                       type:MenuActionType::CloseAllOtherTabs
@@ -277,9 +292,22 @@
   return action;
 }
 
+- (UIAction*)actionToDeleteBrowsingDataWithBlock:(ProceduralBlock)block {
+  UIImage* image =
+      SymbolWithPointSize(SymbolDeleteAction, kSymbolActionPointSize);
+  UIAction* action =
+      [self actionWithTitle:l10n_util::GetNSString(
+                                IDS_IOS_TOOLS_MENU_CLEAR_BROWSING_DATA)
+                      image:image
+                       type:MenuActionType::DeleteBrowsingData
+                      block:block];
+  action.attributes = UIMenuElementAttributesDestructive;
+  return action;
+}
+
 - (UIAction*)actionSaveImageWithBlock:(ProceduralBlock)block {
-  UIImage* image = DefaultSymbolWithPointSize(kSaveImageActionSymbol,
-                                              kSymbolActionPointSize);
+  UIImage* image =
+      SymbolWithPointSize(SymbolSaveImageAction, kSymbolActionPointSize);
   UIAction* action = [self
       actionWithTitle:l10n_util::GetNSString(IDS_IOS_CONTENT_CONTEXT_SAVEIMAGE)
                 image:image
@@ -290,7 +318,7 @@
 
 - (UIAction*)actionCopyImageWithBlock:(ProceduralBlock)block {
   UIImage* image =
-      DefaultSymbolWithPointSize(kCopyActionSymbol, kSymbolActionPointSize);
+      SymbolWithPointSize(SymbolCopyAction, kSymbolActionPointSize);
   UIAction* action = [self
       actionWithTitle:l10n_util::GetNSString(IDS_IOS_CONTENT_CONTEXT_COPYIMAGE)
                 image:image
@@ -301,8 +329,8 @@
 
 - (UIAction*)actionSearchImageWithTitle:(NSString*)title
                                   Block:(ProceduralBlock)block {
-  UIImage* image = CustomSymbolWithPointSize(kPhotoBadgeMagnifyingglassSymbol,
-                                             kSymbolActionPointSize);
+  UIImage* image = SymbolWithPointSize(SymbolPhotoBadgeMagnifyingglass,
+                                       kSymbolActionPointSize);
   UIAction* action = [self actionWithTitle:title
                                      image:image
                                       type:MenuActionType::SearchImage
@@ -311,22 +339,20 @@
 }
 
 - (UIAction*)actionToCloseAllTabsWithBlock:(ProceduralBlock)block {
-  UIImage* image =
-      DefaultSymbolWithPointSize(kXMarkSymbol, kSymbolActionPointSize);
-  int titleID = IsTabGroupSyncEnabled()
-                    ? IDS_IOS_CONTENT_CONTEXT_CLOSEALLTABSANDGROUPS
-                    : IDS_IOS_CONTENT_CONTEXT_CLOSEALLTABS;
-  UIAction* action = [self actionWithTitle:l10n_util::GetNSString(titleID)
-                                     image:image
-                                      type:MenuActionType::CloseAllTabs
-                                     block:block];
+  UIImage* image = SymbolWithPointSize(SymbolXMark, kSymbolActionPointSize);
+  UIAction* action =
+      [self actionWithTitle:l10n_util::GetNSString(
+                                IDS_IOS_CONTENT_CONTEXT_CLOSEALLTABSANDGROUPS)
+                      image:image
+                       type:MenuActionType::CloseAllTabs
+                      block:block];
   action.attributes = UIMenuElementAttributesDestructive;
   return action;
 }
 
 - (UIAction*)actionToSelectTabsWithBlock:(ProceduralBlock)block {
-  UIImage* image = DefaultSymbolWithPointSize(kCheckmarkCircleSymbol,
-                                              kSymbolActionPointSize);
+  UIImage* image =
+      SymbolWithPointSize(SymbolCheckmarkCircle, kSymbolActionPointSize);
   UIAction* action = [self
       actionWithTitle:l10n_util::GetNSString(IDS_IOS_CONTENT_CONTEXT_SELECTTABS)
                 image:image
@@ -337,7 +363,7 @@
 
 - (UIAction*)actionToSearchImageUsingLensWithBlock:(ProceduralBlock)block {
   UIImage* image =
-      CustomSymbolWithPointSize(kCameraLensSymbol, kSymbolActionPointSize);
+      SymbolWithPointSize(SymbolCameraLens, kSymbolActionPointSize);
   UIAction* action =
       [self actionWithTitle:l10n_util::GetNSString(
                                 IDS_IOS_CONTEXT_MENU_SEARCHIMAGEWITHGOOGLE)
@@ -357,14 +383,23 @@
   };
 }
 
+- (UIAction*)actionToCreateEmptyTabGroupWithBlock:(ProceduralBlock)block {
+  UIImage* image =
+      SymbolWithPointSize(SymbolNewTabGroupAction, kSymbolActionPointSize);
+  UIAction* action = [self
+      actionWithTitle:l10n_util::GetNSString(
+                          IDS_IOS_CONTENT_CONTEXT_ADDTABTONEWTABGROUP_SUBMENU)
+                image:image
+                 type:MenuActionType::CreateEmptyTabGroup
+                block:block];
+  return action;
+}
+
 - (UIAction*)actionToAddTabsToNewGroupWithTabsNumber:(int)tabsNumber
                                            inSubmenu:(BOOL)inSubmenu
                                                block:(ProceduralBlock)block {
-  CHECK(IsTabGroupInGridEnabled())
-      << "You should not be able to create a tab group context menu action "
-         "outside the Tab Groups experiment.";
-  UIImage* image = DefaultSymbolWithPointSize(kNewTabGroupActionSymbol,
-                                              kSymbolActionPointSize);
+  UIImage* image =
+      SymbolWithPointSize(SymbolNewTabGroupAction, kSymbolActionPointSize);
   NSString* title =
       inSubmenu ? l10n_util::GetNSString(
                       IDS_IOS_CONTENT_CONTEXT_ADDTABTONEWTABGROUP_SUBMENU)
@@ -379,8 +414,8 @@
 
 - (UIAction*)actionToOpenLinkInNewGroupWithBlock:(ProceduralBlock)block
                                        inSubmenu:(BOOL)inSubmenu {
-  UIImage* image = DefaultSymbolWithPointSize(kNewTabGroupActionSymbol,
-                                              kSymbolActionPointSize);
+  UIImage* image =
+      SymbolWithPointSize(SymbolNewTabGroupAction, kSymbolActionPointSize);
   NSString* title =
       inSubmenu ? l10n_util::GetNSString(
                       IDS_IOS_CONTENT_CONTEXT_ADDTABTONEWTABGROUP_SUBMENU)
@@ -397,10 +432,6 @@
     menuToAddTabToGroupWithGroups:(const std::set<const TabGroup*>&)groups
                      numberOfTabs:(int)tabsNumber
                             block:(void (^)(const TabGroup*))block {
-  CHECK(IsTabGroupInGridEnabled())
-      << "You should not be able to create a tab group context menu action "
-         "outside the Tab Groups experiment.";
-
   if (groups.size() == 0) {
     ProceduralBlock addTabToNewGroupBlock = ^{
       if (block) {
@@ -432,8 +463,8 @@
     menu
   ];
 
-  UIImage* image = DefaultSymbolWithPointSize(kMoveTabToGroupActionSymbol,
-                                              kSymbolActionPointSize);
+  UIImage* image =
+      SymbolWithPointSize(SymbolMoveTabToGroupAction, kSymbolActionPointSize);
 
   return [UIMenu
       menuWithTitle:l10n_util::GetPluralNSStringF(
@@ -449,10 +480,6 @@
                       currentGroup:(const TabGroup*)currentGroup
                          moveBlock:(void (^)(const TabGroup*))moveBlock
                        removeBlock:(ProceduralBlock)removeBlock {
-  CHECK(IsTabGroupInGridEnabled())
-      << "You should not be able to create a tab group context menu action "
-         "outside the Tab Groups experiment.";
-
   if (groups.size() == 0) {
     NOTREACHED() << "Groups cannot be empty.";
   }
@@ -468,8 +495,8 @@
   NSArray<UIMenuElement*>* moveTabFromGroupMenuElements =
       @[ [self actionToRemoveTabFromGroup:removeBlock], menu ];
 
-  UIImage* image = DefaultSymbolWithPointSize(kMoveTabToGroupActionSymbol,
-                                              kSymbolActionPointSize);
+  UIImage* image =
+      SymbolWithPointSize(SymbolMoveTabToGroupAction, kSymbolActionPointSize);
   return [UIMenu menuWithTitle:l10n_util::GetNSString(
                                    IDS_IOS_CONTENT_CONTEXT_MOVETABTOGROUP)
                          image:image
@@ -481,10 +508,6 @@
 - (UIMenuElement*)
     menuToOpenLinkInGroupWithGroups:(const std::set<const TabGroup*>&)groups
                               block:(void (^)(const TabGroup*))block {
-  CHECK(IsTabGroupInGridEnabled())
-      << "You should not be able to create a tab group context menu action "
-         "outside the Tab Groups experiment.";
-
   if (groups.size() == 0) {
     ProceduralBlock openInNewGroupBlock = ^{
       if (block) {
@@ -514,8 +537,8 @@
     menu
   ];
 
-  UIImage* image = DefaultSymbolWithPointSize(kMoveTabToGroupActionSymbol,
-                                              kSymbolActionPointSize);
+  UIImage* image =
+      SymbolWithPointSize(SymbolMoveTabToGroupAction, kSymbolActionPointSize);
 
   return [UIMenu menuWithTitle:l10n_util::GetNSString(
                                    IDS_IOS_CONTENT_CONTEXT_OPENLINKINTABGROUP)
@@ -526,22 +549,19 @@
 }
 
 - (UIAction*)actionToRenameTabGroupWithBlock:(ProceduralBlock)block {
-  CHECK(IsTabGroupInGridEnabled());
   UIImage* image =
-      DefaultSymbolWithPointSize(kEditActionSymbol, kSymbolActionPointSize);
-  UIAction* action =
-      [self actionWithTitle:l10n_util::GetNSString(
-                                IDS_IOS_CONTENT_CONTEXT_RENAMEGROUP)
-                      image:image
-                       type:MenuActionType::RenameTabGroup
-                      block:block];
+      SymbolWithPointSize(SymbolEditAction, kSymbolActionPointSize);
+  UIAction* action = [self
+      actionWithTitle:l10n_util::GetNSString(IDS_IOS_CONTENT_CONTEXT_EDITGROUP)
+                image:image
+                 type:MenuActionType::RenameTabGroup
+                block:block];
   return action;
 }
 
 - (UIAction*)actionToAddNewTabInGroupWithBlock:(ProceduralBlock)block {
-  CHECK(IsTabGroupInGridEnabled());
-  UIImage* image = DefaultSymbolWithPointSize(kNewTabGroupActionSymbol,
-                                              kSymbolActionPointSize);
+  UIImage* image =
+      SymbolWithPointSize(SymbolNewTabGroupAction, kSymbolActionPointSize);
   UIAction* action =
       [self actionWithTitle:l10n_util::GetNSString(
                                 IDS_IOS_CONTENT_CONTEXT_NEWTABINGROUP)
@@ -552,9 +572,8 @@
 }
 
 - (UIAction*)actionToUngroupTabGroupWithBlock:(ProceduralBlock)block {
-  CHECK(IsTabGroupInGridEnabled());
-  UIImage* image = DefaultSymbolWithPointSize(kUngroupTabGroupSymbol,
-                                              kSymbolActionPointSize);
+  UIImage* image =
+      SymbolWithPointSize(SymbolUngroupTabGroup, kSymbolActionPointSize);
   UIAction* action = [self
       actionWithTitle:l10n_util::GetNSString(IDS_IOS_CONTENT_CONTEXT_UNGROUP)
                 image:image
@@ -564,9 +583,8 @@
 }
 
 - (UIAction*)actionToDeleteTabGroupWithBlock:(ProceduralBlock)block {
-  CHECK(IsTabGroupInGridEnabled());
   UIImage* image =
-      DefaultSymbolWithPointSize(kDeleteActionSymbol, kSymbolActionPointSize);
+      SymbolWithPointSize(SymbolDeleteAction, kSymbolActionPointSize);
   UIAction* action =
       [self actionWithTitle:l10n_util::GetNSString(
                                 IDS_IOS_CONTENT_CONTEXT_DELETEGROUP)
@@ -578,11 +596,7 @@
 }
 
 - (UIAction*)actionToCloseTabGroupWithBlock:(ProceduralBlock)block {
-  CHECK(IsTabGroupInGridEnabled());
-  CHECK(IsTabGroupSyncEnabled());
-
-  UIImage* image =
-      DefaultSymbolWithPointSize(kXMarkSymbol, kSymbolActionPointSize);
+  UIImage* image = SymbolWithPointSize(SymbolXMark, kSymbolActionPointSize);
   UIAction* action = [self
       actionWithTitle:l10n_util::GetNSString(IDS_IOS_CONTENT_CONTEXT_CLOSEGROUP)
                 image:image
@@ -593,11 +607,8 @@
 }
 
 - (UIAction*)actionToLeaveSharedTabGroupWithBlock:(ProceduralBlock)block {
-  CHECK(IsTabGroupInGridEnabled());
-  CHECK(IsTabGroupSyncEnabled());
-
   UIImage* image =
-      DefaultSymbolWithPointSize(kMinusInCircleSymbol, kSymbolActionPointSize);
+      SymbolWithPointSize(SymbolMinusInCircle, kSymbolActionPointSize);
   UIAction* action =
       [self actionWithTitle:l10n_util::GetNSString(
                                 IDS_IOS_CONTENT_CONTEXT_LEAVESHAREDGROUP)
@@ -609,11 +620,8 @@
 }
 
 - (UIAction*)actionToDeleteSharedTabGroupWithBlock:(ProceduralBlock)block {
-  CHECK(IsTabGroupInGridEnabled());
-  CHECK(IsTabGroupSyncEnabled());
-
   UIImage* image =
-      DefaultSymbolWithPointSize(kDeleteActionSymbol, kSymbolActionPointSize);
+      SymbolWithPointSize(SymbolDeleteAction, kSymbolActionPointSize);
   UIAction* action =
       [self actionWithTitle:l10n_util::GetNSString(
                                 IDS_IOS_CONTENT_CONTEXT_DELETESHAREDGROUP)
@@ -625,11 +633,8 @@
 }
 
 - (UIAction*)actionToShareTabGroupWithBlock:(ProceduralBlock)block {
-  CHECK(IsTabGroupInGridEnabled());
-  CHECK(IsTabGroupSyncEnabled());
-
   UIImage* image =
-      DefaultSymbolWithPointSize(kPersonPlusSymbol, kSymbolActionPointSize);
+      SymbolWithPointSize(SymbolPersonPlus, kSymbolActionPointSize);
   UIAction* action =
       [self actionWithTitle:l10n_util::GetNSString(
                                 IDS_IOS_CONTENT_CONTEXT_SHARELOCALGROUP)
@@ -640,11 +645,8 @@
 }
 
 - (UIAction*)actionToManageTabGroupWithBlock:(ProceduralBlock)block {
-  CHECK(IsTabGroupInGridEnabled());
-  CHECK(IsTabGroupSyncEnabled());
-
   UIImage* image =
-      DefaultSymbolWithPointSize(kPersonPlusSymbol, kSymbolActionPointSize);
+      SymbolWithPointSize(SymbolPersonPlus, kSymbolActionPointSize);
   UIAction* action =
       [self actionWithTitle:l10n_util::GetNSString(
                                 IDS_IOS_CONTENT_CONTEXT_MANAGESHAREDGROUP)
@@ -659,8 +661,7 @@
 // Creates a UIAction instance for closing a tab with a provided `title`.
 - (UIAction*)actionToCloseTabWithTitle:(NSString*)title
                                  block:(ProceduralBlock)block {
-  UIImage* image =
-      DefaultSymbolWithPointSize(kXMarkSymbol, kSymbolActionPointSize);
+  UIImage* image = SymbolWithPointSize(SymbolXMark, kSymbolActionPointSize);
   UIAction* action = [self actionWithTitle:title
                                      image:image
                                       type:MenuActionType::CloseTab
@@ -671,11 +672,8 @@
 
 // Creates a UIAction instance for removing a tab from a group.
 - (UIAction*)actionToRemoveTabFromGroup:(ProceduralBlock)block {
-  CHECK(IsTabGroupInGridEnabled())
-      << "You should not be able to create a tab group context menu action "
-         "outside the Tab Groups experiment.";
-  UIImage* image = DefaultSymbolWithPointSize(kRemoveTabFromGroupActionSymbol,
-                                              kSymbolActionPointSize);
+  UIImage* image = SymbolWithPointSize(SymbolRemoveTabFromGroupAction,
+                                       kSymbolActionPointSize);
   NSString* title =
       l10n_util::GetNSString(IDS_IOS_CONTENT_CONTEXT_REMOVEFROMGROUP);
   UIAction* action = [self actionWithTitle:title
@@ -687,7 +685,7 @@
 
 - (UIAction*)actionToShowDetailsWithBlock:(ProceduralBlock)block {
   UIImage* image =
-      DefaultSymbolWithPointSize(kInfoCircleSymbol, kSymbolActionPointSize);
+      SymbolWithPointSize(SymbolInfoCircle, kSymbolActionPointSize);
   return [self
       actionWithTitle:l10n_util::GetNSString(IDS_IOS_SHOW_DETAILS_ACTION_TITLE)
                 image:image
@@ -704,7 +702,7 @@
   NSMutableArray<UIMenuElement*>* groupsMenu = [[NSMutableArray alloc] init];
 
   UIImage* circleImage =
-      DefaultSymbolWithPointSize(kCircleFillSymbol, kSymbolActionPointSize);
+      SymbolWithPointSize(SymbolCircleFill, kSymbolActionPointSize);
   circleImage =
       [circleImage imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
   for (const TabGroup* group : groups) {
@@ -716,9 +714,11 @@
       }
     };
 
+    UIColor* imageColor = [TabGroupColorPalette commonColor:group->GetColor()];
+
     UIAction* groupAction =
         [self actionWithTitle:title
-                        image:[circleImage imageWithTintColor:group->GetColor()]
+                        image:[circleImage imageWithTintColor:imageColor]
                          type:MenuActionType::MoveTabToExistingGroup
                         block:actionBlock];
 
@@ -797,24 +797,88 @@
                          block:block];
 }
 
-- (UIAction*)actionToManageLinkInNewTabWithBlock:(ProceduralBlock)block {
-  UIImage* image =
-      DefaultSymbolWithPointSize(kExternalLinkSymbol, kSymbolActionPointSize);
-
-  return [self actionWithTitle:l10n_util::GetNSString(
-                                   IDS_IOS_CONTENT_CONTEXT_OPENMANAGEINNEWTAB)
-                         image:image
-                          type:MenuActionType::ManageInNewTab
-                         block:block];
-}
-
 - (UIAction*)actionToShowRecentActivity:(ProceduralBlock)block {
-  UIImage* image =
-      DefaultSymbolWithPointSize(kHistorySymbol, kSymbolActionPointSize);
+  UIImage* image = SymbolWithPointSize(SymbolHistory, kSymbolActionPointSize);
   return [self actionWithTitle:l10n_util::GetNSString(
                                    IDS_IOS_CONTENT_CONTEXT_RECENTACTIVITY)
                          image:image
                           type:MenuActionType::RecentActivityInSharedTabGroup
+                         block:block];
+}
+
+- (UIAction*)actionToOpenImageInGeminiWithBlock:(ProceduralBlock)block {
+  // Create the canvas slightly bigger than the emoji's text point size, to
+  // allow for the parts that overflow.
+  CGSize imageSize =
+      CGSizeMake(kSymbolActionPointSize * kEmojiCanvasPaddingRatio,
+                 kSymbolActionPointSize * kEmojiCanvasPaddingRatio);
+
+  UIGraphicsImageRenderer* renderer =
+      [[UIGraphicsImageRenderer alloc] initWithSize:imageSize];
+
+  // Create a UIImage from an emoji.
+  UIImage* emojiImage =
+      [renderer imageWithActions:^(UIGraphicsImageRendererContext* context) {
+        NSDictionary* attrs = @{
+          NSFontAttributeName : [UIFont systemFontOfSize:kSymbolActionPointSize]
+        };
+
+        // Center the draw point of the emoji in the canvas.
+        CGSize textSize = [kGeminiActionImageEmoji sizeWithAttributes:attrs];
+        CGPoint drawPoint =
+            CGPointMake((imageSize.width - textSize.width) / 2.0,
+                        (imageSize.height - textSize.height) / 2.0);
+
+        [kGeminiActionImageEmoji drawAtPoint:drawPoint withAttributes:attrs];
+      }];
+
+  return
+      [self actionWithTitle:l10n_util::GetNSString(
+                                IDS_IOS_GEMINI_IMAGE_CONTEXT_MENU_ENTRY_POINT)
+                      image:emojiImage
+                       type:MenuActionType::GeminiWithImageAttachment
+                      block:block];
+}
+
+- (UIAction*)actionToPinSiteToMostVisitedTileWithBlock:(ProceduralBlock)block {
+  UIImage* image = SymbolWithPointSize(SymbolPin, kSymbolActionPointSize);
+  return [self actionWithTitle:l10n_util::GetNSString(
+                                   IDS_IOS_CONTENT_SUGGESTIONS_PIN_SITE)
+                         image:image
+                          type:MenuActionType::PinSite
+                         block:block];
+}
+
+- (UIAction*)actionToUnpinSiteFromMostVisitedTileWithBlock:
+    (ProceduralBlock)block {
+  UIImage* image = SymbolWithPointSize(SymbolPinSlash, kSymbolActionPointSize);
+  UIAction* action =
+      [self actionWithTitle:l10n_util::GetNSString(
+                                IDS_IOS_CONTENT_SUGGESTIONS_UNPIN_SITE)
+                      image:image
+                       type:MenuActionType::UnpinSite
+                      block:block];
+  action.attributes = UIMenuElementAttributesDestructive;
+  return action;
+}
+
+- (UIAction*)actionToEditPinnedSiteOnMostVisitedTileWithBlock:
+    (ProceduralBlock)block {
+  UIImage* image =
+      SymbolWithPointSize(SymbolEditAction, kSymbolActionPointSize);
+  return [self actionWithTitle:l10n_util::GetNSString(
+                                   IDS_IOS_CONTENT_SUGGESTIONS_EDIT_PINNED_SITE)
+                         image:image
+                          type:MenuActionType::EditPinnedSite
+                         block:block];
+}
+
+- (UIAction*)actionToSendTabToSelfWithBlock:(ProceduralBlock)block {
+  UIImage* image =
+      SymbolWithPointSize(SymbolRecentTabs, kSymbolActionPointSize);
+  return [self actionWithTitle:l10n_util::GetNSString(IDS_SEND_TAB_TO_SELF)
+                         image:image
+                          type:MenuActionType::SendTabToSelf
                          block:block];
 }
 

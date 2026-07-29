@@ -5,11 +5,17 @@
 #include "media/capture/video/apple/video_capture_device_apple.h"
 
 #include "base/apple/scoped_cftyperef.h"
+#include "base/logging.h"
+#import "base/memory/ref_counted.h"
+#import "base/memory/scoped_refptr.h"
 #import "base/run_loop.h"
+#include "base/synchronization/waitable_event.h"
 #include "base/test/bind.h"
 #include "base/test/gmock_callback_support.h"
+#include "base/threading/thread.h"
 #include "media/capture/video/apple/test/fake_av_capture_device_format.h"
 #import "media/capture/video/apple/test/video_capture_test_utils.h"
+#include "media/capture/video/apple/video_capture_device_avfoundation.h"
 #include "media/capture/video/apple/video_capture_device_avfoundation_utils.h"
 #include "media/capture/video/apple/video_capture_device_factory_apple.h"
 #include "media/capture/video/apple/video_capture_device_frame_receiver.h"
@@ -132,9 +138,41 @@ TEST(VideoCaptureDeviceMacTest, FindBestCaptureFormat) {
   EXPECT_EQ(result, fmt_640_480_2vuy_30);
 }
 
+// OnPhotoTaken() and OnPhotoError() are documented as safe to call from any
+// thread. Exercise OnPhotoError() concurrently from the device task runner and
+// a background thread to ensure the in-flight TakePhoto callback is accessed
+// safely without data races or sequence checker violations.
+TEST(VideoCaptureDeviceMacTest, ConcurrentOnPhotoErrorIsThreadSafe) {
+  RunTestCase(base::BindOnce([] {
+    constexpr int kIterations = 1000;
+    VideoCaptureDeviceDescriptor descriptor;
+    auto device = std::make_unique<VideoCaptureDeviceApple>(descriptor);
+    VideoCaptureDeviceAVFoundationFrameReceiver* frame_receiver = device.get();
+
+    base::Thread other_thread("OnPhotoErrorTestThread");
+    ASSERT_TRUE(other_thread.Start());
+
+    base::WaitableEvent done;
+    other_thread.task_runner()->PostTask(
+        FROM_HERE, base::BindLambdaForTesting([&] {
+          for (int i = 0; i < kIterations; ++i) {
+            frame_receiver->OnPhotoError();
+          }
+          done.Signal();
+        }));
+    for (int i = 0; i < kIterations; ++i) {
+      frame_receiver->OnPhotoError();
+    }
+    done.Wait();
+    other_thread.Stop();
+  }));
+}
+
 class MockImageCaptureClient
     : public base::RefCountedThreadSafe<MockImageCaptureClient> {
  public:
+  REQUIRE_ADOPTION_FOR_REFCOUNTED_TYPE();
+
   // GMock doesn't support move-only arguments, so we use this forward method.
   void DoOnGetPhotoState(mojom::PhotoStatePtr received_state) {
     state = std::move(received_state);
@@ -154,7 +192,7 @@ class VideoCaptureDeviceMacWithImageCaptureTest : public ::testing::Test {
 
  protected:
   VideoCaptureDeviceMacWithImageCaptureTest()
-      : image_capture_client_(new MockImageCaptureClient()) {}
+      : image_capture_client_(base::MakeRefCounted<MockImageCaptureClient>()) {}
 
   VideoCaptureDeviceApple* GetFirstAvailableDevice() {
     VideoCaptureDeviceFactoryApple video_capture_device_factory;
@@ -202,16 +240,15 @@ void VideoCaptureDeviceMacWithImageCaptureTest::
     device->SetIsPortraitEffectSupportedForTesting(false);
     mojom::PhotoState* photo_state = GetPhotoState(device);
 
-    ASSERT_FALSE(photo_state->supported_background_blur_modes);
+    EXPECT_EQ(photo_state->supported_background_blur_modes.size(), 0u);
   }
   {
     device->SetIsPortraitEffectSupportedForTesting(true);
     device->SetIsPortraitEffectActiveForTesting(false);
     mojom::PhotoState* photo_state = GetPhotoState(device);
 
-    ASSERT_TRUE(photo_state->supported_background_blur_modes);
-    EXPECT_EQ(photo_state->supported_background_blur_modes->size(), 1u);
-    EXPECT_EQ(photo_state->supported_background_blur_modes.value()[0],
+    EXPECT_EQ(photo_state->supported_background_blur_modes.size(), 1u);
+    EXPECT_EQ(photo_state->supported_background_blur_modes[0],
               mojom::BackgroundBlurMode::OFF);
     EXPECT_EQ(photo_state->background_blur_mode,
               mojom::BackgroundBlurMode::OFF);
@@ -221,9 +258,8 @@ void VideoCaptureDeviceMacWithImageCaptureTest::
     device->SetIsPortraitEffectActiveForTesting(true);
     mojom::PhotoState* photo_state = GetPhotoState(device);
 
-    ASSERT_TRUE(photo_state->supported_background_blur_modes);
-    EXPECT_EQ(photo_state->supported_background_blur_modes->size(), 1u);
-    EXPECT_EQ(photo_state->supported_background_blur_modes.value()[0],
+    EXPECT_EQ(photo_state->supported_background_blur_modes.size(), 1u);
+    EXPECT_EQ(photo_state->supported_background_blur_modes[0],
               mojom::BackgroundBlurMode::BLUR);
     EXPECT_EQ(photo_state->background_blur_mode,
               mojom::BackgroundBlurMode::BLUR);

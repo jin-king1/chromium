@@ -2,20 +2,18 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chromeos/ash/services/quick_pair/fast_pair_data_parser.h"
 
 #include <algorithm>
 #include <cstdint>
 #include <optional>
+#include <ranges>
 #include <vector>
 
+#include "ash/constants/ash_features.h"
 #include "ash/quick_pair/common/fast_pair/fast_pair_decoder.h"
 #include "base/base64.h"
+#include "base/compiler_specific.h"
 #include "base/containers/circular_deque.h"
 #include "base/containers/flat_map.h"
 #include "base/strings/string_number_conversions.h"
@@ -157,10 +155,16 @@ FastPairDataParser::~FastPairDataParser() = default;
 void FastPairDataParser::GetHexModelIdFromServiceData(
     const std::vector<uint8_t>& service_data,
     GetHexModelIdFromServiceDataCallback callback) {
-  std::move(callback).Run(
-      fast_pair_decoder::HasModelId(&service_data)
-          ? fast_pair_decoder::GetHexModelIdFromServiceData(&service_data)
-          : std::nullopt);
+  // TODO(399163998): Clean up logic post-feature launch.
+  if (features::IsFastPairAdvertisingFormat2025Enabled()) {
+    std::move(callback).Run(
+        fast_pair_decoder::GetHexModelIdFromServiceData(&service_data));
+  } else {
+    std::move(callback).Run(
+        fast_pair_decoder::HasModelId(&service_data)
+            ? fast_pair_decoder::GetHexModelIdFromServiceData(&service_data)
+            : std::nullopt);
+  }
 }
 
 void FastPairDataParser::ParseDecryptedResponse(
@@ -316,8 +320,7 @@ void FastPairDataParser::ParseMessageStreamMessages(
     return;
   }
 
-  base::circular_deque<uint8_t> remaining_bytes(base::from_range,
-                                                message_bytes);
+  base::circular_deque<uint8_t> remaining_bytes(std::from_range, message_bytes);
   while (remaining_bytes.size() >= kMinMessageByteCount) {
     uint8_t message_group_byte = remaining_bytes.front();
     remaining_bytes.pop_front();
@@ -360,7 +363,8 @@ void FastPairDataParser::ParseMessageStreamMessages(
 
     mojom::MessageStreamMessagePtr message = ParseMessageStreamMessage(
         message_group.value(), message_code,
-        base::span<uint8_t>(additional_data.begin(), additional_data.end()));
+        UNSAFE_TODO(base::span<uint8_t>(additional_data.begin(),
+                                        additional_data.end())));
 
     // Only add a completely parsed message to the return vector.
     if (message)

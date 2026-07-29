@@ -28,7 +28,7 @@ import java.io.IOException;
 public class InMemoryDownloadFile {
     private static final String TAG = "InMemoryDownload";
     private @Nullable FileOutputStream mFos;
-    private ParcelFileDescriptor mPfd;
+    private final ParcelFileDescriptor mPfd;
 
     @CalledByNative
     @RequiresApi(Build.VERSION_CODES.R)
@@ -44,9 +44,9 @@ public class InMemoryDownloadFile {
 
     @RequiresApi(Build.VERSION_CODES.R)
     private InMemoryDownloadFile(String filename) throws Exception {
-        FileDescriptor mFd = Os.memfd_create(filename, 0);
-        mPfd = ParcelFileDescriptor.dup(mFd);
-        mFos = new FileOutputStream(mFd);
+        FileDescriptor fd = Os.memfd_create(filename, 0);
+        mPfd = ParcelFileDescriptor.dup(fd);
+        mFos = new FileOutputStream(fd);
     }
 
     @CalledByNative

@@ -5,12 +5,19 @@
 #import "ios/chrome/browser/lens_overlay/model/lens_overlay_snapshot_controller.h"
 
 #import <map>
+#import <utility>
 
+#import "base/functional/callback_helpers.h"
 #import "base/task/bind_post_task.h"
 #import "base/task/thread_pool.h"
+#import "ios/chrome/browser/fullscreen/model/fullscreen_browser_agent.h"
+#import "ios/chrome/browser/fullscreen/public/fullscreen_metrics.h"
 #import "ios/chrome/browser/fullscreen/ui_bundled/fullscreen_controller.h"
+#import "ios/chrome/browser/lens_overlay/model/lens_overlay_presentation_type.h"
 #import "ios/chrome/browser/lens_overlay/model/lens_overlay_tab_helper.h"
 #import "ios/chrome/browser/lens_overlay/model/snapshot_cover_view_controller.h"
+#import "ios/chrome/browser/shared/public/commands/fullscreen_commands.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/snapshots/model/snapshot_tab_helper.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 
@@ -18,10 +25,10 @@ namespace {
 
 // The number of rows the infill mechanism should take into account when
 // computing the average color.
-CGFloat const kNumberOfRowsForInfill = 5;
+constexpr CGFloat kNumberOfRowsForInfill = 5;
 
 // Number of bytes per pixel.
-size_t const kBytesPerPixel = 4;
+constexpr size_t kBytesPerPixel = 4;
 
 }  // namespace
 
@@ -34,39 +41,41 @@ size_t const kBytesPerPixel = 4;
 UIColor* DominantColor(UIImage* image) {
   CGImageRef imageRef = [image CGImage];
 
-  size_t width = CGImageGetWidth(imageRef);
-  size_t height = CGImageGetHeight(imageRef);
-  size_t numberOfPixels = width * height;
-  CGFloat dominantColorThreshold = numberOfPixels / 2;
+  const size_t width = CGImageGetWidth(imageRef);
+  const size_t height = CGImageGetHeight(imageRef);
+  const size_t numberOfPixels = width * height;
+  const CGFloat dominantColorThreshold = numberOfPixels / 2;
 
   CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-  uint8_t* rawData = new uint8_t[numberOfPixels * kBytesPerPixel]();
 
-  NSUInteger bytesPerRow = kBytesPerPixel * width;
-  CGContextRef context =
-      CGBitmapContextCreate(rawData, width, height, 8, bytesPerRow, colorSpace,
-                            (uint32_t)kCGImageAlphaPremultipliedLast |
-                                (uint32_t)kCGImageByteOrder32Big);
+  std::vector<uint8_t> rawData;
+  rawData.resize(numberOfPixels * kBytesPerPixel);
+
+  const NSUInteger bytesPerRow = kBytesPerPixel * width;
+  CGContextRef context = CGBitmapContextCreate(
+      rawData.data(), width, height, 8, bytesPerRow, colorSpace,
+      std::to_underlying(kCGImageAlphaPremultipliedLast) |
+          std::to_underlying(kCGImageByteOrder32Big));
+
   CGColorSpaceRelease(colorSpace);
   CGContextDrawImage(context, CGRectMake(0, 0, width, height), imageRef);
   CGContextRelease(context);
 
   std::map<uint32_t, uint32_t> colorsMapping;
 
-  size_t columnIndex = 0;
-  size_t rowIndex = 0;
+  base::span<const uint8_t> pixelView;
+  base::span<const uint8_t> view = base::span(rawData);
   for (size_t n = 0; n < numberOfPixels; ++n) {
-    size_t index = (bytesPerRow * rowIndex) + columnIndex * kBytesPerPixel;
+    std::tie(pixelView, view) = view.split_at(kBytesPerPixel);
 
-    uint32_t red = rawData[index];
-    uint32_t green = rawData[index + 1];
-    uint32_t blue = rawData[index + 2];
-    uint32_t alpha = rawData[index + 3];
+    uint32_t red = pixelView[0];
+    uint32_t green = pixelView[1];
+    uint32_t blue = pixelView[2];
+    uint32_t alpha = pixelView[3];
     uint32_t color = (red << 24) | (green << 16) | (blue << 8) | alpha;
 
     uint32_t colorCount = colorsMapping[color] + 1;
     if (colorCount >= dominantColorThreshold) {
-      delete[] rawData;
       return [[UIColor alloc] initWithRed:CGFloat(red) / 256
                                     green:CGFloat(green) / 256
                                      blue:CGFloat(blue) / 256
@@ -74,15 +83,8 @@ UIColor* DominantColor(UIImage* image) {
     }
 
     colorsMapping[color] = colorCount;
-
-    rowIndex++;
-    if (rowIndex == height) {
-      rowIndex = 0;
-      ++columnIndex;
-    }
   }
 
-  delete[] rawData;
   return nil;
 }
 
@@ -162,10 +164,10 @@ UIWindow* CreateMirrorWindowFromBaseWindow(
 // The top edge is filled with the most prominent color found at the top of the
 // original snapshot. The bottom edge is extended using the background color of
 // the UI elements.
-void PreprocessSnapshot(UIImage* snapshot,
-                        CGSize expected_snapshot_size,
-                        UIEdgeInsets viewport_insets,
-                        base::OnceCallback<void(UIImage*)> callback) {
+void ExtendSnapshot(UIImage* snapshot,
+                    CGSize expected_snapshot_size,
+                    UIEdgeInsets viewport_insets,
+                    base::OnceCallback<void(UIImage*)> callback) {
   // The color used by the omnibox and the bottom toolbar.
   UIColor* elementsBackgroundColor = [UIColor colorNamed:kBackgroundColor];
 
@@ -223,10 +225,14 @@ void PreprocessSnapshot(UIImage* snapshot,
 LensOverlaySnapshotController::LensOverlaySnapshotController(
     SnapshotTabHelper* snapshot_tab_helper,
     FullscreenController* fullscreen_controller,
+    FullscreenBrowserAgent* fullscreen_agent,
+    id<FullscreenCommands> fullscreen_handler,
     UIWindow* window,
     bool is_bottom_omnibox)
     : snapshot_tab_helper_(snapshot_tab_helper),
       fullscreen_controller_(fullscreen_controller),
+      fullscreen_agent_(fullscreen_agent),
+      fullscreen_handler_(fullscreen_handler),
       task_runner_(base::SequencedTaskRunner::GetCurrentDefault()),
       base_window_(window),
       is_bottom_omnibox_(is_bottom_omnibox) {}
@@ -249,8 +255,14 @@ UIImage* LensOverlaySnapshotController::CropSnapshotToWindowSafeArea(
       (base_window_.bounds.size.height - viewportInsets.bottom) *
           snapshot.scale);
 
-  return [[UIImage alloc] initWithCGImage:CGImageCreateWithImageInRect(
-                                              snapshot.CGImage, croppingRect)];
+  CGImageRef imageRef =
+      CGImageCreateWithImageInRect(snapshot.CGImage, croppingRect);
+  UIImage* croppedImage = [[UIImage alloc] initWithCGImage:imageRef];
+
+  // We are responsible for releasing the `CGImageRef` after being consumed.
+  CGImageRelease(imageRef);
+
+  return croppedImage;
 }
 
 UIImage* LensOverlaySnapshotController::CaptureSnapshotOfBaseWindow() {
@@ -285,22 +297,32 @@ void LensOverlaySnapshotController::CaptureFullscreenSnapshot(
     return;
   }
 
-  // If fullscreen is already enabled directly take the screenshot.
-  bool is_already_fullscreen = fullscreen_controller_->GetProgress() == 0.0;
-  if (is_already_fullscreen) {
-    ShowStaticSnapshotOfBaseWindowIfNeeded();
-    return;
-  }
+  if (IsFullscreenRefactoringEnabled()) {
+    bool is_already_fullscreen =
+        fullscreen_agent_->State() == FullscreenState::kUICollapsed;
+    bool is_disabled = !fullscreen_agent_->IsEnabled();
 
-  // Register as observer and request fullscreen.
-  fullscreen_controller_->AddObserver(this);
-  if (fullscreen_controller_->IsEnabled()) {
-    // Enter fullscreen and rely on the update from the fullscreen controller.
-    fullscreen_controller_->EnterFullscreen();
+    if (is_already_fullscreen || is_disabled) {
+      ShowStaticSnapshotOfBaseWindowIfNeeded();
+    } else {
+      fullscreen_agent_->AddObserver(this);
+      [fullscreen_handler_ enterFullscreenWithTrigger:
+                               FullscreenModeTransitionTrigger::kUserControlled
+                                             animated:YES];
+    }
   } else {
-    // Fullscreen could not be requested, likely because the content is too
-    // small to enlarge the view. Go straight to fetching a screenshot.
-    ShowStaticSnapshotOfBaseWindowIfNeeded();
+    // If fullscreen is already enabled directly take the screenshot.
+    bool is_already_fullscreen = fullscreen_controller_->GetProgress() == 0.0;
+    bool is_disabled = !fullscreen_controller_->IsEnabled();
+
+    if (is_already_fullscreen || is_disabled) {
+      ShowStaticSnapshotOfBaseWindowIfNeeded();
+    } else {
+      // Register as observer and request fullscreen.
+      fullscreen_controller_->AddObserver(this);
+      // Enter fullscreen and rely on the update from the fullscreen controller.
+      fullscreen_controller_->EnterFullscreen();
+    }
   }
 }
 
@@ -322,10 +344,34 @@ void LensOverlaySnapshotController::FullscreenDidAnimate(
                      weak_ptr_factory_.GetWeakPtr()));
 }
 
+void LensOverlaySnapshotController::FullscreenDidTransition(
+    FullscreenBrowserAgent* agent,
+    FullscreenTransition transition) {
+  DCHECK(agent == this->fullscreen_agent_);
+
+  if (transition != FullscreenTransition::kEnterFullscreen) {
+    return;
+  }
+
+  task_tracker_.PostTask(
+      task_runner_.get(), FROM_HERE,
+      base::BindOnce(&LensOverlaySnapshotController::
+                         ShowStaticSnapshotOfBaseWindowIfNeeded,
+                     weak_ptr_factory_.GetWeakPtr()));
+}
+
 // The inset amount of the content relative to the device screen when the
 // snapshot is taken.
 UIEdgeInsets
 LensOverlaySnapshotController::GetContentInsetsOnSnapshotCapture() {
+  if (IsFullscreenRefactoringEnabled()) {
+    if (!is_bottom_omnibox_ || is_NTP_) {
+      return fullscreen_agent_->max_insets();
+    }
+    return fullscreen_agent_->IsEnabled() ? fullscreen_agent_->min_insets()
+                                          : fullscreen_agent_->max_insets();
+  }
+
   if (!is_bottom_omnibox_ || is_NTP_) {
     return fullscreen_controller_->GetMaxViewportInsets();
   }
@@ -339,6 +385,10 @@ UIEdgeInsets LensOverlaySnapshotController::GetSnapshotInsets() {
   // The NTP does not require snapshot insetting.
   if (is_NTP_) {
     return UIEdgeInsetsZero;
+  }
+
+  if (IsFullscreenRefactoringEnabled()) {
+    return GetContentInsetsOnSnapshotCapture();
   }
 
   // If the fullscreen mode is achieved by adjusting the size of the scroll
@@ -432,11 +482,29 @@ void LensOverlaySnapshotController::ProcessRawSnapshot(UIImage* snapshot) {
     mirror_window_.windowLevel = base_window_.windowLevel - 1;
   }
 
+  if (!snapshot) {
+    NotifySnapshotComplete(nil);
+    return;
+  }
+
   base::OnceCallback<void(UIImage*)> snapshotCapturedCallback =
       base::BindOnce(&LensOverlaySnapshotController::NotifySnapshotComplete,
                      weak_ptr_factory_.GetWeakPtr());
   auto callbackOnInitialSequence = base::BindPostTask(
       task_runner_.get(), std::move(snapshotCapturedCallback));
+
+  if (lens::ContainerPresentationFor(base_window_) ==
+      lens::ContainerPresentationType::kContentAreaCover) {
+    // Content area cover presentation does not require any preprocessing.
+    // Lens requires the image to be 1.0 scale.
+    UIImage* rescaledSnapshot =
+        [[UIImage alloc] initWithCGImage:snapshot.CGImage
+                                   scale:1
+                             orientation:UIImageOrientationUp];
+
+    std::move(callbackOnInitialSequence).Run(rescaledSnapshot);
+    return;
+  }
 
   scoped_refptr<base::SequencedTaskRunner> backgroundRunner =
       base::ThreadPool::CreateSequencedTaskRunner(
@@ -453,10 +521,10 @@ void LensOverlaySnapshotController::ProcessRawSnapshot(UIImage* snapshot) {
     viewportInsets.top = topInsetForNTP;
   }
 
-  auto preprocessCallback =
-      base::BindOnce(&PreprocessSnapshot, snapshot, expected_window_size_,
+  auto extendSnapshotCallback =
+      base::BindOnce(&ExtendSnapshot, snapshot, expected_window_size_,
                      viewportInsets, std::move(callbackOnInitialSequence));
-  backgroundRunner->PostTask(FROM_HERE, std::move(preprocessCallback));
+  backgroundRunner->PostTask(FROM_HERE, std::move(extendSnapshotCallback));
 }
 
 void LensOverlaySnapshotController::NotifySnapshotComplete(UIImage* snapshot) {
@@ -491,7 +559,11 @@ void LensOverlaySnapshotController::BeginCapturing() {
 }
 
 void LensOverlaySnapshotController::FinalizeCapturing() {
-  fullscreen_controller_->RemoveObserver(this);
+  if (IsFullscreenRefactoringEnabled()) {
+    fullscreen_agent_->RemoveObserver(this);
+  } else {
+    fullscreen_controller_->RemoveObserver(this);
+  }
   is_capturing_ = false;
   if (delegate_) {
     delegate_->OnSnapshotCaptureEnd();

@@ -7,12 +7,15 @@
 
 #include "third_party/blink/renderer/core/layout/baseline_utils.h"
 #include "third_party/blink/renderer/core/layout/block_node.h"
-#include "third_party/blink/renderer/core/layout/layout_result.h"
 #include "third_party/blink/renderer/core/layout/min_max_sizes.h"
 #include "third_party/blink/renderer/platform/geometry/layout_unit.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 
 namespace blink {
+
+// Used within the LineFlexer, indicates if this item is in a min/max
+// violation state, or frozen.
+enum class FlexerState { kNone, kMinViolation, kMaxViolation, kFrozen };
 
 struct FlexItem {
   DISALLOW_NEW();
@@ -25,6 +28,7 @@ struct FlexItem {
            LayoutUnit base_content_size,
            MinMaxSizes main_axis_min_max_sizes,
            LayoutUnit main_axis_border_padding,
+           std::optional<LayoutUnit> max_content_contribution,
            PhysicalBoxStrut initial_margins,
            BoxStrut initial_scrollbars,
            uint8_t main_axis_auto_margin_count,
@@ -34,8 +38,7 @@ struct FlexItem {
            bool is_initial_block_size_indefinite,
            bool is_used_flex_basis_indefinite,
            bool depends_on_min_max_sizes,
-           bool is_horizontal_flow,
-           std::optional<LayoutUnit> max_content_contribution)
+           bool is_horizontal_flow)
       : block_node(block_node),
         item_index(item_index),
         flex_grow(flex_grow),
@@ -45,6 +48,7 @@ struct FlexItem {
             main_axis_min_max_sizes.ClampSizeToMinAndMax(base_content_size)),
         main_axis_min_max_sizes(main_axis_min_max_sizes),
         main_axis_border_padding(main_axis_border_padding),
+        max_content_contribution(max_content_contribution),
         initial_margins(initial_margins),
         initial_scrollbars(initial_scrollbars),
         main_axis_auto_margin_count(main_axis_auto_margin_count),
@@ -56,8 +60,8 @@ struct FlexItem {
         is_used_flex_basis_indefinite(is_used_flex_basis_indefinite),
         depends_on_min_max_sizes(depends_on_min_max_sizes),
         is_horizontal_flow(is_horizontal_flow),
-        frozen(false),
-        max_content_contribution(max_content_contribution) {}
+        // Set all items to their hypothetical size initially.
+        flexed_content_size(hypothetical_content_size) {}
 
   LayoutUnit HypotheticalMainAxisMarginBoxSize() const {
     return hypothetical_content_size + main_axis_border_padding +
@@ -89,7 +93,6 @@ struct FlexItem {
 
   void Trace(Visitor* visitor) const {
     visitor->Trace(block_node);
-    visitor->Trace(layout_result);
   }
 
   const BlockNode block_node;
@@ -98,19 +101,23 @@ struct FlexItem {
   const float flex_grow;
   const float flex_shrink;
 
-  // `base_content_size` include the scrollbar, but not border/padding.
+  // Base size including the scrollbar, but not border/padding.
   const LayoutUnit base_content_size;
+
   const LayoutUnit hypothetical_content_size;
 
-  // `main_axis_min_max_sizes` is the resolved min/max size properties, and also
-  // does not include border/padding.
+  // Resolved min/max size properties, not including border/padding.
   const MinMaxSizes main_axis_min_max_sizes;
+
   const LayoutUnit main_axis_border_padding;
 
-  // `initial_margins` are the margins with auto-margins applied.
-  // `initial_scrollbars` is the scrollbar state at the beginning of running
-  // flex layout, so it can be compared to the final state.
+  const std::optional<LayoutUnit> max_content_contribution;
+
+  // Margins without auto-margins applied.
   const PhysicalBoxStrut initial_margins;
+
+  // Scrollbar state at the beginning of running flex layout, so it can be
+  // compared to the final state.
   const BoxStrut initial_scrollbars;
 
   const uint8_t main_axis_auto_margin_count;
@@ -123,14 +130,11 @@ struct FlexItem {
   const bool is_used_flex_basis_indefinite;
   const bool depends_on_min_max_sizes;
   const bool is_horizontal_flow;
-  bool frozen;
 
+  // Fields mutated within the line-flexer.
+  double free_space_fraction = 0.0;
+  FlexerState state = FlexerState::kNone;
   LayoutUnit flexed_content_size;
-
-  // The above fields are used by the flex algorithm. The following fields, by
-  // contrast, are just convenient storage.
-  Member<const LayoutResult> layout_result;
-  std::optional<LayoutUnit> max_content_contribution;
 };
 
 }  // namespace blink

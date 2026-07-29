@@ -35,8 +35,10 @@
 
 namespace blink {
 
+class AffineTransform;
 class DOMPointInit;
 class Path;
+class PathBuilder;
 class SVGAnimatedNumber;
 class SVGPointTearOff;
 
@@ -45,12 +47,14 @@ class SVGGeometryElement : public SVGGraphicsElement {
 
  public:
   virtual Path AsPath() const = 0;
+  virtual PathBuilder AsMutablePath() const = 0;
+
   bool isPointInFill(const DOMPointInit*) const;
   bool isPointInStroke(const DOMPointInit*) const;
 
-  Path ToClipPath() const;
+  Path ToClipPath(const AffineTransform* clip_transform = nullptr) const;
 
-  SVGAnimatedNumber* pathLength() const { return path_length_.Get(); }
+  SVGAnimatedNumber* pathLength() const;
 
   virtual float getTotalLength(ExceptionState&);
   virtual SVGPointTearOff* getPointAtLength(float distance, ExceptionState&);
@@ -72,6 +76,8 @@ class SVGGeometryElement : public SVGGraphicsElement {
   void GeometryAttributeChanged();
   void GeometryPresentationAttributeChanged(const SVGAnimatedPropertyBase&);
 
+  void CollectExtraStyleForPresentationAttribute(
+      HeapVector<CSSPropertyValue, 8>& style) override;
   SVGAnimatedPropertyBase* PropertyFromAttribute(
       const QualifiedName& attribute_name) const override;
   void SynchronizeAllSVGAttributes() const override;
@@ -81,7 +87,9 @@ class SVGGeometryElement : public SVGGraphicsElement {
   virtual float ComputePathLength() const;
   LayoutObject* CreateLayoutObject(const ComputedStyle&) override;
 
-  Member<SVGAnimatedNumber> path_length_;
+  SVGAnimatedNumber& EnsurePathLength() const;
+
+  mutable Member<SVGAnimatedNumber> path_length_;
 };
 
 template <>

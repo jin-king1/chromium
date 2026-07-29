@@ -52,11 +52,11 @@ FilePath ThreadTypeToCgroupDirectory(const FilePath& cgroup_filepath,
   switch (thread_type) {
     case ThreadType::kBackground:
     case ThreadType::kUtility:
-    case ThreadType::kResourceEfficient:
       return cgroup_filepath.Append(FILE_PATH_LITERAL("non-urgent"));
     case ThreadType::kDefault:
       return cgroup_filepath;
-    case ThreadType::kDisplayCritical:
+    case ThreadType::kPresentation:
+    case ThreadType::kAudioProcessing:
     case ThreadType::kRealtimeAudio:
       return cgroup_filepath.Append(FILE_PATH_LITERAL("urgent"));
   }
@@ -91,25 +91,10 @@ void SetThreadCgroupForThreadType(PlatformThreadId thread_id,
 
 namespace internal {
 
-const ThreadPriorityToNiceValuePairForTest
-    kThreadPriorityToNiceValueMapForTest[7] = {
-        {ThreadPriorityForTest::kRealtimeAudio, -10},
-        {ThreadPriorityForTest::kDisplay, -8},
-        {ThreadPriorityForTest::kNormal, 0},
-        {ThreadPriorityForTest::kResourceEfficient, 1},
-        {ThreadPriorityForTest::kUtility, 2},
-        {ThreadPriorityForTest::kBackground, 10},
-};
-
-// These nice values are shared with ChromeOS platform code
-// (platform_thread_cros.cc) and have to be unique as ChromeOS has a unique
-// type -> nice value mapping.
-// The uniqueness of the nice value per-type helps to change and restore the
-// scheduling params of threads when their process toggles between FG and BG.
-const ThreadTypeToNiceValuePair kThreadTypeToNiceValueMap[7] = {
-    {ThreadType::kBackground, 10},       {ThreadType::kUtility, 2},
-    {ThreadType::kResourceEfficient, 1}, {ThreadType::kDefault, 0},
-    {ThreadType::kDisplayCritical, -8},  {ThreadType::kRealtimeAudio, -10},
+const ThreadTypeToNiceValuePairForTest kThreadTypeToNiceValueMapForTest[7] = {
+    {ThreadType::kRealtimeAudio, -10}, {ThreadType::kPresentation, -8},
+    {ThreadType::kDefault, 0},         {ThreadType::kUtility, 2},
+    {ThreadType::kBackground, 10},
 };
 
 bool CanSetThreadTypeToRealtimeAudio() {
@@ -124,22 +109,19 @@ bool CanSetThreadTypeToRealtimeAudio() {
   return getrlimit(RLIMIT_RTPRIO, &rlim) != 0 && rlim.rlim_cur != 0;
 }
 
-bool SetCurrentThreadTypeForPlatform(ThreadType thread_type,
-                                     MessagePumpType pump_type_hint) {
+void SetCurrentThreadTypeImpl(ThreadType thread_type,
+                              MessagePumpType pump_type_hint) {
   const PlatformThreadId thread_id = PlatformThread::CurrentId();
 
   if (g_thread_type_delegate &&
       g_thread_type_delegate->HandleThreadTypeChange(thread_id, thread_type)) {
-    return true;
+    return;
   }
 
-  internal::SetThreadType(getpid(), thread_id, thread_type, IsViaIPC(false));
-
-  return true;
+  internal::SetThreadType(getpid(), thread_id, thread_type);
 }
 
-std::optional<ThreadPriorityForTest>
-GetCurrentThreadPriorityForPlatformForTest() {
+std::optional<ThreadType> GetCurrentEffectiveThreadTypeForPlatformForTest() {
   int maybe_sched_rr = 0;
   struct sched_param maybe_realtime_prio = {0};
   if (pthread_getschedparam(pthread_self(), &maybe_sched_rr,
@@ -147,9 +129,32 @@ GetCurrentThreadPriorityForPlatformForTest() {
       maybe_sched_rr == SCHED_RR &&
       maybe_realtime_prio.sched_priority ==
           PlatformThreadLinux::kRealTimeAudioPrio.sched_priority) {
-    return std::make_optional(ThreadPriorityForTest::kRealtimeAudio);
+    return std::make_optional(ThreadType::kRealtimeAudio);
   }
   return std::nullopt;
+}
+
+PlatformPriorityOverride SetThreadTypeOverride(
+    PlatformThreadHandle thread_handle,
+    ThreadType thread_type) {
+  if (!thread_handle.is_equal(PlatformThread::CurrentHandle()) ||
+      g_thread_type_delegate) {
+    return false;
+  }
+  internal::SetThreadType(getpid(), PlatformThread::CurrentId(), thread_type);
+  return true;
+}
+
+void RemoveThreadTypeOverride(
+    PlatformThreadHandle thread_handle,
+    const PlatformPriorityOverride& priority_override_handle,
+    ThreadType initial_thread_type) {
+  if (!priority_override_handle) {
+    return;
+  }
+  DCHECK(thread_handle.is_equal(PlatformThread::CurrentHandle()));
+  internal::SetThreadType(getpid(), PlatformThread::CurrentId(),
+                          initial_thread_type);
 }
 
 }  // namespace internal
@@ -250,16 +255,14 @@ void PlatformThreadLinux::SetThreadCgroupsForThreadType(
 // static
 void PlatformThreadLinux::SetThreadType(ProcessId process_id,
                                         PlatformThreadId thread_id,
-                                        ThreadType thread_type,
-                                        IsViaIPC via_ipc) {
-  internal::SetThreadType(process_id, thread_id, thread_type, via_ipc);
+                                        ThreadType thread_type) {
+  internal::SetThreadType(process_id, thread_id, thread_type);
 }
 
 namespace internal {
 void SetThreadTypeLinux(ProcessId process_id,
                         PlatformThreadId thread_id,
-                        ThreadType thread_type,
-                        IsViaIPC via_ipc) {
+                        ThreadType thread_type) {
   PlatformThreadLinux::SetThreadCgroupsForThreadType(thread_id, thread_type);
 
   // Some scheduler syscalls require thread ID of 0 for current thread.
@@ -279,11 +282,22 @@ void SetThreadTypeLinux(ProcessId process_id,
     DPLOG(ERROR) << "Failed to set realtime priority for thread " << thread_id;
   }
 
-  const int nice_setting = ThreadTypeToNiceValue(thread_type);
-  if (setpriority(PRIO_PROCESS, static_cast<id_t>(syscall_tid.raw()),
-                  nice_setting)) {
-    DVPLOG(1) << "Failed to set nice value of thread (" << thread_id << ") to "
-              << nice_setting;
+  SetThreadNiceFromType(thread_id, thread_type);
+}
+
+int ThreadTypeToNiceValue(const ThreadType thread_type) {
+  switch (thread_type) {
+    case ThreadType::kBackground:
+      return 10;
+    case ThreadType::kUtility:
+      return 2;
+    case ThreadType::kDefault:
+      return 0;
+    case ThreadType::kPresentation:
+    case ThreadType::kAudioProcessing:
+      return -8;
+    case ThreadType::kRealtimeAudio:
+      return -10;
   }
 }
 

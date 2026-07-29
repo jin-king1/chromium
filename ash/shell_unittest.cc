@@ -34,7 +34,6 @@
 #include "ash/system/status_area_widget.h"
 #include "ash/test/ash_test_base.h"
 #include "ash/test/ash_test_helper.h"
-#include "ash/test/test_widget_builder.h"
 #include "ash/test_shell_delegate.h"
 #include "ash/wallpaper/views/wallpaper_widget_controller.h"
 #include "ash/wm/desks/desks_util.h"
@@ -47,6 +46,7 @@
 #include "ui/aura/env.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_event_dispatcher.h"
+#include "ui/aura/window_observer.h"
 #include "ui/base/mojom/menu_source_type.mojom.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
 #include "ui/display/scoped_display_for_new_windows.h"
@@ -57,10 +57,13 @@
 #include "ui/menus/simple_menu_model.h"
 #include "ui/views/controls/menu/menu_controller.h"
 #include "ui/views/controls/menu/menu_runner.h"
+#include "ui/views/test/test_widget_builder.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_delegate.h"
 #include "ui/views/window/dialog_delegate.h"
 #include "ui/wm/core/accelerator_filter.h"
+#include "ui/wm/core/focus_controller.h"
+#include "ui/wm/core/window_util.h"
 
 using aura::RootWindow;
 
@@ -141,15 +144,6 @@ void ExpectAllContainers() {
   EXPECT_FALSE(Shell::GetContainer(root_window, kShellWindowId_PhantomWindow));
 }
 
-std::unique_ptr<views::WidgetDelegateView> CreateModalWidgetDelegate() {
-  auto delegate = std::make_unique<views::WidgetDelegateView>();
-  delegate->SetCanResize(true);
-  delegate->SetModalType(ui::mojom::ModalType::kSystem);
-  delegate->SetOwnedByWidget(true);
-  delegate->SetTitle(u"Modal Window");
-  return delegate;
-}
-
 class SimpleMenuDelegate : public ui::SimpleMenuModel::Delegate {
  public:
   SimpleMenuDelegate() = default;
@@ -170,10 +164,21 @@ class SimpleMenuDelegate : public ui::SimpleMenuModel::Delegate {
 
 class ShellTest : public AshTestBase {
  public:
+  static std::unique_ptr<views::WidgetDelegateView>
+  CreateModalWidgetDelegate() {
+    auto delegate = std::make_unique<views::WidgetDelegateView>(
+        views::WidgetDelegateView::CreatePassKey());
+    delegate->SetCanResize(true);
+    delegate->SetModalType(ui::mojom::ModalType::kSystem);
+    delegate->SetOwnedByWidget(views::WidgetDelegate::OwnedByWidgetPassKey());
+    delegate->SetTitle(u"Modal Window");
+    return delegate;
+  }
+
   void TestCreateWindow(views::Widget::InitParams::Type type,
                         bool always_on_top,
                         aura::Window* expected_container) {
-    TestWidgetBuilder builder;
+    views::test::TestWidgetBuilder builder;
     if (always_on_top)
       builder.SetZOrderLevel(ui::ZOrderLevel::kFloatingWindow);
     views::Widget* widget =
@@ -197,7 +202,7 @@ class ShellTest : public AshTestBase {
 
     // Create a LockScreen window.
     views::Widget* lock_widget =
-        TestWidgetBuilder()
+        views::test::TestWidgetBuilder()
             .SetWidgetType(views::Widget::InitParams::TYPE_WINDOW)
             .SetShow(false)
             .BuildOwnedByNativeWidget();
@@ -251,7 +256,8 @@ TEST_F(ShellTest, CreateWindowWithPreferredSize) {
       views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET);
   // Don't specify bounds, parent or context.
   {
-    auto delegate = std::make_unique<views::WidgetDelegateView>();
+    auto delegate = std::make_unique<views::WidgetDelegateView>(
+        views::WidgetDelegateView::CreatePassKey());
     delegate->SetPreferredSize(gfx::Size(400, 300));
     params.delegate = delegate.release();
   }
@@ -267,7 +273,8 @@ TEST_F(ShellTest, CreateWindowWithPreferredSize) {
 
 TEST_F(ShellTest, ChangeZOrderLevel) {
   // Creates a normal window.
-  views::Widget* widget = TestWidgetBuilder().BuildOwnedByNativeWidget();
+  views::Widget* widget =
+      views::test::TestWidgetBuilder().BuildOwnedByNativeWidget();
 
   // It should be in the active desk container.
   EXPECT_TRUE(
@@ -295,7 +302,8 @@ TEST_F(ShellTest, ChangeZOrderLevel) {
 
 TEST_F(ShellTest, CreateModalWindow) {
   // Create a normal window.
-  views::Widget* widget = TestWidgetBuilder().BuildOwnedByNativeWidget();
+  views::Widget* widget =
+      views::test::TestWidgetBuilder().BuildOwnedByNativeWidget();
 
   // It should be in the active desk container.
   EXPECT_TRUE(
@@ -317,7 +325,8 @@ TEST_F(ShellTest, CreateModalWindow) {
 
 TEST_F(ShellTest, CreateLockScreenModalWindow) {
   // Create a normal window.
-  views::Widget* widget = TestWidgetBuilder().BuildOwnedByNativeWidget();
+  views::Widget* widget =
+      views::test::TestWidgetBuilder().BuildOwnedByNativeWidget();
   EXPECT_TRUE(widget->GetNativeView()->HasFocus());
 
   // It should be in the active desk container.
@@ -326,8 +335,9 @@ TEST_F(ShellTest, CreateLockScreenModalWindow) {
 
   GetSessionControllerClient()->LockScreen();
   // Create a LockScreen window.
-  views::Widget* lock_widget =
-      TestWidgetBuilder().SetShow(false).BuildOwnedByNativeWidget();
+  views::Widget* lock_widget = views::test::TestWidgetBuilder()
+                                   .SetShow(false)
+                                   .BuildOwnedByNativeWidget();
   Shell::GetContainer(Shell::GetPrimaryRootWindow(),
                       kShellWindowId_LockScreenContainer)
       ->AddChild(lock_widget->GetNativeView());
@@ -427,7 +437,7 @@ TEST_F(ShellTest, ManagedWindowModeBasics) {
   //  EXPECT_FALSE(wallpaper->layer());
 
   // Create a normal window.  It is not maximized.
-  views::Widget* widget = TestWidgetBuilder()
+  views::Widget* widget = views::test::TestWidgetBuilder()
                               .SetBounds(gfx::Rect(11, 22, 300, 400))
                               .BuildOwnedByNativeWidget();
   EXPECT_FALSE(widget->IsMaximized());
@@ -641,6 +651,68 @@ using NoDuplicateShellContainerIdsTest = AshTestBase;
 
 TEST_F(NoDuplicateShellContainerIdsTest, ValidateContainersIds) {
   ExpectAllContainers();
+}
+
+// A test fixture that host `ActivationChanger` to simulate window activation
+// change during Shell shutdown and verifies no crash will happen.
+class ShellShutdownTest : public AshTestBase {
+ protected:
+  // Helper to activate `to_activate` when `to_observe` is destroyed. The
+  // intention is to simulate active window change during Shell destruction.
+  // The activation change needs to affect `CloseAllRootWindowChildWindows()`
+  // in Shell destructor.
+  class ActivationChanger : public aura::WindowObserver {
+   public:
+    ActivationChanger(aura::Window* to_observe, aura::Window* to_activate)
+        : to_observe_(to_observe), to_activate_(to_activate) {
+      // No `RemoveObsever` because `this` outlives `Shell` and all windows.
+      to_observe_->AddObserver(this);
+    }
+
+    // aura::WindowObserver:
+    void OnWindowDestroying(aura::Window* window) override {
+      Shell::Get()->focus_controller()->ActivateWindow(to_activate_);
+
+      // Clear out references to avoid `raw_ptr` dangling pointer warnings.
+      to_observe_ = nullptr;
+      to_activate_ = nullptr;
+    }
+
+   private:
+    raw_ptr<aura::Window> to_observe_;
+    raw_ptr<aura::Window> to_activate_;
+  };
+
+  void CreateActivationChanger(aura::Window* to_observe,
+                               aura::Window* to_activate) {
+    activation_changer_ =
+        std::make_unique<ActivationChanger>(to_observe, to_activate);
+  }
+
+ private:
+  std::unique_ptr<ActivationChanger> activation_changer_;
+};
+
+TEST_F(ShellShutdownTest, ActivateWindow) {
+  aura::Window* to_observe =
+      CreateTestWindowInShell({.bounds = {40, 0, 60, 40}, .window_id = 0})
+          .release();
+  to_observe->Show();
+
+  aura::Window* to_activate =
+      CreateTestWindowInShell({.bounds = {30, 20}, .window_id = 0}).release();
+  // Put `to_activate` in a container after desks containers so that its
+  // destruction (and activations of `to_activate`) comes after desk containers
+  // destruction.
+  Shell::GetPrimaryRootWindow()
+      ->GetChildById(kShellWindowId_FloatContainer)
+      ->AddChild(to_activate);
+  to_activate->Show();
+
+  wm::ActivateWindow(to_observe);
+
+  // Creates an ActivationChanger to activate `to_activate` during shutdown.
+  CreateActivationChanger(to_observe, to_activate);
 }
 
 }  // namespace ash

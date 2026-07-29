@@ -43,10 +43,13 @@ class CORE_EXPORT SVGImageElement final
 
  public:
   explicit SVGImageElement(Document&);
+  ElementType GetElementType() const final {
+    return ElementType::kSVGImageElement;
+  }
 
   void Trace(Visitor*) const override;
 
-  bool CurrentFrameHasSingleSecurityOrigin() const;
+  bool HasSingleSecurityOrigin() const;
 
   SVGAnimatedLength* x() const { return x_.Get(); }
   SVGAnimatedLength* y() const { return y_.Get(); }
@@ -70,8 +73,6 @@ class CORE_EXPORT SVGImageElement final
   void SetImageForTest(ImageResourceContent* content) {
     GetImageLoader().SetImageForTest(content);
   }
-
-  bool SelfHasRelativeLengths() const override;
 
  private:
   bool IsStructurallyExternal() const override {

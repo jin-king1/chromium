@@ -4,6 +4,8 @@
 
 #include "chrome/browser/ui/webui/top_chrome/webui_contents_wrapper.h"
 
+#include "base/debug/crash_logging.h"
+#include "base/debug/dump_without_crashing.h"
 #include "chrome/browser/page_load_metrics/page_load_metrics_initialize.h"
 #include "chrome/browser/task_manager/web_contents_tags.h"
 #include "chrome/browser/ui/browser_window.h"
@@ -11,13 +13,17 @@
 #include "chrome/browser/ui/webui/top_chrome/webui_contents_preload_manager.h"
 #include "chrome/common/chrome_render_frame.mojom.h"
 #include "components/input/native_web_keyboard_event.h"
+#include "components/performance_manager/embedder/performance_manager_registry.h"
+#include "components/performance_manager/public/graph/page_node.h"
 #include "components/site_engagement/content/site_engagement_helper.h"
 #include "components/site_engagement/content/site_engagement_service.h"
+#include "components/web_modal/web_contents_modal_dialog_manager.h"
 #include "content/public/browser/keyboard_event_processing_result.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
 #include "ui/base/models/menu_model.h"
+#include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/gfx/geometry/size.h"
 
@@ -44,17 +50,6 @@ void EnableAutoResizeForWebContents(content::WebContents* web_contents) {
           web_contents->GetRenderWidgetHostView()) {
     render_widget_host_view->EnableAutoResize(gfx::Size(1, 1),
                                               gfx::Size(INT_MAX, INT_MAX));
-  }
-}
-
-// Enables the web contents to support web platform defined draggable regions
-// for the current primary render frame host. This should be called each time
-// the primary rfh changes (after navigation for e.g.).
-void EnableDraggableRegions(content::WebContents* web_contents) {
-  if (content::RenderFrameHost* rfh = web_contents->GetPrimaryMainFrame()) {
-    mojo::AssociatedRemote<chrome::mojom::ChromeRenderFrame> client;
-    rfh->GetRemoteAssociatedInterfaces()->GetInterface(&client);
-    client->SetSupportsDraggableRegions(true);
   }
 }
 
@@ -92,22 +87,44 @@ content::WebContents* WebUIContentsWrapper::Host::AddNewContents(
   return nullptr;
 }
 
+web_modal::WebContentsModalDialogHost*
+WebUIContentsWrapper::Host::GetWebContentsModalDialogHost(
+    content::WebContents* web_contents) {
+  return nullptr;
+}
+
 WebUIContentsWrapper::WebUIContentsWrapper(const GURL& webui_url,
                                            Profile* profile,
                                            int task_manager_string_id,
                                            bool webui_resizes_host,
                                            bool esc_closes_ui,
                                            bool supports_draggable_regions,
-                                           const std::string& webui_name)
+                                           std::string_view webui_name)
     : webui_resizes_host_(webui_resizes_host),
       esc_closes_ui_(esc_closes_ui),
       supports_draggable_regions_(supports_draggable_regions) {
+  DCHECK_GE(task_manager_string_id, 0);
   RequestResult make_contents_result = Request(webui_url, profile);
   web_contents_ = std::move(make_contents_result.web_contents);
   is_ready_to_show_ = make_contents_result.is_ready_to_show;
 
+  web_contents_->SetIgnoreZoomGestures(true);
   web_contents_->SetDelegate(this);
   WebContentsObserver::Observe(web_contents_.get());
+
+  if (auto* pm_registry =
+          performance_manager::PerformanceManagerRegistry::GetInstance()) {
+    // Flagging this web contents as a Non Tab WebUI allows the
+    // PerformanceManager to opt it out of aggressive resource management
+    // strategies (such as freezing).
+    pm_registry->SetPageType(web_contents_.get(),
+                             performance_manager::PageType::kNonTabWebUI);
+  }
+
+  web_modal::WebContentsModalDialogManager::CreateForWebContents(
+      web_contents_.get());
+  web_modal::WebContentsModalDialogManager::FromWebContents(web_contents_.get())
+      ->SetDelegate(this);
 
   PrefsTabHelper::CreateForWebContents(web_contents_.get());
   InitializePageLoadMetricsForWebContents(web_contents_.get());
@@ -122,7 +139,7 @@ WebUIContentsWrapper::WebUIContentsWrapper(const GURL& webui_url,
     EnableAutoResizeForWebContents(web_contents_.get());
   }
   if (supports_draggable_regions_) {
-    EnableDraggableRegions(web_contents_.get());
+    web_contents_->SetSupportsDraggableRegions(true);
   }
 
   profile_observation_.Observe(profile);
@@ -147,9 +164,12 @@ WebUIContentsWrapper::PreHandleKeyboardEvent(
   DCHECK_EQ(web_contents(), source);
   // Close the bubble if an escape event is detected. Handle this here to
   // prevent the renderer from capturing the event and not propagating it up.
-  if (host_ && IsEscapeEvent(event) && esc_closes_ui_) {
-    host_->CloseUI();
-    return content::KeyboardEventProcessingResult::HANDLED;
+  if (host_ && IsEscapeEvent(event)) {
+    host_->OnPreHandleEscapeKey();
+    if (esc_closes_ui_) {
+      host_->CloseUI();
+      return content::KeyboardEventProcessingResult::HANDLED;
+    }
   }
   return content::KeyboardEventProcessingResult::NOT_HANDLED;
 }
@@ -224,6 +244,18 @@ void WebUIContentsWrapper::SetContentsBounds(content::WebContents* source,
   }
 }
 
+void WebUIContentsWrapper::FindReply(content::WebContents* web_contents,
+                                     int request_id,
+                                     int number_of_matches,
+                                     const gfx::Rect& selection_rect,
+                                     int active_match_ordinal,
+                                     bool final_update) {
+  if (host_) {
+    host_->FindReply(web_contents, request_id, number_of_matches,
+                     selection_rect, active_match_ordinal, final_update);
+  }
+}
+
 content::WebContents* WebUIContentsWrapper::AddNewContents(
     content::WebContents* source,
     std::unique_ptr<content::WebContents> new_contents,
@@ -238,13 +270,18 @@ content::WebContents* WebUIContentsWrapper::AddNewContents(
                : nullptr;
 }
 
+web_modal::WebContentsModalDialogHost*
+WebUIContentsWrapper::GetWebContentsModalDialogHost(
+    content::WebContents* web_contents) {
+  return host_ ? host_->GetWebContentsModalDialogHost(web_contents) : nullptr;
+}
+
 void WebUIContentsWrapper::PrimaryPageChanged(content::Page& page) {
   if (webui_resizes_host_) {
     EnableAutoResizeForWebContents(web_contents_.get());
   }
   if (supports_draggable_regions_) {
     draggable_regions_.reset();
-    EnableDraggableRegions(web_contents_.get());
   }
 }
 
@@ -294,21 +331,38 @@ base::WeakPtr<WebUIContentsWrapper::Host> WebUIContentsWrapper::GetHost() {
 
 void WebUIContentsWrapper::SetHost(
     base::WeakPtr<WebUIContentsWrapper::Host> host) {
-  DCHECK(!web_contents_->IsCrashed());
   host_ = std::move(host);
   if (!host_) {
+    return;
+  }
+
+  if (web_contents_->IsCrashed()) {
     return;
   }
 
   // Resize the host to the frame size. If there are new updates to the frame
   // size they will be capture by WebUIContentsWrapper::ResizeDueToAutoResize().
   content::RenderFrameHost* rfh = web_contents_->GetPrimaryMainFrame();
-  if (webui_resizes_host_ && rfh && rfh->GetFrameSize().has_value()) {
-    // RenderFrameHost::GetFrameSize() returns the actual frame size while
-    // the host view expects device-independent size.
-    const gfx::Size frame_dip_size = gfx::ScaleToCeiledSize(
-        *rfh->GetFrameSize(), 1.f / rfh->GetView()->GetDeviceScaleFactor());
-    host_->ResizeDueToAutoResize(web_contents_.get(), frame_dip_size);
+  if (webui_resizes_host_ && rfh) {
+    // TODO(crbug.com/376493192): RWHView is found to be sometimes null in the
+    // wild. This is suspected to happen when the render process is crashed.
+    // The code now early returns in that case, and hence we should not reach
+    // this point. If so, use a DumpWithoutCrashing to get more information on
+    // the state of the system.
+    if (!rfh->GetView()) {
+      SCOPED_CRASH_KEY_NUMBER("WebUIContentsWrapper", "lifecycle_state",
+                              static_cast<int>(rfh->GetLifecycleState()));
+      base::debug::DumpWithoutCrashing();
+      return;
+    }
+
+    if (rfh->GetFrameSize().has_value()) {
+      // RenderFrameHost::GetFrameSize() returns the actual frame size while
+      // the host view expects device-independent size.
+      const gfx::Size frame_dip_size = gfx::ScaleToCeiledSize(
+          *rfh->GetFrameSize(), 1.f / rfh->GetView()->GetDeviceScaleFactor());
+      host_->ResizeDueToAutoResize(web_contents_.get(), frame_dip_size);
+    }
   }
 
   if (supports_draggable_regions_ && draggable_regions_.has_value()) {

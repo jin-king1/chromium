@@ -20,15 +20,27 @@ namespace crypto {
 class SubtlePassKey;
 }  // namespace crypto
 
+namespace chromeos {
+crypto::SubtlePassKey MakeCryptoPassKeyForSharedSessionHandler();
+}
+
 namespace chromeos::onc {
 crypto::SubtlePassKey MakeCryptoPassKey();
 }
 
 namespace os_crypt_async {
 class FreedesktopSecretKeyProvider;
+class KeychainKeyProvider;
 }
 
-class OSCryptImpl;
+namespace password_manager {
+crypto::SubtlePassKey MakeCryptoPassKey();
+crypto::SubtlePassKey MakeCryptoPassKeyForPasswordHash();
+}
+
+namespace webauthn {
+crypto::SubtlePassKey MakeCryptoPassKey();
+}  // namespace webauthn
 
 namespace crypto {
 
@@ -58,14 +70,27 @@ class CRYPTO_EXPORT SubtlePassKey final {
   // This class uses custom PBKDF2 parameters - the Nigori spec requires this.
   friend class syncer::Nigori;
 
+  // SharedSessionHandler needs to use the same scrypt parameters to stay
+  // compatible with existing data on disk.
+  friend SubtlePassKey chromeos::MakeCryptoPassKeyForSharedSessionHandler();
+
   // ONC EncryptedConfiguration objects can contain and require us to use
   // arbitrary (possibly attacker-supplied) PBKDF2 parameters.
   friend SubtlePassKey chromeos::onc::MakeCryptoPassKey();
 
   // These classes use custom PBKDF2 parameters and have to keep doing so for
   // compatibility with existing persisted data.
-  friend class ::OSCryptImpl;
   friend class os_crypt_async::FreedesktopSecretKeyProvider;
+  friend class os_crypt_async::KeychainKeyProvider;
+
+  // This class uses custom scrypt parameters and has to keep doing so for
+  // compatibility with a server-side implementation.
+  friend SubtlePassKey password_manager::MakeCryptoPassKey();
+  friend SubtlePassKey password_manager::MakeCryptoPassKeyForPasswordHash();
+
+  // These use custom scrypt parameters for compatibility with Android and the
+  // enclave server.
+  friend SubtlePassKey webauthn::MakeCryptoPassKey();
 
   // This class uses custom PBKDF2 parameters which cannot be changed for
   // compatibility with persisted data.

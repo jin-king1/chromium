@@ -6,7 +6,6 @@
 #define IOS_CHROME_BROWSER_HTTPS_UPGRADES_MODEL_HTTPS_ONLY_MODE_UPGRADE_TAB_HELPER_H_
 
 #import "base/memory/raw_ptr.h"
-#include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #import "ios/web/public/navigation/web_state_policy_decider.h"
@@ -17,7 +16,6 @@
 
 class HttpsUpgradeService;
 class PrefService;
-class PrerenderService;
 
 // This tab helper handles HTTP main frame navigation upgrades to HTTPS.
 // When it encounters an eligible HTTP navigation, it cancels the navigation,
@@ -66,14 +64,13 @@ class HttpsOnlyModeUpgradeTabHelper
 
   HttpsOnlyModeUpgradeTabHelper(web::WebState* web_state,
                                 PrefService* prefs,
-                                PrerenderService* prerender_service,
                                 HttpsUpgradeService* service);
 
   // Returns true if url can be loaded over HTTP (e.g. it was previously
   // allowlisted).
   bool IsHttpAllowedForUrl(const GURL& url) const;
   // Called when the upgrade timer times out.
-  void OnHttpsLoadTimeout(base::WeakPtr<web::WebState> weak_web_state);
+  void OnHttpsLoadTimeout();
   // Stops the current navigation and sets the state so that an upgrade will be
   // started.
   void StopToUpgrade(
@@ -89,6 +86,10 @@ class HttpsOnlyModeUpgradeTabHelper
   void ResetState();
 
   // web::WebStatePolicyDecider implementation:
+  void ShouldAllowRequest(
+      NSURLRequest* request,
+      WebStatePolicyDecider::RequestInfo request_info,
+      web::WebStatePolicyDecider::PolicyDecisionCallback callback) override;
   void ShouldAllowResponse(
       NSURLResponse* response,
       WebStatePolicyDecider::ResponseInfo response_info,
@@ -118,14 +119,17 @@ class HttpsOnlyModeUpgradeTabHelper
   // Used to check if the navigation should be upgraded when a response is
   // received. Cleared when the current navigation finishes.
   bool navigation_is_post_ = false;
+  // Set to true when a main frame navigation has started but not yet finished.
+  // Used to distinguish ShouldAllowRequest calls for redirects within an
+  // in-progress navigation from those for the initial request of a new
+  // navigation.
+  bool was_navigation_started_ = false;
 
   base::OneShotTimer timer_;
 
-  raw_ptr<PrefService> prefs_;
-  raw_ptr<PrerenderService> prerender_service_;
-  raw_ptr<HttpsUpgradeService> service_;
-
-  WEB_STATE_USER_DATA_KEY_DECL();
+  raw_ptr<web::WebState> web_state_;
+  raw_ptr<PrefService, DanglingUntriaged> prefs_;
+  raw_ptr<HttpsUpgradeService, DanglingUntriaged> service_;
 };
 
 #endif  // IOS_CHROME_BROWSER_HTTPS_UPGRADES_MODEL_HTTPS_ONLY_MODE_UPGRADE_TAB_HELPER_H_

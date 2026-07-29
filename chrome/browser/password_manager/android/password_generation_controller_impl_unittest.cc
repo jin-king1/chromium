@@ -222,7 +222,7 @@ TEST_F(PasswordGenerationControllerTest, IsNotRecreatedForSameWebContents) {
 }
 
 TEST_F(PasswordGenerationControllerTest, RelaysAutomaticGenerationAvailable) {
-  // TODO (crbug.com/1421753): Test this is for the
+  // TODO (crbug.com/40259397): Test this is for the
   // PasswordGenerationBottomSheet flag disabled. Add one more test for the case
   // after the bottom sheet is dismissed.
   EXPECT_CALL(mock_manual_filling_controller_,
@@ -601,6 +601,27 @@ TEST_F(PasswordGenerationControllerTest,
       active_driver(), GetTestGenerationUIData1(),
       /*has_saved_credentials=*/false, gfx::RectF(100, 20));
 
+  EXPECT_CALL(create_ttf_generation_controller_, Run);
+  controller()->OnGenerationRequested(PasswordGenerationType::kAutomatic);
+}
+
+TEST_F(PasswordGenerationControllerTest,
+       FocusChangePreventsRequestingGenerationWithInvalidGenerationData) {
+  // If the driver isn't active or nothing is focused, create no TTF controller.
+  ON_CALL(create_ttf_generation_controller_, Run).WillByDefault([]() {
+    return nullptr;
+  });
+
+  // Assume the initially focused field was unfocused briefly after.
+  EXPECT_CALL(mock_manual_filling_controller_,
+              OnAccessoryActionAvailabilityChanged(
+                  ShouldShowAction(false),
+                  autofill::AccessoryAction::GENERATE_PASSWORD_AUTOMATIC));
+  controller()->FocusedInputChanged(/*is_field_eligible_for_generation=*/false,
+                                    active_driver());
+
+  // Since the entry point may not have been updated, check that no crash occurs
+  // which would be caused by the generation controller returning null.
   EXPECT_CALL(create_ttf_generation_controller_, Run);
   controller()->OnGenerationRequested(PasswordGenerationType::kAutomatic);
 }

@@ -5,10 +5,8 @@
 #include "ui/views/accessibility/view_accessibility_utils.h"
 
 #include <algorithm>
-#include <set>
 #include <string>
 
-#include "base/memory/raw_ptr.h"
 #include "ui/accessibility/ax_enum_util.h"
 #include "ui/accessibility/ax_tree_id.h"
 #include "ui/views/view.h"
@@ -66,9 +64,7 @@ void ViewAccessibilityUtils::Merge(const ui::AXNodeData& source,
     }
   }
 
-  for (const auto& attr : source.bool_attributes) {
-    destination.AddBoolAttribute(attr.first, attr.second);
-  }
+  destination.bool_attributes.Append(source.bool_attributes);
 
   for (const auto& attr : source.intlist_attributes) {
     destination.AddIntListAttribute(attr.first, attr.second);
@@ -90,7 +86,7 @@ void ViewAccessibilityUtils::Merge(const ui::AXNodeData& source,
     destination.id = source.id;
   }
 
-  destination.state |= source.state;
+  destination.state.value() |= source.state.value();
 
   destination.actions |= source.actions;
 }
@@ -118,10 +114,12 @@ void ViewAccessibilityUtils::ValidateAttributesNotSet(
         << attributeErrorMessage(std::string(ui::ToString(attr.first)));
   }
 
-  for (const auto& attr : new_data.bool_attributes) {
-    DCHECK(!existing_data.HasBoolAttribute(attr.first))
-        << attributeErrorMessage(std::string(ui::ToString(attr.first)));
-  }
+  new_data.bool_attributes.ForEach(
+      [&existing_data, &attributeErrorMessage](ax::mojom::BoolAttribute attr,
+                                               bool value) {
+        DCHECK(!existing_data.HasBoolAttribute(attr))
+            << attributeErrorMessage(std::string(ui::ToString(attr)));
+      });
 
   for (const auto& attr : new_data.float_attributes) {
     DCHECK(!existing_data.HasFloatAttribute(attr.first))
@@ -150,7 +148,7 @@ void ViewAccessibilityUtils::ValidateAttributesNotSet(
            "it.";
   };
 
-  DCHECK(new_data.state == 0U) << bitfieldErrorMessage("state");
+  DCHECK(new_data.state.value() == 0U) << bitfieldErrorMessage("state");
   DCHECK(new_data.actions == 0U) << bitfieldErrorMessage("action");
   DCHECK(new_data.relative_bounds.bounds.IsEmpty())
       << "The `relative_bounds` should not be set in the lazy loading "

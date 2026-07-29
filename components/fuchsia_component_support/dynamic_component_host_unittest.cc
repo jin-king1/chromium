@@ -13,9 +13,11 @@
 #include <memory>
 #include <utility>
 
+#include "base/files/file_path.h"
 #include "base/fuchsia/process_context.h"
 #include "base/fuchsia/scoped_service_binding.h"
 #include "base/fuchsia/test_component_context_for_process.h"
+#include "base/functional/callback_helpers.h"
 #include "base/test/bind.h"
 #include "base/test/gtest_util.h"
 #include "base/test/task_environment.h"
@@ -81,7 +83,7 @@ fidl::InterfaceHandle<fuchsia::io::Directory> GetSvcFromChildArgs(
       path = path.Append(directory_offer.subdir());
     }
     fidl::InterfaceHandle<fuchsia::io::Node> services_handle;
-    root_dir->Open3(
+    root_dir->Open(
         path.value(),
         fuchsia::io::PERM_READABLE | fuchsia::io::Flags::PROTOCOL_DIRECTORY, {},
         services_handle.NewRequest().TakeChannel());

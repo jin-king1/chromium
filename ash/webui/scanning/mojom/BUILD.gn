@@ -22,10 +22,10 @@ mojom("mojom") {
         },
       ]
       traits_headers = [
-        "scanning_type_converters.h",
+        "scanning_mojom_traits.h",
         "//chromeos/ash/components/dbus/lorgnette/lorgnette_service.pb.h",
       ]
-      traits_sources = [ "scanning_type_converters.cc" ]
+      traits_sources = [ "scanning_mojom_traits.cc" ]
       traits_public_deps =
           [ "//chromeos/ash/components/dbus/lorgnette_manager:lorgnette_proto" ]
     },
@@ -33,14 +33,13 @@ mojom("mojom") {
 }
 source_set("unit_tests") {
   testonly = true
-  sources = [ "scanning_type_converters_unittest.cc" ]
+  sources = [ "scanning_mojom_traits_unittest.cc" ]
   deps = [
     ":mojom",
     "//base",
     "//base/test:test_support",
     "//chromeos/ash/components/dbus/lorgnette_manager:lorgnette_proto",
     "//content/test:test_support",
-    "//services/data_decoder/public/cpp:test_support",
     "//services/device/public/cpp:test_support",
     "//testing/gtest",
     "//ui/gfx",

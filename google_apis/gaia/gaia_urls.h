@@ -6,6 +6,7 @@
 #define GOOGLE_APIS_GAIA_GAIA_URLS_H_
 
 #include <string>
+#include <string_view>
 
 #include "base/component_export.h"
 #include "base/memory/singleton.h"
@@ -43,20 +44,28 @@ class COMPONENT_EXPORT(GOOGLE_APIS) GaiaUrls {
   const GURL& saml_redirect_chromeos_url() const;
   const GURL& signin_chrome_sync_dice() const;
   const GURL& reauth_chrome_dice() const;
-  const GURL& signin_chrome_sync_keys_retrieval_url() const;
-  const GURL& signin_chrome_sync_keys_recoverability_degraded_url() const;
+  GURL SigninChromeSyncKeysRetrievalUrl(size_t account_index) const;
+  const std::string_view signin_chrome_passkey_unlock_kdi_parameter() const;
+  GURL SigninChromePasskeyUnlockUrl(size_t account_index) const;
+  GURL SigninChromeSyncKeysRecoverabilityDegradedUrl(
+      size_t account_index) const;
+  GURL SigninChromePasskeyUnlockDesktopEmbeddedUrl(size_t account_index) const;
   const GURL& service_logout_url() const;
   const GURL& oauth_multilogin_url() const;
   const GURL& oauth_user_info_url() const;
   const GURL& embedded_signin_url() const;
   const GURL& add_account_url() const;
   const GURL& reauth_url() const;
-  const GURL& account_capabilities_url() const;
+  const GURL& account_capabilities_batch_get_url() const;
+  const GURL& account_capabilities_get_all_visible_url() const;
 
   const std::string& oauth2_chrome_client_id() const;
   const std::string& oauth2_chrome_client_secret() const;
   const GURL& oauth2_token_url() const;
+  const GURL& mtls_oauth2_token_url() const;
   const GURL& oauth2_issue_token_url() const;
+  const GURL& mtls_oauth2_issue_token_url() const;
+  const GURL& oauth2_upgrade_token_url() const;
   const GURL& oauth2_token_info_url() const;
   const GURL& oauth2_revoke_url() const;
   const GURL& reauth_api_url() const;
@@ -96,7 +105,9 @@ class COMPONENT_EXPORT(GOOGLE_APIS) GaiaUrls {
 
   GURL lso_origin_url_;
   GURL google_apis_origin_url_;
+  GURL oauth2_mtls_origin_url_;
   GURL oauth_account_manager_origin_url_;
+  GURL oauth_account_manager_mtls_origin_url_;
   GURL account_capabilities_origin_url_;
   GURL classroom_api_origin_url_;
   GURL tasks_api_origin_url_;
@@ -111,7 +122,9 @@ class COMPONENT_EXPORT(GOOGLE_APIS) GaiaUrls {
   GURL signin_chrome_sync_dice_;
   GURL reauth_chrome_dice_;
   GURL signin_chrome_sync_keys_retrieval_url_;
+  GURL signin_chrome_passkey_unlock_url_;
   GURL signin_chrome_sync_keys_recoverability_degraded_url_;
+  GURL signin_chrome_passkey_unlock_desktop_embedded_url_;
   GURL service_logout_url_;
   GURL blank_page_url_;
   GURL oauth_multilogin_url_;
@@ -120,11 +133,15 @@ class COMPONENT_EXPORT(GOOGLE_APIS) GaiaUrls {
   GURL embedded_signin_url_;
   GURL add_account_url_;
   GURL reauth_url_;
-  GURL account_capabilities_url_;
+  GURL account_capabilities_batch_get_url_;
+  GURL account_capabilities_get_all_visible_url_;
   GURL get_check_connection_info_url_;
 
   GURL oauth2_token_url_;
+  GURL mtls_oauth2_token_url_;
   GURL oauth2_issue_token_url_;
+  GURL mtls_oauth2_issue_token_url_;
+  GURL oauth2_upgrade_token_url_;
   GURL oauth2_token_info_url_;
   GURL oauth2_revoke_url_;
 

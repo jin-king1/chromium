@@ -10,6 +10,7 @@
 
 #include "base/run_loop.h"
 #include "base/time/time.h"
+#include "base/unguessable_token.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver_set.h"
 #include "net/url_request/url_request.h"
@@ -18,7 +19,7 @@
 #include "services/network/public/mojom/http_raw_headers.mojom-forward.h"
 #include "services/network/public/mojom/ip_address_space.mojom-forward.h"
 #include "services/network/public/mojom/shared_dictionary_error.mojom.h"
-#include "services/network/public/mojom/sri_message_signature.mojom-forward.h"
+#include "services/network/public/mojom/sri_message_signature.mojom.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
 namespace network {
@@ -38,9 +39,12 @@ class MockDevToolsObserver : public mojom::DevToolsObserver {
       const net::CookieAccessResultList& cookies_with_access_result,
       std::vector<network::mojom::HttpRawHeaderPairPtr> headers,
       const base::TimeTicks timestamp,
+      std::vector<network::mojom::DeviceBoundSessionWithUsagePtr>
+          device_bound_session_usages,
       network::mojom::ClientSecurityStatePtr client_security_state,
-      network::mojom::OtherPartitionInfoPtr site_has_cookie_in_other_partition)
-      override;
+      network::mojom::OtherPartitionInfoPtr site_has_cookie_in_other_partition,
+      const std::optional<base::UnguessableToken>&
+          applied_network_conditions_id) override;
 
   void OnRawResponse(
       const std::string& devtools_request_id,
@@ -56,7 +60,7 @@ class MockDevToolsObserver : public mojom::DevToolsObserver {
       const std::string& devtools_request_id,
       std::vector<network::mojom::HttpRawHeaderPairPtr> headers) override;
 
-  void OnPrivateNetworkRequest(
+  void OnLocalNetworkRequest(
       const std::optional<std::string>& devtools_request_id,
       const GURL& url,
       bool is_warning,
@@ -84,33 +88,6 @@ class MockDevToolsObserver : public mojom::DevToolsObserver {
       network::mojom::TrustTokenOperationResultPtr result) override;
 
   MOCK_METHOD(void,
-              OnSubresourceWebBundleMetadata,
-              (const std::string& devtools_request_id,
-               const std::vector<GURL>& urls),
-              (override));
-
-  MOCK_METHOD(void,
-              OnSubresourceWebBundleMetadataError,
-              (const std::string& devtools_request_id,
-               const std::string& error_message),
-              (override));
-
-  MOCK_METHOD(void,
-              OnSubresourceWebBundleInnerResponse,
-              (const std::string& inner_request_devtools_id,
-               const GURL& url,
-               const std::optional<std::string>& bundle_request_devtools_id),
-              (override));
-
-  MOCK_METHOD(void,
-              OnSubresourceWebBundleInnerResponseError,
-              (const std::string& inner_request_devtools_id,
-               const GURL& url,
-               const std::string& error_message,
-               const std::optional<std::string>& bundle_request_devtools_id),
-              (override));
-
-  MOCK_METHOD(void,
               OnSharedDictionaryError,
               (const std::string& devtool_request_id,
                const GURL& url,
@@ -118,10 +95,24 @@ class MockDevToolsObserver : public mojom::DevToolsObserver {
               (override));
 
   MOCK_METHOD(void,
-              OnSRIMessageSignatureError,
+              OnSRIMessageSignatureIssue,
               (const std::string& devtool_request_id,
                const GURL& url,
-               network::mojom::SRIMessageSignatureError error),
+               std::vector<network::mojom::SRIMessageSignatureIssuePtr> issues),
+              (override));
+
+  MOCK_METHOD(void,
+              OnUnencodedDigestError,
+              (const std::string& devtool_request_id,
+               const GURL& url,
+               network::mojom::UnencodedDigestIssue issue),
+              (override));
+
+  MOCK_METHOD(void,
+              OnConnectionAllowlistIssue,
+              (const std::string& devtool_request_id,
+               const GURL& url,
+               network::mojom::ConnectionAllowlistIssue issue),
               (override));
 
   void OnCorsError(const std::optional<std::string>& devtool_request_id,
@@ -141,7 +132,7 @@ class MockDevToolsObserver : public mojom::DevToolsObserver {
 
   void WaitUntilRawResponse(size_t goal);
   void WaitUntilRawRequest(size_t goal);
-  void WaitUntilPrivateNetworkRequest();
+  void WaitUntilLocalNetworkRequest();
   void WaitUntilCorsError();
   void WaitUntilEarlyHints();
 
@@ -176,15 +167,15 @@ class MockDevToolsObserver : public mojom::DevToolsObserver {
     return resource_address_space_;
   }
 
-  struct OnPrivateNetworkRequestParams {
-    OnPrivateNetworkRequestParams(
+  struct OnLocalNetworkRequestParams {
+    OnLocalNetworkRequestParams(
         const std::optional<std::string>& devtools_request_id,
         const GURL& url,
         bool is_warning,
         network::mojom::IPAddressSpace resource_address_space,
         network::mojom::ClientSecurityStatePtr client_security_state);
-    OnPrivateNetworkRequestParams(OnPrivateNetworkRequestParams&&);
-    ~OnPrivateNetworkRequestParams();
+    OnLocalNetworkRequestParams(OnLocalNetworkRequestParams&&);
+    ~OnLocalNetworkRequestParams();
     std::optional<std::string> devtools_request_id;
     GURL url;
     bool is_warning;
@@ -192,9 +183,9 @@ class MockDevToolsObserver : public mojom::DevToolsObserver {
     network::mojom::ClientSecurityStatePtr client_security_state;
   };
 
-  const std::optional<OnPrivateNetworkRequestParams>&
-  private_network_request_params() const {
-    return params_of_private_network_request_;
+  const std::optional<OnLocalNetworkRequestParams>&
+  local_network_request_params() const {
+    return params_of_local_network_request_;
   }
 
   struct OnCorsErrorParams {
@@ -248,9 +239,8 @@ class MockDevToolsObserver : public mojom::DevToolsObserver {
   size_t wait_for_raw_request_goal_ = 0u;
   network::mojom::ClientSecurityStatePtr client_security_state_;
 
-  base::RunLoop wait_for_private_network_request_;
-  std::optional<OnPrivateNetworkRequestParams>
-      params_of_private_network_request_;
+  base::RunLoop wait_for_local_network_request_;
+  std::optional<OnLocalNetworkRequestParams> params_of_local_network_request_;
 
   base::RunLoop wait_for_cors_error_;
   std::optional<OnCorsErrorParams> params_of_cors_error_;

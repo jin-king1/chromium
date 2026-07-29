@@ -189,9 +189,11 @@ void DisplayManagerTestApi::UpdateDisplayWithDisplayInfoList(
     }
   }
 
-  display_manager_->OnNativeDisplaysChanged(display_list_copy);
+  bool tasks = display_manager_->OnNativeDisplaysChanged(display_list_copy);
   display_manager_->UpdateInternalManagedDisplayModeListForTest();
-  display_manager_->RunPendingTasksForTest();
+  if (tasks) {
+    display_manager_->RunPendingTasksForTest();
+  }
 }
 
 int64_t DisplayManagerTestApi::SetFirstDisplayAsInternalDisplay() {
@@ -224,8 +226,7 @@ void DisplayManagerTestApi::SetTouchSupport(
 const Display& DisplayManagerTestApi::GetSecondaryDisplay() const {
   CHECK_GE(display_manager_->GetNumDisplays(), 2U);
 
-  const int64_t primary_display_id =
-      Screen::GetScreen()->GetPrimaryDisplay().id();
+  const int64_t primary_display_id = Screen::Get()->GetPrimaryDisplay().id();
 
   auto primary_display_iter = std::ranges::find(
       display_manager_->active_display_list_, primary_display_id, &Display::id);
@@ -266,7 +267,7 @@ std::unique_ptr<DisplayLayout> CreateDisplayLayout(
     DisplayManager* display_manager,
     DisplayPlacement::Position position,
     int offset) {
-  DisplayLayoutBuilder builder(Screen::GetScreen()->GetPrimaryDisplay().id());
+  DisplayLayoutBuilder builder(Screen::Get()->GetPrimaryDisplay().id());
   builder.SetSecondaryPlacement(
       DisplayManagerTestApi(display_manager).GetSecondaryDisplay().id(),
       position, offset);

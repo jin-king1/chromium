@@ -4,6 +4,7 @@
 
 #include "ash/quick_insert/views/quick_insert_view.h"
 
+#include <algorithm>
 #include <memory>
 #include <optional>
 #include <string>
@@ -44,7 +45,7 @@
 #include "ash/strings/grit/ash_strings.h"
 #include "base/check.h"
 #include "base/check_op.h"
-#include "base/containers/contains.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
@@ -72,12 +73,13 @@
 #include "ui/views/controls/separator.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/fill_layout.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/view_observer.h"
 #include "ui/views/view_tracker.h"
 #include "ui/views/view_utils.h"
 #include "ui/views/widget/widget.h"
-#include "ui/views/window/non_client_view.h"
+#include "ui/views/window/frame_view.h"
 
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
 #include "chromeos/ash/resources/internal/strings/grit/ash_internal_strings.h"
@@ -94,7 +96,8 @@ constexpr gfx::Insets kPaddingFromScreenEdge(16);
 std::unique_ptr<views::BubbleBorder> CreateBorder() {
   auto border = std::make_unique<views::BubbleBorder>(
       views::BubbleBorder::NONE, views::BubbleBorder::NO_SHADOW);
-  border->SetCornerRadius(kQuickInsertContainerBorderRadius);
+  border->set_rounded_corners(
+      gfx::RoundedCornersF(kQuickInsertContainerBorderRadius));
   border->SetColor(SK_ColorTRANSPARENT);
   return border;
 }
@@ -112,9 +115,8 @@ gfx::Rect GetQuickInsertViewBoundsWithoutSelectedText(
     QuickInsertLayoutType layout_type,
     const gfx::Size& quick_insert_view_size,
     int quick_insert_view_search_field_vertical_offset) {
-  gfx::Rect screen_work_area = display::Screen::GetScreen()
-                                   ->GetDisplayMatching(anchor_bounds)
-                                   .work_area();
+  gfx::Rect screen_work_area =
+      display::Screen::Get()->GetDisplayMatching(anchor_bounds).work_area();
   screen_work_area.Inset(kPaddingFromScreenEdge);
   gfx::Rect quick_insert_view_bounds(quick_insert_view_size);
   if (anchor_bounds.right() + quick_insert_view_size.width() <=
@@ -160,9 +162,8 @@ gfx::Rect GetQuickInsertViewBoundsWithSelectedText(
     const gfx::Rect& anchor_bounds,
     QuickInsertLayoutType layout_type,
     const gfx::Size& quick_insert_view_size) {
-  gfx::Rect screen_work_area = display::Screen::GetScreen()
-                                   ->GetDisplayMatching(anchor_bounds)
-                                   .work_area();
+  gfx::Rect screen_work_area =
+      display::Screen::Get()->GetDisplayMatching(anchor_bounds).work_area();
   screen_work_area.Inset(kPaddingFromScreenEdge);
   gfx::Rect quick_insert_view_bounds(quick_insert_view_size);
   switch (layout_type) {
@@ -266,10 +267,10 @@ ui::ImageModel GetNoResultsFoundIllustration() {
 
 bool IsEditorAvailable(
     base::span<const QuickInsertCategory> available_categories) {
-  return base::Contains(available_categories,
-                        QuickInsertCategory::kEditorWrite) ||
-         base::Contains(available_categories,
-                        QuickInsertCategory::kEditorRewrite);
+  return std::ranges::contains(available_categories,
+                               QuickInsertCategory::kEditorWrite) ||
+         std::ranges::contains(available_categories,
+                               QuickInsertCategory::kEditorRewrite);
 }
 
 }  // namespace
@@ -299,10 +300,10 @@ QuickInsertView::QuickInsertView(QuickInsertViewDelegate* delegate,
       /*between_child_spacing=*/kVerticalPaddingBetweenQuickInsertContainers));
 
   AddMainContainerView(layout_type);
-  if (base::Contains(delegate_->GetAvailableCategories(),
-                     QuickInsertCategory::kEmojisGifs) ||
-      base::Contains(delegate_->GetAvailableCategories(),
-                     QuickInsertCategory::kEmojis)) {
+  if (std::ranges::contains(delegate_->GetAvailableCategories(),
+                            QuickInsertCategory::kEmojisGifs) ||
+      std::ranges::contains(delegate_->GetAvailableCategories(),
+                            QuickInsertCategory::kEmojis)) {
     AddEmojiBarView();
   }
 
@@ -339,8 +340,8 @@ bool QuickInsertView::AcceleratorPressed(const ui::Accelerator& accelerator) {
   }
 }
 
-std::unique_ptr<views::NonClientFrameView>
-QuickInsertView::CreateNonClientFrameView(views::Widget* widget) {
+std::unique_ptr<views::FrameView> QuickInsertView::CreateFrameView(
+    views::Widget* widget) {
   auto frame =
       std::make_unique<views::BubbleFrameView>(gfx::Insets(), gfx::Insets());
   frame->SetBubbleBorder(CreateBorder());
@@ -423,10 +424,14 @@ void QuickInsertView::SelectSearchResult(
     UpdateSearchQueryAndActivePage(search_request_data->primary_text);
   } else if (const QuickInsertEditorResult* editor_data =
                  std::get_if<QuickInsertEditorResult>(&result)) {
+    delegate_->GetSessionMetrics().SetOutcome(
+        QuickInsertSessionMetrics::SessionOutcome::kRedirected);
     delegate_->ShowEditor(
         editor_data->preset_query_id,
         base::UTF16ToUTF8(search_field_view_->GetQueryText()));
   } else if (std::get_if<QuickInsertLobsterResult>(&result)) {
+    delegate_->GetSessionMetrics().SetOutcome(
+        QuickInsertSessionMetrics::SessionOutcome::kRedirected);
     delegate_->ShowLobster(
         base::UTF16ToUTF8(search_field_view_->GetQueryText()));
   } else {
@@ -469,13 +474,12 @@ void QuickInsertView::ToggleGifs(bool is_checked) {
 void QuickInsertView::ShowEmojiPicker(ui::EmojiPickerCategory category) {
   QuickInsertSessionMetrics& session_metrics = delegate_->GetSessionMetrics();
   session_metrics.SetSelectedCategory(QuickInsertCategory::kEmojisGifs);
-
+  session_metrics.SetOutcome(
+      QuickInsertSessionMetrics::SessionOutcome::kRedirected);
   if (auto* widget = GetWidget()) {
     widget->CloseWithReason(views::Widget::ClosedReason::kLostFocus);
   }
 
-  session_metrics.SetOutcome(
-      QuickInsertSessionMetrics::SessionOutcome::kRedirected);
   delegate_->ShowEmojiPicker(category, search_field_view_->GetQueryText());
 }
 
@@ -743,29 +747,26 @@ void QuickInsertView::SelectCategoryWithQuery(QuickInsertCategory category,
 
   if (category == QuickInsertCategory::kEmojisGifs ||
       category == QuickInsertCategory::kEmojis) {
+    session_metrics.SetOutcome(
+        QuickInsertSessionMetrics::SessionOutcome::kRedirected);
     if (auto* widget = GetWidget()) {
       // TODO(b/316936394): Correctly handle opening of emoji picker. Probably
       // best to wait for the IME on focus event, or save some coordinates and
       // open emoji picker in the correct location in some other way.
       widget->CloseWithReason(views::Widget::ClosedReason::kLostFocus);
     }
-    session_metrics.SetOutcome(
-        QuickInsertSessionMetrics::SessionOutcome::kRedirected);
     delegate_->ShowEmojiPicker(ui::EmojiPickerCategory::kEmojis, query);
     return;
   }
 
   if (category == QuickInsertCategory::kEditorWrite ||
       category == QuickInsertCategory::kEditorRewrite) {
+    session_metrics.SetOutcome(
+        QuickInsertSessionMetrics::SessionOutcome::kRedirected);
     if (auto* widget = GetWidget()) {
-      // TODO: b/330267329 - Correctly handle opening of Editor. Probably
-      // best to wait for the IME on focus event, or save some coordinates and
-      // open Editor in the correct location in some other way.
       widget->CloseWithReason(views::Widget::ClosedReason::kLostFocus);
     }
     CHECK(query.empty());
-    session_metrics.SetOutcome(
-        QuickInsertSessionMetrics::SessionOutcome::kRedirected);
     delegate_->ShowEditor(/*preset_query_id*/ std::nullopt,
                           /*freeform_text=*/std::nullopt);
     return;
@@ -773,11 +774,11 @@ void QuickInsertView::SelectCategoryWithQuery(QuickInsertCategory category,
 
   if (category == QuickInsertCategory::kLobsterWithNoSelectedText ||
       category == QuickInsertCategory::kLobsterWithSelectedText) {
+    session_metrics.SetOutcome(
+        QuickInsertSessionMetrics::SessionOutcome::kRedirected);
     if (auto* widget = GetWidget()) {
       widget->CloseWithReason(views::Widget::ClosedReason::kLostFocus);
     }
-    session_metrics.SetOutcome(
-        QuickInsertSessionMetrics::SessionOutcome::kRedirected);
     delegate_->ShowLobster(/*query=*/std::nullopt);
     return;
   }

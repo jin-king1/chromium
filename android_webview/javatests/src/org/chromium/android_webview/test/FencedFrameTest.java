@@ -73,13 +73,13 @@ public class FencedFrameTest extends AwParameterizedTest {
     }
 
     /**
-     * Allocate an URL from the webserver that stores a main document and a fenced frame
-     * resource to be returned. The result should then be loaded in the WebContents.
+     * Allocate an URL from the webserver that stores a main document and a fenced frame resource to
+     * be returned. The result should then be loaded in the WebContents.
      */
     private String generateFencedFrame(String fencedFrameHtml) {
         String path = "/fenced_frame.html";
-        final List<Pair<String, String>> headers = new ArrayList<Pair<String, String>>();
-        headers.add(new Pair("Supports-Loading-Mode", " fenced-frame"));
+        final List<Pair<String, String>> headers = new ArrayList<>();
+        headers.add(new Pair<>("Supports-Loading-Mode", " fenced-frame"));
         String fencedFrameUrl = mWebServer.setResponse(path, fencedFrameHtml, headers);
 
         String mainPath = "/main_document.html";
@@ -92,9 +92,7 @@ public class FencedFrameTest extends AwParameterizedTest {
         return mWebServer.setResponse(mainPath, mainResponseStr, null);
     }
 
-    /**
-     * Test that a java object is mirrored in a fenced frame.
-     **/
+    /** Test that a java object is mirrored in a fenced frame. */
     @Test
     @SmallTest
     @Feature({"AndroidWebView", "Android-JavaBridge"})
@@ -140,7 +138,7 @@ public class FencedFrameTest extends AwParameterizedTest {
 
         class TestObserver {
             private String mValue = "UNSET";
-            private CallbackHelper mCallbackHelper = new CallbackHelper();
+            private final CallbackHelper mCallbackHelper = new CallbackHelper();
 
             @JavascriptInterface
             public String getValue() {
@@ -218,9 +216,7 @@ public class FencedFrameTest extends AwParameterizedTest {
                 });
     }
 
-    /**
-     * Test that a fenced frame is rastered correctly.
-     **/
+    /** Test that a fenced frame is rastered correctly. */
     @Test
     @SmallTest
     @Feature({"AndroidWebView", "Android-JavaBridge"})

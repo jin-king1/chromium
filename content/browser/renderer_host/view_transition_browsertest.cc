@@ -4,15 +4,23 @@
 
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
+#include "base/trace_event/trace_config.h"
 #include "build/buildflag.h"
+#include "cc/base/features.h"
 #include "cc/test/pixel_comparator.h"
 #include "cc/test/pixel_test_utils.h"
+#include "components/viz/common/features.h"
+#include "components/viz/common/frame_sinks/copy_output_result.h"
 #include "components/viz/host/host_frame_sink_manager.h"
 #include "content/browser/compositor/surface_utils.h"
 #include "content/browser/renderer_host/frame_tree_node.h"
+#include "content/browser/renderer_host/render_process_host_impl.h"
 #include "content/browser/renderer_host/view_transition_opt_in_state.h"
 #include "content/browser/web_contents/web_contents_impl.h"
+#include "content/public/browser/browser_context.h"
+#include "content/public/browser/tracing_controller.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "content/public/common/content_features.h"
 #include "content/public/test/back_forward_cache_util.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
@@ -52,8 +60,7 @@ class ViewTransitionBrowserTest : public ContentBrowserTest {
   ViewTransitionBrowserTest() {
     feature_list_.InitWithFeatures(
         /*enabled_features=*/
-        {blink::features::kViewTransitionOnNavigation,
-         viz::mojom::EnableVizTestApis},
+        {viz::mojom::EnableVizTestApis},
         /*disabled_features=*/{});
   }
 
@@ -88,8 +95,16 @@ class ViewTransitionBrowserTest : public ContentBrowserTest {
   std::unique_ptr<base::RunLoop> run_loop_;
 };
 
+// TODO(crbug.com/468211765): Flaky on Android.
+#if BUILDFLAG(IS_ANDROID)
+#define MAYBE_NavigationCancelledAfterScreenshot \
+  DISABLED_NavigationCancelledAfterScreenshot
+#else
+#define MAYBE_NavigationCancelledAfterScreenshot \
+  NavigationCancelledAfterScreenshot
+#endif
 IN_PROC_BROWSER_TEST_F(ViewTransitionBrowserTest,
-                       NavigationCancelledAfterScreenshot) {
+                       MAYBE_NavigationCancelledAfterScreenshot) {
   // Start with a page which has an opt-in for VT.
   GURL test_url(
       embedded_test_server()->GetURL("/view_transitions/basic-vt-opt-in.html"));
@@ -134,6 +149,57 @@ IN_PROC_BROWSER_TEST_F(ViewTransitionBrowserTest,
   EXPECT_TRUE(ExecJs(
       shell()->web_contents()->GetPrimaryMainFrame(),
       "(async () => { await document.startViewTransition().ready; })()"));
+}
+
+class ViewTransitionEarlyFinalFrameTest : public ViewTransitionBrowserTest {
+ public:
+  ViewTransitionEarlyFinalFrameTest() {
+    feature_list_.InitAndEnableFeature(
+        ::features::kSendEarlyFinalBeginMainFrame);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(ViewTransitionEarlyFinalFrameTest,
+                       SendEarlyFinalBeginMainFrameTriggers) {
+  GURL test_url(
+      embedded_test_server()->GetURL("/view_transitions/basic-vt-opt-in.html"));
+
+  ASSERT_TRUE(NavigateToURL(shell()->web_contents(), test_url));
+  WaitForCopyableViewInWebContents(shell()->web_contents());
+
+  // Start tracing for the "cc" category.
+  base::RunLoop tracing_run_loop;
+  base::trace_event::TraceConfig trace_config("cc", "");
+  content::TracingController::GetInstance()->StartTracing(
+      trace_config, tracing_run_loop.QuitClosure());
+  tracing_run_loop.Run();
+
+  // Trigger the cross-document view transition.
+  TestNavigationManager navigation_manager(shell()->web_contents(), test_url);
+  ASSERT_TRUE(
+      ExecJs(shell()->web_contents(), "location.href = location.href;"));
+  ASSERT_TRUE(navigation_manager.WaitForNavigationFinished());
+
+  // Stop tracing.
+  std::string trace_output;
+  base::RunLoop stop_tracing_run_loop;
+  content::TracingController::GetInstance()->StopTracing(
+      content::TracingController::CreateStringEndpoint(base::BindOnce(
+          [](std::string* output, base::OnceClosure quit,
+             std::unique_ptr<std::string> trace_str) {
+            *output = std::move(*trace_str);
+            std::move(quit).Run();
+          },
+          &trace_output, stop_tracing_run_loop.QuitClosure())));
+  stop_tracing_run_loop.Run();
+
+  // Check that the function which requests an urgent frame was called and
+  // traced.
+  EXPECT_TRUE(trace_output.find("Scheduler::SendEarlyFinalBeginMainFrame") !=
+              std::string::npos);
 }
 
 IN_PROC_BROWSER_TEST_F(ViewTransitionBrowserTest,
@@ -398,14 +464,16 @@ INSTANTIATE_TEST_SUITE_P(P,
 
 class ViewTransitionCaptureTest
     : public ContentBrowserTest,
-      public ::testing::WithParamInterface<std::string> {
+      public ::testing::WithParamInterface<std::pair<bool, std::string>> {
  public:
   ViewTransitionCaptureTest() {
-    EnablePixelOutput();
+    EnablePixelOutput(1.f);
     feature_list_.InitWithFeatures(
         /*enabled_features=*/
-        {viz::mojom::EnableVizTestApis},
-        /*disabled_features=*/{});
+        {viz::mojom::EnableVizTestApis,
+         features::kViewTransitionCaptureAndDisplay},
+        /*disabled_features=*/
+        {blink::features::kPaintHolding});
   }
 
   void SetUpOnMainThread() override {
@@ -419,10 +487,13 @@ class ViewTransitionCaptureTest
 
  protected:
   SkBitmap TakeScreenshot() {
-    base::test::TestFuture<const SkBitmap&> future_bitmap;
+    base::test::TestFuture<const content::CopyFromSurfaceResult&> future_bitmap;
     shell()->web_contents()->GetRenderWidgetHostView()->CopyFromSurface(
-        gfx::Rect(), gfx::Size(), future_bitmap.GetCallback());
-    return future_bitmap.Take();
+        gfx::Rect(), gfx::Size(), base::TimeDelta(),
+        future_bitmap.GetCallback());
+    return future_bitmap.Take()
+        .value_or(viz::CopyOutputBitmapWithMetadata())
+        .bitmap;
   }
 
   void WaitForSurfaceAnimationManager(RenderFrameHost* render_frame_host) {
@@ -439,15 +510,20 @@ class ViewTransitionCaptureTest
   base::test::ScopedFeatureList feature_list_;
 };
 
+// TODO(https://crbug.com/400187507): Disabled due to continuous flakiness.
 IN_PROC_BROWSER_TEST_P(ViewTransitionCaptureTest,
-                       ViewTransitionNoArtifactDuringCapture) {
-  GURL test_url(embedded_test_server()->GetURL(GetParam()));
+                       DISABLED_ViewTransitionNoArtifactDuringCapture) {
+  const auto& [frametest, url] = GetParam();
+  GURL test_url(embedded_test_server()->GetURL(url));
   auto* web_contents = shell()->web_contents();
-  web_contents->Resize({0, 0, 20, 20});
   ASSERT_TRUE(NavigateToURL(web_contents, test_url));
+  shell()->ResizeWebContentForTests(gfx::Size(100, 100));
+
   ASSERT_EQ(EvalJs(web_contents, JsReplace(R"(
             new Promise(resolve => {
-              requestAnimationFrame(() => resolve("ok"));
+              requestAnimationFrame(() => {
+                requestAnimationFrame(() => resolve("ok"));
+              });
             }))")),
             "ok");
   WaitForCopyableViewInWebContents(shell()->web_contents());
@@ -455,16 +531,27 @@ IN_PROC_BROWSER_TEST_P(ViewTransitionCaptureTest,
 
   // Sanity to see that we've captured something.
   ASSERT_NE(before_bitmap.getColor(5, 5), 0u);
-  // This starts a view transition with a "hanging" promise that never resolves.
-  // When the view-transition callback is called, we resolve the external
-  // promise that signals us that it's time to capture.
-  ASSERT_EQ(EvalJs(web_contents, JsReplace(R"(
-              new Promise(ready_to_capture => {
-                document.startViewTransition(() => new Promise(() => {
-                    ready_to_capture('ok');
-                }));
-              }))")),
-            "ok");
+  // This starts a view transition with a callback that signals that we're ok
+  // to capture, but otherwise never finishes running the callback.
+  if (frametest) {
+    ASSERT_EQ(EvalJs(web_contents, JsReplace(R"(
+                new Promise(dom_callback_started => {
+                  frame.contentDocument.startViewTransition(async () => {
+                    dom_callback_started('ok');
+                    await new Promise(() => {});
+                  });
+                }))")),
+              "ok");
+  } else {
+    ASSERT_EQ(EvalJs(web_contents, JsReplace(R"(
+                new Promise(dom_callback_started => {
+                  document.startViewTransition(async () => {
+                    dom_callback_started('ok');
+                    await new Promise(() => {});
+                  });
+                }))")),
+              "ok");
+  }
   WaitForSurfaceAnimationManager(
       shell()->web_contents()->GetPrimaryMainFrame());
   auto after_bitmap = TakeScreenshot();
@@ -483,7 +570,63 @@ IN_PROC_BROWSER_TEST_P(ViewTransitionCaptureTest,
 INSTANTIATE_TEST_SUITE_P(
     P,
     ViewTransitionCaptureTest,
-    testing::Values("/view_transitions/parent-child.html",
-                    "/view_transitions/parent-child-opacity.html"));
+    // The pair parameter has the following meaning:
+    //  - The first boolean indicates whether this test should invoke
+    //    startViewTransition() on the `frame` DOM element's contentDocument (if
+    //    true) or on the main frame's document (if false).
+    //    - The second string indicates the location of the test to load.
+    testing::Values(
+        std::make_pair(false, "/view_transitions/parent-child.html"),
+        std::make_pair(false, "/view_transitions/parent-child-opacity.html"),
+        std::make_pair(true,
+                       "/view_transitions/parent-child-opacity-iframe.html")));
 
+class ViewTransitionProcessShutdownTest : public ViewTransitionBrowserTest {
+ public:
+  ViewTransitionProcessShutdownTest() {
+    EnablePixelOutput(1.f);
+    feature_list_.InitWithFeatures(
+        /*enabled_features=*/
+        {blink::features::kDelayLayerTreeViewDeletionOnLocalSwap,
+         ::features::kRenderDocument},
+        /*disabled_features=*/{});
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(ViewTransitionProcessShutdownTest,
+                       ResourcesAvailableAfterCrossProcessNavigation) {
+  DisableBackForwardCacheForTesting(
+      shell()->web_contents(),
+      BackForwardCache::DisableForTestingReason::TEST_REQUIRES_NO_CACHING);
+
+  GURL test_url(embedded_test_server()->GetURL(
+      "a.com", "/view_transitions/basic-vt-opt-in.html"));
+  ASSERT_TRUE(NavigateToURL(shell()->web_contents(), test_url));
+  WaitForCopyableViewInWebContents(shell()->web_contents());
+
+  // Navigate to another page with an opt-in. Use a.com to ensure same-origin
+  // (triggers VT). Use COOP to force a new BrowsingInstance and process swap.
+  GURL second_url(embedded_test_server()->GetURL(
+      "a.com",
+      "/view_transitions/"
+      "basic-vt-opt-in.html?new&pipe=header(Cross-Origin-Opener-Policy,same-"
+      "origin)"));
+  TestNavigationManager navigation_manager(shell()->web_contents(), second_url);
+  ASSERT_TRUE(ExecJs(shell()->web_contents(),
+                     JsReplace("location.href = $1", second_url)));
+  ASSERT_TRUE(navigation_manager.WaitForNavigationFinished());
+
+  WaitForCopyableViewInWebContents(shell()->web_contents());
+  auto& nav_controller = static_cast<NavigationControllerImpl&>(
+      shell()->web_contents()->GetController());
+  ASSERT_EQ(nav_controller.GetLastCommittedEntry()->GetURL(), second_url);
+
+  // Ensure the new renderer has the resources.
+  ASSERT_TRUE(static_cast<RenderWidgetHostViewBase*>(
+                  shell()->web_contents()->GetRenderWidgetHostView())
+                  ->HasViewTransitionResourcesForTesting());
+}
 }  // namespace content

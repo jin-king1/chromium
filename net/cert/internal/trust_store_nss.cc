@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "net/cert/internal/trust_store_nss.h"
 
 #include <cert.h>
@@ -19,8 +14,10 @@
 #include <secmod.h>
 #include <secmodt.h>
 
+#include <variant>
+
+#include "base/containers/span.h"
 #include "base/containers/to_vector.h"
-#include "base/hash/sha1.h"
 #include "base/logging.h"
 #include "base/notreached.h"
 #include "base/strings/string_number_conversions.h"
@@ -28,6 +25,7 @@
 #include "crypto/chaps_support.h"
 #include "crypto/nss_util.h"
 #include "crypto/nss_util_internal.h"
+#include "crypto/obsolete/sha1.h"
 #include "crypto/scoped_nss_types.h"
 #include "net/base/features.h"
 #include "net/cert/internal/platform_trust_store.h"
@@ -56,6 +54,11 @@ extern "C" CERTCertificate* CERT_FindCertByDERCertForChromium(
 #endif  // BUILDFLAG(IS_CHROMEOS) && BUILDFLAG(IS_CHROMEOS_DEVICE)
 
 namespace net {
+
+std::array<uint8_t, crypto::obsolete::Sha1::kSize> Sha1ForNSSTrust(
+    base::span<const uint8_t> data) {
+  return crypto::obsolete::Sha1::Hash(data);
+}
 
 namespace {
 
@@ -147,9 +150,9 @@ TrustStoreNSS::ListCertsResult& TrustStoreNSS::ListCertsResult::operator=(
 
 TrustStoreNSS::TrustStoreNSS(UserSlotTrustSetting user_slot_trust_setting)
     : user_slot_trust_setting_(std::move(user_slot_trust_setting)) {
-  if (absl::holds_alternative<crypto::ScopedPK11Slot>(
+  if (std::holds_alternative<crypto::ScopedPK11Slot>(
           user_slot_trust_setting_)) {
-    CHECK(absl::get<crypto::ScopedPK11Slot>(user_slot_trust_setting_) !=
+    CHECK(std::get<crypto::ScopedPK11Slot>(user_slot_trust_setting_) !=
           nullptr);
   }
 #if BUILDFLAG(IS_CHROMEOS) && BUILDFLAG(IS_CHROMEOS_DEVICE)
@@ -222,21 +225,14 @@ void TrustStoreNSS::SyncGetIssuersOf(const bssl::ParsedCertificate* cert,
 }
 
 std::vector<TrustStoreNSS::ListCertsResult>
-TrustStoreNSS::ListCertsIgnoringNSSRoots() {
-  // In this path, the returned certs could include client certificates, so we
-  // should not skip the chaps module.
-  return ListCertsIgnoringNSSRootsImpl(/*ignore_chaps_module=*/false);
-}
-
-std::vector<TrustStoreNSS::ListCertsResult>
 TrustStoreNSS::ListCertsIgnoringNSSRootsImpl(bool ignore_chaps_module) {
   crypto::EnsureNSSInit();
   std::vector<TrustStoreNSS::ListCertsResult> results;
   crypto::ScopedCERTCertList cert_list;
-  if (absl::holds_alternative<crypto::ScopedPK11Slot>(
+  if (std::holds_alternative<crypto::ScopedPK11Slot>(
           user_slot_trust_setting_)) {
     cert_list.reset(PK11_ListCertsInSlot(
-        absl::get<crypto::ScopedPK11Slot>(user_slot_trust_setting_).get()));
+        std::get<crypto::ScopedPK11Slot>(user_slot_trust_setting_).get()));
   } else {
     cert_list.reset(PK11_ListCerts(PK11CertListUnique, nullptr));
   }
@@ -244,7 +240,7 @@ TrustStoreNSS::ListCertsIgnoringNSSRootsImpl(bool ignore_chaps_module) {
   // that was backing the specified slot is not available anymore.
   // Treat it as no certificates being present on the slot.
   if (!cert_list) {
-    LOG(WARNING) << (absl::holds_alternative<crypto::ScopedPK11Slot>(
+    LOG(WARNING) << (std::holds_alternative<crypto::ScopedPK11Slot>(
                          user_slot_trust_setting_)
                          ? "PK11_ListCertsInSlot"
                          : "PK11_ListCerts")
@@ -308,7 +304,20 @@ bssl::CertificateTrust TrustStoreNSS::GetTrust(
     return bssl::CertificateTrust::ForUnspecified();
   }
 
+  // CERT_FindCertByDERCert may have returned a different cert that has the same
+  // issuer+serial. A trust record should only be used if it's really the same
+  // cert.
+  if (x509_util::CERTCertificateAsSpan(nss_cert.get()) != cert->der_cert()) {
+    DVLOG(1) << "skipped non-identical cert returned by CERT_FindCertByDERCert";
+    return bssl::CertificateTrust::ForUnspecified();
+  }
+
   return GetTrustIgnoringSystemTrust(nss_cert.get());
+}
+
+std::shared_ptr<const bssl::MTCAnchor> TrustStoreNSS::GetTrustedMTCIssuerOf(
+    const bssl::ParsedCertificate* cert) {
+  return nullptr;
 }
 
 bssl::CertificateTrust TrustStoreNSS::GetTrustIgnoringSystemTrust(
@@ -352,10 +361,10 @@ bssl::CertificateTrust TrustStoreNSS::GetTrustIgnoringSystemTrust(
     DVLOG(1) << "found cert in slot:" << PK11_GetSlotName(slot)
              << " token:" << PK11_GetTokenName(slot)
              << " module trustOrder: " << PK11_GetModule(slot)->trustOrder;
-    if (absl::holds_alternative<crypto::ScopedPK11Slot>(
+    if (std::holds_alternative<crypto::ScopedPK11Slot>(
             user_slot_trust_setting_) &&
         slot !=
-            absl::get<crypto::ScopedPK11Slot>(user_slot_trust_setting_).get()) {
+            std::get<crypto::ScopedPK11Slot>(user_slot_trust_setting_).get()) {
       DVLOG(1) << "skipping slot " << PK11_GetSlotName(slot)
                << ", it's not user_slot_trust_setting_";
       continue;
@@ -390,8 +399,8 @@ bssl::CertificateTrust TrustStoreNSS::GetTrustIgnoringSystemTrust(
   // clear the cache. (There are multiple approaches possible, could cache the
   // hash->trust mappings on a per-slot basis, or just cache the end result for
   // each cert, etc.)
-  base::SHA1Digest cert_sha1 =
-      base::SHA1Hash(x509_util::CERTCertificateAsSpan(nss_cert));
+  std::array<uint8_t, crypto::obsolete::Sha1::kSize> cert_sha1 =
+      Sha1ForNSSTrust(x509_util::CERTCertificateAsSpan(nss_cert));
 
   // Check the slots in trustOrder ordering. Lower trustOrder values are higher
   // priority, so we can return as soon as we find a matching trust object.
@@ -451,7 +460,8 @@ bssl::CertificateTrust TrustStoreNSS::GetTrustIgnoringSystemTrust(
       // This matches how pk11_GetTrustField in NSS converts the raw trust
       // object to a CK_TRUST (actually an unsigned long).
       // https://searchfox.org/nss/source/lib/pk11wrap/pk11nobj.c#37
-      memcpy(&trust, trust_attr->data, trust_attr->len);
+      base::byte_span_from_ref(trust).copy_from(
+          x509_util::SECItemAsSpan(*trust_attr));
 
       // This doesn't handle the "TrustAnchorOrLeaf" combination, it's unclear
       // how that is represented. But it doesn't really matter since the only

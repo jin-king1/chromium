@@ -14,36 +14,22 @@
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/timer/timer.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
 #include "components/optimization_guide/core/model_execution/multimodal_message.h"
+#include "components/optimization_guide/core/model_execution/on_device_capability.h"
 #include "components/optimization_guide/core/model_execution/on_device_context.h"
 #include "components/optimization_guide/core/model_execution/on_device_model_feature_adapter.h"
-#include "components/optimization_guide/core/model_execution/optimization_guide_model_execution_error.h"
+#include "components/optimization_guide/core/model_execution/on_device_telemetry_logger.h"
+#include "components/optimization_guide/core/model_execution/repetition_checker.h"
 #include "components/optimization_guide/core/model_execution/safety_checker.h"
 #include "components/optimization_guide/core/model_execution/substitution.h"
-#include "components/optimization_guide/core/model_quality/model_quality_logs_uploader_service.h"
-#include "components/optimization_guide/core/optimization_guide_model_executor.h"
 #include "components/optimization_guide/proto/model_quality_metadata.pb.h"
-#include "components/optimization_guide/proto/model_quality_service.pb.h"
 #include "components/optimization_guide/proto/text_safety_model_metadata.pb.h"
-#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "components/optimization_guide/public/mojom/model_broker.mojom.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "services/on_device_model/public/mojom/on_device_model.mojom.h"
 
 namespace optimization_guide {
-
-using ExecuteRemoteFn = base::RepeatingCallback<void(
-    ModelBasedCapabilityKey feature,
-    const google::protobuf::MessageLite&,
-    std::optional<base::TimeDelta> timeout,
-    std::unique_ptr<proto::LogAiDataRequest>,
-    OptimizationGuideModelExecutionResultCallback)>;
-
-void InvokeStreamingCallbackWithRemoteResult(
-    OptimizationGuideModelExecutionResultStreamingCallback callback,
-    OptimizationGuideModelExecutionResult result,
-    std::unique_ptr<ModelQualityLogEntry> log_entry);
 
 // The state for an ongoing ExecuteModel() call.
 class OnDeviceExecution final
@@ -104,30 +90,28 @@ class OnDeviceExecution final
   // Used to log the result of ExecuteModel.
   class ResultLogger {
    public:
-    explicit ResultLogger(ModelBasedCapabilityKey feature)
-        : feature_(feature) {}
+    explicit ResultLogger(mojom::OnDeviceFeature feature) : feature_(feature) {}
     ~ResultLogger();
 
     void set_result(Result result) { result_ = result; }
 
    private:
-    const ModelBasedCapabilityKey feature_;
+    const mojom::OnDeviceFeature feature_;
     Result result_ = Result::kOnDeviceNotUsed;
   };
 
   explicit OnDeviceExecution(
-      ModelBasedCapabilityKey feature,
+      mojom::OnDeviceFeature feature,
       OnDeviceOptions opts,
-      ExecuteRemoteFn execute_remote_fn,
       MultimodalMessage message,
+      on_device_model::mojom::ResponseConstraintPtr constraint,
       std::unique_ptr<ResultLogger> logger,
       OptimizationGuideModelExecutionResultStreamingCallback callback,
-      base::OnceCallback<void(bool)> cleanup_callback);
+      base::OnceClosure cleanup_callback);
   ~OnDeviceExecution() final;
 
   // Begin processing the request.
-  void BeginExecution(OnDeviceContext& context,
-                      const SamplingParams& sampling_params);
+  void BeginExecution(OnDeviceContext& context);
 
   // Cancels the execution.
   void Cancel();
@@ -156,11 +140,15 @@ class OnDeviceExecution final
   // on_device_model::mojom::StreamingResponder:
   void OnResponse(on_device_model::mojom::ResponseChunkPtr chunk) override;
   void OnComplete(on_device_model::mojom::ResponseSummaryPtr summary) override;
+  void OnToolCalls(
+      std::vector<on_device_model::mojom::ToolCallPtr> tool_calls) override;
 
   // on_device_model::mojom::ContextClient:
   void OnComplete(uint32_t tokens_processed) override;
 
-  void OnResponderDisconnect();
+  // Called on StreamingResponder mojo pipe disconnect.
+  void OnResponderDisconnect(uint32_t custom_reason,
+                             const std::string& description);
 
   // Evaluates raw output safety (leads to OnRawOutputSafetyResult).
   void RunRawOutputSafetyCheck(ResponseCompleteness completeness);
@@ -187,28 +175,13 @@ class OnDeviceExecution final
                               proto::Any output,
                               SafetyChecker::Result safety_result);
 
-  // Called to run the text safety remote fallback. Will invoke
-  // OnTextSafetyRemoteResponse when done.
-  void RunTextSafetyRemoteFallback(proto::Any success_response_metadata);
-
-  // Callback invoked when the text safety remote fallback response comes
-  // back. Will invoke the session's completion callback and destroy state.
-  void OnTextSafetyRemoteResponse(
-      proto::InternalOnDeviceModelExecutionInfo remote_ts_model_execution_info,
-      proto::Any success_response_metadata,
-      OptimizationGuideModelExecutionResult result,
-      std::unique_ptr<ModelQualityLogEntry> remote_log_entry);
-
   // Terminates on-device processing as unhealthy and falls back to remote
   // execution to provide the result to the caller.
   void FallbackToRemote(Result result);
 
   // Sends an error result and terminates on-device processing as healthy.
-  void CancelPendingResponse(
-      Result result,
-      OptimizationGuideModelExecutionError::ModelExecutionError error =
-          OptimizationGuideModelExecutionError::ModelExecutionError::
-              kCancelled);
+  void CancelPendingResponse(Result result,
+                             OnDeviceError error = OnDeviceError::kCancelled);
 
   // Sends the partial response callback, and does NOT terminate processing.
   void SendPartialResponseCallback(const proto::Any& success_response_metadata);
@@ -219,22 +192,23 @@ class OnDeviceExecution final
 
   // Called after terminating to release all held resources and notify owner
   // that this object is safe to destroy.
-  void Cleanup(bool healthy);
+  void Cleanup();
 
-  const ModelBasedCapabilityKey feature_;
+  const mojom::OnDeviceFeature feature_;
   const OnDeviceOptions opts_;
-  ExecuteRemoteFn execute_remote_fn_;
 
   mojo::Remote<on_device_model::mojom::Session> session_;
 
   // The request message.
   MultimodalMessage last_message_;
-  // Time ExecuteModel() was called.
-  base::TimeTicks start_;
+  // A constraint defining structured output requirements for the response.
+  on_device_model::mojom::ResponseConstraintPtr constraint_;
+  // Handles telemetry logging for the execution.
+  OnDeviceRequestTelemetryLogger telemetry_logger_;
   // Used to log the result of ExecuteModel().
   std::unique_ptr<ResultLogger> histogram_logger_;
   // Used to log execution information for the request.
-  proto::LogAiDataRequest log_;
+  proto::ModelExecutionInfo exec_log_;
 
   // Response received so far.
   std::string current_response_;
@@ -260,14 +234,18 @@ class OnDeviceExecution final
 
   // The number of tokens in the returned output.
   size_t output_token_count_ = 0;
+  // The number of tokens in execute portion of the input.
+  size_t execute_input_token_count_ = 0;
+
+  // A buffer to hold trailing newlines.
+  NewlineBuffer newline_buffer_;
 
   // Callback to provide the execution result.
   OptimizationGuideModelExecutionResultStreamingCallback callback_;
 
   // Callback to notify the owning session that on-device execution has
   // terminated, and that this object is safe to destroy.
-  // Should pass true to indicate healthy completion, or false if unhealthy.
-  base::OnceCallback<void(bool)> cleanup_callback_;
+  base::OnceClosure cleanup_callback_;
 
   mojo::Receiver<on_device_model::mojom::StreamingResponder> receiver_{this};
   mojo::Receiver<on_device_model::mojom::ContextClient> context_receiver_{this};

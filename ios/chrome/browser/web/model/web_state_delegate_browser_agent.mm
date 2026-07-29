@@ -4,12 +4,20 @@
 
 #import "ios/chrome/browser/web/model/web_state_delegate_browser_agent.h"
 
+#import "base/notimplemented.h"
 #import "base/strings/sys_string_conversions.h"
 #import "components/content_settings/core/browser/host_content_settings_map.h"
 #import "components/content_settings/core/common/content_settings.h"
+#import "components/enterprise/client_certificates/ios/certificate_provisioning_service_ios.h"
+#import "components/enterprise/client_certificates/ios/client_identity_ios.h"
 #import "ios/chrome/browser/content_settings/model/host_content_settings_map_factory.h"
 #import "ios/chrome/browser/context_menu/ui_bundled/context_menu_configuration_provider.h"
 #import "ios/chrome/browser/dialogs/ui_bundled/nsurl_protection_space_util.h"
+#import "ios/chrome/browser/enterprise/client_certificates/client_certificates_service_ios.h"
+#import "ios/chrome/browser/enterprise/client_certificates/client_certificates_service_ios_factory.h"
+#import "ios/chrome/browser/enterprise/data_controls/model/data_controls_tab_helper.h"
+#import "ios/chrome/browser/intelligence/bwg/utils/gemini_constants.h"
+#import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/overlays/model/public/overlay_callback_manager.h"
 #import "ios/chrome/browser/overlays/model/public/overlay_modality.h"
 #import "ios/chrome/browser/overlays/model/public/overlay_request.h"
@@ -19,6 +27,8 @@
 #import "ios/chrome/browser/overlays/model/public/web_content_area/insecure_form_overlay.h"
 #import "ios/chrome/browser/permissions/model/permissions_tab_helper.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
+#import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
+#import "ios/chrome/browser/shared/public/commands/gemini_commands.h"
 #import "ios/chrome/browser/snapshots/model/snapshot_tab_helper.h"
 #import "ios/chrome/browser/supervised_user/model/supervised_user_capabilities.h"
 #import "ios/chrome/browser/tab_insertion/model/tab_insertion_browser_agent.h"
@@ -28,17 +38,16 @@
 #import "ios/chrome/browser/web/model/repost_form_tab_helper.h"
 #import "ios/chrome/browser/web/model/web_state_container_view_provider.h"
 #import "ios/components/security_interstitials/ios_blocking_page_tab_helper.h"
+#import "ios/public/provider/chrome/browser/context_menu/context_menu_api.h"
 #import "ios/web/public/permissions/permissions.h"
 #import "ios/web/public/ui/context_menu_params.h"
 #import "ios/web/public/ui/crw_web_view_proxy.h"
-
-BROWSER_USER_DATA_KEY_IMPL(WebStateDelegateBrowserAgent)
 
 namespace {
 // Callback for HTTP authentication dialogs. This callback is a standalone
 // function rather than an instance method. This is to ensure that the callback
 // can be executed regardless of whether the browser agent has been destroyed.
-void OnHTTPAuthOverlayFinished(web::WebStateDelegate::AuthCallback callback,
+void OnHTTPAuthOverlayFinished(web::WebStateDelegate::HTTPAuthCallback callback,
                                OverlayResponse* response) {
   if (response) {
     HTTPAuthOverlayResponseInfo* auth_info =
@@ -50,6 +59,17 @@ void OnHTTPAuthOverlayFinished(web::WebStateDelegate::AuthCallback callback,
     }
   }
   std::move(callback).Run(nil, nil);
+}
+
+void OnGetIdentityFinished(
+    web::WebStateDelegate::ClientCertAuthCallback callback,
+    std::unique_ptr<client_certificates::ClientIdentityIOS> result) {
+  if (result) {
+    std::move(callback).Run(result->identity_ref.get());
+    return;
+  }
+
+  std::move(callback).Run(nullptr);
 }
 
 void OnInsecureFormWarningResponse(base::OnceCallback<void(bool)> callback,
@@ -94,24 +114,22 @@ bool IsMicOrCameraAccessSubjectToParentalControls(
 
 }  // namespace
 
-WebStateDelegateBrowserAgent::WebStateDelegateBrowserAgent(
-    Browser* browser,
-    TabInsertionBrowserAgent* tab_insertion_agent)
-    : web_state_list_(browser->GetWebStateList()),
-      tab_insertion_agent_(tab_insertion_agent) {
-  DCHECK(tab_insertion_agent_);
-  browser_ = browser;
-  browser_observation_.Observe(browser);
-  web_state_list_observation_.Observe(web_state_list_.get());
-
+WebStateDelegateBrowserAgent::WebStateDelegateBrowserAgent(Browser* browser)
+    : BrowserUserData(browser),
+      web_state_list_(browser->GetWebStateList()),
+      browser_(browser) {
   // All the BrowserAgent are attached to the Browser during the creation,
   // the WebStateList must be empty at this point.
   DCHECK(web_state_list_->empty())
       << "WebStateDelegateBrowserAgent created for a Browser with a non-empty "
          "WebStateList.";
+
+  StartObserving(browser);
 }
 
-WebStateDelegateBrowserAgent::~WebStateDelegateBrowserAgent() {}
+WebStateDelegateBrowserAgent::~WebStateDelegateBrowserAgent() {
+  StopObserving();
+}
 
 void WebStateDelegateBrowserAgent::SetUIProviders(
     ContextMenuConfigurationProvider* context_menu_provider,
@@ -128,84 +146,33 @@ void WebStateDelegateBrowserAgent::ClearUIProviders() {
   container_view_provider_ = nil;
 }
 
-#pragma mark - WebStateListObserver
+#pragma mark - TabsDependencyInstaller
 
-void WebStateDelegateBrowserAgent::WebStateListDidChange(
-    WebStateList* web_state_list,
-    const WebStateListChange& change,
-    const WebStateListStatus& status) {
-  switch (change.type()) {
-    case WebStateListChange::Type::kStatusOnly:
-      // Do nothing when a WebState is selected and its status is updated.
-      break;
-    case WebStateListChange::Type::kDetach: {
-      const WebStateListChangeDetach& detach_change =
-          change.As<WebStateListChangeDetach>();
-      ClearWebStateDelegate(detach_change.detached_web_state());
-      break;
-    }
-    case WebStateListChange::Type::kMove:
-      // Do nothing when a WebState is moved.
-      break;
-    case WebStateListChange::Type::kReplace: {
-      const WebStateListChangeReplace& replace_change =
-          change.As<WebStateListChangeReplace>();
-      ClearWebStateDelegate(replace_change.replaced_web_state());
-      SetWebStateDelegate(replace_change.inserted_web_state());
-      break;
-    }
-    case WebStateListChange::Type::kInsert: {
-      const WebStateListChangeInsert& insert_change =
-          change.As<WebStateListChangeInsert>();
-      SetWebStateDelegate(insert_change.inserted_web_state());
-      break;
-    }
-    case WebStateListChange::Type::kGroupCreate:
-      // Do nothing when a group is created.
-      break;
-    case WebStateListChange::Type::kGroupVisualDataUpdate:
-      // Do nothing when a tab group's visual data are updated.
-      break;
-    case WebStateListChange::Type::kGroupMove:
-      // Do nothing when a tab group is moved.
-      break;
-    case WebStateListChange::Type::kGroupDelete:
-      // Do nothing when a group is deleted.
-      break;
-  }
+void WebStateDelegateBrowserAgent::OnWebStateInserted(
+    web::WebState* web_state) {
+  DCHECK(web_state);
+  DCHECK(web_state->IsRealized());
+  web_state->SetDelegate(this);
 }
 
-#pragma mark - BrowserObserver
-
-void WebStateDelegateBrowserAgent::BrowserDestroyed(Browser* browser) {
-  DCHECK(browser_observation_.IsObservingSource(browser));
-
-  WebStateList* web_state_list = browser->GetWebStateList();
-  DCHECK(web_state_list_observation_.IsObservingSource(web_state_list));
-  DCHECK_EQ(web_state_list_, web_state_list);
-
-  // Remove all web state delegates.
-  for (int index = 0; index < web_state_list_->count(); ++index) {
-    web_state_list_->GetWebStateAt(index)->SetDelegate(nullptr);
-  }
-
-  web_state_observations_.RemoveAllObservations();
-  web_state_list_observation_.Reset();
-  browser_observation_.Reset();
+void WebStateDelegateBrowserAgent::OnWebStateRemoved(web::WebState* web_state) {
+  DCHECK(web_state);
+  DCHECK(web_state->IsRealized());
+  web_state->SetDelegate(nullptr);
 }
 
-#pragma mark - WebStateObserver
-
-void WebStateDelegateBrowserAgent::WebStateRealized(web::WebState* web_state) {
-  SetWebStateDelegate(web_state);
-  web_state_observations_.RemoveObservation(web_state);
+void WebStateDelegateBrowserAgent::OnWebStateDeleted(web::WebState* web_state) {
+  // Nothing to do.
 }
 
-void WebStateDelegateBrowserAgent::WebStateDestroyed(web::WebState* web_state) {
-  web_state_observations_.RemoveObservation(web_state);
+void WebStateDelegateBrowserAgent::OnActiveWebStateChanged(
+    web::WebState* old_active,
+    web::WebState* new_active) {
+  // Nothing to do.
 }
 
-// WebStateDelegate::
+#pragma mark - WebStateDelegate
+
 web::WebState* WebStateDelegateBrowserAgent::CreateNewWebState(
     web::WebState* source,
     const GURL& url,
@@ -220,9 +187,19 @@ web::WebState* WebStateDelegateBrowserAgent::CreateNewWebState(
     return nullptr;
   }
 
+  // Under certain circumstances, it is possible for this callback to be
+  // called while the WebState has been removed from the WebStateList but
+  // before the delegate could be updated. See crbug.com/520318841 for
+  // details. In that case, the request to create a new WebState is
+  // silently dropped.
+  int index = web_state_list_->GetIndexOfWebState(source);
+  if (index == WebStateList::kInvalidIndex) {
+    return nullptr;
+  }
+
   // Check if requested web state is a popup and block it if necessary.
   if (!initiated_by_user) {
-    auto* helper = BlockedPopupTabHelper::GetOrCreateForWebState(source);
+    auto* helper = BlockedPopupTabHelper::FromWebState(source);
     if (helper->ShouldBlockPopup(opener_url)) {
       // It's possible for a page to inject a popup into a window created via
       // window.open before its initial load is committed.  Rather than relying
@@ -240,13 +217,14 @@ web::WebState* WebStateDelegateBrowserAgent::CreateNewWebState(
   // Requested web state should not be blocked from opening.
   SnapshotTabHelper::FromWebState(source)->UpdateSnapshotWithCallback(nil);
 
-  return tab_insertion_agent_->InsertWebStateOpenedByDOM(source);
+  return tab_insertion_agent()->InsertWebStateOpenedByDOM(source);
 }
 
 void WebStateDelegateBrowserAgent::CloseWebState(web::WebState* source) {
   int index = web_state_list_->GetIndexOfWebState(source);
   if (index != WebStateList::kInvalidIndex) {
-    web_state_list_->CloseWebStateAt(index, WebStateList::CLOSE_USER_ACTION);
+    web_state_list_->CloseWebStateAt(index,
+                                     WebStateList::ClosingReason::kUserAction);
   }
 }
 
@@ -258,6 +236,8 @@ web::WebState* WebStateDelegateBrowserAgent::OpenURLFromWebState(
   load_params.transition_type = params.transition;
   load_params.is_renderer_initiated = params.is_renderer_initiated;
   load_params.virtual_url = params.virtual_url;
+  load_params.internal_scroll_to_text_fragment =
+      params.internal_scroll_to_text_fragment;
 
   TabInsertion::Params insertion_params;
   insertion_params.parent = source;
@@ -267,8 +247,8 @@ web::WebState* WebStateDelegateBrowserAgent::OpenURLFromWebState(
     case WindowOpenDisposition::NEW_BACKGROUND_TAB: {
       insertion_params.in_background =
           params.disposition == WindowOpenDisposition::NEW_BACKGROUND_TAB;
-      return tab_insertion_agent_->InsertWebState(load_params,
-                                                  insertion_params);
+      return tab_insertion_agent()->InsertWebState(load_params,
+                                                   insertion_params);
     }
     case WindowOpenDisposition::CURRENT_TAB: {
       source->GetNavigationManager()->LoadURLWithParams(load_params);
@@ -276,8 +256,8 @@ web::WebState* WebStateDelegateBrowserAgent::OpenURLFromWebState(
     }
     case WindowOpenDisposition::NEW_POPUP: {
       insertion_params.opened_by_dom = true;
-      return tab_insertion_agent_->InsertWebState(load_params,
-                                                  insertion_params);
+      return tab_insertion_agent()->InsertWebState(load_params,
+                                                   insertion_params);
     }
     default:
       NOTIMPLEMENTED();
@@ -347,7 +327,7 @@ void WebStateDelegateBrowserAgent::OnAuthRequired(
     web::WebState* source,
     NSURLProtectionSpace* protection_space,
     NSURLCredential* proposed_credential,
-    web::WebStateDelegate::AuthCallback callback) {
+    web::WebStateDelegate::HTTPAuthCallback callback) {
   std::string message = base::SysNSStringToUTF8(
       nsurlprotectionspace_util::MessageForHTTPAuth(protection_space));
   std::string default_username;
@@ -364,6 +344,24 @@ void WebStateDelegateBrowserAgent::OnAuthRequired(
       ->AddRequest(std::move(request));
 }
 
+void WebStateDelegateBrowserAgent::OnAuthRequired(
+    web::WebState* source,
+    NSURLProtectionSpace* protection_space,
+    web::WebStateDelegate::ClientCertAuthCallback callback) {
+  ProfileIOS* profile = ProfileIOS::FromBrowserState(source->GetBrowserState());
+
+  client_certificates::ClientCertificatesServiceIOS* service =
+      client_certificates::ClientCertificatesServiceIOSFactory::GetForProfile(
+          profile);
+  if (service) {
+    service->GetAutoSelectedIdentity(
+        nsurlprotectionspace_util::RequesterOrigin(protection_space),
+        base::BindOnce(&OnGetIdentityFinished, std::move(callback)));
+  } else {
+    std::move(callback).Run(nullptr);
+  }
+}
+
 UIView* WebStateDelegateBrowserAgent::GetWebViewContainer(
     web::WebState* source) {
   return [container_view_provider_ containerView];
@@ -373,10 +371,29 @@ void WebStateDelegateBrowserAgent::ContextMenuConfiguration(
     web::WebState* source,
     const web::ContextMenuParams& params,
     void (^completion_handler)(UIContextMenuConfiguration*)) {
+  if (IsPageActionMenuEnabled()) {
+    id<GeminiCommands> geminiHandler =
+        HandlerForProtocol(browser_->GetCommandDispatcher(), GeminiCommands);
+    [geminiHandler
+        hideFloatyIfInvokedAnimated:YES
+                         fromSource:gemini::FloatyUpdateSource::WebContextMenu];
+  }
+
   UIContextMenuConfiguration* configuration =
       [context_menu_provider_ contextMenuConfigurationForWebState:source
                                                            params:params];
   completion_handler(configuration);
+}
+
+UIContextMenuConfiguration*
+WebStateDelegateBrowserAgent::GetCustomContextMenuConfiguration() {
+  return ios::provider::GetDefaultContextMenuConfiguration();
+}
+
+void WebStateDelegateBrowserAgent::ContextMenuConfigurationLoaded(
+    UIContextMenuConfiguration* configuration,
+    UIContextMenuConfiguration* update) {
+  ios::provider::UpdateContextMenuConfiguration(configuration, update);
 }
 
 void WebStateDelegateBrowserAgent::ContextMenuWillCommitWithAnimator(
@@ -402,22 +419,33 @@ void WebStateDelegateBrowserAgent::OnNewWebViewCreated(web::WebState* source) {
   [source->GetWebViewProxy() becomeFirstResponder];
 }
 
-void WebStateDelegateBrowserAgent::SetWebStateDelegate(
-    web::WebState* web_state) {
-  DCHECK(web_state);
-  if (web_state->IsRealized()) {
-    web_state->SetDelegate(this);
-  } else {
-    web_state_observations_.AddObservation(web_state);
-  }
+void WebStateDelegateBrowserAgent::ShouldAllowCopy(
+    web::WebState* source,
+    base::OnceCallback<void(bool)> callback) {
+  data_controls::DataControlsTabHelper::FromWebState(source)->ShouldAllowCopy(
+      std::move(callback));
 }
 
-void WebStateDelegateBrowserAgent::ClearWebStateDelegate(
-    web::WebState* web_state) {
-  DCHECK(web_state);
-  if (web_state->IsRealized()) {
-    web_state->SetDelegate(nullptr);
-  } else {
-    web_state_observations_.RemoveObservation(web_state);
-  }
+void WebStateDelegateBrowserAgent::ShouldAllowPaste(
+    web::WebState* source,
+    base::OnceCallback<void(bool)> callback) {
+  data_controls::DataControlsTabHelper::FromWebState(source)->ShouldAllowPaste(
+      std::move(callback));
+}
+
+void WebStateDelegateBrowserAgent::ShouldAllowCut(
+    web::WebState* source,
+    base::OnceCallback<void(bool)> callback) {
+  data_controls::DataControlsTabHelper::FromWebState(source)->ShouldAllowCut(
+      std::move(callback));
+}
+
+void WebStateDelegateBrowserAgent::DidFinishClipboardRead(
+    web::WebState* source) {
+  data_controls::DataControlsTabHelper::FromWebState(source)
+      ->DidFinishClipboardRead();
+}
+
+TabInsertionBrowserAgent* WebStateDelegateBrowserAgent::tab_insertion_agent() {
+  return TabInsertionBrowserAgent::FromBrowser(browser_);
 }

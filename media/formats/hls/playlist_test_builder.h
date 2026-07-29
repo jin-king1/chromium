@@ -12,6 +12,7 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/location.h"
+#include "media/base/media_serializers.h"
 #include "media/base/media_serializers_base.h"
 #include "media/formats/hls/playlist.h"
 #include "media/formats/hls/source_string.h"
@@ -19,6 +20,7 @@
 #include "media/formats/hls/types.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
+#include "url/origin.h"
 
 namespace media::hls {
 
@@ -67,8 +69,8 @@ class PlaylistTestBuilder {
   scoped_refptr<PlaylistT> Parse(
       Args&&... args,
       const base::Location& from = base::Location::Current()) {
-    auto result =
-        PlaylistT::Parse(source_, uri_, version_, std::forward<Args>(args)...);
+    auto result = PlaylistT::Parse(source_, uri_, url::Origin::Create(uri_),
+                                   version_, std::forward<Args>(args)...);
 
     if (!result.has_value()) {
       EXPECT_TRUE(result.has_value())
@@ -90,14 +92,15 @@ class PlaylistTestBuilder {
   void ExpectError(ParseStatusCode code,
                    const base::Location& from,
                    Args&&... args) const {
-    auto result =
-        PlaylistT::Parse(source_, uri_, version_, std::forward<Args>(args)...);
+    auto result = PlaylistT::Parse(source_, uri_, url::Origin::Create(uri_),
+                                   version_, std::forward<Args>(args)...);
     ASSERT_FALSE(result.has_value()) << from.ToString();
 
-    auto actual_code = std::move(result).error().code();
-    EXPECT_EQ(actual_code, code)
-        << "Error: " << ParseStatusCodeToString(actual_code) << "\n"
-        << "Expected Error: " << ParseStatusCodeToString(code) << "\n"
+    auto actual_error = std::move(result).error();
+    ParseStatus expected_error = code;
+    EXPECT_EQ(actual_error.code(), code)
+        << "Error: " << actual_error.message() << "\n"
+        << "Expected Error: " << expected_error.message() << "\n"
         << from.ToString();
   }
 
@@ -105,11 +108,10 @@ class PlaylistTestBuilder {
   // expectations.
   template <typename... Args>
   void ExpectOk(const base::Location& from, Args&&... args) const {
-    auto result =
-        PlaylistT::Parse(source_, uri_, version_, std::forward<Args>(args)...);
+    auto result = PlaylistT::Parse(source_, uri_, url::Origin::Create(uri_),
+                                   version_, std::forward<Args>(args)...);
     ASSERT_TRUE(result.has_value())
-        << "Error: "
-        << ParseStatusCodeToString(std::move(result).error().code()) << "\n"
+        << "Error: " << std::move(result).error().message() << "\n"
         << from.ToString();
     auto playlist = std::move(result).value();
 

@@ -15,10 +15,9 @@
 #include "gin/thread_isolation.h"
 #include "partition_alloc/thread_isolation/pkey.h"
 
-#if PA_BUILDFLAG(ENABLE_PKEYS)
-#else  // PA_BUILDFLAG(ENABLE_PKEYS)
+#if !PA_BUILDFLAG(ENABLE_PKEYS)
 #error Not implemented for non-pkey thread isolation
-#endif  // PA_BUILDFLAG(ENABLE_PKEYS)
+#endif  // !PA_BUILDFLAG(ENABLE_PKEYS)
 
 namespace gin {
 
@@ -30,21 +29,11 @@ void ThreadIsolatedAllocator::Initialize(int pkey) {
   partition_alloc::PartitionOptions opts;
   opts.thread_isolation = partition_alloc::ThreadIsolationOption(pkey_);
 
-  // TODO(crbug.com/40274683): This will disappear when we reduce
-  // freelist impl selection to a compile-time seam.
-  opts.use_pool_offset_freelists = partition_alloc::PartitionOptions::kEnabled;
-
-  // TODO(crbug.com/333443437): Remove this user-configurable toggle and
-  // default all buckets to "small" single-slot spans.
-  opts.use_small_single_slot_spans =
-      partition_alloc::PartitionOptions::kEnabled;
-
   allocator_.init(opts);
 }
 
 void* ThreadIsolatedAllocator::Allocate(size_t size) {
-  return allocator_.root()->AllocInline<partition_alloc::AllocFlags::kNoHooks>(
-      size);
+  return allocator_.root()->Alloc<partition_alloc::AllocFlags::kNoHooks>(size);
 }
 
 void ThreadIsolatedAllocator::Free(void* object) {

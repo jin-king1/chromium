@@ -25,7 +25,6 @@
 #include "content/public/common/content_client.h"
 #include "storage/browser/file_system/file_system_context.h"
 #include "storage/browser/file_system/file_system_url.h"
-#include "storage/browser/file_system/file_system_util.h"
 #include "storage/browser/quota/quota_manager.h"
 #include "storage/common/file_system/file_system_types.h"
 #include "storage/common/file_system/file_system_util.h"
@@ -120,7 +119,7 @@ void SyncFileSystemRequestFileSystemFunction::DidOpenFileSystem(
     return;
   }
 
-  base::Value::Dict dict;
+  base::DictValue dict;
   dict.Set("name", file_system_name);
   dict.Set("root", ::sync_file_system::GetSyncableFileSystemRootURI(
                        root_url.origin().GetURL())
@@ -168,7 +167,6 @@ SyncFileSystemGetUsageAndQuotaFunction::Run() {
           &storage::QuotaManager::GetUsageAndQuotaForWebApps, quota_manager,
           blink::StorageKey::CreateFirstParty(
               url::Origin::Create(source_url())),
-          storage::FileSystemTypeToQuotaStorageType(file_system_url.type()),
           BindOnce(&SyncFileSystemGetUsageAndQuotaFunction::DidGetUsageAndQuota,
                    this)));
 

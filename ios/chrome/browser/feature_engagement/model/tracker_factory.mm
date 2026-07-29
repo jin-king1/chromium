@@ -10,6 +10,14 @@
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 
 namespace feature_engagement {
+namespace {
+
+// static
+std::unique_ptr<KeyedService> BuildServiceInstance(ProfileIOS* profile) {
+  return CreateFeatureEngagementTracker(profile);
+}
+
+}  // namespace
 
 // static
 feature_engagement::Tracker* TrackerFactory::GetForProfile(
@@ -31,8 +39,14 @@ TrackerFactory::TrackerFactory()
 
 TrackerFactory::~TrackerFactory() = default;
 
-std::unique_ptr<KeyedService> TrackerFactory::BuildServiceInstanceFor(
-    web::BrowserState* context) const {
-  return CreateFeatureEngagementTracker(ProfileIOS::FromBrowserState(context));
+// static
+TrackerFactory::TestingFactory TrackerFactory::GetDefaultFactory() {
+  return base::BindOnce(&BuildServiceInstance);
 }
+
+std::unique_ptr<KeyedService> TrackerFactory::BuildServiceInstanceFor(
+    ProfileIOS* profile) const {
+  return BuildServiceInstance(profile);
+}
+
 }  // namespace feature_engagement

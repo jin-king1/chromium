@@ -114,8 +114,11 @@ void TestFillingExpirationMonth(const std::vector<const char*>& values,
   // Try a single-digit month.
   CreditCard credit_card = test::GetCreditCard();
   credit_card.SetExpirationMonth(3);
-  std::u16string value_to_fill = GetFillingValueForCreditCard(
-      credit_card, kAppLocale, mojom::ActionPersistence::kFill, field);
+  std::u16string value_to_fill =
+      GetFillingValueAndTypeForCreditCard(
+          credit_card, kAppLocale, mojom::ActionPersistence::kFill, field,
+          /*is_cvc_filling_supported=*/true)
+          .value;
 
   ASSERT_FALSE(value_to_fill.empty());
   content_index = GetIndexOfValue(field.options(), value_to_fill);
@@ -123,8 +126,11 @@ void TestFillingExpirationMonth(const std::vector<const char*>& values,
 
   // Try a two-digit month.
   credit_card.SetExpirationMonth(11);
-  value_to_fill = GetFillingValueForCreditCard(
-      credit_card, kAppLocale, mojom::ActionPersistence::kFill, field);
+  value_to_fill =
+      GetFillingValueAndTypeForCreditCard(
+          credit_card, kAppLocale, mojom::ActionPersistence::kFill, field,
+          /*is_cvc_filling_supported=*/true)
+          .value;
 
   ASSERT_FALSE(value_to_fill.empty());
   content_index = GetIndexOfValue(field.options(), value_to_fill);
@@ -151,10 +157,21 @@ class FieldFillingPaymentsUtilTest : public testing::Test {
  public:
   FieldFillingPaymentsUtilTest() = default;
 
+  std::u16string GetFillingValueForCreditCard(
+      const CreditCard& credit_card,
+      const std::string& app_locale,
+      mojom::ActionPersistence action_persistence,
+      const AutofillField& field,
+      bool is_cvc_filling_supported) {
+    return GetFillingValueAndTypeForCreditCard(credit_card, app_locale,
+                                               action_persistence, field,
+                                               is_cvc_filling_supported)
+        .value;
+  }
+
  private:
   test::AutofillUnitTestEnvironment autofill_test_environment_;
-  base::test::ScopedFeatureList scoped_feature_list_{
-      features::kAutofillEnableCvcStorageAndFilling};
+  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 // Verify that credit card related fields with the autocomplete attribute
@@ -167,9 +184,10 @@ TEST_F(FieldFillingPaymentsUtilTest,
 
   CreditCard credit_card;
   credit_card.SetNumber(u"4111111111111111");
-  EXPECT_EQ(u"4111111111111111", GetFillingValueForCreditCard(
-                                     credit_card, kAppLocale,
-                                     mojom::ActionPersistence::kFill, field));
+  EXPECT_EQ(u"4111111111111111",
+            GetFillingValueForCreditCard(credit_card, kAppLocale,
+                                         mojom::ActionPersistence::kFill, field,
+                                         /*is_cvc_filling_supported=*/true));
 }
 
 // Verify that the correct value is returned if the maximum length of the credit
@@ -183,9 +201,10 @@ TEST_F(FieldFillingPaymentsUtilTest,
 
   CreditCard credit_card;
   credit_card.SetNumber(u"0123456789999999");
-  EXPECT_EQ(u"23456789999999", GetFillingValueForCreditCard(
-                                   credit_card, kAppLocale,
-                                   mojom::ActionPersistence::kFill, field));
+  EXPECT_EQ(u"23456789999999",
+            GetFillingValueForCreditCard(credit_card, kAppLocale,
+                                         mojom::ActionPersistence::kFill, field,
+                                         /*is_cvc_filling_supported=*/true));
 }
 
 // Verify that the full credit card number is returned if the offset exceeds the
@@ -199,9 +218,10 @@ TEST_F(FieldFillingPaymentsUtilTest,
 
   CreditCard credit_card;
   credit_card.SetNumber(u"0123456789999999");
-  EXPECT_EQ(u"0123456789999999", GetFillingValueForCreditCard(
-                                     credit_card, kAppLocale,
-                                     mojom::ActionPersistence::kFill, field));
+  EXPECT_EQ(u"0123456789999999",
+            GetFillingValueForCreditCard(credit_card, kAppLocale,
+                                         mojom::ActionPersistence::kFill, field,
+                                         /*is_cvc_filling_supported=*/true));
 }
 
 // Verify that only the truncated and offsetted value of the credit card number
@@ -217,9 +237,9 @@ TEST_F(FieldFillingPaymentsUtilTest,
   credit_card.SetNumber(u"0123456789999999");
   // Verify that the field is filled with the third digit of the credit card
   // number.
-  EXPECT_EQ(u"3", GetFillingValueForCreditCard(credit_card, kAppLocale,
-                                               mojom::ActionPersistence::kFill,
-                                               field));
+  EXPECT_EQ(u"3", GetFillingValueForCreditCard(
+                      credit_card, kAppLocale, mojom::ActionPersistence::kFill,
+                      field, /*is_cvc_filling_supported=*/true));
 }
 
 // Verify that only the truncated value of the credit card number is set.
@@ -232,9 +252,9 @@ TEST_F(FieldFillingPaymentsUtilTest, FillFormField_MaxLength_CreditCardField) {
   credit_card.SetNumber(u"4111111111111111");
   // Verify that the field is filled with only the first digit of the credit
   // card number.
-  EXPECT_EQ(u"4", GetFillingValueForCreditCard(credit_card, kAppLocale,
-                                               mojom::ActionPersistence::kFill,
-                                               field));
+  EXPECT_EQ(u"4", GetFillingValueForCreditCard(
+                      credit_card, kAppLocale, mojom::ActionPersistence::kFill,
+                      field, /*is_cvc_filling_supported=*/true));
 }
 
 // Test that in the preview credit card numbers are obfuscated.
@@ -247,16 +267,22 @@ TEST_F(FieldFillingPaymentsUtilTest, FillFormField_Preview_CreditCardField) {
   // Verify that the field contains 4 but no more than 4 digits.
   size_t num_digits = std::ranges::count_if(
       GetFillingValueForCreditCard(credit_card, kAppLocale,
-                                   mojom::ActionPersistence::kPreview, field),
+                                   mojom::ActionPersistence::kPreview, field,
+                                   /*is_cvc_filling_supported=*/true),
       &base::IsAsciiDigit<char16_t>);
   EXPECT_EQ(4u, num_digits);
 }
 
 class CreditCardVerificationCodeTest
     : public FieldFillingPaymentsUtilTest,
-      public testing::WithParamInterface<mojom::ActionPersistence> {
+      public testing::WithParamInterface<
+          std::tuple<mojom::ActionPersistence, bool>> {
  public:
-  mojom::ActionPersistence persistence() { return GetParam(); }
+  mojom::ActionPersistence persistence() const {
+    return std::get<0>(GetParam());
+  }
+
+  bool IsCvcFillingSupported() const { return std::get<1>(GetParam()); }
 };
 
 // Test that verify CVC should be expected value for Preview and Fill.
@@ -270,7 +296,13 @@ TEST_P(CreditCardVerificationCodeTest,
   const std::u16string kCvc = u"1111";
   credit_card.set_cvc(kCvc);
   std::u16string value_to_fill = GetFillingValueForCreditCard(
-      credit_card, kAppLocale, persistence(), field);
+      credit_card, kAppLocale, persistence(), field, IsCvcFillingSupported());
+
+  if (!IsCvcFillingSupported()) {
+    EXPECT_TRUE(value_to_fill.empty());
+    return;
+  }
+
   if (persistence() == mojom::ActionPersistence::kPreview) {
     EXPECT_EQ(kMidlineEllipsis4DotsWithoutPadding, value_to_fill);
   } else {
@@ -288,8 +320,9 @@ TEST_P(CreditCardVerificationCodeTest,
   CreditCard credit_card;
   const std::u16string kEmptyCvc = u"";
   credit_card.set_cvc(kEmptyCvc);
-  EXPECT_EQ(kEmptyCvc, GetFillingValueForCreditCard(credit_card, kAppLocale,
-                                                    persistence(), field));
+  EXPECT_EQ(kEmptyCvc, GetFillingValueForCreditCard(
+                           credit_card, kAppLocale, persistence(), field,
+                           /*is_cvc_filling_supported=*/true));
 }
 
 // Tests that CVC is correctly previewed and filled for a standalone CVC field.
@@ -299,8 +332,9 @@ TEST_P(CreditCardVerificationCodeTest, FillFormField_StandaloneCVCField) {
                   AutofillPredictionSource::kHeuristics);
 
   CreditCard credit_card = test::WithCvc(test::GetVirtualCard());
-  std::u16string value_to_fill = GetFillingValueForCreditCard(
-      credit_card, kAppLocale, persistence(), field);
+  std::u16string value_to_fill =
+      GetFillingValueForCreditCard(credit_card, kAppLocale, persistence(),
+                                   field, /*is_cvc_filling_supported=*/true);
   switch (persistence()) {
     case mojom::ActionPersistence::kPreview:
       EXPECT_EQ(kMidlineEllipsis3DotsWithoutPadding, value_to_fill);
@@ -326,8 +360,9 @@ TEST_P(CreditCardVerificationCodeTest,
   test_api(credit_card).set_network_for_card(kAmericanExpressCard);
   const std::u16string kCvc = u"1111";
   credit_card.set_cvc(kCvc);
-  std::u16string value_to_fill = GetFillingValueForCreditCard(
-      credit_card, kAppLocale, persistence(), field);
+  std::u16string value_to_fill =
+      GetFillingValueForCreditCard(credit_card, kAppLocale, persistence(),
+                                   field, /*is_cvc_filling_supported=*/true);
   switch (persistence()) {
     case mojom::ActionPersistence::kPreview:
       EXPECT_EQ(kMidlineEllipsis4DotsWithoutPadding, value_to_fill);
@@ -340,10 +375,12 @@ TEST_P(CreditCardVerificationCodeTest,
   }
 }
 
-INSTANTIATE_TEST_SUITE_P(FieldFillingPaymentsUtilTest,
-                         CreditCardVerificationCodeTest,
-                         testing::Values(mojom::ActionPersistence::kPreview,
-                                         mojom::ActionPersistence::kFill));
+INSTANTIATE_TEST_SUITE_P(
+    FieldFillingPaymentsUtilTest,
+    CreditCardVerificationCodeTest,
+    testing::Combine(testing::Values(mojom::ActionPersistence::kPreview,
+                                     mojom::ActionPersistence::kFill),
+                     testing::Bool()));
 
 struct FieldFillingPaymentsUtilTestCase {
   HtmlFieldType field_type;
@@ -371,10 +408,10 @@ TEST_P(ExpirationYearTest, FillExpirationYearInput) {
 
   CreditCard credit_card = test::GetCreditCard();
   credit_card.SetExpirationDateFromString(u"12/2050");
-  EXPECT_EQ(
-      test_case.expected_value,
-      GetFillingValueForCreditCard(credit_card, kAppLocale,
-                                   mojom::ActionPersistence::kFill, field));
+  EXPECT_EQ(test_case.expected_value,
+            GetFillingValueForCreditCard(credit_card, kAppLocale,
+                                         mojom::ActionPersistence::kFill, field,
+                                         /*is_cvc_filling_supported=*/true));
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -499,7 +536,8 @@ TEST_P(ExpirationDateTest, FillExpirationDateInput) {
   CreditCard credit_card = test::GetCreditCard();
   credit_card.SetExpirationDateFromString(u"03/2050");
   std::u16string value_to_fill = GetFillingValueForCreditCard(
-      credit_card, kAppLocale, mojom::ActionPersistence::kFill, field);
+      credit_card, kAppLocale, mojom::ActionPersistence::kFill, field,
+      /*is_cvc_filling_supported=*/true);
   EXPECT_EQ(!value_to_fill.empty(), test_case.expected_response);
   if (!value_to_fill.empty()) {
     EXPECT_EQ(test_case.expected_value, value_to_fill);
@@ -820,9 +858,10 @@ TEST_F(FieldFillingPaymentsUtilTest,
 
   CreditCard credit_card = test::GetCreditCard();
   credit_card.SetExpirationMonth(4);
-  EXPECT_EQ(u"Apr", GetFillingValueForCreditCard(
-                        credit_card, kAppLocale,
-                        mojom::ActionPersistence::kFill, field));
+  EXPECT_EQ(u"Apr",
+            GetFillingValueForCreditCard(credit_card, kAppLocale,
+                                         mojom::ActionPersistence::kFill, field,
+                                         /*is_cvc_filling_supported=*/true));
 }
 
 TEST_F(FieldFillingPaymentsUtilTest, FillSelectControlWithMonthName) {
@@ -832,9 +871,10 @@ TEST_F(FieldFillingPaymentsUtilTest, FillSelectControlWithMonthName) {
       CREDIT_CARD_EXP_MONTH);
   CreditCard credit_card = test::GetCreditCard();
   credit_card.SetExpirationMonth(4);
-  EXPECT_EQ(u"April", GetFillingValueForCreditCard(
-                          credit_card, kAppLocale,
-                          mojom::ActionPersistence::kFill, field));
+  EXPECT_EQ(u"April",
+            GetFillingValueForCreditCard(credit_card, kAppLocale,
+                                         mojom::ActionPersistence::kFill, field,
+                                         /*is_cvc_filling_supported=*/true));
 }
 
 TEST_F(FieldFillingPaymentsUtilTest, FillSelectControlWithMonthNameAndDigits) {
@@ -845,9 +885,10 @@ TEST_F(FieldFillingPaymentsUtilTest, FillSelectControlWithMonthNameAndDigits) {
       CREDIT_CARD_EXP_MONTH);
   CreditCard credit_card = test::GetCreditCard();
   credit_card.SetExpirationMonth(4);
-  EXPECT_EQ(u"April (04)", GetFillingValueForCreditCard(
-                               credit_card, kAppLocale,
-                               mojom::ActionPersistence::kFill, field));
+  EXPECT_EQ(u"April (04)",
+            GetFillingValueForCreditCard(credit_card, kAppLocale,
+                                         mojom::ActionPersistence::kFill, field,
+                                         /*is_cvc_filling_supported=*/true));
 }
 
 TEST_F(FieldFillingPaymentsUtilTest,
@@ -862,13 +903,15 @@ TEST_F(FieldFillingPaymentsUtilTest,
       CREDIT_CARD_EXP_MONTH);
   CreditCard credit_card = test::GetCreditCard();
   credit_card.SetExpirationMonth(8);
-  EXPECT_EQ(u"08 - AOÛT", GetFillingValueForCreditCard(
-                              credit_card, /*app_locale=*/"fr-FR",
-                              mojom::ActionPersistence::kFill, field));
+  EXPECT_EQ(u"08 - AOÛT",
+            GetFillingValueForCreditCard(credit_card, /*app_locale=*/"fr-FR",
+                                         mojom::ActionPersistence::kFill, field,
+                                         /*is_cvc_filling_supported=*/true));
   credit_card.SetExpirationMonth(12);
-  EXPECT_EQ(u"12 - DECEMBRE", GetFillingValueForCreditCard(
-                                  credit_card, kAppLocale,
-                                  mojom::ActionPersistence::kFill, field));
+  EXPECT_EQ(u"12 - DECEMBRE",
+            GetFillingValueForCreditCard(credit_card, kAppLocale,
+                                         mojom::ActionPersistence::kFill, field,
+                                         /*is_cvc_filling_supported=*/true));
 }
 
 TEST_F(FieldFillingPaymentsUtilTest, FillSelectControlWithMonthName_French) {
@@ -876,19 +919,22 @@ TEST_F(FieldFillingPaymentsUtilTest, FillSelectControlWithMonthName_French) {
       {"JANV", "FÉVR.", "MARS", "décembre"}, CREDIT_CARD_EXP_MONTH);
   CreditCard credit_card = test::GetCreditCard();
   credit_card.SetExpirationMonth(2);
-  EXPECT_EQ(u"FÉVR.", GetFillingValueForCreditCard(
-                          credit_card, /*app_locale=*/"fr-FR",
-                          mojom::ActionPersistence::kFill, field));
+  EXPECT_EQ(u"FÉVR.",
+            GetFillingValueForCreditCard(credit_card, /*app_locale=*/"fr-FR",
+                                         mojom::ActionPersistence::kFill, field,
+                                         /*is_cvc_filling_supported=*/true));
 
   credit_card.SetExpirationMonth(1);
-  EXPECT_EQ(u"JANV", GetFillingValueForCreditCard(
-                         credit_card, /*app_locale=*/"fr-FR",
-                         mojom::ActionPersistence::kFill, field));
+  EXPECT_EQ(u"JANV",
+            GetFillingValueForCreditCard(credit_card, /*app_locale=*/"fr-FR",
+                                         mojom::ActionPersistence::kFill, field,
+                                         /*is_cvc_filling_supported=*/true));
 
   credit_card.SetExpirationMonth(12);
-  EXPECT_EQ(u"décembre", GetFillingValueForCreditCard(
-                             credit_card, /*app_locale=*/"fr-FR",
-                             mojom::ActionPersistence::kFill, field));
+  EXPECT_EQ(u"décembre",
+            GetFillingValueForCreditCard(credit_card, /*app_locale=*/"fr-FR",
+                                         mojom::ActionPersistence::kFill, field,
+                                         /*is_cvc_filling_supported=*/true));
 }
 
 TEST_F(FieldFillingPaymentsUtilTest,
@@ -901,9 +947,9 @@ TEST_F(FieldFillingPaymentsUtilTest,
 
   CreditCard credit_card = test::GetCreditCard();
   credit_card.SetExpirationMonth(4);
-  EXPECT_EQ(u"4", GetFillingValueForCreditCard(credit_card, kAppLocale,
-                                               mojom::ActionPersistence::kFill,
-                                               field));
+  EXPECT_EQ(u"4", GetFillingValueForCreditCard(
+                      credit_card, kAppLocale, mojom::ActionPersistence::kFill,
+                      field, /*is_cvc_filling_supported=*/true));
 }
 
 TEST_F(FieldFillingPaymentsUtilTest,
@@ -914,9 +960,9 @@ TEST_F(FieldFillingPaymentsUtilTest,
 
   CreditCard credit_card = test::GetCreditCard();
   credit_card.SetExpirationYear(2050);
-  EXPECT_EQ(u"50", GetFillingValueForCreditCard(credit_card, kAppLocale,
-                                                mojom::ActionPersistence::kFill,
-                                                field));
+  EXPECT_EQ(u"50", GetFillingValueForCreditCard(
+                       credit_card, kAppLocale, mojom::ActionPersistence::kFill,
+                       field, /*is_cvc_filling_supported=*/true));
 }
 
 TEST_F(FieldFillingPaymentsUtilTest, FillSelectControlWithCreditCardType) {
@@ -926,27 +972,31 @@ TEST_F(FieldFillingPaymentsUtilTest, FillSelectControlWithCreditCardType) {
 
   // Normal case:
   credit_card.SetNumber(u"4111111111111111");  // Visa number.
-  EXPECT_EQ(u"Visa", GetFillingValueForCreditCard(
-                         credit_card, kAppLocale,
-                         mojom::ActionPersistence::kFill, field));
+  EXPECT_EQ(u"Visa",
+            GetFillingValueForCreditCard(credit_card, kAppLocale,
+                                         mojom::ActionPersistence::kFill, field,
+                                         /*is_cvc_filling_supported=*/true));
 
   // Filling should be able to handle intervening whitespace:
   credit_card.SetNumber(u"5555555555554444");  // MC number.
-  EXPECT_EQ(u"Mastercard", GetFillingValueForCreditCard(
-                               credit_card, kAppLocale,
-                               mojom::ActionPersistence::kFill, field));
+  EXPECT_EQ(u"Mastercard",
+            GetFillingValueForCreditCard(credit_card, kAppLocale,
+                                         mojom::ActionPersistence::kFill, field,
+                                         /*is_cvc_filling_supported=*/true));
 
   // American Express is sometimes abbreviated as AmEx:
   credit_card.SetNumber(u"378282246310005");  // Amex number.
-  EXPECT_EQ(u"AmEx", GetFillingValueForCreditCard(
-                         credit_card, kAppLocale,
-                         mojom::ActionPersistence::kFill, field));
+  EXPECT_EQ(u"AmEx",
+            GetFillingValueForCreditCard(credit_card, kAppLocale,
+                                         mojom::ActionPersistence::kFill, field,
+                                         /*is_cvc_filling_supported=*/true));
 
   // Case insensitivity:
   credit_card.SetNumber(u"6011111111111117");  // Discover number.
-  EXPECT_EQ(u"discover", GetFillingValueForCreditCard(
-                             credit_card, kAppLocale,
-                             mojom::ActionPersistence::kFill, field));
+  EXPECT_EQ(u"discover",
+            GetFillingValueForCreditCard(credit_card, kAppLocale,
+                                         mojom::ActionPersistence::kFill, field,
+                                         /*is_cvc_filling_supported=*/true));
 }
 
 TEST_F(FieldFillingPaymentsUtilTest, FillMonthControl) {
@@ -958,15 +1008,17 @@ TEST_F(FieldFillingPaymentsUtilTest, FillMonthControl) {
   // Try a month with two digits.
   CreditCard credit_card = test::GetCreditCard();
   credit_card.SetExpirationDateFromString(u"12/2050");
-  EXPECT_EQ(u"2050-12", GetFillingValueForCreditCard(
-                            credit_card, kAppLocale,
-                            mojom::ActionPersistence::kFill, field));
+  EXPECT_EQ(u"2050-12",
+            GetFillingValueForCreditCard(credit_card, kAppLocale,
+                                         mojom::ActionPersistence::kFill, field,
+                                         /*is_cvc_filling_supported=*/true));
 
   // Try a month with a leading zero.
   credit_card.SetExpirationDateFromString(u"03/2050");
-  EXPECT_EQ(u"2050-03", GetFillingValueForCreditCard(
-                            credit_card, kAppLocale,
-                            mojom::ActionPersistence::kFill, field));
+  EXPECT_EQ(u"2050-03",
+            GetFillingValueForCreditCard(credit_card, kAppLocale,
+                                         mojom::ActionPersistence::kFill, field,
+                                         /*is_cvc_filling_supported=*/true));
 }
 
 TEST_F(FieldFillingPaymentsUtilTest, FillCreditCardNumberWithoutSplits) {
@@ -977,9 +1029,10 @@ TEST_F(FieldFillingPaymentsUtilTest, FillCreditCardNumberWithoutSplits) {
   CreditCard credit_card;
   credit_card.SetNumber(u"41111111111111111");
   // Verify that full card-number shall get filled properly.
-  EXPECT_EQ(u"41111111111111111", GetFillingValueForCreditCard(
-                                      credit_card, kAppLocale,
-                                      mojom::ActionPersistence::kFill, field));
+  EXPECT_EQ(u"41111111111111111",
+            GetFillingValueForCreditCard(credit_card, kAppLocale,
+                                         mojom::ActionPersistence::kFill, field,
+                                         /*is_cvc_filling_supported=*/true));
   EXPECT_EQ(0U, field.credit_card_number_offset());
 }
 
@@ -1000,10 +1053,10 @@ TEST_F(FieldFillingPaymentsUtilTest, FillCreditCardNumberWithEqualSizeSplits) {
     // Fill with a card-number; should fill just the card_number_part.
     CreditCard credit_card;
     credit_card.SetNumber(test.card_number_);
-    EXPECT_EQ(
-        test.expected_results_[i],
-        GetFillingValueForCreditCard(credit_card, kAppLocale,
-                                     mojom::ActionPersistence::kFill, field));
+    EXPECT_EQ(test.expected_results_[i],
+              GetFillingValueForCreditCard(
+                  credit_card, kAppLocale, mojom::ActionPersistence::kFill,
+                  field, /*is_cvc_filling_supported=*/true));
     EXPECT_EQ(4 * i, field.credit_card_number_offset());
   }
 
@@ -1013,9 +1066,10 @@ TEST_F(FieldFillingPaymentsUtilTest, FillCreditCardNumberWithEqualSizeSplits) {
 
   CreditCard credit_card;
   credit_card.SetNumber(test.card_number_);
-  EXPECT_EQ(test.card_number_, GetFillingValueForCreditCard(
-                                   credit_card, kAppLocale,
-                                   mojom::ActionPersistence::kFill, field));
+  EXPECT_EQ(test.card_number_,
+            GetFillingValueForCreditCard(credit_card, kAppLocale,
+                                         mojom::ActionPersistence::kFill, field,
+                                         /*is_cvc_filling_supported=*/true));
 }
 
 TEST_F(FieldFillingPaymentsUtilTest,
@@ -1043,9 +1097,9 @@ TEST_F(FieldFillingPaymentsUtilTest,
     CreditCard credit_card;
     credit_card.SetNumber(test.card_number_);
     EXPECT_EQ(test.expected_results_[i],
-              GetFillingValueForCreditCard(credit_card, kAppLocale,
-                                           mojom::ActionPersistence::kPreview,
-                                           field));
+              GetFillingValueForCreditCard(
+                  credit_card, kAppLocale, mojom::ActionPersistence::kPreview,
+                  field, /*is_cvc_filling_supported=*/true));
     EXPECT_EQ(4 * i, field.credit_card_number_offset());
   }
 
@@ -1055,10 +1109,10 @@ TEST_F(FieldFillingPaymentsUtilTest,
 
   CreditCard credit_card;
   credit_card.SetNumber(test.card_number_);
-  EXPECT_EQ(
-      obfuscated_card_number,
-      GetFillingValueForCreditCard(credit_card, kAppLocale,
-                                   mojom::ActionPersistence::kPreview, field));
+  EXPECT_EQ(obfuscated_card_number,
+            GetFillingValueForCreditCard(
+                credit_card, kAppLocale, mojom::ActionPersistence::kPreview,
+                field, /*is_cvc_filling_supported=*/true));
 }
 
 TEST_F(FieldFillingPaymentsUtilTest,
@@ -1081,10 +1135,10 @@ TEST_F(FieldFillingPaymentsUtilTest,
     // Fill with a card-number; should fill just the card_number_part.
     CreditCard credit_card;
     credit_card.SetNumber(test.card_number_);
-    EXPECT_EQ(
-        test.expected_results_[i],
-        GetFillingValueForCreditCard(credit_card, kAppLocale,
-                                     mojom::ActionPersistence::kFill, field));
+    EXPECT_EQ(test.expected_results_[i],
+              GetFillingValueForCreditCard(
+                  credit_card, kAppLocale, mojom::ActionPersistence::kFill,
+                  field, /*is_cvc_filling_supported=*/true));
     EXPECT_EQ(GetNumberOffset(i, test), field.credit_card_number_offset());
   }
 
@@ -1093,9 +1147,10 @@ TEST_F(FieldFillingPaymentsUtilTest,
   field.set_heuristic_type(GetActiveHeuristicSource(), CREDIT_CARD_NUMBER);
   CreditCard credit_card;
   credit_card.SetNumber(test.card_number_);
-  EXPECT_EQ(test.card_number_, GetFillingValueForCreditCard(
-                                   credit_card, kAppLocale,
-                                   mojom::ActionPersistence::kFill, field));
+  EXPECT_EQ(test.card_number_,
+            GetFillingValueForCreditCard(credit_card, kAppLocale,
+                                         mojom::ActionPersistence::kFill, field,
+                                         /*is_cvc_filling_supported=*/true));
 }
 
 TEST_F(FieldFillingPaymentsUtilTest,
@@ -1127,9 +1182,9 @@ TEST_F(FieldFillingPaymentsUtilTest,
     CreditCard credit_card;
     credit_card.SetNumber(test.card_number_);
     EXPECT_EQ(test.expected_results_[i],
-              GetFillingValueForCreditCard(credit_card, kAppLocale,
-                                           mojom::ActionPersistence::kPreview,
-                                           field));
+              GetFillingValueForCreditCard(
+                  credit_card, kAppLocale, mojom::ActionPersistence::kPreview,
+                  field, /*is_cvc_filling_supported=*/true));
     EXPECT_EQ(GetNumberOffset(i, test), field.credit_card_number_offset());
   }
 
@@ -1138,10 +1193,10 @@ TEST_F(FieldFillingPaymentsUtilTest,
   field.set_heuristic_type(GetActiveHeuristicSource(), CREDIT_CARD_NUMBER);
   CreditCard credit_card;
   credit_card.SetNumber(test.card_number_);
-  EXPECT_EQ(
-      obfuscated_card_number,
-      GetFillingValueForCreditCard(credit_card, kAppLocale,
-                                   mojom::ActionPersistence::kPreview, field));
+  EXPECT_EQ(obfuscated_card_number,
+            GetFillingValueForCreditCard(
+                credit_card, kAppLocale, mojom::ActionPersistence::kPreview,
+                field, /*is_cvc_filling_supported=*/true));
 }
 
 TEST_F(FieldFillingPaymentsUtilTest, PreviewVirtualMonth) {
@@ -1152,17 +1207,17 @@ TEST_F(FieldFillingPaymentsUtilTest, PreviewVirtualMonth) {
   // A month with two digits should return two dots.
   CreditCard credit_card = test::GetVirtualCard();
   credit_card.SetExpirationDateFromString(u"12/2050");
-  EXPECT_EQ(
-      kMidlineEllipsis2DotsWithoutPadding,
-      GetFillingValueForCreditCard(credit_card, kAppLocale,
-                                   mojom::ActionPersistence::kPreview, field));
+  EXPECT_EQ(kMidlineEllipsis2DotsWithoutPadding,
+            GetFillingValueForCreditCard(
+                credit_card, kAppLocale, mojom::ActionPersistence::kPreview,
+                field, /*is_cvc_filling_supported=*/true));
 
   // A month with one digit should still return two dots.
   credit_card.SetExpirationDateFromString(u"03/2050");
-  EXPECT_EQ(
-      kMidlineEllipsis2DotsWithoutPadding,
-      GetFillingValueForCreditCard(credit_card, kAppLocale,
-                                   mojom::ActionPersistence::kPreview, field));
+  EXPECT_EQ(kMidlineEllipsis2DotsWithoutPadding,
+            GetFillingValueForCreditCard(
+                credit_card, kAppLocale, mojom::ActionPersistence::kPreview,
+                field, /*is_cvc_filling_supported=*/true));
 }
 
 // Test that month should be empty for Preview if the form control type of the
@@ -1174,7 +1229,8 @@ TEST_F(FieldFillingPaymentsUtilTest, PreviewVirtualMonthOneSelectOne_Empty) {
 
   CreditCard card = test::GetVirtualCard();
   EXPECT_TRUE(GetFillingValueForCreditCard(
-                  card, kAppLocale, mojom::ActionPersistence::kPreview, field)
+                  card, kAppLocale, mojom::ActionPersistence::kPreview, field,
+                  /*is_cvc_filling_supported=*/true)
                   .empty());
 }
 
@@ -1186,17 +1242,17 @@ TEST_F(FieldFillingPaymentsUtilTest, PreviewVirtualYear) {
 
   CreditCard credit_card = test::GetVirtualCard();
   credit_card.SetExpirationDateFromString(u"12/2050");
-  EXPECT_EQ(
-      kMidlineEllipsis4DotsWithoutPadding,
-      GetFillingValueForCreditCard(credit_card, kAppLocale,
-                                   mojom::ActionPersistence::kPreview, field));
+  EXPECT_EQ(kMidlineEllipsis4DotsWithoutPadding,
+            GetFillingValueForCreditCard(
+                credit_card, kAppLocale, mojom::ActionPersistence::kPreview,
+                field, /*is_cvc_filling_supported=*/true));
 
   field.set_heuristic_type(GetActiveHeuristicSource(),
                            CREDIT_CARD_EXP_2_DIGIT_YEAR);
-  EXPECT_EQ(
-      kMidlineEllipsis2DotsWithoutPadding,
-      GetFillingValueForCreditCard(credit_card, kAppLocale,
-                                   mojom::ActionPersistence::kPreview, field));
+  EXPECT_EQ(kMidlineEllipsis2DotsWithoutPadding,
+            GetFillingValueForCreditCard(
+                credit_card, kAppLocale, mojom::ActionPersistence::kPreview,
+                field, /*is_cvc_filling_supported=*/true));
 }
 
 // Test that 4 digit year should be empty for Preview if the form control type
@@ -1210,7 +1266,8 @@ TEST_F(FieldFillingPaymentsUtilTest,
 
   CreditCard card = test::GetVirtualCard();
   EXPECT_TRUE(GetFillingValueForCreditCard(
-                  card, kAppLocale, mojom::ActionPersistence::kPreview, field)
+                  card, kAppLocale, mojom::ActionPersistence::kPreview, field,
+                  /*is_cvc_filling_supported=*/true)
                   .empty());
 }
 
@@ -1225,7 +1282,8 @@ TEST_F(FieldFillingPaymentsUtilTest,
 
   CreditCard card = test::GetVirtualCard();
   EXPECT_TRUE(GetFillingValueForCreditCard(
-                  card, kAppLocale, mojom::ActionPersistence::kPreview, field)
+                  card, kAppLocale, mojom::ActionPersistence::kPreview, field,
+                  /*is_cvc_filling_supported=*/true)
                   .empty());
 }
 
@@ -1239,10 +1297,10 @@ TEST_F(FieldFillingPaymentsUtilTest, PreviewVirtualShortenedYear) {
 
   CreditCard credit_card = test::GetVirtualCard();
   credit_card.SetExpirationDateFromString(u"12/2050");
-  EXPECT_EQ(
-      kMidlineEllipsis2DotsWithoutPadding,
-      GetFillingValueForCreditCard(credit_card, kAppLocale,
-                                   mojom::ActionPersistence::kPreview, field));
+  EXPECT_EQ(kMidlineEllipsis2DotsWithoutPadding,
+            GetFillingValueForCreditCard(
+                credit_card, kAppLocale, mojom::ActionPersistence::kPreview,
+                field, /*is_cvc_filling_supported=*/true));
 }
 
 TEST_F(FieldFillingPaymentsUtilTest, PreviewVirtualDate) {
@@ -1260,9 +1318,10 @@ TEST_F(FieldFillingPaymentsUtilTest, PreviewVirtualDate) {
   std::u16string expected =
       base::StrCat({kMidlineEllipsis2DotsWithoutPadding, slash,
                     kMidlineEllipsis4DotsWithoutPadding});
-  EXPECT_EQ(expected, GetFillingValueForCreditCard(
-                          credit_card, kAppLocale,
-                          mojom::ActionPersistence::kPreview, field));
+  EXPECT_EQ(expected,
+            GetFillingValueForCreditCard(
+                credit_card, kAppLocale, mojom::ActionPersistence::kPreview,
+                field, /*is_cvc_filling_supported=*/true));
 
   // A date that has a year containing two digits should return two dots for
   // month and two for year.
@@ -1271,9 +1330,10 @@ TEST_F(FieldFillingPaymentsUtilTest, PreviewVirtualDate) {
   field.set_max_length(5);
   expected = base::StrCat({kMidlineEllipsis2DotsWithoutPadding, slash,
                            kMidlineEllipsis2DotsWithoutPadding});
-  EXPECT_EQ(expected, GetFillingValueForCreditCard(
-                          credit_card, kAppLocale,
-                          mojom::ActionPersistence::kPreview, field));
+  EXPECT_EQ(expected,
+            GetFillingValueForCreditCard(
+                credit_card, kAppLocale, mojom::ActionPersistence::kPreview,
+                field, /*is_cvc_filling_supported=*/true));
 }
 
 TEST_F(FieldFillingPaymentsUtilTest, PreviewVirtualShortenedDate) {
@@ -1288,34 +1348,38 @@ TEST_F(FieldFillingPaymentsUtilTest, PreviewVirtualShortenedDate) {
   credit_card.SetExpirationDateFromString(u"12/2050");
   // Expected: MMYY = ••••. Unlikely case
   std::u16string expected = kMidlineEllipsis4DotsWithoutPadding;
-  EXPECT_EQ(expected, GetFillingValueForCreditCard(
-                          credit_card, kAppLocale,
-                          mojom::ActionPersistence::kPreview, field));
+  EXPECT_EQ(expected,
+            GetFillingValueForCreditCard(
+                credit_card, kAppLocale, mojom::ActionPersistence::kPreview,
+                field, /*is_cvc_filling_supported=*/true));
 
   field.set_max_length(5);
   std::u16string slash = u"/";
   // Expected: MM/YY = ••/••.
   expected = base::StrCat({kMidlineEllipsis2DotsWithoutPadding, slash,
                            kMidlineEllipsis2DotsWithoutPadding});
-  EXPECT_EQ(expected, GetFillingValueForCreditCard(
-                          credit_card, kAppLocale,
-                          mojom::ActionPersistence::kPreview, field));
+  EXPECT_EQ(expected,
+            GetFillingValueForCreditCard(
+                credit_card, kAppLocale, mojom::ActionPersistence::kPreview,
+                field, /*is_cvc_filling_supported=*/true));
 
   field.set_max_length(6);
   // Expected: MMYYYY = ••••••.
   expected = base::StrCat({kMidlineEllipsis2DotsWithoutPadding,
                            kMidlineEllipsis4DotsWithoutPadding});
-  EXPECT_EQ(expected, GetFillingValueForCreditCard(
-                          credit_card, kAppLocale,
-                          mojom::ActionPersistence::kPreview, field));
+  EXPECT_EQ(expected,
+            GetFillingValueForCreditCard(
+                credit_card, kAppLocale, mojom::ActionPersistence::kPreview,
+                field, /*is_cvc_filling_supported=*/true));
 
   field.set_max_length(7);
   // Expected: MM/YYYY = ••/••••.
   expected = base::StrCat({kMidlineEllipsis2DotsWithoutPadding, slash,
                            kMidlineEllipsis4DotsWithoutPadding});
-  EXPECT_EQ(expected, GetFillingValueForCreditCard(
-                          credit_card, kAppLocale,
-                          mojom::ActionPersistence::kPreview, field));
+  EXPECT_EQ(expected,
+            GetFillingValueForCreditCard(
+                credit_card, kAppLocale, mojom::ActionPersistence::kPreview,
+                field, /*is_cvc_filling_supported=*/true));
 }
 
 TEST_F(FieldFillingPaymentsUtilTest, PreviewVirtualCVC) {
@@ -1326,10 +1390,10 @@ TEST_F(FieldFillingPaymentsUtilTest, PreviewVirtualCVC) {
 
   CreditCard credit_card = test::GetVirtualCard();
   test_api(credit_card).set_network_for_card(kMasterCard);
-  EXPECT_EQ(
-      kMidlineEllipsis3DotsWithoutPadding,
-      GetFillingValueForCreditCard(credit_card, kAppLocale,
-                                   mojom::ActionPersistence::kPreview, field));
+  EXPECT_EQ(kMidlineEllipsis3DotsWithoutPadding,
+            GetFillingValueForCreditCard(
+                credit_card, kAppLocale, mojom::ActionPersistence::kPreview,
+                field, /*is_cvc_filling_supported=*/true));
 }
 
 TEST_F(FieldFillingPaymentsUtilTest, PreviewVirtualCVCAmericanExpress) {
@@ -1340,10 +1404,10 @@ TEST_F(FieldFillingPaymentsUtilTest, PreviewVirtualCVCAmericanExpress) {
 
   CreditCard credit_card = test::GetVirtualCard();
   test_api(credit_card).set_network_for_card(kAmericanExpressCard);
-  EXPECT_EQ(
-      kMidlineEllipsis4DotsWithoutPadding,
-      GetFillingValueForCreditCard(credit_card, kAppLocale,
-                                   mojom::ActionPersistence::kPreview, field));
+  EXPECT_EQ(kMidlineEllipsis4DotsWithoutPadding,
+            GetFillingValueForCreditCard(
+                credit_card, kAppLocale, mojom::ActionPersistence::kPreview,
+                field, /*is_cvc_filling_supported=*/true));
 }
 
 TEST_F(FieldFillingPaymentsUtilTest, PreviewVirtualCardNumber) {
@@ -1360,9 +1424,10 @@ TEST_F(FieldFillingPaymentsUtilTest, PreviewVirtualCardNumber) {
       u"\x202A\x2022\x2060\x2006\x2060\x2022\x2060\x2006\x2060\x2022\x2060"
       u"\x2006\x2060\x2022\x2060\x2006\x2060"
       u"5454\x202C";
-  EXPECT_EQ(expected, GetFillingValueForCreditCard(
-                          credit_card, kAppLocale,
-                          mojom::ActionPersistence::kPreview, field));
+  EXPECT_EQ(expected,
+            GetFillingValueForCreditCard(
+                credit_card, kAppLocale, mojom::ActionPersistence::kPreview,
+                field, /*is_cvc_filling_supported=*/true));
 }
 
 // Verify that the obfuscated virtual card number is returned if the offset is
@@ -1384,9 +1449,10 @@ TEST_F(FieldFillingPaymentsUtilTest,
       u"\x2022"
       u"5454";
   // Verify that the field is previewed with the full card number.
-  EXPECT_EQ(expected, GetFillingValueForCreditCard(
-                          credit_card, kAppLocale,
-                          mojom::ActionPersistence::kPreview, field));
+  EXPECT_EQ(expected,
+            GetFillingValueForCreditCard(
+                credit_card, kAppLocale, mojom::ActionPersistence::kPreview,
+                field, /*is_cvc_filling_supported=*/true));
 }
 
 TEST_F(FieldFillingPaymentsUtilTest, PreviewVirtualCardholderName) {
@@ -1399,9 +1465,10 @@ TEST_F(FieldFillingPaymentsUtilTest, PreviewVirtualCardholderName) {
   CreditCard credit_card = test::GetVirtualCard();
   credit_card.SetRawInfoWithVerificationStatus(CREDIT_CARD_NAME_FULL, name,
                                                VerificationStatus::kFormatted);
-  EXPECT_EQ(name, GetFillingValueForCreditCard(
-                      credit_card, kAppLocale,
-                      mojom::ActionPersistence::kPreview, field));
+  EXPECT_EQ(name,
+            GetFillingValueForCreditCard(
+                credit_card, kAppLocale, mojom::ActionPersistence::kPreview,
+                field, /*is_cvc_filling_supported=*/true));
 }
 
 // Verify that `WillFillCreditCardNumberOrCvc` returns false on a form with no
@@ -1416,8 +1483,9 @@ TEST_F(FieldFillingPaymentsUtilTest,
   test_api(form_structure).SetFieldTypes({NAME_FIRST});
 
   EXPECT_FALSE(WillFillCreditCardNumberOrCvc(
-      form_data.fields(), form_structure.fields(), *form_structure.fields()[0],
-      /*card_has_cvc=*/true));
+      form_structure.fields(), *form_structure.fields()[0],
+      AutofillTriggerSource::kPopup, /*card_has_cvc=*/true,
+      AutocompleteUnrecognizedBehavior::kSuggestionsSuppressed));
 }
 
 // Verify that `WillFillCreditCardNumberOrCvc` returns false on a form where
@@ -1437,8 +1505,9 @@ TEST_F(FieldFillingPaymentsUtilTest,
       .SetFieldTypes({CREDIT_CARD_NAME_FIRST, CREDIT_CARD_NUMBER});
 
   EXPECT_FALSE(WillFillCreditCardNumberOrCvc(
-      form_data.fields(), form_structure.fields(), *form_structure.fields()[0],
-      /*card_has_cvc=*/true));
+      form_structure.fields(), *form_structure.fields()[0],
+      AutofillTriggerSource::kPopup, /*card_has_cvc=*/true,
+      AutocompleteUnrecognizedBehavior::kSuggestionsSuppressed));
 }
 
 // Verify that `WillFillCreditCardNumberOrCvc` returns false on a form where
@@ -1450,16 +1519,18 @@ TEST_F(FieldFillingPaymentsUtilTest,
                                      .label = u"First Name on Card"},
                                     {.role = CREDIT_CARD_NUMBER,
                                      .label = u"Card Number",
-                                     .is_autofilled = true,
+                                     .value = u"4111111111111111",
                                      .properties_mask = kUserTyped}}});
 
   FormStructure form_structure(form_data);
   test_api(form_structure)
       .SetFieldTypes({CREDIT_CARD_NAME_FIRST, CREDIT_CARD_NUMBER});
+  form_structure.field(1)->AddFieldModifier(FieldModifier::kAutofill);
 
   EXPECT_FALSE(WillFillCreditCardNumberOrCvc(
-      form_data.fields(), form_structure.fields(), *form_structure.fields()[0],
-      /*card_has_cvc=*/true));
+      form_structure.fields(), *form_structure.fields()[0],
+      AutofillTriggerSource::kPopup, /*card_has_cvc=*/true,
+      AutocompleteUnrecognizedBehavior::kSuggestionsSuppressed));
 }
 
 // Verify that `WillFillCreditCardNumberOrCvc` return true on a form where the
@@ -1478,34 +1549,9 @@ TEST_F(FieldFillingPaymentsUtilTest,
       .SetFieldTypes({CREDIT_CARD_NAME_FIRST, CREDIT_CARD_NUMBER});
 
   EXPECT_TRUE(WillFillCreditCardNumberOrCvc(
-      form_data.fields(), form_structure.fields(), *form_structure.fields()[0],
-      /*card_has_cvc=*/true));
-}
-
-// Verify that `WillFillCreditCardNumberOrCvc` return true on a form where the
-// credit card number field is present and not empty but was not typed by the
-// user if `features::kAutofillSkipPreFilledFields` is disabled.
-TEST_F(FieldFillingPaymentsUtilTest,
-       WillFillCreditCardNumberOrCvc_CCNumberFieldNotEmpty_NotUserTyped) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitWithFeatures(
-      /*enabled_features=*/{features::kAutofillEnableCvcStorageAndFilling},
-      /*disabled_features=*/{features::kAutofillSkipPreFilledFields});
-  FormData form_data = test::GetFormData(
-      {.fields = {
-           {.role = CREDIT_CARD_NAME_FULL, .label = u"First Name on Card"},
-           {.role = CREDIT_CARD_NUMBER,
-            .label = u"Card Number",
-            .value = u"field is not empty",
-            .properties_mask = kAutofilledOnPageLoad}}});
-
-  FormStructure form_structure(form_data);
-  test_api(form_structure)
-      .SetFieldTypes({CREDIT_CARD_NAME_FIRST, CREDIT_CARD_NUMBER});
-
-  EXPECT_TRUE(WillFillCreditCardNumberOrCvc(
-      form_data.fields(), form_structure.fields(), *form_structure.fields()[0],
-      /*card_has_cvc=*/true));
+      form_structure.fields(), *form_structure.fields()[0],
+      AutofillTriggerSource::kPopup, /*card_has_cvc=*/true,
+      AutocompleteUnrecognizedBehavior::kSuggestionsSuppressed));
 }
 
 // Verify that `WillFillCreditCardNumberOrCvc` returns true on a form with only
@@ -1521,8 +1567,9 @@ TEST_F(FieldFillingPaymentsUtilTest,
       .SetFieldTypes({CREDIT_CARD_STANDALONE_VERIFICATION_CODE});
 
   EXPECT_TRUE(WillFillCreditCardNumberOrCvc(
-      form_data.fields(), form_structure.fields(), *form_structure.fields()[0],
-      /*card_has_cvc=*/true));
+      form_structure.fields(), *form_structure.fields()[0],
+      AutofillTriggerSource::kPopup, /*card_has_cvc=*/true,
+      AutocompleteUnrecognizedBehavior::kSuggestionsSuppressed));
 }
 
 // Verify that `WillFillCreditCardNumberOrCvc` returns true on a form with only
@@ -1537,8 +1584,9 @@ TEST_F(FieldFillingPaymentsUtilTest,
   test_api(form_structure).SetFieldTypes({CREDIT_CARD_VERIFICATION_CODE});
 
   EXPECT_TRUE(WillFillCreditCardNumberOrCvc(
-      form_data.fields(), form_structure.fields(), *form_structure.fields()[0],
-      /*card_has_cvc=*/true));
+      form_structure.fields(), *form_structure.fields()[0],
+      AutofillTriggerSource::kPopup, /*card_has_cvc=*/true,
+      AutocompleteUnrecognizedBehavior::kSuggestionsSuppressed));
 }
 
 // Verify that `WillFillCreditCardNumberOrCvc` returns false on a form where
@@ -1561,8 +1609,9 @@ TEST_F(FieldFillingPaymentsUtilTest,
       .SetFieldTypes({CREDIT_CARD_NAME_FIRST, CREDIT_CARD_VERIFICATION_CODE});
 
   EXPECT_FALSE(WillFillCreditCardNumberOrCvc(
-      form_data.fields(), form_structure.fields(), *form_structure.fields()[0],
-      /*card_has_cvc=*/true));
+      form_structure.fields(), *form_structure.fields()[0],
+      AutofillTriggerSource::kPopup, /*card_has_cvc=*/true,
+      AutocompleteUnrecognizedBehavior::kSuggestionsSuppressed));
 }
 
 // Verify that `WillFillCreditCardNumberOrCvc` returns true on a form where
@@ -1581,8 +1630,9 @@ TEST_F(FieldFillingPaymentsUtilTest,
       .SetFieldTypes({CREDIT_CARD_NAME_FIRST, CREDIT_CARD_VERIFICATION_CODE});
 
   EXPECT_TRUE(WillFillCreditCardNumberOrCvc(
-      form_data.fields(), form_structure.fields(), *form_structure.fields()[0],
-      /*card_has_cvc=*/true));
+      form_structure.fields(), *form_structure.fields()[0],
+      AutofillTriggerSource::kPopup, /*card_has_cvc=*/true,
+      AutocompleteUnrecognizedBehavior::kSuggestionsSuppressed));
 }
 
 // Verify that `WillFillCreditCardNumberOrCvc` returns false on a form where
@@ -1601,8 +1651,9 @@ TEST_F(FieldFillingPaymentsUtilTest,
       .SetFieldTypes({CREDIT_CARD_NAME_FIRST, CREDIT_CARD_VERIFICATION_CODE});
 
   EXPECT_FALSE(WillFillCreditCardNumberOrCvc(
-      form_data.fields(), form_structure.fields(), *form_structure.fields()[0],
-      /*card_has_cvc=*/false));
+      form_structure.fields(), *form_structure.fields()[0],
+      AutofillTriggerSource::kPopup, /*card_has_cvc=*/false,
+      AutocompleteUnrecognizedBehavior::kSuggestionsSuppressed));
 }
 
 }  // namespace

@@ -10,15 +10,13 @@ import org.chromium.build.annotations.NullMarked;
 
 import java.util.List;
 
-/**
- * Java API for recording UMA histograms.
- * */
+/** Java API for recording UMA histograms. */
 @NullMarked
 public class RecordHistogram {
     /**
      * Records a sample in a boolean UMA histogram of the given name. Boolean histogram has two
      * buckets, corresponding to success (true) and failure (false). This is the Java equivalent of
-     * the UMA_HISTOGRAM_BOOLEAN C++ macro.
+     * base::UmaHistogramBoolean() in C++.
      *
      * @param name name of the histogram
      * @param sample sample to be recorded, either true or false
@@ -28,19 +26,18 @@ public class RecordHistogram {
     }
 
     /**
-     * Records a sample in an enumerated histogram of the given name and boundary. Note that
-     * {@code max} identifies the histogram - it should be the same at every invocation. This is the
-     * Java equivalent of the UMA_HISTOGRAM_ENUMERATION C++ macro.
+     * Records a sample in an enumerated histogram of the given name and boundary. This is the
+     * Java equivalent of base::UmaHistogramEnumeration() with three params in C++.
+     * Note: This API and the three-param C++ API expect the last param to be the enum size, rather
+     * than the max possible value. It must be 1000 or less and all call sites of a metric must pass
+     * the same value.
      *
      * @param name name of the histogram
-     * @param sample sample to be recorded, at least 0 and at most {@code max-1}
-     * @param max upper bound for legal sample values - all sample values have to be
-     *            lower than or equal to {@code max}. This value should be 1000 or less.
+     * @param sample sample to be recorded, at least 0 and at most {@code enumSize-1}
+     * @param enumSize number of possible values - all {@code sample} values must be strictly lower
      */
-    public static void recordEnumeratedHistogram(String name, int sample, int max) {
-        // While recordExactLinearHistogram’s documentation states that the third argument
-        // should be 100 or less, a value up to 1000 is actually accepted.
-        recordExactLinearHistogram(name, sample, max);
+    public static void recordEnumeratedHistogram(String name, int sample, int enumSize) {
+        recordExactLinearHistogram(name, sample, enumSize);
     }
 
     /**
@@ -234,6 +231,43 @@ public class RecordHistogram {
     public static void recordCustomTimesHistogram(
             String name, long durationMs, long min, long max, int numBuckets) {
         recordCustomTimesHistogramMilliseconds(name, durationMs, min, max, numBuckets);
+    }
+
+    /**
+     * Records a sample in a histogram of microsecond times. Useful for recording very short
+     * durations. This is the Java equivalent of the UMA_HISTOGRAM_MICRO_TIMES C++ macro.
+     *
+     * <p>Note that (like UMA_HISTOGRAM_MICRO_TIMES) this is measured up to 1 second, not 10 seconds
+     * like the base::UmaHistogramMicrosecondsTimes function.
+     *
+     * @param name name of the histogram
+     * @param durationMicros duration to be recorded in microseconds
+     */
+    public static void recordMicroTimesHistogram(String name, long durationMicros) {
+        recordCustomMicroTimesHistogram(name, durationMicros, 1, 1_000_000, 50);
+    }
+
+    /**
+     * Records a sample in a histogram of microsecond times with custom buckets. This is the Java
+     * equivalent of the UMA_HISTOGRAM_CUSTOM_MICRO_TIMES C++ macro.
+     *
+     * @param name name of the histogram
+     * @param durationMicros duration to be recorded in microseconds; expected to fall in range
+     *     {@code [min, max)}
+     * @param min the smallest expected sample value; at least 1
+     * @param max the smallest sample value that will be recorded in overflow bucket
+     * @param numBuckets the number of buckets including underflow ({@code [0, min)}) and overflow
+     *     ({@code [max, inf)}) buckets; at most 100
+     */
+    public static void recordCustomMicroTimesHistogram(
+            String name, long durationMicros, long min, long max, int numBuckets) {
+        UmaRecorderHolder.get()
+                .recordExponentialHistogram(
+                        name,
+                        clampToInt(durationMicros),
+                        clampToInt(min),
+                        clampToInt(max),
+                        numBuckets);
     }
 
     /**

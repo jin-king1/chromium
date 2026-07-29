@@ -78,14 +78,14 @@ export class CrToolbarSearchFieldElement extends
     };
   }
 
-  narrow: boolean = false;
-  showingSearch: boolean = false;
-  disabled: boolean = false;
-  override autofocus: boolean = false;
-  spinnerActive: boolean = false;
-  private searchFocused_: boolean = false;
-  iconOverride?: string;
-  inputAriaDescription: string = '';
+  accessor narrow: boolean = false;
+  accessor showingSearch: boolean = false;
+  accessor disabled: boolean = false;
+  override accessor autofocus: boolean = false;
+  accessor spinnerActive: boolean = false;
+  private accessor searchFocused_: boolean = false;
+  accessor iconOverride: string|undefined;
+  accessor inputAriaDescription: string = '';
 
   override firstUpdated() {
     this.addEventListener('click', e => this.showSearch_(e));
@@ -105,7 +105,7 @@ export class CrToolbarSearchFieldElement extends
     this.focus_();
   }
 
-  protected onSearchTermNativeBeforeInput(e: InputEvent) {
+  protected onSearchTermNativeBeforeinput(e: InputEvent) {
     this.fire('search-term-native-before-input', {e});
   }
 
@@ -124,14 +124,14 @@ export class CrToolbarSearchFieldElement extends
   }
 
   protected getIconAriaHidden_(): string {
-    return Boolean(!this.narrow || this.hasSearchText).toString();
+    return (!this.narrow || this.hasSearchText).toString();
   }
 
   protected shouldShowSpinner_(): boolean {
     return this.spinnerActive && this.showingSearch;
   }
 
-  protected onSearchIconClicked_() {
+  protected onSearchIconClick_() {
     this.fire('search-icon-clicked');
   }
 
@@ -168,7 +168,7 @@ export class CrToolbarSearchFieldElement extends
     }
   }
 
-  protected clearSearch_() {
+  protected onClearSearchClick_() {
     this.setValue('');
     this.focus_();
     this.spinnerActive = false;

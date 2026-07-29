@@ -18,16 +18,12 @@ bool IsPolicyTestingEnabled(PrefService* pref_service,
   }
 
   if (channel == version_info::Channel::CANARY ||
+      channel == version_info::Channel::DEV ||
       channel == version_info::Channel::DEFAULT) {
     return true;
   }
 
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_IOS)
-  if (channel == version_info::Channel::DEV) {
-    return true;
-  }
-#endif
-
+// Enable on iOS Beta because Canary and Dev are not easily accessible.
 #if BUILDFLAG(IS_IOS)
   if (channel == version_info::Channel::BETA) {
     return true;
@@ -42,10 +38,9 @@ bool IsPolicyTestingEnabled(PrefService* pref_service,
 #endif
 }
 
-base::Value::Dict GetPolicyNameToTypeMapping(
-    const base::Value::List& policy_names,
-    const policy::Schema& schema) {
-  base::Value::Dict result;
+base::DictValue GetPolicyNameToTypeMapping(const base::ListValue& policy_names,
+                                           const policy::Schema& schema) {
+  base::DictValue result;
   for (auto& policy_name : policy_names) {
     base::Value::Type policy_type =
         schema.GetKnownProperty(policy_name.GetString()).type();

@@ -20,12 +20,11 @@
 #import "components/commerce/core/proto/commerce_subscription_db_content.pb.h"
 #import "components/commerce/core/proto/price_tracking.pb.h"
 #import "components/commerce/core/test_utils.h"
-#import "components/optimization_guide/core/hints_manager.h"
+#import "components/optimization_guide/core/hints/hints_manager.h"
 #import "components/optimization_guide/core/optimization_guide_features.h"
 #import "components/optimization_guide/proto/push_notification.pb.h"
 #import "components/session_proto_db/session_proto_db.h"
 #import "components/sync_bookmarks/bookmark_sync_service.h"
-#import "ios/chrome/app/application_delegate/app_state.h"
 #import "ios/chrome/browser/bookmarks/model/account_bookmark_sync_service_factory.h"
 #import "ios/chrome/browser/bookmarks/model/bookmark_model_factory.h"
 #import "ios/chrome/browser/commerce/model/session_proto_db_factory.h"
@@ -36,11 +35,12 @@
 #import "ios/chrome/browser/shared/model/browser/browser_list.h"
 #import "ios/chrome/browser/shared/model/browser/browser_list_factory.h"
 #import "ios/chrome/browser/shared/model/browser/test/test_browser.h"
+#import "ios/chrome/browser/shared/model/profile/features.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_manager_ios.h"
-#import "ios/chrome/browser/shared/public/commands/application_commands.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/open_new_tab_command.h"
+#import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/web/public/test/web_task_environment.h"
 #import "testing/gmock/include/gmock/gmock.h"
@@ -48,20 +48,21 @@
 #import "testing/gtest_mac.h"
 #import "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
+#import "third_party/ocmock/gtest_support.h"
 
 namespace {
 
 constexpr char kHintKey[] = "https://www.merchant.com/price_drop_product";
 constexpr char kBookmarkFoundHistogramName[] =
     "Commerce.PriceTracking.Untrack.BookmarkFound";
-std::string kBookmarkTitle = "My product title";
-uint64_t kClusterId = 12345L;
+constexpr std::string_view kBookmarkTitle = "My product title";
+constexpr uint64_t kClusterId = 12345L;
 constexpr char kPayloadValue[] = "value";
-NSString* kSerializedPayloadKey = @"op";
-NSString* kVisitSiteActionId = @"visit_site";
-NSString* kVisitSiteTitle = @"Visit site";
-NSString* kUntrackPriceActionId = @"untrack_price";
-NSString* kUntrackPriceTitle = @"Untrack price";
+NSString* const kSerializedPayloadKey = @"op";
+NSString* const kVisitSiteActionId = @"visit_site";
+NSString* const kVisitSiteTitle = @"Visit site";
+NSString* const kUntrackPriceActionId = @"untrack_price";
+NSString* const kUntrackPriceTitle = @"Untrack price";
 constexpr char kUntrackSuccessHistogramName[] =
     "Commerce.PriceTracking.Untrack.Success";
 
@@ -164,7 +165,7 @@ class CommercePushNotificationClientTest : public PlatformTest {
     builder.AddTestingFactory(
         commerce::ShoppingServiceFactory::GetInstance(),
         base::BindRepeating(
-            [](web::BrowserState*) -> std::unique_ptr<KeyedService> {
+            [](ProfileIOS* profile) -> std::unique_ptr<KeyedService> {
               return std::make_unique<
                   testing::NiceMock<commerce::MockShoppingService>>();
             }));
@@ -180,13 +181,12 @@ class CommercePushNotificationClientTest : public PlatformTest {
         OptimizationGuideServiceFactory::GetDefaultFactory());
     profile_ = profile_manager_.AddProfileWithBuilder(std::move(builder));
     browser_list_ = BrowserListFactory::GetForProfile(profile_.get());
-    app_state_ = [[AppState alloc] initWithStartupInformation:nil];
-    scene_state_foreground_ = [[SceneState alloc] initWithAppState:app_state_];
+    scene_state_foreground_ = [[SceneState alloc] init];
     scene_state_foreground_.activationLevel =
         SceneActivationLevelForegroundActive;
     browser_ =
         std::make_unique<TestBrowser>(profile_.get(), scene_state_foreground_);
-    scene_state_background_ = [[SceneState alloc] initWithAppState:app_state_];
+    scene_state_background_ = [[SceneState alloc] init];
     scene_state_background_.activationLevel = SceneActivationLevelBackground;
     background_browser_ =
         std::make_unique<TestBrowser>(profile_.get(), scene_state_background_);
@@ -200,14 +200,24 @@ class CommercePushNotificationClientTest : public PlatformTest {
         ->SetIsTrackingMetadataForTesting();
     shopping_service_ = static_cast<commerce::MockShoppingService*>(
         commerce::ShoppingServiceFactory::GetForProfile(profile_.get()));
-    application_handler_ = OCMProtocolMock(@protocol(ApplicationCommands));
+    application_handler_ = OCMProtocolMock(@protocol(SceneCommands));
     [browser_->GetCommandDispatcher()
         startDispatchingToTarget:application_handler_
-                     forProtocol:@protocol(ApplicationCommands)];
+                     forProtocol:@protocol(SceneCommands)];
+
+    commerce_push_notification_client_ =
+        IsMultiProfilePushNotificationHandlingEnabled()
+            ? std::make_unique<CommercePushNotificationClient>(profile_.get())
+            : std::make_unique<CommercePushNotificationClient>();
+  }
+
+  void TearDown() override {
+    EXPECT_OCMOCK_VERIFY((id)application_handler_);
+    PlatformTest::TearDown();
   }
 
   CommercePushNotificationClient* GetCommercePushNotificationClient() {
-    return &commerce_push_notification_client_;
+    return commerce_push_notification_client_.get();
   }
 
   Browser* GetBrowser() { return browser_.get(); }
@@ -219,29 +229,28 @@ class CommercePushNotificationClientTest : public PlatformTest {
   void HandleNotificationInteraction(NSString* action_identifier,
                                      NSDictionary* user_info,
                                      base::OnceClosure completion) {
-    commerce_push_notification_client_.HandleNotificationInteraction(
+    commerce_push_notification_client_->HandleNotificationInteraction(
         action_identifier, user_info, std::move(completion));
   }
 
-  std::vector<std::pair<GURL, base::OnceCallback<void(Browser*)>>>&
-  GetUrlsDelayedForLoading() {
-    return commerce_push_notification_client_.urls_delayed_for_loading_;
+  base::OnceCallbackList<void(Browser*)>& GetActionsDelayedForLoading() {
+    return commerce_push_notification_client_->actions_delayed_for_loading_;
   }
 
   void OnSceneActiveForegroundBrowserReady() {
-    commerce_push_notification_client_.OnSceneActiveForegroundBrowserReady();
+    commerce_push_notification_client_->OnSceneActiveForegroundBrowserReady();
   }
 
   Browser* GetSceneLevelForegroundActiveBrowser() {
-    return commerce_push_notification_client_
-        .GetSceneLevelForegroundActiveBrowser();
+    return commerce_push_notification_client_->GetActiveForegroundBrowser();
   }
 
  protected:
   web::WebTaskEnvironment task_environment_;
   IOSChromeScopedTestingLocalState scoped_testing_local_state_;
   TestProfileManagerIOS profile_manager_;
-  CommercePushNotificationClient commerce_push_notification_client_;
+  std::unique_ptr<CommercePushNotificationClient>
+      commerce_push_notification_client_;
   std::unique_ptr<Browser> browser_;
   std::unique_ptr<Browser> background_browser_;
   raw_ptr<TestProfileIOS> profile_;
@@ -250,8 +259,7 @@ class CommercePushNotificationClientTest : public PlatformTest {
   raw_ptr<commerce::MockShoppingService> shopping_service_;
   SceneState* scene_state_foreground_;
   SceneState* scene_state_background_;
-  id<ApplicationCommands> application_handler_;
-  AppState* app_state_;
+  id<SceneCommands> application_handler_;
 };
 
 TEST_F(CommercePushNotificationClientTest, TestParsing) {
@@ -320,16 +328,16 @@ TEST_F(CommercePushNotificationClientTest, TestHintKeyRemovedUponNotification) {
     kSerializedPayloadKey : base::SysUTF8ToNSString(serialized_any_escaped)
   };
 
-  CommercePushNotificationClient push_notification_client;
-
   EXPECT_CALL(mock_delegate,
               RemoveFetchedEntriesByHintKeys(
                   testing::_, testing::Eq(optimization_guide::proto::HOST),
                   testing::ElementsAreArray({kHintKey})));
-  push_notification_client.HandleNotificationReception(dict);
+  commerce_push_notification_client_->HandleNotificationReception(dict);
 }
 
-TEST_F(CommercePushNotificationClientTest, TestNotificationInteraction) {
+// TODO(crbug.com/422437406): Re-enable the test by correcting the expectation.
+TEST_F(CommercePushNotificationClientTest,
+       DISABLED_TestNotificationInteraction) {
   NSDictionary* user_info = SerializeOptGuideCommercePayload();
 
   // Simulate user clicking 'visit site'.
@@ -411,19 +419,20 @@ TEST_F(CommercePushNotificationClientTest, TestUntrackPriceFailed) {
                                      /*sample=*/true, /*expected_count=*/1);
 }
 
-TEST_F(CommercePushNotificationClientTest, TestBrowserInitialization) {
+// TODO(crbug.com/422436433): Re-enable the test by correcting the expectation.
+TEST_F(CommercePushNotificationClientTest, DISABLED_TestBrowserInitialization) {
   browser_list_->RemoveBrowser(GetBrowser());
   NSDictionary* user_info = SerializeOptGuideCommercePayload();
 
   // Simulate user clicking 'visit site'.
   HandleNotificationInteraction(kVisitSiteActionId, user_info,
                                 base::DoNothing());
-  EXPECT_EQ(1u, GetUrlsDelayedForLoading().size());
+  EXPECT_FALSE(GetActionsDelayedForLoading().empty());
   CommercePushNotificationClient* commerce_push_notification_client =
       GetCommercePushNotificationClient();
   browser_list_->AddBrowser(GetBrowser());
   commerce_push_notification_client->OnSceneActiveForegroundBrowserReady();
-  EXPECT_EQ(0u, GetUrlsDelayedForLoading().size());
+  EXPECT_TRUE(GetActionsDelayedForLoading().empty());
 
   // Check PriceDropNotification Destination URL loaded.
   OCMExpect([application_handler_

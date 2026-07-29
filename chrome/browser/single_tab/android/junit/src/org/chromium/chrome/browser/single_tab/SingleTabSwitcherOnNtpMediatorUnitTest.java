@@ -35,26 +35,27 @@ import android.graphics.drawable.Drawable;
 import android.util.Size;
 
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Captor;
 import org.mockito.Mock;
-import org.mockito.Mockito;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
 
 import org.chromium.base.Callback;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider;
 import org.chromium.chrome.browser.magic_stack.ModuleDelegate;
 import org.chromium.chrome.browser.magic_stack.ModuleDelegate.ModuleType;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabObserver;
 import org.chromium.chrome.browser.tab_ui.TabContentManager;
 import org.chromium.chrome.browser.tab_ui.TabListFaviconProvider;
+import org.chromium.chrome.browser.tab_ui.TabListFaviconProvider.TabFaviconMetadata;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.components.browser_ui.widget.displaystyle.DisplayStyleObserver;
@@ -63,8 +64,8 @@ import org.chromium.components.browser_ui.widget.displaystyle.UiConfig;
 import org.chromium.components.browser_ui.widget.displaystyle.UiConfig.DisplayStyle;
 import org.chromium.components.browser_ui.widget.displaystyle.VerticalDisplayStyle;
 import org.chromium.components.embedder_support.util.UrlUtilities;
-import org.chromium.components.embedder_support.util.UrlUtilitiesJni;
 import org.chromium.ui.modelutil.PropertyModel;
+import org.chromium.ui.test.util.MockitoHelper;
 import org.chromium.url.GURL;
 import org.chromium.url.JUnitTestGURLs;
 
@@ -72,7 +73,7 @@ import org.chromium.url.JUnitTestGURLs;
 @RunWith(BaseRobolectricTestRunner.class)
 @Config(manifest = Config.NONE)
 public class SingleTabSwitcherOnNtpMediatorUnitTest {
-    @Mock UrlUtilities.Natives mUrlUtilitiesJniMock;
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     private final int mTabId = 1;
     private final String mTitle = "test";
@@ -88,7 +89,6 @@ public class SingleTabSwitcherOnNtpMediatorUnitTest {
     @Mock private Tab mTab3;
     @Mock private TabListFaviconProvider mTabListFaviconProvider;
     @Mock private TabContentManager mTabContentManager;
-    @Mock private BrowserControlsStateProvider mBrowserControlsStateProvider;
     @Captor private ArgumentCaptor<Callback<Drawable>> mFaviconCallbackCaptor;
     @Captor private ArgumentCaptor<TabObserver> mTabObserverCaptor;
     @Mock private UiConfig mUiConfig;
@@ -99,15 +99,14 @@ public class SingleTabSwitcherOnNtpMediatorUnitTest {
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
-        UrlUtilitiesJni.setInstanceForTesting(mUrlUtilitiesJniMock);
-
         doReturn(true).when(mTabListFaviconProvider).isInitialized();
         doReturn(mNormalTabModel).when(mTabModelSelector).getModel(false);
         doReturn(mTab).when(mNormalTabModel).getTabAt(0);
         doReturn(1).when(mNormalTabModel).getCount();
 
         doReturn(mUrl).when(mTab).getUrl();
+        doReturn(false).when(mTab).isIncognitoBranded();
+        doReturn(null).when(mTab).getTabGroupId();
         doReturn(mTabId).when(mTab).getId();
         doReturn(mTitle).when(mTab).getTitle();
         doReturn(mTitle2).when(mTab2).getTitle();
@@ -159,13 +158,17 @@ public class SingleTabSwitcherOnNtpMediatorUnitTest {
                         .getDimensionPixelSize(R.dimen.single_tab_module_tab_thumbnail_size_big);
         int height = width;
         Size thumbnailSize = new Size(width, height);
+        TabFaviconMetadata metadata =
+                new TabFaviconMetadata(
+                        mTab, mUrl, /* isIncognito= */ false, /* isInTabGroup= */ false);
 
         verify(mTabListFaviconProvider)
-                .getFaviconDrawableForTabAsync(eq(mTab), mFaviconCallbackCaptor.capture());
+                .getFaviconDrawableForTabAsync(eq(metadata), mFaviconCallbackCaptor.capture());
         verify(mTabContentManager)
                 .getTabThumbnailWithCallback(eq(mTabId), eq(thumbnailSize), any());
         assertEquals(mTitle, mPropertyModel.get(TITLE));
-        assertEquals(mUrlHost, mPropertyModel.get(URL));
+        String expectedUrl = UrlUtilities.getDomainAndRegistry(mUrl.getSpec(), false);
+        assertEquals(expectedUrl, mPropertyModel.get(URL));
         assertTrue(mPropertyModel.get(IS_VISIBLE));
         if (moduleDelegate != null) {
             verify(moduleDelegate).onDataReady(eq(ModuleType.SINGLE_TAB), eq(mPropertyModel));
@@ -237,9 +240,12 @@ public class SingleTabSwitcherOnNtpMediatorUnitTest {
         assertFalse(mediator.getInitialized());
 
         mediator.setVisibility(true);
+        TabFaviconMetadata metadata =
+                new TabFaviconMetadata(
+                        mTab, mUrl, /* isIncognito= */ false, /* isInTabGroup= */ false);
 
         verify(mTabListFaviconProvider)
-                .getFaviconDrawableForTabAsync(eq(mTab), mFaviconCallbackCaptor.capture());
+                .getFaviconDrawableForTabAsync(eq(metadata), mFaviconCallbackCaptor.capture());
         assertEquals(mTitle, mPropertyModel.get(TITLE));
         assertTrue(mediator.getInitialized());
 
@@ -340,7 +346,7 @@ public class SingleTabSwitcherOnNtpMediatorUnitTest {
 
     @Test
     public void testSingleTabCardClickCallback() {
-        Callback<Integer> callback = Mockito.mock(Callback.class);
+        Callback<Integer> callback = MockitoHelper.mockCallback();
         int tabId = 3;
         when(mTab3.getId()).thenReturn(tabId);
         new SingleTabSwitcherOnNtpMediator(
@@ -388,8 +394,7 @@ public class SingleTabSwitcherOnNtpMediatorUnitTest {
                 ContextUtils.getApplicationContext()
                         .getResources()
                         .getDimensionPixelSize(
-                                org.chromium.chrome.R.dimen
-                                        .ntp_search_box_lateral_margin_narrow_window_tablet);
+                                R.dimen.ntp_search_box_lateral_margin_narrow_window_tablet);
         UiConfig.DisplayStyle displayStyleRegular =
                 new DisplayStyle(HorizontalDisplayStyle.REGULAR, VerticalDisplayStyle.REGULAR);
         when(mUiConfig.getCurrentDisplayStyle()).thenReturn(displayStyleRegular);

@@ -1,7 +1,8 @@
 Name: Activity Kotlin Extensions
 Short Name: activity-ktx
-URL: https://developer.android.com/jetpack/androidx/releases/activity#1.11.0-SNAPSHOT
-Version: 1.11.0-SNAPSHOT
+URL: https://androidx.dev/snapshots/builds/15963504/artifacts/repository/androidx/activity/activity-ktx/1.14.0-SNAPSHOT/activity-ktx-1.14.0-20260728.210420-1.aar
+Version: 1.14.0-SNAPSHOT
+Update Mechanism: Autoroll
 License: Apache-2.0
 License File: LICENSE
 CPEPrefix: unknown
@@ -11,6 +12,9 @@ License Android Compatible: yes
 
 Description:
 Kotlin extensions for 'activity' artifact
+
+See also: https://developer.android.com/jetpack/androidx/releases/activity#1.14.0-SNAPSHOT
+
 
 Local Modifications:
 No modifications.

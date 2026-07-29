@@ -6,27 +6,36 @@
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_CROWDSOURCING_AUTOFILL_CROWDSOURCING_MANAGER_H_
 
 #include <stddef.h>
+
+#include <deque>
 #include <list>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <utility>
 #include <vector>
 
+#include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
-#include "components/autofill/core/browser/autofill_type.h"
+#include "base/version_info/channel.h"
 #include "components/autofill/core/browser/form_structure.h"
 #include "components/autofill/core/browser/proto/server.pb.h"
+#include "components/autofill/core/common/form_data.h"
+#include "components/autofill/core/common/mojom/autofill_types.mojom-shared.h"
 #include "components/autofill/core/common/signatures.h"
-#include "components/version_info/channel.h"
 #include "net/base/backoff_entry.h"
 #include "net/base/isolation_info.h"
-#include "services/network/public/cpp/simple_url_loader.h"
 #include "url/gurl.h"
 
 class PrefService;
+
+namespace network {
+class SimpleURLLoader;
+}
 
 namespace autofill {
 
@@ -41,12 +50,15 @@ struct ScopedActiveAutofillExperiments {
   ~ScopedActiveAutofillExperiments();
 };
 
+enum class CrowdsourcingRequestType {
+  kRequestQuery,
+  kRequestUpload,
+};
+
 // Obtains Autofill server predictions and upload votes for generating them.
 class AutofillCrowdsourcingManager {
  public:
   // Names of UMA metrics recorded in this class.
-  static constexpr char kUmaApiUrlIsTooLong[] =
-      "Autofill.Query.ApiUrlIsTooLong";
   static constexpr char kUmaGetUrlLength[] = "Autofill.Query.GetUrlLength";
   static constexpr char kUmaMethod[] = "Autofill.Query.Method";
   static constexpr char kUmaWasInCache[] = "Autofill.Query.WasInCache";
@@ -77,7 +89,7 @@ class AutofillCrowdsourcingManager {
   // Returns true if a query is made.
   // TODO: crbug.com/40100455 - Make the return type `void`.
   virtual bool StartQueryRequest(
-      const std::vector<raw_ptr<FormStructure, VectorExperimental>>& forms,
+      const std::vector<FormData>& forms,
       std::optional<net::IsolationInfo> isolation_info,
       base::OnceCallback<void(std::optional<QueryResponse>)> callback);
 
@@ -85,7 +97,7 @@ class AutofillCrowdsourcingManager {
   // more than one element, then `upload_contents[0]` is expected to correspond
   // to the browser form and `upload_contents[i]` with `i>0` are expected to
   // correspond to the renderer forms that constitute the browser form.
-  // See `autofill::FormForest` for more information on browser vs renderer
+  // See `internal::FormForest` for more information on browser vs renderer
   // forms.
   virtual bool StartUploadRequest(
       std::vector<AutofillUploadContents> upload_contents,
@@ -149,7 +161,15 @@ class AutofillCrowdsourcingManager {
       std::list<std::unique_ptr<network::SimpleURLLoader>>::iterator it,
       FormRequestData request_data,
       base::TimeTicks request_start,
-      std::unique_ptr<std::string> response_body);
+      std::optional<std::string> response_body);
+
+  // Records the number of requests of a given `request_type` in the last minute
+  static void RecordRequestsInLastMinute(CrowdsourcingRequestType request_type);
+
+  // Returns the timestamps at which requests of type `request_type` were sent
+  // recently.
+  static std::deque<base::TimeTicks>& GetRecentRequestTimestamps(
+      CrowdsourcingRequestType request_type);
 
   // The AutofillClient that this instance will use. Must not be null, and must
   // outlive this instance.

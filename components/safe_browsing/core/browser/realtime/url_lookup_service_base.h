@@ -21,11 +21,16 @@
 #include "components/enterprise/common/proto/connectors.pb.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/safe_browsing/core/browser/db/v4_protocol_manager_util.h"
+#include "components/safe_browsing/core/browser/intelligent_scan_delegate.h"
 #include "components/safe_browsing/core/browser/referring_app_info.h"
+#include "components/safe_browsing/core/browser/safe_browsing_token_fetcher.h"
 #include "components/safe_browsing/core/browser/utils/backoff_operator.h"
 #include "components/safe_browsing/core/common/proto/csd.pb.h"
 #include "components/safe_browsing/core/common/proto/realtimeapi.pb.h"
 #include "components/sessions/core/session_id.h"
+#include "net/base/address_list.h"
+#include "net/dns/public/host_resolver_results.h"
+#include "net/dns/public/resolve_error_info.h"
 #include "url/gurl.h"
 
 namespace net {
@@ -36,9 +41,14 @@ namespace network {
 struct ResourceRequest;
 class SimpleURLLoader;
 class SharedURLLoaderFactory;
+class SimpleHostResolver;
 }  // namespace network
 
 class PrefService;
+
+namespace network::mojom {
+class NetworkContext;
+}
 
 namespace safe_browsing {
 
@@ -58,6 +68,18 @@ class ReferrerChainProvider;
 // lookup feature.
 class RealTimeUrlLookupServiceBase : public KeyedService {
  public:
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  // LINT.IfChange(DnsResolutionResult)
+  enum class DnsResolutionResult {
+    kSuccess = 0,
+    kTimeout = 1,
+    kError = 2,
+    kSkipped = 3,
+    kMaxValue = kSkipped,
+  };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/safe_browsing/enums.xml:SafeBrowsingRtDnsResolutionResult)
+
   // Interface via which a client of this class can surface relevant events in
   // WebUI. All methods must be called on the UI thread.
   class WebUIDelegate {
@@ -67,12 +89,12 @@ class RealTimeUrlLookupServiceBase : public KeyedService {
     // Adds the new ping to the set of URT lookup pings. Returns a token that
     // can be used in |AddToURTLookupResponses| to correlate a ping and
     // response.
-    virtual int AddToURTLookupPings(const RTLookupRequest request,
-                                    const std::string oauth_token) = 0;
+    virtual int AddToURTLookupPings(const RTLookupRequest& request,
+                                    const std::string& oauth_token) = 0;
 
     // Adds the new response to the set of URT lookup pings.
     virtual void AddToURTLookupResponses(int webui_token,
-                                         const RTLookupResponse response) = 0;
+                                         const RTLookupResponse& response) = 0;
   };
 
   explicit RealTimeUrlLookupServiceBase(
@@ -81,8 +103,12 @@ class RealTimeUrlLookupServiceBase : public KeyedService {
       base::RepeatingCallback<ChromeUserPopulation()>
           get_user_population_callback,
       ReferrerChainProvider* referrer_chain_provider,
+      std::unique_ptr<SafeBrowsingTokenFetcher> token_fetcher,
       PrefService* pref_service,
-      WebUIDelegate* webui_delegate);
+      WebUIDelegate* webui_delegate,
+      IntelligentScanDelegate* intelligent_scan_delegate,
+      base::RepeatingCallback<network::mojom::NetworkContext*()>
+          network_context_getter);
 
   RealTimeUrlLookupServiceBase(const RealTimeUrlLookupServiceBase&) = delete;
   RealTimeUrlLookupServiceBase& operator=(const RealTimeUrlLookupServiceBase&) =
@@ -111,6 +137,18 @@ class RealTimeUrlLookupServiceBase : public KeyedService {
       scoped_refptr<base::SequencedTaskRunner> callback_task_runner,
       SessionID tab_id,
       std::optional<internal::ReferringAppInfo> referring_app_info);
+
+  // Start the full URL lookup for |url| and call |response_callback|
+  // on |callback_task_runner| when response is received. |use_cache| may be
+  // set to `false` to skip the URL verdict cache check.
+  // This function is overridden in unit tests.
+  virtual void StartMaybeCachedLookup(
+      const GURL& url,
+      RTLookupResponseCallback response_callback,
+      scoped_refptr<base::SequencedTaskRunner> callback_task_runner,
+      SessionID tab_id,
+      std::optional<internal::ReferringAppInfo> referring_app_info,
+      bool use_cache);
 
   // Similar to the function StartLookup above,
   // but to send Protego sampled request specifically.
@@ -159,6 +197,10 @@ class RealTimeUrlLookupServiceBase : public KeyedService {
   virtual std::unique_ptr<enterprise_connectors::ClientMetadata>
   GetClientMetadata() const = 0;
 
+  // Returns the content area email address. This is the email address used for
+  // active Gaia filtering.
+  virtual std::string GetContentAreaAccountEmail(const GURL& tab_url) const = 0;
+
   // Returns true if `url`'s scheme can be checked, or if it should be checked
   // anyway because of "EnterpriseRealTimeUrlCheckMode".
   virtual bool CanCheckUrl(const GURL& url) = 0;
@@ -169,6 +211,11 @@ class RealTimeUrlLookupServiceBase : public KeyedService {
 
   // Suffix for logging metrics.
   virtual std::string GetMetricSuffix() const = 0;
+
+  // Overrides safe url check from browser throttle. This is used
+  // to send requests for sites that would usually be safe in case
+  // they are blocked by an enterprise data protection rule.
+  virtual bool ShouldOverrideKnownSafeUrlDecision(const GURL& url) const = 0;
 
   // Fragments, usernames and passwords are removed, because fragments are only
   // used for local navigations and usernames/passwords are too privacy
@@ -192,10 +239,11 @@ class RealTimeUrlLookupServiceBase : public KeyedService {
   bool shutting_down() const { return shutting_down_; }
 
  private:
+  struct RequestProtoPopulatorState;
+
   class PendingRTLookupRequestData {
    public:
-    explicit PendingRTLookupRequestData(
-        std::unique_ptr<network::SimpleURLLoader> loader);
+    PendingRTLookupRequestData();
     PendingRTLookupRequestData(const PendingRTLookupRequestData&) = delete;
     PendingRTLookupRequestData(PendingRTLookupRequestData&&);
     PendingRTLookupRequestData& operator=(const PendingRTLookupRequestData&) =
@@ -206,7 +254,17 @@ class RealTimeUrlLookupServiceBase : public KeyedService {
     // Adds the callback to the internal list if it is not null.
     void AddCallback(RTLookupResponseCallback callback);
 
+    void SetLoader(std::unique_ptr<network::SimpleURLLoader> loader);
+    void SetRequestPopulatorState(
+        std::unique_ptr<RequestProtoPopulatorState> state);
+
     network::SimpleURLLoader* loader() { return loader_.get(); }
+    RequestProtoPopulatorState* request_populator_state() {
+      return request_populator_state_.get();
+    }
+    std::unique_ptr<RequestProtoPopulatorState> take_request_populator_state() {
+      return std::move(request_populator_state_);
+    }
     bool has_callbacks() { return !callbacks_.empty(); }
     std::vector<RTLookupResponseCallback> take_callbacks() {
       return std::move(callbacks_);
@@ -215,6 +273,7 @@ class RealTimeUrlLookupServiceBase : public KeyedService {
    private:
     std::unique_ptr<network::SimpleURLLoader> loader_;
     std::vector<RTLookupResponseCallback> callbacks_;
+    std::unique_ptr<RequestProtoPopulatorState> request_populator_state_;
   };
 
   // The URL used as a key to this map is expected to have been sanitized
@@ -228,6 +287,25 @@ class RealTimeUrlLookupServiceBase : public KeyedService {
       ReferrerChain* referrer_chain,
       std::optional<base::Time> min_allowed_timestamp,
       bool should_remove_subresource_url);
+
+  // Stores state for populating the request proto asynchronously.
+  struct RequestProtoPopulatorState {
+    RequestProtoPopulatorState(
+        std::unique_ptr<RTLookupRequest> request,
+        base::OnceCallback<void(std::unique_ptr<RTLookupRequest>)> callback);
+    ~RequestProtoPopulatorState();
+
+    // The request being populated.
+    std::unique_ptr<RTLookupRequest> request;
+    // The callback to run when the request is fully populated.
+    base::OnceCallback<void(std::unique_ptr<RTLookupRequest>)> callback;
+    // The host resolver used for DNS resolution.
+    std::unique_ptr<network::SimpleHostResolver> simple_host_resolver;
+    // The time when DNS resolution started.
+    base::TimeTicks dns_start_time;
+    // Timer to abort DNS resolution if it takes too long.
+    base::OneShotTimer dns_timer;
+  };
 
   // Returns the endpoint that the URL lookup will be sent to.
   virtual GURL GetRealTimeLookupUrl() const = 0;
@@ -247,16 +325,22 @@ class RealTimeUrlLookupServiceBase : public KeyedService {
 
   // Gets access token, called if |CanPerformFullURLLookupWithToken| returns
   // true.
-  virtual void GetAccessToken(
+  void GetAccessToken(
       const GURL& url,
       RTLookupResponseCallback response_callback,
       scoped_refptr<base::SequencedTaskRunner> callback_task_runner,
       SessionID tab_id,
-      std::optional<internal::ReferringAppInfo> referring_app_info) = 0;
+      std::optional<internal::ReferringAppInfo> referring_app_info);
 
-  // Called when the response from the server is unauthorized, so child classes
-  // can add extra handling when this happens.
-  virtual void OnResponseUnauthorized(const std::string& invalid_access_token);
+  // Called when the access token is obtained from |token_fetcher_|.
+  void OnGetAccessToken(
+      const GURL& url,
+      RTLookupResponseCallback response_callback,
+      scoped_refptr<base::SequencedTaskRunner> callback_task_runner,
+      base::TimeTicks get_token_start_time,
+      SessionID tab_id,
+      std::optional<internal::ReferringAppInfo> referring_app_info,
+      const std::string& access_token);
 
   // Gets a dm token string to be set in a request proto.
   virtual std::optional<std::string> GetDMTokenString() const = 0;
@@ -268,6 +352,11 @@ class RealTimeUrlLookupServiceBase : public KeyedService {
   // there is no such restriction.
   virtual std::optional<base::Time> GetMinAllowedTimestampForReferrerChains()
       const = 0;
+
+  // Returns the Llama forced trigger capability that helps the server set Llama
+  // forced trigger info in the response.
+  RTLookupRequest::LlamaForcedTriggerCapability
+  MaybeGetLlamaForcedTriggerCapability() const;
 
   // Called to get cache from |cache_manager|. Returns the cached response if
   // there's a cache hit; nullptr otherwise.
@@ -284,15 +373,6 @@ class RealTimeUrlLookupServiceBase : public KeyedService {
   // ping time of the without-token ping time.
   virtual void MaybeLogLastProtegoPingTimeToPrefs(bool sent_with_token) {}
 
-  // Maybe logs to histograms about whether the ping request had a cookie. The
-  // base class provides this as an empty implementation that subclasses can
-  // implement. `was_first_request` is whether the request was the first request
-  // after service instantiation. `sent_with_token` is whether the ping had
-  // a token, and is used to determine whether the user was signed in.
-  virtual void MaybeLogProtegoPingCookieHistograms(bool request_had_cookie,
-                                                   bool was_first_request,
-                                                   bool sent_with_token) {}
-
   // Fills in the ReferringAppInfo field pertaining to a referring WebAPK, if
   // appropriate. The safe_browsing::ReferringAppInfo message should already
   // have been added to the RTLookupRequest.
@@ -308,7 +388,6 @@ class RealTimeUrlLookupServiceBase : public KeyedService {
       std::unique_ptr<network::ResourceRequest> resource_request,
       const std::string& req_data,
       std::optional<std::string> access_token_string,
-      RTLookupResponseCallback response_callback,
       scoped_refptr<base::SequencedTaskRunner> callback_task_runner,
       ChromeUserPopulation::UserPopulation user_population,
       bool is_sampled_report,
@@ -317,9 +396,9 @@ class RealTimeUrlLookupServiceBase : public KeyedService {
   // Called when the response from the real-time lookup remote endpoint is
   // received. |url| is the URL that was looked up and can be used as a key into
   // the |pending_requests_| map. |access_token_string| is used for calling
-  // |OnResponseUnauthorized| in case the response code is HTTP_UNAUTHORIZED.
-  // |request_start_time| is the time when the request was sent.
-  // |response_body| is the response received.
+  // |SafeBrowsingTokenFetcher::OnInvalidAccessToken| in case the response code
+  // is HTTP_UNAUTHORIZED. |request_start_time| is the time when the request was
+  // sent. |response_body| is the response received.
   void OnURLLoaderComplete(
       const GURL& url,
       std::optional<std::string> access_token_string,
@@ -328,15 +407,51 @@ class RealTimeUrlLookupServiceBase : public KeyedService {
       bool is_sampled_report,
       scoped_refptr<base::SequencedTaskRunner> response_callback_task_runner,
       std::optional<int> webui_token,
-      std::unique_ptr<std::string> response_body);
+      std::optional<std::string> response_body);
 
   // Fills in fields in |RTLookupRequest|.  |url| is expected to be already
   // sanitized.
-  std::unique_ptr<RTLookupRequest> FillRequestProto(
+  void StartFillingRequestProto(
       const GURL& url,
       bool is_sampled_report,
       SessionID tab_id,
-      std::optional<internal::ReferringAppInfo> referring_app_info);
+      std::optional<internal::ReferringAppInfo> referring_app_info,
+      base::OnceCallback<void(std::unique_ptr<RTLookupRequest>)> callback);
+
+  // Called when the IP addresses are fetched and adds them to the request.
+  void OnLocalIpsFetched(const GURL& url,
+                         base::RepeatingClosure barrier_closure,
+                         std::vector<std::string> ip_addresses);
+
+  // Callback when DNS resolution completes. Adds the resolved IP to the
+  // request.
+  void OnDnsResolved(
+      const GURL& url,
+      base::RepeatingClosure barrier_closure,
+      int result,
+      const net::ResolveErrorInfo& resolve_error_info,
+      const net::AddressList& resolved_addresses,
+      const net::HostResolverEndpointResults& alternative_endpoints);
+
+  // Callback when DNS resolution times out.
+  void OnDnsTimeout(const GURL& url, base::RepeatingClosure barrier_closure);
+
+  // Helper method called when DNS resolution completes or times out.
+  void DnsResolutionComplete(const GURL& url,
+                             base::RepeatingClosure barrier_closure,
+                             DnsResolutionResult resolution_result,
+                             std::optional<std::string> dns_ip);
+
+  // Called when all fields in the request proto are populated.
+  void OnAllRequestProtoFieldsPopulated(const GURL& url);
+
+  // Called when the request proto is filled and ready to be sent.
+  void OnRequestProtoFilled(
+      const GURL& sanitized_url,
+      const std::string& access_token_string,
+      scoped_refptr<base::SequencedTaskRunner> callback_task_runner,
+      bool is_sampled_report,
+      std::unique_ptr<RTLookupRequest> request);
 
   // Logs |request| and |oauth_token| on any open
   // chrome://safe-browsing pages. Returns a token that can be passed
@@ -350,6 +465,9 @@ class RealTimeUrlLookupServiceBase : public KeyedService {
                                  const RTLookupResponse& response);
 
   SEQUENCE_CHECKER(sequence_checker_);
+
+  // The token fetcher used for getting access token.
+  std::unique_ptr<SafeBrowsingTokenFetcher> token_fetcher_;
 
   // The URLLoaderFactory we use to issue network requests.
   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
@@ -372,14 +490,18 @@ class RealTimeUrlLookupServiceBase : public KeyedService {
   // Helper object that manages backoff state.
   std::unique_ptr<BackoffOperator> backoff_operator_;
 
-  // Tracks the start time of the first request after service instantiation, for
-  // metrics.
-  std::optional<base::TimeTicks> first_request_start_time_ = std::nullopt;
-
   // May be null on certain platforms that don't support chrome://safe-browsing
   // and in unit tests. If non-null, guaranteed to outlive this object by
   // contract.
   raw_ptr<WebUIDelegate> webui_delegate_ = nullptr;
+
+  // Unowned object used for getting the supported intelligent scan model type.
+  raw_ptr<IntelligentScanDelegate> intelligent_scan_delegate_;
+
+  // Provides the NetworkContext to be used for DNS resolution. Can be a null
+  // callback for testing.
+  base::RepeatingCallback<network::mojom::NetworkContext*()>
+      network_context_getter_;
 
   // True if Shutdown() has already been called, or started running. This allows
   // us to skip unnecessary calls to SendRequest().

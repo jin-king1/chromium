@@ -51,9 +51,15 @@ class MockReleaseCallback {
 };
 
 static void CollectResources(std::vector<ReturnedResource>* array,
-                             std::vector<ReturnedResource> returned) {
-  array->insert(array->end(), std::make_move_iterator(returned.begin()),
-                std::make_move_iterator(returned.end()));
+                             std::vector<ReturnedResourceViz> returned) {
+  for (auto& resource_viz : returned) {
+    ReturnedResource resource{
+        resource_viz.id,
+        gpu::SharedImageExportResult::CreateForTesting(resource_viz.sync_token),
+        std::move(resource_viz.release_fence), resource_viz.count,
+        resource_viz.lost};
+    array->emplace_back(std::move(resource));
+  }
 }
 
 class DisplayResourceProviderSoftwareTest : public testing::Test {
@@ -66,7 +72,7 @@ class DisplayResourceProviderSoftwareTest : public testing::Test {
 
   void InitializeProvider() {
     auto context_provider = base::MakeRefCounted<TestInProcessContextProvider>(
-        TestContextType::kSoftwareRaster, /*support_locking=*/false);
+        TestContextType::kRaster, /*support_locking=*/false);
     gpu::ContextResult result = context_provider->BindToCurrentSequence();
     CHECK_EQ(result, gpu::ContextResult::kSuccess);
     auto* gpu_service = context_provider->GpuService();
@@ -98,10 +104,9 @@ class DisplayResourceProviderSoftwareTest : public testing::Test {
 
     std::fill(span.begin(), span.end(), value);
 
-    auto transferable_resource = TransferableResource::MakeSoftwareSharedImage(
-        shared_image, shared_image_interface->GenVerifiedSyncToken(), size,
-        SinglePlaneFormat::kBGRA_8888,
-        TransferableResource::ResourceSource::kTileRasterTask);
+    auto transferable_resource = TransferableResource::Make(
+        shared_image, TransferableResource::ResourceSource::kTileRasterTask,
+        shared_image_interface->GenVerifiedSyncToken());
 
     auto callback = base::BindOnce(&MockReleaseCallback::Released,
                                    base::Unretained(&release_callback),
@@ -132,9 +137,11 @@ TEST_F(DisplayResourceProviderSoftwareTest, ReadSoftwareResources) {
   std::vector<ReturnedResource> returned_to_child;
   int child_id = resource_provider_->CreateChild(
       base::BindRepeating(&CollectResources, &returned_to_child), SurfaceId());
+
+  CHECK(child_context_provider_);
   child_resource_provider_->PrepareSendToParent(
       {resource_id}, &send_to_parent,
-      static_cast<RasterContextProvider*>(nullptr));
+      child_context_provider_->SharedImageInterface());
   resource_provider_->ReceiveFromChild(child_id, send_to_parent);
 
   // In DisplayResourceProvider's namespace, use the mapped resource id.
@@ -148,7 +155,7 @@ TEST_F(DisplayResourceProviderSoftwareTest, ReadSoftwareResources) {
                                             kPremul_SkAlphaType));
 
     DisplayResourceProviderSoftware::ScopedReadLockSkImage lock(
-        resource_provider_.get(), mapped_resource_id, kPremul_SkAlphaType);
+        resource_provider_.get(), mapped_resource_id);
     const SkImage* sk_image = lock.sk_image();
     bool result = sk_image->readPixels(nullptr, dstBitmap.pixmap(),
                                        /*srcX=*/0, /*srcY=*/0);

@@ -34,13 +34,22 @@
 #include <iosfwd>
 #include <vector>
 
-#include "base/functional/callback_helpers.h"
+#include "base/functional/callback_forward.h"
 #include "cc/paint/element_id.h"
 #include "third_party/blink/public/platform/web_common.h"
 #include "third_party/blink/public/platform/web_private_ptr.h"
 #include "third_party/blink/public/platform/web_string.h"
 #include "third_party/blink/public/web/web_dom_event.h"
+#include "v8/include/cppgc/source-location.h"
 #include "v8/include/v8-forward.h"
+
+#if INSIDE_BLINK
+#include "third_party/blink/renderer/platform/wtf/casting.h"
+#endif  // INSIDE_BLINK
+
+namespace base {
+class ScopedClosureRunner;
+}  // namespace base
 
 namespace blink {
 
@@ -49,6 +58,18 @@ class WebDocument;
 class WebElement;
 class WebElementCollection;
 class WebPluginContainer;
+
+// BLINK_WEB_NODE_LOCATION_FROM_HERE is used to optimize away much of
+// the code size cost of cppgc::SourceLocation::Current for builds that
+// do not need them.  This macro should be used in the constructor of
+// WebNode and of any classes that derive from it or use it that want to
+// provide source locations for debugging in developer tools heap
+// snapshots.
+#if BUILDFLAG(VERBOSE_PERSISTENT)
+#define BLINK_WEB_NODE_LOCATION_FROM_HERE cppgc::SourceLocation::Current()
+#else  // !BUILDFLAG(VERBOSE_PERSISTENT)
+#define BLINK_WEB_NODE_LOCATION_FROM_HERE cppgc::SourceLocation()
+#endif  // !BUILDFLAG(VERBOSE_PERSISTENT)
 
 // Provides access to some properties of a DOM node.
 // Note that the class design requires that neither this class nor any of its
@@ -59,14 +80,26 @@ class WebPluginContainer;
 class BLINK_EXPORT WebNode {
  public:
   enum class EventType {
+    kAutofill,
     kSelectionchange,
+    kBeforeinput,
+    kInput,
+    kCompositionstart,
+    kCompositionupdate,
+    kCompositionend,
+    kDrop,
+    kPaste,
+    kKeydown,
+    kKeyup,
+    kKeypress,
   };
 
   static WebNode FromDomNodeId(int dom_node_id);
 
   virtual ~WebNode();
 
-  WebNode();
+  explicit WebNode(
+      cppgc::SourceLocation loc = BLINK_WEB_NODE_LOCATION_FROM_HERE);
   WebNode(const WebNode&);
   WebNode& operator=(const WebNode&);
 
@@ -83,8 +116,20 @@ class BLINK_EXPORT WebNode {
 
   bool IsConnected() const;
 
+  bool Contains(const WebNode*) const;
+  bool ContainsViaFlatTree(const WebNode*) const;
+
   WebNode ParentNode() const;
+  // Returns the DOM parent, or the shadow host when this node is a shadow root.
   WebNode ParentOrShadowHostNode() const;
+  // Returns the parent node of this node in the flat (composed) tree.
+  WebNode ParentInFlatTree() const;
+  // Returns the next node in flat-tree preorder, or a null node if advancing
+  // would leave the subtree rooted at `stay_within`.
+  WebNode NextInFlatTree(const WebNode& stay_within) const;
+  // As above, but skips this node's descendants.
+  WebNode NextSkippingChildrenInFlatTree(const WebNode& stay_within) const;
+  bool IsInUserAgentShadowRoot() const;
   WebString NodeValue() const;
   WebDocument GetDocument() const;
   WebNode FirstChild() const;
@@ -130,6 +175,8 @@ class BLINK_EXPORT WebNode {
 
   bool Focused() const;
 
+  void RevealAutoExpandableAncestors() const;
+
   WebPluginContainer* PluginContainer() const;
 
   bool IsInsideFocusableElementOrARIAWidget() const;
@@ -142,7 +189,11 @@ class BLINK_EXPORT WebNode {
   // Returns a RAII object that removes the listener.
   base::ScopedClosureRunner AddEventListener(
       EventType event_type,
-      base::RepeatingCallback<void(WebDOMEvent)> handler);
+      base::RepeatingCallback<void(WebDOMEvent)> handler,
+      bool use_capture = false);
+
+  // Returns true there is at least one listener for `event_type` on this node.
+  bool HasEventListeners(EventType event_type) const;
 
   // Helper to downcast to `T`. Will fail with a CHECK() if converting to `T` is
   // not legal. The returned `T` will always be non-null if `this` is non-null.
@@ -163,12 +214,12 @@ class BLINK_EXPORT WebNode {
 
   template <typename T>
   T* Unwrap() {
-    return static_cast<T*>(private_.Get());
+    return ::blink::To<T>(private_.Get());
   }
 
   template <typename T>
   const T* ConstUnwrap() const {
-    return static_cast<const T*>(private_.Get());
+    return ::blink::To<T>(private_.Get());
   }
 #endif
 
@@ -203,10 +254,6 @@ class BLINK_EXPORT WebNode {
 
 inline bool operator==(const WebNode& a, const WebNode& b) {
   return a.Equals(b);
-}
-
-inline bool operator!=(const WebNode& a, const WebNode& b) {
-  return !(a == b);
 }
 
 inline bool operator<(const WebNode& a, const WebNode& b) {

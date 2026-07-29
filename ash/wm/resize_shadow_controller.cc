@@ -4,6 +4,7 @@
 
 #include "ash/wm/resize_shadow_controller.h"
 
+#include <array>
 #include <memory>
 
 #include "ash/public/cpp/window_properties.h"
@@ -11,11 +12,14 @@
 #include "ash/wm/overview/overview_controller.h"
 #include "ash/wm/resize_shadow.h"
 #include "ash/wm/window_properties.h"
-#include "chromeos/constants/chromeos_features.h"
+#include "ash/wm/window_state.h"
+#include "chromeos/ui/base/chromeos_ui_constants.h"
+#include "chromeos/ui/base/window_properties.h"
 #include "chromeos/ui/base/window_state_type.h"
 #include "chromeos/ui/frame/frame_utils.h"
 #include "ui/aura/client/aura_constants.h"
 #include "ui/base/mojom/window_show_state.mojom.h"
+#include "ui/gfx/geometry/rounded_corners_f.h"
 
 namespace ash {
 
@@ -26,9 +30,10 @@ ResizeShadowController::~ResizeShadowController() {
 }
 
 void ResizeShadowController::ShowShadow(aura::Window* window, int hit_test) {
-  RecreateShadowIfNeeded(window);
-  if (ShouldShowShadowForWindow(window) && window->IsVisible())
+  if (ShouldShowShadowForWindow(window) && window->IsVisible()) {
+    RecreateShadowIfNeeded(window);
     GetShadowForWindow(window)->ShowForHitTest(hit_test);
+  }
 }
 
 void ResizeShadowController::TryShowAllShadows() {
@@ -117,7 +122,7 @@ void ResizeShadowController::OnWindowPropertyChanged(aura::Window* window,
   // If the resize shadow is being shown, ensure that shadow is configured
   // correctly for either a rounded window or squared window.
   if (ShouldShowShadowForWindow(window) &&
-      key == aura::client::kWindowCornerRadiusKey) {
+      chromeos::CanPropertyEffectWindowRoundedCorners(key)) {
     RecreateShadowIfNeeded(window);
     UpdateShadowVisibility(window, window->IsVisible());
     return;
@@ -150,15 +155,16 @@ void ResizeShadowController::RecreateShadowIfNeeded(aura::Window* window) {
   ResizeShadow* shadow = GetShadowForWindow(window);
   const ash::ResizeShadowType type =
       window->GetProperty(ash::kResizeShadowTypeKey);
-  const int window_corner_radius =
-      window->GetProperty(aura::client::kWindowCornerRadiusKey);
-  const bool has_rounded_window =
-      chromeos::features::IsRoundedWindowsEnabled() && window_corner_radius > 0;
+  const gfx::RoundedCornersF window_radii =
+      ash::WindowState::Get(window)->GetWindowRoundedCorners();
+  const int corner_radius = window_radii.upper_left();
+  const bool has_large_rounded_corners =
+      corner_radius > chromeos::kRoundedWindowSmallCornerRadius;
 
   // If the `window` has a resize shadow with the requested type and the shadow
-  // is configured for a rounded window, no need to recreate it.
+  // is configured for small/large rounded corners, no need to recreate it.
   if (shadow && shadow->type_ == type &&
-      shadow->is_for_rounded_window() == has_rounded_window) {
+      shadow->is_for_large_rounded_corners() == has_large_rounded_corners) {
     return;
   }
 
@@ -171,16 +177,16 @@ void ResizeShadowController::RecreateShadowIfNeeded(aura::Window* window) {
     params.color = gfx::kGoogleGrey900;
     params.hit_test_enabled = false;
     params.hide_duration_ms = 0;
-    params.is_for_rounded_window = false;
+    params.is_for_large_rounded_corners = false;
   }
 
   // Configure window and shadow corner radius when `window` has rounded
   // corners.
-  if (has_rounded_window) {
+  if (has_large_rounded_corners) {
     params.thickness = 6;
-    params.window_corner_radius = window_corner_radius;
+    params.window_corner_radius = corner_radius;
     params.shadow_corner_radius = 16;
-    params.is_for_rounded_window = true;
+    params.is_for_large_rounded_corners = true;
   }
 
   auto new_shadow = std::make_unique<ResizeShadow>(window, params, type);
@@ -216,17 +222,12 @@ void ResizeShadowController::UpdateShadowVisibility(aura::Window* window,
 
 bool ResizeShadowController::ShouldShowShadowForWindow(
     aura::Window* window) const {
-  // Hide the shadow if it's a maximized/fullscreen/minimized window or the
-  // overview mode is active or if the shadow is disabled.
-  if (window->GetProperty(kDisableResizeShadow)) {
+  if (window->GetProperty(kDisableResizeShadow) ||
+      Shell::Get()->overview_controller()->InOverviewSession()) {
     return false;
   }
-  ui::mojom::WindowShowState show_state =
-      window->GetProperty(aura::client::kShowStateKey);
-  return show_state != ui::mojom::WindowShowState::kFullscreen &&
-         show_state != ui::mojom::WindowShowState::kMaximized &&
-         show_state != ui::mojom::WindowShowState::kMinimized &&
-         !Shell::Get()->overview_controller()->InOverviewSession();
+
+  return chromeos::ShouldShowResizeBorder(window);
 }
 
 }  // namespace ash

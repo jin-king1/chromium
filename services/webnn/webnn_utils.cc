@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <set>
 
+#include "base/check.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/strcat.h"
 #include "services/webnn/public/cpp/webnn_errors.h"
@@ -229,12 +230,18 @@ std::string OpKindToString(mojom::ElementWiseUnary::Kind kind) {
       return ops::kLog;
     case mojom::ElementWiseUnary::Kind::kNeg:
       return ops::kNeg;
+    case mojom::ElementWiseUnary::Kind::kRoundEven:
+      return ops::kRoundEven;
     case mojom::ElementWiseUnary::Kind::kSign:
       return ops::kSign;
     case mojom::ElementWiseUnary::Kind::kSin:
       return ops::kSin;
     case mojom::ElementWiseUnary::Kind::kTan:
       return ops::kTan;
+    case mojom::ElementWiseUnary::Kind::kIsNaN:
+      return ops::kIsNaN;
+    case mojom::ElementWiseUnary::Kind::kIsInfinite:
+      return ops::kIsInfinite;
     case mojom::ElementWiseUnary::Kind::kLogicalNot:
       return ops::kLogicalNot;
     case mojom::ElementWiseUnary::Kind::kIdentity:
@@ -360,6 +367,17 @@ bool IsLogicalElementWiseBinary(mojom::ElementWiseBinary::Kind kind) {
   }
 }
 
+bool IsLogicalElementWiseUnary(mojom::ElementWiseUnary::Kind kind) {
+  switch (kind) {
+    case mojom::ElementWiseUnary::Kind::kIsNaN:
+    case mojom::ElementWiseUnary::Kind::kIsInfinite:
+    case mojom::ElementWiseUnary::Kind::kLogicalNot:
+      return true;
+    default:
+      return false;
+  }
+}
+
 std::vector<uint32_t> CalculateStrides(base::span<const uint32_t> dimensions) {
   size_t rank = dimensions.size();
   std::vector<uint32_t> strides(rank);
@@ -368,7 +386,55 @@ std::vector<uint32_t> CalculateStrides(base::span<const uint32_t> dimensions) {
     strides[i] = stride.ValueOrDie();
     stride *= dimensions[i];
   }
+  CHECK(stride.IsValid());
   return strides;
+}
+
+webnn::Pool2dKind FromMojoPool2dType(mojom::Pool2d::Kind kind) {
+  switch (kind) {
+    case mojom::Pool2d::Kind::kAveragePool2d:
+      return webnn::Pool2dKind::kAverage;
+    case mojom::Pool2d::Kind::kL2Pool2d:
+      return webnn::Pool2dKind::kL2;
+    case mojom::Pool2d::Kind::kMaxPool2d:
+      return webnn::Pool2dKind::kMax;
+  }
+}
+
+webnn::ReduceKind FromMojoReduceType(mojom::Reduce::Kind kind) {
+  switch (kind) {
+    case mojom::Reduce::Kind::kL1:
+      return webnn::ReduceKind::kL1;
+    case mojom::Reduce::Kind::kL2:
+      return webnn::ReduceKind::kL2;
+    case mojom::Reduce::Kind::kLogSum:
+      return webnn::ReduceKind::kLogSum;
+    case mojom::Reduce::Kind::kLogSumExp:
+      return webnn::ReduceKind::kLogSumExp;
+    case mojom::Reduce::Kind::kMax:
+      return webnn::ReduceKind::kMax;
+    case mojom::Reduce::Kind::kMean:
+      return webnn::ReduceKind::kMean;
+    case mojom::Reduce::Kind::kMin:
+      return webnn::ReduceKind::kMin;
+    case mojom::Reduce::Kind::kProduct:
+      return webnn::ReduceKind::kProduct;
+    case mojom::Reduce::Kind::kSum:
+      return webnn::ReduceKind::kSum;
+    case mojom::Reduce::Kind::kSumSquare:
+      return webnn::ReduceKind::kSumSquare;
+  }
+}
+
+webnn::PaddingMode FromMojoPaddingMode(mojom::PaddingMode::Tag tag) {
+  switch (tag) {
+    case mojom::PaddingMode::Tag::kConstant:
+      return webnn::PaddingMode::kConstant;
+    case mojom::PaddingMode::Tag::kEdge:
+      return webnn::PaddingMode::kEdge;
+    case mojom::PaddingMode::Tag::kReflection:
+      return webnn::PaddingMode::kReflection;
+  }
 }
 
 }  // namespace webnn

@@ -11,10 +11,11 @@
 #include "base/metrics/field_trial.h"
 #include "base/metrics/metrics_hashes.h"
 #include "base/no_destructor.h"
+#include "components/metrics/private_metrics/private_metrics_features.h"
 
 namespace metrics::dwa {
 
-BASE_FEATURE(kDwaFeature, "DwaFeature", base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kDwaFeature, base::FEATURE_DISABLED_BY_DEFAULT);
 
 namespace {
 
@@ -43,38 +44,13 @@ void PopulateFieldTrialsForDwaEvent(
   }
 }
 
-// Takes |raw_entries_metrics|, a vector of metric_hash to metric_value maps,
-// and returns it as a vector of EntryMetrics as defined in
-// deidentified_web_analytics.proto.
-std::vector<::dwa::DeidentifiedWebAnalyticsEvent::ContentMetric::EntryMetrics>
-TransformEntriesMetrics(
-    const std::vector<base::flat_map<uint64_t, int64_t>>& raw_entries_metrics) {
-  std::vector<::dwa::DeidentifiedWebAnalyticsEvent::ContentMetric::EntryMetrics>
-      entries_metrics;
-  entries_metrics.reserve(raw_entries_metrics.size());
-
-  for (const auto& raw_entry_metrics : raw_entries_metrics) {
-    ::dwa::DeidentifiedWebAnalyticsEvent::ContentMetric::EntryMetrics
-        entry_metric;
-    for (const auto& [metric_hash, metric_value] : raw_entry_metrics) {
-      ::dwa::DeidentifiedWebAnalyticsEvent::ContentMetric::EntryMetrics::Metric*
-          metric = entry_metric.add_metric();
-      metric->set_name_hash(metric_hash);
-      metric->set_value(metric_value);
-    }
-    entries_metrics.push_back(std::move(entry_metric));
-  }
-
-  return entries_metrics;
-}
-
-// Takes a vector of entries, aggregates them, and then returns a vector of
-// dwa events. The contents of |entries| are moved in this function and
-// should not be used after.
+// Takes a vector of `entries`, and then returns a vector of dwa events. The
+// vector of `entries` should not be used after.
 std::vector<::dwa::DeidentifiedWebAnalyticsEvent> BuildDwaEvents(
     const std::vector<::metrics::dwa::mojom::DwaEntryPtr>& entries) {
   base::FieldTrial::ActiveGroups active_groups;
-  base::FieldTrialList::GetActiveFieldTrialGroups(&active_groups);
+  base::FieldTrialList::GetActiveFieldTrialGroups(
+      &active_groups, /*include_runtime_overrides=*/true);
   std::unordered_map<std::string, std::string> active_field_trial_groups;
 
   for (const auto& active_group : active_groups) {
@@ -82,45 +58,21 @@ std::vector<::dwa::DeidentifiedWebAnalyticsEvent> BuildDwaEvents(
         std::make_pair(active_group.trial_name, active_group.group_name));
   }
 
-  // Maps {event_hash: {content_hash: vector<metrics>}}.
-  std::unordered_map<
-      uint64_t, std::unordered_map<
-                    uint64_t, std::vector<base::flat_map<uint64_t, int64_t>>>>
-      dwa_events_aggregation;
-  // Maps {event_hash: vector<field_trials>}.
-  std::unordered_map<uint64_t, base::flat_map<std::string, bool>>
-      dwa_events_field_trials;
-
-  for (const auto& entry : entries) {
-    dwa_events_aggregation[entry->event_hash][entry->content_hash].push_back(
-        std::move(entry->metrics));
-    dwa_events_field_trials.try_emplace(entry->event_hash,
-                                        std::move(entry->studies_of_interest));
-  }
-
   std::vector<::dwa::DeidentifiedWebAnalyticsEvent> dwa_events;
 
-  for (const auto& [event_hash, content_and_metrics] : dwa_events_aggregation) {
+  for (const auto& entry : entries) {
     ::dwa::DeidentifiedWebAnalyticsEvent event;
 
-    event.set_event_hash(event_hash);
-    for (const auto& [content_hash, raw_entries_metrics] :
-         content_and_metrics) {
-      ::dwa::DeidentifiedWebAnalyticsEvent::ContentMetric* content_metric =
-          event.add_content_metrics();
-      content_metric->set_content_type(::dwa::DeidentifiedWebAnalyticsEvent::
-                                           ContentMetric::CONTENT_TYPE_URL);
-      content_metric->set_content_hash(content_hash);
+    event.set_event_hash(entry->event_hash);
+    event.set_content_hash(entry->content_hash);
 
-      std::vector<
-          ::dwa::DeidentifiedWebAnalyticsEvent::ContentMetric::EntryMetrics>
-          entries_metrics = TransformEntriesMetrics(raw_entries_metrics);
-      content_metric->mutable_metrics()->Add(
-          std::make_move_iterator(entries_metrics.begin()),
-          std::make_move_iterator(entries_metrics.end()));
+    for (const auto& [metric_hash, metric_value] : entry->metrics) {
+      auto* dwa_event_metric = event.add_metric();
+      dwa_event_metric->set_name_hash(metric_hash);
+      dwa_event_metric->set_value(metric_value);
     }
 
-    PopulateFieldTrialsForDwaEvent(dwa_events_field_trials[event_hash],
+    PopulateFieldTrialsForDwaEvent(entry->studies_of_interest,
                                    active_field_trial_groups, event);
 
     dwa_events.push_back(std::move(event));
@@ -137,7 +89,7 @@ DwaRecorder::~DwaRecorder() = default;
 
 void DwaRecorder::EnableRecording() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  recorder_enabled_ = base::FeatureList::IsEnabled(kDwaFeature);
+  recorder_enabled_ = IsDwaOrPrivateMetricsFeatureEnabled();
 }
 
 void DwaRecorder::DisableRecording() {
@@ -148,7 +100,6 @@ void DwaRecorder::DisableRecording() {
 void DwaRecorder::Purge() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   entries_.clear();
-  page_load_events_.clear();
 }
 
 bool DwaRecorder::IsEnabled() {
@@ -176,50 +127,30 @@ bool DwaRecorder::HasEntries() {
   return !entries_.empty();
 }
 
-void DwaRecorder::OnPageLoad() {
+std::vector<::dwa::DeidentifiedWebAnalyticsEvent> DwaRecorder::TakeDwaEvents() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (!recorder_enabled_) {
-    return;
-  }
 
   // No entries, so there's nothing to do.
   if (entries_.empty()) {
-    return;
+    return std::vector<::dwa::DeidentifiedWebAnalyticsEvent>();
   }
 
   std::vector<::dwa::DeidentifiedWebAnalyticsEvent> dwa_events =
       BuildDwaEvents(entries_);
   entries_.clear();
 
-  if (dwa_events.empty()) {
-    return;
-  }
-
-  // Puts existing |dwa_events_| into a page load event.
-  ::dwa::PageLoadEvents page_load_event;
-  page_load_event.mutable_events()->Add(
-      std::make_move_iterator(dwa_events.begin()),
-      std::make_move_iterator(dwa_events.end()));
-
-  // Add the page load event to the list of page load events.
-  page_load_events_.push_back(std::move(page_load_event));
-}
-
-std::vector<::dwa::PageLoadEvents> DwaRecorder::TakePageLoadEvents() {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  std::vector<::dwa::PageLoadEvents> results = std::move(page_load_events_);
-  page_load_events_.clear();
-  return results;
-}
-
-bool DwaRecorder::HasPageLoadEvents() {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  return !page_load_events_.empty();
+  return dwa_events;
 }
 
 const std::vector<metrics::dwa::mojom::DwaEntryPtr>&
 DwaRecorder::GetEntriesForTesting() const {
   return entries_;
+}
+
+// static
+bool DwaRecorder::IsDwaOrPrivateMetricsFeatureEnabled() {
+  return base::FeatureList::IsEnabled(kDwaFeature) ||
+         base::FeatureList::IsEnabled(private_metrics::kPrivateMetricsFeature);
 }
 
 }  // namespace metrics::dwa

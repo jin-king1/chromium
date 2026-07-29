@@ -6,6 +6,7 @@
 
 #import "base/time/time.h"
 #import "components/infobars/core/infobar.h"
+#import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
 #import "ios/chrome/browser/credential_provider/model/ios_credential_provider_infobar_delegate.h"
 #import "ios/chrome/browser/infobars/model/infobar_manager_impl.h"
@@ -18,21 +19,20 @@
 #import "ios/chrome/browser/webauthn/model/ios_passkey_model_factory.h"
 #import "ios/web/public/web_state.h"
 
+namespace {
 // Maximum amount of time since a passkey was created for it to count as a
 // recently added passkey.
-static constexpr base::TimeDelta kRecentlyAddedDelay = base::Seconds(5);
-
-BROWSER_USER_DATA_KEY_IMPL(CredentialProviderBrowserAgent)
+constexpr base::TimeDelta kRecentlyAddedDelay = base::Seconds(5);
+}  // namespace
 
 CredentialProviderBrowserAgent::CredentialProviderBrowserAgent(Browser* browser)
-    : browser_(browser),
+    : BrowserUserData(browser),
       model_(IOSPasskeyModelFactory::GetForProfile(
           // Here, we want to observe the user's passkey model, so we need the
           // original profile.
           browser_->GetProfile()->GetOriginalProfile())) {
   if (model_) {
     model_observation_.Observe(model_.get());
-    browser_observation_.Observe(browser_.get());
   }
 }
 
@@ -44,7 +44,7 @@ void CredentialProviderBrowserAgent::SetInfobarAllowed(bool allowed) {
 
 void CredentialProviderBrowserAgent::DisplayInfoBar(
     const sync_pb::WebauthnCredentialSpecifics& passkey) {
-  if (!browser_ || !infobar_allowed_) {
+  if (!infobar_allowed_) {
     return;
   }
 
@@ -82,12 +82,6 @@ void CredentialProviderBrowserAgent::DisplayInfoBar(
 
 void CredentialProviderBrowserAgent::RemoveObservers() {
   model_observation_.Reset();
-  browser_observation_.Reset();
-  browser_ = nullptr;
-}
-
-void CredentialProviderBrowserAgent::BrowserDestroyed(Browser* browser) {
-  RemoveObservers();
 }
 
 void CredentialProviderBrowserAgent::OnPasskeysChanged(

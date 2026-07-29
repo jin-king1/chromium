@@ -9,58 +9,98 @@
 #include <string>
 #include <vector>
 
-#include "base/memory/raw_ptr.h"
+#include "base/containers/flat_set.h"
+#include "base/containers/span.h"
+#include "base/memory/raw_ref.h"
+#include "base/types/optional_ref.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
+#include "components/autofill/core/common/mojom/autofill_types.mojom-shared.h"
+#include "services/metrics/public/cpp/ukm_source_id.h"
 #include "url/origin.h"
 
 namespace autofill {
 
 class AddressDataManager;
 
-// Specifies the type of a profile form import.
+// Specifies the type of a profile form import. The type is used for logging but
+// also for deciding which UI to show.
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
 enum class AutofillProfileImportType {
   // Type is unspecified.
-  kImportTypeUnspecified,
+  kImportTypeUnspecified = 0,
   // The observed profile corresponds to a new profile because there are no
   // mergeable or updatable profiles.
-  kNewProfile,
+  kNewProfile = 1,
   // The imported profile is a subset of an already existing profile.
-  kDuplicateImport,
+  kDuplicateImport = 2,
   // The imported profile can be integrated into an already existing profile
   // without any changes to settings-visible values.
-  kSilentUpdate,
+  kSilentUpdate = 3,
   // The imported profile changes settings-visible values which is only imported
   // after explicit user confirmation.
-  kConfirmableMerge,
-  // The observed profile corresponds to a new profile because there are no
-  // mergeable or updatable profiles but imports are suppressed for this
-  // domain.
-  kSuppressedNewProfile,
+  kConfirmableMerge = 4,
+  // The observed profile corresponds to a new profile, but either imports are
+  // suppressed for this domain or only silent updates are allowed.
+  kSuppressedNewProfile = 5,
   // The observed profile resulted both in a confirmable merge and in a silent
   // update.
-  kConfirmableMergeAndSilentUpdate,
+  kConfirmableMergeAndSilentUpdate = 6,
   // The observed profile resulted in one or more confirmable merges that are
   // all suppressed with no additional silent updates.
-  kSuppressedConfirmableMerge,
+  kSuppressedConfirmableMerge = 7,
   // The observed profile resulted in one or more suppressed confirmable merges
   // but with additional silent updates.
-  kSuppressedConfirmableMergeAndSilentUpdate,
-  // Indicates that a silent update was the result of importing an incomplete
-  // profile.
-  kSilentUpdateForIncompleteProfile,
-  // Indicates that even though the incomplete profile contained structured
-  // information, it could not be used for a silent update.
-  kUnusableIncompleteProfile,
+  kSuppressedConfirmableMergeAndSilentUpdate = 8,
+  // Only updates on complete profiles are performed.
+  // kSilentUpdateForIncompleteProfile = 9,
+  // kUnusableIncompleteProfile = 10,
   // The observed profile corresponds to an existing kLocalOrSyncable profile,
   // which can be migrated to the account profile storage.
-  kProfileMigration,
+  kProfileMigration = 11,
   // Like `kProfileMigration`, but additionally the migration candidate and
   // other stored profiles can be silently updated. These silent updates happen
   // even if the user declines the migration.
-  kProfileMigrationAndSilentUpdate,
-  kMaxValue = kProfileMigrationAndSilentUpdate
+  kProfileMigrationAndSilentUpdate = 12,
+  // A superset of a Home and Work address was submitted and no other non-Home
+  // and Work profile qualified for an update. This will trigger an update
+  // prompt, but accepting this prompt creates a new H/W superset profile
+  // under the hood since H/W is read-only.
+  kHomeAndWorkSuperset = 13,
+  // A profile that is a superset of an existing `kAccountNameEmail` profile was
+  // submitted. This triggers a prompt to save the submitted profile as a new,
+  // more complete profile.
+  kNameEmailSuperset = 14,
+  // Import of a profile that is a superset of both a H/W profile and the
+  // `kAccountNameEmail` profile, when form fields were not edited after
+  // filling.
+  kHomeWorkNameEmailMerge = 15,
+  kMaxValue = kHomeWorkNameEmailMerge
 };
+
+// LINT.IfChange(ProfileCountrySource)
+
+// Specifies the source of the country in the imported profile.
+enum class ProfileCountrySource {
+  // The submitted form contained a dedicated country field that contained a
+  // valid country which was used to set the profile country.
+  kExplicitlyObserved = 0,
+  // The profile country was inferred using variations services to get the
+  // latest reported country or, if not possible, using the app locale.
+  kDefaultCountryCodeForNewAddress = 1,
+  // The profile country was inferred from a phone number in international
+  // format in the submitted form.
+  kPhoneNumberRegionCode = 2,
+  // The profile has no country.
+  kNoCountry = 3,
+  // The profile country was set, but its exact origin cannot be determined.
+  kCountryMerged = 4,
+
+  kMaxValue = kCountryMerged,
+};
+
+// LINT.ThenChange(//tools/metrics/histograms/metadata/autofill/enums.xml:AutofillAddressProfileImportCountrySource)
 
 // Specifies the status of the imported phone number.
 enum class PhoneImportStatus {
@@ -86,8 +126,9 @@ struct ProfileImportMetadata {
 
   // Tracks if the form section contains an invalid country.
   bool observed_invalid_country = false;
-  // Whether the profile's country was complemented automatically.
-  bool did_complement_country = false;
+  // Source of the country in a profile.
+  ProfileCountrySource country_source =
+      ProfileCountrySource::kExplicitlyObserved;
   // Whether the form originally contained a phone number and if that phone
   // number is considered valid by libphonenumber.
   PhoneImportStatus phone_import_status = PhoneImportStatus::kNone;
@@ -96,6 +137,15 @@ struct ProfileImportMetadata {
   bool did_import_from_unrecognized_autocomplete_field = false;
   // The origin that the form was submitted on.
   url::Origin origin;
+  // GUIDs of `AutofillProfile`s that were used to fill the form. Empty if the
+  // user edited any of the filled fields in the form.
+  base::flat_set<std::string> unedited_autofilled_profile_guids;
+  // Tracks if the submitted form contained non-empty split zip fields.
+  bool observed_split_zip = false;
+  // The source of submission that triggered the current profile import. In the
+  // case of multi-step import, this would be the source of the last submission
+  // that occurred so far.
+  mojom::SubmissionSource submission_source = mojom::SubmissionSource::NONE;
 };
 
 // This class holds the state associated with the import of an AutofillProfile
@@ -182,6 +232,9 @@ class ProfileImportProcess {
   // If no decision is available yet, return false.
   bool UserAccepted() const;
 
+  // Returns true if the import process requires a user prompt.
+  bool requires_user_prompt() const;
+
   const GURL& form_source_url() const { return form_source_url_; }
 
   // Adds and updates all profiles affected by the import process in the
@@ -229,34 +282,86 @@ class ProfileImportProcess {
       const std::vector<const AutofillProfile*>& existing_profiles) const;
 
  private:
-  // Determines the import type of |observed_profile_| with respect to
-  // |existing_profiles|. Only the first profile in |existing_profiles| becomes
-  // a merge candidate in case there is a confirmable merge.
+  // Represents an existing profile and how it changes when merged with the
+  // `observed_profile_`.
+  struct ImportCandidate {
+    // Describes how `existing_profile` and `merged_profile` differ.
+    enum class Change {
+      kNoChange = 0,
+      kNonSettingVisibleChange = 1,
+      kSettingVisibleChange = 2,
+    } change;
+    // An existing profile, as saved in Autofill prior to form submission.
+    AutofillProfile existing_profile;
+    // The `existing_profile`, merged with `observed_profile_`.
+    AutofillProfile merged_profile;
+  };
+
+  // Determines the import type of `observed_profile_` with respect to
+  // `existing_profiles` and updates `merge_candidate_`, `import_candidate_`
+  // and/or `silently_updated_profiles_`.
+  // Only one profile can be updated in a user-visible way at a time. Updates
+  // are preferred over migrations and higher frecency profiles are preferred
+  // over lower frecency ones.
   void DetermineProfileImportType();
+
+  // Helper functions for `DetermineProfileImportType()` that set the
+  // appropriate `import_type_` once the logic has determined that a certain
+  // flow should happen (new profile import, suppressing an import, ...).
+  // Also sets the `import_candidate_` and `merge_candidate_`, if necessary.
+  void DetermineNewProfileImportType();
+  void DetermineSuppressedImportType(
+      base::span<const ImportCandidate> candidates);
+  void DetermineUpdateProfileImportType(
+      const ImportCandidate& update_candidate);
+  void DetermineMigrateProfileImportType(
+      const AutofillProfile& migration_candidate);
+
+  // Predicates to classify whether a `candidates` qualifies for a certain flow.
+  // This checks for conditions like address completeness or strikes from
+  // repeatedly rejecting prompts.
+  bool QualifiesForSilentUpdate(const ImportCandidate& candidate) const;
+  bool QualifiesForUpdateProfilePrompt(const ImportCandidate& candidate) const;
+  bool QualifiesForMigrateProfilePrompt(const ImportCandidate& profile) const;
+
+  // Merges the `mergeable_profiles` with the `observed_profile_` and determines
+  // how the merged profile differs from the original one (see
+  // `ImportCandidate::Change`). Constructs one `ImportCandidate` per
+  // `mergeable_profiles` and returns the result, preserving relative order.
+  // Assumes that mergeability has already been determined.
+  std::vector<ImportCandidate> GetImportCandidates(
+      base::span<const AutofillProfile*> mergeable_profiles) const;
 
   // For new profile imports, sets the source of the `import_candidate_`
   // correctly, depending on the user's account storage eligiblity.
   void DetermineSourceOfImportCandidate();
-
-  // If the observed profile is a duplicate (modulo silent updates) of an
-  // existing `kLocalOrSyncable` profile, eligible users are prompted to change
-  // its storage location to `kAccount`.
-  // This function checks whether the `profile` qualifies for migration and sets
-  // the `migration_candidate` accordingly. The conditions are:
-  // - `migration_candidate` not set yet.
-  // - The User eligible for account profile storage.
-  // - `profile` is of source `kLocalOrSyncable` and not blocked for migration.
-  // - The `profile`'s country isn't set to an unsupported country.
-  // - Not only silent updates are allowed.
-  void MaybeSetMigrationCandidate(
-      std::optional<AutofillProfile>& migration_candidate,
-      const AutofillProfile& profile) const;
 
   // Computes the settings-visible profile difference between the
   // `import_candidate_` and the `confirmed_import_candidate_`. Logs all edited
   // types, depending on the import type. Returns the number of edited fields.
   // If the user didn't edit any fields (or wasn't prompted), this is a no-op.
   int CollectedEditedTypeHistograms() const;
+
+  // Records UKM metrics after the import was applied.
+  void LogUkmMetrics(
+      ukm::UkmRecorder* ukm_recorder,
+      const std::vector<const AutofillProfile*>& existing_profiles,
+      int num_edited_fields = 0) const;
+
+  // Records new profile import metrics after the import was applied.
+  void LogNewProfileMetrics(
+      const std::vector<const AutofillProfile*>& existing_profiles) const;
+
+  // Records confirmable profile update metrics after the import was applied.
+  void LogConfirmableProfileUpdateMetrics(
+      const std::vector<const AutofillProfile*>& existing_profiles) const;
+
+  // Records Home and Work superset metrics after the import was applied.
+  void LogHomeAndWorkSupersetMetrics() const;
+
+  // Records details about silent profile updates.
+  void LogSilentUpdateMergeCategory(
+      const std::vector<const AutofillProfile*>& existing_profiles) const;
 
   // Indicates if the user is already prompted.
   bool prompt_shown_{false};

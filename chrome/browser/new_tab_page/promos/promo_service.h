@@ -7,14 +7,15 @@
 
 #include <memory>
 #include <optional>
+#include <string>
 
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "chrome/browser/new_tab_page/promos/promo_data.h"
 #include "chrome/browser/new_tab_page/promos/promo_service_observer.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/prefs/pref_registry_simple.h"
-#include "services/data_decoder/public/cpp/data_decoder.h"
 
 class GURL;
 class Profile;
@@ -86,8 +87,7 @@ class PromoService : public KeyedService {
   void PromoDataLoaded(Status status, const std::optional<PromoData>& data);
 
  private:
-  void OnLoadDone(std::unique_ptr<std::string> response_body);
-  void OnJsonParsed(data_decoder::DataDecoder::ValueOrError result);
+  void OnLoadDone(std::optional<std::string> response_body);
 
   void NotifyObservers();
 

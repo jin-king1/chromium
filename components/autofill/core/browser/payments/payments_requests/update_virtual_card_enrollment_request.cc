@@ -4,11 +4,21 @@
 
 #include "components/autofill/core/browser/payments/payments_requests/update_virtual_card_enrollment_request.h"
 
+#include <optional>
 #include <string>
+#include <utility>
 
+#include "base/check.h"
+#include "base/functional/callback.h"
 #include "base/json/json_writer.h"
+#include "base/logging.h"
+#include "base/notreached.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/time/time.h"
 #include "base/values.h"
+#include "components/autofill/core/browser/payments/payments_autofill_client.h"
+#include "components/autofill/core/browser/payments/payments_request_details.h"
+#include "components/autofill/core/browser/payments/payments_requests/payments_request.h"
 #include "components/autofill/core/browser/payments/virtual_card_enrollment_flow.h"
 
 namespace autofill {
@@ -17,6 +27,10 @@ namespace payments {
 namespace {
 const char kEnrollRequestPath[] = "payments/apis/virtualcardservice/enroll";
 const char kUnenrollRequestPath[] = "payments/apis/virtualcardservice/unenroll";
+
+// The timeout for VCN enrollment request is 6.5 seconds (selected after
+// experimentation).
+constexpr int kVcnEnrollRequestTimeoutMilliseconds = 6500;
 }  // namespace
 
 UpdateVirtualCardEnrollmentRequest::UpdateVirtualCardEnrollmentRequest(
@@ -40,7 +54,7 @@ std::string UpdateVirtualCardEnrollmentRequest::GetRequestContentType() {
 }
 
 std::string UpdateVirtualCardEnrollmentRequest::GetRequestContent() {
-  base::Value::Dict request_dict;
+  base::DictValue request_dict;
 
   switch (request_details_.virtual_card_enrollment_request_type) {
     case VirtualCardEnrollmentRequestType::kEnroll:
@@ -53,14 +67,13 @@ std::string UpdateVirtualCardEnrollmentRequest::GetRequestContent() {
       NOTREACHED();
   }
 
-  std::string request_content;
-  base::JSONWriter::Write(request_dict, &request_content);
-  VLOG(3) << "UpdateVirtualCardEnrollmentRequest Body: " << request_content;
+  std::string request_content = base::WriteJson(request_dict).value_or("");
+  DVLOG(3) << "UpdateVirtualCardEnrollmentRequest Body: " << request_content;
   return request_content;
 }
 
 void UpdateVirtualCardEnrollmentRequest::ParseResponse(
-    const base::Value::Dict& response) {
+    const base::DictValue& response) {
   // Only enroll requests have a response to parse, unenroll request responses
   // are empty except for possible errors which are parsed in
   // PaymentsNetworkInterface.
@@ -112,18 +125,11 @@ std::optional<base::TimeDelta> UpdateVirtualCardEnrollmentRequest::GetTimeout()
       VirtualCardEnrollmentRequestType::kEnroll) {
     return std::nullopt;
   }
-
-  if (!base::FeatureList::IsEnabled(
-          features::kAutofillVcnEnrollRequestTimeout)) {
-    return std::nullopt;
-  }
-
-  return base::Milliseconds(
-      features::kAutofillVcnEnrollRequestTimeoutMilliseconds.Get());
+  return base::Milliseconds(kVcnEnrollRequestTimeoutMilliseconds);
 }
 
 void UpdateVirtualCardEnrollmentRequest::BuildEnrollRequestDictionary(
-    base::Value::Dict* request_dict) {
+    base::DictValue* request_dict) {
   DCHECK(request_details_.virtual_card_enrollment_request_type ==
          VirtualCardEnrollmentRequestType::kEnroll);
 
@@ -133,7 +139,7 @@ void UpdateVirtualCardEnrollmentRequest::BuildEnrollRequestDictionary(
          request_details_.instrument_id.has_value());
 
   // Builds the context and channel_type for this enroll request.
-  base::Value::Dict context;
+  base::DictValue context;
   switch (request_details_.virtual_card_enrollment_source) {
     case VirtualCardEnrollmentSource::kUpstream:
       context.Set("billable_service",
@@ -180,7 +186,7 @@ void UpdateVirtualCardEnrollmentRequest::BuildEnrollRequestDictionary(
 }
 
 void UpdateVirtualCardEnrollmentRequest::BuildUnenrollRequestDictionary(
-    base::Value::Dict* request_dict) {
+    base::DictValue* request_dict) {
   DCHECK(request_details_.virtual_card_enrollment_request_type ==
          VirtualCardEnrollmentRequestType::kUnenroll);
 
@@ -191,7 +197,7 @@ void UpdateVirtualCardEnrollmentRequest::BuildUnenrollRequestDictionary(
 
   // Builds the context for this unenroll request with the billable service
   // number and the billing customer number if present.
-  base::Value::Dict context;
+  base::DictValue context;
   if (request_details_.billing_customer_number != 0) {
     context.Set("customer_context",
                 BuildCustomerContextDictionary(

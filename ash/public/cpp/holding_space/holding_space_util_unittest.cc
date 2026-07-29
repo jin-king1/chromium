@@ -33,8 +33,8 @@ namespace {
 // `kMinValue` and `kMaxValue`. NOTE: Some values contained in the set may be
 // undefined if type is not contiguous.
 template <typename T>
-base::EnumSet<T, T::kMinValue, T::kMaxValue> CreateEnumSet() {
-  return base::EnumSet<T, T::kMinValue, T::kMaxValue>::All();
+base::EnumSet<T> CreateEnumSet() {
+  return base::EnumSet<T>::All();
 }
 
 // Returns a created `ui::OSExchangeData` instance with optional file paths
@@ -91,10 +91,10 @@ TEST_F(HoldingSpaceUtilAshTest, ExtractFilePaths) {
 
   // Configure the `client` to crack file system URLs.
   ON_CALL(client, CrackFileSystemUrl)
-      .WillByDefault(testing::Invoke([](const GURL& file_system_url) {
+      .WillByDefault([](const GURL& file_system_url) {
         return base::FilePath(base::StrCat(
             {"//path/to/", std::string(&file_system_url.spec().back())}));
-      }));
+      });
 
   // Case: Empty.
   data = CreateOSExchangeData(file_system_sources, filenames);
@@ -183,7 +183,7 @@ TEST_F(HoldingSpaceUtilTest, GetAllFileSystemTypes) {
         should_exist_in_all_types_set = true;
     }
 
-    EXPECT_EQ(base::Contains(all_types, type), should_exist_in_all_types_set);
+    EXPECT_EQ(all_types.contains(type), should_exist_in_all_types_set);
   }
 }
 
@@ -215,7 +215,7 @@ TEST_F(HoldingSpaceUtilTest, GetAllItemTypes) {
         should_exist_in_all_types_set = true;
     }
 
-    EXPECT_EQ(base::Contains(all_types, type), should_exist_in_all_types_set);
+    EXPECT_EQ(all_types.contains(type), should_exist_in_all_types_set);
   }
 }
 

@@ -9,13 +9,16 @@
 
 #include "android_webview/browser/aw_apk_type.h"
 #include "android_webview/browser/aw_browser_context.h"
+#include "android_webview/browser/aw_content_browser_client.h"
 #include "android_webview/browser/aw_enterprise_authentication_app_link_manager.h"
 #include "android_webview/browser/aw_feature_list_creator.h"
 #include "android_webview/browser/lifecycle/aw_contents_lifecycle_notifier.h"
+#include "android_webview/browser/lifecycle/webview_app_state_observer.h"
 #include "android_webview/browser/safe_browsing/aw_safe_browsing_allowlist_manager.h"
 #include "android_webview/browser/safe_browsing/aw_safe_browsing_ui_manager.h"
-#include "base/feature_list.h"
+#include "android_webview/common/aw_features.h"
 #include "base/memory/raw_ptr.h"
+#include "base/timer/timer.h"
 #include "components/os_crypt/async/browser/os_crypt_async.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/prefs/pref_service.h"
@@ -37,6 +40,7 @@ namespace prefs {
 extern const char kAuthAndroidNegotiateAccountType[];
 extern const char kAuthServerAllowlist[];
 extern const char kEnterpriseAuthAppLinkPolicy[];
+extern const char kLastKnownAppCacheQuota[];
 
 }  // namespace prefs
 
@@ -44,14 +48,14 @@ class AwContentsLifecycleNotifier;
 class VisibilityMetricsLogger;
 
 // Lifetime: Singleton
-class AwBrowserProcess {
+class AwBrowserProcess : public WebViewAppStateObserver {
  public:
-  AwBrowserProcess(AwFeatureListCreator* aw_feature_list_creator);
+  explicit AwBrowserProcess(AwContentBrowserClient* browser_client);
 
   AwBrowserProcess(const AwBrowserProcess&) = delete;
   AwBrowserProcess& operator=(const AwBrowserProcess&) = delete;
 
-  ~AwBrowserProcess();
+  ~AwBrowserProcess() override;
 
   static AwBrowserProcess* GetInstance();
 
@@ -62,6 +66,16 @@ class AwBrowserProcess {
   void CreateBrowserPolicyConnector();
   void CreateLocalState();
   void InitSafeBrowsing();
+
+  // App's cache quota value when queried by WebView.
+  // Returns -1 if app's cache quota is unavailable to WebView.
+  // Note that this does not reflect the real-time quota. The quota can
+  // be changed by the Android framework during the lifetime of the app.
+  // This method MUST be called from the UI thread.
+  int64_t GetHostAppCacheQuota();
+
+  // This method can be called from any thread.
+  void FetchHostAppCacheQuota();
 
   safe_browsing::RemoteSafeBrowsingDatabaseManager* GetSafeBrowsingDBManager();
 
@@ -86,6 +100,8 @@ class AwBrowserProcess {
       PrefRegistrySimple* pref_registry);
   static void RegisterEnterpriseAuthenticationAppLinkPolicyPref(
       PrefRegistrySimple* pref_registry);
+  static void RegisterAppCacheQuotaLocalStatePref(
+      PrefRegistrySimple* pref_registry);
 
   // Constructs HttpAuthDynamicParams based on |local_state_|.
   network::mojom::HttpAuthDynamicParamsPtr CreateHttpAuthDynamicParams();
@@ -94,12 +110,32 @@ class AwBrowserProcess {
 
   static void TriggerMinidumpUploading();
   static ApkType GetApkType();
+  static bool IsAppVisibleToUser();
 
   EnterpriseAuthenticationAppLinkManager*
   GetEnterpriseAuthenticationAppLinkManager();
 
   embedder_support::OriginTrialsSettingsStorage*
   GetOriginTrialsSettingsStorage();
+  AwContentBrowserClient* GetBrowserClient();
+
+  // Returns true if we should init tracing during browser main.
+  // Will return false if tracing was already initialized during factory init,
+  // or disabled by feature flag.
+  static bool ShouldInitTracingDuringBrowserMain();
+
+  // Waits for tracing to be initialized on a background thread.
+  // If tracing is not being initialized on a background thread, this function
+  // returns immediately.
+  static void WaitForBackgroundTracingInit();
+
+  static void SetNativeWebViewZygoteEnabled(bool enabled);
+  static bool IsNativeWebViewZygoteEnabled();
+
+  // WebViewAppStateObserver implementation:
+  void OnAppStateChanged(State state) override;
+
+  void PurgeMemory();
 
  private:
   void CreateSafeBrowsingUIManager();
@@ -136,13 +172,16 @@ class AwBrowserProcess {
   // Accessed on UI and IO threads.
   std::unique_ptr<AwSafeBrowsingAllowlistManager>
       safe_browsing_allowlist_manager_;
-
+  base::Lock lock_;
+  int64_t app_cache_quota_ GUARDED_BY(lock_) = -1;
+  base::OneShotTimer purge_memory_timer_;
   std::unique_ptr<VisibilityMetricsLogger> visibility_metrics_logger_;
   std::unique_ptr<AwContentsLifecycleNotifier> aw_contents_lifecycle_notifier_;
   std::unique_ptr<EnterpriseAuthenticationAppLinkManager> app_link_manager_;
   std::unique_ptr<embedder_support::OriginTrialsSettingsStorage>
       origin_trials_settings_storage_;
   std::unique_ptr<os_crypt_async::OSCryptAsync> os_crypt_async_;
+  raw_ref<AwContentBrowserClient> browser_client_;
 };
 
 }  // namespace android_webview

@@ -9,7 +9,6 @@
 #include <optional>
 
 #include "base/containers/queue.h"
-#include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
@@ -193,7 +192,6 @@ class COMPONENT_EXPORT(CHROMEOS_NETWORK) CellularConnectionHandler
   void EnableProfile();
   void OnEnableCarrierProfileResult(HermesResponseStatus status);
 
-  void UninhibitScans(const std::optional<std::string>& error_before_uninhibit);
   void OnUninhibitScanResult(
       const std::optional<std::string>& error_before_uninhibit,
       bool success);

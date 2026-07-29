@@ -33,16 +33,20 @@ class FeedbackCommon : public base::RefCountedThreadSafe<FeedbackCommon> {
   using SystemLogsMap = std::map<std::string, std::string>;
 
   struct AttachedFile {
-    explicit AttachedFile(const std::string& filename, std::string data);
+    explicit AttachedFile(const std::string& filename,
+                          std::vector<uint8_t> data);
     ~AttachedFile();
+    AttachedFile(AttachedFile&&);
+    AttachedFile& operator=(AttachedFile&&);
 
     std::string name;
-    std::string data;
+    std::vector<uint8_t> data;
   };
 
   FeedbackCommon();
 
   void AddFile(const std::string& filename, std::string data);
+  void AddFile(const std::string& filename, std::vector<uint8_t> data);
 
   void AddLog(std::string name, std::string value);
   void AddLogs(SystemLogsMap logs);
@@ -70,7 +74,6 @@ class FeedbackCommon : public base::RefCountedThreadSafe<FeedbackCommon> {
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
   // Getters
-  const std::optional<std::string>& mac_address() const { return mac_address_; }
   const std::string& category_tag() const { return category_tag_; }
   const std::string& page_url() const { return page_url_; }
   const std::string& description() const { return description_; }
@@ -92,9 +95,6 @@ class FeedbackCommon : public base::RefCountedThreadSafe<FeedbackCommon> {
   size_t attachments() const { return attachments_.size(); }
 
   // Setters
-  void set_mac_address(const std::optional<std::string>& mac_address) {
-    mac_address_ = mac_address;
-  }
   void set_category_tag(const std::string& category_tag) {
     category_tag_ = category_tag;
   }
@@ -149,7 +149,6 @@ class FeedbackCommon : public base::RefCountedThreadSafe<FeedbackCommon> {
   // Returns true if a product ID was set in the feedback report.
   bool HasProductId() const { return product_id_ != -1; }
 
-  std::optional<std::string> mac_address_;
   std::string category_tag_;
   std::string page_url_;
   std::string description_;

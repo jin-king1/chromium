@@ -7,8 +7,6 @@
 #include <memory>
 #include <utility>
 
-#include "base/containers/contains.h"
-#include "base/not_fatal_until.h"
 #include "base/observer_list.h"
 #include "ui/gfx/animation/animation_container.h"
 #include "ui/gfx/animation/slide_animation.h"
@@ -62,7 +60,7 @@ void BoundsAnimator::AnimateViewTo(
 
   Data existing_data;
   if (is_animating) {
-    DCHECK(base::Contains(data_, view));
+    DCHECK(data_.contains(view));
     const bool used_transforms = data_[view].target_transform.has_value();
     if (used_transforms) {
       // Using transforms means a view does not have the proper bounds until an
@@ -143,7 +141,7 @@ void BoundsAnimator::SetAnimationDelegate(
     View* view,
     std::unique_ptr<AnimationDelegate> delegate) {
   const auto i = data_.find(view);
-  CHECK(i != data_.end(), base::NotFatalUntil::M130);
+  CHECK(i != data_.end());
 
   i->second.delegate = std::move(delegate);
 }
@@ -216,7 +214,7 @@ BoundsAnimator::Data::~Data() = default;
 
 BoundsAnimator::Data BoundsAnimator::RemoveFromMaps(View* view) {
   const auto i = data_.find(view);
-  CHECK(i != data_.end(), base::NotFatalUntil::M130);
+  CHECK(i != data_.end());
   DCHECK_GT(animation_to_view_.count(i->second.animation.get()), 0u);
 
   Data old_data = std::move(i->second);

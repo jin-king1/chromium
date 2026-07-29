@@ -71,14 +71,21 @@ enum class MenuActionType {
   SortDriveItemsByOpeningTime = 58,
   SelectDriveIdentity = 59,
   AddDriveAccount = 60,
-  ManageInNewTab = 61,
+  ManageInNewTab = 61,  // Obsolete
   RecentActivityInSharedTabGroup = 62,
   AIPrototyping = 63,
   ManageSharedTabGroup = 64,
   ShareLocalTabGroup = 65,
   LeaveSharedTabGroup = 66,
   DeleteSharedTabGroup = 67,
-  kMaxValue = DeleteSharedTabGroup,
+  GeminiWithImageAttachment = 68,
+  PinSite = 69,
+  UnpinSite = 70,
+  EditPinnedSite = 71,
+  DeleteBrowsingData = 72,
+  CreateEmptyTabGroup = 73,
+  SendTabToSelf = 74,
+  kMaxValue = SendTabToSelf,
 };
 // LINT.ThenChange(/tools/metrics/histograms/metadata/mobile/enums.xml)
 

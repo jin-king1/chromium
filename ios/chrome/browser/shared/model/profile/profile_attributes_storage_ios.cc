@@ -12,7 +12,7 @@
 
 #include "base/check_deref.h"
 #include "base/check_op.h"
-#include "base/containers/contains.h"
+#include "base/containers/flat_set.h"
 #include "base/functional/callback.h"
 #include "base/strings/string_util.h"
 #include "base/values.h"
@@ -50,7 +50,7 @@ void IterateOverProfileAttributesImpl(
     // reference (it is not possible for the iterator to mutate to value
     // otherwise).
     if constexpr (std::is_same_v<AttributesReference, ProfileAttributesIOS&>) {
-      base::Value::Dict storage = std::move(attr).GetStorage();
+      base::DictValue storage = std::move(attr).GetStorage();
       if (storage != value) {
         value = std::move(storage);
       }
@@ -65,7 +65,46 @@ void IterateOverProfileAttributesImpl(
 }  // anonymous namespace
 
 ProfileAttributesStorageIOS::ProfileAttributesStorageIOS(PrefService* prefs)
-    : prefs_(prefs) {}
+    : prefs_(CHECK_DEREF(prefs)) {
+  // Some users are crashing on startup because kProfileInfoCache values are
+  // not dictionaries (see https://crbug.com/426651506 for details). Iterate
+  // over the preference and remove all invalid values.
+  std::set<std::string> keys_to_remove;
+  for (const auto pair : prefs_->GetDict(prefs::kProfileInfoCache)) {
+    if (!pair.second.is_dict()) {
+      keys_to_remove.insert(pair.first);
+    }
+  }
+
+  // If there are any keys whose value is not a dictionary, then ...
+  if (!keys_to_remove.empty()) {
+    // ... first remove them from `kProfileInfoCache`, ...
+    {
+      ScopedDictPrefUpdate update(&prefs_.get(), prefs::kProfileInfoCache);
+      base::DictValue& dict = update.Get();
+      for (const auto& key : keys_to_remove) {
+        dict.Remove(key);
+      }
+    }
+
+    // ... second request the removal of the corresponding profiles,
+    // unless it was already requested.
+    {
+      ScopedListPrefUpdate update(&prefs_.get(), prefs::kProfilesToRemove);
+      base::ListValue& list = update.Get();
+      for (const auto& value : list) {
+        const std::string& key = value.GetString();
+        if (keys_to_remove.contains(key)) {
+          keys_to_remove.erase(key);
+        }
+      }
+
+      for (const auto& key : keys_to_remove) {
+        list.Append(key);
+      }
+    }
+  }
+}
 
 ProfileAttributesStorageIOS::~ProfileAttributesStorageIOS() = default;
 
@@ -85,13 +124,16 @@ size_t ProfileAttributesStorageIOS::GetNumberOfProfiles() const {
 
 bool ProfileAttributesStorageIOS::HasProfileWithName(
     std::string_view name) const {
+  if (name.empty()) {
+    return false;
+  }
+
   return prefs_->GetDict(prefs::kProfileInfoCache).FindDict(name) != nullptr;
 }
 
 bool ProfileAttributesStorageIOS::IsProfileMarkedForDeletion(
     std::string_view profile_name) const {
-  return base::Contains(prefs_->GetList(prefs::kProfilesToRemove),
-                        profile_name);
+  return prefs_->GetList(prefs::kProfilesToRemove).contains(profile_name);
 }
 
 ProfileAttributesIOS
@@ -101,7 +143,7 @@ ProfileAttributesStorageIOS::GetAttributesForProfileWithName(
     return ProfileAttributesIOS::DeletedProfile(name);
   }
 
-  const base::Value::Dict& values =
+  const base::DictValue& values =
       CHECK_DEREF(prefs_->GetDict(prefs::kProfileInfoCache).FindDict(name));
   return ProfileAttributesIOS::WithAttrs(name, values);
 }
@@ -113,19 +155,19 @@ void ProfileAttributesStorageIOS::UpdateAttributesForProfileWithName(
     return;
   }
 
-  const base::Value::Dict& values =
+  const base::DictValue& values =
       CHECK_DEREF(prefs_->GetDict(prefs::kProfileInfoCache).FindDict(name));
 
   ProfileAttributesIOS attr = ProfileAttributesIOS::WithAttrs(name, values);
   std::move(callback).Run(attr);
   CHECK(!attr.IsDeletedProfile());
 
-  base::Value::Dict updated_values = std::move(attr).GetStorage();
+  base::DictValue updated_values = std::move(attr).GetStorage();
   if (values != updated_values) {
     // Note: The block is there to ensure the pref update gets committed before
     // observers are notified, so they see the new value.
     {
-      ScopedDictPrefUpdate update(prefs_, prefs::kProfileInfoCache);
+      ScopedDictPrefUpdate update(&prefs_.get(), prefs::kProfileInfoCache);
       update->Set(name, std::move(updated_values));
     }
     observers_.Notify(
@@ -135,7 +177,7 @@ void ProfileAttributesStorageIOS::UpdateAttributesForProfileWithName(
 
 void ProfileAttributesStorageIOS::IterateOverProfileAttributes(
     Iterator iterator) {
-  ScopedDictPrefUpdate update(prefs_, prefs::kProfileInfoCache);
+  ScopedDictPrefUpdate update(&prefs_.get(), prefs::kProfileInfoCache);
   IterateOverProfileAttributesImpl(update.Get(), std::move(iterator));
 }
 
@@ -162,13 +204,13 @@ void ProfileAttributesStorageIOS::SetProfileNameForSceneID(
     std::string_view profile_name) {
   DCHECK(!profile_name.empty());
   DCHECK(HasProfileWithName(profile_name));
-  ScopedDictPrefUpdate update(prefs_, prefs::kProfileForScene);
+  ScopedDictPrefUpdate update(&prefs_.get(), prefs::kProfileForScene);
   update->Set(scene_id, profile_name);
 }
 
 void ProfileAttributesStorageIOS::ClearProfileNameForSceneID(
     std::string_view scene_id) {
-  ScopedDictPrefUpdate update(prefs_, prefs::kProfileForScene);
+  ScopedDictPrefUpdate update(&prefs_.get(), prefs::kProfileForScene);
   update->Remove(scene_id);
 }
 
@@ -194,6 +236,20 @@ void ProfileAttributesStorageIOS::SetPersonalProfileName(
   DCHECK(!profile_name.empty());
   DCHECK(HasProfileWithName(profile_name));
   prefs_->SetString(prefs::kPersonalProfileName, profile_name);
+}
+
+// static
+base::flat_set<std::string> ProfileAttributesStorageIOS::GetAllProfileNames(
+    PrefService* local_prefs) {
+  base::flat_set<std::string> profile_names;
+
+  const base::DictValue& attribute_storage =
+      local_prefs->GetDict(prefs::kProfileInfoCache);
+  for (const auto attribute_entry : attribute_storage) {
+    profile_names.insert(attribute_entry.first);
+  }
+
+  return profile_names;
 }
 
 // static

@@ -7,10 +7,10 @@
 
 #include <compare>
 #include <memory>
+#include <string_view>
 #include <utility>
 #include <vector>
 
-#include "base/strings/stringprintf.h"
 #include "base/values.h"
 #include "chrome/test/interaction/interaction_test_util_browser.h"
 #include "chrome/test/interaction/tracked_element_webcontents.h"
@@ -20,8 +20,8 @@
 #include "ui/base/interaction/element_tracker.h"
 #include "ui/base/interaction/interaction_sequence.h"
 #include "ui/base/interaction/interactive_test_definitions.h"
-#include "ui/gfx/native_widget_types.h"
-#include "ui/views/interaction/interactive_views_test_internal.h"
+#include "ui/base/interaction/interactive_test_internal.h"
+#include "ui/gfx/native_ui_types.h"
 
 class DevToolsAgentCoverageObserver;
 class InteractiveBrowserTestApi;
@@ -31,15 +31,17 @@ namespace internal {
 // Class that provides functionality needed by InteractiveBrowserTestApi but
 // which should not be directly visible to tests inheriting from the API class.
 class InteractiveBrowserTestPrivate
-    : public views::test::internal::InteractiveViewsTestPrivate {
+    : public ui::test::internal::InteractiveTestPrivateFrameworkBase {
  public:
-  explicit InteractiveBrowserTestPrivate(
-      std::unique_ptr<InteractionTestUtilBrowser> test_util);
-  ~InteractiveBrowserTestPrivate() override;
+  DECLARE_SAFE_CAST_TARGET()
 
-  // views::test::internal::InteractiveViewsTestPrivate:
-  void DoTestSetUp() override;
-  void DoTestTearDown() override;
+  // Injects functions into the current scope that allow retrieval of a summary
+  // of the entire HTML DOM or a subset of it.
+  static const std::string_view kDumpElementsScript;
+
+  explicit InteractiveBrowserTestPrivate(
+      ui::test::internal::InteractiveTestPrivate& test_impl);
+  ~InteractiveBrowserTestPrivate() override;
 
   // Starts code coverage if the proper configuration is present.
   void MaybeStartWebUICodeCoverage();
@@ -58,13 +60,15 @@ class InteractiveBrowserTestPrivate
       const WebContentsInteractionTestUtil::DeepQuery& deep_query);
 
  protected:
-  // views::test::InteractiveViewsTestPrivate:
+  // views::test::internal::InteractiveTestPrivateFrameworkBase:
+  void DoTestTearDown() override;
   gfx::NativeWindow GetNativeWindowFromElement(
-      ui::TrackedElement* el) const override;
+      const ui::TrackedElement* el) const override;
   gfx::NativeWindow GetNativeWindowFromContext(
       ui::ElementContext context) const override;
   std::string DebugDescribeContext(ui::ElementContext context) const override;
-  DebugTreeNode DebugDumpElement(const ui::TrackedElement* el) const override;
+  std::vector<DebugTreeNode> DebugDumpElements(
+      std::set<const ui::TrackedElement*>& elements) const override;
 
  private:
   friend InteractiveBrowserTestApi;
@@ -102,9 +106,6 @@ class MatchableValue {
   // that a base::Value can be constructed from. This is also required for a lot
   // of gtest and gmock logic to work properly.
   bool operator==(const MatchableValue& other) const;
-  bool operator!=(const MatchableValue& other) const {
-    return !(*this == other);
-  }
   bool operator<(const MatchableValue& other) const;
   bool operator>(const MatchableValue& other) const;
   bool operator<=(const MatchableValue& other) const;

@@ -7,6 +7,7 @@
 #include "ash/constants/ash_switches.h"
 #include "ash/public/cpp/session/session_controller.h"
 #include "base/command_line.h"
+#include "base/dcheck_is_on.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
@@ -72,8 +73,25 @@ void MisconfiguredUserCleaner::DoCleanup(
   }
 
   LOG(WARNING) << "User is non-owner, trigger user removal.";
-  integrity_manager.RemoveUser(account_id);
-  integrity_manager.ClearPrefs();
+  bool safe_to_remove_user = base::CommandLine::ForCurrentProcess()->HasSwitch(
+      ash::switches::kFirstExecAfterBoot);
+  // If we got to this point after user have signed in since last reboot (e.g.
+  // if Chrome have crashed right after starting user session), user removal
+  // might fail. Trigger a reboot without clearing prefs, it guarantees that
+  // this code would be called again after the reboot.
+  if (safe_to_remove_user) {
+    integrity_manager.RemoveUser(account_id);
+    integrity_manager.ClearPrefs();
+  } else {
+#if DCHECK_IS_ON()
+    LOG(ERROR) << "\n\n\n\n\n==== Misconfigured User Data Detected ===\n"
+               << " Pass --first-exec-after-boot to remove the misconfigured "
+                  "data\n\n\n";
+#endif
+    chromeos::PowerManagerClient::Get()->RequestRestart(
+        power_manager::RequestRestartReason::REQUEST_RESTART_OTHER,
+        "Restarting for logged-in misconfigured user removal");
+  }
 }
 
 void MisconfiguredUserCleaner::OnStartDeviceWipe(bool result) {

@@ -3,26 +3,23 @@
 // found in the LICENSE file.
 
 import './searchbox_match.js';
-import './searchbox_dropdown_shared_style.css.js';
 import '//resources/cr_elements/cr_icon_button/cr_icon_button.js';
-import '//resources/cr_elements/cr_icons.css.js';
 
 import {loadTimeData} from '//resources/js/load_time_data.js';
 import {MetricsReporterImpl} from '//resources/js/metrics_reporter/metrics_reporter.js';
-import {PolymerElement} from '//resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
+import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
+import type {AutocompleteMatch, AutocompleteResult, OmniboxPopupSelection} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
+import {RenderType, SelectionLineState, SideType} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
 
-import {SearchboxBrowserProxy} from './searchbox_browser_proxy.js';
-import {getTemplate} from './searchbox_dropdown.html.js';
+import {getCss} from './searchbox_dropdown.css.js';
+import {getHtml} from './searchbox_dropdown.html.js';
+import {kDefaultSelection} from './searchbox_match.js';
 import type {SearchboxMatchElement} from './searchbox_match.js';
-import type {AutocompleteMatch, AutocompleteResult, OmniboxPopupSelection, PageHandlerInterface} from './searchbox.mojom-webui.js';
-import {RenderType, SelectionLineState, SideType} from './searchbox.mojom-webui.js';
-import {decodeString16, renderTypeToClass, sideTypeToClass} from './utils.js';
+import {renderTypeToClass, sideTypeToClass} from './utils.js';
 
 // The '%' operator in JS returns negative numbers. This workaround avoids that.
 const remainder = (lhs: number, rhs: number) => ((lhs % rhs) + rhs) % rhs;
-
-const CHAR_TYPED_TO_PAINT = 'Realbox.CharTypedToRepaintLatency.ToPaint';
-const RESULT_CHANGED_TO_PAINT = 'Realbox.ResultChangedToRepaintLatency.ToPaint';
 
 export interface SearchboxDropdownElement {
   $: {
@@ -32,16 +29,20 @@ export interface SearchboxDropdownElement {
 
 // A dropdown element that contains autocomplete matches. Provides an API for
 // the embedder (i.e., <cr-searchbox>) to change the selection.
-export class SearchboxDropdownElement extends PolymerElement {
+export class SearchboxDropdownElement extends CrLitElement {
   static get is() {
     return 'cr-searchbox-dropdown';
   }
 
-  static get template() {
-    return getTemplate();
+  static override get styles() {
+    return getCss();
   }
 
-  static get properties() {
+  override render() {
+    return getHtml.bind(this)();
+  }
+
+  static override get properties() {
     return {
       //========================================================================
       // Public properties
@@ -51,17 +52,13 @@ export class SearchboxDropdownElement extends PolymerElement {
        * Whether the secondary side can be shown based on the feature state and
        * the width available to the dropdown.
        */
-      canShowSecondarySide: {
-        type: Boolean,
-        value: false,
-      },
+      canShowSecondarySide: {type: Boolean},
 
       /**
        * Whether the secondary side was at any point available to be shown.
        */
       hadSecondarySide: {
         type: Boolean,
-        value: false,
         notify: true,
       },
 
@@ -70,27 +67,37 @@ export class SearchboxDropdownElement extends PolymerElement {
        */
       hasSecondarySide: {
         type: Boolean,
-        computed: `computeHasSecondarySide_(result)`,
         notify: true,
-        reflectToAttribute: true,
+        reflect: true,
       },
 
       hasEmptyInput: {
         type: Boolean,
-        reflectToAttribute: true,
-        computed: `computeHasEmptyInput_(result)`,
+        reflect: true,
       },
 
-      result: {
-        type: Object,
-      },
+      result: {type: Object},
 
-      /** Index of the selected match. */
+      // TODO(crbug.com/519713849): Remove selectedMatchIndex once
+      // kRealboxVirtualFocusNavigation is launched.
       selectedMatchIndex: {
         type: Number,
-        value: -1,
         notify: true,
       },
+
+      /** Omnibox focused selection state. */
+      selection: {
+        type: Object,
+        notify: true,
+      },
+
+      showThumbnail: {type: Boolean},
+
+      virtualFocusEnabled: {type: Boolean},
+
+      //========================================================================
+      // Private properties
+      //========================================================================
 
       /**
        * Computed value for whether or not the dropdown should show the
@@ -98,70 +105,51 @@ export class SearchboxDropdownElement extends PolymerElement {
        * `canShowSecondarySide` to true and whether there are visible primary
        * matches.
        */
-      showSecondarySide_: {
-        type: Boolean,
-        value: false,
-        computed: 'computeShowSecondarySide_(' +
-            'canShowSecondarySide, result.matches.*, hiddenGroupIds_.*)',
-      },
-
-      showThumbnail: {
-        type: Boolean,
-        value: false,
-      },
-
-      //========================================================================
-      // Private properties
-      //========================================================================
-
-      /** The list of suggestion group IDs whose matches should be hidden. */
-      hiddenGroupIds_: {
-        type: Array,
-        computed: `computeHiddenGroupIds_(result)`,
-      },
-
-      /** The list of selectable match elements. */
-      selectableMatchElements_: {
-        type: Array,
-        value: () => [],
-      },
+      showSecondarySide_: {type: Boolean},
     };
   }
 
-  declare canShowSecondarySide: boolean;
-  declare hadSecondarySide: boolean;
-  declare hasSecondarySide: boolean;
-  declare hasEmptyInput: boolean;
-  declare result: AutocompleteResult;
-  declare selectedMatchIndex: number;
-  declare showThumbnail: boolean;
-  declare private hiddenGroupIds_: number[];
-  declare private selectableMatchElements_: SearchboxMatchElement[];
-  declare private showSecondarySide_: boolean;
-  private resizeObserver_: ResizeObserver|null = null;
-  private pageHandler_: PageHandlerInterface;
+  accessor canShowSecondarySide: boolean = false;
+  accessor hadSecondarySide: boolean = false;
+  accessor hasSecondarySide: boolean = false;
+  accessor hasEmptyInput: boolean = false;
+  accessor result: AutocompleteResult|null = null;
+  // TODO(crbug.com/519713849): Remove selectedMatchIndex once
+  // kRealboxVirtualFocusNavigation is launched.
+  accessor selectedMatchIndex: number = -1;
+  accessor selection: OmniboxPopupSelection = kDefaultSelection;
+  accessor showThumbnail: boolean = false;
+  accessor virtualFocusEnabled: boolean =
+      loadTimeData.valueExists('realboxVirtualFocusNavigation') &&
+      loadTimeData.getBoolean('realboxVirtualFocusNavigation');
+  private accessor showSecondarySide_: boolean = false;
 
-  constructor() {
-    super();
-    this.pageHandler_ = SearchboxBrowserProxy.getInstance().handler;
-  }
+  /** The list of selectable match elements. */
+  private selectableMatchElements_: SearchboxMatchElement[] = [];
 
-  override connectedCallback() {
-    super.connectedCallback();
-    this.resizeObserver_ = new ResizeObserver(
-        (entries: ResizeObserverEntry[]) =>
-            this.pageHandler_.popupElementSizeChanged({
-              width: entries[0].contentRect.width,
-              height: entries[0].contentRect.height,
-            }));
-    this.resizeObserver_.observe(this.$.content);
-  }
 
-  override disconnectedCallback() {
-    if (this.resizeObserver_) {
-      this.resizeObserver_.disconnect();
+  override willUpdate(changedProperties: PropertyValues<this>) {
+    super.willUpdate(changedProperties);
+
+    if (changedProperties.has('result')) {
+      this.hasSecondarySide = this.computeHasSecondarySide_();
+      this.hasEmptyInput = this.computeHasEmptyInput_();
     }
-    super.disconnectedCallback();
+
+    if (changedProperties.has('result') ||
+        changedProperties.has('canShowSecondarySide')) {
+      this.showSecondarySide_ = this.computeShowSecondarySide_();
+    }
+  }
+
+  override updated(changedProperties: PropertyValues<this>) {
+    super.updated(changedProperties);
+
+    this.onResultRepaint_();
+
+    // Update the list of selectable match elements.
+    this.selectableMatchElements_ =
+        [...this.shadowRoot.querySelectorAll('cr-searchbox-match')];
   }
 
   //============================================================================
@@ -178,6 +166,7 @@ export class SearchboxDropdownElement extends PolymerElement {
   /** Unselects the currently selected match, if any. */
   unselect() {
     this.selectedMatchIndex = -1;
+    this.selection = kDefaultSelection;
   }
 
   /** Focuses the selected match, if any. */
@@ -187,30 +176,31 @@ export class SearchboxDropdownElement extends PolymerElement {
 
   /** Selects the first match. */
   selectFirst() {
-    this.selectedMatchIndex = 0;
+    return this.selectIndex(0);
   }
 
   /** Selects the match at the given index. */
   selectIndex(index: number) {
     this.selectedMatchIndex = index;
+    if (this.virtualFocusEnabled && this.selection.line !== index) {
+      const match = this.result?.matches[index];
+      if (match && (!match.isHidden || match.allowedToBeDefaultMatch)) {
+        this.selection = {
+          line: index,
+          state: SelectionLineState.kNormal,
+          actionIndex: 0,
+        };
+      } else {
+        this.selection = kDefaultSelection;
+      }
+    }
+    return this.updateComplete;
   }
 
   updateSelection(
-      oldSelection: OmniboxPopupSelection, selection: OmniboxPopupSelection) {
-    if (selection.state === SelectionLineState.kFocusedButtonHeader) {
-      // TODO: Focus group header.
-      this.unselect();
-      return;
-    }
-    // If the updated selection is a new match, remove any remaining selection
-    // on the previously selected match.
-    if (oldSelection.line !== selection.line) {
-      this.selectableMatchElements[this.selectedMatchIndex]?.updateSelection(
-          selection);
-    }
+      _oldSelection: OmniboxPopupSelection, selection: OmniboxPopupSelection) {
     this.selectIndex(selection.line);
-    this.selectableMatchElements[this.selectedMatchIndex]?.updateSelection(
-        selection);
+    this.fire('selection-changed', {value: selection});
   }
 
   /**
@@ -223,11 +213,13 @@ export class SearchboxDropdownElement extends PolymerElement {
     const previous = Math.max(this.selectedMatchIndex, 0) - 1;
     this.selectedMatchIndex =
         remainder(previous, this.selectableMatchElements.length);
+    return this.updateComplete;
   }
 
   /** Selects the last match. */
   selectLast() {
     this.selectedMatchIndex = this.selectableMatchElements.length - 1;
+    return this.updateComplete;
   }
 
   /**
@@ -238,75 +230,54 @@ export class SearchboxDropdownElement extends PolymerElement {
     const next = this.selectedMatchIndex + 1;
     this.selectedMatchIndex =
         remainder(next, this.selectableMatchElements.length);
+    return this.updateComplete;
   }
 
   //============================================================================
   // Event handlers
   //============================================================================
 
-  private onHeaderClick_(e: Event) {
-    const groupId =
-        Number.parseInt((e.currentTarget as HTMLElement).dataset['id']!, 10);
-
-    // Tell the backend to toggle visibility of the given suggestion group ID.
-    this.pageHandler_.toggleSuggestionGroupIdVisibility(groupId);
-
-    // Hide/Show matches with the given suggestion group ID.
-    const index = this.hiddenGroupIds_.indexOf(groupId);
-    if (index === -1) {
-      this.push('hiddenGroupIds_', groupId);
-    } else {
-      this.splice('hiddenGroupIds_', index, 1);
-    }
-  }
-
-  private onHeaderFocusin_() {
-    this.dispatchEvent(new CustomEvent('header-focusin', {
-      bubbles: true,
-      composed: true,
-    }));
-  }
-
-  private onHeaderMousedown_(e: Event) {
+  protected onHeaderMousedown_(e: Event) {
     e.preventDefault();  // Prevents default browser action (focus).
   }
 
   private onResultRepaint_() {
-    if (loadTimeData.getBoolean('reportMetrics')) {
-      const metricsReporter = MetricsReporterImpl.getInstance();
-      metricsReporter.measure('CharTyped')
-          .then(duration => {
-            metricsReporter.umaReportTime(CHAR_TYPED_TO_PAINT, duration);
-          })
-          .then(() => {
-            metricsReporter.clearMark('CharTyped');
-          })
-          .catch(() => {});  // Fail silently if 'CharTyped' is not marked.
-
-      metricsReporter.measure('ResultChanged')
-          .then(duration => {
-            metricsReporter.umaReportTime(RESULT_CHANGED_TO_PAINT, duration);
-          })
-          .then(() => {
-            metricsReporter.clearMark('ResultChanged');
-          })
-          .catch(() => {});  // Fail silently if 'ResultChanged' is not marked.
+    if (!loadTimeData.getBoolean('reportMetrics')) {
+      return;
     }
 
-    // Update the list of selectable match elements.
-    this.selectableMatchElements_ =
-        [...this.shadowRoot!.querySelectorAll('cr-searchbox-match')];
+    const metricsReporter = MetricsReporterImpl.getInstance();
+    metricsReporter.measure('CharTyped')
+        .then(duration => {
+          metricsReporter.umaReportTime(
+              loadTimeData.getString('charTypedToPaintMetricName'), duration);
+        })
+        .then(() => {
+          metricsReporter.clearMark('CharTyped');
+        })
+        .catch(() => {});  // Fail silently if 'CharTyped' is not marked.
+
+    metricsReporter.measure('ResultChanged')
+        .then(duration => {
+          metricsReporter.umaReportTime(
+              loadTimeData.getString('resultChangedToPaintMetricName'),
+              duration);
+        })
+        .then(() => {
+          metricsReporter.clearMark('ResultChanged');
+        })
+        .catch(() => {});  // Fail silently if 'ResultChanged' is not marked.
   }
 
   //============================================================================
   // Helpers
   //============================================================================
 
-  private sideTypeClass_(side: SideType): string {
+  protected sideTypeClass_(side: SideType): string {
     return sideTypeToClass(side);
   }
 
-  private renderTypeClassForGroup_(groupId: number): string {
+  protected renderTypeClassForGroup_(groupId: number): string {
     return renderTypeToClass(
         this.result?.suggestionGroupsMap[groupId]?.renderType ??
         RenderType.kDefaultVertical);
@@ -322,16 +293,10 @@ export class SearchboxDropdownElement extends PolymerElement {
   }
 
   private computeHasEmptyInput_(): boolean {
-    return this.result && decodeString16(this.result.input) === '';
+    return !!this.result && this.result.input === '';
   }
 
-  private computeHiddenGroupIds_(): number[] {
-    return Object.keys(this.result?.suggestionGroupsMap ?? {})
-        .map(groupId => Number.parseInt(groupId, 10))
-        .filter(groupId => this.result.suggestionGroupsMap[groupId].hidden);
-  }
-
-  private isSelected_(match: AutocompleteMatch): boolean {
+  protected isSelected_(match: AutocompleteMatch): boolean {
     return this.matchIndex_(match) === this.selectedMatchIndex;
   }
 
@@ -339,33 +304,29 @@ export class SearchboxDropdownElement extends PolymerElement {
    * @returns The unique suggestion group IDs that belong to the given side type
    *     while preserving the order in which they appear in the list of matches.
    */
-  private groupIdsForSideType_(side: SideType): number[] {
+  protected groupIdsForSideType_(side: SideType): number[] {
     return [...new Set<number>(
-        this.result?.matches?.map(match => match.suggestionGroupId)
+        this.result?.matches.map(match => match.suggestionGroupId)
             .filter(groupId => this.sideTypeForGroup_(groupId) === side))];
-  }
-
-  /**
-   * @returns Whether matches with the given suggestion group ID should be
-   *     hidden.
-   */
-  private groupIsHidden_(groupId: number): boolean {
-    return this.hiddenGroupIds_.indexOf(groupId) !== -1;
   }
 
   /**
    * @returns Whether the given suggestion group ID has a header.
    */
-  private hasHeaderForGroup_(groupId: number): boolean {
+  protected hasHeaderForGroup_(groupId: number): boolean {
     return !!this.headerForGroup_(groupId);
+  }
+
+  protected getAriaDescribedByForGroup_(groupId: number): string {
+    return this.hasHeaderForGroup_(groupId) ? `hg_${groupId}` : '';
   }
 
   /**
    * @returns The header for the given suggestion group ID, if any.
    */
-  private headerForGroup_(groupId: number): string {
+  protected headerForGroup_(groupId: number): string {
     return this.result?.suggestionGroupsMap[groupId] ?
-        decodeString16(this.result.suggestionGroupsMap[groupId].header) :
+        this.result.suggestionGroupsMap[groupId].header :
         '';
   }
 
@@ -373,25 +334,24 @@ export class SearchboxDropdownElement extends PolymerElement {
    * @returns Index of the match in the autocomplete result. Passed to the match
    *     so it knows its position in the list of matches.
    */
-  private matchIndex_(match: AutocompleteMatch): number {
-    return this.result?.matches?.indexOf(match) ?? -1;
+  protected matchIndex_(match: AutocompleteMatch): number {
+    return this.result?.matches.indexOf(match) ?? -1;
   }
 
   /**
    * @returns The list of visible matches that belong to the given suggestion
    *     group ID.
    */
-  private matchesForGroup_(groupId: number): AutocompleteMatch[] {
-    return this.groupIsHidden_(groupId) ?
-        [] :
-        (this.result?.matches ??
-         []).filter(match => match.suggestionGroupId === groupId);
+  protected matchesForGroup_(groupId: number): AutocompleteMatch[] {
+    return (this.result?.matches ?? [])
+        .filter(
+            match => (match.suggestionGroupId === groupId && !match.isHidden));
   }
 
   /**
    * @returns The list of side types to show.
    */
-  private sideTypes_(): SideType[] {
+  protected sideTypes_(): SideType[] {
     return this.showSecondarySide_ ?
         [SideType.kDefaultPrimary, SideType.kSecondary] :
         [SideType.kDefaultPrimary];
@@ -400,52 +360,15 @@ export class SearchboxDropdownElement extends PolymerElement {
   /**
    * @returns The side type for the given suggestion group ID.
    */
-  private sideTypeForGroup_(groupId: number): SideType {
+  protected sideTypeForGroup_(groupId: number): SideType {
     return this.result?.suggestionGroupsMap[groupId]?.sideType ??
         SideType.kDefaultPrimary;
-  }
-
-  /**
-   * @returns A11y label for suggestion group show/hide toggle button.
-   */
-  private toggleButtonA11yLabelForGroup_(groupId: number): string {
-    if (!this.hasHeaderForGroup_(groupId)) {
-      return '';
-    }
-
-    return !this.groupIsHidden_(groupId) ?
-        decodeString16(
-            this.result.suggestionGroupsMap[groupId].hideGroupA11yLabel) :
-        decodeString16(
-            this.result.suggestionGroupsMap[groupId].showGroupA11yLabel);
-  }
-
-  /**
-   * @returns Icon name for suggestion group show/hide toggle button.
-   */
-  private toggleButtonIconForGroup_(groupId: number): string {
-    return this.groupIsHidden_(groupId) ? 'icon-arrow-drop-down-cr23' :
-                                          'icon-arrow-drop-up-cr23';
-  }
-
-  /**
-   * @returns Tooltip for suggestion group show/hide toggle button.
-   */
-  private toggleButtonTitleForGroup_(groupId: number): string {
-    return loadTimeData.getString(
-        this.groupIsHidden_(groupId) ? 'showSuggestions' : 'hideSuggestions');
   }
 
   private computeShowSecondarySide_(): boolean {
     if (!this.canShowSecondarySide) {
       // Parent prohibits showing secondary side.
       return false;
-    }
-
-    if (!this.hiddenGroupIds_) {
-      // Not ready yet as dropdown has received results but has not yet
-      // determined which groups are hidden.
-      return true;
     }
 
     // Only show secondary side if there are primary matches visible.

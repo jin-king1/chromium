@@ -17,13 +17,14 @@
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
-#include "chrome/browser/apps/app_service/app_launch_params.h"
-#include "chrome/browser/apps/app_service/launch_result_type.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/services/app_service/public/cpp/app_capability_access_cache.h"
+#include "components/services/app_service/public/cpp/app_launch_params.h"
 #include "components/services/app_service/public/cpp/app_launch_util.h"
 #include "components/services/app_service/public/cpp/app_registry_cache.h"
+#include "components/services/app_service/public/cpp/app_service.h"
 #include "components/services/app_service/public/cpp/app_types.h"
 #include "components/services/app_service/public/cpp/capability_access.h"
 #include "components/services/app_service/public/cpp/icon_cache.h"
@@ -32,11 +33,11 @@
 #include "components/services/app_service/public/cpp/icon_types.h"
 #include "components/services/app_service/public/cpp/intent.h"
 #include "components/services/app_service/public/cpp/intent_filter.h"
+#include "components/services/app_service/public/cpp/launch_result.h"
 #include "components/services/app_service/public/cpp/menu.h"
 #include "components/services/app_service/public/cpp/permission.h"
 #include "components/services/app_service/public/cpp/preferred_app.h"
 #include "components/services/app_service/public/cpp/preferred_apps_impl.h"
-#include "ui/gfx/native_widget_types.h"
 
 class Profile;
 class GURL;
@@ -47,10 +48,12 @@ class FilePath;
 
 namespace apps {
 
-class AppPublisher;
+class Publisher;
 class AppUpdate;
 class BrowserAppLauncher;
 class PreferredAppsListHandle;
+class PublisherHostFactory;
+class PublisherHost;
 
 struct IntentLaunchInfo {
   IntentLaunchInfo();
@@ -78,9 +81,12 @@ struct IntentLaunchInfo {
 //
 // See components/services/app_service/README.md.
 class AppServiceProxyBase : public KeyedService,
+                            public AppService,
                             public PreferredAppsImpl::Host {
  public:
-  explicit AppServiceProxyBase(Profile* profile);
+  // `publisher_host_factory` must be non-null and outlive this instance.
+  AppServiceProxyBase(Profile* profile,
+                      PublisherHostFactory* publisher_host_factory);
   AppServiceProxyBase(const AppServiceProxyBase&) = delete;
   AppServiceProxyBase& operator=(const AppServiceProxyBase&) = delete;
   ~AppServiceProxyBase() override;
@@ -92,7 +98,8 @@ class AppServiceProxyBase : public KeyedService,
 
   Profile* profile() const { return profile_; }
 
-  apps::AppRegistryCache& AppRegistryCache();
+  apps::AppRegistryCache& AppRegistryCache() override;
+
   apps::AppCapabilityAccessCache& AppCapabilityAccessCache();
 
   apps::BrowserAppLauncher* BrowserAppLauncher();
@@ -102,7 +109,7 @@ class AppServiceProxyBase : public KeyedService,
   // Registers `publisher` with the App Service as exclusively publishing apps
   // of type `app_type`. `publisher` must have a lifetime equal to or longer
   // than this object.
-  void RegisterPublisher(AppType app_type, AppPublisher* publisher);
+  void RegisterPublisher(AppType app_type, Publisher* publisher);
 
   // UnRegisters the publisher for `app_type`, As the publisher(ArcApps) might
   // be destroyed earlier than AppServiceProxy.
@@ -111,6 +118,12 @@ class AppServiceProxyBase : public KeyedService,
   // PreferredAppsImpl::Host overrides.
   void OnSupportedLinksPreferenceChanged(const std::string& app_id,
                                          bool open_in_app) override;
+  bool QueryConflict(const std::string& first_app_id,
+                     const IntentFilterPtr& first_filter,
+                     const std::string& second_app_id,
+                     const IntentFilterPtr& second_filter) override;
+  bool IsWebAppInExtendedScope(const GURL& url,
+                               const std::string& app_id) const override;
 
   // Convenience method that calls app_icon_loader()->LoadIcon to load app icons
   // with `app_id`. `callback` may be dispatched synchronously if it's possible
@@ -142,25 +155,11 @@ class AppServiceProxyBase : public KeyedService,
   // Return the most outer layer of the app icon loader that app service owns.
   IconLoader* app_icon_loader() { return &app_outer_icon_loader_; }
 
-  // Launches the app for the given `app_id`.
-  //
-  // - `event_flags` is a bitset of ui::EventFlags providing additional context
-  // about the action which launches the app (e.g. a middle click indicating
-  // opening a background tab).
-  // - `launch_source` is the UI surface which is launching the app (e.g. shelf,
-  // search box).
-  // - `window_info` specifies the desired location of the new app window
-  // (e.g. window bounds, display ID). If `window_info` is nullptr, the app
-  // publisher will position the new app window using its default behavior (e.g.
-  // on the currently active display).
-  //
-  // Note: prefer using LaunchSystemWebAppAsync() for launching System Web Apps,
-  // as that is robust to the choice of profile and avoids needing to specify an
-  // app_id.
+  using AppService::Launch;
   void Launch(const std::string& app_id,
               int32_t event_flags,
               apps::LaunchSource launch_source,
-              apps::WindowInfoPtr window_info = nullptr);
+              apps::WindowInfoPtr window_info) override;
 
   // Launches the app for the given |app_id| with files from |file_paths|.
   // DEPRECATED. Prefer passing the files in an Intent through
@@ -171,25 +170,12 @@ class AppServiceProxyBase : public KeyedService,
                           LaunchSource launch_source,
                           std::vector<base::FilePath> file_paths);
 
-  // Launches an app for the given `app_id`, passing `intent` to the app.
-  //
-  // - `event_flags` is a bitset of ui::EventFlags providing additional context
-  // about the action which launches the app (e.g. a middle click indicating
-  // opening a background tab).
-  // - `launch_source` is the UI surface which is launching the app (e.g. shelf,
-  // search box).
-  // - `window_info` specifies the desired location of the new app window
-  // (e.g. window bounds, display ID). If `window_info` is nullptr, the app
-  // publisher will position the new app window using its default behavior (e.g.
-  // on the currently active display).
-  // - `callback` will be called with the result of the launch once it is
-  // complete.
-  virtual void LaunchAppWithIntent(const std::string& app_id,
-                                   int32_t event_flags,
-                                   IntentPtr intent,
-                                   LaunchSource launch_source,
-                                   WindowInfoPtr window_info,
-                                   LaunchCallback callback);
+  void LaunchAppWithIntent(const std::string& app_id,
+                           int32_t event_flags,
+                           IntentPtr intent,
+                           LaunchSource launch_source,
+                           WindowInfoPtr window_info,
+                           LaunchCallback callback) override;
 
   // Launches an app for the given `app_id`, passing `url` to the app.
   //
@@ -386,13 +372,19 @@ class AppServiceProxyBase : public KeyedService,
   // avoid calling other virtual methods in the AppServiceProxy constructor).
   virtual void Initialize();
 
-  AppPublisher* GetPublisher(AppType app_type);
+  Publisher* GetPublisher(AppType app_type);
 
   // Returns true if the app cannot be launched and a launch prevention dialog
   // is shown to the user (e.g. the app is paused or blocked). Returns false
   // otherwise (and the app can be launched).
-  virtual bool MaybeShowLaunchPreventionDialog(
-      const apps::AppUpdate& update) = 0;
+  // TODO(crbug.com/477191550): Conditional pure virtual declaration depending
+  // on platform is a short term workaround. This should be cleaned on
+  // extracting an interface.
+  virtual bool MaybeShowLaunchPreventionDialog(const apps::AppUpdate& update)
+#if BUILDFLAG(IS_CHROMEOS)
+      = 0
+#endif
+      ;
 
   IntentFilterPtr FindBestMatchingFilter(const IntentPtr& intent);
 
@@ -407,8 +399,7 @@ class AppServiceProxyBase : public KeyedService,
                                          const std::string& app_id,
                                          UninstallSource uninstall_source);
 
-  virtual void OnLaunched(LaunchCallback callback,
-                          LaunchResult&& launch_result);
+  virtual void OnLaunched(LaunchCallback callback, LaunchResult launch_result);
 
   virtual bool ShouldExcludeBrowserTabApps(bool exclude_browser_tab_apps,
                                            WindowMode window_mode);
@@ -432,7 +423,9 @@ class AppServiceProxyBase : public KeyedService,
       const apps::IntentFilterPtr& filter,
       const apps::AppUpdate& update);
 
-  base::flat_map<AppType, raw_ptr<AppPublisher, CtnExperimental>> publishers_;
+  const raw_ref<PublisherHostFactory> publisher_host_factory_;
+  std::unique_ptr<PublisherHost> publisher_host_;
+  base::flat_map<AppType, raw_ptr<Publisher, CtnExperimental>> publishers_;
 
   apps::AppRegistryCache app_registry_cache_;
   apps::AppCapabilityAccessCache app_capability_access_cache_;
@@ -455,10 +448,14 @@ class AppServiceProxyBase : public KeyedService,
   // WebApps) can run on Chrome.
   std::unique_ptr<apps::BrowserAppLauncher> browser_app_launcher_;
 
-  bool is_using_testing_profile_ = false;
+  bool skip_pause_dialog_for_testing_ = false;
   base::OnceClosure dialog_created_callback_;
 
  private:
+  bool IsNonSystemWebapp(const std::string& app_id);
+  bool AppScopesMatchForUserLinkCapturing(const std::string& app_id1,
+                                          const std::string& app_id2);
+
   // For access to Initialize.
   friend class AppServiceProxyFactory;
 

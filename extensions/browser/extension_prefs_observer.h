@@ -5,6 +5,7 @@
 #ifndef EXTENSIONS_BROWSER_EXTENSION_PREFS_OBSERVER_H_
 #define EXTENSIONS_BROWSER_EXTENSION_PREFS_OBSERVER_H_
 
+#include "base/observer_list_types.h"
 #include "base/time/time.h"
 #include "extensions/browser/disable_reason.h"
 #include "extensions/common/extension_id.h"
@@ -13,7 +14,7 @@ namespace extensions {
 
 class ExtensionPrefs;
 
-class ExtensionPrefsObserver {
+class ExtensionPrefsObserver : public base::CheckedObserver {
  public:
   // Called when the reasons for an extension being disabled have changed.
   virtual void OnExtensionDisableReasonsChanged(
@@ -58,10 +59,13 @@ class ExtensionPrefsObserver {
       const base::Time& last_launch_time) {}
 
   // Called when the ExtensionPrefs object (the thing that this observer
-  // observes) will be destroyed. In response, the observer, |this|, should
+  // observes) will be destroyed. In response, the observer, `this`, should
   // call "prefs->RemoveObserver(this)", whether directly or indirectly (e.g.
   // via ScopedObservation::Reset).
   virtual void OnExtensionPrefsWillBeDestroyed(ExtensionPrefs* prefs) {}
+
+ protected:
+  ~ExtensionPrefsObserver() override = default;
 };
 
 // An ExtensionPrefsObserver that's part of the GetEarlyExtensionPrefsObservers
@@ -72,11 +76,11 @@ class ExtensionPrefsObserver {
 class EarlyExtensionPrefsObserver {
  public:
   // Called when "prefs->AddObserver(observer)" should be called, during or
-  // shortly after |prefs|' constructor. OnExtensionPrefsAvailable
+  // shortly after `prefs`' constructor. OnExtensionPrefsAvailable
   // implementations should make that AddObserver call, but are also
   // responsible for making the matching RemoveObserver call at an appropriate
   // time, no later than during the observer's destructor. Otherwise, the
-  // observee (the |prefs| object) will follow a dangling pointer whenever the
+  // observee (the `prefs` object) will follow a dangling pointer whenever the
   // next event occurs.
   //
   // Making that RemoveObserver call at the right time has to be the

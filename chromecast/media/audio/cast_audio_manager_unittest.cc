@@ -20,6 +20,7 @@
 #include "media/audio/fake_audio_log_factory.h"
 #include "media/audio/mock_audio_source_callback.h"
 #include "media/audio/test_audio_thread.h"
+#include "media/base/audio_bus.h"
 #include "media/media_buildflags.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -33,7 +34,6 @@
 
 using testing::_;
 using testing::AnyNumber;
-using testing::Invoke;
 using testing::NiceMock;
 using testing::Return;
 using testing::StrictMock;
@@ -66,7 +66,8 @@ namespace chromecast::media {
 
 class CastAudioManagerTest : public testing::Test {
  public:
-  CastAudioManagerTest() : audio_thread_("CastAudioThread") {}
+  CastAudioManagerTest()
+      : audio_thread_("CastAudioThread", base::Thread::Restartable{}) {}
 
   void SetUp() override { CreateAudioManagerForTesting(); }
 
@@ -83,10 +84,15 @@ class CastAudioManagerTest : public testing::Test {
     return mock_backend_factory_.get();
   }
 
-  void CreateAudioManagerForTesting(bool use_mixer = false) {
+  void CreateAudioManagerForTesting() {
     // Only one AudioManager may exist at a time, so destroy the one we're
     // currently holding before creating a new one.
-    // Flush the message loop to run any shutdown tasks posted by AudioManager.
+    // We must reset `device_info_accessor_` first because it holds a raw_ptr
+    // to `audio_manager_` which would otherwise dangle when we reset the
+    // audio manager.
+    // Found while debugging BRP on Linux (CastOS) which uses
+    // InProcessNetworkService.
+    device_info_accessor_.reset();
     if (audio_manager_) {
       audio_manager_->Shutdown();
       audio_manager_.reset();
@@ -111,9 +117,7 @@ class CastAudioManagerTest : public testing::Test {
         base::BindRepeating(&CastAudioManagerTest::GetCmaBackendFactory,
                             base::Unretained(this)),
         task_environment_.GetMainThreadTaskRunner(),
-        audio_thread_.task_runner(), use_mixer,
-        true /* force_use_cma_backend_for_output*/
-        ));
+        audio_thread_.task_runner()));
 #endif  // BUILDFLAG(IS_ANDROID)
     // A few AudioManager implementations post initialization tasks to
     // audio thread. Flush the thread to ensure that |audio_manager_| is
@@ -139,9 +143,9 @@ class CastAudioManagerTest : public testing::Test {
     EXPECT_CALL(*mock_cma_backend_, Initialize()).WillOnce(Return(true));
 
     EXPECT_CALL(*mock_backend_factory_, CreateBackend(_))
-        .WillOnce(Invoke([this](const MediaPipelineDeviceParams&) {
+        .WillOnce([this](const MediaPipelineDeviceParams&) {
           return std::move(mock_cma_backend_);
-        }));
+        });
 #endif  // !BUILDFLAG(IS_ANDROID)
     EXPECT_EQ(mock_backend_factory_.get(),
               audio_manager_->helper_.GetCmaBackendFactory());
@@ -189,7 +193,7 @@ TEST_F(CastAudioManagerTest, CanMakeStream) {
     EXPECT_CALL(*mock_cma_backend_, Start(_)).WillOnce(Return(true));
   }
   EXPECT_CALL(mock_source_callback_, OnMoreData(_, _, _, _))
-      .WillRepeatedly(Invoke(OnMoreData));
+      .WillRepeatedly(OnMoreData);
   EXPECT_CALL(mock_source_callback_, OnError(_)).Times(0);
   stream->Start(&mock_source_callback_);
   RunThreadsUntilIdle();
@@ -213,7 +217,7 @@ TEST_F(CastAudioManagerTest, CanMakeAC3Stream) {
   // Only run the rest of the test if the device supports AC3.
   if (stream->Open()) {
     EXPECT_CALL(mock_source_callback_, OnMoreData(_, _, _, _))
-        .WillRepeatedly(Invoke(OnMoreData));
+        .WillRepeatedly(OnMoreData);
     EXPECT_CALL(mock_source_callback_, OnError(_)).Times(0);
     stream->Start(&mock_source_callback_);
     RunThreadsUntilIdle();
@@ -236,7 +240,7 @@ TEST_F(CastAudioManagerTest, CanMakeDTSStream) {
   // Only run the rest of the test if the device supports DTS.
   if (stream->Open()) {
     EXPECT_CALL(mock_source_callback_, OnMoreData(_, _, _, _))
-        .WillRepeatedly(Invoke(OnMoreData));
+        .WillRepeatedly(OnMoreData);
     EXPECT_CALL(mock_source_callback_, OnError(_)).Times(0);
     stream->Start(&mock_source_callback_);
     RunThreadsUntilIdle();
@@ -261,7 +265,7 @@ TEST_F(CastAudioManagerTest, DISABLED_CanMakeStreamProxy) {
     EXPECT_CALL(*mock_cma_backend_, Start(_)).WillOnce(Return(true));
   }
   EXPECT_CALL(mock_source_callback_, OnMoreData(_, _, _, _))
-      .WillRepeatedly(Invoke(OnMoreData));
+      .WillRepeatedly(OnMoreData);
   EXPECT_CALL(mock_source_callback_, OnError(_)).Times(0);
   stream->Start(&mock_source_callback_);
   RunThreadsUntilIdle();
@@ -274,29 +278,7 @@ TEST_F(CastAudioManagerTest, DISABLED_CanMakeStreamProxy) {
   // audio_manager_
 }
 
-TEST_F(CastAudioManagerTest, CanMakeMixerStream) {
-  CreateAudioManagerForTesting(true /* use_mixer */);
-  SetUpBackendAndDecoder();
-  ::media::AudioOutputStream* stream = audio_manager_->MakeAudioOutputStream(
-      kDefaultAudioParams, "", ::media::AudioManager::LogCallback());
-  ASSERT_TRUE(stream);
-  EXPECT_TRUE(stream->Open());
 
-  if (mock_cma_backend_) {
-    EXPECT_CALL(*mock_cma_backend_, Start(_)).WillOnce(Return(true));
-  }
-  EXPECT_CALL(mock_source_callback_, OnMoreData(_, _, _, _))
-      .WillRepeatedly(Invoke(OnMoreData));
-  EXPECT_CALL(mock_source_callback_, OnError(_)).Times(0);
-
-  stream->Start(&mock_source_callback_);
-  RunThreadsUntilIdle();
-
-  stream->Stop();
-  RunThreadsUntilIdle();
-
-  stream->Close();
-}
 
 TEST_F(CastAudioManagerTest, CanMakeCommunicationsStream) {
   CreateAudioManagerForTesting();
@@ -309,7 +291,7 @@ TEST_F(CastAudioManagerTest, CanMakeCommunicationsStream) {
   EXPECT_TRUE(stream->Open());
 
   EXPECT_CALL(mock_source_callback_, OnMoreData(_, _, _, _))
-      .WillRepeatedly(Invoke(OnMoreData));
+      .WillRepeatedly(OnMoreData);
   EXPECT_CALL(mock_source_callback_, OnError(_)).Times(0);
   task_environment_.RunUntilIdle();
 

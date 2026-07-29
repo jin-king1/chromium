@@ -3,12 +3,14 @@
 // found in the LICENSE file.
 
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "ash/accessibility/magnifier/fullscreen_magnifier_controller.h"
 #include "ash/accessibility/ui/accessibility_focus_ring_controller_impl.h"
 #include "ash/accessibility/ui/accessibility_focus_ring_layer.h"
 #include "ash/accessibility/ui/accessibility_highlight_layer.h"
+#include "ash/constants/ash_extension_constants.h"
 #include "ash/constants/ash_pref_names.h"
 #include "ash/public/cpp/ash_view_ids.h"
 #include "ash/public/cpp/system_tray_test_api.h"
@@ -21,6 +23,7 @@
 #include "ash/test/ash_test_util.h"
 #include "base/functional/bind.h"
 #include "base/memory/weak_ptr.h"
+#include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/ash/accessibility/accessibility_feature_browsertest.h"
@@ -34,23 +37,28 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
-#include "chrome/common/extensions/extension_constants.h"
+#include "chrome/browser/ui/ui_features.h"
+#include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/prefs/pref_service.h"
 #include "content/public/test/accessibility_notification_waiter.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "extensions/browser/browsertest_util.h"
 #include "extensions/browser/extension_host_test_helper.h"
+#include "extensions/browser/extension_registry_test_helper.h"
 #include "extensions/browser/process_manager.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/accessibility/accessibility_features.h"
+#include "ui/base/l10n/l10n_util.h"
 #include "ui/compositor/layer.h"
 #include "ui/display/manager/display_manager.h"
 #include "ui/display/screen.h"
 #include "ui/display/test/display_manager_test_api.h"
 #include "ui/events/keycodes/keyboard_codes_posix.h"
 #include "ui/events/test/event_generator.h"
+#include "ui/gfx/text_utils.h"
 #include "url/url_constants.h"
 
 namespace ash {
@@ -84,6 +92,17 @@ class SelectToSpeakTest : public AccessibilityFeatureBrowserTest {
 
   void ExpectTotalSpeechDurationSamples(int expected_count) {
     histogram_tester_.ExpectTotalCount(kSpeechDurationMetric, expected_count);
+  }
+
+  void TearDownOnMainThread() override {
+    if (console_observer_ && !console_observer_->HasErrorsOrWarnings()) {
+      // In manifest v3, there are errors that get fired during tear down that
+      // can cause tests to flake. To avoid flakiness, we reset the console
+      // observer, but only if there were no errors during the test.
+      console_observer_.reset();
+    }
+
+    AccessibilityFeatureBrowserTest::TearDownOnMainThread();
   }
 
  protected:
@@ -233,6 +252,7 @@ class SelectToSpeakTest : public AccessibilityFeatureBrowserTest {
   std::unique_ptr<base::RunLoop> loop_runner_;
   std::unique_ptr<base::RunLoop> highlights_runner_;
   std::unique_ptr<base::RunLoop> tray_loop_runner_;
+  base::test::ScopedFeatureList scoped_feature_list_;
   base::WeakPtrFactory<SelectToSpeakTest> weak_ptr_factory_{this};
 };
 
@@ -316,8 +336,8 @@ IN_PROC_BROWSER_TEST_F(SelectToSpeakTest, WorksWithTouchSelection) {
 IN_PROC_BROWSER_TEST_F(SelectToSpeakTest,
                        WorksWithTouchSelectionOnNonPrimaryMonitor) {
   // Don't observe error messages.
-  // An error message is observed consistently on MSAN, see crbug.com/1201212,
-  // and flakily on other builds, see crbug.com/1213451.
+  // An error message is observed consistently on MSAN, see crbug.com/40762240,
+  // and flakily on other builds, see crbug.com/40768771.
   // Run the rest of this test on but don't try to catch console errors.
   // TODO: Figure out why the "unable to load tab" error is occurring
   // and bring back the console observer.
@@ -330,7 +350,7 @@ IN_PROC_BROWSER_TEST_F(SelectToSpeakTest,
   display::test::DisplayManagerTestApi display_manager_test_api(
       shell_test_api.display_manager());
 
-  display::Screen* screen = display::Screen::GetScreen();
+  display::Screen* screen = display::Screen::Get();
   int64_t display2 = display_manager_test_api.GetSecondaryDisplay().id();
   screen->SetDisplayForNewWindows(display2);
 
@@ -669,8 +689,8 @@ IN_PROC_BROWSER_TEST_F(SelectToSpeakTest,
                                  8.0);
 
   // Wait for Fullscreen magnifier to initialize.
-  extensions::ExtensionHostTestHelper host_helper(
-      profile, extension_misc::kAccessibilityCommonExtensionId);
+  extensions::ExtensionRegistryTestHelper observer(
+      extension_misc::kAccessibilityCommonExtensionId, profile);
   profile->GetPrefs()->SetBoolean(prefs::kAccessibilityScreenMagnifierEnabled,
                                   true);
 
@@ -679,7 +699,7 @@ IN_PROC_BROWSER_TEST_F(SelectToSpeakTest,
   MagnifierAnimationWaiter waiter(fullscreen_magnifier_controller);
   waiter.Wait();
 
-  host_helper.WaitForHostCompletedFirstLoad();
+  observer.WaitForServiceWorkerStart();
   FullscreenMagnifierTestHelper::WaitForMagnifierJSReady(profile);
 
   gfx::Rect initial_viewport =
@@ -854,6 +874,40 @@ IN_PROC_BROWSER_TEST_F(SelectToSpeakTest, ReadsSelectedTextWithSearchS) {
 }
 
 IN_PROC_BROWSER_TEST_F(SelectToSpeakTest,
+                       ReadsSelectedTextWithContextMenuNotification) {
+  std::string text = "Pick me! Read me!";
+  LoadURLAndSelectToSpeak(base::StringPrintf(
+      "data:text/html;charset=utf-8,<p>Not me!</p><p>%s</p><p>Nor me!</p>",
+      text.c_str()));
+  SelectNodeWithText(text);
+
+  AccessibilityManager::Get()->OnSelectToSpeakContextMenuClick();
+
+  sm_.ExpectSpeechPattern(text);
+  sm_.Replay();
+}
+
+class SelectToSpeakContextMenuTest
+    : public SelectToSpeakTest,
+      public ::testing::WithParamInterface<bool> {
+ public:
+  SelectToSpeakContextMenuTest() {
+    if (GetParam()) {
+      scoped_feature_list_.InitAndEnableFeature(
+          ::features::kMenuSimplification);
+    } else {
+      scoped_feature_list_.InitAndDisableFeature(
+          ::features::kMenuSimplification);
+    }
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+INSTANTIATE_TEST_SUITE_P(All, SelectToSpeakContextMenuTest, ::testing::Bool());
+
+IN_PROC_BROWSER_TEST_P(SelectToSpeakContextMenuTest,
                        ReadsSelectedTextFromContextMenuClick) {
   std::string text = "This is some selected text";
   LoadURLAndSelectToSpeak(base::StringPrintf(
@@ -873,9 +927,25 @@ IN_PROC_BROWSER_TEST_F(SelectToSpeakTest,
   generator_->PressRightButton();
   generator_->ReleaseRightButton();
 
-  // Wait for the copy context menu item to be shown,
+  // Maximum length of the elided text on the render view menu item.
+  const int max_string_length = 25;
+
+  // Wait for the Select to Speak menu item to be shown,
   // this means the menu is displayed.
-  automation_test_utils_->GetNodeBoundsInRoot("Copy Ctrl+C", "menuItem");
+  // Truncate the selected text so that it matches what is shown on the render
+  // view menu item.
+  std::string elided_text = text;
+  if (GetParam() && elided_text.length() > max_string_length) {
+    elided_text = elided_text.substr(0, max_string_length - 1) + "\u2026";
+  }
+  std::string copy_name =
+      GetParam()
+          ? base::UTF16ToUTF8(gfx::RemoveAccelerator(
+                l10n_util::GetStringFUTF16(IDS_CONTENT_CONTEXT_COPY_SELECTION,
+                                           base::UTF8ToUTF16(elided_text)))) +
+                " Ctrl+C"
+          : "Copy Ctrl+C";
+  automation_test_utils_->GetNodeBoundsInRoot(copy_name, "menuItem");
   ASSERT_TRUE(automation_test_utils_->NodeExistsNoWait(name, "menuItem"));
 
   // Click the Select to Speak menu item.
@@ -888,19 +958,4 @@ IN_PROC_BROWSER_TEST_F(SelectToSpeakTest,
   sm_.ExpectSpeechPattern(text);
   sm_.Replay();
 }
-
-IN_PROC_BROWSER_TEST_F(SelectToSpeakTest,
-                       ReadsSelectedTextWithContextMenuNotification) {
-  std::string text = "Pick me! Read me!";
-  LoadURLAndSelectToSpeak(base::StringPrintf(
-      "data:text/html;charset=utf-8,<p>Not me!</p><p>%s</p><p>Nor me!</p>",
-      text.c_str()));
-  SelectNodeWithText(text);
-
-  AccessibilityManager::Get()->OnSelectToSpeakContextMenuClick();
-
-  sm_.ExpectSpeechPattern(text);
-  sm_.Replay();
-}
-
 }  // namespace ash

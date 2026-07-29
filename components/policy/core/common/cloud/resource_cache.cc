@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "components/policy/core/common/cloud/resource_cache.h"
 
@@ -18,6 +14,7 @@
 #include "base/logging.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/task/sequenced_task_runner.h"
+#include "components/policy/core/common/policy_logger.h"
 
 namespace policy {
 
@@ -303,8 +300,9 @@ int64_t ResourceCache::GetCacheDirectoryOrFileSize(
     const base::FilePath& path) const {
   DCHECK(path == cache_dir_ || cache_dir_.IsParent(path));
   if (base::IsLink(path)) {
-    DLOG(WARNING) << "Symlink " << path.LossyDisplayName()
-                  << " detected in cache directory";
+    DLOG_POLICY(WARNING, POLICY_FETCHING)
+        << "Symlink " << path.LossyDisplayName()
+        << " detected in cache directory";
     return 0;
   }
   int64_t path_size = 0;

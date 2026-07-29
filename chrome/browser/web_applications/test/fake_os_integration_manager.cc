@@ -6,7 +6,6 @@
 
 #include <string_view>
 
-#include "base/containers/contains.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/test/bind.h"
 #include "chrome/browser/web_applications/os_integration/os_integration_manager.h"
@@ -53,9 +52,10 @@ void FakeOsIntegrationManager::SetShortcutInfoForApp(
 void FakeOsIntegrationManager::GetShortcutInfoForAppFromRegistrar(
     const webapps::AppId& app_id,
     GetShortcutInfoCallback callback) {
-  if (shortcut_info_map_.find(app_id) != shortcut_info_map_.end()) {
-    std::move(callback).Run(std::move(shortcut_info_map_[app_id]));
-    shortcut_info_map_.erase(app_id);
+  auto it = shortcut_info_map_.find(app_id);
+  if (it != shortcut_info_map_.end()) {
+    std::move(callback).Run(std::move(it->second));
+    shortcut_info_map_.erase(it);
   } else {
     std::move(callback).Run(nullptr);
   }

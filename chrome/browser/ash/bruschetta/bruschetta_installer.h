@@ -13,6 +13,7 @@ namespace bruschetta {
 // numeric values should never be reused. BruschettaInstallResult in
 // tools/metrics/histograms/enums.xml must be updated when making a change to
 // this enum.
+// LINT.IfChange
 enum class BruschettaInstallResult {
   kUnknown = 0,
   kSuccess = 1,
@@ -46,8 +47,10 @@ enum class BruschettaInstallResult {
   kConciergeUnavailableError = 27,
   kNotEnoughMemoryError = 28,
   kNoAdidError = 29,
-  kMaxValue = kNoAdidError,
+  kInstallationFailed = 30,
+  kMaxValue = kInstallationFailed,
 };
+// LINT.ThenChange(/tools/metrics/histograms/enums.xml)
 
 // Returns the string name of the BruschettaResult.
 const char16_t* BruschettaInstallResultString(

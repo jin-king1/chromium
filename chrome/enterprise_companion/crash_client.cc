@@ -15,6 +15,7 @@
 #include "base/base_paths.h"
 #include "base/check.h"
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
 #include "base/debug/dump_without_crashing.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
@@ -200,7 +201,7 @@ class CrashClient {
     // Save dereferenced memory from all registers on the crashing thread.
     // Crashpad saves up to 512 bytes per CPU register, and in the worst case,
     // ARM64 has 32 registers.
-    constexpr uint32_t kIndirectMemoryLimit = 32 * 512;
+    static constexpr uint32_t kIndirectMemoryLimit = 32 * 512;
     crashpad::CrashpadInfo::GetCrashpadInfo()
         ->set_gather_indirectly_referenced_memory(crashpad::TriState::kEnabled,
                                                   kIndirectMemoryLimit);
@@ -217,7 +218,7 @@ class CrashClient {
                               GetGlobalConstants()->CrashUploadURL().spec(),
                               annotations, MakeCrashHandlerArgs(),
                               /*restartable=*/true,
-                              /*asynchronous_start=*/false)) {
+                              /*asynchronous_start=*/false, attachments)) {
       VLOG(1) << "Failed to start handler.";
       return false;
     }
@@ -271,9 +272,9 @@ int CrashReporterMain() {
 #else
     storage.push_back(argv[i]);
 #endif
-    argv_as_utf8[i] = &storage[i][0];
+    UNSAFE_TODO(argv_as_utf8[i]) = &storage[i][0];
   }
-  argv_as_utf8[argv.size()] = nullptr;
+  UNSAFE_TODO(argv_as_utf8[argv.size()]) = nullptr;
 
   return crashpad::HandlerMain(argv.size(), argv_as_utf8.get(),
                                /*user_stream_sources=*/nullptr);

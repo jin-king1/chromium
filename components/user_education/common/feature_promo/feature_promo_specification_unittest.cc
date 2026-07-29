@@ -5,10 +5,16 @@
 #include "components/user_education/common/feature_promo/feature_promo_specification.h"
 
 #include "base/feature_list.h"
+#include "base/test/bind.h"
+#include "base/test/scoped_feature_list.h"
 #include "components/strings/grit/components_strings.h"
+#include "components/user_education/common/feature_promo/feature_promo_handle.h"
+#include "components/user_education/common/help_bubble/help_bubble_params.h"
+#include "components/user_education/common/user_education_features.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/interaction/element_test_util.h"
+#include "ui/base/interaction/element_tracker.h"
 
 namespace user_education {
 
@@ -16,10 +22,38 @@ namespace {
 BASE_FEATURE(kTestRotatingPromo,
              "TEST_RotatingPromo",
              base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kTestSimplePromo,
+             "TEST_SimplePromo",
+             base::FEATURE_DISABLED_BY_DEFAULT);
 DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kTestAnchorElement);
 DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kTestAnchorElement2);
-const ui::ElementContext kTestContext(1);
+constexpr ui::ElementContext kTestContext =
+    ui::ElementContext::CreateFakeContextForTesting(1);
 }  // namespace
+
+TEST(FeaturePromoSpecificationTest, HelpBubbleArrow) {
+  ui::test::TestElement el(kTestAnchorElement, kTestContext);
+  FeaturePromoSpecification spec =
+      std::move(FeaturePromoSpecification::CreateForToastPromo(
+                    kTestSimplePromo, kTestAnchorElement, IDS_CLOSE_PROMO, 0,
+                    FeaturePromoSpecification::AcceleratorInfo())
+                    .SetBubbleArrow(HelpBubbleArrow::kBottomLeft));
+  EXPECT_EQ(HelpBubbleArrow::kBottomLeft, spec.GetBubbleArrow(&el));
+}
+
+TEST(FeaturePromoSpecificationTest, HelpBubbleArrowCallback) {
+  ui::test::TestElement el(kTestAnchorElement, kTestContext);
+  FeaturePromoSpecification spec =
+      std::move(FeaturePromoSpecification::CreateForToastPromo(
+                    kTestSimplePromo, kTestAnchorElement, IDS_CLOSE_PROMO, 0,
+                    FeaturePromoSpecification::AcceleratorInfo())
+                    .SetBubbleArrowCallback(base::BindLambdaForTesting(
+                        [&](const ui::TrackedElement* anchor_element) {
+                          EXPECT_EQ(&el, anchor_element);
+                          return HelpBubbleArrow::kBottomLeft;
+                        })));
+  EXPECT_EQ(HelpBubbleArrow::kBottomLeft, spec.GetBubbleArrow(&el));
+}
 
 TEST(FeaturePromoSpecificationTest, RotatingPromoOverrideFocusOnShow) {
   FeaturePromoSpecification::RotatingPromos promos(
@@ -63,6 +97,36 @@ TEST(FeaturePromoSpecificationTest, GetAnchorElementFromRotatingPromo) {
 
   EXPECT_EQ(&el1, spec.GetAnchorElement(kTestContext, 0));
   EXPECT_EQ(&el2, spec.GetAnchorElement(kTestContext, 2));
+}
+
+TEST(FeaturePromoSpecificationTest, CustomActionCaptionLazyLoad) {
+  // kLazilySetCustomActionCaption is disabled (eager evaluation).
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndDisableFeature(features::kLazilySetCustomActionCaption);
+
+    FeaturePromoSpecification spec =
+        FeaturePromoSpecification::CreateForCustomAction(
+            kTestSimplePromo, kTestAnchorElement, IDS_CLOSE_PROMO,
+            IDS_CLOSE_PROMO, base::DoNothing());
+
+    EXPECT_EQ(l10n_util::GetStringUTF16(IDS_CLOSE_PROMO),
+              spec.custom_action_caption());
+  }
+
+  // kLazilySetCustomActionCaption is enabled (lazy evaluation).
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndEnableFeature(features::kLazilySetCustomActionCaption);
+
+    FeaturePromoSpecification spec =
+        FeaturePromoSpecification::CreateForCustomAction(
+            kTestSimplePromo, kTestAnchorElement, IDS_CLOSE_PROMO,
+            IDS_CLOSE_PROMO, base::DoNothing());
+
+    EXPECT_EQ(l10n_util::GetStringUTF16(IDS_CLOSE_PROMO),
+              spec.custom_action_caption());
+  }
 }
 
 }  // namespace user_education

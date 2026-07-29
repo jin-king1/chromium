@@ -74,11 +74,11 @@ static bool HasNoAttributeOrOnlyStyleAttribute(
   if (attributes.IsEmpty())
     return true;
 
-  unsigned matched_attributes = 0;
+  wtf_size_t matched_attributes = 0;
   if (element->hasAttribute(html_names::kStyleAttr) &&
       (should_style_attribute_be_empty == kAllowNonEmptyStyleAttribute ||
        !element->InlineStyle() || element->InlineStyle()->IsEmpty()))
-    matched_attributes++;
+    ++matched_attributes;
 
   DCHECK_LE(matched_attributes, attributes.size());
   return matched_attributes == attributes.size();
@@ -188,7 +188,7 @@ void ApplyStyleCommand::UpdateStartEnd(const EphemeralRange& range) {
   GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
   const bool was_base_first =
       StartingSelection().IsAnchorFirst() || !SelectionIsDirectional();
-  SelectionInDOMTree::Builder builder;
+  SelectionInDomTree::Builder builder;
   if (was_base_first)
     builder.SetAsForwardSelection(range);
   else
@@ -197,6 +197,10 @@ void ApplyStyleCommand::UpdateStartEnd(const EphemeralRange& range) {
       CreateVisibleSelection(builder.Build());
   SetEndingSelection(
       SelectionForUndoStep::From(visible_selection.AsSelection()));
+  if (RuntimeEnabledFeatures::EditingUseDomPositionApiEnabled()) {
+    SetEndingDomSelection(
+        SelectionForUndoStep::From(visible_selection.AsSelection()));
+  }
   start_ = range.StartPosition();
   end_ = range.EndPosition();
 }
@@ -288,8 +292,10 @@ void ApplyStyleCommand::ApplyBlockStyle(EditingStyle* style,
       visible_end.DeepEquivalent().ParentAnchoredEquivalent());
 
   const TextIteratorBehavior behavior =
-      TextIteratorBehavior::AllVisiblePositionsRangeLengthBehavior();
-
+      RuntimeEnabledFeatures::EnterInOpenShadowRootsEnabled()
+          ? TextIteratorBehavior::
+                AllVisiblePositionsIncludingShadowRootRangeLengthBehavior()
+          : TextIteratorBehavior::AllVisiblePositionsRangeLengthBehavior();
   const int start_index = TextIterator::RangeLength(start_range, behavior);
   const int end_index = TextIterator::RangeLength(end_range, behavior);
 
@@ -323,7 +329,7 @@ void ApplyStyleCommand::ApplyBlockStyle(EditingStyle* style,
           block = new_block;
       }
       if (auto* html_element = DynamicTo<HTMLElement>(block)) {
-        RemoveCSSStyle(style, html_element, editing_state);
+        RemoveCssStyle(style, html_element, editing_state);
         if (editing_state->IsAborted())
           return;
         if (!remove_only_)
@@ -468,7 +474,13 @@ void ApplyStyleCommand::ApplyRelativeFontStyleChange(
       // style this text node. To make this possible, add a style span to
       // surround this text node.
       auto* span = MakeGarbageCollected<HTMLSpanElement>(GetDocument());
-      SurroundNodeRangeWithElement(node, node, span, editing_state);
+      // Prevent merging the span with adjacent siblings, to ensure the DOM
+      // structure and traversal order do not change.
+      SurroundNodeRangeWithElement(
+          node, node, span, editing_state,
+          RuntimeEnabledFeatures::AvoidMergingStyledSpanWithSiblingsEnabled()
+              ? kDoNotMergeSiblings
+              : kMergeSiblings);
       if (editing_state->IsAborted())
         return;
       element = span;
@@ -1194,8 +1206,9 @@ bool ApplyStyleCommand::RemoveInlineStyleFromElement(
 
   // If the node was converted to a span, the span may still contain relevant
   // styles which must be removed (e.g. <b style='font-weight: bold'>)
-  if (RemoveCSSStyle(style, element, editing_state, mode, extracted_style))
+  if (RemoveCssStyle(style, element, editing_state, mode, extracted_style)) {
     removed = true;
+  }
   if (editing_state->IsAborted())
     return false;
 
@@ -1260,7 +1273,7 @@ bool ApplyStyleCommand::RemoveImplicitlyStyledElement(
   return true;
 }
 
-bool ApplyStyleCommand::RemoveCSSStyle(EditingStyle* style,
+bool ApplyStyleCommand::RemoveCssStyle(EditingStyle* style,
                                        HTMLElement* element,
                                        EditingState* editing_state,
                                        InlineStyleRemovalMode mode,
@@ -1279,7 +1292,7 @@ bool ApplyStyleCommand::RemoveCSSStyle(EditingStyle* style,
   // FIXME: We should use a mass-removal function here but we don't have an
   // undoable one yet.
   for (const auto& property : properties)
-    RemoveCSSProperty(element, property);
+    RemoveCssProperty(element, property);
 
   if (IsSpanWithoutAttributesOrUnstyledStyleSpan(element))
     RemoveNodePreservingChildren(element, editing_state);
@@ -1366,14 +1379,42 @@ void ApplyStyleCommand::ApplyInlineStyleToPushDown(
   AddInlineStyleIfNeeded(new_inline_style, node, node, editing_state);
 }
 
+// Removes CSS properties that affect the container/box area rather than just
+// text content.
+void ApplyStyleCommand::FilterContainerLevelStyles(EditingStyle* style) {
+  if (!style || !style->Style()) {
+    return;
+  }
+
+  // CSS properties that create visual effects on the container/box rather than
+  // on text content. These should be excluded when removing inline styles from
+  // block elements.
+  // Note: This list only contains limited styles which have been found to cause
+  // unexpected behavior during `ApplyStyleCommand` execution.
+  static const CSSProperty* kContainerLevelProperties[] = {
+      &CSSProperty::Get(CSSPropertyID::kBackground),
+      &CSSProperty::Get(CSSPropertyID::kBackgroundColor)};
+
+  style->Style()->RemovePropertiesInSet(kContainerLevelProperties);
+}
+
 void ApplyStyleCommand::PushDownInlineStyleAroundNode(
     EditingStyle* style,
     Node* target_node,
     EditingState* editing_state) {
   HTMLElement* highest_ancestor =
       HighestAncestorWithConflictingInlineStyle(style, target_node);
-  if (!highest_ancestor)
+  if (!highest_ancestor) {
     return;
+  }
+
+  EditingStyle* filtered_style = style->Copy();
+
+  // CSS properties that affect the container/box area rather than just text
+  // should not be pushed down to children for block elements.
+  if (RuntimeEnabledFeatures::FilterContainerLevelStylesEnabled()) {
+    FilterContainerLevelStyles(filtered_style);
+  }
 
   // The outer loop is traversing the tree vertically from highestAncestor to
   // targetNode
@@ -1395,8 +1436,9 @@ void ApplyStyleCommand::PushDownInlineStyleAroundNode(
 
     EditingStyle* style_to_push_down = MakeGarbageCollected<EditingStyle>();
     if (auto* html_element = DynamicTo<HTMLElement>(current)) {
-      RemoveInlineStyleFromElement(style, html_element, editing_state,
-                                   kRemoveIfNeeded, style_to_push_down);
+      RemoveInlineStyleFromElement(
+          IsEnclosingBlock(html_element) ? filtered_style : style, html_element,
+          editing_state, kRemoveIfNeeded, style_to_push_down);
       if (editing_state->IsAborted())
         return;
     }
@@ -1460,7 +1502,7 @@ void ApplyStyleCommand::RemoveInlineStyle(EditingStyle* style,
   // removing the style from this node. e.g. if pushDownStart was at
   // Position("hello", 5) in <b>hello<div>world</div></b>, we want
   // Position("world", 0) instead.
-  const unsigned push_down_start_offset =
+  const wtf_size_t push_down_start_offset =
       push_down_start.ComputeOffsetInContainerNode();
   auto* push_down_start_container =
       DynamicTo<Text>(push_down_start.ComputeContainerNode());
@@ -1510,6 +1552,10 @@ void ApplyStyleCommand::RemoveInlineStyle(EditingStyle* style,
   Position s = start;
   Position e = end;
   Node* node = start.AnchorNode();
+  EditingStyle* filtered_style = style->Copy();
+  if (RuntimeEnabledFeatures::FilterContainerLevelStylesEnabled()) {
+    FilterContainerLevelStyles(filtered_style);
+  }
   while (node) {
     Node* next_to_process = nullptr;
     if (!EditingIgnoresContent(*node))
@@ -1527,8 +1573,11 @@ void ApplyStyleCommand::RemoveInlineStyle(EditingStyle* style,
         child_node = elem->firstChild();
       }
 
-      RemoveInlineStyleFromElement(style, elem, editing_state, kRemoveIfNeeded,
-                                   style_to_push_down);
+      // CSS properties that affect the container/box area rather than just text
+      // should not be removed from block elements.
+      RemoveInlineStyleFromElement(
+          IsEnclosingBlock(elem) ? filtered_style : style, elem, editing_state,
+          kRemoveIfNeeded, style_to_push_down);
       if (editing_state->IsAborted())
         return;
       if (!elem->isConnected()) {
@@ -1557,11 +1606,30 @@ void ApplyStyleCommand::RemoveInlineStyle(EditingStyle* style,
       }
 
       if (style_to_push_down) {
+        EditingStyle* filtered_style_to_push_down = style_to_push_down;
+
+        if (RuntimeEnabledFeatures::
+                RemoveFormatFilterBackgroundColorEnabled()) {
+          // Filter out styles that should be removed - don't push down styles
+          // that conflict with the styles we're trying to remove
+          filtered_style_to_push_down = style_to_push_down->Copy();
+          if (style && style->Style() && filtered_style_to_push_down->Style()) {
+            // Remove any properties from style_to_push_down that are present in
+            // the style being removed
+            for (const CSSPropertyValue& property :
+                 style->Style()->Properties()) {
+              filtered_style_to_push_down->Style()->RemoveProperty(
+                  property.PropertyID());
+            }
+          }
+        }
+
         for (; child_node; child_node = child_node->nextSibling()) {
-          ApplyInlineStyleToPushDown(child_node, style_to_push_down,
+          ApplyInlineStyleToPushDown(child_node, filtered_style_to_push_down,
                                      editing_state);
-          if (editing_state->IsAborted())
+          if (editing_state->IsAborted()) {
             return;
+          }
         }
       }
     }
@@ -1686,7 +1754,7 @@ bool ApplyStyleCommand::IsValidCaretPositionInTextNode(
   Node* node = position.ComputeContainerNode();
   if (!position.IsOffsetInAnchor() || !node->IsTextNode())
     return false;
-  int offset_in_text = position.OffsetInContainerNode();
+  wtf_size_t offset_in_text = position.OffsetInContainerNode();
   return offset_in_text > CaretMinOffset(node) &&
          offset_in_text < CaretMaxOffset(node);
 }
@@ -1785,7 +1853,8 @@ void ApplyStyleCommand::SurroundNodeRangeWithElement(
     Node* passed_start_node,
     Node* end_node,
     Element* element_to_insert,
-    EditingState* editing_state) {
+    EditingState* editing_state,
+    MergeSiblings merge_siblings) {
   DCHECK(passed_start_node);
   DCHECK(end_node);
   DCHECK(element_to_insert);
@@ -1810,6 +1879,10 @@ void ApplyStyleCommand::SurroundNodeRangeWithElement(
     if (node == end_node)
       break;
     node = next;
+  }
+
+  if (merge_siblings == kDoNotMergeSiblings) {
+    return;
   }
 
   Node* next_sibling = element->nextSibling();
@@ -1993,19 +2066,19 @@ void ApplyStyleCommand::ApplyInlineStyleChange(
   }
 
   if (style_change.ApplyBold()) {
-    SurroundNodeRangeWithElement(
-        start_node, end_node,
-        MakeGarbageCollected<HTMLElement>(html_names::kBTag, GetDocument()),
-        editing_state);
+    SurroundNodeRangeWithElement(start_node, end_node,
+                                 MakeGarbageCollected<HTMLElement>(
+                                     style_change.BoldTag(), GetDocument()),
+                                 editing_state);
     if (editing_state->IsAborted())
       return;
   }
 
   if (style_change.ApplyItalic()) {
-    SurroundNodeRangeWithElement(
-        start_node, end_node,
-        MakeGarbageCollected<HTMLElement>(html_names::kITag, GetDocument()),
-        editing_state);
+    SurroundNodeRangeWithElement(start_node, end_node,
+                                 MakeGarbageCollected<HTMLElement>(
+                                     style_change.ItalicTag(), GetDocument()),
+                                 editing_state);
     if (editing_state->IsAborted())
       return;
   }
@@ -2013,17 +2086,19 @@ void ApplyStyleCommand::ApplyInlineStyleChange(
   if (style_change.ApplyUnderline()) {
     SurroundNodeRangeWithElement(
         start_node, end_node,
-        MakeGarbageCollected<HTMLElement>(html_names::kUTag, GetDocument()),
+        MakeGarbageCollected<HTMLElement>(style_change.UnderlineTag(),
+                                          GetDocument()),
         editing_state);
     if (editing_state->IsAborted())
       return;
   }
 
   if (style_change.ApplyLineThrough()) {
-    SurroundNodeRangeWithElement(start_node, end_node,
-                                 MakeGarbageCollected<HTMLElement>(
-                                     html_names::kStrikeTag, GetDocument()),
-                                 editing_state);
+    SurroundNodeRangeWithElement(
+        start_node, end_node,
+        MakeGarbageCollected<HTMLElement>(style_change.LineThroughTag(),
+                                          GetDocument()),
+        editing_state);
     if (editing_state->IsAborted())
       return;
   }
@@ -2031,14 +2106,16 @@ void ApplyStyleCommand::ApplyInlineStyleChange(
   if (style_change.ApplySubscript()) {
     SurroundNodeRangeWithElement(
         start_node, end_node,
-        MakeGarbageCollected<HTMLElement>(html_names::kSubTag, GetDocument()),
+        MakeGarbageCollected<HTMLElement>(style_change.SubscriptTag(),
+                                          GetDocument()),
         editing_state);
     if (editing_state->IsAborted())
       return;
   } else if (style_change.ApplySuperscript()) {
     SurroundNodeRangeWithElement(
         start_node, end_node,
-        MakeGarbageCollected<HTMLElement>(html_names::kSupTag, GetDocument()),
+        MakeGarbageCollected<HTMLElement>(style_change.SuperscriptTag(),
+                                          GetDocument()),
         editing_state);
     if (editing_state->IsAborted())
       return;
@@ -2063,17 +2140,20 @@ float ApplyStyleCommand::ComputedFontSize(Node* node) {
   }
 
   auto* style = MakeGarbageCollected<CSSComputedStyleDeclaration>(element);
-  if (!style)
+  if (!style) {
     return 0;
+  }
 
-  const auto* value = To<CSSPrimitiveValue>(
+  const auto* value = DynamicTo<CSSPrimitiveValue>(
       style->GetPropertyCSSValue(CSSPropertyID::kFontSize));
-  if (!value)
+  if (!value) {
     return 0;
+  }
 
   // TODO(yosin): We should have printer for |CSSPrimitiveValue::UnitType|.
   DCHECK(value->IsPx());
-  return value->GetFloatValue();
+  std::optional<double> font_size = value->GetValueIfKnown();
+  return font_size.value_or(0);
 }
 
 void ApplyStyleCommand::JoinChildTextNodes(ContainerNode* node,
@@ -2105,7 +2185,8 @@ void ApplyStyleCommand::JoinChildTextNodes(ContainerNode* node,
       new_end = Position(child_text,
                          child_text->length() + end.OffsetInContainerNode());
     String text_to_move = next_text->data();
-    InsertTextIntoNode(child_text, child_text->length(), text_to_move);
+    InsertTextIntoNode(child_text, child_text->length(), text_to_move,
+                       PasswordEchoBehavior::kDoNotEcho);
     // Removing a Text node doesn't dispatch synchronous events.
     RemoveNode(next, ASSERT_NO_EDITING_ABORT);
     // don't move child node pointer. it may want to merge with more text nodes.

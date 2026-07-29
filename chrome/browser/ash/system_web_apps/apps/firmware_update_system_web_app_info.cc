@@ -11,10 +11,10 @@
 #include "ash/style/color_util.h"
 #include "ash/webui/firmware_update_ui/url_constants.h"
 #include "ash/webui/grit/ash_firmware_update_app_resources.h"
-#include "ash/webui/system_apps/public/system_web_app_type.h"
 #include "chrome/browser/ash/system_web_apps/apps/system_web_app_install_utils.h"
 #include "chrome/browser/web_applications/mojom/user_display_mode.mojom.h"
 #include "chrome/browser/web_applications/web_app_install_info.h"
+#include "chromeos/ash/components/system_web_apps/system_web_app_type.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "third_party/blink/public/mojom/manifest/display_mode.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -76,9 +76,10 @@ bool FirmwareUpdateSystemAppDelegate::ShouldShowInSearchAndShelf() const {
   return false;
 }
 
-gfx::Rect FirmwareUpdateSystemAppDelegate::GetDefaultBounds(Browser*) const {
+gfx::Rect FirmwareUpdateSystemAppDelegate::GetDefaultBounds(
+    ash::BrowserDelegate*) const {
   gfx::Rect bounds =
-      display::Screen::GetScreen()->GetDisplayForNewWindows().work_area();
+      display::Screen::Get()->GetDisplayForNewWindows().work_area();
   bounds.ClampToCenteredSize(
       {kFirmwareUpdateAppDefaultWidth, kFirmwareUpdateAppDefaultHeight});
   return bounds;

@@ -11,7 +11,6 @@
 #include <string>
 
 #include "base/functional/callback.h"
-#include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
@@ -94,6 +93,7 @@ class DialAppDiscoveryService {
    public:
     PendingRequest(const MediaSinkInternal& sink,
                    const std::string& app_name,
+                   const GURL& app_url,
                    DialAppInfoCallback app_info_cb,
                    DialAppDiscoveryService* const service);
 

@@ -18,7 +18,7 @@
 #include "components/segmentation_platform/internal/database/signal_database.h"
 #include "components/segmentation_platform/internal/database/signal_storage_config.h"
 #include "components/segmentation_platform/internal/database/storage_service.h"
-#include "components/segmentation_platform/internal/database/ukm_database_backend.h"
+#include "components/segmentation_platform/internal/database/ukm_database_impl.h"
 #include "components/segmentation_platform/internal/database/ukm_types.h"
 #include "components/segmentation_platform/internal/execution/processing/mock_feature_aggregator.h"
 #include "components/segmentation_platform/internal/mock_ukm_data_manager.h"
@@ -49,9 +49,8 @@ class FeatureListQueryProcessorTest : public testing::TestWithParam<bool> {
   void SetUp() override {
     InitFeatureList();
 
-    ukm_db_ = std::make_unique<UkmDatabaseBackend>(
-        base::FilePath(), /*in_memory=*/true,
-        task_environment_.GetMainThreadTaskRunner());
+    ukm_db_ = std::make_unique<UkmDatabaseImpl>(base::FilePath(),
+                                                /*in_memory=*/true);
     base::RunLoop wait_for_sql_init;
     ukm_db_->InitDatabase(base::BindOnce(
         [](base::OnceClosure quit_closure, bool success) {
@@ -335,6 +334,73 @@ TEST_P(FeatureListQueryProcessorTest, DefaultValueCustomInput) {
   // The next step should be to run the feature processor, the input tensor
   // should contain the default values 1 and 2.
   ExpectProcessedFeatureList(false, ModelProvider::Request{1, 2});
+}
+
+TEST_P(FeatureListQueryProcessorTest, CustomInputFromInputContextAllTypes) {
+  const bool use_sql_db = GetParam();
+  CreateFeatureListQueryProcessor(use_sql_db);
+
+  // Initialize with required metadata.
+  SetBucketDuration(3, proto::TimeUnit::HOUR);
+
+  // Add custom inputs that will be filled from the input context.
+  AddCustomInput(1, proto::CustomInput::FILL_FROM_INPUT_CONTEXT, {});
+  model_metadata.mutable_input_features(0)->mutable_custom_input()->set_name(
+      "bool_input");
+  AddCustomInput(1, proto::CustomInput::FILL_FROM_INPUT_CONTEXT, {});
+  model_metadata.mutable_input_features(1)->mutable_custom_input()->set_name(
+      "int_input");
+  AddCustomInput(1, proto::CustomInput::FILL_FROM_INPUT_CONTEXT, {});
+  model_metadata.mutable_input_features(2)->mutable_custom_input()->set_name(
+      "double_input");
+  AddCustomInput(1, proto::CustomInput::FILL_FROM_INPUT_CONTEXT, {});
+  model_metadata.mutable_input_features(3)->mutable_custom_input()->set_name(
+      "int64_input");
+
+  auto input_context = base::MakeRefCounted<InputContext>();
+  input_context->metadata_args.emplace("bool_input", true);
+  input_context->metadata_args.emplace("int_input", 42);
+  input_context->metadata_args.emplace("double_input", 3.14);
+  input_context->metadata_args.emplace("int64_input", INT64_C(9876543210));
+
+  base::RunLoop loop;
+  feature_list_query_processor_->ProcessFeatureList(
+      model_metadata, input_context, segment_id_, clock_.Now(), base::Time(),
+      FeatureListQueryProcessor::ProcessOption::kInputsOnly,
+      base::BindOnce(
+          &FeatureListQueryProcessorTest::OnProcessingFinishedCallback,
+          base::Unretained(this), loop.QuitClosure(), false,
+          ModelProvider::Request{1.0f, 42.0f, 3.14f, 9876543210.0f},
+          ModelProvider::Response{}));
+  loop.Run();
+}
+
+TEST_P(FeatureListQueryProcessorTest, CustomInputFromInputContextWithString) {
+  const bool use_sql_db = GetParam();
+  CreateFeatureListQueryProcessor(use_sql_db);
+
+  // Initialize with required metadata.
+  SetBucketDuration(3, proto::TimeUnit::HOUR);
+
+  // Add custom inputs that will be filled from the input context.
+  AddCustomInput(1, proto::CustomInput::FILL_FROM_INPUT_CONTEXT, {});
+  model_metadata.mutable_input_features(0)->mutable_custom_input()->set_name(
+      "string_input");
+
+  auto input_context = base::MakeRefCounted<InputContext>();
+  input_context->metadata_args.emplace("string_input",
+                                       std::string("test_value"));
+
+  base::RunLoop loop;
+  feature_list_query_processor_->ProcessFeatureList(
+      model_metadata, input_context, segment_id_, clock_.Now(), base::Time(),
+      FeatureListQueryProcessor::ProcessOption::kInputsOnly,
+      base::BindOnce(
+          &FeatureListQueryProcessorTest::OnProcessingFinishedCallback,
+          base::Unretained(this), loop.QuitClosure(),
+          /*expected_error=*/true, ModelProvider::Request{},
+          ModelProvider::Response{}));
+  loop.Run();
 }
 
 TEST_P(FeatureListQueryProcessorTest, SingleUserAction) {

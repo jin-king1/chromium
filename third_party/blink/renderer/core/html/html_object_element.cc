@@ -24,6 +24,7 @@
 
 #include "third_party/blink/renderer/core/html/html_object_element.h"
 
+#include "third_party/blink/renderer/bindings/core/v8/v8_union_trustedscripturl_usvstring.h"
 #include "third_party/blink/renderer/core/css/style_change_reason.h"
 #include "third_party/blink/renderer/core/dom/attribute.h"
 #include "third_party/blink/renderer/core/dom/document.h"
@@ -32,6 +33,7 @@
 #include "third_party/blink/renderer/core/dom/tag_collection.h"
 #include "third_party/blink/renderer/core/dom/text.h"
 #include "third_party/blink/renderer/core/exported/web_plugin_container_impl.h"
+#include "third_party/blink/renderer/core/frame/deprecation/deprecation.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_client.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
@@ -60,9 +62,12 @@ void HTMLObjectElement::Trace(Visitor* visitor) const {
 
 const AttrNameToTrustedType& HTMLObjectElement::GetCheckedAttributeTypes()
     const {
-  DEFINE_STATIC_LOCAL(AttrNameToTrustedType, attribute_map,
-                      ({{"data", SpecificTrustedType::kScriptURL},
-                        {"codebase", SpecificTrustedType::kScriptURL}}));
+  DEFINE_STATIC_LOCAL(
+      AttrNameToTrustedType, attribute_map,
+      ({{"data", std::pair{SpecificTrustedType::kScriptURL,
+                           trusted_types_names::kHTMLObjectElement}},
+        {"codebase", std::pair{SpecificTrustedType::kScriptURL,
+                               trusted_types_names::kHTMLObjectElement}}}));
   return attribute_map;
 }
 
@@ -95,15 +100,15 @@ void HTMLObjectElement::ParseAttribute(
   if (name == html_names::kFormAttr) {
     FormAttributeChanged();
   } else if (name == html_names::kTypeAttr) {
-    SetServiceType(params.new_value.LowerASCII());
-    wtf_size_t pos = service_type_.Find(";");
+    SetServiceType(params.new_value.ToAsciiLower());
+    wtf_size_t pos = service_type_.find(';');
     if (pos != kNotFound)
-      SetServiceType(service_type_.Left(pos));
+      SetServiceType(service_type_.substr(0, pos));
     // TODO(crbug.com/572908): What is the right thing to do here? Should we
     // suppress the reload stuff when a persistable widget-type is specified?
     ReloadPluginOnAttributeChange(name);
   } else if (name == html_names::kDataAttr) {
-    SetUrl(StripLeadingAndTrailingHTMLSpaces(params.new_value));
+    SetUrl(StripLeadingAndTrailingHtmlSpaces(params.new_value));
     if (GetLayoutObject() && IsImageType()) {
       SetNeedsPluginUpdate(true);
       if (!image_loader_)
@@ -149,8 +154,9 @@ bool HTMLObjectElement::HasFallbackContent() const {
 
 bool HTMLObjectElement::HasValidClassId() const {
   if (MIMETypeRegistry::IsJavaAppletMIMEType(service_type_) &&
-      ClassId().StartsWithIgnoringASCIICase("java:"))
+      ClassId().StartsWithIgnoringAsciiCase("java:")) {
     return true;
+  }
 
   // HTML5 says that fallback content should be rendered if a non-empty
   // classid is specified for which the UA can't find a suitable plugin.
@@ -178,7 +184,7 @@ void HTMLObjectElement::ReloadPluginOnAttributeChange(
   }
   SetNeedsPluginUpdate(true);
   if (needs_invalidation)
-    ReattachOnPluginChangeIfNeeded();
+    ReattachOnPluginChangeIfNeeded(/*require_layout=*/true);
 }
 
 // TODO(crbug.com/572908): This should be unified with
@@ -220,7 +226,8 @@ void HTMLObjectElement::UpdatePluginInternal() {
       GetDocument().GetFrame()->Client()->OverrideFlashEmbedWithHTML(
           GetDocument().CompleteURL(url_));
   if (!overriden_url.IsEmpty()) {
-    UseCounter::Count(GetDocument(), WebFeature::kOverrideFlashEmbedwithHTML);
+    Deprecation::CountDeprecation(GetDocument().GetExecutionContext(),
+                                  WebFeature::kOverrideFlashEmbedwithHTML);
     url_ = overriden_url.GetString();
     SetServiceType("text/html");
   }
@@ -252,7 +259,7 @@ void HTMLObjectElement::ChildrenChanged(const ChildrenChange& change) {
   HTMLPlugInElement::ChildrenChanged(change);
   if (isConnected() && !UseFallbackContent()) {
     SetNeedsPluginUpdate(true);
-    ReattachOnPluginChangeIfNeeded();
+    ReattachOnPluginChangeIfNeeded(/*require_layout=*/true);
   }
 }
 
@@ -329,6 +336,39 @@ void HTMLObjectElement::RenderFallbackContent(
   ReattachFallbackContent();
 }
 
+String HTMLObjectElement::data() {
+  return GetURLAttribute(html_names::kDataAttr);
+}
+
+void HTMLObjectElement::setData(const V8UnionTrustedScriptURLOrUSVString* value,
+                                ExceptionState& exception_state) {
+  String compliant_value = TrustedTypesCheckForScriptURL(
+      value, GetExecutionContext(), trusted_types_names::kHTMLObjectElement,
+      trusted_types_names::kData, exception_state);
+  if (exception_state.HadException()) {
+    return;
+  }
+  SetAttributeWithoutValidation(html_names::kDataAttr,
+                                AtomicString(compliant_value));
+}
+
+String HTMLObjectElement::codeBase() {
+  return GetURLAttribute(html_names::kCodebaseAttr);
+}
+
+void HTMLObjectElement::setCodeBase(
+    const V8UnionTrustedScriptURLOrUSVString* value,
+    ExceptionState& exception_state) {
+  String compliant_value = TrustedTypesCheckForScriptURL(
+      value, GetExecutionContext(), trusted_types_names::kHTMLObjectElement,
+      trusted_types_names::kCodeBase, exception_state);
+  if (exception_state.HadException()) {
+    return;
+  }
+  SetAttributeWithoutValidation(html_names::kCodebaseAttr,
+                                AtomicString(compliant_value));
+}
+
 bool HTMLObjectElement::IsExposed() const {
   // http://www.whatwg.org/specs/web-apps/current-work/#exposed
   for (HTMLObjectElement* ancestor =
@@ -352,10 +392,11 @@ bool HTMLObjectElement::ContainsJavaApplet() const {
 
   for (HTMLElement& child : Traversal<HTMLElement>::ChildrenOf(*this)) {
     if (IsA<HTMLParamElement>(child) &&
-        EqualIgnoringASCIICase(child.GetNameAttribute(), "type") &&
+        EqualIgnoringAsciiCase(child.GetNameAttribute(), "type") &&
         MIMETypeRegistry::IsJavaAppletMIMEType(
-            child.FastGetAttribute(html_names::kValueAttr).GetString()))
+            child.FastGetAttribute(html_names::kValueAttr).GetString())) {
       return true;
+    }
 
     auto* html_image_element = DynamicTo<HTMLObjectElement>(child);
     if (html_image_element && html_image_element->ContainsJavaApplet())
@@ -372,6 +413,10 @@ void HTMLObjectElement::DidMoveToNewDocument(Document& old_document) {
 
 HTMLFormElement* HTMLObjectElement::formOwner() const {
   return ListedElement::Form();
+}
+
+HTMLElement* HTMLObjectElement::formForBinding() const {
+  return ListedElement::RetargetedForm();
 }
 
 bool HTMLObjectElement::UseFallbackContent() const {

@@ -16,7 +16,6 @@ import android.provider.Browser;
 import android.provider.Settings;
 import android.text.TextUtils;
 
-import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
 
 import org.json.JSONArray;
@@ -28,11 +27,14 @@ import org.chromium.base.IntentUtils;
 import org.chromium.base.Log;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.shared_preferences.SharedPreferencesManager;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.bookmarks.BookmarkModel;
 import org.chromium.chrome.browser.bookmarks.BookmarkModelObserver;
 import org.chromium.chrome.browser.browserservices.intents.WebappConstants;
 import org.chromium.chrome.browser.commerce.ShoppingServiceFactory;
 import org.chromium.chrome.browser.document.ChromeLauncherActivity;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.init.ChromeBrowserInitializer;
 import org.chromium.chrome.browser.notifications.NotificationIntentInterceptor;
 import org.chromium.chrome.browser.notifications.NotificationUmaTracker;
@@ -42,8 +44,8 @@ import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileManager;
-import org.chromium.components.browser_ui.notifications.NotificationManagerProxy;
-import org.chromium.components.browser_ui.notifications.NotificationManagerProxyImpl;
+import org.chromium.components.browser_ui.notifications.BaseNotificationManagerProxy;
+import org.chromium.components.browser_ui.notifications.BaseNotificationManagerProxyFactory;
 import org.chromium.components.browser_ui.notifications.NotificationProxyUtils;
 import org.chromium.components.browser_ui.notifications.channels.ChannelsInitializer;
 import org.chromium.components.commerce.core.CommerceFeatureUtils;
@@ -56,6 +58,7 @@ import org.chromium.components.commerce.core.SubscriptionType;
 import java.util.Locale;
 
 /** Manage price drop notifications. */
+@NullMarked
 public class PriceDropNotificationManagerImpl implements PriceDropNotificationManager {
     private static final String TAG = "PriceDropNotif";
     // The action ids should be the same as defined in the server, see {@link
@@ -103,6 +106,18 @@ public class PriceDropNotificationManagerImpl implements PriceDropNotificationMa
 
             dismissNotification(notificationId);
 
+            if (TextUtils.isEmpty(destinationUrl)) {
+                Log.e(TAG, "No destination URL could be obtained from the Intent");
+                finish();
+                return;
+            }
+
+            if (TextUtils.isEmpty(actionId)) {
+                Log.e(TAG, "No action ID could be obtained from the Intent");
+                finish();
+                return;
+            }
+
             if (TextUtils.isEmpty(offerId)) {
                 Log.e(TAG, "No offer id is provided when handling turn off alert action.");
                 finish();
@@ -147,6 +162,8 @@ public class PriceDropNotificationManagerImpl implements PriceDropNotificationMa
     private final Context mContext;
     private final Profile mProfile;
     private final SharedPreferencesManager mPreferencesManager;
+    private final BaseNotificationManagerProxy mNotificationManagerProxy =
+            BaseNotificationManagerProxyFactory.create();
 
     /**
      * Constructor.
@@ -168,44 +185,57 @@ public class PriceDropNotificationManagerImpl implements PriceDropNotificationMa
     }
 
     @Override
-    public boolean canPostNotification() {
+    public void canPostNotification(Callback<Boolean> callback) {
         // Currently we only post notifications for explicit price tracking which is gated by the
         // "shopping list" feature flag. When we start implicit price tracking, we should use a
         // separate flag and add the check on it here.
         if (!areAppNotificationsEnabled()
                 || !CommerceFeatureUtils.isShoppingListEligible(
                         ShoppingServiceFactory.getForProfile(mProfile))) {
-            return false;
+            callback.onResult(false);
+            return;
         }
 
-        NotificationChannel channel = getNotificationChannel();
-        if (channel == null || channel.getImportance() == NotificationManager.IMPORTANCE_NONE) {
-            return false;
-        }
-
-        return true;
+        getNotificationChannel(
+                (channel) -> {
+                    callback.onResult(
+                            channel != null
+                                    && channel.getImportance()
+                                            != NotificationManager.IMPORTANCE_NONE);
+                });
     }
 
     @Override
-    public boolean canPostNotificationWithMetricsRecorded() {
+    public void canPostNotificationWithMetricsRecorded(Callback<Boolean> callback) {
         if (!CommerceFeatureUtils.isShoppingListEligible(
                 ShoppingServiceFactory.getForProfile(mProfile))) {
-            return false;
+            callback.onResult(false);
+            return;
         }
         boolean isSystemNotificationEnabled = areAppNotificationsEnabled();
         RecordHistogram.recordBooleanHistogram(
                 NOTIFICATION_ENABLED_HISTOGRAM, isSystemNotificationEnabled);
-        if (!isSystemNotificationEnabled) return false;
+        if (!isSystemNotificationEnabled) {
+            callback.onResult(false);
+            return;
+        }
 
-        NotificationChannel channel = getNotificationChannel();
-        boolean isChannelCreated = channel != null;
-        RecordHistogram.recordBooleanHistogram(
-                "Commerce.PriceDrop.NotificationChannelCreated", isChannelCreated);
-        if (!isChannelCreated) return false;
-        boolean isChannelBlocked = channel.getImportance() == NotificationManager.IMPORTANCE_NONE;
-        RecordHistogram.recordBooleanHistogram(
-                "Commerce.PriceDrop.NotificationChannelBlocked", isChannelBlocked);
-        return !isChannelBlocked;
+        getNotificationChannel(
+                (channel) -> {
+                    boolean isChannelCreated = channel != null;
+                    RecordHistogram.recordBooleanHistogram(
+                            "Commerce.PriceDrop.NotificationChannelCreated", isChannelCreated);
+                    if (!isChannelCreated) {
+                        callback.onResult(false);
+                        return;
+                    }
+
+                    boolean isChannelBlocked =
+                            channel.getImportance() == NotificationManager.IMPORTANCE_NONE;
+                    RecordHistogram.recordBooleanHistogram(
+                            "Commerce.PriceDrop.NotificationChannelBlocked", isChannelBlocked);
+                    callback.onResult(!isChannelBlocked);
+                });
     }
 
     @Override
@@ -319,10 +349,13 @@ public class PriceDropNotificationManagerImpl implements PriceDropNotificationMa
                         .setAction(Intent.ACTION_VIEW)
                         .setData(Uri.parse(url))
                         .setClass(mContext, DismissNotificationChromeActivity.class)
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NEW_DOCUMENT)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                         .putExtra(Browser.EXTRA_APPLICATION_ID, mContext.getPackageName())
                         .putExtra(WebappConstants.REUSE_URL_MATCHING_TAB_ELSE_NEW_TAB, true)
                         .putExtra(EXTRA_NOTIFICATION_ID, notificationId);
+        if (!ChromeFeatureList.sNotificationTrampolineNoNewTask.isEnabled()) {
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT | Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
+        }
         IntentUtils.addTrustedIntentExtras(intent);
         return intent;
     }
@@ -336,17 +369,27 @@ public class PriceDropNotificationManagerImpl implements PriceDropNotificationMa
     @Override
     @Deprecated
     public Intent getNotificationActionClickIntent(
-            String actionId, String url, String offerId, String clusterId) {
+            String actionId, String url, String offerId, @Nullable String clusterId) {
         return getNotificationActionClickIntent(actionId, url, offerId, clusterId, 0);
     }
 
     @Override
     public Intent getNotificationActionClickIntent(
-            String actionId, String url, String offerId, String clusterId, int notificationId) {
+            String actionId,
+            String url,
+            String offerId,
+            @Nullable String clusterId,
+            int notificationId) {
+        assert (actionId.equals(ACTION_ID_VISIT_SITE) || actionId.equals(ACTION_ID_TURN_OFF_ALERT))
+                : "Expected actionId to be "
+                        + ACTION_ID_VISIT_SITE
+                        + " or "
+                        + ACTION_ID_TURN_OFF_ALERT
+                        + ", but was "
+                        + actionId;
         if (ACTION_ID_VISIT_SITE.equals(actionId)) {
             return getNotificationClickIntent(url, notificationId);
-        }
-        if (ACTION_ID_TURN_OFF_ALERT.equals(actionId)) {
+        } else {
             Intent intent = new Intent(mContext, TrampolineActivity.class);
             intent.putExtra(EXTRA_DESTINATION_URL, url);
             intent.putExtra(EXTRA_ACTION_ID, actionId);
@@ -354,9 +397,12 @@ public class PriceDropNotificationManagerImpl implements PriceDropNotificationMa
             if (clusterId != null) intent.putExtra(EXTRA_PRODUCT_CLUSTER_ID, clusterId);
             intent.putExtra(EXTRA_NOTIFICATION_ID, notificationId);
             IntentUtils.addTrustedIntentExtras(intent);
+            if (!ChromeFeatureList.sNotificationTrampolineNoNewTask.isEnabled()) {
+                intent.addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_DOCUMENT | Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
+            }
             return intent;
         }
-        return null;
     }
 
     @Override
@@ -366,10 +412,8 @@ public class PriceDropNotificationManagerImpl implements PriceDropNotificationMa
 
     @Override
     public void createNotificationChannel() {
-        NotificationChannel channel = getNotificationChannel();
-        if (channel != null) return;
         new ChannelsInitializer(
-                        NotificationManagerProxyImpl.getInstance(),
+                        mNotificationManagerProxy,
                         ChromeChannelDefinitions.getInstance(),
                         mContext.getResources())
                 .ensureInitialized(ChromeChannelDefinitions.ChannelId.PRICE_DROP_DEFAULT);
@@ -402,16 +446,16 @@ public class PriceDropNotificationManagerImpl implements PriceDropNotificationMa
 
     @Override
     @VisibleForTesting
-    public NotificationChannel getNotificationChannel() {
-        return NotificationManagerProxyImpl.getInstance()
-                .getNotificationChannel(ChromeChannelDefinitions.ChannelId.PRICE_DROP_DEFAULT);
+    public void getNotificationChannel(Callback<NotificationChannel> callback) {
+        mNotificationManagerProxy.getNotificationChannel(
+                ChromeChannelDefinitions.ChannelId.PRICE_DROP_DEFAULT, callback);
     }
 
     /** Delete price drop notification channel for testing. */
     @Override
     public void deleteChannelForTesting() {
-        NotificationManagerProxyImpl.getInstance()
-                .deleteNotificationChannel(ChromeChannelDefinitions.ChannelId.PRICE_DROP_DEFAULT);
+        mNotificationManagerProxy.deleteNotificationChannel(
+                ChromeChannelDefinitions.ChannelId.PRICE_DROP_DEFAULT);
     }
 
     @Override
@@ -494,7 +538,7 @@ public class PriceDropNotificationManagerImpl implements PriceDropNotificationMa
         }
     }
 
-    private String notificationTypeToManagementType(@SystemNotificationType int type) {
+    private @Nullable String notificationTypeToManagementType(@SystemNotificationType int type) {
         if (type == SystemNotificationType.PRICE_DROP_ALERTS_CHROME_MANAGED) {
             return "ChromeManaged";
         } else if (type == SystemNotificationType.PRICE_DROP_ALERTS_USER_MANAGED) {
@@ -506,7 +550,7 @@ public class PriceDropNotificationManagerImpl implements PriceDropNotificationMa
     }
 
     private static void dismissNotification(int notificationId) {
-        NotificationManagerProxyImpl.getInstance()
+        BaseNotificationManagerProxyFactory.create()
                 .cancel(PriceDropNotifier.NOTIFICATION_TAG, notificationId);
     }
 }

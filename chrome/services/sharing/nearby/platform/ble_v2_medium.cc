@@ -2,14 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 #include "chrome/services/sharing/nearby/platform/ble_v2_medium.h"
 
+#include "base/compiler_specific.h"
 #include "base/containers/flat_set.h"
 #include "base/logging.h"
+#include "base/notimplemented.h"
 #include "base/notreached.h"
 #include "base/rand_util.h"
 #include "base/strings/string_number_conversions.h"
@@ -62,7 +60,7 @@ void CancelPendingTasks(
             << " pending calls.";
   }
 
-  for (base::WaitableEvent* event : std::move(events_to_cancel)) {
+  for (base::WaitableEvent* event : events_to_cancel) {
     event->Signal();
   }
 }
@@ -194,7 +192,8 @@ bool BleV2Medium::StartAdvertising(
         "{UUID:" + std::string(it->first) +
         ",data size:" + base::NumberToString(it->second.size()) + ",data=0x" +
         base::HexEncode(std::vector<uint8_t>(
-            it->second.data(), it->second.data() + it->second.size())) +
+            it->second.data(),
+            UNSAFE_TODO(it->second.data() + it->second.size()))) +
         (std::next(it) == advertising_data.service_data.end() ? "}" : "}, ");
   }
   VLOG(1) << __func__
@@ -256,8 +255,9 @@ bool BleV2Medium::StartAdvertising(
     mojo::PendingRemote<bluetooth::mojom::Advertisement> pending_advertisement;
     bool success = adapter_->RegisterAdvertisement(
         service_uuid,
-        std::vector<uint8_t>(entry.second.data(),
-                             entry.second.data() + entry.second.size()),
+        std::vector<uint8_t>(
+            entry.second.data(),
+            UNSAFE_TODO(entry.second.data() + entry.second.size())),
         /*use_scan_data=*/use_scan_response,
         /*connectable=*/advertise_set_parameters.is_connectable,
         &pending_advertisement);
@@ -487,10 +487,6 @@ std::unique_ptr<api::ble_v2::GattServer> BleV2Medium::StartGattServer(
     return nullptr;
   }
 
-  if (!features::IsNearbyBleV2GattServerEnabled()) {
-    return nullptr;
-  }
-
   bool is_dual_role_supported;
   adapter_->IsLeScatternetDualRoleSupported(&is_dual_role_supported);
   metrics::RecordGattServerScatternetDualRoleSupported(is_dual_role_supported);
@@ -507,11 +503,24 @@ std::unique_ptr<api::ble_v2::GattServer> BleV2Medium::StartGattServer(
 }
 
 std::unique_ptr<api::ble_v2::GattClient> BleV2Medium::ConnectToGattServer(
-    api::ble_v2::BlePeripheral& peripheral,
+    api::ble_v2::BlePeripheral::UniqueId peripheral_id,
     api::ble_v2::TxPowerLevel tx_power_level,
     api::ble_v2::ClientGattConnectionCallback callback) {
   if (!features::IsNearbyBleV2Enabled()) {
     VLOG(1) << __func__ << ": BleV2 is disabled.";
+    return nullptr;
+  }
+
+  auto it = std::find_if(discovered_ble_peripherals_map_.begin(),
+                         discovered_ble_peripherals_map_.end(),
+                         [&peripheral_id](const auto& address_device_pair) {
+                           return address_device_pair.second.GetUniqueId() ==
+                                  peripheral_id;
+                         });
+
+  if (it == discovered_ble_peripherals_map_.end()) {
+    LOG(WARNING) << __func__
+                 << ": no match for device at peripheral_id=" << peripheral_id;
     return nullptr;
   }
 
@@ -521,7 +530,7 @@ std::unique_ptr<api::ble_v2::GattClient> BleV2Medium::ConnectToGattServer(
   task_runner_->PostTask(
       FROM_HERE,
       base::BindOnce(&BleV2Medium::DoConnectToGattServer,
-                     base::Unretained(this), &device, peripheral.GetAddress(),
+                     base::Unretained(this), &device, it->second.GetAddress(),
                      &connect_to_gatt_server_waitable_event));
   base::ScopedAllowBaseSyncPrimitives allow_wait;
   connect_to_gatt_server_waitable_event.Wait();
@@ -559,7 +568,7 @@ std::unique_ptr<api::ble_v2::BleServerSocket> BleV2Medium::OpenServerSocket(
 std::unique_ptr<api::ble_v2::BleSocket> BleV2Medium::Connect(
     const std::string& service_id,
     api::ble_v2::TxPowerLevel tx_power_level,
-    api::ble_v2::BlePeripheral& peripheral,
+    api::ble_v2::BlePeripheral::UniqueId peripheral_id,
     CancellationFlag* cancellation_flag) {
   NOTIMPLEMENTED();
   return nullptr;
@@ -578,30 +587,6 @@ bool BleV2Medium::IsExtendedAdvertisementsAvailable() {
   bluetooth::mojom::AdapterInfoPtr info;
   bool success = adapter_->GetInfo(&info);
   return success && info->extended_advertisement_support;
-}
-
-bool BleV2Medium::GetRemotePeripheral(const std::string& mac_address,
-                                      GetRemotePeripheralCallback callback) {
-  NOTIMPLEMENTED();
-  return false;
-}
-
-bool BleV2Medium::GetRemotePeripheral(api::ble_v2::BlePeripheral::UniqueId id,
-                                      GetRemotePeripheralCallback callback) {
-  auto it =
-      std::find_if(discovered_ble_peripherals_map_.begin(),
-                   discovered_ble_peripherals_map_.end(),
-                   [&](const auto& address_device_pair) {
-                     return address_device_pair.second.GetUniqueId() == id;
-                   });
-
-  if (it == discovered_ble_peripherals_map_.end()) {
-    LOG(WARNING) << __func__ << ": no match for device at id = " << id;
-    return false;
-  }
-
-  std::move(callback)(it->second);
-  return true;
 }
 
 void BleV2Medium::PresentChanged(bool present) {
@@ -693,7 +678,7 @@ void BleV2Medium::DeviceAdded(bluetooth::mojom::DeviceInfoPtr device) {
 
       if (scanning_callback_iter->second.advertisement_found_cb) {
         scanning_callback_iter->second.advertisement_found_cb(
-            *ble_peripheral, advertisement_data);
+            ble_peripheral->GetUniqueId(), advertisement_data);
       }
     }
   }

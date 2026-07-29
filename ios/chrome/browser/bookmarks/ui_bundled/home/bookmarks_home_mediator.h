@@ -16,6 +16,7 @@
 @class BookmarkTableCell;
 @protocol BookmarkTableCellTitleEditing;
 class Browser;
+typedef NS_ENUM(NSUInteger, SigninCoordinatorResult);
 @class TableViewModel;
 
 namespace bookmarks {
@@ -26,6 +27,9 @@ class BookmarkNode;
 namespace user_prefs {
 class PrefRegistrySyncable;
 }  // namespace user_prefs
+
+using queryLocalBookmarksCompletion = void (^)(int local_bookmarks_count,
+                                               std::string user_email);
 
 typedef NS_ENUM(NSInteger, BookmarksHomeSectionIdentifier) {
   // Section to invite the user to sign in and sync.
@@ -89,7 +93,7 @@ typedef NS_ENUM(NSInteger, BookmarksHomeItemType) {
 @property(nonatomic, assign) const bookmarks::BookmarkNode* editingFolderNode;
 
 // Registers the feature preferences.
-+ (void)registerBrowserStatePrefs:(user_prefs::PrefRegistrySyncable*)registry;
++ (void)registerProfilePrefs:(user_prefs::PrefRegistrySyncable*)registry;
 
 // Designated initializer.
 // `bookmarkModel` must not be `nullptr`. It must also be loaded.
@@ -108,6 +112,9 @@ typedef NS_ENUM(NSInteger, BookmarksHomeItemType) {
 // Stops mediating and disconnects from backend models.
 - (void)disconnect;
 
+// Whether the view can be dismissed.
+- (BOOL)canDismiss;
+
 // Rebuilds the table view model data for the Bookmarks section.  Deletes any
 // existing data first.
 - (void)computeBookmarkTableViewData;
@@ -125,13 +132,15 @@ typedef NS_ENUM(NSInteger, BookmarksHomeItemType) {
 - (void)triggerBatchUpload;
 
 // Queries the sync service for the count of local bookmarks.
-- (void)queryLocalBookmarks:(void (^)(int local_bookmarks_count,
-                                      std::string user_email))completion;
+- (void)queryLocalBookmarks:(queryLocalBookmarksCompletion)completion;
 
 // Returns weather the slashed cloud icon should be displayed for
 // `bookmarkNode`.
 - (BOOL)shouldDisplayCloudSlashIconWithBookmarkNode:
     (const bookmarks::BookmarkNode*)bookmarkNode;
+
+// Callback for the SigninPresenter.
+- (void)signinDidCompleteWithResult:(SigninCoordinatorResult)result;
 
 @end
 

@@ -4,6 +4,7 @@
 
 #include "components/invalidation/impl/per_user_topic_subscription_request.h"
 
+#include "base/byte_size.h"
 #include "base/functional/bind.h"
 #include "base/memory/ptr_util.h"
 #include "base/run_loop.h"
@@ -15,6 +16,7 @@
 #include "base/test/task_environment.h"
 #include "base/test/test_simple_task_runner.h"
 #include "base/values.h"
+#include "net/http/http_response_headers.h"
 #include "services/data_decoder/public/cpp/test_support/in_process_data_decoder.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "services/network/test/test_url_loader_factory.h"
@@ -122,7 +124,7 @@ TEST_F(PerUserTopicSubscriptionRequestTest, ShouldSubscribeWithoutErrors) {
   )";
 
   network::URLLoaderCompletionStatus response_status(net::OK);
-  response_status.decoded_body_length = response_body.size();
+  response_status.decoded_body_length = base::ByteSize(response_body.size());
 
   url_loader_factory()->AddResponse(url(request.get()),
                                     CreateHeadersForTest(net::HTTP_OK),
@@ -169,7 +171,7 @@ TEST_F(PerUserTopicSubscriptionRequestTest,
   )";
 
   network::URLLoaderCompletionStatus response_status(net::ERR_TIMED_OUT);
-  response_status.decoded_body_length = response_body.size();
+  response_status.decoded_body_length = base::ByteSize(response_body.size());
 
   url_loader_factory()->AddResponse(url(request.get()),
                                     CreateHeadersForTest(net::HTTP_OK),
@@ -214,7 +216,7 @@ TEST_F(PerUserTopicSubscriptionRequestTest,
   )";
 
   network::URLLoaderCompletionStatus response_status(net::OK);
-  response_status.decoded_body_length = response_body.size();
+  response_status.decoded_body_length = base::ByteSize(response_body.size());
 
   url_loader_factory()->AddResponse(url(request.get()),
                                     CreateHeadersForTest(net::HTTP_OK),
@@ -258,7 +260,7 @@ TEST_F(PerUserTopicSubscriptionRequestTest, ShouldUnsubscribe) {
   )";
 
   network::URLLoaderCompletionStatus response_status(net::OK);
-  response_status.decoded_body_length = response_body.size();
+  response_status.decoded_body_length = base::ByteSize(response_body.size());
 
   url_loader_factory()->AddResponse(url(request.get()),
                                     CreateHeadersForTest(net::HTTP_OK),
@@ -303,7 +305,7 @@ TEST_F(PerUserTopicSubscriptionRequestTest, ShouldDestroyOnFailure) {
   )";
 
   network::URLLoaderCompletionStatus response_status(net::ERR_TIMED_OUT);
-  response_status.decoded_body_length = response_body.size();
+  response_status.decoded_body_length = base::ByteSize(response_body.size());
 
   url_loader_factory()->AddResponse(url(request.get()),
                                     CreateHeadersForTest(net::HTTP_OK),

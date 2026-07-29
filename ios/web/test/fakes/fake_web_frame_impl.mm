@@ -10,6 +10,7 @@
 #import "base/functional/bind.h"
 #import "base/functional/callback.h"
 #import "base/json/json_writer.h"
+#import "base/strings/string_split.h"
 #import "base/strings/string_util.h"
 #import "base/strings/utf_string_conversions.h"
 #import "base/values.h"
@@ -106,49 +107,84 @@ WebFrameInternal* FakeWebFrameImpl::GetWebFrameInternal() {
 std::string FakeWebFrameImpl::GetFrameId() const {
   return frame_id_;
 }
+
 bool FakeWebFrameImpl::IsMainFrame() const {
   return is_main_frame_;
 }
+
 url::Origin FakeWebFrameImpl::GetSecurityOrigin() const {
   return security_origin_;
+}
+
+GURL FakeWebFrameImpl::GetUrl() const {
+  return url_;
+}
+
+void FakeWebFrameImpl::set_url(GURL url) {
+  url_ = std::move(url);
 }
 
 BrowserState* FakeWebFrameImpl::GetBrowserState() {
   return browser_state_;
 }
 
-void FakeWebFrameImpl::set_call_java_script_function_callback(
+void FakeWebFrameImpl::SetJavaScriptFunctionCallback(
+    const std::string& java_script_feature_name,
     base::RepeatingClosure callback) {
-  call_java_script_function_callback_ = std::move(callback);
+  if (callback) {
+    call_java_script_function_callback_[java_script_feature_name] =
+        std::move(callback);
+  } else {
+    call_java_script_function_callback_.erase(java_script_feature_name);
+  }
 }
 
 bool FakeWebFrameImpl::CallJavaScriptFunction(
     const std::string& name,
-    const base::Value::List& parameters) {
-  if (call_java_script_function_callback_) {
-    call_java_script_function_callback_.Run();
+    const base::ListValue& parameters) {
+  auto iter = call_java_script_function_callback_.find(name);
+  if (iter != call_java_script_function_callback_.end()) {
+    CHECK(iter->second);
+    iter->second.Run();
   }
 
+  std::optional<std::pair<std::string_view, std::string_view>> name_parts =
+      base::SplitStringOnce(name, ".");
+
+  std::string_view api_name_sv;
+  std::string_view function_name_sv;
+
+  if (name_parts) {
+    api_name_sv = name_parts->first;
+    function_name_sv = name_parts->second;
+  } else {
+    api_name_sv = "";
+    function_name_sv = name;
+  }
+
+  std::u16string api_name = base::UTF8ToUTF16(api_name_sv);
+  std::u16string function_name = base::UTF8ToUTF16(function_name_sv);
+
   std::u16string javascript_call =
-      std::u16string(u"__gCrWeb." + base::UTF8ToUTF16(name) + u"(");
+      std::u16string(u"__gCrWeb.callFunctionInGcrWeb('" + api_name + u"', '" +
+                     function_name + u"', " + u"[");
   bool first = true;
   for (auto& param : parameters) {
     if (!first) {
       javascript_call += u", ";
     }
     first = false;
-    std::string paramString;
-    base::JSONWriter::Write(param, &paramString);
+    std::string paramString = base::WriteJson(param).value_or("");
     javascript_call += base::UTF8ToUTF16(paramString);
   }
-  javascript_call += u");";
+  javascript_call += u"]);";
   java_script_calls_.push_back(javascript_call);
   return true;
 }
 
 bool FakeWebFrameImpl::CallJavaScriptFunction(
     const std::string& name,
-    const base::Value::List& parameters,
+    const base::ListValue& parameters,
     base::OnceCallback<void(const base::Value*)> callback,
     base::TimeDelta timeout) {
   bool success = CallJavaScriptFunction(name, parameters);
@@ -168,14 +204,14 @@ bool FakeWebFrameImpl::CallJavaScriptFunction(
 
 bool FakeWebFrameImpl::CallJavaScriptFunctionInContentWorld(
     const std::string& name,
-    const base::Value::List& parameters,
+    const base::ListValue& parameters,
     JavaScriptContentWorld* content_world) {
   return CallJavaScriptFunction(name, parameters);
 }
 
 bool FakeWebFrameImpl::CallJavaScriptFunctionInContentWorld(
     const std::string& name,
-    const base::Value::List& parameters,
+    const base::ListValue& parameters,
     JavaScriptContentWorld* content_world,
     base::OnceCallback<void(const base::Value*)> callback,
     base::TimeDelta timeout) {
@@ -230,6 +266,74 @@ bool FakeWebFrameImpl::ExecuteJavaScriptInContentWorld(
     JavaScriptContentWorld* content_world,
     ExecuteJavaScriptCallbackWithError callback) {
   return ExecuteJavaScript(script, std::move(callback));
+}
+
+bool FakeWebFrameImpl::ExecuteAsyncJavaScript(
+    const std::u16string& script,
+    const base::DictValue& parameters,
+    ExecuteJavaScriptCallbackWithError callback) {
+  return ExecuteAsyncJavaScriptInContentWorld(script, parameters, nullptr,
+                                              std::move(callback));
+}
+
+bool FakeWebFrameImpl::ExecuteAsyncJavaScriptInContentWorld(
+    const std::u16string& script,
+    const base::DictValue& parameters,
+    JavaScriptContentWorld* content_world,
+    ExecuteJavaScriptCallbackWithError callback) {
+  java_script_calls_.push_back(script);
+
+  const base::Value* result = executed_js_result_map_[script];
+  NSError* error = nil;
+  if (!result) {
+    error = [[NSError alloc] initWithDomain:@"" code:0 userInfo:nil];
+  }
+
+  if (!callback.is_null()) {
+    GetUIThreadTaskRunner({})->PostTask(
+        FROM_HERE, base::BindOnce(std::move(callback), result, error));
+  }
+
+  return !error;
+}
+
+bool FakeWebFrameImpl::CallAsyncJavaScriptFunction(
+    const std::string& name,
+    const base::DictValue& parameters,
+    ExecuteJavaScriptCallbackWithError callback) {
+  return CallAsyncJavaScriptFunctionInContentWorld(name, parameters, nullptr,
+                                                   std::move(callback));
+}
+
+bool FakeWebFrameImpl::CallAsyncJavaScriptFunctionInContentWorld(
+    const std::string& name,
+    const base::DictValue& parameters,
+    JavaScriptContentWorld* content_world,
+    ExecuteJavaScriptCallbackWithError callback) {
+  std::optional<std::pair<std::string_view, std::string_view>> name_parts =
+      base::SplitStringOnce(name, ".");
+
+  std::string_view api_name_sv;
+  std::string_view function_name_sv;
+
+  if (name_parts) {
+    api_name_sv = name_parts->first;
+    function_name_sv = name_parts->second;
+  } else {
+    api_name_sv = "";
+    function_name_sv = name;
+  }
+
+  std::u16string api_name = base::UTF8ToUTF16(api_name_sv);
+  std::u16string function_name = base::UTF8ToUTF16(function_name_sv);
+
+  std::string paramString = base::WriteJson(parameters).value_or("");
+  std::u16string javascript_call = std::u16string(
+      u"__gCrWeb.callFunctionInGcrWeb('" + api_name + u"', '" + function_name +
+      u"', [" + base::UTF8ToUTF16(paramString) + u"]);");
+
+  java_script_calls_.push_back(javascript_call);
+  return true;
 }
 
 void FakeWebFrameImpl::AddJsResultForFunctionCall(

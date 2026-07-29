@@ -68,11 +68,17 @@ class ConsentDialogUiTest : public InProcessBrowserTest {
   testing::NiceMock<policy::MockConfigurationPolicyProvider> provider_;
 };
 
-IN_PROC_BROWSER_TEST_F(ConsentDialogUiTest, GetConsentDialogBodyTest) {
+// TODO(crbug.com/416157468): Enable the test.
+#if BUILDFLAG(IS_WIN)
+#define MAYBE_GetConsentDialogBodyTest DISABLED_GetConsentDialogBodyTest
+#else
+#define MAYBE_GetConsentDialogBodyTest GetConsentDialogBodyTest
+#endif
+IN_PROC_BROWSER_TEST_F(ConsentDialogUiTest, MAYBE_GetConsentDialogBodyTest) {
   // Simulate a managed profile.
   AddEnterpriseManagedPolicies();
   policy::ScopedManagementServiceOverrideForTesting browser_management(
-      policy::ManagementServiceFactory::GetForProfile(browser()->profile()),
+      policy::ManagementServiceFactory::GetForProfile(browser()->GetProfile()),
       policy::EnterpriseManagementAuthority::CLOUD);
 
   TestingProfile::Builder builder;
@@ -83,12 +89,13 @@ IN_PROC_BROWSER_TEST_F(ConsentDialogUiTest, GetConsentDialogBodyTest) {
   builder_with_domain.OverridePolicyConnectorIsManagedForTesting(true);
   auto profile_with_domain = builder_with_domain.Build();
 
-  auto* profile_with_hosted_domain = browser()->profile();
+  auto* profile_with_hosted_domain = browser()->GetProfile();
   ProfileAttributesEntry* entry =
       g_browser_process->profile_manager()
           ->GetProfileAttributesStorage()
           .GetProfileAttributesWithPath(profile_with_hosted_domain->GetPath());
   ASSERT_TRUE(entry);
+  entry->SetIsManaged(signin::Tribool::kTrue);
   entry->SetHostedDomain("hosteddomain.com");
 
   // Simulate a supervised profile.

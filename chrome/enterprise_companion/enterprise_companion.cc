@@ -14,6 +14,9 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/logging.h"
+#include "base/logging/logging_settings.h"
+#include "base/message_loop/message_pump_type.h"
+#include "base/process/memory.h"
 #include "base/process/process_handle.h"
 #include "base/system/sys_info.h"
 #include "base/task/single_thread_task_executor.h"
@@ -33,7 +36,10 @@
 #if BUILDFLAG(IS_WIN)
 #include "base/strings/stringprintf.h"
 #include "base/win/windows_version.h"
-#endif
+#include "chrome/enterprise_companion/installer.h"
+#include "chrome/updater/util/win_util.h"
+#include "partition_alloc/page_allocator.h"
+#endif  // BUILDFLAG(IS_WIN)
 
 namespace enterprise_companion {
 
@@ -141,6 +147,19 @@ std::string OperatingSystemVersion() {
 }  // namespace
 
 int EnterpriseCompanionMain(int argc, const char* const* argv) {
+#if BUILDFLAG(IS_WIN)
+  CHECK(updater::EnableSecureDllLoading());
+#endif
+
+  // Make the process more resilient to memory allocation issues.
+#if BUILDFLAG(IS_WIN)
+  updater::EnableProcessHeapMetadataProtection();
+  partition_alloc::SetRetryOnCommitFailure(true);
+#endif
+  base::EnableTerminationOnHeapCorruption();
+  base::EnableTerminationOnOutOfMemory();
+  logging::RegisterAbslAbortHook();
+
   base::CommandLine::Init(argc, argv);
   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
   InitLogging();
@@ -154,7 +173,8 @@ int EnterpriseCompanionMain(int argc, const char* const* argv) {
   InitThreadPool();
   base::AtExitManager exit_manager;
 
-  base::SingleThreadTaskExecutor main_task_executor;
+  base::SingleThreadTaskExecutor main_task_executor(
+      base::MessagePumpType::DEFAULT, true);
 
   if (command_line->HasSwitch(kCrashHandlerSwitch)) {
     return CrashReporterMain();
@@ -177,7 +197,8 @@ int EnterpriseCompanionMain(int argc, const char* const* argv) {
 
 std::optional<base::FilePath> GetLogFilePath() {
   std::optional<base::FilePath> path = GetInstallDirectory();
-  return path ? path->AppendASCII("enterprise_companion.log") : path;
+  return path ? path->Append(FILE_PATH_LITERAL("enterprise_companion.log"))
+              : path;
 }
 
 }  // namespace enterprise_companion

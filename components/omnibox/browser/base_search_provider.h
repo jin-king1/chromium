@@ -11,6 +11,7 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -25,6 +26,7 @@
 #include "third_party/metrics_proto/omnibox_scoring_signals.pb.h"
 #include "third_party/omnibox_proto/answer_type.pb.h"
 #include "third_party/omnibox_proto/rich_answer_template.pb.h"
+#include "third_party/omnibox_proto/suggest_template_info.pb.h"
 
 class AutocompleteProviderClient;
 class GURL;
@@ -85,7 +87,6 @@ class BaseSearchProvider : public AutocompleteProvider {
   static AutocompleteMatch CreateShortcutSearchSuggestion(
       const std::u16string& suggestion,
       AutocompleteMatchType::Type type,
-      bool from_keyword_provider,
       const TemplateURL* template_url,
       const SearchTermsData& search_terms_data);
 
@@ -101,10 +102,13 @@ class BaseSearchProvider : public AutocompleteProvider {
       bool is_tail_suggestion);
 
   static scoped_refptr<OmniboxAction> CreateActionInSuggest(
-      omnibox::ActionInfo action_info,
+      omnibox::SuggestTemplateInfo::TemplateAction template_action,
       const TemplateURLRef& search_url,
       const TemplateURLRef::SearchTermsArgs& original_search_terms,
       const SearchTermsData& search_terms_data);
+
+  static std::string CreateQueryParamStringFromMap(
+      const google::protobuf::Map<std::string, std::string>& query_param_map);
 
   static scoped_refptr<OmniboxAction> CreateAnswerAction(
       omnibox::SuggestionEnhancement enhancement,
@@ -248,7 +252,7 @@ class BaseSearchProvider : public AutocompleteProvider {
   // completes.
   void OnDeletionComplete(const network::SimpleURLLoader* source,
                           const int response_code,
-                          std::unique_ptr<std::string> response_body);
+                          std::optional<std::string> response_body);
 
   raw_ptr<AutocompleteProviderClient> client_;
 

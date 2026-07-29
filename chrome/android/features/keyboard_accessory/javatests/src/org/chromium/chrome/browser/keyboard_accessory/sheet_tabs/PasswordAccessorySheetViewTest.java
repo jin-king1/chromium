@@ -50,13 +50,14 @@ import org.chromium.chrome.browser.keyboard_accessory.R;
 import org.chromium.chrome.browser.keyboard_accessory.data.KeyboardAccessoryData;
 import org.chromium.chrome.browser.keyboard_accessory.data.KeyboardAccessoryData.OptionToggle;
 import org.chromium.chrome.browser.keyboard_accessory.data.KeyboardAccessoryData.PasskeySection;
-import org.chromium.chrome.browser.keyboard_accessory.data.KeyboardAccessoryData.PlusAddressInfo;
 import org.chromium.chrome.browser.keyboard_accessory.data.KeyboardAccessoryData.UserInfo;
 import org.chromium.chrome.browser.keyboard_accessory.data.UserInfoField;
 import org.chromium.chrome.browser.keyboard_accessory.sheet_component.AccessorySheetCoordinator;
 import org.chromium.chrome.browser.keyboard_accessory.sheet_tabs.AccessorySheetTabItemsModel.AccessorySheetDataPiece;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.components.browser_ui.widget.chips.ChipView;
 
 import java.util.concurrent.ExecutionException;
@@ -66,15 +67,17 @@ import java.util.concurrent.atomic.AtomicReference;
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 public class PasswordAccessorySheetViewTest {
+    private WebPageStation mPage;
     private AccessorySheetTabItemsModel mModel;
-    private AtomicReference<RecyclerView> mView = new AtomicReference<>();
+    private final AtomicReference<RecyclerView> mView = new AtomicReference<>();
 
     @Rule
-    public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
+    public FreshCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.freshChromeTabbedActivityRule();
 
     @Before
     public void setUp() throws InterruptedException {
-        mActivityTestRule.startMainActivityOnBlankPage();
+        mPage = mActivityTestRule.startOnBlankPage();
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     mModel = new AccessorySheetTabItemsModel();
@@ -89,7 +92,7 @@ public class PasswordAccessorySheetViewTest {
                             new KeyboardAccessoryData.Tab[] {
                                 new KeyboardAccessoryData.Tab(
                                         "Passwords",
-                                        null,
+                                        0,
                                         null,
                                         R.layout.password_accessory_sheet,
                                         AccessoryTabType.ALL,
@@ -230,40 +233,6 @@ public class PasswordAccessorySheetViewTest {
 
     @Test
     @MediumTest
-    public void testAddingPlusAddressInfoToTheModelRendersClickableActions()
-            throws ExecutionException {
-        final AtomicReference<Boolean> clicked = new AtomicReference<>(false);
-        assertThat(mView.get().getChildCount(), is(0));
-
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    mModel.add(
-                            new AccessorySheetDataPiece(
-                                    new PlusAddressInfo(
-                                            /* origin= */ "google.com",
-                                            new UserInfoField.Builder()
-                                                    .setSuggestionType(
-                                                            AccessorySuggestionType.PLUS_ADDRESS)
-                                                    .setDisplayText("example@gmail.com")
-                                                    .setTextToFill("example@gmail.com")
-                                                    .setIsObfuscated(false)
-                                                    .setCallback(unused -> clicked.set(true))
-                                                    .build()),
-                                    AccessorySheetDataPiece.Type.PLUS_ADDRESS_SECTION));
-                });
-
-        CriteriaHelper.pollUiThread(
-                () -> Criteria.checkThat(mView.get().getChildCount(), greaterThan(0)));
-
-        assertThat(getPlusAddressChipAt(0).getPrimaryTextView().getText(), is("example@gmail.com"));
-
-        // Plus address chip is clickable:
-        ThreadUtils.runOnUiThreadBlocking(getPlusAddressChipAt(0)::performClick);
-        assertThat(clicked.get(), is(true));
-    }
-
-    @Test
-    @MediumTest
     public void testAddingUserInfoWithObfuscatedTextAndNullCallbackRendersDialog()
             throws ExecutionException {
         final AtomicReference<Boolean> clicked = new AtomicReference<>(false);
@@ -340,6 +309,50 @@ public class PasswordAccessorySheetViewTest {
         assertThat(getUserInfoAt(0).getTitle().isShown(), is(false));
         assertThat(getUserInfoAt(1).getTitle().isShown(), is(true));
         assertThat(getUserInfoAt(1).getTitle().getText(), is("other.origin.eg"));
+    }
+
+    @Test
+    @MediumTest
+    public void testDisplaysBackupCredentialCorrectly() {
+        assertThat(mView.get().getChildCount(), is(0));
+        final UserInfoField kUnusedInfoField =
+                new UserInfoField.Builder()
+                        .setSuggestionType(AccessorySuggestionType.CREDENTIAL_USERNAME)
+                        .setDisplayText("Unused Name")
+                        .setA11yDescription("Unused Password")
+                        .setCallback(cb -> {})
+                        .build();
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    UserInfo mainCredentialInfo = new UserInfo("psl.matched.origin.com", false);
+                    mainCredentialInfo.addField(kUnusedInfoField);
+                    mainCredentialInfo.addField(kUnusedInfoField);
+                    mModel.add(
+                            new AccessorySheetDataPiece(
+                                    mainCredentialInfo,
+                                    AccessorySheetDataPiece.Type.PASSWORD_INFO));
+
+                    UserInfo backupCredentialInfo =
+                            new UserInfo("psl.matched.origin.com", false, null, true);
+                    backupCredentialInfo.addField(kUnusedInfoField);
+                    backupCredentialInfo.addField(kUnusedInfoField);
+                    mModel.add(
+                            new AccessorySheetDataPiece(
+                                    backupCredentialInfo,
+                                    AccessorySheetDataPiece.Type.PASSWORD_INFO));
+                });
+
+        CriteriaHelper.pollUiThread(() -> Criteria.checkThat(mView.get().getChildCount(), is(2)));
+        assertThat(getUserInfoAt(0).getTitle().isShown(), is(true));
+        assertThat(getUserInfoAt(0).getTitle().getText(), is("psl.matched.origin.com"));
+        assertThat(getUserInfoAt(1).getTitle().isShown(), is(true));
+        assertThat(
+                getUserInfoAt(1).getTitle(),
+                withText(R.string.password_accessory_recovery_password_title));
+        assertThat(
+                getUserInfoAt(1).getContentDescription(),
+                is(getString(R.string.recovery_password_accessory_sheet_content_description)));
     }
 
     @Test
@@ -425,13 +438,6 @@ public class PasswordAccessorySheetViewTest {
 
     private String getString(@StringRes int strId) {
         return mView.get().getResources().getString(strId);
-    }
-
-    private ChipView getPlusAddressChipAt(int index) {
-        assertThat(mView.get().getChildCount(), is(greaterThan(index)));
-        assertThat(mView.get().getChildAt(index), instanceOf(ViewGroup.class));
-        LinearLayout plusAddressInfo = (LinearLayout) mView.get().getChildAt(index);
-        return plusAddressInfo.findViewById(R.id.plus_address);
     }
 
     private ChipView getPasskeyChipAt(int index) {

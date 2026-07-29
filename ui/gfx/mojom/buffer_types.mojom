@@ -6,27 +6,6 @@ module gfx.mojom;
 
 import "ui/gfx/mojom/native_handle_types.mojom";
 
-// gfx::BufferFormat
-enum BufferFormat {
-  R_8,
-  R_16,
-  RG_88,
-  RG_1616,
-  BGR_565,
-  RGBA_4444,
-  RGBX_8888,
-  RGBA_8888,
-  BGRX_8888,
-  BGRA_1010102,
-  RGBA_1010102,
-  BGRA_8888,
-  RGBA_F16,
-  YVU_420,
-  YUV_420_BIPLANAR,
-  YUVA_420_TRIPLANAR,
-  P010,
-};
-
 // gfx::BufferUsage
 enum BufferUsage {
   GPU_READ,
@@ -43,21 +22,6 @@ enum BufferUsage {
   SCANOUT_FRONT_RENDERING,
 };
 
-struct BufferUsageAndFormat {
-  BufferUsage usage;
-  BufferFormat format;
-};
-
-enum BufferPlane {
-  DEFAULT,
-  Y,
-  UV,
-  U,
-  V,
-  A,
-};
-
-// gfx::GpuMemoryBufferId
 [Stable]
 struct GpuMemoryBufferId {
   int32 id;
@@ -66,7 +30,6 @@ struct GpuMemoryBufferId {
 // gfx::GpuMemoryBufferHandle
 [EnableIf=use_blink]
 struct GpuMemoryBufferHandle {
-  GpuMemoryBufferId id;
   uint32 offset;
   uint32 stride;
   GpuMemoryBufferPlatformHandle? platform_handle;

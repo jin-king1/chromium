@@ -7,21 +7,21 @@
 
 #include <deque>
 
+#include "base/byte_size.h"
 #include "base/compiler_specific.h"
-#include "base/debug/proc_maps_linux.h"
 #include "base/feature_list.h"
 #include "base/functional/callback.h"
+#include "base/gtest_prod_util.h"
 #include "base/memory/post_delayed_memory_reduction_task.h"
 #include "base/no_destructor.h"
 #include "base/profiler/sample_metadata.h"
+#include "base/sequence_checker.h"
 #include "base/task/delayed_task_handle.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/timer/timer.h"
 
 namespace base::android {
 class MemoryPurgeManagerAndroid;
-
-BASE_EXPORT BASE_DECLARE_FEATURE(kShouldFreezeSelf);
 
 // Starting from Android U, apps are frozen shortly after being backgrounded
 // (with some exceptions). This causes some background tasks for reclaiming
@@ -35,14 +35,6 @@ BASE_EXPORT BASE_DECLARE_FEATURE(kShouldFreezeSelf);
 // be frozen.
 class BASE_EXPORT PreFreezeBackgroundMemoryTrimmer {
  public:
-  // These values are persisted to logs. Entries should not be renumbered and
-  // numeric values should never be reused.
-  enum class SelfCompactCancellationReason {
-    kAppFreezer,
-    kPageResumed,
-    kMaxValue = kPageResumed
-  };
-
   static PreFreezeBackgroundMemoryTrimmer& Instance();
   ~PreFreezeBackgroundMemoryTrimmer() = delete;
 
@@ -52,7 +44,7 @@ class BASE_EXPORT PreFreezeBackgroundMemoryTrimmer {
   static void PostDelayedBackgroundTask(
       scoped_refptr<base::SequencedTaskRunner> task_runner,
       const base::Location& from_here,
-      OnceCallback<void(void)> task,
+      OnceClosure task,
       base::TimeDelta delay) LOCKS_EXCLUDED(lock()) {
     PostDelayedBackgroundTask(
         task_runner, from_here,
@@ -70,6 +62,11 @@ class BASE_EXPORT PreFreezeBackgroundMemoryTrimmer {
       OnceCallback<void(MemoryReductionTaskContext)> task,
       base::TimeDelta delay) LOCKS_EXCLUDED(lock());
 
+  static void PostOnFreezeTask(
+      scoped_refptr<base::SequencedTaskRunner> task_runner,
+      const base::Location& from_here,
+      OnceClosure task) LOCKS_EXCLUDED(lock());
+
   class PreFreezeMetric {
    public:
     virtual ~PreFreezeMetric();
@@ -78,7 +75,7 @@ class BASE_EXPORT PreFreezeBackgroundMemoryTrimmer {
     // unable to record the metric for any reason. It is called underneath a
     // lock, so it should be fast enough to avoid delays (the same lock is held
     // when unregistering metrics).
-    virtual std::optional<uint64_t> Measure() const = 0;
+    virtual std::optional<ByteSize> Measure() const = 0;
 
     const std::string& name() const LIFETIME_BOUND { return name_; }
 
@@ -115,25 +112,8 @@ class BASE_EXPORT PreFreezeBackgroundMemoryTrimmer {
   static void UnregisterMemoryMetric(const PreFreezeMetric* metric)
       LOCKS_EXCLUDED(lock());
 
-  // The callback runs in the thread pool. The caller cannot make any thread
-  // safety assumptions for the callback execution (e.g. it could run
-  // concurrently with the thread that registered it).
-  static void SetOnStartSelfCompactionCallback(base::RepeatingClosure callback)
-      LOCKS_EXCLUDED(lock());
-
-  static bool SelfCompactionIsSupported();
-
-  // Compacts the memory for the process.
-  void CompactSelf(scoped_refptr<SequencedTaskRunner> task_runner,
-                   base::TimeTicks triggered_at);
-
-  // If we are currently running self compaction, cancel it. If it was running,
-  // record a metric with the reason for the cancellation.
-  static void MaybeCancelSelfCompaction(
-      SelfCompactCancellationReason cancellation_reason);
-
   static void SetSupportsModernTrimForTesting(bool is_supported);
-  static void ClearMetricsForTesting() LOCKS_EXCLUDED(lock());
+  static void ResetForTesting() LOCKS_EXCLUDED(lock());
   size_t GetNumberOfPendingBackgroundTasksForTesting() const
       LOCKS_EXCLUDED(lock());
   size_t GetNumberOfKnownMetricsForTesting() const LOCKS_EXCLUDED(lock());
@@ -141,31 +121,46 @@ class BASE_EXPORT PreFreezeBackgroundMemoryTrimmer {
   bool DidRegisterTasksForTesting() const;
 
   static void OnPreFreezeForTesting() LOCKS_EXCLUDED(lock()) { OnPreFreeze(); }
-  static void ResetSelfCompactionLastCancelledForTesting();
-
-  static std::optional<uint64_t> CompactRegion(
-      debug::MappedMemoryRegion region);
 
   // Called when Chrome is about to be frozen. Runs as many delayed tasks as
   // possible immediately, before we are frozen.
   static void OnPreFreeze() LOCKS_EXCLUDED(lock());
 
-  static void OnSelfFreeze() LOCKS_EXCLUDED(lock());
-
   static bool SupportsModernTrim();
   static bool ShouldUseModernTrim();
   static bool IsTrimMemoryBackgroundCritical();
 
+  class Delegate {
+   public:
+    virtual ~Delegate() = default;
+    virtual bool ShouldThawPreFrozenProcess() const = 0;
+  };
+
+  static void SetDelegate(std::unique_ptr<Delegate> delegate)
+      LOCKS_EXCLUDED(lock());
+
+  // Returns true if the process is currently in a pre-frozen state.
+  // Resets the state to false if it detects the process is no longer cached.
+  static bool GetAndUpdatePreFrozenState() LOCKS_EXCLUDED(lock());
+
+  // Forces the pre-frozen state for testing.
+  static void SetForcePreFrozenForTesting(bool force) LOCKS_EXCLUDED(lock());
+
  private:
   friend class base::NoDestructor<PreFreezeBackgroundMemoryTrimmer>;
-  friend jboolean JNI_MemoryPurgeManager_IsOnPreFreezeMemoryTrimEnabled(
+  friend bool JNI_MemoryPurgeManager_IsOnPreFreezeMemoryTrimEnabled(
       JNIEnv* env);
   friend class base::android::MemoryPurgeManagerAndroid;
   friend class base::OneShotDelayedBackgroundTimer;
+  friend class SelfCompactionManager;
   friend class PreFreezeBackgroundMemoryTrimmerTest;
   friend class PreFreezeSelfCompactionTest;
-  FRIEND_TEST_ALL_PREFIXES(PreFreezeSelfCompactionTest, Cancel);
+  friend class PreFreezeSelfCompactionTestWithParam;
+  FRIEND_TEST_ALL_PREFIXES(PreFreezeSelfCompactionTestWithParam, Disabled);
+  FRIEND_TEST_ALL_PREFIXES(PreFreezeSelfCompactionTestWithParam, TimeoutCancel);
+  FRIEND_TEST_ALL_PREFIXES(PreFreezeSelfCompactionTestWithParam, Cancel);
   FRIEND_TEST_ALL_PREFIXES(PreFreezeSelfCompactionTest, NotCanceled);
+  FRIEND_TEST_ALL_PREFIXES(PreFreezeSelfCompactionTest, SimpleCancel);
   FRIEND_TEST_ALL_PREFIXES(PreFreezeSelfCompactionTest, OnSelfFreezeCancel);
 
   // We use our own implementation here, based on |PostCancelableDelayedTask|,
@@ -180,6 +175,11 @@ class BASE_EXPORT PreFreezeBackgroundMemoryTrimmer {
         const base::Location& from_here,
         OnceCallback<void(MemoryReductionTaskContext)> task,
         base::TimeDelta delay);
+
+    static std::unique_ptr<BackgroundTask> CreateOnFreezeTask(
+        scoped_refptr<base::SequencedTaskRunner> task_runner,
+        const base::Location& from_here,
+        OnceClosure task);
 
     explicit BackgroundTask(
         scoped_refptr<base::SequencedTaskRunner> task_runner);
@@ -199,79 +199,22 @@ class BASE_EXPORT PreFreezeBackgroundMemoryTrimmer {
     void StartInternal(const Location& from_here,
                        TimeDelta delay,
                        OnceClosure task);
-    scoped_refptr<base::SequencedTaskRunner> task_runner_;
-    base::DelayedTaskHandle task_handle_;
+
+    const scoped_refptr<base::SequencedTaskRunner> task_runner_;
+    base::DelayedTaskHandle GUARDED_BY_CONTEXT(sequence_checker_) task_handle_;
 
     OnceCallback<void(MemoryReductionTaskContext)> task_;
+    // If true, the task has no delayed fallback and should only run when
+    // a pre-freeze signal is received.
+    bool is_freeze_only_ = false;
+    SEQUENCE_CHECKER(sequence_checker_);
   };
 
  private:
-  class CompactionMetric : public RefCountedThreadSafe<CompactionMetric> {
-   public:
-    CompactionMetric(base::TimeTicks triggered_at, base::TimeTicks started_at);
-
-    void RecordDelayedMetrics();
-    void RecordTimeMetrics(base::TimeTicks self_compaction_last_cancelled);
-
-    void RecordBeforeMetrics();
-    void MaybeRecordCompactionMetrics() LOCKS_EXCLUDED(lock());
-
-   private:
-    friend class RefCountedThreadSafe<CompactionMetric>;
-    ~CompactionMetric();
-    void RecordSmapsRollup(std::optional<debug::SmapsRollup>* target)
-        LOCKS_EXCLUDED(lock());
-    void RecordSmapsRollupWithDelay(std::optional<debug::SmapsRollup>* target,
-                                    base::TimeDelta delay);
-    // When the self compaction was first triggered. There is a delay between
-    // this time and when we actually begin the compaction.
-    base::TimeTicks self_compaction_triggered_at_;
-    // When the self compaction first started. This should generally be
-    // |self_compaction_triggered_at_ +
-    // kShouldFreezeSelfDelayAfterPreFreezeTasks.Get()|, but may be longer if
-    // the task was delayed.
-    base::TimeTicks self_compaction_started_at_;
-    // We use std::optional here because:
-    // - We record these incrementally.
-    // - We may stop recording at some point.
-    // - We only want to emit histograms if all values were recorded.
-    std::optional<debug::SmapsRollup> smaps_before_;
-    std::optional<debug::SmapsRollup> smaps_after_;
-    std::optional<debug::SmapsRollup> smaps_after_1s_;
-    std::optional<debug::SmapsRollup> smaps_after_10s_;
-    std::optional<debug::SmapsRollup> smaps_after_60s_;
-  };
-
   PreFreezeBackgroundMemoryTrimmer();
 
   static base::Lock& lock() { return Instance().lock_; }
 
-  void StartSelfCompaction(scoped_refptr<base::SequencedTaskRunner> task_runner,
-                           std::vector<debug::MappedMemoryRegion> regions,
-                           uint64_t max_size,
-                           base::TimeTicks triggered_at) LOCKS_EXCLUDED(lock());
-  static base::TimeDelta GetDelayBetweenSelfCompaction();
-  void MaybePostSelfCompactionTask(
-      scoped_refptr<base::SequencedTaskRunner> task_runner,
-      std::vector<debug::MappedMemoryRegion> regions,
-      scoped_refptr<CompactionMetric> metric,
-      uint64_t max_size,
-      base::TimeTicks triggered_at) LOCKS_EXCLUDED(lock());
-  void SelfCompactionTask(scoped_refptr<base::SequencedTaskRunner> task_runner,
-                          std::vector<debug::MappedMemoryRegion> regions,
-                          scoped_refptr<CompactionMetric> metric,
-                          uint64_t max_size,
-                          base::TimeTicks triggered_at) LOCKS_EXCLUDED(lock());
-  void FinishSelfCompaction(scoped_refptr<CompactionMetric> metric,
-                            base::TimeTicks triggered_at)
-      LOCKS_EXCLUDED(lock());
-
-  static bool ShouldContinueSelfCompaction(
-      base::TimeTicks self_compaction_triggered_at) LOCKS_EXCLUDED(lock());
-
-  static std::optional<uint64_t> CompactMemory(
-      std::vector<debug::MappedMemoryRegion>* regions,
-      const uint64_t max_bytes);
 
   void RegisterMemoryMetricInternal(const PreFreezeMetric* metric)
       EXCLUSIVE_LOCKS_REQUIRED(lock());
@@ -283,7 +226,6 @@ class BASE_EXPORT PreFreezeBackgroundMemoryTrimmer {
   void UnregisterBackgroundTaskInternal(BackgroundTask*) LOCKS_EXCLUDED(lock());
 
   static void RegisterPrivateMemoryFootprintMetric() LOCKS_EXCLUDED(lock());
-  void RegisterPrivateMemoryFootprintMetricInternal() LOCKS_EXCLUDED(lock());
 
   void PostDelayedBackgroundTaskInternal(
       scoped_refptr<base::SequencedTaskRunner> task_runner,
@@ -295,6 +237,10 @@ class BASE_EXPORT PreFreezeBackgroundMemoryTrimmer {
       const base::Location& from_here,
       OnceCallback<void(MemoryReductionTaskContext)> task,
       base::TimeDelta delay) LOCKS_EXCLUDED(lock());
+  void PostOnFreezeTaskModern(
+      scoped_refptr<base::SequencedTaskRunner> task_runner,
+      const base::Location& from_here,
+      OnceClosure task) LOCKS_EXCLUDED(lock());
   BackgroundTask* PostDelayedBackgroundTaskModernHelper(
       scoped_refptr<base::SequencedTaskRunner> task_runner,
       const base::Location& from_here,
@@ -303,11 +249,6 @@ class BASE_EXPORT PreFreezeBackgroundMemoryTrimmer {
 
   void OnPreFreezeInternal() LOCKS_EXCLUDED(lock());
   void RunPreFreezeTasks() EXCLUSIVE_LOCKS_REQUIRED(lock());
-
-  void OnSelfFreezeInternal(scoped_refptr<SequencedTaskRunner> task_runner);
-
-  void MaybeCancelSelfCompactionInternal(
-      SelfCompactCancellationReason cancellation_reason) LOCKS_EXCLUDED(lock());
 
   void PostMetricsTasksIfModern() EXCLUSIVE_LOCKS_REQUIRED(lock());
   void PostMetricsTask() EXCLUSIVE_LOCKS_REQUIRED(lock());
@@ -321,25 +262,17 @@ class BASE_EXPORT PreFreezeBackgroundMemoryTrimmer {
   // metric before any tasks are run are saved here. The "i"th entry corresponds
   // to the "i"th entry in |metrics_|. When there is no pending metrics task,
   // |values_before_| should be empty.
-  std::vector<std::optional<uint64_t>> values_before_ GUARDED_BY(lock());
-  // Whether or not we should continue self compaction. There are two reasons
-  // why we would cancel:
-  // (1) We have resumed, meaning we are likely to touch much of the process
-  //     memory soon, and we do not want to waste CPU time with compaction,
-  //     since it can block other work that needs to be done.
-  // (2) We are going to be frozen by App Freezer, which will do the compaction
-  //     work for us. This situation should be relatively rare, because we
-  //     attempt to not do self compaction if we know that we are going to
-  //     frozen by App Freezer.
-  base::TimeTicks self_compaction_last_cancelled_ GUARDED_BY(lock()) =
-      base::TimeTicks::Min();
-  // When we last triggered self compaction. Used to record metrics.
-  base::TimeTicks self_compaction_last_triggered_ GUARDED_BY(lock()) =
-      base::TimeTicks::Min();
-  std::optional<base::ScopedSampleMetadata> process_compacted_metadata_
-      GUARDED_BY(lock());
-  base::RepeatingClosure on_self_compact_callback_ GUARDED_BY(lock());
+  std::vector<std::optional<ByteSize>> values_before_ GUARDED_BY(lock());
   bool supports_modern_trim_;
+  // True if the process has received a pre-freeze signal and has not yet
+  // been thawed.
+  bool is_pre_frozen_ GUARDED_BY(lock()) = false;
+  bool force_pre_frozen_for_testing_ GUARDED_BY(lock()) = false;
+  // Incremented every time a pre-freeze event occurs. Used to detect and
+  // prevent race conditions where a new pre-freeze event happens while a
+  // thread is checking the thaw status.
+  size_t pre_freeze_generation_ GUARDED_BY(lock()) = 0;
+  std::unique_ptr<Delegate> delegate_ GUARDED_BY(lock());
 };
 
 }  // namespace base::android

@@ -6,14 +6,25 @@
 #include "build/build_config.h"
 #include "chrome/browser/ui/window_sizer/window_sizer_common_unittest.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/gfx/geometry/point.h"
+#include "ui/gfx/geometry/rect.h"
 
 namespace {
 const int kWindowTilePixels = WindowSizer::kWindowTilePixels;
 }
 
+#if BUILDFLAG(IS_CHROMEOS)
+// TODO(crbug.com/445541616): Reenable the test.
+#define MAYBE_DefaultSizeCase DISABLED_DefaultSizeCase
+#define MAYBE_PersistedBoundsCase DISABLED_PersistedBoundsCase
+#else
+#define MAYBE_DefaultSizeCase DefaultSizeCase
+#define MAYBE_PersistedBoundsCase PersistedBoundsCase
+#endif  // BUILDFLAG(IS_CHROMEOS)
+
 // Test that the window is sized appropriately for the first run experience
 // where the default window bounds calculation is invoked.
-TEST(WindowSizerTest, DefaultSizeCase) {
+TEST(WindowSizerTest, MAYBE_DefaultSizeCase) {
   {  // 4:3 monitor case, 1024x768, no taskbar
     gfx::Rect window_bounds =
         WindowSizerTestUtil().WithMonitorBounds(p1024x768).GetWindowBounds();
@@ -87,6 +98,15 @@ TEST(WindowSizerTest, DefaultSizeCase) {
                         WindowSizer::kWindowMaxDefaultWidth,
                         1200 - kWindowTilePixels * 2),
               window_bounds);
+  }
+
+  {  // 4:3 monitor case, 1200x1600, portrait orientation
+    gfx::Rect window_bounds =
+        WindowSizerTestUtil().WithMonitorBounds(p1200x1600).GetWindowBounds();
+    EXPECT_EQ(window_bounds.origin(),
+              gfx::Point(kWindowTilePixels, kWindowTilePixels));
+    EXPECT_LE(window_bounds.width(), WindowSizer::kWindowMaxDefaultWidth);
+    EXPECT_GE(window_bounds.width(), window_bounds.height());
   }
 
   {  // 16:10 monitor case, 1680x1050
@@ -169,7 +189,7 @@ TEST(WindowSizerTest, LastWindowBoundsCase) {
 }
 
 // Test that the window opened is sized appropriately given persisted sizes.
-TEST(WindowSizerTest, PersistedBoundsCase) {
+TEST(WindowSizerTest, MAYBE_PersistedBoundsCase) {
   {  // normal, in the middle of the screen somewhere.
     gfx::Rect initial_bounds(kWindowTilePixels, kWindowTilePixels, 500, 400);
     gfx::Rect window_bounds = WindowSizerTestUtil()

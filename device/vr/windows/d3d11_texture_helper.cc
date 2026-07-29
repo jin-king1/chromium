@@ -4,6 +4,8 @@
 
 #include "device/vr/windows/d3d11_texture_helper.h"
 
+#include "base/check_op.h"
+#include "base/logging.h"
 #include "base/trace_event/common/trace_event_common.h"
 #include "base/trace_event/trace_event.h"
 #include "components/viz/common/gpu/context_provider.h"
@@ -57,8 +59,8 @@ enum ErrorLocation {
 };
 
 void TraceDXError(ErrorLocation location, HRESULT hr) {
-  TRACE_EVENT_INSTANT2("xr", "TraceDXError", TRACE_EVENT_SCOPE_THREAD,
-                       "ErrorLocation", location, "hr", hr);
+  TRACE_EVENT_INSTANT("xr", "TraceDXError", "ErrorLocation", location, "hr",
+                      hr);
 }
 
 }  // namespace
@@ -79,9 +81,8 @@ void D3D11TextureHelper::SetSourceAndOverlayVisible(bool source_visible,
                                                     bool overlay_visible) {
   source_visible_ = source_visible;
   overlay_visible_ = overlay_visible;
-  TRACE_EVENT_INSTANT2("xr", "TextureHelper SetSourceAndOverlayVisible",
-                       TRACE_EVENT_SCOPE_THREAD, "source", source_visible,
-                       "overlay", overlay_visible);
+  TRACE_EVENT_INSTANT("xr", "TextureHelper SetSourceAndOverlayVisible",
+                      "source", source_visible, "overlay", overlay_visible);
 
   if (!source_visible_) {
     render_state_.source_.keyed_mutex_ = nullptr;
@@ -189,17 +190,11 @@ bool D3D11TextureHelper::CopyToBackBuffer(
 
   Microsoft::WRL::ComPtr<ID3D11Device1> d3d11_device;
   HRESULT hr = render_state_.d3d11_device_.As(&d3d11_device);
-  if (FAILED(hr)) {
-    DLOG(ERROR) << "Failed to get ID3D11Device1.";
-    return false;
-  }
+  CHECK_EQ(hr, S_OK);
 
   Microsoft::WRL::ComPtr<IDXGIResource1> dxgi_resource;
   hr = source->QueryInterface(IID_PPV_ARGS(&dxgi_resource));
-  if (FAILED(hr)) {
-    DLOG(ERROR) << "Failed QueryInterface.";
-    return false;
-  }
+  CHECK_EQ(hr, S_OK);
 
   Microsoft::WRL::ComPtr<IDXGIKeyedMutex> keyed_mutex;
   hr = dxgi_resource.As(&(keyed_mutex));
@@ -593,7 +588,7 @@ void D3D11TextureHelper::SetSourceTexture(
   render_state_.source_.right_ = right;
   render_state_.source_.submitted_this_frame_ = true;
 
-  if (!texture_handle.IsValid()) {
+  if (!texture_handle.is_valid()) {
     return;
   }
 

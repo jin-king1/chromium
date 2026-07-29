@@ -12,6 +12,7 @@
 
 #include "base/files/file_path.h"
 #include "base/memory/raw_ptr.h"
+#include "base/test/test_discardable_memory_allocator.h"
 #include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -74,10 +75,9 @@ class PDFiumTestBase : public testing::TestWithParam<bool> {
 
   // Returns the `PDFiumPage` for the page index. The page index must be valid
   // (less than `engine.GetNumberOfPages()`).
-  static const PDFiumPage& GetPDFiumPageForTest(const PDFiumEngine& engine,
-                                                size_t page_index);
-  static PDFiumPage& GetPDFiumPageForTest(PDFiumEngine& engine,
-                                          size_t page_index);
+  static const PDFiumPage& GetPDFiumPage(const PDFiumEngine& engine,
+                                         size_t page_index);
+  static PDFiumPage& GetPDFiumPage(PDFiumEngine& engine, size_t page_index);
 
  private:
   void InitializePDFiumSDK();
@@ -89,6 +89,8 @@ class PDFiumTestBase : public testing::TestWithParam<bool> {
   std::unique_ptr<PDFiumEngine> CreateEngine(TestClient* client);
   void SimulateLoading(PDFiumEngine* engine,
                        TestDocumentLoader* document_loader);
+
+  base::TestDiscardableMemoryAllocator discardable_memory_allocator_;
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
   base::FilePath test_fonts_path_;

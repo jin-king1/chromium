@@ -12,6 +12,7 @@
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
+#include "ui/views/controls/button/image_button.h"
 #include "ui/views/metadata/view_factory.h"
 #include "ui/views/view.h"
 #include "ui/views/widget/widget.h"
@@ -27,16 +28,21 @@ class Label;
 
 namespace ash {
 
+class FaceGazeBubbleMainContentView;
+
 // The FaceGaze bubble view. This is a UI that appears at the top of the screen,
 // which tells the user the most recently recognized facial gesture and the
-// corresponding action that was taken. This view is only visible when the
-// FaceGaze feature is enabled.
+// corresponding action that was taken. It also exposes a close button so that
+// the feature can be conveniently turned off, if necessary. This view is only
+// visible when the FaceGaze feature is enabled.
 class ASH_EXPORT FaceGazeBubbleView : public views::BubbleDialogDelegateView {
   METADATA_HEADER(FaceGazeBubbleView, views::BubbleDialogDelegateView)
 
  public:
   explicit FaceGazeBubbleView(
-      const base::RepeatingCallback<void()>& on_mouse_entered);
+      const base::RepeatingCallback<void()>& on_mouse_entered,
+      const base::RepeatingCallback<void(const ui::Event& event)>&
+          on_close_button_clicked);
   FaceGazeBubbleView(const FaceGazeBubbleView&) = delete;
   FaceGazeBubbleView& operator=(const FaceGazeBubbleView&) = delete;
   ~FaceGazeBubbleView() override;
@@ -44,14 +50,51 @@ class ASH_EXPORT FaceGazeBubbleView : public views::BubbleDialogDelegateView {
   // Updates text content of this view.
   void Update(const std::u16string& text, bool is_warning);
 
-  // views::View:
-  void OnMouseEntered(const ui::MouseEvent& event) override;
-
   std::u16string_view GetTextForTesting() const;
+
+  const raw_ptr<views::ImageButton> GetCloseViewForTesting() const {
+    return close_view_;
+  }
 
  private:
   friend class FaceGazeBubbleControllerTest;
+  friend class FaceGazeBubbleTestHelper;
 
+  // Updates color of this view.
+  void UpdateColor(bool is_warning);
+
+  // The view containing the main content, such as the FaceGaze icon and the
+  // informational text. Owned by the views hierarchy.
+  raw_ptr<FaceGazeBubbleMainContentView> main_content_view_ = nullptr;
+
+  // The view containing the close button, which can be used to quickly turn
+  // FaceGaze off. Owned by the views hierarchy.
+  raw_ptr<views::ImageButton> close_view_ = nullptr;
+};
+
+// The main content view. This is the part of the bubble UI that tells the user
+// the most recently recognized facial gesture and the corresponding action that
+// was taken.
+class ASH_EXPORT FaceGazeBubbleMainContentView : public views::View {
+  METADATA_HEADER(FaceGazeBubbleMainContentView, views::View)
+
+ public:
+  FaceGazeBubbleMainContentView(
+      const base::RepeatingCallback<void()>& on_mouse_entered);
+  FaceGazeBubbleMainContentView(const FaceGazeBubbleMainContentView&) = delete;
+  FaceGazeBubbleMainContentView& operator=(
+      const FaceGazeBubbleMainContentView&) = delete;
+  ~FaceGazeBubbleMainContentView() override;
+
+  // views::View:
+  void OnMouseEntered(const ui::MouseEvent& event) override;
+
+  // Updates the text content, visibility, and color of this view.
+  void Update(const std::u16string& text, bool is_warning);
+
+  views::Label* label() { return label_; }
+
+ private:
   // Updates color of this view.
   void UpdateColor(bool is_warning);
 

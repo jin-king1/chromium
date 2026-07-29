@@ -9,7 +9,9 @@
 #include <string>
 #include <string_view>
 
+#include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/sequence_checker.h"
 #include "base/sync_socket.h"
 #include "base/unguessable_token.h"
 #include "media/mojo/mojom/audio_data_pipe.mojom.h"
@@ -21,6 +23,8 @@
 #include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/bindings/shared_remote.h"
 #include "services/audio/input_controller.h"
+#include "services/audio/loopback_mixin.h"
+#include "third_party/perfetto/include/perfetto/tracing/track.h"
 
 namespace media {
 class AecdumpRecordingManager;
@@ -29,8 +33,8 @@ class AudioParameters;
 }  // namespace media
 
 namespace audio {
-class DeviceOutputListener;
 class InputSyncWriter;
+class MlModelManager;
 
 class InputStream final : public media::mojom::AudioInputStream,
                           public InputController::EventHandler {
@@ -47,11 +51,13 @@ class InputStream final : public media::mojom::AudioInputStream,
       mojo::PendingReceiver<media::mojom::AudioInputStream> receiver,
       mojo::PendingRemote<media::mojom::AudioInputStreamClient> client,
       mojo::PendingRemote<media::mojom::AudioInputStreamObserver> observer,
-      mojo::PendingRemote<media::mojom::AudioLog> log,
+      mojo::SharedRemote<media::mojom::AudioLog> log,
       media::AudioManager* manager,
       media::AecdumpRecordingManager* aecdump_recording_manager,
-      DeviceOutputListener* device_output_listener,
+      raw_ptr<MlModelManager> ml_model_manager,
+      std::unique_ptr<ReferenceSignalProvider> reference_signal_provider,
       media::mojom::AudioProcessingConfigPtr processing_config,
+      LoopbackMixin::MaybeCreateCallback maybe_create_loopback_mixin_cb,
       const std::string& device_id,
       const media::AudioParameters& params,
       uint32_t shared_memory_count,
@@ -81,7 +87,7 @@ class InputStream final : public media::mojom::AudioInputStream,
           reason_to_report);
   void OnStreamPlatformError();
   void CallDeleter();
-  PRINTF_FORMAT(2, 3) void SendLogMessage(const char* format, ...);
+  void SendLogMessage(const std::string& message);
 
   SEQUENCE_CHECKER(owning_sequence_);
 
@@ -102,6 +108,7 @@ class InputStream final : public media::mojom::AudioInputStream,
   const std::unique_ptr<InputSyncWriter> writer_;
   std::unique_ptr<InputController> controller_;
 
+  const perfetto::NamedTrack trace_track_;
   base::WeakPtrFactory<InputStream> weak_factory_{this};
 };
 

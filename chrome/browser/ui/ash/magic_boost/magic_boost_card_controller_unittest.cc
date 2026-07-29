@@ -5,29 +5,37 @@
 #include "chrome/browser/ui/ash/magic_boost/magic_boost_card_controller.h"
 
 #include <memory>
+#include <string>
 
 #include "ash/system/mahi/test/mock_mahi_media_app_events_proxy.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
-#include "chrome/browser/ash/magic_boost/magic_boost_state_ash.h"
+#include "chrome/browser/ash/magic_boost/magic_boost_state.h"
 #include "chrome/browser/ash/magic_boost/mock_editor_panel_manager.h"
 #include "chrome/browser/ash/magic_boost/mock_magic_boost_state.h"
+#include "chrome/browser/global_features.h"
 #include "chrome/browser/ui/ash/magic_boost/magic_boost_metrics.h"
 #include "chrome/browser/ui/ash/magic_boost/magic_boost_opt_in_card.h"
-#include "chrome/browser/ui/ash/magic_boost/test/mock_magic_boost_controller_crosapi.h"
+#include "chrome/browser/ui/ash/magic_boost/test/mock_magic_boost_controller.h"
+#include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/views/chrome_views_test_base.h"
 #include "chromeos/components/magic_boost/public/cpp/magic_boost_state.h"
 #include "chromeos/components/mahi/public/cpp/mahi_media_app_events_proxy.h"
 #include "chromeos/constants/chromeos_features.h"
-#include "mojo/public/cpp/bindings/receiver.h"
-#include "mojo/public/cpp/bindings/remote.h"
+#include "components/application_locale_storage/application_locale_storage.h"
 #include "testing/gmock/include/gmock/gmock.h"
-#include "ui/lottie/resource.h"
 #include "ui/views/view_utils.h"
 
 namespace chromeos {
 
-using OptInFeatures = crosapi::mojom::MagicBoostController::OptInFeatures;
+namespace {
+const std::string& GetApplicationLocale() {
+  return TestingBrowserProcess::GetGlobal()
+      ->GetFeatures()
+      ->application_locale_storage()
+      ->Get();
+}
+}  // namespace
 
 class MagicBoostCardControllerTest : public ChromeViewsTestBase {
  public:
@@ -35,13 +43,6 @@ class MagicBoostCardControllerTest : public ChromeViewsTestBase {
     // The magic boost card only exists when Magic Boost Revamp logic is
     // disabled.
     features_.InitAndDisableFeature(chromeos::features::kMagicBoostRevamp);
-
-    // Sets the default functions for the test to create image with the lottie
-    // resource id. Otherwise there's no `g_parse_lottie_as_still_image_` set in
-    // the `ResourceBundle`.
-    ui::ResourceBundle::SetLottieParsingFunctions(
-        &lottie::ParseLottieAsStillImage,
-        &lottie::ParseLottieAsThemedStillImage);
   }
 
   // ChromeViewsTestBase:
@@ -49,9 +50,8 @@ class MagicBoostCardControllerTest : public ChromeViewsTestBase {
     ChromeViewsTestBase::SetUp();
 
     // Replace the production `MagicBoostController` with a mock for testing
-    card_controller_.SetMagicBoostControllerCrosapiForTesting(
-        &crosapi_controller_);
-    card_controller_.SetOptInFeature(OptInFeatures::kHmrOnly);
+    card_controller_.SetMagicBoostControllerForTesting(&controller_);
+    card_controller_.SetOptInFeature(ash::magic_boost::OptInFeatures::kHmrOnly);
 
     magic_boost_state_ = std::make_unique<ash::MockMagicBoostState>();
     magic_boost_state_->set_editor_panel_manager_for_test(
@@ -75,10 +75,10 @@ class MagicBoostCardControllerTest : public ChromeViewsTestBase {
   testing::NiceMock<ash::MockEditorPanelManager> mock_editor_manager_;
 
   std::unique_ptr<ash::MockMagicBoostState> magic_boost_state_;
-  MagicBoostCardController card_controller_;
-  testing::NiceMock<MockMagicBoostControllerCrosapi> crosapi_controller_;
-  mojo::Receiver<crosapi::mojom::MagicBoostController> receiver_{
-      &crosapi_controller_};
+  MagicBoostCardController card_controller_{TestingBrowserProcess::GetGlobal()
+                                                ->GetFeatures()
+                                                ->application_locale_storage()};
+  testing::NiceMock<MockMagicBoostController> controller_;
 };
 
 // Tests the behavior of the controller when `OnTextAvailable()` and
@@ -88,7 +88,7 @@ TEST_F(MagicBoostCardControllerTest, OnTextAvailableAndDismiss) {
   EXPECT_FALSE(card_controller_.opt_in_widget_for_test());
 
   // Show the opt-in widget and test that the proper views are set.
-  EXPECT_CALL(crosapi_controller_, CloseDisclaimerUi);
+  EXPECT_CALL(controller_, CloseDisclaimerUi);
   card_controller_.OnTextAvailable(/*anchor_bounds=*/gfx::Rect(),
                                    /*selected_text=*/"",
                                    /*surrounding_text=*/"");
@@ -108,7 +108,7 @@ TEST_F(MagicBoostCardControllerTest, OnTextAvailableAndDismiss) {
 TEST_F(MagicBoostCardControllerTest, BoundsChanged) {
   EXPECT_FALSE(card_controller_.opt_in_widget_for_test());
 
-  EXPECT_CALL(crosapi_controller_, CloseDisclaimerUi);
+  EXPECT_CALL(controller_, CloseDisclaimerUi);
   gfx::Rect anchor_bounds = gfx::Rect(50, 50, 25, 100);
   card_controller_.OnTextAvailable(anchor_bounds,
                                    /*selected_text=*/"",
@@ -117,53 +117,50 @@ TEST_F(MagicBoostCardControllerTest, BoundsChanged) {
   EXPECT_TRUE(widget);
 
   // Correct bounds should be set.
-  EXPECT_EQ(editor_menu::GetEditorMenuBounds(anchor_bounds,
-                                             widget->GetContentsView()),
-            widget->GetRestoredBounds());
+  EXPECT_EQ(
+      editor_menu::GetEditorMenuBounds(anchor_bounds, widget->GetContentsView(),
+                                       GetApplicationLocale()),
+      widget->GetRestoredBounds());
 
   anchor_bounds = gfx::Rect(0, 50, 55, 80);
 
   // Widget should change bounds accordingly.
   card_controller_.OnAnchorBoundsChanged(anchor_bounds);
-  EXPECT_EQ(editor_menu::GetEditorMenuBounds(anchor_bounds,
-                                             widget->GetContentsView()),
-            widget->GetRestoredBounds());
+  EXPECT_EQ(
+      editor_menu::GetEditorMenuBounds(anchor_bounds, widget->GetContentsView(),
+                                       GetApplicationLocale()),
+      widget->GetRestoredBounds());
 }
 
 TEST_F(MagicBoostCardControllerTest, DisclaimerUi) {
   int expected_display_id = 2;
-  auto expected_action =
-      crosapi::mojom::MagicBoostController::TransitionAction::kShowEditorPanel;
-  auto expected_features =
-      crosapi::mojom::MagicBoostController::OptInFeatures::kOrcaAndHmr;
+  auto expected_action = ash::magic_boost::TransitionAction::kShowEditorPanel;
+  auto expected_features = ash::magic_boost::OptInFeatures::kOrcaAndHmr;
 
   card_controller_.set_transition_action(expected_action);
   card_controller_.SetOptInFeature(expected_features);
 
-  EXPECT_CALL(crosapi_controller_, ShowDisclaimerUi)
-      .WillOnce(
-          [expected_display_id, expected_action, expected_features](
-              int display_id,
-              crosapi::mojom::MagicBoostController::TransitionAction action,
-              /*opt_in_features=*/
-              crosapi::mojom::MagicBoostController::OptInFeatures features) {
-            EXPECT_EQ(expected_display_id, display_id);
-            EXPECT_EQ(expected_action, action);
-            EXPECT_EQ(expected_features, features);
-          });
+  EXPECT_CALL(controller_, ShowDisclaimerUi)
+      .WillOnce([expected_display_id, expected_action, expected_features](
+                    int display_id, ash::magic_boost::TransitionAction action,
+                    ash::magic_boost::OptInFeatures features) {
+        EXPECT_EQ(expected_display_id, display_id);
+        EXPECT_EQ(expected_action, action);
+        EXPECT_EQ(expected_features, features);
+      });
 
   card_controller_.ShowDisclaimerUi(expected_display_id);
 }
 
 TEST_F(MagicBoostCardControllerTest, ShowOptInCardAgain) {
   // Shows the disclaimer view.
-  EXPECT_CALL(crosapi_controller_, ShowDisclaimerUi);
+  EXPECT_CALL(controller_, ShowDisclaimerUi);
   card_controller_.ShowDisclaimerUi(
       /*display_id=*/1);
   EXPECT_FALSE(card_controller_.opt_in_widget_for_test());
 
   // Shows the opt-in widget. It should close the discalimer view.
-  EXPECT_CALL(crosapi_controller_, CloseDisclaimerUi);
+  EXPECT_CALL(controller_, CloseDisclaimerUi);
   card_controller_.OnTextAvailable(/*anchor_bounds=*/gfx::Rect(),
                                    /*selected_text=*/"",
                                    /*surrounding_text=*/"");
@@ -178,7 +175,7 @@ TEST_F(MagicBoostCardControllerTest, ShowOptInCardMetrics) {
   histogram_tester->ExpectTotalCount(histogram_name + "OrcaAndHmr", 0);
 
   // Shows the opt-in widget from hmr feature.
-  card_controller_.SetOptInFeature(OptInFeatures::kHmrOnly);
+  card_controller_.SetOptInFeature(ash::magic_boost::OptInFeatures::kHmrOnly);
   card_controller_.ShowOptInUi(/*anchor_bounds=*/gfx::Rect());
   histogram_tester->ExpectTotalCount(histogram_name + "Total", 1);
   histogram_tester->ExpectTotalCount(histogram_name + "HmrOnly", 1);
@@ -187,7 +184,8 @@ TEST_F(MagicBoostCardControllerTest, ShowOptInCardMetrics) {
   card_controller_.CloseOptInUi();
 
   // Shows the opt-in widget from both hmr and orca feature.
-  card_controller_.SetOptInFeature(OptInFeatures::kOrcaAndHmr);
+  card_controller_.SetOptInFeature(
+      ash::magic_boost::OptInFeatures::kOrcaAndHmr);
   card_controller_.ShowOptInUi(/*anchor_bounds=*/gfx::Rect());
   histogram_tester->ExpectTotalCount(histogram_name + "Total", 2);
   histogram_tester->ExpectTotalCount(histogram_name + "OrcaAndHmr", 1);
@@ -236,7 +234,8 @@ TEST_F(MagicBoostCardControllerTest, PdfContextMenuIncludeOrca) {
 
   // The opt-in features should include Orca if needed.
   card_controller_.OnPdfContextMenuShown(/*anchor=*/gfx::Rect());
-  EXPECT_EQ(OptInFeatures::kOrcaAndHmr, card_controller_.GetOptInFeatures());
+  EXPECT_EQ(ash::magic_boost::OptInFeatures::kOrcaAndHmr,
+            card_controller_.GetOptInFeatures());
 }
 
 TEST_F(MagicBoostCardControllerTest, PdfContextMenuNotIncludeOrca) {
@@ -250,7 +249,8 @@ TEST_F(MagicBoostCardControllerTest, PdfContextMenuNotIncludeOrca) {
 
   // The opt-in features should not include Orca if not needed.
   card_controller_.OnPdfContextMenuShown(/*anchor=*/gfx::Rect());
-  EXPECT_EQ(OptInFeatures::kHmrOnly, card_controller_.GetOptInFeatures());
+  EXPECT_EQ(ash::magic_boost::OptInFeatures::kHmrOnly,
+            card_controller_.GetOptInFeatures());
 }
 
 }  // namespace chromeos

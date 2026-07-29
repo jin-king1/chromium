@@ -28,8 +28,6 @@
 #define THIRD_PARTY_BLINK_RENDERER_CORE_TYPED_ARRAYS_ARRAY_BUFFER_ARRAY_BUFFER_CONTENTS_H_
 
 #include "base/containers/span.h"
-#include "base/memory/platform_shared_memory_region.h"
-#include "base/memory/scoped_refptr.h"
 #include "partition_alloc/partition_alloc_constants.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
@@ -37,6 +35,10 @@
 #include "third_party/blink/renderer/platform/wtf/thread_safe_ref_counted.h"
 #include "third_party/blink/renderer/platform/wtf/wtf.h"
 #include "v8/include/v8.h"
+
+namespace base::subtle {
+class PlatformSharedMemoryRegion;
+}
 
 namespace blink {
 
@@ -139,14 +141,19 @@ class CORE_EXPORT ArrayBufferContents {
   base::span<uint8_t> ByteSpan() const {
     // SAFETY: `BackingStore` guarantees that `Data()` points to at least
     // `DataLength()` many bytes.
-    return UNSAFE_BUFFERS(
-        base::span(static_cast<uint8_t*>(Data()), DataLength()));
+    return UNSAFE_BUFFERS(base::span(
+        base::unchecked, static_cast<uint8_t*>(Data()), DataLength()));
+  }
+  base::span<uint8_t> ByteSpanShared() const {
+    DCHECK(IsShared());
+    return ByteSpanMaybeShared();
   }
   base::span<uint8_t> ByteSpanMaybeShared() const {
     // SAFETY: `BackingStore` guarantees that `Data()` points to at least
     // `DataLength()` many bytes.
-    return UNSAFE_BUFFERS(
-        base::span(static_cast<uint8_t*>(DataMaybeShared()), DataLength()));
+    return UNSAFE_BUFFERS(base::span(base::unchecked,
+                                     static_cast<uint8_t*>(DataMaybeShared()),
+                                     DataLength()));
   }
 
   std::shared_ptr<v8::BackingStore> BackingStore() const {
@@ -169,18 +176,5 @@ class CORE_EXPORT ArrayBufferContents {
 };
 
 }  // namespace blink
-
-namespace WTF {
-
-template <>
-struct CrossThreadCopier<blink::ArrayBufferContents> {
-  STATIC_ONLY(CrossThreadCopier);
-  using Type = blink::ArrayBufferContents;
-  static Type Copy(Type handle) {
-    return handle;  // This is in fact a move.
-  }
-};
-
-}  // namespace WTF
 
 #endif  // THIRD_PARTY_BLINK_RENDERER_CORE_TYPED_ARRAYS_ARRAY_BUFFER_ARRAY_BUFFER_CONTENTS_H_

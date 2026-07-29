@@ -17,7 +17,8 @@
 #include "base/functional/callback.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ref.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
 #include "base/time/time.h"
 #include "base/types/expected.h"
@@ -28,7 +29,6 @@
 #include "components/update_client/pipeline.h"
 #include "components/update_client/protocol_parser.h"
 #include "components/update_client/update_client.h"
-#include "url/gurl.h"
 
 namespace update_client {
 
@@ -69,8 +69,6 @@ struct UpdateContext;
 // kCanUpdate will transition to kUpdateError.
 class Component {
  public:
-  using CallbackHandleComplete = base::OnceCallback<void()>;
-
   Component(const UpdateContext& update_context, const std::string& id);
   Component(const Component&) = delete;
   Component& operator=(const Component&) = delete;
@@ -78,12 +76,12 @@ class Component {
 
   // Handles the current state of the component and makes it transition
   // to the next component state before |callback_handle_complete_| is invoked.
-  void Handle(CallbackHandleComplete callback_handle_complete);
+  void Handle(base::OnceClosure callback_handle_complete);
 
   CrxUpdateItem GetCrxUpdateItem() const;
 
   // Called by the UpdateEngine when an update check for this component is done.
-  void SetUpdateCheckResult(std::optional<ProtocolParser::Result> result,
+  void SetUpdateCheckResult(std::optional<ProtocolParser::App> result,
                             ErrorCategory error_category,
                             int error,
                             base::OnceCallback<void(bool)> callback);
@@ -132,29 +130,20 @@ class Component {
 
   bool is_foreground() const;
 
-  const std::vector<GURL>& crx_diffurls() const { return crx_diffurls_; }
-
-  bool diff_update_failed() const { return diff_error_code_; }
-
   ErrorCategory error_category() const { return error_category_; }
   int error_code() const { return error_code_; }
   int extra_code1() const { return extra_code1_; }
-  ErrorCategory diff_error_category() const { return diff_error_category_; }
-  int diff_error_code() const { return diff_error_code_; }
-  int diff_extra_code1() const { return diff_extra_code1_; }
-
-  std::string action_run() const { return action_run_; }
 
   scoped_refptr<Configurator> config() const;
 
   std::string session_id() const;
 
-  const std::vector<base::Value::Dict>& events() const { return events_; }
+  const std::vector<base::DictValue>& events() const { return events_; }
 
   // Returns a clone of the component events.
-  std::vector<base::Value::Dict> GetEvents() const;
+  std::vector<base::DictValue> GetEvents() const;
 
-  void AppendEvent(base::Value::Dict event);
+  void AppendEvent(base::DictValue event);
 
  private:
   friend class MockPingManagerImpl;
@@ -313,9 +302,6 @@ class Component {
   // The decision may be predicated on the expected size of the download.
   bool CanDoBackgroundDownload(int64_t size) const;
 
-  // Returns true if the component has a differential update.
-  bool HasDiffUpdate() const;
-
   // Changes the component state and notifies the caller of the |Handle|
   // function that the handling of this component state is complete.
   void ChangeState(std::unique_ptr<State> next_state);
@@ -328,12 +314,12 @@ class Component {
 
   // These functions return a specific event. Each data member of the event is
   // represented as a key-value pair in a dictionary value.
-  base::Value::Dict MakeEventUpdateComplete() const;
-  base::Value::Dict MakeEventDownloadMetrics(
+  base::DictValue MakeEventUpdateComplete() const;
+  base::DictValue MakeEventDownloadMetrics(
       const CrxDownloader::DownloadMetrics& download_metrics) const;
-  base::Value::Dict MakeEventActionRun(bool succeeded,
-                                       int error_code,
-                                       int extra_code1) const;
+  base::DictValue MakeEventActionRun(bool succeeded,
+                                     int error_code,
+                                     int extra_code1) const;
 
   std::unique_ptr<CrxInstaller::InstallParams> install_params() const;
 
@@ -351,35 +337,17 @@ class Component {
   // Time when the update of this CRX has begun.
   base::TimeTicks update_begin_;
 
-  // A component can be made available for download from several urls.
-  std::vector<GURL> crx_urls_;
-  std::vector<GURL> crx_diffurls_;
-
-  // The cryptographic hash values for the component payload.
-  std::string hash_sha256_;
-  std::string hashdiff_sha256_;
-
-  // The expected size of the download as reported by the update server.
-  int64_t size_ = -1;
-  int64_t sizediff_ = -1;
-
   // The from/to version and fingerprint values.
   base::Version previous_version_;
   base::Version next_version_;
   std::string previous_fp_;
   std::string next_fp_;
 
-  // Contains the file name of the payload to run. This member is set by
-  // the update response parser, when the update response includes a run action.
-  std::string action_run_;
-
   // True if the update check response for this component includes an update.
   bool is_update_available_ = false;
 
   // The error reported by the update checker.
   int update_check_error_ = 0;
-
-  base::FilePath payload_path_;
 
   // The byte counts below are valid for the current url being fetched.
   // |total_bytes| is equal to the size of the CRX file and |downloaded_bytes|
@@ -404,9 +372,6 @@ class Component {
   int error_code_ = 0;
   int extra_code1_ = 0;
   std::optional<CrxInstaller::Result> installer_result_;
-  ErrorCategory diff_error_category_ = ErrorCategory::kNone;
-  int diff_error_code_ = 0;
-  int diff_extra_code1_ = 0;
 
   // Contains app-specific custom response attributes from the server, sent in
   // the last update check.
@@ -416,9 +381,9 @@ class Component {
   std::optional<CrxInstaller::InstallParams> install_params_;
 
   // Contains the events which are therefore serialized in the requests.
-  std::vector<base::Value::Dict> events_;
+  std::vector<base::DictValue> events_;
 
-  CallbackHandleComplete callback_handle_complete_;
+  base::OnceClosure callback_handle_complete_;
   std::unique_ptr<State> state_;
   const raw_ref<const UpdateContext> update_context_;
 
@@ -430,6 +395,8 @@ class Component {
   // True if this component has reached a final state because all its states
   // have been handled.
   bool is_handled_ = false;
+
+  base::WeakPtrFactory<Component> weak_ptr_factory_{this};
 };
 
 using IdToComponentPtrMap = std::map<std::string, std::unique_ptr<Component>>;

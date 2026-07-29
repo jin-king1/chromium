@@ -5,17 +5,19 @@
 import 'chrome://profile-picker/profile_picker.js';
 
 import type {ProfileCardElement, ProfilePickerMainViewElement, ProfileState} from 'chrome://profile-picker/profile_picker.js';
-import {loadTimeData, ManageProfilesBrowserProxyImpl, NavigationMixin, Routes} from 'chrome://profile-picker/profile_picker.js';
+import {loadTimeData, ManageProfilesBrowserProxyImpl, navigateTo, NavigationMixin, Routes} from 'chrome://profile-picker/profile_picker.js';
 import {webUIListenerCallback} from 'chrome://resources/js/cr.js';
 import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
-import {assertDeepEquals, assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
-import {isVisible, microtasksFinished} from 'chrome://webui-test/test_util.js';
+import {assertDeepEquals, assertEquals, assertFalse, assertGE, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import {isChildVisible, isVisible, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
 import {TestManageProfilesBrowserProxy} from './test_manage_profiles_browser_proxy.js';
 
-class NavigationElement extends NavigationMixin(CrLitElement) {
+const NavigationTestElementBase = NavigationMixin(CrLitElement);
+
+class NavigationTestElement extends NavigationTestElementBase {
   static get is() {
-    return 'navigation-element';
+    return 'navigation-test';
   }
 
   changeCalled: boolean = false;
@@ -38,11 +40,11 @@ class NavigationElement extends NavigationMixin(CrLitElement) {
 
 declare global {
   interface HTMLElementTagNameMap {
-    'navigation-element': NavigationElement;
+    'navigation-test': NavigationTestElement;
   }
 }
 
-customElements.define(NavigationElement.is, NavigationElement);
+customElements.define(NavigationTestElement.is, NavigationTestElement);
 
 /**
  * @param n Indicates the desired number of profiles.
@@ -62,17 +64,18 @@ function generateProfilesList(n: number): ProfileState[] {
              avatarBadge: i % 4 === 0 ? 'cr:domain' : '',
              profileCardButtonLabel: '',
              hasEnterpriseLabel: false,
+             hasAvatarRing: i % 3 === 0,
            }));
 }
 
 suite('ProfilePickerMainViewTest', function() {
   let mainViewElement: ProfilePickerMainViewElement;
   let browserProxy: TestManageProfilesBrowserProxy;
-  let navigationElement: NavigationElement;
+  let navigationElement: NavigationTestElement;
 
   function resetTest() {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
-    navigationElement = document.createElement('navigation-element');
+    navigationElement = document.createElement('navigation-test');
     document.body.appendChild(navigationElement);
     mainViewElement = document.createElement('profile-picker-main-view');
     document.body.appendChild(mainViewElement);
@@ -86,6 +89,8 @@ suite('ProfilePickerMainViewTest', function() {
       isProfileCreationAllowed: true,
       isAskOnStartupAllowed: true,
       profilesReorderingEnabled: true,
+      maxProfilesCountToShowOpenAllProfilesButton: 0,
+      useRefreshedUI: false,
     });
   }
 
@@ -118,8 +123,10 @@ suite('ProfilePickerMainViewTest', function() {
       const profile = profiles[i]!;
       const expectedProfile = expectedProfiles[i]!;
       assertTrue(!!profile.shadowRoot.querySelector('profile-card-menu'));
-      profile.shadowRoot.querySelector('cr-button')!.click();
+      profile.$.profileCardButton.click();
       await browserProxy.whenCalled('launchSelectedProfile');
+      webUIListenerCallback('reset-picker-buttons');
+      await microtasksFinished();
       assertEquals(
           profile.shadowRoot
               .querySelector<HTMLElement>('#forceSigninContainer')!.hidden,
@@ -134,12 +141,13 @@ suite('ProfilePickerMainViewTest', function() {
           profile.shadowRoot.querySelector<HTMLElement>(
                                 '#iconContainer')!.hidden,
           !expectedProfile.avatarBadge);
+      const avatarElement = profile.shadowRoot.querySelector<HTMLImageElement>(
+          '.profile-avatar')!;
       assertEquals(
-          (profile.shadowRoot
-               .querySelector<HTMLImageElement>('.profile-avatar')!.src)
-              .split('/')
-              .pop(),
-          expectedProfile.avatarIcon);
+          avatarElement.src.split('/').pop(), expectedProfile.avatarIcon);
+      assertEquals(
+          avatarElement.classList.contains('with-avatar-ring'),
+          expectedProfile.hasAvatarRing);
     }
   }
 
@@ -165,6 +173,8 @@ suite('ProfilePickerMainViewTest', function() {
     assertTrue(isVisible(mainViewElement.$.addProfile));
     mainViewElement.$.browseAsGuestButton.click();
     await browserProxy.whenCalled('launchGuestProfile');
+    webUIListenerCallback('reset-picker-buttons');
+    await microtasksFinished();
     // Ask when chrome opens.
     mainViewElement.$.askOnStartup.click();
     await browserProxy.whenCalled('askOnStartupChanged');
@@ -194,6 +204,7 @@ suite('ProfilePickerMainViewTest', function() {
       avatarBadge: 'cr:domain',
       profileCardButtonLabel: '',
       hasEnterpriseLabel: true,
+      hasAvatarRing: false,
     });
     await simulateProfilesListChanged(profiles);
 
@@ -259,64 +270,166 @@ suite('ProfilePickerMainViewTest', function() {
     assertFalse(navigationElement.changeCalled);
   });
 
-  test('AskOnStartupSingleToMultipleProfiles', async function() {
-    await browserProxy.whenCalled('initializeMainView');
-    // Hidden while profiles list is not yet defined.
-    assertTrue(mainViewElement.$.profilesWrapper.hidden);
-    assertTrue(mainViewElement.$.askOnStartup.hidden);
-    let profiles = generateProfilesList(1);
-    await simulateProfilesListChanged(profiles);
-    await verifyProfileCard(
-        profiles, mainViewElement.shadowRoot.querySelectorAll('profile-card'));
-    // The checkbox 'Ask when chrome opens' should only be visible to
-    // multi-profile users.
-    assertTrue(mainViewElement.$.askOnStartup.hidden);
-    // Add a second profile.
-    profiles = generateProfilesList(2);
-    await simulateProfilesListChanged(profiles);
-    await verifyProfileCard(
-        profiles, mainViewElement.shadowRoot.querySelectorAll('profile-card'));
-    assertTrue(!mainViewElement.$.askOnStartup.hidden);
-    assertTrue(mainViewElement.$.askOnStartup.checked);
-    mainViewElement.$.askOnStartup.click();
-    await browserProxy.whenCalled('askOnStartupChanged');
-    assertTrue(!mainViewElement.$.askOnStartup.checked);
-  });
-
-  test('AskOnStartupMultipleToSingleProfile', async function() {
-    await browserProxy.whenCalled('initializeMainView');
-    // Hidden while profiles list is not yet defined.
-    assertTrue(mainViewElement.$.profilesWrapper.hidden);
-    assertTrue(mainViewElement.$.askOnStartup.hidden);
-    const profiles = generateProfilesList(2);
-    await simulateProfilesListChanged(profiles);
-    await verifyProfileCard(
-        profiles, mainViewElement.shadowRoot.querySelectorAll('profile-card'));
-    assertTrue(!mainViewElement.$.askOnStartup.hidden);
-    // Remove profile.
-    await simulateProfileRemoved(profiles[0]!.profilePath);
-    await verifyProfileCard(
-        [profiles[1]!],
-        mainViewElement.shadowRoot.querySelectorAll('profile-card'));
-    assertTrue(mainViewElement.$.askOnStartup.hidden);
-  });
-
-  test('AskOnStartupMulipleProfiles', async function() {
-    // Disable AskOnStartup
-    loadTimeData.overrideValues({isAskOnStartupAllowed: false});
+  test('ProfileCreationDisableButtons', async function() {
     resetTest();
-
+    const addProfileButton = mainViewElement.$.addProfile;
+    assertFalse(isVisible(addProfileButton));
     await browserProxy.whenCalled('initializeMainView');
-    // Hidden while profiles list is not yet defined.
-    assertTrue(mainViewElement.$.profilesWrapper.hidden);
-    assertTrue(mainViewElement.$.askOnStartup.hidden);
-    const profiles = generateProfilesList(2);
-    await simulateProfilesListChanged(profiles);
-    await verifyProfileCard(
-        profiles, mainViewElement.shadowRoot.querySelectorAll('profile-card'));
+    await simulateProfilesListChanged(generateProfilesList(2));
+    navigationElement.reset();
+    assertTrue(isVisible(addProfileButton));
+    assertFalse(addProfileButton.disabled);
+    const profileCards =
+        mainViewElement.shadowRoot.querySelectorAll<ProfileCardElement>(
+            'profile-card');
+    profileCards.forEach(profileCard => {
+      assertFalse(profileCard.$.profileCardButton.disabled);
+    });
 
-    // Checkbox hidden even if there are multiple profiles.
-    assertTrue(mainViewElement.$.askOnStartup.hidden);
+    // Clicking on the add profile button should disable all buttons.
+    addProfileButton.click();
+    await microtasksFinished();
+    assertTrue(navigationElement.changeCalled);
+    assertEquals(navigationElement.route, Routes.NEW_PROFILE);
+    assertTrue(addProfileButton.disabled);
+    profileCards.forEach(profileCard => {
+      assertTrue(profileCard.$.profileCardButton.disabled);
+    });
+
+    // Navigating back to the main route should re-enable the buttons.
+    navigationElement.reset();
+    navigateTo(Routes.MAIN);
+    await microtasksFinished();
+    assertTrue(navigationElement.changeCalled);
+    assertEquals(navigationElement.route, Routes.MAIN);
+    assertFalse(addProfileButton.disabled);
+    profileCards.forEach(profileCard => {
+      assertFalse(profileCard.$.profileCardButton.disabled);
+    });
+  });
+
+  test('ProfileCardClickDisableButtons', async function() {
+    resetTest();
+    const addProfileButton = mainViewElement.$.addProfile;
+    assertFalse(isVisible(addProfileButton));
+    await browserProxy.whenCalled('initializeMainView');
+    await simulateProfilesListChanged(generateProfilesList(2));
+    assertTrue(isVisible(addProfileButton));
+    assertFalse(addProfileButton.disabled);
+    const profileCards =
+        mainViewElement.shadowRoot.querySelectorAll<ProfileCardElement>(
+            'profile-card');
+    profileCards.forEach(profileCard => {
+      assertFalse(profileCard.$.profileCardButton.disabled);
+    });
+
+    // Clicking on a profile button should disable all buttons.
+    assertGE(profileCards.length, 1);
+    const firstProfileCard = profileCards[0]!;
+    firstProfileCard.$.profileCardButton.click();
+    await microtasksFinished();
+    assertTrue(addProfileButton.disabled);
+    profileCards.forEach(profileCard => {
+      assertTrue(profileCard.$.profileCardButton.disabled);
+    });
+
+    // Receiving the signal that the step was completed should re-enable the
+    // buttons.
+    webUIListenerCallback('reset-picker-buttons');
+    await microtasksFinished();
+    assertFalse(addProfileButton.disabled);
+    profileCards.forEach(profileCard => {
+      assertFalse(profileCard.$.profileCardButton.disabled);
+    });
+  });
+
+  [true, false].forEach(isRefreshedUI => {
+    test(
+        `AskOnStartupSingleToMultipleProfiles${
+            isRefreshedUI ? 'RefreshedUI' : ''}`,
+        async function() {
+          loadTimeData.overrideValues({
+            useRefreshedUI: isRefreshedUI,
+          });
+          resetTest();
+          await browserProxy.whenCalled('initializeMainView');
+          // Hidden while profiles list is not yet defined.
+          assertTrue(mainViewElement.$.profilesWrapper.hidden);
+          assertFalse(isChildVisible(mainViewElement, '#askOnStartup'));
+          let profiles = generateProfilesList(1);
+          await simulateProfilesListChanged(profiles);
+          await verifyProfileCard(
+              profiles,
+              mainViewElement.shadowRoot.querySelectorAll('profile-card'));
+          // The checkbox 'Ask when chrome opens' should only be visible to
+          // multi-profile users.
+          assertFalse(isChildVisible(mainViewElement, '#askOnStartup'));
+          // Add a second profile.
+          profiles = generateProfilesList(2);
+          await simulateProfilesListChanged(profiles);
+          await verifyProfileCard(
+              profiles,
+              mainViewElement.shadowRoot.querySelectorAll('profile-card'));
+          assertTrue(isChildVisible(mainViewElement, '#askOnStartup'));
+          assertTrue(mainViewElement.$.askOnStartup.checked);
+          mainViewElement.$.askOnStartup.click();
+          await browserProxy.whenCalled('askOnStartupChanged');
+          assertTrue(!mainViewElement.$.askOnStartup.checked);
+        });
+  });
+
+  [true, false].forEach(isRefreshedUI => {
+    test(
+        `AskOnStartupMultipleToSingleProfile${
+            isRefreshedUI ? 'RefreshedUI' : ''}`,
+        async function() {
+          loadTimeData.overrideValues({
+            useRefreshedUI: isRefreshedUI,
+          });
+          resetTest();
+          await browserProxy.whenCalled('initializeMainView');
+          // Hidden while profiles list is not yet defined.
+          assertTrue(mainViewElement.$.profilesWrapper.hidden);
+          assertFalse(isChildVisible(mainViewElement, '#askOnStartup'));
+          const profiles = generateProfilesList(2);
+          await simulateProfilesListChanged(profiles);
+          await verifyProfileCard(
+              profiles,
+              mainViewElement.shadowRoot.querySelectorAll('profile-card'));
+          assertTrue(isChildVisible(mainViewElement, '#askOnStartup'));
+          // Remove profile.
+          await simulateProfileRemoved(profiles[0]!.profilePath);
+          await verifyProfileCard(
+              [profiles[1]!],
+              mainViewElement.shadowRoot.querySelectorAll('profile-card'));
+          assertFalse(isChildVisible(mainViewElement, '#askOnStartup'));
+        });
+  });
+
+  [true, false].forEach(isRefreshedUI => {
+    test(
+        `AskOnStartupMulipleProfiles${isRefreshedUI ? 'RefreshedUI' : ''}`,
+        async function() {
+          // Disable AskOnStartup
+          loadTimeData.overrideValues({
+            isAskOnStartupAllowed: false,
+            useRefreshedUI: isRefreshedUI,
+          });
+          resetTest();
+
+          await browserProxy.whenCalled('initializeMainView');
+          // Hidden while profiles list is not yet defined.
+          assertTrue(mainViewElement.$.profilesWrapper.hidden);
+          assertFalse(isChildVisible(mainViewElement, '#askOnStartup'));
+          const profiles = generateProfilesList(2);
+          await simulateProfilesListChanged(profiles);
+          await verifyProfileCard(
+              profiles,
+              mainViewElement.shadowRoot.querySelectorAll('profile-card'));
+
+          // Checkbox hidden even if there are multiple profiles.
+          assertFalse(isChildVisible(mainViewElement, '#askOnStartup'));
+        });
   });
 
   test('ForceSigninIsEnabled', async function() {

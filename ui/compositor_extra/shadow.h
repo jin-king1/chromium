@@ -8,13 +8,13 @@
 #include <memory>
 
 #include "base/memory/raw_ptr.h"
+#include "ui/compositor/layer.h"
 #include "ui/compositor/layer_animation_observer.h"
 #include "ui/compositor/layer_owner.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/shadow_util.h"
 
 namespace ui {
-class Layer;
 
 // Simple class that draws a drop shadow around content at given bounds.
 class Shadow : public ui::ImplicitAnimationObserver, public ui::LayerOwner {
@@ -37,9 +37,15 @@ class Shadow : public ui::ImplicitAnimationObserver, public ui::LayerOwner {
 
   // Exposed to allow setting animation parameters for bounds and opacity
   // animations.
-  ui::Layer* shadow_layer() { return shadow_layer_owner_.layer(); }
+  ui::LayerNinePatch* shadow_layer() {
+    ui::Layer* layer = shadow_layer_owner_.layer();
+    return layer ? layer->AsNinePatch() : nullptr;
+  }
 
-  ui::Layer* fading_layer() { return fading_layer_owner_.layer(); }
+  ui::LayerNinePatch* fading_layer() {
+    ui::Layer* layer = fading_layer_owner_.layer();
+    return layer ? layer->AsNinePatch() : nullptr;
+  }
 
   const gfx::Rect& content_bounds() const { return content_bounds_; }
   int desired_elevation() const { return desired_elevation_; }

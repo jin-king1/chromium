@@ -5,21 +5,21 @@
 #include "chrome/browser/task_manager/providers/render_process_host_task_provider.h"
 
 #include "base/process/process.h"
+#include "chrome/browser/glic/host/guest_util.h"
+#include "chrome/browser/glic/public/glic_enabling.h"  // nogncheck
+#include "chrome/browser/glic/public/glic_keyed_service.h"
+#include "chrome/browser/glic/public/glic_keyed_service_factory.h"
 #include "chrome/browser/task_manager/providers/child_process_task.h"
+#include "chrome/common/buildflags.h"
 #include "content/public/browser/browser_child_process_host_iterator.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/child_process_data.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/common/process_type.h"
-#include "extensions/buildflags/buildflags.h"
 
-using content::RenderProcessHost;
 using content::BrowserThread;
 using content::ChildProcessData;
-
-#if BUILDFLAG(ENABLE_EXTENSIONS)
-#include "extensions/browser/process_map.h"  // nogncheck
-#endif
+using content::RenderProcessHost;
 
 namespace task_manager {
 
@@ -74,10 +74,13 @@ void RenderProcessHostTaskProvider::CreateTask(
   ChildProcessData data(content::PROCESS_TYPE_RENDERER, host->GetID());
   data.SetProcess(host->GetProcess().Duplicate());
 
+  auto subtype = ChildProcessTask::ProcessSubtype::kUnknownRenderProcess;
+  if (glic::IsProcessHostForGlic(host)) {
+    subtype = ChildProcessTask::ProcessSubtype::kGlicRenderProcess;
+  }
   std::unique_ptr<ChildProcessTask>& task =
       tasks_by_rph_id_[render_process_host_id];
-  task = std::make_unique<ChildProcessTask>(
-      data, ChildProcessTask::ProcessSubtype::kUnknownRenderProcess);
+  task = std::make_unique<ChildProcessTask>(data, subtype);
   NotifyObserverTaskAdded(task.get());
 }
 
@@ -86,8 +89,9 @@ void RenderProcessHostTaskProvider::DeleteTask(
   auto itr = tasks_by_rph_id_.find(render_process_host_id);
   // If the render process host id isn't being tracked in `tasks_by_rph_id` do
   // nothing.
-  if (itr == tasks_by_rph_id_.end())
+  if (itr == tasks_by_rph_id_.end()) {
     return;
+  }
 
   NotifyObserverTaskRemoved(itr->second.get());
 
@@ -95,7 +99,7 @@ void RenderProcessHostTaskProvider::DeleteTask(
   tasks_by_rph_id_.erase(itr);
 }
 
-void RenderProcessHostTaskProvider::OnRenderProcessHostCreated(
+void RenderProcessHostTaskProvider::OnRenderProcessLaunched(
     content::RenderProcessHost* host) {
   if (is_updating_) {
     CreateTask(host);

@@ -17,7 +17,6 @@ import {FocusRowMixin} from 'chrome://resources/ash/common/cr_elements/focus_row
 import {I18nMixin} from 'chrome://resources/ash/common/cr_elements/i18n_mixin.js';
 import {loadTimeData} from 'chrome://resources/ash/common/load_time_data.m.js';
 import {assert, assertNotReached} from 'chrome://resources/js/assert.js';
-import type {String16} from 'chrome://resources/mojo/mojo/public/mojom/base/string16.mojom-webui.js';
 import type {Time} from 'chrome://resources/mojo/mojo/public/mojom/base/time.mojom-webui.js';
 import {IronA11yAnnouncer} from 'chrome://resources/polymer/v3_0/iron-a11y-announcer/iron-a11y-announcer.js';
 import type {PolymerElementProperties} from 'chrome://resources/polymer/v3_0/polymer/interfaces.js';
@@ -55,7 +54,7 @@ function convertMojoTimeToJS(mojoTime: Time): Date {
   // conversion from microseconds to milliseconds.
   const windowsEpoch = Date.UTC(1601, 0, 1, 0, 0, 0, 0);
   const unixEpoch = Date.UTC(1970, 0, 1, 0, 0, 0, 0);
-  // |epochDeltaInMs| equals to base::Time::kTimeTToMicrosecondsOffset.
+  // |epochDeltaInMs| equals to base::Time::kMicrosecondsFromWindowsToUnixEpoch.
   const epochDeltaInMs = unixEpoch - windowsEpoch;
   const timeInMs = Number(mojoTime.internalValue) / 1000;
 
@@ -170,12 +169,12 @@ export class PrintJobEntryElement extends PrintJobEntryElementBase {
 
       jobTitle: {
         type: String,
-        computed: 'decodeString16(jobEntry.title)',
+        computed: 'computeJobTitle(jobEntry.title)',
       },
 
       printerName: {
         type: String,
-        computed: 'decodeString16(jobEntry.printerName)',
+        computed: 'computePrinterName(jobEntry.printerName)',
       },
 
       creationTime: {
@@ -227,18 +226,18 @@ export class PrintJobEntryElement extends PrintJobEntryElementBase {
     };
   }
 
-  jobEntry: PrintJobInfo;
+  declare jobEntry: PrintJobInfo;
   private mojoInterfaceProvider: PrintingMetadataProviderInterface;
-  private jobTitle: string;
-  private printerName: string;
-  private creationTime: string;
-  private completionStatus: string;
-  private ongoingErrorStatus: string;
-  private readableProgress: string;
-  private jobEntryAriaLabel: string;
-  private showFullOngoingStatus: boolean;
-  private fileIcon: string;
-  private fileIconClass: string;
+  declare private jobTitle: string;
+  declare private printerName: string;
+  declare private creationTime: string;
+  declare private completionStatus: string;
+  declare private ongoingErrorStatus: string;
+  declare private readableProgress: string;
+  declare private jobEntryAriaLabel: string;
+  declare private showFullOngoingStatus: boolean;
+  declare private fileIcon: string;
+  declare private fileIconClass: string;
 
   static get observers(): string[] {
     return [
@@ -348,8 +347,12 @@ export class PrintJobEntryElement extends PrintJobEntryElementBase {
         {bubbles: true, composed: true, detail: this.jobEntry.id}));
   }
 
-  private decodeString16(arr: String16): string {
-    return arr.data.map(ch => String.fromCodePoint(ch)).join('');
+  private computeJobTitle(title: string): string {
+    return title;
+  }
+
+  private computePrinterName(printerName: string): string {
+    return printerName;
   }
 
   /**

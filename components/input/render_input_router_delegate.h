@@ -11,6 +11,7 @@
 #include "components/viz/common/resources/peak_gpu_memory_tracker.h"
 #include "third_party/blink/public/common/input/web_input_event.h"
 #include "third_party/blink/public/mojom/input/input_event_result.mojom-shared.h"
+#include "third_party/blink/public/mojom/input/input_handler.mojom.h"
 #include "ui/gfx/delegated_ink_point.h"
 
 namespace input {
@@ -83,26 +84,24 @@ class COMPONENT_EXPORT(INPUT) RenderInputRouterDelegate {
   // Called when an invalid input event source is sent from the renderer.
   virtual void OnInvalidInputEventSource() = 0;
 
-  // Notifies when an input event is ignored, see `IsIgnoringWebInputEvents`
-  // above.
-  virtual void OnInputIgnored(const blink::WebInputEvent& event) = 0;
-
   virtual StylusInterface* GetStylusInterface() = 0;
 
   // Returns whether the RenderInputRouter is hidden or not.
   virtual bool IsHidden() const = 0;
 
-  // Returns whether this render process is blocked. If true, input events
-  // should not be sent to it, nor other timely signs of life should be
-  // expected.
-  virtual bool IsRendererProcessBlocked() = 0;
-
   // Called by |RenderInputRouter::input_event_ack_timeout_| when an input event
-  // timed out without getting an ack from the renderer.
-  virtual void OnInputEventAckTimeout() = 0;
+  // timed out without getting an ack from the renderer. |ack_timeout_ts|
+  // denotes the timestamp where this timeout was detected by RenderInputRouter.
+  virtual void OnInputEventAckTimeout(base::TimeTicks ack_timeout_ts) = 0;
 
   // Notifies the delegate that RenderInputRouter is responsive.
   virtual void RendererIsResponsive() = 0;
+
+  // Passes the overscroll parameters to the delegate.
+  virtual void DidOverscroll(blink::mojom::DidOverscrollParamsPtr params) = 0;
+
+  // Called when the input router becomes active.
+  virtual void OnInputRouterActive() = 0;
 };
 
 }  // namespace input

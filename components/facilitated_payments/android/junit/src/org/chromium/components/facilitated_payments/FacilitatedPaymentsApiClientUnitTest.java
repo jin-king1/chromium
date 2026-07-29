@@ -16,6 +16,8 @@ import org.chromium.base.test.util.Batch;
 import org.chromium.components.signin.base.CoreAccountInfo;
 import org.chromium.content_public.browser.RenderFrameHost;
 
+import java.util.Collections;
+
 /** Tests for the facilitated payment API client. */
 @RunWith(BaseRobolectricTestRunner.class)
 @Batch(Batch.UNIT_TESTS)
@@ -71,6 +73,15 @@ public class FacilitatedPaymentsApiClientUnitTest {
     }
 
     @Test
+    public void apiIsNotAvailableByDefaultSyncCheck() throws Exception {
+        TestDelegate delegate = new TestDelegate();
+        FacilitatedPaymentsApiClient apiClient =
+                FacilitatedPaymentsApiClient.create(/* renderFrameHost= */ null, delegate);
+
+        Assert.assertFalse(apiClient.isAvailableSync());
+    }
+
+    @Test
     public void cannotRetrieveClientTokenByDefault() throws Exception {
         TestDelegate delegate = new TestDelegate();
         FacilitatedPaymentsApiClient apiClient =
@@ -90,7 +101,8 @@ public class FacilitatedPaymentsApiClientUnitTest {
 
         apiClient.invokePurchaseAction(
                 /* primaryAccount= */ null,
-                SecurePayload.create(new byte[] {'A', 'c', 't', 'i', 'o', 'n'}, new SecureData[0]));
+                SecurePayload.create(
+                        new byte[] {'A', 'c', 't', 'i', 'o', 'n'}, Collections.emptyList()));
 
         Assert.assertTrue(delegate.mIsPurchaseActionInvoked);
         Assert.assertEquals(PurchaseActionResult.COULD_NOT_INVOKE, delegate.mPurchaseActionResult);
@@ -106,6 +118,11 @@ public class FacilitatedPaymentsApiClientUnitTest {
         @Override
         public void isAvailable() {
             mDelegate.onIsAvailable(/* isAvailable= */ true);
+        }
+
+        @Override
+        public boolean isAvailableSync() {
+            return true;
         }
 
         @Override
@@ -127,6 +144,16 @@ public class FacilitatedPaymentsApiClientUnitTest {
                 RenderFrameHost renderFrameHost, FacilitatedPaymentsApiClient.Delegate delegate) {
             return new FakeApiClient(delegate);
         }
+    }
+
+    @Test
+    public void factoryCanOverrideApiAvailableSyncResult() throws Exception {
+        FacilitatedPaymentsApiClient.setFactory(new FakeApiClientFactory());
+        TestDelegate delegate = new TestDelegate();
+        FacilitatedPaymentsApiClient apiClient =
+                FacilitatedPaymentsApiClient.create(/* renderFrameHost= */ null, delegate);
+
+        Assert.assertTrue(apiClient.isAvailableSync());
     }
 
     @Test
@@ -164,7 +191,8 @@ public class FacilitatedPaymentsApiClientUnitTest {
 
         apiClient.invokePurchaseAction(
                 /* primaryAccount= */ null,
-                SecurePayload.create(new byte[] {'A', 'c', 't', 'i', 'o', 'n'}, new SecureData[0]));
+                SecurePayload.create(
+                        new byte[] {'A', 'c', 't', 'i', 'o', 'n'}, Collections.emptyList()));
 
         Assert.assertTrue(delegate.mIsPurchaseActionInvoked);
         Assert.assertEquals(PurchaseActionResult.RESULT_OK, delegate.mPurchaseActionResult);

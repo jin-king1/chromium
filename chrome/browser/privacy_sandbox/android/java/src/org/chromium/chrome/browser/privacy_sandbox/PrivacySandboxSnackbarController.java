@@ -7,14 +7,17 @@ package org.chromium.chrome.browser.privacy_sandbox;
 import android.content.Context;
 
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.metrics.RecordUserAction;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.ui.messages.snackbar.Snackbar;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 
 /** Shows the snackbar for Privacy Sandbox settings, allowing the user to quickly navigate there. */
+@NullMarked
 public class PrivacySandboxSnackbarController implements SnackbarManager.SnackbarController {
-    private Context mContext;
-    private SnackbarManager mSnackbarManager;
+    private final Context mContext;
+    private final SnackbarManager mSnackbarManager;
 
     /** Creates an instance of the controller given a SnackbarManager. */
     public PrivacySandboxSnackbarController(Context context, SnackbarManager manager) {
@@ -26,7 +29,10 @@ public class PrivacySandboxSnackbarController implements SnackbarManager.Snackba
 
     /** Displays a snackbar, showing the user an option to go to Privacy Sandbox settings. */
     public void showSnackbar() {
-        RecordUserAction.record("Settings.PrivacySandbox.Block3PCookies");
+        if (ChromeFeatureList.isEnabled(
+                ChromeFeatureList.PRIVACY_SANDBOX_AD_PRIVACY_UX_DEPRECATION)) {
+            return;
+        }
         mSnackbarManager.dismissSnackbars(this);
         mSnackbarManager.showSnackbar(
                 Snackbar.make(
@@ -35,7 +41,8 @@ public class PrivacySandboxSnackbarController implements SnackbarManager.Snackba
                                 Snackbar.TYPE_PERSISTENT,
                                 Snackbar.UMA_PRIVACY_SANDBOX_PAGE_OPEN)
                         .setAction(mContext.getString(R.string.more), null)
-                        .setSingleLine(false));
+                        .setHighPriority(true)
+                        .setDefaultLines(false));
     }
 
     /** Dismisses the snackbar, if it is active. */
@@ -45,11 +52,11 @@ public class PrivacySandboxSnackbarController implements SnackbarManager.Snackba
 
     // Implement SnackbarController.
     @Override
-    public void onAction(Object actionData) {
+    public void onAction(@Nullable Object actionData) {
         PrivacySandboxSettingsBaseFragment.launchPrivacySandboxSettings(
                 mContext, PrivacySandboxReferrer.COOKIES_SNACKBAR);
     }
 
     @Override
-    public void onDismissNoAction(Object actionData) {}
+    public void onDismissNoAction(@Nullable Object actionData) {}
 }

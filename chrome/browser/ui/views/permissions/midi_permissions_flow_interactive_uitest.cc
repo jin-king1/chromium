@@ -3,21 +3,17 @@
 // found in the LICENSE file.
 
 #include "base/test/scoped_feature_list.h"
-#include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window.h"
-#include "chrome/browser/ui/views/controls/rich_controls_container_view.h"
 #include "chrome/browser/ui/views/location_bar/content_setting_image_view.h"
 #include "chrome/browser/ui/views/page_info/page_info_main_view.h"
 #include "chrome/browser/ui/views/page_info/permission_toggle_row_view.h"
 #include "chrome/browser/ui/views/permissions/permission_prompt_bubble_base_view.h"
 #include "chrome/grit/generated_resources.h"
-#include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/interaction/interactive_browser_test.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
-#include "components/content_settings/core/common/content_settings_types.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/vector_icons/vector_icons.h"
 #include "content/public/test/browser_test.h"
@@ -25,10 +21,9 @@
 #include "net/dns/mock_host_resolver.h"
 #include "third_party/blink/public/common/features.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/gfx/vector_icon_types.h"
 #include "ui/views/interaction/interaction_test_util_views.h"
-#include "ui/views/interaction/interactive_views_test.h"
-#include "ui/views/view_utils.h"
 
 namespace {
 
@@ -72,10 +67,6 @@ class MidiPermissionsFlowInteractiveUITest : public InteractiveBrowserTest {
 
   net::EmbeddedTestServer* https_server() { return https_server_.get(); }
 
-  ui::ElementContext context() const {
-    return browser()->window()->GetElementContext();
-  }
-
   auto NavigateAndRequestMidi() {
     return Steps(
         InstrumentTab(kWebContentsElementId),
@@ -100,8 +91,8 @@ class MidiPermissionsFlowInteractiveUITest : public InteractiveBrowserTest {
 
 // Display MIDI permission prompt.
 IN_PROC_BROWSER_TEST_F(MidiPermissionsFlowInteractiveUITest, PermissionPrompt) {
-  RunTestSequenceInContext(
-      context(), NavigateAndRequestMidi(),
+  RunTestSequence(
+      NavigateAndRequestMidi(),
       CheckViewProperty(
           PermissionPromptBubbleBaseView::kMainViewId,
           &PermissionPromptBubbleBaseView::GetPermissionFragmentForTesting,
@@ -113,8 +104,8 @@ IN_PROC_BROWSER_TEST_F(MidiPermissionsFlowInteractiveUITest, PermissionPrompt) {
 // Display MIDI permission state in page info when denied.
 IN_PROC_BROWSER_TEST_F(MidiPermissionsFlowInteractiveUITest,
                        BlockedMidiPermissionInPageInfo) {
-  RunTestSequenceInContext(
-      context(), NavigateAndRequestMidi(),
+  RunTestSequence(
+      NavigateAndRequestMidi(),
       PressButton(PermissionPromptBubbleBaseView::kBlockButtonElementId),
       WaitForHide(PermissionPromptBubbleBaseView::kMainViewId),
       PressButton(kLocationIconElementId),  // open page info.
@@ -137,8 +128,8 @@ IN_PROC_BROWSER_TEST_F(MidiPermissionsFlowInteractiveUITest,
 // Display MIDI permission state in page info when allowed.
 IN_PROC_BROWSER_TEST_F(MidiPermissionsFlowInteractiveUITest,
                        AllowedMidiPermissionInPageInfo) {
-  RunTestSequenceInContext(
-      context(), NavigateAndRequestMidi(),
+  RunTestSequence(
+      NavigateAndRequestMidi(),
       PressButton(PermissionPromptBubbleBaseView::kAllowButtonElementId),
       WaitForHide(PermissionPromptBubbleBaseView::kMainViewId),
       PressButton(kLocationIconElementId),  // open page info.
@@ -161,15 +152,18 @@ IN_PROC_BROWSER_TEST_F(MidiPermissionsFlowInteractiveUITest,
 // Display blockage indicator of MIDI when blocked.
 IN_PROC_BROWSER_TEST_F(MidiPermissionsFlowInteractiveUITest,
                        BlockedMidiPermissionIndicator) {
-  RunTestSequenceInContext(
-      context(), NavigateAndRequestMidi(),
+  RunTestSequence(
+      NavigateAndRequestMidi(),
       PressButton(PermissionPromptBubbleBaseView::kBlockButtonElementId),
       WaitForHide(PermissionPromptBubbleBaseView::kMainViewId),
-      AfterShow(ContentSettingImageView::kMidiSysexActivityIndicatorElementId,
+      AfterShow(ContentSettingImageModel::kMidiSysexIconElementId,
                 base::BindOnce([](ui::TrackedElement* element) {
                   auto* element_view = AsView<ContentSettingImageView>(element);
-                  EXPECT_EQ(element_view->get_icon_for_testing(),
-                            &vector_icons::kMidiOffChromeRefreshIcon);
+                  EXPECT_EQ(
+                      element_view->get_icon_for_testing(),
+                      &(features::IsRoundedIconsEnabled()
+                            ? vector_icons::kPianoOffIcon
+                            : vector_icons::kMidiOffChromeRefreshOldIcon));
                   EXPECT_EQ(element_view->get_icon_badge_for_testing(),
                             &gfx::VectorIcon::EmptyIcon());
                   EXPECT_EQ(element_view->get_tooltip_text_for_testing(),
@@ -181,15 +175,17 @@ IN_PROC_BROWSER_TEST_F(MidiPermissionsFlowInteractiveUITest,
 // Display in-use indicator of MIDI when allowed.
 IN_PROC_BROWSER_TEST_F(MidiPermissionsFlowInteractiveUITest,
                        AllowedMidiPermissionIndicator) {
-  RunTestSequenceInContext(
-      context(), NavigateAndRequestMidi(),
+  RunTestSequence(
+      NavigateAndRequestMidi(),
       PressButton(PermissionPromptBubbleBaseView::kAllowButtonElementId),
       WaitForHide(PermissionPromptBubbleBaseView::kMainViewId),
-      AfterShow(ContentSettingImageView::kMidiSysexActivityIndicatorElementId,
+      AfterShow(ContentSettingImageModel::kMidiSysexIconElementId,
                 base::BindOnce([](ui::TrackedElement* element) {
                   auto* element_view = AsView<ContentSettingImageView>(element);
                   EXPECT_EQ(element_view->get_icon_for_testing(),
-                            &vector_icons::kMidiChromeRefreshIcon);
+                            &(features::IsRoundedIconsEnabled()
+                                  ? vector_icons::kPianoIcon
+                                  : vector_icons::kMidiChromeRefreshOldIcon));
                   EXPECT_EQ(element_view->get_icon_badge_for_testing(),
                             &gfx::VectorIcon::EmptyIcon());
                   EXPECT_EQ(element_view->get_tooltip_text_for_testing(),

@@ -13,7 +13,6 @@
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/no_destructor.h"
-#include "base/not_fatal_until.h"
 #include "base/path_service.h"
 #include "base/process/process.h"
 #include "base/process/process_handle.h"
@@ -198,9 +197,8 @@ ServiceManager::~ServiceManager() {
 ServiceInstance* ServiceManager::FindOrCreateMatchingTargetInstance(
     const ServiceInstance& source_instance,
     const ServiceFilter& partial_target_filter) {
-  TRACE_EVENT_INSTANT1("service_manager", "ServiceManager::Connect",
-                       TRACE_EVENT_SCOPE_THREAD, "original_name",
-                       partial_target_filter.service_name());
+  TRACE_EVENT_INSTANT("service_manager", "ServiceManager::Connect",
+                      "original_name", partial_target_filter.service_name());
   if (partial_target_filter.service_name() == mojom::kServiceName)
     return service_manager_instance_;
 
@@ -393,7 +391,7 @@ void ServiceManager::DestroyInstance(ServiceInstance* instance) {
 
   MakeInstanceUnreachable(instance);
   auto it = instances_.find(instance);
-  CHECK(it != instances_.end(), base::NotFatalUntil::M130);
+  CHECK(it != instances_.end());
 
   // Deletes |instance|.
   instances_.erase(it);

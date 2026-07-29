@@ -10,7 +10,7 @@
 #include "base/memory/scoped_refptr.h"
 #include "base/unguessable_token.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
-#include "services/network/public/mojom/attribution.mojom-blink.h"
+#include "services/network/public/cpp/fetch_retry_options.h"
 #include "services/network/public/mojom/fetch_api.mojom-blink-forward.h"
 #include "services/network/public/mojom/referrer_policy.mojom-blink-forward.h"
 #include "services/network/public/mojom/trust_tokens.mojom-blink.h"
@@ -67,10 +67,10 @@ class CORE_EXPORT FetchRequestData final
   void SetOrigin(scoped_refptr<const SecurityOrigin> origin) {
     origin_ = std::move(origin);
   }
-  const WTF::Vector<KURL>& NavigationRedirectChain() const {
+  const Vector<KURL>& NavigationRedirectChain() const {
     return navigation_redirect_chain_;
   }
-  void SetNavigationRedirectChain(const WTF::Vector<KURL>& value) {
+  void SetNavigationRedirectChain(const Vector<KURL>& value) {
     navigation_redirect_chain_ = value;
   }
   scoped_refptr<const SecurityOrigin> IsolatedWorldOrigin() const {
@@ -144,11 +144,6 @@ class CORE_EXPORT FetchRequestData final
   bool Keepalive() const { return keepalive_; }
   void SetKeepalive(bool b) { keepalive_ = b; }
 
-  bool BrowsingTopics() const { return browsing_topics_; }
-  void SetBrowsingTopics(bool b) { browsing_topics_ = b; }
-
-  bool AdAuctionHeaders() const { return ad_auction_headers_; }
-  void SetAdAuctionHeaders(bool b) { ad_auction_headers_ = b; }
 
   bool SharedStorageWritable() const { return shared_storage_writable_; }
   void SetSharedStorageWritable(bool shared_storage_writable) {
@@ -157,6 +152,9 @@ class CORE_EXPORT FetchRequestData final
 
   bool IsHistoryNavigation() const { return is_history_navigation_; }
   void SetIsHistoryNavigation(bool b) { is_history_navigation_ = b; }
+
+  bool IsReloadNavigation() const { return is_reload_navigation_; }
+  void SetIsReloadNavigation(bool b) { is_reload_navigation_ = b; }
 
   network::mojom::blink::URLLoaderFactory* URLLoaderFactory() const {
     return url_loader_factory_.is_bound() ? url_loader_factory_.get() : nullptr;
@@ -180,29 +178,22 @@ class CORE_EXPORT FetchRequestData final
     trust_token_params_ = std::move(trust_token_params);
   }
 
-  network::mojom::AttributionReportingEligibility
-  AttributionReportingEligibility() const {
-    return attribution_reporting_eligibility_;
-  }
-  void SetAttributionReportingEligibility(
-      network::mojom::AttributionReportingEligibility eligibility) {
-    attribution_reporting_eligibility_ = eligibility;
-  }
-
-  network::mojom::AttributionSupport AttributionSupport() const {
-    return attribution_reporting_support_;
-  }
-  void SetAttributionReportingSupport(
-      network::mojom::AttributionSupport support) {
-    attribution_reporting_support_ = support;
-  }
-
   base::UnguessableToken ServiceWorkerRaceNetworkRequestToken() const {
     return service_worker_race_network_request_token_;
   }
   void SetServiceWorkerRaceNetworkRequestToken(
       const base::UnguessableToken& token) {
     service_worker_race_network_request_token_ = token;
+  }
+
+  bool HasRetryOptions() const { return retry_options_.has_value(); }
+
+  const std::optional<network::FetchRetryOptions>& RetryOptions() const {
+    return retry_options_;
+  }
+
+  void SetRetryOptions(network::FetchRetryOptions retry_options) {
+    retry_options_ = retry_options;
   }
 
   void Trace(Visitor*) const;
@@ -218,7 +209,7 @@ class CORE_EXPORT FetchRequestData final
   network::mojom::RequestDestination destination_ =
       network::mojom::RequestDestination::kEmpty;
   scoped_refptr<const SecurityOrigin> origin_;
-  WTF::Vector<KURL> navigation_redirect_chain_;
+  Vector<KURL> navigation_redirect_chain_;
   scoped_refptr<const SecurityOrigin> isolated_world_origin_;
   // FIXME: Support m_forceOriginHeaderFlag;
   AtomicString referrer_string_;
@@ -251,15 +242,10 @@ class CORE_EXPORT FetchRequestData final
   network::mojom::RequestDestination original_destination_ =
       network::mojom::RequestDestination::kEmpty;
   bool keepalive_ = false;
-  bool browsing_topics_ = false;
-  bool ad_auction_headers_ = false;
   bool shared_storage_writable_ = false;
   bool is_history_navigation_ = false;
-  network::mojom::AttributionReportingEligibility
-      attribution_reporting_eligibility_ =
-          network::mojom::AttributionReportingEligibility::kUnset;
-  network::mojom::AttributionSupport attribution_reporting_support_ =
-      network::mojom::AttributionSupport::kUnset;
+  bool is_reload_navigation_ = false;
+  std::optional<network::FetchRetryOptions> retry_options_;
   // A specific factory that should be used for this request instead of whatever
   // the system would otherwise decide to use to load this request.
   // Currently used for blob: URLs, to ensure they can still be loaded even if

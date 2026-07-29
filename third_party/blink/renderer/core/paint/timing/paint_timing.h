@@ -5,6 +5,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_PAINT_TIMING_PAINT_TIMING_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_PAINT_TIMING_PAINT_TIMING_H_
 
+#include <array>
 #include <memory>
 
 #include "base/gtest_prod_util.h"
@@ -15,39 +16,39 @@
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/paint/paint_event.h"
 #include "third_party/blink/renderer/core/paint/timing/first_meaningful_paint_detector.h"
+#include "third_party/blink/renderer/core/paint/timing/paint_timing_callbacks.h"
 #include "third_party/blink/renderer/core/timing/animation_frame_timing_info.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/supplementable.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 
-namespace base {
-class TickClock;
-}
-
 namespace blink {
-
 struct DOMPaintTimingInfo;
+class LargestContentfulPaintManager;
+class ImageElementTiming;
 class LocalFrame;
-
-using PaintTimingCallback =
-    base::OnceCallback<void(const base::TimeTicks&, const DOMPaintTimingInfo&)>;
-
-using OptionalPaintTimingCallback = std::optional<PaintTimingCallback>;
+class PaintTimingDetector;
+class TextElementTiming;
 
 // PaintTiming is responsible for tracking paint-related timings for a given
 // document.
 class CORE_EXPORT PaintTiming final : public GarbageCollected<PaintTiming>,
                                       public Supplement<Document> {
-  friend class FirstMeaningfulPaintDetector;
-  using ReportTimeCallback =
-      base::OnceCallback<void(const viz::FrameTimingDetails&)>;
   using RequestAnimationFrameTimesAfterBackForwardCacheRestore = std::array<
       base::TimeTicks,
       WebPerformanceMetricsForReporting::
           kRequestAnimationFramesToRecordAfterBackForwardCacheRestore>;
 
  public:
-  static const char kSupplementName[];
+  using ReportTimeCallback =
+      base::OnceCallback<void(const viz::FrameTimingDetails&)>;
+
+  // `CallbackManager` is a unit-test specific interface to capture callbacks so
+  // that the lifecycle can be be controlled synchronously.
+  class CallbackManager : public GarbageCollectedMixin {
+   public:
+    virtual void RegisterCallback(ReportTimeCallback) = 0;
+  };
 
   struct PaintTimingInfo {
     // https://w3c.github.io/paint-timing/#paint-timing-info-rendering-update-end-time
@@ -57,10 +58,12 @@ class CORE_EXPORT PaintTiming final : public GarbageCollected<PaintTiming>,
     base::TimeTicks presentation_time;
   };
 
+  static const char kSupplementName[];
+
   explicit PaintTiming(Document&);
   PaintTiming(const PaintTiming&) = delete;
   PaintTiming& operator=(const PaintTiming&) = delete;
-  virtual ~PaintTiming() = default;
+  ~PaintTiming() = default;
 
   static PaintTiming& From(Document&);
   static const PaintTiming* From(const Document&);
@@ -93,7 +96,7 @@ class CORE_EXPORT PaintTiming final : public GarbageCollected<PaintTiming>,
       base::TimeTicks presentation_time,
       FirstMeaningfulPaintDetector::HadUserInput had_input);
   void NotifyPaint(bool is_first_paint, bool text_painted, bool image_painted);
-  void NotifyPaintFinished() { MarkPaintTimingInternal(); }
+  void NotifyPaintFinished();
 
   // The getters below return monotonically-increasing seconds, or zero if the
   // given paint event has not yet occurred. See the comments for
@@ -109,21 +112,20 @@ class CORE_EXPORT PaintTiming final : public GarbageCollected<PaintTiming>,
   // Times when the first paint happens after the page is restored from the
   // back-forward cache. If the element value is zero time tick, the first paint
   // event did not happen for that navigation.
-  WTF::Vector<base::TimeTicks> FirstPaintsAfterBackForwardCacheRestore() const {
+  Vector<base::TimeTicks> FirstPaintsAfterBackForwardCacheRestore() const {
     return first_paints_after_back_forward_cache_restore_presentation_;
   }
 
-  WTF::Vector<RequestAnimationFrameTimesAfterBackForwardCacheRestore>
+  Vector<RequestAnimationFrameTimesAfterBackForwardCacheRestore>
   RequestAnimationFramesAfterBackForwardCacheRestore() const {
     return request_animation_frames_after_back_forward_cache_restore_;
   }
 
   // Returns the first time that 'contentful' content was painted in the current
-  // document after a hard navigation (and ignoring soft navigations). For
-  // instance, the first time that text or image content was painted after the
-  // user landed on the page.
-  base::TimeTicks FirstContentfulPaintIgnoringSoftNavigations() const {
-    return first_contentful_paint_presentation_ignoring_soft_navigations_;
+  // document after a hard navigation. For instance, the first time that text or
+  // image content was painted after the user landed on the page.
+  base::TimeTicks FirstContentfulPaint() const {
+    return first_contentful_paint_presentation_;
   }
 
   base::TimeTicks FirstContentfulPaintRenderedButNotPresentedAsMonotonicTime()
@@ -131,17 +133,14 @@ class CORE_EXPORT PaintTiming final : public GarbageCollected<PaintTiming>,
     return paint_details_.first_contentful_paint_;
   }
 
-  void ResetFirstPaintAndFCP() {
-    soft_navigation_pending_paint_details_ = PaintDetails();
-    first_paints_reset_ = true;
-    soft_navigation_detected_ = false;
-    soft_navigation_fp_reported_ = false;
-    soft_navigation_fcp_reported_ = false;
-  }
-
   // FirstImagePaint returns the first time that image content was painted.
   base::TimeTicks FirstImagePaint() const {
     return paint_details_.first_image_paint_presentation_;
+  }
+
+  base::TimeTicks FirstImagePaintRenderedButNotPresentedAsMonotonicTime()
+      const {
+    return paint_details_.first_image_paint_;
   }
 
   // FirstEligibleToPaint returns the first time that the frame is not
@@ -168,9 +167,15 @@ class CORE_EXPORT PaintTiming final : public GarbageCollected<PaintTiming>,
     return paint_details_.first_contentful_paint_presentation_;
   }
 
+  base::TimeTicks FirstPaintRendered() const {
+    return paint_details_.first_paint_;
+  }
+
   FirstMeaningfulPaintDetector& GetFirstMeaningfulPaintDetector() {
     return *fmp_detector_;
   }
+
+  Document* GetDocument() { return GetSupplementable(); }
 
   void RegisterNotifyPresentationTime(ReportTimeCallback);
   void ReportPresentationTime(PaintEvent,
@@ -181,16 +186,34 @@ class CORE_EXPORT PaintTiming final : public GarbageCollected<PaintTiming>,
       wtf_size_t index,
       const viz::FrameTimingDetails&);
 
-  // The caller owns the |clock| which must outlive the PaintTiming.
-  void SetTickClockForTesting(const base::TickClock* clock);
-
   void OnRestoredFromBackForwardCache();
-
-  void SoftNavigationDetected();
 
   void MarkPaintTiming();
 
+  void OnInputOrScroll();
+
   void Trace(Visitor*) const override;
+
+  // Returns the `LargestContentfulPaintManager` associated with this
+  // `PaintTiming`. Returns null if hard LCP is no longer being recorded, e.g.
+  // after first input.
+  LargestContentfulPaintManager* GetLargestContentfulPaintManager() {
+    return largest_contentful_paint_manager_;
+  }
+
+  // Sets the `CallbackManager` to handle presentation time callbacks. Used for
+  // unit tests.
+  void SetCallbackManagerForTest(CallbackManager* manager) {
+    callback_manager_ = manager;
+  }
+
+  // TODO(crbug.com/503420427): Consider removing this and proxying through
+  // PaintTiming.
+  PaintTimingDetector& GetPaintTimingDetector() {
+    return *paint_timing_detector_.Get();
+  }
+
+  ImageElementTiming* GetImageElementTiming() { return image_element_timing_; }
 
  private:
   friend class RecodingTimeAfterBackForwardCacheRestoreFrameCallback;
@@ -234,13 +257,9 @@ class CORE_EXPORT PaintTiming final : public GarbageCollected<PaintTiming>,
   void RegisterNotifyFirstPaintAfterBackForwardCacheRestorePresentationTime(
       wtf_size_t index);
 
-  base::TimeTicks FirstPaintRendered() const {
-    return paint_details_.first_paint_;
-  }
-
-  WTF::Vector<base::TimeTicks>
+  Vector<base::TimeTicks>
       first_paints_after_back_forward_cache_restore_presentation_;
-  WTF::Vector<RequestAnimationFrameTimesAfterBackForwardCacheRestore>
+  Vector<RequestAnimationFrameTimesAfterBackForwardCacheRestore>
       request_animation_frames_after_back_forward_cache_restore_;
   struct PaintDetails {
     // TODO(crbug/738235): Non first_*_presentation_ variables are only being
@@ -254,46 +273,34 @@ class CORE_EXPORT PaintTiming final : public GarbageCollected<PaintTiming>,
     base::TimeTicks first_contentful_paint_presentation_;
   };
 
-  PaintDetails& GetRelevantPaintDetails() {
-    return first_paints_reset_ ? soft_navigation_pending_paint_details_
-                               : paint_details_;
-  }
+  PaintDetails& GetRelevantPaintDetails() { return paint_details_; }
 
   DOMPaintTimingInfo ToDOMPaintTimingInfo(const PaintTimingInfo&) const;
 
   PaintDetails paint_details_;
-  PaintDetails soft_navigation_pending_paint_details_;
-  std::optional<PaintTimingInfo>
-      soft_navigation_pending_first_paint_timing_info_;
-  std::optional<PaintTimingInfo>
-      soft_navigation_pending_first_contentful_paint_timing_info_;
-  // First paint timestamp that doesn't update after soft navigations, and only
-  // used for UKM reporting.
+  // Timestamps used for UKM reporting.
   base::TimeTicks first_paint_presentation_for_ukm_;
-  // FCP timestamp that does not update after soft navigations.
-  base::TimeTicks
-      first_contentful_paint_presentation_ignoring_soft_navigations_;
+  base::TimeTicks first_contentful_paint_presentation_;
   base::TimeTicks first_meaningful_paint_presentation_;
   base::TimeTicks first_meaningful_paint_candidate_;
   base::TimeTicks first_eligible_to_paint_;
   base::TimeTicks last_rendering_update_end_time_;
-  bool first_paints_reset_ = false;
-  bool soft_navigation_detected_ = false;
-  bool soft_navigation_fp_reported_ = false;
-  bool soft_navigation_fcp_reported_ = false;
 
   base::TimeTicks lcp_mouse_over_dispatch_time_;
 
+  Member<PaintTimingDetector> paint_timing_detector_;
+  Member<ImageElementTiming> image_element_timing_;
+  Member<TextElementTiming> text_element_timing_;
+  Member<LargestContentfulPaintManager> largest_contentful_paint_manager_;
   Member<FirstMeaningfulPaintDetector> fmp_detector_;
   // The callback ID for requestAnimationFrame to record its time after the page
   // is restored from the back-forward cache.
   int raf_after_bfcache_restore_measurement_callback_id_ = 0;
 
-  const base::TickClock* clock_;
-
-  FRIEND_TEST_ALL_PREFIXES(FirstMeaningfulPaintDetectorTest,
-                           TwoLayoutsSignificantFirst);
   HashSet<PaintEvent> pending_paint_events_;
+
+  // Set in some unit tests.
+  Member<CallbackManager> callback_manager_;
 };
 
 }  // namespace blink

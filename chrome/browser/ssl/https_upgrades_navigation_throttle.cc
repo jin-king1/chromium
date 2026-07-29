@@ -4,9 +4,11 @@
 
 #include "chrome/browser/ssl/https_upgrades_navigation_throttle.h"
 
+#include <optional>
 #include <utility>
 
 #include "base/feature_list.h"
+#include "base/functional/bind.h"
 #include "base/memory/weak_ptr.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
@@ -20,105 +22,81 @@
 #include "components/prefs/pref_service.h"
 #include "components/security_interstitials/content/security_interstitial_tab_helper.h"
 #include "components/security_interstitials/content/stateful_ssl_host_state_delegate.h"
+#include "components/security_interstitials/core/features.h"
 #include "components/security_interstitials/core/https_only_mode_metrics.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/navigation_throttle.h"
 #include "content/public/browser/web_contents.h"
 #include "net/base/net_errors.h"
+#include "services/metrics/public/cpp/ukm_builders.h"
+#include "services/metrics/public/cpp/ukm_recorder.h"
 #include "ui/base/page_transition_types.h"
 
 using security_interstitials::https_only_mode::Event;
 
 namespace {
 
-// Time that the throttle will wait before canceling the upgraded navigation and
-// showing the HTTPS-First Mode interstitial.
-base::TimeDelta g_fallback_delay = base::Seconds(3);
+// If set, the fallback delay has been overridden for testing.
+std::optional<base::TimeDelta> g_fallback_delay;
+
+// TODO(crbug.com/351990829): Consider setting the page title and favicon to be
+// more like interstitials.
+inline constexpr char kBlankPageHtml[] = "<html></html>";
 
 }  // namespace
 
 // static
-std::unique_ptr<HttpsUpgradesNavigationThrottle>
-HttpsUpgradesNavigationThrottle::MaybeCreateThrottleFor(
-    content::NavigationHandle* handle,
+void HttpsUpgradesNavigationThrottle::MaybeCreateAndAdd(
+    content::NavigationThrottleRegistry& registry,
     std::unique_ptr<SecurityBlockingPageFactory> blocking_page_factory,
     Profile* profile) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
   // HTTPS-First Mode is only relevant for primary main-frame HTTP(S)
   // navigations.
-  if (!handle->GetURL().SchemeIsHTTPOrHTTPS() ||
-      !handle->IsInPrimaryMainFrame() || handle->IsSameDocument()) {
-    return nullptr;
+  content::NavigationHandle& handle = registry.GetNavigationHandle();
+  if (!registry.GetNavigationHandle().GetURL().SchemeIsHTTPOrHTTPS() ||
+      !handle.IsInPrimaryMainFrame() || handle.IsSameDocument()) {
+    return;
   }
 
-  PrefService* prefs = profile->GetPrefs();
   security_interstitials::https_only_mode::HttpInterstitialState
-      interstitial_state;
-  interstitial_state.enabled_by_pref =
-      prefs && prefs->GetBoolean(prefs::kHttpsOnlyModeEnabled);
-
-  if (base::FeatureList::IsEnabled(features::kHttpsFirstModeIncognito)) {
-    if (profile->IsIncognitoProfile() && prefs &&
-        prefs->GetBoolean(prefs::kHttpsFirstModeIncognito)) {
-      interstitial_state.enabled_by_incognito = true;
-    }
-  }
-
-  StatefulSSLHostStateDelegate* state =
-      static_cast<StatefulSSLHostStateDelegate*>(
-          profile->GetSSLHostStateDelegate());
-
-  if (IsBalancedModeEnabled(prefs) && state &&
-      !state->HttpsFirstBalancedModeSuppressedForTesting()) {
-    interstitial_state.enabled_in_balanced_mode = true;
-  }
-
-  auto* storage_partition =
-      handle->GetWebContents()->GetPrimaryMainFrame()->GetStoragePartition();
+      interstitial_state =
+          ComputeInterstitialState(handle.GetWebContents(), handle.GetURL());
 
   HttpsFirstModeService* hfm_service =
       HttpsFirstModeServiceFactory::GetForProfile(profile);
   if (hfm_service) {
     // Can be null in some cases, e.g. when using Ash sign-in profile.
     hfm_service->IncrementRecentNavigationCount();
-    interstitial_state.enabled_by_typically_secure_browsing =
-        hfm_service->IsInterstitialEnabledByTypicallySecureUserHeuristic();
-  }
-
-  // StatefulSSLHostStateDelegate can be null during tests.
-  if (state &&
-      state->IsHttpsEnforcedForUrl(handle->GetURL(), storage_partition) &&
-      !MustDisableSiteEngagementHeuristic(profile)) {
-    interstitial_state.enabled_by_engagement_heuristic = true;
   }
 
   bool https_upgrades_enabled =
-      interstitial_state.enabled_by_pref ||
+      IsInterstitialEnabled(interstitial_state) ||
       base::FeatureList::IsEnabled(features::kHttpsUpgrades);
   if (!https_upgrades_enabled) {
-    return nullptr;
+    return;
   }
 
   // Ensure that the HttpsOnlyModeTabHelper has been created (this does nothing
   // if it has already been created for the WebContents). There are cases where
   // the tab helper won't get created by the initialization in
   // chrome/browser/ui/tab_helpers.cc but the criteria for adding the throttle
-  // are still met (see crbug.com/1233889 for one example).
-  HttpsOnlyModeTabHelper::CreateForWebContents(handle->GetWebContents());
+  // are still met (see crbug.com/40781148 for one example).
+  HttpsOnlyModeTabHelper::CreateForWebContents(handle.GetWebContents());
 
-  return std::make_unique<HttpsUpgradesNavigationThrottle>(
-      handle, profile, std::move(blocking_page_factory), interstitial_state);
+  registry.AddThrottle(std::make_unique<HttpsUpgradesNavigationThrottle>(
+      registry, profile, std::move(blocking_page_factory), interstitial_state));
 }
 
 HttpsUpgradesNavigationThrottle::HttpsUpgradesNavigationThrottle(
-    content::NavigationHandle* handle,
+    content::NavigationThrottleRegistry& registry,
     Profile* profile,
     std::unique_ptr<SecurityBlockingPageFactory> blocking_page_factory,
     security_interstitials::https_only_mode::HttpInterstitialState
         interstitial_state)
-    : content::NavigationThrottle(handle),
+    : content::NavigationThrottle(registry),
       profile_(profile),
       blocking_page_factory_(std::move(blocking_page_factory)),
       interstitial_state_(interstitial_state) {}
@@ -157,16 +135,36 @@ HttpsUpgradesNavigationThrottle::WillStartRequest() {
 
       // Mark this as a fallback HTTP navigation and trigger the interstitial.
       tab_helper->set_is_navigation_fallback(true);
-      std::unique_ptr<security_interstitials::HttpsOnlyModeBlockingPage>
-          blocking_page =
-              blocking_page_factory_->CreateHttpsOnlyModeBlockingPage(
-                  contents, handle->GetURL(), interstitial_state_);
-      std::string interstitial_html = blocking_page->GetHTMLContents();
-      security_interstitials::SecurityInterstitialTabHelper::
-          AssociateBlockingPage(handle, std::move(blocking_page));
-      return content::NavigationThrottle::ThrottleCheckResult(
-          content::NavigationThrottle::CANCEL, net::ERR_BLOCKED_BY_CLIENT,
-          std::move(interstitial_html));
+
+      if (base::FeatureList::IsEnabled(
+              security_interstitials::features::kHttpsFirstDialogUi)) {
+        // New dialog UI.
+        // Rewrite the response to a blank page. DidFinishNavigation will
+        // show the ABH dialog on top of this blank page.
+        return {content::NavigationThrottle::CANCEL, net::ERR_BLOCKED_BY_CLIENT,
+                kBlankPageHtml};
+      } else {
+        // Old full-page interstitial UI.
+        ukm::SourceId source_id =
+            ukm::ConvertToSourceId(navigation_handle()->GetNavigationId(),
+                                   ukm::SourceIdType::NAVIGATION_ID);
+        security_interstitials::https_only_mode::FallbackReason
+            fallback_reason =
+                tab_helper->get_failed_upgrade_reason(handle->GetURL());
+        std::unique_ptr<security_interstitials::HttpsOnlyModeBlockingPage>
+            blocking_page =
+                blocking_page_factory_->CreateHttpsOnlyModeBlockingPage(
+                    contents, handle->GetURL(), interstitial_state_,
+                    /*url_type_param=*/std::nullopt,
+                    base::BindRepeating(&RecordHttpsFirstModeUKM, source_id,
+                                        fallback_reason));
+        std::string interstitial_html = blocking_page->GetHTMLContents();
+        security_interstitials::SecurityInterstitialTabHelper::
+            AssociateBlockingPage(handle, std::move(blocking_page));
+        return content::NavigationThrottle::ThrottleCheckResult(
+            content::NavigationThrottle::CANCEL, net::ERR_BLOCKED_BY_CLIENT,
+            std::move(interstitial_html));
+      }
     }
 
     // Otherwise, just record metrics and continue.
@@ -210,21 +208,37 @@ HttpsUpgradesNavigationThrottle::WillRedirectRequest() {
     handle->CancelNavigationTimeout();
   }
 
+  ukm::SourceId source_id = ukm::ConvertToSourceId(
+      navigation_handle()->GetNavigationId(), ukm::SourceIdType::NAVIGATION_ID);
   if (tab_helper->is_navigation_fallback() &&
       !handle->GetURL().SchemeIsCryptographic() &&
       IsInterstitialEnabled(interstitial_state_)) {
     security_interstitials::https_only_mode::RecordInterstitialReason(
         interstitial_state_);
 
-    std::unique_ptr<security_interstitials::HttpsOnlyModeBlockingPage>
-        blocking_page = blocking_page_factory_->CreateHttpsOnlyModeBlockingPage(
-            contents, handle->GetURL(), interstitial_state_);
-    std::string interstitial_html = blocking_page->GetHTMLContents();
-    security_interstitials::SecurityInterstitialTabHelper::
-        AssociateBlockingPage(handle, std::move(blocking_page));
-    return content::NavigationThrottle::ThrottleCheckResult(
-        content::NavigationThrottle::CANCEL, net::ERR_BLOCKED_BY_CLIENT,
-        std::move(interstitial_html));
+    if (base::FeatureList::IsEnabled(
+            security_interstitials::features::kHttpsFirstDialogUi)) {
+      // New dialog UI.
+      // Rewrite the response to a blank page and cancel the navigation.
+      // HttpsOnlyModeTabHelper::DidFinishNavigation() will
+      // show the ABH dialog on top of this blank page.
+      return {content::NavigationThrottle::CANCEL, net::ERR_BLOCKED_BY_CLIENT,
+              kBlankPageHtml};
+    } else {
+      std::unique_ptr<security_interstitials::HttpsOnlyModeBlockingPage>
+          blocking_page =
+              blocking_page_factory_->CreateHttpsOnlyModeBlockingPage(
+                  contents, handle->GetURL(), interstitial_state_,
+                  /*url_type_param=*/std::nullopt,
+                  base::BindRepeating(&RecordHttpsFirstModeUKM, source_id,
+                                      tab_helper->fallback_reason()));
+      std::string interstitial_html = blocking_page->GetHTMLContents();
+      security_interstitials::SecurityInterstitialTabHelper::
+          AssociateBlockingPage(handle, std::move(blocking_page));
+      return content::NavigationThrottle::ThrottleCheckResult(
+          content::NavigationThrottle::CANCEL, net::ERR_BLOCKED_BY_CLIENT,
+          std::move(interstitial_html));
+    }
   }
 
   // Otherwise, just record metrics and continue.
@@ -253,13 +267,20 @@ HttpsUpgradesNavigationThrottle::WillRedirectRequest() {
   // long, the fallback timer will kick in. ERR_TOO_MANY_REDIRECTS should result
   // in the request failing and triggering fallback.
   if (tab_helper->is_navigation_upgraded()) {
-    // Check if the timer is already started, as there may be additional
-    // redirects on the navigation after the artificial upgrade redirect.
-    bool timer_started =
-        navigation_handle()->SetNavigationTimeout(g_fallback_delay);
+    base::TimeDelta default_delay =
+        IsInterstitialEnabled(interstitial_state_)
+            ? features::kHttpsUpgradesAskBeforeHttpFallbackDelay.Get()
+            : features::kHttpsUpgradesFallbackDelay.Get();
+    base::TimeDelta delay = g_fallback_delay.value_or(default_delay);
+    // Only log the first time the timeout is set.
+    bool timer_started = navigation_handle()->SetNavigationTimeout(delay);
     if (timer_started) {
       RecordHttpsFirstModeNavigation(Event::kUpgradeAttempted,
                                      interstitial_state_);
+      if (tab_helper->is_typed_schemeless_upgrade()) {
+        RecordHttpsFirstModeNavigation(Event::kTypedSchemelessUpgradeAttempted,
+                                       interstitial_state_);
+      }
     }
   }
 
@@ -274,6 +295,10 @@ HttpsUpgradesNavigationThrottle::WillProcessResponse() {
   if (tab_helper->is_navigation_upgraded()) {
     RecordHttpsFirstModeNavigation(Event::kUpgradeSucceeded,
                                    interstitial_state_);
+    if (tab_helper->is_typed_schemeless_upgrade()) {
+      RecordHttpsFirstModeNavigation(Event::kTypedSchemelessUpgradeSucceeded,
+                                     interstitial_state_);
+    }
     tab_helper->set_is_navigation_upgraded(false);
   }
 

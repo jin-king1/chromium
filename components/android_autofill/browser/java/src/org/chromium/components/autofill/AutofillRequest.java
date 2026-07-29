@@ -39,7 +39,7 @@ public class AutofillRequest {
 
     private static final String TAG = "AutofillRequest";
 
-    private FormData mFormData;
+    private final FormData mFormData;
     private @Nullable FocusField mFocusField;
     private @Nullable AutofillHintsService mAutofillHintsService;
 
@@ -159,15 +159,15 @@ public class AutofillRequest {
 
     public void onServerPredictionsAvailable() {
         if (mAutofillHintsService == null) return;
-        ArrayList<ViewType> viewTypes = new ArrayList<ViewType>();
+        ArrayList<ViewType> viewTypes = new ArrayList<>();
         for (FormFieldData field : mFormData.mFields) {
             viewTypes.add(
                     new ViewType(
                             field.getAutofillId(),
                             field.getServerType(),
-                            field.getComputedType(),
+                            field.getOverallType(),
                             field.getServerPredictions()));
-            }
+        }
         mAutofillHintsService.onViewTypeAvailable(viewTypes);
     }
 }

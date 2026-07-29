@@ -7,10 +7,10 @@ package org.chromium.chrome.browser.bookmarks;
 import android.app.Activity;
 import android.content.Context;
 
-import androidx.annotation.Nullable;
-
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.components.bookmarks.BookmarkId;
 
 @NullMarked
@@ -19,23 +19,26 @@ public interface BookmarkManagerOpener {
      * Shows the bookmark manager UI.
      *
      * @param activity An activity to start the manager with, if null then the application context
-     *     will be used instead.
-     * @param profile The profile associated with the bookmarks.
+     *                 will be used instead.
+     * @param tab      The current tab if it exists.
+     * @param profile  The profile associated with the bookmarks.
      */
-    default void showBookmarkManager(Activity activity, Profile profile) {
-        showBookmarkManager(activity, profile, /* folderId= */ null);
+    default void showBookmarkManager(Activity activity, @Nullable Tab tab, Profile profile) {
+        showBookmarkManager(activity, tab, profile, /* folderId= */ null);
     }
 
     /**
      * Shows the bookmark manager UI.
      *
      * @param activity An activity to start the manager with, if null then the application context
-     *     will be used instead.
-     * @param profile The profile associated with the bookmarks.
+     *                 will be used instead.
+     * @param tab      The current tab if it exists.
+     * @param profile  The profile associated with the bookmarks.
      * @param folderId The bookmark folder to open. If null, the bookmark manager will open the most
-     *     recent folder. Can be null.
+     *                 recent folder. Can be null.
      */
-    void showBookmarkManager(Activity activity, Profile profile, @Nullable BookmarkId folderId);
+    void showBookmarkManager(Activity activity, @Nullable Tab tab, Profile profile,
+            @Nullable BookmarkId folderId);
 
     /**
      * Starts an {@link BookmarkEditActivity} for the given {@link BookmarkId}.
@@ -61,6 +64,10 @@ public interface BookmarkManagerOpener {
     // TODO(crbug.com/400793505): Remove this function.
     void finishActivityOnPhone(Context context);
 
-    /** Returns the last used URL for the bookmarks manager. */
-    String getLastUsedUrl();
+    /**
+     * Returns the last used URL for the bookmarks manager.
+     *
+     * @param profile The URL for the profile associated with the bookmarks.
+     */
+    String getLastUsedUrl(Profile profile);
 }

@@ -9,6 +9,7 @@
 #include "ash/public/cpp/login_screen_test_api.h"
 #include "ash/public/cpp/login_types.h"
 #include "ash/public/cpp/system_tray_test_api.h"
+#include "base/check_deref.h"
 #include "base/command_line.h"
 #include "base/functional/bind.h"
 #include "base/memory/ref_counted.h"
@@ -22,15 +23,15 @@
 #include "chrome/browser/ash/login/test/oobe_screen_waiter.h"
 #include "chrome/browser/ash/policy/core/device_policy_cros_browser_test.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/lifetime/application_lifetime.h"
 #include "chrome/browser/net/profile_network_context_service.h"
 #include "chrome/browser/net/profile_network_context_service_factory.h"
-#include "chrome/grit/generated_resources.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/settings/cros_settings_names.h"
 #include "chromeos/ash/components/system/fake_statistics_provider.h"
 #include "chromeos/strings/grit/chromeos_strings.h"
+#include "components/language/core/browser/language_prefs.h"
 #include "components/policy/proto/chrome_device_policy.pb.h"
 #include "components/user_manager/user_manager.h"
 #include "content/public/test/browser_test.h"
@@ -204,9 +205,18 @@ class LoginScreenLocalePolicyWithVPDTest
 // preference over the VPD locale.
 IN_PROC_BROWSER_TEST_F(LoginScreenLocalePolicyWithVPDTest,
                        SigninAcceptLanguage) {
+  // TODO(pkasting): The `languages::LanguagePrefs` constructor seems to be the
+  // only place that sets the `kAcceptLanguages` pref value to the correct
+  // value, but there is no persistent instance of this object (?!). Instantiate
+  // one to make sure the test sees the right value, but this seems like a
+  // band-aid...
+  content::BrowserContext* const browser_context =
+      ash::BrowserContextHelper::Get()->GetSigninBrowserContext();
+  language::LanguagePrefs language_prefs(
+      Profile::FromBrowserContext(browser_context)->GetPrefs());
+
   auto* profile_network_context =
-      ProfileNetworkContextServiceFactory::GetForContext(
-          ash::BrowserContextHelper::Get()->GetSigninBrowserContext());
+      ProfileNetworkContextServiceFactory::GetForContext(browser_context);
   ASSERT_NE(profile_network_context, nullptr);
 
   network::mojom::NetworkContextParams network_context_params;
@@ -216,7 +226,8 @@ IN_PROC_BROWSER_TEST_F(LoginScreenLocalePolicyWithVPDTest,
   profile_network_context->ConfigureNetworkContextParams(
       /*in_memory=*/true, empty_relative_partition_path,
       &network_context_params, &cert_verifier_creation_params);
-  ASSERT_EQ(network_context_params.accept_language, "fr-FR,fr;q=0.9");
+  EXPECT_EQ(network_context_params.accept_language,
+            "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7");
 }
 
 class LoginScreenButtonsLocalePolicy : public LoginScreenLocalePolicyTestBase {
@@ -255,7 +266,8 @@ IN_PROC_BROWSER_TEST_F(LoginScreenButtonsLocalePolicy,
 
 IN_PROC_BROWSER_TEST_F(LoginScreenButtonsLocalePolicy,
                        PRE_UnifiedTrayLabelsText) {
-  StartupUtils::MarkOobeCompleted();
+  StartupUtils::MarkOobeCompleted(
+      CHECK_DEREF(g_browser_process->local_state()));
 }
 
 IN_PROC_BROWSER_TEST_F(LoginScreenButtonsLocalePolicy, UnifiedTrayLabelsText) {

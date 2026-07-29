@@ -119,8 +119,11 @@ void HotseatTransitionAnimator::DoAnimation(HotseatState old_state,
 
   StopObservingImplicitAnimations();
 
-  shelf_widget_->GetAnimatingBackground()->SetColor(
-      ShelfConfig::Get()->GetMaximizedShelfColor(shelf_widget_));
+  // TODO(b:522627357): Update `GetAnimatingBackground` to return
+  // `ui::LayerSolidColor`.
+  shelf_widget_->GetAnimatingBackground()->AsSolidColor()->SetColor(
+      SkColor4f::FromColor(
+          ShelfConfig::Get()->GetMaximizedShelfColor(shelf_widget_)));
 
   gfx::Rect drag_handle_bounds(shelf_widget_->GetAnimatingBackground()->size());
   drag_handle_bounds.ClampToCenteredSize(ShelfConfig::Get()->DragHandleSize());
@@ -165,7 +168,7 @@ bool HotseatTransitionAnimator::ShouldDoAnimation(HotseatState old_state,
           old_state == HotseatState::kShownHomeLauncher) &&
          !(new_state == HotseatState::kShownClamshell ||
            old_state == HotseatState::kShownClamshell) &&
-         display::Screen::GetScreen()->InTabletMode();
+         display::Screen::Get()->InTabletMode();
 }
 
 void HotseatTransitionAnimator::NotifyHotseatTransitionAnimationEnded(

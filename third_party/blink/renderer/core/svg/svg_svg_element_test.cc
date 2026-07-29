@@ -7,11 +7,11 @@
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/html/html_body_element.h"
-#include "third_party/blink/renderer/core/layout/geometry/physical_size.h"
 #include "third_party/blink/renderer/core/layout/layout_box.h"
 #include "third_party/blink/renderer/core/testing/core_unit_test_helper.h"
 #include "third_party/blink/renderer/core/testing/sim/sim_request.h"
 #include "third_party/blink/renderer/core/testing/sim/sim_test.h"
+#include "third_party/blink/renderer/platform/geometry/physical_size.h"
 
 namespace blink {
 
@@ -37,14 +37,14 @@ TEST_F(SVGSVGElementTest, ViewSpecSetAfterFirstEmbeddeeLayout) {
   Document& document = GetDocument();
   Element* object_element = document.body()->firstElementChild();
   const LayoutBox* layout_box = object_element->GetLayoutBox();
-  EXPECT_EQ(layout_box->Size(), PhysicalSize(200, 100));
+  EXPECT_EQ(layout_box->StitchedSize(), PhysicalSize(200, 100));
 
   object_subresource.Finish();
 
   ASSERT_TRUE(Compositor().NeedsBeginFrame());
   Compositor().BeginFrame();
 
-  EXPECT_EQ(layout_box->Size(), PhysicalSize(100, 100));
+  EXPECT_EQ(layout_box->StitchedSize(), PhysicalSize(100, 100));
 }
 
 }  // namespace blink

@@ -34,21 +34,21 @@
 #include <memory>
 #include <optional>
 
-#include "base/gtest_prod_util.h"
+#include "base/types/pass_key.h"
+#include "net/base/schemeful_site.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/forward.h"
 #include "third_party/blink/renderer/platform/wtf/hash_traits.h"
+#include "third_party/blink/renderer/platform/wtf/ref_counted.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "third_party/blink/renderer/platform/wtf/thread_safe_ref_counted.h"
 #include "url/origin.h"
 
-namespace WTF {
-class StringBuilder;
-}  // namespace WTF
-
 namespace blink {
 
 class KURL;
+class SandboxedOpaqueSecurityOriginCreator;
 
 // An identifier which defines the source of content (e.g. a document) and
 // restricts what other objects it is permitted to access (based on their
@@ -105,6 +105,18 @@ class PLATFORM_EXPORT SecurityOrigin : public RefCounted<SecurityOrigin> {
 
   static scoped_refptr<SecurityOrigin> CreateFromUrlOrigin(const url::Origin&);
   url::Origin ToUrlOrigin() const;
+
+  // Returns the cached `net::SchemefulSite` for this origin, computing it
+  // on-demand. Equivalent to `net::SchemefulSite(ToUrlOrigin())`.
+  const net::SchemefulSite& GetSchemefulSite() const;
+
+  // Creates an opaque origin with the given nonce and origin. This method can
+  // only be called by SandboxedOpaqueSecurityOriginCreator to ensure proper
+  // access control for nonce-based origins.
+  static scoped_refptr<SecurityOrigin> CreateWithNonce(
+      base::PassKey<SandboxedOpaqueSecurityOriginCreator>,
+      const base::UnguessableToken& nonce,
+      const SecurityOrigin* origin);
 
   SecurityOrigin(const SecurityOrigin&) = delete;
   SecurityOrigin& operator=(const SecurityOrigin&) = delete;
@@ -412,7 +424,7 @@ class PLATFORM_EXPORT SecurityOrigin : public RefCounted<SecurityOrigin> {
  private:
   // Various serialisation and test routines that need direct nonce access.
   friend struct mojo::UrlOriginAdapter;
-  friend struct WTF::HashTraits<scoped_refptr<const SecurityOrigin>>;
+  friend struct HashTraits<scoped_refptr<const SecurityOrigin>>;
   friend class SecurityOriginTest;
 
   // For calling GetNonceForSerialization().
@@ -453,7 +465,7 @@ class PLATFORM_EXPORT SecurityOrigin : public RefCounted<SecurityOrigin> {
 
   // FIXME: Rename this function to something more semantic.
   bool PassesFileCheck(const SecurityOrigin*) const;
-  void BuildRawString(WTF::StringBuilder&) const;
+  void BuildRawString(StringBuilder&) const;
 
   // Get the nonce associated with this origin, if it is opaque. This should be
   // used only when trying to send an Origin across an IPC pipe or comparing
@@ -480,11 +492,11 @@ class PLATFORM_EXPORT SecurityOrigin : public RefCounted<SecurityOrigin> {
   // For opaque origins, tracks the non-opaque origin from which the opaque
   // origin is derived.
   const scoped_refptr<const SecurityOrigin> precursor_origin_;
+
+  // Cached value of `GetSchemefulSite()`. Pure function of `const` tuple
+  // members so invalidation is not needed. Not copied; copies recompute lazily.
+  mutable std::unique_ptr<net::SchemefulSite> cached_schemeful_site_;
 };
-
-}  // namespace blink
-
-namespace WTF {
 
 // The default HashTraits of SecurityOrigin implements the "same origin"
 // equality relation between two origins. As such it ignores the domain that
@@ -492,9 +504,9 @@ namespace WTF {
 // equality you'll need to define a custom hash traits type using a different
 // hash function.
 template <>
-struct HashTraits<scoped_refptr<const blink::SecurityOrigin>>
-    : GenericHashTraits<scoped_refptr<const blink::SecurityOrigin>> {
-  static unsigned GetHash(const blink::SecurityOrigin* origin) {
+struct HashTraits<scoped_refptr<const SecurityOrigin>>
+    : GenericHashTraits<scoped_refptr<const SecurityOrigin>> {
+  static unsigned GetHash(const SecurityOrigin* origin) {
     const base::UnguessableToken* nonce = origin->GetNonceForSerialization();
     size_t nonce_hash = nonce ? base::UnguessableTokenHash()(*nonce) : 0;
 
@@ -511,33 +523,31 @@ struct HashTraits<scoped_refptr<const blink::SecurityOrigin>>
 #error "Unknown bits"
 #endif
     };
-    return StringHasher::HashMemory(base::as_byte_span(hash_codes));
+    return StringHasher::HashMemory32(base::as_byte_span(hash_codes));
   }
-  static unsigned GetHash(
-      const scoped_refptr<const blink::SecurityOrigin>& origin) {
+  static unsigned GetHash(const scoped_refptr<const SecurityOrigin>& origin) {
     return GetHash(origin.get());
   }
 
-  static bool Equal(const blink::SecurityOrigin* a,
-                    const blink::SecurityOrigin* b) {
+  static bool Equal(const SecurityOrigin* a, const SecurityOrigin* b) {
     return a->IsSameOriginWith(b);
   }
-  static bool Equal(const blink::SecurityOrigin* a,
-                    const scoped_refptr<const blink::SecurityOrigin>& b) {
+  static bool Equal(const SecurityOrigin* a,
+                    const scoped_refptr<const SecurityOrigin>& b) {
     return Equal(a, b.get());
   }
-  static bool Equal(const scoped_refptr<const blink::SecurityOrigin>& a,
-                    const blink::SecurityOrigin* b) {
+  static bool Equal(const scoped_refptr<const SecurityOrigin>& a,
+                    const SecurityOrigin* b) {
     return Equal(a.get(), b);
   }
-  static bool Equal(const scoped_refptr<const blink::SecurityOrigin>& a,
-                    const scoped_refptr<const blink::SecurityOrigin>& b) {
+  static bool Equal(const scoped_refptr<const SecurityOrigin>& a,
+                    const scoped_refptr<const SecurityOrigin>& b) {
     return Equal(a.get(), b.get());
   }
 
   static constexpr bool kSafeToCompareToEmptyOrDeleted = false;
 };
 
-}  // namespace WTF
+}  // namespace blink
 
 #endif  // THIRD_PARTY_BLINK_RENDERER_PLATFORM_WEBORIGIN_SECURITY_ORIGIN_H_

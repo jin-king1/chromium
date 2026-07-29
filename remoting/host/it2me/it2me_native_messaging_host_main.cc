@@ -17,9 +17,9 @@
 #include "mojo/core/embedder/embedder.h"
 #include "net/base/network_change_notifier.h"
 #include "remoting/base/auto_thread_task_runner.h"
-#include "remoting/base/crash/crash_reporting.h"
 #include "remoting/base/host_settings.h"
 #include "remoting/base/logging.h"
+#include "remoting/base/memory_consumer_registry.h"
 #include "remoting/host/base/host_exit_codes.h"
 #include "remoting/host/base/switches.h"
 #include "remoting/host/chromoting_host_context.h"
@@ -44,10 +44,15 @@
 #include "remoting/host/mac/permission_utils.h"
 #endif  // BUILDFLAG(IS_APPLE)
 
+#if BUILDFLAG(IS_LINUX)
+#include "remoting/base/crash/crash_reporting_crashpad.h"
+#endif  // BUILDFLAG(IS_LINUX)
+
 #if BUILDFLAG(IS_WIN)
 #include <windows.h>
 
 #include <commctrl.h>
+#include "remoting/base/crash/crash_reporting_breakpad.h"
 #endif  // BUILDFLAG(IS_WIN)
 
 namespace remoting {
@@ -75,6 +80,9 @@ bool CurrentProcessHasUiAccess() {
 // Creates a It2MeNativeMessagingHost instance, attaches it to stdin/stdout and
 // runs the task executor until It2MeNativeMessagingHost signals shutdown.
 int It2MeNativeMessagingHostMain(int argc, char** argv) {
+  base::ScopedMemoryConsumerRegistry<remoting::MemoryConsumerRegistry>
+      memory_consumer_registry;
+
 #if (BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)) && defined(REMOTING_USE_X11)
   // Initialize Xlib for multi-threaded use, allowing non-Chromium code to
   // use X11 safely (such as the WebRTC capturer, GTK ...)
@@ -100,7 +108,11 @@ int It2MeNativeMessagingHostMain(int argc, char** argv) {
   // needs to be initialized first, so that the preference for crash-reporting
   // can be looked up in the config file.
   if (IsUsageStatsAllowed()) {
-    InitializeCrashReporting();
+#if BUILDFLAG(IS_LINUX)
+    InitializeCrashpadReporting();
+#elif BUILDFLAG(IS_WIN)
+    InitializeBreakpadReporting();
+#endif  // BUILDFLAG(IS_LINUX)
   }
 #endif  // defined(REMOTING_ENABLE_CRASH_REPORTING)
 
@@ -209,7 +221,8 @@ int It2MeNativeMessagingHostMain(int argc, char** argv) {
 #error Not implemented.
 #endif
 
-  base::SingleThreadTaskExecutor main_task_executor(base::MessagePumpType::UI);
+  base::SingleThreadTaskExecutor main_task_executor(base::MessagePumpType::UI,
+                                                    /*is_main_thread=*/true);
   base::RunLoop run_loop;
 
 #if BUILDFLAG(IS_APPLE)

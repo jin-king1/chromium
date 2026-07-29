@@ -11,6 +11,7 @@
 #include <optional>
 
 #include "chrome/common/extensions/api/accessibility_private.h"
+#include "content/public/browser/scoped_accessibility_mode.h"
 #include "extensions/browser/extension_function.h"
 
 // API function that darkens or undarkens the screen.
@@ -77,6 +78,21 @@ class AccessibilityPrivateForwardKeyEventsToSwitchAccessFunction
       ACCESSIBILITY_PRIVATE_FORWARDKEYEVENTSTOSWITCHACCESS)
 };
 
+// API function that initiates a download of the Tenji DLC and responds with the
+// file bytes via a callback.
+class AccessibilityPrivateInstallTenjiFunction : public ExtensionFunction {
+  ~AccessibilityPrivateInstallTenjiFunction() override = default;
+
+ public:
+  ResponseAction Run() override;
+  DECLARE_EXTENSION_FUNCTION("accessibilityPrivate.installTenji",
+                             ACCESSIBILITY_PRIVATE_INSTALLTENJI)
+
+ private:
+  void OnInstallFinished(
+      std::optional<::extensions::api::accessibility_private::TenjiData> data);
+};
+
 // API function that is called to get the device's battery status as a string.
 class AccessibilityPrivateGetBatteryDescriptionFunction
     : public ExtensionFunction {
@@ -133,6 +149,18 @@ class AccessibilityPrivateHandleScrollableBoundsForPointFoundFunction
   DECLARE_EXTENSION_FUNCTION(
       "accessibilityPrivate.handleScrollableBoundsForPointFound",
       ACCESSIBILITY_PRIVATE_HANDLESCROLLABLEBOUNDSFORPOINTFOUND)
+};
+
+// API function that is called by the ChromeVox extension to process a pending
+// key event.
+class AccessibilityPrivateProcessPendingSpokenFeedbackEventFunction
+    : public ExtensionFunction {
+  ~AccessibilityPrivateProcessPendingSpokenFeedbackEventFunction() override =
+      default;
+  ResponseAction Run() override;
+  DECLARE_EXTENSION_FUNCTION(
+      "accessibilityPrivate.processPendingSpokenFeedbackEvent",
+      ACCESSIBILITY_PRIVATE_PROCESSPENDINGSPOKENFEEDBACKEVENT)
 };
 
 // API function that initiates a download of the FaceGaze assets DLC and
@@ -291,12 +319,16 @@ class AccessibilityPrivateSetKeyboardListenerFunction
 // API function that enables or disables web content accessibility support.
 class AccessibilityPrivateSetNativeAccessibilityEnabledFunction
     : public ExtensionFunction {
-  ~AccessibilityPrivateSetNativeAccessibilityEnabledFunction() override =
-      default;
+ public:
+  AccessibilityPrivateSetNativeAccessibilityEnabledFunction();
+
+ private:
+  ~AccessibilityPrivateSetNativeAccessibilityEnabledFunction() override;
   ResponseAction Run() override;
   DECLARE_EXTENSION_FUNCTION(
       "accessibilityPrivate.setNativeAccessibilityEnabled",
       ACCESSIBILITY_PRIVATE_SETNATIVEACCESSIBILITYENABLED)
+  std::unique_ptr<content::ScopedAccessibilityMode> scoped_accessibility_mode_;
 };
 
 // API function that sets native ChromeVox ARC support.
@@ -329,6 +361,18 @@ class AccessibilityPrivateSetSelectToSpeakStateFunction
   ResponseAction Run() override;
   DECLARE_EXTENSION_FUNCTION("accessibilityPrivate.setSelectToSpeakState",
                              ACCESSIBILITY_PRIVATE_SETSELECTTOSPEAKSTATE)
+};
+
+// API function that is called by the ChromeVox extension to enable
+// key handling for the Manifest V3 version of the extension.
+class AccessibilityPrivateEnableSpokenFeedbackMv3KeyHandlingFunction
+    : public ExtensionFunction {
+  ~AccessibilityPrivateEnableSpokenFeedbackMv3KeyHandlingFunction() override =
+      default;
+  ResponseAction Run() override;
+  DECLARE_EXTENSION_FUNCTION(
+      "accessibilityPrivate.enableSpokenFeedbackMv3KeyHandling",
+      ACCESSIBILITY_PRIVATE_ENABLESPOKENFEEDBACKMV3KEYHANDLING)
 };
 
 // API function that opens or closes the virtual keyboard.

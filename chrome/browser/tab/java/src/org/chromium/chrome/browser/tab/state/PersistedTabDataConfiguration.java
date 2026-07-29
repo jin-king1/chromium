@@ -4,7 +4,13 @@
 
 package org.chromium.chrome.browser.tab.state;
 
+import static org.chromium.build.NullUtil.assertNonNull;
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import androidx.annotation.VisibleForTesting;
+
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -13,6 +19,7 @@ import java.util.Map;
  * Contains configuration values such as data storage methods and unique identifiers for {@link
  * PersistedTabData}
  */
+@NullMarked
 public enum PersistedTabDataConfiguration {
     // TODO(crbug.com/40678592) investigate should this go in the app code?
     // Also investigate if the storage instance should be shared.
@@ -20,6 +27,7 @@ public enum PersistedTabDataConfiguration {
     ENCRYPTED_MOCK_PERSISTED_TAB_DATA("EMPTD"),
     SHOPPING_PERSISTED_TAB_DATA("SPTD"),
     ARCHIVE_PERSISTED_TAB_DATA("APTD"),
+    SEND_TAB_TO_SELF_TAB_CARD_LABEL_DATA("STTSTCLD"),
     EMPTY_BYTE_BUFFER_TEST_CONFIG("EBBTC"),
     // TODO(crbug.com/40143638) investigate separating test from prod test implementations
     TEST_CONFIG("TC");
@@ -30,9 +38,10 @@ public enum PersistedTabDataConfiguration {
             sEncryptedLookup = new HashMap<>();
 
     /** Ensure lazy initialization of singleton storage */
-    private static MockPersistedTabDataStorage sMockPersistedTabDataStorage;
+    private static @Nullable MockPersistedTabDataStorage sMockPersistedTabDataStorage;
 
-    private static EmptyByteBufferPersistedTabDataStorage sEmptyByteBufferPersistedTabDataStorage;
+    private static @Nullable EmptyByteBufferPersistedTabDataStorage
+            sEmptyByteBufferPersistedTabDataStorage;
     private static boolean sUseEmptyByteBufferTestConfig;
 
     private static EmptyByteBufferPersistedTabDataStorage
@@ -60,6 +69,9 @@ public enum PersistedTabDataConfiguration {
         sEncryptedLookup.put(ShoppingPersistedTabData.class, SHOPPING_PERSISTED_TAB_DATA);
         sLookup.put(ArchivePersistedTabData.class, ARCHIVE_PERSISTED_TAB_DATA);
         sEncryptedLookup.put(ArchivePersistedTabData.class, ARCHIVE_PERSISTED_TAB_DATA);
+        sLookup.put(SendTabToSelfTabCardLabelData.class, SEND_TAB_TO_SELF_TAB_CARD_LABEL_DATA);
+        sEncryptedLookup.put(
+                SendTabToSelfTabCardLabelData.class, SEND_TAB_TO_SELF_TAB_CARD_LABEL_DATA);
     }
 
     private final String mId;
@@ -84,12 +96,13 @@ public enum PersistedTabDataConfiguration {
                 return getMockPersistedTabDataStorage();
             case SHOPPING_PERSISTED_TAB_DATA:
             case ARCHIVE_PERSISTED_TAB_DATA:
+            case SEND_TAB_TO_SELF_TAB_CARD_LABEL_DATA:
                 return new LevelDBPersistedTabDataStorageFactory().create();
             case EMPTY_BYTE_BUFFER_TEST_CONFIG:
                 return getEmptyByteBufferPersistedTabDataStorage();
         }
         assert false;
-        return null;
+        return assumeNonNull(null);
     }
 
     /**
@@ -109,24 +122,24 @@ public enum PersistedTabDataConfiguration {
             return TEST_CONFIG;
         }
         if (isEncrypted) {
-            return sEncryptedLookup.get(clazz);
+            return assertNonNull(sEncryptedLookup.get(clazz));
         }
-        return sLookup.get(clazz);
+        return assertNonNull(sLookup.get(clazz));
     }
 
     // TODO(crbug.com/40212560) merge test config options into an enum so there can be just one
     // setter).
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public static void setUseTestConfig(boolean useTestConfig) {
         sUseTestConfig = useTestConfig;
     }
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public static void setUseEmptyByteBufferTestConfig(boolean useEmptyByteBufferTestConfig) {
         sUseEmptyByteBufferTestConfig = useEmptyByteBufferTestConfig;
     }
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     static PersistedTabDataConfiguration getTestConfig() {
         return TEST_CONFIG;
     }

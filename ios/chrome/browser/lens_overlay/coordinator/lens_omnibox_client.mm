@@ -28,7 +28,6 @@
 #import "ios/chrome/browser/lens_overlay/coordinator/lens_omnibox_client_delegate.h"
 #import "ios/chrome/browser/lens_overlay/coordinator/lens_web_provider.h"
 #import "ios/chrome/browser/search_engines/model/template_url_service_factory.h"
-#import "ios/chrome/browser/sessions/model/ios_chrome_session_tab_helper.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/url/chrome_url_constants.h"
 #import "ios/chrome/common/NSString+Chromium.h"
@@ -88,7 +87,7 @@ bool LensOmniboxClient::IsDefaultSearchProviderEnabled() const {
 
 SessionID LensOmniboxClient::GetSessionID() const {
   if (web::WebState* web_state = web_provider_.webState) {
-    return IOSChromeSessionTabHelper::FromWebState(web_state)->session_id();
+    return web_state->GetUniqueIdentifier().ToSessionID();
   }
   return SessionID::InvalidValue();
 }
@@ -253,6 +252,6 @@ void LensOmniboxClient::OnThumbnailOnlyAccept() {
   [delegate_ omniboxDidAcceptText:u"" destinationURL:GURL() textClobbered:NO];
 }
 
-base::WeakPtr<OmniboxClient> LensOmniboxClient::AsWeakPtr() {
+base::WeakPtr<OmniboxClientIOS> LensOmniboxClient::AsWeakPtr() {
   return weak_factory_.GetWeakPtr();
 }

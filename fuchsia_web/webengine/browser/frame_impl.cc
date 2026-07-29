@@ -12,10 +12,10 @@
 #include <lib/fpromise/result.h>
 #include <lib/sys/cpp/component_context.h>
 
+#include <algorithm>
 #include <limits>
 
 #include "base/command_line.h"
-#include "base/containers/contains.h"
 #include "base/fuchsia/fuchsia_component_connect.h"
 #include "base/fuchsia/fuchsia_logging.h"
 #include "base/fuchsia/mem_buffer_util.h"
@@ -24,6 +24,7 @@
 #include "base/json/json_writer.h"
 #include "base/logging.h"
 #include "base/metrics/user_metrics.h"
+#include "base/notimplemented.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/synchronization/lock.h"
@@ -44,6 +45,8 @@
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/permission_controller.h"
+#include "content/public/browser/permission_descriptor_util.h"
+#include "content/public/browser/permission_result.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_widget_host.h"
@@ -200,7 +203,7 @@ FrameImplMap& WebContentsToFrameImplMap() {
   return frame_impl_map;
 }
 
-blink::PermissionType FidlPermissionTypeToContentPermissionType(
+std::optional<blink::PermissionType> FidlPermissionTypeToContentPermissionType(
     fuchsia::web::PermissionType fidl_type) {
   switch (fidl_type) {
     case fuchsia::web::PermissionType::MICROPHONE:
@@ -210,7 +213,11 @@ blink::PermissionType FidlPermissionTypeToContentPermissionType(
     case fuchsia::web::PermissionType::PROTECTED_MEDIA_IDENTIFIER:
       return blink::PermissionType::PROTECTED_MEDIA_IDENTIFIER;
     case fuchsia::web::PermissionType::PERSISTENT_STORAGE:
-      return blink::PermissionType::DURABLE_STORAGE;
+      return blink::PermissionType::PERSISTENT_STORAGE;
+    case fuchsia::web::PermissionType::NOTIFICATIONS:
+      return blink::PermissionType::NOTIFICATIONS;
+    default:
+      return std::nullopt;
   }
 }
 
@@ -218,7 +225,7 @@ blink::PermissionType FidlPermissionTypeToContentPermissionType(
 void HandleMediaPermissionsRequestResult(
     const content::MediaStreamRequest& request,
     content::MediaResponseCallback callback,
-    const std::vector<blink::mojom::PermissionStatus>& result) {
+    const std::vector<content::PermissionResult>& result) {
   // TODO(crbug.com/40216442): Generalize to multiple streams.
   blink::mojom::StreamDevicesPtr devices = blink::mojom::StreamDevices::New();
 
@@ -226,7 +233,7 @@ void HandleMediaPermissionsRequestResult(
 
   if (request.audio_type ==
       blink::mojom::MediaStreamType::DEVICE_AUDIO_CAPTURE) {
-    if (result[result_pos] == blink::mojom::PermissionStatus::GRANTED) {
+    if (result[result_pos].status == blink::mojom::PermissionStatus::GRANTED) {
       devices->audio_device = blink::MediaStreamDevice(
           request.audio_type,
           request.requested_audio_device_ids.empty()
@@ -239,7 +246,7 @@ void HandleMediaPermissionsRequestResult(
 
   if (request.video_type ==
       blink::mojom::MediaStreamType::DEVICE_VIDEO_CAPTURE) {
-    if (result[result_pos] == blink::mojom::PermissionStatus::GRANTED) {
+    if (result[result_pos].status == blink::mojom::PermissionStatus::GRANTED) {
       devices->video_device = blink::MediaStreamDevice(
           request.video_type,
           request.requested_video_device_ids.empty()
@@ -264,13 +271,14 @@ void HandleMediaPermissionsRequestResult(
 std::optional<url::Origin> ParseAndValidateWebOrigin(
     const std::string& origin_str) {
   GURL origin_url(origin_str);
-  if (!origin_url.username().empty() || !origin_url.password().empty() ||
-      !origin_url.query().empty() || !origin_url.ref().empty()) {
+  if (!origin_url.GetUsername().empty() || !origin_url.GetPassword().empty() ||
+      !origin_url.GetQuery().empty() || !origin_url.GetRef().empty()) {
     return std::nullopt;
   }
 
-  if (!origin_url.path().empty() && origin_url.path() != "/")
+  if (!origin_url.GetPath().empty() && origin_url.GetPath() != "/") {
     return std::nullopt;
+  }
 
   auto origin = url::Origin::Create(origin_url);
   if (origin.opaque())
@@ -318,6 +326,7 @@ class AudioStreamBrokerFactory final
       int render_frame_id,
       const std::string& device_id,
       const media::AudioParameters& params,
+      const base::UnguessableToken& group_id,
       uint32_t shared_memory_count,
       bool enable_agc,
       media::mojom::AudioProcessingConfigPtr processing_config,
@@ -325,7 +334,7 @@ class AudioStreamBrokerFactory final
       mojo::PendingRemote<blink::mojom::RendererAudioInputStreamFactoryClient>
           renderer_factory_client) final {
     return base_factory_->CreateAudioInputStreamBroker(
-        render_process_id, render_frame_id, device_id, params,
+        render_process_id, render_frame_id, device_id, params, group_id,
         shared_memory_count, enable_agc, std::move(processing_config),
         std::move(deleter), std::move(renderer_factory_client));
   }
@@ -357,6 +366,12 @@ class AudioStreamBrokerFactory final
       mojo::PendingRemote<media::mojom::AudioOutputStreamProviderClient> client)
       final {
     DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+
+    if (params.effects() & media::AudioParameters::FUCHSIA_RENDER_USAGE_MASK) {
+      DLOG(ERROR) << "Renderer requested forbidden Fuchsia effect flags.";
+      return nullptr;
+    }
+
     media::AudioParameters params_with_effects = params;
     if (output_usage_) {
       params_with_effects.set_effects(
@@ -572,6 +587,7 @@ void FrameImpl::ExecuteJavaScriptInternal(std::vector<std::string> origins,
 }
 
 bool FrameImpl::IsWebContentsCreationOverridden(
+    content::RenderFrameHost* opener,
     content::SiteInstance* source_site_instance,
     content::mojom::WindowContainerType window_container_type,
     const GURL& opener_url,
@@ -656,6 +672,7 @@ content::WebContents* FrameImpl::AddNewContents(
     case WindowOpenDisposition::OFF_THE_RECORD:
     case WindowOpenDisposition::IGNORE_ACTION:
     case WindowOpenDisposition::SWITCH_TO_TAB:
+    case WindowOpenDisposition::NEW_SPLIT_VIEW:
     case WindowOpenDisposition::UNKNOWN:
       NOTIMPLEMENTED() << "Dropped new web contents (disposition: "
                        << static_cast<int>(disposition) << ")";
@@ -663,12 +680,12 @@ content::WebContents* FrameImpl::AddNewContents(
   }
 }
 
-void FrameImpl::WebContentsCreated(content::WebContents* source_contents,
-                                   int opener_render_process_id,
-                                   int opener_render_frame_id,
-                                   const std::string& frame_name,
-                                   const GURL& target_url,
-                                   content::WebContents* new_contents) {
+void FrameImpl::WebContentsCreated(
+    content::WebContents* source_contents,
+    const content::GlobalRenderFrameHostId& opener_id,
+    const std::string& frame_name,
+    const GURL& target_url,
+    content::WebContents* new_contents) {
   auto creation_info = std::make_unique<PopupFrameCreationInfoUserData>();
   creation_info->info.set_initial_url(target_url.spec());
   new_contents->SetUserData(kPopupCreationInfo, std::move(creation_info));
@@ -962,7 +979,7 @@ void FrameImpl::AddBeforeLoadJavaScript(
   }
 
   // TODO(crbug.com/40707541): Only allow wildcards to be specified standalone.
-  if (base::Contains(origins, kWildcardOrigin)) {
+  if (std::ranges::contains(origins, kWildcardOrigin)) {
     script_injector_.AddScriptForAllOrigins(id, *script_as_string);
   } else {
     std::vector<url::Origin> origins_converted;
@@ -1011,9 +1028,9 @@ void FrameImpl::PostMessage(std::string origin,
     return;
   }
 
-  std::optional<std::u16string> origin_utf16;
+  std::optional<url::Origin> target_origin;
   if (origin != kWildcardOrigin)
-    origin_utf16 = base::UTF8ToUTF16(origin);
+    target_origin = url::Origin::Create(GURL(origin));
 
   std::optional<std::u16string> data_utf16 =
       base::ReadUTF8FromVMOAsUTF16(message.data());
@@ -1046,7 +1063,8 @@ void FrameImpl::PostMessage(std::string origin,
   }
 
   content::MessagePortProvider::PostMessageToFrame(
-      web_contents_->GetPrimaryPage(), std::u16string(), origin_utf16,
+      web_contents_->GetPrimaryPage(), nullptr,
+      target_origin.has_value() ? &(*target_origin) : nullptr,
       std::move(*data_utf16), std::move(message_ports));
   callback(fpromise::ok());
 }
@@ -1225,8 +1243,10 @@ void FrameImpl::SetMediaSettings(
               perfetto::Flow::FromPointer(this));
 
   media_settings_ = std::move(media_settings);
-  if (media_settings.has_renderer_usage() && set_audio_output_usage_callback_)
-    set_audio_output_usage_callback_.Run(media_settings.renderer_usage());
+  if (media_settings_.has_renderer_usage() &&
+      set_audio_output_usage_callback_) {
+    set_audio_output_usage_callback_.Run(media_settings_.renderer_usage());
+  }
 }
 
 void FrameImpl::ForceContentDimensions(
@@ -1268,8 +1288,14 @@ void FrameImpl::SetPermissionState(
     return;
   }
 
-  blink::PermissionType type =
+  std::optional<blink::PermissionType> type =
       FidlPermissionTypeToContentPermissionType(fidl_permission.type());
+  if (!type) {
+    LOG(ERROR) << "SetPermissionState() called with invalid permission type: "
+               << static_cast<uint16_t>(fidl_permission.type()) << ".";
+    CloseAndDestroyFrame(ZX_ERR_INVALID_ARGS);
+    return;
+  }
 
   blink::mojom::PermissionStatus state =
       (fidl_state == fuchsia::web::PermissionState::GRANTED)
@@ -1279,8 +1305,8 @@ void FrameImpl::SetPermissionState(
   // TODO(crbug.com/40724536): Remove this once the PermissionManager API is
   // available.
   if (web_origin_string == "*" &&
-      type == blink::PermissionType::PROTECTED_MEDIA_IDENTIFIER) {
-    permission_controller_.SetDefaultPermissionState(type, state);
+      *type == blink::PermissionType::PROTECTED_MEDIA_IDENTIFIER) {
+    permission_controller_.SetDefaultPermissionState(*type, state);
     return;
   }
 
@@ -1293,7 +1319,7 @@ void FrameImpl::SetPermissionState(
     return;
   }
 
-  permission_controller_.SetPermissionState(type, web_origin.value(), state);
+  permission_controller_.SetPermissionState(*type, web_origin.value(), state);
 }
 
 void FrameImpl::GetPrivateMemorySize(GetPrivateMemorySizeCallback callback) {
@@ -1469,11 +1495,13 @@ void FrameImpl::RequestMediaAccessPermission(
     content::MediaResponseCallback callback) {
   DCHECK_EQ(web_contents_.get(), web_contents);
 
-  std::vector<blink::PermissionType> permissions;
+  std::vector<blink::mojom::PermissionDescriptorPtr> permissions;
 
   if (request.audio_type ==
       blink::mojom::MediaStreamType::DEVICE_AUDIO_CAPTURE) {
-    permissions.push_back(blink::PermissionType::AUDIO_CAPTURE);
+    permissions.push_back(content::PermissionDescriptorUtil::
+                              CreatePermissionDescriptorForPermissionType(
+                                  blink::PermissionType::AUDIO_CAPTURE));
   } else if (request.audio_type != blink::mojom::MediaStreamType::NO_SERVICE) {
     std::move(callback).Run(
         blink::mojom::StreamDevicesSet(),
@@ -1483,7 +1511,9 @@ void FrameImpl::RequestMediaAccessPermission(
 
   if (request.video_type ==
       blink::mojom::MediaStreamType::DEVICE_VIDEO_CAPTURE) {
-    permissions.push_back(blink::PermissionType::VIDEO_CAPTURE);
+    permissions.push_back(content::PermissionDescriptorUtil::
+                              CreatePermissionDescriptorForPermissionType(
+                                  blink::PermissionType::VIDEO_CAPTURE));
   } else if (request.video_type != blink::mojom::MediaStreamType::NO_SERVICE) {
     std::move(callback).Run(
         blink::mojom::StreamDevicesSet(),
@@ -1512,10 +1542,10 @@ void FrameImpl::RequestMediaAccessPermission(
   content::PermissionController* permission_controller =
       web_contents_->GetBrowserContext()->GetPermissionController();
   DCHECK(permission_controller);
-
   permission_controller->RequestPermissionsFromCurrentDocument(
       render_frame_host,
-      content::PermissionRequestDescription(permissions, request.user_gesture),
+      content::PermissionRequestDescription(std::move(permissions),
+                                            request.user_gesture),
       base::BindOnce(&HandleMediaPermissionsRequestResult, request,
                      std::move(callback)));
 }
@@ -1546,8 +1576,9 @@ bool FrameImpl::CheckMediaAccessPermission(
   DCHECK(permission_controller);
 
   return permission_controller->GetPermissionStatusForCurrentDocument(
-             permission, render_frame_host) ==
-         blink::mojom::PermissionStatus::GRANTED;
+             content::PermissionDescriptorUtil::
+                 CreatePermissionDescriptorForPermissionType(permission),
+             render_frame_host) == blink::mojom::PermissionStatus::GRANTED;
 }
 
 std::unique_ptr<content::AudioStreamBrokerFactory>
@@ -1615,6 +1646,7 @@ void FrameImpl::DidFirstVisuallyNonEmptyPaint() {
 void FrameImpl::ResourceLoadComplete(
     content::RenderFrameHost* render_frame_host,
     const content::GlobalRequestID& request_id,
+    const GURL& original_url,
     const blink::mojom::ResourceLoadInfo& resource_load_info) {
   int net_error = resource_load_info.net_error;
   if (net_error != net::OK) {
@@ -1645,9 +1677,12 @@ void FrameImpl::SetAccessibilityEnabled(bool enabled) {
   if (!enabled) {
     scoped_accessibility_mode_.reset();
   } else if (!scoped_accessibility_mode_) {
+    // Fuchsia a11y only has one consumer, which is the Fuchsia screen reader.
     scoped_accessibility_mode_ =
         content::BrowserAccessibilityState::GetInstance()
-            ->CreateScopedModeForProcess(ui::kAXModeComplete);
+            ->CreateScopedModeForProcess(ui::kAXModeComplete |
+                                         ui::AXMode::kFromPlatform |
+                                         ui::AXMode::kScreenReader);
   }
 }
 

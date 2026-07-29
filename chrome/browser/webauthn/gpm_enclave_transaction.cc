@@ -21,9 +21,11 @@
 #include "components/signin/public/identity_manager/primary_account_access_token_fetcher.h"
 #include "components/sync/protocol/webauthn_credential_specifics.pb.h"
 #include "components/webauthn/core/browser/passkey_model.h"
+#include "components/webauthn/core/browser/passkey_model_utils.h"
+#include "device/fido/authenticator_get_assertion_response.h"
 #include "device/fido/enclave/types.h"
-#include "device/fido/features.h"
-#include "device/fido/fido_constants.h"
+#include "device/fido/public/features.h"
+#include "device/fido/public/fido_constants.h"
 
 namespace {
 
@@ -39,6 +41,21 @@ void MaybeRecordUserActionForWinUv(device::FidoRequestType request_type,
 #endif  // BUILDFLAG(IS_WIN)
 }
 
+base::OnceCallback<void(bool)> UvKeyDeferralCallback(
+    base::OnceClosure success_closure,
+    base::OnceClosure failure_closure) {
+  return base::BindOnce(
+      [](base::OnceClosure success_closure, base::OnceClosure failure_closure,
+         bool success) {
+        if (success) {
+          std::move(success_closure).Run();
+          return;
+        }
+        std::move(failure_closure).Run();
+      },
+      std::move(success_closure), std::move(failure_closure));
+}
+
 }  // namespace
 
 GPMEnclaveTransaction::GPMEnclaveTransaction(
@@ -46,24 +63,23 @@ GPMEnclaveTransaction::GPMEnclaveTransaction(
     webauthn::PasskeyModel* passkey_model,
     device::FidoRequestType request_type,
     std::string rp_id,
-    EnclaveUserVerificationMethod uv_method,
     EnclaveManager* enclave_manager,
     std::optional<std::string> pin,
     std::optional<std::vector<uint8_t>> selected_credential_id,
-    EnclaveRequestCallback enclave_request_callback)
+    EnclaveRequestCallback enclave_request_callback,
+    std::optional<std::vector<std::vector<uint8_t>>> cmtg_device_keys)
     : delegate_(delegate),
       passkey_model_(passkey_model),
       request_type_(request_type),
       rp_id_(std::move(rp_id)),
-      uv_method_(uv_method),
       enclave_manager_(enclave_manager),
       pin_(std::move(pin)),
+      cmtg_device_keys_(std::move(cmtg_device_keys)),
       selected_credential_id_(std::move(selected_credential_id)),
       enclave_request_callback_(std::move(enclave_request_callback)) {
   CHECK(delegate_);
   CHECK(passkey_model_);
   CHECK(enclave_manager_);
-  CHECK(uv_method != EnclaveUserVerificationMethod::kPIN || pin_.has_value());
   CHECK((request_type_ == device::FidoRequestType::kMakeCredential) ^
         selected_credential_id_.has_value());
   CHECK(enclave_request_callback_);
@@ -106,13 +122,37 @@ void GPMEnclaveTransaction::StartEnclaveTransaction(
   // `enclave_request_callback_` which surfaces in
   // `EnclaveDiscovery::OnUIRequest`.
 
-  if (!token || !enclave_manager_->is_ready()) {
+  if (!token || !enclave_manager_->IsReady()) {
     delegate_->HandleEnclaveTransactionError();
+    return;
+  }
+
+  EnclaveUserVerificationMethod uv_method = delegate_->GetUvMethod();
+
+  CHECK(uv_method != EnclaveUserVerificationMethod::kPIN || pin_.has_value());
+
+  if (uv_method == EnclaveUserVerificationMethod::kDeferredUVKeyWithSystemUI &&
+      enclave_manager_->deferred_uv_key_creation_locked()) {
+    // Another transaction is trying to create a UV key. Provide a callback that
+    // will try again.
+    enclave_manager_->AddPendingUvRequest(UvKeyDeferralCallback(
+        base::BindOnce(&GPMEnclaveTransaction::StartEnclaveTransaction,
+                       weak_ptr_factory_.GetWeakPtr(), std::move(token),
+                       std::move(claimed_pin)),
+        base::BindOnce(
+            [](base::WeakPtr<GPMEnclaveTransaction> transaction) {
+              if (!transaction) {
+                return;
+              }
+              transaction->delegate_->HandleEnclaveTransactionError();
+            },
+            weak_ptr_factory_.GetWeakPtr())));
     return;
   }
 
   auto request = std::make_unique<device::enclave::CredentialRequest>();
   request->access_token = std::move(*token);
+  request->cmtg_device_keys = std::move(cmtg_device_keys_);
   // A request to the enclave can either provide a wrapped secret, which only
   // the enclave can decrypt, or can provide the security domain secret
   // directly. The latter is only possible immediately after registering a
@@ -120,7 +160,7 @@ void GPMEnclaveTransaction::StartEnclaveTransaction(
   // is in memory.
   bool use_unwrapped_secret = false;
 
-  switch (uv_method_) {
+  switch (uv_method) {
     case EnclaveUserVerificationMethod::kUserPresenceOnly:
       request->signing_callback =
           enclave_manager_->IdentityKeySigningCallback();
@@ -153,7 +193,7 @@ void GPMEnclaveTransaction::StartEnclaveTransaction(
           enclave_manager_->UserVerifyingKeySigningCallback(
               std::move(uv_options));
       request->up_and_uv_bits = UserPresentAndVerifiedBits::kPresentAndVerified;
-      MaybeRecordUserActionForWinUv(request_type_, uv_method_);
+      MaybeRecordUserActionForWinUv(request_type_, uv_method);
       break;
     }
     case EnclaveUserVerificationMethod::kDeferredUVKeyWithSystemUI:
@@ -163,9 +203,9 @@ void GPMEnclaveTransaction::StartEnclaveTransaction(
       request->signing_callback =
           enclave_manager_->IdentityKeySigningCallback();
       request->up_and_uv_bits = UserPresentAndVerifiedBits::kPresentAndVerified;
-      request->uv_key_creation_callback =
+      std::tie(uv_key_lock_, request->uv_key_creation_callback) =
           enclave_manager_->UserVerifyingKeyCreationCallback();
-      MaybeRecordUserActionForWinUv(request_type_, uv_method_);
+      MaybeRecordUserActionForWinUv(request_type_, uv_method);
       break;
 
     case EnclaveUserVerificationMethod::kNoUserVerificationAndNoUserPresence:
@@ -196,7 +236,8 @@ void GPMEnclaveTransaction::StartEnclaveTransaction(
                          weak_ptr_factory_.GetWeakPtr());
       std::vector<std::vector<uint8_t>> existing_credential_ids;
       std::ranges::transform(
-          passkey_model_->GetPasskeysForRelyingPartyId(rp_id_),
+          passkey_model_->GetPasskeys(
+              rp_id_, webauthn::PasskeyModel::ShadowedCredentials::kExclude),
           std::back_inserter(existing_credential_ids),
           [](const sync_pb::WebauthnCredentialSpecifics& cred) {
             const std::string& cred_id = cred.credential_id();
@@ -210,13 +251,23 @@ void GPMEnclaveTransaction::StartEnclaveTransaction(
       CHECK(selected_credential_id_);
       std::unique_ptr<sync_pb::WebauthnCredentialSpecifics> selected_credential;
       std::vector<sync_pb::WebauthnCredentialSpecifics> credentials =
-          passkey_model_->GetPasskeysForRelyingPartyId(rp_id_);
+          passkey_model_->GetPasskeys(
+              rp_id_, webauthn::PasskeyModel::ShadowedCredentials::kExclude);
       for (auto& cred : credentials) {
         if (std::ranges::equal(base::as_byte_span(cred.credential_id()),
                                base::span(*selected_credential_id_))) {
           selected_credential =
               std::make_unique<sync_pb::WebauthnCredentialSpecifics>(
                   std::move(cred));
+          request->save_passkey_callback = base::BindOnce(
+              [](base::WeakPtr<GPMEnclaveTransaction> txn,
+                 sync_pb::WebauthnCredentialSpecifics passkey) {
+                if (txn) {
+                  txn->OnPasskeyEncryptedBlobUpdated(passkey.credential_id(),
+                                                     passkey.encrypted());
+                }
+              },
+              weak_ptr_factory_.GetWeakPtr());
           break;
         }
       }
@@ -228,10 +279,8 @@ void GPMEnclaveTransaction::StartEnclaveTransaction(
         delegate_->HandleEnclaveTransactionError();
         return;
       }
-      if (base::FeatureList::IsEnabled(device::kWebAuthnUpdateLastUsed)) {
-        passkey_model_->UpdatePasskeyTimestamp(
-            selected_credential->credential_id(), base::Time::Now());
-      }
+      passkey_model_->UpdatePasskeyTimestamp(
+          selected_credential->credential_id(), base::Time::Now());
 
       if (use_unwrapped_secret) {
         std::tie(std::ignore, request->secret) =
@@ -271,6 +320,13 @@ void GPMEnclaveTransaction::HandlePINValidationResult(
 
 void GPMEnclaveTransaction::OnPasskeyCreated(
     sync_pb::WebauthnCredentialSpecifics passkey) {
+  CHECK(webauthn::passkey_model_utils::IsGpmPasskeyValid(passkey));
   passkey_model_->CreatePasskey(passkey);
   delegate_->OnPasskeyCreated(passkey);
+}
+
+void GPMEnclaveTransaction::OnPasskeyEncryptedBlobUpdated(
+    const std::string& credential_id,
+    const std::string& encrypted_data) {
+  passkey_model_->UpdatePasskeyEncryptedBlob(credential_id, encrypted_data);
 }

@@ -1,6 +1,6 @@
 import("//build/config/c++/c++.gni")
+import("//build/config/c++/modules.gni")
 import("//build/config/chrome_build.gni")
-import("//build/config/chromeos/ui_mode.gni")
 import("//build/config/compiler/compiler.gni")
 import("//build/config/dcheck_always_on.gni")
 import("//buildtools/deps_revisions.gni")
@@ -54,13 +54,6 @@ config("runtime_library") {
 
   defines += [ "CR_LIBCXX_REVISION=$libcxx_revision" ]
 
-  # Temporarily add a define to force a rebuild when changing
-  # buildtools/third_party/libc++/__config_site which isn't picked up by
-  # dependency tracking (because it's an #include of headers included via
-  # -isysroot).
-  # TODO(thakis): Remove this after a few days.
-  defines += [ "TMP_REBUILD_HACK" ]
-
   if (is_win) {
     # Intentionally not using libc++abi on Windows because libc++abi only
     # implements the Itanium C++ ABI, and not the Microsoft ABI which we use on
@@ -110,6 +103,24 @@ config("runtime_library") {
         "rt",
       ]
     }
+  }
+
+  if (is_ios) {
+    swiftflags = [
+      # Prevent the swift compiler from leaking the system's default C++
+      # toolchain into the build.
+      "-Xcc=-nostdinc++",
+      "-Xcc=-nodefaultlibs",
+
+      # Add the path to our custom libc++ to the swift compiler. This is used
+      # when enabling the C++/Swift interoperability.
+      "-isystem",
+      rebase_path("//third_party/libc++/src/include", root_build_dir),
+      "-isystem",
+      rebase_path("//third_party/libc++abi/src/include", root_build_dir),
+      "-I",
+      rebase_path("//buildtools/third_party/libc++", root_build_dir),
+    ]
   }
 
   # In a world without NaCl, the `runtime_library` config would also configure

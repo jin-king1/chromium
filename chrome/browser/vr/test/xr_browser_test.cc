@@ -26,6 +26,8 @@
 #include "content/public/common/content_features.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/test/browser_test_utils.h"
+#include "device/vr/buildflags/buildflags.h"
+#include "third_party/blink/public/common/features_generated.h"
 #include "url/gurl.h"
 
 #if BUILDFLAG(IS_ANDROID)
@@ -35,8 +37,13 @@
 #include "chrome/browser/ui/android/tab_model/tab_model_list.h"
 #else
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
+#endif
+
+#if BUILDFLAG(ENABLE_VR)
+#include "device/vr/public/cpp/features.h"
 #endif
 namespace vr {
 
@@ -64,6 +71,13 @@ const std::vector<std::pair<std::string, std::string>>
 
 XrBrowserTestBase::XrBrowserTestBase() : env_(base::Environment::Create()) {
   enable_features_.push_back(features::kLogJsConsoleMessages);
+#if BUILDFLAG(ENABLE_VR)
+  enable_features_.push_back(device::features::kWebXrVisibleBlurred);
+#if BUILDFLAG(IS_ANDROID)
+  enable_features_.push_back(device::features::kWebXRLayers);
+  enable_features_.push_back(blink::features::kWebXRMediaBinding);
+#endif
+#endif
 }
 
 XrBrowserTestBase::~XrBrowserTestBase() = default;
@@ -156,12 +170,9 @@ void XrBrowserTestBase::SetUp() {
 
   // Set any command line flags that subclasses have set, e.g. enabling features
   // or specific runtimes.
-  for (const auto& switch_string : append_switches_) {
-    cmd_line->AppendSwitch(switch_string);
-  }
-
-  for (const auto& blink_feature : enable_blink_features_) {
-    cmd_line->AppendSwitchASCII(switches::kEnableBlinkFeatures, blink_feature);
+  if (forced_runtime_.has_value() && !forced_runtime_->empty()) {
+    cmd_line->AppendSwitchASCII(switches::kWebXrForceRuntime,
+                                forced_runtime_.value());
   }
 
 #if defined(MEMORY_SANITIZER)
@@ -218,10 +229,12 @@ content::WebContents* XrBrowserTestBase::GetCurrentWebContents() {
   // returned by the base class, which doesn't get overridden by the incognito
   // browser.
   if (incognito_) {
-    Browser* incognito_browser = chrome::FindTabbedBrowser(
-        browser()->profile()->GetPrimaryOTRProfile(/*create_if_needed=*/false),
-        /*match_original_profiles=*/false);
-    return incognito_browser->tab_strip_model()->GetActiveWebContents();
+    BrowserWindowInterface* incognito_browser =
+        ProfileBrowserCollection::GetForProfile(
+            browser()->GetProfile()->GetPrimaryOTRProfile(
+                /*create_if_needed=*/false))
+            ->FindTabbedBrowser();
+    return incognito_browser->GetTabStripModel()->GetActiveWebContents();
   }
 #endif
   return chrome_test_utils::GetActiveWebContents(this);
@@ -250,14 +263,32 @@ void XrBrowserTestBase::OpenNewTab(const std::string& url, bool incognito) {
       content::WebContents::Create(content::WebContents::CreateParams(profile));
   EXPECT_TRUE(content::NavigateToURL(contents.get(), GURL(url)));
   // TabModel takes ownership of the WebContents, so we release it here.
-  tab_model->CreateTab(first_tab, contents.release(), true);
+  tab_model->CreateTab(first_tab, std::move(contents), TabModel::kInvalidIndex,
+                       TabModel::TabLaunchType::FROM_RECENT_TABS_FOREGROUND,
+                       /*should_pin=*/false);
 #else
   if (incognito) {
-    OpenURLOffTheRecord(browser()->profile(), GURL(url));
+    OpenURLOffTheRecord(browser()->GetProfile(), GURL(url));
   } else {
     // -1 is a special index value used to append to the end of the tab list.
     chrome::AddTabAt(browser(), GURL(url), /*index=*/-1, /*foreground=*/true);
   }
+#endif
+}
+
+void XrBrowserTestBase::CloseTab(content::WebContents* web_contents) {
+#if BUILDFLAG(IS_ANDROID)
+  TabModel* tab_model = TabModelList::GetTabModelForWebContents(web_contents);
+  ASSERT_TRUE(tab_model);
+  for (int i = 0; i < tab_model->GetTabCount(); ++i) {
+    if (tab_model->GetWebContentsAt(i) == web_contents) {
+      tab_model->CloseTabAt(i);
+      return;
+    }
+  }
+  ADD_FAILURE() << "Failed to find tab to close";
+#else
+  chrome::CloseWebContents(browser(), web_contents, /*add_to_history=*/false);
 #endif
 }
 

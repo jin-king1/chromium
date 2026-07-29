@@ -13,6 +13,7 @@
 #include "base/files/file_util.h"
 #include "base/location.h"
 #include "base/system/sys_info.h"
+#include "base/task/single_thread_task_runner.h"
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
 #include "base/time/time.h"
@@ -66,7 +67,8 @@ void BootingAnimationController::Show() {
       views::Widget::InitParams::NATIVE_WIDGET_OWNS_WIDGET,
       views::Widget::InitParams::TYPE_WINDOW_FRAMELESS);
   params.delegate = new views::WidgetDelegate;  // Takes ownership.
-  params.delegate->SetOwnedByWidget(true);
+  params.delegate->SetOwnedByWidget(
+      views::WidgetDelegate::OwnedByWidgetPassKey());
   // Allow maximize so the booting container's FillLayoutManager can
   // fill the screen with the widget. This is required even for
   // fullscreen widgets.

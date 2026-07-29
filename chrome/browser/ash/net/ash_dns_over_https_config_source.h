@@ -8,6 +8,7 @@
 #include <string>
 
 #include "base/functional/callback_forward.h"
+#include "base/memory/raw_ptr.h"
 #include "chrome/browser/ash/net/secure_dns_manager.h"
 #include "chrome/browser/net/dns_over_https_config_source.h"
 
@@ -31,6 +32,7 @@ class AshDnsOverHttpsConfigSource : public DnsOverHttpsConfigSource,
   // DnsOverHttpsConfigSource:
   std::string GetDnsOverHttpsMode() const override;
   std::string GetDnsOverHttpsTemplates() const override;
+  bool AutomaticModeFallbackToDohEnabled() const override;
   bool IsConfigManaged() const override;
   void SetDohChangeCallback(base::RepeatingClosure callback) override;
 

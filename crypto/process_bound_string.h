@@ -10,10 +10,9 @@
 
 #include "base/check.h"
 #include "base/containers/span.h"
-#include "base/feature_list.h"
 #include "base/gtest_prod_util.h"
 #include "crypto/crypto_export.h"
-#include "crypto/features.h"
+#include "crypto/secure_util.h"
 
 namespace crypto {
 
@@ -30,10 +29,6 @@ CRYPTO_EXPORT bool MaybeEncryptBuffer(base::span<uint8_t> buffer);
 // Maybe decrypt a buffer, in place. Returns true if the buffer was successfully
 // decrypted or false if unsupported by the platform or failed to decrypt.
 CRYPTO_EXPORT bool MaybeDecryptBuffer(base::span<uint8_t> buffer);
-
-// Securely zero a buffer using a platform specific method.
-CRYPTO_EXPORT void SecureZeroBuffer(base::span<uint8_t> buffer);
-
 }  // namespace internal
 
 // SecureAllocator is used by the SecureString variants below to clear the
@@ -50,7 +45,7 @@ struct CRYPTO_EXPORT SecureAllocator {
     if (p) {
       // SAFETY: deallocate() has a fixed prototype from the std library, and
       // passes an unsafe buffer, so convert it to a base::span here.
-      internal::SecureZeroBuffer(UNSAFE_BUFFERS(
+      SecureZeroBuffer(UNSAFE_BUFFERS(
           base::span<uint8_t>(reinterpret_cast<uint8_t*>(p), n * sizeof(T))));
       std::allocator<T>().deallocate(p, n);
     }
@@ -74,12 +69,9 @@ class CRYPTO_EXPORT ProcessBound {
   explicit ProcessBound(const StringType& value)
       : original_size_(value.size()) {
     std::vector<CharType> data(value.begin(), value.end());
-    if (base::FeatureList::IsEnabled(
-            crypto::features::kProcessBoundStringEncryption)) {
-      data.resize(internal::MaybeRoundUp(data.size()));
-      encrypted_ =
-          internal::MaybeEncryptBuffer(base::as_writable_byte_span(data));
-    }
+    data.resize(internal::MaybeRoundUp(data.size()));
+    encrypted_ =
+        internal::MaybeEncryptBuffer(base::as_writable_byte_span(data));
     maybe_encrypted_data_ = std::move(data);
   }
 
@@ -121,7 +113,7 @@ class CRYPTO_EXPORT ProcessBound {
   bool empty() const { return size() == 0; }
 
  private:
-  FRIEND_TEST_ALL_PREFIXES(ProcessBoundFeatureTest, Encryption);
+  FRIEND_TEST_ALL_PREFIXES(ProcessBoundEncryptionTest, Encryption);
   std::vector<CharType> maybe_encrypted_data_;
   size_t original_size_;
   bool encrypted_ = false;

@@ -9,12 +9,14 @@
 #include <string>
 #include <utility>
 
+#include "ash/constants/ash_login_pref_names.h"
 #include "base/debug/dump_without_crashing.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/memory/weak_ptr.h"
 #include "base/notreached.h"
+#include "base/syslog_logging.h"
 #include "chrome/browser/ash/login/oobe_screen.h"
 #include "chrome/browser/ash/login/screens/oobe_mojo_binder.h"
 #include "chrome/browser/ash/login/screens/osauth/base_osauth_setup_screen.h"
@@ -24,7 +26,9 @@
 #include "chromeos/ash/components/login/auth/mount_performer.h"
 #include "chromeos/ash/components/login/auth/public/authentication_error.h"
 #include "chromeos/ash/components/login/auth/public/user_context.h"
+#include "chromeos/ash/components/osauth/public/common_types.h"
 #include "components/device_event_log/device_event_log.h"
+#include "components/prefs/pref_service.h"
 #include "components/user_manager/user_manager.h"
 
 namespace ash {
@@ -58,16 +62,20 @@ std::string LocalDataLossWarningScreen::GetResultString(Result result) {
       return "CryptohomeError";
     case Result::kCancel:
       return "Cancel";
+    case Result::kAutoWipe:
+      return "AutoWipe";
   }
   // LINT.ThenChange(//tools/metrics/histograms/metadata/oobe/histograms.xml)
 }
 
 LocalDataLossWarningScreen::LocalDataLossWarningScreen(
+    PrefService& local_state,
     base::WeakPtr<LocalDataLossWarningScreenView> view,
     const ScreenExitCallback& exit_callback)
     : BaseOSAuthSetupScreen(LocalDataLossWarningScreenView::kScreenId,
                             OobeScreenPriority::DEFAULT),
       OobeMojoBinder(this),
+      local_state_(local_state),
       view_(std::move(view)),
       exit_callback_(exit_callback),
       mount_performer_(std::make_unique<MountPerformer>()) {}
@@ -75,6 +83,17 @@ LocalDataLossWarningScreen::LocalDataLossWarningScreen(
 LocalDataLossWarningScreen::~LocalDataLossWarningScreen() = default;
 
 void LocalDataLossWarningScreen::ShowImpl() {
+  if (context()->ShouldTriggerAutoWipe(local_state_.get())) {
+    LOGIN_LOG(EVENT)
+        << "AutoWipe behavior active: removing user directory directly";
+    SYSLOG(INFO)
+        << "(LOGIN) AutoWipe behavior active: removing user directory directly";
+    mount_performer_->RemoveUserDirectory(
+        std::move(context()->user_context),
+        base::BindOnce(&LocalDataLossWarningScreen::OnRemovedUserDirectory,
+                       weak_factory_.GetWeakPtr(), Result::kAutoWipe));
+    return;
+  }
   bool can_go_back = context()->knowledge_factor_setup.data_loss_back_option !=
                      WizardContext::DataLossBackOptions::kNone;
   view_->Show(isOwner(context()->user_context->GetAccountId()),
@@ -100,7 +119,7 @@ void LocalDataLossWarningScreen::OnRecreateUser() {
   mount_performer_->RemoveUserDirectory(
       std::move(context()->user_context),
       base::BindOnce(&LocalDataLossWarningScreen::OnRemovedUserDirectory,
-                     weak_factory_.GetWeakPtr()));
+                     weak_factory_.GetWeakPtr(), Result::kRemoveUser));
 }
 
 void LocalDataLossWarningScreen::OnCancel() {
@@ -127,11 +146,13 @@ void LocalDataLossWarningScreen::OnBack() {
 }
 
 void LocalDataLossWarningScreen::OnRemovedUserDirectory(
+    Result exit_result,
     std::unique_ptr<UserContext> user_context,
     std::optional<AuthenticationError> error) {
   context()->user_context = std::move(user_context);
   if (error.has_value()) {
     LOGIN_LOG(ERROR) << "Failed to remove user home directory";
+    SYSLOG(INFO) << "(LOGIN) Failed to remove user home directory";
     context()->osauth_error = WizardContext::OSAuthErrorKind::kFatal;
     exit_callback_.Run(Result::kCryptohomeError);
     return;
@@ -151,13 +172,15 @@ void LocalDataLossWarningScreen::OnRemovedUserDirectory(
   context()->user_context->ClearAuthFactorsConfiguration();
   context()->knowledge_factor_setup.auth_setup_flow =
       WizardContext::AuthChangeFlow::kInitialSetup;
+  SYSLOG(INFO) << "(LOGIN) LocalDataLossWarningScreen::OnRemovedUserDirectory, "
+               << "setting auth_setup_flow to kInitialSetup.";
 
   // Move online password back so that it can be used as key.
   // See `ShowImpl()` to see where it was stored.
   if (context()->user_context->HasReplacementKey()) {
     context()->user_context->ReuseReplacementKey();
   }
-  exit_callback_.Run(Result::kRemoveUser);
+  exit_callback_.Run(exit_result);
 }
 
 }  // namespace ash

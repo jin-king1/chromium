@@ -5,10 +5,10 @@
 module media.mojom;
 
 import "mojo/public/mojom/base/string16.mojom";
+import "mojo/public/mojom/base/time.mojom";
 
 // A single hypothesis indicating what the recognition service thinks a
 // particular speech segment means.
-[Stable]
 struct SpeechRecognitionHypothesis {
   // Transcript of spoken text.
   mojo_base.mojom.String16 utterance;
@@ -19,7 +19,6 @@ struct SpeechRecognitionHypothesis {
 };
 
 // Group of recognition hypotheses for a particular speech segment.
-[Stable]
 struct WebSpeechRecognitionResult {
   // An N-best list of hypotheses.
   array<media.mojom.SpeechRecognitionHypothesis> hypotheses;
@@ -28,4 +27,12 @@ struct WebSpeechRecognitionResult {
   // particular result. If true, then this represents an interim result that
   // could still be changed.
   bool is_provisional;
+
+  // Start and end timestamps of the source audio corresponding to this
+  // result, relative to the start of the audio input stream (i.e., the
+  // media-local timeline).
+  // TODO(crbug.com/528037568): Make timestamps non-optional once fully
+  // implemented and spec update is finalized.
+  mojo_base.mojom.TimeDelta? audio_start_time;
+  mojo_base.mojom.TimeDelta? audio_end_time;
 };

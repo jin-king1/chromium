@@ -6,9 +6,9 @@ package org.chromium.chrome.browser.tab;
 
 import android.graphics.Bitmap;
 
-import androidx.annotation.Nullable;
-
 import org.chromium.base.Token;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.cc.input.BrowserControlsState;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsOffsetTagsInfo;
 import org.chromium.chrome.browser.tab.Tab.LoadUrlResult;
@@ -23,12 +23,13 @@ import org.chromium.url.GURL;
 /**
  * An implementation of the {@link TabObserver} which has empty implementations of all methods.
  *
- * Note: Do not replace this with TabObserver with default interface methods as it inadvertently
- * bloats the number of methods. See https://crbug.com/781359.
+ * <p>Note: Do not replace this with TabObserver with default interface methods as it inadvertently
+ * bloats the number of methods. See https://crbug.com/40548063.
  */
+@NullMarked
 public class EmptyTabObserver implements TabObserver {
     @Override
-    public void onInitialized(Tab tab, String appId) {}
+    public void onInitialized(Tab tab, @Nullable String appId) {}
 
     @Override
     public void onShown(Tab tab, @TabSelectionType int type) {}
@@ -64,7 +65,10 @@ public class EmptyTabObserver implements TabObserver {
     public void onRestoreFailed(Tab tab) {}
 
     @Override
-    public void onFaviconUpdated(Tab tab, Bitmap icon, GURL iconUrl) {}
+    public void onFaviconUpdated(Tab tab, @Nullable Bitmap icon, @Nullable GURL iconUrl) {}
+
+    @Override
+    public void onMediaStateChanged(Tab tab, @MediaState int mediaState) {}
 
     @Override
     public void onTitleUpdated(Tab tab) {}
@@ -77,12 +81,6 @@ public class EmptyTabObserver implements TabObserver {
 
     @Override
     public void onCrash(Tab tab) {}
-
-    @Override
-    public void webContentsWillSwap(Tab tab) {}
-
-    @Override
-    public void onWebContentsSwapped(Tab tab, boolean didStartLoad, boolean didFinishLoad) {}
 
     @Override
     public void onContextMenuShown(Tab tab) {}
@@ -100,7 +98,7 @@ public class EmptyTabObserver implements TabObserver {
     public void onLoadProgressChanged(Tab tab, float progress) {}
 
     @Override
-    public void onUpdateUrl(Tab tab, GURL url) {}
+    public void onUpdateTargetUrl(Tab tab, GURL url) {}
 
     @Override
     public void onDidStartNavigationInPrimaryMainFrame(
@@ -156,7 +154,7 @@ public class EmptyTabObserver implements TabObserver {
             int bottomControlsMinHeightOffsetY) {}
 
     @Override
-    public void onBrowserControlsConstraintsChanged(
+    public void onOffsetTagsInfoChanged(
             Tab tab,
             BrowserControlsOffsetTagsInfo oldOffsetTagsInfo,
             BrowserControlsOffsetTagsInfo offsetTagsInfo,
@@ -185,6 +183,12 @@ public class EmptyTabObserver implements TabObserver {
 
     @Override
     public void onGestureEnd() {}
+
+    @Override
+    public void onTouchDown() {}
+
+    @Override
+    public void onTouchUp() {}
 
     @Override
     public void didBackForwardTransitionAnimationChange(Tab tab) {}

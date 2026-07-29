@@ -7,16 +7,18 @@ import 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js'
 import type {CrInputElement} from '//resources/cr_elements/cr_input/cr_input.js';
 import type {CrToggleElement} from '//resources/cr_elements/cr_toggle/cr_toggle.js';
 import type {LanguageMenuElement, LanguageToastElement} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
-import {AVAILABLE_GOOGLE_TTS_LOCALES, VoiceClientSideStatusCode, VoiceNotificationManager} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
+import {AVAILABLE_GOOGLE_TTS_LOCALES, ReadAloudSettingsChange, VoiceClientSideStatusCode, VoiceNotificationManager} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome-untrusted://webui-test/chai_assert.js';
 import {microtasksFinished} from 'chrome-untrusted://webui-test/test_util.js';
 
-import {createSpeechSynthesisVoice} from './common.js';
+import {createSpeechSynthesisVoice, mockMetrics} from './common.js';
+import type {TestMetricsBrowserProxy} from './test_metrics_browser_proxy.js';
 
 suite('LanguageMenu', () => {
   let languageMenu: LanguageMenuElement;
   let availableVoices: SpeechSynthesisVoice[];
   let enabledLangs: string[];
+  let metrics: TestMetricsBrowserProxy;
 
   function getLanguageLineItems() {
     return languageMenu.$.languageMenu.querySelectorAll<HTMLElement>(
@@ -41,6 +43,11 @@ suite('LanguageMenu', () => {
         '.search-field')!;
   }
 
+  function getLanguageSearchClearButton() {
+    return languageMenu.$.languageMenu.querySelector<HTMLElement>(
+        '#clearLanguageSearch');
+  }
+
   function getNoResultsFoundMessage() {
     return languageMenu.$.languageMenu.querySelector<HTMLElement>(
         '#noResultsMessage');
@@ -56,6 +63,7 @@ suite('LanguageMenu', () => {
     // Clearing the DOM should always be done first.
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     VoiceNotificationManager.getInstance().clear();
+    metrics = mockMetrics();
     languageMenu = document.createElement('language-menu');
     languageMenu.localesOfLangPackVoices = new Set(['it-it']);
   });
@@ -146,7 +154,7 @@ suite('LanguageMenu', () => {
           assertLanguageLineWithTextAndSwitch(
               'en-us', getLanguageLineItems()[1]!);
           assertEquals('', getLanguageSearchField().value);
-          assertEquals(true, getNoResultsFoundMessage()!.hidden);
+          assertTrue(getNoResultsFoundMessage()!.hidden);
         });
 
     suite('with display names for locales', () => {
@@ -170,7 +178,7 @@ suite('LanguageMenu', () => {
 
         assertTrue(isPositionedOnPage(languageMenu));
         assertEquals(0, getLanguageLineItems().length);
-        assertEquals(false, getNoResultsFoundMessage()!.hidden);
+        assertFalse(getNoResultsFoundMessage()!.hidden);
       });
 
       test('it displays matching language with a match', async () => {
@@ -180,11 +188,103 @@ suite('LanguageMenu', () => {
         assertEquals(1, getLanguageLineItems().length);
         assertLanguageLineWithTextAndSwitch(
             'English (United States)', getLanguageLineItems()[0]!);
-        assertEquals(true, getNoResultsFoundMessage()!.hidden);
+        assertTrue(getNoResultsFoundMessage()!.hidden);
+      });
+
+      test('it matches the language code', async () => {
+        getLanguageSearchField().value = 'en-us';
+        await microtasksFinished();
+
+        assertEquals(1, getLanguageLineItems().length);
+        assertLanguageLineWithTextAndSwitch(
+            'English (United States)', getLanguageLineItems()[0]!);
+        assertTrue(getNoResultsFoundMessage()!.hidden);
+      });
+
+      test('shows clear button when search field has contents', async () => {
+        getLanguageSearchField().value = 'eng';
+        await microtasksFinished();
+
+        assertEquals('eng', getLanguageSearchField().value);
+
+        const clearButton = getLanguageSearchClearButton();
+        assertTrue(!!clearButton);
+      });
+
+      test(
+          'does not show clear button when search field has no content',
+          async () => {
+            getLanguageSearchField().value = '';
+            await microtasksFinished();
+
+            assertEquals('', getLanguageSearchField().value);
+
+            const clearButton = getLanguageSearchClearButton();
+            assertFalse(!!clearButton);
+          });
+
+      test('clears search field when clear button is clicked', async () => {
+        getLanguageSearchField().value = 'xxx';
+        await microtasksFinished();
+
+        assertEquals('xxx', getLanguageSearchField().value);
+
+        const clearButton = getLanguageSearchClearButton();
+        assertTrue(!!clearButton);
+
+        clearButton.click();
+        await microtasksFinished();
+
+        assertEquals('', getLanguageSearchField().value);
+      });
+    });
+
+    suite('with display names with accent', () => {
+      const portugueseDisplayName = 'Português (Brasil)';
+
+      setup(() => {
+        availableVoices = [
+          createSpeechSynthesisVoice(
+              {name: portugueseDisplayName, lang: 'pt-br'}),
+        ];
+        languageMenu.localeToDisplayName = {
+          'pt-br': portugueseDisplayName,
+        };
+        languageMenu.availableVoices = availableVoices;
+        return drawLanguageMenu();
+      });
+
+      test('it matches search with accent', async () => {
+        getLanguageSearchField().value = 'português';
+        await microtasksFinished();
+
+        assertEquals(1, getLanguageLineItems().length);
+        assertLanguageLineWithTextAndSwitch(
+            portugueseDisplayName, getLanguageLineItems()[0]!);
+        assertTrue(getNoResultsFoundMessage()!.hidden);
+      });
+
+      test('it matches search with no accent', async () => {
+        getLanguageSearchField().value = 'portugues';
+        await microtasksFinished();
+
+        assertEquals(1, getLanguageLineItems().length);
+        assertLanguageLineWithTextAndSwitch(
+            portugueseDisplayName, getLanguageLineItems()[0]!);
+        assertTrue(getNoResultsFoundMessage()!.hidden);
+      });
+
+      test('it matches the language code', async () => {
+        getLanguageSearchField().value = 'pt-';
+        await microtasksFinished();
+
+        assertEquals(1, getLanguageLineItems().length);
+        assertLanguageLineWithTextAndSwitch(
+            portugueseDisplayName, getLanguageLineItems()[0]!);
+        assertTrue(getNoResultsFoundMessage()!.hidden);
       });
     });
   });
-
   suite('with multiple languages', () => {
     setup(() => {
       availableVoices = [
@@ -272,6 +372,19 @@ suite('LanguageMenu', () => {
         assertLanguageLineWithToggleChecked(true, getLanguageLineItems()[2]!);
       });
 
+      test('it logs metric when switch is toggled', async () => {
+        await drawLanguageMenu();
+
+        const toggle = getLanguageLineItems()[0]!.querySelector('cr-toggle');
+        assertTrue(!!toggle);
+        toggle.click();
+
+        assertEquals(
+            ReadAloudSettingsChange.LANGUAGE_TOGGLE,
+            await metrics.whenCalled('recordSpeechSettingsChange'));
+        assertEquals(1, metrics.getCallCount('recordSpeechSettingsChange'));
+      });
+
       test('it toggles switch when language pref changes', async () => {
         enabledLangs = ['it-it', 'en-us'];
         languageMenu.enabledLangs = enabledLangs;
@@ -308,17 +421,6 @@ suite('LanguageMenu', () => {
         assertTrue(getToast().$.toast.open);
       });
 
-      test('it does not show error toast', async () => {
-        enabledLangs = ['it-it', 'en-us'];
-        languageMenu.enabledLangs = enabledLangs;
-        notify('it', VoiceClientSideStatusCode.SENT_INSTALL_REQUEST);
-        await drawLanguageMenu();
-        notify('it', VoiceClientSideStatusCode.INSTALL_ERROR_ALLOCATION);
-        await microtasksFinished();
-
-        assertFalse(getToast().$.toast.open);
-      });
-
       test('it does not show downloaded toast when closed', async () => {
         enabledLangs = ['it-it', 'en-us'];
         languageMenu.enabledLangs = enabledLangs;
@@ -335,6 +437,17 @@ suite('LanguageMenu', () => {
         assertFalse(getToast().$.toast.open);
       });
       // </if>
+
+      test('it does not show error toast', async () => {
+        enabledLangs = ['it-it', 'en-us'];
+        languageMenu.enabledLangs = enabledLangs;
+        notify('it', VoiceClientSideStatusCode.SENT_INSTALL_REQUEST);
+        await drawLanguageMenu();
+        notify('it', VoiceClientSideStatusCode.INSTALL_ERROR_ALLOCATION);
+        await microtasksFinished();
+
+        assertFalse(getToast().$.toast.open);
+      });
 
       test('it shows and hides downloading notification', async () => {
         languageMenu.localesOfLangPackVoices = new Set(['it-it']);
@@ -505,6 +618,11 @@ suite('LanguageMenu', () => {
         assertLanguageLineWithTextAndSwitch(
             'Italian', getLanguageLineItems()[0]!);
       });
+
+      test('it has a close button label', async () => {
+        await drawLanguageMenu();
+        assertTrue(!!languageMenu.$.languageMenu.closeText);
+      });
     });
   });
 
@@ -583,7 +701,7 @@ function isPositionedOnPage(element: HTMLElement) {
 
 function assertLanguageLineWithTextAndSwitch(
     expectedText: string, element: HTMLElement) {
-  assertEquals(expectedText, element.textContent!.trim());
+  assertEquals(expectedText, element.textContent.trim());
   assertEquals(2, element.children.length);
   assertEquals('CR-TOGGLE', element.children[1]!.tagName);
 }

@@ -42,10 +42,6 @@ void DestroyString(const void* s) {
   static_cast<const std::string*>(s)->~basic_string();
 }
 
-PROTOBUF_ATTRIBUTE_NO_DESTROY PROTOBUF_CONSTINIT
-    PROTOBUF_ATTRIBUTE_INIT_PRIORITY1 ExplicitlyConstructedArenaString
-        fixed_address_empty_string{};  // NOLINT
-
 
 PROTOBUF_ATTRIBUTE_NO_DESTROY PROTOBUF_CONSTINIT const EmptyCord empty_cord_;
 
@@ -89,7 +85,7 @@ void InitWeakDefaults() {}
 
 PROTOBUF_CONSTINIT bool init_protobuf_defaults_state{false};
 void InitProtobufDefaultsSlow() {
-  fixed_address_empty_string.DefaultConstruct();
+  fixed_address_empty_string.Init();
   init_protobuf_defaults_state = true;
   InitWeakDefaults();
 }
@@ -102,17 +98,6 @@ PROTOBUF_ATTRIBUTE_INIT_PRIORITY1 static std::true_type init_empty_string =
 const std::string& GetEmptyString() {
   InitProtobufDefaults();
   return GetEmptyStringAlreadyInited();
-}
-
-size_t StringSpaceUsedExcludingSelfLong(const std::string& str) {
-  const void* start = &str;
-  const void* end = &str + 1;
-  if (start <= str.data() && str.data() < end) {
-    // The string's data is stored inside the string object itself.
-    return 0;
-  } else {
-    return str.capacity();
-  }
 }
 
 template <typename T>

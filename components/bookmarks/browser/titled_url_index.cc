@@ -8,10 +8,8 @@
 
 #include <algorithm>
 #include <iterator>
-#include <unordered_set>
 #include <utility>
 
-#include "base/feature_list.h"
 #include "base/i18n/case_conversion.h"
 #include "base/i18n/unicodestring.h"
 #include "base/logging.h"
@@ -22,8 +20,9 @@
 #include "components/bookmarks/browser/bookmark_utils.h"
 #include "components/bookmarks/browser/titled_url_match.h"
 #include "components/bookmarks/browser/titled_url_node.h"
-#include "components/bookmarks/common/bookmark_features.h"
+#include "components/omnibox/common/string_cleaning.h"
 #include "components/query_parser/snippet.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 #include "third_party/icu/source/common/unicode/normalizer2.h"
 #include "third_party/icu/source/common/unicode/utypes.h"
 
@@ -37,55 +36,10 @@ bool IsPrefix(const std::u16string& prefix, const std::u16string& string) {
          prefix.compare(0, prefix.size(), string, 0, prefix.size()) == 0;
 }
 
-TitledUrlIndex::NodeSetType DetermineNodeSetTypeFromFeatureFlags() {
-  return base::FeatureList::IsEnabled(kBookmarksUseBinaryTreeInTitledUrlIndex)
-             ? TitledUrlIndex::NodeSetType::kBinaryTree
-             : TitledUrlIndex::NodeSetType::kFlat;
-}
-
 }  // namespace
 
-TitledUrlIndex::NodeSet::NodeSet(TitledUrlIndex::NodeSetType type) {
-  switch (type) {
-    case NodeSetType::kFlat:
-      variant_.emplace<FlatNodeSet>();
-      break;
-    case NodeSetType::kBinaryTree:
-      variant_.emplace<BinaryTreeNodeSet>();
-      break;
-  }
-}
-
-TitledUrlIndex::NodeSet::~NodeSet() = default;
-
-bool TitledUrlIndex::NodeSet::empty() const {
-  return std::visit([](const auto& set) { return set.empty(); }, variant_);
-}
-
-void TitledUrlIndex::NodeSet::InsertSingleNode(const TitledUrlNode* node) {
-  std::visit([node](auto& set) { set.insert(node); }, variant_);
-}
-
-void TitledUrlIndex::NodeSet::EraseSingleNode(const TitledUrlNode* node) {
-  std::visit([node](auto& set) { set.erase(node); }, variant_);
-}
-
-TitledUrlIndex::NodeVector TitledUrlIndex::NodeSet::DeepCopyToVector() const {
-  return std::visit(
-      [](const auto& set) { return NodeVector(set.begin(), set.end()); },
-      variant_);
-}
-
-void TitledUrlIndex::NodeSet::AppendNodesToVector(NodeVector& output) const {
-  std::visit(
-      [&output](const auto& set) {
-        output.insert(output.end(), set.begin(), set.end());
-      },
-      variant_);
-}
-
-TitledUrlIndex::TitledUrlIndex()
-    : indexed_node_set_type_(DetermineNodeSetTypeFromFeatureFlags()) {}
+TitledUrlIndex::TitledUrlIndex(std::unique_ptr<TitledUrlNodeSorter> sorter)
+    : sorter_(std::move(sorter)) {}
 
 TitledUrlIndex::~TitledUrlIndex() = default;
 
@@ -114,11 +68,13 @@ void TitledUrlIndex::AddPath(const TitledUrlNode* node) {
 void TitledUrlIndex::RemovePath(const TitledUrlNode* node) {
   for (const std::u16string& term :
        ExtractQueryWords(Normalize(node->GetTitledUrlNodeTitle()))) {
-    // `path_index_.count(term)` should be > 0, since nodes can't be
+    // `path_index_ should contain `term`, since nodes can't be
     // removed/renamed if they didn't exist to begin with. But some tests don't
     // fully load bookmarks so it's not `DCHECK`ed.
-    if (path_index_.count(term) && !--path_index_[term])
-      path_index_.erase(term);
+    if (auto it = path_index_.find(term);
+        it != path_index_.end() && !--(it->second)) {
+      path_index_.erase(it);
+    }
   }
 }
 
@@ -145,13 +101,13 @@ std::vector<TitledUrlMatch> TitledUrlIndex::GetResultsMatching(
   // below will filter out nodes that neither match nor ancestor-match every
   // query term.
   static const size_t kMaxNodes = 1000;
-  FlatNodeSet matches =
+  TitledUrlNodeSet matches =
       RetrieveNodesMatchingAnyTerms(terms, matching_algorithm, kMaxNodes);
 
   if (matches.empty())
     return {};
 
-  NodeVector sorted_nodes;
+  TitledUrlNodes sorted_nodes;
   SortMatches(matches, &sorted_nodes);
 
   // We use a QueryParser to fill in match positions for us. It's not the most
@@ -186,8 +142,8 @@ std::u16string TitledUrlIndex::Normalize(std::u16string_view text) {
   return base::i18n::UnicodeStringToString16(unicode_normalized_text);
 }
 
-void TitledUrlIndex::SortMatches(const FlatNodeSet& matches,
-                                 NodeVector* sorted_nodes) const {
+void TitledUrlIndex::SortMatches(const TitledUrlNodeSet& matches,
+                                 TitledUrlNodes* sorted_nodes) const {
   if (sorter_) {
     sorter_->SortMatches(matches, sorted_nodes);
   } else {
@@ -196,7 +152,7 @@ void TitledUrlIndex::SortMatches(const FlatNodeSet& matches,
 }
 
 std::vector<TitledUrlMatch> TitledUrlIndex::MatchTitledUrlNodesWithQuery(
-    const NodeVector& nodes,
+    const TitledUrlNodes& nodes,
     const query_parser::QueryNodeVector& query_nodes,
     const std::vector<std::u16string>& query_terms,
     size_t max_count) {
@@ -206,7 +162,7 @@ std::vector<TitledUrlMatch> TitledUrlIndex::MatchTitledUrlNodesWithQuery(
   // `HistoryContentsProvider::ConvertResults()` will run backwards to assure
   // higher relevance will be attributed to the best matches.
   std::vector<TitledUrlMatch> matches;
-  for (NodeVector::const_iterator i = nodes.begin();
+  for (TitledUrlNodes::const_iterator i = nodes.begin();
        i != nodes.end() && matches.size() < max_count; ++i) {
     std::optional<TitledUrlMatch> match =
         MatchTitledUrlNodeWithQuery(*i, query_nodes, query_terms);
@@ -235,13 +191,13 @@ std::optional<TitledUrlMatch> TitledUrlIndex::MatchTitledUrlNodeWithQuery(
       base::i18n::ToLower(Normalize(node->GetTitledUrlNodeTitle()));
   base::OffsetAdjuster::Adjustments adjustments;
   const std::u16string clean_url =
-      CleanUpUrlForMatching(node->GetTitledUrlNodeUrl(), &adjustments);
+      omnibox::CleanUpUrlForMatching(node->GetTitledUrlNodeUrl(), &adjustments);
   std::vector<std::u16string> lower_ancestor_titles;
   std::ranges::transform(
       node->GetTitledUrlNodeAncestorTitles(),
       std::back_inserter(lower_ancestor_titles),
       [](const auto& ancestor_title) {
-        return base::i18n::ToLower(Normalize(std::u16string(ancestor_title)));
+        return base::i18n::ToLower(Normalize(ancestor_title));
       });
 
   // Check if the input approximately matches the node. This is less strict than
@@ -311,22 +267,23 @@ std::optional<TitledUrlMatch> TitledUrlIndex::MatchTitledUrlNodeWithQuery(
   return match;
 }
 
-TitledUrlIndex::FlatNodeSet TitledUrlIndex::RetrieveNodesMatchingAllTerms(
+TitledUrlIndex::TitledUrlNodeSet TitledUrlIndex::RetrieveNodesMatchingAllTerms(
     const std::vector<std::u16string>& terms,
     query_parser::MatchingAlgorithm matching_algorithm) const {
   DCHECK(!terms.empty());
-  FlatNodeSet matches = RetrieveNodesMatchingTerm(terms[0], matching_algorithm);
+  TitledUrlNodeSet matches =
+      RetrieveNodesMatchingTerm(terms[0], matching_algorithm);
   for (size_t i = 1; i < terms.size() && !matches.empty(); ++i) {
-    FlatNodeSet term_matches =
+    TitledUrlNodeSet term_matches =
         RetrieveNodesMatchingTerm(terms[i], matching_algorithm);
     // Compute intersection between the two sets.
-    base::EraseIf(matches, base::IsNotIn<FlatNodeSet>(term_matches));
+    base::EraseIf(matches, base::IsNotIn<TitledUrlNodeSet>(term_matches));
   }
 
   return matches;
 }
 
-TitledUrlIndex::FlatNodeSet TitledUrlIndex::RetrieveNodesMatchingAnyTerms(
+TitledUrlIndex::TitledUrlNodeSet TitledUrlIndex::RetrieveNodesMatchingAnyTerms(
     const std::vector<std::u16string>& terms,
     query_parser::MatchingAlgorithm matching_algorithm,
     size_t max_nodes) const {
@@ -348,13 +305,13 @@ TitledUrlIndex::FlatNodeSet TitledUrlIndex::RetrieveNodesMatchingAnyTerms(
   if (!terms_not_path.empty())
     return RetrieveNodesMatchingAllTerms(terms_not_path, matching_algorithm);
 
-  std::vector<NodeVector> matches_per_term;
+  std::vector<TitledUrlNodes> matches_per_term;
   bool some_term_had_empty_matches = false;
   for (const std::u16string& term : terms) {
     // Use `matching_algorithm`, as opposed to exact matching, to allow inputs
     // like 'myFolder goog' to match a 'google.com' bookmark in a 'myFolder'
     // folder.
-    NodeVector term_matches =
+    TitledUrlNodes term_matches =
         RetrieveNodesMatchingTerm(term, matching_algorithm);
     if (term_matches.empty())
       some_term_had_empty_matches = true;
@@ -369,9 +326,9 @@ TitledUrlIndex::FlatNodeSet TitledUrlIndex::RetrieveNodesMatchingAnyTerms(
       [](size_t first, size_t second) { return first < second; },
       [](const auto& matches) { return matches.size(); });
 
-  // Use an `unordered_set` to avoid potentially 1000's of linear time
-  // insertions into the ordered `FlatNodeSet` (i.e. `flat_set`).
-  std::unordered_set<const TitledUrlNode*> matches;
+  // Use an `absl::flat_hash_set` to avoid potentially 1000's of linear time
+  // insertions into the ordered `TitledUrlNodeSet` (i.e. `flat_set`).
+  absl::flat_hash_set<const TitledUrlNode*> matches;
   for (const auto& term_matches : matches_per_term) {
     for (const TitledUrlNode* node : term_matches) {
       matches.insert(node);
@@ -388,14 +345,14 @@ TitledUrlIndex::FlatNodeSet TitledUrlIndex::RetrieveNodesMatchingAnyTerms(
   // is a superset of the intersection of `matches_per_term`s, if
   // `matches_per_term[0].size() <= max_nodes`, all of `matches_per_term[0]`,
   // and therefore the intersection matches`, are already in `matches`.
-  FlatNodeSet all_term_matches;
+  TitledUrlNodeSet all_term_matches;
   if (!some_term_had_empty_matches && matches_per_term[0].size() > max_nodes) {
-    all_term_matches = std::move(matches_per_term[0]);
+    all_term_matches = matches_per_term[0];
     for (size_t i = 1; i < matches_per_term.size() && !all_term_matches.empty();
          ++i) {
       // Compute intersection between the two sets.
       base::EraseIf(all_term_matches,
-                    base::IsNotIn<FlatNodeSet>(matches_per_term[i]));
+                    base::IsNotIn<TitledUrlNodeSet>(matches_per_term[i]));
     }
     // `all_term_matches` is the intersection of each term's node matches; the
     // same as `RetrieveNodesMatchingAllTerms()`. We don't call the latter as a
@@ -405,10 +362,10 @@ TitledUrlIndex::FlatNodeSet TitledUrlIndex::RetrieveNodesMatchingAnyTerms(
   }
 
   matches.insert(all_term_matches.begin(), all_term_matches.end());
-  return FlatNodeSet(matches.begin(), matches.end());
+  return TitledUrlNodeSet(matches.begin(), matches.end());
 }
 
-TitledUrlIndex::NodeVector TitledUrlIndex::RetrieveNodesMatchingTerm(
+TitledUrlIndex::TitledUrlNodes TitledUrlIndex::RetrieveNodesMatchingTerm(
     const std::u16string& term,
     query_parser::MatchingAlgorithm matching_algorithm) const {
   Index::const_iterator i = index_.lower_bound(term);
@@ -420,14 +377,15 @@ TitledUrlIndex::NodeVector TitledUrlIndex::RetrieveNodesMatchingTerm(
     // Term is too short for prefix match, compare using exact match.
     if (i->first != term)
       return {};  // No title/URL pairs with this term.
-    return i->second.DeepCopyToVector();
+    return TitledUrlNodes(i->second.begin(), i->second.end());
   }
 
   // Loop through index adding all entries that start with term to
   // `prefix_matches`.
-  NodeVector prefix_matches;
+  TitledUrlNodes prefix_matches;
   while (i != index_.end() && IsPrefix(term, i->first)) {
-    i->second.AppendNodesToVector(prefix_matches);
+    prefix_matches.insert(prefix_matches.end(), i->second.begin(),
+                          i->second.end());
     ++i;
   }
   return prefix_matches;
@@ -468,7 +426,8 @@ std::vector<std::u16string> TitledUrlIndex::ExtractIndexTerms(
     terms.push_back(term);
   }
 
-  for (const std::u16string& term : ExtractQueryWords(CleanUpUrlForMatching(
+  for (const std::u16string& term :
+       ExtractQueryWords(omnibox::CleanUpUrlForMatching(
            node->GetTitledUrlNodeUrl(), /*adjustments=*/nullptr))) {
     terms.push_back(term);
   }
@@ -478,8 +437,7 @@ std::vector<std::u16string> TitledUrlIndex::ExtractIndexTerms(
 
 void TitledUrlIndex::RegisterNode(const std::u16string& term,
                                   const TitledUrlNode* node) {
-  index_.try_emplace(term, indexed_node_set_type_)
-      .first->second.InsertSingleNode(node);
+  index_[term].insert(node);
 }
 
 void TitledUrlIndex::UnregisterNode(const std::u16string& term,
@@ -490,7 +448,7 @@ void TitledUrlIndex::UnregisterNode(const std::u16string& term,
     // example, a node with the title 'foo foo' would end up here.
     return;
   }
-  i->second.EraseSingleNode(node);
+  i->second.erase(node);
   if (i->second.empty())
     index_.erase(i);
 }

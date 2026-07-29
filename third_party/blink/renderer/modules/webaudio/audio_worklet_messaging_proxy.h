@@ -9,6 +9,7 @@
 #include <optional>
 
 #include "base/time/time.h"
+#include "base/gtest_prod_util.h"
 #include "third_party/blink/renderer/core/workers/threaded_worklet_messaging_proxy.h"
 #include "third_party/blink/renderer/modules/modules_export.h"
 
@@ -39,7 +40,7 @@ class MODULES_EXPORT AudioWorkletMessagingProxy final
 
   // Invokes AudioWorkletGlobalScope to create an instance of
   // AudioWorkletProcessor.
-  void CreateProcessorOnRenderingThread(
+  static void CreateProcessorOnRenderingThread(
       WorkerThread*,
       scoped_refptr<AudioWorkletHandler>,
       const String& name,
@@ -78,6 +79,8 @@ class MODULES_EXPORT AudioWorkletMessagingProxy final
   void Trace(Visitor*) const override;
 
  private:
+  FRIEND_TEST_ALL_PREFIXES(AudioContextTest, AudioWorkletTerminatedOnClose);
+
   // Implements ThreadedWorkletMessagingProxy.
   std::unique_ptr<ThreadedWorkletObjectProxy> CreateObjectProxy(
       ThreadedWorkletMessagingProxy*,

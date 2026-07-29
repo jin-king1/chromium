@@ -12,22 +12,39 @@
 #import "ios/chrome/browser/push_notification/model/push_notification_client.h"
 
 class Browser;
+class ProfileIOS;
 
 // Client for handling send tab notifications.
 class SendTabPushNotificationClient : public PushNotificationClient {
  public:
+  // Constructor for when multi-Profile push notification handling is enabled.
+  // Associates this client instance with a specific user `profile`. This should
+  // only be called when `IsMultiProfilePushNotificationHandlingEnabled()`
+  // returns YES.
+  explicit SendTabPushNotificationClient(ProfileIOS* profile);
+  // Legacy constructor for when multi-Profile push notification handling is
+  // disabled. The client will operate without being tied to a specific Profile.
   SendTabPushNotificationClient();
   ~SendTabPushNotificationClient() override;
 
   // Override PushNotificationClient.
+  std::optional<NotificationType> GetNotificationType(
+      UNNotification* notification) override;
+  bool CanHandleNotification(UNNotification* notification) override;
   bool HandleNotificationInteraction(UNNotificationResponse* response) override;
   std::optional<UIBackgroundFetchResult> HandleNotificationReception(
       NSDictionary<NSString*, id>* notification) override;
   NSArray<UNNotificationCategory*>* RegisterActionableNotifications() override;
 
  private:
-  // Handles the completion of URL loads.
-  void OnURLLoadedInNewTab(std::string guid, Browser* browser);
+  // Extracts the scroll text fragment if present and opens the URL in a new
+  // tab.
+  void LoadSendTabUrlInNewTab(const GURL& url,
+                              std::string_view identifier,
+                              Browser* browser);
+
+  // Subscriptions for delayed actions.
+  std::vector<base::CallbackListSubscription> delayed_actions_;
 
   // Weak pointer factory.
   base::WeakPtrFactory<SendTabPushNotificationClient> weak_ptr_factory_{this};

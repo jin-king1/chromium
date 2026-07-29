@@ -26,11 +26,9 @@ class AwPicture {
 
   // Methods called from Java.
   void Destroy(JNIEnv* env);
-  jint GetWidth(JNIEnv* env, const base::android::JavaParamRef<jobject>& obj);
-  jint GetHeight(JNIEnv* env, const base::android::JavaParamRef<jobject>& obj);
-  void Draw(JNIEnv* env,
-            const base::android::JavaParamRef<jobject>& obj,
-            const base::android::JavaParamRef<jobject>& canvas);
+  int32_t GetWidth(JNIEnv* env);
+  int32_t GetHeight(JNIEnv* env);
+  void Draw(JNIEnv* env, const base::android::JavaRef<jobject>& canvas);
 
  private:
   sk_sp<SkPicture> picture_;

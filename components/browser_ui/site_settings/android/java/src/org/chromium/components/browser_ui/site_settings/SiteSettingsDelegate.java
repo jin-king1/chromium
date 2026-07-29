@@ -7,6 +7,8 @@ package org.chromium.components.browser_ui.site_settings;
 import android.app.Activity;
 import android.graphics.drawable.Drawable;
 
+import androidx.annotation.StringRes;
+
 import org.chromium.base.Callback;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -64,6 +66,11 @@ public interface SiteSettingsDelegate {
     boolean isIncognitoModeEnabled();
 
     /**
+     * @return true if the delegate is for an incognito-branded profile.
+     */
+    boolean isIncognito();
+
+    /**
      * @return true if the QuietNotificationPrompts Feature is enabled.
      */
     boolean isQuietNotificationPromptsFeatureEnabled();
@@ -71,20 +78,11 @@ public interface SiteSettingsDelegate {
     boolean isPermissionDedicatedCpssSettingAndroidFeatureEnabled();
 
     /**
-     * @return true if the PermissionSiteSettingsRadioButtonFeatureEnabled Feature is enabled.
+     * Get the id of the notification channel associated with the given origin.
+     *
+     * @param callback Callback to be invoked with the Id of the channel.
      */
-    boolean isPermissionSiteSettingsRadioButtonFeatureEnabled();
-
-    /**
-     * @return true if the PrivacySandboxFirstPartySetsUi Feature is enabled.
-     */
-    boolean isPrivacySandboxFirstPartySetsUiFeatureEnabled();
-
-    /**
-     * @return The id of the notification channel associated with the given origin.
-     */
-    // TODO(crbug.com/40126121): Remove this once WebLayer supports notifications.
-    String getChannelIdForOrigin(String origin);
+    void getChannelIdForOrigin(String origin, Callback<String> callback);
 
     /**
      * @return The name of the app the settings are associated with.
@@ -111,6 +109,13 @@ public interface SiteSettingsDelegate {
     boolean isHelpAndFeedbackEnabled();
 
     /**
+     * @return The resource ID of the help string that is valid for the current policy.
+     */
+    default @StringRes int getHelpMenuStringRes() {
+        return R.string.menu_help;
+    }
+
+    /**
      * Launches a support page relevant to settings UI pages.
      *
      * @see org.chromium.chrome.browser.feedback.HelpAndFeedbackLauncher#show
@@ -124,8 +129,8 @@ public interface SiteSettingsDelegate {
      */
     void launchProtectedContentHelpAndFeedbackActivity(Activity currentActivity);
 
-    /** Launches the Storage Access API help center link in a Chrome Custom Tab. */
-    void launchStorageAccessHelpActivity(Activity currentActivity);
+    /** Launches a Help Center URL in a custom tab. */
+    void launchUrlInCustomTab(Activity currentActivity, String url);
 
     /**
      * @return The set of all origins that have a WebAPK or TWA installed.
@@ -176,37 +181,6 @@ public interface SiteSettingsDelegate {
      */
     boolean isPartOfManagedRelatedWebsiteSet(String origin);
 
-    /**
-     * @return true if the Tracking Protection UI should be displayed.
-     */
-    boolean shouldShowTrackingProtectionUi();
-
-    /**
-     * @return true if the IP Protection UI should be displayed in User Bypass.
-     */
-    boolean shouldDisplayIpProtection();
-
-    /***
-     * @return true if the Fingerprinting Protection UI should be displayed in User
-     *         Bypass.
-     */
-    boolean shouldDisplayFingerprintingProtection();
-
-    /**
-     * @return whether the 100% 3PCD Tracking Protection with ACT features UI should be shown.
-     */
-    boolean shouldShowTrackingProtectionActFeaturesUi();
-
-    /**
-     * @return whether all 3pcs should be blocked in incognito.
-     */
-    boolean isAlwaysBlock3pcsIncognitoEnabled();
-
-    /**
-     * @return true if all third-party cookies are blocked when Tracking Protection is on.
-     */
-    boolean isBlockAll3pcEnabledInTrackingProtection();
-
     /** Enables/disables Related Website Sets data access. */
     void setRelatedWebsiteSetsDataAccessEnabled(boolean enabled);
 
@@ -241,19 +215,19 @@ public interface SiteSettingsDelegate {
     void getBrowsingDataModel(Callback<BrowsingDataModel> callback);
 
     /**
-     * @return whether the Privacy Sandbox Rws UI should be shown in the Settings.
-     */
-    boolean shouldShowPrivacySandboxRwsUi();
-
-    /**
-     * @return whether the Safety Hub is enabled.
-     */
-    boolean isSafetyHubEnabled();
-
-    /**
      * @return whether the unused site permission autorevocation is enabled.
      */
     boolean isPermissionAutorevocationEnabled();
+
+    /**
+     * @return whether the related website sets UI is enabled.
+     */
+    boolean isRelatedWebsiteSetsUiEnabled();
+
+    /**
+     * @return whether the settings containment feature is enabled.
+     */
+    boolean isSettingsContainmentEnabled();
 
     /** Enable/Disable unused site permission autorevocation. */
     void setPermissionAutorevocationEnabled(boolean isEnabled);

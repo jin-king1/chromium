@@ -6,6 +6,7 @@
 
 #import "base/apple/foundation_util.h"
 #import "base/check.h"
+#import "ios/chrome/app/tests_hook.h"
 #import "ios/chrome/browser/feature_engagement/model/tracker_factory.h"
 #import "ios/chrome/browser/infobars/model/infobar_ios.h"
 #import "ios/chrome/browser/infobars/model/infobar_type.h"
@@ -20,13 +21,17 @@
 #import "ios/chrome/browser/overlays/model/public/overlay_request_support.h"
 #import "ios/chrome/browser/overlays/model/public/overlay_response.h"
 #import "ios/chrome/browser/overlays/ui_bundled/infobar_banner/autofill_address_profile/save_address_profile_infobar_banner_overlay_mediator.h"
+#import "ios/chrome/browser/overlays/ui_bundled/infobar_banner/collaboration_group/collaboration_group_infobar_banner_overlay_mediator.h"
+#import "ios/chrome/browser/overlays/ui_bundled/infobar_banner/collaboration_out_of_date/collaboration_out_of_date_infobar_banner_overlay_mediator.h"
 #import "ios/chrome/browser/overlays/ui_bundled/infobar_banner/confirm/confirm_infobar_banner_overlay_mediator.h"
 #import "ios/chrome/browser/overlays/ui_bundled/infobar_banner/features.h"
+#import "ios/chrome/browser/overlays/ui_bundled/infobar_banner/forms_ai_private_inference/forms_ai_private_inference_banner_overlay_mediator.h"
 #import "ios/chrome/browser/overlays/ui_bundled/infobar_banner/infobar_banner_overlay_mediator.h"
 #import "ios/chrome/browser/overlays/ui_bundled/infobar_banner/passwords/password_infobar_banner_overlay_mediator.h"
 #import "ios/chrome/browser/overlays/ui_bundled/infobar_banner/permissions/permissions_infobar_banner_overlay_mediator.h"
 #import "ios/chrome/browser/overlays/ui_bundled/infobar_banner/safe_browsing/enhanced_safe_browsing_infobar_overlay_mediator.h"
 #import "ios/chrome/browser/overlays/ui_bundled/infobar_banner/save_card/save_card_infobar_banner_overlay_mediator.h"
+#import "ios/chrome/browser/overlays/ui_bundled/infobar_banner/save_cvc/save_cvc_infobar_banner_overlay_mediator.h"
 #import "ios/chrome/browser/overlays/ui_bundled/infobar_banner/sync_error/sync_error_infobar_banner_overlay_mediator.h"
 #import "ios/chrome/browser/overlays/ui_bundled/infobar_banner/tailored_security/tailored_security_infobar_banner_overlay_mediator.h"
 #import "ios/chrome/browser/overlays/ui_bundled/infobar_banner/translate/translate_infobar_banner_overlay_mediator.h"
@@ -35,8 +40,12 @@
 #import "ios/chrome/browser/overlays/ui_bundled/overlay_request_mediator_util.h"
 #import "ios/chrome/browser/shared/coordinator/layout_guide/layout_guide_util.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
+#import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
+#import "ios/chrome/browser/shared/public/commands/non_modal_signin_promo_commands.h"
+#import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/util/layout_guide_names.h"
+#import "ios/chrome/browser/shared/ui/util/omnibox_util.h"
 #import "ios/chrome/browser/shared/ui/util/util_swift.h"
 
 @interface InfobarBannerOverlayCoordinator () <InfobarBannerPositioner>
@@ -59,11 +68,13 @@
     [ConfirmInfobarBannerOverlayMediator class],
     [TranslateInfobarBannerOverlayMediator class],
     [SaveCardInfobarBannerOverlayMediator class],
+    [SaveCVCInfobarBannerOverlayMediator class],
     [SaveAddressProfileInfobarBannerOverlayMediator class],
     [PermissionsBannerOverlayMediator class],
     [TailoredSecurityInfobarBannerOverlayMediator class],
     [SyncErrorInfobarBannerOverlayMediator class],
     [EnhancedSafeBrowsingBannerOverlayMediator class],
+    [FormsAiPrivateInferenceBannerOverlayMediator class],
   ];
 }
 
@@ -80,15 +91,14 @@
 #pragma mark - InfobarBannerPositioner
 
 - (CGFloat)bannerYPosition {
+  if (!self.started || !self.browser) {
+    return 0;
+  }
   LayoutGuideCenter* layoutGuideCenter =
       LayoutGuideCenterForBrowser(self.browser);
-  UIView* topOmnibox =
-      [layoutGuideCenter referencedViewUnderName:kTopOmniboxGuide];
-  CGRect omniboxFrame = [topOmnibox convertRect:topOmnibox.bounds toView:nil];
-  CGFloat omniboxMaxY = CGRectGetMaxY(omniboxFrame);
 
-  // Use the top toolbar's layout guide when the omnibox is at the bottom.
-  if (topOmnibox.hidden) {
+  if (IsCurrentLayoutBottomOmnibox(self.browser)) {
+    // Use the top toolbar's layout guide when the omnibox is at the bottom.
     UIView* topToolbar =
         [layoutGuideCenter referencedViewUnderName:kPrimaryToolbarGuide];
     CGRect topToolbarFrame = [topToolbar convertRect:topToolbar.bounds
@@ -97,7 +107,11 @@
         CGRectGetMaxY(topToolbarFrame) + kInfobarTopPaddingBottomOmnibox;
     return topToolbarMaxY;
   }
-  return omniboxMaxY;
+
+  UIView* topOmnibox =
+      [layoutGuideCenter referencedViewUnderName:kTopOmniboxGuide];
+  CGRect omniboxFrame = [topOmnibox convertRect:topOmnibox.bounds toView:nil];
+  return CGRectGetMaxY(omniboxFrame);
 }
 
 - (UIView*)bannerView {
@@ -119,9 +133,18 @@
          presentsModal:config->has_badge()
                   type:config->infobar_type()];
   mediator.consumer = self.bannerViewController;
+  // Set the nonModalSignInPromoHandler for non modal sign-in promo.
+  mediator.nonModalSignInPromoHandler = HandlerForProtocol(
+      self.browser->GetCommandDispatcher(), NonModalSignInPromoCommands);
   mediator.engagementTracker =
-      feature_engagement::TrackerFactory::GetForProfile(
-          self.browser->GetProfile());
+      feature_engagement::TrackerFactory::GetForProfile(self.profile);
+
+  if ([mediator isKindOfClass:[SaveCardInfobarBannerOverlayMediator class]]) {
+    SaveCardInfobarBannerOverlayMediator* saveCardMediator =
+        (SaveCardInfobarBannerOverlayMediator*)mediator;
+    saveCardMediator.snackbarCommandsHandler = HandlerForProtocol(
+        self.browser->GetCommandDispatcher(), SnackbarCommands);
+  }
 
   self.mediator = mediator;
   // Present the banner.
@@ -158,6 +181,9 @@
   // Mark started as NO before calling dismissal callback to prevent dup
   // stopAnimated: executions.
   self.started = NO;
+  // Disconnect the mediator synchronously so it stops referencing command
+  // handlers before asynchronous view controller dismissal finishes.
+  [self.mediator disconnect];
   __weak InfobarBannerOverlayCoordinator* weakSelf = self;
   [self.baseViewController dismissViewControllerAnimated:animated
                                               completion:^{
@@ -194,7 +220,7 @@
   // is necessary to synchronize OverlayPresenter scheduling logic with the UI
   // layer.
   if (self.delegate) {
-    self.delegate->OverlayUIDidFinishDismissal(self.request);
+    self.delegate->OverlayUIDidFinishDismissal(self.requestId);
   }
   UpdateBannerAccessibilityForDismissal(self.baseViewController);
 }
@@ -235,17 +261,27 @@
     case InfobarType::kInfobarTypeSaveCard:
       mediatorClass = [SaveCardInfobarBannerOverlayMediator class];
       break;
+    case InfobarType::kInfobarTypeSaveCvc:
+      mediatorClass = [SaveCVCInfobarBannerOverlayMediator class];
+      break;
     case InfobarType::kInfobarTypeSyncError:
       mediatorClass = [SyncErrorInfobarBannerOverlayMediator class];
       break;
     case InfobarType::kInfobarTypeTranslate:
       mediatorClass = [TranslateInfobarBannerOverlayMediator class];
       break;
-    case InfobarType::kInfobarTypeParcelTracking:
-      // TODO(crbug.com/391002352): Remove kInfobarTypeParcelTracking
-      NOTREACHED();
     case InfobarType::kInfobarTypeEnhancedSafeBrowsing:
       mediatorClass = [EnhancedSafeBrowsingBannerOverlayMediator class];
+      break;
+    case InfobarType::kInfobarTypeCollaborationGroup:
+      mediatorClass = [CollaborationGroupInfobarBannerOverlayMediator class];
+      break;
+    case InfobarType::kInfobarTypeCollaborationOutOfDate:
+      mediatorClass =
+          [CollaborationOutOfDateInfobarBannerOverlayMediator class];
+      break;
+    case InfobarType::kInfobarTypeFormsAiPrivateInference:
+      mediatorClass = [FormsAiPrivateInferenceBannerOverlayMediator class];
       break;
     default:
       NOTREACHED() << "Received unsupported infobarType.";
@@ -263,6 +299,11 @@
 // Determines the duration for which to show the infobar based on its priority
 // and its type.
 - (base::TimeDelta)infobarDuration {
+  std::optional<base::TimeDelta> overrideDuration =
+      tests_hook::GetOverrideInfobarDuration();
+  if (overrideDuration.has_value()) {
+    return overrideDuration.value();
+  }
   InfobarOverlayRequestConfig* config =
       self.request->GetConfig<InfobarOverlayRequestConfig>();
 

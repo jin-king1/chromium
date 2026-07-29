@@ -12,19 +12,16 @@
 #include "chrome/browser/ui/webui/top_chrome/top_chrome_webui_config.h"
 #include "chrome/browser/ui/webui/top_chrome/untrusted_top_chrome_web_ui_controller.h"
 #include "chrome/common/webui_url_constants.h"
+#include "components/omnibox/browser/searchbox.mojom.h"
 #include "components/user_education/webui/help_bubble_handler.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_ui_data_source.h"
 #include "content/public/common/url_constants.h"
-#include "ui/webui/resources/cr_components/color_change_listener/color_change_listener.mojom.h"
 #include "ui/webui/resources/cr_components/help_bubble/help_bubble.mojom.h"
-#include "ui/webui/resources/cr_components/searchbox/searchbox.mojom-forward.h"
+#include "ui/webui/resources/cr_components/composebox/composebox.mojom.h"
 
 class LensOverlayController;
-
-namespace ui {
-class ColorChangeHandler;
-}  // namespace ui
+class LensSearchController;
 
 namespace lens {
 
@@ -43,7 +40,9 @@ class LensSidePanelUntrustedUI
     : public UntrustedTopChromeWebUIController,
       public lens::mojom::LensSidePanelPageHandlerFactory,
       public lens::mojom::LensGhostLoaderPageHandlerFactory,
-      public help_bubble::mojom::HelpBubbleHandlerFactory {
+      public help_bubble::mojom::HelpBubbleHandlerFactory,
+      public composebox::mojom::PageHandlerFactory,
+      public searchbox::mojom::PageHandlerFactory {
  public:
   explicit LensSidePanelUntrustedUI(content::WebUI* web_ui);
 
@@ -64,17 +63,10 @@ class LensSidePanelUntrustedUI
       mojo::PendingReceiver<lens::mojom::LensGhostLoaderPageHandlerFactory>
           pending_receiver);
 
-  // Instantiates the implementor of the searchbox::mojom::PageHandler mojo
-  // interface passing the pending receiver that will be internally bound.
+  // Instantiates the implementor of the searchbox::mojom::PageHandlerFactory
+  // mojo interface passing the pending receiver that will be internally bound.
   void BindInterface(
-      mojo::PendingReceiver<searchbox::mojom::PageHandler> receiver);
-
-  // Instantiates the implementor of the
-  // color_change_listener::mojom::PageHandler mojo interface passing the
-  // pending receiver that will be internally bound.
-  void BindInterface(
-      mojo::PendingReceiver<color_change_listener::mojom::PageHandler>
-          receiver);
+      mojo::PendingReceiver<searchbox::mojom::PageHandlerFactory> receiver);
 
   // Instantiates the implementor of the
   // help_bubble::mojom::HelpBubbleHandlerFactory mojo interface passing the
@@ -83,11 +75,19 @@ class LensSidePanelUntrustedUI
       mojo::PendingReceiver<help_bubble::mojom::HelpBubbleHandlerFactory>
           receiver);
 
-  static constexpr std::string GetWebUIName() {
+  // Instantiates the implementor of the
+  // composebox::mojom::PageHandlerFactory mojo interface passing the
+  // pending receiver that will be internally bound.
+  void BindInterface(
+      mojo::PendingReceiver<composebox::mojom::PageHandlerFactory>
+          receiver);
+
+  static constexpr std::string_view GetWebUIName() {
     return "LensSidePanelUntrusted";
   }
 
  private:
+  LensSearchController& GetLensSearchController();
   LensOverlayController& GetLensOverlayController();
 
   // lens::mojom::LensSidePanelPageHandlerFactory:
@@ -105,7 +105,19 @@ class LensSidePanelUntrustedUI
       mojo::PendingReceiver<help_bubble::mojom::HelpBubbleHandler> handler)
       override;
 
-  std::unique_ptr<ui::ColorChangeHandler> color_provider_handler_;
+  // searchbox::mojom::PageHandlerFactory:
+  void CreatePageHandler(
+      mojo::PendingRemote<searchbox::mojom::Page> page,
+      mojo::PendingReceiver<searchbox::mojom::PageHandler> handler) override;
+
+    // Instantiates the implementor of the composebox::mojom::PageHandler mojo
+  // interface passing the pending receiver that will be internally bound.
+  void CreatePageHandler(
+      mojo::PendingReceiver<composebox::mojom::PageHandler>
+          pending_page_handler,
+      mojo::PendingRemote<searchbox::mojom::Page> pending_searchbox_page,
+      mojo::PendingReceiver<searchbox::mojom::PageHandler>
+          pending_searchbox_handler) override;
 
   mojo::Receiver<lens::mojom::LensSidePanelPageHandlerFactory>
       lens_side_panel_page_factory_receiver_{this};
@@ -117,6 +129,12 @@ class LensSidePanelUntrustedUI
 
   mojo::Receiver<help_bubble::mojom::HelpBubbleHandlerFactory>
       help_bubble_handler_factory_receiver_{this};
+
+  mojo::Receiver<composebox::mojom::PageHandlerFactory>
+      composebox_page_handler_factory_receiver_{this};
+
+  mojo::Receiver<searchbox::mojom::PageHandlerFactory>
+      searchbox_page_factory_receiver_{this};
 
   base::WeakPtrFactory<LensSidePanelUntrustedUI> weak_factory_{this};
 

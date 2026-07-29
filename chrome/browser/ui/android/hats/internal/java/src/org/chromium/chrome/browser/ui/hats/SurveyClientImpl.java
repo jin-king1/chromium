@@ -4,24 +4,27 @@
 
 package org.chromium.chrome.browser.ui.hats;
 
-import android.app.Activity;
+import static org.chromium.build.NullUtil.assumeNonNull;
 
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
+import android.app.Activity;
 
 import org.chromium.base.Callback;
 import org.chromium.base.CommandLine;
 import org.chromium.base.Log;
 import org.chromium.base.ResettersForTesting;
-import org.chromium.base.supplier.ObservableSupplier;
+import org.chromium.base.supplier.NonNullObservableSupplier;
 import org.chromium.base.task.AsyncTask;
 import org.chromium.base.task.TaskTraits;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.lifecycle.LifecycleObserver;
 import org.chromium.chrome.browser.lifecycle.PauseResumeWithNativeObserver;
 import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.tabmodel.TabModel;
+import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.components.user_prefs.UserPrefs;
 
 import java.lang.ref.WeakReference;
@@ -30,6 +33,7 @@ import java.util.Map;
 
 /** Impl for SurveyClient interface. */
 // TODO(crbug.com/40250401): Add metrics and refine the logging in this class.
+@NullMarked
 class SurveyClientImpl implements SurveyClient {
     private static final String TAG = "SurveyClient";
 
@@ -37,35 +41,39 @@ class SurveyClientImpl implements SurveyClient {
      * When set, bypass the AsyncTask to read throttler in the background, and ignore whether the
      * current activity is alive. Set for unit testing / native tests.
      */
-    private static Boolean sForceShowSurveyForTesting;
+    private static @Nullable Boolean sForceShowSurveyForTesting;
 
-    private final @NonNull SurveyConfig mConfig;
-    private final @NonNull SurveyUiDelegate mUiDelegate;
-    private final @NonNull SurveyController mController;
-    private final @NonNull SurveyThrottler mThrottler;
-    private final @NonNull ObservableSupplier<Boolean> mCrashUploadPermissionSupplier;
-    private final @NonNull Map<String, String> mAggregatedSurveyPsd;
-    private final @NonNull Profile mProfile;
+    private final SurveyConfig mConfig;
+    private final SurveyUiDelegate mUiDelegate;
+    private final SurveyController mController;
+    private final SurveyThrottler mThrottler;
+    private final NonNullObservableSupplier<Boolean> mCrashUploadPermissionSupplier;
+    private final Map<String, String> mAggregatedSurveyPsd;
+    private final Profile mProfile;
+    private final @Nullable TabModelSelector mTabModelSelector;
 
-    private WeakReference<Activity> mActivityRef;
+    private @Nullable WeakReference<Activity> mActivityRef;
     private @Nullable ActivityLifecycleDispatcher mLifecycleDispatcher;
     private @Nullable LifecycleObserver mLifecycleObserver;
     private @Nullable Callback<Boolean> mOnCrashUploadPermissionChangeCallback;
+    private @Nullable Callback<TabModel> mTabModelSupplierObserver;
     private boolean mIsDestroyed;
 
     SurveyClientImpl(
-            @NonNull SurveyConfig config,
-            @NonNull SurveyUiDelegate uiDelegate,
-            @NonNull SurveyController controller,
-            @NonNull ObservableSupplier<Boolean> crashUploadPermissionSupplier,
-            @NonNull Profile profile) {
+            SurveyConfig config,
+            SurveyUiDelegate uiDelegate,
+            SurveyController controller,
+            NonNullObservableSupplier<Boolean> crashUploadPermissionSupplier,
+            Profile profile,
+            @Nullable TabModelSelector tabModelSelector) {
         mConfig = config;
         mUiDelegate = uiDelegate;
         mController = controller;
         mCrashUploadPermissionSupplier = crashUploadPermissionSupplier;
-        mThrottler = new SurveyThrottler(mConfig);
+        mThrottler = new SurveyThrottler(mConfig, profile.getCreationTime());
         mAggregatedSurveyPsd = new HashMap<>();
         mProfile = profile;
+        mTabModelSelector = tabModelSelector;
     }
 
     @Override
@@ -76,7 +84,7 @@ class SurveyClientImpl implements SurveyClient {
     @Override
     public void showSurvey(
             Activity activity,
-            ActivityLifecycleDispatcher lifecycleDispatcher,
+            @Nullable ActivityLifecycleDispatcher lifecycleDispatcher,
             Map<String, Boolean> surveyPsdBitValues,
             Map<String, String> surveyPsdStringValues) {
         showSurveyImpl(activity, lifecycleDispatcher, surveyPsdStringValues, surveyPsdBitValues);
@@ -85,7 +93,7 @@ class SurveyClientImpl implements SurveyClient {
     /** Kick off the survey presentation flow. */
     private void showSurveyImpl(
             Activity activity,
-            ActivityLifecycleDispatcher lifecycleDispatcher,
+            @Nullable ActivityLifecycleDispatcher lifecycleDispatcher,
             Map<String, String> surveyPsdStringValues,
             Map<String, Boolean> surveyPsdBitValues) {
         if (!configurationAllowsSurveys()) return;
@@ -140,11 +148,34 @@ class SurveyClientImpl implements SurveyClient {
             Log.d(TAG, "Survey can't be shown");
             return;
         }
+        assert mActivityRef != null;
         mController.downloadSurvey(
-                mActivityRef.get(),
+                assumeNonNull(mActivityRef.get()),
                 mConfig.mTriggerId,
                 this::onSurveyDownloadSucceeded,
                 this::onSurveyDownloadFailed);
+    }
+
+    /**
+     * @return Whether the actual browser type matches the requested browser type from the survey
+     *     config.
+     */
+    private boolean isRightBrowserType() {
+        if (mTabModelSelector == null) {
+            // TODO(crbug.com/418075247): Ensure mTabModelSelector is never null.
+            return true;
+        }
+
+        @RequestedBrowserType int requestedBrowserType = mConfig.mRequestedBrowserType;
+        switch (requestedBrowserType) {
+            case RequestedBrowserType.REGULAR:
+                return !mTabModelSelector.isIncognitoSelected();
+            case RequestedBrowserType.INCOGNITO:
+                return mTabModelSelector.isIncognitoSelected();
+            default:
+                assert false : "Unknown requested browser type: " + requestedBrowserType;
+                return false;
+        }
     }
 
     private void onSurveyDownloadSucceeded() {
@@ -176,7 +207,27 @@ class SurveyClientImpl implements SurveyClient {
                         mUiDelegate.dismiss();
                     }
                 };
-        mCrashUploadPermissionSupplier.addObserver(mOnCrashUploadPermissionChangeCallback);
+        mCrashUploadPermissionSupplier.addSyncObserverAndPostIfNonNull(
+                mOnCrashUploadPermissionChangeCallback);
+
+        // TODO(crbug.com/418075247): Ensure mTabModelSelector is never null.
+        if (mTabModelSelector != null) {
+            mTabModelSupplierObserver =
+                    tabModel -> {
+                        if (!isRightBrowserType()) {
+                            mUiDelegate.dismiss();
+                            if (mTabModelSupplierObserver != null) {
+                                mTabModelSelector
+                                        .getCurrentTabModelSupplier()
+                                        .removeObserver(mTabModelSupplierObserver);
+                                mTabModelSupplierObserver = null;
+                            }
+                        }
+                    };
+            mTabModelSelector
+                    .getCurrentTabModelSupplier()
+                    .addSyncObserverAndPostIfNonNull(mTabModelSupplierObserver);
+        }
 
         mUiDelegate.showSurveyInvitation(
                 this::onSurveyAccepted, this::onSurveyDeclined, this::onSurveyPresentationFailed);
@@ -199,7 +250,7 @@ class SurveyClientImpl implements SurveyClient {
         }
         mThrottler.recordSurveyPromptDisplayed();
         mController.showSurveyIfAvailable(
-                mActivityRef.get(),
+                assumeNonNull(mActivityRef.get()),
                 mConfig.mTriggerId,
                 R.drawable.chrome_sync_logo,
                 mLifecycleDispatcher,
@@ -246,6 +297,12 @@ class SurveyClientImpl implements SurveyClient {
             mCrashUploadPermissionSupplier.removeObserver(mOnCrashUploadPermissionChangeCallback);
             mOnCrashUploadPermissionChangeCallback = null;
         }
+        if (mTabModelSelector != null && mTabModelSupplierObserver != null) {
+            mTabModelSelector
+                    .getCurrentTabModelSupplier()
+                    .removeObserver(mTabModelSupplierObserver);
+            mTabModelSupplierObserver = null;
+        }
         mLifecycleDispatcher = null;
 
         if (dismissUiDelegate) {
@@ -262,11 +319,11 @@ class SurveyClientImpl implements SurveyClient {
      * @return a boolean indicating whether the user's configuration allows a survey to be shown.
      */
     private boolean configurationAllowsSurveys() {
+        if (!isRightBrowserType()) return false;
         if (forceShowSurvey()) return true;
 
         // Do not include any logging to avoid reveal the fact user has crash upload disabled.
-        boolean isCrashUploadAllowed =
-                mCrashUploadPermissionSupplier.hasValue() && mCrashUploadPermissionSupplier.get();
+        boolean isCrashUploadAllowed = mCrashUploadPermissionSupplier.get();
         boolean isHatsEnabledByPolicy =
                 UserPrefs.get(mProfile).getBoolean(Pref.FEEDBACK_SURVEYS_ENABLED);
         return isCrashUploadAllowed && isHatsEnabledByPolicy;

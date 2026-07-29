@@ -5,6 +5,7 @@
 #include "services/tracing/public/cpp/system_metrics_sampler.h"
 
 #include "base/check.h"
+#include "base/logging.h"
 #include "base/no_destructor.h"
 #include "base/power_monitor/cpu_frequency_utils.h"
 #include "base/task/sequenced_task_runner.h"
@@ -12,7 +13,7 @@
 #include "base/time/time.h"
 #include "base/trace_event/common/trace_event_common.h"
 #include "base/trace_event/trace_event.h"
-#include "services/tracing/public/mojom/perfetto_service.mojom.h"
+#include "services/tracing/public/cpp/perfetto/perfetto_data_source_names.h"
 #include "third_party/perfetto/include/perfetto/tracing/core/data_source_descriptor.h"
 #include "third_party/perfetto/protos/perfetto/config/chrome/system_metrics.gen.h"
 #include "third_party/perfetto/protos/perfetto/config/data_source_config.gen.h"
@@ -28,21 +29,13 @@ namespace tracing {
 
 namespace {
 
-constexpr base::TimeDelta kDefaultSamplingInterval = base::Seconds(5);
-
-#if BUILDFLAG(IS_WIN)
-// Returns memory in bytes from pages count.
-size_t GetTotalMemory(size_t num_pages, size_t page_size) {
-  return base::ValueOrDefaultForType<size_t>(
-      base::CheckedNumeric(num_pages) * page_size, 0U);
-}
-#endif  // BUILDFLAG(IS_WIN)
+constexpr base::TimeDelta kDefaultSamplingInterval = base::Milliseconds(500);
 
 }  // namespace
 
 void SystemMetricsSampler::Register(bool system_wide) {
   perfetto::DataSourceDescriptor desc;
-  desc.set_name(tracing::mojom::kSystemMetricsSourceName);
+  desc.set_name(kSystemMetricsSourceName);
   perfetto::DataSource<SystemMetricsSampler>::Register(desc, system_wide);
 }
 
@@ -104,6 +97,16 @@ void SystemMetricsSampler::SystemSampler::SampleSystemMetrics() {
                   cpu_throughput->estimated_frequency);
   }
 
+#if BUILDFLAG(IS_ANDROID)
+  auto frequencies = cpu_frequency_monitor_.GetCoreFrequencies();
+  for (const auto& freq : frequencies) {
+    TRACE_COUNTER(TRACE_DISABLED_BY_DEFAULT("system_metrics"),
+                  perfetto::CounterTrack("CpuFrequency", freq.core_id.value(),
+                                         perfetto::Track::Global(0)),
+                  freq.freq);
+  }
+#endif
+
 #if BUILDFLAG(IS_WIN)
   base::CpuFrequencyInfo cpu_info = base::GetCpuFrequencyInfo();
   TRACE_COUNTER(
@@ -117,27 +120,25 @@ void SystemMetricsSampler::SystemSampler::SampleSystemMetrics() {
 
 #if BUILDFLAG(IS_WIN)
 void SystemMetricsSampler::SystemSampler::SampleMemoryMetrics() {
-  PERFORMANCE_INFORMATION performance_info = {};
-  performance_info.cb = sizeof(performance_info);
-  bool get_performance_info_result =
-      ::GetPerformanceInfo(&performance_info, sizeof(performance_info));
-  if (!get_performance_info_result) {
+  MEMORYSTATUSEX mem_status = {};
+  mem_status.dwLength = sizeof(mem_status);
+  if (!::GlobalMemoryStatusEx(&mem_status)) {
     return;
   }
 
   TRACE_COUNTER(
       TRACE_DISABLED_BY_DEFAULT("system_metrics"),
       perfetto::CounterTrack("CommitMemoryLimit", perfetto::Track::Global(0)),
-      GetTotalMemory(performance_info.CommitLimit, performance_info.PageSize));
-  TRACE_COUNTER(
-      TRACE_DISABLED_BY_DEFAULT("system_metrics"),
-      perfetto::CounterTrack("CommitMemoryTotal", perfetto::Track::Global(0)),
-      GetTotalMemory(performance_info.CommitTotal, performance_info.PageSize));
+      mem_status.ullTotalPageFile);
+
+  TRACE_COUNTER(TRACE_DISABLED_BY_DEFAULT("system_metrics"),
+                perfetto::CounterTrack("CommitMemoryAvailable",
+                                       perfetto::Track::Global(0)),
+                mem_status.ullAvailPageFile);
   TRACE_COUNTER(TRACE_DISABLED_BY_DEFAULT("system_metrics"),
                 perfetto::CounterTrack("AvailablePhysicalMemory",
                                        perfetto::Track::Global(0)),
-                GetTotalMemory(performance_info.PhysicalAvailable,
-                               performance_info.PageSize));
+                mem_status.ullAvailPhys);
 }
 #endif  // BUILDFLAG(IS_WIN)
 

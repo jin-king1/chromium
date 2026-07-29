@@ -8,7 +8,6 @@
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/engagement/site_engagement_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/common/chrome_features.h"
 
 // static
 NotificationPermissionsReviewServiceFactory*
@@ -55,9 +54,10 @@ std::unique_ptr<KeyedService> NotificationPermissionsReviewServiceFactory::
 
 bool NotificationPermissionsReviewServiceFactory::
     ServiceIsCreatedWithBrowserContext() const {
-#if BUILDFLAG(IS_ANDROID)
-  return base::FeatureList::IsEnabled(features::kSafetyHub);
-#else   // BUILDFLAG(IS_ANDROID)
-  return base::FeatureList::IsEnabled(features::kSafetyHubServicesOnStartUp);
-#endif  // BUILDFLAG(IS_ANDROID)
+  return true;
+}
+
+bool NotificationPermissionsReviewServiceFactory::ServiceIsNULLWhileTesting()
+    const {
+  return true;
 }

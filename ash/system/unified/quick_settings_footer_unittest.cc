@@ -16,6 +16,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/run_until.h"
 #include "components/user_manager/user_type.h"
 #include "ui/views/test/views_test_utils.h"
 #include "ui/views/view_utils.h"
@@ -39,6 +40,7 @@ class QuickSettingsFooterTest : public NoSessionAshTestBase {
   }
 
   void TearDown() override {
+    footer_ = nullptr;
     widget_.reset();
     NoSessionAshTestBase::TearDown();
   }
@@ -75,7 +77,7 @@ class QuickSettingsFooterTest : public NoSessionAshTestBase {
   std::unique_ptr<views::Widget> widget_;
 
   // Owned by `widget_`.
-  raw_ptr<QuickSettingsFooter, DanglingUntriaged> footer_;
+  raw_ptr<QuickSettingsFooter> footer_;
 };
 
 // Tests that all buttons are with the correct view id, catalog name and UMA
@@ -249,11 +251,6 @@ TEST_F(QuickSettingsFooterTest, SignOutShowsWithMultipleAccounts) {
 }
 
 TEST_F(QuickSettingsFooterTest, SignOutButtonRecordsUmaAndSignsOut) {
-  // TODO(minch): Re-enable this test.
-  if (features::IsForestFeatureEnabled()) {
-    GTEST_SKIP() << "Skipping test body for forest feature.";
-  }
-
   GetSessionControllerClient()->set_existing_users_count(2);
   SimulateUserLogin(kRegularUserLoginInfo);
   SetUpView();
@@ -267,7 +264,9 @@ TEST_F(QuickSettingsFooterTest, SignOutButtonRecordsUmaAndSignsOut) {
                                      QsButtonCatalogName::kSignOutButton,
                                      /*expected_count=*/1);
 
-  EXPECT_EQ(1, GetSessionControllerClient()->request_sign_out_count());
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return GetSessionControllerClient()->request_sign_out_count() == 1;
+  }));
 }
 
 // Settings button is disabled when kSettingsIconDisabled is set.
@@ -288,11 +287,9 @@ TEST_F(QuickSettingsFooterTest, BatteryButtonState) {
   SimulateUserLogin(kRegularUserLoginInfo);
   SetUpView();
 
-  const bool use_smart_charging_ui =
-      ash::features::IsAdaptiveChargingEnabled() &&
-      Shell::Get()
-          ->adaptive_charging_controller()
-          ->is_adaptive_delaying_charge();
+  const bool use_smart_charging_ui = Shell::Get()
+                                         ->adaptive_charging_controller()
+                                         ->is_adaptive_delaying_charge();
 
   if (use_smart_charging_ui) {
     EXPECT_TRUE(views::IsViewClass<QsBatteryIconView>(GetBatteryButton()));

@@ -3,7 +3,7 @@
 // found in the LICENSE file.
 
 import {flush} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
-import type {LanguageHelper, LanguageSettingsMetricsProxy, LanguageSettingsPageImpressionType, SettingsSpellCheckPageElement} from 'chrome://settings/lazy_load.js';
+import type {LanguageSettingsMetricsProxy, LanguageSettingsPageImpressionType, SettingsSpellCheckPageElement} from 'chrome://settings/lazy_load.js';
 import {LanguagesBrowserProxyImpl, LanguageSettingsActionType, LanguageSettingsMetricsProxyImpl} from 'chrome://settings/lazy_load.js';
 import {CrSettingsPrefs} from 'chrome://settings/settings.js';
 import {assertEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
@@ -34,7 +34,6 @@ class TestSpellCheckSettingsMetricsProxy extends TestBrowserProxy implements
 }
 
 suite('SpellCheckPageMetricsBrowser', function() {
-  let languageHelper: LanguageHelper;
   let spellCheckPage: SettingsSpellCheckPageElement;
   let browserProxy: TestLanguagesBrowserProxy;
   let languageSettingsMetricsProxy: TestSpellCheckSettingsMetricsProxy;
@@ -43,48 +42,43 @@ suite('SpellCheckPageMetricsBrowser', function() {
     CrSettingsPrefs.deferInitialization = true;
   });
 
-  setup(function() {
+  setup(async function() {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     const settingsPrefs = document.createElement('settings-prefs');
     const settingsPrivate = new FakeSettingsPrivate(getFakeLanguagePrefs());
     settingsPrefs.initialize(settingsPrivate);
     document.body.appendChild(settingsPrefs);
-    return CrSettingsPrefs.initialized.then(function() {
-      // Sets up test browser proxy.
-      browserProxy = new TestLanguagesBrowserProxy();
-      LanguagesBrowserProxyImpl.setInstance(browserProxy);
 
-      // Sets up test browser proxy.
-      languageSettingsMetricsProxy = new TestSpellCheckSettingsMetricsProxy();
-      LanguageSettingsMetricsProxyImpl.setInstance(
-          languageSettingsMetricsProxy);
+    await CrSettingsPrefs.initialized;
+    // Sets up test browser proxy.
+    browserProxy = new TestLanguagesBrowserProxy();
+    LanguagesBrowserProxyImpl.setInstance(browserProxy);
 
-      // Sets up fake languageSettingsPrivate API.
-      const languageSettingsPrivate = browserProxy.getLanguageSettingsPrivate();
-      (languageSettingsPrivate as unknown as FakeLanguageSettingsPrivate)
-          .setSettingsPrefs(settingsPrefs);
+    // Sets up test browser proxy.
+    languageSettingsMetricsProxy = new TestSpellCheckSettingsMetricsProxy();
+    LanguageSettingsMetricsProxyImpl.setInstance(languageSettingsMetricsProxy);
 
-      const settingsLanguages = document.createElement('settings-languages');
-      settingsLanguages.prefs = settingsPrefs.prefs;
-      fakeDataBind(settingsPrefs, settingsLanguages, 'prefs');
-      document.body.appendChild(settingsLanguages);
+    // Sets up fake languageSettingsPrivate API.
+    const languageSettingsPrivate = browserProxy.getLanguageSettingsPrivate();
+    (languageSettingsPrivate as unknown as FakeLanguageSettingsPrivate)
+        .setSettingsPrefs(settingsPrefs);
 
-      spellCheckPage = document.createElement('settings-spell-check-page');
+    const settingsLanguages = document.createElement('settings-languages');
+    settingsLanguages.prefs = settingsPrefs.prefs!;
+    fakeDataBind(settingsPrefs, settingsLanguages, 'prefs');
+    document.body.appendChild(settingsLanguages);
 
-      // Prefs would normally be data-bound to settings-languages-page.
-      spellCheckPage.prefs = settingsLanguages.prefs;
-      fakeDataBind(settingsLanguages, spellCheckPage, 'prefs');
+    spellCheckPage = document.createElement('settings-spell-check-page');
 
-      spellCheckPage.languageHelper = settingsLanguages.languageHelper;
-      fakeDataBind(settingsLanguages, spellCheckPage, 'language-helper');
+    // Prefs would normally be data-bound to settings-languages-page.
+    spellCheckPage.prefs = settingsLanguages.prefs;
+    fakeDataBind(settingsLanguages, spellCheckPage, 'prefs');
 
-      spellCheckPage.languages = settingsLanguages.languages;
-      fakeDataBind(settingsLanguages, spellCheckPage, 'languages');
+    spellCheckPage.languages = settingsLanguages.languages;
+    fakeDataBind(settingsLanguages, spellCheckPage, 'languages');
 
-      document.body.appendChild(spellCheckPage);
-      languageHelper = spellCheckPage.languageHelper;
-      return languageHelper.whenReady();
-    });
+    document.body.appendChild(spellCheckPage);
+    return settingsLanguages.whenReady();
   });
 
   teardown(function() {
@@ -153,7 +147,8 @@ suite('SpellCheckPageMetricsBrowser', function() {
   // <if expr="not is_macosx">
   suite('MetricsNotMacOS', function() {
     test('records when enabling spellCheck for a language', async () => {
-      assertTrue(spellCheckPage.getPref('browser.enable_spellchecking').value);
+      assertTrue(spellCheckPage.getPref<boolean>('browser.enable_spellchecking')
+                     .value);
 
       // Enable spellcheck only for the 1st entry.
       spellCheckPage.setPrefValue('spellcheck.dictionaries', ['en-US']);
@@ -175,7 +170,8 @@ suite('SpellCheckPageMetricsBrowser', function() {
     });
 
     test('records when disabling spellCheck for a language', async () => {
-      assertTrue(spellCheckPage.getPref('browser.enable_spellchecking').value);
+      assertTrue(spellCheckPage.getPref<boolean>('browser.enable_spellchecking')
+                     .value);
 
       // Enable spellcheck for both language entries.
       spellCheckPage.setPrefValue('spellcheck.dictionaries', ['en-US', 'sw']);

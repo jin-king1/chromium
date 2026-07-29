@@ -2,25 +2,23 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "components/metrics/file_metrics_provider.h"
 
+#include <array>
 #include <memory>
 
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/memory_mapped_file.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/histogram.h"
 #include "base/metrics/histogram_base.h"
-#include "base/metrics/histogram_flattener.h"
 #include "base/metrics/histogram_snapshot_manager.h"
 #include "base/metrics/persistent_histogram_allocator.h"
 #include "base/metrics/persistent_memory_allocator.h"
@@ -30,13 +28,16 @@
 #include "base/synchronization/waitable_event.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
+#include "build/build_config.h"
 #include "components/metrics/metrics_log.h"
 #include "components/metrics/metrics_pref_names.h"
 #include "components/metrics/persistent_system_profile.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/testing_pref_service.h"
+#include "components/variations/variations_test_utils.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/metrics_proto/chrome_user_metrics_extension.pb.h"
@@ -67,14 +68,15 @@ void WriteSystemProfileToAllocator(
 
 namespace metrics {
 
-class HistogramFlattenerDeltaRecorder : public base::HistogramFlattener {
+class DeltaRecordingHistogramSnapshotManager
+    : public base::HistogramSnapshotManager {
  public:
-  HistogramFlattenerDeltaRecorder() = default;
+  DeltaRecordingHistogramSnapshotManager() = default;
 
-  HistogramFlattenerDeltaRecorder(const HistogramFlattenerDeltaRecorder&) =
-      delete;
-  HistogramFlattenerDeltaRecorder& operator=(
-      const HistogramFlattenerDeltaRecorder&) = delete;
+  DeltaRecordingHistogramSnapshotManager(
+      const DeltaRecordingHistogramSnapshotManager&) = delete;
+  DeltaRecordingHistogramSnapshotManager& operator=(
+      const DeltaRecordingHistogramSnapshotManager&) = delete;
 
   void RecordDelta(const base::HistogramBase& histogram,
                    const base::HistogramSamples& snapshot) override {
@@ -125,19 +127,22 @@ class TestFileMetricsProvider : public FileMetricsProvider {
   base::RepeatingClosure callback_;
 };
 
-class FileMetricsProviderTest : public testing::TestWithParam<bool> {
+class FileMetricsProviderTestBase : public testing::Test {
  public:
-  FileMetricsProviderTest(const FileMetricsProviderTest&) = delete;
-  FileMetricsProviderTest& operator=(const FileMetricsProviderTest&) = delete;
+  FileMetricsProviderTestBase(const FileMetricsProviderTestBase&) = delete;
+  FileMetricsProviderTestBase& operator=(const FileMetricsProviderTestBase&) =
+      delete;
 
  protected:
   const size_t kSmallFileSize = 64 << 10;  // 64 KiB
-  const size_t kLargeFileSize =  2 << 20;  //  2 MiB
+  const size_t kLargeFileSize = 2 << 20;   //  2 MiB
 
   enum : int { kMaxCreateHistograms = 10 };
 
-  FileMetricsProviderTest()
-      : create_large_files_(GetParam()),
+  explicit FileMetricsProviderTestBase(bool create_large_files = false,
+                                       bool is_fre = false)
+      : create_large_files_(create_large_files),
+        is_fre_(is_fre),
         statistics_recorder_(
             base::StatisticsRecorder::CreateTemporaryForTesting()),
         prefs_(new TestingPrefServiceSimple) {
@@ -145,7 +150,7 @@ class FileMetricsProviderTest : public testing::TestWithParam<bool> {
     FileMetricsProvider::RegisterSourcePrefs(prefs_->registry(), kMetricsName);
   }
 
-  ~FileMetricsProviderTest() override {
+  ~FileMetricsProviderTestBase() override {
     // Clear out any final remaining tasks.
     task_environment_.RunUntilIdle();
     DCHECK_EQ(0U, filter_actions_remaining_);
@@ -163,14 +168,13 @@ class FileMetricsProviderTest : public testing::TestWithParam<bool> {
   }
 
   TestFileMetricsProvider* provider() {
-    if (!provider_)
-      provider_ = std::make_unique<TestFileMetricsProvider>(prefs());
+    if (!provider_) {
+      provider_ = std::make_unique<TestFileMetricsProvider>(prefs(), is_fre_);
+    }
     return provider_.get();
   }
 
-  void OnDidCreateMetricsLog() {
-    provider()->OnDidCreateMetricsLog();
-  }
+  void OnDidCreateMetricsLog() { provider()->OnDidCreateMetricsLog(); }
 
   bool HasPreviousSessionData() { return provider()->HasPreviousSessionData(); }
 
@@ -211,25 +215,23 @@ class FileMetricsProviderTest : public testing::TestWithParam<bool> {
     MergeHistogramDeltas();
 
     // Flatten what is known to see what has changed since the last time.
-    HistogramFlattenerDeltaRecorder flattener;
-    base::HistogramSnapshotManager snapshot_manager(&flattener);
+    DeltaRecordingHistogramSnapshotManager snapshot_manager;
     // "true" to the begin() includes histograms held in persistent storage.
     base::StatisticsRecorder::PrepareDeltas(true, base::Histogram::kNoFlags,
                                             base::Histogram::kNoFlags,
                                             &snapshot_manager);
-    return flattener.GetRecordedDeltaHistogramNames().size();
+    return snapshot_manager.GetRecordedDeltaHistogramNames().size();
   }
 
   size_t GetIndependentHistogramCount() {
-    HistogramFlattenerDeltaRecorder flattener;
-    base::HistogramSnapshotManager snapshot_manager(&flattener);
+    DeltaRecordingHistogramSnapshotManager snapshot_manager;
     ChromeUserMetricsExtension uma_proto;
     provider()->ProvideIndependentMetrics(base::DoNothing(),
                                           base::BindOnce([](bool success) {}),
                                           &uma_proto, &snapshot_manager);
 
     task_environment()->RunUntilIdle();
-    return flattener.GetRecordedDeltaHistogramNames().size();
+    return snapshot_manager.GetRecordedDeltaHistogramNames().size();
   }
 
   void CreateGlobalHistograms(int histogram_count) {
@@ -238,7 +240,7 @@ class FileMetricsProviderTest : public testing::TestWithParam<bool> {
     // Create both sparse and normal histograms in the allocator. Make them
     // stability histograms to ensure that the histograms are snapshotted (in
     // the case of stability logs) or are put into independent logs. Histogram
-    // names must be 2 characters (see HistogramFlattenerDeltaRecorder).
+    // names must be 2 characters (see DeltaRecordingHistogramSnapshotManager).
     created_histograms_[0] = base::SparseHistogram::FactoryGet(
         "h0", /*flags=*/base::HistogramBase::Flags::kUmaStabilityHistogramFlag);
     created_histograms_[0]->Add(0);
@@ -257,8 +259,10 @@ class FileMetricsProviderTest : public testing::TestWithParam<bool> {
     // Use DCHECK so the stack-trace will indicate where this was called.
     DCHECK(writer.IsValid()) << path;
     size_t file_size = create_large_files_ ? metrics->size() : metrics->used();
-    int written = writer.Write(0, (const char*)metrics->data(), file_size);
-    DCHECK_EQ(static_cast<int>(file_size), written);
+    bool success = writer.WriteAndCheck(
+        0, UNSAFE_BUFFERS(base::span(
+               static_cast<const uint8_t*>(metrics->data()), file_size)));
+    DCHECK(success);
   }
 
   void WriteMetricsFileAtTime(const base::FilePath& path,
@@ -274,8 +278,7 @@ class FileMetricsProviderTest : public testing::TestWithParam<bool> {
       int histogram_count,
       base::OnceCallback<void(base::PersistentHistogramAllocator*)> callback) {
     base::GlobalHistogramAllocator::CreateWithLocalMemory(
-        create_large_files_ ? kLargeFileSize : kSmallFileSize,
-        0, kMetricsName);
+        create_large_files_ ? kLargeFileSize : kSmallFileSize, 0, kMetricsName);
 
     CreateGlobalHistograms(histogram_count);
 
@@ -290,6 +293,15 @@ class FileMetricsProviderTest : public testing::TestWithParam<bool> {
   void CreateEmptyFile(const base::FilePath& file_path) {
     base::File empty(file_path,
                      base::File::FLAG_CREATE | base::File::FLAG_WRITE);
+  }
+
+  void CreateEmptyFileAtTime(const base::FilePath& file_path,
+                             base::Time write_time) {
+    base::File empty(file_path,
+                     base::File::FLAG_CREATE | base::File::FLAG_WRITE);
+    base::TouchFile(file_path,
+                    /*last_accessed=*/write_time,
+                    /*last_modified=*/write_time);
   }
 
   base::GlobalHistogramAllocator* CreateMetricsFileWithHistograms(
@@ -310,17 +322,18 @@ class FileMetricsProviderTest : public testing::TestWithParam<bool> {
     filter_actions_ = actions;
     filter_actions_remaining_ = count;
     params->filter = base::BindRepeating(
-        &FileMetricsProviderTest::FilterSourcePath, base::Unretained(this));
+        &FileMetricsProviderTestBase::FilterSourcePath, base::Unretained(this));
   }
 
   const bool create_large_files_;
+  const bool is_fre_ = false;
 
  private:
   FileMetricsProvider::FilterAction FilterSourcePath(
       const base::FilePath& path) {
     DCHECK_LT(0U, filter_actions_remaining_);
     --filter_actions_remaining_;
-    return *filter_actions_++;
+    return UNSAFE_TODO(*filter_actions_++);
   }
 
   base::test::TaskEnvironment task_environment_;
@@ -328,11 +341,17 @@ class FileMetricsProviderTest : public testing::TestWithParam<bool> {
   base::ScopedTempDir temp_dir_;
   std::unique_ptr<TestingPrefServiceSimple> prefs_;
   std::unique_ptr<TestFileMetricsProvider> provider_;
-  base::HistogramBase* created_histograms_[kMaxCreateHistograms];
+  std::array<base::HistogramBase*, kMaxCreateHistograms> created_histograms_;
 
   raw_ptr<const FileMetricsProvider::FilterAction, AllowPtrArithmetic>
       filter_actions_ = nullptr;
   size_t filter_actions_remaining_ = 0;
+};
+
+class FileMetricsProviderTest : public FileMetricsProviderTestBase,
+                                public testing::WithParamInterface<bool> {
+ public:
+  FileMetricsProviderTest() : FileMetricsProviderTestBase(GetParam()) {}
 };
 
 // Run all test cases with both small and large files.
@@ -506,7 +525,8 @@ TEST_P(FileMetricsProviderTest, AccessDirectory) {
                          allocator, base_time);
   WriteMetricsFileAtTime(metrics_files.GetPath().AppendASCII("_bar.pma"),
                          allocator, base_time);
-  // Histogram names must be 2 characters (see HistogramFlattenerDeltaRecorder).
+  // Histogram names must be 2 characters (see
+  // DeltaRecordingHistogramSnapshotManager).
   histogram = base::Histogram::FactoryGet("h1", 1, 100, 10, 0);
   histogram->Add(1);
   WriteMetricsFileAtTime(metrics_files.GetPath().AppendASCII("a1.pma"),
@@ -650,7 +670,7 @@ TEST_P(FileMetricsProviderTest, AccessTimeLimitedDirectory) {
   base::HistogramBase* histogram;
 
   // Create one old file and one new file. Histogram names must be 2 characters
-  // (see HistogramFlattenerDeltaRecorder).
+  // (see DeltaRecordingHistogramSnapshotManager).
   base::ScopedTempDir metrics_files;
   EXPECT_TRUE(metrics_files.CreateUniqueTempDir());
   histogram = base::Histogram::FactoryGet("h1", 1, 100, 10, 0);
@@ -698,7 +718,7 @@ TEST_P(FileMetricsProviderTest, AccessCountLimitedDirectory) {
   base::HistogramBase* histogram;
 
   // Create one old file and one new file. Histogram names must be 2 characters
-  // (see HistogramFlattenerDeltaRecorder).
+  // (see DeltaRecordingHistogramSnapshotManager).
   base::ScopedTempDir metrics_files;
   EXPECT_TRUE(metrics_files.CreateUniqueTempDir());
   histogram = base::Histogram::FactoryGet("h1", 1, 100, 10, 0);
@@ -738,8 +758,9 @@ TEST_P(FileMetricsProviderTest, AccessCountLimitedDirectory) {
 
 TEST_P(FileMetricsProviderTest, AccessSizeLimitedDirectory) {
   // This only works with large files that are big enough to count.
-  if (!create_large_files_)
+  if (!create_large_files_) {
     return;
+  }
 
   ASSERT_FALSE(PathExists(metrics_file()));
 
@@ -751,7 +772,7 @@ TEST_P(FileMetricsProviderTest, AccessSizeLimitedDirectory) {
   base::HistogramBase* histogram;
 
   // Create one old file and one new file. Histogram names must be 2 characters
-  // (see HistogramFlattenerDeltaRecorder).
+  // (see DeltaRecordingHistogramSnapshotManager).
   base::ScopedTempDir metrics_files;
   EXPECT_TRUE(metrics_files.CreateUniqueTempDir());
   histogram = base::Histogram::FactoryGet("h1", 1, 100, 10, 0);
@@ -805,7 +826,8 @@ TEST_P(FileMetricsProviderTest, AccessFilteredDirectory) {
   // ensure that each file has a later timestamp on disk than the previous one.
   base::ScopedTempDir metrics_files;
   EXPECT_TRUE(metrics_files.CreateUniqueTempDir());
-  // Histogram names must be 2 characters (see HistogramFlattenerDeltaRecorder).
+  // Histogram names must be 2 characters (see
+  // DeltaRecordingHistogramSnapshotManager).
   histogram = base::Histogram::FactoryGet("h1", 1, 100, 10, 0);
   histogram->Add(1);
   WriteMetricsFileAtTime(metrics_files.GetPath().AppendASCII("a1.pma"),
@@ -927,10 +949,9 @@ TEST_P(FileMetricsProviderTest, AccessInitialMetrics) {
   ASSERT_TRUE(HasPreviousSessionData());
   task_environment()->RunUntilIdle();
   {
-    HistogramFlattenerDeltaRecorder flattener;
-    base::HistogramSnapshotManager snapshot_manager(&flattener);
+    DeltaRecordingHistogramSnapshotManager snapshot_manager;
     RecordInitialHistogramSnapshots(&snapshot_manager);
-    EXPECT_EQ(2U, flattener.GetRecordedDeltaHistogramNames().size());
+    EXPECT_EQ(2U, snapshot_manager.GetRecordedDeltaHistogramNames().size());
   }
   EXPECT_TRUE(base::PathExists(metrics_file()));
   OnDidCreateMetricsLog();
@@ -964,8 +985,7 @@ TEST_P(FileMetricsProviderTest, AccessEmbeddedProfileMetricsWithoutProfile) {
   OnDidCreateMetricsLog();
   task_environment()->RunUntilIdle();
   {
-    HistogramFlattenerDeltaRecorder flattener;
-    base::HistogramSnapshotManager snapshot_manager(&flattener);
+    DeltaRecordingHistogramSnapshotManager snapshot_manager;
     ChromeUserMetricsExtension uma_proto;
 
     // A read of metrics with internal profiles should return nothing.
@@ -996,10 +1016,9 @@ TEST_P(FileMetricsProviderTest, AccessEmbeddedProfileMetricsWithProfile) {
   OnDidCreateMetricsLog();
   task_environment()->RunUntilIdle();
   {
-    HistogramFlattenerDeltaRecorder flattener;
-    base::HistogramSnapshotManager snapshot_manager(&flattener);
+    DeltaRecordingHistogramSnapshotManager snapshot_manager;
     RecordInitialHistogramSnapshots(&snapshot_manager);
-    EXPECT_EQ(0U, flattener.GetRecordedDeltaHistogramNames().size());
+    EXPECT_EQ(0U, snapshot_manager.GetRecordedDeltaHistogramNames().size());
 
     // A read of metrics with internal profiles should return one result, and
     // the independent log generated should have the embedded system profile.
@@ -1035,10 +1054,9 @@ TEST_P(FileMetricsProviderTest, AccessEmbeddedFallbackMetricsWithoutProfile) {
   ASSERT_TRUE(HasPreviousSessionData());
   task_environment()->RunUntilIdle();
   {
-    HistogramFlattenerDeltaRecorder flattener;
-    base::HistogramSnapshotManager snapshot_manager(&flattener);
+    DeltaRecordingHistogramSnapshotManager snapshot_manager;
     RecordInitialHistogramSnapshots(&snapshot_manager);
-    EXPECT_EQ(2U, flattener.GetRecordedDeltaHistogramNames().size());
+    EXPECT_EQ(2U, snapshot_manager.GetRecordedDeltaHistogramNames().size());
 
     // A read of metrics with internal profiles should return nothing.
     ChromeUserMetricsExtension uma_proto;
@@ -1070,10 +1088,9 @@ TEST_P(FileMetricsProviderTest, AccessEmbeddedFallbackMetricsWithProfile) {
   EXPECT_FALSE(HasPreviousSessionData());
   task_environment()->RunUntilIdle();
   {
-    HistogramFlattenerDeltaRecorder flattener;
-    base::HistogramSnapshotManager snapshot_manager(&flattener);
+    DeltaRecordingHistogramSnapshotManager snapshot_manager;
     RecordInitialHistogramSnapshots(&snapshot_manager);
-    EXPECT_EQ(0U, flattener.GetRecordedDeltaHistogramNames().size());
+    EXPECT_EQ(0U, snapshot_manager.GetRecordedDeltaHistogramNames().size());
 
     // A read of metrics with internal profiles should return one result.
     ChromeUserMetricsExtension uma_proto;
@@ -1116,8 +1133,7 @@ TEST_P(FileMetricsProviderTest, AccessEmbeddedProfileMetricsFromDir) {
   task_environment()->RunUntilIdle();
 
   // A read of metrics with internal profiles should return one result.
-  HistogramFlattenerDeltaRecorder flattener;
-  base::HistogramSnapshotManager snapshot_manager(&flattener);
+  DeltaRecordingHistogramSnapshotManager snapshot_manager;
   ChromeUserMetricsExtension uma_proto;
   for (int i = 0; i < file_count; ++i) {
     EXPECT_TRUE(HasIndependentMetrics()) << i;
@@ -1137,7 +1153,7 @@ TEST_P(FileMetricsProviderTest,
        RecordInitialHistogramSnapshotsStabilityHistograms) {
   // Create a metrics file with 2 non-stability histograms and 2 stability
   // histograms. Histogram names must be 2 characters (see
-  // HistogramFlattenerDeltaRecorder).
+  // DeltaRecordingHistogramSnapshotManager).
   ASSERT_FALSE(PathExists(metrics_file()));
   base::GlobalHistogramAllocator::CreateWithLocalMemory(
       create_large_files_ ? kLargeFileSize : kSmallFileSize, 0, kMetricsName);
@@ -1171,12 +1187,11 @@ TEST_P(FileMetricsProviderTest,
   task_environment()->RunUntilIdle();
 
   // Record embedded snapshots via snapshot-manager.
-  HistogramFlattenerDeltaRecorder flattener;
-  base::HistogramSnapshotManager snapshot_manager(&flattener);
+  DeltaRecordingHistogramSnapshotManager snapshot_manager;
   RecordInitialHistogramSnapshots(&snapshot_manager);
 
   // Verify that only the stability histograms were snapshotted.
-  EXPECT_THAT(flattener.GetRecordedDeltaHistogramNames(),
+  EXPECT_THAT(snapshot_manager.GetRecordedDeltaHistogramNames(),
               testing::ElementsAre("h0", "h2"));
 
   // The metrics file should eventually be deleted.
@@ -1189,7 +1204,8 @@ TEST_P(FileMetricsProviderTest,
 TEST_P(FileMetricsProviderTest, IndependentLogContainsUmaHistograms) {
   ASSERT_FALSE(PathExists(metrics_file()));
   // Create a metrics file with 2 UMA histograms and 2 non-UMA histograms.
-  // Histogram names must be 2 characters (see HistogramFlattenerDeltaRecorder).
+  // Histogram names must be 2 characters (see
+  // DeltaRecordingHistogramSnapshotManager).
   base::GlobalHistogramAllocator::CreateWithLocalMemory(
       create_large_files_ ? kLargeFileSize : kSmallFileSize, 0, kMetricsName);
   base::HistogramBase* h0 = base::SparseHistogram::FactoryGet(
@@ -1227,11 +1243,10 @@ TEST_P(FileMetricsProviderTest, IndependentLogContainsUmaHistograms) {
   // Verify that the independent log provided only contains UMA histograms (both
   // stability and non-stability).
   ChromeUserMetricsExtension uma_proto;
-  HistogramFlattenerDeltaRecorder flattener;
-  base::HistogramSnapshotManager snapshot_manager(&flattener);
+  DeltaRecordingHistogramSnapshotManager snapshot_manager;
   EXPECT_TRUE(HasIndependentMetrics());
   EXPECT_TRUE(ProvideIndependentMetrics(&uma_proto, &snapshot_manager));
-  EXPECT_THAT(flattener.GetRecordedDeltaHistogramNames(),
+  EXPECT_THAT(snapshot_manager.GetRecordedDeltaHistogramNames(),
               testing::ElementsAre("h0", "h2"));
 
   // The metrics file should eventually be deleted.
@@ -1259,8 +1274,7 @@ TEST_P(FileMetricsProviderTest, EmbeddedProfileWithoutClientUuid) {
   OnDidCreateMetricsLog();
   task_environment()->RunUntilIdle();
   {
-    HistogramFlattenerDeltaRecorder flattener;
-    base::HistogramSnapshotManager snapshot_manager(&flattener);
+    DeltaRecordingHistogramSnapshotManager snapshot_manager;
 
     // Since the embedded system profile has no client_uuid set (see
     // WriteSystemProfileToAllocator()), the client ID written in |uma_proto|
@@ -1304,8 +1318,7 @@ TEST_P(FileMetricsProviderTest, EmbeddedProfileWithClientUuid) {
   OnDidCreateMetricsLog();
   task_environment()->RunUntilIdle();
   {
-    HistogramFlattenerDeltaRecorder flattener;
-    base::HistogramSnapshotManager snapshot_manager(&flattener);
+    DeltaRecordingHistogramSnapshotManager snapshot_manager;
 
     // Since the embedded system profile contains a client_uuid, the client ID
     // in |uma_proto| should be overwritten.
@@ -1380,5 +1393,94 @@ TEST_P(FileMetricsProviderTest, MetricsDisabledRegisterActiveFile) {
   // Active file should not be deleted.
   EXPECT_TRUE(base::PathExists(metrics_file()));
 }
+
+#if BUILDFLAG(IS_IOS)
+class FileMetricsProviderFirstRunTest : public FileMetricsProviderTestBase {
+ public:
+  FileMetricsProviderFirstRunTest()
+      : FileMetricsProviderTestBase(/*create_large_files=*/false,
+                                    /*is_fre=*/true) {}
+};
+
+TEST_F(FileMetricsProviderFirstRunTest, FREFilesLimit) {
+  base::ScopedTempDir metrics_files;
+  EXPECT_TRUE(metrics_files.CreateUniqueTempDir());
+  base::FilePath dir = metrics_files.GetPath();
+
+  for (size_t i = 0; i < FileMetricsProvider::kMaxSourceFilesInFRE * 2; i++) {
+    CreateEmptyFileAtTime(dir.AppendASCII(base::StringPrintf("h%d.pma", i)),
+                          base::Time::Now() - base::Minutes(i));
+  }
+
+  provider()->RegisterSource(
+      FileMetricsProvider::Params(
+          metrics_files.GetPath(),
+          FileMetricsProvider::SOURCE_HISTOGRAMS_ATOMIC_DIR,
+          FileMetricsProvider::ASSOCIATE_INTERNAL_PROFILE, kMetricsName),
+      /*metrics_reporting_enabled=*/false);
+
+  task_environment()->RunUntilIdle();
+
+  for (size_t i = 0; i < FileMetricsProvider::kMaxSourceFilesInFRE; i++) {
+    EXPECT_TRUE(
+        base::PathExists(dir.AppendASCII(base::StringPrintf("h%d.pma", i))));
+  }
+  for (size_t i = FileMetricsProvider::kMaxSourceFilesInFRE;
+       i < FileMetricsProvider::kMaxSourceFilesInFRE * 2; i++) {
+    EXPECT_FALSE(
+        base::PathExists(dir.AppendASCII(base::StringPrintf("h%d.pma", i))));
+  }
+}
+
+TEST_F(FileMetricsProviderFirstRunTest, FirstRunExperience) {
+  base::ScopedTempDir metrics_files;
+  ASSERT_TRUE(metrics_files.CreateUniqueTempDir());
+  base::FilePath dir = metrics_files.GetPath();
+
+  CreateMetricsFileWithHistograms(
+      dir.AppendASCII("h1.pma"), base::Time::Now() - base::Minutes(10), 1,
+      base::BindOnce(&WriteSystemProfileToAllocator));
+  // Also create an empty file there to test the multiple-files in dir case.
+  CreateEmptyFile(dir.AppendASCII("h2.pma"));
+
+  ASSERT_TRUE(base::PathExists(dir));
+  ASSERT_TRUE(base::PathExists(dir.AppendASCII("h1.pma")));
+  ASSERT_TRUE(base::PathExists(dir.AppendASCII("h2.pma")));
+  provider()->RegisterSource(
+      FileMetricsProvider::Params(
+          metrics_files.GetPath(),
+          FileMetricsProvider::SOURCE_HISTOGRAMS_ATOMIC_DIR,
+          FileMetricsProvider::ASSOCIATE_INTERNAL_PROFILE, kMetricsName),
+      /*metrics_reporting_enabled=*/false);
+  task_environment()->RunUntilIdle();
+  EXPECT_TRUE(base::PathExists(dir));
+}
+
+TEST_F(FileMetricsProviderTestBase, PostFRERun) {
+  base::ScopedTempDir metrics_files;
+  EXPECT_TRUE(metrics_files.CreateUniqueTempDir());
+  base::FilePath dir = metrics_files.GetPath();
+
+  CreateMetricsFileWithHistograms(
+      dir.AppendASCII("h1.pma"), base::Time::Now() - base::Minutes(10), 1,
+      base::BindOnce(&WriteSystemProfileToAllocator));
+  // Also create an empty file there to test the multiple-files in dir case.
+  CreateEmptyFile(dir.AppendASCII("h2.pma"));
+
+  EXPECT_TRUE(base::PathExists(dir));
+  EXPECT_TRUE(base::PathExists(dir.AppendASCII("h1.pma")));
+  EXPECT_TRUE(base::PathExists(dir.AppendASCII("h2.pma")));
+  provider()->RegisterSource(
+      FileMetricsProvider::Params(
+          metrics_files.GetPath(),
+          FileMetricsProvider::SOURCE_HISTOGRAMS_ATOMIC_DIR,
+          FileMetricsProvider::ASSOCIATE_INTERNAL_PROFILE, kMetricsName),
+      /*metrics_reporting_enabled=*/false);
+
+  task_environment()->RunUntilIdle();
+
+  EXPECT_FALSE(base::PathExists(dir));
+}
+#endif  // BUILDFLAG(IS_IOS)
 
 }  // namespace metrics

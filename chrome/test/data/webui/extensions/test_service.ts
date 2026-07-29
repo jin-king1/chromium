@@ -35,7 +35,6 @@ export class TestService extends TestBrowserProxy implements ServiceInterface {
       'deleteItems',
       'dismissSafetyHubExtensionsMenuNotification',
       'dismissMv2DeprecationNotice',
-      'dismissMv2DeprecationNoticeForExtension',
       'uninstallItem',
       'downloadActivities',
       'getExtensionActivityLog',
@@ -52,6 +51,7 @@ export class TestService extends TestBrowserProxy implements ServiceInterface {
       'loadUnpacked',
       'loadUnpackedFromDrag',
       'notifyDragInstallInProgress',
+      'openDevToolsForError',
       'openUrl',
       'packExtension',
       'recordUserAction',
@@ -70,11 +70,13 @@ export class TestService extends TestBrowserProxy implements ServiceInterface {
       'setItemPinnedToToolbar',
       'setItemSafetyCheckWarningAcknowledged',
       'setProfileInDevMode',
+      'setProfileExtensionsPinnedByDefault',
       'setShortcutHandlingSuspended',
       'setShowAccessRequestsInToolbar',
       'shouldIgnoreUpdate',
       'showInFolder',
       'showItemOptionsPage',
+      'showSiteSettings',
       'updateAllExtensions',
       'updateExtensionCommandKeybinding',
       'updateExtensionCommandScope',
@@ -120,6 +122,7 @@ export class TestService extends TestBrowserProxy implements ServiceInterface {
       isIncognitoAvailable: false,
       isChildAccount: false,
       isMv2DeprecationNoticeDismissed: false,
+      extensionsPinnedByDefault: false,
     });
   }
 
@@ -147,6 +150,10 @@ export class TestService extends TestBrowserProxy implements ServiceInterface {
 
   inspectItemView(id: string, view: chrome.developerPrivate.ExtensionView) {
     this.methodCalled('inspectItemView', [id, view]);
+  }
+
+  openDevToolsForError(error: chrome.developerPrivate.RuntimeError) {
+    this.methodCalled('openDevToolsForError', [error]);
   }
 
   removeRuntimeHostPermission(id: string, host: string) {
@@ -260,6 +267,11 @@ export class TestService extends TestBrowserProxy implements ServiceInterface {
 
   setProfileInDevMode(inDevMode: boolean) {
     this.methodCalled('setProfileInDevMode', inDevMode);
+  }
+
+  setProfileExtensionsPinnedByDefault(extensionsPinnedByDefault: boolean) {
+    this.methodCalled(
+        'setProfileExtensionsPinnedByDefault', extensionsPinnedByDefault);
   }
 
   showInFolder(id: string) {
@@ -406,16 +418,16 @@ export class TestService extends TestBrowserProxy implements ServiceInterface {
     this.methodCalled('dismissSafetyHubExtensionsMenuNotification');
   }
 
-  dismissMv2DeprecationNoticeForExtension(id: string) {
-    this.methodCalled('dismissMv2DeprecationNoticeForExtension', id);
-  }
-
   dismissMv2DeprecationNotice() {
     this.methodCalled('dismissMv2DeprecationNotice');
   }
 
   uploadItemToAccount(id: string) {
     this.methodCalled('uploadItemToAccount', id);
-    return Promise.resolve();
+    return Promise.resolve(false);
+  }
+
+  showSiteSettings(id: string) {
+    this.methodCalled('showSiteSettings', id);
   }
 }

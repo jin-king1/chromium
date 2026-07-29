@@ -11,7 +11,6 @@
 
 #include "base/check_op.h"
 #include "base/functional/bind.h"
-#include "base/metrics/histogram_functions.h"
 #include "base/syslog_logging.h"
 #include "chrome/browser/web_applications/external_install_options.h"
 #include "chrome/browser/web_applications/mojom/user_display_mode.mojom-shared.h"
@@ -19,22 +18,10 @@
 #include "chrome/browser/web_applications/web_app_management_type.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/web_applications/web_app_registrar.h"
-#include "chromeos/crosapi/mojom/web_kiosk_service.mojom-shared.h"
-#include "chromeos/crosapi/mojom/web_kiosk_service.mojom.h"
 #include "components/webapps/browser/install_result_code.h"
 #include "url/gurl.h"
 
-using crosapi::mojom::WebKioskInstallState;
-
 namespace {
-
-// Histogram to log the installed web app is a placeholder.
-constexpr std::string_view kWebAppIsPlaceholderUMA =
-    "Kiosk.AppService.WebApp.IsPlaceholder";
-
-// Histogram to log the web app install result code.
-constexpr std::string_view kWebAppInstallResultUMA =
-    "Kiosk.AppService.WebApp.InstallResult";
 
 web_app::ExternalInstallOptions GetInstallOptions(GURL install_url) {
   web_app::ExternalInstallOptions options(
@@ -52,11 +39,10 @@ web_app::WebAppProvider& WebAppProviderOf(Profile& profile) {
 
 void OnExternalInstallCompleted(
     const GURL& requested_install_url,
-    crosapi::mojom::WebKioskInstaller::InstallWebKioskCallback on_done,
+    chromeos::InstallWebKioskCallback on_done,
     const GURL& installed_url,
     web_app::ExternallyManagedAppManager::InstallResult result) {
   CHECK_EQ(installed_url, requested_install_url);
-  base::UmaHistogramEnumeration(kWebAppInstallResultUMA, result.code);
 
   if (!webapps::IsSuccess(result.code)) {
     SYSLOG(ERROR) << "Failed to install Kiosk web app, code " << result.code;
@@ -89,7 +75,6 @@ KioskWebAppInstallState GetKioskWebAppInstallState(Profile& profile,
   bool is_placeholder_app =
       WebAppProviderOf(profile).registrar_unsafe().IsPlaceholderApp(
           app_id.value(), web_app::WebAppManagement::Type::kKiosk);
-  base::UmaHistogramBoolean(kWebAppIsPlaceholderUMA, is_placeholder_app);
   if (is_placeholder_app) {
     SYSLOG(INFO) << "Placeholder app installed. Trying to reinstall...";
     return std::make_tuple(WebKioskInstallState::kPlaceholderInstalled,
@@ -99,10 +84,9 @@ KioskWebAppInstallState GetKioskWebAppInstallState(Profile& profile,
   return std::make_tuple(WebKioskInstallState::kInstalled, app_id);
 }
 
-void InstallKioskWebApp(
-    Profile& profile,
-    const GURL& install_url,
-    crosapi::mojom::WebKioskInstaller::InstallWebKioskCallback on_done) {
+void InstallKioskWebApp(Profile& profile,
+                        const GURL& install_url,
+                        InstallWebKioskCallback on_done) {
   WebAppProviderOf(profile).externally_managed_app_manager().Install(
       GetInstallOptions(install_url),
       base::BindOnce(&OnExternalInstallCompleted, install_url,

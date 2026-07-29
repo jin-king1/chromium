@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_AUTOFILL_PAYMENTS_BNPL_ISSUER_VIEW_H_
 #define CHROME_BROWSER_UI_VIEWS_AUTOFILL_PAYMENTS_BNPL_ISSUER_VIEW_H_
 
+#include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "components/autofill/core/browser/data_model/payments/bnpl_issuer.h"
 #include "components/autofill/core/browser/ui/payments/select_bnpl_issuer_dialog_controller.h"
@@ -13,6 +14,8 @@
 
 namespace autofill::payments {
 
+class SelectBnplIssuerDialog;
+
 // View containing the list of available BNPL Issuers from which the user may
 // select.
 class BnplIssuerView : public views::BoxLayoutView {
@@ -20,16 +23,20 @@ class BnplIssuerView : public views::BoxLayoutView {
 
  public:
   explicit BnplIssuerView(
-      base::WeakPtr<SelectBnplIssuerDialogController> controller);
+      base::WeakPtr<SelectBnplIssuerDialogController> controller,
+      SelectBnplIssuerDialog* issuer_dialog);
   BnplIssuerView(const BnplIssuerView&) = delete;
   BnplIssuerView& operator=(const BnplIssuerView&) = delete;
   ~BnplIssuerView() override;
 
   void AddedToWidget() override;
+  void UpdateIssuers();
 
  private:
+  void PopulateIssuers();
   void IssuerSelected(BnplIssuer issuer, const ui::Event& event);
 
+  const raw_ptr<SelectBnplIssuerDialog> issuer_dialog_;
   base::WeakPtr<SelectBnplIssuerDialogController> controller_;
 };
 

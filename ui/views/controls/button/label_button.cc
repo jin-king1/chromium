@@ -9,6 +9,8 @@
 #include <algorithm>
 #include <string_view>
 #include <utility>
+#include <variant>
+#include <vector>
 
 #include "base/lazy_instance.h"
 #include "base/logging.h"
@@ -17,6 +19,7 @@
 #include "ui/accessibility/ax_node_data.h"
 #include "ui/actions/actions.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/base/pointer/touch_ui_controller.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_provider.h"
@@ -27,9 +30,11 @@
 #include "ui/gfx/color_utils.h"
 #include "ui/gfx/font_list.h"
 #include "ui/gfx/geometry/vector2d.h"
+#include "ui/gfx/image/canvas_image_source.h"
 #include "ui/native_theme/native_theme.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/animation/ink_drop.h"
+#include "ui/views/animation/ink_drop_host.h"
 #include "ui/views/background.h"
 #include "ui/views/controls/button/label_button_border.h"
 #include "ui/views/controls/highlight_path_generator.h"
@@ -37,6 +42,7 @@
 #include "ui/views/layout/delegating_layout_manager.h"
 #include "ui/views/layout/proposed_layout.h"
 #include "ui/views/painter.h"
+#include "ui/views/property_effects.h"
 #include "ui/views/style/platform_style.h"
 #include "ui/views/style/typography.h"
 #include "ui/views/style/typography_provider.h"
@@ -81,6 +87,13 @@ LabelButton::LabelButton(
   SetTextInternal(text);
   SetLayoutManager(std::make_unique<DelegatingLayoutManager>(this));
   GetViewAccessibility().SetIsDefault(is_default_);
+
+#if BUILDFLAG(IS_WIN)
+  // Paint image(s) to a layer so that the canvas is snapped to pixel
+  // boundaries.
+  image_container_view()->SetPaintToLayer();
+  image_container_view()->layer()->SetFillsBoundsOpaquely(false);
+#endif
 }
 
 LabelButton::~LabelButton() {
@@ -91,8 +104,32 @@ LabelButton::~LabelButton() {
 }
 
 gfx::ImageSkia LabelButton::GetImage(ButtonState state) const {
-  state = ImageStateForState(state);
-  auto image_model = GetImageModel(state).value_or(ui::ImageModel());
+  const ButtonState for_state = ImageStateForState(state);
+  auto image_model = GetImageModel(for_state).value_or(ui::ImageModel());
+
+  // In forced-colors mode, re-rasterize vector icons so they remain visible
+  // against the opaque ink drop highlight (hover, pressed, or activated).
+  const ui::NativeTheme* theme = GetWidget() ? GetNativeTheme() : nullptr;
+  if (theme &&
+      theme->forced_colors() != ui::ColorProviderKey::ForcedColors::kNone) {
+    const bool is_hover_or_pressed =
+        (state == STATE_HOVERED || state == STATE_PRESSED);
+    const auto* ink_drop_host = InkDrop::Get(this);
+    const bool is_ink_drop_highlighted =
+        ink_drop_host && ink_drop_host->GetHighlighted();
+
+    if ((is_hover_or_pressed || is_ink_drop_highlighted) &&
+        image_model.IsVectorIcon()) {
+      const auto& vector_icon = image_model.GetVectorIcon();
+      if (const gfx::VectorIcon* icon = vector_icon.vector_icon()) {
+        return ui::ImageModel::FromVectorIcon(*icon, ui::kColorIconHovered,
+                                              vector_icon.icon_size(),
+                                              vector_icon.badge_icon())
+            .Rasterize(GetColorProvider());
+      }
+    }
+  }
+
   return image_model.Rasterize(GetColorProvider());
 }
 
@@ -179,7 +216,7 @@ void LabelButton::SetFocusRingCornerRadii(const gfx::RoundedCornersF& radii) {
 
   views::InstallRoundRectHighlightPathGenerator(this, gfx::Insets(),
                                                 focus_ring_corner_radii_);
-  OnPropertyChanged(&focus_ring_corner_radii_, kPropertyEffectsPaint);
+  OnPropertyChanged(&focus_ring_corner_radii_, PropertyEffects::kPaint);
 }
 
 void LabelButton::SetFocusRingCornerRadius(float radius) {
@@ -221,7 +258,7 @@ void LabelButton::SetHorizontalAlignment(gfx::HorizontalAlignment alignment) {
     return;
   }
   horizontal_alignment_ = alignment;
-  OnPropertyChanged(&min_size_, kPropertyEffectsLayout);
+  OnPropertyChanged(&horizontal_alignment_, PropertyEffects::kLayout);
 }
 
 gfx::HorizontalAlignment LabelButton::GetHorizontalAlignment() const {
@@ -237,7 +274,7 @@ void LabelButton::SetMinSize(const gfx::Size& min_size) {
     return;
   }
   min_size_ = min_size;
-  OnPropertyChanged(&min_size_, kPropertyEffectsPreferredSizeChanged);
+  OnPropertyChanged(&min_size_, PropertyEffects::kPreferredSizeChanged);
 }
 
 gfx::Size LabelButton::GetMaxSize() const {
@@ -249,7 +286,7 @@ void LabelButton::SetMaxSize(const gfx::Size& max_size) {
     return;
   }
   max_size_ = max_size;
-  OnPropertyChanged(&max_size_, kPropertyEffectsPreferredSizeChanged);
+  OnPropertyChanged(&max_size_, PropertyEffects::kPreferredSizeChanged);
 }
 
 bool LabelButton::GetIsDefault() const {
@@ -287,7 +324,7 @@ void LabelButton::SetImageLabelSpacing(int spacing) {
   }
   image_label_spacing_ = spacing;
   OnPropertyChanged(&image_label_spacing_,
-                    kPropertyEffectsPreferredSizeChanged);
+                    PropertyEffects::kPreferredSizeChanged);
 }
 
 bool LabelButton::GetImageCentered() const {
@@ -299,7 +336,7 @@ void LabelButton::SetImageCentered(bool image_centered) {
     return;
   }
   image_centered_ = image_centered;
-  OnPropertyChanged(&image_centered_, kPropertyEffectsLayout);
+  OnPropertyChanged(&image_centered_, PropertyEffects::kLayout);
 }
 
 std::unique_ptr<LabelButtonBorder> LabelButton::CreateDefaultBorder() const {
@@ -519,8 +556,10 @@ void LabelButton::UpdateImage() {
 
 void LabelButton::AddLayerToRegion(ui::Layer* new_layer,
                                    views::LayerRegion region) {
+#if !BUILDFLAG(IS_WIN)
   image_container_view()->SetPaintToLayer();
   image_container_view()->layer()->SetFillsBoundsOpaquely(false);
+#endif
   ink_drop_container()->SetVisible(true);
   ink_drop_container()->AddLayerToRegion(new_layer, region);
 }
@@ -528,7 +567,9 @@ void LabelButton::AddLayerToRegion(ui::Layer* new_layer,
 void LabelButton::RemoveLayerFromRegions(ui::Layer* old_layer) {
   ink_drop_container()->RemoveLayerFromRegions(old_layer);
   ink_drop_container()->SetVisible(false);
+#if !BUILDFLAG(IS_WIN)
   image_container_view()->DestroyLayer();
+#endif
 }
 
 std::unique_ptr<ActionViewInterface> LabelButton::GetActionViewInterface() {
@@ -536,7 +577,7 @@ std::unique_ptr<ActionViewInterface> LabelButton::GetActionViewInterface() {
 }
 
 void LabelButton::GetExtraParams(ui::NativeTheme::ExtraParams* params) const {
-  auto& button = absl::get<ui::NativeTheme::ButtonExtraParams>(*params);
+  auto& button = std::get<ui::NativeTheme::ButtonExtraParams>(*params);
   button.checked = false;
   button.indeterminate = false;
   button.is_default = GetIsDefault();
@@ -558,7 +599,7 @@ PropertyEffects LabelButton::UpdateStyleToIndicateDefaultStatus() {
   label_->SetFontList(GetIsDefault() ? cached_default_button_font_list_
                                      : cached_normal_font_list_);
   ResetLabelEnabledColor();
-  return kPropertyEffectsPreferredSizeChanged;
+  return PropertyEffects::kPreferredSizeChanged;
 }
 
 void LabelButton::ChildPreferredSizeChanged(View* child) {
@@ -602,6 +643,14 @@ void LabelButton::OnThemeChanged() {
   // The entire button has to be repainted here, since the native theme can
   // define the tint for the entire background/border/focus ring.
   SchedulePaint();
+
+  // Update the icon when ink drop highlight visibility changes so that
+  // forced-colors mode keeps the icon contrasting with the opaque ink drop.
+  if (auto* ink_drop_host = InkDrop::Get(this)) {
+    ink_drop_highlighted_subscription_ =
+        ink_drop_host->AddHighlightedChangedCallback(base::BindRepeating(
+            &LabelButton::UpdateImage, base::Unretained(this)));
+  }
 }
 
 void LabelButton::StateChanged(ButtonState old_state) {
@@ -616,8 +665,8 @@ void LabelButton::SetTextInternal(std::u16string_view text) {
 
   // Setting text cancels ShrinkDownThenClearText().
   const auto effects = shrinking_down_label_
-                           ? kPropertyEffectsPreferredSizeChanged
-                           : kPropertyEffectsNone;
+                           ? PropertyEffects::kPreferredSizeChanged
+                           : PropertyEffects::kNone;
   shrinking_down_label_ = false;
 
   // TODO(pkasting): Remove this and forward callback subscriptions to the
@@ -701,16 +750,9 @@ void LabelButton::ResetLabelEnabledColor() {
     return;
   }
 
-  const auto& color_variant = button_state_colors_[GetState()];
-  if (color_variant) {
-    if (auto color = color_variant->GetSkColor();
-        color && color != label_->GetEnabledColor()) {
-      label_->SetEnabledColor(*color);
-    } else if (auto color_id = color_variant->GetColorId()) {
-      // Omitting the check that the new color id differs from the existing
-      // color id, because the setter already does that check.
-      label_->SetEnabledColor(*color_id);
-    }
+  const auto& color = button_state_colors_[GetState()];
+  if (color && color != label_->GetEnabledColor()) {
+    label_->SetEnabledColor(*color);
   }
 }
 
@@ -738,7 +780,7 @@ void LabelButtonActionViewInterface::ActionItemChangedImpl(
 }
 
 BEGIN_METADATA(LabelButton)
-ADD_PROPERTY_METADATA(std::u16string_view, Text)
+ADD_PROPERTY_METADATA(std::u16string, Text)
 ADD_PROPERTY_METADATA(gfx::HorizontalAlignment, HorizontalAlignment)
 ADD_PROPERTY_METADATA(gfx::Size, MinSize)
 ADD_PROPERTY_METADATA(gfx::Size, MaxSize)

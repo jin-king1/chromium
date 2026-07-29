@@ -36,28 +36,29 @@ namespace blink {
 
 namespace {
 
-String ToColorSpaceConversion(
+V8ColorSpaceConversion::Enum ToColorSpaceConversion(
     wc_fuzzer::ImageBitmapOptions_ColorSpaceConversion type) {
   switch (type) {
     case wc_fuzzer::ImageBitmapOptions_ColorSpaceConversion_CS_NONE:
-      return "none";
+      return V8ColorSpaceConversion::Enum::kNone;
     case wc_fuzzer::ImageBitmapOptions_ColorSpaceConversion_CS_DEFAULT:
-      return "default";
+      return V8ColorSpaceConversion::Enum::kDefault;
   }
 }
 
 void RunFuzzingLoop(ImageDecoderExternal* image_decoder,
                     const google::protobuf::RepeatedPtrField<
                         wc_fuzzer::ImageDecoderApiInvocation>& invocations) {
-  Persistent<ImageDecodeOptions> options = ImageDecodeOptions::Create();
-  for (auto& invocation : invocations) {
+  for (const auto& invocation : invocations) {
     switch (invocation.Api_case()) {
-      case wc_fuzzer::ImageDecoderApiInvocation::kDecodeImage:
+      case wc_fuzzer::ImageDecoderApiInvocation::kDecodeImage: {
+        Persistent<ImageDecodeOptions> options = ImageDecodeOptions::Create();
         options->setFrameIndex(invocation.decode_image().frame_index());
         options->setCompleteFramesOnly(
             invocation.decode_image().complete_frames_only());
         image_decoder->decode(options);
         break;
+      }
       case wc_fuzzer::ImageDecoderApiInvocation::kDecodeMetadata:
         // Deprecated.
         break;
@@ -81,6 +82,10 @@ void RunFuzzingLoop(ImageDecoderExternal* image_decoder,
 
 DEFINE_BINARY_PROTO_FUZZER(
     const wc_fuzzer::ImageDecoderApiInvocationSequence& proto) {
+  if (proto.invocations().size() > kMaxFuzzerProtoLength) {
+    return;
+  }
+
   static BlinkFuzzerTestSupport test_support = BlinkFuzzerTestSupport();
   test::TaskEnvironment task_environment;
 
@@ -109,8 +114,8 @@ DEFINE_BINARY_PROTO_FUZZER(
   Persistent<ImageDecoderInit> image_decoder_init =
       MakeGarbageCollected<ImageDecoderInit>();
   image_decoder_init->setType(proto.config().type().c_str());
-  Persistent<DOMArrayBuffer> data_copy = DOMArrayBuffer::Create(
-      proto.config().data().data(), proto.config().data().size());
+  Persistent<DOMArrayBuffer> data_copy =
+      DOMArrayBuffer::Create(base::as_byte_span(proto.config().data()));
   image_decoder_init->setData(
       MakeGarbageCollected<V8ImageBufferSource>(data_copy));
   image_decoder_init->setColorSpaceConversion(ToColorSpaceConversion(

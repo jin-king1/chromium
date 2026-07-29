@@ -148,6 +148,8 @@ export class SettingsDisplayElement extends SettingsDisplayElementBase {
       /** Primary display id */
       primaryDisplayId: String,
 
+      primaryDisplay: Object,
+
       selectedDisplay: Object,
 
       /** Id passed to the overscan dialog. */
@@ -195,20 +197,6 @@ export class SettingsDisplayElement extends SettingsDisplayElementBase {
         type: Boolean,
         value() {
           return loadTimeData.getBoolean('deviceSupportsAmbientColor');
-        },
-      },
-
-      listAllDisplayModes_: {
-        type: Boolean,
-        value() {
-          return loadTimeData.getBoolean('listAllDisplayModes');
-        },
-      },
-
-      excludeDisplayInMirrorModeEnabled_: {
-        type: Boolean,
-        value() {
-          return loadTimeData.getBoolean('excludeDisplayInMirrorModeEnabled');
         },
       },
 
@@ -281,25 +269,6 @@ export class SettingsDisplayElement extends SettingsDisplayElementBase {
         type: Number,
         value: null,
       },
-
-      /**
-       * Used by DeepLinkingMixin to focus this page's deep links.
-       */
-      supportedSettingIds: {
-        type: Object,
-        value: () => new Set<Setting>([
-          Setting.kDisplaySize,
-          Setting.kDisplayOrientation,
-          Setting.kDisplayArrangement,
-          Setting.kDisplayResolution,
-          Setting.kDisplayRefreshRate,
-          Setting.kDisplayMirroring,
-          Setting.kAllowWindowsToSpanDisplays,
-          Setting.kAmbientColors,
-          Setting.kTouchscreenCalibration,
-          Setting.kDisplayOverscan,
-        ]),
-      },
     };
   }
 
@@ -313,44 +282,62 @@ export class SettingsDisplayElement extends SettingsDisplayElementBase {
     ];
   }
 
-  displayIds: string;
-  displays: DisplayUnitInfo[];
-  layouts: DisplayLayout[];
-  mirroringDestinationIds: string[];
-  overscanDisplayId: string;
-  primaryDisplayId: string;
-  selectedDisplay?: DisplayUnitInfo;
+  declare displayIds: string;
+  declare displays: DisplayUnitInfo[];
+  declare layouts: DisplayLayout[];
+  declare mirroringDestinationIds: string[];
+  declare overscanDisplayId: string;
+  declare primaryDisplayId: string;
+  declare primaryDisplay?: DisplayUnitInfo;
+  declare selectedDisplay?: DisplayUnitInfo;
+
+  // DeepLinkingMixin override
+  override supportedSettingIds = new Set<Setting>([
+    Setting.kDisplaySize,
+    Setting.kDisplayOrientation,
+    Setting.kDisplayArrangement,
+    Setting.kDisplayResolution,
+    Setting.kDisplayRefreshRate,
+    Setting.kDisplayMirroring,
+    Setting.kAllowWindowsToSpanDisplays,
+    Setting.kAmbientColors,
+    Setting.kTouchscreenCalibration,
+    Setting.kDisplayOverscan,
+  ]);
+
+  declare private readonly ambientColorAvailable_: boolean;
   private browserProxy_: DevicePageBrowserProxy;
-  private brightnessSliderMax_: number;
-  private brightnessSliderMin_: number;
-  private currentInternalScreenBrightness_: number;
+  declare private brightnessSliderMax_: number;
+  declare private brightnessSliderMin_: number;
+  declare private currentInternalScreenBrightness_: number;
   private currentRoute_: Route|null;
   private currentSelectedModeIndex_: number;
   private currentSelectedParentModeIndex_: number;
   private displayChangedListener_: (() => void)|null;
-  private displayModeList_: DropdownMenuOptionList;
+  declare private displayModeList_: DropdownMenuOptionList;
   private displaySettingsProvider: DisplaySettingsProviderInterface;
-  private displayTabNames_: string[];
-  private hasAmbientLightSensor_: boolean;
+  declare private displayTabNames_: string[];
+  declare private hasAmbientLightSensor_: boolean;
   private invalidDisplayId_: string;
-  private isAmbientLightSensorEnabled_: boolean;
-  private isDisplayPerformanceEnabled_: boolean;
-  private isTabletMode_: boolean;
-  private listAllDisplayModes_: boolean;
-  private logicalResolutionText_: string;
+  declare private isAmbientLightSensorEnabled_: boolean;
+  declare private isDisplayPerformanceEnabled_: boolean;
+  declare private readonly isDisplayPerformanceSupported_: boolean;
+  declare private isTabletMode_: boolean;
+  declare private logicalResolutionText_: string;
   private mirroringExcludedId_: string;
   private modeToParentModeMap_: Map<number, number>;
-  private modeValues_: number[];
-  private opsDisplayScaleFactorEnabled_: boolean;
+  declare private modeValues_: number[];
+  declare private opsDisplayScaleFactorEnabled_: boolean;
   private parentModeToRefreshRateMap_: Map<number, DropdownMenuOptionList>;
-  private pendingSettingId_: Setting|null;
-  private refreshRateList_: DropdownMenuOptionList;
-  private selectedModePref_: chrome.settingsPrivate.PrefObject;
-  private selectedParentModePref_: chrome.settingsPrivate.PrefObject;
-  private selectedTab_: number;
-  private selectedZoomPref_: chrome.settingsPrivate.PrefObject;
-  private unifiedDesktopMode_: boolean;
-  private zoomValues_: SliderTick[];
+  declare private pendingSettingId_: Setting|null;
+  declare private refreshRateList_: DropdownMenuOptionList;
+  declare private selectedModePref_: chrome.settingsPrivate.PrefObject;
+  declare private selectedParentModePref_: chrome.settingsPrivate.PrefObject;
+  declare private selectedTab_: number;
+  declare private selectedZoomPref_: chrome.settingsPrivate.PrefObject;
+  declare private readonly unifiedDesktopAvailable_: boolean;
+  declare private unifiedDesktopMode_: boolean;
+  declare private zoomValues_: SliderTick[];
 
   constructor() {
     super();
@@ -651,33 +638,6 @@ export class SettingsDisplayElement extends SettingsDisplayElementBase {
         !resolutionPref.value!.recommended;
   }
 
-
-  /**
-   * Parses the display modes for |selectedDisplay|. |displayModeList_| will
-   * contain entries representing a combined resolution + refresh rate.
-   * Only one parse*DisplayModes_ method must be called, depending on the
-   * state of |listAllDisplayModes_|.
-   */
-  private parseCompoundDisplayModes_(selectedDisplay: DisplayUnitInfo): void {
-    assert(!this.listAllDisplayModes_);
-    const optionList: DropdownMenuOptionList = [];
-    for (let i = 0; i < selectedDisplay.modes.length; ++i) {
-      const mode = selectedDisplay.modes[i];
-
-      const id = 'displayResolutionMenuItem';
-      const refreshRate = Math.round(mode.refreshRate * 100) / 100;
-      const resolution = this.i18n(
-          id, mode.width.toString(), mode.height.toString(),
-          refreshRate.toString());
-
-      optionList.push({
-        name: resolution,
-        value: i,
-      });
-    }
-    this.displayModeList_ = optionList;
-  }
-
   /**
    * Uses the modes of |selectedDisplay| to build a nested map of width =>
    * height => refreshRate => modeIndex. modeIndex is the index of the
@@ -689,24 +649,30 @@ export class SettingsDisplayElement extends SettingsDisplayElementBase {
     const modes = new Map();
     for (let i = 0; i < selectedDisplay.modes.length; ++i) {
       const mode = selectedDisplay.modes[i];
-      if (!modes.has(mode.width)) {
-        modes.set(mode.width, new Map());
+      if (!modes.has(mode.widthInNativePixels)) {
+        modes.set(mode.widthInNativePixels, new Map());
       }
 
-      if (!modes.get(mode.width).has(mode.height)) {
-        modes.get(mode.width).set(mode.height, new Map());
+      if (!modes.get(mode.widthInNativePixels).has(mode.heightInNativePixels)) {
+        modes.get(mode.widthInNativePixels)
+            .set(mode.heightInNativePixels, new Map());
       }
 
       // Prefer the first native mode we find, for consistency.
-      if (modes.get(mode.width).get(mode.height).has(mode.refreshRate)) {
-        const existingModeIndex =
-            modes.get(mode.width).get(mode.height).get(mode.refreshRate);
+      if (modes.get(mode.widthInNativePixels)
+              .get(mode.heightInNativePixels)
+              .has(mode.refreshRate)) {
+        const existingModeIndex = modes.get(mode.widthInNativePixels)
+                                      .get(mode.heightInNativePixels)
+                                      .get(mode.refreshRate);
         const existingMode = selectedDisplay.modes[existingModeIndex];
         if (existingMode.isNative || !mode.isNative) {
           continue;
         }
       }
-      modes.get(mode.width).get(mode.height).set(mode.refreshRate, i);
+      modes.get(mode.widthInNativePixels)
+          .get(mode.heightInNativePixels)
+          .set(mode.refreshRate, i);
     }
     return modes;
   }
@@ -718,11 +684,9 @@ export class SettingsDisplayElement extends SettingsDisplayElementBase {
    * method goes through the mode list for a given display creating data
    * structures so that given a resolution, the default refresh rate is
    * selected, and other possible refresh rates at that resolution are shown
-   * in a dropdown. Only one parse*DisplayModes_ method must be called,
-   * depending on the state of |listAllDisplayModes_|.
+   * in a dropdown.
    */
-  private parseSplitDisplayModes_(selectedDisplay: DisplayUnitInfo): void {
-    assert(this.listAllDisplayModes_);
+  private parseDisplayModes_(selectedDisplay: DisplayUnitInfo): void {
     // Clear the mappings before recalculating.
     this.modeToParentModeMap_ = new Map();
     this.parentModeToRefreshRateMap_ = new Map();
@@ -764,8 +728,8 @@ export class SettingsDisplayElement extends SettingsDisplayElementBase {
     // Construct mode->parentMode map so we can get parent modes later.
     for (let i = 0; i < selectedDisplay.modes.length; i++) {
       const mode = selectedDisplay.modes[i];
-      const parentModeIndex =
-          this.getParentModeIndex_(modes.get(mode.width)!.get(mode.height)!);
+      const parentModeIndex = this.getParentModeIndex_(
+          modes.get(mode.widthInNativePixels)!.get(mode.heightInNativePixels)!);
       this.modeToParentModeMap_.set(i, parentModeIndex);
     }
     assert(this.modeToParentModeMap_.size === selectedDisplay.modes.length);
@@ -792,8 +756,6 @@ export class SettingsDisplayElement extends SettingsDisplayElementBase {
    */
   private addResolution_(
       parentModeIndex: number, width: number, height: number): void {
-    assert(this.listAllDisplayModes_);
-
     // Add an entry in the outer map for |parentModeIndex|. The inner
     // array (the value at |parentModeIndex|) will be populated with all
     // possible refresh rates for the given resolution.
@@ -817,11 +779,9 @@ export class SettingsDisplayElement extends SettingsDisplayElementBase {
   private addRefreshRate_(
       parentModeIndex: number, modeIndex: number, rate: number,
       isInterlaced?: boolean): void {
-    assert(this.listAllDisplayModes_);
-
     // Truncate at two decimal places for display. If the refresh rate
     // is a whole number, remove the mantissa.
-    let refreshRate = Number(rate).toFixed(2);
+    let refreshRate = rate.toFixed(2);
     if (refreshRate.endsWith('.00')) {
       refreshRate = refreshRate.substring(0, refreshRate.length - 3);
     }
@@ -829,7 +789,7 @@ export class SettingsDisplayElement extends SettingsDisplayElementBase {
     const id = isInterlaced ? 'displayRefreshRateInterlacedMenuItem' :
                               'displayRefreshRateMenuItem';
 
-    const refreshRateOption = this.i18n(id, refreshRate.toString());
+    const refreshRateOption = this.i18n(id, refreshRate);
 
     this.parentModeToRefreshRateMap_.get(parentModeIndex)!.push({
       name: refreshRateOption,
@@ -857,16 +817,12 @@ export class SettingsDisplayElement extends SettingsDisplayElementBase {
 
   /**
    * Parses display modes for |selectedDisplay|. A 'mode' is a resolution +
-   * refresh rate combo. If |listAllDisplayModes_| is on, resolution and
-   * refresh rate are parsed into separate dropdowns and
-   * |parentModeToRefreshRateMap_| + |modeToParentModeMap_| are populated.
+   * refresh rate combo. Resolution and refresh rate are parsed into separate
+   * dropdowns and |parentModeToRefreshRateMap_| + |modeToParentModeMap_| are
+   * populated.
    */
   private updateDisplayModeStructures_(selectedDisplay: DisplayUnitInfo): void {
-    if (this.listAllDisplayModes_) {
-      this.parseSplitDisplayModes_(selectedDisplay);
-    } else {
-      this.parseCompoundDisplayModes_(selectedDisplay);
-    }
+    this.parseDisplayModes_(selectedDisplay);
   }
 
   /**
@@ -941,16 +897,12 @@ export class SettingsDisplayElement extends SettingsDisplayElementBase {
     // This will also cause the parent mode to be updated.
     this.set('selectedModePref_.value', this.currentSelectedModeIndex_);
 
-    if (this.listAllDisplayModes_) {
-      // Now that everything is in sync, set the selected mode to its correct
-      // value right before updating the pref.
-      this.currentSelectedParentModeIndex_ =
-          this.modeToParentModeMap_.get(currentModeIndex)!;
-      this.refreshRateList_ = this.parentModeToRefreshRateMap_.get(
-          this.currentSelectedParentModeIndex_)!;
-    } else {
-      this.currentSelectedParentModeIndex_ = currentModeIndex;
-    }
+    // Now that everything is in sync, set the selected mode to its correct
+    // value right before updating the pref.
+    this.currentSelectedParentModeIndex_ =
+        this.modeToParentModeMap_.get(currentModeIndex)!;
+    this.refreshRateList_ = this.parentModeToRefreshRateMap_.get(
+        this.currentSelectedParentModeIndex_)!;
 
     this.set(
         'selectedParentModePref_.value', this.currentSelectedParentModeIndex_);
@@ -969,8 +921,7 @@ export class SettingsDisplayElement extends SettingsDisplayElementBase {
    * Returns true if the refresh rate setting needs to be displayed.
    */
   private showRefreshRateSetting_(display: DisplayUnitInfo): boolean {
-    return this.listAllDisplayModes_ &&
-        this.showDropDownResolutionSetting_(display);
+    return this.showDropDownResolutionSetting_(display);
   }
 
   /**
@@ -1054,7 +1005,11 @@ export class SettingsDisplayElement extends SettingsDisplayElementBase {
    * Returns the i18n string for the text to be used for mirroring settings.
    * @return i18n string for mirroring settings text.
    */
-  private getDisplayMirrorText_(displays: DisplayUnitInfo[]): string {
+  private getDisplayMirrorText_(
+      displays: DisplayUnitInfo[], primaryDisplay: DisplayUnitInfo): string {
+    if (primaryDisplay) {
+      return this.i18n('displayMirror', primaryDisplay.name);
+    }
     return this.i18n('displayMirror', displays[0].name);
   }
 
@@ -1093,19 +1048,15 @@ export class SettingsDisplayElement extends SettingsDisplayElementBase {
   }
 
   private showExcludeInMirror_(
-      unifiedDesktopMode: boolean,
-      excludeDisplayInMirrorModeEnabled: boolean,
-      allowExcludeDisplayInMirrorModePref: boolean,
-      displays: DisplayUnitInfo[],
-      selectedDisplay: DisplayUnitInfo): boolean {
+      unifiedDesktopMode: boolean, allowExcludeDisplayInMirrorModePref: boolean,
+      displays: DisplayUnitInfo[], selectedDisplay: DisplayUnitInfo): boolean {
     if (!selectedDisplay) {
       return false;
     }
     if (this.isMirrored(displays)) {
       return selectedDisplay.id === this.mirroringExcludedId_;
     }
-    if (!excludeDisplayInMirrorModeEnabled &&
-        !allowExcludeDisplayInMirrorModePref) {
+    if (!allowExcludeDisplayInMirrorModePref) {
       return false;
     }
     if (displays.length < 3) {
@@ -1159,8 +1110,8 @@ export class SettingsDisplayElement extends SettingsDisplayElementBase {
     }
     const mode =
         castExists(this.selectedDisplay.modes[this.selectedModePref_.value]);
-    const widthStr = mode.width.toString();
-    const heightStr = mode.height.toString();
+    const widthStr = mode.widthInNativePixels.toString();
+    const heightStr = mode.heightInNativePixels.toString();
     if (this.isBestMode_(this.selectedDisplay, mode)) {
       return this.i18n('displayResolutionTextBest', widthStr, heightStr);
     } else if (mode.isNative) {
@@ -1390,7 +1341,7 @@ export class SettingsDisplayElement extends SettingsDisplayElementBase {
    */
   private onSelectedModeChange_(newModeIndex: number): void {
     // We want to ignore all value changes to the pref due to the slider being
-    // dragged. See http://crbug/845712 for more info.
+    // dragged. See http://crbug.com/40577551 for more info.
     if (this.currentSelectedModeIndex_ === newModeIndex) {
       return;
     }
@@ -1417,8 +1368,9 @@ export class SettingsDisplayElement extends SettingsDisplayElementBase {
     const currentMode =
         this.selectedDisplay.modes[this.currentSelectedModeIndex_];
     const newMode = this.selectedDisplay.modes[this.selectedModePref_.value];
-    const displaySettingsType = (currentMode.height === newMode.height &&
-                                 currentMode.width === newMode.width) ?
+    const displaySettingsType =
+        (currentMode.heightInNativePixels === newMode.heightInNativePixels &&
+         currentMode.widthInNativePixels === newMode.widthInNativePixels) ?
         DisplaySettingsType.kRefreshRate :
         DisplaySettingsType.kResolution;
     this.displaySettingsProvider.recordChangingDisplaySettings(
@@ -1493,7 +1445,7 @@ export class SettingsDisplayElement extends SettingsDisplayElementBase {
 
   private onMirroredClick_(event: Event): void {
     // Blur the control so that when the transition animation completes and
-    // the UI is focused, the control does not receive focus. crbug.com/785070
+    // the UI is focused, the control does not receive focus. crbug.com/41355419
     (event.currentTarget as CrCheckboxElement).blur();
 
     const mirrorModeInfo: MirrorModeInfo = {
@@ -1591,6 +1543,7 @@ export class SettingsDisplayElement extends SettingsDisplayElementBase {
       }
     }
     this.displayIds = displayIds;
+    this.primaryDisplay = primaryDisplay;
     this.primaryDisplayId = (primaryDisplay && primaryDisplay.id) || '';
     selectedDisplay = selectedDisplay || primaryDisplay ||
         (this.displays && this.displays[0]);

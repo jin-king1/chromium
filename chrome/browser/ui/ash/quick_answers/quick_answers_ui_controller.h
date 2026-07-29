@@ -11,6 +11,7 @@
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "chrome/browser/ui/ash/quick_answers/ui/magic_boost_user_consent_view.h"
 #include "chrome/browser/ui/ash/quick_answers/ui/quick_answers_view.h"
 #include "chrome/browser/ui/ash/quick_answers/ui/rich_answers_view.h"
 #include "chrome/browser/ui/ash/quick_answers/ui/user_consent_view.h"
@@ -23,6 +24,7 @@
 #include "ui/views/widget/unique_widget_ptr.h"
 #include "ui/views/widget/widget.h"
 
+class ApplicationLocaleStorage;
 class Profile;
 class QuickAnswersControllerImpl;
 
@@ -47,7 +49,9 @@ class QuickAnswersUiController {
       base::RepeatingCallback<void(const std::string&)>;
   using FakeOpenWebUrlCallback = base::RepeatingCallback<void(const GURL&)>;
 
-  explicit QuickAnswersUiController(QuickAnswersControllerImpl* controller);
+  // `application_locale_storage` must not be null and must outlive `this`.
+  QuickAnswersUiController(ApplicationLocaleStorage* application_locale_storage,
+                           QuickAnswersControllerImpl* controller);
   ~QuickAnswersUiController();
 
   QuickAnswersUiController(const QuickAnswersUiController&) = delete;
@@ -93,7 +97,8 @@ class QuickAnswersUiController {
   // feature vertically aligned to the anchor. Note that user consent is handled
   // by Quick Answers code only if `QuickAnswersState::FeatureType` is
   // `kQuickAnswers`.
-  void CreateUserConsentView(const gfx::Rect& anchor_bounds,
+  void CreateUserConsentView(Profile* profile,
+                             const gfx::Rect& anchor_bounds,
                              quick_answers::IntentType intent_type,
                              const std::u16string& intent_text);
   void CreateUserConsentViewForPixelTest(const gfx::Rect& anchor_bounds,
@@ -143,6 +148,10 @@ class QuickAnswersUiController {
     return views::AsViewClass<quick_answers::UserConsentView>(
         user_consent_view_.view());
   }
+  quick_answers::MagicBoostUserConsentView* magic_boost_user_consent_view() {
+    return views::AsViewClass<quick_answers::MagicBoostUserConsentView>(
+        user_consent_view_.view());
+  }
   quick_answers::RichAnswersView* rich_answers_view() {
     return views::AsViewClass<quick_answers::RichAnswersView>(
         rich_answers_widget_->GetContentsView());
@@ -153,19 +162,23 @@ class QuickAnswersUiController {
   void OpenWebUrl(const GURL& url);
   void OnUserConsentNoThanksPressed();
   void OnUserConsentAllowPressed();
+  void OnMagicBoostUserConsentIntentButtonPressed();
 
   void CreateQuickAnswersViewInternal(
       Profile* profile,
       const std::string& query,
       std::optional<quick_answers::Intent> intent,
       quick_answers::QuickAnswersView::Params params);
-  void CreateUserConsentViewInternal(const gfx::Rect& anchor_bounds,
+  void CreateUserConsentViewInternal(Profile* profile,
+                                     const gfx::Rect& anchor_bounds,
                                      quick_answers::IntentType intent_type,
                                      const std::u16string& intent_text,
                                      bool use_refreshed_design);
 
   // Constructs/resets the Quick Answers rich card view.
   void CreateRichAnswersView();
+
+  const raw_ref<ApplicationLocaleStorage> application_locale_storage_;
 
   raw_ptr<QuickAnswersControllerImpl> controller_ = nullptr;
 

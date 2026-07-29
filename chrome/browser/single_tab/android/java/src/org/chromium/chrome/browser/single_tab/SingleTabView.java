@@ -11,28 +11,29 @@ import android.graphics.drawable.Drawable;
 import android.util.AttributeSet;
 import android.view.View;
 import android.widget.ImageView;
-import android.widget.ImageView.ScaleType;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
-import androidx.annotation.Nullable;
-
-import org.chromium.chrome.browser.magic_stack.HomeModulesMetricsUtils;
+import org.chromium.build.annotations.Initializer;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.tab_ui.TabThumbnailView;
 
 /** View of the tab on the single tab tab switcher. */
+@NullMarked
 class SingleTabView extends LinearLayout {
-    @Nullable private TextView mSeeMoreLinkView;
+    private TextView mSeeMoreLinkView;
     private ImageView mFavicon;
     private TextView mTitle;
-    @Nullable private TabThumbnailView mTabThumbnail;
-    @Nullable private TextView mUrl;
+    private @Nullable TabThumbnailView mTabThumbnail;
+    private TextView mUrl;
 
     /** Default constructor needed to inflate via XML. */
     public SingleTabView(Context context, AttributeSet attrs) {
         super(context, attrs);
     }
 
+    @Initializer
     @Override
     protected void onFinishInflate() {
         super.onFinishInflate();
@@ -44,30 +45,25 @@ class SingleTabView extends LinearLayout {
         mUrl = findViewById(R.id.tab_url_view);
 
         if (mTabThumbnail != null) {
-            if (HomeModulesMetricsUtils.useMagicStack()) {
-                Resources resources = getResources();
-                MarginLayoutParams marginLayoutParams =
-                        (MarginLayoutParams) mTabThumbnail.getLayoutParams();
-                int size =
-                        resources.getDimensionPixelSize(
-                                R.dimen.single_tab_module_tab_thumbnail_size_big);
-                marginLayoutParams.width = size;
-                marginLayoutParams.height = size;
+            Resources resources = getResources();
+            MarginLayoutParams marginLayoutParams =
+                    (MarginLayoutParams) mTabThumbnail.getLayoutParams();
+            int size =
+                    resources.getDimensionPixelSize(
+                            R.dimen.single_tab_module_tab_thumbnail_size_big);
+            marginLayoutParams.width = size;
+            marginLayoutParams.height = size;
 
-                TextView tabSwitcherTitleDescription =
-                        findViewById(R.id.tab_switcher_title_description);
-                MarginLayoutParams titleDescriptionMarginLayoutParams =
-                        (MarginLayoutParams) tabSwitcherTitleDescription.getLayoutParams();
-                titleDescriptionMarginLayoutParams.bottomMargin =
-                        resources.getDimensionPixelSize(
-                                R.dimen.single_tab_module_title_margin_bottom);
-                tabSwitcherTitleDescription.setText(
-                        resources.getQuantityString(
-                                R.plurals.home_modules_tab_resumption_title, 1));
-            }
-            mTabThumbnail.setScaleType(ScaleType.MATRIX);
+            TextView tabSwitcherTitleDescription =
+                    findViewById(R.id.tab_switcher_title_description);
+            MarginLayoutParams titleDescriptionMarginLayoutParams =
+                    (MarginLayoutParams) tabSwitcherTitleDescription.getLayoutParams();
+            titleDescriptionMarginLayoutParams.bottomMargin =
+                    resources.getDimensionPixelSize(R.dimen.single_tab_module_title_margin_bottom);
+            tabSwitcherTitleDescription.setText(
+                    getContext().getString(R.string.home_modules_single_tab_title));
             mTabThumbnail.updateThumbnailPlaceholder(
-                    /* isIncognito= */ false, /* isSelected= */ false);
+                    /* isIncognito= */ false, /* isSelected= */ false, /* colorId= */ null);
         }
     }
 
@@ -142,6 +138,7 @@ class SingleTabView extends LinearLayout {
     }
 
     private void updateThumbnailMatrix(Drawable thumbnail) {
+        assert mTabThumbnail != null;
         final int width = mTabThumbnail.getMeasuredWidth();
         final int height = mTabThumbnail.getMeasuredHeight();
         if (width == 0 || height == 0) {

@@ -9,6 +9,8 @@
 #include <optional>
 #include <set>
 
+#include "base/byte_size.h"
+#include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "components/page_load_metrics/common/page_load_timing.h"
 #include "components/page_load_metrics/renderer/page_resource_data_use.h"
@@ -25,38 +27,7 @@ namespace base {
 class OneShotTimer;
 }  // namespace base
 
-namespace blink {
-struct JavaScriptFrameworkDetectionResult;
-struct SoftNavigationMetrics;
-}  // namespace blink
-
 namespace page_load_metrics {
-
-namespace internal {
-const char kPageLoadInternalSoftNavigationFromStartInvalidTiming[] =
-    "PageLoad.Internal.SoftNavigationFromStartInvalidTiming";
-
-// These values are recorded into a UMA histogram as scenarios where the start
-// time of soft navigation ends up being 0. These entries
-// should not be renumbered and the numeric values should not be reused. These
-// entries should be kept in sync with the definition in
-// tools/metrics/histograms/enums.xml
-// TODO(crbug.com/40074158): Remove the code here and related code once the bug
-// is resolved.
-enum class SoftNavigationFromStartInvalidTimingReasons {
-  kSoftNavStartTimeIsZeroAndLtNavStart = 0,
-  kSoftNavStartTimeIsZeroAndEqNavStart = 1,
-  kSoftNavStartTimeIsNonZeroAndEqNavStart = 2,
-  kSoftNavStartTimeIsNonZeroAndLtNavStart = 3,
-  kMaxValue = kSoftNavStartTimeIsNonZeroAndLtNavStart,
-};
-
-void RecordUmaForkPageLoadInternalSoftNavigationFromStartInvalidTiming(
-    base::TimeDelta start_time_relative_to_reference,
-    double nav_start_to_reference);
-
-}  // namespace internal
-
 class PageTimingMetricsSender;
 class PageTimingSender;
 
@@ -80,6 +51,7 @@ class MetricsRenderFrameObserver : public content::RenderFrameObserver,
   void DidChangePerformanceTiming() override;
   void DidObserveUserInteraction(base::TimeTicks max_event_start,
                                  base::TimeTicks max_event_queued_main_thread,
+                                 base::TimeTicks max_event_processing_start,
                                  base::TimeTicks max_event_commit_finish,
                                  base::TimeTicks max_event_end,
                                  uint64_t interaction_offset) override;
@@ -91,28 +63,33 @@ class MetricsRenderFrameObserver : public content::RenderFrameObserver,
       const blink::SubresourceLoadMetrics& subresource_load_metrics) override;
   void DidObserveNewFeatureUsage(
       const blink::UseCounterFeature& feature) override;
-  void DidObserveSoftNavigation(blink::SoftNavigationMetrics metrics) override;
+  void DidObserveSoftNavigation(
+      blink::SoftNavigationMetricsForReporting metrics) override;
+  void DidObserveSoftLargestContentfulPaint(
+      const blink::LargestContentfulPaintDetailsForReporting& lcp) override;
   void DidObserveLayoutShift(double score, bool after_input_or_scroll) override;
   void DidStartResponse(const url::SchemeHostPort& final_response_url,
                         int request_id,
                         const network::mojom::URLResponseHead& response_head,
                         network::mojom::RequestDestination request_destination,
                         bool is_ad_resource) override;
-  void DidReceiveTransferSizeUpdate(int request_id,
-                                    int received_data_length) override;
+  void DidReceiveTransferSizeUpdate(
+      int request_id,
+      base::ByteSize received_data_length) override;
   void DidCompleteResponse(
       int request_id,
       const network::URLLoaderCompletionStatus& status) override;
   void DidCancelResponse(int request_id) override;
   void DidLoadResourceFromMemoryCache(const GURL& response_url,
                                       int request_id,
-                                      int64_t encoded_body_length,
+                                      base::ByteSize encoded_body_length,
                                       const std::string& mime_type,
                                       bool from_archive) override;
   void DidStartNavigation(
       const GURL& url,
       std::optional<blink::WebNavigationType> navigation_type) override;
-  void DidSetPageLifecycleState(bool restoring_from_bfcache) override;
+  void DidSetPageLifecycleState(
+      blink::BFCacheStateChange bfcache_change) override;
 
   void ReadyToCommitNavigation(
       blink::WebDocumentLoader* document_loader) override;
@@ -125,20 +102,14 @@ class MetricsRenderFrameObserver : public content::RenderFrameObserver,
   // before being destroyed.
   void WillDetach(blink::DetachReason detach_reason) override;
 
-  void OnMainFrameIntersectionChanged(
-      const gfx::Rect& main_frame_intersection_rect) override;
+  void OnMainFrameRectangleChanged(const gfx::Rect& main_frame_rect) override;
   void OnMainFrameViewportRectangleChanged(
       const gfx::Rect& main_frame_viewport_rect) override;
-  void OnMainFrameImageAdRectangleChanged(
-      int element_id,
-      const gfx::Rect& image_ad_rect) override;
+  void OnMainFrameAdRectangleChanged(int element_id,
+                                     const gfx::Rect& ad_rect) override;
 
   // blink::WebLocalFrameObserver implementation
   void OnFrameDetached() override;
-
-  bool SetUpUkmReporting(
-      base::ReadOnlySharedMemoryRegion& shared_memory_smoothness,
-      base::ReadOnlySharedMemoryRegion& shared_memory_dropped_frames) override;
 
  protected:
   // The relative and monotonic page load timings.
@@ -164,8 +135,12 @@ class MetricsRenderFrameObserver : public content::RenderFrameObserver,
 
   void SendMetrics();
   void OnMetricsSenderCreated();
+
+  // Start of the (hard) navigation, as seen by PerformanceMetricsForReporting,
+  // in seconds since the Unix Epoch.
+  virtual double GetNavigationStart() const;
   virtual Timing GetTiming() const;
-  virtual mojom::SoftNavigationMetricsPtr GetSoftNavigationMetrics() const;
+  virtual mojom::FontLoadingMetricsPtr GetFontLoadingMetrics() const;
   virtual mojom::CustomUserTimingMarkPtr GetCustomUserTimingMark() const;
   virtual std::unique_ptr<base::OneShotTimer> CreateTimer();
   virtual std::unique_ptr<PageTimingSender> CreatePageTimingSender(
@@ -181,18 +156,15 @@ class MetricsRenderFrameObserver : public content::RenderFrameObserver,
   // before this page loads in a new renderer).
   std::unique_ptr<PageResourceDataUse> provisional_frame_resource_data_use_;
 
-  // Handle to the shared memory for transporting smoothness related ukm data.
-  base::ReadOnlySharedMemoryRegion ukm_smoothness_data_;
-  base::ReadOnlySharedMemoryRegion ukm_dropped_frames_data_;
-
   // The main frame intersection rectangle signal received before
   // `page_timing_metrics_sender_` is created. The signal will be send out right
   // after `page_timing_metrics_sender_` is created.
-  std::optional<gfx::Rect>
-      main_frame_intersection_rect_before_metrics_sender_created_;
+  std::optional<gfx::Rect> main_frame_rect_before_metrics_sender_created_;
 
   // Will be null when we're not actively sending metrics.
   std::unique_ptr<PageTimingMetricsSender> page_timing_metrics_sender_;
+
+  base::WeakPtrFactory<MetricsRenderFrameObserver> weak_factory_{this};
 };
 
 }  // namespace page_load_metrics

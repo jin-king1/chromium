@@ -6,7 +6,6 @@
 
 #import <PassKit/PassKit.h>
 
-#import <memory>
 #import <string>
 
 #import "base/files/file_path.h"
@@ -14,10 +13,10 @@
 #import "base/metrics/histogram_functions.h"
 #import "base/metrics/histogram_macros.h"
 #import "ios/chrome/browser/download/model/pass_kit_tab_helper_delegate.h"
-#import "ios/chrome/browser/shared/model/utils/js_unzipper.h"
 #import "ios/chrome/browser/shared/model/utils/mime_type_util.h"
 #import "ios/chrome/browser/shared/public/commands/web_content_commands.h"
 #import "ios/web/public/download/download_task.h"
+#import "ios/web/public/navigation/navigation_context.h"
 
 const char kUmaDownloadPassKitResult[] = "Download.IOSDownloadPassKitResult";
 const char kUmaDownloadBundledPassKitResult[] =
@@ -45,9 +44,12 @@ DownloadPassKitResult GetUmaHttpResult(web::DownloadTask* task) {
 
 }  // namespace
 
+#pragma mark - Initialization
+
 PassKitTabHelper::PassKitTabHelper(web::WebState* web_state)
     : web_state_(web_state) {
-  DCHECK(web_state_);
+  CHECK(web_state_);
+  web_state_observation_.Observe(web_state);
 }
 
 PassKitTabHelper::~PassKitTabHelper() {
@@ -55,6 +57,8 @@ PassKitTabHelper::~PassKitTabHelper() {
     task->RemoveObserver(this);
   }
 }
+
+#pragma mark - Public
 
 void PassKitTabHelper::Download(std::unique_ptr<web::DownloadTask> task) {
   DCHECK(task->GetMimeType() == kPkPassMimeType ||
@@ -70,6 +74,27 @@ void PassKitTabHelper::Download(std::unique_ptr<web::DownloadTask> task) {
 void PassKitTabHelper::SetWebContentsHandler(id<WebContentCommands> handler) {
   handler_ = handler;
 }
+
+#pragma mark - WebStateObserver
+
+void PassKitTabHelper::WasShown(web::WebState* web_state) {
+  CHECK_EQ(web_state_, web_state);
+  if (handler_ && pending_passes_) {
+    [handler_ showDialogForPassKitPasses:pending_passes_];
+    pending_passes_ = nil;
+  }
+}
+
+void PassKitTabHelper::DidStartNavigation(
+    web::WebState* web_state,
+    web::NavigationContext* navigation_context) {
+  CHECK_EQ(web_state_, web_state);
+  if (!navigation_context->IsSameDocument()) {
+    pending_passes_ = nil;
+  }
+}
+
+#pragma mark - DownloadTaskObserver
 
 void PassKitTabHelper::OnDownloadUpdated(web::DownloadTask* updated_task) {
   auto iterator = tasks_.find(updated_task);
@@ -100,26 +125,18 @@ void PassKitTabHelper::OnDownloadUpdated(web::DownloadTask* updated_task) {
   }
 }
 
+#pragma mark - Private
+
 void PassKitTabHelper::OnDownloadBundledPassesDataRead(
     DownloadPassKitResult uma_result,
     NSData* data) {
   base::WeakPtr<PassKitTabHelper> weak_pointer = weak_factory_.GetWeakPtr();
 
-  unzipper_ = [[JSUnzipper alloc] init];
-  [unzipper_ unzipData:data
-      completionCallback:^void(NSArray<NSData*>* result_array, NSError* error) {
-        DownloadPassKitResult inner_uma_result = uma_result;
-        if (error && inner_uma_result == DownloadPassKitResult::kSuccessful) {
-          inner_uma_result = DownloadPassKitResult::kParsingFailure;
-        }
-        if (weak_pointer) {
-          weak_pointer->OnDownloadDataAllRead(kUmaDownloadBundledPassKitResult,
-                                              inner_uma_result, result_array);
-        } else {
-          base::UmaHistogramEnumeration(kUmaDownloadBundledPassKitResult,
-                                        DownloadPassKitResult::kParsingFailure);
-        }
-      }];
+  auto completion_callback =
+      base::BindOnce(&PassKitTabHelper::OnUnzipCompleted,
+                     weak_factory_.GetWeakPtr(), uma_result);
+
+  UnzipData(data, std::move(completion_callback));
 }
 
 void PassKitTabHelper::OnDownloadPassDataRead(DownloadPassKitResult uma_result,
@@ -145,9 +162,23 @@ void PassKitTabHelper::OnDownloadDataAllRead(std::string uma_histogram,
       uma_result == DownloadPassKitResult::kParsingFailure) {
     uma_result = DownloadPassKitResult::kPartialFailure;
   }
-  [handler_ showDialogForPassKitPasses:passes];
+
+  if (web_state_->IsVisible()) {
+    [handler_ showDialogForPassKitPasses:passes];
+  } else {
+    pending_passes_ = passes;
+  }
 
   base::UmaHistogramEnumeration(uma_histogram, uma_result);
 }
 
-WEB_STATE_USER_DATA_KEY_IMPL(PassKitTabHelper)
+void PassKitTabHelper::OnUnzipCompleted(DownloadPassKitResult uma_result,
+                                        UnzipResultData result) {
+  auto new_uma_result =
+      (result.error && uma_result == DownloadPassKitResult::kSuccessful)
+          ? DownloadPassKitResult::kParsingFailure
+          : uma_result;
+
+  OnDownloadDataAllRead(kUmaDownloadBundledPassKitResult, new_uma_result,
+                        result.unzipped_files);
+}

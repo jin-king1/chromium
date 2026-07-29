@@ -13,7 +13,6 @@
 #include "ash/birch/birch_item.h"
 #include "ash/birch/birch_model.h"
 #include "ash/birch/stub_birch_client.h"
-#include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
 #include "ash/constants/geolocation_access_level.h"
 #include "ash/public/cpp/ambient/ambient_backend_controller.h"
@@ -22,9 +21,8 @@
 #include "ash/shell.h"
 #include "ash/test/ash_test_base.h"
 #include "base/memory/raw_ptr.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/time/time_override.h"
-#include "chromeos/ash/components/geolocation/simple_geolocation_provider.h"
+#include "chromeos/ash/components/geolocation/system_location_provider.h"
 #include "components/prefs/pref_service.h"
 #include "components/user_manager/user_names.h"
 
@@ -39,7 +37,6 @@ BirchWeatherProvider* GetWeatherProvider() {
 class BirchWeatherProviderTest : public AshTestBase {
  public:
   BirchWeatherProviderTest() : clock_override_(&GetTestTime, nullptr, nullptr) {
-    feature_list_.InitAndEnableFeature(features::kForestFeature);
     // Ensure the time is morning (7 AM) so weather will be fetched.
     SetTestTime(base::Time::Now().LocalMidnight() + base::Hours(7));
   }
@@ -75,7 +72,6 @@ class BirchWeatherProviderTest : public AshTestBase {
  private:
   base::subtle::ScopedTimeClockOverrides clock_override_;
   static base::Time test_time_;
-  base::test::ScopedFeatureList feature_list_;
 };
 
 // static
@@ -177,7 +173,7 @@ TEST_F(BirchWeatherProviderTest, WeatherNotFetchedWhenGeolocationDisabled) {
   ambient_backend_controller_->SetWeatherInfo(info);
 
   // Disable geolocation.
-  SimpleGeolocationProvider::GetInstance()->SetGeolocationAccessLevel(
+  SystemLocationProvider::GetInstance()->SetGeolocationAccessLevel(
       GeolocationAccessLevel::kDisallowed);
 
   // Fetch birch data.
@@ -509,7 +505,7 @@ TEST_F(BirchWeatherProviderTest, DisabledByPolicy) {
   EXPECT_EQ(ambient_backend_controller_->fetch_weather_count(), 0);
 
   // Enable weather integration by policy, weather should be fetched.
-  base::Value::List enabled_integrations;
+  base::ListValue enabled_integrations;
   enabled_integrations.Append(prefs::kWeatherIntegrationName);
   pref_service->SetList(prefs::kContextualGoogleIntegrationsConfiguration,
                         std::move(enabled_integrations));
@@ -526,12 +522,9 @@ TEST_F(BirchWeatherProviderTest, WeatherManagedUser) {
   EXPECT_EQ(ambient_backend_controller_->fetch_weather_count(), 1);
 
   // Add and switch to a managed user account.
-  const AccountId& account_id = AccountId::FromUserEmail("primary@test");
-  TestSessionControllerClient* const session = GetSessionControllerClient();
-  session->AddUserSession({.display_email = "primary@test",
-                           .is_new_profile = true,
-                           .is_account_managed = true});
-  session->SwitchActiveUser(account_id);
+  SimulateUserLogin({.display_email = "primary@test",
+                     .is_new_profile = true,
+                     .is_account_managed = true});
 
   // Weather should not be fetched when the active account is managed.
   provider.RequestBirchDataFetch();

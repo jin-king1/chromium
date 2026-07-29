@@ -14,15 +14,14 @@
 
 #include "base/component_export.h"
 #include "base/containers/span.h"
-#include "base/functional/callback.h"
 #include "device/fido/authenticator_get_assertion_response.h"
 #include "device/fido/authenticator_make_credential_response.h"
 #include "device/fido/ctap_get_assertion_request.h"
 #include "device/fido/ctap_make_credential_request.h"
 #include "device/fido/discoverable_credential_metadata.h"
 #include "device/fido/fido_authenticator.h"
-#include "device/fido/fido_constants.h"
-#include "third_party/microsoft_webauthn/webauthn.h"
+#include "device/fido/public/fido_constants.h"
+#include "third_party/microsoft_webauthn/src/webauthn.h"
 
 namespace device {
 
@@ -55,7 +54,7 @@ class COMPONENT_EXPORT(DEVICE_FIDO) WinWebAuthnApi {
 
   // Returns whether the API is available on this system. If this returns
   // false, none of the other methods on this instance may be called.
-  virtual bool IsAvailable() const = 0;
+  virtual bool IsAvailable() = 0;
 
   // Returns whether the API is available and supports the following methods:
   //   |GetPlatformCredentialList|

@@ -8,7 +8,6 @@
 #include <memory>
 #include <optional>
 #include <string>
-#include <unordered_set>
 
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
@@ -22,6 +21,7 @@
 #include "extensions/browser/extension_function.h"
 #include "extensions/browser/extension_function_histogram_value.h"
 #include "extensions/common/api/bluetooth_low_energy.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 
 namespace extensions {
 class BluetoothApiAdvertisement;
@@ -82,7 +82,7 @@ class BluetoothLowEnergyExtensionFunction : public ExtensionFunction {
   ResponseAction Run() override;
 
   // Implemented by individual bluetoothLowEnergy extension functions to perform
-  // the body of the function. This invoked asynchonously after Run after
+  // the body of the function. This invoked asynchronously after Run after
   // the BluetoothLowEnergyEventRouter has obtained a handle on the
   // BluetoothAdapter.
   virtual void DoWork() = 0;
@@ -453,7 +453,7 @@ class BluetoothLowEnergyAdvertisementFunction
   int AddAdvertisement(BluetoothApiAdvertisement* advertisement);
   BluetoothApiAdvertisement* GetAdvertisement(int advertisement_id);
   void RemoveAdvertisement(int advertisement_id);
-  const std::unordered_set<int>* GetAdvertisementIds();
+  const absl::flat_hash_set<int>* GetAdvertisementIds();
 
   // ExtensionFunction override.
   ResponseAction Run() override;
@@ -565,10 +565,7 @@ class BluetoothLowEnergyCreateServiceFunction
   void DoWork() override;
   bool ParseParams() override;
 
-  // Causes link error on Windows. API will never be on Windows, so #ifdefing.
-#if !BUILDFLAG(IS_WIN)
   std::optional<bluetooth_low_energy::CreateService::Params> params_;
-#endif
 };
 
 class BluetoothLowEnergyCreateCharacteristicFunction

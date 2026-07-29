@@ -71,7 +71,7 @@ public class GCMMessage {
     private final String @Nullable [] mDataKeysAndValuesArray;
 
     /** Creates a GCMMessage object based on data received from GCM. The extras will be filtered. */
-    public GCMMessage(String senderId, Bundle extras) {
+    public GCMMessage(@Nullable String senderId, @Nullable Bundle extras) {
         String bundleCollapseKey = "collapse_key";
         String bundleGcmplex = "com.google.ipc.invalidation.gcmmplex.";
         String bundleRawData = "rawData";
@@ -80,7 +80,7 @@ public class GCMMessage {
         String bundleOriginalPriority = "google.original_priority";
         String bundleMessageId = "google.message_id";
 
-        if (!extras.containsKey(bundleSubtype)) {
+        if (extras == null || !extras.containsKey(bundleSubtype)) {
             throw new IllegalArgumentException("Received push message with no subtype");
         }
 
@@ -92,7 +92,7 @@ public class GCMMessage {
         mOriginalPriority = extras.getString(bundleOriginalPriority); // May be null.
         mMessageId = extras.getString(bundleMessageId); // May be null.
 
-        List<String> dataKeysAndValues = new ArrayList<String>();
+        List<String> dataKeysAndValues = new ArrayList<>();
         for (String key : extras.keySet()) {
             if (key.equals(bundleSubtype)
                     || key.equals(bundleSenderId)
@@ -183,7 +183,8 @@ public class GCMMessage {
             mRawData = null;
         }
 
-        mDataKeysAndValuesArray = reader.readStringArray(source, KEY_DATA);
+        // Assume read array has no null values.
+        mDataKeysAndValuesArray = (String @Nullable []) reader.readStringArray(source, KEY_DATA);
     }
 
     public @Nullable String getSenderId() {
@@ -302,11 +303,11 @@ public class GCMMessage {
     }
 
     private interface Reader<T> {
-        public boolean hasKey(T in, String key);
+        boolean hasKey(T in, String key);
 
-        public @Nullable String readString(T in, String key);
+        @Nullable String readString(T in, String key);
 
-        public @Nullable String @Nullable [] readStringArray(T in, String key);
+        @Nullable String @Nullable [] readStringArray(T in, String key);
     }
 
     private static class BundleReader implements Reader<Bundle> {
@@ -363,7 +364,7 @@ public class GCMMessage {
             if (jsonArray == null) {
                 return null;
             }
-            List<String> strings = new ArrayList<String>(jsonArray.length());
+            List<String> strings = new ArrayList<>(jsonArray.length());
             for (int i = 0; i < jsonArray.length(); i++) {
                 strings.add(jsonArray.optString(i));
             }
@@ -372,11 +373,11 @@ public class GCMMessage {
     }
 
     private interface Writer<T> {
-        public T createOutputObject();
+        T createOutputObject();
 
-        public void writeString(T out, String key, @Nullable String value);
+        void writeString(T out, String key, @Nullable String value);
 
-        public void writeStringArray(T out, String key, String @Nullable [] value);
+        void writeStringArray(T out, String key, String @Nullable [] value);
     }
 
     private static class PersistableBundleWriter implements Writer<PersistableBundle> {

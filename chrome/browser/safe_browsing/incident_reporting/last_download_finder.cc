@@ -72,7 +72,7 @@ bool IsBinaryDownloadForCurrentOS(
 #endif
 
 // Extensions are supported where enabled.
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   if (download_type == ClientDownloadRequest::CHROME_EXTENSION)
     return true;
 #endif
@@ -84,7 +84,6 @@ bool IsBinaryDownloadForCurrentOS(
       download_type == ClientDownloadRequest::RAR_COMPRESSED_ARCHIVE ||
       download_type == ClientDownloadRequest::INVALID_RAR ||
       download_type == ClientDownloadRequest::ARCHIVE ||
-      download_type == ClientDownloadRequest::PPAPI_SAVE_REQUEST ||
       download_type == ClientDownloadRequest::SEVEN_ZIP_COMPRESSED_EXECUTABLE ||
       download_type == ClientDownloadRequest::SEVEN_ZIP_COMPRESSED_ARCHIVE ||
       download_type == ClientDownloadRequest::INVALID_SEVEN_ZIP) {
@@ -100,7 +99,7 @@ bool IsBinaryDownloadForCurrentOS(
 // the current OS.
 bool IsBinaryDownload(const history::DownloadRow& row) {
   // TODO(grt): Peek into archives to see if they contain binaries;
-  // http://crbug.com/386915.
+  // http://crbug.com/40371482.
   FileTypePolicies* policies = FileTypePolicies::GetInstance();
   return (policies->IsCheckedBinaryFile(row.target_path) &&
           !policies->IsArchiveFile(row.target_path) &&
@@ -189,7 +188,7 @@ void PopulateDetailsFromRow(const history::DownloadRow& download,
   ClientDownloadRequest* download_request = details->mutable_download();
   download_request->set_url(download.url_chain.back().spec());
   // digests is a required field, so force it to exist.
-  // TODO(grt): Include digests in reports; http://crbug.com/389123.
+  // TODO(grt): Include digests in reports; http://crbug.com/40372429.
   std::ignore = download_request->mutable_digests();
   download_request->set_length(download.received_bytes);
   for (size_t i = 0; i < download.url_chain.size(); ++i) {
@@ -233,7 +232,7 @@ void PopulateNonBinaryDetailsFromRow(
           .AsUTF8Unsafe());
   details->set_length(download.received_bytes);
   if (download.url_chain.back().has_host())
-    details->set_host(download.url_chain.back().host());
+    details->set_host(download.url_chain.back().GetHost());
   details->set_url_spec_sha256(
       crypto::SHA256HashString(download.url_chain.back().spec()));
 }

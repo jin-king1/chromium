@@ -19,8 +19,14 @@
 #include "ui/gfx/geometry/insets.h"
 #include "ui/views/context_menu_controller.h"
 
+namespace base {
+class ScopedClosureRunner;
+}  // namespace base
+
 namespace ui {
 class Event;
+class Layer;
+class LayerSolidColor;
 }  // namespace ui
 
 namespace views {
@@ -74,6 +80,14 @@ class ASH_EXPORT TrayBackgroundView : public views::Button,
     kStartRounded,
     kEndRounded,
     kAllRounded
+  };
+
+  enum class CloseReason {
+    // No reason given for closing the bubble.
+    kUnspecified,
+
+    // Bubble is closed due to window activation change.
+    kWindowActivation,
   };
 
   TrayBackgroundView(Shelf* shelf,
@@ -169,8 +183,9 @@ class ASH_EXPORT TrayBackgroundView : public views::Button,
   virtual void UpdateTrayItemColor(bool is_active) = 0;
 
   // Calls `CloseBubbleInternal` which is implemented by each child tray view.
-  // The focusing behavior is handled in this method.
-  void CloseBubble();
+  // The focusing behavior is handled in this method. `close_reason` is set by
+  // caller to indicate why bubble needs to be closed.
+  void CloseBubble(CloseReason close_reason = CloseReason::kUnspecified);
 
   // Gets the anchor for bubbles, which is tray_container().
   views::View* GetBubbleAnchor() const;
@@ -352,7 +367,7 @@ class ASH_EXPORT TrayBackgroundView : public views::Button,
   raw_ptr<TrayContainer> tray_container_;
 
   // A separate layer for ripple aimation.
-  std::unique_ptr<ui::Layer> ripple_layer_;
+  std::unique_ptr<ui::LayerSolidColor> ripple_layer_;
   // The handle to abort ripple and pulse animation.
   std::unique_ptr<views::AnimationAbortHandle>
       ripple_and_pulse_animation_abort_handle_;

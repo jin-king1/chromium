@@ -5,14 +5,16 @@
 #include "third_party/blink/renderer/core/workers/dedicated_worker_messaging_proxy.h"
 
 #include <memory>
-#include "base/feature_list.h"
+
 #include "base/trace_event/typed_macros.h"
 #include "services/network/public/mojom/fetch_api.mojom-blink.h"
 #include "third_party/blink/public/common/features.h"
+#include "third_party/blink/public/common/loader/javascript_framework_detection.h"
 #include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/public/mojom/v8_cache_options.mojom-blink.h"
 #include "third_party/blink/public/mojom/worker/dedicated_worker_host.mojom-blink-forward.h"
 #include "third_party/blink/public/platform/task_type.h"
+#include "third_party/blink/public/platform/web_policy_container.h"
 #include "third_party/blink/renderer/bindings/core/v8/sanitize_script_errors.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_worker_options.h"
 #include "third_party/blink/renderer/core/dom/document.h"
@@ -20,9 +22,11 @@
 #include "third_party/blink/renderer/core/events/message_event.h"
 #include "third_party/blink/renderer/core/fetch/request.h"
 #include "third_party/blink/renderer/core/frame/csp/content_security_policy.h"
+#include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/inspector/inspector_trace_events.h"
 #include "third_party/blink/renderer/core/inspector/thread_debugger_common_impl.h"
+#include "third_party/blink/renderer/core/loader/document_loader.h"
 #include "third_party/blink/renderer/core/loader/worker_resource_timing_notifier_impl.h"
 #include "third_party/blink/renderer/core/messaging/blink_transferable_message.h"
 #include "third_party/blink/renderer/core/script_type_names.h"
@@ -81,13 +85,12 @@ void DedicatedWorkerMessagingProxy::StartWorkerGlobalScope(
     const KURL& script_url,
     const FetchClientSettingsObjectSnapshot& outside_settings_object,
     const v8_inspector::V8StackTraceId& stack_id,
-    const String& source_code,
-    RejectCoepUnsafeNone reject_coep_unsafe_none,
     const blink::DedicatedWorkerToken& token,
     mojo::PendingRemote<mojom::blink::DedicatedWorkerHost>
         dedicated_worker_host,
     mojo::PendingRemote<mojom::blink::BackForwardCacheControllerHost>
-        back_forward_cache_controller_host) {
+        back_forward_cache_controller_host,
+    std::unique_ptr<WebPolicyContainer> web_policy_container) {
   DCHECK(IsParentContextThread());
   if (AskedToTerminate()) {
     virtual_time_pauser_.UnpauseVirtualTime();
@@ -100,33 +103,39 @@ void DedicatedWorkerMessagingProxy::StartWorkerGlobalScope(
   pending_dedicated_worker_host_ = std::move(dedicated_worker_host);
   pending_back_forward_cache_controller_host_ =
       std::move(back_forward_cache_controller_host);
-  InitializeWorkerThread(
+  bool initialized = InitializeWorkerThread(
       std::move(creation_params),
       CreateBackingThreadStartupData(GetExecutionContext()->GetIsolate()),
       token);
+  if (base::FeatureList::IsEnabled(
+          blink::features::kWorkerThreadRespectTermRequest) &&
+      !initialized) {
+    virtual_time_pauser_.UnpauseVirtualTime();
+    // if the current thread (i.e. parent thread) has been asked to terminate,
+    // we do not start the child thread.
+    return;
+  }
+
+  if (pending_freeze_is_in_back_forward_cache_.has_value()) {
+    GetWorkerThread()->Freeze(*pending_freeze_is_in_back_forward_cache_);
+    pending_freeze_is_in_back_forward_cache_.reset();
+  }
 
   // Step 13: "Obtain script by switching on the value of options's type
   // member:"
-  if (options->type() == script_type_names::kClassic) {
+  if (options->type() == V8WorkerType::Enum::kClassic) {
     // "classic: Fetch a classic worker script given url, outside settings,
     // destination, and inside settings."
     UseCounter::Count(GetExecutionContext(),
                       WebFeature::kClassicDedicatedWorker);
-    if (base::FeatureList::IsEnabled(features::kPlzDedicatedWorker)) {
-      auto* resource_timing_notifier =
-          WorkerResourceTimingNotifierImpl::CreateForOutsideResourceFetcher(
-              *GetExecutionContext());
-      // TODO(crbug.com/1177199): pass a proper policy container
-      GetWorkerThread()->FetchAndRunClassicScript(
-          script_url, std::move(worker_main_script_load_params),
-          /*policy_container=*/nullptr, outside_settings_object.CopyData(),
-          resource_timing_notifier, stack_id);
-    } else {
-      // Legacy code path (to be deprecated, see https://crbug.com/835717):
-      GetWorkerThread()->EvaluateClassicScript(
-          script_url, source_code, nullptr /* cached_meta_data */, stack_id);
-    }
-  } else if (options->type() == script_type_names::kModule) {
+    auto* resource_timing_notifier =
+        WorkerResourceTimingNotifierImpl::CreateForOutsideResourceFetcher(
+            *GetExecutionContext());
+    GetWorkerThread()->FetchAndRunClassicScript(
+        script_url, std::move(worker_main_script_load_params),
+        std::move(web_policy_container), outside_settings_object.CopyData(),
+        resource_timing_notifier, stack_id);
+  } else if (options->type() == V8WorkerType::Enum::kModule) {
     // "module: Fetch a module worker script graph given url, outside settings,
     // destination, the value of the credentials member of options, and inside
     // settings."
@@ -139,11 +148,10 @@ void DedicatedWorkerMessagingProxy::StartWorkerGlobalScope(
     auto* resource_timing_notifier =
         WorkerResourceTimingNotifierImpl::CreateForOutsideResourceFetcher(
             *GetExecutionContext());
-    // TODO(crbug.com/1177199): pass a proper policy container
     GetWorkerThread()->FetchAndRunModuleScript(
         script_url, std::move(worker_main_script_load_params),
-        /*policy_container=*/nullptr, outside_settings_object.CopyData(),
-        resource_timing_notifier, credentials_mode, reject_coep_unsafe_none);
+        std::move(web_policy_container), outside_settings_object.CopyData(),
+        resource_timing_notifier, credentials_mode);
   } else {
     NOTREACHED();
   }
@@ -213,20 +221,32 @@ void DedicatedWorkerMessagingProxy::DidFailToFetchScript() {
 void DedicatedWorkerMessagingProxy::Freeze(bool is_in_back_forward_cache) {
   DCHECK(IsParentContextThread());
   auto* worker_thread = GetWorkerThread();
-  if (AskedToTerminate() || !worker_thread)
+  if (AskedToTerminate()) {
     return;
+  }
+  if (!worker_thread) {
+    pending_freeze_is_in_back_forward_cache_ = is_in_back_forward_cache;
+    return;
+  }
   worker_thread->Freeze(is_in_back_forward_cache);
 }
 
 void DedicatedWorkerMessagingProxy::Resume() {
   DCHECK(IsParentContextThread());
   auto* worker_thread = GetWorkerThread();
-  if (AskedToTerminate() || !worker_thread)
+  if (AskedToTerminate()) {
     return;
+  }
+  if (!worker_thread) {
+    pending_freeze_is_in_back_forward_cache_.reset();
+    return;
+  }
   worker_thread->Resume();
 }
 
-void DedicatedWorkerMessagingProxy::DidEvaluateScript(bool success) {
+void DedicatedWorkerMessagingProxy::DidEvaluateScript(
+    bool success,
+    const JavaScriptFrameworkDetectionResult& result) {
   DCHECK(IsParentContextThread());
   was_script_evaluated_ = true;
 
@@ -239,6 +259,22 @@ void DedicatedWorkerMessagingProxy::DidEvaluateScript(bool success) {
   if (!GetWorkerThread()) {
     DCHECK(AskedToTerminate());
     return;
+  }
+
+  // Report JS framework loads from the worker thread.
+  if (success) {
+    ExecutionContext* execution_context = GetExecutionContext();
+    if (auto* window = DynamicTo<LocalDOMWindow>(execution_context)) {
+      Document* document = window->document();
+      if (document && document->Loader() &&
+          document->Url().ProtocolIsInHttpFamily() &&
+          document->BaseURL().ProtocolIsInHttpFamily()) {
+        LocalFrame* const frame = document->GetFrame();
+        if (frame && frame->IsOutermostMainFrame()) {
+          document->Loader()->DidObserveJavaScriptFrameworks(result);
+        }
+      }
+    }
   }
 
   // Post all queued tasks to the worker.
@@ -278,12 +314,14 @@ void DedicatedWorkerMessagingProxy::PostMessageToWorkerObject(
 
   ThreadDebugger* debugger =
       ThreadDebugger::From(GetExecutionContext()->GetIsolate());
-  MessagePortArray* ports = MessagePort::EntanglePorts(
+  GCedMessagePortArray* ports = MessagePort::EntanglePorts(
       *GetExecutionContext(), std::move(message.ports));
   debugger->ExternalAsyncTaskStarted(message.sender_stack_trace_id);
   if (message.message->CanDeserializeIn(GetExecutionContext())) {
-    MessageEvent* event =
-        MessageEvent::Create(ports, std::move(message.message));
+    MessageEvent* event = MessageEvent::Create(
+        ports, std::move(message.message), /* origin=*/nullptr,
+        MessageEvent::kMessageIsSameOrigin,
+        /* last_event_id=*/{}, /* source=*/nullptr);
     event->SetTraceId(message.trace_id);
     TRACE_EVENT(
         "devtools.timeline", "HandlePostMessage", "data",
@@ -301,11 +339,13 @@ void DedicatedWorkerMessagingProxy::PostMessageToWorkerObject(
 
 void DedicatedWorkerMessagingProxy::DispatchErrorEvent(
     const String& error_message,
-    std::unique_ptr<SourceLocation> location,
+    const CrossThreadSourceLocation& cross_location,
     int exception_id) {
   DCHECK(IsParentContextThread());
   if (!worker_object_)
     return;
+
+  SourceLocation* location = cross_location.ToSourceLocation();
 
   // We don't bother checking the AskedToTerminate() flag for dispatching the
   // event on the owner context, because exceptions should *always* be reported
@@ -315,8 +355,7 @@ void DedicatedWorkerMessagingProxy::DispatchErrorEvent(
   // the original Document, even if some of the workers along this chain have
   // been terminated and garbage collected."
   // https://html.spec.whatwg.org/C/#runtime-script-errors-2
-  ErrorEvent* event =
-      ErrorEvent::Create(error_message, location->Clone(), nullptr);
+  ErrorEvent* event = ErrorEvent::Create(error_message, location, nullptr);
   if (worker_object_->DispatchEvent(*event) !=
       DispatchEventResult::kNotCanceled)
     return;

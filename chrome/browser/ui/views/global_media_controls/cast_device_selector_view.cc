@@ -5,9 +5,10 @@
 #include "chrome/browser/ui/views/global_media_controls/cast_device_selector_view.h"
 
 #include "base/metrics/histogram_functions.h"
+#include "base/strings/string_util.h"
+#include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/ui/views/global_media_controls/media_item_ui_helper.h"
-#include "chrome/browser/ui/views/global_media_controls/media_notification_device_entry_ui.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/global_media_controls/public/views/media_item_ui_updated_view.h"
 #include "components/media_router/browser/media_router_metrics.h"
@@ -17,6 +18,7 @@
 #include "components/vector_icons/vector_icons.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/animation/ink_drop.h"
 #include "ui/views/background.h"
@@ -42,6 +44,7 @@ constexpr int kDeviceContainerSeparator = 4;
 constexpr int kDeviceEntrySeparator = 8;
 constexpr int kCloseButtonIconSize = 20;
 constexpr int kDeviceEntryIconSize = 20;
+constexpr int kPermissionRejectedLabelWidth = 400;
 
 constexpr gfx::Insets kBackgroundInsets = gfx::Insets::TLBR(12, 8, 16, 8);
 constexpr gfx::Insets kCastHeaderRowInsets = gfx::Insets::TLBR(0, 8, 0, 4);
@@ -118,7 +121,7 @@ CastDeviceSelectorView::CastDeviceSelectorView(
     : device_list_host_(std::move(device_list_host)),
       device_list_client_(this, std::move(device_list_client)),
       media_color_theme_(media_color_theme) {
-  SetBorder(views::CreateThemedRoundedRectBorder(
+  SetBorder(views::CreateRoundedRectBorder(
       kBackgroundBorderThickness, kBackgroundCornerRadius,
       media_color_theme_.device_selector_border_color_id));
   SetBackground(views::CreateRoundedRectBackground(
@@ -150,8 +153,10 @@ CastDeviceSelectorView::CastDeviceSelectorView(
                               base::Unretained(this)),
           global_media_controls::kEmptyMediaActionButtonId,
           IDS_GLOBAL_MEDIA_CONTROLS_CLOSE_DEVICE_LIST_TEXT,
-          kCloseButtonIconSize, vector_icons::kCloseSmallIcon, kCloseButtonSize,
-          media_color_theme_.secondary_foreground_color_id,
+          kCloseButtonIconSize,
+          features::IsRoundedIconsEnabled() ? vector_icons::kCloseSmallIcon
+                                            : vector_icons::kCloseSmallOldIcon,
+          kCloseButtonSize, media_color_theme_.secondary_foreground_color_id,
           media_color_theme_.secondary_foreground_color_id,
           media_color_theme_.focus_ring_color_id);
   close_button_ = cast_header_row->AddChildView(std::move(close_button));
@@ -256,6 +261,10 @@ void CastDeviceSelectorView::OnPermissionRejected() {
   permission_rejected_label_->SetDefaultEnabledColorId(
       media_color_theme_.secondary_foreground_color_id);
   permission_rejected_label_->SetText(label_text);
+  gfx::Size preferred_size(kPermissionRejectedLabelWidth,
+                           permission_rejected_label_->GetHeightForWidth(
+                               kPermissionRejectedLabelWidth));
+  permission_rejected_label_->SetPreferredSize(preferred_size);
 
 #if BUILDFLAG(IS_MAC)
   base::RepeatingClosure open_settings_cb = base::BindRepeating([]() {
@@ -296,9 +305,8 @@ std::unique_ptr<HoverButton> CastDeviceSelectorView::BuildCastDeviceEntryView(
         std::move(callback), std::move(throbber), device_name);
     device_entry_button->SetBorder(
         views::CreateEmptyBorder(kThrobberHoverButtonInsets));
-    device_entry_button->title()->SetDefaultTextStyle(
-        views::style::STYLE_BODY_2);
-    device_entry_button->title()->SetDefaultEnabledColorId(
+    device_entry_button->title()->SetTextStyle(views::style::STYLE_BODY_2);
+    device_entry_button->title()->SetEnabledColor(
         media_color_theme_.secondary_foreground_color_id);
   } else if (icon == global_media_controls::mojom::IconType::kInfo) {
     // Create the device entry button with a static info icon view, and

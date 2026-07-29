@@ -3,9 +3,9 @@
 // found in the LICENSE file.
 
 #include "ash/constants/ash_features.h"
+#include "ash/constants/ash_login_pref_names.h"
 #include "ash/shell.h"
 #include "base/test/test_future.h"
-#include "chrome/browser/ash/login/login_pref_names.h"
 #include "chrome/browser/ash/login/test/login_manager_mixin.h"
 #include "chrome/browser/ash/login/test/oobe_base_test.h"
 #include "chrome/browser/ash/login/test/oobe_screen_exit_waiter.h"
@@ -72,8 +72,7 @@ class DisplaySizeScreenTest : public OobeBaseTest {
   }
 
   std::vector<float> GetAvailableSizes() {
-    const auto display_id =
-        display::Screen::GetScreen()->GetPrimaryDisplay().id();
+    const auto display_id = display::Screen::Get()->GetPrimaryDisplay().id();
     const auto& info =
         ash::Shell::Get()->display_manager()->GetDisplayInfo(display_id);
     auto factors = display::GetDisplayZoomFactors(info.display_modes()[0]);
@@ -81,8 +80,7 @@ class DisplaySizeScreenTest : public OobeBaseTest {
   }
 
   int GetCurrentSizeIndex() {
-    const auto display_id =
-        display::Screen::GetScreen()->GetPrimaryDisplay().id();
+    const auto display_id = display::Screen::Get()->GetPrimaryDisplay().id();
     const auto& info =
         ash::Shell::Get()->display_manager()->GetDisplayInfo(display_id);
     float current_size = info.zoom_factor();

@@ -12,23 +12,25 @@
 #include <vector>
 
 #include "ash/constants/ash_features.h"
+#include "ash/constants/ash_login_pref_names.h"
 #include "ash/constants/ash_switches.h"
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
 #include "base/functional/callback_helpers.h"
 #include "base/run_loop.h"
 #include "base/strings/string_util.h"
 #include "base/test/bind.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/run_until.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "base/test/test_mock_time_task_runner.h"
 #include "build/build_config.h"
 #include "chrome/browser/ash/login/lock/online_reauth/lock_screen_reauth_manager.h"
 #include "chrome/browser/ash/login/lock/online_reauth/lock_screen_reauth_manager_factory.h"
 #include "chrome/browser/ash/login/lock/screen_locker_tester.h"
-#include "chrome/browser/ash/login/login_pref_names.h"
 #include "chrome/browser/ash/login/saml/fake_saml_idp_mixin.h"
 #include "chrome/browser/ash/login/saml/lockscreen_reauth_dialog_test_helper.h"
+#include "chrome/browser/ash/login/saml/saml_test_utils.h"
 #include "chrome/browser/ash/login/session/user_session_manager.h"
 #include "chrome/browser/ash/login/session/user_session_manager_test_api.h"
 #include "chrome/browser/ash/login/signin/authentication_flow_auto_reload_manager.h"
@@ -38,7 +40,6 @@
 #include "chrome/browser/ash/login/test/logged_in_user_mixin.h"
 #include "chrome/browser/ash/login/test/test_condition_waiter.h"
 #include "chrome/browser/ash/policy/affiliation/affiliation_test_helper.h"
-#include "chrome/browser/ash/policy/core/device_policy_builder.h"
 #include "chrome/browser/ash/policy/core/device_policy_cros_browser_test.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/browser_process.h"
@@ -55,9 +56,10 @@
 #include "chromeos/ash/components/network/network_state_handler.h"
 #include "chromeos/ash/components/network/network_state_test_helper.h"
 #include "chromeos/ash/components/network/proxy/proxy_config_handler.h"
+#include "chromeos/ash/components/policy/device_policy/device_policy_builder.h"
 #include "components/account_id/account_id.h"
-#include "components/network_session_configurator/common/network_switches.h"
 #include "components/policy/core/browser/browser_policy_connector.h"
+#include "components/policy/core/browser/url_list/url_list_policy_pref_names.h"
 #include "components/policy/core/common/cloud/test/policy_builder.h"
 #include "components/policy/core/common/mock_configuration_policy_provider.h"
 #include "components/policy/core/common/policy_map.h"
@@ -74,12 +76,14 @@
 #include "dbus/object_path.h"
 #include "google_apis/gaia/gaia_id.h"
 #include "google_apis/gaia/gaia_urls.h"
+#include "net/base/host_port_pair.h"
 #include "net/cookies/canonical_cookie.h"
 #include "net/cookies/cookie_constants.h"
 #include "net/cookies/cookie_options.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/http/http_status_code.h"
-#include "net/test/spawned_test_server/spawned_test_server.h"
+#include "net/test/embedded_test_server/embedded_test_server.h"
+#include "net/test/embedded_test_server/register_basic_auth_handler.h"
 #include "services/network/public/mojom/cookie_manager.mojom.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/cros_system_api/dbus/shill/dbus-constants.h"
@@ -104,6 +108,9 @@ constexpr char kSAMLLink[] = "link";
 constexpr char kSAMLLinkedPageURLPattern[] =
     "*"
     "/linked";
+
+constexpr char kSamlRedirectDuringUnlockHistogram[] =
+    "ChromeOS.SAML.Unlock.SamlRedirectUsage";
 
 void ErrorCallbackFunction(base::OnceClosure run_loop_quit_closure,
                            const std::string& error_name,
@@ -143,8 +150,6 @@ class LockscreenWebUiTest : public MixinBasedInProcessBrowserTest {
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
     command_line->AppendSwitch(switches::kAllowFailedPolicyFetchForTest);
-    // TODO(crbug.com/1177416) - Fix this with a proper SSL solution.
-    command_line->AppendSwitch(::switches::kIgnoreCertificateErrors);
 
     MixinBasedInProcessBrowserTest::SetUpCommandLine(command_line);
   }
@@ -581,9 +586,7 @@ IN_PROC_BROWSER_TEST_F(AutoReloadLockscreenWebUiTest,
 // Sets up proxy server which requires authentication.
 class ProxyAuthLockscreenWebUiTest : public LockscreenWebUiTest {
  public:
-  ProxyAuthLockscreenWebUiTest()
-      : proxy_server_(net::SpawnedTestServer::TYPE_BASIC_AUTH_PROXY,
-                      base::FilePath()) {}
+  ProxyAuthLockscreenWebUiTest() {}
 
   ProxyAuthLockscreenWebUiTest(const ProxyAuthLockscreenWebUiTest&) = delete;
   ProxyAuthLockscreenWebUiTest& operator=(const ProxyAuthLockscreenWebUiTest&) =
@@ -592,6 +595,12 @@ class ProxyAuthLockscreenWebUiTest : public LockscreenWebUiTest {
   ~ProxyAuthLockscreenWebUiTest() override = default;
 
   void SetUpOnMainThread() override {
+    // Finish setting up the proxy, now that the EmbeddedTestServer has started.
+    CHECK(embedded_test_server()->Started());
+    proxy_server_.EnableConnectProxy({net::HostPortPair::FromURL(
+        embedded_test_server()->GetURL("accounts.google.com", "/"))});
+    proxy_server_.StartAcceptingConnections();
+
     LockscreenWebUiTest::SetUpOnMainThread();
 
     // Disconnect unneeded wifi network - these tests use only the network which
@@ -601,8 +610,14 @@ class ProxyAuthLockscreenWebUiTest : public LockscreenWebUiTest {
   }
 
   void SetUp() override {
-    proxy_server_.set_redirect_connect_to_localhost(true);
-    ASSERT_TRUE(proxy_server_.Start());
+    net::test_server::RegisterProxyBasicAuthHandler(proxy_server_, "user",
+                                                    "pass");
+    // Can't actually start accepting connections until after the main
+    // EmbeddedTestServer server has started, which happens during the nested
+    // mixin SetUp() calls, but still need to open the listen socket here to get
+    // a port for the SetUpCommandLine() call.
+    ASSERT_TRUE(proxy_server_.InitializeAndListen());
+
     LockscreenWebUiTest::SetUp();
   }
 
@@ -623,7 +638,8 @@ class ProxyAuthLockscreenWebUiTest : public LockscreenWebUiTest {
     base::RunLoop().RunUntilIdle();
   }
 
-  net::SpawnedTestServer proxy_server_;
+  net::test_server::EmbeddedTestServer proxy_server_{
+      net::test_server::EmbeddedTestServer::Type::TYPE_HTTP};
 };
 
 // TODO(b/343013116): Flaky on linux-chromeos-rel.
@@ -662,12 +678,12 @@ IN_PROC_BROWSER_TEST_F(ProxyAuthLockscreenWebUiTest,
   ASSERT_TRUE(base::test::RunUntil(
       []() { return HttpAuthDialog::GetAllDialogsForTest().size() == 1; }));
   HttpAuthDialog::GetAllDialogsForTest().front()->SupplyCredentialsForTest(
-      u"foo", u"bar");
+      u"user", u"pass");
 
   reauth_dialog_helper->WaitForPrimaryGaiaButtonToBeEnabled();
+  auto saml_waiter = reauth_dialog_helper->CreateSamlPageLoadWaiter();
   reauth_dialog_helper->ClickPrimaryGaiaButton();
-
-  reauth_dialog_helper->WaitForSamlIdpPageLoad();
+  saml_waiter->Wait();
 
   // Fill-in the SAML IdP form and submit.
   test::JSChecker signin_frame_js = reauth_dialog_helper->SigninFrameJS();
@@ -715,9 +731,18 @@ IN_PROC_BROWSER_TEST_F(ProxyAuthLockscreenWebUiTest, ProxyAuthCanBeCancelled) {
   reauth_dialog_helper->WaitForReauthDialogToClose();
 }
 
-class AutoStartTest : public LockscreenWebUiTest {
+class AutoStartTest : public LockscreenWebUiTest,
+                      public testing::WithParamInterface<bool> {
  public:
-  AutoStartTest() = default;
+  AutoStartTest() {
+    if (GetParam()) {
+      scoped_feature_list_.InitAndEnableFeature(
+          features::kManagedLocalPinAndPassword);
+    } else {
+      scoped_feature_list_.InitAndDisableFeature(
+          features::kManagedLocalPinAndPassword);
+    }
+  }
   AutoStartTest(const AutoStartTest&) = delete;
   AutoStartTest& operator=(const AutoStartTest&) = delete;
   ~AutoStartTest() override = default;
@@ -738,17 +763,26 @@ class AutoStartTest : public LockscreenWebUiTest {
   }
 
   void ForceOnlineReauthOnLockScreen() {
+    base::test::TestFuture<void> test_future;
     Profile* profile = ProfileHelper::Get()->GetProfileByUser(
         user_manager::UserManager::Get()->GetActiveUser());
     ASSERT_TRUE(profile);
     LockScreenReauthManager* lock_screen_reauth_manager =
         LockScreenReauthManagerFactory::GetForProfile(profile);
     ASSERT_TRUE(lock_screen_reauth_manager);
+    lock_screen_reauth_manager
+        ->SetGetAuthfactorsConfigurationCallbackForTesting(
+            test_future.GetRepeatingCallback());
     // Force online reauth on the lock screen as if SAML time limit
     // policy demands it. For auto start it is important to just have
     // reauth forced, specific reason doesn't matter.
     lock_screen_reauth_manager->MaybeForceReauthOnLockScreen(
         ReauthReason::kSamlLockScreenReauthPolicy);
+    if (features::IsManagedLocalPinAndPasswordEnabled()) {
+      ASSERT_TRUE(test_future.Wait())
+          << "Failed to wait for the auth confiugration exit callback";
+      test_future.Clear();
+    }
   }
 
   void ExpectSuccessfulAutoStart() {
@@ -759,16 +793,20 @@ class AutoStartTest : public LockscreenWebUiTest {
     EXPECT_TRUE(reauth_dialog_helper);
 
     // Wait for the webview and SAML IdP page to load.
+    auto saml_waiter = reauth_dialog_helper->CreateSamlPageLoadWaiter();
     reauth_dialog_helper->WaitForSigninWebview();
-    reauth_dialog_helper->WaitForSamlIdpPageLoad();
+    saml_waiter->Wait();
   }
 
   testing::NiceMock<policy::MockConfigurationPolicyProvider> provider;
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 // Verify that online reauth dialog is shown automatically after user locks the
 // screen if online reauth is required.
-IN_PROC_BROWSER_TEST_F(AutoStartTest, DialogShownOnLock) {
+IN_PROC_BROWSER_TEST_P(AutoStartTest, DialogShownOnLock) {
   Login();
   ForceOnlineReauthOnLockScreen();
   ScreenLockerTester().Lock();
@@ -777,7 +815,7 @@ IN_PROC_BROWSER_TEST_F(AutoStartTest, DialogShownOnLock) {
 
 // Verify that online reauth dialog is shown automatically when online reauth
 // becomes required while the screen is locked.
-IN_PROC_BROWSER_TEST_F(AutoStartTest, DialogShownOnReauthEnforcement) {
+IN_PROC_BROWSER_TEST_P(AutoStartTest, DialogShownOnReauthEnforcement) {
   Login();
   ScreenLockerTester().Lock();
 
@@ -790,7 +828,8 @@ IN_PROC_BROWSER_TEST_F(AutoStartTest, DialogShownOnReauthEnforcement) {
 
 // Verify that the "Enter Google Account Info" is shown during
 // AutoStart flow and pressing it initiates the standard reauth flow.
-IN_PROC_BROWSER_TEST_F(AutoStartTest, ChangeIdPButtonPresence) {
+IN_PROC_BROWSER_TEST_P(AutoStartTest, ChangeIdPButtonPresence) {
+  base::HistogramTester histogram_tester;
   Login();
   ForceOnlineReauthOnLockScreen();
   ScreenLockerTester().Lock();
@@ -802,8 +841,11 @@ IN_PROC_BROWSER_TEST_F(AutoStartTest, ChangeIdPButtonPresence) {
   EXPECT_TRUE(reauth_dialog_helper);
 
   // Wait for the webview and SAML IdP page to load.
+  auto saml_waiter = reauth_dialog_helper->CreateSamlPageLoadWaiter();
   reauth_dialog_helper->WaitForSigninWebview();
-  reauth_dialog_helper->WaitForSamlIdpPageLoad();
+  saml_waiter->Wait();
+  histogram_tester.ExpectUniqueSample(kSamlRedirectDuringUnlockHistogram,
+                                      SamlRedirectEvent::kStartWithDomain, 1);
 
   // EGAI button should be visible during the AutoStart flow,
   // but not during normal reauth.
@@ -813,11 +855,17 @@ IN_PROC_BROWSER_TEST_F(AutoStartTest, ChangeIdPButtonPresence) {
   // With reauth endpoint we start on a Gaia page where user needs to click
   // "Next" before being redirected to SAML IdP page.
   reauth_dialog_helper->WaitForPrimaryGaiaButtonToBeEnabled();
+  histogram_tester.ExpectBucketCount(
+      kSamlRedirectDuringUnlockHistogram,
+      SamlRedirectEvent::kChangeToDefaultGoogleSignIn, 1);
+  auto new_saml_waiter = reauth_dialog_helper->CreateSamlPageLoadWaiter();
   reauth_dialog_helper->ClickPrimaryGaiaButton();
 
-  reauth_dialog_helper->WaitForSamlIdpPageLoad();
+  new_saml_waiter->Wait();
   reauth_dialog_helper->ExpectChangeIdPButtonHidden();
 }
+
+INSTANTIATE_TEST_SUITE_P(All, AutoStartTest, testing::Bool());
 
 class SamlUnlockTest : public LockscreenWebUiTest {
  public:
@@ -1163,7 +1211,7 @@ IN_PROC_BROWSER_TEST_F(SamlUnlockTest, SAMLBlocklistNavigationDisallowed) {
       BrowserContextHelper::Get()->GetLockScreenBrowserContext())
       ->GetPrefs()
       ->SetList(policy::policy_prefs::kUrlBlocklist,
-                base::Value::List().Append(kSAMLLinkedPageURLPattern));
+                base::ListValue().Append(kSAMLLinkedPageURLPattern));
 
   test::JSChecker signin_frame_js = reauth_dialog_helper->SigninFrameJS();
   signin_frame_js.CreateVisibilityWaiter(true, kSAMLLink)->Wait();
@@ -1325,6 +1373,8 @@ class SamlSsoProfileTest : public SamlUnlockTest {
 // Test that during online reauth on the lock screen we can perform SAML
 // redirection without relying on domain-based redirection. Depending on
 // Gaia endpoint, we will rely either on an email, or on an SSO profile.
+// TODO(crbug.com/448384223): this should be rewritten as AutoStartTest, because
+// nowadays auto-start is the only lock screen flow where we use /samlredirect.
 IN_PROC_BROWSER_TEST_F(SamlSsoProfileTest, ReauthIndependentOfDomain) {
   fake_saml_idp()->SetLoginHTMLTemplate("saml_login.html");
 

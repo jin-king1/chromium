@@ -20,6 +20,7 @@ class ToastSpecification {
   class Builder final {
    public:
     Builder(const gfx::VectorIcon& icon, int body_string_id);
+    explicit Builder(const gfx::VectorIcon& icon);
     Builder(const Builder& other) = delete;
     Builder& operator=(const Builder&) = delete;
 
@@ -47,6 +48,17 @@ class ToastSpecification {
     // dismiss.
     Builder& AddGlobalScoped();
 
+    // Adds a property to allow tab-scoped toasts to survive navigation
+    // events (like form submissions).
+    Builder& SetPersistOnNavigation();
+
+    // Explicitly marks this toast as an actionable toast (allows the user to
+    // interact with it in some way).
+    // NOTE: Only use this for toasts that do not have actionable buttons /
+    // menus but have interactions tied to the toast that are handled outside
+    // the toast framework such as keyboard shortcuts.
+    Builder& SetToastAsActionable();
+
     std::unique_ptr<ToastSpecification> Build();
 
    private:
@@ -58,6 +70,8 @@ class ToastSpecification {
   ToastSpecification(base::PassKey<ToastSpecification::Builder>,
                      const gfx::VectorIcon& icon,
                      int string_id);
+  ToastSpecification(base::PassKey<ToastSpecification::Builder>,
+                     const gfx::VectorIcon& icon);
   ~ToastSpecification();
 
   int body_string_id() const { return body_string_id_; }
@@ -69,22 +83,32 @@ class ToastSpecification {
   base::RepeatingClosure action_button_callback() const {
     return action_button_closure_;
   }
+
   bool has_menu() const { return has_menu_; }
   bool is_global_scope() const { return is_global_scope_; }
+  bool persist_on_navigation() const { return persist_on_navigation_; }
+  bool is_actionable() const {
+    return has_close_button() || has_menu() || has_actionable_override();
+  }
+  bool has_actionable_override() const { return actionable_toast_override_; }
 
   void AddCloseButton();
   void AddActionButton(int string_id, base::RepeatingClosure closure);
   void AddMenu();
   void AddGlobalScope();
+  void SetPersistOnNavigation();
+  void SetToastAsActionable();
 
  private:
   const base::raw_ref<const gfx::VectorIcon> icon_;
-  int body_string_id_;
+  int body_string_id_ = 0;
   bool has_close_button_ = false;
   bool has_menu_ = false;
   std::optional<int> action_button_string_id_;
   base::RepeatingClosure action_button_closure_;
   bool is_global_scope_ = false;
+  bool persist_on_navigation_ = false;
+  bool actionable_toast_override_ = false;
 };
 
 #endif  // CHROME_BROWSER_UI_TOASTS_API_TOAST_SPECIFICATION_H_

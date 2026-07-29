@@ -61,7 +61,7 @@ std::unique_ptr<GuestViewBase> ExtensionOptionsGuest::Create(
 void ExtensionOptionsGuest::CreateInnerPage(
     std::unique_ptr<GuestViewBase> owned_this,
     scoped_refptr<content::SiteInstance> site_instance,
-    const base::Value::Dict& create_params,
+    const base::DictValue& create_params,
     GuestPageCreatedCallback callback) {
   // Get the extension's base URL.
   const std::string* extension_id =
@@ -117,7 +117,7 @@ void ExtensionOptionsGuest::CreateInnerPage(
 }
 
 void ExtensionOptionsGuest::DidInitialize(
-    const base::Value::Dict& create_params) {
+    const base::DictValue& create_params) {
   if (base::FeatureList::IsEnabled(features::kGuestViewMPArch)) {
     return;
   }
@@ -142,8 +142,7 @@ void ExtensionOptionsGuest::MaybeRecreateGuestContents(
 
 void ExtensionOptionsGuest::GuestViewDidStopLoading() {
   DispatchEventToView(std::make_unique<GuestViewEvent>(
-      api::extension_options_internal::OnLoad::kEventName,
-      base::Value::Dict()));
+      api::extension_options_internal::OnLoad::kEventName, base::DictValue()));
 }
 
 const char* ExtensionOptionsGuest::GetAPINamespace() const {
@@ -207,7 +206,7 @@ WebContents* ExtensionOptionsGuest::OpenURLFromTab(
   // Don't allow external URLs with the CURRENT_TAB disposition be opened in
   // this guest view, change the disposition to NEW_FOREGROUND_TAB.
   if ((!params.url.SchemeIs(extensions::kExtensionScheme) ||
-       params.url.host() != options_page_.host()) &&
+       params.url.GetHost() != options_page_.GetHost()) &&
       params.disposition == WindowOpenDisposition::CURRENT_TAB) {
     return extension_options_guest_delegate_->OpenURLInNewTab(
         content::OpenURLParams(params.url, params.referrer,
@@ -236,8 +235,7 @@ bool ExtensionOptionsGuest::GuestHandleContextMenu(
 
 void ExtensionOptionsGuest::GuestClose() {
   DispatchEventToView(std::make_unique<GuestViewEvent>(
-      api::extension_options_internal::OnClose::kEventName,
-      base::Value::Dict()));
+      api::extension_options_internal::OnClose::kEventName, base::DictValue()));
 }
 
 bool ExtensionOptionsGuest::HandleContextMenu(
@@ -259,6 +257,7 @@ bool ExtensionOptionsGuest::ShouldResumeRequestsForCreatedWindow() {
 }
 
 bool ExtensionOptionsGuest::IsWebContentsCreationOverridden(
+    content::RenderFrameHost* opener,
     content::SiteInstance* source_site_instance,
     content::mojom::WindowContainerType window_container_type,
     const GURL& opener_url,
@@ -280,6 +279,8 @@ WebContents* ExtensionOptionsGuest::CreateCustomWebContents(
     const GURL& opener_url,
     const std::string& frame_name,
     const GURL& target_url,
+    WindowOpenDisposition disposition,
+    const blink::mojom::WindowFeatures& window_features,
     const content::StoragePartitionConfig& partition_config,
     content::SessionStorageNamespace* session_storage_namespace) {
   CHECK(!base::FeatureList::IsEnabled(features::kGuestViewMPArch));

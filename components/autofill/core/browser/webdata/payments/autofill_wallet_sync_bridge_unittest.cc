@@ -9,10 +9,12 @@
 #include <memory>
 #include <string_view>
 #include <utility>
+#include <variant>
 
 #include "base/files/scoped_temp_dir.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/run_loop.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
@@ -40,6 +42,7 @@
 #include "components/autofill/core/common/autofill_constants.h"
 #include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/os_crypt/async/browser/test_utils.h"
+#include "components/os_crypt/async/common/encryptor.h"
 #include "components/sync/base/client_tag_hash.h"
 #include "components/sync/base/data_type.h"
 #include "components/sync/engine/data_type_activation_response.h"
@@ -64,7 +67,7 @@ namespace {
 using ::autofill::AutofillProfileChange;
 using ::autofill::CreditCardChange;
 using ::base::ScopedTempDir;
-using IbanChangeKey = absl::variant<std::string, int64_t>;
+using IbanChangeKey = std::variant<std::string, int64_t>;
 using ::base::test::EqualsProto;
 using ::sync_pb::AutofillWalletSpecifics;
 using ::sync_pb::DataTypeState;
@@ -327,7 +330,7 @@ class AutofillWalletSyncBridgeTestBase {
     db_.AddTable(&sync_metadata_table_);
     db_.AddTable(&table_);
     db_.Init(temp_dir_.GetPath().AppendASCII("SyncTestWebDatabase"),
-             &encryptor_);
+             encryptor_);
     ON_CALL(*backend(), GetDatabase()).WillByDefault(Return(&db_));
     ResetProcessor();
     // Fake that initial sync has been done (so that the bridge immediately
@@ -471,7 +474,7 @@ class AutofillWalletSyncBridgeTestBase {
   ScopedTempDir temp_dir_;
   base::test::SingleThreadTaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
-  const os_crypt_async::Encryptor encryptor_;
+  scoped_refptr<const os_crypt_async::Encryptor> encryptor_;
   NiceMock<MockAutofillWebDataBackend> backend_;
   AutofillSyncMetadataTable sync_metadata_table_;
   PaymentsAutofillTable table_;
@@ -624,9 +627,6 @@ TEST_F(AutofillWalletSyncBridgeTest,
 
 TEST_F(AutofillWalletSyncBridgeTest,
        GetAllDataForDebugging_ShouldReturnAllData) {
-  base::test::ScopedFeatureList feature;
-  feature.InitAndEnableFeature(
-      features::kAutofillEnableCardInfoRuntimeRetrieval);
   // Create Wallet Data and store them in the table.
   CreditCard card1 = test::GetMaskedServerCard();
   // Set the card issuer to Google.
@@ -811,9 +811,6 @@ TEST_F(AutofillWalletSyncBridgeTest, MergeFullSyncData_NewWalletCard) {
 // CardInfoRetrievalEnrollment, the client only keeps the new data.
 TEST_F(AutofillWalletSyncBridgeTest,
        MergeFullSyncData_NewWalletCard_CardInfoRetrievalEnrollment) {
-  base::test::ScopedFeatureList feature;
-  feature.InitAndEnableFeature(
-      features::kAutofillEnableCardInfoRuntimeRetrieval);
   // Create one card on the client.
   CreditCard card1 = test::GetMaskedServerCard();
   card1.set_card_info_retrieval_enrollment_state(
@@ -1105,9 +1102,6 @@ TEST_F(AutofillWalletSyncBridgeTest,
 // changes on the client.
 TEST_F(AutofillWalletSyncBridgeTest,
        MergeFullSyncData_SameWalletCardAndCustomerDataAndCloudTokenData) {
-  base::test::ScopedFeatureList feature;
-  feature.InitAndEnableFeature(
-      features::kAutofillEnableCardInfoRuntimeRetrieval);
   // Create one card on the client.
   CreditCard card = test::GetMaskedServerCard();
   card.set_virtual_card_enrollment_state(
@@ -1189,9 +1183,6 @@ TEST_F(AutofillWalletSyncBridgeTest,
 // Test that all field values for a card sent from the server are copied on the
 // card on the client.
 TEST_F(AutofillWalletSyncBridgeTest, MergeFullSyncData_SetsAllWalletCardData) {
-  base::test::ScopedFeatureList feature;
-  feature.InitAndEnableFeature(
-      features::kAutofillEnableCardInfoRuntimeRetrieval);
   // Create a card to be synced from the server.
   CreditCard card = test::GetMaskedServerCard();
   card.SetNickname(u"Grocery card");
@@ -1884,8 +1875,6 @@ TEST_F(AutofillWalletSyncBridgeTestWithBenefitSyncDisabled,
 
 #if BUILDFLAG(IS_ANDROID)
 TEST_F(AutofillWalletSyncBridgeTest, ApplyDisableSyncChanges_BankAccount) {
-  base::test::ScopedFeatureList scoped_feature_list(
-      features::kAutofillEnableSyncingOfPixBankAccounts);
   // Create one bank account on the client.
   table()->SetMaskedBankAccounts(
       {test::CreatePixBankAccount(/*instrument_id=*/1234)});
@@ -1906,8 +1895,6 @@ TEST_F(AutofillWalletSyncBridgeTest, ApplyDisableSyncChanges_BankAccount) {
 // Tests that when the server sends the same data as the client has, nothing
 // changes on the client.
 TEST_F(AutofillWalletSyncBridgeTest, MergeFullSyncData_SameBankAccountData) {
-  base::test::ScopedFeatureList scoped_feature_list(
-      features::kAutofillEnableSyncingOfPixBankAccounts);
   // Create one bank account on the client.
   BankAccount existing_bank_account =
       test::CreatePixBankAccount(/*instrument_id=*/1234);
@@ -1932,8 +1919,6 @@ TEST_F(AutofillWalletSyncBridgeTest, MergeFullSyncData_SameBankAccountData) {
 // Tests that when the server sends a new bank account, it gets added to the
 // database.
 TEST_F(AutofillWalletSyncBridgeTest, MergeFullSyncData_NewBankAccount) {
-  base::test::ScopedFeatureList scoped_feature_list(
-      features::kAutofillEnableSyncingOfPixBankAccounts);
   // Create one bank account on the client.
   BankAccount existing_bank_account =
       test::CreatePixBankAccount(/*instrument_id=*/1234);
@@ -1965,8 +1950,6 @@ TEST_F(AutofillWalletSyncBridgeTest, MergeFullSyncData_NewBankAccount) {
 // Tests that when the server sends an updated bank account, it gets updated in
 // the database.
 TEST_F(AutofillWalletSyncBridgeTest, MergeFullSyncData_UpdatedBankAccount) {
-  base::test::ScopedFeatureList scoped_feature_list(
-      features::kAutofillEnableSyncingOfPixBankAccounts);
   // Create one bank account on the client.
   BankAccount existing_bank_account =
       test::CreatePixBankAccount(/*instrument_id=*/1234);
@@ -1999,8 +1982,6 @@ TEST_F(AutofillWalletSyncBridgeTest, MergeFullSyncData_UpdatedBankAccount) {
 // Tests that when the server deletes a bank account, it gets removed from the
 // database.
 TEST_F(AutofillWalletSyncBridgeTest, MergeFullSyncData_RemoveBankAccount) {
-  base::test::ScopedFeatureList scoped_feature_list(
-      features::kAutofillEnableSyncingOfPixBankAccounts);
   // Create one bank account on the client.
   BankAccount bank_account_1 =
       test::CreatePixBankAccount(/*instrument_id=*/1234);
@@ -2021,25 +2002,6 @@ TEST_F(AutofillWalletSyncBridgeTest, MergeFullSyncData_RemoveBankAccount) {
   EXPECT_EQ(1U, bank_accounts.size());
   EXPECT_THAT(GetAllLocalData(),
               UnorderedElementsAre(EqualsSpecifics(bank_account_1_specifics)));
-}
-
-// Tests that when the server sends a new bank account, it does not get added to
-// the database if the experiment is off.
-TEST_F(AutofillWalletSyncBridgeTest, MergeFullSyncData_NewBankAccount_ExpOff) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndDisableFeature(
-      features::kAutofillEnableSyncingOfPixBankAccounts);
-  // Create a bank account on the server.
-  BankAccount bank_account = test::CreatePixBankAccount(/*instrument_id=*/1234);
-  std::vector<BankAccount> bank_accounts;
-  AutofillWalletSpecifics bank_account_specifics;
-  SetAutofillWalletSpecificsFromBankAccount(bank_account,
-                                            &bank_account_specifics);
-
-  StartSyncing({bank_account_specifics});
-
-  table()->GetMaskedBankAccounts(bank_accounts);
-  EXPECT_EQ(0U, bank_accounts.size());
 }
 
 // Tests that when the server sends the same data as the client has, nothing

@@ -8,21 +8,25 @@ import static org.chromium.chrome.browser.flags.ChromeSwitches.SKIP_WEBAPK_VERIF
 
 import org.chromium.base.ApplicationState;
 import org.chromium.base.ApplicationStatus;
+import org.chromium.base.ApplicationStatus.ApplicationStateListener;
 import org.chromium.base.CommandLine;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.components.webapk.lib.client.ChromeWebApkHostSignature;
 import org.chromium.components.webapk.lib.client.WebApkValidator;
 import org.chromium.webapk.lib.client.WebApkIdentityServiceClient;
 
 /** Contains functionality needed for Chrome to host WebAPKs. */
+@NullMarked
 public class ChromeWebApkHost {
     /** Time in milliseconds to wait for {@link WebApkServiceClient} to finish. */
     private static final long WAIT_FOR_WORK_DISCONNECT_SERVICE_DELAY_MS = 1000;
 
-    private static ApplicationStatus.ApplicationStateListener sListener;
+    private static @Nullable ApplicationStateListener sListener;
 
     public static void init() {
         WebApkValidator.init(
@@ -46,12 +50,16 @@ public class ChromeWebApkHost {
             // Registers an application listener to disconnect all connections to WebAPKs
             // when Chrome is stopped.
             sListener =
-                    new ApplicationStatus.ApplicationStateListener() {
+                    new ApplicationStateListener() {
                         @Override
                         public void onApplicationStateChange(int newState) {
                             if (newState == ApplicationState.HAS_STOPPED_ACTIVITIES
                                     || newState == ApplicationState.HAS_DESTROYED_ACTIVITIES) {
                                 disconnectFromAllServices(/* waitForPendingWork= */ false);
+
+                                if (sListener == null) {
+                                    return;
+                                }
 
                                 ApplicationStatus.unregisterApplicationStateListener(sListener);
                                 sListener = null;

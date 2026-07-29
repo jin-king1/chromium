@@ -106,7 +106,7 @@ TEST_F(SyncModelLoadManagerTest, StopAfterFinish) {
 TEST_F(SyncModelLoadManagerTest, ModelLoadFail) {
   controllers_[BOOKMARKS] = std::make_unique<FakeDataTypeController>(BOOKMARKS);
   GetController(BOOKMARKS)->model()->SimulateModelError(
-      ModelError(FROM_HERE, "Test error"));
+      ModelError(FROM_HERE, syncer::ModelError::Type::kGenericTestError));
   ModelLoadManager model_load_manager(&controllers_, &delegate_);
   DataTypeSet types;
   types.Put(BOOKMARKS);
@@ -136,7 +136,7 @@ TEST_F(SyncModelLoadManagerTest, StopAfterConfiguration) {
   testing::Mock::VerifyAndClearExpectations(&delegate_);
   EXPECT_CALL(delegate_, OnSingleDataTypeWillStop(BOOKMARKS, _));
   GetController(BOOKMARKS)->model()->SimulateModelError(
-      ModelError(FROM_HERE, "Test error"));
+      ModelError(FROM_HERE, syncer::ModelError::Type::kGenericTestError));
 }
 
 // Test that OnAllDataTypesReadyForConfigure is called when all datatypes that
@@ -218,7 +218,7 @@ TEST_F(SyncModelLoadManagerTest,
   // Simulate model load error for APPS and finish loading it. This should
   // trigger OnAllDataTypesReadyForConfigure.
   GetController(APPS)->model()->SimulateModelError(
-      ModelError(FROM_HERE, "Test error"));
+      ModelError(FROM_HERE, syncer::ModelError::Type::kGenericTestError));
   EXPECT_EQ(GetController(APPS)->state(), DataTypeController::FAILED);
 }
 
@@ -257,7 +257,7 @@ TEST_F(SyncModelLoadManagerTest,
   EXPECT_CALL(delegate_, OnSingleDataTypeWillStop(APPS, _));
   // Apps datatype reports failure.
   GetController(APPS)->model()->SimulateModelError(
-      ModelError(FROM_HERE, "Test error"));
+      ModelError(FROM_HERE, syncer::ModelError::Type::kGenericTestError));
 
   testing::Mock::VerifyAndClearExpectations(&delegate_);
 
@@ -309,8 +309,9 @@ TEST_F(SyncModelLoadManagerTest, StopDataType) {
 
   model_load_manager.StopDatatype(
       BOOKMARKS, SyncStopMetadataFate::CLEAR_METADATA,
-      SyncError(FROM_HERE, SyncError::PRECONDITION_ERROR_WITH_KEEP_DATA,
-                "Data type is unready."));
+      SyncError::CreateFromErrorType(
+          FROM_HERE, SyncError::PRECONDITION_ERROR_WITH_KEEP_DATA,
+          "Data type is unready."));
 
   EXPECT_EQ(GetController(BOOKMARKS)->state(), DataTypeController::NOT_RUNNING);
   EXPECT_EQ(1, GetController(BOOKMARKS)->model()->clear_metadata_count());
@@ -325,8 +326,9 @@ TEST_F(SyncModelLoadManagerTest, StopDataType_NotRunning) {
 
   model_load_manager.StopDatatype(
       BOOKMARKS, SyncStopMetadataFate::CLEAR_METADATA,
-      SyncError(FROM_HERE, SyncError::PRECONDITION_ERROR_WITH_KEEP_DATA,
-                "Data type is unready."));
+      SyncError::CreateFromErrorType(
+          FROM_HERE, SyncError::PRECONDITION_ERROR_WITH_KEEP_DATA,
+          "Data type is unready."));
 
   // The state should still be not running.
   EXPECT_EQ(GetController(BOOKMARKS)->state(), DataTypeController::NOT_RUNNING);
@@ -552,7 +554,7 @@ TEST_F(SyncModelLoadManagerTest, ShouldNotClearMetadataIfFailed) {
   // Bring the underlying model to a failed state. Note that this does *not*
   // bring the controller into the FAILED state yet.
   GetController(BOOKMARKS)->model()->SimulateModelError(
-      ModelError(FROM_HERE, "Test error"));
+      ModelError(FROM_HERE, syncer::ModelError::Type::kGenericTestError));
 
   ModelLoadManager model_load_manager(&controllers_, &delegate_);
   DataTypeSet types{BOOKMARKS};
@@ -758,15 +760,16 @@ TEST_F(SyncModelLoadManagerTest, ShouldNotStartFailedTypesUponLoadModels) {
   // continue and not wait for the failed type.
   EXPECT_CALL(delegate_, OnAllDataTypesReadyForConfigure);
   GetController(BOOKMARKS)->model()->SimulateModelError(
-      ModelError(FROM_HERE, "Test error"));
+      ModelError(FROM_HERE, syncer::ModelError::Type::kGenericTestError));
   ASSERT_EQ(GetController(BOOKMARKS)->state(), DataTypeController::FAILED);
 
   // No crash from LoadModels.
 }
 
-// Regression test for crbug.com/1519806.
-// Tests that stop callbacks for a type which is not in NOT_RUNNING state
-// anymore are ignored.
+// Regression test for crbug.com/41492783.
+// Tests that when Configure() is called multiple times while a type is
+// STOPPING, only the latest LoadModelsForType callback is invoked (earlier
+// ones are invalidated via weak pointers).
 TEST_F(SyncModelLoadManagerTest,
        ShouldHandleMultipleStopCallbacksForStoppingType) {
   // Create a controller with manual loading.
@@ -795,8 +798,8 @@ TEST_F(SyncModelLoadManagerTest,
   // BOOKMARKS needs to finish stopping first before it can start again.
   ASSERT_EQ(GetController(BOOKMARKS)->state(), DataTypeController::STOPPING);
 
-  // Add the same stop callback again to be called after the type has finished
-  // stopping.
+  // Configure again while BOOKMARKS is still STOPPING. This should invalidate
+  // the previous LoadModelsForType callback and register a new one.
   model_load_manager.Configure(
       /*preferred_types_without_errors=*/preferred_types, preferred_types,
       BuildConfigureContext());
@@ -805,9 +808,9 @@ TEST_F(SyncModelLoadManagerTest,
   ASSERT_EQ(GetController(BOOKMARKS)->state(), DataTypeController::STOPPING);
 
   // Finish loading of BOOKMARKS for the first time. This should first move the
-  // state to NOT_RUNNING. But, as part of the load callback,
-  // DataTypeController::LoadModels() will be called which will set its state
-  // to MODEL_STARTING.
+  // state to NOT_RUNNING. Only the latest LoadModelsForType callback fires
+  // (the earlier one was invalidated), which calls LoadModels() setting the
+  // state to MODEL_STARTING.
   GetController(BOOKMARKS)->model()->SimulateModelStartFinished();
   EXPECT_EQ(GetController(BOOKMARKS)->state(),
             DataTypeController::MODEL_STARTING);
@@ -818,8 +821,6 @@ TEST_F(SyncModelLoadManagerTest,
   GetController(BOOKMARKS)->model()->SimulateModelStartFinished();
   ASSERT_EQ(GetController(BOOKMARKS)->state(),
             DataTypeController::MODEL_LOADED);
-
-  // Note: The second stop callback didn't do anything and was a no-op.
 }
 
 }  // namespace syncer

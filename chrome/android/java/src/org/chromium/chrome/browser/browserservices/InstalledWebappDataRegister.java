@@ -7,11 +7,11 @@ package org.chromium.chrome.browser.browserservices;
 import android.content.Context;
 import android.content.SharedPreferences;
 
-import androidx.annotation.Nullable;
-
 import org.chromium.base.ContextUtils;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.components.embedder_support.util.Origin;
 
 import java.util.Collections;
@@ -24,18 +24,23 @@ import java.util.Set;
  * <p>Lifecycle: Most of the data used by this class modifies the underlying {@link
  * SharedPreferences} (which are global and preserved across Chrome restarts).
  */
+@NullMarked
 public class InstalledWebappDataRegister {
+
     /** The shared preferences file name. If you modify this you'll have to migrate old data. */
     private static final String PREFS_FILE = "trusted_web_activity_client_apps";
 
     /**
-     * The key to the set of UIDs stored as strings in shared preferences. If you modify this
-     * you'll have to migrate old data.
+     * The key to the set of UIDs stored as strings in shared preferences. If you modify this you'll
+     * have to migrate old data.
      */
     private static final String UIDS_KEY = "trusted_web_activity_uids";
 
+    /** The key to the set of package names stored as strings in shared preferences. */
+    private static final String PACKAGES_KEY = "trusted_web_activity_packages";
+
     /* Preferences unique to this class. */
-    private static SharedPreferences sPreferences;
+    private static @Nullable SharedPreferences sPreferences;
 
     private InstalledWebappDataRegister() {}
 
@@ -49,45 +54,113 @@ public class InstalledWebappDataRegister {
         return sPreferences;
     }
 
+    public static void setPreferencesForTesting(@Nullable SharedPreferences sharedPreferences) {
+        sPreferences = sharedPreferences;
+    }
+
     // Trigger a Preferences read in a background thread to try to load the Preferences file
     // before we need it.
     public static void prefetchPreferences() {
         PostTask.postTask(
                 TaskTraits.BEST_EFFORT,
                 () -> {
-                    getUids();
+                    migrateOldDataIfNeeded();
+                    getPackages();
                 });
     }
 
-    /**
-     * Saves to Preferences that the app with |uid| has the application name |appName| and when it
-     * is removed or cleared, we should consider doing the same with Chrome data relevant to
-     * |origin|. |domain| is stored as well in order to not have to derive it from origin while
-     * handling uninstallation or data clear, since that would require loading native libraries.
-     */
-    public static void registerPackageForOrigin(
-            int uid, String appName, String packageName, String domain, Origin origin) {
-        // Store the UID in the main Chrome Preferences.
-        Set<String> uids = getUids();
-        uids.add(String.valueOf(uid));
-        setUids(uids);
+    /* package */ static Set<String> getPackages() {
+        return new HashSet<>(getPreferences().getStringSet(PACKAGES_KEY, Collections.emptySet()));
+    }
 
-        SharedPreferences.Editor editor = getPreferences().edit();
-        editor.putString(createAppNameKey(uid), appName);
-        editor.putString(createPackageNameKey(uid), packageName);
-        writeToSet(editor, createDomainKey(uid), domain);
-        writeToSet(editor, createOriginKey(uid), origin.toString());
+    private static void setPackages(Set<String> packages) {
+        getPreferences().edit().putStringSet(PACKAGES_KEY, packages).apply();
+    }
+
+    public static void migrateOldDataIfNeeded() {
+        SharedPreferences prefs = getPreferences();
+        if (!prefs.contains(UIDS_KEY)) return;
+
+        Set<String> uids = getUids();
+        Set<String> packages = getPackages();
+
+        SharedPreferences.Editor editor = prefs.edit();
+
+        for (String uidStr : uids) {
+            int uid;
+            try {
+                uid = Integer.parseInt(uidStr);
+            } catch (NumberFormatException e) {
+                editor.remove(uidStr + ".packageName");
+                editor.remove(uidStr + ".appName");
+                editor.remove(uidStr + ".domain");
+                editor.remove(uidStr + ".origin");
+                continue;
+            }
+            String packageName = prefs.getString(createPackageNameKey(uid), null);
+            String appName = prefs.getString(createAppNameKey(uid), null);
+            Set<String> domains = prefs.getStringSet(createDomainKey(uid), Collections.emptySet());
+            Set<String> origins = prefs.getStringSet(createOriginKey(uid), Collections.emptySet());
+
+            if (packageName != null) {
+                packages.add(packageName);
+                editor.putString(createAppNameKey(packageName), appName);
+
+                Set<String> newDomains =
+                        new HashSet<>(
+                                prefs.getStringSet(
+                                        createDomainKey(packageName), Collections.emptySet()));
+                newDomains.addAll(domains);
+                editor.putStringSet(createDomainKey(packageName), newDomains);
+
+                Set<String> newOrigins =
+                        new HashSet<>(
+                                prefs.getStringSet(
+                                        createOriginKey(packageName), Collections.emptySet()));
+                newOrigins.addAll(origins);
+                editor.putStringSet(createOriginKey(packageName), newOrigins);
+            }
+
+            // Remove old data
+            editor.remove(createPackageNameKey(uid));
+            editor.remove(createAppNameKey(uid));
+            editor.remove(createDomainKey(uid));
+            editor.remove(createOriginKey(uid));
+        }
+
+        editor.putStringSet(PACKAGES_KEY, packages);
+        editor.remove(UIDS_KEY);
         editor.apply();
     }
 
-    private static void writeToSet(SharedPreferences.Editor editor, String key, String newElement) {
+    /**
+     * Saves to Preferences that the app has the application name |appName| and when it is removed
+     * or cleared, we should consider doing the same with Chrome data relevant to |origin|. |domain|
+     * is stored as well in order to not have to derive it from origin while handling uninstallation
+     * or data clear, since that would require loading native libraries.
+     */
+    public static void registerPackageForOrigin(
+            String appName, String packageName, @Nullable String domain, Origin origin) {
+        // Store the Package Name in the new Preferences.
+        Set<String> packages = getPackages();
+        packages.add(packageName);
+        setPackages(packages);
+
+        SharedPreferences.Editor editor = getPreferences().edit();
+
+        // Write to new keys
+        editor.putString(createAppNameKey(packageName), appName);
+        writeToSet(editor, createDomainKey(packageName), domain);
+        writeToSet(editor, createOriginKey(packageName), origin.toString());
+
+        editor.apply();
+    }
+
+    private static void writeToSet(
+            SharedPreferences.Editor editor, String key, @Nullable String newElement) {
         Set<String> set = new HashSet<>(getPreferences().getStringSet(key, Collections.emptySet()));
         set.add(newElement);
         editor.putStringSet(key, set);
-    }
-
-    private static void setUids(Set<String> uids) {
-        getPreferences().edit().putStringSet(UIDS_KEY, uids).apply();
     }
 
     /* package */ static Set<String> getUids() {
@@ -96,51 +169,48 @@ public class InstalledWebappDataRegister {
         return new HashSet<>(getPreferences().getStringSet(UIDS_KEY, Collections.emptySet()));
     }
 
-    public static void removePackage(int uid) {
-        Set<String> uids = getUids();
-        uids.remove(String.valueOf(uid));
-        setUids(uids);
+    public static void removePackage(String packageName) {
+        Set<String> packages = getPackages();
+        packages.remove(packageName);
+        setPackages(packages);
 
         SharedPreferences.Editor editor = getPreferences().edit();
-        editor.putString(createAppNameKey(uid), null);
-        editor.putString(createPackageNameKey(uid), null);
-        editor.putStringSet(createDomainKey(uid), null);
-        editor.putStringSet(createOriginKey(uid), null);
+        editor.remove(createAppNameKey(packageName));
+        editor.remove(createDomainKey(packageName));
+        editor.remove(createOriginKey(packageName));
         editor.apply();
     }
 
-    /* package */ static boolean chromeHoldsDataForPackage(int uid) {
-        return getUids().contains(String.valueOf(uid));
+    /* package */ static boolean chromeHoldsDataForPackage(String packageName) {
+        return getPackages().contains(packageName);
     }
 
-    /** Gets the application name that was previously registered for the uid. */
-    /* package */ static @Nullable String getAppNameForRegisteredUid(int uid) {
-        return getPreferences().getString(createAppNameKey(uid), null);
+    /* package */ static @Nullable String getAppNameForRegisteredPackage(String packageName) {
+        return getPreferences().getString(createAppNameKey(packageName), null);
     }
 
-    /** Gets the package name that was previously registered for the uid. */
-    /* package */ static @Nullable String getPackageNameForRegisteredUid(int uid) {
-        return getPreferences().getString(createPackageNameKey(uid), null);
+    /* package */ static Set<String> getDomainsForRegisteredPackage(String packageName) {
+        return getPreferences().getStringSet(createDomainKey(packageName), Collections.emptySet());
     }
 
-    /**
-     * Gets all the domains that have been registered for the uid. Do not modify the set returned by
-     * this method.
-     */
-    /* package */ static Set<String> getDomainsForRegisteredUid(int uid) {
-        return getPreferences().getStringSet(createDomainKey(uid), Collections.emptySet());
+    /* package */ static Set<String> getOriginsForRegisteredPackage(String packageName) {
+        return getPreferences().getStringSet(createOriginKey(packageName), Collections.emptySet());
     }
 
-    /**
-     * Gets all the origins that have been registered for the uid. Do not modify the set returned by
-     * this method.
-     */
-    /* package */ static Set<String> getOriginsForRegisteredUid(int uid) {
-        return getPreferences().getStringSet(createOriginKey(uid), Collections.emptySet());
-    }
-
-    // Methods below create the Preferences keys to access the data associated with given app uid.
+    // Methods below create the Preferences keys to access the data associated with given app.
     // If you modify any of them you'll have to migrate old data.
+
+    private static String createAppNameKey(String packageName) {
+        return packageName + ".appName";
+    }
+
+    private static String createDomainKey(String packageName) {
+        return packageName + ".domain";
+    }
+
+    private static String createOriginKey(String packageName) {
+        return packageName + ".origin";
+    }
 
     private static String createAppNameKey(int uid) {
         return uid + ".appName";

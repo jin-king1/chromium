@@ -9,7 +9,8 @@
 #include "base/files/scoped_temp_dir.h"
 #include "base/memory/raw_ptr.h"
 #include "base/scoped_observation.h"
-#include "base/test/metrics/histogram_tester.h"
+#include "chrome/browser/ash/drive/drive_integration_service.h"
+#include "chrome/browser/ash/drive/drive_integration_service_factory.h"
 #include "chrome/browser/ash/file_suggest/file_suggest_keyed_service_factory.h"
 #include "chrome/browser/ash/file_suggest/file_suggest_test_util.h"
 #include "chrome/browser/ash/file_suggest/file_suggest_util.h"
@@ -53,12 +54,9 @@ class FileSuggestKeyedServiceTest : public testing::Test {
 };
 
 TEST_F(FileSuggestKeyedServiceTest, GetSuggestData) {
-  base::HistogramTester tester;
-  if (features::IsForestFeatureEnabled()) {
-    drive::DriveIntegrationServiceFactory::GetInstance()
-        ->GetForProfile(profile_)
-        ->SetEnabled(true);
-  }
+  drive::DriveIntegrationServiceFactory::GetInstance()
+      ->GetForProfile(profile_)
+      ->SetEnabled(true);
   FileSuggestKeyedServiceFactory::GetInstance()
       ->GetService(profile_)
       ->GetSuggestFileData(
@@ -67,23 +65,12 @@ TEST_F(FileSuggestKeyedServiceTest, GetSuggestData) {
                                 suggest_data) {
             EXPECT_FALSE(suggest_data.has_value());
           }));
-  tester.ExpectBucketCount(
-      "Ash.Search.DriveFileSuggestDataValidation.Status",
-      /*sample=*/DriveSuggestValidationStatus::kDriveFSNotMounted,
-      /*expected_count=*/
-      (features::IsLauncherContinueSectionWithRecentsEnabled() ||
-       features::IsForestFeatureEnabled())
-          ? 0
-          : 1);
 }
 
 TEST_F(FileSuggestKeyedServiceTest, DisabledByPolicy) {
-  base::HistogramTester tester;
-  if (features::IsForestFeatureEnabled()) {
-    drive::DriveIntegrationServiceFactory::GetInstance()
-        ->GetForProfile(profile_)
-        ->SetEnabled(true);
-  }
+  drive::DriveIntegrationServiceFactory::GetInstance()
+      ->GetForProfile(profile_)
+      ->SetEnabled(true);
   FileSuggestKeyedServiceFactory::GetInstance()
       ->GetService(profile_)
       ->GetSuggestFileData(

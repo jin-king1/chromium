@@ -33,7 +33,8 @@ enum class HashRealTimeSelection {
   kDatabaseManager = 2,
   // Only background lookups can be performed, and they should use the native
   // HashRealTimeService.
-  // This is relevant to Desktop and iOS.
+  // This is only relevant to Desktop. This is NOT relevant for iOS because that
+  // platform does not send CSBRRs anyway.
   kHashRealTimeServiceBackgroundOnly = 3,
   // Only background lookups can be performed, and they should use the
   // database manager.
@@ -77,10 +78,8 @@ bool CanCheckUrl(const GURL& url);
 
 // Returns whether the full hash detail is relevant for hash-prefix real-time
 // lookups.
+//  - `detail`: The full hash detail to evaluate.
 bool IsHashDetailRelevant(const V5::FullHash::FullHashDetail& detail);
-
-// Returns the 4-byte prefix of the requested 32-byte full hash.
-std::string GetHashPrefix(const std::string& full_hash);
 
 // Specifies whether hash-prefix real-time lookups are possible for the browser
 // session. For cases when the user's location should not influence the logic,

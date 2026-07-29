@@ -20,11 +20,13 @@
 #include "base/functional/bind.h"
 #include "base/i18n/number_formatting.h"
 #include "base/memory/raw_ptr.h"
+#include "base/strings/utf_string_conversions.h"
 #include "chromeos/ash/services/network_config/public/cpp/cros_network_config_test_helper.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "chromeos/services/network_config/public/mojom/cros_network_config.mojom.h"
 #include "third_party/cros_system_api/dbus/shill/dbus-constants.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/chromeos/styles/cros_tokens_color_mappings.h"
 #include "ui/gfx/image/image_unittest_util.h"
 #include "ui/gfx/paint_vector_icon.h"
 #include "ui/gfx/vector_icon_types.h"
@@ -59,7 +61,7 @@ const char kWiFiDevicePath[] = "/device/wifi_device";
 const char kCellularDeviceName[] = "cellular_device";
 const char kCellularDevicePath[] = "/device/cellular_device";
 
-int kSignalStrength = 50;
+constexpr int kSignalStrength = 50;
 
 }  // namespace
 
@@ -90,6 +92,7 @@ class NetworkListNetworkItemViewTest : public AshTestBase {
   }
 
   void TearDown() override {
+    network_list_network_item_view_ = nullptr;
     widget_.reset();
 
     AshTestBase::TearDown();
@@ -169,8 +172,7 @@ class NetworkListNetworkItemViewTest : public AshTestBase {
   std::unique_ptr<FakeNetworkDetailedNetworkView>
       fake_network_detailed_network_view_;
   CrosNetworkConfigTestHelper network_config_helper_;
-  raw_ptr<NetworkListNetworkItemView, DanglingUntriaged>
-      network_list_network_item_view_;
+  raw_ptr<NetworkListNetworkItemView> network_list_network_item_view_;
 };
 
 TEST_F(NetworkListNetworkItemViewTest, HasCorrectLabel) {
@@ -235,7 +237,7 @@ TEST_F(NetworkListNetworkItemViewTest, HasCorrectCellularSublabel) {
 
   // Simulate user logout and check label for pSIM networks that are
   // connected but not activated.
-  GetSessionControllerClient()->Reset();
+  ClearLogin();
   base::RunLoop().RunUntilIdle();
   UpdateViewForNetwork(cellular_network);
   EXPECT_EQ(l10n_util::GetStringUTF16(
@@ -282,7 +284,7 @@ TEST_F(NetworkListNetworkItemViewTest, HasCorrectCellularSublabel) {
             network_list_network_item_view()->sub_text_label()->GetText());
 
   // label for locked cellular network when user is not logged in.
-  GetSessionControllerClient()->Reset();
+  ClearLogin();
   base::RunLoop().RunUntilIdle();
   UpdateViewForNetwork(cellular_network);
   EXPECT_EQ(l10n_util::GetStringUTF16(
@@ -368,8 +370,7 @@ TEST_F(NetworkListNetworkItemViewTest, HasEnterpriseIconWhenBlockedByPolicy) {
 
   const gfx::Image expected_image(CreateVectorIcon(
       kSystemMenuBusinessIcon,
-      AshColorProvider::Get()->GetContentLayerColor(
-          AshColorProvider::ContentLayerType::kIconColorPrimary)));
+      AshColorProvider::Get()->GetColor(cros_tokens::kIconColorPrimary)));
   const gfx::Image actual_image(
       static_cast<views::ImageView*>(
           network_list_network_item_view()->right_view())
@@ -446,7 +447,7 @@ TEST_F(NetworkListNetworkItemViewTest, HasExpectedA11yText) {
 
   // Simulate user logout and check label for pSIM networks that are
   // connected but not activated.
-  GetSessionControllerClient()->Reset();
+  ClearLogin();
   base::RunLoop().RunUntilIdle();
   UpdateViewForNetwork(cellular_network);
   EXPECT_EQ(
@@ -585,7 +586,7 @@ TEST_F(NetworkListNetworkItemViewTest, HasExpectedDescriptionForCellular) {
           IDS_ASH_STATUS_TRAY_NETWORK_STATUS_CLICK_TO_ACTIVATE));
 
   // Cellular is not activate and user is not logged in.
-  GetSessionControllerClient()->Reset();
+  ClearLogin();
   base::RunLoop().RunUntilIdle();
   AssertA11yDescription(
       cellular_network,
@@ -613,7 +614,7 @@ TEST_F(NetworkListNetworkItemViewTest, HasExpectedDescriptionForCellular) {
           IDS_ASH_STATUS_TRAY_NETWORK_STATUS_CLICK_TO_UNLOCK));
 
   // User is not signed in.
-  GetSessionControllerClient()->Reset();
+  ClearLogin();
   AssertA11yDescription(
       cellular_network,
       l10n_util::GetStringUTF16(

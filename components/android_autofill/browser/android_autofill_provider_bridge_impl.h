@@ -26,7 +26,7 @@ class AndroidAutofillProviderBridgeImpl : public AndroidAutofillProviderBridge {
   // AndroidAutofillProviderBridge:
   void AttachToJavaAutofillProvider(
       JNIEnv* env,
-      const base::android::JavaRef<jobject>& jcaller) override;
+      const base::android::JavaRef<jobject>& obj) override;
   void SendPrefillRequest(FormDataAndroid& form) override;
   void StartAutofillSession(FormDataAndroid& form,
                             const FieldInfo& field,
@@ -40,7 +40,7 @@ class AndroidAutofillProviderBridgeImpl : public AndroidAutofillProviderBridge {
   void OnFormFieldVisibilitiesDidChange(base::span<const int> indices) override;
   void OnTextFieldDidScroll(const FieldInfo& field) override;
   void OnFormSubmitted(mojom::SubmissionSource submission_source) override;
-  void OnDidFillAutofillFormData() override;
+  void OnDidAutofillForm() override;
   void CancelSession() override;
   void Reset() override;
 
@@ -51,6 +51,9 @@ class AndroidAutofillProviderBridgeImpl : public AndroidAutofillProviderBridge {
   // Java `AutofillProvider` is destroyed. It indicates that the Java Peer is
   // about to be destroyed.
   void DetachFromJavaAutofillProvider(JNIEnv* env);
+
+  // Asks the `Delegate` whether passkeys options are available.
+  bool HasPasskeyRequest(JNIEnv* env);
 
   // Informs the `Delegate` that the linked form should be sent to the renderer
   // for filling. Invoked when the user has accepted Autofill.
@@ -64,19 +67,22 @@ class AndroidAutofillProviderBridgeImpl : public AndroidAutofillProviderBridge {
   // anchor rect for `anchor_view` to the specified bounds. Invoked when opening
   // a datalist popup.
   void SetAnchorViewRect(JNIEnv* env,
-                         jobject anchor_view,
-                         jfloat x,
-                         jfloat y,
-                         jfloat width,
-                         jfloat height);
+                         const base::android::JavaRef<jobject>& anchor_view,
+                         float x,
+                         float y,
+                         float width,
+                         float height);
 
   // Informs the `Delegate` of the outcome of an attempt to show a bottom sheet.
   // `is_shown` indicates whether the bottom sheet was shown and
   // `provided_autofill_structure` describes whether an Autofill ViewStructure
   // was provided to the Autofill framework prior to showing the bottom sheet.
   void OnShowBottomSheetResult(JNIEnv* env,
-                               jboolean is_shown,
-                               jboolean provided_autofill_structure);
+                               bool is_shown,
+                               bool provided_autofill_structure);
+
+  // Informs the `Delegate` that the user explicitly requested passkeys options.
+  void OnTriggerPasskeyRequest(JNIEnv* env);
 
  private:
   // The delegate of the bridge.

@@ -28,52 +28,44 @@ with `AutofillAgent` extracting a form from the DOM.
 │ └────────────────────┘      ┌─▼─────────────┐  ┌─▼────────┐
 │weak ref                     │AutofillProfile│  │CreditCard│
 │                             └───────────────┘  └──────────┘
-│ ┌─────────────────┐
-│ │FormDataImporter ◄─────────────────────┐
-│ │1 per WebContents│               events│
-│ └─▲───────────────┘                     │
-│   │                                     │
-│   │ ┌────────────────────────┐        ┌─┴────────────────────┐
-│   │ │AutofillExternalDelegate◄────────┤BrowserAutofillManager│
-│   │ │1 per RenderFrameHost   │  owns 1│1 per RenderFrameHost │
-│   │ └──────────────────────┬─┘        └─▲───┬──────────────┬─┘
-│   │                        │events      │   │        events│
-│   │ ┌─────────────────┐    │            │   │votes         │
-│   ├─►VotesUploader    ◄────┼────────────┼───┘              │
-│   │ │1 per WebContents│    │            │                  │
-│   │ └─┬───────────────┘    └────────┐   │                  │
-│   │   │posts                        │   │                  │
-│   │ ┌─▼─────────────────────────┐   │   │                  │
-│   ├─►AutofillCrowsourcingManager│   │   │                  │    ┌──────────────┐
-│   │ │1 per WebContents          │   │   │                  │    │FormStructure │
-│   │ └─────────────────────▲─────┘   │   │                  │    │1 per FormData│
-│   │                       │         │   │                  └──┐ └─▲────────────┘
-│   │owns 1                 │         │   │events               │   │sets types
-│ ┌─┴──────────────────┐    │queries  │ ┌─┴───────────────────┐ │   │owns N
-└─┤ChromeAutofillClient│    └─────────┼─┼AutofillManager      ├─┼───┘
-  │1 per WebContents   │              │ │1 per RenderFrameHost│ │
-  └─┬──────────────────┘              │ └─▲─────────────────┬─┘ │
-    │owns 1                           │   │           events│   │
-    │                                 └───┼────────────────►│◄──┘
-    │                                     │                 │
-    │                        ┌────────────┼─────────────────┼────────────┐
-    │                        │owns 1      │events           │            │
-    │                        │            │owns 1           │            │
-  ┌─▼────────────────────────┴─┐        ┌─┴─────────────────▼─┐        ┌─▼──────────────────┐
-  │ContentAutofillDriverFactory├────────►ContentAutofillDriver◄────────►AutofillDriverRouter│
-  │1 per WebContents           │owns N  │1 per RenderFrameHost│ events │1 per WebContents   │
-  └────────────────────────────┘        └─▲─────────┬─────────┘        └────────────────────┘
-                                          │         │fill form and
-  Browser                                 │         │other events
-  1 process                               │         │
-  ────────────────────────────────────────┼─────────┼────────────────────────────────────────
-  Renderer                                │         │
-  N processes           events, often with│         │
-                        FormData objects  │         │
-                                        ┌─┴─────────▼─────┐       ┌─────────────────────┐
-                                        │AutofillAgent    ├───────►form_autofill_util.cc│
-                                        │1 per RenderFrame│calls  └─────────────────────┘
-                                        └─────────────────┘
+│
+│ ┌─────────────────┐                              ┌────────────────────────┐
+│ │FormDataImporter ◄─────────────────────┐        │AutofillExternalDelegate│
+│ │1 per WebContents│                     │        │1 per RenderFrameHost   ├─┐
+│ └─▲───────────────┘                     │        └─────▲──────────────────┘ │
+│   │                               events│       owns 1 │              events│
+│   │ ┌─────────────────┐               ┌─┴──────────────┴─────┐              │
+│   ├─►VotesUploader    ◄───────────────┤BrowserAutofillManager│events        │
+│   │ │1 per WebContents│          votes│1 per RenderFrameHost ├────────────┐ │
+│   │ └─┬───────────────┘               └─▲────────────────────┘            │ │
+│   │   │posts                            │                                 │ │
+│   │   │                                 │          ┌──────────────┐       │ │
+│   │ ┌─▼──────────────────────────┐      │          │FormStructure │       │ │
+│   ├─►AutofillCrowdsourcingManager│      │          │1 per FormData│       │ │
+│   │ │1 per WebContents           │      │          └─▲────────────┘       │ │
+│   │ └─────────────────────▲──────┘      │            │sets types          │ │
+│   │owns 1                 │             │events      │owns N              │ │
+│ ┌─┴──────────────────┐    │queries    ┌─┴────────────┴──────┐             │ │
+└─┤ChromeAutofillClient│    └───────────┤AutofillManager      │events       │ │
+  │1 per WebContents   │                │1 per RenderFrameHost┼───────────┐ │ │
+  └─┬──────────────────┘                └───────────────────▲─┘           │ │ │
+    │owns 1                                                 │events       │ │ │
+    │                                                       │owns 1       │ │ │
+┌───▼────────────────────────┐   ┌────────────────────┐   ┌─┴─────────────▼─▼─▼─┐
+│ContentAutofillDriverFactory│   │AutofillDriverRouter│   │ContentAutofillDriver│
+│1 per WebContents           │   │1 per WebContents   │   │1 per RenderFrameHost│
+└──────────────────────────┬─┘   └─▲────────────────▲─┘   └─▲────▲──┬───────────┘
+                     owns 1└───────┘                └───────┘    │  │fill form and
+  Browser                                             events     │  │other events
+  1 process                                                      │  │
+─────────────────────────────────────────────────────────────────┼──┼─────────────
+  Renderer                                                       │  │
+  N processes                                  events, often with│  │
+                                               FormData objects  │  │
+                                                           ┌─────┴──▼────────┐
+                          ┌─────────────────────┐     calls│AutofillAgent    │
+                          │form_autofill_util.cc◄──────────┤1 per RenderFrame│
+                          └─────────────────────┘          └─────────────────┘
 ```
 To edit the diagram, copy-paste it to asciiflow.com.
 
@@ -95,6 +87,15 @@ corresponds to a [`Profile`](https://www.chromium.org/developers/design-document
 * Chrome vs WebView: WebView also uses `AutofillManager` and everything south
   of it, but `AndroidAutofillClient` instead of `ChromeAutofillClient`, and
   `AndroidAutofillManager` instead of `BrowserAutofillManager`.
+
+| Platform | Uses Blink | `AutofillClient` Implementation | `AutofillManager` Implementation | `AutofillDriver` Implementation | `AutofillAgent` Implementation |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| Chrome Browser | Yes | [`ChromeAutofillClient`](https://source.chromium.org/chromium/chromium/src/+/main:chrome/browser/ui/autofill/chrome_autofill_client.h) | [`BrowserAutofillManager`](https://source.chromium.org/chromium/chromium/src/+/main:components/autofill/core/browser/foundations/browser_autofill_manager.h) | [`ContentAutofillDriver`](https://source.chromium.org/chromium/chromium/src/+/main:components/autofill/content/browser/content_autofill_driver.h) | [`AutofillAgent (Blink)`](https://source.chromium.org/chromium/chromium/src/+/main:components/autofill/content/renderer/autofill_agent.h) |
+| Chrome for Android (Clank) | Yes | [`ChromeAutofillClient`](https://source.chromium.org/chromium/chromium/src/+/main:chrome/browser/ui/autofill/chrome_autofill_client.h) | [`BrowserAutofillManager`](https://source.chromium.org/chromium/chromium/src/+/main:components/autofill/core/browser/foundations/browser_autofill_manager.h), [`AndroidAutofillManager`](https://source.chromium.org/chromium/chromium/src/+/main:components/android_autofill/browser/android_autofill_manager.h) _can also be used in Chrome on Android if it's using Android's Autofill_ | [`ContentAutofillDriver`](https://source.chromium.org/chromium/chromium/src/+/main:components/autofill/content/browser/content_autofill_driver.h) | [`AutofillAgent (Blink)`](https://source.chromium.org/chromium/chromium/src/+/main:components/autofill/content/renderer/autofill_agent.h) |
+| Android WebView | Yes | [`AndroidAutofillClient`](https://source.chromium.org/chromium/chromium/src/+/main:components/android_autofill/browser/android_autofill_client.h) | [`AndroidAutofillManager`](https://source.chromium.org/chromium/chromium/src/+/main:components/android_autofill/browser/android_autofill_manager.h) | [`ContentAutofillDriver`](https://source.chromium.org/chromium/chromium/src/+/main:components/autofill/content/browser/content_autofill_driver.h) | [`AutofillAgent (Blink)`](https://source.chromium.org/chromium/chromium/src/+/main:components/autofill/content/renderer/autofill_agent.h) |
+| Chrome for iOS (Bling) | No - uses WebKit | [`ChromeAutofillClientIOS`](https://source.chromium.org/chromium/chromium/src/+/main:ios/chrome/browser/autofill/ui_bundled/chrome_autofill_client_ios.h) | [`BrowserAutofillManager`](https://source.chromium.org/chromium/chromium/src/+/main:components/autofill/core/browser/foundations/browser_autofill_manager.h) | [`AutofillDriverIOS`](https://source.chromium.org/chromium/chromium/src/+/main:components/autofill/ios/browser/autofill_driver_ios.h) | [`AutofillAgent (iOS)`](https://source.chromium.org/chromium/chromium/src/+/main:components/autofill/ios/browser/autofill_agent.h) |
+| iOS WebView | No - uses WebKit | [`WebViewAutofillClientIOS`](https://source.chromium.org/chromium/chromium/src/+/main:ios/web_view/internal/autofill/web_view_autofill_client_ios.h) | [`BrowserAutofillManager`](https://source.chromium.org/chromium/chromium/src/+/main:components/autofill/core/browser/foundations/browser_autofill_manager.h) | [`AutofillDriverIOS`](https://source.chromium.org/chromium/chromium/src/+/main:components/autofill/ios/browser/autofill_driver_ios.h) | [`AutofillAgent (iOS)`](https://source.chromium.org/chromium/chromium/src/+/main:components/autofill/ios/browser/autofill_agent.h) |
+
 
 ### Links to files
 
@@ -195,17 +196,16 @@ may sacrifice a little bit of correctness in favor of simplicity.
     * Implements `AutofillClient` interface.
     * Has siblings `AndroidAutofillClient`, `ChromeAutofillClientIOS` and
       `WebViewAutofillClientIOS`.
-  * `PersonalDataManager`
+  * `PersonalDataManager` and `PaymentsDataManager`
     * One instance per `BrowserContext` (Chrome profile). In incognito mode, the
       original profile's instance is used. This enables filling even in
       incognito mode. Imports are disabled in incognito mode by the
       `BrowserAutofillManager`.
     * Responsibilities:
       * Reading/writing/updating AutofillProfiles and payment information from
-        `AutofillTable` - an SQLite database used to persist data across browser
-        shutdown.
-      * Keeps a copy of `AutofillTable`'s data in memory, making them available
-        to the rest of Autofill.
+        `AddressAutofillTable` and `PaymentsAutofillTable` - an SQLite database used to persist data across browser shutdown.
+      * Keeps a copy of `AddressAutofillTable` and `PaymentsAutofillTable`'s data in memory,
+        making them available to the rest of Autofill.
       * Modifications triggered through the `PersonalDataManager` generally
         happen asynchronously. For details, see
         [go/pdm-autofill-table-interface](http://go/pdm-autofill-table-interface).
@@ -322,7 +322,7 @@ Several important subsets of FieldTypes exist:
   Every form group defines which FieldTypes it maintains. For example:
   * The supported type of [EmailInfo](https://source.chromium.org/chromium/chromium/src/+/refs/heads/main:components/autofill/core/browser/data_model/contact_info.h;l=87;drc=10009f6ff9f3b626979c9422321686f360df7cee) is [EMAIL_ADDRESS](https://source.chromium.org/chromium/chromium/src/+/refs/heads/main:components/autofill/core/browser/data_model/contact_info.cc;l=184;drc=59b1cf76cc21ae34bc99073e963f7d268b0a5c17).
   * The supported types of AutofillProfile are all name, address, phone number, etc. types.
-* Stored types of AutofillProfile: The set of types stored in AutofillTable,
+* Stored types of AutofillProfile: The set of types stored in AddressAutofillTable,
   defined by `AutofillProfile::kDatabaseStoredTypes`.
   * Not all supported types of AutofillProfile are stored, since types following
     a standard format can unambiguously be derived from another type. See
@@ -365,7 +365,7 @@ See [go/autofill-new-fieldtypes-in-data-model-dd](http://go/autofill-new-fieldty
 ## Where is Autofill data persisted?
 
 * See
-  [`../../components/autofill/core/browser/webdata/autofill_table.h`](https://source.chromium.org/chromium/chromium/src/+/main:components/autofill/core/browser/webdata/autofill_table.h)
+  [`../../components/autofill/core/browser/webdata/addresses/address_autofill_table.h`](https://source.chromium.org/chromium/chromium/src/+/main:components/autofill/core/browser/webdata/addresses/address_autofill_table.h)
 
 ## What is a form submission?
 

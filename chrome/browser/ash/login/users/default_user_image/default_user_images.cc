@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/browser/ash/login/users/default_user_image/default_user_images.h"
 
 #include <algorithm>
@@ -17,14 +12,15 @@
 #include "ash/constants/ash_features.h"
 #include "ash/public/cpp/default_user_image.h"
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
 #include "base/logging.h"
+#include "base/notimplemented.h"
 #include "base/rand_util.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/system/sys_info.h"
-#include "chrome/common/webui_url_constants.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/chromeos/resources/grit/ui_chromeos_resources.h"
@@ -237,10 +233,11 @@ constexpr bool ValidateCurrentImageIndexes() {
   }
 
   for (const int index : kCurrentImageIndexes) {
-    if (kDefaultImageInfo[index].eligibility != Eligibility::kEligible) {
+    if (UNSAFE_TODO(kDefaultImageInfo[index]).eligibility !=
+        Eligibility::kEligible) {
       return false;
     }
-    if (kDefaultImageInfo[index].description_message_id == 0) {
+    if (UNSAFE_TODO(kDefaultImageInfo[index]).description_message_id == 0) {
       // All current and new images must have a description.
       return false;
     }
@@ -372,11 +369,11 @@ GURL GetDefaultImageUrl(
   auto scale_factor_prefix = GetUrlPrefixForScaleFactor(adjusted_scale_factor);
 
   return GURL(base::StrCat({kGstaticImagePrefix, scale_factor_prefix,
-                            kDefaultImageInfo[index].path}));
+                            UNSAFE_TODO(kDefaultImageInfo[index]).path}));
 }
 
 int GetDefaultImageResourceId(int index) {
-  return kDefaultImageInfo[index].resource_id;
+  return UNSAFE_TODO(kDefaultImageInfo[index]).resource_id;
 }
 
 const gfx::ImageSkia& GetStubDefaultImage() {
@@ -385,7 +382,7 @@ const gfx::ImageSkia& GetStubDefaultImage() {
 }
 
 int GetRandomDefaultImageIndex() {
-  return kCurrentImageIndexes[base::RandInt(
+  return UNSAFE_TODO(kCurrentImageIndexes)[base::RandIntInclusive(
       0, std::size(kCurrentImageIndexes) - 1)];
 }
 
@@ -395,14 +392,16 @@ bool IsValidIndex(int index) {
 
 bool IsInCurrentImageSet(int index) {
   return IsValidIndex(index) &&
-         kDefaultImageInfo[index].eligibility == Eligibility::kEligible;
+         UNSAFE_TODO(kDefaultImageInfo[index]).eligibility ==
+             Eligibility::kEligible;
 }
 
 DefaultUserImage GetDefaultUserImage(
     int index,
     ui::ResourceScaleFactor scale_factor /*= ui::k200Percent*/) {
   DCHECK(IsValidIndex(index));
-  int description_message_id = kDefaultImageInfo[index].description_message_id;
+  int description_message_id =
+      UNSAFE_TODO(kDefaultImageInfo[index]).description_message_id;
   std::u16string title = description_message_id
                              ? l10n_util::GetStringUTF16(description_message_id)
                              : std::u16string();
@@ -420,10 +419,10 @@ std::vector<DefaultUserImage> GetCurrentImageSet() {
   return result;
 }
 
-base::Value::List GetCurrentImageSetAsListValue() {
-  base::Value::List image_urls;
+base::ListValue GetCurrentImageSetAsListValue() {
+  base::ListValue image_urls;
   for (auto& user_image : GetCurrentImageSet()) {
-    base::Value::Dict image_data;
+    base::DictValue image_data;
     image_data.Set("index", user_image.index);
     image_data.Set("title", std::move(user_image.title));
     image_data.Set("url", user_image.url.spec());
@@ -438,7 +437,7 @@ std::optional<DeprecatedSourceInfo> GetDeprecatedDefaultImageSourceInfo(
     return std::nullopt;
   }
 
-  const auto& source_info_ids = kDefaultImageSourceInfoIds[index];
+  const auto& source_info_ids = UNSAFE_TODO(kDefaultImageSourceInfoIds[index]);
   return DeprecatedSourceInfo(
       l10n_util::GetStringUTF16(source_info_ids.author_id),
       GURL(l10n_util::GetStringUTF16(source_info_ids.website_id)));

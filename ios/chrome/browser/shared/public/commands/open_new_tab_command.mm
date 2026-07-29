@@ -16,10 +16,14 @@
 @synthesize inIncognito = _inIncognito;
 @synthesize inBackground = _inBackground;
 @synthesize originPoint = _originPoint;
+@synthesize extraHeaders = _extraHeaders;
 @synthesize fromChrome = _fromChrome;
+@synthesize sendTabToSelfEntryGUID = _sendTabToSelfEntryGUID;
 @synthesize appendTo = _appendTo;
 @synthesize userInitiated = _userInitiated;
 @synthesize shouldFocusOmnibox = _shouldFocusOmnibox;
+@synthesize textFragment = _textFragment;
+@synthesize openerWebState = _openerWebState;
 
 - (instancetype)initInIncognito:(BOOL)inIncognito
                    inBackground:(BOOL)inBackground {
@@ -110,6 +114,10 @@
 
 - (const web::Referrer&)referrer {
   return _referrer;
+}
+
+- (BOOL)fromSendTabToSelf {
+  return self.sendTabToSelfEntryGUID.length > 0;
 }
 
 @end

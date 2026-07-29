@@ -5,12 +5,12 @@
 #include "chrome/browser/chromeos/extensions/wallpaper/wallpaper_api.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "base/check_op.h"
-#include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/lazy_instance.h"
 #include "base/strings/stringprintf.h"
@@ -21,7 +21,6 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/wallpaper/wallpaper_ash.h"
 #include "chrome/common/chrome_paths.h"
-#include "chrome/common/extensions/extension_constants.h"
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
 #include "content/public/browser/browser_thread.h"
@@ -109,11 +108,11 @@ class WallpaperFetcher {
   }
 
  private:
-  void OnSimpleLoaderComplete(std::unique_ptr<std::string> response_body) {
+  void OnSimpleLoaderComplete(std::optional<std::string> response_body) {
     std::string response;
     bool success = false;
     if (response_body) {
-      response = std::move(*response_body);
+      response = std::move(response_body).value();
       success = true;
     } else if (simple_loader_->ResponseInfo() &&
                simple_loader_->ResponseInfo()->headers) {

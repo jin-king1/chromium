@@ -13,7 +13,6 @@
 #include "base/memory/ref_counted.h"
 #include "base/run_loop.h"
 #include "base/test/mock_callback.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "components/policy/core/common/policy_pref_names.h"
 #include "components/prefs/pref_service.h"
@@ -23,10 +22,8 @@
 #include "components/signin/public/identity_manager/accounts_cookie_mutator.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
-#include "components/supervised_user/core/browser/list_family_members_service.h"
+#include "components/supervised_user/core/browser/family_link_settings_service.h"
 #include "components/supervised_user/core/browser/supervised_user_preferences.h"
-#include "components/supervised_user/core/browser/supervised_user_settings_service.h"
-#include "components/supervised_user/core/common/features.h"
 #include "components/supervised_user/core/common/supervised_user_constants.h"
 #include "components/supervised_user/test_support/supervised_user_signin_test_utils.h"
 #include "components/supervised_user/test_support/supervised_user_url_filter_test_utils.h"
@@ -60,27 +57,22 @@ class ChildAccountServiceTest : public ::testing::Test {
             /*test_url_loader_factory=*/nullptr, &syncable_pref_service_,
             test_signin_client_.get());
 
-    settings_service_.Init(syncable_pref_service_.user_prefs_store());
+    family_link_settings_service_.Init(
+        syncable_pref_service_.user_prefs_store());
     PrefRegistrySimple* registry = syncable_pref_service_.registry();
     supervised_user::RegisterProfilePrefs(registry);
     registry->RegisterBooleanPref(policy::policy_prefs::kForceGoogleSafeSearch,
                                   false);
 
-    list_family_members_service_ = std::make_unique<ListFamilyMembersService>(
-        identity_test_environment_->identity_manager(),
-        weak_wrapped_subresource_loader_factory, syncable_pref_service_);
-
     child_account_service_ = std::make_unique<ChildAccountService>(
         syncable_pref_service_, identity_test_environment_->identity_manager(),
-        weak_wrapped_subresource_loader_factory,
-        /*check_user_child_status_callback=*/base::DoNothing(),
-        *list_family_members_service_.get());
+        /*check_user_child_status_callback=*/base::DoNothing());
 
     child_account_service_->Init();
   }
 
   void TearDown() override {
-    settings_service_.Shutdown();
+    family_link_settings_service_.Shutdown();
     child_account_service_->Shutdown();
   }
 
@@ -98,7 +90,7 @@ class ChildAccountServiceTest : public ::testing::Test {
   PrefService& GetUserPerferences() { return syncable_pref_service_; }
 
   void SetListAccountsResponseAndTriggerCookieJarUpdate(
-      const signin::CookieParams& params) {
+      const gaia::CookieParams& params) {
     signin::SetListAccountsResponseOneAccountWithParams(
         params, GetTestURLLoaderFactory());
     GetAccountsCookieMutator()->TriggerCookieJarUpdate();
@@ -106,14 +98,12 @@ class ChildAccountServiceTest : public ::testing::Test {
   }
 
   base::test::TaskEnvironment task_environment_;
-  network::TestURLLoaderFactory test_url_loader_factory_;
   sync_preferences::TestingPrefServiceSyncable syncable_pref_service_;
   syncer::MockSyncService sync_service_;
-  SupervisedUserSettingsService settings_service_;
+  FamilyLinkSettingsService family_link_settings_service_;
 
   std::unique_ptr<TestSigninClient> test_signin_client_;
   std::unique_ptr<signin::IdentityTestEnvironment> identity_test_environment_;
-  std::unique_ptr<ListFamilyMembersService> list_family_members_service_;
   std::unique_ptr<ChildAccountService> child_account_service_;
 };
 
@@ -195,12 +185,10 @@ TEST_F(ChildAccountServiceTest, GetGoogleAuthStateNotAuthenticatedNotSignedIn) {
             child_account_service_->GetGoogleAuthState());
 }
 
-// Tests that SafeSearch is correctly enforced for a supervised profile.
+// Tests that SafeSearch is correctly enforced for a supervised profile on Mac,
+// Linux, and Windows,.
+#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
 TEST_F(ChildAccountServiceTest, UpdateForceGoogleSafeSearch) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(
-      supervised_user::kForceSafeSearchForUnauthenticatedSupervisedUsers);
-
   // SafeSearch should not be forced for signed-out users.
   ASSERT_FALSE(GetUserPerferences().GetBoolean(
       policy::policy_prefs::kForceGoogleSafeSearch));
@@ -226,5 +214,26 @@ TEST_F(ChildAccountServiceTest, UpdateForceGoogleSafeSearch) {
   ASSERT_FALSE(GetUserPerferences().GetBoolean(
       policy::policy_prefs::kForceGoogleSafeSearch));
 }
+
+TEST_F(ChildAccountServiceTest, GoogleSafeSearchNotForcedAfterSignOut) {
+  // Sign back in as a supervised user.
+  AccountInfo account = identity_test_environment_->MakePrimaryAccountAvailable(
+      kEmail, signin::ConsentLevel::kSignin);
+  supervised_user::UpdateSupervisionStatusForAccount(
+      account, identity_test_environment_->identity_manager(),
+      /*is_subject_to_parental_controls=*/true);
+
+  // User is in transient state, so SafeSearch should be forced.
+  ASSERT_TRUE(GetUserPerferences().GetBoolean(
+      policy::policy_prefs::kForceGoogleSafeSearch));
+
+  // Clear primary account (sign out) while in transient state.
+  identity_test_environment_->ClearPrimaryAccount();
+
+  // SafeSearch should not be forced after signing out.
+  EXPECT_FALSE(GetUserPerferences().GetBoolean(
+      policy::policy_prefs::kForceGoogleSafeSearch));
+}
+#endif
 
 }  // namespace supervised_user

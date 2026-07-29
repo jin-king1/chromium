@@ -37,7 +37,6 @@ import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisabledTest;
-import org.chromium.components.browser_ui.widget.test.R;
 import org.chromium.ui.KeyboardVisibilityDelegate;
 import org.chromium.ui.test.util.BlankUiTestActivity;
 
@@ -115,9 +114,8 @@ public class RadioButtonWithEditTextTest {
                                             R.layout.radio_button_with_edit_text_test, null, false);
                     sContentView.addView(layout, MATCH_PARENT, WRAP_CONTENT);
 
-                    mRadioButtonWithEditText =
-                            (RadioButtonWithEditText) layout.findViewById(R.id.test_radio_button);
-                    mDummyButton = (Button) layout.findViewById(R.id.dummy_button);
+                    mRadioButtonWithEditText = layout.findViewById(R.id.test_radio_button);
+                    mDummyButton = layout.findViewById(R.id.dummy_button);
                     Assert.assertNotNull(mRadioButtonWithEditText);
                     Assert.assertNotNull(mDummyButton);
 
@@ -358,8 +356,7 @@ public class RadioButtonWithEditTextTest {
                 () -> {
                     Criteria.checkThat(
                             "Keyboard visibility does not consist with test setting.",
-                            KeyboardVisibilityDelegate.getInstance()
-                                    .isKeyboardShowing(sActivity, mEditText),
+                            KeyboardVisibilityDelegate.getInstance().isKeyboardShowing(mEditText),
                             Matchers.is(isVisible));
                 });
     }

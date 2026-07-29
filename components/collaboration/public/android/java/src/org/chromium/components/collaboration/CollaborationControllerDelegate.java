@@ -4,7 +4,10 @@
 
 package org.chromium.components.collaboration;
 
+import org.chromium.build.annotations.NullMarked;
+
 /** An interface to manage collaboration flow UI screens. */
+@NullMarked
 public interface CollaborationControllerDelegate {
     /**
      * This method is called exactly once, and the service takes ownership of the native and java
@@ -15,5 +18,5 @@ public interface CollaborationControllerDelegate {
     long getNativePtr();
 
     /** Cleans up any outstanding resources. */
-    public void destroy();
+    void destroy();
 }

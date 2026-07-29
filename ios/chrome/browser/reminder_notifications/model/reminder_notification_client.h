@@ -8,66 +8,76 @@
 #import <Foundation/Foundation.h>
 #import <UserNotifications/UserNotifications.h>
 
+#import <memory>
 #import <optional>
 
-#import "base/scoped_observation.h"
 #import "base/sequence_checker.h"
 #import "ios/chrome/browser/push_notification/model/push_notification_client.h"
-#import "ios/chrome/browser/shared/model/profile/profile_manager_ios.h"
-#import "ios/chrome/browser/shared/model/profile/profile_manager_observer_ios.h"
 
 class PrefChangeRegistrar;
+class ProfileIOS;
 
-// A notification client responsible for scheduling reminder notification
-// requests and handling user interactions with reminders.
-class ReminderNotificationClient : public PushNotificationClient,
-                                   public ProfileManagerObserverIOS {
+// A Profile-based notification client responsible for scheduling reminder
+// notification requests and handling user interactions with reminders.
+class ReminderNotificationClient : public PushNotificationClient {
  public:
-  ReminderNotificationClient(ProfileManagerIOS* profile_manager);
+  explicit ReminderNotificationClient(ProfileIOS* profile);
   ~ReminderNotificationClient() override;
 
   // Override PushNotificationClient::
+  std::optional<NotificationType> GetNotificationType(
+      UNNotification* notification) override;
+  bool CanHandleNotification(UNNotification* notification) override;
   bool HandleNotificationInteraction(
       UNNotificationResponse* notification_response) override;
   std::optional<UIBackgroundFetchResult> HandleNotificationReception(
       NSDictionary<NSString*, id>* notification) override;
   NSArray<UNNotificationCategory*>* RegisterActionableNotifications() override;
-  void OnSceneActiveForegroundBrowserReady() override;
-
-  // Called when the scene becomes "active foreground" and the browser is
-  // ready. The closure will be called when all async operations are done.
-  void OnSceneActiveForegroundBrowserReady(base::OnceClosure closure);
-
-  // ProfileManagerObserverIOS:
-  void OnProfileManagerDestroyed(ProfileManagerIOS* manager) override;
-  void OnProfileCreated(ProfileManagerIOS* manager,
-                        ProfileIOS* profile) override;
-  void OnProfileLoaded(ProfileManagerIOS* manager,
-                       ProfileIOS* profile) override;
-  void OnProfileUnloaded(ProfileManagerIOS* manager,
-                         ProfileIOS* profile) override;
-  void OnProfileMarkedForPermanentDeletion(ProfileManagerIOS* manager,
-                                           ProfileIOS* profile) override;
 
  private:
-  // Observe pref changes for a profile.
-  void ObserveProfilePrefs(ProfileIOS* profile);
-  // Stop observing pref changes for a profile.
-  void StopObservingProfilePrefs(ProfileIOS* profile);
-  // Called when prefs change for a profile.
-  void OnProfilePrefsChanged(ProfileIOS* profile);
+  // Returns true if the client is permitted to schedule notifications.
+  bool IsPermitted();
+
+  // Called when the relevant Reminder Notifications Pref changes.
+  void OnReminderDataPrefChanged();
+
+  // Called when the relevant permissions Pref changes.
+  void OnPermissionsPrefChanged();
+
+  // Schedules new reminder notifications based on the current reminder data in
+  // Prefs.
+  void ScheduleNewReminders();
+
+  // Schedules new reminder notifications if they don't already exist in the
+  // notification center.
+  void ScheduleNewRemindersIfNeeded(
+      NSArray<UNNotificationRequest*>* pending_requests);
+
+  // Cancels all pending reminder notifications.
+  void CancelAllNotifications(base::OnceClosure completion_handler);
+
+  // Callback for `-getPendingNotificationRequestsWithCompletionHandler:` used
+  // in `CancelAllNotifications()`.
+  void OnGetPendingNotificationsForCancellation(
+      base::OnceClosure completion_handler,
+      NSArray<UNNotificationRequest*>* requests);
+
+  // Schedules a single reminder notification for `reminder_url` using
+  // `reminder_details`.
+  void ScheduleNotification(const GURL& reminder_url,
+                            const base::DictValue& reminder_details,
+                            std::string_view profile_name);
+
+  // Called upon completion of scheduling a single notification. Removes the
+  // corresponding Pref entry for `scheduled_url` if scheduling was successful.
+  void OnNotificationScheduled(const GURL& scheduled_url, NSError* error);
 
   // Used to assert that asynchronous callback are invoked on the correct
   // sequence.
   SEQUENCE_CHECKER(sequence_checker_);
 
-  // Observation of the ProfileManagerIOS.
-  base::ScopedObservation<ProfileManagerIOS, ProfileManagerObserverIOS>
-      profile_manager_observation_{this};
-
-  // Observations of ProfilePrefs for each loaded profile.
-  base::flat_map<ProfileIOS*, std::unique_ptr<PrefChangeRegistrar>>
-      pref_observers_;
+  // Observes Pref changes for the Profile associated with this client.
+  std::unique_ptr<PrefChangeRegistrar> pref_change_registrar_;
 
   base::WeakPtrFactory<ReminderNotificationClient> weak_ptr_factory_{this};
 };

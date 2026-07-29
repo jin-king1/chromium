@@ -4,14 +4,12 @@
 
 import("//extensions/buildflags/buildflags.gni")
 
-assert(enable_extensions)
+assert(enable_extensions_core)
 
 source_set("extension_action") {
   sources = [
     "extension_action_api.cc",
     "extension_action_api.h",
-    "extension_page_actions_api_constants.cc",
-    "extension_page_actions_api_constants.h",
   ]
 
   configs += [ "//build/config/compiler:wexit_time_destructors" ]
@@ -24,10 +22,13 @@ source_set("extension_action") {
 
   deps = [
     "//chrome/browser/extensions",
-    "//chrome/browser/profiles:profile",
+    "//chrome/browser/profiles",
     "//chrome/browser/ui",
-    "//chrome/browser/ui/tabs:tab_strip",
+    "//chrome/browser/ui/extensions",
+    "//chrome/browser/ui/extensions:extension_popup_types",
+    "//chrome/browser/ui/toolbar",
     "//components/sessions",
+    "//components/tabs:public",
     "//content/public/common",
     "//extensions/common:common_constants",
     "//extensions/common:mojom",

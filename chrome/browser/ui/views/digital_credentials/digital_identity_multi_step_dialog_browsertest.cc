@@ -4,18 +4,16 @@
 
 #include "chrome/browser/ui/views/digital_credentials/digital_identity_multi_step_dialog.h"
 
-#include "base/functional/callback_forward.h"
 #include "base/scoped_observation.h"
 #include "base/test/scoped_feature_list.h"
+#include "chrome/browser/digital_credentials/digital_identity_provider_desktop.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_features.h"
 #include "content/public/test/browser_test.h"
-#include "testing/gtest/include/gtest/gtest-spi.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
-#include "ui/events/test/test_event.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/test/widget_test.h"
@@ -112,12 +110,13 @@ IN_PROC_BROWSER_TEST_F(DigitalIdentityMultiStepDialogBrowserTest,
 
     dialog->TryShow(accept_button_params, base::DoNothing(),
                     cancel_button_params, base::DoNothing(), kStep1Title,
-                    kStep1Body, nullptr);
+                    kStep1Body, /*custom_body_field=*/nullptr,
+                    /*show_progress_bar=*/false);
   }
 
-  views::Widget* widget = dialog_test_api.get_widget();
+  views::Widget* widget = dialog_test_api.GetWidget();
   views::BubbleDialogDelegate* widget_delegate =
-      dialog_test_api.get_widget_delegate();
+      dialog_test_api.GetWidgetDelegate();
 
   // Observe `widget` to ensure that it does not get hidden as a result of the
   // second DigitalIdentityMultiStepDialog::TryShow() call.
@@ -144,11 +143,12 @@ IN_PROC_BROWSER_TEST_F(DigitalIdentityMultiStepDialogBrowserTest,
 
     dialog->TryShow(accept_button_params, base::DoNothing(),
                     cancel_button_params, base::DoNothing(), kStep2Title,
-                    kStep2Body, nullptr);
+                    kStep2Body, /*custom_body_field=*/nullptr,
+                    /*show_progress_bar=*/false);
   }
 
   // The same widget should be showing.
-  EXPECT_EQ(widget, dialog_test_api.get_widget());
+  EXPECT_EQ(widget, dialog_test_api.GetWidget());
   EXPECT_FALSE(visibility_observer->did_widget_visiblity_change());
 
   EXPECT_EQ(kStep2Title, widget_delegate->GetWindowTitle());
@@ -181,20 +181,20 @@ IN_PROC_BROWSER_TEST_F(DigitalIdentityMultiStepDialogBrowserTest,
       GetActiveWebContents()->GetWeakPtr());
   auto dialog_test_api =
       std::make_unique<DigitalIdentityMultiStepDialog::TestApi>(dialog.get());
-  dialog->TryShow(std::make_optional<ButtonParams>(),
-                  base::BindRepeating(ok_callback, &was_ok_callback_called),
-                  ButtonParams(),
-                  base::BindOnce(cancel_callback, &was_cancel_callback_called),
-                  u"Title", u"Body", nullptr);
-  EXPECT_TRUE(dialog_test_api->get_widget()->IsVisible());
+  dialog->TryShow(
+      std::make_optional<ButtonParams>(),
+      base::BindRepeating(ok_callback, &was_ok_callback_called), ButtonParams(),
+      base::BindOnce(cancel_callback, &was_cancel_callback_called), u"Title",
+      u"Body", /*custom_body_field=*/nullptr, /*show_progress_bar=*/false);
+  EXPECT_TRUE(dialog_test_api->GetWidget()->IsVisible());
 
   // Accept dialog and run any pending tasks.
-  dialog_test_api->get_widget_delegate()->AcceptDialog();
+  dialog_test_api->GetWidgetDelegate()->AcceptDialog();
   base::RunLoop().RunUntilIdle();
   EXPECT_TRUE(was_ok_callback_called);
 
   views::test::WidgetDestroyedWaiter destroyed_waiter(
-      dialog_test_api->get_widget());
+      dialog_test_api->GetWidget());
   dialog_test_api.reset();
   dialog.reset();
   destroyed_waiter.Wait();
@@ -215,8 +215,9 @@ IN_PROC_BROWSER_TEST_F(DigitalIdentityMultiStepDialogBrowserTest,
         std::make_optional<ButtonParams>();
     accept_button_params->SetEnabled(false);
     dialog->TryShow(accept_button_params, base::DoNothing(), ButtonParams(),
-                    base::DoNothing(), u"Title", u"Body", nullptr);
-    EXPECT_FALSE(dialog_test_api.get_widget_delegate()->IsDialogButtonEnabled(
+                    base::DoNothing(), u"Title", u"Body",
+                    /*custom_body_field=*/nullptr, /*show_progress_bar=*/false);
+    EXPECT_FALSE(dialog_test_api.GetWidgetDelegate()->IsDialogButtonEnabled(
         ui::mojom::DialogButton::kOk));
   }
 
@@ -225,8 +226,112 @@ IN_PROC_BROWSER_TEST_F(DigitalIdentityMultiStepDialogBrowserTest,
         std::make_optional<ButtonParams>();
     accept_button_params->SetEnabled(true);
     dialog->TryShow(accept_button_params, base::DoNothing(), ButtonParams(),
-                    base::DoNothing(), u"Title", u"Body", nullptr);
-    EXPECT_TRUE(dialog_test_api.get_widget_delegate()->IsDialogButtonEnabled(
+                    base::DoNothing(), u"Title", u"Body",
+                    /*custom_body_field=*/nullptr, /*show_progress_bar=*/false);
+    EXPECT_TRUE(dialog_test_api.GetWidgetDelegate()->IsDialogButtonEnabled(
         ui::mojom::DialogButton::kOk));
+  }
+}
+
+namespace {
+
+// Subclass to expose protected methods for testing.
+class TestDigitalIdentityProviderDesktop
+    : public DigitalIdentityProviderDesktop {
+ public:
+  using DigitalIdentityProviderDesktop::EndRequestWithError;
+  using DigitalIdentityProviderDesktop::EnsureDialogCreated;
+  using DigitalIdentityProviderDesktop::set_callback_for_testing;
+  using DigitalIdentityProviderDesktop::set_rp_origin_for_testing;
+  using DigitalIdentityProviderDesktop::set_web_contents_for_testing;
+
+  // Calls the protected ShowQrCodeDialog.
+  void SetUpAndShowQrDialog(content::WebContents* web_contents,
+                            base::OnceClosure callback) {
+    set_web_contents_for_testing(web_contents->GetWeakPtr());
+    set_rp_origin_for_testing(url::Origin::Create(GURL("https://rp.example")));
+    set_callback_for_testing(base::BindOnce(
+        [](base::OnceClosure callback,
+           base::expected<
+               TestDigitalIdentityProviderDesktop::DigitalCredential,
+               content::DigitalIdentityProvider::RequestStatusForMetrics>
+               result) { std::move(callback).Run(); },
+        std::move(callback)));
+    ShowQrCodeDialog("FIDO:/0123456789", RequestInfo::RequestType::kGet);
+  }
+
+  DigitalIdentityMultiStepDialog* GetDialog() { return EnsureDialogCreated(); }
+};
+
+class ProviderDestroyerOnWidgetClosingObserver : public views::WidgetObserver {
+ public:
+  explicit ProviderDestroyerOnWidgetClosingObserver(
+      base::OnceClosure destruction_callback)
+      : destruction_callback_(std::move(destruction_callback)) {}
+
+  void OnWidgetClosing(views::Widget* widget) override {
+    widget->RemoveObserver(this);
+    if (destruction_callback_) {
+      std::move(destruction_callback_).Run();
+    }
+  }
+
+ private:
+  base::OnceClosure destruction_callback_;
+};
+
+}  // namespace
+
+// Regression test for UAF in
+// DigitalIdentityProviderDesktop::EndRequestWithError when the owner is
+// synchronously destroyed during dialog close.
+IN_PROC_BROWSER_TEST_F(DigitalIdentityMultiStepDialogBrowserTest,
+                       EndRequestWithErrorOwnerDestroyedDuringDialogClose) {
+  auto provider = std::make_unique<TestDigitalIdentityProviderDesktop>();
+
+  base::RunLoop run_loop;
+  // Show the dialog via the real ShowQrCodeDialog flow.
+  provider->SetUpAndShowQrDialog(GetActiveWebContents(),
+                                 run_loop.QuitClosure());
+
+  // Retrieve the widget robustly using TestApi and EnsureDialogCreated.
+  // Wrap `TestApi` in a nested scope so it is destroyed before the message
+  // loop runs. Otherwise, when the loop runs and triggers the UAF teardown,
+  // the dialog is deleted, leaving `TestApi` holding a dangling raw_ptr.
+  views::Widget* widget = nullptr;
+  {
+    DigitalIdentityMultiStepDialog* dialog = provider->GetDialog();
+    DigitalIdentityMultiStepDialog::TestApi dialog_test_api(dialog);
+    widget = dialog_test_api.GetWidget();
+  }
+  ASSERT_TRUE(widget);
+  base::WeakPtr<views::Widget> weak_widget = widget->GetWeakPtr();
+
+  // Set up the observer to synchronously destroy the provider when the widget
+  // closes.
+  ProviderDestroyerOnWidgetClosingObserver observer(base::BindOnce(
+      [](std::unique_ptr<TestDigitalIdentityProviderDesktop>* provider) {
+        provider->reset();
+      },
+      base::Unretained(&provider)));
+  widget->AddObserver(&observer);
+
+  // Trigger cancellation. OnDialogCanceled() will PostTask a call to
+  // OnCanceled() -> EndRequestWithError().
+  static_cast<views::DialogDelegate*>(widget->widget_delegate())
+      ->CancelDialog();
+  ASSERT_FALSE(widget->IsClosed());
+
+  // Run the message loop to execute the posted tasks.
+  // This will run EndRequestWithError(), triggering the UAF if the bug exists.
+  run_loop.Run();
+
+  // Verify that the provider was safely destroyed (pointer is null).
+  EXPECT_FALSE(provider);
+
+  // Clean up if the widget is still alive.
+  if (weak_widget) {
+    weak_widget->RemoveObserver(&observer);
+    views::test::WidgetDestroyedWaiter(weak_widget.get()).Wait();
   }
 }

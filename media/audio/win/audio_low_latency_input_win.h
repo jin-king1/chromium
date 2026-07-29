@@ -62,7 +62,6 @@
 #include <endpointvolume.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <windows.media.effects.h>
 #include <wrl/client.h>
 
 #include <memory>
@@ -70,11 +69,13 @@
 #include <vector>
 
 #include "base/compiler_specific.h"
+#include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/sequence_checker.h"
 #include "base/threading/platform_thread.h"
 #include "base/threading/simple_thread.h"
 #include "base/time/time.h"
+#include "base/unguessable_token.h"
 #include "base/win/scoped_co_mem.h"
 #include "base/win/scoped_com_initializer.h"
 #include "base/win/scoped_handle.h"
@@ -86,6 +87,7 @@
 #include "media/base/audio_glitch_info.h"
 #include "media/base/audio_parameters.h"
 #include "media/base/media_export.h"
+#include "media/base/sample_format.h"
 
 namespace media {
 
@@ -113,7 +115,7 @@ class MEDIA_EXPORT WASAPIAudioInputStream
     OPEN_RESULT_ACTIVATION_FAILED = 5,
     OPEN_RESULT_FORMAT_NOT_SUPPORTED = 6,
     OPEN_RESULT_AUDIO_CLIENT_INIT_FAILED = 7,
-    OPEN_RESULT_GET_BUFFER_SIZE_FAILED = 8,
+    OPEN_RESULT_GET_BUFFER_SIZE_FAILED = 8,  // Obsolete.
     OPEN_RESULT_LOOPBACK_ACTIVATE_FAILED = 9,
     OPEN_RESULT_LOOPBACK_INIT_FAILED = 10,
     OPEN_RESULT_SET_EVENT_HANDLE = 11,
@@ -122,6 +124,28 @@ class MEDIA_EXPORT WASAPIAudioInputStream
     OPEN_RESULT_OK_WITH_RESAMPLING = 14,
     OPEN_RESULT_MAX = OPEN_RESULT_OK_WITH_RESAMPLING
   };
+
+  // LINT.IfChange(WASAPIInputDeviceInUseRetryOutcome)
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  enum class WASAPIInputDeviceInUseRetryOutcome {
+    kFailedNoRetry = 0,
+    kSucceededOnFirstRetry = 1,
+    kSucceededOnSecondRetry = 2,
+    kFailedAfterRetries = 3,
+    kMaxValue = kFailedAfterRetries
+  };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/media/enums.xml:WASAPIInputDeviceInUseRetryOutcome)
+
+  using ActivateAudioInterfaceAsyncCallback =
+      base::RepeatingCallback<HRESULT(LPCWSTR,
+                                      REFIID,
+                                      PROPVARIANT*,
+                                      IActivateAudioInterfaceCompletionHandler*,
+                                      IActivateAudioInterfaceAsyncOperation**)>;
+
+  using AudioClientStartCallback =
+      base::RepeatingCallback<HRESULT(IAudioClient*)>;
 
   // The ctor takes all the usual parameters, plus |manager| which is the
   // the audio manager who is creating this object.
@@ -150,11 +174,38 @@ class MEDIA_EXPORT WASAPIAudioInputStream
 
   bool started() const { return started_; }
 
+  void SendLogMessage(std::string message);
+
+  // Overrides the function pointer used to activate an IAudioClient during
+  // application loopback captures. This is used for testing purposes only to
+  // add a hook to obtain fake implementations of Windows interfaces.
+  static void OverrideActivateAudioInterfaceAsyncCallbackForTesting(
+      ActivateAudioInterfaceAsyncCallback callback);
+
+  void OverrideAsyncActivationTimeoutForTesting(
+      base::TimeDelta async_activation_timeout_ms) {
+    async_activation_timeout_ms_ = async_activation_timeout_ms;
+  }
+
+  // Overrides the Start() call used for `audio_client_`. Intended for tests
+  // that need to inject failures when starting the capture stream.
+  void OverrideAudioClientStartCallbackForTesting(
+      AudioClientStartCallback&& callback) {
+    audio_client_start_callback_for_testing_ = std::move(callback);
+  }
+
+  // Returns whether the capture thread has been created. This is used for
+  // testing purposes only.
+  bool HasCaptureThreadForTesting() const { return capture_thread_ != nullptr; }
+
+  // Triggers a call to OnError() on the sink to simulate a stream error.
+  // This method is for testing purposes only.
+  void SimulateErrorForTesting();
+
  private:
   class DataDiscontinuityReporter;
   class EchoCancellationConfig;
-
-  PRINTF_FORMAT(2, 3) void SendLogMessage(const char* format, ...);
+  class AudioClientActivationHandler;
 
   // DelegateSimpleThread::Delegate implementation.
   void Run() override;
@@ -167,6 +218,12 @@ class MEDIA_EXPORT WASAPIAudioInputStream
 
   // The Open() method is divided into these sub methods.
   HRESULT SetCaptureDevice();
+  // Activates the IAudioClient interface with the adequate parameters. If
+  // `device_id_` represents an application device, the function will call
+  // ActivateAudioInterfaceAsync to activate an audio interface for process
+  // loopback capture. If `device_id_` does not represent an application device,
+  // it will activate the selected audio endpoint `endpoint_device_`.
+  HRESULT ActivateAudioClientInterface();
   // Returns whether raw audio processing is supported or not for the selected
   // capture device.
   bool RawProcessingSupported();
@@ -176,7 +233,7 @@ class MEDIA_EXPORT WASAPIAudioInputStream
   // Sets communications policy and excludes any built-in audio processing,
   // i.e., activates raw capture mode.
   // Raw capture mode is only enabled if the native number of input channels is
-  // less than |media::kMaxConcurrentChannels| (8).
+  // less than `kMaxRawCaptureChannels` (8).
   HRESULT SetCommunicationsCategoryAndMaybeRawCaptureMode(WORD channels);
   // Returns whether the desired format is supported or not and writes the
   // result of a failing system call to |*hr|, or S_OK if successful. If this
@@ -200,15 +257,25 @@ class MEDIA_EXPORT WASAPIAudioInputStream
   // Reports glitch stats and resets associated variables.
   void ReportAndResetGlitchStats();
 
+  // Creates the FIFO used to store audio data between the audio engine and the
+  // converter.
+  HRESULT CreateFifoIfNeeded();
+
+  // Sets up `input_format_` and `output_format_` based on `params_`.
+  bool UpdateFormats();
+
+  const base::UnguessableToken id_;
+
   // Our creator, the audio manager needs to be notified when we close.
   const raw_ptr<AudioManagerWin> manager_;
 
-  // Used to aggregate and report glitch metrics to UMA (periodically) and to
-  // text logs (when a stream ends).
-  SystemGlitchReporter glitch_reporter_;
+  // AudioParameters used to configure the stream formats in UpdateFormats().
+  const AudioParameters params_;
 
-  // Accumulates glitch info to be passed on to OnData().
-  media::AudioGlitchInfo::Accumulator glitch_accumulator_;
+  // This is the SampleFormat we request from CoreAudio. Used to create
+  // WAVEFORMATs as well as for the fifo to know the format of the data being
+  // pushed. We choose a SampleFormat based on the SharedModeMixFormat.
+  SampleFormat sample_format_ = kUnknownSampleFormat;
 
   AmplitudePeakDetector peak_detector_;
 
@@ -238,20 +305,17 @@ class MEDIA_EXPORT WASAPIAudioInputStream
   bool started_ = false;
   StreamOpenResult open_result_ = OPEN_RESULT_OK;
 
-  // Size in bytes of each audio frame before the converter (4 bytes for 16-bit
-  // stereo PCM). Note that this is the same before and after the fifo.
+  // Size in bytes of each audio frame before the converter (e.g. 4 bytes for
+  // 16-bit stereo PCM). Note that this is the same before and after the FIFO.
   size_t frame_size_bytes_ = 0;
 
-  // Size in audio frames of each audio packet (buffer) after the fifo but
+  // Size in audio frames of each audio packet (buffer) after the FIFO but
   // before the converter.
   size_t packet_size_frames_ = 0;
 
-  // Size in bytes of each audio packet (buffer) after the fifo but before the
+  // Size in bytes of each audio packet (buffer) after the FIFO but before the
   // converter.
   size_t packet_size_bytes_ = 0;
-
-  // Length of the audio endpoint buffer, i.e. the buffer size before the fifo.
-  uint32_t endpoint_buffer_size_frames_ = 0;
 
   // Contains the unique name of the selected endpoint device.
   // Note that AudioDeviceDescription::kDefaultDeviceId represents the default
@@ -272,12 +336,16 @@ class MEDIA_EXPORT WASAPIAudioInputStream
   // an audio stream between an audio application and the audio engine.
   Microsoft::WRL::ComPtr<IAudioClient> audio_client_;
 
-  // Loopback IAudioClient doesn't support event-driven mode, so a separate
-  // IAudioClient is needed to receive notifications when data is available in
-  // the buffer. For loopback input |audio_client_| is used to receive data,
-  // while |audio_render_client_for_loopback_| is used to get notifications
-  // when a new buffer is ready. See comment in InitializeAudioEngine() for
-  // details.
+  // Loopback IAudioClient supports event-driven mode but it requires an active
+  // audio output. Some clients (e.g. Chromecast) needs to be able to deliver
+  // a (silent) captured loopback stream even without active output audio, so a
+  // separate IAudioClient is needed to receive notifications when data is
+  // available in the buffer. For loopback input |audio_client_| is used to
+  // receive data, while |audio_render_client_for_loopback_| is used as a helper
+  // to get notifications when a new buffer is ready.
+  // The extra rendering client is only created and used in combination
+  // with endpoint devices or when |is_process_loopback_capture_| is false.
+  // See comment inInitializeAudioEngine() for more details.
   Microsoft::WRL::ComPtr<IAudioClient> audio_render_client_for_loopback_;
 
   // The IAudioCaptureClient interface enables a client to read input data
@@ -307,7 +375,7 @@ class MEDIA_EXPORT WASAPIAudioInputStream
   // indicates that we need to unmute the system audio when stopping capturing.
   bool mute_done_ = false;
 
-  // Used for the captured audio on the callback thread.
+  // Used to store data between the audio engine and the converter.
   std::unique_ptr<AudioBlockFifo> fifo_;
 
   // If the caller requires resampling (should only be in exceptional cases and
@@ -349,6 +417,36 @@ class MEDIA_EXPORT WASAPIAudioInputStream
   // Utility class which wraps support of system AEC functionality.
   // Will be set to nullptr during construction if AEC is not supported.
   std::unique_ptr<EchoCancellationConfig> aec_config_;
+
+  // Set to true if the capture stream is a loopback stream. No distinction is
+  // made between application and process loopback. We need to check this every
+  // time a glitch is reported and it is therefore cheaper to cache it.
+  const bool is_loopback_capture_;
+
+  // Process loopback captures do not get audio from an endpoint device but
+  // from a specified process IDs instead. It's is possible to check this
+  // using an internal helper method called IsProcessLoopbackDevice.
+  // However, we need to perform this check every time we need to pull data
+  // from the audio engine, which can be expensive. Checking the variable is
+  // cheaper than calling the function.
+  const bool is_process_loopback_capture_;
+
+  // Used to aggregate and report glitch metrics to UMA (periodically) and to
+  // text logs (when a stream ends).
+  SystemGlitchReporter glitch_reporter_;
+
+  // Accumulates glitch info to be passed on to OnData().
+  media::AudioGlitchInfo::Accumulator glitch_accumulator_;
+
+  // Timeout period for waiting on the OS to activate the audio interface for
+  // application loopback capture.
+  base::TimeDelta async_activation_timeout_ms_ = base::Seconds(10);
+
+  bool simulate_error_for_testing_ = false;
+
+  bool use_device_sample_format_;
+
+  AudioClientStartCallback audio_client_start_callback_for_testing_;
 
   SEQUENCE_CHECKER(sequence_checker_);
 };

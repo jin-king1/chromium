@@ -14,12 +14,10 @@
 #include "base/run_loop.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/metrics/histogram_tester.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/base/ui_base_features.h"
 #include "ui/events/event_constants.h"
 #include "ui/events/gesture_detection/gesture_event_data.h"
 #include "ui/events/test/motion_event_test_utils.h"
@@ -1190,6 +1188,10 @@ TEST_F(GestureProviderTest, FractionalScroll) {
 
     // And that there has been no horizontal motion at all.
     EXPECT_EQ(0, gesture.details.scroll_x());
+
+    // Verify unconstrained deltas are NOT zeroed.
+    EXPECT_NEAR(delta_x, gesture.details.scroll_x_unconstrained(), 0.001f);
+    EXPECT_NEAR(delta_y, gesture.details.scroll_y_unconstrained(), 0.001f);
   }
 }
 
@@ -1726,9 +1728,6 @@ TEST_F(GestureProviderTest, NoStylusScrollWithinSlop) {
 //
 // TODO(mustaq@chromium.org): Refactor SnapScrollController states to fix this.
 TEST_F(GestureProviderTest, SnapScrollWithStylusSlop) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(features::kStylusSpecificTapSlop);
-
   const MotionEvent::ToolType tool_type = MotionEvent::ToolType::STYLUS;
   const float tap_slop = GetTapSlop(tool_type);
   base::TimeTicks event_time = base::TimeTicks::Now();

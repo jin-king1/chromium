@@ -20,10 +20,6 @@
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
 
-#if BUILDFLAG(IS_WIN)
-#include "base/types/expected.h"
-#endif  // BUILDFLAG(IS_WIN)
-
 // This is the interface for platform-specific code for a print backend
 namespace printing {
 
@@ -104,63 +100,27 @@ struct COMPONENT_EXPORT(PRINT_BACKEND) AdvancedCapability {
 
 using AdvancedCapabilities = std::vector<AdvancedCapability>;
 
+// Describes the margins for a paper size.
+struct COMPONENT_EXPORT(PRINT_BACKEND) PaperMargins {
+  PaperMargins();
+  PaperMargins(int32_t top_margin_um,
+               int32_t right_margin_um,
+               int32_t bottom_margin_um,
+               int32_t left_margin_um);
+  PaperMargins(const PaperMargins& other);
+  PaperMargins& operator=(const PaperMargins& other);
+  ~PaperMargins();
+
+  bool operator==(const PaperMargins& other) const;
+
+  // Defines margins from their edges.
+  int32_t top_margin_um;
+  int32_t right_margin_um;
+  int32_t bottom_margin_um;
+  int32_t left_margin_um;
+};
+
 #endif  // BUILDFLAG(IS_CHROMEOS)
-
-#if BUILDFLAG(IS_WIN)
-
-struct COMPONENT_EXPORT(PRINT_BACKEND) PageOutputQualityAttribute {
-  PageOutputQualityAttribute();
-  PageOutputQualityAttribute(const std::string& display_name,
-                             const std::string& name);
-  ~PageOutputQualityAttribute();
-
-  bool operator==(const PageOutputQualityAttribute& other) const;
-
-  bool operator<(const PageOutputQualityAttribute& other) const;
-
-  // Localized name of the page output quality attribute.
-  std::string display_name;
-
-  // Internal ID of the page output quality attribute.
-  std::string name;
-};
-using PageOutputQualityAttributes = std::vector<PageOutputQualityAttribute>;
-
-struct COMPONENT_EXPORT(PRINT_BACKEND) PageOutputQuality {
-  PageOutputQuality();
-  PageOutputQuality(PageOutputQualityAttributes qualities,
-                    std::optional<std::string> default_quality);
-  PageOutputQuality(const PageOutputQuality& other);
-  ~PageOutputQuality();
-
-  // All options of page output quality.
-  PageOutputQualityAttributes qualities;
-
-  // Default option of page output quality.
-  // TODO(crbug.com/40212677): Need populate this option in the next CLs.
-  std::optional<std::string> default_quality;
-};
-
-#if defined(UNIT_TEST)
-
-COMPONENT_EXPORT(PRINT_BACKEND)
-bool operator==(const PageOutputQuality& quality1,
-                const PageOutputQuality& quality2);
-
-#endif  // defined(UNIT_TEST)
-
-struct COMPONENT_EXPORT(PRINT_BACKEND) XpsCapabilities {
-  XpsCapabilities();
-  XpsCapabilities(const XpsCapabilities&) = delete;
-  XpsCapabilities& operator=(const XpsCapabilities&) = delete;
-  XpsCapabilities(XpsCapabilities&& other) noexcept;
-  XpsCapabilities& operator=(XpsCapabilities&& other) noexcept;
-  ~XpsCapabilities();
-
-  std::optional<PageOutputQuality> page_output_quality;
-};
-
-#endif  // BUILDFLAG(IS_WIN)
 
 struct COMPONENT_EXPORT(PRINT_BACKEND) PrinterSemanticCapsAndDefaults {
   PrinterSemanticCapsAndDefaults();
@@ -203,7 +163,14 @@ struct COMPONENT_EXPORT(PRINT_BACKEND) PrinterSemanticCapsAndDefaults {
           const gfx::Size& size_um,
           const gfx::Rect& printable_area_um,
           int max_height_um,
-          bool has_borderless_variant);
+          bool has_borderless_variant
+#if BUILDFLAG(IS_CHROMEOS)
+          ,
+          std::optional<PaperMargins> supported_margins_um = std::nullopt
+#endif  // BUILDFLAG(IS_CHROMEOS)
+    );
+
+    ~Paper();
 
     // The compiler has decided that this class is now "complex" and thus
     // requires an explicit, out-of-line copy constructor.
@@ -237,6 +204,12 @@ struct COMPONENT_EXPORT(PRINT_BACKEND) PrinterSemanticCapsAndDefaults {
     // of this object.  Else, return false.
     bool IsSizeWithinBounds(const gfx::Size& other_um) const;
 
+#if BUILDFLAG(IS_CHROMEOS)
+    const std::optional<PaperMargins>& supported_margins_um() const {
+      return supported_margins_um_;
+    }
+#endif  // BUILDFLAG(IS_CHROMEOS)
+
    private:
     std::string display_name_;
     std::string vendor_id_;
@@ -257,6 +230,13 @@ struct COMPONENT_EXPORT(PRINT_BACKEND) PrinterSemanticCapsAndDefaults {
     // *only* supports borderless and has no variant with margins, this field
     // will be false and `printable_area_um` will cover the entire page.
     bool has_borderless_variant_ = false;
+
+#if BUILDFLAG(IS_CHROMEOS)
+    // This field represents supported margins by the printer for this paper.
+    // If this field is nullopt, it means that it was not possible to determine
+    // the margins.
+    std::optional<PaperMargins> supported_margins_um_;
+#endif  // BUILDFLAG(IS_CHROMEOS)
   };
   using Papers = std::vector<Paper>;
   Papers papers;
@@ -282,11 +262,12 @@ struct COMPONENT_EXPORT(PRINT_BACKEND) PrinterSemanticCapsAndDefaults {
 #if BUILDFLAG(IS_CHROMEOS)
   bool pin_supported = false;
   AdvancedCapabilities advanced_capabilities;
-#endif  // BUILDFLAG(IS_CHROMEOS)
 
-#if BUILDFLAG(IS_WIN)
-  std::optional<PageOutputQuality> page_output_quality;
-#endif  // BUILDFLAG(IS_WIN)
+  // Print scaling capability
+  std::vector<mojom::PrintScalingType> print_scaling_types;
+  mojom::PrintScalingType print_scaling_type_default =
+      mojom::PrintScalingType::kUnknownPrintScalingType;
+#endif  // BUILDFLAG(IS_CHROMEOS)
 };
 
 #if defined(UNIT_TEST)
@@ -352,8 +333,6 @@ class COMPONENT_EXPORT(PRINT_BACKEND) PrintBackend
 
 #if BUILDFLAG(IS_WIN)
   // Gets the capabilities and defaults for a specific printer.
-  // TODO(crbug.com/40100562): Evaluate if this code is useful and delete if
-  // not.
   virtual mojom::ResultCode GetPrinterCapsAndDefaults(
       const std::string& printer_name,
       PrinterCapsAndDefaults* printer_info) = 0;
@@ -376,16 +355,6 @@ class COMPONENT_EXPORT(PRINT_BACKEND) PrintBackend
 
   // Returns true if printer_name points to a valid printer.
   virtual bool IsValidPrinter(const std::string& printer_name) = 0;
-
-#if BUILDFLAG(IS_WIN)
-
-  // This method uses the XPS API to get the printer capabilities.
-  // Returns raw XML string on success, or mojom::ResultCode on failure.
-  // This method is virtual to support testing.
-  virtual base::expected<std::string, mojom::ResultCode>
-  GetXmlPrinterCapabilitiesForXpsDriver(const std::string& printer_name);
-
-#endif  // BUILDFLAG(IS_WIN)
 
   // Allocates a print backend.
   static scoped_refptr<PrintBackend> CreateInstance(const std::string& locale);

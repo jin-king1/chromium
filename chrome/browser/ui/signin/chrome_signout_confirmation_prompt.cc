@@ -17,7 +17,11 @@ constexpr char kChromeSignoutPromptHistogramUnsyncedVariant[] = "Unsynced";
 constexpr char kChromeSignoutPromptHistogramNoUnsyncedVariant[] = "NoUnsynced";
 constexpr char kChromeSignoutPromptHistogramSupervisedProfileVariant[] =
     "SupervisedProfile";
+constexpr char kChromeSignoutPromptHistogramTooManyBookmarksVariant[] =
+    "TooManyBookmarks";
 
+constexpr char kAccountExtensionsSignoutChoiceHistogramName[] =
+    "Signin.Extensions.AccountExtensionsSignoutChoice";
 }  // namespace
 
 void RecordChromeSignoutConfirmationPromptMetrics(
@@ -39,10 +43,36 @@ void RecordChromeSignoutConfirmationPromptMetrics(
       histogram_variant_name =
           kChromeSignoutPromptHistogramSupervisedProfileVariant;
       break;
+    case ChromeSignoutConfirmationPromptVariant::kTooManyBookmarks:
+      histogram_variant_name =
+          kChromeSignoutPromptHistogramTooManyBookmarksVariant;
+      break;
   }
 
   base::UmaHistogramEnumeration(
       base::StrCat(
           {kChromeSignoutPromptHistogramBaseName, histogram_variant_name}),
       choice);
+}
+
+void RecordAccountExtensionsSignoutChoice(
+    ChromeSignoutConfirmationChoice choice,
+    bool account_extensions_kept) {
+  AccountExtensionsSignoutChoice extension_choice =
+      AccountExtensionsSignoutChoice::kCancelSignout;
+  switch (choice) {
+    case ChromeSignoutConfirmationChoice::kCancelSignout:
+    case ChromeSignoutConfirmationChoice::kCancelSignoutAndReauth:
+      break;
+    case ChromeSignoutConfirmationChoice::kSignout:
+      extension_choice =
+          account_extensions_kept
+              ? AccountExtensionsSignoutChoice::kSignoutAccountExtensionsKept
+              : AccountExtensionsSignoutChoice::
+                    kSignoutAccountExtensionsUninstalled;
+      break;
+  }
+
+  base::UmaHistogramEnumeration(kAccountExtensionsSignoutChoiceHistogramName,
+                                extension_choice);
 }

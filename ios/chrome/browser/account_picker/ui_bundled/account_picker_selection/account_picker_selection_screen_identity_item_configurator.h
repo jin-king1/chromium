@@ -7,16 +7,19 @@
 
 #import <UIKit/UIKit.h>
 
+class GaiaId;
 @class TableViewIdentityItem;
 
 // This class configures TableViewIdentityItem instances.
 @interface AccountPickerSelectionScreenIdentityItemConfigurator : NSObject
 
-@property(nonatomic, strong) NSString* gaiaID;
-@property(nonatomic, strong) NSString* name;
-@property(nonatomic, strong) NSString* email;
+@property(nonatomic, assign) GaiaId gaiaID;
+// The name may be nil if it has not yet been loaded.
+@property(nonatomic, copy) NSString* name;
+@property(nonatomic, copy) NSString* email;
 @property(nonatomic, strong) UIImage* avatar;
 @property(nonatomic, assign) BOOL selected;
+@property(nonatomic, assign) BOOL managed;
 
 - (void)configureIdentityChooser:(TableViewIdentityItem*)item;
 

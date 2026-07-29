@@ -36,22 +36,49 @@ class GPUCommandEncoder : public DawnObject<wgpu::CommandEncoder> {
   GPUCommandEncoder(const GPUCommandEncoder&) = delete;
   GPUCommandEncoder& operator=(const GPUCommandEncoder&) = delete;
 
-  // gpu_command_encoder.idl
+  // gpu_command_encoder.idl {{{
   GPURenderPassEncoder* beginRenderPass(
       const GPURenderPassDescriptor* descriptor,
       ExceptionState& exception_state);
   GPUComputePassEncoder* beginComputePass(
       const GPUComputePassDescriptor* descriptor,
       ExceptionState& exception_state);
-  void copyBufferToBuffer(DawnObject<wgpu::Buffer>* src,
-                          uint64_t src_offset,
-                          DawnObject<wgpu::Buffer>* dst,
-                          uint64_t dst_offset,
-                          uint64_t size) {
-    DCHECK(src);
-    DCHECK(dst);
-    GetHandle().CopyBufferToBuffer(src->GetHandle(), src_offset,
-                                   dst->GetHandle(), dst_offset, size);
+  void copyBufferToBuffer(DawnObject<wgpu::Buffer>* source,
+                          DawnObject<wgpu::Buffer>* destination,
+                          ExceptionState& exception_state) {
+    copyBufferToBuffer(source, 0, destination, 0, exception_state);
+  }
+  void copyBufferToBuffer(DawnObject<wgpu::Buffer>* source,
+                          DawnObject<wgpu::Buffer>* destination,
+                          uint64_t size,
+                          ExceptionState& exception_state) {
+    copyBufferToBuffer(source, 0, destination, 0, size, exception_state);
+  }
+  void copyBufferToBuffer(DawnObject<wgpu::Buffer>* source,
+                          uint64_t source_offset,
+                          DawnObject<wgpu::Buffer>* destination,
+                          uint64_t destination_offset,
+                          ExceptionState& exception_state) {
+    DCHECK(source);
+    // Underflow in the size calculation is acceptable because a GPU validation
+    // error will be fired if the resulting size is a very large positive
+    // integer. The offset is validated to be less than the buffer size before
+    // we compute the remaining size in the buffer.
+    copyBufferToBuffer(source, source_offset, destination, destination_offset,
+                       source->GetHandle().GetSize() - source_offset,
+                       exception_state);
+  }
+  void copyBufferToBuffer(DawnObject<wgpu::Buffer>* source,
+                          uint64_t source_offset,
+                          DawnObject<wgpu::Buffer>* destination,
+                          uint64_t destination_offset,
+                          uint64_t size,
+                          ExceptionState& exception_state) {
+    DCHECK(source);
+    DCHECK(destination);
+    GetHandle().CopyBufferToBuffer(source->GetHandle(), source_offset,
+                                   destination->GetHandle(), destination_offset,
+                                   size);
   }
   void copyBufferToTexture(GPUTexelCopyBufferInfo* source,
                            GPUTexelCopyTextureInfo* destination,
@@ -94,10 +121,10 @@ class GPUCommandEncoder : public DawnObject<wgpu::CommandEncoder> {
     GetHandle().ClearBuffer(buffer->GetHandle(), offset, size);
   }
   GPUCommandBuffer* finish(const GPUCommandBufferDescriptor* descriptor);
+  // }}} End of WebIDL binding implementation.
 
-  void setLabelImpl(const String& value) override {
-    std::string utf8_label = value.Utf8();
-    GetHandle().SetLabel(utf8_label.c_str());
+  void SetLabelImpl(std::string_view value) override {
+    GetHandle().SetLabel(value);
   }
 };
 

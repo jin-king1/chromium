@@ -40,10 +40,14 @@ class FirstPartySetMetadata;
 class NET_EXPORT GlobalFirstPartySets {
  public:
   GlobalFirstPartySets();
-  GlobalFirstPartySets(
+  GlobalFirstPartySets(base::Version public_sets_version,
+                       FirstPartySetsContextConfig public_config);
+
+  // Convenience factory for tests. CHECKs if inputs are not valid.
+  static GlobalFirstPartySets CreateForTesting(
       base::Version public_sets_version,
       base::flat_map<SchemefulSite, FirstPartySetEntry> entries,
-      base::flat_map<SchemefulSite, SchemefulSite> aliases);
+      base::flat_map<SchemefulSite, SchemefulSite> aliases = {});
 
   GlobalFirstPartySets(GlobalFirstPartySets&&);
   GlobalFirstPartySets& operator=(GlobalFirstPartySets&&);
@@ -51,7 +55,6 @@ class NET_EXPORT GlobalFirstPartySets {
   ~GlobalFirstPartySets();
 
   bool operator==(const GlobalFirstPartySets& other) const;
-  bool operator!=(const GlobalFirstPartySets& other) const;
 
   // Creates a clone of this instance.
   GlobalFirstPartySets Clone() const;
@@ -66,12 +69,6 @@ class NET_EXPORT GlobalFirstPartySets {
   // insecure.
   std::optional<FirstPartySetEntry> FindEntry(
       const SchemefulSite& site,
-      const FirstPartySetsContextConfig& config) const;
-
-  // Batched version of `FindEntry`. Where `FindEntry` would have returned
-  // nullopt, this just omits from the result map.
-  base::flat_map<SchemefulSite, FirstPartySetEntry> FindEntries(
-      const base::flat_set<SchemefulSite>& sites,
       const FirstPartySetsContextConfig& config) const;
 
   // Computes the First-Party Set metadata related to the given request context.
@@ -125,7 +122,9 @@ class NET_EXPORT GlobalFirstPartySets {
           f) const;
 
   // Whether the global sets are empty.
-  bool empty() const { return entries_.empty() && manual_config_.empty(); }
+  bool empty() const {
+    return public_config_.empty() && manual_config_.empty();
+  }
 
   const base::Version& public_sets_version() const {
     return public_sets_version_;
@@ -139,11 +138,9 @@ class NET_EXPORT GlobalFirstPartySets {
   friend NET_EXPORT std::ostream& operator<<(std::ostream& os,
                                              const GlobalFirstPartySets& sets);
 
-  GlobalFirstPartySets(
-      base::Version public_sets_version,
-      base::flat_map<SchemefulSite, FirstPartySetEntry> entries,
-      base::flat_map<SchemefulSite, SchemefulSite> aliases,
-      FirstPartySetsContextConfig manual_config);
+  GlobalFirstPartySets(base::Version public_sets_version,
+                       FirstPartySetsContextConfig public_config,
+                       FirstPartySetsContextConfig manual_config);
 
   // Same as the public version of FindEntry, but is allowed to omit the
   // `config` argument (i.e. pass nullptr instead of a reference).
@@ -199,19 +196,20 @@ class NET_EXPORT GlobalFirstPartySets {
   bool IsValid(base::optional_ref<const FirstPartySetsContextConfig> config =
                    std::nullopt) const;
 
+  // Resolves an alias site into the canonical representative site, if possible.
+  // The returned reference's lifetime is the *minimum* of the lifetimes of
+  // `site` and `this`.
+  const SchemefulSite& ResolveAlias(const SchemefulSite& site) const
+      LIFETIME_BOUND;
+
   // The version associated with the component_updater-provided public sets.
   // This may be invalid if the "First-Party Sets" component has not been
   // installed yet, or has been corrupted. Entries and aliases from invalid
   // components are ignored.
   base::Version public_sets_version_;
 
-  // Represents the mapping of site -> entry, where keys are sites within sets,
-  // and values are entries of the sets.
-  base::flat_map<SchemefulSite, FirstPartySetEntry> entries_;
-
-  // The site aliases. Used to normalize a given SchemefulSite into its
-  // canonical representative, before looking it up in `entries_`.
-  base::flat_map<SchemefulSite, SchemefulSite> aliases_;
+  // Stores the sets defined by the public repository.
+  FirstPartySetsContextConfig public_config_;
 
   // Stores the customizations induced by the manually-specified set. May be
   // empty if no switch was provided.

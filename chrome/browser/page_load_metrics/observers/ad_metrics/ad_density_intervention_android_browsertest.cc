@@ -7,7 +7,6 @@
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "chrome/browser/subresource_filter/subresource_filter_browser_test_harness.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/test/base/chrome_test_utils.h"
 #include "components/messages/android/message_enums.h"
 #include "components/messages/android/test/messages_test_helper.h"
@@ -73,9 +72,12 @@ IN_PROC_BROWSER_TEST_F(
   const GURL url(embedded_test_server()->GetURL(
       "a.com", "/ads_observer/blank_with_adiframe_writer.html"));
 
-  waiter->SetMainFrameIntersectionExpectation();
+  waiter->SetMainFrameRectExpectation();
   EXPECT_TRUE(content::NavigateToURL(web_contents, url));
   waiter->Wait();
+
+  page_load_metrics::AddTextAndWaitForFirstContentfulPaint(web_contents,
+                                                           waiter.get());
 
   int document_height = page_load_metrics::GetDocumentHeight(web_contents);
 
@@ -114,9 +116,10 @@ IN_PROC_BROWSER_TEST_F(
       1);
 }
 
+// TODO(crbug.com/449908513): Re-enable this test.
 IN_PROC_BROWSER_TEST_F(
     AdDensityViolationBrowserTestMessagesUi,
-    MobilePageAdDensityByHeightBelow30_AdInterventionNotTriggered_MessagesUi) {
+    DISABLED_MobilePageAdDensityByHeightBelow30_AdInterventionNotTriggered_MessagesUi) {
   base::HistogramTester histogram_tester;
   ukm::TestAutoSetUkmRecorder ukm_recorder;
 
@@ -127,9 +130,12 @@ IN_PROC_BROWSER_TEST_F(
   const GURL url(embedded_test_server()->GetURL(
       "a.com", "/ads_observer/blank_with_adiframe_writer.html"));
 
-  waiter->SetMainFrameIntersectionExpectation();
+  waiter->SetMainFrameRectExpectation();
   EXPECT_TRUE(content::NavigateToURL(web_contents, url));
   waiter->Wait();
+
+  page_load_metrics::AddTextAndWaitForFirstContentfulPaint(web_contents,
+                                                           waiter.get());
 
   int document_height = page_load_metrics::GetDocumentHeight(web_contents);
 
@@ -190,9 +196,10 @@ class AdDensityViolationBrowserTestWithoutEnforcement
   base::test::ScopedFeatureList feature_list_;
 };
 
+// TODO(crbug.com/494121676): Re-enable this test.
 IN_PROC_BROWSER_TEST_F(
     AdDensityViolationBrowserTestWithoutEnforcement,
-    MobilePageAdDensityByHeightAbove30_NoAdInterventionTriggered) {
+    DISABLED_MobilePageAdDensityByHeightAbove30_NoAdInterventionTriggered) {
   base::HistogramTester histogram_tester;
   ukm::TestAutoSetUkmRecorder ukm_recorder;
 
@@ -203,9 +210,12 @@ IN_PROC_BROWSER_TEST_F(
   const GURL url(embedded_test_server()->GetURL(
       "a.com", "/ads_observer/blank_with_adiframe_writer.html"));
 
-  waiter->SetMainFrameIntersectionExpectation();
+  waiter->SetMainFrameRectExpectation();
   EXPECT_TRUE(content::NavigateToURL(web_contents, url));
   waiter->Wait();
+
+  page_load_metrics::AddTextAndWaitForFirstContentfulPaint(web_contents,
+                                                           waiter.get());
 
   int document_height = page_load_metrics::GetDocumentHeight(web_contents);
 

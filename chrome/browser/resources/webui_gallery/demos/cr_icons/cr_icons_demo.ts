@@ -37,7 +37,7 @@ export class CrIconsDemoElement extends CrLitElement {
     };
   }
 
-  protected crIcons_: string[] = [
+  protected accessor crIcons_: string[] = [
     'icon-arrow-back',  'icon-arrow-dropdown', 'icon-cancel',
     'icon-clear',       'icon-copy-content',   'icon-delete-gray',
     'icon-edit',        'icon-folder-open',    'icon-picture-delete',
@@ -46,9 +46,9 @@ export class CrIconsDemoElement extends CrLitElement {
     'icon-settings',    'icon-visibility',     'icon-visibility-off',
     'subpage-arrow',
   ];
-  protected iconColor_: string = '#000000';
-  protected iconSize_: string = '24';
-  protected icons_: string[] = [];
+  protected accessor iconColor_: string = '#000000';
+  protected accessor iconSize_: string = '24';
+  protected accessor icons_: string[] = [];
 
   override firstUpdated() {
     function getIconNames(iconset: CrIconsetElement) {
@@ -78,8 +78,14 @@ export class CrIconsDemoElement extends CrLitElement {
     this.iconColor_ = color;
   }
 
-  protected onIconSizeChanged_(e: CustomEvent<{value: string}>) {
+  protected onIconSizeValueChanged_(e: CustomEvent<{value: string}>) {
     this.iconSize_ = e.detail.value;
+  }
+}
+
+declare global {
+  interface HTMLElementTagNameMap {
+    'cr-icons-demo': CrIconsDemoElement;
   }
 }
 

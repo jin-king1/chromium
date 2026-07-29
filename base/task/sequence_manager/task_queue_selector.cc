@@ -14,7 +14,7 @@
 #include "base/task/sequence_manager/work_queue.h"
 #include "base/task/task_features.h"
 #include "base/threading/thread_checker.h"
-#include "base/trace_event/base_tracing.h"
+#include "base/trace_event/trace_event.h"
 
 namespace base::sequence_manager::internal {
 
@@ -217,9 +217,9 @@ WorkQueue* TaskQueueSelector::SelectWorkQueueToService(
   return queue;
 }
 
-Value::Dict TaskQueueSelector::AsValue() const {
+DictValue TaskQueueSelector::AsValue() const {
   DCHECK_CALLED_ON_VALID_THREAD(associated_thread_->thread_checker);
-  Value::Dict state;
+  DictValue state;
   state.Set("immediate_starvation_count", immediate_starvation_count_);
   return state;
 }

@@ -9,6 +9,7 @@
 #include "base/strings/stringprintf.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/test_timeouts.h"
 #include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
@@ -36,6 +37,7 @@
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/accounts_in_cookie_jar_info.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
+#include "components/sync/base/features.h"
 #include "components/sync/base/time.h"
 #include "components/sync/engine/cycle/entity_change_metric_recording.h"
 #include "components/sync/protocol/entity_specifics.pb.h"
@@ -118,7 +120,7 @@ class IsIconURLSyncedChecker : public SingleClientStatusChangeChecker {
 
   // StatusChangeChecker implementation.
   bool IsExitConditionSatisfied(std::ostream* os) override {
-    *os << "Waiting for URLs to be commited to the server";
+    *os << "Waiting for URLs to be committed to the server";
     std::vector<sync_pb::SyncEntity> sessions =
         fake_server_->GetSyncEntitiesByDataType(syncer::SESSIONS);
     for (const sync_pb::SyncEntity& entity : sessions) {
@@ -209,15 +211,30 @@ class FaviconForPageUrlAvailableChecker : public StatusChangeChecker {
   base::CancelableTaskTracker tracker_;
 };
 
-class SingleClientSessionsSyncTest : public SyncTest {
+class SingleClientSessionsSyncTest
+    : public SyncTest,
+      public testing::WithParamInterface<SyncTest::SetupSyncMode> {
  public:
-  SingleClientSessionsSyncTest() : SyncTest(SINGLE_CLIENT) {}
+  SingleClientSessionsSyncTest() : SyncTest(SINGLE_CLIENT) {
+    if (GetSetupSyncMode() == SetupSyncMode::kSyncTransportOnly) {
+      scoped_feature_list_.InitAndEnableFeature(
+          syncer::kReplaceSyncPromosWithSignInPromos);
+    }
+  }
 
   SingleClientSessionsSyncTest(const SingleClientSessionsSyncTest&) = delete;
   SingleClientSessionsSyncTest& operator=(const SingleClientSessionsSyncTest&) =
       delete;
 
   ~SingleClientSessionsSyncTest() override = default;
+
+  SyncTest::SetupSyncMode GetSetupSyncMode() const override {
+    return GetParam();
+  }
+
+  GURL GetInitialURL() const override {
+    return chrome::ChromeUINewTabURLAsGURL();
+  }
 
   void ExpectNavigationChain(const std::vector<GURL>& urls) {
     ScopedWindowMap windows;
@@ -277,14 +294,21 @@ class SingleClientSessionsSyncTest : public SyncTest {
  protected:
   void SetUpOnMainThread() override {
     host_resolver()->AddRule("*", "127.0.0.1");
-    ASSERT_TRUE(embedded_test_server()->Start());
     SyncTest::SetUpOnMainThread();
   }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
-IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest,
+INSTANTIATE_TEST_SUITE_P(,
+                         SingleClientSessionsSyncTest,
+                         GetSyncTestModes(),
+                         testing::PrintToStringParamName());
+
+IN_PROC_BROWSER_TEST_P(SingleClientSessionsSyncTest,
                        RequireUserSelectableTypeTabsForUiDelegate) {
-  ASSERT_TRUE(SetupSync()) << "SetupSync() failed.";
+  ASSERT_TRUE(SetupSync());
   ASSERT_TRUE(CheckInitialState(0));
 
   sync_sessions::SessionSyncService* service =
@@ -292,19 +316,19 @@ IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest,
 
   EXPECT_NE(nullptr, service->GetOpenTabsUIDelegate());
   ASSERT_TRUE(
-      GetClient(0)->DisableSyncForType(syncer::UserSelectableType::kTabs));
+      GetClient(0)->DisableSelectableType(syncer::UserSelectableType::kTabs));
   EXPECT_EQ(nullptr, service->GetOpenTabsUIDelegate());
 }
 
-IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest, Sanity) {
-  ASSERT_TRUE(SetupSync()) << "SetupSync() failed.";
+IN_PROC_BROWSER_TEST_P(SingleClientSessionsSyncTest, Sanity) {
+  ASSERT_TRUE(SetupSync());
 
   ASSERT_TRUE(CheckInitialState(0));
 
   // Add a new session to client 0 and wait for it to sync.
   ScopedWindowMap old_windows;
   GURL url = embedded_test_server()->GetURL("/sync/simple.html");
-  ASSERT_TRUE(OpenTab(0, url));
+  NavigateTab(0, url);
   EXPECT_TRUE(GetLocalWindows(0, &old_windows));
   EXPECT_TRUE(UpdatedProgressMarkerChecker(GetSyncService(0)).Wait());
 
@@ -321,16 +345,16 @@ IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest, Sanity) {
   WaitForURLOnServer(url);
 }
 
-IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest, PRE_SessionStartTime) {
+IN_PROC_BROWSER_TEST_P(SingleClientSessionsSyncTest, PRE_SessionStartTime) {
   const base::Time initial_time = base::Time::Now();
-  ASSERT_TRUE(SetupSync()) << "SetupSync() failed.";
+  ASSERT_TRUE(SetupSync());
 
   ASSERT_TRUE(CheckInitialState(0));
 
   // Add a tab and wait for it to sync.
   GURL url =
       embedded_test_server()->GetURL("www.host1.com", "/sync/simple.html");
-  ASSERT_TRUE(OpenTab(0, url));
+  NavigateTab(0, url);
   EXPECT_TRUE(UpdatedProgressMarkerChecker(GetSyncService(0)).Wait());
 
   WaitForURLOnServer(url);
@@ -351,17 +375,21 @@ IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest, PRE_SessionStartTime) {
     }
   }
   EXPECT_TRUE(found_header);
+
+  // Opened browser is carried over into the following test, so close it
+  // explicitly just before the completion of the preparation.
+  CloseTab(/*browser_index=*/0, /*tab_index=*/0);
 }
 
-IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest, SessionStartTime) {
+IN_PROC_BROWSER_TEST_P(SingleClientSessionsSyncTest, SessionStartTime) {
   const base::Time initial_time = base::Time::Now();
-  ASSERT_TRUE(SetupClients()) << "SetupSync() failed.";
+  ASSERT_TRUE(SetupClients());
 
   // Open another tab and wait for it to sync, just to ensure everything's up
   // to date.
   GURL url =
       embedded_test_server()->GetURL("www.host2.com", "/sync/simple.html");
-  ASSERT_TRUE(OpenTab(0, url));
+  NavigateTab(0, url);
   EXPECT_TRUE(UpdatedProgressMarkerChecker(GetSyncService(0)).Wait());
 
   WaitForURLOnServer(url);
@@ -388,8 +416,8 @@ IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest, SessionStartTime) {
 
 #if !BUILDFLAG(IS_CHROMEOS)
 // Regression test for crbug.com/361256057.
-IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest, UpdateSessionTag) {
-  ASSERT_TRUE(SetupSync()) << "SetupSync() failed.";
+IN_PROC_BROWSER_TEST_P(SingleClientSessionsSyncTest, UpdateSessionTag) {
+  ASSERT_TRUE(SetupSync(SyncTestAccount::kConsumerAccount1));
 
   ASSERT_TRUE(CheckInitialState(0));
 
@@ -409,8 +437,7 @@ IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest, UpdateSessionTag) {
 
   // Disable Sync, then turn it on again with a different account.
   GetClient(0)->SignOutPrimaryAccount();
-  GetClient(0)->SetUsernameForFutureSignins("account2@gmail.com");
-  ASSERT_TRUE(GetClient(0)->SetupSync());
+  ASSERT_TRUE(GetClient(0)->SetupSync(SyncTestAccount::kConsumerAccount2));
 
   std::string second_cache_guid;
   {
@@ -429,8 +456,8 @@ IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest, UpdateSessionTag) {
 }
 #endif  // !BUILDFLAG(IS_CHROMEOS)
 
-IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest, NavigateInTab) {
-  ASSERT_TRUE(SetupSync()) << "SetupSync() failed.";
+IN_PROC_BROWSER_TEST_P(SingleClientSessionsSyncTest, NavigateInTab) {
+  ASSERT_TRUE(SetupSync());
   ASSERT_TRUE(CheckInitialState(0));
 
   GURL url1 =
@@ -438,21 +465,21 @@ IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest, NavigateInTab) {
   GURL url2 =
       embedded_test_server()->GetURL("www.host2.com", "/sync/simple.html");
 
-  ASSERT_TRUE(OpenTab(0, url1));
+  NavigateTab(0, url1);
   WaitForHierarchyOnServer(SessionsHierarchy({{url1.spec()}}));
 
   NavigateTab(0, url2);
   WaitForHierarchyOnServer(SessionsHierarchy({{url2.spec()}}));
 }
 
-IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest,
+IN_PROC_BROWSER_TEST_P(SingleClientSessionsSyncTest,
                        SessionsWithoutHistorySync) {
-  ASSERT_TRUE(SetupSync()) << "SetupSync() failed.";
+  ASSERT_TRUE(SetupSync());
   // If the user disables history sync on settings, but still enables tab sync,
   // then sessions should be synced but the server should be able to tell the
   // difference based on active datatypes.
-  ASSERT_TRUE(
-      GetClient(0)->DisableSyncForType(syncer::UserSelectableType::kHistory));
+  ASSERT_TRUE(GetClient(0)->DisableSelectableType(
+      syncer::UserSelectableType::kHistory));
   ASSERT_TRUE(CheckInitialState(0));
 
   GURL url1 =
@@ -460,28 +487,28 @@ IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest,
   GURL url2 =
       embedded_test_server()->GetURL("www.host2.com", "/sync/simple.html");
 
-  ASSERT_TRUE(OpenTab(0, url1));
+  NavigateTab(0, url1);
   WaitForHierarchyOnServer(SessionsHierarchy({{url1.spec()}}));
 
   NavigateTab(0, url2);
   WaitForHierarchyOnServer(SessionsHierarchy({{url2.spec()}}));
 }
 
-IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest, NoSessions) {
-  ASSERT_TRUE(SetupSync()) << "SetupSync() failed.";
+IN_PROC_BROWSER_TEST_P(SingleClientSessionsSyncTest, NoSessions) {
+  ASSERT_TRUE(SetupSync());
 
   WaitForHierarchyOnServer(SessionsHierarchy());
 }
 
-IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest, TimestampMatchesHistory) {
-  ASSERT_TRUE(SetupSync()) << "SetupSync() failed.";
+IN_PROC_BROWSER_TEST_P(SingleClientSessionsSyncTest, TimestampMatchesHistory) {
+  ASSERT_TRUE(SetupSync());
 
   ASSERT_TRUE(CheckInitialState(0));
 
   GURL url = embedded_test_server()->GetURL("/sync/simple.html");
 
   ScopedWindowMap windows;
-  ASSERT_TRUE(OpenTab(0, url));
+  NavigateTab(0, url);
   ASSERT_TRUE(GetLocalWindows(0, &windows));
 
   int found_navigations = 0;
@@ -505,15 +532,15 @@ IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest, TimestampMatchesHistory) {
   ASSERT_EQ(1, found_navigations);
 }
 
-IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest, ResponseCodeIsPreserved) {
-  ASSERT_TRUE(SetupSync()) << "SetupSync() failed.";
+IN_PROC_BROWSER_TEST_P(SingleClientSessionsSyncTest, ResponseCodeIsPreserved) {
+  ASSERT_TRUE(SetupSync());
 
   ASSERT_TRUE(CheckInitialState(0));
 
   GURL url = embedded_test_server()->GetURL("/sync/simple.html");
 
   ScopedWindowMap windows;
-  ASSERT_TRUE(OpenTab(0, url));
+  NavigateTab(0, url);
   ASSERT_TRUE(GetLocalWindows(0, &windows));
 
   int found_navigations = 0;
@@ -530,12 +557,12 @@ IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest, ResponseCodeIsPreserved) {
   ASSERT_EQ(1, found_navigations);
 }
 
-IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest, FragmentURLNavigation) {
-  ASSERT_TRUE(SetupSync()) << "SetupSync() failed.";
+IN_PROC_BROWSER_TEST_P(SingleClientSessionsSyncTest, FragmentURLNavigation) {
+  ASSERT_TRUE(SetupSync());
   ASSERT_TRUE(CheckInitialState(0));
 
   const GURL url(kBaseFragmentURL);
-  ASSERT_TRUE(OpenTab(0, url));
+  NavigateTab(0, url);
   WaitForURLOnServer(url);
 
   const GURL fragment_url(kSpecifiedFragmentURL);
@@ -543,14 +570,14 @@ IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest, FragmentURLNavigation) {
   WaitForURLOnServer(fragment_url);
 }
 
-IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest,
+IN_PROC_BROWSER_TEST_P(SingleClientSessionsSyncTest,
                        NavigationChainForwardBack) {
-  ASSERT_TRUE(SetupSync()) << "SetupSync() failed.";
+  ASSERT_TRUE(SetupSync());
   ASSERT_TRUE(CheckInitialState(0));
 
   GURL first_url =
       embedded_test_server()->GetURL("www.host1.com", "/sync/simple.html");
-  ASSERT_TRUE(OpenTab(0, first_url));
+  NavigateTab(0, first_url);
   WaitForURLOnServer(first_url);
 
   GURL second_url =
@@ -569,14 +596,14 @@ IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest,
   ExpectNavigationChain({first_url, second_url});
 }
 
-IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest,
+IN_PROC_BROWSER_TEST_P(SingleClientSessionsSyncTest,
                        NavigationChainAlteredDestructively) {
-  ASSERT_TRUE(SetupSync()) << "SetupSync() failed.";
+  ASSERT_TRUE(SetupSync());
   ASSERT_TRUE(CheckInitialState(0));
 
   GURL base_url =
       embedded_test_server()->GetURL("www.base.com", "/sync/simple.html");
-  ASSERT_TRUE(OpenTab(0, base_url));
+  NavigateTab(0, base_url);
   WaitForURLOnServer(base_url);
 
   GURL first_url =
@@ -604,8 +631,8 @@ IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest,
   ExpectNavigationChain({base_url, second_url});
 }
 
-IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest, OpenNewTab) {
-  ASSERT_TRUE(SetupSync()) << "SetupSync() failed.";
+IN_PROC_BROWSER_TEST_P(SingleClientSessionsSyncTest, OpenNewTab) {
+  ASSERT_TRUE(SetupSync());
   ASSERT_TRUE(CheckInitialState(0));
 
   GURL base_url =
@@ -622,13 +649,13 @@ IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest, OpenNewTab) {
       SessionsHierarchy({{base_url.spec(), new_tab_url.spec()}}));
 }
 
-IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest, OpenNewWindow) {
-  ASSERT_TRUE(SetupSync()) << "SetupSync() failed.";
+IN_PROC_BROWSER_TEST_P(SingleClientSessionsSyncTest, OpenNewWindow) {
+  ASSERT_TRUE(SetupSync());
   ASSERT_TRUE(CheckInitialState(0));
 
   GURL base_url =
       embedded_test_server()->GetURL("www.host1.com", "/sync/simple.html");
-  ASSERT_TRUE(OpenTab(0, base_url));
+  NavigateTab(0, base_url);
 
   WaitForURLOnServer(base_url);
 
@@ -641,7 +668,7 @@ IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest, OpenNewWindow) {
       SessionsHierarchy({{base_url.spec()}, {new_window_url.spec()}}));
 }
 
-IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest,
+IN_PROC_BROWSER_TEST_P(SingleClientSessionsSyncTest,
                        GarbageCollectionOfForeignSessions) {
   const std::string kForeignSessionTag = "ForeignSessionTag";
   const std::string kForeignClientName = "ForeignClientName";
@@ -675,7 +702,7 @@ IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest,
   }
 
   base::HistogramTester histogram_tester;
-  ASSERT_TRUE(SetupSync()) << "SetupSync() failed.";
+  ASSERT_TRUE(SetupSync());
 
   // Verify that all entities have been deleted.
   WaitForHierarchyOnServer(SessionsHierarchy());
@@ -691,7 +718,7 @@ IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest,
                    syncer::DataTypeEntityChange::kLocalDeletion));
 }
 
-IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest,
+IN_PROC_BROWSER_TEST_P(SingleClientSessionsSyncTest,
                        GarbageCollectionOfForeignOrphanTabWithoutHeader) {
   const std::string kForeignSessionTag = "ForeignSessionTag";
   const SessionID kWindowId = SessionID::FromSerializedValue(5);
@@ -721,7 +748,7 @@ IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest,
   }
 
   base::HistogramTester histogram_tester;
-  ASSERT_TRUE(SetupSync()) << "SetupSync() failed.";
+  ASSERT_TRUE(SetupSync());
 
   // Verify that all entities have been deleted.
   WaitForHierarchyOnServer(SessionsHierarchy());
@@ -737,9 +764,9 @@ IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest,
                    syncer::DataTypeEntityChange::kLocalDeletion));
 }
 
-// Regression test for crbug.com/915133 that verifies the browser doesn't crash
-// if the server sends corrupt data during initial merge.
-IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest, CorruptInitialForeignTab) {
+// Regression test for crbug.com/41431802 that verifies the browser doesn't
+// crash if the server sends corrupt data during initial merge.
+IN_PROC_BROWSER_TEST_P(SingleClientSessionsSyncTest, CorruptInitialForeignTab) {
   // Tabs with a negative node ID should be ignored.
   sync_pb::EntitySpecifics specifics;
   specifics.mutable_session()->mutable_tab();
@@ -751,7 +778,7 @@ IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest, CorruptInitialForeignTab) {
           /*creation_time=*/0,
           /*last_modified_time=*/0));
 
-  ASSERT_TRUE(SetupSync()) << "SetupSync() failed.";
+  ASSERT_TRUE(SetupSync());
 
   // Foreign data should be empty.
   SyncedSessionVector sessions;
@@ -759,10 +786,10 @@ IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest, CorruptInitialForeignTab) {
   EXPECT_EQ(0U, sessions.size());
 }
 
-// Regression test for crbug.com/915133 that verifies the browser doesn't crash
-// if the server sends corrupt data as incremental update.
-IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest, CorruptForeignTabUpdate) {
-  ASSERT_TRUE(SetupSync()) << "SetupSync() failed.";
+// Regression test for crbug.com/41431802 that verifies the browser doesn't
+// crash if the server sends corrupt data as incremental update.
+IN_PROC_BROWSER_TEST_P(SingleClientSessionsSyncTest, CorruptForeignTabUpdate) {
+  ASSERT_TRUE(SetupSync());
 
   // Tabs with a negative node ID should be ignored.
   sync_pb::EntitySpecifics specifics;
@@ -776,7 +803,8 @@ IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest, CorruptForeignTabUpdate) {
           /*last_modified_time=*/0));
 
   // Mimic a browser restart by forcing a refresh to get updates.
-  GetSyncService(0)->TriggerRefresh({syncer::SESSIONS});
+  GetSyncService(0)->TriggerRefresh(
+      syncer::SyncService::TriggerRefreshSource::kUnknown, {syncer::SESSIONS});
   EXPECT_TRUE(UpdatedProgressMarkerChecker(GetSyncService(0)).Wait());
 
   // Foreign data should be empty.
@@ -785,8 +813,8 @@ IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest, CorruptForeignTabUpdate) {
   EXPECT_EQ(0U, sessions.size());
 }
 
-IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest, TabMovedToOtherWindow) {
-  ASSERT_TRUE(SetupSync()) << "SetupSync() failed.";
+IN_PROC_BROWSER_TEST_P(SingleClientSessionsSyncTest, TabMovedToOtherWindow) {
+  ASSERT_TRUE(SetupSync());
   ASSERT_TRUE(CheckInitialState(0));
 
   GURL base_url =
@@ -794,7 +822,7 @@ IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest, TabMovedToOtherWindow) {
   GURL moved_tab_url =
       embedded_test_server()->GetURL("www.host1.com", "/sync/simple.html");
 
-  ASSERT_TRUE(OpenTab(0, base_url));
+  NavigateTab(0, base_url);
   ASSERT_TRUE(OpenTabAtIndex(0, 1, moved_tab_url));
 
   GURL new_window_url =
@@ -812,8 +840,8 @@ IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest, TabMovedToOtherWindow) {
       {{base_url.spec()}, {new_window_url.spec(), moved_tab_url.spec()}}));
 }
 
-IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest, CookieJarMismatch) {
-  ASSERT_TRUE(SetupSync()) << "SetupSync() failed.";
+IN_PROC_BROWSER_TEST_P(SingleClientSessionsSyncTest, CookieJarMismatch) {
+  ASSERT_TRUE(SetupSync());
 
   ASSERT_TRUE(CheckInitialState(0));
 
@@ -824,7 +852,7 @@ IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest, CookieJarMismatch) {
   // Add a new session to client 0 and wait for it to sync.
   GURL url1 =
       embedded_test_server()->GetURL("www.host1.com", "/sync/simple.html");
-  ASSERT_TRUE(OpenTab(0, url1));
+  NavigateTab(0, url1);
   WaitForURLOnServer(url1);
 
   // Verify the cookie jar mismatch bool is set to true.
@@ -859,9 +887,9 @@ IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest, CookieJarMismatch) {
       << syncer::ClientToServerMessageToValue(second_commit, /*options=*/{});
 }
 
-IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest,
+IN_PROC_BROWSER_TEST_P(SingleClientSessionsSyncTest,
                        ShouldNotifyLoadedIconUrl) {
-  ASSERT_TRUE(SetupSync()) << "SetupSync() failed.";
+  ASSERT_TRUE(SetupSync());
   ASSERT_TRUE(CheckInitialState(0));
 
   // Url with endoded 1 pixel icon.
@@ -873,7 +901,7 @@ IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTest,
       "href=" +
       icon_url + " /></html>";
 
-  ASSERT_TRUE(OpenTab(0, GURL(page_url)));
+  NavigateTab(0, GURL(page_url));
 
   IsIconURLSyncedChecker checker(page_url, icon_url, GetFakeServer(),
                                  GetSyncService(0));
@@ -901,7 +929,13 @@ class SingleClientSessionsSyncTestWithFaviconTestServer
   }
 };
 
-IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTestWithFaviconTestServer,
+INSTANTIATE_TEST_SUITE_P(
+    ,
+    SingleClientSessionsSyncTestWithFaviconTestServer,
+    GetSyncTestModes(),
+    testing::PrintToStringParamName());
+
+IN_PROC_BROWSER_TEST_P(SingleClientSessionsSyncTestWithFaviconTestServer,
                        ShouldDeleteOnDemandIconsOnSessionsDisabled) {
   const std::string kForeignSessionTag = "ForeignSessionTag";
   const std::string kForeignClientName = "ForeignClientName";
@@ -928,7 +962,7 @@ IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTestWithFaviconTestServer,
             /*last_modified_time=*/syncer::TimeToProtoTime(kLastModifiedTime)));
   }
 
-  ASSERT_TRUE(SetupClients()) << "SetupClients() failed.";
+  ASSERT_TRUE(SetupClients());
 
   // Override large icon service to talk to the mock server.
   favicon::LargeIconServiceImpl* large_icon_service =
@@ -937,7 +971,7 @@ IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTestWithFaviconTestServer,
   large_icon_service->SetServerUrlForTesting(
       embedded_test_server()->GetURL("/"));
 
-  ASSERT_TRUE(SetupSync()) << "SetupSync() failed.";
+  ASSERT_TRUE(SetupSync());
 
   // Expect injected foreign sessions to be synced down.
   SyncedSessionVector sessions;
@@ -955,9 +989,9 @@ IN_PROC_BROWSER_TEST_F(SingleClientSessionsSyncTestWithFaviconTestServer,
 
   // Disable tabs and history toggles.
   ASSERT_TRUE(
-      GetClient(0)->DisableSyncForType(syncer::UserSelectableType::kTabs));
-  ASSERT_TRUE(
-      GetClient(0)->DisableSyncForType(syncer::UserSelectableType::kHistory));
+      GetClient(0)->DisableSelectableType(syncer::UserSelectableType::kTabs));
+  ASSERT_TRUE(GetClient(0)->DisableSelectableType(
+      syncer::UserSelectableType::kHistory));
 
   EXPECT_TRUE(FaviconForPageUrlAvailableChecker(GetProfile(0),
                                                 GURL("http://foo/1"),
@@ -976,9 +1010,14 @@ class SingleClientSessionsWithoutDestroyProfileSyncTest
   base::test::ScopedFeatureList features_;
 };
 
-IN_PROC_BROWSER_TEST_F(SingleClientSessionsWithoutDestroyProfileSyncTest,
+INSTANTIATE_TEST_SUITE_P(,
+                         SingleClientSessionsWithoutDestroyProfileSyncTest,
+                         GetSyncTestModes(),
+                         testing::PrintToStringParamName());
+
+IN_PROC_BROWSER_TEST_P(SingleClientSessionsWithoutDestroyProfileSyncTest,
                        ShouldDeleteLastClosedTab) {
-  ASSERT_TRUE(SetupSync()) << "SetupSync() failed.";
+  ASSERT_TRUE(SetupSync());
   ASSERT_TRUE(CheckInitialState(0));
 
   GURL url1 =
@@ -986,7 +1025,7 @@ IN_PROC_BROWSER_TEST_F(SingleClientSessionsWithoutDestroyProfileSyncTest,
   GURL url2 =
       embedded_test_server()->GetURL("www.host2.com", "/sync/simple.html");
 
-  ASSERT_TRUE(OpenTab(0, url1));
+  NavigateTab(0, url1);
   ASSERT_TRUE(OpenTab(0, url2));
   WaitForHierarchyOnServer(SessionsHierarchy({{url1.spec(), url2.spec()}}));
 
@@ -1008,9 +1047,14 @@ class SingleClientSessionsWithDestroyProfileSyncTest
   base::test::ScopedFeatureList features_;
 };
 
-IN_PROC_BROWSER_TEST_F(SingleClientSessionsWithDestroyProfileSyncTest,
+INSTANTIATE_TEST_SUITE_P(,
+                         SingleClientSessionsWithDestroyProfileSyncTest,
+                         GetSyncTestModes(),
+                         testing::PrintToStringParamName());
+
+IN_PROC_BROWSER_TEST_P(SingleClientSessionsWithDestroyProfileSyncTest,
                        ShouldNotDeleteLastClosedTab) {
-  ASSERT_TRUE(SetupSync()) << "SetupSync() failed.";
+  ASSERT_TRUE(SetupSync());
   ASSERT_TRUE(CheckInitialState(0));
 
   GURL url1 =
@@ -1018,7 +1062,7 @@ IN_PROC_BROWSER_TEST_F(SingleClientSessionsWithDestroyProfileSyncTest,
   GURL url2 =
       embedded_test_server()->GetURL("www.host2.com", "/sync/simple.html");
 
-  ASSERT_TRUE(OpenTab(0, url1));
+  NavigateTab(0, url1);
   ASSERT_TRUE(OpenTab(0, url2));
   WaitForHierarchyOnServer(SessionsHierarchy({{url1.spec(), url2.spec()}}));
 

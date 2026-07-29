@@ -20,12 +20,13 @@ import androidx.test.filters.SmallTest;
 
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
-import org.robolectric.annotation.LooperMode;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Batch;
@@ -37,13 +38,13 @@ import org.chromium.ui.modelutil.PropertyModel;
 /** Robolectric tests for {@link IncognitoReauthDialog}. */
 @RunWith(BaseRobolectricTestRunner.class)
 @Config(manifest = Config.NONE)
-@LooperMode(LooperMode.Mode.PAUSED)
 @Batch(UNIT_TESTS)
 public class IncognitoReauthDialogTest {
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock private ModalDialogManager mModalDialogManagerMock;
     @Mock private View mIncognitoReauthViewMock;
 
-    private OnBackPressedCallback mOnBackPressedCallbackMock =
+    private final OnBackPressedCallback mOnBackPressedCallbackMock =
             new OnBackPressedCallback(false) {
                 @Override
                 public void handleOnBackPressed() {}
@@ -53,7 +54,6 @@ public class IncognitoReauthDialogTest {
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
         mIncognitoReauthDialog =
                 new IncognitoReauthDialog(
                         mModalDialogManagerMock,

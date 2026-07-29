@@ -26,6 +26,20 @@ chromium-metrics-reviews@google.com.
 
 <enums>
 
+<!-- LINT.IfChange(BookmarkBarClickType)-->
+
+<enum name="BookmarkBarClickType">
+  <int value="0" label="Unknown"/>
+  <int value="1" label="URL in Bookmark Bar"/>
+  <int value="2" label="Folder in Bookmark Bar"/>
+  <int value="3" label="Overflow Menu"/>
+  <int value="4" label="All Bookmarks"/>
+  <int value="5" label="URL in Pop-up"/>
+  <int value="6" label="Folder in Pop-up"/>
+</enum>
+
+<!-- LINT.ThenChange(//chrome/browser/bookmarks/android/java/src/org/chromium/chrome/browser/bookmarks/bar/BookmarkBarUtils.java:BookmarkBarClickType) -->
+
 <enum name="BookmarkBarDragDropType">
   <int value="0" label="Drop single URL onto bar"/>
   <int value="1" label="Drop single URL into folder"/>
@@ -39,21 +53,21 @@ chromium-metrics-reviews@google.com.
   <int value="9" label="Reorder subfolder in folder"/>
 </enum>
 
-<enum name="BookmarkBarPrefAndState">
-  <summary>
-    The Boomarks bar pref state and whether the user is on the NTP when the
-    reading list is opened.
-  </summary>
-  <int value="0"
-      label="Bookmarks bar pref is set to shown and user is opening the
-             reading list from the NTP"/>
-  <int value="1"
-      label="Bookmarks bar pref is set to hidden and user is opening the
-             reading list from the NTP"/>
-  <int value="2"
-      label="Bookmarks bar pref is set to shown and user is not opening the
-             reading list from the NTP"/>
+<!-- LINT.IfChange(BookmarkBarShownReason)-->
+
+<enum name="BookmarkBarShownReason">
+  <int value="0" label="Unknown reason"/>
+  <int value="1" label="Disabled by user pref"/>
+  <int value="2" label="Enabled by user pref"/>
+  <int value="3" label="Disabled by device pref (e.g. tablet)"/>
+  <int value="4" label="Enabled by device pref (e.g. tablet)"/>
+  <int value="5"
+      label="Disabled by feature param (show_bookmark_bar on tablets)"/>
+  <int value="6"
+      label="Enabled by feature param (show_bookmark_bar on tablets)"/>
 </enum>
+
+<!-- LINT.ThenChange(//chrome/browser/bookmarks/android/java/src/org/chromium/chrome/browser/bookmarks/bar/BookmarkBarUtils.java:BookmarkBarShownReason) -->
 
 <enum name="BookmarkEditSource">
   <int value="0" label="Edited by a user"/>
@@ -110,6 +124,7 @@ chromium-metrics-reviews@google.com.
   <int value="20" label="Help center"/>
   <int value="21" label="Open bookmark (via double-click / enter)"/>
   <int value="22" label="Open folder (via double-click / enter)"/>
+  <int value="23" label="Open in split view"/>
 </enum>
 
 <!-- LINT.IfChange(BookmarkReorderDropTarget) -->
@@ -118,6 +133,7 @@ chromium-metrics-reviews@google.com.
   <int value="0" label="Bookmark bar view"/>
   <int value="1" label="Bookmark manager API"/>
   <int value="2" label="Bookmark Menu"/>
+  <int value="3" label="Bookmark side panel"/>
 </enum>
 
 <!-- LINT.ThenChange(//chrome/browser/ui/bookmarks/bookmark_drag_drop.h:BookmarkReorderDropTarget) -->
@@ -128,6 +144,42 @@ chromium-metrics-reviews@google.com.
   <int value="2" label="Space or Enter"/>
   <int value="3" label="Mouse click"/>
 </enum>
+
+<!-- LINT.IfChange(BookmarksExistInStorageType) -->
+
+<enum name="BookmarksExistInStorageType">
+  <summary>
+    The storage in which bookmarks are stored in permanent nodes.
+  </summary>
+  <int value="0" label="Local only"/>
+  <int value="1" label="Account only"/>
+  <int value="2" label="Local and Account"/>
+</enum>
+
+<!-- LINT.ThenChange(//components/bookmarks/common/bookmark_metrics.h:BookmarksExistInStorageType) -->
+
+<!-- LINT.IfChange(BookmarksFileLoadResult) -->
+
+<enum name="BookmarksFileLoadResult">
+  <int value="0" label="Success"/>
+  <int value="1" label="File Missing"/>
+  <int value="2" label="Content Loading Failed"/>
+  <int value="3" label="Decryption Failed"/>
+  <int value="4" label="JSON Parsing Failed"/>
+  <int value="5" label="Bookmark Codec Decoding Failed"/>
+</enum>
+
+<!-- LINT.ThenChange(//components/bookmarks/common/bookmark_metrics.h:BookmarksFileLoadResult) -->
+
+<!-- LINT.IfChange(BookmarksSerializationResult) -->
+
+<enum name="BookmarksSerializationResult">
+  <int value="0" label="Success"/>
+  <int value="1" label="JSON Encoding Failed"/>
+  <int value="2" label="Encryption Failed"/>
+</enum>
+
+<!-- LINT.ThenChange(//components/bookmarks/common/bookmark_metrics.h:BookmarksSerializationResult) -->
 
 <enum name="BookmarksSidePanelSearchCTREvent">
   <int value="0" label="Shown"/>
@@ -153,6 +205,19 @@ chromium-metrics-reviews@google.com.
   <int value="2" label="ReadingList"/>
 </enum>
 
+<enum name="JavaBookmarkBridgeBackends">
+  <int value="0" label="Bookmarks"/>
+  <int value="1" label="Partner bookmarks"/>
+  <int value="2" label="Local reading list"/>
+  <int value="3" label="Account reading list"/>
+  <int value="4" label="Reading list manager"/>
+</enum>
+
+<enum name="JavaBookmarkBridgeLoadedState">
+  <int value="0" label="Loading started"/>
+  <int value="1" label="Loading finished"/>
+</enum>
+
 <enum name="MobileBookmarkManagerBookmarkRowDisplayPref">
   <int value="0" label="Compact"/>
   <int value="1" label="Visual"/>
@@ -172,27 +237,10 @@ chromium-metrics-reviews@google.com.
   <int value="1" label="Placeholder"/>
 </enum>
 
-<enum name="PowerBookmarkType">
-  <int value="0" label="Unspecified">
-    Unspecified power type, shouldn't be used.
-  </int>
-  <int value="1" label="Mock">Mock power type, used for testing.</int>
-  <int value="2" label="Note">
-    Note power type, used to take notes on webpages.
-  </int>
-</enum>
-
 <enum name="PriceTrackingState">
   <int value="0" label="Price tracking shown"/>
   <int value="1" label="Price tracking enabled"/>
   <int value="2" label="Price tracking disabled"/>
-</enum>
-
-<enum name="StarEntryPointAction">
-  <int value="0" label="Add bookmark"/>
-  <int value="1" label="Edit bookmark"/>
-  <int value="2" label="Add to reading list"/>
-  <int value="3" label="Mark as read"/>
 </enum>
 
 </enums>

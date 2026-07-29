@@ -33,7 +33,7 @@ proto_library("tflite_support_proto") {
   cc_generator_options = "lite=true:"
 
   import_dirs = [ "//third_party/tflite/src" ]
-  proto_deps = [ "//third_party/tflite:tflite_proto" ]
+  deps = [ "//third_party/tflite:tflite_proto" ]
 }
 
 config("tflite_support_flags") {
@@ -47,11 +47,6 @@ config("tflite_support_flags") {
     "-Wno-unused-function",
     "-Wno-unused-variable",
   ]
-  if (!is_win) {
-    cflags_cc = [ "-frtti" ]
-  } else {
-    cflags_cc = [ "/GR" ]
-  }
 }
 
 flatbuffer("metadata_schema") {
@@ -63,6 +58,9 @@ flatbuffer("metadata_schema") {
 }
 
 static_library("tflite_support") {
+  _configs = configs
+  configs = []
+  configs = [ "//third_party/tflite:tflite_shim_config" ] + _configs
   sources = [
     "src/tensorflow_lite_support/cc/common.cc",
     "src/tensorflow_lite_support/cc/common.h",
@@ -145,27 +143,31 @@ static_library("tflite_support") {
 
   deps = [
     ":metadata_schema",
-    ":tflite_support_proto",
     "//base",
     "//third_party/flatbuffers",
     "//third_party/libyuv",
     "//third_party/libzip",
     "//third_party/tensorflow-text",
     "//third_party/tflite",
-    "//third_party/tflite:tflite_proto",
-    "//third_party/tflite:tflite_public_headers",
     "//third_party/zlib:minizip",
   ]
 
   public_deps = [
+    ":tflite_support_proto",
     "//third_party/abseil-cpp:absl",
     "//third_party/re2",
+    "//third_party/tflite:tflite_proto",
+    "//third_party/tflite:tflite_public_headers",
   ]
 
-  configs -= [ "//build/config/compiler:chromium_code" ]
+  configs -= [
+    "//build/config/compiler:chromium_code",
+    "//build/config/compiler:no_rtti",
+  ]
 
   configs += [
     "//build/config/compiler:no_chromium_code",
+    "//build/config/compiler:rtti",
 
     # Must be after no_chromium_code for warning flags to be ordered correctly.
     ":tflite_support_flags",

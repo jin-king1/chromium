@@ -26,7 +26,7 @@ class LensPermissionBubbleInteractiveUiTest : public InteractiveBrowserTest {
 
   auto* GetDialog() { return controller_->dialog_widget_for_testing(); }
 
-  auto* GetPrefService() { return browser()->profile()->GetPrefs(); }
+  auto* GetPrefService() { return browser()->GetProfile()->GetPrefs(); }
 
   void SetUp() override {
     feature_list_.InitWithFeatures(
@@ -38,7 +38,8 @@ class LensPermissionBubbleInteractiveUiTest : public InteractiveBrowserTest {
   void SetUpOnMainThread() override {
     InteractiveBrowserTest::SetUpOnMainThread();
     controller_ = std::make_unique<lens::LensPermissionBubbleController>(
-        browser(), GetPrefService(), LensOverlayInvocationSource::kAppMenu);
+        *browser()->GetActiveTabInterface(), GetPrefService(),
+        LensOverlayInvocationSource::kAppMenu);
     request_permission_callback_called_ = false;
   }
 

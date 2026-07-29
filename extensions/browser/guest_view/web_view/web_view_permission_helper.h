@@ -11,11 +11,12 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/values.h"
+#include "components/content_settings/core/common/content_settings_types.h"
 #include "components/guest_view/common/guest_view_constants.h"
 #include "content/public/browser/media_stream_request.h"
+#include "content/public/browser/permission_result.h"
 #include "content/public/browser/web_contents.h"
 #include "extensions/browser/guest_view/web_view/web_view_permission_types.h"
-#include "ppapi/buildflags/buildflags.h"
 #include "third_party/blink/public/common/mediastream/media_stream_request.h"
 
 namespace url {
@@ -58,10 +59,10 @@ class WebViewPermissionHelper {
 
   using RequestMap = std::map<int, PermissionResponseInfo>;
 
-  int RequestPermission(WebViewPermissionType permission_type,
-                        base::Value::Dict request_info,
-                        PermissionResponseCallback callback,
-                        bool allowed_by_default);
+  void RequestPermission(WebViewPermissionType permission_type,
+                         base::DictValue request_info,
+                         PermissionResponseCallback callback,
+                         bool allowed_by_default);
 
   static WebViewPermissionHelper* FromRenderFrameHost(
       content::RenderFrameHost* render_frame_host);
@@ -92,6 +93,13 @@ class WebViewPermissionHelper {
                                     bool last_unlocked_by_target,
                                     base::OnceCallback<void(bool)> callback);
 
+  // Requests Media Permission from the embedder (for Page Embedded Permission
+  // Control).
+  void RequestMediaPermission(ContentSettingsType type,
+                              const GURL& requesting_frame_origin,
+                              bool user_gesture,
+                              base::OnceCallback<void(bool)> callback);
+
   // Requests Geolocation Permission from the embedder.
   void RequestGeolocationPermission(const GURL& requesting_frame,
                                     bool user_gesture,
@@ -108,6 +116,18 @@ class WebViewPermissionHelper {
   void RequestFullscreenPermission(const url::Origin& requesting_origin,
                                    PermissionResponseCallback callback);
 
+  void RequestClipboardReadWritePermission(
+      const GURL& requesting_frame_url,
+      bool user_gesture,
+      base::OnceCallback<void(bool)> callback);
+
+  void RequestClipboardSanitizedWritePermission(
+      const GURL& requesting_frame_url,
+      base::OnceCallback<void(bool)> callback);
+
+  std::optional<content::PermissionResult> OverridePermissionResult(
+      ContentSettingsType type);
+
   enum PermissionResponseAction { DENY, ALLOW, DEFAULT };
 
   enum SetPermissionResult {
@@ -116,14 +136,12 @@ class WebViewPermissionHelper {
     SET_PERMISSION_DENIED
   };
 
-  // Responds to the permission request |request_id| with |action| and
-  // |user_input|. Returns whether there was a pending request for the provided
-  // |request_id|.
+  // Responds to the permission request `request_id` with `action` and
+  // `user_input`. Returns whether there was a pending request for the provided
+  // `request_id`.
   SetPermissionResult SetPermission(int request_id,
                                     PermissionResponseAction action,
                                     const std::string& user_input);
-
-  void CancelPendingPermissionRequest(int request_id);
 
   WebViewGuest* web_view_guest() { return web_view_guest_; }
 

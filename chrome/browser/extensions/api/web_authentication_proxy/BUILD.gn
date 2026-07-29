@@ -6,6 +6,9 @@ import("//extensions/buildflags/buildflags.gni")
 
 assert(enable_extensions)
 
+# This API is limited to Win/Mac/Linux.
+assert(is_win || is_mac || is_linux)
+
 source_set("web_authentication_proxy") {
   sources = [
     "remote_session_state_change.cc",
@@ -23,10 +26,8 @@ source_set("web_authentication_proxy") {
     "//chrome/browser/profiles:profile",
     "//chrome/common/extensions/api",
     "//components/keyed_service/core",
-    "//content/public/browser",
     "//extensions/browser",
     "//extensions/common",
-    "//services/data_decoder/public/cpp",
   ]
 
   deps = [

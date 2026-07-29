@@ -7,6 +7,8 @@
 
 #import <UIKit/UIKit.h>
 
+#import <string_view>
+
 #import "ios/chrome/browser/scoped_ui_blocker/ui_bundled/ui_blocker_target.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_activation_level.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state_observer.h"
@@ -14,9 +16,34 @@
 
 @class AppState;
 @protocol BrowserProviderInterface;
+@class IncognitoState;
+@class LayoutState;
+@class LensOverlayStateNotifier;
 @class ProfileState;
 @class SceneController;
 @class SceneState;
+@class SceneStatePrefs;
+class SigninInProgress;
+struct SceneStateOptions;
+@class SceneUIBlockerState;
+@class TabGridState;
+
+// During profile switching, it is possible that an animation is displayed
+// over the SceneState until the transition is complete. In that case the
+// object responsible should implement this protocol to allow cancellation
+// of the animation if the Profile initialisation needs to present wait for
+// the user to interact with some mandatory interactive step.
+@protocol SceneStateAnimator
+
+// Cancel any in progress animation. The animation can be restarted with
+// the -restartAnimation method.
+- (void)cancelAnimation;
+
+// Restart the animation if it has been cancelled. Does nothing if the
+// animation has not been cancelled before.
+- (void)restartAnimation;
+
+@end
 
 // Scene agents are objects owned by a scene state and providing some
 // scene-scoped function. They can be driven by SceneStateObserver events.
@@ -34,11 +61,14 @@
 // TODO(b/326186137): This class should implement BrowserProviderInterface.
 @interface SceneState : NSObject <UIBlockerTarget>
 
-- (instancetype)initWithAppState:(AppState*)appState NS_DESIGNATED_INITIALIZER;
-- (instancetype)init NS_UNAVAILABLE;
+// Designated initializer.
+- (instancetype)init NS_DESIGNATED_INITIALIZER;
 
 // The profile state for profile that owns this scene.
 @property(nonatomic, weak) ProfileState* profileState;
+
+// The SceneStateAnimator instance.
+@property(nonatomic, weak) id<SceneStateAnimator> animator;
 
 // The current activation level.
 @property(nonatomic, assign) SceneActivationLevel activationLevel;
@@ -47,19 +77,12 @@
 // WindowActivityRestoredOrigin.
 @property(nonatomic, assign) WindowActivityOrigin currentOrigin;
 
-// YES if some incognito content is visible, for example an incognito tab or the
-// incognito tab switcher.
-@property(nonatomic) BOOL incognitoContentVisible;
-
 // Window for the associated scene, if any.
-@property(nonatomic, readonly) UIWindow* window;
+@property(nonatomic, weak) UIWindow* window;
 
 // The scene object backing this scene state. It's in a 1-to-1 relationship and
 // the window scene owns this object (indirectly through scene delegate).
 @property(nonatomic, weak) UIWindowScene* scene;
-
-// The root view controller of the current scene if any.
-@property(nonatomic, readonly) UIViewController* rootViewController;
 
 // Connection options of `scene`, if any, from when the scene was connected.
 @property(nonatomic, strong) UISceneConnectionOptions* connectionOptions;
@@ -70,13 +93,10 @@
 
 // The persistent identifier for the scene session. This should be used instead
 // of -[UISceneSession persistentIdentifier].
-@property(nonatomic, readonly) NSString* sceneSessionID;
+@property(nonatomic, readonly) std::string_view sceneSessionID;
 
 // The controller for this scene.
 @property(nonatomic, weak) SceneController* controller;
-
-// When this is YES, the scene is showing the modal overlay.
-@property(nonatomic, assign) BOOL presentingModalOverlay;
 
 // When this is YES, the scene either resumed or started up in response to an
 // external intent.
@@ -101,13 +121,27 @@
 
 // YES if sign-in is in progress which covers the authentication flow and the
 // sign-in prompt UI.
-@property(nonatomic, assign) BOOL signinInProgress;
+@property(nonatomic, readonly) BOOL signinInProgress;
 
-// Accessibility identifier of the window.
-@property(nonatomic, assign, readonly) NSString* windowAccessibilityIdentifier;
+// Object containing the state of whether some incognito content is visible, for
+// example an incognito tab or the incognito tab switcher.
+@property(nonatomic, strong, readonly) IncognitoState* incognitoState;
 
-// Root view controller's view.
-@property(nonatomic, assign, readonly) UIView* rootView;
+// Object containing the state of the scene UI blocker.
+@property(nonatomic, strong, readonly) SceneUIBlockerState* uiBlockerState;
+
+// Object containing the state of the tab grid.
+@property(nonatomic, strong, readonly) TabGridState* tabGridState;
+
+// Object containing the state of the layout.
+@property(nonatomic, strong, readonly) LayoutState* layoutState;
+
+// Object used to notify of changes to the LensOverlay state.
+@property(nonatomic, strong, readonly)
+    LensOverlayStateNotifier* lensOverlayStateNotifier;
+
+// Object allowing access to the SceneState scoped preferences.
+@property(nonatomic, readonly) SceneStatePrefs* prefs;
 
 // Adds an observer to this scene state. The observers will be notified about
 // scene state changes per SceneStateObserver protocol.
@@ -122,26 +156,12 @@
 // Array of all agents added to this scene state.
 - (NSArray*)connectedAgents;
 
-// Retrieves per-session preference for `key`. May return nil if the key is
-// not found.
-- (NSObject*)sessionObjectForKey:(NSString*)key;
+// Records that an extra sign-in process started. When the returned value is
+// destructed, the sign-in ended.
+- (std::unique_ptr<SigninInProgress>)createSigninInProgress;
 
-// Stores `object` as a per-session preference if supported by the device or
-// into NSUserDefaults otherwise (old table, phone, ...).
-- (void)setSessionObject:(NSObject*)object forKey:(NSString*)key;
-
-// Set the root view controller with the given view controller. Set
-// `makeKeyAndVisible` to YES if it is needed to show and position it in front
-// of all other windows.
-- (void)setRootViewController:(UIViewController*)rootViewController
-            makeKeyAndVisible:(BOOL)makeKeyAndVisible;
-
-// Shows and positions rootViewController in front of all others window.
-- (void)setRootViewControllerKeyAndVisible;
-
-// Sets the User Interface Style of the window.
-- (void)setWindowUserInterfaceStyle:
-    (UIUserInterfaceStyle)windowUserInterfaceStyle;
+// Connects the SceneState with the given `options`.
+- (void)connectWithOptions:(SceneStateOptions)options;
 
 @end
 

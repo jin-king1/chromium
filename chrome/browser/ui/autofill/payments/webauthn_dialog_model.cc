@@ -66,13 +66,19 @@ std::u16string WebauthnDialogModel::GetCancelButtonLabel() const {
   return std::u16string();
 }
 
-bool WebauthnDialogModel::IsAcceptButtonVisible() const {
-  return state_ == WebauthnDialogState::kOffer ||
-         state_ == WebauthnDialogState::kOfferPending;
-}
-
-bool WebauthnDialogModel::IsAcceptButtonEnabled() const {
-  return state_ != WebauthnDialogState::kOfferPending;
+AuthenticatorRequestSheetModel::AcceptButtonState
+WebauthnDialogModel::GetAcceptButtonState() const {
+  switch (state_) {
+    case WebauthnDialogState::kOffer:
+      return AcceptButtonState::kEnabled;
+    case WebauthnDialogState::kOfferPending:
+      return AcceptButtonState::kDisabled;
+    case WebauthnDialogState::kOfferError:
+    case WebauthnDialogState::kVerifyPending:
+    case WebauthnDialogState::kInactive:
+    case WebauthnDialogState::kUnknown:
+      return AcceptButtonState::kNotVisible;
+  }
 }
 
 std::u16string WebauthnDialogModel::GetAcceptButtonLabel() const {
@@ -122,11 +128,12 @@ void WebauthnDialogModel::SetIllustrationsFromState() {
     case WebauthnDialogState::kOffer:
     case WebauthnDialogState::kOfferPending:
     case WebauthnDialogState::kVerifyPending:
-      vector_illustrations_.emplace(kWebauthnDialogHeaderIcon,
-                                    kWebauthnDialogHeaderDarkIcon);
+      vector_illustrations_.emplace(kWebauthnDialogHeaderCustomIcon,
+                                    kWebauthnDialogHeaderDarkCustomIcon);
       break;
     case WebauthnDialogState::kOfferError:
-      vector_illustrations_.emplace(kWebauthnErrorIcon, kWebauthnErrorDarkIcon);
+      vector_illustrations_.emplace(kWebauthnErrorCustomIcon,
+                                    kWebauthnErrorDarkCustomIcon);
       break;
     case WebauthnDialogState::kInactive:
     case WebauthnDialogState::kUnknown:

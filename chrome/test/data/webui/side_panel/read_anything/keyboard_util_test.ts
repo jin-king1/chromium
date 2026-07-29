@@ -3,10 +3,14 @@
 // found in the LICENSE file.
 import 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
 
-import {getNewIndex, isArrow, isForwardArrow, isHorizontalArrow} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
+import {getNewIndex, isActivationKey, isArrow, isBackwardArrow, isForwardArrow, isHorizontalArrow, isLineFocusShortcut, isPlayPauseShortcut, isVerticalArrow} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome-untrusted://webui-test/chai_assert.js';
 
 suite('Keyboard utils', () => {
+  setup(() => {
+    document.documentElement.dir = 'ltr';
+  });
+
   test('isArrow', () => {
     assertTrue(isArrow('ArrowRight'));
     assertTrue(isArrow('ArrowUp'));
@@ -19,8 +23,6 @@ suite('Keyboard utils', () => {
   });
 
   test('isForwardArrow ltr', () => {
-    document.documentElement.dir = 'ltr';
-
     assertTrue(isForwardArrow('ArrowRight'));
     assertTrue(isForwardArrow('ArrowDown'));
     assertFalse(isForwardArrow('ArrowUp'));
@@ -44,6 +46,30 @@ suite('Keyboard utils', () => {
     assertFalse(isForwardArrow('Space'));
   });
 
+  test('isBackwardArrow ltr', () => {
+    assertTrue(isBackwardArrow('ArrowLeft'));
+    assertTrue(isBackwardArrow('ArrowUp'));
+    assertFalse(isBackwardArrow('ArrowRight'));
+    assertFalse(isBackwardArrow('ArrowDown'));
+    assertFalse(isBackwardArrow('Space'));
+    assertFalse(isForwardArrow('not a key'));
+    assertFalse(isForwardArrow('w'));
+    assertFalse(isForwardArrow('Tab'));
+  });
+
+  test('isBackwardArrow rtl', () => {
+    document.documentElement.dir = 'rtl';
+
+    assertTrue(isBackwardArrow('ArrowRight'));
+    assertTrue(isBackwardArrow('ArrowDown'));
+    assertFalse(isBackwardArrow('ArrowLeft'));
+    assertFalse(isBackwardArrow('ArrowUp'));
+    assertFalse(isBackwardArrow('Space'));
+    assertFalse(isForwardArrow('not a key'));
+    assertFalse(isForwardArrow('w'));
+    assertFalse(isForwardArrow('Tab'));
+  });
+
   test('isHorizontalArrow', () => {
     assertTrue(isHorizontalArrow('ArrowRight'));
     assertTrue(isHorizontalArrow('ArrowLeft'));
@@ -53,6 +79,70 @@ suite('Keyboard utils', () => {
     assertFalse(isHorizontalArrow('w'));
     assertFalse(isHorizontalArrow('Tab'));
     assertFalse(isHorizontalArrow('Space'));
+  });
+
+  test('isVerticalArrow', () => {
+    assertFalse(isVerticalArrow('ArrowRight'));
+    assertFalse(isVerticalArrow('ArrowLeft'));
+    assertTrue(isVerticalArrow('ArrowUp'));
+    assertTrue(isVerticalArrow('ArrowDown'));
+    assertFalse(isVerticalArrow('not a key'));
+    assertFalse(isVerticalArrow('w'));
+    assertFalse(isVerticalArrow('Tab'));
+    assertFalse(isVerticalArrow('Space'));
+  });
+
+  test('isActivationKey', () => {
+    assertFalse(isActivationKey('ArrowRight'));
+    assertFalse(isActivationKey('ArrowLeft'));
+    assertFalse(isActivationKey('ArrowUp'));
+    assertFalse(isActivationKey('ArrowDown'));
+    assertFalse(isActivationKey('not a key'));
+    assertFalse(isActivationKey('w'));
+    assertTrue(isActivationKey('Enter'));
+    assertTrue(isActivationKey(' '));
+  });
+
+  test('isLineFocusShortcut', () => {
+    // Standard 'l'
+    assertTrue(isLineFocusShortcut(new KeyboardEvent('keydown', {key: 'l'})));
+    // Uppercase 'L' (Caps Lock or Shift+L)
+    assertTrue(isLineFocusShortcut(new KeyboardEvent('keydown', {key: 'L'})));
+
+    // Modifiers should fail
+    assertFalse(isLineFocusShortcut(
+        new KeyboardEvent('keydown', {key: 'l', ctrlKey: true})));
+    assertFalse(isLineFocusShortcut(
+        new KeyboardEvent('keydown', {key: 'l', altKey: true})));
+    assertFalse(isLineFocusShortcut(
+        new KeyboardEvent('keydown', {key: 'l', metaKey: true})));
+    assertFalse(isLineFocusShortcut(
+        new KeyboardEvent('keydown', {key: 'l', shiftKey: true})));
+
+    // Other keys should fail
+    assertFalse(isLineFocusShortcut(new KeyboardEvent('keydown', {key: 'k'})));
+    assertFalse(isLineFocusShortcut(new KeyboardEvent('keydown', {key: 'a'})));
+  });
+
+  test('isPlayPauseShortcut', () => {
+    // Standard 'k'
+    assertTrue(isPlayPauseShortcut(new KeyboardEvent('keydown', {key: 'k'})));
+    // Uppercase 'K' (Caps Lock or Shift+K)
+    assertTrue(isPlayPauseShortcut(new KeyboardEvent('keydown', {key: 'K'})));
+
+    // Modifiers should fail
+    assertFalse(isPlayPauseShortcut(
+        new KeyboardEvent('keydown', {key: 'k', ctrlKey: true})));
+    assertFalse(isPlayPauseShortcut(
+        new KeyboardEvent('keydown', {key: 'k', altKey: true})));
+    assertFalse(isPlayPauseShortcut(
+        new KeyboardEvent('keydown', {key: 'k', metaKey: true})));
+    assertFalse(isPlayPauseShortcut(
+        new KeyboardEvent('keydown', {key: 'k', shiftKey: true})));
+
+    // Other keys should fail
+    assertFalse(isPlayPauseShortcut(new KeyboardEvent('keydown', {key: 'l'})));
+    assertFalse(isPlayPauseShortcut(new KeyboardEvent('keydown', {key: 'a'})));
   });
 
   suite('getNewIndex', () => {

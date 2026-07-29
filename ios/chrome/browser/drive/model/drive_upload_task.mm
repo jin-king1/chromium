@@ -5,8 +5,8 @@
 #import "ios/chrome/browser/drive/model/drive_upload_task.h"
 
 #import "base/apple/foundation_util.h"
+#import "base/feature_list.h"
 #import "base/files/file_path.h"
-#import "base/files/file_util.h"
 #import "base/functional/bind.h"
 #import "base/metrics/histogram_functions.h"
 #import "base/strings/sys_string_conversions.h"
@@ -14,7 +14,9 @@
 #import "ios/chrome/browser/download/model/download_mimetype_util.h"
 #import "ios/chrome/browser/drive/model/drive_file_uploader.h"
 #import "ios/chrome/browser/drive/model/drive_metrics.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/system_identity.h"
+#import "ios/chrome/browser/signin/model/system_identity_manager.h"
 #import "net/base/apple/url_conversions.h"
 #import "net/base/url_util.h"
 #import "url/gurl.h"
@@ -40,6 +42,7 @@ const char* HistogramSuffixForUploadTaskState(UploadTask::State state) {
     case UploadTask::State::kComplete:
       return kHistogramSuffixTaskComplete;
     case UploadTask::State::kFailed:
+    case UploadTask::State::kFailedNotResumable:
       return kHistogramSuffixTaskFailed;
   }
 }
@@ -56,6 +59,7 @@ UploadTaskStateHistogram UploadTaskStateToHistogram(UploadTask::State state) {
     case UploadTask::State::kComplete:
       return UploadTaskStateHistogram::kComplete;
     case UploadTask::State::kFailed:
+    case UploadTask::State::kFailedNotResumable:
       return UploadTaskStateHistogram::kFailed;
   }
 }
@@ -149,8 +153,10 @@ void DriveUploadTask::Start() {
   }
   upload_progress_.reset();
   upload_result_.reset();
+
   SetState(State::kInProgress);
-  SearchFolderThenCreateFolderOrDirectlyUploadFile();
+  number_of_attempts_++;
+  FetchClientFolderThenUploadFile();
 }
 
 void DriveUploadTask::Cancel() {
@@ -160,6 +166,16 @@ void DriveUploadTask::Cancel() {
   upload_progress_.reset();
   upload_result_.reset();
   SetState(State::kCancelled);
+}
+
+void DriveUploadTask::Fail(NSError* error, bool resumable) {
+  if (state_ == State::kComplete || state_ == State::kFailed ||
+      state_ == State::kFailedNotResumable || state_ == State::kCancelled) {
+    return;
+  }
+  upload_progress_.reset();
+  upload_result_ = DriveFileUploadResult({.error = error});
+  SetState(resumable ? State::kFailed : State::kFailedNotResumable);
 }
 
 float DriveUploadTask::GetProgress() const {
@@ -174,6 +190,10 @@ float DriveUploadTask::GetProgress() const {
 std::optional<GURL> DriveUploadTask::GetResponseLink(
     bool add_user_identifier) const {
   if (!upload_result_ || !upload_result_->file_link) {
+    base::UmaHistogramEnumeration(
+        "IOS.SaveToDrive.UploadTask.GetResponseLinkFailure",
+        !upload_result_ ? GetResponseLinkFailure::kMissingResult
+                        : GetResponseLinkFailure::kMissingFileLink);
     return std::nullopt;
   }
   GURL result(base::SysNSStringToUTF8(upload_result_->file_link));
@@ -195,44 +215,17 @@ NSError* DriveUploadTask::GetError() const {
 
 #pragma mark - Private
 
-void DriveUploadTask::SearchFolderThenCreateFolderOrDirectlyUploadFile() {
-  number_of_attempts_++;
-  // Search a destination Drive folder using
-  // `SearchSaveToDriveFolder(folder_name, ...)`;
-  uploader_->SearchSaveToDriveFolder(
-      base::SysUTF8ToNSString(folder_name_),
-      base::BindOnce(&DriveUploadTask::CreateFolderOrDirectlyUploadFile,
-                     weak_ptr_factory_.GetWeakPtr()));
-}
-
-void DriveUploadTask::CreateFolderOrDirectlyUploadFile(
-    const DriveFolderResult& folder_search_result) {
-  // Record folder search success histogram.
-  base::UmaHistogramBoolean(kDriveSearchFolderResultSuccessful,
-                            !folder_search_result.error);
-  // If folder search failed, update state and result with the error object.
-  if (folder_search_result.error) {
-    base::UmaHistogramSparse(kDriveSearchFolderResultErrorCode,
-                             folder_search_result.error.code);
-    upload_result_ =
-        DriveFileUploadResult({.error = folder_search_result.error});
-    SetState(State::kFailed);
-    return;
-  }
-  // If the first step returned an existing folder, upload file directly.
-  if (folder_search_result.folder_identifier) {
-    UploadFile(folder_search_result);
-    return;
-  }
-  // Otherwise, create a destination Drive folder using
-  // `CreateSaveToDriveFolder(folder_name, ...)`;
-  auto record_result_successful_callback = base::BindOnce(
-      RecordDriveFolderResultSuccessful, kDriveCreateFolderResultSuccessful);
+void DriveUploadTask::FetchClientFolderThenUploadFile() {
+  // Get or create a destination Drive folder using
+  // `FetchSaveToDriveClientFolder(folder_name, ...)`;
+  auto record_result_successful_callback =
+      base::BindOnce(RecordDriveFolderResultSuccessful,
+                     kDriveFetchClientFolderResultSuccessful);
   auto record_result_error_code_callback = base::BindOnce(
-      RecordDriveFolderResultErrorCode, kDriveCreateFolderResultErrorCode);
+      RecordDriveFolderResultErrorCode, kDriveFetchClientFolderResultErrorCode);
   auto upload_file_callback = base::BindOnce(&DriveUploadTask::UploadFile,
                                              weak_ptr_factory_.GetWeakPtr());
-  uploader_->CreateSaveToDriveFolder(
+  uploader_->FetchSaveToDriveClientFolder(
       base::SysUTF8ToNSString(folder_name_),
       std::move(record_result_successful_callback)
           .Then(std::move(record_result_error_code_callback))

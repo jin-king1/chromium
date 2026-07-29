@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "ui/ozone/platform/wayland/host/wayland_keyboard.h"
 
 #include <keyboard-extension-unstable-v1-client-protocol.h>
@@ -17,9 +12,11 @@
 #include <cstring>
 #include <utility>
 
+#include "base/files/scoped_file.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted_memory.h"
+#include "base/notimplemented.h"
 #include "base/unguessable_token.h"
 #include "ui/base/buildflags.h"
 #include "ui/events/base_event_utils.h"
@@ -197,16 +194,31 @@ void WaylandKeyboard::OnUnhandledKeyEvent(const KeyEvent& key_event) {
   extended_keyboard_->AckKey(serial, false);
 }
 
-// Keyboard shortcuts will be inhibited only when in fullscreen
-// and when a WaylandKeyboardHook is in place for a given widget. See
-// KeyboardLock spec for more details: https://wicg.github.io/keyboard-lock
+// Keyboard shortcuts will be inhibited only when the following conditions are
+// met:
+// 1) A fullscreen window requested by the app is active.
+// 2) A WaylandKeyboardHook is in place for a given widget.
+// 3) Escape key is not requested as the only key (see comment below).
 //
-// TODO(crbug.com/40229635): Revisit once this scenario changes.
+// See KeyboardLock spec for more details: https://wicg.github.io/keyboard-lock
 std::unique_ptr<PlatformKeyboardHook> WaylandKeyboard::CreateKeyboardHook(
     WaylandWindow* window,
     std::optional<base::flat_set<DomCode>> dom_codes,
     PlatformKeyboardHook::KeyEventCallback callback) {
   DCHECK(window);
+  if (dom_codes.has_value() && dom_codes->size() == 1 &&
+      *dom_codes->begin() == DomCode::ESCAPE) {
+    // TODO(crbug.com/40270434): The protocol doesn't support locking specific
+    // keys [1]. So when a lock is active, all keys are locked.
+    // An exception can be made just for escape key since this is typically done
+    // to avoid exiting fullscreen mode only instead of locking any other keys.
+    // And since the key would still be received by the foreground window, there
+    // is really no need to use the protocol in this case, which would lock all
+    // keys, when in fact other shortcuts (e.g. Alt+Tab) should continue to be
+    // handled by the compositor.
+    // [1] https://gitlab.freedesktop.org/wayland/wayland-protocols/-/issues/131
+    return nullptr;
+  }
   return std::make_unique<WaylandKeyboardHook>(
       CreateShortcutsInhibitor(window));
 }
@@ -230,6 +242,7 @@ void WaylandKeyboard::OnKeymap(void* data,
                                uint32_t format,
                                int32_t fd,
                                uint32_t size) {
+  base::ScopedFD scoped_fd(fd);
   auto* self = static_cast<WaylandKeyboard*>(data);
   DCHECK(self);
 
@@ -240,7 +253,7 @@ void WaylandKeyboard::OnKeymap(void* data,
   // mapped with MAP_PRIVATE by the recipient, as MAP_SHARED may fail."
   int map_flags =
       wl_keyboard_get_version(keyboard) >= 7 ? MAP_PRIVATE : MAP_SHARED;
-  void* keymap = mmap(nullptr, size, PROT_READ, map_flags, fd, 0);
+  void* keymap = mmap(nullptr, size, PROT_READ, map_flags, scoped_fd.get(), 0);
   if (keymap == MAP_FAILED) {
     DPLOG(ERROR) << "Failed to map XKB keymap.";
     return;
@@ -248,7 +261,7 @@ void WaylandKeyboard::OnKeymap(void* data,
 
   const char* keymap_string = static_cast<const char*>(keymap);
   if (!self->layout_engine_->SetCurrentLayoutFromBuffer(
-          keymap_string, strnlen(keymap_string, size))) {
+          keymap_string, UNSAFE_TODO(strnlen(keymap_string, size)))) {
     DLOG(ERROR) << "Failed to set XKB keymap.";
   }
   munmap(keymap, size);
@@ -276,6 +289,9 @@ void WaylandKeyboard::OnLeave(void* data,
   auto* self = static_cast<WaylandKeyboard*>(data);
   if (auto* window = wl::RootWindowFromWlSurface(surface))
     self->delegate_->OnKeyboardFocusChanged(window, /*focused=*/false);
+
+  // Upon window focus lose, reset modifier state.
+  self->delegate_->OnKeyboardModifiersChanged(0);
 
   // Upon window focus lose, reset the key repeat timers.
   self->auto_repeat_handler_.StopKeyRepeat();
@@ -382,7 +398,15 @@ void WaylandKeyboard::ProcessKey(uint32_t serial,
                                  uint32_t key,
                                  uint32_t state,
                                  KeyEventKind kind) {
-  bool down = state == WL_KEYBOARD_KEY_STATE_PRESSED;
+  // If we receive a Repeat event while repeat info != 0,
+  // we shouldn't dispatch it.
+  if (state == WL_KEYBOARD_KEY_STATE_REPEATED &&
+      auto_repeat_handler_.IsAutoRepeatEnabled()) {
+    LOG(WARNING) << "Received key repeat event while repeat rate is non-zero";
+    return;
+  }
+
+  bool down = state != WL_KEYBOARD_KEY_STATE_RELEASED;
   if (down) {
     connection_->serial_tracker().UpdateSerial(wl::SerialType::kKeyPress,
                                                serial);
@@ -404,9 +428,11 @@ void WaylandKeyboard::ProcessKey(uint32_t serial,
     return;
   }
 
-  DispatchKey(
-      key, 0 /*scan_code*/, down, false /*repeat*/, std::make_optional(serial),
-      wl::EventMillisecondsToTimeTicks(time), device_id(), EF_NONE, kind);
+  DispatchKey(key, 0 /*scan_code*/, down,
+              state == WL_KEYBOARD_KEY_STATE_REPEATED /*repeat*/,
+              std::make_optional(serial),
+              wl::EventMillisecondsToTimeTicks(time), device_id(), EF_NONE,
+              kind);
 }
 
 void WaylandKeyboard::DispatchKey(unsigned int key,

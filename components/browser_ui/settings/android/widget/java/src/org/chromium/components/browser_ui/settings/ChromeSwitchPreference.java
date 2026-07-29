@@ -4,10 +4,9 @@
 
 package org.chromium.components.browser_ui.settings;
 
-import static org.chromium.build.NullUtil.assumeNonNull;
+import static org.chromium.components.browser_ui.widget.containment.ContainmentUiUtils.parseContainmentAttributes;
 
 import android.content.Context;
-import android.graphics.drawable.Drawable;
 import android.text.TextUtils;
 import android.util.AttributeSet;
 import android.view.View;
@@ -22,20 +21,19 @@ import androidx.preference.SwitchPreferenceCompat;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.components.browser_ui.widget.containment.ContainmentItem;
+import org.chromium.components.browser_ui.widget.containment.ContainmentUiUtils;
 
 /** A Chrome switch preference that supports managed preferences. */
 @NullMarked
-public class ChromeSwitchPreference extends SwitchPreferenceCompat {
+public class ChromeSwitchPreference extends SwitchPreferenceCompat implements ContainmentItem {
     private @Nullable ManagedPreferenceDelegate mManagedPrefDelegate;
 
     /** The View for this preference. */
     private @Nullable View mView;
 
-    /** The initial background resource for this preference. */
-    @Nullable private Drawable mInitialBackgroundDrawable;
-
     /** The color for tinting of the view's background. */
-    @ColorInt @Nullable private Integer mBackgroundColorInt;
+    private @ColorInt @Nullable Integer mBackgroundColorInt;
 
     /** Indicates if the preference uses a custom layout. */
     private final boolean mHasCustomLayout;
@@ -48,7 +46,8 @@ public class ChromeSwitchPreference extends SwitchPreferenceCompat {
      */
     private @Nullable String mSummaryOverrideForScreenReader;
 
-    private boolean mUseSummaryAsTitle;
+    private final boolean mUseSummaryAsTitle;
+    private final @BackgroundStyle int mBackgroundStyle;
 
     public ChromeSwitchPreference(Context context) {
         this(context, null);
@@ -56,6 +55,10 @@ public class ChromeSwitchPreference extends SwitchPreferenceCompat {
 
     public ChromeSwitchPreference(Context context, @Nullable AttributeSet attrs) {
         super(context, attrs);
+
+        ContainmentUiUtils.ContainmentAttributes containmentAttributes =
+                parseContainmentAttributes(context, attrs);
+        mBackgroundStyle = containmentAttributes.backgroundStyle;
 
         mHasCustomLayout = ManagedPreferencesUtils.isCustomLayoutApplied(context, attrs);
         mUseSummaryAsTitle = true;
@@ -73,14 +76,23 @@ public class ChromeSwitchPreference extends SwitchPreferenceCompat {
                 /* hasCustomLayout= */ mHasCustomLayout);
     }
 
+    /**
+     * Returns the ManagedPreferenceDelegate which will determine whether this preference is
+     * managed.
+     */
+    @VisibleForTesting
+    public @Nullable ManagedPreferenceDelegate getManagedPreferenceDelegate() {
+        return mManagedPrefDelegate;
+    }
+
     @Override
     public void onBindViewHolder(PreferenceViewHolder holder) {
         super.onBindViewHolder(holder);
 
-        TextView title = (TextView) assumeNonNull(holder.findViewById(android.R.id.title));
+        TextView title = (TextView) holder.findViewById(android.R.id.title);
         title.setSingleLine(false);
 
-        TextView summary = (TextView) assumeNonNull(holder.findViewById(android.R.id.summary));
+        TextView summary = (TextView) holder.findViewById(android.R.id.summary);
         View.AccessibilityDelegate summaryOverrideDelegate = null;
         if (mSummaryOverrideForScreenReader != null) {
             summaryOverrideDelegate =
@@ -137,17 +149,6 @@ public class ChromeSwitchPreference extends SwitchPreferenceCompat {
         updateBackground();
     }
 
-    /**
-     * Resets the background to its initial resource after a color change. Does nothing if the color
-     * was never changed.
-     */
-    public void clearBackgroundColor() {
-        if (mView == null || mBackgroundColorInt == null || mInitialBackgroundDrawable == null)
-            return;
-        mView.setBackground(mInitialBackgroundDrawable);
-        mBackgroundColorInt = null;
-    }
-
     /** Returns the background color of the preference. */
     public @Nullable @ColorInt Integer getBackgroundColor() {
         return mBackgroundColorInt;
@@ -163,14 +164,20 @@ public class ChromeSwitchPreference extends SwitchPreferenceCompat {
         mSummaryOverrideForScreenReader = text;
     }
 
-    /** Controls whether the summary is used as title when the title is empty. */
-    public void setUseSummaryAsTitle(boolean value) {
-        mUseSummaryAsTitle = value;
-    }
-
     private void updateBackground() {
         if (mView == null || mBackgroundColorInt == null) return;
-        mInitialBackgroundDrawable = mView.getBackground();
         mView.setBackgroundColor(mBackgroundColorInt);
+    }
+
+    @Override
+    public @BackgroundStyle int getCustomBackgroundStyle() {
+        return mBackgroundStyle;
+    }
+
+    @Override
+    public int getCustomMinHeight() {
+        return getContext()
+                .getResources()
+                .getDimensionPixelSize(R.dimen.settings_toggle_item_min_height);
     }
 }

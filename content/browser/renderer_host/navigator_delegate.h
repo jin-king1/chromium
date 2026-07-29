@@ -16,6 +16,25 @@
 #include "content/public/browser/reload_type.h"
 #include "content/public/browser/trust_token_access_details.h"
 
+#if BUILDFLAG(IS_ANDROID)
+#include "base/android/scoped_hardware_buffer_handle.h"
+#include "base/functional/callback_forward.h"
+#include "components/viz/common/resources/release_callback.h"
+
+namespace base {
+class ScopedClosureRunner;
+}  // namespace base
+
+namespace gpu {
+class ClientSharedImage;
+}  // namespace gpu
+
+namespace viz {
+class RasterContextProvider;
+}  // namespace viz
+
+#endif  // BUILDFLAG(IS_ANDROID)
+
 class GURL;
 
 namespace blink {
@@ -33,9 +52,17 @@ class CommitDeferringCondition;
 class FrameTree;
 class NavigationHandle;
 class NavigationRequest;
+class NavigationThrottleRegistry;
 class RenderFrameHostImpl;
+class WebContents;
 struct LoadCommittedDetails;
 struct OpenURLParams;
+
+#if BUILDFLAG(IS_ANDROID)
+using HardwareBufferResultCallback =
+    base::OnceCallback<void(base::android::ScopedHardwareBufferHandle,
+                            base::ScopedClosureRunner)>;
+#endif  // BUILDFLAG(IS_ANDROID)
 
 // A delegate API used by Navigator to notify its embedder of navigation
 // related events.
@@ -74,6 +101,8 @@ class NavigatorDelegate {
   virtual void DidNavigateMainFramePreCommit(
       NavigationHandle* navigation_handle,
       bool navigation_is_within_page) = 0;
+  virtual void DidNavigateAnyFramePreCommit(NavigationHandle* navigation_handle,
+                                            bool navigation_is_within_page) = 0;
 
   // Handles post-navigation tasks in navigation AFTER the entry has been
   // committed to the NavigationController. Note that the NavigationEntry is
@@ -119,8 +148,8 @@ class NavigatorDelegate {
   // Returns the NavigationThrottles to add to this navigation. Normally these
   // are defined by the content/ embedder, except in the case of interstitials
   // where no NavigationThrottles are added to the navigation.
-  virtual std::vector<std::unique_ptr<NavigationThrottle>>
-  CreateThrottlesForNavigation(NavigationHandle* navigation_handle) = 0;
+  virtual void CreateThrottlesForNavigation(
+      NavigationThrottleRegistry& registry) = 0;
 
   // Returns commit deferring conditions to add to this navigation.
   virtual std::vector<std::unique_ptr<CommitDeferringCondition>>
@@ -180,6 +209,11 @@ class NavigatorDelegate {
   // e.g. not enough memory) if this returns true.
   virtual bool MaybeCopyContentAreaAsBitmap(
       base::OnceCallback<void(const SkBitmap&)> callback) = 0;
+
+#if BUILDFLAG(IS_ANDROID)
+  virtual bool MaybeCopyContentAreaAsHardwareBuffer(
+      HardwareBufferResultCallback callback) = 0;
+#endif  // BUILDFLAG(IS_ANDROID)
 
   // Whether animations when performing forward transitions are supported.
   virtual bool SupportsForwardTransitionAnimation() = 0;

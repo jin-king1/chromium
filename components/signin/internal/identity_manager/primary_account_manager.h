@@ -21,6 +21,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <variant>
 
 #include "base/feature_list.h"
 #include "base/functional/callback_helpers.h"
@@ -28,9 +29,9 @@
 #include "base/observer_list.h"
 #include "base/observer_list_types.h"
 #include "base/scoped_observation.h"
-#include "components/prefs/pref_member.h"
 #include "components/signin/internal/identity_manager/profile_oauth2_token_service_observer.h"
 #include "components/signin/public/base/consent_level.h"
+#include "components/signin/public/base/signin_buildflags.h"
 #include "components/signin/public/base/signin_client.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/primary_account_change_event.h"
@@ -38,6 +39,10 @@
 class AccountTrackerService;
 class PrefRegistrySimple;
 class ProfileOAuth2TokenService;
+
+namespace metrics {
+class ProfileMetricsService;
+}  // namespace metrics
 
 namespace signin_metrics {
 enum class ProfileSignout;
@@ -65,20 +70,45 @@ class PrimaryAccountManager : public ProfileOAuth2TokenServiceObserver {
   };
 
   // Enum for histogram 'Signin.PAMInitialize.PrimaryAccountInfoState'.
+  //
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  //
+  // LINT.IfChange(InitializeAccountInfoState)
   enum class InitializeAccountInfoState {
     kAccountInfoAvailable = 0,
     kEmptyAccountInfo_RestoreFailedNotSyncConsented = 1,
     kEmptyAccountInfo_RestoreFailedNoLastSyncGaiaId = 2,
     kEmptyAccountInfo_RestoreFailedNoLastSyncEmail = 3,
     kEmptyAccountInfo_RestoreFailedAccountIdDontMatch = 4,
-    kEmptyAccountInfo_RestoreFailedAsRestoreFeatureIsDisabled = 5,
+    // kEmptyAccountInfo_RestoreFailedAsRestoreFeatureIsDisabled = 5, // no
+    // longer used, related feature flag has been removed
     kEmptyAccountInfo_RestoreSuccessFromLastSyncInfo = 6,
     kMaxValue = kEmptyAccountInfo_RestoreSuccessFromLastSyncInfo,
   };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/signin/enums.xml:PAMInitializePrimaryAccountInfoState)
 
-  PrimaryAccountManager(SigninClient* client,
-                        ProfileOAuth2TokenService* token_service,
-                        AccountTrackerService* account_tracker_service);
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+  // LINT.IfChange(ExplicitSigninDatatypeMigrationState)
+  // Enum for histogram 'Signin.ExplicitSigninDatatypeMigration'.
+  //
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  enum class ExplicitSigninDatatypeMigrationState {
+    kSignedIn = 0,  // Baseline.
+    kSignedInWithExplicitBookmarks = 1,
+    kSignedInWithExplicitExtensions = 2,
+
+    kMaxValue = kSignedInWithExplicitExtensions,
+  };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/signin/enums.xml:ExplicitSigninDatatypeMigrationState)
+#endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
+
+  PrimaryAccountManager(
+      SigninClient* client,
+      ProfileOAuth2TokenService* token_service,
+      AccountTrackerService* account_tracker_service,
+      metrics::ProfileMetricsService* profile_metrics_service);
 
   PrimaryAccountManager(const PrimaryAccountManager&) = delete;
   PrimaryAccountManager& operator=(const PrimaryAccountManager&) = delete;
@@ -201,29 +231,22 @@ class PrimaryAccountManager : public ProfileOAuth2TokenServiceObserver {
   // Fires OnPrimaryAccountChanged() notifications on all observers.
   void FirePrimaryAccountChanged(
       const signin::PrimaryAccountChangeEvent::State& previous_state,
-      absl::variant<signin_metrics::AccessPoint, signin_metrics::ProfileSignout>
+      std::variant<signin_metrics::AccessPoint, signin_metrics::ProfileSignout>
           event_source,
       ScopedPrefCommit& scoped_pref_commit);
 
   // ProfileOAuth2TokenServiceObserver:
   void OnRefreshTokensLoaded() override;
 
-  // Sets the value for `pref::kExplicitBrowserSignin` pref based on the access
-  // point when signing in.
-  void ComputeExplicitBrowserSignin(
+  // Sets the values for various sign-in prefs based on the sign-in access point
+  // and feature enabled states.
+  void SetExplicitBrowserSigninPrefs(
       const signin::PrimaryAccountChangeEvent& event_details,
       ScopedPrefCommit& scoped_pref_commit);
 
   // Returns the primary account. Crashes if it is called before the primary
   // account was initialized.
   const PrimaryAccount& GetPrimaryAccount() const;
-
-  // Callback to changes of `prefs::kSigninAllowed` pref.
-  void OnSigninAllowedPrefChanged();
-
-  // Returns true if the `prefs::kSigninAllowed` pref should modify the primary
-  // account, based on the current state.
-  bool ShouldSigninAllowedPrefAffectPrimaryAccount(bool is_sync_consent);
 
   // The SigninClient instance associated with this object. Must outlive this
   // object.
@@ -237,21 +260,21 @@ class PrimaryAccountManager : public ProfileOAuth2TokenServiceObserver {
   // outlive this object.
   raw_ptr<AccountTrackerService> account_tracker_service_ = nullptr;
 
+  // Allows per profile metrics to be recorded. Should be used to record metrics
+  // of interest instead of regular `base::Uma*()` methods. Must outlive this
+  // object.
+  raw_ref<metrics::ProfileMetricsService> profile_metrics_service_;
+
   // The primary account information. The account may or may not be consented
   // for Sync.
   // Must be kept in sync with prefs. Use SetPrimaryAccountInternal() to change
   // this field.
   std::optional<PrimaryAccount> primary_account_;
 
-  BooleanPrefMember signin_allowed_;
-
   base::ObserverList<Observer> observers_;
   base::ScopedObservation<ProfileOAuth2TokenService,
                           ProfileOAuth2TokenServiceObserver>
       token_service_observation_{this};
 };
-
-// Internal feature - exposed only unit testing.
-BASE_DECLARE_FEATURE(kRestorePrimaryAccountInfo);
 
 #endif  // COMPONENTS_SIGNIN_INTERNAL_IDENTITY_MANAGER_PRIMARY_ACCOUNT_MANAGER_H_

@@ -7,7 +7,6 @@ package org.chromium.android_webview.test;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
-import android.util.Log;
 
 import androidx.test.InstrumentationRegistry;
 import androidx.test.filters.SmallTest;
@@ -20,6 +19,7 @@ import org.junit.runners.Parameterized;
 import org.junit.runners.Parameterized.UseParametersRunnerFactory;
 
 import org.chromium.android_webview.DefaultVideoPosterRequestHandler;
+import org.chromium.base.Log;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.Feature;
 import org.chromium.components.embedder_support.util.WebResourceResponseInfo;
@@ -37,9 +37,9 @@ public class AwContentsClientGetDefaultVideoPosterTest extends AwParameterizedTe
     private static final String TAG = "AwContentsClientGetDefaultVideoPosterTest";
 
     private static class DefaultVideoPosterClient extends TestAwContentsClient {
-        private CallbackHelper mVideoPosterCallbackHelper = new CallbackHelper();
+        private final CallbackHelper mVideoPosterCallbackHelper = new CallbackHelper();
         private Bitmap mPoster;
-        private Context mContext;
+        private final Context mContext;
 
         public DefaultVideoPosterClient(Context context) {
             mContext = context;

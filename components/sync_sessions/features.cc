@@ -7,7 +7,14 @@
 namespace sync_sessions {
 
 BASE_FEATURE(kOptimizeAssociateWindowsAndroid,
-             "OptimizeAssociateWindowsAndroid",
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kFilterNavigationsBySyncSessionsClient,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kSyncTabScreenshots, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kSyncSessionsUsePreferredDisplayName,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 }  // namespace sync_sessions

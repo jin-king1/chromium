@@ -14,10 +14,6 @@
 #include "chrome/browser/ui/views/web_apps/isolated_web_apps/isolated_web_app_installer_view.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 
-namespace gfx {
-class Size;
-}  // namespace gfx
-
 namespace ui {
 class DialogModelLabel;
 class ImageModel;
@@ -27,8 +23,11 @@ namespace views {
 class Widget;
 }  // namespace views
 
+class SkBitmap;
+
 namespace web_app {
 
+class InstallerDialogView;
 class DisabledView;
 class GetMetadataView;
 class InstallView;
@@ -48,8 +47,9 @@ class IsolatedWebAppInstallerViewImpl : public IsolatedWebAppInstallerView {
   void ShowGetMetadataScreen() override;
   void UpdateGetMetadataProgress(double percent) override;
 
-  void ShowMetadataScreen(
-      const SignedWebBundleMetadata& bundle_metadata) override;
+  void ShowMetadataScreen(const SignedWebBundleMetadata& bundle_metadata,
+                          const std::vector<UpdateManifest::ChannelMetadata>&
+                              available_channels) override;
 
   void ShowInstallScreen(
       const SignedWebBundleMetadata& bundle_metadata) override;
@@ -59,10 +59,8 @@ class IsolatedWebAppInstallerViewImpl : public IsolatedWebAppInstallerView {
       const SignedWebBundleMetadata& bundle_metadata) override;
 
   views::Widget* ShowDialog(
-      const IsolatedWebAppInstallerModel::Dialog& dialog) override;
-
-  // `views::View`:
-  gfx::Size GetMaximumSize() const override;
+      const IsolatedWebAppInstallerModel::Dialog& dialog,
+      const views::DialogDelegate* dialog_delegate) override;
 
  private:
   template <class T, class... Args>
@@ -70,7 +68,8 @@ class IsolatedWebAppInstallerViewImpl : public IsolatedWebAppInstallerView {
     return AddChildView(std::make_unique<T>(std::forward<Args>(args)...));
   }
 
-  void Dim(bool dim);
+  void ApplyDim(const views::DialogDelegate* dialog_delegate);
+  void RemoveDim();
 
   views::Widget* ShowChildDialog(int title,
                                  const ui::DialogModelLabel& subtitle,
@@ -80,6 +79,9 @@ class IsolatedWebAppInstallerViewImpl : public IsolatedWebAppInstallerView {
                                  const ui::DialogModelLabel& subtitle,
                                  const ui::ImageModel& icon,
                                  std::optional<int> ok_label);
+
+  void OnIconMaskedUpdateAppIcon(InstallerDialogView* view,
+                                 SkBitmap masked_bitmap);
 
   void ShowChildView(views::View* view);
 

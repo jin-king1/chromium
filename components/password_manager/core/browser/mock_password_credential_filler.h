@@ -8,10 +8,10 @@
 #include <string>
 
 #include "base/memory/weak_ptr.h"
-#include "components/autofill/core/common/mojom/autofill_types.mojom-shared.h"
 #include "components/password_manager/core/browser/password_credential_filler.h"
 #include "components/password_manager/core/browser/password_manager_driver.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#include "url/origin.h"
 
 namespace password_manager {
 
@@ -37,6 +37,7 @@ class MockPasswordCredentialFiller final : public PasswordCredentialFiller {
               (),
               (const override));
   MOCK_METHOD(GURL, GetFrameUrl, (), (const override));
+  MOCK_METHOD(url::Origin, GetFrameOrigin, (), (const override));
 
   base::WeakPtr<PasswordCredentialFiller> AsWeakPtr() override;
 

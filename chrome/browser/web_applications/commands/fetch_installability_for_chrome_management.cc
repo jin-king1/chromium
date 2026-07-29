@@ -10,11 +10,13 @@
 
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/strings/to_string.h"
 #include "base/values.h"
 #include "chrome/browser/web_applications/commands/web_app_command.h"
 #include "chrome/browser/web_applications/locks/app_lock.h"
 #include "chrome/browser/web_applications/locks/noop_lock.h"
 #include "chrome/browser/web_applications/locks/web_app_lock_manager.h"
+#include "chrome/browser/web_applications/scheduler/fetch_installability_for_chrome_management_result.h"
 #include "chrome/browser/web_applications/web_app_command_manager.h"
 #include "chrome/browser/web_applications/web_app_helpers.h"
 #include "chrome/browser/web_applications/web_app_registrar.h"
@@ -85,8 +87,7 @@ void FetchInstallabilityForChromeManagement::OnUrlLoadedCheckInstallability(
                             std::nullopt);
     return;
   }
-  GetMutableDebugValue().Set("WebAppUrlLoader::Result",
-                             ConvertUrlLoaderResultToString(result));
+  GetMutableDebugValue().Set("WebAppUrlLoader::Result", base::ToString(result));
 
   if (result == webapps::WebAppUrlLoaderResult::kRedirectedUrlLoaded) {
     CompleteAndSelfDestruct(CommandResult::kSuccess,
@@ -162,6 +163,7 @@ void FetchInstallabilityForChromeManagement::OnAppLockGranted() {
   } else {
     switch (app_lock_->registrar().GetInstallState(app_id_).value()) {
       case web_app::proto::SUGGESTED_FROM_ANOTHER_DEVICE:
+      case web_app::proto::SUGGESTED_FROM_MIGRATION:
         result = InstallableCheckResult::kInstallable;
         break;
       case web_app::proto::INSTALLED_WITH_OS_INTEGRATION:

@@ -5,11 +5,10 @@
 package org.chromium.android_webview.test;
 
 import android.app.Activity;
-import android.os.Build;
 import android.view.View;
 import android.view.WindowManager;
 
-import androidx.annotation.RequiresApi;
+import androidx.core.graphics.Insets;
 import androidx.test.filters.SmallTest;
 
 import org.junit.After;
@@ -22,16 +21,12 @@ import org.junit.runners.Parameterized;
 import org.junit.runners.Parameterized.UseParametersRunnerFactory;
 
 import org.chromium.android_webview.AwContents;
-import org.chromium.android_webview.AwDisplayCutoutController.Insets;
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.test.util.MinAndroidSdkLevel;
 import org.chromium.net.test.util.TestWebServer;
 
 /** Tests for DisplayCutout. */
 @RunWith(Parameterized.class)
 @UseParametersRunnerFactory(AwJUnit4ClassRunnerWithParameters.Factory.class)
-@MinAndroidSdkLevel(Build.VERSION_CODES.P)
-@RequiresApi(Build.VERSION_CODES.P)
 public class AwDisplayCutoutTest extends AwParameterizedTest {
     private static final String TEST_HTML =
             """
@@ -130,7 +125,7 @@ public class AwDisplayCutoutTest extends AwParameterizedTest {
         mActivityTestRule.loadHtmlSync(
                 mAwContents, mContentsClient.getOnPageFinishedHelper(), TEST_HTML);
         // Reset safe area just in case we have a notch.
-        Insets insets = new Insets(0, 0, 0, 0);
+        Insets insets = Insets.of(0, 0, 0, 0);
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     mAwContents.getDisplayCutoutController().onApplyWindowInsetsInternal(insets);
@@ -152,7 +147,7 @@ public class AwDisplayCutoutTest extends AwParameterizedTest {
         setFullscreen(true);
         mActivityTestRule.loadHtmlSync(
                 mAwContents, mContentsClient.getOnPageFinishedHelper(), TEST_HTML);
-        Insets insets = new Insets(0, 130, 0, 0);
+        Insets insets = Insets.of(0, 130, 0, 0);
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     mAwContents.getDisplayCutoutController().onApplyWindowInsetsInternal(insets);

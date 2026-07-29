@@ -37,10 +37,12 @@
 #include "build/build_config.h"
 #include "cc/paint/paint_record.h"
 #include "cc/paint/paint_recorder.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/skia/include/core/SkCanvas.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "third_party/skia/include/core/SkFontStyle.h"
+#include "third_party/skia/include/core/SkString.h"
 #include "third_party/skia/include/core/SkSurface.h"
 #include "third_party/skia/include/core/SkTextBlob.h"
 #include "third_party/skia/include/core/SkTypeface.h"
@@ -419,7 +421,7 @@ class TestRectangleBuffer {
                                      << stride_;
     for (int y = top; y < top + height; ++y) {
       for (int x = left; x < left + width; ++x) {
-        SkColor buffer_color = buffer_[x + y * stride_];
+        SkColor buffer_color = UNSAFE_TODO(buffer_[x + y * stride_]);
         EXPECT_EQ(color, buffer_color) << string_ << " at " << x << ", " << y;
       }
     }
@@ -431,7 +433,7 @@ class TestRectangleBuffer {
                                 int top,
                                 int width,
                                 int height) const {
-    SkColor buffer_color = buffer_[left + top * stride_];
+    SkColor buffer_color = UNSAFE_TODO(buffer_[left + top * stride_]);
     EnsureSolidRect(buffer_color, left, top, width, height);
   }
 
@@ -1817,8 +1819,15 @@ const RunListCase kScriptsRunListCases[] = {
     // Devanagari Danda codepoints have large set of script extensions.
     {"dev_danda", u"\u0964\u0965", "[0->1]"},
     // Combining Diacritical Marks (inherited) should only merge with preceding.
+#if U_ICU_VERSION_MAJOR_NUM >= 76
+    // ICU 76 changed the script extensions property. See crbug.com/378738904,
+    // the comment #6 in particular.
+    {"diac_lat", u"\u0308fg", "[0->2]"},
+    {"diac_dev", u"क\u0308f", "[0][1->2]"},
+#else
     {"diac_lat", u"\u0308fg", "[0][1->2]"},
     {"diac_dev", u"क\u0308f", "[0->1][2]"},
+#endif
     // ZWJW has the inherited script.
     {"lat_ZWNJ", u"ab\u200Ccd", "[0->4]"},
     {"dev_ZWNJ", u"क\u200Cक", "[0->2]"},
@@ -1856,9 +1865,15 @@ const RunListCase kScriptsRunListCases[] = {
     {"arabic", u"\u0633\u069b\u0763\u077f\u08A2\uFB53", "[5<-0]"},
     {"arabic_lat", u"\u0633\u069b\u0763\u077f\u08A2\uFB53abc", "[6->8][5<-0]"},
     {"arabic_word_ligatures", u"\uFDFD\uFDF3", "[1<-0]"},
+#if U_ICU_VERSION_MAJOR_NUM >= 76
+    {"arabic_diac", u"\u069D\u0300", "[1][0]"},
+    {"arabic_diac_lat", u"\u069D\u0300abc", "[2->4][1][0]"},
+    {"arabic_diac_lat2", u"abc\u069D\u0300abc", "[0->2][4][3][5->7]"},
+#else
     {"arabic_diac", u"\u069D\u0300", "[1<-0]"},
     {"arabic_diac_lat", u"\u069D\u0300abc", "[2->4][1<-0]"},
     {"arabic_diac_lat2", u"abc\u069D\u0300abc", "[0->2][4<-3][5->7]"},
+#endif
     {"arabic_lyd", u"\U00010935\U00010930\u06B0\u06B1", "[5<-4][3<-0]"},
     {"arabic_numbers", u"12\u06D034", "[3->4][2][0->1]"},
     {"arabic_letters", u"ab\u06D0cd", "[0->1][2][3->4]"},
@@ -1898,9 +1913,15 @@ const RunListCase kScriptsRunListCases[] = {
     {"unicode_emoticon1", u"(▀̿ĺ̯▀̿ ̿)", "[0][1->2][3->4][5->6][7->8][9]"},
     {"unicode_emoticon2", u"▀̿̿Ĺ̯̿▀̿ ", "[0->2][3->5][6->7][8]"},
     {"unicode_emoticon3", u"( ͡° ͜ʖ ͡°)", "[0][1->2][3][4->5][6][7->8][9][10]"},
+#if U_ICU_VERSION_MAJOR_NUM >= 76
+    {"unicode_emoticon4", u"✩·͙*̩̩͙˚̩̥̩̥( ͡ᵔ ͜ʖ ͡ᵔ )*̩̩͙✩·͙˚̩̥̩̥.",
+     "[0][1->2][3->6][7->8][9->11][12][13->14][15][16->17][18][19->20][21][22]"
+     "[23][24->27][28][29->30][31->32][33->35][36]"},
+#else
     {"unicode_emoticon4", u"✩·͙*̩̩͙˚̩̥̩̥( ͡ᵔ ͜ʖ ͡ᵔ )*̩̩͙✩·͙˚̩̥̩̥.",
      "[0][1->2][3->6][7->11][12][13->14][15][16->17][18][19->20][21][22][23]["
      "24->27][28][29->30][31->35][36]"},
+#endif
     {"unicode_emoticon5", u"ヽ(͡◕ ͜ʖ ͡◕)ﾉ",
      "[0][1->2][3][4->5][6][7->8][9][10][11]"},
     {"unicode_art1", u"꧁༒✧ Great ✧༒꧂", "[0][1][2][3][4->8][9][10][11][12]"},
@@ -1908,13 +1929,27 @@ const RunListCase kScriptsRunListCases[] = {
 
     // Combining diacritical sequences.
     {"unicode_diac1", u"\u2123\u0336", "[0->1]"},
+#if U_ICU_VERSION_MAJOR_NUM >= 76
+    {"unicode_diac2", u"\u273c\u0325", "[0][1]"},
+#else
     {"unicode_diac2", u"\u273c\u0325", "[0->1]"},
+#endif
     {"unicode_diac3", u"\u2580\u033f", "[0->1]"},
+#if U_ICU_VERSION_MAJOR_NUM >= 76
+    {"unicode_diac4", u"\u2022\u0325\u0329", "[0][1->2]"},
+    {"unicode_diac5", u"\u2022\u0325", "[0][1]"},
+#else
     {"unicode_diac4", u"\u2022\u0325\u0329", "[0->2]"},
     {"unicode_diac5", u"\u2022\u0325", "[0->1]"},
+#endif
     {"unicode_diac6", u"\u00b7\u0359\u0325", "[0->2]"},
+#if U_ICU_VERSION_MAJOR_NUM >= 76
+    {"unicode_diac7", u"\u2027\u0329\u0325", "[0->1][2]"},
+    {"unicode_diac8", u"\u0332\u0305\u03c1", "[0][1][2]"},
+#else
     {"unicode_diac7", u"\u2027\u0329\u0325", "[0->2]"},
     {"unicode_diac8", u"\u0332\u0305\u03c1", "[0->1][2]"},
+#endif
 };
 
 INSTANTIATE_TEST_SUITE_P(ItemizeTextToRunsScripts,
@@ -2421,6 +2456,22 @@ TEST_F(RenderTextTest, SetElideBehavior) {
   // Setting a different eliding behavior must trigger a relayout.
   render_text->SetElideBehavior(ELIDE_HEAD);
   EXPECT_EQ(u"…ef", render_text->GetDisplayText());
+}
+
+TEST_F(RenderTextTest, ElideMissingGlyphs) {
+  constexpr int kGlyphWidth = 10;
+  SetGlyphWidth(kGlyphWidth);
+
+  RenderText* render_text = GetRenderText();
+  render_text->SetText(u"𪛗𪛗𪛗𪛗龭疆龭疆龭疆龭疆疆疆疆");
+  render_text->SetCursorEnabled(false);
+  render_text->SetDisplayRect(Rect(0, 0, 10 * kGlyphWidth, 100));
+
+  // Missing glyph state shouldn't change with elision.
+  const bool has_missing_glyphs = GetHarfBuzzRunList()->HasMissingGlyphs();
+  render_text->SetElideBehavior(ELIDE_TAIL);
+  EXPECT_EQ(u"𪛗𪛗𪛗𪛗龭疆龭疆龭…", render_text->GetDisplayText());
+  EXPECT_EQ(has_missing_glyphs, GetHarfBuzzRunList()->HasMissingGlyphs());
 }
 
 TEST_F(RenderTextTest, SetWhitespaceElision) {
@@ -2965,8 +3016,14 @@ TEST_F(RenderTextTest, MoveCursor_Character) {
       render_text, CHARACTER_BREAK, CURSOR_RIGHT, SELECTION_EXTEND, &expected);
 
   // Move left twice.
+#if BUILDFLAG(IS_MAC)
+  // Mac: Selection collapses when returning to selection start.
+  expected.push_back(Range(6));
+  expected.push_back(Range(6, 5));
+#else
   expected.push_back(Range(7, 6));
   expected.push_back(Range(7, 5));
+#endif
   RunMoveCursorTestAndClearExpectations(
       render_text, CHARACTER_BREAK, CURSOR_LEFT, SELECTION_EXTEND, &expected);
 }
@@ -3235,7 +3292,12 @@ TEST_F(RenderTextTest, MoveCursor_Line) {
                                           SELECTION_EXTEND, &expected);
 
     // Move right.
+#if BUILDFLAG(IS_MAC)
+    // Mac: Selection collapses when returning to selection start.
+    expected.push_back(Range(11));
+#else
     expected.push_back(Range(0, 11));
+#endif
     RunMoveCursorTestAndClearExpectations(render_text, break_type, CURSOR_RIGHT,
                                           SELECTION_EXTEND, &expected);
   }
@@ -5044,11 +5106,9 @@ TEST_F(RenderTextTest, StringSizeRespectsFontListMetrics) {
   // NOTE: On most platforms, kCJKFontName has different metrics than
   // kTestFontName, but on Android it does not.
   Font test_font(kTestFontName, 16);
-  ASSERT_EQ(base::ToLowerASCII(kTestFontName),
-            base::ToLowerASCII(test_font.GetActualFontName()));
+  EXPECT_THAT(test_font.GetActualFontNames(), testing::Contains(kTestFontName));
   Font cjk_font(kCJKFontName, 16);
-  ASSERT_EQ(base::ToLowerASCII(kCJKFontName),
-            base::ToLowerASCII(cjk_font.GetActualFontName()));
+  EXPECT_THAT(cjk_font.GetActualFontNames(), testing::Contains(kCJKFontName));
   Font smaller_font = test_font;
   Font larger_font = cjk_font;
   // "a" should be rendered with the test font, not with the CJK font.
@@ -6987,6 +7047,173 @@ TEST_F(RenderTextTest, HarfBuzz_BreakRunsByEmojiVariationSelectors) {
 #endif
 }
 
+// Verifies that text-default emoji (codepoints with the `Emoji` property but
+// not `Emoji_Presentation`) followed by VS-16 still produce a well-formed
+// run with non-zero glyphs. The native gfx::RenderText path explicitly tries
+// the platform color emoji font for these sequences (see ShapeRuns), but if
+// that font is unavailable shaping must fall through to the system text font
+// rather than producing an empty/zero-width run.
+TEST_F(RenderTextTest, HarfBuzz_TextDefaultEmojiVS16ProducesGlyphs) {
+  RenderTextHarfBuzz* render_text = GetRenderText();
+
+  // U+2666 (BLACK DIAMOND SUIT) + U+FE0F: text-default emoji + VS-16.
+  // U+00A9 (COPYRIGHT SIGN) + U+FE0F: same pattern with a BMP symbol.
+  // U+260E (BLACK TELEPHONE) + U+FE0F: covered by another test for run breaks,
+  // here we just assert glyph presence for completeness.
+  for (const char16_t* sequence :
+       {u"\u2666\uFE0F", u"\u00A9\uFE0F", u"\u260E\uFE0F"}) {
+    SCOPED_TRACE(sequence);
+    render_text->SetText(sequence);
+    render_text->SetDisplayRect(Rect(1000, 50));
+    const internal::TextRunList* run_list = GetHarfBuzzRunList();
+    ASSERT_GE(run_list->size(), 1U);
+    size_t total_glyphs = 0;
+    for (const auto& run : run_list->runs()) {
+      total_glyphs += run->shape.glyph_count;
+      EXPECT_EQ(0U, run->CountMissingGlyphs());
+    }
+    EXPECT_GT(total_glyphs, 0U);
+  }
+}
+
+// Returns true when `typeface` is one of the platform color-emoji typefaces
+// the emoji pre-pass in render_text_harfbuzz.cc may route runs through.
+// Mirrors the checks performed by gfx::TypefaceMayRenderColorEmoji.
+bool TypefaceMayRenderColorEmojiForTest(SkTypeface* typeface) {
+  if (!typeface) {
+    return false;
+  }
+
+  if (typeface->getTableSize(SkSetFourByteTag('C', 'O', 'L', 'R')) > 0 ||
+      typeface->getTableSize(SkSetFourByteTag('C', 'B', 'D', 'T')) > 0 ||
+      typeface->getTableSize(SkSetFourByteTag('s', 'b', 'i', 'x')) > 0) {
+    return true;
+  }
+
+#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_FUCHSIA)
+  // No platform color-emoji font to match by name on these platforms.
+  return false;
+#else
+  // Some color-emoji typefaces (notably Segoe UI Emoji via DirectWrite) don't
+  // expose a color table to Skia, so fall back to matching the known platform
+  // family names. Checking all of them regardless of platform keeps this
+  // simple and is harmless.
+  SkString family_name;
+  typeface->getFamilyName(&family_name);
+  return base::EqualsCaseInsensitiveASCII(family_name.c_str(),
+                                          "Segoe UI Emoji") ||
+         base::EqualsCaseInsensitiveASCII(family_name.c_str(),
+                                          "Apple Color Emoji") ||
+         base::EqualsCaseInsensitiveASCII(family_name.c_str(),
+                                          "Noto Color Emoji");
+#endif
+}
+
+// The emoji pre-pass in RenderTextHarfBuzz::ShapeRuns must route bare
+// default-emoji codepoints (Unicode `Emoji_Presentation=Yes`, no trailing
+// VS-16) through the platform color-emoji typeface so they render in color
+// on native UI surfaces (tab titles, etc.). Without the pre-pass these
+// codepoints can render monochrome on Windows because GetFallbackFont
+// returns Segoe UI Symbol (which has a B&W glyph) instead of Segoe UI Emoji.
+// See crbug.com/519440127.
+TEST_F(RenderTextTest, HarfBuzz_DefaultEmojiCodepointProducesGlyphs) {
+  RenderTextHarfBuzz* render_text = GetRenderText();
+
+  // U+1F004 MAHJONG TILE RED DRAGON: canonical default-emoji codepoint in
+  //   the U+1F000-U+1F02F Mahjong/Domino/Playing-Card block that Windows
+  //   text-font fallback historically mishandled.
+  // U+1F0CF PLAYING CARD BLACK JOKER: same block.
+  // U+1F3B2 GAME DIE: outside the Mahjong block; also Emoji_Presentation=Yes.
+  for (const char16_t* sequence :
+       {u"\xD83C\xDC04", u"\xD83C\xDCCF", u"\xD83C\xDFB2"}) {
+    SCOPED_TRACE(sequence);
+    render_text->SetText(sequence);
+    render_text->SetDisplayRect(Rect(1000, 50));
+    const internal::TextRunList* run_list = GetHarfBuzzRunList();
+    ASSERT_GE(run_list->size(), 1U);
+    size_t total_glyphs = 0;
+    for (const auto& run : run_list->runs()) {
+      total_glyphs += run->shape.glyph_count;
+#if !BUILDFLAG(IS_FUCHSIA)
+      // Fuchsia does not bundle a suitable font to resolve all glyphs.
+      EXPECT_EQ(0U, run->CountMissingGlyphs());
+#endif
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_APPLE)
+      // The pre-pass must have routed the run through the platform color
+      // emoji typeface. On Linux/CrOS we can't reliably assert this in tests
+      // because the bot image may not have Noto Color Emoji installed.
+      EXPECT_TRUE(
+          TypefaceMayRenderColorEmojiForTest(run->font_params.skia_face.get()))
+          << "Default-emoji codepoint was not routed through the platform "
+             "color emoji font";
+#endif
+    }
+    EXPECT_GT(total_glyphs, 0U);
+  }
+}
+
+// Locks in the current run-level behavior of the emoji pre-pass: an
+// emoji-default codepoint adjacent to a text-default codepoint in the same
+// Unicode block forms a single run that is shaped entirely with the platform
+// color emoji font. This mirrors the run-level trade-off already accepted for
+// VS-16 sequences (e.g. "\u00A9\uFE0F\u2600" colors the trailing \u2600 too)
+// and Blink's segment-level FontFallbackPriority::kEmojiEmoji. Splitting runs
+// by effective emoji presentation and forcing text-default runs through a text
+// font is left as a possible follow-up; see crbug.com/520656242.
+TEST_F(RenderTextTest,
+       HarfBuzz_MixedDefaultAndTextEmojiInSameRunUsesEmojiPrePass) {
+  RenderTextHarfBuzz* render_text = GetRenderText();
+
+  // U+2614 UMBRELLA WITH RAIN DROPS (Emoji_Presentation=Yes) followed by
+  // U+2600 BLACK SUN WITH RAYS (Emoji_Presentation=No, text-default). Both
+  // live in the Miscellaneous Symbols block (U+2600-U+26FF) and end up in a
+  // single run.
+  render_text->SetText(u"\u2614\u2600");
+  render_text->SetDisplayRect(Rect(1000, 50));
+  const internal::TextRunList* run_list = GetHarfBuzzRunList();
+  ASSERT_EQ(1U, run_list->size())
+      << "Expected a single run; if FindRunBreakingCharacter starts splitting "
+         "on emoji presentation, update this test and the mixed-run guard.";
+  const auto& run = run_list->runs()[0];
+  EXPECT_GT(run->shape.glyph_count, 0U);
+#if !BUILDFLAG(IS_FUCHSIA)
+  // Fuchsia does not bundle a suitable font to resolve all glyphs.
+  EXPECT_EQ(0U, run->CountMissingGlyphs());
+#endif
+}
+
+// Verifies that emoji-default codepoints followed by VS-15 (U+FE0E) route
+// through a non-color-emoji typeface. This is the dual of the VS-16
+// pre-pass: VS-15 explicitly requests text presentation, so the native
+// gfx::RenderText path must refuse to shape such runs with a color-emoji
+// typeface even when one of the system fallback fonts happens to be one.
+TEST_F(RenderTextTest, HarfBuzz_EmojiDefaultVS15PrefersTextPresentation) {
+  RenderTextHarfBuzz* render_text = GetRenderText();
+
+  // U+1F310 GLOBE WITH MERIDIANS: emoji-default; the canonical case from
+  //   https://crbug.com/40800376 / crbug.com/1263737.
+  // U+2600 BLACK SUN WITH RAYS: BMP, text-default in Unicode but routinely
+  //   colored by platform font fallback; VS-15 must still steer away from
+  //   color.
+  // U+2764 HEAVY BLACK HEART: BMP, common in UI strings.
+  for (const char16_t* sequence :
+       {u"\xD83C\xDF10\uFE0E", u"\u2600\uFE0E", u"\u2764\uFE0E"}) {
+    SCOPED_TRACE(sequence);
+    render_text->SetText(sequence);
+    render_text->SetDisplayRect(Rect(1000, 50));
+    const internal::TextRunList* run_list = GetHarfBuzzRunList();
+    ASSERT_GE(run_list->size(), 1U);
+    for (const auto& run : run_list->runs()) {
+#if BUILDFLAG(IS_WIN)
+      EXPECT_EQ(0U, run->CountMissingGlyphs()) << "VS-15 run rendered as tofu";
+#endif
+      EXPECT_FALSE(
+          TypefaceMayRenderColorEmojiForTest(run->font_params.skia_face.get()))
+          << "VS-15 run was shaped with a color-emoji typeface";
+    }
+  }
+}
+
 TEST_F(RenderTextTest, HarfBuzz_OrphanedVariationSelector) {
   RenderTextHarfBuzz* render_text = GetRenderText();
 
@@ -7058,15 +7285,22 @@ TEST_F(RenderTextTest, HarfBuzz_SplitRunsWithMissingGlyphCJK) {
 
 TEST_F(RenderTextTest, HarfBuzz_SplitRunsWithMissingGlyphSmallCaps) {
   RenderTextHarfBuzz* render_text = GetRenderText();
+
+  // "ꟺ" and "Ｍ" are in the same script, but all OS's split them between
+  // different fonts. This test ensures that each glyph is not in its own
+  // run, but rather that the final rendered runs place adjacent runs with the
+  // same final fallback font in the same run.
   render_text->SetText(u"ꟺＭ");
 
-#if BUILDFLAG(IS_ANDROID)
-  // Android doesn't support either glyph, so they are both missing glyphs in
-  // the same run.
-  EXPECT_EQ(std::vector<std::u16string>({u"ꟺＭ"}), GetRunListStrings());
-  EXPECT_EQ("[0->1]", GetRunListStructureString());
-#else
+  // Must snapshot histograms before checking for missing glyphs.
   base::HistogramTester histograms;
+
+  // This test requires both glyphs to render for merging to occur. If there
+  // are still missing glyphs (this happens on some versions of Android),
+  // return early.
+  if (GetHarfBuzzRunList()->HasMissingGlyphs()) {
+    return;
+  }
   EXPECT_EQ(std::vector<std::u16string>({u"ꟺ", u"Ｍ"}), GetRunListStrings());
   EXPECT_EQ("[0][1]", GetRunListStructureString());
 
@@ -7074,7 +7308,6 @@ TEST_F(RenderTextTest, HarfBuzz_SplitRunsWithMissingGlyphSmallCaps) {
   histograms.ExpectTotalCount("RenderTextHarfBuzz.ShapeRunsFallback", 1);
   EXPECT_EQ(histograms.GetTotalSum("RenderTextHarfBuzz.ShapeRunsFallback"), 2);
 
-#endif  // BUILDFLAG(IS_ANDROID)
   CheckBoundsForCursorPositions();
 }
 
@@ -7103,9 +7336,15 @@ TEST_F(RenderTextTest, HarfBuzz_SplitRunsWithMissingGlyphDiacDev) {
   RenderTextHarfBuzz* render_text = GetRenderText();
   render_text->SetText(u"क\u0308f");
 
+#if U_ICU_VERSION_MAJOR_NUM >= 76
+  EXPECT_EQ(std::vector<std::u16string>({u"", u"\u0915\u0308f"}),
+            GetRunListStrings());
+  EXPECT_EQ("[0][1->2]", GetRunListStructureString());
+#else
   EXPECT_EQ(std::vector<std::u16string>({u"\x915\x308", u"f"}),
             GetRunListStrings());
   EXPECT_EQ("[0->1][2]", GetRunListStructureString());
+#endif
   CheckBoundsForCursorPositions();
 }
 
@@ -7365,10 +7604,9 @@ TEST_F(RenderTextTest, HarfBuzz_FontListFallback) {
       base::StringPrintf("%s, %s, 12px", kTestFontName, kSymbolFontName));
   const std::vector<Font>& fonts = font_list.GetFonts();
   ASSERT_EQ(2u, fonts.size());
-  ASSERT_EQ(base::ToLowerASCII(kTestFontName),
-            base::ToLowerASCII(fonts[0].GetActualFontName()));
-  ASSERT_EQ(base::ToLowerASCII(kSymbolFontName),
-            base::ToLowerASCII(fonts[1].GetActualFontName()));
+  EXPECT_THAT(fonts[0].GetActualFontNames(), testing::Contains(kTestFontName));
+  EXPECT_THAT(fonts[1].GetActualFontNames(),
+              testing::Contains(kSymbolFontName));
 
   // "⊕" (U+2295, CIRCLED PLUS) should be rendered with Symbol rather than
   // falling back to some other font that's present on the system.
@@ -8718,6 +8956,49 @@ TEST_F(RenderTextTest, BaselineWithLineHeight) {
   EXPECT_EQ(font_height + kDelta, current_selection_bounds.height());
   EXPECT_EQ(normal_selection_bounds.width(), current_selection_bounds.width());
   EXPECT_EQ(gfx::Vector2d(), current_selection_bounds.OffsetFromOrigin());
+}
+
+// Test multi-line wrapping selection bounds; see crbug.com/405532692.
+TEST_F(RenderTextTest, WordWrapperSubstringBoundsMultiline) {
+  RenderText* render_text = GetRenderText();
+  render_text->SetMultiline(true);
+  render_text->SetWordWrapBehavior(gfx::WRAP_LONG_WORDS);
+  const auto text_cases = std::to_array<const std::u16string_view>(
+      {kWeak, kLtr, u"Hello", kRtl, u"abc\n\ndef", u"这是一段中文长文本"});
+
+  for (auto text_case : text_cases) {
+    SCOPED_TRACE(base::StrCat({u"Testing text: ", text_case}));
+    render_text->SetDisplayRect(Rect(1000, 1000));
+    render_text->SetText(text_case);
+    // Get the length of the entire text.
+    const int whole_width = render_text->GetStringSize().width();
+
+    // Setting the width to trigger line wrapping
+    render_text->SetDisplayRect(Rect(whole_width / 2 + 1, 1000));
+    EXPECT_GT(test_api()->lines().size(), 1u);
+
+    Rect expected_total_bounds;
+    for (size_t i = 0; i < test_api()->lines().size(); i++) {
+      SCOPED_TRACE(base::StringPrintf("Testing bounds for line %" PRIuS "", i));
+      const internal::Line& line = test_api()->lines()[i];
+      size_t line_end = i < test_api()->lines().size() - 1
+                            ? test_api()->lines()[i + 1].display_text_index
+                            : render_text->GetDisplayText().size();
+      // SelectRange seems to change the result of GetLineOffset(i). SelectRange
+      // must be called first.
+      render_text->SelectRange(Range(line.display_text_index, line_end));
+
+      const Rect expected_line_bounds =
+          render_text->GetLineOffset(i) +
+          Rect(std::ceil(line.size.width()), std::ceil(line.size.height()));
+      EXPECT_EQ(expected_line_bounds, GetSelectionBoundsUnion());
+
+      expected_total_bounds.Union(expected_line_bounds);
+    }
+    // Test complete bounds.
+    render_text->SelectAll(false);
+    EXPECT_EQ(expected_total_bounds, GetSelectionBoundsUnion());
+  }
 }
 
 TEST_F(RenderTextTest, TeluguGraphemeBoundaries) {

@@ -32,8 +32,9 @@
 #include "chrome/browser/ash/platform_keys/key_permissions/key_permissions_manager.h"
 #include "chrome/browser/ash/platform_keys/platform_keys_service.h"
 #include "chrome/browser/ash/platform_keys/platform_keys_service_factory.h"
-#include "chrome/browser/chromeos/platform_keys/platform_keys.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chromeos/ash/components/kcer/kcer_utils.h"
+#include "chromeos/ash/components/platform_keys/platform_keys.h"
 #include "components/policy/core/common/cloud/device_management_service.h"
 #include "components/policy/proto/device_management_backend.pb.h"
 #include "content/public/browser/browser_context.h"
@@ -64,8 +65,12 @@ namespace {
 constexpr unsigned int kNonVaKeyModulusLengthBits = 2048;
 constexpr char kEcNamedCurve[] = "P-256";
 
-constexpr base::TimeDelta kMinumumTryAgainLaterDelay = base::Seconds(10);
+constexpr base::TimeDelta kMinumumTryAgainLaterDelay = base::Seconds(5);
+constexpr base::TimeDelta kInitialFetchInstructionDelay =
+    kMinumumTryAgainLaterDelay;
 constexpr base::TimeDelta kMaximumFetchInstructionDelay = base::Hours(8);
+constexpr base::TimeDelta kOnSubscribedFetchInstructionDelay =
+    base::Seconds(30);
 
 const net::BackoffEntry::Policy kBackoffPolicy{
     /*num_errors_to_ignore=*/0,
@@ -77,18 +82,20 @@ const net::BackoffEntry::Policy kBackoffPolicy{
     /*entry_lifetime_ms=*/-1,
     /*always_use_initial_delay=*/false};
 
-// Used only for the first 3 attempts, after which
-// `kMaximumFetchInstructionDelay` is used. So the approximate waiting times
-// (ignoring the jitter) are: 30 sec, 2 min, 8 min, 8 hours, 8 hours, ...
+// Used only for the first 4 attempts, after which
+// `kMaximumFetchInstructionDelay` is used. Also an additional
+// kInitialFetchInstructionDelay delay is inserted at the beginning. So the
+// approximate waiting times (ignoring the jitter) are: 5 sec, 5 sec, 20 sec, 80
+// sec, 320 sec, 8 hours, 8 hours, ...
 const net::BackoffEntry::Policy kFetchInstructionBackoffPolicy{
-    /*num_errors_to_ignore=*/0,
+    /*num_errors_to_ignore=*/1,
     /*initial_delay_ms=*/
-    base::Seconds(30).InMilliseconds(),
+    kInitialFetchInstructionDelay.InMilliseconds(),
     /*multiply_factor=*/4.0,
     /*jitter_factor=*/0.10,
     /*maximum_backoff_ms=*/kMaximumFetchInstructionDelay.InMilliseconds(),
     /*entry_lifetime_ms=*/-1,
-    /*always_use_initial_delay=*/false};
+    /*always_use_initial_delay=*/true};
 
 // The original message of kUserNotManagedError is misleading in case the user
 // is not affiliated. In this case, the error message associated to the error
@@ -208,6 +215,10 @@ CertProvisioningWorkerDynamic::CertProvisioningWorkerDynamic(
   CHECK(pref_service);
   CHECK(cert_provisioning_client_);
   CHECK(invalidator_);
+
+  // This logs an empty cppId for deserealized workers. A different log line
+  // clarifies that.
+  LOG(WARNING) << "Started provisioning a certificate" << GetLogInfoBlock();
 }
 
 CertProvisioningWorkerDynamic::~CertProvisioningWorkerDynamic() = default;
@@ -265,8 +276,8 @@ CertProvisioningWorkerDynamic::GetLastBackendServerError() const {
   return last_backend_server_error_;
 }
 
-std::string CertProvisioningWorkerDynamic::GetFailureMessage() const {
-  return failure_message_ui_.value_or(failure_message_);
+std::string CertProvisioningWorkerDynamic::GetFailureMessageWithPii() const {
+  return failure_message_with_pii_.value_or(failure_message_no_pii_);
 }
 
 void CertProvisioningWorkerDynamic::Stop(CertProvisioningWorkerState state) {
@@ -348,11 +359,10 @@ CertProvisioningWorkerDynamic::UpdateState(
   DCHECK(kDynamicWorkerStates.Has(new_state)) << static_cast<int>(new_state);
 
   if (!IsStateTransitionAllowed(state_, new_state)) {
-    failure_message_ = base::StrCat(
+    failure_message_no_pii_ = base::StrCat(
         {"Invalid state transition from ", from_here.ToString(),
          " state=", CertificateProvisioningWorkerStateToString(state_),
-         " new_state=", CertificateProvisioningWorkerStateToString(new_state),
-         GetLogInfoBlock()});
+         " new_state=", CertificateProvisioningWorkerStateToString(new_state)});
     new_state = CertProvisioningWorkerState::kFailed;
   }
 
@@ -371,7 +381,7 @@ CertProvisioningWorkerDynamic::UpdateState(
 
   if (state_ == CertProvisioningWorkerState::kFailed) {
     LOG(ERROR) << "Failure state from " << from_here.ToString()
-               << ". Details: " << failure_message_;
+               << ". Details: " << failure_message_no_pii_ << GetLogInfoBlock();
   }
 
   state_change_callback_.Run();
@@ -414,9 +424,9 @@ void CertProvisioningWorkerDynamic::OnGenerateRegularKeyDone(
     chromeos::platform_keys::Status status) {
   if (status != chromeos::platform_keys::Status::kSuccess ||
       public_key_spki_der.empty()) {
-    failure_message_ = base::StrCat(
-        {"Failed to prepare a non-VA key: ",
-         chromeos::platform_keys::StatusToString(status), GetLogInfoBlock()});
+    failure_message_no_pii_ =
+        base::StrCat({"Failed to prepare a non-VA key: ",
+                      chromeos::platform_keys::StatusToString(status)});
     FINAL_STATE_EXPECTED(
         UpdateState(FROM_HERE, CertProvisioningWorkerState::kFailed));
     return;
@@ -440,7 +450,7 @@ void CertProvisioningWorkerDynamic::GenerateKeyForVa() {
           /*will_register_key=*/true, ::attestation::KEY_TYPE_RSA,
           GetKeyName(cert_profile_.profile_id), profile_,
           base::BindOnce(&CertProvisioningWorkerDynamic::OnGenerateKeyForVaDone,
-                         weak_factory_.GetWeakPtr(), base::TimeTicks::Now()),
+                         weak_factory_.GetWeakPtr()),
           /*signals=*/std::nullopt);
       break;
     case KeyType::kEc:
@@ -449,18 +459,14 @@ void CertProvisioningWorkerDynamic::GenerateKeyForVa() {
           /*will_register_key=*/true, ::attestation::KEY_TYPE_ECC,
           GetKeyName(cert_profile_.profile_id), profile_,
           base::BindOnce(&CertProvisioningWorkerDynamic::OnGenerateKeyForVaDone,
-                         weak_factory_.GetWeakPtr(), base::TimeTicks::Now()),
+                         weak_factory_.GetWeakPtr()),
           /*signals=*/std::nullopt);
   }
 }
 
 void CertProvisioningWorkerDynamic::OnGenerateKeyForVaDone(
-    base::TimeTicks start_time,
     const attestation::TpmChallengeKeyResult& result) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-
-  RecordKeypairGenerationTime(cert_profile_.protocol_version, cert_scope_,
-                              base::TimeTicks::Now() - start_time);
 
   if (result.result_code ==
       attestation::TpmChallengeKeyResultCode::kGetCertificateFailedError) {
@@ -468,15 +474,14 @@ void CertProvisioningWorkerDynamic::OnGenerateKeyForVaDone(
         {"Failed to get certificate for a key", GetLogInfoBlock()});
     request_backoff_.InformOfRequest(false);
     // Next DoStep will retry generating the key.
-    ScheduleNextStep(request_backoff_.GetTimeUntilRelease(),
-                     /*try_provisioning_on_timeout=*/true);
+    ScheduleNextStepAndNotifyStateChange(request_backoff_.GetTimeUntilRelease(),
+                                         /*try_provisioning_on_timeout=*/true);
     return;
   }
 
   if (!result.IsSuccess() || result.public_key.empty()) {
-    failure_message_ =
-        base::StrCat({"Failed to prepare a key: ", result.GetErrorMessage(),
-                      GetLogInfoBlock()});
+    failure_message_no_pii_ =
+        base::StrCat({"Failed to prepare a key: ", result.GetErrorMessage()});
     FINAL_STATE_EXPECTED(
         UpdateState(FROM_HERE, CertProvisioningWorkerState::kFailed));
     return;
@@ -492,7 +497,6 @@ void CertProvisioningWorkerDynamic::OnGenerateKeyForVaDone(
 void CertProvisioningWorkerDynamic::Start() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  // From this point, connection to the DM Server was successful.
   cert_provisioning_client_->Start(
       GetProvisioningProcessForClient(),
       base::BindOnce(&CertProvisioningWorkerDynamic::OnStartResponse,
@@ -508,12 +512,22 @@ void CertProvisioningWorkerDynamic::OnStartResponse(
     return;
   }
 
-  invalidation_topic_ = response.value().invalidation_topic();
-  RegisterForInvalidationTopic();
+  RegisterForInvalidations();
 
   RETURN_ON_FINAL_STATE(UpdateState(
       FROM_HERE, CertProvisioningWorkerState::kReadyForNextOperation));
-  DoStep();
+
+  if (cert_profile_.is_va_enabled) {
+    // If VA is enabled, then the server is expected to have the next
+    // instruction available from the very beginning.
+    DoStep();
+  } else {
+    // If VA is disabled, then the server will need to wait for an input from
+    // the adapter and is expected to send an invalidation when ready.
+    ScheduleNextStep(
+        kInitialFetchInstructionDelay,
+        /*try_provisioning_on_timeout=*/!ShouldOnlyUseInvalidations());
+  }
 }
 
 void CertProvisioningWorkerDynamic::GetNextInstruction() {
@@ -560,14 +574,13 @@ void CertProvisioningWorkerDynamic::OnGetNextInstructionResponse(
 void CertProvisioningWorkerDynamic::OnAuthorizeInstructionReceived(
     const em::CertProvAuthorizeInstruction& authorize_instruction) {
   if (!cert_profile_.is_va_enabled) {
-    failure_message_ = base::StrCat({"VA not enabled", GetLogInfoBlock()});
+    failure_message_no_pii_ = "VA not enabled";
     FINAL_STATE_EXPECTED(
         UpdateState(FROM_HERE, CertProvisioningWorkerState::kFailed));
     return;
   }
   if (attempted_va_challenge_) {
-    failure_message_ =
-        base::StrCat({"VA only possible once", GetLogInfoBlock()});
+    failure_message_no_pii_ = "VA only possible once";
     FINAL_STATE_EXPECTED(
         UpdateState(FROM_HERE, CertProvisioningWorkerState::kFailed));
     return;
@@ -584,8 +597,7 @@ void CertProvisioningWorkerDynamic::OnProofOfPossessionInstructionReceived(
     const em::CertProvProofOfPossessionInstruction&
         proof_of_possession_instruction) {
   if (cert_profile_.is_va_enabled && !attempted_va_challenge_) {
-    failure_message_ =
-        base::StrCat({"Expected VA challenge", GetLogInfoBlock()});
+    failure_message_no_pii_ = "Expected VA challenge";
     FINAL_STATE_EXPECTED(
         UpdateState(FROM_HERE, CertProvisioningWorkerState::kFailed));
     return;
@@ -595,8 +607,7 @@ void CertProvisioningWorkerDynamic::OnProofOfPossessionInstructionReceived(
     signature_algorithm_ =
         proof_of_possession_instruction.signature_algorithm();
   } else {
-    failure_message_ =
-        base::StrCat({"No signature algorithm provided", GetLogInfoBlock()});
+    failure_message_no_pii_ = "No signature algorithm provided";
     FINAL_STATE_EXPECTED(
         UpdateState(FROM_HERE, CertProvisioningWorkerState::kFailed));
     return;
@@ -613,8 +624,7 @@ void CertProvisioningWorkerDynamic::OnImportCertificateInstructionReceived(
     const em::CertProvImportCertificateInstruction&
         import_certificate_instruction) {
   if (cert_profile_.is_va_enabled && !attempted_va_challenge_) {
-    failure_message_ =
-        base::StrCat({"Expected VA challenge", GetLogInfoBlock()});
+    failure_message_no_pii_ = "Expected VA challenge";
     FINAL_STATE_EXPECTED(
         UpdateState(FROM_HERE, CertProvisioningWorkerState::kFailed));
     return;
@@ -635,28 +645,23 @@ void CertProvisioningWorkerDynamic::BuildVaChallengeResponse() {
       std::move(va_challenge_),
       base::BindOnce(
           &CertProvisioningWorkerDynamic::OnBuildVaChallengeResponseDone,
-          weak_factory_.GetWeakPtr(), base::TimeTicks::Now()));
+          weak_factory_.GetWeakPtr()));
   va_challenge_.clear();
 }
 
 void CertProvisioningWorkerDynamic::OnBuildVaChallengeResponseDone(
-    base::TimeTicks start_time,
     const attestation::TpmChallengeKeyResult& challenge_result) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  RecordVerifiedAccessTime(cert_profile_.protocol_version, cert_scope_,
-                           base::TimeTicks::Now() - start_time);
-
   if (!challenge_result.IsSuccess()) {
-    failure_message_ = ConstructFailureMessage(challenge_result);
+    failure_message_no_pii_ = ConstructFailureMessage(challenge_result);
     FINAL_STATE_EXPECTED(
         UpdateState(FROM_HERE, CertProvisioningWorkerState::kFailed));
     return;
   }
 
   if (challenge_result.challenge_response.empty()) {
-    failure_message_ =
-        base::StrCat({"Challenge response is empty", GetLogInfoBlock()});
+    failure_message_no_pii_ = "Challenge response is empty";
     FINAL_STATE_EXPECTED(
         UpdateState(FROM_HERE, CertProvisioningWorkerState::kFailed));
     return;
@@ -684,9 +689,8 @@ void CertProvisioningWorkerDynamic::OnRegisterKeyDone(
   tpm_challenge_key_subtle_impl_.reset();
 
   if (!result.IsSuccess()) {
-    failure_message_ =
-        base::StrCat({"Failed to register key: ", result.GetErrorMessage(),
-                      GetLogInfoBlock()});
+    failure_message_no_pii_ =
+        base::StrCat({"Failed to register key: ", result.GetErrorMessage()});
     FINAL_STATE_EXPECTED(
         UpdateState(FROM_HERE, CertProvisioningWorkerState::kFailed));
     return;
@@ -749,9 +753,9 @@ void CertProvisioningWorkerDynamic::OnMarkKeyDone(
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   if (status != chromeos::platform_keys::Status::kSuccess) {
-    failure_message_ = base::StrCat(
-        {"Failed to mark a key: ",
-         chromeos::platform_keys::StatusToString(status), GetLogInfoBlock()});
+    failure_message_no_pii_ =
+        base::StrCat({"Failed to mark a key: ",
+                      chromeos::platform_keys::StatusToString(status)});
     FINAL_STATE_EXPECTED(
         UpdateState(FROM_HERE, CertProvisioningWorkerState::kFailed));
     return;
@@ -780,15 +784,17 @@ void CertProvisioningWorkerDynamic::OnUploadAuthorizationResponse(
 
   RETURN_ON_FINAL_STATE(UpdateState(
       FROM_HERE, CertProvisioningWorkerState::kReadyForNextOperation));
-  DoStep();
+  // Wait for an invalidation or a timeout before doing the next step.
+  ScheduleNextStep(
+      kInitialFetchInstructionDelay,
+      /*try_provisioning_on_timeout=*/!ShouldOnlyUseInvalidations());
 }
 
 void CertProvisioningWorkerDynamic::BuildProofOfPossession() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   if (attempted_proof_of_possession_) {
-    failure_message_ = base::StrCat(
-        {"Proof of possession requested >1 times", GetLogInfoBlock()});
+    failure_message_no_pii_ = "Proof of possession requested >1 times";
     FINAL_STATE_EXPECTED(
         UpdateState(FROM_HERE, CertProvisioningWorkerState::kFailed));
     return;
@@ -803,7 +809,7 @@ void CertProvisioningWorkerDynamic::BuildProofOfPossession() {
           public_key_,
           base::BindRepeating(
               &CertProvisioningWorkerDynamic::OnBuildProofOfPossessionDone,
-              weak_factory_.GetWeakPtr(), base::TimeTicks::Now()));
+              weak_factory_.GetWeakPtr()));
       break;
     case em::CertProvSignatureAlgorithm::SIGNATURE_ALGORITHM_ECDSA_SHA256:
       platform_keys_service_->SignEcdsa(
@@ -811,11 +817,10 @@ void CertProvisioningWorkerDynamic::BuildProofOfPossession() {
           public_key_, chromeos::platform_keys::HASH_ALGORITHM_SHA256,
           base::BindRepeating(
               &CertProvisioningWorkerDynamic::OnBuildProofOfPossessionDone,
-              weak_factory_.GetWeakPtr(), base::TimeTicks::Now()));
+              weak_factory_.GetWeakPtr()));
       break;
     case em::CertProvSignatureAlgorithm::SIGNATURE_ALGORITHM_UNSPECIFIED:
-      failure_message_ =
-          base::StrCat({"Unknown signature algorithm", GetLogInfoBlock()});
+      failure_message_no_pii_ = "Unknown signature algorithm";
       FINAL_STATE_EXPECTED(
           UpdateState(FROM_HERE, CertProvisioningWorkerState::kFailed));
       return;
@@ -825,24 +830,36 @@ void CertProvisioningWorkerDynamic::BuildProofOfPossession() {
 }
 
 void CertProvisioningWorkerDynamic::OnBuildProofOfPossessionDone(
-    base::TimeTicks start_time,
     std::vector<uint8_t> signature,
     chromeos::platform_keys::Status status) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  RecordDataSignTime(cert_profile_.protocol_version, cert_scope_,
-                     base::TimeTicks::Now() - start_time);
-
   if (status != chromeos::platform_keys::Status::kSuccess) {
-    failure_message_ = base::StrCat(
-        {"Failed to sign data: ",
-         chromeos::platform_keys::StatusToString(status), GetLogInfoBlock()});
+    failure_message_no_pii_ =
+        base::StrCat({"Failed to sign data: ",
+                      chromeos::platform_keys::StatusToString(status)});
     FINAL_STATE_EXPECTED(
         UpdateState(FROM_HERE, CertProvisioningWorkerState::kFailed));
     return;
   }
 
-  signature_ = std::move(signature);
+  if (signature_algorithm_ ==
+      em::CertProvSignatureAlgorithm::SIGNATURE_ALGORITHM_ECDSA_SHA256) {
+    base::expected<std::vector<uint8_t>, kcer::Error> asn1_ec_signature =
+        kcer::ReencodeEcSignatureAsAsn1(signature);
+    if (!asn1_ec_signature.has_value()) {
+      failure_message_no_pii_ =
+          base::StringPrintf("Failed to re-encode ECC signature, error: %d",
+                             static_cast<int>(asn1_ec_signature.error()));
+      FINAL_STATE_EXPECTED(
+          UpdateState(FROM_HERE, CertProvisioningWorkerState::kFailed));
+      return;
+    }
+    signature_ = std::move(asn1_ec_signature).value();
+  } else {
+    signature_ = std::move(signature);
+  }
+
   RETURN_ON_FINAL_STATE(
       UpdateState(FROM_HERE, CertProvisioningWorkerState::kSignCsrFinished));
   DoStep();
@@ -868,7 +885,10 @@ void CertProvisioningWorkerDynamic::OnUploadProofOfPossessionResponse(
 
   RETURN_ON_FINAL_STATE(UpdateState(
       FROM_HERE, CertProvisioningWorkerState::kReadyForNextOperation));
-  DoStep();
+  // Wait for an invalidation or a timeout before doing the next step.
+  ScheduleNextStep(
+      kInitialFetchInstructionDelay,
+      /*try_provisioning_on_timeout=*/!ShouldOnlyUseInvalidations());
 }
 
 void CertProvisioningWorkerDynamic::ImportCert() {
@@ -877,20 +897,18 @@ void CertProvisioningWorkerDynamic::ImportCert() {
   scoped_refptr<net::X509Certificate> cert = CreateSingleCertificateFromBytes(
       pem_encoded_certificate_.data(), pem_encoded_certificate_.size());
   if (!cert) {
-    failure_message_ =
-        base::StrCat({"Failed to parse a certificate", GetLogInfoBlock()});
+    failure_message_no_pii_ = "Failed to parse a certificate";
     FINAL_STATE_EXPECTED(
         UpdateState(FROM_HERE, CertProvisioningWorkerState::kFailed));
     return;
   }
 
   std::vector<uint8_t> public_key_from_cert =
-      chromeos::platform_keys::GetSubjectPublicKeyInfoBlob(cert);
+      chromeos::platform_keys::GetSubjectPublicKeyInfo(cert);
   if (public_key_from_cert != public_key_) {
-    failure_message_ = base::StrCat(
-        {"Downloaded certificate does not match the expected key pair.",
-         GetLogInfoBlock()});
-    failure_message_ui_ = base::StrCat(
+    failure_message_no_pii_ =
+        "Downloaded certificate does not match the expected key pair.";
+    failure_message_with_pii_ = base::StrCat(
         {"Downloaded certificate does not match the expected key pair. ",
          "Expected: ", base::Base64Encode(public_key_), " ",
          "Public key from cert: ", base::Base64Encode(public_key_from_cert),
@@ -911,9 +929,9 @@ void CertProvisioningWorkerDynamic::OnImportCertDone(
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   if (status != chromeos::platform_keys::Status::kSuccess) {
-    failure_message_ = base::StrCat(
-        {"Failed to import certificate: ",
-         chromeos::platform_keys::StatusToString(status), GetLogInfoBlock()});
+    failure_message_no_pii_ =
+        base::StrCat({"Failed to import certificate, error: ",
+                      chromeos::platform_keys::StatusToString(status)});
     FINAL_STATE_EXPECTED(
         UpdateState(FROM_HERE, CertProvisioningWorkerState::kFailed));
     return;
@@ -930,8 +948,11 @@ bool CertProvisioningWorkerDynamic::ProcessResponseErrors(
 
   if (response.has_value()) {
     last_backend_server_error_ = std::nullopt;
-    request_backoff_.InformOfRequest(true);
-    fetch_instruction_backoff_.InformOfRequest(true);
+    // Use Reset to explicitly reset a potentially non-zero error count tracked
+    // by BackoffEntry to 0. This assumes that a successful response is a good
+    // indicator that following responses will also be successful.
+    request_backoff_.Reset();
+    fetch_instruction_backoff_.Reset();
     RecordDmStatusForDynamic(policy::DeviceManagementStatus::DM_STATUS_SUCCESS);
     return true;
   }
@@ -949,56 +970,49 @@ void CertProvisioningWorkerDynamic::ProcessResponseErrors(
       (status == policy::DeviceManagementStatus::DM_STATUS_REQUEST_FAILED) ||
       (status == policy::DeviceManagementStatus::DM_STATUS_HTTP_STATUS_ERROR)) {
     LOG(WARNING) << "Connection to DM Server failed, error: " << status
-                 << " for profile ID: " << cert_profile_.profile_id
-                 << " in state: "
-                 << CertificateProvisioningWorkerStateToString(state_)
                  << GetLogInfoBlock();
     last_backend_server_error_ =
         BackendServerError(status, base::Time::NowFromSystemTime());
     request_backoff_.InformOfRequest(false);
-    ScheduleNextStep(request_backoff_.GetTimeUntilRelease(),
-                     /*try_provisioning_on_timeout=*/true);
+    ScheduleNextStepAndNotifyStateChange(request_backoff_.GetTimeUntilRelease(),
+                                         /*try_provisioning_on_timeout=*/true);
     return;
   }
 
   // From this point, connection to the DM Server was successful.
   last_backend_server_error_ = std::nullopt;
   if (status != policy::DeviceManagementStatus::DM_STATUS_SUCCESS) {
-    failure_message_ = base::StrCat(
-        {"DM Server returned error: ", base::NumberToString(status),
-         " for profile ID: ", cert_profile_.profile_id,
-         " in state: ", CertificateProvisioningWorkerStateToString(state_),
-         GetLogInfoBlock()});
+    failure_message_no_pii_ = base::StrCat(
+        {"DM Server returned error: ", base::NumberToString(status)});
     FINAL_STATE_EXPECTED(
         UpdateState(FROM_HERE, CertProvisioningWorkerState::kFailed));
     return;
   }
 
-  request_backoff_.InformOfRequest(true);
+  request_backoff_.Reset();
 
   const em::CertProvBackendError& backend_error = error.backend_error;
   RecordCertProvBackendErrorForDynamic(backend_error.error());
   if (backend_error.error() ==
       em::CertProvBackendError::INSTRUCTION_NOT_YET_AVAILABLE) {
     LOG(WARNING) << "No instruction available yet "
-                 << " for profile ID: " << cert_profile_.profile_id
                  << GetLogInfoBlock();
 
     fetch_instruction_backoff_.InformOfRequest(false);
-    if (fetch_instruction_backoff_.failure_count() > 3) {
+    if (fetch_instruction_backoff_.failure_count() > 4) {
       fetch_instruction_backoff_.SetCustomReleaseTime(
           base::TimeTicks::Now() + kMaximumFetchInstructionDelay);
     }
 
     // Don't change state, just retry the operation in this state in a delay (or
     // when an invalidation is triggered).
-    ScheduleNextStep(
+    ScheduleNextStepAndNotifyStateChange(
         fetch_instruction_backoff_.GetTimeUntilRelease(),
         /*try_provisioning_on_timeout=*/!ShouldOnlyUseInvalidations());
     return;
   }
 
-  fetch_instruction_backoff_.InformOfRequest(true);
+  fetch_instruction_backoff_.Reset();
 
   if (backend_error.error() == em::CertProvBackendError::INCONSISTENT_DATA ||
       backend_error.error() == em::CertProvBackendError::PROFILE_NOT_FOUND ||
@@ -1016,21 +1030,17 @@ void CertProvisioningWorkerDynamic::ProcessResponseErrors(
     // kInconsistentDataError because both mean that the locally-cached policy
     // does not match the server's database.
     LOG(ERROR) << "Server response contains error: " << backend_error.error()
-               << " for profile ID: " << cert_profile_.profile_id
-               << " in state: "
-               << CertificateProvisioningWorkerStateToString(state_)
+               << ". Debug message: " << backend_error.debug_message()
                << GetLogInfoBlock();
     FINAL_STATE_EXPECTED(UpdateState(
         FROM_HERE, CertProvisioningWorkerState::kInconsistentDataError));
     return;
   }
 
-  failure_message_ = base::StrCat(
-      {"Server response contains error: ",
-       base::NumberToString(backend_error.error()),
-       " for profile ID: ", cert_profile_.profile_id,
-       " in state: ", CertificateProvisioningWorkerStateToString(state_),
-       ". Debug message: ", backend_error.debug_message(), GetLogInfoBlock()});
+  failure_message_no_pii_ =
+      base::StrCat({"Server response contains error: ",
+                    base::NumberToString(backend_error.error()),
+                    ". Debug message: ", backend_error.debug_message()});
   FINAL_STATE_EXPECTED(
       UpdateState(FROM_HERE, CertProvisioningWorkerState::kFailed));
   return;
@@ -1052,17 +1062,19 @@ void CertProvisioningWorkerDynamic::ScheduleNextStep(
   }
 
   is_waiting_ = true;
+}
+
+void CertProvisioningWorkerDynamic::ScheduleNextStepAndNotifyStateChange(
+    base::TimeDelta delay,
+    bool try_provisioning_on_timeout) {
+  ScheduleNextStep(delay, try_provisioning_on_timeout);
+
   last_update_time_ = base::Time::NowFromSystemTime();
   state_change_callback_.Run();
 }
 
 void CertProvisioningWorkerDynamic::OnShouldContinue(ContinueReason reason) {
   switch (reason) {
-    case ContinueReason::kSubscribedToInvalidation:
-      RecordEvent(
-          cert_profile_.protocol_version, cert_scope_,
-          CertProvisioningEvent::kSuccessfullySubscribedToInvalidationTopic);
-      break;
     case ContinueReason::kInvalidationReceived:
       RecordEvent(cert_profile_.protocol_version, cert_scope_,
                   CertProvisioningEvent::kInvalidationReceived);
@@ -1095,12 +1107,12 @@ void CertProvisioningWorkerDynamic::CancelScheduledTasks() {
 // worker is asked to cleanup and shutdown while a key is being generated for
 // it. In that case this cleanup will miss that key and it's important to make
 // sure that there is another mechanism that will eventually clean up the key.
-// VA and PKS keys both are covered and the mechanism is described in seperate
+// VA and PKS keys both are covered and the mechanism is described in separate
 // comments.
 void CertProvisioningWorkerDynamic::CleanUpAndRunCallback() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  UnregisterFromInvalidationTopic();
+  UnregisterFromInvalidations();
 
   if (state_ == CertProvisioningWorkerState::kSucceeded) {
     // No extra clean up is necessary.
@@ -1178,10 +1190,12 @@ void CertProvisioningWorkerDynamic::HandleSerialization() {
 
   switch (state_) {
     case CertProvisioningWorkerState::kInitState:
-      break;
     case CertProvisioningWorkerState::kKeypairGenerated:
-      // Serialize as we're going to perform a server-side request which could
-      // be repeated if we had e.g. no connectivity.
+      // Do not serialize in the early states, it's easier to retry from the
+      // beginning. Notably, the worker registers for invalidations both after
+      // deserialization and after calling the Start RPC, but it should only
+      // register once.
+      break;
     case CertProvisioningWorkerState::kReadyForNextOperation:
       // Serialize as we're going to wait for a server-side instruction.
     case CertProvisioningWorkerState::kSignCsrFinished:
@@ -1217,7 +1231,7 @@ void CertProvisioningWorkerDynamic::HandleSerialization() {
 void CertProvisioningWorkerDynamic::InitAfterDeserialization() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  RegisterForInvalidationTopic();
+  RegisterForInvalidations();
 
   // Only initialize TpmChallengeKeySubtle if any Verified Access operations can
   // still happen, i.e. if VA is enabled and the key has not been moved into the
@@ -1244,22 +1258,16 @@ void CertProvisioningWorkerDynamic::InitAfterDeserialization() {
   }
 }
 
-void CertProvisioningWorkerDynamic::RegisterForInvalidationTopic() {
+void CertProvisioningWorkerDynamic::RegisterForInvalidations() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   DCHECK(invalidator_);
-
-  // Can be empty after deserialization if no topic was received yet. Also
-  // protects from errors on the server side.
-  if (invalidation_topic_.empty()) {
-    return;
-  }
 
   // Registering the callback with base::Unretained is OK because this class
   // owns |invalidator_|, and the callback will never be called after
   // |invalidator_| is destroyed.
   invalidator_->Register(
-      invalidation_topic_, MakeInvalidationListenerType(process_id_),
+      MakeInvalidationListenerType(process_id_),
       base::BindRepeating(&CertProvisioningWorkerDynamic::OnInvalidationEvent,
                           base::Unretained(this)));
 
@@ -1267,7 +1275,7 @@ void CertProvisioningWorkerDynamic::RegisterForInvalidationTopic() {
               CertProvisioningEvent::kRegisteredToInvalidationTopic);
 }
 
-void CertProvisioningWorkerDynamic::UnregisterFromInvalidationTopic() {
+void CertProvisioningWorkerDynamic::UnregisterFromInvalidations() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   DCHECK(invalidator_);
@@ -1281,9 +1289,13 @@ void CertProvisioningWorkerDynamic::OnInvalidationEvent(
   // to monitor for b/307340577 .
   switch (invalidation_event) {
     case InvalidationEvent::kSuccessfullySubscribed:
+      RecordEvent(
+          cert_profile_.protocol_version, cert_scope_,
+          CertProvisioningEvent::kSuccessfullySubscribedToInvalidationTopic);
       LOG(WARNING) << "Successfully subscribed to invalidations"
                    << GetLogInfoBlock();
-      OnShouldContinue(ContinueReason::kSubscribedToInvalidation);
+      ScheduleNextStep(kOnSubscribedFetchInstructionDelay,
+                       /*try_provisioning_on_timeout=*/true);
       break;
     case InvalidationEvent::kInvalidationReceived:
       LOG(WARNING) << "Invalidation received" << GetLogInfoBlock();
@@ -1292,7 +1304,7 @@ void CertProvisioningWorkerDynamic::OnInvalidationEvent(
   }
 }
 
-std::string CertProvisioningWorkerDynamic::GetLogInfoBlock() {
+std::string CertProvisioningWorkerDynamic::GetLogInfoBlock() const {
   return base::StringPrintf(" [cppId: %s]", process_id_.c_str());
 }
 

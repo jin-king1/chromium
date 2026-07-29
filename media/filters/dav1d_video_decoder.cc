@@ -16,11 +16,13 @@
 #include "base/strings/stringprintf.h"
 #include "base/task/bind_post_task.h"
 #include "base/task/sequenced_task_runner.h"
+#include "media/base/agtm.h"
 #include "media/base/decoder_buffer.h"
 #include "media/base/limits.h"
 #include "media/base/media_log.h"
 #include "media/base/video_aspect_ratio.h"
 #include "media/base/video_util.h"
+#include "third_party/skia/include/core/SkData.h"
 
 extern "C" {
 #include "third_party/dav1d/libdav1d/include/dav1d/dav1d.h"
@@ -104,7 +106,7 @@ static void ReleaseDecoderBuffer(const uint8_t* buffer, void* opaque) {
 }
 
 static void LogDav1dMessage(void* cookie, const char* format, va_list ap) {
-  auto log = base::StringPrintV(format, ap);
+  auto log = UNSAFE_TODO(base::StringPrintV(format, ap));
   if (log.empty())
     return;
 
@@ -228,16 +230,6 @@ class RefCountedUV16Data : public base::RefCountedMemory {
   std::vector<uint16_t> uv_data_;
 };
 
-// static
-SupportedVideoDecoderConfigs Dav1dVideoDecoder::SupportedConfigs() {
-  return {{/*profile_min=*/AV1PROFILE_PROFILE_MAIN,
-           /*profile_max=*/AV1PROFILE_PROFILE_HIGH,
-           /*coded_size_min=*/kDefaultSwDecodeSizeMin,
-           /*coded_size_max=*/kDefaultSwDecodeSizeMax,
-           /*allow_encrypted=*/false,
-           /*require_encrypted=*/false}};
-}
-
 Dav1dVideoDecoder::Dav1dVideoDecoder(std::unique_ptr<MediaLog> media_log,
                                      OffloadState offload_state)
     : media_log_(std::move(media_log)),
@@ -283,7 +275,8 @@ void Dav1dVideoDecoder::Initialize(const VideoDecoderConfig& config,
   }
 
   if (!frame_pool_) {
-    frame_pool_ = base::MakeRefCounted<FrameBufferPool>();
+    frame_pool_ =
+        base::MakeRefCounted<FrameBufferPool>(/*zero_initialize_memory=*/true);
   }
 
   // Clear any previously initialized decoder.
@@ -374,6 +367,7 @@ void Dav1dVideoDecoder::Reset(base::OnceClosure reset_cb) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   state_ = DecoderState::kNormal;
   dav1d_flush(dav1d_decoder_.get());
+  hdr_metadata_reordering_map_.Clear();
   error_status_ = DecoderStatus::Codes::kFailed;
 
   if (bind_callbacks_)
@@ -402,6 +396,7 @@ void Dav1dVideoDecoder::Dav1dContextDeleter::operator()(Dav1dContext* ptr) {
 void Dav1dVideoDecoder::CloseDecoder() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   dav1d_decoder_.reset();
+  hdr_metadata_reordering_map_.Clear();
 }
 
 bool Dav1dVideoDecoder::DecodeBuffer(scoped_refptr<DecoderBuffer> buffer) {
@@ -409,12 +404,14 @@ bool Dav1dVideoDecoder::DecodeBuffer(scoped_refptr<DecoderBuffer> buffer) {
 
   using ScopedPtrDav1dData = std::unique_ptr<Dav1dData, ScopedDav1dDataFree>;
   ScopedPtrDav1dData input_buffer;
-
   if (!buffer->end_of_stream()) {
+    hdr_metadata_reordering_map_.Insert(*buffer);
+
+    auto buffer_span = base::span(*buffer);
     input_buffer.reset(new Dav1dData{});
-    const int res =
-        dav1d_data_wrap(input_buffer.get(), buffer->data(), buffer->size(),
-                        &ReleaseDecoderBuffer, buffer.get());
+    const int res = dav1d_data_wrap(input_buffer.get(), buffer_span.data(),
+                                    buffer_span.size(), &ReleaseDecoderBuffer,
+                                    buffer.get());
     if (res < 0) {
       if (res == DAV1D_ERR(ENOMEM)) {
         error_status_ = DecoderStatus::Codes::kOutOfMemory;
@@ -470,6 +467,22 @@ bool Dav1dVideoDecoder::DecodeBuffer(scoped_refptr<DecoderBuffer> buffer) {
       continue;
     }
 
+    gfx::HDRMetadata hdr_metadata = config_.hdr_metadata();
+    if (p->itut_t35) {
+      // SAFETY: The best we can do is trust the size provided by Dav1d.
+      auto t35s = UNSAFE_BUFFERS(
+          base::span<const Dav1dITUTT35>(p->itut_t35, p->n_itut_t35));
+      for (const auto& t35 : t35s) {
+        // SAFETY: The best we can do is trust the size provided by Dav1d.
+        auto t35_payload_span = UNSAFE_BUFFERS(
+            base::span<const uint8_t>(t35.payload, t35.payload_size));
+        SetAgtmFromT35WithCountryCode(hdr_metadata, t35.country_code,
+                                      t35_payload_span);
+      }
+    }
+    hdr_metadata_reordering_map_.MergeAndEraseMetadataForTimestamp(
+        base::Microseconds(p->m.timestamp), hdr_metadata);
+
     auto frame = BindImageToVideoFrame(p.get());
     if (!frame) {
       MEDIA_LOG(DEBUG, media_log_)
@@ -492,7 +505,7 @@ bool Dav1dVideoDecoder::DecodeBuffer(scoped_refptr<DecoderBuffer> buffer) {
 
     frame->set_color_space(gfx_cs);
     frame->metadata().power_efficient = false;
-    frame->set_hdr_metadata(config_.hdr_metadata());
+    frame->set_hdr_metadata(hdr_metadata);
 
     FrameBufferData* opaque_data =
         static_cast<FrameBufferData*>(p->allocator_data);
@@ -516,15 +529,30 @@ scoped_refptr<VideoFrame> Dav1dVideoDecoder::BindImageToVideoFrame(
     return nullptr;
 
   auto uv_plane_stride = pic->stride[1];
-  const auto* u_plane = static_cast<const uint8_t*>(pic->data[1]);
-  const auto* v_plane = static_cast<const uint8_t*>(pic->data[2]);
+  const size_t y_plane_height = pic->p.h;
+  const size_t uv_plane_height =
+      media::VideoFrame::PlaneSizeInSamples(
+          pixel_format, media::VideoFrame::Plane::kU, visible_size)
+          .height();
+
+  // SAFETY: Dav1d doesn't give us the size of the planes directly, that's
+  // why we assume it to be equal to stride * rows,
+  // as we do in many other places.
+  auto y_plane =
+      UNSAFE_BUFFERS(base::span(static_cast<const uint8_t*>(pic->data[0]),
+                                y_plane_height * pic->stride[0]));
+  auto u_plane =
+      UNSAFE_BUFFERS(base::span(static_cast<const uint8_t*>(pic->data[1]),
+                                uv_plane_height * uv_plane_stride));
+  auto v_plane =
+      UNSAFE_BUFFERS(base::span(static_cast<const uint8_t*>(pic->data[2]),
+                                uv_plane_height * uv_plane_stride));
 
   const bool needs_fake_uv_planes = pic->p.layout == DAV1D_PIXEL_LAYOUT_I400;
   if (needs_fake_uv_planes) {
     // UV planes are half the size of the Y plane.
     uv_plane_stride =
         base::bits::AlignUpDeprecatedDoNotUse(pic->stride[0] / 2, ptrdiff_t{2});
-    const auto uv_plane_height = (pic->p.h + 1) / 2;
     const size_t size_needed = uv_plane_stride * uv_plane_height;
 
     if (!fake_uv_data_ || fake_uv_data_->size() != size_needed) {
@@ -543,15 +571,14 @@ scoped_refptr<VideoFrame> Dav1dVideoDecoder::BindImageToVideoFrame(
       }
     }
 
-    u_plane = v_plane = fake_uv_data_->data();
+    u_plane = v_plane = base::span<const uint8_t>(*fake_uv_data_);
   }
 
   auto frame = VideoFrame::WrapExternalYuvData(
       pixel_format, visible_size, gfx::Rect(visible_size),
       config_.aspect_ratio().GetNaturalSize(gfx::Rect(visible_size)),
-      pic->stride[0], uv_plane_stride, uv_plane_stride,
-      static_cast<uint8_t*>(pic->data[0]), u_plane, v_plane,
-      base::Microseconds(pic->m.timestamp));
+      pic->stride[0], uv_plane_stride, uv_plane_stride, y_plane, u_plane,
+      v_plane, base::Microseconds(pic->m.timestamp));
   if (!frame)
     return nullptr;
 

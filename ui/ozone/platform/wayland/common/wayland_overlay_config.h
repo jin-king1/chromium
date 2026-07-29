@@ -6,10 +6,12 @@
 #define UI_OZONE_PLATFORM_WAYLAND_COMMON_WAYLAND_OVERLAY_CONFIG_H_
 
 #include <memory>
+#include <variant>
 
 #include "ui/gfx/color_space.h"
 #include "ui/gfx/gpu_fence.h"
 #include "ui/gfx/gpu_fence_handle.h"
+#include "ui/gfx/hdr_metadata.h"
 #include "ui/gfx/overlay_plane_data.h"
 #include "ui/gfx/overlay_priority_hint.h"
 #include "ui/gfx/overlay_transform.h"
@@ -36,7 +38,7 @@ struct WaylandOverlayConfig {
   // Specifies how the buffer is to be transformed during composition.
   // Note: A |gfx::OverlayTransform| transforms the buffer within its bounds and
   // does not affect |bounds_rect|.
-  absl::variant<gfx::OverlayTransform, gfx::Transform> transform =
+  std::variant<gfx::OverlayTransform, gfx::Transform> transform =
       gfx::OverlayTransform::OVERLAY_TRANSFORM_NONE;
 
   // Specifies if alpha blending, with premultiplied alpha should be applied at
@@ -77,8 +79,9 @@ struct WaylandOverlayConfig {
   // compositing.
   gfx::GpuFenceHandle access_fence_handle;
 
-  // Specifies the color space data of the wayland config.
+  // Specifies the color space data and HDR metadata of the wayland config.
   std::optional<gfx::ColorSpace> color_space;
+  gfx::HDRMetadata hdr_metadata;
 };
 
 }  // namespace wl

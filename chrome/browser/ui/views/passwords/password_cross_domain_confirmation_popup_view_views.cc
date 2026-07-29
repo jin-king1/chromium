@@ -8,6 +8,7 @@
 #include <string>
 
 #include "base/memory/weak_ptr.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/ui/passwords/password_cross_domain_confirmation_popup_controller_interface.h"
 #include "chrome/browser/ui/passwords/ui_utils.h"
@@ -18,21 +19,22 @@
 #include "chrome/grit/generated_resources.h"
 #include "components/strings/grit/components_strings.h"
 #include "ui/accessibility/ax_enums.mojom-shared.h"
+#include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/ui_base_types.h"
+#include "ui/events/event.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/text_constants.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/controls/button/button.h"
-#include "ui/views/controls/button/label_button.h"
 #include "ui/views/controls/button/md_text_button.h"
 #include "ui/views/controls/image_view.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/box_layout_view.h"
 #include "ui/views/layout/layout_provider.h"
-#include "ui/views/metadata/view_factory_internal.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/style/typography.h"
 #include "ui/views/view.h"
 #include "url/gurl.h"
@@ -48,7 +50,8 @@ PasswordCrossDomainConfirmationPopupViewViews::
         base::OnceClosure cancel_callback)
     : autofill::PopupBaseView(controller,
                               parent_widget,
-                              views::Widget::InitParams::Activatable::kYes) {
+                              views::Widget::InitParams::Activatable::kYes),
+      confirmation_callback_(std::move(confirmation_callback)) {
   SetBackground(views::CreateSolidBackground(ui::kColorDropdownBackground));
 
   auto* layout_provider = ChromeLayoutProvider::Get();
@@ -67,7 +70,7 @@ PasswordCrossDomainConfirmationPopupViewViews::
       std::make_unique<views::ImageView>(ui::ImageModel::FromVectorIcon(
           GooglePasswordManagerVectorIcon(), ui::kColorIcon,
           layout_provider->GetDistanceMetric(
-              DISTANCE_BUBBLE_HEADER_VECTOR_ICON_SIZE))));
+              views::DISTANCE_BUBBLE_HEADER_VECTOR_ICON_SIZE))));
   headline->AddChildView(
       views::Builder<views::Label>()
           .SetText(controller->GetTitleText())
@@ -92,7 +95,7 @@ PasswordCrossDomainConfirmationPopupViewViews::
           .Build());
   EmphasizeTokens(label, views::style::TextStyle::STYLE_BODY_3_BOLD,
                   /*tokens=*/
-                  {password_hostname, base::ASCIIToUTF16(domain.host())});
+                  {password_hostname, base::ASCIIToUTF16(domain.GetHost())});
 
   auto* controls = AddChildView(
       views::Builder<views::BoxLayoutView>()
@@ -103,17 +106,22 @@ PasswordCrossDomainConfirmationPopupViewViews::
           .SetBetweenChildSpacing(layout_provider->GetDistanceMetric(
               views::DISTANCE_RELATED_BUTTON_HORIZONTAL))
           .Build());
-  controls->AddChildView(views::Builder<views::MdTextButton>()
-                             .SetText(l10n_util::GetStringUTF16(IDS_CANCEL))
-                             .SetStyle(ui::ButtonStyle::kDefault)
-                             .SetCallback(std::move(cancel_callback))
-                             .Build());
+  auto* cancel_button = controls->AddChildView(
+      views::Builder<views::MdTextButton>()
+          .SetText(l10n_util::GetStringUTF16(IDS_CANCEL))
+          .SetStyle(ui::ButtonStyle::kDefault)
+          .SetCallback(std::move(cancel_callback))
+          .SetID(static_cast<int>(PopupViewId::kCancelButton))
+          .Build());
   auto* confirmation_button = controls->AddChildView(
       views::Builder<views::MdTextButton>()
           .SetText(l10n_util::GetStringUTF16(
               IDS_PASSWORD_CROSS_DOMAIN_FILLING_CONFIRMATION_CONFIRM_BUTTON_LABEL))
           .SetStyle(ui::ButtonStyle::kProminent)
-          .SetCallback(std::move(confirmation_callback))
+          .SetCallback(base::BindRepeating(
+              &PasswordCrossDomainConfirmationPopupViewViews::OnConfirm,
+              base::Unretained(this)))
+          .SetID(static_cast<int>(PopupViewId::kConfirmButton))
           .Build());
   confirmation_button->GetViewAccessibility().SetName(base::JoinString(
       {controller->GetTitleText(), controller->GetBodyText(),
@@ -124,7 +132,18 @@ PasswordCrossDomainConfirmationPopupViewViews::
                              layout_provider->GetDistanceMetric(
                                  DISTANCE_STANDALONE_BUBBLE_PREFERRED_WIDTH));
   SetPreferredSize(gfx::Size(popup_width, GetHeightForWidth(popup_width)));
-  SetInitiallyFocusedView(confirmation_button);
+  SetInitiallyFocusedView(cancel_button);
+}
+
+void PasswordCrossDomainConfirmationPopupViewViews::OnConfirm(
+    const ui::Event& event) {
+  if (input_protector_.IsPossiblyUnintendedInteraction(
+          event, /*allow_key_events=*/false)) {
+    return;
+  }
+  if (confirmation_callback_) {
+    std::move(confirmation_callback_).Run();
+  }
 }
 
 PasswordCrossDomainConfirmationPopupViewViews::
@@ -145,6 +164,7 @@ bool PasswordCrossDomainConfirmationPopupViewViews::
 
 void PasswordCrossDomainConfirmationPopupViewViews::Show() {
   DoShow();
+  input_protector_.VisibilityChanged(true);
 }
 
 BEGIN_METADATA(PasswordCrossDomainConfirmationPopupViewViews)

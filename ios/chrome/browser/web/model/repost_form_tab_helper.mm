@@ -4,6 +4,7 @@
 
 #import "ios/chrome/browser/web/model/repost_form_tab_helper.h"
 
+#import "base/functional/callback_helpers.h"
 #import "base/memory/ptr_util.h"
 #import "ios/chrome/browser/web/model/repost_form_tab_helper_delegate.h"
 
@@ -106,5 +107,3 @@ void RepostFormTabHelper::WebStateDestroyed(web::WebState* web_state) {
   web_state_->RemoveObserver(this);
   web_state_ = nullptr;
 }
-
-WEB_STATE_USER_DATA_KEY_IMPL(RepostFormTabHelper)

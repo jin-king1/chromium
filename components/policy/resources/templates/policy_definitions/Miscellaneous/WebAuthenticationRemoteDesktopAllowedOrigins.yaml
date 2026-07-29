@@ -9,14 +9,16 @@ desc: |-
   Only valid HTTPS origins are allowed. Wildcards are not supported.
   Any invalid entries are ignored.
 
+  This policy only applies to affiliated users.
+
 features:
   dynamic_refresh: true
   per_profile: true
   platform_only: true
-future_on:
-- chrome.*
-- chrome_os
-- android
+supported_on:
+- chrome.*:136-
+- chrome_os:136-
+- android:136-
 example_value:
 - https://remotedesktop.google.com
 - https://vdi.corp.example

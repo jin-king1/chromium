@@ -15,13 +15,12 @@
 namespace blink {
 
 V8RenderingContext* HTMLCanvasElementModule::getContext(
+    ScriptState* script_state,
     HTMLCanvasElement& canvas,
     const String& context_id,
     const CanvasContextCreationAttributesModule* attributes,
     ExceptionState& exception_state) {
-  if (canvas.IsOffscreenCanvasRegistered() && !canvas.LowLatencyEnabled()) {
-    // The existence of canvas surfaceLayerBridge indicates that
-    // HTMLCanvasElement.transferControlToOffscreen() has been called.
+  if (canvas.IsOffscreenCanvasRegistered()) {
     exception_state.ThrowDOMException(DOMExceptionCode::kInvalidStateError,
                                       "Cannot get context from a canvas that "
                                       "has transferred its control to "
@@ -35,7 +34,8 @@ V8RenderingContext* HTMLCanvasElementModule::getContext(
     return nullptr;
   }
   CanvasRenderingContext* context = canvas.GetCanvasRenderingContext(
-      context_id, canvas_context_creation_attributes);
+      ExecutionContext::From(script_state), context_id,
+      canvas_context_creation_attributes);
   if (!context)
     return nullptr;
   return context->AsV8RenderingContext();
@@ -59,8 +59,7 @@ OffscreenCanvas* HTMLCanvasElementModule::transferControlToOffscreen(
         "Cannot transfer control from a canvas for more than one time.");
   } else {
     canvas.CreateLayer();
-    offscreen_canvas = TransferControlToOffscreenInternal(script_state, canvas,
-                                                          exception_state);
+    offscreen_canvas = TransferControlToOffscreenInternal(script_state, canvas);
   }
 
   base::UmaHistogramBoolean("Blink.OffscreenCanvas.TransferControlToOffscreen",
@@ -70,22 +69,24 @@ OffscreenCanvas* HTMLCanvasElementModule::transferControlToOffscreen(
 
 OffscreenCanvas* HTMLCanvasElementModule::TransferControlToOffscreenInternal(
     ScriptState* script_state,
-    HTMLCanvasElement& canvas,
-    ExceptionState& exception_state) {
-  OffscreenCanvas* offscreen_canvas =
-      OffscreenCanvas::Create(script_state, canvas.width(), canvas.height());
-
+    HTMLCanvasElement& canvas) {
   DOMNodeId canvas_id = canvas.GetDomNodeId();
-  canvas.RegisterPlaceholderCanvas(static_cast<int>(canvas_id));
-  offscreen_canvas->SetPlaceholderCanvasId(canvas_id);
+  canvas.RegisterPlaceholderCanvas(canvas_id);
+
+  uint32_t client_id = 0;
+  uint32_t sink_id = 0;
+
+  if (SurfaceLayerBridge* bridge = canvas.SurfaceLayerBridge()) {
+    client_id = bridge->GetFrameSinkId().client_id();
+    sink_id = bridge->GetFrameSinkId().sink_id();
+  }
+
+  OffscreenCanvas* offscreen_canvas =
+      OffscreenCanvas::Create(script_state, canvas.width(), canvas.height(),
+                              client_id, sink_id, canvas_id);
   offscreen_canvas->SetTextDirection(canvas.GetTextDirection(nullptr));
   offscreen_canvas->SetLocale(canvas.GetLocale());
 
-  SurfaceLayerBridge* bridge = canvas.SurfaceLayerBridge();
-  if (bridge) {
-    offscreen_canvas->SetFrameSinkId(bridge->GetFrameSinkId().client_id(),
-                                     bridge->GetFrameSinkId().sink_id());
-  }
   return offscreen_canvas;
 }
 

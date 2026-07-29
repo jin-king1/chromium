@@ -26,7 +26,7 @@
 #include "ash/display/display_configuration_controller_test_api.h"
 #include "ash/display/screen_orientation_controller.h"
 #include "ash/display/screen_orientation_controller_test_api.h"
-#include "ash/frame/non_client_frame_view_ash.h"
+#include "ash/frame/frame_view_ash.h"
 #include "ash/game_dashboard/test_game_dashboard_delegate.h"
 #include "ash/ime/ime_controller_impl.h"
 #include "ash/ime/test_ime_controller_client.h"
@@ -65,7 +65,6 @@
 #include "ash/wm/window_util.h"
 #include "ash/wm/wm_event.h"
 #include "base/command_line.h"
-#include "base/containers/contains.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/json/json_writer.h"
@@ -125,6 +124,8 @@
 #include "ui/wm/core/accelerator_filter.h"
 
 namespace ash {
+
+using chromeos::AppType;
 
 namespace {
 
@@ -372,6 +373,12 @@ class AcceleratorControllerTest : public AshTestBase {
         std::make_unique<AcceleratorControllerImpl::TestApi>(controller_);
   }
 
+  void TearDown() override {
+    test_api_.reset();
+    controller_ = nullptr;
+    AshTestBase::TearDown();
+  }
+
  protected:
   static bool ProcessInController(const ui::Accelerator& accelerator) {
     AcceleratorControllerImpl* controller =
@@ -507,8 +514,7 @@ class AcceleratorControllerTest : public AshTestBase {
 
   MockNewWindowDelegate& new_window_delegate() { return new_window_delegate_; }
 
-  raw_ptr<AcceleratorControllerImpl, DanglingUntriaged> controller_ =
-      nullptr;  // Not owned.
+  raw_ptr<AcceleratorControllerImpl> controller_ = nullptr;  // Not owned.
   std::unique_ptr<AcceleratorControllerImpl::TestApi> test_api_;
 
  private:
@@ -685,7 +691,7 @@ TEST_F(AcceleratorControllerTest, IsRegistered) {
 
 TEST_F(AcceleratorControllerTest, WindowSnap) {
   std::unique_ptr<aura::Window> window(
-      CreateTestWindowInShellWithBounds(gfx::Rect(5, 5, 20, 20)));
+      CreateTestWindowInShell({.bounds = {5, 5, 20, 20}, .window_id = 0}));
   WindowState* window_state = WindowState::Get(window.get());
 
   window_state->Activate();
@@ -794,7 +800,7 @@ TEST_F(AcceleratorControllerTest, WindowSnapUpsideDown) {
   ASSERT_FALSE(chromeos::IsDisplayLayoutPrimary(current_display));
 
   // Snap the window. Test that it goes to the physical left/right as expected.
-  auto window = CreateAppWindow(gfx::Rect(300, 300));
+  auto window = CreateWindowWithAppType(AppType::SYSTEM_APP, {300, 300});
   controller_->PerformActionIfEnabled(AcceleratorAction::kWindowCycleSnapLeft,
                                       {});
   EXPECT_EQ(gfx::Point(0, 0), window->GetBoundsInScreen().origin());
@@ -814,7 +820,7 @@ TEST_F(AcceleratorControllerTest, WindowSnapUpsideDown) {
   ASSERT_FALSE(current_display.is_landscape());
   ASSERT_FALSE(chromeos::IsDisplayLayoutPrimary(current_display));
 
-  window = CreateAppWindow(gfx::Rect(300, 300));
+  window = CreateWindowWithAppType(AppType::SYSTEM_APP, {300, 300});
   work_area_bounds = current_display.work_area();
 
   // Snap the window. Test that it goes to the physical top/bottom as expected.
@@ -830,7 +836,7 @@ TEST_F(AcceleratorControllerTest, WindowSnapUpsideDown) {
 // Tests that window snapping works.
 TEST_F(AcceleratorControllerTest, TestRepeatedSnap) {
   std::unique_ptr<aura::Window> window(
-      CreateTestWindowInShellWithBounds(gfx::Rect(5, 5, 20, 20)));
+      CreateTestWindowInShell({.bounds = {5, 5, 20, 20}, .window_id = 0}));
 
   WindowState* window_state = WindowState::Get(window.get());
   window_state->Activate();
@@ -902,11 +908,11 @@ TEST_F(AcceleratorControllerTestWithClamshellSplitView, WindowSnapUma) {
   base::UserActionTester user_action_tester;
   base::HistogramTester histogram_tester;
   std::unique_ptr<aura::Window> window1(
-      CreateTestWindowInShellWithBounds(gfx::Rect(10, 10, 20, 20)));
+      CreateTestWindowInShell({.bounds = {10, 10, 20, 20}, .window_id = 0}));
   // Some test cases use clamshell split view, for which we need a second window
   // so overview will be nonempty. Otherwise split view will end when it starts.
   std::unique_ptr<aura::Window> window2(
-      CreateTestWindowInShellWithBounds(gfx::Rect(5, 5, 20, 20)));
+      CreateTestWindowInShell({.bounds = {5, 5, 20, 20}, .window_id = 0}));
   base::HistogramBase::Count32 left_clamshell_no_overview = 0;
   base::HistogramBase::Count32 left_clamshell_overview = 0;
   base::HistogramBase::Count32 left_tablet = 0;
@@ -1030,10 +1036,10 @@ TEST_F(AcceleratorControllerTestWithClamshellSplitView,
        WindowSnapOrientationUma) {
   UpdateDisplay("800x600");
   std::unique_ptr<aura::Window> window(
-      CreateTestWindowInShellWithBounds(gfx::Rect(5, 5, 20, 20)));
+      CreateTestWindowInShell({.bounds = {5, 5, 20, 20}, .window_id = 0}));
   WindowState* window_state = WindowState::Get(window.get());
   std::unique_ptr<aura::Window> window2(
-      CreateTestWindowInShellWithBounds(gfx::Rect(5, 5, 20, 20)));
+      CreateTestWindowInShell({.bounds = {5, 5, 20, 20}, .window_id = 0}));
   WindowState* window_state2 = WindowState::Get(window2.get());
   base::HistogramTester histogram_tester;
   constexpr char kSnapWindowDeviceOrientationHistogram[] =
@@ -1075,7 +1081,7 @@ TEST_F(AcceleratorControllerTestWithClamshellSplitView,
 }
 
 TEST_F(AcceleratorControllerTest, RotateScreen) {
-  display::Display display = display::Screen::GetScreen()->GetPrimaryDisplay();
+  display::Display display = display::Screen::Get()->GetPrimaryDisplay();
   display::Display::Rotation initial_rotation =
       GetActiveDisplayRotation(display.id());
   AccessibilityController* accessibility_controller =
@@ -1189,8 +1195,8 @@ TEST_F(AcceleratorControllerTest, RotateScreenWithWindowLockingOrientation) {
       Shell::Get()->screen_orientation_controller();
   EXPECT_TRUE(tablet_mode_controller->is_in_tablet_physical_state());
   EXPECT_FALSE(screen_orientation_controller->user_rotation_locked());
-  auto win0 = CreateAppWindow(gfx::Rect{100, 300});
-  auto win1 = CreateAppWindow(gfx::Rect{200, 200});
+  auto win0 = CreateWindowWithAppType(AppType::SYSTEM_APP, {100, 300});
+  auto win1 = CreateWindowWithAppType(AppType::SYSTEM_APP, {200, 200});
   screen_orientation_controller->LockOrientationForWindow(
       win0.get(), chromeos::OrientationType::kPortraitPrimary);
   screen_orientation_controller->LockOrientationForWindow(
@@ -1239,7 +1245,7 @@ TEST_F(AcceleratorControllerTest, RotateScreenWithWindowLockingOrientation) {
   // those that requested window rotation locks.
   TabletModeControllerTestApi().AttachExternalMouse();
   EXPECT_TRUE(tablet_mode_controller->is_in_tablet_physical_state());
-  EXPECT_FALSE(display::Screen::GetScreen()->InTabletMode());
+  EXPECT_FALSE(display::Screen::Get()->InTabletMode());
 
   wm::ActivateWindow(win0.get());
   EXPECT_TRUE(screen_orientation_controller->rotation_locked());
@@ -1373,7 +1379,7 @@ TEST_F(AcceleratorControllerTest, DontToggleFullscreenWhenOverviewStarts) {
 // window in overview.
 TEST_F(AcceleratorControllerTest, MinimizedWindowInOverview) {
   std::unique_ptr<aura::Window> window(
-      CreateTestWindowInShellWithBounds(gfx::Rect(5, 5, 20, 20)));
+      CreateTestWindowInShell({.bounds = {5, 5, 20, 20}, .window_id = 0}));
   WindowState* window_state = WindowState::Get(window.get());
   window_state->Minimize();
   EXPECT_TRUE(window_state->IsMinimized());
@@ -1621,11 +1627,12 @@ TEST_F(AcceleratorControllerTest, ToggleMultitaskMenu) {
   // targeting.
   Shell::Get()->ash_accelerator_configuration()->Initialize();
 
-  std::unique_ptr<aura::Window> window = CreateAppWindow();
+  std::unique_ptr<aura::Window> window =
+      CreateWindowWithAppType(AppType::SYSTEM_APP);
   ui::Accelerator accelerator(ui::VKEY_Z, ui::EF_COMMAND_DOWN);
   // Pressing accelerator once should show the multitask menu.
   EXPECT_TRUE(ProcessInController(accelerator));
-  auto* frame_view = NonClientFrameViewAsh::Get(window.get());
+  auto* frame_view = FrameViewAsh::Get(window.get());
   auto* size_button = static_cast<chromeos::FrameSizeButton*>(
       frame_view->GetHeaderView()->caption_button_container()->size_button());
   ASSERT_TRUE(size_button->IsMultitaskMenuShown());
@@ -1795,15 +1802,13 @@ TEST_F(AcceleratorControllerTest, SideVolumeButtonLocation) {
 
   // Tests that |side_volume_button_location_| is read correctly if the location
   // file exists.
-  base::Value::Dict location;
+  base::DictValue location;
   location.Set(kVolumeButtonRegion, kVolumeButtonRegionScreen);
   location.Set(kVolumeButtonSide, kVolumeButtonSideLeft);
-  std::string json_location;
-  base::JSONWriter::Write(location, &json_location);
   base::ScopedTempDir file_tmp_dir;
   ASSERT_TRUE(file_tmp_dir.CreateUniqueTempDir());
   base::FilePath file_path = file_tmp_dir.GetPath().Append("location.json");
-  ASSERT_TRUE(WriteJsonFile(file_path, json_location));
+  ASSERT_TRUE(WriteJsonFile(file_path, base::WriteJson(location).value_or("")));
   EXPECT_TRUE(base::PathExists(file_path));
   test_api_->SetSideVolumeButtonFilePath(file_path);
   EXPECT_EQ(kVolumeButtonRegionScreen,
@@ -1899,8 +1904,8 @@ TEST_P(SideVolumeButtonAcceleratorTest, FlipSideVolumeButtonAction) {
   user_action_tester.ResetCounts();
 
   ui::KeyEvent event(ui::EventType::kKeyPressed, ui::VKEY_VOLUME_DOWN,
-                     ui::DomCode::VOLUME_DOWN, /*flags=*/0, /*dom_key=*/2099727,
-                     base::TimeTicks::Now());
+                     ui::DomCode::VOLUME_DOWN, /*flags=*/0,
+                     ui::DomKey::AUDIO_VOLUME_DOWN, base::TimeTicks::Now());
   event.set_source_device_id(kSideVolumeButtonId);
   const ui::Accelerator volume_down_from_side_volume_button(event);
   ProcessInController(volume_down_from_side_volume_button);
@@ -1978,9 +1983,7 @@ INSTANTIATE_TEST_SUITE_P(
 TEST_F(AcceleratorControllerTest, PressAndReleasePowerButtonWithFunctionKey) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitWithFeatures(
-      {features::kModifierSplit, features::kPeripheralCustomization,
-       features::kInputDeviceSettingsSplit},
-      {});
+      {features::kModifierSplit, features::kPeripheralCustomization}, {});
 
   const int kKeyboardDeviceIdWithFunction = 123;
   const int kKeyboardDeviceId = 456;
@@ -2047,9 +2050,7 @@ TEST_F(AcceleratorControllerTest, PressAndReleasePowerButtonWithFunctionKey) {
 TEST_F(AcceleratorControllerTest, ToggleCapsLockAcceleratorsWithFunctionKey) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitWithFeatures(
-      {features::kModifierSplit, features::kShortcutStateMachines,
-       features::kPeripheralCustomization, features::kInputDeviceSettingsSplit},
-      {});
+      {features::kModifierSplit, features::kPeripheralCustomization}, {});
 
   AnchoredNudgeManagerImpl* nudge_manager =
       Shell::Get()->anchored_nudge_manager();
@@ -2099,116 +2100,7 @@ TEST_F(AcceleratorControllerTest, ToggleCapsLockAcceleratorsWithFunctionKey) {
 }
 
 // Tests the AcceleratorAction::kToggleCapsLock accelerator.
-TEST_F(AcceleratorControllerTest, ToggleCapsLockAccelerators) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndDisableFeature(features::kShortcutStateMachines);
-
-  ImeControllerImpl* controller = Shell::Get()->ime_controller();
-  TestImeControllerClient client;
-  controller->SetClient(&client);
-  EXPECT_EQ(0, client.set_caps_lock_count_);
-
-  // 1. Press Alt, Press Search, Release Search, Release Alt.
-  // Note when you press Alt then press search, the key_code at this point is
-  // VKEY_LWIN (for search) and Alt is the modifier.
-  const ui::Accelerator press_alt_then_search(ui::VKEY_LWIN, ui::EF_ALT_DOWN);
-  EXPECT_FALSE(ProcessInController(press_alt_then_search));
-  // When you release Search before Alt, the key_code is still VKEY_LWIN and
-  // Alt is still the modifier.
-  const ui::Accelerator release_search_before_alt(
-      CreateReleaseAccelerator(ui::VKEY_LWIN, ui::EF_ALT_DOWN));
-  EXPECT_TRUE(ProcessInController(release_search_before_alt));
-  EXPECT_EQ(1, client.set_caps_lock_count_);
-  EXPECT_TRUE(controller->IsCapsLockEnabled());
-  controller->UpdateCapsLockState(false);
-
-  // 2. Press Search, Press Alt, Release Search, Release Alt.
-  const ui::Accelerator press_search_then_alt(ui::VKEY_MENU,
-                                              ui::EF_COMMAND_DOWN);
-  EXPECT_FALSE(ProcessInController(press_search_then_alt));
-  EXPECT_TRUE(ProcessInController(release_search_before_alt));
-  EXPECT_EQ(2, client.set_caps_lock_count_);
-  EXPECT_TRUE(controller->IsCapsLockEnabled());
-  controller->UpdateCapsLockState(false);
-
-  // 3. Press Alt, Press Search, Release Alt, Release Search.
-  EXPECT_FALSE(ProcessInController(press_alt_then_search));
-  const ui::Accelerator release_alt_before_search(
-      CreateReleaseAccelerator(ui::VKEY_MENU, ui::EF_COMMAND_DOWN));
-  EXPECT_TRUE(ProcessInController(release_alt_before_search));
-  EXPECT_EQ(3, client.set_caps_lock_count_);
-  EXPECT_TRUE(controller->IsCapsLockEnabled());
-  controller->UpdateCapsLockState(false);
-
-  // 4. Press Search, Press Alt, Release Alt, Release Search.
-  EXPECT_FALSE(ProcessInController(press_search_then_alt));
-  EXPECT_TRUE(ProcessInController(release_alt_before_search));
-  EXPECT_EQ(4, client.set_caps_lock_count_);
-  EXPECT_TRUE(controller->IsCapsLockEnabled());
-  controller->UpdateCapsLockState(false);
-
-  // 5. Press M, Press Alt, Press Search, Release Alt. After that CapsLock
-  // should not be triggered. https://crbug.com/789283
-  ui::test::EventGenerator* generator = GetEventGenerator();
-  generator->PressKey(ui::VKEY_M, ui::EF_NONE);
-  generator->PressKey(ui::VKEY_MENU, ui::EF_NONE);
-  generator->PressKey(ui::VKEY_LWIN, ui::EF_ALT_DOWN);
-  generator->ReleaseKey(ui::VKEY_MENU, ui::EF_COMMAND_DOWN);
-  EXPECT_FALSE(controller->IsCapsLockEnabled());
-  controller->UpdateCapsLockState(false);
-  generator->ReleaseKey(ui::VKEY_M, ui::EF_NONE);
-  generator->ReleaseKey(ui::VKEY_LWIN, ui::EF_ALT_DOWN);
-
-  // 6. Toggle CapsLock shortcut should still work after the partial screenshot
-  // shortcut is used. (https://crbug.com/920030)
-  {
-    // Press Ctrl+Shift+F5 then release to enter the partial screenshot session.
-    const ui::Accelerator press_partial_screenshot_shortcut(
-        ui::VKEY_MEDIA_LAUNCH_APP1, ui::EF_SHIFT_DOWN | ui::EF_CONTROL_DOWN);
-    EXPECT_TRUE(ProcessInController(press_partial_screenshot_shortcut));
-    const ui::Accelerator release_partial_screenshot_shortcut =
-        CreateReleaseAccelerator(ui::VKEY_MEDIA_LAUNCH_APP1,
-                                 ui::EF_SHIFT_DOWN | ui::EF_CONTROL_DOWN);
-    EXPECT_FALSE(ProcessInController(release_partial_screenshot_shortcut));
-
-    // Press mouse left button, move mouse and release mouse button. Then
-    // the partial screenshot is taken.
-    generator->MoveMouseTo(0, 0);
-    generator->PressLeftButton();
-    generator->MoveMouseTo(10, 10);
-    generator->ReleaseLeftButton();
-    auto* capture_mode_controller = CaptureModeController::Get();
-    EXPECT_TRUE(capture_mode_controller->IsActive());
-    EXPECT_EQ(CaptureModeSource::kRegion, capture_mode_controller->source());
-
-    // Press Search, Press Alt, Release Search, Release Alt. CapsLock should be
-    // triggered.
-    EXPECT_FALSE(ProcessInController(press_search_then_alt));
-    EXPECT_TRUE(ProcessInController(release_search_before_alt));
-    EXPECT_EQ(5, client.set_caps_lock_count_);
-    EXPECT_TRUE(controller->IsCapsLockEnabled());
-    controller->UpdateCapsLockState(false);
-  }
-
-  // 7. Toggle CapsLock shortcut should still work after fake events generated.
-  // (https://crbug.com/918317).
-  generator->PressKey(ui::VKEY_PROCESSKEY, ui::EF_IME_FABRICATED_KEY);
-  generator->ReleaseKey(ui::VKEY_UNKNOWN, ui::EF_IME_FABRICATED_KEY);
-
-  // Press Search, Press Alt, Release Search, Release Alt. CapsLock should be
-  // triggered.
-  EXPECT_FALSE(ProcessInController(press_search_then_alt));
-  EXPECT_TRUE(ProcessInController(release_search_before_alt));
-  EXPECT_EQ(6, client.set_caps_lock_count_);
-  EXPECT_TRUE(controller->IsCapsLockEnabled());
-  controller->UpdateCapsLockState(false);
-}
-
-// Tests the AcceleratorAction::kToggleCapsLock accelerator.
 TEST_F(AcceleratorControllerTest, ToggleCapsLockAcceleratorsStateMachines) {
-  base::test::ScopedFeatureList feature_list_;
-  feature_list_.InitAndEnableFeature(features::kShortcutStateMachines);
-
   ImeControllerImpl* controller = Shell::Get()->ime_controller();
   TestImeControllerClient client;
   controller->SetClient(&client);
@@ -2298,8 +2190,8 @@ class PreferredReservedAcceleratorsTest : public AshTestBase {
 };
 
 TEST_F(PreferredReservedAcceleratorsTest, AcceleratorsWithFullscreen) {
-  aura::Window* w1 = CreateTestWindowInShellWithId(0);
-  aura::Window* w2 = CreateTestWindowInShellWithId(1);
+  aura::Window* w1 = CreateTestWindowInShell({.window_id = 0}).release();
+  aura::Window* w2 = CreateTestWindowInShell({.window_id = 1}).release();
   wm::ActivateWindow(w1);
 
   WMEvent fullscreen(WM_EVENT_FULLSCREEN);
@@ -2346,8 +2238,8 @@ TEST_F(PreferredReservedAcceleratorsTest, AcceleratorsWithFullscreen) {
 }
 
 TEST_F(PreferredReservedAcceleratorsTest, AcceleratorsWithPinned) {
-  aura::Window* w1 = CreateTestWindowInShellWithId(0);
-  aura::Window* w2 = CreateTestWindowInShellWithId(1);
+  aura::Window* w1 = CreateTestWindowInShell({.window_id = 0}).release();
+  aura::Window* w2 = CreateTestWindowInShell({.window_id = 1}).release();
   wm::ActivateWindow(w1);
 
   {
@@ -2393,19 +2285,19 @@ TEST_F(AcceleratorControllerTest, DisallowedAtModalWindow) {
     actionsAllowedAtModalWindow.insert(action);
   }
   for (const auto& action : actionsAllowedAtModalWindow) {
-    EXPECT_TRUE(base::Contains(all_actions, action) ||
-                base::Contains(all_debug_actions, action) ||
-                base::Contains(all_dev_actions, action))
+    EXPECT_TRUE(all_actions.contains(action) ||
+                all_debug_actions.contains(action) ||
+                all_dev_actions.contains(action))
         << " action from kActionsAllowedAtModalWindow"
         << " not found in kAcceleratorData, kDebugAcceleratorData or"
         << " kDeveloperAcceleratorData action: " << action;
   }
   std::unique_ptr<aura::Window> window(
-      CreateTestWindowInShellWithBounds(gfx::Rect(5, 5, 20, 20)));
+      CreateTestWindowInShell({.bounds = {5, 5, 20, 20}, .window_id = 0}));
   wm::ActivateWindow(window.get());
   ShellTestApi().SimulateModalWindowOpenForTest(true);
   for (const auto& action : all_actions) {
-    if (!base::Contains(actionsAllowedAtModalWindow, action)) {
+    if (!actionsAllowedAtModalWindow.contains(action)) {
       EXPECT_TRUE(controller_->PerformActionIfEnabled(action, {}))
           << " for action (disallowed at modal window): " << action;
     }
@@ -2508,7 +2400,7 @@ TEST_F(AcceleratorControllerTest, DisallowedWithNoWindow) {
   std::map<AcceleratorAction, ui::Accelerator> accelerators_needing_window;
   for (const AcceleratorData& accelerator_data : kAcceleratorData) {
     auto iter = actions_needing_window.find(accelerator_data.action);
-    if (!base::Contains(actions_needing_window, accelerator_data.action)) {
+    if (!actions_needing_window.contains(accelerator_data.action)) {
       continue;
     }
 
@@ -2530,7 +2422,8 @@ TEST_F(AcceleratorControllerTest, DisallowedWithNoWindow) {
   // Make sure we don't alert if we do have a window.
   std::unique_ptr<aura::Window> window;
   for (const auto& iter : accelerators_needing_window) {
-    window.reset(CreateTestWindowInShellWithBounds(gfx::Rect(5, 5, 20, 20)));
+    window =
+        CreateTestWindowInShell({.bounds = {5, 5, 20, 20}, .window_id = 0});
     wm::ActivateWindow(window.get());
     accessibility_controller->TriggerAccessibilityAlert(
         AccessibilityAlert::NONE);
@@ -2540,7 +2433,8 @@ TEST_F(AcceleratorControllerTest, DisallowedWithNoWindow) {
 
   // Don't alert if we have a minimized window either.
   for (const auto& iter : accelerators_needing_window) {
-    window.reset(CreateTestWindowInShellWithBounds(gfx::Rect(5, 5, 20, 20)));
+    window =
+        CreateTestWindowInShell({.bounds = {5, 5, 20, 20}, .window_id = 0});
     wm::ActivateWindow(window.get());
     controller_->PerformActionIfEnabled(AcceleratorAction::kWindowMinimize, {});
     accessibility_controller->TriggerAccessibilityAlert(
@@ -2741,7 +2635,7 @@ class SystemShortcutBehaviorTest : public AcceleratorControllerTest {
 
 TEST_F(SystemShortcutBehaviorTest, StandardSearchBasedAcceleratorProcessing) {
   VoidEventHandler event_handler;
-  aura::Window* w1 = CreateTestWindowInShellWithId(0);
+  aura::Window* w1 = CreateTestWindowInShell({.window_id = 0}).release();
   w1->AddPostTargetHandler(&event_handler);
   wm::ActivateWindow(w1);
 
@@ -2770,7 +2664,7 @@ TEST_F(SystemShortcutBehaviorTest, IgnoreCommonVdiShortcuts) {
 
 TEST_F(SystemShortcutBehaviorTest, IgnoreCommonVdiShortcutsFullscreenOnly) {
   VoidEventHandler event_handler;
-  aura::Window* w1 = CreateTestWindowInShellWithId(0);
+  aura::Window* w1 = CreateTestWindowInShell({.window_id = 0}).release();
   w1->AddPostTargetHandler(&event_handler);
   wm::ActivateWindow(w1);
 
@@ -2823,7 +2717,7 @@ TEST_F(SystemShortcutBehaviorTest, IgnoreCommonVdiShortcutsFullscreenOnly) {
 
 TEST_F(SystemShortcutBehaviorTest, AllowSearchBasedPassthrough) {
   VoidEventHandler event_handler;
-  aura::Window* w1 = CreateTestWindowInShellWithId(0);
+  aura::Window* w1 = CreateTestWindowInShell({.window_id = 0}).release();
   w1->AddPostTargetHandler(&event_handler);
   wm::ActivateWindow(w1);
 
@@ -2859,7 +2753,7 @@ TEST_F(SystemShortcutBehaviorTest, AllowSearchBasedPassthrough) {
 
 TEST_F(SystemShortcutBehaviorTest, AllowSearchBasedPassthroughFullscreenOnly) {
   VoidEventHandler event_handler;
-  aura::Window* w1 = CreateTestWindowInShellWithId(0);
+  aura::Window* w1 = CreateTestWindowInShell({.window_id = 0}).release();
   w1->AddPostTargetHandler(&event_handler);
   wm::ActivateWindow(w1);
 
@@ -2965,12 +2859,12 @@ class AcceleratorControllerImprovedKeyboardShortcutsTest
     EXPECT_FALSE(
         input_method_manager_->observers_.HasObserver(controller_.get()));
 
-    input_method::InputMethodManager::Shutdown();
     input_method_manager_ = nullptr;
+    input_method::InputMethodManager::Shutdown();
   }
 
  protected:
-  raw_ptr<TestInputMethodManager, DanglingUntriaged> input_method_manager_ =
+  raw_ptr<TestInputMethodManager> input_method_manager_ =
       nullptr;  // Not owned.
 };
 
@@ -3018,9 +2912,13 @@ class AcceleratorControllerInputMethodTest : public AcceleratorControllerTest {
     AcceleratorControllerTest::SetUp();
   }
 
+  void TearDown() override {
+    mock_input_ = nullptr;
+    AcceleratorControllerTest::TearDown();
+  }
+
  protected:
-  raw_ptr<AcceleratorMockInputMethod, DanglingUntriaged> mock_input_ =
-      nullptr;  // Not owned.
+  raw_ptr<AcceleratorMockInputMethod> mock_input_ = nullptr;  // Not owned.
 };
 
 // In some layouts positional accelerators can be on dead/compose keys. To
@@ -3637,7 +3535,8 @@ TEST_P(MediaSessionAcceleratorTest, MediaPlaybackAcceleratorsBehavior) {
   for (ui::KeyboardCode key : media_keys) {
     // If the media session service integration is enabled then media keys will
     // be handled in ash.
-    std::unique_ptr<aura::Window> window(CreateTestWindowInShellWithId(1));
+    std::unique_ptr<aura::Window> window(
+        CreateTestWindowInShell({.window_id = 1}));
     {
       ui::KeyEvent press_key(ui::EventType::kKeyPressed, key, ui::EF_NONE);
       ui::Event::DispatcherApi dispatch_helper(&press_key);
@@ -3862,7 +3761,7 @@ TEST_F(AcceleratorControllerTest, ToggleGameDashboardAccelerator) {
 
   // Create an ARC app window.
   std::unique_ptr<aura::Window> window =
-      CreateAppWindow(gfx::Rect(5, 5, 20, 20), chromeos::AppType::ARC_APP);
+      CreateWindowWithAppType(AppType::ARC_APP, {5, 5, 20, 20});
   window->SetProperty(kAppIDKey,
                       std::string(TestGameDashboardDelegate::kGameAppId));
   // Verify the accelerator is not processed until the game controls status is
@@ -3878,7 +3777,7 @@ TEST_F(AcceleratorControllerTest, ToggleGameDashboardAccelerator) {
   EXPECT_FALSE(ProcessInController(accelerator));
 
   // Create a non-ARC app window.
-  window = CreateAppWindow(gfx::Rect(5, 5, 20, 20), chromeos::AppType::BROWSER);
+  window = CreateWindowWithAppType(AppType::BROWSER, {5, 5, 20, 20});
   window->SetProperty(
       kAppIDKey, std::string(TestGameDashboardDelegate::kAllowlistedAppId));
   EXPECT_TRUE(ProcessInController(accelerator));

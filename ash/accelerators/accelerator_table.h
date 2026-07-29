@@ -206,6 +206,8 @@ ASH_EXPORT inline constexpr auto kDebugAcceleratorData =
          AcceleratorAction::kDebugToggleFocusModeState},
         {true, ui::VKEY_8, kDebugModifier,
          AcceleratorAction::kDebugStartSunfishSession},
+        {true, ui::VKEY_0, kDebugModifier,
+         AcceleratorAction::kDebugShowTestWindow},
     });
 
 // Developer accelerators that are enabled only with the command-line switch
@@ -245,7 +247,7 @@ ASH_EXPORT inline constexpr auto kDeveloperAcceleratorData = std::to_array<
      AcceleratorAction::kToggleFullscreen},
     // For testing on Linux desktop where it's hard to rebind the caps lock key.
     {true, ui::VKEY_A, ui::EF_ALT_DOWN, AcceleratorAction::kDevToggleAppList},
-    {true, ui::VKEY_S, ui::EF_ALT_DOWN, AcceleratorAction::kTogglePicker},
+    {true, ui::VKEY_S, ui::EF_ALT_DOWN, AcceleratorAction::kToggleQuickInsert},
 
     // For testing fingerprint ui.
     {true, ui::VKEY_1, kDebugModifier, kTouchFingerprintSensor1},
@@ -326,7 +328,7 @@ ASH_EXPORT inline constexpr std::array kActionsAllowedAtLoginOrLockScreen = {
     AcceleratorAction::kToggleFullscreenMagnifier,
     AcceleratorAction::kToggleHighContrast,
     AcceleratorAction::kToggleMirrorMode,
-    AcceleratorAction::kTogglePicker,
+    AcceleratorAction::kToggleQuickInsert,
     AcceleratorAction::kToggleSpokenFeedback,
     AcceleratorAction::kToggleSystemTrayBubble,
     AcceleratorAction::kToggleWifi,
@@ -410,7 +412,7 @@ ASH_EXPORT inline constexpr std::array kActionsAllowedAtModalWindow = {
     AcceleratorAction::kToggleHighContrast,
     AcceleratorAction::kToggleMirrorMode,
     AcceleratorAction::kToggleSpokenFeedback,
-    AcceleratorAction::kTogglePicker,
+    AcceleratorAction::kToggleQuickInsert,
     AcceleratorAction::kToggleWifi,
     AcceleratorAction::kTouchFingerprintSensor1,
     AcceleratorAction::kTouchFingerprintSensor2,
@@ -532,7 +534,7 @@ ASH_EXPORT inline constexpr std::array kActionsNeedingWindow = {
     AcceleratorAction::kToggleFloating,
     AcceleratorAction::kToggleFullscreen,
     AcceleratorAction::kToggleMaximized,
-    AcceleratorAction::kCreateSnapGroup,
+    AcceleratorAction::kToggleSnapGroup,
     AcceleratorAction::kToggleSnapGroupWindowsMinimizeAndRestore,
     AcceleratorAction::kWindowCycleSnapLeft,
     AcceleratorAction::kWindowCycleSnapRight,

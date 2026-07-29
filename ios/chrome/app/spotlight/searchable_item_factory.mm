@@ -10,9 +10,9 @@
 
 #import "base/containers/span.h"
 #import "base/functional/bind.h"
-#import "base/hash/md5.h"
 #import "base/memory/raw_ptr.h"
 #import "base/numerics/byte_conversions.h"
+#import "base/strings/string_number_conversions.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/task/cancelable_task_tracker.h"
 #import "build/branding_buildflags.h"
@@ -20,7 +20,9 @@
 #import "components/favicon/core/large_icon_service.h"
 #import "components/favicon_base/fallback_icon_style.h"
 #import "components/favicon_base/favicon_types.h"
+#import "crypto/hash.h"
 #import "ios/chrome/app/spotlight/spotlight_logger.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "net/base/apple/url_conversions.h"
 #import "skia/ext/skia_utils_ios.h"
@@ -39,11 +41,39 @@ const CGFloat kFallbackIconSize = 180;
 // Radius of the rounded corner of the fallback icon.
 const CGFloat kFallbackRoundedCorner = 8;
 
-// Create an image with a rounded square with color `backgroundColor` and
-// `string` centered in color `textColor`.
-UIImage* GetFallbackImageWithStringAndColor(NSString* string,
-                                            UIColor* backgroundColor,
-                                            UIColor* textColor) {
+UIImage* CreateFallbackImageWithStringAndColorViaGraphicsImageRenderer(
+    NSString* string,
+    UIColor* backgroundColor,
+    UIColor* textColor) {
+  CGRect rect = CGRectMake(0, 0, kFallbackIconSize, kFallbackIconSize);
+  UIGraphicsImageRenderer* renderer =
+      [[UIGraphicsImageRenderer alloc] initWithSize:rect.size];
+  return [renderer imageWithActions:^(UIGraphicsImageRendererContext* ctx) {
+    [backgroundColor setFill];
+    UIBezierPath* rounded =
+        [UIBezierPath bezierPathWithRoundedRect:rect
+                                   cornerRadius:kFallbackRoundedCorner];
+    [rounded fill];
+    UIFont* font = [UIFont systemFontOfSize:(kFallbackIconSize / 2)
+                                     weight:UIFontWeightRegular];
+    CGRect textRect = CGRectMake(0, (kFallbackIconSize - [font lineHeight]) / 2,
+                                 kFallbackIconSize, [font lineHeight]);
+    NSMutableParagraphStyle* paragraphStyle =
+        [[NSMutableParagraphStyle alloc] init];
+    [paragraphStyle setAlignment:NSTextAlignmentCenter];
+    NSDictionary* attributes = @{
+      NSFontAttributeName : font,
+      NSForegroundColorAttributeName : textColor,
+      NSParagraphStyleAttributeName : paragraphStyle
+    };
+    [string drawInRect:textRect withAttributes:attributes];
+  }];
+}
+
+UIImage* CreateFallbackImageWithStringAndColorViaLegacyCGContext(
+    NSString* string,
+    UIColor* backgroundColor,
+    UIColor* textColor) {
   CGRect rect = CGRectMake(0, 0, kFallbackIconSize, kFallbackIconSize);
   UIGraphicsBeginImageContext(rect.size);
   CGContextRef context = UIGraphicsGetCurrentContext();
@@ -69,6 +99,21 @@ UIImage* GetFallbackImageWithStringAndColor(NSString* string,
   UIImage* image = UIGraphicsGetImageFromCurrentImageContext();
   UIGraphicsEndImageContext();
   return image;
+}
+
+// Create an image with a rounded square with color `backgroundColor` and
+// `string` centered in color `textColor`.
+UIImage* GetFallbackImageWithStringAndColor(NSString* string,
+                                            UIColor* backgroundColor,
+                                            UIColor* textColor) {
+  if (base::FeatureList::IsEnabled(
+          kUseUIGraphicsImageRendererForFallbackIcons)) {
+    return CreateFallbackImageWithStringAndColorViaGraphicsImageRenderer(
+        string, backgroundColor, textColor);
+  } else {
+    return CreateFallbackImageWithStringAndColorViaLegacyCGContext(
+        string, backgroundColor, textColor);
+  }
 }
 
 }  // namespace
@@ -161,7 +206,7 @@ UIImage* GetFallbackImageWithStringAndColor(NSString* string,
 
 - (NSString*)spotlightIDForURL:(const GURL&)URL title:(NSString*)title {
   NSString* spotlightID = [NSString
-      stringWithFormat:@"%@.%016llx",
+      stringWithFormat:@"%@.%@",
                        spotlight::StringFromSpotlightDomain(_spotlightDomain),
                        [self hashForURL:URL title:title]];
   return spotlightID;
@@ -286,16 +331,15 @@ UIImage* GetFallbackImageWithStringAndColor(NSString* string,
   [[item attributeSet] setKeywords:[itemKeywords allObjects]];
 }
 
-// Compute a hash consisting of the first 8 bytes of the MD5 hash of a string
-// containing `URL` and `title`.
-- (int64_t)hashForURL:(const GURL&)URL title:(NSString*)title {
+// Computes a hash consisting of the SHA256 hash of a string containing `URL`
+// and `title`. Returns an Hex encoded string.
+- (NSString*)hashForURL:(const GURL&)URL title:(NSString*)title {
   NSString* key = [NSString
       stringWithFormat:@"%@ %@", base::SysUTF8ToNSString(URL.spec()), title];
-  const std::string clipboard = base::SysNSStringToUTF8(key);
+  const std::string keyAsString = base::SysNSStringToUTF8(key);
 
-  base::MD5Digest hash;
-  base::MD5Sum(base::as_byte_span(clipboard), &hash);
-  return base::U64FromLittleEndian(base::span(hash.a).first<8u>());
+  std::string hash = base::HexEncode(crypto::hash::Sha256(keyAsString));
+  return base::SysUTF8ToNSString(hash);
 }
 
 @end

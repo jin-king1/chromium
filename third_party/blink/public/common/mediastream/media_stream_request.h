@@ -42,6 +42,8 @@ BLINK_COMMON_EXPORT bool IsScreenCaptureMediaType(mojom::MediaStreamType type);
 BLINK_COMMON_EXPORT bool IsVideoScreenCaptureMediaType(
     mojom::MediaStreamType type);
 BLINK_COMMON_EXPORT bool IsDesktopCaptureMediaType(mojom::MediaStreamType type);
+BLINK_COMMON_EXPORT bool IsAudioDesktopCaptureMediaType(
+    mojom::MediaStreamType type);
 BLINK_COMMON_EXPORT bool IsVideoDesktopCaptureMediaType(
     mojom::MediaStreamType type);
 BLINK_COMMON_EXPORT bool IsTabCaptureMediaType(mojom::MediaStreamType type);
@@ -68,7 +70,7 @@ struct BLINK_COMMON_EXPORT MediaStreamDevice {
                     const std::string& id,
                     const std::string& name,
                     int sample_rate,
-                    const media::ChannelLayoutConfig& channel_layout_config,
+                    media::ChannelLayoutConfig channel_layout_config,
                     int frames_per_buffer);
   MediaStreamDevice(const MediaStreamDevice& other);
   ~MediaStreamDevice();

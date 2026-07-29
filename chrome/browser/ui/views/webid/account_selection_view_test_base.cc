@@ -4,7 +4,9 @@
 
 #include "chrome/browser/ui/views/webid/account_selection_view_test_base.h"
 
+#include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/ui/views/webid/account_selection_view_base.h"
+#include "chrome/browser/ui/webid/identity_ui_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/events/test/test_event.h"
 #include "ui/views/controls/image_view.h"
@@ -26,7 +28,7 @@ AccountSelectionViewTestBase::AccountSelectionViewTestBase() = default;
 
 AccountSelectionViewTestBase::~AccountSelectionViewTestBase() = default;
 
-std::u16string AccountSelectionViewTestBase::GetHoverButtonTitle(
+std::u16string_view AccountSelectionViewTestBase::GetHoverButtonTitle(
     HoverButton* account) {
   return account->title()->GetText();
 }
@@ -57,18 +59,26 @@ AccountSelectionViewTestBase::CreateTestIdentityRequestAccount(
     IdentityProviderDataPtr idp,
     content::IdentityRequestAccount::LoginState login_state,
     std::optional<base::Time> last_used_timestamp) {
+  std::string display_identifier =
+      std::string(kDisplayIdentifierBase) + account_suffix;
+  std::string display_name = std::string(kDisplayNameBase) + account_suffix;
+  std::string name = std::string(kNameBase) + account_suffix;
+  std::string email = std::string(kEmailBase) + account_suffix;
   IdentityRequestAccountPtr account =
       base::MakeRefCounted<content::IdentityRequestAccount>(
-          std::string(kIdBase) + account_suffix,
-          std::string(kEmailBase) + account_suffix,
-          std::string(kNameBase) + account_suffix,
-          std::string(kGivenNameBase) + account_suffix, GURL(),
+          std::string(kIdBase) + account_suffix, display_identifier,
+          display_name, email, name,
+          std::string(kGivenNameBase) + account_suffix, GURL(), "", "",
+          /*potentially_approved_origin_hashes=*/std::vector<std::string>(),
           /*login_hints=*/std::vector<std::string>(),
           /*domain_hints=*/std::vector<std::string>(),
           /*labels=*/std::vector<std::string>(), login_state,
           /*browser_trusted_login_state=*/
           content::IdentityRequestAccount::LoginState::kSignUp,
           last_used_timestamp);
+  if (login_state == content::IdentityRequestAccount::LoginState::kSignUp) {
+    account->fields = idp->disclosure_fields;
+  }
   account->identity_provider = std::move(idp);
   return account;
 }
@@ -133,7 +143,8 @@ views::View* AccountSelectionViewTestBase::GetViewWithClassName(
 
 void AccountSelectionViewTestBase::CheckNonHoverableAccountRow(
     views::View* row,
-    const std::string& account_suffix) {
+    const std::string& account_suffix,
+    bool has_display_identifier) {
   std::vector<raw_ptr<views::View, VectorExperimental>> row_children =
       row->children();
   ASSERT_EQ(row_children.size(), 2u);
@@ -152,18 +163,25 @@ void AccountSelectionViewTestBase::CheckNonHoverableAccountRow(
             views::BoxLayout::Orientation::kVertical);
   std::vector<raw_ptr<views::View, VectorExperimental>> text_view_children =
       text_view->children();
-  ASSERT_EQ(text_view_children.size(), 2u);
+  unsigned int expected_children = has_display_identifier ? 2u : 1u;
+  ASSERT_EQ(text_view_children.size(), expected_children);
 
-  std::string expected_name(std::string(kNameBase) + account_suffix);
+  std::string expected_display_name(std::string(kDisplayNameBase) +
+                                    account_suffix);
   views::StyledLabel* name_view =
       static_cast<views::StyledLabel*>(text_view_children[0]);
   ASSERT_TRUE(name_view);
-  EXPECT_EQ(name_view->GetText(), base::UTF8ToUTF16(expected_name));
+  EXPECT_EQ(name_view->GetText(), base::UTF8ToUTF16(expected_display_name));
 
-  std::string expected_email(std::string(kEmailBase) + account_suffix);
-  views::Label* email_view = static_cast<views::Label*>(text_view_children[1]);
-  ASSERT_TRUE(email_view);
-  EXPECT_EQ(email_view->GetText(), base::UTF8ToUTF16(expected_email));
+  if (has_display_identifier) {
+    std::string expected_display_identifier(
+        std::string(kDisplayIdentifierBase) + account_suffix);
+    views::Label* display_identifier_view =
+        static_cast<views::Label*>(text_view_children[1]);
+    ASSERT_TRUE(display_identifier_view);
+    EXPECT_EQ(display_identifier_view->GetText(),
+              base::UTF8ToUTF16(expected_display_identifier));
+  }
 }
 
 void AccountSelectionViewTestBase::CheckHoverableAccountRows(
@@ -181,13 +199,15 @@ void AccountSelectionViewTestBase::CheckHoverableAccountRows(
       ++accounts_index;
     }
     CheckHoverableAccountRow(accounts[accounts_index++], account_suffix,
-                             expect_idp, is_modal_dialog);
+                             /*has_display_identifier=*/true, expect_idp,
+                             is_modal_dialog);
   }
 }
 
 void AccountSelectionViewTestBase::CheckHoverableAccountRow(
     views::View* account,
     const std::string& account_suffix,
+    bool has_display_identifier,
     bool expect_idp,
     bool is_modal_dialog,
     bool is_disabled) {
@@ -198,17 +218,22 @@ void AccountSelectionViewTestBase::CheckHoverableAccountRow(
   HoverButton* account_row = static_cast<HoverButton*>(account);
   ASSERT_TRUE(account_row);
 
-  // Check for the title, which is the name if the account is not filtered out
-  // and the email otherwise.
+  // Check for the title, which is the display name if the account is not
+  // filtered out and the display identifier otherwise.
   EXPECT_EQ(GetHoverButtonTitle(account_row),
-            is_disabled
-                ? base::UTF8ToUTF16(std::string(kEmailBase) + account_suffix)
-                : base::UTF8ToUTF16(kNameBase + account_suffix));
+            (is_disabled && has_display_identifier)
+                ? base::UTF8ToUTF16(kDisplayIdentifierBase + account_suffix)
+                : base::UTF8ToUTF16(kDisplayNameBase + account_suffix));
 
   if (!is_disabled) {
-    // Check for account email in subtitle.
-    EXPECT_EQ(GetHoverButtonSubtitle(account_row)->GetText(),
-              base::UTF8ToUTF16(std::string(kEmailBase) + account_suffix));
+    if (has_display_identifier) {
+      // Check for account display identifier in subtitle.
+      EXPECT_EQ(GetHoverButtonSubtitle(account_row)->GetText(),
+                base::UTF8ToUTF16(std::string(kDisplayIdentifierBase) +
+                                  account_suffix));
+    } else {
+      EXPECT_EQ(nullptr, GetHoverButtonSubtitle(account_row));
+    }
     EXPECT_TRUE(account_row->GetEnabled());
   } else {
     // Check that the subtitle says that the account is disabled.
@@ -216,10 +241,12 @@ void AccountSelectionViewTestBase::CheckHoverableAccountRow(
               u"You can't sign in using this account");
     EXPECT_FALSE(account_row->GetEnabled());
   }
-  // The subtitle has changed style, so AutoColorReadabilityEnabled should be
-  // set.
-  EXPECT_TRUE(
-      GetHoverButtonSubtitle(account_row)->GetAutoColorReadabilityEnabled());
+  if (is_disabled || has_display_identifier) {
+    // The subtitle has changed style, so AutoColorReadabilityEnabled should be
+    // set.
+    EXPECT_TRUE(
+        GetHoverButtonSubtitle(account_row)->GetAutoColorReadabilityEnabled());
+  }
 
   // Check for account icon.
   views::View* icon_view = GetHoverButtonIconView(account_row);
@@ -234,11 +261,15 @@ void AccountSelectionViewTestBase::CheckHoverableAccountRow(
   } else {
     EXPECT_FALSE(GetHoverButtonFooter(account_row));
   }
-  EXPECT_EQ(icon_view->size(),
-            is_modal_dialog ? gfx::Size(kModalAvatarSize, kModalAvatarSize)
-            : expect_idp    ? gfx::Size(kDesiredAvatarSize + kIdpBadgeOffset,
-                                        kDesiredAvatarSize + kIdpBadgeOffset)
-                         : gfx::Size(kDesiredAvatarSize, kDesiredAvatarSize));
+  EXPECT_EQ(
+      icon_view->size(),
+      is_modal_dialog
+          ? gfx::Size(webid::kModalAvatarSize, webid::kModalAvatarSize)
+      // Height is increased by 2 * offset so that the account icon is centered.
+      : expect_idp
+          ? gfx::Size(webid::kDesiredAvatarSize + webid::kIdpBadgeOffset,
+                      webid::kDesiredAvatarSize + 2 * webid::kIdpBadgeOffset)
+          : gfx::Size(webid::kDesiredAvatarSize, webid::kDesiredAvatarSize));
 
   if (is_modal_dialog) {
     // Check for arrow icon in secondary view.

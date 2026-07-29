@@ -7,6 +7,7 @@
 #include <functional>
 
 #include "base/feature_list.h"
+#include "base/strings/string_util.h"
 #include "content/browser/preloading/prefetch/prefetch_document_manager.h"
 #include "content/browser/preloading/preloading_decider.h"
 #include "content/public/browser/web_contents.h"
@@ -29,10 +30,12 @@ bool CandidatesAreValid(
       return false;
     }
 
-    // Only "prerender" action supports `target_browsing_context_name_hint`.
-    // Invalid Speculation Rules are ignored and invalid candidates are not
-    // produced in Blink.
+    // Only "prerender" and "prerender-until-script" actions support
+    // `target_browsing_context_name_hint`. Invalid Speculation Rules are
+    // ignored and invalid candidates are not produced in Blink.
     if (candidate->action != blink::mojom::SpeculationAction::kPrerender &&
+        candidate->action !=
+            blink::mojom::SpeculationAction::kPrerenderUntilScript &&
         candidate->target_browsing_context_name_hint !=
             blink::mojom::SpeculationTargetHint::kNoHint) {
       mojo::ReportBadMessage("SH_TARGET_HINT_ON_PREFETCH");
@@ -47,6 +50,24 @@ bool CandidatesAreValid(
       mojo::ReportBadMessage(
           "SH_INVALID_REQUIRES_ANONYMOUS_CLIENT_IP_WHEN_CROSS_ORIGIN");
       return false;
+    }
+
+    // Speculation rules tags must contain at least one tag. When no tags are
+    // specified in rules, this should contain std::nullopt that represents a
+    // null tag.
+    if (candidate->tags.empty()) {
+      mojo::ReportBadMessage("SH_EMPTY_TAGS");
+      return false;
+    }
+    // All speculation rules tags must be valid tokens and std::nullopt is valid
+    // by definition.
+    for (auto& tag : candidate->tags) {
+      if (tag.has_value() &&
+          !std::all_of(tag.value().begin(), tag.value().end(),
+                       base::IsAsciiPrintable<char>)) {
+        mojo::ReportBadMessage("SH_INVALID_TAG");
+        return false;
+      }
     }
   }
   return true;
@@ -70,47 +91,87 @@ SpeculationHostImpl::SpeculationHostImpl(
 
 SpeculationHostImpl::~SpeculationHostImpl() = default;
 
+bool SpeculationHostImpl::ValidateFrameState() {
+  // Window gets inactive randomly by user-interaction, which is not avoidable.
+  if (!render_frame_host().IsActive()) {
+    return false;
+  }
+  // Sending messages from sub frames won't happen unless it is compromised.
+  if (render_frame_host().GetParent()) {
+    mojo::ReportBadMessage(
+        "SpeculationHost mojo message is sent from a subframe.");
+    return false;
+  }
+  return true;
+}
+
 void SpeculationHostImpl::UpdateSpeculationCandidates(
-    std::vector<blink::mojom::SpeculationCandidatePtr> candidates) {
+    std::vector<blink::mojom::SpeculationCandidatePtr> candidates,
+    bool enable_cross_origin_prerender_iframes) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
-  if (!CandidatesAreValid(candidates))
+  if (!CandidatesAreValid(candidates)) {
     return;
+  }
 
   // Only handle messages from an active main frame.
-  if (!render_frame_host().IsActive())
+  // TODO(crbug.com/489033320): Validate with ValidateFrameState().
+  if (!render_frame_host().IsActive()) {
     return;
-  if (render_frame_host().GetParent())
+  }
+  if (render_frame_host().GetParent()) {
     return;
+  }
 
   auto* preloading_decider =
       PreloadingDecider::GetOrCreateForCurrentDocument(&render_frame_host());
-  preloading_decider->UpdateSpeculationCandidates(candidates);
+  preloading_decider->UpdateSpeculationCandidates(
+      candidates, enable_cross_origin_prerender_iframes);
+}
+
+void SpeculationHostImpl::EnactCandidate(
+    blink::mojom::SpeculationCandidatePtr candidate) {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  // The renderer must only send EnactCandidate when renderer-side heuristics
+  // are enabled; reject the message otherwise.
+  if (!base::FeatureList::IsEnabled(
+          blink::features::kSpeculationRulesRendererSideHeuristics)) {
+    mojo::ReportBadMessage("SH_ENACT_CANDIDATE_FEATURE_DISABLED");
+    return;
+  }
+
+  // Validate the candidate the same way as UpdateSpeculationCandidates. A
+  // compromised renderer must not be able to enact an invalid candidate.
+  std::vector<blink::mojom::SpeculationCandidatePtr> singleton;
+  singleton.push_back(std::move(candidate));
+  if (!CandidatesAreValid(singleton)) {
+    return;
+  }
+
+  // Only handle messages from an active main frame.
+  // TODO(crbug.com/489033320): Validate with ValidateFrameState().
+  if (!render_frame_host().IsActive()) {
+    return;
+  }
+  if (render_frame_host().GetParent()) {
+    return;
+  }
+
+  auto* preloading_decider =
+      PreloadingDecider::GetOrCreateForCurrentDocument(&render_frame_host());
+  preloading_decider->EnactRendererSelectedCandidate(
+      std::move(singleton.front()));
 }
 
 void SpeculationHostImpl::OnLCPPredicted() {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  if (!ValidateFrameState()) {
+    return;
+  }
   auto* preloading_decider =
       PreloadingDecider::GetOrCreateForCurrentDocument(&render_frame_host());
   preloading_decider->OnLCPPredicted();
 }
 
-void SpeculationHostImpl::InitiatePreview(const GURL& url) {
-  if (!base::FeatureList::IsEnabled(blink::features::kLinkPreview)) {
-    mojo::ReportBadMessage("SH_PREVIEW");
-    return;
-  }
 
-  // Link Preview is not allowed in a frame with untrusted network disabled.
-  if (render_frame_host().IsUntrustedNetworkDisabled()) {
-    return;
-  }
-
-  WebContents* web_contents =
-      WebContents::FromRenderFrameHost(&render_frame_host());
-  CHECK(web_contents);
-  WebContentsDelegate* delegate = web_contents->GetDelegate();
-  CHECK(delegate);
-  delegate->InitiatePreview(*web_contents, url);
-}
 
 }  // namespace content

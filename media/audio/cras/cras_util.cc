@@ -4,6 +4,7 @@
 
 #include "media/audio/cras/cras_util.h"
 
+#include "base/compiler_specific.h"
 #include "base/logging.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/time/time.h"
@@ -60,7 +61,7 @@ libcras_client* CrasConnect() {
     LOG(ERROR) << "Couldn't create CRAS client.\n";
     return nullptr;
   }
-  if (libcras_client_connect(client)) {
+  if (libcras_client_connect_timeout(client, kCrasConnectTimeoutMs)) {
     LOG(ERROR) << "Couldn't connect CRAS client.\n";
     libcras_client_destroy(client);
     return nullptr;
@@ -80,6 +81,10 @@ void CrasDisconnect(libcras_client** client) {
 }  // namespace
 
 CrasDevice::CrasDevice() = default;
+
+CrasDevice::CrasDevice(const CrasDevice&) = default;
+
+CrasDevice::~CrasDevice() = default;
 
 CrasDevice::CrasDevice(struct libcras_node_info* node, DeviceType type)
     : type(type) {
@@ -226,12 +231,11 @@ bool CrasUtil::CacheEffects() {
   return true;
 }
 
-std::vector<CrasDevice> CrasUtil::CrasGetAudioDevices(DeviceType type) {
-  std::vector<CrasDevice> devices;
-
+std::optional<std::vector<CrasDevice>> CrasUtil::CrasGetAudioDevices(
+    DeviceType type) {
   libcras_client* client = CrasConnect();
   if (!client) {
-    return devices;
+    return std::nullopt;
   }
 
   int rc;
@@ -250,11 +254,12 @@ std::vector<CrasDevice> CrasUtil::CrasGetAudioDevices(DeviceType type) {
   if (rc < 0) {
     LOG(ERROR) << "Failed to get devices: " << std::strerror(rc);
     CrasDisconnect(&client);
-    return devices;
+    return std::nullopt;
   }
 
+  std::vector<CrasDevice> devices;
   for (size_t i = 0; i < num_nodes; i++) {
-    auto new_dev = CrasDevice(nodes[i], type);
+    auto new_dev = CrasDevice(UNSAFE_TODO(nodes[i]), type);
     if (!new_dev.plugged || !IsForSimpleUsage(new_dev.node_type)) {
       continue;
     }

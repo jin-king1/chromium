@@ -67,6 +67,7 @@ struct CookieStoreIOSTestTraits {
   static const int creation_time_granularity_in_ms = 1000;
   static const bool supports_cookie_access_semantics = false;
   static const bool supports_partitioned_cookies = false;
+  static const bool dispatches_events_on_no_change_overwrite = false;
 
   base::test::SingleThreadTaskEnvironment task_environment_;
 };
@@ -164,10 +165,10 @@ class CookieStoreIOSTest : public PlatformTest {
                        const std::string& value) {
     system_store_->SetCookieAsync(
         [NSHTTPCookie cookieWithProperties:@{
-          NSHTTPCookiePath : base::SysUTF8ToNSString(url.path()),
+          NSHTTPCookiePath : base::SysUTF8ToNSString(url.GetPath()),
           NSHTTPCookieName : base::SysUTF8ToNSString(name),
           NSHTTPCookieValue : base::SysUTF8ToNSString(value),
-          NSHTTPCookieDomain : base::SysUTF8ToNSString(url.host()),
+          NSHTTPCookieDomain : base::SysUTF8ToNSString(url.GetHost()),
         }],
         base::BindOnce(&net::CookieStoreIOS::NotifySystemCookiesChanged));
     base::RunLoop().RunUntilIdle();
@@ -204,7 +205,7 @@ class CookieStoreIOSTest : public PlatformTest {
   // |system_store_| will point to the NSHTTPSystemCookieStore object owned by
   // |store_|. Once the store_ object is deleted the NSHTTPSystemCookieStore
   // object will be deleted.
-  raw_ptr<net::SystemCookieStore> system_store_;
+  raw_ptr<net::SystemCookieStore, DanglingUntriaged> system_store_;
   std::unique_ptr<net::CookieStoreIOS> store_;
   std::unique_ptr<net::CookieChangeSubscription> cookie_change_subscription_;
   std::vector<net::CanonicalCookie> cookies_changed_;
@@ -246,7 +247,7 @@ TEST_F(CookieStoreIOSTest, DeleteCanonicalCookie) {
   // for same key if cookie value changed.  Document CookieStoreIOS compat.
   std::unique_ptr<CanonicalCookie> non_equiv_cookie =
       CanonicalCookie::CreateForTesting(kTestCookieURLFooBar, "abc=wfg",
-                                        not_now);
+                                        not_now, net::CookieSourceType::kOther);
   base::RunLoop run_loop;
   store_->DeleteCanonicalCookieAsync(
       *non_equiv_cookie, base::BindLambdaForTesting([&](uint32_t deleted) {
@@ -270,7 +271,7 @@ TEST_F(CookieStoreIOSTest, DeleteCanonicalCookie) {
   // Now delete equivalent one with non-matching ctime.
   std::unique_ptr<CanonicalCookie> equiv_cookie =
       CanonicalCookie::CreateForTesting(kTestCookieURLFooBar, "abc=def",
-                                        not_now);
+                                        not_now, net::CookieSourceType::kOther);
 
   base::RunLoop run_loop3;
   store_->DeleteCanonicalCookieAsync(
@@ -335,11 +336,13 @@ TEST_F(CookieStoreIOSTest, GetAllCookies) {
 
   // Add a cookie.
   auto canonical_cookie = net::CanonicalCookie::CreateForTesting(
-      kTestCookieURLFooBar, "a=b", base::Time::Now());
+      kTestCookieURLFooBar, "a=b", base::Time::Now(),
+      net::CookieSourceType::kOther);
   cookie_store->SetCanonicalCookieAsync(std::move(canonical_cookie),
                                         kTestCookieURLFooBar,
                                         net::CookieOptions::MakeAllInclusive(),
-                                        net::CookieStore::SetCookiesCallback());
+                                        net::CookieStore::SetCookiesCallback(),
+                                        /*cookie_access_result=*/std::nullopt);
   // Check we can get the cookie.
   GetAllCookiesHelperCallback callback;
   cookie_store->GetCookieListWithOptionsAsync(

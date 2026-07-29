@@ -5,16 +5,13 @@
 #ifndef CHROME_BROWSER_UI_BLOCKED_CONTENT_TAB_UNDER_NAVIGATION_THROTTLE_H_
 #define CHROME_BROWSER_UI_BLOCKED_CONTENT_TAB_UNDER_NAVIGATION_THROTTLE_H_
 
-#include <memory>
-
-#include "base/feature_list.h"
 #include "content/public/browser/navigation_throttle.h"
 
 namespace content {
-class NavigationHandle;
+class NavigationThrottleRegistry;
 }
 
-constexpr char kBlockTabUnderFormatMessage[] =
+inline constexpr char kBlockTabUnderFormatMessage[] =
     "Chrome stopped this site from navigating to %s, see "
     "https://www.chromestatus.com/feature/5675755719622656 for more details.";
 
@@ -34,7 +31,7 @@ constexpr char kBlockTabUnderFormatMessage[] =
 //  in the background to be considered a tab-under restricts the scope of the
 //  intervention. For instance, popups that do not completely hide the original
 //  page may cause subsequent tab-under navigations to occur while visible (not
-//  compeltely backgrounded). See https://crbug.com/733736.
+//  compeltely backgrounded). See https://crbug.com/41325640.
 //
 //  For now, we allow these tab-unders because this pattern seems to be
 //  legitimate for some cases (like auth).
@@ -64,8 +61,7 @@ class TabUnderNavigationThrottle : public content::NavigationThrottle {
     kCount
   };
 
-  static std::unique_ptr<content::NavigationThrottle> MaybeCreate(
-      content::NavigationHandle* handle);
+  static void MaybeCreateAndAdd(content::NavigationThrottleRegistry& registry);
 
   TabUnderNavigationThrottle(const TabUnderNavigationThrottle&) = delete;
   TabUnderNavigationThrottle& operator=(const TabUnderNavigationThrottle&) =
@@ -74,7 +70,8 @@ class TabUnderNavigationThrottle : public content::NavigationThrottle {
   ~TabUnderNavigationThrottle() override;
 
  private:
-  explicit TabUnderNavigationThrottle(content::NavigationHandle* handle);
+  explicit TabUnderNavigationThrottle(
+      content::NavigationThrottleRegistry& registry);
 
   // This method is described at the top of this file.
   //

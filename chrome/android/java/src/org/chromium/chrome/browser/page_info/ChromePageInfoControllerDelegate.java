@@ -4,28 +4,34 @@
 
 package org.chromium.chrome.browser.page_info;
 
-import static org.chromium.components.browser_ui.site_settings.AllSiteSettings.EXTRA_SEARCH;
+import static org.chromium.build.NullUtil.assertNonNull;
+import static org.chromium.components.browser_ui.site_settings.SingleWebsiteSettings.EXTRA_SITE;
 
 import android.app.Activity;
 import android.content.Context;
+import android.content.Intent;
 import android.content.res.Resources;
 import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
+import android.net.Uri;
 import android.os.Bundle;
+import android.provider.Settings;
 import android.text.TextUtils;
 import android.view.ViewGroup;
 
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 import androidx.fragment.app.FragmentActivity;
 import androidx.fragment.app.FragmentManager;
 
 import org.chromium.base.Callback;
-import org.chromium.base.supplier.Supplier;
+import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ephemeraltab.EphemeralTabCoordinator;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
+import org.chromium.chrome.browser.feedback.FeedbackPolicyManager;
 import org.chromium.chrome.browser.feedback.HelpAndFeedbackLauncherImpl;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.merchant_viewer.PageInfoStoreInfoController;
 import org.chromium.chrome.browser.merchant_viewer.PageInfoStoreInfoController.StoreInfoActionHandler;
 import org.chromium.chrome.browser.offlinepages.OfflinePageItem;
@@ -35,9 +41,6 @@ import org.chromium.chrome.browser.omnibox.ChromeAutocompleteSchemeClassifier;
 import org.chromium.chrome.browser.paint_preview.TabbedPaintPreview;
 import org.chromium.chrome.browser.pdf.PdfUtils;
 import org.chromium.chrome.browser.pdf.PdfUtils.PdfPageType;
-import org.chromium.chrome.browser.preferences.Pref;
-import org.chromium.chrome.browser.privacy_sandbox.PrivacySandboxReferrer;
-import org.chromium.chrome.browser.privacy_sandbox.PrivacySandboxSettingsBaseFragment;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.settings.SettingsNavigationFactory;
 import org.chromium.chrome.browser.site_settings.ChromeSiteSettingsDelegate;
@@ -47,22 +50,21 @@ import org.chromium.chrome.browser.tabmodel.TabCreator;
 import org.chromium.chrome.browser.ui.favicon.FaviconHelper;
 import org.chromium.chrome.browser.util.ChromeAccessibilityUtil;
 import org.chromium.components.browser_ui.settings.SettingsNavigation;
-import org.chromium.components.browser_ui.site_settings.AllSiteSettings;
+import org.chromium.components.browser_ui.site_settings.SingleWebsiteSettings;
 import org.chromium.components.browser_ui.site_settings.SiteSettingsCategory;
 import org.chromium.components.browser_ui.site_settings.SiteSettingsDelegate;
+import org.chromium.components.browser_ui.site_settings.Website;
 import org.chromium.components.browser_ui.widget.TintedDrawable;
 import org.chromium.components.content_settings.CookieControlsBridge;
 import org.chromium.components.content_settings.CookieControlsObserver;
 import org.chromium.components.embedder_support.util.UrlUtilities;
 import org.chromium.components.feature_engagement.EventConstants;
-import org.chromium.components.page_info.PageInfoAdPersonalizationController;
+import org.chromium.components.page_info.PageInfoController;
 import org.chromium.components.page_info.PageInfoControllerDelegate;
 import org.chromium.components.page_info.PageInfoMainController;
 import org.chromium.components.page_info.PageInfoRowView;
 import org.chromium.components.page_info.PageInfoSubpageController;
 import org.chromium.components.page_info.PageInfoView;
-import org.chromium.components.privacy_sandbox.TrackingProtectionSettings;
-import org.chromium.components.user_prefs.UserPrefs;
 import org.chromium.content_public.browser.BrowserContextHandle;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.modaldialog.ModalDialogManager;
@@ -73,23 +75,28 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Date;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 /**
  * Chrome's customization of PageInfoControllerDelegate. This class provides Chrome-specific info to
  * PageInfoController. It also contains logic for Chrome-specific features, like {@link
  * TabbedPaintPreview}
  */
+@NullMarked
 public class ChromePageInfoControllerDelegate extends PageInfoControllerDelegate {
     private final WebContents mWebContents;
-    private final Supplier<ModalDialogManager> mModalDialogManagerSupplier;
-    private final Supplier<EphemeralTabCoordinator> mEphemeralTabCoordinatorSupplier;
+    private final Supplier<@Nullable ModalDialogManager> mModalDialogManagerSupplier;
+    private final @Nullable Supplier<@Nullable EphemeralTabCoordinator>
+            mEphemeralTabCoordinatorSupplier;
     private final Context mContext;
     private final Profile mProfile;
-    private final Supplier<StoreInfoActionHandler> mStoreInfoActionHandlerSupplier;
+    private final @Nullable MonotonicObservableSupplier<StoreInfoActionHandler>
+            mStoreInfoActionHandlerSupplier;
     private final ChromePageInfoHighlight mPageInfoHighlight;
     private final OfflinePageLoadUrlDelegate mOfflinePageLoadUrlDelegate;
-    private String mOfflinePageCreationDate;
-    private final TabCreator mTabCreator;
+    private @Nullable String mOfflinePageCreationDate;
+    private final @Nullable TabCreator mTabCreator;
+    private final @Nullable String mPackageName;
 
     static final String FEEDBACK_REPORT_TYPE =
             "com.google.chrome.browser.page_info.USER_INITIATED_FEEDBACK_REPORT";
@@ -97,12 +104,14 @@ public class ChromePageInfoControllerDelegate extends PageInfoControllerDelegate
     public ChromePageInfoControllerDelegate(
             Context context,
             WebContents webContents,
-            Supplier<ModalDialogManager> modalDialogManagerSupplier,
+            Supplier<@Nullable ModalDialogManager> modalDialogManagerSupplier,
             OfflinePageLoadUrlDelegate offlinePageLoadUrlDelegate,
-            @Nullable Supplier<StoreInfoActionHandler> storeInfoActionHandlerSupplier,
-            Supplier<EphemeralTabCoordinator> ephemeralTabCoordinatorSupplier,
+            @Nullable MonotonicObservableSupplier<StoreInfoActionHandler>
+                    storeInfoActionHandlerSupplier,
+            @Nullable Supplier<@Nullable EphemeralTabCoordinator> ephemeralTabCoordinatorSupplier,
             ChromePageInfoHighlight pageInfoHighlight,
-            TabCreator tabCreator) {
+            @Nullable TabCreator tabCreator,
+            @Nullable String packageName) {
         super(
                 new ChromeAutocompleteSchemeClassifier(Profile.fromWebContents(webContents)),
                 /* isSiteSettingsAvailable= */ SiteSettingsHelper.isSiteSettingsAvailable(
@@ -117,6 +126,7 @@ public class ChromePageInfoControllerDelegate extends PageInfoControllerDelegate
         mStoreInfoActionHandlerSupplier = storeInfoActionHandlerSupplier;
         mPageInfoHighlight = pageInfoHighlight;
         mTabCreator = tabCreator;
+        mPackageName = packageName;
 
         initOfflinePageParams();
         mOfflinePageLoadUrlDelegate = offlinePageLoadUrlDelegate;
@@ -149,7 +159,7 @@ public class ChromePageInfoControllerDelegate extends PageInfoControllerDelegate
     /** {@inheritDoc} */
     @Override
     public ModalDialogManager getModalDialogManager() {
-        return mModalDialogManagerSupplier.get();
+        return assertNonNull(mModalDialogManagerSupplier.get());
     }
 
     /** {@inheritDoc} */
@@ -244,25 +254,20 @@ public class ChromePageInfoControllerDelegate extends PageInfoControllerDelegate
 
     /** {@inheritDoc} */
     @Override
-    public void showTrackingProtectionSettings() {
-        SettingsNavigation settingsNavigation =
-                SettingsNavigationFactory.createSettingsNavigation();
-        settingsNavigation.startSettings(mContext, TrackingProtectionSettings.class);
-    }
-
-    /** {@inheritDoc} */
-    @Override
-    public void showAllSettingsForRws(String rwsOwner) {
+    public void showSiteSettings(Website currentSite) {
         Bundle extras = new Bundle();
-        extras.putString(EXTRA_SEARCH, rwsOwner);
+        extras.putSerializable(EXTRA_SITE, currentSite);
 
         SettingsNavigation settingsNavigation =
                 SettingsNavigationFactory.createSettingsNavigation();
-        settingsNavigation.startSettings(mContext, AllSiteSettings.class, extras);
+        settingsNavigation.startSettings(mContext, SingleWebsiteSettings.class, extras);
     }
 
     @Override
     public void showCookieFeedback(Activity activity) {
+        if (!FeedbackPolicyManager.getInstance().isUserFeedbackAllowed()) {
+            return;
+        }
         Tab tab = TabUtils.fromWebContents(mWebContents);
 
         // FEEDBACK_REPORT_TYPE: Reports for Chrome mobile must have a contextTag of the form
@@ -273,22 +278,12 @@ public class ChromePageInfoControllerDelegate extends PageInfoControllerDelegate
     }
 
     @Override
-    public void showAdPersonalizationSettings() {
-        PrivacySandboxSettingsBaseFragment.launchPrivacySandboxSettings(
-                mContext, PrivacySandboxReferrer.PAGE_INFO_AD_PRIVACY_SECTION);
-    }
+    public void showAdPersonalizationSettings() {}
 
-    @NonNull
     @Override
     public Collection<PageInfoSubpageController> createAdditionalRowViews(
             PageInfoMainController mainController, ViewGroup rowWrapper) {
         Collection<PageInfoSubpageController> controllers = new ArrayList<>();
-        var adPersonalizationRow = new PageInfoRowView(rowWrapper.getContext(), null);
-        adPersonalizationRow.setId(PageInfoAdPersonalizationController.ROW_ID);
-        rowWrapper.addView(adPersonalizationRow);
-        controllers.add(
-                new PageInfoAdPersonalizationController(
-                        mainController, adPersonalizationRow, this));
 
         // Add history row.
         final Tab tab = TabUtils.fromWebContents(mWebContents);
@@ -304,7 +299,8 @@ public class ChromePageInfoControllerDelegate extends PageInfoControllerDelegate
                             return tab;
                         }));
 
-        if (PageInfoAboutThisSiteController.isFeatureEnabled()) {
+        if (PageInfoAboutThisSiteController.isFeatureEnabled()
+                && (mEphemeralTabCoordinatorSupplier != null || mTabCreator != null)) {
             var aboutThisSiteRow = new PageInfoRowView(rowWrapper.getContext(), null);
             aboutThisSiteRow.setId(PageInfoAboutThisSiteController.ROW_ID);
             rowWrapper.addView(aboutThisSiteRow);
@@ -329,13 +325,21 @@ public class ChromePageInfoControllerDelegate extends PageInfoControllerDelegate
                             mWebContents,
                             mProfile));
         }
+
+        if (mPackageName != null) {
+            var appInfoRow = new PageInfoRowView(rowWrapper.getContext(), null);
+            PageInfoRowView.ViewParams rowParams =
+                    getAppInfoRowParams(mainController, appInfoRow, mPackageName);
+            appInfoRow.setParams(rowParams);
+            rowWrapper.addView(appInfoRow);
+        }
+
         return controllers;
     }
 
     /** {@inheritDoc} */
     @Override
-    public @NonNull CookieControlsBridge createCookieControlsBridge(
-            CookieControlsObserver observer) {
+    public CookieControlsBridge createCookieControlsBridge(CookieControlsObserver observer) {
         return new CookieControlsBridge(
                 observer,
                 mWebContents,
@@ -345,18 +349,18 @@ public class ChromePageInfoControllerDelegate extends PageInfoControllerDelegate
 
     /** {@inheritDoc} */
     @Override
-    public @NonNull BrowserContextHandle getBrowserContext() {
+    public BrowserContextHandle getBrowserContext() {
         return mProfile;
     }
 
     /** {@inheritDoc} */
     @Override
-    public @NonNull SiteSettingsDelegate getSiteSettingsDelegate() {
+    public SiteSettingsDelegate getSiteSettingsDelegate() {
         return new ChromeSiteSettingsDelegate(mContext, mProfile);
     }
 
     @Override
-    public void getFavicon(GURL url, Callback<Drawable> callback) {
+    public void getFavicon(GURL url, Callback<@Nullable Drawable> callback) {
         Resources resources = mContext.getResources();
         int size = resources.getDimensionPixelSize(R.dimen.page_info_favicon_size);
         FaviconHelper faviconHelper = new FaviconHelper();
@@ -364,6 +368,7 @@ public class ChromePageInfoControllerDelegate extends PageInfoControllerDelegate
                 mProfile,
                 url,
                 size,
+                /* fallbackToHost= */ true,
                 (image, iconUrl) -> {
                     if (image != null) {
                         callback.onResult(new BitmapDrawable(resources, image));
@@ -384,7 +389,7 @@ public class ChromePageInfoControllerDelegate extends PageInfoControllerDelegate
     }
 
     @Override
-    public FragmentManager getFragmentManager() {
+    public @Nullable FragmentManager getFragmentManager() {
         FragmentActivity activity = ((FragmentActivity) mContext);
         if (activity.isFinishing()) return null;
         return activity.getSupportFragmentManager();
@@ -396,19 +401,33 @@ public class ChromePageInfoControllerDelegate extends PageInfoControllerDelegate
         return mProfile.isOffTheRecord();
     }
 
+    /** {@inheritDoc} */
     @Override
-    public boolean showTrackingProtectionUi() {
-        return getSiteSettingsDelegate().shouldShowTrackingProtectionUi();
+    public boolean isHttpsFirstDialogUiEnabled() {
+        return ChromeFeatureList.isEnabled(ChromeFeatureList.HTTPS_FIRST_DIALOG_UI);
     }
 
-    @Override
-    public boolean showTrackingProtectionActFeaturesUi() {
-        return getSiteSettingsDelegate().shouldShowTrackingProtectionActFeaturesUi();
-    }
+    private PageInfoRowView.ViewParams getAppInfoRowParams(
+            PageInfoMainController mainController, PageInfoRowView appInfoRow, String packageName) {
+        Resources resources = appInfoRow.getContext().getResources();
+        PageInfoRowView.ViewParams rowParams = new PageInfoRowView.ViewParams();
 
-    @Override
-    public boolean allThirdPartyCookiesBlockedTrackingProtection() {
-        return UserPrefs.get(mProfile).getBoolean(Pref.BLOCK_ALL3PC_TOGGLE_ENABLED)
-                || isIncognito();
+        rowParams.title = resources.getString(R.string.app_info_settings);
+        rowParams.visible = rowParams.title != null;
+        rowParams.iconResId = R.drawable.settings_cog;
+        rowParams.decreaseIconSize = true;
+        rowParams.clickCallback =
+                () -> {
+                    Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+                    ((PageInfoController) mainController)
+                            .runAfterDismiss(
+                                    () -> {
+                                        intent.setData(Uri.parse("package:" + packageName));
+                                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                                        mainController.getActivity().startActivity(intent);
+                                    });
+                };
+
+        return rowParams;
     }
 }

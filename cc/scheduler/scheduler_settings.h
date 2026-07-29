@@ -63,9 +63,11 @@ class CC_EXPORT SchedulerSettings {
   // frames by.
   int delay_impl_invalidation_frames = 0;
 
-  // Whether the tree is pushing updates to a separate display tree via a
-  // LayerContext, rather than drawing directly to a compositor frame.
-  bool use_layer_context_for_display = false;
+  // When true SingleThreadedProxy is in use, which typically combines
+  // `commit_to_active_tree` and disables `main_frame_before_commit_enabled`.
+  // However those two settings are also changed by Blink WebTests. The
+  // SlimScheduler currently does not support SingleThreadedProxy.
+  bool single_threaded_proxy = false;
 
   std::unique_ptr<base::trace_event::ConvertableToTraceFormat> AsValue() const;
 };

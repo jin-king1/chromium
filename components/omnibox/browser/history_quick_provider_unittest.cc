@@ -192,8 +192,6 @@ class HistoryQuickProviderTest : public testing::Test {
   }
 
  private:
-  base::test::ScopedFeatureList feature_list_{omnibox::kDomainSuggestions};
-
   base::test::TaskEnvironment task_environment_;
   base::ScopedTempDir history_dir_;
   std::unique_ptr<FakeAutocompleteProviderClient> client_;
@@ -305,6 +303,7 @@ HistoryQuickProviderTest::GetTestData() {
 }
 
 void HistoryQuickProviderTest::FillData() {
+  std::vector<history::URLRow> rows;
   for (const auto& info : GetTestData()) {
     history::URLRow row{GURL(info.url)};
     ASSERT_TRUE(row.url().is_valid());
@@ -313,8 +312,10 @@ void HistoryQuickProviderTest::FillData() {
     row.set_typed_count(info.typed_count);
     row.set_last_visit(base::Time::Now() - base::Days(info.days_from_now));
 
-    AddFakeURLToHistoryDB(history_backend()->db(), row);
+    rows.push_back(row);
   }
+
+  history::AddFakeURLsToHistoryService(client_->GetHistoryService(), rows);
 }
 
 HistoryQuickProviderTest::SetShouldContain::SetShouldContain(
@@ -838,7 +839,7 @@ ScoredHistoryMatch BuildScoredHistoryMatch(const std::string& url_text,
                                            const std::u16string& input_term) {
   return ScoredHistoryMatch(history::URLRow(GURL(url_text)), VisitInfoVector(),
                             input_term, String16Vector(1, input_term),
-                            WordStarts(1, 0), RowWordStarts(), false, 0, false,
+                            WordStarts(1, 0), RowWordStarts(), false, 0,
                             base::Time());
 }
 
@@ -914,7 +915,7 @@ TEST_F(HistoryQuickProviderTest, CorrectAutocompleteWithTrailingSlash) {
   word_starts.url_word_starts_ = {0};
   ScoredHistoryMatch sh_match(history::URLRow(GURL("http://cr/")),
                               VisitInfoVector(), u"cr/", {u"cr"}, {0},
-                              word_starts, false, 0, false, base::Time());
+                              word_starts, false, 0, base::Time());
   AutocompleteMatch ac_match(QuickMatchToACMatch(sh_match, 0));
   EXPECT_EQ(u"cr/", ac_match.fill_into_edit);
   EXPECT_EQ(u"", ac_match.inline_autocompletion);
@@ -924,7 +925,7 @@ TEST_F(HistoryQuickProviderTest, CorrectAutocompleteWithTrailingSlash) {
 TEST_F(HistoryQuickProviderTest, KeywordModeExtractUserInput) {
   // Populate template URL with starter pack entries
   std::vector<std::unique_ptr<TemplateURLData>> turls =
-      TemplateURLStarterPackData::GetStarterPackEngines();
+      template_url_starter_pack_data::GetStarterPackEngines();
   for (auto& turl : turls) {
     client().GetTemplateURLService()->Add(
         std::make_unique<TemplateURL>(std::move(*turl)));
@@ -955,9 +956,7 @@ TEST_F(HistoryQuickProviderTest, KeywordModeExtractUserInput) {
 
   // Turn on keyword mode, test result again, we should get back the result for
   // google.com since we're searching only for the user text after the keyword.
-  input2.set_prefer_keyword(true);
-  input2.set_keyword_mode_entry_method(
-      metrics::OmniboxEventProto_KeywordModeEntryMethod_TAB);
+  input2.set_in_keyword_mode(true);
   provider().Start(input2, false);
   if (!provider().done())
     base::RunLoop().Run();
@@ -972,6 +971,9 @@ TEST_F(HistoryQuickProviderTest, KeywordModeExtractUserInput) {
   EXPECT_EQ(matches[0].keyword, u"@history");
   EXPECT_TRUE(PageTransitionCoreTypeIs(matches[0].transition,
                                        ui::PAGE_TRANSITION_KEYWORD));
+
+  // Ensure `fill_to_edit` includes the keyword.
+  EXPECT_EQ(matches[0].fill_into_edit, u"@history www.google.com");
 }
 
 TEST_F(HistoryQuickProviderTest,
@@ -997,9 +999,7 @@ TEST_F(HistoryQuickProviderTest, MaxMatches) {
   EXPECT_EQ(matches.size(), provider().provider_max_matches());
 
   // Turn keyword mode on. we should be able to get more matches now.
-  input.set_keyword_mode_entry_method(
-      metrics::OmniboxEventProto_KeywordModeEntryMethod_TAB);
-  input.set_prefer_keyword(true);
+  input.set_in_keyword_mode(true);
   provider().Start(input, false);
 
   matches = provider().matches();
@@ -1008,9 +1008,7 @@ TEST_F(HistoryQuickProviderTest, MaxMatches) {
   // The provider should not limit the number of suggestions when ML scoring
   // w/increased candidates is enabled. Any matches beyond the limit should be
   // marked as culled_by_provider and have a relevance of 0.
-  input.set_keyword_mode_entry_method(
-      metrics::OmniboxEventProto_KeywordModeEntryMethod_INVALID);
-  input.set_prefer_keyword(false);
+  input.set_in_keyword_mode(false);
 
   base::test::ScopedFeatureList scoped_feature_list;
   scoped_feature_list.InitWithFeaturesAndParameters(
@@ -1107,83 +1105,6 @@ class HQPDomainSuggestionsTest : public HistoryQuickProviderTest {
     };
   }
 };
-
-TEST_F(HQPDomainSuggestionsTest, DomainSuggestions) {
-  const auto test = [&](const std::u16string& input_text, bool input_keyword,
-                        std::vector<std::u16string> expected_matches,
-                        bool expected_triggered) {
-    SCOPED_TRACE("input_text: " + base::UTF16ToUTF8(input_text) +
-                 ", input_keyword: " + base::ToString(input_keyword));
-
-    AutocompleteInput input(input_text, metrics::OmniboxEventProto::OTHER,
-                            TestSchemeClassifier());
-    input.set_keyword_mode_entry_method(
-        input_keyword
-            ? metrics::OmniboxEventProto_KeywordModeEntryMethod_TAB
-            : metrics::OmniboxEventProto_KeywordModeEntryMethod_INVALID);
-    input.set_prefer_keyword(input_keyword);
-
-    client().GetOmniboxTriggeredFeatureService()->ResetSession();
-    provider().Start(input, false);
-    auto matches = provider().matches();
-    std::vector<std::u16string> match_titles;
-    std::ranges::transform(matches, std::back_inserter(match_titles),
-                           [](const auto& match) { return match.description; });
-    EXPECT_THAT(match_titles, testing::ElementsAreArray(expected_matches));
-
-    EXPECT_EQ(client()
-                  .GetOmniboxTriggeredFeatureService()
-                  ->GetFeatureTriggeredInSession(
-                      metrics::OmniboxEventProto_Feature_DOMAIN_SUGGESTIONS),
-              expected_triggered);
-  };
-
-  // When matching a popular domain, its top 3 suggestions should be suggested
-  // twice: 1st from the overall pass, 2nd from domain pass. They should each be
-  // limited to individually, 3 matches for the 1st, 2 matches for the latter.
-  // Duplicates aren't necessary behavior, just a harmless side effect. The
-  // domain algorithm may change in the future to not add duplicates.
-  test(u"Dilijan", false,
-       {u"Dilijan 1", u"Dilijan 2", u"Dilijan 3", u"Dilijan 1", u"Dilijan 2"},
-       true);
-
-  // Like above, but when only some of its suggestions match, only those should
-  // be suggested by both the overall and domain passes.
-  test(u"Dilijan 1", false, {u"Dilijan 1", u"Dilijan 1"}, true);
-
-  // Domains with more than 4 typed visits should be considered popular.
-  test(u"Geghard", false,
-       {u"Geghard 1", u"Geghard 2", u"Geghard 3", u"Geghard 1", u"Geghard 2"},
-       true);
-
-  // Domains with more than 4 typed visits but less than 4 capped typed visits
-  // should not be considered popular.
-  test(u"Tatev", false, {u"Tatev 1", u"Tatev 2", u"Tatev 3"}, false);
-
-  // Domains with more than 7 visits, but less than 7 1-typed visits should not
-  // be considered popular.
-  test(u"Gyumri", false, {u"Gyumri 1", u"Gyumri 2", u"Gyumri 3"}, false);
-
-  // When matching multiple domains, the overall pass should suggest the top
-  // suggestion, even if some of them aren't from a popular domain, then each
-  // domain's suggestions should be appended, each individually limited to 2.
-  test(u"www.", false,
-       {u"Gyumri 1", u"Tatev 1", u"Gyumri 2", u"Geghard 1", u"Geghard 2",
-        u"Dilijan 1", u"Dilijan 2"},
-       true);
-
-  // Short inputs should not have domain suggestions. They should still log the
-  // feature as triggered since their scores may potentially be boosted.
-  test(u"Dil", false, {u"Dilijan 1", u"Dilijan 2", u"Dilijan 3"}, false);
-
-  // Keyword inputs should not have domain suggestions, so we shouldn't see
-  // duplicates. But keyword inputs have a higher provider limit, so we should
-  // see all 7 matching suggestions.
-  test(u"Dilijan", true,
-       {u"Dilijan 1", u"Dilijan 2", u"Dilijan 3", u"Dilijan 4", u"Dilijan 5",
-        u"Dilijan 6", u"Dilijan 7"},
-       false);
-}
 
 // HQPOrderingTest -------------------------------------------------------------
 

@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import 'chrome://resources/cr_elements/cr_button/cr_button.js';
 import 'chrome://resources/cr_elements/cr_dialog/cr_dialog.js';
 
 import type {CrDialogElement} from 'chrome://resources/cr_elements/cr_dialog/cr_dialog.js';
@@ -42,7 +43,7 @@ export class ViewerPropertiesDialogElement extends CrLitElement {
     };
   }
 
-  documentMetadata: DocumentMetadata = {
+  accessor documentMetadata: DocumentMetadata = {
     author: '',
     canSerializeDocument: false,
     creationDate: '',
@@ -57,9 +58,9 @@ export class ViewerPropertiesDialogElement extends CrLitElement {
     title: '',
     version: '',
   };
-  fileName: string = '';
-  pageCount: number = 0;
-  strings?: {[key: string]: string};
+  accessor fileName: string = '';
+  accessor pageCount: number = 0;
+  accessor strings: {[key: string]: string}|undefined;
 
   protected getFastWebViewValue_(): string {
     if (!this.strings) {
@@ -74,7 +75,7 @@ export class ViewerPropertiesDialogElement extends CrLitElement {
     return value || '-';
   }
 
-  protected onClickClose_() {
+  protected onCloseClick_() {
     this.$.dialog.close();
   }
 }

@@ -6,38 +6,20 @@
 #define COMPONENTS_VIZ_COMMON_VIZ_UTILS_H_
 
 #include "base/timer/elapsed_timer.h"
+#include "build/build_config.h"
 #include "cc/paint/filter_operations.h"
 #include "components/viz/common/quads/draw_quad.h"
 #include "components/viz/common/viz_common_export.h"
 
-#include "build/build_config.h"
-
 namespace gfx {
 class Rect;
-class RRectF;
-class QuadF;
 }  // namespace gfx
 
 namespace viz {
 
-#if BUILDFLAG(IS_ANDROID)
-VIZ_COMMON_EXPORT bool PreferRGB565ResourcesForDisplay();
-VIZ_COMMON_EXPORT bool AlwaysUseWideColorGamut();
-#endif
-
+class CompositorRenderPassDrawQuad;
 class CopyOutputRequest;
-class RenderPassDrawQuadInternal;
-
-// This takes a gfx::Rect and a clip region quad in the same space,
-// and returns a quad with the same proportions in the space -0.5->0.5.
-VIZ_COMMON_EXPORT bool GetScaledRegion(const gfx::Rect& rect,
-                                       const gfx::QuadF* clip,
-                                       gfx::QuadF* scaled_region);
-// This takes a rounded rect and a rect that it lives in, and returns an
-// equivalent rounded rect in the space -0.5->0.5.
-VIZ_COMMON_EXPORT bool GetScaledRRectF(const gfx::Rect& space,
-                                       const gfx::RRectF& rect,
-                                       gfx::RRectF* scaled_rect);
+class AggregatedRenderPassDrawQuad;
 
 // Returns File Descriptor (FD) stats for current process.
 // Rendering resources can consume FDs. This this function can be used to
@@ -51,19 +33,41 @@ VIZ_COMMON_EXPORT bool GatherFDStats(base::TimeDelta* delta_time_taken,
 VIZ_COMMON_EXPORT gfx::Rect ClippedQuadRectangle(const DrawQuad* quad);
 VIZ_COMMON_EXPORT gfx::RectF ClippedQuadRectangleF(const DrawQuad* quad);
 
+// TODO(crbug.com/444264038): Remove this overload after
+// CompositorRenderPassDrawQuad is updated to contain filters. We should
+// consolidate the two overloads into one that accepts
+// `RenderPassDrawQuadInternal`.
+VIZ_COMMON_EXPORT gfx::Rect GetTargetExpandedRectForPixelMovingFilters(
+    const CompositorRenderPassDrawQuad& rpdq,
+    const cc::FilterOperations& filters);
+
+// TODO(crbug.com/444264038): Remove this overload after
+// CompositorRenderPassDrawQuad is updated to contain filters. We should
+// consolidate the two overloads into one that accepts
+// `RenderPassDrawQuadInternal`.
+VIZ_COMMON_EXPORT gfx::Rect GetExpandedRectForPixelMovingFilters(
+    const CompositorRenderPassDrawQuad& rpdq,
+    const cc::FilterOperations& filters);
+
 // The expanded area that will be changed by a render pass draw quad with a
 // pixel-moving foreground filter. The returned bounds are in the quad's target
 // coordinate space.
+// TODO(crbug.com/444264038): Remove this overload after
+// CompositorRenderPassDrawQuad is updated to contain filters. We should
+// consolidate the two overloads into one that accepts
+// `RenderPassDrawQuadInternal`.
 VIZ_COMMON_EXPORT gfx::Rect GetTargetExpandedRectForPixelMovingFilters(
-    const RenderPassDrawQuadInternal& rpdq,
-    const cc::FilterOperations& filters);
+    const AggregatedRenderPassDrawQuad& rpdq);
 
 // The expanded area that will be changed by a render pass draw quad with a
 // pixel-moving foreground filter. The returned bounds are in the quad's
 // original coordinate space.
+// TODO(crbug.com/444264038): Remove this overload after
+// CompositorRenderPassDrawQuad is updated to contain filters. We should
+// consolidate the two overloads into one that accepts
+// `RenderPassDrawQuadInternal`.
 VIZ_COMMON_EXPORT gfx::Rect GetExpandedRectForPixelMovingFilters(
-    const RenderPassDrawQuadInternal& rpdq,
-    const cc::FilterOperations& filters);
+    const AggregatedRenderPassDrawQuad& rpdq);
 
 // This transforms a rect from the view transition content surface/render_pass
 // space to the shared element quad space.
@@ -78,7 +82,7 @@ VIZ_COMMON_EXPORT bool QuadRoundedCornersBoundsIntersects(
     const gfx::RectF& target_quad);
 
 // Customizes the output sizes of a `CopyOutputRequest`.
-VIZ_COMMON_EXPORT void SetCopyOutoutRequestResultSize(
+VIZ_COMMON_EXPORT void SetCopyOutputRequestResultSize(
     CopyOutputRequest* request,
     const gfx::Rect& src_rect,
     const gfx::Size& output_size,

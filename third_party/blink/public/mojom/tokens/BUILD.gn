@@ -66,6 +66,10 @@ mojom_component("tokens") {
           cpp = "::blink::PaintWorkletToken"
         },
         {
+          mojom = "blink.mojom.SharedStorageWorkletToken"
+          cpp = "::blink::SharedStorageWorkletToken"
+        },
+        {
           mojom = "blink.mojom.WorkletToken"
           cpp = "::blink::WorkletToken"
         },
@@ -83,14 +87,6 @@ mojom_component("tokens") {
         # If you have multiple tokens that make a thematic group, please lift
         # them to their own section, in alphabetical order. If adding a new
         # token here, please keep the following list in alphabetic order.
-        {
-          mojom = "blink.mojom.AttributionSrcToken"
-          cpp = "::blink::AttributionSrcToken"
-        },
-        {
-          mojom = "blink.mojom.ClipboardSequenceNumberToken"
-          cpp = "::blink::ClipboardSequenceNumberToken"
-        },
         {
           mojom = "blink.mojom.ExecutionContextToken"
           cpp = "::blink::ExecutionContextToken"
@@ -122,6 +118,10 @@ mojom_component("tokens") {
         {
           mojom = "blink.mojom.WebNNTensorToken"
           cpp = "::blink::WebNNTensorToken"
+        },
+        {
+          mojom = "blink.mojom.WebNNGraphToken"
+          cpp = "::blink::WebNNGraphToken"
         },
       ]
       traits_headers = [

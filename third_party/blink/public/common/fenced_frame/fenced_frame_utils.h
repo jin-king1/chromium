@@ -23,6 +23,9 @@ const size_t kFencedFrameMaxBeaconLength = 64000;
 // When setting, longer strings are truncated to this length.
 const size_t kFencedFrameConfigSharedStorageContextMaxLength = 2048;
 
+// The maximum number of ad components a bid in an auction can have.
+const size_t kMaxAdAuctionAdComponents = 0;
+
 // Histogram names for fenced frame.
 inline constexpr char kFencedFrameCreationOrNavigationOutcomeHistogram[] =
     "Blink.FencedFrame.CreationOrNavigationOutcome";
@@ -39,23 +42,8 @@ inline constexpr char kFencedFrameMandatoryUnsandboxedFlagsSandboxed[] =
 inline constexpr char kFencedFrameFailedSandboxLoadInTopLevelFrame[] =
     "Blink.FencedFrame.FailedSandboxLoadInTopLevelFrame";
 
-inline constexpr char kFencedFrameTopNavigationHistogram[] =
-    "Navigation.FencedFrameTopNavigation";
-
-inline constexpr char kAutomaticBeaconOutcomeHistogram[] =
-    "Navigation.AutomaticBeaconOutcome";
-
-inline constexpr char kAutomaticBeaconEventTypeHistogram[] =
-    "Navigation.FencedFrameAutomaticBeaconEventType";
-
-inline constexpr char kFencedFrameBeaconReportingHttpResultUMA[] =
-    "Blink.FencedFrame.BeaconReportingHttpResult";
-
 inline constexpr char kFencedFrameBeaconReportingCountUMA[] =
     "Navigation.FencedFrameBeaconReportingCountSameOrigin";
-
-inline constexpr char kFencedFrameBeaconReportingCountCrossOriginUMA[] =
-    "Navigation.FencedFrameBeaconReportingCountCrossOrigin";
 
 inline constexpr char kSameSiteAdComponentsMaxCountForWinningBidHistogram[] =
     "Ads.InterestGroup.Auction.SameSiteAdComponentsMaxCountForWinningBid";
@@ -64,7 +52,7 @@ inline constexpr char kAdComponentsCountForWinningBidHistogram[] =
     "Ads.InterestGroup.Auction.AdComponentsCountForWinningBid";
 
 // Corresponds to the "FencedFrameCreationOutcome" histogram enumeration type in
-// tools/metrics/histograms/enums.xml.
+// tools/metrics/histograms/metadata/blink/enums.xml.
 //
 // PLEASE DO NOT REORDER, REMOVE, OR CHANGE THE MEANING OF THESE VALUES.
 enum class FencedFrameCreationOutcome {
@@ -80,41 +68,14 @@ enum class FencedFrameCreationOutcome {
   kMaxValue = kResponseHeaderNotOptIn
 };
 
-// Corresponds to the "AutomaticBeaconOutcome" histogram enumeration type in
-// tools/metrics/histograms/enums.xml.
-//
-// PLEASE DO NOT REORDER, REMOVE, OR CHANGE THE MEANING OF THESE VALUES.
-enum class AutomaticBeaconOutcome {
-  kSuccess = 0,
-  kNoUserActivation,
-  kNotSameOriginNotOptedIn,
-  kMaxValue = kNotSameOriginNotOptedIn,
-};
-
 // Corresponds to the "FencedFrameNavigationState" histogram enumeration type in
-// tools/metrics/histograms/enums.xml.
+// tools/metrics/histograms/metadata/navigation/enums.xml.
 //
 // PLEASE DO NOT REORDER, REMOVE, OR CHANGE THE MEANING OF THESE VALUES.
 enum class FencedFrameNavigationState {
   kBegin = 0,
   kCommit = 1,
   kMaxValue = kCommit
-};
-
-// These values are persisted to logs. Entries should not be renumbered and
-// numeric values should never be reused.
-enum class FencedFrameBeaconReportingResult {
-  kUnknownResult = 0,
-  kDestinationEnumInvalid = 1,
-  kDestinationEnumSuccess = 2,
-  kDestinationEnumFailure = 3,
-  kDestinationUrlInvalid = 4,
-  kDestinationUrlSuccess = 5,
-  kDestinationUrlFailure = 6,
-  kAutomaticInvalid = 7,
-  kAutomaticSuccess = 8,
-  kAutomaticFailure = 9,
-  kMaxValue = kAutomaticFailure
 };
 
 // Whether or not a fenced frame is allowed to be navigated to `url`. For now
@@ -135,11 +96,6 @@ BLINK_COMMON_EXPORT void RecordFencedFrameUnsandboxedFlags(
     network::mojom::WebSandboxFlags flags);
 BLINK_COMMON_EXPORT void RecordFencedFrameFailedSandboxLoadInTopLevelFrame(
     bool is_main_frame);
-
-// Returns true if the DOM event type name `event_type` is allowed to be
-// propagated from a fenced frame to its embedder. Returns false otherwise.
-BLINK_COMMON_EXPORT bool CanNotifyEventTypeAcrossFence(
-    const std::string& event_type);
 
 // Automatic beacon type definitions
 inline constexpr char kDeprecatedFencedFrameTopNavigationBeaconType[] =

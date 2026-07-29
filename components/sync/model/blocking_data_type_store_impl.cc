@@ -37,6 +37,31 @@ const char kMetadataPrefix[] = "-md-";
 // Key for global metadata record.
 const char kGlobalMetadataKey[] = "-GlobalMetadata";
 
+// Formats key prefix for data records of `data_type` using `storage_type`.
+std::string FormatDataPrefix(DataType data_type, StorageType storage_type) {
+  return base::StrCat(
+      {BlockingDataTypeStoreImpl::FormatPrefixForDataTypeAndStorageType(
+           data_type, storage_type),
+       kDataPrefix});
+}
+
+// Formats key prefix for metadata records of `data_type` using `storage_type`.
+std::string FormatMetaPrefix(DataType data_type, StorageType storage_type) {
+  return base::StrCat(
+      {BlockingDataTypeStoreImpl::FormatPrefixForDataTypeAndStorageType(
+           data_type, storage_type),
+       kMetadataPrefix});
+}
+
+// Formats key for global metadata record of `data_type` using `storage_type`.
+std::string FormatGlobalMetadataKey(DataType data_type,
+                                    StorageType storage_type) {
+  return base::StrCat(
+      {BlockingDataTypeStoreImpl::FormatPrefixForDataTypeAndStorageType(
+           data_type, storage_type),
+       kGlobalMetadataKey});
+}
+
 class LevelDbMetadataChangeList : public MetadataChangeList {
  public:
   LevelDbMetadataChangeList(DataType data_type,
@@ -72,6 +97,10 @@ class LevelDbMetadataChangeList : public MetadataChangeList {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     leveldb_write_batch_->Delete(FormatMetadataKey(storage_key));
   }
+
+  void TransferChangesTo(MetadataChangeList* other) override { NOTREACHED(); }
+
+  void DropAllChanges() override { NOTREACHED(); }
 
  private:
   // Format key for metadata records with given id.
@@ -154,31 +183,6 @@ std::string GetStorageTypePrefix(StorageType storage_type) {
 
 }  // namespace
 
-// Formats key prefix for data records of `data_type` using `storage_type`.
-std::string FormatDataPrefix(DataType data_type, StorageType storage_type) {
-  return base::StrCat(
-      {BlockingDataTypeStoreImpl::FormatPrefixForDataTypeAndStorageType(
-           data_type, storage_type),
-       kDataPrefix});
-}
-
-// Formats key prefix for metadata records of `data_type` using `storage_type`.
-std::string FormatMetaPrefix(DataType data_type, StorageType storage_type) {
-  return base::StrCat(
-      {BlockingDataTypeStoreImpl::FormatPrefixForDataTypeAndStorageType(
-           data_type, storage_type),
-       kMetadataPrefix});
-}
-
-// Formats key for global metadata record of `data_type` using `storage_type`.
-std::string FormatGlobalMetadataKey(DataType data_type,
-                                    StorageType storage_type) {
-  return base::StrCat(
-      {BlockingDataTypeStoreImpl::FormatPrefixForDataTypeAndStorageType(
-           data_type, storage_type),
-       kGlobalMetadataKey});
-}
-
 BlockingDataTypeStoreImpl::BlockingDataTypeStoreImpl(
     DataType data_type,
     StorageType storage_type,
@@ -238,7 +242,9 @@ std::optional<ModelError> BlockingDataTypeStoreImpl::ReadAllMetadata(
   } else {
     sync_pb::DataTypeState state;
     if (!state.ParseFromString(global_metadata_records[0].value)) {
-      return ModelError(FROM_HERE, "Failed to deserialize data type state.");
+      return ModelError(
+          FROM_HERE,
+          ModelError::Type::kDataTypeStoreFailedToDeserializeDataTypeState);
     }
     metadata_batch->SetDataTypeState(state);
   }
@@ -254,7 +260,9 @@ std::optional<ModelError> BlockingDataTypeStoreImpl::ReadAllMetadata(
   for (const Record& r : metadata_records) {
     auto entity_metadata = std::make_unique<sync_pb::EntityMetadata>();
     if (!entity_metadata->ParseFromString(r.value)) {
-      return ModelError(FROM_HERE, "Failed to deserialize entity metadata.");
+      return ModelError(
+          FROM_HERE,
+          ModelError::Type::kDataTypeStoreFailedToDeserializeEntityMetadata);
     }
     metadata_batch->AddMetadata(r.id, std::move(entity_metadata));
   }

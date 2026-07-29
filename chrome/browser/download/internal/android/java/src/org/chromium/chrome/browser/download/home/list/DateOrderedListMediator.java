@@ -4,22 +4,28 @@
 
 package org.chromium.chrome.browser.download.home.list;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.os.Handler;
 
-import androidx.annotation.Nullable;
 import androidx.core.util.Pair;
 
 import org.chromium.base.Callback;
 import org.chromium.base.CallbackUtils;
 import org.chromium.base.DiscardableReferencePool;
-import org.chromium.base.supplier.ObservableSupplier;
-import org.chromium.base.supplier.ObservableSupplierImpl;
+import org.chromium.base.supplier.NonNullObservableSupplier;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableNonNullObservableSupplier;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.download.home.DownloadManagerUiConfig;
 import org.chromium.chrome.browser.download.home.FaviconProvider;
 import org.chromium.chrome.browser.download.home.JustNowProvider;
 import org.chromium.chrome.browser.download.home.OfflineItemSource;
+import org.chromium.chrome.browser.download.home.filter.BlockedSensitiveOfflineItemFilter;
+import org.chromium.chrome.browser.download.home.filter.DangerousOfflineItemFilter;
 import org.chromium.chrome.browser.download.home.filter.DeleteUndoOfflineItemFilter;
 import org.chromium.chrome.browser.download.home.filter.Filters.FilterType;
 import org.chromium.chrome.browser.download.home.filter.InvalidStateOfflineItemFilter;
@@ -39,6 +45,7 @@ import org.chromium.chrome.browser.profiles.OtrProfileId;
 import org.chromium.chrome.browser.thumbnail.generator.ThumbnailProvider;
 import org.chromium.chrome.browser.thumbnail.generator.ThumbnailProvider.ThumbnailRequest;
 import org.chromium.chrome.browser.thumbnail.generator.ThumbnailProviderImpl;
+import org.chromium.components.browser_ui.util.DownloadUtils;
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandler;
 import org.chromium.components.browser_ui.widget.selectable_list.SelectionDelegate;
 import org.chromium.components.offline_items_collection.LaunchLocation;
@@ -59,6 +66,7 @@ import java.util.Set;
  * A Mediator responsible for converting an OfflineContentProvider to a list of items in downloads
  * home. This includes support for filtering, deleting, etc..
  */
+@NullMarked
 class DateOrderedListMediator implements BackPressHandler {
     /** Helper interface for handling share requests by the UI. */
     @FunctionalInterface
@@ -95,6 +103,19 @@ class DateOrderedListMediator implements BackPressHandler {
         void rename(String name, RenameCallback result);
     }
 
+    /** Helper interface for handling warning bypass requests by the UI. */
+    @FunctionalInterface
+    public interface WarningBypassDialogController {
+        /**
+         * Will be called whenever a dangerous {@link OfflineItem} is being requested to bypass a
+         * warning by the UI.
+         *
+         * @param fileName The filename of the warned download, to show in the dialog.
+         * @param callback The callback used to communicate whether the user chose to bypass.
+         */
+        void showWarningBypassDialog(String fileName, Callback<Boolean> callback);
+    }
+
     private final Handler mHandler = new Handler();
 
     private final OfflineContentProvider mProvider;
@@ -103,6 +124,8 @@ class DateOrderedListMediator implements BackPressHandler {
     private final ListItemModel mModel;
     private final DeleteController mDeleteController;
     private final RenameController mRenameController;
+    private final Callback<OfflineItem> mOpenWithHandler;
+    private final WarningBypassDialogController mWarningBypassDialogController;
 
     private final OfflineItemSource mSource;
     private final DateOrderedListMutator mListMutator;
@@ -111,14 +134,15 @@ class DateOrderedListMediator implements BackPressHandler {
     private final SelectionDelegate<ListItem> mSelectionDelegate;
     private final DownloadManagerUiConfig mUiConfig;
 
+    private final BlockedSensitiveOfflineItemFilter mBlockedSensitiveFilter;
+    private final DangerousOfflineItemFilter mDangerousFilter;
     private final OffTheRecordOfflineItemFilter mOffTheRecordFilter;
     private final InvalidStateOfflineItemFilter mInvalidStateFilter;
     private final DeleteUndoOfflineItemFilter mDeleteUndoFilter;
     private final TypeOfflineItemFilter mTypeFilter;
     private final SearchOfflineItemFilter mSearchFilter;
-
-    private final ObservableSupplierImpl<Boolean> mBackPressStateSupplier =
-            new ObservableSupplierImpl<>();
+    private final SettableNonNullObservableSupplier<Boolean> mBackPressStateSupplier =
+            ObservableSuppliers.createNonNull(false);
 
     /**
      * A selection observer that correctly updates the selection state for each item in the list.
@@ -149,20 +173,22 @@ class DateOrderedListMediator implements BackPressHandler {
     }
 
     /**
-     * Creates an instance of a DateOrderedListMediator that will push {@code provider} into
-     * {@code model}.
-     * @param provider                 The {@link OfflineContentProvider} to visually represent.
-     * @param faviconProvider          The {@link FaviconProvider} to handle favicon requests.
-     * @param deleteController         A class to manage whether or not items can be deleted.
-     * @param shareController          A class responsible for sharing downloaded item {@link
-     *                                 Intent}s.
-     * @param selectionDelegate        A class responsible for handling list item selection.
-     * @param config                   A {@link DownloadManagerUiConfig} to provide UI config
-     *                                 params.
-     * @param dateOrderedListObserver  An observer of the list and recycler view.
-     * @param model                    The {@link ListItemModel} to push {@code provider} into.
+     * Creates an instance of a DateOrderedListMediator that will push {@code provider} into {@code
+     * model}.
+     *
+     * @param provider The {@link OfflineContentProvider} to visually represent.
+     * @param faviconProvider The {@link FaviconProvider} to handle favicon requests.
+     * @param shareController A class responsible for sharing downloaded item {@link Intent}s.
+     * @param deleteController A class to manage whether or not items can be deleted.
+     * @param renameController A class to manage whether or not items can be renamed.
+     * @param warningBypassDialogController A class to manage whether or not items can trigger a
+     *     warning bypass.
+     * @param selectionDelegate A class responsible for handling list item selection.
+     * @param config A {@link DownloadManagerUiConfig} to provide UI config params.
+     * @param dateOrderedListObserver An observer of the list and recycler view.
+     * @param model The {@link ListItemModel} to push {@code provider} into.
      * @param discardableReferencePool A {@linK DiscardableReferencePool} reference to use for large
-     *                                 objects (e.g. bitmaps) in the UI.
+     *     objects (e.g. bitmaps) in the UI.
      */
     public DateOrderedListMediator(
             OfflineContentProvider provider,
@@ -170,6 +196,8 @@ class DateOrderedListMediator implements BackPressHandler {
             ShareController shareController,
             DeleteController deleteController,
             RenameController renameController,
+            Callback<OfflineItem> openWithHandler,
+            WarningBypassDialogController warningBypassDialogController,
             SelectionDelegate<ListItem> selectionDelegate,
             DownloadManagerUiConfig config,
             DateOrderedListObserver dateOrderedListObserver,
@@ -178,13 +206,15 @@ class DateOrderedListMediator implements BackPressHandler {
         // Build a chain from the data source to the model.  The chain will look like:
         // [OfflineContentProvider] ->
         //     [OfflineItemSource] ->
-        //         [OffTheRecordOfflineItemFilter] ->
-        //             [InvalidStateOfflineItemFilter] ->
-        //                 [DeleteUndoOfflineItemFilter] ->
-        //                     [SearchOfflineItemFitler] ->
-        //                         [TypeOfflineItemFilter] ->
-        //                             [DateOrderedListMutator] ->
-        //                                 [ListItemModel]
+        //         [BlockedSensitiveOfflineItemFilter] ->
+        //             [DangerousOfflineItemFilter] ->
+        //                 [OffTheRecordOfflineItemFilter] ->
+        //                     [InvalidStateOfflineItemFilter] ->
+        //                         [DeleteUndoOfflineItemFilter] ->
+        //                             [SearchOfflineItemFilter] ->
+        //                             [TypeOfflineItemFilter] ->
+        //                                 [DateOrderedListMutator] ->
+        //                                     [ListItemModel]
         // TODO(shaktisahu): Look into replacing mutator chain by
         // sorter -> label adder -> property setter -> paginator -> model
 
@@ -194,14 +224,18 @@ class DateOrderedListMediator implements BackPressHandler {
         mModel = model;
         mDeleteController = deleteController;
         mRenameController = renameController;
+        mOpenWithHandler = openWithHandler;
+        mWarningBypassDialogController = warningBypassDialogController;
         mSelectionDelegate = selectionDelegate;
         mUiConfig = config;
 
         mSource = new OfflineItemSource(mProvider);
+        mBlockedSensitiveFilter = new BlockedSensitiveOfflineItemFilter(config, mSource);
+        mDangerousFilter = new DangerousOfflineItemFilter(config, mBlockedSensitiveFilter);
         mOffTheRecordFilter =
                 new OffTheRecordOfflineItemFilter(
-                        OtrProfileId.isOffTheRecord(config.otrProfileId), mSource);
-        mInvalidStateFilter = new InvalidStateOfflineItemFilter(mOffTheRecordFilter);
+                        OtrProfileId.isOffTheRecord(config.otrProfileId), mDangerousFilter);
+        mInvalidStateFilter = new InvalidStateOfflineItemFilter(config, mOffTheRecordFilter);
         mDeleteUndoFilter = new DeleteUndoOfflineItemFilter(mInvalidStateFilter);
         mSearchFilter = new SearchOfflineItemFilter(mDeleteUndoFilter);
         mTypeFilter = new TypeOfflineItemFilter(mSearchFilter);
@@ -216,7 +250,8 @@ class DateOrderedListMediator implements BackPressHandler {
                 new ThumbnailProviderImpl(
                         discardableReferencePool,
                         config.inMemoryThumbnailCacheSizeBytes,
-                        ThumbnailProviderImpl.ClientType.DOWNLOAD_HOME);
+                        ThumbnailProviderImpl.ClientType.DOWNLOAD_HOME,
+                        /* useMultiRequests= */ true);
         new MediatorSelectionObserver(selectionDelegate);
 
         mModel.getProperties().set(ListProperties.ENABLE_ITEM_ANIMATIONS, true);
@@ -230,6 +265,11 @@ class DateOrderedListMediator implements BackPressHandler {
         mModel.getProperties().set(ListProperties.PROVIDER_FAVICON, this::getFavicon);
         mModel.getProperties().set(ListProperties.CALLBACK_SELECTION, this::onSelection);
         mModel.getProperties().set(ListProperties.CALLBACK_RENAME, this::onRenameItem);
+        mModel.getProperties().set(ListProperties.CALLBACK_OPEN_WITH, this::onOpenWithItem);
+        mModel.getProperties()
+                .set(
+                        ListProperties.CALLBACK_SHOW_WARNING_BYPASS_DIALOG,
+                        this::onShowWarningBypassDialog);
         mModel.getProperties()
                 .set(
                         ListProperties.CALLBACK_PAGINATION_CLICK,
@@ -262,9 +302,13 @@ class DateOrderedListMediator implements BackPressHandler {
 
     /**
      * To be called when this mediator should filter its content based on {@code filter}.
+     *
      * @see SearchOfflineItemFilter#onQueryChanged(String)
      */
-    public void onFilterStringChanged(String filter) {
+    public void onFilterStringChanged(@Nullable String filter) {
+        if (filter != null && mSelectionDelegate.isSelectionEnabled()) {
+            mSelectionDelegate.clearSelection();
+        }
         try (AnimationDisableClosable closeable = new AnimationDisableClosable()) {
             mSearchFilter.onQueryChanged(filter);
         }
@@ -300,7 +344,7 @@ class DateOrderedListMediator implements BackPressHandler {
     }
 
     @Override
-    public ObservableSupplier<Boolean> getHandleBackPressChangedSupplier() {
+    public NonNullObservableSupplier<Boolean> getHandleBackPressChangedSupplier() {
         return mBackPressStateSupplier;
     }
 
@@ -329,26 +373,30 @@ class DateOrderedListMediator implements BackPressHandler {
         return mTypeFilter;
     }
 
-    private void onSelection(@Nullable ListItem item) {
+    private void onSelection(ListItem item) {
         mSelectionDelegate.toggleSelectionForItem(item);
     }
 
     private void onOpenItem(OfflineItem item) {
+        if (DownloadUtils.shouldDisplayDownloadAsDangerous(item.dangerType, item.state)) {
+            onShowWarningBypassDialog(item);
+            return;
+        }
         OpenParams openParams = new OpenParams(LaunchLocation.DOWNLOAD_HOME);
         openParams.openInIncognito = OtrProfileId.isOffTheRecord(mUiConfig.otrProfileId);
-        mProvider.openItem(openParams, item.id);
+        mProvider.openItem(openParams, assumeNonNull(item.id));
     }
 
     private void onPauseItem(OfflineItem item) {
-        mProvider.pauseDownload(item.id);
+        mProvider.pauseDownload(assumeNonNull(item.id));
     }
 
     private void onResumeItem(OfflineItem item) {
-        mProvider.resumeDownload(item.id);
+        mProvider.resumeDownload(assumeNonNull(item.id));
     }
 
     private void onCancelItem(OfflineItem item) {
-        mProvider.cancelDownload(item.id);
+        mProvider.cancelDownload(assumeNonNull(item.id));
     }
 
     private void onDeleteItem(OfflineItem item) {
@@ -363,12 +411,32 @@ class DateOrderedListMediator implements BackPressHandler {
         mRenameController.rename(
                 item.title,
                 (newName, renameCallback) -> {
-                    mProvider.renameItem(item.id, newName, renameCallback);
+                    mProvider.renameItem(assumeNonNull(item.id), newName, renameCallback);
+                });
+    }
+
+    private void onOpenWithItem(OfflineItem item) {
+        if (mOpenWithHandler != null) {
+            mOpenWithHandler.onResult(item);
+        }
+    }
+
+    private void onShowWarningBypassDialog(OfflineItem item) {
+        if (!DownloadUtils.shouldDisplayDownloadAsDangerous(item.dangerType, item.state)) {
+            return;
+        }
+        mWarningBypassDialogController.showWarningBypassDialog(
+                item.title,
+                (didValidate) -> {
+                    if (didValidate) {
+                        mProvider.validateDangerousDownload(assumeNonNull(item.id));
+                    }
                 });
     }
 
     /**
      * Deletes a given list of items. If the items are not completed yet, they would be cancelled.
+     *
      * @param items The list of items to delete.
      */
     private void deleteItemsInternal(List<OfflineItem> items) {
@@ -382,7 +450,7 @@ class DateOrderedListMediator implements BackPressHandler {
                 delete -> {
                     if (delete) {
                         for (OfflineItem item : itemsToDelete) {
-                            mProvider.removeItem(item.id);
+                            mProvider.removeItem(assumeNonNull(item.id));
                         }
                     } else {
                         mDeleteUndoFilter.removePendingDeletions(itemsToDelete);
@@ -396,7 +464,7 @@ class DateOrderedListMediator implements BackPressHandler {
         final Collection<Pair<OfflineItem, OfflineItemShareInfo>> shareInfo = new ArrayList<>();
         for (OfflineItem item : items) {
             mProvider.getShareInfoForItem(
-                    item.id,
+                    assumeNonNull(item.id),
                     (id, info) -> {
                         shareInfo.add(Pair.create(item, info));
 
@@ -412,7 +480,7 @@ class DateOrderedListMediator implements BackPressHandler {
     private Runnable getVisuals(
             OfflineItem item, int iconWidthPx, int iconHeightPx, VisualsCallback callback) {
         if (!UiUtils.canHaveThumbnails(item) || iconWidthPx == 0 || iconHeightPx == 0) {
-            mHandler.post(() -> callback.onVisualsAvailable(item.id, null));
+            mHandler.post(() -> callback.onVisualsAvailable(assumeNonNull(item.id), null));
             return CallbackUtils.emptyRunnable();
         }
 
@@ -454,7 +522,7 @@ class DateOrderedListMediator implements BackPressHandler {
      * changes between empty and non-empty.
      */
     private static class EmptyStateObserver implements OfflineItemFilterObserver {
-        private Boolean mIsEmpty;
+        private @Nullable Boolean mIsEmpty;
         private final DateOrderedListObserver mDateOrderedListObserver;
         private final OfflineItemFilter mOfflineItemFilter;
 

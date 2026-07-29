@@ -9,13 +9,15 @@
 #import "ios/chrome/browser/alert_view/ui_bundled/alert_view_controller.h"
 #import "ios/chrome/browser/overlays/model/public/overlay_request.h"
 #import "ios/chrome/browser/overlays/model/public/web_content_area/alert_overlay.h"
-#import "ios/chrome/browser/overlays/model/test/overlay_test_macros.h"
 #import "ios/chrome/browser/overlays/ui_bundled/test/fake_overlay_request_coordinator_delegate.h"
 #import "ios/chrome/browser/shared/model/browser/test/test_browser.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
+#import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
+#import "ios/chrome/browser/shared/public/commands/gemini_commands.h"
 #import "ios/chrome/test/scoped_key_window.h"
 #import "ios/web/public/test/web_task_environment.h"
 #import "testing/platform_test.h"
+#import "third_party/ocmock/OCMock/OCMock.h"
 
 using alert_overlays::AlertRequest;
 using alert_overlays::ButtonConfig;
@@ -46,6 +48,10 @@ class AlertOverlayCoordinatorTest : public PlatformTest {
   AlertOverlayCoordinatorTest() {
     profile_ = TestProfileIOS::Builder().Build();
     browser_ = std::make_unique<TestBrowser>(profile_.get());
+    mock_gemini_handler_ = OCMProtocolMock(@protocol(GeminiCommands));
+    [browser_->GetCommandDispatcher()
+        startDispatchingToTarget:mock_gemini_handler_
+                     forProtocol:@protocol(GeminiCommands)];
     root_view_controller_ = [[UIViewController alloc] init];
     request_ = CreateAlertRequest();
     coordinator_ = [[AlertOverlayCoordinator alloc]
@@ -54,6 +60,11 @@ class AlertOverlayCoordinatorTest : public PlatformTest {
                            request:request_.get()
                           delegate:&delegate_];
     scoped_window_.Get().rootViewController = root_view_controller_;
+  }
+  ~AlertOverlayCoordinatorTest() override {
+    [browser_->GetCommandDispatcher()
+        stopDispatchingForProtocol:@protocol(GeminiCommands)];
+    mock_gemini_handler_ = nil;
   }
 
  protected:
@@ -64,6 +75,7 @@ class AlertOverlayCoordinatorTest : public PlatformTest {
   UIViewController* root_view_controller_ = nil;
   std::unique_ptr<OverlayRequest> request_;
   FakeOverlayRequestCoordinatorDelegate delegate_;
+  id mock_gemini_handler_;
   AlertOverlayCoordinator* coordinator_ = nil;
 };
 

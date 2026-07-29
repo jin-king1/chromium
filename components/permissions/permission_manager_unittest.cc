@@ -6,20 +6,30 @@
 
 #include <memory>
 
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/field_trial.h"
 #include "base/metrics/field_trial_params.h"
+#include "base/test/run_until.h"
+#include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
+#include "components/content_settings/core/browser/permission_settings_registry.h"
+#include "components/content_settings/core/common/content_settings.h"
+#include "components/content_settings/core/common/content_settings_types.h"
+#include "components/content_settings/core/common/content_settings_utils.h"
+#include "components/content_settings/core/common/features.h"
+#include "components/permissions/content_setting_permission_context_base.h"
 #include "components/permissions/features.h"
-#include "components/permissions/permission_context_base.h"
 #include "components/permissions/permission_request_manager.h"
 #include "components/permissions/permission_util.h"
+#include "components/permissions/resolvers/permission_prompt_options.h"
 #include "components/permissions/test/mock_permission_prompt_factory.h"
 #include "components/permissions/test/permission_test_util.h"
 #include "components/permissions/test/test_permissions_client.h"
 #include "content/public/browser/content_browser_client.h"
+#include "content/public/browser/permission_descriptor_util.h"
 #include "content/public/browser/permission_request_description.h"
 #include "content/public/browser/permission_result.h"
 #include "content/public/common/content_client.h"
@@ -31,15 +41,26 @@
 #include "services/network/public/cpp/permissions_policy/origin_with_possible_wildcards.h"
 #include "services/network/public/cpp/permissions_policy/permissions_policy_declaration.h"
 #include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/permissions/permission_utils.h"
 #include "url/origin.h"
+
+#if BUILDFLAG(IS_ANDROID)
+#include "base/test/metrics/histogram_tester.h"
+#include "ui/android/display_android_manager.h"
+#endif  // IS_ANDROID
 
 using blink::PermissionType;
 using network::mojom::PermissionsPolicyFeature;
 
 namespace permissions {
 namespace {
+
+#if BUILDFLAG(IS_ANDROID)
+constexpr char kWindowManagementHistogramName[] =
+    "Permissions.WindowManagementApi.Android.Allowed";
+#endif  // IS_ANDROID
 
 class ScopedPartitionedOriginBrowserClient
     : public content::ContentBrowserClient {
@@ -73,12 +94,13 @@ class ScopedPartitionedOriginBrowserClient
 
 class PermissionManagerTest : public content::RenderViewHostTestHarness {
  public:
-  void OnPermissionChange(PermissionStatus permission) {
-    if (!quit_closure_.is_null())
+  void OnPermissionChange(content::PermissionResult result) {
+    if (!quit_closure_.is_null()) {
       std::move(quit_closure_).Run();
+    }
     callback_called_ = true;
     callback_count_++;
-    callback_result_ = permission;
+    callback_result_ = result.status;
   }
 
  protected:
@@ -100,7 +122,8 @@ class PermissionManagerTest : public content::RenderViewHostTestHarness {
     EXPECT_EQ(expected,
               GetPermissionManager()
                   ->GetPermissionStatusInternal(
-                      PermissionUtil::PermissionTypeToContentSettingsType(type),
+                      content::PermissionDescriptorUtil::
+                          CreatePermissionDescriptorForPermissionType(type),
                       /*render_process_host=*/nullptr,
                       /*render_frame_host=*/nullptr, url_, url_,
                       should_include_device_status)
@@ -113,7 +136,9 @@ class PermissionManagerTest : public content::RenderViewHostTestHarness {
       content::PermissionStatusSource expected_status_source) {
     content::PermissionResult result =
         GetPermissionManager()->GetPermissionResultForOriginWithoutContext(
-            type, url::Origin::Create(url_), url::Origin::Create(url_));
+            content::PermissionDescriptorUtil::
+                CreatePermissionDescriptorForPermissionType(type),
+            url::Origin::Create(url_), url::Origin::Create(url_));
     EXPECT_EQ(expected_status, result.status);
     EXPECT_EQ(expected_status_source, result.source);
   }
@@ -132,10 +157,18 @@ class PermissionManagerTest : public content::RenderViewHostTestHarness {
                      const GURL& embedding_origin,
                      PermissionType type,
                      PermissionStatus value) {
-    GetHostContentSettingsMap()->SetContentSettingDefaultScope(
-        requesting_origin, embedding_origin,
-        permissions::PermissionUtil::PermissionTypeToContentSettingsType(type),
-        permissions::PermissionUtil::PermissionStatusToContentSetting(value));
+    ContentSettingsType content_settings_type =
+        permissions::PermissionUtil::PermissionTypeToContentSettingsType(type);
+    PermissionSetting permission_setting =
+        content_settings::PermissionSettingsRegistry::GetInstance()
+            ->Get(content_settings_type)
+            ->delegate()
+            .ToPermissionSetting(
+                permissions::PermissionUtil::PermissionStatusToContentSetting(
+                    value));
+    GetHostContentSettingsMap()->SetPermissionSettingDefaultScope(
+        requesting_origin, embedding_origin, content_settings_type,
+        permission_setting);
   }
 
   void RequestPermissionFromCurrentDocument(PermissionType type,
@@ -145,13 +178,14 @@ class PermissionManagerTest : public content::RenderViewHostTestHarness {
     GetPermissionManager()->RequestPermissionsFromCurrentDocument(
         rfh,
         std::move(content::PermissionRequestDescription(
-            std::vector(1, type),
+            content::PermissionDescriptorUtil::
+                CreatePermissionDescriptorForPermissionType(type),
             /*user_gesture=*/true, rfh->GetLastCommittedOrigin().GetURL())),
         base::BindOnce(
-            [](base::OnceCallback<void(PermissionStatus)> callback,
-               const std::vector<PermissionStatus>& state) {
-              DCHECK_EQ(state.size(), 1U);
-              std::move(callback).Run(state[0]);
+            [](base::OnceCallback<void(content::PermissionResult)> callback,
+               const std::vector<content::PermissionResult>& result) {
+              DCHECK_EQ(result.size(), 1U);
+              std::move(callback).Run(result[0]);
             },
             base::BindOnce(&PermissionManagerTest::OnPermissionChange,
                            base::Unretained(this))));
@@ -164,13 +198,14 @@ class PermissionManagerTest : public content::RenderViewHostTestHarness {
     GetPermissionManager()->RequestPermissionsFromCurrentDocument(
         rfh,
         content::PermissionRequestDescription(
-            type, /*user_gesture=*/true,
-            rfh->GetLastCommittedOrigin().GetURL()),
+            content::PermissionDescriptorUtil::
+                CreatePermissionDescriptorForPermissionType(type),
+            /*user_gesture=*/true, rfh->GetLastCommittedOrigin().GetURL()),
         base::BindOnce(
-            [](base::OnceCallback<void(PermissionStatus)> callback,
-               const std::vector<PermissionStatus>& state) {
-              DCHECK_EQ(state.size(), 1U);
-              std::move(callback).Run(state[0]);
+            [](base::OnceCallback<void(content::PermissionResult)> callback,
+               const std::vector<content::PermissionResult>& result) {
+              DCHECK_EQ(result.size(), 1U);
+              std::move(callback).Run(result[0]);
             },
             base::BindOnce(&PermissionManagerTest::OnPermissionChange,
                            base::Unretained(this))));
@@ -179,28 +214,39 @@ class PermissionManagerTest : public content::RenderViewHostTestHarness {
   PermissionStatus GetPermissionStatusForCurrentDocument(
       PermissionType permission,
       content::RenderFrameHost* render_frame_host) {
-    return GetPermissionManager()->GetPermissionStatusForCurrentDocument(
-        permission, render_frame_host, /*should_include_device_status*/ false);
+    return GetPermissionManager()
+        ->GetPermissionResultForCurrentDocument(
+            content::PermissionDescriptorUtil::
+                CreatePermissionDescriptorForPermissionType(permission),
+            render_frame_host, /*should_include_device_status*/ false)
+        .status;
   }
 
   content::PermissionResult GetPermissionResultForCurrentDocument(
       PermissionType permission,
       content::RenderFrameHost* render_frame_host) {
     return GetPermissionManager()->GetPermissionResultForCurrentDocument(
-        permission, render_frame_host, /*should_include_device_status*/ false);
+        content::PermissionDescriptorUtil::
+            CreatePermissionDescriptorForPermissionType(permission),
+        render_frame_host, /*should_include_device_status*/ false);
   }
 
   PermissionStatus GetPermissionStatusForWorker(
       PermissionType permission,
       content::RenderProcessHost* render_process_host,
       const GURL& worker_origin) {
-    return GetPermissionManager()->GetPermissionStatusForWorker(
-        permission, render_process_host, worker_origin);
+    return GetPermissionManager()
+        ->GetPermissionResultForWorker(
+            content::PermissionDescriptorUtil::
+                CreatePermissionDescriptorForPermissionType(permission),
+            render_process_host, worker_origin)
+        .status;
   }
 
   bool IsPermissionOverridable(PermissionType permission,
                                const std::optional<url::Origin>& origin) {
-    return GetPermissionManager()->IsPermissionOverridable(permission, origin);
+    return GetPermissionManager()->IsPermissionOverridable(permission, origin,
+                                                           origin);
   }
 
   void ResetPermission(PermissionType permission,
@@ -208,6 +254,23 @@ class PermissionManagerTest : public content::RenderViewHostTestHarness {
                        const GURL& embedding_origin) {
     GetPermissionManager()->ResetPermission(permission, requesting_origin,
                                             embedding_origin);
+  }
+
+  content::PermissionController::SubscriptionId
+  SubscribeToContentSettingsTypeChange(
+      ContentSettingsType content_settings_type,
+      const GURL& requesting_origin,
+      const GURL& embedding_origin,
+      base::RepeatingCallback<void(const PermissionSetting&)> callback) {
+    return GetPermissionManager()->SubscribeToContentSettingsTypeChange(
+        content_settings_type, requesting_origin, embedding_origin,
+        std::move(callback));
+  }
+
+  void UnsubscribeFromContentSettingsTypeChange(
+      content::PermissionController::SubscriptionId subscription_id) {
+    GetPermissionManager()->UnsubscribeFromContentSettingsTypeChange(
+        subscription_id);
   }
 
   const GURL& url() const { return url_; }
@@ -354,6 +417,67 @@ TEST_F(PermissionManagerTest, GetPermissionStatusAfterSet) {
 #endif
 }
 
+#if BUILDFLAG(IS_ANDROID)
+TEST_F(PermissionManagerTest, AndroidWindowManagementPermissionDenied) {
+  SetPermission(PermissionType::WINDOW_MANAGEMENT, PermissionStatus::GRANTED);
+
+  // Feature flag and Display Topology are disabled.
+  CheckPermissionStatus(PermissionType::WINDOW_MANAGEMENT,
+                        PermissionStatus::DENIED);
+
+  ui::DisplayAndroidManager::SetIsDisplayTopologyAvailableForTesting(true);
+
+  // Display Topology is enabled, but Feature flag is disabled.
+  CheckPermissionStatus(PermissionType::WINDOW_MANAGEMENT,
+                        PermissionStatus::DENIED);
+
+  // Enable kAndroidWindowManagementWebApi flag.
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatureState(
+      permissions::features::kAndroidWindowManagementWebApi, true);
+  ui::DisplayAndroidManager::SetIsDisplayTopologyAvailableForTesting(false);
+
+  // Feature flag is enabled, but Display Topology is disabled.
+  CheckPermissionStatus(PermissionType::WINDOW_MANAGEMENT,
+                        PermissionStatus::DENIED);
+}
+
+TEST_F(PermissionManagerTest, AndroidWindowManagementPermission) {
+  // Enable kAndroidWindowManagementWebApi flag.
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatureState(
+      permissions::features::kAndroidWindowManagementWebApi, true);
+
+  // Set display topology availability
+  ui::DisplayAndroidManager::SetIsDisplayTopologyAvailableForTesting(true);
+
+  CheckPermissionStatus(PermissionType::WINDOW_MANAGEMENT,
+                        PermissionStatus::ASK);
+
+  {
+    base::HistogramTester histogram_tester;
+
+    SetPermission(PermissionType::WINDOW_MANAGEMENT, PermissionStatus::GRANTED);
+    CheckPermissionStatus(PermissionType::WINDOW_MANAGEMENT,
+                          PermissionStatus::GRANTED);
+
+    histogram_tester.ExpectUniqueSample(kWindowManagementHistogramName, true,
+                                        1);
+  }
+
+  {
+    base::HistogramTester histogram_tester;
+
+    SetPermission(PermissionType::WINDOW_MANAGEMENT, PermissionStatus::DENIED);
+    CheckPermissionStatus(PermissionType::WINDOW_MANAGEMENT,
+                          PermissionStatus::DENIED);
+
+    histogram_tester.ExpectUniqueSample(kWindowManagementHistogramName, false,
+                                        1);
+  }
+}
+#endif
+
 TEST_F(PermissionManagerTest, CheckPermissionResultDefault) {
   CheckPermissionResult(PermissionType::MIDI_SYSEX, PermissionStatus::ASK,
                         content::PermissionStatusSource::UNSPECIFIED);
@@ -400,7 +524,7 @@ TEST_F(PermissionManagerTest, PermissionIgnoredCleanup) {
 
   NavigateAndCommit(url());
 
-  RequestPermissionFromCurrentDocumentNonBlocking(PermissionType::GEOLOCATION,
+  RequestPermissionFromCurrentDocumentNonBlocking(PermissionType::MIDI_SYSEX,
                                                   main_rfh());
 
   EXPECT_FALSE(PendingRequestsEmpty());
@@ -463,7 +587,7 @@ TEST_F(PermissionManagerTest, KillSwitchOnIsNotOverridable) {
   // Turn on kill switch for GEOLOCATION.
   std::map<std::string, std::string> params;
   params[PermissionUtil::GetPermissionString(
-      ContentSettingsType::GEOLOCATION)] =
+      content_settings::GeolocationContentSettingsType())] =
       PermissionContextBase::kPermissionsKillSwitchBlockedValue;
   base::AssociateFieldTrialParams(
       PermissionContextBase::kPermissionsKillSwitchFieldStudy, "TestGroup",
@@ -527,8 +651,9 @@ TEST_F(PermissionManagerTest, GetPermissionStatusDelegation) {
   // By default the parent should be able to request access, but not the child.
   EXPECT_EQ(PermissionStatus::ASK, GetPermissionStatusForCurrentDocument(
                                        PermissionType::GEOLOCATION, parent));
-  // Permission policy is no longer verified in PermissionContextBase, hence in
-  // this code a cross-origin iframe is allowed to use permission.
+  // Permission policy is no longer verified in
+  // PermissionContextBase, hence in this code a cross-origin
+  // iframe is allowed to use permission.
   EXPECT_EQ(PermissionStatus::ASK, GetPermissionStatusForCurrentDocument(
                                        PermissionType::GEOLOCATION, child));
 
@@ -539,6 +664,11 @@ TEST_F(PermissionManagerTest, GetPermissionStatusDelegation) {
       PermissionRequestManager::FromWebContents(web_contents());
   auto prompt_factory = std::make_unique<MockPermissionPromptFactory>(manager);
   prompt_factory->set_response_type(PermissionRequestManager::ACCEPT_ALL);
+  if (base::FeatureList::IsEnabled(
+          content_settings::features::kApproximateGeolocationPermission)) {
+    prompt_factory->set_response_prompt_options(GeolocationPromptOptions{
+        .selected_accuracy = GeolocationAccuracy::kPrecise});
+  }
   prompt_factory->DocumentOnLoadCompletedInPrimaryMainFrame();
 
   RequestPermissionFromCurrentDocument(PermissionType::GEOLOCATION, child);
@@ -702,6 +832,66 @@ TEST_F(PermissionManagerTest, MAYBE_UpdatePermissionStatusWithDeviceStatus) {
   }
 }
 
+// Counts wildcard-pattern OnPermissionChanged notifications. Per-origin
+// notifications are filtered out to isolate the signal from
+// MaybeUpdateCachedHasDevicePermission's cross-origin invalidation.
+class WildcardPermissionObserver : public permissions::Observer {
+ public:
+  void OnPermissionChanged(const ContentSettingsPattern& primary_pattern,
+                           const ContentSettingsPattern& secondary_pattern,
+                           ContentSettingsTypeSet content_type_set) override {
+    if (primary_pattern == ContentSettingsPattern::Wildcard() &&
+        secondary_pattern == ContentSettingsPattern::Wildcard()) {
+      ++wildcard_count_;
+    }
+  }
+
+  int wildcard_count() const { return wildcard_count_; }
+
+ private:
+  int wildcard_count_ = 0;
+};
+
+// TODO(crbug.com/377264243): Enable when device permission is supported on
+// Android.
+#if BUILDFLAG(IS_ANDROID)
+#define MAYBE_DeviceStatusRefreshNotifiesObservers \
+  DISABLED_DeviceStatusRefreshNotifiesObservers
+#else
+#define MAYBE_DeviceStatusRefreshNotifiesObservers \
+  DeviceStatusRefreshNotifiesObservers
+#endif
+// Verifies that when the device-level permission is revoked, the site-level
+// permission status is updated and a wildcard observer notification is
+// dispatched.
+TEST_F(PermissionManagerTest, MAYBE_DeviceStatusRefreshNotifiesObservers) {
+  PermissionContextBase* context =
+      GetPermissionManager()->GetPermissionContextForTesting(
+          ContentSettingsType::NOTIFICATIONS);
+  ASSERT_TRUE(context);
+
+  // Prime the cached state so a subsequent flip is a real change.
+  SetPermission(PermissionType::NOTIFICATIONS, PermissionStatus::GRANTED);
+  permissions_client().SetHasDevicePermission(true);
+  permissions_client().SetCanRequestDevicePermission(true);
+  CheckPermissionStatus(PermissionType::NOTIFICATIONS,
+                        PermissionStatus::GRANTED,
+                        /*should_include_device_status=*/true);
+
+  WildcardPermissionObserver observer;
+  context->AddObserver(&observer);
+
+  // Revoking the OS permission must downgrade the status to ASK and trigger the
+  // wildcard notification.
+  permissions_client().SetHasDevicePermission(false);
+  CheckPermissionStatus(PermissionType::NOTIFICATIONS, PermissionStatus::ASK,
+                        /*should_include_device_status=*/true);
+
+  EXPECT_EQ(1, observer.wildcard_count());
+
+  context->RemoveObserver(&observer);
+}
+
 TEST_F(PermissionManagerTest,
        GetPermissionContextForNotAddedPermissionContext) {
   PermissionContextBase* context =
@@ -710,6 +900,153 @@ TEST_F(PermissionManagerTest,
 
   // Context is null because it is not added to PermissionContextMap.
   EXPECT_TRUE(!context);
+}
+
+TEST_F(PermissionManagerTest, StorageAccessPermissionStatusMasksDenied) {
+  SetPermission(PermissionType::STORAGE_ACCESS_GRANT,
+                PermissionStatus::GRANTED);
+  CheckPermissionStatus(PermissionType::STORAGE_ACCESS_GRANT,
+                        PermissionStatus::GRANTED);
+
+  SetPermission(PermissionType::STORAGE_ACCESS_GRANT, PermissionStatus::ASK);
+  CheckPermissionStatus(PermissionType::STORAGE_ACCESS_GRANT,
+                        PermissionStatus::ASK);
+
+  SetPermission(PermissionType::STORAGE_ACCESS_GRANT, PermissionStatus::DENIED);
+  CheckPermissionStatus(PermissionType::STORAGE_ACCESS_GRANT,
+                        PermissionStatus::ASK);
+  CheckPermissionResult(PermissionType::STORAGE_ACCESS_GRANT,
+                        PermissionStatus::ASK,
+                        content::PermissionStatusSource::UNSPECIFIED);
+}
+
+TEST_F(PermissionManagerTest, StorageAccessPermissionRequestMasksDenied) {
+  NavigateAndCommit(url());
+  SetPermission(PermissionType::STORAGE_ACCESS_GRANT, PermissionStatus::DENIED);
+
+  RequestPermissionFromCurrentDocument(PermissionType::STORAGE_ACCESS_GRANT,
+                                       main_rfh());
+  EXPECT_TRUE(callback_called());
+  EXPECT_EQ(PermissionStatus::ASK, callback_result());
+}
+
+class PermissionManagerWithGeolocationTest : public PermissionManagerTest {
+ public:
+  PermissionManagerWithGeolocationTest() {
+    feature_list_.InitAndEnableFeature(
+        content_settings::features::kApproximateGeolocationPermission);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+TEST_F(PermissionManagerWithGeolocationTest, GetGeolocationPermissionStatus) {
+  auto content_settings_type = ContentSettingsType::GEOLOCATION_WITH_OPTIONS;
+  auto permission_type = PermissionType::GEOLOCATION;
+
+  GetHostContentSettingsMap()->SetPermissionSettingDefaultScope(
+      url(), url(), content_settings_type,
+      GeolocationSetting{PermissionOption::kAllowed,
+                         PermissionOption::kAllowed});
+  CheckPermissionStatus(permission_type, PermissionStatus::GRANTED);
+
+  GetHostContentSettingsMap()->SetPermissionSettingDefaultScope(
+      url(), url(), content_settings_type,
+      GeolocationSetting{PermissionOption::kAllowed,
+                         PermissionOption::kDenied});
+  CheckPermissionStatus(permission_type, PermissionStatus::GRANTED);
+
+  GetHostContentSettingsMap()->SetPermissionSettingDefaultScope(
+      url(), url(), content_settings_type,
+      GeolocationSetting{PermissionOption::kAllowed, PermissionOption::kAsk});
+  CheckPermissionStatus(permission_type, PermissionStatus::ASK);
+
+  GetHostContentSettingsMap()->SetPermissionSettingDefaultScope(
+      url(), url(), content_settings_type,
+      GeolocationSetting{PermissionOption::kAsk, PermissionOption::kAsk});
+  CheckPermissionStatus(permission_type, PermissionStatus::ASK);
+
+  GetHostContentSettingsMap()->SetPermissionSettingDefaultScope(
+      url(), url(), content_settings_type,
+      GeolocationSetting{PermissionOption::kAsk, PermissionOption::kDenied});
+  CheckPermissionStatus(permission_type, PermissionStatus::ASK);
+
+  GetHostContentSettingsMap()->SetPermissionSettingDefaultScope(
+      url(), url(), content_settings_type,
+      GeolocationSetting{PermissionOption::kDenied, PermissionOption::kDenied});
+  CheckPermissionStatus(permission_type, PermissionStatus::DENIED);
+}
+
+TEST_F(PermissionManagerTest, SubscribeToContentSettingsTypeChange) {
+  ContentSettingsType type = ContentSettingsType::NOTIFICATIONS;
+
+  class Mocker {
+   public:
+    MOCK_METHOD(void, Callback, (const PermissionSetting&), ());
+  };
+
+  Mocker mocker;
+  content::PermissionController::SubscriptionId subscription_id =
+      SubscribeToContentSettingsTypeChange(
+          type, url(), url(),
+          base::BindRepeating(&Mocker::Callback, base::Unretained(&mocker)));
+
+  EXPECT_TRUE(subscription_id);
+
+  // Now change the setting. Expect the callback to be called.
+  EXPECT_CALL(mocker, Callback(PermissionSetting(CONTENT_SETTING_ALLOW)));
+  SetPermission(PermissionType::NOTIFICATIONS, PermissionStatus::GRANTED);
+
+  // Change it back to ASK.
+  EXPECT_CALL(mocker, Callback(PermissionSetting(CONTENT_SETTING_ASK)));
+  SetPermission(PermissionType::NOTIFICATIONS, PermissionStatus::ASK);
+
+  // Unsubscribe.
+  UnsubscribeFromContentSettingsTypeChange(subscription_id);
+
+  // Change it again, callback should not be called.
+  EXPECT_CALL(mocker, Callback(testing::_)).Times(0);
+  SetPermission(PermissionType::NOTIFICATIONS, PermissionStatus::GRANTED);
+}
+
+TEST_F(PermissionManagerWithGeolocationTest,
+       SubscribeToContentSettingsTypeChangeGeolocation) {
+  ContentSettingsType type = ContentSettingsType::GEOLOCATION_WITH_OPTIONS;
+
+  class Mocker {
+   public:
+    MOCK_METHOD(void, Callback, (const PermissionSetting&), ());
+  };
+
+  Mocker mocker;
+  content::PermissionController::SubscriptionId subscription_id =
+      SubscribeToContentSettingsTypeChange(
+          type, url(), url(),
+          base::BindRepeating(&Mocker::Callback, base::Unretained(&mocker)));
+
+  EXPECT_TRUE(subscription_id);
+
+  // Change Geolocation setting.
+  EXPECT_CALL(mocker,
+              Callback(PermissionSetting(GeolocationSetting{
+                  PermissionOption::kAllowed, PermissionOption::kDenied})));
+  GetHostContentSettingsMap()->SetPermissionSettingDefaultScope(
+      url(), url(), type,
+      GeolocationSetting{PermissionOption::kAllowed,
+                         PermissionOption::kDenied});
+
+  // Change it again.
+  EXPECT_CALL(mocker,
+              Callback(PermissionSetting(GeolocationSetting{
+                  PermissionOption::kAllowed, PermissionOption::kAllowed})));
+  GetHostContentSettingsMap()->SetPermissionSettingDefaultScope(
+      url(), url(), type,
+      GeolocationSetting{PermissionOption::kAllowed,
+                         PermissionOption::kAllowed});
+
+  // Unsubscribe.
+  UnsubscribeFromContentSettingsTypeChange(subscription_id);
 }
 
 }  // namespace permissions

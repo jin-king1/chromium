@@ -6,6 +6,7 @@
 
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
+#include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
 #include "components/user_manager/user.h"
@@ -14,24 +15,44 @@
 namespace ash::boca_util {
 
 namespace {
-inline constexpr char kDisabled[] = "disabled";
-inline constexpr char kStudent[] = "student";
+inline constexpr std::string_view kDisabled = "disabled";
+inline constexpr std::string_view kStudent = "student";
+inline constexpr std::string_view kRemoteAdmin = "remote_admin_was_present";
 }  // namespace
 
 void RegisterPrefs(PrefRegistrySimple* registry) {
   registry->RegisterStringPref(
-      ash::prefs::kClassManagementToolsAvailabilitySetting, std::string());
+      ash::prefs::kClassManagementToolsAvailabilitySetting, kDisabled);
   // Fixes a dangling pointer crash associated with this pref not being
   // registered. Need to revisit if this is the best place for this pref to be
   // set.
-  registry->RegisterBooleanPref("remote_admin_was_present", false);
-  registry->RegisterDictionaryPref(
-      ash::prefs::kClassManagementToolsNavRuleSetting);
+  registry->RegisterBooleanPref(kRemoteAdmin, false);
   registry->RegisterBooleanPref(
       ash::prefs::kClassManagementToolsCaptionEnablementSetting, false);
+  registry->RegisterBooleanPref(
+      ash::prefs::kClassManagementToolsCaptionEligibilitySetting, true);
+  registry->RegisterBooleanPref(
+      ash::prefs::kClassManagementToolsClassroomEligibilitySetting, true);
+  registry->RegisterBooleanPref(
+      ash::prefs::kClassManagementToolsViewScreenEligibilitySetting, true);
+  registry->RegisterBooleanPref(
+      ash::prefs::kClassManagementToolsNetworkRestrictionSetting, true);
+  registry->RegisterDictionaryPref(
+      ash::prefs::kClassManagementToolsNavRuleSetting);
+
+  registry->RegisterIntegerPref(
+      ash::prefs::kClassManagementToolsOOBEAccessCountSetting, 0,
+      user_prefs::PrefRegistrySyncable::SYNCABLE_OS_PREF);
+  registry->RegisterDictionaryPref(
+      ash::prefs::kClassManagementToolsKioskReceiverCodes,
+      user_prefs::PrefRegistrySyncable::SYNCABLE_OS_PREF);
 }
 
 bool IsEnabled(const user_manager::User* user) {
+  if (!ash::features::IsBocaUberEnabled()) {
+    return false;
+  }
+
   if (features::IsBocaEnabled()) {
     return true;
   }

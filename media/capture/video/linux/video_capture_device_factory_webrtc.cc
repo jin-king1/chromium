@@ -5,6 +5,7 @@
 #include "media/capture/video/linux/video_capture_device_factory_webrtc.h"
 
 #include "base/feature_list.h"
+#include "base/logging.h"
 #include "media/capture/capture_switches.h"
 #include "media/capture/video/linux/video_capture_device_webrtc.h"
 #include "third_party/webrtc/modules/video_capture/video_capture_factory.h"
@@ -24,6 +25,7 @@ struct {
     {webrtc::VideoType::kUYVY, PIXEL_FORMAT_UYVY},
     {webrtc::VideoType::kMJPEG, PIXEL_FORMAT_MJPEG},
     {webrtc::VideoType::kBGRA, PIXEL_FORMAT_BGRA},
+    {webrtc::VideoType::kABGR, PIXEL_FORMAT_ABGR},
 };
 
 VideoCaptureDeviceFactoryWebRtc::VideoCaptureDeviceFactoryWebRtc() = default;
@@ -47,9 +49,9 @@ void VideoCaptureDeviceFactoryWebRtc::FinishGetDevicesInfo() {
 
     if (info) {
       for (uint32_t i = 0; i < info->NumberOfDevices(); ++i) {
-        char device_name[webrtc::kVideoCaptureDeviceNameLength];
-        char unique_name[webrtc::kVideoCaptureUniqueNameLength];
-        char product_id[webrtc::kVideoCaptureProductIdLength];
+        char device_name[webrtc::kVideoCaptureDeviceNameLength] = {};
+        char unique_name[webrtc::kVideoCaptureUniqueNameLength] = {};
+        char product_id[webrtc::kVideoCaptureProductIdLength] = {};
 
         if (info->GetDeviceName(
                 i, device_name, webrtc::kVideoCaptureDeviceNameLength,

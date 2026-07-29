@@ -20,6 +20,7 @@
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
 #include "base/values.h"
+#include "build/build_config.h"
 #include "chrome/browser/policy/policy_ui_utils.h"
 #include "chrome/browser/policy/policy_value_and_status_aggregator.h"
 #include "chrome/browser/support_tool/data_collector.h"
@@ -29,9 +30,9 @@
 #include "components/policy/core/browser/webui/policy_status_provider.h"
 #include "components/policy/core/browser/webui/policy_webui_constants.h"
 
-#if !BUILDFLAG(IS_CHROMEOS_ASH)
+#if !BUILDFLAG(IS_CHROMEOS)
 #include "components/policy/core/browser/webui/machine_level_user_cloud_policy_status_provider.h"
-#endif  // !BUILDFLAG(IS_CHROMEOS_ASH)
+#endif  // !BUILDFLAG(IS_CHROMEOS)
 
 namespace {
 
@@ -41,14 +42,13 @@ std::optional<redaction::PIIType> GetPIITypeOfStatusField(
     std::string_view status_field) {
   // List of keys in policy status that will be considered as PII and will be
   // redacted selectively.
-  // TODO(crbug.com/41486252): Convert to MakeFixedFlatMap().
   static constexpr auto kPersonallyIdentifiableStatusFields =
       base::MakeFixedFlatMap<std::string_view, redaction::PIIType>({
-#if !BUILDFLAG(IS_CHROMEOS_ASH)
+#if !BUILDFLAG(IS_CHROMEOS)
           {policy::kDeviceIdKey, redaction::PIIType::kStableIdentifier},
           {policy::kEnrollmentTokenKey, redaction::PIIType::kStableIdentifier},
           {policy::kMachineKey, redaction::PIIType::kStableIdentifier},
-#endif  // !BUILDFLAG(IS_CHROMEOS_ASH)
+#endif  // !BUILDFLAG(IS_CHROMEOS)
           {policy::kAssetIdKey, redaction::PIIType::kStableIdentifier},
           // kLocationKey is the "Asset location" which is an identifier for
           // the device that is set during enterprise enrollment or by the
@@ -184,8 +184,9 @@ void PolicyDataCollector::RedactPIIInPolicyStatus(
          entry.second.GetDict()) {
       std::optional<redaction::PIIType> pii_type =
           GetPIITypeOfStatusField(status_pair.first);
-      if (!pii_type || base::Contains(pii_types_to_keep, pii_type.value()))
+      if (!pii_type || pii_types_to_keep.contains(pii_type.value())) {
         continue;
+      }
       // Replace the value with `kRedactedPlaceholder` if it's a PII type that
       // user didn't select to keep.
       status_pair.second = base::Value(kRedactedPlaceholder);

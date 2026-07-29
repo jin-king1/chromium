@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "media/capture/video/win/video_capture_device_factory_win.h"
 
 #include <objbase.h>
@@ -28,13 +23,14 @@
 #include <vector>
 
 #include "base/command_line.h"
-#include "base/containers/contains.h"
+#include "base/compiler_specific.h"
 #include "base/containers/fixed_flat_set.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/native_library.h"
 #include "base/no_destructor.h"
 #include "base/not_fatal_until.h"
 #include "base/strings/cstring_view.h"
@@ -44,19 +40,19 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/threading/scoped_thread_priority.h"
 #include "base/win/core_winrt_util.h"
+#include "base/win/delayload_helpers.h"
 #include "base/win/scoped_co_mem.h"
 #include "base/win/scoped_variant.h"
-#include "base/win/win_util.h"
 #include "base/win/windows_version.h"
 #include "media/base/media_switches.h"
 #include "media/base/win/mf_helpers.h"
 #include "media/base/win/mf_initializer.h"
 #include "media/capture/capture_switches.h"
 #include "media/capture/video/video_capture_device_descriptor.h"
-#include "media/capture/video/video_capture_metrics.h"
 #include "media/capture/video/win/metrics.h"
 #include "media/capture/video/win/video_capture_device_mf_win.h"
 #include "media/capture/video/win/video_capture_device_win.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 
 using DevicesInfo = std::vector<media::VideoCaptureDeviceInfo>;
 using base::win::GetActivationFactory;
@@ -68,7 +64,6 @@ using Microsoft::WRL::ComPtr;
 namespace media {
 
 BASE_FEATURE(kMediaFoundationD3D11VideoCaptureBlocklist,
-             "MediaFoundationD3D11VideoCaptureBlocklist",
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 namespace {
@@ -131,36 +126,48 @@ static_assert(std::size(kBlockedCameraNames) == BLOCKED_CAMERA_MAX + 1,
 
 // Use this list only for USB webcams.
 constexpr auto kModelIdsBlockedForMediaFoundation =
-    base::MakeFixedFlatSet<std::string_view>(
-        {// Devices using Empia 2860 or 2820 chips, see
-         // https://crbug.com/849636.
-         "eb1a:2860", "eb1a:2820", "1ce6:2820",
-         // Elgato HD60 Pro
-         "12ab:0380",
-         // Sensoray 2253
-         "1943:2253",
-         // Dell E5440
-         "0c45:64d0", "0c45:64d2",
-         // Dell E7440
-         "1bcf:2985",
-         // Lenovo Thinkpad Model 20CG0006FMZ front and rear cameras, see
-         // also https://crbug.com/924528.
-         "04ca:7047", "04ca:7048",
-         // HP Elitebook 840 G1
-         "04f2:b3ed", "04f2:b3ca", "05c8:035d", "05c8:0369",
-         // HP HD Camera. See https://crbug.com/1011888.
-         "04ca:7095",
-         // RBG/IR camera for Windows Hello Face Auth. See
-         // https://crbug.com/984864.
-         "13d3:5257",
-         // Acer Aspire f5-573g. See https://crbug.com/1034644.
-         "0bda:57f2",
-         // Elgato Camlink 4k
-         "0fd9:0066",
-         // ACER Aspire VN7-571G. See https://crbug.com/1327948.
-         "04f2:b469",
-         // Hauppauge USB-Live2. See https://crbug.com/1447113.
-         "2040:c200"});
+    base::MakeFixedFlatSet<std::string_view>({
+        // Devices using Empia 2860 or 2820 chips, see
+        // https://crbug.com/849636.
+        "eb1a:2860",
+        "eb1a:2820",
+        "1ce6:2820",
+        // Elgato HD60 Pro
+        "12ab:0380",
+        // Sensoray 2253
+        "1943:2253",
+        // Dell E5440
+        "0c45:64d0",
+        "0c45:64d2",
+        // Dell E7440
+        "1bcf:2985",
+        // Lenovo Thinkpad Model 20CG0006FMZ front and rear cameras, see
+        // also https://crbug.com/924528.
+        "04ca:7047",
+        "04ca:7048",
+        // HP Elitebook 840 G1
+        "04f2:b3ed",
+        "04f2:b3ca",
+        "05c8:035d",
+        "05c8:0369",
+        // HP HD Camera. See https://crbug.com/1011888.
+        "04ca:7095",
+        // RBG/IR camera for Windows Hello Face Auth. See
+        // https://crbug.com/984864.
+        "13d3:5257",
+        // Acer Aspire f5-573g. See https://crbug.com/1034644.
+        "0bda:57f2",
+        // Elgato Camlink 4k
+        "0fd9:0066",
+        // ACER Aspire VN7-571G. See https://crbug.com/1327948.
+        "04f2:b469",
+        // Hauppauge USB-Live2. See https://crbug.com/1447113.
+        "2040:c200",
+        // TOSHIBA Web Camera - HD. See https://crbug.com/420284824.
+        "04f2:b7a3",
+        // Microsoft LifeCam Studio. See https://crbug.com/535635412
+        "045e:0772",
+    });
 
 // Use this list only for USB webcams.
 constexpr auto kModelIdsBlockedForMediaFoundationD3D11VideoCapture =
@@ -227,36 +234,30 @@ bool IsDeviceBlockedForMediaFoundationByDisplayName(
   return kDisplayNamesBlockedForMediaFoundation.contains(display_name);
 }
 
-HMODULE ExpandEnvironmentStringsAndLoadLibrary(base::wcstring_view path) {
-  auto expanded_path = base::win::ExpandEnvironmentVariables(path);
-  if (!expanded_path) {
-    return nullptr;
-  }
-
-  return LoadLibraryExW(expanded_path->c_str(), nullptr,
-                        LOAD_WITH_ALTERED_SEARCH_PATH);
-}
-
 bool LoadMediaFoundationDlls() {
-  static constexpr base::wcstring_view kMfDLLs[] = {
-      L"%WINDIR%\\system32\\mf.dll", L"%WINDIR%\\system32\\mfplat.dll",
-      L"%WINDIR%\\system32\\mfreadwrite.dll",
-      L"%WINDIR%\\system32\\MFCaptureEngine.dll"};
-
   // Mitigate the issues caused by loading DLLs on a background thread
   // (http://crbug/973868).
-  SCOPED_MAY_LOAD_LIBRARY_AT_BACKGROUND_PRIORITY_REPEATEDLY();
+  SCOPED_MAY_LOAD_LIBRARY_AT_BACKGROUND_PRIORITY();
 
-  // Load required DLLs.
-  for (const auto& kMfDLL : kMfDLLs) {
-    if (!ExpandEnvironmentStringsAndLoadLibrary(kMfDLL)) {
-      return false;
-    }
+  // Force-resolve all imports from modules accessed via /DELAYLOAD. Note that
+  // MF.dll and MFPlat.DLL have already been resolved via
+  // InitializeMediaFoundation(). LoadAllImportsForDll() makes a
+  // case-sensitive comparison to the module names in the dll.
+  // LINT.IfChange
+  auto loaded = base::win::LoadAllImportsForDll("MFReadWrite.dll");
+  // LINT.ThenChange(//chrome/common/win/delay_load_failure_hook.cc)
+  if (!loaded.value_or(false)) {
+    // Loading failed, or the module is not a delayload dep of this module.
+    return false;
+  }
+
+  // MFCaptureEngine is not imported via delayloads, but may be needed anyway.
+  if (!base::LoadSystemLibrary(L"MFCaptureEngine.dll")) {
+    return false;
   }
 
   // Load optional DLLs whose availability depends on Windows version.
-  ExpandEnvironmentStringsAndLoadLibrary(
-      L"%WINDIR%\\system32\\mfsensorgroup.dll");
+  base::LoadSystemLibrary(L"mfsensorgroup.dll");
 
   return true;
 }
@@ -287,8 +288,8 @@ bool PrepareVideoCaptureAttributesMediaFoundation(
 bool IsDeviceBlocked(const std::string& name) {
   DCHECK_EQ(BLOCKED_CAMERA_MAX + 1,
             static_cast<int>(std::size(kBlockedCameraNames)));
-  for (size_t i = 0; i < std::size(kBlockedCameraNames); ++i) {
-    if (base::StartsWith(name, kBlockedCameraNames[i],
+  for (const char* blocked_camera_name : kBlockedCameraNames) {
+    if (base::StartsWith(name, blocked_camera_name,
                          base::CompareCase::INSENSITIVE_ASCII)) {
       DVLOG(1) << "Enumerated blocked device: " << name;
       return true;
@@ -319,10 +320,10 @@ std::string GetDeviceModelId(const std::string& device_id) {
 
 bool DevicesInfoContainsDeviceId(const DevicesInfo& devices_info,
                                  const std::string& device_id) {
-  return base::Contains(devices_info, device_id,
-                        [](const VideoCaptureDeviceInfo& device_info) {
-                          return device_info.descriptor.device_id;
-                        });
+  return std::ranges::contains(devices_info, device_id,
+                               [](const VideoCaptureDeviceInfo& device_info) {
+                                 return device_info.descriptor.device_id;
+                               });
 }
 
 // Returns a non DirectShow descriptor DevicesInfo with the provided name and
@@ -384,7 +385,7 @@ class VideoCaptureDeviceFactoryWin::ComThreadData
   friend class base::RefCountedThreadSafe<ComThreadData>;
   ~ComThreadData() = default;
 
-  std::unordered_set<
+  absl::flat_hash_set<
       raw_ptr<IAsyncOperation<DeviceInformationCollection*>, CtnExperimental>>
       async_ops_;
   base::WeakPtr<VideoCaptureDeviceFactoryWin> device_factory_;
@@ -515,16 +516,17 @@ class VideoCaptureDeviceFactoryWin::UsageReportHandler
   void UpdateDevicesInfoAvailability(
       std::vector<VideoCaptureDeviceInfo>* devices_info) {
     base::AutoLock lock(cache_lock_);
-    std::set<std::string> device_ids;
+    absl::flat_hash_set<std::string_view> device_ids;
+    device_ids.reserve(devices_info->size());
     for (auto& info : *devices_info) {
-      device_ids.insert(info.descriptor.device_id);
+      device_ids.emplace(info.descriptor.device_id);
       auto it = availability_cache_.find(info.descriptor.device_id);
       if (it != availability_cache_.end()) {
         info.descriptor.availability = it->second;
       }
     }
     std::erase_if(availability_cache_, [&device_ids](const auto& entry) {
-      return !base::Contains(device_ids, entry.first);
+      return !device_ids.contains(entry.first);
     });
   }
 
@@ -580,7 +582,8 @@ VideoCaptureDeviceFactoryWin::VideoCaptureDeviceFactoryWin()
       use_d3d11_with_media_foundation_(
           media::IsMediaFoundationD3D11VideoCaptureEnabled() &&
           switches::IsVideoCaptureUseGpuMemoryBufferEnabled()),
-      com_thread_("Windows Video Capture COM Thread") {
+      com_thread_("Windows Video Capture COM Thread",
+                  base::Thread::Restartable{}) {
   if (use_media_foundation_ && !PlatformSupportsMediaFoundation()) {
     use_media_foundation_ = false;
   }
@@ -626,7 +629,6 @@ VideoCaptureErrorOrDevice VideoCaptureDeviceFactoryWin::CreateDevice(
           DVLOG(1) << " MediaFoundation Device: "
                    << device_descriptor.display_name();
           if (device->Init()) {
-            LogCaptureDeviceHashedModelId(device_descriptor);
             return VideoCaptureErrorOrDevice(std::move(device));
           }
           return VideoCaptureErrorOrDevice(
@@ -652,7 +654,6 @@ VideoCaptureErrorOrDevice VideoCaptureDeviceFactoryWin::CreateDevice(
           device_descriptor, std::move(capture_filter));
       DVLOG(1) << " DirectShow Device: " << device_descriptor.display_name();
       if (device->Init()) {
-        LogCaptureDeviceHashedModelId(device_descriptor);
         return VideoCaptureErrorOrDevice(std::move(device));
       }
       return VideoCaptureErrorOrDevice(
@@ -827,8 +828,10 @@ void VideoCaptureDeviceFactoryWin::GetDevicesInfo(
     devices_info = GetDevicesInfoDirectShow(devices_info);
   }
 
-  com_thread_.init_com_with_mta(true);
-  com_thread_.Start();
+  if (!com_thread_.IsRunning()) {
+    com_thread_.init_com_with_mta(true);
+    com_thread_.Start();
+  }
   com_thread_data_ =
       base::MakeRefCounted<VideoCaptureDeviceFactoryWin::ComThreadData>(
           weak_ptr_factory_.GetWeakPtr(), com_thread_.task_runner(),
@@ -978,7 +981,7 @@ void VideoCaptureDeviceFactoryWin::ComThreadData::FoundAllDevicesUWP(
                                 std::move(result_callback)));
 
   auto it = async_ops_.find(operation);
-  CHECK(it != async_ops_.end(), base::NotFatalUntil::M130);
+  CHECK(it != async_ops_.end());
   (*it)->Release();
   async_ops_.erase(it);
 }
@@ -993,10 +996,6 @@ void VideoCaptureDeviceFactoryWin::UpdateDevicesInfoAvailability(
 void VideoCaptureDeviceFactoryWin::DeviceInfoReady(
     std::vector<VideoCaptureDeviceInfo> devices_info,
     GetDevicesInfoCallback result_callback) {
-  if (com_thread_.IsRunning()) {
-    com_thread_.Stop();
-    com_thread_data_.reset();
-  }
   UpdateDevicesInfoAvailability(&devices_info);
 
   std::move(result_callback).Run(std::move(devices_info));
@@ -1032,14 +1031,17 @@ DevicesInfo VideoCaptureDeviceFactoryWin::GetDevicesInfoMediaFoundation() {
     for (UINT32 i = 0; i < count; ++i) {
       ScopedCoMem<wchar_t> name;
       UINT32 name_size;
-      HRESULT hr = devices[i]->GetAllocatedString(
-          MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, &name, &name_size);
+      HRESULT hr =
+          UNSAFE_TODO(devices[i])
+              ->GetAllocatedString(MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, &name,
+                                   &name_size);
       if (SUCCEEDED(hr)) {
         ScopedCoMem<wchar_t> id;
         UINT32 id_size;
-        hr = devices[i]->GetAllocatedString(
-            MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK, &id,
-            &id_size);
+        hr = UNSAFE_TODO(devices[i])
+                 ->GetAllocatedString(
+                     MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK,
+                     &id, &id_size);
         if (SUCCEEDED(hr)) {
           const std::string device_id =
               base::SysWideToUTF8(std::wstring(id, id_size));
@@ -1075,7 +1077,7 @@ DevicesInfo VideoCaptureDeviceFactoryWin::GetDevicesInfoMediaFoundation() {
       }
       DLOG_IF(ERROR, FAILED(hr)) << "GetAllocatedString failed: "
                                  << logging::SystemErrorCodeToString(hr);
-      devices[i]->Release();
+      UNSAFE_TODO(devices[i])->Release();
     }
   }
 

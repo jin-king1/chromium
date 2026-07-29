@@ -12,155 +12,6 @@
 #include "third_party/openxr/src/include/openxr/openxr.h"
 #include "third_party/openxr/src/include/openxr/openxr_platform_defines.h"
 
-#ifndef XR_ANDROID_trackables
-#define XR_ANDROID_trackables 1
-#define XR_ANDROID_trackables_SPEC_VERSION 1
-#define XR_ANDROID_TRACKABLES_EXTENSION_NAME "XR_ANDROID_trackables"
-
-#define XR_TYPE_TRACKABLE_GET_INFO_ANDROID ((XrStructureType)1000455000U)
-#define XR_TYPE_TRACKABLE_PLANE_ANDROID ((XrStructureType)1000455003U)
-#define XR_TYPE_TRACKABLE_TRACKER_CREATE_INFO_ANDROID \
-  ((XrStructureType)1000455004U)
-#define XR_TYPE_ANCHOR_SPACE_CREATE_INFO_ANDROID ((XrStructureType)1000455001U)
-#define XR_TYPE_ANCHOR_STATE_ANDROID ((XrStructureType)1000455002U)
-
-#define XR_ERROR_MISMATCHING_TRACKABLE_TYPE_ANDROID ((XrResult)-1000455000U)
-
-#define XR_OBJECT_TYPE_TRACKABLE_TRACKER_ANDROID ((XrObjectType)1000455001U)
-
-XR_DEFINE_ATOM(XrTrackableANDROID)
-#define XR_NULL_TRACKABLE_ANDROID 0
-
-XR_DEFINE_HANDLE(XrTrackableTrackerANDROID)
-
-enum XrTrackingStateANDROID {
-  XR_TRACKING_STATE_PAUSED_ANDROID = 0,
-  XR_TRACKING_STATE_STOPPED_ANDROID = 1,
-  XR_TRACKING_STATE_TRACKING_ANDROID = 2,
-};
-
-enum XrTrackableTypeANDROID {
-  XR_TRACKABLE_TYPE_NOT_VALID_ANDROID = 0,
-  XR_TRACKABLE_TYPE_PLANE_ANDROID = 1,
-  XR_TRACKABLE_TYPE_DEPTH_ANDROID = 2,
-};
-
-enum XrPlaneTypeANDROID {
-  XR_PLANE_TYPE_HORIZONTAL_DOWNWARD_FACING_ANDROID = 0,
-  XR_PLANE_TYPE_HORIZONTAL_UPWARD_FACING_ANDROID = 1,
-  XR_PLANE_TYPE_VERTICAL_ANDROID = 2,
-  XR_PLANE_TYPE_ARBITRARY_ANDROID = 3,
-};
-
-typedef struct XrTrackableTrackerCreateInfoANDROID {
-  XrStructureType type;
-  const void* next;
-  XrTrackableTypeANDROID trackableType;
-} XrTrackableTrackerCreateInfoANDROID;
-
-typedef struct XrTrackableGetInfoANDROID {
-  XrStructureType type;
-  void* next;
-  XrTrackableANDROID trackable;
-  XrSpace baseSpace;
-  XrTime time;
-} XrTrackableGetInfoANDROID;
-
-typedef struct XrTrackablePlaneANDROID {
-  XrStructureType type;
-  void* next;
-  XrTrackingStateANDROID trackingState;
-  XrPosef centerPose;
-  XrExtent2Df extents;
-  XrPlaneTypeANDROID planeType;
-  uint32_t deprecated;
-  XrTrackableANDROID subsumedByPlane;
-  XrTime lastUpdatedTime;
-  uint32_t vertexCapacityInput;
-  uint32_t* vertexCountOutput;
-  XrVector2f* vertices;
-} XrTrackablePlaneANDROID;
-
-typedef XrResult(XRAPI_PTR* PFN_xrCreateTrackableTrackerANDROID)(
-    XrSession session,
-    const XrTrackableTrackerCreateInfoANDROID* createInfo,
-    XrTrackableTrackerANDROID* trackableTracker);
-
-typedef XrResult(XRAPI_PTR* PFN_xrDestroyTrackableTrackerANDROID)(
-    XrTrackableTrackerANDROID trackableTracker);
-
-typedef XrResult(XRAPI_PTR* PFN_xrGetAllTrackablesANDROID)(
-    XrTrackableTrackerANDROID trackableTracker,
-    uint32_t trackableCapacityInput,
-    uint32_t* trackableCountOutput,
-    XrTrackableANDROID* trackablesOutput);
-
-typedef XrResult(XRAPI_PTR* PFN_xrGetTrackablePlaneANDROID)(
-    XrTrackableTrackerANDROID trackableTracker,
-    const XrTrackableGetInfoANDROID* getInfo,
-    XrTrackablePlaneANDROID* planeOutput);
-
-typedef struct XrAnchorSpaceCreateInfoANDROID {
-  XrStructureType type;
-  void* next;
-  XrSpace space;
-  XrTime time;
-  XrPosef pose;
-  XrTrackableANDROID trackable;
-} XrAnchorSpaceCreateInfoANDROID;
-
-typedef struct XrAnchorStateANDROID {
-  XrStructureType type;
-  void* next;
-  XrTrackingStateANDROID trackingState;
-} XrAnchorStateANDROID;
-
-typedef XrResult(XRAPI_PTR* PFN_xrCreateAnchorSpaceANDROID)(
-    XrSession session,
-    const XrAnchorSpaceCreateInfoANDROID* createInfo,
-    XrSpace* anchorOutput);
-#endif  // XR_ANDROID_trackables
-
-#ifndef XR_ANDROID_raycast
-#define XR_ANDROID_raycast 1
-#define XR_ANDROID_raycast_SPEC_VERSION 1
-#define XR_ANDROID_RAYCAST_EXTENSION_NAME "XR_ANDROID_raycast"
-
-#define XR_TYPE_RAYCAST_INFO_ANDROID ((XrStructureType)1000463000U)
-#define XR_TYPE_RAYCAST_HIT_RESULTS_ANDROID ((XrStructureType)1000463001U)
-
-typedef struct XrRaycastInfoANDROID {
-  XrStructureType type;
-  void* next;
-  uint32_t maxResults;
-  uint32_t trackerCount;
-  const XrTrackableTrackerANDROID* trackers;
-  XrVector3f origin;
-  XrVector3f trajectory;
-  XrSpace space;
-  XrTime time;
-} XrRaycastInfoANDROID;
-
-typedef struct XrRaycastHitResultANDROID {
-  XrTrackableTypeANDROID type;
-  XrTrackableANDROID trackable;
-  XrPosef pose;
-} XrRaycastHitResultANDROID;
-
-typedef struct XrRaycastHitResultsANDROID {
-  XrStructureType type;
-  void* next;
-  uint32_t resultsCapacityInput;
-  uint32_t resultsCountOutput;
-  XrRaycastHitResultANDROID* results;
-} XrRaycastHitResultsANDROID;
-
-typedef XrResult(XRAPI_PTR* PFN_xrRaycastANDROID)(
-    XrSession session,
-    const XrRaycastInfoANDROID* rayInfo,
-    XrRaycastHitResultsANDROID* results);
-#endif  // XR_ANDROID_raycast
-
 #ifndef XR_ANDROID_unbounded_reference_space
 #define XR_ANDROID_unbounded_reference_space 1
 #define XR_ANDROID_unbounded_reference_space_SPEC_VERSION 1
@@ -169,19 +20,6 @@ typedef XrResult(XRAPI_PTR* PFN_xrRaycastANDROID)(
 #define XR_REFERENCE_SPACE_TYPE_UNBOUNDED_ANDROID \
   ((XrReferenceSpaceType)1000467000U)
 #endif /* XR_ANDROID_unbounded_reference_space */
-
-#ifndef XR_ANDROID_reference_space_bounds_polygon
-#define XR_ANDROID_reference_space_bounds_polygon 1
-#define XR_ANDROID_reference_space_bounds_polygon_SPEC_VERSION 1
-#define XR_ANDROID_REFERENCE_SPACE_BOUNDS_POLYGON_EXTENSION_NAME \
-  "XR_ANDROID_reference_space_bounds_polygon"
-typedef XrResult(XRAPI_PTR* PFN_xrGetReferenceSpaceBoundsPolygonANDROID)(
-    XrSession session,
-    XrReferenceSpaceType referenceSpaceType,
-    uint32_t boundaryVerticesCapacityInput,
-    uint32_t* boundaryVerticesCountOutput,
-    XrVector2f* boundaryVertices);
-#endif /* XR_ANDROID_reference_space_bounds_polygon */
 
 #ifndef XR_ANDROID_light_estimation
 #define XR_ANDROID_light_estimation 1
@@ -375,5 +213,282 @@ typedef XrResult(XRAPI_PTR* PFN_xrAcquireDepthSwapchainImagesANDROID)(
     const XrDepthAcquireInfoANDROID* acquireInfo,
     XrDepthAcquireResultANDROID* acquireResult);
 #endif  // XR_ANDROID_depth_texture
+
+#ifndef XR_ANDROID_spatial_discovery_raycast
+#define XR_ANDROID_spatial_discovery_raycast 1
+#define XR_ANDROID_spatial_discovery_raycast_SPEC_VERSION 1
+#define XR_ANDROID_SPATIAL_DISCOVERY_RAYCAST_EXTENSION_NAME \
+  "XR_ANDROID_spatial_discovery_raycast"
+
+#define XR_TYPE_SPATIAL_BOUNDS_RAYCAST_ANDROID ((XrStructureType)1000786001U)
+#define XR_TYPE_SPATIAL_COMPONENT_RAYCAST_RESULT_LIST_ANDROID \
+  ((XrStructureType)1000786002U)
+#define XR_TYPE_SPATIAL_RAYCAST_SNAPSHOT_CREATE_INFO_ANDROID \
+  ((XrStructureType)1000786003U)
+#define XR_TYPE_SPATIAL_CAPABILITY_CONFIGURATION_DEPTH_RAYCAST_ANDROID \
+  ((XrStructureType)1000786000U)
+
+#define XR_SPATIAL_CAPABILITY_DEPTH_RAYCAST_ANDROID \
+  ((XrSpatialCapabilityEXT)1000786000U)
+#define XR_SPATIAL_COMPONENT_TYPE_RAYCAST_RESULT_ANDROID \
+  ((XrSpatialComponentTypeEXT)1000786000U)
+
+typedef struct XrSpatialRaycastResultDataANDROID {
+    XrPosef    hitPose;
+    float      distanceSquared;
+} XrSpatialRaycastResultDataANDROID;
+
+typedef struct XrSpatialCapabilityConfigurationDepthRaycastANDROID {
+    XrStructureType                     type;
+    const void* XR_MAY_ALIAS            next;
+    XrSpatialCapabilityEXT              capability;
+    uint32_t                            enabledComponentCount;
+    const XrSpatialComponentTypeEXT*    enabledComponents;
+} XrSpatialCapabilityConfigurationDepthRaycastANDROID;
+
+// XrSpatialBoundsRaycastANDROID extends XrSpatialDiscoverySnapshotCreateInfoEXT
+typedef struct XrSpatialBoundsRaycastANDROID {
+    XrStructureType             type;
+    const void* XR_MAY_ALIAS    next;
+    XrSpace                     space;
+    XrTime                      time;
+    XrVector3f                  origin;
+    XrVector3f                  direction;
+    float                       maxDistance;
+} XrSpatialBoundsRaycastANDROID;
+
+// XrSpatialComponentRaycastResultListANDROID extends XrSpatialComponentDataQueryResultEXT
+typedef struct XrSpatialComponentRaycastResultListANDROID {
+    XrStructureType                   type;
+    void* XR_MAY_ALIAS                next;
+    uint32_t                          raycastResultCount;
+    XrSpatialRaycastResultDataANDROID*    raycastResults;
+} XrSpatialComponentRaycastResultListANDROID;
+
+typedef struct XrSpatialRaycastSnapshotCreateInfoANDROID {
+  XrStructureType type;
+  const void* next;
+  uint32_t componentTypeCount;
+  const XrSpatialComponentTypeEXT* componentTypes;
+  const XrSpatialBoundsRaycastANDROID* raycastBounds;
+} XrSpatialRaycastSnapshotCreateInfoANDROID;
+
+typedef XrResult (XRAPI_PTR* PFN_xrCreateSpatialRaycastSnapshotANDROID)(
+  XrSpatialContextEXT spatialContext,
+  const XrSpatialRaycastSnapshotCreateInfoANDROID* createInfo,
+  XrSpatialSnapshotEXT* snapshot);
+
+#endif  // XR_ANDROID_spatial_discovery_raycast
+
+#ifndef XR_ANDROID_spatial_entity_bound_anchor
+#define XR_ANDROID_spatial_entity_bound_anchor 1
+#define XR_ANDROID_spatial_entity_bound_anchor_SPEC_VERSION 1
+#define XR_ANDROID_SPATIAL_ENTITY_BOUND_ANCHOR_EXTENSION_NAME "XR_ANDROID_spatial_entity_bound_anchor"
+
+#define XR_ERROR_SPATIAL_ANCHOR_ATTACHABLE_COMPONENT_NOT_FOUND_ANDROID ((XrResult) -1000790001U)
+#define XR_TYPE_SPATIAL_ANCHOR_PARENT_ANDROID ((XrStructureType) 1000790000U)
+
+// XrSpatialAnchorParentANDROID extends XrSpatialAnchorCreateInfoEXT
+typedef struct XrSpatialAnchorParentANDROID {
+    XrStructureType             type;
+    const void* XR_MAY_ALIAS    next;
+    XrSpatialEntityIdEXT        parentId;
+} XrSpatialAnchorParentANDROID;
+
+typedef XrResult (XRAPI_PTR *PFN_xrEnumerateSpatialAnchorAttachableComponentsANDROID)(
+    XrInstance                      instance,
+    XrSystemId                      systemId,
+    uint32_t                        attachableComponentCapacityInput,
+    uint32_t*                       attachableComponentCountOutput,
+    XrSpatialComponentTypeEXT*      attachableComponents);
+#endif /* XR_ANDROID_spatial_entity_bound_anchor */
+
+#ifndef XR_ANDROID_scene_meshing
+#define XR_ANDROID_scene_meshing 1
+XR_DEFINE_HANDLE(XrSceneMeshingTrackerANDROID)
+XR_DEFINE_HANDLE(XrSceneMeshSnapshotANDROID)
+#define XR_ANDROID_scene_meshing_SPEC_VERSION 3
+#define XR_ANDROID_SCENE_MESHING_EXTENSION_NAME "XR_ANDROID_scene_meshing"
+// Structure type enums
+#define XR_TYPE_SYSTEM_SCENE_MESHING_PROPERTIES_ANDROID \
+  ((XrStructureType)1000718000)
+#define XR_TYPE_SCENE_MESHING_TRACKER_CREATE_INFO_ANDROID \
+  ((XrStructureType)1000718001)
+#define XR_TYPE_SCENE_MESH_SNAPSHOT_CREATE_INFO_ANDROID \
+  ((XrStructureType)1000718002)
+#define XR_TYPE_SCENE_MESH_SNAPSHOT_CREATION_RESULT_ANDROID \
+  ((XrStructureType)1000718003)
+#define XR_TYPE_SCENE_SUBMESH_STATE_ANDROID ((XrStructureType)1000718004)
+#define XR_TYPE_SCENE_SUBMESH_DATA_ANDROID ((XrStructureType)1000718005)
+
+typedef enum XrSceneMeshSemanticLabelSetANDROID {
+  XR_SCENE_MESH_SEMANTIC_LABEL_SET_NONE_ANDROID = 0,
+  XR_SCENE_MESH_SEMANTIC_LABEL_SET_DEFAULT_ANDROID = 1,
+  XR_SCENE_MESH_SEMANTIC_LABEL_SET_MAX_ENUM_ANDROID = 0x7FFFFFFF
+} XrSceneMeshSemanticLabelSetANDROID;
+
+typedef enum XrSceneMeshTrackingStateANDROID {
+  XR_SCENE_MESH_TRACKING_STATE_INITIALIZING_ANDROID = 0,
+  XR_SCENE_MESH_TRACKING_STATE_TRACKING_ANDROID = 1,
+  XR_SCENE_MESH_TRACKING_STATE_WAITING_ANDROID = 2,
+  XR_SCENE_MESH_TRACKING_STATE_ERROR_ANDROID = 3,
+  XR_SCENE_MESH_TRACKING_STATE_MAX_ENUM_ANDROID = 0x7FFFFFFF
+} XrSceneMeshTrackingStateANDROID;
+
+typedef enum XrSceneMeshSemanticLabelANDROID {
+  XR_SCENE_MESH_SEMANTIC_LABEL_OTHER_ANDROID = 0,
+  XR_SCENE_MESH_SEMANTIC_LABEL_FLOOR_ANDROID = 1,
+  XR_SCENE_MESH_SEMANTIC_LABEL_CEILING_ANDROID = 2,
+  XR_SCENE_MESH_SEMANTIC_LABEL_WALL_ANDROID = 3,
+  XR_SCENE_MESH_SEMANTIC_LABEL_TABLE_ANDROID = 4,
+  XR_SCENE_MESH_SEMANTIC_LABEL_MAX_ENUM_ANDROID = 0x7FFFFFFF
+} XrSceneMeshSemanticLabelANDROID;
+
+// XrSystemSceneMeshingPropertiesANDROID extends XrSystemProperties
+typedef struct XrSystemSceneMeshingPropertiesANDROID {
+  XrStructureType type;
+  void* XR_MAY_ALIAS next;
+  XrBool32 supportsSceneMeshing;
+} XrSystemSceneMeshingPropertiesANDROID;
+
+typedef struct XrSceneMeshingTrackerCreateInfoANDROID {
+  XrStructureType type;
+  const void* XR_MAY_ALIAS next;
+  XrSceneMeshSemanticLabelSetANDROID semanticLabelSet;
+  XrBool32 enableNormals;
+} XrSceneMeshingTrackerCreateInfoANDROID;
+
+typedef struct XrSceneMeshSnapshotCreateInfoANDROID {
+  XrStructureType type;
+  const void* XR_MAY_ALIAS next;
+  XrSpace baseSpace;
+  XrTime time;
+  XrBoxf boundingBox;
+} XrSceneMeshSnapshotCreateInfoANDROID;
+
+typedef struct XrSceneMeshSnapshotCreationResultANDROID {
+  XrStructureType type;
+  const void* XR_MAY_ALIAS next;
+  XrSceneMeshSnapshotANDROID snapshot;
+  XrSceneMeshTrackingStateANDROID trackingState;
+} XrSceneMeshSnapshotCreationResultANDROID;
+
+typedef struct XrSceneSubmeshStateANDROID {
+  XrStructureType type;
+  void* XR_MAY_ALIAS next;
+  XrUuid submeshId;
+  XrTime lastUpdatedTime;
+  XrPosef submeshPoseInBaseSpace;
+  XrExtent3Df bounds;
+} XrSceneSubmeshStateANDROID;
+
+typedef struct XrSceneSubmeshDataANDROID {
+  XrStructureType type;
+  const void* XR_MAY_ALIAS next;
+  XrUuid submeshId;
+  uint32_t vertexCapacityInput;
+  uint32_t vertexCountOutput;
+  XrVector3f* vertexPositions;
+  XrVector3f* vertexNormals;
+  uint8_t* vertexSemantics;
+  uint32_t indexCapacityInput;
+  uint32_t indexCountOutput;
+  uint32_t* indices;
+} XrSceneSubmeshDataANDROID;
+
+typedef XrResult(XRAPI_PTR* PFN_xrEnumerateSupportedSemanticLabelSetsANDROID)(
+    XrInstance instance,
+    XrSystemId systemId,
+    uint32_t supportedSemanticLabelSetsInputCapacity,
+    uint32_t* supportedSemanticLabelSetsOutputCount,
+    XrSceneMeshSemanticLabelSetANDROID* supportedSemanticLabelSets);
+
+typedef XrResult(XRAPI_PTR* PFN_xrCreateSceneMeshingTrackerANDROID)(
+    XrSession session,
+    const XrSceneMeshingTrackerCreateInfoANDROID* createInfo,
+    XrSceneMeshingTrackerANDROID* tracker);
+
+typedef XrResult(XRAPI_PTR* PFN_xrDestroySceneMeshingTrackerANDROID)(
+    XrSceneMeshingTrackerANDROID tracker);
+
+typedef XrResult(XRAPI_PTR* PFN_xrCreateSceneMeshSnapshotANDROID)(
+    XrSceneMeshingTrackerANDROID tracker,
+    const XrSceneMeshSnapshotCreateInfoANDROID* createInfo,
+    XrSceneMeshSnapshotCreationResultANDROID* outSnapshotCreationResult);
+
+typedef XrResult(XRAPI_PTR* PFN_xrDestroySceneMeshSnapshotANDROID)(
+    XrSceneMeshSnapshotANDROID snapshot);
+
+typedef XrResult(XRAPI_PTR* PFN_xrGetAllSubmeshStatesANDROID)(
+    XrSceneMeshSnapshotANDROID snapshot,
+    uint32_t submeshStateCapacityInput,
+    uint32_t* submeshStateCountOutput,
+    XrSceneSubmeshStateANDROID* submeshStates);
+
+typedef XrResult(XRAPI_PTR* PFN_xrGetSubmeshDataANDROID)(
+    XrSceneMeshSnapshotANDROID snapshot,
+    uint32_t submeshDataCount,
+    XrSceneSubmeshDataANDROID* inoutSubmeshData);
+#endif  // XR_ANDROID_scene_meshing
+
+#ifndef XR_ANDROID_light_estimation_cubemap
+#define XR_ANDROID_light_estimation_cubemap 1
+#define XR_ANDROID_light_estimation_cubemap_SPEC_VERSION 1
+#define XR_ANDROID_LIGHT_ESTIMATION_CUBEMAP_EXTENSION_NAME "XR_ANDROID_light_estimation_cubemap"
+
+#define XR_TYPE_SYSTEM_CUBEMAP_LIGHT_ESTIMATION_PROPERTIES_ANDROID ((XrStructureType) 1000721000U)
+#define XR_TYPE_CUBEMAP_LIGHT_ESTIMATOR_CREATE_INFO_ANDROID ((XrStructureType) 1000721001U)
+#define XR_TYPE_CUBEMAP_LIGHTING_DATA_ANDROID ((XrStructureType) 1000721002U)
+
+typedef enum XrCubemapLightingColorFormatANDROID {
+  XR_CUBEMAP_LIGHTING_COLOR_FORMAT_R32G32B32_SFLOAT_ANDROID = 1,
+  XR_CUBEMAP_LIGHTING_COLOR_FORMAT_R32G32B32A32_SFLOAT_ANDROID = 2,
+  XR_CUBEMAP_LIGHTING_COLOR_FORMAT_R16G16B16A16_SFLOAT_ANDROID = 3,
+  XR_CUBEMAP_LIGHTING_COLOR_FORMAT_MAX_ENUM_ANDROID = 0x7FFFFFFF
+} XrCubemapLightingColorFormatANDROID;
+
+typedef struct XrSystemCubemapLightEstimationPropertiesANDROID {
+  XrStructureType type;
+  void* XR_MAY_ALIAS next;
+  XrBool32 supportsCubemapLightEstimation;
+} XrSystemCubemapLightEstimationPropertiesANDROID;
+
+typedef struct XrCubemapLightEstimatorCreateInfoANDROID {
+  XrStructureType type;
+  const void* XR_MAY_ALIAS next;
+  uint32_t cubemapResolution;
+  XrCubemapLightingColorFormatANDROID colorFormat;
+  XrBool32 reproject;
+} XrCubemapLightEstimatorCreateInfoANDROID;
+
+typedef struct XrCubemapLightingDataANDROID {
+  XrStructureType type;
+  void* XR_MAY_ALIAS next;
+  XrLightEstimateStateANDROID state;
+  uint32_t imageBufferSize;
+  uint8_t* rightImageBuffer;
+  uint8_t* leftImageBuffer;
+  uint8_t* topImageBuffer;
+  uint8_t* bottomImageBuffer;
+  uint8_t* frontImageBuffer;
+  uint8_t* backImageBuffer;
+  XrQuaternionf rotation;
+} XrCubemapLightingDataANDROID;
+
+typedef XrResult (XRAPI_PTR *PFN_xrEnumerateCubemapLightingResolutionsANDROID)(
+    XrInstance                                  instance,
+    XrSystemId                                  systemId,
+    uint32_t                                    resolutionCapacityInput,
+    uint32_t*                                   resolutionCountOutput,
+    uint32_t*                                   resolutions);
+
+typedef XrResult (XRAPI_PTR *PFN_xrEnumerateCubemapLightingColorFormatsANDROID)(
+    XrInstance                                  instance,
+    XrSystemId                                  systemId,
+    uint32_t                                    colorFormatCapacityInput,
+    uint32_t*                                   colorFormatCountOutput,
+    XrCubemapLightingColorFormatANDROID*        colorFormats);
+
+#endif  // XR_ANDROID_light_estimation_cubemap
 
 #endif  // THIRD_PARTY_OPENXR_DEV_XR_ANDROID_H_

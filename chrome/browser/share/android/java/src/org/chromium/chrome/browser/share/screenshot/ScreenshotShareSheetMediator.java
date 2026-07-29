@@ -4,11 +4,13 @@
 
 package org.chromium.chrome.browser.share.screenshot;
 
+
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.net.Uri;
 
 import org.chromium.base.Callback;
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.share.ChromeShareExtras;
 import org.chromium.chrome.browser.share.screenshot.ScreenshotShareSheetViewProperties.NoArgOperation;
@@ -27,6 +29,7 @@ import java.util.Locale;
  * ScreenshotShareSheetMediator is in charge of calculating and setting values for
  * ScreenshotShareSheetViewProperties.
  */
+@NullMarked
 class ScreenshotShareSheetMediator {
     private static final String sIsoDateFormat = "yyyy-MM-dd";
 
@@ -79,16 +82,10 @@ class ScreenshotShareSheetMediator {
     public void performNoArgOperation(
             @ScreenshotShareSheetViewProperties.NoArgOperation int operation) {
         if (NoArgOperation.SHARE == operation) {
-            ScreenshotShareSheetMetrics.logScreenshotAction(
-                    ScreenshotShareSheetMetrics.ScreenshotShareSheetAction.SHARE);
             share();
         } else if (NoArgOperation.SAVE == operation) {
-            ScreenshotShareSheetMetrics.logScreenshotAction(
-                    ScreenshotShareSheetMetrics.ScreenshotShareSheetAction.SAVE);
             mSaveRunnable.run();
         } else if (NoArgOperation.DELETE == operation) {
-            ScreenshotShareSheetMetrics.logScreenshotAction(
-                    ScreenshotShareSheetMetrics.ScreenshotShareSheetAction.DELETE);
             mCloseDialogRunnable.run();
         }
     }
@@ -103,14 +100,16 @@ class ScreenshotShareSheetMediator {
         String title = mContext.getString(R.string.screenshot_title_for_share, isoDate);
         Callback<Uri> callback =
                 (bitmapUri) -> {
+                    String type =
+                            mWindowAndroid
+                                    .getApplicationContext()
+                                    .getContentResolver()
+                                    .getType(bitmapUri);
+                    assert type != null;
                     ShareParams params =
                             new ShareParams.Builder(mWindowAndroid, title, /* url= */ "")
                                     .setSingleImageUri(bitmapUri)
-                                    .setFileContentType(
-                                            mWindowAndroid
-                                                    .getApplicationContext()
-                                                    .getContentResolver()
-                                                    .getType(bitmapUri))
+                                    .setFileContentType(type)
                                     .build();
 
                     mChromeOptionShareCallback.showThirdPartyShareSheet(

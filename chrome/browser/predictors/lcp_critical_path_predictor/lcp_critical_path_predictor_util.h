@@ -30,6 +30,12 @@ struct LastVisitTimeCompare {
 }  // namespace lcpp
 struct PreconnectPrediction;
 
+bool RecordLcpElementLocatorHistogramForTesting(
+    int sliding_window_size,
+    int max_histogram_buckets,
+    const std::string& lcp_element_locator,
+    LcppStat& stat);
+
 // Converts LcppStat to LCPCriticalPathPredictorNavigationTimeHint
 // so that it can be passed to the renderer via the navigation handle.
 std::optional<blink::mojom::LCPCriticalPathPredictorNavigationTimeHint>
@@ -56,8 +62,8 @@ ConvertLcppStringFrequencyStatDataToConfidenceStringPairs(
 // data, it returns an empty vector.
 std::vector<std::string> PredictLcpElementLocators(
     const predictors::LcpElementLocatorStat& stat,
-    const double confidence_threshold,
-    const double total_frequency_threshold);
+    const std::optional<double>& confidence_threshold = std::nullopt,
+    const std::optional<double>& total_frequency_threshold = std::nullopt);
 
 // Returns possible fonts from past loads for a given `stat`.
 // The returned urls are ordered by descending frequency (the most
@@ -69,7 +75,7 @@ std::vector<GURL> PredictFetchedFontUrls(const LcppStat& stat);
 // The returned origins are ordered by descending frequency (the most
 // frequent one comes first). If there is no data, it returns an empty
 // vector.
-std::vector<GURL> PredictPreconnectableOrigins(const LcppStat& stat);
+std::vector<url::Origin> PredictPreconnectableOrigins(const LcppStat& stat);
 
 // Returns possible subresource URLs from past loads for a given `stat`.
 // The returned URLs are ordered by descending frequency (the most
@@ -102,10 +108,12 @@ struct LcppDataInputs {
   // data of the LCP candidate that won.
   //
   // a locator of the LCP element.
-  std::string lcp_element_locator;
+  std::optional<std::string> lcp_element_locator;
+  std::optional<std::string> lcp_element_locator_image;
+
   // async script urls of the latest LCP candidate element.
   std::vector<GURL> lcp_influencer_scripts;
-  std::vector<GURL> preconnect_origins;
+  std::set<url::Origin> preconnect_origins;
 
   // Fetched font URLs.
   // Unlike data above, the field will be updated per font fetch.
@@ -134,6 +142,9 @@ struct LcppDataInputs {
   // URLs of preloaded but not actually used resources.
   std::vector<GURL> unused_preload_resources;
 };
+
+const std::optional<std::string>& GetLcpElementLocatorForCriticalPathPredictor(
+    const LcppDataInputs& inputs);
 
 bool UpdateLcppStatWithLcppDataInputs(const LoadingPredictorConfig& config,
                                       const LcppDataInputs& inputs,

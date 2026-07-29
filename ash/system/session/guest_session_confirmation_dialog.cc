@@ -66,15 +66,13 @@ void GuestSessionConfirmationDialog::Show() {
 
   auto bubble = views::BubbleDialogModelHost::CreateModal(
       std::move(dialog_model), ui::mojom::ModalType::kSystem);
-  bubble->SetOwnedByWidget(true);
+  bubble->SetOwnedByWidget(views::WidgetDelegate::OwnedByWidgetPassKey());
   views::Widget* widget =
       views::DialogDelegate::CreateDialogWidget(std::move(bubble),
                                                 /*context=*/nullptr,
                                                 /*parent=*/nullptr);
   widget->Show();
 
-  // TODO(crbug.com/1016828): Remove/update this after the dialog behavior on
-  // Chrome OS is defined.
   WindowBackdrop::Get(widget->GetNativeWindow())
       ->SetBackdropType(WindowBackdrop::BackdropType::kSemiOpaque);
 }

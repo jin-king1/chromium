@@ -13,6 +13,7 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
+#include "components/server_certificate_database/server_certificate_database.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "base/metrics/histogram_functions.h"
@@ -22,6 +23,20 @@
 #endif
 
 namespace net {
+
+namespace {
+
+#if BUILDFLAG(IS_CHROMEOS)
+bool g_disable_nss_cert_migration_for_testing = false;
+#endif
+
+}  // namespace
+
+#if BUILDFLAG(IS_CHROMEOS)
+// TODO(crbug.com/390333881): The NSS migration code is now deprecated and
+// disabled by default. Remove completely after a few milestones.
+BASE_FEATURE(kEnableNSSCertMigration, base::FEATURE_DISABLED_BY_DEFAULT);
+#endif
 
 #if BUILDFLAG(IS_CHROMEOS)
 ServerCertificateDatabaseService::ServerCertificateDatabaseService(
@@ -38,9 +53,10 @@ ServerCertificateDatabaseService::ServerCertificateDatabaseService(
 #endif
 {
   server_cert_database_ = base::SequenceBound<net::ServerCertificateDatabase>(
-      base::ThreadPool::CreateSequencedTaskRunner(
+      base::ThreadPool::CreateSequencedTaskRunnerForResource(
           {base::MayBlock(), base::TaskPriority::USER_BLOCKING,
-           base::TaskShutdownBehavior::BLOCK_SHUTDOWN}),
+           base::TaskShutdownBehavior::BLOCK_SHUTDOWN},
+          profile_path_.Append(kServerCertificateDatabaseName)),
       profile_path_);
 }
 
@@ -68,8 +84,10 @@ void ServerCertificateDatabaseService::GetAllCertificates(
   // processed once the migration is done.
   // TODO(crbug.com/390333881): Remove the migration code once sufficient time
   // has passed after the feature is launched.
-  if (prefs_->GetInteger(prefs::kNSSCertsMigratedToServerCertDb) ==
-      static_cast<int>(NSSMigrationResultPref::kNotMigrated)) {
+  if (!g_disable_nss_cert_migration_for_testing &&
+      base::FeatureList::IsEnabled(kEnableNSSCertMigration) &&
+      prefs_->GetInteger(prefs::kNSSCertsMigratedToServerCertDb) ==
+          static_cast<int>(NSSMigrationResultPref::kNotMigrated)) {
     if (!nss_migrator_) {
       DVLOG(1) << "starting migration for profile "
                << profile_path_.AsUTF8Unsafe();
@@ -110,9 +128,6 @@ void ServerCertificateDatabaseService::NSSMigrationComplete(
   }
   base::UmaHistogramEnumeration("Net.CertVerifier.NSSCertMigrationResult",
                                 result_for_histogram);
-  base::UmaHistogramCounts100(
-      "Net.CertVerifier.NSSCertMigrationQueuedRequestsWhenFinished",
-      get_certificates_pending_migration_.size());
 
   prefs_->SetInteger(
       prefs::kNSSCertsMigratedToServerCertDb,
@@ -176,6 +191,10 @@ void ServerCertificateDatabaseService::RegisterProfilePrefs(
       prefs::kNSSCertsMigratedToServerCertDb,
       static_cast<int>(net::ServerCertificateDatabaseService::
                            NSSMigrationResultPref::kNotMigrated));
+}
+
+void ServerCertificateDatabaseService::DisableNSSCertMigrationForTesting() {
+  g_disable_nss_cert_migration_for_testing = true;
 }
 #endif
 

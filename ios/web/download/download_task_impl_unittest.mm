@@ -12,7 +12,9 @@
 #import "base/task/sequenced_task_runner.h"
 #import "base/task/task_traits.h"
 #import "base/task/thread_pool.h"
+#import "base/test/scoped_feature_list.h"
 #import "base/test/task_environment.h"
+#import "ios/web/common/features.h"
 #import "ios/web/public/test/fakes/fake_web_state.h"
 #import "testing/gtest/include/gtest/gtest.h"
 #import "testing/gtest_mac.h"
@@ -29,6 +31,10 @@ NSString* const kOrigninatingHost = @"host.test";
 const char kContentDisposition[] = "attachment; filename=file.test";
 const char kMimeType[] = "application/pdf";
 const base::FilePath::CharType kTestFileName[] = FILE_PATH_LITERAL("file.test");
+const base::FilePath::CharType kNoExtensionFileName[] =
+    FILE_PATH_LITERAL("file");
+const base::FilePath::CharType kWithExtensionFileName[] =
+    FILE_PATH_LITERAL("file.pdf");
 NSString* const kHttpMethod = @"POST";
 
 }  //  namespace
@@ -121,6 +127,69 @@ TEST_F(DownloadTaskImplTest, RedirectURL) {
   task_->Redirect(GURL(kUrlRedirected));
   EXPECT_EQ(kUrl, task_->GetOriginalUrl());
   EXPECT_EQ(kUrlRedirected, task_->GetRedirectedUrl());
+}
+
+// Tests DownloadTaskImpl GenerateFileName with no extension and no content
+// disposition.
+TEST_F(DownloadTaskImplTest, GenerateFileNameTest) {
+  task_ = std::make_unique<FakeDownloadTaskImpl>(
+      &web_state_, GURL(std::string(kUrl) + kNoExtensionFileName),
+      kOrigninatingHost, kHttpMethod, "",
+      /*total_bytes=*/-1, kMimeType, [[NSUUID UUID] UUIDString],
+      base::ThreadPool::CreateSequencedTaskRunner(
+          {base::MayBlock(), base::TaskPriority::USER_BLOCKING}));
+  EXPECT_EQ(kMimeType, task_->GetMimeType());
+  EXPECT_EQ(kMimeType, task_->GetOriginalMimeType());
+  EXPECT_EQ(base::FilePath(kWithExtensionFileName), task_->GenerateFileName());
+}
+
+// Tests that DownloadTaskImpl::GenerateFileName sanitizes NFC filenames to NFD
+// when the feature is enabled.
+TEST_F(DownloadTaskImplTest, GenerateFileNameSanitization) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      web::features::kIOSDownloadSanitizeFilename);
+
+  // NFC: "ä.txt" (U+00E4) -> \xC3\xA4
+  std::string nfc_filename = "\xC3\xA4.txt";
+  std::string content_disposition =
+      "attachment; filename=\"" + nfc_filename + "\"";
+
+  // NFD: "ä.txt" (U+0061 U+0308) -> \x61\xCC\x88
+  std::string nfd_filename = "a\xCC\x88.txt";
+
+  task_ = std::make_unique<FakeDownloadTaskImpl>(
+      &web_state_, GURL(kUrl), kOrigninatingHost, kHttpMethod,
+      content_disposition,
+      /*total_bytes=*/-1, kMimeType, [[NSUUID UUID] UUIDString],
+      base::ThreadPool::CreateSequencedTaskRunner(
+          {base::MayBlock(), base::TaskPriority::USER_BLOCKING}));
+
+  // Verify that the generated filename matches the NFD version.
+  EXPECT_EQ(base::FilePath(nfd_filename), task_->GenerateFileName());
+}
+
+// Tests that DownloadTaskImpl::GenerateFileName preserves NFC filenames when
+// the feature is disabled.
+TEST_F(DownloadTaskImplTest, GenerateFileNameNoSanitization) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(
+      web::features::kIOSDownloadSanitizeFilename);
+
+  // NFC: "ä.txt" (U+00E4) -> \xC3\xA4
+  std::string nfc_filename = "\xC3\xA4.txt";
+  std::string content_disposition =
+      "attachment; filename=\"" + nfc_filename + "\"";
+
+  task_ = std::make_unique<FakeDownloadTaskImpl>(
+      &web_state_, GURL(kUrl), kOrigninatingHost, kHttpMethod,
+      content_disposition,
+      /*total_bytes=*/-1, kMimeType, [[NSUUID UUID] UUIDString],
+      base::ThreadPool::CreateSequencedTaskRunner(
+          {base::MayBlock(), base::TaskPriority::USER_BLOCKING}));
+
+  // Verify that the generated filename remains NFC when feature is disabled.
+  EXPECT_EQ(base::FilePath(nfc_filename), task_->GenerateFileName());
 }
 
 }  // namespace web

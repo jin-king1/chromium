@@ -10,11 +10,11 @@
 #include <bitset>
 #include <limits>
 #include <memory>
+#include <utility>
 
 #include "base/numerics/angle_conversions.h"
 #include "base/time/time.h"
 #include "base/trace_event/typed_macros.h"
-#include "base/types/cxx23_to_underlying.h"
 #include "build/build_config.h"
 #include "third_party/blink/public/common/input/web_input_event.h"
 #include "third_party/blink/public/common/input/web_mouse_wheel_event.h"
@@ -68,6 +68,8 @@ WebInputEvent::Type ToWebTouchEventType(MotionEvent::Action action) {
     case MotionEvent::Action::HOVER_MOVE:
     case MotionEvent::Action::BUTTON_PRESS:
     case MotionEvent::Action::BUTTON_RELEASE:
+    case MotionEvent::Action::OUTSIDE:
+    case MotionEvent::Action::SCROLL:
       break;
   }
   NOTREACHED() << "Invalid MotionEvent::Action = " << action;
@@ -101,6 +103,8 @@ WebTouchPoint::State ToWebTouchPointState(const MotionEvent& event,
     case MotionEvent::Action::HOVER_MOVE:
     case MotionEvent::Action::BUTTON_PRESS:
     case MotionEvent::Action::BUTTON_RELEASE:
+    case MotionEvent::Action::OUTSIDE:
+    case MotionEvent::Action::SCROLL:
       break;
   }
   NOTREACHED() << "Invalid MotionEvent::Action.";
@@ -413,12 +417,21 @@ WebGestureEvent CreateWebGestureEvent(const GestureEventDetails& details,
       gesture.SetType(WebInputEvent::Type::kGestureScrollUpdate);
       gesture.data.scroll_update.delta_x = IfNanUseMaxFloat(details.scroll_x());
       gesture.data.scroll_update.delta_y = IfNanUseMaxFloat(details.scroll_y());
+      gesture.data.scroll_update.delta_x_unconstrained =
+          IfNanUseMaxFloat(details.scroll_x_unconstrained());
+      gesture.data.scroll_update.delta_y_unconstrained =
+          IfNanUseMaxFloat(details.scroll_y_unconstrained());
       gesture.data.scroll_update.delta_units = details.scroll_update_units();
       gesture.data.scroll_update.inertial_phase =
           WebGestureEvent::InertialPhaseState::kNonMomentum;
       break;
     case EventType::kGestureScrollEnd:
       gesture.SetType(WebInputEvent::Type::kGestureScrollEnd);
+      gesture.data.scroll_end.delta_x_compensated =
+          IfNanUseMaxFloat(details.scroll_x_compensated());
+      gesture.data.scroll_end.delta_y_compensated =
+          IfNanUseMaxFloat(details.scroll_y_compensated());
+      gesture.data.scroll_end.delta_units = details.scroll_end_units();
       gesture.data.scroll_end.inertial_phase =
           WebGestureEvent::InertialPhaseState::kNonMomentum;
       break;
@@ -468,7 +481,7 @@ WebGestureEvent CreateWebGestureEvent(const GestureEventDetails& details,
       break;
     default:
       NOTREACHED() << "EventType provided wasn't a valid gesture event: "
-                   << base::to_underlying(details.type());
+                   << std::to_underlying(details.type());
   }
 
   return gesture;
@@ -552,6 +565,8 @@ std::unique_ptr<blink::WebInputEvent> TranslateAndScaleWebInputEvent(
                 ui::ScrollGranularity::kScrollByPrecisePixel) {
           gesture_event->data.scroll_update.delta_x *= scale;
           gesture_event->data.scroll_update.delta_y *= scale;
+          gesture_event->data.scroll_update.delta_x_unconstrained *= scale;
+          gesture_event->data.scroll_update.delta_y_unconstrained *= scale;
         }
         break;
       case blink::WebInputEvent::Type::kGestureScrollBegin:
@@ -836,7 +851,18 @@ std::unique_ptr<WebGestureEvent> CreateWebGestureEventFromGestureEventAndroid(
   // event's fields better when extended to handle more cases.
   web_event->SetPositionInWidget(event.location());
   web_event->SetPositionInScreen(event.screen_location());
-  web_event->SetSourceDevice(WebGestureDevice::kTouchscreen);
+  WebGestureDevice device_type = WebGestureDevice::kUninitialized;
+  switch (event.source()) {
+    case ui::GestureDeviceType::DEVICE_TOUCHPAD:
+      device_type = WebGestureDevice::kTouchpad;
+      break;
+    case ui::GestureDeviceType::DEVICE_TOUCHSCREEN:
+      device_type = WebGestureDevice::kTouchscreen;
+      break;
+    default:
+      NOTREACHED() << "Unexpected gesture device type";
+  }
+  web_event->SetSourceDevice(device_type);
   if (event.synthetic_scroll())
     web_event->SetSourceDevice(WebGestureDevice::kSyntheticAutoscroll);
   if (event_type == WebInputEvent::Type::kGesturePinchUpdate) {
@@ -848,6 +874,8 @@ std::unique_ptr<WebGestureEvent> CreateWebGestureEventFromGestureEventAndroid(
   } else if (event_type == WebInputEvent::Type::kGestureScrollUpdate) {
     web_event->data.scroll_update.delta_x = event.delta_x();
     web_event->data.scroll_update.delta_y = event.delta_y();
+    web_event->data.scroll_update.delta_x_unconstrained = event.delta_x();
+    web_event->data.scroll_update.delta_y_unconstrained = event.delta_y();
   } else if (event_type == WebInputEvent::Type::kGestureFlingStart) {
     web_event->data.fling_start.velocity_x = event.velocity_x();
     web_event->data.fling_start.velocity_y = event.velocity_y();

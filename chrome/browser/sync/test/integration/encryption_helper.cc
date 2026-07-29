@@ -9,6 +9,7 @@
 
 #include "base/base64.h"
 #include "base/functional/bind.h"
+#include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "components/sync/base/passphrase_enums.h"
 #include "components/sync/service/sync_client.h"
@@ -85,8 +86,8 @@ void SetupFakeTrustedVaultPages(
   test_server->RegisterRequestHandler(base::BindRepeating(
       &HttpServerRedirect,
       /*from_prefix=*/
-      GaiaUrls::GetInstance()
-          ->signin_chrome_sync_keys_recoverability_degraded_url(),
+      GaiaUrls::GetInstance()->SigninChromeSyncKeysRecoverabilityDegradedUrl(
+          /*account_index=*/0),
       /*to=*/recoverability_url));
 
   const GURL retrieval_url = GetFakeTrustedVaultRetrievalURL(
@@ -94,7 +95,8 @@ void SetupFakeTrustedVaultPages(
   test_server->RegisterRequestHandler(base::BindRepeating(
       &HttpServerRedirect,
       /*from_prefix=*/
-      GaiaUrls::GetInstance()->signin_chrome_sync_keys_retrieval_url(),
+      GaiaUrls::GetInstance()->SigninChromeSyncKeysRetrievalUrl(
+          /*account_index=*/0),
       /*to=*/retrieval_url));
 }
 
@@ -166,6 +168,16 @@ bool PassphraseRequiredChecker::IsExitConditionSatisfied(std::ostream* os) {
          service()->GetUserSettings()->IsPassphraseRequired();
 }
 
+KeystoreKeysRequiredChecker::KeystoreKeysRequiredChecker(
+    syncer::SyncServiceImpl* service)
+    : SingleClientStatusChangeChecker(service) {}
+
+bool KeystoreKeysRequiredChecker::IsExitConditionSatisfied(std::ostream* os) {
+  *os << "Checking whether keystore keys are required";
+  return service()->IsEngineInitialized() &&
+         service()->GetUserSettings()->IsKeystoreKeyRequiredForTesting();
+}
+
 PassphraseAcceptedChecker::PassphraseAcceptedChecker(
     syncer::SyncServiceImpl* service)
     : SingleClientStatusChangeChecker(service) {}
@@ -232,7 +244,8 @@ bool TrustedVaultKeysChangedStateChecker::IsExitConditionSatisfied(
   return keys_changed_;
 }
 
-void TrustedVaultKeysChangedStateChecker::OnTrustedVaultKeysChanged() {
+void TrustedVaultKeysChangedStateChecker::OnTrustedVaultKeysChanged(
+    std::optional<trusted_vault::TrustedVaultUserActionTriggerForUMA> trigger) {
   keys_changed_ = true;
   CheckExitCondition();
 }

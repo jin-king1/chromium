@@ -51,11 +51,6 @@ class AsyncCheckTracker
     virtual void OnAsyncSafeBrowsingCheckTrackerDestructed() {}
   };
 
-  static AsyncCheckTracker* GetOrCreateForWebContents(
-      content::WebContents* web_contents,
-      scoped_refptr<BaseUIManager> ui_manager,
-      bool should_sync_checker_check_allowlist);
-
   // Returns true if the main frame load is pending (i.e. the navigation has not
   // yet committed). Note that a main frame hit may not be pending, eg. 1)
   // client side detection happens after the load is committed, or 2) async Safe
@@ -69,7 +64,8 @@ class AsyncCheckTracker
   static bool IsMainPageLoadPending(
       const security_interstitials::UnsafeResourceLocator& rfh_locator,
       const std::optional<int64_t>& navigation_id,
-      safe_browsing::SBThreatType threat_type);
+      safe_browsing::SBThreatType threat_type,
+      safe_browsing::ThreatSource threat_source);
 
   // Returns the timestamp when the navigation associated with `resource` is
   // committed. Returns nullopt if the navigation has not committed.

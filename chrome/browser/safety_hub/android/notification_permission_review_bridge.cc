@@ -47,12 +47,10 @@ std::vector<NotificationPermissions> GetNotificationPermissions(
   NotificationPermissionsReviewService* service =
       NotificationPermissionsReviewServiceFactory::GetForProfile(profile);
   CHECK(service);
-  std::unique_ptr<SafetyHubService::Result> result =
+  std::unique_ptr<NotificationPermissionsReviewResult> result =
       service->GetNotificationPermissions();
 
-  return (static_cast<NotificationPermissionsReviewService::
-                          NotificationPermissionsResult*>(result.get()))
-      ->GetSortedNotificationPermissions();
+  return result->GetSortedNotificationPermissions();
 }
 
 void IgnoreOriginForNotificationPermissionReview(Profile* profile,
@@ -109,7 +107,7 @@ static void
 JNI_NotificationPermissionReviewBridge_IgnoreOriginForNotificationPermissionReview(
     JNIEnv* env,
     Profile* profile,
-    std::string& origin) {
+    const std::string& origin) {
   IgnoreOriginForNotificationPermissionReview(profile, origin);
 }
 
@@ -117,7 +115,7 @@ static void
 JNI_NotificationPermissionReviewBridge_UndoIgnoreOriginForNotificationPermissionReview(
     JNIEnv* env,
     Profile* profile,
-    std::string& origin) {
+    const std::string& origin) {
   UndoIgnoreOriginForNotificationPermissionReview(profile, origin);
 }
 
@@ -125,7 +123,7 @@ static void
 JNI_NotificationPermissionReviewBridge_AllowNotificationPermissionForOrigin(
     JNIEnv* env,
     Profile* profile,
-    std::string& origin) {
+    const std::string& origin) {
   AllowNotificationPermissionForOrigin(profile, origin);
 }
 
@@ -133,6 +131,9 @@ static void
 JNI_NotificationPermissionReviewBridge_ResetNotificationPermissionForOrigin(
     JNIEnv* env,
     Profile* profile,
-    std::string& origin) {
+    const std::string& origin) {
   ResetNotificationPermissionForOrigin(profile, origin);
 }
+
+DEFINE_JNI(NotificationPermissionReviewBridge)
+DEFINE_JNI(NotificationPermissions)

@@ -5,20 +5,33 @@
 #include "chrome/browser/page_content_annotations/page_content_extraction_service_factory.h"
 
 #include "base/no_destructor.h"
+#include "build/build_config.h"
 #include "chrome/browser/app_mode/app_mode_utils.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/page_content_annotations/page_content_extraction_service.h"
+#include "chrome/browser/feature_engagement/tracker_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_attributes_storage.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "components/keyed_service/core/keyed_service.h"
+#include "components/page_content_annotations/content/page_content_extraction_service.h"
 #include "components/page_content_annotations/core/page_content_annotations_features.h"
 
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/page_content_annotations/android/page_content_extraction_tab_model_observer_android.h"
+#endif
+
+#if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #endif
 
 namespace page_content_annotations {
+
+namespace {
+#if BUILDFLAG(IS_ANDROID)
+const char kPageContentExtractionTabModelObserverAndroidKey[] =
+    "page_content_extraction_tab_model_observer_android";
+#endif
+}  // namespace
 
 // static
 PageContentExtractionService*
@@ -40,7 +53,9 @@ PageContentExtractionServiceFactory::PageContentExtractionServiceFactory()
           "PageContentExtractionService",
           ProfileSelections::Builder()
               .WithRegular(ProfileSelection::kOriginalOnly)
-              .Build()) {}
+              .Build()) {
+  DependsOn(feature_engagement::TrackerFactory::GetInstance());
+}
 
 PageContentExtractionServiceFactory::~PageContentExtractionServiceFactory() =
     default;
@@ -53,15 +68,28 @@ PageContentExtractionServiceFactory::BuildServiceInstanceForBrowserContext(
     return nullptr;
   }
 
-  return std::make_unique<PageContentExtractionService>();
+  Profile* profile = Profile::FromBrowserContext(context);
+  feature_engagement::Tracker* tracker = nullptr;
+  if (base::FeatureList::IsEnabled(features::kPageContentCache)) {
+    tracker = feature_engagement::TrackerFactory::GetForBrowserContext(profile);
+  }
+  auto service = std::make_unique<PageContentExtractionService>(
+      g_browser_process->os_crypt_async(), profile->GetPath(), tracker);
+
+#if BUILDFLAG(IS_ANDROID)
+  if (base::FeatureList::IsEnabled(features::kPageContentCache)) {
+    auto observer =
+        std::make_unique<PageContentExtractionTabModelObserverAndroid>(
+            profile, service.get());
+    service->SetUserData(kPageContentExtractionTabModelObserverAndroidKey,
+                         std::move(observer));
+  }
+#endif
+  return service;
 }
 
 bool PageContentExtractionServiceFactory::ServiceIsCreatedWithBrowserContext()
     const {
-  return true;
-}
-
-bool PageContentExtractionServiceFactory::ServiceIsNULLWhileTesting() const {
   return true;
 }
 

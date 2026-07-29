@@ -63,13 +63,15 @@ std::vector<Manifest::ImageResource> ToImageResource(
 
 KURL FindBestIcon(std::vector<Manifest::ImageResource> image_resources,
                   const gfx::Size& icon_size) {
-  return KURL(ManifestIconSelector::FindBestMatchingIcon(
-      image_resources,
-      /* ideal_icon_height_in_px= */ icon_size.height(),
-      /* minimum_icon_size_in_px= */ 0,
-      /* max_width_to_height_ratio= */ icon_size.width() * 1.0f /
-          icon_size.height(),
-      mojom::ManifestImageResource_Purpose::ANY));
+  ManifestIconSelectorParams params;
+  params.ideal_icon_size_in_px = icon_size.height();
+  params.minimum_icon_size_in_px = 0;
+  params.max_width_to_height_ratio =
+      static_cast<float>(icon_size.width()) / icon_size.height();
+  params.purpose = mojom::ManifestImageResource_Purpose::ANY;
+  std::optional<ManifestIconSelectorResult> result =
+      ManifestIconSelector::FindBestMatchingIcon(image_resources, params);
+  return result ? KURL(result->icon_url) : KURL();
 }
 
 }  // namespace
@@ -91,9 +93,9 @@ void ContentIndexIconLoader::Start(
   Vector<SkBitmap>* icons_ptr = icons.get();
   auto barrier_closure = base::BarrierClosure(
       icon_sizes.size(),
-      WTF::BindOnce(&ContentIndexIconLoader::DidGetIcons, WrapPersistent(this),
-                    std::move(description), std::move(icons),
-                    std::move(callback)));
+      blink::BindOnce(&ContentIndexIconLoader::DidGetIcons,
+                      WrapPersistent(this), std::move(description),
+                      std::move(icons), std::move(callback)));
 
   for (const auto& icon_size : icon_sizes) {
     // TODO(crbug.com/973844): The same `src` may be chosen more than once.
@@ -107,14 +109,14 @@ void ContentIndexIconLoader::Start(
     // |icons_ptr| is safe to use since it is owned by |barrier_closure|.
     FetchIcon(
         execution_context, icon_url, icon_size, threaded_icon_loader,
-        WTF::BindOnce(
+        blink::BindOnce(
             [](base::OnceClosure done_closure, Vector<SkBitmap>* icons_ptr,
                ThreadedIconLoader* icon_loader, SkBitmap icon,
                double resize_scale) {
               icons_ptr->push_back(std::move(icon));
               std::move(done_closure).Run();
             },
-            barrier_closure, WTF::Unretained(icons_ptr),
+            barrier_closure, Unretained(icons_ptr),
             // Pass |threaded_icon_loader| to the callback to make sure it
             // doesn't get destroyed.
             WrapPersistent(threaded_icon_loader)));

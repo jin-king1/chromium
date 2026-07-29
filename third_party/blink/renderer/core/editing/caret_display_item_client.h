@@ -30,6 +30,7 @@
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/editing/forward.h"
 #include "third_party/blink/renderer/core/layout/geometry/physical_rect.h"
+#include "third_party/blink/renderer/core/layout/inline/caret_rect.h"
 #include "third_party/blink/renderer/platform/graphics/color.h"
 #include "third_party/blink/renderer/platform/graphics/paint/display_item.h"
 #include "third_party/blink/renderer/platform/graphics/paint/display_item_client.h"
@@ -41,6 +42,7 @@ namespace blink {
 
 class GraphicsContext;
 class LayoutBlock;
+class Node;
 class PhysicalBoxFragment;
 struct PaintInvalidatorContext;
 
@@ -69,11 +71,18 @@ class CORE_EXPORT CaretDisplayItemClient final
   // Called during pre-paint tree walk to invalidate |previous_layout_block_|.
   void EnsureInvalidationOfPreviousLayoutBlock();
 
+  // Invalidate paint if a cc property tree update is not available.
+  void SetNeedsNonCompositedPaintInvalidation();
+
+  bool IsInCanvasSubtree() const { return is_in_canvas_subtree_; }
+
   bool ShouldPaintCaret(const LayoutBlock& block) const {
     return &block == layout_block_;
   }
 
   bool ShouldPaintCaret(const PhysicalBoxFragment& box_fragment) const;
+
+  const LayoutBlock* GetLayoutBlock() const { return layout_block_; }
 
   void PaintCaret(GraphicsContext&,
                   const PhysicalOffset& paint_offset,
@@ -102,7 +111,8 @@ class CORE_EXPORT CaretDisplayItemClient final
   // PositionWithAffinity version if possible.
   // A position in HTMLTextFromControlElement is a typical example.
   static CaretRectAndPainterBlock ComputeCaretRectAndPainterBlock(
-      const PositionWithAffinity& caret_position);
+      const PositionWithAffinity& caret_position,
+      CaretShape caret_shape);
 
   void InvalidatePaintInCurrentLayoutBlock(const PaintInvalidatorContext&);
   void InvalidatePaintInPreviousLayoutBlock(const PaintInvalidatorContext&);
@@ -120,8 +130,15 @@ class CORE_EXPORT CaretDisplayItemClient final
 
   WeakMember<const PhysicalBoxFragment> box_fragment_;
 
+  // The text node at the current block-caret position.
+  // It is used to invalidate its LayoutObject when the caret moves so the
+  // character is repainted with the second value of caret-color if it's
+  // non-auto.
+  WeakMember<Node> block_caret_anchor_;
+
   bool is_active_ = false;
   bool needs_paint_invalidation_ = false;
+  bool is_in_canvas_subtree_ = false;
 };
 
 }  // namespace blink

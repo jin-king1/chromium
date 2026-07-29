@@ -16,11 +16,16 @@
 #include "content/browser/devtools/service_worker_devtools_manager.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_process_host_observer.h"
+#include "content/public/common/child_process_id.h"
 #include "services/network/public/cpp/cross_origin_embedder_policy.h"
 #include "services/network/public/mojom/client_security_state.mojom-forward.h"
 #include "services/network/public/mojom/cross_origin_embedder_policy.mojom.h"
 #include "services/network/public/mojom/document_isolation_policy.mojom.h"
 #include "third_party/blink/public/mojom/devtools/devtools_agent.mojom.h"
+
+namespace blink {
+class StorageKey;
+}  // namespace blink
 
 namespace content {
 
@@ -40,7 +45,7 @@ class ServiceWorkerDevToolsAgentHost : public DevToolsAgentHostImpl,
   // not been fetched yet. In that case, `UpdateClientSecurityState()` should be
   // called once the headers have been fetched.
   ServiceWorkerDevToolsAgentHost(
-      int worker_process_id,
+      ChildProcessId worker_process_id,
       int worker_route_id,
       scoped_refptr<ServiceWorkerContextWrapper> context_wrapper,
       int64_t version_id,
@@ -59,6 +64,8 @@ class ServiceWorkerDevToolsAgentHost : public DevToolsAgentHostImpl,
   ServiceWorkerDevToolsAgentHost& operator=(
       const ServiceWorkerDevToolsAgentHost&) = delete;
 
+  std::optional<blink::StorageKey> GetStorageKey() const;
+
   // DevToolsAgentHost overrides.
   BrowserContext* GetBrowserContext() override;
   std::string GetType() override;
@@ -73,7 +80,7 @@ class ServiceWorkerDevToolsAgentHost : public DevToolsAgentHostImpl,
   std::optional<network::CrossOriginEmbedderPolicy>
   cross_origin_embedder_policy(const std::string& id) override;
 
-  void WorkerStarted(int worker_process_id, int worker_route_id);
+  void WorkerStarted(ChildProcessId worker_process_id, int worker_route_id);
   void WorkerReadyForInspection(
       mojo::PendingRemote<blink::mojom::DevToolsAgent> agent_remote,
       mojo::PendingReceiver<blink::mojom::DevToolsAgentHost> host_receiver);
@@ -123,10 +130,12 @@ class ServiceWorkerDevToolsAgentHost : public DevToolsAgentHostImpl,
   ~ServiceWorkerDevToolsAgentHost() override;
   void UpdateIsAttached(bool attached);
   void UpdateProcessHost();
+  void ForceUpdateOnReloadIfModified();
 
   // DevToolsAgentHostImpl overrides.
   bool AttachSession(DevToolsSession* session) override;
   void DetachSession(DevToolsSession* session) override;
+  void UpdateRendererChannel(bool force) override;
   protocol::TargetAutoAttacher* auto_attacher() override;
 
   // RenderProcessHostObserver implementation.
@@ -143,7 +152,7 @@ class ServiceWorkerDevToolsAgentHost : public DevToolsAgentHostImpl,
   };
   WorkerState state_;
   base::UnguessableToken devtools_worker_token_;
-  int worker_process_id_;
+  ChildProcessId worker_process_id_;
   int worker_route_id_;
   scoped_refptr<ServiceWorkerContextWrapper> context_wrapper_;
   int64_t version_id_;
@@ -173,6 +182,10 @@ class ServiceWorkerDevToolsAgentHost : public DevToolsAgentHostImpl,
 
   base::ScopedObservation<RenderProcessHost, RenderProcessHostObserver>
       process_observation_{this};
+
+  mojo::PendingRemote<blink::mojom::DevToolsAgent> pending_agent_remote_;
+  mojo::PendingReceiver<blink::mojom::DevToolsAgentHost>
+      pending_agent_host_receiver_;
 };
 
 }  // namespace content

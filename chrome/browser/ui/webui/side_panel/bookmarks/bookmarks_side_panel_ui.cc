@@ -7,23 +7,27 @@
 #include <string>
 #include <utility>
 
+#include "base/check_is_test.h"
+#include "base/feature_list.h"
 #include "chrome/app/chrome_command_ids.h"
+#include "chrome/browser/bookmarks/bookmark_merged_surface_service_factory.h"
 #include "chrome/browser/bookmarks/bookmark_model_factory.h"
-#include "chrome/browser/bookmarks/managed_bookmark_service_factory.h"
 #include "chrome/browser/browser_features.h"
 #include "chrome/browser/commerce/shopping_service_factory.h"
 #include "chrome/browser/feature_engagement/tracker_factory.h"
 #include "chrome/browser/page_image_service/image_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profiles_state.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/webui/bookmarks/bookmark_prefs.h"
 #include "chrome/browser/ui/webui/commerce/price_tracking_handler.h"
 #include "chrome/browser/ui/webui/commerce/shopping_list_context_menu_controller.h"
 #include "chrome/browser/ui/webui/favicon_source.h"
 #include "chrome/browser/ui/webui/plural_string_handler.h"
-#include "chrome/browser/ui/webui/sanitized_image_source.h"
+#include "chrome/browser/ui/webui/sanitized_image/sanitized_image_source.h"
 #include "chrome/browser/ui/webui/side_panel/bookmarks/bookmarks_page_handler.h"
+#include "chrome/browser/ui/webui/theme_source.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/grit/side_panel_bookmarks_resources.h"
 #include "chrome/grit/side_panel_bookmarks_resources_map.h"
@@ -32,12 +36,10 @@
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/bookmarks/browser/bookmark_node.h"
 #include "components/bookmarks/common/bookmark_pref_names.h"
-#include "components/bookmarks/managed/managed_bookmark_service.h"
 #include "components/commerce/core/commerce_feature_list.h"
 #include "components/commerce/core/shopping_service.h"
 #include "components/commerce/core/webui/shopping_service_handler.h"
 #include "components/favicon_base/favicon_url_parser.h"
-#include "components/page_image_service/features.h"
 #include "components/page_image_service/image_service.h"
 #include "components/page_image_service/image_service_handler.h"
 #include "components/policy/core/common/policy_pref_names.h"
@@ -51,8 +53,13 @@
 #include "ui/base/ui_base_features.h"
 #include "ui/base/webui/web_ui_util.h"
 #include "ui/views/style/platform_style.h"
-#include "ui/webui/color_change_listener/color_change_handler.h"
 #include "ui/webui/webui_util.h"
+
+const char kSidePanelRootBookmarkID[] = "SIDE_PANEL_ROOT_BOOKMARK_ID";
+const char kSidePanelBookmarkBarID[] = "SIDE_PANEL_BOOKMARK_BAR_ID";
+const char kSidePanelOtherBookmarksID[] = "SIDE_PANEL_OTHER_BOOKMARKS_ID";
+const char kSidePanelMobileBookmarksID[] = "SIDE_PANEL_MOBILE_BOOKMARKS_ID";
+const char kSidePanelManagedBookmarksID[] = "SIDE_PANEL_MANAGED_BOOKMARKS_ID";
 
 BookmarksSidePanelUIConfig::BookmarksSidePanelUIConfig()
     : DefaultTopChromeWebUIConfig(content::kChromeUIScheme,
@@ -83,6 +90,7 @@ BookmarksSidePanelUI::BookmarksSidePanelUI(content::WebUI* web_ui)
       {"bookmarkFolderCreated", IDS_BOOKMARK_SCREEN_READER_FOLDER_CREATED},
       {"bookmarkReordered", IDS_BOOKMARK_SCREEN_READER_REORDERED},
       {"bookmarkMoved", IDS_BOOKMARK_SCREEN_READER_MOVED},
+      {"ok", IDS_OK},
       {"tooltipClose", IDS_CLOSE},
       {"tooltipDelete", IDS_DELETE},
       {"tooltipMore", IDS_BOOKMARKS_EDIT_MORE},
@@ -111,6 +119,8 @@ BookmarksSidePanelUI::BookmarksSidePanelUI(content::WebUI* web_ui)
       {"sortLastOpenedLower", IDS_BOOKMARKS_SORT_LAST_OPENED_LOWER},
       {"visualView", IDS_BOOKMARKS_VISUAL_VIEW},
       {"compactView", IDS_BOOKMARKS_COMPACT_VIEW},
+      {"switchToCompactView", IDS_BOOKMARKS_SWITCH_TO_COMPACT_VIEW},
+      {"switchToVisualView", IDS_BOOKMARKS_SWITCH_TO_VISUAL_VIEW},
       {"sortMenuA11yLabel", IDS_BOOKMARKS_SORT_MENU_A11Y_LABEL},
       {"createNewFolderA11yLabel", IDS_BOOKMARKS_CREATE_NEW_FOLDER_A11Y_LABEL},
       {"editBookmarkListA11yLabel",
@@ -141,6 +151,7 @@ BookmarksSidePanelUI::BookmarksSidePanelUI(content::WebUI* web_ui)
       {"menuOpenNewTabGroup", IDS_BOOKMARK_MANAGER_MENU_OPEN_IN_NEW_TAB_GROUP},
       {"menuOpenNewTabGroupWithCount",
        IDS_BOOKMARK_MANAGER_MENU_OPEN_ALL_NEW_TAB_GROUP_WITH_COUNT},
+      {"menuOpenSplitView", IDS_BOOKMARK_MANAGER_MENU_OPEN_IN_SPLIT_VIEW},
       {"menuMoveToBookmarksBar", IDS_BOOKMARKS_MOVE_TO_BOOKMARKS_BAR},
       {"menuMoveToAllBookmarks", IDS_BOOKMARKS_MOVE_TO_ALL_BOOKMARKS},
       {"menuTrackPrice", IDS_SIDE_PANEL_TRACK_BUTTON},
@@ -193,21 +204,18 @@ BookmarksSidePanelUI::BookmarksSidePanelUI(content::WebUI* web_ui)
       !prefs->GetList(bookmarks::prefs::kManagedBookmarks).empty());
   source->AddBoolean("shoppingListEnabled",
                      commerce::IsShoppingListAllowedForEnterprise(prefs));
-  source->AddBoolean(
-      "urlImagesEnabled",
-      base::FeatureList::IsEnabled(page_image_service::kImageService));
 
   source->AddBoolean("guestMode", profile->IsGuestSession());
   source->AddBoolean("incognitoMode", profile->IsIncognitoProfile());
   source->AddBoolean("isIncognitoModeAvailable", IsIncognitoModeAvailable());
+
   source->AddBoolean(
-      "bookmarksTreeViewEnabled",
-      base::FeatureList::IsEnabled(features::kBookmarksTreeView));
-  // TODO(crbug.com/380818698): Replace this with the flag which will be used to
-  // launch account storage for bookmarks.
-  source->AddBoolean("isBookmarksInTransportModeEnabled",
-                     base::FeatureList::IsEnabled(
-                         switches::kSyncEnableBookmarksInTransportMode));
+      "isBookmarksMigrationUiChanges",
+      base::FeatureList::IsEnabled(switches::kBookmarksMigrateUiChanges));
+
+  source->AddBoolean("menuSimplification",
+                     features::IsMenuSimplificationEnabled());
+
   source->AddInteger(
       "sortOrder",
       prefs->GetInteger(bookmarks_webui::prefs::kBookmarksSortOrder));
@@ -215,29 +223,11 @@ BookmarksSidePanelUI::BookmarksSidePanelUI(content::WebUI* web_ui)
       "viewType",
       prefs->GetInteger(bookmarks_webui::prefs::kBookmarksViewType));
 
-  bookmarks::BookmarkModel* bookmark_model =
-      BookmarkModelFactory::GetForBrowserContext(profile);
-  source->AddString(
-      "bookmarksBarId",
-      base::NumberToString(bookmark_model && bookmark_model->bookmark_bar_node()
-                               ? bookmark_model->bookmark_bar_node()->id()
-                               : -1));
-  source->AddString(
-      "otherBookmarksId",
-      base::NumberToString(bookmark_model && bookmark_model->other_node()
-                               ? bookmark_model->other_node()->id()
-                               : -1));
-  source->AddString(
-      "mobileBookmarksId",
-      base::NumberToString(bookmark_model && bookmark_model->mobile_node()
-                               ? bookmark_model->mobile_node()->id()
-                               : -1));
-  bookmarks::ManagedBookmarkService* managed =
-      ManagedBookmarkServiceFactory::GetForProfile(profile);
-  source->AddString("managedBookmarksFolderId",
-                    managed && managed->managed_node()
-                        ? base::NumberToString(managed->managed_node()->id())
-                        : "");
+  source->AddString("rootBookmarkId", kSidePanelRootBookmarkID);
+  source->AddString("bookmarksBarId", kSidePanelBookmarkBarID);
+  source->AddString("otherBookmarksId", kSidePanelOtherBookmarksID);
+  source->AddString("mobileBookmarksId", kSidePanelMobileBookmarksID);
+  source->AddString("managedBookmarksFolderId", kSidePanelManagedBookmarksID);
 
   content::URLDataSource::Add(
       profile, std::make_unique<FaviconSource>(
@@ -254,6 +244,7 @@ BookmarksSidePanelUI::BookmarksSidePanelUI(content::WebUI* web_ui)
 
   content::URLDataSource::Add(profile,
                               std::make_unique<SanitizedImageSource>(profile));
+  content::URLDataSource::Add(profile, std::make_unique<ThemeSource>(profile));
 }
 
 BookmarksSidePanelUI::~BookmarksSidePanelUI() = default;
@@ -283,13 +274,6 @@ void BookmarksSidePanelUI::BindInterface(
 }
 
 void BookmarksSidePanelUI::BindInterface(
-    mojo::PendingReceiver<color_change_listener::mojom::PageHandler>
-        pending_receiver) {
-  color_provider_handler_ = std::make_unique<ui::ColorChangeHandler>(
-      web_ui()->GetWebContents(), std::move(pending_receiver));
-}
-
-void BookmarksSidePanelUI::BindInterface(
     mojo::PendingReceiver<page_image_service::mojom::PageImageServiceHandler>
         pending_image_handler) {
   base::WeakPtr<page_image_service::ImageService> image_service_weak;
@@ -309,9 +293,10 @@ BookmarksSidePanelUI::GetShoppingListContextMenuController() {
 }
 
 void BookmarksSidePanelUI::CreateBookmarksPageHandler(
+    mojo::PendingRemote<side_panel::mojom::BookmarksPage> page,
     mojo::PendingReceiver<side_panel::mojom::BookmarksPageHandler> receiver) {
-  bookmarks_page_handler_ =
-      std::make_unique<BookmarksPageHandler>(std::move(receiver), this);
+  bookmarks_page_handler_ = std::make_unique<BookmarksPageHandler>(
+      std::move(receiver), std::move(page), this, web_ui());
 }
 
 void BookmarksSidePanelUI::CreateShoppingServiceHandler(

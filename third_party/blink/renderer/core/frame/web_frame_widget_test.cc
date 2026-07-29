@@ -4,26 +4,34 @@
 
 #include "base/functional/callback_helpers.h"
 #include "base/run_loop.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/mock_callback.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/unguessable_token.h"
 #include "build/build_config.h"
 #include "cc/base/features.h"
 #include "cc/layers/solid_color_layer.h"
 #include "cc/test/property_tree_test_utils.h"
+#include "cc/trees/scroll_source_type.h"
 #include "components/viz/common/surfaces/parent_local_surface_id_allocator.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/input/synthetic_web_input_event_builders.h"
 #include "third_party/blink/public/mojom/page/widget.mojom-shared.h"
+#include "third_party/blink/public/web/web_plugin_params.h"
+#include "third_party/blink/public/web/web_script_source.h"
 #include "third_party/blink/renderer/core/css/properties/css_property_ref.h"
 #include "third_party/blink/renderer/core/css/properties/longhands.h"
 #include "third_party/blink/renderer/core/css/style_engine.h"
 #include "third_party/blink/renderer/core/dom/events/add_event_listener_options_resolved.h"
 #include "third_party/blink/renderer/core/dom/events/native_event_listener.h"
 #include "third_party/blink/renderer/core/editing/editing_utilities.h"
+#include "third_party/blink/renderer/core/execution_context/agent.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
+#include "third_party/blink/renderer/core/frame/visual_viewport.h"
 #include "third_party/blink/renderer/core/frame/web_frame_widget_impl.h"
 #include "third_party/blink/renderer/core/frame/web_local_frame_impl.h"
 #include "third_party/blink/renderer/core/geometry/dom_rect.h"
@@ -32,7 +40,11 @@
 #include "third_party/blink/renderer/core/html/html_div_element.h"
 #include "third_party/blink/renderer/core/html/html_image_element.h"
 #include "third_party/blink/renderer/core/input/event_handler.h"
+#include "third_party/blink/renderer/core/layout/layout_image.h"
 #include "third_party/blink/renderer/core/paint/paint_layer_scrollable_area.h"
+#include "third_party/blink/renderer/core/scroll/scrollbar.h"
+#include "third_party/blink/renderer/core/testing/fake_web_plugin.h"
+#include "third_party/blink/renderer/core/testing/scoped_fake_plugin_registry.h"
 #include "third_party/blink/renderer/core/testing/sim/sim_request.h"
 #include "third_party/blink/renderer/core/testing/sim/sim_test.h"
 #include "third_party/blink/renderer/platform/scheduler/test/fake_task_runner.h"
@@ -41,7 +53,9 @@
 #include "third_party/blink/renderer/platform/testing/url_test_helpers.h"
 #include "third_party/blink/renderer/platform/widget/input/widget_input_handler_manager.h"
 #include "third_party/blink/renderer/platform/widget/widget_base.h"
+#include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "ui/base/mojom/window_show_state.mojom-blink.h"
+#include "ui/display/screen_info.h"
 
 #if BUILDFLAG(IS_WIN)
 #include "components/stylus_handwriting/win/features.h"
@@ -50,6 +64,7 @@
 namespace blink {
 
 using testing::_;
+using testing::ContainerEq;
 
 bool operator==(const InputHandlerProxy::DidOverscrollParams& lhs,
                 const InputHandlerProxy::DidOverscrollParams& rhs) {
@@ -121,6 +136,55 @@ TEST_F(WebFrameWidgetSimTest, AutoResizeAllocatedLocalSurfaceId) {
                   ->new_local_surface_id_request_for_testing());
 }
 
+TEST_F(WebFrameWidgetSimTest, ColorGamutChangeTriggersMediaQuery) {
+  SimRequest request("https://example.com/test.html", "text/html");
+  LoadURL("https://example.com/test.html");
+  request.Complete(R"HTML(
+    <script>
+      window.__changed = false;
+      const mq = window.matchMedia("(color-gamut: p3)");
+      mq.addEventListener("change", () => { window.__changed = true; });
+    </script>
+  )HTML");
+
+  viz::ParentLocalSurfaceIdAllocator allocator;
+  allocator.GenerateId();
+
+  VisualProperties visual_properties;
+  visual_properties.local_surface_id = allocator.GetCurrentLocalSurfaceId();
+
+  display::ScreenInfo screen_info;
+  screen_info.display_color_spaces =
+      gfx::DisplayColorSpaces(gfx::ColorSpace::CreateSRGB());
+  visual_properties.screen_infos = display::ScreenInfos(screen_info);
+
+  WebView().MainFrameWidget()->ApplyVisualProperties(visual_properties);
+  WebView().MainFrameViewWidget()->UpdateSurfaceAndScreenInfo(
+      visual_properties.local_surface_id.value(),
+      visual_properties.compositor_viewport_pixel_rect,
+      visual_properties.screen_infos);
+
+  Compositor().BeginFrame();
+  test::RunPendingTasks();
+
+  screen_info.display_color_spaces =
+      gfx::DisplayColorSpaces(gfx::ColorSpace::CreateDisplayP3D65());
+  visual_properties.screen_infos = display::ScreenInfos(screen_info);
+
+  WebView().MainFrameViewWidget()->UpdateSurfaceAndScreenInfo(
+      visual_properties.local_surface_id.value(),
+      visual_properties.compositor_viewport_pixel_rect,
+      visual_properties.screen_infos);
+
+  Compositor().BeginFrame();
+  test::RunPendingTasks();
+
+  v8::HandleScope handle_scope(Window().GetIsolate());
+  v8::Local<v8::Value> changed = MainFrame().ExecuteScriptAndReturnValue(
+      WebScriptSource("window.__changed"));
+  EXPECT_TRUE(changed->BooleanValue(Window().GetIsolate()));
+}
+
 TEST_F(WebFrameWidgetSimTest, FrameSinkIdHitTestAPI) {
   SimRequest request("https://example.com/test.html", "text/html");
   LoadURL("https://example.com/test.html");
@@ -159,6 +223,81 @@ TEST_F(WebFrameWidgetSimTest, FrameSinkIdHitTestAPI) {
   EXPECT_EQ(gfx::PointF(150.27, 150.25), point);
 }
 
+class FrameSinkIdTestPlugin : public FakeWebPlugin {
+ public:
+  FrameSinkIdTestPlugin(const WebPluginParams& params,
+                        viz::FrameSinkId frame_sink_id)
+      : FakeWebPlugin(params), frame_sink_id_(frame_sink_id) {}
+
+  viz::FrameSinkId GetFrameSinkId() override { return frame_sink_id_; }
+
+ private:
+  viz::FrameSinkId frame_sink_id_;
+};
+
+class FrameSinkIdPluginWebFrameClient
+    : public frame_test_helpers::TestWebFrameClient {
+ public:
+  explicit FrameSinkIdPluginWebFrameClient(viz::FrameSinkId frame_sink_id)
+      : frame_sink_id_(frame_sink_id) {}
+
+  WebPlugin* CreatePlugin(const WebPluginParams& params) override {
+    return new FrameSinkIdTestPlugin(params, frame_sink_id_);
+  }
+
+ private:
+  viz::FrameSinkId frame_sink_id_;
+};
+
+class WebFrameWidgetPluginHitTestTest : public SimTest {
+ public:
+  std::unique_ptr<frame_test_helpers::TestWebFrameClient>
+  CreateWebFrameClientForMainFrame() override {
+    return std::make_unique<FrameSinkIdPluginWebFrameClient>(
+        plugin_frame_sink_id_);
+  }
+
+ protected:
+  viz::FrameSinkId plugin_frame_sink_id_{42, 42};
+  ScopedFakePluginRegistry fake_plugins_;
+};
+
+TEST_F(WebFrameWidgetPluginHitTestTest, GetFrameSinkIdAtPointPlugin) {
+  WebView().GetPage()->GetSettings().SetPluginsEnabled(true);
+
+  SimRequest request("https://example.com/test.html", "text/html");
+  LoadURL("https://example.com/test.html");
+  request.Complete(
+      R"HTML(
+      <style>
+      html, body {
+        margin: 0px;
+        padding: 0px;
+      }
+      </style>
+      <embed id='plugin' type='application/x-webkit-test-webplugin'
+             style='width: 200px; height: 100px; margin: 0px; padding: 0px;'></embed>
+      )HTML");
+
+  Compositor().BeginFrame();
+  test::RunPendingTasks();
+
+  gfx::PointF point;
+  viz::FrameSinkId frame_sink_id =
+      WebView().MainFrameViewWidget()->GetFrameSinkIdAtPoint(
+          gfx::PointF(100.0f, 50.0f), &point);
+  EXPECT_EQ(plugin_frame_sink_id_, frame_sink_id);
+  EXPECT_EQ(gfx::PointF(100.0f, 50.0f), point);
+
+  // Test a point outside of the plugin.
+  viz::FrameSinkId frame_sink_id_outside =
+      WebView().MainFrameViewWidget()->GetFrameSinkIdAtPoint(
+          gfx::PointF(250.0f, 150.0f), &point);
+  EXPECT_EQ(WebView().MainFrameViewWidget()->GetFrameSinkId(),
+            frame_sink_id_outside);
+  EXPECT_EQ(gfx::PointF(250.0f, 150.0f), point);
+}
+
 #if BUILDFLAG(IS_ANDROID)
 TEST_F(WebFrameWidgetSimTest, ForceSendMetadataOnInput) {
   const cc::LayerTreeHost* layer_tree_host =
@@ -174,7 +313,106 @@ TEST_F(WebFrameWidgetSimTest, ForceSendMetadataOnInput) {
 }
 #endif  // BUILDFLAG(IS_ANDROID)
 
-// A test that forces a RemoteMainFrame to be created.
+class WebFrameWidgetScrollContainerHitTest : public WebFrameWidgetSimTest {
+ public:
+  void SetUp() override {
+    WebFrameWidgetSimTest::SetUp();
+
+    WebView().Resize(gfx::Size(1000, 1000));
+    WebView().MainFrameViewWidget()->SetPageScaleStateAndLimits(1.0f, true,
+                                                                1.0f, 3.0f);
+    GetVisualViewport().SetSize(gfx::Size(500, 500));
+
+    SimRequest request("https://example.com/test.html", "text/html");
+    LoadURL("https://example.com/test.html");
+    request.Complete(
+        R"HTML(
+      <style>
+      html, body {
+        margin :0px;
+        padding: 0px;
+      }
+      .box {
+        width: 100px;
+        height: 100px;
+        overflow: scroll;
+      }
+      .space {
+        height: 200vh;
+        width: 200vw;
+      }
+      </style>
+
+      <div id='box1' class='box'>
+        <div class='space'></div>
+      </div>
+      <div id='box2' class='box'>
+        <div class='space'></div>
+      </div>
+
+      )HTML");
+    WebView().MainFrameViewWidget()->UpdateAllLifecyclePhases(
+        DocumentUpdateReason::kTest);
+  }
+
+  VisualViewport& GetVisualViewport() {
+    return WebView().MainFrameViewWidget()->GetPage()->GetVisualViewport();
+  }
+
+  void TestScrollContainerHitTest(gfx::PointF box1_target_offset,
+                                  gfx::PointF box2_target_offset) {
+    Element* box1 = GetDocument().getElementById(AtomicString("box1"));
+    Element* box2 = GetDocument().getElementById(AtomicString("box2"));
+
+    const cc::ElementId box1_dom_node_id =
+        box1->GetLayoutBox()->GetScrollableArea()->GetScrollElementId();
+    const cc::ElementId box2_dom_node_id =
+        box2->GetLayoutBox()->GetScrollableArea()->GetScrollElementId();
+
+    WebFrameWidgetImpl& widget = *WebView().MainFrameViewWidget();
+    VisualViewport& visual_viewport = GetVisualViewport();
+    EXPECT_EQ(visual_viewport.GetScrollOffset(), ScrollOffset(0, 0));
+
+    cc::ElementId scrollable_id =
+        widget.GetScrollableContainerIdAt(box1_target_offset);
+    EXPECT_EQ(scrollable_id, box1_dom_node_id);
+
+    visual_viewport.SetScrollOffset(
+        ScrollOffset(0, 50), mojom::blink::ScrollType::kProgrammatic,
+        cc::ScrollSourceType::kNone, mojom::blink::ScrollBehavior::kInstant);
+    EXPECT_EQ(visual_viewport.GetScrollOffset(), ScrollOffset(0, 50));
+    scrollable_id = widget.GetScrollableContainerIdAt(box2_target_offset);
+    EXPECT_EQ(scrollable_id, box2_dom_node_id);
+  }
+};
+
+TEST_F(WebFrameWidgetScrollContainerHitTest, PageScaleOne) {
+  GetVisualViewport().SetScale(1);
+
+  // Here is a note about the selection of numbers for hitting box2:
+  // The hit test offset should account for the visual viewport scroll
+  // offset (50). The hit test offset should be the following:
+  //   50 (scroll offset) + 1 (page scale) * 75 = 125 > 100
+  // which should hit box2.
+  // If the scroll offset is (incorrectly) not taken into account, we should hit
+  // the wrong box: 75 < 100
+  TestScrollContainerHitTest(gfx::PointF(50, 50), gfx::PointF(50, 75));
+}
+
+TEST_F(WebFrameWidgetScrollContainerHitTest, PageScaleHalf) {
+  GetVisualViewport().SetScale(2.0f);
+
+  // Here is a note about the selection of numbers for hitting box2:
+  // The page scale should be applied only once to get the hit test offset. The
+  // hit test offset should be the following:
+  //   50 (scroll offset) + 0.5 (page scale) * 150 = 125 > 100
+  // which should hit box2.
+  // If the page scale is (incorrectly) applied more than once, e.g.:
+  //   50 + 0.5 * 0.5 * 150 = 87.5 < 100
+  // we'll hit the wrong box.
+  TestScrollContainerHitTest(gfx::PointF(50, 50), gfx::PointF(50, 150));
+}
+
 class WebFrameWidgetImplRemoteFrameSimTest : public SimTest {
  public:
   void SetUp() override {
@@ -245,8 +483,8 @@ class MockHandledEventCallback {
                       std::optional<cc::TouchAction>));
 
   WidgetBaseInputHandler::HandledEventCallback GetCallback() {
-    return WTF::BindOnce(&MockHandledEventCallback::HandleCallback,
-                         WTF::Unretained(this));
+    return BindOnce(&MockHandledEventCallback::HandleCallback,
+                    Unretained(this));
   }
 
  private:
@@ -273,8 +511,10 @@ class MockWebFrameWidgetImpl : public frame_test_helpers::TestWebFrameWidget {
                     const cc::OverscrollBehavior& overscroll_behavior,
                     bool event_processed));
 
-  MOCK_METHOD2(RequestDecode,
-               void(const cc::DrawImage&, base::OnceCallback<void(bool)>));
+  MOCK_METHOD3(RequestDecode,
+               void(const cc::DrawImage&,
+                    base::OnceCallback<void(bool)>,
+                    bool));
 };
 
 class WebFrameWidgetImplSimTest : public SimTest {
@@ -568,16 +808,16 @@ TEST_F(WebFrameWidgetImplSimTest, SpeculativeDecodeSimple) {
   WebView().MainFrameViewWidget()->Resize(gfx::Size(800, 600));
   SimRequest doc_request("https://example.com/test.html", "text/html");
   LoadURL("https://example.com/test.html");
-  EXPECT_CALL(*MockMainFrameWidget(), RequestDecode(_, _)).Times(1);
+  EXPECT_CALL(*MockMainFrameWidget(), RequestDecode(_, _, _)).Times(1);
   doc_request.Complete(
       R"HTML(
 <!DOCTYPE html>
-<img id="img" width=300 height=300 src="image.png">
+<img id="img" width=400 height=300 src="image.png">
       )HTML");
   url_test_helpers::ServeAsynchronousRequests();
 }
 
-TEST_F(WebFrameWidgetImplSimTest, NoSpeculativeDecodeOutsideViewport) {
+TEST_F(WebFrameWidgetImplSimTest, SpeculativeDecodeOutsideViewport) {
   base::test::ScopedFeatureList scoped_feature_list;
   scoped_feature_list.InitWithFeatures(
       /*enabled_features=*/
@@ -590,7 +830,7 @@ TEST_F(WebFrameWidgetImplSimTest, NoSpeculativeDecodeOutsideViewport) {
   WebView().MainFrameViewWidget()->Resize(gfx::Size(800, 600));
   SimRequest doc_request("https://example.com/test.html", "text/html");
   LoadURL("https://example.com/test.html");
-  EXPECT_CALL(*MockMainFrameWidget(), RequestDecode(_, _)).Times(0);
+  EXPECT_CALL(*MockMainFrameWidget(), RequestDecode(_, _, _)).Times(0);
   doc_request.Complete(
       R"HTML(
 <!DOCTYPE html>
@@ -601,7 +841,7 @@ TEST_F(WebFrameWidgetImplSimTest, NoSpeculativeDecodeOutsideViewport) {
   Compositor().BeginFrame();
 }
 
-TEST_F(WebFrameWidgetImplSimTest, SpeculativeDecodeIgnoresBackgroundImage) {
+TEST_F(WebFrameWidgetImplSimTest, SpeculativeDecodeBackgroundImage) {
   base::test::ScopedFeatureList scoped_feature_list;
   scoped_feature_list.InitWithFeatures(
       /*enabled_features=*/
@@ -614,7 +854,7 @@ TEST_F(WebFrameWidgetImplSimTest, SpeculativeDecodeIgnoresBackgroundImage) {
   WebView().MainFrameViewWidget()->Resize(gfx::Size(800, 600));
   SimRequest doc_request("https://example.com/test.html", "text/html");
   LoadURL("https://example.com/test.html");
-  EXPECT_CALL(*MockMainFrameWidget(), RequestDecode(_, _)).Times(0);
+  EXPECT_CALL(*MockMainFrameWidget(), RequestDecode(_, _, _)).Times(0);
   doc_request.Complete(
       R"HTML(
 <!DOCTYPE html>
@@ -623,40 +863,64 @@ TEST_F(WebFrameWidgetImplSimTest, SpeculativeDecodeIgnoresBackgroundImage) {
   url_test_helpers::ServeAsynchronousRequests();
 }
 
-// Without extrinsic sizing (e.g., css width & height), an image's final decode
-// size can depend on both the image's intrinsic size and layout. Using only the
-// image's intrinsic size can result in a speculative decode that is too small
-// (will not be used), or too big (can cause small rendering differences as the
-// larger decode will be re-used and scaled). To avoid these issues, we should
-// wait for layout if the decoded size depends on it.
-TEST_F(WebFrameWidgetImplSimTest, SpeculativeDecodeNoSizeWaitsForLayout) {
+// An img element may get a small layout size when layout runs prior to
+// intrinsic sizing info being available. In that case, we skip the expensive
+// visibility computation for performance reasons. When the image resource loads
+// and it turns out to be above the speculative decode size threshold, we may
+// still speculatively decode it, but not until a subsequent layout runs during
+// which the img element's visibility will be computed.
+TEST_F(WebFrameWidgetImplSimTest, SpeculativeDecodeSmallLayoutSizeBeforeLoad) {
   base::test::ScopedFeatureList scoped_feature_list;
   scoped_feature_list.InitWithFeatures(
       /*enabled_features=*/
       {features::kSpeculativeImageDecodes,
        ::features::kSendExplicitDecodeRequestsImmediately},
       /*disabled_features=*/{});
-  SimRequest image_request("https://example.com/image.png", "image/png");
+  SimRequest image_1_request("https://example.com/image1.png", "image/png");
+  SimRequest image_2_request("https://example.com/image2.png", "image/png");
   auto* widget = WebView().MainFrameViewWidget();
   widget->Resize(gfx::Size(800, 600));
   SimRequest doc_request("https://example.com/test.html", "text/html");
   LoadURL("https://example.com/test.html");
 
   {
-    EXPECT_CALL(*MockMainFrameWidget(), RequestDecode(_, _)).Times(0);
+    EXPECT_CALL(*MockMainFrameWidget(), RequestDecode(_, _, _)).Times(0);
     doc_request.Complete(
         R"HTML(<!DOCTYPE html>
-        <img id="i1" src="image.png">
-        <img id="i2" style="height: auto; max-height: 50px;" src="image.png">
+        <img id="img1">
+        <img id="img2" style="min-width:10px;min-height:10px">
       )HTML");
     Compositor().BeginFrame();
     test::RunPendingTasks();
-    image_request.Complete(
-        *test::ReadFromFile(test::CoreTestDataPath("background_image.png")));
   }
 
   {
-    EXPECT_CALL(*MockMainFrameWidget(), RequestDecode(_, _)).Times(1);
+    // Set the src attribute and load the image without doing layout. Priority
+    // has not been calculated, so speculative decode cannot start.
+    EXPECT_CALL(*MockMainFrameWidget(), RequestDecode(_, _, _)).Times(0);
+    HTMLImageElement* image1 = To<HTMLImageElement>(
+        GetDocument().QuerySelector(AtomicString("#img1")));
+    image1->setAttribute(html_names::kSrcAttr, AtomicString("image1.png"));
+    HTMLImageElement* image2 = To<HTMLImageElement>(
+        GetDocument().QuerySelector(AtomicString("#img2")));
+    image2->setAttribute(html_names::kSrcAttr, AtomicString("image2.png"));
+    // The fetch is initiated synchronously from a microtask after src is set.
+    GetDocument().GetAgent().PerformMicrotaskCheckpoint();
+    image_1_request.Complete(*test::ReadFromFile(
+        test::CoreTestDataPath("notifications/120x120.png")));
+    image_2_request.Complete(*test::ReadFromFile(
+        test::CoreTestDataPath("notifications/500x500.png")));
+    EXPECT_FALSE(To<LayoutImage>(image1->GetLayoutObject())
+                     ->CachedResourcePriority()
+                     .has_value());
+    EXPECT_FALSE(To<LayoutImage>(image2->GetLayoutObject())
+                     ->CachedResourcePriority()
+                     .has_value());
+  }
+
+  {
+    // Speculative decode should start after the next layout.
+    EXPECT_CALL(*MockMainFrameWidget(), RequestDecode(_, _, _)).Times(2);
     widget->UpdateAllLifecyclePhases(DocumentUpdateReason::kTest);
   }
 }
@@ -677,17 +941,105 @@ TEST_F(WebFrameWidgetImplSimTest, SpeculativeDecodeWithExtrinsicSize) {
   LoadURL("https://example.com/test.html");
 
   {
-    EXPECT_CALL(*MockMainFrameWidget(), RequestDecode(_, _)).Times(1);
+    EXPECT_CALL(*MockMainFrameWidget(), RequestDecode(_, _, _)).Times(1);
     doc_request.Complete(
         R"HTML(<!DOCTYPE html>
-        <img style="width: 100px" src="image.png">
+        <img style="width:240px;height:240px" src="image.png">
       )HTML");
     Compositor().BeginFrame();
     test::RunPendingTasks();
-    image_request.Complete(
-        *test::ReadFromFile(test::CoreTestDataPath("background_image.png")));
+    image_request.Complete(*test::ReadFromFile(
+        test::CoreTestDataPath("notifications/120x120.png")));
     test::RunPendingTasks();
   }
+}
+
+TEST_F(WebFrameWidgetImplSimTest, SpeculativeImageDecodeBeforeLayout) {
+  // Check that a speculative decode can start as soon as an img element gets a
+  // src based on prior layout information, without waiting for a subsequent
+  // layout to happen.
+  base::test::ScopedFeatureList feature_list(
+      features::kSpeculativeImageDecodes);
+  SimRequest request("https://example.com/test.html", "text/html");
+  SimRequest image_request("https://example.com/image.png", "image/png");
+  LoadURL("https://example.com/test.html");
+  request.Complete(R"HTML(
+      <!DOCTYPE html>
+      <html><body><img width=340 height=380/></body></html>
+  )HTML");
+  Compositor().BeginFrame();
+  HTMLImageElement* image =
+      To<HTMLImageElement>(GetDocument().QuerySelector(AtomicString("img")));
+  LayoutImage* layout_image = To<LayoutImage>(image->GetLayoutObject());
+  EXPECT_TRUE(layout_image->CachedResourcePriority().has_value());
+  EXPECT_EQ(layout_image->CachedResourcePriority()
+                .value_or(ResourcePriority())
+                .visibility,
+            ResourcePriority::kVisible);
+  // Decode size should be based on layout size; note that this does not
+  // actually match the intrinsic size of the data URL below.
+  EXPECT_EQ(layout_image->CachedSpeculativeDecodeSize(), gfx::Size(340, 380));
+
+  image->setAttribute(html_names::kSrcAttr, AtomicString("image.png"));
+  // The fetch is initiated synchronously from a microtask after src is set.
+  GetDocument().GetAgent().PerformMicrotaskCheckpoint();
+  EXPECT_CALL(*MockMainFrameWidget(), RequestDecode(_, _, true)).Times(1);
+  image_request.Complete(*test::ReadFromFile(
+      test::CoreTestDataPath("notifications/3000x2000.png")));
+}
+
+TEST_F(WebFrameWidgetImplSimTest, SpeculativeImageDecodeMinimumSize) {
+  // Tests that an image with large layout size but small intrinsic image size
+  // will not be speculatively decoded.
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      /*enabled_features=*/
+      {features::kSpeculativeImageDecodes,
+       ::features::kSendExplicitDecodeRequestsImmediately},
+      /*disabled_features=*/{});
+  url_test_helpers::RegisterMockedURLLoad(
+      url_test_helpers::ToKURL("https://example.com/image.png"),
+      test::CoreTestDataPath("notifications/48x48.png"));
+  WebView().MainFrameViewWidget()->Resize(gfx::Size(800, 600));
+  SimRequest doc_request("https://example.com/test.html", "text/html");
+  LoadURL("https://example.com/test.html");
+  EXPECT_CALL(*MockMainFrameWidget(), RequestDecode(_, _, _)).Times(0);
+  doc_request.Complete(
+      R"HTML(
+<!DOCTYPE html>
+<img id="img" width=400 height=300 src="image.png">
+      )HTML");
+  url_test_helpers::ServeAsynchronousRequests();
+}
+
+TEST_F(WebFrameWidgetImplSimTest, SpeculativeImageDecodeMultiple) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      /*enabled_features=*/
+      {features::kSpeculativeImageDecodes,
+       ::features::kSendExplicitDecodeRequestsImmediately},
+      /*disabled_features=*/{});
+  WebView().MainFrameViewWidget()->Resize(gfx::Size(800, 600));
+  SimRequest doc_request("https://example.com/test.html", "text/html");
+  SimRequest image_a_request("https://example.com/a.png", "image/png");
+  SimRequest image_b_request("https://example.com/b.png", "image/png");
+  LoadURL("https://example.com/test.html");
+  {
+    EXPECT_CALL(*MockMainFrameWidget(), RequestDecode(_, _, _)).Times(0);
+    doc_request.Complete(
+        R"HTML(
+<!DOCTYPE html>
+<img id="img_a" width=500 height=500 src="a.png">
+<img id="img_b" width=3000 height=1000 src="b.png">
+      )HTML");
+    Compositor().BeginFrame();
+    test::RunPendingTasks();
+  }
+  EXPECT_CALL(*MockMainFrameWidget(), RequestDecode(_, _, true)).Times(2);
+  image_a_request.Complete(
+      *test::ReadFromFile(test::CoreTestDataPath("notifications/500x500.png")));
+  image_b_request.Complete(*test::ReadFromFile(
+      test::CoreTestDataPath("notifications/3000x1000.png")));
 }
 
 #if BUILDFLAG(IS_WIN)
@@ -832,9 +1184,9 @@ class WebFrameWidgetProximateBoundsCollectionSimTestBase
   void OnStartStylusWriting(const gfx::Rect& focus_widget_rect_in_dips) {
     MockMainFrameWidget()->OnStartStylusWriting(
         focus_widget_rect_in_dips,
-        base::BindOnce(&WebFrameWidgetProximateBoundsCollectionSimTestBase::
-                           OnStartStylusWritingComplete,
-                       weak_factory_.GetWeakPtr()));
+        blink::BindOnce(&WebFrameWidgetProximateBoundsCollectionSimTestBase::
+                            OnStartStylusWritingComplete,
+                        weak_factory_.GetWeakPtr()));
   }
 
   Element* GetElementById(const char* id) {
@@ -1189,15 +1541,15 @@ class NotifySwapTimesWebFrameWidgetTest : public SimTest {
     base::TimeTicks swap_time;
     static_cast<WebFrameWidgetImpl*>(MainFrame().FrameWidget())
         ->NotifySwapAndPresentationTimeForTesting(
-            {WTF::BindOnce(
+            {blink::BindOnce(
                  [](base::OnceClosure swap_quit_closure,
                     base::TimeTicks* swap_time, base::TimeTicks timestamp) {
                    CHECK(!timestamp.is_null());
                    *swap_time = timestamp;
                    std::move(swap_quit_closure).Run();
                  },
-                 swap_run_loop.QuitClosure(), WTF::Unretained(&swap_time)),
-             WTF::BindOnce(
+                 swap_run_loop.QuitClosure(), blink::Unretained(&swap_time)),
+             blink::BindOnce(
                  [](base::OnceClosure presentation_quit_closure,
                     const viz::FrameTimingDetails& presentation_details) {
                    base::TimeTicks timestamp =
@@ -1510,7 +1862,7 @@ TEST_F(WebFrameWidgetSimTest, PropagateScaleToRemoteFrames) {
 }
 
 #if BUILDFLAG(IS_ANDROID)
-TEST_F(WebFrameWidgetSimTest, TestLineBoundsAreEmptyBeforeFocus) {
+TEST_F(WebFrameWidgetSimTest, TestCursorAnchorInfoIsEmptyBeforeFocus) {
   WebView().ResizeVisualViewport(gfx::Size(1000, 1000));
   auto* widget = WebView().MainFrameViewWidget();
   SimRequest request("https://example.com/test.html", "text/html");
@@ -1545,8 +1897,9 @@ TEST_F(WebFrameWidgetSimTest, TestLineBoundsAreEmptyBeforeFocus) {
       *test::ReadFromFile(test::CoreTestDataPath("Ahem.woff2")));
   Compositor().BeginFrame();
   widget->UpdateAllLifecyclePhases(DocumentUpdateReason::kTest);
-  Vector<gfx::Rect>& actual = widget->GetVisibleLineBoundsOnScreenForTesting();
-  EXPECT_EQ(0U, actual.size());
+  mojom::blink::InputCursorAnchorInfoPtr& actual =
+      widget->GetLastCursorAnchorInfoForTesting();
+  EXPECT_TRUE(actual.is_null());
 }
 
 TEST_F(WebFrameWidgetSimTest, TestLineBoundsAreCorrectAfterFocusChange) {
@@ -1593,7 +1946,8 @@ TEST_F(WebFrameWidgetSimTest, TestLineBoundsAreCorrectAfterFocusChange) {
   first->Focus();
   widget->UpdateAllLifecyclePhases(DocumentUpdateReason::kTest);
   Vector<gfx::Rect> expected(Vector({gfx::Rect(0, 0, 40, 10)}));
-  Vector<gfx::Rect>& actual = widget->GetVisibleLineBoundsOnScreenForTesting();
+  Vector<gfx::Rect> actual =
+      widget->GetLastCursorAnchorInfoForTesting()->visible_line_bounds;
   EXPECT_EQ(expected.size(), actual.size());
   for (wtf_size_t i = 0; i < expected.size(); ++i) {
     EXPECT_EQ(expected.at(i), actual.at(i));
@@ -1606,11 +1960,55 @@ TEST_F(WebFrameWidgetSimTest, TestLineBoundsAreCorrectAfterFocusChange) {
       second->GetBoundingClientRect()->ToEnclosingRect().origin();
   widget->UpdateAllLifecyclePhases(DocumentUpdateReason::kTest);
   expected = Vector({gfx::Rect(origin.x(), origin.y(), 90, 10)});
-  actual = widget->GetVisibleLineBoundsOnScreenForTesting();
+  actual = widget->GetLastCursorAnchorInfoForTesting()->visible_line_bounds;
   EXPECT_EQ(expected.size(), actual.size());
   for (wtf_size_t i = 0; i < expected.size(); ++i) {
     EXPECT_EQ(expected.at(i), actual.at(i));
   }
+}
+
+TEST_F(WebFrameWidgetSimTest, TestLineBoundsAreCorrectForContenteditable) {
+  WebView().ResizeVisualViewport(gfx::Size(1000, 1000));
+  auto* widget = WebView().MainFrameViewWidget();
+  SimRequest request("https://example.com/test.html", "text/html");
+  SimSubresourceRequest font_resource("https://example.com/Ahem.woff2",
+                                      "font/woff2");
+  LoadURL("https://example.com/test.html");
+  request.Complete(
+      R"HTML(
+      <!doctype html>
+      <style>
+        @font-face {
+          font-family: custom-font;
+          src: url(https://example.com/Ahem.woff2) format("woff2");
+        }
+        body {
+          margin: 0;
+          padding: 0;
+          border: 0;
+        }
+        .target {
+          font: 10px/1 custom-font, monospace;
+          margin: 0;
+          padding: 0;
+          border: none;
+        }
+      </style>
+      <div contenteditable id='first' class='target'>ABCD</div>
+      )HTML");
+  Compositor().BeginFrame();
+  // Finish font loading, and trigger invalidations.
+  font_resource.Complete(
+      *test::ReadFromFile(test::CoreTestDataPath("Ahem.woff2")));
+  Compositor().BeginFrame();
+  Element* first = GetDocument().getElementById(AtomicString("first"));
+  first->Focus();
+  widget->UpdateAllLifecyclePhases(DocumentUpdateReason::kTest);
+
+  Vector<gfx::Rect> expected = {gfx::Rect(0, 0, 40, 10)};
+  Vector<gfx::Rect> actual =
+      widget->GetLastCursorAnchorInfoForTesting()->visible_line_bounds;
+  EXPECT_THAT(expected, ContainerEq(actual));
 }
 
 TEST_F(WebFrameWidgetSimTest, DisplayStateMatchesWindowShowState) {
@@ -1661,13 +2059,13 @@ TEST_F(WebFrameWidgetSimTest, DisplayStateMatchesWindowShowState) {
             GetDocument().body()->GetComputedStyle()->VisitedDependentColor(
                 GetCSSPropertyBackgroundColor()));
 
-  WTF::Vector<std::pair<ui::mojom::blink::WindowShowState, Color>> test_cases =
-      {{ui::mojom::blink::WindowShowState::kMinimized,
-        Color::FromRGB(/*cyan*/ 0, 255, 255)},
-       {ui::mojom::blink::WindowShowState::kMaximized,
-        Color::FromRGB(/*red*/ 255, 0, 0)},
-       {ui::mojom::blink::WindowShowState::kFullscreen,
-        Color::FromRGB(/*blue*/ 0, 0, 255)}};
+  Vector<std::pair<ui::mojom::blink::WindowShowState, Color>> test_cases = {
+      {ui::mojom::blink::WindowShowState::kMinimized,
+       Color::FromRGB(/*cyan*/ 0, 255, 255)},
+      {ui::mojom::blink::WindowShowState::kMaximized,
+       Color::FromRGB(/*red*/ 255, 0, 0)},
+      {ui::mojom::blink::WindowShowState::kFullscreen,
+       Color::FromRGB(/*blue*/ 0, 0, 255)}};
 
   for (const auto& [show_state, color] : test_cases) {
     visual_properties.window_show_state = show_state;
@@ -1769,7 +2167,8 @@ TEST_F(WebFrameWidgetSimTest, TestLineBoundsAreCorrectAfterLayoutChange) {
   first->Focus();
   first->SetValue("hello world");
   widget->UpdateAllLifecyclePhases(DocumentUpdateReason::kTest);
-  Vector<gfx::Rect> expected = widget->GetVisibleLineBoundsOnScreenForTesting();
+  Vector<gfx::Rect> expected =
+      widget->GetLastCursorAnchorInfoForTesting()->visible_line_bounds;
   // Offset each line bound by 200 pixels downwards (for after layout shift).
   for (auto& i : expected) {
     i.Offset(0, 200);
@@ -1779,7 +2178,8 @@ TEST_F(WebFrameWidgetSimTest, TestLineBoundsAreCorrectAfterLayoutChange) {
       .getElementById(AtomicString("d"))
       ->setAttribute(html_names::kStyleAttr, AtomicString("height: 200px"));
   widget->UpdateAllLifecyclePhases(DocumentUpdateReason::kTest);
-  Vector<gfx::Rect>& actual = widget->GetVisibleLineBoundsOnScreenForTesting();
+  Vector<gfx::Rect> actual =
+      widget->GetLastCursorAnchorInfoForTesting()->visible_line_bounds;
   for (wtf_size_t i = 0; i < expected.size(); ++i) {
     EXPECT_EQ(expected.at(i), actual.at(i));
   }
@@ -1832,7 +2232,8 @@ TEST_F(WebFrameWidgetSimTest, TestLineBoundsAreCorrectAfterPageScroll) {
   widget->UpdateAllLifecyclePhases(DocumentUpdateReason::kTest);
 
   Vector<gfx::Rect> expected;
-  for (auto& i : widget->GetVisibleLineBoundsOnScreenForTesting()) {
+  for (auto& i :
+       widget->GetLastCursorAnchorInfoForTesting()->visible_line_bounds) {
     gfx::Rect bound(i.origin(), i.size());
     bound.Offset(0, -50);
     expected.push_back(bound);
@@ -1845,7 +2246,8 @@ TEST_F(WebFrameWidgetSimTest, TestLineBoundsAreCorrectAfterPageScroll) {
 
   // As line bounds are calculated in document coordinates, a document scroll
   // should not have any effect. Assert that they are the same as before.
-  Vector<gfx::Rect>& actual = widget->GetVisibleLineBoundsOnScreenForTesting();
+  Vector<gfx::Rect> actual =
+      widget->GetLastCursorAnchorInfoForTesting()->visible_line_bounds;
   for (wtf_size_t i = 0; i < expected.size(); ++i) {
     EXPECT_EQ(expected.at(i).ToString(), actual.at(i).ToString());
   }
@@ -1903,17 +2305,19 @@ TEST_F(WebFrameWidgetSimTest, TestLineBoundsAreCorrectAfterElementScroll) {
   Vector<gfx::Rect> expected;
 
   // Offset each line bound by 50 pixels upwards (for after a scroll down).
-  for (auto& i : widget->GetVisibleLineBoundsOnScreenForTesting()) {
+  for (auto& i :
+       widget->GetLastCursorAnchorInfoForTesting()->visible_line_bounds) {
     gfx::Rect bound(i.origin(), i.size());
     bound.Offset(0, -50);
     expected.push_back(bound);
   }
 
   // Scroll element by 50 pixels down.
-  GetDocument().FocusedElement()->scrollBy(0, 50);
+  GetDocument().FocusedElement()->scrollByForTesting(0, 50);
   widget->UpdateAllLifecyclePhases(DocumentUpdateReason::kTest);
 
-  Vector<gfx::Rect>& actual = widget->GetVisibleLineBoundsOnScreenForTesting();
+  Vector<gfx::Rect> actual =
+      widget->GetLastCursorAnchorInfoForTesting()->visible_line_bounds;
   EXPECT_EQ(expected.size(), actual.size());
   for (wtf_size_t i = 0; i < expected.size(); ++i) {
     EXPECT_EQ(expected.at(i), actual.at(i));
@@ -1967,18 +2371,22 @@ TEST_F(WebFrameWidgetSimTest, TestLineBoundsAreCorrectAfterCommit) {
   for (wtf_size_t i = 0; i < text.length(); ++i) {
     first->SetValue(first->Value() + text[i]);
     widget->UpdateAllLifecyclePhases(DocumentUpdateReason::kTest);
-    EXPECT_EQ(1U, widget->GetVisibleLineBoundsOnScreenForTesting().size());
-    EXPECT_EQ(gfx::Rect(origin.x(), origin.y(), 10 * (i + 1), 10),
-              widget->GetVisibleLineBoundsOnScreenForTesting().at(0));
+    EXPECT_EQ(1U, widget->GetLastCursorAnchorInfoForTesting()
+                      ->visible_line_bounds.size());
+    EXPECT_EQ(
+        gfx::Rect(origin.x(), origin.y(), 10 * (i + 1), 10),
+        widget->GetLastCursorAnchorInfoForTesting()->visible_line_bounds.at(0));
   }
   first->SetValue(first->Value() + "\n");
   String new_text = "goodbye world";
   for (wtf_size_t i = 0; i < new_text.length(); ++i) {
     first->SetValue(first->Value() + new_text[i]);
     widget->UpdateAllLifecyclePhases(DocumentUpdateReason::kTest);
-    EXPECT_EQ(2U, widget->GetVisibleLineBoundsOnScreenForTesting().size());
-    EXPECT_EQ(gfx::Rect(origin.x(), origin.y() + 10, 10 * (i + 1), 10),
-              widget->GetVisibleLineBoundsOnScreenForTesting().at(1));
+    EXPECT_EQ(2U, widget->GetLastCursorAnchorInfoForTesting()
+                      ->visible_line_bounds.size());
+    EXPECT_EQ(
+        gfx::Rect(origin.x(), origin.y() + 10, 10 * (i + 1), 10),
+        widget->GetLastCursorAnchorInfoForTesting()->visible_line_bounds.at(1));
   }
 }
 
@@ -2031,9 +2439,11 @@ TEST_F(WebFrameWidgetSimTest, TestLineBoundsAreCorrectAfterDelete) {
   for (wtf_size_t i = last_line.length() - 1; i > 0; --i) {
     widget->FocusedWebLocalFrameInWidget()->DeleteSurroundingText(1, 0);
     widget->UpdateAllLifecyclePhases(DocumentUpdateReason::kTest);
-    EXPECT_EQ(2U, widget->GetVisibleLineBoundsOnScreenForTesting().size());
-    EXPECT_EQ(gfx::Rect(origin.x(), origin.y() + 10, 10 * i, 10),
-              widget->GetVisibleLineBoundsOnScreenForTesting().at(1));
+    EXPECT_EQ(2U, widget->GetLastCursorAnchorInfoForTesting()
+                      ->visible_line_bounds.size());
+    EXPECT_EQ(
+        gfx::Rect(origin.x(), origin.y() + 10, 10 * i, 10),
+        widget->GetLastCursorAnchorInfoForTesting()->visible_line_bounds.at(1));
   }
 
   // Remove the last character on the second line.
@@ -2041,26 +2451,34 @@ TEST_F(WebFrameWidgetSimTest, TestLineBoundsAreCorrectAfterDelete) {
   // line bound.
   widget->FocusedWebLocalFrameInWidget()->DeleteSurroundingText(1, 0);
   widget->UpdateAllLifecyclePhases(DocumentUpdateReason::kTest);
-  EXPECT_EQ(1U, widget->GetVisibleLineBoundsOnScreenForTesting().size());
+  EXPECT_EQ(
+      1U,
+      widget->GetLastCursorAnchorInfoForTesting()->visible_line_bounds.size());
 
   // Remove the new line character.
   widget->FocusedWebLocalFrameInWidget()->DeleteSurroundingText(1, 0);
   widget->UpdateAllLifecyclePhases(DocumentUpdateReason::kTest);
-  EXPECT_EQ(1U, widget->GetVisibleLineBoundsOnScreenForTesting().size());
+  EXPECT_EQ(
+      1U,
+      widget->GetLastCursorAnchorInfoForTesting()->visible_line_bounds.size());
 
   String first_line = "hello world";
   for (wtf_size_t i = first_line.length() - 1; i > 0; --i) {
     widget->FocusedWebLocalFrameInWidget()->DeleteSurroundingText(1, 0);
     widget->UpdateAllLifecyclePhases(DocumentUpdateReason::kTest);
-    EXPECT_EQ(1U, widget->GetVisibleLineBoundsOnScreenForTesting().size());
-    EXPECT_EQ(gfx::Rect(origin.x(), origin.y(), 10 * i, 10),
-              widget->GetVisibleLineBoundsOnScreenForTesting().at(0));
+    EXPECT_EQ(1U, widget->GetLastCursorAnchorInfoForTesting()
+                      ->visible_line_bounds.size());
+    EXPECT_EQ(
+        gfx::Rect(origin.x(), origin.y(), 10 * i, 10),
+        widget->GetLastCursorAnchorInfoForTesting()->visible_line_bounds.at(0));
   }
 
   // Remove last character
   widget->FocusedWebLocalFrameInWidget()->DeleteSurroundingText(1, 0);
   widget->UpdateAllLifecyclePhases(DocumentUpdateReason::kTest);
-  EXPECT_EQ(0U, widget->GetVisibleLineBoundsOnScreenForTesting().size());
+  EXPECT_EQ(
+      0U,
+      widget->GetLastCursorAnchorInfoForTesting()->visible_line_bounds.size());
 }
 
 TEST_F(WebFrameWidgetSimTest, TestLineBoundsInFrame) {
@@ -2120,7 +2538,8 @@ TEST_F(WebFrameWidgetSimTest, TestLineBoundsInFrame) {
   Compositor().BeginFrame();
 
   Vector<gfx::Rect> expected(Vector({gfx::Rect(0, /* 123+42= */ 165, 40, 10)}));
-  Vector<gfx::Rect>& actual = widget->GetVisibleLineBoundsOnScreenForTesting();
+  Vector<gfx::Rect> actual =
+      widget->GetLastCursorAnchorInfoForTesting()->visible_line_bounds;
   EXPECT_EQ(expected.size(), actual.size());
   for (wtf_size_t i = 0; i < expected.size(); ++i) {
     EXPECT_EQ(expected.at(i), actual.at(i));
@@ -2192,7 +2611,8 @@ TEST_F(WebFrameWidgetSimTest, TestLineBoundsWithDifferentZoom) {
   Vector<gfx::Rect> expected(
       Vector({gfx::Rect(0, /* 70*1.2+40*1.2*1.5= */ 156, /* 40*1.2*1.5= */ 72,
                         /* 10*1.2*1.5= */ 18)}));
-  Vector<gfx::Rect>& actual = widget->GetVisibleLineBoundsOnScreenForTesting();
+  Vector<gfx::Rect> actual =
+      widget->GetLastCursorAnchorInfoForTesting()->visible_line_bounds;
   EXPECT_EQ(expected.size(), actual.size());
   for (wtf_size_t i = 0; i < expected.size(); ++i) {
     EXPECT_EQ(expected.at(i), actual.at(i));
@@ -2261,11 +2681,56 @@ TEST_F(WebFrameWidgetSimTest, TestLineBoundsAreClippedInSubframe) {
   // The expected height is 10 * 11 = 110 but this should be clipped as to the
   // screen height of 200px - 100px for the top of the bound.
   Vector<gfx::Rect> expected(Vector({gfx::Rect(0, 100, 200, 100)}));
-  Vector<gfx::Rect>& actual = widget->GetVisibleLineBoundsOnScreenForTesting();
+  Vector<gfx::Rect> actual =
+      widget->GetLastCursorAnchorInfoForTesting()->visible_line_bounds;
   EXPECT_EQ(expected.size(), actual.size());
   for (wtf_size_t i = 0; i < expected.size(); ++i) {
     EXPECT_EQ(expected.at(i), actual.at(i));
   }
+}
+
+TEST_F(WebFrameWidgetSimTest, TestCursorAnchorInfoWithEditContext) {
+  WebView().ResizeVisualViewport(gfx::Size(1000, 1000));
+  auto* widget = WebView().MainFrameViewWidget();
+  SimRequest request("https://example.com/test.html", "text/html");
+  LoadURL("https://example.com/test.html");
+  request.Complete(
+      R"HTML(
+      <!doctype html>
+      <div id="target" style='width:200px;height:200px'></div>
+      <script>
+        const editContext = new EditContext();
+        const target = document.getElementById('target');
+        target.editContext = editContext;
+        target.focus();
+        let controlBounds = new DOMRect(10, 20, 100, 50);
+        editContext.updateControlBounds(controlBounds);
+        let selectionBounds = new DOMRect(15, 25, 2, 10);
+        editContext.updateSelectionBounds(selectionBounds);
+      </script>
+      )HTML");
+  Compositor().BeginFrame();
+  widget->UpdateAllLifecyclePhases(DocumentUpdateReason::kTest);
+
+  // Directly verify CalculateCursorAnchorInfo using ForTesting helper
+  mojom::blink::InputCursorAnchorInfoPtr info =
+      widget->CalculateCursorAnchorInfoForTesting(/*update_requested=*/true);
+  ASSERT_TRUE(info);
+  EXPECT_EQ(gfx::RectF(10, 20, 100, 50),
+            info->editor_bounds_info->editor_bounds);
+  EXPECT_TRUE(info->insertion_marker.has_value());
+  EXPECT_EQ(gfx::Rect(15, 25, 2, 10), info->insertion_marker.value());
+
+  // Also verify UpdateCursorAnchorInfo properly populates
+  // last_cursor_anchor_info_
+  widget->UpdateCursorAnchorInfo(/*update_requested=*/true);
+  mojom::blink::InputCursorAnchorInfoPtr& actual =
+      widget->GetLastCursorAnchorInfoForTesting();
+  ASSERT_TRUE(actual);
+  EXPECT_EQ(gfx::RectF(10, 20, 100, 50),
+            actual->editor_bounds_info->editor_bounds);
+  EXPECT_TRUE(actual->insertion_marker.has_value());
+  EXPECT_EQ(gfx::Rect(15, 25, 2, 10), actual->insertion_marker.value());
 }
 #endif  // BUILDFLAG(IS_ANDROID)
 
@@ -2393,15 +2858,15 @@ class EventHandlingWebFrameWidgetSimTest : public SimTest {
       // Register callbacks for swap and presentation times.
       base::TimeTicks swap_time;
       NotifySwapAndPresentationTimeForTesting(
-          {WTF::BindOnce(
+          {blink::BindOnce(
                [](base::OnceClosure swap_quit_closure,
                   base::TimeTicks* swap_time, base::TimeTicks timestamp) {
                  DCHECK(!timestamp.is_null());
                  *swap_time = timestamp;
                  std::move(swap_quit_closure).Run();
                },
-               swap_run_loop.QuitClosure(), WTF::Unretained(&swap_time)),
-           WTF::BindOnce(
+               swap_run_loop.QuitClosure(), blink::Unretained(&swap_time)),
+           blink::BindOnce(
                [](base::OnceClosure presentation_quit_closure,
                   const viz::FrameTimingDetails& presentation_details) {
                  base::TimeTicks timestamp =
@@ -2530,5 +2995,171 @@ TEST_F(EventHandlingWebFrameWidgetSimTest, RafAlignedEventWithUpdate) {
   GetTestWebFrameWidget().CompositeAndWaitForPresentation(Compositor());
   EXPECT_EQ(TestSwapPromise::State::kResolved, swap_promise_state);
 }
+
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+
+class WebFrameWidgetAdditionalWindowingControlsTest : public SimTest {
+ public:
+  WebFrameWidgetAdditionalWindowingControlsTest()
+      : SimTest(base::test::TaskEnvironment::TimeSource::MOCK_TIME) {}
+  void SetUp() override {
+    feature_list_.InitAndEnableFeature(
+        features::kDesktopPWAsAdditionalWindowingControls);
+    SimTest::SetUp();
+  }
+  void FastForwardBy(base::TimeDelta delta) {
+    task_environment().FastForwardBy(delta);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+TEST_F(WebFrameWidgetAdditionalWindowingControlsTest, MaximizeCallbackCalled) {
+  using ui::mojom::blink::WindowShowState;
+
+  const std::vector<WindowShowState> start_states = {
+      WindowShowState::kDefault, WindowShowState::kNormal,
+      WindowShowState::kMinimized, WindowShowState::kFullscreen};
+
+  for (const WindowShowState start_state : start_states) {
+    SCOPED_TRACE(testing::Message() << "Testing transition from " << start_state
+                                    << " to " << WindowShowState::kMaximized);
+    base::MockOnceCallback<void(bool)> maximize_callback;
+    EXPECT_CALL(maximize_callback, Run(true));
+
+    WebView().MainFrameViewWidget()->MaximizeRequested(maximize_callback.Get());
+    WebView().MainFrameViewWidget()->OnWindowShowStateChanged(
+        /*old_state=*/start_state,
+        /*new_state=*/WindowShowState::kMaximized);
+  }
+}
+
+TEST_F(WebFrameWidgetAdditionalWindowingControlsTest, MinimizeCallbackCalled) {
+  using ui::mojom::blink::WindowShowState;
+
+  const std::vector<WindowShowState> start_states = {
+      WindowShowState::kDefault, WindowShowState::kNormal,
+      WindowShowState::kMaximized, WindowShowState::kFullscreen};
+
+  for (const WindowShowState start_state : start_states) {
+    SCOPED_TRACE(testing::Message() << "Testing transition from " << start_state
+                                    << " to " << WindowShowState::kMinimized);
+    base::MockOnceCallback<void(bool)> minimize_callback;
+    EXPECT_CALL(minimize_callback, Run(true));
+
+    WebView().MainFrameViewWidget()->MinimizeRequested(minimize_callback.Get());
+    WebView().MainFrameViewWidget()->OnWindowShowStateChanged(
+        /*old_state=*/start_state,
+        /*new_state=*/WindowShowState::kMinimized);
+  }
+}
+
+TEST_F(WebFrameWidgetAdditionalWindowingControlsTest,
+       RestoreToNormalCallbackCalled) {
+  using ui::mojom::blink::WindowShowState;
+
+  const std::vector<WindowShowState> start_states = {
+      WindowShowState::kMinimized, WindowShowState::kMaximized,
+      WindowShowState::kFullscreen};
+
+  for (const WindowShowState start_state : start_states) {
+    SCOPED_TRACE(testing::Message() << "Testing transition from " << start_state
+                                    << " to " << WindowShowState::kNormal);
+    base::MockOnceCallback<void(bool)> restore_callback;
+    EXPECT_CALL(restore_callback, Run(true));
+
+    WebView().MainFrameViewWidget()->RestoreRequested(restore_callback.Get());
+    WebView().MainFrameViewWidget()->OnWindowShowStateChanged(
+        /*old_state=*/start_state,
+        /*new_state=*/WindowShowState::kNormal);
+  }
+}
+
+TEST_F(WebFrameWidgetAdditionalWindowingControlsTest,
+       RestoreToMaximizedCallbackCalled) {
+  using ui::mojom::blink::WindowShowState;
+
+  const std::vector<WindowShowState> start_states = {
+      WindowShowState::kMinimized, WindowShowState::kFullscreen};
+
+  for (const WindowShowState start_state : start_states) {
+    SCOPED_TRACE(testing::Message() << "Testing transition from " << start_state
+                                    << " to " << WindowShowState::kMaximized);
+    base::MockOnceCallback<void(bool)> restore_callback;
+    EXPECT_CALL(restore_callback, Run(true));
+
+    WebView().MainFrameViewWidget()->RestoreRequested(restore_callback.Get());
+    WebView().MainFrameViewWidget()->OnWindowShowStateChanged(
+        /*old_state=*/start_state,
+        /*new_state=*/WindowShowState::kMaximized);
+  }
+}
+
+TEST_F(WebFrameWidgetAdditionalWindowingControlsTest,
+       SetResizableCallbackCalled) {
+  const std::vector<bool> values_to_test = {true, false};
+  for (const bool value_to_test : values_to_test) {
+    base::MockOnceCallback<void(bool)> set_resizable_callback;
+    EXPECT_CALL(set_resizable_callback, Run(true));
+
+    WebView().MainFrameViewWidget()->SetResizableRequested(
+        value_to_test, set_resizable_callback.Get());
+    WebView().MainFrameViewWidget()->OnResizableChanged(
+        /*new_resizable=*/value_to_test);
+  }
+}
+
+TEST_F(WebFrameWidgetAdditionalWindowingControlsTest,
+       WindowShowStateChangeTimeout) {
+  using ui::mojom::blink::WindowShowState;
+  static constexpr base::TimeDelta kWindowShowStateChangeTimeout =
+      base::Seconds(5);
+
+  {
+    base::MockOnceCallback<void(bool)> maximize_callback;
+    EXPECT_CALL(maximize_callback, Run(false));
+    WebView().MainFrameViewWidget()->MaximizeRequested(maximize_callback.Get());
+    FastForwardBy(kWindowShowStateChangeTimeout + base::Seconds(1));
+    WebView().MainFrameViewWidget()->OnWindowShowStateChanged(
+        /*old_state=*/WindowShowState::kNormal,
+        /*new_state=*/WindowShowState::kMaximized);
+  }
+  {
+    base::MockOnceCallback<void(bool)> minimize_callback;
+    EXPECT_CALL(minimize_callback, Run(false));
+    WebView().MainFrameViewWidget()->MinimizeRequested(minimize_callback.Get());
+    FastForwardBy(kWindowShowStateChangeTimeout + base::Seconds(1));
+    WebView().MainFrameViewWidget()->OnWindowShowStateChanged(
+        /*old_state=*/WindowShowState::kMaximized,
+        /*new_state=*/WindowShowState::kMinimized);
+  }
+  {
+    base::MockOnceCallback<void(bool)> restore_callback;
+    EXPECT_CALL(restore_callback, Run(false));
+    WebView().MainFrameViewWidget()->RestoreRequested(restore_callback.Get());
+    FastForwardBy(kWindowShowStateChangeTimeout + base::Seconds(1));
+    WebView().MainFrameViewWidget()->OnWindowShowStateChanged(
+        /*old_state=*/WindowShowState::kMinimized,
+        /*new_state=*/WindowShowState::kMaximized);
+  }
+}
+
+TEST_F(WebFrameWidgetAdditionalWindowingControlsTest, SetResizableTimeout) {
+  static constexpr base::TimeDelta kWindowShowStateChangeTimeout =
+      base::Seconds(5);
+  WebView().MainFrameViewWidget()->SetResizableRequested(/*resizable=*/false,
+                                                         base::DoNothing());
+  WebView().MainFrameViewWidget()->OnResizableChanged(/*new_resizable=*/false);
+
+  base::MockOnceCallback<void(bool)> set_resizable_callback;
+  EXPECT_CALL(set_resizable_callback, Run(false));
+  WebView().MainFrameViewWidget()->SetResizableRequested(
+      /*resizable=*/true, set_resizable_callback.Get());
+  FastForwardBy(kWindowShowStateChangeTimeout + base::Seconds(1));
+  WebView().MainFrameViewWidget()->OnResizableChanged(/*new_resizable=*/true);
+}
+
+#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 
 }  // namespace blink

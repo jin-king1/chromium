@@ -4,19 +4,25 @@
 
 #include "chrome/browser/ash/printing/cups_printers_manager.h"
 
+#include <algorithm>
 #include <map>
 #include <optional>
 #include <utility>
 
+#include "ash/constants/ash_features.h"
+#include "ash/constants/ash_pref_names.h"
 #include "ash/public/cpp/network_config_service.h"
 #include "base/containers/fixed_flat_map.h"
 #include "base/containers/flat_set.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/observer_list.h"
 #include "base/scoped_observation.h"
 #include "base/sequence_checker.h"
+#include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/timer/elapsed_timer.h"
@@ -43,7 +49,6 @@
 #include "chrome/browser/ash/scanning/zeroconf_scanner_detector.h"
 #include "chrome/browser/printing/print_preview_sticky_settings.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/common/pref_names.h"
 #include "chromeos/ash/components/dbus/dlcservice/dlcservice_client.h"
 #include "chromeos/ash/components/dbus/printscanmgr/printscanmgr_client.h"
 #include "chromeos/ash/components/settings/cros_settings.h"
@@ -209,7 +214,7 @@ class CupsPrintersManagerImpl
 
     print_servers_manager_->AddObserver(this);
 
-    user_printers_allowed_.Init(prefs::kUserPrintersAllowed, pref_service);
+    user_printers_allowed_.Init(ash::prefs::kUserPrintersAllowed, pref_service);
   }
 
   ~CupsPrintersManagerImpl() override = default;
@@ -341,7 +346,15 @@ class CupsPrintersManagerImpl
         }
       }
     }
-    NotifyObservers({PrinterClass::kEnterprise});
+
+    if (base::FeatureList::IsEnabled(features::kManagedUsbPrinters)) {
+      // Retrigger the setup of enterprise USB printers. This also removes any
+      // detected (but not saved) USB printers which should be enterprise
+      // managed. `PrinterClass::kEnterprise` observers are also notified here.
+      RebuildDetectedLists();
+    } else {
+      NotifyObservers({PrinterClass::kEnterprise});
+    }
   }
 
   // CrosNetworkConfigObserver implementation.
@@ -417,10 +430,10 @@ class CupsPrintersManagerImpl
           PrinterConfigurer::Create(ppd_provider_, dlc_service_client_);
       printers_being_setup_[id].fingerprint = fingerprint;
       printers_being_setup_[id].configurer->SetUpPrinterInCups(
-          printer,
-          base::BindOnce(&CupsPrintersManagerImpl::OnPrinterSetupResult,
-                         weak_ptr_factory_.GetWeakPtr(), id,
-                         is_automatic_installation));
+          printer, base::BindOnce(
+                       &CupsPrintersManagerImpl::OnPrinterSetupResult,
+                       weak_ptr_factory_.GetWeakPtr(), id,
+                       is_automatic_installation, printer.ipp_printer_info()));
     }
   }
 
@@ -437,9 +450,10 @@ class CupsPrintersManagerImpl
 
     // If the printer is being installed now, stop the process.
     std::vector<PrinterSetupCallback> callbacks;
-    if (printers_being_setup_.contains(printer_id)) {
-      callbacks = std::move(printers_being_setup_[printer_id].callbacks);
-      printers_being_setup_.erase(printer_id);
+    if (auto it = printers_being_setup_.find(printer_id);
+        it != printers_being_setup_.end()) {
+      callbacks = std::move(it->second.callbacks);
+      printers_being_setup_.erase(it);
     }
     for (auto& callback : callbacks) {
       std::move(callback).Run(PrinterSetupResult::kPrinterRemoved);
@@ -522,7 +536,7 @@ class CupsPrintersManagerImpl
       // Query every printer that is either saved or recently used.
       if (printers_.IsPrinterInClass(chromeos::PrinterClass::kSaved,
                                      printer.id()) ||
-          base::Contains(recently_used_printers, printer.id())) {
+          std::ranges::contains(recently_used_printers, printer.id())) {
         FetchPrinterStatus(printer.id(),
                            /*PrinterStatusCallback=*/base::DoNothing());
         ++printers_queried;
@@ -566,7 +580,7 @@ class CupsPrintersManagerImpl
     // UNREACHABLE if the printer is disconnected.
     if (printer->IsUsbProtocol()) {
       CupsPrinterStatus printer_status(printer_id);
-      if (FindDetectedPrinter(printer_id)) {
+      if (UsbPrinterIsConnected(printer_id)) {
         printer_status.AddStatusReason(
             CupsPrinterStatus::CupsPrinterStatusReason::Reason::kNoError,
             CupsPrinterStatus::CupsPrinterStatusReason::Severity::
@@ -646,7 +660,8 @@ class CupsPrintersManagerImpl
       const std::string& make_and_model,
       const std::vector<std::string>& document_formats,
       bool ipp_everywhere,
-      const chromeos::PrinterAuthenticationInfo& auth_info) {
+      const chromeos::PrinterAuthenticationInfo& auth_info,
+      const chromeos::IppPrinterInfo& ipp_printer_info) {
     ParsePrinterStatusFromPrinterQuery(printer_id, std::move(cb), result,
                                        printer_status, auth_info);
   }
@@ -730,9 +745,10 @@ class CupsPrintersManagerImpl
 
   void QueryPrinterForAutoConf(
       const Printer& printer,
-      base::OnceCallback<void(bool)> callback) override {
+      base::OnceCallback<void(bool, const chromeos::IppPrinterInfo&)> callback)
+      override {
     if (!IsIppUri(printer.uri())) {
-      std::move(callback).Run(false);
+      std::move(callback).Run(false, chromeos::IppPrinterInfo{});
       return;
     }
 
@@ -741,24 +757,53 @@ class CupsPrintersManagerImpl
         printer.uri().GetPathEncodedAsString(),
         printer.uri().GetScheme() == chromeos::kIppsScheme,
         base::BindOnce(&CupsPrintersManagerImpl::OnQueryPrinterForAutoConf,
-                       weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
+                       weak_ptr_factory_.GetWeakPtr(), printer.id(),
+                       std::move(callback)));
   }
 
   // Callback for QueryPrinterForAutoConf
   void OnQueryPrinterForAutoConf(
-      base::OnceCallback<void(bool)> callback,
+      std::string printer_id,
+      base::OnceCallback<void(bool, const chromeos::IppPrinterInfo&)> callback,
       PrinterQueryResult result,
       const ::printing::PrinterStatus& printer_status,
       const std::string& make_and_model,
       const std::vector<std::string>& document_formats,
       bool ipp_everywhere,
-      const chromeos::PrinterAuthenticationInfo& auth_info) {
+      const chromeos::PrinterAuthenticationInfo& auth_info,
+      const chromeos::IppPrinterInfo& ipp_printer_info) {
     if (result != PrinterQueryResult::kSuccess) {
-      std::move(callback).Run(false);
+      std::string error;
+      switch (result) {
+        case PrinterQueryResult::kUnreachable:
+          error = "device unreachable";
+          break;
+        case PrinterQueryResult::kHostnameResolution:
+          error = "hostname resolution failed";
+          break;
+        case PrinterQueryResult::kUnknownFailure:
+          error = "unknown failure trying to reach printer";
+          break;
+        case PrinterQueryResult::kSuccess:
+          NOTREACHED();
+      }
+
+      PRINTER_LOG(ERROR) << printer_id
+                         << ": Failed to query printer attributes: " << error;
+
+      std::move(callback).Run(false, chromeos::IppPrinterInfo{});
       return;
     }
 
-    std::move(callback).Run(ipp_everywhere);
+    PRINTER_LOG(DEBUG) << printer_id << ": Printer attributes: make_and_model=["
+                       << make_and_model << "] document_formats=["
+                       << base::JoinString(document_formats, " ")
+                       << "] ipp_features=["
+                       << base::JoinString(ipp_printer_info.ipp_features, " ")
+                       << "] mopria_certified=["
+                       << ipp_printer_info.mopria_certified << "]";
+
+    std::move(callback).Run(ipp_everywhere, ipp_printer_info);
   }
 
  private:
@@ -766,8 +811,58 @@ class CupsPrintersManagerImpl
     return printers_.Get(PrinterClass::kEnterprise, id);
   }
 
+  // It's possible that multiple printers have the same `usb_device_id`, eg. two
+  // different configurations for the same printer.
+  std::vector<Printer> FindUsbEnterprisePrinters(
+      std::optional<Printer::UsbDeviceId> usb_device_id) const {
+    if (!usb_device_id.has_value()) {
+      return std::vector<Printer>{};
+    }
+    std::vector<Printer> result;
+    for (Printer ep : printers_.Get(PrinterClass::kEnterprise)) {
+      if (ep.IsUsbProtocol() && ep.usb_device_id() == usb_device_id) {
+        result.push_back(std::move(ep));
+      }
+    }
+    return result;
+  }
+
+  const PrinterDetector::DetectedPrinter* FindUsbDetectedPrinter(
+      std::optional<Printer::UsbDeviceId> usb_device_id) const {
+    if (!usb_device_id.has_value()) {
+      return nullptr;
+    }
+    for (const auto& detected : usb_detections_) {
+      if (detected.printer.usb_device_id() == usb_device_id) {
+        return &detected;
+      }
+    }
+    return nullptr;
+  }
+
+  bool AnyEnterprisePrinterMatches(
+      std::optional<Printer::UsbDeviceId> usb_device_id) const {
+    return FindUsbEnterprisePrinters(usb_device_id).size() > 0;
+  }
+
+  void UpdateEnterprisePrintersWithDetected(const Printer& detected_printer) {
+    for (chromeos::Printer enterprise :
+         FindUsbEnterprisePrinters(detected_printer.usb_device_id())) {
+      // Modify the enterprise printer if needed adding the serial (only needed
+      // for "usb" protocol, "ippusb" should be good to go).
+      if (enterprise.GetProtocol() == Printer::PrinterProtocol::kUsb) {
+        // Note: `detected_printer.uri` has "usb" as the protocol and contains
+        // the correct serial for the printer, since it was set in
+        // `UsbPrinterDetector::DoAddDevice` and never changed.
+        enterprise.SetUri(detected_printer.uri());
+        printers_.Remove(chromeos::PrinterClass::kEnterprise, enterprise.id());
+        printers_.Insert(chromeos::PrinterClass::kEnterprise, enterprise);
+      }
+    }
+  }
+
   // TODO(baileyberro): Remove the need for this function by pushing additional
-  // logic into PrintersMap. https://crbug.com/956172
+  // logic into PrintersMap. https://crbug.com/216048433
   void ResetNearbyPrintersLists() {
     printers_.Clear(PrinterClass::kAutomatic);
     printers_.Clear(PrinterClass::kDiscovered);
@@ -777,9 +872,6 @@ class CupsPrintersManagerImpl
   void NotifyObservers(const std::vector<PrinterClass>& printer_classes) {
     for (auto printer_class : printer_classes) {
       auto printers = printers_.Get(printer_class);
-      PRINTER_LOG(DEBUG) << "Sending notification for " << printers.size()
-                         << " printers in class (" << ToString(printer_class)
-                         << ")";
       for (auto& observer : observer_list_) {
         observer.OnPrintersChanged(printer_class, printers);
       }
@@ -793,27 +885,62 @@ class CupsPrintersManagerImpl
     }
   }
 
-  // Look through all sources for the detected printer with the given id.
-  // Return a pointer to the printer on found, null if no entry is found.
-  const PrinterDetector::DetectedPrinter* FindDetectedPrinter(
+  struct UsbPrinterPpdInfo {
+    chromeos::Printer::PpdReference ppd_reference;
+    chromeos::PrinterSearchData ppd_search_data;
+  };
+  // Get PPD information for the given USB printer (detected or enterprise).
+  // Returns `std::nullopt` if there's no such connected USB printer.
+  std::optional<UsbPrinterPpdInfo> GetUsbPrinterPpdInfo(
       const std::string& id) const {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_);
-    for (const auto* printer_list : {&usb_detections_, &zeroconf_detections_}) {
-      for (const auto& detected : *printer_list) {
-        if (detected.printer.id() == id) {
-          return &detected;
-        }
+    // First look through regular usb detected printers.
+    for (const auto& detected : usb_detections_) {
+      if (detected.printer.id() == id) {
+        return UsbPrinterPpdInfo(detected.printer.ppd_reference(),
+                                 detected.ppd_search_data);
       }
     }
-    return nullptr;
+    // Now look through enterprise usb printers.
+    if (!base::FeatureList::IsEnabled(features::kManagedUsbPrinters)) {
+      return std::nullopt;
+    }
+    if (std::optional<Printer> enterprise =
+            printers_.Get(chromeos::PrinterClass::kEnterprise, id)) {
+      // Need to find the corresponding detected usb printer and get the
+      // `ppd_search_data` from it.
+      if (const PrinterDetector::DetectedPrinter* detected =
+              FindUsbDetectedPrinter(enterprise->usb_device_id())) {
+        return UsbPrinterPpdInfo(enterprise->ppd_reference(),
+                                 detected->ppd_search_data);
+      }
+    }
+    return std::nullopt;
   }
 
-  void MaybeRecordInstallation(const Printer& printer,
-                               bool is_automatic_installation) {
+  bool UsbPrinterIsConnected(const std::string& id) {
+    return GetUsbPrinterPpdInfo(id).has_value();
+  }
+
+  void MaybeRecordInstallation(
+      const Printer& printer,
+      bool is_automatic_installation,
+      const std::optional<chromeos::IppPrinterInfo>& ipp_printer_info,
+      const std::string& ppd_filename) {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_);
     if (synced_printers_manager_->GetPrinter(printer.id())) {
       // It's just an update, not a new installation, so don't record an event.
       return;
+    }
+
+    // For recording purposes, this is an automatic install if the ppd reference
+    // generated at detection time is the one we actually used -- i.e. the user
+    // didn't have to change anything to obtain a ppd that worked.
+    PrinterEventTracker::SetupMode mode;
+    if (is_automatic_installation) {
+      mode = PrinterEventTracker::kAutomatic;
+    } else {
+      mode = PrinterEventTracker::kUser;
     }
 
     // For compatibility with the previous implementation, record USB printers
@@ -822,33 +949,19 @@ class CupsPrintersManagerImpl
     // IPP.
     if (printer.IsUsbProtocol()) {
       // Get the associated detection record if one exists.
-      const auto* detected = FindDetectedPrinter(printer.id());
-      // We should have the full DetectedPrinter.  We can't log the printer if
-      // we don't have it.
-      if (!detected) {
+      std::optional<UsbPrinterPpdInfo> ppd_info =
+          GetUsbPrinterPpdInfo(printer.id());
+      if (!ppd_info.has_value()) {
         LOG(WARNING) << "Failed to find USB printer " << printer.id()
                      << " for installation event logging";
         return;
       }
-      // For recording purposes, this is an automatic install if the ppd
-      // reference generated at detection time is the is the one we actually
-      // used -- i.e. the user didn't have to change anything to obtain a ppd
-      // that worked.
-      PrinterEventTracker::SetupMode mode;
-      if (is_automatic_installation) {
-        mode = PrinterEventTracker::kAutomatic;
-      } else {
-        mode = PrinterEventTracker::kUser;
-      }
-      event_tracker_->RecordUsbPrinterInstalled(*detected, mode);
+      event_tracker_->RecordUsbPrinterInstalled(ppd_info->ppd_reference,
+                                                ppd_info->ppd_search_data, mode,
+                                                ppd_filename);
     } else {
-      PrinterEventTracker::SetupMode mode;
-      if (is_automatic_installation) {
-        mode = PrinterEventTracker::kAutomatic;
-      } else {
-        mode = PrinterEventTracker::kUser;
-      }
-      event_tracker_->RecordIppPrinterInstalled(printer, mode);
+      event_tracker_->RecordIppPrinterInstalled(printer, mode, ipp_printer_info,
+                                                ppd_filename);
     }
   }
 
@@ -856,14 +969,26 @@ class CupsPrintersManagerImpl
       const std::vector<PrinterDetector::DetectedPrinter>& detected_list) {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_);
 
-    // Update the list of connected printers (skip the saved ones).
+    // Update the list of connected printers.
     std::vector<PrinterDetector::DetectedPrinter> printers;
     for (const PrinterDetector::DetectedPrinter& detected : detected_list) {
-      if (!printers_.IsPrinterInClass(PrinterClass::kSaved,
-                                      detected.printer.id())) {
+      if (base::FeatureList::IsEnabled(features::kManagedUsbPrinters)) {
+        UpdateEnterprisePrintersWithDetected(detected.printer);
+        // Skip further set up for any enterprise managed or saved printers.
+        if (AnyEnterprisePrinterMatches(detected.printer.usb_device_id()) ||
+            printers_.IsPrinterInClass(PrinterClass::kSaved,
+                                       detected.printer.id())) {
+          continue;
+        }
         printers.push_back(detected);
+      } else {
+        if (!printers_.IsPrinterInClass(PrinterClass::kSaved,
+                                        detected.printer.id())) {
+          printers.push_back(detected);
+        }
       }
     }
+
     auto_usb_printer_configurer_->UpdateListOfConnectedPrinters(
         std::move(printers));
 
@@ -941,12 +1066,12 @@ class CupsPrintersManagerImpl
                                const Printer& printer) {
     printers_.Insert(printer_class, printer);
 
+    bool inserted = detected_printers_seen_.insert(printer.id()).second;
     // If we've seen this printer before, don't trigger a new detection event.
-    if (detected_printers_seen_.contains(printer.id())) {
+    if (!inserted) {
       return;
     }
 
-    detected_printers_seen_.insert(printer.id());
     NotifyLocalPrinterObservers();
   }
 
@@ -982,29 +1107,34 @@ class CupsPrintersManagerImpl
   void RecordSetupAbandoned(const Printer& printer) override {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_);
     if (printer.IsUsbProtocol()) {
-      const auto* detected = FindDetectedPrinter(printer.id());
-      if (!detected) {
+      std::optional<UsbPrinterPpdInfo> ppd_info =
+          GetUsbPrinterPpdInfo(printer.id());
+      if (!ppd_info.has_value()) {
         LOG(WARNING) << "Failed to find USB printer " << printer.id()
                      << " for abandoned event logging";
         return;
       }
-      event_tracker_->RecordUsbSetupAbandoned(*detected);
+      event_tracker_->RecordUsbSetupAbandoned(ppd_info->ppd_search_data);
     } else {
       event_tracker_->RecordSetupAbandoned(printer);
     }
   }
 
-  // Rebuild the Automatic and Discovered printers lists from the (cached) raw
-  // detections.  This will also generate OnPrintersChanged events for any
-  // observers observering either of the detected lists (kAutomatic and
-  // kDiscovered).
+  // Rebuild the Automatic, Discovered, and Enterprise printers lists from the
+  // (cached) raw detections. This will also generate OnPrintersChanged events
+  // for any observers observering any of the lists.
   void RebuildDetectedLists() {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_);
     ResetNearbyPrintersLists();
     AddDetectedUsbPrinters(usb_detections_);
     AddDetectedNetworkPrinters(zeroconf_detections_);
     AddDetectedNetworkPrinters(servers_detections_);
-    NotifyObservers({PrinterClass::kAutomatic, PrinterClass::kDiscovered});
+    if (base::FeatureList::IsEnabled(features::kManagedUsbPrinters)) {
+      NotifyObservers({PrinterClass::kAutomatic, PrinterClass::kDiscovered,
+                       PrinterClass::kEnterprise});
+    } else {
+      NotifyObservers({PrinterClass::kAutomatic, PrinterClass::kDiscovered});
+    }
   }
 
   void OnUsbPrinterSetupDone(std::string printer_id) {
@@ -1042,9 +1172,11 @@ class CupsPrintersManagerImpl
   }
 
   // Callback for `SetUpPrinterInCups`.
-  void OnPrinterSetupResult(const std::string& printer_id,
-                            bool is_automatic_installation,
-                            PrinterSetupResult result) {
+  void OnPrinterSetupResult(
+      const std::string& printer_id,
+      bool is_automatic_installation,
+      const std::optional<chromeos::IppPrinterInfo>& ipp_printer_info,
+      PrinterSetupResult result) {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_);
 
     std::map<std::string, PrinterSetupTracker>::iterator it =
@@ -1053,6 +1185,8 @@ class CupsPrintersManagerImpl
 
     if (result == PrinterSetupResult::kSuccess) {
       installed_printer_fingerprints_[printer_id] = it->second.fingerprint;
+      std::string ppd_filename = it->second.configurer->GetLastPpdBasename();
+
       // TODO: b/295243026 - Solve this issue during metrics clean-up.
       // We check this condition before calling MaybeRecordInstallation() to
       // make it backward compatible with the state before crrev.com/c/4763464.
@@ -1063,7 +1197,8 @@ class CupsPrintersManagerImpl
       if (user_printers_allowed_.GetValue()) {
         std::optional<chromeos::Printer> printer = printers_.Get(printer_id);
         if (printer) {
-          MaybeRecordInstallation(*printer, is_automatic_installation);
+          MaybeRecordInstallation(*printer, is_automatic_installation,
+                                  ipp_printer_info, ppd_filename);
         }
       }
     }
@@ -1226,10 +1361,10 @@ std::unique_ptr<CupsPrintersManager> CupsPrintersManager::CreateForTesting(
 void CupsPrintersManager::RegisterProfilePrefs(
     user_prefs::PrefRegistrySyncable* registry) {
   registry->RegisterBooleanPref(
-      prefs::kUserPrintersAllowed, true,
+      ash::prefs::kUserPrintersAllowed, true,
       user_prefs::PrefRegistrySyncable::SYNCABLE_OS_PREF);
-  registry->RegisterBooleanPref(prefs::kPrintingSendUsernameAndFilenameEnabled,
-                                false);
+  registry->RegisterBooleanPref(
+      ash::prefs::kPrintingSendUsernameAndFilenameEnabled, false);
   PrintServersProvider::RegisterProfilePrefs(registry);
 }
 

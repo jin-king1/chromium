@@ -14,9 +14,11 @@
 
 @implementation TabGridTransitionLayout
 
-+ (instancetype)layoutWithActiveCell:(TabGridTransitionItem*)activeCell {
++ (instancetype)layoutWithActiveCell:(TabGridTransitionItem*)activeCell
+                          activeGrid:(UIViewController*)activeGrid {
   TabGridTransitionLayout* layout = [[self alloc] init];
   layout.activeCell = activeCell;
+  layout.activeGrid = activeGrid;
   return layout;
 }
 

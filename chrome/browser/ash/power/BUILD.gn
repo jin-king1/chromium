@@ -2,16 +2,12 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/chromeos/ui_mode.gni")
-
 assert(is_chromeos)
 
 static_library("power") {
   sources = [
     "cpu_data_collector.cc",
     "cpu_data_collector.h",
-    "extension_event_observer.cc",
-    "extension_event_observer.h",
     "freezer_cgroup_process_manager.cc",
     "freezer_cgroup_process_manager.h",
     "idle_action_warning_dialog_view.cc",
@@ -33,12 +29,11 @@ static_library("power") {
   deps = [
     "//ash/constants",
     "//base",
-    "//chrome/browser:browser_process",
-    "//chrome/browser/ash/login/demo_mode",
     "//chrome/browser/profiles:profile",
+    "//chrome/browser/profiles:profile_manager",
     "//chrome/common",
     "//chromeos/ash/components/dbus",
-    "//chromeos/ash/components/dbus",
+    "//chromeos/ash/components/demo_mode",
     "//chromeos/dbus/power",
     "//chromeos/dbus/power:power_manager_proto",
     "//content/public/browser",
@@ -56,7 +51,6 @@ source_set("unit_tests") {
 
   sources = [
     "cpu_data_collector_unittest.cc",
-    "extension_event_observer_unittest.cc",
     "power_data_collector_unittest.cc",
     "renderer_freezer_unittest.cc",
     "suspend_perf_reporter_unittest.cc",

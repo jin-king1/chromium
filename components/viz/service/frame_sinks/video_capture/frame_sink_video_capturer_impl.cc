@@ -9,8 +9,8 @@
 #include <limits>
 #include <optional>
 #include <utility>
+#include <variant>
 
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
@@ -24,12 +24,13 @@
 #include "base/trace_event/trace_event.h"
 #include "base/tracing_buildflags.h"
 #include "build/build_config.h"
+#include "components/viz/common/features.h"
 #include "components/viz/common/frame_sinks/copy_output_request.h"
 #include "components/viz/common/frame_sinks/copy_output_result.h"
 #include "components/viz/common/frame_sinks/copy_output_util.h"
 #include "components/viz/common/surfaces/local_surface_id.h"
 #include "components/viz/service/frame_sinks/video_capture/frame_sink_video_capturer_manager.h"
-#include "components/viz/service/frame_sinks/video_capture/gpu_memory_buffer_video_frame_pool.h"
+#include "components/viz/service/frame_sinks/video_capture/mappable_shared_image_video_frame_pool.h"
 #include "components/viz/service/frame_sinks/video_capture/shared_memory_video_frame_pool.h"
 #include "media/base/limits.h"
 #include "media/base/media_switches.h"
@@ -39,6 +40,7 @@
 #include "media/capture/mojom/video_capture_types.mojom.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
+#include "third_party/perfetto/include/perfetto/tracing/track.h"
 #include "ui/gfx/color_space.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect.h"
@@ -86,13 +88,12 @@ constexpr gfx::Rect kMaxRect = gfx::Rect(0,
 // format. When user wants ARGB result, it requests a CopyOutputRequest with
 // ResultFormat::RGBA which gives RGBA/BGRA results depends on platform and
 // where the result is stored (buffer format preference).
-// Currently, kPreferGpuMemoryBuffer + ARGB will request BGRA as pixel format,
-// but kDefault + ARGB will be platform dependent because CopyOutputRequest
-// will use kN32_SkColorType (RGBA on Android, BGRA elsewhere) mostly, and use
-// kRGBA_8888_SkColorType on iOS.
-// This is also documented in the mojom comments (https://crrev.com/c/5418235)
-// about SetFormat, indicating the ARGB format may produce RGBA/BGRA frames
-// depends on platform.
+// Currently, kPreferMappableSharedImage + ARGB will request BGRA as pixel
+// format, but kDefault + ARGB will be platform dependent because
+// CopyOutputRequest will use kN32_SkColorType (RGBA on Android, BGRA elsewhere)
+// mostly, and use kRGBA_8888_SkColorType on iOS. This is also documented in the
+// mojom comments (https://crrev.com/c/5418235) about SetFormat, indicating the
+// ARGB format may produce RGBA/BGRA frames depends on platform.
 
 // Get the frame pool for the specific format. We need context_provider if the
 // format is NV12 or ARGB (when buffer_format_preference is kNativeTexture).
@@ -104,17 +105,23 @@ std::unique_ptr<VideoFramePool> GetVideoFramePoolForFormat(
     GmbVideoFramePoolContextProvider* context_provider) {
   CHECK(format == media::PIXEL_FORMAT_I420 ||
         format == media::PIXEL_FORMAT_NV12 ||
-        format == media::PIXEL_FORMAT_ARGB);
+        format == media::PIXEL_FORMAT_ARGB ||
+        format == media::PIXEL_FORMAT_RGBAF16);
 
   switch (format) {
     case media::PIXEL_FORMAT_I420:
       return std::make_unique<SharedMemoryVideoFramePool>(capacity);
-    case media::PIXEL_FORMAT_ARGB: {
+    case media::PIXEL_FORMAT_ARGB:
+    case media::PIXEL_FORMAT_RGBAF16: {
+      auto color_space = format == media::PIXEL_FORMAT_ARGB
+                             ? gfx::ColorSpace::CreateSRGB()
+                             : gfx::ColorSpace::CreateSRGBLinear();
       switch (buffer_format_preference) {
-        case mojom::BufferFormatPreference::kPreferGpuMemoryBuffer:
-          return std::make_unique<GpuMemoryBufferVideoFramePool>(
-              capacity, format, gfx::ColorSpace::CreateSRGB(),
-              context_provider);
+        case mojom::BufferFormatPreference::kPreferMappableSharedImage:
+        case mojom::BufferFormatPreference::kPreferSharedImageWithNativeHandle:
+          return std::make_unique<MappableSharedImageVideoFramePool>(
+              capacity, format, color_space, context_provider,
+              buffer_format_preference);
         case mojom::BufferFormatPreference::kDefault:
           return std::make_unique<SharedMemoryVideoFramePool>(capacity);
         default:
@@ -122,8 +129,9 @@ std::unique_ptr<VideoFramePool> GetVideoFramePoolForFormat(
       }
     }
     case media::PIXEL_FORMAT_NV12:
-      return std::make_unique<GpuMemoryBufferVideoFramePool>(
-          capacity, format, gfx::ColorSpace::CreateREC709(), context_provider);
+      return std::make_unique<MappableSharedImageVideoFramePool>(
+          capacity, format, gfx::ColorSpace::CreateREC709(), context_provider,
+          buffer_format_preference);
     default:
       NOTREACHED();
   }
@@ -138,6 +146,8 @@ CopyOutputRequest::ResultFormat VideoPixelFormatToCopyOutputRequestFormat(
       return CopyOutputRequest::ResultFormat::NV12;
     case media::PIXEL_FORMAT_ARGB:
       return CopyOutputRequest::ResultFormat::RGBA;
+    case media::PIXEL_FORMAT_RGBAF16:
+      return CopyOutputRequest::ResultFormat::RGBAF16;
     default:
       NOTREACHED();
   }
@@ -147,8 +157,11 @@ bool IsCompatibleWithFormat(const gfx::Rect& rect,
                             media::VideoPixelFormat format) {
   CHECK(format == media::PIXEL_FORMAT_I420 ||
         format == media::PIXEL_FORMAT_NV12 ||
-        format == media::PIXEL_FORMAT_ARGB);
-  if (format == media::PIXEL_FORMAT_ARGB) {
+        format == media::PIXEL_FORMAT_ARGB ||
+        format == media::PIXEL_FORMAT_RGBAF16);
+
+  if (format == media::PIXEL_FORMAT_ARGB ||
+      format == media::PIXEL_FORMAT_RGBAF16) {
     // No special requirements:
     return true;
   }
@@ -193,7 +206,8 @@ FrameSinkVideoCapturerImpl::FrameSinkVideoCapturerImpl(
     GmbVideoFramePoolContextProvider* gmb_video_frame_pool_context_provider,
     mojo::PendingReceiver<mojom::FrameSinkVideoCapturer> receiver,
     std::unique_ptr<media::VideoCaptureOracle> oracle,
-    bool log_to_webrtc)
+    bool log_to_webrtc,
+    uint32_t capture_version_source)
     : frame_sink_manager_(frame_sink_manager),
       copy_request_source_(base::UnguessableToken::Create()),
       clock_(base::DefaultTickClock::GetInstance()),
@@ -201,7 +215,8 @@ FrameSinkVideoCapturerImpl::FrameSinkVideoCapturerImpl(
       gmb_video_frame_pool_context_provider_(
           gmb_video_frame_pool_context_provider),
       feedback_weak_factory_(oracle_.get()),
-      log_to_webrtc_(log_to_webrtc) {
+      log_to_webrtc_(log_to_webrtc),
+      capture_version_source_(capture_version_source) {
   CHECK(oracle_);
   if (log_to_webrtc_) {
     oracle_->SetLogCallback(base::BindRepeating(
@@ -231,16 +246,6 @@ void FrameSinkVideoCapturerImpl::ResolveTarget() {
   SetResolvedTarget(
       target_ ? frame_sink_manager_->FindCapturableFrameSink(target_.value())
               : nullptr);
-}
-
-bool FrameSinkVideoCapturerImpl::TryResolveTarget() {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-
-  if (!resolved_target_) {
-    ResolveTarget();
-  }
-
-  return resolved_target_;
 }
 
 void FrameSinkVideoCapturerImpl::SetResolvedTarget(
@@ -283,9 +288,11 @@ void FrameSinkVideoCapturerImpl::SetFormat(media::VideoPixelFormat format) {
 
   if (format != media::PIXEL_FORMAT_I420 &&
       format != media::PIXEL_FORMAT_ARGB &&
-      format != media::PIXEL_FORMAT_NV12) {
-    LOG(DFATAL) << "Invalid pixel format: Only I420, ARGB & NV12 formats are "
-                   "supported.";
+      format != media::PIXEL_FORMAT_NV12 &&
+      format != media::PIXEL_FORMAT_RGBAF16) {
+    LOG(DFATAL)
+        << "Invalid pixel format: Only I420, ARGB, RGBAF16 & NV12 formats are "
+           "supported.";
   } else {
     // We only support NV12 if we got a context provider for pool creation:
     CHECK(format != media::PIXEL_FORMAT_NV12 ||
@@ -302,9 +309,9 @@ void FrameSinkVideoCapturerImpl::SetFormat(media::VideoPixelFormat format) {
       // Don't tolerate changing to NV12 mid-capture:
       CHECK(format != media::PIXEL_FORMAT_NV12);
 
-      // If we have started with kPreferGpuMemoryBuffer, we set it to kDefault
-      // as currently we probably only doing mid-capture change due to crash
-      // downgrade, and we should not try using GMB anymore.
+      // If we have started with kPreferMappableSharedImage, we set it to
+      // kDefault as currently we probably only doing mid-capture change due to
+      // crash downgrade, and we should not try using mappable SI anymore.
       // TODO: We may move buffer_format_preference from Start to SetFormat.
       buffer_format_preference_ = mojom::BufferFormatPreference::kDefault;
 
@@ -315,7 +322,6 @@ void FrameSinkVideoCapturerImpl::SetFormat(media::VideoPixelFormat format) {
       frame_pool_ = GetVideoFramePoolForFormat(
           pixel_format_, kFramePoolCapacity, buffer_format_preference_,
           gmb_video_frame_pool_context_provider_);
-
       RefreshEntireSourceNow();
     }
   }
@@ -363,6 +369,18 @@ void FrameSinkVideoCapturerImpl::SetMinSizeChangePeriod(
   oracle_->SetMinSizeChangePeriod(min_period);
 }
 
+void FrameSinkVideoCapturerImpl::SetAnimationFpsLockIn(
+    bool enabled,
+    float majority_damaged_pixel_min_ratio) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  TRACE_EVENT_INSTANT("gpu.capture", "SetAnimationFpsLockIn", "enabled",
+                      enabled, "majority_damaged_pixel_min_ratio",
+                      majority_damaged_pixel_min_ratio);
+
+  oracle_->SetAnimationFpsLockIn(enabled, majority_damaged_pixel_min_ratio);
+}
+
 void FrameSinkVideoCapturerImpl::SetResolutionConstraints(
     const gfx::Size& min_size,
     const gfx::Size& max_size,
@@ -396,17 +414,16 @@ void FrameSinkVideoCapturerImpl::SetAutoThrottlingEnabled(bool enabled) {
 
 void FrameSinkVideoCapturerImpl::ChangeTarget(
     const std::optional<VideoCaptureTarget>& target,
-    uint32_t sub_capture_target_version) {
+    uint32_t sub_capture_version) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  CHECK_GE(sub_capture_target_version, sub_capture_target_version_);
 
   target_ = target;
 
-  if (sub_capture_target_version_ != sub_capture_target_version) {
-    sub_capture_target_version_ = sub_capture_target_version;
+  if (capture_version_sub_capture_ != sub_capture_version) {
+    capture_version_sub_capture_ = sub_capture_version;
 
     if (consumer_) {
-      consumer_->OnNewSubCaptureTargetVersion(sub_capture_target_version);
+      consumer_->OnNewCaptureVersion(capture_version());
     }
   }
 
@@ -435,20 +452,27 @@ void FrameSinkVideoCapturerImpl::Start(
       pixel_format_, kFramePoolCapacity, buffer_format_preference_,
       gmb_video_frame_pool_context_provider_);
 
-  TRACE_EVENT_NESTABLE_ASYNC_BEGIN2(
-      "gpu.capture", "FrameSinkVideoCapturerImpl::Start", this, "pixel_format_",
-      pixel_format_, "buffer_format_preference_", buffer_format_preference_);
+  TRACE_EVENT_BEGIN("gpu.capture", "FrameSinkVideoCapturerImpl::Start",
+                    perfetto::Track::FromPointer(this), "pixel_format_",
+                    pixel_format_, "buffer_format_preference_",
+                    buffer_format_preference_);
 
-  // If we should start capture for NV12 format, we can only hand out GMBs so
-  // the caller must tolerate them:
+  // If we should start capture for NV12 format, we can only hand out mappable
+  // SharedImages so the caller must tolerate them:
   CHECK(pixel_format_ != media::PIXEL_FORMAT_NV12 ||
         buffer_format_preference_ ==
-            mojom::BufferFormatPreference::kPreferGpuMemoryBuffer);
+            mojom::BufferFormatPreference::kPreferMappableSharedImage);
 
-  // If we are using ARGB format with GMB, we must have the pool context
-  CHECK(pixel_format_ != media::PIXEL_FORMAT_ARGB ||
+  // Only support RGBAF16 with kPreferMappableSharedImage
+  CHECK(pixel_format_ != media::PIXEL_FORMAT_RGBAF16 ||
+        buffer_format_preference_ ==
+            mojom::BufferFormatPreference::kPreferMappableSharedImage);
+
+  // If we are using ARGB format with mappable SI, we must have the pool context
+  CHECK((pixel_format_ != media::PIXEL_FORMAT_ARGB &&
+         pixel_format_ != media::PIXEL_FORMAT_RGBAF16) ||
         buffer_format_preference_ !=
-            mojom::BufferFormatPreference::kPreferGpuMemoryBuffer ||
+            mojom::BufferFormatPreference::kPreferMappableSharedImage ||
         gmb_video_frame_pool_context_provider_);
 
   video_capture_started_ = true;
@@ -462,6 +486,11 @@ void FrameSinkVideoCapturerImpl::Start(
   // Stop(), make that call on its behalf.
   consumer_.set_disconnect_handler(base::BindOnce(
       &FrameSinkVideoCapturerImpl::Stop, base::Unretained(this)));
+
+  // Inform the consumer of the change ahead of the first frame (which will
+  // essentially have the same message implicit in its metadata).
+  consumer_->OnNewCaptureVersion(capture_version());
+
   RefreshEntireSourceNow();
 }
 
@@ -495,8 +524,10 @@ void FrameSinkVideoCapturerImpl::Stop() {
     resolved_target_->OnClientCaptureStopped();
   }
 
-  TRACE_EVENT_NESTABLE_ASYNC_END0("gpu.capture",
-                                  "FrameSinkVideoCapturerImpl::Start", this);
+  TRACE_EVENT_END(
+      "gpu.capture",
+      /* FrameSinkVideoCapturerImpl::Start */ perfetto::Track::FromPointer(
+          this));
 
   video_capture_started_ = false;
   buffer_format_preference_ = mojom::BufferFormatPreference::kDefault;
@@ -505,7 +536,10 @@ void FrameSinkVideoCapturerImpl::Stop() {
 void FrameSinkVideoCapturerImpl::RequestRefreshFrame() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  if (!TryResolveTarget()) {
+  if (!resolved_target_) {
+    // If we don't have a target, attempting to resolve it will force a high
+    // priority refresh.
+    ResolveTarget();
     return;
   }
 
@@ -557,13 +591,13 @@ gfx::Rect FrameSinkVideoCapturerImpl::GetContentRectangle(
     media::VideoPixelFormat pixel_format) {
   CHECK(pixel_format == media::PIXEL_FORMAT_I420 ||
         pixel_format == media::PIXEL_FORMAT_NV12 ||
-        pixel_format == media::PIXEL_FORMAT_ARGB);
+        pixel_format == media::PIXEL_FORMAT_ARGB ||
+        pixel_format == media::PIXEL_FORMAT_RGBAF16);
 
   if (pixel_format == media::PIXEL_FORMAT_I420 ||
       pixel_format == media::PIXEL_FORMAT_NV12) {
     return media::ComputeLetterboxRegionForI420(visible_rect, source_size);
   } else {
-    CHECK_EQ(media::PIXEL_FORMAT_ARGB, pixel_format);
     const gfx::Rect content_rect =
         media::ComputeLetterboxRegion(visible_rect, source_size);
 
@@ -626,8 +660,17 @@ void FrameSinkVideoCapturerImpl::RefreshInternal(
 
   // If the capture target has not yet been resolved, first try changing the
   // target since it may be available now.
-  if (!TryResolveTarget()) {
-    MaybeScheduleRefreshFrame();
+  if (!resolved_target_) {
+    ResolveTarget();
+
+    // ResolveTarget() may have updated `resolved_target_`. If it failed to do so, we may
+    // need a refresh frame.
+    if (!resolved_target_) {
+      MaybeScheduleRefreshFrame();
+    }
+
+    // Attempting to resolve the target will implicitly request a refresh frame,
+    // so we can exit early here.
     return;
   }
 
@@ -869,14 +912,7 @@ void FrameSinkVideoCapturerImpl::MaybeCaptureFrame(
                         region_properties->root_render_pass_size.ToString(),
                         "render_pass_subrect",
                         region_properties->render_pass_subrect.ToString());
-    auto reserve_start_time = base::TimeTicks::Now();
-
     frame = frame_pool_->ReserveVideoFrame(pixel_format_, capture_size);
-
-    UMA_HISTOGRAM_CUSTOM_TIMES(
-        "Viz.FrameSinkVideoCapturer.ReserveFrameDuration",
-        base::TimeTicks::Now() - reserve_start_time, base::Milliseconds(1),
-        base::Milliseconds(250), 50);
   }
 
   UMA_HISTOGRAM_BOOLEAN("Viz.FrameSinkVideoCapturer.FrameResurrected",
@@ -1009,6 +1045,7 @@ void FrameSinkVideoCapturerImpl::MaybeCaptureFrame(
                                        frame->stride(VideoFrame::Plane::kV));
           break;
         case media::PIXEL_FORMAT_ARGB:
+        case media::PIXEL_FORMAT_RGBAF16:
           strides = base::StringPrintf("strideARGB:%d",
                                        frame->stride(VideoFrame::Plane::kARGB));
           break;
@@ -1048,14 +1085,6 @@ void FrameSinkVideoCapturerImpl::MaybeCaptureFrame(
   if (content_rect.IsEmpty()) {
     media::LetterboxVideoFrame(frame.get(), gfx::Rect());
 
-    if (pixel_format_ == media::PIXEL_FORMAT_I420 ||
-        pixel_format_ == media::PIXEL_FORMAT_NV12) {
-      frame->set_color_space(gfx::ColorSpace::CreateREC709());
-    } else {
-      CHECK_EQ(pixel_format_, media::PIXEL_FORMAT_ARGB);
-      frame->set_color_space(gfx::ColorSpace::CreateSRGB());
-    }
-
     dirty_rect_ = gfx::Rect();
     FrameCapture frame_capture(
         capture_frame_number, oracle_frame_number, content_version_,
@@ -1085,32 +1114,33 @@ void FrameSinkVideoCapturerImpl::MaybeCaptureFrame(
   }
   // Note that this is done unconditionally, as a new sub-capture-target version
   // may indicate that the stream has been successfully uncropped.
-  metadata.sub_capture_target_version = sub_capture_target_version_;
+  metadata.capture_version = capture_version();
   FrameCapture frame_capture(capture_frame_number, oracle_frame_number,
                              content_version_, content_rect, *region_properties,
                              std::move(frame), capture_begin_time);
 
   // TODO(crbug.com/346799708): The condition to check `pixel_format_` shouldn't
-  // be necessary but video capture is started with I420+GMB in tests. That
-  // still captures software I420 frames and not textures.
+  // be necessary but video capture is started with I420+mappable SI in tests.
+  // That still captures software I420 frames and not textures.
   const bool capture_texture_results =
       buffer_format_preference_ ==
-          mojom::BufferFormatPreference::kPreferGpuMemoryBuffer &&
+          mojom::BufferFormatPreference::kPreferMappableSharedImage &&
       (pixel_format_ == media::PIXEL_FORMAT_NV12 ||
-       pixel_format_ == media::PIXEL_FORMAT_ARGB);
+       pixel_format_ == media::PIXEL_FORMAT_ARGB ||
+       pixel_format_ == media::PIXEL_FORMAT_RGBAF16);
 
   std::optional<BlitRequest> blit_request;
   if (capture_texture_results) {
     TRACE_EVENT("gpu.capture", "PopulateBlitRequest");
 
     auto sync_token = frame_capture.frame->acquire_sync_token();
-    auto mailbox = frame_capture.frame->shared_image()->mailbox();
 
     // TODO(crbug.com/41350322): change the capturer to only request the
     // parts of the frame that have changed whenever possible.
     blit_request =
         BlitRequest(content_rect.origin(), LetterboxingBehavior::kLetterbox,
-                    mailbox, sync_token, true);
+                    frame_capture.frame->shared_image(), sync_token,
+                    /*populates_mappable_shared_image=*/true);
 
     // We haven't captured the frame yet, but let's pretend that we did for
     // the sake of blend information computation. We will be asking for an
@@ -1141,7 +1171,7 @@ void FrameSinkVideoCapturerImpl::MaybeCaptureFrame(
   auto request = std::make_unique<CopyOutputRequest>(
       VideoPixelFormatToCopyOutputRequestFormat(pixel_format_),
       capture_texture_results
-          ? CopyOutputRequest::ResultDestination::kNativeTextures
+          ? CopyOutputRequest::ResultDestination::kSharedImage
           : CopyOutputRequest::ResultDestination::kSystemMemory,
       base::BindOnce(&FrameSinkVideoCapturerImpl::DidCopyFrame,
                      capture_weak_factory_.GetWeakPtr(),
@@ -1171,7 +1201,7 @@ void FrameSinkVideoCapturerImpl::MaybeCaptureFrame(
 
   if (log_to_webrtc_) {
     const std::string format = media::VideoPixelFormatToString(pixel_format_);
-    // NV12 is currently supported only via GpuMemoryBuffers, everything else is
+    // NV12 is currently supported only via MappableSI, everything else is
     // returned as a bitmap:
     const bool is_bitmap =
         buffer_format_preference_ == mojom::BufferFormatPreference::kDefault;
@@ -1181,7 +1211,7 @@ void FrameSinkVideoCapturerImpl::MaybeCaptureFrame(
         "scale_from: %s "
         "scale_to: %s "
         "frame pool utilization: %d",
-        format.c_str(), is_bitmap ? "bitmap" : "GPU memory buffer",
+        format.c_str(), is_bitmap ? "bitmap" : "mappable SharedImage",
         request->area().ToString().c_str(),
         request->scale_from().ToString().c_str(),
         request->scale_to().ToString().c_str(), utilization_pct));
@@ -1189,11 +1219,12 @@ void FrameSinkVideoCapturerImpl::MaybeCaptureFrame(
 
   const SubtreeCaptureId subtree_id =
       IsSubtreeCapture(target_->sub_target)
-          ? absl::get<SubtreeCaptureId>(target_->sub_target)
+          ? std::get<SubtreeCaptureId>(target_->sub_target)
           : SubtreeCaptureId();
 
   resolved_target_->RequestCopyOfOutput(
-      {LocalSurfaceId(), subtree_id, std::move(request)});
+      std::make_unique<PendingCopyOutputRequest>(LocalSurfaceId(), subtree_id,
+                                                 std::move(request)));
 }
 
 void FrameSinkVideoCapturerImpl::DidCopyFrame(
@@ -1232,10 +1263,15 @@ void FrameSinkVideoCapturerImpl::DidCopyFrame(
           case CopyOutputResult::Destination::kSystemMemory:
             format = "ARGB_Bitmap";
             break;
-          case CopyOutputResult::Destination::kNativeTextures:
+          case CopyOutputResult::Destination::kSharedImage:
             format = "ARGB_Texture";
             break;
         }
+        break;
+      case CopyOutputResult::Format::RGBAF16:
+        format = "RGBAF16_Texture";
+        strides = base::StringPrintf("strideARGB:%d",
+                                     frame->stride(VideoFrame::Plane::kARGB));
         break;
     }
     consumer_->OnLog(base::StringPrintf(
@@ -1293,7 +1329,8 @@ void FrameSinkVideoCapturerImpl::DidCopyFrame(
       frame_capture.CaptureFailed(CaptureResult::kI420ReadbackFailed);
     }
     UMA_HISTOGRAM_CAPTURE_SUCCEEDED("I420", success);
-  } else if (pixel_format_ == media::PIXEL_FORMAT_ARGB) {
+  } else if (pixel_format_ == media::PIXEL_FORMAT_ARGB ||
+             pixel_format_ == media::PIXEL_FORMAT_RGBAF16) {
     if (buffer_format_preference_ == mojom::BufferFormatPreference::kDefault) {
       int stride = frame->stride(VideoFrame::Plane::kARGB);
       // Note: ResultFormat::RGBA CopyOutputResult's format currently is
@@ -1314,11 +1351,11 @@ void FrameSinkVideoCapturerImpl::DidCopyFrame(
       }
     } else {
       CHECK_EQ(buffer_format_preference_,
-               mojom::BufferFormatPreference::kPreferGpuMemoryBuffer);
-      // GMB ARGB results are written to the existing pool texture.
+               mojom::BufferFormatPreference::kPreferMappableSharedImage);
+      // MappableSI ARGB results are written to the existing pool texture.
       if (result->IsEmpty()) {
         frame_capture.CaptureFailed(
-            CaptureResult::kGpuMemoryBufferReadbackFailed);
+            CaptureResult::kMappableSharedImageReadbackFailed);
       } else {
         UMA_HISTOGRAM_CAPTURE_DURATION(
             "RGBA", base::TimeTicks::Now() - frame_capture.request_time);
@@ -1328,9 +1365,9 @@ void FrameSinkVideoCapturerImpl::DidCopyFrame(
     }
   } else {
     CHECK_EQ(pixel_format_, media::PIXEL_FORMAT_NV12);
-    // NV12 is only supported for GMBs for now, in which case there is nothing
-    // for us to do since the CopyOutputResults are already available in the
-    // video frame (assuming that we got the results).
+    // NV12 is only supported for mappable SIs for now, in which case there is
+    // nothing for us to do since the CopyOutputResults are already available in
+    // the video frame (assuming that we got the results).
 
     if (result->IsEmpty()) {
       frame_capture.CaptureFailed(CaptureResult::kNV12ReadbackFailed);
@@ -1352,11 +1389,11 @@ void FrameSinkVideoCapturerImpl::DidCopyFrame(
     CHECK_LE(result->size().width(), content_rect.width());
     CHECK_LE(result->size().height(), content_rect.height());
 
-    if (!frame->HasMappableGpuBuffer()) {
+    if (!frame->HasMappableSharedImage()) {
       const VideoCaptureOverlay::CapturedFrameProperties frame_properties{
           frame_capture.region_properties, content_rect, frame->format()};
 
-      // For GMB-backed video frames, overlays were already applied by
+      // For MappableSI-backed video frames, overlays were already applied by
       // CopyOutputRequest API. For in-memory frames, apply overlays here:
       auto overlay_renderer = VideoCaptureOverlay::MakeCombinedRenderer(
           GetOverlaysInOrder(), frame_properties);
@@ -1372,10 +1409,10 @@ void FrameSinkVideoCapturerImpl::DidCopyFrame(
         gfx::Rect(content_rect.origin(), result->size());
     DCHECK(IsCompatibleWithFormat(result_rect, pixel_format_));
     if (frame->visible_rect() != result_rect &&
-        !frame->HasMappableGpuBuffer()) {
+        !frame->HasMappableSharedImage()) {
       // If there are parts of the frame that are visible but we have not wrote
-      // into them, letterbox them. This is not needed for GMB-backed frames as
-      // the letterboxing happens on GPU.
+      // into them, letterbox them. This is not needed for MappableSI-backed
+      // frames as the letterboxing happens on GPU.
       media::LetterboxVideoFrame(frame.get(), result_rect);
     }
 
@@ -1437,11 +1474,12 @@ void FrameSinkVideoCapturerImpl::MaybeDeliverFrame(FrameCapture frame_capture) {
   base::TimeTicks media_ticks;
 
   if (frame_capture.success()) {
-    // TODO(crbug.com/40227755): When capture fails because the
-    // sub-capture-target version has changed, expedite the capture/delivery of
-    // a new frame.
-    if (frame_capture.frame->metadata().sub_capture_target_version !=
-        sub_capture_target_version_) {
+    // TODO(crbug.com/394794490): When capture fails because the
+    // capture-target version has changed, expedite the capture/delivery of
+    // a new frame. (Whether there has been a change in crop-status,
+    // restriction-status, share-this-tab-instead of anything else, an early new
+    // frame is desirable.)
+    if (frame_capture.frame->metadata().capture_version != capture_version()) {
       frame_capture.CaptureFailed(CaptureResult::kSubCaptureTargetChanged);
     } else if (!oracle_->CompleteCapture(frame_capture.oracle_frame_number,
                                          frame_capture.success(),
@@ -1491,6 +1529,7 @@ void FrameSinkVideoCapturerImpl::MaybeDeliverFrame(FrameCapture frame_capture) {
   info->pixel_format = frame->format();
   info->coded_size = frame->coded_size();
   info->visible_rect = frame->visible_rect();
+  info->natural_size = frame->natural_size();
   DCHECK(frame->ColorSpace().IsValid());  // Ensure it was set by this point.
   info->color_space = frame->ColorSpace();
 
@@ -1520,7 +1559,8 @@ void FrameSinkVideoCapturerImpl::MaybeDeliverFrame(FrameCapture frame_capture) {
 
 gfx::Size FrameSinkVideoCapturerImpl::AdjustSizeForPixelFormat(
     const gfx::Size& raw_size) const {
-  if (pixel_format_ == media::PIXEL_FORMAT_ARGB) {
+  if (pixel_format_ == media::PIXEL_FORMAT_ARGB ||
+      pixel_format_ == media::PIXEL_FORMAT_RGBAF16) {
     gfx::Size result(raw_size);
     if (result.width() <= 0) {
       result.set_width(1);

@@ -60,9 +60,6 @@ class WebAppInternalsHandler : public mojom::WebAppInternalsHandler {
   void UpdateDevProxyIsolatedWebApp(
       const webapps::AppId& app_id,
       UpdateDevProxyIsolatedWebAppCallback callback) override;
-  void RotateKey(
-      const std::string& web_bundle_id,
-      const std::optional<std::vector<uint8_t>>& public_key) override;
   void UpdateManifestInstalledIsolatedWebApp(
       const webapps::AppId& app_id,
       UpdateManifestInstalledIsolatedWebAppCallback callback) override;
@@ -79,12 +76,14 @@ class WebAppInternalsHandler : public mojom::WebAppInternalsHandler {
   void SetAllowDowngradesForIsolatedWebApp(
       bool allow_downgrades,
       const webapps::AppId& app_id) override;
+  void DeleteIsolatedWebApp(const webapps::AppId& app_id,
+                            DeleteIsolatedWebAppCallback callback) override;
 
  private:
   const raw_ref<content::WebUI> web_ui_;
   const raw_ref<Profile> profile_;
   mojo::Receiver<mojom::WebAppInternalsHandler> receiver_;
-  web_app::IwaInternalsHandler iwa_handler_;
+  std::optional<web_app::IwaInternalsHandler> iwa_handler_;
 };
 
 #endif  // CHROME_BROWSER_UI_WEBUI_WEB_APP_INTERNALS_WEB_APP_INTERNALS_HANDLER_H_

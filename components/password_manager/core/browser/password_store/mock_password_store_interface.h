@@ -5,6 +5,7 @@
 #ifndef COMPONENTS_PASSWORD_MANAGER_CORE_BROWSER_PASSWORD_STORE_MOCK_PASSWORD_STORE_INTERFACE_H_
 #define COMPONENTS_PASSWORD_MANAGER_CORE_BROWSER_PASSWORD_STORE_MOCK_PASSWORD_STORE_INTERFACE_H_
 
+#include "base/callback_list.h"
 #include "components/password_manager/core/browser/password_store/password_store_interface.h"
 #include "components/sync/model/proxy_data_type_controller_delegate.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -15,37 +16,36 @@ class MockPasswordStoreInterface : public PasswordStoreInterface {
  public:
   MockPasswordStoreInterface();
 
-  MOCK_METHOD(bool, IsAbleToSavePasswords, (), (const, override));
+  MOCK_METHOD(ActionableError, GetError, (), (const, override));
   MOCK_METHOD(void,
               AddLogin,
-              (const PasswordForm&, base::OnceClosure),
+              (StoredCredential, base::OnceClosure),
               (override));
   MOCK_METHOD(void,
               UpdateLogin,
-              (const PasswordForm&, base::OnceClosure),
+              (StoredCredential, base::OnceClosure),
               (override));
   MOCK_METHOD(void,
               UpdateLogins,
-              (const std::vector<PasswordForm>&, base::OnceClosure),
+              (std::vector<StoredCredential>, base::OnceClosure),
               (override));
   MOCK_METHOD(void,
               AddLogins,
-              (const std::vector<PasswordForm>&, base::OnceClosure),
+              (std::vector<StoredCredential>, base::OnceClosure),
               (override));
   MOCK_METHOD(void,
               UpdateLoginWithPrimaryKey,
-              (const PasswordForm&, const PasswordForm&, base::OnceClosure),
+              (StoredCredential, const StoredCredential&, base::OnceClosure),
               (override));
   MOCK_METHOD(void,
               RemoveLogin,
-              (const base::Location&, const PasswordForm&),
+              (const base::Location&, const StoredCredential&),
               (override));
   MOCK_METHOD(void,
               RemoveLoginsCreatedBetween,
               (const base::Location&,
                base::Time,
                base::Time,
-               base::OnceCallback<void(bool)>,
                base::OnceCallback<void(bool)>),
               (override));
   MOCK_METHOD(void,

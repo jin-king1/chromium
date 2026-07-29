@@ -4,9 +4,11 @@
 
 #include "third_party/blink/renderer/core/layout/svg/svg_content_container.h"
 
+#include "third_party/blink/renderer/core/layout/layout_object_inlines.h"
 #include "third_party/blink/renderer/core/layout/svg/layout_svg_container.h"
 #include "third_party/blink/renderer/core/layout/svg/layout_svg_foreign_object.h"
 #include "third_party/blink/renderer/core/layout/svg/layout_svg_image.h"
+#include "third_party/blink/renderer/core/layout/svg/layout_svg_inline.h"
 #include "third_party/blink/renderer/core/layout/svg/layout_svg_resource_marker.h"
 #include "third_party/blink/renderer/core/layout/svg/layout_svg_shape.h"
 #include "third_party/blink/renderer/core/layout/svg/layout_svg_text.h"
@@ -21,8 +23,7 @@ namespace {
 
 bool UpdateSVGLayoutIfNeeded(LayoutObject* child,
                              const SVGLayoutInfo& layout_info) {
-  if (RuntimeEnabledFeatures::SvgViewportOptimizationEnabled() &&
-      layout_info.viewport_changed && child->HasViewportDependence()) {
+  if (layout_info.viewport_changed && child->HasViewportDependence()) {
     child->SetNeedsLayout(layout_invalidation_reason::kSvgChanged,
                           kMarkOnlyThis);
   }
@@ -31,6 +32,25 @@ bool UpdateSVGLayoutIfNeeded(LayoutObject* child,
     child->SetHasViewportDependence(child_result.has_viewport_dependence);
   }
   return child->HasViewportDependence();
+}
+
+gfx::RectF ComputeVisualOverflowRectIncludingFilters(
+    const LayoutObject& object) {
+  gfx::RectF bounds;
+  if (auto* container = DynamicTo<LayoutSVGContainer>(&object)) {
+    bounds = container->ComputeContentVisualOverflowRectIncludingFilters();
+  } else {
+    bounds = object.DecoratedBoundingBox();
+    for (LayoutObject* child = object.SlowFirstChild(); child;
+         child = child->NextSibling()) {
+      if (child->IsSVGInline()) {
+        gfx::RectF child_bounds =
+            ComputeVisualOverflowRectIncludingFilters(*child);
+        bounds.Union(child_bounds);
+      }
+    }
+  }
+  return SVGLayoutSupport::ApplyFiltersToRect(object, bounds);
 }
 
 bool LayoutMarkerResourcesIfNeeded(LayoutObject& layout_object,
@@ -96,6 +116,20 @@ gfx::RectF ObjectBoundsForPropagation(const LayoutObject& object) {
   return bounds;
 }
 
+bool ShouldForceLayoutChild(const SVGLayoutInfo& layout_info,
+                            const LayoutObject& child) {
+  if (layout_info.force_layout) {
+    return true;
+  }
+  if (layout_info.scale_factor_changed) {
+    return true;
+  }
+  if (layout_info.viewport_changed && child.HasViewportDependence()) {
+    return true;
+  }
+  return false;
+}
+
 }  // namespace
 
 // static
@@ -119,45 +153,8 @@ SVGLayoutResult SVGContentContainer::Layout(const SVGLayoutInfo& layout_info) {
 
   for (LayoutObject* child = children_.FirstChild(); child;
        child = child->NextSibling()) {
-    bool force_child_layout = layout_info.force_layout;
-
-    if (layout_info.scale_factor_changed) {
-      // If the screen scaling factor changed we need to update the text
-      // metrics (note: this also happens for layoutSizeChanged=true).
-      if (auto* text = DynamicTo<LayoutSVGText>(child)) {
-        text->SetNeedsTextMetricsUpdate();
-      }
-      force_child_layout = true;
-    }
-
-    bool child_has_viewport_dependence = false;
-    if (RuntimeEnabledFeatures::SvgViewportOptimizationEnabled()) {
-      child_has_viewport_dependence = child->HasViewportDependence();
-    } else if (auto* element = DynamicTo<SVGElement>(child->GetNode())) {
-      child_has_viewport_dependence = element->HasRelativeLengths();
-    }
-
-    if (layout_info.viewport_changed && child_has_viewport_dependence) {
-      if (auto* shape = DynamicTo<LayoutSVGShape>(*child)) {
-        shape->SetNeedsShapeUpdate();
-      } else if (auto* text = DynamicTo<LayoutSVGText>(*child)) {
-        text->SetNeedsTextMetricsUpdate();
-      } else if (auto* container =
-                     DynamicTo<LayoutSVGTransformableContainer>(*child)) {
-        container->SetNeedsTransformUpdate();
-      }
-
-      force_child_layout = true;
-    }
-
-    if (!RuntimeEnabledFeatures::SvgViewportOptimizationEnabled() &&
-        layout_info.viewport_changed && !child->NeedsLayout() &&
-        child->SVGSelfOrDescendantHasViewportDependency()) {
-      force_child_layout = true;
-    }
-
     DCHECK(!child->IsSVGRoot());
-    if (force_child_layout) {
+    if (ShouldForceLayoutChild(layout_info, *child)) {
       child->SetNeedsLayout(layout_invalidation_reason::kSvgChanged,
                             kMarkOnlyThis);
     }
@@ -224,6 +221,22 @@ bool SVGContentContainer::UpdateBoundingBoxes() {
   changed |= decorated_bounding_box_ != decorated_bounding_box;
   decorated_bounding_box_ = decorated_bounding_box;
   return changed;
+}
+
+gfx::RectF SVGContentContainer::ComputeVisualOverflowRectIncludingFilters()
+    const {
+  gfx::RectF visual_overflow;
+  for (LayoutObject* current = children_.FirstChild(); current;
+       current = current->NextSibling()) {
+    if (!HasValidBoundingBoxForContainer(*current)) {
+      continue;
+    }
+    const AffineTransform& transform = current->LocalToSVGParentTransform();
+    gfx::RectF child_bounds =
+        ::blink::ComputeVisualOverflowRectIncludingFilters(*current);
+    visual_overflow.Union(transform.MapRect(child_bounds));
+  }
+  return visual_overflow;
 }
 
 bool SVGContentContainer::ComputeHasNonIsolatedBlendingDescendants() const {

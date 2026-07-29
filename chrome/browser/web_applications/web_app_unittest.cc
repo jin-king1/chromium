@@ -17,10 +17,13 @@
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/path_service.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/strings/string_util.h"
+#include "base/strings/to_string.h"
+#include "base/test/values_test_util.h"
 #include "base/values.h"
-#include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_integrity_block_data.h"
-#include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_storage_location.h"
-#include "chrome/browser/web_applications/isolated_web_apps/update_manifest/update_manifest.h"
+#include "chrome/browser/web_applications/model/display_override.h"
+#include "chrome/browser/web_applications/model/integrity_block_data.h"
 #include "chrome/browser/web_applications/test/fake_web_app_provider.h"
 #include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
 #include "chrome/browser/web_applications/test/web_app_test.h"
@@ -35,9 +38,12 @@
 #include "components/web_package/signed_web_bundles/ecdsa_p256_public_key.h"
 #include "components/web_package/signed_web_bundles/ecdsa_p256_sha256_signature.h"
 #include "components/web_package/signed_web_bundles/signed_web_bundle_signature_stack_entry.h"
-#include "services/network/public/cpp/permissions_policy/origin_with_possible_wildcards.h"
-#include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom.h"
+#include "components/webapps/isolated_web_apps/types/storage_location.h"
+#include "components/webapps/isolated_web_apps/types/update_channel.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/safe_url_pattern.h"
+#include "third_party/liburlpattern/part.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -94,7 +100,8 @@ std::string SerializeValueToJsonOrDie(const base::Value& value) {
 }
 
 base::Value DeserializeValueFromJsonOrDie(std::string_view json) {
-  std::optional<base::Value> value = base::JSONReader::Read(json);
+  std::optional<base::Value> value =
+      base::JSONReader::Read(json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   CHECK(value.has_value());
   return *std::move(value);
 }
@@ -128,7 +135,7 @@ static constexpr char kEcdsaP256SHA256SignatureHex[] =
     "3044022007381524F538B04F99CCC62703F06C87F66EF41BDA18A22D8E57952AA23E53A6"
     "022063C7F81D3A44798CB95823FA38FC23B15E0483744657FF49E1E83AB8C06B63C2";
 
-IsolatedWebAppIntegrityBlockData CreateIntegrityBlockData() {
+IntegrityBlockData CreateIntegrityBlockData() {
   std::vector<web_package::SignedWebBundleSignatureInfo> signatures;
 
   // EcdsaP256SHA256:
@@ -143,14 +150,15 @@ IsolatedWebAppIntegrityBlockData CreateIntegrityBlockData() {
             std::move(public_key), std::move(signature)));
   }
 
-  return IsolatedWebAppIntegrityBlockData(std::move(signatures));
+  return IntegrityBlockData(std::move(signatures));
 }
 
 }  // namespace
 
 TEST(WebAppTest, HasAnySources) {
-  WebApp app{GenerateAppId(/*manifest_id_path=*/std::nullopt,
-                           GURL("https://example.com"))};
+  GURL start_url("https://example.com");
+  WebApp app(GenerateManifestIdFromStartUrlOnly(start_url), start_url,
+             start_url.GetWithoutFilename());
 
   EXPECT_FALSE(app.HasAnySources());
   for (WebAppManagement::Type source : WebAppManagementTypes::All()) {
@@ -166,8 +174,9 @@ TEST(WebAppTest, HasAnySources) {
 }
 
 TEST(WebAppTest, HasOnlySource) {
-  WebApp app{GenerateAppId(/*manifest_id_path=*/std::nullopt,
-                           GURL("https://example.com"))};
+  GURL start_url("https://example.com");
+  WebApp app(GenerateManifestIdFromStartUrlOnly(start_url), start_url,
+             start_url.GetWithoutFilename());
 
   for (WebAppManagement::Type source : WebAppManagementTypes::All()) {
     app.AddSource(source);
@@ -205,8 +214,9 @@ TEST(WebAppTest, HasOnlySource) {
 }
 
 TEST(WebAppTest, WasInstalledByUser) {
-  WebApp app{GenerateAppId(/*manifest_id_path=*/std::nullopt,
-                           GURL("https://example.com"))};
+  GURL start_url("https://example.com");
+  WebApp app(GenerateManifestIdFromStartUrlOnly(start_url), start_url,
+             start_url.GetWithoutFilename());
 
   app.AddSource(WebAppManagement::kSync);
   EXPECT_TRUE(app.WasInstalledByUser());
@@ -258,8 +268,9 @@ TEST(WebAppTest, WasInstalledByUser) {
 }
 
 TEST(WebAppTest, CanUserUninstallWebApp) {
-  WebApp app{GenerateAppId(/*manifest_id_path=*/std::nullopt,
-                           GURL("https://example.com"))};
+  GURL start_url("https://example.com");
+  WebApp app(GenerateManifestIdFromStartUrlOnly(start_url), start_url,
+             start_url.GetWithoutFilename());
 
   app.AddSource(WebAppManagement::kDefault);
   EXPECT_TRUE(app.IsPreinstalledApp());
@@ -309,7 +320,7 @@ TEST(WebAppTest, EmptyAppAsDebugValue) {
   const base::FilePath path_to_test_file =
       GetPathToTestFile("empty_web_app.json");
   const base::Value web_app_debug_value =
-      WebAppToPlatformAgnosticDebugValue(std::make_unique<WebApp>("empty_app"));
+      WebAppToPlatformAgnosticDebugValue(test::CreateWebApp());
 
   if (IsRebaseline()) {
     LOG(INFO) << "Generating expectations empty web app unit test in "
@@ -334,8 +345,11 @@ TEST(WebAppTest, EmptyAppAsDebugValue) {
 TEST(WebAppTest, SampleAppAsDebugValue) {
   const base::FilePath path_to_test_file =
       GetPathToTestFile("sample_web_app.json");
-  const base::Value web_app_debug_value = WebAppToPlatformAgnosticDebugValue(
-      test::CreateRandomWebApp({.seed = 1234, .non_zero = true}));
+  test::CreateRandomWebAppParams params;
+  params.seed = 1234;
+  params.non_zero = true;
+  const base::Value web_app_debug_value =
+      WebAppToPlatformAgnosticDebugValue(test::CreateRandomWebApp(params));
 
   if (IsRebaseline()) {
     LOG(INFO) << "Generating expectations sample web app unit test in "
@@ -353,33 +367,36 @@ TEST(WebAppTest, SampleAppAsDebugValue) {
 
 TEST(WebAppTest, RandomAppAsDebugValue_NoCrash) {
   for (uint32_t seed = 0; seed < 1000; ++seed) {
+    test::CreateRandomWebAppParams params;
+    params.seed = seed;
     const base::Value web_app_debug_value =
-        test::CreateRandomWebApp({.seed = seed})->AsDebugValue();
+        test::CreateRandomWebApp(params)->AsDebugValue();
 
     EXPECT_TRUE(web_app_debug_value.is_dict());
-    EXPECT_TRUE(base::ToString(web_app_debug_value).length() > 10);
+    EXPECT_GT(base::ToString(web_app_debug_value).length(), 10ul);
   }
 }
 
 TEST(WebAppTest, IsolationDataStartsEmpty) {
-  WebApp app{GenerateAppId(/*manifest_id_path=*/std::nullopt,
-                           GURL("https://example.com"))};
+  auto app = web_app::test::CreateWebApp(GURL("https://example.com"));
 
-  EXPECT_FALSE(app.isolation_data().has_value());
+  EXPECT_FALSE(app->isolation_data().has_value());
 }
 
 TEST(WebAppTest, IsolationDataDebugValue) {
-  WebApp app{GenerateAppId(/*manifest_id_path=*/std::nullopt,
-                           GURL("https://example.com"))};
+  GURL kStartUrl("isolated-app://random_name");
+  WebApp app(GenerateManifestIdFromStartUrlOnly(kStartUrl),
+             /*start_url=*/kStartUrl, /*scope=*/kStartUrl);
   app.SetIsolationData(
       IsolationData::Builder(
           IwaStorageOwnedBundle{"random_name", /*dev_mode=*/false},
-          base::Version("1.0.0"))
+          *IwaVersion::Create("1.0.0"))
           .Build());
 
   EXPECT_TRUE(app.isolation_data().has_value());
 
-  base::Value expected_isolation_data = base::JSONReader::Read(R"|({
+  base::Value expected_isolation_data =
+      base::JSONReader::Read(R"|({
         "isolated_web_app_location": {
           "owned_bundle": {
             "dev_mode": false,
@@ -388,21 +405,23 @@ TEST(WebAppTest, IsolationDataDebugValue) {
         },
         "version": "1.0.0",
         "controlled_frame_partitions (on-disk)": [],
+        "opened_tabs_counter_notification_state": null,
         "pending_update_info": null,
         "integrity_block_data": null
-      })|")
-                                            .value();
+      })|",
+                             base::JSON_PARSE_CHROMIUM_EXTENSIONS)
+          .value();
 
-  base::Value::Dict debug_app = app.AsDebugValue().GetDict().Clone();
-  base::Value::Dict* debug_isolation_data =
-      debug_app.FindDict("isolation_data");
+  base::DictValue debug_app = app.AsDebugValue().GetDict().Clone();
+  base::DictValue* debug_isolation_data = debug_app.FindDict("isolation_data");
   EXPECT_TRUE(debug_isolation_data != nullptr);
   EXPECT_EQ(*debug_isolation_data, expected_isolation_data);
 }
 
 TEST(WebAppTest, IsolationDataPendingUpdateInfoDebugValue) {
-  WebApp app{GenerateAppId(/*manifest_id_path=*/std::nullopt,
-                           GURL("https://example.com"))};
+  GURL kStartUrl("isolated-app://random_name");
+  WebApp app(GenerateManifestIdFromStartUrlOnly(kStartUrl),
+             /*start_url=*/kStartUrl, /*scope=*/kStartUrl);
 
   static constexpr std::string_view kUpdateManifestUrl =
       "https://update-manifest.com";
@@ -412,11 +431,11 @@ TEST(WebAppTest, IsolationDataPendingUpdateInfoDebugValue) {
   app.SetIsolationData(
       IsolationData::Builder(
           IwaStorageOwnedBundle{"random_name", /*dev_mode=*/true},
-          base::Version("1.0.0"))
+          *IwaVersion::Create("1.0.0"))
           .SetPendingUpdateInfo(IsolationData::PendingUpdateInfo(
               IwaStorageUnownedBundle{
                   base::FilePath(FILE_PATH_LITERAL("random_folder"))},
-              base::Version("2.0.0"), integrity_block_data))
+              *IwaVersion::Create("2.0.0"), integrity_block_data))
           .SetIntegrityBlockData(integrity_block_data)
           .SetUpdateManifestUrl(GURL(kUpdateManifestUrl))
           .SetUpdateChannel(kUpdateChannel)
@@ -424,10 +443,10 @@ TEST(WebAppTest, IsolationDataPendingUpdateInfoDebugValue) {
 
   EXPECT_TRUE(app.isolation_data().has_value());
 
-  auto ib_data_serialized = *base::WriteJson(base::Value::Dict().Set(
-      "signatures", base::Value::List().Append(base::Value::Dict().Set(
+  auto ib_data_serialized = *base::WriteJson(base::DictValue().Set(
+      "signatures", base::ListValue().Append(base::DictValue().Set(
                         "ecdsa_p256_sha256",
-                        base::Value::Dict()
+                        base::DictValue()
                             .Set("public_key", kEcdsaP256PublicKeyBase64)
                             .Set("signature", kEcdsaP256SHA256SignatureHex)))));
 
@@ -441,6 +460,7 @@ TEST(WebAppTest, IsolationDataPendingUpdateInfoDebugValue) {
         },
         "version": "1.0.0",
         "controlled_frame_partitions (on-disk)": [],
+        "opened_tabs_counter_notification_state": null,
         "pending_update_info": {
           "isolated_web_app_location": {
             "unowned_bundle": {
@@ -455,100 +475,42 @@ TEST(WebAppTest, IsolationDataPendingUpdateInfoDebugValue) {
         "update_channel": "$4"
       })|";
 
-  base::Value expected_isolation_data =
-      *base::JSONReader::Read(base::ReplaceStringPlaceholders(
+  base::Value expected_isolation_data = *base::JSONReader::Read(
+      base::ReplaceStringPlaceholders(
           kExpectedIsolationDataFormat,
           {ib_data_serialized, ib_data_serialized,
            GURL(kUpdateManifestUrl).spec(), kUpdateChannel.ToString()},
-          /*offsets=*/nullptr));
+          /*offsets=*/nullptr),
+      base::JSON_PARSE_CHROMIUM_EXTENSIONS);
 
-  base::Value::Dict debug_app = app.AsDebugValue().GetDict().Clone();
-  base::Value::Dict* debug_isolation_data =
-      debug_app.FindDict("isolation_data");
+  base::DictValue debug_app = app.AsDebugValue().GetDict().Clone();
+  base::DictValue* debug_isolation_data = debug_app.FindDict("isolation_data");
   EXPECT_TRUE(debug_isolation_data != nullptr);
   EXPECT_EQ(*debug_isolation_data, expected_isolation_data);
 }
 
-TEST(WebAppTest, PermissionsPolicyDebugValue) {
-  WebApp app{GenerateAppId(/*manifest_id_path=*/std::nullopt,
-                           GURL("https://example.com"))};
-  app.SetPermissionsPolicy({
-      {network::mojom::PermissionsPolicyFeature::kGyroscope,
-       /*allowed_origins=*/{},
-       /*self_if_matches=*/std::nullopt,
-       /*matches_all_origins=*/false,
-       /*matches_opaque_src=*/true},
-      {network::mojom::PermissionsPolicyFeature::kGeolocation,
-       /*allowed_origins=*/{},
-       /*self_if_matches=*/std::nullopt,
-       /*matches_all_origins=*/true,
-       /*matches_opaque_src=*/false},
-      {network::mojom::PermissionsPolicyFeature::kGamepad,
-       {*network::OriginWithPossibleWildcards::FromOriginAndWildcardsForTest(
-            url::Origin::Create(GURL("https://example.com")),
-            /*has_subdomain_wildcard=*/false),
-        *network::OriginWithPossibleWildcards::FromOriginAndWildcardsForTest(
-            url::Origin::Create(GURL("https://example.net")),
-            /*has_subdomain_wildcard=*/true)},
-       /*self_if_matches=*/std::nullopt,
-       /*matches_all_origins=*/false,
-       /*matches_opaque_src=*/false},
-  });
+TEST(WebAppTest, DisplayOverrideDebugValue) {
+  GURL start_url("https://example.com");
+  WebApp app(GenerateManifestIdFromStartUrlOnly(start_url), start_url,
+             start_url.GetWithoutFilename());
 
-  EXPECT_TRUE(!app.permissions_policy().empty());
+  blink::SafeUrlPattern pattern;
+  pattern.pathname = {liburlpattern::Part(
+      liburlpattern::PartType::kFixed, "/foo", liburlpattern::Modifier::kNone)};
 
-  base::Value expected_permissions_policy = base::JSONReader::Read(R"([
-        {
-          "allowed_origins": [  ],
-          "feature": "gyroscope",
-          "matches_all_origins": false,
-          "matches_opaque_src": true
-        }
-        , {
-          "allowed_origins": [  ],
-          "feature": "geolocation",
-          "matches_all_origins": true,
-          "matches_opaque_src": false
-        }
-        , {
-          "allowed_origins": [ "https://example.com", "https://*.example.net" ],
-          "feature": "gamepad",
-          "matches_all_origins": false,
-          "matches_opaque_src": false
-        }
-      ])")
-                                                .value();
+  app.SetDisplayModeOverride({DisplayOverride::Create(DisplayMode::kStandalone),
+                              DisplayOverride::CreateUnframed({pattern})});
 
-  base::Value::Dict debug_app = app.AsDebugValue().GetDict().Clone();
-  base::Value::List* debug_permissions_policy =
-      debug_app.FindList("permissions_policy");
-  EXPECT_TRUE(debug_permissions_policy != nullptr);
-  EXPECT_EQ(*debug_permissions_policy, expected_permissions_policy);
-}
+  base::Value debug_app = app.AsDebugValue();
 
-class WebAppScopeTest : public WebAppTest {
- public:
-  void SetUp() override {
-    WebAppTest::SetUp();
-    test::AwaitStartWebAppProviderAndSubsystems(profile());
-  }
-};
-
-TEST_F(WebAppScopeTest, TestScopeIgnored) {
-  const GURL kStartUrl("https://www.foo.com/bar/index.html");
-  const GURL kScopeWithQueryAndFragments =
-      GURL("https://www.foo.com/bar/?query=abc#fragment");
-
-  std::unique_ptr<WebAppInstallInfo> install_info =
-      WebAppInstallInfo::CreateWithStartUrlForTesting(kStartUrl);
-  install_info->scope = kScopeWithQueryAndFragments;
-  webapps::AppId app_id =
-      test::InstallWebApp(profile(), std::move(install_info));
-
-  EXPECT_EQ(GURL("https://www.foo.com/bar/"),
-            fake_provider().registrar_unsafe().GetAppScope(app_id));
-  EXPECT_TRUE(fake_provider().registrar_unsafe().IsUrlInAppScope(
-      GURL("https://www.foo.com/bar/"), app_id));
+  base::ListValue* debug_display_override =
+      debug_app.GetDict().FindList("display_override");
+  ASSERT_THAT(debug_display_override, testing::NotNull());
+  EXPECT_THAT(*debug_display_override,
+              testing::ElementsAre("standalone", base::test::IsJson(R"({
+                "display": "unframed",
+                "url_patterns": [{ "pathname": "/foo" }]
+              })")));
 }
 
 }  // namespace web_app

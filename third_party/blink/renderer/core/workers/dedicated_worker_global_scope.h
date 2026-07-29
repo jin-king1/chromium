@@ -53,6 +53,7 @@ class DedicatedWorkerThread;
 class PostMessageOptions;
 class ScriptState;
 class SourceLocation;
+class WebServiceWorkerProvider;
 class WorkerClassicScriptLoader;
 struct GlobalScopeCreationParams;
 
@@ -81,8 +82,6 @@ class CORE_EXPORT DedicatedWorkerGlobalScope final : public WorkerGlobalScope {
       std::unique_ptr<Vector<mojom::blink::OriginTrialFeature>>
           inherited_trial_features,
       const BeginFrameProviderParams& begin_frame_provider_params,
-      bool parent_cross_origin_isolated_capability,
-      bool direct_socket_isolated_capability,
       mojo::PendingRemote<mojom::blink::DedicatedWorkerHost>
           dedicated_worker_host,
       mojo::PendingRemote<mojom::blink::BackForwardCacheControllerHost>
@@ -113,6 +112,7 @@ class CORE_EXPORT DedicatedWorkerGlobalScope final : public WorkerGlobalScope {
       const KURL& response_url,
       network::mojom::ReferrerPolicy response_referrer_policy,
       Vector<network::mojom::blink::ContentSecurityPolicyPtr> response_csp,
+      DocumentPolicy::DocumentPolicyBundle response_document_policy,
       const Vector<String>* response_origin_trial_tokens) override;
   void FetchAndRunClassicScript(
       const KURL& script_url,
@@ -129,8 +129,7 @@ class CORE_EXPORT DedicatedWorkerGlobalScope final : public WorkerGlobalScope {
       std::unique_ptr<PolicyContainer> policy_container,
       const FetchClientSettingsObjectSnapshot& outside_settings_object,
       WorkerResourceTimingNotifier& outside_resource_timing_notifier,
-      network::mojom::CredentialsMode,
-      RejectCoepUnsafeNone reject_coep_unsafe_none) override;
+      network::mojom::CredentialsMode) override;
   bool IsOffMainThreadScriptFetchDisabled() override;
   void WorkerScriptFetchFinished(
       Script& worker_script,
@@ -140,9 +139,8 @@ class CORE_EXPORT DedicatedWorkerGlobalScope final : public WorkerGlobalScope {
   void UpdateBackForwardCacheDisablingFeatures(
       BlockingDetails details) override;
   // Implements BackForwardCacheLoaderHelperImpl::Delegate.
-  void EvictFromBackForwardCache(
-      mojom::blink::RendererEvictionReason reason,
-      std::unique_ptr<SourceLocation> source_location) override;
+  void EvictFromBackForwardCache(mojom::blink::RendererEvictionReason reason,
+                                 SourceLocation* source_location) override;
   void DidBufferLoadWhileInBackForwardCache(bool update_process_wide_count,
                                             size_t num_bytes) override;
 
@@ -158,11 +156,6 @@ class CORE_EXPORT DedicatedWorkerGlobalScope final : public WorkerGlobalScope {
                    ExceptionState&);
   DEFINE_ATTRIBUTE_EVENT_LISTENER(message, kMessage)
   DEFINE_ATTRIBUTE_EVENT_LISTENER(messageerror, kMessageerror)
-
-  RejectCoepUnsafeNone ShouldRejectCoepUnsafeNoneTopModuleScript()
-      const override {
-    return reject_coep_unsafe_none_;
-  }
 
   // Called by the Oilpan.
   void Trace(Visitor*) const override;
@@ -185,11 +178,15 @@ class CORE_EXPORT DedicatedWorkerGlobalScope final : public WorkerGlobalScope {
     return parent_token_;
   }
 
+  std::unique_ptr<WebServiceWorkerProvider> CreateServiceWorkerProvider();
+
  private:
   struct ParsedCreationParams {
     std::unique_ptr<GlobalScopeCreationParams> creation_params;
     ExecutionContextToken parent_context_token;
     net::StorageAccessApiStatus parent_storage_access_api_status;
+    bool parent_is_isolated_context = false;
+    bool direct_sockets_force_enabled_in_parent = false;
   };
 
   static ParsedCreationParams ParseCreationParams(
@@ -207,8 +204,6 @@ class CORE_EXPORT DedicatedWorkerGlobalScope final : public WorkerGlobalScope {
       std::unique_ptr<Vector<mojom::blink::OriginTrialFeature>>
           inherited_trial_features,
       const BeginFrameProviderParams& begin_frame_provider_params,
-      bool parent_cross_origin_isolated_capability,
-      bool is_isolated_context,
       mojo::PendingRemote<mojom::blink::DedicatedWorkerHost>
           dedicated_worker_host,
       mojo::PendingRemote<mojom::blink::BackForwardCacheControllerHost>
@@ -229,7 +224,6 @@ class CORE_EXPORT DedicatedWorkerGlobalScope final : public WorkerGlobalScope {
   bool cross_origin_isolated_capability_;
   bool is_isolated_context_;
   Member<WorkerAnimationFrameProvider> animation_frame_provider_;
-  RejectCoepUnsafeNone reject_coep_unsafe_none_ = RejectCoepUnsafeNone(false);
 
   HeapMojoRemote<mojom::blink::DedicatedWorkerHost> dedicated_worker_host_{
       this};

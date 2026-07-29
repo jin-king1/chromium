@@ -5,19 +5,20 @@
 #ifndef UI_BASE_MODELS_IMAGE_MODEL_H_
 #define UI_BASE_MODELS_IMAGE_MODEL_H_
 
+#include <variant>
+
 #include "base/component_export.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_variant.h"
 #include "ui/gfx/color_palette.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/image/image.h"
-#include "ui/gfx/image/image_skia.h"
 
 namespace gfx {
+class ImageSkia;
 struct VectorIcon;
 }  // namespace gfx
 
@@ -48,8 +49,8 @@ class COMPONENT_EXPORT(UI_BASE) VectorIconModel {
 
   bool is_empty() const { return !vector_icon_; }
 
-  bool operator==(const VectorIconModel& other) const;
-  bool operator!=(const VectorIconModel& other) const;
+  friend bool operator==(const VectorIconModel&,
+                         const VectorIconModel&) = default;
 
   const gfx::VectorIcon* vector_icon() const { return vector_icon_; }
   int icon_size() const { return icon_size_; }
@@ -111,8 +112,7 @@ class COMPONENT_EXPORT(UI_BASE) ImageModel {
   ImageGenerator GetImageGenerator() const;
 
   // Checks if both models yield equal images.
-  bool operator==(const ImageModel& other) const;
-  bool operator!=(const ImageModel& other) const;
+  friend bool operator==(const ImageModel&, const ImageModel&) = default;
 
   // Rasterizes if necessary.
   gfx::ImageSkia Rasterize(const ui::ColorProvider* color_provider) const;
@@ -124,7 +124,8 @@ class COMPONENT_EXPORT(UI_BASE) ImageModel {
     ImageGeneratorAndSize& operator=(const ImageGeneratorAndSize&);
     ~ImageGeneratorAndSize();
 
-    bool operator==(const ImageGeneratorAndSize& other) const;
+    friend bool operator==(const ImageGeneratorAndSize&,
+                           const ImageGeneratorAndSize&) = default;
 
     ImageGenerator generator;
     gfx::Size size;
@@ -135,7 +136,7 @@ class COMPONENT_EXPORT(UI_BASE) ImageModel {
   explicit ImageModel(const gfx::ImageSkia& image_skia);
   explicit ImageModel(ImageGeneratorAndSize image_generator);
 
-  absl::variant<VectorIconModel, gfx::Image, ImageGeneratorAndSize> icon_;
+  std::variant<VectorIconModel, gfx::Image, ImageGeneratorAndSize> icon_;
 };
 
 }  // namespace ui

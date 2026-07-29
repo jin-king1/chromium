@@ -2,7 +2,7 @@
 <html>
 <head>
   <style>
-    permission {
+    geolocation {
       font-size: xxx-large;
       margin: 0px;
       border: 0px;
@@ -11,7 +11,7 @@
 </head>
 <body>
   <div id="parent">
-    <permission id="geolocation" type="geolocation">
+    <geolocation id="geolocation"></geolocation>
   </div>
   <script>
     function checkGeolocation() {
@@ -23,11 +23,17 @@
       });
     }
 
-    document.getElementById('parent').addEventListener('resolve', (event) => {
-      window.document.title = 'resolve';
+    function getGeolocationPermissionState() {
+      navigator.permissions.query({name: 'geolocation'}).then(permission => {
+        domAutomationController.send(permission.state);
+      });
+    }
+
+    document.getElementById('parent').addEventListener('promptaction', (event) => {
+      window.document.title = 'promptaction';
     });
-    document.getElementById('parent').addEventListener('dismiss', (event) => {
-      window.document.title = 'dismiss';
+    document.getElementById('parent').addEventListener('promptdismiss', (event) => {
+      window.document.title = 'promptdismiss';
     });
   </script>
 </body>

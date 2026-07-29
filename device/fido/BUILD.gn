@@ -22,11 +22,10 @@ component("fido") {
     "cbor_extract.h",
     "ed25519_public_key.cc",
     "ed25519_public_key.h",
-    "fido_constants.cc",
-    "fido_constants.h",
     "fido_parsing_utils.cc",
     "fido_parsing_utils.h",
-    "fido_types.h",
+    "fido_user_verification_requirement.cc",
+    "fido_user_verification_requirement.h",
     "opaque_attestation_statement.cc",
     "opaque_attestation_statement.h",
     "p256_public_key.cc",
@@ -41,6 +40,8 @@ component("fido") {
 
   defines = [ "IS_DEVICE_FIDO_IMPL" ]
 
+  public_deps = [ "//device/fido/public" ]
+
   deps = [
     "//base",
     "//components/cbor",
@@ -53,12 +54,10 @@ component("fido") {
 
   if (use_blink) {
     sources += [
-      "authenticator_selection_criteria.cc",
-      "authenticator_selection_criteria.h",
-      "cable/cable_discovery_data.cc",
-      "cable/cable_discovery_data.h",
       "cable/noise.cc",
       "cable/noise.h",
+      "cable/pairing.cc",
+      "cable/pairing.h",
       "cable/v2_constants.h",
       "cable/v2_handshake.cc",
       "cable/v2_handshake.h",
@@ -66,21 +65,9 @@ component("fido") {
       "cable/websocket_adapter.h",
       "discoverable_credential_metadata.cc",
       "discoverable_credential_metadata.h",
-      "features.cc",
-      "features.h",
-      "fido_transport_protocol.cc",
-      "fido_transport_protocol.h",
       "json_request.cc",
       "json_request.h",
       "network_context_factory.h",
-      "public_key_credential_descriptor.cc",
-      "public_key_credential_descriptor.h",
-      "public_key_credential_params.cc",
-      "public_key_credential_params.h",
-      "public_key_credential_rp_entity.cc",
-      "public_key_credential_rp_entity.h",
-      "public_key_credential_user_entity.cc",
-      "public_key_credential_user_entity.h",
     ]
 
     deps += [
@@ -89,11 +76,11 @@ component("fido") {
       "//device/base",
       "//device/fido/strings",
       "//services/data_decoder/public/cpp",
-      "//third_party/microsoft_webauthn",
+      "//third_party/blink/public/mojom:authenticator_mojo_bindings",
       "//ui/base",
     ]
 
-    public_deps = [
+    public_deps += [
       "//base",
       "//device/bluetooth",
       "//device/bluetooth/public/cpp",
@@ -125,24 +112,14 @@ component("fido") {
         "bio/enrollment_handler.h",
         "ble_adapter_manager.cc",
         "ble_adapter_manager.h",
-        "cable/fido_ble_connection.cc",
-        "cable/fido_ble_connection.h",
-        "cable/fido_ble_frames.cc",
-        "cable/fido_ble_frames.h",
-        "cable/fido_ble_transaction.cc",
-        "cable/fido_ble_transaction.h",
         "cable/fido_ble_uuids.cc",
         "cable/fido_ble_uuids.h",
-        "cable/fido_cable_device.cc",
-        "cable/fido_cable_device.h",
-        "cable/fido_cable_discovery.cc",
-        "cable/fido_cable_discovery.h",
-        "cable/fido_cable_handshake_handler.cc",
-        "cable/fido_cable_handshake_handler.h",
         "cable/fido_tunnel_device.cc",
         "cable/fido_tunnel_device.h",
         "cable/v2_discovery.cc",
         "cable/v2_discovery.h",
+        "cmtg_key_response.cc",
+        "cmtg_key_response.h",
         "credential_management.cc",
         "credential_management.h",
         "credential_management_handler.cc",
@@ -154,6 +131,8 @@ component("fido") {
         "ctap_get_assertion_request.h",
         "ctap_make_credential_request.cc",
         "ctap_make_credential_request.h",
+        "ctap_request_common.cc",
+        "ctap_request_common.h",
         "device_operation.h",
         "device_response_converter.cc",
         "device_response_converter.h",
@@ -240,20 +219,19 @@ component("fido") {
       ]
 
       deps += [
-        "//components/sync/protocol:protocol",
-        "//device/fido/enclave/proto:proto",
+        "//components/sync/protocol",
+        "//device/fido/enclave/proto",
         "//services/device/public/cpp/hid",
         "//services/device/public/cpp/usb",
         "//services/device/public/mojom",
         "//services/device/public/mojom:usb",
+        "//services/network/public/cpp",
         "//services/network/public/mojom",
       ]
     }
 
     if (is_mac) {
       sources += [
-        "enclave/icloud_recovery_key_mac.h",
-        "enclave/icloud_recovery_key_mac.mm",
         "mac/authenticator.h",
         "mac/authenticator.mm",
         "mac/authenticator_config.h",
@@ -303,6 +281,8 @@ component("fido") {
         "win/webauthn_api.cc",
         "win/webauthn_api.h",
       ]
+      deps += [ "//third_party/microsoft_webauthn" ]
+      libs = [ "wtsapi32.lib" ]
     }
 
     if (is_chromeos) {
@@ -353,8 +333,9 @@ if (use_blink) {
       ":fido",
       "//components/cbor",
       "//components/device_event_log",
-      "//content/public/common",  # for authenticator.mojom
+      "//services/network/public/cpp",
       "//services/network/public/mojom",
+      "//third_party/blink/public/mojom:authenticator_mojo_bindings",
     ]
     configs += [ "//build/config/compiler:wexit_time_destructors" ]
   }
@@ -368,12 +349,15 @@ if (use_blink) {
     deps = [
       ":cablev2_authenticator",
       ":fido",
+      ":mocks",
       "//components/cbor",
-      "//content/public/common",  # for authenticator.mojom
       "//crypto",
       "//net/traffic_annotation:test_support",
       "//services/network:test_support",
       "//services/network/public/mojom",
+      "//testing/gmock",
+      "//testing/gtest",
+      "//third_party/blink/public/mojom:authenticator_mojo_bindings",
     ]
   }
 
@@ -381,8 +365,8 @@ if (use_blink) {
     testonly = true
 
     sources = [
-      "cable/mock_fido_ble_connection.cc",
-      "cable/mock_fido_ble_connection.h",
+      "cable/cable_mock_bluetooth_adapter.cc",
+      "cable/cable_mock_bluetooth_adapter.h",
       "mock_fido_device.cc",
       "mock_fido_device.h",
       "mock_fido_discovery_observer.cc",
@@ -394,49 +378,35 @@ if (use_blink) {
       "//base",
       "//components/apdu",
       "//components/cbor",
-      "//testing/gmock",
-    ]
-  }
-
-  fuzzer_test("fido_hid_message_fuzzer") {
-    sources = [ "hid/fido_hid_message_fuzzer.cc" ]
-    deps = [
-      ":fido",
-      "//base",
-    ]
-    libfuzzer_options = [ "max_len=2048" ]
-  }
-
-  fuzzer_test("fido_ble_frames_fuzzer") {
-    sources = [ "cable/fido_ble_frames_fuzzer.cc" ]
-    deps = [ ":fido" ]
-    libfuzzer_options = [ "max_len=65535" ]
-  }
-
-  fuzzer_test("ctap_response_fuzzer") {
-    sources = [ "ctap_response_fuzzer.cc" ]
-    deps = [
-      ":fido",
-      "//base",
-      "//base:i18n",
-      "//components/cbor",
-      "//components/device_event_log",
-    ]
-    seed_corpus = "response_data_fuzzer_corpus/"
-    libfuzzer_options = [ "max_len=65537" ]
-  }
-
-  fuzzer_test("fido_cable_handshake_handler_fuzzer") {
-    sources = [ "cable/fido_cable_handshake_handler_fuzzer.cc" ]
-    deps = [
-      ":fido",
-      "//base",
-      "//base/test:test_support",
       "//device/bluetooth:mocks",
       "//testing/gmock",
-      "//testing/gtest",
     ]
-    libfuzzer_options = [ "max_len=2048" ]
+  }
+
+  # Android implementation of FIDO is delegated to GMSCore.
+  if (!is_android) {
+    fuzzer_test("fido_hid_message_fuzzer") {
+      sources = [ "hid/fido_hid_message_fuzzer.cc" ]
+      deps = [
+        ":fido",
+        "//base",
+        "//testing/libfuzzer:libfuzzer_base_wrappers",
+      ]
+      libfuzzer_options = [ "max_len=2048" ]
+    }
+
+    fuzzer_test("ctap_response_fuzzer") {
+      sources = [ "ctap_response_fuzzer.cc" ]
+      deps = [
+        ":fido",
+        "//base",
+        "//base:i18n",
+        "//components/cbor",
+        "//components/device_event_log",
+      ]
+      seed_corpus = "response_data_fuzzer_corpus/"
+      libfuzzer_options = [ "max_len=65537" ]
+    }
   }
 
   fuzzer_test("v2_handshake_fuzzer") {
@@ -448,6 +418,7 @@ if (use_blink) {
       "//device/bluetooth:mocks",
       "//testing/gmock",
       "//testing/gtest",
+      "//testing/libfuzzer:libfuzzer_base_wrappers",
     ]
     libfuzzer_options = [ "max_len=2048" ]
   }

@@ -9,6 +9,7 @@
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/hash/hash.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/pickle.h"
 #include "base/threading/scoped_blocking_call.h"
 
@@ -21,7 +22,7 @@ bool LoadFromFile(base::FilePath file_path,
   DCHECK(!file_path.empty());
   // Reset to empty to ensure IsValid() is false if reading fails.
   *name_table_region = base::MappedReadOnlyRegion();
-  std::vector<char> file_contents;
+  std::vector<uint8_t> file_contents;
   {
     base::ScopedBlockingCall scoped_blocking_call(
         FROM_HERE, base::BlockingType::MAY_BLOCK);
@@ -32,17 +33,15 @@ bool LoadFromFile(base::FilePath file_path,
       return false;
     }
 
-    file_contents.resize(table_cache_file.GetLength());
+    file_contents.resize(
+        base::checked_cast<size_t>(table_cache_file.GetLength()));
 
-    if (UNSAFE_TODO(table_cache_file.Read(0, file_contents.data(),
-                                          file_contents.size())) <= 0) {
+    if (table_cache_file.Read(0, file_contents).value_or(0) == 0) {
       return false;
     }
   }
 
-  base::Pickle pickle =
-      base::Pickle::WithUnownedBuffer(base::as_byte_span(file_contents));
-  base::PickleIterator pickle_iterator(pickle);
+  base::PickleIterator pickle_iterator = base::PickleIterator::WithData(file_contents);
 
   uint32_t checksum = 0;
   if (!pickle_iterator.ReadUInt32(&checksum)) {
@@ -64,7 +63,7 @@ bool LoadFromFile(base::FilePath file_path,
   }
 
   blink::FontUniqueNameTable font_table;
-  if (!font_table.ParseFromArray(proto.data(), proto.size())) {
+  if (!font_table.ParseFromString(base::as_string_view(proto))) {
     return false;
   }
 
@@ -99,8 +98,7 @@ bool PersistToFile(const base::MappedReadOnlyRegion& name_table_region,
     base::ScopedBlockingCall scoped_blocking_call(
         FROM_HERE, base::BlockingType::MAY_BLOCK);
 
-    if (UNSAFE_TODO(table_cache_file.Write(0, pickle.data_as_char(),
-                                           pickle.size())) == -1) {
+    if (!table_cache_file.Write(0, pickle)) {
       table_cache_file.SetLength(0);
       return false;
     }

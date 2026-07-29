@@ -63,7 +63,7 @@ export class SettingsAndroidAppsSubpageElement extends
       },
 
       dialogBody_: {
-        type: TrustedHTML,
+        type: Object,
         value(this: SettingsAndroidAppsSubpageElement): TrustedHTML {
           return this.i18nAdvanced(
               'androidAppsDisableDialogMessage',
@@ -73,24 +73,20 @@ export class SettingsAndroidAppsSubpageElement extends
 
       /** Whether Arc VM manage usb subpage should be shown. */
       isArcVmManageUsbAvailable: Boolean,
-
-      /**
-       * Used by DeepLinkingMixin to focus this page's deep links.
-       */
-      supportedSettingIds: {
-        type: Object,
-        value: () => new Set<Setting>([
-          Setting.kManageAndroidPreferences,
-          Setting.kRemovePlayStore,
-        ]),
-      },
     };
   }
 
-  androidAppsInfo: AndroidAppsInfo;
-  isArcVmManageUsbAvailable: boolean;
-  private dialogBody_: string;
-  private playStoreEnabled_: boolean;
+  declare androidAppsInfo: AndroidAppsInfo;
+  declare isArcVmManageUsbAvailable: boolean;
+
+  // DeepLinkingMixin override
+  override supportedSettingIds = new Set<Setting>([
+    Setting.kManageAndroidPreferences,
+    Setting.kRemovePlayStore,
+  ]);
+
+  declare private dialogBody_: string;
+  declare private playStoreEnabled_: boolean;
 
   constructor() {
     super();
@@ -130,7 +126,7 @@ export class SettingsAndroidAppsSubpageElement extends
   }
 
   private allowRemove_(): boolean {
-    return this.prefs.arc.enabled.enforcement !==
+    return this.getPref<boolean>('arc.enabled').enforcement !==
         chrome.settingsPrivate.Enforcement.ENFORCED;
   }
 

@@ -23,7 +23,13 @@ class CORE_EXPORT PhysicalLineBoxFragment final : public PhysicalFragment {
     // that are ignored for margin collapsing and for other purposes.
     // https://drafts.csswg.org/css2/box.html#collapsing-margins
     // Also see |InlineItem::IsEmptyItem|.
-    kEmptyLineBox
+    kEmptyLineBox,
+    // Ruby line box. It is treated as a normal line box.
+    // This type is only for FragmenItem. PhysicalLineBoxFragment never uses
+    // this.
+    kRubyLineBox,
+
+    kMaxValue = kRubyLineBox
   };
 
   static const PhysicalLineBoxFragment* Create(LineBoxFragmentBuilder* builder);
@@ -59,9 +65,6 @@ class CORE_EXPORT PhysicalLineBoxFragment final : public PhysicalFragment {
 
   // Compute the baseline metrics for this linebox.
   FontHeight BaselineMetrics() const;
-
-  // Whether the content soft-wraps to the next line.
-  bool HasSoftWrapToNextLine() const;
 
   // Returns the |LayoutObject| of the container. |GetLayoutObject()| returns
   // |nullptr| because line boxes do not have corresponding |LayoutObject|.

@@ -9,6 +9,7 @@
 
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
+#include "base/logging.h"
 #include "base/message_loop/message_pump_type.h"
 #include "base/power_monitor/power_monitor.h"
 #include "base/power_monitor/power_monitor_source.h"
@@ -19,6 +20,7 @@
 #include "components/viz/common/buildflags.h"
 #include "components/viz/common/features.h"
 #include "components/viz/service/debugger/viz_debugger.h"
+#include "components/viz/service/gl/gpu_log_message_manager.h"
 #include "components/viz/service/performance_hint/hint_session.h"
 #include "gpu/command_buffer/common/shm_count.h"
 #include "gpu/config/gpu_finch_features.h"
@@ -42,7 +44,7 @@ std::unique_ptr<base::Thread> CreateAndStartIOThread() {
   base::Thread::Options thread_options(base::MessagePumpType::IO, 0);
   // TODO(reveman): Remove this in favor of setting it explicitly for each
   // type of process.
-  thread_options.thread_type = base::ThreadType::kDisplayCritical;
+  thread_options.thread_type = base::ThreadType::kPresentation;
   auto io_thread = std::make_unique<base::Thread>("GpuIOThread");
   CHECK(io_thread->StartWithOptions(std::move(thread_options)));
 
@@ -157,6 +159,10 @@ VizMainImpl::~VizMainImpl() {
   if (dependencies_.ukm_recorder)
     ukm::DelegatingUkmRecorder::Get()->RemoveDelegate(
         dependencies_.ukm_recorder.get());
+
+  if (!gpu_init_->gpu_info().in_process_gpu) {
+    GpuLogMessageManager::GetInstance()->ShutdownLogging();
+  }
 }
 
 void VizMainImpl::Bind(mojo::PendingReceiver<mojom::VizMain> receiver) {
@@ -166,6 +172,7 @@ void VizMainImpl::Bind(mojo::PendingReceiver<mojom::VizMain> receiver) {
 void VizMainImpl::CreateGpuService(
     mojo::PendingReceiver<mojom::GpuService> pending_receiver,
     mojo::PendingRemote<mojom::GpuHost> pending_gpu_host,
+    mojo::PendingRemote<mojom::GpuLogging> pending_gpu_logging,
     mojo::PendingRemote<
         discardable_memory::mojom::DiscardableSharedMemoryManager>
         discardable_memory_manager,
@@ -181,7 +188,9 @@ void VizMainImpl::CreateGpuService(
 
   if (!gpu_init_->init_successful()) {
     LOG(ERROR) << "Exiting GPU process due to errors during initialization";
-    GpuServiceImpl::FlushPreInitializeLogMessages(gpu_host.get());
+    mojo::Remote<mojom::GpuLogging> gpu_logging(std::move(pending_gpu_logging));
+    GpuLogMessageManager::GetInstance()->FlushMessages(gpu_logging.get());
+
     gpu_service_.reset();
     gpu_host->DidFailInitialize();
     if (delegate_)
@@ -197,6 +206,10 @@ void VizMainImpl::CreateGpuService(
         std::move(discardable_memory_manager), io_task_runner());
     base::DiscardableMemoryAllocator::SetInstance(
         discardable_shared_memory_manager_.get());
+
+    // Setup GPU Log message hook and bind the GPU logging interface.
+    GpuLogMessageManager::GetInstance()->InstallPostInitializeLogHandler(
+        std::move(pending_gpu_logging), io_task_runner());
   }
 
 #if BUILDFLAG(IS_ANDROID)
@@ -215,6 +228,13 @@ void VizMainImpl::CreateGpuService(
       dependencies_.shutdown_event);
 #endif
 
+  CompositorGpuThread* compositor_gpu_thread =
+      gpu_service_->compositor_gpu_thread();
+  if (delegate_ && compositor_gpu_thread) {
+    delegate_->PostDisplayCompositorGpuThreadCreated(
+        compositor_gpu_thread->task_runner().get());
+  }
+
   gpu_service_->Bind(std::move(pending_receiver));
 
   {
@@ -227,17 +247,10 @@ void VizMainImpl::CreateGpuService(
     base::PlatformThreadId main_thread_id = base::PlatformThread::CurrentId();
     gpu_process_thread_ids.insert(main_thread_id);
 #if BUILDFLAG(IS_ANDROID)
-    if (base::FeatureList::IsEnabled(::features::kWebViewEnableADPFGpuMain)) {
-      viz_compositor_thread_runner_->SetGpuMainThreadId(main_thread_id);
-    }
+    viz_compositor_thread_runner_->SetGpuMainThreadId(main_thread_id);
 #endif
 
-    CompositorGpuThread* compositor_gpu_thread =
-        gpu_service_->compositor_gpu_thread();
-
-    if (compositor_gpu_thread &&
-        base::FeatureList::IsEnabled(
-            ::features::kEnableADPFGpuCompositorThread)) {
+    if (compositor_gpu_thread) {
       gpu_process_thread_ids.insert(compositor_gpu_thread->GetThreadId());
     }
 
@@ -301,6 +314,10 @@ void VizMainImpl::SetHostProcessId(int32_t pid) {
   if (gpu_service_)
     gpu_service_->SetHostProcessId(pid);
 }
+
+void VizMainImpl::NotifyWorkloadIncrease() {
+  viz_compositor_thread_runner_->NotifyWorkloadIncrease();
+}
 #endif
 
 void VizMainImpl::CreateFrameSinkManager(
@@ -340,7 +357,7 @@ void VizMainImpl::RequestBeginFrameForGpuService(bool toggle) {
 }
 
 #if BUILDFLAG(USE_VIZ_DEBUGGER)
-void VizMainImpl::FilterDebugStream(base::Value::Dict filter_data) {
+void VizMainImpl::FilterDebugStream(base::DictValue filter_data) {
   VizDebugger::GetInstance()->FilterDebugStream(std::move(filter_data));
 }
 

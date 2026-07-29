@@ -49,8 +49,9 @@ namespace {
 
 class TestShellContentRendererClient : public ShellContentRendererClient {
  public:
-  TestShellContentRendererClient()
-      : latest_error_valid_(false),
+  explicit TestShellContentRendererClient(bool is_browsertest)
+      : ShellContentRendererClient(is_browsertest),
+        latest_error_valid_(false),
         latest_error_reason_(0),
         latest_error_stale_copy_in_cache_(false) {}
 
@@ -95,7 +96,8 @@ class RenderViewBrowserTest : public ContentBrowserTest {
 
   void SetUpOnMainThread() override {
     // Override setting of renderer client.
-    renderer_client_ = new TestShellContentRendererClient();
+    renderer_client_ =
+        new TestShellContentRendererClient(/*is_browsertest=*/true);
     // Explicitly leaks ownership; this object will remain alive
     // until process death.  We don't deleted the returned value,
     // since some contexts set the pointer to a non-heap address.
@@ -144,15 +146,9 @@ class RenderViewBrowserTest : public ContentBrowserTest {
 };
 
 // https://crbug.com/788788
-#if (BUILDFLAG(IS_ANDROID) && defined(ADDRESS_SANITIZER)) || \
-    (BUILDFLAG(IS_LINUX) && defined(MEMORY_SANITIZER))
-#define MAYBE_ConfirmCacheInformationPlumbed \
-  DISABLED_ConfirmCacheInformationPlumbed
-#else
-#define MAYBE_ConfirmCacheInformationPlumbed ConfirmCacheInformationPlumbed
-#endif  // BUILDFLAG(IS_ANDROID) && defined(ADDRESS_SANITIZER)
+// TODO(crbug.com/408394636): Tests are flaky.
 IN_PROC_BROWSER_TEST_F(RenderViewBrowserTest,
-                       MAYBE_ConfirmCacheInformationPlumbed) {
+                       DISABLED_ConfirmCacheInformationPlumbed) {
   ASSERT_TRUE(embedded_test_server()->Start());
 
   // Load URL with "nocache" set, to create stale cache.

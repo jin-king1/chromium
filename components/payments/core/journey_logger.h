@@ -5,6 +5,8 @@
 #ifndef COMPONENTS_PAYMENTS_CORE_JOURNEY_LOGGER_H_
 #define COMPONENTS_PAYMENTS_CORE_JOURNEY_LOGGER_H_
 
+#include <array>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -133,6 +135,7 @@ class JourneyLogger {
     ABORT_REASON_USER_NAVIGATION = 9,
     ABORT_REASON_MERCHANT_NAVIGATION = 10,
     ABORT_REASON_USER_OPTED_OUT = 11,
+    ABORT_REASON_INTERNAL_ERROR = 12,
     ABORT_REASON_MAX,
   };
 
@@ -147,6 +150,22 @@ class JourneyLogger {
     kOther = 4,
     kGooglePayAuthentication = 5,
     kMaxValue = kGooglePayAuthentication,
+  };
+
+  // The reason why the browser window size check failed.
+  enum class WindowSizeCheckRejectionReason {
+    // The check failed during the initial ShowDialog() call.
+    kRejectedAtShow = 0,
+    // The check failed when transitioning to a Payment Handler (which may
+    // require more space).
+    kRejectedAtPaymentHandlerTransition = 1,
+    // The check failed because the browser window was resized to be too small
+    // while the dialog was already open.
+    kRejectedAtResize = 2,
+    // The check did not fail, or the dialog was never shown to the user (e.g.
+    // because of no matching payment methods).
+    kNotRejectedOrNotShown = 3,
+    kMaxValue = kNotRejectedOrNotShown,
   };
 
   // Records different checkout steps for payment requests. The difference
@@ -230,14 +249,16 @@ class JourneyLogger {
   // Records that the Payment Request was not shown to the user.
   void SetNotShown();
 
-  // Records that the SPC No Matching Credentials UX was shown to the user.
-  void SetNoMatchingCredentialsShown();
-
   // Increments the bucket count for the given checkout step.
   void RecordCheckoutStep(CheckoutFunnelStep step);
 
   // Sets the UKM source id of the selected app when it gets invoked.
   void SetPaymentAppUkmSourceId(ukm::SourceId payment_app_source_id);
+
+  // Sets the reason why the browser window size check failed. The reason
+  // will eventually be logged when the PaymentRequest is completed or aborted.
+  // If this method is called multiple times, the last value will be used.
+  void SetWindowSizeCheckRejectionReason(WindowSizeCheckRejectionReason reason);
 
   base::WeakPtr<JourneyLogger> GetWeakPtr();
 
@@ -290,14 +311,16 @@ class JourneyLogger {
   // Returns whether this Payment Request was triggered (shown or skipped show).
   bool WasPaymentRequestTriggered();
 
-  SectionStats sections_[NUMBER_OF_SECTIONS];
-  bool has_recorded_ = false;
+  std::array<SectionStats, NUMBER_OF_SECTIONS> sections_;
 
   // Accumulates the many events that have happened during the Payment Request.
   int events2_;
 
   ukm::SourceId payment_request_source_id_;
   ukm::SourceId payment_app_source_id_ = ukm::kInvalidSourceId;
+
+  WindowSizeCheckRejectionReason window_size_check_rejection_reason_ =
+      WindowSizeCheckRejectionReason::kNotRejectedOrNotShown;
 
   base::WeakPtrFactory<JourneyLogger> weak_ptr_factory_{this};
 };

@@ -17,6 +17,7 @@ import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bu
 
 import {DeepLinkingMixin} from '../../common/deep_linking_mixin.js';
 import {RouteOriginMixin} from '../../common/route_origin_mixin.js';
+import type {PrefsState} from '../../common/types.js';
 import {recordSettingChange} from '../../metrics_recorder.js';
 import type {App, AppNotificationsHandlerInterface} from '../../mojom-webui/app_notification_handler.mojom-webui.js';
 import {AppNotificationsObserverReceiver} from '../../mojom-webui/app_notification_handler.mojom-webui.js';
@@ -72,27 +73,23 @@ export class AppNotificationsSubpage extends AppNotificationsSubpageBase {
         type: Array,
         value: [],
       },
-
-      /**
-       * Used by DeepLinkingMixin to focus this page's deep links.
-       */
-      supportedSettingIds: {
-        type: Object,
-        value: () => new Set<Setting>([
-          Setting.kDoNotDisturbOnOff,
-          Setting.kAppBadgingOnOff,
-        ]),
-      },
     };
   }
 
-  prefs: {[key: string]: any};
-  private appList_: App[];
+  declare prefs: PrefsState;
+
+  // DeepLinkingMixin override
+  override supportedSettingIds = new Set<Setting>([
+    Setting.kDoNotDisturbOnOff,
+    Setting.kAppBadgingOnOff,
+  ]);
+
+  declare private appList_: App[];
   private appNotificationsObserverReceiver_: AppNotificationsObserverReceiver|
       null;
-  private isDndEnabled_: boolean;
+  declare private isDndEnabled_: boolean;
   private mojoInterfaceProvider_: AppNotificationsHandlerInterface;
-  private virtualDndPref_: chrome.settingsPrivate.PrefObject<boolean>;
+  declare private virtualDndPref_: chrome.settingsPrivate.PrefObject<boolean>;
 
   constructor() {
     super();

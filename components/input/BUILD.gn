@@ -5,10 +5,6 @@
 import("//build/config/ui.gni")
 import("//mojo/public/tools/bindings/mojom.gni")
 
-assert(
-    use_blink,
-    "//components/input can't be built without blink and shouldn't be included if use_blink is false")
-
 component("input") {
   defines = [ "IS_INPUT_IMPL" ]
   sources = [
@@ -34,6 +30,7 @@ component("input") {
     "input_disposition_handler.h",
     "input_event_ack_state.cc",
     "input_event_ack_state.h",
+    "input_event_source.h",
     "input_event_stream_validator.cc",
     "input_event_stream_validator.h",
     "input_router.h",
@@ -96,10 +93,10 @@ component("input") {
     "//third_party/blink/public/common:headers",
     "//ui/base",
     "//ui/base/cursor",
-    "//ui/events:events",
+    "//ui/events",
     "//ui/events:events_base",
     "//ui/events:gesture_detection",
-    "//ui/events/blink:blink",
+    "//ui/events/blink",
     "//ui/events/gestures/blink",
   ]
   if (use_aura) {
@@ -109,6 +106,7 @@ component("input") {
     sources += [
       "android/android_input_callback.cc",
       "android/android_input_callback.h",
+      "android/input_feature_map.cc",
       "android/input_receiver_data.cc",
       "android/input_receiver_data.h",
       "android/input_token_forwarder.cc",
@@ -124,6 +122,10 @@ component("input") {
       "native_web_keyboard_event_android.cc",
       "web_input_event_builders_android.cc",
       "web_input_event_builders_android.h",
+    ]
+    deps += [
+      "//components/input/android:jni_headers",
+      "//ui/events:motionevent_jni_headers",
     ]
   }
   if (is_ios) {
@@ -150,6 +152,7 @@ component("input") {
 mojom_component("mojom") {
   sources = [ "render_input_router.mojom" ]
   public_deps = [
+    "//cc/mojom",
     "//services/viz/public/mojom",
     "//third_party/blink/public/mojom:mojom_platform",
     "//ui/events/mojom",
@@ -185,19 +188,20 @@ source_set("unit_tests") {
   ]
   deps = [
     ":input",
-    "//base:base",
+    "//base",
     "//base/test:test_support",
     "//testing/gtest",
     "//third_party/blink/public/common:headers",
     "//ui/base:features",
+    "//ui/events",
     "//ui/events:dom_keycode_converter",
-    "//ui/events:events",
     "//ui/events:test_support",
     "//ui/events:velocity_tracker",
-    "//ui/events/blink:blink",
+    "//ui/events/blink",
   ]
   if (is_android) {
     sources += [ "web_input_event_builders_android_unittest.cc" ]
+    deps += [ "//ui/events:motionevent_jni_headers" ]
   }
   if (is_mac) {
     sources += [

@@ -18,13 +18,18 @@
 #include "third_party/blink/renderer/core/css/cssom/css_math_min.h"
 #include "third_party/blink/renderer/core/css/cssom/css_math_negate.h"
 #include "third_party/blink/renderer/core/css/cssom/css_math_product.h"
+#include "third_party/blink/renderer/core/css/cssom/css_math_random.h"
 #include "third_party/blink/renderer/core/css/cssom/css_math_sum.h"
 #include "third_party/blink/renderer/core/css/cssom/css_unit_value.h"
 #include "third_party/blink/renderer/core/css/parser/css_parser_context.h"
+#include "third_party/blink/renderer/core/css/parser/css_parser_local_context.h"
 #include "third_party/blink/renderer/core/css/parser/css_parser_token_stream.h"
 #include "third_party/blink/renderer/core/css/parser/css_tokenizer.h"
+#include "third_party/blink/renderer/core/css/properties/css_parsing_utils.h"
 #include "third_party/blink/renderer/core/css_value_keywords.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 
 namespace blink {
 
@@ -153,19 +158,59 @@ CSSNumericValue* CalcToNumericValue(const CSSMathExpressionNode& root) {
     return CSSMathSum::Create(std::move(values));
   }
 
-  // TODO(crbug.com/1376521): Implement Typed OM API for `anchor()`, and turn
-  // the CHECK below back into a DCHECK.
+  if (root.IsRandomFunction() &&
+      RuntimeEnabledFeatures::CSSRandomFunctionTypedOMEnabled()) {
+    const auto& node = To<CSSMathExpressionRandomFunction>(root);
+    DCHECK(node.GetRandomCacheKey()->IsFixed());
+    CSSNumericValue* min = CalcToNumericValue(*node.Min());
+    CSSNumericValue* max = CalcToNumericValue(*node.Max());
+    if (!min || !max) {
+      return nullptr;
+    }
+    // TODO(crbug.com/475807587): Use correct random_base_value instead of 0 if
+    // it's not calculated.
+    double random_base_value =
+        node.GetRandomCacheKey()->GetFixed()->GetValueIfKnown().value_or(0);
+    if (!node.Step()) {
+      return CSSMathRandom::Create(random_base_value, std::move(min),
+                                   std::move(max));
+    }
+    CSSNumericValue* step = CalcToNumericValue(*node.Step());
+    if (!step) {
+      return nullptr;
+    }
+    return CSSMathRandom::Create(random_base_value, std::move(min),
+                                 std::move(max), std::move(step));
+  }
 
-  CHECK(root.IsOperation());
+  // TODO(crbug.com/40243221): Implement Typed OM API for `anchor()` and
+  // `sibling-index()`, and turn that if below into a DCHECK.
+  if (!root.IsOperation()) {
+    return nullptr;
+  }
 
   CSSNumericValueVector values;
 
-  // When the node is a variadic operation, we return either a CSSMathMin or a
-  // CSSMathMax.
+  if (const auto& node = To<CSSMathExpressionOperation>(root);
+      node.IsInvert()) {
+    DCHECK_EQ(node.GetOperands().size(), 1u);
+    CSSNumericValue* value = CalcToNumericValue(*node.GetOperands()[0]);
+    if (!value) {
+      return nullptr;
+    }
+    return CSSMathInvert::Create(value);
+  }
+
+  // When the node is a math function, we return a CSSMathMin, a CSSMathMax, or
+  // a CSSMathClamp.
   if (const auto& node = To<CSSMathExpressionOperation>(root);
       node.IsMathFunction()) {
     for (const auto& operand : node.GetOperands()) {
-      values.push_back(CalcToNumericValue(*operand));
+      CSSNumericValue* value = CalcToNumericValue(*operand);
+      if (!value) {
+        return nullptr;
+      }
+      values.push_back(value);
     }
     if (node.OperatorType() == CSSMathOperator::kMin) {
       return CSSMathMin::Create(std::move(values));
@@ -173,11 +218,15 @@ CSSNumericValue* CalcToNumericValue(const CSSMathExpressionNode& root) {
     if (node.OperatorType() == CSSMathOperator::kMax) {
       return CSSMathMax::Create(std::move(values));
     }
-    DCHECK_EQ(CSSMathOperator::kClamp, node.OperatorType());
-    auto& min = values[0];
-    auto& val = values[1];
-    auto& max = values[2];
-    return CSSMathClamp::Create(std::move(min), std::move(val), std::move(max));
+    if (node.OperatorType() == CSSMathOperator::kClamp) {
+      auto& min = values[0];
+      auto& val = values[1];
+      auto& max = values[2];
+      return CSSMathClamp::Create(std::move(min), std::move(val),
+                                  std::move(max));
+    }
+    // Other CSS math functions are not yet implemented.
+    return nullptr;
   }
 
   DCHECK_EQ(To<CSSMathExpressionOperation>(root).GetOperands().size(), 2u);
@@ -212,6 +261,9 @@ CSSNumericValue* CalcToNumericValue(const CSSMathExpressionNode& root) {
     DCHECK(right_node);
 
     auto* const value = CalcToNumericValue(*right_node);
+    if (!value) {
+      return nullptr;
+    }
 
     // If the current node is a '-' or '/', it's really just a '+' or '*' with
     // the right child negated or inverted, respectively.
@@ -221,11 +273,15 @@ CSSNumericValue* CalcToNumericValue(const CSSMathExpressionNode& root) {
   } while (CanCombineNodes(root, *cur_node));
 
   DCHECK(cur_node);
-  values.push_back(CalcToNumericValue(*cur_node));
+  CSSNumericValue* value = CalcToNumericValue(*cur_node);
+  if (!value) {
+    return nullptr;
+  }
+  values.push_back(value);
 
   // Our algorithm collects the children in reverse order, so we have to reverse
   // the values.
-  std::reverse(values.begin(), values.end());
+  std::ranges::reverse(values);
   CSSMathOperator operator_type =
       To<CSSMathExpressionOperation>(root).OperatorType();
   if (operator_type == CSSMathOperator::kAdd ||
@@ -244,6 +300,29 @@ CSSUnitValue* CSSNumericSumValueEntryToUnitValue(
     return CSSUnitValue::Create(term.value, term.units.begin()->key);
   }
   return nullptr;
+}
+
+V8CSSNumericBaseType::Enum BaseTypeToV8Enum(
+    CSSNumericValueType::BaseType base_type) {
+  using BaseType = CSSNumericValueType::BaseType;
+  switch (base_type) {
+    case BaseType::kLength:
+      return V8CSSNumericBaseType::Enum::kLength;
+    case BaseType::kAngle:
+      return V8CSSNumericBaseType::Enum::kAngle;
+    case BaseType::kTime:
+      return V8CSSNumericBaseType::Enum::kTime;
+    case BaseType::kFrequency:
+      return V8CSSNumericBaseType::Enum::kFrequency;
+    case BaseType::kResolution:
+      return V8CSSNumericBaseType::Enum::kResolution;
+    case BaseType::kFlex:
+      return V8CSSNumericBaseType::Enum::kFlex;
+    case BaseType::kPercent:
+      return V8CSSNumericBaseType::Enum::kPercent;
+    case BaseType::kNumBaseTypes:
+      NOTREACHED();
+  }
 }
 
 }  // namespace
@@ -268,10 +347,10 @@ CSSPrimitiveValue::UnitType CSSNumericValue::UnitFromName(const String& name) {
   if (name.empty()) {
     return CSSPrimitiveValue::UnitType::kUnknown;
   }
-  if (EqualIgnoringASCIICase(name, "number")) {
+  if (EqualIgnoringAsciiCase(name, "number")) {
     return CSSPrimitiveValue::UnitType::kNumber;
   }
-  if (EqualIgnoringASCIICase(name, "percent") || name == "%") {
+  if (EqualIgnoringAsciiCase(name, "percent") || name == "%") {
     return CSSPrimitiveValue::UnitType::kPercentage;
   }
   return CSSPrimitiveValue::StringToUnitType(name);
@@ -304,14 +383,19 @@ CSSNumericValue* CSSNumericValue::parse(
         using enum CSSMathExpressionNode::Flag;
         using Flags = CSSMathExpressionNode::Flags;
 
+        CSSParserLocalContext local_context =
+            CSSParserLocalContext::CreateWithoutPropertyForCSSOM();
         // TODO(crbug.com/1309178): Decide how to handle anchor queries here.
         CSSMathExpressionNode* expression =
             CSSMathExpressionNode::ParseMathFunction(
                 CSSValueID::kCalc, stream,
                 *MakeGarbageCollected<CSSParserContext>(*execution_context),
-                Flags({AllowPercent}), kCSSAnchorQueryTypesNone);
-        if (expression) {
-          return CalcToNumericValue(*expression);
+                local_context, Flags({AllowPercent}), kCSSAnchorQueryTypesAll);
+        if (!expression) {
+          break;
+        }
+        if (CSSNumericValue* numeric_value = CalcToNumericValue(*expression)) {
+          return numeric_value;
         }
       }
       break;
@@ -376,7 +460,7 @@ CSSUnitValue* CSSNumericValue::to(const String& unit_string,
 
   CSSUnitValue* result = to(target_unit);
   if (!result) {
-    exception_state.ThrowTypeError("Cannot convert to " + unit_string);
+    exception_state.ThrowTypeError(StrCat({"Cannot convert to ", unit_string}));
     return nullptr;
   }
 
@@ -424,8 +508,8 @@ CSSMathSum* CSSNumericValue::toSum(const Vector<String>& unit_strings,
 
   if (unit_strings.size() == 0) {
     std::sort(values.begin(), values.end(), [](const auto& a, const auto& b) {
-      return WTF::CodeUnitCompareLessThan(To<CSSUnitValue>(a.Get())->unit(),
-                                          To<CSSUnitValue>(b.Get())->unit());
+      return CodeUnitCompareLessThan(To<CSSUnitValue>(a.Get())->unit(),
+                                     To<CSSUnitValue>(b.Get())->unit());
     });
 
     // We got 'values' from a sum value, so it must be a valid CSSMathSum.
@@ -493,8 +577,7 @@ CSSNumericType* CSSNumericValue::type() const {
     type->setPercent(exponent);
   }
   if (type_.HasPercentHint()) {
-    type->setPercentHint(
-        CSSNumericValueType::BaseTypeToString(type_.PercentHint()));
+    type->setPercentHint(BaseTypeToV8Enum(type_.PercentHint()));
   }
   return type;
 }
@@ -535,7 +618,7 @@ CSSNumericValue* CSSNumericValue::mul(
   if (CSSUnitValue* unit_value = MaybeMultiplyAsUnitValue(values)) {
     return unit_value;
   }
-  return CSSMathProduct::Create(std::move(values));
+  return CSSMathProduct::Create(std::move(values), exception_state);
 }
 
 CSSNumericValue* CSSNumericValue::div(
@@ -556,7 +639,7 @@ CSSNumericValue* CSSNumericValue::div(
   if (CSSUnitValue* unit_value = MaybeMultiplyAsUnitValue(values)) {
     return unit_value;
   }
-  return CSSMathProduct::Create(std::move(values));
+  return CSSMathProduct::Create(std::move(values), exception_state);
 }
 
 CSSNumericValue* CSSNumericValue::min(
@@ -569,7 +652,7 @@ CSSNumericValue* CSSNumericValue::min(
           values, [](double a, double b) { return std::min(a, b); })) {
     return unit_value;
   }
-  return CSSMathMin::Create(std::move(values));
+  return CSSMathMin::Create(std::move(values), exception_state);
 }
 
 CSSNumericValue* CSSNumericValue::max(
@@ -582,7 +665,8 @@ CSSNumericValue* CSSNumericValue::max(
           values, [](double a, double b) { return std::max(a, b); })) {
     return unit_value;
   }
-  return CSSMathMax::Create(std::move(values));
+
+  return CSSMathMax::Create(std::move(values), exception_state);
 }
 
 bool CSSNumericValue::equals(

@@ -1,9 +1,4 @@
 [INTERFACES]
-interface AICreateMonitor : EventTarget
-    attribute @@toStringTag
-    getter ondownloadprogress
-    method constructor
-    setter ondownloadprogress
 interface AbortController
     attribute @@toStringTag
     getter signal
@@ -74,10 +69,12 @@ interface Blob
     getter size
     getter type
     method arrayBuffer
+    method bytes
     method constructor
     method slice
     method stream
     method text
+    method textStream
 interface BroadcastChannel : EventTarget
     attribute @@toStringTag
     getter name
@@ -177,6 +174,11 @@ interface CountQueuingStrategy
     getter highWaterMark
     getter size
     method constructor
+interface CreateMonitor : EventTarget
+    attribute @@toStringTag
+    getter ondownloadprogress
+    method constructor
+    setter ondownloadprogress
 interface CropTarget
     attribute @@toStringTag
     method constructor
@@ -468,6 +470,7 @@ interface EventTarget
     method constructor
     method dispatchEvent
     method removeEventListener
+    method when
 interface ExtendableCookieChangeEvent : ExtendableEvent
     attribute @@toStringTag
     getter changed
@@ -585,6 +588,7 @@ interface FontFace
     getter style
     getter unicodeRange
     getter variant
+    getter variationSettings
     getter weight
     method constructor
     method load
@@ -599,7 +603,31 @@ interface FontFace
     setter style
     setter unicodeRange
     setter variant
+    setter variationSettings
     setter weight
+interface FontFaceSet : EventTarget
+    attribute @@toStringTag
+    getter onloading
+    getter onloadingdone
+    getter onloadingerror
+    getter ready
+    getter size
+    getter status
+    method @@iterator
+    method add
+    method check
+    method clear
+    method constructor
+    method delete
+    method entries
+    method forEach
+    method has
+    method keys
+    method load
+    method values
+    setter onloading
+    setter onloadingdone
+    setter onloadingerror
 interface FormData
     attribute @@toStringTag
     method @@iterator
@@ -624,7 +652,6 @@ interface GPUAdapter
     attribute @@toStringTag
     getter features
     getter info
-    getter isFallbackAdapter
     getter limits
     method constructor
     method requestDevice
@@ -633,6 +660,7 @@ interface GPUAdapterInfo
     getter architecture
     getter description
     getter device
+    getter isFallbackAdapter
     getter subgroupMaxSize
     getter subgroupMinSize
     getter vendor
@@ -713,6 +741,7 @@ interface GPUComputePassEncoder
     method popDebugGroup
     method pushDebugGroup
     method setBindGroup
+    method setImmediates
     method setPipeline
     method writeTimestamp
     setter label
@@ -817,6 +846,7 @@ interface GPURenderBundleEncoder
     method popDebugGroup
     method pushDebugGroup
     method setBindGroup
+    method setImmediates
     method setIndexBuffer
     method setPipeline
     method setVertexBuffer
@@ -838,6 +868,7 @@ interface GPURenderPassEncoder
     method pushDebugGroup
     method setBindGroup
     method setBlendConstant
+    method setImmediates
     method setIndexBuffer
     method setPipeline
     method setScissorRect
@@ -889,11 +920,16 @@ interface GPUSupportedLimits
     getter maxComputeWorkgroupsPerDimension
     getter maxDynamicStorageBuffersPerPipelineLayout
     getter maxDynamicUniformBuffersPerPipelineLayout
+    getter maxImmediateSize
     getter maxInterStageShaderVariables
     getter maxSampledTexturesPerShaderStage
     getter maxSamplersPerShaderStage
     getter maxStorageBufferBindingSize
+    getter maxStorageBuffersInFragmentStage
+    getter maxStorageBuffersInVertexStage
     getter maxStorageBuffersPerShaderStage
+    getter maxStorageTexturesInFragmentStage
+    getter maxStorageTexturesInVertexStage
     getter maxStorageTexturesPerShaderStage
     getter maxTextureArrayLayers
     getter maxTextureDimension1D
@@ -916,6 +952,7 @@ interface GPUTexture
     getter label
     getter mipLevelCount
     getter sampleCount
+    getter textureBindingViewDimension
     getter usage
     getter width
     method constructor
@@ -1002,6 +1039,7 @@ interface IDBIndex
     method get
     method getAll
     method getAllKeys
+    method getAllRecords
     method getKey
     method openCursor
     method openKeyCursor
@@ -1035,6 +1073,7 @@ interface IDBObjectStore
     method get
     method getAll
     method getAllKeys
+    method getAllRecords
     method getKey
     method index
     method openCursor
@@ -1048,6 +1087,12 @@ interface IDBOpenDBRequest : IDBRequest
     method constructor
     setter onblocked
     setter onupgradeneeded
+interface IDBRecord
+    attribute @@toStringTag
+    getter key
+    getter primaryKey
+    getter value
+    method constructor
 interface IDBRequest : EventTarget
     attribute @@toStringTag
     getter error
@@ -1100,6 +1145,7 @@ interface ImageData
     getter colorSpace
     getter data
     getter height
+    getter pixelFormat
     getter width
     method constructor
 interface InstallEvent : ExtendableEvent
@@ -1204,6 +1250,29 @@ interface NotificationEvent : ExtendableEvent
     getter notification
     getter reply
     method constructor
+interface Observable
+    static method from
+    attribute @@toStringTag
+    method catch
+    method constructor
+    method drop
+    method every
+    method filter
+    method finally
+    method find
+    method first
+    method flatMap
+    method forEach
+    method inspect
+    method last
+    method map
+    method reduce
+    method some
+    method subscribe
+    method switchMap
+    method take
+    method takeUntil
+    method toArray
 interface OffscreenCanvas : EventTarget
     attribute @@toStringTag
     getter height
@@ -1232,6 +1301,7 @@ interface OffscreenCanvasRenderingContext2D
     getter globalCompositeOperation
     getter imageSmoothingEnabled
     getter imageSmoothingQuality
+    getter lang
     getter letterSpacing
     getter lineCap
     getter lineDashOffset
@@ -1303,6 +1373,7 @@ interface OffscreenCanvasRenderingContext2D
     setter globalCompositeOperation
     setter imageSmoothingEnabled
     setter imageSmoothingQuality
+    setter lang
     setter letterSpacing
     setter lineCap
     setter lineDashOffset
@@ -1318,6 +1389,13 @@ interface OffscreenCanvasRenderingContext2D
     setter textBaseline
     setter textRendering
     setter wordSpacing
+interface Origin
+    static method from
+    attribute @@toStringTag
+    getter opaque
+    method constructor
+    method isSameOrigin
+    method isSameSite
 interface Path2D
     attribute @@toStringTag
     method addPath
@@ -1371,6 +1449,7 @@ interface PerformanceEntry
     getter duration
     getter entryType
     getter name
+    getter navigationId
     getter startTime
     method constructor
     method toJSON
@@ -1399,6 +1478,8 @@ interface PerformanceResourceTiming : PerformanceEntry
     attribute @@toStringTag
     getter connectEnd
     getter connectStart
+    getter contentEncoding
+    getter contentType
     getter decodedBodySize
     getter deliveryType
     getter domainLookupEnd
@@ -1419,6 +1500,10 @@ interface PerformanceResourceTiming : PerformanceEntry
     getter secureConnectionStart
     getter serverTiming
     getter transferSize
+    getter workerCacheLookupStart
+    getter workerFinalSourceType
+    getter workerMatchedSourceType
+    getter workerRouterEvaluationStart
     getter workerStart
     method constructor
     method toJSON
@@ -1483,10 +1568,20 @@ interface PushSubscription
     method getKey
     method toJSON
     method unsubscribe
+interface PushSubscriptionChangeEvent : ExtendableEvent
+    attribute @@toStringTag
+    getter newSubscription
+    getter oldSubscription
+    method constructor
 interface PushSubscriptionOptions
     attribute @@toStringTag
     getter applicationServerKey
     getter userVisibleOnly
+    method constructor
+interface QuotaExceededError : DOMException
+    attribute @@toStringTag
+    getter quota
+    getter requested
     method constructor
 interface ReadableByteStreamController
     attribute @@toStringTag
@@ -1555,6 +1650,7 @@ interface Request
     getter headers
     getter integrity
     getter isHistoryNavigation
+    getter isReloadNavigation
     getter keepalive
     getter method
     getter mode
@@ -1572,6 +1668,7 @@ interface Request
     method formData
     method json
     method text
+    method textStream
 interface Response
     static method error
     static method redirect
@@ -1593,6 +1690,7 @@ interface Response
     method formData
     method json
     method text
+    method textStream
 interface RestrictionTarget
     attribute @@toStringTag
     method constructor
@@ -1673,6 +1771,15 @@ interface StorageManager
     method estimate
     method getDirectory
     method persisted
+interface Subscriber
+    attribute @@toStringTag
+    getter active
+    getter signal
+    method addTeardown
+    method complete
+    method constructor
+    method error
+    method next
 interface SubtleCrypto
     attribute @@toStringTag
     method constructor
@@ -1790,7 +1897,7 @@ interface TrustedTypePolicy
     method createHTML
     method createScript
     method createScriptURL
-interface TrustedTypePolicyFactory : EventTarget
+interface TrustedTypePolicyFactory
     attribute @@toStringTag
     getter defaultPolicy
     getter emptyHTML
@@ -3218,6 +3325,7 @@ interface WebTransport
     getter datagrams
     getter incomingBidirectionalStreams
     getter incomingUnidirectionalStreams
+    getter protocol
     getter ready
     method close
     method constructor
@@ -3232,16 +3340,20 @@ interface WebTransportDatagramDuplexStream
     attribute @@toStringTag
     getter incomingHighWaterMark
     getter incomingMaxAge
+    getter incomingMaxBufferedDatagrams
     getter maxDatagramSize
     getter outgoingHighWaterMark
     getter outgoingMaxAge
+    getter outgoingMaxBufferedDatagrams
     getter readable
     getter writable
     method constructor
     setter incomingHighWaterMark
     setter incomingMaxAge
+    setter incomingMaxBufferedDatagrams
     setter outgoingHighWaterMark
     setter outgoingMaxAge
+    setter outgoingMaxBufferedDatagrams
 interface WebTransportError : DOMException
     attribute @@toStringTag
     getter source
@@ -3388,6 +3500,18 @@ namespace GPUTextureUsage
     attribute RENDER_ATTACHMENT
     attribute STORAGE_BINDING
     attribute TEXTURE_BINDING
+    attribute TRANSIENT_ATTACHMENT
+namespace Temporal
+    attribute @@toStringTag
+    attribute Now
+    method Duration
+    method Instant
+    method PlainDate
+    method PlainDateTime
+    method PlainMonthDay
+    method PlainTime
+    method PlainYearMonth
+    method ZonedDateTime
 namespace console
     attribute @@toStringTag
     method assert
@@ -3436,6 +3560,7 @@ namespace console
     getter onpaymentrequest
     getter onperiodicsync
     getter onpush
+    getter onpushsubscriptionchange
     getter onsync
     getter registration
     getter serviceWorker
@@ -3458,6 +3583,7 @@ namespace console
     setter onpaymentrequest
     setter onperiodicsync
     setter onpush
+    setter onpushsubscriptionchange
     setter onsync
 PASS Verify the interface of ServiceWorkerGlobalScope
 PASS successfullyParsed is true

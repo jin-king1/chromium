@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "third_party/blink/renderer/platform/text//bidi_paragraph.h"
 
 #include "third_party/blink/renderer/platform/text/icu_error.h"
@@ -18,9 +13,16 @@ namespace blink {
 
 bool BidiParagraph::SetParagraph(const String& text,
                                  std::optional<TextDirection> base_direction) {
+  // A workaround for integer overflow in ICU. See crbug.com/504629701.
+  // We can remove this after fixing the ICU issue, and rolling out the ICU
+  // update.
+  constexpr size_t kIcuRunSize = sizeof(int32_t) * 3;
+  CHECK_LE(text.length(), std::numeric_limits<int32_t>::max() / kIcuRunSize);
+
   DCHECK(!text.IsNull());
-  DCHECK(!ubidi_);
-  ubidi_ = UBidiPtr(ubidi_open());
+  if (!ubidi_) {
+    ubidi_ = UBidiPtr(ubidi_open());
+  }
 
   UBiDiLevel para_level;
   if (base_direction) {
@@ -30,8 +32,8 @@ bool BidiParagraph::SetParagraph(const String& text,
     para_level = UBIDI_DEFAULT_LTR;
   }
 
-  ICUError error;
-  ubidi_setPara(ubidi_.get(), text.Characters16(), text.length(), para_level,
+  IcuError error;
+  ubidi_setPara(ubidi_.get(), text.Span16().data(), text.length(), para_level,
                 nullptr, &error);
   if (U_FAILURE(error)) {
     NOTREACHED();
@@ -70,7 +72,7 @@ std::optional<TextDirection> BidiParagraph::BaseDirectionForString(
   const size_t len = text.size();
   for (size_t i = 0; i < len;) {
     UChar32 ch;
-    U16_NEXT(data, i, len, ch);
+    UNSAFE_TODO(U16_NEXT(data, i, len, ch));
     switch (u_charDirection(ch)) {
       case U_LEFT_TO_RIGHT:
         return TextDirection::kLtr;
@@ -101,10 +103,10 @@ String BidiParagraph::StringWithDirectionalOverride(const StringView& text,
                                                     TextDirection direction) {
   StringBuilder builder;
   builder.Reserve16BitCapacity(text.length() + 2);
-  builder.Append(IsLtr(direction) ? kLeftToRightOverrideCharacter
-                                  : kRightToLeftOverrideCharacter);
+  builder.Append(IsLtr(direction) ? uchar::kLeftToRightOverride
+                                  : uchar::kRightToLeftOverride);
   builder.Append(text);
-  builder.Append(kPopDirectionalFormattingCharacter);
+  builder.Append(uchar::kPopDirectionalFormatting);
   return builder.ToString();
 }
 

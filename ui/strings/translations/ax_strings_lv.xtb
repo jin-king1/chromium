@@ -37,7 +37,6 @@
 <translation id="2311842470354187719">lappuses pārtraukums</translation>
 <translation id="2335594187091864976">datuma un laika atlasītājs</translation>
 <translation id="2393030564806080191">Heksadecimāla krāsas vērtība</translation>
-<translation id="2398813069815436052">tika atvērts dialoglodziņš.</translation>
 <translation id="245932805758469625">atlikušais video laiks sekundēs</translation>
 <translation id="248395913932153421">Diena</translation>
 <translation id="2508569020611168319">ciļņu saraksts</translation>
@@ -223,6 +222,7 @@
 <translation id="8634971699417195529">Rādīt mēneša atlasītāju</translation>
 <translation id="8711688047404765493">izvade</translation>
 <translation id="8808573423886751634">nodaļa</translation>
+<translation id="8826423933757944500">uzraksts</translation>
 <translation id="8851136666856101339">galvenais</translation>
 <translation id="8861621546968757188">poga uznirstošā dialoglodziņa atvēršanai</translation>
 <translation id="8889402386540077796">Nokrāsa</translation>
@@ -238,7 +238,6 @@
 <translation id="9138385573473225930">brīdinājums</translation>
 <translation id="9155987714137265666"><ph name="WEEK" />, sākot no: <ph name="WEEK_START_DATE" /></translation>
 <translation id="9168329111483466115">vēre</translation>
-<translation id="945780513535800434">Daļēji atzīmēta</translation>
 <translation id="954003015749068518">atvērt režīmu “attēls attēlā”</translation>
 <translation id="966787709310836684">izvēlne</translation>
 </translationbundle>

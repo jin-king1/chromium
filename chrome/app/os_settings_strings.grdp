@@ -106,9 +106,6 @@
   <message name="IDS_SETTINGS_ABOUT_PAGE_END_OF_LIFE_TITLE" desc="Title used for End of Life section on the About Page.">
     Update schedule
   </message>
-  <message name="IDS_SETTINGS_ABOUT_PAGE_DEVICE_NAME" desc="Title of the line item on the about page that allows the user to edit the device hostname.">
-    Device name
-  </message>
   <message name="IDS_SETTINGS_UPGRADE_ROLLBACK_IN_PROGRESS" desc="Status label: Rolling back ChromiumOS or ChromeOS.">
     <ph name="MANAGER">$1<ex>google.com</ex></ph> is putting this device on a previous version (<ph name="PROGRESS_PERCENT">$2<ex>90%</ex></ph>)
   </message>
@@ -202,33 +199,6 @@
   <message name="IDS_OS_SETTINGS_ABOUT_PAGE_SHOW_RELEASE_NOTES_DESCRIPTION" desc="Sublabel description shown for See What's New button.">
     Automatic updates provide you with the latest features. Explore highlights from recent updates.
   </message>
-  <message name="IDS_SETTINGS_ABOUT_PAGE_EDIT_DEVICE_NAME" desc="The title of the dialog that allows the user to edit the device hostname.">
-    Edit device name
-  </message>
-  <message name="IDS_SETTINGS_ABOUT_PAGE_DEVICE_NAME_INFO" desc="Label describing which areas of the ChromeOS system broadcast the device hostname to external networks.">
-    This name is visible to other devices for Bluetooth and network connections
-  </message>
-  <message name="IDS_SETTINGS_ABOUT_PAGE_DEVICE_NAME_CONSTRAINTS" desc="Label describing the requirements for the text of the device hostname.">
-    Name can use letters, numbers, and hyphens (-)
-  </message>
-  <message name="IDS_SETTINGS_ABOUT_PAGE_DEVICE_NAME_CONSTRAINTS_A11Y_DESCRIPTION" desc="Label describing the requirements for the text of the device hostname.">
-    Name can use letters, numbers, and hyphens (-), and must be between 1 and 15 characters inclusive.
-  </message>
-  <message name="IDS_SETTINGS_ABOUT_PAGE_DEVICE_NAME_INPUT_COUNT" desc="Label for the dialog input for the device name, informing the user the number of characters they have inputted compared to the maximum number of characters allowed.">
-    <ph name="CURRENT_CHARACTER_COUNT">$1<ex>10</ex></ph>/<ph name="MAX_CHARACTER_COUNT">$2<ex>15</ex></ph>
-  </message>
-  <message name="IDS_SETTINGS_ABOUT_PAGE_DEVICE_NAME_INPUT_A11Y_LABEL" desc="The a11y label for the edit device name dialog input, informing the user that they are currently naming the device">
-    Name device
-  </message>
-  <message name="IDS_SETTINGS_ABOUT_PAGE_DEVICE_NAME_DONE_BTN_A11Y_LABEL" desc="The a11y label for the done button in the edit device name dialog">
-    Name device to <ph name="DEVICE_NAME">$1<ex>MyChromebook</ex></ph>
-  </message>
-  <message name="IDS_SETTINGS_ABOUT_PAGE_DEVICE_NAME_EDIT_BTN_A11Y_LABEL" desc="The a11y label for the edit button for device name on the detailed build into page">
-    Change device name
-  </message>
-  <message name="IDS_SETTINGS_ABOUT_PAGE_DEVICE_NAME_EDIT_BTN_A11Y_DESCRIPTION" desc="The a11y description for the edit button for device name on the detailed build into page">
-    Current device name is <ph name="DEVICE_NAME">$1<ex>MyChromebook</ex></ph>
-  </message>
   <message name="IDS_SETTINGS_UPGRADE_TRY_AGAIN" desc="Status label: Update check error (ChromiumOS/ChromeOS)">
     Couldn't update your Chromebook. Please try again later.
   </message>
@@ -270,6 +240,9 @@
   </message>
   <message name="IDS_OS_SETTINGS_FIRMWARE_UP_TO_DATE_DESCRIPTION" desc="Sublabel shown when no firmware updates are available.">
     Firmware is up to date
+  </message>
+  <message name="IDS_OS_SETTINGS_FIRMWARE_DISABLED_DESCRIPTION" desc="Sublabel shown when firmware updates are disabled.">
+    Firmware updates are disabled by your administrator.
   </message>
   <message name="IDS_OS_SETTINGS_FIRMWARE_UPDATE_AVAILABLE_DESCRIPTION" desc="Sublabel shown when firmware updates are available.">
     Update available
@@ -350,17 +323,20 @@
     <message name="IDS_OS_SETTINGS_SYNC_FEATURE_LABEL" desc="Label describing the OS sync feature.">
       Your apps and settings will sync across all ChromeOS Flex devices where you are signed in with your Google account. For browser sync options, go to <ph name="LINK_BEGIN">&lt;a href='#'&gt;</ph>Chrome settings<ph name="LINK_END">&lt;/a&gt;</ph>.
     </message>
+    <message name="IDS_OS_SETTINGS_SYNC_FEATURE_LABEL_2" desc="Label describing the OS sync feature.">
+      Your apps and settings will sync across all ChromeOS Flex devices where you are signed in with your Google Account. To manage what browser data is saved in your Google Account, go to <ph name="LINK_BEGIN">&lt;a href='#'&gt;</ph>Chrome settings<ph name="LINK_END">&lt;/a&gt;</ph>.
+    </message>
   </if>
   <if expr="not reven">
     <message name="IDS_OS_SETTINGS_SYNC_FEATURE_LABEL" desc="Label describing the OS sync feature.">
       Your apps and settings will sync across all ChromeOS devices where you are signed in with your Google account. For browser sync options, go to <ph name="LINK_BEGIN">&lt;a href='#'&gt;</ph>Chrome settings<ph name="LINK_END">&lt;/a&gt;</ph>.
     </message>
+    <message name="IDS_OS_SETTINGS_SYNC_FEATURE_LABEL_2" desc="Label describing the OS sync feature.">
+      Your apps and settings will sync across all ChromeOS devices where you are signed in with your Google Account. To manage what browser data is saved in your Google Account, go to <ph name="LINK_BEGIN">&lt;a href='#'&gt;</ph>Chrome settings<ph name="LINK_END">&lt;/a&gt;</ph>.
+    </message>
   </if>
   <message name="IDS_OS_SETTINGS_SYNC_APPS_CHECKBOX_LABEL" desc="Label for the checkbox which enables syncing of apps across devices.">
     Apps
-  </message>
-  <message name="IDS_OS_SETTINGS_SYNC_PRINTERS_CHECKBOX_LABEL" desc="Label for the checkbox which enables syncing of printers across devices.">
-    Printers
   </message>
   <message name="IDS_OS_SETTINGS_SYNC_SETTINGS_CHECKBOX_LABEL" desc="Label for the checkbox which enables syncing of OS settings across devices.">
     Settings
@@ -388,9 +364,6 @@
   </message>
   <message name="IDS_SETTINGS_ACCOUNT_MANAGER_EDUCATION_ACCOUNT" desc="Status label which indicates that specified account is a school/EDU account.">
     School account
-  </message>
-  <message name="IDS_SETTINGS_ADD_FINGERPRINT_DIALOG_INSTRUCTION_LOCATE_SCANNER_POWER_BUTTON" desc="Text in the add fingerprint dialog telling users to place finger on the power button which is the sensor.">
-    Touch the power button with your finger
   </message>
 
   <!-- Languages and Inputs (OS settings) -->
@@ -617,38 +590,6 @@
     Change <ph name="APP">$1<ex>Google TV</ex></ph> language. Current language is <ph name="LANGUAGE">$2<ex>English (United States)</ex></ph>.
   </message>
 
-  <!-- Suggestions Section -->
-  <message name="IDS_SETTINGS_SUGGESTIONS_TITLE" desc="The label for the suggestions section, which contains features to help users type faster or more expressively such as suggesting personal information or suggesting emoji to use.">
-    Suggestions
-  </message>
-  <message name="IDS_SETTINGS_SUGGESTIONS_PERSONAL_INFO_TITLE" desc="The label for personal information suggestion section. The feature shows inline suggestions for the users’s name, address, and phone number.">
-    Personal information suggestions
-  </message>
-  <message name="IDS_SETTINGS_SUGGESTIONS_PERSONAL_INFO_HELP_TOOLTIP" desc="The help icon's tooltip for personal information suggestion section to inform users of the privacy of the suggestions.">
-    Personal suggestions are only shown on your account
-  </message>
-  <message name="IDS_SETTINGS_SUGGESTIONS_PERSONAL_INFO_DESCRIPTION" desc="The description for personal information suggestion section.">
-    Write faster with inline suggestions for your name, address, or phone number
-  </message>
-  <message name="IDS_SETTINGS_SUGGESTIONS_MANAGE_PERSONAL_INFO" desc="The label for opening Chrome's browser settings page for managing personal addresses">
-    Manage personal information
-  </message>
-  <message name="IDS_OS_SETTINGS_SUGGESTIONS_ORCA_TITLE" desc="The label for Help me write settings">
-    Help me write
-  </message>
-  <message name="IDS_OS_SETTINGS_SUGGESTIONS_ORCA_DESCRIPTION" desc="The description for Help me write settings">
-    Right-click in a text box to create a draft or refine existing work, powered by Google AI. Currently has limited availability.
-  </message>
-  <message name="IDS_SETTINGS_SUGGESTIONS_ORCA_REVIEW_TERMS_BANNER_DESCRIPTION" desc="The description for Help me write review notice banner">
-    You need to review and accept terms to use this feature
-  </message>
-  <message name="IDS_SETTINGS_SUGGESTIONS_EMOJI_SUGGESTION_TITLE" desc="The label for emoji suggestion (when an user types a word, some emojis might be suggested for the user to insert after) section.">
-    Emoji suggestions
-  </message>
-  <message name="IDS_SETTINGS_SUGGESTIONS_EMOJI_SUGGESTION_DESCRIPTION" desc="The description for emoji suggestion (when an user types a word, some emojis might be suggested for the user to insert after) section.">
-    Get emoji suggestions based on what you're typing
-  </message>
-
   <!-- Input Method Options Section -->
   <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_BASIC" desc="The label for the section in input method options page containing basic options.">
     Basics
@@ -674,14 +615,11 @@
   <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_PRIVACY" desc="The label for the section in input method options page containing privacy settings.">
     Privacy
   </message>
-  <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_SECTION_TITLE" desc="The label for the section in input method options page section title.">
-    Section
-  </message>
   <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_AUTOMATICALLY_SWITCH_TO_HALFWIDTH" desc="The label for the input method option to enable double-space to type period (when an user types two consecutive space, it outputs a period).">
     Automatically switch to halfwidth
   </message>
-  <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_SHIFT_KEY_MODE_STYLE" desc="The label for the setting to set the shift key mode style.">
-    Shift Key Mode Style
+  <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_SHIFT_KEY_MODE_STYLE" desc="The label for the dropdown to set the shift key mode switch for the Japanese keyboard. This controls the behavior of typing in Japanese while holding shift. The available dropdown values are 'Off', 'Alphanumeric', or 'Katakana'. In Japanese, this string is 'シフトキーでの入力切替'.">
+    Shift key mode switch
   </message>
   <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_SHIFT_KEY_MODE_STYLE_OFF" desc="The label for the option to disable the shift key mode style.">
     Off
@@ -692,8 +630,8 @@
   <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_SHIFT_KEY_MODE_STYLE_KATAKANA" desc="The label for the option to set the Shift key mode style to Katakana.">
     Katakana
   </message>
-  <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_USE_INPUT_HISTORY" desc="The label for the toggled settings to determine if the input history should be used or not.">
-    Use Input History
+  <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_USE_INPUT_HISTORY" desc="The label for the toggle to determine if the input history should be used or not for the Japanese keyboard. If enabled, the input method may suggest text that was previously typed by the user. In Japanese, this string is '入力履歴からのサジェスト自動表示を有効にする'.">
+    Use input history
   </message>
   <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_USE_SYSTEM_DICTIONARY" desc="The label for the toggled settings to determine if the system dictionary should be used or not.">
     Use system dictionary
@@ -703,6 +641,9 @@
   </message>
   <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_DISABLE_PERSONALIZED_SUGGESTIONS" desc="The label for the setting toggle to enable or disable the personalized conversions and custom user dictionaries for Japanese. The original string in Japanese is '学習機能、入力履歴からのサジェスト機能、ユーザ辞書機能を無効にする'.">
     Disable personalized conversions and suggestions as well as user dictionary
+  </message>
+  <message name="IDS_OS_SETTINGS_LANGUAGES_JAPANESE_DICTIONARY_DEFAULT_NAME" desc="This is the default name for a new Japanese dictionary. The number value is a number like 1,2,3,4, etc. In Japanese, this string should in the format: ユーザー辞書 1">
+   User Dictionary <ph name="number">$1</ph>
   </message>
   <message name="IDS_OS_SETTINGS_LANGUAGES_JAPANESE_DICTIONARY_NAME" desc="Label for the text box of the Japanese user settings which allows them to change the name of their custom dictionary for Japanese input.">
     Name
@@ -724,6 +665,15 @@
   </message>
   <message name="IDS_OS_SETTINGS_LANGUAGES_JAPANESE_DICTIONARY_EXPORT" desc="Button to export a Japanese dictionary to a file on the device. In Japanese, this text should be: エクスポート">
     Export
+  </message>
+  <message name="IDS_OS_SETTINGS_LANGUAGES_JAPANESE_DICTIONARY_ENTRY_DELETED" desc="This text is an announcement made to screen readers that a dictionary entry has been deleted. This occurs aftere the delete button is pressed and deletion is successful.">
+   Entry deleted
+  </message>
+  <message name="IDS_OS_SETTINGS_LANGUAGES_JAPANESE_DICTIONARY_ENTRY_POSITION" desc="This text is mainly for screen readers to differentiate between different entries inside a dictionary, by referring to the entry and its position in the list of entries inside the dictionary. The number value will be a number like 1,2,3,etc">
+   Entry <ph name="number">$1</ph>
+  </message>
+  <message name="IDS_OS_SETTINGS_LANGUAGES_JAPANESE_DICTIONARY_DELETE_ENTRY" desc="Button to delete an entry into a Japanese dictionary. In Japanese, this text should be: この単語を削除">
+    Delete entry
   </message>
   <message name="IDS_OS_SETTINGS_LANGUAGES_JAPANESE_DICTIONARY_NEW_ENTRY" desc="Button to add a new entry into a Japanese dictionary. In Japanese, this text should be: 単語を追加">
     New entry
@@ -779,6 +729,30 @@
   <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_KOREAN_SYLLABLE_INPUT">
     Input a syllable at a time
   </message>
+  <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_CLEAR_PERSONALIZATION_DATA" desc="Label for a heading/button to clear persionalized data from the Japanese IME">
+   Clear personalization data
+  </message>
+  <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_DELETE_DICTIONARY" desc="Label for a dialog for users to confirm deletion of a user dictionary">
+   Delete this dictionary
+  </message>
+  <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_DELETE_DICTIONARY_DETAIL" desc="More detail confirming that the user wants to delete a particular user dictionary">
+   <ph name="dictionary">$1</ph> will be permanently deleted. This action can't be undone.
+  </message>
+  <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_DELETE_DICTIONARY_BUTTON_LABEL" desc="Accessible name for button that will delete user a user dictionary in the Japanese IME.">
+   Delete dictionary
+  </message>
+  <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_DELETE_DICTIONARY_BUTTON" desc="Button that will confirm deletion of user dictionary in Japanese IME">
+   Delete
+  </message>
+  <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_DELETE_ITEMS" desc="Label for a form for users to select the type of personalized data they wany to Delete">
+   Delete the following items:
+  </message>
+  <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_CONVERSATION_HISTORY" desc="One of the types of personalization data that can be cleared from the Japanese IME">
+   Conversation history
+  </message>
+  <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_SUGGESTION_HISTORY" desc="One of the types of personalization data that can be cleared from the Japanese IME">
+   Suggestion history
+  </message>
   <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_INPUT_MODE" desc="The label for the Input Mode section of the Japanese keyboad settings. As an example, it could be set to have a value of Romaji or Kana. In Japanese, this string should be 'ローマ字入力・かな入力'.">
    Input mode
   </message>
@@ -788,38 +762,38 @@
   <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_INPUT_MODE_KANA" desc="The label for the input mode option used to set the input mode to Kana. In Japanese, this string should be 'かな入力'.">
     Kana
   </message>
-  <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_PUNCTUATION_STYLE" desc="The label for the setting used to set the Punctuation style for Japanese within the Japanese virtual and physical keyboard input settings. In Japanese, this string should be '句読点'.">
-    Punctuation Style
+  <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_PUNCTUATION_STYLE" desc="The label for the dropdown used to set the Punctuation style for Japanese within the Japanese virtual and physical keyboard input settings. This controls what character is inserted when the user presses punctuation keys like comma or period. In Japanese, this string should be '句読点'.">
+    Punctuation style
   </message>
-  <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_PUNCTUATION_STYLE_KUTEN_TOUTEN" translateable="false">
+  <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_PUNCTUATION_STYLE_TOUTEN_KUTEN" translateable="false">
     、。
   </message>
   <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_PUNCTUATION_STYLE_COMMA_PERIOD" translateable="false">
     ，．
   </message>
-  <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_PUNCTUATION_STYLE_KUTEN_PERIOD" translateable="false">
+  <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_PUNCTUATION_STYLE_TOUTEN_PERIOD" translateable="false">
     、．
   </message>
-  <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_PUNCTUATION_STYLE_COMMA_TOUTEN" translateable="false">
+  <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_PUNCTUATION_STYLE_COMMA_KUTEN" translateable="false">
     ，。
   </message>
-  <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_SYMBOL_STYLE"  desc="The label for the option to set the Symbol style for Japanese. This can be written as '記号' in Japanese.">
-    Symbol Style
+  <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_SYMBOL_STYLE"  desc="The label for the dropdown to set the Symbol style for the Japanese keyboard. This controls what character is inserted when the user presses symbol keys like brackets. This can be written as '記号' in Japanese.">
+    Symbol style
   </message>
   <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_SYMBOL_STYLE_CORNER_BRACKET_MIDDLE_DOT" translateable="false">
    「」・
   </message>
   <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_SYMBOL_STYLE_SQUARE_BRACKET_SLASH" translateable="false">
-    []／
+   ［］／
   </message>
   <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_SYMBOL_STYLE_CORNER_BRACKET_SLASH" translateable="false">
    「」／
   </message>
   <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_SYMBOL_STYLE_SQUARE_BRACKET_MIDDLE_DOT" translateable="false">
-    []・
+   ［］・
   </message>
-  <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_SPACE_INPUT_STYLE" desc="The label for the Space input option within the Japanese settings page. It allows users of Japanese input settings to choose between fullwidth and halfwidth input modes. . In Japanese, this string should be 'スペースの入力'.">
-    Space Input Style
+  <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_SPACE_INPUT_STYLE" desc="The label for the Space input style dropdown within the Japanese keyboard settings page. It controls whether typing spaces with the Japanese keyboard will insert fullwidth or halfwidth characters. The available dropdown values are 'Follow input mode', 'Fullwidth', and 'Halfwidth'. In Japanese, this string should be 'スペースの入力'.">
+    Space input style
     </message>
   <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_SPACE_INPUT_STYLE_INPUT_MODE" desc="The label for option to set the space input style for the Japanese keyboard to Follow input mode. In Japanese, this string should be '入力モードに従う'.">
     Follow input mode
@@ -830,23 +804,20 @@
   <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_SPACE_INPUT_STYLE_HALFWIDTH" desc="The label for input modes option to set the space input style for the Japanese keyboard to Halfwidth mode. In Japanese, this string should be '半角'.">
     Halfwidth
   </message>
-  <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_SECTION_SHORTCUT" desc="The label for the Japanese keyboard settings option to set the shortcut selection hotkeys for Japanese candidate selection. In Japanese, this string should be '候補選択ショートカット'.">
-    Selection Shortcut
+  <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_SELECTION_SHORTCUT" desc="The label for the Japanese keyboard settings dropdown to set the shortcut selection hotkeys for Japanese candidate selection. In Japanese, this string should be '候補選択ショートカット'.">
+    Selection shortcut
   </message>
-  <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_SECTION_SHORTCUT_NO_SHORTCUT" desc="The label for the Japanese keyboard settings option to set that there is no shortcut set for the Japanese keyboard candidate selection. In Japanese, this string should be 'なし'.">
+  <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_SELECTION_SHORTCUT_NO_SHORTCUT" desc="The label for the Japanese keyboard settings option to set that there is no shortcut set for the Japanese keyboard candidate selection. In Japanese, this string should be 'なし'.">
     No shortcut
   </message>
-  <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_SECTION_SHORTCUT_123456789" translateable="false">
+  <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_SELECTION_SHORTCUT_123456789" translateable="false">
     1 -- 9
   </message>
-  <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_SECTION_SHORTCUT_ASDFGHJKL" translateable="false">
+  <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_SELECTION_SHORTCUT_ASDFGHJKL" translateable="false">
     A -- L
   </message>
-  <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_KEYMAP_STYLE" desc="The label for Japanese keyboard settings option within the settings page to set the keymap style for the Japanese keyboard. In Japaneses, this string should be 'キー設定の選択'.">
-    Keymap Style
-  </message>
-  <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_KEYMAP_STYLE_CUSTOM" desc="The label for Japanese settings page to set the keymap style to use a Custom keymap. This is 'Custom Keymap' in Japanese. In Japanese, this string should be 'カスタム'.">
-    Custom keymap
+  <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_KEYMAP_STYLE" desc="The label for Japanese keyboard settings dropdown within the settings page to set the keymap style for the Japanese keyboard. The available dropdown values are 'Custom keymap', 'ATOK', 'MS-IME', 'Kotoeri', and 'ChromeOS'. In Japanese, this string should be 'キー設定の選択'.">
+    Keymap style
   </message>
   <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_KEYMAP_STYLE_ATOK" translateable="false">
     ATOK
@@ -857,11 +828,11 @@
   <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_KEYMAP_STYLE_KOTOERI" desc="The label for Japanese settings page to set the keymap style to Kotoeri. In Japanese, this string can be written as 'ことえり'.">
     Kotoeri
   </message>
-  <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_KEYMAP_STYLE_MOBILE" translateable="false">
-    Mobile
-  </message>
   <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_KEYMAP_STYLE_CHROMEOS" translateable="false">
     ChromeOS
+  </message>
+  <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_DICTIONARY" desc="Heading on the settings page where users can modify their custom user dictionary for the Japanese IME">
+    Dictionaries
   </message>
   <message name="IDS_SETTINGS_INPUT_METHOD_OPTIONS_JAPANESE_MANAGE_USER_DICTIONARY" desc="Label on the settings page which if the user clicks on, will bring up the Japaneses dictionary management page. There are multiple dictionary which the user can modify.">
     Manage user dictionaries
@@ -999,9 +970,6 @@
   </message>
 
   <!-- Search and Assistant section. -->
-  <message name="IDS_SETTINGS_SEARCH_AND_ASSISTANT" desc="Name of the settings page which displays search engine and assistant preferences on ChromeOS.">
-    Search and Assistant
-  </message>
   <message name="IDS_OS_SETTINGS_SEARCH_AND_SUGGESTIONS_TITLE" desc="Name of the settings page which displays search engine and suggestion preferences on ChromeOS.">
     Search and suggestions
   </message>
@@ -1011,20 +979,11 @@
   <message name="IDS_OS_SETTINGS_SEARCH_ENGINE_DESCRIPTION" desc="Description in the search engine dialog in OS settings explaining that search engine is used in both the Chrome browser and the ChromeOS app launcher.">
     Set your default search engine for Chrome browser and <ph name="DEVICE_TYPE">$1<ex>Chromebook</ex></ph> Launcher
   </message>
-  <message name="IDS_SETTINGS_SEARCH_GOOGLE_ASSISTANT" desc="Label for the Google Assistant button.">
-    Google Assistant
-  </message>
-  <message name="IDS_OS_SETTINGS_SEARCH_GOOGLE_ASSISTANT_ON" desc="Row label in Google Assistant settings." meaning="Google Assistant is on.">
-    On
-  </message>
-  <message name="IDS_OS_SETTINGS_SEARCH_GOOGLE_ASSISTANT_OFF" desc="Row label in Google Assistant settings." meaning="Google Assistant is off.">
-    Off
-  </message>
   <message name="IDS_OS_SETTINGS_ENABLE_MAGIC_BOOST" desc="The label of the toggle to enable/disable Magic Boost in ChromeOS settings.">
-    Use Google AI to get help reading and writing
+    Use Google AI to get help reading, writing, and creating
   </message>
   <message name="IDS_OS_SETTINGS_ENABLE_MAGIC_BOOST_DESCRIPTION" desc="The description of the toggle to enable/disable Magic Boost in ChromeOS settings.">
-    Right-click to write with more confidence, summarize content, get definitions, and more. Currently has limited availability.
+    Right-click to summarize content, get definitions, write with more confidence, create images, and more. Currently has limited availability.
   </message>
   <message name="IDS_OS_SETTINGS_MAGIC_BOOST_REVIEW_TERMS_BANNER_DESCRIPTION" desc="The description for Magic Boost review notice banner">
     You need to review and accept terms to use these features
@@ -1036,13 +995,19 @@
     Help me read
   </message>
   <message name="IDS_OS_SETTINGS_ENABLE_HELP_ME_READ_DESCRIPTION" desc="The description of the toggle to enable/disable Help Me Read in ChromeOS settings.">
-    Summarize content or ask questions.
+    Summarize content, simplify complex language, or ask questions.
   </message>
   <message name="IDS_OS_SETTINGS_ENABLE_HELP_ME_WRITE" desc="The label of the toggle to enable/disable Help Me Write in ChromeOS settings.">
     Help me write
   </message>
   <message name="IDS_OS_SETTINGS_ENABLE_HELP_ME_WRITE_DESCRIPTION" desc="The description of the toggle to enable/disable Help Me Write in ChromeOS settings.">
     Create a draft or refine existing work.
+  </message>
+  <message name="IDS_OS_SETTINGS_ENABLE_SCANNER" desc="The label of the toggle to enable/disable suggested actions when searching your screen in ChromeOS settings.">
+    Suggested actions when searching your screen
+  </message>
+  <message name="IDS_OS_SETTINGS_ENABLE_SCANNER_DESCRIPTION" desc="The description of the toggle to enable/disable suggested actions when searching your screen in ChromeOS settings. A &quot;Learn more&quot; link will be added after this string.">
+    After taking a screenshot or searching your screen, show more actions such as add to Calendar, create Google Docs, and more.
   </message>
 
   <!-- Search subpage (OS settings) -->
@@ -1525,12 +1490,6 @@
   <message name="IDS_OS_SETTINGS_ACCESSIBILITY_FACEGAZE_CURSOR_SPEED_SLOW" desc="Label for the 'slow' side of a cursor speed slider that goes from 'slow' to 'fast'.">
     Slow
   </message>
-  <message name="IDS_OS_SETTINGS_ACCESSIBILITY_FACEGAZE_CURSOR_SMOOTHING_LABEL" desc="Label description for a slider that adjusts the cursor smoothing rate for Face Gaze. Smoothing makes the cursor movement less jumpy at the expense of being reactive.">
-    Smoothness
-  </message>
-  <message name="IDS_OS_SETTINGS_ACCESSIBILITY_FACEGAZE_CURSOR_SMOOTHING_DESCRIPTION" desc="Description for a slider that adjusts the cursor smoothing rate for Face Gaze. Smoothing makes the cursor movement less jumpy at the expense of being reactive.">
-    You can prevent your cursor from jumping around for slight head movements, but there will be a short delay.
-  </message>
   <message name="IDS_OS_SETTINGS_ACCESSIBILITY_FACEGAZE_CURSOR_ACCELERATION_LABEL" desc="Label description for a toggle button that turns on mouse acceleration for Face Gaze. Mouse acceleration makes the cursor move faster when the head moves quickly.">
     Cursor acceleration
   </message>
@@ -1653,6 +1612,9 @@
   </message>
   <message name="IDS_SETTINGS_CURSOR_COLOR_PINK" desc="Label for a cursor color option which colors the cursor pink.">
     Pink
+  </message>
+  <message name="IDS_SETTINGS_CURSOR_COLOR_INVERTED" desc="Label for a cursor color option which inverts the colors underneath the cursor.">
+    Inverted
   </message>
   <message name="IDS_SETTINGS_HIGH_CONTRAST_LABEL" desc="Label for checkbox which enables high-contrast UI.">
     Color inversion
@@ -2197,9 +2159,6 @@ Use Ctrl + Alt + Brightness down to zoom out.
   <message name="IDS_OS_SETTINGS_ACCESSIBILITY_MOUSE_KEYS_NUM_KEYPAD_PREVIEW_RELEASE_MOUSE_BUTTON" desc="Radio button option for mouse keys showing the user how to release a mouse button using a numeric keypad.">
     Use “.” to release a mouse button
   </message>
-  <message name="IDS_SETTINGS_ACCESSIBILITY_DICTATION_DESCRIPTION" desc="Description explaining that Dictation sends audio data to Google for transcription">
-    Send your voice to Google to allow dictation into any text field.
-  </message>
   <message name="IDS_SETTINGS_ACCESSIBILITY_DICTATION_LABEL" desc="Label for checkbox which enables the ability to speak into text fields">
     Dictation
   </message>
@@ -2436,12 +2395,6 @@ Use Ctrl + Alt + Brightness down to zoom out.
   </message>
   <message name="IDS_SETTINGS_SWITCH_ASSIGNMENT_HEADING" desc="Heading for the settings section for Switch Access to assign switches to actions">
     Switch action assignment
-  </message>
-  <message name="IDS_SETTINGS_SWITCH_ASSIGN_OPTION_PLACEHOLDER" desc="Placeholder for the options for switch assignment.">
-    Placeholder
-  </message>
-  <message name="IDS_SETTINGS_SWITCH_ASSIGN_OPTION_NONE" desc="Label for the option to have no switch assigned to an action.">
-    None
   </message>
   <message name="IDS_SETTINGS_SWITCH_ASSIGN_OPTION_SPACE" desc="Label for the option to assign the spacebar as a switch.">
     Space
@@ -2688,6 +2641,9 @@ Press an assigned switch or key to remove assignment.
   <message name="IDS_SETTINGS_ACCESSIBILITY_ADDITIONAL_FEATURES_TITLE" desc="In the settings tab, the title of a link that adds additional accessibility features not found in the built-in settings.">
     Find more accessibility tools in the Chrome Web Store
   </message>
+  <message name="IDS_SETTINGS_ACCESSIBILITY_DISABILITY_SUPPORT_TITLE" desc="In the settings tab, the title of a link that opens the disability support help center page.">
+    Contact Google Disability Support
+  </message>
   <message name="IDS_SETTINGS_MANAGE_TTS_SETTINGS" desc="Link to manage text-to-speech settings">
     Text-to-Speech voice settings
   </message>
@@ -2769,9 +2725,6 @@ Press an assigned switch or key to remove assignment.
   <message name="IDS_SETTINGS_ACCESSIBILITY_DISPLAY_AND_MAGNIFICATION_LINK_TITLE" desc="In the settings tab, the title of a link that opens a screen allowing the user to change display and magnification accessibility features.">
     Display and magnification
   </message>
-  <message name="IDS_SETTINGS_ACCESSIBILITY_DISPLAY_AND_MAGNIFICATION_LINK_DESCRIPTION" desc="In the settings tab, the description of a link that opens a screen allowing the user to change display and magnification accessibility features.">
-    Color inversion, magnifier, and display settings
-  </message>
   <message name="IDS_SETTINGS_ACCESSIBILITY_DISPLAY_AND_MAGNIFICATION_LINK_NEW_DESCRIPTION" desc="In the settings tab, the description of a link that opens a screen allowing the user to change display and magnification accessibility features, including the new color correction feature.">
     Color inversion, color correction, magnifier, and display settings
   </message>
@@ -2807,9 +2760,6 @@ Press an assigned switch or key to remove assignment.
   <message name="IDS_SETTINGS_ACCOUNT_MANAGER_CHILD_SECOND_MESSAGE" desc="Description of the Account Manager Settings page for child users. Shown just below the link to learn more about account management.">
     Adding a school account enables easy sign-in to websites, extensions, and apps as a student while still operating under parental controls.
   </message>
-  <message name="IDS_SETTINGS_ACCOUNT_MANAGER_LIST_HEADER" desc="List header for Account List in Account Manager Settings page.">
-    Accounts
-  </message>
   <message name="IDS_SETTINGS_ACCOUNT_MANAGER_LIST_HEADER_V2" desc="List header for additional account List in Account Manager Settings page.">
     Additional accounts
   </message>
@@ -2839,9 +2789,6 @@ Press an assigned switch or key to remove assignment.
   </message>
   <message name="IDS_SETTINGS_ACCOUNT_MANAGER_ADD_SCHOOL_ACCOUNT_LABEL" desc="Label of the button to add a school/EDU account in Account Manager.">
     Add school account
-  </message>
-  <message name="IDS_SETTINGS_ACCOUNT_MANAGER_ADD_SCHOOL_ACCOUNT_LABEL_2" desc="Label of the button to add a school/EDU account in Account Manager.">
-    School Account
   </message>
   <message name="IDS_SETTINGS_ACCOUNT_MANAGER_SECONDARY_ACCOUNTS_DISABLED_TEXT_V2" desc="Tooltip text for 'secondary accounts disabled' message in Settings page.">
    Your administrator doesn’t allow additional Google Accounts.
@@ -2876,12 +2823,6 @@ Press an assigned switch or key to remove assignment.
   <message name="IDS_SETTINGS_ACCOUNT_MANAGER_MANAGEMENT_STATUS_CHILD" desc="Management status label for child accounts.">
     Managed by Family Link
   </message>
-  <message name="IDS_SETTINGS_ACCOUNT_MANAGER_MANAGEMENT_PRIMARY_ACCOUNT" desc="Indicates this account is the primary account, when the primary account is a child account.">
-    Primary Account
-  </message>
-  <message name="IDS_SETTINGS_ACCOUNT_MANAGER_MANAGEMENT_SCHOOL_ACCOUNT" desc="Indicates this account is the school account, when the primary account is a child account.">
-    School Account
-  </message>
 
   <!-- Used by Crostini, Plugin VM and Bruschetta -->
   <message name="IDS_SETTINGS_GUEST_OS_SHARED_PATHS" desc="Label for managing shared folders for Parallels.">
@@ -2909,10 +2850,10 @@ Press an assigned switch or key to remove assignment.
     Manage USB devices
   </message>
   <message name="IDS_SETTINGS_GUEST_OS_SHARED_USB_DEVICES_DESCRIPTION" desc="Description for managing shared USB devices.">
-    Let Android apps access USB devices on this Chromebook
+    Give Android apps control over USB devices on this Chromebook
   </message>
   <message name="IDS_SETTINGS_GUEST_OS_SHARED_USB_DEVICES_EXTRA_DESCRIPTION" desc="Extra description for managing shared USB devices.">
-    Only supported devices are shown.
+    Only supported devices are shown. USB devices will no longer be available to native apps until disconnected.
   </message>
   <message name="IDS_SETTINGS_GUEST_OS_SHARED_USB_DEVICES_LIST_EMPTY_MESSAGE" desc="Message shown when there are no available USB devices.">
     Available USB devices will appear here.
@@ -2998,7 +2939,7 @@ Press an assigned switch or key to remove assignment.
     Remove
   </message>
   <message name="IDS_SETTINGS_CROSTINI_SHARED_USB_DEVICES_DESCRIPTION" desc="Description for managing shared USB devices.">
-    Give Linux apps permission to access USB devices.
+    Give Linux apps control over USB devices.
   </message>
   <message name="IDS_SETTINGS_CROSTINI_ARC_ADB_TITLE" desc="Title of ARC ADB sideloading section.">
     Develop Android apps
@@ -3017,21 +2958,6 @@ Press an assigned switch or key to remove assignment.
   </message>
   <message name="IDS_SETTINGS_CROSTINI_ARC_ADB_CONFIRMATION_TITLE_DISABLE" desc="Confirmation dialog title to restart for disabling ADB.">
     Disable ADB debugging?
-  </message>
-  <message name="IDS_SETTINGS_CROSTINI_CONTAINER_UPGRADE_MESSAGE" desc="Message shown when an upgrade to Debian 10 (codenamed Buster) is available.">
-    An upgrade to Debian 10 (Buster) is available
-  </message>
-  <message name="IDS_SETTINGS_CROSTINI_CONTAINER_UPGRADE_BULLSEYE_MESSAGE" desc="Message shown when an upgrade to Debian 11 (codenamed Bullseye) is available.">
-    An upgrade to Debian 11 (Bullseye) is available
-  </message>
-  <message name="IDS_OS_SETTINGS_CROSTINI_CONTAINER_UPGRADE_BOOKWORM_MESSAGE" desc="Message shown when an upgrade to Debian 12 (codenamed Bookworm) is available.">
-    An upgrade to Debian 12 (Bookworm) is available
-  </message>
-  <message name="IDS_SETTINGS_CROSTINI_CONTAINER_UPGRADE_SUBTEXT" desc="The current version the user has.">
-    Current version is <ph name="CURRENT_VERSION">$1<ex>Debian GNU/Linux 9 (stretch)</ex></ph>
-  </message>
-  <message name="IDS_SETTINGS_CROSTINI_CONTAINER_UPGRADE_BUTTON" desc="Label for the button that launches the upgrade to Debian 10 for Crostini.">
-    Upgrade
   </message>
   <message name="IDS_SETTINGS_CROSTINI_PORT_FORWARDING" desc="Label for managing port forwarding in Linux on ChromeOS.">
     Port forwarding
@@ -3092,63 +3018,6 @@ Press an assigned switch or key to remove assignment.
   </message>
   <message name="IDS_SETTINGS_CROSTINI_PORT_FORWARDING_SHOW_MORE_ACTIONS_ARIA_LABEL" desc="The aria label for the button that displays more actions to the user for an individual port i.e. the text that screen readers will read out for the button.">
     Show more actions for this port
-  </message>
-  <message name="IDS_SETTINGS_CROSTINI_EXTRA_CONTAINERS_LABEL" desc="Label for managing extra Linux containers in ChromeOS.">
-    Manage extra containers
-  </message>
-  <message name="IDS_SETTINGS_CROSTINI_EXTRA_CONTAINERS_DESCRIPTION" desc="Description for managing extra Linux containers.">
-    Create and delete extra containers.
-  </message>
-  <message name="IDS_SETTINGS_CROSTINI_EXTRA_CONTAINERS_CREATE" desc="Label for the button the user clicks to create a new container.">
-    Create
-  </message>
-  <message name="IDS_SETTINGS_CROSTINI_EXTRA_CONTAINERS_TABLE_TITLE" desc="Heading for the table of all containers and their associated virtual machines">
-    All containers
-  </message>
-  <message name="IDS_SETTINGS_CROSTINI_EXTRA_CONTAINERS_DELETE" desc="Menu item the user selects to delete Linux container.">
-    Delete this container
-  </message>
-  <message name="IDS_SETTINGS_CROSTINI_EXTRA_CONTAINERS_STOP" desc="Menu item the user selects to stop a running Linux container.">
-    Stop this container
-  </message>
-  <message name="IDS_SETTINGS_CROSTINI_EXTRA_CONTAINERS_VM_NAME_LABEL" desc="Column heading for virtual machine name.">
-    VM name
-  </message>
-  <message name="IDS_SETTINGS_CROSTINI_EXTRA_CONTAINERS_CONTAINER_NAME_LABEL" desc="Column heading for container name.">
-    Container name
-  </message>
-  <message name="IDS_SETTINGS_CROSTINI_EXTRA_CONTAINERS_CONTAINER_IP_LABEL" desc="Column heading for container IP address.">
-    IP address
-  </message>
-  <message name="IDS_SETTINGS_CROSTINI_EXTRA_CONTAINERS_SHARE_MICROPHONE" desc="Toggle label to share host microhone with this container.">
-    Share microphone
-  </message>
-  <message name="IDS_SETTINGS_CROSTINI_EXTRA_CONTAINERS_APP_BADGE_COLOR" desc="Label for color picker to choose a badge color for this container's apps.">
-    App badge color
-  </message>
-  <message name="IDS_SETTINGS_CROSTINI_EXTRA_CONTAINERS_CREATE_DIALOG_TITLE" desc="Title of the dialog for entering details to create a new Linux container.">
-    Create a new container
-  </message>
-  <message name="IDS_SETTINGS_CROSTINI_EXTRA_CONTAINERS_CREATE_DIALOG_CONTAINER_EXISTS_ERROR" desc="Error for invalid input when creating a new Linux container.">
-    This container already exists.
-  </message>
-  <message name="IDS_SETTINGS_CROSTINI_EXTRA_CONTAINERS_CREATE_DIALOG_EMPTY_CONTAINER_NAME_ERROR" desc="Error for invalid input when creating a new Linux container.">
-    Container name cannot be empty.
-  </message>
-  <message name="IDS_SETTINGS_CROSTINI_EXTRA_CONTAINERS_CREATE_DIALOG_IMAGE_SERVER" desc="Heading for the input field for entering the image server URL when creating a new Linux container.">
-    Image Server
-  </message>
-  <message name="IDS_SETTINGS_CROSTINI_EXTRA_CONTAINERS_CREATE_DIALOG_IMAGE_ALIAS" desc="Heading for the input field for entering the image alias string e.g. debian/buster when creating a new Linux container.">
-    Image Alias
-  </message>
-  <message name="IDS_SETTINGS_CROSTINI_EXTRA_CONTAINERS_CREATE_DIALOG_ADD_CONTAINER_LABEL" desc="Heading for the input field for uploading an Ansible playbook or Crostini backup file to set up a Linux container.">
-    Create from an Ansible Playbook or a Crostini backup file
-  </message>
-  <message name="IDS_SETTINGS_CROSTINI_EXTRA_CONTAINERS_CREATE_DIALOG_ADD_CONTAINER_BUTTON_LABEL" desc="Label for button to attach an Ansible Playbook or Crostini backup file to set up a Linux container.">
-    Select file
-  </message>
-  <message name="IDS_SETTINGS_CROSTINI_FILE_SELECTOR_DIALOG_TITLE" desc="The text used as the title for selecting a file for Crostini container creation">
-    Select an Ansible Playbook or Crostini backup file
   </message>
   <message name="IDS_SETTINGS_CROSTINI_DISK_RESIZE_SHOW_BUTTON" desc="The label of the button/link the user clicks to open the disk resizing dialogue." meaning="The label of the button/link the user clicks to open the disk resizing dialogue.">
     Change
@@ -3253,7 +3122,7 @@ Press an assigned switch or key to remove assignment.
     Managed Development Environment (<ph name="GENERAL_NAME">$1<ex>HappyVm</ex></ph>)
   </message>
   <message name="IDS_SETTINGS_BRUSCHETTA_SHARED_USB_DEVICES_DESCRIPTION" desc="Description for managing shared USB devices.">
-    Give <ph name="SPECIFIC_NAME">$1<ex>HappyVm</ex></ph> permission to access USB devices.
+    Give <ph name="SPECIFIC_NAME">$1<ex>HappyVm</ex></ph> control over USB devices.
   </message>
   <message name="IDS_SETTINGS_BRUSCHETTA_SHARED_PATHS_INSTRUCTIONS_LOCATE" desc="Instructions for how to locate shared folders in Bruschetta..">
     Shared folders are available in <ph name="SPECIFIC_NAME">$1<ex>HappyVm</ex></ph> at <ph name="BASE_DIR">$2<ex>/mnt/chromeos</ex></ph>.
@@ -3305,11 +3174,8 @@ Press an assigned switch or key to remove assignment.
   <message name="IDS_OS_SETTINGS_ANDROID_APPS_DISABLE_DIALOG_TITLE" desc="Title of the confirmation dialog for disabling android apps.">
     Remove Google Play and Android apps?
   </message>
-  <message name="IDS_SETTINGS_ANDROID_APPS_MANAGE_APP_LINKS" desc="Label for accessing app preferrences on ARC side.">
-    Manage Play app links
-  </message>
   <message name="IDS_SETTINGS_APPS_ARC_VM_SHARED_USB_DEVICES_DESCRIPTION" desc="Description for managing shared USB devices. Do not translate 'ARCVM'.">
-    Let Android apps access USB devices on this Chromebook. Permission will be requested each time you plug in a USB device. Individual Android apps will ask for additional permissions.
+    Give Android apps control over USB devices on this Chromebook. Permission will be requested each time you plug in a USB device. Individual Android apps will ask for additional permissions.
   </message>
   <message name="IDS_OS_SETTINGS_OPEN_GOOGLE_PLAY" desc="Label for launching Google Play Store.">
     Open Google Play
@@ -3333,9 +3199,6 @@ Press an assigned switch or key to remove assignment.
   </message>
   <message name="IDS_SETTINGS_STYLUS_NOTE_TAKING_APP_LABEL" desc="Label describing a dropdown that lets the user pick their default note-taking applications. The dropdown contains a list of all available choices. The user can install additional apps, so the contents of the dropdown is dynamic.">
     Note-taking app
-  </message>
-  <message name="IDS_SETTINGS_STYLUS_NOTE_TAKING_APP_KEEP_LATEST_NOTE" desc="Label for a check box that, when checked, indicates that the note-taking app should keep the latest note the user took while on the lock screen available to the user whenever the app is launched on the lock screen (i.e. if the active app window is closed, the note should be visible the next time the app is launched).">
-    Keep latest note on lock screen
   </message>
   <message name="IDS_SETTINGS_STYLUS_NOTE_TAKING_APP_NONE_AVAILABLE" desc="Secondary label used when there are no note-taking applications available.">
     None available
@@ -3622,9 +3485,6 @@ Press an assigned switch or key to remove assignment.
   <message name="IDS_SETTINGS_BLUETOOTH_SUMMARY_PAGE_ON" desc="Label for Bluetooth summary page, when Bluetooth is on but no devices are connected.">
     On
   </message>
-  <message name="IDS_SETTINGS_BLUETOOTH_PAIRED_DEVICE_ITEM_SUBPAGE_BUTTON_A11Y_LABEL" desc="Accessibility label for button in a paired Bluetooth device list item that routes to the detail page for the device.">
-    <ph name="DEVICE">$1<ex>Beats</ex></ph>, Details
-  </message>
   <message name="IDS_SETTINGS_BLUETOOTH_DEVICE_DETAILS" desc="Name of the settings page which displays Bluetooth device details.">
     Bluetooth device details
   </message>
@@ -3751,8 +3611,8 @@ Press an assigned switch or key to remove assignment.
   <message name="IDS_SETTINGS_AUDIO_INPUT_ALLOW_AGC_TITLE" desc="In Device Settings, the title of the allowance of AGC toggle under the input section in audio settings subpage." translateable="false">
     Allow apps to automatically adjust mic volume
   </message>
-  <message name="IDS_SETTINGS_AUDIO_INPUT_ALLOW_AGC_DESCRIPTION" desc="In Device Settings, the description of the allowance of AGC toggle under the input section in audio settings subpage." translateable="false">
-    Some apps can automatically adjust mic volume(gain control) to optimize(audio).
+  <message name="IDS_SETTINGS_AUDIO_FOCUS_ENFORCEMENT_TITLE" desc="In Device Settings, the title of the audio focus enforcement (audio ducking) toggle under the audio settings subpage.">
+    Reduce background audio for notifications and alerts
   </message>
   <message name="IDS_SETTINGS_AUDIO_HFP_MIC_SR_TITLE" desc="In Device Settings, the title of the super resolution toggle under the input section in audio settings subpage.">
     Bluetooth Super Resolution
@@ -3859,9 +3719,6 @@ Press an assigned switch or key to remove assignment.
   <message name="IDS_SETTINGS_AUDIO_OUTPUT_ENABLE_SPATIAL_AUDIO_TITLE" desc="In Device Settings, the title of the enablement of spatial audio toggle under the output section in audio settings subpage." translateable="false">
     Spatial Audio
   </message>
-  <message name="IDS_SETTINGS_AUDIO_OUTPUT_ENABLE_SPATIAL_AUDIO_DESCRIPTION" desc="In Device Settings, the description of the enablement of spatial audio toggle under the output section in audio settings subpage." translateable="false">
-    Enable supported content to sound more immersive
-  </message>
 
   <!-- Device pointer page (OS settings) -->
   <message name="IDS_SETTINGS_MOUSE_TITLE" desc="In Device Settings, the title of the mouse settings subpage.">
@@ -3894,9 +3751,6 @@ Press an assigned switch or key to remove assignment.
   <message name="IDS_SETTINGS_POINTER_SPEED_FAST_LABEL" desc="In Device Settings, the text under the right (more sensitive) side of the slider for the pointer (mouse/touchpad) speed (sensitivity).">
     Fast
   </message>
-  <message name="IDS_SETTINGS_MOUSE_SPEED_LABEL" desc="In Device Settings, the text next to the slider that sets the speed (sensitivity) of the mouse.">
-    Mouse speed
-  </message>
   <message name="IDS_SETTINGS_POINTING_STICK_SPEED_LABEL" desc="In Device Settings, the text next to the slider that sets the speed (sensitivity) of the pointing stick (normally referred to as a TrackPoint).">
     TrackPoint speed
   </message>
@@ -3926,9 +3780,6 @@ Press an assigned switch or key to remove assignment.
   </message>
   <message name="IDS_OS_SETTINGS_MOUSE_REVERSE_SCROLL_DESCRIPTION" desc="In Device Settings, the description for the label to set mouse reverse scrolling.">
     Scroll up to move the page down
-  </message>
-  <message name="IDS_OS_SETTINGS_MOUSE_ACCELERATION_LABEL" desc="In Device Settings, the text next to the checkbox to enable mouse acceleration.">
-    Mouse acceleration
   </message>
   <message name="IDS_OS_SETTINGS_MOUSE_ACCELERATION_DESCRIPTION" desc="In Device Settings, the description for the label next to the checkbox to enable mouse acceleration.">
     Faster movements with your mouse will move the cursor farther
@@ -4343,6 +4194,9 @@ Press an assigned switch or key to remove assignment.
   <message name="IDS_SETTINGS_PRINTING_CUPS_PRINTER_ADVANCED_CONFIG_SELECT_DRIVER" desc="Label for the file selector to manually select a PPD file from the user's file system.">
     Alternatively, select printer PPD. <ph name="LINK_BEGIN">&lt;a&gt;</ph>Learn more<ph name="LINK_END">&lt;/a&gt;</ph>
   </message>
+  <message name="IDS_SETTINGS_PRINTING_CUPS_PRINTER_MANAGED_PRINTER_PPD" desc="Label for the text box displaying a path to the used PPD file for the active printer.">
+    Printer PPD
+  </message>
   <message name="IDS_SETTINGS_PRINTING_CUPS_PRINTER_SELECT_DRIVER" desc="Label for the file selector to manually select a PPD file from the user's file system.">
     or select PPD. <ph name="LINK_BEGIN">&lt;a&gt;</ph>Learn more<ph name="LINK_END">&lt;/a&gt;</ph>
   </message>
@@ -4351,9 +4205,6 @@ Press an assigned switch or key to remove assignment.
   </message>
   <message name="IDS_SETTINGS_PRINTING_CUPS_VIEW_PPD_ERROR_MESSAGE" desc="The message shown when the request to view a PPD is unsuccessful.">
     Unable to retrieve PPD for <ph name="PRINTER_NAME">$1<ex>Acme Printer</ex></ph>.
-  </message>
-  <message name="IDS_SETTINGS_PRINTING_CUPS_PRINTERS_PPD_INTRO" desc="Text used to introduce the PPD for an active printer.">
-    PPD for <ph name="PRINTER_NAME">$1<ex>Acme Printer</ex></ph>
   </message>
   <message name="IDS_SETTINGS_PRINTING_CUPS_PRINTER_BUTTON_SELECT_DRIVER_ARIA_LABEL" desc="ARIA label for the file selector button to manually select a PPD file from the user's file system. This text will not be visual on any page. It will only be spoken by screen readers.">
     Browse to specify your printer PPD
@@ -4423,6 +4274,9 @@ Press an assigned switch or key to remove assignment.
   </message>
   <message name="IDS_SETTINGS_PRINTING_CUPS_VIEW_PRINTER_DIALOG_TITLE" desc="Text for the title of the dialog that is used to view a CUPS managed printer's information.">
     View printer
+  </message>
+  <message name="IDS_SETTINGS_PRINTING_CUPS_VIEW_PRINTER_DIALOG_MANAGED_LABEL" desc="A11y text for the managed icon displayed next to the dialog title." is_accessibility_with_no_ui="true">
+    Managed printer
   </message>
   <message name="IDS_SETTINGS_PRINTING_CUPS_EDIT_PRINTER_BUTTON" desc="Text for the button which allows the user to save the modification of a CUPS printer.">
     Save
@@ -4573,10 +4427,7 @@ Press an assigned switch or key to remove assignment.
     <message name="IDS_SETTINGS_INTERNET_CELLULAR_SUBTITLE_WITH_LEARN_MORE_LINK" desc="Subtitle of the cellular subpage which explains the behavior of a carrier locked Chromebook.">
     This device can only connect to a specific mobile network. <ph name="BEGIN_LINK_LEARN_MORE">&lt;a target="_blank" href="$1"&gt;</ph>Learn more<ph name="END_LINK_LEARN_MORE">&lt;/a&gt;</ph>
   </message>
-  <message name="IDS_SETTINGS_INTERNET_INSTANT_TETHERING_DETAILS" desc="Name of the settings page which displays details about an Instant hotspot network (i.e., using a phone's internet through the Instant hotspot feature).">
-    Instant hotspot details
-  </message>
-  <message name="IDS_SETTINGS_INTERNET_INSTANT_TETHERING_DETAILS_LEGACY" desc="Name of the settings page which displays details about an Instant Tethering network (i.e., using a phone's internet through the Instant Tethering feature).">
+  <message name="IDS_SETTINGS_INTERNET_INSTANT_TETHERING_DETAILS" desc="Name of the settings page which displays details about an Instant Tethering network (i.e., using a phone's internet through the Instant Tethering feature).">
     Instant Tethering details
   </message>
   <message name="IDS_SETTINGS_INTERNET_VPN_DETAILS" desc="Name of the settings page which displays details about a VPN connection.">
@@ -4722,12 +4573,6 @@ Press an assigned switch or key to remove assignment.
   </message>
   <message name="IDS_SETTINGS_INTERNET_LEGACY" desc="Name of the settings page which displays internet preferences.">
     Network
-  </message>
-  <message name="IDS_SETTINGS_INTERNET_NO_TETHER_HOSTS" desc="Entry when there are no available tether hosts nearby.">
-    No available hotspots
-  </message>
-  <message name="IDS_SETTINGS_INTERNET" desc="Name of the settings page which displays internet preferences.">
-    Internet
   </message>
   <message name="IDS_SETTINGS_INTERNET_HOTSPOT" desc="Name of the settings page which displays hotspot preferences.">
     Hotspot
@@ -5165,7 +5010,7 @@ Press an assigned switch or key to remove assignment.
     Subscription is installed on this device only and not synced with other devices under your account. <ph name="LINK_BEGIN">&lt;a&gt;</ph>Learn more<ph name="LINK_END">&lt;/a&gt;</ph>
   </message>
   <message name="IDS_SETTINGS_INTERNET_PASSPOINT_SUBSCRIPTION_EXPIRATION" desc="Label of the subscription expiration date.">
-    Expiry date
+    Expiration date
   </message>
   <message name="IDS_SETTINGS_INTERNET_PASSPOINT_SOURCE" desc="Label of the source that installed the Passpoint subscription.">
     Passpoint provider
@@ -5300,9 +5145,6 @@ Press an assigned switch or key to remove assignment.
   <message name="IDS_SETTINGS_MULTIDEVICE_SUITE_TOGGLE_A11Y_LABEL" desc="Accessibility label for toggle button that enables/disables connected phone features.">
     Connected phone features enable.
   </message>
-  <message name="IDS_SETTINGS_MULTIDEVICE_INSTANT_HOTSPOT" desc="Name of a feature. This feature automatically offers the user to tether to their phone if their Chromebook is offline and their phone supports tethering.">
-    Instant hotspot
-  </message>
   <message name="IDS_SETTINGS_MULTIDEVICE_INSTANT_TETHERING" desc="Name of a feature. This feature automatically offers the user to tether to their phone if their Chromebook is offline and their phone supports tethering.">
     Instant Tethering
   </message>
@@ -5335,9 +5177,6 @@ Press an assigned switch or key to remove assignment.
   </message>
   <message name="IDS_SETTINGS_MULTIDEVICE_PHONE_HUB_TASK_CONTINUATION_SECTION_TITLE" desc="The title of the Phone Hub Task Continuation section on the settings page.">
     Recent Chrome tabs
-  </message>
-  <message name="IDS_SETTINGS_MULTIDEVICE_PHONE_HUB_APPS_SECTION_BETA_TITLE" desc="The title of the Phone Hub Apps section in the settings page on Beta stage.">
-    Apps (Beta)
   </message>
   <message name="IDS_SETTINGS_MULTIDEVICE_PHONE_HUB_APPS_SECTION_TITLE" desc="The title of the Phone Hub Apps section on the settings page.">
     Apps
@@ -5545,20 +5384,26 @@ Press an assigned switch or key to remove assignment.
   <message name="IDS_SETTINGS_PEOPLE_ENABLE_SCREENLOCK" desc="The text on the checkbox to enable screenlocker for current user.  Lock will happen in the device goes into sleep mode from being idle, or when laptop lid or detachable cover is closed">
     Lock when sleeping or lid is closed
   </message>
-  <message name="IDS_SETTINGS_PEOPLE_SCREEN_LOCK_ENABLE_TITLE" desc="The title on the toggle to enable screen lock for current user.">
-    Screen lock
-  </message>
-  <message name="IDS_SETTINGS_PEOPLE_SCREEN_LOCK_ENABLE_SUBTITLE" desc="The subtitle on the toggle to enable screen lock for current user.">
-    Require password to unlock device for added security
-  </message>
   <message name="IDS_ASH_SETTINGS_LOCK_SCREEN_NOTIFICATION_SHOW" desc="One of options of the lock screen notification mode to show all the notifications and its contents on the lock screen.">
     Show all notification content
   </message>
   <message name="IDS_SETTINGS_PEOPLE_LOCK_SCREEN_PIN_OR_PASSWORD" desc="The account password or a custom PIN can be used to unlock the device.">
     PIN or password
   </message>
-  <message name="IDS_SETTINGS_PEOPLE_LOCK_SCREEN_ENABLE_PIN" desc="Text on the toggle that allows the user to enable PIN in addition to password for the lock screen.">
-    Use PIN in addition to password
+  <message name="IDS_SETTINGS_PEOPLE_LOCK_SCREEN_PIN_ONLY" desc="The PIN can be used to unlock the device.">
+    PIN only
+  </message>
+  <message name="IDS_SETTINGS_PEOPLE_LOCK_SCREEN_PASSWORD_OR_FINGERPRINT" desc="The account password or a fingerprint can be used to unlock the device.">
+    Password or fingerprint
+  </message>
+  <message name="IDS_SETTINGS_PEOPLE_LOCK_SCREEN_PIN_OR_FINGERPRINT" desc="The PIN or a fingerprint can be used to unlock the device.">
+    PIN or fingerprint
+  </message>
+  <message name="IDS_SETTINGS_PEOPLE_LOCK_SCREEN_PASSWORD_OR_PIN_OR_FINGERPRINT" desc="The account password, PIN or a fingerprint can be used to unlock the device.">
+    Password, PIN or fingerprint
+  </message>
+  <message name="IDS_SETTINGS_PEOPLE_LOCK_SCREEN_NO_AUTH" desc="The account has no authentication factor.">
+    No authentication
   </message>
   <message name="IDS_SETTINGS_PEOPLE_LOCK_SCREEN_PIN_AUTOSUBMIT" desc="Option to enable PIN auto-submit">
     Unlock automatically once PIN is entered
@@ -5667,14 +5512,8 @@ Press an assigned switch or key to remove assignment.
   <message name="IDS_SETTINGS_PEOPLE_LOCK_SCREEN_TITLE_LOCK" desc="Text on the people page which opens up the quick unlock subpage and the title of the quick unlock subpage.">
     Lock screen
   </message>
-  <message name="IDS_SETTINGS_PEOPLE_LOCK_SCREEN_TITLE_LOGIN_LOCK" desc="Text on the people page which opens up the security and sign-in section.">
-    Security and sign-in
-  </message>
   <message name="IDS_SETTINGS_PEOPLE_LOCK_SCREEN_TITLE_LOGIN_LOCK_V2" desc="Text on the people page which opens up the security and sign-in section.">
     Lock screen and sign-in
-  </message>
-  <message name="IDS_SETTINGS_PEOPLE_SCREEN_LOCK_TITLE" desc="Text on the people page which opens up the screen lock and sign-in section.">
-    Screen lock and sign-in
   </message>
   <message name="IDS_SETTINGS_PEOPLE_PASSWORD_PROMPT_ENTER_PASSWORD_LOCK" desc="Text above a password input field that tells the user they need to submit their password to configure these settings.">
     Enter your password to configure screen lock
@@ -5872,17 +5711,11 @@ Press an assigned switch or key to remove assignment.
   <message name="IDS_SETTINGS_POWER_IDLE_LABEL" desc="In Device Settings > Power, label for behavior when device is idle.">
     When idle
   </message>
-  <message name="IDS_SETTINGS_POWER_IDLE_WHILE_CHARGING_LABEL" desc="In Device Settings > Power, label for behavior when device is idle.">
-    While charging
-  </message>
-<message name="IDS_OS_SETTINGS_POWER_INACTIVE_WHILE_PLUGGED_IN_LABEL" desc="In Device Settings > Power, label for behavior when device is inactive and plugged in.">
+  <message name="IDS_OS_SETTINGS_POWER_INACTIVE_WHILE_PLUGGED_IN_LABEL" desc="In Device Settings > Power, label for behavior when device is inactive and plugged in.">
     While inactive and plugged in
   </message>
   <message name="IDS_SETTINGS_POWER_IDLE_WHILE_CHARGING_ARIA_LABEL" desc="In Device Settings > Power, aria label for behavior when device is idle.">
     Idle action while charging
-  </message>
-  <message name="IDS_SETTINGS_POWER_IDLE_WHILE_ON_BATTERY_LABEL" desc="In Device Settings > Power, label for behavior when device is idle.">
-    While on battery
   </message>
   <message name="IDS_OS_SETTINGS_POWER_INACTIVE_WHILE_ON_BATTERY_LABEL" desc="In Device Settings > Power, label for behavior when device is inactive and on battery.">
     While inactive and on battery
@@ -5895,6 +5728,24 @@ Press an assigned switch or key to remove assignment.
   </message>
   <message name="IDS_SETTINGS_POWER_ADAPTIVE_CHARGING_SUBTEXT" desc="In Device Settings > Power, description of the behavior of the adaptive charging feature.">
     Extends battery life by keeping your battery around 80%. Battery will fully charge before you typically disconnect from power.
+  </message>
+  <message name="IDS_SETTINGS_POWER_ADAPTIVE_CHARGING_LEARN_MORE_ARIA_LABEL" desc="In Device Settings > Power > Optimized Charging > Change, aria label for the learn more link for adaptive charging.">
+    Learn more about Adaptive charging.
+  </message>
+  <message name="IDS_SETTINGS_POWER_OPTIMIZED_CHARGING_LABEL" desc="In Device Settings > Power, the title of the settings row of the optimized charging feature.">
+    Optimized charging
+  </message>
+  <message name="IDS_SETTINGS_POWER_OPTIMIZED_CHARGING_MODE_CHANGE_LABEL" desc="In Device Settings > Power, the text of the optimized charging change mode button, which creates a dialog that allows the user to pick between adaptive charging and a charge limit.">
+    Change
+  </message>
+  <message name="IDS_SETTINGS_POWER_OPTIMIZED_CHARGING_MODE_CHANGE_ARIA_LABEL" desc="In Device Settings > Power, aria label for the button which changes the optimized charging strategy.">
+    Change the optimized charging strategy.
+  </message>
+  <message name="IDS_SETTINGS_POWER_BATTERY_CHARGE_LIMIT_LABEL" desc="In Device Settings > Power > Optimized Charging > Change, the title of the battery charge limit feature, which explicitly limits the battery charging to 80%.">
+    Charge limit
+  </message>
+  <message name="IDS_SETTINGS_POWER_BATTERY_CHARGE_LIMIT_SUBTEXT" desc="In Device Settings > Power > Optimized Charging > Change, description of the behavior of the battery charge limit feature.">
+    Stops charging at 80% to help your battery last longer.
   </message>
   <message name="IDS_SETTINGS_POWER_IDLE_DISPLAY_OFF_SLEEP" desc="In Device Settings > Power, menu item for idle behavior that turns the screen off and later puts the device to sleep. String must be short enough to fit in a drop-down menu.">
     Sleep
@@ -5929,6 +5780,9 @@ Press an assigned switch or key to remove assignment.
   <message name="IDS_SETTINGS_BATTERY_STATUS_SHORT" desc="In Device Settings > Power, the battery status when the time left cannot be shown.">
     <ph name="percentage">$1<ex>56</ex></ph>%
   </message>
+  <message name="IDS_SETTINGS_BATTERY_STATUS_CHARGING_ON_HOLD" desc="In Device Settings > Power, the battery status while a charger is plugged in, showing the battery power as a percentage and that charging has stopped.">
+    <ph name="percentage">$1<ex>80</ex></ph>% - Charging on hold
+  </message>
   <message name="IDS_SETTINGS_POWER_BATTERY_SAVER_LABEL" desc="In Device Settings > Power, label for toggling battery saver mode">
     Battery saver
   </message>
@@ -5937,9 +5791,6 @@ Press an assigned switch or key to remove assignment.
   </message>
 
   <!-- Reset Page (OS settings)-->
-  <message name="IDS_SETTINGS_RESET_TITLE" desc="Title of a section of settings. This section describes settings for resetting the device.">
-    Reset settings
-  </message>
   <message name="IDS_OS_SETTINGS_RESET_TITLE" desc="Title of a section of settings. This section describes settings for resetting the device.">
     Reset
   </message>
@@ -5948,9 +5799,6 @@ Press an assigned switch or key to remove assignment.
   </message>
   <message name="IDS_SETTINGS_FACTORY_RESET_HEADING" desc="Name of the 'Factory reset' window">
     Restart your device
-  </message>
-  <message name="IDS_SETTINGS_FACTORY_RESET_DESCRIPTION" desc="Description of the factory reset option on the Chrome settings page">
-    Remove all user accounts and reset your <ph name="IDS_SHORT_PRODUCT_NAME">$1<ex>Chrome</ex></ph> device to be just like new.
   </message>
   <message name="IDS_OS_SETTINGS_FACTORY_RESET_DESCRIPTION" desc="Description of the factory reset option on the ChromeOS settings page">
     Remove all user accounts and reset your Chromebook to be just like new.
@@ -5999,52 +5847,6 @@ Press an assigned switch or key to remove assignment.
   </message>
   <message name="IDS_OS_SETTINGS_SANITIZE_FEEDBACK" desc="Feedback label in the Reset Profile Settings dialog.">
     Help make ChromeOS better by reporting the <ph name="BEGIN_LINK">&lt;a is="action-link" target="_blank"&gt;</ph>current settings<ph name="END_LINK">&lt;/a&gt;</ph>
-  </message>
-  <!-- Google Assistant Page (OS Settings)-->
-  <message name="IDS_SETTINGS_GOOGLE_ASSISTANT" desc="Name of the settings page for Google Assistant.">
-    Google Assistant
-  </message>
-  <message name="IDS_SETTINGS_GOOGLE_ASSISTANT_ENABLE_HOTWORD" desc="Title for a toggle that lets the assistant detect hotword.">
-    "Hey Google"
-  </message>
-  <message name="IDS_SETTINGS_GOOGLE_ASSISTANT_ENABLE_HOTWORD_DESCRIPTION" desc="Sub label for hotword-enable toggle.">
-    Access your Assistant when you say "Hey Google."
-  </message>
-  <message name="IDS_SETTINGS_GOOGLE_ASSISTANT_ENABLE_HOTWORD_WITHOUT_DSP_DESCRIPTION" desc="Sub label for hotword-enable dropdown without DSP support.">
-    Access your Assistant when you say "Hey Google." To save battery, choose “On (Recommended.)” Your Assistant will respond only when your device is plugged in or charging.
-  </message>
-  <message name="IDS_SETTINGS_GOOGLE_ASSISTANT_ENABLE_HOTWORD_WITHOUT_DSP_RECOMMENDED" desc="Default label for hotword-enable dropdown without DSP support.">
-    On (Recommended)
-  </message>
-  <message name="IDS_SETTINGS_GOOGLE_ASSISTANT_ENABLE_HOTWORD_WITHOUT_DSP_ALWAYS_ON" desc="Always-on label for hotword-enable dropdown without DSP support.">
-    Always on
-  </message>
-  <message name="IDS_SETTINGS_GOOGLE_ASSISTANT_ENABLE_HOTWORD_WITHOUT_DSP_OFF" desc="Off label for hotword-enable dropdown without DSP support." meaning="Ok Google hotwording is disabled.">
-    Off
-  </message>
-  <message name="IDS_SETTINGS_GOOGLE_ASSISTANT_VOICE_SETTINGS" desc="Title for the Assistant voice settings.">
-    Voice match
-  </message>
-  <message name="IDS_SETTINGS_GOOGLE_ASSISTANT_VOICE_SETTINGS_RETRAIN" desc="Button label for retrain voice model.">
-    Retrain
-  </message>
-  <message name="IDS_SETTINGS_GOOGLE_ASSISTANT_ENABLE_NOTIFICATION" desc="Title for a toggle that lets the assistant show you notifications.">
-    Notifications
-  </message>
-  <message name="IDS_SETTINGS_GOOGLE_ASSISTANT_ENABLE_NOTIFICATION_DESCRIPTION" desc="Sub label for notification-enable toggle.">
-    Allow the Assistant to show you notifications
-  </message>
-  <message name="IDS_SETTINGS_GOOGLE_ASSISTANT_LAUNCH_WITH_MIC_OPEN" desc="Title for a toggle that determines whether to open the microphone when launching the Assistant.">
-    Preferred input
-  </message>
-  <message name="IDS_SETTINGS_GOOGLE_ASSISTANT_LAUNCH_WITH_MIC_OPEN_DESCRIPTION" desc="Sub label for launch-with-microphone-open toggle.">
-    Default to using voice instead of keyboard
-  </message>
-  <message name="IDS_SETTINGS_GOOGLE_ASSISTANT_SCREEN_CONTEXT_DESCRIPTION" desc="Sub label for context-enable toggle.">
-    When you ask questions, Google Assistant provides tailored responses based on your screen
-  </message>
-  <message name="IDS_SETTINGS_GOOGLE_ASSISTANT_SETTINGS" desc="Title for a button that opens the Google Assistant app settings.">
-    Google Assistant settings
   </message>
 
   <!-- Device display (OS settings) -->
@@ -6274,12 +6076,6 @@ Press an assigned switch or key to remove assignment.
   <!-- Smart Lock Page (OS settings) -->
   <message name="IDS_SETTINGS_EASY_UNLOCK_SECTION_TITLE" desc="The title of the Easy Unlock section on the settings page.">
     Smart Lock
-  </message>
-  <message name="IDS_SETTINGS_EASY_UNLOCK_UNLOCK_DEVICE_ONLY" desc="This option lets the user unlock their Chromebook from their phone if they're logged in. It will unlock their Chromebook but will not sign them in.">
-    Unlock device only
-  </message>
-  <message name="IDS_SETTINGS_EASY_UNLOCK_UNLOCK_DEVICE_AND_ALLOW_SIGNIN" desc="This option lets the user unlock their Chromebook from their phone as well as log into their Chromebook without a password if their phone is nearby and unlocked.">
-    Unlock device and sign in to Google Account
   </message>
 
   <!-- Fingerprint Page (OS settings) -->
@@ -6597,9 +6393,6 @@ Press an assigned switch or key to remove assignment.
   <message name="IDS_SETTINGS_KEYBOARD_SHOW_SHORTCUT_VIEWER" desc="The link to open the keyboard shortut viewer.">
     View keyboard shortcuts
   </message>
-  <message name="IDS_SETTINGS_KEYBOARD_SHOW_LANGUAGE_AND_INPUT" desc="The link to navigate to the language and input method settings.">
-    Change language and input settings
-  </message>
   <message name="IDS_OS_SETTINGS_KEYBOARD_SHOW_INPUT_SETTINGS" desc="The link to navigate to input method settings.">
     Input settings
   </message>
@@ -6670,7 +6463,7 @@ Press &amp; hold keyboard keys to see accent marks and special characters. This 
     Isolated web apps (beta)
   </message>
   <message name="IDS_SETTINGS_ISOLATED_WEB_APPS_DESCRIPTION" desc="A short description for Isolated Web Apps and a link for additional information.">
-    Packaged web applications with enhanced capabilities. <ph name="BEGIN_LINK_LEARN_MORE">&lt;a target="_blank" href="$1"&gt;</ph>Learn more<ph name="END_LINK_LEARN_MORE">&lt;/a&gt;</ph>
+    Access packaged web applications with enhanced capabilities. <ph name="BEGIN_LINK_LEARN_MORE">&lt;a target="_blank" href="$1"&gt;</ph>Learn more<ph name="END_LINK_LEARN_MORE">&lt;/a&gt;</ph>
   </message>
   <message name="IDS_OS_SETTINGS_APP_NOTIFICATIONS_LINK_DESCRIPTION" desc="The description for the settings row button in the App section of OS Settings which links to the App Notifications page.">
     Manage app notifications, Do Not Disturb, and app badging
@@ -6763,12 +6556,6 @@ Press &amp; hold keyboard keys to see accent marks and special characters. This 
   <message name="IDS_SETTINGS_ANDROID_SETTINGS_TITLE" desc="The title of Android settings section in case Play Store app is not available.">
     Android settings
   </message>
-  <message name="IDS_SETTINGS_ANDROID_APPS_SUBTEXT" desc="Description for the section for enabling and managing Google Play Store (Android) apps.">
-    Install apps and games from Google Play on your <ph name="DEVICE_TYPE">$1<ex>Chromebook</ex></ph>. <ph name="LINK_BEGIN">&lt;a target="_blank" href="$2<ex>https://google.com/</ex>"&gt;</ph>Learn more<ph name="LINK_END">&lt;/a&gt;</ph>
-  </message>
-  <message name="IDS_SETTINGS_ANDROID_APPS_SUBTEXT_DESCRIPTION" desc="Accessibility description for the section for enabling and managing Google Play Store (Android) apps." is_accessibility_with_no_ui="true">
-    Install apps and games from Google Play on your <ph name="DEVICE_TYPE">$1<ex>Chromebook</ex></ph>.
-  </message>
   <message name="IDS_OS_SETTINGS_ANDROID_APPS_SUBTEXT" desc="Description for the section for enabling and managing Google Play Store (Android) apps.">
     You can download Android apps and games through the Play Store. <ph name="LINK_BEGIN">&lt;a target="_blank" href="$1<ex>https://google.com/</ex>"&gt;</ph>Learn more<ph name="LINK_END">&lt;/a&gt;</ph>
   </message>
@@ -6814,31 +6601,6 @@ Press &amp; hold keyboard keys to see accent marks and special characters. This 
     Permissions for games and apps installed via Steam can be managed in the <ph name="LINK_BEGIN">&lt;a&gt;</ph>Steam app settings<ph name="LINK_END">&lt;/a&gt;</ph>.
   </message>
 
-  <!-- Apps > Manage your apps > Parallels -->
-  <message name="IDS_SETTINGS_APPS_PLUGIN_VM_PERMISSION_DIALOG_CAMERA_LABEL" desc="Label for the Parallels permissions dialog when camera permissions are being adjusted">
-    The change in camera setting requires Parallels Desktop to relaunch. Relaunch Parallels Desktop to proceed.
-  </message>
-  <message name="IDS_SETTINGS_APPS_PLUGIN_VM_PERMISSION_DIALOG_MICROPHONE_LABEL" desc="Label for the Parallels permissions dialog when microphone permissions are being adjusted">
-    The change in microphone setting requires Parallels Desktop to relaunch. Relaunch Parallels Desktop to proceed.
-  </message>
-  <message name="IDS_SETTINGS_APPS_PLUGIN_VM_PERMISSION_DIALOG_RELAUNCH_BUTTON" desc="Label for the relaunch button in the Plugin Vm permissions dialog">
-    Relaunch
-  </message>
-
-  <!-- Apps > Manage your apps > Parallels > Shared folders -->
-  <message name="IDS_SETTINGS_APPS_PLUGIN_VM_SHARED_PATHS_INSTRUCTIONS_LOCATE" desc="Instructions for how to locate shared folders in Parallels.">
-      Shared folders are available in Windows at <ph name="BASE_DIR">$1<ex>Network › ChromeOS</ex></ph>.
-  </message>
-  <message name="IDS_SETTINGS_APPS_PLUGIN_VM_SHARED_PATHS_INSTRUCTIONS_ADD" desc="Instructions for how to add shared folders in Parallels.">
-    To share, right-click on a folder in Files app, then select "Share with Parallels Desktop".
-  </message>
-  <message name="IDS_SETTINGS_APPS_PLUGIN_VM_SHARED_PATHS_REMOVE_FAILURE_DIALOG_MESSAGE" desc="Message to show user when unsharing a Parallels shared folder fails. Do not translate 'Parallels Desktop'">
-    Couldn't unshare because an application is using this folder. The folder will be unshared when Parallels Desktop is next shut down.
-  </message>
-  <message name="IDS_SETTINGS_APPS_PLUGIN_VM_SHARED_USB_DEVICES_DESCRIPTION" desc="Description for managing shared USB devices. Do not translate 'Parallels Desktop'.">
-    Give Parallels Desktop permission to access USB devices.
-  </message>
-
   <!-- Storage -->
   <message name="IDS_SETTINGS_STORAGE_TITLE" desc="In Device Settings, the title for storage management.">
     Storage management
@@ -6854,9 +6616,6 @@ Press &amp; hold keyboard keys to see accent marks and special characters. This 
   </message>
   <message name="IDS_SETTINGS_STORAGE_ITEM_BROWSING_DATA" desc="In Device Settings > Storage, label for the size of browsing data.">
     Browsing data
-  </message>
-  <message name="IDS_SETTINGS_STORAGE_ITEM_APPS" desc="In Device Settings > Storage, label for the total size of Android apps and web store apps and extensions.">
-    Apps and extensions
   </message>
   <message name="IDS_OS_SETTINGS_STORAGE_ITEM_APPS" desc="In Device Settings > Storage, label for the total size of Android apps and web store apps and extensions.">
     Apps
@@ -6923,30 +6682,17 @@ Press &amp; hold keyboard keys to see accent marks and special characters. This 
   </message>
 
   <!-- Privacy Page -->
-  <if expr="reven">
-    <message name="IDS_OS_SETTINGS_ENABLE_LOGGING_TOGGLE_TITLE" desc="The label of the checkbox to enable/disable crash and user metrics logging in ChromeOS Flex.">
-      Send crash reports and diagnostic and usage data to ChromeOS Flex
-    </message>
-    <message name="IDS_OS_SETTINGS_ENABLE_LOGGING_TOGGLE_DESCRIPTION" desc="The description of the checkbox to enable/disable crash and user metrics logging in ChromeOS Flex for user of the device.">
-      Help improve ChromeOS Flex features and performance. Data is aggregated and highly protected.
-    </message>
-  </if>
-  <if expr="not reven">
-    <message name="IDS_OS_SETTINGS_ENABLE_LOGGING_TOGGLE_TITLE" desc="The label of the checkbox to enable/disable crash and user metrics logging in ChromeOS.">
-      Send crash reports and diagnostic and usage data to ChromeOS
-    </message>
-    <message name="IDS_OS_SETTINGS_ENABLE_LOGGING_TOGGLE_DESCRIPTION" desc="The description of the checkbox to enable/disable crash and user metrics logging in ChromeOS for user of the device.">
-      Help improve ChromeOS features and performance. Data is aggregated and highly protected.
-    </message>
-  </if>
+  <message name="IDS_OS_SETTINGS_ENABLE_LOGGING_TOGGLE_TITLE" desc="The label of the checkbox to enable/disable crash and user metrics logging in ChromeOS.">
+    Send diagnostic and usage data
+  </message>
+  <message name="IDS_OS_SETTINGS_ENABLE_LOGGING_TOGGLE_DESCRIPTION" desc="The description of the checkbox to enable/disable crash and user metrics logging in ChromeOS for user of the device.">
+    Help improve Chrome and ChromeOS features and performance by automatically sending crash reports as well as diagnostic and usage data to Google.
+  </message>
   <message name="IDS_OS_SETTINGS_PRIVACY_TITLE" desc="Name of the privacy settings page.">
     Privacy and security
   </message>
   <message name="IDS_OS_SETTINGS_PRIVACY_MENU_ITEM_DESCRIPTION" desc="Description for the Privacy menu item in the left menu.">
     Lock screen, controls
-  </message>
-  <message name="IDS_SETTINGS_ENABLE_LOGGING_TOGGLE_DESC" desc="The description of the checkbox to enable/disable crash and user metrics logging in ChromeOS for user of the device.">
-    Automatically sends crash reports as well as diagnostic and usage data to Google
   </message>
   <message name="IDS_OS_SETTINGS_ENABLE_SUGGESTED_CONTENT_TITLE" desc="The label of the checkbox to enable/disable Suggested Content in ChromeOS settings. Suggested Content includes app search recommendations and website recommendations which can show up in places such as the launcher search and suggestion chips.">
     Get content recommendations
@@ -6974,9 +6720,6 @@ Press &amp; hold keyboard keys to see accent marks and special characters. This 
   </message>
   <message name="IDS_OS_SETTINGS_DATA_ACCESS_PROTECTION_CONFIRM_DIALOG_CANCEL_BUTTON_LABEL" desc="The label of the cancel button for the data access protection confirmation dialog">
     Cancel
-  </message>
-  <message name="IDS_OS_SETTINGS_DATA_ACCESS_PROTECTION_CONFIRM_DIALOG_DISABLE_BUTTON_LABEL" desc="The label of the confirmation button to disable data access protection">
-    Disable
   </message>
   <message name="IDS_OS_SETTINGS_DATA_ACCESS_PROTECTION_CONFIRM_DIALOG_ALLOW_BUTTON_LABEL" desc="The label of the confirmation button to disable data access protection">
     Allow
@@ -7293,6 +7036,139 @@ Press &amp; hold keyboard keys to see accent marks and special characters. This 
   </message>
 
   <!-- App Management -->
+  <message name="IDS_APP_MANAGEMENT_NO_APPS_FOUND" desc="Text shown when a search of apps yeilds no results.">
+    No apps found
+  </message>
+  <message name="IDS_APP_MANAGEMENT_PIN_TO_SHELF" desc="Label for the pin to shelf button in the app settings page.">
+    Pin to shelf
+  </message>
+  <message name="IDS_APP_MANAGEMENT_PRESET_WINDOW_SIZES" desc="Label for the preset window sizes toggle in the app settings page.">
+    Preset window sizes
+  </message>
+  <message name="IDS_APP_MANAGEMENT_PRESET_WINDOW_SIZES_TEXT" desc="Label for the description of the window preset toggle in the app settings page.">
+    Use presets for phone, tablet, or resizable windows to prevent app from misbehaving
+  </message>
+  <message name="IDS_APP_MANAGEMENT_PRINTING" desc="Label for the printing permission toggle.">
+    Printers
+  </message>
+  <message name="IDS_APP_MANAGEMENT_SEARCH_PROMPT" desc="Prompt in search bar of main app management page.">
+    Search apps
+  </message>
+  <message name="IDS_APP_MANAGEMENT_CONTACTS" desc="Label for the Android contacts (address book) permission toggle.">
+    Contacts
+  </message>
+  <message name="IDS_APP_MANAGEMENT_STORAGE" desc="Label for the Android storage permission toggle.">
+    Storage
+  </message>
+  <message name="IDS_APP_MANAGEMENT_APP_DETAILS_TITLE" desc="Title for App Details Section">
+    App details
+  </message>
+  <message name="IDS_APP_MANAGEMENT_APP_DETAILS_TOOLTIP_WEB_A11Y" desc="Text to be read out by ChromeVox, when highlighting an info icon for Web Apps downloaded from the Chrome browser, stating the source URL of the app">
+    From <ph name="APP_URL">$1<ex>https://google.com</ex></ph>
+  </message>
+  <message name="IDS_APP_MANAGEMENT_APP_DETAILS_INSTALL_SOURCE_WEB_STORE" desc="Text for Chrome Web Store installation source">
+    Chrome Web Store
+  </message>
+  <message name="IDS_APP_MANAGEMENT_APP_DETAILS_INSTALL_SOURCE_PLAY_STORE" desc="Text for Google Play Store installation source">
+    Google Play Store
+  </message>
+  <message name="IDS_APP_MANAGEMENT_APP_DETAILS_INSTALL_SOURCE_BROWSER" desc="Text for Chrome browser installation source for Web App">
+    Web App installed from Chrome browser
+  </message>
+  <message name="IDS_APP_MANAGEMENT_APP_DETAILS_SUBAPP_DATA_SHARING_EXPLANATION" desc="Explanation of data sharing between parent app and sub apps in App Management settings.">
+    This app data is shared between "<ph name="PARENT_APP_NAME">$1<ex>Office Suite</ex></ph>" and its installed apps
+  </message>
+  <message name="IDS_APP_MANAGEMENT_APP_DETAILS_TYPE_AND_SOURCE_COMBINED" desc="Full text for installation source and app type line">
+    <ph name="APP_TYPE">$1<ex>Web App</ex></ph> installed from <ph name="BEGIN_LINK">&lt;a href="#"&gt;</ph><ph name="INSTALL_SOURCE">$2<ex>Google Play Store</ex></ph><ph name="END_LINK">&lt;/a&gt;</ph>
+  </message>
+  <message name="IDS_APP_MANAGEMENT_APP_DETAILS_TYPE_AND_SOURCE_PREINSTALLED_APP" desc="Explanation text for the installation source of an app, describing the type of the app, and that it came automatically installed with the device (preinstalled).">
+    <ph name="APP_TYPE">$1<ex>ChromeOS System App</ex></ph> preinstalled on your <ph name="DEVICE_TYPE">$2<ex>Chromebook</ex></ph>
+  </message>
+  <message name="IDS_APP_MANAGEMENT_APP_DETAILS_VERSION" desc="Text for application version">
+    Version: <ph name="APP_VERSION">$1<ex>17.2</ex></ph>
+  </message>
+  <message name="IDS_APP_MANAGEMENT_APPLY_UPDATE" desc="Button label to apply a downloaded update for an app">
+    Apply update
+  </message>
+  <message name="IDS_APP_MANAGEMENT_CHECKING" desc="Button label while checking for updates">
+    Checking...
+  </message>
+  <message name="IDS_APP_MANAGEMENT_APP_IS_UP_TO_DATE" desc="Status text indicating the app is running the latest version">
+    App is up to date.
+  </message>
+  <message name="IDS_APP_MANAGEMENT_UPDATE_FOUND_DIALOG_TITLE" desc="Title for the dialog indicating that an update has been found for an isolated web app.">
+    Update found
+  </message>
+  <message name="IDS_APP_MANAGEMENT_UPDATE_FOUND_DIALOG_DESCRIPTION" desc="Description for the dialog warning that an update has been found and asking if they want to apply it.">
+    A new version (<ph name="VERSION">$1<ex>1.2.0</ex></ph>) of <ph name="APP_NAME">$2<ex>Kitchen Sink IWA</ex></ph> is available. Would you like to apply it now?
+  </message>
+  <message name="IDS_APP_MANAGEMENT_UPDATE_FOUND_WARNING_DIALOG_DESCRIPTION" desc="Description for the dialog warning that an update has been found, app windows will close, and asking if they want to apply it.">
+    A new version (<ph name="VERSION">$1<ex>1.2.0</ex></ph>) of <ph name="APP_NAME">$2<ex>Kitchen Sink IWA</ex></ph> is available. All open windows will be closed to apply the update. Unsaved data may be lost.
+  </message>
+  <message name="IDS_APP_MANAGEMENT_APP_DETAILS_STORAGE_TITLE" desc="Text for title of storage section for storage related to the app and its associated files">
+    Storage
+  </message>
+  <message name="IDS_APP_MANAGEMENT_APP_DETAILS_APP_SIZE" desc="Text for app size label for the amount of storage the app itself is using">
+    App size: <ph name="APP_SIZE">$1<ex>100 MB</ex></ph>
+  </message>
+  <message name="IDS_APP_MANAGEMENT_APP_DETAILS_DATA_SIZE" desc="Text for data size label for the amount of storage the app's associated files is using">
+    Data stored in app: <ph name="APP_SIZE">$1<ex>100 MB</ex></ph>
+  </message>
+  <message name="IDS_APP_MANAGEMENT_APP_LANGUAGE_LABEL" desc="The label for the settings row button to manage app language selection section of OS Settings which opens a dialog.">
+    App language
+  </message>
+  <message name="IDS_APP_MANAGEMENT_ARC_MANAGE_PERMISSIONS" desc="Label for a link to manage permissions for an app.">
+    Manage permissions
+  </message>
+  <message name="IDS_APP_MANAGEMENT_PERMISSION_ASK" desc="Label explaining that the user will be asked whether an app can access a permission (e.g. camera access) every time it is used.">
+    Ask every time
+  </message>
+  <message name="IDS_APP_MANAGEMENT_PERMISSION_ALLOWED" desc="Label explaining that access to a permission (e.g. camera access) is allowed for an app.">
+    Allowed
+  </message>
+  <message name="IDS_APP_MANAGEMENT_PERMISSION_ALLOWED_WITH_DETAILS" desc="Label explaining that access to a permission (e.g. camera access) is allowed for an app. The placeholder after the dash provides additional details about what access is allowed.">
+    Allowed – <ph name="PERMISSION_DETAILS">$1<ex>While in use</ex></ph>
+  </message>
+  <message name="IDS_APP_MANAGEMENT_PERMISSION_DENIED" desc="Label explaining that access to a permission (e.g. camera access) is denied for an app.">
+    Denied
+  </message>
+  <message name="IDS_APP_MANAGEMENT_PERMISSION_ALLOWED_TEXT_WITH_TURN_ON_SYSTEM_CAMERA_ACCESS_BUTTON" desc="Label explaining that access to camera is allowed for an app followed by a button to turn on system camera access.">
+    Allowed. Turn on <ph name="LINK_BEGIN">&lt;a href="#"&gt;</ph>system camera access<ph name="LINK_END">&lt;/a&gt;</ph>.
+  </message>
+  <message name="IDS_APP_MANAGEMENT_PERMISSION_ALLOWED_TEXT_WITH_TURN_ON_SYSTEM_MICROPHONE_ACCESS_BUTTON" desc="Label explaining that access to microphone is allowed for an app followed by a button to turn on system microphone access.">
+    Allowed. Turn on <ph name="LINK_BEGIN">&lt;a href="#"&gt;</ph>system microphone access<ph name="LINK_END">&lt;/a&gt;</ph>.
+  </message>
+  <message name="IDS_APP_MANAGEMENT_PERMISSION_ALLOWED_TEXT_WITH_TURN_ON_SYSTEM_LOCATION_ACCESS_BUTTON" desc="Label explaining that access to location is allowed for an app followed by a button to turn on system location access.">
+    Allowed. Turn on <ph name="LINK_BEGIN">&lt;a href="#"&gt;</ph>system location access<ph name="LINK_END">&lt;/a&gt;</ph>.
+  </message>
+  <message name="IDS_APP_MANAGEMENT_PERMISSION_ALLOWED_TEXT_WITH_DETAILS_AND_TURN_ON_SYSTEM_CAMERA_ACCESS_BUTTON" desc="Label explaining that access to camera is allowed for an app followed by a button to turn on system camera access.">
+    Allowed – <ph name="PERMISSION_DETAILS">$1<ex>While in use</ex></ph>. Turn on <ph name="LINK_BEGIN">&lt;a href="#"&gt;</ph>system camera access<ph name="LINK_END">&lt;/a&gt;</ph>.
+  </message>
+  <message name="IDS_APP_MANAGEMENT_PERMISSION_ALLOWED_TEXT_WITH_DETAILS_AND_TURN_ON_SYSTEM_MICROPHONE_ACCESS_BUTTON" desc="Label explaining that access to microphone is allowed for an app followed by a button to turn on system microphone access.">
+    Allowed – <ph name="PERMISSION_DETAILS">$1<ex>While in use</ex></ph>. Turn on <ph name="LINK_BEGIN">&lt;a href="#"&gt;</ph>system microphone access<ph name="LINK_END">&lt;/a&gt;</ph>.
+  </message>
+  <message name="IDS_APP_MANAGEMENT_PERMISSION_ALLOWED_TEXT_WITH_DETAILS_AND_TURN_ON_SYSTEM_LOCATION_ACCESS_BUTTON" desc="Label explaining that access to location is allowed for an app followed by a button to turn on system location access.">
+    Allowed – <ph name="PERMISSION_DETAILS">$1<ex>While in use</ex></ph>. Turn on <ph name="LINK_BEGIN">&lt;a href="#"&gt;</ph>system location access<ph name="LINK_END">&lt;/a&gt;</ph>.
+  </message>
+  <message name="IDS_APP_MANAGEMENT_PERMISSION_ALLOWED_BUT_NO_CAMERA_CONNECTED_TEXT" desc="Label explaining that access to camera is allowed for an app but no camera is connected to the device.">
+    Allowed. Connect a camera to your device.
+  </message>
+  <message name="IDS_APP_MANAGEMENT_PERMISSION_ALLOWED_BUT_NO_MICROPHONE_CONNECTED_TEXT" desc="Label explaining that access to microphone is allowed for an app but no microphone is connected to the device.">
+    Allowed. Connect a microphone to your device.
+  </message>
+  <message name="IDS_APP_MANAGEMENT_PERMISSION_ALLOWED_BUT_NO_CAMERA_CONNECTED_TEXT_WITH_DETAILS" desc="Label explaining that access to camera is allowed for an app but no camera is connected to the device with details.">
+    Allowed – <ph name="PERMISSION_DETAILS">$1<ex>While in use</ex></ph>. Connect a camera to your device.
+  </message>
+  <message name="IDS_APP_MANAGEMENT_PERMISSION_ALLOWED_BUT_NO_MICROPHONE_CONNECTED_TEXT_WITH_DETAILS" desc="Label explaining that access to microphone is allowed for an app but no microphone is connected to the device with details.">
+    Allowed – <ph name="PERMISSION_DETAILS">$1<ex>While in use</ex></ph>. Connect a microphone to your device.
+  </message>
+  <message name="IDS_APP_MANAGEMENT_PERMISSION_ALLOWED_BUT_MICROPHONE_HW_SWITCH_ACTIVE_TEXT" desc="Label explaining that access to microphone is allowed for an app but microphone is blocked by hardware switch.">
+    Allowed. Turn on microphone using physical switch.
+  </message>
+  <message name="IDS_APP_MANAGEMENT_PERMISSION_ALLOWED_BUT_MICROPHONE_HW_SWITCH_ACTIVE_TEXT_WITH_DETAILS" desc="Label explaining that access to microphone is allowed for an app but microphone is blocked by hardware switch with details.">
+    Allowed – <ph name="PERMISSION_DETAILS">$1<ex>While in use</ex></ph>. Turn on microphone using physical switch.
+  </message>
+
   <message name="IDS_OS_SETTINGS_PERMISSION_ITEM_CLICK_TOGGLE_PERMISSION" desc="Text to be spoken by a screen reader to describe the toggle button to enable or disable a specific permission for an app.">
     Click to toggle permission.
   </message>
@@ -7318,6 +7194,17 @@ Press &amp; hold keyboard keys to see accent marks and special characters. This 
     Web app installed by your device administrator.
   </message>
 
+  <!-- Sub-Apps API -->
+  <message name="IDS_APP_MANAGEMENT_SUB_APPS_LIST_HEADING" desc="Label for the sub-app section in an app's settings page. The section lists all sub-applications that got installed by the current app. These sub-applications might be installed locally, or streamed from a remote location via the parent app.">
+    Installed applications from <ph name="APP_NAME">$1<ex>Parent app</ex></ph>
+  </message>
+  <message name="IDS_APP_MANAGEMENT_PARENT_APP_PERMISSION_EXPLANATION" desc="Explanation text that appears underneath the Permission header on an app's settings page. Any changes the user makes to this app's permissions also apply to any installed ('sub') apps.">
+    Permissions you allow for <ph name="APP_NAME">$1<ex>Parent app</ex></ph> will also be allowed for its installed apps.
+  </message>
+  <message name="IDS_APP_MANAGEMENT_SUB_APP_PERMISSION_EXPLANATION" desc="Explanation text that appears underneath the Permission header on an app's settings page. Any changes the user makes to the app's parent app's permissions also apply to this app. The 'Manage' link takes the user to the parent app's settings page where they can change the permissions.">
+    Permissions you allow for <ph name="APP_NAME">$1<ex>Parent app</ex></ph> will also be allowed for this app. <ph name="BEGIN_LINK">&lt;a href="#"&gt;</ph>Manage permissions for parent app<ph name="END_LINK">&lt;/a&gt;</ph>
+  </message>
+
   <!-- Safety Hub -->
   <message name="IDS_SETTINGS_SAFETY_HUB_VERSION_CARD_HEADER_RESTART" desc="Safety Hub settings page (chrome://settings/safetyHub) gives users an overview over their safety status. The version card, which this text is a part of, informs the user whether their Chrome is up to date. This title of the card is shown when Chrome is not up to date but there is an update available and the user needs to restart their browser to finish the update. Shown above the subtitle 'Relaunch to finish update. Your tabs will reopen'.">
     ChromeOS is out of date
@@ -7331,7 +7218,7 @@ Press &amp; hold keyboard keys to see accent marks and special characters. This 
     Create image
   </message>
   <message name="IDS_LOBSTER_OS_SETTINGS_ENABLE_DESCRIPTION" desc="The description of the toggle to enable/disable Image Generation in ChromeOS settings.">
-    Enter a custom prompt or highlight text to create an image.
+   Enter a custom prompt or highlight text to create an image
   </message>
 
 </if>

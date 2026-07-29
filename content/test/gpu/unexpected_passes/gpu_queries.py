@@ -5,10 +5,9 @@
 
 from typing import Iterable, Optional
 
-from gpu_tests import gpu_integration_test
-
 from unexpected_passes_common import queries as queries_module
 
+from gpu_tests import gpu_integration_test
 
 # This query gets us the most recent |num_builds| CI builds from the past month
 # for each builder.
@@ -80,7 +79,6 @@ TRY_BUILDS_SUBQUERY = """\
     WHERE rank_idx <= {num_builds}
   )"""
 
-
 # step_name can be either the step_name tag or test_suite variant because of the
 # way Skylab builders work. In normal Chromium test tasks, the step name is
 # reported to the task-level RDB invocation, which then gets applied to every
@@ -94,6 +92,7 @@ RESULTS_SUBQUERY = """\
     SELECT
       exported.id,
       test_id,
+      test_metadata.name as test_name,
       status,
       (
         SELECT value
@@ -124,123 +123,107 @@ RESULTS_SUBQUERY = """\
       DATE(tr.partition_time) > DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
       AND exported.id = build_inv_id
       AND status != "SKIP"
-      AND REGEXP_CONTAINS(
-          test_id,
-          "gpu_tests\\\\.{suite}\\\\.")
+      AND STRUCT("gpu_test_class", "{suite_class}") IN UNNEST(tags)
   )"""
-
 
 # Selects the relevant columns from results that had either a Failure or a
 # RetryOnFailure expectation when they were run, ordered by builder name.
 FINAL_SELECTOR_QUERY = """\
-SELECT id, test_id, builder_name, status, step_name, typ_tags
+SELECT id, test_id, test_name, builder_name, status, step_name, typ_tags
 FROM results
 WHERE
   "Failure" IN UNNEST(typ_expectations)
   OR "RetryOnFailure" IN UNNEST(typ_expectations)
 ORDER BY builder_name DESC"""
 
+
+def _PartitionedSubmittedBuildsFor(project_view: str) -> str:
+  return queries_module.PARTITIONED_SUBMITTED_BUILDS_TEMPLATE.format(
+      project_view=project_view)
+
+
 # Gets the Buildbucket IDs for all the public trybots that:
 #   1. Run GPU tests
 #   2. Were used for CL submission (i.e. weren't for intermediate patchsets)
-PUBLIC_TRY_SUBMITTED_BUILDS_SUBQUERY = """\
+PUBLIC_TRY_SUBMITTED_BUILDS_SUBQUERY = f"""\
   submitted_builds AS (
-{chromium_builds_subquery}
+{_PartitionedSubmittedBuildsFor('chromium')}
     UNION ALL
-{angle_builds_subquery}
-  )""".format(
-    chromium_builds_subquery=queries_module.
-    PARTITIONED_SUBMITTED_BUILDS_TEMPLATE.format(project_view='chromium'),
-    angle_builds_subquery=queries_module.PARTITIONED_SUBMITTED_BUILDS_TEMPLATE.
-    format(project_view='angle'))
+{_PartitionedSubmittedBuildsFor('angle')}
+  )"""
 
 # The same as PUBLIC_TRY_SUBMITTED_BUILDS_SUBQUERY, but for internal trybots.
 # There are no internal ANGLE tryjobs, so no need to look for attempts there.
-INTERNAL_TRY_SUBMITTED_BUILDS_SUBQUERY = """\
+INTERNAL_TRY_SUBMITTED_BUILDS_SUBQUERY = f"""\
   submitted_builds AS (
-{chrome_builds_subquery}
-  )""".format(chrome_builds_subquery=queries_module.
-              PARTITIONED_SUBMITTED_BUILDS_TEMPLATE.format(
-                  project_view='chrome'))
+{_PartitionedSubmittedBuildsFor('chrome')}
+  )"""
 
 
 class GpuBigQueryQuerier(queries_module.BigQueryQuerier):
+
   def __init__(self, *args, **kwargs):
     super().__init__(*args, **kwargs)
 
     name_mapping = gpu_integration_test.GenerateTestNameMapping()
-    # The suite name we use for identification (return value of Name()) is not
-    # the same as the one used by ResultDB (Python module), so convert here.
-    self._suite = name_mapping[self._suite].__module__.split('.')[-1]
+    _suite_class = name_mapping[self._suite]
+    # __qualname__ returns the same value as __name__, so we need to manually
+    # construct the qualified name.
+    self._qualified_class_name = (
+        f'{_suite_class.__module__}.{_suite_class.__name__}')
+
+  def _CiBuildsFor(self, project: str) -> str:
+    """Helper function to generate a CI builds subquery."""
+    return CI_BUILDS_SUBQUERY.format(project=project,
+                                     num_builds=self._num_samples)
+
+  def _TryBuildsFor(self, project: str) -> str:
+    """Helper function to generate a try builds subquery."""
+    return TRY_BUILDS_SUBQUERY.format(project=project,
+                                      num_builds=self._num_samples)
+
+  def _ResultsFor(self, project: str, ci_or_try: str) -> str:
+    """Helper function to generate a results subquery."""
+    return RESULTS_SUBQUERY.format(project=project,
+                                   ci_or_try=ci_or_try,
+                                   suite_class=self._qualified_class_name)
 
   def _GetPublicCiQuery(self) -> str:
-    return """\
+    return f"""\
 WITH
-{builds_subquery},
-{results_subquery}
-{final_selector_query}
-""".format(builds_subquery=CI_BUILDS_SUBQUERY.format(
-        project='chromium', num_builds=self._num_samples),
-           results_subquery=RESULTS_SUBQUERY.format(project='chromium',
-                                                    ci_or_try='ci',
-                                                    suite=self._suite),
-           final_selector_query=FINAL_SELECTOR_QUERY)
+{self._CiBuildsFor('chromium')},
+{self._ResultsFor('chromium', 'ci')}
+{FINAL_SELECTOR_QUERY}
+"""
 
   def _GetInternalCiQuery(self) -> str:
-    return """\
+    return f"""\
 WITH
-{builds_subquery},
-{results_subquery}
-{final_selector_query}
-""".format(builds_subquery=CI_BUILDS_SUBQUERY.format(
-        project='chrome', num_builds=self._num_samples),
-           results_subquery=RESULTS_SUBQUERY.format(project='chrome',
-                                                    ci_or_try='ci',
-                                                    suite=self._suite),
-           final_selector_query=FINAL_SELECTOR_QUERY)
+{self._CiBuildsFor('chrome')},
+{self._ResultsFor('chrome', 'ci')}
+{FINAL_SELECTOR_QUERY}
+"""
 
   def _GetPublicTryQuery(self) -> str:
-    return """\
+    return f"""\
 WITH
-{submitted_builds_subquery},
-{builds_subquery},
-{results_subquery}
-{final_selector_query}
-""".format(submitted_builds_subquery=PUBLIC_TRY_SUBMITTED_BUILDS_SUBQUERY,
-           builds_subquery=TRY_BUILDS_SUBQUERY.format(
-               project='chromium', num_builds=self._num_samples),
-           results_subquery=RESULTS_SUBQUERY.format(project='chromium',
-                                                    ci_or_try='try',
-                                                    suite=self._suite),
-           final_selector_query=FINAL_SELECTOR_QUERY)
+{PUBLIC_TRY_SUBMITTED_BUILDS_SUBQUERY},
+{self._TryBuildsFor('chromium')},
+{self._ResultsFor('chromium', 'try')}
+{FINAL_SELECTOR_QUERY}
+"""
 
   def _GetInternalTryQuery(self) -> str:
-    return """\
+    return f"""\
 WITH
-{submitted_builds_subquery},
-{builds_subquery},
-{results_subquery}
-{final_selector_query}
-""".format(submitted_builds_subquery=INTERNAL_TRY_SUBMITTED_BUILDS_SUBQUERY,
-           builds_subquery=TRY_BUILDS_SUBQUERY.format(
-               project='chrome', num_builds=self._num_samples),
-           results_subquery=RESULTS_SUBQUERY.format(project='chrome',
-                                                    ci_or_try='try',
-                                                    suite=self._suite),
-           final_selector_query=FINAL_SELECTOR_QUERY)
+{INTERNAL_TRY_SUBMITTED_BUILDS_SUBQUERY},
+{self._TryBuildsFor('chrome')},
+{self._ResultsFor('chrome', 'try')}
+{FINAL_SELECTOR_QUERY}
+"""
 
   def _GetRelevantExpectationFilesForQueryResult(
       self, _: queries_module.QueryResult) -> Optional[Iterable[str]]:
     # Only one expectation file is ever used for the GPU tests, so just use
     # whichever one we've read in.
     return None
-
-  def _StripPrefixFromTestId(self, test_id: str) -> str:
-    # GPU test IDs provided by ResultDB are the test name as known by the test
-    # runner prefixed by
-    # "ninja://<target>/gpu_tests.<suite>_integration_test.<class>.", e.g.
-    #     "ninja://chrome/test:telemetry_gpu_integration_test/
-    #      gpu_tests.pixel_integration_test.PixelIntegrationTest."
-    split_id = test_id.split('.', 3)
-    assert len(split_id) == 4
-    return split_id[-1]

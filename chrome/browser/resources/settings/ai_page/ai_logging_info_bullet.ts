@@ -9,6 +9,8 @@
  * an AI feature. |pref| must be set to the preference that is bound to the
  * enterprise policy of this AI feature.
  */
+import '/shared/settings/controls/cr_policy_pref_indicator.js';
+import 'chrome://resources/cr_elements/cr_icon/cr_icon.js';
 import 'chrome://resources/cr_elements/cr_shared_style.css.js';
 import '../settings_shared.css.js';
 
@@ -38,10 +40,16 @@ export class SettingsAiLoggingInfoBullet extends
         type: String,
         computed: 'computeLabel_(pref.value)',
       },
+
+      loggingManagedDisabledCustomLabel: {
+        type: String,
+        value: null,
+      },
     };
   }
 
-  private label_: string;
+  declare private label_: string;
+  declare loggingManagedDisabledCustomLabel: string|null;
 
   private isLoggingDisabledByPolicy_(): boolean {
     return this.pref?.value ===
@@ -50,9 +58,13 @@ export class SettingsAiLoggingInfoBullet extends
   }
 
   private computeLabel_(): string {
-    return this.isLoggingDisabledByPolicy_() ?
-        loadTimeData.getString('aiSubpageSublabelLoggingManagedDisabled') :
-        loadTimeData.getString('aiSubpageSublabelReviewers');
+    if (!this.isLoggingDisabledByPolicy_()) {
+      return loadTimeData.getString('aiSubpageSublabelReviewers');
+    }
+    if (this.loggingManagedDisabledCustomLabel) {
+      return this.loggingManagedDisabledCustomLabel;
+    }
+    return loadTimeData.getString('aiSubpageSublabelLoggingManagedDisabled');
   }
 }
 

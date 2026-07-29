@@ -2,17 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "chrome/browser/ash/secure_channel/nearby_connection_broker_impl.h"
 
 #include <memory>
 #include <vector>
 
-#include "ash/constants/ash_features.h"
 #include "base/containers/span.h"
 #include "base/files/file_util.h"
 #include "base/memory/raw_ptr.h"
@@ -25,7 +20,6 @@
 #include "chrome/browser/ash/secure_channel/fake_nearby_endpoint_finder.h"
 #include "chromeos/ash/components/multidevice/logging/logging.h"
 #include "chromeos/ash/services/nearby/public/cpp/mock_nearby_connections.h"
-#include "chromeos/ash/services/secure_channel/public/mojom/nearby_connector.mojom-shared.h"
 #include "chromeos/ash/services/secure_channel/public/mojom/nearby_connector.mojom.h"
 #include "chromeos/ash/services/secure_channel/public/mojom/secure_channel_types.mojom.h"
 #include "chromeos/ash/services/secure_channel/util/histogram_util.h"
@@ -53,7 +47,6 @@ using ::nearby::connections::mojom::PayloadTransferUpdate;
 using ::nearby::connections::mojom::PayloadTransferUpdatePtr;
 using ::nearby::connections::mojom::Status;
 using ::testing::_;
-using ::testing::Invoke;
 
 const char kEndpointId[] = "endpointId";
 
@@ -107,7 +100,7 @@ class NearbyConnectionBrokerImplTest
   void DiscoverEndpoint() {
     base::RunLoop run_loop;
     EXPECT_CALL(mock_nearby_connections_, RequestConnection(_, _, _, _, _, _))
-        .WillOnce(Invoke(
+        .WillOnce(
             [&](const std::string& service_id,
                 const std::vector<uint8_t>& endpoint_info,
                 const std::string& endpoint_id, ConnectionOptionsPtr options,
@@ -116,7 +109,7 @@ class NearbyConnectionBrokerImplTest
               request_connection_callback_ = std::move(callback);
               connection_lifecycle_listener_.Bind(std::move(listener));
               run_loop.Quit();
-            }));
+            });
 
     fake_endpoint_finder_.NotifyEndpointFound(
         kEndpointId,
@@ -152,14 +145,14 @@ class NearbyConnectionBrokerImplTest
   void NotifyConnectionInitiated() {
     base::RunLoop run_loop;
     EXPECT_CALL(mock_nearby_connections_, AcceptConnection(_, _, _, _))
-        .WillOnce(Invoke(
+        .WillOnce(
             [&](const std::string& service_id, const std::string& endpoint_id,
                 mojo::PendingRemote<PayloadListener> listener,
                 NearbyConnectionsMojom::AcceptConnectionCallback callback) {
               accept_connection_callback_ = std::move(callback);
               payload_listener_.Bind(std::move(listener));
               run_loop.Quit();
-            }));
+            });
 
     connection_lifecycle_listener_->OnConnectionInitiated(
         kEndpointId, ConnectionInfo::New());
@@ -212,20 +205,19 @@ class NearbyConnectionBrokerImplTest
     NearbyConnectionsMojom::SendPayloadCallback send_payload_callback;
     std::string sent_message;
     EXPECT_CALL(mock_nearby_connections_, SendPayload(_, _, _, _))
-        .WillOnce(
-            Invoke([&](const std::string& service_id,
-                       const std::vector<std::string>& endpoint_ids,
-                       PayloadPtr payload,
-                       NearbyConnectionsMojom::SendPayloadCallback callback) {
-              send_payload_callback = std::move(callback);
+        .WillOnce([&](const std::string& service_id,
+                      const std::vector<std::string>& endpoint_ids,
+                      PayloadPtr payload,
+                      NearbyConnectionsMojom::SendPayloadCallback callback) {
+          send_payload_callback = std::move(callback);
 
-              const std::vector<uint8_t>& payload_bytes =
-                  payload->content->get_bytes()->bytes;
-              sent_message =
-                  std::string(payload_bytes.begin(), payload_bytes.end());
+          const std::vector<uint8_t>& payload_bytes =
+              payload->content->get_bytes()->bytes;
+          sent_message =
+              std::string(payload_bytes.begin(), payload_bytes.end());
 
-              send_message_run_loop.Quit();
-            }));
+          send_message_run_loop.Quit();
+        });
 
     message_sender_->SendMessage(
         message, base::BindLambdaForTesting([&](bool did_send_succeeed) {
@@ -298,13 +290,13 @@ class NearbyConnectionBrokerImplTest
     NearbyConnectionsMojom::RegisterPayloadFileCallback
         register_payload_file_callback;
     EXPECT_CALL(mock_nearby_connections_, RegisterPayloadFile(_, _, _, _, _))
-        .WillOnce(Invoke(
+        .WillOnce(
             [&](const std::string& service_id, int64_t payload_id,
                 const base::File& input_file, const base::File& output_file,
                 NearbyConnectionsMojom::RegisterPayloadFileCallback callback) {
               register_payload_file_callback = std::move(callback);
               nearby_connections_run_loop.Quit();
-            }));
+            });
 
     file_payload_handler_->RegisterPayloadFile(
         payload_id,
@@ -384,13 +376,13 @@ class NearbyConnectionBrokerImplTest
     on_disconnect_from_endpoint_closure_ =
         std::move(on_disconnect_from_endpoint_closure);
     EXPECT_CALL(mock_nearby_connections_, DisconnectFromEndpoint(_, _, _))
-        .WillOnce(Invoke(
-            [&](const std::string& service_id, const std::string& endpoint_id,
-                NearbyConnectionsMojom::DisconnectFromEndpointCallback
-                    callback) {
-              disconnect_from_endpoint_callback_ = std::move(callback);
-              std::move(on_disconnect_from_endpoint_closure_).Run();
-            }));
+        .WillOnce([&](const std::string& service_id,
+                      const std::string& endpoint_id,
+                      NearbyConnectionsMojom::DisconnectFromEndpointCallback
+                          callback) {
+          disconnect_from_endpoint_callback_ = std::move(callback);
+          std::move(on_disconnect_from_endpoint_closure_).Run();
+        });
   }
 
   bool IsTimerRunning() const { return mock_timer_->IsRunning(); }
@@ -492,26 +484,7 @@ TEST_F(NearbyConnectionBrokerImplTest, DisconnectsUnexpectedly) {
 }
 
 TEST_F(NearbyConnectionBrokerImplTest,
-       DisconnectAfterReceivingFilePayloadWhenFeatureUnsupported) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndDisableFeature(features::kPhoneHubCameraRoll);
-  SetUpFullConnection();
-
-  base::RunLoop disconnect_from_endpoint_run_loop;
-  ExpectDisconnectFromEndpoint(disconnect_from_endpoint_run_loop.QuitClosure());
-  base::FilePath path;
-  base::CreateTemporaryFile(&path);
-  ReceiveFilePayload(/*payload_id=*/1234, path);
-  disconnect_from_endpoint_run_loop.Run();
-
-  InvokeDisconnectedFromEndpointCallback(/*success=*/true);
-  InvokeDisconnectedCallback();
-}
-
-TEST_F(NearbyConnectionBrokerImplTest,
        DisconnectAfterReceivingUnregisteredFilePayload) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(features::kPhoneHubCameraRoll);
   SetUpFullConnection();
 
   base::RunLoop disconnect_from_endpoint_run_loop;
@@ -536,8 +509,6 @@ TEST_F(NearbyConnectionBrokerImplTest,
 }
 
 TEST_F(NearbyConnectionBrokerImplTest, FileTransferUpdateForRegisteredPayload) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(features::kPhoneHubCameraRoll);
   SetUpFullConnection();
 
   int64_t payload_id = 1234;
@@ -585,8 +556,6 @@ TEST_F(NearbyConnectionBrokerImplTest, FileTransferUpdateForRegisteredPayload) {
 }
 
 TEST_F(NearbyConnectionBrokerImplTest, FileTransferUpdateForCompletedPayload) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(features::kPhoneHubCameraRoll);
   SetUpFullConnection();
 
   int64_t payload_id = 1234;
@@ -624,8 +593,6 @@ TEST_F(NearbyConnectionBrokerImplTest, FileTransferUpdateForCompletedPayload) {
 
 TEST_F(NearbyConnectionBrokerImplTest,
        FileTransferUpdateForUnregisteredPayload) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(features::kPhoneHubCameraRoll);
   SetUpFullConnection();
 
   base::FilePath path;
@@ -645,8 +612,6 @@ TEST_F(NearbyConnectionBrokerImplTest,
 }
 
 TEST_F(NearbyConnectionBrokerImplTest, FileTransferCanceledOnDisconnect) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(features::kPhoneHubCameraRoll);
   SetUpFullConnection();
 
   int64_t payload_id = 1234;
@@ -680,8 +645,6 @@ TEST_F(NearbyConnectionBrokerImplTest, FileTransferCanceledOnDisconnect) {
 }
 
 TEST_F(NearbyConnectionBrokerImplTest, FileTransferCanceledOnMojoDisconnect) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(features::kPhoneHubCameraRoll);
   SetUpFullConnection();
 
   int64_t payload_id = 1234;
@@ -860,7 +823,7 @@ TEST_F(NearbyConnectionBrokerImplTest, FailAcceptingConnection) {
   InvokeDisconnectedCallback();
 }
 
-// Regression test for https://crbug.com/1175489.
+// Regression test for https://crbug.com/40747380.
 TEST_F(NearbyConnectionBrokerImplTest, OnAcceptedBeforeAcceptCallback) {
   DiscoverEndpoint();
   InvokeRequestConnectionCallback(Status::kSuccess);

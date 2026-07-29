@@ -5,42 +5,34 @@
 package org.chromium.android_webview;
 
 import android.content.Context;
-import android.content.Intent;
-import android.graphics.drawable.Drawable;
+import android.content.res.Resources;
 import android.os.Build;
 import android.view.Display;
 import android.view.Gravity;
-import android.view.LayoutInflater;
 import android.view.View;
 import android.view.WindowManager;
-import android.widget.ListView;
 import android.widget.PopupWindow;
 
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 import androidx.annotation.RequiresApi;
 
 import org.chromium.base.Log;
 import org.chromium.base.StrictModeContext;
 import org.chromium.components.embedder_support.application.ClassLoaderContextWrapperFactory;
+import org.chromium.components.embedder_support.selection.DefaultSelectionDropdownMenuDelegate;
 import org.chromium.content_public.browser.SelectionPopupController;
-import org.chromium.content_public.browser.selection.SelectionDropdownMenuDelegate;
 import org.chromium.ui.display.DisplayAndroidManager;
+import org.chromium.ui.hierarchicalmenu.HierarchicalMenuController;
 import org.chromium.ui.listmenu.BasicListMenu;
-import org.chromium.ui.listmenu.ListMenuItemProperties;
+import org.chromium.ui.listmenu.ListMenuUtils;
 import org.chromium.ui.modelutil.MVCListAdapter;
-import org.chromium.ui.modelutil.MVCListAdapter.ListItem;
-import org.chromium.ui.modelutil.PropertyModel;
 
 /**
  * WebView implementation of dropdown text selection menu delegate. The functionality provided by
  * this class is only available on Android U+.
  */
-public class AwSelectionDropdownMenuDelegate implements SelectionDropdownMenuDelegate {
+public class AwSelectionDropdownMenuDelegate extends DefaultSelectionDropdownMenuDelegate {
 
     private static final String TAG = "AwSelectionDropdown";
-
-    private @Nullable PopupWindow mPopupWindow;
 
     private AwSelectionDropdownMenuDelegate() {
         // No external instantiation.
@@ -52,12 +44,18 @@ public class AwSelectionDropdownMenuDelegate implements SelectionDropdownMenuDel
             View rootView,
             MVCListAdapter.ModelList items,
             ItemClickListener clickListener,
+            Runnable dismissMenuCallback,
             int x,
             int y) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             // WebView text selection drop-down menu is only supported on Android U+.
             return;
         }
+
+        HierarchicalMenuController<Object> hierarchicalMenuController =
+                ListMenuUtils.createHierarchicalMenuController(context);
+        hierarchicalMenuController.setupCallbacks(
+                /* headerModelList= */ null, items, dismissMenuCallback);
 
         // Dismiss the previous popup window if it's showing.
         dismiss();
@@ -71,12 +69,7 @@ public class AwSelectionDropdownMenuDelegate implements SelectionDropdownMenuDel
 
         final BasicListMenu menu = getListMenu(context, items, clickListener);
         final int[] menuDimensions = menu.getMenuDimensions();
-        final int menuWidth =
-                getIdealMenuWidth(
-                        context,
-                        menuDimensions[0],
-                        context.getResources()
-                                .getDimensionPixelSize(R.dimen.list_menu_popup_max_width));
+        final int menuWidth = getIdealMenuWidth(context, menuDimensions[0]);
         final int menuHeight = menuDimensions[1];
 
         // We will always try to show the menu to the right and below the anchor point unless
@@ -119,6 +112,8 @@ public class AwSelectionDropdownMenuDelegate implements SelectionDropdownMenuDel
                 context.getResources().getDimensionPixelSize(R.dimen.list_menu_elevation));
         mPopupWindow.setOnDismissListener(this::cleanup);
         mPopupWindow.setFocusable(true);
+        hierarchicalMenuController.setupBackPressBehaviorForPopupWindow(
+                menu.getContentView(), () -> mPopupWindow.dismiss());
         try {
             mPopupWindow.showAtLocation(rootView, Gravity.NO_GRAVITY, x, y);
         } catch (WindowManager.BadTokenException e) {
@@ -133,76 +128,15 @@ public class AwSelectionDropdownMenuDelegate implements SelectionDropdownMenuDel
         }
     }
 
-    @Override
-    public void dismiss() {
-        if (mPopupWindow != null) {
-            mPopupWindow.dismiss();
-        }
-    }
-
-    @Override
-    public int getGroupId(PropertyModel itemModel) {
-        return PropertyModel.getFromModelOrDefault(itemModel, ListMenuItemProperties.GROUP_ID, 0);
-    }
-
-    @Override
-    public int getItemId(PropertyModel itemModel) {
-        return PropertyModel.getFromModelOrDefault(
-                itemModel, ListMenuItemProperties.MENU_ITEM_ID, 0);
-    }
-
-    @Nullable
-    @Override
-    public Intent getItemIntent(PropertyModel itemModel) {
-        return PropertyModel.getFromModelOrDefault(itemModel, ListMenuItemProperties.INTENT, null);
-    }
-
-    @Nullable
-    @Override
-    public View.OnClickListener getClickListener(PropertyModel itemModel) {
-        return PropertyModel.getFromModelOrDefault(
-                itemModel, ListMenuItemProperties.CLICK_LISTENER, null);
-    }
-
-    @Override
-    public ListItem getDivider() {
-        return BasicListMenu.buildMenuDivider();
-    }
-
-    @Override
-    public ListItem getMenuItem(
-            String title,
-            @Nullable String contentDescription,
-            int groupId,
-            int id,
-            @Nullable Drawable startIcon,
-            boolean isIconTintable,
-            boolean groupContainsIcon,
-            boolean enabled,
-            @Nullable View.OnClickListener clickListener,
-            @Nullable Intent intent) {
-        return BasicListMenu.buildListMenuItem(
-                title,
-                contentDescription,
-                groupId,
-                id,
-                startIcon,
-                isIconTintable,
-                groupContainsIcon,
-                enabled,
-                clickListener,
-                intent);
-    }
-
     /** For nulling out references after drop-down dismissal or the inability to show. */
     private void cleanup() {
         mPopupWindow = null;
     }
 
     @RequiresApi(Build.VERSION_CODES.S)
-    @NonNull
-    private BasicListMenu getListMenu(
-            final @NonNull Context context,
+    @Override
+    protected BasicListMenu getListMenu(
+            final Context context,
             MVCListAdapter.ModelList items,
             ItemClickListener clickListener) {
         Context windowContext;
@@ -217,23 +151,13 @@ public class AwSelectionDropdownMenuDelegate implements SelectionDropdownMenuDel
 
         assert windowContext != null : "Window context cannot be null.";
 
-        LayoutInflater inflater =
-                (LayoutInflater) windowContext.getSystemService(Context.LAYOUT_INFLATER_SERVICE);
-        View contentView = inflater.inflate(R.layout.list_menu_layout, null);
-        ListView listView = contentView.findViewById(R.id.menu_list);
         return new BasicListMenu(
-                windowContext, items, contentView, listView, clickListener::onItemClick, 0);
-    }
-
-    /**
-     * Returns the preferred dropdown width. Will ideally return the width of the widest list item
-     * provided it falls within the bounds of a static min and max width.
-     */
-    private static int getIdealMenuWidth(
-            @NonNull Context context, final int longestItemWidth, final int maxDropdownWidth) {
-        final int minDropdownWidth =
-                context.getResources().getDimensionPixelSize(R.dimen.list_menu_popup_min_width);
-        return Math.min(Math.max(minDropdownWidth, longestItemWidth), maxDropdownWidth);
+                windowContext,
+                items,
+                (model, view) -> clickListener.onItemClick(model),
+                /* backgroundDrawable= */ Resources.ID_NULL,
+                /* backgroundTintColor= */ Resources.ID_NULL,
+                /* bottomHairlineColor= */ null);
     }
 
     /**

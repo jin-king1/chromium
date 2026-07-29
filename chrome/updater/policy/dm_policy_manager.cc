@@ -9,9 +9,9 @@
 #include <string>
 #include <vector>
 
+#include "base/containers/to_vector.h"
 #include "base/enterprise_util.h"
 #include "base/logging.h"
-#include "base/memory/ref_counted.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/notreached.h"
 #include "base/strings/string_util.h"
@@ -19,7 +19,6 @@
 #include "build/build_config.h"
 #include "chrome/enterprise_companion/device_management_storage/dm_storage.h"
 #include "chrome/updater/constants.h"
-#include "chrome/updater/device_management/dm_message.h"
 #include "chrome/updater/policy/manager.h"
 #include "chrome/updater/protos/omaha_settings.pb.h"
 #include "device_management_backend.pb.h"
@@ -261,6 +260,26 @@ std::optional<bool> DMPolicyManager::IsRollbackToTargetVersionAllowed(
               ROLLBACK_TO_TARGET_VERSION_ENABLED);
 }
 
+std::optional<int> DMPolicyManager::GetMajorVersionRolloutPolicy(
+    const std::string& app_id) const {
+  const auto* app_settings = GetAppSettings(app_id);
+  if (!app_settings || !app_settings->has_major_version_rollout_policy()) {
+    return std::nullopt;
+  }
+
+  return app_settings->major_version_rollout_policy();
+}
+
+std::optional<int> DMPolicyManager::GetMinorVersionRolloutPolicy(
+    const std::string& app_id) const {
+  const auto* app_settings = GetAppSettings(app_id);
+  if (!app_settings || !app_settings->has_minor_version_rollout_policy()) {
+    return std::nullopt;
+  }
+
+  return app_settings->minor_version_rollout_policy();
+}
+
 std::optional<std::vector<std::string>> DMPolicyManager::GetForceInstallApps()
     const {
   std::vector<std::string> force_install_apps;
@@ -289,30 +308,24 @@ std::optional<std::vector<std::string>> DMPolicyManager::GetForceInstallApps()
 
 std::optional<std::vector<std::string>> DMPolicyManager::GetAppsWithPolicy()
     const {
-  std::vector<std::string> apps_with_policy;
-
-  for (const auto& app_settings_proto :
-       omaha_settings_.application_settings()) {
+  return base::ToVector(omaha_settings_.application_settings(),
+                        [](const auto& app_settings) {
 #if BUILDFLAG(IS_MAC)
-    // BundleIdentifier is preferred over AppGuid as product ID on Mac.
-    // If not found, fall back to AppGuid below.
-    if (app_settings_proto.has_bundle_identifier()) {
-      apps_with_policy.push_back(app_settings_proto.bundle_identifier());
-      continue;
-    }
+                          if (app_settings.has_bundle_identifier()) {
+                            return app_settings.bundle_identifier();
+                          }
 #endif  // BUILDFLAG(IS_MAC)
-    if (app_settings_proto.has_app_guid()) {
-      apps_with_policy.push_back(app_settings_proto.app_guid());
-    }
-  }
-
-  return apps_with_policy;
+                          return app_settings.app_guid();
+                        });
 }
 
 std::optional<
     wireless_android_enterprise_devicemanagement::OmahaSettingsClientProto>
 GetOmahaPolicySettings(
     scoped_refptr<device_management_storage::DMStorage> dm_storage) {
+  static constexpr char kGoogleUpdatePolicyType[] =
+      "google/machine-level-omaha";
+
   wireless_android_enterprise_devicemanagement::OmahaSettingsClientProto
       omaha_settings;
   std::optional<enterprise_management::PolicyData> policy_data =

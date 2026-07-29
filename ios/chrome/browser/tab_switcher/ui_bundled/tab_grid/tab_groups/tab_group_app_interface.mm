@@ -5,61 +5,58 @@
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_groups/tab_group_app_interface.h"
 
 #import "base/strings/string_number_conversions.h"
+#import "base/strings/sys_string_conversions.h"
+#import "base/test/gmock_callback_support.h"
+#import "components/collaboration/public/pref_names.h"
 #import "components/data_sharing/public/data_sharing_service.h"
+#import "components/data_sharing/public/features.h"
 #import "components/data_sharing/public/group_data.h"
 #import "components/data_sharing/test_support/mock_preview_server_proxy.h"
+#import "components/policy/core/common/policy_map.h"
+#import "components/policy/policy_constants.h"
+#import "components/saved_tab_groups/public/saved_tab_group.h"
+#import "components/saved_tab_groups/public/saved_tab_group_tab.h"
 #import "components/saved_tab_groups/test_support/fake_tab_group_sync_service.h"
-#import "components/sync/service/sync_service.h"
+#import "ios/chrome/browser/collaboration/model/collaboration_service_factory.h"
 #import "ios/chrome/browser/collaboration/model/features.h"
 #import "ios/chrome/browser/data_sharing/model/data_sharing_service_factory.h"
+#import "ios/chrome/browser/policy/model/test_platform_policy_provider.h"
 #import "ios/chrome/browser/saved_tab_groups/model/tab_group_sync_service_factory.h"
 #import "ios/chrome/browser/share_kit/model/share_kit_service_factory.h"
 #import "ios/chrome/browser/share_kit/model/test_share_kit_service.h"
-#import "ios/chrome/browser/shared/model/application_context/application_context.h"
+#import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
-#import "ios/chrome/browser/shared/model/profile/profile_manager_ios.h"
-#import "ios/chrome/browser/shared/public/features/features.h"
-#import "ios/chrome/browser/sync/model/sync_service_factory.h"
+#import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
+#import "ios/chrome/browser/shared/public/commands/tab_groups_commands.h"
+#import "ios/chrome/test/app/chrome_test_util.h"
 #import "ios/chrome/test/app/sync_test_util.h"
+
+using collaboration::prefs::SharedTabGroupsManagedAccountSetting;
 
 namespace {
 
-// Returns the first regular (= non-incognito) profile from the loaded browser
-// states.
-ProfileIOS* GetRegularProfile() {
-  for (ProfileIOS* profile :
-       GetApplicationContext()->GetProfileManager()->GetLoadedProfiles()) {
-    if (!profile->IsOffTheRecord()) {
-      return profile;
-    }
-  }
-  return nullptr;
-}
-
 // Returns the tab group sync service from the first regular profile.
 tab_groups::TabGroupSyncService* GetTabGroupSyncService() {
-  CHECK(IsTabGroupSyncEnabled());
-  return tab_groups::TabGroupSyncServiceFactory::GetForProfile(
-      GetRegularProfile());
+  ProfileIOS* profile = chrome_test_util::GetOriginalProfile();
+  return tab_groups::TabGroupSyncServiceFactory::GetForProfile(profile);
 }
 
 // Returns the data sharing service from the first regular profile.
 data_sharing::DataSharingService* GetDataSharingService() {
-  ProfileIOS* profile = GetRegularProfile();
-  CHECK(IsSharedTabGroupsJoinEnabled(profile));
+  ProfileIOS* profile = chrome_test_util::GetOriginalProfile();
+  collaboration::CollaborationService* collaboration_service =
+      collaboration::CollaborationServiceFactory::GetForProfile(profile);
+  CHECK(IsSharedTabGroupsJoinEnabled(collaboration_service));
   return data_sharing::DataSharingServiceFactory::GetForProfile(profile);
-}
-
-// Returns the sync service from the first regular profile.
-syncer::SyncService* GetSyncService() {
-  return SyncServiceFactory::GetForProfile(GetRegularProfile());
 }
 
 // Returns the share kit service from the first regular profile.
 TestShareKitService* GetShareKitService() {
-  ProfileIOS* profile = GetRegularProfile();
-  CHECK(IsSharedTabGroupsJoinEnabled(profile));
-  CHECK(IsSharedTabGroupsCreateEnabled(profile));
+  ProfileIOS* profile = chrome_test_util::GetOriginalProfile();
+  collaboration::CollaborationService* collaboration_service =
+      collaboration::CollaborationServiceFactory::GetForProfile(profile);
+  CHECK(IsSharedTabGroupsJoinEnabled(collaboration_service));
+  CHECK(IsSharedTabGroupsCreateEnabled(collaboration_service));
   return static_cast<TestShareKitService*>(
       ShareKitServiceFactory::GetForProfile(profile));
 }
@@ -95,21 +92,11 @@ tab_groups::SavedTabGroup CreateGroup(
   return saved_group;
 }
 
-// testing::InvokeArgument<N> does not work with base::OnceCallback. Use this
-// gmock action template to invoke base::OnceCallback. `k` is the k-th argument
-// and `T` is the callback's type.
-ACTION_TEMPLATE(InvokeCallbackArgument,
-                HAS_2_TEMPLATE_PARAMS(int, k, typename, T),
-                AND_1_VALUE_PARAMS(p0)) {
-  std::move(const_cast<T&>(std::get<k>(args))).Run(p0);
-}
-
 }  // namespace
 
 @implementation TabGroupAppInterface
 
 + (void)prepareFakeSyncedTabGroups:(NSInteger)numberOfGroups {
-  CHECK(IsTabGroupSyncEnabled());
   for (NSInteger i = 0; i < numberOfGroups; i++) {
     base::Uuid groupID = base::Uuid::GenerateRandomV4();
     std::vector<tab_groups::SavedTabGroupTab> tabs;
@@ -120,47 +107,54 @@ ACTION_TEMPLATE(InvokeCallbackArgument,
         CreateGroup(base::NumberToString16(i) + u"RemoteGroup", tabs, groupID));
   }
 
-  GetSyncService()->TriggerRefresh({syncer::SAVED_TAB_GROUP});
+  chrome_test_util::TriggerSyncCycle(syncer::SAVED_TAB_GROUP);
 }
 
-+ (void)prepareFakeSharedTabGroups:(NSInteger)numberOfGroups {
-  CHECK(IsTabGroupSyncEnabled());
++ (void)prepareFakeSharedTabGroups:(NSInteger)numberOfGroups
+                           asOwner:(BOOL)owner
+                               url:(NSString*)url {
+  GURL gurl(base::SysNSStringToUTF8(url));
   for (NSInteger i = 0; i < numberOfGroups; i++) {
     NSString* collaborationID =
-        [NSString stringWithFormat:@"CollaborationIDd%ld", i];
+        [NSString stringWithFormat:@"CollaborationID%ld", i];
 
-    // Create a shared tab group in the fake server. The user (`fakeIdentity1`)
-    // will join the group as a member.
-    GetShareKitService()->CreateSharedTabGroupInFakeServer(collaborationID);
+    // Create a shared tab group in the fake server.
+    GetShareKitService()->CreateSharedTabGroupInFakeServer(
+        owner, collaborationID, gurl);
   }
 
-  GetSyncService()->TriggerRefresh({syncer::COLLABORATION_GROUP});
+  chrome_test_util::TriggerSyncCycle(syncer::COLLABORATION_GROUP);
 }
 
 + (void)removeAtIndex:(unsigned int)index {
-  CHECK(IsTabGroupSyncEnabled());
   std::vector<tab_groups::SavedTabGroup> groups =
       GetTabGroupSyncService()->GetAllGroups();
   tab_groups::SavedTabGroup groupToRemove = groups[index];
-  chrome_test_util::DeleteTabOrGroupFromFakeServer(groupToRemove.saved_guid());
 
-  GetSyncService()->TriggerRefresh({syncer::SAVED_TAB_GROUP});
+  chrome_test_util::DeleteTabOrGroupFromFakeServer(groupToRemove.saved_guid());
+  chrome_test_util::TriggerSyncCycle(syncer::SAVED_TAB_GROUP);
+
+  // When a group is shared, the fake server stores the data of the group as
+  // syncer::SAVED_TAB_GROUP and syncer::SHARED_TAB_GROUP_DATA. Remove the both
+  // data from the fake server.
+  if (groupToRemove.is_shared_tab_group()) {
+    chrome_test_util::DeleteSharedGroupFromFakeServer(
+        groupToRemove.saved_guid());
+    chrome_test_util::TriggerSyncCycle(syncer::SHARED_TAB_GROUP_DATA);
+  }
 }
 
 + (void)cleanup {
-  CHECK(IsTabGroupSyncEnabled());
-
   std::vector<tab_groups::SavedTabGroup> groups =
       GetTabGroupSyncService()->GetAllGroups();
-  for (const tab_groups::SavedTabGroup& group : groups) {
-    chrome_test_util::DeleteTabOrGroupFromFakeServer(group.saved_guid());
+  for (unsigned int i = 0; i < groups.size(); i++) {
+    [self removeAtIndex:i];
   }
 
-  GetSyncService()->TriggerRefresh({syncer::SAVED_TAB_GROUP});
+  chrome_test_util::TriggerSyncCycle(syncer::SAVED_TAB_GROUP);
 }
 
 + (int)countOfSavedTabGroups {
-  CHECK(IsTabGroupSyncEnabled());
   tab_groups::TabGroupSyncService* tabGroupSyncService =
       GetTabGroupSyncService();
   return tabGroupSyncService->GetAllGroups().size();
@@ -179,12 +173,62 @@ ACTION_TEMPLATE(InvokeCallbackArgument,
       sharedDataPreview;
   ON_CALL(*mockPreviewProxy,
           GetSharedDataPreview(testing::_, testing::_, testing::_))
-      .WillByDefault(
-          InvokeCallbackArgument<
-              2,
-              base::OnceCallback<void(const data_sharing::DataSharingService::
-                                          SharedDataPreviewOrFailureOutcome&)>>(
-              outcome));
+      .WillByDefault(base::test::RunOnceCallback<2>(outcome));
+}
+
++ (void)addSharedTabToGroupAtIndex:(unsigned int)index {
+  std::vector<tab_groups::SavedTabGroup> groups =
+      GetTabGroupSyncService()->GetAllGroups();
+  tab_groups::SavedTabGroup group = groups[index];
+  CHECK(group.collaboration_id().has_value());
+
+  tab_groups::SavedTabGroupTab tab(GURL("https://example.com"), u"Example",
+                                   group.saved_guid(), 1);
+  chrome_test_util::AddSharedTabToFakeServer(
+      tab, group.collaboration_id().value());
+  chrome_test_util::TriggerSyncCycle(syncer::SHARED_TAB_GROUP_DATA);
+}
+
++ (NSString*)activityLogsURL {
+  return base::SysUTF8ToNSString(
+      data_sharing::features::kActivityLogsURL.Get());
+}
+
++ (void)setSharedTabGroupsManagedAccountPolicyEnabled:
+    (BOOL)managedAccountPolicyEnabled {
+  policy::PolicyMap values;
+  SharedTabGroupsManagedAccountSetting setting =
+      managedAccountPolicyEnabled
+          ? SharedTabGroupsManagedAccountSetting::kEnabled
+          : SharedTabGroupsManagedAccountSetting::kDisabled;
+  values.Set(policy::key::kTabGroupSharingSettings,
+             policy::POLICY_LEVEL_MANDATORY, policy::POLICY_SCOPE_USER,
+             policy::POLICY_SOURCE_CLOUD,
+             base::Value(static_cast<int>(setting)),
+             /*external_data_fetcher=*/nullptr);
+  GetTestPlatformPolicyProvider()->UpdateChromePolicy(values);
+}
+
++ (BOOL)isAllowedToJoinTabGroups {
+  ProfileIOS* profile = chrome_test_util::GetOriginalProfile();
+  collaboration::CollaborationService* collaboration_service =
+      collaboration::CollaborationServiceFactory::GetForProfile(profile);
+  return IsSharedTabGroupsJoinEnabled(collaboration_service);
+}
+
++ (BOOL)isAllowedToShareTabGroups {
+  ProfileIOS* profile = chrome_test_util::GetOriginalProfile();
+  collaboration::CollaborationService* collaboration_service =
+      collaboration::CollaborationServiceFactory::GetForProfile(profile);
+  return IsSharedTabGroupsCreateEnabled(collaboration_service);
+}
+
++ (void)triggerDoubleEmptyTabGroupCreation {
+  Browser* browser = chrome_test_util::GetCurrentBrowser();
+  id<TabGroupsCommands> tabGroupsHandler =
+      HandlerForProtocol(browser->GetCommandDispatcher(), TabGroupsCommands);
+  [tabGroupsHandler showTabGroupCreationWithoutTabs];
+  [tabGroupsHandler showTabGroupCreationWithoutTabs];
 }
 
 @end

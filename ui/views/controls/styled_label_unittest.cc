@@ -12,6 +12,7 @@
 
 #include "base/command_line.h"
 #include "base/functional/callback.h"
+#include "base/functional/callback_helpers.h"
 #include "base/i18n/base_i18n_switches.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/strcat.h"
@@ -24,6 +25,8 @@
 #include "ui/base/ui_base_switches.h"
 #include "ui/gfx/font_list.h"
 #include "ui/gfx/text_constants.h"
+#include "ui/native_theme/mock_os_settings_provider.h"
+#include "ui/native_theme/native_theme.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/border.h"
 #include "ui/views/controls/link.h"
@@ -94,6 +97,9 @@ class StyledLabelInWidgetTest : public ViewsTestBase {
     ViewsTestBase::TearDown();
   }
 
+  ui::MockOsSettingsProvider& os_settings_provider() {
+    return os_settings_provider_;
+  }
   Widget* widget() const { return widget_.get(); }
 
   StyledLabel* InitStyledLabel(const std::string& ascii_text) {
@@ -105,6 +111,7 @@ class StyledLabelInWidgetTest : public ViewsTestBase {
   }
 
  private:
+  ui::MockOsSettingsProvider os_settings_provider_;
   std::unique_ptr<Widget> widget_;
 };
 
@@ -375,11 +382,6 @@ TEST_F(StyledLabelInWidgetTest, Color) {
   styled->SetBounds(0, 0, 1000, 1000);
   test::RunScheduledLayout(styled);
 
-  // The code below is not prepared to deal with dark mode.
-  auto* const native_theme = widget()->GetNativeTheme();
-  native_theme->set_use_dark_colors(false);
-  native_theme->NotifyOnNativeThemeUpdated();
-
   auto* container = widget()->GetContentsView();
   // Obtain the default text color for a label.
   Label* label =
@@ -438,14 +440,13 @@ TEST_F(StyledLabelInWidgetTest, SetBackgroundColorIdReactsToThemeChange) {
   test::RunScheduledLayout(styled);
 
   ASSERT_THAT(styled->children(), SizeIs(1u));
-  auto* const native_theme = widget()->GetNativeTheme();
-  native_theme->set_use_dark_colors(true);
-  native_theme->NotifyOnNativeThemeUpdated();
+  os_settings_provider().SetPreferredColorScheme(
+      ui::NativeTheme::PreferredColorScheme::kDark);
   EXPECT_EQ(widget()->GetColorProvider()->GetColor(ui::kColorDialogBackground),
             LabelAt(styled, 0)->GetBackgroundColor());
 
-  native_theme->set_use_dark_colors(false);
-  native_theme->NotifyOnNativeThemeUpdated();
+  os_settings_provider().SetPreferredColorScheme(
+      ui::NativeTheme::PreferredColorScheme::kLight);
   EXPECT_EQ(widget()->GetColorProvider()->GetColor(ui::kColorDialogBackground),
             LabelAt(styled, 0)->GetBackgroundColor());
 
@@ -453,8 +454,8 @@ TEST_F(StyledLabelInWidgetTest, SetBackgroundColorIdReactsToThemeChange) {
   EXPECT_EQ(widget()->GetColorProvider()->GetColor(ui::kColorAlertHighSeverity),
             LabelAt(styled, 0)->GetBackgroundColor());
 
-  native_theme->set_use_dark_colors(true);
-  native_theme->NotifyOnNativeThemeUpdated();
+  os_settings_provider().SetPreferredColorScheme(
+      ui::NativeTheme::PreferredColorScheme::kDark);
   EXPECT_EQ(widget()->GetColorProvider()->GetColor(ui::kColorAlertHighSeverity),
             LabelAt(styled, 0)->GetBackgroundColor());
 }
@@ -951,6 +952,120 @@ TEST_F(StyledLabelTest, OldChildViewsAreAliveAfterLayout) {
   test::RunScheduledLayout(styled);
 
   link->RemoveObserver(&view_destroy_observer);
+}
+
+TEST_F(StyledLabelTest, WrappedLinkAccessibilityAndFocus) {
+  const std::u16string text = u"This is a long link that should wrap";
+  StyledLabel* styled = InitStyledLabel(base::UTF16ToUTF8(text));
+  styled->AddStyleRange(
+      gfx::Range(0, text.size()),
+      StyledLabel::RangeStyleInfo::CreateForLink(base::BindRepeating([]() {})));
+
+  // Force wrapping by setting a small width.
+  styled->SetBounds(0, 0, 50, 1000);
+  test::RunScheduledLayout(styled);
+
+  // Verify that we have multiple children and they are LinkFragments.
+  ASSERT_GT(styled->children().size(), 1u);
+  for (views::View* child : styled->children()) {
+    EXPECT_EQ(LinkFragment::kViewClassName, child->GetClassName());
+  }
+
+  // Only the first fragment should be focusable and have the full name.
+  for (size_t i = 0; i < styled->children().size(); ++i) {
+    views::View* child = styled->children()[i];
+    if (i == 0) {
+      EXPECT_NE(views::View::FocusBehavior::NEVER, child->GetFocusBehavior());
+      EXPECT_FALSE(child->GetViewAccessibility().GetIsIgnored());
+      EXPECT_EQ(text, child->GetViewAccessibility().GetCachedName());
+    } else {
+      EXPECT_EQ(views::View::FocusBehavior::NEVER, child->GetFocusBehavior());
+      EXPECT_TRUE(child->GetViewAccessibility().GetIsIgnored());
+    }
+  }
+}
+
+TEST_F(StyledLabelTest, AccessibleRoleReflectsInlineLink) {
+  const std::string text("Please visit example.com for details");
+  StyledLabel* styled = InitStyledLabel(text);
+
+  IgnoreMissingWidgetForTestingScopedSetter a11y_ignore_missing_widget_(
+      styled->GetViewAccessibility());
+
+  EXPECT_EQ(styled->GetViewAccessibility().GetCachedRole(),
+            ax::mojom::Role::kStaticText);
+  styled->SetBounds(0, 0, 1000, 1000);
+  test::RunScheduledLayout(styled);
+  EXPECT_EQ(styled->GetViewAccessibility().GetCachedRole(),
+            ax::mojom::Role::kStaticText);
+
+  // The role reflects the styled content immediately, before layout rebuilds
+  // the child views.
+  const size_t link_start = text.find("example.com");
+  styled->AddStyleRange(
+      gfx::Range(link_start, link_start + std::string("example.com").size()),
+      StyledLabel::RangeStyleInfo::CreateForLink(base::RepeatingClosure()));
+  EXPECT_EQ(styled->GetViewAccessibility().GetCachedRole(),
+            ax::mojom::Role::kParagraph);
+
+  test::RunScheduledLayout(styled);
+  ASSERT_NE(styled->GetFirstLinkForTesting(), nullptr);
+  EXPECT_EQ(styled->GetViewAccessibility().GetCachedRole(),
+            ax::mojom::Role::kParagraph);
+  EXPECT_EQ(styled->GetViewAccessibility().GetCachedName(),
+            base::UTF8ToUTF16(text));
+
+  styled->ClearStyleRanges();
+  EXPECT_EQ(styled->GetViewAccessibility().GetCachedRole(),
+            ax::mojom::Role::kStaticText);
+  test::RunScheduledLayout(styled);
+  EXPECT_EQ(styled->GetFirstLinkForTesting(), nullptr);
+  EXPECT_EQ(styled->GetViewAccessibility().GetCachedRole(),
+            ax::mojom::Role::kStaticText);
+}
+
+TEST_F(StyledLabelTest, AccessibleRoleReflectsCustomView) {
+  const std::string text("prefix ");
+  const std::string custom_view_text("custom");
+  auto custom_view = std::make_unique<StaticSizedView>(gfx::Size(20, 20));
+  StyledLabel::RangeStyleInfo style_info;
+  style_info.custom_view = custom_view.get();
+
+  StyledLabel* styled = InitStyledLabel(text + custom_view_text);
+  IgnoreMissingWidgetForTestingScopedSetter a11y_ignore_missing_widget_(
+      styled->GetViewAccessibility());
+  styled->AddStyleRange(
+      gfx::Range(text.size(), text.size() + custom_view_text.size()),
+      style_info);
+  styled->AddCustomView(std::move(custom_view));
+
+  EXPECT_EQ(styled->GetViewAccessibility().GetCachedRole(),
+            ax::mojom::Role::kParagraph);
+
+  styled->SetBounds(0, 0, 1000, 1000);
+  test::RunScheduledLayout(styled);
+  EXPECT_EQ(styled->GetViewAccessibility().GetCachedRole(),
+            ax::mojom::Role::kParagraph);
+}
+
+TEST_F(StyledLabelTest, AccessibleRoleTitleContextUnaffectedByLink) {
+  const std::string text("Title with example.com link");
+  StyledLabel* styled = InitStyledLabel(text);
+  styled->SetTextContext(style::CONTEXT_DIALOG_TITLE);
+
+  IgnoreMissingWidgetForTestingScopedSetter a11y_ignore_missing_widget_(
+      styled->GetViewAccessibility());
+
+  const size_t link_start = text.find("example.com");
+  styled->AddStyleRange(
+      gfx::Range(link_start, link_start + std::string("example.com").size()),
+      StyledLabel::RangeStyleInfo::CreateForLink(base::RepeatingClosure()));
+  styled->SetBounds(0, 0, 1000, 1000);
+  test::RunScheduledLayout(styled);
+
+  ASSERT_NE(styled->GetFirstLinkForTesting(), nullptr);
+  EXPECT_EQ(styled->GetViewAccessibility().GetCachedRole(),
+            ax::mojom::Role::kTitleBar);
 }
 
 }  // namespace views

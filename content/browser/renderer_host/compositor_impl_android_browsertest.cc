@@ -2,19 +2,21 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "content/browser/renderer_host/compositor_impl_android.h"
+
 #include "base/android/application_status_listener.h"
-#include "base/android/build_info.h"
 #include "base/base_switches.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/task/single_thread_task_runner.h"
+#include "cc/slim/layer.h"
 #include "components/viz/common/gpu/raster_context_provider.h"
 #include "content/browser/browser_main_loop.h"
 #include "content/browser/gpu/gpu_process_host.h"
-#include "content/browser/renderer_host/compositor_impl_android.h"
 #include "content/browser/renderer_host/render_widget_host_view_android.h"
 #include "content/browser/web_contents/web_contents_impl.h"
+#include "content/public/browser/android/compositor_client.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/common/gpu_stream_constants.h"
 #include "content/public/test/browser_test.h"
@@ -29,6 +31,7 @@
 #include "gpu/ipc/client/gpu_channel_host.h"
 #include "media/base/media_switches.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
+#include "services/viz/public/cpp/gpu/context_provider_command_buffer.h"
 #include "ui/android/window_android.h"
 #include "ui/gfx/android/android_surface_control_compat.h"
 #include "url/gurl.h"
@@ -36,6 +39,17 @@
 namespace content {
 
 namespace {
+
+class StubCompositorClient : public CompositorClient {
+ public:
+  StubCompositorClient() = default;
+  ~StubCompositorClient() override = default;
+
+  void RecreateSurface() override {}
+  void UpdateLayerTreeHost() override {}
+  void DidSwapFrame(int pending_frames) override {}
+  void DidSwapBuffers(const gfx::Size& swap_size) override {}
+};
 
 class CompositorImplBrowserTest : public ContentBrowserTest {
  public:
@@ -171,7 +185,7 @@ IN_PROC_BROWSER_TEST_F(CompositorImplLowEndBrowserTest,
   base::android::ApplicationStatusListener::NotifyApplicationStateChange(
       base::android::APPLICATION_STATE_HAS_STOPPED_ACTIVITIES);
   rwhva->OnRootWindowVisibilityChanged(false);
-  rwhva->Hide();
+  web_contents()->WasHidden();
 
   // Ensure that context is eventually dropped and at that point we do not have
   // a valid frame.
@@ -182,7 +196,7 @@ IN_PROC_BROWSER_TEST_F(CompositorImplLowEndBrowserTest,
   compositor->SetVisibleForTesting(true);
   base::android::ApplicationStatusListener::NotifyApplicationStateChange(
       base::android::APPLICATION_STATE_HAS_RUNNING_ACTIVITIES);
-  rwhva->Show();
+  web_contents()->WasShown();
   rwhva->OnRootWindowVisibilityChanged(true);
 
   // Wait for a swap after becoming visible.
@@ -251,6 +265,23 @@ IN_PROC_BROWSER_TEST_F(CompositorImplBrowserTestRefreshRate, VideoPreference) {
   run_loop_->Run();
   run_loop_.reset();
   window()->SetTestHooks(nullptr);
+}
+
+IN_PROC_BROWSER_TEST_F(CompositorImplBrowserTest, CompositorImplOffscreen) {
+  StubCompositorClient client;
+  auto window_for_testing = ui::WindowAndroid::CreateForTesting();
+  std::unique_ptr<Compositor> compositor(
+      Compositor::CreateOffscreen(&client, window_for_testing->get()));
+  auto* compositor_impl = static_cast<CompositorImpl*>(compositor.get());
+
+  CompositorSwapRunLoop swap_run_loop(compositor_impl);
+
+  compositor->SetWindowBounds(gfx::Size(100, 100));
+  compositor->SetRootLayer(cc::slim::Layer::Create());
+  compositor->SetBackgroundColor(SK_ColorRED);
+  compositor->SetNeedsComposite();
+
+  swap_run_loop.RunUntilSwap();
 }
 
 }  // namespace

@@ -3,22 +3,24 @@
 // found in the LICENSE file.
 
 #include "ash/ash_element_identifiers.h"
+#include "ash/constants/ash_extension_constants.h"
 #include "base/base_paths.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/threading/thread_restrictions.h"
 #include "chrome/browser/ash/accessibility/accessibility_manager.h"
 #include "chrome/browser/ash/accessibility/chromevox_panel.h"
 #include "chrome/browser/speech/extension_api/tts_engine_extension_api.h"
-#include "chrome/common/extensions/extension_constants.h"
 #include "chrome/test/base/chromeos/crosier/ash_integration_test.h"
 #include "chrome/test/base/chromeos/crosier/upstart.h"
 #include "extensions/browser/browsertest_util.h"
 #include "extensions/browser/extension_host_test_helper.h"
 #include "extensions/browser/process_manager.h"
+#include "ui/accessibility/accessibility_features.h"
 #include "ui/base/interaction/interactive_test.h"
 #include "ui/base/test/ui_controls.h"
 #include "ui/events/keycodes/keyboard_codes_posix.h"
@@ -58,6 +60,12 @@ IN_PROC_BROWSER_TEST_F(SpokenFeedbackIntegrationTest, KeyboardShortcut) {
 class GoogleTtsIntegrationTest : public AshIntegrationTest {
  public:
   GoogleTtsIntegrationTest() {
+    // Disable MV3 before the test is updated.
+    // TODO(crbug.com/425939574): Remove after making it work with MV3.
+    scoped_feature_list_.InitWithFeatures(
+        /*enabled_features=*/{},
+        /*disabled_features=*/{features::kAccessibilityManifestV3GoogleTts});
+
     // Google TTS files are mounted by upstart when the UI job is started.
     // However, Crosier (which is the UI job in this context) is started by a
     // test script, not upstart. The result is that Google TTS will never get
@@ -128,9 +136,13 @@ class GoogleTtsIntegrationTest : public AshIntegrationTest {
         /*extension_id=*/extension_misc::kGoogleSpeechSynthesisExtensionId,
         /*script=*/script);
   }
+
+  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
-IN_PROC_BROWSER_TEST_F(GoogleTtsIntegrationTest, Speak) {
+// TODO(crbug.com/468917699): Flaky on ChromeOS, which is the only platform that
+// runs this test.
+IN_PROC_BROWSER_TEST_F(GoogleTtsIntegrationTest, DISABLED_Speak) {
   SetupContextWidget();
   RunTestSequence(Log("Setting up Google TTS extension"), Do([this] {
                     EnableGoogleTts();

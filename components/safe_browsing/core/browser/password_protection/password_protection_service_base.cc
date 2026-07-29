@@ -11,12 +11,12 @@
 
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/strings/escape.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/time/time.h"
 #include "build/build_config.h"
 #include "components/password_manager/core/browser/password_manager_metrics_util.h"
 #include "components/password_manager/core/browser/password_reuse_detector.h"
@@ -38,7 +38,7 @@ using PasswordReuseEvent = LoginReputationClientRequest::PasswordReuseEvent;
 
 namespace {
 
-// Keys for storing password protection verdict into a base::Value::Dict.
+// Keys for storing password protection verdict into a base::DictValue.
 const int kRequestTimeoutMs = 10000;
 const char kPasswordProtectionRequestUrl[] =
     "https://sb-ssl.google.com/safebrowsing/clientreport/login";
@@ -163,9 +163,7 @@ void PasswordProtectionServiceBase::RequestFinished(
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(request);
 
-#if !BUILDFLAG(IS_ANDROID)
   bool warning_shown = false;
-#endif
   if (response) {
     ReusedPasswordAccountType password_type =
         GetPasswordProtectionReusedPasswordAccountType(request->password_type(),
@@ -183,9 +181,16 @@ void PasswordProtectionServiceBase::RequestFinished(
       ShowModalWarning(request, response->verdict_type(),
                        response->verdict_token(), password_type);
       request->set_is_modal_warning_showing(true);
-#if !BUILDFLAG(IS_ANDROID)
       warning_shown = true;
-#endif
+    }
+
+    if (request->trigger_type() ==
+            LoginReputationClientRequest::ONE_TIME_PASSWORD_FIELD_DETECTED &&
+        request->HasOtpPhishingVerdictCallback()) {
+      request->TakeOtpPhishingVerdictCallback().Run(
+          response->verdict_type() == LoginReputationClientResponse::PHISHING ||
+          response->verdict_type() ==
+              LoginReputationClientResponse::LOW_REPUTATION);
     }
   }
 
@@ -201,13 +206,17 @@ void PasswordProtectionServiceBase::RequestFinished(
     // If verdict declares a security sensitive event, log accordingly.
     MaybeRecordSecuritySensitiveEvent(metrics_collector_, verdict);
 
-// Disabled on Android, because enterprise reporting extension is not supported.
-#if !BUILDFLAG(IS_ANDROID)
+    ReferrerChain referrer_chain;
+    if (request->request_proto() &&
+        request->request_proto()->frames_size() > 0) {
+      referrer_chain = request->request_proto()->frames(0).referrer_chain();
+    }
+
     MaybeReportPasswordReuseDetected(
         request->main_frame_url(), request->username(),
         request->password_type(),
-        verdict == LoginReputationClientResponse::PHISHING, warning_shown);
-#endif
+        verdict == LoginReputationClientResponse::PHISHING, warning_shown,
+        referrer_chain);
 
     // Persist a bit in CompromisedCredentials table when saved password is
     // reused on a phishing or low reputation site.
@@ -343,7 +352,7 @@ PasswordProtectionServiceBase::GetPasswordProtectionReusedPasswordAccountType(
     case PasswordType::OTHER_GAIA_PASSWORD: {
       AccountInfo account_info = GetAccountInfoForUsername(username);
       if (account_info.account_id.empty() ||
-          account_info.hosted_domain.empty()) {
+          !account_info.GetHostedDomain().has_value()) {
         reused_password_account_type.set_account_type(
             ReusedPasswordAccountType::UNKNOWN);
         return reused_password_account_type;

@@ -26,6 +26,7 @@
 #include "extensions/browser/extensions_browser_client.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/webui/web_ui_util.h"
+#include "ui/gfx/native_ui_types.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "base/strings/string_split.h"
@@ -64,10 +65,10 @@ int GetSysInfoCheckboxStringId(content::BrowserContext* browser_context) {
 ChromeFeedbackPrivateDelegate::ChromeFeedbackPrivateDelegate() = default;
 ChromeFeedbackPrivateDelegate::~ChromeFeedbackPrivateDelegate() = default;
 
-base::Value::Dict ChromeFeedbackPrivateDelegate::GetStrings(
+base::DictValue ChromeFeedbackPrivateDelegate::GetStrings(
     content::BrowserContext* browser_context,
     bool from_crash) const {
-  base::Value::Dict dict;
+  base::DictValue dict;
 
 #define SET_STRING(id, idr) dict.Set(id, l10n_util::GetStringUTF16(idr))
   SET_STRING("pageTitle", from_crash
@@ -205,7 +206,7 @@ void ChromeFeedbackPrivateDelegate::FetchExtraLogs(
     // We can pass null for the 1st party IDs since we are just anonymizing
     // wifi data here.
     system_logs::SystemLogsFetcher* fetcher =
-        new system_logs::SystemLogsFetcher(scrub, nullptr);
+        new system_logs::SystemLogsFetcher(scrub);
     fetcher->AddSource(std::make_unique<system_logs::IwlwifiDumpLogSource>());
     fetcher->Fetch(base::BindOnce(&OnFetchedExtraLogs, feedback_data,
                                   std::move(callback)));
@@ -218,8 +219,9 @@ api::feedback_private::LandingPageType
 ChromeFeedbackPrivateDelegate::GetLandingPageType(
     const feedback::FeedbackData& feedback_data) const {
   // Googlers using eve get a custom landing page.
-  if (!gaia::IsGoogleInternalAccountEmail(feedback_data.user_email()))
+  if (!gaia::IsGoogleInternalAccountEmail(feedback_data.user_email())) {
     return api::feedback_private::LandingPageType::kNormal;
+  }
 
   const std::vector<std::string> board =
       base::SplitString(base::SysInfo::GetLsbReleaseBoard(), "-",
@@ -233,8 +235,9 @@ std::string ChromeFeedbackPrivateDelegate::GetSignedInUserEmail(
     content::BrowserContext* context) const {
   auto* identity_manager = IdentityManagerFactory::GetForProfile(
       Profile::FromBrowserContext(context));
-  if (!identity_manager)
+  if (!identity_manager) {
     return std::string();
+  }
   // Browser sync consent is not required to use feedback.
   return identity_manager->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin)
       .email;
@@ -243,8 +246,9 @@ std::string ChromeFeedbackPrivateDelegate::GetSignedInUserEmail(
 void ChromeFeedbackPrivateDelegate::NotifyFeedbackDelayed() const {
   // Show a message box to indicate that sending the feedback has been delayed
   // because the user is offline.
-  chrome::ShowWarningMessageBox(
-      nullptr, l10n_util::GetStringUTF16(IDS_FEEDBACK_OFFLINE_DIALOG_TITLE),
+  chrome::ShowWarningMessageBoxAsync(
+      gfx::NativeWindow(),
+      l10n_util::GetStringUTF16(IDS_FEEDBACK_OFFLINE_DIALOG_TITLE),
       l10n_util::GetStringUTF16(IDS_FEEDBACK_OFFLINE_DIALOG_TEXT));
 }
 

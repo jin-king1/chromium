@@ -28,7 +28,12 @@ namespace enterprise_reporting {
 
 namespace em = enterprise_management;
 
-class CloudProfileReportingServiceTest : public PlatformBrowserTest {
+class CloudProfileReportingServiceTest
+    : public PlatformBrowserTest,
+      public testing::WithParamInterface<
+          // Two boolean variables represents whether profile reporting and
+          // signals reporting is enabled
+          testing::tuple<bool, bool>> {
  public:
   CloudProfileReportingServiceTest() = default;
   ~CloudProfileReportingServiceTest() override = default;
@@ -36,7 +41,9 @@ class CloudProfileReportingServiceTest : public PlatformBrowserTest {
   void SetUpOnMainThread() override {
     Profile* profile = chrome_test_utils::GetProfile(this);
     EnableProfileManagement(profile);
-    EnableReportingPolicy(profile);
+    SetReportingPolicy(profile, profile_reporting_enabled());
+    profile->GetPrefs()->SetBoolean(kUserSecuritySignalsReporting,
+                                    signals_reporting_enabled());
   }
 
   void EnableProfileManagement(Profile* profile) {
@@ -54,21 +61,47 @@ class CloudProfileReportingServiceTest : public PlatformBrowserTest {
         /*service=*/nullptr, std::move(client));
   }
 
-  void EnableReportingPolicy(Profile* profile) {
-    profile->GetPrefs()->SetBoolean(kCloudProfileReportingEnabled, true);
+  void SetReportingPolicy(Profile* profile, bool enabled) {
+    profile->GetPrefs()->SetBoolean(kCloudProfileReportingEnabled, enabled);
   }
+
+  bool profile_reporting_enabled() { return testing::get<0>(GetParam()); }
+  bool signals_reporting_enabled() { return testing::get<1>(GetParam()); }
 };
 
-IN_PROC_BROWSER_TEST_F(CloudProfileReportingServiceTest, LaunchTest) {
+IN_PROC_BROWSER_TEST_P(CloudProfileReportingServiceTest,
+                       VerifyReportingConfig) {
   base::RunLoop().RunUntilIdle();
   ReportScheduler* report_scheduler =
       CloudProfileReportingServiceFactory::GetForProfile(
           chrome_test_utils::GetProfile(this))
           ->report_scheduler();
   ASSERT_TRUE(report_scheduler);
-  EXPECT_TRUE(report_scheduler->IsNextReportScheduledForTesting() ||
-              report_scheduler->GetActiveTriggerForTesting() ==
-                  ReportScheduler::kTriggerTimer);
+
+  auto active_trigger = report_scheduler->GetActiveTriggerForTesting();
+  auto active_config = report_scheduler->GetActiveGenerationConfigForTesting();
+
+  if (signals_reporting_enabled() && profile_reporting_enabled()) {
+    EXPECT_EQ(active_trigger, ReportTrigger::kTriggerTimer);
+    EXPECT_EQ(active_config.security_signals_mode,
+              SecuritySignalsMode::kSignalsAttached);
+  } else if (profile_reporting_enabled()) {
+    EXPECT_EQ(active_trigger, ReportTrigger::kTriggerTimer);
+    EXPECT_EQ(active_config.security_signals_mode,
+              SecuritySignalsMode::kNoSignals);
+  } else if (signals_reporting_enabled()) {
+    EXPECT_EQ(active_trigger, ReportTrigger::kTriggerSecurity);
+    EXPECT_EQ(active_config.security_signals_mode,
+              SecuritySignalsMode::kSignalsOnly);
+  } else {
+    EXPECT_EQ(active_trigger, ReportTrigger::kTriggerNone);
+  }
 }
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         CloudProfileReportingServiceTest,
+                         testing::Combine(
+                             /*profile_reporting_enabled=*/testing::Bool(),
+                             /*signals_reporting_enabled=*/testing::Bool()));
 
 }  // namespace enterprise_reporting

@@ -7,6 +7,7 @@
 #include "base/check_deref.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/strcat.h"
+#include "components/autofill/content/browser/content_autofill_client.h"
 #include "components/autofill/core/browser/autofill_field.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/form_structure.h"
@@ -48,8 +49,9 @@ SensitiveContentManager::SensitiveContentManager(
     SensitiveContentClient* client)
     : client_(CHECK_DEREF(client)) {
   autofill_managers_observation_.Observe(
-      web_contents, autofill::ScopedAutofillManagersObservation::
-                        InitializationPolicy::kObservePreexistingManagers);
+      autofill::ContentAutofillClient::FromWebContents(web_contents),
+      autofill::ScopedAutofillManagersObservation::InitializationPolicy::
+          kObservePreexistingManagers);
 }
 
 SensitiveContentManager::~SensitiveContentManager() = default;
@@ -78,14 +80,16 @@ bool SensitiveContentManager::UpdateContentSensitivity() {
   return false;
 }
 
-void SensitiveContentManager::OnFieldTypesDetermined(AutofillManager& manager,
-                                                     FormGlobalId form_id,
-                                                     FieldTypeSource) {
+void SensitiveContentManager::OnFieldTypesDetermined(
+    AutofillManager& manager,
+    FormGlobalId form_id,
+    FieldTypeSource source,
+    bool small_forms_were_parsed) {
   if (const autofill::FormStructure* form =
           manager.FindCachedFormById(form_id)) {
     for (const std::unique_ptr<AutofillField>& field : form->fields()) {
-      const bool field_is_sensitive =
-          IsSensitiveAutofillType(field->Type().GetStorableType());
+      const bool field_is_sensitive = std::ranges::any_of(
+          field->Type().GetTypes(), &IsSensitiveAutofillType);
       // The feature param check is done first because reparsing by password
       // manager (calling `ClassifyAsPasswordForm`) can take long. Moreover,
       // this feature param exists only to check whether reparsing has a
@@ -138,13 +142,13 @@ void SensitiveContentManager::OnBeforeFormsSeen(
 
 void SensitiveContentManager::OnAutofillManagerStateChanged(
     AutofillManager& manager,
-    LifecycleState previous,
-    LifecycleState current) {
+    LifecycleState old_state,
+    LifecycleState new_state) {
   autofill::LocalFrameToken local_frame_token =
       manager.driver().GetFrameToken();
 
-  if (previous == LifecycleState::kActive &&
-      current != LifecycleState::kActive) {
+  if (old_state == LifecycleState::kActive &&
+      new_state != LifecycleState::kActive) {
     // The frame is not active anymore, so its fields are not anymore in the
     // DOM.
     // If needed, the time complexity can be further improved here by exploiting
@@ -158,21 +162,17 @@ void SensitiveContentManager::OnAutofillManagerStateChanged(
                     FormGlobalId form_id = item.first;
                     return form_id.frame_token == local_frame_token;
                   });
-  } else if (previous != LifecycleState::kActive &&
-             current == LifecycleState::kActive) {
+  } else if (old_state != LifecycleState::kActive &&
+             new_state == LifecycleState::kActive) {
     // The frame became active, so its fields are present in the DOM again.
-    const std::map<FormGlobalId, std::unique_ptr<autofill::FormStructure>>&
-        forms = manager.form_structures();
-
-    for (const auto& [form_id, form_structure] : forms) {
-      const std::vector<std::unique_ptr<AutofillField>>& fields =
-          form_structure->fields();
-      for (const std::unique_ptr<AutofillField>& field : fields) {
-        if (IsSensitiveAutofillType(field->Type().GetStorableType())) {
+    manager.ForEachCachedForm([&](const autofill::FormStructure& form) {
+      for (const std::unique_ptr<AutofillField>& field : form.fields()) {
+        if (std::ranges::any_of(field->Type().GetTypes(),
+                                &IsSensitiveAutofillType)) {
           sensitive_fields_.insert(field->global_id());
         }
       }
-    }
+    });
   }
 
   UpdateContentSensitivity();

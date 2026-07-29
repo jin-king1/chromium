@@ -12,6 +12,7 @@
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
 #include "base/run_loop.h"
+#include "base/strings/string_view_util.h"
 #include "base/test/gmock_callback_support.h"
 #include "base/test/task_environment.h"
 #include "device/bluetooth/bluetooth_socket.h"
@@ -199,6 +200,31 @@ TEST_F(SocketTest, TestReceiveAndSendMultiple) {
   WriteAndVerifySend("message_4", /*success=*/true);
   VerifyReceiveAndRead("message_5", /*success=*/true);
   WriteAndVerifySend("message_6", /*success=*/true);
+}
+
+TEST_F(SocketTest, TestSend_ClosedDuringSend) {
+  EXPECT_FALSE(send_stream_->QuerySignalsState().never_writable());
+  EXPECT_FALSE(fake_bluetooth_socket_->HasSendArgs());
+
+  std::string message = "test_message";
+  size_t actually_written_bytes = 0;
+  EXPECT_EQ(MOJO_RESULT_OK,
+            send_stream_->WriteData(base::as_byte_span(message),
+                                    MOJO_WRITE_DATA_FLAG_NONE,
+                                    actually_written_bytes));
+  EXPECT_EQ(message.size(), actually_written_bytes);
+
+  base::RunLoop().RunUntilIdle();
+
+  EXPECT_TRUE(fake_bluetooth_socket_->HasSendArgs());
+  auto send_args = fake_bluetooth_socket_->TakeSendArgs();
+
+  send_stream_.reset();
+
+  base::RunLoop().RunUntilIdle();
+
+  auto success_callback = std::move(std::get<2>(*send_args));
+  std::move(success_callback).Run(/*num_bytes_sent=*/message.size());
 }
 
 }  // namespace bluetooth

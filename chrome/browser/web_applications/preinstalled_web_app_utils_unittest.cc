@@ -4,6 +4,8 @@
 
 #include "chrome/browser/web_applications/preinstalled_web_app_utils.h"
 
+#include <variant>
+
 #include "base/files/file_path.h"
 #include "base/json/json_reader.h"
 #include "base/memory/scoped_refptr.h"
@@ -58,15 +60,15 @@ class PreinstalledWebAppUtilsTest : public testing::Test {
 
   std::optional<ExternalInstallOptions> ParseConfig(
       const char* app_config_string) {
-    std::optional<base::Value> app_config =
-        base::JSONReader::Read(app_config_string);
+    std::optional<base::Value> app_config = base::JSONReader::Read(
+        app_config_string, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
     DCHECK(app_config);
     auto file_utils = base::MakeRefCounted<FileUtilsWrapper>();
     OptionsOrError result =
         ::web_app::ParseConfig(*file_utils, /*dir=*/base::FilePath(),
                                /*file=*/base::FilePath(), app_config.value());
     if (ExternalInstallOptions* options =
-            absl::get_if<ExternalInstallOptions>(&result)) {
+            std::get_if<ExternalInstallOptions>(&result)) {
       return std::move(*options);
     }
     return std::nullopt;
@@ -74,15 +76,15 @@ class PreinstalledWebAppUtilsTest : public testing::Test {
 
   std::optional<WebAppInstallInfoFactory> ParseOfflineManifest(
       const char* offline_manifest_string) {
-    std::optional<base::Value> offline_manifest =
-        base::JSONReader::Read(offline_manifest_string);
+    std::optional<base::Value> offline_manifest = base::JSONReader::Read(
+        offline_manifest_string, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
     DCHECK(offline_manifest);
     WebAppInstallInfoFactoryOrError result = ::web_app::ParseOfflineManifest(
         *file_utils_, base::FilePath(FILE_PATH_LITERAL("test_dir")),
         base::FilePath(FILE_PATH_LITERAL("test_dir/test.json")),
         *offline_manifest);
     if (WebAppInstallInfoFactory* factory =
-            absl::get_if<WebAppInstallInfoFactory>(&result)) {
+            std::get_if<WebAppInstallInfoFactory>(&result)) {
       return std::move(*factory);
     }
     return std::nullopt;
@@ -114,16 +116,8 @@ class PreinstalledWebAppUtilsTabletTest
  public:
   PreinstalledWebAppUtilsTabletTest() {
     if (GetParam()) {
-#if BUILDFLAG(IS_CHROMEOS)
       base::CommandLine::ForCurrentProcess()->AppendSwitch(
           ash::switches::kEnableTabletFormFactor);
-#else
-      auto init_params = crosapi::mojom::BrowserInitParams::New();
-      init_params->device_properties = crosapi::mojom::DeviceProperties::New();
-      init_params->device_properties->is_tablet_form_factor = true;
-      chromeos::BrowserInitParams::SetInitParamsForTests(
-          std::move(init_params));
-#endif  // BUILDFLAG(IS_CHROMEOS)
     }
   }
   ~PreinstalledWebAppUtilsTabletTest() override = default;
@@ -164,16 +158,8 @@ class PreinstalledWebAppUtilsArcTest
  public:
   PreinstalledWebAppUtilsArcTest() {
     if (GetParam()) {
-#if BUILDFLAG(IS_CHROMEOS)
       base::CommandLine::ForCurrentProcess()->AppendSwitchASCII(
           ash::switches::kArcAvailability, "officially-supported");
-#else
-      auto init_params = crosapi::mojom::BrowserInitParams::New();
-      init_params->device_properties = crosapi::mojom::DeviceProperties::New();
-      init_params->device_properties->is_arc_available = true;
-      chromeos::BrowserInitParams::SetInitParamsForTests(
-          std::move(init_params));
-#endif  // BUILDFLAG(IS_CHROMEOS)
     }
   }
   ~PreinstalledWebAppUtilsArcTest() override = default;

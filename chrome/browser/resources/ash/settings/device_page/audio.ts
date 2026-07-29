@@ -8,7 +8,6 @@
  * settings.
  */
 
-import '../icons.html.js';
 import '../settings_shared.css.js';
 import '//resources/ash/common/cr_elements/cr_shared_style.css.js';
 import 'chrome://resources/ash/common/cr_elements/cr_icon_button/cr_icon_button.js';
@@ -56,7 +55,6 @@ const VOLUME_ICON_OFF_LEVEL = 0;
 // TODO(b/271871947): Match volume icon logic to QS revamp sliders.
 // Matches level calculated in unified_volume_view.cc.
 const VOLUME_ICON_LOUD_LEVEL = 34;
-const SETTINGS_20PX_ICON_PREFIX = 'settings20:';
 
 export class SettingsAudioElement extends SettingsAudioElementBase {
   static get is() {
@@ -118,17 +116,6 @@ export class SettingsAudioElement extends SettingsAudioElementBase {
         value: false,
       },
 
-      /**
-       * Used by DeepLinkingMixin to focus this page's deep links.
-       */
-      supportedSettingIds: {
-        type: Object,
-        value: () => new Set<Setting>([
-          Setting.kChargingSounds,
-          Setting.kLowBatterySound,
-        ]),
-      },
-
       showAllowAGC: {
         type: Boolean,
         value: loadTimeData.getBoolean('enableForceRespectUiGainsToggle'),
@@ -148,6 +135,12 @@ export class SettingsAudioElement extends SettingsAudioElementBase {
         type: Boolean,
       },
 
+      showAudioFocusEnforcement: {
+        type: Boolean,
+        value: () => loadTimeData.getBoolean('enableAudioFocusSetting'),
+        readOnly: true,
+      },
+
       isSpatialAudioEnabled_: {
         type: Boolean,
         value: true,
@@ -155,28 +148,35 @@ export class SettingsAudioElement extends SettingsAudioElementBase {
     };
   }
 
-  protected isAllowAGCEnabled: boolean;
-  protected showAllowAGC: boolean;
-  protected isHfpMicSrEnabled: boolean;
+  // DeepLinkingMixin override
+  override supportedSettingIds = new Set<Setting>([
+    Setting.kChargingSounds,
+    Setting.kLowBatterySound,
+  ]);
+
+  declare protected isAllowAGCEnabled: boolean;
+  declare protected showAllowAGC: boolean;
+  declare protected isHfpMicSrEnabled: boolean;
   protected isHfpMicSrSupported: boolean;
-  protected showSpatialAudio: boolean;
+  declare protected showSpatialAudio: boolean;
+  declare protected showAudioFocusEnforcement: boolean;
 
   private audioAndCaptionsBrowserProxy_: AudioAndCaptionsPageBrowserProxy;
   private devicePageBrowserProxy_: DevicePageBrowserProxy;
-  private audioSystemProperties_: AudioSystemProperties;
+  declare private audioSystemProperties_: AudioSystemProperties;
   private audioSystemPropertiesObserverReceiver_:
       AudioSystemPropertiesObserverReceiver;
-  private crosAudioConfig_: CrosAudioConfigInterface;
-  private isOutputMuted_: boolean;
-  private isInputMuted_: boolean;
-  private showVoiceIsolationSubsection_: boolean;
-  private isSpatialAudioEnabled_: boolean;
+  declare private crosAudioConfig_: CrosAudioConfigInterface;
+  declare private isOutputMuted_: boolean;
+  declare private isInputMuted_: boolean;
+  declare private showVoiceIsolationSubsection_: boolean;
+  declare private isSpatialAudioEnabled_: boolean;
   private isSpatialAudioSupported_: boolean;
-  private outputVolume_: number;
-  private startupSoundEnabled_: boolean;
+  declare private outputVolume_: number;
+  declare private startupSoundEnabled_: boolean;
   private batteryStatus_: BatteryStatus|undefined;
-  private powerSoundsHidden_: boolean;
-  private voiceIsolationEffectModePrefValues_: {[key: string]: number};
+  declare private powerSoundsHidden_: boolean;
+  declare private voiceIsolationEffectModePrefValues_: {[key: string]: number};
 
   constructor() {
     super();
@@ -331,7 +331,7 @@ export class SettingsAudioElement extends SettingsAudioElementBase {
 
   /** Handles updating the mic icon depending on the input mute state. */
   protected getInputIcon_(): string {
-    return this.isInputMuted_ ? 'settings:mic-off' : 'cr:mic';
+    return this.isInputMuted_ ? 'os-settings:mic-off' : 'cr:mic';
   }
 
   /**
@@ -340,18 +340,18 @@ export class SettingsAudioElement extends SettingsAudioElementBase {
    */
   protected getOutputIcon_(): string {
     if (this.isOutputMuted_) {
-      return SETTINGS_20PX_ICON_PREFIX + 'volume-up-off';
+      return 'os-settings:volume-up-off';
     }
 
     if (this.outputVolume_ === VOLUME_ICON_OFF_LEVEL) {
-      return SETTINGS_20PX_ICON_PREFIX + 'volume-zero';
+      return 'os-settings:volume-zero';
     }
 
     if (this.outputVolume_ < VOLUME_ICON_LOUD_LEVEL) {
-      return SETTINGS_20PX_ICON_PREFIX + 'volume-down';
+      return 'os-settings:volume-down';
     }
 
-    return SETTINGS_20PX_ICON_PREFIX + 'volume-up';
+    return 'os-settings:volume-up';
   }
 
   /**

@@ -4,6 +4,12 @@
 
 #import "ios/chrome/browser/home_customization/utils/home_customization_constants.h"
 
+CustomizationSection* const kCustomizationSectionBackground =
+    @"kCustomizationSectionBackground";
+
+CustomizationSection* const kCustomizationSectionEnterprise =
+    @"kCustomizationSectionEnterprise";
+
 CustomizationSection* const kCustomizationSectionMainToggles =
     @"kCustomizationSectionMainToggles";
 
@@ -14,6 +20,11 @@ CustomizationSection* const kCustomizationSectionMagicStackToggles =
     @"kCustomizationSectionMagicStackToggles";
 
 NSString* const kBottomSheetDetentIdentifier = @"kBottomSheetDetentIdentifier";
+
+CGFloat const kBottomSheetDetentHeight = 350;
+
+NSString* const kBottomSheetExpandedDetentIdentifier =
+    @"kBottomSheetExpandedDetentIdentifier";
 
 NSString* const kNavigationBarDismissButtonIdentifier =
     @"kNavigationBarDismissButtonIdentifier";
@@ -28,14 +39,14 @@ NSString* const kCustomizationToggleMagicStackIdentifier =
 NSString* const kCustomizationToggleDiscoverIdentifier =
     @"kCustomizationToggleDiscoverIdentifier";
 
-NSString* const kCustomizationToggleSetUpListIdentifier =
-    @"kCustomizationToggleSetUpListIdentifier";
 NSString* const kCustomizationToggleSafetyCheckIdentifier =
     @"kCustomizationToggleSafetyCheckIdentifier";
 NSString* const kCustomizationToggleTabResumptionIdentifier =
     @"kCustomizationToggleTabResumptionIdentifier";
-NSString* const kCustomizationToggleParcelTrackingIdentifier =
-    @"kCustomizationToggleParcelTrackingIdentifier";
+NSString* const kCustomizationToggleShopCardPriceTrackingIdentifier =
+    @"kCustomizationToggleShopCardPriceTrackingIdentifier";
+NSString* const kCustomizationToggleShopCardReviewsIdentifier =
+    @"kCustomizationToggleShopCardReviewsIdentifier";
 NSString* const kCustomizationToggleTipsIdentifier =
     @"kCustomizationToggleTipsIdentifier";
 
@@ -62,6 +73,13 @@ NSString* const kCustomizationCollectionMagicStackIdentifier =
 NSString* const kCustomizationCollectionDiscoverIdentifier =
     @"kCustomizationCollectionDiscoverIdentifier";
 
+NSString* const kBackgroundCellIdentifier = @"kBackgroundCellIdentifier";
+
+NSString* const kBackgroundPickerCellIdentifier =
+    @"kBackgroundPickerCellIdentifier";
+
+NSString* const kEnterpriseCellIdentifier = @"kEnterpriseCellIdentifier";
+
 const char kDiscoverFollowingURL[] =
     "https://google.com/preferences/interests/yourinterests";
 const char kDiscoverHiddenURL[] =
@@ -71,4 +89,5 @@ const char kDiscoverActivityURL[] =
 const char kDiscoverLearnMoreURL[] = "https://support.google.com/chrome/"
                                      "?p=new_tab&co=GENIE.Platform%3DiOS&oco=1";
 
+const NSInteger kNumberOfRecentBackgrounds = 3;
 const CGFloat kToggleIconPointSize = 18;

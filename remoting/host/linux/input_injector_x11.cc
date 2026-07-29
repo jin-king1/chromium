@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 #include "remoting/host/linux/input_injector_x11.h"
 
 #include <stddef.h>
@@ -20,6 +16,7 @@
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/memory/raw_ptr.h"
+#include "base/notimplemented.h"
 #include "base/strings/utf_string_conversion_utils.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
@@ -239,8 +236,7 @@ void InputInjectorX11::Core::InjectTextEvent(const TextEvent& event) {
   const std::string text = event.text();
   for (size_t index = 0; index < text.size(); ++index) {
     base_icu::UChar32 code_point;
-    if (!base::ReadUnicodeCharacter(text.c_str(), text.size(), &index,
-                                    &code_point)) {
+    if (!base::ReadUnicodeCharacter(text, &index, &code_point)) {
       continue;
     }
     character_injector_->Inject(code_point);

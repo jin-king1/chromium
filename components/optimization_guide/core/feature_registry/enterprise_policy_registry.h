@@ -5,6 +5,10 @@
 #ifndef COMPONENTS_OPTIMIZATION_GUIDE_CORE_FEATURE_REGISTRY_ENTERPRISE_POLICY_REGISTRY_H_
 #define COMPONENTS_OPTIMIZATION_GUIDE_CORE_FEATURE_REGISTRY_ENTERPRISE_POLICY_REGISTRY_H_
 
+#include <memory>
+#include <string_view>
+#include <vector>
+
 #include "components/optimization_guide/core/model_execution/model_execution_prefs.h"
 
 class PrefService;
@@ -16,9 +20,9 @@ namespace optimization_guide {
 class EnterprisePolicyPref {
  public:
   COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-  explicit EnterprisePolicyPref(const char* name);
+  explicit EnterprisePolicyPref(std::string_view name);
 
-  const char* name() const { return name_; }
+  std::string_view name() const { return name_; }
 
   // Returns the current setting of the enterprise policy.
   COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
@@ -27,12 +31,16 @@ class EnterprisePolicyPref {
 
  private:
   // The full pref path controlling the enterprise policy.
-  const char* name_;
+  std::string_view name_;
 };
 
 class EnterprisePolicyRegistry {
  public:
   EnterprisePolicyRegistry();
+
+  // Export destructor so test instances created with `CreateForTesting` can be
+  // destructed.
+  COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
   ~EnterprisePolicyRegistry();
 
   COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
@@ -40,18 +48,22 @@ class EnterprisePolicyRegistry {
 
   // Registers an enterprise policy pref. Features should register themselves in
   // components/optimization_guide/core/feature_registry/feature_registration.cc.
+  // `name` must reference a string with static storage duration (e.g. a string
+  // literal), as `EnterprisePolicyPref` stores `name` as a non-owning
+  // `std::string_view`.
   // Note that this does not cause the pref to be immediately registered in the
   // pref service: RegisterProfilePrefs must be called to do so (only once all
   // features are done registering their enterprise policy via Register calls).
   COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-  EnterprisePolicyPref Register(const char* name);
+  EnterprisePolicyPref Register(std::string_view name);
 
   // Registers all the prefs this registry holds into the pref registry.
   COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
   void RegisterProfilePrefs(PrefRegistrySimple* registry);
 
+  // Allows tests to create instances that can be tested in isolation.
   COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-  void ClearForTesting();
+  static std::unique_ptr<EnterprisePolicyRegistry> CreateForTesting();
 
  private:
   std::vector<EnterprisePolicyPref> enterprise_policies_;

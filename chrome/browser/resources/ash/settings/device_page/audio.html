@@ -158,10 +158,14 @@
           on-change="toggleSpatialAudioEnabled_">
       </cr-toggle>
     </div>
+    <template is="dom-if" if="[[showAudioFocusEnforcement]]">
+      <settings-toggle-button id="audioFocusEnforcementToggle"
+          pref="{{prefs.ash.audio_focus_enforcement_enabled}}"
+          label="$i18n{audioFocusEnforcementTitle}">
+      </settings-toggle-button>
+    </template>
   </div>
 </div>
-<!--TODO(b/260277007): Replace placeholder text when localization strings
-  available. Add styling. -->
 <div id="input"
     hidden="[[getInputHidden_(audioSystemProperties_.inputDevices)]]">
   <h2 id="audioInputTitle">$i18n{audioInputTitle}</h2>

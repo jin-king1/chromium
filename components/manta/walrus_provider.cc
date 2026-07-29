@@ -9,7 +9,7 @@
 
 #include "components/manta/features.h"
 #include "third_party/skia/include/codec/SkJpegDecoder.h"
-#include "third_party/skia/include/codec/SkPngDecoder.h"
+#include "third_party/skia/include/codec/SkPngRustDecoder.h"
 #include "ui/gfx/codec/jpeg_codec.h"
 #include "ui/gfx/codec/png_codec.h"
 #include "ui/gfx/image/image_skia.h"
@@ -19,10 +19,46 @@ namespace manta {
 
 namespace {
 
-constexpr char kOauthConsumerName[] = "manta_walrus";
 constexpr base::TimeDelta kTimeout = base::Seconds(30);
 // The maximum number of pixels after resizing an image.
 constexpr int32_t kMaxPixelsAfterResizing = 512 * 512;
+constexpr auto kTrafficAnnotation =
+    net::DefineNetworkTrafficAnnotation("chromeos_walrus_provider", R"(
+      semantics {
+        sender: "ChromeOS Walrus"
+        description:
+          "Requests the trust and safety verdict of images and text prompt "
+          "from the Mantis service."
+        trigger:
+          "User editing an image in the Gallery app with 'Edit with AI'"
+        internal {
+          contacts {
+            email: "cros-mantis@google.com"
+          }
+        }
+        user_data {
+          type: USER_CONTENT
+        }
+        data:
+          "The image user selected to edit in the gallery and the text prompt "
+          "typed in a editable text field. The generated images from the model "
+          "are also sent for the trust and safety verdict."
+        destination: GOOGLE_OWNED_SERVICE
+        last_reviewed: "2025-03-26"
+      }
+      policy {
+        cookies_allowed: NO
+        setting:
+            "User/Admin can enable or disable this feature via the Google "
+            "Admin Console by updating the GenAI Photo Editing settings. "
+            "The feature is enabled by default."
+        chrome_policy {
+            GenAIPhotoEditingSettings {
+              GenAIPhotoEditingSettings: 0
+            }
+        }
+      }
+    )");
 
 void OnServerResponseOrErrorReceived(
     MantaGenericCallback callback,
@@ -30,14 +66,14 @@ void OnServerResponseOrErrorReceived(
     MantaStatus manta_status) {
   if (manta_response == nullptr || !manta_response->filtered_data_size()) {
     // Return the status if the text/images are not blocked.
-    std::move(callback).Run(base::Value::Dict(), std::move(manta_status));
+    std::move(callback).Run(base::DictValue(), std::move(manta_status));
     return;
   }
 
   CHECK(manta_response != nullptr);
 
   // Add extra information for the invalid inputs.
-  auto output_data = base::Value::Dict();
+  auto output_data = base::DictValue();
   for (const auto& filtered_data : manta_response->filtered_data()) {
     auto filtered_reason = filtered_data.reason();
     switch (filtered_reason) {
@@ -81,7 +117,7 @@ std::optional<SkBitmap> DeserializeImage(const std::vector<uint8_t>& bytes) {
   if (SkJpegDecoder::IsJpeg(bytes.data(), bytes.size())) {
     return gfx::JPEGCodec::Decode(bytes);
   }
-  if (SkPngDecoder::IsPng(bytes.data(), bytes.size())) {
+  if (SkPngRustDecoder::IsPng(bytes.data(), bytes.size())) {
     return gfx::PNGCodec::Decode(bytes);
   }
   return std::nullopt;
@@ -139,7 +175,7 @@ void WalrusProvider::Filter(const std::optional<std::string>& text_prompt,
                             MantaGenericCallback done_callback) {
   if (images.size() != image_types.size()) {
     std::move(done_callback)
-        .Run(base::Value::Dict(), {MantaStatusCode::kInvalidInput});
+        .Run(base::DictValue(), {MantaStatusCode::kInvalidInput});
     return;
   }
 
@@ -171,16 +207,13 @@ void WalrusProvider::Filter(const std::optional<std::string>& text_prompt,
 
   if (!request.input_data_size()) {
     std::move(done_callback)
-        .Run(base::Value::Dict(), {MantaStatusCode::kInvalidInput});
+        .Run(base::DictValue(), {MantaStatusCode::kInvalidInput});
     return;
   }
 
-  // TODO(b:370476808): MISSING_TRAFFIC_ANNOTATION should be resolved before
-  // launch.
   RequestInternal(
       GURL{GetProviderEndpoint(features::IsWalrusUseProdServerEnabled())},
-      kOauthConsumerName, MISSING_TRAFFIC_ANNOTATION, request,
-      MantaMetricType::kWalrus,
+      kTrafficAnnotation, request, MantaMetricType::kWalrus,
       base::BindOnce(&OnServerResponseOrErrorReceived,
                      std::move(done_callback)),
       kTimeout);

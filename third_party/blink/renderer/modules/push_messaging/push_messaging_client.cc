@@ -72,7 +72,7 @@ void PushMessagingClient::Subscribe(
   if (!options->applicationServerKey()->ByteLength()) {
     ManifestManager* manifest_manager =
         ManifestManager::From(*GetSupplementable());
-    manifest_manager->RequestManifest(WTF::BindOnce(
+    manifest_manager->RequestManifest(BindOnce(
         &PushMessagingClient::DidGetManifest, WrapPersistent(this),
         WrapPersistent(service_worker_registration), std::move(options_ptr),
         user_gesture, WrapPersistent(resolver)));
@@ -107,9 +107,9 @@ void PushMessagingClient::DidGetManifest(
   }
 
   if (!manifest->gcm_sender_id.IsNull()) {
-    StringUTF8Adaptor gcm_sender_id_as_utf8_string(manifest->gcm_sender_id);
+    StringUtf8Adaptor gcm_sender_id_as_utf8_string(manifest->gcm_sender_id);
     Vector<uint8_t> application_server_key;
-    application_server_key.AppendSpan(base::span(gcm_sender_id_as_utf8_string));
+    application_server_key.append_range(gcm_sender_id_as_utf8_string);
     options->application_server_key = std::move(application_server_key);
   }
 
@@ -134,9 +134,9 @@ void PushMessagingClient::DoSubscribe(
   GetPushMessagingRemote()->Subscribe(
       service_worker_registration->RegistrationId(), std::move(options),
       user_gesture,
-      WTF::BindOnce(&PushMessagingClient::DidSubscribe, WrapPersistent(this),
-                    WrapPersistent(service_worker_registration),
-                    WrapPersistent(resolver)));
+      BindOnce(&PushMessagingClient::DidSubscribe, WrapPersistent(this),
+               WrapPersistent(service_worker_registration),
+               WrapPersistent(resolver)));
 }
 
 void PushMessagingClient::DidSubscribe(

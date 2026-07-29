@@ -10,9 +10,11 @@
 #include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
 #include "third_party/blink/renderer/bindings/core/v8/to_v8_traits.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_microtasks_scope.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/platform/bindings/dictionary_base.h"
 #include "third_party/blink/renderer/platform/bindings/exception_context.h"
+#include "third_party/blink/renderer/platform/bindings/lazy_source_location.h"
 #include "third_party/blink/renderer/platform/bindings/scoped_persistent.h"
 #include "third_party/blink/renderer/platform/bindings/script_forbidden_scope.h"
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
@@ -32,7 +34,6 @@ namespace blink {
 
 template <typename IDLResolvedType>
 class ScriptPromiseResolver;
-class SourceLocation;
 
 // This class wraps v8::Promise::Resolver for easier use in blink.
 //
@@ -185,9 +186,7 @@ class CORE_EXPORT ScriptPromiseResolverBase
     {
       ScriptForbiddenScope::AllowUserAgentScript allow_script;
       v8::Isolate* isolate = script_state_->GetIsolate();
-      v8::MicrotasksScope microtasks_scope(
-          isolate, ToMicrotaskQueue(script_state_.Get()),
-          v8::MicrotasksScope::kDoNotRunMicrotasks);
+      V8DoNotRunMicrotasksScope microtasks_scope(script_state_.Get());
       value_.Reset(isolate,
                    ToV8Traits<IDLType>::ToV8(script_state_, std::move(value)));
     }
@@ -220,12 +219,12 @@ class CORE_EXPORT ScriptPromiseResolverBase
   Member<ScriptState> script_state_;
   TraceWrapperV8Reference<v8::Value> value_;
   const ExceptionContext exception_context_;
-  std::unique_ptr<SourceLocation> source_location_;
+  Member<LazySourceLocation> lazy_source_location_;
 
 #if DCHECK_IS_ON()
   bool suppress_detach_check_ = false;
 
-  base::debug::StackTrace create_stack_trace_{8};
+  base::debug::StackTrace create_stack_trace_{11};
 #endif
 };
 
@@ -281,6 +280,18 @@ class ScriptPromiseResolver final : public ScriptPromiseResolverBase {
         MakeGarbageCollected<IDLResolvedType>(value));
   }
 
+  // This Resolve() method allows a Promise expecting to be resolved with an
+  // enum type to be resolved with an enum value of that type rather than having
+  // to explicitly construct the enum type.
+  template <typename T = IDLResolvedType>
+    requires std::derived_from<IDLResolvedType, bindings::EnumerationBase>
+  void Resolve(T::Enum value) {
+    if (!PrepareToResolveOrReject<kResolving>()) {
+      return;
+    }
+    ResolveOrReject<IDLResolvedType>(T(value));
+  }
+
   // A promise may be resolved with another promise if they are the same type.
   void Resolve(ScriptPromise<IDLResolvedType> promise) {
     if (!PrepareToResolveOrReject<kResolving>()) {
@@ -328,7 +339,7 @@ class ScriptPromiseResolver final : public ScriptPromiseResolverBase {
   base::OnceCallback<void(Args...)> WrapCallbackInScriptScope(
       base::OnceCallback<void(ScriptPromiseResolver<IDLResolvedType>*, Args...)>
           callback) {
-    return WTF::BindOnce(
+    return blink::BindOnce(
         [](ScriptPromiseResolver<IDLResolvedType>* resolver,
            base::OnceCallback<void(ScriptPromiseResolver<IDLResolvedType>*,
                                    Args...)> callback,

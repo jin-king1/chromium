@@ -15,13 +15,14 @@
 #include "base/containers/flat_map.h"
 #include "base/files/file_path.h"
 #include "base/memory/raw_ptr.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
 #include "base/task/cancelable_task_tracker.h"
 #include "base/timer/timer.h"
 #include "chrome/browser/prefs/incognito_mode_prefs.h"
 #include "chrome/browser/win/jumplist_updater.h"
+#include "components/favicon_base/favicon_types.h"
 #include "components/history/core/browser/history_types.h"
 #include "components/history/core/browser/top_sites_observer.h"
 #include "components/keyed_service/core/keyed_service.h"
@@ -189,6 +190,14 @@ class JumpList : public sessions::TabRestoreServiceObserver,
   // |cmd_line_profile_dir| is not empty, it will be added to the command line
   // switch --profile-directory.
   void AddGroup(const sessions::tab_restore::Group& group,
+                const base::FilePath& cmd_line_profile_dir,
+                size_t max_items);
+
+  // Adds a new ShellLinkItem for each tab in |split| to the JumpList data
+  // provided that doing so will not exceed |max_items|. If
+  // |cmd_line_profile_dir| is not empty, it will be added to the command line
+  // switch --profile-directory.
+  void AddSplit(const sessions::tab_restore::Split& split,
                 const base::FilePath& cmd_line_profile_dir,
                 size_t max_items);
 

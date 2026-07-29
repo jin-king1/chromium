@@ -11,6 +11,7 @@
 
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_switches.h"
+#include "ash/constants/chrome_webui_url_constants.h"
 #include "base/base_switches.h"
 #include "base/command_line.h"
 #include "base/feature_list.h"
@@ -25,21 +26,21 @@
 #include "cc/base/switches.h"
 #include "chrome/browser/ash/boot_times_recorder/boot_times_recorder.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/lifetime/application_lifetime.h"
 #include "chrome/common/chrome_constants.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/chrome_switches.h"
-#include "chrome/common/url_constants.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/cryptohome/cryptohome_parameters.h"
 #include "chromeos/ash/components/dbus/dbus_thread_manager.h"
 #include "chromeos/ash/components/dbus/session_manager/session_manager_client.h"
+#include "chromeos/constants/chromeos_features.h"
 #include "chromeos/dbus/constants/dbus_switches.h"
 #include "components/account_id/account_id.h"
 #include "components/policy/core/common/policy_switches.h"
 #include "components/prefs/json_pref_store.h"
 #include "components/prefs/pref_service.h"
+#include "components/session_manager/core/session_manager.h"
 #include "components/tracing/common/tracing_switches.h"
 #include "components/user_manager/user_names.h"
 #include "components/variations/variations_switches.h"
@@ -55,6 +56,7 @@
 #include "sandbox/policy/switches.h"
 #include "third_party/blink/public/common/switches.h"
 #include "third_party/cros_system_api/switches/chrome_switches.h"
+#include "ui/accessibility/accessibility_features.h"
 #include "ui/base/ui_base_switches.h"
 #include "ui/display/display_features.h"
 #include "ui/display/display_switches.h"
@@ -77,7 +79,7 @@ const char kGuestModeLoggingLevel[] = "1";
 bool IsRunningTest() {
   const base::CommandLine* current_command_line =
       base::CommandLine::ForCurrentProcess();
-  return current_command_line->HasSwitch(::switches::kTestName) ||
+  return current_command_line->HasSwitch(ash::switches::kTestName) ||
          current_command_line->HasSwitch(::switches::kTestType);
 }
 
@@ -87,18 +89,18 @@ bool IsRunningTest() {
 // - Append/override switches using `new_switches`;
 void DeriveCommandLine(const GURL& start_url,
                        const base::CommandLine& base_command_line,
-                       const base::Value::Dict& new_switches,
+                       const base::DictValue& new_switches,
                        base::CommandLine* command_line) {
   DCHECK_NE(&base_command_line, command_line);
 
   static const char* const kForwardSwitches[] = {
       sandbox::policy::switches::kDisableGpuSandbox,
+      sandbox::policy::switches::kDisableLandlockSandbox,
       sandbox::policy::switches::kDisableSeccompFilterSandbox,
       sandbox::policy::switches::kDisableSetuidSandbox,
       sandbox::policy::switches::kGpuSandboxAllowSysVShm,
       sandbox::policy::switches::kGpuSandboxFailuresFatal,
       sandbox::policy::switches::kNoSandbox,
-      ::switches::kDisable2dCanvasImageChromium,
       ::switches::kDisableAccelerated2dCanvas,
       ::switches::kDisableAcceleratedMjpegDecode,
       ::switches::kDisableAcceleratedVideoDecode,
@@ -113,7 +115,6 @@ void DeriveCommandLine(const GURL& start_url,
       ::switches::kDisableGpuCompositing,
       ::switches::kDisableGpuRasterization,
       ::switches::kDisableMojoBroker,
-      ::switches::kDisableTouchDragDrop,
       ::switches::kDisableVideoCaptureUseGpuMemoryBuffer,
       ::switches::kDisableYUVImageDecoding,
       ::switches::kEnableBlinkFeatures,
@@ -122,27 +123,26 @@ void DeriveCommandLine(const GURL& start_url,
       ::switches::kEnableLogging,
       ::switches::kEnableMicrophoneMuteSwitchDeviceSwitch,
       ::switches::kEnableNativeGpuMemoryBuffers,
-      ::switches::kEnableTouchDragDrop,
       ::switches::kEnableUnifiedDesktop,
       ::switches::kEnableViewport,
       ::switches::kEnableHardwareOverlays,
       ::switches::kEdgeTouchFiltering,
       ::switches::kHostWindowBounds,
       ::switches::kForceDeviceScaleFactor,
-      ::switches::kForceGpuMemAvailableMb,
       ::switches::kGpuStartupDialog,
       ::switches::kGpuSandboxStartEarly,
-      ::switches::kPpapiInProcess,
       ::switches::kRemoteDebuggingPort,
       ::switches::kRendererStartupDialog,
       ::switches::kSchedulerBoostUrgent,
       ::switches::kTouchDevices,
       ::switches::kTouchEventFeatureDetection,
       ::switches::kTopChromeTouchUi,
-      ::switches::kTraceToConsole,
       ::switches::kUIDisablePartialSwap,
 #if BUILDFLAG(USE_CRAS)
       ::switches::kUseCras,
+#endif
+#if BUILDFLAG(USE_VAAPI)
+      ::switches::kHardwareVideoDevicePath,
 #endif
       ::switches::kUseGL,
       ::switches::kUserDataDir,
@@ -152,13 +152,10 @@ void DeriveCommandLine(const GURL& start_url,
       ::switches::kWebAuthRemoteDesktopSupport,
       ::switches::kEnableWebGLDeveloperExtensions,
       ::switches::kEnableWebGLDraftExtensions,
-      ::switches::kDisableWebGLImageChromium,
-      ::switches::kEnableWebGLImageChromium,
       ::switches::kEnableUnsafeWebGPU,
       ::switches::kEnableWebGPUDeveloperFeatures,
       ::switches::kOzonePlatform,
       ::switches::kRenderNodeOverride,
-      switches::kAshClearFastInkBuffer,
       switches::kAshConstrainPointerToRoot,
       switches::kAshDebugShortcuts,
       switches::kAshDeveloperShortcuts,
@@ -174,16 +171,20 @@ void DeriveCommandLine(const GURL& start_url,
       switches::kShowTaps,
       blink::switches::kBlinkSettings,
       blink::switches::kDarkModeSettings,
-      blink::switches::kDisableLowResTiling,
       blink::switches::kDisablePartialRaster,
       blink::switches::kDisablePreferCompositingToLCDText,
       blink::switches::kDisableRGBA4444Textures,
       blink::switches::kDisableZeroCopy,
-      blink::switches::kEnableLowResTiling,
       blink::switches::kEnablePreferCompositingToLCDText,
       blink::switches::kEnableRGBA4444Textures,
       blink::switches::kEnableRasterSideDarkModeForImages,
+#if BUILDFLAG(IS_CHROMEOS)
+      blink::switches::kEnableOverlaysAndLowLatencyUsageForWebGL,
+#endif
       blink::switches::kEnableZeroCopy,
+      blink::switches::kForceGpuMemAvailableMb,
+      blink::switches::
+          kGpuMemoryBufferReadbackFromTextureForceDisabledForDebugging,
       blink::switches::kGpuRasterizationMSAASampleCount,
       switches::kAshPowerButtonPosition,
       switches::kAshSideVolumeButtonPosition,
@@ -200,7 +201,6 @@ void DeriveCommandLine(const GURL& start_url,
       ::switches::kDisableThreadedAnimation,
       ::switches::kEnableGpuBenchmarking,
       ::switches::kEnableMainFrameBeforeActivation,
-      ::switches::kHighlightNonLCDTextLayers,
       ::switches::kNumRasterThreads,
       ::switches::kShowCompositedLayerBorders,
       ::switches::kShowFPSCounter,
@@ -219,7 +219,6 @@ void DeriveCommandLine(const GURL& start_url,
       switches::kDisableLoginAnimations,
       switches::kEnableArc,
       switches::kEnterpriseDisableArc,
-      switches::kEnterpriseEnableForcedReEnrollment,
       switches::kForceTabletPowerButton,
       switches::kFormFactor,
       switches::kHasChromeOSKeyboard,
@@ -248,10 +247,14 @@ void DeriveCommandLine(const GURL& start_url,
 // current session.
 void DeriveFeatures(base::CommandLine* out_command_line) {
   auto kForwardFeatures = {
+      &::features::kAccessibilityManifestV3EspeakNGTts,
+      &::features::kAccessibilityManifestV3GoogleTts,
       &features::kAutoNightLight,
+      &chromeos::features::kFeatureManagementRoundedWindows,
       &ash::features::kSeamlessRefreshRateSwitching,
       &::features::kPluginVm,
       &display::features::kCtmColorManagement,
+      &display::features::kDrmColorSpaceDefaultIsRec709,
       &display::features::kOledScaleFactorEnabled,
 #if BUILDFLAG(ENABLE_PLATFORM_HEVC)
       &media::kPlatformHEVCDecoderSupport,
@@ -284,7 +287,7 @@ void DeriveFeatures(base::CommandLine* out_command_line) {
 // and exit current process.
 void ReLaunch(const base::CommandLine& command_line) {
   base::LaunchProcess(command_line.argv(), base::LaunchOptions());
-  chrome::AttemptUserExit();
+  session_manager::SessionManager::Get()->RequestSignOut();
 }
 
 // Wraps the work of sending chrome restart request to session manager.
@@ -334,7 +337,7 @@ void ChromeRestartRequest::Start() {
 
   // XXX: normally this call must not be needed, however RestartJob
   // just kills us so settings may be lost. See http://crosbug.com/13102
-  g_browser_process->FlushLocalStateAndReply(base::BindOnce(
+  g_browser_process->local_state()->CommitPendingWrite(base::BindOnce(
       &ChromeRestartRequest::RestartJob, weak_ptr_factory_.GetWeakPtr()));
   timer_.Start(FROM_HERE, base::Seconds(3), this,
                &ChromeRestartRequest::RestartJob);
@@ -381,7 +384,7 @@ void ChromeRestartRequest::OnRestartJob(base::ScopedFD local_auth_fd,
 void GetOffTheRecordCommandLine(const GURL& start_url,
                                 const base::CommandLine& base_command_line,
                                 base::CommandLine* command_line) {
-  base::Value::Dict otr_switches;
+  base::DictValue otr_switches;
   otr_switches.Set(switches::kGuestSession, std::string());
   otr_switches.Set(::switches::kIncognito, std::string());
   otr_switches.Set(::switches::kLoggingLevel, kGuestModeLoggingLevel);
@@ -395,7 +398,7 @@ void GetOffTheRecordCommandLine(const GURL& start_url,
 
   // Override the home page.
   otr_switches.Set(::switches::kHomePage,
-                   GURL(chrome::kChromeUINewTabURL).spec());
+                   GURL(ash::chrome_urls::kChromeUINewTabURL).spec());
 
   DeriveCommandLine(start_url, base_command_line, otr_switches, command_line);
   DeriveFeatures(command_line);

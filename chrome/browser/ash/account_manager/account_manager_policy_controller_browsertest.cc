@@ -27,9 +27,7 @@
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "components/account_id/account_id.h"
 #include "components/account_manager_core/account.h"
-#include "components/account_manager_core/account_manager_facade.h"
 #include "components/account_manager_core/chromeos/account_manager.h"
-#include "components/account_manager_core/chromeos/account_manager_facade_factory.h"
 #include "components/account_manager_core/pref_names.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/signin/public/base/consent_level.h"
@@ -71,7 +69,7 @@ class AccountManagerPolicyControllerTest : public InProcessBrowserTest {
     const AccountId account_id = AccountId::FromUserEmailGaiaId(
         kFakePrimaryUsername,
         signin::GetTestGaiaIdForEmail(kFakePrimaryUsername));
-    ASSERT_TRUE(user_manager::TestHelper(*user_manager::UserManager::Get())
+    ASSERT_TRUE(user_manager::TestHelper(user_manager::UserManager::Get())
                     .AddRegularUser(account_id));
     session_manager::SessionManager::Get()->CreateSession(
         account_id, user_manager::TestHelper::GetFakeUsernameHash(account_id),
@@ -87,11 +85,6 @@ class AccountManagerPolicyControllerTest : public InProcessBrowserTest {
     profile_builder.SetProfileName(kFakePrimaryUsername);
     profile_ = IdentityTestEnvironmentProfileAdaptor::
         CreateProfileForIdentityTestEnvironment(profile_builder);
-    auto* factory =
-        g_browser_process->platform_part()->GetAccountManagerFactory();
-    account_manager_ = factory->GetAccountManager(profile()->GetPath().value());
-    account_manager_facade_ =
-        ::GetAccountManagerFacade(profile()->GetPath().value());
     identity_test_environment_adaptor_ =
         std::make_unique<IdentityTestEnvironmentProfileAdaptor>(profile_.get());
 
@@ -106,11 +99,14 @@ class AccountManagerPolicyControllerTest : public InProcessBrowserTest {
                                              primary_account_info.gaia));
 
     // Add accounts in Account Manager.
-    account_manager_->UpsertAccount(
+    auto* account_manager =
+        ash::AccountManagerFactory::Get()->GetAccountManager(
+            profile_->GetPath().value());
+    account_manager->UpsertAccount(
         ::account_manager::AccountKey::FromGaiaId(primary_account_info.gaia),
         primary_account_info.email,
         account_manager::AccountManager::kInvalidToken);
-    account_manager_->UpsertAccount(
+    account_manager->UpsertAccount(
         ::account_manager::AccountKey::FromGaiaId(kFakeSecondaryGaiaId),
         kFakeSecondaryUsername, account_manager::AccountManager::kInvalidToken);
 
@@ -124,11 +120,14 @@ class AccountManagerPolicyControllerTest : public InProcessBrowserTest {
   }
 
   std::vector<::account_manager::Account> GetAccountManagerAccounts() {
-    CHECK(account_manager_facade_);
+    auto* account_manager =
+        ash::AccountManagerFactory::Get()->GetAccountManager(
+            profile_->GetPath().value());
+    CHECK(account_manager);
 
     base::test::TestFuture<const std::vector<::account_manager::Account>&>
         future;
-    account_manager_facade_->GetAccounts(future.GetCallback());
+    account_manager->GetAccounts(future.GetCallback());
     return future.Get();
   }
 
@@ -141,10 +140,6 @@ class AccountManagerPolicyControllerTest : public InProcessBrowserTest {
 
  private:
   base::ScopedTempDir temp_dir_;
-  raw_ptr<account_manager::AccountManager, DanglingUntriaged> account_manager_ =
-      nullptr;
-  raw_ptr<account_manager::AccountManagerFacade> account_manager_facade_ =
-      nullptr;
   std::unique_ptr<Profile> profile_;
   std::unique_ptr<IdentityTestEnvironmentProfileAdaptor>
       identity_test_environment_adaptor_;

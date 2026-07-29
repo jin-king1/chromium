@@ -18,6 +18,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "webgl_conformance_gles_passthrough_tests",
         "resultdb": {
           "enable": true,
@@ -26,7 +28,7 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "device_os": "PQ3A.190801.002",
+            "device_os": "QQ1A.191205.008",
             "device_os_flavor": "google",
             "device_os_type": "userdebug",
             "device_type": "walleye",

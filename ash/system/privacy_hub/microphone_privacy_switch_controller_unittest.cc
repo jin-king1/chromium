@@ -96,6 +96,10 @@ class MockFrontendAPI : public PrivacyHubDelegate {
  public:
   MOCK_METHOD(void, MicrophoneHardwareToggleChanged, (bool), (override));
   MOCK_METHOD(void, SetForceDisableCameraSwitch, (bool), (override));
+  MOCK_METHOD(void,
+              SystemGeolocationAccessLevelChanged,
+              (GeolocationAccessLevel),
+              (override));
 };
 
 }  // namespace
@@ -247,15 +251,18 @@ INSTANTIATE_TEST_SUITE_P(All,
                          PrivacyHubMicrophoneControllerTest,
                          testing::Bool());
 
-TEST_P(PrivacyHubMicrophoneControllerTest, SetSystemMuteOnLogin) {
+TEST_P(PrivacyHubMicrophoneControllerTest, SetSystemMuteOnSwitchUser) {
+  const AccountId user1_account_id =
+      Shell::Get()->session_controller()->GetActiveAccountId();
+  auto user2_account_id = SimulateUserLogin({"other@user.test"});
+  SwitchActiveUser(user1_account_id);
+
   for (bool microphone_allowed : {false, true, false}) {
     const bool microphone_muted = !microphone_allowed;
     SetUserPref(microphone_allowed);
     ASSERT_EQ(CrasAudioHandler::Get()->IsInputMuted(), microphone_muted);
-    const AccountId user1_account_id =
-        Shell::Get()->session_controller()->GetActiveAccountId();
 
-    SimulateUserLogin({"other@user.test"});
+    SwitchActiveUser(user2_account_id);
     SetUserPref(microphone_muted);
     EXPECT_EQ(CrasAudioHandler::Get()->IsInputMuted(), microphone_allowed);
 
@@ -862,6 +869,41 @@ TEST_P(PrivacyHubMicrophoneControllerTest, NotificationUpdatedWhenAppClosed) {
             IDS_MICROPHONE_MUTED_NOTIFICATION_MESSAGE_WITH_ONE_APP_NAME, app1),
         notification_ptr->message());
   }
+}
+
+using PrivacyHubMicrophoneEarlyQueryTest = AshTestBase;
+
+// Tests that querying the microphone switch state early before the active user
+// pref service is registered does not crash, and successfully falls back to
+// retrieving the PrefService directly from the SessionController.
+TEST_F(PrivacyHubMicrophoneEarlyQueryTest,
+       QueryAllowedBeforeActiveUserPrefServiceChangedFallbackToDirectBlocked) {
+  PrefService* active_prefs =
+      Shell::Get()->session_controller()->GetActivePrefService();
+  ASSERT_TRUE(active_prefs);
+
+  // Set the microphone preference to FALSE.
+  active_prefs->SetBoolean(prefs::kUserMicrophoneAllowed, false);
+
+  MicrophonePrivacySwitchController controller;
+
+  // It should safely read the false (blocked) value.
+  EXPECT_FALSE(controller.IsMicrophoneUsageAllowed());
+}
+
+TEST_F(PrivacyHubMicrophoneEarlyQueryTest,
+       QueryAllowedBeforeActiveUserPrefServiceChangedFallbackToDirectAllowed) {
+  PrefService* active_prefs =
+      Shell::Get()->session_controller()->GetActivePrefService();
+  ASSERT_TRUE(active_prefs);
+
+  // Set the microphone preference to TRUE.
+  active_prefs->SetBoolean(prefs::kUserMicrophoneAllowed, true);
+
+  MicrophonePrivacySwitchController controller;
+
+  // It should safely read the true (allowed) value.
+  EXPECT_TRUE(controller.IsMicrophoneUsageAllowed());
 }
 
 }  // namespace ash

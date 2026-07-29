@@ -6,12 +6,11 @@
 
 #include <array>
 
+#include "ash/constants/url_constants.h"
 #include "ash/webui/settings/public/constants/routes.mojom-forward.h"
 #include "base/containers/span.h"
 #include "chrome/browser/ui/webui/ash/settings/pages/printing/cups_printers_handler.h"
 #include "chrome/browser/ui/webui/ash/settings/search/search_tag_registry.h"
-#include "chrome/common/chrome_features.h"
-#include "chrome/common/url_constants.h"
 #include "chrome/grit/generated_resources.h"
 #include "chromeos/printing/printer_configuration.h"
 #include "content/public/browser/web_ui_data_source.h"
@@ -206,6 +205,8 @@ void PrintingSection::AddLoadTimeData(content::WebUIDataSource* html_source) {
       {"printerConfiguringMessage",
        IDS_SETTINGS_PRINTING_CUPS_PRINTER_CONFIGURING_MESSAGE},
       {"printerManufacturer", IDS_SETTINGS_PRINTING_CUPS_PRINTER_MANUFACTURER},
+      {"managedPrinterPPD",
+       IDS_SETTINGS_PRINTING_CUPS_PRINTER_MANAGED_PRINTER_PPD},
       {"selectDriver", IDS_SETTINGS_PRINTING_CUPS_PRINTER_SELECT_DRIVER},
       {"advancedConfigSelectDriver",
        IDS_SETTINGS_PRINTING_CUPS_PRINTER_ADVANCED_CONFIG_SELECT_DRIVER},
@@ -255,6 +256,8 @@ void PrintingSection::AddLoadTimeData(content::WebUIDataSource* html_source) {
        IDS_SETTINGS_PRINTING_CUPS_EDIT_PRINTER_DIALOG_TITLE},
       {"viewPrinterDialogTitle",
        IDS_SETTINGS_PRINTING_CUPS_VIEW_PRINTER_DIALOG_TITLE},
+      {"viewPrinterDialogManagedLabel",
+       IDS_SETTINGS_PRINTING_CUPS_VIEW_PRINTER_DIALOG_MANAGED_LABEL},
       {"editPrinterButtonText", IDS_SETTINGS_PRINTING_CUPS_EDIT_PRINTER_BUTTON},
       {"currentPpdMessage",
        IDS_SETTINGS_PRINTING_CUPS_EDIT_PRINTER_CURRENT_PPD_MESSAGE},
@@ -306,11 +309,12 @@ void PrintingSection::AddLoadTimeData(content::WebUIDataSource* html_source) {
   };
   html_source->AddLocalizedStrings(kLocalizedStrings);
 
-  html_source->AddString("printingCUPSPrintLearnMoreUrl",
-                         GetHelpUrlWithBoard(chrome::kCupsPrintLearnMoreURL));
+  html_source->AddString(
+      "printingCUPSPrintLearnMoreUrl",
+      GetHelpUrlWithBoard(ash::external_urls::kCupsPrintLearnMoreURL));
   html_source->AddString(
       "printingCUPSPrintPpdLearnMoreUrl",
-      GetHelpUrlWithBoard(chrome::kCupsPrintPPDLearnMoreURL));
+      GetHelpUrlWithBoard(ash::external_urls::kCupsPrintPPDLearnMoreURL));
 }
 
 void PrintingSection::AddHandlers(content::WebUI* web_ui) {

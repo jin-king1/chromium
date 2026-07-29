@@ -6,7 +6,6 @@
 
 #include "base/barrier_closure.h"
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
@@ -15,6 +14,7 @@
 #include "base/run_loop.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "services/device/device_service.h"
@@ -32,7 +32,6 @@
 #include "services/device/public/cpp/generic_sensor/sensor_traits.h"
 
 using ::testing::_;
-using ::testing::Invoke;
 
 namespace device {
 
@@ -247,7 +246,8 @@ TEST_F(GenericSensorServiceTest, GetSensorTest) {
   auto client = std::make_unique<TestSensorClient>(SensorType::ACCELEROMETER);
   base::RunLoop run_loop;
   sensor_provider_->GetSensor(
-      SensorType::ACCELEROMETER,
+      SensorType::ACCELEROMETER, mojo::NullReceiver(),
+      /*initially_suspended=*/false,
       base::BindOnce(&TestSensorClient::OnSensorCreated,
                      base::Unretained(client.get()), run_loop.QuitClosure()));
   run_loop.Run();
@@ -262,7 +262,8 @@ TEST_F(GenericSensorServiceTest, GetDefaultConfigurationTest) {
   {
     base::RunLoop run_loop;
     sensor_provider_->GetSensor(
-        SensorType::ACCELEROMETER,
+        SensorType::ACCELEROMETER, mojo::NullReceiver(),
+        /*initially_suspended=*/false,
         base::BindOnce(&TestSensorClient::OnSensorCreated,
                        base::Unretained(client.get()), run_loop.QuitClosure()));
     run_loop.Run();
@@ -287,7 +288,8 @@ TEST_F(GenericSensorServiceTest, ValidAddConfigurationTest) {
   {
     base::RunLoop run_loop;
     sensor_provider_->GetSensor(
-        SensorType::AMBIENT_LIGHT,
+        SensorType::AMBIENT_LIGHT, mojo::NullReceiver(),
+        /*initially_suspended=*/false,
         base::BindOnce(&TestSensorClient::OnSensorCreated,
                        base::Unretained(client.get()), run_loop.QuitClosure()));
     run_loop.Run();
@@ -309,7 +311,8 @@ TEST_F(GenericSensorServiceTest, InvalidAddConfigurationTest) {
   {
     base::RunLoop run_loop;
     sensor_provider_->GetSensor(
-        SensorType::LINEAR_ACCELERATION,
+        SensorType::LINEAR_ACCELERATION, mojo::NullReceiver(),
+        /*initially_suspended=*/false,
         base::BindOnce(&TestSensorClient::OnSensorCreated,
                        base::Unretained(client.get()), run_loop.QuitClosure()));
     run_loop.Run();
@@ -331,11 +334,13 @@ TEST_F(GenericSensorServiceTest, MultipleClientsTest) {
     base::RunLoop run_loop;
     auto barrier_closure = base::BarrierClosure(2, run_loop.QuitClosure());
     sensor_provider_->GetSensor(
-        SensorType::ACCELEROMETER,
+        SensorType::ACCELEROMETER, mojo::NullReceiver(),
+        /*initially_suspended=*/false,
         base::BindOnce(&TestSensorClient::OnSensorCreated,
                        base::Unretained(client_1.get()), barrier_closure));
     sensor_provider_->GetSensor(
-        SensorType::ACCELEROMETER,
+        SensorType::ACCELEROMETER, mojo::NullReceiver(),
+        /*initially_suspended=*/false,
         base::BindOnce(&TestSensorClient::OnSensorCreated,
                        base::Unretained(client_2.get()), barrier_closure));
     run_loop.Run();
@@ -362,11 +367,13 @@ TEST_F(GenericSensorServiceTest, ClientMojoConnectionBrokenTest) {
     base::RunLoop run_loop;
     auto barrier_closure = base::BarrierClosure(2, run_loop.QuitClosure());
     sensor_provider_->GetSensor(
-        SensorType::ACCELEROMETER,
+        SensorType::ACCELEROMETER, mojo::NullReceiver(),
+        /*initially_suspended=*/false,
         base::BindOnce(&TestSensorClient::OnSensorCreated,
                        base::Unretained(client_1.get()), barrier_closure));
     sensor_provider_->GetSensor(
-        SensorType::ACCELEROMETER,
+        SensorType::ACCELEROMETER, mojo::NullReceiver(),
+        /*initially_suspended=*/false,
         base::BindOnce(&TestSensorClient::OnSensorCreated,
                        base::Unretained(client_2.get()), barrier_closure));
     run_loop.Run();
@@ -391,7 +398,8 @@ TEST_F(GenericSensorServiceTest, AddAndRemoveConfigurationTest) {
   {
     base::RunLoop run_loop;
     sensor_provider_->GetSensor(
-        SensorType::ACCELEROMETER,
+        SensorType::ACCELEROMETER, mojo::NullReceiver(),
+        /*initially_suspended=*/false,
         base::BindOnce(&TestSensorClient::OnSensorCreated,
                        base::Unretained(client.get()), run_loop.QuitClosure()));
     run_loop.Run();
@@ -432,7 +440,8 @@ TEST_F(GenericSensorServiceTest, SuspendTest) {
   {
     base::RunLoop run_loop;
     sensor_provider_->GetSensor(
-        SensorType::AMBIENT_LIGHT,
+        SensorType::AMBIENT_LIGHT, mojo::NullReceiver(),
+        /*initially_suspended=*/false,
         base::BindOnce(&TestSensorClient::OnSensorCreated,
                        base::Unretained(client.get()), run_loop.QuitClosure()));
     run_loop.Run();
@@ -464,7 +473,8 @@ TEST_F(GenericSensorServiceTest, ErrorWhileSuspendedTest) {
   {
     base::RunLoop run_loop;
     sensor_provider_->GetSensor(
-        SensorType::AMBIENT_LIGHT,
+        SensorType::AMBIENT_LIGHT, mojo::NullReceiver(),
+        /*initially_suspended=*/false,
         base::BindOnce(&TestSensorClient::OnSensorCreated,
                        base::Unretained(client.get()), run_loop.QuitClosure()));
     run_loop.Run();
@@ -497,7 +507,8 @@ TEST_F(GenericSensorServiceTest, SuspendThenResumeTest) {
   {
     base::RunLoop run_loop;
     sensor_provider_->GetSensor(
-        SensorType::ACCELEROMETER,
+        SensorType::ACCELEROMETER, mojo::NullReceiver(),
+        /*initially_suspended=*/false,
         base::BindOnce(&TestSensorClient::OnSensorCreated,
                        base::Unretained(client.get()), run_loop.QuitClosure()));
     run_loop.Run();
@@ -543,11 +554,13 @@ TEST_F(GenericSensorServiceTest, MultipleClientsSuspendAndResumeTest) {
     base::RunLoop run_loop;
     auto barrier_closure = base::BarrierClosure(2, run_loop.QuitClosure());
     sensor_provider_->GetSensor(
-        SensorType::ACCELEROMETER,
+        SensorType::ACCELEROMETER, mojo::NullReceiver(),
+        /*initially_suspended=*/false,
         base::BindOnce(&TestSensorClient::OnSensorCreated,
                        base::Unretained(client_1.get()), barrier_closure));
     sensor_provider_->GetSensor(
-        SensorType::ACCELEROMETER,
+        SensorType::ACCELEROMETER, mojo::NullReceiver(),
+        /*initially_suspended=*/false,
         base::BindOnce(&TestSensorClient::OnSensorCreated,
                        base::Unretained(client_2.get()), barrier_closure));
     run_loop.Run();
@@ -573,7 +586,8 @@ TEST_F(GenericSensorServiceTest, MojoReceiverDisconnectionTest) {
   {
     base::RunLoop run_loop;
     sensor_provider_->GetSensor(
-        SensorType::ACCELEROMETER,
+        SensorType::ACCELEROMETER, mojo::NullReceiver(),
+        /*initially_suspended=*/false,
         base::BindOnce(&TestSensorClient::OnSensorCreated,
                        base::Unretained(client.get()), run_loop.QuitClosure()));
     run_loop.Run();
@@ -610,7 +624,8 @@ TEST_F(GenericSensorServiceTest, MojoReceiverDisconnectionTest) {
   {
     base::RunLoop run_loop;
     sensor_provider_->GetSensor(
-        SensorType::ACCELEROMETER,
+        SensorType::ACCELEROMETER, mojo::NullReceiver(),
+        /*initially_suspended=*/false,
         base::BindOnce(&TestSensorClient::OnSensorCreated,
                        base::Unretained(new_client.get()),
                        run_loop.QuitClosure()));
@@ -666,7 +681,8 @@ TEST_F(GenericSensorServiceTest,
   {
     base::RunLoop run_loop;
     sensor_provider_->GetSensor(
-        SensorType::AMBIENT_LIGHT,
+        SensorType::AMBIENT_LIGHT, mojo::NullReceiver(),
+        /*initially_suspended=*/false,
         base::BindOnce(&TestSensorClient::OnSensorCreated,
                        base::Unretained(client.get()), run_loop.QuitClosure()));
     run_loop.Run();
@@ -695,7 +711,8 @@ TEST_F(GenericSensorServiceTest, SameVirtualAndNonVirtualPlatformSensorsTest) {
   {
     base::RunLoop run_loop;
     sensor_provider_->GetSensor(
-        SensorType::ACCELEROMETER,
+        SensorType::ACCELEROMETER, mojo::NullReceiver(),
+        /*initially_suspended=*/false,
         base::BindOnce(&TestSensorClient::OnSensorCreated,
                        base::Unretained(client.get()), run_loop.QuitClosure()));
     run_loop.Run();
@@ -753,7 +770,8 @@ TEST_F(GenericSensorServiceTest, VirtualEulerAngleSensorCreationTest) {
   {
     base::RunLoop run_loop;
     sensor_provider_->GetSensor(
-        SensorType::RELATIVE_ORIENTATION_EULER_ANGLES,
+        SensorType::RELATIVE_ORIENTATION_EULER_ANGLES, mojo::NullReceiver(),
+        /*initially_suspended=*/false,
         base::BindOnce(&TestSensorClient::OnSensorCreated,
                        base::Unretained(client.get()), run_loop.QuitClosure()));
     run_loop.Run();
@@ -775,7 +793,8 @@ TEST_F(GenericSensorServiceTest, VirtualPlatformOverridesNonVirtualTest) {
   {
     base::RunLoop run_loop;
     sensor_provider_->GetSensor(
-        SensorType::ACCELEROMETER,
+        SensorType::ACCELEROMETER, mojo::NullReceiver(),
+        /*initially_suspended=*/false,
         base::BindOnce(&TestSensorClient::OnSensorCreated,
                        base::Unretained(client1.get()),
                        run_loop.QuitClosure()));
@@ -790,7 +809,8 @@ TEST_F(GenericSensorServiceTest, VirtualPlatformOverridesNonVirtualTest) {
   {
     base::RunLoop run_loop;
     sensor_provider_->GetSensor(
-        SensorType::ACCELEROMETER,
+        SensorType::ACCELEROMETER, mojo::NullReceiver(),
+        /*initially_suspended=*/false,
         base::BindOnce(&TestSensorClient::OnSensorCreated,
                        base::Unretained(client2.get()),
                        run_loop.QuitClosure()));

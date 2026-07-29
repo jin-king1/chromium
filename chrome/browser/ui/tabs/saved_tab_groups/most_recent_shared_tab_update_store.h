@@ -5,6 +5,8 @@
 #ifndef CHROME_BROWSER_UI_TABS_SAVED_TAB_GROUPS_MOST_RECENT_SHARED_TAB_UPDATE_STORE_H_
 #define CHROME_BROWSER_UI_TABS_SAVED_TAB_GROUPS_MOST_RECENT_SHARED_TAB_UPDATE_STORE_H_
 
+#include "base/feature_list.h"
+#include "base/memory/raw_ptr.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "components/saved_tab_groups/public/types.h"
 
@@ -59,7 +61,7 @@ class MostRecentSharedTabUpdateStore {
 
   // The most recent local update to a tab within this browser window.
   // LocalTabID will be null in the case where the user removed the tab.
-  std::optional<TabIdentifiers> last_updated_tab_ = std::nullopt;
+  std::optional<TabIdentifiers> last_updated_tab_;
 };
 
 }  // namespace tab_groups

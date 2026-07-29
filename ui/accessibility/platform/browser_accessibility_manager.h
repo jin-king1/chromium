@@ -21,6 +21,7 @@
 #include "base/memory/raw_ref.h"
 #include "build/build_config.h"
 #include "cc/base/rtree.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 #include "ui/accessibility/ax_action_data.h"
 #include "ui/accessibility/ax_action_handler_registry.h"
 #include "ui/accessibility/ax_location_and_scroll_updates.h"
@@ -40,7 +41,7 @@
 #include "ui/accessibility/platform/ax_platform_tree_manager_delegate.h"
 #include "ui/accessibility/platform/browser_accessibility.h"
 #include "ui/base/buildflags.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 
 namespace ui {
 class AXNodeIdDelegate;
@@ -140,13 +141,21 @@ class COMPONENT_EXPORT(AX_PLATFORM) BrowserAccessibilityManager
   virtual void FireAriaNotificationEvent(
       BrowserAccessibility* node,
       const std::string& announcement,
-      const std::string& notification_id,
+      ax::mojom::AriaNotificationPriority priority_property,
       ax::mojom::AriaNotificationInterrupt interrupt_property,
-      ax::mojom::AriaNotificationPriority priority_property) {}
+      const std::string& type) {}
+  // Performs the platform-specific check to determine if we should use extra
+  // announcement nodes for ARIA notifications.
+  virtual bool ShouldExposeExtraAnnouncementNodes() const;
+  virtual BrowserAccessibility* GetExtraAnnouncementNodeFromNode(
+      const BrowserAccessibility* node,
+      ax::mojom::AriaNotificationPriority priority_property) const;
+  virtual bool TreeHasExtraAnnouncementNodes() const;
+  virtual size_t TreeExtraAnnouncementNodesCount() const;
 
-  virtual void FireBlinkEvent(ax::mojom::Event event_type,
-                              BrowserAccessibility* node,
-                              int action_request_id) {}
+  virtual void FireSourceEvent(ax::mojom::Event event_type,
+                               BrowserAccessibility* node,
+                               int action_request_id) {}
 
   // AXPlatformTreeManager overrides.
   void FireGeneratedEvent(AXEventGenerator::Event event_type,
@@ -159,6 +168,10 @@ class COMPONENT_EXPORT(AX_PLATFORM) BrowserAccessibilityManager
 
   // Return whether or not we are currently able to fire events.
   bool CanFireEvents() const override;
+
+  // Returns false for generated events that should not be exposed for this
+  // accessibility tree source.
+  bool ShouldFireGeneratedEvent(AXEventGenerator::Event event_type) const;
 
   // Return a pointer to the root of the tree.
   BrowserAccessibility* GetBrowserAccessibilityRoot() const;
@@ -198,6 +211,11 @@ class COMPONENT_EXPORT(AX_PLATFORM) BrowserAccessibilityManager
   // a generated event is fired from this BrowserAccessibilityManager.
   void SetGeneratedEventCallbackForTesting(
       const GeneratedEventCallbackForTesting& callback);
+
+  // For testing only, register a function to be called when handling
+  // accessibility events.
+  void SetAccessibilityEventsCallbackForTesting(
+      const base::RepeatingClosure& callback);
 
   // For testing only, register a function to be called when nodes
   // change location / bounding box in this BrowserAccessibilityManager.
@@ -244,6 +262,7 @@ class COMPONENT_EXPORT(AX_PLATFORM) BrowserAccessibilityManager
   void ScrollToPoint(const BrowserAccessibility& node, gfx::Point point);
   void SetAccessibilityFocus(const BrowserAccessibility& node);
   void Blur(const BrowserAccessibility& node);
+  void RequestLayoutBasedAction(const BrowserAccessibility& node);
   void SetFocus(const BrowserAccessibility& node);
   void SetSequentialFocusNavigationStartingPoint(
       const BrowserAccessibility& node);
@@ -251,7 +270,12 @@ class COMPONENT_EXPORT(AX_PLATFORM) BrowserAccessibilityManager
   void SetValue(const BrowserAccessibility& node, const std::string& value);
   void SetSelection(const AXActionData& action_data);
   void SetSelection(const BrowserAccessibility::AXRange& range);
+  void ReplaceRanges(const BrowserAccessibility& node,
+                     const std::vector<BrowserAccessibility::AXRange>& ranges,
+                     const std::vector<std::string>& replacement_strings);
   void ShowContextMenu(const BrowserAccessibility& node);
+  void ShowTooltip(const BrowserAccessibility& node);
+  void HideTooltip(const BrowserAccessibility& node);
   void SignalEndOfTest();
   void StitchChildTree(const BrowserAccessibility& node,
                        const AXTreeID& child_tree_id);
@@ -262,7 +286,7 @@ class COMPONENT_EXPORT(AX_PLATFORM) BrowserAccessibilityManager
   // Called when the renderer process has notified us of tree changes. Returns
   // false in fatal-error conditions, in which case the caller should destroy
   // the manager.
-  virtual bool OnAccessibilityEvents(const AXUpdatesAndEvents& details);
+  virtual bool OnAccessibilityEvents(AXUpdatesAndEvents& details);
 
   // Allows derived classes to do event pre-processing
   virtual void BeforeAccessibilityEvents();
@@ -408,8 +432,8 @@ class COMPONENT_EXPORT(AX_PLATFORM) BrowserAccessibilityManager
   void OnNodeReparented(AXTree* tree, AXNode* node) override;
   void OnAtomicUpdateStarting(
       AXTree* tree,
-      const std::set<AXNodeID>& deleted_node_ids,
-      const std::set<AXNodeID>& reparented_node_ids) override;
+      const absl::flat_hash_set<AXNodeID>& deleted_node_ids,
+      const absl::flat_hash_set<AXNodeID>& reparented_node_ids) override;
   void OnAtomicUpdateFinished(
       AXTree* tree,
       bool root_changed,
@@ -440,8 +464,16 @@ class COMPONENT_EXPORT(AX_PLATFORM) BrowserAccessibilityManager
   // yet.
   AXPlatformTreeManagerDelegate* GetDelegateFromRootManager() const;
 
+  // Returns the delegate that owns the native view backing this tree: the root
+  // frame for web content, whose native view is shared by its frames, or this
+  // manager's own delegate for any other source.
+  AXPlatformTreeManagerDelegate* GetDelegateForNativeView() const;
+
   // Returns whether this is the root frame.
   bool IsRootFrameManager() const;
+
+  // Returns whether this manager's tree was serialized from web content.
+  bool IsWebContentSource() const;
 
   // Get a snapshot of the current tree as an AXTreeUpdate.
   AXTreeUpdate SnapshotAXTreeForTesting();
@@ -504,7 +536,7 @@ class COMPONENT_EXPORT(AX_PLATFORM) BrowserAccessibilityManager
   AXPlatformNodeId GetNodeUniqueId(const BrowserAccessibility* node);
 
   // Returns the global accessibility focus. Only relevant on a root manager.
-  BrowserAccessibility* GetAccessibilityFocus();
+  virtual BrowserAccessibility* GetAccessibilityFocus() const;
 
  protected:
   FRIEND_TEST_ALL_PREFIXES(content::BrowserAccessibilityManagerTest,
@@ -525,7 +557,7 @@ class COMPONENT_EXPORT(AX_PLATFORM) BrowserAccessibilityManager
   void CollectChangedNodesAndParentsForAtomicUpdate(
       AXTree* tree,
       const std::vector<AXTreeObserver::Change>& changes,
-      std::set<AXPlatformNode*>* nodes_needing_update);
+      absl::flat_hash_set<AXPlatformNode*>* nodes_needing_update);
 
   bool ShouldFireEventForNode(BrowserAccessibility* node) const;
 
@@ -536,12 +568,18 @@ class COMPONENT_EXPORT(AX_PLATFORM) BrowserAccessibilityManager
   // based on which layer this code is running on, Web vs. Views.
   raw_ptr<AXPlatformTreeManagerDelegate> delegate_;
 
+  // A delegate responsible for assigning window-unique identifiers for nodes.
+  // The ordering here is important, as this member must be destroyed after
+  // the `id_wrapper_map_` below.
+  const raw_ref<AXNodeIdDelegate> node_id_delegate_;
+
   // A mapping from a node id to its wrapper of type BrowserAccessibility.
   // This is different from the map in AXTree, which does not contain extra mac
   // nodes from AXTableInfo.
   // TODO(accessibility) Find a way to have a single map for both, perhaps by
   // having BrowserAccessibility into a subclass of AXNode.
-  std::map<AXNodeID, std::unique_ptr<BrowserAccessibility>> id_wrapper_map_;
+  absl::flat_hash_map<AXNodeID, std::unique_ptr<BrowserAccessibility>>
+      id_wrapper_map_;
 
   // True if the user has initiated a navigation to another page.
   bool user_is_navigating_away_;
@@ -587,6 +625,9 @@ class COMPONENT_EXPORT(AX_PLATFORM) BrowserAccessibilityManager
   // For testing only; A function to call when locations change.
   base::RepeatingClosure location_change_callback_for_testing_;
 
+  // For testing only: A function to call when accessibility events are sent.
+  base::RepeatingClosure accessibility_events_callback_for_testing_;
+
   // Keeps track of the nested popup root's id, if it exists. See GetPopupRoot()
   // for details.
   std::set<int32_t> popup_root_ids_;
@@ -596,7 +637,7 @@ class COMPONENT_EXPORT(AX_PLATFORM) BrowserAccessibilityManager
   static bool never_suppress_or_delay_events_for_testing_;
 
   // For debug only: True when handling OnAccessibilityEvents.
-#if DCHECK_IS_ON()
+#if BUILDFLAG(IS_WIN) || DCHECK_IS_ON()
   bool in_on_accessibility_events_ = false;
 #endif  // DCHECK_IS_ON()
 
@@ -626,9 +667,6 @@ class COMPONENT_EXPORT(AX_PLATFORM) BrowserAccessibilityManager
   // the new focus.
   void UpdateAccessibilityFocus(BrowserAccessibilityManager* manager,
                                 const BrowserAccessibility& node);
-
-  // A delegate responsible for assigning window-unique identifiers for nodes.
-  const raw_ref<AXNodeIdDelegate> node_id_delegate_;
 
   // Only used on the root node for AXTree hit testing as an alternative to
   // ApproximateHitTest when used without a renderer.

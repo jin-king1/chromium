@@ -12,19 +12,24 @@
 
 #include "base/check_op.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback_forward.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
-#include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/notreached.h"
+#include "base/scoped_observation.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/bind.h"
+#include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_feature_list.h"
+#include "base/test/test_future.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "build/build_config.h"
 #include "chrome/browser/lifetime/application_lifetime.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
+#include "chrome/browser/signin/signin_browser_test_base.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/passwords/manage_passwords_ui_controller.h"
@@ -38,23 +43,28 @@
 #include "chrome/browser/webauthn/webauthn_switches.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
-#include "components/network_session_configurator/common/network_switches.h"
 #include "components/signin/public/base/consent_level.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
+#include "components/trusted_vault/trusted_vault_histograms.h"
 #include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_contents_observer.h"
 #include "content/public/test/browser_test.h"
+#include "content/public/test/test_navigation_observer.h"
 #include "device/fido/authenticator_data.h"
 #include "device/fido/authenticator_get_assertion_response.h"
-#include "device/fido/cable/cable_discovery_data.h"
 #include "device/fido/discoverable_credential_metadata.h"
-#include "device/fido/fido_constants.h"
 #include "device/fido/fido_request_handler_base.h"
-#include "device/fido/fido_transport_protocol.h"
-#include "device/fido/fido_types.h"
 #include "device/fido/pin.h"
-#include "device/fido/public_key_credential_descriptor.h"
-#include "device/fido/public_key_credential_user_entity.h"
+#include "device/fido/public/features.h"
+#include "device/fido/public/fido_constants.h"
+#include "device/fido/public/fido_transport_protocol.h"
+#include "device/fido/public/fido_types.h"
+#include "device/fido/public/public_key_credential_descriptor.h"
+#include "device/fido/public/public_key_credential_user_entity.h"
 #include "google_apis/gaia/gaia_switches.h"
+#include "google_apis/gaia/gaia_urls.h"
+#include "net/base/url_util.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/http/http_status_code.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
@@ -64,8 +74,78 @@
 
 namespace {
 
-constexpr char kPhoneName[] = "Elisa's Pixel 6 Pro";
 using BleStatus = device::FidoRequestHandlerBase::BleStatus;
+
+constexpr std::string_view kTestMagicArchHtmlSuccess =
+    R"(<html><head><title>Test MagicArch</title>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  chrome.setClientEncryptionKeys(
+      function() {},
+      "1234",
+      new Map([["hw_protected", [{epoch: 1, key: new ArrayBuffer(32)}]]]));
+});
+</script></head><body><p>Test MagicArch</p></body></html>)";
+
+constexpr std::string_view kTestMagicArchHtmlResetSuccessButton =
+    R"(<html><head><title>Test MagicArch</title>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  window.location = '/embedded/passkeys/reset/done#success';
+});
+</script></head><body><p>Test MagicArch</p></body></html>)";
+
+constexpr std::string_view kTestMagicArchHtmlResetErrorButton =
+    R"(<html><head><title>Test MagicArch</title>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  window.location = '/embedded/passkeys/reset/error#fail';
+});
+</script></head><body><p>Test MagicArch</p></body></html>)";
+
+constexpr std::string_view kTestMagicArchHtmlResetSuccessCloseWindow =
+    R"(<html><head><title>Test MagicArch</title>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  window.location = '/embedded/passkeys/reset/done';
+});
+</script></head><body><p>Test MagicArch</p></body></html>)";
+
+constexpr std::string_view kTestMagicArchHtmlResetErrorCloseWindow =
+    R"(<html><head><title>Test MagicArch</title>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  window.location = '/embedded/passkeys/reset/error';
+});
+</script></head><body><p>Test MagicArch</p></body></html>)";
+
+constexpr std::string_view kTestReauthHtml =
+    R"(<html><head><title>Test Reauth</title>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  const url = new URL(window.location.href);
+  if (url.searchParams.get("rapt") === null) {
+    url.searchParams.set("rapt", "RAPT");
+    window.location.href = url.href;
+  }
+});
+</script></head><body><p>Test Reauth</p></body></html>)";
+
+void UpdateModelBeforeStartFlow(
+    AuthenticatorRequestDialogModel* model,
+    device::FidoRequestHandlerBase::TransportAvailabilityInfo tai,
+    bool is_off_the_record) {
+  model->request_type = tai.request_type;
+  model->resident_key_requirement = tai.resident_key_requirement;
+  model->attestation_conveyance_preference =
+      tai.attestation_conveyance_preference;
+  model->ble_adapter_is_powered =
+      tai.ble_status == device::FidoRequestHandlerBase::BleStatus::kOn;
+  model->show_security_key_on_qr_sheet = tai.available_transports.contains(
+      device::FidoTransportProtocol::kUsbHumanInterfaceDevice);
+  model->is_off_the_record = is_off_the_record;
+  model->platform_has_biometrics = tai.platform_has_biometrics;
+}
 
 }  // namespace
 
@@ -85,8 +165,8 @@ class AuthenticatorDialogTest : public DialogBrowserTest {
   void SetUpOnMainThread() override {
     DialogBrowserTest::SetUpOnMainThread();
     signin::MakePrimaryAccountAvailable(
-        IdentityManagerFactory::GetForProfile(browser()->profile()),
-        "user@example.com", signin::ConsentLevel::kSync);
+        IdentityManagerFactory::GetForProfile(browser()->GetProfile()),
+        "user@example.com", signin::ConsentLevel::kSignin);
   }
 
   void TearDownOnMainThread() override {
@@ -101,7 +181,7 @@ class AuthenticatorDialogTest : public DialogBrowserTest {
   // DialogBrowserTest:
   void ShowUi(const std::string& name) override {
     // Web modal dialogs' bounds may exceed the display's work area.
-    // https://crbug.com/893292.
+    // https://crbug.com/41419544.
     set_should_verify_dialog_bounds(false);
 
     content::RenderFrameHost* rfh = browser()
@@ -124,11 +204,6 @@ class AuthenticatorDialogTest : public DialogBrowserTest {
         AuthenticatorTransport::kHybrid,
     };
 
-    std::vector<std::unique_ptr<device::cablev2::Pairing>> phones;
-    auto phone = std::make_unique<device::cablev2::Pairing>();
-    phone->from_sync_deviceinfo = false;
-    phone->name = kPhoneName;
-    phones.emplace_back(std::move(phone));
     transport_availability.has_platform_authenticator_credential = device::
         FidoRequestHandlerBase::RecognizedCredential::kNoRecognizedCredential;
     transport_availability.request_type =
@@ -136,10 +211,6 @@ class AuthenticatorDialogTest : public DialogBrowserTest {
 
     // The dialog should immediately close as soon as it is displayed.
     if (name == "mechanisms" || name == "mechanisms_disabled") {
-      // A phone is configured so that the "Manage devices" button is shown.
-      controller_->set_cable_transport_info(
-          /*extension_is_v2=*/std::nullopt, std::move(phones),
-          /*contact_phone_callback=*/base::DoNothing(), "fido://qrcode");
       controller_->SetCurrentStepForTesting(
           AuthenticatorRequestDialogModel::Step::kMechanismSelection);
     } else if (name == "mechanisms_create" ||
@@ -179,21 +250,8 @@ class AuthenticatorDialogTest : public DialogBrowserTest {
     } else if (name == "touchid_incognito") {
       controller_->SetCurrentStepForTesting(
           AuthenticatorRequestDialogModel::Step::kOffTheRecordInterstitial);
-    } else if (name == "cable_activate") {
-      controller_->set_cable_transport_info(
-          /*extension_is_v2=*/false, std::move(phones),
-          /*contact_phone_callback=*/base::DoNothing(), "fido://qrcode");
-      controller_->ContactPhoneForTesting(kPhoneName);
-    } else if (name == "cable_v2_activate") {
-      controller_->set_cable_transport_info(
-          /*extension_is_v2=*/std::nullopt, std::move(phones),
-          /*contact_phone_callback=*/base::DoNothing(), "fido://qrcode");
-      controller_->ContactPhoneForTesting(kPhoneName);
     } else if (name == "cable_v2_pair") {
-      controller_->set_cable_transport_info(
-          /*extension_is_v2=*/std::nullopt,
-          /*paired_phones=*/{},
-          /*contact_phone_callback=*/base::DoNothing(), "fido://qrcode");
+      controller_->set_cable_transport_info("fido://qrcode");
       controller_->SetCurrentStepForTesting(
           AuthenticatorRequestDialogModel::Step::kCableV2QRCode);
     } else if (name == "cable_v2_connecting") {
@@ -368,23 +426,10 @@ class AuthenticatorDialogTest : public DialogBrowserTest {
       controller_->SelectAccount(
           std::move(responses),
           base::BindOnce([](device::AuthenticatorGetAssertionResponse) {}));
-    } else if (name == "server_link_title_UNLOCK_YOUR_PHONE") {
-      controller_->set_cable_transport_info(
-          /*extension_is_v2=*/true, /*paired_phones=*/{},
-          /*contact_phone_callback=*/base::DoNothing(), "fido://qrcode");
-      controller_->SetCurrentStepForTesting(
-          AuthenticatorRequestDialogModel::Step::kCableActivate);
+
     } else if (name == "create_passkey") {
       controller_->SetCurrentStepForTesting(
-          AuthenticatorRequestDialogModel::Step::kCreatePasskey);
-    } else if (name == "phone_confirmation") {
-      // The phone must be from Sync.
-      phones[0]->from_sync_deviceinfo = true;
-      controller_->set_cable_transport_info(
-          /*extension_is_v2=*/true, std::move(phones),
-          /*contact_phone_callback=*/base::DoNothing(), "fido://qrcode");
-      controller_->SetCurrentStepForTesting(
-          AuthenticatorRequestDialogModel::Step::kPhoneConfirmationSheet);
+          AuthenticatorRequestDialogModel::Step::kChromeProfileCreatePasskey);
     }
 #if BUILDFLAG(IS_MAC)
     else if (name == "ble_permission_mac") {  // NOLINT
@@ -393,6 +438,8 @@ class AuthenticatorDialogTest : public DialogBrowserTest {
     }
 #endif
 
+    UpdateModelBeforeStartFlow(model_.get(), transport_availability,
+                               /*is_off_the_record=*/false);
     controller_->StartFlow(std::move(transport_availability), {});
     if (name.ends_with("_disabled")) {
       model_->ui_disabled_ = true;
@@ -482,14 +529,6 @@ IN_PROC_BROWSER_TEST_F(AuthenticatorDialogTest, InvokeUi_touchid_incognito) {
   ShowAndVerifyUi();
 }
 #endif  // BUILDFLAG(IS_MAC)
-
-IN_PROC_BROWSER_TEST_F(AuthenticatorDialogTest, InvokeUi_cable_activate) {
-  ShowAndVerifyUi();
-}
-
-IN_PROC_BROWSER_TEST_F(AuthenticatorDialogTest, InvokeUi_cable_v2_activate) {
-  ShowAndVerifyUi();
-}
 
 IN_PROC_BROWSER_TEST_F(AuthenticatorDialogTest, InvokeUi_cable_v2_pair) {
   ShowAndVerifyUi();
@@ -592,11 +631,6 @@ IN_PROC_BROWSER_TEST_F(AuthenticatorDialogTest,
   ShowAndVerifyUi();
 }
 
-IN_PROC_BROWSER_TEST_F(AuthenticatorDialogTest,
-                       InvokeUi_server_link_title_UNLOCK_YOUR_PHONE) {
-  ShowAndVerifyUi();
-}
-
 #if BUILDFLAG(IS_MAC)
 IN_PROC_BROWSER_TEST_F(AuthenticatorDialogTest, InvokeUi_ble_permission_mac) {
   ShowAndVerifyUi();
@@ -604,10 +638,6 @@ IN_PROC_BROWSER_TEST_F(AuthenticatorDialogTest, InvokeUi_ble_permission_mac) {
 #endif
 
 IN_PROC_BROWSER_TEST_F(AuthenticatorDialogTest, InvokeUi_create_passkey) {
-  ShowAndVerifyUi();
-}
-
-IN_PROC_BROWSER_TEST_F(AuthenticatorDialogTest, InvokeUi_phone_confirmation) {
   ShowAndVerifyUi();
 }
 
@@ -621,8 +651,8 @@ class GPMPasskeysAuthenticatorDialogTest : public DialogBrowserTest {
  public:
   void SetUpOnMainThread() override {
     signin::MakePrimaryAccountAvailable(
-        IdentityManagerFactory::GetForProfile(browser()->profile()),
-        "user@example.com", signin::ConsentLevel::kSync);
+        IdentityManagerFactory::GetForProfile(browser()->GetProfile()),
+        "user@example.com", signin::ConsentLevel::kSignin);
   }
 
   void TearDownOnMainThread() override {
@@ -637,7 +667,7 @@ class GPMPasskeysAuthenticatorDialogTest : public DialogBrowserTest {
   // AuthenticatorDialogTest:
   void ShowUi(const std::string& name) override {
     // Web modal dialogs' bounds may exceed the display's work area.
-    // https://crbug.com/893292.
+    // https://crbug.com/41419544.
     set_should_verify_dialog_bounds(false);
 
     content::RenderFrameHost* rfh = browser()
@@ -676,16 +706,6 @@ class GPMPasskeysAuthenticatorDialogTest : public DialogBrowserTest {
         device::PublicKeyCredentialUserEntity({2}, "elisa.beckett@ink-42.com",
                                               "Elisa Beckett"),
         std::nullopt);
-    device::DiscoverableCredentialMetadata phone_cred1(
-        device::AuthenticatorType::kPhone, "example.com", {3},
-        device::PublicKeyCredentialUserEntity({1}, "elisa.g.beckett@gmail.com",
-                                              "Elisa Beckett"),
-        std::nullopt);
-    device::DiscoverableCredentialMetadata phone_cred2(
-        device::AuthenticatorType::kPhone, "example.com", {4},
-        device::PublicKeyCredentialUserEntity({2}, "elisa.beckett@ink-42.com",
-                                              "Elisa Beckett"),
-        std::nullopt);
     device::DiscoverableCredentialMetadata ick_cred1(
         device::AuthenticatorType::kICloudKeychain, "example.com", {5},
         device::PublicKeyCredentialUserEntity({1}, "elisa.beckett@gmail.com",
@@ -697,26 +717,10 @@ class GPMPasskeysAuthenticatorDialogTest : public DialogBrowserTest {
                                               "Elisa Beckett"),
         "Another Example Passkey Provider");
     model_->user_entity = local_cred1.user;
-
-    // Configure a phone from sync.
-    std::vector<std::unique_ptr<device::cablev2::Pairing>> phones;
-    auto phone = std::make_unique<device::cablev2::Pairing>();
-    phone->from_sync_deviceinfo = true;
-    phone->name = kPhoneName;
-    phones.emplace_back(std::move(phone));
-    controller_->set_cable_transport_info(
-        /*extension_is_v2=*/std::nullopt, std::move(phones),
-        /*contact_phone_callback=*/base::DoNothing(), "fido://qrcode");
+    controller_->set_cable_transport_info("fido://qrcode");
 
     if (name == "no_passkeys_discovered") {
       transport_availability.recognized_credentials = {};
-    } else if (name == "local_and_phone") {
-      transport_availability.recognized_credentials = {
-          std::move(local_cred1),
-          std::move(local_cred2),
-          std::move(phone_cred1),
-          std::move(phone_cred2),
-      };
     } else if (name == "local_only" || name == "local_only_disabled") {
       transport_availability.recognized_credentials = {
           std::move(local_cred1),
@@ -729,44 +733,23 @@ class GPMPasskeysAuthenticatorDialogTest : public DialogBrowserTest {
       };
       transport_availability.available_transports = {
           device::FidoTransportProtocol::kInternal};
-    } else if (name == "phone_only") {
-      transport_availability.recognized_credentials = {
-          std::move(phone_cred1),
-          std::move(phone_cred2),
-      };
     } else if (name == "priority_mech" || name == "priority_mech_disabled") {
       transport_availability.has_empty_allow_list = true;
       transport_availability.recognized_credentials = {
           std::move(gpm_cred),
       };
-    } else if (name == "one_phone_cred") {
-      transport_availability.recognized_credentials = {
-          std::move(phone_cred1),
-      };
     } else if (name == "get_assertion_qr_with_usb") {
-      controller_->set_cable_transport_info(
-          /*extension_is_v2=*/std::nullopt,
-          /*paired_phones=*/{},
-          /*contact_phone_callback=*/base::DoNothing(), "fido://qrcode");
       transport_availability.ble_status = BleStatus::kOn;
       transport_availability.available_transports = {
           AuthenticatorTransport::kHybrid,
           AuthenticatorTransport::kUsbHumanInterfaceDevice,
       };
     } else if (name == "get_assertion_qr_without_usb") {
-      controller_->set_cable_transport_info(
-          /*extension_is_v2=*/std::nullopt,
-          /*paired_phones=*/{},
-          /*contact_phone_callback=*/base::DoNothing(), "fido://qrcode");
       transport_availability.ble_status = BleStatus::kOn;
       transport_availability.available_transports = {
           AuthenticatorTransport::kHybrid,
       };
     } else if (name == "make_credential_qr_with_usb") {
-      controller_->set_cable_transport_info(
-          /*extension_is_v2=*/std::nullopt,
-          /*paired_phones=*/{},
-          /*contact_phone_callback=*/base::DoNothing(), "fido://qrcode");
       transport_availability.request_type =
           device::FidoRequestType::kMakeCredential;
       transport_availability.attestation_conveyance_preference =
@@ -777,10 +760,6 @@ class GPMPasskeysAuthenticatorDialogTest : public DialogBrowserTest {
           AuthenticatorTransport::kUsbHumanInterfaceDevice,
       };
     } else if (name == "make_credential_qr_without_usb") {
-      controller_->set_cable_transport_info(
-          /*extension_is_v2=*/std::nullopt,
-          /*paired_phones=*/{},
-          /*contact_phone_callback=*/base::DoNothing(), "fido://qrcode");
       transport_availability.request_type =
           device::FidoRequestType::kMakeCredential;
       transport_availability.attestation_conveyance_preference =
@@ -791,10 +770,11 @@ class GPMPasskeysAuthenticatorDialogTest : public DialogBrowserTest {
       };
     } else if (name == "trust_this_computer_assertion") {
       controller_->SetCurrentStepForTesting(
-          AuthenticatorRequestDialogModel::Step::kTrustThisComputerAssertion);
+          AuthenticatorRequestDialogModel::Step::
+              kGPMTrustThisComputerAssertion);
     } else if (name == "trust_this_computer_creation") {
       controller_->SetCurrentStepForTesting(
-          AuthenticatorRequestDialogModel::Step::kTrustThisComputerCreation);
+          AuthenticatorRequestDialogModel::Step::kGPMTrustThisComputerCreation);
     } else if (name == "gpm_create_passkey") {
       controller_->SetCurrentStepForTesting(
           AuthenticatorRequestDialogModel::Step::kGPMCreatePasskey);
@@ -831,9 +811,9 @@ class GPMPasskeysAuthenticatorDialogTest : public DialogBrowserTest {
     } else if (name == "gpm_connecting") {
       controller_->SetCurrentStepForTesting(
           AuthenticatorRequestDialogModel::Step::kGPMConnecting);
-    } else if (name == "gpm_confirm_incognito_create") {
+    } else if (name == "gpm_disabled") {
       controller_->SetCurrentStepForTesting(
-          AuthenticatorRequestDialogModel::Step::kGPMConfirmOffTheRecordCreate);
+          AuthenticatorRequestDialogModel::Step::kErrorGpmDisabled);
     } else if (name == "gpm_locked_pin") {
       controller_->SetCurrentStepForTesting(
           AuthenticatorRequestDialogModel::Step::kGPMLockedPin);
@@ -847,6 +827,8 @@ class GPMPasskeysAuthenticatorDialogTest : public DialogBrowserTest {
     } else {
       NOTREACHED();
     }
+    UpdateModelBeforeStartFlow(model_.get(), transport_availability,
+                               /*is_off_the_record=*/false);
     controller_->StartFlow(std::move(transport_availability), {});
     if (name.ends_with("_disabled")) {
       model_->ui_disabled_ = true;
@@ -861,11 +843,6 @@ class GPMPasskeysAuthenticatorDialogTest : public DialogBrowserTest {
 
 IN_PROC_BROWSER_TEST_F(GPMPasskeysAuthenticatorDialogTest,
                        InvokeUi_no_passkeys_discovered) {
-  ShowAndVerifyUi();
-}
-
-IN_PROC_BROWSER_TEST_F(GPMPasskeysAuthenticatorDialogTest,
-                       InvokeUi_local_and_phone) {
   ShowAndVerifyUi();
 }
 
@@ -885,22 +862,12 @@ IN_PROC_BROWSER_TEST_F(GPMPasskeysAuthenticatorDialogTest,
 }
 
 IN_PROC_BROWSER_TEST_F(GPMPasskeysAuthenticatorDialogTest,
-                       InvokeUi_phone_only) {
-  ShowAndVerifyUi();
-}
-
-IN_PROC_BROWSER_TEST_F(GPMPasskeysAuthenticatorDialogTest,
                        InvokeUi_priority_mech) {
   ShowAndVerifyUi();
 }
 
 IN_PROC_BROWSER_TEST_F(GPMPasskeysAuthenticatorDialogTest,
                        InvokeUi_priority_mech_disabled) {
-  ShowAndVerifyUi();
-}
-
-IN_PROC_BROWSER_TEST_F(GPMPasskeysAuthenticatorDialogTest,
-                       InvokeUi_one_phone_cred) {
   ShowAndVerifyUi();
 }
 
@@ -984,7 +951,7 @@ IN_PROC_BROWSER_TEST_F(GPMPasskeysAuthenticatorDialogTest,
 }
 
 IN_PROC_BROWSER_TEST_F(GPMPasskeysAuthenticatorDialogTest,
-                       InvokeUi_gpm_confirm_incognito_create) {
+                       InvokeUi_gpm_disabled) {
   ShowAndVerifyUi();
 }
 
@@ -1000,14 +967,36 @@ IN_PROC_BROWSER_TEST_F(GPMPasskeysAuthenticatorDialogTest,
 
 #if BUILDFLAG(IS_MAC)
 IN_PROC_BROWSER_TEST_F(GPMPasskeysAuthenticatorDialogTest, InvokeUi_touchid) {
-  if (__builtin_available(macos 12, *)) {
-    ShowAndVerifyUi();
-  }
+  ShowAndVerifyUi();
 }
 #endif  // BUILDFLAG(IS_MAC)
 
+enum MagicArchUnlockResponse {
+  // Magic Arch recovery is unexpected and will crash the test.
+  kNone,
+
+  // Simulates successful recovery of the security domain secret.
+  kRecoverySuccess,
+
+  // Simulates successful reset of the security domain secret, and the user
+  // clicking the button acknowledging this.
+  kResetSuccessButton,
+
+  // Simulates an error when resetting of the security domain secret, and the
+  // user clicking the button acknowledging this.
+  kResetErrorButton,
+
+  // Simulates successful reset of the security domain secret. The user will
+  // close the window manually.
+  kResetSuccessCloseWindow,
+
+  // Simulates an error when resetting of the security domain secret. The user
+  // will close the window manually.
+  kResetErrorCloseWindow,
+};
+
 // Tests the UI steps that show a pop-up window.
-class AuthenticatorWindowTest : public InProcessBrowserTest {
+class AuthenticatorWindowTest : public SigninBrowserTestBase {
  public:
   void SetUp() override {
     https_server_.RegisterRequestHandler(
@@ -1019,15 +1008,14 @@ class AuthenticatorWindowTest : public InProcessBrowserTest {
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
     InProcessBrowserTest::SetUpCommandLine(command_line);
-    command_line->AppendSwitch(switches::kIgnoreCertificateErrors);
     command_line->AppendSwitchASCII(switches::kGaiaUrl,
                                     https_server_.base_url().spec());
-    command_line->AppendSwitchASCII(
-        webauthn::switches::kGpmPinResetReauthUrlSwitch,
-        https_server_.GetURL("/encryption/pin/reset").spec());
+    command_line->AppendSwitchASCII(webauthn::switches::kGpmMagicArchUrlSwitch,
+                                    https_server_.base_url().spec());
   }
 
   void SetUpOnMainThread() override {
+    SigninBrowserTestBase::SetUpOnMainThread();
     https_server_.ServeFilesFromSourceDirectory(GetChromeTestDataDir());
     https_server_.StartAcceptingConnections();
     host_resolver()->AddRule("*", "127.0.0.1");
@@ -1039,67 +1027,83 @@ class AuthenticatorWindowTest : public InProcessBrowserTest {
             ->GetPrimaryMainFrame());
   }
 
+  void TearDownOnMainThread() override {
+    if (model_) {
+      // Close the dialog before the entire browser is torn down.
+      model_->SetStep(AuthenticatorRequestDialogModel::Step::kClosed);
+    }
+    SigninBrowserTestBase::TearDownOnMainThread();
+  }
+
+  void set_magic_arch_response(MagicArchUnlockResponse response) {
+    magic_arch_response_ = response;
+  }
+
  protected:
   scoped_refptr<AuthenticatorRequestDialogModel> model_;
   net::EmbeddedTestServer https_server_{net::EmbeddedTestServer::TYPE_HTTPS};
+  std::string last_authuser_parameter_;
 
  private:
   std::unique_ptr<net::test_server::HttpResponse> HandleNetworkRequest(
       const net::test_server::HttpRequest& request) {
     const GURL url = request.GetURL();
-    const std::string_view path = url.path_piece();
+    const std::string_view path = url.path();
     auto response = std::make_unique<net::test_server::BasicHttpResponse>();
-
-    if (path == "/encryption/unlock/desktop") {
+    if (path.contains("/encryption/unlock/")) {
+      net::GetValueForKeyInQuery(url, "authuser", &last_authuser_parameter_);
       response->set_code(net::HTTP_OK);
-      response->set_content(R"(<html><head><title>Test MagicArch</title>
-<script>
-document.addEventListener('DOMContentLoaded', function() {
-  chrome.setClientEncryptionKeys(
-      function() {},
-      "1234",
-      new Map([["hw_protected", [{epoch: 1, key: new ArrayBuffer(32)}]]]));
-});
-</script></head><body><p>Test MagicArch</p></body></html>)");
+      switch (magic_arch_response_) {
+        case kNone:
+          NOTREACHED() << "Unexpected passkey unlock request";
+        case kRecoverySuccess:
+          response->set_content(kTestMagicArchHtmlSuccess);
+          break;
+        case kResetSuccessButton:
+          response->set_content(kTestMagicArchHtmlResetSuccessButton);
+          break;
+        case kResetErrorButton:
+          response->set_content(kTestMagicArchHtmlResetErrorButton);
+          break;
+        case kResetSuccessCloseWindow:
+          response->set_content(kTestMagicArchHtmlResetSuccessCloseWindow);
+          break;
+        case kResetErrorCloseWindow:
+          response->set_content(kTestMagicArchHtmlResetErrorCloseWindow);
+          break;
+      }
     } else if (path == "/encryption/pin/reset") {
+      net::GetValueForKeyInQuery(url, "authuser", &last_authuser_parameter_);
       response->set_code(net::HTTP_OK);
-      response->set_content(R"(<html><head><title>Test Reauth</title>
-<script>
-document.addEventListener('DOMContentLoaded', function() {
-  const url = new URL(window.location.href);
-  if (url.searchParams.get("rapt") === null) {
-    url.searchParams.set("rapt", "RAPT");
-    window.location.href = url.href;
-  }
-});
-</script></head><body><p>Test Reauth</p></body></html>)");
+      response->set_content(kTestReauthHtml);
+    } else if (path.starts_with("/embedded/passkeys/reset")) {
+      response->set_code(net::HTTP_OK);
+      response->set_content("");
     } else {
-      LOG(ERROR) << "Unknown network request: " << url.spec();
       response->set_code(net::HTTP_NOT_FOUND);
     }
 
     return response;
   }
-};
 
-#if !BUILDFLAG(IS_CHROMEOS)
-// This test doesn't work on Chrome OS because
-// `trusted_vault_encryption_key_tab_helper.cc` will not send the keys to the
-// EnclaveManager, since Chrome OS doesn't use the enclave.
+  MagicArchUnlockResponse magic_arch_response_ = kNone;
+};
 
 // Quits the browser (and thus finishes the test) when keys are received by the
 // EnclaveManager.
 class QuitBrowserWhenKeysStored : public EnclaveManager::Observer {
  public:
   explicit QuitBrowserWhenKeysStored(Browser* browser) : browser_(browser) {
-    EnclaveManagerFactory::GetAsEnclaveManagerForProfile(browser_->profile())
-        ->AddObserver(this);
+    EnclaveManager* const enclave_manager =
+        EnclaveManagerFactory::GetAsEnclaveManagerForProfile(
+            browser_->GetProfile());
+    enclave_manager->AddObserver(this);
+    store_keys_lock_ = enclave_manager->GetStoreKeysLock();
   }
 
   // EnclaveManager::Observer
-  void OnKeysStored() override {
-    LOG(INFO) << "QuitBrowserWhenKeysStored::OnKeysStored";
-    EnclaveManagerFactory::GetAsEnclaveManagerForProfile(browser_->profile())
+  void OnKeysStored(const GaiaId& gaia_id) override {
+    EnclaveManagerFactory::GetAsEnclaveManagerForProfile(browser_->GetProfile())
         ->RemoveObserver(this);
     browser_ = nullptr;
 
@@ -1109,20 +1113,21 @@ class QuitBrowserWhenKeysStored : public EnclaveManager::Observer {
 
  private:
   raw_ptr<Browser> browser_;
+  std::unique_ptr<EnclaveManager::StoreKeysLock> store_keys_lock_;
 };
 
 IN_PROC_BROWSER_TEST_F(AuthenticatorWindowTest, RecoverSecurityDomain) {
+  set_magic_arch_response(kRecoverySuccess);
   QuitBrowserWhenKeysStored observer(browser());
 
   // This should open a pop-up to MagicArch. The fake MagicArch, configured
   // by this test class, will immediately return keys, which will cause the
   // browser to exit.
   model_->SetStep(
-      AuthenticatorRequestDialogModel::Step::kRecoverSecurityDomain);
+      AuthenticatorRequestDialogModel::Step::kGPMRecoverSecurityDomain);
 
   RunUntilBrowserProcessQuits();
 }
-#endif
 
 class QuitBrowserWhenReauthTokenReceived
     : public AuthenticatorRequestDialogModel::Observer {
@@ -1134,8 +1139,7 @@ class QuitBrowserWhenReauthTokenReceived
   }
 
   // AuthenticatorRequestDialogModel::Observer
-  void OnReauthComplete(std::string token) override {
-    LOG(INFO) << "QuitBrowserWhenKeysStored::OnReauthComplete";
+  void OnGPMReauthComplete(std::string token) override {
     CHECK_EQ(token, "RAPT");
     model_->observers.RemoveObserver(this);
     model_ = nullptr;
@@ -1160,12 +1164,195 @@ IN_PROC_BROWSER_TEST_F(AuthenticatorWindowTest, ReauthForPinReset) {
   RunUntilBrowserProcessQuits();
 }
 
+class OnGPMPasskeysResetStepListener
+    : public AuthenticatorRequestDialogModel::Observer {
+ public:
+  OnGPMPasskeysResetStepListener(AuthenticatorRequestDialogModel* model,
+                                 base::OnceCallback<void(bool)> callback)
+      : model_(model), callback_(std::move(callback)) {
+    observation_.Observe(model_);
+  }
+
+  void OnModelDestroyed(AuthenticatorRequestDialogModel* model) override {
+    observation_.Reset();
+  }
+
+  // AuthenticatorRequestDialogModel::Observer
+  void OnGPMPasskeysReset(bool success) override {
+    // UI code moves to a step that renders as a dialog.
+    model_->SetStep(AuthenticatorRequestDialogModel::Step::kGPMError);
+    std::move(callback_).Run(success);
+  }
+
+ private:
+  base::ScopedObservation<AuthenticatorRequestDialogModel,
+                          OnGPMPasskeysResetStepListener>
+      observation_{this};
+  raw_ptr<AuthenticatorRequestDialogModel> model_;
+  base::OnceCallback<void(bool)> callback_;
+};
+
+class PasskeyResetPageObserver : public content::WebContentsObserver {
+ public:
+  PasskeyResetPageObserver(content::WebContents* web_contents,
+                           base::OnceCallback<void(bool)> callback)
+      : content::WebContentsObserver(web_contents),
+        callback_(std::move(callback)) {}
+
+  void DidFinishNavigation(
+      content::NavigationHandle* navigation_handle) override {
+    const GURL& url = navigation_handle->GetURL();
+    if (url.path().contains("/embedded/passkeys/reset/done")) {
+      std::move(callback_).Run(true);
+    } else if (url.path().contains("/embedded/passkeys/reset/error")) {
+      std::move(callback_).Run(false);
+    }
+  }
+
+ private:
+  base::OnceCallback<void(bool)> callback_;
+};
+
+// Tests that upon reporting that the security domain was reset and the user
+// clicks the button to acknowledge this, Chrome moves on to the next step.
+// Regression step for crbug.com/503420438.
+IN_PROC_BROWSER_TEST_F(AuthenticatorWindowTest, SecurityDomainResetButton) {
+  for (bool success : {false, true}) {
+    SCOPED_TRACE(success);
+    set_magic_arch_response(success ? kResetSuccessButton : kResetErrorButton);
+    base::test::TestFuture<bool> future;
+    OnGPMPasskeysResetStepListener observer(model_.get(), future.GetCallback());
+    model_->SetStep(
+        AuthenticatorRequestDialogModel::Step::kGPMRecoverSecurityDomain);
+    ASSERT_TRUE(future.Wait());
+    EXPECT_EQ(future.Get(), success);
+  }
+}
+
+// Tests that upon reporting that the security domain was reset and the user
+// closes the window, Chrome moves on to the next step.
+// Regression step for crbug.com/503420438.
+IN_PROC_BROWSER_TEST_F(AuthenticatorWindowTest,
+                       SecurityDomainResetCloseWindow) {
+  for (bool success : {false, true}) {
+    SCOPED_TRACE(success);
+    set_magic_arch_response(success ? kResetSuccessCloseWindow
+                                    : kResetErrorCloseWindow);
+
+    // Set up a listener for the model.
+    base::test::TestFuture<bool> result_future;
+    OnGPMPasskeysResetStepListener observer(model_.get(),
+                                            result_future.GetCallback());
+
+    // Set up a listener for the web contents popup.
+    ui_test_utils::AllBrowserTabAddedWaiter tab_waiter;
+
+    // Start the process of opening a window and loading the Magic Arch URL.
+    model_->SetStep(
+        AuthenticatorRequestDialogModel::Step::kGPMRecoverSecurityDomain);
+
+    // Wait for the web contents popup to show up.
+    content::WebContents* popup = tab_waiter.Wait();
+
+    // Wait for the reset page to be shown.
+    base::test::TestFuture<bool> reset_future;
+    PasskeyResetPageObserver reset_page_observer(popup,
+                                                 reset_future.GetCallback());
+    ASSERT_TRUE(reset_future.Wait());
+    ASSERT_EQ(reset_future.Get(), success);
+
+    // At this point, the result should not be ready yet.
+    EXPECT_FALSE(result_future.IsReady());
+
+    // Close the popup, which should trigger getting the result.
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindLambdaForTesting([popup] { popup->Close(); }));
+    ASSERT_TRUE(result_future.Wait());
+    EXPECT_EQ(result_future.Get(), success);
+  }
+}
+
 IN_PROC_BROWSER_TEST_F(AuthenticatorWindowTest, UINavigatesAway) {
   // Test that closing the window (e.g. due to a timeout) doesn't cause any
   // issues.
+  set_magic_arch_response(kRecoverySuccess);
   model_->SetStep(
-      AuthenticatorRequestDialogModel::Step::kRecoverSecurityDomain);
+      AuthenticatorRequestDialogModel::Step::kGPMRecoverSecurityDomain);
   model_->SetStep(AuthenticatorRequestDialogModel::Step::kNotStarted);
+}
+
+// Regression test for crbug.com/505059790.
+// Make sure the correct authuser index is set when invoking MagicArch for
+// account recovery.
+IN_PROC_BROWSER_TEST_F(AuthenticatorWindowTest, MultiAccountRecovery) {
+  base::HistogramTester histogram_tester;
+  set_magic_arch_response(kRecoverySuccess);
+  std::vector<AccountInfo> accounts = SetAccountsCookiesAndTokens(
+      {"another@example.com", "primary@example.com"});
+
+  identity_test_env()->SetPrimaryAccount("primary@example.com",
+                                         signin::ConsentLevel::kSignin);
+
+  GURL expected_url = GaiaUrls::GetInstance()->SigninChromePasskeyUnlockUrl(1);
+  content::TestNavigationObserver navigation_observer(expected_url);
+  navigation_observer.StartWatchingNewWebContents();
+  model_->SetStep(
+      AuthenticatorRequestDialogModel::Step::kGPMRecoverSecurityDomain);
+  navigation_observer.Wait();
+  EXPECT_EQ(last_authuser_parameter_, "1");
+
+  histogram_tester.ExpectUniqueSample(
+      "TrustedVault.RecoveryFlowTriggeredEndpoint",
+      trusted_vault::TrustedVaultRecoveryFlowEndpoint::kDesktop, 1);
+}
+
+class AuthenticatorWindowTestWithEmbeddedRecoveryUrl
+    : public AuthenticatorWindowTest {
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_{
+      device::kWebAuthnGpmPasskeyEmbeddedRecoveryUrl};
+};
+
+IN_PROC_BROWSER_TEST_F(AuthenticatorWindowTestWithEmbeddedRecoveryUrl,
+                       RecoverSecurityDomain_Embedded) {
+  base::HistogramTester histogram_tester;
+  set_magic_arch_response(kRecoverySuccess);
+  std::vector<AccountInfo> accounts = SetAccountsCookiesAndTokens(
+      {"another@example.com", "primary@example.com"});
+  identity_test_env()->SetPrimaryAccount("primary@example.com",
+                                         signin::ConsentLevel::kSignin);
+
+  GURL expected_url =
+      GaiaUrls::GetInstance()->SigninChromePasskeyUnlockDesktopEmbeddedUrl(1);
+  content::TestNavigationObserver navigation_observer(expected_url);
+  navigation_observer.StartWatchingNewWebContents();
+  model_->SetStep(
+      AuthenticatorRequestDialogModel::Step::kGPMRecoverSecurityDomain);
+  navigation_observer.Wait();
+
+  EXPECT_EQ(last_authuser_parameter_, "1");
+  histogram_tester.ExpectUniqueSample(
+      "TrustedVault.RecoveryFlowTriggeredEndpoint",
+      trusted_vault::TrustedVaultRecoveryFlowEndpoint::kDesktopEmbedded, 1);
+}
+
+// Regression test for crbug.com/505059790.
+// Make sure the correct authuser index is set when invoking MagicArch for PIN
+// reset.
+IN_PROC_BROWSER_TEST_F(AuthenticatorWindowTest, MultiAccountPinReset) {
+  std::vector<AccountInfo> accounts = SetAccountsCookiesAndTokens(
+      {"another@example.com", "primary@example.com"});
+
+  identity_test_env()->SetPrimaryAccount("primary@example.com",
+                                         signin::ConsentLevel::kSignin);
+
+  GURL expected_url = https_server_.base_url().Resolve("/encryption/pin/reset");
+  expected_url = net::AppendQueryParameter(expected_url, "authuser", "1");
+  content::TestNavigationObserver navigation_observer(expected_url);
+  navigation_observer.StartWatchingNewWebContents();
+  model_->SetStep(AuthenticatorRequestDialogModel::Step::kGPMReauthForPinReset);
+  navigation_observer.Wait();
+  EXPECT_EQ(last_authuser_parameter_, "1");
 }
 
 // Run with:
@@ -1187,7 +1374,7 @@ class PasskeyUpgradeConfirmationBubbleTest : public DialogBrowserTest {
     DialogBrowserTest::SetUpOnMainThread();
     host_resolver()->AddRule("*", "127.0.0.1");
     signin::MakePrimaryAccountAvailable(
-        IdentityManagerFactory::GetForProfile(browser()->profile()),
+        IdentityManagerFactory::GetForProfile(browser()->GetProfile()),
         "user@gmail.com", signin::ConsentLevel::kSync);
   }
 

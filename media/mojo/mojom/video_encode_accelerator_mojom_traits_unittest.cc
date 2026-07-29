@@ -5,6 +5,7 @@
 #include "media/mojo/mojom/video_encode_accelerator_mojom_traits.h"
 
 #include "media/base/video_bitrate_allocation.h"
+#include "media/base/video_types.h"
 #include "media/mojo/mojom/video_encode_accelerator.mojom.h"
 #include "media/mojo/mojom/video_encoder_info_mojom_traits.h"
 #include "media/video/video_encode_accelerator.h"
@@ -63,6 +64,11 @@ TEST(VideoEncoderInfoStructTraitTest, RoundTrip) {
   input.has_trusted_rate_controller = true;
   input.is_hardware_accelerated = true;
   input.supports_simulcast = true;
+  input.supports_gpu_shared_images = true;
+  input.gpu_supported_pixel_formats.push_back(
+      ::media::VideoPixelFormat::PIXEL_FORMAT_NV12);
+  input.gpu_supported_pixel_formats.push_back(
+      ::media::VideoPixelFormat::PIXEL_FORMAT_BGRA);
 
   ::media::VideoEncoderInfo output = input;
   ASSERT_TRUE(mojo::test::SerializeAndDeserialize<mojom::VideoEncoderInfo>(
@@ -205,12 +211,62 @@ TEST(VideoEncodeAcceleratorConfigStructTraitTest, RoundTripVariableBitrate) {
       kBitrate, 30,
       ::media::VideoEncodeAccelerator::Config::StorageType::kGpuMemoryBuffer,
       ::media::VideoEncodeAccelerator::Config::ContentType::kCamera);
+  input_config.manual_reference_buffer_control = true;
 
   ::media::VideoEncodeAccelerator::Config output_config{};
   ASSERT_TRUE(
       mojo::test::SerializeAndDeserialize<mojom::VideoEncodeAcceleratorConfig>(
           input_config, output_config));
   EXPECT_EQ(input_config, output_config);
+}
+
+TEST(VideoEncodeAcceleratorConfigStructTraitTest,
+     NonEmptySpatialLayerWithManualReference_Rejected) {
+  constexpr gfx::Size kBaseSize(320, 180);
+  constexpr uint32_t kBaseBitrateBps = 123456u;
+  const ::media::Bitrate kBitrate =
+      ::media::Bitrate::ConstantBitrate(kBaseBitrateBps);
+
+  ::media::VideoEncodeAccelerator::Config input_config(
+      ::media::PIXEL_FORMAT_NV12, kBaseSize, ::media::VP9PROFILE_PROFILE0,
+      kBitrate, 30,
+      ::media::VideoEncodeAccelerator::Config::StorageType::kGpuMemoryBuffer,
+      ::media::VideoEncodeAccelerator::Config::ContentType::kCamera);
+  input_config.manual_reference_buffer_control = true;
+
+  ::media::VideoEncodeAccelerator::Config::SpatialLayer spatial_layer;
+  spatial_layer.width = kBaseSize.width();
+  spatial_layer.height = kBaseSize.height();
+  spatial_layer.bitrate_bps = kBaseBitrateBps;
+  spatial_layer.framerate = 30;
+  spatial_layer.num_of_temporal_layers = 1;
+  input_config.spatial_layers.push_back(spatial_layer);
+
+  ::media::VideoEncodeAccelerator::Config output_config{};
+  EXPECT_FALSE(
+      mojo::test::SerializeAndDeserialize<mojom::VideoEncodeAcceleratorConfig>(
+          input_config, output_config));
+}
+
+TEST(VideoEncodeAcceleratorConfigStructTraitTest,
+     InterLayerPredNotOffWithManualReference_Rejected) {
+  constexpr gfx::Size kBaseSize(320, 180);
+  constexpr uint32_t kBaseBitrateBps = 123456u;
+  const ::media::Bitrate kBitrate =
+      ::media::Bitrate::ConstantBitrate(kBaseBitrateBps);
+
+  ::media::VideoEncodeAccelerator::Config input_config(
+      ::media::PIXEL_FORMAT_NV12, kBaseSize, ::media::VP9PROFILE_PROFILE0,
+      kBitrate, 30,
+      ::media::VideoEncodeAccelerator::Config::StorageType::kGpuMemoryBuffer,
+      ::media::VideoEncodeAccelerator::Config::ContentType::kCamera);
+  input_config.manual_reference_buffer_control = true;
+  input_config.inter_layer_pred = ::media::SVCInterLayerPredMode::kOn;
+
+  ::media::VideoEncodeAccelerator::Config output_config{};
+  EXPECT_FALSE(
+      mojo::test::SerializeAndDeserialize<mojom::VideoEncodeAcceleratorConfig>(
+          input_config, output_config));
 }
 
 TEST(VariableBitrateStructTraitTest, PeakZeroBps_Rejected) {
@@ -238,11 +294,11 @@ TEST(VariableBitrateStructTraitTest, PeakLessThanTarget_Rejected) {
 }
 
 TEST(BitstreamBufferMetadataTraitTest, RoundTrip) {
-  ::media::BitstreamBufferMetadata input_metadata;
+  BitstreamBufferMetadata input_metadata;
   input_metadata.payload_size_bytes = 1234;
   input_metadata.key_frame = true;
   input_metadata.timestamp = base::Milliseconds(123456);
-  ::media::BitstreamBufferMetadata output_metadata;
+  BitstreamBufferMetadata output_metadata;
   ASSERT_TRUE(
       mojo::test::SerializeAndDeserialize<mojom::BitstreamBufferMetadata>(
           input_metadata, output_metadata));
@@ -252,7 +308,7 @@ TEST(BitstreamBufferMetadataTraitTest, RoundTrip) {
   h264.temporal_idx = 1;
   h264.layer_sync = true;
   input_metadata.h264 = h264;
-  output_metadata = ::media::BitstreamBufferMetadata();
+  output_metadata = BitstreamBufferMetadata();
   ASSERT_TRUE(
       mojo::test::SerializeAndDeserialize<mojom::BitstreamBufferMetadata>(
           input_metadata, output_metadata));
@@ -264,7 +320,7 @@ TEST(BitstreamBufferMetadataTraitTest, RoundTrip) {
   vp8.temporal_idx = 1;
   vp8.layer_sync = false;
   input_metadata.vp8 = vp8;
-  output_metadata = ::media::BitstreamBufferMetadata();
+  output_metadata = BitstreamBufferMetadata();
   ASSERT_TRUE(
       mojo::test::SerializeAndDeserialize<mojom::BitstreamBufferMetadata>(
           input_metadata, output_metadata));
@@ -278,7 +334,7 @@ TEST(BitstreamBufferMetadataTraitTest, RoundTrip) {
   svc_generic.refresh_flags = 0b11111111;
   svc_generic.reference_flags = 0b00000001;
   input_metadata.svc_generic = svc_generic;
-  output_metadata = ::media::BitstreamBufferMetadata();
+  output_metadata = BitstreamBufferMetadata();
   ASSERT_TRUE(
       mojo::test::SerializeAndDeserialize<mojom::BitstreamBufferMetadata>(
           input_metadata, output_metadata));
@@ -296,7 +352,7 @@ TEST(BitstreamBufferMetadataTraitTest, RoundTrip) {
   vp9.spatial_layer_resolutions = {gfx::Size(320, 180), gfx::Size(640, 360)};
   vp9.p_diffs = {0, 1};
   input_metadata.vp9 = vp9;
-  output_metadata = ::media::BitstreamBufferMetadata();
+  output_metadata = BitstreamBufferMetadata();
   ASSERT_TRUE(
       mojo::test::SerializeAndDeserialize<mojom::BitstreamBufferMetadata>(
           input_metadata, output_metadata));
@@ -306,10 +362,74 @@ TEST(BitstreamBufferMetadataTraitTest, RoundTrip) {
       BitstreamBufferMetadata::CreateForDropFrame(base::Milliseconds(123456),
                                                   /*spatial_idx=*/1u, false);
   CHECK(input_metadata.drop);
-  output_metadata = ::media::BitstreamBufferMetadata();
+  output_metadata = BitstreamBufferMetadata();
   ASSERT_TRUE(
       mojo::test::SerializeAndDeserialize<mojom::BitstreamBufferMetadata>(
           input_metadata, output_metadata));
   EXPECT_EQ(input_metadata, output_metadata);
 }
+
+TEST(BitstreamBufferMetadataTraitTest, YuvPsnrRoundTrip) {
+  BitstreamBufferMetadata input_metadata;
+  input_metadata.payload_size_bytes = 1234;
+  input_metadata.key_frame = true;
+  input_metadata.timestamp = base::Milliseconds(123456);
+
+  // Full PSNR channels
+  YuvPsnr yuv_psnr;
+  yuv_psnr.y = 40.1;
+  yuv_psnr.u = 41.2;
+  yuv_psnr.v = 42.3;
+  input_metadata.yuv_psnr = yuv_psnr;
+  BitstreamBufferMetadata output_metadata;
+  ASSERT_TRUE(
+      mojo::test::SerializeAndDeserialize<mojom::BitstreamBufferMetadata>(
+          input_metadata, output_metadata));
+  EXPECT_EQ(input_metadata, output_metadata);
+}
+
+TEST(BitstreamBufferMetadataTraitTest, YuvPsnrValidation) {
+  BitstreamBufferMetadata input_metadata;
+  input_metadata.payload_size_bytes = 1234;
+  input_metadata.key_frame = true;
+  input_metadata.timestamp = base::Milliseconds(123456);
+
+  // Negative values should fail.
+  input_metadata.yuv_psnr = YuvPsnr{.y = -1.0, .u = 41.2, .v = 42.3};
+  BitstreamBufferMetadata output_metadata;
+  EXPECT_FALSE(
+      mojo::test::SerializeAndDeserialize<mojom::BitstreamBufferMetadata>(
+          input_metadata, output_metadata));
+
+  input_metadata.yuv_psnr = YuvPsnr{.y = 40.0, .u = -0.5, .v = 42.0};
+  output_metadata = BitstreamBufferMetadata();
+  EXPECT_FALSE(
+      mojo::test::SerializeAndDeserialize<mojom::BitstreamBufferMetadata>(
+          input_metadata, output_metadata));
+
+  // Reject NotANumber.
+  input_metadata.yuv_psnr = YuvPsnr{
+      .y = std::numeric_limits<double>::quiet_NaN(), .u = 41.2, .v = 42.3};
+  output_metadata = BitstreamBufferMetadata();
+  EXPECT_FALSE(
+      mojo::test::SerializeAndDeserialize<mojom::BitstreamBufferMetadata>(
+          input_metadata, output_metadata));
+
+  // Positive infinity should be allowed (bit perfect match).
+  input_metadata.yuv_psnr = YuvPsnr{
+      .y = std::numeric_limits<double>::infinity(), .u = 41.2, .v = 42.3};
+  output_metadata = BitstreamBufferMetadata();
+  EXPECT_TRUE(
+      mojo::test::SerializeAndDeserialize<mojom::BitstreamBufferMetadata>(
+          input_metadata, output_metadata));
+
+  // Negative infinity should be rejected (same as any negative).
+  input_metadata.yuv_psnr = YuvPsnr{
+      .y = -std::numeric_limits<double>::infinity(), .u = 41.2, .v = 42.3};
+  output_metadata = BitstreamBufferMetadata();
+  EXPECT_FALSE(
+      mojo::test::SerializeAndDeserialize<mojom::BitstreamBufferMetadata>(
+          input_metadata, output_metadata));
+}
+
 }  // namespace media

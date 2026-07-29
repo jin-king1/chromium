@@ -24,6 +24,23 @@ constexpr size_t kPayloadVersionFieldSize = sizeof(uint8_t);
 constexpr size_t kProtoBufferHeaderSize = sizeof(uint16_t);
 constexpr size_t kDataBufferHeaderSize = sizeof(uint32_t);
 
+// Helper method for Chromium enums that are contiguous, meaning all integers in
+// [kUnknown, kMaxValue] are valid (where kUnknown is typically zero but not a
+// requirement for this function).
+template <typename Enum>
+  requires requires {
+    Enum::kMaxValue;
+    Enum::kUnknown;
+  }
+Enum SafeCastAsContiguousEnum(int64_t value) {
+  static_assert(Enum::kUnknown <= Enum::kMaxValue);
+  if (value >= static_cast<int64_t>(Enum::kUnknown) &&
+      value <= static_cast<int64_t>(Enum::kMaxValue)) {
+    return static_cast<Enum>(value);
+  }
+  return Enum::kUnknown;
+}
+
 scoped_refptr<media::DecoderBuffer> ConvertProtoToDecoderBuffer(
     const openscreen::cast::DecoderBuffer& buffer_message,
     scoped_refptr<media::DecoderBuffer> buffer) {
@@ -87,10 +104,13 @@ void ConvertDecoderBufferToProto(
   buffer_message->set_duration_usec(decoder_buffer.duration().InMicroseconds());
   buffer_message->set_is_key_frame(decoder_buffer.is_key_frame());
 
-  buffer_message->set_front_discard_usec(
-      decoder_buffer.discard_padding().first.InMicroseconds());
-  buffer_message->set_back_discard_usec(
-      decoder_buffer.discard_padding().second.InMicroseconds());
+  auto discard_padding = decoder_buffer.discard_padding();
+  if (discard_padding.has_value()) {
+    buffer_message->set_front_discard_usec(
+        discard_padding->first.InMicroseconds());
+    buffer_message->set_back_discard_usec(
+        discard_padding->second.InMicroseconds());
+  }
 
   if (decoder_buffer.side_data() &&
       !decoder_buffer.side_data()->alpha_data.empty()) {
@@ -122,7 +142,10 @@ scoped_refptr<media::DecoderBuffer> ByteArrayToDecoderBuffer(
     // it may be EOS buffer.
     scoped_refptr<media::DecoderBuffer> decoder_buffer =
         ConvertProtoToDecoderBuffer(
-            segment, media::DecoderBuffer::CopyFrom(buffer_span));
+            segment,
+            media::DecoderBuffer::FromExternalMemory(
+                std::make_unique<media::DecoderBuffer::UnownedExternalMemory>(
+                    buffer_span)));
     return decoder_buffer;
   }
 
@@ -183,25 +206,9 @@ void ConvertAudioDecoderConfigToProto(
       audio_config.seek_preroll().InMicroseconds());
   audio_message->set_codec_delay(audio_config.codec_delay());
 
-  // We choose to not expose the "aac_extra_data" field to the remoting
-  // protobuf, because it is due to an internal Chrome bug. Instead, use the
-  // "extra_data" field as receivers should expect.
-  //
-  // TODO(crbug.com/40198159): Remove all references to "aac_extra_data" when it
-  // is removed as part of a media/ cleanup.
-#if DCHECK_IS_ON()
-  if (!audio_config.extra_data().empty() &&
-      !audio_config.aac_extra_data().empty() &&
-      audio_config.extra_data() != audio_config.aac_extra_data()) {
-    LOG(WARNING) << "mismatch between extra data and AAC extra data.";
-  }
-#endif
-  const bool is_aac = audio_config.codec() == media::AudioCodec::kAAC;
-  const std::vector<uint8_t>& extra_data =
-      is_aac ? audio_config.aac_extra_data() : audio_config.extra_data();
-
-  if (!extra_data.empty()) {
-    audio_message->set_extra_data(extra_data.data(), extra_data.size());
+  if (!audio_config.extra_data().empty()) {
+    audio_message->set_extra_data(audio_config.extra_data().data(),
+                                  audio_config.extra_data().size());
   }
 }
 
@@ -210,27 +217,18 @@ bool ConvertProtoToAudioDecoderConfig(
     media::AudioDecoderConfig* audio_config) {
   DCHECK(audio_config);
 
-  // Either "extra_data" or "aac_extra_data" should be populated but not both.
-  const bool is_aac =
-      audio_message.codec() == openscreen::cast::AudioDecoderConfig::kCodecAAC;
   const auto extra_data = base::span(audio_message.extra_data());
+  const media::ChannelLayout layout =
+      ToMediaChannelLayout(audio_message.channel_layout()).value();
   audio_config->Initialize(
       ToMediaAudioCodec(audio_message.codec()).value(),
       ToMediaSampleFormat(audio_message.sample_format()).value(),
-      ToMediaChannelLayout(audio_message.channel_layout()).value(),
+      media::ChannelLayoutConfig::FromLayout(layout),
       audio_message.samples_per_second(),
-      is_aac ? std::vector<uint8_t>{}
-             : std::vector<uint8_t>(extra_data.begin(), extra_data.end()),
+      std::vector<uint8_t>(extra_data.begin(), extra_data.end()),
       media::EncryptionScheme::kUnencrypted,
       base::Microseconds(audio_message.seek_preroll_usec()),
       audio_message.codec_delay());
-
-  // TODO(crbug.com/40198159): Remove all references to "aac_extra_data" when it
-  // is removed as part of a media/ cleanup.
-  if (is_aac) {
-    audio_config->set_aac_extra_data(
-        std::vector<uint8_t>(extra_data.begin(), extra_data.end()));
-  }
 
   return audio_config->IsValidConfig();
 }
@@ -354,7 +352,8 @@ void ConvertProtoToPipelineStatistics(
   if (stats_message.has_audio_decoder_info()) {
     auto audio_info = stats_message.audio_decoder_info();
     stats->audio_pipeline_info.decoder_type =
-        static_cast<media::AudioDecoderType>(audio_info.decoder_type());
+        SafeCastAsContiguousEnum<media::AudioDecoderType>(
+            audio_info.decoder_type());
     stats->audio_pipeline_info.is_platform_decoder =
         audio_info.is_platform_decoder();
     stats->audio_pipeline_info.has_decrypting_demuxer_stream = false;
@@ -363,7 +362,8 @@ void ConvertProtoToPipelineStatistics(
   if (stats_message.has_video_decoder_info()) {
     auto video_info = stats_message.video_decoder_info();
     stats->video_pipeline_info.decoder_type =
-        static_cast<media::VideoDecoderType>(video_info.decoder_type());
+        SafeCastAsContiguousEnum<media::VideoDecoderType>(
+            video_info.decoder_type());
     stats->video_pipeline_info.is_platform_decoder =
         video_info.is_platform_decoder();
     stats->video_pipeline_info.has_decrypting_demuxer_stream = false;

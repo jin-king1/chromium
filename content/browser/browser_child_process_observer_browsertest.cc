@@ -13,9 +13,9 @@
 #include "content/public/browser/browser_child_process_host.h"
 #include "content/public/browser/browser_child_process_host_delegate.h"
 #include "content/public/browser/child_process_data.h"
+#include "content/public/browser/sandboxed_process_launcher_delegate.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/common/process_type.h"
-#include "content/public/common/sandboxed_process_launcher_delegate.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/content_browser_test.h"
 #include "content/public/test/test_service.mojom.h"
@@ -188,7 +188,7 @@ class TestSandboxedProcessLauncherDelegate
 };
 
 // A test-specific type of process host. Self-owned.
-class TestProcessHost : public BrowserChildProcessHostDelegate {
+class TestProcessHost final : public BrowserChildProcessHostDelegate {
  public:
   static base::WeakPtr<TestProcessHost> Create() {
     auto* instance = new TestProcessHost();
@@ -196,10 +196,7 @@ class TestProcessHost : public BrowserChildProcessHostDelegate {
   }
 
   TestProcessHost()
-      : process_(BrowserChildProcessHost::Create(
-            PROCESS_TYPE_UTILITY,
-            this,
-            ChildProcessHost::IpcMode::kNormal)) {}
+      : process_(BrowserChildProcessHost::Create(PROCESS_TYPE_UTILITY, this)) {}
   ~TestProcessHost() override = default;
 
   // Returns the ID of the child process.
@@ -246,10 +243,9 @@ class TestProcessHost : public BrowserChildProcessHostDelegate {
     process_->SetName(u"Test utility process");
 
     auto command_line = GetChildCommandLine();
-    bool terminate_on_shutdown = true;
 
     process_->Launch(std::move(sandboxed_process_launcher_delegate),
-                     std::move(command_line), terminate_on_shutdown);
+                     std::move(command_line));
 
     test_service_ = BindTestService();
   }
@@ -438,7 +434,8 @@ IN_PROC_BROWSER_TEST_F(BrowserChildProcessObserverBrowserTest,
 // Tests that launching and then causing a crash the host results in a crashed
 // notification.
 // TODO(crbug.com/40868150): Times out on Android tests.
-#if BUILDFLAG(IS_ANDROID)
+// TODO(crbug.com/440535492): Flaky on Win dbg. Re-enable this test.
+#if BUILDFLAG(IS_ANDROID) || (BUILDFLAG(IS_WIN) && !defined(NDEBUG))
 #define MAYBE_LaunchAndCrash DISABLED_LaunchAndCrash
 #else
 #define MAYBE_LaunchAndCrash LaunchAndCrash

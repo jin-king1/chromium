@@ -28,15 +28,15 @@ ALIGNMENT_ORDER = [
     'ScaleTransformOperation',
     'RotateTransformOperation',
     'TranslateTransformOperation',
-    'NGGridTrackList',
+    'GridTrackList',
     'StyleHighlightData',
     'FilterOperations',
     'DynamicRangeLimit',
-    'ComputedGridTrackList',
     'std::optional<gfx::Size>',
     'double',
     'StyleViewTransitionGroup',
     'Superellipse',
+    'FlowTolerance',
     # Aligns like a pointer (can be 32 or 64 bits)
     'NamedGridLinesMap',
     'NamedGridAreaMap',
@@ -46,8 +46,8 @@ ALIGNMENT_ORDER = [
     'Vector<TimelineAttachment>',
     'Vector<TimelineAxis>',
     'Vector<TimelineInset>',
+    'HeapVector<Member<StyleTriggerAttachmentVector>>',
     'GridPosition',
-    'ScrollStartData',
     'AtomicString',
     'scoped_refptr',
     'std::unique_ptr',
@@ -59,15 +59,23 @@ ALIGNMENT_ORDER = [
     'IntrinsicLength',
     'TextBoxEdge',
     'TextDecorationThickness',
+    'TextOverflowData',
     'StyleAnchorScope',
     'StyleAspectRatio',
     'StyleIntrinsicLength',
+    'StyleInheritedVariables',
+    'StyleNameScope',
+    'StyleNonInheritedVariables',
+    'StylePositionAnchor',
+    'StyleTimelineScope',
+    'StyleTriggerScope',
     'std::optional<StyleOverflowClipMargin>',
     'std::optional<blink::PositionAreaOffsets>',
     'std::optional<PhysicalOffset>',
     'GapDataList<StyleColor>',
     'GapDataList<int>',
     'GapDataList<EBorderStyle>',
+    'gfx::Size',
     # Compressed builds a Member can be 32 bits, vs. a pointer will be 64.
     'Member',
     # Aligns like float
@@ -84,30 +92,36 @@ ALIGNMENT_ORDER = [
     'Length',
     'UnzoomedLength',
     'TextSizeAdjust',
+    'TextFit',
     'TabSize',
     'float',
+    'StyleInterestDelay',
     # Aligns like int
     'cc::ScrollSnapType',
     'cc::ScrollSnapAlign',
     'BorderValue',
     'StyleColor',
     'StyleAutoColor',
+    'StyleCaretColor',
     'Color',
     'StyleHyphenateLimitChars',
     'LayoutUnit',
-    'LineClampValue',
+    'MaxLinesData',
     'OutlineValue',
     'unsigned',
     'size_t',
     'wtf_size_t',
     'int',
     'PositionArea',
+    'GridLanesDirection',
     # Aligns like short
     'unsigned short',
+    'uint16_t',
     'short',
     # Aligns like char
     'StyleSelfAlignmentData',
     'StyleContentAlignmentData',
+    'StyleFlexWrapData',
     'uint8_t',
     'char',
     # Aligns like bool
@@ -206,8 +220,8 @@ def _create_enums(properties):
     for property_ in properties:
         # Only generate enums for keyword properties that do not
         # require includes.
-        if (property_.field_template in ('keyword', 'multi_keyword',
-                                         'bitset_keyword')
+        if (property_.field_template in ('keyword', 'keyword_custom',
+                                         'multi_keyword', 'bitset_keyword')
                 and len(property_.include_paths) == 0):
             if property_.field_template == 'multi_keyword':
                 set_type = 'multi'
@@ -240,7 +254,7 @@ def _create_enums(properties):
 
 
 def _find_size_for_property(property_):
-    if property_.field_template == 'keyword':
+    if property_.field_template in ('keyword', 'keyword_custom'):
         assert property_.field_size is None, \
             ("'" + property_.name + "' is a keyword field, "
              "so it should not specify a field_size")
@@ -276,31 +290,36 @@ def _create_property_field(property_):
 
     size = _find_size_for_property(property_)
 
-    return Field(
-        'property',
-        name_for_methods,
-        property_name=property_.name.original,
-        inherited=property_.inherited,
-        independent=property_.independent,
-        semi_independent_variable=property_.semi_independent_variable,
-        type_name=property_.type_name,
-        wrapper_pointer_name=property_.wrapper_pointer_name,
-        field_template=property_.field_template,
-        size=size,
-        default_value=property_.default_value,
-        invalidate=property_.invalidate,
-        derived_from=property_.derived_from,
-        reset_on_new_style=property_.reset_on_new_style,
-        custom_compare=property_.custom_compare,
-        mutable=property_.mutable,
-        getter_method_name=property_.getter,
-        setter_method_name=property_.setter,
-        initial_method_name=property_.initial,
-        computed_style_custom_functions=property_.
-        computed_style_custom_functions,
-        computed_style_protected_functions=property_.
-        computed_style_protected_functions,
-    )
+    return Field('property',
+                 name_for_methods,
+                 property_name=property_.name.original,
+                 inherited=property_.inherited,
+                 independent=property_.independent,
+                 semi_independent_variable=property_.semi_independent_variable,
+                 type_name=property_.type_name,
+                 wrapper_pointer_name=property_.wrapper_pointer_name,
+                 field_template=property_.field_template,
+                 size=size,
+                 default_value=property_.default_value,
+                 invalidate=property_.invalidate,
+                 derived_from=property_.derived_from,
+                 reset_on_new_style=property_.reset_on_new_style,
+                 custom_compare=property_.custom_compare,
+                 highlight_style_comes_from_originating_element=property_.
+                 highlight_style_comes_from_originating_element,
+                 mutable=property_.mutable,
+                 getter_method_name=property_.getter,
+                 setter_method_name=property_.setter,
+                 initial_method_name=property_.initial,
+                 computed_style_custom_functions=property_.
+                 computed_style_custom_functions,
+                 computed_style_protected_functions=property_.
+                 computed_style_protected_functions,
+                 may_be_affected_by_transition_all=property_.
+                 may_be_affected_by_transition_all,
+                 may_be_affected_by_transition_all_discrete=property_.
+                 may_be_affected_by_transition_all_discrete,
+                 is_extra_field=property_.is_extra_field)
 
 
 def _create_inherited_flag_field(property_):
@@ -325,6 +344,7 @@ def _create_inherited_flag_field(property_):
         invalidate=[],
         reset_on_new_style=False,
         custom_compare=False,
+        highlight_style_comes_from_originating_element=False,
         mutable=False,
         getter_method_name=name_source.to_function_name(),
         setter_method_name=name_source.to_function_name(prefix='set'),
@@ -333,6 +353,9 @@ def _create_inherited_flag_field(property_):
         computed_style_custom_functions,
         computed_style_protected_functions=property_.
         computed_style_protected_functions,
+        may_be_affected_by_transition_all=False,
+        may_be_affected_by_transition_all_discrete=False,
+        is_extra_field=False,
     )
 
 
@@ -356,6 +379,10 @@ def _create_fields(property_):
 
         field = _create_property_field(property_)
 
+        # Link the two against each other.
+        property_.main_field = field
+        field.property_if_main_field = property_
+
     return field, flag_field
 
 
@@ -372,7 +399,11 @@ def _reorder_bit_fields(bit_fields):
     field_buckets = []
     # Consider fields in descending order of size to reduce fragmentation
     # when they are selected. Ties broken in alphabetical order by name.
-    for field in sorted(bit_fields, key=lambda f: (-f.size, f.name)):
+    # We also try to group together inherited and non-inherited fields
+    # if possible, so that the compiler can generate cleaner bit masks
+    # when dealing with them as a group.
+    for field in sorted(bit_fields,
+                        key=lambda f: (f.is_inherited, -f.size, f.name)):
         added_to_bucket = False
         # Go through each bucket and add this field if it will not increase
         # the bucket's size to larger than 32 bits. Otherwise, make a new

@@ -15,6 +15,7 @@
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/apps/app_service/app_service_test.h"
 #include "chrome/browser/extensions/extension_service_test_with_install.h"
+#include "chrome/browser/extensions/scoped_test_mv2_enabler.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/supervised_user/supervised_user_extensions_delegate_impl.h"
 #include "chrome/browser/supervised_user/supervised_user_test_util.h"
@@ -124,6 +125,7 @@ class FamilyUserAppMetricsTest
                 content::BrowserTaskEnvironment::TimeSource::MOCK_TIME)) {}
 
   void SetUp() override {
+    extensions::ExtensionServiceTestWithInstall::SetUp();
     base::Time start_time;
     EXPECT_TRUE(base::Time::FromString(kStartTime, &start_time));
     base::TimeDelta forward_by = start_time - base::Time::Now();
@@ -146,6 +148,13 @@ class FamilyUserAppMetricsTest
 
     family_user_app_metrics_ =
         std::make_unique<FamilyUserAppMetricsDerivedForTest>(profile());
+  }
+
+  void TearDown() override {
+    window_.reset();
+    family_user_app_metrics_.reset();
+    supervised_user_extensions_delegate_.reset();
+    extensions::ExtensionServiceTestWithInstall::TearDown();
   }
 
   void InstallExtensions() {
@@ -241,10 +250,14 @@ class FamilyUserAppMetricsTest
 
   bool IsFamilyLink() const { return GetParam(); }
 
-  std::unique_ptr<FamilyUserAppMetricsDerivedForTest> family_user_app_metrics_;
-  std::unique_ptr<aura::Window> window_;
   std::unique_ptr<extensions::SupervisedUserExtensionsDelegate>
       supervised_user_extensions_delegate_;
+  std::unique_ptr<FamilyUserAppMetricsDerivedForTest> family_user_app_metrics_;
+  std::unique_ptr<aura::Window> window_;
+
+  // TODO(https://crbug.com/40804030): Migrate this to only rely on MV3
+  // extensions.
+  extensions::ScopedTestMV2Enabler mv2_enabler_;
 };
 
 // Tests the UMA metrics that count the number of installed and enabled

@@ -16,7 +16,6 @@
 #include "ash/test/ash_test_util.h"
 #include "ash/test/pixel/ash_pixel_differ.h"
 #include "ash/test/pixel/ash_pixel_test_init_params.h"
-#include "base/containers/enum_set.h"
 #include "base/files/file_path.h"
 #include "ui/views/test/views_test_utils.h"
 #include "ui/views/view.h"
@@ -99,13 +98,13 @@ class AuthContainerPixelTest : public AshTestBase {
 TEST_F(AuthContainerPixelTest, SwitchTest) {
   //  Verify the UI.
   EXPECT_TRUE(GetPixelDiffer()->CompareUiComponentsOnPrimaryScreen(
-      "PasswordWithSwitch", /*revision_number=*/0, container_view_));
+      "PasswordWithSwitch", /*revision_number=*/1, container_view_));
   // Switch to the pin UI.
   LeftClickOn(test_api_->GetSwitchButton());
 
   //  Verify the UI.
   EXPECT_TRUE(GetPixelDiffer()->CompareUiComponentsOnPrimaryScreen(
-      "PinWithSwitch", /*revision_number=*/0, container_view_));
+      "PinWithSwitch", /*revision_number=*/1, container_view_));
 }
 
 // Verify the PIN only UI.
@@ -114,7 +113,7 @@ TEST_F(AuthContainerPixelTest, PinOnlyTest) {
   test_api_->GetView()->SetHasPassword(false);
 
   EXPECT_TRUE(GetPixelDiffer()->CompareUiComponentsOnPrimaryScreen(
-      "PinOnly", /*revision_number=*/0, container_view_));
+      "PinOnly", /*revision_number=*/1, container_view_));
 }
 
 // Verify the password only UI.
@@ -123,7 +122,7 @@ TEST_F(AuthContainerPixelTest, PasswordOnlyTest) {
   test_api_->GetView()->SetHasPin(false);
 
   EXPECT_TRUE(GetPixelDiffer()->CompareUiComponentsOnPrimaryScreen(
-      "PasswordOnly", /*revision_number=*/0, container_view_));
+      "PasswordOnly", /*revision_number=*/1, container_view_));
 }
 
 // Verify the password only UI with a PIN status.
@@ -143,11 +142,11 @@ TEST_F(AuthContainerPixelTest, PinStatusTest) {
       std::make_unique<cryptohome::PinStatus>(pin_status));
 
   EXPECT_TRUE(GetPixelDiffer()->CompareUiComponentsOnPrimaryScreen(
-      "SetPinStatus", /*revision_number=*/1, container_view_));
+      "SetPinStatus", /*revision_number=*/2, container_view_));
 
   test_api_->GetView()->SetPinStatus(nullptr);
   EXPECT_TRUE(GetPixelDiffer()->CompareUiComponentsOnPrimaryScreen(
-      "PasswordOnly", /*revision_number=*/0, container_view_));
+      "PasswordOnly", /*revision_number=*/1, container_view_));
 }
 
 // Verify the fingerprint view.
@@ -160,12 +159,12 @@ TEST_F(AuthContainerPixelTest, PasswordWithFingerprintTest) {
   // Turn on the fingerprint factor availability.
   container_view_->SetFingerprintState(FingerprintState::AVAILABLE_DEFAULT);
   EXPECT_TRUE(GetPixelDiffer()->CompareUiComponentsOnPrimaryScreen(
-      "PasswordWithFingerprint", /*revision_number=*/0, container_view_));
+      "PasswordWithFingerprint", /*revision_number=*/1, container_view_));
 
   // Turn off the fingerprint factor availability.
   container_view_->SetFingerprintState(FingerprintState::UNAVAILABLE);
   EXPECT_TRUE(GetPixelDiffer()->CompareUiComponentsOnPrimaryScreen(
-      "PasswordWithHiddenFingerprint", /*revision_number=*/0, container_view_));
+      "PasswordWithHiddenFingerprint", /*revision_number=*/1, container_view_));
 }
 
 // Verify the fingerprint view.
@@ -178,12 +177,12 @@ TEST_F(AuthContainerPixelTest, PasswordAndPinWithFingerprintTest) {
   // Turn on the fingerprint factor availability.
   container_view_->SetFingerprintState(FingerprintState::AVAILABLE_DEFAULT);
   EXPECT_TRUE(GetPixelDiffer()->CompareUiComponentsOnPrimaryScreen(
-      "PasswordAndPinWithFingerprint", /*revision_number=*/0, container_view_));
+      "PasswordAndPinWithFingerprint", /*revision_number=*/1, container_view_));
 
   // Turn on the fingerprint factor availability.
   container_view_->SetFingerprintState(FingerprintState::UNAVAILABLE);
   EXPECT_TRUE(GetPixelDiffer()->CompareUiComponentsOnPrimaryScreen(
-      "PasswordAndPinWithHiddenFingerprint", /*revision_number=*/0,
+      "PasswordAndPinWithHiddenFingerprint", /*revision_number=*/1,
       container_view_));
 }
 

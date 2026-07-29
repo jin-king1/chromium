@@ -5,7 +5,9 @@
 #include "chrome/browser/ash/cryptauth/client_app_metadata_provider_service_factory.h"
 
 #include "chrome/browser/ash/cryptauth/client_app_metadata_provider_service.h"
+#include "chrome/browser/browser_process.h"
 #include "chrome/browser/gcm/instance_id/instance_id_profile_service_factory.h"
+#include "chrome/browser/global_features.h"
 #include "chrome/browser/profiles/incognito_helpers.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chromeos/ash/components/network/network_handler.h"
@@ -53,6 +55,8 @@ ClientAppMetadataProviderServiceFactory::BuildServiceInstanceForBrowserContext(
     content::BrowserContext* browser_context) const {
   Profile* profile = Profile::FromBrowserContext(browser_context);
   return std::make_unique<ClientAppMetadataProviderService>(
+      g_browser_process->local_state(),
+      g_browser_process->GetFeatures()->application_locale_storage(),
       profile->GetPrefs(), NetworkHandler::Get()->network_state_handler(),
       instance_id::InstanceIDProfileServiceFactory::GetForProfile(profile));
 }

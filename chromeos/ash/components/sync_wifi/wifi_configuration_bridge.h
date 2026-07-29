@@ -26,6 +26,7 @@ class PrefService;
 
 namespace syncer {
 class DataTypeLocalChangeProcessor;
+class MetadataChangeList;
 }  // namespace syncer
 
 namespace ash::timer_factory {
@@ -70,8 +71,6 @@ class WifiConfigurationBridge : public syncer::DataTypeSyncBridge,
   static void RegisterPrefs(PrefRegistrySimple* registry);
 
   // syncer::DataTypeSyncBridge:
-  std::unique_ptr<syncer::MetadataChangeList> CreateMetadataChangeList()
-      override;
   std::optional<syncer::ModelError> MergeFullSyncData(
       std::unique_ptr<syncer::MetadataChangeList> metadata_change_list,
       syncer::EntityChangeList entity_data) override;
@@ -81,16 +80,23 @@ class WifiConfigurationBridge : public syncer::DataTypeSyncBridge,
   std::unique_ptr<syncer::DataBatch> GetDataForCommit(
       StorageKeyList storage_keys) override;
   std::unique_ptr<syncer::DataBatch> GetAllDataForDebugging() override;
-  std::string GetClientTag(const syncer::EntityData& entity_data) override;
-  std::string GetStorageKey(const syncer::EntityData& entity_data) override;
+  std::string GetClientTag(
+      const syncer::EntityData& entity_data) const override;
+  std::string GetStorageKey(
+      const syncer::EntityData& entity_data) const override;
+  sync_pb::EntitySpecifics TrimAllSupportedFieldsFromRemoteSpecifics(
+      const sync_pb::EntitySpecifics& entity_specifics) const override;
+  bool IsEntityDataValid(const syncer::EntityData& entity_data) const override;
   void ApplyDisableSyncChanges(std::unique_ptr<syncer::MetadataChangeList>
                                    delete_metadata_change_list) override;
+  std::unique_ptr<syncer::MetadataChangeList> CreateMetadataChangeList()
+      override;
 
   // NetworkMetadataObserver:
   void OnFirstConnectionToNetwork(const std::string& guid) override;
   void OnNetworkCreated(const std::string& guid) override;
   void OnNetworkUpdate(const std::string& guid,
-                       const base::Value::Dict* set_properties) override;
+                       const base::DictValue* set_properties) override;
 
   // NetworkConfigurationObserver::
   void OnBeforeConfigurationRemoved(const std::string& service_path,
@@ -107,6 +113,8 @@ class WifiConfigurationBridge : public syncer::DataTypeSyncBridge,
 
  private:
   void Commit(std::unique_ptr<syncer::DataTypeStore::WriteBatch> batch);
+
+  void RecordNetworkMetrics();
 
   // Callbacks for DataTypeStore.
   void OnStoreCreated(const std::optional<syncer::ModelError>& error,

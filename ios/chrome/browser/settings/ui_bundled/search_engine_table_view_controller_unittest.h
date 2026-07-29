@@ -4,11 +4,14 @@
 
 #ifndef IOS_CHROME_BROWSER_SETTINGS_UI_BUNDLED_SEARCH_ENGINE_TABLE_VIEW_CONTROLLER_UNITTEST_H_
 #define IOS_CHROME_BROWSER_SETTINGS_UI_BUNDLED_SEARCH_ENGINE_TABLE_VIEW_CONTROLLER_UNITTEST_H_
+
 #import <UIKit/UIKit.h>
 
 #import <string>
+#import <vector>
 
 #import "base/test/metrics/histogram_tester.h"
+#import "base/test/scoped_feature_list.h"
 #import "base/time/time.h"
 #import "components/search_engines/template_url_service.h"
 #import "components/sync_preferences/testing_pref_service_syncable.h"
@@ -96,6 +99,7 @@ class SearchEngineTableViewControllerTest
   [[nodiscard]] bool DeleteItemsAndWait(NSArray<NSIndexPath*>* indexes,
                                         ConditionBlock condition);
 
+  base::test::ScopedFeatureList scoped_feature_list_;
   web::WebTaskEnvironment task_environment_;
   std::unique_ptr<TestProfileIOS> profile_;
   base::HistogramTester histogram_tester_;

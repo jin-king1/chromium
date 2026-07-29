@@ -17,6 +17,7 @@
 #include "components/content_settings/common/content_settings_manager.mojom.h"
 #include "components/content_settings/core/browser/cookie_settings.h"
 #include "components/content_settings/core/common/pref_names.h"
+#include "components/prefs/pref_service.h"
 #include "content/public/browser/browsing_data_remover.h"
 #include "content/public/browser/cookie_access_details.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -49,7 +50,7 @@ void ValidateAllowedUnpartitionedSites(
   EXPECT_TRUE(
       std::ranges::equal(sites, expected_sites_in_order,
                          [](const auto& site, const auto& expected_site) {
-                           return site.origin.host() == expected_site.host();
+                           return site.origin.host() == expected_site.GetHost();
                          }));
 }
 
@@ -106,10 +107,12 @@ TEST_F(PageSpecificSiteDataDialogUnitTest, CookieAccessed) {
 
   std::unique_ptr<net::CanonicalCookie> first_party_cookie(
       net::CanonicalCookie::CreateForTesting(GURL(kCurrentUrl), "A=B",
-                                             base::Time::Now()));
+                                             base::Time::Now(),
+                                             net::CookieSourceType::kOther));
   std::unique_ptr<net::CanonicalCookie> third_party_cookie(
       net::CanonicalCookie::CreateForTesting(GURL(kThirdPartyUrl), "C=D",
-                                             base::Time::Now()));
+                                             base::Time::Now(),
+                                             net::CookieSourceType::kOther));
   ASSERT_TRUE(first_party_cookie);
   ASSERT_TRUE(third_party_cookie);
   content_settings->OnCookiesAccessed(
@@ -146,7 +149,7 @@ TEST_F(PageSpecificSiteDataDialogUnitTest, QuotaStorageAccessedFirstParty) {
   ASSERT_EQ(sites.size(), 1u);
 
   auto first_site = sites[0];
-  EXPECT_EQ(first_site.origin.host(), GURL(kThirdPartyUrl).host());
+  EXPECT_EQ(first_site.origin.host(), GURL(kThirdPartyUrl).GetHost());
   EXPECT_EQ(first_site.setting, CONTENT_SETTING_ALLOW);
   // False due to first-party storage being accessed.
   EXPECT_EQ(first_site.is_fully_partitioned, false);
@@ -159,7 +162,8 @@ TEST_F(PageSpecificSiteDataDialogUnitTest,
   auto* content_settings = GetContentSettings();
   std::unique_ptr<net::CanonicalCookie> first_party_cookie(
       net::CanonicalCookie::CreateForTesting(GURL(kThirdPartyUrl), "C=D",
-                                             base::Time::Now()));
+                                             base::Time::Now(),
+                                             net::CookieSourceType::kOther));
   ASSERT_TRUE(first_party_cookie);
   content_settings->OnCookiesAccessed(
       {content::CookieAccessDetails::Type::kRead,
@@ -178,7 +182,7 @@ TEST_F(PageSpecificSiteDataDialogUnitTest,
   ASSERT_EQ(sites.size(), 1u);
 
   auto first_site = sites[0];
-  EXPECT_EQ(first_site.origin.host(), GURL(kThirdPartyUrl).host());
+  EXPECT_EQ(first_site.origin.host(), GURL(kThirdPartyUrl).GetHost());
   EXPECT_EQ(first_site.setting, CONTENT_SETTING_ALLOW);
   // False due to first-party storage being accessed.
   EXPECT_EQ(first_site.is_fully_partitioned, false);
@@ -192,6 +196,7 @@ TEST_F(PageSpecificSiteDataDialogUnitTest,
   std::unique_ptr<net::CanonicalCookie> first_party_cookie(
       net::CanonicalCookie::CreateForTesting(
           GURL(kThirdPartyUrl), "C=D", base::Time::Now(),
+          net::CookieSourceType::kOther,
           /*server_time=*/std::nullopt,
           net::CookiePartitionKey::FromURLForTesting(GURL(kThirdPartyUrl))));
   ASSERT_TRUE(first_party_cookie);
@@ -212,7 +217,7 @@ TEST_F(PageSpecificSiteDataDialogUnitTest,
   ASSERT_EQ(sites.size(), 1u);
 
   auto first_site = sites[0];
-  EXPECT_EQ(first_site.origin.host(), GURL(kThirdPartyUrl).host());
+  EXPECT_EQ(first_site.origin.host(), GURL(kThirdPartyUrl).GetHost());
   EXPECT_EQ(first_site.setting, CONTENT_SETTING_ALLOW);
   // False due to first-party storage being accessed.
   EXPECT_EQ(first_site.is_fully_partitioned, false);
@@ -233,7 +238,7 @@ TEST_F(PageSpecificSiteDataDialogUnitTest, QuotaStorageAccessedThirdParty) {
   ASSERT_EQ(sites.size(), 1u);
 
   auto first_site = sites[0];
-  EXPECT_EQ(first_site.origin.host(), GURL(kThirdPartyUrl).host());
+  EXPECT_EQ(first_site.origin.host(), GURL(kThirdPartyUrl).GetHost());
   EXPECT_EQ(first_site.setting, CONTENT_SETTING_ALLOW);
   // True due to only third-party storage being accessed.
   EXPECT_EQ(first_site.is_fully_partitioned, true);
@@ -246,7 +251,8 @@ TEST_F(PageSpecificSiteDataDialogUnitTest,
   auto* content_settings = GetContentSettings();
   std::unique_ptr<net::CanonicalCookie> third_party_cookie(
       net::CanonicalCookie::CreateForTesting(GURL(kThirdPartyUrl), "C=D",
-                                             base::Time::Now()));
+                                             base::Time::Now(),
+                                             net::CookieSourceType::kOther));
   ASSERT_TRUE(third_party_cookie);
   content_settings->OnCookiesAccessed(
       {content::CookieAccessDetails::Type::kRead,
@@ -265,7 +271,7 @@ TEST_F(PageSpecificSiteDataDialogUnitTest,
   ASSERT_EQ(sites.size(), 1u);
 
   auto first_site = sites[0];
-  EXPECT_EQ(first_site.origin.host(), GURL(kThirdPartyUrl).host());
+  EXPECT_EQ(first_site.origin.host(), GURL(kThirdPartyUrl).GetHost());
   EXPECT_EQ(first_site.setting, CONTENT_SETTING_ALLOW);
   // False due to cookies being accessed without forced partitioning.
   EXPECT_EQ(first_site.is_fully_partitioned, false);
@@ -279,6 +285,7 @@ TEST_F(PageSpecificSiteDataDialogUnitTest,
   std::unique_ptr<net::CanonicalCookie> third_party_cookie(
       net::CanonicalCookie::CreateForTesting(
           GURL(kThirdPartyUrl), "C=D", base::Time::Now(),
+          net::CookieSourceType::kOther,
           /*server_time=*/std::nullopt,
           net::CookiePartitionKey::FromURLForTesting(GURL(kCurrentUrl))));
   ASSERT_TRUE(third_party_cookie);
@@ -299,7 +306,7 @@ TEST_F(PageSpecificSiteDataDialogUnitTest,
   ASSERT_EQ(sites.size(), 1u);
 
   auto first_site = sites[0];
-  EXPECT_EQ(first_site.origin.host(), GURL(kThirdPartyUrl).host());
+  EXPECT_EQ(first_site.origin.host(), GURL(kThirdPartyUrl).GetHost());
   EXPECT_EQ(first_site.setting, CONTENT_SETTING_ALLOW);
   // TODO(crbug.com/40231917): Fix this test to return true once cookie
   // partition logic is tested.
@@ -325,7 +332,7 @@ TEST_F(PageSpecificSiteDataDialogUnitTest, QuotaStorageAccessedMixedParty) {
   ASSERT_EQ(sites.size(), 1u);
 
   auto first_site = sites[0];
-  EXPECT_EQ(first_site.origin.host(), GURL(kThirdPartyUrl).host());
+  EXPECT_EQ(first_site.origin.host(), GURL(kThirdPartyUrl).GetHost());
   EXPECT_EQ(first_site.setting, CONTENT_SETTING_ALLOW);
   // False due to first-party storage being accessed.
   EXPECT_EQ(first_site.is_fully_partitioned, false);
@@ -338,7 +345,8 @@ TEST_F(PageSpecificSiteDataDialogUnitTest,
   auto* content_settings = GetContentSettings();
   std::unique_ptr<net::CanonicalCookie> first_party_cookie(
       net::CanonicalCookie::CreateForTesting(GURL(kThirdPartyUrl), "C=D",
-                                             base::Time::Now()));
+                                             base::Time::Now(),
+                                             net::CookieSourceType::kOther));
   ASSERT_TRUE(first_party_cookie);
   content_settings->OnCookiesAccessed(
       {content::CookieAccessDetails::Type::kRead,
@@ -352,7 +360,8 @@ TEST_F(PageSpecificSiteDataDialogUnitTest,
       /*blocked=*/false);
   std::unique_ptr<net::CanonicalCookie> third_party_cookie(
       net::CanonicalCookie::CreateForTesting(GURL(kThirdPartyUrl), "C=D",
-                                             base::Time::Now()));
+                                             base::Time::Now(),
+                                             net::CookieSourceType::kOther));
   ASSERT_TRUE(third_party_cookie);
   content_settings->OnCookiesAccessed(
       {content::CookieAccessDetails::Type::kRead,
@@ -371,7 +380,7 @@ TEST_F(PageSpecificSiteDataDialogUnitTest,
   ASSERT_EQ(sites.size(), 1u);
 
   auto first_site = sites[0];
-  EXPECT_EQ(first_site.origin.host(), GURL(kThirdPartyUrl).host());
+  EXPECT_EQ(first_site.origin.host(), GURL(kThirdPartyUrl).GetHost());
   EXPECT_EQ(first_site.setting, CONTENT_SETTING_ALLOW);
   // False due to first-party storage being accessed.
   EXPECT_EQ(first_site.is_fully_partitioned, false);
@@ -385,6 +394,7 @@ TEST_F(PageSpecificSiteDataDialogUnitTest,
   std::unique_ptr<net::CanonicalCookie> first_party_cookie(
       net::CanonicalCookie::CreateForTesting(
           GURL(kThirdPartyUrl), "C=D", base::Time::Now(),
+          net::CookieSourceType::kOther,
           /*server_time=*/std::nullopt,
           net::CookiePartitionKey::FromURLForTesting(GURL(kThirdPartyUrl))));
   ASSERT_TRUE(first_party_cookie);
@@ -401,6 +411,7 @@ TEST_F(PageSpecificSiteDataDialogUnitTest,
   std::unique_ptr<net::CanonicalCookie> third_party_cookie(
       net::CanonicalCookie::CreateForTesting(
           GURL(kThirdPartyUrl), "C=D", base::Time::Now(),
+          net::CookieSourceType::kOther,
           /*server_time=*/std::nullopt,
           net::CookiePartitionKey::FromURLForTesting(GURL(kCurrentUrl))));
   ASSERT_TRUE(third_party_cookie);
@@ -421,7 +432,7 @@ TEST_F(PageSpecificSiteDataDialogUnitTest,
   ASSERT_EQ(sites.size(), 1u);
 
   auto first_site = sites[0];
-  EXPECT_EQ(first_site.origin.host(), GURL(kThirdPartyUrl).host());
+  EXPECT_EQ(first_site.origin.host(), GURL(kThirdPartyUrl).GetHost());
   EXPECT_EQ(first_site.setting, CONTENT_SETTING_ALLOW);
   // False due to first-party storage being accessed.
   EXPECT_EQ(first_site.is_fully_partitioned, false);
@@ -441,7 +452,7 @@ TEST_F(PageSpecificSiteDataDialogUnitTest, TrustTokenAccessed) {
   auto sites = delegate->GetAllSites();
   ASSERT_EQ(sites.size(), 1u);
   auto first_site = sites[0];
-  EXPECT_EQ(first_site.origin.host(), GURL(kThirdPartyUrl).host());
+  EXPECT_EQ(first_site.origin.host(), GURL(kThirdPartyUrl).GetHost());
   EXPECT_EQ(first_site.setting, CONTENT_SETTING_ALLOW);
   EXPECT_EQ(first_site.is_fully_partitioned, false);
 }
@@ -480,7 +491,8 @@ TEST_F(PageSpecificSiteDataDialogUnitTest, RemoveBrowsingData) {
   // Setup a cookie for `kCurrentUrl`.
   std::unique_ptr<net::CanonicalCookie> first_party_cookie(
       net::CanonicalCookie::CreateForTesting(GURL(kCurrentUrl), "A=B",
-                                             base::Time::Now()));
+                                             base::Time::Now(),
+                                             net::CookieSourceType::kOther));
   ASSERT_TRUE(first_party_cookie);
 
   auto allowed_browsing_data_model = std::make_unique<FakeBrowsingDataModel>();

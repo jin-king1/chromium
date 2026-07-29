@@ -4,17 +4,25 @@
 
 #include "components/autofill/core/browser/data_model/payments/iban.h"
 
-#include <string_view>
+#include <stddef.h>
+#include <stdint.h>
 
-#include "base/containers/fixed_flat_map.h"
+#include <ostream>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <variant>
+
+#include "base/check.h"
+#include "base/check_op.h"
+#include "base/i18n/case_conversion.h"
 #include "base/notreached.h"
-#include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/uuid.h"
-#include "components/autofill/core/browser/autofill_field.h"
 #include "components/autofill/core/browser/data_model/payments/payments_metadata.h"
 #include "components/autofill/core/browser/metrics/payments/iban_metrics.h"
+#include "components/autofill/core/browser/suggestions/payments/payments_suggestion_generator_util.h"
 #include "components/autofill/core/common/autofill_clock.h"
 #include "components/autofill/core/common/autofill_regexes.h"
 
@@ -88,10 +96,7 @@ std::u16string RemoveIbanSeparators(std::u16string_view value) {
 
 constexpr char16_t kCapitalizedIbanPattern[] =
     u"^[A-Z]{2}[0-9]{2}[A-Z0-9]{4}[0-9]{7}[A-Z0-9]{0,18}$";
-// Unicode characters used in IBAN value obfuscation:
-//  - \u2022 - Bullet.
-//  - \u2006 - SIX-PER-EM SPACE (small space between bullets).
-constexpr char16_t kEllipsisOneDot = u'\u2022';
+// \u2006 - SIX-PER-EM SPACE (small space).
 constexpr char16_t kEllipsisOneSpace = u'\u2006';
 
 Iban::Iban() : record_type_(RecordType::kUnknown) {}
@@ -225,6 +230,8 @@ Iban::IbanSupportedCountry Iban::GetIbanSupportedCountry(
     return IbanSupportedCountry::kHR;
   } else if (country_code == "HU") {
     return IbanSupportedCountry::kHU;
+  } else if (country_code == "IE") {
+    return IbanSupportedCountry::kIE;
   } else if (country_code == "IL") {
     return IbanSupportedCountry::kIL;
   } else if (country_code == "IQ") {
@@ -391,6 +398,8 @@ size_t Iban::GetLengthOfIbanCountry(IbanSupportedCountry supported_country) {
       return 21;
     case IbanSupportedCountry::kHU:
       return 28;
+    case IbanSupportedCountry::kIE:
+      return 22;
     case IbanSupportedCountry::kIL:
       return 23;
     case IbanSupportedCountry::kIQ:
@@ -539,8 +548,8 @@ bool Iban::operator==(const Iban& iban) const {
   return Compare(iban) == 0;
 }
 
-void Iban::set_identifier(const absl::variant<Guid, InstrumentId>& identifier) {
-  if (absl::holds_alternative<Guid>(identifier_)) {
+void Iban::set_identifier(const std::variant<Guid, InstrumentId>& identifier) {
+  if (std::holds_alternative<Guid>(identifier_)) {
     CHECK_NE(record_type_, kServerIban);
   } else {
     CHECK_EQ(record_type_, kServerIban);
@@ -549,13 +558,13 @@ void Iban::set_identifier(const absl::variant<Guid, InstrumentId>& identifier) {
 }
 
 const std::string& Iban::guid() const {
-  CHECK(absl::holds_alternative<Guid>(identifier_));
-  return absl::get<Guid>(identifier_).value();
+  CHECK(std::holds_alternative<Guid>(identifier_));
+  return std::get<Guid>(identifier_).value();
 }
 
 int64_t Iban::instrument_id() const {
-  CHECK(absl::holds_alternative<InstrumentId>(identifier_));
-  return absl::get<InstrumentId>(identifier_).value();
+  CHECK(std::holds_alternative<InstrumentId>(identifier_));
+  return std::get<InstrumentId>(identifier_).value();
 }
 
 void Iban::set_value(const std::u16string& value) {
@@ -624,9 +633,7 @@ std::u16string Iban::GetIdentifierStringForAutofillDisplay(
   }
 
   if (is_value_masked) {
-    const std::u16string one_space = std::u16string(1, kEllipsisOneSpace);
-    const std::u16string two_dots = std::u16string(2, kEllipsisOneDot);
-    return base::StrCat({prefix(), one_space, two_dots, suffix()});
+    return GetObfuscatedIban(prefix(), suffix());
   }
 
   // Displaying the full IBAN value is not possible for server-based IBANs.
@@ -656,8 +663,8 @@ bool Iban::MatchesPrefixAndSuffix(const Iban& iban) const {
   // Therefore, even if the values of `kPrefixLength` or `kSuffixLength` change
   // later, leading to differences in length between the client and server, it
   // remains essential to match substrings and identify the matched IBAN.
-  bool prefix_matched = base::StartsWith(prefix(), iban.prefix()) ||
-                        base::StartsWith(iban.prefix(), prefix());
+  bool prefix_matched = prefix().starts_with(iban.prefix()) ||
+                        iban.prefix().starts_with(prefix());
   if (!prefix_matched) {
     return false;
   }

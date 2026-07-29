@@ -37,7 +37,6 @@
 #include "third_party/blink/renderer/core/dom/events/event_listener.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context_lifecycle_state_observer.h"
 #include "third_party/blink/renderer/modules/modules_export.h"
-#include "third_party/blink/renderer/modules/webaudio/async_audio_decoder.h"
 #include "third_party/blink/renderer/modules/webaudio/audio_destination_node.h"
 #include "third_party/blink/renderer/modules/webaudio/deferred_task_handler.h"
 #include "third_party/blink/renderer/modules/webaudio/inspector_helper_mixin.h"
@@ -120,7 +119,11 @@ class MODULES_EXPORT BaseAudioContext
   float sampleRate() const { return destination_handler_->SampleRate(); }
   double currentTime() const { return destination_handler_->CurrentTime(); }
   AudioListener* listener() { return listener_.Get(); }
-  V8AudioContextState state() const;
+  // Virtual so AudioContext::state() can add UseCounters.
+  virtual V8AudioContextState state() const;
+  uint32_t renderQuantumSize() const {
+    return deferred_task_handler_->RenderQuantumFrames();
+  }
   AudioWorklet* audioWorklet() const;
   DEFINE_ATTRIBUTE_EVENT_LISTENER(statechange, kStatechange)
   AnalyserNode* createAnalyser(ExceptionState&);
@@ -204,6 +207,9 @@ class MODULES_EXPORT BaseAudioContext
   // does nothing useful because the context is closed.
   void WarnForConnectionIfContextClosed() const;
 
+  void SetAllocationFailed() { has_allocation_failed_ = true; }
+  bool HasAllocationFailed() const { return has_allocation_failed_; }
+
   // Return true if the destination is pulling on the audio graph.  Otherwise
   // return false.
   virtual bool IsPullingAudioGraph() const = 0;
@@ -213,9 +219,7 @@ class MODULES_EXPORT BaseAudioContext
   void HandleDecodeAudioData(AudioBuffer*,
                              ScriptPromiseResolver<AudioBuffer>*,
                              V8DecodeSuccessCallback*,
-                             V8DecodeErrorCallback*,
-                             ExceptionContext);
-
+                             V8DecodeErrorCallback*);
 
   virtual bool HasRealtimeConstraint() = 0;
 
@@ -264,16 +268,6 @@ class MODULES_EXPORT BaseAudioContext
   // DeferredTaskHandler.
   bool IsAudioThread() const {
     return GetDeferredTaskHandler().IsAudioThread();
-  }
-  // NO_THREAD_SAFETY_ANALYSIS_FIXME: Stopping here, since the callers (and
-  // derived classes are not annotated).
-  void lock() NO_THREAD_SAFETY_ANALYSIS_FIXME {
-    GetDeferredTaskHandler().lock();
-  }
-  bool TryLock() { return GetDeferredTaskHandler().TryLock(); }
-  void unlock() {
-    GetDeferredTaskHandler().AssertGraphOwner();
-    GetDeferredTaskHandler().unlock();
   }
 
   // In DCHECK builds, fails if this thread does not own the context's lock.
@@ -330,7 +324,9 @@ class MODULES_EXPORT BaseAudioContext
  protected:
   enum class ContextType { kRealtimeContext, kOfflineContext };
 
-  explicit BaseAudioContext(LocalDOMWindow*, ContextType);
+  explicit BaseAudioContext(LocalDOMWindow*,
+                            ContextType,
+                            uint32_t render_quantum_frames);
 
   void Initialize();
   virtual void Uninitialize();
@@ -343,34 +339,13 @@ class MODULES_EXPORT BaseAudioContext
   // they can be collected.
   void HandleStoppableSourceNodes();
 
-  void RejectPendingDecodeAudioDataResolvers();
-
   // When the context goes away, reject any pending script promise resolvers.
   virtual void RejectPendingResolvers();
 
   // Returns the window with which the instance is associated.
   LocalDOMWindow* GetWindow() const;
 
-  // The audio thread relies on the main thread to perform some operations over
-  // the objects that it owns and controls; this method posts the task to
-  // initiate those.
-  void ScheduleMainThreadCleanup();
-
-  // Handles promise resolving, stopping and finishing up of audio source nodes
-  // etc. Actions that should happen, but can happen asynchronously to the
-  // audio thread making rendering progress.
-  void PerformCleanupOnMainThread();
-
-  // https://webaudio.github.io/web-audio-api/#dom-baseaudiocontext-pending-promises-slot
-  HeapVector<Member<ScriptPromiseResolver<IDLUndefined>>>
-      pending_promises_resolvers_;
-
   Member<AudioDestinationNode> destination_node_;
-
-  // True if we're in the process of resolving promises for resume().  Resolving
-  // can take some time and the audio context process loop is very fast, so we
-  // don't want to call resolve an excessive number of times.
-  bool is_resolving_resume_promises_ = false;
 
   scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
 
@@ -384,6 +359,8 @@ class MODULES_EXPORT BaseAudioContext
   // When the context goes away, there might still be some sources which
   // haven't finished playing.  Make sure to release them here.
   void ReleaseActiveSourceNodes();
+
+  void RejectPendingDecodeAudioDataResolvers();
 
   // The state of an audio context.  On creation, the state is Suspended. The
   // state is Running if audio is being processed (audio graph is being pulled
@@ -399,15 +376,11 @@ class MODULES_EXPORT BaseAudioContext
   // Listener for the PannerNodes
   Member<AudioListener> listener_;
 
-  // Set to `true` by the audio thread when it posts a main-thread task to
-  // perform delayed state sync'ing updates that needs to be done on the main
-  // thread. Cleared by the main thread task once it has run.
-  bool has_posted_cleanup_task_ = false;
+  // Set to `true` if initial memory allocation for the context fails.
+  bool has_allocation_failed_ = false;
 
   // Graph locking.
   scoped_refptr<DeferredTaskHandler> deferred_task_handler_;
-
-  AsyncAudioDecoder audio_decoder_;
 
   // Vector of promises created by decodeAudioData.  This keeps the resolvers
   // alive until decodeAudioData finishes decoding and can tell the main thread

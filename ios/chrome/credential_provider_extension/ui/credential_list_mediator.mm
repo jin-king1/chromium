@@ -7,6 +7,7 @@
 #import <AuthenticationServices/AuthenticationServices.h>
 
 #import "ios/chrome/common/credential_provider/credential_store.h"
+#import "ios/chrome/common/credential_provider/net_util.h"
 #import "ios/chrome/credential_provider_extension/ui/credential_list_consumer.h"
 #import "ios/chrome/credential_provider_extension/ui/credential_list_ui_handler.h"
 #import "ios/chrome/credential_provider_extension/ui/credential_response_handler.h"
@@ -129,7 +130,7 @@
 
 #pragma mark - Private
 
-// Fetches and presents credentials that are relavent to the service the user is
+// Fetches and presents credentials that are relevant to the service the user is
 // trying to log into.
 - (void)fetchAndPresentRelevantCredentials {
   self.allCredentials = [self fetchAllCredentials];
@@ -152,8 +153,7 @@
   if (relyingPartyIdentifier) {
     // When showing passkeys, only include passwords if there's at least one
     // that matches the service identifiers.
-    includePasswords = IsPasskeysM2Enabled() &&
-                       [self hasPasswordThatMatchesServiceIdentifiers];
+    includePasswords = [self hasPasswordThatMatchesServiceIdentifiers];
     includePasskeys = YES;
   } else {
     includePasswords = YES;
@@ -165,18 +165,17 @@
                                                    NSDictionary* bindings) {
         BOOL isPassword = !credential.isPasskey;
         BOOL isValidPasskey =
-            credential.isPasskey &&
+            credential.isPasskey && !credential.hidden &&
             [credential.rpId isEqualToString:relyingPartyIdentifier];
 
         return (includePasswords && isPassword) ||
                (includePasskeys && isValidPasskey);
       }]];
 
-  // Only sort `credentials` if the Passkeys M2 feature is enabled or if there's
-  // no relying party identifier. Otherwise, it means that the `credentials`
-  // list only contains passkeys, and hence there's no need to sort as they all
-  // have the same `rpId`.
-  if (IsPasskeysM2Enabled() || !relyingPartyIdentifier) {
+  // Only sort if there's no relying party identifier. Otherwise, it means that
+  // the `credentials` list only contains passkeys, and hence there's no need to
+  // sort as they all have the same `rpId`.
+  if (!relyingPartyIdentifier) {
     credentials = [credentials sortedArrayUsingComparator:^NSComparisonResult(
                                    id<Credential> obj1, id<Credential> obj2) {
       NSString* firstIdentifier = obj1.isPasskey ? obj1.rpId : obj1.serviceName;
@@ -197,11 +196,6 @@
   // If the `allowedCredentials` array is empty, then the relying party accepts
   // any passkey credential.
   BOOL isAnyPasskeyAllowed = allowedCredentials.count == 0;
-  if (!IsPasskeysM2Enabled() && [self.UIHandler relyingPartyIdentifier] &&
-      isAnyPasskeyAllowed) {
-    // Return the `allCredentials` array as it only contains passkeys.
-    return self.allCredentials;
-  }
 
   for (id<Credential> credential in self.allCredentials) {
     if (credential.isPasskey) {
@@ -219,21 +213,41 @@
   return filteredCredentials;
 }
 
+// Returns `YES` if the password credential's registry controlled domain
+// matches the provided `requestedHost`.
+- (BOOL)passwordCredential:(id<Credential>)credential
+    matchesRegistryControlledDomain:(NSString*)requestedHost {
+  if (credential.registryControlledDomain.length == 0) {
+    return NO;
+  }
+  return credential_provider::SecureHostsMatch(
+      requestedHost, credential.registryControlledDomain);
+}
+
 // Returns `YES` if the provided `credential` matches at least one of the
 // `serviceIdentifiers`.
 - (BOOL)passwordCredential:(id<Credential>)credential
     matchesServiceIdentifiers:
         (NSArray<ASCredentialServiceIdentifier*>*)serviceIdentifiers {
-  for (ASCredentialServiceIdentifier* identifier in serviceIdentifiers) {
-    BOOL serviceNameMatches =
-        credential.serviceName &&
-        [identifier.identifier
-            localizedStandardContainsString:credential.serviceName];
-    BOOL serviceIdentifierMatches =
-        credential.serviceIdentifier &&
-        [identifier.identifier
-            localizedStandardContainsString:credential.serviceIdentifier];
-    if (serviceNameMatches || serviceIdentifierMatches) {
+  for (ASCredentialServiceIdentifier* serviceIdentifier in serviceIdentifiers) {
+    NSString* requestedHost =
+        credential_provider::HostForIdentifier(serviceIdentifier.identifier);
+    if (!requestedHost) {
+      continue;
+    }
+
+    // Try matching with registryControlledDomain if available.
+    if ([self passwordCredential:credential
+            matchesRegistryControlledDomain:requestedHost]) {
+      return YES;
+    }
+
+    // Fallback to matching the parsed host of the credential's
+    // serviceIdentifier.
+    NSString* credHost =
+        credential_provider::HostForIdentifier(credential.serviceIdentifier);
+
+    if (credential_provider::SecureHostsMatch(requestedHost, credHost)) {
       return YES;
     }
   }

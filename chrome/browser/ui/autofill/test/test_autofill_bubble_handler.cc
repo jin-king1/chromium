@@ -4,12 +4,16 @@
 
 #include "chrome/browser/ui/autofill/test/test_autofill_bubble_handler.h"
 
-#include "chrome/browser/ui/autofill/autofill_ai/save_or_update_autofill_ai_data_controller.h"
+#include "chrome/browser/ui/autofill/autofill_ai/autofill_ai_import_data_controller.h"
 #include "chrome/browser/ui/autofill/payments/save_iban_ui.h"
 #include "chrome/browser/ui/autofill/save_address_bubble_controller.h"
 #include "chrome/browser/ui/autofill/update_address_bubble_controller.h"
 
 namespace autofill {
+
+bool TestAutofillBubble::IsMouseHovered() const {
+  return false;
+}
 
 TestAutofillBubbleHandler::TestAutofillBubbleHandler() = default;
 
@@ -34,16 +38,6 @@ AutofillBubbleBase* TestAutofillBubbleHandler::ShowIbanBubble(
     iban_bubble_view_ = std::make_unique<TestAutofillBubble>();
   }
   return iban_bubble_view_.get();
-}
-
-AutofillBubbleBase* TestAutofillBubbleHandler::ShowLocalCardMigrationBubble(
-    content::WebContents* web_contents,
-    LocalCardMigrationBubbleController* controller,
-    bool is_user_gesture) {
-  if (!local_card_migration_bubble_view_) {
-    local_card_migration_bubble_view_ = std::make_unique<TestAutofillBubble>();
-  }
-  return local_card_migration_bubble_view_.get();
 }
 
 AutofillBubbleBase* TestAutofillBubbleHandler::ShowOfferNotificationBubble(
@@ -79,11 +73,22 @@ AutofillBubbleBase* TestAutofillBubbleHandler::ShowAddressSignInPromo(
 
 AutofillBubbleBase* TestAutofillBubbleHandler::ShowSaveAutofillAiDataBubble(
     content::WebContents* contents,
-    autofill_ai::SaveOrUpdateAutofillAiDataController* controller) {
+    AutofillAiImportDataController* controller) {
   if (!save_autofill_ai_data_bubble_view_) {
     save_autofill_ai_data_bubble_view_ = std::make_unique<TestAutofillBubble>();
   }
   return save_autofill_ai_data_bubble_view_.get();
+}
+
+AutofillBubbleBase*
+TestAutofillBubbleHandler::ShowAutofillAiLocalSaveNotification(
+    content::WebContents* contents,
+    AutofillAiImportDataController* controller) {
+  if (!autofill_ai_local_save_notification_view_) {
+    autofill_ai_local_save_notification_view_ =
+        std::make_unique<TestAutofillBubble>();
+  }
+  return autofill_ai_local_save_notification_view_.get();
 }
 
 AutofillBubbleBase* TestAutofillBubbleHandler::ShowUpdateAddressProfileBubble(
@@ -158,6 +163,26 @@ AutofillBubbleBase* TestAutofillBubbleHandler::ShowSaveIbanConfirmationBubble(
         std::make_unique<TestAutofillBubble>();
   }
   return save_iban_confirmation_bubble_view_.get();
+}
+
+AutofillBubbleBase* TestAutofillBubbleHandler::ShowOmniboxAutofillBubble(
+    content::WebContents* web_contents,
+    OmniboxAutofillBubbleController* controller) {
+  if (!omnibox_autofill_bubble_view_) {
+    omnibox_autofill_bubble_view_ = std::make_unique<TestAutofillBubble>();
+  }
+  return omnibox_autofill_bubble_view_.get();
+}
+
+AutofillBubbleBase* TestAutofillBubbleHandler::ShowPaymentsChurnedUsersBubble(
+    content::WebContents* web_contents,
+    PaymentsChurnedUsersBubbleController* controller,
+    bool is_user_gesture) {
+  if (!payments_churned_users_bubble_view_) {
+    payments_churned_users_bubble_view_ =
+        std::make_unique<TestAutofillBubble>();
+  }
+  return payments_churned_users_bubble_view_.get();
 }
 
 }  // namespace autofill

@@ -2,31 +2,28 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "third_party/blink/renderer/platform/fonts/shaping/shape_result_bloberizer.h"
 
 #include <memory>
 #include <optional>
 #include <utility>
 
+#include "base/numerics/safe_conversions.h"
 #include "skia/ext/font_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/platform/fonts/character_range.h"
 #include "third_party/blink/renderer/platform/fonts/font.h"
 #include "third_party/blink/renderer/platform/fonts/opentype/open_type_vertical_data.h"
-#include "third_party/blink/renderer/platform/fonts/shaping/caching_word_shaper.h"
+#include "third_party/blink/renderer/platform/fonts/plain_text_node.h"
 #include "third_party/blink/renderer/platform/fonts/shaping/shape_result_test_info.h"
 #include "third_party/blink/renderer/platform/fonts/shaping/shape_result_view.h"
 #include "third_party/blink/renderer/platform/fonts/simple_font_data.h"
 #include "third_party/blink/renderer/platform/fonts/text_fragment_paint_info.h"
-#include "third_party/blink/renderer/platform/fonts/text_run_paint_info.h"
+#include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/testing/font_test_base.h"
 #include "third_party/blink/renderer/platform/testing/font_test_helpers.h"
 #include "third_party/blink/renderer/platform/testing/unit_test_helpers.h"
+#include "third_party/blink/renderer/platform/text/text_run.h"
 
 namespace blink {
 
@@ -51,14 +48,9 @@ class ShapeResultBloberizerTest : public FontTestBase {
     font_description.SetLocale(LayoutLocale::Get(AtomicString("en")));
     ASSERT_EQ(USCRIPT_LATIN, font_description.GetScript());
     font_description.SetGenericFamily(FontDescription::kStandardFamily);
-
-    cache = MakeGarbageCollected<ShapeCache>();
   }
 
-  FontCachePurgePreventer font_cache_purge_preventer;
   FontDescription font_description;
-
-  Persistent<ShapeCache> cache;
 };
 
 struct ExpectedRun {
@@ -83,7 +75,7 @@ void CheckBlobBuffer(const ShapeResultBloberizer::BlobBuffer& blob_buffer,
   auto&& expected_blob_iter = expected_blobs.begin();
   for (; blob_info_iter != blob_buffer.end() &&
          expected_blob_iter != expected_blobs.end();
-       ++blob_info_iter, ++expected_blob_iter) {
+       UNSAFE_TODO(++blob_info_iter), ++expected_blob_iter) {
     size_t blob_index = expected_blob_iter - expected_blobs.begin();
     const ExpectedBlob& expected_blob = *expected_blob_iter;
     SkTextBlob::Iter::Run run;
@@ -101,26 +93,29 @@ void CheckBlobBuffer(const ShapeResultBloberizer::BlobBuffer& blob_buffer,
       EXPECT_EQ(expected_run.glyph_count, run.fGlyphCount)
           << "Blob: " << blob_index << " Run: " << run_index;
 
-      int actual_size = run.fUtf8Size_forTest;
-      int expected_size = expected_run.utf8.size();
+      size_t actual_size = base::checked_cast<size_t>(run.fUtf8Size_forTest);
+      size_t expected_size = expected_run.utf8.size();
       EXPECT_EQ(actual_size, expected_size)
           << "Blob: " << blob_index << " Run: " << run_index;
-      for (int i = 0; i < actual_size && i < expected_size; ++i) {
-        EXPECT_EQ(run.fUtf8_forTest[i], expected_run.utf8[i])
+      for (size_t i = 0; i < actual_size && i < expected_size; ++i) {
+        EXPECT_EQ(UNSAFE_TODO(run.fUtf8_forTest[i]), expected_run.utf8[i])
             << "Blob: " << blob_index << " Run: " << run_index << " i: " << i;
       }
 
       auto utf8_index_previous = run.fClusterIndex_forTest[0];
       for (int i = 0; i < run.fGlyphCount; ++i) {
-        EXPECT_LE(0ul, run.fClusterIndex_forTest[i]);
-        EXPECT_LT((int)run.fClusterIndex_forTest[i], run.fUtf8Size_forTest);
+        EXPECT_LE(0ul, UNSAFE_TODO(run.fClusterIndex_forTest[i]));
+        EXPECT_LT((int)UNSAFE_TODO(run.fClusterIndex_forTest[i]),
+                  run.fUtf8Size_forTest);
         auto expected_direction = expected_run.cluster_direction;
         if (expected_direction == ExpectedRun::ClusterDirection::kAscending) {
-          EXPECT_LE(utf8_index_previous, run.fClusterIndex_forTest[i]);
+          EXPECT_LE(utf8_index_previous,
+                    UNSAFE_TODO(run.fClusterIndex_forTest[i]));
         } else {
-          EXPECT_GE(utf8_index_previous, run.fClusterIndex_forTest[i]);
+          EXPECT_GE(utf8_index_previous,
+                    UNSAFE_TODO(run.fClusterIndex_forTest[i]));
         }
-        utf8_index_previous = run.fClusterIndex_forTest[i];
+        utf8_index_previous = UNSAFE_TODO(run.fClusterIndex_forTest[i]);
       }
     }
   }
@@ -339,89 +334,44 @@ TEST_F(ShapeResultBloberizerTest, CommonAccentLeftToRightFillGlyphBuffer) {
   // "/. ." with an accent mark over the first dot.
   const UChar kStr[] = {0x2F, 0x301, 0x2E, 0x20, 0x2E};
   TextRun text_run{base::span(kStr)};
-  TextRunPaintInfo run_info(text_run);
-  run_info.to = 3;
 
   Font* font = MakeGarbageCollected<Font>(font_description);
-  CachingWordShaper word_shaper(*font);
-  ShapeResultBuffer buffer;
-  word_shaper.FillResultBuffer(text_run, &buffer);
+  PlainTextNode* node = MakeGarbageCollected<PlainTextNode>(
+      text_run, /* normalize_space */ false, *font, /* supports_bidi */ true,
+      /* cache */ nullptr);
   ShapeResultBloberizer::FillGlyphs bloberizer(
-      font->GetFontDescription(), run_info, buffer,
+      font->GetFontDescription(), *node,
       ShapeResultBloberizer::Type::kEmitText);
 
   Font* reference_font = MakeGarbageCollected<Font>(font_description);
   reference_font->SetCanShapeWordByWordForTesting(false);
 
-  CachingWordShaper reference_word_shaper(*reference_font);
-  ShapeResultBuffer reference_buffer;
-  reference_word_shaper.FillResultBuffer(text_run, &reference_buffer);
+  PlainTextNode* reference_node = MakeGarbageCollected<PlainTextNode>(
+      text_run, /* normalize_space */ false, *reference_font,
+      /* supports_bidi */ true,
+      /* cache */ nullptr);
   ShapeResultBloberizer::FillGlyphs reference_bloberizer(
-      reference_font->GetFontDescription(), run_info, reference_buffer,
+      reference_font->GetFontDescription(), *reference_node,
       ShapeResultBloberizer::Type::kEmitText);
 
   const auto& glyphs =
       ShapeResultBloberizerTestInfo::PendingRunGlyphs(bloberizer);
-  ASSERT_EQ(glyphs.size(), 3ul);
+  ASSERT_EQ(glyphs.size(), 5ul);
   const auto reference_glyphs =
       ShapeResultBloberizerTestInfo::PendingRunGlyphs(reference_bloberizer);
-  ASSERT_EQ(reference_glyphs.size(), 3ul);
-
-  EXPECT_EQ(reference_glyphs[0], glyphs[0]);
-  EXPECT_EQ(reference_glyphs[1], glyphs[1]);
-  EXPECT_EQ(reference_glyphs[2], glyphs[2]);
-
-  CheckBlobBuffer(
-      bloberizer.Blobs(),
-      {{
-          {3,
-           text_run.ToStringView()
-               .ToString()
-               .Substring(run_info.from, run_info.to - run_info.from)
-               .Utf8(),
-           ExpectedRun::ClusterDirection::kAscending},
-      }});
-}
-
-// Tests that filling a glyph buffer for a specific range returns the same
-// results when shaping word by word as when shaping the full run in one go.
-TEST_F(ShapeResultBloberizerTest, CommonAccentRightToLeftFillGlyphBuffer) {
-  // "[] []" with an accent mark over the last square bracket.
-  const UChar kStr[] = {0x5B, 0x5D, 0x20, 0x5B, 0x301, 0x5D};
-  TextRun text_run(StringView(base::span(kStr)), TextDirection::kRtl);
-  TextRunPaintInfo run_info(text_run);
-  run_info.from = 1;
-
-  Font* font = MakeGarbageCollected<Font>(font_description);
-  CachingWordShaper word_shaper(*font);
-  ShapeResultBuffer buffer;
-  word_shaper.FillResultBuffer(text_run, &buffer);
-  ShapeResultBloberizer::FillGlyphs bloberizer(
-      font->GetFontDescription(), run_info, buffer,
-      ShapeResultBloberizer::Type::kEmitText);
-
-  Font* reference_font = MakeGarbageCollected<Font>(font_description);
-  reference_font->SetCanShapeWordByWordForTesting(false);
-
-  CachingWordShaper reference_word_shaper(*reference_font);
-  ShapeResultBuffer reference_buffer;
-  reference_word_shaper.FillResultBuffer(text_run, &reference_buffer);
-  ShapeResultBloberizer::FillGlyphs reference_bloberizer(
-      reference_font->GetFontDescription(), run_info, reference_buffer,
-      ShapeResultBloberizer::Type::kEmitText);
-
-  const auto& glyphs =
-      ShapeResultBloberizerTestInfo::PendingRunGlyphs(bloberizer);
-  ASSERT_EQ(5u, glyphs.size());
-  const auto reference_glyphs =
-      ShapeResultBloberizerTestInfo::PendingRunGlyphs(reference_bloberizer);
-  ASSERT_EQ(5u, reference_glyphs.size());
+  ASSERT_EQ(reference_glyphs.size(), 5ul);
 
   EXPECT_EQ(reference_glyphs[0], glyphs[0]);
   EXPECT_EQ(reference_glyphs[1], glyphs[1]);
   EXPECT_EQ(reference_glyphs[2], glyphs[2]);
   EXPECT_EQ(reference_glyphs[3], glyphs[3]);
   EXPECT_EQ(reference_glyphs[4], glyphs[4]);
+
+  CheckBlobBuffer(bloberizer.Blobs(),
+                  {{
+                      {5, text_run.ToStringView().ToString().Utf8(),
+                       ExpectedRun::ClusterDirection::kAscending},
+                  }});
 }
 
 TEST_F(ShapeResultBloberizerTest, CommonAccentRightToLeftFillGlyphBufferNG) {
@@ -444,8 +394,7 @@ TEST_F(ShapeResultBloberizerTest, CommonAccentRightToLeftFillGlyphBufferNG) {
       bloberizer_ng.Blobs(),
       {{
           {5,
-           string.Substring(text_info.from, text_info.to - text_info.from)
-               .Utf8(),
+           string.substr(text_info.from, text_info.to - text_info.from).Utf8(),
            ExpectedRun::ClusterDirection::kDescending},
       }});
 }
@@ -470,8 +419,7 @@ TEST_F(ShapeResultBloberizerTest, FourByteUtf8CodepointsNG) {
       bloberizer_ng.Blobs(),
       {{
           {2,
-           string.Substring(text_info.from, text_info.to - text_info.from)
-               .Utf8(),
+           string.substr(text_info.from, text_info.to - text_info.from).Utf8(),
            ExpectedRun::ClusterDirection::kAscending},
       }});
 }
@@ -502,8 +450,7 @@ TEST_F(ShapeResultBloberizerTest, OffsetIntoTrailingSurrogateNG) {
       bloberizer_ng.Blobs(),
       {{
           {1,
-           string
-               .Substring(text_info.from + 1, text_info.to - text_info.from - 1)
+           string.substr(text_info.from + 1, text_info.to - text_info.from - 1)
                .Utf8(),
            ExpectedRun::ClusterDirection::kAscending},
       }});
@@ -517,10 +464,10 @@ TEST_F(ShapeResultBloberizerTest, LatinMultRunNG) {
   ExpectedRange range_b{5, 7};
   ExpectedRange range_c{7, 32};
   ExpectedRange range_d{32, 38};
-  HarfBuzzShaper shaper_a(string.Substring(range_a.from, range_a.to));
-  HarfBuzzShaper shaper_b(string.Substring(range_b.from, range_b.to));
-  HarfBuzzShaper shaper_c(string.Substring(range_c.from, range_c.to));
-  HarfBuzzShaper shaper_d(string.Substring(range_d.from, range_d.to));
+  HarfBuzzShaper shaper_a(string.substr(range_a.from, range_a.to));
+  HarfBuzzShaper shaper_b(string.substr(range_b.from, range_b.to));
+  HarfBuzzShaper shaper_c(string.substr(range_c.from, range_c.to));
+  HarfBuzzShaper shaper_d(string.substr(range_d.from, range_d.to));
 
   Font* font = MakeGarbageCollected<Font>(font_description);
 
@@ -548,19 +495,19 @@ TEST_F(ShapeResultBloberizerTest, LatinMultRunNG) {
       {{
           // "Testi"
           {static_cast<int>(range_a.length() - 1),
-           string.Substring(range_a.from + 1, range_a.length() - 1).Utf8(),
+           string.substr(range_a.from + 1, range_a.length() - 1).Utf8(),
            ExpectedRun::ClusterDirection::kAscending},
           // "ng"
           {static_cast<int>(range_b.length()),
-           string.Substring(range_b.from, range_b.length()).Utf8(),
+           string.substr(range_b.from, range_b.length()).Utf8(),
            ExpectedRun::ClusterDirection::kAscending},
           // " ShapeResultIterator::Cop"
           {static_cast<int>(range_c.length()),
-           string.Substring(range_c.from, range_c.length()).Utf8(),
+           string.substr(range_c.from, range_c.length()).Utf8(),
            ExpectedRun::ClusterDirection::kAscending},
           // "yRange"
           {static_cast<int>(range_d.length()),
-           string.Substring(range_d.from, range_d.length()).Utf8(),
+           string.substr(range_d.from, range_d.length()).Utf8(),
            ExpectedRun::ClusterDirection::kAscending},
       }});
 }
@@ -576,9 +523,9 @@ TEST_F(ShapeResultBloberizerTest, SupplementaryMultiRunNG) {
   ExpectedRange range_a{0, 6};
   ExpectedRange range_b{6, 12};
   ExpectedRange range_c{12, 16};
-  HarfBuzzShaper shaper_a(string.Substring(range_a.from, range_a.to));
-  HarfBuzzShaper shaper_b(string.Substring(range_b.from, range_b.to));
-  HarfBuzzShaper shaper_c(string.Substring(range_c.from, range_c.to));
+  HarfBuzzShaper shaper_a(string.substr(range_a.from, range_a.to));
+  HarfBuzzShaper shaper_b(string.substr(range_b.from, range_b.to));
+  HarfBuzzShaper shaper_c(string.substr(range_c.from, range_c.to));
 
   Font* font = blink::test::CreateTestFont(
       AtomicString("NotoSansCJK"),
@@ -609,15 +556,15 @@ TEST_F(ShapeResultBloberizerTest, SupplementaryMultiRunNG) {
                   {{
                       // "𠜎𠜱𠝹"
                       {static_cast<int>(range_a.length() / 2),
-                       string.Substring(range_a.from, range_a.length()).Utf8(),
+                       string.substr(range_a.from, range_a.length()).Utf8(),
                        ExpectedRun::ClusterDirection::kAscending},
                       // "𠱓𠱸𠲖"
                       {static_cast<int>(range_b.length() / 2),
-                       string.Substring(range_b.from, range_b.length()).Utf8(),
+                       string.substr(range_b.from, range_b.length()).Utf8(),
                        ExpectedRun::ClusterDirection::kAscending},
                       // "𠳏𠳕"
                       {static_cast<int>(range_c.length() / 2),
-                       string.Substring(range_c.from, range_c.length()).Utf8(),
+                       string.substr(range_c.from, range_c.length()).Utf8(),
                        ExpectedRun::ClusterDirection::kAscending},
                   }});
 }
@@ -630,21 +577,17 @@ TEST_F(ShapeResultBloberizerTest, SubRunWithZeroGlyphs) {
   TextRun text_run{base::span(kStr)};
 
   Font* font = MakeGarbageCollected<Font>(font_description);
-  CachingWordShaper shaper(*font);
+  PlainTextNode* node = MakeGarbageCollected<PlainTextNode>(
+      text_run, /* normalize_space */ false, *font, /* supports_bidi */ false,
+      /* cache */ nullptr);
   gfx::RectF glyph_bounds;
-  ASSERT_GT(shaper.Width(text_run, &glyph_bounds), 0);
+  ASSERT_GT(node->AccumulateInlineSize(&glyph_bounds), .0f);
 
-  TextRunPaintInfo run_info(text_run);
-  run_info.to = 8;
-
-  CachingWordShaper word_shaper(*font);
-  ShapeResultBuffer buffer;
-  word_shaper.FillResultBuffer(text_run, &buffer);
   ShapeResultBloberizer::FillGlyphs bloberizer(
-      font->GetFontDescription(), run_info, buffer,
+      font->GetFontDescription(), *node,
       ShapeResultBloberizer::Type::kEmitText);
 
-  shaper.GetCharacterRange(text_run, 0, 8);
+  node->ComputeCharacterRange(0, 8);
 }
 
 }  // namespace blink

@@ -11,22 +11,17 @@
 #include "base/memory/weak_ptr.h"
 #include "base/types/pass_key.h"
 #include "base/types/strong_alias.h"
-#include "chrome/browser/password_manager/android/access_loss/password_access_loss_warning_bridge.h"
 #include "components/autofill/core/common/mojom/autofill_types.mojom-forward.h"
 #include "components/device_reauth/device_authenticator.h"
 #include "components/password_manager/core/browser/password_manager_metrics_util.h"
 #include "components/password_manager/core/browser/password_store/password_store_consumer.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 #include "url/gurl.h"
 
 namespace password_manager {
 class PasswordManagerClient;
 class PasswordManagerDriver;
 }  // namespace password_manager
-
-namespace plus_addresses {
-class PlusAddressService;
-}  // namespace plus_addresses
 
 namespace safe_browsing {
 class PasswordReuseDetectionManagerClient;
@@ -58,9 +53,7 @@ class AllPasswordsBottomSheetController
       autofill::mojom::FocusedFieldType focused_field_type,
       password_manager::PasswordManagerClient* client,
       safe_browsing::PasswordReuseDetectionManagerClient*
-          password_reuse_detection_manager_client,
-      std::unique_ptr<PasswordAccessLossWarningBridge>
-          access_loss_warning_bridge);
+          password_reuse_detection_manager_client);
 
   AllPasswordsBottomSheetController(
       content::WebContents* web_contents,
@@ -75,9 +68,9 @@ class AllPasswordsBottomSheetController
       const AllPasswordsBottomSheetController&) = delete;
 
   // PasswordStoreConsumer:
-  void OnGetPasswordStoreResults(
-      std::vector<std::unique_ptr<password_manager::PasswordForm>> results)
-      override;
+  void OnGetPasswordStoreResultsOrErrorFrom(
+      password_manager::PasswordStoreInterface* store,
+      password_manager::LoginsResultOrError results_or_error) override;
 
   // Instructs AllPasswordsBottomSheetView to show the credentials to the user.
   void Show();
@@ -100,10 +93,6 @@ class AllPasswordsBottomSheetController
   // Returns the last committed URL of the frame from |driver_|.
   const GURL& GetFrameUrl();
 
-  // Uses `PlusAddressService` as a source of truth to check if the
-  // `maybe_plus_address` is an existing plus address.
-  bool IsPlusAddress(const std::string& potential_plus_address) const;
-
  private:
   // Called when the biometric re-auth completes. |password| is the password
   // to be filled and |auth_succeded| is the authentication result.
@@ -113,12 +102,7 @@ class AllPasswordsBottomSheetController
   void FillPassword(const std::u16string& password);
 
   void OnResultFromAllStoresReceived(
-      std::vector<std::vector<std::unique_ptr<password_manager::PasswordForm>>>
-          results);
-
-  // Shows the access loss warning sheet if needed. It's used after filling a
-  // credential.
-  void TryToShowAccessLossWarningSheet();
+      std::vector<std::vector<password_manager::PasswordForm>> results);
 
   // The controller takes |view_| ownership.
   std::unique_ptr<AllPasswordsBottomSheetView> view_;
@@ -133,8 +117,7 @@ class AllPasswordsBottomSheetController
   raw_ptr<password_manager::PasswordStoreInterface> account_store_;
 
   // Allows to aggregate GetAllLogins results from multiple stores.
-  base::RepeatingCallback<void(
-      std::vector<std::unique_ptr<password_manager::PasswordForm>>)>
+  base::RepeatingCallback<void(std::vector<password_manager::PasswordForm>)>
       on_password_forms_received_barrier_callback_;
 
   // A callback method will be consumed when the user dismisses the BottomSheet.
@@ -159,14 +142,6 @@ class AllPasswordsBottomSheetController
   // password has been reused.
   raw_ptr<safe_browsing::PasswordReuseDetectionManagerClient>
       password_reuse_detection_manager_client_ = nullptr;
-
-  // Bridge that is used to show the password access loss warning if it's needed
-  // after filling a credential.
-  std::unique_ptr<PasswordAccessLossWarningBridge> access_loss_warning_bridge_;
-
-  // `PlusAddressService` is used to check which credentials have a plus address
-  // as a username.
-  raw_ptr<const plus_addresses::PlusAddressService> plus_address_service_;
 
   base::WeakPtrFactory<AllPasswordsBottomSheetController> weak_ptr_factory_{
       this};

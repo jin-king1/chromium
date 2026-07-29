@@ -14,9 +14,12 @@
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/base/ui_base_types.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/gfx/paint_vector_icon.h"
 #include "ui/gfx/vector_icon_types.h"
+#include "ui/native_theme/native_theme.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/controls/button/checkbox.h"
 #include "ui/views/controls/button/md_text_button.h"
@@ -46,12 +49,15 @@ class ThemeTrackingCheckbox : public views::Checkbox {
   // views::Checkbox
   void OnThemeChanged() override {
     views::Checkbox::OnThemeChanged();
-    SetChecked(GetNativeTheme()->ShouldUseDarkColors());
+    SetChecked(GetNativeTheme()->preferred_color_scheme() ==
+               ui::NativeTheme::PreferredColorScheme::kDark);
   }
 
   void ButtonPressed() {
-    GetNativeTheme()->set_use_dark_colors(GetChecked());
-    GetWidget()->ThemeChanged();
+    GetNativeTheme()->set_preferred_color_scheme(
+        GetChecked() ? ui::NativeTheme::PreferredColorScheme::kDark
+                     : ui::NativeTheme::PreferredColorScheme::kLight);
+    GetNativeTheme()->NotifyOnNativeThemeUpdated();
   }
 };
 
@@ -149,7 +155,7 @@ ColoredDialogChooser::ColoredDialogChooser() {
       base::BindRepeating(&ColoredDialogChooser::ButtonPressed,
                           base::Unretained(this)),
       l10n_util::GetStringUTF16(IDS_COLORED_DIALOG_CHOOSER_BUTTON),
-      views::kInfoIcon));
+      features::IsRoundedIconsEnabled() ? kInfoIcon : views::kInfoOldIcon));
 
   confirmation_label_ = AddChildView(
       std::make_unique<views::Label>(std::u16string(), style::CONTEXT_LABEL));
@@ -163,7 +169,7 @@ void ColoredDialogChooser::ButtonPressed() {
   views::Widget* widget = DialogDelegate::CreateDialogWidget(
       new ColoredDialog(base::BindOnce(&ColoredDialogChooser::OnFeedbackSubmit,
                                        base::Unretained(this))),
-      nullptr, GetWidget()->GetNativeView());
+      gfx::NativeWindow(), GetWidget()->GetNativeView());
   widget->Show();
 }
 

@@ -30,6 +30,7 @@ import org.chromium.base.IntentUtils;
 import org.chromium.base.Log;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.content.browser.sms.Wrappers.WebOTPServiceContext;
 import org.chromium.ui.base.WindowAndroid;
 
@@ -48,7 +49,7 @@ public class SmsVerificationReceiver extends BroadcastReceiver {
     private static final boolean DEBUG = false;
     private final SmsProviderGms mProvider;
     private boolean mDestroyed;
-    private Wrappers.WebOTPServiceContext mContext;
+    private final Wrappers.WebOTPServiceContext mContext;
 
     @IntDef({
         BackendAvailability.AVAILABLE,
@@ -184,7 +185,8 @@ public class SmsVerificationReceiver extends BroadcastReceiver {
                                     resolutionIntent,
                                     new WindowAndroid.IntentCallback() {
                                         @Override
-                                        public void onIntentCompleted(int resultCode, Intent data) {
+                                        public void onIntentCompleted(
+                                                int resultCode, @Nullable Intent data) {
                                             // Backend availability will be recorded inside
                                             // |onPermissionDone|.
                                             onPermissionDone(resultCode, isLocalRequest);
@@ -206,7 +208,7 @@ public class SmsVerificationReceiver extends BroadcastReceiver {
         Task<Void> task = client.startSmsCodeBrowserRetriever();
 
         task.addOnSuccessListener(
-                unused -> {
+                _ -> {
                     this.reportBackendAvailability(BackendAvailability.AVAILABLE);
                     mProvider.verificationReceiverSucceeded(isLocalRequest);
                 });

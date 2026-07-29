@@ -9,7 +9,6 @@
 #include <utility>
 #include <vector>
 
-#include "base/containers/contains.h"
 #include "base/format_macros.h"
 #include "base/i18n/number_formatting.h"
 #include "base/memory/ref_counted_memory.h"
@@ -25,7 +24,6 @@
 #include "ios/web/public/webui/url_data_source_ios.h"
 #include "ui/base/device_form_factor.h"
 #include "ui/base/resource/resource_bundle.h"
-#include "url/gurl.h"
 
 namespace {
 
@@ -44,9 +42,9 @@ class AboutUIHTMLSource : public web::URLDataSourceIOS {
   // web::URLDataSourceIOS implementation.
   std::string GetSource() const override;
   void StartDataRequest(
-      const std::string& path,
+      std::string_view path,
       web::URLDataSourceIOS::GotDataCallback callback) override;
-  std::string GetMimeType(const std::string& path) const override;
+  std::string GetMimeType(std::string_view path) const override;
   bool ShouldDenyXFrameOptions() const override;
 
   // Send the response data.
@@ -58,49 +56,6 @@ class AboutUIHTMLSource : public web::URLDataSourceIOS {
 
   std::string source_name_;
 };
-
-void AppendHeader(std::string* output,
-                  int refresh,
-                  const std::string& unescaped_title) {
-  output->append("<!DOCTYPE HTML>\n<html>\n<head>\n");
-  if (!unescaped_title.empty()) {
-    output->append("<title>");
-    output->append(base::EscapeForHTML(unescaped_title));
-    output->append("</title>\n");
-  }
-  output->append("<meta charset='utf-8'>\n");
-  if (refresh > 0) {
-    output->append("<meta http-equiv='refresh' content='");
-    output->append(base::NumberToString(refresh));
-    output->append("'/>\n");
-  }
-}
-
-void AppendBody(std::string* output) {
-  output->append("</head>\n<body>\n");
-}
-
-void AppendFooter(std::string* output) {
-  output->append("</body>\n</html>\n");
-}
-
-std::string ChromeURLs() {
-  std::string html;
-  AppendHeader(&html, 0, "Chrome URLs");
-  AppendBody(&html);
-  html += "<h2>List of Chrome URLs</h2>\n<ul>\n";
-  std::vector<std::string> hosts(kChromeHostURLs,
-                                 kChromeHostURLs + kNumberOfChromeHostURLs);
-  std::sort(hosts.begin(), hosts.end());
-  for (std::vector<std::string>::const_iterator i = hosts.begin();
-       i != hosts.end(); ++i) {
-    html += "<li><a href='chrome://" + *i + "/' id='" + *i + "'>chrome://" +
-            *i + "</a></li>\n";
-  }
-  html += "</ul>\n";
-  AppendFooter(&html);
-  return html;
-}
 
 }  // namespace
 
@@ -116,13 +71,12 @@ std::string AboutUIHTMLSource::GetSource() const {
 }
 
 void AboutUIHTMLSource::StartDataRequest(
-    const std::string& path,
+    std::string_view path,
     web::URLDataSourceIOS::GotDataCallback callback) {
   std::string response;
   // Add your data source here, in alphabetical order.
-  if (source_name_ == kChromeUIChromeURLsHost) {
-    response = ChromeURLs();
-  } else if (source_name_ == kChromeUICreditsHost) {
+  // keep-sorted start block=yes
+  if (source_name_ == kChromeUICreditsHost) {
     int idr = IDR_ABOUT_UI_CREDITS_HTML;
     if (path == kCreditsJsPath) {
       idr = IDR_ABOUT_UI_CREDITS_JS;
@@ -138,10 +92,10 @@ void AboutUIHTMLSource::StartDataRequest(
     // chrome://histograms, this code could likely be moved to //ios/web.
     for (base::HistogramBase* histogram : base::StatisticsRecorder::Sort(
              base::StatisticsRecorder::GetHistograms())) {
-      if (!base::Contains(histogram->histogram_name(), path)) {
+      if (!histogram->histogram_name().contains(path)) {
         continue;
       }
-      base::Value::Dict histogram_dict = histogram->ToGraphDict();
+      base::DictValue histogram_dict = histogram->ToGraphDict();
       std::string* header = histogram_dict.FindString("header");
       std::string* body = histogram_dict.FindString("body");
 
@@ -154,6 +108,7 @@ void AboutUIHTMLSource::StartDataRequest(
       response.append("<br><hr><br>");
     }
   }
+  // keep-sorted end
 
   FinishDataRequest(response, std::move(callback));
 }
@@ -164,7 +119,7 @@ void AboutUIHTMLSource::FinishDataRequest(
   std::move(callback).Run(base::MakeRefCounted<base::RefCountedString>(html));
 }
 
-std::string AboutUIHTMLSource::GetMimeType(const std::string& path) const {
+std::string AboutUIHTMLSource::GetMimeType(std::string_view path) const {
   if (path == kCreditsJsPath || path == kStringsJsPath) {
     return "application/javascript";
   }

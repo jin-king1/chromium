@@ -33,10 +33,10 @@
 #include "third_party/blink/renderer/core/html/html_element.h"
 #include "third_party/blink/renderer/core/html/html_head_element.h"
 #include "third_party/blink/renderer/core/html/html_html_element.h"
+#include "third_party/blink/renderer/core/html/html_template_element.h"
 #include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/mathml_names.h"
 #include "third_party/blink/renderer/core/svg_names.h"
-#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
 namespace blink {
 
@@ -44,17 +44,12 @@ using HTMLTag = html_names::HTMLTag;
 
 namespace {
 
-inline bool IsScopeMarkerTag(const HTMLTag& tag, ContainerNode* node) {
+inline bool IsScopeMarkerTag(const HTMLTag& tag) {
   if (tag == HTMLTag::kCaption || tag == HTMLTag::kApplet ||
       tag == HTMLTag::kHTML || tag == HTMLTag::kMarquee ||
       tag == HTMLTag::kObject || tag == HTMLTag::kTable ||
-      tag == HTMLTag::kTd || tag == HTMLTag::kTemplate || tag == HTMLTag::kTh) {
-    return true;
-  }
-  // TODO(crbug.com/40146374): the `node` parameter can be removed once the
-  // SelectParserRelaxationOptOut flag is removed.
-  if (tag == HTMLTag::kSelect &&
-      HTMLSelectElement::SelectParserRelaxationEnabled(node)) {
+      tag == HTMLTag::kTd || tag == HTMLTag::kTemplate || tag == HTMLTag::kTh ||
+      tag == HTMLTag::kSelect) {
     return true;
   }
   return false;
@@ -80,7 +75,7 @@ inline bool IsScopeMarkerNonHTML(HTMLStackItem* item) {
 
 inline bool IsScopeMarker(HTMLStackItem* item) {
   if (item->IsHTMLNamespace()) {
-    return IsScopeMarkerTag(item->GetHTMLTag(), item->GetNode()) ||
+    return IsScopeMarkerTag(item->GetHTMLTag()) ||
            item->IsDocumentFragmentNode();
   }
   return IsScopeMarkerNonHTML(item);
@@ -88,7 +83,7 @@ inline bool IsScopeMarker(HTMLStackItem* item) {
 
 inline bool IsListItemScopeMarker(HTMLStackItem* item) {
   if (item->IsHTMLNamespace()) {
-    return IsScopeMarkerTag(item->GetHTMLTag(), item->GetNode()) ||
+    return IsScopeMarkerTag(item->GetHTMLTag()) ||
            item->IsDocumentFragmentNode() ||
            item->GetHTMLTag() == HTMLTag::kOl ||
            item->GetHTMLTag() == HTMLTag::kUl;
@@ -148,16 +143,11 @@ inline bool IsForeignContentScopeMarker(HTMLStackItem* item) {
 
 inline bool IsButtonScopeMarker(HTMLStackItem* item) {
   if (item->IsHTMLNamespace()) {
-    return IsScopeMarkerTag(item->GetHTMLTag(), item->GetNode()) ||
+    return IsScopeMarkerTag(item->GetHTMLTag()) ||
            item->IsDocumentFragmentNode() ||
            item->GetHTMLTag() == HTMLTag::kButton;
   }
   return IsScopeMarkerNonHTML(item);
-}
-
-inline bool IsSelectScopeMarker(HTMLStackItem* item) {
-  return !item->HasTagName(html_names::kOptgroupTag) &&
-         !item->HasTagName(html_names::kOptionTag);
 }
 
 }  // namespace
@@ -219,8 +209,8 @@ void HTMLElementStack::Pop() {
 }
 
 void HTMLElementStack::PopUntil(html_names::HTMLTag tag) {
-  // kUnknown by itself is not enough to uniquely a tag. This code should only
-  // be called with HTMLTags other than kUnknown.
+  // kUnknown by itself is not enough to uniquely identify a tag. This code
+  // should only be called with HTMLTags other than kUnknown.
   DCHECK_NE(tag, HTMLTag::kUnknown);
   while (!TopStackItem()->IsHTMLNamespace() ||
          TopStackItem()->GetHTMLTag() != tag) {
@@ -288,8 +278,8 @@ bool HTMLElementStack::IsHTMLIntegrationPoint(HTMLStackItem* item) {
         item->GetAttributeItem(mathml_names::kEncodingAttr);
     if (encoding_attr) {
       const String& encoding = encoding_attr->Value();
-      return EqualIgnoringASCIICase(encoding, "text/html") ||
-             EqualIgnoringASCIICase(encoding, "application/xhtml+xml");
+      return EqualIgnoringAsciiCase(encoding, "text/html") ||
+             EqualIgnoringAsciiCase(encoding, "application/xhtml+xml");
     }
     return false;
   }
@@ -411,8 +401,8 @@ HTMLStackItem* HTMLElementStack::Find(Element* element) const {
 }
 
 HTMLStackItem* HTMLElementStack::Topmost(html_names::HTMLTag tag) const {
-  // kUnknown by itself is not enough to uniquely a tag. This code should only
-  // be called with HTMLTags other than kUnknown.
+  // kUnknown by itself is not enough to uniquely identify a tag. This code
+  // should only be called with HTMLTags other than kUnknown.
   DCHECK_NE(tag, HTMLTag::kUnknown);
   for (HTMLStackItem* item = top_.Get(); item; item = item->NextItemInStack()) {
     if (item->IsHTMLNamespace() && tag == item->GetHTMLTag()) {
@@ -428,12 +418,35 @@ bool HTMLElementStack::Contains(Element* element) const {
 
 template <bool isMarker(HTMLStackItem*)>
 bool InScopeCommon(HTMLStackItem* top, html_names::HTMLTag tag) {
-  // kUnknown by itself is not enough to uniquely a tag. This code should only
-  // be called with HTMLTags other than kUnknown.
+  // kUnknown by itself is not enough to uniquely identify a tag. This code
+  // should only be called with HTMLTags other than kUnknown.
   DCHECK_NE(HTMLTag::kUnknown, tag);
   for (HTMLStackItem* item = top; item; item = item->NextItemInStack()) {
     if (tag == item->GetHTMLTag() && item->IsHTMLNamespace())
       return true;
+    if (isMarker(item))
+      return false;
+  }
+  NOTREACHED();  // <html> is always on the stack and is a scope marker.
+}
+
+// Like InScopeCommon above, but matches any of |tags| in a single walk of the
+// stack instead of requiring one walk per tag.
+template <bool isMarker(HTMLStackItem*)>
+bool InScopeCommon(HTMLStackItem* top,
+                   std::initializer_list<html_names::HTMLTag> tags) {
+  // kUnknown by itself is not enough to uniquely identify a tag. This code
+  // should only be called with HTMLTags other than kUnknown.
+  for (html_names::HTMLTag tag : tags) {
+    DCHECK_NE(HTMLTag::kUnknown, tag);
+  }
+  for (HTMLStackItem* item = top; item; item = item->NextItemInStack()) {
+    if (item->IsHTMLNamespace()) {
+      for (html_names::HTMLTag tag : tags) {
+        if (tag == item->GetHTMLTag())
+          return true;
+      }
+    }
     if (isMarker(item))
       return false;
   }
@@ -472,20 +485,13 @@ bool HTMLElementStack::InTableScope(html_names::HTMLTag tag) const {
   return InScopeCommon<IsTableScopeMarker>(top_.Get(), tag);
 }
 
-bool HTMLElementStack::InButtonScope(html_names::HTMLTag tag) const {
-  return InScopeCommon<IsButtonScopeMarker>(top_.Get(), tag);
+bool HTMLElementStack::InTableScope(
+    std::initializer_list<html_names::HTMLTag> tags) const {
+  return InScopeCommon<IsTableScopeMarker>(top_.Get(), tags);
 }
 
-bool HTMLElementStack::InSelectScope(html_names::HTMLTag tag) const {
-  // IsSelectScopeMarker has rigid checks about having <option>s or
-  // <optgroup>s between the top and the <select> which don't hold
-  // true anymore when permitting other tags when SelectParserRelaxation is
-  // enabled.
-  if (HTMLSelectElement::SelectParserRelaxationEnabled(root_node_)) {
-    return InScopeCommon<IsScopeMarker>(top_.Get(), tag);
-  } else {
-    return InScopeCommon<IsSelectScopeMarker>(top_.Get(), tag);
-  }
+bool HTMLElementStack::InButtonScope(html_names::HTMLTag tag) const {
+  return InScopeCommon<IsButtonScopeMarker>(top_.Get(), tag);
 }
 
 bool HTMLElementStack::HasTemplateInHTMLScope() const {
@@ -515,12 +521,6 @@ ContainerNode* HTMLElementStack::RootNode() const {
 void HTMLElementStack::PushCommon(HTMLStackItem* item) {
   DCHECK(root_node_);
 
-  if (dom_parts_allowed_state_ == DOMPartsAllowed::kInsideParseParts &&
-      item->HasParsePartsAttribute() && body_element_) {
-    DCHECK(RuntimeEnabledFeatures::DOMPartsAPIEnabled());
-    ++parse_parts_count_;
-  }
-
   stack_depth_++;
   item->SetNextItemInStack(top_.Release());
   top_ = item;
@@ -531,14 +531,6 @@ void HTMLElementStack::PopCommon() {
   DCHECK(!TopStackItem()->HasTagName(html_names::kHeadTag) || !head_element_);
   DCHECK(!TopStackItem()->HasTagName(html_names::kBodyTag) || !body_element_);
   Top()->FinishParsingChildren();
-
-  DCHECK(!TopStackItem()->HasParsePartsAttribute() || parse_parts_count_ ||
-         !body_element_ ||
-         dom_parts_allowed_state_ != DOMPartsAllowed::kInsideParseParts);
-  if (parse_parts_count_ && TopStackItem()->HasParsePartsAttribute() &&
-      dom_parts_allowed_state_ == DOMPartsAllowed::kInsideParseParts) {
-    --parse_parts_count_;
-  }
 
   top_ = top_->ReleaseNextItemInStack();
 
@@ -554,13 +546,6 @@ void HTMLElementStack::RemoveNonTopCommon(Element* element) {
       // FIXME: Is it OK to call finishParsingChildren()
       // when the children aren't actually finished?
       element->FinishParsingChildren();
-
-      DCHECK(!TopStackItem()->HasParsePartsAttribute() || parse_parts_count_);
-      if (parse_parts_count_ &&
-          item->NextItemInStack()->HasParsePartsAttribute() &&
-          dom_parts_allowed_state_ == DOMPartsAllowed::kInsideParseParts) {
-        --parse_parts_count_;
-      }
 
       item->SetNextItemInStack(
           item->ReleaseNextItemInStack()->ReleaseNextItemInStack());

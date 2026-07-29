@@ -72,7 +72,7 @@ class CameraAvailabilityObserver extends CameraManager.AvailabilityCallback {
                 return;
             }
             CameraAvailabilityObserverJni.get()
-                    .onCameraAvailabilityChanged(mNativeCameraAvailabilityObserver, this);
+                    .onCameraAvailabilityChanged(mNativeCameraAvailabilityObserver);
         }
     }
 
@@ -83,19 +83,18 @@ class CameraAvailabilityObserver extends CameraManager.AvailabilityCallback {
                 return;
             }
             CameraAvailabilityObserverJni.get()
-                    .onCameraAvailabilityChanged(mNativeCameraAvailabilityObserver, this);
+                    .onCameraAvailabilityChanged(mNativeCameraAvailabilityObserver);
         }
     }
 
     // Lock for guarding |mNativeCameraAvailabilityObserver|.
     private final Object mNativeCameraAvailabilityObserverLock = new Object();
     private long mNativeCameraAvailabilityObserver;
-    private CameraManager mCameraManager;
-    private Handler mObservationThreadHandler;
+    private final CameraManager mCameraManager;
+    private final Handler mObservationThreadHandler;
 
     @NativeMethods
     interface Natives {
-        void onCameraAvailabilityChanged(
-                long nativeCameraAvailabilityObserver, CameraAvailabilityObserver caller);
+        void onCameraAvailabilityChanged(long nativeCameraAvailabilityObserver);
     }
 }

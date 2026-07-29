@@ -11,6 +11,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "base/check.h"
@@ -35,9 +36,7 @@
 #include "chromeos/ash/components/cryptohome/error_util.h"
 #include "chromeos/ash/components/dbus/cryptohome/UserDataAuth.pb.h"
 #include "chromeos/ash/components/dbus/cryptohome/auth_factor.pb.h"
-#include "chromeos/ash/components/dbus/cryptohome/recoverable_key_store.pb.h"
 #include "chromeos/ash/components/dbus/cryptohome/rpc.pb.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 
 namespace ash {
 
@@ -49,7 +48,7 @@ namespace {
 // Secrets are stored the same way they are sent to cryptohome (i.e. salted and
 // hashed), but only if secret checking has been enabled via
 // `TestApi::set_enabled_auth_check`.
-// `FakeAuthFactor` is the union/absl::variant of the factor-specific auth
+// `FakeAuthFactor` is the union/std::variant of the factor-specific auth
 // factor structs.
 
 struct PasswordFactor {
@@ -71,11 +70,11 @@ struct SmartCardFactor {
 
 struct KioskFactor {};
 
-using FakeAuthFactor = absl::variant<PasswordFactor,
-                                     PinFactor,
-                                     RecoveryFactor,
-                                     KioskFactor,
-                                     SmartCardFactor>;
+using FakeAuthFactor = std::variant<PasswordFactor,
+                                    PinFactor,
+                                    RecoveryFactor,
+                                    KioskFactor,
+                                    SmartCardFactor>;
 
 // Strings concatenated with the account id to obtain a user's profile
 // directory name. The prefix "u-" below corresponds to
@@ -94,6 +93,7 @@ constexpr char kCryptohomePublicMountLabel[] = "publicmount";
 // dependencies.
 constexpr char kCryptohomeRecoveryKeyLabel[] = "recovery";
 constexpr char kCryptohomeGaiaKeyLabel[] = "gaia";
+const char kCryptohomeLocalPasswordKeyLabel[] = "local-password";
 
 template <typename ReplyType>
 void SetErrorWrapperToReply(ReplyType& reply, cryptohome::ErrorWrapper error) {
@@ -150,7 +150,7 @@ FakeUserDataAuthClient* g_instance = nullptr;
 
 // `OverloadedFunctor` and `FunctorWithReturnType` are used to implement
 // `Overload`, which constructs a visitor appropriate for use with
-// `absl::visit` from lambdas for each case.
+// `std::visit` from lambdas for each case.
 
 // A functor combining the `operator()` definitions of a list of functors into
 // a single functor with overloaded `operator()`.
@@ -173,7 +173,7 @@ struct FunctorWithReturnType {
   Functor functor;
 };
 
-// `Overload` constructs a visitor appropriate for use with `absl::visit` from
+// `Overload` constructs a visitor appropriate for use with `std::visit` from
 // a number of lambdas for each case. The return type of each provided lambda
 // must be convertible to `ReturnType`, and the `operator()` of the combined
 // visitor will always return `ReturnType`.
@@ -202,7 +202,7 @@ user_data_auth::AuthFactorWithStatus BuildDefaultAuthFactorWithStatus() {
 std::optional<user_data_auth::AuthFactorWithStatus>
 FakeAuthFactorToAuthFactorWithStatus(std::string label,
                                      const FakeAuthFactor& factor) {
-  return absl::visit(
+  return std::visit(
       Overload<std::optional<user_data_auth::AuthFactorWithStatus>>(
           [&](const PasswordFactor& password) {
             user_data_auth::AuthFactorWithStatus result =
@@ -261,30 +261,6 @@ FakeAuthFactorToAuthFactorWithStatus(std::string label,
       factor);
 }
 
-std::optional<cryptohome::RecoverableKeyStore>
-FakeAuthFactorToRecoverableKeyStore(const FakeAuthFactor& factor) {
-  return absl::visit(
-      Overload<std::optional<cryptohome::RecoverableKeyStore>>(
-          [&](const PasswordFactor& password) {
-            cryptohome::RecoverableKeyStore store;
-            store.mutable_key_store_metadata()->set_knowledge_factor_type(
-                cryptohome::KNOWLEDGE_FACTOR_TYPE_PASSWORD);
-            store.mutable_wrapped_security_domain_key()->set_key_name(
-                "security_domain_member_key_encrypted_locally");
-            return store;
-          },
-          [&](const PinFactor& pin) {
-            cryptohome::RecoverableKeyStore store;
-            store.mutable_key_store_metadata()->set_knowledge_factor_type(
-                cryptohome::KNOWLEDGE_FACTOR_TYPE_PIN);
-            store.mutable_wrapped_security_domain_key()->set_key_name(
-                "security_domain_member_key_encrypted_locally");
-            return store;
-          },
-          [&](const auto&) { return std::nullopt; }),
-      factor);
-}
-
 // Turns AuthFactor+AuthInput into a pair of label and FakeAuthFactor.
 std::pair<std::string, FakeAuthFactor> AuthFactorWithInputToFakeAuthFactor(
     const user_data_auth::AuthFactor& factor,
@@ -325,7 +301,7 @@ std::pair<std::string, FakeAuthFactor> AuthFactorWithInputToFakeAuthFactor(
 
 bool CheckCredentialsViaAuthFactor(const FakeAuthFactor& factor,
                                    const std::string& secret) {
-  return absl::visit(
+  return std::visit(
       Overload<bool>(
           [&](const PasswordFactor& password) {
             return password.password == secret;
@@ -351,15 +327,21 @@ bool ContainsFakeFactor(
   const auto it =
       std::ranges::find_if(factors, [](const auto label_factor_pair) {
         const FakeAuthFactor& fake_factor = label_factor_pair.second;
-        return absl::get_if<FakeFactorType>(&fake_factor) != nullptr;
+        return std::get_if<FakeFactorType>(&fake_factor) != nullptr;
       });
   return it != std::end(factors);
+}
+
+bool ContainsFakeFactorWithLabel(
+    const base::flat_map<std::string, FakeAuthFactor>& factors,
+    std::string auth_factor_label) {
+  return factors.contains(auth_factor_label);
 }
 
 bool AuthInputMatchesFakeFactorType(
     const ::user_data_auth::AuthInput& auth_input,
     const FakeAuthFactor& fake_factor) {
-  return absl::visit(
+  return std::visit(
       Overload<bool>(
           [&](const PasswordFactor& password) {
             return auth_input.has_password_input();
@@ -499,7 +481,7 @@ void FakeUserDataAuthClient::TestApi::SetPinLocked(
       << "Factor does not exist: " << label;
   FakeAuthFactor& factor = factor_it->second;
 
-  PinFactor* pin_factor = absl::get_if<PinFactor>(&factor);
+  PinFactor* pin_factor = std::get_if<PinFactor>(&factor);
   CHECK(pin_factor) << "Factor is not PIN: " << label;
 
   pin_factor->locked = locked;
@@ -519,7 +501,7 @@ void FakeUserDataAuthClient::TestApi::SetPinType(
       << "Factor does not exist: " << label;
   FakeAuthFactor& factor = factor_it->second;
 
-  PinFactor* pin_factor = absl::get_if<PinFactor>(&factor);
+  PinFactor* pin_factor = std::get_if<PinFactor>(&factor);
   CHECK(pin_factor) << "Factor is not PIN: " << label;
 
   pin_factor->legacy = legacy_pin;
@@ -577,6 +559,12 @@ void FakeUserDataAuthClient::TestApi::AddAuthFactor(
   CHECK(was_inserted) << "Factor already exists";
 }
 
+void FakeUserDataAuthClient::TestApi::ClearAuthFactors(
+    const cryptohome::AccountIdentifier& account_id) {
+  UserCryptohomeState& user_state = GetUserState(account_id);
+  user_state.auth_factors.clear();
+}
+
 void FakeUserDataAuthClient::TestApi::AddRecoveryFactor(
     const cryptohome::AccountIdentifier& account_id) {
   UserCryptohomeState& user_state = GetUserState(account_id);
@@ -597,6 +585,20 @@ bool FakeUserDataAuthClient::TestApi::HasPinFactor(
     const cryptohome::AccountIdentifier& account_id) {
   const UserCryptohomeState& user_state = GetUserState(account_id);
   return ContainsFakeFactor<PinFactor>(user_state.auth_factors);
+}
+
+bool FakeUserDataAuthClient::TestApi::HasLocalPasswordFactor(
+    const cryptohome::AccountIdentifier& account_id) {
+  const UserCryptohomeState& user_state = GetUserState(account_id);
+  return ContainsFakeFactorWithLabel(user_state.auth_factors,
+                                     kCryptohomeLocalPasswordKeyLabel);
+}
+
+bool FakeUserDataAuthClient::TestApi::HasGaiaPasswordFactor(
+    const cryptohome::AccountIdentifier& account_id) {
+  const UserCryptohomeState& user_state = GetUserState(account_id);
+  return ContainsFakeFactorWithLabel(user_state.auth_factors,
+                                     kCryptohomeGaiaKeyLabel);
 }
 
 std::pair<std::string, std::string> FakeUserDataAuthClient::TestApi::AddSession(
@@ -1388,7 +1390,7 @@ void FakeUserDataAuthClient::AuthenticateAuthFactor(
     // Factor-specific verification logic. Will set the result_error variable
     // variable if a check didn't pass.
     cryptohome::ErrorWrapper result_error = cryptohome::ErrorWrapper::success();
-    absl::visit(
+    std::visit(
         Overload<void>(
             [&](const PasswordFactor& password_factor) {
               const auto& password_input = auth_input.password_input();
@@ -1581,6 +1583,13 @@ void FakeUserDataAuthClient::RemoveAuthFactor(
     RemoveAuthFactorCallback callback) {
   ::user_data_auth::RemoveAuthFactorReply reply;
   ReplyOnReturn auto_reply(&reply, std::move(callback));
+  RememberRequest<Operation::kRemoveAuthFactor>(request);
+
+  if (auto error = TakeOperationError(Operation::kRemoveAuthFactor);
+      cryptohome::HasError(error)) {
+    SetErrorWrapperToReply(reply, error);
+    return;
+  }
 
   auto error = cryptohome::ErrorWrapper::success();
   auto* session =
@@ -1608,6 +1617,14 @@ void FakeUserDataAuthClient::GetAuthFactorExtendedInfo(
     const ::user_data_auth::GetAuthFactorExtendedInfoRequest& request,
     GetAuthFactorExtendedInfoCallback callback) {
   ::user_data_auth::GetAuthFactorExtendedInfoReply reply;
+  ReplyOnReturn auto_reply(&reply, std::move(callback));
+}
+
+void FakeUserDataAuthClient::GenerateFreshRecoveryId(
+    const ::user_data_auth::GenerateFreshRecoveryIdRequest& request,
+    GenerateFreshRecoveryIdCallback callback) {
+  RememberRequest<Operation::kGenerateFreshRecoveryId>(request);
+  ::user_data_auth::GenerateFreshRecoveryIdReply reply;
   ReplyOnReturn auto_reply(&reply, std::move(callback));
 }
 
@@ -1897,38 +1914,6 @@ void FakeUserDataAuthClient::SetUserDataDir(base::FilePath path) {
 
     // This does intentionally not override existing entries.
     users_.insert({std::move(account_id), UserCryptohomeState()});
-  }
-}
-
-void FakeUserDataAuthClient::GetRecoverableKeyStores(
-    const ::user_data_auth::GetRecoverableKeyStoresRequest& request,
-    GetRecoverableKeyStoresCallback callback) {
-  ::user_data_auth::GetRecoverableKeyStoresReply reply;
-  ReplyOnReturn auto_reply(&reply, std::move(callback));
-  RememberRequest<Operation::kGetRecoverableKeyStores>(request);
-
-  if (auto error = TakeOperationError(Operation::kGetRecoverableKeyStores);
-      cryptohome::HasError(error)) {
-    SetErrorWrapperToReply(reply, error);
-    return;
-  }
-
-  const auto user_it = users_.find(request.account_id());
-  const bool user_exists = user_it != std::end(users_);
-  if (!user_exists) {
-    SetErrorWrapperToReply(
-        reply, cryptohome::ErrorWrapper::CreateFromErrorCodeOnly(
-                   CryptohomeErrorCode::CRYPTOHOME_ERROR_ACCOUNT_NOT_FOUND));
-    return;
-  }
-
-  const UserCryptohomeState& user_state = user_it->second;
-  for (const auto& [label, factor] : user_state.auth_factors) {
-    std::optional<cryptohome::RecoverableKeyStore> store =
-        FakeAuthFactorToRecoverableKeyStore(factor);
-    if (store) {
-      *reply.add_key_stores() = std::move(*store);
-    }
   }
 }
 

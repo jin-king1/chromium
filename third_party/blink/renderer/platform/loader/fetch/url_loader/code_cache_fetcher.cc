@@ -6,6 +6,7 @@
 
 #include "base/memory/scoped_refptr.h"
 #include "services/network/public/cpp/resource_request.h"
+#include "third_party/blink/public/mojom/loader/code_cache.mojom-blink.h"
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/public/platform/web_url.h"
 #include "third_party/blink/renderer/platform/loader/fetch/code_cache_host.h"
@@ -21,7 +22,7 @@ namespace {
 // webui bundled code cache.
 bool ShouldFetchWebUIBundledCodeCache(const network::ResourceRequest& request) {
   return SchemeRegistry::SchemeSupportsWebUIBundledBytecode(
-             String(request.url.scheme())) &&
+             String(request.url.GetScheme())) &&
          Platform::Current()->GetWebUIBundledCodeCacheResourceId(request.url);
 }
 
@@ -38,7 +39,7 @@ bool ShouldFetchCodeCache(const network::ResourceRequest& request) {
   // fetch cached code if opted-out by the embedder.
   bool should_use_source_hash =
       SchemeRegistry::SchemeSupportsCodeCacheWithHashing(
-          String(request.url.scheme())) &&
+          String(request.url.GetScheme())) &&
       Platform::Current()->ShouldUseCodeCacheWithHashing(
           WebURL(KURL(request.url)));
   if (!request.url.SchemeIsHTTPOrHTTPS() && !should_use_source_hash) {

@@ -5,11 +5,13 @@
 #import "ios/chrome/browser/settings/ui_bundled/password/password_details/password_details_table_view_controller.h"
 
 #import "base/apple/foundation_util.h"
+#import "base/functional/callback_helpers.h"
 #import "base/i18n/time_formatting.h"
 #import "base/ios/ios_util.h"
 #import "base/metrics/histogram_functions.h"
 #import "base/metrics/histogram_macros.h"
 #import "base/metrics/user_metrics.h"
+#import "base/strings/string_number_conversions.h"
 #import "base/strings/sys_string_conversions.h"
 #import "components/crash/core/common/crash_key.h"
 #import "components/password_manager/core/browser/password_manager_metrics_util.h"
@@ -27,9 +29,10 @@
 #import "ios/chrome/browser/settings/ui_bundled/password/password_details/password_details_table_view_controller_delegate.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/passwords_table_view_constants.h"
 #import "ios/chrome/browser/settings/ui_bundled/settings_navigation_controller.h"
-#import "ios/chrome/browser/shared/public/commands/application_commands.h"
 #import "ios/chrome/browser/shared/public/commands/open_new_tab_command.h"
+#import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
+#import "ios/chrome/browser/shared/public/snackbar/snackbar_message.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_multi_line_text_edit_item.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_multi_line_text_edit_item_delegate.h"
@@ -41,9 +44,9 @@
 #import "ios/chrome/browser/shared/ui/table_view/table_view_utils.h"
 #import "ios/chrome/browser/shared/ui/util/pasteboard_util.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
+#import "ios/chrome/common/string_util.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/elements/popover_label_view_controller.h"
-#import "ios/chrome/common/ui/reauthentication/reauthentication_module.h"
 #import "ios/chrome/common/ui/table_view/table_view_cells_constants.h"
 #import "ios/chrome/grit/ios_branded_strings.h"
 #import "ios/chrome/grit/ios_strings.h"
@@ -138,8 +141,9 @@ bool ShouldAllowToRestoreWarning(DetailsContext context, bool is_muted) {
 #pragma mark - PasswordDetailsTableViewController
 
 @interface PasswordDetailsTableViewController () <
-    TableViewTextEditItemDelegate,
+    PopoverLabelViewControllerDelegate,
     TableViewMultiLineTextEditItemDelegate,
+    TableViewTextEditItemDelegate,
     UIEditMenuInteractionDelegate> {
   // Index of the password the user wants to reveal.
   NSInteger _passwordIndexToReveal;
@@ -157,7 +161,7 @@ bool ShouldAllowToRestoreWarning(DetailsContext context, bool is_muted) {
 // Array of credentials that are shown on the screen.
 @property(nonatomic, strong) NSArray<CredentialDetails*>* credentials;
 
-@property(nonatomic, strong) NSString* pageTitle;
+@property(nonatomic, copy) NSString* pageTitle;
 
 // Whether the password is shown in plain text form or in masked form.
 @property(nonatomic, assign, getter=isPasswordShown) BOOL passwordShown;
@@ -329,7 +333,9 @@ bool ShouldAllowToRestoreWarning(DetailsContext context, bool is_muted) {
       initWithType:PasswordDetailsItemTypeWebsite];
   item.titleText = l10n_util::GetNSString(IDS_IOS_SHOW_PASSWORD_VIEW_SITES);
   item.detailTexts = passwordDetails.websites;
-  item.detailTextColor = [UIColor colorNamed:kTextSecondaryColor];
+  item.detailTextColor =
+      [UIColor colorNamed:passwordDetails.hidden ? kTextQuaternaryColor
+                                                 : kTextSecondaryColor];
   item.accessibilityTraits = UIAccessibilityTraitNotEnabled;
   return item;
 }
@@ -353,7 +359,9 @@ bool ShouldAllowToRestoreWarning(DetailsContext context, bool is_muted) {
   item.hideIcon = YES;
   item.textFieldPlaceholder = l10n_util::GetNSString(
       IDS_IOS_PASSWORD_SETTINGS_USERNAME_PLACEHOLDER_TEXT);
-  if (!self.tableView.editing) {
+  if (passwordDetails.hidden) {
+    item.textFieldTextColor = [UIColor colorNamed:kTextQuaternaryColor];
+  } else if (!self.tableView.editing) {
     item.textFieldTextColor = [UIColor colorNamed:kTextSecondaryColor];
   }
 
@@ -379,10 +387,11 @@ bool ShouldAllowToRestoreWarning(DetailsContext context, bool is_muted) {
   item.autoCapitalizationType = UITextAutocapitalizationTypeNone;
   item.delegate = self;
   item.hideIcon = YES;
-  if (!self.tableView.editing) {
+  if (passwordDetails.hidden) {
+    item.textFieldTextColor = [UIColor colorNamed:kTextQuaternaryColor];
+  } else if (!self.tableView.editing) {
     item.textFieldTextColor = [UIColor colorNamed:kTextSecondaryColor];
   }
-
   // For testing: only use this custom accessibility identifier if there are
   // more than one password shown on the Password Details.
   if (_credentials.count > 1) {
@@ -398,16 +407,11 @@ bool ShouldAllowToRestoreWarning(DetailsContext context, bool is_muted) {
 - (TableViewTextEditItem*)creationDateItemForPasswordDetails:
     (CredentialDetails*)passwordDetails {
   TableViewTextEditItem* item = [[TableViewTextEditItem alloc]
-      initWithType:PasswordDetailsItemTypeUsername];
+      initWithType:PasswordDetailsItemTypeCreationDate];
   item.textFieldBackgroundColor = [UIColor clearColor];
   item.fieldNameLabelText =
       l10n_util::GetNSString(IDS_IOS_SHOW_PASSKEY_CREATION_DATE);
-  item.textFieldValue =
-      passwordDetails.creationTime.has_value()
-          ? l10n_util::GetNSStringF(
-                IDS_IOS_PASSKEY_CREATION_DATE,
-                base::TimeFormatShortDate(*(passwordDetails.creationTime)))
-          : @"";
+  item.textFieldValue = [self passkeyCreationDateString:passwordDetails];
   item.textFieldEnabled = NO;
   item.autoCapitalizationType = UITextAutocapitalizationTypeNone;
   item.delegate = self;
@@ -445,10 +449,9 @@ bool ShouldAllowToRestoreWarning(DetailsContext context, bool is_muted) {
 
   // During editing password is exposed so eye icon shouldn't be shown.
   if (!self.tableView.editing) {
-    UIImage* image =
-        [self isPasswordShown]
-            ? DefaultSymbolWithPointSize(kHideActionSymbol, kSymbolSize)
-            : DefaultSymbolWithPointSize(kShowActionSymbol, kSymbolSize);
+    UIImage* image = [self isPasswordShown]
+                         ? SymbolWithPointSize(SymbolHideAction, kSymbolSize)
+                         : SymbolWithPointSize(SymbolShowAction, kSymbolSize);
     item.identifyingIcon = image;
     item.identifyingIconEnabled = YES;
     item.identifyingIconAccessibilityLabel = l10n_util::GetNSString(
@@ -584,8 +587,8 @@ bool ShouldAllowToRestoreWarning(DetailsContext context, bool is_muted) {
   item.detailText = l10n_util::GetNSStringF(
       IDS_IOS_SAVE_PASSWORD_TO_ACCOUNT_STORE_DESCRIPTION,
       base::SysNSStringToUTF16(self.userEmail));
-  item.image = CustomSymbolWithPointSize(kCloudAndArrowUpSymbol,
-                                         kRecommendationSymbolSize);
+  item.image =
+      SymbolWithPointSize(SymbolCloudAndArrowUp, kRecommendationSymbolSize);
   item.imageViewTintColor = [UIColor colorNamed:kBlueColor];
   return item;
 }
@@ -651,7 +654,7 @@ bool ShouldAllowToRestoreWarning(DetailsContext context, bool is_muted) {
     }
     case PasswordDetailsItemTypeChangePasswordButton:
       if (!self.tableView.editing) {
-        DCHECK(self.applicationCommandsHandler);
+        CHECK(self.sceneHandler);
         CredentialDetails* passwordDetails =
             self.credentials[indexPath.section];
         DCHECK(passwordDetails.changePasswordURL.has_value());
@@ -664,7 +667,7 @@ bool ShouldAllowToRestoreWarning(DetailsContext context, bool is_muted) {
 
         OpenNewTabCommand* command = [OpenNewTabCommand
             commandWithURLFromChrome:passwordDetails.changePasswordURL.value()];
-        [self.applicationCommandsHandler closePresentedViewsAndOpenURL:command];
+        [self.sceneHandler closePresentedViewsAndOpenURL:command];
       }
       break;
     case PasswordDetailsItemTypeNote: {
@@ -708,6 +711,7 @@ bool ShouldAllowToRestoreWarning(DetailsContext context, bool is_muted) {
       break;
     case PasswordDetailsItemTypeChangePasswordRecommendation:
     case PasswordDetailsItemTypeMoveToAccountRecommendation:
+    case PasswordDetailsItemTypeCreationDate:
       break;
   }
 }
@@ -758,6 +762,7 @@ bool ShouldAllowToRestoreWarning(DetailsContext context, bool is_muted) {
     }
     case PasswordDetailsItemTypeChangePasswordRecommendation:
     case PasswordDetailsItemTypeMoveToAccountRecommendation:
+    case PasswordDetailsItemTypeCreationDate:
       return NO;
   }
   return YES;
@@ -827,12 +832,27 @@ bool ShouldAllowToRestoreWarning(DetailsContext context, bool is_muted) {
               containsObject:self.credentials[indexPath.section].username]) {
         [self.usernamesWithMoveToAccountOfferRecorded
             addObject:self.credentials[indexPath.section].username];
-        // TODO(crbug.com/40880533): Use a common function for recording sites.
         base::UmaHistogramEnumeration(
             "PasswordManager.AccountStorage.MoveToAccountStoreFlowOffered",
             password_manager::metrics_util::MoveToAccountStoreTrigger::
                 kExplicitlyTriggeredInSettings);
       }
+      break;
+    }
+    case PasswordDetailsItemTypeCreationDate: {
+      if (!self.credentials[indexPath.section].hidden) {
+        break;
+      }
+
+      UIButton* infoButton = [UIButton buttonWithType:UIButtonTypeInfoLight];
+      [infoButton setImage:SymbolWithPointSize(SymbolInfoCircle,
+                                               kRecommendationSymbolSize)
+                  forState:UIControlStateNormal];
+      [infoButton addTarget:self
+                     action:@selector(passkeyHiddenInfoButtonTapped:)
+           forControlEvents:UIControlEventTouchUpInside];
+      infoButton.accessibilityIdentifier = kHiddenPasskeyInfoButtonID;
+      cell.accessoryView = infoButton;
       break;
     }
     case PasswordDetailsItemTypeNoteFooter:
@@ -885,8 +905,10 @@ bool ShouldAllowToRestoreWarning(DetailsContext context, bool is_muted) {
 - (void)setCredentials:(NSArray<CredentialDetails*>*)credentials
               andTitle:(NSString*)title {
   BOOL hadCredentials = [_credentials count];
-  _credentials = credentials;
-  _pageTitle = title;
+  NSSortDescriptor* hidden = [[NSSortDescriptor alloc] initWithKey:@"hidden"
+                                                         ascending:YES];
+  _credentials = [credentials sortedArrayUsingDescriptors:@[ hidden ]];
+  _pageTitle = [title copy];
 
   [self updateNavigationTitle];
   // Update the model even if all credentials are deleted and the view
@@ -915,8 +937,7 @@ bool ShouldAllowToRestoreWarning(DetailsContext context, bool is_muted) {
   SEL selector = policyEnabled ? @selector(onShareButtonPressed)
                                : @selector(onPolicyDisabledShareButtonPressed:);
   UIBarButtonItem* shareButton = [[UIBarButtonItem alloc]
-      initWithImage:DefaultSymbolWithPointSize(kShareSymbol,
-                                               kSymbolActionPointSize)
+      initWithImage:SymbolWithPointSize(SymbolShare, kSymbolActionPointSize)
               style:UIBarButtonItemStylePlain
              target:self
              action:selector];
@@ -929,6 +950,14 @@ bool ShouldAllowToRestoreWarning(DetailsContext context, bool is_muted) {
 
 - (void)hideShareButton {
   _shareButton.hidden = YES;
+}
+
+#pragma mark - PopoverLabelViewControllerDelegate
+
+- (void)didTapLinkURL:(NSURL*)URL {
+  OpenNewTabCommand* command =
+      [OpenNewTabCommand commandWithURLFromChrome:GURL(kAboutPasskeysURL)];
+  [self.sceneHandler closePresentedViewsAndOpenURL:command];
 }
 
 #pragma mark - TableViewTextEditItemDelegate
@@ -1020,8 +1049,8 @@ bool ShouldAllowToRestoreWarning(DetailsContext context, bool is_muted) {
 
 // Applies tint colour and resizes image.
 - (UIImage*)compromisedIcon {
-  return DefaultSymbolTemplateWithPointSize(kErrorCircleFillSymbol,
-                                            kRecommendationSymbolSize);
+  return SymbolTemplateWithPointSize(SymbolErrorCircleFill,
+                                     kRecommendationSymbolSize);
 }
 
 // Reveals password to the user. If copyCompletion is provided and the user
@@ -1036,7 +1065,7 @@ bool ShouldAllowToRestoreWarning(DetailsContext context, bool is_muted) {
           self.credentials[_passwordIndexToReveal].password;
       self.passwordDetailsInfoItems[_passwordIndexToReveal]
           .passwordTextItem.identifyingIcon =
-          DefaultSymbolWithPointSize(kHideActionSymbol, kSymbolSize);
+          SymbolWithPointSize(SymbolHideAction, kSymbolSize);
       self.passwordDetailsInfoItems[_passwordIndexToReveal]
           .passwordTextItem.identifyingIconAccessibilityLabel =
           l10n_util::GetNSString(IDS_IOS_SETTINGS_PASSWORD_HIDE_BUTTON);
@@ -1085,10 +1114,9 @@ bool ShouldAllowToRestoreWarning(DetailsContext context, bool is_muted) {
   TriggerHapticFeedbackForNotification(success
                                            ? UINotificationFeedbackTypeSuccess
                                            : UINotificationFeedbackTypeError);
-  [self.snackbarCommandsHandler showSnackbarWithMessage:message
-                                             buttonText:nil
-                                          messageAction:nil
-                                       completionAction:nil];
+  SnackbarMessage* snackbarMessage =
+      [[SnackbarMessage alloc] initWithTitle:message];
+  [self.snackbarHandler showSnackbarMessage:snackbarMessage];
 
   if ([self.tableView indexPathForSelectedRow]) {
     [self.tableView
@@ -1403,6 +1431,56 @@ bool ShouldAllowToRestoreWarning(DetailsContext context, bool is_muted) {
   [textFieldCell.textView becomeFirstResponder];
 }
 
+// For a hidden passkey, returns a string informating about it. Otherwise,
+// returns a creation date of a passkey or an empty string if it is not defined.
+- (NSString*)passkeyCreationDateString:(CredentialDetails*)credentialDetails {
+  if (credentialDetails.hidden) {
+    return l10n_util::GetNSString(IDS_IOS_PASSKEY_DOES_NOT_WORK);
+  }
+
+  return credentialDetails.creationTime.has_value()
+             ? l10n_util::GetNSStringF(
+                   IDS_IOS_PASSKEY_CREATION_DATE,
+                   base::TimeFormatShortDate(*(credentialDetails.creationTime)))
+             : @"";
+}
+
+// Displays a popover informing the user why the passkey does not work.
+- (void)passkeyHiddenInfoButtonTapped:(UIButton*)button {
+  NSString* text = l10n_util::GetNSStringF(
+      IDS_IOS_PASSKEY_HIDDEN_INFO, base::SysNSStringToUTF16(self.pageTitle));
+  NSDictionary* textAttributes = @{
+    NSForegroundColorAttributeName : [UIColor colorNamed:kTextSecondaryColor],
+    NSFontAttributeName :
+        [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline]
+  };
+  NSDictionary* linkAttributes = @{
+    NSForegroundColorAttributeName : [UIColor colorNamed:kBlueColor],
+    NSFontAttributeName :
+        [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline],
+    // Opening HC article is handled by the delegate.
+    NSLinkAttributeName : @"",
+  };
+
+  PopoverLabelViewController* popoverViewController =
+      [[PopoverLabelViewController alloc]
+          initWithPrimaryAttributedString:AttributedStringFromStringWithLink(
+                                              text, textAttributes,
+                                              linkAttributes)
+                secondaryAttributedString:nil];
+  popoverViewController.delegate = self;
+  popoverViewController.popoverPresentationController.sourceView = button;
+  popoverViewController.popoverPresentationController.sourceRect =
+      button.bounds;
+  popoverViewController.popoverPresentationController.permittedArrowDirections =
+      UIPopoverArrowDirectionAny;
+  [self presentViewController:popoverViewController
+                     animated:YES
+                   completion:nil];
+  popoverViewController.view.accessibilityIdentifier =
+      kHiddenPasskeyInfoPopoverViewID;
+}
+
 #pragma mark - AutofillEditTableViewController
 
 - (BOOL)isItemAtIndexPathTextEditCell:(NSIndexPath*)cellPath {
@@ -1422,6 +1500,7 @@ bool ShouldAllowToRestoreWarning(DetailsContext context, bool is_muted) {
     case PasswordDetailsItemTypeMoveToAccountRecommendation:
     case PasswordDetailsItemTypeNoteFooter:
     case PasswordDetailsItemTypeNote:
+    case PasswordDetailsItemTypeCreationDate:
       return NO;
   }
 }
@@ -1469,7 +1548,7 @@ bool ShouldAllowToRestoreWarning(DetailsContext context, bool is_muted) {
 
     self.passwordDetailsInfoItems[_passwordIndexToReveal]
         .passwordTextItem.identifyingIcon =
-        DefaultSymbolWithPointSize(kShowActionSymbol, kSymbolSize);
+        SymbolWithPointSize(SymbolShowAction, kSymbolSize);
     self.passwordDetailsInfoItems[_passwordIndexToReveal]
         .passwordTextItem.identifyingIconAccessibilityLabel =
         l10n_util::GetNSString(IDS_IOS_SETTINGS_PASSWORD_SHOW_BUTTON);
@@ -1682,7 +1761,7 @@ bool ShouldAllowToRestoreWarning(DetailsContext context, bool is_muted) {
       }
     }
   }
-  [self.delegate didFinishEditingPasswordDetails];
+  [self.delegate didFinishEditingCredentialDetails];
   [super editButtonPressed];
   [self reloadData];
 }

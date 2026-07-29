@@ -4,6 +4,8 @@
 
 #include "chrome/browser/web_applications/os_integration/mac/web_app_shortcut_mac.h"
 
+#import <AppKit/AppKit.h>
+
 #include <optional>
 #include <string>
 #include <utility>
@@ -11,10 +13,12 @@
 #import "base/apple/foundation_util.h"
 #include "base/check_is_test.h"
 #include "base/command_line.h"
+#include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/ref_counted.h"
+#include "base/strings/strcat.h"
 #include "base/task/task_runner.h"
 #include "base/threading/scoped_blocking_call.h"
 #include "chrome/browser/browser_process.h"
@@ -61,40 +65,94 @@ std::string GetBundleIdentifierForShim(const std::string& app_id,
     std::string normalized_profile_path;
     base::ReplaceChars(profile_path.BaseName().value(), " ", "-",
                        &normalized_profile_path);
-    return base::apple::BaseBundleID() + std::string(".app.") +
-           normalized_profile_path + "-" + app_id;
+    return base::StrCat({base::apple::BaseBundleID(), ".app.",
+                         normalized_profile_path, "-", app_id});
   }
-  return base::apple::BaseBundleID() + std::string(".app.") + app_id;
+  return base::StrCat({base::apple::BaseBundleID(), ".app.", app_id});
+}
+
+namespace {
+
+base::FilePath FindInstalledAppPath(const std::string& app_id) {
+  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+                                                base::BlockingType::MAY_BLOCK);
+  std::string bundle_id = GetBundleIdentifierForShim(app_id);
+  auto bundles =
+      BundleInfoPlist::SearchForBundlesById(bundle_id, GetChromeAppsFolder());
+
+  return bundles.empty() ? base::FilePath() : bundles.front().bundle_path();
+}
+
+bool AppShimRevealDisabledForTest() {
+  // Disable app shim reveal in the Finder during tests, to avoid
+  // creating Finder windows that are never closed.
+  return base::CommandLine::ForCurrentProcess()->HasSwitch(
+             switches::kTestType) ||
+         OsIntegrationTestOverride::Get();
+}
+
+}  // namespace
+
+void RevealAppShimInFinder(const std::string& app_id) {
+  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+                                                base::BlockingType::MAY_BLOCK);
+  base::FilePath app_path = FindInstalledAppPath(app_id);
+  if (app_path.empty()) {
+    return;
+  }
+
+  auto closure = base::BindOnce(
+      [](const base::FilePath& app_path) {
+        // The Finder creates a new window each time the app shim is revealed.
+        // Skip revealing the app shim during testing to avoid an avalanche of
+        // new Finder windows.
+        if (AppShimRevealDisabledForTest()) {
+          return;
+        }
+        NSURL* path_url = base::apple::FilePathToNSURL(app_path);
+        [[NSWorkspace sharedWorkspace]
+            activateFileViewerSelectingURLs:@[ path_url ]];
+      },
+      app_path);
+  // Perform the call to NSWorkspace on the UI thread. Calling it on the IO
+  // thread appears to cause crashes.
+  // https://crbug.com/40124995
+  content::GetUIThreadTaskRunner({})->PostTask(FROM_HERE, std::move(closure));
 }
 
 bool UseAdHocSigningForWebAppShims() {
-  if (@available(macOS 11.7, *)) {
-    // macOS 11.7 and above can code sign at runtime without requiring that the
-    // developer tools be installed.
+  // A disabled feature flag takes precedence over any enterprise policy.
+  if (!base::FeatureList::IsEnabled(features::kUseAdHocSigningForWebAppShims)) {
+    return false;
+  }
 
-    // A disabled feature flag takes precedence over any enterprise policy.
-    if (!base::FeatureList::IsEnabled(
-            features::kUseAdHocSigningForWebAppShims)) {
-      return false;
-    }
-
-    // The browser's local_state can be null in tests. In that case there is no
-    // enterprise policy to consider.
-    if (PrefService* local_state = g_browser_process->local_state()) {
-      // Respect an enterprise policy if one is set.
-      if (local_state->IsManagedPreference(
-              prefs::kWebAppsUseAdHocCodeSigningForAppShims)) {
-        return local_state->GetBoolean(
-            prefs::kWebAppsUseAdHocCodeSigningForAppShims);
-      }
-    }
-
+  // An explicitly enabled (via command line or chrome://flags) feature flag
+  // also takes precedence over any enterprise policy, to allow testing the
+  // behavior even if the enterprise policy is set to disabled.
+  if (base::FeatureList::GetInstance()->IsFeatureOverriddenFromCommandLine(
+          features::kUseAdHocSigningForWebAppShims.name,
+          base::FeatureList::OVERRIDE_ENABLE_FEATURE)) {
     return true;
   }
 
-  // Code signing on older macOS versions invokes `codesign_allocate` from the
-  // developer tools, so we can't do it at runtime.
-  return false;
+  // The browser's local_state can be null in tests. In that case there is no
+  // enterprise policy to consider.
+  if (PrefService* local_state = g_browser_process->local_state()) {
+    // Respect an enterprise policy if one is set.
+    if (local_state->IsManagedPreference(
+            prefs::kWebAppsUseAdHocCodeSigningForAppShims)) {
+      return local_state->GetBoolean(
+          prefs::kWebAppsUseAdHocCodeSigningForAppShims);
+    }
+  }
+
+  return true;
+}
+
+bool UseNotificationAttributionForWebAppShims() {
+  return base::FeatureList::IsEnabled(
+             features::kAppShimNotificationAttribution) &&
+         UseAdHocSigningForWebAppShims();
 }
 
 namespace internals {

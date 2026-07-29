@@ -7,6 +7,7 @@
 #include <memory>
 #include <optional>
 #include <utility>
+#include <variant>
 
 #include "base/functional/bind.h"
 #include "base/lazy_instance.h"
@@ -19,16 +20,19 @@
 #include "components/zoom/zoom_controller.h"
 #include "content/public/browser/file_select_listener.h"
 #include "content/public/browser/isolated_web_apps_policy.h"
+#include "content/public/browser/keyboard_event_processing_result.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/permission_result.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/render_widget_host_view.h"
+#include "content/public/browser/security_principal.h"
 #include "content/public/browser/site_instance.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_features.h"
 #include "third_party/blink/public/common/input/web_gesture_event.h"
+#include "third_party/blink/public/common/page/drag_operation.h"
 #include "third_party/blink/public/common/page/page_zoom.h"
 #include "third_party/blink/public/mojom/mediastream/media_stream.mojom.h"
 
@@ -83,6 +87,16 @@ class GuestViewBase::OwnerContentsObserver : public WebContentsObserver {
     // but we clear this anyway to avoid unexpected lookups during destruction.
     guest_->owner_rfh_id_ = content::GlobalRenderFrameHostId();
     DestroyGuestIfUnattached(&*guest_);
+  }
+
+  void RenderFrameHostChanged(content::RenderFrameHost* old_host,
+                              content::RenderFrameHost* new_host) override {
+    if (old_host && guest_->owner_rfh_id_ == old_host->GetGlobalId() &&
+        new_host && guest_->element_instance_id_ == kInstanceIDNone &&
+        old_host->GetProcess() == new_host->GetProcess()) {
+      // TODO(crbug.com/40202416): Do something similar for MPArch.
+      guest_->owner_rfh_id_ = new_host->GetGlobalId();
+    }
   }
 
   void DidToggleFullscreenModeForTab(bool entered_fullscreen,
@@ -184,7 +198,7 @@ GuestViewBase::~GuestViewBase() {
 
 void GuestViewBase::Init(std::unique_ptr<GuestViewBase> owned_this,
                          scoped_refptr<content::SiteInstance> site_instance,
-                         const base::Value::Dict& create_params,
+                         const base::DictValue& create_params,
                          GuestCreatedCallback callback) {
   if (!GetGuestViewManager()->IsGuestAvailableToContext(this)) {
     // The derived class did not create a WebContents so this class serves no
@@ -200,7 +214,7 @@ void GuestViewBase::Init(std::unique_ptr<GuestViewBase> owned_this,
                                  create_params.Clone(), std::move(callback)));
 }
 
-void GuestViewBase::InitWithWebContents(const base::Value::Dict& create_params,
+void GuestViewBase::InitWithWebContents(const base::DictValue& create_params,
                                         WebContents* guest_web_contents) {
   CHECK(guest_web_contents);
 
@@ -246,7 +260,7 @@ void GuestViewBase::SetGuestPageHolder(
 }
 
 void GuestViewBase::InitWithGuestPageHolder(
-    const base::Value::Dict& create_params,
+    const base::DictValue& create_params,
     content::GuestPageHolder* guest_page_holder) {
   SetGuestPageHolder(guest_page_holder);
 
@@ -272,13 +286,13 @@ void GuestViewBase::InitWithGuestPageHolder(
 }
 
 const std::optional<
-    std::pair<base::Value::Dict, content::WebContents::CreateParams>>&
+    std::pair<base::DictValue, content::WebContents::CreateParams>>&
 GuestViewBase::GetCreateParams() const {
   return create_params_;
 }
 
 void GuestViewBase::SetCreateParams(
-    const base::Value::Dict& create_params,
+    const base::DictValue& create_params,
     const content::WebContents::CreateParams& web_contents_create_params) {
   DCHECK_EQ(web_contents_create_params.browser_context, browser_context());
   DCHECK_EQ(web_contents_create_params.guest_delegate, this);
@@ -295,11 +309,12 @@ zoom::ZoomController* GuestViewBase::GetZoomController() const {
 
 void GuestViewBase::DispatchOnResizeEvent(const gfx::Size& old_size,
                                           const gfx::Size& new_size) {
-  if (new_size == old_size)
+  if (new_size == old_size) {
     return;
+  }
 
   // Dispatch the onResize event.
-  base::Value::Dict args;
+  base::DictValue args;
   args.Set(kOldWidth, old_size.width());
   args.Set(kOldHeight, old_size.height());
   args.Set(kNewWidth, new_size.width());
@@ -309,8 +324,9 @@ void GuestViewBase::DispatchOnResizeEvent(const gfx::Size& old_size,
 }
 
 gfx::Size GuestViewBase::GetDefaultSize() const {
-  if (!is_full_page_plugin())
+  if (!is_full_page_plugin()) {
     return gfx::Size(kDefaultWidth, kDefaultHeight);
+  }
 
   // Full page plugins default to the size of the owner's viewport.
   return owner_rfh()->GetView()->GetVisibleViewportSize();
@@ -321,8 +337,9 @@ void GuestViewBase::SetSize(const SetSizeParams& params) {
   gfx::Size min_size = params.min_size.value_or(min_auto_size_);
   gfx::Size max_size = params.max_size.value_or(max_auto_size_);
 
-  if (params.normal_size)
+  if (params.normal_size) {
     normal_size_ = *params.normal_size;
+  }
 
   min_auto_size_ = min_size;
   min_auto_size_.SetToMin(max_size);
@@ -335,16 +352,19 @@ void GuestViewBase::SetSize(const SetSizeParams& params) {
   content::RenderWidgetHostView* rwhv = GetGuestMainFrame()->GetView();
   if (enable_auto_size) {
     // Autosize is being enabled.
-    if (rwhv)
+    if (rwhv) {
       rwhv->EnableAutoResize(min_auto_size_, max_auto_size_);
+    }
     normal_size_.SetSize(0, 0);
   } else {
     // Autosize is being disabled.
     // Use default width/height if missing from partially defined normal size.
-    if (normal_size_.width() && !normal_size_.height())
+    if (normal_size_.width() && !normal_size_.height()) {
       normal_size_.set_height(GetDefaultSize().height());
-    if (!normal_size_.width() && normal_size_.height())
+    }
+    if (!normal_size_.width() && normal_size_.height()) {
       normal_size_.set_width(GetDefaultSize().width());
+    }
 
     gfx::Size new_size;
     if (!normal_size_.IsEmpty()) {
@@ -358,8 +378,9 @@ void GuestViewBase::SetSize(const SetSizeParams& params) {
     bool changed_due_to_auto_resize = false;
     if (auto_size_enabled_) {
       // Autosize was previously enabled.
-      if (rwhv)
+      if (rwhv) {
         rwhv->DisableAutoResize(new_size);
+      }
       changed_due_to_auto_resize = true;
     } else {
       // Autosize was already disabled. The RenderWidgetHostView is responsible
@@ -456,8 +477,9 @@ GuestViewBase* GuestViewBase::FromInstanceID(
 GuestViewBase* GuestViewBase::FromInstanceID(int owner_process_id,
                                              int guest_instance_id) {
   auto* host = content::RenderProcessHost::FromID(owner_process_id);
-  if (!host)
+  if (!host) {
     return nullptr;
+  }
 
   return GuestViewManager::FromBrowserContext(host->GetBrowserContext())
       ->GetGuestByInstanceIDSafely(guest_instance_id, owner_process_id);
@@ -469,7 +491,14 @@ WebContents* GuestViewBase::GetTopLevelWebContents(WebContents* web_contents) {
     return web_contents;
   } else {
     while (GuestViewBase* guest = FromWebContents(web_contents)) {
-      web_contents = guest->owner_web_contents();
+      content::WebContents* owner_web_contents = guest->owner_web_contents();
+      // If the embedder contents is shutdown before guest attachment,
+      // `owner_web_contents()` will be null.
+      // This is seen in WebViewTest.ShutdownBeforeAttach.
+      if (!owner_web_contents) {
+        break;
+      }
+      web_contents = owner_web_contents;
     }
     return web_contents;
   }
@@ -533,7 +562,7 @@ GuestViewManager* GuestViewBase::GetGuestViewManager() const {
 std::unique_ptr<WebContents> GuestViewBase::CreateNewGuestWindow(
     const WebContents::CreateParams& create_params) {
   return GetGuestViewManager()->CreateGuestWithWebContentsParams(
-      GetViewType(), owner_rfh(), create_params);
+      std::string(GetViewType()), owner_rfh(), create_params);
 }
 
 void GuestViewBase::DidAttach() {
@@ -571,11 +600,14 @@ const GURL& GuestViewBase::GetOwnerLastCommittedURL() const {
   return owner_rfh()->GetLastCommittedURL();
 }
 
-const GURL& GuestViewBase::GetOwnerSiteURL() const {
-  return owner_rfh()->GetSiteInstance()->GetSiteURL();
+GURL GuestViewBase::GetOwnerSiteURL() const {
+  return owner_rfh()
+      ->GetLastCommittedOrigin()
+      .GetTupleOrPrecursorTupleIfOpaque()
+      .GetURL();
 }
 
-void GuestViewBase::SetAttachParams(const base::Value::Dict& params) {
+void GuestViewBase::SetAttachParams(const base::DictValue& params) {
   attach_params_ = params.Clone();
   view_instance_id_ =
       attach_params_.FindInt(kParameterInstanceId).value_or(view_instance_id_);
@@ -596,6 +628,8 @@ void GuestViewBase::AttachToOuterWebContentsFrame(
     bool is_full_page_plugin,
     GuestViewMessageHandler::AttachToEmbedderFrameCallback
         attachment_callback) {
+  CHECK_EQ(owned_this.get(), this);
+
   // Stop tracking the old embedder's zoom level.
   // TODO(crbug.com/40436245): We should assert that we're not tracking the
   // embedder at this point, since guest reattachment is no longer possible.
@@ -659,8 +693,9 @@ void GuestViewBase::AttachToOuterWebContentsFrame(
   // |outer_contents_frame| gets swapped before the AttachToEmbedderFrame
   // callback is run. We also need to send the ACK before queued events are sent
   // in DidAttach.
-  if (attachment_callback)
+  if (attachment_callback) {
     std::move(attachment_callback).Run();
+  }
 
   // Completing attachment will resume suspended resource loads and then send
   // queued events.
@@ -925,6 +960,20 @@ void GuestViewBase::ContentsZoomChange(bool zoom_in) {
   embedder_web_contents()->GetDelegate()->ContentsZoomChange(zoom_in);
 }
 
+content::KeyboardEventProcessingResult GuestViewBase::PreHandleKeyboardEvent(
+    WebContents* source,
+    const input::NativeWebKeyboardEvent& event) {
+  CHECK(!base::FeatureList::IsEnabled(features::kGuestViewMPArch));
+
+  if (!attached() || !embedder_web_contents()->GetDelegate()) {
+    return content::KeyboardEventProcessingResult::NOT_HANDLED;
+  }
+
+  // Send the keyboard events back to the embedder to reprocess them.
+  return embedder_web_contents()->GetDelegate()->PreHandleKeyboardEvent(
+      embedder_web_contents(), event);
+}
+
 bool GuestViewBase::HandleKeyboardEvent(
     WebContents* source,
     const input::NativeWebKeyboardEvent& event) {
@@ -968,17 +1017,6 @@ bool GuestViewBase::ShouldFocusPageAfterCrash(content::WebContents* source) {
   return false;
 }
 
-bool GuestViewBase::PreHandleGestureEvent(WebContents* source,
-                                          const blink::WebGestureEvent& event) {
-  CHECK(!base::FeatureList::IsEnabled(features::kGuestViewMPArch));
-  // Pinch events which cause a scale change should not be routed to a guest.
-  // We still allow synthetic wheel events for touchpad pinch to go to the page.
-  DCHECK(!blink::WebInputEvent::IsPinchGestureEventType(event.GetType()) ||
-         (event.SourceDevice() == blink::WebGestureDevice::kTouchpad &&
-          event.NeedsWheelEvent()));
-  return false;
-}
-
 void GuestViewBase::UpdatePreferredSize(WebContents* target_web_contents,
                                         const gfx::Size& pref_size) {
   CHECK(!base::FeatureList::IsEnabled(features::kGuestViewMPArch));
@@ -995,6 +1033,32 @@ void GuestViewBase::UpdateTargetURL(WebContents* source, const GURL& url) {
 
   embedder_web_contents()->GetDelegate()->UpdateTargetURL(
       embedder_web_contents(), url);
+}
+
+bool GuestViewBase::CanDragEnter(WebContents* source,
+                                 const content::DropData& data,
+                                 blink::DragOperationsMask operations_allowed) {
+  CHECK(!base::FeatureList::IsEnabled(features::kGuestViewMPArch));
+
+  if (!attached() || !embedder_web_contents()->GetDelegate()) {
+    return false;
+  }
+
+  return embedder_web_contents()->GetDelegate()->CanDragEnter(
+      embedder_web_contents(), data, operations_allowed);
+}
+
+void GuestViewBase::DraggableRegionsChanged(
+    const std::vector<blink::mojom::DraggableRegionPtr>& regions,
+    content::WebContents* contents) {
+  CHECK(!base::FeatureList::IsEnabled(features::kGuestViewMPArch));
+
+  if (!attached() || !embedder_web_contents()->GetDelegate()) {
+    return;
+  }
+
+  embedder_web_contents()->GetDelegate()->DraggableRegionsChanged(regions,
+                                                                  contents);
 }
 
 void GuestViewBase::OnZoomControllerDestroyed(zoom::ZoomController* source) {
@@ -1053,8 +1117,9 @@ void GuestViewBase::DispatchEventToView(std::unique_ptr<GuestViewEvent> event) {
 }
 
 void GuestViewBase::SendQueuedEvents() {
-  if (!attached())
+  if (!attached()) {
     return;
+  }
   while (!pending_events_.empty()) {
     std::unique_ptr<GuestViewEvent> event_ptr =
         std::move(pending_events_.front());
@@ -1075,15 +1140,15 @@ void GuestViewBase::RejectGuestCreation(
   }
 }
 
-void GuestViewBase::CompleteInit(base::Value::Dict create_params,
+void GuestViewBase::CompleteInit(base::DictValue create_params,
                                  GuestCreatedCallback callback,
                                  std::unique_ptr<GuestViewBase> owned_this,
                                  GuestPageVariant guest_page) {
   if (base::FeatureList::IsEnabled(features::kGuestViewMPArch)) {
-    CHECK(absl::holds_alternative<std::unique_ptr<content::GuestPageHolder>>(
+    CHECK(std::holds_alternative<std::unique_ptr<content::GuestPageHolder>>(
         guest_page));
     std::unique_ptr<content::GuestPageHolder> guest_page_holder =
-        absl::get<std::unique_ptr<content::GuestPageHolder>>(
+        std::get<std::unique_ptr<content::GuestPageHolder>>(
             std::move(guest_page));
     if (!guest_page_holder) {
       // The derived class did not create a guest page so this class
@@ -1096,10 +1161,10 @@ void GuestViewBase::CompleteInit(base::Value::Dict create_params,
     TakeGuestPageOwnership(std::move(guest_page_holder));
     std::move(callback).Run(std::move(owned_this));
   } else {
-    CHECK(absl::holds_alternative<std::unique_ptr<content::WebContents>>(
+    CHECK(std::holds_alternative<std::unique_ptr<content::WebContents>>(
         guest_page));
     std::unique_ptr<content::WebContents> guest_web_contents =
-        absl::get<std::unique_ptr<content::WebContents>>(std::move(guest_page));
+        std::get<std::unique_ptr<content::WebContents>>(std::move(guest_page));
     if (!guest_web_contents) {
       // The derived class did not create a guest WebContents so this class
       // serves no purpose. Let's self-destruct.
@@ -1168,15 +1233,16 @@ void GuestViewBase::UpdateWebContentsForNewOwner(
 }
 
 double GuestViewBase::GetEmbedderZoomFactor() const {
-  if (!embedder_web_contents())
+  if (!embedder_web_contents()) {
     return 1.0;
+  }
 
   return blink::ZoomLevelToZoomFactor(
       zoom::ZoomController::GetZoomLevelForWebContents(
           embedder_web_contents()));
 }
 
-void GuestViewBase::SetUpSizing(const base::Value::Dict& params) {
+void GuestViewBase::SetUpSizing(const base::DictValue& params) {
   // Read the autosize parameters passed in from the embedder.
   std::optional<bool> auto_size_enabled_opt =
       params.FindBool(kAttributeAutoSize);
@@ -1229,15 +1295,17 @@ void GuestViewBase::SetGuestZoomLevelToMatchEmbedder() {
       zoom::ZoomController::FromWebContentsAndRenderFrameHost(
           owner_web_contents(),
           owner_rfh()->GetOutermostMainFrame()->GetGlobalId());
-  if (!embedder_zoom_controller)
+  if (!embedder_zoom_controller) {
     return;
+  }
 
   GetZoomController()->SetZoomLevel(embedder_zoom_controller->GetZoomLevel());
 }
 
 void GuestViewBase::StartTrackingEmbedderZoomLevel() {
-  if (!ZoomPropagatesFromEmbedderToGuest())
+  if (!ZoomPropagatesFromEmbedderToGuest()) {
     return;
+  }
 
   auto* embedder_zoom_controller =
       zoom::ZoomController::FromWebContentsAndRenderFrameHost(
@@ -1245,8 +1313,9 @@ void GuestViewBase::StartTrackingEmbedderZoomLevel() {
           owner_rfh()->GetOutermostMainFrame()->GetGlobalId());
 
   // Chrome Apps do not have a ZoomController.
-  if (!embedder_zoom_controller)
+  if (!embedder_zoom_controller) {
     return;
+  }
   // Listen to the embedder's zoom changes.
   zoom_controller_observations_.AddObservation(embedder_zoom_controller);
 
@@ -1258,15 +1327,17 @@ void GuestViewBase::StopTrackingEmbedderZoomLevel() {
   // TODO(wjmaclean): Remove the observer any time the GuestWebView transitions
   // from propagating to not-propagating the zoom from the embedder.
 
-  if (!owner_web_contents())
+  if (!owner_web_contents()) {
     return;
+  }
   auto* embedder_zoom_controller =
       zoom::ZoomController::FromWebContentsAndRenderFrameHost(
           owner_web_contents(),
           owner_rfh()->GetOutermostMainFrame()->GetGlobalId());
   // Chrome Apps do not have a ZoomController.
-  if (!embedder_zoom_controller)
+  if (!embedder_zoom_controller) {
     return;
+  }
 
   if (zoom_controller_observations_.IsObservingSource(
           embedder_zoom_controller)) {
@@ -1276,8 +1347,9 @@ void GuestViewBase::StopTrackingEmbedderZoomLevel() {
 
 void GuestViewBase::UpdateGuestSize(const gfx::Size& new_size,
                                     bool due_to_auto_resize) {
-  if (due_to_auto_resize)
+  if (due_to_auto_resize) {
     GuestSizeChangedDueToAutoSize(guest_size_, new_size);
+  }
   DispatchOnResizeEvent(guest_size_, new_size);
   guest_size_ = new_size;
 }
@@ -1296,7 +1368,7 @@ bool GuestViewBase::IsOwnedByControlledFrameEmbedder() const {
 
 void GuestViewBase::SetOwnerHost() {
   if (IsOwnedByExtension()) {
-    owner_host_ = GetOwnerLastCommittedURL().host();
+    owner_host_ = GetOwnerLastCommittedURL().GetHost();
   } else if (IsOwnedByWebUI()) {
     owner_host_ = std::string();
   } else if (IsOwnedByControlledFrameEmbedder()) {

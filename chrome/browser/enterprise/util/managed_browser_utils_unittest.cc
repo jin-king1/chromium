@@ -11,12 +11,14 @@
 #include "base/memory/raw_ptr.h"
 #include "build/build_config.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
-#include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/enterprise/browser_management/management_service_factory.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
+#include "components/policy/core/common/management/scoped_management_service_override_for_testing.h"
+#include "components/prefs/pref_service.h"
 #include "content/public/test/browser_task_environment.h"
 #include "net/base/host_port_pair.h"
 #include "net/cert/x509_certificate.h"
@@ -94,7 +96,6 @@ class ManagedBrowserUtilsTest : public testing::Test {
   std::unique_ptr<policy::MockConfigurationPolicyProvider> mock_provider_;
   TestingProfileManager profile_manager_{TestingBrowserProcess::GetGlobal()};
   raw_ptr<TestingProfile> profile_;
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 TEST_F(ManagedBrowserUtilsTest, HasMachineLevelPolicies) {
@@ -110,14 +111,31 @@ TEST_F(ManagedBrowserUtilsTest, HasMachineLevelPolicies) {
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
 TEST_F(ManagedBrowserUtilsTest, WorkProfileDefaultLabel) {
-  scoped_feature_list_.InitAndEnableFeature(
-      features::kEnterpriseProfileBadgingForAvatar);
   // Ensure enterprise badging can be shown.
   std::u16string work_label = u"Work";
 
   {
     enterprise_util::SetUserAcceptedAccountManagement(profile(), true);
+    policy::ScopedManagementServiceOverrideForTesting platform_management(
+        policy::ManagementServiceFactory::GetForProfile(profile()),
+        policy::EnterpriseManagementAuthority::CLOUD);
     EXPECT_EQ(enterprise_util::GetEnterpriseLabel(profile()), work_label);
+  }
+
+  {
+    enterprise_util::SetUserAcceptedAccountManagement(profile(), false);
+    policy::ScopedManagementServiceOverrideForTesting platform_management(
+        policy::ManagementServiceFactory::GetForProfile(profile()),
+        policy::EnterpriseManagementAuthority::CLOUD);
+    EXPECT_NE(enterprise_util::GetEnterpriseLabel(profile()), work_label);
+  }
+
+  {
+    enterprise_util::SetUserAcceptedAccountManagement(profile(), true);
+    policy::ScopedManagementServiceOverrideForTesting platform_management(
+        policy::ManagementServiceFactory::GetForProfile(profile()),
+        policy::EnterpriseManagementAuthority::NONE);
+    EXPECT_NE(enterprise_util::GetEnterpriseLabel(profile()), work_label);
   }
 
   {
@@ -127,51 +145,45 @@ TEST_F(ManagedBrowserUtilsTest, WorkProfileDefaultLabel) {
 }
 
 TEST_F(ManagedBrowserUtilsTest, DefaultLabelDisabledbyPolicy) {
-  scoped_feature_list_.InitAndEnableFeature(
-      features::kEnterpriseProfileBadgingForAvatar);
   std::u16string work_label = u"Work";
   profile()->GetPrefs()->SetInteger(
       prefs::kEnterpriseProfileBadgeToolbarSettings, 1);
   enterprise_util::SetUserAcceptedAccountManagement(profile(), true);
+  policy::ScopedManagementServiceOverrideForTesting platform_management(
+      policy::ManagementServiceFactory::GetForProfile(profile()),
+      policy::EnterpriseManagementAuthority::CLOUD);
 
   // There should be no text because the policy fully disables badging.
   EXPECT_EQ(enterprise_util::GetEnterpriseLabel(profile()), std::u16string());
 }
 
 TEST_F(ManagedBrowserUtilsTest, CustomLabelDisabledbyPolicy) {
-  scoped_feature_list_.InitAndEnableFeature(
-      features::kEnterpriseProfileBadgingForAvatar);
   profile()->GetPrefs()->SetString(prefs::kEnterpriseCustomLabelForProfile,
                                    "Custom Label");
   profile()->GetPrefs()->SetInteger(
       prefs::kEnterpriseProfileBadgeToolbarSettings, 1);
   enterprise_util::SetUserAcceptedAccountManagement(profile(), true);
+  policy::ScopedManagementServiceOverrideForTesting platform_management(
+      policy::ManagementServiceFactory::GetForProfile(profile()),
+      policy::EnterpriseManagementAuthority::CLOUD);
 
   // There should be no label because the policy fully disables badging.
   EXPECT_EQ(enterprise_util::GetEnterpriseLabel(profile()), std::u16string());
 }
 
 TEST_F(ManagedBrowserUtilsTest, CustomLabelTruncated) {
-  scoped_feature_list_.InitAndEnableFeature(
-      features::kEnterpriseProfileBadgingForAvatar);
   profile()->GetPrefs()->SetString(prefs::kEnterpriseCustomLabelForProfile,
                                    "Custom Label Can Be Max 16 Characters");
   enterprise_util::SetUserAcceptedAccountManagement(profile(), true);
+  policy::ScopedManagementServiceOverrideForTesting platform_management(
+      policy::ManagementServiceFactory::GetForProfile(profile()),
+      policy::EnterpriseManagementAuthority::CLOUD);
 
   EXPECT_EQ(enterprise_util::GetEnterpriseLabel(profile()),
             u"Custom Label Can Be Max 16 Characters");
   // The text should be truncated to 16 characters followed by ellipsis.
   EXPECT_EQ(enterprise_util::GetEnterpriseLabel(profile(), true),
             u"Custom Label Can…");
-}
-
-TEST_F(ManagedBrowserUtilsTest, DefaultLabelGatedBehindFeature) {
-  scoped_feature_list_.InitAndDisableFeature(
-      features::kEnterpriseProfileBadgingForAvatar);
-  enterprise_util::SetUserAcceptedAccountManagement((profile()), true);
-
-  // The text should be truncated to 16 characters followed by ellipsis.
-  EXPECT_EQ(enterprise_util::GetEnterpriseLabel((profile())), std::u16string());
 }
 #endif
 
@@ -203,11 +215,11 @@ class AutoSelectCertificateTest : public testing::Test {
         {client_1_, client_2_});
   }
 
-  void SetPolicyValueInContentSettings(base::Value::List filters) {
+  void SetPolicyValueInContentSettings(base::ListValue filters) {
     HostContentSettingsMap* m =
         HostContentSettingsMapFactory::GetForProfile(profile());
 
-    base::Value::Dict root;
+    base::DictValue root;
     root.Set("filters", std::move(filters));
 
     m->SetWebsiteSettingDefaultScope(
@@ -216,17 +228,17 @@ class AutoSelectCertificateTest : public testing::Test {
         base::Value(std::move(root)));
   }
 
-  base::Value::Dict CreateFilterValue(const std::string& issuer,
-                                      const std::string& subject) {
+  base::DictValue CreateFilterValue(const std::string& issuer,
+                                    const std::string& subject) {
     EXPECT_FALSE(issuer.empty() && subject.empty());
 
-    base::Value::Dict filter;
+    base::DictValue filter;
     if (!issuer.empty()) {
-      filter.Set("ISSUER", base::Value::Dict().Set("CN", issuer));
+      filter.Set("ISSUER", base::DictValue().Set("CN", issuer));
     }
 
     if (!subject.empty()) {
-      filter.Set("SUBJECT", base::Value::Dict().Set("CN", subject));
+      filter.Set("SUBJECT", base::DictValue().Set("CN", subject));
     }
 
     return filter;
@@ -267,7 +279,7 @@ TEST_F(AutoSelectCertificateTest,
   net::ClientCertIdentityList client_certs_list = GetDefaultClientCertList();
 
   // client_1.pem has "B CA" as its issuer, so set up filters to select it
-  base::Value::List filters;
+  base::ListValue filters;
   filters.Append(CreateFilterValue("B CA", ""));
 
   SetPolicyValueInContentSettings(std::move(filters));
@@ -287,7 +299,7 @@ TEST_F(AutoSelectCertificateTest,
   net::ClientCertIdentityList client_certs_list = GetDefaultClientCertList();
 
   // client_2.pem has "E CA" as its issuer, so set up filters to select it
-  base::Value::List filters;
+  base::ListValue filters;
   filters.Append(CreateFilterValue("E CA", ""));
 
   SetPolicyValueInContentSettings(std::move(filters));
@@ -309,7 +321,7 @@ TEST_F(AutoSelectCertificateTest,
 
   // client_1.pem has "Client Cert A" as its subject, so set up filters to
   // select it
-  base::Value::List filters;
+  base::ListValue filters;
   filters.Append(CreateFilterValue("", "Client Cert A"));
 
   SetPolicyValueInContentSettings(std::move(filters));
@@ -331,7 +343,7 @@ TEST_F(AutoSelectCertificateTest,
 
   // client_2.pem has "Client Cert D" as its subject, so set up filters to
   // select it
-  base::Value::List filters;
+  base::ListValue filters;
   filters.Append(CreateFilterValue("", "Client Cert D"));
 
   SetPolicyValueInContentSettings(std::move(filters));
@@ -350,7 +362,7 @@ TEST_F(AutoSelectCertificateTest, IssuerNotMatchingDoesntSelectCerts) {
   GURL requesting_url(kRequestingUrl);
   net::ClientCertIdentityList client_certs_list = GetDefaultClientCertList();
 
-  base::Value::List filters;
+  base::ListValue filters;
   filters.Append(CreateFilterValue("Bad Issuer", "Client Cert D"));
 
   SetPolicyValueInContentSettings(std::move(filters));
@@ -370,7 +382,7 @@ TEST_F(AutoSelectCertificateTest, SubjectNotMatchingDoesntSelectCerts) {
   GURL requesting_url(kRequestingUrl);
   net::ClientCertIdentityList client_certs_list = GetDefaultClientCertList();
 
-  base::Value::List filters;
+  base::ListValue filters;
   filters.Append(CreateFilterValue("E CA", "Bad Subject"));
 
   SetPolicyValueInContentSettings(std::move(filters));
@@ -390,7 +402,7 @@ TEST_F(AutoSelectCertificateTest, MatchingCertOnDifferentUrlDoesntSelectCerts) {
   GURL requesting_url("http://other.domain.example.com");
   net::ClientCertIdentityList client_certs_list = GetDefaultClientCertList();
 
-  base::Value::List filters;
+  base::ListValue filters;
   filters.Append(CreateFilterValue("E CA", ""));
 
   SetPolicyValueInContentSettings(std::move(filters));

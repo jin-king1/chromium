@@ -5,6 +5,7 @@
 import 'chrome://read-later.top-chrome/shared/sp_empty_state.js';
 import 'chrome://read-later.top-chrome/shared/sp_footer.js';
 import 'chrome://read-later.top-chrome/shared/sp_heading.js';
+import 'chrome://read-later.top-chrome/shared/sp_icons.html.js';
 import 'chrome://resources/cr_elements/cr_button/cr_button.js';
 import 'chrome://resources/cr_elements/cr_icon/cr_icon.js';
 import 'chrome://resources/cr_elements/cr_icon_button/cr_icon_button.js';
@@ -37,7 +38,8 @@ const ReadingListAppElementBase = HelpBubbleMixinLit(CrLitElement);
 export interface ReadingListAppElement {
   $: {
     footer: HTMLElement,
-    readingListList: CrLazyListElement,
+    readingListList: CrLazyListElement<ReadLaterEntry>,
+    scroller: HTMLElement,
   };
 }
 
@@ -69,30 +71,32 @@ export class ReadingListAppElement extends ReadingListAppElementBase {
       buttonRipples: {type: Boolean},
       loadingContent_: {type: Boolean},
       itemSize_: {type: Number},
-      minViewportHeight_: {type: Number},
       scrollTarget_: {type: Object},
       unreadHeader_: {type: String},
       readHeader_: {type: String},
       unreadExpanded_: {type: Boolean},
       readExpanded_: {type: Boolean},
+      isWebUIBrowser_: {type: Boolean},
     };
   }
 
-  protected unreadItems_: ReadLaterEntry[] = [];
-  protected readItems_: ReadLaterEntry[] = [];
-  protected focusedIndex_: number = -1;
-  protected focusedItem_: HTMLElement|null = null;
-  private currentPageActionButtonState_: CurrentPageActionButtonState =
+  protected accessor unreadItems_: ReadLaterEntry[] = [];
+  protected accessor readItems_: ReadLaterEntry[] = [];
+  protected accessor focusedIndex_: number = -1;
+  protected accessor focusedItem_: HTMLElement|null = null;
+  private accessor currentPageActionButtonState_: CurrentPageActionButtonState =
       CurrentPageActionButtonState.kDisabled;
-  buttonRipples: boolean = loadTimeData.getBoolean('useRipples');
-  protected loadingContent_: boolean = true;
-  protected itemSize_: number = 48;
-  protected minViewportHeight_: number = 0;
-  protected scrollTarget_: HTMLElement|null = null;
-  private unreadHeader_: string = loadTimeData.getString('unreadHeader');
-  private readHeader_: string = loadTimeData.getString('readHeader');
-  private unreadExpanded_: boolean = true;
-  private readExpanded_: boolean = false;
+  accessor buttonRipples: boolean = loadTimeData.getBoolean('useRipples');
+  protected accessor loadingContent_: boolean = true;
+  protected accessor itemSize_: number = 48;
+  protected accessor scrollTarget_: HTMLElement = document.documentElement;
+  private accessor unreadHeader_: string =
+      loadTimeData.getString('unreadHeader');
+  private accessor readHeader_: string = loadTimeData.getString('readHeader');
+  private accessor unreadExpanded_: boolean = true;
+  private accessor readExpanded_: boolean = false;
+  private accessor isWebUIBrowser_: boolean =
+      loadTimeData.getBoolean('isWebUIBrowser');
   private apiProxy_: ReadingListApiProxy =
       ReadingListApiProxyImpl.getInstance();
   private listenerIds_: number[] = [];
@@ -108,13 +112,16 @@ export class ReadingListAppElement extends ReadingListAppElementBase {
       // state.
       if (document.visibilityState === 'visible') {
         this.updateReadLaterEntries_();
-        this.updateViewportHeight_();
       }
     };
   }
 
   override connectedCallback() {
     super.connectedCallback();
+
+    if (this.isWebUIBrowser_) {
+      this.classList.add('in-webui-browser');
+    }
 
     document.addEventListener(
         'visibilitychange', this.visibilityChangedListener_);
@@ -128,9 +135,8 @@ export class ReadingListAppElement extends ReadingListAppElementBase {
             (state: CurrentPageActionButtonState) =>
                 this.updateCurrentPageActionButton_(state)));
 
-    this.scrollTarget_ = this.$.readingListList;
+    this.scrollTarget_ = this.$.scroller;
     this.updateReadLaterEntries_();
-    this.updateViewportHeight_();
     this.apiProxy_.updateCurrentPageActionButtonState();
 
     this.readingListEventTracker_.add(
@@ -192,15 +198,6 @@ export class ReadingListAppElement extends ReadingListAppElementBase {
     }
   }
 
-  private updateViewportHeight_() {
-    this.apiProxy_.getWindowData().then(({windows}) => {
-      const activeWindow = windows.find((w) => w.active);
-      const windowHeight =
-          activeWindow ? activeWindow.height : windows[0]!.height;
-      this.minViewportHeight_ = windowHeight - this.$.footer.offsetHeight;
-    });
-  }
-
   getFocusedIndexForTesting() {
     return this.focusedIndex_;
   }
@@ -210,7 +207,11 @@ export class ReadingListAppElement extends ReadingListAppElementBase {
     this.unreadExpanded_ = true;
   }
 
-  protected updateFocusedItem_() {
+  protected onViewportFilled_() {
+    this.updateFocusedItem_();
+  }
+
+  private updateFocusedItem_() {
     this.focusedItem_ = this.focusedIndex_ === -1 ?
         null :
         this.querySelector<HTMLElement>(
@@ -237,12 +238,29 @@ export class ReadingListAppElement extends ReadingListAppElementBase {
   private createHeaderEntry_(title: string): ReadLaterEntry {
     return {
       title: title,
-      url: {url: ''},
+      url: '',
       displayUrl: '',
       updateTime: 0n,
       read: false,
       displayTimeSinceUpdate: '',
     };
+  }
+
+  protected getExpandButtonAriaLabel_(title: string): string {
+    let labelString: string;
+    switch (title) {
+      case this.unreadHeader_:
+        labelString = this.unreadExpanded_ ? 'collapseButtonAriaLabel' :
+                                             'expandButtonAriaLabel';
+        break;
+      case this.readHeader_:
+        labelString = this.readExpanded_ ? 'collapseButtonAriaLabel' :
+                                           'expandButtonAriaLabel';
+        break;
+      default:
+        assertNotReached();
+    }
+    return loadTimeData.getStringF(labelString, title);
   }
 
   protected getExpandButtonIcon_(title: string): string {
@@ -323,7 +341,11 @@ export class ReadingListAppElement extends ReadingListAppElementBase {
    * @return The appropriate cr icon for the current page action button
    */
   protected getCurrentPageActionButtonIcon_(): string {
-    return this.getCurrentPageActionButtonMarkAsRead_() ? 'cr:check' : 'cr:add';
+    return this.getCurrentPageActionButtonMarkAsRead_() ?
+        'cr:check' :
+        (loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
+             'sp:add-circle' :
+             'sp:add-circle-old');
   }
 
   /**
@@ -367,7 +389,7 @@ export class ReadingListAppElement extends ReadingListAppElementBase {
     );
   }
 
-  protected async onItemKeyDown_(e: KeyboardEvent) {
+  protected async onItemKeydown_(e: KeyboardEvent) {
     if (e.shiftKey || !navigationKeys.has(e.key)) {
       return;
     }

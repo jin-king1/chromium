@@ -11,9 +11,8 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/memory/scoped_refptr.h"
-#include "base/not_fatal_until.h"
 #include "base/task/single_thread_task_runner.h"
-#include "components/subresource_filter/content/shared/renderer/filter_utils.h"
+#include "components/subresource_filter/content/renderer/filter_utils.h"
 #include "components/subresource_filter/core/common/constants.h"
 #include "components/subresource_filter/core/common/load_policy.h"
 #include "components/subresource_filter/core/common/memory_mapped_ruleset.h"
@@ -71,15 +70,16 @@ WebDocumentSubresourceFilterImpl::WebDocumentSubresourceFilterImpl(
 
 WebLoadPolicy WebDocumentSubresourceFilterImpl::GetLoadPolicy(
     const blink::WebURL& resourceUrl,
-    network::mojom::RequestDestination request_destination) {
-  return getLoadPolicyImpl(resourceUrl, ToElementType(request_destination));
+    network::mojom::RequestDestination request_destination,
+    ScopedRule* out_rule) {
+  return getLoadPolicyImpl(resourceUrl, ToElementType(request_destination),
+                           out_rule);
 }
 
 WebLoadPolicy
 WebDocumentSubresourceFilterImpl::GetLoadPolicyForWebSocketConnect(
     const blink::WebURL& url) {
-  CHECK(url.ProtocolIs("ws") || url.ProtocolIs("wss"),
-        base::NotFatalUntil::M129);
+  CHECK(url.ProtocolIs("ws") || url.ProtocolIs("wss"));
   return getLoadPolicyImpl(url, proto::ELEMENT_TYPE_WEBSOCKET);
 }
 
@@ -87,6 +87,37 @@ WebLoadPolicy
 WebDocumentSubresourceFilterImpl::GetLoadPolicyForWebTransportConnect(
     const blink::WebURL& url) {
   return getLoadPolicyImpl(url, proto::ELEMENT_TYPE_WEBTRANSPORT);
+}
+
+void WebDocumentSubresourceFilterImpl::GetDomainSelectors(
+    std::vector<std::string_view>& out_selectors) {
+  filter_.GetDomainSelectors(out_selectors);
+}
+
+bool WebDocumentSubresourceFilterImpl::MaybeHasStyleRule(uint32_t hash) {
+  return filter_.MaybeHasStyleRule(hash);
+}
+
+void WebDocumentSubresourceFilterImpl::GetSelectorsByClass(
+    std::string_view class_name,
+    uint32_t hash,
+    std::vector<std::string_view>& out_selectors) {
+  filter_.GetSelectorsByClass(class_name, hash, out_selectors);
+}
+
+void WebDocumentSubresourceFilterImpl::GetSelectorsById(
+    std::string_view id_name,
+    uint32_t hash,
+    std::vector<std::string_view>& out_selectors) {
+  filter_.GetSelectorsById(id_name, hash, out_selectors);
+}
+bool WebDocumentSubresourceFilterImpl::IsDryRun() {
+  return filter_.activation_state().activation_level ==
+         mojom::ActivationLevel::kDryRun;
+}
+
+uint64_t WebDocumentSubresourceFilterImpl::GetRulesetId() const {
+  return filter_.GetRulesetId();
 }
 
 void WebDocumentSubresourceFilterImpl::ReportDisallowedLoad() {
@@ -101,7 +132,8 @@ bool WebDocumentSubresourceFilterImpl::ShouldLogToConsole() {
 
 WebLoadPolicy WebDocumentSubresourceFilterImpl::getLoadPolicyImpl(
     const blink::WebURL& url,
-    proto::ElementType element_type) {
+    proto::ElementType element_type,
+    ScopedRule* out_rule) {
   if (filter_.activation_state().filtering_disabled_for_document ||
       url.ProtocolIs(url::kDataScheme)) {
     ++filter_.statistics().num_loads_total;
@@ -109,7 +141,8 @@ WebLoadPolicy WebDocumentSubresourceFilterImpl::getLoadPolicyImpl(
   }
 
   // TODO(pkalinnikov): Would be good to avoid converting to GURL.
-  return ToWebLoadPolicy(filter_.GetLoadPolicy(GURL(url), element_type));
+  return ToWebLoadPolicy(
+      filter_.GetLoadPolicy(GURL(url), element_type, out_rule));
 }
 
 WebDocumentSubresourceFilterImpl::BuilderImpl::BuilderImpl(
@@ -128,7 +161,7 @@ WebDocumentSubresourceFilterImpl::BuilderImpl::~BuilderImpl() = default;
 
 std::unique_ptr<blink::WebDocumentSubresourceFilter>
 WebDocumentSubresourceFilterImpl::BuilderImpl::Build() {
-  CHECK(ruleset_file_.IsValid(), base::NotFatalUntil::M129);
+  CHECK(ruleset_file_.IsValid());
   scoped_refptr<MemoryMappedRuleset> ruleset =
       MemoryMappedRuleset::CreateAndInitialize(std::move(ruleset_file_));
   if (!ruleset) {

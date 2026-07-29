@@ -39,7 +39,7 @@ void FakeSyncScheduler::SetNotificationsEnabled(bool notifications_enabled) {}
 void FakeSyncScheduler::OnCredentialsUpdated() {}
 
 void FakeSyncScheduler::OnConnectionStatusChange(
-    network::mojom::ConnectionType type) {}
+    net::NetworkChangeNotifier::ConnectionType type) {}
 
 void FakeSyncScheduler::OnThrottled(const base::TimeDelta& throttle_duration) {}
 
@@ -60,8 +60,6 @@ void FakeSyncScheduler::OnReceivedCustomNudgeDelays(
     const std::map<DataType, base::TimeDelta>& nudge_delays) {}
 
 void FakeSyncScheduler::OnSyncProtocolError(const SyncProtocolError& error) {}
-
-void FakeSyncScheduler::OnReceivedGuRetryDelay(const base::TimeDelta& delay) {}
 
 void FakeSyncScheduler::OnReceivedMigrationRequest(DataTypeSet types) {}
 

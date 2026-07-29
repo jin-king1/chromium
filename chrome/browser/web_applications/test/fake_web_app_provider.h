@@ -11,6 +11,8 @@
 #include "base/functional/callback.h"
 #include "base/memory/scoped_refptr.h"
 #include "build/build_config.h"
+#include "chrome/browser/web_applications/extensions_manager.h"
+#include "chrome/browser/web_applications/test/fake_web_contents_manager.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "components/sync/test/mock_data_type_local_change_processor.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -27,8 +29,6 @@ namespace web_app {
 class AbstractWebAppDatabaseFactory;
 class ExternallyManagedAppManager;
 class FileUtilsWrapper;
-class IsolatedWebAppInstallationManager;
-class IsolatedWebAppUpdateManager;
 class OsIntegrationManager;
 class PreinstalledWebAppManager;
 class WebAppCommandManager;
@@ -58,6 +58,9 @@ class WebAppRunOnOsLoginManager;
 // * All access to `WebContents` is redirected to the `FakeWebContentsManager`
 //   (accessible via `GetFakeWebContentsManager()`), which stores & returns
 //   results for any interaction here.
+// * Integration with the Extensions system is intercepted by
+//   `FakeExtensionsManager` to prevent hangs waiting for the real global
+//   system.
 //
 // Other features & notes:
 // * FakeWebAppProvider is used by default in unit tests, as the
@@ -148,11 +151,6 @@ class FakeWebAppProvider : public WebAppProvider {
   void SetWebAppUiManager(std::unique_ptr<WebAppUiManager> ui_manager);
   void SetWebAppPolicyManager(
       std::unique_ptr<WebAppPolicyManager> web_app_policy_manager);
-  void SetIsolatedWebAppInstallationManager(
-      std::unique_ptr<IsolatedWebAppInstallationManager>
-          isolated_web_app_installation_manager);
-  void SetIsolatedWebAppUpdateManager(
-      std::unique_ptr<IsolatedWebAppUpdateManager> iwa_update_manager);
 #if BUILDFLAG(IS_CHROMEOS)
   void SetWebAppRunOnOsLoginManager(std::unique_ptr<WebAppRunOnOsLoginManager>
                                         web_app_run_on_os_login_manager);
@@ -166,6 +164,8 @@ class FakeWebAppProvider : public WebAppProvider {
           origin_association_manager);
   void SetWebContentsManager(
       std::unique_ptr<WebContentsManager> web_contents_manager);
+  void SetExtensionsManager(
+      std::unique_ptr<ExtensionsManager> extensions_manager);
 
   // These getters can be called at any time: no
   // WebAppProvider::CheckIsConnected() check performed. See
@@ -199,6 +199,8 @@ class FakeWebAppProvider : public WebAppProvider {
 
   FakeWebAppProvider* AsFakeWebAppProviderForTesting() override;
 
+  FakeWebContentsManager* GetFakeWebContentsManager() const;
+
   syncer::MockDataTypeLocalChangeProcessor& processor() {
     return mock_processor_;
   }
@@ -227,7 +229,7 @@ class FakeWebAppProvider : public WebAppProvider {
   AutomaticIwaUpdateStrategy automatic_iwa_update_strategy_ =
       AutomaticIwaUpdateStrategy::kForceDisabled;
 
-  testing::NiceMock<syncer::MockDataTypeLocalChangeProcessor> mock_processor_;
+  ::testing::NiceMock<syncer::MockDataTypeLocalChangeProcessor> mock_processor_;
 };
 
 // Used in BrowserTests to ensure that the WebAppProvider that is create on

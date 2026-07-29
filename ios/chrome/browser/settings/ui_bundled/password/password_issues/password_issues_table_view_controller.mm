@@ -89,10 +89,18 @@ typedef NS_ENUM(NSInteger, ItemType) {
 #pragma mark - UIViewController
 
 - (void)viewDidLoad {
+  base::RecordAction(
+      base::UserMetricsAction("MobilePasswordIssuesViewDidLoad"));
   [super viewDidLoad];
   self.tableView.accessibilityIdentifier = kPasswordIssuesTableViewID;
 
   [self loadModel];
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+  base::RecordAction(
+      base::UserMetricsAction("MobilePasswordIssuesViewDidAppear"));
+  [super viewDidAppear:animated];
 }
 
 - (void)didMoveToParentViewController:(UIViewController*)parent {
@@ -181,6 +189,7 @@ typedef NS_ENUM(NSInteger, ItemType) {
   PasswordIssueContentItem* passwordItem =
       [[PasswordIssueContentItem alloc] initWithType:ItemTypePassword];
   passwordItem.password = password;
+  passwordItem.titleLineBreakMode = NSLineBreakByTruncatingHead;
   passwordItem.accessibilityTraits |= UIAccessibilityTraitButton;
   passwordItem.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
   return passwordItem;
@@ -273,19 +282,13 @@ typedef NS_ENUM(NSInteger, ItemType) {
 
 - (UITableViewCell*)tableView:(UITableView*)tableView
         cellForRowAtIndexPath:(NSIndexPath*)indexPath {
-  UITableViewCell* cell = [super tableView:tableView
-                     cellForRowAtIndexPath:indexPath];
-  switch ([self.tableViewModel itemTypeForIndexPath:indexPath]) {
-    case ItemTypePassword: {
-      TableViewURLCell* urlCell =
-          base::apple::ObjCCastStrict<TableViewURLCell>(cell);
-      urlCell.textLabel.lineBreakMode = NSLineBreakByTruncatingHead;
-      // Load the favicon from cache.
-      [self loadFaviconAtIndexPath:indexPath forCell:cell];
-      break;
-    }
+  if ([self.tableViewModel itemTypeForIndexPath:indexPath] ==
+      ItemTypePassword) {
+    // Load the favicon from cache.
+    [self loadFaviconAtIndexPath:indexPath];
   }
-  return cell;
+
+  return [super tableView:tableView cellForRowAtIndexPath:indexPath];
 }
 
 - (UIView*)tableView:(UITableView*)tableView
@@ -377,27 +380,26 @@ typedef NS_ENUM(NSInteger, ItemType) {
 
 // Asynchronously loads favicon for given index path. The loads are cancelled
 // upon cell reuse automatically.
-- (void)loadFaviconAtIndexPath:(NSIndexPath*)indexPath
-                       forCell:(UITableViewCell*)cell {
+- (void)loadFaviconAtIndexPath:(NSIndexPath*)indexPath {
   TableViewItem* item = [self.tableViewModel itemAtIndexPath:indexPath];
   DCHECK(item);
-  DCHECK(cell);
 
   TableViewURLItem* URLItem =
       base::apple::ObjCCastStrict<TableViewURLItem>(item);
-  TableViewURLCell* URLCell =
-      base::apple::ObjCCastStrict<TableViewURLCell>(cell);
 
-  NSString* itemIdentifier = URLItem.uniqueIdentifier;
+  if (URLItem.faviconAttributes) {
+    return;
+  }
+
+  __weak __typeof(self) weakSelf = self;
+
   [self.imageDataSource
       faviconForPageURL:URLItem.URL
-             completion:^(FaviconAttributes* attributes) {
-               // Only set favicon if the cell hasn't been reused.
-               if ([URLCell.cellUniqueIdentifier
-                       isEqualToString:itemIdentifier]) {
-                 DCHECK(attributes);
-                 [URLCell.faviconView configureWithAttributes:attributes];
-               }
+             completion:^(FaviconAttributes* attributes, bool cached) {
+               [weakSelf didFetchFaviconAttributes:attributes
+                                            cached:cached
+                                              item:URLItem
+                                         indexPath:indexPath];
              }];
 }
 
@@ -452,6 +454,30 @@ typedef NS_ENUM(NSInteger, ItemType) {
 }
 
 #pragma mark - Private
+
+// Called when a favicon is fetched.
+- (void)didFetchFaviconAttributes:(FaviconAttributes*)attributes
+                           cached:(bool)cached
+                             item:(TableViewURLItem*)item
+                        indexPath:(NSIndexPath*)indexPath {
+  item.faviconAttributes = attributes;
+  if (!cached && attributes.faviconImage) {
+    if (![self.tableViewModel hasItemAtIndexPath:indexPath] ||
+        [self.tableViewModel itemAtIndexPath:indexPath] != item) {
+      return;
+    }
+    LegacyTableViewCell* cell =
+        base::apple::ObjCCastStrict<LegacyTableViewCell>(
+            [self.tableView cellForRowAtIndexPath:indexPath]);
+    if (!cell) {
+      return;
+    }
+    // Even if Apple documentation hints toward reconfiguring the row instead
+    // of just updating the cell, it creates a visible jank. Use the item
+    // configuration method instead. See crbug.com/479692041 for more info.
+    [item configureCell:cell];
+  }
+}
 
 // Helper for getting the url for changing the password of the password issue
 // item in the given tableView section.

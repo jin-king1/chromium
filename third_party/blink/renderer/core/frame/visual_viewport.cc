@@ -83,8 +83,9 @@ namespace blink {
 namespace {
 
 OverscrollType ComputeOverscrollType() {
-  if (!Platform::Current()->IsElasticOverscrollEnabled())
+  if (!Platform::Current()->IsElasticOverscrollEnabledOnRoot()) {
     return OverscrollType::kNone;
+  }
   return OverscrollType::kTransform;
 }
 
@@ -247,7 +248,7 @@ PaintPropertyChangeType VisualViewport::UpdatePaintPropertyNodesIfNeeded(
   {
     ScrollPaintPropertyNode::State state;
     state.container_rect = gfx::Rect(size_);
-    state.contents_size = ContentsSize();
+    state.contents_rect = gfx::Rect(ContentsSize());
 
     state.user_scrollable_horizontal =
         UserInputScrollable(kHorizontalScrollbar);
@@ -399,8 +400,7 @@ void VisualViewport::SetSize(const gfx::Size& size) {
                "height", size.height());
   size_ = size;
 
-  TRACE_EVENT_INSTANT1("loading", "viewport", TRACE_EVENT_SCOPE_THREAD, "data",
-                       ViewportToTracedValue());
+  TRACE_EVENT_INSTANT("loading", "viewport", "data", ViewportToTracedValue());
 
   if (!IsActiveViewport())
     return;
@@ -612,8 +612,7 @@ bool VisualViewport::DidSetScaleOrLocation(float scale,
 
   needs_paint_property_update_ = true;
   if (notify_page_scale_factor_changed) {
-    TRACE_EVENT_INSTANT1("loading", "viewport", TRACE_EVENT_SCOPE_THREAD,
-                         "data", ViewportToTracedValue());
+    TRACE_EVENT_INSTANT("loading", "viewport", "data", ViewportToTracedValue());
   }
   return true;
 }
@@ -735,7 +734,39 @@ void VisualViewport::UpdateScrollbarLayer(ScrollbarOrientation orientation) {
 }
 
 bool VisualViewport::VisualViewportSuppliesScrollbars() const {
-  return IsActiveViewport() && GetPage().GetSettings().GetViewportEnabled();
+  // Only the active viewport should supply scrollbars.
+  if (!IsActiveViewport()) {
+    return false;
+  }
+
+  const auto& settings = GetPage().GetSettings();
+
+  // If we are forcing mobile-style scrollbars (can be set by emulation of
+  // overlay scrollbars or mobile emulation), the VisualViewport must supply
+  // them regardless of other settings.
+  if (settings.GetForceAndroidOverlayScrollbar()) {
+    return true;
+  }
+
+  // The VisualViewport is distinct from the LayoutViewport only when the
+  // mobile-style viewport logic is enabled. On desktop, the LayoutViewport
+  // handles all scrollbars.
+  if (!settings.GetViewportEnabled()) {
+    return false;
+  }
+
+  // Even if the mobile viewport is enabled, on "desktop Android" (e.g.
+  // large screen optimizations), we prefer the LayoutViewport to handle
+  // scrollbars for a desktop-like experience.
+  if (ScrollbarTheme::DesktopAndroidScrollbarsEnabled()) {
+    return false;
+  }
+
+  // If none of the above conditions are met, we are in the standard mobile
+  // behavior (ViewportEnabled is true, and DesktopAndroidScrollbarsEnabled is
+  // false). In this case, the VisualViewport is distinct from the
+  // LayoutViewport and handles the "screen" scrollbars.
+  return true;
 }
 
 const Document* VisualViewport::GetDocument() const {
@@ -754,14 +785,16 @@ ChromeClient* VisualViewport::GetChromeClient() const {
   return &GetPage().GetChromeClient();
 }
 
-bool VisualViewport::SetScrollOffset(
+bool VisualViewport::SetScrollOffsetInternal(
     const ScrollOffset& offset,
     mojom::blink::ScrollType scroll_type,
+    cc::ScrollSourceType source_type,
     mojom::blink::ScrollBehavior scroll_behavior,
-    ScrollCallback on_finish,
-    bool targeted_scroll) {
+    bool targeted_scroll,
+    std::unique_ptr<ScrollPromiseResolver::ActiveScrollTracker>
+        scroll_tracker) {
   // We clamp the offset here, because the ScrollAnimator may otherwise be
-  // set to a non-clamped offset by ScrollableArea::setScrollOffset,
+  // set to a non-clamped offset by ScrollableArea::setScrollOffsetInternal,
   // which may lead to incorrect scrolling behavior in RootFrameViewport down
   // the line.
   // TODO(eseckler): Solve this instead by ensuring that ScrollableArea and
@@ -769,16 +802,9 @@ bool VisualViewport::SetScrollOffset(
   // stores fractional offsets and that truncation happens elsewhere, see
   // crbug.com/626315.
   ScrollOffset new_scroll_offset = ClampScrollOffset(offset);
-  return ScrollableArea::SetScrollOffset(new_scroll_offset, scroll_type,
-                                         scroll_behavior, std::move(on_finish));
-}
-
-bool VisualViewport::SetScrollOffset(
-    const ScrollOffset& offset,
-    mojom::blink::ScrollType scroll_type,
-    mojom::blink::ScrollBehavior scroll_behavior) {
-  return SetScrollOffset(offset, scroll_type, scroll_behavior,
-                         ScrollCallback());
+  return ScrollableArea::SetScrollOffsetInternal(
+      new_scroll_offset, scroll_type, source_type, scroll_behavior,
+      /*targeted_scroll=*/false, std::move(scroll_tracker));
 }
 
 PhysicalOffset VisualViewport::LocalToScrollOriginOffset() const {
@@ -788,9 +814,12 @@ PhysicalOffset VisualViewport::LocalToScrollOriginOffset() const {
 PhysicalRect VisualViewport::ScrollIntoView(
     const PhysicalRect& rect_in_absolute,
     const PhysicalBoxStrut& scroll_margin,
-    const mojom::blink::ScrollIntoViewParamsPtr& params) {
-  if (!IsActiveViewport())
+    const mojom::blink::ScrollIntoViewParamsPtr& params,
+    std::unique_ptr<ScrollPromiseResolver::ActiveScrollTracker>
+        scroll_tracker) {
+  if (!IsActiveViewport()) {
     return rect_in_absolute;
+  }
 
   ScrollOffset new_scroll_offset =
       ClampScrollOffset(scroll_into_view_util::GetScrollOffsetToExpose(
@@ -798,12 +827,9 @@ PhysicalRect VisualViewport::ScrollIntoView(
           *params->align_y.get()));
 
   if (new_scroll_offset != GetScrollOffset()) {
-    if (params->is_for_scroll_sequence) {
-      SetScrollOffset(new_scroll_offset, params->type, params->behavior);
-    } else {
-      SetScrollOffset(new_scroll_offset, params->type, params->behavior,
-                      ScrollCallback());
-    }
+    SetScrollOffsetInternal(
+        new_scroll_offset, params->type, cc::ScrollSourceType::kAbsoluteScroll,
+        params->behavior, /*targeted_scroll=*/false, std::move(scroll_tracker));
   }
 
   return rect_in_absolute;
@@ -943,7 +969,8 @@ mojom::blink::ColorScheme VisualViewport::UsedColorSchemeScrollbars() const {
 }
 
 void VisualViewport::UpdateScrollOffset(const ScrollOffset& position,
-                                        mojom::blink::ScrollType scroll_type) {
+                                        mojom::blink::ScrollType scroll_type,
+                                        cc::ScrollSourceType source_type) {
   if (!DidSetScaleOrLocation(scale_, is_pinch_gesture_active_,
                              gfx::PointAtOffsetFromOrigin(position))) {
     return;
@@ -1139,7 +1166,7 @@ PaintArtifactCompositor* VisualViewport::GetPaintArtifactCompositor() const {
 
 std::unique_ptr<TracedValue> VisualViewport::ViewportToTracedValue() const {
   auto value = std::make_unique<TracedValue>();
-  gfx::Rect viewport = VisibleContentRect();
+  gfx::Rect viewport = VisibleContentRect(kExcludeScrollbars);
   value->SetInteger("x", ClampTo<int>(roundf(viewport.x())));
   value->SetInteger("y", ClampTo<int>(roundf(viewport.y())));
   value->SetInteger("width", ClampTo<int>(roundf(viewport.width())));

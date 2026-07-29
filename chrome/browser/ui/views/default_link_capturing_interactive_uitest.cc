@@ -11,7 +11,9 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
-#include "chrome/browser/ui/browser_finder.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+#include "chrome/browser/ui/intent_picker_tab_helper.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/web_apps/web_app_link_capturing_test_utils.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
@@ -38,6 +40,17 @@
 #include "ui/views/test/button_test_api.h"
 #include "ui/views/widget/any_widget_observer.h"
 
+namespace {
+
+// Helper function to generate test names for IntentChipButton tests.
+std::string GenerateIntentChipTestName(
+    const testing::TestParamInfo<apps::test::LinkCapturingFeatureVersion>&
+        param_info) {
+  return apps::test::ToString(param_info.param);
+}
+
+}  // namespace
+
 #if BUILDFLAG(IS_MAC)
 #include "chrome/browser/apps/link_capturing/mac_intent_picker_helpers.h"
 #endif  // BUILDFLAG(IS_MAC)
@@ -51,8 +64,12 @@ class DefaultLinkCapturingInteractiveUiTest
           apps::test::LinkCapturingFeatureVersion> {
  public:
   DefaultLinkCapturingInteractiveUiTest() {
-    scoped_feature_list_.InitWithFeaturesAndParameters(
-        apps::test::GetFeaturesToEnableLinkCapturingUX(GetParam()), {});
+    std::vector<base::test::FeatureRefAndParams> features_to_enable =
+        apps::test::GetFeaturesToEnableLinkCapturingUX(GetParam());
+
+    features_to_enable.push_back({::features::kPageActionsMigration, {}});
+
+    feature_list_.InitWithFeaturesAndParameters(features_to_enable, {});
   }
 
   void SetUpOnMainThread() override {
@@ -84,16 +101,15 @@ class DefaultLinkCapturingInteractiveUiTest
   std::tuple<webapps::AppId, webapps::AppId> InstallOuterAppAndInnerApp() {
     // The inner app must be installed first so that it is installable.
     webapps::AppId inner_app_id =
-        web_app::InstallWebAppFromPageAndCloseAppBrowser(browser(),
-                                                         GetInnerNestedUrl());
+        web_app::InstallWebAppInNewTabAndClose(browser(), GetInnerNestedUrl());
     webapps::AppId outer_app_id =
-        web_app::InstallWebAppFromPageAndCloseAppBrowser(browser(),
-                                                         GetOuterUrl());
+        web_app::InstallWebAppInNewTabAndClose(browser(), GetOuterUrl());
     return {outer_app_id, inner_app_id};
   }
 
+
  private:
-  base::test::ScopedFeatureList scoped_feature_list_;
+  base::test::ScopedFeatureList feature_list_;
 };
 
 IN_PROC_BROWSER_TEST_P(DefaultLinkCapturingInteractiveUiTest,
@@ -113,8 +129,7 @@ IN_PROC_BROWSER_TEST_P(DefaultLinkCapturingInteractiveUiTest,
   ASSERT_NE(it, app_infos.end());
   size_t index = it - app_infos.begin();
 
-  ui_test_utils::BrowserChangeObserver browser_added_waiter(
-      nullptr, ui_test_utils::BrowserChangeObserver::ChangeType::kAdded);
+  ui_test_utils::BrowserCreatedObserver browser_created_observer;
   views::test::ButtonTestApi test_api(
       web_app::GetIntentPickerButtonAtIndex(index));
   test_api.NotifyClick(ui::MouseEvent(
@@ -124,7 +139,7 @@ IN_PROC_BROWSER_TEST_P(DefaultLinkCapturingInteractiveUiTest,
 
   EXPECT_EQ(
       1, user_action_tester.GetActionCount("IntentPickerViewAcceptLaunchApp"));
-  Browser* app_browser = browser_added_waiter.Wait();
+  Browser* app_browser = browser_created_observer.Wait();
   ASSERT_TRUE(app_browser);
   EXPECT_TRUE(web_app::AppBrowserController::IsWebApp(app_browser));
   EXPECT_TRUE(
@@ -142,7 +157,7 @@ IN_PROC_BROWSER_TEST_P(DefaultLinkCapturingInteractiveUiTest, BubbleCancel) {
   EXPECT_EQ(1, user_action_tester.GetActionCount(
                    "IntentPickerViewClosedStayInChrome"));
   // Verify no new browsers have opened.
-  EXPECT_EQ(1u, chrome::GetTotalBrowserCount());
+  EXPECT_EQ(1u, GlobalBrowserCollection::GetInstance()->GetSize());
 }
 
 IN_PROC_BROWSER_TEST_P(DefaultLinkCapturingInteractiveUiTest, BubbleIgnored) {
@@ -152,11 +167,11 @@ IN_PROC_BROWSER_TEST_P(DefaultLinkCapturingInteractiveUiTest, BubbleIgnored) {
   base::UserActionTester user_action_tester;
   EXPECT_TRUE(web_app::ClickIntentPickerAndWaitForBubble(browser()));
   // Opening a new tab should ignore the current intent picker view.
-  chrome::NewTab(browser());
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
 
   EXPECT_EQ(1, user_action_tester.GetActionCount("IntentPickerViewIgnored"));
   // Verify no new browsers have opened.
-  EXPECT_EQ(1u, chrome::GetTotalBrowserCount());
+  EXPECT_EQ(1u, GlobalBrowserCollection::GetInstance()->GetSize());
 }
 
 #if BUILDFLAG(IS_MAC)
@@ -176,7 +191,7 @@ IN_PROC_BROWSER_TEST_P(DefaultLinkCapturingInteractiveUiTest,
   // Verify that no icon was shown.
   EXPECT_TRUE(web_app::AwaitIntentPickerTabHelperIconUpdateComplete(
       browser()->tab_strip_model()->GetActiveWebContents()));
-  ASSERT_FALSE(web_app::GetIntentPickerIcon(browser())->GetVisible());
+  ASSERT_FALSE(web_app::GetIntentPickerButton(browser())->GetVisible());
 
   // Load a different page while simulating it having a native app.
   apps::OverrideMacAppForUrlForTesting(true, kFinderAppPath);
@@ -185,11 +200,17 @@ IN_PROC_BROWSER_TEST_P(DefaultLinkCapturingInteractiveUiTest,
   // Verify app icon shows up in the intent picker.
   EXPECT_TRUE(web_app::AwaitIntentPickerTabHelperIconUpdateComplete(
       browser()->tab_strip_model()->GetActiveWebContents()));
-  IntentChipButton* intent_picker_icon =
-      web_app::GetIntentPickerIcon(browser());
+  views::Button* intent_picker_icon = web_app::GetIntentPickerButton(browser());
   ASSERT_NE(intent_picker_icon, nullptr);
 
-  ui::ImageModel app_icon = intent_picker_icon->GetAppIconForTesting();
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  ASSERT_NE(web_contents, nullptr);
+
+  IntentPickerTabHelper* tab_helper =
+      IntentPickerTabHelper::FromWebContents(web_contents);
+
+  ui::ImageModel app_icon = tab_helper->app_icon();
 
   SkColor final_color = app_icon.GetImage().AsBitmap().getColor(8, 8);
   EXPECT_TRUE(
@@ -202,4 +223,4 @@ INSTANTIATE_TEST_SUITE_P(
     DefaultLinkCapturingInteractiveUiTest,
     testing::Values(apps::test::LinkCapturingFeatureVersion::kV2DefaultOff,
                     apps::test::LinkCapturingFeatureVersion::kV2DefaultOn),
-    apps::test::LinkCapturingVersionToString);
+    GenerateIntentChipTestName);

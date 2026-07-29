@@ -11,7 +11,7 @@ import androidx.test.filters.SmallTest;
 
 import org.junit.After;
 import org.junit.Assert;
-import org.junit.Rule;
+import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
@@ -23,13 +23,13 @@ import org.chromium.chrome.browser.browsing_data.BrowsingDataType;
 import org.chromium.chrome.browser.browsing_data.TimePeriod;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileManager;
-import org.chromium.chrome.test.ChromeBrowserTestRule;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.components.browser_ui.site_settings.WebsitePreferenceBridge;
-import org.chromium.components.content_settings.ContentSettingValues;
+import org.chromium.components.content_settings.ContentSetting;
 import org.chromium.components.content_settings.ContentSettingsObserver;
 import org.chromium.components.content_settings.ContentSettingsType;
 import org.chromium.components.content_settings.ContentSettingsTypeSet;
+import org.chromium.content_public.browser.test.NativeLibraryTestUtils;
 import org.chromium.url.GURL;
 
 import java.util.concurrent.TimeoutException;
@@ -38,13 +38,16 @@ import java.util.concurrent.TimeoutException;
 @RunWith(ChromeJUnit4ClassRunner.class)
 @Batch(Batch.PER_CLASS)
 public class ContentSettingsObserverTest {
-    @Rule public final ChromeBrowserTestRule mBrowserTestRule = new ChromeBrowserTestRule();
-
-    private CallbackHelper mCallbackHelper = new CallbackHelper();
+    private final CallbackHelper mCallbackHelper = new CallbackHelper();
 
     private String mLastPrimaryPattern;
     private String mLastSecondaryPattern;
     private ContentSettingsTypeSet mLastTypeSet;
+
+    @Before
+    public void setUp() {
+        NativeLibraryTestUtils.loadNativeLibraryAndInitBrowserProcess();
+    }
 
     @After
     public void tearDown() throws TimeoutException {
@@ -83,7 +86,7 @@ public class ContentSettingsObserverTest {
 
         GURL url = new GURL("https://www.chromium.org");
         WebsitePreferenceBridge.setContentSettingDefaultScope(
-                profile, ContentSettingsType.JAVASCRIPT, url, url, ContentSettingValues.BLOCK);
+                profile, ContentSettingsType.JAVASCRIPT, url, url, ContentSetting.BLOCK);
 
         mCallbackHelper.waitForOnly();
         Assert.assertNotNull("ContentSettingsTypeSet should not be null.", mLastTypeSet);
@@ -99,10 +102,10 @@ public class ContentSettingsObserverTest {
         // Destroy the observer and no updates should be posted for mCallbackHelper.
         observer.destroy();
         WebsitePreferenceBridge.setContentSettingDefaultScope(
-                profile, ContentSettingsType.JAVASCRIPT, url, url, ContentSettingValues.DEFAULT);
+                profile, ContentSettingsType.JAVASCRIPT, url, url, ContentSetting.DEFAULT);
         Assert.assertEquals(
                 "Content settings should be updated for URL.",
-                ContentSettingValues.ALLOW,
+                ContentSetting.ALLOW,
                 WebsitePreferenceBridge.getContentSetting(
                         profile, ContentSettingsType.JAVASCRIPT, url, url));
         Assert.assertEquals(

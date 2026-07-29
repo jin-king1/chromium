@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40284755): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "base/files/file_proxy.h"
 
 #include <stddef.h>
@@ -17,6 +12,7 @@
 #include <utility>
 
 #include "base/containers/heap_array.h"
+#include "base/containers/span.h"
 #include "base/files/file.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
@@ -396,7 +392,7 @@ TEST_F(FileProxyTest, MAYBE_SetTimes) {
 
 TEST_F(FileProxyTest, SetLength_Shrink) {
   // Setup.
-  const char kTestData[] = "0123456789";
+  const std::string_view kTestData = "0123456789";
   ASSERT_TRUE(base::WriteFile(TestPath(), kTestData));
   File::Info info;
   GetFileInfo(TestPath(), &info);
@@ -425,7 +421,7 @@ TEST_F(FileProxyTest, SetLength_Shrink) {
 
 TEST_F(FileProxyTest, SetLength_Expand) {
   // Setup.
-  const char kTestData[] = "9876543210";
+  const std::string_view kTestData = "9876543210";
   ASSERT_TRUE(base::WriteFile(TestPath(), kTestData));
   File::Info info;
   GetFileInfo(TestPath(), &info);

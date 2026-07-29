@@ -23,17 +23,13 @@
  * DAMAGE.
  */
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "third_party/blink/renderer/modules/webaudio/script_processor_node.h"
 
-#include <memory>
-
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/trace_event/trace_event.h"
+#include "services/metrics/public/cpp/ukm_builders.h"
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/public/platform/task_type.h"
 #include "third_party/blink/renderer/bindings/core/v8/active_script_wrappable_creation_key.h"
@@ -50,6 +46,7 @@
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
+#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 
 namespace blink {
 
@@ -101,8 +98,8 @@ ScriptProcessorNode::ScriptProcessorNode(BaseAudioContext& context,
     : AudioNode(context), ActiveScriptWrappable<ScriptProcessorNode>({}) {
   // Regardless of the allowed buffer sizes, we still need to process at the
   // granularity of the AudioNode.
-  if (buffer_size < context.GetDeferredTaskHandler().RenderQuantumFrames()) {
-    buffer_size = context.GetDeferredTaskHandler().RenderQuantumFrames();
+  if (buffer_size < context.renderQuantumSize()) {
+    buffer_size = context.renderQuantumSize();
   }
 
   // Create double buffers on both the input and output sides.
@@ -131,12 +128,21 @@ ScriptProcessorNode::ScriptProcessorNode(BaseAudioContext& context,
   SetHandler(ScriptProcessorHandler::Create(
       *this, sample_rate, buffer_size, number_of_input_channels,
       number_of_output_channels, input_buffers_, output_buffers_));
+
+  if (auto* window = To<LocalDOMWindow>(GetExecutionContext())) {
+    auto* frame = window->GetFrame();
+    if (frame && frame->IsMainFrame()) {
+      ukm::builders::Media_WebAudio_ScriptProcessorNode(window->UkmSourceID())
+          .SetCreation(true)
+          .Record(window->UkmRecorder());
+    }
+  }
 }
 
 ScriptProcessorNode* ScriptProcessorNode::Create(
     BaseAudioContext& context,
     ExceptionState& exception_state) {
-  DCHECK(IsMainThread());
+  CHECK(IsMainThread());
 
   // Default buffer size is 0 (let WebAudio choose) with 2 inputs and 2
   // outputs.
@@ -147,7 +153,7 @@ ScriptProcessorNode* ScriptProcessorNode::Create(
     BaseAudioContext& context,
     uint32_t requested_buffer_size,
     ExceptionState& exception_state) {
-  DCHECK(IsMainThread());
+  CHECK(IsMainThread());
 
   // Default is 2 inputs and 2 outputs.
   return Create(context, requested_buffer_size, 2, 2, exception_state);
@@ -158,7 +164,7 @@ ScriptProcessorNode* ScriptProcessorNode::Create(
     uint32_t requested_buffer_size,
     uint32_t number_of_input_channels,
     ExceptionState& exception_state) {
-  DCHECK(IsMainThread());
+  CHECK(IsMainThread());
 
   // Default is 2 outputs.
   return Create(context, requested_buffer_size, number_of_input_channels, 2,
@@ -171,7 +177,7 @@ ScriptProcessorNode* ScriptProcessorNode::Create(
     uint32_t number_of_input_channels,
     uint32_t number_of_output_channels,
     ExceptionState& exception_state) {
-  DCHECK(IsMainThread());
+  CHECK(IsMainThread());
 
   if (number_of_input_channels == 0 && number_of_output_channels == 0) {
     exception_state.ThrowDOMException(
@@ -183,18 +189,20 @@ ScriptProcessorNode* ScriptProcessorNode::Create(
   if (number_of_input_channels > BaseAudioContext::MaxNumberOfChannels()) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kIndexSizeError,
-        "number of input channels (" +
-            String::Number(number_of_input_channels) + ") exceeds maximum (" +
-            String::Number(BaseAudioContext::MaxNumberOfChannels()) + ").");
+        StrCat({"number of input channels (",
+                String::Number(number_of_input_channels), ") exceeds maximum (",
+                String::Number(BaseAudioContext::MaxNumberOfChannels()),
+                ")."}));
     return nullptr;
   }
 
   if (number_of_output_channels > BaseAudioContext::MaxNumberOfChannels()) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kIndexSizeError,
-        "number of output channels (" +
-            String::Number(number_of_output_channels) + ") exceeds maximum (" +
-            String::Number(BaseAudioContext::MaxNumberOfChannels()) + ").");
+        StrCat(
+            {"number of output channels (",
+             String::Number(number_of_output_channels), ") exceeds maximum (",
+             String::Number(BaseAudioContext::MaxNumberOfChannels()), ")."}));
     return nullptr;
   }
 
@@ -230,9 +238,19 @@ ScriptProcessorNode* ScriptProcessorNode::Create(
     default:
       exception_state.ThrowDOMException(
           DOMExceptionCode::kIndexSizeError,
-          "buffer size (" + String::Number(requested_buffer_size) +
-              ") must be 0 or a power of two between 256 and 16384.");
+          StrCat({"buffer size (", String::Number(requested_buffer_size),
+                  ") must be 0 or a power of two between 256 and 16384."}));
       return nullptr;
+  }
+
+  uint32_t render_quantum_size = context.renderQuantumSize();
+  if (render_quantum_size == 0 || buffer_size % render_quantum_size != 0) {
+    exception_state.ThrowDOMException(
+        DOMExceptionCode::kNotSupportedError,
+        StrCat({"buffer size (", String::Number(buffer_size),
+                ") must be a multiple of the context render quantum size (",
+                String::Number(render_quantum_size), ")."}));
+    return nullptr;
   }
 
   ScriptProcessorNode* node = MakeGarbageCollected<ScriptProcessorNode>(
@@ -252,7 +270,7 @@ uint32_t ScriptProcessorNode::bufferSize() const {
 
 void ScriptProcessorNode::DispatchEvent(double playback_time,
                                         uint32_t double_buffer_index) {
-  DCHECK(IsMainThread());
+  CHECK(IsMainThread());
 
   TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("webaudio.audionode"),
                "ScriptProcessorNode::DispatchEvent");
@@ -290,12 +308,8 @@ void ScriptProcessorNode::DispatchEvent(double playback_time,
 
       for (unsigned channel = 0;
           channel < backing_input_buffer->numberOfChannels(); ++channel) {
-        const float* source = static_cast<float*>(
-            backing_input_buffer->getChannelData(channel)->buffer()->Data());
-        float* destination = static_cast<float*>(
-            external_input_buffer_->getChannelData(channel)->buffer()->Data());
-        memcpy(destination, source,
-               backing_input_buffer->length() * sizeof(float));
+        external_input_buffer_->getChannelData(channel)->AsSpan().copy_from(
+            backing_input_buffer->getChannelData(channel)->AsSpan());
       }
     }
   }
@@ -330,12 +344,8 @@ void ScriptProcessorNode::DispatchEvent(double playback_time,
 
       for (unsigned channel = 0;
           channel < backing_output_buffer->numberOfChannels(); ++channel) {
-        const float* source = static_cast<float*>(
-            external_output_buffer_->getChannelData(channel)->buffer()->Data());
-        float* destination = static_cast<float*>(
-            backing_output_buffer->getChannelData(channel)->buffer()->Data());
-        memcpy(destination, source,
-               backing_output_buffer->length() * sizeof(float));
+        backing_output_buffer->getChannelData(channel)->AsSpan().copy_from(
+            external_output_buffer_->getChannelData(channel)->AsSpan());
       }
     }
   }

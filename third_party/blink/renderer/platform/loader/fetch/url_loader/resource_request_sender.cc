@@ -10,9 +10,10 @@
 #include "base/compiler_specific.h"
 #include "base/containers/to_vector.h"
 #include "base/debug/alias.h"
+#include "base/debug/crash_logging.h"
+#include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/ref_counted.h"
@@ -40,6 +41,7 @@
 #include "services/network/public/mojom/fetch_api.mojom.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "third_party/blink/public/common/client_hints/client_hints.h"
+#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/loader/inter_process_time_ticks_converter.h"
 #include "third_party/blink/public/common/loader/referrer_utils.h"
 #include "third_party/blink/public/common/loader/resource_type_util.h"
@@ -55,6 +57,7 @@
 #include "third_party/blink/renderer/platform/loader/fetch/code_cache_host.h"
 #include "third_party/blink/renderer/platform/loader/fetch/fetch_utils.h"
 #include "third_party/blink/renderer/platform/loader/fetch/url_loader/code_cache_fetcher.h"
+#include "third_party/blink/renderer/platform/loader/fetch/url_loader/content_decoding_url_loader_throttle.h"
 #include "third_party/blink/renderer/platform/loader/fetch/url_loader/mojo_url_loader_client.h"
 #include "third_party/blink/renderer/platform/loader/fetch/url_loader/resource_request_client.h"
 #include "third_party/blink/renderer/platform/loader/fetch/url_loader/sync_load_context.h"
@@ -66,34 +69,6 @@
 #include "third_party/blink/renderer/platform/wtf/cross_thread_copier_std.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/ref_counted.h"
-
-namespace WTF {
-
-template <>
-struct CrossThreadCopier<
-    std::vector<std::unique_ptr<blink::URLLoaderThrottle>>> {
-  STATIC_ONLY(CrossThreadCopier);
-  using Type = std::vector<std::unique_ptr<blink::URLLoaderThrottle>>;
-  static Type Copy(Type&& value) { return std::move(value); }
-};
-
-template <>
-struct CrossThreadCopier<net::NetworkTrafficAnnotationTag>
-    : public CrossThreadCopierPassThrough<net::NetworkTrafficAnnotationTag> {
-  STATIC_ONLY(CrossThreadCopier);
-  using Type = net::NetworkTrafficAnnotationTag;
-  static const Type& Copy(const Type& traffic_annotation) {
-    return traffic_annotation;
-  }
-};
-
-template <>
-struct CrossThreadCopier<std::vector<blink::WebString>>
-    : public CrossThreadCopierPassThrough<std::vector<blink::WebString>> {
-  STATIC_ONLY(CrossThreadCopier);
-};
-
-}  // namespace WTF
 
 namespace blink {
 
@@ -137,7 +112,7 @@ bool RedirectRequiresLoaderRestart(const GURL& original_url,
 
   // If URL wasn't originally handled by network service, restart is needed if
   // schemes are different.
-  return original_url.scheme_piece() != redirect_url.scheme_piece();
+  return original_url.scheme() != redirect_url.scheme();
 }
 
 }  // namespace
@@ -185,16 +160,16 @@ void ResourceRequestSender::SendSync(
   SyncLoadContext* context_for_redirect = nullptr;
   PostCrossThreadTask(
       *task_runner, FROM_HERE,
-      WTF::CrossThreadBindOnce(
-          &SyncLoadContext::StartAsyncWithWaitableEvent, std::move(request),
-          task_runner, traffic_annotation, loader_options,
-          std::move(pending_factory), std::move(throttles),
-          CrossThreadUnretained(response),
-          CrossThreadUnretained(&context_for_redirect),
-          CrossThreadUnretained(&redirect_or_response_event),
-          CrossThreadUnretained(terminate_sync_load_event), timeout,
-          std::move(download_to_blob_registry), cors_exempt_header_list,
-          std::move(resource_load_info_notifier_wrapper)));
+      CrossThreadBindOnce(&SyncLoadContext::StartAsyncWithWaitableEvent,
+                          std::move(request), task_runner, traffic_annotation,
+                          loader_options, std::move(pending_factory),
+                          std::move(throttles), CrossThreadUnretained(response),
+                          CrossThreadUnretained(&context_for_redirect),
+                          CrossThreadUnretained(&redirect_or_response_event),
+                          CrossThreadUnretained(terminate_sync_load_event),
+                          timeout, std::move(download_to_blob_registry),
+                          cors_exempt_header_list,
+                          std::move(resource_load_info_notifier_wrapper)));
 
   // `redirect_or_response_event` will signal when each redirect completes, and
   // when the final response is complete.
@@ -214,7 +189,7 @@ void ResourceRequestSender::SendSync(
     client->OnReceivedRedirect(
         *response->redirect_info, response->head.Clone(),
         /*follow_redirect_callback=*/
-        WTF::BindOnce(
+        blink::BindOnce(
             [](scoped_refptr<RefCountedOptionalStringVector>
                    removed_headers_out,
                scoped_refptr<RefCountedOptionalHttpRequestHeaders>
@@ -265,6 +240,19 @@ int ResourceRequestSender::SendAsync(
   loading_task_runner_ = loading_task_runner;
   CheckSchemeForReferrerPolicy(*request);
 
+  if (base::FeatureList::IsEnabled(
+          network::features::kRendererSideContentDecoding)) {
+    // When RendererSideContentDecoding is enabled, set the
+    // `client_side_content_decoding_enabled` flag on the ResourceRequest to
+    // prevent the network service from performing decoding, and add a
+    // ContentDecodingURLLoaderThrottle to the beginning of the throttle chain
+    // to handle decoding of the response before other throttles process it.
+    // The cost of inserting entry in the top of vector is O(n). But size of
+    // `throttles` is not so large. So the cost should be acceptable.
+    request->client_side_content_decoding_enabled = true;
+    throttles.insert(throttles.begin(),
+                     std::make_unique<ContentDecodingURLLoaderThrottle>());
+  }
 #if BUILDFLAG(IS_ANDROID)
   // TODO(crbug.com/1286053): This used to be a DCHECK asserting "Main frame
   // shouldn't come here", but after removing and re-landing the DCHECK later it
@@ -283,8 +271,8 @@ int ResourceRequestSender::SendAsync(
 #endif
   code_cache_fetcher_ = CodeCacheFetcher::TryCreateAndStart(
       *request, code_cache_host, loading_task_runner_,
-      WTF::BindOnce(&ResourceRequestSender::DidReceiveCachedCode,
-                    weak_factory_.GetWeakPtr()));
+      blink::BindOnce(&ResourceRequestSender::DidReceiveCachedCode,
+                      weak_factory_.GetWeakPtr()));
   used_code_cache_fetcher_ = !!code_cache_fetcher_;
 
   // Compute a unique request_id for this renderer process.
@@ -293,16 +281,20 @@ int ResourceRequestSender::SendAsync(
       std::move(client), request->destination, KURL(request->url),
       std::move(resource_load_info_notifier_wrapper));
 
-  request_info_->resource_load_info_notifier_wrapper
-      ->NotifyResourceLoadInitiated(request_id, request->url, request->method,
-                                    request->referrer,
-                                    request_info_->request_destination,
-                                    request->priority, request->is_ad_tagged);
+  // In special cases such as HTML serialization,
+  // resource_load_info_notifier_wrapper is not set.
+  if (request_info_->resource_load_info_notifier_wrapper) {
+    request_info_->resource_load_info_notifier_wrapper
+        ->NotifyResourceLoadInitiated(request_id, request->url, request->method,
+                                      request->referrer,
+                                      request_info_->request_destination,
+                                      request->priority, request->is_ad_tagged);
+  }
 
   auto url_loader_client = std::make_unique<MojoURLLoaderClient>(
       this, loading_task_runner, url_loader_factory->BypassRedirectChecks(),
       request->url, std::move(evict_from_bfcache_callback),
-      std::move(did_buffer_load_while_in_bfcache_callback));
+      std::move(did_buffer_load_while_in_bfcache_callback), request->keepalive);
 
   std::vector<std::string> std_cors_exempt_header_list =
       base::ToVector(cors_exempt_header_list,
@@ -350,7 +342,7 @@ void ResourceRequestSender::Freeze(LoaderFreezeMode mode) {
     loading_task_runner_->PostTask(
         FROM_HERE, base::BindOnce(&ResourceRequestSender::MaybeRunPendingTasks,
                                   weak_factory_.GetWeakPtr()));
-    FollowPendingRedirect(request_info_.get());
+    FollowPendingRedirect();
   }
 }
 
@@ -372,8 +364,12 @@ void ResourceRequestSender::DeletePendingRequest(
 
   if (request_info_->net_error == net::ERR_IO_PENDING) {
     request_info_->net_error = net::ERR_ABORTED;
-    request_info_->resource_load_info_notifier_wrapper
-        ->NotifyResourceLoadCanceled(request_info_->net_error);
+    // In special cases such as HTML serialization,
+    // resource_load_info_notifier_wrapper is not set.
+    if (request_info_->resource_load_info_notifier_wrapper) {
+      request_info_->resource_load_info_notifier_wrapper
+          ->NotifyResourceLoadCanceled(request_info_->net_error);
+    }
   }
 
   // Cancel loading.
@@ -405,41 +401,40 @@ ResourceRequestSender::PendingRequestInfo::PendingRequestInfo(
 
 ResourceRequestSender::PendingRequestInfo::~PendingRequestInfo() = default;
 
-void ResourceRequestSender::FollowPendingRedirect(
-    PendingRequestInfo* request_info) {
-  if (request_info->has_pending_redirect) {
-    request_info->has_pending_redirect = false;
+void ResourceRequestSender::FollowPendingRedirect() {
+  if (request_info_->has_pending_redirect) {
+    request_info_->has_pending_redirect = false;
     // net::URLRequest clears its request_start on redirect, so should we.
-    request_info->local_request_start = base::TimeTicks::Now();
+    request_info_->local_request_start = base::TimeTicks::Now();
     // Redirect URL may not be handled by the network service, so force a
     // restart in case another URLLoaderFactory should handle the URL.
-    if (request_info->redirect_requires_loader_restart) {
-      request_info->modified_headers.Clear();
-      request_info->url_loader->FollowRedirectForcingRestart();
+    if (request_info_->redirect_requires_loader_restart) {
+      request_info_->headers_update_params.Clear();
+      request_info_->url_loader->FollowRedirectForcingRestart();
     } else {
-      request_info->url_loader->FollowRedirect(
-          request_info_->removed_headers, request_info->modified_headers,
-          {} /* modified_cors_exempt_headers */);
-      request_info->modified_headers.Clear();
+      network::HttpRequestHeadersUpdateParams headers_update_params =
+          std::move(request_info_->headers_update_params);
+      request_info_->headers_update_params.Clear();
+      request_info_->url_loader->FollowRedirect(
+          std::move(headers_update_params));
     }
   }
 }
 
-void ResourceRequestSender::OnTransferSizeUpdated(int32_t transfer_size_diff) {
+void ResourceRequestSender::OnTransferSizeUpdated(
+    base::ByteSize transfer_size_diff) {
   if (ShouldDeferTask()) {
     pending_tasks_.emplace_back(
-        WTF::BindOnce(&ResourceRequestSender::OnTransferSizeUpdated,
-                      weak_factory_.GetWeakPtr(), transfer_size_diff));
+        blink::BindOnce(&ResourceRequestSender::OnTransferSizeUpdated,
+                        weak_factory_.GetWeakPtr(), transfer_size_diff));
     return;
   }
 
-  DCHECK_GT(transfer_size_diff, 0);
+  DCHECK(transfer_size_diff.is_positive());
   if (!request_info_) {
     return;
   }
 
-  // TODO(yhirano): Consider using int64_t in
-  // ResourceRequestClient::OnTransferSizeUpdated.
   request_info_->client->OnTransferSizeUpdated(transfer_size_diff);
   if (!request_info_) {
     return;
@@ -451,8 +446,8 @@ void ResourceRequestSender::OnTransferSizeUpdated(int32_t transfer_size_diff) {
 void ResourceRequestSender::OnUploadProgress(int64_t position, int64_t size) {
   if (ShouldDeferTask()) {
     pending_tasks_.emplace_back(
-        WTF::BindOnce(&ResourceRequestSender::OnUploadProgress,
-                      weak_factory_.GetWeakPtr(), position, size));
+        blink::BindOnce(&ResourceRequestSender::OnUploadProgress,
+                        weak_factory_.GetWeakPtr(), position, size));
     return;
   }
   if (!request_info_) {
@@ -475,7 +470,7 @@ void ResourceRequestSender::OnReceivedResponse(
 
   if (ShouldDeferTask()) {
     latency_critical_operation_deferred_ = true;
-    pending_tasks_.push_back(WTF::BindOnce(
+    pending_tasks_.push_back(blink::BindOnce(
         &ResourceRequestSender::OnReceivedResponse, weak_factory_.GetWeakPtr(),
         std::move(response_head), std::move(body), std::move(cached_metadata),
         response_ipc_arrival_time));
@@ -505,6 +500,11 @@ void ResourceRequestSender::OnReceivedResponse(
         code_cache_fetcher_->TakeCodeCacheForResponse(*response_head);
   }
 
+  // OnReceivedResponse() can be called at most once. This check is added to
+  // debug crbug.com/463388771.
+  CHECK(!response_sent_to_client_);
+  response_sent_to_client_ = true;
+
   request_info_->client->OnReceivedResponse(
       response_head.Clone(), std::move(body), std::move(cached_metadata));
   if (!request_info_) {
@@ -521,7 +521,7 @@ void ResourceRequestSender::OnReceivedRedirect(
     base::TimeTicks redirect_ipc_arrival_time) {
   if (ShouldDeferTask()) {
     latency_critical_operation_deferred_ = true;
-    pending_tasks_.emplace_back(WTF::BindOnce(
+    pending_tasks_.emplace_back(blink::BindOnce(
         &ResourceRequestSender::OnReceivedRedirect, weak_factory_.GetWeakPtr(),
         redirect_info, std::move(response_head), redirect_ipc_arrival_time));
     return;
@@ -552,7 +552,7 @@ void ResourceRequestSender::OnReceivedRedirect(
         request_info_->local_response_start - remote_response_start);
   }
 
-  auto callback = WTF::BindOnce(
+  auto callback = blink::BindOnce(
       &ResourceRequestSender::OnFollowRedirectCallback,
       weak_factory_.GetWeakPtr(), redirect_info, response_head.Clone());
   request_info_->client->OnReceivedRedirect(
@@ -573,15 +573,18 @@ void ResourceRequestSender::OnFollowRedirectCallback(
     return;
   }
 
-  request_info_->removed_headers = std::move(removed_headers);
+  CHECK(!request_info_->has_pending_redirect);
+  request_info_->headers_update_params.removed_headers =
+      std::move(removed_headers);
   request_info_->response_url = KURL(redirect_info.new_url);
   request_info_->has_pending_redirect = true;
   request_info_->resource_load_info_notifier_wrapper
       ->NotifyResourceRedirectReceived(redirect_info, std::move(response_head));
-  request_info_->modified_headers.MergeFrom(modified_headers);
+  request_info_->headers_update_params.modified_headers =
+      std::move(modified_headers);
 
   if (request_info_->freeze_mode == LoaderFreezeMode::kNone) {
-    FollowPendingRedirect(request_info_.get());
+    FollowPendingRedirect();
   }
 }
 
@@ -590,7 +593,7 @@ void ResourceRequestSender::OnRequestComplete(
     base::TimeTicks complete_ipc_arrival_time) {
   if (ShouldDeferTask()) {
     latency_critical_operation_deferred_ = true;
-    pending_tasks_.emplace_back(WTF::BindOnce(
+    pending_tasks_.emplace_back(blink::BindOnce(
         &ResourceRequestSender::OnRequestComplete, weak_factory_.GetWeakPtr(),
         status, complete_ipc_arrival_time));
     return;
@@ -608,26 +611,44 @@ void ResourceRequestSender::OnRequestComplete(
   ResourceRequestClient* client = request_info_->client.get();
 
   network::URLLoaderCompletionStatus renderer_status(status);
-  if (status.completion_time.is_null()) {
-    // No completion timestamp is provided, leave it as is.
-  } else if (request_info_->remote_request_start.is_null() ||
-             request_info_->load_timing_info.request_start.is_null()) {
-    // We cannot convert the remote time to a local time, let's use the current
-    // timestamp. This happens when
-    //  - We get an error before OnReceivedRedirect or OnReceivedResponse is
-    //    called, or
-    //  - Somehow such a timestamp was missing in the LoadTimingInfo.
-    renderer_status.completion_time = complete_ipc_arrival_time;
-  } else {
-    // We have already converted the request start timestamp, let's use that
-    // conversion information.
-    // Note: We cannot create a InterProcessTimeTicksConverter with
-    // (local_request_start, now, remote_request_start, remote_completion_time)
-    // as that may result in inconsistent timestamps.
-    renderer_status.completion_time =
-        std::min(status.completion_time - request_info_->remote_request_start +
-                     request_info_->load_timing_info.request_start,
-                 complete_ipc_arrival_time);
+
+  bool completion_time_out_of_range = true;
+  if (base::TimeTicks::IsConsistentAcrossProcesses()) {
+    // Normally, if TimeTicks is consistent across processes, completion_time
+    // should not be out of range, but this check is kept for robustness.
+    // TODO(https://crbug.com/433887078): Consider removing this logic based on
+    // metrics analysis.
+    completion_time_out_of_range =
+        !renderer_status.completion_time.is_null() &&
+        (renderer_status.completion_time < request_info_->local_request_start ||
+         renderer_status.completion_time > complete_ipc_arrival_time);
+
+    base::UmaHistogramBoolean("Blink.ResourceRequest.CompletionTimeOutOfRange",
+                              completion_time_out_of_range);
+  }
+
+  if (completion_time_out_of_range) {
+    if (status.completion_time.is_null()) {
+      // No completion timestamp is provided, leave it as is.
+    } else if (request_info_->remote_request_start.is_null() ||
+               request_info_->load_timing_info.request_start.is_null()) {
+      // We cannot convert the remote time to a local time, let's use the
+      // current timestamp. This happens when
+      //  - We get an error before OnReceivedRedirect or OnReceivedResponse is
+      //    called, or
+      //  - Somehow such a timestamp was missing in the LoadTimingInfo.
+      renderer_status.completion_time = complete_ipc_arrival_time;
+    } else {
+      // We have already converted the request start timestamp, let's use that
+      // conversion information.
+      // Note: We cannot create a InterProcessTimeTicksConverter with
+      // (local_request_start, now, remote_request_start,
+      // remote_completion_time) as that may result in inconsistent timestamps.
+      renderer_status.completion_time = std::min(
+          status.completion_time - request_info_->remote_request_start +
+              request_info_->load_timing_info.request_start,
+          complete_ipc_arrival_time);
+    }
   }
 
   if (!request_info_->ignore_for_histogram) {
@@ -639,7 +660,7 @@ void ResourceRequestSender::OnRequestComplete(
     }
     if (!renderer_status.completion_time.is_null()) {
       UmaHistogramTimes(
-          "Blink.ResourceRequest.CompletionDelay2",
+          "Blink.ResourceRequest.CompletionDelay3",
           complete_ipc_arrival_time - renderer_status.completion_time);
     }
   }
@@ -725,7 +746,7 @@ void ResourceRequestSender::MaybeRunPendingTasks() {
     return;
   }
 
-  WTF::Vector<base::OnceClosure> tasks = std::move(pending_tasks_);
+  Vector<base::OnceClosure> tasks = std::move(pending_tasks_);
   for (auto& task : tasks) {
     std::move(task).Run();
   }

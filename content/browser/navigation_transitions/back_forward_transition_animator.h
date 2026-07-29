@@ -24,7 +24,7 @@ class Layer;
 class SolidColorLayer;
 class SurfaceLayer;
 class UIResourceLayer;
-}
+}  // namespace cc::slim
 
 namespace ui {
 class InputFilter;
@@ -131,8 +131,7 @@ class CONTENT_EXPORT BackForwardTransitionAnimator
 
   // Indicates the animation abort reason for UMA metrics.
   // These values are persisted to logs. Entries should not be renumbered and
-  // numeric values should never be reused. Upon adding a new value, add it
-  // to `tools/metrics/histograms/metadata/navigation/enums.xml` as well.
+  // numeric values should never be reused.
   enum class AnimationAbortReason {
     // The subscribed `RenderWidgetHost` was destroyed.
     kRenderWidgetHostDestroyed = 0,
@@ -246,7 +245,6 @@ class CONTENT_EXPORT BackForwardTransitionAnimator
       RenderFrameHostImpl* old_host,
       RenderFrameHostImpl* new_host);
   void OnNavigationCancelledBeforeStart(NavigationHandle* navigation_handle);
-  void MaybeRecordIgnoredInput(const blink::WebInputEvent& event);
   void OnBeforeUnloadDialogShown(int64_t navigation_id);
 
   // Notifies when the transition needs to be aborted.
@@ -589,18 +587,6 @@ class CONTENT_EXPORT BackForwardTransitionAnimator
   // fully centered (at the end of the invoke animation).
   base::OneShotTimer dismiss_screenshot_timer_;
 
-  // Counter for different combinations of reason and position of ignored
-  // inputs.
-  struct IgnoredReasonCategoryAndCount {
-    int animation_invoked_on_source = 0;
-    int animation_invoked_on_destination = 0;
-    int animation_canceled_on_source = 0;
-    int animation_canceled_on_destination = 0;
-  };
-  IgnoredReasonCategoryAndCount ignored_inputs_count_;
-
-  IgnoringInputReason ignoring_input_reason_ =
-      IgnoringInputReason::kNoOccurrence;
 
   // Stores the token that identify the deferred dialogs. During the animated
   // transition, the live page could show the user some permission prompts or

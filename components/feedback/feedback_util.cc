@@ -2,18 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "components/feedback/feedback_util.h"
 
 #include <optional>
 #include <string>
 #include <vector>
 
+#include "base/compiler_specific.h"
 #include "base/files/file_util.h"
+#include "base/files/safe_base_name.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/functional/bind.h"
 #include "base/json/json_reader.h"
@@ -36,6 +33,12 @@ namespace feedback_util {
 
 std::optional<std::string> ZipString(const base::FilePath& filename,
                                      std::string_view data) {
+  std::optional<base::SafeBaseName> safe_name =
+      base::SafeBaseName::Create(filename);
+  if (!safe_name || safe_name->path() != filename) {
+    return std::nullopt;
+  }
+
   base::ScopedTempDir temp_dir;
   base::FilePath zip_file;
 
@@ -44,7 +47,7 @@ std::optional<std::string> ZipString(const base::FilePath& filename,
   if (!temp_dir.CreateUniqueTempDir()) {
     return std::nullopt;
   }
-  if (!base::WriteFile(temp_dir.GetPath().Append(filename), data)) {
+  if (!base::WriteFile(temp_dir.GetPath().Append(safe_name->path()), data)) {
     return std::nullopt;
   }
   if (!base::CreateTemporaryFile(&zip_file)) {
@@ -94,7 +97,7 @@ std::string LogsToString(const FeedbackCommon::SystemLogsMap& sys_info) {
 }
 
 void RemoveUrlsFromAutofillData(std::string& autofill_metadata) {
-  std::optional<base::Value::Dict> autofill_data = base::JSONReader::ReadDict(
+  std::optional<base::DictValue> autofill_data = base::JSONReader::ReadDict(
       autofill_metadata, base::JSON_ALLOW_TRAILING_COMMAS);
 
   if (!autofill_data) {
@@ -102,7 +105,7 @@ void RemoveUrlsFromAutofillData(std::string& autofill_metadata) {
     return;
   }
 
-  if (base::Value::List* form_structures =
+  if (base::ListValue* form_structures =
           autofill_data->FindList("formStructures")) {
     for (base::Value& item : *form_structures) {
       auto& dict = item.GetDict();
@@ -110,7 +113,7 @@ void RemoveUrlsFromAutofillData(std::string& autofill_metadata) {
       dict.Remove("mainFrameUrl");
     }
   }
-  base::JSONWriter::Write(*autofill_data, &autofill_metadata);
+  autofill_metadata = base::WriteJson(*autofill_data).value_or("");
   return;
 }
 
@@ -141,8 +144,8 @@ std::optional<std::string> ReadEndOfFile(const base::FilePath& path,
 
   // Since most logs are not seekable, read until the end keeping tracking of
   // last two chunks.
-  while ((bytes_read = fread(chunk.data(), 1, max_size, fp.get())) ==
-         max_size) {
+  while ((bytes_read = UNSAFE_TODO(
+              fread(chunk.data(), 1, max_size, fp.get()))) == max_size) {
     total_bytes_read += bytes_read;
     last_chunk.swap(chunk);
     chunk[0] = '\0';
@@ -161,8 +164,10 @@ std::optional<std::string> ReadEndOfFile(const base::FilePath& path,
 
     // Shift left last_chunk by size of chunk and fit it in the back of
     // last_chunk.
-    memmove(last_chunk.data(), last_chunk.data() + bytes_read, bytes_from_last);
-    memcpy(last_chunk.data() + bytes_from_last, chunk.data(), bytes_read);
+    UNSAFE_TODO(memmove(last_chunk.data(), last_chunk.data() + bytes_read,
+                        bytes_from_last));
+    UNSAFE_TODO(
+        memcpy(last_chunk.data() + bytes_from_last, chunk.data(), bytes_read));
 
     contents.assign(last_chunk.data(), max_size);
   }

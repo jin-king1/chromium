@@ -6,14 +6,15 @@
 
 #include <stdint.h>
 
+#include <optional>
 #include <tuple>
+#include <utility>
 
 #include "base/check_op.h"
 #include "base/i18n/rtl.h"
 #include "base/notreached.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/types/cxx23_to_underlying.h"
 #include "build/build_config.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/events/event.h"
@@ -21,6 +22,8 @@
 #include "ui/strings/grit/ui_strings.h"
 
 #if BUILDFLAG(IS_MAC)
+#include <dlfcn.h>
+
 #include "base/mac/mac_util.h"
 #endif
 
@@ -43,17 +46,56 @@
 
 namespace ui {
 
+#if BUILDFLAG(IS_MAC)
 namespace {
 
-std::u16string ApplyModifierToAcceleratorString(
-    const std::u16string& accelerator,
-    int modifier_message_id) {
-  return l10n_util::GetStringFUTF16(
-      IDS_APP_ACCELERATOR_WITH_MODIFIER,
-      l10n_util::GetStringUTF16(modifier_message_id), accelerator);
+constexpr char kHIServicesFrameworkPath[] =
+    "/System/Library/Frameworks/ApplicationServices.framework/Frameworks/"
+    "HIServices.framework/HIServices";
+
+// The glyph macOS uses for the fn modifier on keyboards that have a globe key:
+// U+1F310 GLOBE WITH MERIDIANS followed by U+FE0E VARIATION SELECTOR-15. The
+// VS-15 selector explicitly requests the text-style (monochrome) presentation
+// rather than the platform color emoji glyph, matching how AppKit renders the
+// symbol in native menus.
+constexpr char16_t kGlobeKeySymbol[] = u"\U0001F310\uFE0E";
+
+std::optional<bool>& MacKeyboardHasGlobeKeyOverride() {
+  static std::optional<bool> has_globe_key;
+  return has_globe_key;
+}
+
+// Returns true if any attached keyboard advertises a globe key. The underlying
+// answer comes from HIS_XPC_GetGlobeKeyAvailability(), a private HIServices SPI
+// used by AppKit's -[NSKeyboardShortcut localizedModifierMaskDisplayName].
+// Because there is no public header that declares this symbol, it is resolved
+// at runtime via dlopen + dlsym: this avoids depending on a private SDK and
+// lets older macOS versions that lack the symbol fall back gracefully to the
+// "(fn) " text. See crbug.com/40800376.
+bool MacKeyboardHasGlobeKey() {
+  std::optional<bool>& has_globe_key_override =
+      MacKeyboardHasGlobeKeyOverride();
+  if (has_globe_key_override.has_value()) {
+    return has_globe_key_override.value();
+  }
+
+  using HISXPCGetGlobeKeyAvailability = bool (*)();
+  static HISXPCGetGlobeKeyAvailability get_globe_key_availability =
+      []() -> HISXPCGetGlobeKeyAvailability {
+    void* hiservices = dlopen(kHIServicesFrameworkPath, RTLD_LAZY | RTLD_LOCAL);
+    if (!hiservices) {
+      return nullptr;
+    }
+
+    return reinterpret_cast<HISXPCGetGlobeKeyAvailability>(
+        dlsym(hiservices, "HIS_XPC_GetGlobeKeyAvailability"));
+  }();
+
+  return get_globe_key_availability && get_globe_key_availability();
 }
 
 }  // namespace
+#endif  // BUILDFLAG(IS_MAC)
 
 Accelerator::Accelerator(const KeyEvent& key_event)
     : key_code_(key_event.key_code()),
@@ -78,6 +120,16 @@ Accelerator::Accelerator(const KeyEvent& key_event)
 #endif
 }
 
+#if BUILDFLAG(IS_MAC)
+void Accelerator::SetMacKeyboardHasGlobeKeyForTesting(bool has_globe_key) {
+  MacKeyboardHasGlobeKeyOverride() = has_globe_key;
+}
+
+void Accelerator::ClearMacKeyboardHasGlobeKeyForTesting() {
+  MacKeyboardHasGlobeKeyOverride().reset();
+}
+#endif  // BUILDFLAG(IS_MAC)
+
 KeyEvent Accelerator::ToKeyEvent() const {
   return KeyEvent(key_state() == Accelerator::KeyState::PRESSED
                       ? EventType::kKeyPressed
@@ -99,16 +151,83 @@ bool Accelerator::IsMediaKey() const {
 }
 #endif
 
-std::u16string Accelerator::GetShortcutText() const {
-  std::u16string shortcut;
+std::vector<std::u16string> Accelerator::GetShortcutVectorRepresentation()
+    const {
+  std::vector<std::u16string> shortcut_vector;
+  if (IsEmpty()) {
+    return shortcut_vector;
+  }
+
+  std::u16string key_code = GetKeyCodeStringForShortcut();
 
 #if BUILDFLAG(IS_MAC)
-  shortcut = KeyCodeToMacSymbol();
+  shortcut_vector = GetShortFormModifiers();
+  shortcut_vector.push_back(key_code);
 #else
-  shortcut = KeyCodeToName();
+  std::vector<std::u16string> modifiers = GetLongFormModifiers();
+  // For some reason, menus in Windows ignore standard Unicode directionality
+  // marks (such as LRE, PDF, etc.). On RTL locales, we use RTL menus and
+  // therefore any text we draw for the menu items is drawn in an RTL context.
+  // Thus, the text "Ctrl++" (which we currently use for the Zoom In option)
+  // appears as "++Ctrl" in RTL because the Unicode BiDi algorithm puts
+  // punctuation on the left when the context is right-to-left. Shortcuts that
+  // do not end with a punctuation mark (such as "Ctrl+H" do not have this
+  // problem).
+  //
+  // The only way to solve this problem is to adjust the shortcut representation
+  // if the locale is RTL so that it is drawn correctly in an RTL context.
+  // Instead of returning "Ctrl++" in the above example, we return "++Ctrl".
+  // This will cause the text to appear as "Ctrl++" when Windows draws the
+  // string in an RTL context because the punctuation no longer appears at the
+  // end of the string.
+  // To accomplish this, if the character used for the accelerator is not
+  // alphanumeric and the locale is RTL place the character key code before the
+  // modifiers. Otherwise, place it after the modifiers as per usual.
+  //
+  // TODO(crbug.com/40175605): This hack of doing the RTL adjustment here was
+  // intended to be removed when the menu system moved to MenuItemView. That was
+  // crbug.com/2822, closed in 2010. Can we finally remove all of this?
+  if (base::i18n::IsRTL() && key_code.length() == 1 &&
+      !base::IsAsciiAlphaNumeric(key_code[0])) {
+    shortcut_vector.push_back(key_code);
+    shortcut_vector.insert(shortcut_vector.end(), modifiers.begin(),
+                           modifiers.end());
+  } else {
+    shortcut_vector.insert(shortcut_vector.end(), modifiers.begin(),
+                           modifiers.end());
+    shortcut_vector.push_back(key_code);
+  }
+
+#endif  // BUILDFLAG(IS_MAC)
+
+  return shortcut_vector;
+}
+
+std::u16string Accelerator::GetShortcutText() const {
+  std::u16string shortcut;
+  std::vector<std::u16string> shortcut_vector =
+      GetShortcutVectorRepresentation();
+
+  // Shortcut text is expected to be represented using '+' as a separator on all
+  // platforms except Mac, where no separator is used.
+#if BUILDFLAG(IS_MAC)
+  shortcut = base::JoinString(shortcut_vector, u"");
+#else
+  shortcut = base::JoinString(shortcut_vector, u"+");
 #endif
 
-  if (shortcut.empty()) {
+  return shortcut;
+}
+
+std::u16string Accelerator::GetKeyCodeStringForShortcut() const {
+  std::u16string key_string;
+#if BUILDFLAG(IS_MAC)
+  key_string = KeyCodeToMacSymbol();
+#else
+  key_string = KeyCodeToName();
+#endif
+
+  if (key_string.empty()) {
 #if BUILDFLAG(IS_WIN)
     // Our fallback is to try translate the key code to a regular character
     // unless it is one of digits (VK_0 to VK_9). Some keyboard
@@ -117,70 +236,27 @@ std::u16string Accelerator::GetShortcutText() const {
     // accent' for '0'). For display in the menu (e.g. Ctrl-0 for the
     // default zoom level), we leave VK_[0-9] alone without translation.
     wchar_t key;
-    if (base::IsAsciiDigit(base::to_underlying(key_code_))) {
+    if (base::IsAsciiDigit(std::to_underlying(key_code_))) {
       key = static_cast<wchar_t>(key_code_);
     } else {
       key = LOWORD(::MapVirtualKeyW(key_code_, MAPVK_VK_TO_CHAR));
     }
     // If there is no translation for the given |key_code_| (e.g.
     // VKEY_UNKNOWN), |::MapVirtualKeyW| returns 0.
-    if (key != 0)
-      shortcut += key;
+    if (key != 0) {
+      key_string += key;
+    }
 #elif defined(USE_AURA) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_ANDROID)
     const uint16_t c = DomCodeToUsLayoutCharacter(
         UsLayoutKeyboardCodeToDomCode(key_code_), false);
-    if (c != 0)
-      shortcut +=
+    if (c != 0) {
+      key_string +=
           static_cast<std::u16string::value_type>(base::ToUpperASCII(c));
+    }
 #endif
   }
 
-#if BUILDFLAG(IS_MAC)
-  shortcut = ApplyShortFormModifiers(shortcut);
-#else
-  // Checking whether the character used for the accelerator is alphanumeric.
-  // If it is not, then we need to adjust the string later on if the locale is
-  // right-to-left. See below for more information of why such adjustment is
-  // required.
-  std::u16string shortcut_rtl;
-  bool adjust_shortcut_for_rtl = false;
-  if (base::i18n::IsRTL() && shortcut.length() == 1 &&
-      !base::IsAsciiAlpha(shortcut[0]) && !base::IsAsciiDigit(shortcut[0])) {
-    adjust_shortcut_for_rtl = true;
-    shortcut_rtl.assign(shortcut);
-  }
-
-  shortcut = ApplyLongFormModifiers(shortcut);
-
-  // For some reason, menus in Windows ignore standard Unicode directionality
-  // marks (such as LRE, PDF, etc.). On RTL locales, we use RTL menus and
-  // therefore any text we draw for the menu items is drawn in an RTL context.
-  // Thus, the text "Ctrl++" (which we currently use for the Zoom In option)
-  // appears as "++Ctrl" in RTL because the Unicode BiDi algorithm puts
-  // punctuations on the left when the context is right-to-left. Shortcuts that
-  // do not end with a punctuation mark (such as "Ctrl+H" do not have this
-  // problem).
-  //
-  // The only way to solve this problem is to adjust the string if the locale
-  // is RTL so that it is drawn correctly in an RTL context. Instead of
-  // returning "Ctrl++" in the above example, we return "++Ctrl". This will
-  // cause the text to appear as "Ctrl++" when Windows draws the string in an
-  // RTL context because the punctuation no longer appears at the end of the
-  // string.
-  //
-  // TODO(crbug.com/40175605): This hack of doing the RTL adjustment here was
-  // intended to be removed when the menu system moved to MenuItemView. That was
-  // crbug.com/2822, closed in 2010. Can we finally remove all of this?
-  if (adjust_shortcut_for_rtl) {
-    DCHECK_GT(shortcut_rtl.length(), 0u);
-    shortcut_rtl.append(u"+");
-
-    shortcut_rtl.append(shortcut, 0, shortcut.length() - shortcut_rtl.length());
-    shortcut.swap(shortcut_rtl);
-  }
-#endif  // BUILDFLAG(IS_MAC)
-
-  return shortcut;
+  return key_string;
 }
 
 #if BUILDFLAG(IS_MAC)
@@ -280,6 +356,9 @@ std::u16string Accelerator::KeyCodeToName() const {
     case VKEY_F1:
       string_id = IDS_APP_F1_KEY;
       break;
+    case VKEY_F4:
+      string_id = IDS_APP_F4_KEY;
+      break;
     case VKEY_F6:
       string_id = IDS_APP_F6_KEY;
       break;
@@ -313,87 +392,79 @@ std::u16string Accelerator::KeyCodeToName() const {
   return string_id ? l10n_util::GetStringUTF16(string_id) : std::u16string();
 }
 
-std::u16string Accelerator::ApplyLongFormModifiers(
-    const std::u16string& shortcut) const {
-  std::u16string result = shortcut;
-
-  if (IsShiftDown()) {
-    result = ApplyModifierToAcceleratorString(result, IDS_APP_SHIFT_KEY);
-  }
-
-  if (IsCtrlDown()) {
-    result = ApplyModifierToAcceleratorString(result, IDS_APP_CTRL_KEY);
-  }
-
-  if (IsAltDown()) {
-    result = ApplyModifierToAcceleratorString(result, IDS_APP_ALT_KEY);
-  }
+std::vector<std::u16string> Accelerator::GetLongFormModifiers() const {
+  std::vector<std::u16string> modifiers;
 
   if (IsCmdDown()) {
 #if BUILDFLAG(IS_MAC)
-    result = ApplyModifierToAcceleratorString(result, IDS_APP_COMMAND_KEY);
+    modifiers.push_back(l10n_util::GetStringUTF16(IDS_APP_COMMAND_KEY));
 #elif BUILDFLAG(IS_CHROMEOS)
-    result = ApplyModifierToAcceleratorString(result, IDS_APP_SEARCH_KEY);
+    modifiers.push_back(l10n_util::GetStringUTF16(IDS_APP_SEARCH_KEY));
 #elif BUILDFLAG(IS_WIN)
-    result = ApplyModifierToAcceleratorString(result, IDS_APP_WINDOWS_KEY);
+    modifiers.push_back(l10n_util::GetStringUTF16(IDS_APP_WINDOWS_KEY));
 #elif BUILDFLAG(IS_LINUX)
-    result = ApplyModifierToAcceleratorString(result, IDS_APP_SUPER_KEY);
+    modifiers.push_back(l10n_util::GetStringUTF16(IDS_APP_SUPER_KEY));
 #else
     NOTREACHED();
 #endif
   }
 
-  return result;
+  if (IsAltDown()) {
+    modifiers.push_back(l10n_util::GetStringUTF16(IDS_APP_ALT_KEY));
+  }
+
+  if (IsCtrlDown()) {
+    modifiers.push_back(l10n_util::GetStringUTF16(IDS_APP_CTRL_KEY));
+  }
+
+  if (IsShiftDown()) {
+    modifiers.push_back(l10n_util::GetStringUTF16(IDS_APP_SHIFT_KEY));
+  }
+
+  return modifiers;
 }
 
-std::u16string Accelerator::ApplyShortFormModifiers(
-    const std::u16string& shortcut) const {
-  std::u16string result;
-  result.reserve(6);
-
+std::vector<std::u16string> Accelerator::GetShortFormModifiers() const {
+  std::vector<std::u16string> modifiers;
   // Add modifiers in the order that matches how they are displayed in native
   // menus.
   if (IsCtrlDown()) {
-    result.push_back(u'⌃');  // U+2303, UP ARROWHEAD
+    modifiers.push_back(u"⌃");  // U+2303, UP ARROWHEAD
   }
   if (IsAltDown()) {
-    result.push_back(u'⌥');  // U+2325, OPTION KEY
+    modifiers.push_back(u"⌥");  // U+2325, OPTION KEY
   }
   if (IsShiftDown()) {
-    result.push_back(u'⇧');  // U+21E7, UPWARDS WHITE ARROW
+    modifiers.push_back(u"⇧");  // U+21E7, UPWARDS WHITE ARROW
   }
   if (IsCmdDown()) {
-    result.push_back(u'⌘');  // U+2318, PLACE OF INTEREST SIGN
+    modifiers.push_back(u"⌘");  // U+2318, PLACE OF INTEREST SIGN
   }
 
+#if BUILDFLAG(IS_MAC)
+  // GetShortFormModifiers() is only called on macOS (see
+  // GetShortcutVectorRepresentation() and AcceleratorTestMac), and the
+  // function-key modifier is itself a Mac concept, so this entire block is
+  // restricted to Mac builds. This also keeps MacKeyboardHasGlobeKey() — which
+  // calls Mac-only HIServices — out of non-Mac compilation units.
   if (IsFunctionDown()) {
-    // The real "fn" used by menus is actually U+E23E in the Private Use Area in
-    // the keyboard font obtained with CTFontCreateUIFontForLanguage, with key
-    // kCTFontUIFontMenuItemCmdKey. Because this function must return a raw
+    // The real "fn" used by menus is actually U+E23E in the Private Use Area
+    // in the keyboard font obtained with CTFontCreateUIFontForLanguage, with
+    // key kCTFontUIFontMenuItemCmdKey. Because this function must return a raw
     // Unicode string with no specified font, return a string of characters.
     //
-    // Newer Mac keyboards have a globe symbol on the fn key that is used in
-    // menus instead of "fn". That globe symbol is actually U+1F310 + U+FE0E,
-    // the emoji globe + the variation selector that indicates the text-style
-    // presentation. (🌐︎)
-    //
-    // Whether or not "fn" or the globe is displayed as the menu shortcut
-    // modifier depends on whether there is an attached keyboard with a globe
-    // symbol on it. Rather than rummaging around in the IORegistry, where the
-    // HID driver for the keyboard has a SupportsGlobeKey = True property, it's
-    // probably best to just make a call to the HIServices function
-    // HIS_XPC_GetGlobeKeyAvailability() and let it do the magic. See AppKit's
-    // -[NSKeyboardShortcut localizedModifierMaskDisplayName] for an example of
-    // this.
-    //
-    // TODO(http://crbug.com/40800376): Implement all of this when text-style
-    // presentations are implemented for Views in https://crbug.com/40137571.
-    result.append(u"(fn) ");
+    // Whether "(fn) " or the globe glyph is shown depends on whether an
+    // attached keyboard advertises a globe key; see MacKeyboardHasGlobeKey()
+    // above.
+    if (MacKeyboardHasGlobeKey()) {
+      modifiers.push_back(kGlobeKeySymbol);
+    } else {
+      modifiers.push_back(u"(fn) ");
+    }
   }
+#endif  // BUILDFLAG(IS_MAC)
 
-  result.append(shortcut);
-
-  return result;
+  return modifiers;
 }
 
 }  // namespace ui

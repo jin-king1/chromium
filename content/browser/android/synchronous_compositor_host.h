@@ -12,7 +12,7 @@
 
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/task/single_thread_task_runner.h"
 #include "components/viz/common/frame_sinks/begin_frame_source.h"
 #include "components/viz/common/quads/compositor_frame.h"
@@ -71,8 +71,8 @@ class CONTENT_EXPORT SynchronousCompositorHost
   void OnCompositorFrameTransitionDirectiveProcessed(
       uint32_t layer_tree_frame_sink_id,
       uint32_t sequence_id) override;
-  void DidPresentCompositorFrames(viz::FrameTimingDetailsMap timing_details,
-                                  uint32_t frame_token) override;
+  void DidPresentCompositorFrames(
+      viz::FrameTimingDetailsMap timing_details) override;
   void SetMemoryPolicy(size_t bytes_limit) override;
   float GetVelocityInPixelsPerSecond() override;
   void DidBecomeActive() override;
@@ -177,7 +177,7 @@ class CONTENT_EXPORT SynchronousCompositorHost
   // to rely on sending a synchronous message first on initialization. So
   // with an abundance of caution, keep that behavior until we are sure this
   // isn't required.
-  bool allow_async_draw_ = false;
+  bool allow_async_draw_;
 
   // Indicates begin frames are paused from the browser.
   bool begin_frame_paused_ = false;

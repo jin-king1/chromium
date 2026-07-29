@@ -4,8 +4,6 @@
 
 source_set("webui") {
   sources = [
-    "product_specifications_handler.cc",
-    "product_specifications_handler.h",
     "shopping_service_handler.cc",
     "shopping_service_handler.h",
     "webui_utils.cc",
@@ -15,7 +13,6 @@ source_set("webui") {
   deps = [
     "../:shopping_service",
     "../mojom:mojo_bindings",
-    "../product_specifications",
     "//base",
     "//components/bookmarks/browser",
     "//components/commerce/core:commerce_constants",
@@ -23,12 +20,13 @@ source_set("webui") {
     "//components/commerce/core:feature_utils",
     "//components/commerce/core:metrics",
     "//components/commerce/core:pref_names",
+    "//components/commerce/core:proto",
     "//components/commerce/core:shopping_service",
     "//components/commerce/core:utils",
     "//components/feature_engagement/public",
-    "//components/history/core/browser:browser",
-    "//components/optimization_guide/core:core",
-    "//components/payments/core",
+    "//components/history/core/browser",
+    "//components/optimization_guide/core",
+    "//components/payments/core:currency_formatter",
     "//components/power_bookmarks/core",
     "//components/prefs",
     "//components/url_formatter",
@@ -41,15 +39,10 @@ source_set("webui") {
 source_set("unit_tests") {
   testonly = true
 
-  sources = [
-    "product_specifications_handler_unittest.cc",
-    "shopping_service_handler_unittest.cc",
-  ]
+  sources = [ "shopping_service_handler_unittest.cc" ]
 
   deps = [
     ":webui",
-    "../product_specifications",
-    "../product_specifications:test_support",
     "//base/test:test_support",
     "//components/bookmarks/browser",
     "//components/bookmarks/test",
@@ -65,6 +58,10 @@ source_set("unit_tests") {
     "//mojo/public/cpp/bindings",
     "//services/metrics/public/cpp:ukm_builders",
     "//testing/gtest",
-    "//url:url",
+    "//url",
   ]
+
+  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+  # enable the diagnostic by removing this line.
+  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }

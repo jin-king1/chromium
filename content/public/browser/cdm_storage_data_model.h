@@ -9,10 +9,15 @@
 #include <vector>
 
 #include "base/functional/callback.h"
+#include "content/common/content_export.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
 
 using CdmStorageKeyUsageSize =
     std::vector<std::pair<blink::StorageKey, uint64_t>>;
+
+namespace base {
+class Time;
+}
 
 namespace content {
 

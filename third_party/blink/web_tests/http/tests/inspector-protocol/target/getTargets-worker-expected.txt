@@ -4,10 +4,12 @@ Tests that getTargets returns worker targets.
         attached : false
         browserContextId : <string>
         canAccessOpener : false
+        parentFrameId : <string>
+        parentId : <string>
         targetId : <string>
-        title : 
+        title :
         type : worker
-        url : 
+        url :
     }
 ]
 

@@ -7,6 +7,15 @@ import {constants} from './constants.js';
 import {NodeUtils} from './node_utils.js';
 import {ParagraphUtils} from './paragraph_utils.js';
 import {SentenceUtils} from './sentence_utils.js';
+import {TestImportManager} from './testing/test_import_manager.js';
+// SelectToSpeakNodeNavigationUtilsUnitTest needs these helpers. The tests
+// are run in a service worker context after the MV3 update, so
+// test_node_generator cannot be dynamically included. Instead, we statically
+// include them here, even though they are not needed in this utility file.
+import {createMockNode, generateTestNodeGroup} from './testing/test_node_generator.js';
+
+TestImportManager.exportForTesting(createMockNode);
+TestImportManager.exportForTesting(generateTestNodeGroup);
 
 import AutomationNode = chrome.automation.AutomationNode;
 const RoleType = chrome.automation.RoleType;
@@ -257,7 +266,7 @@ export class NodeNavigationUtils {
    * sentence, the function returns content from the start of the previous
    * sentence.
    * TODO(leileilei@google.com): Handle the edge case where the user navigates
-   * to next sentence from the end of a document, see http://crbug.com/1160962.
+   * to next sentence from the end of a document, see http://crbug.com/40738506.
    * @param direction Direction to search for the next sentence.
    *     If set to forward, we look for the sentence start after the current
    *     position. Otherwise, we look for the sentence start before the current
@@ -474,3 +483,5 @@ export class NodeNavigationUtils {
     return {nodes, offset};
   }
 }
+
+TestImportManager.exportForTesting(NodeNavigationUtils);

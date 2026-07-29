@@ -19,6 +19,7 @@
 #include "base/path_service.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
+#include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/time/time.h"
@@ -38,17 +39,17 @@
 #include "chrome/browser/ui/translate/translate_bubble_test_utils.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/test/base/in_process_browser_test.h"
-#include "chrome/test/base/interactive_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/autofill/content/browser/content_autofill_driver.h"
-#include "components/autofill/content/browser/scoped_autofill_managers_observation.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/foundations/autofill_manager.h"
 #include "components/autofill/core/browser/foundations/browser_autofill_manager.h"
 #include "components/autofill/core/browser/foundations/browser_autofill_manager_test_delegate.h"
+#include "components/autofill/core/browser/foundations/scoped_autofill_managers_observation.h"
 #include "components/autofill/core/browser/geo/state_names.h"
 #include "components/autofill/core/browser/proto/server.pb.h"
 #include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/common/autofill_debug_features.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_regexes.h"
 #include "components/autofill/core/common/autofill_util.h"
@@ -96,21 +97,21 @@ base::FilePath GetReplayFilesRootDirectory() {
   }
 }
 
-autofill::ElementExpr GetElementByXpath(const std::string& xpath) {
-  return autofill::ElementExpr(base::StringPrintf(
+ElementExpr GetElementByXpath(const std::string& xpath) {
+  return ElementExpr(base::StringPrintf(
       "automation_helper.getElementByXpath(`%s`)", xpath.c_str()));
 }
 
 std::optional<std::vector<std::string>> GetExpectedFormSignatures(
     const base::FilePath& recipe_file_path) {
-  std::optional<base::Value::Dict> recipe =
+  std::optional<base::DictValue> recipe =
       captured_sites_test_utils::ReadRecipeFile(recipe_file_path);
   if (!recipe) {
     VLOG(1) << "Failed to read recipe file: " << recipe_file_path.value();
     return std::nullopt;
   }
 
-  base::Value::List* form_signatures_list =
+  base::ListValue* form_signatures_list =
       recipe.value().FindList("formSignaturesSubmitted");
   if (!form_signatures_list) {
     VLOG(1) << "No expected form signatures in recipe.";
@@ -129,20 +130,21 @@ std::optional<std::vector<std::string>> GetExpectedFormSignatures(
 
 // Used to verify that the expected form signatures are submitted during the
 // test.
-class FormSubmissionCounter : public autofill::AutofillManager::Observer {
+class FormSubmissionCounter : public AutofillManager::Observer {
  public:
   explicit FormSubmissionCounter(content::WebContents* web_contents) {
     autofill_managers_observation_.Observe(
-        web_contents, autofill::ScopedAutofillManagersObservation::
-                          InitializationPolicy::kObservePreexistingManagers);
+        ContentAutofillClient::FromWebContents(web_contents),
+        ScopedAutofillManagersObservation::InitializationPolicy::
+            kObservePreexistingManagers);
   }
   ~FormSubmissionCounter() override = default;
 
   // AutofillManager::Observer:
-  void OnFormSubmitted(autofill::AutofillManager& manager,
-                       const autofill::FormData& form_data) override {
-    actual_form_signatures_submitted_.insert(base::NumberToString(
-        autofill::CalculateFormSignature(form_data).value()));
+  void OnBeforeFormSubmitted(AutofillManager& manager,
+                             const FormData& form_data) override {
+    actual_form_signatures_submitted_.insert(
+        base::NumberToString(CalculateFormSignature(form_data).value()));
   }
 
   void VerifyFormSubmissions(
@@ -160,8 +162,7 @@ class FormSubmissionCounter : public autofill::AutofillManager::Observer {
 
  private:
   std::set<std::string> actual_form_signatures_submitted_;
-  autofill::ScopedAutofillManagersObservation autofill_managers_observation_{
-      this};
+  ScopedAutofillManagersObservation autofill_managers_observation_{this};
 };
 
 // Implements the `kAutofillCapturedSiteTestsMetricsScraper` testing feature.
@@ -170,13 +171,14 @@ class MetricsScraper {
   // Creates a MetricsScraper if the Finch flag is enabled.
   static std::unique_ptr<MetricsScraper> MaybeCreate(const std::string& test) {
     if (!base::FeatureList::IsEnabled(
-            features::test::kAutofillCapturedSiteTestsMetricsScraper)) {
+            features::debug::kAutofillCapturedSiteTestsMetricsScraper)) {
       return nullptr;
     }
     const std::string& output_dir =
-        features::test::kAutofillCapturedSiteTestsMetricsScraperOutputDir.Get();
+        features::debug::kAutofillCapturedSiteTestsMetricsScraperOutputDir
+            .Get();
     const std::string& histogram_regex =
-        features::test::kAutofillCapturedSiteTestsMetricsScraperHistogramRegex
+        features::debug::kAutofillCapturedSiteTestsMetricsScraperHistogramRegex
             .Get();
     return base::WrapUnique(new MetricsScraper(
         base::FilePath::FromASCII(output_dir).AppendASCII(test + ".txt"),
@@ -196,7 +198,7 @@ class MetricsScraper {
     for (base::HistogramBase* histogram :
          base::StatisticsRecorder::GetHistograms()) {
       const auto& name = histogram->histogram_name();
-      if (MatchesRegex(base::UTF8ToUTF16(name), *histogram_regex_)) {
+      if (MatchesRegex(base::UTF8ToUTF16(name), histogram_regex_.get())) {
         histogram_names.emplace_back(name);
       }
     }
@@ -245,7 +247,7 @@ class AutofillCapturedSitesInteractiveTest
     test_delegate()->Observe(autofill_manager);
 
     if (base::FeatureList::IsEnabled(
-            features::test::kAutofillCapturedSiteTestsUseAutofillFlow)) {
+            features::debug::kAutofillCapturedSiteTestsUseAutofillFlow)) {
       if (AutofillFormWithAutofillFlow(web_contents, focus_element_css_selector,
                                        attempts, frame, triggered_field_type)) {
         return true;
@@ -264,8 +266,8 @@ class AutofillCapturedSitesInteractiveTest
       translate::test_utils::CloseCurrentBubble(browser());
       TryToCloseAllPrompts(web_contents);
 
-      autofill_manager.client().HideAutofillSuggestions(
-          autofill::SuggestionHidingReason::kViewDestroyed);
+      autofill_manager.client().HideSuggestions(
+          SuggestionHidingReason::kViewDestroyed, /*product=*/std::nullopt);
 
       testing::AssertionResult suggestions_shown = ShowAutofillSuggestion(
           focus_element_css_selector, iframe_path, frame);
@@ -317,8 +319,8 @@ class AutofillCapturedSitesInteractiveTest
       return true;
     }
 
-    autofill_manager.client().HideAutofillSuggestions(
-        autofill::SuggestionHidingReason::kViewDestroyed);
+    autofill_manager.client().HideSuggestions(
+        SuggestionHidingReason::kViewDestroyed, /*product=*/std::nullopt);
     ADD_FAILURE() << "Failed to autofill the form!";
     return false;
   }
@@ -329,12 +331,12 @@ class AutofillCapturedSitesInteractiveTest
   }
 
   bool SetupAutofillProfile() override {
-    AddTestAutofillData(browser()->profile(), profile_controller_->profile(),
+    AddTestAutofillData(browser()->GetProfile(), profile_controller_->profile(),
                         profile_controller_->credit_card());
     // Disable the Password Manager to prevent password bubbles from occurring.
     // The password bubbles could overlap with the Autofill popups, in which
-    // case the Autofill popup would not be shown (crbug.com/1223898).
-    browser()->profile()->GetPrefs()->SetBoolean(
+    // case the Autofill popup would not be shown (crbug.com/40187831).
+    browser()->GetProfile()->GetPrefs()->SetBoolean(
         password_manager::prefs::kCredentialsEnableService, false);
     return true;
   }
@@ -368,8 +370,8 @@ class AutofillCapturedSitesInteractiveTest
     form_submission_counter_ =
         std::make_unique<FormSubmissionCounter>(GetWebContents());
 
-    browser()->profile()->GetPrefs()->SetBoolean(prefs::kSafeBrowsingEnabled,
-                                                 false);
+    browser()->GetProfile()->GetPrefs()->SetBoolean(prefs::kSafeBrowsingEnabled,
+                                                    false);
   }
 
   void TearDownOnMainThread() override {
@@ -405,22 +407,19 @@ class AutofillCapturedSitesInteractiveTest
     // prediction. Test will check this attribute on all the relevant input
     // elements in a form to determine if the form is ready for interaction.
     feature_list_.InitWithFeaturesAndParameters(
-        /*enabled_features=*/{{features::test::kAutofillServerCommunication,
-                               {}},
-                              {features::test::kAutofillShowTypePredictions,
-                               {}},
-                              {features::test::
-                                   kAutofillCapturedSiteTestsUseAutofillFlow,
-                               {}}},
-        /*disabled_features=*/{features::kAutofillOverwritePlaceholdersOnly,
-                               features::kAutofillSkipPreFilledFields});
+        /*enabled_features=*/
+        {{features::debug::kAutofillServerCommunication, {}},
+         {features::debug::kAutofillShowTypePredictions,
+          {
+              // TODO(crbug.com/410879924): Investigate why the test fails when
+              // kAutofillShowTypePredictions is enabled without parameters.
+              {features::debug::kAutofillShowTypePredictionsAsTitleParam.name,
+               "true"},
+          }},
+         {features::debug::kAutofillCapturedSiteTestsUseAutofillFlow, {}}},
+        /*disabled_features=*/{});
     command_line->AppendSwitchASCII(
         variations::switches::kVariationsOverrideCountry, "us");
-    // SelectParserRelaxation affects the results from the test data because the
-    // test data may have unclosed <select> tags. Since SelectParserRelaxation
-    // is not enabled by default, we are disabling it for these tests.
-    command_line->AppendSwitchASCII("disable-blink-features",
-                                    "SelectParserRelaxation");
     AutofillUiTest::SetUpCommandLine(command_line);
     SetUpHostResolverRules(command_line);
     captured_sites_test_utils::TestRecipeReplayer::SetUpCommandLine(
@@ -499,21 +498,6 @@ class AutofillCapturedSitesInteractiveTest
       const int attempts,
       content::RenderFrameHost* frame,
       std::optional<FieldType> triggered_field_type) {
-    std::optional<std::u16string> cvc = profile_controller_->cvc();
-    // If CVC is available in the Action Recorder receipts and this is a
-    // payment form, this means it's running the test with a server card. So
-    // the "Enter CVC" dialog will pop up for card autofill.
-    // TODO(crbug.com/333815150): Fix the TestCardUnmaskPromptWaiter.
-    bool is_credit_card_field =
-        triggered_field_type.has_value() &&
-        GroupTypeOfFieldType(triggered_field_type.value()) ==
-            FieldTypeGroup::kCreditCard;
-    bool should_cvc_dialog_pop_up = is_credit_card_field && cvc;
-    CHECK(!should_cvc_dialog_pop_up)
-        << "Tests with CVC dialogs are currently not supported due to "
-           "crbug.com/333815150. See crrev.com/c/5458703 for the code to bring "
-           "back the TestCardUnmaskPromptWaiter.";
-
     // Use AutofillFlow library to trigger the autofill behavior. Try both ways.
     testing::AssertionResult autofill_assertion_by_arrow =
         AutofillFlow(GetElementByXpath(focus_element_css_selector), this,
@@ -605,7 +589,7 @@ IN_PROC_BROWSER_TEST_P(AutofillCapturedSitesInteractiveTest, Recipe) {
 
 // This test is called with a dynamic list and will be empty during the Password
 // run instance, so adding GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST a la
-// crbug/1192206
+// crbug.com/40174793
 GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(
     AutofillCapturedSitesInteractiveTest);
 INSTANTIATE_TEST_SUITE_P(
@@ -690,7 +674,7 @@ IN_PROC_BROWSER_TEST_P(AutofillCapturedSitesRefresh, Recipe) {
 
 // This test is called with a dynamic list and will be empty during the Password
 // run instance, so adding GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST a la
-// crbug/1192206
+// crbug.com/40174793
 GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(AutofillCapturedSitesRefresh);
 INSTANTIATE_TEST_SUITE_P(
     All,

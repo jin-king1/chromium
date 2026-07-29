@@ -6,6 +6,7 @@
 
 #include <algorithm>
 
+#include "ash/accessibility/ui/accessibility_focusable_widget_delegate.h"
 #include "ash/focus/focus_cycler.h"
 #include "ash/public/cpp/shelf_prefs.h"
 #include "ash/public/cpp/shelf_types.h"
@@ -22,6 +23,7 @@
 #include "base/i18n/rtl.h"
 #include "ui/aura/window_targeter.h"
 #include "ui/compositor/scoped_layer_animation_settings.h"
+#include "ui/display/screen.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
@@ -29,7 +31,7 @@
 #include "ui/views/animation/animation_builder.h"
 #include "ui/views/background.h"
 #include "ui/views/layout/fill_layout.h"
-#include "ui/views/metadata/view_factory_internal.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/view.h"
 #include "ui/wm/core/coordinate_conversion.h"
 
@@ -83,11 +85,10 @@ class DeskButtonWindowTargeter : public aura::WindowTargeter {
   const raw_ptr<DeskButtonWidget> desk_button_widget_;
 };
 
-DeskButtonWidget::DelegateView::DelegateView() = default;
-DeskButtonWidget::DelegateView::~DelegateView() = default;
+DeskButtonWidgetDelegateView::DeskButtonWidgetDelegateView() = default;
+DeskButtonWidgetDelegateView::~DeskButtonWidgetDelegateView() = default;
 
-void DeskButtonWidget::DelegateView::Init(
-    DeskButtonWidget* desk_button_widget) {
+void DeskButtonWidgetDelegateView::Init(DeskButtonWidget* desk_button_widget) {
   CHECK(desk_button_widget);
   desk_button_widget_ = desk_button_widget;
   SetPaintToLayer(ui::LAYER_NOT_DRAWN);
@@ -98,13 +99,7 @@ void DeskButtonWidget::DelegateView::Init(
   AddAccelerator(ui::Accelerator(ui::VKEY_ESCAPE, ui::EF_NONE));
 }
 
-bool DeskButtonWidget::DelegateView::CanActivate() const {
-  // We don't want mouse clicks to activate us, but we need to allow
-  // activation when the user is using the keyboard (FocusCycler).
-  return Shell::Get()->focus_cycler()->widget_activating() == GetWidget();
-}
-
-void DeskButtonWidget::DelegateView::Layout(PassKey) {
+void DeskButtonWidgetDelegateView::Layout(PassKey) {
   if (!desk_button_widget_ || !desk_button_container_) {
     return;
   }
@@ -134,7 +129,7 @@ void DeskButtonWidget::DelegateView::Layout(PassKey) {
   desk_button_container_->SetBoundsRect({container_origin, container_size});
 }
 
-bool DeskButtonWidget::DelegateView::AcceleratorPressed(
+bool DeskButtonWidgetDelegateView::AcceleratorPressed(
     const ui::Accelerator& accelerator) {
   CHECK_EQ(accelerator.key_code(), ui::VKEY_ESCAPE);
   GetWidget()->Deactivate();
@@ -162,7 +157,8 @@ bool DeskButtonWidget::ShouldReserveSpaceFromShelf() const {
   PrefService* prefs =
       shell->session_controller()->GetLastActiveUserPrefService();
   return layout_manager->is_active_session_state() &&
-         !shell->IsInTabletMode() && prefs && GetDeskButtonVisibility(prefs);
+         !display::Screen::Get()->InTabletMode() && prefs &&
+         GetDeskButtonVisibility(prefs);
 }
 
 bool DeskButtonWidget::ShouldBeVisible() const {
@@ -280,7 +276,7 @@ void DeskButtonWidget::HandleLocaleChange() {
 
 void DeskButtonWidget::Initialize(aura::Window* container) {
   CHECK(container);
-  delegate_view_ = new DelegateView();
+  delegate_view_ = new AccessibilityFocusable<DeskButtonWidgetDelegateView>();
   views::Widget::InitParams params(
       views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET,
       views::Widget::InitParams::TYPE_WINDOW_FRAMELESS);

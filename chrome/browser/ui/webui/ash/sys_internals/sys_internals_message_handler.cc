@@ -12,6 +12,8 @@
 #include <utility>
 #include <vector>
 
+#include "base/byte_size.h"
+#include "base/compiler_specific.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
@@ -62,10 +64,10 @@ bool ParseProcStatLine(const std::string& line, std::vector<CpuInfo>* infos) {
   uint64_t sys = 0;
   uint64_t idle = 0;
   uint32_t cpu_index = 0;
-  int vals =
-      sscanf(line.c_str(),
-             "cpu%" SCNu32 " %" SCNu64 " %" SCNu64 " %" SCNu64 " %" SCNu64,
-             &cpu_index, &user, &nice, &sys, &idle);
+  int vals = UNSAFE_TODO(sscanf(line.c_str(),
+                                "cpu%" SCNu32 " %" SCNu64 " %" SCNu64
+                                " %" SCNu64 " %" SCNu64,
+                                &cpu_index, &user, &nice, &sys, &idle));
   if (vals != 5 || cpu_index >= infos->size()) {
     NOTREACHED();
   }
@@ -117,18 +119,17 @@ bool GetCpuInfo(std::vector<CpuInfo>* infos) {
   return true;
 }
 
-void SetConstValue(base::Value::Dict* result) {
+void SetConstValue(base::DictValue* result) {
   DCHECK(result);
   int counter_max = static_cast<int>(COUNTER_MAX);
   result->SetByDottedPath("const.counterMax", counter_max);
 }
 
-void SetCpusValue(const std::vector<CpuInfo>& infos,
-                  base::Value::Dict* result) {
+void SetCpusValue(const std::vector<CpuInfo>& infos, base::DictValue* result) {
   DCHECK(result);
-  base::Value::List cpu_results;
+  base::ListValue cpu_results;
   for (const CpuInfo& cpu : infos) {
-    base::Value::Dict cpu_result;
+    base::DictValue cpu_result;
     cpu_result.Set("user", cpu.user);
     cpu_result.Set("kernel", cpu.kernel);
     cpu_result.Set("idle", cpu.idle);
@@ -138,28 +139,25 @@ void SetCpusValue(const std::vector<CpuInfo>& infos,
   result->Set("cpus", std::move(cpu_results));
 }
 
-const double kBytesInKB = 1024;
-
-double GetAvailablePhysicalMemory(const base::SystemMemoryInfoKB& info) {
-  double available = static_cast<double>(
-      info.available == 0 ? info.free + info.reclaimable : info.available);
-
-  return available * kBytesInKB;
+double GetAvailablePhysicalMemory(const base::SystemMemoryInfo& info) {
+  const base::ByteSize available =
+      info.available.is_zero() ? info.free + info.reclaimable : info.available;
+  return available.InBytesF();
 }
 
-void SetMemValue(const base::SystemMemoryInfoKB& info,
+void SetMemValue(const base::SystemMemoryInfo& info,
                  const base::VmStatInfo& vmstat,
-                 base::Value::Dict* result) {
+                 base::DictValue* result) {
   DCHECK(result);
-  base::Value::Dict mem_result;
+  base::DictValue mem_result;
 
   // For values that may exceed the range of 32-bit signed integer, use double.
-  double total = static_cast<double>(info.total) * kBytesInKB;
+  double total = info.total.InBytesF();
   mem_result.Set("total", total);
   mem_result.Set("available", GetAvailablePhysicalMemory(info));
-  double swap_total = static_cast<double>(info.swap_total) * kBytesInKB;
+  double swap_total = info.swap_total.InBytesF();
   mem_result.Set("swapTotal", swap_total);
-  double swap_free = static_cast<double>(info.swap_free) * kBytesInKB;
+  double swap_free = info.swap_free.InBytesF();
   mem_result.Set("swapFree", swap_free);
 
   mem_result.Set("pswpin", ToCounter(vmstat.pswpin));
@@ -168,9 +166,9 @@ void SetMemValue(const base::SystemMemoryInfoKB& info,
   result->Set("memory", std::move(mem_result));
 }
 
-void SetZramValue(const base::SwapInfo& info, base::Value::Dict* result) {
+void SetZramValue(const base::SwapInfo& info, base::DictValue* result) {
   DCHECK(result);
-  base::Value::Dict zram_result;
+  base::DictValue zram_result;
 
   zram_result.Set("numReads", ToCounter(info.num_reads));
   zram_result.Set("numWrites", ToCounter(info.num_writes));
@@ -211,8 +209,8 @@ std::optional<GpuInfo> GetGpuInfoFromI915EngineInfo() {
     // the usage percentage to 100% in the frontend. If needed, we can consider
     // exposing the per-engine breakdown.
     int64_t engine_runtime_ms = 0;
-    if (sscanf(line.data(), "\tRuntime: %" PRId64 "ms", &engine_runtime_ms) !=
-        1) {
+    if (UNSAFE_TODO(sscanf(line.data(), "\tRuntime: %" PRId64 "ms",
+                           &engine_runtime_ms)) != 1) {
       continue;
     }
 
@@ -251,15 +249,14 @@ std::optional<GpuInfo> GetGpuInfo() {
   return GetGpuInfoFromI915EngineInfo();
 }
 
-void SetGpuValue(const std::optional<GpuInfo>& info,
-                 base::Value::Dict* result) {
+void SetGpuValue(const std::optional<GpuInfo>& info, base::DictValue* result) {
   if (!info.has_value()) {
     result->Set("gpu", base::Value(base::Value::Type::NONE));
     return;
   }
 
   int busy = ToCounter(info->busy_time.InMilliseconds());
-  result->Set("gpu", base::Value::Dict().Set("busy", busy));
+  result->Set("gpu", base::DictValue().Set("busy", busy));
 }
 
 // TODO: b/380808338 - Resolve this dynamically from driver or udev instead of
@@ -303,24 +300,23 @@ std::optional<NpuInfo> GetNpuInfo() {
   return NpuInfo{.busy_time = base::Microseconds(busy_time_us)};
 }
 
-void SetNpuValue(const std::optional<NpuInfo>& info,
-                 base::Value::Dict* result) {
+void SetNpuValue(const std::optional<NpuInfo>& info, base::DictValue* result) {
   if (!info.has_value()) {
     result->Set("npu", base::Value(base::Value::Type::NONE));
     return;
   }
 
   int busy = ToCounter(info->busy_time.InMilliseconds());
-  result->Set("npu", base::Value::Dict().Set("busy", busy));
+  result->Set("npu", base::DictValue().Set("busy", busy));
 }
 
-base::Value::Dict GetSysInfo() {
+base::DictValue GetSysInfo() {
   std::vector<CpuInfo> cpu_infos(base::SysInfo::NumberOfProcessors());
   if (!GetCpuInfo(&cpu_infos)) {
     DLOG(WARNING) << "Failed to get system CPU info.";
     cpu_infos.clear();
   }
-  base::SystemMemoryInfoKB mem_info;
+  base::SystemMemoryInfo mem_info;
   if (!GetSystemMemoryInfo(&mem_info)) {
     DLOG(WARNING) << "Failed to get system memory info.";
   }
@@ -335,7 +331,7 @@ base::Value::Dict GetSysInfo() {
   std::optional<GpuInfo> gpu_info = GetGpuInfo();
   std::optional<NpuInfo> npu_info = GetNpuInfo();
 
-  base::Value::Dict result;
+  base::DictValue result;
   SetConstValue(&result);
   SetCpusValue(cpu_infos, &result);
   SetMemValue(mem_info, vmstat_info, &result);
@@ -359,8 +355,7 @@ void SysInternalsMessageHandler::RegisterMessages() {
                           base::Unretained(this)));
 }
 
-void SysInternalsMessageHandler::HandleGetSysInfo(
-    const base::Value::List& list) {
+void SysInternalsMessageHandler::HandleGetSysInfo(const base::ListValue& list) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
   AllowJavascript();
@@ -376,7 +371,7 @@ void SysInternalsMessageHandler::HandleGetSysInfo(
 }
 
 void SysInternalsMessageHandler::ReplySysInfo(base::Value callback_id,
-                                              base::Value::Dict result) {
+                                              base::DictValue result) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
   ResolveJavascriptCallback(callback_id, result);

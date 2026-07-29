@@ -1,4 +1,5 @@
 include_rules = [
+  "+device/fido/public",
   "+mojo/public",
   "+services/metrics/public/cpp/metrics_utils.h",
   "+services/metrics/public/cpp/ukm_builders.h",
@@ -13,10 +14,7 @@ specific_include_rules = {
   "credential_manager_type_converters.cc": [
     "+third_party/boringssl/src/include",
   ],
-  "credential_manager_type_converters_unittest.cc": [
-    "+device/fido/fido_constants.h",
-  ],
-  ".*test\.cc": [
+  ".*test\\.cc": [
     "+components/ukm/test_ukm_recorder.h",
   ],
 }

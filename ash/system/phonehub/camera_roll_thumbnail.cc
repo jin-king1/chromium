@@ -4,7 +4,6 @@
 
 #include "ash/system/phonehub/camera_roll_thumbnail.h"
 
-#include "ash/constants/ash_features.h"
 #include "ash/resources/vector_icons/vector_icons.h"
 #include "ash/style/ash_color_id.h"
 #include "ash/style/ash_color_provider.h"
@@ -76,7 +75,6 @@ void CameraRollThumbnail::PaintButtonContents(gfx::Canvas* canvas) {
                        kCameraRollThumbnailBorderSize.height(), false);
 
   if (video_type_) {
-    auto* color_provider = AshColorProvider::Get();
     cc::PaintFlags flags;
     flags.setAntiAlias(true);
     flags.setColor(GetColorProvider()->GetColor(kColorAshShieldAndBase80));
@@ -86,8 +84,7 @@ void CameraRollThumbnail::PaintButtonContents(gfx::Canvas* canvas) {
     canvas->DrawImageInt(
         CreateVectorIcon(
             kPhoneHubCameraRollItemVideoIcon, kCameraRollThumbnailVideoIconSize,
-            color_provider->GetContentLayerColor(
-                AshColorProvider::ContentLayerType::kIconColorPrimary)),
+            GetColorProvider()->GetColor(cros_tokens::kIconColorPrimary)),
         kCameraRollThumbnailVideoIconOrigin.x(),
         kCameraRollThumbnailVideoIconOrigin.y());
   }
@@ -108,8 +105,10 @@ void CameraRollThumbnail::ShowContextMenuForViewImpl(
 }
 
 void CameraRollThumbnail::ButtonPressed() {
+  constexpr base::TimeDelta kPhoneHubCameraRollThrottleInterval =
+      base::Seconds(2);
   if (base::TimeTicks::Now() - download_throttle_timestamp_ <
-      features::kPhoneHubCameraRollThrottleInterval.Get()) {
+      kPhoneHubCameraRollThrottleInterval) {
     return;
   }
 

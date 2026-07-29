@@ -3,15 +3,16 @@
 # found in the LICENSE file.
 """Definitions of builders in the chromium.android builder group."""
 
-load("//lib/builders.star", "os")
-load("//lib/branches.star", "branches")
-load("//lib/try.star", "try_")
-load("//lib/consoles.star", "consoles")
+load("@chromium-luci//branches.star", "branches")
+load("@chromium-luci//builders.star", "os")
+load("@chromium-luci//consoles.star", "consoles")
+load("@chromium-luci//try.star", "try_")
+load("//lib/try_constants.star", "try_constants")
 load("//project.star", "PLATFORMS", "platform")
 load("../fallback-cq.star", "fallback_cq")
 
 try_.defaults.set(
-    pool = try_.DEFAULT_POOL,
+    pool = try_constants.DEFAULT_POOL,
     cores = 8,
     os = os.LINUX_DEFAULT,
     list_view = "presubmit",
@@ -28,7 +29,7 @@ try_.defaults.set(
     # This will improve our turnaround time for landing infra/config changes
     # when addressing outages
     priority = 25,
-    service_account = try_.DEFAULT_SERVICE_ACCOUNT,
+    service_account = try_constants.DEFAULT_SERVICE_ACCOUNT,
 )
 
 consoles.list_view(
@@ -71,64 +72,72 @@ def branch_configs():
 try_.presubmit_builder(
     name = "branch-config-verifier",
     executable = "recipe:branch_configuration/tester",
+    cq_settings = try_.cq_settings(
+        location_filters = ["infra/config/.+"],
+    ),
+    # TODO: crbug.com/383375912 - If the checkout can be sped up, switch back to
+    # using the default
+    execution_timeout = 25 * time.minute,
     properties = {
         "branch_script": "infra/config/scripts/branch.py",
         "branch_configs": branch_configs(),
         "starlark_entry_points": ["infra/config/main.star", "infra/config/dev.star"],
     },
-    tryjob = try_.job(
-        location_filters = ["infra/config/.+"],
-    ),
 )
 
 try_.presubmit_builder(
     name = "reclient-config-deployment-verifier",
     executable = "recipe:reclient_config_deploy_check/tester",
-    properties = {
-        "fetch_script": "buildtools/reclient_cfgs/fetch_reclient_cfgs.py",
-        "rbe_project": [
-            {
-                "name": "rbe-chromium-trusted",
-                "cfg_file": [
-                    "buildtools/reclient_cfgs/chromium-browser-clang/rewrapper_linux.cfg",
-                    "buildtools/reclient_cfgs/chromium-browser-clang/rewrapper_windows.cfg",
-                    "buildtools/reclient_cfgs/nacl/rewrapper_linux.cfg",
-                ],
-            },
-        ],
-    },
-    tryjob = try_.job(
+    cq_settings = try_.cq_settings(
         location_filters = [
             "buildtools/reclient_cfgs/.+",
             "tools/clang/scripts/update.py",
             "DEPS",
         ],
     ),
+    # TODO: crbug.com/383375912 - If the checkout can be sped up, switch back to
+    # using the default
+    execution_timeout = 25 * time.minute,
+    properties = {
+        "fetch_script": "buildtools/reclient_cfgs/configure_reclient_cfgs.py",
+        "rbe_project": [
+            {
+                "name": "rbe-chromium-trusted",
+                "cfg_file": [
+                    "buildtools/reclient_cfgs/chromium-browser-clang/rewrapper_linux.cfg",
+                    "buildtools/reclient_cfgs/chromium-browser-clang/rewrapper_windows.cfg",
+                ],
+            },
+        ],
+    },
 )
 
 try_.presubmit_builder(
     name = "builder-config-verifier",
     description_html = "checks that builder configs in properties files match the recipe-side configs",
     executable = "recipe:chromium/builder_config_verifier",
+    cq_settings = try_.cq_settings(
+        location_filters = ["infra/config/generated/builders[^/]+/[^/]+/properties\\.json"],
+    ),
     properties = {
         "builder_config_directory": "infra/config/generated/builders",
     },
-    tryjob = try_.job(
-        location_filters = ["infra/config/generated/builders[^/]+/[^/]+/properties\\.json"],
-    ),
 )
 
 try_.presubmit_builder(
     name = "targets-config-verifier",
     description_html = "checks that target configs specified in starlark match those specified in //testing/buildbot",
     executable = "recipe:chromium/targets_config_verifier",
+    cq_settings = try_.cq_settings(
+        location_filters = ["infra/config/generated/builders/[^/]+/[^/]+/targets/.+\\.json"],
+    ),
+    # TODO: crbug.com/383375912 - If the checkout can be sped up, switch back to
+    # using the default
+    execution_timeout = 25 * time.minute,
     properties = {
         "builder_config_directory": "infra/config/generated/builders",
         "precommit_buckets": ["try"],
     },
-    tryjob = try_.job(
-        location_filters = ["infra/config/generated/builders/[^/]+/[^/]+/targets/.+\\.json"],
-    ),
 )
 
 try_.presubmit_builder(
@@ -136,13 +145,16 @@ try_.presubmit_builder(
     description_html = "checks that target configs specified in starlark for dev builders match those specified in //testing/buildbot",
     executable = "recipe:chromium/targets_config_verifier",
     contact_team_email = "chrome-dev-infra@google.com",
+    cq_settings = try_.cq_settings(
+        location_filters = ["infra/config/generated/builders-dev/[^/]+/[^/]+/targets/.+\\.json"],
+    ),
+    # TODO: crbug.com/383375912 - If the checkout can be sped up, switch back to
+    # using the default
+    execution_timeout = 25 * time.minute,
     properties = {
         "builder_config_directory": "infra/config/generated/builders-dev",
         "precommit_buckets": ["try"],
     },
-    tryjob = try_.job(
-        location_filters = ["infra/config/generated/builders-dev/[^/]+/[^/]+/targets/.+\\.json"],
-    ),
 )
 
 try_.presubmit_builder(
@@ -150,21 +162,32 @@ try_.presubmit_builder(
     description_html = "checks that GN args generated by starlark definition match those originally specified in //tools/mb/mb_config.pyl",
     executable = "recipe:chromium/gn_args_verifier",
     contact_team_email = "chrome-browser-infra-team@google.com",
+    cq_settings = try_.cq_settings(
+        location_filters = ["infra/config/generated/builders/[^/]+/[^/]+/gn-args\\.json"],
+    ),
+    # TODO: crbug.com/383375912 - If the checkout can be sped up, switch back to
+    # using the default
+    execution_timeout = 25 * time.minute,
     properties = {
         "gclient_config": "chromium",
         "builder_config_directory": "infra/config/generated/builders",
         "mb_config_paths": ["src/tools/mb/mb_config.pyl"],
     },
-    tryjob = try_.job(
-        location_filters = ["infra/config/generated/builders/[^/]+/[^/]+/gn-args\\.json"],
-    ),
 )
 
 try_.presubmit_builder(
-    name = "chromium_presubmit",
+    name = "linux-presubmit",
     branch_selector = branches.selector.ALL_BRANCHES,
+    description_html = "Runs basic presubmit checks on Linux machines",
     executable = "recipe:presubmit",
+    contact_team_email = "chrome-browser-infra-team@google.com",
+    cq_settings = try_.cq_settings(
+        on_default_cq = True,
+    ),
     execution_timeout = 40 * time.minute,
+    experiments = {
+        "presubmit.resultdb_module": 100,
+    },
     properties = {
         "$depot_tools/presubmit": {
             "runhooks": True,
@@ -172,7 +195,6 @@ try_.presubmit_builder(
         },
         "repo_name": "chromium",
     },
-    tryjob = try_.job(),
 )
 
 try_.presubmit_builder(
@@ -181,7 +203,13 @@ try_.presubmit_builder(
     builderless = True,
     os = os.WINDOWS_DEFAULT,
     ssd = True,
+    cq_settings = try_.cq_settings(
+        on_default_cq = True,
+    ),
     execution_timeout = 40 * time.minute,
+    experiments = {
+        "presubmit.resultdb_module": 100,
+    },
     properties = {
         "$depot_tools/presubmit": {
             "runhooks": True,
@@ -189,7 +217,6 @@ try_.presubmit_builder(
         },
         "repo_name": "chromium",
     },
-    tryjob = try_.job(),
 )
 
 try_.presubmit_builder(
@@ -197,5 +224,7 @@ try_.presubmit_builder(
     description_html = "prevents CLs that requires testing from landing on branches with no CQ",
     executable = "recipe:requires_testing_checker",
     cq_group = fallback_cq.GROUP,
-    tryjob = try_.job(),
+    cq_settings = try_.cq_settings(
+        on_default_cq = True,
+    ),
 )

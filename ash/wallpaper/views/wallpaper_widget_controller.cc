@@ -4,7 +4,6 @@
 
 #include "ash/wallpaper/views/wallpaper_widget_controller.h"
 
-#include "ash/constants/ash_features.h"
 #include "ash/public/cpp/shell_window_ids.h"
 #include "ash/root_window_controller.h"
 #include "ash/shell.h"
@@ -31,6 +30,10 @@ WallpaperWidgetController::WallpaperWidgetController(aura::Window* root_window)
 
 WallpaperWidgetController::~WallpaperWidgetController() {
   widget_->CloseNow();
+}
+
+ui::Layer* WallpaperWidgetController::wallpaper_underlay_layer() {
+  return wallpaper_underlay_layer_.get();
 }
 
 void WallpaperWidgetController::Init(bool locked) {
@@ -133,19 +136,14 @@ void WallpaperWidgetController::OnDisplayMetricsChanged(
 
 void WallpaperWidgetController::OnColorProviderChanged() {
   if (wallpaper_underlay_layer_) {
-    wallpaper_underlay_layer_->SetColor(
+    wallpaper_underlay_layer_->SetColor(SkColor4f::FromColor(
         GetColorProviderSource()->GetColorProvider()->GetColor(
-            cros_tokens::kCrosSysSystemBase));
+            cros_tokens::kCrosSysSystemBase)));
   }
 }
 
 void WallpaperWidgetController::CreateWallpaperUnderlayLayer() {
-  if (!features::IsForestFeatureEnabled()) {
-    return;
-  }
-
-  wallpaper_underlay_layer_ =
-      std::make_unique<ui::Layer>(ui::LAYER_SOLID_COLOR);
+  wallpaper_underlay_layer_ = std::make_unique<ui::LayerSolidColor>();
   wallpaper_underlay_layer_->SetName("WallpaperUnderlayLayer");
   auto* wallpaper_view_layer = wallpaper_view_->layer();
   auto* wallpaper_view_layer_parent = wallpaper_view_layer->parent();

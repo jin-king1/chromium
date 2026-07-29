@@ -14,18 +14,22 @@
 
 #include "absl/random/internal/nonsecure_base.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
 #include <random>
+#include <thread>  // NOLINT
 #include <type_traits>
 #include <utility>
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "absl/container/flat_hash_set.h"
 #include "absl/meta/type_traits.h"
 #include "absl/random/distributions.h"
 #include "absl/random/random.h"
+#include "absl/synchronization/mutex.h"
 
 namespace {
 
@@ -70,19 +74,19 @@ TEST(NonsecureURBGBase, StandardInterface) {
 
   using T = typename E::result_type;
 
-  static_assert(!std::is_copy_constructible<E>::value,
+  static_assert(!std::is_copy_constructible_v<E>,
                 "NonsecureURBGBase should not be copy constructible");
 
-  static_assert(!absl::is_copy_assignable<E>::value,
+  static_assert(!std::is_copy_assignable_v<E>,
                 "NonsecureURBGBase should not be copy assignable");
 
-  static_assert(std::is_move_constructible<E>::value,
+  static_assert(std::is_move_constructible_v<E>,
                 "NonsecureURBGBase should be move constructible");
 
-  static_assert(absl::is_move_assignable<E>::value,
+  static_assert(std::is_move_assignable_v<E>,
                 "NonsecureURBGBase should be move assignable");
 
-  static_assert(std::is_same<decltype(std::declval<E>()()), T>::value,
+  static_assert(std::is_same_v<decltype(std::declval<E>()()), T>,
                 "return type of operator() must be result_type");
 
   {
@@ -90,10 +94,10 @@ TEST(NonsecureURBGBase, StandardInterface) {
     Use(x);
     Use(y);
 
-    static_assert(std::is_same<decltype(x == y), bool>::value,
+    static_assert(std::is_same_v<decltype(x == y), bool>,
                   "return type of operator== must be bool");
 
-    static_assert(std::is_same<decltype(x != y), bool>::value,
+    static_assert(std::is_same_v<decltype(x != y), bool>,
                   "return type of operator== must be bool");
   }
 
@@ -192,6 +196,41 @@ TEST(NonsecureURBGBase, EqualSeedSequencesYieldEqualVariates) {
   for (uint32_t i = 0; i < 1000; i++) {
     EXPECT_EQ(rbg1(), rbg2());
   }
+}
+
+TEST(NonsecureURBGBase, DistinctSequencesPerThread) {
+  constexpr int kNumThreads = 12;
+  constexpr size_t kValuesPerThread = 32;
+  using result_type = absl::BitGen::result_type;
+
+  // Acquire initial sequences from multiple threads.
+  std::vector<std::vector<result_type>> data;
+  {
+    absl::Mutex mu;
+    std::vector<std::thread> threads;
+    for (int i = 0; i < kNumThreads; i++) {
+      threads.emplace_back([&]() {
+        absl::BitGen gen;
+
+        std::vector<result_type> v(kValuesPerThread);
+        std::generate(v.begin(), v.end(), [&]() { return gen(); });
+        absl::MutexLock l(mu);
+        data.push_back(std::move(v));
+      });
+    }
+    for (auto& t : threads) t.join();
+  }
+
+  EXPECT_EQ(data.size(), kNumThreads);
+
+  // There should be essentially no duplicates in the sequences.
+  size_t expected_size = 0;
+  absl::flat_hash_set<result_type> seen;
+  for (const auto& v : data) {
+    expected_size += v.size();
+    for (result_type x : v) seen.insert(x);
+  }
+  EXPECT_GE(seen.size(), expected_size - 1);
 }
 
 TEST(RandenPoolSeedSeqTest, SeederWorksForU32) {

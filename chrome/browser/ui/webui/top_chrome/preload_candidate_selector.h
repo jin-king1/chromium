@@ -9,7 +9,6 @@
 #include <string>
 #include <vector>
 
-#include "base/functional/callback.h"
 #include "chrome/browser/ui/webui/top_chrome/preload_context.h"
 #include "url/gurl.h"
 
@@ -27,8 +26,7 @@ class PreloadCandidateSelector {
   // Among preloadable URLs, selects the best URL to preload under the
   // current condition of PreloadContext.
   // If no URL should be preloaded, returns std::nullopt.
-  virtual std::optional<GURL> GetURLToPreload(
-      const PreloadContext& context) const = 0;
+  virtual std::optional<GURL> GetURLToPreload(PreloadContext context) const = 0;
 
   // Returns true if the feature flag (via command line or Finch) excludes the
   // url from preloading.

@@ -7,6 +7,7 @@
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/web_ui_mocha_browser_test.h"
 #include "content/public/test/browser_test.h"
+#include "printing/printing_features.h"
 
 class PrintPreviewBrowserTest : public WebUIMochaBrowserTest {
  protected:
@@ -54,10 +55,6 @@ IN_PROC_BROWSER_TEST_F(PrintPreviewTest, MediaSizeSettings) {
   RunTest("print_preview/media_size_settings_test.js", "mocha.run()");
 }
 
-IN_PROC_BROWSER_TEST_F(PrintPreviewTest, MediaTypeSettings) {
-  RunTest("print_preview/media_type_settings_test.js", "mocha.run()");
-}
-
 IN_PROC_BROWSER_TEST_F(PrintPreviewTest, ModelSettingsAvailability) {
   RunTest("print_preview/model_settings_availability_test.js", "mocha.run()");
 }
@@ -76,6 +73,10 @@ IN_PROC_BROWSER_TEST_F(PrintPreviewTest, SelectMixin) {
 
 IN_PROC_BROWSER_TEST_F(PrintPreviewTest, SettingsSelect) {
   RunTest("print_preview/settings_select_test.js", "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(PrintPreviewTest, Observable) {
+  RunTest("print_preview/observable_test.js", "mocha.run()");
 }
 
 class PrintPreviewAppTest : public PrintPreviewBrowserTest {
@@ -119,14 +120,6 @@ IN_PROC_BROWSER_TEST_F(PrintPreviewSidebarTest,
   RunTestCase("SettingsSectionsVisibilityChange");
 }
 
-IN_PROC_BROWSER_TEST_F(PrintPreviewSidebarTest, SheetCountWithDuplex) {
-  RunTestCase("SheetCountWithDuplex");
-}
-
-IN_PROC_BROWSER_TEST_F(PrintPreviewSidebarTest, SheetCountWithCopies) {
-  RunTestCase("SheetCountWithCopies");
-}
-
 class PrintPreviewPagesSettingsTest : public PrintPreviewBrowserTest {
  protected:
   void RunTestCase(const std::string& testCase) {
@@ -139,6 +132,10 @@ class PrintPreviewPagesSettingsTest : public PrintPreviewBrowserTest {
 
 IN_PROC_BROWSER_TEST_F(PrintPreviewPagesSettingsTest, PagesDropdown) {
   RunTestCase("PagesDropdown");
+}
+
+IN_PROC_BROWSER_TEST_F(PrintPreviewPagesSettingsTest, PagesDropdownDisabled) {
+  RunTestCase("PagesDropdownDisabled");
 }
 
 IN_PROC_BROWSER_TEST_F(PrintPreviewPagesSettingsTest, NoParityOptions) {
@@ -295,7 +292,7 @@ IN_PROC_BROWSER_TEST_F(PrintPreviewRestoreStateTest, SaveValues) {
   RunTestCase("SaveValues");
 }
 
-class PrintPreviewModelTest : public PrintPreviewBrowserTest {
+class PrintPreviewModelTestBase : public PrintPreviewBrowserTest {
  protected:
   void RunTestCase(const std::string& testCase) {
     PrintPreviewBrowserTest::RunTest(
@@ -303,6 +300,19 @@ class PrintPreviewModelTest : public PrintPreviewBrowserTest {
         base::StringPrintf("runMochaTest('ModelTest', '%s');",
                            testCase.c_str()));
   }
+};
+
+class PrintPreviewModelTest : public PrintPreviewModelTestBase {
+ public:
+  PrintPreviewModelTest() {
+    scoped_feature_list_.InitWithFeatures(
+        /*enabled_features=*/{},
+        /*disabled_features=*/{
+            printing::features::kAlignPdfDefaultPrintSettingsWithHTML});
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 IN_PROC_BROWSER_TEST_F(PrintPreviewModelTest, SetStickySettings) {
@@ -315,6 +325,10 @@ IN_PROC_BROWSER_TEST_F(PrintPreviewModelTest, SetPolicySettings) {
 
 IN_PROC_BROWSER_TEST_F(PrintPreviewModelTest, GetPrintTicket) {
   RunTestCase("GetPrintTicket");
+}
+
+IN_PROC_BROWSER_TEST_F(PrintPreviewModelTest, GetPrintTicketPdf) {
+  RunTestCase("GetPrintTicketPdf");
 }
 
 IN_PROC_BROWSER_TEST_F(PrintPreviewModelTest, GetCloudPrintTicket) {
@@ -347,6 +361,34 @@ IN_PROC_BROWSER_TEST_F(PrintPreviewModelTest, CustomMarginsAreNotNegative) {
 
 IN_PROC_BROWSER_TEST_F(PrintPreviewModelTest, CustomMarginsAreNotStrings) {
   RunTestCase("CustomMarginsAreNotStrings");
+}
+
+IN_PROC_BROWSER_TEST_F(PrintPreviewModelTest, GetSettingValueReturnsRawArray) {
+  RunTestCase("GetSettingValueReturnsRawArray");
+}
+
+IN_PROC_BROWSER_TEST_F(PrintPreviewModelTest,
+                       ScalingTypeActualSizeOptionIsHidden) {
+  RunTestCase("ScalingTypeActualSizeOptionIsHidden");
+}
+
+class PrintPreviewDefaultSettingsAlignedModelTest
+    : public PrintPreviewModelTestBase {
+ public:
+  PrintPreviewDefaultSettingsAlignedModelTest() {
+    scoped_feature_list_.InitWithFeatures(
+        /*enabled_features=*/{printing::features::
+                                  kAlignPdfDefaultPrintSettingsWithHTML},
+        /*disabled_features=*/{});
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(PrintPreviewDefaultSettingsAlignedModelTest,
+                       ScalingTypeActualSizeOptionIsShown) {
+  RunTestCase("ScalingTypeActualSizeOptionIsShown");
 }
 
 class PrintPreviewPreviewGenerationTest : public PrintPreviewBrowserTest {
@@ -405,6 +447,11 @@ IN_PROC_BROWSER_TEST_F(PrintPreviewPreviewGenerationTest, Scaling) {
 
 IN_PROC_BROWSER_TEST_F(PrintPreviewPreviewGenerationTest, ScalingPdf) {
   RunTestCase("ScalingPdf");
+}
+
+IN_PROC_BROWSER_TEST_F(PrintPreviewPreviewGenerationTest,
+                       ScalingPdfAlignPdfDefaultPrintSettingsWithHTML) {
+  RunTestCase("ScalingPdfAlignPdfDefaultPrintSettingsWithHTML");
 }
 
 #if !BUILDFLAG(IS_WIN) && !BUILDFLAG(IS_MAC)
@@ -623,6 +670,10 @@ IN_PROC_BROWSER_TEST_F(PrintPreviewPreviewAreaTest, ViewportSizeChanges) {
   RunTestCase("ViewportSizeChanges");
 }
 
+IN_PROC_BROWSER_TEST_F(PrintPreviewPreviewAreaTest, PointerEvents) {
+  RunTestCase("PointerEvents");
+}
+
 class PrintPreviewCustomMarginsTest : public PrintPreviewBrowserTest {
  protected:
   void RunTestCase(const std::string& testCase) {
@@ -730,6 +781,14 @@ IN_PROC_BROWSER_TEST_F(PrintPreviewHeaderTest, EnterprisePolicy) {
   RunTestCase("EnterprisePolicy");
 }
 
+IN_PROC_BROWSER_TEST_F(PrintPreviewHeaderTest, SheetCountWithDuplex) {
+  RunTestCase("SheetCountWithDuplex");
+}
+
+IN_PROC_BROWSER_TEST_F(PrintPreviewHeaderTest, SheetCountWithCopies) {
+  RunTestCase("SheetCountWithCopies");
+}
+
 class PrintPreviewButtonStripTest : public PrintPreviewBrowserTest {
  protected:
   void RunTestCase(const std::string& testCase) {
@@ -832,6 +891,11 @@ IN_PROC_BROWSER_TEST_F(PrintPreviewDestinationListTest,
   RunTestCase("FireDestinationSelected");
 }
 
+IN_PROC_BROWSER_TEST_F(PrintPreviewDestinationListTest,
+                       ActiveItemHasTabindexZero) {
+  RunTestCase("ActiveItemHasTabindexZero");
+}
+
 class PrintPreviewPrintButtonTest : public PrintPreviewBrowserTest {
  protected:
   void RunTestCase(const std::string& testCase) {
@@ -926,7 +990,7 @@ IN_PROC_BROWSER_TEST_F(PrintPreviewDestinationSettingsTest,
   RunTestCase("RecentDestinations");
 }
 
-// Flaky on Mac and Linux, see https://crbug.com/1147205
+// Flaky on Mac and Linux, see https://crbug.com/40156519
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 #define MAYBE_RecentDestinationsMissing DISABLED_RecentDestinationsMissing
 #else
@@ -963,7 +1027,7 @@ IN_PROC_BROWSER_TEST_F(PrintPreviewDestinationSettingsTest, DisabledSaveAsPdf) {
   RunTestCase("DisabledSaveAsPdf");
 }
 
-// Flaky on Mac, see https://crbug.com/1146513.
+// Flaky on Mac, see https://crbug.com/40730118.
 #if BUILDFLAG(IS_MAC)
 #define MAYBE_NoDestinations DISABLED_NoDestinations
 #else
@@ -974,7 +1038,7 @@ IN_PROC_BROWSER_TEST_F(PrintPreviewDestinationSettingsTest,
   RunTestCase("NoDestinations");
 }
 
-class PrintPreviewScalingSettingsTest : public PrintPreviewBrowserTest {
+class PrintPreviewScalingSettingsTestBase : public PrintPreviewBrowserTest {
  protected:
   void RunTestCase(const std::string& testCase) {
     PrintPreviewBrowserTest::RunTest(
@@ -984,16 +1048,57 @@ class PrintPreviewScalingSettingsTest : public PrintPreviewBrowserTest {
   }
 };
 
+class PrintPreviewScalingSettingsTest
+    : public PrintPreviewScalingSettingsTestBase {
+ public:
+  PrintPreviewScalingSettingsTest() {
+    scoped_feature_list_.InitWithFeatures(
+        /*enabled_features=*/{},
+        /*disabled_features=*/{
+            printing::features::kAlignPdfDefaultPrintSettingsWithHTML});
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
 IN_PROC_BROWSER_TEST_F(PrintPreviewScalingSettingsTest,
                        ShowCorrectDropdownOptions) {
   RunTestCase("ShowCorrectDropdownOptions");
 }
 
-IN_PROC_BROWSER_TEST_F(PrintPreviewScalingSettingsTest, SetScaling) {
+class PrintPreviewDefaultSettingsAlignedScalingSettingsTest
+    : public PrintPreviewScalingSettingsTestBase {
+ public:
+  PrintPreviewDefaultSettingsAlignedScalingSettingsTest() {
+    scoped_feature_list_.InitWithFeatures(
+        /*enabled_features=*/{printing::features::
+                                  kAlignPdfDefaultPrintSettingsWithHTML},
+        /*disabled_features=*/{});
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(PrintPreviewDefaultSettingsAlignedScalingSettingsTest,
+                       ShowActualSizeOption) {
+  RunTestCase("ShowActualSizeOption");
+}
+
+IN_PROC_BROWSER_TEST_F(PrintPreviewDefaultSettingsAlignedScalingSettingsTest,
+                       SetScaling) {
   RunTestCase("SetScaling");
 }
 
+// TODO(crbug.com/440516024): Fix flakiness on Linux and re-enable.
+#if BUILDFLAG(IS_LINUX)
+#define MAYBE_InputNotDisabledOnValidityChange \
+  DISABLED_InputNotDisabledOnValidityChange
+#else
+#define MAYBE_InputNotDisabledOnValidityChange InputNotDisabledOnValidityChange
+#endif
 IN_PROC_BROWSER_TEST_F(PrintPreviewScalingSettingsTest,
-                       InputNotDisabledOnValidityChange) {
+                       MAYBE_InputNotDisabledOnValidityChange) {
   RunTestCase("InputNotDisabledOnValidityChange");
 }

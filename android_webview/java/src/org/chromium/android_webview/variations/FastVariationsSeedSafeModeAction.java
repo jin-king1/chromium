@@ -9,7 +9,6 @@ import android.net.Uri;
 import android.os.ParcelFileDescriptor;
 import android.os.ParcelFileDescriptor.AutoCloseInputStream;
 
-import androidx.annotation.NonNull;
 import androidx.annotation.VisibleForTesting;
 
 import org.chromium.android_webview.AwBrowserProcess;
@@ -23,29 +22,39 @@ import org.chromium.base.Log;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.components.variations.LoadSeedResult;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.util.Date;
 import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 
 /**
- * A {@link SafeModeAction} to ensure the variations seed is distributed on an app's first run.
- * This is the browser-process counterpart to {@link
+ * A {@link SafeModeAction} to ensure the variations seed is distributed on an app's first run. This
+ * is the browser-process counterpart to {@link
  * org.chromium.android_webview.services.NonEmbeddedFastVariationsSeedSafeModeAction}.
  */
 @Lifetime.Singleton
-public class FastVariationsSeedSafeModeAction implements SafeModeAction {
+@NullMarked
+public class FastVariationsSeedSafeModeAction extends SafeModeAction {
     private static final String TAG = "FastVariationsSeed";
     // This ID should not be reused.
     private static final String ID = SafeModeActionIds.FAST_VARIATIONS_SEED;
     private final String mWebViewPackageName;
     private static boolean sHasRun;
-    private static File sSeedFile = VariationsUtils.getSeedFile();
+
+    private static class LazyHolder {
+        private static File sSeedFile = VariationsUtils.getSeedFile();
+    }
+
+    @Override
+    public String getId() {
+        return ID;
+    }
 
     @VisibleForTesting
     public FastVariationsSeedSafeModeAction(String webViewPackageName) {
@@ -58,7 +67,7 @@ public class FastVariationsSeedSafeModeAction implements SafeModeAction {
 
     @VisibleForTesting
     public static void setAlternateSeedFilePath(File seedFile) {
-        sSeedFile = seedFile;
+        LazyHolder.sSeedFile = seedFile;
     }
 
     /**
@@ -70,20 +79,15 @@ public class FastVariationsSeedSafeModeAction implements SafeModeAction {
     }
 
     @Override
-    @NonNull
-    public String getId() {
-        return ID;
-    }
-
-    @Override
-    public boolean execute() {
+    public boolean executeAtStartup() {
         sHasRun = true;
-        long currDateTime = new Date().getTime();
+        long currDateTime = System.currentTimeMillis();
         SeedParser parser = new SeedParser();
-        long stampTime = sSeedFile.lastModified();
+        // This will return 0 if the file doesn't exist.
+        long stampTime = LazyHolder.sSeedFile.lastModified();
         long ageInMillis = currDateTime - stampTime;
 
-        if (sSeedFile.exists() && ageInMillis > 0) {
+        if (LazyHolder.sSeedFile.exists() && ageInMillis > 0) {
             logSeedFileAge(ageInMillis);
         }
         // If we see that the local seed file has not exceeded the
@@ -116,17 +120,16 @@ public class FastVariationsSeedSafeModeAction implements SafeModeAction {
     }
 
     /**
-     * This class queries {@link SafeModeVariationsSeedContentProvider} for the
-     * latest variations seed.
+     * This class queries {@link SafeModeVariationsSeedContentProvider} for the latest variations
+     * seed.
      *
      * @return Byte array representation of a variations seed
      */
-    private byte[] getProtoFromServiceBlocking() {
+    private byte @Nullable [] getProtoFromServiceBlocking() {
         return new ContentProviderQuery(mWebViewPackageName)
                 .querySafeModeVariationsSeedContentProvider();
     }
 
-    // TODO(crbug.com/40259816): Update this to include timeout capability.
     private static class ContentProviderQuery {
         private static final String URI_SUFFIX = ".SafeModeVariationsSeedContentProvider";
         private static final String URI_PATH = VariationsFastFetchModeUtils.URI_PATH;
@@ -136,7 +139,7 @@ public class FastVariationsSeedSafeModeAction implements SafeModeAction {
             mWebViewPackageName = webViewPackageName;
         }
 
-        public byte[] querySafeModeVariationsSeedContentProvider() {
+        public byte @Nullable [] querySafeModeVariationsSeedContentProvider() {
             try {
                 Uri uri =
                         new Uri.Builder()
@@ -189,7 +192,7 @@ public class FastVariationsSeedSafeModeAction implements SafeModeAction {
             if (success) {
                 Log.i(TAG, "Successfully parsed and loaded new seed!");
                 recordLoadSeedResult(LoadSeedResult.SUCCESS);
-                VariationsSeedLoader.maybeRecordSeedFileTime(sSeedFile.lastModified());
+                VariationsSeedLoader.maybeRecordSeedFileTime(LazyHolder.sSeedFile.lastModified());
             } else {
                 Log.i(TAG, "Failure parsing and loading seed!");
                 recordLoadSeedResult(LoadSeedResult.LOAD_OTHER_FAILURE);
@@ -198,11 +201,11 @@ public class FastVariationsSeedSafeModeAction implements SafeModeAction {
         }
 
         public boolean parseAndSaveSeedFile() {
-            boolean success = VariationsSeedLoader.parseAndSaveSeedFile(sSeedFile);
+            boolean success = VariationsSeedLoader.parseAndSaveSeedFile(LazyHolder.sSeedFile);
             if (success) {
                 Log.i(TAG, "Successfully parsed and loaded new seed!");
                 recordLoadSeedResult(LoadSeedResult.SUCCESS);
-                VariationsSeedLoader.maybeRecordSeedFileTime(sSeedFile.lastModified());
+                VariationsSeedLoader.maybeRecordSeedFileTime(LazyHolder.sSeedFile.lastModified());
             } else {
                 Log.i(TAG, "Seed fetch not successful.");
                 recordLoadSeedResult(LoadSeedResult.LOAD_OTHER_FAILURE);
@@ -219,7 +222,7 @@ public class FastVariationsSeedSafeModeAction implements SafeModeAction {
     }
 
     private static class SeedWriterTask implements Runnable {
-        private byte[] mProtoAsByteArray;
+        private final byte[] mProtoAsByteArray;
 
         public SeedWriterTask(byte[] protoAsByteArray) {
             mProtoAsByteArray = protoAsByteArray;
@@ -233,7 +236,7 @@ public class FastVariationsSeedSafeModeAction implements SafeModeAction {
         }
 
         private boolean writeToSeedFile() {
-            String filePath = sSeedFile.getPath();
+            String filePath = LazyHolder.sSeedFile.getPath();
             try (FileOutputStream out = new FileOutputStream(filePath, false)) {
                 out.write(mProtoAsByteArray);
                 out.flush();

@@ -8,14 +8,17 @@
 #include <tuple>
 
 #include "base/containers/queue.h"
+#include "base/sequence_checker.h"
+#include "base/time/time.h"
 #include "media/formats/hls/media_playlist.h"
 #include "media/formats/hls/media_segment.h"
 
 namespace media::hls {
 
-// Represents a segment, its start time, and its end time.
-using SegmentInfo =
-    std::tuple<scoped_refptr<MediaSegment>, base::TimeDelta, base::TimeDelta>;
+// Represents a segment, its start time, end time, and whether the init segment
+// should be included.
+using SegmentInfo = std::
+    tuple<scoped_refptr<MediaSegment>, base::TimeDelta, base::TimeDelta, bool>;
 
 // A segment stream represents the queue of segments which should be downloaded
 // in order. It supports configurable seeking as well as checks for size and
@@ -65,6 +68,10 @@ class MEDIA_EXPORT SegmentStream {
   // future somewhere.
   void ResetExpectingFutureManifest(base::TimeDelta new_start_time);
 
+  // Sets whether this stream is seekable. Used when transitioning from live to
+  // VOD.
+  void SetSeekable(bool seekable);
+
  private:
   class SegmentIndex {
    public:
@@ -85,13 +92,23 @@ class MEDIA_EXPORT SegmentStream {
     types::DecimalInteger discontinuity_sequence_;
   };
 
-  const bool seekable_;
+  // For live streams, start 3 segments from the end per RFC 8216
+  // Section 6.3.3, which recommends starting at least 3 target durations from
+  // the live edge to prevent playback stalls. Since segment duration ≈ target
+  // duration, queuing the last 3 segments achieves RFC compliance.
+  void SkipEarlySegmentsForLiveStream();
+
+  bool seekable_;
   base::TimeDelta next_segment_start_;
 
   base::queue<scoped_refptr<MediaSegment>> segments_;
   scoped_refptr<MediaPlaylist> active_playlist_;
 
   SegmentIndex highest_segment_index_ = {0, 0};
+  std::optional<GURL> previous_segment_init_segment_;
+
+  std::optional<base::Time> last_popped_segment_pdt_;
+  base::TimeDelta last_popped_segment_duration_;
 
   SEQUENCE_CHECKER(sequence_checker_);
 };

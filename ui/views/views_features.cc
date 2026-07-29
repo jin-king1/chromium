@@ -11,36 +11,43 @@ namespace views::features {
 
 // Please keep alphabetized.
 
-// Use a high-contrast style for ink drops when in platform high-contrast mode,
-// including full opacity and a high-contrast color
-BASE_FEATURE(kEnablePlatformHighContrastInkDrop,
-             "EnablePlatformHighContrastInkDrop",
+// When enabled, the screen capture exclusion feature (such as
+// SetExcludeFromScreenCapture) is allowed even when running inside a remote
+// session. By default, it is disabled to prevent excluded windows (such as
+// Picture-in-Picture) from being completely hidden from the remote user's
+// local view of that remote session.
+BASE_FEATURE(kAllowWindowCaptureExclusionInRemoteSessions,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-// Handle mouse cursor being out sync with a touch drag operation. If mouse
-// cursor is over different window, drag will not start, and cursor will be
-// moved to the window where the touch drag started. This is a kill switch
-// for this new logic,  crbug.com/370856871.
-BASE_FEATURE(kEnableTouchDragCursorSync,
-             "EnableTouchDragCursorSync",
-             base::FEATURE_ENABLED_BY_DEFAULT);
+// Used to apply the initial URL to the WebContents in WebView. This is a kill
+// switch for this new logic, see crbug.com/456058558.
+// TODO(https://crbug.com/456058558): Remove this flag once the feature becomes
+// stable.
+BASE_FEATURE(kApplyInitialUrlToWebContents, base::FEATURE_ENABLED_BY_DEFAULT);
+
+// Enables input protection by blocking interaction with views that are
+// currently or were recently obscured by always-on-top windows, and prevents
+// unintended events on security-sensitive UI that appears and activates
+// unexpectedly."
+BASE_FEATURE(kEnableInputProtection, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// If mouse cursor is over different window Windows will not start a Drag
+// and drop. This feature moves the cursor to the location of a touch on
+// press-down so that by the time a Drag and drop is started, the cursor will
+// already be inside the window. This is a kill switch for this new logic, see
+// crbug.com/370856871.
+BASE_FEATURE(kEnableTouchDragCursorSync, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Used to enable keyboard-accessible tooltips in Views UI, as opposed
 // to kKeyboardAccessibleTooltip in //ui/base/ui_base_features.cc.
 BASE_FEATURE(kKeyboardAccessibleTooltipInViews,
-             "KeyboardAccessibleTooltipInViews",
              base::FEATURE_ENABLED_BY_DEFAULT);
 
-// Used to enable additional a11y attributes when announcing text.
-BASE_FEATURE(kAnnounceTextAdditionalAttributes,
-             "AnnounceTextAdditionalAttributes",
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
-// Whether the window appearance follows the color provider's color mode.
-// This is only effective for mac. Some plumbing is not restricted to mac,
-// therefore this flag is included in all platforms.
-BASE_FEATURE(kMacWindowFollowsColorProviderColorMode,
-             "MacWindowFollowsColorProviderColorMode",
-             base::FEATURE_ENABLED_BY_DEFAULT);
+// If enabled, NativeViewHost controls the layers of the native view.
+#if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX)
+BASE_FEATURE(kNativeViewHostManagesLayers, base::FEATURE_ENABLED_BY_DEFAULT);
+#else
+BASE_FEATURE(kNativeViewHostManagesLayers, base::FEATURE_DISABLED_BY_DEFAULT);
+#endif
 
 }  // namespace views::features

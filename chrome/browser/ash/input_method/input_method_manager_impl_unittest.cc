@@ -25,12 +25,15 @@
 #include "chrome/browser/ash/input_method/mock_input_method_engine.h"
 #include "chrome/browser/ash/input_method/test_ime_controller.h"
 #include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
+#include "chrome/browser/global_features.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/ash/input_method/ime_controller_client_impl.h"
 #include "chrome/browser/ui/ash/keyboard/chrome_keyboard_controller_client_test_helper.h"
 #include "chrome/test/base/browser_with_test_window_test.h"
+#include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
+#include "chromeos/ash/components/login/session/session_termination_manager.h"
 #include "chromeos/components/kiosk/kiosk_test_utils.h"
 #include "components/account_id/account_id.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -177,6 +180,10 @@ class InputMethodManagerImplTest : public BrowserWithTestWindowTest {
     keyboard_ = fake_keyboard.get();
 
     manager_ = new InputMethodManagerImpl(
+        TestingBrowserProcess::GetGlobal()->local_state(),
+        TestingBrowserProcess::GetGlobal()
+            ->GetFeatures()
+            ->application_locale_storage(),
         std::make_unique<FakeInputMethodDelegate>(), std::move(mock_delegate),
         false, std::move(fake_keyboard));
     manager_->GetInputMethodUtil()->UpdateHardwareLayoutCache();
@@ -379,6 +386,7 @@ class InputMethodManagerImplTest : public BrowserWithTestWindowTest {
   }
 
  protected:
+  ash::SessionTerminationManager session_termination_manager_;
   std::unique_ptr<ChromeKeyboardControllerClientTestHelper>
       chrome_keyboard_controller_client_test_helper_;
   raw_ptr<InputMethodManagerImpl, DanglingUntriaged> manager_ = nullptr;
@@ -410,7 +418,7 @@ TEST_F(InputMethodManagerImplTest, TestCandidateWindowObserver) {
 }
 
 TEST_F(InputMethodManagerImplTest, TestObserver) {
-  // For http://crbug.com/19655#c11 - (3).
+  // For http://crbug.com/40979322#comment12 - (3).
   std::vector<std::string> keyboard_layouts;
   keyboard_layouts.emplace_back("xkb:us::eng");
 
@@ -490,7 +498,7 @@ TEST_F(InputMethodManagerImplTest, TestEnableLayouts) {
   manager_->GetActiveIMEState()->EnableLoginLayouts("en-US", keyboard_layouts);
   EXPECT_EQ(8U, manager_->GetActiveIMEState()->GetNumEnabledInputMethods());
 
-  // For http://crbug.com/19655#c11 - (5)
+  // For http://crbug.com/40979322#comment12 - (5)
   // The hardware keyboard layout "xkb:us::eng" is always active, hence 2U.
   manager_->GetActiveIMEState()->EnableLoginLayouts(
       "ja", keyboard_layouts);  // Japanese
@@ -498,7 +506,7 @@ TEST_F(InputMethodManagerImplTest, TestEnableLayouts) {
 }
 
 TEST_F(InputMethodManagerImplTest, TestEnableLayoutsAndCurrentInputMethod) {
-  // For http://crbug.com/329061
+  // For http://crbug.com/41080524
   std::vector<std::string> keyboard_layouts;
   keyboard_layouts.push_back(ImeIdFromEngineId("xkb:se::swe"));
 
@@ -577,7 +585,7 @@ TEST_F(InputMethodManagerImplTest, TestEnabledInputMethods) {
 }
 
 TEST_F(InputMethodManagerImplTest, TestEnableTwoLayouts) {
-  // For http://crbug.com/19655#c11 - (8), step 6.
+  // For http://crbug.com/40979322#comment12 - (8), step 6.
   TestObserver observer;
   manager_->AddObserver(&observer);
   std::vector<std::string> ids;
@@ -603,7 +611,7 @@ TEST_F(InputMethodManagerImplTest, TestEnableTwoLayouts) {
 }
 
 TEST_F(InputMethodManagerImplTest, TestEnableThreeLayouts) {
-  // For http://crbug.com/19655#c11 - (9).
+  // For http://crbug.com/40979322#comment12 - (9).
   TestObserver observer;
   manager_->AddObserver(&observer);
   std::string us_id = ImeIdFromEngineId("xkb:us::eng");
@@ -633,7 +641,7 @@ TEST_F(InputMethodManagerImplTest, TestEnableThreeLayouts) {
 }
 
 TEST_F(InputMethodManagerImplTest, TestEnableLayoutAndIme) {
-  // For http://crbug.com/19655#c11 - (10).
+  // For http://crbug.com/40979322#comment12 - (10).
   TestObserver observer;
   manager_->AddObserver(&observer);
   std::string dvorak_id = ImeIdFromEngineId("xkb:us:dvorak:eng");
@@ -661,7 +669,7 @@ TEST_F(InputMethodManagerImplTest, TestEnableLayoutAndIme) {
 }
 
 TEST_F(InputMethodManagerImplTest, TestEnableLayoutAndIme2) {
-  // For http://crbug.com/19655#c11 - (11).
+  // For http://crbug.com/40979322#comment12 - (11).
   TestObserver observer;
   manager_->AddObserver(&observer);
   std::vector<std::string> ids;
@@ -713,7 +721,7 @@ TEST_F(InputMethodManagerImplTest, TestEnableUnknownIds) {
 }
 
 TEST_F(InputMethodManagerImplTest, TestEnableLayoutsThenLock) {
-  // For http://crbug.com/19655#c11 - (14).
+  // For http://crbug.com/40979322#comment12 - (14).
   TestObserver observer;
   manager_->AddObserver(&observer);
   std::string us_id = ImeIdFromEngineId("xkb:us::eng");
@@ -761,7 +769,7 @@ TEST_F(InputMethodManagerImplTest, TestEnableLayoutsThenLock) {
 }
 
 TEST_F(InputMethodManagerImplTest, SwitchInputMethodTest) {
-  // For http://crbug.com/19655#c11 - (15).
+  // For http://crbug.com/40979322#comment12 - (15).
   TestObserver observer;
   manager_->AddObserver(&observer);
   std::string id1 = ImeIdFromEngineId("xkb:us:dvorak:eng");
@@ -810,7 +818,7 @@ TEST_F(InputMethodManagerImplTest, SwitchInputMethodTest) {
 }
 
 TEST_F(InputMethodManagerImplTest, TestXkbSetting) {
-  // For http://crbug.com/19655#c11 - (8), step 7-11.
+  // For http://crbug.com/40979322#comment12 - (8), step 7-11.
   EXPECT_EQ(1, keyboard_->set_current_keyboard_layout_by_name_count_);
   std::string dvorak_id = ImeIdFromEngineId("xkb:us:dvorak:eng");
   std::string colemak_id = ImeIdFromEngineId("xkb:us:colemak:eng");
@@ -956,7 +964,7 @@ TEST_F(InputMethodManagerImplTest, TestNextInputMethod) {
   std::vector<std::string> keyboard_layouts;
   keyboard_layouts.push_back(ImeIdFromEngineId("xkb:us::eng"));
 
-  // For http://crbug.com/19655#c11 - (1)
+  // For http://crbug.com/40979322#comment12 - (1)
   manager_->GetActiveIMEState()->EnableLoginLayouts("en-US", keyboard_layouts);
   EXPECT_EQ(8U, manager_->GetActiveIMEState()->GetNumEnabledInputMethods());
   InputMethodDescriptors sorted_enabled_input_methods =
@@ -1537,7 +1545,7 @@ class InputMethodManagerImplKioskTest : public InputMethodManagerImplTest {
   }
 
   void LogIn(std::string_view email, const GaiaId& gaia_id) override {
-    chromeos::SetUpFakeKioskSession(email);
+    chromeos::SetUpFakeChromeAppKioskSession(email);
   }
 };
 
@@ -1574,7 +1582,8 @@ TEST_F(InputMethodManagerImplTest, SetLoginDefaultWithAllowedInputMethods) {
   EXPECT_TRUE(manager_->GetActiveIMEState()->SetAllowedInputMethods(allowed));
   EXPECT_TRUE(manager_->GetActiveIMEState()->ReplaceEnabledInputMethods(
       manager_->GetActiveIMEState()->GetAllowedInputMethodIds()));
-  manager_->GetActiveIMEState()->SetInputMethodLoginDefault();
+  manager_->GetActiveIMEState()->SetInputMethodLoginDefault(
+      /*is_in_oobe_context=*/false);
   EXPECT_THAT(manager_->GetActiveIMEState()->GetEnabledInputMethodIds(),
               testing::ElementsAre(ImeIdFromEngineId("xkb:us::eng"),
                                    ImeIdFromEngineId("xkb:de::ger"),

@@ -31,15 +31,15 @@ WebDatabaseTable::TypeKey GetWebAppManifestKey() {
   return reinterpret_cast<void*>(&table_key);
 }
 
-// Converts 2-dimensional vector |fingerprints| to 1-dimesional vector.
-std::unique_ptr<std::vector<uint8_t>> SerializeFingerPrints(
+// Converts 2-dimensional vector |fingerprints| to 1-dimensional vector.
+std::vector<uint8_t> SerializeFingerPrints(
     const std::vector<std::vector<uint8_t>>& fingerprints) {
-  auto serialized_fingerprints = std::make_unique<std::vector<uint8_t>>();
+  std::vector<uint8_t> serialized_fingerprints;
 
   for (const auto& fingerprint : fingerprints) {
     DCHECK_EQ(fingerprint.size(), kFingerPrintLength);
-    serialized_fingerprints->insert(serialized_fingerprints->end(),
-                                    fingerprint.begin(), fingerprint.end());
+    serialized_fingerprints.insert(serialized_fingerprints.end(),
+                                   fingerprint.begin(), fingerprint.end());
   }
 
   return serialized_fingerprints;
@@ -79,15 +79,12 @@ WebDatabaseTable::TypeKey WebAppManifestSectionTable::GetTypeKey() const {
 }
 
 bool WebAppManifestSectionTable::CreateTablesIfNecessary() {
-  if (!db()->Execute("CREATE TABLE IF NOT EXISTS web_app_manifest_section ( "
-                     "expire_date INTEGER NOT NULL DEFAULT 0, "
-                     "id VARCHAR, "
-                     "min_version INTEGER NOT NULL DEFAULT 0, "
-                     "fingerprints BLOB) ")) {
-    NOTREACHED();
-  }
-
-  return true;
+  return db()->Execute(
+      "CREATE TABLE IF NOT EXISTS web_app_manifest_section ( "
+      "expire_date INTEGER NOT NULL DEFAULT 0, "
+      "id VARCHAR, "
+      "min_version INTEGER NOT NULL DEFAULT 0, "
+      "fingerprints BLOB) ");
 }
 
 bool WebAppManifestSectionTable::MigrateToVersion(
@@ -133,9 +130,7 @@ bool WebAppManifestSectionTable::AddWebAppManifest(
     s2.BindTime(index++, expire_date);
     s2.BindString(index++, section.id);
     s2.BindInt64(index++, section.min_version);
-    std::unique_ptr<std::vector<uint8_t>> serialized_fingerprints =
-        SerializeFingerPrints(section.fingerprints);
-    s2.BindBlob(index, *serialized_fingerprints);
+    s2.BindBlob(index, SerializeFingerPrints(section.fingerprints));
     if (!s2.Run())
       return false;
     s2.Reset(true);
@@ -162,11 +157,7 @@ WebAppManifestSectionTable::GetWebAppManifest(const std::string& web_app) {
     section.id = s.ColumnString(index++);
     section.min_version = s.ColumnInt64(index++);
 
-    std::vector<uint8_t> fingerprints;
-    if (!s.ColumnBlobAsVector(index, &fingerprints)) {
-      manifest.clear();
-      break;
-    }
+    std::vector<uint8_t> fingerprints = s.ColumnBlobAsVector(index);
 
     if (!DeserializeFingerPrints(fingerprints, section.fingerprints)) {
       manifest.clear();

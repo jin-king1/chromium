@@ -24,8 +24,11 @@
 #include "extensions/browser/process_manager.h"
 #include "extensions/browser/process_manager_observer.h"
 #include "extensions/browser/update_observer.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/api/runtime.h"
 #include "extensions/common/extension_id.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace base {
 class Version;
@@ -103,8 +106,13 @@ class RuntimeAPI : public BrowserContextKeyedAPI,
       const ExtensionId& extension_id,
       int seconds_from_now);
 
-  bool OpenOptionsPage(const Extension* extension,
-                       content::BrowserContext* browser_context);
+  // Opens the options page for an extension. On Android, this will open the
+  // options page asynchronously. After the option page attempts to open,
+  // the callback will execute with the result of the attempt. Returns true
+  // if the options page could be opened successfully, false otherwise.
+  void OpenOptionsPage(const Extension* extension,
+                       content::BrowserContext* browser_context,
+                       base::OnceCallback<void(bool)> callback);
 
  private:
   friend class BrowserContextKeyedAPIFactory<RuntimeAPI>;
@@ -143,7 +151,7 @@ class RuntimeAPI : public BrowserContextKeyedAPI,
   void Shutdown() override;
 
   // extensions::UpdateObserver overrides:
-  void OnAppUpdateAvailable(const Extension* extension) override;
+  void OnAppUpdateAvailable(const Extension& extension) override;
   void OnChromeUpdateAvailable() override;
 
   // ProcessManagerObserver implementation:
@@ -200,7 +208,13 @@ class RuntimeEventRouter {
                                      const ExtensionId& extension_id);
 
   // Dispatches the onInstalled event to the given extension.
-  static void DispatchOnInstalledEvent(void* context_id,
+  //
+  // `context_id` is intentionally a `MayBeDangling<void>` opaque handle: the
+  // posted task may outlive the BrowserContext during profile shutdown.
+  // Validity is checked via `ExtensionsBrowserClient::IsValidContext()`
+  // before any dereference. See `base::UnsafeDangling()` in
+  // base/functional/bind.h for the id-then-lookup pattern this implements.
+  static void DispatchOnInstalledEvent(MayBeDangling<void> context_id,
                                        const ExtensionId& extension_id,
                                        const base::Version& old_version,
                                        bool chrome_updated);
@@ -208,7 +222,7 @@ class RuntimeEventRouter {
   // Dispatches the onUpdateAvailable event to the given extension.
   static void DispatchOnUpdateAvailableEvent(content::BrowserContext* context,
                                              const ExtensionId& extension_id,
-                                             const base::Value::Dict* manifest);
+                                             const base::DictValue* manifest);
 
   // Dispatches the onBrowserUpdateAvailable event to all extensions.
   static void DispatchOnBrowserUpdateAvailableEvent(
@@ -247,6 +261,9 @@ class RuntimeOpenOptionsPageFunction : public ExtensionFunction {
  protected:
   ~RuntimeOpenOptionsPageFunction() override = default;
   ResponseAction Run() override;
+
+ private:
+  void OnOpenOptionsPageResult(bool success);
 };
 
 class RuntimeSetUninstallURLFunction : public ExtensionFunction {

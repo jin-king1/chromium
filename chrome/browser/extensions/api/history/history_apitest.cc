@@ -11,8 +11,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ssl/https_upgrades_util.h"
 #include "chrome/browser/sync/sync_service_factory.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/test/base/ui_test_utils.h"
+#include "components/history/core/browser/features.h"
 #include "components/history/core/browser/history_backend.h"
 #include "components/history/core/browser/history_db_task.h"
 #include "components/history/core/browser/history_service.h"
@@ -29,6 +28,8 @@
 #include "extensions/test/test_extension_dir.h"
 #include "net/dns/mock_host_resolver.h"
 #include "url/gurl.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace {
 
@@ -65,12 +66,9 @@ class AddSyncedVisitTask : public history::HistoryDBTask {
 
 namespace extensions {
 
-using ContextType = extensions::browser_test_util::ContextType;
-
-class HistoryApiTest : public ExtensionApiTest,
-                       public testing::WithParamInterface<ContextType> {
+class HistoryApiTest : public ExtensionApiTest {
  public:
-  HistoryApiTest() : ExtensionApiTest(GetParam()) {}
+  HistoryApiTest() = default;
 
   void SetUpOnMainThread() override {
     ExtensionApiTest::SetUpOnMainThread();
@@ -90,12 +88,16 @@ class HistoryApiTest : public ExtensionApiTest,
   }
 };
 
-INSTANTIATE_TEST_SUITE_P(PersistentBackground,
-                         HistoryApiTest,
-                         ::testing::Values(ContextType::kPersistentBackground));
-INSTANTIATE_TEST_SUITE_P(ServiceWorker,
-                         HistoryApiTest,
-                         ::testing::Values(ContextType::kServiceWorker));
+class HistoryApi404Test : public HistoryApiTest {
+ public:
+  HistoryApi404Test() {
+    // Allow 404s to be saved to History.
+    scoped_feature_list_.InitAndEnableFeature(history::kVisitedLinksOn404);
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
 
 class SyncEnabledHistoryApiTest : public HistoryApiTest {
  public:
@@ -116,42 +118,125 @@ class SyncEnabledHistoryApiTest : public HistoryApiTest {
   }
 };
 
-INSTANTIATE_TEST_SUITE_P(PersistentBackground,
-                         SyncEnabledHistoryApiTest,
-                         ::testing::Values(ContextType::kPersistentBackground));
-INSTANTIATE_TEST_SUITE_P(ServiceWorker,
-                         SyncEnabledHistoryApiTest,
-                         ::testing::Values(ContextType::kServiceWorker));
+class AddPageTask : public history::HistoryDBTask {
+ public:
+  AddPageTask(base::RunLoop* run_loop, const history::HistoryAddPageArgs& args)
+      : run_loop_(run_loop), args_(args) {}
 
-IN_PROC_BROWSER_TEST_P(HistoryApiTest, MiscSearch) {
+  bool RunOnDBThread(history::HistoryBackend* backend,
+                     history::HistoryDatabase* db) override {
+    backend->AddPage(args_);
+    return true;
+  }
+
+  void DoneRunOnMainThread() override { run_loop_->QuitWhenIdle(); }
+
+ private:
+  raw_ptr<base::RunLoop> run_loop_;
+  const history::HistoryAddPageArgs args_;
+};
+
+IN_PROC_BROWSER_TEST_F(HistoryApiTest, MiscSearch) {
   ASSERT_TRUE(StartEmbeddedTestServer());
   ASSERT_TRUE(RunExtensionTest("history/regular/misc_search")) << message_;
 }
 
-IN_PROC_BROWSER_TEST_P(HistoryApiTest, TimedSearch) {
+IN_PROC_BROWSER_TEST_F(HistoryApiTest, TimedSearch) {
   ASSERT_TRUE(StartEmbeddedTestServer());
   ASSERT_TRUE(RunExtensionTest("history/regular/timed_search")) << message_;
 }
 
-IN_PROC_BROWSER_TEST_P(HistoryApiTest, Delete) {
+IN_PROC_BROWSER_TEST_F(HistoryApiTest, Delete) {
   ASSERT_TRUE(StartEmbeddedTestServer());
   ASSERT_TRUE(RunExtensionTest("history/regular/delete")) << message_;
 }
 
-IN_PROC_BROWSER_TEST_P(HistoryApiTest, DeleteProhibited) {
-  browser()->profile()->GetPrefs()->
-      SetBoolean(prefs::kAllowDeletingBrowserHistory, false);
+IN_PROC_BROWSER_TEST_F(HistoryApiTest, DeleteProhibited) {
+  profile()->GetPrefs()->SetBoolean(prefs::kAllowDeletingBrowserHistory, false);
   ASSERT_TRUE(StartEmbeddedTestServer());
   ASSERT_TRUE(RunExtensionTest("history/regular/delete_prohibited"))
       << message_;
 }
 
-IN_PROC_BROWSER_TEST_P(HistoryApiTest, GetVisits) {
+IN_PROC_BROWSER_TEST_F(HistoryApiTest, GetVisits) {
   ASSERT_TRUE(StartEmbeddedTestServer());
   ASSERT_TRUE(RunExtensionTest("history/regular/get_visits")) << message_;
 }
 
-IN_PROC_BROWSER_TEST_P(SyncEnabledHistoryApiTest, GetVisits_Foreign) {
+IN_PROC_BROWSER_TEST_F(HistoryApi404Test, GetVisits_Excludes404Visits) {
+  ASSERT_TRUE(StartEmbeddedTestServer());
+  history::HistoryService* history_service =
+      HistoryServiceFactory::GetForProfile(profile(),
+                                           ServiceAccessType::EXPLICIT_ACCESS);
+
+  // Add a non-404 visit for a.com to the History DB.
+  history::HistoryAddPageArgs add_page_args_a_200;
+  add_page_args_a_200.url = GURL("https://a.com/");
+  add_page_args_a_200.transition = ui::PageTransitionFromInt(
+      ui::PAGE_TRANSITION_LINK | ui::PAGE_TRANSITION_CHAIN_START |
+      ui::PAGE_TRANSITION_CHAIN_END);
+  add_page_args_a_200.time = base::Time::Now() - base::Minutes(1);
+  add_page_args_a_200.context_annotations = {.response_code = 200};
+  history_service->AddPage(add_page_args_a_200);
+
+  // Add a 404 visit for a.com to the History DB.
+  history::HistoryAddPageArgs add_page_args_a_404;
+  add_page_args_a_404.url = GURL("https://a.com/");
+  add_page_args_a_404.transition = ui::PageTransitionFromInt(
+      ui::PAGE_TRANSITION_LINK | ui::PAGE_TRANSITION_CHAIN_START |
+      ui::PAGE_TRANSITION_CHAIN_END);
+  add_page_args_a_404.time = base::Time::Now() - base::Minutes(1);
+  add_page_args_a_404.context_annotations = {.response_code = 404};
+  history_service->AddPage(add_page_args_a_404);
+
+  // Add a 404 visit for b.com to the History DB.
+  history::HistoryAddPageArgs add_page_args_b_404;
+  add_page_args_b_404.url = GURL("https://b.com/");
+  add_page_args_b_404.transition = ui::PageTransitionFromInt(
+      ui::PAGE_TRANSITION_LINK | ui::PAGE_TRANSITION_CHAIN_START |
+      ui::PAGE_TRANSITION_CHAIN_END);
+  add_page_args_b_404.time = base::Time::Now() - base::Minutes(1);
+  add_page_args_b_404.context_annotations = {.response_code = 404};
+  history_service->AddPage(add_page_args_b_404);
+
+  static constexpr char kManifest[] =
+      R"({
+        "name": "chrome.history",
+        "version": "0.1",
+        "manifest_version": 3,
+        "permissions": ["history"],
+        "background": {
+          "service_worker": "get_visits_404.js"
+        }
+      })";
+  static constexpr char kBackgroundJs[] =
+      R"(chrome.test.runTests([
+        function getVisits() {
+          var query = {text: ''};
+          chrome.history.search(query, function(results) {
+            // We should only get a.com back, since b.com only has 404 visits.
+            chrome.test.assertEq(1, results.length);
+            chrome.test.assertEq('https://a.com/', results[0].url);
+
+            var urlId = results[0].id;
+            chrome.history.getVisits(
+                {url: results[0].url}, function(results) {
+                  // We should only get the non-404 visit back for a.com.
+                  chrome.test.assertEq(1, results.length);
+                  chrome.test.assertEq(urlId, results[0].id);
+                  chrome.test.succeed();
+                });
+          });
+        }
+      ]);)";
+  TestExtensionDir test_dir;
+  test_dir.WriteManifest(kManifest);
+  test_dir.WriteFile(FILE_PATH_LITERAL("get_visits_404.js"), kBackgroundJs);
+
+  ASSERT_TRUE(RunExtensionTest(test_dir.UnpackedPath(), {}, {})) << message_;
+}
+
+IN_PROC_BROWSER_TEST_F(SyncEnabledHistoryApiTest, GetVisits_Foreign) {
   ASSERT_TRUE(StartEmbeddedTestServer());
 
   // Setup: Add a foreign (aka synced) history entry to the DB.
@@ -166,7 +251,7 @@ IN_PROC_BROWSER_TEST_P(SyncEnabledHistoryApiTest, GetVisits_Foreign) {
   base::CancelableTaskTracker tracker;
   base::RunLoop run_loop;
   history::HistoryService* history_service =
-      HistoryServiceFactory::GetForProfile(browser()->profile(),
+      HistoryServiceFactory::GetForProfile(profile(),
                                            ServiceAccessType::EXPLICIT_ACCESS);
   history_service->ScheduleDBTask(
       FROM_HERE,
@@ -179,11 +264,10 @@ IN_PROC_BROWSER_TEST_P(SyncEnabledHistoryApiTest, GetVisits_Foreign) {
       R"({
         "name": "chrome.history",
         "version": "0.1",
-        "manifest_version": 2,
+        "manifest_version": 3,
         "permissions": ["history"],
         "background": {
-          "scripts": ["get_visits_foreign.js"],
-          "persistent": true
+          "service_worker": "get_visits_foreign.js"
         }
       })";
   static constexpr char kBackgroundJs[] =
@@ -214,22 +298,76 @@ IN_PROC_BROWSER_TEST_P(SyncEnabledHistoryApiTest, GetVisits_Foreign) {
   ASSERT_TRUE(RunExtensionTest(test_dir.UnpackedPath(), {}, {})) << message_;
 }
 
-IN_PROC_BROWSER_TEST_P(HistoryApiTest, SearchAfterAdd) {
+IN_PROC_BROWSER_TEST_F(SyncEnabledHistoryApiTest, SearchIncludesActorVisits) {
+  ASSERT_TRUE(StartEmbeddedTestServer());
+
+  history::HistoryService* history_service =
+      HistoryServiceFactory::GetForProfile(profile(),
+                                           ServiceAccessType::EXPLICIT_ACCESS);
+
+  const GURL actor_url("https://actor-visit.com/");
+  history::HistoryAddPageArgs add_page_args;
+  add_page_args.url = actor_url;
+  add_page_args.time = base::Time::Now();
+  add_page_args.transition = ui::PAGE_TRANSITION_LINK;
+  add_page_args.visit_source = history::VisitSource::SOURCE_ACTOR;
+
+  base::CancelableTaskTracker tracker;
+  base::RunLoop run_loop;
+
+  // Schedule the `AddPageTask()` to run on the `HistoryService`'s DB thread.
+  // The test must wait for this task to complete before checking the DB.
+  history_service->ScheduleDBTask(
+      FROM_HERE, std::make_unique<AddPageTask>(&run_loop, add_page_args),
+      &tracker);
+  run_loop.Run();
+
+  // Load the extension to execute history.search().
+  static constexpr char kManifest[] =
+      R"({
+         "name": "chrome.history.actor",
+         "version": "0.1",
+         "manifest_version": 3,
+         "permissions": ["history"],
+         "background": {
+           "service_worker": "search_actor.js"
+         }
+       })";
+  static constexpr char kBackgroundJs[] =
+      R"(chrome.test.runTests([
+           function searchActorVisit() {
+             var query = {text: 'actor-visit'};
+             chrome.history.search(query, function(results) {
+               // The actor visit should be included.
+               chrome.test.assertEq(1, results.length);
+               chrome.test.assertEq('https://actor-visit.com/', results[0].url);
+               chrome.test.succeed();
+             });
+           }
+         ]);)";
+  TestExtensionDir test_dir;
+  test_dir.WriteManifest(kManifest);
+  test_dir.WriteFile(FILE_PATH_LITERAL("search_actor.js"), kBackgroundJs);
+
+  ASSERT_TRUE(RunExtensionTest(test_dir.UnpackedPath(), {}, {})) << message_;
+}
+
+IN_PROC_BROWSER_TEST_F(HistoryApiTest, SearchAfterAdd) {
   ASSERT_TRUE(StartEmbeddedTestServer());
   ASSERT_TRUE(RunExtensionTest("history/regular/search_after_add")) << message_;
 }
 
 // Test when History API is used from incognito mode, it has access to the
 // regular mode history and actual incognito navigation has no effect on it.
-IN_PROC_BROWSER_TEST_P(HistoryApiTest, Incognito) {
+IN_PROC_BROWSER_TEST_F(HistoryApiTest, Incognito) {
   // TODO(crbug.com/40937027): Convert test to use HTTPS and then remove.
   ScopedAllowHttpForHostnamesForTesting allow_http({"www.b.com"},
                                                    profile()->GetPrefs());
 
   ASSERT_TRUE(StartEmbeddedTestServer());
-  // Setup.
-  Browser* incognito_browser = CreateIncognitoBrowser(browser()->profile());
-  Profile* incognito_profile = incognito_browser->profile();
+  Profile* incognito_profile =
+      profile()->GetPrimaryOTRProfile(/*create_if_needed=*/true);
+
   ExtensionTestMessageListener regular_listener("regular ready");
   ExtensionTestMessageListener incognito_listener("incognito ready");
   const Extension* extension =
@@ -260,10 +398,7 @@ IN_PROC_BROWSER_TEST_P(HistoryApiTest, Incognito) {
   // Perform navigation in incognito mode.
   const GURL b_com =
       embedded_test_server()->GetURL("www.b.com", "/simple.html");
-  content::TestNavigationObserver incognito_observer(
-      incognito_browser->tab_strip_model()->GetActiveWebContents());
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(incognito_browser, b_com));
-  EXPECT_TRUE(incognito_observer.last_navigation_succeeded());
+  PlatformOpenURLOffTheRecord(incognito_profile, b_com);
 
   // Check history in regular mode is not modified by incognito navigation.
   EXPECT_EQ("1",
@@ -275,9 +410,10 @@ IN_PROC_BROWSER_TEST_P(HistoryApiTest, Incognito) {
                                "countItemsInHistory()"));
 
   // Perform navigation in regular mode.
-  content::TestNavigationObserver regular_observer(
-      browser()->tab_strip_model()->GetActiveWebContents());
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), b_com));
+  auto* web_contents = GetActiveWebContents();
+  content::TestNavigationObserver regular_observer(web_contents);
+  ASSERT_TRUE(NavigateToURL(web_contents, b_com));
+
   EXPECT_TRUE(regular_observer.last_navigation_succeeded());
 
   // Check history in regular mode is modified by navigation.

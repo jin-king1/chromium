@@ -26,6 +26,7 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+import io
 import json
 import optparse
 import textwrap
@@ -39,8 +40,6 @@ from blinkpy.common.system.log_testing import LoggingTestCase
 from blinkpy.web_tests import lint_test_expectations
 from blinkpy.web_tests.port.base import VirtualTestSuite
 from blinkpy.web_tests.port.test import MOCK_WEB_TESTS
-
-from six import StringIO
 
 
 class FakePort(object):
@@ -88,20 +87,6 @@ class FakePort(object):
 
     def tests(self,_):
         return set()
-
-
-class FakeFactory(object):
-    def __init__(self, host, ports):
-        self.host = host
-        self.ports = {}
-        for port in ports:
-            self.ports[port.name] = port
-
-    def get(self, port_name='a', *args, **kwargs):  # pylint: disable=unused-argument,method-hidden
-        return self.ports[port_name]
-
-    def all_port_names(self, platform=None):  # pylint: disable=unused-argument,method-hidden
-        return sorted(self.ports.keys())
 
 
 class LintTest(LoggingTestCase):
@@ -659,7 +644,7 @@ class CheckVirtualSuiteTest(unittest.TestCase):
 class MainTest(unittest.TestCase):
 
     def setUp(self):
-        self.stderr = StringIO()
+        self.stderr = io.StringIO()
 
     def test_success(self):
         with patch.object(lint_test_expectations,
@@ -728,3 +713,14 @@ class MainTest(unittest.TestCase):
                           side_effect=AssertionError):
             res = lint_test_expectations.main([], self.stderr, host=MockHost())
         self.assertEqual(res, exit_codes.EXCEPTIONAL_EXIT_STATUS)
+
+    def test_remote_branch_option(self):
+        host = MockHost()
+        with patch.object(lint_test_expectations,
+                          'lint',
+                          return_value=([], [])):
+            res = lint_test_expectations.main(['--remote-branch', 'security'],
+                                              self.stderr,
+                                              host=host)
+        self.assertEqual(res, 0)
+        self.assertEqual(host.remote_branch, 'security')

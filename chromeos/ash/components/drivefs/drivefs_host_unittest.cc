@@ -30,7 +30,6 @@
 #include "chromeos/ash/components/drivefs/mojom/drivefs.mojom.h"
 #include "chromeos/components/mojo_bootstrap/pending_connection_manager.h"
 #include "components/account_id/account_id.h"
-#include "components/invalidation/impl/fake_invalidation_service.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
 #include "mojo/public/cpp/bindings/clone_traits.h"
@@ -41,7 +40,6 @@
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/test/test_network_connection_tracker.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/abseil-cpp/absl/utility/utility.h"
 
 namespace drivefs {
 namespace {
@@ -191,7 +189,6 @@ class TestingDriveFsHostDelegate : public DriveFsHost::Delegate,
   const AccountId account_id_;
   mojo::PendingRemote<mojom::DriveFsBootstrap> pending_bootstrap_;
   bool verbose_logging_enabled_ = false;
-  invalidation::FakeInvalidationService invalidation_service_;
   mojom::ExtensionConnectionParamsPtr extension_params_;
 };
 
@@ -213,11 +210,7 @@ class MockDriveFsHostObserver : public DriveFsHost::Observer {
 
 class DriveFsHostTest : public ::testing::Test, public mojom::DriveFsBootstrap {
  public:
-  DriveFsHostTest()
-      : network_connection_tracker_(
-            network::TestNetworkConnectionTracker::CreateInstance()) {
-    clock_.SetNow(base::Time::Now());
-  }
+  DriveFsHostTest() { clock_.SetNow(base::Time::Now()); }
 
   DriveFsHostTest(const DriveFsHostTest&) = delete;
   DriveFsHostTest& operator=(const DriveFsHostTest&) = delete;
@@ -238,8 +231,8 @@ class DriveFsHostTest : public ::testing::Test, public mojom::DriveFsBootstrap {
     timer_ = timer.get();
     host_ = std::make_unique<DriveFsHost>(
         profile_path_, host_delegate_.get(), host_delegate_.get(),
-        network_connection_tracker_.get(), &clock_, disk_manager_.get(),
-        std::move(timer));
+        network::TestNetworkConnectionTracker::GetInstance(), &clock_,
+        disk_manager_.get(), std::move(timer));
   }
 
   void TearDown() override {
@@ -291,8 +284,8 @@ class DriveFsHostTest : public ::testing::Test, public mojom::DriveFsBootstrap {
     token_ = StartMount();
     CallMountCallbackSuccess(token_);
 
-    ASSERT_TRUE(mojo_bootstrap::PendingConnectionManager::Get().OpenIpcChannel(
-        token_, {}));
+    ASSERT_TRUE(mojo_bootstrap::PendingConnectionManager::GetForDriveFs()
+                    .OpenIpcChannel(token_, {}));
     {
       base::RunLoop run_loop;
       bootstrap_receiver_.set_disconnect_handler(run_loop.QuitClosure());
@@ -343,8 +336,6 @@ class DriveFsHostTest : public ::testing::Test, public mojom::DriveFsBootstrap {
   AccountId account_id_;
   std::unique_ptr<ash::disks::MockDiskMountManager> disk_manager_;
   ash::disks::DiskMountManager::MountPathCallback mount_callback_;
-  std::unique_ptr<network::TestNetworkConnectionTracker>
-      network_connection_tracker_;
   base::SimpleTestClock clock_;
   signin::IdentityTestEnvironment identity_test_env_;
   std::unique_ptr<TestingDriveFsHostDelegate> host_delegate_;
@@ -431,8 +422,9 @@ TEST_F(DriveFsHostTest, OnMountFailedFromDbus) {
   run_loop.Run();
 
   ASSERT_FALSE(host_->IsMounted());
-  EXPECT_FALSE(mojo_bootstrap::PendingConnectionManager::Get().OpenIpcChannel(
-      token, {}));
+  EXPECT_FALSE(
+      mojo_bootstrap::PendingConnectionManager::GetForDriveFs().OpenIpcChannel(
+          token, {}));
 }
 
 TEST_F(DriveFsHostTest, DestroyBeforeMojoConnection) {
@@ -444,8 +436,9 @@ TEST_F(DriveFsHostTest, DestroyBeforeMojoConnection) {
       .WillOnce(base::test::RunClosure(run_loop.QuitClosure()));
 
   host_.reset();
-  EXPECT_FALSE(mojo_bootstrap::PendingConnectionManager::Get().OpenIpcChannel(
-      token, {}));
+  EXPECT_FALSE(
+      mojo_bootstrap::PendingConnectionManager::GetForDriveFs().OpenIpcChannel(
+          token, {}));
 
   run_loop.Run();
 }
@@ -465,8 +458,8 @@ TEST_F(DriveFsHostTest, UnsupportedAccountTypes) {
         identity_test_env_.identity_manager(), account);
     host_ = std::make_unique<DriveFsHost>(
         profile_path_, host_delegate_.get(), host_delegate_.get(),
-        network_connection_tracker_.get(), &clock_, disk_manager_.get(),
-        std::make_unique<base::MockOneShotTimer>());
+        network::TestNetworkConnectionTracker::GetInstance(), &clock_,
+        disk_manager_.get(), std::make_unique<base::MockOneShotTimer>());
     EXPECT_FALSE(host_->Mount());
     EXPECT_FALSE(host_->IsMounted());
   }

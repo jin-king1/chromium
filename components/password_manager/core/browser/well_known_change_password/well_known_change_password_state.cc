@@ -11,6 +11,7 @@
 #include "components/affiliations/core/browser/affiliation_service.h"
 #include "components/password_manager/core/browser/well_known_change_password/well_known_change_password_util.h"
 #include "net/base/load_flags.h"
+#include "net/http/http_response_headers.h"
 #include "net/http/http_status_code.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "services/network/public/cpp/resource_request.h"
@@ -109,7 +110,7 @@ void WellKnownChangePasswordState::PrefetchChangePasswordURL(
     const GURL& url) {
   prefetch_timer_.Start(FROM_HERE, kPrefetchTimeout, this,
                         &WellKnownChangePasswordState::ContinueProcessing);
-  affiliation_service->PrefetchChangePasswordURL(
+  affiliation_service->FetchChangePasswordURL(
       url,
       base::BindOnce(
           &WellKnownChangePasswordState::PrefetchChangePasswordURLsCallback,
@@ -129,7 +130,7 @@ void WellKnownChangePasswordState::FetchNonExistingResourceCallback(
   ContinueProcessing();
 }
 
-void WellKnownChangePasswordState::PrefetchChangePasswordURLsCallback() {
+void WellKnownChangePasswordState::PrefetchChangePasswordURLsCallback(GURL) {
   if (prefetch_timer_.IsRunning()) {
     prefetch_timer_.Stop();
     ContinueProcessing();
@@ -139,10 +140,24 @@ void WellKnownChangePasswordState::PrefetchChangePasswordURLsCallback() {
 void WellKnownChangePasswordState::ContinueProcessing() {
   if (BothRequestsFinished()) {
     bool is_well_known_supported = SupportsWellKnownChangePasswordUrl();
-    // Don't wait for change password URL from Affiliation Service if
-    // .well-known/change-password is supported.
+    // We can proceed to notify the delegate in two cases:
+    // 1. The site supports the well-known change-password URL. In this case,
+    //    we don't need the affiliation fallback URL, so we can finish early
+    //    and stop the prefetch timer.
+    // 2. We are not waiting for the affiliation prefetch anymore (either it
+    //    finished or timed out, so the timer is not running).
     if (is_well_known_supported || !prefetch_timer_.IsRunning()) {
-      delegate_->OnProcessingFinished(is_well_known_supported);
+      // Stop the timer if we are finishing early (case 1). This also prevents
+      // the prefetch callback from running ContinueProcessing() again if it
+      // arrives later.
+      prefetch_timer_.Stop();
+      if (delegate_) {
+        auto* delegate = delegate_.get();
+        delegate_ = nullptr;
+        delegate->OnProcessingFinished(is_well_known_supported);
+        // WARNING: `this` may be deleted after the call above.
+        return;
+      }
     }
   }
 }

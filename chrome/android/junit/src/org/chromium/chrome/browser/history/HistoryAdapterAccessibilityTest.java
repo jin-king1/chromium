@@ -8,11 +8,13 @@ import static org.chromium.chrome.browser.history.HistoryTestUtils.checkAdapterC
 
 import org.junit.Assert;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.Mockito;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -32,6 +34,7 @@ import java.util.concurrent.TimeUnit;
 public class HistoryAdapterAccessibilityTest {
     public static final int PAGING = 2;
 
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     private StubbedHistoryProvider mHistoryProvider;
     private HistoryAdapter mAdapter;
 
@@ -41,12 +44,17 @@ public class HistoryAdapterAccessibilityTest {
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
         mHistoryProvider = new StubbedHistoryProvider();
         mHistoryProvider.setPaging(PAGING);
 
         mAdapter =
-                new HistoryAdapter(mContentManager, mHistoryProvider, mHistorySyncPromoCoordinator);
+                new HistoryAdapter(
+                        mContentManager,
+                        mHistoryProvider,
+                        mHistorySyncPromoCoordinator,
+                        /* shouldClusterByDomain= */ false,
+                        /* snackbarManager= */ null,
+                        /* profile= */ null);
         mAdapter.generateHeaderItemsForTest();
         mAdapter.generateFooterItemsForTest(mMockButton);
         mAdapter.setScrollToLoadDisabledForTest(true);

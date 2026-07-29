@@ -9,11 +9,15 @@
 #import "base/notreached.h"
 #import "build/build_config.h"
 #import "components/autofill/core/browser/form_import/addresses/autofill_save_update_address_profile_delegate_ios.h"
+#import "ios/chrome/browser/badges/model/features.h"
 #import "ios/chrome/browser/badges/ui_bundled/badge_button.h"
 #import "ios/chrome/browser/badges/ui_bundled/badge_constants.h"
 #import "ios/chrome/browser/badges/ui_bundled/badge_delegate.h"
 #import "ios/chrome/browser/badges/ui_bundled/badge_overflow_menu_util.h"
 #import "ios/chrome/browser/infobars/model/infobar_ios.h"
+#import "ios/chrome/browser/intelligence/features/features.h"
+#import "ios/chrome/browser/reader_mode/model/constants.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/grit/ios_strings.h"
@@ -30,46 +34,73 @@ const CGFloat kSymbolIncognitoPointSize = 28.;
 // The size of the incognito full screen symbol image.
 const CGFloat kSymbolIncognitoFullScreenPointSize = 14.;
 
+// Modifier for changing the infobar symbol size.
+const CGFloat kInfobarSymbolPointSizeModifier = 4;
+
 }  // namespace
 
 @implementation BadgeButtonFactory
 
 - (BadgeButton*)badgeButtonForBadgeType:(BadgeType)badgeType
                            usingInfoBar:(InfoBarIOS*)infoBar {
-  switch (badgeType) {
-    case kBadgeTypePasswordSave:
-      return [self passwordsSaveBadgeButton];
-    case kBadgeTypePasswordUpdate:
-      return [self passwordsUpdateBadgeButton];
-    case kBadgeTypeSaveCard:
-      return [self saveCardBadgeButton];
-    case kBadgeTypeTranslate:
-      return [self translateBadgeButton];
-    case kBadgeTypeIncognito:
-      return [self incognitoBadgeButton];
-    case kBadgeTypeOverflow:
-      return [self overflowBadgeButton];
-    case kBadgeTypeSaveAddressProfile:
-      return [self saveAddressProfileBadgeButton:infoBar];
-    case kBadgeTypePermissionsCamera:
-      return [self permissionsCameraBadgeButton];
-    case kBadgeTypePermissionsMicrophone:
-      return [self permissionsMicrophoneBadgeButton];
-    case kBadgeTypeParcelTracking:
-      return [self parcelTrackingBadgeButton];
-    case kBadgeTypeNone:
-      NOTREACHED() << "A badge should not have kBadgeTypeNone";
+  if (base::FeatureList::IsEnabled(kAutofillBadgeRemoval)) {
+    switch (badgeType) {
+      case kBadgeTypeTranslate:
+        return [self translateBadgeButton];
+      case kBadgeTypeIncognito:
+        return [self incognitoBadgeButton];
+      case kBadgeTypeOverflow:
+        return [self overflowBadgeButton];
+      case kBadgeTypePermissionsCamera:
+        return [self permissionsCameraBadgeButton];
+      case kBadgeTypePermissionsMicrophone:
+        return [self permissionsMicrophoneBadgeButton];
+      case kBadgeTypeReaderMode:
+        return [self readerModeBadgeButton];
+      case kBadgeTypeNone:
+      case kBadgeTypePasswordSave:
+      case kBadgeTypePasswordUpdate:
+      case kBadgeTypeSaveCard:
+      case kBadgeTypeSaveAddressProfile:
+        NOTREACHED() << "Badge of type " << badgeType << " should not be used.";
+    }
+  } else {
+    switch (badgeType) {
+      case kBadgeTypePasswordSave:
+        return [self passwordsSaveBadgeButton];
+      case kBadgeTypePasswordUpdate:
+        return [self passwordsUpdateBadgeButton];
+      case kBadgeTypeSaveCard:
+        return [self saveCardBadgeButton];
+      case kBadgeTypeTranslate:
+        return [self translateBadgeButton];
+      case kBadgeTypeIncognito:
+        return [self incognitoBadgeButton];
+      case kBadgeTypeOverflow:
+        return [self overflowBadgeButton];
+      case kBadgeTypeSaveAddressProfile:
+        return [self saveAddressProfileBadgeButton:infoBar];
+      case kBadgeTypePermissionsCamera:
+        return [self permissionsCameraBadgeButton];
+      case kBadgeTypePermissionsMicrophone:
+        return [self permissionsMicrophoneBadgeButton];
+      case kBadgeTypeReaderMode:
+        return [self readerModeBadgeButton];
+      case kBadgeTypeNone:
+        NOTREACHED() << "A badge should not have kBadgeTypeNone";
+    }
   }
 }
 
 #pragma mark - Private
+
 - (BadgeButton*)passwordsSaveBadgeButton {
   UIImage* image =
 #if BUILDFLAG(IS_IOS_MACCATALYST)
-      CustomSymbolWithPointSize(kPasswordSymbol, kInfobarSymbolPointSize);
+      SymbolWithPointSize(SymbolPassword, [self infoBarSymbolPointSize]);
 #else
-      CustomSymbolWithPointSize(kMulticolorPasswordSymbol,
-                                kInfobarSymbolPointSize);
+      SymbolWithPointSize(SymbolMulticolorPassword,
+                          [self infoBarSymbolPointSize]);
 #endif  // BUILDFLAG(IS_IOS_MACCATALYST)
   BadgeButton* button = [self createButtonForType:kBadgeTypePasswordSave
                                             image:image];
@@ -86,10 +117,10 @@ const CGFloat kSymbolIncognitoFullScreenPointSize = 14.;
 - (BadgeButton*)passwordsUpdateBadgeButton {
   UIImage* image =
 #if BUILDFLAG(IS_IOS_MACCATALYST)
-      CustomSymbolWithPointSize(kPasswordSymbol, kInfobarSymbolPointSize);
+      SymbolWithPointSize(SymbolPassword, [self infoBarSymbolPointSize]);
 #else
-      CustomSymbolWithPointSize(kMulticolorPasswordSymbol,
-                                kInfobarSymbolPointSize);
+      SymbolWithPointSize(SymbolMulticolorPassword,
+                          [self infoBarSymbolPointSize]);
 #endif  // BUILDFLAG(IS_IOS_MACCATALYST)
   BadgeButton* button = [self createButtonForType:kBadgeTypePasswordUpdate
                                             image:image];
@@ -105,7 +136,7 @@ const CGFloat kSymbolIncognitoFullScreenPointSize = 14.;
 
 - (BadgeButton*)saveCardBadgeButton {
   UIImage* image =
-      DefaultSymbolWithPointSize(kCreditCardSymbol, kInfobarSymbolPointSize);
+      SymbolWithPointSize(SymbolCreditCard, [self infoBarSymbolPointSize]);
   BadgeButton* button = [self createButtonForType:kBadgeTypeSaveCard
                                             image:image];
   [button addTarget:self.delegate
@@ -119,7 +150,7 @@ const CGFloat kSymbolIncognitoFullScreenPointSize = 14.;
 
 - (BadgeButton*)translateBadgeButton {
   UIImage* image =
-      CustomSymbolWithPointSize(kTranslateSymbol, kInfobarSymbolPointSize);
+      SymbolWithPointSize(SymbolTranslate, [self infoBarSymbolPointSize]);
   BadgeButton* button = [self createButtonForType:kBadgeTypeTranslate
                                             image:image];
   [button addTarget:self.delegate
@@ -135,13 +166,12 @@ const CGFloat kSymbolIncognitoFullScreenPointSize = 14.;
   BadgeButton* button;
   UIImage* image;
 
-  image =
-      SymbolWithPalette(CustomSymbolWithPointSize(kIncognitoCircleFillSymbol,
-                                                  kSymbolIncognitoPointSize),
-                        SmallIncognitoPalette());
+  image = SymbolWithPalette(
+      SymbolWithPointSize(SymbolIncognitoCircleFill, kSymbolIncognitoPointSize),
+      SmallIncognitoPalette());
   button = [self createButtonForType:kBadgeTypeIncognito image:image];
-  button.fullScreenImage = CustomSymbolTemplateWithPointSize(
-      kIncognitoSymbol, kSymbolIncognitoFullScreenPointSize);
+  button.fullScreenImage = SymbolTemplateWithPointSize(
+      SymbolIncognito, kSymbolIncognitoFullScreenPointSize);
 
   button.tintColor = [UIColor colorNamed:kTextPrimaryColor];
   button.accessibilityTraits &= ~UIAccessibilityTraitButton;
@@ -153,8 +183,17 @@ const CGFloat kSymbolIncognitoFullScreenPointSize = 14.;
 }
 
 - (BadgeButton*)overflowBadgeButton {
-  UIImage* image = DefaultSymbolWithPointSize(kEllipsisCircleFillSymbol,
-                                              kInfobarSymbolPointSize);
+  Symbol symbol = IsProactiveSuggestionsFrameworkEnabled()
+                      ? SymbolEllipsis
+                      : SymbolEllipsisCircleFill;
+
+  UIImage* image = SymbolWithPointSize(symbol, [self infoBarSymbolPointSize]);
+
+  if (IsProactiveSuggestionsFrameworkEnabled()) {
+    image = [image imageWithTintColor:[UIColor whiteColor]
+                        renderingMode:UIImageRenderingModeAlwaysOriginal];
+  }
+
   BadgeButton* button = [self createButtonForType:kBadgeTypeOverflow
                                             image:image];
   button.accessibilityIdentifier = kBadgeButtonOverflowAccessibilityIdentifier;
@@ -194,7 +233,7 @@ const CGFloat kSymbolIncognitoFullScreenPointSize = 14.;
 
 - (BadgeButton*)saveAddressProfileBadgeButton:(InfoBarIOS*)infoBar {
   UIImage* image =
-      CustomSymbolWithPointSize(kLocationSymbol, kInfobarSymbolPointSize);
+      SymbolWithPointSize(SymbolLocation, [self infoBarSymbolPointSize]);
 
   if (infoBar) {
     autofill::AutofillSaveUpdateAddressProfileDelegateIOS* delegate =
@@ -202,8 +241,8 @@ const CGFloat kSymbolIncognitoFullScreenPointSize = 14.;
             infoBar->delegate());
     CHECK(delegate);
     if (delegate->IsMigrationToAccount()) {
-      image = CustomSymbolWithPointSize(kCloudAndArrowUpSymbol,
-                                        kInfobarSymbolPointSize);
+      image = SymbolWithPointSize(SymbolCloudAndArrowUp,
+                                  [self infoBarSymbolPointSize]);
     }
   }
 
@@ -221,8 +260,8 @@ const CGFloat kSymbolIncognitoFullScreenPointSize = 14.;
 - (BadgeButton*)permissionsCameraBadgeButton {
   BadgeButton* button = [self
       createButtonForType:kBadgeTypePermissionsCamera
-                    image:CustomSymbolTemplateWithPointSize(
-                              kCameraFillSymbol, kInfobarSymbolPointSize)];
+                    image:SymbolTemplateWithPointSize(
+                              SymbolCameraFill, [self infoBarSymbolPointSize])];
   [button addTarget:self.delegate
                 action:@selector(permissionsBadgeButtonTapped:)
       forControlEvents:UIControlEventTouchUpInside];
@@ -234,10 +273,11 @@ const CGFloat kSymbolIncognitoFullScreenPointSize = 14.;
 }
 
 - (BadgeButton*)permissionsMicrophoneBadgeButton {
-  BadgeButton* button = [self
-      createButtonForType:kBadgeTypePermissionsMicrophone
-                    image:DefaultSymbolTemplateWithPointSize(
-                              kMicrophoneFillSymbol, kInfobarSymbolPointSize)];
+  BadgeButton* button =
+      [self createButtonForType:kBadgeTypePermissionsMicrophone
+                          image:SymbolTemplateWithPointSize(
+                                    SymbolMicrophoneFill,
+                                    [self infoBarSymbolPointSize])];
   [button addTarget:self.delegate
                 action:@selector(permissionsBadgeButtonTapped:)
       forControlEvents:UIControlEventTouchUpInside];
@@ -248,25 +288,22 @@ const CGFloat kSymbolIncognitoFullScreenPointSize = 14.;
   return button;
 }
 
-- (BadgeButton*)parcelTrackingBadgeButton {
-  UIImage* image =
-      DefaultSymbolWithPointSize(kShippingBoxSymbol, kInfobarSymbolPointSize);
-  BadgeButton* button = [self createButtonForType:kBadgeTypeParcelTracking
-                                            image:image];
-  [button addTarget:self.delegate
-                action:@selector(parcelTrackingBadgeButtonTapped:)
-      forControlEvents:UIControlEventTouchUpInside];
+- (BadgeButton*)readerModeBadgeButton {
+  BadgeButton* button = [self
+      createButtonForType:kBadgeTypeReaderMode
+                    image:SymbolTemplateWithPointSize(
+                              SymbolReaderMode, [self infoBarSymbolPointSize])];
   button.accessibilityIdentifier =
-      kBadgeButtonParcelTrackingAccessibilityIdentifier;
+      kBadgeButtonReaderModeAccessibilityIdentifier;
   button.accessibilityLabel =
-      l10n_util::GetNSString(IDS_IOS_INFOBAR_BADGES_PARCEL_TRACKING_HINT);
+      l10n_util::GetNSString(IDS_IOS_READER_MODE_CHIP_ACCESSIBILITY_LABEL);
   return button;
 }
 
 - (BadgeButton*)createButtonForType:(BadgeType)badgeType image:(UIImage*)image {
   BadgeButton* button = [BadgeButton badgeButtonWithType:badgeType];
   UIImageSymbolConfiguration* symbolConfig = [UIImageSymbolConfiguration
-      configurationWithPointSize:kInfobarSymbolPointSize
+      configurationWithPointSize:[self infoBarSymbolPointSize]
                           weight:UIImageSymbolWeightRegular
                            scale:UIImageSymbolScaleMedium];
   [button setPreferredSymbolConfiguration:symbolConfig
@@ -278,6 +315,16 @@ const CGFloat kSymbolIncognitoFullScreenPointSize = 14.;
       activateConstraints:@[ [button.widthAnchor
                               constraintEqualToAnchor:button.heightAnchor] ]];
   return button;
+}
+
+// Returns the size of the infobar symbol image.
+- (CGFloat)infoBarSymbolPointSize {
+  if (IsProactiveSuggestionsFrameworkEnabled() &&
+      (!self.incognito || IsChromeNextIaEnabled())) {
+    return kInfobarSymbolPointSize - kInfobarSymbolPointSizeModifier;
+  }
+
+  return kInfobarSymbolPointSize;
 }
 
 @end

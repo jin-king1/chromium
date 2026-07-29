@@ -2,11 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {TestRunner} from 'test_runner';
-
 import * as Common from 'devtools/core/common/common.js';
-import * as TextUtils from 'devtools/models/text_utils/text_utils.js';
+import * as TextUtils from 'devtools/core/text_utils/text_utils.js';
 import * as Workspace from 'devtools/models/workspace/workspace.js';
+import {TestRunner} from 'test_runner';
 
 (async function() {
   TestRunner.addResult(`Tests UISourceCode class.\n`);
@@ -45,7 +44,7 @@ import * as Workspace from 'devtools/models/workspace/workspace.js';
       TestRunner.assertEquals('var x = 0;', text);
 
       if (callNumber === 3) {
-        // Check that sourceCodeProvider.requestContent won't be called anymore.
+        // Check that sourceCodeProvider.requestContentData won't be called anymore.
         uiSourceCode.requestContentData().then(function({ text }) {
           TestRunner.assertEquals('text/javascript', uiSourceCode.mimeType());
           TestRunner.assertEquals('var x = 0;', text);

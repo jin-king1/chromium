@@ -143,12 +143,12 @@ class EditingList::AddContainerButton : public views::Button {
     add_button_->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(6, 6)));
     add_button_->SetImageModel(
         views::Button::STATE_NORMAL,
-        ui::ImageModel::FromVectorIcon(kGameControlsAddIcon,
+        ui::ImageModel::FromVectorIcon(ash::kGameControlsAddIcon,
                                        cros_tokens::kCrosSysOnPrimary,
                                        /*icon_size=*/20));
     add_button_->SetImageModel(
         views::Button::STATE_DISABLED,
-        ui::ImageModel::FromVectorIcon(kGameControlsAddIcon,
+        ui::ImageModel::FromVectorIcon(ash::kGameControlsAddIcon,
                                        cros_tokens::kCrosSysInverseOnSurface,
                                        /*icon_size=*/20));
     add_button_->SetImageCentered(true);
@@ -364,7 +364,6 @@ void EditingList::AddControlListContent() {
   // | ---------------------- |
   // | ......                 |
   // --------------------------
-  // TODO(b/270969479): Wrap `scroll_content` in a scroll view.
   DCHECK(controller_);
   DCHECK(scroll_content_);
   for (const auto& action : controller_->touch_injector()->actions()) {
@@ -455,7 +454,7 @@ void EditingList::OnDoneButtonPressed() {
 }
 
 void EditingList::OnHelpButtonPressed() {
-  ash::NewWindowDelegate::GetPrimary()->OpenUrl(
+  ash::NewWindowDelegate::GetInstance()->OpenUrl(
       GURL(kHelpUrl), ash::NewWindowDelegate::OpenUrlFrom::kUserInteraction,
       ash::NewWindowDelegate::Disposition::kNewForegroundTab);
 }

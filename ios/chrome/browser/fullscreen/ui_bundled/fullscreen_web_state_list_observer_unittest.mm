@@ -6,13 +6,18 @@
 
 #import <memory>
 
+#import "base/check_deref.h"
+#import "base/test/task_environment.h"
 #import "ios/chrome/browser/fullscreen/ui_bundled/fullscreen_model.h"
 #import "ios/chrome/browser/fullscreen/ui_bundled/test/fullscreen_model_test_util.h"
 #import "ios/chrome/browser/fullscreen/ui_bundled/test/test_fullscreen_controller.h"
-#import "ios/chrome/browser/fullscreen/ui_bundled/test/test_fullscreen_mediator.h"
+#import "ios/chrome/browser/fullscreen/ui_bundled/test/test_legacy_fullscreen_mediator.h"
+#import "ios/chrome/browser/shared/model/browser/test/test_browser.h"
+#import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/shared/model/web_state_list/test/fake_web_state_list_delegate.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_opener.h"
+#import "ios/chrome/browser/toolbar/legacy/ui_bundled/fullscreen/toolbars_size_browser_agent.h"
 #import "ios/web/public/navigation/navigation_item.h"
 #import "ios/web/public/security/ssl_status.h"
 #import "ios/web/public/test/fakes/fake_navigation_context.h"
@@ -46,28 +51,38 @@ class FakeWebStateWithProxy : public web::FakeWebState {
 
 class FullscreenWebStateListObserverTest : public PlatformTest {
  public:
-  FullscreenWebStateListObserverTest()
-      : PlatformTest(),
-        mediator_(&controller_, controller_.getModel()),
-        web_state_list_(&web_state_list_delegate_),
-        observer_(&controller_, controller_.getModel(), &mediator_) {
-    observer_.SetWebStateList(&web_state_list_);
+  FullscreenWebStateListObserverTest() {
+    profile_ = TestProfileIOS::Builder().Build();
+    browser_ = std::make_unique<TestBrowser>(profile_.get());
+    ToolbarsSizeBrowserAgent::CreateForBrowser(browser_.get());
+    TestFullscreenController::CreateForBrowser(browser_.get());
+    TestFullscreenController* controller =
+        TestFullscreenController::FromBrowser(browser_.get());
+    mediator_ = std::make_unique<TestLegacyFullscreenMediator>(
+        controller, controller->getModel());
+    observer_ = std::make_unique<FullscreenWebStateListObserver>(
+        controller, controller->getModel(), mediator_.get());
+    observer_->SetWebStateList(browser_->GetWebStateList());
   }
 
   ~FullscreenWebStateListObserverTest() override {
-    mediator_.Disconnect();
-    observer_.Disconnect();
+    mediator_->Disconnect();
+    observer_->Disconnect();
   }
 
-  FullscreenModel* model() { return controller_.getModel(); }
-  WebStateList& web_state_list() { return web_state_list_; }
+  FullscreenModel* model() {
+    return TestFullscreenController::FromBrowser(browser_.get())->getModel();
+  }
+  WebStateList& web_state_list() {
+    return CHECK_DEREF(browser_->GetWebStateList());
+  }
 
  private:
-  TestFullscreenController controller_;
-  TestFullscreenMediator mediator_;
-  FakeWebStateListDelegate web_state_list_delegate_;
-  WebStateList web_state_list_;
-  FullscreenWebStateListObserver observer_;
+  base::test::TaskEnvironment task_environment_;
+  std::unique_ptr<TestProfileIOS> profile_;
+  std::unique_ptr<TestBrowser> browser_;
+  std::unique_ptr<TestLegacyFullscreenMediator> mediator_;
+  std::unique_ptr<FullscreenWebStateListObserver> observer_;
 };
 
 TEST_F(FullscreenWebStateListObserverTest, ObserveActiveWebState) {
@@ -75,6 +90,7 @@ TEST_F(FullscreenWebStateListObserverTest, ObserveActiveWebState) {
   // FullscreenWebStateObserver for the newly activated WebState.
   auto inserted_web_state = std::make_unique<FakeWebStateWithProxy>();
   FakeWebStateWithProxy* web_state = inserted_web_state.get();
+  WebViewProxyTabHelper::CreateForWebState(web_state);
   auto passed_navigation_manager =
       std::make_unique<web::FakeNavigationManager>();
   web::FakeNavigationManager* navigation_manager =

@@ -52,7 +52,7 @@ public class AuthTabColorProviderUnitTest {
         Intent intent = new AuthTabIntent.Builder().build().intent;
         AuthTabColorProvider provider =
                 new AuthTabColorProvider(intent, mActivity, COLOR_SCHEME_LIGHT);
-        int color = ChromeColors.getDefaultThemeColor(mActivity, false);
+        int color = ChromeColors.getDefaultThemeColor(mActivity, /* isIncognito= */ false);
         assertEquals("Wrong toolbar color", color, provider.getToolbarColor());
         assertEquals("Wrong bottom bar color", color, provider.getBottomBarColor());
         assertEquals(

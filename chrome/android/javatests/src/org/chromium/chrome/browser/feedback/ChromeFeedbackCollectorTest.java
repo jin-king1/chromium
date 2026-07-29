@@ -14,7 +14,8 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
@@ -22,8 +23,8 @@ import org.chromium.base.test.util.Feature;
 import org.chromium.chrome.browser.feedback.ChromeFeedbackCollector.InitParams;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileManager;
-import org.chromium.chrome.test.ChromeBrowserTestRule;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
+import org.chromium.content_public.browser.test.NativeLibraryTestUtils;
 
 import java.util.List;
 
@@ -32,7 +33,7 @@ import java.util.List;
 public class ChromeFeedbackCollectorTest {
     private static final String FEEDBACK_URL = "https://google.com";
     private static final String FEEDBACK_CONSTANT = "feedbackContext";
-    @Rule public ChromeBrowserTestRule mChromeBrowserTestRule = new ChromeBrowserTestRule();
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Mock Activity mActivity;
 
@@ -40,7 +41,7 @@ public class ChromeFeedbackCollectorTest {
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
+        NativeLibraryTestUtils.loadNativeLibraryAndInitBrowserProcess();
     }
 
     @Test
@@ -75,7 +76,7 @@ public class ChromeFeedbackCollectorTest {
                 });
 
         // FamilyInfoFeedbackSource relies on IdentityManager which is not available for the
-        // incognito profile. See https://crbug.com/1340320.
+        // incognito profile. See https://crbug.com/40850279.
         Assert.assertFalse(
                 "FamilyInfoFeedbackSource should not be present.", containsFamilyFeedbackSource());
     }

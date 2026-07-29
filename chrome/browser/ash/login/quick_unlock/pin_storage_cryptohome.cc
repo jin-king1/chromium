@@ -8,6 +8,7 @@
 
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
+#include "base/debug/dump_without_crashing.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/task/single_thread_task_runner.h"
@@ -137,7 +138,7 @@ void PinStorageCryptohome::IsSupported(BoolCallback result) {
 
 // static
 std::optional<Key> PinStorageCryptohome::TransformPinKey(
-    const PinSaltStorage* pin_salt_storage,
+    const PinSaltStorage& pin_salt_storage,
     const AccountId& account_id,
     const Key& key) {
   Key result = key;
@@ -147,7 +148,7 @@ std::optional<Key> PinStorageCryptohome::TransformPinKey(
   if (key.GetKeyType() != Key::KEY_TYPE_PASSWORD_PLAIN)
     return std::nullopt;
 
-  const std::string salt = pin_salt_storage->GetSalt(account_id);
+  const std::string salt = pin_salt_storage.GetSalt(account_id);
   if (salt.empty())
     return std::nullopt;
 
@@ -155,8 +156,12 @@ std::optional<Key> PinStorageCryptohome::TransformPinKey(
   return result;
 }
 
-PinStorageCryptohome::PinStorageCryptohome()
-    : pin_salt_storage_(std::make_unique<PinSaltStorage>()),
+PinStorageCryptohome::PinStorageCryptohome(PrefService* local_state)
+    : PinStorageCryptohome(std::make_unique<PinSaltStorageImpl>(local_state)) {}
+
+PinStorageCryptohome::PinStorageCryptohome(
+    std::unique_ptr<PinSaltStorage> pin_salt_storage)
+    : pin_salt_storage_(std::move(pin_salt_storage)),
       auth_factor_editor_(UserDataAuthClient::Get()),
       auth_performer_(UserDataAuthClient::Get()) {
   SystemSaltGetter::Get()->GetSystemSalt(base::BindOnce(
@@ -240,8 +245,9 @@ void PinStorageCryptohome::RemovePin(std::unique_ptr<UserContext> user_context,
 
 void PinStorageCryptohome::OnSystemSaltObtained(
     const std::string& system_salt) {
+  // TODO(crbug.com/498085249): Figure out why system_salt_callbacks_ need to be
+  // delayed until system salt is ready.
   salt_obtained_ = true;
-  system_salt_ = system_salt;
 
   std::vector<base::OnceClosure> callbacks;
   std::swap(callbacks, system_salt_callbacks_);
@@ -301,17 +307,14 @@ void PinStorageCryptohome::TryAuthenticate(
       AuthSessionIntent::kVerifyOnly, std::move(on_start_auth_session));
 }
 
-void PinStorageCryptohome::SetPinSaltStorageForTesting(
-    std::unique_ptr<PinSaltStorage> pin_salt_storage) {
-  pin_salt_storage_ = std::move(pin_salt_storage);
-}
-
 void PinStorageCryptohome::OnAuthFactorsEdit(
     AuthOperationCallback callback,
     std::unique_ptr<UserContext> user_context,
     std::optional<AuthenticationError> error) {
   if (error.has_value()) {
     LOG(ERROR) << "Failed to edit pin, code " << error->get_cryptohome_error();
+    // TODO(b:374099765): Remove this once the bug is fixed.
+    base::debug::DumpWithoutCrashing();
     std::move(callback).Run(std::move(user_context), std::move(error));
     return;
   }

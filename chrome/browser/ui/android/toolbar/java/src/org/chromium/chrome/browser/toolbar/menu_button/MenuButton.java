@@ -4,6 +4,8 @@
 
 package org.chromium.chrome.browser.toolbar.menu_button;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.animation.Animator;
 import android.animation.AnimatorListenerAdapter;
 import android.animation.AnimatorSet;
@@ -27,16 +29,22 @@ import androidx.core.view.ViewCompat;
 import androidx.core.widget.ImageViewCompat;
 
 import org.chromium.base.ApiCompatibilityUtils;
-import org.chromium.base.supplier.Supplier;
+import org.chromium.build.annotations.EnsuresNonNull;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.theme.ThemeColorProvider.TintObserver;
 import org.chromium.chrome.browser.theme.ThemeUtils;
 import org.chromium.chrome.browser.toolbar.R;
+import org.chromium.chrome.browser.ui.actions.appmenu.MenuButtonState;
 import org.chromium.chrome.browser.ui.appmenu.AppMenuButtonHelper;
 import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 import org.chromium.components.browser_ui.widget.highlight.PulseDrawable;
 import org.chromium.ui.interpolators.Interpolators;
 
+import java.util.function.Supplier;
+
 /** The overflow menu button. */
+@NullMarked
 public class MenuButton extends FrameLayout implements TintObserver {
     /** The {@link ImageButton} for the menu button. */
     private ImageButton mMenuImageButton;
@@ -46,21 +54,21 @@ public class MenuButton extends FrameLayout implements TintObserver {
 
     private @BrandedColorScheme int mBrandedColorScheme;
 
-    private AppMenuButtonHelper mAppMenuButtonHelper;
+    private @Nullable AppMenuButtonHelper mAppMenuButtonHelper;
 
     private boolean mHighlightingMenu;
-    private PulseDrawable mHighlightDrawable;
+    private @Nullable PulseDrawable mHighlightDrawable;
     private Drawable mOriginalBackground;
 
-    private AnimatorSet mMenuBadgeAnimatorSet;
+    private @Nullable AnimatorSet mMenuBadgeAnimatorSet;
     private boolean mIsMenuBadgeAnimationRunning;
 
-    /** A provider that notifies components when the theme color changes.*/
-    private BitmapDrawable mMenuImageButtonAnimationDrawable;
+    /** A provider that notifies components when the theme color changes. */
+    private @Nullable BitmapDrawable mMenuImageButtonAnimationDrawable;
 
-    private BitmapDrawable mUpdateBadgeAnimationDrawable;
+    private @Nullable BitmapDrawable mUpdateBadgeAnimationDrawable;
 
-    private Supplier<MenuButtonState> mStateSupplier;
+    private @Nullable Supplier<MenuButtonState> mStateSupplier;
 
     public MenuButton(Context context, AttributeSet attrs) {
         super(context, attrs);
@@ -111,7 +119,9 @@ public class MenuButton extends FrameLayout implements TintObserver {
         }
     }
 
+    @EnsuresNonNull({"mMenuImageButtonAnimationDrawable"})
     private void updateImageResources() {
+        assumeNonNull(mMenuImageButton.getDrawable().getConstantState());
         mMenuImageButtonAnimationDrawable =
                 (BitmapDrawable)
                         mMenuImageButton.getDrawable().getConstantState().newDrawable().mutate();
@@ -137,6 +147,7 @@ public class MenuButton extends FrameLayout implements TintObserver {
         @DrawableRes int drawable = getUpdateBadgeIcon(buttonState, mBrandedColorScheme);
         mUpdateBadgeView.setImageDrawable(
                 ApiCompatibilityUtils.getDrawable(getResources(), drawable));
+        assumeNonNull(mUpdateBadgeView.getDrawable().getConstantState());
         mUpdateBadgeAnimationDrawable =
                 (BitmapDrawable)
                         mUpdateBadgeView.getDrawable().getConstantState().newDrawable().mutate();
@@ -162,6 +173,7 @@ public class MenuButton extends FrameLayout implements TintObserver {
 
     /**
      * Set the supplier of menu button state.
+     *
      * @param supplier Supplier of menu button state.
      */
     void setStateSupplier(Supplier<MenuButtonState> supplier) {
@@ -315,8 +327,8 @@ public class MenuButton extends FrameLayout implements TintObserver {
 
     @Override
     public void onTintChanged(
-            ColorStateList tintList,
-            ColorStateList activityFocusTintList,
+            @Nullable ColorStateList tintList,
+            @Nullable ColorStateList activityFocusTintList,
             @BrandedColorScheme int brandedColorScheme) {
         ImageViewCompat.setImageTintList(mMenuImageButton, tintList);
         mBrandedColorScheme = brandedColorScheme;
@@ -331,8 +343,8 @@ public class MenuButton extends FrameLayout implements TintObserver {
         }
 
         return isShowingAppMenuUpdateBadge()
-                ? mUpdateBadgeAnimationDrawable
-                : mMenuImageButtonAnimationDrawable;
+                ? assumeNonNull(mUpdateBadgeAnimationDrawable)
+                : assumeNonNull(mMenuImageButtonAnimationDrawable);
     }
 
     /**

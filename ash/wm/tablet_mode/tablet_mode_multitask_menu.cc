@@ -63,8 +63,11 @@ class TabletModeMultitaskMenuView : public views::View {
   TabletModeMultitaskMenuView(aura::Window* window,
                               base::RepeatingClosure close_callback,
                               base::RepeatingClosure dismiss_callback) {
-    SetBackground(views::CreateRoundedRectBackground(
-        kColorAshShieldAndBaseOpaque, kCornerRadius));
+    SetPaintToLayer();
+    layer()->SetFillsBoundsOpaquely(false);
+
+    SetBackground(views::CreateRoundedRectBackground(ui::kColorSysSurface3,
+                                                     kCornerRadius));
     SetBorder(std::make_unique<views::HighlightBorder>(
         kCornerRadius, views::HighlightBorder::Type::kHighlightBorderOnShadow));
 
@@ -121,9 +124,6 @@ class TabletModeMultitaskMenuView : public views::View {
     layout->set_cross_axis_alignment(
         views::BoxLayout::CrossAxisAlignment::kCenter);
 
-    SetPaintToLayer();
-    layer()->SetFillsBoundsOpaquely(false);
-
     shadow_ = SystemShadow::CreateShadowOnNinePatchLayer(
         SystemShadow::Type::kElevation12,
         SystemShadow::LayerRecreatedCallback());
@@ -166,6 +166,7 @@ TabletModeMultitaskMenu::TabletModeMultitaskMenu(
   params.parent = window->GetRootWindow()->GetChildById(
       kShellWindowId_AlwaysOnTopContainer);
   params.name = "TabletModeMultitaskMenuWidget";
+  params.layer_type = ui::LAYER_NOT_DRAWN;
 
   widget_->Init(std::move(params));
   widget_->SetVisibilityChangedAnimationsEnabled(false);
@@ -221,11 +222,11 @@ TabletModeMultitaskMenu::TabletModeMultitaskMenu(
 
   // Showing the widget can change native focus (which would result in an
   // immediate closing of the menu). Only start observing after shown.
-  views::WidgetFocusManager::GetInstance()->AddFocusChangeListener(this);
+  views::NativeViewFocusManager::GetInstance()->AddFocusChangeListener(this);
 }
 
 TabletModeMultitaskMenu::~TabletModeMultitaskMenu() {
-  views::WidgetFocusManager::GetInstance()->RemoveFocusChangeListener(this);
+  views::NativeViewFocusManager::GetInstance()->RemoveFocusChangeListener(this);
 }
 
 void TabletModeMultitaskMenu::Animate(bool show) {
@@ -385,7 +386,7 @@ void TabletModeMultitaskMenu::OnDisplayMetricsChanged(
     return;
 
   // Ignore changes to displays that aren't showing the menu.
-  if (display.id() != display::Screen::GetScreen()
+  if (display.id() != display::Screen::Get()
                           ->GetDisplayNearestView(widget_->GetNativeWindow())
                           .id()) {
     return;

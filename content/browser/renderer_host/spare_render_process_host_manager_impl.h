@@ -7,17 +7,24 @@
 
 #include <optional>
 
-#include "base/memory/memory_pressure_listener.h"
+#include "base/feature_list.h"
+#include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory_coordinator/memory_consumer.h"
 #include "base/observer_list.h"
 #include "base/time/time.h"
 #include "base/timer/elapsed_timer.h"
 #include "base/timer/timer.h"
 #include "components/performance_manager/scenario_api/performance_scenario_observer.h"
 #include "content/common/content_export.h"
+#include "content/public/browser/content_browser_client.h"
 #include "content/public/browser/process_allocation_context.h"
 #include "content/public/browser/render_process_host_observer.h"
 #include "content/public/browser/spare_render_process_host_manager.h"
+
+#if BUILDFLAG(IS_ANDROID)
+#include "base/android/application_status_listener.h"
+#endif
 
 namespace content {
 
@@ -31,14 +38,15 @@ class RenderProcessHost;
 // LINT.IfChange(SpareRendererDispatchResult)
 enum class SpareRendererDispatchResult {
   kUsed = 0,
-  kTimeout,
-  kOverridden,
-  kDestroyedNotEnabled,
-  kDestroyedProcessLimit,
-  kProcessExited,
-  kProcessHostDestroyed,
-  kMemoryPressure,
-  kMaxValue = kMemoryPressure
+  kTimeout = 1,
+  kOverridden = 2,
+  kDestroyedNotEnabled = 3,
+  kDestroyedProcessLimit = 4,
+  kProcessExited = 5,
+  kProcessHostDestroyed = 6,
+  kMemoryPressure = 7,
+  kKillAfterBackgrounded = 8,
+  kMaxValue = kKillAfterBackgrounded
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/browser/enums.xml:SpareRendererDispatchResult)
 
@@ -57,14 +65,20 @@ enum class NoSpareRendererReason {
   kProcessHostDestroyed = 7,
   kNotYetCreatedFirstLaunch = 8,
   kNotYetCreatedAfterWarmup = 9,
-  kMaxValue = kNotYetCreatedAfterWarmup
+  kOnceBackgrounded = 10,
+  kMaxValue = kOnceBackgrounded
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/browser/enums.xml:NoSpareRendererReason)
+
+CONTENT_EXPORT BASE_DECLARE_FEATURE(kKillSpareRenderOnMemoryPressure);
+CONTENT_EXPORT BASE_DECLARE_FEATURE(kSpareRPHKeepOneAliveOnMemoryPressure);
+CONTENT_EXPORT BASE_DECLARE_FEATURE(kSpareRPHUseCriticalMemoryPressure);
 
 class CONTENT_EXPORT SpareRenderProcessHostManagerImpl
     : public SpareRenderProcessHostManager,
       public RenderProcessHostObserver,
-      public performance_scenarios::PerformanceScenarioObserver {
+      public performance_scenarios::PerformanceScenarioObserver,
+      public base::MemoryConsumer {
  public:
   SpareRenderProcessHostManagerImpl();
   ~SpareRenderProcessHostManagerImpl() override;
@@ -79,10 +93,12 @@ class CONTENT_EXPORT SpareRenderProcessHostManagerImpl
   // SpareRenderProcessHostManager:
   void AddObserver(Observer* observer) override;
   void RemoveObserver(Observer* observer) override;
-  void WarmupSpare(BrowserContext* browser_context) override;
-  const std::vector<RenderProcessHost*>& GetSpares() override;
+  RenderProcessHost* WarmupSpare(BrowserContext* browser_context) override;
+  const std::vector<raw_ptr<RenderProcessHost>>& GetSpares() override;
   std::vector<ChildProcessId> GetSpareIds() override;
   void CleanupSparesForTesting() override;
+  const std::optional<LastSpareRendererCreationInfo>&
+  GetLastSpareRendererCreationInfo() const override;
 
   // Start a spare renderer immediately, only if there is none.
   // If the timeout is given, the spare render process will not be created
@@ -100,8 +116,10 @@ class CONTENT_EXPORT SpareRenderProcessHostManagerImpl
   // If the function is called again without a timeout, the current timeout will
   // be cancelled. If the function is called again with a timeout firing after
   // the current timeout, the timeout will be updated.
-  void WarmupSpare(BrowserContext* browser_context,
-                   std::optional<base::TimeDelta> timeout);
+  //
+  // Returns a RenderProcessHost if a new one is created.
+  RenderProcessHost* WarmupSpare(BrowserContext* browser_context,
+                                 std::optional<base::TimeDelta> timeout);
 
   // RenderProcessHostImpl should call
   // SpareRenderProcessHostManager::MaybeTakeSpare when creating a new RPH. In
@@ -134,10 +152,18 @@ class CONTENT_EXPORT SpareRenderProcessHostManagerImpl
   void CleanupSpares(
       std::optional<SpareRendererDispatchResult> dispatch_result);
 
+  // Gracefully removes and cleanups any extra spare RenderProcessHost beyond
+  // the first one. This is always a nop if the kMultipleSpareRPHs feature is
+  // disabled.
+  void CleanupExtraSpares(
+      std::optional<SpareRendererDispatchResult> dispatch_result);
+
   void SetDeferTimerTaskRunnerForTesting(
       scoped_refptr<base::SequencedTaskRunner> task_runner);
 
   void SetIsBrowserIdleForTesting(bool is_browser_idle);
+
+  bool HasSpareRenderer() { return !spare_rphs_.empty(); }
 
  private:
   // Release ownership of a spare renderer. Called when the spare has either
@@ -170,12 +196,9 @@ class CONTENT_EXPORT SpareRenderProcessHostManagerImpl
 
   bool DestroyTimerWillFireBefore(base::TimeDelta timeout);
 
-  void OnMemoryPressure(
-      base::MemoryPressureListener::MemoryPressureLevel memory_pressure_level);
-
-  // When the system is under memory pressure, this function is called every 5
-  // minutes to determine when it ends.
-  void CheckIfMemoryPressureEnded();
+  // base::MemoryConsumer:
+  void OnUpdateMemoryLimit() override;
+  void OnReleaseMemory() override;
 
   // Returns true if an extra spare should be created.
   bool ShouldCreateExtraSpare() const;
@@ -188,18 +211,30 @@ class CONTENT_EXPORT SpareRenderProcessHostManagerImpl
   // Records heartbeat metrics for the spare RPHs. Called every 2 minutes.
   void OnMetricsHeartbeatTimerFired();
 
-  base::MemoryPressureListener memory_pressure_listener_;
+#if BUILDFLAG(IS_ANDROID)
+  FRIEND_TEST_ALL_PREFIXES(
+      SpareRenderProcessHostManagerMemoryThresholdBrowserTest,
+      CorrectThresholdLogic);
+  void OnApplicationStateChange(base::android::ApplicationState state);
 
-  // If this timer is running, then the system is under memory pressure.
-  // TODO(380805024): Remove the polling timer when possible.
-  base::RepeatingTimer check_memory_pressure_timer_;
+  bool ShouldCreateSpareRendererWithAvailableMemory(
+      int available_memory_mb) const;
+#endif
+
+  // Checks various conditions that could prevent an embedder from using the
+  // spare.
+  std::optional<ContentBrowserClient::SpareProcessRefusedByEmbedderReason>
+  DoesEmbedderAllowSpareUsage(BrowserContext* browser_context,
+                              SiteInstanceImpl* site_instance);
+
+  base::MemoryConsumerRegistration memory_consumer_registration_;
 
   // The clients who want to know when the spare render process host has
   // changed.
   base::ObserverList<Observer> observer_list_;
 
   // All spare RPHs. RPH instances are self-owned, hence the raw pointers.
-  std::vector<RenderProcessHost*> spare_rphs_;
+  std::vector<raw_ptr<RenderProcessHost>> spare_rphs_;
 
   // The timer used to track the startup time of the spare renderer process.
   // The elapsed time will be tracked even if the spare renderer is destroyed
@@ -228,6 +263,15 @@ class CONTENT_EXPORT SpareRenderProcessHostManagerImpl
   bool is_browser_idle_ = true;
 
   base::RepeatingTimer metrics_heartbeat_timer_;
+
+  std::optional<LastSpareRendererCreationInfo>
+      last_spare_renderer_creation_info_;
+
+#if BUILDFLAG(IS_ANDROID)
+  std::unique_ptr<base::android::ApplicationStatusListener>
+      app_status_listener_;
+  bool is_app_backgroud_;
+#endif
 };
 
 }  // namespace content

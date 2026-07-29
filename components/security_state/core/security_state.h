@@ -6,10 +6,10 @@
 #define COMPONENTS_SECURITY_STATE_CORE_SECURITY_STATE_H_
 
 #include <stdint.h>
+
 #include <memory>
 #include <string>
 
-#include "base/feature_list.h"
 #include "net/base/url_util.h"
 #include "net/cert/cert_status_flags.h"
 #include "net/cert/sct_status_flags.h"
@@ -91,6 +91,10 @@ enum ContentStatus {
 
 // Describes whether the page contains malicious resources such as
 // malware or phishing attacks.
+//
+// A Java counterpart will be generated for this enum.
+// GENERATED_JAVA_ENUM_PACKAGE: org.chromium.components.security_state
+// GENERATED_JAVA_CLASS_NAME_OVERRIDE: ConnectionMaliciousContentStatus
 enum MaliciousContentStatus {
   MALICIOUS_CONTENT_STATUS_NONE,
   MALICIOUS_CONTENT_STATUS_MALWARE,
@@ -172,6 +176,7 @@ struct VisibleSecurityState {
   // The following fields contain information about the connection
   // used to load the page or request.
   scoped_refptr<net::X509Certificate> certificate;
+  scoped_refptr<net::X509Certificate> two_qwac;
   net::CertStatus cert_status;
   int connection_status;
   // The ID of the (EC)DH group used by the key exchange. The value is zero if

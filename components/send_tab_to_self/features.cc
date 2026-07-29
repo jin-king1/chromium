@@ -6,60 +6,92 @@
 
 #include "base/feature_list.h"
 #include "base/metrics/field_trial_params.h"
+#include "base/time/time.h"
 #include "build/build_config.h"
+
+#if BUILDFLAG(IS_IOS)
+namespace {
+
+// The default time offset used to pre-populate the date/time picker when the
+// 'Set a Reminder' UI half-sheet is first shown.
+const base::TimeDelta kReminderNotificationsDefaultOffset = base::Hours(24);
+
+}  // namespace
+#endif  // BUILDFLAG(IS_IOS)
 
 namespace send_tab_to_self {
 
 BASE_FEATURE(kSendTabToSelfEnableNotificationTimeOut,
-             "SendTabToSelfEnableNotificationTimeOut",
              base::FEATURE_DISABLED_BY_DEFAULT);
 
+BASE_FEATURE(kSendTabToSelfPropagateFormFields,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kSendTabToSelfPropagateScrollPosition,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kSendTabToSelfImprovedLastActiveLabels,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kSendTabToSelfPropagateNavigationHistory,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kSendTabToSelfAutoOpen, base::FEATURE_DISABLED_BY_DEFAULT);
+
+#if BUILDFLAG(IS_IOS) || BUILDFLAG(IS_ANDROID)
+BASE_FEATURE(kSendTabToSelfSupportAutoOpenInTabGrid,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+#endif  // BUILDFLAG(IS_IOS) || BUILDFLAG(IS_ANDROID)
+
+BASE_FEATURE(kSendTabToSelfEnhancedDesktopUI,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kSendTabToSelfPostSendToast, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kSendTabToSelfExtraEntryPoints, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kSendTabToSelfEnhancedDesktopUIv2,
+             "SendTabToSelfEnhancedDesktopUIv2",
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+#if BUILDFLAG(IS_ANDROID)
+BASE_FEATURE(kSendTabToSelfGesture, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kSendTabToSelfOpenNativeApp, base::FEATURE_DISABLED_BY_DEFAULT);
+#endif  // BUILDFLAG(IS_ANDROID)
+
 #if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
-BASE_FEATURE(kSendTabToSelfV2,
-             "SendTabToSelfV2",
+BASE_FEATURE(kSendTabToSelfEnhancedBottomsheet,
              base::FEATURE_DISABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
 
-BASE_FEATURE(kSendTabToSelfIOSPushNotifications,
-             "SendTabToSelfIOSPushNotifications",
+#if BUILDFLAG(IS_IOS)
+
+BASE_FEATURE(kSendTabToSelfIOSShareSheetDeviceList,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-const char kSendTabIOSPushNotificationsURLImageParam[] =
-    "variant_with_URL_image";
+BASE_FEATURE(kSendTabToSelfIOSLimitToRegularBrowsers,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
-bool IsSendTabIOSPushNotificationsEnabledWithURLImage() {
-  if (base::FeatureList::IsEnabled(kSendTabToSelfIOSPushNotifications)) {
-    return base::GetFieldTrialParamByFeatureAsBool(
-        kSendTabToSelfIOSPushNotifications,
-        kSendTabIOSPushNotificationsURLImageParam, false);
-  }
-  return false;
+BASE_FEATURE(kIOSTabReminders, base::FEATURE_DISABLED_BY_DEFAULT);
+
+bool AreIOSTabRemindersEnabled() {
+  return base::FeatureList::IsEnabled(kIOSTabReminders);
 }
 
-#if BUILDFLAG(IS_IOS)
-const char kSendTabIOSPushNotificationsWithMagicStackCardParam[] =
-    "variant_with_magic_stack_card";
+const char kReminderNotificationsDefaultTimeOffset[] =
+    "ReminderNotificationsDefaultTimeOffset";
 
-bool IsSendTabIOSPushNotificationsEnabledWithMagicStackCard() {
-  if (base::FeatureList::IsEnabled(kSendTabToSelfIOSPushNotifications)) {
-    return base::GetFieldTrialParamByFeatureAsBool(
-        kSendTabToSelfIOSPushNotifications,
-        kSendTabIOSPushNotificationsWithMagicStackCardParam, false);
-  }
-  return false;
-}
-
-const char kSendTabIOSPushNotificationsWithTabRemindersParam[] =
-    "variant_with_tab_reminders";
-
-bool IsSendTabIOSPushNotificationsEnabledWithTabReminders() {
-  if (base::FeatureList::IsEnabled(kSendTabToSelfIOSPushNotifications)) {
-    return base::GetFieldTrialParamByFeatureAsBool(
-        kSendTabToSelfIOSPushNotifications,
-        kSendTabIOSPushNotificationsWithTabRemindersParam, false);
-  }
-  return false;
+const base::TimeDelta GetReminderNotificationsDefaultTimeOffset() {
+  // Default to 24 hours.
+  return base::GetFieldTrialParamByFeatureAsTimeDelta(
+      kIOSTabReminders, kReminderNotificationsDefaultTimeOffset,
+      kReminderNotificationsDefaultOffset);
 }
 #endif  // BUILDFLAG(IS_IOS)
+
+#if BUILDFLAG(IS_ANDROID)
+BASE_FEATURE(kSendTabToSelfDynamicShortcuts, base::FEATURE_DISABLED_BY_DEFAULT);
+#endif  // BUILDFLAG(IS_ANDROID)
 
 }  // namespace send_tab_to_self

@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <array>
 #include <map>
 #include <memory>
 #include <optional>
@@ -17,7 +18,6 @@
 #include <vector>
 
 #include "base/containers/circular_deque.h"
-#include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/scoped_refptr.h"
@@ -34,6 +34,7 @@
 #include "net/base/net_export.h"
 #include "net/base/network_change_notifier.h"
 #include "net/base/request_priority.h"
+#include "net/dns/public/resolution_details.h"
 #include "net/log/net_log_source.h"
 #include "net/socket/client_socket_pool.h"
 #include "net/socket/next_proto.h"
@@ -61,6 +62,7 @@
 namespace net {
 
 namespace test {
+class SpdyHttpStreamTest;
 class SpdyStreamTest;
 }
 
@@ -100,6 +102,13 @@ const spdy::SpdyStreamId kLastStreamId = 0x7fffffff;
 // virtually never be hit in practice, while still preventing an
 // attacker from growing this queue unboundedly.
 const int kSpdySessionMaxQueuedCappedFrames = 10000;
+
+// Default minimum time the connection must be idle before a "Preface Ping"
+// is sent upon subsequent write activity.
+// A "Preface Ping" is a PING frame proactively sent by the SPDY session
+// prior to enqueuing a DATA or HEADERS frame when the connection has been
+// idle, to verify that the network path is still alive.
+const int kSpdyDefaultConnectionAtRiskOfLossSeconds = 10;
 
 // Default time to delay sending small receive window updates (can be
 // configured through SetTimeToBufferSmallWindowUpdates()). Usually window
@@ -216,6 +225,11 @@ class NET_EXPORT_PRIVATE SpdyStreamRequest {
     return confirm_handshake_end_;
   }
 
+  // Returns the time spent waiting in the SpdySession's pending queue.
+  base::TimeDelta max_stream_limit_pending_delay() const {
+    return max_stream_limit_pending_delay_;
+  }
+
   // Starts the request to create a stream. If OK is returned, then
   // ReleaseStream() may be called. If ERR_IO_PENDING is returned,
   // then when the stream is created, |callback| will be called, at
@@ -293,6 +307,7 @@ class NET_EXPORT_PRIVATE SpdyStreamRequest {
   CompletionOnceCallback callback_;
   MutableNetworkTrafficAnnotationTag traffic_annotation_;
   base::TimeTicks confirm_handshake_end_;
+  base::TimeDelta max_stream_limit_pending_delay_;
   bool detect_broken_connection_;
   base::TimeDelta heartbeat_interval_;
 
@@ -306,6 +321,9 @@ class NET_EXPORT SpdySession
       public HigherLayeredPool,
       public NetworkChangeNotifier::DefaultNetworkActiveObserver {
  public:
+  static constexpr inline std::string_view kHTTP11RequiredErrorMessage =
+      "HTTP/1.x is required.";
+
   // TODO(akalin): Use base::TickClock when it becomes available.
   typedef base::TimeTicks (*TimeFunc)();
 
@@ -341,15 +359,13 @@ class NET_EXPORT SpdySession
               TimeFunc time_func,
               NetworkQualityEstimator* network_quality_estimator,
               NetLog* net_log,
-              MultiplexedSessionCreationInitiator session_creation_initiator);
+              MultiplexedSessionCreationInitiator session_creation_initiator,
+              SpdySessionInitiator spdy_session_initiator);
 
   ~SpdySession() override;
 
   const HostPortPair& host_port_pair() const {
-    return spdy_session_key_.host_port_proxy_pair().first;
-  }
-  const HostPortProxyPair& host_port_proxy_pair() const {
-    return spdy_session_key_.host_port_proxy_pair();
+    return spdy_session_key_.host_port_pair();
   }
   const SpdySessionKey& spdy_session_key() const { return spdy_session_key_; }
 
@@ -518,15 +534,18 @@ class NET_EXPORT SpdySession
   // be destroyed right away, e.g. when a SpdySession function is
   // present in the call stack.)
   //
-  // |err| should be < ERR_IO_PENDING; this function is intended to be
+  // `err` should be < ERR_IO_PENDING; this function is intended to be
   // called on error.
-  // |description| indicates the reason for the error.
-  void CloseSessionOnError(Error err, const std::string& description);
+  // `description` indicates the reason for the error.
+  // `force_send_go_away` forces sending GOAWAY.
+  void CloseSessionOnError(Error err,
+                           const std::string& description,
+                           bool force_send_go_away = false);
 
   // Mark this session as unavailable, meaning that it will not be used to
   // service new streams. Unlike when a GOAWAY frame is received, this function
   // will not close any streams.
-  void MakeUnavailable();
+  void MakeUnavailable(Error error);
 
   // Closes all active streams with stream id's greater than
   // |last_good_stream_id|, as well as any created or pending
@@ -542,7 +561,7 @@ class NET_EXPORT SpdySession
 
   // Retrieves information on the current state of the SPDY session as a
   // Value.
-  base::Value::Dict GetInfoAsValue() const;
+  base::DictValue GetInfoAsValue() const;
 
   // Indicates whether the session is being reused after having successfully
   // used to send/receive data in the past or if the underlying socket was idle
@@ -564,9 +583,16 @@ class NET_EXPORT SpdySession
   bool GetLoadTimingInfo(spdy::SpdyStreamId stream_id,
                          LoadTimingInfo* load_timing_info) const;
 
+  // Returns the details of the host resolution if available.
+  std::optional<ResolutionDetails> GetResolutionDetails() const;
+
   // Returns true if session is currently active.
   bool is_active() const {
     return !active_streams_.empty() || !created_streams_.empty();
+  }
+
+  bool WasEverUsedToCreateStreams() const {
+    return streams_initiated_count_ > 0;
   }
 
   // True if the server supports WebSocket protocol.
@@ -608,20 +634,37 @@ class NET_EXPORT SpdySession
   // Whether connection status monitoring is active or not.
   bool IsBrokenConnectionDetectionEnabled() const;
 
+  SpdySessionInitiator spdy_session_initiator() const {
+    return spdy_session_initiator_;
+  }
+
  private:
-  friend class test::SpdyStreamTest;
   friend class base::RefCounted<SpdySession>;
   friend class HttpNetworkTransactionTest;
   friend class HttpProxyClientSocketPoolTest;
-  friend class SpdyHttpStreamTest;
   friend class SpdyNetworkTransactionTest;
   friend class SpdyProxyClientSocketTest;
   friend class SpdySessionPoolTest;
   friend class SpdySessionTest;
   friend class SpdyStreamRequest;
+  friend class test::SpdyHttpStreamTest;
+  friend class test::SpdyStreamTest;
 
-  using PendingStreamRequestQueue =
-      base::circular_deque<base::WeakPtr<SpdyStreamRequest>>;
+  // Represents a pending stream request.
+  struct PendingStreamRequest {
+    PendingStreamRequest(base::WeakPtr<SpdyStreamRequest> request,
+                         base::TimeTicks queue_first_enqueued_time);
+    ~PendingStreamRequest();
+    PendingStreamRequest(const PendingStreamRequest& other);
+    PendingStreamRequest(PendingStreamRequest&& other);
+    PendingStreamRequest& operator=(const PendingStreamRequest& other);
+    PendingStreamRequest& operator=(PendingStreamRequest&& other);
+
+    base::WeakPtr<SpdyStreamRequest> request;
+    base::TimeTicks queue_first_enqueued_time;
+  };
+
+  using PendingStreamRequestQueue = base::circular_deque<PendingStreamRequest>;
   using ActiveStreamMap = std::map<spdy::SpdyStreamId, SpdyStream*>;
   using CreatedStreamSet = std::set<raw_ptr<SpdyStream>>;
 
@@ -650,6 +693,8 @@ class NET_EXPORT SpdySession
     WRITE_STATE_DO_WRITE,
     WRITE_STATE_DO_WRITE_COMPLETE,
   };
+
+  static std::string_view AvailabilityStateToString(AvailabilityState state);
 
   // Has the shared logic for the other two Initialize methods that call it.
   void InitializeInternal(SpdySessionPool* pool);
@@ -843,7 +888,18 @@ class NET_EXPORT SpdySession
 
   // If the session is already draining, does nothing. Otherwise, moves
   // the session to the draining state.
-  void DoDrainSession(Error err, const std::string& description);
+  void DoDrainSession(Error err,
+                      const std::string& description,
+                      bool force_send_go_away = false);
+
+  // Immediately marks a session as unavailable, to prevent reuse, and posts a
+  // task to call DoDrainSession (if the session is drained for some other
+  // reason in the meantime, that is fine). This should be used instead of
+  // DoDrainSession when there may be a consumer of the SpdySession on the
+  // stack, so as to avoid reentrancy.
+  void DoDrainSessionAsync(Error err,
+                           std::string description,
+                           bool force_send_go_away = false);
 
   // Called right before closing a (possibly-inactive) stream for a
   // reason other than being requested to by the stream.
@@ -1038,7 +1094,8 @@ class NET_EXPORT SpdySession
 
   // Queue, for each priority, of pending stream requests that have
   // not yet been satisfied.
-  PendingStreamRequestQueue pending_create_stream_queues_[NUM_PRIORITIES];
+  std::array<PendingStreamRequestQueue, NUM_PRIORITIES>
+      pending_create_stream_queues_;
 
   // Map from stream id to all active streams.  Streams are active in the sense
   // that they have a consumer (typically HttpNetworkTransaction and regardless
@@ -1089,6 +1146,11 @@ class NET_EXPORT SpdySession
   // may be OK (upon a polite GOAWAY) or an error < ERR_IO_PENDING otherwise.
   // Initialized to OK.
   Error error_on_close_ = OK;
+
+  // If the session is made unavailable (i.e., `availability_state_` is
+  // STATE_GOING_AWAY), then `error_on_unavailable_` holds the error that
+  // caused it to become unavailable. Initialized to OK.
+  Error error_on_unavailable_ = OK;
 
   // Settings that are sent in the initial SETTINGS frame
   // (if |enable_sending_initial_data_| is true),
@@ -1223,8 +1285,8 @@ class NET_EXPORT SpdySession
 
   // A queue of stream IDs that have been send-stalled at some point
   // in the past.
-  base::circular_deque<spdy::SpdyStreamId>
-      stream_send_unstall_queue_[NUM_PRIORITIES];
+  std::array<base::circular_deque<spdy::SpdyStreamId>, NUM_PRIORITIES>
+      stream_send_unstall_queue_;
 
   NetLogWithSource net_log_;
 
@@ -1277,8 +1339,18 @@ class NET_EXPORT SpdySession
   // nullptr.
   raw_ptr<NetworkQualityEstimator> network_quality_estimator_;
 
+  // Set to the error and reason why this session is draining.
+  // TODO(crbug.com/405934874): Remove once we identify the cause of the bug.
+  std::optional<Error> drain_error_;
+  std::string drain_description_;
+  std::optional<spdy::SpdyErrorCode> go_away_error_;
+  std::string go_away_debug_data_;
+  spdy::SpdyStreamId last_good_stream_id_ = 0;
+
   // Represents how this session is created.
   const MultiplexedSessionCreationInitiator session_creation_initiator_;
+
+  const SpdySessionInitiator spdy_session_initiator_;
 
   // Used for accessing the SpdySession from asynchronous tasks. An asynchronous
   // must check if its WeakPtr<SpdySession> is valid before accessing it, to

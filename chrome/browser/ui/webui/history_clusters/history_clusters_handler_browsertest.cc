@@ -27,6 +27,7 @@
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "ui/menus/simple_menu_model.h"
 #include "ui/webui/resources/cr_components/history_clusters/history_clusters.mojom.h"
 
 namespace history_clusters {
@@ -63,7 +64,7 @@ class HistoryClustersHandlerBrowserTest : public InProcessBrowserTest {
   ~HistoryClustersHandlerBrowserTest() override = default;
 
   void SetUpOnMainThread() override {
-    browser()->profile()->GetPrefs()->SetInteger(
+    browser()->GetProfile()->GetPrefs()->SetInteger(
         history_clusters::prefs::kLastSelectedTab,
         history_clusters::prefs::TabbedPage::GROUP);
     EXPECT_TRUE(ui_test_utils::NavigateToURL(
@@ -91,7 +92,7 @@ class HistoryClustersHandlerBrowserTest : public InProcessBrowserTest {
 IN_PROC_BROWSER_TEST_F(HistoryClustersHandlerBrowserTest,
                        OpenVisitUrlsInTabGroup) {
   auto* tab_strip_model = browser()->tab_strip_model();
-  ASSERT_EQ(1, tab_strip_model->GetTabCount());
+  ASSERT_EQ(1, tab_strip_model->count());
 
   std::vector<mojom::URLVisitPtr> visits;
   auto visit1 = mojom::URLVisit::New();
@@ -102,7 +103,7 @@ IN_PROC_BROWSER_TEST_F(HistoryClustersHandlerBrowserTest,
   visits.push_back(std::move(visit2));
 
   handler_->OpenVisitUrlsInTabGroup(std::move(visits), std::nullopt);
-  ASSERT_EQ(3, tab_strip_model->GetTabCount());
+  ASSERT_EQ(3, tab_strip_model->count());
 
   ASSERT_EQ(tab_strip_model->GetTabGroupForTab(1).value(),
             tab_strip_model->GetTabGroupForTab(2).value());
@@ -117,7 +118,7 @@ IN_PROC_BROWSER_TEST_F(HistoryClustersHandlerBrowserTest,
 IN_PROC_BROWSER_TEST_F(HistoryClustersHandlerBrowserTest,
                        DISABLED_OpenVisitUrlsInTabGroupHardCap) {
   auto* tab_strip_model = browser()->tab_strip_model();
-  ASSERT_EQ(1, tab_strip_model->GetTabCount());
+  ASSERT_EQ(1, tab_strip_model->count());
 
   std::vector<mojom::URLVisitPtr> visits;
   for (size_t i = 0; i < 50; ++i) {
@@ -128,13 +129,13 @@ IN_PROC_BROWSER_TEST_F(HistoryClustersHandlerBrowserTest,
 
   // Verify that we open 32 at maximum. Including the NTP, that's 33 total.
   handler_->OpenVisitUrlsInTabGroup(std::move(visits), std::nullopt);
-  ASSERT_EQ(33, tab_strip_model->GetTabCount());
+  ASSERT_EQ(33, tab_strip_model->count());
 }
 
 IN_PROC_BROWSER_TEST_F(HistoryClustersHandlerBrowserTest,
                        RecordUIVisitActions) {
   auto* tab_strip_model = browser()->tab_strip_model();
-  ASSERT_EQ(1, tab_strip_model->GetTabCount());
+  ASSERT_EQ(1, tab_strip_model->count());
 
   base::HistogramTester histogram_tester;
 
@@ -169,7 +170,7 @@ IN_PROC_BROWSER_TEST_F(HistoryClustersHandlerBrowserTest,
 IN_PROC_BROWSER_TEST_F(HistoryClustersHandlerBrowserTest,
                        RecordUIClusterActions) {
   auto* tab_strip_model = browser()->tab_strip_model();
-  ASSERT_EQ(1, tab_strip_model->GetTabCount());
+  ASSERT_EQ(1, tab_strip_model->count());
 
   base::HistogramTester histogram_tester;
 
@@ -194,7 +195,7 @@ IN_PROC_BROWSER_TEST_F(HistoryClustersHandlerBrowserTest,
 IN_PROC_BROWSER_TEST_F(HistoryClustersHandlerBrowserTest,
                        RecordUIRelatedSearchActions) {
   auto* tab_strip_model = browser()->tab_strip_model();
-  ASSERT_EQ(1, tab_strip_model->GetTabCount());
+  ASSERT_EQ(1, tab_strip_model->count());
 
   base::HistogramTester histogram_tester;
 
@@ -216,7 +217,7 @@ IN_PROC_BROWSER_TEST_F(HistoryClustersHandlerBrowserTest,
 IN_PROC_BROWSER_TEST_F(HistoryClustersHandlerBrowserTest,
                        RecordUnsuccessfulOutcome) {
   auto* tab_strip_model = browser()->tab_strip_model();
-  ASSERT_EQ(1, tab_strip_model->GetTabCount());
+  ASSERT_EQ(1, tab_strip_model->count());
 
   base::HistogramTester histogram_tester;
 
@@ -242,7 +243,7 @@ IN_PROC_BROWSER_TEST_F(HistoryClustersHandlerBrowserTest,
   std::vector<history::Cluster> clusters;
 
   history::Cluster cluster;
-  cluster.cluster_id = 4;
+  cluster.cluster_id = history::ClusterId(4);
   cluster.related_searches = {"one", "two", "three", "four", "five"};
   cluster.visits.push_back(CreateVisit("https://low-score-1", .4));
   cluster.visits.push_back(CreateVisit("https://low-score-1", .4));
@@ -250,7 +251,7 @@ IN_PROC_BROWSER_TEST_F(HistoryClustersHandlerBrowserTest,
   clusters.push_back(cluster);
 
   mojom::QueryResultPtr mojom_result = QueryClustersResultToMojom(
-      browser()->profile(), "query", clusters, true, false);
+      browser()->GetProfile(), "query", clusters, true, false);
 
   EXPECT_EQ(mojom_result->query, "query");
   EXPECT_EQ(mojom_result->can_load_more, true);
@@ -271,8 +272,9 @@ IN_PROC_BROWSER_TEST_F(HistoryClustersHandlerBrowserTest,
   EXPECT_EQ(cluster_mojom->related_searches[4]->query, "five");
 }
 
+// TODO(crbug.com/401535901): Test is flaky.
 IN_PROC_BROWSER_TEST_F(HistoryClustersHandlerBrowserTest,
-                       RemoveVisitByUrlAndTime) {
+                       DISABLED_RemoveVisitByUrlAndTime) {
   ASSERT_TRUE(embedded_test_server()->Start());
   const GURL url = embedded_test_server()->GetURL("/simple.html");
   // Open in a new tab to keep the history clusters UI open.
@@ -283,7 +285,7 @@ IN_PROC_BROWSER_TEST_F(HistoryClustersHandlerBrowserTest,
   history::QueryResults history_query_results;
   base::RunLoop run_loop;
   base::CancelableTaskTracker tracker;
-  HistoryServiceFactory::GetForProfile(browser()->profile(),
+  HistoryServiceFactory::GetForProfile(browser()->GetProfile(),
                                        ServiceAccessType::EXPLICIT_ACCESS)
       ->QueryHistory(
           std::u16string(), history::QueryOptions(),
@@ -304,7 +306,7 @@ IN_PROC_BROWSER_TEST_F(HistoryClustersHandlerBrowserTest,
   ASSERT_TRUE(success);
 
   // Verify the history entry is no longer there.
-  ui_test_utils::HistoryEnumerator enumerator(browser()->profile());
+  ui_test_utils::HistoryEnumerator enumerator(browser()->GetProfile());
   EXPECT_EQ(0u, enumerator.urls().size());
 }
 
@@ -313,7 +315,7 @@ IN_PROC_BROWSER_TEST_F(HistoryClustersHandlerBrowserTest,
   // Disable incognito mode, the menu option should not appear.
   const GURL test_url("https://www.foo.com/");
   IncognitoModePrefs::SetAvailability(
-      browser()->profile()->GetPrefs(),
+      browser()->GetProfile()->GetPrefs(),
       policy::IncognitoModeAvailability::kDisabled);
   auto menu_model =
       handler_->CreateHistoryClustersSidePanelContextMenuForTesting(browser(),
@@ -322,7 +324,7 @@ IN_PROC_BROWSER_TEST_F(HistoryClustersHandlerBrowserTest,
 
   // Enable incognito mode, the menu option should appear as expected.
   IncognitoModePrefs::SetAvailability(
-      browser()->profile()->GetPrefs(),
+      browser()->GetProfile()->GetPrefs(),
       policy::IncognitoModeAvailability::kEnabled);
   menu_model = handler_->CreateHistoryClustersSidePanelContextMenuForTesting(
       browser(), test_url);

@@ -52,6 +52,12 @@
           // TODO(kalman): Investigate how this is ending up as -1 (based on window type? a bug?) and whether it should be optional instead.
           "index": {"type": "integer", "minimum": -1, "description": "The zero-based index of the tab within its window."},
           "groupId": {"type": "integer", "minimum": -1, "description": "The ID of the group that the tab belongs to."},
+          "splitViewId": {
+            "type": "integer",
+            "minimum": -1,
+            "optional": true,
+            "description": "The ID of the Split View that the tab belongs to."
+          },
           "windowId": {"type": "integer", "minimum": -1, "description": "The ID of the window that contains the tab."},
           "openerTabId": {"type": "integer", "minimum": 0, "optional": true, "description": "The ID of the tab that opened this tab, if any. This property is only present if the opener tab still exists."},
           "selected": {"type": "boolean", "description": "Whether the tab is selected.", "deprecated": "Please use $(ref:tabs.Tab.highlighted)."},
@@ -138,7 +144,7 @@
       {
         "id": "WindowType",
         "type": "string",
-        "enum": ["normal", "popup", "panel", "app", "devtools"],
+        "enum": ["normal", "popup", "panel", "app", "devtools", {"name": "custom-tab", "nodoc": true}],
         "description": "The type of window."
       }
     ],
@@ -146,6 +152,10 @@
       "MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND": {
         "value": 2,
         "description": "The maximum number of times that $(ref:captureVisibleTab) can be called per second. $(ref:captureVisibleTab) is expensive and should not be called too often."
+      },
+      "SPLIT_VIEW_ID_NONE": {
+        "value": -1,
+        "description": "An ID that represents the absence of a split tab."
       },
       "TAB_ID_NONE": {
         "value": -1,
@@ -251,7 +261,7 @@
             {
               "name": "response",
               "type": "any",
-              "description": "The JSON response object sent by the handler of the request. If an error occurs while connecting to the specified tab, the callback is called with no arguments and $(ref:runtime.lastError) is set to the error message."
+              "description": "The JSON response object sent by the handler of the request. If an error occurs while connecting to the specified tab, the promise will be rejected."
             }
           ]
         }
@@ -260,7 +270,7 @@
         "name": "sendMessage",
         "nocompile": true,
         "type": "function",
-        "description": "Sends a single message to the content script(s) in the specified tab, with an optional callback to run when a response is sent back.  The $(ref:runtime.onMessage) event is fired in each content script running in the specified tab for the current extension.",
+        "description": "Sends a single message to the content script(s) in the specified tab. The $(ref:runtime.onMessage) event is fired in each content script running in the specified tab for the current extension.",
         "parameters": [
           {
             "type": "integer",
@@ -294,11 +304,12 @@
         "returns_async": {
           "name": "callback",
           "optional": true,
+          "description": "Promise that resolves with the response from the content script. If an error occurs while connecting to the specified tab, the promise will be rejected.",
           "parameters": [
             {
               "name": "response",
               "type": "any",
-              "description": "The JSON response object sent by the handler of the message. If an error occurs while connecting to the specified tab, the callback is called with no arguments and $(ref:runtime.lastError) is set to the error message."
+              "description": "The JSON response object sent by the handler of the message."
             }
           ]
         }
@@ -515,6 +526,12 @@
                 "optional": true,
                 "minimum": -1,
                 "description": "The ID of the group that the tabs are in, or $(ref:tabGroups.TAB_GROUP_ID_NONE) for ungrouped tabs."
+              },
+              "splitViewId": {
+                "type": "integer",
+                "minimum": -1,
+                "optional": true,
+                "description": "The ID of the Split View that the tabs are in, or $(ref:tabs.SPLIT_VIEW_ID_NONE) for tabs that aren't in a Split View."
               },
               "windowId": {
                 "type": "integer",
@@ -879,7 +896,7 @@
         "returns_async": {
           "name": "callback",
           "optional": true,
-          "description": "Called after all the JavaScript has been executed.",
+          "description": "Resolves after all the JavaScript has been executed.",
           "parameters": [
             {
               "name": "result",
@@ -907,7 +924,7 @@
         "returns_async": {
           "name": "callback",
           "optional": true,
-          "description": "Called when all the CSS has been inserted.",
+          "description": "Resolves when all the CSS has been inserted.",
           "parameters": []
         }
       },
@@ -933,7 +950,7 @@
         "returns_async": {
           "name": "callback",
           "optional": true,
-          "description": "Called when all the CSS has been removed.",
+          "description": "Resolves when all the CSS has been removed.",
           "parameters": []
         }
       },
@@ -958,7 +975,7 @@
         "returns_async": {
           "name": "callback",
           "optional": true,
-          "description": "Called after the zoom factor has been changed.",
+          "description": "Resolves after the zoom factor has been changed.",
           "parameters": []
         }
       },
@@ -977,7 +994,7 @@
         ],
         "returns_async": {
           "name": "callback",
-          "description": "Called with the tab's current zoom factor after it has been fetched.",
+          "description": "Resolves with the tab's current zoom factor after it has been fetched.",
           "parameters": [
             {
               "type": "number",
@@ -1008,7 +1025,7 @@
         "returns_async": {
           "name": "callback",
           "optional": true,
-          "description": "Called after the zoom settings are changed.",
+          "description": "Resolves after the zoom settings are changed.",
           "parameters": []
         }
       },
@@ -1027,7 +1044,7 @@
         ],
         "returns_async": {
           "name": "callback",
-          "description": "Called with the tab's current zoom settings.",
+          "description": "Resolves with the tab's current zoom settings.",
           "parameters": [
             {
               "$ref": "ZoomSettings",
@@ -1053,7 +1070,7 @@
         "returns_async": {
           "name": "callback",
           "optional": true,
-          "description": "Called after the operation is completed.",
+          "description": "Resolves after the operation is completed.",
           "parameters": [
             {
               "name": "tab",
@@ -1142,6 +1159,12 @@
                 "optional": true,
                 "minimum": -1,
                 "description": "The tab's new group."
+              },
+              "splitViewId": {
+                "type": "integer",
+                "minimum": -1,
+                "optional": true,
+                "description": "The tab's new Split View."
               },
               "pinned": {
                 "type": "boolean",

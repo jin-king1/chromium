@@ -19,9 +19,6 @@ void ProvideUmaHistograms() {
                             IsChromeLikelyDefaultBrowser7Days());
   base::UmaHistogramBoolean("IOS.IsDefaultBrowser21",
                             IsChromeLikelyDefaultBrowser());
-  base::UmaHistogramBoolean(
-      "IOS.IsEligibleDefaultBrowserPromoUser",
-      IsLikelyInterestedDefaultBrowserUser(DefaultPromoTypeGeneral));
 
   base::UmaHistogramBoolean("IOS.IsDefaultBrowser1",
                             IsChromeLikelyDefaultBrowserXDays(1));
@@ -80,8 +77,10 @@ void IOSChromeDefaultBrowserMetricsProvider::ProvideCurrentSessionData(
       NOTREACHED();
     case metrics::MetricsLogUploader::MetricServiceType::DWA:
       // `this` should never be instantiated with this service type.
-      NOTREACHED(base::NotFatalUntil::M134);
-      return;
+      NOTREACHED();
+    case metrics::MetricsLogUploader::MetricServiceType::PRIVATE_METRICS:
+      // `this` should never be instantiated with this service type.
+      NOTREACHED();
   }
   NOTREACHED();
 }

@@ -14,6 +14,7 @@
 #include "base/memory/weak_ptr.h"
 #include "remoting/protocol/message_pipe.h"
 #include "third_party/webrtc/api/peer_connection_interface.h"
+#include "third_party/webrtc/api/scoped_refptr.h"
 #include "third_party/webrtc/rtc_base/ref_count.h"
 
 namespace remoting::protocol {
@@ -23,7 +24,7 @@ class WebrtcDataStreamAdapter : public MessagePipe,
                                 public webrtc::DataChannelObserver {
  public:
   explicit WebrtcDataStreamAdapter(
-      rtc::scoped_refptr<webrtc::DataChannelInterface> channel);
+      webrtc::scoped_refptr<webrtc::DataChannelInterface> channel);
 
   WebrtcDataStreamAdapter(const WebrtcDataStreamAdapter&) = delete;
   WebrtcDataStreamAdapter& operator=(const WebrtcDataStreamAdapter&) = delete;
@@ -69,7 +70,7 @@ class WebrtcDataStreamAdapter : public MessagePipe,
   void InvokeMessageEvent(std::unique_ptr<CompoundBuffer> buffer);
   void HandleIncomingMessages();
 
-  rtc::scoped_refptr<webrtc::DataChannelInterface> channel_;
+  webrtc::scoped_refptr<webrtc::DataChannelInterface> channel_;
 
   raw_ptr<EventHandler> event_handler_ = nullptr;
 

@@ -4,6 +4,7 @@
 
 #include "printing/backend/print_backend.h"
 
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -89,64 +90,35 @@ bool AdvancedCapability::operator==(const AdvancedCapability& other) const {
          values == other.values;
 }
 
+PaperMargins::PaperMargins()
+    : top_margin_um(0),
+      right_margin_um(0),
+      bottom_margin_um(0),
+      left_margin_um(0) {}
+
+PaperMargins::PaperMargins(int32_t top_margin_um,
+                           int32_t right_margin_um,
+                           int32_t bottom_margin_um,
+                           int32_t left_margin_um)
+    : top_margin_um(top_margin_um),
+      right_margin_um(right_margin_um),
+      bottom_margin_um(bottom_margin_um),
+      left_margin_um(left_margin_um) {}
+
+PaperMargins::~PaperMargins() = default;
+
+PaperMargins::PaperMargins(const PaperMargins& other) = default;
+
+PaperMargins& PaperMargins::operator=(const PaperMargins& other) = default;
+
+bool PaperMargins::operator==(const PaperMargins& other) const {
+  return top_margin_um == other.top_margin_um &&
+         right_margin_um == other.right_margin_um &&
+         bottom_margin_um == other.bottom_margin_um &&
+         left_margin_um == other.left_margin_um;
+}
+
 #endif  // BUILDFLAG(IS_CHROMEOS)
-
-#if BUILDFLAG(IS_WIN)
-
-PageOutputQualityAttribute::PageOutputQualityAttribute() = default;
-
-PageOutputQualityAttribute::PageOutputQualityAttribute(
-    const std::string& display_name,
-    const std::string& name)
-    : display_name(display_name), name(name) {}
-
-PageOutputQualityAttribute::~PageOutputQualityAttribute() = default;
-
-bool PageOutputQualityAttribute::operator==(
-    const PageOutputQualityAttribute& other) const {
-  return display_name == other.display_name && name == other.name;
-}
-
-bool PageOutputQualityAttribute::operator<(
-    const ::printing::PageOutputQualityAttribute& other) const {
-  return std::tie(name, display_name) <
-         std::tie(other.name, other.display_name);
-}
-
-PageOutputQuality::PageOutputQuality() = default;
-
-PageOutputQuality::PageOutputQuality(PageOutputQualityAttributes qualities,
-                                     std::optional<std::string> default_quality)
-    : qualities(std::move(qualities)),
-      default_quality(std::move(default_quality)) {}
-
-PageOutputQuality::PageOutputQuality(const PageOutputQuality& other) = default;
-
-PageOutputQuality::~PageOutputQuality() = default;
-
-// This function is only supposed to be used in tests. The declaration in the
-// header file is guarded by "#if defined(UNIT_TEST)" so that they can be used
-// by tests but not non-test code. However, this .cc file is compiled as part of
-// "backend" where "UNIT_TEST" is not defined. So we need to specify
-// "COMPONENT_EXPORT(PRINT_BACKEND)" here again so that they are visible to
-// tests.
-COMPONENT_EXPORT(PRINT_BACKEND)
-bool operator==(const PageOutputQuality& quality1,
-                const PageOutputQuality& quality2) {
-  return quality1.qualities == quality2.qualities &&
-         quality1.default_quality == quality2.default_quality;
-}
-
-XpsCapabilities::XpsCapabilities() = default;
-
-XpsCapabilities::XpsCapabilities(XpsCapabilities&& other) noexcept = default;
-
-XpsCapabilities& XpsCapabilities::operator=(XpsCapabilities&& other) noexcept =
-    default;
-
-XpsCapabilities::~XpsCapabilities() = default;
-
-#endif  // BUILDFLAG(IS_WIN)
 
 PrinterSemanticCapsAndDefaults::Paper::Paper() = default;
 
@@ -159,7 +131,12 @@ PrinterSemanticCapsAndDefaults::Paper::Paper(const std::string& display_name,
                                              const std::string& vendor_id,
                                              const gfx::Size& size_um,
                                              const gfx::Rect& printable_area_um)
-    : Paper(display_name, vendor_id, size_um, printable_area_um, 0) {}
+    : Paper(display_name,
+            vendor_id,
+            size_um,
+            printable_area_um,
+            /*max_height_um=*/0,
+            /*has_borderless_variant=*/false) {}
 
 PrinterSemanticCapsAndDefaults::Paper::Paper(const std::string& display_name,
                                              const std::string& vendor_id,
@@ -171,20 +148,33 @@ PrinterSemanticCapsAndDefaults::Paper::Paper(const std::string& display_name,
             size_um,
             printable_area_um,
             max_height_um,
-            false) {}
+            /*has_borderless_variant=*/false) {}
 
-PrinterSemanticCapsAndDefaults::Paper::Paper(const std::string& display_name,
-                                             const std::string& vendor_id,
-                                             const gfx::Size& size_um,
-                                             const gfx::Rect& printable_area_um,
-                                             int max_height_um,
-                                             bool has_borderless_variant)
+PrinterSemanticCapsAndDefaults::Paper::Paper(
+    const std::string& display_name,
+    const std::string& vendor_id,
+    const gfx::Size& size_um,
+    const gfx::Rect& printable_area_um,
+    int max_height_um,
+    bool has_borderless_variant
+#if BUILDFLAG(IS_CHROMEOS)
+    ,
+    std::optional<PaperMargins> supported_margins_um
+#endif  // BUILDFLAG(IS_CHROMEOS)
+    )
     : display_name_(display_name),
       vendor_id_(vendor_id),
       size_um_(size_um),
       printable_area_um_(printable_area_um),
       max_height_um_(max_height_um),
-      has_borderless_variant_(has_borderless_variant) {}
+      has_borderless_variant_(has_borderless_variant)
+#if BUILDFLAG(IS_CHROMEOS)
+      ,
+      supported_margins_um_(supported_margins_um)
+#endif  // BUILDFLAG(IS_CHROMEOS)
+    {}
+
+PrinterSemanticCapsAndDefaults::Paper::~Paper() = default;
 
 PrinterSemanticCapsAndDefaults::Paper::Paper(const Paper& other) = default;
 
@@ -197,7 +187,12 @@ bool PrinterSemanticCapsAndDefaults::Paper::operator==(
          vendor_id_ == other.vendor_id_ && size_um_ == other.size_um_ &&
          printable_area_um_ == other.printable_area_um_ &&
          max_height_um_ == other.max_height_um_ &&
-         has_borderless_variant_ == other.has_borderless_variant_;
+         has_borderless_variant_ == other.has_borderless_variant_
+#if BUILDFLAG(IS_CHROMEOS)
+         && supported_margins_um_.value_or(PaperMargins()) ==
+                other.supported_margins_um_.value_or(PaperMargins())
+#endif  // BUILDFLAG(IS_CHROMEOS)
+      ;
 }
 
 bool PrinterSemanticCapsAndDefaults::Paper::SupportsCustomSize() const {
@@ -256,9 +251,6 @@ bool operator==(const PrinterSemanticCapsAndDefaults& caps1,
          && caps1.pin_supported == caps2.pin_supported &&
          caps1.advanced_capabilities == caps2.advanced_capabilities
 #endif  // BUILDFLAG(IS_CHROMEOS)
-#if BUILDFLAG(IS_WIN)
-         && caps1.page_output_quality == caps2.page_output_quality
-#endif  // BUILDFLAG(IS_WIN)
       ;
 }
 

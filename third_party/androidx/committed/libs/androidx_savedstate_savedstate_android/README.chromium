@@ -1,7 +1,8 @@
 Name: Saved State
 Short Name: savedstate-android
-URL: https://developer.android.com/jetpack/androidx/releases/savedstate#1.3.0-SNAPSHOT
-Version: 1.3.0-SNAPSHOT
+URL: https://androidx.dev/snapshots/builds/15963504/artifacts/repository/androidx/savedstate/savedstate-android/1.6.0-SNAPSHOT/savedstate-android-1.6.0-20260728.210420-1.aar
+Version: 1.6.0-SNAPSHOT
+Update Mechanism: Autoroll
 License: Apache-2.0
 License File: LICENSE
 CPEPrefix: unknown
@@ -11,6 +12,9 @@ License Android Compatible: yes
 
 Description:
 Android Lifecycle Saved State
+
+See also: https://developer.android.com/jetpack/androidx/releases/savedstate#1.6.0-SNAPSHOT
+
 
 Local Modifications:
 No modifications.

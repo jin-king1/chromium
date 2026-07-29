@@ -8,8 +8,6 @@ import 'chrome://personalization/strings.m.js';
 
 import type {CurrentAttribution, CurrentWallpaper, GooglePhotosPhoto} from 'chrome://personalization/js/personalization_app.js';
 import {DailyRefreshType, GooglePhotosSharedAlbumDialogElement, Paths, WallpaperLayout, WallpaperSelectedElement, WallpaperType} from 'chrome://personalization/js/personalization_app.js';
-import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
-import {stringToMojoString16} from 'chrome://resources/js/mojo_type_util.js';
 import {assertDeepEquals, assertEquals, assertFalse, assertNotEquals, assertNull, assertStringContains, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {flushTasks, waitAfterNextRender} from 'chrome://webui-test/polymer_test_util.js';
 
@@ -21,17 +19,15 @@ const descriptionOptionsId = 'descriptionOptions';
 const descriptionDialogId = 'descriptionDialog';
 const dailyRefreshButtonId = 'dailyRefresh';
 const learnMoreContainerId = 'descriptionDialogLearnMore';
-const actionUrl = {
-  url: 'https://example.com/',
-};
+const actionUrl = 'https://example.com/';
 const photos: GooglePhotosPhoto[] = [
   // First row.
   {
     id: '1',
     dedupKey: '1',
     name: '1',
-    date: stringToMojoString16('First row'),
-    url: {url: createSvgDataUrl('1')},
+    date: 'First row',
+    url: createSvgDataUrl('1'),
     location: '1',
   },
   // Second row.
@@ -39,16 +35,16 @@ const photos: GooglePhotosPhoto[] = [
     id: '2',
     dedupKey: '2',
     name: '2',
-    date: stringToMojoString16('Second row'),
-    url: {url: createSvgDataUrl('2')},
+    date: 'Second row',
+    url: createSvgDataUrl('2'),
     location: '2',
   },
   {
     id: '3',
     dedupKey: '3',
     name: '3',
-    date: stringToMojoString16('Second row'),
-    url: {url: createSvgDataUrl('3')},
+    date: 'Second row',
+    url: createSvgDataUrl('3'),
     location: '3',
   },
   // Third row.
@@ -56,8 +52,8 @@ const photos: GooglePhotosPhoto[] = [
     id: '4',
     dedupKey: '4',
     name: '4',
-    date: stringToMojoString16('Third row'),
-    url: {url: createSvgDataUrl('4')},
+    date: 'Third row',
+    url: createSvgDataUrl('4'),
     location: '4',
   },
 ];
@@ -268,7 +264,7 @@ suite('WallpaperSelectedElementTest', function() {
         wallpaperSelectedElement.shadowRoot!.getElementById('imageTitle');
     assertEquals(
         wallpaperSelectedElement.i18n('unknownImageAttribution'),
-        title!.textContent!.trim());
+        title!.textContent.trim());
   });
 
   test('updates image when store is updated', async () => {
@@ -551,7 +547,6 @@ suite('WallpaperSelectedElementTest', function() {
   test(
       'shows google photos shared album confirmation dialog for daily refresh',
       async () => {
-        loadTimeData.overrideValues({isGooglePhotosSharedAlbumsEnabled: true});
         const currentSelected: CurrentWallpaper = {
           descriptionContent: '',
           descriptionTitle: '',
@@ -590,7 +585,6 @@ suite('WallpaperSelectedElementTest', function() {
   test(
       'clicks cancel on the Google Photos shared album confirmation dialog',
       async () => {
-        loadTimeData.overrideValues({isGooglePhotosSharedAlbumsEnabled: true});
         personalizationStore.data.wallpaper.currentSelected = {
           descriptionContent: '',
           descriptionTitle: '',
@@ -633,7 +627,6 @@ suite('WallpaperSelectedElementTest', function() {
   test(
       'clicks proceed on the Google Photos shared album confirmation dialog',
       async () => {
-        loadTimeData.overrideValues({isGooglePhotosSharedAlbumsEnabled: true});
         personalizationStore.data.wallpaper.currentSelected = {
           descriptionContent: '',
           descriptionTitle: '',
@@ -716,7 +709,6 @@ suite('WallpaperSelectedElementTest', function() {
   test(
       'does not show confirmation dialog for google photos unshared album',
       async () => {
-        loadTimeData.overrideValues({isGooglePhotosSharedAlbumsEnabled: true});
         personalizationStore.data.wallpaper.currentSelected = {
           descriptionContent: '',
           descriptionTitle: '',
@@ -969,7 +961,7 @@ suite('WallpaperSelectedElementTest', function() {
     assertTrue(!!learnMoreContainer, 'learn more container should exist');
 
     assertEquals(
-        learnMoreContainer.querySelector('a')?.href, actionUrl.url,
+        learnMoreContainer.querySelector('a')?.href, actionUrl,
         'url is displayed');
   });
 
@@ -1004,7 +996,7 @@ suite('WallpaperSelectedElementTest', function() {
 
     personalizationStore.data.wallpaper.currentSelected = {
       ...personalizationStore.data.wallpaper.currentSelected,
-      actionUrl: {url: '<script>bad</script>'},
+      actionUrl: '<script>bad</script>',
     };
     personalizationStore.notifyObservers();
     await waitAfterNextRender(wallpaperSelectedElement);

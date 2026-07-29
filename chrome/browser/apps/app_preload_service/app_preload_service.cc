@@ -69,29 +69,21 @@ static constexpr char kApsStateManager[] =
     "apps.app_preload_service.state_manager";
 }  // namespace prefs
 
-BASE_FEATURE(kAppPreloadServiceForceRun,
-             "AppPreloadServiceForceRun",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kAppPreloadServiceForceRun, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kAppPreloadServiceEnableTestApps,
-             "AppPreloadServiceEnableTestApps",
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kAppPreloadServiceEnableArcApps,
-             "AppPreloadServiceEnableArcApps",
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kAppPreloadServiceEnableShelfPin,
-             "AppPreloadServiceEnableShelfPin",
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kAppPreloadServiceEnableLauncherOrder,
-             "AppPreloadServiceEnableLauncherOrder",
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kAppPreloadServiceAllUserTypes,
-             "AppPreloadServiceAllUserTypes",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kAppPreloadServiceAllUserTypes, base::FEATURE_DISABLED_BY_DEFAULT);
 
 AppPreloadService::AppPreloadService(Profile* profile) : profile_(profile) {
   if (g_disable_preloads_on_startup_for_testing_) {
@@ -314,8 +306,8 @@ bool AppPreloadService::ShouldInstallApp(const PreloadAppDefinition& app) {
   return !installed;
 }
 
-const base::Value::Dict& AppPreloadService::GetStateManager() const {
-  const base::Value::Dict& value =
+const base::DictValue& AppPreloadService::GetStateManager() const {
+  const base::DictValue& value =
       profile_->GetPrefs()->GetDict(prefs::kApsStateManager);
   return value;
 }

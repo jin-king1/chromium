@@ -22,7 +22,10 @@ if (!is_chromeos_device) {
       "//base/test:test_support",
       "//chrome/app:generated_resources",
       "//chrome/browser/ui",
+      "//chrome/browser/ui/browser_window",
+      "//chrome/test:test_support_ui",
       "//chrome/test/base/ash/interactive:test_support",
+      "//chromeos/ash/experiences/settings_ui",
       "//chromeos/dbus/power",
       "//device/udev_linux:test_support",
       "//ui/base",
@@ -33,5 +36,9 @@ if (!is_chromeos_device) {
       "//ui/events/devices",
       "//ui/events/devices:test_support",
     ]
+
+    # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+    # enable the diagnostic by removing this line.
+    configs += [ "//build/config/compiler:no_exit_time_destructors" ]
   }
 }

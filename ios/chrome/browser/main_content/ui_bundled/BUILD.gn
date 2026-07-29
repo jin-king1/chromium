@@ -16,6 +16,7 @@ source_set("ui") {
     "//ios/chrome/browser/broadcaster/ui_bundled",
     "//ios/chrome/browser/shared/model/web_state_list",
     "//ios/chrome/browser/shared/ui/util",
+    "//ios/chrome/browser/web/model/web_view_proxy",
     "//ios/web/public",
   ]
 }
@@ -50,6 +51,7 @@ source_set("unit_tests") {
     "//ios/chrome/browser/main_content/ui_bundled/test",
     "//ios/chrome/browser/shared/model/web_state_list",
     "//ios/chrome/common/ui/util",
+    "//ios/web/common:features",
     "//ios/web/public/test",
     "//ios/web/public/test/fakes",
     "//testing/gtest",

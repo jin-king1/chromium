@@ -4,8 +4,9 @@
 
 #include "third_party/blink/renderer/modules/accessibility/ax_relation_cache.h"
 
-#include "base/memory/ptr_util.h"
+#include "base/containers/span.h"
 #include "base/notreached.h"
+#include "third_party/blink/renderer/bindings/core/v8/frozen_array.h"
 #include "third_party/blink/renderer/core/dom/dom_node_ids.h"
 #include "third_party/blink/renderer/core/dom/shadow_including_tree_order_traversal.h"
 #include "third_party/blink/renderer/core/html/custom/element_internals.h"
@@ -13,10 +14,11 @@
 #include "third_party/blink/renderer/core/html/forms/html_opt_group_element.h"
 #include "third_party/blink/renderer/core/html/forms/html_option_element.h"
 #include "third_party/blink/renderer/core/html/html_area_element.h"
-#include "third_party/blink/renderer/core/html/html_body_element.h"
 #include "third_party/blink/renderer/core/html/html_br_element.h"
 #include "third_party/blink/renderer/core/layout/layout_box.h"
 #include "third_party/blink/renderer/modules/accessibility/ax_node_object.h"
+#include "third_party/blink/renderer/modules/accessibility/ax_object-inl.h"
+#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "ui/accessibility/ax_common.h"
 
 namespace blink {
@@ -26,7 +28,7 @@ void IdsFromAttribute(const Element& element,
                       Vector<AtomicString>& ids,
                       const QualifiedName& attr_name) {
   SpaceSplitString split_ids(AXObject::AriaAttribute(element, attr_name));
-  ids.AppendRange(split_ids.begin(), split_ids.end());
+  ids.append_range(split_ids);
 }
 }  // namespace
 
@@ -151,7 +153,7 @@ void AXRelationCache::CheckRelationsCached(Element& element) {
   }
 
   // Check aria-labelledby, aria-describedby.
-  for (const QualifiedName& attribute : GetTextRelationAttributes()) {
+  for (const auto& [attribute, filter] : GetTextRelationAttributes()) {
     Vector<AtomicString> text_relation_ids;
     HeapVector<Member<Element>> text_relation_elements;
     GetRelationTargets(element, attribute, text_relation_ids,
@@ -263,6 +265,12 @@ void AXRelationCache::ProcessUpdatesWithCleanLayout() {
   owner_axids_to_update_.clear();
 }
 
+void AXRelationCache::QueueOwnerToUpdate(AXObject* owner) {
+  DCHECK(owner);
+  DCHECK(!owner->IsDetached());
+  owner_axids_to_update_.insert(owner->AXObjectID());
+}
+
 bool AXRelationCache::IsDirty() const {
   return !owner_axids_to_update_.empty();
 }
@@ -289,15 +297,16 @@ bool AXRelationCache::IsAriaOwned(const AXObject* child, bool check) const {
         *object_cache_, child->GetElement());
     if (parent->GetNode() != natural_parent) {
       std::ostringstream msg;
-      msg << "Unowned child should have natural parent:" << "\n* Child: "
-          << child << "\n* Actual parent: " << parent
+      msg << "Unowned child should have natural parent:"
+          << "\n* Child: " << child << "\n* Actual parent: " << parent
           << "\n* Natural ax parent: " << object_cache_->Get(natural_parent)
           << "\n* Natural dom parent: " << natural_parent << " #"
           << natural_parent->GetDomNodeId() << "\n* Owners to update:";
       for (AXID id : owner_axids_to_update_) {
         msg << " " << id;
       }
-      DUMP_WILL_BE_CHECK(false) << msg.str();
+      // TODO(crbug.com/500774800): Investigate and convert to CHECK.
+      DCHECK(false) << msg.str();
     }
   }
 
@@ -330,9 +339,9 @@ void AXRelationCache::GetExplicitlySetElementsForAttr(
     const Element& source,
     const QualifiedName& attr_name,
     HeapVector<Member<Element>>& target_elements) {
-  if (source.HasExplicitlySetAttrAssociatedElements(attr_name)) {
-    HeapLinkedHashSet<WeakMember<Element>>* explicitly_set_elements =
-        source.GetExplicitlySetElementsForAttr(attr_name);
+  if (auto* explicitly_set_elements =
+          source.GetExplicitlySetElementsForAttr(attr_name);
+      explicitly_set_elements) {
     for (const WeakMember<Element>& element : *explicitly_set_elements) {
       target_elements.push_back(element);
     }
@@ -454,18 +463,27 @@ void AXRelationCache::UpdateReverseElementAttributeRelations(
   }
 }
 
-Vector<QualifiedName>& AXRelationCache::GetTextRelationAttributes() {
+base::span<std::pair<QualifiedName, Element::TinyBloomFilter>>
+AXRelationCache::GetTextRelationAttributes() {
+  // Avoid issues with commas within the type name in DEFINE_STATIC_LOCAL().
+  using QualifiedNameArray =
+      std::array<std::pair<QualifiedName, Element::TinyBloomFilter>, 3>;
   DEFINE_STATIC_LOCAL(
-      Vector<QualifiedName>, text_attributes,
-      ({html_names::kAriaLabelledbyAttr, html_names::kAriaLabeledbyAttr,
-        html_names::kAriaDescribedbyAttr}));
+      QualifiedNameArray, text_attributes,
+      ({{html_names::kAriaLabelledbyAttr,
+         Element::FilterForAttribute(html_names::kAriaLabelledbyAttr)},
+        {html_names::kAriaLabeledbyAttr,
+         Element::FilterForAttribute(html_names::kAriaLabeledbyAttr)},
+        {html_names::kAriaDescribedbyAttr,
+         Element::FilterForAttribute(html_names::kAriaDescribedbyAttr)}}));
   return text_attributes;
 }
 
 void AXRelationCache::UpdateReverseTextRelations(Element& source) {
-  Vector<QualifiedName> text_attributes = GetTextRelationAttributes();
-  for (const QualifiedName& attribute : text_attributes) {
-    UpdateReverseTextRelations(source, attribute);
+  for (const auto& [attribute, filter] : GetTextRelationAttributes()) {
+    if (source.CouldMatchFilter(filter) || source.GetElementInternals()) {
+      UpdateReverseTextRelations(source, attribute);
+    }
   }
 }
 
@@ -535,30 +553,48 @@ void AXRelationCache::UpdateReverseElementAttributeTextRelations(
 }
 
 void AXRelationCache::UpdateReverseActiveDescendantRelations(Element& source) {
-  UpdateReverseSingleRelation(source, html_names::kAriaActivedescendantAttr,
-                              aria_activedescendant_id_map_,
-                              aria_activedescendant_node_map_);
+  if (source.CouldHaveAttribute(html_names::kAriaActivedescendantAttr) ||
+      source.GetElementInternals()) {
+    UpdateReverseSingleRelation(source, html_names::kAriaActivedescendantAttr,
+                                aria_activedescendant_id_map_,
+                                aria_activedescendant_node_map_);
+  }
 }
 
 void AXRelationCache::UpdateReverseOwnsRelations(Element& source) {
-  UpdateReverseRelations(source, html_names::kAriaOwnsAttr, aria_owns_id_map_,
-                         aria_owns_node_map_);
+  if (source.CouldHaveAttribute(html_names::kAriaOwnsAttr) ||
+      source.GetElementInternals()) {
+    UpdateReverseRelations(source, html_names::kAriaOwnsAttr, aria_owns_id_map_,
+                           aria_owns_node_map_);
+  }
 }
 
-Vector<QualifiedName>& AXRelationCache::GetOtherRelationAttributes() {
+base::span<std::pair<QualifiedName, Element::TinyBloomFilter>>
+AXRelationCache::GetOtherRelationAttributes() {
+  // Avoid issues with commas within the type name in DEFINE_STATIC_LOCAL().
+  using QualifiedNameArray =
+      std::array<std::pair<QualifiedName, Element::TinyBloomFilter>, 5>;
   DEFINE_STATIC_LOCAL(
-      Vector<QualifiedName>, attributes,
-      ({html_names::kAriaControlsAttr, html_names::kAriaDetailsAttr,
-        html_names::kAriaErrormessageAttr, html_names::kAriaFlowtoAttr,
-        html_names::kAriaActionsAttr}));
+      QualifiedNameArray, attributes,
+      ({{html_names::kAriaControlsAttr,
+         Element::FilterForAttribute(html_names::kAriaControlsAttr)},
+        {html_names::kAriaDetailsAttr,
+         Element::FilterForAttribute(html_names::kAriaDetailsAttr)},
+        {html_names::kAriaErrormessageAttr,
+         Element::FilterForAttribute(html_names::kAriaErrormessageAttr)},
+        {html_names::kAriaFlowtoAttr,
+         Element::FilterForAttribute(html_names::kAriaFlowtoAttr)},
+        {html_names::kAriaActionsAttr,
+         Element::FilterForAttribute(html_names::kAriaActionsAttr)}}));
   return attributes;
 }
 
 void AXRelationCache::UpdateReverseOtherRelations(Element& source) {
-  Vector<QualifiedName>& attributes = GetOtherRelationAttributes();
-  for (const QualifiedName& attribute : attributes) {
-    UpdateReverseRelations(source, attribute, aria_other_relations_id_map_,
-                           aria_other_relations_node_map_);
+  for (const auto& [attribute, filter] : GetOtherRelationAttributes()) {
+    if (source.CouldMatchFilter(filter) || source.GetElementInternals()) {
+      UpdateReverseRelations(source, attribute, aria_other_relations_id_map_,
+                             aria_other_relations_node_map_);
+    }
   }
 }
 
@@ -787,9 +823,13 @@ void AXRelationCache::MapOwnedChildrenWithCleanLayout(
             original_parent->ParentObject());
       }
     }
-    // Now that the child is owned, it's "included in tree" state must be
-    // recomputed because owned children are always included in the tree.
     added_child->UpdateCachedAttributeValuesIfNeeded(false);
+
+    // Re-evaluate the role since its required parent context is now satisfied.
+    if (added_child->RoleValue() !=
+        added_child->DetermineRawAriaRoleWithContext()) {
+      added_child->UpdateRole();
+    }
 
     // If the added child had a change in an inherited state because of the new
     // owner, that state needs to propagate into the subtree. Remove its
@@ -807,7 +847,7 @@ void AXRelationCache::MapOwnedChildrenWithCleanLayout(
 
 void AXRelationCache::UpdateAriaOwnsFromAttrAssociatedElementsWithCleanLayout(
     AXObject* owner,
-    const HeapVector<Member<Element>>& attr_associated_elements,
+    const GCedHeapVector<Member<Element>>& attr_associated_elements,
     HeapVector<Member<AXObject>>& validated_owned_children_result,
     bool force) {
   CHECK(!object_cache_->IsFrozen());
@@ -853,8 +893,8 @@ void AXRelationCache::ValidatedAriaOwnedChildren(
     } else if (ValidatedAriaOwner(child) == owner) {
       validated_owned_children_result.push_back(child);
       DCHECK(IsAriaOwned(child))
-          << "Owned child not in owned child map:" << "\n* Owner = " << owner
-          << "\n* Child = " << child;
+          << "Owned child not in owned child map:"
+          << "\n* Owner = " << owner << "\n* Child = " << child;
     }
   }
 }
@@ -873,8 +913,13 @@ void AXRelationCache::UpdateAriaOwnsWithCleanLayout(AXObject* owner,
   // that |owner| is replacing may have previously been a valid owner. In this
   // case, the old owned child mappings will need to be removed.
   bool is_valid_owner = IsValidOwner(owner);
-  if (!force && !is_valid_owner)
+  if (!force && !is_valid_owner) {
+    // Make sure that the owner's children are updated even in the case where
+    // aria-owns is empty, or the object is not a valid owner. This protects
+    // from ending up with a previous owner containing invalid children.
+    ChildrenChangedWithCleanLayout(owner);
     return;
+  }
 
   HeapVector<Member<AXObject>> owned_children;
 
@@ -891,9 +936,8 @@ void AXRelationCache::UpdateAriaOwnsWithCleanLayout(AXObject* owner,
     // TODO (crbug.com/41469336): Also check ElementInternals here.
     UpdateAriaOwnsFromAttrAssociatedElementsWithCleanLayout(
         owner,
-        // TODO (crbug.com/353750122): Set resolve_reference_target to false.
-        *element->GetAttrAssociatedElements(html_names::kAriaOwnsAttr,
-                                            /*resolve_reference_target*/ true),
+        *element->GetAttrAssociatedElementsResolvingReferenceTarget(
+            html_names::kAriaOwnsAttr),
         owned_children, force);
   } else {
     // Figure out the ids that actually correspond to children that exist
@@ -974,6 +1018,7 @@ void AXRelationCache::UpdateAriaOwnerToChildrenMappingWithCleanLayout(
   // there is nothing to refresh even for a new AXObject replacing an old owner.
   if (previously_owned_child_ids == validated_owned_child_axids &&
       (!force || previously_owned_child_ids.empty())) {
+    ChildrenChangedWithCleanLayout(owner);
     return;
   }
 
@@ -1116,8 +1161,9 @@ AXObject* AXRelationCache::GetOrCreateAriaOwnerFor(Node* node, AXObject* obj) {
     DCHECK(!obj->IsDetached());
   AXObject* obj_for_node = object_cache_->Get(node);
   DCHECK(!obj || obj_for_node == obj)
-      << "Object and node did not match:" << "\n* node = " << node
-      << "\n* obj = " << obj << "\n* obj_for_node = " << obj_for_node;
+      << "Object and node did not match:"
+      << "\n* node = " << node << "\n* obj = " << obj
+      << "\n* obj_for_node = " << obj_for_node;
 #endif
 
   // Look for any new aria-owns relations.
@@ -1327,16 +1373,6 @@ void AXRelationCache::UpdateCSSAnchorFor(Node* positioned_node) {
   object_cache_->MarkElementDirtyWithCleanLayout(anchor);
 }
 
-AXObject* AXRelationCache::GetPositionedObjectForAnchor(
-    const AXObject* anchor) {
-  HashMap<AXID, AXID>::const_iterator iter =
-      anchor_to_positioned_obj_mapping_.find(anchor->AXObjectID());
-  if (iter == anchor_to_positioned_obj_mapping_.end()) {
-    return nullptr;
-  }
-  return ObjectFromAXID(iter->value);
-}
-
 AXObject* AXRelationCache::GetAnchorForPositionedObject(
     const AXObject* positioned_obj) {
   HashMap<AXID, AXID>::const_iterator iter =
@@ -1390,13 +1426,26 @@ void AXRelationCache::RemoveOwnedRelation(AXID obj_id) {
     // Previous owner no longer relevant to this child.
     // Also, remove |obj_id| from previous owner's owned child list:
     AXID owner_id = aria_owned_child_to_owner_mapping_.Take(obj_id);
-    const Vector<AXID>& owners_owned_children =
-        aria_owner_to_children_mapping_.at(owner_id);
-    for (wtf_size_t index = 0; index < owners_owned_children.size(); index++) {
-      if (owners_owned_children[index] == obj_id) {
-        aria_owner_to_children_mapping_.at(owner_id).EraseAt(index);
-        break;
+    if (aria_owner_to_children_mapping_.Contains(owner_id)) {
+      const Vector<AXID>& owners_owned_children =
+          aria_owner_to_children_mapping_.at(owner_id);
+      for (wtf_size_t index = 0; index < owners_owned_children.size();
+           index++) {
+        if (owners_owned_children[index] == obj_id) {
+          aria_owner_to_children_mapping_.at(owner_id).EraseAt(index);
+          break;
+        }
       }
+    } else {
+      // TODO(crbug.com/437579600) This is not a situation we expect, but it
+      // also shouldn't cause a renderer crash. Once we have fixed the
+      // underlying issue and verified that this dump does not exist in
+      // telemetry, we should upgrade this to a NOTREACHED or remove the
+      // `Contains(owner_id)` check above.
+      // TODO(crbug.com/500774800): Keep this debug-only because the dump can
+      // hang production users while this issue remains uninvestigated.
+      DCHECK(false) << "Inconsistent aria-owns mapping: owner " << owner_id
+                    << " not found";
     }
     if (AXObject* owner = ObjectFromAXID(owner_id)) {
       // The child is removed, so the owner needs to make sure its maps

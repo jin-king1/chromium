@@ -2,26 +2,24 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "media/formats/hls/items.h"
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string_view>
+#include <variant>
 
 #include "base/check.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
+#include "base/types/to_address.h"
 
 namespace {
 
 bool IsSubstring(std::string_view sub, std::string_view base) {
-  return sub.empty() || (base.data() <= sub.data() &&
-                         base.data() + base.size() >= sub.data() + sub.size());
+  return sub.empty() ||
+         (base.data() <= sub.data() &&
+          base::to_address(base.end()) >= base::to_address(sub.end()));
 }
 
 std::optional<media::hls::SourceString> GetItemContent(
@@ -74,9 +72,9 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     }
 
     auto value = std::move(result).value();
-    auto content = absl::visit([](auto x) { return GetItemContent(x); }, value);
+    auto content = std::visit([](auto x) { return GetItemContent(x); }, value);
     auto line_number =
-        absl::visit([](auto x) { return GetItemLineNumber(x); }, value);
+        std::visit([](auto x) { return GetItemLineNumber(x); }, value);
 
     // Ensure that the line number associated with this item is between the
     // original line number and the updated line number

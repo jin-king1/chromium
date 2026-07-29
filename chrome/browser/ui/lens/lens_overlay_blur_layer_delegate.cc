@@ -2,48 +2,29 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "chrome/browser/ui/lens/lens_overlay_blur_layer_delegate.h"
 
+#include "base/compiler_specific.h"
 #include "base/timer/timer.h"
 #include "cc/paint/render_surface_filters.h"
 #include "components/lens/lens_features.h"
+#include "components/viz/common/frame_sinks/copy_output_result.h"
+#include "content/public/browser/render_widget_host_view.h"
 #include "ui/compositor/paint_recorder.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/geometry/rect_f.h"
-
-namespace {
-bool AreBitmapsEqual(const SkBitmap& bitmap1, const SkBitmap& bitmap2) {
-  // Verify the dimensions are the same.
-  if (bitmap1.width() != bitmap2.width() ||
-      bitmap1.height() != bitmap2.height()) {
-    return false;
-  }
-
-  // Compare pixel data
-  SkPixmap pixmap1 = bitmap1.pixmap();
-  SkPixmap pixmap2 = bitmap2.pixmap();
-  return memcmp(pixmap1.addr(), pixmap2.addr(), pixmap1.computeByteSize()) == 0;
-}
-}  // namespace
+#include "ui/gfx/skia_util.h"
 
 namespace lens {
 
 LensOverlayBlurLayerDelegate::LensOverlayBlurLayerDelegate(
     content::RenderWidgetHost* background_view_host)
     : background_view_host_(background_view_host) {
-  SetLayer(std::make_unique<ui::Layer>(ui::LAYER_TEXTURED));
+  SetLayer(std::make_unique<ui::LayerTextured>());
   layer()->SetFillsBoundsOpaquely(true);
   layer()->set_delegate(this);
 
   render_widget_host_observer_.Observe(background_view_host);
-
-  // Fetch the initial screenshot to be used for blurring.
-  FetchBackgroundImage();
 }
 
 LensOverlayBlurLayerDelegate::~LensOverlayBlurLayerDelegate() = default;
@@ -51,7 +32,7 @@ LensOverlayBlurLayerDelegate::~LensOverlayBlurLayerDelegate() = default;
 void LensOverlayBlurLayerDelegate::StartBackgroundImageCapture() {
   // If there is no background_view_host_, there is nothing to take a screenshot
   // of, so we should exit early.
-  if (screenshot_timer_.IsRunning() || !background_view_host_) {
+  if (IsLiveBlurActive() || !background_view_host_) {
     return;
   }
   // Start taking screenshots to render on the layer.
@@ -63,10 +44,34 @@ void LensOverlayBlurLayerDelegate::StartBackgroundImageCapture() {
 }
 
 void LensOverlayBlurLayerDelegate::StopBackgroundImageCapture() {
-  if (!screenshot_timer_.IsRunning()) {
+  if (!IsLiveBlurActive()) {
     return;
   }
   screenshot_timer_.Stop();
+}
+
+void LensOverlayBlurLayerDelegate::Hide() {
+  render_widget_host_observer_.Reset();
+  background_view_host_ = nullptr;
+
+  StopBackgroundImageCapture();
+  background_screenshot_.reset();
+  layer()->SchedulePaint(gfx::Rect(layer()->size()));
+}
+
+void LensOverlayBlurLayerDelegate::Show(
+    content::RenderWidgetHost* background_view_host) {
+  background_view_host_ = background_view_host;
+  render_widget_host_observer_.Observe(background_view_host);
+  StartBackgroundImageCapture();
+}
+
+bool LensOverlayBlurLayerDelegate::IsLiveBlurActive() {
+  return screenshot_timer_.IsRunning();
+}
+
+bool LensOverlayBlurLayerDelegate::IsCapturingBackgroundImageForTesting() {
+  return screenshot_timer_.IsRunning();
 }
 
 void LensOverlayBlurLayerDelegate::OnPaintLayer(
@@ -129,15 +134,21 @@ void LensOverlayBlurLayerDelegate::FetchBackgroundImage() {
       /*src_rect=*/gfx::Rect(),
       /*output_size=*/
       gfx::Size(size.width() * quality, size.height() * quality),
+      base::TimeDelta(),
       base::BindOnce(&LensOverlayBlurLayerDelegate::UpdateBackgroundImage,
                      weak_factory_.GetWeakPtr()));
 }
 
 void LensOverlayBlurLayerDelegate::UpdateBackgroundImage(
-    const SkBitmap& bitmap) {
+    const content::CopyFromSurfaceResult& result) {
+  if (!result.has_value()) {
+    return;
+  }
+
+  const SkBitmap& bitmap = result->bitmap;
   auto layer_size = layer()->size();
-  if (bitmap.drawsNothing() || layer_size.width() * layer_size.height() <= 0 ||
-      AreBitmapsEqual(background_screenshot_, bitmap)) {
+  if (layer_size.width() * layer_size.height() <= 0 ||
+      gfx::BitmapsAreEqual(background_screenshot_, bitmap)) {
     return;
   }
   background_screenshot_ = bitmap;

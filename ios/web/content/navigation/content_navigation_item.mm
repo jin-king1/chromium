@@ -129,6 +129,17 @@ const std::u16string& ContentNavigationItem::GetTitleForDisplay() const {
   return entry_->GetTitleForDisplay();
 }
 
+void ContentNavigationItem::SetInternalScrollToTextFragment(
+    const std::optional<std::string>& internal_scroll_to_text_fragment) {
+  NOTREACHED();
+}
+
+const std::optional<std::string>&
+ContentNavigationItem::GetInternalScrollToTextFragment() const {
+  static const std::optional<std::string> text_fragment;
+  return text_fragment;
+}
+
 void ContentNavigationItem::SetTransitionType(
     ui::PageTransition transition_type) {
   NOTREACHED();
@@ -185,6 +196,14 @@ void ContentNavigationItem::SetUserAgentType(UserAgentType type) {
 
 UserAgentType ContentNavigationItem::GetUserAgentType() const {
   return user_agent_type_;
+}
+
+void ContentNavigationItem::SetSecurityScopedFileResource(NSData* data) {
+  security_scoped_file_resource_ = [data copy];
+}
+
+NSData* ContentNavigationItem::GetSecurityScopedFileResource() {
+  return security_scoped_file_resource_;
 }
 
 bool ContentNavigationItem::HasPostData() const {

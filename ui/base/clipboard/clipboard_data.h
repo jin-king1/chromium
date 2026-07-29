@@ -8,6 +8,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -51,7 +52,6 @@ class COMPONENT_EXPORT(UI_BASE_CLIPBOARD) ClipboardData {
   ~ClipboardData();
 
   bool operator==(const ClipboardData& that) const;
-  bool operator!=(const ClipboardData& that) const;
 
   const ClipboardSequenceNumberToken& sequence_number_token() const {
     return sequence_number_token_;
@@ -148,8 +148,7 @@ class COMPONENT_EXPORT(UI_BASE_CLIPBOARD) ClipboardData {
   std::string GetCustomData(const ClipboardFormatType& data_format) const;
   // Returns the ClipboardFormatType::DataTransferCustomType() pickle.
   std::string GetDataTransferCustomData() const;
-  void SetCustomData(const ClipboardFormatType& format,
-                     const std::string& data);
+  void SetCustomData(const ClipboardFormatType& format, std::string_view data);
 
   bool web_smart_paste() const { return web_smart_paste_; }
   void set_web_smart_paste(bool web_smart_paste) {
@@ -168,6 +167,10 @@ class COMPONENT_EXPORT(UI_BASE_CLIPBOARD) ClipboardData {
 
   void set_source(std::optional<DataTransferEndpoint> src) {
     src_ = std::move(src);
+  }
+
+  const std::map<ClipboardFormatType, std::string>& custom_data() const {
+    return custom_data_;
   }
 
 #if BUILDFLAG(IS_CHROMEOS)

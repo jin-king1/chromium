@@ -16,6 +16,7 @@
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/navigation_handle.h"
+#include "content/public/browser/page.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_view_host.h"
@@ -133,24 +134,26 @@ void AwRenderViewHostExt::OnPageScaleFactorChanged(float page_scale_factor) {
 
 void AwRenderViewHostExt::UpdateHitTestData(
     mojom::HitTestDataPtr hit_test_data) {
-  content::RenderFrameHost* render_frame_host =
-      frame_host_receivers_.GetCurrentTargetFrame();
+  content::RenderFrameHost& render_frame_host =
+      frame_host_receivers_.CurrentTargetFrame();
   // Make sense from any frame of the active frame tree, because a focused
   // node could be in either the mainframe or a subframe.
-  if (!render_frame_host->IsActive())
+  if (!render_frame_host.IsActive()) {
     return;
+  }
 
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   last_hit_test_data_ = std::move(hit_test_data);
 }
 
 void AwRenderViewHostExt::ContentsSizeChanged(const gfx::Size& contents_size) {
-  content::RenderFrameHost* render_frame_host =
-      frame_host_receivers_.GetCurrentTargetFrame();
+  content::RenderFrameHost& render_frame_host =
+      frame_host_receivers_.CurrentTargetFrame();
 
   // Only makes sense coming from the main frame of the current frame tree.
-  if (!render_frame_host->IsInPrimaryMainFrame())
+  if (!render_frame_host.IsInPrimaryMainFrame()) {
     return;
+  }
 
   client_->OnWebLayoutContentsSizeChanged(contents_size);
 }

@@ -2,20 +2,22 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include <drm_fourcc.h>
+#include <errno.h>
 #include <overlay-prioritizer-client-protocol.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
+#include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <memory>
+#include <utility>
 
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/memory/raw_ptr.h"
+#include "base/posix/eintr_wrapper.h"
 #include "base/run_loop.h"
 #include "base/test/mock_callback.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -37,7 +39,9 @@
 #include "ui/ozone/platform/wayland/host/wayland_connection.h"
 #include "ui/ozone/platform/wayland/host/wayland_frame_manager.h"
 #include "ui/ozone/platform/wayland/host/wayland_subsurface.h"
+#include "ui/ozone/platform/wayland/host/wayland_window_manager.h"
 #include "ui/ozone/platform/wayland/host/wayland_zwp_linux_dmabuf.h"
+#include "ui/ozone/platform/wayland/test/mock_drm_syncobj_ioctl_wrapper.h"
 #include "ui/ozone/platform/wayland/test/mock_surface.h"
 #include "ui/ozone/platform/wayland/test/mock_zwp_linux_dmabuf.h"
 #include "ui/ozone/platform/wayland/test/test_overlay_prioritized_surface.h"
@@ -189,7 +193,7 @@ class WaylandBufferManagerTest : public WaylandTest {
       EXPECT_CALL(*callback, Run(_))
           .Times(1)
           .WillRepeatedly(
-              ::testing::Invoke([this, callback](std::string error_string) {
+              [this, callback](std::string error_string) {
                 channel_destroyed_error_message_ = error_string;
 
                 manager_host_->OnChannelDestroyed();
@@ -197,8 +201,12 @@ class WaylandBufferManagerTest : public WaylandTest {
                 manager_host_->SetTerminateGpuCallback(callback->Get());
 
                 auto interface_ptr = manager_host_->BindInterface();
-                // Recreate the gpu side manager (the production code does the
-                // same).
+
+                // Reset the surface factory's buffer manager to avoid a
+                // dangling pointer.
+                surface_factory_->SetBufferManagerForTesting(nullptr);
+                // Recreate the gpu side manager (the production code does
+                // the same).
                 buffer_manager_gpu_ =
                     std::make_unique<WaylandBufferManagerGpu>();
                 buffer_manager_gpu_->Initialize(
@@ -208,7 +216,9 @@ class WaylandBufferManagerTest : public WaylandTest {
                     /*supports_acquire_fence=*/false,
                     /*supports_overlays=*/true,
                     /*supports_single_pixel_buffer=*/true);
-              }));
+                surface_factory_->SetBufferManagerForTesting(
+                    buffer_manager_gpu_.get());
+              });
     }
   }
 
@@ -220,7 +230,7 @@ class WaylandBufferManagerTest : public WaylandTest {
       const std::vector<uint32_t>& strides = {1},
       const std::vector<uint32_t>& offsets = {2},
       const std::vector<uint64_t>& modifiers = {3},
-      uint32_t format = DRM_FORMAT_R8,
+      uint32_t format = DRM_FORMAT_ABGR8888,
       uint32_t planes_count = 1) {
     if (!fd.is_valid())
       fd = MakeFD();
@@ -228,7 +238,7 @@ class WaylandBufferManagerTest : public WaylandTest {
     SetTerminateCallbackExpectationAndDestroyChannel(&callback_, fail);
     buffer_manager_gpu_->CreateDmabufBasedBuffer(
         std::move(fd), kDefaultSize, strides, offsets, modifiers, format,
-        planes_count, buffer_id);
+        planes_count, gfx::ColorSpace(), gfx::HDRMetadata(), buffer_id);
 
     base::RunLoop().RunUntilIdle();
   }
@@ -336,6 +346,162 @@ class WaylandBufferManagerTest : public WaylandTest {
   uint32_t surface_id_ = 0u;
 };
 
+class WaylandBufferManagerDrmSyncobjTest : public WaylandBufferManagerTest {
+ protected:
+  void SetUp() override {
+    WaylandBufferManagerTest::SetUp();
+    auto drm =
+        std::make_unique<testing::NiceMock<MockDrmSyncobjIoctlWrapper>>();
+    drm_ = drm.get();
+    manager_host_->SetDrmSyncobjWrapper(std::move(drm));
+
+    ASSERT_TRUE(connection_->SupportsExplicitSync());
+
+    ON_CALL(*drm_, SyncobjImportSyncFile(_, _))
+        .WillByDefault(testing::Return(0));
+    ON_CALL(*drm_, SyncobjTransfer(_, _, _, _, _))
+        .WillByDefault(testing::Return(0));
+    ON_CALL(*drm_, SyncobjEventfd(_, _, _, _))
+        .WillByDefault([](uint32_t, uint64_t, int ev_fd, uint32_t) {
+          uint64_t value = 1;
+          return HANDLE_EINTR(write(ev_fd, &value, sizeof(value))) >= 0 ? 0
+                                                                        : errno;
+        });
+    ON_CALL(*drm_, SyncobjExportSyncFile(_, _))
+        .WillByDefault([this](uint32_t, int* sync_file_fd) {
+          constexpr int kSuccess = 0;
+          auto sync_file = MakeFD();
+          *sync_file_fd = HANDLE_EINTR(dup(sync_file.get()));
+          if (*sync_file_fd < 0) {
+            const int error = errno;
+            return error;
+          }
+          struct stat statbuf;
+          if (fstat(sync_file.get(), &statbuf) != 0) {
+            const int error = errno;
+            return error;
+          }
+          exported_sync_file_stats_.emplace_back(statbuf.st_dev,
+                                                 statbuf.st_ino);
+          return kSuccess;
+        });
+  }
+
+  void CommitBufferWithAcquireFence(gfx::AcceleratedWidget widget,
+                                    uint32_t frame_id,
+                                    uint32_t buffer_id,
+                                    const gfx::Rect& bounds_rect) {
+    gfx::GpuFenceHandle fence;
+    fence.Adopt(MakeFD());
+    auto overlay_config =
+        CreateBasicWaylandOverlayConfig(INT32_MIN, buffer_id, bounds_rect);
+    overlay_config.access_fence_handle = std::move(fence);
+
+    std::vector<wl::WaylandOverlayConfig> overlay_configs;
+    overlay_configs.emplace_back(std::move(overlay_config));
+    buffer_manager_gpu_->CommitOverlays(widget, frame_id,
+                                        gfx::FrameData(delegate_.viz_seq()),
+                                        std::move(overlay_configs));
+    base::RunLoop().RunUntilIdle();
+  }
+
+  MockDrmSyncobjIoctlWrapper& drm() { return *drm_; }
+
+  bool IsMatchingExportedSyncFile(const gfx::GpuFenceHandle& fence) const {
+    if (fence.is_null() || exported_sync_file_stats_.empty()) {
+      return false;
+    }
+    struct stat fence_stat;
+    if (fstat(fence.Peek(), &fence_stat) != 0) {
+      return false;
+    }
+    return std::any_of(
+        exported_sync_file_stats_.begin(), exported_sync_file_stats_.end(),
+        [&fence_stat](const auto& exported_sync_file_stat) {
+          return fence_stat.st_dev == exported_sync_file_stat.first &&
+                 fence_stat.st_ino == exported_sync_file_stat.second;
+        });
+  }
+
+  void RunFencedReleaseScenario(bool expect_exported_release_fence) {
+    constexpr uint32_t kBufferId1 = 1;
+    constexpr uint32_t kBufferId2 = 2;
+    constexpr size_t kExpectedBufferParamsSize = 2u;
+
+    const gfx::AcceleratedWidget widget = window_->GetWidget();
+    const gfx::Rect bounds = window_->GetBoundsInPixels();
+
+    MockSurfaceGpu mock_surface_gpu(buffer_manager_gpu_.get(), widget);
+
+    EXPECT_CALL(drm(), SyncobjImportSyncFile(_, _)).Times(testing::AtLeast(1));
+    EXPECT_CALL(drm(), SyncobjTransfer(_, _, _, _, _))
+        .Times(testing::AtLeast(1));
+    EXPECT_CALL(drm(), SyncobjEventfd(_, _, _, _)).Times(testing::AtLeast(1));
+    EXPECT_CALL(drm(), SyncobjExportSyncFile(_, _)).Times(testing::AtLeast(1));
+
+    PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+      EXPECT_CALL(*server->zwp_linux_dmabuf_v1(), CreateParams(_, _, _))
+          .Times(2);
+    });
+    CreateDmabufBasedBufferAndSetTerminateExpectation(/*fail=*/false,
+                                                      kBufferId1);
+    CreateDmabufBasedBufferAndSetTerminateExpectation(/*fail=*/false,
+                                                      kBufferId2);
+    ProcessCreatedBufferResourcesWithExpectation(kExpectedBufferParamsSize,
+                                                 /*fail=*/false);
+
+    PostToServerAndWait(
+        [id = surface_id_](wl::TestWaylandServerThread* server) {
+          auto* mock_surface = server->GetObject<wl::MockSurface>(id);
+          constexpr uint32_t kNumberOfCommits = 2;
+          EXPECT_CALL(*mock_surface, Attach(_, _, _)).Times(kNumberOfCommits);
+          EXPECT_CALL(*mock_surface, Frame(_)).Times(kNumberOfCommits);
+          EXPECT_CALL(*mock_surface, Commit()).Times(kNumberOfCommits);
+        });
+
+    {
+      testing::InSequence s;
+      EXPECT_CALL(mock_surface_gpu,
+                  OnSubmission(
+                      kBufferId1, gfx::SwapResult::SWAP_ACK,
+                      Truly([](const auto& fence) { return fence.is_null(); })))
+          .Times(1);
+      if (expect_exported_release_fence) {
+        EXPECT_CALL(mock_surface_gpu,
+                    OnSubmission(kBufferId2, gfx::SwapResult::SWAP_ACK,
+                                 Truly([this](const auto& fence) {
+                                   return IsMatchingExportedSyncFile(fence);
+                                 })))
+            .Times(1);
+      } else {
+        EXPECT_CALL(mock_surface_gpu,
+                    OnSubmission(kBufferId2, gfx::SwapResult::SWAP_ACK,
+                                 Truly([](const auto& fence) {
+                                   return fence.is_null();
+                                 })))
+            .Times(1);
+      }
+    }
+    EXPECT_CALL(mock_surface_gpu, OnPresentation(kBufferId1, _)).Times(1);
+    EXPECT_CALL(mock_surface_gpu, OnPresentation(kBufferId2, _)).Times(1);
+
+    CommitBufferWithAcquireFence(widget, kBufferId1, kBufferId1, bounds);
+    SendFrameCallbackForSurface(surface_id_);
+    base::RunLoop().RunUntilIdle();
+
+    CommitBufferWithAcquireFence(widget, kBufferId2, kBufferId2, bounds);
+    SendFrameCallbackForSurface(surface_id_);
+    base::RunLoop().RunUntilIdle();
+
+    DestroyBufferAndSetTerminateExpectation(kBufferId1, /*fail=*/false);
+    DestroyBufferAndSetTerminateExpectation(kBufferId2, /*fail=*/false);
+  }
+
+ private:
+  raw_ptr<MockDrmSyncobjIoctlWrapper> drm_ = nullptr;
+  std::vector<std::pair<dev_t, ino_t>> exported_sync_file_stats_;
+};
+
 TEST_P(WaylandBufferManagerTest, CreateDmabufBasedBuffers) {
   constexpr uint32_t kDmabufBufferId = 1;
 
@@ -350,36 +516,32 @@ TEST_P(WaylandBufferManagerTest, CreateDmabufBasedBuffers) {
 
 TEST_P(WaylandBufferManagerTest, VerifyModifiers) {
   constexpr uint32_t kDmabufBufferId = 1;
-  constexpr uint32_t kFourccFormatR8 = DRM_FORMAT_R8;
+  constexpr uint32_t kFourccFormatRGBA8888 = DRM_FORMAT_ABGR8888;
   constexpr uint64_t kFormatModiferLinear = DRM_FORMAT_MOD_LINEAR;
 
   const std::vector<uint64_t> kFormatModifiers{DRM_FORMAT_MOD_INVALID,
                                                kFormatModiferLinear};
 
-  // Tests that fourcc format is added, but invalid modifier is ignored first.
-  // Then, when valid modifier comes, it is stored.
+  // Tests that fourcc format is added.
   for (const auto& modifier : kFormatModifiers) {
     PostToServerAndWait([modifier](wl::TestWaylandServerThread* server) {
       uint32_t modifier_hi = modifier >> 32;
       uint32_t modifier_lo = modifier & UINT32_MAX;
       zwp_linux_dmabuf_v1_send_modifier(
-          server->zwp_linux_dmabuf_v1()->resource(), kFourccFormatR8,
+          server->zwp_linux_dmabuf_v1()->resource(), kFourccFormatRGBA8888,
           modifier_hi, modifier_lo);
     });
+  }
 
-    auto buffer_formats =
-        connection_->buffer_factory()->GetSupportedBufferFormats();
-    ASSERT_EQ(buffer_formats.size(), 1u);
-    ASSERT_EQ(buffer_formats.begin()->first,
-              GetBufferFormatFromFourCCFormat(kFourccFormatR8));
-
-    auto modifiers = buffer_formats.begin()->second;
-    if (modifier == DRM_FORMAT_MOD_INVALID) {
-      ASSERT_EQ(modifiers.size(), 0u);
-    } else {
-      ASSERT_EQ(modifiers.size(), 1u);
-      ASSERT_EQ(modifiers[0], modifier);
-    }
+  auto shared_image_formats =
+      connection_->buffer_factory()->GetSupportedSharedImageFormats();
+  ASSERT_EQ(shared_image_formats.size(), 1u);
+  ASSERT_EQ(shared_image_formats.begin()->first,
+            GetSharedImageFormatFromFourCCFormat(kFourccFormatRGBA8888));
+  auto modifiers = shared_image_formats.begin()->second;
+  ASSERT_EQ(modifiers.size(), 2u);
+  for (size_t i = 0; i < kFormatModifiers.size(); ++i) {
+    ASSERT_EQ(modifiers[i], kFormatModifiers[i]);
   }
 
   PostToServerAndWait([](wl::TestWaylandServerThread* server) {
@@ -388,7 +550,7 @@ TEST_P(WaylandBufferManagerTest, VerifyModifiers) {
 
   CreateDmabufBasedBufferAndSetTerminateExpectation(
       false /*fail*/, kDmabufBufferId, base::ScopedFD(), kDefaultSize, {1}, {2},
-      {kFormatModiferLinear}, kFourccFormatR8, 1);
+      {kFormatModiferLinear}, kFourccFormatRGBA8888, 1);
 
   PostToServerAndWait([](wl::TestWaylandServerThread* server) {
     auto params_vector = server->zwp_linux_dmabuf_v1()->buffer_params();
@@ -428,7 +590,7 @@ TEST_P(WaylandBufferManagerTest, ValidateDataFromGpu) {
       // Vectors are valid but buffer format is not.
       {true, kDefaultSize, 1, {1}, {2}, {6}},
       // Everything is correct but the buffer ID is zero.
-      {true, kDefaultSize, 1, {1}, {2}, {6}, DRM_FORMAT_R8},
+      {true, kDefaultSize, 1, {1}, {2}, {6}, DRM_FORMAT_ABGR8888},
   };
 
   for (const auto& bad : kBadInputs) {
@@ -630,11 +792,10 @@ TEST_P(WaylandBufferManagerTest, CommitOverlaysWithSameBufferId) {
     GTEST_SKIP();
   }
 
-  const size_t expected_number_of_buffers =
-      connection_->linux_explicit_synchronization_v1() ? 1 : 2;
+  const size_t expected_number_of_buffers = 2;
 
   PostToServerAndWait(
-      [expected_number_of_buffers](wl::TestWaylandServerThread* server) {
+      [](wl::TestWaylandServerThread* server) {
         EXPECT_CALL(*server->zwp_linux_dmabuf_v1(), CreateParams(_, _, _))
             .Times(expected_number_of_buffers);
       });
@@ -676,153 +837,6 @@ TEST_P(WaylandBufferManagerTest, CommitBufferNullWidget) {
 
   // Let the mojo call to go through.
   base::RunLoop().RunUntilIdle();
-}
-
-// Tests that committing overlays with bounds_rect containing NaN or infinity
-// values is illegal - the host terminates the gpu process.
-TEST_P(WaylandBufferManagerTest, CommitOverlaysNonsensicalBoundsRect) {
-  if (!connection_->ShouldUseOverlayDelegation()) {
-    GTEST_SKIP();
-  }
-
-  const std::vector<gfx::RectF> bounds_rect_test_data = {
-      gfx::RectF(std::nanf(""), window_->GetBoundsInPixels().y(), std::nanf(""),
-                 window_->GetBoundsInPixels().height()),
-      gfx::RectF(window_->GetBoundsInPixels().x(),
-                 std::numeric_limits<float>::infinity(),
-                 window_->GetBoundsInPixels().width(),
-                 std::numeric_limits<float>::infinity())};
-
-  constexpr bool config[2] = {/*root_has_nan_bounds=*/true,
-                              /*non_root_overlay_has_nan_bounds=*/false};
-  constexpr uint32_t kBufferId1 = 1;
-  constexpr uint32_t kBufferId2 = 2;
-  constexpr uint32_t kBufferId3 = 3;
-
-  for (bool should_root_have_nan_bounds : config) {
-    for (const auto& faulty_bounds_rect : bounds_rect_test_data) {
-      CreateDmabufBasedBufferAndSetTerminateExpectation(false /*fail*/,
-                                                        kBufferId1);
-      CreateDmabufBasedBufferAndSetTerminateExpectation(false /*fail*/,
-                                                        kBufferId2);
-      CreateDmabufBasedBufferAndSetTerminateExpectation(false /*fail*/,
-                                                        kBufferId3);
-      ProcessCreatedBufferResourcesWithExpectation(3u /* expected size */,
-                                                   false /* fail */);
-
-      // Can't commit for bounds rect containing NaN
-      SetTerminateCallbackExpectationAndDestroyChannel(&callback_,
-                                                       true /*fail*/);
-
-      size_t z_order = 0;
-      std::vector<wl::WaylandOverlayConfig> overlay_configs;
-      if (should_root_have_nan_bounds) {
-        // The root surface has nan bounds.
-        overlay_configs.emplace_back(CreateBasicWaylandOverlayConfig(
-            INT32_MIN, kBufferId1, faulty_bounds_rect));
-        overlay_configs.emplace_back(CreateBasicWaylandOverlayConfig(
-            z_order++, kBufferId2, window_->GetBoundsInPixels()));
-        overlay_configs.emplace_back(CreateBasicWaylandOverlayConfig(
-            z_order++, kBufferId3, window_->GetBoundsInPixels()));
-      } else {
-        // Overlays have nan bounds. Given playback starts with the biggest
-        // z-order number, add two more overlays around the faulty overlay
-        // config so that the test ensures no further playback happens and it
-        // doesn't crash.
-        overlay_configs.emplace_back(CreateBasicWaylandOverlayConfig(
-            INT32_MIN, kBufferId1, window_->GetBoundsInPixels()));
-        overlay_configs.emplace_back(CreateBasicWaylandOverlayConfig(
-            z_order++, kBufferId2, window_->GetBoundsInPixels()));
-        overlay_configs.emplace_back(CreateBasicWaylandOverlayConfig(
-            z_order++, kBufferId3, faulty_bounds_rect));
-        overlay_configs.emplace_back(CreateBasicWaylandOverlayConfig(
-            z_order++, kBufferId2, window_->GetBoundsInPixels()));
-      }
-      buffer_manager_gpu_->CommitOverlays(window_->GetWidget(), 1u,
-                                          gfx::FrameData(delegate_.viz_seq()),
-                                          std::move(overlay_configs));
-
-      base::RunLoop().RunUntilIdle();
-
-      if (!should_root_have_nan_bounds &&
-          !connection_->linux_explicit_synchronization_v1()) {
-        // This case submits kBufferId2 twice. So, a second handle is requested
-        // during a frame playback if explicit sync is unavailable.
-        ProcessCreatedBufferResourcesWithExpectation(1u /* expected size */,
-                                                     false /* fail */);
-      }
-
-      EXPECT_EQ("Overlay bounds_rect is invalid (NaN or infinity).",
-                channel_destroyed_error_message_);
-
-      std::vector<uint32_t> ids_of_subsurfaces;
-      ids_of_subsurfaces.reserve(window_->wayland_subsurfaces_.size());
-      for (auto& subsurface : window_->wayland_subsurfaces_) {
-        ids_of_subsurfaces.emplace_back(
-            subsurface->wayland_surface()->get_surface_id());
-      }
-
-      PostToServerAndWait([id = surface_id_, ids_of_subsurfaces](
-                              wl::TestWaylandServerThread* server) {
-        // Clear all the possible frame and release callbacks.
-        auto* mock_surface = server->GetObject<wl::MockSurface>(id);
-        for (auto subsurface_id : ids_of_subsurfaces) {
-          auto* mock_surface_of_subsurface =
-              server->GetObject<wl::MockSurface>(subsurface_id);
-          EXPECT_TRUE(mock_surface_of_subsurface);
-          mock_surface_of_subsurface->SendFrameCallback();
-          mock_surface_of_subsurface->ClearBufferReleases();
-        }
-
-        mock_surface->SendFrameCallback();
-        mock_surface->ClearBufferReleases();
-      });
-    }
-  }
-}
-
-// A similar test to the above with the only difference that a background
-// dummy buffer is not used as delegation is disabled.
-TEST_P(WaylandBufferManagerTest,
-       CommitOverlaysNonsensicalBoundsRectSingleOverlay) {
-  if (connection_->ShouldUseOverlayDelegation()) {
-    GTEST_SKIP();
-  }
-
-  const std::vector<gfx::RectF> bounds_rect_test_data = {
-      gfx::RectF(std::nanf(""), window_->GetBoundsInPixels().y(), std::nanf(""),
-                 window_->GetBoundsInPixels().height()),
-      gfx::RectF(window_->GetBoundsInPixels().x(),
-                 std::numeric_limits<float>::infinity(),
-                 window_->GetBoundsInPixels().width(),
-                 std::numeric_limits<float>::infinity())};
-
-  for (const auto& faulty_bounds_rect : bounds_rect_test_data) {
-    constexpr uint32_t kBufferId1 = 1;
-
-    CreateDmabufBasedBufferAndSetTerminateExpectation(false /*fail*/,
-                                                      kBufferId1);
-    ProcessCreatedBufferResourcesWithExpectation(1u /* expected size */,
-                                                 false /* fail */);
-
-    // Can't commit for bounds rect containing NaN
-    SetTerminateCallbackExpectationAndDestroyChannel(&callback_, true /*fail*/);
-
-    size_t z_order = 0;
-    std::vector<wl::WaylandOverlayConfig> overlay_configs;
-
-    overlay_configs.emplace_back(CreateBasicWaylandOverlayConfig(
-        z_order, kBufferId1, faulty_bounds_rect));
-
-    buffer_manager_gpu_->CommitOverlays(window_->GetWidget(), 1u,
-                                        gfx::FrameData(delegate_.viz_seq()),
-                                        std::move(overlay_configs));
-
-    base::RunLoop().RunUntilIdle();
-
-    EXPECT_EQ("Overlay bounds_rect is invalid (NaN or infinity).",
-              channel_destroyed_error_message_);
-  }
 }
 
 TEST_P(WaylandBufferManagerTest, EnsureCorrectOrderOfCallbacks) {
@@ -2375,117 +2389,24 @@ TEST_P(WaylandBufferManagerTest, RootSurfaceIsCommittedLast) {
   });
 }
 
-// TODO(crbug.com/367623923) Decouple this test from the older explicit sync
-// protocol and/or add coverage for the new linux-drm-syncobj protocol.
-TEST_P(WaylandBufferManagerTest, FencedRelease) {
-  if (!connection_->linux_explicit_synchronization_v1())
-    GTEST_SKIP();
+// Tests fenced release on syncobj path returns an exported release fence.
+TEST_P(WaylandBufferManagerDrmSyncobjTest, FencedRelease) {
+  RunFencedReleaseScenario(/*expect_exported_release_fence=*/true);
+}
 
-  constexpr uint32_t kBufferId1 = 1;
-  constexpr uint32_t kBufferId2 = 2;
-  constexpr uint32_t kBufferId3 = 3;
+// Tests SyncobjEventfd failure submission proceeds without release fence.
+TEST_P(WaylandBufferManagerDrmSyncobjTest, FencedReleaseSyncobjEventfdFails) {
+  ON_CALL(drm(), SyncobjEventfd(_, _, _, _))
+      .WillByDefault(testing::Return(EIO));
+  RunFencedReleaseScenario(/*expect_exported_release_fence=*/false);
+}
 
-  const gfx::AcceleratedWidget widget = window_->GetWidget();
-  const gfx::Rect bounds = gfx::Rect({0, 0}, kDefaultSize);
-  window_->SetBoundsInDIP(bounds);
-
-  MockSurfaceGpu mock_surface_gpu(buffer_manager_gpu_.get(), widget_);
-
-  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
-    EXPECT_CALL(*server->zwp_linux_dmabuf_v1(), CreateParams(_, _, _)).Times(3);
-  });
-  CreateDmabufBasedBufferAndSetTerminateExpectation(false /*fail*/, kBufferId1);
-  CreateDmabufBasedBufferAndSetTerminateExpectation(false /*fail*/, kBufferId2);
-  CreateDmabufBasedBufferAndSetTerminateExpectation(false /*fail*/, kBufferId3);
-  ProcessCreatedBufferResourcesWithExpectation(3u /* expected size */,
-                                               false /* fail */);
-
-  PostToServerAndWait([id = surface_id_](wl::TestWaylandServerThread* server) {
-    auto* mock_surface = server->GetObject<wl::MockSurface>(id);
-
-    constexpr uint32_t kNumberOfCommits = 3;
-    EXPECT_CALL(*mock_surface, Attach(_, _, _)).Times(kNumberOfCommits);
-    EXPECT_CALL(*mock_surface, Frame(_)).Times(kNumberOfCommits);
-    EXPECT_CALL(*mock_surface, Commit()).Times(kNumberOfCommits);
-  });
-
-  ::testing::InSequence s;
-
-  // Commit the first buffer and expect the OnSubmission immediately.
-  EXPECT_CALL(
-      mock_surface_gpu,
-      OnSubmission(kBufferId1, gfx::SwapResult::SWAP_ACK,
-                   Truly([](const auto& fence) { return fence.is_null(); })))
-      .Times(1);
-  CommitBuffer(widget, kBufferId1, kBufferId1,
-               gfx::FrameData(delegate_.viz_seq()), bounds,
-               gfx::RoundedCornersF(), kDefaultScale, bounds);
-
-  // Let mojo messages from gpu to host to go through.
-  base::RunLoop().RunUntilIdle();
-  testing::Mock::VerifyAndClearExpectations(&mock_surface_gpu);
-
-  SendFrameCallbackForSurface(surface_id_);
-
-  // Commit the second buffer now.
-  CommitBuffer(widget, kBufferId2, kBufferId2,
-               gfx::FrameData(delegate_.viz_seq()), bounds,
-               gfx::RoundedCornersF(), kDefaultScale, bounds);
-
-  SendFrameCallbackForSurface(surface_id_);
-
-  EXPECT_CALL(
-      mock_surface_gpu,
-      OnSubmission(kBufferId2, gfx::SwapResult::SWAP_ACK,
-                   Truly([](const auto& fence) { return !fence.is_null(); })))
-      .Times(1);
-
-  PostToServerAndWait([id = surface_id_](wl::TestWaylandServerThread* server) {
-    // Release the first buffer via fenced release. This should trigger
-    // OnSubmission for the second buffer with a non-null fence.
-    gfx::GpuFenceHandle handle;
-    const int32_t kFenceFD = dup(1);
-    handle.Adopt(base::ScopedFD(kFenceFD));
-
-    auto* mock_surface = server->GetObject<wl::MockSurface>(id);
-    mock_surface->ReleaseBufferFenced(mock_surface->prev_attached_buffer(),
-                                      std::move(handle));
-    mock_surface->SendFrameCallback();
-  });
-
-  // Let mojo messages from gpu to host to go through.
-  base::RunLoop().RunUntilIdle();
-  testing::Mock::VerifyAndClearExpectations(&mock_surface_gpu);
-
-  // Commit the third buffer now.
-  CommitBuffer(widget, kBufferId3, kBufferId3,
-               gfx::FrameData(delegate_.viz_seq()), bounds,
-               gfx::RoundedCornersF(), kDefaultScale, bounds);
-
-  SendFrameCallbackForSurface(surface_id_);
-
-  // Release the second buffer via immediate explicit release. This should
-  // trigger OnSubmission for the second buffer with a null fence.
-  EXPECT_CALL(
-      mock_surface_gpu,
-      OnSubmission(kBufferId3, gfx::SwapResult::SWAP_ACK,
-                   Truly([](const auto& fence) { return fence.is_null(); })))
-      .Times(1);
-
-  PostToServerAndWait([id = surface_id_](wl::TestWaylandServerThread* server) {
-    auto* mock_surface = server->GetObject<wl::MockSurface>(id);
-    mock_surface->ReleaseBufferFenced(mock_surface->prev_attached_buffer(),
-                                      gfx::GpuFenceHandle());
-    mock_surface->SendFrameCallback();
-  });
-
-  // Let mojo messages from gpu to host to go through.
-  base::RunLoop().RunUntilIdle();
-  testing::Mock::VerifyAndClearExpectations(&mock_surface_gpu);
-
-  DestroyBufferAndSetTerminateExpectation(kBufferId1, false /*fail*/);
-  DestroyBufferAndSetTerminateExpectation(kBufferId2, false /*fail*/);
-  DestroyBufferAndSetTerminateExpectation(kBufferId3, false /*fail*/);
+// Tests SyncobjExportSyncFile failure submission has no release fence.
+TEST_P(WaylandBufferManagerDrmSyncobjTest,
+       FencedReleaseSyncobjExportSyncFileFails) {
+  ON_CALL(drm(), SyncobjExportSyncFile(_, _))
+      .WillByDefault(testing::Return(EIO));
+  RunFencedReleaseScenario(/*expect_exported_release_fence=*/false);
 }
 
 // Tests that destroying a channel doesn't result in resetting surface state
@@ -2546,17 +2467,6 @@ TEST_P(WaylandBufferManagerTest,
 
   // Let mojo messages from host to gpu go through.
   base::RunLoop().RunUntilIdle();
-
-  // The surface must has the buffer detached and all the buffers are destroyed.
-  // Release the fence as there is no further need to hold that as the client
-  // no longer expects that. Moreover, its next attach may result in a DCHECK,
-  // as the next buffer resource can be allocated on the same memory address
-  // resulting in a DCHECK when set_linux_buffer_release is called. The reason
-  // is that wl_resource_create calls internally calls malloc, which may reuse
-  // that memory.
-  PostToServerAndWait([id = surface_id_](wl::TestWaylandServerThread* server) {
-    server->GetObject<wl::MockSurface>(id)->ClearBufferReleases();
-  });
 
   auto interface_ptr = manager_host_->BindInterface();
   buffer_manager_gpu_->Initialize(std::move(interface_ptr), {},
@@ -2679,7 +2589,6 @@ TEST_P(WaylandBufferManagerTest, HidesSubsurfacesOnChannelDestroyed) {
 
   PostToServerAndWait([id = surface_id_](wl::TestWaylandServerThread* server) {
     auto* root_surface = server->GetObject<wl::MockSurface>(id);
-    root_surface->ClearBufferReleases();
     root_surface->SendFrameCallback();
   });
 
@@ -2720,16 +2629,14 @@ TEST_P(WaylandBufferManagerTest, HidesSubsurfacesOnChannelDestroyed) {
   EXPECT_FALSE(window_->wayland_subsurfaces().begin()->get()->IsVisible());
 }
 
-TEST_P(WaylandBufferManagerTest,
-       DoesNotAttachAndCommitOnHideIfNoBuffersAttached) {
+TEST_P(WaylandBufferManagerTest, AttachNullBufferAndCommitOnHide) {
   EXPECT_TRUE(window_->IsVisible());
 
   PostToServerAndWait([id = surface_id_](wl::TestWaylandServerThread* server) {
     auto* mock_surface = server->GetObject<wl::MockSurface>(id);
 
-    constexpr uint32_t kNumberOfCommits = 0;
-    EXPECT_CALL(*mock_surface, Attach(_, _, _)).Times(kNumberOfCommits);
-    EXPECT_CALL(*mock_surface, Commit()).Times(kNumberOfCommits);
+    EXPECT_CALL(*mock_surface, Attach(nullptr, 0, 0)).Times(1);
+    EXPECT_CALL(*mock_surface, Commit()).Times(1);
   });
 
   window_->Hide();
@@ -3064,6 +2971,71 @@ TEST_P(WaylandBufferManagerViewportTest, ViewportDestinationInteger) {
   }
 }
 
+// Regression test: WaylandBufferManagerHost::OnChannelDestroyed iterates a
+// bare-pointer snapshot of all WaylandWindows and calls OnChannelDestroyed()
+// on each. If processing one window synchronously destroys another (via the
+// OnStateUpdate delegate callout, reachable when should_ack_swap_without_commit
+// is set on a suspended window under video capture), the next iteration
+// dereferences a freed WaylandWindow pointer.
+TEST_P(WaylandBufferManagerTest,
+       OnChannelDestroyedSnapshotSurvivesWindowDeletion) {
+  // Create a second toplevel that will be destroyed synchronously from within
+  // the first window's OnChannelDestroyed() -> ... -> delegate()->OnStateUpdate
+  // call chain.
+  testing::NiceMock<MockWaylandPlatformWindowDelegate> victim_delegate(
+      connection_.get());
+  std::unique_ptr<WaylandWindow> victim = CreateWaylandWindowWithParams(
+      PlatformWindowType::kWindow, gfx::Rect(0, 0, 100, 100), &victim_delegate);
+  ASSERT_TRUE(victim);
+  // Both windows must be tracked by the manager.
+  ASSERT_EQ(2u, connection_->window_manager()->GetAllWindows().size());
+  // Iteration order in the flat_map is by widget id; window_ was created first.
+  ASSERT_LT(window_->GetWidget(), victim->GetWidget());
+
+  // Put |window_| into the state where WaylandWindow::OnChannelDestroyed ->
+  // WaylandFrameManager::MaybeProcessPendingFrame takes the
+  // should_ack_swap_without_commit_ branch and reaches delegate->OnStateUpdate.
+  //
+  // 1) Queue enough server-side configures to hit MAX_IN_FLIGHT_REQUESTS so
+  //    the last one remains unapplied for MaybeApplyLatestStateRequest to pick
+  //    up when OnSequencePoint(-1) runs.
+  WaylandWindow::WindowStates states;
+  states.is_activated = true;
+  for (int i = 1; i <= 4; ++i) {
+    window_->HandleToplevelConfigure(200 + i * 10, 200 + i * 10, states);
+    window_->HandleSurfaceConfigure(10 + i);
+  }
+  // 2) Video capture + suspended -> should_ack_swap_without_commit_ = true.
+  window_->SetVideoCapture();
+  states.is_suspended = true;
+  window_->HandleToplevelConfigure(250, 250, states);
+
+  // 3) Hook OnStateUpdate on |window_|'s delegate so that when it fires from
+  //    inside the OnChannelDestroyed loop, it synchronously destroys the other
+  //    window that is still referenced by the snapshot vector.
+  bool destroyed_from_callback = false;
+  delegate_.set_on_state_update_callback(
+      base::BindLambdaForTesting([&]() -> bool {
+        if (victim) {
+          victim.reset();
+          destroyed_from_callback = true;
+        }
+        return false;
+      }));
+
+  // Simulate GPU-process channel loss. The dangling snapshot loop will call
+  // OnChannelDestroyed() on the freed |victim| pointer without a per-iteration
+  // liveness check.
+  manager_host_->OnChannelDestroyed();
+
+  EXPECT_TRUE(destroyed_from_callback);
+  EXPECT_EQ(1u, connection_->window_manager()->GetAllWindows().size());
+
+  delegate_.set_on_state_update_callback({});
+  manager_host_ = connection_->buffer_manager_host();
+  DisableSyncOnTearDown();
+}
+
 INSTANTIATE_TEST_SUITE_P(XdgVersionStableTest,
                          WaylandBufferManagerTest,
                          Values(wl::ServerConfig{}));
@@ -3073,17 +3045,10 @@ INSTANTIATE_TEST_SUITE_P(XdgVersionStableTest,
                          Values(wl::ServerConfig{}));
 
 INSTANTIATE_TEST_SUITE_P(
-    XdgVersionStableTestWithoutExplicitSync,
-    WaylandBufferManagerTest,
+    XdgVersionStableTestWithLinuxDrmSyncobj,
+    WaylandBufferManagerDrmSyncobjTest,
     Values(wl::ServerConfig{
-        .use_explicit_synchronization =
-            wl::ShouldUseExplicitSynchronizationProtocol::kNone}));
-INSTANTIATE_TEST_SUITE_P(
-    XdgVersionStableTestWithExplicitSync,
-    WaylandBufferManagerTest,
-    Values(wl::ServerConfig{
-        .use_explicit_synchronization =
-            wl::ShouldUseExplicitSynchronizationProtocol::kUse}));
+        .use_linux_drm_syncobj = wl::ShouldUseLinuxDrmSyncobjProtocol::kUse}));
 
 INSTANTIATE_TEST_SUITE_P(
     XdgVersionStableTestWithViewporterSurfaceScalingDisabled,

@@ -47,7 +47,10 @@ class MockSyncService : public SyncService {
               (),
               (override));
 #endif  // BUILDFLAG(IS_ANDROID)
-  MOCK_METHOD(void, SetSyncFeatureRequested, (), (override));
+  MOCK_METHOD(void,
+              AcknowledgeBookmarksLimitExceededError,
+              (BookmarksLimitExceededHelpClickedSource source),
+              (override));
   MOCK_METHOD(DisableReasonSet, GetDisableReasons, (), (const override));
   MOCK_METHOD(TransportState, GetTransportState, (), (const override));
   MOCK_METHOD(UserActionableError,
@@ -63,7 +66,6 @@ class MockSyncService : public SyncService {
               HasCachedPersistentAuthErrorForMetrics,
               (),
               (const override));
-  MOCK_METHOD(bool, RequiresClientUpgrade, (), (const override));
   MOCK_METHOD(std::unique_ptr<SyncSetupInProgressHandle>,
               GetSetupInProgressHandle,
               (),
@@ -80,7 +82,10 @@ class MockSyncService : public SyncService {
               (),
               (const override));
   MOCK_METHOD(void, OnDataTypeRequestsSyncStartup, (DataType type), (override));
-  MOCK_METHOD(void, TriggerRefresh, (const DataTypeSet& types), (override));
+  MOCK_METHOD(void,
+              TriggerRefresh,
+              (TriggerRefreshSource source, const DataTypeSet& types),
+              (override));
   MOCK_METHOD(void,
               DataTypePreconditionChanged,
               (syncer::DataType type),
@@ -139,7 +144,7 @@ class MockSyncService : public SyncService {
               (override));
   MOCK_METHOD(void,
               GetAllNodesForDebugging,
-              (base::OnceCallback<void(base::Value::List)> callback),
+              (base::OnceCallback<void(base::ListValue)> callback),
               (override));
   MOCK_METHOD(DataTypeDownloadStatus,
               GetDownloadStatusFor,
@@ -147,7 +152,8 @@ class MockSyncService : public SyncService {
               (const override));
   MOCK_METHOD(void,
               GetTypesWithUnsyncedData,
-              (DataTypeSet, base::OnceCallback<void(DataTypeSet)>),
+              (DataTypeSet,
+               base::OnceCallback<void(absl::flat_hash_map<DataType, size_t>)>),
               (const override));
   MOCK_METHOD(
       void,

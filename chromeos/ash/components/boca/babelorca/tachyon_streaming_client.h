@@ -15,7 +15,6 @@
 #include "base/thread_annotations.h"
 #include "base/timer/timer.h"
 #include "chromeos/ash/components/boca/babelorca/tachyon_client.h"
-#include "chromeos/ash/services/boca/babelorca/mojom/tachyon_parsing_service.mojom-shared.h"
 #include "chromeos/ash/services/boca/babelorca/mojom/tachyon_parsing_service.mojom.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "services/network/public/cpp/simple_url_loader_stream_consumer.h"
@@ -34,6 +33,20 @@ struct RequestDataWrapper;
 class TachyonStreamingClient : public TachyonClient,
                                public network::SimpleURLLoaderStreamConsumer {
  public:
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused. Visible for testing.
+  //
+  // LINT.IfChange(StreamEndReason)
+  enum class StreamEndReason {
+    kEndedByClient = 0,
+    kConnectionClosedSuccess = 1,
+    kConnectionClosedError = 2,
+    kParseError = 3,
+    kParsingServiceDisconnected = 4,
+    kTimeout = 5,
+    kMaxValue = kTimeout,
+  };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/ash/enums.xml:BabelOrcaStreamEndReason)
   using ParsingServiceBinder =
       base::RepeatingCallback<mojo::Remote<mojom::TachyonParsingService>()>;
   using OnMessageCallback =

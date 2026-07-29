@@ -21,12 +21,12 @@
 #include "base/test/test_switches.h"
 #include "base/values.h"
 #include "chrome/browser/ash/app_restore/full_restore_app_launch_handler.h"
+#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/ash/system_web_apps/system_web_app_manager.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
-#include "chrome/browser/ui/browser_commands.h"
-#include "chrome/browser/ui/browser_list.h"
-#include "chrome/browser/ui/browser_navigator.h"
+#include "chrome/browser/ui/interaction/browser_elements.h"
+#include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/test/base/ash/interactive/settings/interactive_uitest_elements.h"
 #include "chrome/test/base/chromeos/crosier/aura_window_title_observer.h"
 #include "ui/base/accelerators/accelerator.h"
@@ -37,7 +37,7 @@
 namespace {
 
 using InteractiveMixinBasedBrowserTest =
-    InteractiveBrowserTestT<MixinBasedInProcessBrowserTest>;
+    InteractiveBrowserTestMixin<MixinBasedInProcessBrowserTest>;
 
 // This JavaScript is used to select an option from a dropdown menu. This
 // JavaScript can be formatted with a single string to identify the desired
@@ -153,7 +153,7 @@ constexpr char kFindElementAndDoActionJs[] = R"(
 std::string DeepQueryToSelectors(
     const WebContentsInteractionTestUtil::DeepQuery& query) {
   // Safely convert the selector list in `where` to a JSON/JS list.
-  base::Value::List selector_list;
+  base::ListValue selector_list;
   for (const auto& selector : query) {
     selector_list.Append(selector);
   }
@@ -175,7 +175,8 @@ InteractiveAshTest::InteractiveAshTest() {
   // the home button, shelf, etc. appear once per display.
   views::ElementTrackerViews::SetContextOverrideCallback(
       base::BindRepeating([](views::Widget* widget) {
-        return ui::ElementContext(ash::Shell::GetPrimaryRootWindow());
+        return ui::ElementContext::CreateFakeContextForTesting(
+            ash::Shell::GetPrimaryRootWindow());
       }));
 }
 
@@ -212,15 +213,19 @@ ui::ElementContext InteractiveAshTest::FindSystemWebApp(
     ash::SystemWebAppType type) {
   Profile* profile = GetActiveUserProfile();
   CHECK(profile);
-  Browser* browser = FindSystemWebAppBrowser(profile, type);
+  ash::BrowserDelegate* browser =
+      ash::FindSystemWebAppBrowser(profile, type, ash::BrowserType::kApp);
   CHECK(browser);
-  return browser->window()->GetElementContext();
+  return BrowserElements::From(
+             browser->GetBrowser().GetBrowserForMigrationOnly())
+      ->GetContext();
 }
 
 void InteractiveAshTest::CloseSystemWebApp(ash::SystemWebAppType type) {
   if (Profile* const profile = GetActiveUserProfile()) {
-    if (Browser* const browser = FindSystemWebAppBrowser(profile, type)) {
-      chrome::CloseWindow(browser);
+    if (ash::BrowserDelegate* const browser = ash::FindSystemWebAppBrowser(
+            profile, type, ash::BrowserType::kApp)) {
+      browser->Close();
     }
   }
 }
@@ -515,7 +520,7 @@ InteractiveAshTest::CreateBrowserWindow(const GURL& url) {
   CHECK(profile);
   NavigateParams params(profile, url, ui::PAGE_TRANSITION_TYPED);
   params.disposition = WindowOpenDisposition::NEW_WINDOW;
-  params.window_action = NavigateParams::SHOW_WINDOW;
+  params.window_action = NavigateParams::WindowAction::kShowWindow;
   return Navigate(&params);
 }
 
@@ -527,7 +532,7 @@ void InteractiveAshTest::TearDownOnMainThread() {
     base::RunLoop loop;
     loop.Run();
   }
-  InteractiveBrowserTestT<
+  InteractiveBrowserTestMixin<
       MixinBasedInProcessBrowserTest>::TearDownOnMainThread();
 }
 

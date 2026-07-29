@@ -11,6 +11,7 @@
 #include "base/functional/callback_helpers.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/task_environment.h"
+#include "components/autofill/core/browser/data_model/addresses/autofill_i18n_api.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
 #include "components/autofill/core/browser/data_quality/addresses/address_normalizer.h"
 #include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
@@ -41,15 +42,14 @@ class ChromiumTestdataSource : public TestdataSource {
 
   // For this test, only load the rules for the "US".
   void Get(const std::string& key, const Callback& data_ready) const override {
-    data_ready(
-        true, key,
-        new std::string("{\"data/US\": "
-                        "{\"id\":\"data/US\",\"key\":\"US\",\"name\":\"UNITED "
-                        "STATES\",\"lang\":\"en\",\"languages\":\"en\","
-                        "\"sub_keys\": \"CA\", \"sub_names\": \"California\"},"
-                        "\"data/US/CA\":{\"lang\":\"en\",\"name\":"
-                        "\"California\",\"key\":\"CA\",\"id\":"
-                        "\"data/US/CA\"}}"));
+    data_ready(true, key,
+               "{\"data/US\": "
+               "{\"id\":\"data/US\",\"key\":\"US\",\"name\":\"UNITED "
+               "STATES\",\"lang\":\"en\",\"languages\":\"en\","
+               "\"sub_keys\": \"CA\", \"sub_names\": \"California\"},"
+               "\"data/US/CA\":{\"lang\":\"en\",\"name\":"
+               "\"California\",\"key\":\"CA\",\"id\":"
+               "\"data/US/CA\"}}");
   }
 };
 
@@ -150,7 +150,7 @@ TEST_F(AddressNormalizerTest, AreRulesLoadedForRegion_NotAvailable) {
 TEST_F(AddressNormalizerTest, NormalizeAddressAsync_RulesLoaded) {
   WaitForAddressValidatorInitialization();
 
-  AutofillProfile profile = autofill::test::GetFullProfile();
+  AutofillProfile profile = test::GetFullProfile();
   profile.SetRawInfo(ADDRESS_HOME_STATE, u"California");
   const std::string kCountryCode =
       base::UTF16ToUTF8(profile.GetRawInfo(ADDRESS_HOME_COUNTRY));
@@ -179,7 +179,7 @@ TEST_F(AddressNormalizerTest,
        NormalizeAddressAsync_RulesNotLoaded_WillNotLoad) {
   WaitForAddressValidatorInitialization();
 
-  AutofillProfile profile = autofill::test::GetFullProfile();
+  AutofillProfile profile = test::GetFullProfile();
   profile.SetRawInfo(ADDRESS_HOME_STATE, u"California");
 
   // Make sure the rules will not be loaded in the NormalizeAddressAsync
@@ -208,7 +208,7 @@ TEST_F(AddressNormalizerTest, NormalizeAddressAsync_RulesNotAvailable) {
   WaitForAddressValidatorInitialization();
 
   // Rules are not available for Canada.
-  AutofillProfile profile = autofill::test::GetFullCanadianProfile();
+  AutofillProfile profile = test::GetFullCanadianProfile();
   // Verify the pre-condition.
   EXPECT_EQ("New Brunswick",
             base::UTF16ToUTF8(profile.GetRawInfo(ADDRESS_HOME_STATE)));
@@ -239,7 +239,7 @@ TEST_F(AddressNormalizerTest, NormalizeAddressAsync_RulesNotAvailable) {
 TEST_F(AddressNormalizerTest, NormalizeAddressAsync_RulesNotLoaded_WillLoad) {
   WaitForAddressValidatorInitialization();
 
-  AutofillProfile profile = autofill::test::GetFullProfile();
+  AutofillProfile profile = test::GetFullProfile();
   profile.SetRawInfo(ADDRESS_HOME_STATE, u"California");
 
   // Do the normalization.
@@ -264,7 +264,7 @@ TEST_F(AddressNormalizerTest, NormalizeAddressAsync_RulesNotLoaded_WillLoad) {
 TEST_F(AddressNormalizerTest, FormatPhone_AddressNormalizedAsync) {
   WaitForAddressValidatorInitialization();
 
-  AutofillProfile profile = autofill::test::GetFullProfile();
+  AutofillProfile profile = test::GetFullProfile();
   profile.SetRawInfo(PHONE_HOME_WHOLE_NUMBER, u"(515) 223-1234");
   profile.SetRawInfo(ADDRESS_HOME_STATE, u"California");
   const std::string kCountryCode =
@@ -295,7 +295,7 @@ TEST_F(AddressNormalizerTest, FormatPhone_AddressNormalizedAsync) {
 TEST_F(AddressNormalizerTest, FormatInvalidPhone_AddressNormalizedAsync) {
   WaitForAddressValidatorInitialization();
 
-  AutofillProfile profile = autofill::test::GetFullProfile();
+  AutofillProfile profile = test::GetFullProfile();
   // The number below is not a valid US number.
   profile.SetRawInfo(PHONE_HOME_WHOLE_NUMBER, u"(515) 123-1234");
   profile.SetRawInfo(ADDRESS_HOME_STATE, u"California");
@@ -326,7 +326,7 @@ TEST_F(AddressNormalizerTest, FormatInvalidPhone_AddressNormalizedAsync) {
 TEST_F(AddressNormalizerTest, FormatPhone_AddressNotNormalizedAsync) {
   WaitForAddressValidatorInitialization();
 
-  AutofillProfile profile = autofill::test::GetFullProfile();
+  AutofillProfile profile = test::GetFullProfile();
   profile.SetRawInfo(ADDRESS_HOME_STATE, u"California");
   profile.SetRawInfo(PHONE_HOME_WHOLE_NUMBER, u"515-223-1234");
 
@@ -359,7 +359,7 @@ TEST_F(AddressNormalizerTest, FormatPhone_AddressNotNormalizedAsync) {
 TEST_F(AddressNormalizerTest, NormalizeAddressSync_RulesNotLoaded) {
   WaitForAddressValidatorInitialization();
 
-  AutofillProfile profile = autofill::test::GetFullProfile();
+  AutofillProfile profile = test::GetFullProfile();
   profile.SetRawInfo(ADDRESS_HOME_STATE, u"California");
   profile.SetRawInfo(PHONE_HOME_WHOLE_NUMBER, u"515-223-1234");
 
@@ -380,7 +380,7 @@ TEST_F(AddressNormalizerTest, NormalizeAddressSync_RulesNotLoaded) {
 TEST_F(AddressNormalizerTest, NormalizeAddressSync_RulesLoaded) {
   WaitForAddressValidatorInitialization();
 
-  AutofillProfile profile = autofill::test::GetFullProfile();
+  AutofillProfile profile = test::GetFullProfile();
   profile.SetRawInfo(ADDRESS_HOME_STATE, u"California");
   profile.SetRawInfo(PHONE_HOME_WHOLE_NUMBER, u"515-223-1234");
   const std::string kCountryCode =
@@ -404,7 +404,7 @@ TEST_F(AddressNormalizerTest, NormalizeAddressSync_RulesLoaded) {
 // NormalizeAddressSync, normalization will fail but rules will be loaded after
 // the validator is initialized.
 TEST_F(AddressNormalizerTest, NormalizeAddressSync_UninitializedValidator) {
-  AutofillProfile profile = autofill::test::GetFullProfile();
+  AutofillProfile profile = test::GetFullProfile();
   profile.SetRawInfo(ADDRESS_HOME_STATE, u"California");
   profile.SetRawInfo(PHONE_HOME_WHOLE_NUMBER, u"515-223-1234");
   const std::string kCountryCode =
@@ -428,7 +428,7 @@ TEST_F(AddressNormalizerTest, NormalizeAddressSync_UninitializedValidator) {
 // NormalizeAddressAsync, normalization will succeed once the validator is
 // initialized.
 TEST_F(AddressNormalizerTest, NormalizeAddressAsync_UninitializedValidator) {
-  AutofillProfile profile = autofill::test::GetFullProfile();
+  AutofillProfile profile = test::GetFullProfile();
   profile.SetRawInfo(ADDRESS_HOME_STATE, u"California");
 
   // Do the normalization.

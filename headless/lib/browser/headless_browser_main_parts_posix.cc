@@ -2,17 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "headless/lib/browser/headless_browser_main_parts.h"
 
 #include <errno.h>
 #include <signal.h>
 #include <unistd.h>
 
+#include "base/compiler_specific.h"
 #include "base/files/file_descriptor_watcher_posix.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
@@ -26,17 +22,11 @@
 #include "content/public/browser/browser_thread.h"
 #include "headless/lib/browser/headless_browser_impl.h"
 
-#if BUILDFLAG(IS_LINUX)
-#include "base/command_line.h"
-#include "components/os_crypt/sync/key_storage_config_linux.h"
-#include "components/os_crypt/sync/os_crypt.h"
-#include "headless/public/switches.h"
-
-#if BUILDFLAG(USE_DBUS)
+#if BUILDFLAG(IS_LINUX) && BUILDFLAG(USE_DBUS)
+#include "components/dbus/thread_linux/dbus_thread_linux.h"
+#include "dbus/bus.h"
 #include "device/bluetooth/dbus/bluez_dbus_manager.h"
-#endif
-
-#endif  // BUILDFLAG(IS_LINUX)
+#endif  // BUILDFLAG(IS_LINUX) && BUILDFLAG(USE_DBUS)
 
 namespace headless {
 
@@ -75,7 +65,7 @@ class BrowserShutdownHandler {
     // We need to handle SIGTERM, because that is how many POSIX-based distros
     // ask processes to quit gracefully at shutdown time.
     struct sigaction action;
-    memset(&action, 0, sizeof(action));
+    UNSAFE_TODO(memset(&action, 0, sizeof(action)));
     action.sa_handler = SIGTERMHandler;
     PCHECK(sigaction(SIGTERM, &action, nullptr) == 0);
 
@@ -150,7 +140,7 @@ class BrowserShutdownHandler {
     // Reinstall the default handler. We have only one shot at graceful
     // shutdown.
     struct sigaction action;
-    memset(&action, 0, sizeof(action));
+    UNSAFE_TODO(memset(&action, 0, sizeof(action)));
     action.sa_handler = SIG_DFL;
     RAW_CHECK(sigaction(signal, &action, nullptr) == 0);
 
@@ -166,10 +156,6 @@ class BrowserShutdownHandler {
 
 }  // namespace
 
-#if BUILDFLAG(IS_LINUX)
-constexpr char kProductName[] = "HeadlessChrome";
-#endif
-
 void HeadlessBrowserMainParts::PostCreateMainMessageLoop() {
   BrowserShutdownHandler::Install(base::BindOnce(
       &HeadlessBrowserImpl::ShutdownWithExitCode, browser_->GetWeakPtr()));
@@ -177,24 +163,9 @@ void HeadlessBrowserMainParts::PostCreateMainMessageLoop() {
 #if BUILDFLAG(IS_LINUX)
 
 #if BUILDFLAG(USE_DBUS)
-  bluez::BluezDBusManager::Initialize(/*system_bus=*/nullptr);
+  bluez::BluezDBusManager::Initialize(
+      dbus_thread_linux::GetSharedSystemBus().get());
 #endif
-
-  // Set up crypt config. This needs to be done before anything starts the
-  // network service, as the raw encryption key needs to be shared with the
-  // network service for encrypted cookie storage.
-  std::unique_ptr<os_crypt::Config> config =
-      std::make_unique<os_crypt::Config>();
-  // Forward to os_crypt the flag to use a specific password store.
-  config->store = base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
-      switches::kPasswordStore);
-  // Use a default product name
-  config->product_name = kProductName;
-  // OSCrypt can be disabled in a special settings file, but headless doesn't
-  // need to support that.
-  config->should_use_preference = false;
-  config->user_data_path = base::FilePath();
-  OSCrypt::SetConfig(std::move(config));
 #endif  // BUILDFLAG(IS_LINUX)
 }
 

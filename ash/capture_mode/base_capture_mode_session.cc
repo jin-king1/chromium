@@ -30,7 +30,7 @@ BaseCaptureModeSession::BaseCaptureModeSession(
 BaseCaptureModeSession::~BaseCaptureModeSession() = default;
 
 void BaseCaptureModeSession::Initialize() {
-  SetLayer(std::make_unique<ui::Layer>(ui::LAYER_TEXTURED));
+  SetLayer(std::make_unique<ui::LayerTextured>());
   layer()->SetFillsBoundsOpaquely(false);
 
   InitInternal();
@@ -114,7 +114,7 @@ gfx::Rect BaseCaptureModeSession::GetCaptureSurfaceConfineBounds() const {
     case CaptureModeSource::kFullscreen: {
       auto* parent = GetOnCaptureSurfaceWidgetParentWindow();
       DCHECK(parent);
-      return display::Screen::GetScreen()
+      return display::Screen::Get()
           ->GetDisplayNearestWindow(parent)
           .work_area();
     }

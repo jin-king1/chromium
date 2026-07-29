@@ -26,8 +26,8 @@
 #include "ash/wm/workspace/workspace_layout_manager.h"
 #include "ash/wm/workspace_controller.h"
 #include "base/containers/adapters.h"
-#include "base/containers/contains.h"
 #include "base/containers/flat_set.h"
+#include "base/debug/crash_logging.h"
 #include "base/debug/dump_without_crashing.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
@@ -296,7 +296,7 @@ void Desk::OnRootWindowAdded(aura::Window* root) {
 
   // No windows should be added to the desk container on |root| prior to
   // tracking it by the desk.
-  aura::Window* desk_container = root->GetChildById(container_id_);
+  aura::Window* desk_container = GetDeskContainerForRoot(root);
   DCHECK(desk_container->children().empty());
   auto container_observer =
       std::make_unique<DeskContainerObserver>(this, desk_container);
@@ -329,7 +329,7 @@ void Desk::OnRootWindowClosing(aura::Window* root) {
 }
 
 void Desk::AddWindowToDesk(aura::Window* window) {
-  DCHECK(!base::Contains(windows_, window));
+  DCHECK(!std::ranges::contains(windows_, window));
 
   // Maybe update stacking data for all-desk windows when a window is added. If
   // `window` itself is an all-desk window, it will be handled by
@@ -395,7 +395,7 @@ void Desk::AddWindowToDesk(aura::Window* window) {
 }
 
 void Desk::RemoveWindowFromDesk(aura::Window* window) {
-  DCHECK(base::Contains(windows_, window));
+  DCHECK(std::ranges::contains(windows_, window));
 
   std::erase(windows_, window);
   // No need to refresh the mini_views if the destroyed window doesn't show up
@@ -465,22 +465,6 @@ void Desk::SetGuid(base::Uuid new_guid) {
   }
 }
 
-void Desk::SetLacrosProfileId(uint64_t lacros_profile_id,
-                              bool skip_prefs_update) {
-  if (lacros_profile_id == lacros_profile_id_) {
-    return;
-  }
-
-  lacros_profile_id_ = lacros_profile_id;
-  if (!skip_prefs_update) {
-    desks_restore_util::UpdatePrimaryUserDeskLacrosProfileIdPrefs();
-  }
-
-  for (auto& observer : observers_) {
-    observer.OnDeskProfileChanged(lacros_profile_id_);
-  }
-}
-
 void Desk::PrepareForActivationAnimation() {
   DCHECK(!is_active_);
 
@@ -495,7 +479,7 @@ void Desk::PrepareForActivationAnimation() {
   }
 
   for (aura::Window* root : Shell::GetAllRootWindows()) {
-    auto* container = root->GetChildById(container_id_);
+    auto* container = GetDeskContainerForRoot(root);
     container->layer()->SetOpacity(0);
     container->Show();
   }
@@ -510,8 +494,9 @@ void Desk::Activate(bool update_window_activation) {
   };
 
   if (!MaybeResetContainersOpacities()) {
-    for (aura::Window* root : Shell::GetAllRootWindows())
-      root->GetChildById(container_id_)->Show();
+    for (aura::Window* root : Shell::GetAllRootWindows()) {
+      GetDeskContainerForRoot(root)->Show();
+    }
   }
 
   is_active_ = true;
@@ -565,7 +550,8 @@ void Desk::Activate(bool update_window_activation) {
     const auto* window_state = WindowState::Get(window);
     // Floated window should be activated with the desk window, but it doesn't
     // belong to `windows_`.
-    if (!base::Contains(windows_, window) && !window_state->IsFloated()) {
+    if (!std::ranges::contains(windows_, window) &&
+        !window_state->IsFloated()) {
       continue;
     }
 
@@ -589,8 +575,9 @@ void Desk::Deactivate(bool update_window_activation) {
   auto* active_window = window_util::GetActiveWindow();
 
   // Hide the associated containers on all roots.
-  for (aura::Window* root : Shell::GetAllRootWindows())
-    root->GetChildById(container_id_)->Hide();
+  for (aura::Window* root : Shell::GetAllRootWindows()) {
+    GetDeskContainerForRoot(root)->Hide();
+  }
 
   is_active_ = false;
   last_day_visited_ = desks_restore_util::GetDaysFromLocalEpoch();
@@ -606,7 +593,7 @@ void Desk::Deactivate(bool update_window_activation) {
   // containers have been hidden. This is to prevent the focus controller from
   // activating another window on the same desk when the active window loses
   // focus.
-  if (active_window && base::Contains(windows_, active_window))
+  if (active_window && std::ranges::contains(windows_, active_window))
     wm::DeactivateWindow(active_window);
 }
 
@@ -682,7 +669,7 @@ void Desk::MoveWindowsToDesk(Desk* target_desk) {
     // It's possible the `window` was already moved to the `target_desk`
     // indirectly, such as when one window in a Snap Group moves and the other
     // will follow. If this is the case, skip the explicit window move.
-    if (base::Contains(target_desk->windows(), window)) {
+    if (std::ranges::contains(target_desk->windows(), window)) {
       continue;
     }
 
@@ -703,7 +690,7 @@ void Desk::MoveWindowToDesk(aura::Window* window,
   DCHECK(window);
   DCHECK(target_desk);
   DCHECK(target_root);
-  DCHECK(base::Contains(windows_, window));
+  DCHECK(std::ranges::contains(windows_, window));
   DCHECK(this != target_desk);
 
   ScopedWindowPositionerDisabler window_positioner_disabler;
@@ -739,7 +726,6 @@ void Desk::MoveWindowToDesk(aura::Window* window,
 
 aura::Window* Desk::GetDeskContainerForRoot(aura::Window* root) const {
   DCHECK(root);
-
   return root->GetChildById(container_id_);
 }
 
@@ -1006,7 +992,7 @@ bool Desk::ContentUpdateNotificationSuspended() const {
 void Desk::MoveWindowToDeskInternal(aura::Window* window,
                                     Desk* target_desk,
                                     aura::Window* target_root) {
-  DCHECK(base::Contains(windows_, window));
+  DCHECK(std::ranges::contains(windows_, window));
   DCHECK(CanMoveWindowOutOfDeskContainer(window))
       << "Non-desk windows are not allowed to move out of the container.";
 
@@ -1026,10 +1012,9 @@ void Desk::MoveWindowToDeskInternal(aura::Window* window,
     // Move the window to the container with the same ID on the target display's
     // root (i.e. container that belongs to the same desk), and adjust its
     // bounds to fit in the new display's work area.
-    window_util::MoveWindowToDisplay(window,
-                                     display::Screen::GetScreen()
-                                         ->GetDisplayNearestWindow(target_root)
-                                         .id());
+    window_util::MoveWindowToDisplay(
+        window,
+        display::Screen::Get()->GetDisplayNearestWindow(target_root).id());
     DCHECK_EQ(target_desk->container_id_, window->parent()->GetId());
   }
 }
@@ -1043,7 +1028,7 @@ bool Desk::MaybeResetContainersOpacities() {
     return false;
 
   for (aura::Window* root : Shell::GetAllRootWindows()) {
-    auto* container = root->GetChildById(container_id_);
+    auto* container = GetDeskContainerForRoot(root);
     container->layer()->SetOpacity(1);
   }
   started_activation_animation_ = false;

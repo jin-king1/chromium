@@ -13,6 +13,7 @@
 #include "base/strings/stringprintf.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/values.h"
+#include "components/enterprise/buildflags/buildflags.h"
 #include "components/enterprise/data_controls/core/browser/features.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -21,40 +22,11 @@ namespace data_controls {
 namespace {
 
 std::optional<Rule> MakeRule(const std::string& value) {
-  auto dict = base::JSONReader::Read(value);
+  auto dict =
+      base::JSONReader::Read(value, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   EXPECT_TRUE(dict) << value << " is not valid JSON";
   return Rule::Create(*dict);
 }
-
-class DataControlsRuleTest : public testing::Test {
- public:
-  explicit DataControlsRuleTest(bool screenshot_feature_enabled = true) {
-    std::vector<base::test::FeatureRef> enabled_features;
-    std::vector<base::test::FeatureRef> disabled_features;
-
-    if (screenshot_feature_enabled) {
-      enabled_features.push_back(kEnableScreenshotProtection);
-    } else {
-      disabled_features.push_back(kEnableScreenshotProtection);
-    }
-
-    scoped_features_.InitWithFeatures(enabled_features, disabled_features);
-  }
-
- protected:
-  base::test::ScopedFeatureList scoped_features_;
-};
-
-class DataControlsFeaturesRuleTest : public DataControlsRuleTest,
-                                     public testing::WithParamInterface<bool> {
- public:
-  DataControlsFeaturesRuleTest()
-      : DataControlsRuleTest(screenshot_feature_enabled()) {}
-
-  bool screenshot_feature_enabled() const { return GetParam(); }
-};
-
-INSTANTIATE_TEST_SUITE_P(All, DataControlsFeaturesRuleTest, testing::Bool());
 
 struct AndOrNotTestCase {
   const char* conditions;
@@ -66,8 +38,7 @@ struct AndOrNotTestCase {
 // attribute. This is parametrized with conditions and a corresponding context
 // to trigger them.
 class DataControlsRuleNotTest
-    : public DataControlsRuleTest,
-      public testing::WithParamInterface<AndOrNotTestCase> {
+    : public testing::TestWithParam<AndOrNotTestCase> {
  public:
   std::string normal_rule_string() {
     return base::StringPrintf(R"(
@@ -102,8 +73,7 @@ class DataControlsRuleNotTest
 // inserted into an "and" attribute. This is parametrized with conditions and a
 // corresponding context to trigger them.
 class DataControlsRuleAndTest
-    : public DataControlsRuleTest,
-      public testing::WithParamInterface<AndOrNotTestCase> {
+    : public testing::TestWithParam<AndOrNotTestCase> {
  public:
   std::string rule_string() {
     return base::StringPrintf(R"(
@@ -124,9 +94,7 @@ class DataControlsRuleAndTest
 // Test to validate that a valid set of conditions in a rule will trigger when
 // inserted into an "or" attribute. This is parametrized with conditions and a
 // corresponding context to trigger them.
-class DataControlsRuleOrTest
-    : public DataControlsRuleTest,
-      public testing::WithParamInterface<AndOrNotTestCase> {
+class DataControlsRuleOrTest : public testing::TestWithParam<AndOrNotTestCase> {
  public:
   std::string rule_string() {
     return base::StringPrintf(R"(
@@ -266,7 +234,7 @@ INSTANTIATE_TEST_SUITE_P(All,
 
 }  // namespace
 
-TEST_F(DataControlsRuleTest, InvalidValues) {
+TEST(DataControlsRuleTest, InvalidValues) {
   ASSERT_FALSE(Rule::Create(base::Value(1)));
   ASSERT_FALSE(Rule::Create(base::Value(-1)));
   ASSERT_FALSE(Rule::Create(base::Value(true)));
@@ -281,7 +249,7 @@ TEST_F(DataControlsRuleTest, InvalidValues) {
   ASSERT_FALSE(Rule::Create(base::Value(std::vector<char>({1, 2, 3, 4}))));
 }
 
-TEST_F(DataControlsRuleTest, InvalidConditions) {
+TEST(DataControlsRuleTest, InvalidConditions_Clipboard) {
   // First parameter should be "sources", second one should be "destinations".
   constexpr char kTemplate[] = R"({
     "name": "Block pastes",
@@ -335,7 +303,57 @@ TEST_F(DataControlsRuleTest, InvalidConditions) {
       kTemplate, "", R"("or": {"sources": {"urls": ["or.is.not.a.dict"]}},)")));
 }
 
-TEST_F(DataControlsRuleTest, ValidSourcesInvalidDestinationsConditions) {
+TEST(DataControlsRuleTest, InvalidConditions_FileDownload) {
+  base::test::ScopedFeatureList scoped_feature_list{
+      kEnableDownloadDataControls};
+
+  // First parameter should be "sources", second one should be "destinations".
+  constexpr char kTemplate[] = R"({
+    "name": "Block pastes",
+    "rule_id": "1234",
+    "description": "A test rule to block file downloads",
+    %s
+    "restrictions": [
+      { "class": "FILE_DOWNLOAD", "level": "BLOCK" }
+    ]
+  })";
+
+  // Having no conditions shouldn't make a rule.
+  ASSERT_FALSE(MakeRule(base::StringPrintf(kTemplate, "")));
+
+  // Rules with only invalid sources shouldn't be created.
+  ASSERT_FALSE(MakeRule(base::StringPrintf(kTemplate, R"("sources": {},)")));
+  ASSERT_FALSE(MakeRule(
+      base::StringPrintf(kTemplate, R"("sources": {"fake_key": 1234},)")));
+  ASSERT_FALSE(MakeRule(
+      base::StringPrintf(kTemplate, R"("sources": {"urls": [1, 2, 3, 4]},)")));
+  ASSERT_FALSE(MakeRule(base::StringPrintf(
+      kTemplate, R"("sources": {"urls": ["not_a_real:pattern"]},)")));
+
+  // Rules with destinations shouldn't be created.
+  ASSERT_FALSE(
+      MakeRule(base::StringPrintf(kTemplate, R"("destinations": {},)")));
+  ASSERT_FALSE(MakeRule(
+      base::StringPrintf(kTemplate, R"("destinations": {"fake_key": 1234},)")));
+  ASSERT_FALSE(MakeRule(base::StringPrintf(
+      kTemplate, R"("destinations": {"urls": [1, 2, 3, 4]},)")));
+  ASSERT_FALSE(MakeRule(base::StringPrintf(
+      kTemplate, R"("destinations": {"urls": ["not_a_real:pattern"]},)")));
+  ASSERT_FALSE(MakeRule(base::StringPrintf(
+      kTemplate,
+      R"("destinations": {"destinations": {"urls": ["foo.com"]}},)")));
+
+  // Rules with invalid boolean attributes shouldn't be created.
+  ASSERT_FALSE(MakeRule(base::StringPrintf(
+      kTemplate,
+      R"("not": [{"sources": {"urls": ["not.is.not.an.array"]}}],)")));
+  ASSERT_FALSE(MakeRule(base::StringPrintf(
+      kTemplate, R"("and": {"sources": {"urls": ["and.is.not.a.dict"]}},)")));
+  ASSERT_FALSE(MakeRule(base::StringPrintf(
+      kTemplate, R"("or": {"sources": {"urls": ["or.is.not.a.dict"]}},)")));
+}
+
+TEST(DataControlsRuleTest, ValidSourcesInvalidDestinationsConditions) {
   // Rules with a valid sources but invalid destinations should be created for
   // forward compatibility.
   constexpr char kTemplate[] = R"({
@@ -366,7 +384,7 @@ TEST_F(DataControlsRuleTest, ValidSourcesInvalidDestinationsConditions) {
 #endif  // BUILDFLAG(IS_CHROMEOS)
 }
 
-TEST_F(DataControlsRuleTest, InvalidSourcesValidDestinationsConditions) {
+TEST(DataControlsRuleTest, InvalidSourcesValidDestinationsConditions) {
   // Rules with a valid destinations but valid destinations should be created
   // for forward compatibility.
   constexpr char kTemplate[] = R"({
@@ -389,7 +407,7 @@ TEST_F(DataControlsRuleTest, InvalidSourcesValidDestinationsConditions) {
       kTemplate, R"("sources": {"urls": ["not_a_real:pattern"]},)")));
 }
 
-TEST_F(DataControlsRuleTest, NoRestrictions) {
+TEST(DataControlsRuleTest, NoRestrictions) {
   ASSERT_FALSE(MakeRule(R"({
     "name": "Block pastes",
     "rule_id": "1234",
@@ -398,7 +416,7 @@ TEST_F(DataControlsRuleTest, NoRestrictions) {
   })"));
 }
 
-TEST_F(DataControlsRuleTest, InvalidRestrictions) {
+TEST(DataControlsRuleTest, InvalidRestrictions) {
   constexpr char kTemplate[] = R"({
     "name": "Block pastes",
     "rule_id": "1234",
@@ -414,7 +432,29 @@ TEST_F(DataControlsRuleTest, InvalidRestrictions) {
       MakeRule(base::StringPrintf(kTemplate, R"(["not_a_real_restriction"])")));
 }
 
-TEST_F(DataControlsRuleTest, Restrictions) {
+TEST(DataControlsRuleTest, GetLevelWithoutContext) {
+  auto rule = MakeRule(R"({
+    "name": "Block pastes",
+    "rule_id": "1234",
+    "description": "A test rule to block pastes",
+    "destinations": { "urls": ["*"] },
+    "restrictions": [
+      { "class": "CLIPBOARD", "level": "BLOCK" },
+      { "class": "SCREENSHOT", "level": "WARN" }
+    ]
+  })");
+  ASSERT_TRUE(rule);
+
+  // The raw level should be returned without evaluating conditions like
+  // destinations.
+  ASSERT_EQ(rule->GetLevel(Rule::Restriction::kClipboard), Rule::Level::kBlock);
+  ASSERT_EQ(rule->GetLevel(Rule::Restriction::kScreenshot), Rule::Level::kWarn);
+
+  // Unspecified restrictions should return kNotSet.
+  ASSERT_EQ(rule->GetLevel(Rule::Restriction::kPrinting), Rule::Level::kNotSet);
+}
+
+TEST(DataControlsRuleTest, Restrictions) {
   auto rule = MakeRule(R"({
     "name": "Block pastes",
     "rule_id": "1234",
@@ -444,7 +484,43 @@ TEST_F(DataControlsRuleTest, Restrictions) {
             Rule::Level::kNotSet);
 }
 
-TEST_F(DataControlsRuleTest, Accessors) {
+TEST(DataControlsRuleTest, FileDownloadRestriction) {
+  base::test::ScopedFeatureList scoped_feature_list{
+      kEnableDownloadDataControls};
+
+  auto rule = MakeRule(R"({
+    "name": "Block file downloads",
+    "rule_id": "1234",
+    "description": "A test rule to block file downloads",
+    "sources": { "urls": ["*"] },
+    "restrictions": [
+      { "class": "CLIPBOARD", "level": "BLOCK" },
+      { "class": "SCREENSHOT", "level": "WARN" },
+      { "class": "PRINTING", "level": "ALLOW" },
+      { "class": "PRIVACY_SCREEN", "level": "REPORT" },
+      { "class": "FILE_DOWNLOAD", "level": "BLOCK" }
+    ]
+  })");
+  ASSERT_TRUE(rule);
+
+  ActionContext context = {.source = {.url = GURL("https://google.com")}};
+  ASSERT_EQ(rule->GetLevel(Rule::Restriction::kClipboard, context),
+            Rule::Level::kBlock);
+  ASSERT_EQ(rule->GetLevel(Rule::Restriction::kScreenshot, context),
+            Rule::Level::kWarn);
+  ASSERT_EQ(rule->GetLevel(Rule::Restriction::kPrinting, context),
+            Rule::Level::kAllow);
+  ASSERT_EQ(rule->GetLevel(Rule::Restriction::kPrivacyScreen, context),
+            Rule::Level::kReport);
+  ASSERT_EQ(rule->GetLevel(Rule::Restriction::kScreenShare, context),
+            Rule::Level::kNotSet);
+  ASSERT_EQ(rule->GetLevel(Rule::Restriction::kFiles, context),
+            Rule::Level::kNotSet);
+  ASSERT_EQ(rule->GetLevel(Rule::Restriction::kFileDownload, context),
+            Rule::Level::kBlock);
+}
+
+TEST(DataControlsRuleTest, Accessors) {
   auto rule = MakeRule(R"({
     "name": "Block pastes",
     "rule_id": "1234",
@@ -461,7 +537,7 @@ TEST_F(DataControlsRuleTest, Accessors) {
   ASSERT_EQ(rule->description(), "A test rule to block pastes");
 }
 
-TEST_F(DataControlsRuleTest, SourceUrls) {
+TEST(DataControlsRuleTest, ClipboardSourceUrls) {
   auto rule = MakeRule(R"({
     "name": "Block pastes",
     "rule_id": "1234",
@@ -481,7 +557,30 @@ TEST_F(DataControlsRuleTest, SourceUrls) {
             Rule::Level::kNotSet);
 }
 
-TEST_F(DataControlsRuleTest, DestinationUrls) {
+TEST(DataControlsRuleTest, FileDownloadSourceUrls) {
+  base::test::ScopedFeatureList scoped_feature_list{
+      kEnableDownloadDataControls};
+
+  auto rule = MakeRule(R"({
+    "name": "Block file downloads",
+    "rule_id": "1234",
+    "description": "A test rule to block file downloads",
+    "sources": { "urls": ["google.com"] },
+    "restrictions": [
+      { "class": "FILE_DOWNLOAD", "level": "BLOCK" }
+    ]
+  })");
+  ASSERT_TRUE(rule);
+
+  ASSERT_EQ(rule->GetLevel(Rule::Restriction::kFileDownload,
+                           {.source = {.url = GURL("https://google.com")}}),
+            Rule::Level::kBlock);
+  ASSERT_EQ(rule->GetLevel(Rule::Restriction::kFileDownload,
+                           {.source = {.url = GURL("https://chrome.com")}}),
+            Rule::Level::kNotSet);
+}
+
+TEST(DataControlsRuleTest, DestinationUrls) {
   auto rule = MakeRule(R"({
     "name": "Block pastes",
     "rule_id": "1234",
@@ -503,7 +602,7 @@ TEST_F(DataControlsRuleTest, DestinationUrls) {
       Rule::Level::kNotSet);
 }
 
-TEST_F(DataControlsRuleTest, SourceAndDestinationUrls) {
+TEST(DataControlsRuleTest, SourceAndDestinationUrls) {
   auto rule = MakeRule(R"({
     "name": "Block pastes",
     "rule_id": "1234",
@@ -547,7 +646,7 @@ TEST_F(DataControlsRuleTest, SourceAndDestinationUrls) {
 }
 
 #if BUILDFLAG(IS_CHROMEOS)
-TEST_F(DataControlsRuleTest, DestinationComponent) {
+TEST(DataControlsRuleTest, DestinationComponent) {
   // A "FOO" component is included to validate that compatibility with future
   // components works and doesn't interfere with the rest of the rule.
   auto rule = MakeRule(R"({
@@ -585,7 +684,7 @@ TEST_F(DataControlsRuleTest, DestinationComponent) {
 }
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
-TEST_P(DataControlsFeaturesRuleTest, ScreenshotRules) {
+TEST(DataControlsRuleTest, ScreenshotRules) {
   auto rule = MakeRule(R"({
     "name": "Block screenshots",
     "rule_id": "1234",
@@ -595,17 +694,13 @@ TEST_P(DataControlsFeaturesRuleTest, ScreenshotRules) {
       { "class": "SCREENSHOT", "level": "BLOCK" }
     ]
   })");
-  if (screenshot_feature_enabled()) {
-    ASSERT_TRUE(rule);
-    ASSERT_EQ(rule->GetLevel(Rule::Restriction::kScreenshot,
-                             {.source = {.url = GURL("https://google.com")}}),
-              Rule::Level::kBlock);
-  } else {
-    ASSERT_FALSE(rule);
-  }
+  ASSERT_TRUE(rule);
+  ASSERT_EQ(rule->GetLevel(Rule::Restriction::kScreenshot,
+                           {.source = {.url = GURL("https://google.com")}}),
+            Rule::Level::kBlock);
 }
 
-TEST_P(DataControlsFeaturesRuleTest, NonScreenshotRules) {
+TEST(DataControlsRuleTest, NonScreenshotRules) {
   auto rule = MakeRule(R"({
     "name": "Block stuff",
     "rule_id": "1234",
@@ -697,6 +792,101 @@ TEST_P(DataControlsRuleOrTest, NonTriggeringContext) {
 
   ASSERT_EQ(rule->GetLevel(Rule::Restriction::kClipboard, {}),
             Rule::Level::kNotSet);
+}
+
+TEST(DataControlsRuleTest, SizeConditionRuleMatchingHigherThan) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      kDataControlsUrlRegexAndSizeAttributes);
+
+  auto rule = MakeRule(R"({
+    "name": "Size Eval Rule Higher",
+    "sources": { "size_higher_than": 1000 },
+    "restrictions": [ { "class": "CLIPBOARD", "level": "BLOCK" } ]
+  })");
+  ASSERT_TRUE(rule);
+
+  EXPECT_EQ(
+      rule->GetLevel(Rule::Restriction::kClipboard,
+                     {.source = {.url = GURL("https://google.com"),
+                                 .content_size = 500}}),
+      Rule::Level::kNotSet);
+
+  EXPECT_EQ(
+      rule->GetLevel(Rule::Restriction::kClipboard,
+                     {.source = {.url = GURL("https://google.com"),
+                                 .content_size = 1000}}),
+      Rule::Level::kNotSet);
+
+  EXPECT_EQ(
+      rule->GetLevel(Rule::Restriction::kClipboard,
+                     {.source = {.url = GURL("https://google.com"),
+                                 .content_size = 1001}}),
+      Rule::Level::kBlock);
+
+  EXPECT_EQ(
+      rule->GetLevel(Rule::Restriction::kClipboard,
+                     {.source = {.url = GURL("https://google.com"),
+                                 .content_size = 2000}}),
+      Rule::Level::kBlock);
+}
+
+TEST(DataControlsRuleTest, SizeConditionRuleMatchingLowerThan) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      kDataControlsUrlRegexAndSizeAttributes);
+
+  auto rule = MakeRule(R"({
+    "name": "Size Eval Rule Lower",
+    "sources": { "size_lower_than": 1000 },
+    "restrictions": [ { "class": "CLIPBOARD", "level": "BLOCK" } ]
+  })");
+  ASSERT_TRUE(rule);
+
+  EXPECT_EQ(
+      rule->GetLevel(Rule::Restriction::kClipboard,
+                     {.source = {.url = GURL("https://google.com"),
+                                 .content_size = 500}}),
+      Rule::Level::kBlock);
+
+  EXPECT_EQ(
+      rule->GetLevel(Rule::Restriction::kClipboard,
+                     {.source = {.url = GURL("https://google.com"),
+                                 .content_size = 999}}),
+      Rule::Level::kBlock);
+  EXPECT_EQ(
+      rule->GetLevel(Rule::Restriction::kClipboard,
+                     {.source = {.url = GURL("https://google.com"),
+                                 .content_size = 1000}}),
+      Rule::Level::kNotSet);
+  EXPECT_EQ(
+      rule->GetLevel(Rule::Restriction::kClipboard,
+                     {.source = {.url = GURL("https://google.com"),
+                                 .content_size = 2000}}),
+      Rule::Level::kNotSet);
+}
+
+TEST(DataControlsRuleTest, UrlRegexMatching) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      kDataControlsUrlRegexAndSizeAttributes);
+
+  auto clipboard_rule = MakeRule(R"({
+    "name": "Regex paste rule",
+    "sources": { "url_regexprs": ["^https://.*\\.restricted\\.com/.*$"] },
+    "restrictions": [ { "class": "CLIPBOARD", "level": "BLOCK" } ]
+  })");
+  ASSERT_TRUE(clipboard_rule);
+  EXPECT_EQ(
+      clipboard_rule->GetLevel(
+          Rule::Restriction::kClipboard,
+          {.source = {.url = GURL("https://google.com")}}),
+      Rule::Level::kNotSet);
+  EXPECT_EQ(
+      clipboard_rule->GetLevel(
+          Rule::Restriction::kClipboard,
+          {.source = {.url = GURL("https://foo.restricted.com/data")}}),
+      Rule::Level::kBlock);
 }
 
 }  // namespace data_controls

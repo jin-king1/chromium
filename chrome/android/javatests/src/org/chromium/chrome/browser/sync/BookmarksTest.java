@@ -20,11 +20,11 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.CriteriaNotSatisfiedException;
+import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Feature;
 import org.chromium.chrome.browser.bookmarks.BookmarkModel;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
@@ -44,7 +44,7 @@ import java.util.List;
 /** Test suite for the bookmarks sync data type. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
-@Batch(Batch.PER_CLASS)
+@DoNotBatch(reason = "Manages sign-in state, which is global.")
 public class BookmarksTest {
     @Rule public SyncTestRule mSyncTestRule = new SyncTestRule();
 
@@ -180,7 +180,7 @@ public class BookmarksTest {
         // other a bookmark. We need to figure out which is which because the
         // order is not being explicitly set on creation.
         //
-        // See http://crbug/642128 - Explicitly set order on bookmark creation
+        // See http://crbug.com/40482652 - Explicitly set order on bookmark creation
         // and verify the order here.
         List<Bookmark> clientBookmarks = getClientBookmarks();
         Assert.assertEquals(2, clientBookmarks.size());
@@ -387,7 +387,7 @@ public class BookmarksTest {
     @LargeTest
     @Feature({"Sync"})
     public void testDisabledNoDownloadBookmark() throws Exception {
-        mSyncTestRule.disableDataType(UserSelectableType.BOOKMARKS);
+        mSyncTestRule.setSelectedType(UserSelectableType.BOOKMARKS, false);
         addServerBookmark(TITLE, URL);
         SyncTestUtil.triggerSyncAndWaitForCompletion();
         assertClientBookmarkCount(0);
@@ -492,7 +492,7 @@ public class BookmarksTest {
             List<Pair<String, JSONObject>> rawBookmarks =
                     SyncTestUtil.getLocalData(
                             mSyncTestRule.getTargetContext(), BOOKMARKS_TYPE_STRING);
-            List<Bookmark> bookmarks = new ArrayList<Bookmark>(rawBookmarks.size());
+            List<Bookmark> bookmarks = new ArrayList<>(rawBookmarks.size());
             for (Pair<String, JSONObject> rawBookmark : rawBookmarks) {
                 String id = rawBookmark.first;
                 JSONObject json = rawBookmark.second;
@@ -518,7 +518,7 @@ public class BookmarksTest {
                     mSyncTestRule
                             .getFakeServerHelper()
                             .getSyncEntitiesByDataType(DataType.BOOKMARKS);
-            List<Bookmark> bookmarks = new ArrayList<Bookmark>(entities.size());
+            List<Bookmark> bookmarks = new ArrayList<>(entities.size());
             for (SyncEntity entity : entities) {
                 String id = entity.getIdString();
                 String parentId = entity.getParentIdString();

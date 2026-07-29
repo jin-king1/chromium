@@ -5,10 +5,13 @@
 #include "chromeos/ash/components/enhanced_network_tts/enhanced_network_tts_impl.h"
 
 #include <iterator>
+#include <optional>
+#include <string>
 #include <utility>
 
 #include "base/base64.h"
 #include "base/functional/bind.h"
+#include "base/json/json_reader.h"
 #include "base/logging.h"
 #include "base/no_destructor.h"
 #include "base/strings/string_util.h"
@@ -23,11 +26,7 @@
 
 namespace ash::enhanced_network_tts {
 
-BASE_FEATURE(kEnhancedNetworkTtsOverride,
-             "EnhancedNetworkTtsOverride",
-             base::FEATURE_DISABLED_BY_DEFAULT);
 
-constexpr base::FeatureParam<std::string> EnhancedNetworkTtsImpl::kApiKey;
 
 const net::NetworkTrafficAnnotationTag traffic_annotation =
     net::DefineNetworkTrafficAnnotation("enhanced_network_tts", R"(
@@ -84,8 +83,7 @@ EnhancedNetworkTtsImpl& EnhancedNetworkTtsImpl::GetInstance() {
 }
 
 EnhancedNetworkTtsImpl::EnhancedNetworkTtsImpl()
-    : api_key_(kApiKey.Get().empty() ? google_apis::GetReadAloudAPIKey()
-                                     : kApiKey.Get()),
+    : api_key_(google_apis::GetReadAloudAPIKey()),
       char_limit_per_request_(mojom::kEnhancedNetworkTtsMaxCharacterSize) {}
 EnhancedNetworkTtsImpl::~EnhancedNetworkTtsImpl() = default;
 
@@ -196,10 +194,9 @@ void EnhancedNetworkTtsImpl::ProcessNextServerRequest() {
   }
 
   const ServerRequestList::iterator first_request_it = server_requests_.begin();
-  network::SimpleURLLoader::BodyAsStringCallbackDeprecated
-      body_as_string_callback =
-          base::BindOnce(&EnhancedNetworkTtsImpl::OnServerResponseReceived,
-                         weak_factory_.GetWeakPtr(), first_request_it);
+  network::SimpleURLLoader::BodyAsStringCallback body_as_string_callback =
+      base::BindOnce(&EnhancedNetworkTtsImpl::OnServerResponseReceived,
+                     weak_factory_.GetWeakPtr(), first_request_it);
   server_requests_.front().url_loader->DownloadToString(
       url_loader_factory_.get(), std::move(body_as_string_callback),
       kEnhancedNetworkTtsMaxResponseSize);
@@ -207,7 +204,7 @@ void EnhancedNetworkTtsImpl::ProcessNextServerRequest() {
 
 void EnhancedNetworkTtsImpl::OnServerResponseReceived(
     const ServerRequestList::iterator server_request_it,
-    const std::unique_ptr<std::string> json_response) {
+    std::optional<std::string> json_response) {
   // This callback will not be called when the url_loader and its request are
   // deleted. See simple_url_loader.h for more details.
   DCHECK(!server_requests_.empty());
@@ -226,18 +223,10 @@ void EnhancedNetworkTtsImpl::OnServerResponseReceived(
     return;
   }
 
-  // Send the JSON string to a dedicated service for safe parsing.
-  data_decoder_.ParseJson(
-      *json_response,
-      base::BindOnce(&EnhancedNetworkTtsImpl::OnResponseJsonParsed,
-                     weak_factory_.GetWeakPtr(), start_index, is_last_request));
-}
-
-void EnhancedNetworkTtsImpl::OnResponseJsonParsed(
-    const int start_index,
-    const bool is_last_request,
-    data_decoder::DataDecoder::ValueOrError result) {
-  // Extract results for the request.
+  // Parse the JSON string.
+  base::JSONReader::Result result =
+      base::JSONReader::ReadAndReturnValueWithError(*json_response,
+                                                    base::JSON_PARSE_RFC);
   if (result.has_value() && result->is_list()) {
     SendResponse(
         UnpackJsonResponse(result->GetList(), start_index, is_last_request));
@@ -247,9 +236,7 @@ void EnhancedNetworkTtsImpl::OnResponseJsonParsed(
   } else {
     ResetAndSendErrorResponse(mojom::TtsRequestError::kReceivedUnexpectedData);
     DVLOG(1) << "Parsing server response JSON failed with error: "
-             << (!result.has_value() || result.error().empty()
-                     ? "No reason reported."
-                     : result.error());
+             << (result.has_value() ? "Not a list." : result.error().message);
   }
 }
 

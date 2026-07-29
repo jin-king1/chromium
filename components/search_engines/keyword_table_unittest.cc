@@ -5,10 +5,12 @@
 #include "components/search_engines/keyword_table.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "base/files/scoped_temp_dir.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/strings/cstring_view.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
@@ -17,11 +19,13 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/time/time.h"
 #include "components/os_crypt/async/browser/test_utils.h"
+#include "components/os_crypt/async/common/encryptor.h"
 #include "components/os_crypt/async/common/test_encryptor.h"
 #include "components/search_engines/template_url_data.h"
 #include "components/webdata/common/web_database.h"
 #include "sql/statement.h"
 #include "sql/test/test_helpers.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 using base::ASCIIToUTF16;
@@ -45,12 +49,13 @@ class KeywordTableTest : public testing::Test {
   }
 
   // Pass in an `encryptor` if wanting to override the default one.
-  void InitDatabase(const os_crypt_async::Encryptor* encryptor = nullptr) {
+  void InitDatabase(
+      scoped_refptr<const os_crypt_async::Encryptor> encryptor = nullptr) {
     table_ = std::make_unique<KeywordTable>();
     db_ = std::make_unique<WebDatabase>();
     db_->AddTable(table_.get());
     ASSERT_EQ(sql::INIT_OK,
-              db_->Init(file_, encryptor ? encryptor : &encryptor_));
+              db_->Init(file_, encryptor ? encryptor : encryptor_));
   }
 
   void CloseDatabase() {
@@ -114,10 +119,12 @@ class KeywordTableTest : public testing::Test {
     statement->Assign(table_->db()->GetUniqueStatement(sql));
   }
 
+  KeywordTable* GetTable() { return table_.get(); }
+
   base::FilePath file_;
 
  protected:
-  os_crypt_async::TestEncryptor encryptor_;
+  scoped_refptr<os_crypt_async::TestEncryptor> encryptor_;
 
  private:
   base::ScopedTempDir temp_dir_;
@@ -127,18 +134,20 @@ class KeywordTableTest : public testing::Test {
 
 
 TEST_F(KeywordTableTest, Keywords) {
-  // The feature is tested elsewhere, force enable to make sure expectations
-  // match.
-  base::test::ScopedFeatureList enable_verification(
-      features::kKeywordTableHashVerification);
-
   TemplateURLData keyword(CreateAndAddKeyword());
 
   base::HistogramTester histograms;
 
   KeywordTable::Keywords keywords(GetKeywords());
+  constexpr base::HistogramBase::Sample32 expected_bucket =
+#if BUILDFLAG(IS_WIN)
+      0;  // HashValidationStatus::kSuccess;
+#else
+      5;  // HashValidationStatus::kNotVerifiedFeatureDisabled;
+#endif  // BUILDFLAG(IS_WIN)
   histograms.ExpectUniqueSample("Search.KeywordTable.HashValidationStatus",
-                                /*HashValidationStatus::kSuccess*/ 0, 1);
+                                expected_bucket, 1);
+
   EXPECT_EQ(1U, keywords.size());
   const TemplateURLData& restored_keyword = keywords.front();
 
@@ -160,8 +169,7 @@ TEST_F(KeywordTableTest, Keywords) {
   EXPECT_EQ(keyword.last_visited.ToTimeT(),
             restored_keyword.last_visited.ToTimeT());
   EXPECT_EQ(keyword.policy_origin, restored_keyword.policy_origin);
-  EXPECT_EQ(keyword.created_from_play_api,
-            restored_keyword.created_from_play_api);
+  EXPECT_EQ(keyword.regulatory_origin, restored_keyword.regulatory_origin);
   EXPECT_EQ(keyword.usage_count, restored_keyword.usage_count);
   EXPECT_EQ(keyword.prepopulate_id, restored_keyword.prepopulate_id);
   EXPECT_EQ(keyword.is_active, restored_keyword.is_active);
@@ -181,7 +189,7 @@ TEST_F(KeywordTableTest, UpdateKeyword) {
   keyword.originating_url = GURL("http://originating.url/");
   keyword.input_encodings.push_back("Shift_JIS");
   keyword.prepopulate_id = 5;
-  keyword.created_from_play_api = true;
+  keyword.regulatory_origin = RegulatoryExtensionType::kAndroidEEA;
   keyword.starter_pack_id = 0;
   keyword.enforced_by_policy = false;
   keyword.featured_by_policy = false;
@@ -201,8 +209,7 @@ TEST_F(KeywordTableTest, UpdateKeyword) {
   EXPECT_EQ(keyword.input_encodings, restored_keyword.input_encodings);
   EXPECT_EQ(keyword.id, restored_keyword.id);
   EXPECT_EQ(keyword.prepopulate_id, restored_keyword.prepopulate_id);
-  EXPECT_EQ(keyword.created_from_play_api,
-            restored_keyword.created_from_play_api);
+  EXPECT_EQ(keyword.regulatory_origin, restored_keyword.regulatory_origin);
   EXPECT_EQ(keyword.is_active, restored_keyword.is_active);
   EXPECT_EQ(keyword.starter_pack_id, restored_keyword.starter_pack_id);
   EXPECT_EQ(keyword.enforced_by_policy, restored_keyword.enforced_by_policy);
@@ -287,19 +294,27 @@ TEST_F(KeywordTableTest, SanitizeShortName) {
   }
 }
 
+#if BUILDFLAG(IS_WIN)
 namespace {
+
+enum class Tamper { kNone, kUrl, kKeyword };
 
 struct TestCase {
   bool encryption_enabled;
-  bool feature_enabled;
-  bool tamper;
+  Tamper tamper;
   base::HistogramBase::Sample32 expected_histogram_sample;
   size_t expected_keyword_count;
 
   std::string Name() const {
-    return base::StrCat({encryption_enabled ? "Encryption" : "NoEncryption",
-                         feature_enabled ? "FeatureEnabled" : "FeatureDisabled",
-                         tamper ? "Tamper" : "NoTamper"});
+    std::string tamper_str = "NoTamper";
+    if (tamper == Tamper::kUrl) {
+      tamper_str = "TamperUrl";
+    }
+    if (tamper == Tamper::kKeyword) {
+      tamper_str = "TamperKeyword";
+    }
+    return base::StrCat(
+        {encryption_enabled ? "Encryption" : "NoEncryption", tamper_str});
   }
 };
 
@@ -308,14 +323,6 @@ struct TestCase {
 class KeywordTableTestEncryption
     : public KeywordTableTest,
       public ::testing::WithParamInterface<::TestCase> {
- public:
-  KeywordTableTestEncryption() {
-    feature_.InitWithFeatureState(features::kKeywordTableHashVerification,
-                                  GetParam().feature_enabled);
-  }
-
- private:
-  base::test::ScopedFeatureList feature_;
 };
 
 TEST_P(KeywordTableTestEncryption, KeywordBadHash) {
@@ -325,13 +332,18 @@ TEST_P(KeywordTableTestEncryption, KeywordBadHash) {
     EXPECT_EQ(1U, keywords.size());
   }
   CloseDatabase();
-  if (GetParam().tamper) {
+  if (GetParam().tamper != Tamper::kNone) {
     sql::Database db(sql::test::kTestTag);
     ASSERT_TRUE(db.Open(file_));
-    EXPECT_TRUE(
-        db.Execute("UPDATE keywords SET url='http://bad.com/' WHERE id=1"));
+    if (GetParam().tamper == Tamper::kUrl) {
+      EXPECT_TRUE(
+          db.Execute("UPDATE keywords SET url='http://bad.com/' WHERE id=1"));
+    } else {
+      EXPECT_TRUE(
+          db.Execute("UPDATE keywords SET keyword='badkeyword' WHERE id=1"));
+    }
   }
-  encryptor_.set_decryption_available_for_testing(
+  encryptor_->set_decryption_available_for_testing(
       GetParam().encryption_enabled);
   base::HistogramTester histograms;
   InitDatabase();
@@ -347,55 +359,33 @@ INSTANTIATE_TEST_SUITE_P(
     /*empty*/,
     KeywordTableTestEncryption,
     ::testing::Values(
-        ::TestCase{
-            .encryption_enabled = false,
-            .feature_enabled = false,
-            .tamper = true,
-            .expected_histogram_sample = /*kNotVerifiedFeatureDisabled*/ 5,
-            .expected_keyword_count = 1u},
         ::TestCase{.encryption_enabled = false,
-                   .feature_enabled = true,
-                   .tamper = true,
+                   .tamper = Tamper::kUrl,
                    .expected_histogram_sample = /*kNotVerifiedNoCrypto*/ 4,
                    .expected_keyword_count = 1u},
-        ::TestCase{
-            .encryption_enabled = true,
-            .feature_enabled = false,
-            .tamper = true,
-            .expected_histogram_sample = /*kNotVerifiedFeatureDisabled*/ 5,
-            .expected_keyword_count = 1u},
         ::TestCase{.encryption_enabled = true,
-                   .feature_enabled = true,
-                   .tamper = true,
+                   .tamper = Tamper::kUrl,
                    .expected_histogram_sample = /*kIncorrectHash*/ 3,
                    .expected_keyword_count = 0},
-        ::TestCase{
-            .encryption_enabled = false,
-            .feature_enabled = false,
-            .tamper = false,
-            .expected_histogram_sample = /*kNotVerifiedFeatureDisabled*/ 5,
-            .expected_keyword_count = 1u},
         ::TestCase{.encryption_enabled = false,
-                   .feature_enabled = true,
-                   .tamper = false,
+                   .tamper = Tamper::kKeyword,
                    .expected_histogram_sample = /*kNotVerifiedNoCrypto*/ 4,
                    .expected_keyword_count = 1u},
-        ::TestCase{
-            .encryption_enabled = true,
-            .feature_enabled = false,
-            .tamper = false,
-            .expected_histogram_sample = /*kNotVerifiedFeatureDisabled*/ 5,
-            .expected_keyword_count = 1u},
         ::TestCase{.encryption_enabled = true,
-                   .feature_enabled = true,
-                   .tamper = false,
+                   .tamper = Tamper::kKeyword,
+                   .expected_histogram_sample = /*kIncorrectHash*/ 3,
+                   .expected_keyword_count = 0},
+        ::TestCase{.encryption_enabled = false,
+                   .tamper = Tamper::kNone,
+                   .expected_histogram_sample = /*kNotVerifiedNoCrypto*/ 4,
+                   .expected_keyword_count = 1u},
+        ::TestCase{.encryption_enabled = true,
+                   .tamper = Tamper::kNone,
                    .expected_histogram_sample = /*kSuccess*/ 0,
                    .expected_keyword_count = 1u}),
     [](const auto& info) { return info.param.Name(); });
 
 TEST_F(KeywordTableTest, KeywordBadCrypto) {
-  base::test::ScopedFeatureList enable_verification(
-      features::kKeywordTableHashVerification);
   TemplateURLData keyword(CreateAndAddKeyword());
   {
     KeywordTable::Keywords keywords(GetKeywords());
@@ -407,7 +397,7 @@ TEST_F(KeywordTableTest, KeywordBadCrypto) {
     // A replacement encryptor with a new key that will make decryption of the
     // hash fail.
     const auto new_encryptor = os_crypt_async::GetTestEncryptorForTesting();
-    InitDatabase(&new_encryptor);
+    InitDatabase(new_encryptor);
     {
       KeywordTable::Keywords keywords(GetKeywords());
       EXPECT_TRUE(keywords.empty());
@@ -418,11 +408,9 @@ TEST_F(KeywordTableTest, KeywordBadCrypto) {
                                   1);
   }
 }
+#endif  // BUILDFLAG(IS_WIN)
 
 TEST_F(KeywordTableTest, KeywordBadUrl) {
-  base::test::ScopedFeatureList enable_verification(
-      features::kKeywordTableHashVerification);
-
   TemplateURLData keyword(CreateAndAddKeyword());
   {
     KeywordTable::Keywords keywords(GetKeywords());
@@ -439,4 +427,42 @@ TEST_F(KeywordTableTest, KeywordBadUrl) {
 
   // Invalid keyword with empty url should have been dropped.
   EXPECT_TRUE(keywords.empty());
+}
+
+TEST_F(KeywordTableTest, MigrateVersion152ExpandHashColumnRetainsData) {
+  CloseDatabase();
+  {
+    sql::Database db(sql::test::kTestTag);
+    ASSERT_TRUE(db.Open(file_));
+    ASSERT_TRUE(
+        db.Execute("INSERT INTO keywords (id, short_name, keyword, "
+                   "favicon_url, url, safe_for_autoreplace, starter_pack_id, "
+                   "enforced_by_policy) VALUES (1, 'Test', '@testing', '', "
+                   "'chrome://test/?q={searchTerms}', 1, 1234, 1)"));
+  }
+
+  std::optional<KeywordTable::Keywords> keywords_no_hash;
+  {
+    // An Encryptor with no decryption services causes validation to pass,
+    // allowing access to retrieve the keyword data without hash verification,
+    // which is important as it's not yet present.
+    auto encryptor = os_crypt_async::GetTestEncryptorForTesting();
+    encryptor->set_decryption_available_for_testing(false);
+    InitDatabase(encryptor);
+    keywords_no_hash.emplace(GetKeywords());
+    CloseDatabase();
+  }
+
+  ASSERT_TRUE(keywords_no_hash.has_value());
+  ASSERT_EQ(1u, keywords_no_hash->size());
+
+  InitDatabase();
+  // Manually invoke the migration script, this generates the hashes from the
+  // keyword row.
+  ASSERT_TRUE(GetTable()->MigrateToVersion152ExpandHashColumn());
+
+  // Verify that the row survives hash validation during GetKeywords()
+  // and that its fields were retained.
+  KeywordTable::Keywords keywords(GetKeywords());
+  EXPECT_THAT(keywords, ::testing::ContainerEq(keywords_no_hash.value()));
 }

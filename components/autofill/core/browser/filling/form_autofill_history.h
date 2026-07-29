@@ -5,11 +5,16 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_FILLING_FORM_AUTOFILL_HISTORY_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_FILLING_FORM_AUTOFILL_HISTORY_H_
 
+#include <stddef.h>
+
 #include <list>
 #include <map>
 #include <optional>
 #include <string>
+#include <vector>
 
+#include "base/containers/span.h"
+#include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/filling/filling_product.h"
 #include "components/autofill/core/common/form_field_data.h"
 #include "components/autofill/core/common/unique_ids.h"
@@ -17,6 +22,8 @@
 namespace autofill {
 
 class AutofillField;
+
+enum class FieldModifier;
 
 // Holds history of Autofill filling operations so that they can be undone
 // later. The class is used to add, remove and access filling operations, which
@@ -29,7 +36,8 @@ class FormAutofillHistory {
   struct FieldFillingEntry {
     FieldFillingEntry(
         std::u16string field_value,
-        bool field_is_autofilled,
+        bool field_is_autofilled_according_to_renderer,
+        std::vector<FieldModifier> field_modifiers,
         std::optional<std::string> field_autofill_source_profile_guid,
         std::optional<FieldType> field_autofilled_type,
         FillingProduct filling_product,
@@ -50,7 +58,10 @@ class FormAutofillHistory {
     // because fields that are autofilled might be reset to still autofilled
     // field, considering cases where autofill is allowed to override autofilled
     // fields.
-    bool is_autofilled;
+    bool is_autofilled_according_to_renderer;
+
+    // The sequence of modifiers that have affected the field.
+    std::vector<FieldModifier> field_modifiers;
 
     // ID of the last profile used to fill the field, if any. This is stored so
     // the field doesn't track undone autofill operations, which can cause
@@ -75,36 +86,7 @@ class FormAutofillHistory {
     bool ignore_is_autofilled;
   };
 
-  struct FormFillingEntry {
-    FormFillingEntry();
-    ~FormFillingEntry();
-
-    FillingProduct filling_product = FillingProduct::kNone;
-    std::map<FieldGlobalId, FieldFillingEntry> field_filling_entries = {};
-  };
-
-  class FillOperation {
-   public:
-    // Returns the field value and autofill state stored in history for
-    // `field_id`. Assumes the underlying map contains a entry with key
-    // `field_id`.
-    const FieldFillingEntry& GetFieldFillingEntry(FieldGlobalId field_id) const;
-
-    FillingProduct get_filling_product() const {
-      return iterator_->filling_product;
-    }
-
-    friend bool operator==(const FillOperation& lhs,
-                           const FillOperation& rhs) = default;
-
-   private:
-    friend class FormAutofillHistory;
-
-    explicit FillOperation(std::list<FormFillingEntry>::const_iterator iterator)
-        : iterator_(iterator) {}
-
-    std::list<FormFillingEntry>::const_iterator iterator_;
-  };
+  using FormFillingEntry = std::map<FieldGlobalId, FieldFillingEntry>;
 
   FormAutofillHistory();
 
@@ -115,21 +97,30 @@ class FormAutofillHistory {
   ~FormAutofillHistory();
 
   // Adds a new history entry in the beginning of the list.
-  // FormFieldData's are needed to get the most recent value of a field.
-  // AutofillField's are needed to get the type of a field.
-  // TODO(crbug.com/40232021): Only pass AutofillFields.
-  void AddFormFillEntry(
-      base::span<const FormFieldData* const> filled_fields,
-      base::span<const AutofillField* const> filled_autofill_fields,
-      FillingProduct filling_product,
-      bool is_refill);
+  // `filled_fields` contain the state of the fields that were filled BEFORE
+  // the filling operation happened.
+  void AddFormFillingEntry(base::span<const AutofillField* const> filled_fields,
+                           FillingProduct filling_product,
+                           bool is_refill);
 
-  // Erases the history entry from the list represented by `fill_operation`.
-  void EraseFormFillEntry(FillOperation fill_operation);
+  // Erases the field history information corresponding to all `field_ids` from
+  // `filling_entry`. If `filling_entry` becomes empty afterwards, the function
+  // also removes it from `history_`.
+  void EraseFieldFillingEntries(
+      std::list<FormFillingEntry>::iterator filling_entry,
+      base::span<const FieldGlobalId> field_ids);
 
-  // Finds the latest history entry where the field represented by `field_id`
-  // was affected.
-  FillOperation GetLastFillingOperationForField(FieldGlobalId field_id) const;
+  // Returns the first entry in `history_` (corresponding to the last
+  // chronological entry) that has information about the field represented by
+  // `field_id`, if any exist. Note that this means that the returned iterator
+  // is either `history_.end()` or satisfies  `it->contains(field_id)`.
+  std::list<FormFillingEntry>::iterator GetLastFormFillingEntryForField(
+      FieldGlobalId field_id);
+  std::list<FormFillingEntry>::const_iterator GetLastFormFillingEntryForField(
+      FieldGlobalId field_id) const {
+    return const_cast<FormAutofillHistory*>(this)
+        ->GetLastFormFillingEntryForField(field_id);
+  }
 
   // Checks whether the field represented by `field_id` has some registered
   // value in any history entry.
@@ -142,6 +133,9 @@ class FormAutofillHistory {
   bool empty() const { return history_.empty(); }
 
  private:
+  // Erases the history entry from the list represented by `fill_operation`.
+  void EraseFormFillEntry(std::list<FormFillingEntry>::iterator filling_entry);
+
   // Holds, for each filling operation in reverse chronological order, a map
   // from the IDs of the fields that were affected by the corresponding filling
   // operation to the value and autofill state of the field prior to the

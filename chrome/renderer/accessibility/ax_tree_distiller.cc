@@ -4,12 +4,12 @@
 
 #include "chrome/renderer/accessibility/ax_tree_distiller.h"
 
+#include <algorithm>
 #include <memory>
 #include <queue>
 #include <utility>
 #include <vector>
 
-#include "base/containers/contains.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
@@ -42,8 +42,8 @@ static const ax::mojom::Role kRolesToSkip[]{
     ax::mojom::Role::kSectionFooter,
 };
 
-// Find all of the main and article nodes. Also, include unignored heading nodes
-// which lie outside of the main and article node.
+// Find all of the main, article, and PDF root nodes. Also, include unignored
+// heading nodes which lie outside of these nodes.
 // TODO(crbug.com/40802192): Replace this with a call to
 // OneShotAccessibilityTreeSearch.
 void GetContentRootNodes(const ui::AXTree& tree,
@@ -59,10 +59,11 @@ void GetContentRootNodes(const ui::AXTree& tree,
   while (!queue.empty()) {
     const ui::AXNode* node = queue.front();
     queue.pop();
-    // If a main or article node is found, add it to the list of content root
-    // nodes and continue. Do not explore children for nested article nodes.
+    // If a main, article, or PDF root node is found, add it to the list of
+    // content root nodes and continue. Do not explore children for these nodes.
     if (node->GetRole() == ax::mojom::Role::kMain ||
-        node->GetRole() == ax::mojom::Role::kArticle) {
+        node->GetRole() == ax::mojom::Role::kArticle ||
+        node->GetRole() == ax::mojom::Role::kPdfRoot) {
       content_root_nodes->push_back(node);
       has_main_or_heading = true;
       continue;
@@ -110,7 +111,7 @@ void GetContentRootNodes(const ui::AXTree& tree,
 void AddContentNodesToVector(const ui::AXNode* node,
                              std::vector<ui::AXNodeID>* content_node_ids) {
   const auto& role = node->GetRole();
-  if (base::Contains(kContentRoles, role)) {
+  if (std::ranges::contains(kContentRoles, role)) {
     // TODO(crbug.com/40922922): Remove when flag is no longer necessary. Skip
     // these roles if the flag is not enabled.
     if (!features::IsReadAnythingImagesViaAlgorithmEnabled() &&
@@ -133,7 +134,7 @@ void AddContentNodesToVector(const ui::AXNode* node,
     return;
   }
 
-  if (base::Contains(kRolesToSkip, node->GetRole())) {
+  if (std::ranges::contains(kRolesToSkip, node->GetRole())) {
     return;
   }
   for (auto iter = node->UnignoredChildrenBegin();
@@ -176,6 +177,8 @@ void AXTreeDistiller::Distill(const ui::AXTree& tree,
   }
 
   // Ensure we still callback if Screen2x is not available.
+  VLOG(1) << "Screen 2x not available, running callback with ID: "
+          << tree.GetAXTreeID();
   on_ax_tree_distilled_callback_.Run(tree.GetAXTreeID(), content_node_ids);
 }
 
@@ -228,6 +231,8 @@ void AXTreeDistiller::DistillViaScreen2x(
     main_content_extractor_.set_disconnect_handler(
         base::BindOnce(&AXTreeDistiller::OnMainContentExtractorDisconnected,
                        weak_ptr_factory_.GetWeakPtr()));
+    main_content_extractor_->SetClientType(
+        screen_ai::mojom::MceClientType::kReadingMode);
   }
 
   base::TimeTicks screen2x_start_time = base::TimeTicks::Now();
@@ -251,13 +256,16 @@ void AXTreeDistiller::ProcessScreen2xResult(
                         base::TimeTicks::Now() - screen2x_start_time,
                         !content_node_ids_screen2x.empty());
   // Merge the results from the algorithm and from screen2x.
-  for (ui::AXNodeID content_node_id_screen2x : content_node_ids_screen2x) {
-    if (!base::Contains(content_node_ids_algorithm, content_node_id_screen2x)) {
-      content_node_ids_algorithm.push_back(content_node_id_screen2x);
+  for (ui::AXNodeID node_id : content_node_ids_screen2x) {
+    if (!std::ranges::contains(content_node_ids_algorithm, node_id)) {
+      content_node_ids_algorithm.push_back(node_id);
     }
   }
+
   RecordMergedMetrics(ukm_source_id, base::TimeTicks::Now() - merged_start_time,
                       !content_node_ids_algorithm.empty());
+  VLOG(1) << "Screen 2x extracted content, running callback with ID: "
+          << tree_id;
   on_ax_tree_distilled_callback_.Run(tree_id, content_node_ids_algorithm);
 
   // TODO(crbug.com/40802192): If no content nodes were identified, and
@@ -291,6 +299,8 @@ void AXTreeDistiller::ScreenAIServiceReady() {
 
 void AXTreeDistiller::OnMainContentExtractorDisconnected() {
   main_content_extractor_.reset();
+  VLOG(1) << "Main content extractor disconnected; running callback with "
+             "unknown ID";
   on_ax_tree_distilled_callback_.Run(ui::AXTreeIDUnknown(),
                                      std::vector<ui::AXNodeID>());
 }

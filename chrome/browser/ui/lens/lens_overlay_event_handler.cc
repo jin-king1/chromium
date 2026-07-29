@@ -5,6 +5,9 @@
 #include "chrome/browser/ui/lens/lens_overlay_event_handler.h"
 
 #include "chrome/browser/ui/lens/lens_overlay_controller.h"
+#include "chrome/browser/ui/lens/lens_search_controller.h"
+#include "chrome/browser/ui/tabs/public/tab_features.h"
+#include "components/lens/lens_features.h"
 #include "components/lens/lens_overlay_dismissal_source.h"
 
 namespace lens {
@@ -25,19 +28,27 @@ bool IsCopyEvent(const input::NativeWebKeyboardEvent& event) {
 }  // namespace
 
 LensOverlayEventHandler::LensOverlayEventHandler(
-    LensOverlayController* lens_overlay_controller)
-    : lens_overlay_controller_(lens_overlay_controller) {}
+    LensSearchController* lens_search_controller)
+    : lens_search_controller_(lens_search_controller) {}
 
 bool LensOverlayEventHandler::HandleKeyboardEvent(
     content::WebContents* source,
     const input::NativeWebKeyboardEvent& event,
     views::FocusManager* focus_manager) {
-  if (!focus_manager || !lens_overlay_controller_->IsOverlayActive()) {
+  if (!focus_manager || !lens_search_controller_->IsActive()) {
     return false;
   }
 
   if (IsEscapeEvent(event)) {
-    lens_overlay_controller_->CloseUIAsync(
+    if (lens_search_controller_->lens_overlay_controller()
+            ->IsOverlayShowing() &&
+        !lens_search_controller_->should_route_to_contextual_tasks()) {
+      lens_search_controller_->HideOverlay(
+          lens::LensOverlayDismissalSource::kEscapeKeyPress);
+      return true;
+    }
+
+    lens_search_controller_->CloseLensAsync(
         lens::LensOverlayDismissalSource::kEscapeKeyPress);
     return true;
   }
@@ -47,7 +58,7 @@ bool LensOverlayEventHandler::HandleKeyboardEvent(
   const bool is_making_selection =
       source->GetFocusedFrame() && source->GetFocusedFrame()->HasSelection();
   if (IsCopyEvent(event) && !is_making_selection) {
-    lens_overlay_controller_->TriggerCopyText();
+    lens_search_controller_->lens_overlay_controller()->TriggerCopy();
     return true;
   }
   return unhandled_keyboard_event_handler_.HandleKeyboardEvent(event,

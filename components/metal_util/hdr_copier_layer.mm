@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "components/metal_util/hdr_copier_layer.h"
 
 #include <CoreGraphics/CoreGraphics.h>
@@ -17,8 +12,10 @@
 #include "base/apple/bridging.h"
 #include "base/apple/foundation_util.h"
 #include "base/apple/scoped_cftyperef.h"
+#include "base/compiler_specific.h"
 #include "base/feature_list.h"
 #include "base/strings/sys_string_conversions.h"
+#include "build/build_config.h"
 #include "components/metal_util/device.h"
 #include "third_party/skia/include/core/SkM44.h"
 #include "third_party/skia/modules/skcms/skcms.h"
@@ -29,9 +26,7 @@
 namespace {
 
 // If true, then use the HDRCopierLayer for all HLG video content.
-BASE_FEATURE(kMacHlgUseHdrCopier,
-             "MacHlgUseHdrCopier",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kMacHlgUseHdrCopier, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Source of the shader to perform tonemapping. Note that the functions
 // ToLinearSRGBIsh, ToLinearPQ, and ToLinearHLG are copy-pasted from the GLSL
@@ -210,7 +205,7 @@ bool IOSurfaceGetMTLPixelFormat(IOSurfaceRef buffer,
                                 bool& is_unorm) {
   num_planes = 1;
   format[0] = MTLPixelFormatInvalid;
-  format[1] = MTLPixelFormatInvalid;
+  UNSAFE_TODO(format[1]) = MTLPixelFormatInvalid;
   is_unorm = true;
   switch (IOSurfaceGetPixelFormat(buffer)) {
     case kCVPixelFormatType_64RGBAHalf:
@@ -231,14 +226,14 @@ bool IOSurfaceGetMTLPixelFormat(IOSurfaceRef buffer,
     case kCVPixelFormatType_444YpCbCr8BiPlanarVideoRange:
       num_planes = 2;
       format[0] = MTLPixelFormatR8Unorm;
-      format[1] = MTLPixelFormatRG8Unorm;
+      UNSAFE_TODO(format[1]) = MTLPixelFormatRG8Unorm;
       return true;
     case kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange:
     case kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange:
     case kCVPixelFormatType_444YpCbCr10BiPlanarVideoRange:
       num_planes = 2;
       format[0] = MTLPixelFormatR16Unorm;
-      format[1] = MTLPixelFormatRG16Unorm;
+      UNSAFE_TODO(format[1]) = MTLPixelFormatRG16Unorm;
       return true;
     default:
       break;
@@ -280,7 +275,7 @@ id<MTLRenderPipelineState> CreateRenderPipelineState(id<MTLDevice> device) {
                 device:(id<MTLDevice>)device
      screenHdrHeadroom:(float)screenHdrHeadroom
             colorSpace:(gfx::ColorSpace)colorSpace
-              metadata:(std::optional<gfx::HDRMetadata>)hdrMetadata;
+              metadata:(gfx::HDRMetadata)hdrMetadata;
 @end
 
 @implementation HDRCopierLayer {
@@ -289,14 +284,14 @@ id<MTLRenderPipelineState> CreateRenderPipelineState(id<MTLDevice> device) {
   id<MTLDevice> _device;
   float _screenHdrHeadroom;
   gfx::ColorSpace _colorSpace;
-  std::optional<gfx::HDRMetadata> _hdrMetadata;
+  gfx::HDRMetadata _hdrMetadata;
 }
 - (id)init {
   if ((self = [super init])) {
     id<MTLDevice> device = metal::GetDefaultDevice();
-    if (@available(iOS 16.0, *)) {
-      self.wantsExtendedDynamicRangeContent = YES;
-    }
+#if !BUILDFLAG(IS_IOS_TVOS)
+    self.wantsExtendedDynamicRangeContent = YES;
+#endif
     self.device = device;
     self.opaque = NO;
     self.presentsWithTransaction = YES;
@@ -312,7 +307,7 @@ id<MTLRenderPipelineState> CreateRenderPipelineState(id<MTLDevice> device) {
                 device:(id<MTLDevice>)device
      screenHdrHeadroom:(float)screenHdrHeadroom
             colorSpace:(gfx::ColorSpace)colorSpace
-              metadata:(std::optional<gfx::HDRMetadata>)hdrMetadata {
+              metadata:(gfx::HDRMetadata)hdrMetadata {
   // HLG does not use the OS-provided tone mapping, so it will need to be
   // re-drawn whenever the HDR headroom changes.
   // https://crbug.com/343249142
@@ -346,26 +341,27 @@ id<MTLRenderPipelineState> CreateRenderPipelineState(id<MTLDevice> device) {
   }
 
   // Set metadata for tone mapping.
-  if (@available(iOS 16.0, *)) {
-    if (_colorSpace != colorSpace || _hdrMetadata != hdrMetadata) {
-      CAEDRMetadata* edrMetadata = nil;
-      if (colorSpace.GetTransferID() == gfx::ColorSpace::TransferID::PQ) {
-        base::apple::ScopedCFTypeRef<CFDataRef> display_info =
-            gfx::GenerateMasteringDisplayColorVolume(hdrMetadata);
-        base::apple::ScopedCFTypeRef<CFDataRef> content_info =
-            gfx::GenerateContentLightLevelInfo(hdrMetadata);
-        edrMetadata = [CAEDRMetadata
-            HDR10MetadataWithDisplayInfo:base::apple::CFToNSPtrCast(
-                                             display_info.get())
-                             contentInfo:base::apple::CFToNSPtrCast(
-                                             content_info.get())
-                      opticalOutputScale:203];
-      }
-      self.EDRMetadata = edrMetadata;
-      _colorSpace = colorSpace;
-      _hdrMetadata = hdrMetadata;
+#if !BUILDFLAG(IS_IOS_TVOS)
+  if (_colorSpace != colorSpace || _hdrMetadata != hdrMetadata) {
+    CAEDRMetadata* edrMetadata = nil;
+    if (colorSpace.GetTransferID() == gfx::ColorSpace::TransferID::PQ) {
+      base::apple::ScopedCFTypeRef<CFDataRef> display_info =
+          gfx::GenerateMasteringDisplayColorVolume(hdrMetadata);
+      base::apple::ScopedCFTypeRef<CFDataRef> content_info =
+          gfx::GenerateContentLightLevelInfo(hdrMetadata);
+      edrMetadata = [CAEDRMetadata
+          HDR10MetadataWithDisplayInfo:base::apple::CFToNSPtrCast(
+                                           display_info.get())
+                           contentInfo:base::apple::CFToNSPtrCast(
+                                           content_info.get())
+                    opticalOutputScale:203];
     }
+    self.EDRMetadata = edrMetadata;
+    _colorSpace = colorSpace;
+    _hdrMetadata = hdrMetadata;
   }
+#endif
+
   // Migrate to the MTLDevice on which the CAMetalLayer is being composited, if
   // known.
   if (device) {
@@ -395,7 +391,7 @@ id<MTLRenderPipelineState> CreateRenderPipelineState(id<MTLDevice> device) {
     MTLTextureDescriptor* texDesc = [[MTLTextureDescriptor alloc] init];
     texDesc.textureType = MTLTextureType2D;
     texDesc.usage = MTLTextureUsageShaderRead;
-    texDesc.pixelFormat = mtlFormat[i];
+    texDesc.pixelFormat = UNSAFE_TODO(mtlFormat[i]);
     texDesc.width = IOSurfaceGetWidthOfPlane(buffer, i);
     texDesc.height = IOSurfaceGetHeightOfPlane(buffer, i);
     texDesc.depth = 1;
@@ -405,9 +401,9 @@ id<MTLRenderPipelineState> CreateRenderPipelineState(id<MTLDevice> device) {
 #if BUILDFLAG(IS_MAC)
     texDesc.storageMode = MTLStorageModeManaged;
 #endif
-    bufferTexture[i] = [device newTextureWithDescriptor:texDesc
-                                              iosurface:buffer
-                                                  plane:i];
+    UNSAFE_TODO(bufferTexture[i]) = [device newTextureWithDescriptor:texDesc
+                                                           iosurface:buffer
+                                                               plane:i];
   }
 
   // Create a texture to wrap the drawable.
@@ -522,7 +518,7 @@ void UpdateHDRCopierLayer(CALayer* layer,
                           id<MTLDevice> device,
                           float screen_hdr_headroom,
                           const gfx::ColorSpace& color_space,
-                          const std::optional<gfx::HDRMetadata>& hdr_metadata) {
+                          const gfx::HDRMetadata& hdr_metadata) {
   if (auto* hdr_copier_layer = base::apple::ObjCCast<HDRCopierLayer>(layer)) {
     [hdr_copier_layer setHDRContents:buffer
                               device:device
@@ -569,10 +565,10 @@ bool ShouldUseHDRCopier(IOSurfaceRef buffer,
   }
 
   // Rasterized tiles and the primary plane specify a color space of SRGB_HDR
-  // with no extended range metadata.
+  // LINEAR_HDR, or CUSTOM_HDR, with no extended range metadata.
   // TODO(crbug.com/40268540): Use extended range metadata instead of
   // the SDR_HDR color space to indicate this.
-  if (color_space.GetTransferID() == gfx::ColorSpace::TransferID::SRGB_HDR) {
+  if (color_space.IsHDR()) {
     return !is_unorm;
   }
 

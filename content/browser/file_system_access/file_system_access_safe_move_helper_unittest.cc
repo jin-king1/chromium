@@ -18,6 +18,7 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/bind.h"
 #include "base/test/gmock_callback_support.h"
+#include "content/browser/blob_storage/chrome_blob_storage_context.h"
 #include "content/browser/file_system_access/features.h"
 #include "content/browser/file_system_access/file_system_access_safe_move_helper.h"
 #include "content/browser/file_system_access/fixed_file_system_access_permission_grant.h"
@@ -529,6 +530,8 @@ TEST_F(FileSystemAccessSafeMoveHelperAfterWriteChecksTest, Allow) {
               Field(&FileSystemAccessWriteItem::sha256_hash, Eq(expected_hash)),
               Field(&FileSystemAccessWriteItem::size, Eq(3)),
               Field(&FileSystemAccessWriteItem::frame_url, Eq(kTestURL)),
+              Field(&FileSystemAccessWriteItem::initiating_frame_id,
+                    Eq(kFrameId)),
               Field(&FileSystemAccessWriteItem::has_user_gesture, Eq(false))),
           kFrameId, _))
       .WillOnce(base::test::RunOnceCallback<2>(

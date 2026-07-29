@@ -17,8 +17,8 @@ namespace font_service {
 
 // Wikpedia's main country selection page activates 21 fallback fonts,
 // doubling this we should be on the generous side as an upper bound,
-// but nevertheless not have the mapped typefaces cache grow excessively.
-constexpr const size_t kMaxMappedTypefaces = 42;
+// but nevertheless not have the typeface cache grow excessively.
+constexpr const size_t kMaxTypefacesCached = 42;
 
 std::size_t SkFontConfigInterfaceFontIdentityHash::operator()(
     const SkFontConfigInterface::FontIdentity& sp) const {
@@ -36,7 +36,7 @@ std::size_t SkFontConfigInterfaceFontIdentityHash::operator()(
 FontLoader::FontLoader(
     mojo::PendingRemote<mojom::FontService> pending_font_service)
     : thread_(base::MakeRefCounted<internal::FontServiceThread>()),
-      mapped_typefaces_(kMaxMappedTypefaces) {
+      typeface_cache_(kMaxTypefacesCached) {
   thread_->Init(std::move(pending_font_service));
 }
 
@@ -56,40 +56,24 @@ bool FontLoader::matchFamilyName(const char family_name[],
 SkStreamAsset* FontLoader::openStream(const FontIdentity& identity) {
   TRACE_EVENT2("fonts", "FontLoader::openStream", "identity", identity.fID,
                "name", TRACE_STR_COPY(identity.fString.c_str()));
-  {
-    base::AutoLock lock(lock_);
-    auto mapped_font_files_it = mapped_font_files_.find(identity.fID);
-    if (mapped_font_files_it != mapped_font_files_.end())
-      return mapped_font_files_it->second->CreateMemoryStream();
+
+  auto mapped_font_file = mapped_font_files_.FindOrCreate(
+      identity.fID,
+      [this, &identity] { return thread_->OpenStream(identity); });
+  if (mapped_font_file) {
+    return mapped_font_file->CreateMemoryStream();
   }
-
-  scoped_refptr<internal::MappedFontFile> mapped_font_file =
-      thread_->OpenStream(identity);
-  if (!mapped_font_file)
-    return nullptr;
-
-  // Get notified with |mapped_font_file| is destroyed.
-  mapped_font_file->set_observer(this);
-
-  {
-    base::AutoLock lock(lock_);
-    auto mapped_font_files_it =
-        mapped_font_files_
-            .insert(std::make_pair(mapped_font_file->font_id(),
-                                   mapped_font_file.get()))
-            .first;
-    return mapped_font_files_it->second->CreateMemoryStream();
-  }
+  return nullptr;
 }
 
 sk_sp<SkTypeface> FontLoader::makeTypeface(const FontIdentity& identity,
                                            sk_sp<SkFontMgr> mgr) {
   TRACE_EVENT0("fonts", "FontServiceThread::makeTypeface");
   {
-    base::AutoLock lock(lock_);
-    auto mapped_typefaces_it = mapped_typefaces_.Get(identity);
-    if (mapped_typefaces_it != mapped_typefaces_.end()) {
-      return mapped_typefaces_it->second;
+    base::AutoLock lock(typeface_cache_lock_);
+    auto typeface_cache_it = typeface_cache_.Get(identity);
+    if (typeface_cache_it != typeface_cache_.end()) {
+      return typeface_cache_it->second;
     }
   }
 
@@ -98,10 +82,10 @@ sk_sp<SkTypeface> FontLoader::makeTypeface(const FontIdentity& identity,
       identity.fTTCIndex);
 
   {
-    base::AutoLock lock(lock_);
-    auto mapped_typefaces_insert_it =
-        mapped_typefaces_.Put(identity, std::move(typeface));
-    return mapped_typefaces_insert_it->second;
+    base::AutoLock lock(typeface_cache_lock_);
+    auto typeface_cache_insert_it =
+        typeface_cache_.Put(identity, std::move(typeface));
+    return typeface_cache_insert_it->second;
   }
 }
 
@@ -121,12 +105,12 @@ bool FontLoader::FallbackFontForCharacter(
 bool FontLoader::FontRenderStyleForStrike(
     std::string family,
     uint32_t size,
-    bool is_italic,
     bool is_bold,
+    bool is_italic,
     float device_scale_factor,
     mojom::FontRenderStylePtr* out_font_render_style) {
-  return thread_->FontRenderStyleForStrike(std::move(family), size, is_italic,
-                                           is_bold, device_scale_factor,
+  return thread_->FontRenderStyleForStrike(std::move(family), size, is_bold,
+                                           is_italic, device_scale_factor,
                                            out_font_render_style);
 }
 
@@ -148,12 +132,5 @@ void FontLoader::MatchFontWithFallback(std::string family,
                                  fallback_family_type, out_font_file_handle);
 }
 #endif  // BUILDFLAG(ENABLE_PDF)
-
-void FontLoader::OnMappedFontFileDestroyed(internal::MappedFontFile* f) {
-  TRACE_EVENT1("fonts", "FontLoader::OnMappedFontFileDestroyed", "identity",
-               f->font_id());
-  base::AutoLock lock(lock_);
-  mapped_font_files_.erase(f->font_id());
-}
 
 }  // namespace font_service

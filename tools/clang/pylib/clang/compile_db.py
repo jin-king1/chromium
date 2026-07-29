@@ -18,8 +18,20 @@ _CLANG_WRAPPER_CMD_LINE_RE = re.compile(
       # Assume the args do not contain spaces.
       (?P<rewrapper_arg>\-\S+\s+)*
     )?
+    # Optional wrapper(s) that should be skipped.
+    (?P<wrapper>.*?\s+)?
     # Assume the path to clang does not contain spaces.
-    (?P<clang>\S*clang\S*)
+    # Identifying the compiler binary name specifically to avoid wrappers.
+    # e.g. clang, clang++, clang-cl, clang-18, clang-cl.exe, clang++-15
+    (?P<clang>
+      "?                          # Optional leading quote.
+      \S*?\bclang                 # Base name of the compiler.
+      (?:\+\+)?                   # C++ mode suffix.
+      (?:-(?:cl|[\d.]+)|[\d.]+)?  # Optional version or MSVC drop-in suffix.
+      (?:\.exe)?                  # Optional .exe suffix for Windows.
+      "?                          # Optional trailing quote.
+    )
+    (?!\w)                        # Boundary to reject unexpected trailing text (like '_wrapper').
     \s+
     (?P<args>.*)
     ''', re.VERBOSE)
@@ -58,9 +70,16 @@ def _FilterFlags(command, additional_filtered_flags):
       # This is used for profiling-guided optimizations. Not necessary by tools,
       # and clangd complains it cannot find the referenced profile file.
       '-fprofile-sample-use': 1,
+      '-fprofile-use': 1,
       # This flag is only usable with -fprofile-sample-use excluded above.
       # Exclude it to avoid having an unused-command-line-argument error.
       '-fsample-profile-use-profi': 1,
+      # Clang modules don't play particularly well with clangd.
+      # To solve this, we simply need to remove all references to modulemaps and
+      # to modules.
+      '-fbuiltin-module-map': 0,
+      '-fmodule-map-file': 1,
+      '-fmodule-file': 1,
   }
   # Add user-added flags. We only support flags with no parameters here.
   if additional_filtered_flags:

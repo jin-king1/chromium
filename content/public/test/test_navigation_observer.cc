@@ -139,8 +139,9 @@ void TestNavigationObserver::StopWatchingNewWebContents() {
 }
 
 void TestNavigationObserver::WatchExistingWebContents() {
-  for (auto* web_contents : WebContentsImpl::GetAllWebContents())
+  for (auto web_contents : WebContentsImpl::GetAllWebContents()) {
     RegisterAsObserver(web_contents);
+  }
 }
 
 void TestNavigationObserver::WatchWebContents(
@@ -213,6 +214,10 @@ void TestNavigationObserver::OnDidStopLoading(WebContents* web_contents) {
 
 void TestNavigationObserver::OnDidStartNavigation(
     NavigationHandle* navigation_handle) {
+  if (navigation_handle->IsInPrerenderedMainFrame()) {
+    return;
+  }
+
   if (expected_target_url_.has_value() &&
       expected_target_url_.value() != navigation_handle->GetURL()) {
     return;
@@ -232,6 +237,10 @@ void TestNavigationObserver::OnDidStartNavigation(
 
 void TestNavigationObserver::OnDidFinishNavigation(
     NavigationHandle* navigation_handle) {
+  if (navigation_handle->IsInPrerenderedMainFrame()) {
+    return;
+  }
+
   if (ignore_uncommitted_navigations_ && !navigation_handle->HasCommitted())
     return;
 
@@ -272,8 +281,9 @@ void TestNavigationObserver::OnDidFinishNavigation(
   last_initiator_process_id_ = navigation_handle->GetInitiatorProcessId();
   last_navigation_succeeded_ =
       navigation_handle->HasCommitted() && !navigation_handle->IsErrorPage();
-  last_navigation_initiator_activation_and_ad_status_ =
-      navigation_handle->GetNavigationInitiatorActivationAndAdStatus();
+  last_navigation_started_with_transient_activation_ =
+      navigation_handle->StartedWithTransientActivation();
+  last_navigation_started_by_ad_ = navigation_handle->StartedByAd();
   last_net_error_code_ = navigation_handle->GetNetErrorCode();
   if (auto* headers = navigation_handle->GetResponseHeaders(); !!headers) {
     last_http_response_code_ =

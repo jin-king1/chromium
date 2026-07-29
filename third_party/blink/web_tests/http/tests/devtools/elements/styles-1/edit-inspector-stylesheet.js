@@ -2,11 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {TestRunner} from 'test_runner';
+import * as TextUtils from 'devtools/core/text_utils/text_utils.js';
+import * as Workspace from 'devtools/models/workspace/workspace.js';
 import {ElementsTestRunner} from 'elements_test_runner';
 import {SourcesTestRunner} from 'sources_test_runner';
-
-import * as Workspace from 'devtools/models/workspace/workspace.js';
+import {TestRunner} from 'test_runner';
 
 (async function() {
   TestRunner.addResult(
@@ -19,15 +19,15 @@ import * as Workspace from 'devtools/models/workspace/workspace.js';
   ElementsTestRunner.selectNodeAndWaitForStyles('inspected', onStylesSelected);
 
   function onStylesSelected(node) {
-    Workspace.Workspace.WorkspaceImpl.instance().addEventListener(Workspace.Workspace.Events.WorkingCopyCommitted, onWorkingCopyCommitted);
+    Workspace.Workspace.WorkspaceImpl.instance().addEventListener(Workspace.Workspace.Events.WorkingCopyChanged, onWorkingCopyChanged);
     ElementsTestRunner.addNewRule('#inspected', new Function());
   }
 
-  function onWorkingCopyCommitted(event) {
-    Workspace.Workspace.WorkspaceImpl.instance().removeEventListener(Workspace.Workspace.Events.WorkingCopyCommitted, onWorkingCopyCommitted);
+  function onWorkingCopyChanged(event) {
+    Workspace.Workspace.WorkspaceImpl.instance().removeEventListener(Workspace.Workspace.Events.WorkingCopyChanged, onWorkingCopyChanged);
     var uiSourceCode = event.data.uiSourceCode;
     TestRunner.addResult('Inspector stylesheet URL: ' + uiSourceCode.displayName());
-    uiSourceCode.requestContent().then(printContent(onContent));
+    uiSourceCode.requestContentData().then(TextUtils.ContentData.ContentData.asDeferredContent).then(printContent(onContent));
 
     function onContent() {
       TestRunner.addResult('\nSetting new content');
@@ -38,7 +38,7 @@ import * as Workspace from 'devtools/models/workspace/workspace.js';
   }
 
   function onUpdatedWorkingCopy(uiSourceCode) {
-    uiSourceCode.requestContent().then(printContent(selectNode));
+    uiSourceCode.requestContentData().then(TextUtils.ContentData.ContentData.asDeferredContent).then(printContent(selectNode));
     function selectNode() {
       ElementsTestRunner.selectNodeAndWaitForStyles('inspected', dumpStyles);
     }

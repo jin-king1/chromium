@@ -20,6 +20,7 @@
 #include "components/webapps/browser/android/shortcut_info.h"
 #include "components/webapps/browser/android/webapk/webapk_types.h"
 #include "components/webapps/browser/android/webapps_utils.h"
+#include "components/webapps/browser/banners/app_banner_manager.h"
 #include "components/webapps/browser/features.h"
 #include "components/webapps/browser/installable/installable_logging.h"
 #include "content/public/browser/web_contents.h"
@@ -112,10 +113,17 @@ void WebApkInstallService::OnFinishedInstall(
 
   bool show_failure_notification = base::FeatureList::IsEnabled(
       webapps::features::kWebApkInstallFailureNotification);
-  HandleFinishInstallNotifications(
+  HandleFinishInstallNotificationsAndMaybeLaunch(
       shortcut_info.manifest_id, shortcut_info.url, shortcut_info.short_name,
       primary_icon, shortcut_info.is_primary_icon_maskable, result,
       webapk_package_name, show_failure_notification);
+
+  // If the app was successfully installed, we need to notify the app banner
+  // manager so that the installability status is reflected elsewhere in the UI.
+  if (result == webapps::WebApkInstallResult::SUCCESS && web_contents) {
+    webapps::AppBannerManager::FromWebContents(web_contents.get())
+        ->OnInstall(shortcut_info.display, true);
+  }
 
   if (show_failure_notification) {
     return;
@@ -145,7 +153,7 @@ void WebApkInstallService::OnFinishedInstallRestore(
     bool /* relax_updates */,
     const std::string& webapk_package_name) {
   install_ids_.erase(shortcut_info.manifest_id);
-  HandleFinishInstallNotifications(
+  HandleFinishInstallNotificationsAndMaybeLaunch(
       shortcut_info.manifest_id, shortcut_info.url, shortcut_info.short_name,
       primary_icon, shortcut_info.is_primary_icon_maskable, result,
       webapk_package_name, /* show_failure_notification= */ true);
@@ -153,7 +161,7 @@ void WebApkInstallService::OnFinishedInstallRestore(
   std::move(finish_callback).Run(result);
 }
 
-void WebApkInstallService::HandleFinishInstallNotifications(
+void WebApkInstallService::HandleFinishInstallNotificationsAndMaybeLaunch(
     const GURL& notification_id,
     const GURL& url,
     const std::u16string& short_name,
@@ -163,8 +171,9 @@ void WebApkInstallService::HandleFinishInstallNotifications(
     const std::string& webapk_package_name,
     bool show_failure_notification) {
   if (result == webapps::WebApkInstallResult::SUCCESS) {
-    ShowInstalledNotification(notification_id, short_name, url, primary_icon,
-                              is_primary_icon_maskable, webapk_package_name);
+    ShowInstalledNotificationAndMaybeLaunch(
+        notification_id, short_name, url, primary_icon,
+        is_primary_icon_maskable, webapk_package_name);
   } else if (show_failure_notification) {
     ShowInstallFailedNotification(notification_id, short_name, url,
                                   primary_icon, is_primary_icon_maskable,
@@ -192,7 +201,7 @@ void WebApkInstallService::ShowInstallInProgressNotification(
 }
 
 // static
-void WebApkInstallService::ShowInstalledNotification(
+void WebApkInstallService::ShowInstalledNotificationAndMaybeLaunch(
     const GURL& notification_id,
     const std::u16string& short_name,
     const GURL& url,
@@ -203,7 +212,7 @@ void WebApkInstallService::ShowInstalledNotification(
   base::android::ScopedJavaLocalRef<jobject> java_primary_icon =
       !primary_icon.isNull() ? gfx::ConvertToJavaBitmap(primary_icon) : nullptr;
 
-  Java_WebApkInstallService_showInstalledNotification(
+  Java_WebApkInstallService_showInstalledNotificationAndMaybeLaunch(
       env, webapk_package_name, notification_id.spec(), short_name, url.spec(),
       java_primary_icon, is_primary_icon_maskable);
 }
@@ -224,3 +233,5 @@ void WebApkInstallService::ShowInstallFailedNotification(
       env, notification_id.spec(), short_name, url.spec(), java_primary_icon,
       is_primary_icon_maskable, static_cast<int>(result));
 }
+
+DEFINE_JNI(WebApkInstallService)

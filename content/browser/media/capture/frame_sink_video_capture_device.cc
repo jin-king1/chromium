@@ -33,7 +33,7 @@
 #include "media/capture/video_capture_types.h"
 #include "services/device/public/mojom/wake_lock_provider.mojom.h"
 
-#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+#if !BUILDFLAG(IS_IOS)
 #include "content/browser/media/capture/mouse_cursor_overlay_controller.h"
 #endif
 
@@ -47,7 +47,7 @@ namespace content {
 
 namespace {
 
-#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+#if !BUILDFLAG(IS_IOS)
 constexpr int32_t kMouseCursorStackingIndex = 1;
 #endif
 
@@ -156,7 +156,7 @@ class ContextProviderObserver : viz::ContextLostObserver {
   base::WeakPtrFactory<ContextProviderObserver> weak_factory_{this};
 };
 
-#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+#if !BUILDFLAG(IS_IOS)
 FrameSinkVideoCaptureDevice::FrameSinkVideoCaptureDevice()
     : cursor_controller_(
           RescopeToUIThread(std::make_unique<MouseCursorOverlayController>())) {
@@ -334,10 +334,10 @@ void FrameSinkVideoCaptureDevice::AllocateCapturer(
                                       constraints.fixed_aspect_ratio);
 
   if (target_) {
-    capturer_->ChangeTarget(target_, sub_capture_target_version_);
+    capturer_->ChangeTarget(target_, sub_capture_version_);
   }
 
-#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+#if !BUILDFLAG(IS_IOS)
   GetUIThreadTaskRunner({})->PostTask(
       FROM_HERE,
       base::BindOnce(&MouseCursorOverlayController::Start,
@@ -399,7 +399,7 @@ void FrameSinkVideoCaptureDevice::Resume() {
 void FrameSinkVideoCaptureDevice::ApplySubCaptureTarget(
     media::mojom::SubCaptureTargetType type,
     const base::Token& target,
-    uint32_t sub_capture_target_version,
+    uint32_t sub_capture_version,
     base::OnceCallback<void(media::mojom::ApplySubCaptureTargetResult)>
         callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
@@ -417,7 +417,7 @@ void FrameSinkVideoCaptureDevice::StopAndDeAllocate() {
     wake_lock_.reset();
   }
 
-#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+#if !BUILDFLAG(IS_IOS)
   GetUIThreadTaskRunner({})->PostTask(
       FROM_HERE, base::BindOnce(&MouseCursorOverlayController::Stop,
                                 cursor_controller_->GetWeakPtr()));
@@ -489,14 +489,18 @@ void FrameSinkVideoCaptureDevice::OnFrameCaptured(
   }
   const BufferId buffer_id = static_cast<BufferId>(index);
 
-#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+#if !BUILDFLAG(IS_IOS)
   info->metadata.interactive_content =
       cursor_controller_->IsUserInteractingWithView();
 #else
-  // Since we don't have a cursor controller, on Android we'll just always
+  // Since we don't have a cursor controller, on iOS we'll just always
   // assume the user is interacting with the view.
   info->metadata.interactive_content = true;
 #endif
+
+  if (video_rotation_ != media::VIDEO_ROTATION_0) {
+    info->metadata.transformation = media::VideoTransformation(video_rotation_);
+  }
 
   if (!has_sent_on_started_to_client_) {
     has_sent_on_started_to_client_ = true;
@@ -515,15 +519,15 @@ void FrameSinkVideoCaptureDevice::OnFrameCaptured(
       std::move(info)));
 }
 
-void FrameSinkVideoCaptureDevice::OnNewSubCaptureTargetVersion(
-    uint32_t sub_capture_target_version) {
+void FrameSinkVideoCaptureDevice::OnNewCaptureVersion(
+    const media::CaptureVersion& capture_version) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   if (!receiver_) {
     return;
   }
 
-  receiver_->OnNewSubCaptureTargetVersion(sub_capture_target_version);
+  receiver_->OnNewCaptureVersion(capture_version);
 }
 
 void FrameSinkVideoCaptureDevice::OnFrameWithEmptyRegionCapture() {
@@ -556,22 +560,27 @@ void FrameSinkVideoCaptureDevice::OnLog(const std::string& message) {
 
 void FrameSinkVideoCaptureDevice::OnTargetChanged(
     const std::optional<viz::VideoCaptureTarget>& target,
-    uint32_t sub_capture_target_version) {
+    uint32_t sub_capture_version) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK_GE(sub_capture_target_version, sub_capture_target_version_);
 
   target_ = target;
-  sub_capture_target_version_ = sub_capture_target_version;
+  sub_capture_version_ = sub_capture_version;
 
   if (capturer_) {
-    capturer_->ChangeTarget(target_, sub_capture_target_version_);
+    capturer_->ChangeTarget(target_, sub_capture_version_);
   }
 }
 
 void FrameSinkVideoCaptureDevice::OnTargetPermanentlyLost() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  OnTargetChanged(std::nullopt, sub_capture_target_version_);
+  OnTargetChanged(std::nullopt, sub_capture_version_);
   OnFatalError("Capture target has been permanently lost.");
+}
+
+void FrameSinkVideoCaptureDevice::SetVideoRotation(
+    media::VideoRotation video_rotation) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  video_rotation_ = video_rotation;
 }
 
 void FrameSinkVideoCaptureDevice::WillStart() {}
@@ -580,25 +589,28 @@ void FrameSinkVideoCaptureDevice::DidStop() {}
 
 void FrameSinkVideoCaptureDevice::CreateCapturer(
     mojo::PendingReceiver<viz::mojom::FrameSinkVideoCapturer> receiver) {
-  CreateCapturerViaGlobalManager(std::move(receiver));
+  CreateCapturerViaGlobalManager(std::move(receiver),
+                                 capture_params_.capture_version_source);
 }
 
 // static
 void FrameSinkVideoCaptureDevice::CreateCapturerViaGlobalManager(
-    mojo::PendingReceiver<viz::mojom::FrameSinkVideoCapturer> receiver) {
+    mojo::PendingReceiver<viz::mojom::FrameSinkVideoCapturer> receiver,
+    uint32_t capture_version_source) {
   // Send the receiver to UI thread because that's where HostFrameSinkManager
   // lives.
   GetUIThreadTaskRunner({})->PostTask(
       FROM_HERE,
       base::BindOnce(
-          [](mojo::PendingReceiver<viz::mojom::FrameSinkVideoCapturer>
-                 receiver) {
+          [](mojo::PendingReceiver<viz::mojom::FrameSinkVideoCapturer> receiver,
+             uint32_t capture_version_source) {
             viz::HostFrameSinkManager* const manager =
                 GetHostFrameSinkManager();
             DCHECK(manager);
-            manager->CreateVideoCapturer(std::move(receiver));
+            manager->CreateVideoCapturer(std::move(receiver),
+                                         capture_version_source);
           },
-          std::move(receiver)));
+          std::move(receiver), capture_version_source));
 }
 
 void FrameSinkVideoCaptureDevice::MaybeStartConsuming() {
@@ -608,8 +620,8 @@ void FrameSinkVideoCaptureDevice::MaybeStartConsuming() {
     return;
   }
 
-  capturer_->Start(this,
-                   viz::mojom::BufferFormatPreference::kPreferGpuMemoryBuffer);
+  capturer_->Start(
+      this, viz::mojom::BufferFormatPreference::kPreferMappableSharedImage);
 }
 
 void FrameSinkVideoCaptureDevice::MaybeStopConsuming() {

@@ -2,11 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {flush} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 import type {LanguageHelper, SettingsLanguagesPageElement} from 'chrome://settings/lazy_load.js';
 import {LanguagesBrowserProxyImpl, LanguageSettingsMetricsProxyImpl, LanguageSettingsPageImpressionType} from 'chrome://settings/lazy_load.js';
-import {CrSettingsPrefs} from 'chrome://settings/settings.js';
+import {CrSettingsPrefs, loadTimeData} from 'chrome://settings/settings.js';
 import {assertEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {FakeSettingsPrivate} from 'chrome://webui-test/fake_settings_private.js';
 import {fakeDataBind} from 'chrome://webui-test/polymer_test_util.js';
@@ -30,48 +29,45 @@ suite('LanguagesPageMetricsBrowser', function() {
     CrSettingsPrefs.deferInitialization = true;
   });
 
-  setup(function() {
+  setup(async function() {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     const settingsPrefs = document.createElement('settings-prefs');
     const settingsPrivate = new FakeSettingsPrivate(getFakeLanguagePrefs());
     settingsPrefs.initialize(settingsPrivate);
     document.body.appendChild(settingsPrefs);
-    return CrSettingsPrefs.initialized.then(function() {
-      // Sets up test browser proxy.
-      browserProxy = new TestLanguagesBrowserProxy();
-      LanguagesBrowserProxyImpl.setInstance(browserProxy);
 
-      // Sets up test browser proxy.
-      languageSettingsMetricsProxy = new TestLanguageSettingsMetricsProxy();
-      LanguageSettingsMetricsProxyImpl.setInstance(
-          languageSettingsMetricsProxy);
+    await CrSettingsPrefs.initialized;
+    // Sets up test browser proxy.
+    browserProxy = new TestLanguagesBrowserProxy();
+    LanguagesBrowserProxyImpl.setInstance(browserProxy);
 
-      // Sets up fake languageSettingsPrivate API.
-      const languageSettingsPrivate = browserProxy.getLanguageSettingsPrivate();
-      (languageSettingsPrivate as unknown as FakeLanguageSettingsPrivate)
-          .setSettingsPrefs(settingsPrefs);
+    // Sets up test browser proxy.
+    languageSettingsMetricsProxy = new TestLanguageSettingsMetricsProxy();
+    LanguageSettingsMetricsProxyImpl.setInstance(languageSettingsMetricsProxy);
 
-      const settingsLanguages = document.createElement('settings-languages');
-      settingsLanguages.prefs = settingsPrefs.prefs;
-      fakeDataBind(settingsPrefs, settingsLanguages, 'prefs');
-      document.body.appendChild(settingsLanguages);
+    // Sets up fake languageSettingsPrivate API.
+    const languageSettingsPrivate = browserProxy.getLanguageSettingsPrivate();
+    (languageSettingsPrivate as unknown as FakeLanguageSettingsPrivate)
+        .setSettingsPrefs(settingsPrefs);
 
-      languagesPage = document.createElement('settings-languages-page');
+    const settingsLanguages = document.createElement('settings-languages');
+    settingsLanguages.prefs = settingsPrefs.prefs!;
+    fakeDataBind(settingsPrefs, settingsLanguages, 'prefs');
+    document.body.appendChild(settingsLanguages);
+    languageHelper = settingsLanguages;
 
-      // Prefs would normally be data-bound to settings-languages-page.
-      languagesPage.prefs = settingsLanguages.prefs;
-      fakeDataBind(settingsLanguages, languagesPage, 'prefs');
+    languagesPage = document.createElement('settings-languages-page');
 
-      languagesPage.languageHelper = settingsLanguages.languageHelper;
-      fakeDataBind(settingsLanguages, languagesPage, 'language-helper');
+    // Prefs would normally be data-bound to settings-languages-page.
+    languagesPage.prefs = settingsLanguages.prefs;
+    fakeDataBind(settingsLanguages, languagesPage, 'prefs');
 
-      languagesPage.languages = settingsLanguages.languages;
-      fakeDataBind(settingsLanguages, languagesPage, 'languages');
+    languagesPage.languages = settingsLanguages.languages;
+    fakeDataBind(settingsLanguages, languagesPage, 'languages');
 
-      document.body.appendChild(languagesPage);
-      languageHelper = languagesPage.languageHelper;
-      return languageHelper.whenReady();
-    });
+    document.body.appendChild(languagesPage);
+
+    return settingsLanguages.whenReady();
   });
 
   test('records when adding languages', async () => {
@@ -146,7 +142,7 @@ suite('LanguagesPageMetricsBrowser', function() {
       const menuItems =
           actionMenu.querySelectorAll<HTMLElement>('.dropdown-item');
       const menuItem = Array.from(menuItems).find(
-          item => item.textContent!.trim() === i18nString);
+          item => item.textContent.trim() === i18nString);
       assertTrue(!!menuItem, 'Menu item "' + i18nKey + '" not found');
       return menuItem;
     }

@@ -11,13 +11,12 @@
 
 #import "base/apple/foundation_util.h"
 #import "base/check_op.h"
-#import "base/containers/contains.h"
+#import "base/dcheck_is_on.h"
 #import "base/files/file_path.h"
-#import "base/files/file_util.h"
 #import "base/functional/bind.h"
 #import "base/location.h"
 #import "base/memory/weak_ptr.h"
-#import "base/notreached.h"
+#import "base/notimplemented.h"
 #import "base/observer_list.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/task/sequenced_task_runner.h"
@@ -29,6 +28,7 @@
 #import "ios/net/cookies/system_cookie_util.h"
 #import "ios/net/ios_net_buildflags.h"
 #import "net/base/apple/url_conversions.h"
+#import "net/cookies/cookie_access_params.h"
 #import "net/cookies/cookie_constants.h"
 #import "net/cookies/cookie_util.h"
 #import "net/cookies/parsed_cookie.h"
@@ -228,7 +228,10 @@ void CookieStoreIOS::SetCanonicalCookieAsync(
   // instead.
   DCHECK(SystemCookiesAllowed());
 
-  DCHECK(cookie->IsCanonical());
+  if constexpr (DCHECK_IS_ON()) {
+    net::CanonicalCookie::CanonicalizationResult result = cookie->IsCanonical();
+    DCHECK(result) << result;
+  }
   // The exclude_httponly() option would only be used by a javascript
   // engine.
   DCHECK(!options.exclude_httponly());
@@ -255,7 +258,7 @@ void CookieStoreIOS::SetCanonicalCookieAsync(
 
   if (ns_cookie != nil) {
     system_store_->SetCookieAsync(
-        ns_cookie, &cookie->CreationDate(),
+        ns_cookie, cookie->CreationDate(),
         BindSetCookiesCallback(&callback, access_result));
     return;
   }
@@ -550,7 +553,7 @@ CookieChangeDispatcher& CookieStoreIOS::GetChangeDispatcher() {
 }
 
 void CookieStoreIOS::SetCookieableSchemes(
-    const std::vector<std::string>& schemes,
+    std::vector<std::string> schemes,
     SetCookieableSchemesCallback callback) {
   // Not supported on iOS.
   std::move(callback).Run(false);
@@ -569,7 +572,7 @@ std::unique_ptr<CookieChangeSubscription> CookieStoreIOS::AddCallbackForCookie(
     hook_map_[key] = std::make_unique<CookieChangeCallbackList>();
   }
 
-  DCHECK(base::Contains(hook_map_, key));
+  DCHECK(hook_map_.contains(key));
   auto subscription =
       std::make_unique<Subscription>(hook_map_[key]->Add(std::move(callback)));
   all_subscriptions_.Append(subscription.get());
@@ -663,7 +666,7 @@ void CookieStoreIOS::UpdateCachesFromCookieMonster() {
         &CookieStoreIOS::GotCookieListFor, weak_factory_.GetWeakPtr(), key);
     cookie_monster_->GetCookieListWithOptionsAsync(
         key.first, net::CookieOptions::MakeAllInclusive(),
-        net::CookiePartitionKeyCollection::Todo(), std::move(callback));
+        net::CookiePartitionKeyCollection(), std::move(callback));
   }
 }
 

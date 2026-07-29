@@ -10,7 +10,25 @@ import "media/mojo/mojom/speech_recognition_grammar.mojom";
 import "media/mojo/mojom/speech_recognition_result.mojom";
 import "media/mojo/mojom/speech_recognition_recognition_context.mojom";
 
-// Next MinVersion: 2
+// Next MinVersion: 3
+
+enum AvailabilityStatus {
+  kUnavailable,
+  kDownloadable,
+  kDownloading,
+  kAvailable,
+  // The language pack is downloadable, and the installation can be triggered
+  // without requiring a transient user activation (gesture) in the renderer.
+  // This relaxation is typically authorized by the browser when the origin
+  // has microphone permission and the language is in the user's Accept-Languages list.
+  kDownloadableWithoutUserActivation,
+};
+
+enum SpeechRecognitionQuality {
+  kCommand,
+  kDictation,
+  kConversation,
+};
 
 // Created by the renderer and sent to the browser to start a speech recognition
 // session.
@@ -57,6 +75,13 @@ struct StartSpeechRecognitionRequestParams {
 
   // The sample rate of the forwarded audio.
   int32 sample_rate;
+
+  // Quality of the speech recognition to use.
+  SpeechRecognitionQuality quality = kCommand;
+
+  // Whether the user requested unspoken punctuation (e.g., formatting).
+  [MinVersion=1]
+  bool unspoken_punctuation = false;
 };
 
 // API for the renderer process to manage speech recognition in the browser
@@ -69,17 +94,19 @@ interface SpeechRecognizer {
 
 // API for the renderer process to manage on-device speech recognition in the
 // browser process. The remote lives in the renderer process and the receiver
-// lives in
-// the browser process.
+// lives in the browser process.
 interface OnDeviceSpeechRecognition {
-  // Returns whether on-device speech recognition is available for a given
-  // language. Takes in a BCP 47 language tag (e.g. "en-US").
-  OnDeviceWebSpeechAvailable(string language) => (bool available);
+  // Returns the availability status for whether on-device speech recognition
+  // is available for an array of languages as the quality specified. Takes
+  // in BCP 47 language tags (e.g. "en-US").
+  Available(array<string> languages, SpeechRecognitionQuality quality)
+      => (AvailabilityStatus status);
 
   // Returns whether on-device speech recognition installation was successfully
-  // initiated for the given language.  Takes in a BCP 47 language tag (e.g.
-  // "en-US").
-  InstallOnDeviceSpeechRecognition(string language) => (bool success);
+  // completed for an array of languages as the quality specified. Takes in BCP
+  // 47 language tags (e.g. "en-US").
+  Install(array<string> languages, SpeechRecognitionQuality quality)
+      => (bool success);
 };
 
 // API for the renderer process to stop or abort an existing speech recognition
@@ -87,7 +114,6 @@ interface OnDeviceSpeechRecognition {
 // SpeechRecognizer::Start, and is bound to an implementation there.
 // SpeechRecognitionSession and SpeechRecognitionSessionClient are 1:1 with each
 // other and with WebSpeechRecognitionHandle.
-[Stable]
 interface SpeechRecognitionSession {
   // Requests the speech recognition service to abort speech recognition for the
   // associated session.
@@ -109,7 +135,6 @@ interface SpeechRecognitionSession {
 // process via SpeechRecognizer::Start. SpeechRecognitionSession and
 // SpeechRecognitionSessionClient are 1:1 with each other and with
 // WebSpeechRecognitionHandle.
-[Stable]
 interface SpeechRecognitionSessionClient {
   // Called to dispatch the "result" event.
   ResultRetrieved@0(array<WebSpeechRecognitionResult> results);

@@ -14,9 +14,10 @@ class TestFormFiller : public FormFiller {
  public:
   using FormFiller::FormFiller;
 
+ private:
   // Directly calls TriggerRefill.
-  void ScheduleRefill(const FormData& form,
-                      const FormStructure& form_structure,
+  void ScheduleRefill(const FormGlobalId& form_id,
+                      RefillContext& refill_context,
                       AutofillTriggerSource trigger_source,
                       RefillTriggerReason refill_trigger_reason) override;
 };

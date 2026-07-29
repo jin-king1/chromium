@@ -2,17 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "third_party/blink/renderer/modules/encryptedmedia/media_key_status_map.h"
 
 #include <algorithm>
 #include <limits>
 
+#include "base/compiler_specific.h"
 #include "third_party/blink/public/platform/web_data.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_arraybuffer_arraybufferview.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_union_mediakeystatus_undefined.h"
 #include "third_party/blink/renderer/core/typed_arrays/dom_array_buffer.h"
@@ -29,7 +26,7 @@ class MediaKeyStatusMap::MapEntry final
   MapEntry(WebData key_id, const V8MediaKeyStatus& status)
       : key_id_(DOMArrayBuffer::Create(scoped_refptr<SharedBuffer>(key_id))),
         status_(status) {}
-  virtual ~MapEntry() = default;
+  ~MapEntry() = default;
 
   DOMArrayBuffer* KeyId() const { return key_id_.Get(); }
 
@@ -51,18 +48,11 @@ class MediaKeyStatusMap::MapEntry final
       return b->KeyId();
 
     // Compare the bytes.
-    int result =
-        memcmp(a->KeyId()->Data(), b->KeyId()->Data(),
-               std::min(a->KeyId()->ByteLength(), b->KeyId()->ByteLength()));
-    if (result != 0)
-      return result < 0;
-
-    // KeyIds are equal to the shared length, so the shorter string is <.
-    DCHECK_NE(a->KeyId()->ByteLength(), b->KeyId()->ByteLength());
-    return a->KeyId()->ByteLength() < b->KeyId()->ByteLength();
+    return std::ranges::lexicographical_compare(a->KeyId()->ByteSpan(),
+                                                b->KeyId()->ByteSpan());
   }
 
-  virtual void Trace(Visitor* visitor) const { visitor->Trace(key_id_); }
+  void Trace(Visitor* visitor) const { visitor->Trace(key_id_); }
 
  private:
   const Member<DOMArrayBuffer> key_id_;
@@ -77,8 +67,7 @@ class MapIterationSource final
 
   bool FetchNextItem(ScriptState* script_state,
                      V8BufferSource*& key,
-                     V8MediaKeyStatus& value,
-                     ExceptionState&) override {
+                     V8MediaKeyStatus& value) override {
     // This simply advances an index and returns the next value if any,
     // so if the iterated object is mutated values may be skipped.
     if (current_ >= map_->size())
@@ -141,20 +130,20 @@ bool MediaKeyStatusMap::has(
   return index < entries_.size();
 }
 
-V8UnionMediaKeyStatusOrUndefined* MediaKeyStatusMap::get(
+V8UnionMediaKeyStatusOrUndefined::Ret MediaKeyStatusMap::get(
+    ScriptState* script_state,
     const V8BufferSource* key_id) {
   uint32_t index = IndexOf(key_id);
   if (index >= entries_.size()) {
-    return MakeGarbageCollected<V8UnionMediaKeyStatusOrUndefined>(
-        ToV8UndefinedGenerator());
+    return V8UnionMediaKeyStatusOrUndefined::Ret(script_state,
+                                                 ToV8UndefinedGenerator());
   }
-  return MakeGarbageCollected<V8UnionMediaKeyStatusOrUndefined>(
-      at(index).Status());
+  return V8UnionMediaKeyStatusOrUndefined::Ret(script_state,
+                                               at(index).Status());
 }
 
 MediaKeyStatusMap::IterationSource* MediaKeyStatusMap::CreateIterationSource(
-    ScriptState*,
-    ExceptionState&) {
+    ScriptState*) {
   return MakeGarbageCollected<MapIterationSource>(this);
 }
 

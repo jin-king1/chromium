@@ -4,13 +4,19 @@
 
 #include "chrome/browser/ai/ai_rewriter.h"
 
+#include "base/containers/fixed_flat_set.h"
 #include "base/functional/bind.h"
+#include "base/notimplemented.h"
 #include "base/strings/string_util.h"
+#include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/ai/ai_context_bound_object.h"
-#include "chrome/browser/ai/ai_utils.h"
+#include "components/language/core/common/locale_util.h"
+#include "components/on_device_ai/ai_utils.h"
 #include "components/optimization_guide/core/optimization_guide_util.h"
 #include "components/optimization_guide/proto/common_types.pb.h"
+#include "third_party/blink/public/common/features_generated.h"
 #include "third_party/blink/public/mojom/ai/model_streaming_responder.mojom.h"
+#include "ui/base/l10n/l10n_util.h"
 
 namespace {
 
@@ -67,12 +73,11 @@ optimization_guide::proto::WritingAssistanceApiOutputLength ToProtoLength(
 
 AIRewriter::AIRewriter(
     AIContextBoundObjectSet& context_bound_object_set,
-    std::unique_ptr<optimization_guide::OptimizationGuideModelExecutor::Session>
-        session,
+    std::unique_ptr<optimization_guide::OnDeviceSession> session,
     blink::mojom::AIRewriterCreateOptionsPtr options,
     mojo::PendingReceiver<blink::mojom::AIRewriter> receiver)
     : AIContextBoundObject(context_bound_object_set),
-      session_(std::move(session)),
+      session_wrapper_(std::move(session)),
       options_(std::move(options)),
       receiver_(this, std::move(receiver)) {
   receiver_.set_disconnect_handler(base::BindOnce(
@@ -81,7 +86,8 @@ AIRewriter::AIRewriter(
 
 AIRewriter::~AIRewriter() {
   for (auto& responder : responder_set_) {
-    responder->OnError(
+    on_device_ai::SendStreamingStatus(
+        responder,
         blink::mojom::ModelStreamingResponseStatus::kErrorSessionDestroyed);
   }
 }
@@ -95,7 +101,33 @@ AIRewriter::ToProtoOptions(
   proto_options->set_output_tone(ToProtoTone(options->tone));
   proto_options->set_output_format(ToProtoFormat(options->format));
   proto_options->set_output_length(ToProtoLength(options->length));
+  if (options->output_language && !options->output_language->code.empty()) {
+    // Writer expects the language's display name to use within English prose.
+    std::u16string name = l10n_util::GetDisplayNameForLocaleWithoutCountry(
+        options->output_language->code, "en", /*is_for_ui=*/false);
+    proto_options->set_output_language(base::UTF16ToUTF8(name));
+  }
   return proto_options;
+}
+
+// static
+std::optional<base::flat_set<std::string>>
+AIRewriter::GetEnabledLanguageBaseCodes() {
+  // Comma-separated language codes to enable; or "*" enables all supported.
+  const base::FeatureParam<std::string> kAIRewriterAPILanguagesEnabled{
+      &blink::features::kAIWriterAPI, "langs",
+      /*default_value=*/"en,es,ja,de,fr"};
+  return on_device_ai::GetEnabledLanguagesForFeature(
+      GetDefaultSupportedLanguageBaseCodes(), kAIRewriterAPILanguagesEnabled);
+}
+
+// static
+base::flat_set<std::string> AIRewriter::GetDefaultSupportedLanguageBaseCodes() {
+  // TODO(crbug.com/394841624): Get supported languages from the model config.
+  auto kSupportedBaseLanguages =
+      base::MakeFixedFlatSet<std::string_view>({"en", "ja", "es", "de", "fr"});
+  return base::flat_set<std::string>(kSupportedBaseLanguages.begin(),
+                                     kSupportedBaseLanguages.end());
 }
 
 void AIRewriter::Rewrite(
@@ -103,17 +135,56 @@ void AIRewriter::Rewrite(
     const std::optional<std::string>& context,
     mojo::PendingRemote<blink::mojom::ModelStreamingResponder>
         pending_responder) {
-  optimization_guide::proto::WritingAssistanceApiRequest request;
-  request.set_context(context.value_or(std::string()));
-  request.set_allocated_options(ToProtoOptions(options_).release());
-  request.set_rewrite_text(input);
-  // TODO(crbug.com/390006887): Pass shared context with session creation.
-  request.set_shared_context(options_->shared_context.value_or(std::string()));
-  session_->ExecuteModel(
-      request,
+  auto request = BuildRequest(input, context.value_or(std::string()));
+  mojo::RemoteSetElementId responder_id =
+      responder_set_.Add(std::move(pending_responder));
+
+  session_wrapper_.session()->GetExecutionInputSizeInTokens(
+      optimization_guide::MultimodalMessageReadView(request),
+      base::BindOnce(&AIRewriter::DidGetExecutionInputSizeForRewrite,
+                     weak_ptr_factory_.GetWeakPtr(), responder_id, request));
+}
+
+void AIRewriter::DidGetExecutionInputSizeForRewrite(
+    mojo::RemoteSetElementId responder_id,
+    const optimization_guide::proto::WritingAssistanceApiRequest& request,
+    std::optional<uint32_t> result) {
+  blink::mojom::ModelStreamingResponder* responder =
+      responder_set_.Get(responder_id);
+  if (!responder) {
+    // It might be possible for the responder mojo connection to be closed
+    // before this callback is invoked, in this case, we can't do anything.
+    return;
+  }
+
+  // TODO(crbug.com/494980521): Catch real crash disconnects to surface errors.
+  if (!session_wrapper_.session()) {
+    on_device_ai::SendStreamingStatus(
+        responder,
+        blink::mojom::ModelStreamingResponseStatus::kErrorSessionDestroyed);
+    return;
+  }
+
+  if (!result.has_value()) {
+    on_device_ai::SendStreamingStatus(
+        responder,
+        blink::mojom::ModelStreamingResponseStatus::kErrorFailedToCountTokens);
+    return;
+  }
+
+  uint32_t quota = blink::mojom::kWritingAssistanceMaxInputTokenSize;
+  if (result.value() > quota) {
+    on_device_ai::SendStreamingStatus(
+        responder,
+        blink::mojom::ModelStreamingResponseStatus::kErrorInputTooLarge,
+        blink::mojom::QuotaErrorInfo::New(result.value(), quota));
+    return;
+  }
+
+  session_wrapper_.ExecuteModelOrQueue(
+      optimization_guide::MultimodalMessage(request),
       base::BindRepeating(&AIRewriter::ModelExecutionCallback,
-                          weak_ptr_factory_.GetWeakPtr(),
-                          responder_set_.Add(std::move(pending_responder))));
+                          weak_ptr_factory_.GetWeakPtr(), responder_id));
 }
 
 void AIRewriter::ModelExecutionCallback(
@@ -125,8 +196,8 @@ void AIRewriter::ModelExecutionCallback(
     return;
   }
   if (!result.response.has_value()) {
-    responder->OnError(
-        AIUtils::ConvertModelExecutionError(result.response.error().error()));
+    on_device_ai::SendStreamingStatus(
+        responder, on_device_ai::ConvertOnDeviceError(result.response.error()));
     return;
   }
 
@@ -134,12 +205,55 @@ void AIRewriter::ModelExecutionCallback(
       optimization_guide::proto::WritingAssistanceApiResponse>(
       result.response->response);
   if (response) {
-    responder->OnStreaming(
-        response->output(),
-        blink::mojom::ModelStreamingResponderAction::kReplace);
+    responder->OnStreaming(response->output());
   }
   if (result.response->is_complete) {
     responder->OnCompletion(/*context_info=*/nullptr);
     responder_set_.Remove(responder_id);
   }
+}
+
+void AIRewriter::MeasureUsage(const std::string& input,
+                              const std::string& context,
+                              MeasureUsageCallback callback) {
+  auto* session = session_wrapper_.session();
+  if (!session) {
+    std::move(callback).Run(std::nullopt);
+    return;
+  }
+
+  auto request = BuildRequest(input, context);
+  session->GetExecutionInputSizeInTokens(
+      optimization_guide::MultimodalMessageReadView(request),
+      base::BindOnce(&AIRewriter::DidGetExecutionInputSizeInTokensForMeasure,
+                     weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
+}
+
+void AIRewriter::SetPriority(on_device_model::mojom::Priority priority) {
+  auto* session = session_wrapper_.session();
+  if (session) {
+    session->SetPriority(priority);
+  }
+}
+
+void AIRewriter::DidGetExecutionInputSizeInTokensForMeasure(
+    MeasureUsageCallback callback,
+    std::optional<uint32_t> result) {
+  if (!result.has_value()) {
+    std::move(callback).Run(std::nullopt);
+    return;
+  }
+  std::move(callback).Run(result.value());
+}
+
+optimization_guide::proto::WritingAssistanceApiRequest AIRewriter::BuildRequest(
+    const std::string& input,
+    const std::string& context) {
+  optimization_guide::proto::WritingAssistanceApiRequest request;
+  request.set_context(context);
+  request.set_allocated_options(ToProtoOptions(options_).release());
+  request.set_rewrite_text(input);
+  // TODO(crbug.com/390006887): Pass shared context with session creation.
+  request.set_shared_context(options_->shared_context.value_or(std::string()));
+  return request;
 }

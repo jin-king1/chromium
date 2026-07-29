@@ -26,13 +26,12 @@ import org.chromium.components.data_sharing.GroupData;
 import org.chromium.components.data_sharing.GroupMember;
 import org.chromium.components.data_sharing.PeopleGroupActionFailure;
 import org.chromium.components.data_sharing.member_role.MemberRole;
-import org.chromium.components.signin.base.CoreAccountInfo;
-import org.chromium.components.signin.base.GaiaId;
-import org.chromium.components.signin.identitymanager.ConsentLevel;
+import org.chromium.components.signin.base.AccountInfo;
 import org.chromium.components.signin.identitymanager.IdentityManager;
 import org.chromium.components.tab_group_sync.LocalTabGroupId;
 import org.chromium.components.tab_group_sync.SavedTabGroup;
 import org.chromium.components.tab_group_sync.TabGroupSyncService;
+import org.chromium.google_apis.gaia.GaiaId;
 
 /** Unit tests for {@link TabShareUtils}. */
 @RunWith(BaseRobolectricTestRunner.class)
@@ -52,9 +51,8 @@ public class TabShareUtilsUnitTest {
     @Mock TabModel mTabModel;
     @Mock TabGroupSyncService mTabGroupSyncService;
     @Mock IdentityManager mIdentityManager;
-    @Mock CoreAccountInfo mCoreAccountInfo;
 
-    private LocalTabGroupId mLocalTabGroupId = new LocalTabGroupId(TAB_GROUP_ID);
+    private final LocalTabGroupId mLocalTabGroupId = new LocalTabGroupId(TAB_GROUP_ID);
     private SavedTabGroup mSavedTabGroup;
     private GroupDataOrFailureOutcome mGroupDataOutcome;
 
@@ -81,9 +79,8 @@ public class TabShareUtilsUnitTest {
 
         when(mTabGroupSyncService.getGroup(mLocalTabGroupId)).thenReturn(mSavedTabGroup);
 
-        when(mCoreAccountInfo.getGaiaId()).thenReturn(GAIA_ID);
-        when(mIdentityManager.getPrimaryAccountInfo(ConsentLevel.SIGNIN))
-                .thenReturn(mCoreAccountInfo);
+        when(mIdentityManager.getPrimaryAccountInfo())
+                .thenReturn(new AccountInfo.Builder(EMAIL, GAIA_ID).build());
     }
 
     @Test

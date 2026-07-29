@@ -21,8 +21,9 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.NullUnmarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.components.browser_ui.util.DimensionCompat;
-import org.chromium.components.content_settings.ContentSettingValues;
+import org.chromium.components.content_settings.ContentSetting;
 import org.chromium.ui.LayoutInflaterUtils;
+import org.chromium.ui.UiUtils;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modaldialog.ModalDialogManager.ModalDialogManagerObserver;
 import org.chromium.ui.modaldialog.ModalDialogProperties;
@@ -40,9 +41,9 @@ public class PermissionDialogCoordinator {
         /**
          * Called when the user has just completed a permissions prompt flow with a result.
          *
-         * @param result A ContentSettingValues type, indicating the last dialog result.
+         * @param result A ContentSetting type, indicating the last dialog result.
          */
-        void onPermissionDialogResult(@ContentSettingValues int result);
+        void onPermissionDialogResult(@ContentSetting int result);
 
         /**
          * Called when the user completed a permissions prompt. The dialog is dismissed, and if
@@ -76,12 +77,16 @@ public class PermissionDialogCoordinator {
                 recordOutOfScreenNegativeButton(lastButton);
                 return;
             }
+            final View rootView = dialogView;
+            UiUtils.disableLigaturesForSecurity(rootView);
+
             lastButton
                     .getViewTreeObserver()
                     .addOnGlobalLayoutListener(
                             new ViewTreeObserver.OnGlobalLayoutListener() {
                                 @Override
                                 public void onGlobalLayout() {
+                                    UiUtils.disableLigaturesForSecurity(rootView);
                                     if (!lastButton.isLaidOut()) {
                                         return;
                                     }
@@ -140,8 +145,10 @@ public class PermissionDialogCoordinator {
                 LayoutInflaterUtils.inflate(
                         context,
                         (mDialogDelegate.isEmbeddedPromptVariant()
-                                        || mDialogDelegate.canShowEphemeralOption())
-                                ? R.layout.permission_dialog_one_time_permission
+                                        || mDialogDelegate.canShowEphemeralOption()
+                                        || PermissionDialogModelFactory.shouldUseVerticalButtons(
+                                                mDialogDelegate))
+                                ? R.layout.permission_dialog_vertical_buttons_permission
                                 : R.layout.permission_dialog,
                         null);
 
@@ -150,9 +157,8 @@ public class PermissionDialogCoordinator {
                 PropertyModelChangeProcessor.create(
                         mCustomViewModel,
                         customView,
-                        (mDialogDelegate.isEmbeddedPromptVariant()
-                                        || mDialogDelegate.canShowEphemeralOption())
-                                ? PermissionOneTimeDialogCustomViewBinder::bind
+                        PermissionDialogModelFactory.shouldUseVerticalButtons(mDialogDelegate)
+                                ? PermissionVerticalButtonsDialogCustomViewBinder::bind
                                 : PermissionDialogCustomViewBinder::bind);
         return customView;
     }
@@ -175,7 +181,7 @@ public class PermissionDialogCoordinator {
         // For some embedders (e.g. WebEngine) the layout might not be inflated and so the
         // ModalDialogManager is not available.
         if (mModalDialogManager == null) {
-            mCoordinatorDelegate.onPermissionDialogResult(ContentSettingValues.DEFAULT);
+            mCoordinatorDelegate.onPermissionDialogResult(ContentSetting.DEFAULT);
             if (mDialogDelegate != null) {
                 mDialogDelegate.onDismiss(DismissalType.AUTODISMISS_NO_DIALOG_MANAGER);
             }
@@ -196,6 +202,11 @@ public class PermissionDialogCoordinator {
     /** Dismiss the current dialog, called from native. */
     public void dismissFromNative() {
         assumeNonNull(mMediator).dismissFromNative();
+    }
+
+    /** Dismiss the dialog by the close button. */
+    public void dismissByCloseButton() {
+        assumeNonNull(mMediator).dismissByCloseButton();
     }
 
     /** Update the current dialog. This may hide the current dialog and show OS prompt instead. */
@@ -233,7 +244,7 @@ public class PermissionDialogCoordinator {
         Context context = mDialogDelegate.getWindow().getContext().get();
         assert context != null;
         // Use the context to access resources instead of the activity because the activity may not
-        // have the correct resources in some cases (e.g. WebLayer).
+        // have the correct resources in some cases.
         return context;
     }
 

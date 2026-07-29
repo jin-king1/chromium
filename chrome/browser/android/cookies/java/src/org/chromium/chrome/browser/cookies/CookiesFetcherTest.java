@@ -11,6 +11,7 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.Mockito;
+import org.mockito.Spy;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
@@ -20,8 +21,8 @@ import org.robolectric.util.TempDirectory;
 import org.chromium.base.ImportantFileWriterAndroid;
 import org.chromium.base.ImportantFileWriterAndroidJni;
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.task.test.PausedExecutorTestRule;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.RobolectricUtil;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.chrome.browser.crypto.CipherFactory;
 import org.chromium.chrome.browser.profiles.Profile;
@@ -36,11 +37,9 @@ import java.io.PrintWriter;
 public class CookiesFetcherTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
-    @Rule public PausedExecutorTestRule mExecutorRule = new PausedExecutorTestRule();
-
     @Mock private Profile mProfile1;
     @Mock private Profile mIncognitoProfile1;
-    @Mock private ProfileProvider mProfileProvider;
+    @Spy private ProfileProvider mProfileProvider;
 
     @Mock private CookiesFetcher.Natives mCookiesFetcherJni;
     @Mock private ImportantFileWriterAndroid.Natives mImportantFileWriterJni;
@@ -69,7 +68,7 @@ public class CookiesFetcherTest {
                         mImportantFileWriterJni.writeFileAtomically(
                                 Mockito.anyString(), Mockito.any(byte[].class)))
                 .thenAnswer(
-                        new Answer<Boolean>() {
+                        new Answer<>() {
                             @Override
                             public Boolean answer(InvocationOnMock invocation) {
                                 try (FileOutputStream stream =
@@ -142,8 +141,6 @@ public class CookiesFetcherTest {
 
     private void setupProfileProvider(Profile originalProfile, Profile incognitoProfile) {
         Mockito.when(mProfileProvider.getOriginalProfile()).thenReturn(originalProfile);
-        Mockito.when(mProfileProvider.hasOffTheRecordProfile())
-                .thenReturn(incognitoProfile != null);
         Mockito.when(mProfileProvider.getOffTheRecordProfile(Mockito.anyBoolean()))
                 .thenReturn(incognitoProfile);
     }
@@ -186,7 +183,7 @@ public class CookiesFetcherTest {
 
         CallbackHelper restoreCallback = new CallbackHelper();
         fetcher.restoreCookies(restoreCallback::notifyCalled);
-        mExecutorRule.runAllBackgroundAndUi();
+        RobolectricUtil.runAllBackgroundAndUi();
         restoreCallback.waitForOnly();
 
         assertCookieFileExists(fetcher, false);
@@ -210,7 +207,7 @@ public class CookiesFetcherTest {
 
         CallbackHelper restoreCallback = new CallbackHelper();
         fetcher.restoreCookies(restoreCallback::notifyCalled);
-        mExecutorRule.runAllBackgroundAndUi();
+        RobolectricUtil.runAllBackgroundAndUi();
         restoreCallback.waitForOnly();
 
         assertCookieFileExists(fetcher, false);
@@ -233,7 +230,7 @@ public class CookiesFetcherTest {
 
         CallbackHelper restoreCallback = new CallbackHelper();
         fetcher.restoreCookies(restoreCallback::notifyCalled);
-        mExecutorRule.runAllBackgroundAndUi();
+        RobolectricUtil.runAllBackgroundAndUi();
         restoreCallback.waitForOnly();
 
         assertCookieFileExists(fetcher, false);
@@ -255,7 +252,7 @@ public class CookiesFetcherTest {
         assertLegacyCookieFileExists(true);
         CallbackHelper restoreCallback = new CallbackHelper();
         fetcher.restoreCookies(restoreCallback::notifyCalled);
-        mExecutorRule.runAllBackgroundAndUi();
+        RobolectricUtil.runAllBackgroundAndUi();
         restoreCallback.waitForOnly();
         assertLegacyCookieFileExists(
                 true); // Legacy file should not be deleted for non-initial profiles.
@@ -268,7 +265,7 @@ public class CookiesFetcherTest {
         assertLegacyCookieFileExists(false);
         CallbackHelper restoreCallback = new CallbackHelper();
         fetcher.restoreCookies(restoreCallback::notifyCalled);
-        mExecutorRule.runAllBackgroundAndUi();
+        RobolectricUtil.runAllBackgroundAndUi();
         restoreCallback.waitForOnly();
         assertLegacyCookieFileExists(false);
     }
@@ -287,14 +284,14 @@ public class CookiesFetcherTest {
         cookies[1] = mCookie1;
         cookies[2] = mCookie2;
         fetcher.onCookieFetchFinished(cookies);
-        mExecutorRule.runAllBackgroundAndUi();
+        RobolectricUtil.runAllBackgroundAndUi();
 
         assertLegacyCookieFileExists(false);
         assertCookieFileExists(fetcher, true);
 
         CallbackHelper restoreCallback = new CallbackHelper();
         fetcher.restoreCookies(restoreCallback::notifyCalled);
-        mExecutorRule.runAllBackgroundAndUi();
+        RobolectricUtil.runAllBackgroundAndUi();
         restoreCallback.waitForOnly();
 
         Mockito.verify(mCookiesFetcherJni, Mockito.times(3))
@@ -332,14 +329,14 @@ public class CookiesFetcherTest {
         cookies[1] = mCookie1;
         cookies[2] = mCookie2;
         CookiesFetcher.saveFetchedCookiesToDisk(fetchLegacyFileName(), mCipherFactory, cookies);
-        mExecutorRule.runAllBackgroundAndUi();
+        RobolectricUtil.runAllBackgroundAndUi();
 
         assertLegacyCookieFileExists(true);
         assertCookieFileExists(fetcher, false);
 
         CallbackHelper restoreCallback = new CallbackHelper();
         fetcher.restoreCookies(restoreCallback::notifyCalled);
-        mExecutorRule.runAllBackgroundAndUi();
+        RobolectricUtil.runAllBackgroundAndUi();
         restoreCallback.waitForOnly();
 
         // The legacy file is not attempted to restore due to the cipher key being wiped out during
@@ -379,14 +376,14 @@ public class CookiesFetcherTest {
         cookies[1] = mCookie1;
         cookies[2] = mCookie2;
         CookiesFetcher.saveFetchedCookiesToDisk(fetchLegacyFileName(), mCipherFactory, cookies);
-        mExecutorRule.runAllBackgroundAndUi();
+        RobolectricUtil.runAllBackgroundAndUi();
 
         assertLegacyCookieFileExists(true);
         assertCookieFileExists(fetcher, false);
 
         CallbackHelper restoreCallback = new CallbackHelper();
         fetcher.restoreCookies(restoreCallback::notifyCalled);
-        mExecutorRule.runAllBackgroundAndUi();
+        RobolectricUtil.runAllBackgroundAndUi();
         restoreCallback.waitForOnly();
 
         Mockito.verify(mCookiesFetcherJni, Mockito.never())

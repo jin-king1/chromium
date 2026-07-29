@@ -7,6 +7,7 @@
 
 #include <stdint.h>
 
+#include <array>
 #include <map>
 #include <memory>
 
@@ -21,7 +22,6 @@ class View;
 
 namespace ash {
 class TouchHudCanvas;
-class TouchLog;
 
 // A heads-up display to show touch traces on the screen and log touch events.
 // As a derivative of TouchObserverHud, objects of this class manage their own
@@ -67,11 +67,9 @@ class ASH_EXPORT TouchHudDebug : public TouchObserverHud {
 
   Mode mode_;
 
-  std::unique_ptr<TouchLog> touch_log_;
-
   raw_ptr<TouchHudCanvas> canvas_;
   raw_ptr<views::View> label_container_;
-  views::Label* touch_labels_[kMaxTouchPoints];
+  std::array<views::Label*, kMaxTouchPoints> touch_labels_;
 };
 
 }  // namespace ash

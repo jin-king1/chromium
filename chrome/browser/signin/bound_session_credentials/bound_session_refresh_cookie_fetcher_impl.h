@@ -11,9 +11,11 @@
 #include <string_view>
 
 #include "base/functional/callback_forward.h"
+#include "base/gtest_prod_util.h"
 #include "base/memory/weak_ptr.h"
 #include "base/timer/elapsed_timer.h"
 #include "base/types/expected.h"
+#include "chrome/browser/signin/bound_session_credentials/bound_session_params.pb.h"
 #include "chrome/browser/signin/bound_session_credentials/bound_session_refresh_cookie_fetcher.h"
 #include "chrome/browser/signin/bound_session_credentials/rotation_debug_info.pb.h"
 #include "chrome/browser/signin/bound_session_credentials/session_binding_helper.h"
@@ -37,8 +39,10 @@ class BoundSessionRefreshCookieFetcherImpl
       std::string_view session_id,
       const GURL& refresh_url,
       const GURL& cookie_url,
+      bound_session_credentials::SessionOrigin session_origin,
       base::flat_set<std::string> cookie_names,
       bool is_off_the_record_profile,
+      Trigger trigger,
       bound_session_credentials::RotationDebugInfo debug_info);
   ~BoundSessionRefreshCookieFetcherImpl() override;
 
@@ -49,6 +53,7 @@ class BoundSessionRefreshCookieFetcherImpl
   bool IsChallengeReceived() const override;
   std::optional<std::string> TakeSecSessionChallengeResponseIfAny() override;
   base::flat_set<std::string> GetNonRefreshedCookieNames() override;
+  Trigger GetTrigger() const override;
 
  private:
   friend class BoundSessionRefreshCookieFetcherImplTest;
@@ -84,12 +89,10 @@ class BoundSessionRefreshCookieFetcherImpl
   void HandleBindingKeyAssertionRequired(
       const std::string& challenge_header_value);
   void CompleteRequestAndReportRefreshResult(Result result);
-  void RefreshWithChallenge(const std::string& challenge,
-                            size_t generate_assertion_attempt = 0);
+  void RefreshWithChallenge(const std::string& challenge);
   void OnGenerateBindingKeyAssertion(
       base::ElapsedTimer generate_assertion_timer,
       const std::string& challenge,
-      size_t generate_assertion_attempt,
       base::expected<std::string, SessionBindingHelper::Error>
           assertion_or_error);
 
@@ -104,6 +107,8 @@ class BoundSessionRefreshCookieFetcherImpl
 
   const std::string session_id_;
   const GURL refresh_url_;
+  const bound_session_credentials::SessionOrigin session_origin_ =
+      bound_session_credentials::SessionOrigin::SESSION_ORIGIN_UNSPECIFIED;
 
   // Used to check whether the refresh request has set the required cookie.
   // Otherwise, the request is considered a failure.
@@ -113,6 +118,9 @@ class BoundSessionRefreshCookieFetcherImpl
   // Required to attach X-Client-Data header to cookie rotation request for
   // GWS-visible Finch experiment.
   const bool is_off_the_record_profile_;
+
+  // What triggered the refresh request. Useful for metrics.
+  const Trigger trigger_;
 
   RefreshCookieCompleteCallback callback_;
 

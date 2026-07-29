@@ -52,7 +52,7 @@ source_set("impl") {
     "//chrome/browser/profiles:profile",
     "//components/keyed_service/content",
     "//components/pref_registry",
-    "//components/prefs:prefs",
+    "//components/prefs",
     "//skia",
     "//ui/base",
     "//url",
@@ -72,7 +72,7 @@ source_set("impl") {
     ]
 
     deps += [
-      "//chrome/browser/ui:browser_navigator_params_headers",
+      "//chrome/browser/ui/navigator",
       "//ui/message_center/public/cpp",
     ]
   }

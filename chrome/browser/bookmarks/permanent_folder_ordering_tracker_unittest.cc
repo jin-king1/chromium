@@ -6,7 +6,9 @@
 
 #include <cstddef>
 
+#include "base/strings/utf_ostream_operators.h"
 #include "base/test/scoped_feature_list.h"
+#include "chrome/browser/bookmarks/bookmark_test_helpers.h"
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/bookmarks/browser/bookmark_node.h"
 #include "components/bookmarks/test/bookmark_test_helpers.h"
@@ -25,7 +27,9 @@ using bookmarks::test::AddNodesFromModelString;
 using bookmarks::test::IsFolder;
 using bookmarks::test::IsUrlBookmark;
 using bookmarks::test::ModelStringFromNode;
+using testing::AtLeast;
 using testing::ElementsAre;
+using testing::Mock;
 using testing::Optional;
 using testing::UnorderedElementsAre;
 
@@ -44,6 +48,8 @@ class PermanentFolderOrderingTrackerTest : public testing::Test {
 
   BookmarkModel& model() { return *model_; }
 
+  MockPermanentFolderOrderingTrackerDelegate* delegate() { return &delegate_; }
+
   void ResetModel() {
     model_ = std::make_unique<BookmarkModel>(
         std::make_unique<bookmarks::TestBookmarkClient>());
@@ -53,6 +59,7 @@ class PermanentFolderOrderingTrackerTest : public testing::Test {
   base::test::ScopedFeatureList features_{
       switches::kSyncEnableBookmarksInTransportMode};
   std::unique_ptr<BookmarkModel> model_;
+  testing::NiceMock<MockPermanentFolderOrderingTrackerDelegate> delegate_;
 };
 
 TEST_F(PermanentFolderOrderingTrackerTest,
@@ -60,31 +67,45 @@ TEST_F(PermanentFolderOrderingTrackerTest,
   model().LoadEmptyForTest();
   ASSERT_FALSE(model().account_bookmark_bar_node());
   {
-    PermanentFolderOrderingTracker tracker(&model(),
-                                           BookmarkNode::BOOKMARK_BAR);
+    PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                           delegate());
+    EXPECT_CALL(*delegate(), TrackedOrderingChanged);
+    tracker.Init(/*in_order_node_ids=*/{});
     EXPECT_THAT(tracker.GetUnderlyingPermanentNodes(),
                 UnorderedElementsAre(model().bookmark_bar_node()));
     EXPECT_FALSE(tracker.IsNonDefaultOrderingTracked());
+    Mock::VerifyAndClearExpectations(delegate());
   }
 
   {
-    PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::OTHER_NODE);
+    PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::OTHER_NODE,
+                                           delegate());
+    EXPECT_CALL(*delegate(), TrackedOrderingChanged);
+    tracker.Init(/*in_order_node_ids=*/{});
     EXPECT_THAT(tracker.GetUnderlyingPermanentNodes(),
                 UnorderedElementsAre(model().other_node()));
     EXPECT_FALSE(tracker.IsNonDefaultOrderingTracked());
+    Mock::VerifyAndClearExpectations(delegate());
   }
 
   {
-    PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::MOBILE);
+    PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::MOBILE,
+                                           delegate());
+    EXPECT_CALL(*delegate(), TrackedOrderingChanged);
+    tracker.Init(/*in_order_node_ids=*/{});
     EXPECT_THAT(tracker.GetUnderlyingPermanentNodes(),
                 UnorderedElementsAre(model().mobile_node()));
     EXPECT_FALSE(tracker.IsNonDefaultOrderingTracked());
+    Mock::VerifyAndClearExpectations(delegate());
   }
 }
 
 TEST_F(PermanentFolderOrderingTrackerTest,
        GetUnderlyingPermanentNodesModelNotLoadedNoAccountNodes) {
-  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR);
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged);
+  tracker.Init(/*in_order_node_ids=*/{});
   model().LoadEmptyForTest();
   ASSERT_FALSE(model().account_bookmark_bar_node());
   EXPECT_THAT(tracker.GetUnderlyingPermanentNodes(),
@@ -99,36 +120,50 @@ TEST_F(PermanentFolderOrderingTrackerTest,
   ASSERT_TRUE(model().account_bookmark_bar_node());
 
   {
-    PermanentFolderOrderingTracker tracker(&model(),
-                                           BookmarkNode::BOOKMARK_BAR);
+    PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                           delegate());
+    EXPECT_CALL(*delegate(), TrackedOrderingChanged);
+    tracker.Init(/*in_order_node_ids=*/{});
+
     EXPECT_THAT(tracker.GetUnderlyingPermanentNodes(),
                 UnorderedElementsAre(model().account_bookmark_bar_node(),
                                      model().bookmark_bar_node()));
     EXPECT_FALSE(tracker.IsNonDefaultOrderingTracked());
+    Mock::VerifyAndClearExpectations(delegate());
   }
 
   {
-    PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::OTHER_NODE);
+    PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::OTHER_NODE,
+                                           delegate());
+    EXPECT_CALL(*delegate(), TrackedOrderingChanged);
+    tracker.Init(/*in_order_node_ids=*/{});
     EXPECT_THAT(tracker.GetUnderlyingPermanentNodes(),
                 UnorderedElementsAre(model().account_other_node(),
                                      model().other_node()));
     EXPECT_FALSE(tracker.IsNonDefaultOrderingTracked());
+    Mock::VerifyAndClearExpectations(delegate());
   }
 
   {
-    PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::MOBILE);
+    PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::MOBILE,
+                                           delegate());
+    EXPECT_CALL(*delegate(), TrackedOrderingChanged);
+    tracker.Init(/*in_order_node_ids=*/{});
     EXPECT_THAT(tracker.GetUnderlyingPermanentNodes(),
                 UnorderedElementsAre(model().account_mobile_node(),
                                      model().mobile_node()));
     EXPECT_FALSE(tracker.IsNonDefaultOrderingTracked());
+    Mock::VerifyAndClearExpectations(delegate());
   }
 }
 
 TEST_F(PermanentFolderOrderingTrackerTest,
        GetUnderlyingPermanentNodesAccountNodesCreatedLater) {
   {
-    PermanentFolderOrderingTracker tracker(&model(),
-                                           BookmarkNode::BOOKMARK_BAR);
+    PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                           delegate());
+    EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(2);
+    tracker.Init(/*in_order_node_ids=*/{});
     model().LoadEmptyForTest();
     ASSERT_FALSE(model().account_bookmark_bar_node());
     ASSERT_THAT(tracker.GetUnderlyingPermanentNodes(),
@@ -138,11 +173,15 @@ TEST_F(PermanentFolderOrderingTrackerTest,
     EXPECT_THAT(tracker.GetUnderlyingPermanentNodes(),
                 UnorderedElementsAre(model().account_bookmark_bar_node(),
                                      model().bookmark_bar_node()));
+    Mock::VerifyAndClearExpectations(delegate());
   }
 
   ResetModel();
   {
-    PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::OTHER_NODE);
+    PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::OTHER_NODE,
+                                           delegate());
+    EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(2);
+    tracker.Init(/*in_order_node_ids=*/{});
     model().LoadEmptyForTest();
     ASSERT_FALSE(model().account_other_node());
     ASSERT_THAT(tracker.GetUnderlyingPermanentNodes(),
@@ -152,11 +191,15 @@ TEST_F(PermanentFolderOrderingTrackerTest,
     EXPECT_THAT(tracker.GetUnderlyingPermanentNodes(),
                 UnorderedElementsAre(model().account_other_node(),
                                      model().other_node()));
+    Mock::VerifyAndClearExpectations(delegate());
   }
 
   ResetModel();
   {
-    PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::MOBILE);
+    PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::MOBILE,
+                                           delegate());
+    EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(2);
+    tracker.Init(/*in_order_node_ids=*/{});
     model().LoadEmptyForTest();
     ASSERT_FALSE(model().account_mobile_node());
     ASSERT_THAT(tracker.GetUnderlyingPermanentNodes(),
@@ -166,6 +209,7 @@ TEST_F(PermanentFolderOrderingTrackerTest,
     EXPECT_THAT(tracker.GetUnderlyingPermanentNodes(),
                 UnorderedElementsAre(model().account_mobile_node(),
                                      model().mobile_node()));
+    Mock::VerifyAndClearExpectations(delegate());
   }
 }
 
@@ -173,7 +217,10 @@ TEST_F(PermanentFolderOrderingTrackerTest,
        GetUnderlyingPermanentNodesAccountPermanentFoldersRemoved) {
   model().LoadEmptyForTest();
   model().CreateAccountPermanentFolders();
-  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR);
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(2);
+  tracker.Init(/*in_order_node_ids=*/{});
   ASSERT_THAT(tracker.GetUnderlyingPermanentNodes(),
               UnorderedElementsAre(model().account_bookmark_bar_node(),
                                    model().bookmark_bar_node()));
@@ -186,7 +233,10 @@ TEST_F(PermanentFolderOrderingTrackerTest,
 
 TEST_F(PermanentFolderOrderingTrackerTest, GetDefaultParentForNewNodes) {
   model().LoadEmptyForTest();
-  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR);
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(3);
+  tracker.Init(/*in_order_node_ids=*/{});
   EXPECT_EQ(tracker.GetDefaultParentForNewNodes(), model().bookmark_bar_node());
 
   model().CreateAccountPermanentFolders();
@@ -200,7 +250,10 @@ TEST_F(PermanentFolderOrderingTrackerTest, GetDefaultParentForNewNodes) {
 
 TEST_F(PermanentFolderOrderingTrackerTest, GetIndexOfNoAccountFolder) {
   model().LoadEmptyForTest();
-  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR);
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged);
+  tracker.Init(/*in_order_node_ids=*/{});
   ASSERT_THAT(tracker.GetUnderlyingPermanentNodes(),
               UnorderedElementsAre(model().bookmark_bar_node()));
   AddNodesFromModelString(&model(), model().bookmark_bar_node(),
@@ -216,7 +269,10 @@ TEST_F(PermanentFolderOrderingTrackerTest, GetIndexOfNoAccountFolder) {
 TEST_F(PermanentFolderOrderingTrackerTest, OrderingDefault) {
   model().LoadEmptyForTest();
   model().CreateAccountPermanentFolders();
-  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::OTHER_NODE);
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::OTHER_NODE,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(AtLeast(1));
+  tracker.Init(/*in_order_node_ids=*/{});
   ASSERT_THAT(
       tracker.GetUnderlyingPermanentNodes(),
       UnorderedElementsAre(model().account_other_node(), model().other_node()));
@@ -246,66 +302,83 @@ TEST_F(PermanentFolderOrderingTrackerTest, OrderingDefault) {
 TEST_F(PermanentFolderOrderingTrackerTest, OrderingCustomOrder) {
   model().LoadEmptyForTest();
   model().CreateAccountPermanentFolders();
-  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR);
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  AddNodesFromModelString(&model(), model().bookmark_bar_node(),
+                          "A B C L1:[ D E L2:[ F ] ]");
+  AddNodesFromModelString(&model(), model().account_bookmark_bar_node(),
+                          "1 2 3 f1:[ 4 5 f2:[ 6 ] ]");
+
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(5);
+  tracker.Init(/*in_order_node_ids=*/
+               {model().bookmark_bar_node()->children()[0]->id(),
+                model().account_bookmark_bar_node()->children()[0]->id(),
+                model().account_bookmark_bar_node()->children()[1]->id(),
+                model().account_bookmark_bar_node()->children()[2]->id(),
+                model().bookmark_bar_node()->children()[1]->id(),
+                model().bookmark_bar_node()->children()[2]->id(),
+                model().bookmark_bar_node()->children()[3]->id(),
+                model().account_bookmark_bar_node()->children()[3]->id()});
   ASSERT_THAT(tracker.GetUnderlyingPermanentNodes(),
               UnorderedElementsAre(model().account_bookmark_bar_node(),
                                    model().bookmark_bar_node()));
-  AddNodesFromModelString(&model(), model().bookmark_bar_node(),
-                          "1 2 3 f1:[ 4 5 f2:[ 6 ] ]");
-  AddNodesFromModelString(&model(), model().account_bookmark_bar_node(),
-                          "1 2 3 f1:[ 4 5 f2:[ 6 ] ]");
-  EXPECT_EQ(tracker.GetChildrenCount(), 8u);
 
-  // {L0, A0, A1, A2, L1, L2, L3, A3}.
-  std::vector<raw_ptr<const BookmarkNode>> custom_ordering{
-      model().bookmark_bar_node()->children()[0].get(),
-      model().account_bookmark_bar_node()->children()[0].get(),
-      model().account_bookmark_bar_node()->children()[1].get(),
-      model().account_bookmark_bar_node()->children()[2].get(),
-      model().bookmark_bar_node()->children()[1].get(),
-      model().bookmark_bar_node()->children()[2].get(),
-      model().bookmark_bar_node()->children()[3].get(),
-      model().account_bookmark_bar_node()->children()[3].get()};
-  tracker.SetNodesOrderingForTesting(custom_ordering);
-
-  for (size_t i = 0; i < custom_ordering.size(); i++) {
-    EXPECT_EQ(tracker.GetIndexOf(custom_ordering[i]), i);
-    EXPECT_EQ(tracker.GetNodeAtIndex(i), custom_ordering[i]);
-  }
+  EXPECT_THAT(tracker,
+              HasChildren(ElementsAre(IsUrlBookmark(u"A"), IsUrlBookmark(u"1"),
+                                      IsUrlBookmark(u"2"), IsUrlBookmark(u"3"),
+                                      IsUrlBookmark(u"B"), IsUrlBookmark(u"C"),
+                                      IsFolder(u"L1"), IsFolder(u"f1"))));
 
   // Insert local nodes.
-  const BookmarkNode* node = model().AddURL(
-      model().bookmark_bar_node(), 1, u"Title", GURL("https://example.com"));
+  model().AddURL(model().bookmark_bar_node(), 1, u"N1",
+                 GURL("https://example.com"));
   // {L0, L01, A0, A1, A2, L1, L2, L3, A3}.
-  EXPECT_EQ(tracker.GetIndexOf(node), 1u);
-  EXPECT_EQ(tracker.GetNodeAtIndex(1), node);
+  EXPECT_THAT(
+      tracker,
+      HasChildren(ElementsAre(
+          IsUrlBookmark(u"A"), IsUrlBookmark(u"N1"), IsUrlBookmark(u"1"),
+          IsUrlBookmark(u"2"), IsUrlBookmark(u"3"), IsUrlBookmark(u"B"),
+          IsUrlBookmark(u"C"), IsFolder(u"L1"), IsFolder(u"f1"))));
 
-  node = model().AddURL(model().bookmark_bar_node(), 3, u"Title",
-                        GURL("https://example.com"));
-  // 2 local nodes, 3 account, 1 local then `node`.
-  // {L0, L01, A0, A1, A2, L1, L11, L2, L3, A3}.
-  EXPECT_EQ(tracker.GetIndexOf(node), 6u);
-  EXPECT_EQ(tracker.GetNodeAtIndex(6), node);
+  model().AddURL(model().bookmark_bar_node(), 3, u"N2",
+                 GURL("https://example.com"));
+  EXPECT_THAT(tracker,
+              HasChildren(ElementsAre(IsUrlBookmark(u"A"), IsUrlBookmark(u"N1"),
+                                      IsUrlBookmark(u"1"), IsUrlBookmark(u"2"),
+                                      IsUrlBookmark(u"3"), IsUrlBookmark(u"B"),
+                                      IsUrlBookmark(u"N2"), IsUrlBookmark(u"C"),
+                                      IsFolder(u"L1"), IsFolder(u"f1"))));
 
   // Insert account nodes.
-  node = model().AddURL(model().account_bookmark_bar_node(), 0, u"Title",
-                        GURL("https://example.com"));
-  // {L0, L01, A00, A0, A1, A2, L1, L11, L2, L3, A3}.
-  EXPECT_EQ(tracker.GetIndexOf(node), 2u);
-  EXPECT_EQ(tracker.GetNodeAtIndex(2), node);
+  model().AddURL(model().account_bookmark_bar_node(), 0, u"N3",
+                 GURL("https://example.com"));
+  EXPECT_THAT(
+      tracker,
+      HasChildren(ElementsAre(
+          IsUrlBookmark(u"A"), IsUrlBookmark(u"N1"), IsUrlBookmark(u"N3"),
+          IsUrlBookmark(u"1"), IsUrlBookmark(u"2"), IsUrlBookmark(u"3"),
+          IsUrlBookmark(u"B"), IsUrlBookmark(u"N2"), IsUrlBookmark(u"C"),
+          IsFolder(u"L1"), IsFolder(u"f1"))));
 
-  node = model().AddURL(model().account_bookmark_bar_node(), 4, u"Title",
-                        GURL("https://example.com"));
-  // {L0, L01, A00, A0, A1, A2, A21, L1, L11, L2, L3, A3}.
-  EXPECT_EQ(tracker.GetIndexOf(node), 6u);
-  EXPECT_EQ(tracker.GetNodeAtIndex(6), node);
+  model().AddURL(model().account_bookmark_bar_node(), 4, u"N4",
+                 GURL("https://example.com"));
+  EXPECT_THAT(
+      tracker,
+      HasChildren(ElementsAre(
+          IsUrlBookmark(u"A"), IsUrlBookmark(u"N1"), IsUrlBookmark(u"N3"),
+          IsUrlBookmark(u"1"), IsUrlBookmark(u"2"), IsUrlBookmark(u"3"),
+          IsUrlBookmark(u"N4"), IsUrlBookmark(u"B"), IsUrlBookmark(u"N2"),
+          IsUrlBookmark(u"C"), IsFolder(u"L1"), IsFolder(u"f1"))));
 
   EXPECT_TRUE(tracker.IsNonDefaultOrderingTracked());
 }
 
 TEST_F(PermanentFolderOrderingTrackerTest, OrderingLocalOnly) {
   model().LoadEmptyForTest();
-  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR);
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged);
+  tracker.Init(/*in_order_node_ids=*/{});
   ASSERT_THAT(tracker.GetUnderlyingPermanentNodes(),
               UnorderedElementsAre(model().bookmark_bar_node()));
   AddNodesFromModelString(&model(), model().bookmark_bar_node(),
@@ -338,7 +411,10 @@ TEST_F(PermanentFolderOrderingTrackerTest, OrderingLocalOnly) {
 
 TEST_F(PermanentFolderOrderingTrackerTest, OrderingAccountOnly) {
   model().LoadEmptyForTest();
-  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR);
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(2);
+  tracker.Init(/*in_order_node_ids=*/{});
   model().CreateAccountPermanentFolders();
   ASSERT_THAT(tracker.GetUnderlyingPermanentNodes(),
               UnorderedElementsAre(model().account_bookmark_bar_node(),
@@ -377,7 +453,10 @@ TEST_F(PermanentFolderOrderingTrackerTest, OrderingAccountOnly) {
 
 TEST_F(PermanentFolderOrderingTrackerTest, OrderingExistingLocal) {
   model().LoadEmptyForTest();
-  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR);
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(6);
+  tracker.Init(/*in_order_node_ids=*/{});
   model().CreateAccountPermanentFolders();
   ASSERT_THAT(tracker.GetUnderlyingPermanentNodes(),
               UnorderedElementsAre(model().account_bookmark_bar_node(),
@@ -418,14 +497,20 @@ TEST_F(PermanentFolderOrderingTrackerTest, OrderingExistingLocal) {
 
 TEST_F(PermanentFolderOrderingTrackerTest, OrderingAccountThenLocal) {
   model().LoadEmptyForTest();
-  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR);
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(2);
+  tracker.Init(/*in_order_node_ids=*/{});
+
   model().CreateAccountPermanentFolders();
   ASSERT_THAT(tracker.GetUnderlyingPermanentNodes(),
               UnorderedElementsAre(model().account_bookmark_bar_node(),
                                    model().bookmark_bar_node()));
   AddNodesFromModelString(&model(), model().account_bookmark_bar_node(),
                           "1 2 3 f1:[ 4 5 f2:[ 6 ] ]");
+  Mock::VerifyAndClearExpectations(delegate());
 
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(AtLeast(3));
   // Add local bookmarks.
   const BookmarkNode* node = model().AddURL(
       model().bookmark_bar_node(), 0, u"Title x", GURL("https://example.com"));
@@ -450,7 +535,10 @@ TEST_F(PermanentFolderOrderingTrackerTest, OrderingAccountThenLocal) {
 TEST_F(PermanentFolderOrderingTrackerTest, BookmarkAllUserNodesRemoved) {
   model().LoadEmptyForTest();
   model().CreateAccountPermanentFolders();
-  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::OTHER_NODE);
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::OTHER_NODE,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(5);
+  tracker.Init(/*in_order_node_ids=*/{});
   ASSERT_THAT(
       tracker.GetUnderlyingPermanentNodes(),
       UnorderedElementsAre(model().account_other_node(), model().other_node()));
@@ -458,7 +546,9 @@ TEST_F(PermanentFolderOrderingTrackerTest, BookmarkAllUserNodesRemoved) {
                           "1 2 3 f1:[ 4 5 f2:[ 6 ] ]");
   AddNodesFromModelString(&model(), model().account_other_node(),
                           "1 2 3 f1:[ 4 5 f2:[ 6 ] ]");
+  Mock::VerifyAndClearExpectations(delegate());
 
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged);
   model().RemoveAllUserBookmarks(FROM_HERE);
   const BookmarkNode* node = model().AddURL(model().other_node(), 0, u"Title x",
                                             GURL("https://example.com"));
@@ -470,7 +560,10 @@ TEST_F(PermanentFolderOrderingTrackerTest, BookmarkAllUserNodesRemoved) {
 TEST_F(PermanentFolderOrderingTrackerTest, RemoveAccountPermanentFolders) {
   model().LoadEmptyForTest();
   model().CreateAccountPermanentFolders();
-  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::OTHER_NODE);
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::OTHER_NODE,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(5);
+  tracker.Init(/*in_order_node_ids=*/{});
   ASSERT_THAT(
       tracker.GetUnderlyingPermanentNodes(),
       UnorderedElementsAre(model().account_other_node(), model().other_node()));
@@ -486,6 +579,9 @@ TEST_F(PermanentFolderOrderingTrackerTest, RemoveAccountPermanentFolders) {
       tracker.GetNodeAtIndex(model().account_other_node()->children().size()),
       node);
 
+  Mock::VerifyAndClearExpectations(delegate());
+
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged);
   model().RemoveAccountPermanentFolders();
   EXPECT_THAT(tracker.GetUnderlyingPermanentNodes(),
               UnorderedElementsAre(model().other_node()));
@@ -499,7 +595,10 @@ TEST_F(PermanentFolderOrderingTrackerTest,
        BookmarkMovedOldParentNonTrackedNode) {
   model().LoadEmptyForTest();
   model().CreateAccountPermanentFolders();
-  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR);
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged);
+  tracker.Init(/*in_order_node_ids=*/{});
   AddNodesFromModelString(&model(), model().other_node(),
                           "1 2 3 f1:[ 4 5 f2:[ 6 ] ]");
   AddNodesFromModelString(&model(), model().bookmark_bar_node(),
@@ -507,8 +606,10 @@ TEST_F(PermanentFolderOrderingTrackerTest,
 
   const BookmarkNode* node = model().bookmark_bar_node()->children()[0].get();
   EXPECT_EQ(tracker.GetIndexOf(node), 0u);
+  Mock::VerifyAndClearExpectations(delegate());
 
   // Move node from non-tracked `other_node` to `bookmark_bar_node()`.
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(AtLeast(1));
   const BookmarkNode* node_to_be_moved =
       model().other_node()->children()[1].get();
   model().Move(node_to_be_moved, model().bookmark_bar_node(), 0u);
@@ -536,7 +637,10 @@ TEST_F(PermanentFolderOrderingTrackerTest,
        BookmarkMovedNewParentNonTrackedNode) {
   model().LoadEmptyForTest();
   model().CreateAccountPermanentFolders();
-  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR);
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(5);
+  tracker.Init(/*in_order_node_ids=*/{});
   AddNodesFromModelString(&model(), model().account_bookmark_bar_node(),
                           "1 2 ");
   AddNodesFromModelString(&model(), model().bookmark_bar_node(),
@@ -544,17 +648,24 @@ TEST_F(PermanentFolderOrderingTrackerTest,
   EXPECT_EQ(
       tracker.GetIndexOf(model().bookmark_bar_node()->children()[0].get()),
       model().account_bookmark_bar_node()->children().size());
+  Mock::VerifyAndClearExpectations(delegate());
 
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged);
   model().Move(model().account_bookmark_bar_node()->children()[0].get(),
                model().other_node(), 0u);
   EXPECT_EQ(
       tracker.GetIndexOf(model().bookmark_bar_node()->children()[0].get()), 1u);
+  Mock::VerifyAndClearExpectations(delegate());
 
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged);
   model().Move(model().account_bookmark_bar_node()->children()[0].get(),
                model().other_node(), 0u);
   EXPECT_EQ(
       tracker.GetIndexOf(model().bookmark_bar_node()->children()[0].get()), 0u);
+  Mock::VerifyAndClearExpectations(delegate());
 
+  // No more bookmark bar account nodes, no ordering change.
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(0);
   const BookmarkNode* node = model().bookmark_bar_node()->children()[1].get();
   EXPECT_EQ(tracker.GetIndexOf(node), 1u);
   model().Move(model().bookmark_bar_node()->children()[0].get(),
@@ -566,10 +677,14 @@ TEST_F(PermanentFolderOrderingTrackerTest,
        BookmarkMovedOldAndNewParentTrackedNodes) {
   model().LoadEmptyForTest();
   model().CreateAccountPermanentFolders();
-  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR);
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(4);
+  tracker.Init(/*in_order_node_ids=*/{});
   AddNodesFromModelString(&model(), model().account_bookmark_bar_node(),
                           "1 2 3 ");
   AddNodesFromModelString(&model(), model().bookmark_bar_node(), "1 2 3 ");
+  Mock::VerifyAndClearExpectations(delegate());
 
   // Move node from tracked node to another tracked node.
 
@@ -577,9 +692,12 @@ TEST_F(PermanentFolderOrderingTrackerTest,
       model().bookmark_bar_node()->children()[0].get();
   EXPECT_EQ(tracker.GetIndexOf(node_to_be_moved), 3u);
 
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(AtLeast(1));
   model().Move(node_to_be_moved, model().account_bookmark_bar_node(), 1u);
   EXPECT_EQ(tracker.GetIndexOf(node_to_be_moved), 1u);
+  Mock::VerifyAndClearExpectations(delegate());
 
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(AtLeast(1));
   model().Move(node_to_be_moved, model().bookmark_bar_node(), 0u);
   EXPECT_EQ(tracker.GetIndexOf(node_to_be_moved), 3u);
 }
@@ -587,27 +705,28 @@ TEST_F(PermanentFolderOrderingTrackerTest,
 TEST_F(PermanentFolderOrderingTrackerTest, BookmarkMovedCustomOrder) {
   model().LoadEmptyForTest();
   model().CreateAccountPermanentFolders();
-  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR);
-  ASSERT_THAT(tracker.GetUnderlyingPermanentNodes(),
-              UnorderedElementsAre(model().account_bookmark_bar_node(),
-                                   model().bookmark_bar_node()));
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
   AddNodesFromModelString(&model(), model().bookmark_bar_node(),
-                          "1 2 3 f1:[ 4 5 f2:[ 6 ] ]");
+                          "A B C L1:[ D E L2:[ F ] ]");
   AddNodesFromModelString(&model(), model().account_bookmark_bar_node(),
                           "1 2 3 f1:[ 4 5 f2:[ 6 ] ]");
   AddNodesFromModelString(&model(), model().other_node(), "X Y Z ");
 
-  // {L0, A0, A1, A2, L1, L2, L3, A3}.
-  std::vector<raw_ptr<const BookmarkNode>> custom_ordering{
-      model().bookmark_bar_node()->children()[0].get(),
-      model().account_bookmark_bar_node()->children()[0].get(),
-      model().account_bookmark_bar_node()->children()[1].get(),
-      model().account_bookmark_bar_node()->children()[2].get(),
-      model().bookmark_bar_node()->children()[1].get(),
-      model().bookmark_bar_node()->children()[2].get(),
-      model().bookmark_bar_node()->children()[3].get(),
-      model().account_bookmark_bar_node()->children()[3].get()};
-  tracker.SetNodesOrderingForTesting(custom_ordering);
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(AtLeast(1));
+  // {A, 1, 2, 3, B, C, L1, f1}.
+  tracker.Init(/*in_order_node_ids=*/
+               {model().bookmark_bar_node()->children()[0]->id(),
+                model().account_bookmark_bar_node()->children()[0]->id(),
+                model().account_bookmark_bar_node()->children()[1]->id(),
+                model().account_bookmark_bar_node()->children()[2]->id(),
+                model().bookmark_bar_node()->children()[1]->id(),
+                model().bookmark_bar_node()->children()[2]->id(),
+                model().bookmark_bar_node()->children()[3]->id(),
+                model().account_bookmark_bar_node()->children()[3]->id()});
+  ASSERT_THAT(tracker.GetUnderlyingPermanentNodes(),
+              UnorderedElementsAre(model().account_bookmark_bar_node(),
+                                   model().bookmark_bar_node()));
 
   // Move to a tracked node.
   const BookmarkNode* node_to_be_moved =
@@ -644,22 +763,29 @@ TEST_F(PermanentFolderOrderingTrackerTest, BookmarkMovedCustomOrder) {
 TEST_F(PermanentFolderOrderingTrackerTest, MoveToReorderTrackedNodes) {
   model().LoadEmptyForTest();
   model().CreateAccountPermanentFolders();
-  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR);
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(5);
+  tracker.Init(/*in_order_node_ids=*/{});
   AddNodesFromModelString(&model(), model().account_bookmark_bar_node(),
                           "A1 A2 ");
   AddNodesFromModelString(&model(), model().bookmark_bar_node(),
                           "1 2 3 f1:[ 4 5 f2:[ 6 ] ]");
+  Mock::VerifyAndClearExpectations(delegate());
+
   {
     // Move node `3`
     const BookmarkNode* node = model().bookmark_bar_node()->children()[2].get();
     // {A1 A2 1 2 3 f1 }
     EXPECT_EQ(tracker.GetIndexOf(node), 4u);
     // Move to the end of the list.
+    EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(AtLeast(1));
     EXPECT_THAT(tracker.MoveToIndex(node, 6u), Optional(5u));
     // {A1 A2 1 2 f1 3 }
     EXPECT_EQ(tracker.GetIndexOf(node), 5u);
     EXPECT_EQ(node->parent(), model().bookmark_bar_node());
     EXPECT_EQ(node->parent()->GetIndexOf(node), 3u);
+    Mock::VerifyAndClearExpectations(delegate());
   }
 
   {
@@ -669,11 +795,13 @@ TEST_F(PermanentFolderOrderingTrackerTest, MoveToReorderTrackedNodes) {
     // {A1 A2 1 2 f1 3 }
     EXPECT_EQ(tracker.GetIndexOf(node), 0u);
     // Move to the end of the list.
+    EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(AtLeast(1));
     EXPECT_THAT(tracker.MoveToIndex(node, 6u), Optional(5u));
     // {A2 1 2 f1 3 A1 }
     EXPECT_EQ(tracker.GetIndexOf(node), 5u);
     EXPECT_EQ(node->parent(), model().account_bookmark_bar_node());
     EXPECT_EQ(node->parent()->GetIndexOf(node), 1u);
+    Mock::VerifyAndClearExpectations(delegate());
   }
 
   {
@@ -681,10 +809,12 @@ TEST_F(PermanentFolderOrderingTrackerTest, MoveToReorderTrackedNodes) {
     const BookmarkNode* node = model().bookmark_bar_node()->children()[2].get();
     // {A2 1 2 f1 3 A1 }
     EXPECT_EQ(tracker.GetIndexOf(node), 3u);
+    EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(AtLeast(1));
     EXPECT_THAT(tracker.MoveToIndex(node, 0u), Optional(0u));
     EXPECT_EQ(tracker.GetIndexOf(node), 0u);
     // {f1 A2 1 2 3 A1 }
     EXPECT_EQ(node->parent()->GetIndexOf(node), 0u);
+    Mock::VerifyAndClearExpectations(delegate());
   }
 
   {
@@ -692,6 +822,7 @@ TEST_F(PermanentFolderOrderingTrackerTest, MoveToReorderTrackedNodes) {
     const BookmarkNode* node = model().bookmark_bar_node()->children()[2].get();
     // {f1 A2 1 2 3 A1 }
     EXPECT_EQ(tracker.GetIndexOf(node), 3u);
+    EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(AtLeast(1));
     EXPECT_THAT(tracker.MoveToIndex(node, 5u), Optional(4u));
     // {f1 A2 1 3 2 A1 }
     EXPECT_EQ(tracker.GetIndexOf(node), 4u);
@@ -702,6 +833,7 @@ TEST_F(PermanentFolderOrderingTrackerTest, MoveToReorderTrackedNodes) {
     // {f1 A2 1 3 A1 2}
     EXPECT_EQ(tracker.GetIndexOf(node), 5u);
     EXPECT_EQ(node->parent()->GetIndexOf(node), 3u);
+    Mock::VerifyAndClearExpectations(delegate());
   }
 
   {
@@ -710,14 +842,17 @@ TEST_F(PermanentFolderOrderingTrackerTest, MoveToReorderTrackedNodes) {
         model().account_bookmark_bar_node()->children()[1].get();
     // {f1 A2 1 3 A1 2}
     EXPECT_EQ(tracker.GetIndexOf(node), 4u);
+    EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(AtLeast(1));
     EXPECT_THAT(tracker.MoveToIndex(node, 1u), Optional(1u));
     // {f1 A1 A2 1 3 2}
     EXPECT_EQ(tracker.GetIndexOf(node), 1u);
     EXPECT_EQ(node->parent()->GetIndexOf(node), 0u);
+    Mock::VerifyAndClearExpectations(delegate());
   }
 
   {
     // No Reorder is needed.
+    EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(0);
     const BookmarkNode* node =
         model().account_bookmark_bar_node()->children()[1].get();
     // {f1 A1 A2 1 3 2}
@@ -732,7 +867,10 @@ TEST_F(PermanentFolderOrderingTrackerTest, MoveToReorderTrackedNodes) {
 TEST_F(PermanentFolderOrderingTrackerTest, MoveAddsNewAccountTrackedNodes) {
   model().LoadEmptyForTest();
   model().CreateAccountPermanentFolders();
-  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR);
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(AtLeast(1));
+  tracker.Init(/*in_order_node_ids=*/{});
   AddNodesFromModelString(&model(), model().account_other_node(), "X Y Z W ");
   AddNodesFromModelString(&model(), model().bookmark_bar_node(), "1 2 ");
   EXPECT_EQ(tracker.GetChildrenCount(), 2u);
@@ -787,7 +925,10 @@ TEST_F(PermanentFolderOrderingTrackerTest, MoveAddsNewAccountTrackedNodes) {
 TEST_F(PermanentFolderOrderingTrackerTest, MoveAddsNewLocalTrackedNodes) {
   model().LoadEmptyForTest();
   model().CreateAccountPermanentFolders();
-  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR);
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(AtLeast(1));
+  tracker.Init(/*in_order_node_ids=*/{});
   AddNodesFromModelString(&model(), model().other_node(), "X Y Z ");
   AddNodesFromModelString(&model(), model().account_bookmark_bar_node(),
                           "A1 A2 ");
@@ -813,7 +954,10 @@ TEST_F(PermanentFolderOrderingTrackerTest, MoveAddsNewLocalTrackedNodes) {
 TEST_F(PermanentFolderOrderingTrackerTest, MoveToLocalOrderingNotTracked) {
   model().LoadEmptyForTest();
   model().CreateAccountPermanentFolders();
-  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR);
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(AtLeast(1));
+  tracker.Init(/*in_order_node_ids=*/{});
   AddNodesFromModelString(&model(), model().other_node(),
                           "1 2 3 f1:[ 4 5 f2:[ 6 ] ]");
 
@@ -836,7 +980,10 @@ TEST_F(PermanentFolderOrderingTrackerTest, MoveToLocalOrderingNotTracked) {
 TEST_F(PermanentFolderOrderingTrackerTest, MoveToAccountOrderingNotTracked) {
   model().LoadEmptyForTest();
   model().CreateAccountPermanentFolders();
-  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR);
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(AtLeast(1));
+  tracker.Init(/*in_order_node_ids=*/{});
   AddNodesFromModelString(&model(), model().account_other_node(), "A1 A2 ");
 
   EXPECT_EQ(tracker.GetChildrenCount(), 0u);
@@ -867,22 +1014,29 @@ TEST_F(PermanentFolderOrderingTrackerTest, CopySingleNodeToMiddle) {
   std::vector<BookmarkNodeData::Element> new_nodes;
   new_nodes.emplace_back(model().other_node()->children()[1].get());
 
-  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR);
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(AtLeast(1));
+  tracker.Init(/*in_order_node_ids=*/{});
   tracker.AddNodesAsCopiesOfNodeData(new_nodes, 2);
   EXPECT_EQ(ModelStringFromNode(model().account_bookmark_bar_node()),
             "X Y O2 Z W ");
   EXPECT_EQ(tracker.GetNodeAtIndex(2),
             model().account_bookmark_bar_node()->children()[2u].get());
+  Mock::VerifyAndClearExpectations(delegate());
 
   // Custom order: "X 1 Y O2 Z W 2 "
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(AtLeast(1));
   EXPECT_THAT(
       tracker.MoveToIndex(model().bookmark_bar_node()->children()[0].get(), 1u),
       Optional(1u));
   EXPECT_EQ(tracker.GetNodeAtIndex(1),
             model().bookmark_bar_node()->children()[0].get());
+  Mock::VerifyAndClearExpectations(delegate());
 
   new_nodes.clear();
   new_nodes.emplace_back(model().other_node()->children()[0].get());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(AtLeast(1));
   // Move O1 to index 3.
   tracker.AddNodesAsCopiesOfNodeData(new_nodes, 3);
   // Expected order: "X 1 Y O1 O2 Z W 2 "
@@ -903,7 +1057,10 @@ TEST_F(PermanentFolderOrderingTrackerTest, CopySingleNodeToBeginning) {
 
   std::vector<BookmarkNodeData::Element> new_nodes;
   new_nodes.emplace_back(model().other_node()->children()[0].get());
-  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR);
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(AtLeast(1));
+  tracker.Init(/*in_order_node_ids=*/{});
   tracker.AddNodesAsCopiesOfNodeData(new_nodes, 0);
   EXPECT_EQ(ModelStringFromNode(model().account_bookmark_bar_node()),
             "O1 X Y Z W ");
@@ -937,7 +1094,10 @@ TEST_F(PermanentFolderOrderingTrackerTest, CopySingleNodeToEnd) {
 
   std::vector<BookmarkNodeData::Element> new_nodes;
   new_nodes.emplace_back(model().other_node()->children()[0].get());
-  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR);
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(AtLeast(1));
+  tracker.Init(/*in_order_node_ids=*/{});
   tracker.AddNodesAsCopiesOfNodeData(new_nodes, 6);
   EXPECT_EQ(ModelStringFromNode(model().account_bookmark_bar_node()),
             "X Y Z W O1 ");
@@ -968,35 +1128,48 @@ TEST_F(PermanentFolderOrderingTrackerTest, CopyMultipleNodesToMiddle) {
   new_nodes.emplace_back(model().other_node()->children()[1].get());
   new_nodes.emplace_back(model().other_node()->children()[2].get());
 
-  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR);
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(AtLeast(1));
+  tracker.Init(/*in_order_node_ids=*/{});
   tracker.AddNodesAsCopiesOfNodeData(new_nodes, 1);
   EXPECT_EQ(ModelStringFromNode(model().account_bookmark_bar_node()),
             "X O1 O2 O3 Y Z W ");
-  for (size_t i = 0; i < model().account_bookmark_bar_node()->children().size();
-       i++) {
-    EXPECT_EQ(tracker.GetNodeAtIndex(i),
-              model().account_bookmark_bar_node()->children()[i].get());
-  }
+  EXPECT_THAT(
+      tracker,
+      HasChildren(ElementsAre(
+          IsUrlBookmark(u"X"), IsUrlBookmark(u"O1"), IsUrlBookmark(u"O2"),
+          IsUrlBookmark(u"O3"), IsUrlBookmark(u"Y"), IsUrlBookmark(u"Z"),
+          IsUrlBookmark(u"W"), IsUrlBookmark(u"1"), IsUrlBookmark(u"2"))));
+  Mock::VerifyAndClearExpectations(delegate());
 
-  // Custom order: "1 X O1 O2 O3 Y Z W 2 "
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(AtLeast(1));
   EXPECT_THAT(
       tracker.MoveToIndex(model().bookmark_bar_node()->children()[0].get(), 0u),
       Optional(0u));
-  EXPECT_EQ(tracker.GetNodeAtIndex(0),
-            model().bookmark_bar_node()->children()[0].get());
+  EXPECT_THAT(
+      tracker,
+      HasChildren(ElementsAre(
+          IsUrlBookmark(u"1"), IsUrlBookmark(u"X"), IsUrlBookmark(u"O1"),
+          IsUrlBookmark(u"O2"), IsUrlBookmark(u"O3"), IsUrlBookmark(u"Y"),
+          IsUrlBookmark(u"Z"), IsUrlBookmark(u"W"), IsUrlBookmark(u"2"))));
+  Mock::VerifyAndClearExpectations(delegate());
 
   new_nodes.clear();
   new_nodes.emplace_back(model().other_node()->children()[3].get());
   new_nodes.emplace_back(model().other_node()->children()[4].get());
 
-  // Expected order: "1 X O1 O2 O3 Y O4 O5 Z W 2 "
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(AtLeast(1));
   tracker.AddNodesAsCopiesOfNodeData(new_nodes, 6);
   EXPECT_EQ(ModelStringFromNode(model().account_bookmark_bar_node()),
             "X O1 O2 O3 Y O4 O5 Z W ");
-  EXPECT_EQ(tracker.GetNodeAtIndex(6),
-            model().account_bookmark_bar_node()->children()[5].get());
-  EXPECT_EQ(tracker.GetNodeAtIndex(7),
-            model().account_bookmark_bar_node()->children()[6].get());
+  EXPECT_THAT(
+      tracker,
+      HasChildren(ElementsAre(
+          IsUrlBookmark(u"1"), IsUrlBookmark(u"X"), IsUrlBookmark(u"O1"),
+          IsUrlBookmark(u"O2"), IsUrlBookmark(u"O3"), IsUrlBookmark(u"Y"),
+          IsUrlBookmark(u"O4"), IsUrlBookmark(u"O5"), IsUrlBookmark(u"Z"),
+          IsUrlBookmark(u"W"), IsUrlBookmark(u"2"))));
 }
 
 TEST_F(PermanentFolderOrderingTrackerTest, CopyMultipleNodesToBeginning) {
@@ -1013,7 +1186,10 @@ TEST_F(PermanentFolderOrderingTrackerTest, CopyMultipleNodesToBeginning) {
   new_nodes.emplace_back(model().other_node()->children()[1].get());
   new_nodes.emplace_back(model().other_node()->children()[2].get());
 
-  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR);
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(AtLeast(1));
+  tracker.Init(/*in_order_node_ids=*/{});
   tracker.AddNodesAsCopiesOfNodeData(new_nodes, 0);
   EXPECT_EQ(ModelStringFromNode(model().account_bookmark_bar_node()),
             "O1 O2 O3 X Y Z W ");
@@ -1058,7 +1234,10 @@ TEST_F(PermanentFolderOrderingTrackerTest, CopyMultipleNodesToEnd) {
   new_nodes.emplace_back(model().other_node()->children()[1].get());
   new_nodes.emplace_back(model().other_node()->children()[2].get());
 
-  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR);
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(AtLeast(1));
+  tracker.Init(/*in_order_node_ids=*/{});
   tracker.AddNodesAsCopiesOfNodeData(new_nodes, tracker.GetChildrenCount());
   EXPECT_EQ(ModelStringFromNode(model().account_bookmark_bar_node()),
             "X Y Z W O1 O2 O3 ");
@@ -1101,7 +1280,10 @@ TEST_F(PermanentFolderOrderingTrackerTest, CopyNodesFirstAccountChildNode) {
   // Copy single node.
   std::vector<BookmarkNodeData::Element> new_nodes;
   new_nodes.emplace_back(model().other_node()->children()[0].get());
-  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR);
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(AtLeast(1));
+  tracker.Init(/*in_order_node_ids=*/{});
   tracker.AddNodesAsCopiesOfNodeData(new_nodes, 2);
   EXPECT_EQ(ModelStringFromNode(model().account_bookmark_bar_node()), "O1 ");
   EXPECT_EQ(tracker.GetNodeAtIndex(2),
@@ -1116,7 +1298,10 @@ TEST_F(PermanentFolderOrderingTrackerTest, CopyNodesNoAccountNodes) {
   // Copy single node.
   std::vector<BookmarkNodeData::Element> new_nodes;
   new_nodes.emplace_back(model().other_node()->children()[0].get());
-  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR);
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(AtLeast(1));
+  tracker.Init(/*in_order_node_ids=*/{});
   tracker.AddNodesAsCopiesOfNodeData(new_nodes, 2);
   EXPECT_EQ(ModelStringFromNode(model().bookmark_bar_node()), "1 2 O1 3 ");
   EXPECT_EQ(tracker.GetNodeAtIndex(2),
@@ -1139,7 +1324,10 @@ TEST_F(PermanentFolderOrderingTrackerTest,
   const BookmarkNode* account_bb_node = model().account_bookmark_bar_node();
   AddNodesFromModelString(&model(), local_bb_node, "1 2 3 ");
   AddNodesFromModelString(&model(), account_bb_node, "A B C D ");
-  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR);
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(2);
+  tracker.Init(/*in_order_node_ids=*/{});
   ASSERT_THAT(tracker,
               HasChildren(ElementsAre(IsUrlBookmark(u"A"), IsUrlBookmark(u"B"),
                                       IsUrlBookmark(u"C"), IsUrlBookmark(u"D"),
@@ -1166,7 +1354,10 @@ TEST_F(PermanentFolderOrderingTrackerTest,
   const BookmarkNode* account_bb_node = model().account_bookmark_bar_node();
   AddNodesFromModelString(&model(), local_bb_node, "1 2 3 ");
   AddNodesFromModelString(&model(), account_bb_node, "A B C D ");
-  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR);
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(2);
+  tracker.Init(/*in_order_node_ids=*/{});
   ASSERT_THAT(tracker,
               HasChildren(ElementsAre(IsUrlBookmark(u"A"), IsUrlBookmark(u"B"),
                                       IsUrlBookmark(u"C"), IsUrlBookmark(u"D"),
@@ -1191,17 +1382,14 @@ TEST_F(PermanentFolderOrderingTrackerTest,
   const BookmarkNode* account_bb_node = model().account_bookmark_bar_node();
   AddNodesFromModelString(&model(), local_bb_node, "1 2 3 ");
   AddNodesFromModelString(&model(), account_bb_node, "A B C D ");
-  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR);
-  // Initial setup: "1, A, B, 2, 3, C, D".
-  std::vector<raw_ptr<const BookmarkNode>> custom_order{
-      local_bb_node->children()[0].get(),
-      account_bb_node->children()[0].get(),
-      account_bb_node->children()[1].get(),
-      local_bb_node->children()[1].get(),
-      local_bb_node->children()[2].get(),
-      account_bb_node->children()[2].get(),
-      account_bb_node->children()[3].get()};
-  tracker.SetNodesOrderingForTesting(custom_order);
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(2);
+  tracker.Init(
+      {local_bb_node->children()[0]->id(), account_bb_node->children()[0]->id(),
+       account_bb_node->children()[1]->id(), local_bb_node->children()[1]->id(),
+       local_bb_node->children()[2]->id(), account_bb_node->children()[2]->id(),
+       account_bb_node->children()[3]->id()});
   ASSERT_THAT(tracker,
               HasChildren(ElementsAre(IsUrlBookmark(u"1"), IsUrlBookmark(u"A"),
                                       IsUrlBookmark(u"B"), IsUrlBookmark(u"2"),
@@ -1227,17 +1415,18 @@ TEST_F(PermanentFolderOrderingTrackerTest,
   const BookmarkNode* account_bb_node = model().account_bookmark_bar_node();
   AddNodesFromModelString(&model(), local_bb_node, "1 2 3 ");
   AddNodesFromModelString(&model(), account_bb_node, "A B C D ");
-  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR);
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(2);
   // Initial setup: "1, A, B, 2, 3, C, D".
-  std::vector<raw_ptr<const BookmarkNode>> custom_order{
-      local_bb_node->children()[0].get(),
-      account_bb_node->children()[0].get(),
-      account_bb_node->children()[1].get(),
-      local_bb_node->children()[1].get(),
-      local_bb_node->children()[2].get(),
-      account_bb_node->children()[2].get(),
-      account_bb_node->children()[3].get()};
-  tracker.SetNodesOrderingForTesting(custom_order);
+  tracker.Init(
+      /*in_order_node_ids=*/{local_bb_node->children()[0]->id(),
+                             account_bb_node->children()[0]->id(),
+                             account_bb_node->children()[1]->id(),
+                             local_bb_node->children()[1]->id(),
+                             local_bb_node->children()[2]->id(),
+                             account_bb_node->children()[2]->id(),
+                             account_bb_node->children()[3]->id()});
   ASSERT_THAT(tracker,
               HasChildren(ElementsAre(IsUrlBookmark(u"1"), IsUrlBookmark(u"A"),
                                       IsUrlBookmark(u"B"), IsUrlBookmark(u"2"),
@@ -1265,17 +1454,15 @@ TEST_F(PermanentFolderOrderingTrackerTest,
   const BookmarkNode* account_bb_node = model().account_bookmark_bar_node();
   AddNodesFromModelString(&model(), local_bb_node, "1 2 3 ");
   AddNodesFromModelString(&model(), account_bb_node, "A B C D ");
-  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR);
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(2);
   // "1, A, B, 2, 3, C, D".
-  std::vector<raw_ptr<const BookmarkNode>> custom_order{
-      local_bb_node->children()[0].get(),
-      account_bb_node->children()[0].get(),
-      account_bb_node->children()[1].get(),
-      local_bb_node->children()[1].get(),
-      local_bb_node->children()[2].get(),
-      account_bb_node->children()[2].get(),
-      account_bb_node->children()[3].get()};
-  tracker.SetNodesOrderingForTesting(custom_order);
+  tracker.Init(
+      {local_bb_node->children()[0]->id(), account_bb_node->children()[0]->id(),
+       account_bb_node->children()[1]->id(), local_bb_node->children()[1]->id(),
+       local_bb_node->children()[2]->id(), account_bb_node->children()[2]->id(),
+       account_bb_node->children()[3]->id()});
   ASSERT_THAT(tracker,
               HasChildren(ElementsAre(IsUrlBookmark(u"1"), IsUrlBookmark(u"A"),
                                       IsUrlBookmark(u"B"), IsUrlBookmark(u"2"),
@@ -1303,17 +1490,15 @@ TEST_F(PermanentFolderOrderingTrackerTest,
   const BookmarkNode* account_bb_node = model().account_bookmark_bar_node();
   AddNodesFromModelString(&model(), local_bb_node, "1 2 3 ");
   AddNodesFromModelString(&model(), account_bb_node, "A B C D ");
-  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR);
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(2);
   // "1, A, B, 2, 3, C, D".
-  std::vector<raw_ptr<const BookmarkNode>> custom_order{
-      local_bb_node->children()[0].get(),
-      account_bb_node->children()[0].get(),
-      account_bb_node->children()[1].get(),
-      local_bb_node->children()[1].get(),
-      local_bb_node->children()[2].get(),
-      account_bb_node->children()[2].get(),
-      account_bb_node->children()[3].get()};
-  tracker.SetNodesOrderingForTesting(custom_order);
+  tracker.Init(
+      {local_bb_node->children()[0]->id(), account_bb_node->children()[0]->id(),
+       account_bb_node->children()[1]->id(), local_bb_node->children()[1]->id(),
+       local_bb_node->children()[2]->id(), account_bb_node->children()[2]->id(),
+       account_bb_node->children()[3]->id()});
   ASSERT_THAT(tracker,
               HasChildren(ElementsAre(IsUrlBookmark(u"1"), IsUrlBookmark(u"A"),
                                       IsUrlBookmark(u"B"), IsUrlBookmark(u"2"),
@@ -1339,16 +1524,14 @@ TEST_F(PermanentFolderOrderingTrackerTest,
   const BookmarkNode* account_bb_node = model().account_bookmark_bar_node();
   AddNodesFromModelString(&model(), local_bb_node, "1 2 3 ");
   AddNodesFromModelString(&model(), account_bb_node, "A B C D ");
-  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR);
-  std::vector<raw_ptr<const BookmarkNode>> custom_order{
-      local_bb_node->children()[0].get(),
-      account_bb_node->children()[0].get(),
-      account_bb_node->children()[1].get(),
-      local_bb_node->children()[1].get(),
-      local_bb_node->children()[2].get(),
-      account_bb_node->children()[2].get(),
-      account_bb_node->children()[3].get()};
-  tracker.SetNodesOrderingForTesting(custom_order);
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(2);
+  tracker.Init(
+      {local_bb_node->children()[0]->id(), account_bb_node->children()[0]->id(),
+       account_bb_node->children()[1]->id(), local_bb_node->children()[1]->id(),
+       local_bb_node->children()[2]->id(), account_bb_node->children()[2]->id(),
+       account_bb_node->children()[3]->id()});
   ASSERT_THAT(tracker,
               HasChildren(ElementsAre(IsUrlBookmark(u"1"), IsUrlBookmark(u"A"),
                                       IsUrlBookmark(u"B"), IsUrlBookmark(u"2"),
@@ -1377,16 +1560,14 @@ TEST_F(PermanentFolderOrderingTrackerTest,
   const BookmarkNode* account_bb_node = model().account_bookmark_bar_node();
   AddNodesFromModelString(&model(), local_bb_node, "1 2 3 ");
   AddNodesFromModelString(&model(), account_bb_node, "A B C D ");
-  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR);
-  std::vector<raw_ptr<const BookmarkNode>> custom_order{
-      local_bb_node->children()[0].get(),
-      account_bb_node->children()[0].get(),
-      account_bb_node->children()[1].get(),
-      local_bb_node->children()[1].get(),
-      local_bb_node->children()[2].get(),
-      account_bb_node->children()[2].get(),
-      account_bb_node->children()[3].get()};
-  tracker.SetNodesOrderingForTesting(custom_order);
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(2);
+  tracker.Init(
+      {local_bb_node->children()[0]->id(), account_bb_node->children()[0]->id(),
+       account_bb_node->children()[1]->id(), local_bb_node->children()[1]->id(),
+       local_bb_node->children()[2]->id(), account_bb_node->children()[2]->id(),
+       account_bb_node->children()[3]->id()});
   ASSERT_THAT(tracker,
               HasChildren(ElementsAre(IsUrlBookmark(u"1"), IsUrlBookmark(u"A"),
                                       IsUrlBookmark(u"B"), IsUrlBookmark(u"2"),
@@ -1412,7 +1593,10 @@ TEST_F(PermanentFolderOrderingTrackerTest,
   model().CreateAccountPermanentFolders();
   const BookmarkNode* local_bb_node = model().bookmark_bar_node();
   AddNodesFromModelString(&model(), local_bb_node, "1 2 3 ");
-  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR);
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged);
+  tracker.Init(/*in_order_node_ids=*/{});
 
   model().ReorderChildren(local_bb_node, {local_bb_node->children()[2].get(),
                                           local_bb_node->children()[1].get(),
@@ -1420,6 +1604,207 @@ TEST_F(PermanentFolderOrderingTrackerTest,
   EXPECT_THAT(tracker,
               HasChildren(ElementsAre(IsUrlBookmark(u"3"), IsUrlBookmark(u"2"),
                                       IsUrlBookmark(u"1"))));
+}
+
+TEST_F(PermanentFolderOrderingTrackerTest,
+       ReconcileLoadedNodeIdsNewNodesAdded) {
+  model().LoadEmptyForTest();
+  model().CreateAccountPermanentFolders();
+  const BookmarkNode* local_bb_node = model().bookmark_bar_node();
+  const BookmarkNode* account_bb_node = model().account_bookmark_bar_node();
+  AddNodesFromModelString(&model(), local_bb_node, "1 2 3 ");
+  AddNodesFromModelString(&model(), account_bb_node, "A B C D ");
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged);
+  // "1, B, 2, C".
+  tracker.Init({local_bb_node->children()[0]->id(),
+                account_bb_node->children()[1]->id(),
+                local_bb_node->children()[1]->id(),
+                account_bb_node->children()[2]->id()});
+
+  EXPECT_THAT(tracker,
+              HasChildren(ElementsAre(IsUrlBookmark(u"1"), IsUrlBookmark(u"A"),
+                                      IsUrlBookmark(u"B"), IsUrlBookmark(u"2"),
+                                      IsUrlBookmark(u"3"), IsUrlBookmark(u"C"),
+                                      IsUrlBookmark(u"D"))));
+}
+
+TEST_F(PermanentFolderOrderingTrackerTest, ReconcileLoadedNodeIdsNodesRemoved) {
+  model().LoadEmptyForTest();
+  model().CreateAccountPermanentFolders();
+  const BookmarkNode* local_bb_node = model().bookmark_bar_node();
+  const BookmarkNode* account_bb_node = model().account_bookmark_bar_node();
+  AddNodesFromModelString(&model(), local_bb_node, "1 2 3 ");
+  AddNodesFromModelString(&model(), account_bb_node, "A B C D ");
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged);
+  tracker.Init({2000, local_bb_node->children()[0]->id(),
+                account_bb_node->children()[0]->id(),
+                account_bb_node->children()[1]->id(), 5000,
+                local_bb_node->children()[1]->id(),
+                local_bb_node->children()[2]->id(),
+                account_bb_node->children()[2]->id(),
+                account_bb_node->children()[3]->id(), 3000});
+
+  EXPECT_THAT(tracker,
+              HasChildren(ElementsAre(IsUrlBookmark(u"1"), IsUrlBookmark(u"A"),
+                                      IsUrlBookmark(u"B"), IsUrlBookmark(u"2"),
+                                      IsUrlBookmark(u"3"), IsUrlBookmark(u"C"),
+                                      IsUrlBookmark(u"D"))));
+}
+
+TEST_F(PermanentFolderOrderingTrackerTest,
+       ReconcileLoadedNodeIdsAllAccountNodesInvalid) {
+  model().LoadEmptyForTest();
+  model().CreateAccountPermanentFolders();
+  const BookmarkNode* local_bb_node = model().bookmark_bar_node();
+  const BookmarkNode* account_bb_node = model().account_bookmark_bar_node();
+  AddNodesFromModelString(&model(), local_bb_node, "1 2 3 ");
+  AddNodesFromModelString(&model(), account_bb_node, "A B C D ");
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged);
+  tracker.Init({2000, local_bb_node->children()[0]->id(), 5000,
+                local_bb_node->children()[1]->id(),
+                local_bb_node->children()[2]->id(), 6000, 7000, 3000});
+  // Resets to default.
+  EXPECT_THAT(tracker,
+              HasChildren(ElementsAre(IsUrlBookmark(u"A"), IsUrlBookmark(u"B"),
+                                      IsUrlBookmark(u"C"), IsUrlBookmark(u"D"),
+                                      IsUrlBookmark(u"1"), IsUrlBookmark(u"2"),
+                                      IsUrlBookmark(u"3"))));
+}
+
+TEST_F(PermanentFolderOrderingTrackerTest,
+       ReconcileLoadedNodeIdsAllLocalNodesInvalid) {
+  model().LoadEmptyForTest();
+  model().CreateAccountPermanentFolders();
+  const BookmarkNode* local_bb_node = model().bookmark_bar_node();
+  const BookmarkNode* account_bb_node = model().account_bookmark_bar_node();
+  AddNodesFromModelString(&model(), local_bb_node, "1 2 3 ");
+  AddNodesFromModelString(&model(), account_bb_node, "A B C D ");
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged);
+  tracker.Init({account_bb_node->children()[0]->id(),
+                account_bb_node->children()[1]->id(), 5000, 7000,
+                account_bb_node->children()[2]->id(), 4000,
+                account_bb_node->children()[3]->id(), 8000});
+  // Resets to default.
+  EXPECT_THAT(tracker,
+              HasChildren(ElementsAre(IsUrlBookmark(u"A"), IsUrlBookmark(u"B"),
+                                      IsUrlBookmark(u"C"), IsUrlBookmark(u"D"),
+                                      IsUrlBookmark(u"1"), IsUrlBookmark(u"2"),
+                                      IsUrlBookmark(u"3"))));
+}
+
+TEST_F(PermanentFolderOrderingTrackerTest, ReconcileLoadedNodeIdsAllInvalid) {
+  model().LoadEmptyForTest();
+  model().CreateAccountPermanentFolders();
+  const BookmarkNode* local_bb_node = model().bookmark_bar_node();
+  const BookmarkNode* account_bb_node = model().account_bookmark_bar_node();
+  AddNodesFromModelString(&model(), local_bb_node, "1 2 3 ");
+  AddNodesFromModelString(&model(), account_bb_node, "A B C D ");
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged);
+  tracker.Init({5000, 7000, 4000, 8000, 9000, 2000, 1000});
+  // Resets to default.
+  EXPECT_THAT(tracker,
+              HasChildren(ElementsAre(IsUrlBookmark(u"A"), IsUrlBookmark(u"B"),
+                                      IsUrlBookmark(u"C"), IsUrlBookmark(u"D"),
+                                      IsUrlBookmark(u"1"), IsUrlBookmark(u"2"),
+                                      IsUrlBookmark(u"3"))));
+}
+
+TEST_F(PermanentFolderOrderingTrackerTest,
+       ReconcileLoadedNodeIdsAccountNodeRemoved) {
+  model().LoadEmptyForTest();
+  const BookmarkNode* local_bb_node = model().bookmark_bar_node();
+  AddNodesFromModelString(&model(), local_bb_node, "1 2 3 ");
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged);
+  tracker.Init({2000, local_bb_node->children()[0]->id(), 5000,
+                local_bb_node->children()[1]->id(),
+                local_bb_node->children()[2]->id(), 6000, 7000, 3000});
+
+  EXPECT_THAT(tracker,
+              HasChildren(ElementsAre(IsUrlBookmark(u"1"), IsUrlBookmark(u"2"),
+                                      IsUrlBookmark(u"3"))));
+}
+
+TEST_F(PermanentFolderOrderingTrackerTest, ReconcileLoadedNodeIdsReordered) {
+  model().LoadEmptyForTest();
+  model().CreateAccountPermanentFolders();
+  const BookmarkNode* local_bb_node = model().bookmark_bar_node();
+  const BookmarkNode* account_bb_node = model().account_bookmark_bar_node();
+  AddNodesFromModelString(&model(), local_bb_node, "1 2 3 ");
+  AddNodesFromModelString(&model(), account_bb_node, "A B C D ");
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(AtLeast(1));
+  // 3, B, C, 1, 2, D, A.
+  tracker.Init(
+      {local_bb_node->children()[2]->id(), account_bb_node->children()[1]->id(),
+       account_bb_node->children()[2]->id(), local_bb_node->children()[0]->id(),
+       local_bb_node->children()[1]->id(), account_bb_node->children()[3]->id(),
+       account_bb_node->children()[0]->id()});
+
+  EXPECT_THAT(tracker,
+              HasChildren(ElementsAre(IsUrlBookmark(u"A"), IsUrlBookmark(u"B"),
+                                      IsUrlBookmark(u"C"), IsUrlBookmark(u"1"),
+                                      IsUrlBookmark(u"2"), IsUrlBookmark(u"3"),
+                                      IsUrlBookmark(u"D"))));
+}
+
+TEST_F(PermanentFolderOrderingTrackerTest, ReconcileLoadedNodeIdsCombined) {
+  model().LoadEmptyForTest();
+  model().CreateAccountPermanentFolders();
+  const BookmarkNode* local_bb_node = model().bookmark_bar_node();
+  const BookmarkNode* account_bb_node = model().account_bookmark_bar_node();
+  AddNodesFromModelString(&model(), local_bb_node, "0 1 2 3 4 ");
+  AddNodesFromModelString(&model(), account_bb_node, "A B C K D E ");
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(AtLeast(1));
+  // 3, B, D, 1, 2, E, A.
+  tracker.Init(
+      {local_bb_node->children()[2]->id(), 6000,
+       account_bb_node->children()[1]->id(),
+       account_bb_node->children()[2]->id(), local_bb_node->children()[0]->id(),
+       local_bb_node->children()[1]->id(), account_bb_node->children()[3]->id(),
+       account_bb_node->children()[0]->id()});
+
+  EXPECT_THAT(tracker,
+              HasChildren(ElementsAre(
+                  IsUrlBookmark(u"A"), IsUrlBookmark(u"B"), IsUrlBookmark(u"C"),
+                  IsUrlBookmark(u"0"), IsUrlBookmark(u"1"), IsUrlBookmark(u"2"),
+                  IsUrlBookmark(u"3"), IsUrlBookmark(u"4"), IsUrlBookmark(u"K"),
+                  IsUrlBookmark(u"D"), IsUrlBookmark(u"E"))));
+}
+
+TEST_F(PermanentFolderOrderingTrackerTest,
+       ReconcileLoadedNodeIdsBookmarkModelNotLoaded) {
+  PermanentFolderOrderingTracker tracker(&model(), BookmarkNode::BOOKMARK_BAR,
+                                         delegate());
+  EXPECT_CALL(*delegate(), TrackedOrderingChanged).Times(AtLeast(1));
+  tracker.Init({6, 5, 7, 8, 9, 10});
+  ASSERT_FALSE(model().loaded());
+
+  model().LoadEmptyForTest();
+  model().CreateAccountPermanentFolders();
+  const BookmarkNode* local_bb_node = model().bookmark_bar_node();
+  const BookmarkNode* account_bb_node = model().account_bookmark_bar_node();
+  AddNodesFromModelString(&model(), local_bb_node, "1 2 3 ");
+  AddNodesFromModelString(&model(), account_bb_node, "A B C ");
+
+  EXPECT_THAT(tracker, HasChildren(ElementsAre(
+                           IsUrlBookmark(u"A"), IsUrlBookmark(u"B"),
+                           IsUrlBookmark(u"C"), IsUrlBookmark(u"1"),
+                           IsUrlBookmark(u"2"), IsUrlBookmark(u"3"))));
 }
 
 }  // namespace

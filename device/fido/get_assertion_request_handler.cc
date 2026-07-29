@@ -11,31 +11,29 @@
 #include <utility>
 #include <vector>
 
-#include "base/containers/contains.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/json/json_writer.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/timer/elapsed_timer.h"
 #include "build/build_config.h"
 #include "components/cbor/diagnostic_writer.h"
 #include "components/device_event_log/device_event_log.h"
+#include "crypto/hash.h"
 #include "device/fido/authenticator_get_assertion_response.h"
 #include "device/fido/ctap_get_assertion_request.h"
 #include "device/fido/discoverable_credential_metadata.h"
-#include "device/fido/features.h"
 #include "device/fido/fido_authenticator.h"
-#include "device/fido/fido_constants.h"
 #include "device/fido/fido_discovery_factory.h"
-#include "device/fido/fido_parsing_utils.h"
-#include "device/fido/fido_transport_protocol.h"
-#include "device/fido/fido_types.h"
 #include "device/fido/filter.h"
 #include "device/fido/pin.h"
-#include "device/fido/public_key_credential_descriptor.h"
-#include "device/fido/public_key_credential_user_entity.h"
+#include "device/fido/public/features.h"
+#include "device/fido/public/fido_constants.h"
+#include "device/fido/public/fido_transport_protocol.h"
+#include "device/fido/public/fido_types.h"
+#include "device/fido/public/public_key_credential_descriptor.h"
+#include "device/fido/public/public_key_credential_user_entity.h"
 
 #if BUILDFLAG(IS_MAC)
 #include "device/fido/mac/authenticator.h"
@@ -92,6 +90,10 @@ bool ValidateResponseExtensions(
       if (!request.get_cred_blob || !it.second.is_bytestring()) {
         return false;
       }
+    } else if (ext_name == kExtensionCmtgKey) {
+      if (!request.cmtg_key || !it.second.is_bytestring()) {
+        return false;
+      }
     } else {
       // Authenticators may not return unknown extensions.
       return false;
@@ -119,7 +121,7 @@ bool ResponseValid(
 
     const std::array<uint8_t, kRpIdHashLength>& rp_id_hash =
         response.authenticator_data.application_parameter();
-    if (rp_id_hash != fido_parsing_utils::CreateSHA256Hash(request.rp_id) &&
+    if (rp_id_hash != crypto::hash::Sha256(request.rp_id) &&
         (!request.app_id ||
          rp_id_hash != request.alternative_application_parameter)) {
       return false;
@@ -171,33 +173,6 @@ bool ResponseValid(
   }
 
   return true;
-}
-
-base::flat_set<FidoTransportProtocol> GetTransportsAllowedByRP(
-    const CtapGetAssertionRequest& request) {
-  const base::flat_set<FidoTransportProtocol> kAllTransports = {
-      FidoTransportProtocol::kInternal,
-      FidoTransportProtocol::kNearFieldCommunication,
-      FidoTransportProtocol::kUsbHumanInterfaceDevice,
-      FidoTransportProtocol::kBluetoothLowEnergy,
-      FidoTransportProtocol::kHybrid,
-  };
-
-  const auto& allowed_list = request.allow_list;
-  if (allowed_list.empty()) {
-    return kAllTransports;
-  }
-
-  base::flat_set<FidoTransportProtocol> transports;
-  for (const auto& credential : allowed_list) {
-    if (credential.transports.empty()) {
-      return kAllTransports;
-    }
-    transports.insert(credential.transports.begin(),
-                      credential.transports.end());
-  }
-
-  return transports;
 }
 
 void ReportGetAssertionRequestTransport(FidoAuthenticator* authenticator) {
@@ -260,12 +235,28 @@ CtapGetAssertionRequest SpecializeRequestForAuthenticator(
     specialized_request.user_verification =
         AtLeastUVPreferred(specialized_request.user_verification);
   }
-  if (preselected_credential) {
+  if (preselected_credential &&
+      preselected_credential->source == authenticator.GetType()) {
+    base::flat_set<FidoTransportProtocol> transports;
+    if (!preselected_credential->transports.empty()) {
+      transports = preselected_credential->transports;
+    } else if (preselected_credential->source ==
+               device::AuthenticatorType::kPhone) {
+      transports = {FidoTransportProtocol::kHybrid};
+    } else {
+      transports = {FidoTransportProtocol::kInternal};
+    }
     specialized_request.allow_list = {PublicKeyCredentialDescriptor(
         CredentialType::kPublicKey, preselected_credential->cred_id,
-        {preselected_credential->source == device::AuthenticatorType::kPhone
-             ? FidoTransportProtocol::kHybrid
-             : FidoTransportProtocol::kInternal})};
+        std::move(transports))};
+  }
+  if (authenticator.AuthenticatorTransport() !=
+      FidoTransportProtocol::kHybrid) {
+    specialized_request.cross_device_fallback_url = std::nullopt;
+  }
+
+  if (request.cmtg_key && !authenticator.Options().supports_cmtg_key) {
+    specialized_request.cmtg_key = false;
   }
   return specialized_request;
 }
@@ -289,28 +280,12 @@ CtapGetAssertionOptions SpecializeOptionsForAuthenticator(
   return specialized_options;
 }
 
-bool IsOnlyHybridOrInternal(const PublicKeyCredentialDescriptor& credential) {
-  if (credential.transports.empty()) {
-    return false;
-  }
-  return std::ranges::all_of(credential.transports, [](const auto& transport) {
-    return transport == FidoTransportProtocol::kHybrid ||
-           transport == FidoTransportProtocol::kInternal;
-  });
-}
-
-bool AllowListOnlyHybridOrInternal(const CtapGetAssertionRequest& request) {
-  return !request.allow_list.empty() &&
-         std::ranges::all_of(request.allow_list, &IsOnlyHybridOrInternal);
-}
-
 bool AllowListIncludedTransport(const CtapGetAssertionRequest& request,
                                 FidoTransportProtocol transport) {
   return std::ranges::any_of(
       request.allow_list,
       [transport](const PublicKeyCredentialDescriptor& cred) {
-        return cred.transports.empty() ||
-               base::Contains(cred.transports, transport);
+        return cred.transports.empty() || cred.transports.contains(transport);
       });
 }
 
@@ -324,12 +299,9 @@ GetAssertionRequestHandler::GetAssertionRequestHandler(
     CtapGetAssertionOptions options,
     bool allow_skipping_pin_touch,
     CompletionCallback completion_callback)
-    : FidoRequestHandlerBase(
-          fido_discovery_factory,
-          std::move(additional_discoveries),
-          base::STLSetIntersection<base::flat_set<FidoTransportProtocol>>(
-              supported_transports,
-              GetTransportsAllowedByRP(request))),
+    : FidoRequestHandlerBase(fido_discovery_factory,
+                             std::move(additional_discoveries),
+                             supported_transports),
       completion_callback_(std::move(completion_callback)),
       request_(std::move(request)),
       options_(std::move(options)),
@@ -339,10 +311,6 @@ GetAssertionRequestHandler::GetAssertionRequestHandler(
       request_.user_verification;
   transport_availability_info().has_empty_allow_list =
       request_.allow_list.empty();
-  transport_availability_info().is_only_hybrid_or_internal =
-      AllowListOnlyHybridOrInternal(request_);
-  transport_availability_info().is_off_the_record_context =
-      options_.is_off_the_record_context;
   transport_availability_info().transport_list_did_include_internal =
       AllowListIncludedTransport(request_, FidoTransportProtocol::kInternal);
   transport_availability_info().transport_list_did_include_hybrid =
@@ -379,16 +347,9 @@ void GetAssertionRequestHandler::PreselectAccount(
     DiscoverableCredentialMetadata credential) {
   DCHECK(!preselected_credential_);
   DCHECK(request_.allow_list.empty() ||
-         base::Contains(request_.allow_list, credential.cred_id,
-                        &PublicKeyCredentialDescriptor::id));
+         std::ranges::contains(request_.allow_list, credential.cred_id,
+                               &PublicKeyCredentialDescriptor::id));
   preselected_credential_ = std::move(credential);
-}
-
-void GetAssertionRequestHandler::ProvideClientDataJson(
-    std::string client_data_json) {
-  CHECK(!client_data_json.empty());
-  request_.SetClientDataJson(std::move(client_data_json));
-  RequestReady();
 }
 
 base::WeakPtr<GetAssertionRequestHandler>
@@ -396,30 +357,11 @@ GetAssertionRequestHandler::GetWeakPtr() {
   return weak_factory_.GetWeakPtr();
 }
 
-void GetAssertionRequestHandler::RequestReady() {
-  std::vector<base::WeakPtr<FidoAuthenticator>> pending_requests;
-  pending_requests.swap(pending_authenticator_requests_);
-  for (auto& authenticator : pending_requests) {
-    if (authenticator) {
-      DispatchRequest(authenticator.get());
-    }
-  }
-}
-
 void GetAssertionRequestHandler::OnBluetoothAdapterEnumerated(
     bool is_present,
     BleStatus ble_status,
     bool can_power_on,
     bool is_peripheral_role_supported) {
-  if (!is_peripheral_role_supported && request_.cable_extension) {
-    // caBLEv1 relies on the client being able to broadcast Bluetooth
-    // advertisements. |is_peripheral_role_supported| supposedly indicates
-    // whether the adapter supports advertising, but there appear to be false
-    // negatives (crbug/1074692). So we can't really do anything about it
-    // besides log it to aid diagnostics.
-    FIDO_LOG(ERROR)
-        << "caBLEv1 request, but BLE adapter does not support peripheral role";
-  }
   FidoRequestHandlerBase::OnBluetoothAdapterEnumerated(
       is_present, ble_status, can_power_on, is_peripheral_role_supported);
 }
@@ -427,13 +369,6 @@ void GetAssertionRequestHandler::OnBluetoothAdapterEnumerated(
 void GetAssertionRequestHandler::DispatchRequest(
     FidoAuthenticator* authenticator) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(my_sequence_checker_);
-  if (request_.client_data_json.empty()) {
-    // ChallengeUrl can asynchronously retrieve the challenge for ClientData, in
-    // which case the request has to be held pending.
-    pending_authenticator_requests_.push_back(authenticator->GetWeakPtr());
-    return;
-  }
-
   if (state_ != State::kWaitingForTouch) {
     FIDO_LOG(DEBUG) << "Not dispatching request to "
                     << authenticator->GetDisplayName()

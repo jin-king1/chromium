@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40284755): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "base/logging.h"
 
 #include <sstream>
@@ -14,10 +9,12 @@
 #include <string_view>
 
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/logging/logging_settings.h"
 #include "base/no_destructor.h"
 #include "base/process/process.h"
 #include "base/run_loop.h"
@@ -83,14 +80,15 @@ class LoggingTest : public testing::Test {
 
 class MockLogSource {
  public:
-  MOCK_METHOD0(Log, const char*());
+  MOCK_METHOD(const char*, Log, ());
 };
 
 class MockLogAssertHandler {
  public:
-  MOCK_METHOD4(
+  MOCK_METHOD(
+      void,
       HandleLogAssert,
-      void(const char*, int, const std::string_view, const std::string_view));
+      (const char*, int, const std::string_view, const std::string_view));
 };
 
 TEST_F(LoggingTest, BasicLogging) {
@@ -122,8 +120,6 @@ TEST_F(LoggingTest, BasicLogging) {
 
   EXPECT_TRUE(LOG_IS_ON(INFO));
   EXPECT_EQ(DCHECK_IS_ON(), DLOG_IS_ON(INFO));
-
-  EXPECT_TRUE(VLOG_IS_ON(0));
 
   LOG(INFO) << mock_log_source.Log();
   LOG_IF(INFO, true) << mock_log_source.Log();
@@ -364,7 +360,7 @@ TEST_F(LoggingTest, DuplicateLogFile) {
   FILE* log_file_dup = DuplicateLogFILE();
   CHECK(log_file_dup);
   CloseLogFile();
-  fprintf(log_file_dup, "%s\n", kErrorLogMessage2);
+  UNSAFE_TODO(fprintf(log_file_dup, "%s\n", kErrorLogMessage2));
   fflush(log_file_dup);
 
   // Check the messages were written to the log file.
@@ -577,7 +573,7 @@ TEST_F(LoggingTest, CheckCausesDistinctBreakpoints) {
   ASSERT_NE(child_crash_addr_2, child_crash_addr_3);
 #endif  // defined(OFFICIAL_BUILD)
 }
-#elif BUILDFLAG(IS_POSIX) && !BUILDFLAG(IS_NACL) && !BUILDFLAG(IS_IOS) && \
+#elif BUILDFLAG(IS_POSIX) && !BUILDFLAG(IS_IOS) && \
     (defined(ARCH_CPU_X86_FAMILY) || defined(ARCH_CPU_ARM_FAMILY))
 
 int g_child_crash_pipe;
@@ -749,7 +745,7 @@ TEST_F(LoggingTest, StreamingWstringFindsCorrectOperator) {
   std::wstring wstr = L"Hello World";
   std::ostringstream ostr;
   ostr << wstr;
-  EXPECT_EQ("Hello World", ostr.str());
+  EXPECT_EQ("Hello World", ostr.view());
 }
 }  // namespace nested_test
 
@@ -857,7 +853,7 @@ TEST_F(LoggingTest, String16) {
     std::ostringstream stream;
     stream << "Empty '" << std::u16string() << "' standard '"
            << std::u16string(u"Hello, world") << "'";
-    EXPECT_STREQ("Empty '' standard 'Hello, world'", stream.str().c_str());
+    EXPECT_EQ("Empty '' standard 'Hello, world'", stream.view());
   }
 
   // Interesting edge cases.
@@ -883,20 +879,17 @@ TEST_F(LoggingTest, String16) {
     stream << initial_surrogate << "," << final_surrogate << ","
            << surrogate_pair << "," << unterminated_surrogate;
 
-    EXPECT_STREQ("\xef\xbf\xbd,\xef\xbf\xbd,\xf0\x90\x8c\x80z,\xef\xbf\xbds",
-                 stream.str().c_str());
+    EXPECT_EQ("\xef\xbf\xbd,\xef\xbf\xbd,\xf0\x90\x8c\x80z,\xef\xbf\xbds",
+              stream.view());
   }
 }
 
 // Tests that we don't VLOG from logging_unittest except when in the scope
 // of the ScopedVmoduleSwitches.
 TEST_F(LoggingTest, ScopedVmoduleSwitches) {
-  EXPECT_TRUE(VLOG_IS_ON(0));
-
-  // To avoid unreachable-code warnings when VLOG is disabled at compile-time.
-  int expected_logs = 0;
-  if (VLOG_IS_ON(0)) {
-    expected_logs += 1;
+  // Some builds don't have runtime vlogging. See base/logging.h.
+  if (!VLOG_IS_ON(0)) {
+    GTEST_SKIP();
   }
 
   SetMinLogLevel(LOGGING_FATAL);
@@ -912,9 +905,8 @@ TEST_F(LoggingTest, ScopedVmoduleSwitches) {
     ScopedVmoduleSwitches scoped_vmodule_switches;
     scoped_vmodule_switches.InitWithSwitches(__FILE__ "=1");
     MockLogSource mock_log_source;
-    EXPECT_CALL(mock_log_source, Log())
-        .Times(expected_logs)
-        .WillRepeatedly(Return("log message"));
+
+    EXPECT_CALL(mock_log_source, Log()).WillOnce(Return("log message"));
 
     VLOG(1) << mock_log_source.Log();
   }

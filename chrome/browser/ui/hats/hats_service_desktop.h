@@ -21,6 +21,7 @@
 #include "content/public/browser/web_contents_observer.h"
 
 class Browser;
+class PrefService;
 
 // Key-value mapping type for survey's product specific bits data.
 typedef std::map<std::string, bool> SurveyBitsData;
@@ -44,7 +45,7 @@ class HatsServiceDesktop : public HatsService {
                       content::WebContents* web_contents,
                       const SurveyBitsData& product_specific_bits_data,
                       const SurveyStringData& product_specific_string_data,
-                      NavigationBehaviour navigation_behaviour,
+                      NavigationBehavior navigation_behavior,
                       base::OnceClosure success_callback,
                       base::OnceClosure failure_callback,
                       std::optional<std::string_view> supplied_trigger_id);
@@ -67,6 +68,8 @@ class HatsServiceDesktop : public HatsService {
     // Returns a weak pointer to this object.
     virtual base::WeakPtr<DelayedSurveyTask> GetWeakPtr();
 
+    const std::string& trigger() const { return trigger_; }
+
     bool operator<(const HatsServiceDesktop::DelayedSurveyTask& other) const {
       return trigger_ < other.trigger_ ? true
                                        : web_contents() < other.web_contents();
@@ -78,7 +81,7 @@ class HatsServiceDesktop : public HatsService {
     std::string trigger_;
     SurveyBitsData product_specific_bits_data_;
     SurveyStringData product_specific_string_data_;
-    NavigationBehaviour navigation_behaviour_;
+    NavigationBehavior navigation_behavior_;
     base::OnceClosure success_callback_;
     base::OnceClosure failure_callback_;
     std::optional<std::string> supplied_trigger_id_;
@@ -96,7 +99,7 @@ class HatsServiceDesktop : public HatsService {
     kNoLastSurveyTooRecent = 5,
     kNoBelowProbabilityLimit = 6,
     kNoTriggerStringMismatch = 7,
-    kNoNotRegularBrowser = 8,
+    kNoWrongBrowserType = 8,
     kNoIncognitoDisabled = 9,
     kNoCookiesBlocked = 10,            // Unused.
     kNoThirdPartyCookiesBlocked = 11,  // Unused.
@@ -105,7 +108,8 @@ class HatsServiceDesktop : public HatsService {
     kNoSurveyAlreadyInProgress = 14,
     kNoAnyLastSurveyTooRecent = 15,
     kNoRejectedByHatsService = 16,
-    kMaxValue = kNoRejectedByHatsService,
+    kNoLastSurveyCheckTooRecent = 17,
+    kMaxValue = kNoLastSurveyCheckTooRecent,
   };
 
   explicit HatsServiceDesktop(Profile* profile);
@@ -118,15 +122,17 @@ class HatsServiceDesktop : public HatsService {
   static void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry);
 
   using HatsService::LaunchSurvey;
-  void LaunchSurvey(
+  LaunchError LaunchSurvey(
       const std::string& trigger,
       base::OnceClosure success_callback,
       base::OnceClosure failure_callback,
       const SurveyBitsData& product_specific_bits_data,
-      const SurveyStringData& product_specific_string_data) override;
+      const SurveyStringData& product_specific_string_data,
+      const std::optional<std::string>& supplied_trigger_id,
+      const SurveyOptions& survey_options) override;
 
   using HatsService::LaunchSurveyForWebContents;
-  void LaunchSurveyForWebContents(
+  LaunchError LaunchSurveyForWebContents(
       const std::string& trigger,
       content::WebContents* web_contents,
       const SurveyBitsData& product_specific_bits_data,
@@ -137,20 +143,20 @@ class HatsServiceDesktop : public HatsService {
       const SurveyOptions& survey_options) override;
 
   using HatsService::LaunchDelayedSurvey;
-  bool LaunchDelayedSurvey(
+  LaunchError LaunchDelayedSurvey(
       const std::string& trigger,
       int timeout_ms,
       const SurveyBitsData& product_specific_bits_data,
       const SurveyStringData& product_specific_string_data) override;
 
   using HatsService::LaunchDelayedSurveyForWebContents;
-  bool LaunchDelayedSurveyForWebContents(
+  LaunchError LaunchDelayedSurveyForWebContents(
       const std::string& trigger,
       content::WebContents* web_contents,
       int timeout_ms,
       const SurveyBitsData& product_specific_bits_data,
       const SurveyStringData& product_specific_string_data,
-      NavigationBehaviour navigation_behaviour,
+      NavigationBehavior navigation_behavior,
       base::OnceClosure success_callback,
       base::OnceClosure failure_callback,
       const std::optional<std::string>& supplied_trigger_id,
@@ -180,28 +186,27 @@ class HatsServiceDesktop : public HatsService {
  private:
   FRIEND_TEST_ALL_PREFIXES(HatsServiceProbabilityOne, SingleHatsNextDialog);
 
+  PrefService* GetPrefsForHatsMetadata() const;
+
   // Remove |task| from the set of |pending_tasks_|.
   void RemoveTask(const DelayedSurveyTask& task);
 
-  // Returns true is the survey trigger specified should be shown.
-  bool ShouldShowSurvey(const std::string& trigger) const;
+  // Returns the launch error for the given trigger and browser, performing all
+  // checks.
+  LaunchError RunLaunchChecks(Browser* browser,
+                              const std::string& trigger) const;
 
-  void LaunchSurveyForBrowser(
+  // Helper for CanShowSurvey, performing browser-independent checks (except
+  // probability).
+  LaunchError RunCommonLaunchChecks(const std::string& trigger) const;
+
+  // Returns true if the requested browser type matches the actual browser type.
+  bool IsRightBrowserType(
       Browser* browser,
-      const std::string& trigger,
-      base::OnceClosure success_callback,
-      base::OnceClosure failure_callback,
-      const SurveyBitsData& product_specific_bits_data,
-      const SurveyStringData& product_specific_string_data,
-      const std::optional<std::string_view>& supplied_trigger_id =
-          std::nullopt);
+      hats::SurveyConfig::RequestedBrowserType requested_browser_type) const;
 
-  // Check whether the survey is reachable and under capacity and show it.
-  // |success_callback| is called when the survey is shown to the user.
-  // |failure_callback| is called if the survey does not launch for any reason.
-  // The matches of field names with the `SurveyConfig` are CHECK
-  // enforced.
-  void CheckSurveyStatusAndMaybeShow(
+  // Shows the survey after checking all conditions are met.
+  LaunchError ShowSurvey(
       Browser* browser,
       const std::string& trigger,
       base::OnceClosure success_callback,

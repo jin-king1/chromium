@@ -7,11 +7,12 @@
 
 #include <list>
 #include <queue>
+#include <string>
 #include <vector>
 
 #include "base/files/file_path.h"
 #include "base/functional/callback.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
@@ -24,6 +25,10 @@ namespace network {
 struct ResourceRequest;
 class SimpleURLLoader;
 }  // namespace network
+
+namespace net {
+class HttpResponseHeaders;
+}
 
 namespace feedback {
 
@@ -107,6 +112,11 @@ class FeedbackUploader : public KeyedService {
     return report_being_dispatched_;
   }
 
+  // For testing feedback upload in non-branded builds with a real URL. Returns
+  // the previous URL so that tests can restore on TearDown() to avoid leaking
+  // state.
+  GURL SetFeedbackGURLForTesting(GURL url);
+
  private:
   friend class FeedbackUploaderTest;
 
@@ -137,7 +147,7 @@ class FeedbackUploader : public KeyedService {
   void DispatchReport();
 
   void OnDispatchComplete(UrlLoaderList::iterator it,
-                          std::unique_ptr<std::string> response_body);
+                          scoped_refptr<net::HttpResponseHeaders> headers);
 
   // Update our timer for uploading the next report.
   void UpdateUploadTimer();
@@ -159,7 +169,7 @@ class FeedbackUploader : public KeyedService {
 
   scoped_refptr<FeedbackReport> report_being_dispatched_;
 
-  const GURL feedback_post_url_;
+  GURL feedback_post_url_;
 
   // Priority queue of reports prioritized by the time the report is supposed
   // to be uploaded at.

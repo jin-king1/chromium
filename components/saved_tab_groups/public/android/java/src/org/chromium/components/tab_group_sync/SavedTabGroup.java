@@ -52,6 +52,12 @@ public class SavedTabGroup {
      */
     public @Nullable String collaborationId;
 
+    /**
+     * Timestamp for when the local tab group was archived. The field is null if the group is not
+     * currently archived.
+     */
+    public @Nullable Long archivalTimeMs;
+
     /** The tabs associated with this saved tab group. */
     public List<SavedTabGroupTab> savedTabs = new ArrayList<>();
 
@@ -68,6 +74,8 @@ public class SavedTabGroup {
         sb.append(color);
         sb.append(", collaborationId = ");
         sb.append(collaborationId);
+        sb.append(", archivalTimeMs = ");
+        sb.append(archivalTimeMs);
         sb.append(", # of Tabs = ");
         sb.append(savedTabs.size());
 

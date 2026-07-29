@@ -10,7 +10,6 @@
 
 #include "base/containers/adapters.h"
 #include "base/functional/bind.h"
-#include "base/not_fatal_until.h"
 #include "base/strings/strcat.h"
 #include "base/values.h"
 #include "content/browser/media/media_internals.h"
@@ -156,13 +155,13 @@ void MediaInternalsAudioFocusHelper::DidGetAudioFocusRequestList(
 
   // We should go backwards through the stack so the top of the stack is
   // always shown first in the list.
-  base::Value::List stack_data;
+  base::ListValue stack_data;
   for (const auto& session : base::Reversed(stack)) {
     if (!session->request_id.has_value())
       continue;
 
     std::string id_string = session->request_id.value().ToString();
-    base::Value::Dict media_session_data;
+    base::DictValue media_session_data;
     media_session_data.Set(kAudioFocusIdKey, id_string);
     stack_data.Append(std::move(media_session_data));
 
@@ -191,18 +190,18 @@ void MediaInternalsAudioFocusHelper::DidGetAudioFocusDebugInfo(
   if (!EnsureServiceConnection())
     return;
 
-  base::Value::List* sessions_list =
+  base::ListValue* sessions_list =
       audio_focus_data_.FindList(kAudioFocusSessionsKey);
   DCHECK(sessions_list);
 
   bool updated = false;
   for (auto& value : *sessions_list) {
-    base::Value::Dict& session = value.GetDict();
+    base::DictValue& session = value.GetDict();
     if (session.Find(kAudioFocusIdKey)->GetString() != id)
       continue;
 
     auto state = request_state_.find(id);
-    CHECK(state != request_state_.end(), base::NotFatalUntil::M130);
+    CHECK(state != request_state_.end());
 
     session.Set("name", BuildNameString(state->second, info->name));
     session.Set("owner", info->owner);
@@ -218,7 +217,7 @@ void MediaInternalsAudioFocusHelper::DidGetAudioFocusDebugInfo(
 
 void MediaInternalsAudioFocusHelper::SerializeAndSendUpdate(
     std::string_view function,
-    const base::Value::Dict& value) {
+    const base::DictValue& value) {
   base::ValueView args[] = {value};
   return MediaInternals::GetInstance()->SendUpdate(
       content::WebUI::GetJavascriptCall(function, args));

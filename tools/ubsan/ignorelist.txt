@@ -1,5 +1,4 @@
-#!special-case-list-v1
-# TODO(crbug.com/41488956): update to glob patterns
+#!special-case-list-v2
 
 #############################################################################
 # UBSan ignorelist.
@@ -28,17 +27,9 @@ src:*/hb-ot-shape-fallback.cc
 [null]
 fun:*views*ViewAccessibilityUtils*IsFocusedChildWidget*
 
-# https://crbug.com/363225486
-[alignment]
-fun:*base*Pickle*
-
 # https://crbug.com/385062729
 [pointer-overflow]
 fun:*angle*PoolAllocator*allocate*
-
-# https://crbug.com/385155394
-[pointer-overflow]
-fun:*VP8BitReaderSetBuffer*
 
 # https://crbug.com/400654644
 [pointer-overflow]
@@ -47,3 +38,7 @@ fun:*iterate_string_chunks*
 # https://crbug.com/400740870
 [pointer-overflow]
 fun:*find_best_partition_order_*
+
+# https://crbug.com/451633108
+[builtin]
+fun:*_dispatch_once*

@@ -11,6 +11,7 @@
 #include "third_party/blink/renderer/core/layout/inline/line_info_list.h"
 #include "third_party/blink/renderer/core/layout/inline/line_widths.h"
 #include "third_party/blink/renderer/platform/fonts/shaping/shape_result_view.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
 namespace blink {
 
@@ -85,10 +86,26 @@ void ScoreLineBreaker::OptimalBreakPoints(const LeadingFloats& leading_floats,
       /* column_spanner_path */ nullptr, exclusion_space_);
   const int lines_until_clamp =
       space_.GetLineClampData().LinesUntilClamp().value_or(0);
+  // If we're line-clamping with ellipsis placed as part of line-breaking, we
+  // should use ParagraphLineBreaker instead. Score line breaking will be
+  // disabled in the InlineItemsBuilder for the line-clamp container itself,
+  // but not for its descendants, so we do it here.
+  if (RuntimeEnabledFeatures::CSSLineClampLineBreakingEllipsisEnabled() &&
+      lines_until_clamp) {
+    context.SuspendUntilEndParagraph();
+    return;
+  }
+  DCHECK(!RuntimeEnabledFeatures::CSSLineClampLineBreakingEllipsisEnabled() ||
+         lines_until_clamp == 0);
   for (;;) {
     LineInfo& line_info = line_info_list.Append();
     line_breaker.NextLine(&line_info);
     break_token_ = line_info.GetBreakToken();
+    if (RuntimeEnabledFeatures::ScoreLineBreakerAbortEnabled() &&
+        line_info.HasUnsuccessfulBlockInInline()) {
+      context.SuspendUntilEndParagraph();
+      return;
+    }
     if (line_breaker.ShouldDisableScoreLineBreak()) [[unlikely]] {
       context.SuspendUntilEndParagraph();
       return;
@@ -202,6 +219,16 @@ bool ScoreLineBreaker::Optimize(const LineInfoList& line_info_list,
 
   // Determine final break points.
   ComputeBreakPoints(candidates, scores, break_points);
+
+  // If the optimal layout produces a different number of lines than the greedy
+  // layout, fallback to greedy. The [spec] allows different number of lines for
+  // `pretty`, and for `balance` of more than 5 lines, but the code needs some
+  // updates to support it.
+  // [spec]: https://drafts.csswg.org/css-text-4/#text-wrap-style
+  if (break_points.size() != line_info_list.Size()) {
+    break_points.clear();
+    return false;
+  }
 
   // Copy data for testing.
   if (scores_out_for_testing_) [[unlikely]] {

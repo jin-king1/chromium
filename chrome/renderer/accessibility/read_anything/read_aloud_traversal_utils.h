@@ -6,8 +6,8 @@
 #define CHROME_RENDERER_ACCESSIBILITY_READ_ANYTHING_READ_ALOUD_TRAVERSAL_UTILS_H_
 
 #include <string>
+#include <string_view>
 
-#include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/accessibility/ax_node_position.h"
 
 // Utilities for traversing the accessibility tree for Read Aloud.
@@ -110,11 +110,11 @@ struct ReadAloudCurrentGranularity {
 
 // Returns the index of the next sentence of the given text, such that the
 // next sentence is equivalent to text.substr(0, <returned_index>).
-int GetNextSentence(const std::u16string& text, bool is_pdf);
+int GetNextSentence(std::u16string_view text);
 
 // Returns the index of the next word of the given text, such that the
 // next word is equivalent to text.substr(0, <returned_index>).
-int GetNextWord(const std::u16string& text);
+int GetNextWord(std::u16string_view text);
 
 // Returns true if both positions are non-null and equal.
 bool ArePositionsEqual(const ui::AXNodePosition::AXPositionInstance& position,
@@ -126,11 +126,6 @@ bool ArePositionsEqual(const ui::AXNodePosition::AXPositionInstance& position,
 // to get a parent node from the AXPosition's returned anchor.
 ui::AXNode* GetAnchorNode(
     const ui::AXNodePosition::AXPositionInstance& position);
-
-// Uses the given AXNodePosition to return the next node that should be spoken
-// by Read Aloud.
-ui::AXNode* GetNextNodeFromPosition(
-    const ui::AXNodePosition::AXPositionInstance& ax_position);
 
 // Returns if the given character can be considered opening puncutation.
 // This is used to ensure we're not reading out opening punctuation

@@ -2,13 +2,17 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import '/strings.m.js';
+
 import {loadTimeData} from '//resources/js/load_time_data.js';
 
-import {PageHandlerFactory, PageHandlerRemote, PageReceiver} from './glic.mojom-webui.js';
-import type {PageHandlerInterface, PageInterface} from './glic.mojom-webui.js';
+import {GlicPreloadHandlerFactory, GlicPreloadHandlerRemote, PageCallbackRouter, PageHandlerFactory, PageHandlerRemote, PreloadPageCallbackRouter} from './glic.mojom-webui.js';
+import type {GlicPreloadHandlerInterface, PageHandlerInterface} from './glic.mojom-webui.js';
+import {ObservableValue} from './observable.js';
 
 export interface BrowserProxy {
-  handler: PageHandlerInterface;
+  pageHandler: PageHandlerInterface;
+  glicPreloadHandler?: GlicPreloadHandlerInterface;
 }
 
 // Whether to enable PageHandler debug logging. Can be enabled with the
@@ -16,22 +20,31 @@ export interface BrowserProxy {
 const kEnableDebug = loadTimeData.getBoolean('enableDebug');
 
 export class BrowserProxyImpl implements BrowserProxy {
-  handler: PageHandlerInterface;
-  constructor(pageInterface: PageInterface) {
-    const pageReceiver = new PageReceiver(pageInterface);
+  pageHandler: PageHandlerRemote;
+  pageCallbackRouter: PageCallbackRouter;
+
+  glicPreloadHandler?: GlicPreloadHandlerRemote;
+  preloadPageCallbackRouter: PreloadPageCallbackRouter;
+  instanceId = ObservableValue.withNoValue<string>();
+
+  constructor() {
+    this.pageCallbackRouter = new PageCallbackRouter();
+    this.preloadPageCallbackRouter = new PreloadPageCallbackRouter();
+
     const pageHandlerRemote = new PageHandlerRemote();
-    this.handler = pageHandlerRemote;
-    if (kEnableDebug) {
-      this.handler = new Proxy(pageHandlerRemote, {
+    if (!kEnableDebug) {
+      this.pageHandler = pageHandlerRemote;
+    } else {
+      this.pageHandler = new Proxy(pageHandlerRemote, {
         get(target: PageHandlerRemote, name: keyof PageHandlerRemote,
             receiver) {
           const prop = Reflect.get(target, name, receiver);
           if (!target.hasOwnProperty(name)) {
             if (typeof prop === 'function') {
-              return function(this: PageHandlerRemote, ...args: any) {
+              return function(this: PageHandlerRemote, ...args: unknown[]) {
                 /* eslint no-console: ["error", { allow: ["log"] }] */
                 console.log('PageHandler#', name, args);
-                return (prop as any).apply(this, args);
+                return (prop as Function).apply(this, args);
               };
             }
           }
@@ -39,8 +52,18 @@ export class BrowserProxyImpl implements BrowserProxy {
         },
       });
     }
-    PageHandlerFactory.getRemote().createPageHandler(
-        pageHandlerRemote.$.bindNewPipeAndPassReceiver(),
-        pageReceiver.$.bindNewPipeAndPassRemote());
+    PageHandlerFactory.getRemote()
+        .createPageHandler(
+            this.pageHandler.$.bindNewPipeAndPassReceiver(),
+            this.pageCallbackRouter.$.bindNewPipeAndPassRemote())
+        .then(({instanceId}) => {
+          this.instanceId.assignAndSignal(instanceId);
+        });
+
+    const preloadHandlerRemote = new GlicPreloadHandlerRemote();
+    this.glicPreloadHandler = preloadHandlerRemote;
+    GlicPreloadHandlerFactory.getRemote().createPreloadHandler(
+        this.glicPreloadHandler.$.bindNewPipeAndPassReceiver(),
+        this.preloadPageCallbackRouter.$.bindNewPipeAndPassRemote());
   }
 }

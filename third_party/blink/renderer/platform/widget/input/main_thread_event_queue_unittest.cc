@@ -2,30 +2,32 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "third_party/blink/renderer/platform/widget/input/main_thread_event_queue.h"
 
 #include <stddef.h>
 
+#include <array>
 #include <new>
 #include <tuple>
 #include <utility>
 
 #include "base/auto_reset.h"
+#include "base/compiler_specific.h"
 #include "base/containers/adapters.h"
+#include "base/containers/span.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ref.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/strings/string_util.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/test_simple_task_runner.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
+#include "cc/base/features.h"
 #include "cc/metrics/event_metrics.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/input/synthetic_web_input_event_builders.h"
 #include "third_party/blink/public/common/input/web_input_event_attribution.h"
 #include "third_party/blink/public/common/input/web_mouse_wheel_event.h"
@@ -140,8 +142,11 @@ enum class CallbackReceivedState {
 };
 
 void PrintTo(CallbackReceivedState state, std::ostream* os) {
-  const char* kCallbackReceivedStateToString[] = {
-      "Pending", "CalledWhileHandlingEvent", "CalledAfterHandleEvent"};
+  auto kCallbackReceivedStateToString = std::to_array<const char*>({
+      "Pending",
+      "CalledWhileHandlingEvent",
+      "CalledAfterHandleEvent",
+  });
   *os << kCallbackReceivedStateToString[static_cast<int>(state)];
 }
 
@@ -247,6 +252,7 @@ class MainThreadEventQueueTest : public testing::Test,
     queue_ = base::MakeRefCounted<MainThreadEventQueue>(
         this, main_task_runner_, main_task_runner_, widget_scheduler_, true);
     queue_->ClearRafFallbackTimerForTesting();
+    ::features::SetIsEligibleForThrottleMainFrameTo60Hz(true);
   }
 
   void HandleEvent(const WebInputEvent& event,
@@ -276,7 +282,8 @@ class MainThreadEventQueueTest : public testing::Test,
   }
 
   bool needs_low_latency_until_pointer_up() {
-    return queue_->needs_low_latency_until_pointer_up_;
+    return queue_->needs_low_latency_until_pointer_up_.load(
+        std::memory_order_relaxed);
   }
 
   bool last_touch_start_forced_nonblocking_due_to_fling() {
@@ -288,6 +295,7 @@ class MainThreadEventQueueTest : public testing::Test,
     while (needs_main_frame_ || main_task_runner_->HasPendingTask()) {
       main_task_runner_->RunUntilIdle();
       needs_main_frame_ = false;
+      urgent_main_frame_ = false;
       frame_time_ += kFrameInterval;
       queue_->DispatchRafAlignedInput(frame_time_);
     }
@@ -296,6 +304,7 @@ class MainThreadEventQueueTest : public testing::Test,
   void RunSimulatedRafOnce() {
     if (needs_main_frame_) {
       needs_main_frame_ = false;
+      urgent_main_frame_ = false;
       frame_time_ += kFrameInterval;
       queue_->DispatchRafAlignedInput(frame_time_);
     }
@@ -325,7 +334,11 @@ class MainThreadEventQueueTest : public testing::Test,
     else
       non_raf_aligned_events_dispatched_ = true;
   }
-  void SetNeedsMainFrame() override { needs_main_frame_ = true; }
+  void SetNeedsMainFrame(cc::BeginMainFrameReason, bool urgent) override {
+    needs_main_frame_ = true;
+    urgent_main_frame_ = urgent;
+  }
+
   bool RequestedMainFramePending() override { return needs_main_frame_; }
 
   Vector<ReceivedCallback> GetAndResetCallbackResults() {
@@ -348,7 +361,9 @@ class MainThreadEventQueueTest : public testing::Test,
   Vector<std::unique_ptr<HandledTask>> handled_tasks_;
   std::unique_ptr<HandledEventCallbackTracker> handler_callback_;
 
+  bool requested_main_frames_are_urgent_ = false;
   bool needs_main_frame_ = false;
+  bool urgent_main_frame_ = false;
   bool handle_input_event_ = true;
   bool raf_aligned_events_dispatched_ = false;
   bool non_raf_aligned_events_dispatched_ = false;
@@ -819,6 +834,10 @@ TEST_F(MainThreadEventQueueTest, RafAlignedTouchInput) {
   for (SyntheticWebTouchEvent& event : kEvents)
     HandleEvent(event, blink::mojom::InputEventResultState::kSetNonBlocking);
 
+  EXPECT_TRUE(RequestedMainFramePending());
+  EXPECT_EQ(urgent_main_frame_, base::FeatureList::IsEnabled(
+                                    blink::features::kUrgentMainFrameForInput));
+
   EXPECT_EQ(3u, event_queue().size());
   EXPECT_TRUE(main_task_runner_->HasPendingTask());
   EXPECT_TRUE(needs_main_frame_);
@@ -828,6 +847,8 @@ TEST_F(MainThreadEventQueueTest, RafAlignedTouchInput) {
   EXPECT_THAT(GetAndResetCallbackResults(),
               testing::Each(ReceivedCallback(
                   CallbackReceivedState::kCalledWhileHandlingEvent, false, 0)));
+  EXPECT_FALSE(RequestedMainFramePending());
+  EXPECT_FALSE(urgent_main_frame_);
 
   // Simulate the rAF running before the PostTask occurs. The rAF
   // will consume everything.
@@ -876,8 +897,39 @@ TEST_F(MainThreadEventQueueTest, RafAlignedTouchInput) {
                            false, 3),
           ReceivedCallback(CallbackReceivedState::kCalledAfterHandleEvent,
                            false, 4),
+          // The touch end is dispatched as non-blocking since the touch start
+          // and first touch move were not consumed.
           ReceivedCallback(CallbackReceivedState::kCalledAfterHandleEvent,
-                           false, 5)));
+                           false, 4)));
+}
+
+TEST_F(MainThreadEventQueueTest, RafAlignedTouchInputUrgentMainFrame) {
+  base::test::ScopedFeatureList feature_list{
+      blink::features::kUrgentMainFrameForInput};
+  SyntheticWebTouchEvent event;
+  event.PressPoint(20, 20);
+  event.MovePoint(0, 20, 20);
+
+  EXPECT_FALSE(main_task_runner_->HasPendingTask());
+  EXPECT_EQ(0u, event_queue().size());
+
+  EXPECT_CALL(*widget_scheduler_, DidHandleInputEventOnMainThread(
+                                      testing::_, testing::_, testing::_));
+
+  HandleEvent(event, blink::mojom::InputEventResultState::kNotConsumed);
+
+  // Main frame requests from a rAF-aligned input are urgent, and sent from the
+  // impl thread.
+  EXPECT_TRUE(RequestedMainFramePending());
+  EXPECT_TRUE(urgent_main_frame_);
+
+  EXPECT_EQ(1u, event_queue().size());
+  EXPECT_TRUE(needs_main_frame_);
+  main_task_runner_->RunUntilIdle();
+
+  RunPendingTasksWithSimulatedRaf();
+  EXPECT_FALSE(RequestedMainFramePending());
+  EXPECT_FALSE(urgent_main_frame_);
 }
 
 TEST_F(MainThreadEventQueueTest, RafAlignedTouchInputCoalescedMoves) {
@@ -951,6 +1003,10 @@ TEST_F(MainThreadEventQueueTest, RafAlignedTouchInputCoalescedMoves) {
 }
 
 TEST_F(MainThreadEventQueueTest, RafAlignedTouchInputThrottlingMoves) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      blink::features::kUnthrottleAsyncTouchMoves);
+
   EXPECT_CALL(*widget_scheduler_, DidHandleInputEventOnMainThread(
                                       testing::_, testing::_, testing::_))
       .Times(3);
@@ -994,6 +1050,48 @@ TEST_F(MainThreadEventQueueTest, RafAlignedTouchInputThrottlingMoves) {
               testing::Each(ReceivedCallback(
                   CallbackReceivedState::kCalledWhileHandlingEvent, false, 1)));
   EXPECT_EQ(0u, event_queue().size());
+}
+
+TEST_F(MainThreadEventQueueTest, RafAlignedTouchInputUnthrottledMoves) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      blink::features::kUnthrottleAsyncTouchMoves,
+      {{"policy", "unthrottled_always"}});
+
+  EXPECT_CALL(*widget_scheduler_, DidHandleInputEventOnMainThread(
+                                      testing::_, testing::_, testing::_))
+      .Times(3);
+
+  SyntheticWebTouchEvent kEvents[2];
+  kEvents[0].PressPoint(10, 10);
+  kEvents[0].MovePoint(0, 50, 50);
+  kEvents[0].dispatch_type = WebInputEvent::DispatchType::kEventNonBlocking;
+  kEvents[1].PressPoint(10, 10);
+  kEvents[1].MovePoint(0, 20, 20);
+  kEvents[1].dispatch_type = WebInputEvent::DispatchType::kEventNonBlocking;
+
+  EXPECT_FALSE(main_task_runner_->HasPendingTask());
+  EXPECT_EQ(0u, event_queue().size());
+
+  HandleEvent(kEvents[0], blink::mojom::InputEventResultState::kNotConsumed);
+  EXPECT_EQ(1u, event_queue().size());
+  EXPECT_FALSE(main_task_runner_->HasPendingTask());
+  EXPECT_TRUE(needs_main_frame_);
+  RunPendingTasksWithSimulatedRaf();
+  EXPECT_THAT(GetAndResetCallbackResults(),
+              testing::Each(ReceivedCallback(
+                  CallbackReceivedState::kCalledWhileHandlingEvent, false, 0)));
+  HandleEvent(kEvents[0], blink::mojom::InputEventResultState::kNotConsumed);
+  HandleEvent(kEvents[1], blink::mojom::InputEventResultState::kNotConsumed);
+  EXPECT_EQ(1u, event_queue().size());
+  EXPECT_FALSE(main_task_runner_->HasPendingTask());
+  EXPECT_TRUE(needs_main_frame_);
+
+  // Event should be dispatched immediately after handling a single rAF call.
+  RunSimulatedRafOnce();
+  EXPECT_EQ(0u, event_queue().size());
+  EXPECT_FALSE(main_task_runner_->HasPendingTask());
+  EXPECT_FALSE(needs_main_frame_);
 }
 
 TEST_F(MainThreadEventQueueTest, LowLatency) {
@@ -1469,6 +1567,7 @@ TEST_F(MainThreadEventQueueTest,
 
   SyntheticWebTouchEvent touch_moves[5];
   for (auto& touch_move : touch_moves) {
+    touch_move.PressPoint(20, 30);
     touch_move.MovePoint(0, 20, 30);
     ASSERT_EQ(WebInputEvent::Type::kTouchMove, touch_move.GetType());
     ASSERT_EQ(WebInputEvent::DispatchType::kBlocking, touch_move.dispatch_type);
@@ -1511,7 +1610,7 @@ TEST_F(MainThreadEventQueueTest,
     }
 
     MainThreadEventQueueTest& test;
-    const SyntheticWebTouchEvent* touch_moves;
+    base::span<const SyntheticWebTouchEvent> touch_moves;
     bool consume_touch_start = false;
     bool consume_first_touch_move = false;
   };
@@ -1547,12 +1646,12 @@ TEST_F(MainThreadEventQueueTest,
                            false, 2),
           ReceivedCallback(CallbackReceivedState::kCalledAfterHandleEvent, true,
                            2),
-          // These callbacks were run just after handling the second
-          // touchmove.
-          ReceivedCallback(CallbackReceivedState::kCalledAfterHandleEvent,
-                           false, 3),
-          ReceivedCallback(CallbackReceivedState::kCalledAfterHandleEvent, true,
-                           3)));
+          // These callbacks are run on the compositor thread immediately after
+          // enqueueing the touchmoves.
+          ReceivedCallback(CallbackReceivedState::kCalledWhileHandlingEvent,
+                           false, 2),
+          ReceivedCallback(CallbackReceivedState::kCalledWhileHandlingEvent,
+                           false, 2)));
   EXPECT_THAT(
       handled_tasks_,
       ::testing::ElementsAre(
@@ -1658,10 +1757,13 @@ TEST_F(MainThreadEventQueueTest,
                                       touch_moves[3].unique_touch_event_id,
                                       WebInputEvent::DispatchType::kBlocking)));
 
-  // Start another touch sequence, neither the touch start nor the first touch
-  // move are consumed, like the first touch sequence.
+  // Start another touch sequence. The touch start is not consumed. There are
+  // two "first" touch moves the first of which is consumed because it is
+  // suppressed but the second is not consumed.
   handled_tasks_.clear();
   will_handle_input_event_callback.consume_touch_start = false;
+  will_handle_input_event_callback.consume_first_touch_move = true;
+  touch_moves[1].touch_start_or_first_touch_move = true;
   EXPECT_CALL(*widget_scheduler_, DidHandleInputEventOnMainThread(
                                       testing::_, testing::_, testing::_))
       .Times(6);
@@ -1677,9 +1779,9 @@ TEST_F(MainThreadEventQueueTest,
           ReceivedCallback(CallbackReceivedState::kCalledAfterHandleEvent,
                            false, 2),
           ReceivedCallback(CallbackReceivedState::kCalledAfterHandleEvent,
-                           false, 2),
+                           false, 3),
           ReceivedCallback(CallbackReceivedState::kCalledAfterHandleEvent, true,
-                           2),
+                           3),
           ReceivedCallback(CallbackReceivedState::kCalledAfterHandleEvent,
                            false, 3),
           ReceivedCallback(CallbackReceivedState::kCalledAfterHandleEvent, true,
@@ -1695,7 +1797,7 @@ TEST_F(MainThreadEventQueueTest,
                               WebInputEvent::DispatchType::kBlocking),
           IsHandledTouchEvent(WebInputEvent::Type::kTouchMove,
                               touch_moves[1].unique_touch_event_id,
-                              WebInputEvent::DispatchType::kEventNonBlocking),
+                              WebInputEvent::DispatchType::kBlocking),
           IsHandledTouchEvent(WebInputEvent::Type::kTouchMove,
                               touch_moves[3].unique_touch_event_id,
                               WebInputEvent::DispatchType::kEventNonBlocking)));
@@ -2006,6 +2108,86 @@ TEST_F(MainThreadEventQueueTest, InputEventsDispatchedNotified) {
   EXPECT_EQ(3u, handled_tasks_.size());
   EXPECT_EQ(mouse_move.GetType(),
             handled_tasks_.at(2)->taskAsEvent()->Event().GetType());
+}
+
+TEST_F(MainThreadEventQueueTest, FirstBlockingTouchMoveNotThrottled) {
+  // Advance `frame_time_` so that when we process the event we aren't
+  // throttled.
+  frame_time_ += base::Milliseconds(200);
+  SyntheticWebTouchEvent touch_move;
+  touch_move.PressPoint(10, 10);
+  touch_move.MovePoint(0, 20, 20);
+  touch_move.moved_beyond_slop_region = true;
+  touch_move.dispatch_type = WebInputEvent::DispatchType::kEventNonBlocking;
+  // Post one rAF-aligned event.
+  HandleEvent(touch_move, blink::mojom::InputEventResultState::kNotConsumed);
+
+  // There should be two events, one is the `kTouchMove`, one is
+  // `kPointerRawUpdate`.
+  EXPECT_EQ(1u, event_queue().size());
+  // A main frame should be needed to dispatch the rAF-aligned event.
+  EXPECT_TRUE(needs_main_frame_);
+  EXPECT_FALSE(raf_aligned_events_dispatched_);
+
+  // Run pending tasks with a simulated rAF.
+  RunSimulatedRafOnce();
+  // Now, clients should be notified of rAF-aligned events dispatch.
+  EXPECT_TRUE(raf_aligned_events_dispatched_);
+  // No main frame should be needed anymore..
+  EXPECT_FALSE(needs_main_frame_);
+
+  // The rAF-alinged event should be handled out of the queue now.
+  EXPECT_EQ(0u, event_queue().size());
+  EXPECT_EQ(1u, handled_tasks_.size());
+  EXPECT_EQ(touch_move.GetType(),
+            handled_tasks_.at(0)->taskAsEvent()->Event().GetType());
+
+  // Reset test state:
+  raf_aligned_events_dispatched_ = false;
+
+  // Simulate a the first `kTouchMove` of another sequence, that is blocking,
+  // which arrives within the throttling time `kAsyncTouchMoveInterval`.
+  SyntheticWebTouchEvent touch_move_2;
+  touch_move_2.PressPoint(10, 10);
+  touch_move_2.MovePoint(0, 40, 40);
+  touch_move_2.moved_beyond_slop_region = true;
+  touch_move_2.touch_start_or_first_touch_move = true;
+  touch_move_2.dispatch_type = WebInputEvent::DispatchType::kBlocking;
+  HandleEvent(touch_move_2, blink::mojom::InputEventResultState::kNotConsumed);
+
+  // There should be two events, one is the `kTouchMove`, one is
+  // `kPointerRawUpdate`.
+  EXPECT_EQ(1u, event_queue().size());
+  // A main frame should be needed to dispatch the rAF-aligned event.
+  EXPECT_TRUE(needs_main_frame_);
+  EXPECT_FALSE(raf_aligned_events_dispatched_);
+
+  // Simulate an additional `kTouchMove` which is non-blocking. This will be
+  // merged with the original in the queue. However we should preserve the
+  // original blocking state, to prevent incorrectly throttling.
+  SyntheticWebTouchEvent touch_move_3;
+  touch_move_3.PressPoint(10, 10);
+  touch_move_3.MovePoint(0, 80, 80);
+  touch_move_3.moved_beyond_slop_region = true;
+  touch_move_3.touch_start_or_first_touch_move = true;
+  touch_move_3.dispatch_type = WebInputEvent::DispatchType::kEventNonBlocking;
+  HandleEvent(touch_move_3, blink::mojom::InputEventResultState::kNotConsumed);
+
+  // There should be one, merged event.
+  EXPECT_EQ(1u, event_queue().size());
+
+  // The rAF is only advanced `kFrameInterval` 16ms vs the
+  // `kAsyncTouchMoveInterval` of 200ms.
+  RunSimulatedRafOnce();
+  // Now, clients should be notified of rAF-aligned events dispatch.
+  EXPECT_TRUE(raf_aligned_events_dispatched_);
+  // No main frame should be needed anymore..
+  EXPECT_FALSE(needs_main_frame_);
+  // The rAF-alinged event should be handled out of the queue now.
+  EXPECT_EQ(0u, event_queue().size());
+  EXPECT_EQ(2u, handled_tasks_.size());
+  EXPECT_EQ(touch_move.GetType(),
+            handled_tasks_.at(1)->taskAsEvent()->Event().GetType());
 }
 
 }  // namespace blink

@@ -21,9 +21,11 @@
 #include "components/saved_tab_groups/public/saved_tab_group.h"
 #include "components/saved_tab_groups/public/saved_tab_group_tab.h"
 #include "components/saved_tab_groups/public/types.h"
+#include "components/sync/base/collaboration_id.h"
 #include "components/sync/model/data_type_store.h"
 #include "components/sync/model/data_type_sync_bridge.h"
 #include "components/sync/model/model_error.h"
+#include "components/sync/protocol/collaboration_metadata.h"
 #include "components/sync/protocol/unique_position.pb.h"
 
 class PrefService;
@@ -64,8 +66,6 @@ class SharedTabGroupDataSyncBridge : public syncer::DataTypeSyncBridge {
   ~SharedTabGroupDataSyncBridge() override;
 
   // DataTypeSyncBridge implementation.
-  std::unique_ptr<syncer::MetadataChangeList> CreateMetadataChangeList()
-      override;
   std::optional<syncer::ModelError> MergeFullSyncData(
       std::unique_ptr<syncer::MetadataChangeList> metadata_change_list,
       syncer::EntityChangeList entity_data) override;
@@ -75,8 +75,10 @@ class SharedTabGroupDataSyncBridge : public syncer::DataTypeSyncBridge {
   std::unique_ptr<syncer::DataBatch> GetDataForCommit(
       StorageKeyList storage_keys) override;
   std::unique_ptr<syncer::DataBatch> GetAllDataForDebugging() override;
-  std::string GetClientTag(const syncer::EntityData& entity_data) override;
-  std::string GetStorageKey(const syncer::EntityData& entity_data) override;
+  std::string GetClientTag(
+      const syncer::EntityData& entity_data) const override;
+  std::string GetStorageKey(
+      const syncer::EntityData& entity_data) const override;
   bool SupportsGetClientTag() const override;
   bool SupportsGetStorageKey() const override;
   bool SupportsIncrementalUpdates() const override;
@@ -139,13 +141,15 @@ class SharedTabGroupDataSyncBridge : public syncer::DataTypeSyncBridge {
       syncer::DataTypeStore::WriteBatch& write_batch,
       const std::set<base::Uuid>& tab_ids_with_pending_model_update,
       const syncer::CollaborationMetadata& collaboration_metadata,
-      base::Time creation_time);
+      base::Time creation_time,
+      base::Time modification_time);
 
   // Removes all data assigned to `storage_key` from local storage
   // (SavedTabGroupModel, and DataTypeStore). If a group is removed, all its
   // tabs will be removed in addition to the group.
   void DeleteDataFromLocalStorage(
       const std::string& storage_key,
+      const syncer::CollaborationMetadata& collaboration_metadata,
       GaiaId removed_by,
       syncer::DataTypeStore::WriteBatch& write_batch);
 
@@ -184,9 +188,11 @@ class SharedTabGroupDataSyncBridge : public syncer::DataTypeSyncBridge {
   // When `store_write_batch_on_destroy` is false, the write batch is not
   // committed to the store when destroyed, and the caller is responsible for
   // committing it when needed. `store_write_batch_on_destroy` has no impact if
-  // there is an ongoing write batch.
+  // there is an ongoing write batch. Data from the `metadata_change_list` is
+  // transferred to the ongoing write batch if provided.
   base::ScopedClosureRunner CreateWriteBatchWithDestroyClosure(
-      bool store_write_batch_on_destroy);
+      bool store_write_batch_on_destroy,
+      std::unique_ptr<syncer::MetadataChangeList> metadata_change_list);
 
   // Destroys the ongoing write batch and commits it to the store if
   // `store_write_batch_on_destroy` is true.
@@ -204,6 +210,24 @@ class SharedTabGroupDataSyncBridge : public syncer::DataTypeSyncBridge {
   // published to the model. See comments in the method for more details.
   void FixLocalTabGroupIDsForSharedGroupsDuringFeatureEnabling(
       std::vector<proto::SharedTabGroupData>& stored_entries);
+
+  // Resolves tabs missing groups by adding them to the model if a corresponding
+  // group exists in the model.
+  std::optional<syncer::ModelError> ResolveTabsMissingGroups(
+      syncer::MetadataChangeList& metadata_change_list);
+
+  // Converts a `group` to a `SharedTabGroupDataSpecifics` proto. The returned
+  // specifics also contains unsupported fields that are stored in sync
+  // metadata.
+  sync_pb::SharedTabGroupDataSpecifics SharedTabGroupToSpecifics(
+      const SavedTabGroup& group) const;
+
+  // Converts a `tab` to a `SharedTabGroupDataSpecifics` proto. The returned
+  // specifics also contains unsupported fields that are stored in sync
+  // metadata.
+  sync_pb::SharedTabGroupDataSpecifics SharedTabGroupTabToSpecifics(
+      const SavedTabGroupTab& tab,
+      sync_pb::UniquePosition unique_position) const;
 
   SEQUENCE_CHECKER(sequence_checker_);
 
@@ -234,6 +258,26 @@ class SharedTabGroupDataSyncBridge : public syncer::DataTypeSyncBridge {
 
   // List of tab groups waiting for being committed to the server.
   std::vector<base::Uuid> tab_groups_waiting_for_commit_;
+
+  // Used to store tabs whose groups were not added locally yet. These tabs will
+  // be removed after the TTL expires.
+  struct TabMissingGroup {
+    TabMissingGroup(sync_pb::SharedTabGroupDataSpecifics specifics,
+                    syncer::CollaborationMetadata collaboration_metadata,
+                    base::Time creation_time,
+                    base::Time modification_time);
+    TabMissingGroup(const TabMissingGroup&);
+    TabMissingGroup& operator=(const TabMissingGroup&);
+    TabMissingGroup(TabMissingGroup&&);
+    TabMissingGroup& operator=(TabMissingGroup&&);
+    ~TabMissingGroup();
+
+    sync_pb::SharedTabGroupDataSpecifics specifics;
+    syncer::CollaborationMetadata collaboration_metadata;
+    base::Time creation_time;
+    base::Time modification_time;
+  };
+  std::map<base::Uuid, TabMissingGroup> tabs_missing_groups_;
 
   // Allows safe temporary use of the SharedTabGroupDataSyncBridge object if it
   // exists at the time of use.

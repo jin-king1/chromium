@@ -6,7 +6,6 @@
 #define COMPONENTS_MEDIA_EFFECTS_TEST_FAKE_VIDEO_SOURCE_H_
 
 #include "base/test/test_future.h"
-#include "media/capture/mojom/video_effects_manager.mojom.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "services/video_capture/public/cpp/mock_push_subscription.h"
@@ -26,14 +25,6 @@ class FakeVideoSource : public video_capture::mojom::VideoSource {
       mojo::PendingReceiver<video_capture::mojom::PushVideoStreamSubscription>
           subscription,
       CreatePushSubscriptionCallback callback) override;
-
-  void RegisterVideoEffectsProcessor(
-      mojo::PendingRemote<video_effects::mojom::VideoEffectsProcessor>
-          processor) override {}
-
-  void RegisterReadonlyVideoEffectsManager(
-      mojo::PendingRemote<media::mojom::ReadonlyVideoEffectsManager> remote)
-      override {}
 
   [[nodiscard]] bool WaitForCreatePushSubscription();
 

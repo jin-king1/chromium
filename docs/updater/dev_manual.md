@@ -612,3 +612,57 @@ https://storage.cloud.google.com/chromium-translation-screenshots/.
   `gn args` to verify that `symbol_level=1` (or `0`) is present. If it's not,
   you're running into a known issue where the default symbol level, `2`,
   outputs symbols too large for the linker to comprehend.
+
+### Interpreting numeric exit codes and error codes
+
+* Chrome installer exit codes: early in
+[chrome/installer/util/util_constants.h](https://chromium.googlesource.com/chromium/src/+/main/chrome/installer/util/util_constants.h)
+* Updater installer and update service errors: as of 2025-08-15, they start at
+line 327 of
+[chrome/updater/constants.h](https://chromium.googlesource.com/chromium/src/+/main/chrome/updater/constants.h)
+* Update client errors:
+[components/update_client/update_client_errors.h](https://chromium.googlesource.com/chromium/src/+/main/components/update_client/update_client_errors.h)
+* Response codes reported from the network fetcher are standard HTTP
+  response codes.
+* Update service state and result codes in general:
+[chrome/updater/mojom/updater_service.mojom](https://chromium.googlesource.com/chromium/src/+/main/chrome/updater/mojom/updater_service.mojom)
+which are intended to stay in sync with the equivalent enumerations in
+[chrome/updater/update_service.h](https://chromium.googlesource.com/chromium/src/+/main/chrome/updater/update_service.h)
+* Chromium Mini-Installer exit codes:
+[chrome/installer/mini_installer/exit_code.h](https://chromium.googlesource.com/chromium/src/+/main/chrome/installer/mini_installer/exit_code.h)
+* LZMA unpacker error codes:
+[chrome/installer/util/lzma_util.h](https://chromium.googlesource.com/chromium/src/+/main/chrome/installer/util/lzma_util.h)
+
+## How to manually test the Windows recovery component end-to-end
+
+* Modify `generate_policy_source.py` as per https://crrev.com/c/7817997 to
+  ignore `supported_on` constraints, allowing all policies to be supported
+  regardless of the version specified in `chrome/VERSION`. This enables
+  building a `mini_installer` with a customized lower version (like 141)
+  without running into compilation errors caused by missing generated policy
+  keys.
+* Change the `MAJOR` version in `chrome/VERSION` to a lower version, say `141`.
+
+To test the recovery component end-to-end:
+1. Build the `mini_installer` with `is_chrome_branded=true`.
+2. Run `mini_installer.exe --system-level` on a clean test machine or Windows
+   Sandbox. Wait a while for Chrome to be installed.
+3. Open Chrome and navigate to `chrome://components`.
+4. Find `Chrome Improved Recovery` and click `Check for update`.
+5. Verify that `ChromeRecovery.exe` runs as expected by checking the log at
+   `C:\Program Files (x86)\Google\GoogleUpdater\updater.log`.
+
+Step `2` above installs Chrome Stable. To test other flavors, do the following
+instead:
+* **Beta**:
+  ```cmd
+  mini_installer.exe --system-level --chrome-beta
+  ```
+* **Dev**:
+  ```cmd
+  mini_installer.exe --system-level --chrome-dev
+  ```
+* **Canary (Side-by-Side)**:
+  ```cmd
+  mini_installer.exe --system-level --chrome-sxs
+  ```

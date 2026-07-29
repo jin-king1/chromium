@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "media/gpu/v4l2/legacy/v4l2_video_decode_accelerator.h"
 
 #include <dlfcn.h>
@@ -22,6 +17,7 @@
 #include <algorithm>
 
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/numerics/safe_conversions.h"
@@ -47,6 +43,7 @@
 #include "media/gpu/v4l2/v4l2_vda_helpers.h"
 #include "media/gpu/video_frame_mapper.h"
 #include "media/gpu/video_frame_mapper_factory.h"
+#include "third_party/perfetto/include/perfetto/tracing/track.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/native_pixmap_handle.h"
 
@@ -86,6 +83,11 @@ bool IsVp9KSVCStream(uint32_t input_format_fourcc,
   return input_format_fourcc == V4L2_PIX_FMT_VP9 &&
          decoder_buffer.side_data() &&
          !decoder_buffer.side_data()->spatial_layers.empty();
+}
+
+perfetto::NamedTrack GetTracingTrack(const V4L2VideoDecodeAccelerator* ptr) {
+  return perfetto::NamedTrack::FromPointer("media::V4L2VideoDecodeAccelerator",
+                                           ptr);
 }
 
 }  // namespace
@@ -266,8 +268,7 @@ void V4L2VideoDecodeAccelerator::InitializeTask(const Config& config,
       this, "media::V4l2VideoDecodeAccelerator", decoder_thread_.task_runner());
 
   // Subscribe to the resolution change event.
-  struct v4l2_event_subscription sub;
-  memset(&sub, 0, sizeof(sub));
+  struct v4l2_event_subscription sub = {};
   sub.type = V4L2_EVENT_SOURCE_CHANGE;
   IOCTL_OR_ERROR_RETURN(VIDIOC_SUBSCRIBE_EVENT, &sub);
 
@@ -452,7 +453,7 @@ void V4L2VideoDecodeAccelerator::AssignPictureBuffersTask(
         // duplicates FD's, when a NativePixmap-based FrameResource is
         // available.
         native_pixmap =
-            frame->CreateGpuMemoryBufferHandle().native_pixmap_handle;
+            frame->CreateGpuMemoryBufferHandle().native_pixmap_handle();
       }
 
       ImportBufferForPictureTask(output_record.picture_id,
@@ -484,7 +485,7 @@ void V4L2VideoDecodeAccelerator::ImportBufferForPicture(
       base::BindOnce(
           &V4L2VideoDecodeAccelerator::ImportBufferForPictureForImportTask,
           base::Unretained(this), picture_buffer_id, pixel_format,
-          std::move(gpu_memory_buffer_handle.native_pixmap_handle)));
+          std::move(gpu_memory_buffer_handle).native_pixmap_handle()));
 }
 
 void V4L2VideoDecodeAccelerator::ImportBufferForPictureForImportTask(
@@ -762,7 +763,7 @@ void V4L2VideoDecodeAccelerator::DecodeBufferTask() {
     return;
   }
 
-  if (decoder_current_bitstream_buffer_ == NULL) {
+  if (decoder_current_bitstream_buffer_ == nullptr) {
     if (decoder_input_queue_.empty()) {
       // We're waiting for a new buffer -- exit without scheduling a new task.
       return;
@@ -780,7 +781,8 @@ void V4L2VideoDecodeAccelerator::DecodeBufferTask() {
     if (buffer) {
       DVLOGF(4) << "reading input_id="
                 << decoder_current_bitstream_buffer_->input_id
-                << ", addr=" << buffer->data() << ", size=" << buffer->size();
+                << ", addr=" << base::span(*buffer).data()
+                << ", size=" << buffer->size();
     } else {
       DCHECK_EQ(decoder_current_bitstream_buffer_->input_id, kFlushBufferId);
       DVLOGF(4) << "reading input_id=kFlushBufferId";
@@ -799,7 +801,7 @@ void V4L2VideoDecodeAccelerator::DecodeBufferTask() {
         current_input_buffer_->GetTimeStamp().tv_sec != kFlushBufferId)
       schedule_task = FlushInputFrame();
 
-    if (schedule_task && AppendToInputFrame(NULL, 0) && FlushInputFrame()) {
+    if (schedule_task && AppendToInputFrame(nullptr, 0) && FlushInputFrame()) {
       VLOGF(2) << "enqueued flush buffer";
       schedule_task = true;
     } else {
@@ -816,10 +818,10 @@ void V4L2VideoDecodeAccelerator::DecodeBufferTask() {
     schedule_task = true;
   } else {
     // This is a buffer queued from the client, with actual contents.  Decode.
-    const uint8_t* const data =
-        buffer->data() + decoder_current_bitstream_buffer_->bytes_used;
-    const size_t data_size =
-        buffer->size() - decoder_current_bitstream_buffer_->bytes_used;
+    auto buffer_span = base::span(*buffer).subspan(
+        decoder_current_bitstream_buffer_->bytes_used);
+    const uint8_t* const data = buffer_span.data();
+    const size_t data_size = buffer_span.size();
 
     if (!frame_splitter_->AdvanceFrameFragment(data, data_size,
                                                &decoded_size)) {
@@ -868,8 +870,9 @@ void V4L2VideoDecodeAccelerator::ScheduleDecodeBufferTaskIfNeeded() {
 
   // If we're behind on tasks, schedule another one.
   int buffers_to_decode = decoder_input_queue_.size();
-  if (decoder_current_bitstream_buffer_ != NULL)
+  if (decoder_current_bitstream_buffer_ != nullptr) {
     buffers_to_decode++;
+  }
   if (decoder_decode_buffer_tasks_scheduled_ < buffers_to_decode) {
     decoder_decode_buffer_tasks_scheduled_++;
     decoder_thread_.task_runner()->PostTask(
@@ -952,7 +955,7 @@ bool V4L2VideoDecodeAccelerator::AppendToInputFrame(const void* data,
 
   // Try to get an available input buffer.
   if (!current_input_buffer_) {
-    DCHECK(decoder_current_bitstream_buffer_ != NULL);
+    DCHECK(decoder_current_bitstream_buffer_ != nullptr);
     DCHECK(input_queue_);
 
     // See if we can get more free buffers from HW.
@@ -970,7 +973,7 @@ bool V4L2VideoDecodeAccelerator::AppendToInputFrame(const void* data,
     current_input_buffer_->SetTimeStamp(timestamp);
   }
 
-  DCHECK(data != NULL || size == 0);
+  DCHECK(data != nullptr || size == 0);
   if (size == 0) {
     // If we asked for an empty buffer, return now.  We return only after
     // getting the next input buffer, since we might actually want an empty
@@ -988,7 +991,8 @@ bool V4L2VideoDecodeAccelerator::AppendToInputFrame(const void* data,
     return false;
   }
   void* mapping = current_input_buffer_->GetPlaneMapping(0);
-  memcpy(reinterpret_cast<uint8_t*>(mapping) + bytes_used, data, size);
+  UNSAFE_TODO(
+      memcpy(reinterpret_cast<uint8_t*>(mapping) + bytes_used, data, size));
   current_input_buffer_->SetPlaneBytesUsed(0, bytes_used + size);
 
   return true;
@@ -1334,8 +1338,7 @@ bool V4L2VideoDecodeAccelerator::DequeueOutputBuffer() {
               << flush_awaiting_last_output_buffer_;
     if (flush_awaiting_last_output_buffer_) {
       flush_awaiting_last_output_buffer_ = false;
-      struct v4l2_decoder_cmd cmd;
-      memset(&cmd, 0, sizeof(cmd));
+      struct v4l2_decoder_cmd cmd = {};
       cmd.cmd = V4L2_DEC_CMD_START;
       IOCTL_OR_ERROR_RETURN_FALSE(VIDIOC_DECODER_CMD, &cmd);
     }
@@ -1443,8 +1446,7 @@ void V4L2VideoDecodeAccelerator::FlushTask() {
     return;
   }
 
-  TRACE_EVENT_NESTABLE_ASYNC_BEGIN0("media,gpu", "V4L2VDA::FlushTask",
-                                    TRACE_ID_LOCAL(this));
+  TRACE_EVENT_BEGIN("media,gpu", "V4L2VDA::FlushTask", GetTracingTrack(this));
 
   // We don't support stacked flushing.
   DCHECK(!decoder_flushing_);
@@ -1515,8 +1517,7 @@ void V4L2VideoDecodeAccelerator::NotifyFlushDoneIfNeeded() {
 }
 
 void V4L2VideoDecodeAccelerator::NotifyFlushDone() {
-  TRACE_EVENT_NESTABLE_ASYNC_END0("media,gpu", "V4L2VDA::FlushTask",
-                                  TRACE_ID_LOCAL(this));
+  TRACE_EVENT_END("media,gpu", GetTracingTrack(this));
   decoder_delay_bitstream_buffer_id_ = -1;
   decoder_flushing_ = false;
   VLOGF(2) << "returning flush";
@@ -1528,8 +1529,7 @@ bool V4L2VideoDecodeAccelerator::IsDecoderCmdSupported() {
   // CMD_STOP should always succeed. If the decoder is started, the command can
   // flush it. If the decoder is stopped, the command does nothing. We use this
   // to know if a driver supports V4L2_DEC_CMD_STOP to flush.
-  struct v4l2_decoder_cmd cmd;
-  memset(&cmd, 0, sizeof(cmd));
+  struct v4l2_decoder_cmd cmd = {};
   cmd.cmd = V4L2_DEC_CMD_STOP;
   if (device_->Ioctl(VIDIOC_TRY_DECODER_CMD, &cmd) != 0) {
     VLOGF(2) "V4L2_DEC_CMD_STOP is not supported.";
@@ -1544,8 +1544,7 @@ bool V4L2VideoDecodeAccelerator::SendDecoderCmdStop() {
   DCHECK(decoder_thread_.task_runner()->BelongsToCurrentThread());
   DCHECK(!flush_awaiting_last_output_buffer_);
 
-  struct v4l2_decoder_cmd cmd;
-  memset(&cmd, 0, sizeof(cmd));
+  struct v4l2_decoder_cmd cmd = {};
   cmd.cmd = V4L2_DEC_CMD_STOP;
   IOCTL_OR_ERROR_RETURN_FALSE(VIDIOC_DECODER_CMD, &cmd);
   flush_awaiting_last_output_buffer_ = true;
@@ -1565,8 +1564,7 @@ void V4L2VideoDecodeAccelerator::ResetTask() {
     return;
   }
 
-  TRACE_EVENT_NESTABLE_ASYNC_BEGIN0("media,gpu", "V4L2VDA::ResetTask",
-                                    TRACE_ID_LOCAL(this));
+  TRACE_EVENT_BEGIN("media,gpu", "V4L2VDA::ResetTask", GetTracingTrack(this));
 
   decoder_current_bitstream_buffer_.reset();
   while (!decoder_input_queue_.empty())
@@ -1642,8 +1640,7 @@ void V4L2VideoDecodeAccelerator::ResetDoneTask() {
     return;
   }
 
-  TRACE_EVENT_NESTABLE_ASYNC_END0("media,gpu", "V4L2VDA::ResetTask",
-                                  TRACE_ID_LOCAL(this));
+  TRACE_EVENT_END("media,gpu", GetTracingTrack(this));
 
   // Start poll thread if NotifyFlushDoneIfNeeded has not already.
   if (!device_poll_thread_.IsRunning()) {
@@ -2064,8 +2061,7 @@ bool V4L2VideoDecodeAccelerator::SetupFormats() {
   else
     input_size = kInputBufferMaxSizeFor1080p;
 
-  struct v4l2_fmtdesc fmtdesc;
-  memset(&fmtdesc, 0, sizeof(fmtdesc));
+  struct v4l2_fmtdesc fmtdesc = {};
   fmtdesc.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
   bool is_format_supported = false;
   while (device_->Ioctl(VIDIOC_ENUM_FMT, &fmtdesc) == 0) {
@@ -2082,8 +2078,7 @@ bool V4L2VideoDecodeAccelerator::SetupFormats() {
     return false;
   }
 
-  struct v4l2_format format;
-  memset(&format, 0, sizeof(format));
+  struct v4l2_format format = {};
   format.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
   format.fmt.pix_mp.pixelformat = input_format_fourcc_;
   format.fmt.pix_mp.plane_fmt[0].sizeimage = input_size;
@@ -2094,7 +2089,7 @@ bool V4L2VideoDecodeAccelerator::SetupFormats() {
   // We have to set up the format for output, because the driver may not allow
   // changing it once we start streaming; whether it can support our chosen
   // output format or not may depend on the input format.
-  memset(&fmtdesc, 0, sizeof(fmtdesc));
+  fmtdesc = {};
   fmtdesc.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
   while (device_->Ioctl(VIDIOC_ENUM_FMT, &fmtdesc) == 0) {
     auto fourcc = Fourcc::FromV4L2PixFmt(fmtdesc.pixelformat);
@@ -2141,7 +2136,7 @@ bool V4L2VideoDecodeAccelerator::SetupFormats() {
 
   // Just set the fourcc for output; resolution, etc., will come from the
   // driver once it extracts it from the stream.
-  memset(&format, 0, sizeof(format));
+  format = {};
   format.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
   format.fmt.pix_mp.pixelformat = output_format_fourcc_->ToV4L2PixFmt();
   IOCTL_OR_ERROR_RETURN_FALSE(VIDIOC_S_FMT, &format);
@@ -2236,7 +2231,7 @@ bool V4L2VideoDecodeAccelerator::ProcessFrame(int32_t bitstream_buffer_id,
         /*force_linear_buffer_mapper=*/true);
     if (!output_frame_mapper) {
       output_frame_mapper = VideoFrameMapperFactory::CreateMapper(
-          PIXEL_FORMAT_NV12, VideoFrame::STORAGE_GPU_MEMORY_BUFFER,
+          PIXEL_FORMAT_NV12, VideoFrame::STORAGE_MAPPABLE_SHARED_IMAGE,
           /*force_linear_buffer_mapper=*/true);
     }
     if (!output_frame_mapper) {

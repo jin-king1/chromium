@@ -7,9 +7,11 @@
 #import "base/apple/foundation_util.h"
 #import "base/metrics/user_metrics.h"
 #import "base/metrics/user_metrics_action.h"
+#import "base/notreached.h"
 #import "base/timer/timer.h"
 #import "ios/chrome/browser/fullscreen/ui_bundled/animated_scoped_fullscreen_disabler.h"
 #import "ios/chrome/browser/fullscreen/ui_bundled/fullscreen_controller.h"
+#import "ios/chrome/browser/fullscreen/ui_bundled/scoped_fullscreen_disabler.h"
 #import "ios/chrome/browser/infobars/ui_bundled/banners/infobar_banner_accessibility_util.h"
 #import "ios/chrome/browser/infobars/ui_bundled/banners/infobar_banner_presentation_state.h"
 #import "ios/chrome/browser/infobars/ui_bundled/coordinators/infobar_coordinator+subclassing.h"
@@ -22,20 +24,23 @@
 #import "ios/chrome/browser/infobars/ui_bundled/presentation/infobar_modal_transition_driver.h"
 #import "ios/chrome/browser/shared/coordinator/layout_guide/layout_guide_util.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
+#import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
+#import "ios/chrome/browser/shared/public/commands/fullscreen_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/util/layout_guide_names.h"
+#import "ios/chrome/browser/shared/ui/util/omnibox_util.h"
 #import "ios/chrome/browser/shared/ui/util/util_swift.h"
 
-@interface InfobarCoordinator () <InfobarCoordinatorImplementation,
-                                  InfobarBannerPositioner,
+@interface InfobarCoordinator () <InfobarBannerPositioner,
+                                  InfobarCoordinatorImplementation,
                                   InfobarModalPositioner> {
   // The AnimatedFullscreenDisable disables fullscreen by displaying the
   // Toolbar/s when an Infobar banner is presented.
-  std::unique_ptr<AnimatedScopedFullscreenDisabler> _animatedFullscreenDisabler;
+  std::unique_ptr<ScopedFullscreenDisabler> _fullscreenDisabler;
+  std::unique_ptr<AnimatedScopedFullscreenDisabler>
+      _legacyAnimatedFullscreenDisabler;
 }
 
-// Delegate that holds the Infobar information and actions.
-@property(nonatomic, readonly) infobars::InfoBarDelegate* infobarDelegate;
 // The transition delegate used by the Coordinator to present the InfobarBanner.
 // nil if no Banner is being presented.
 @property(nonatomic, strong)
@@ -56,18 +61,13 @@
   base::OneShotTimer _autoDismissBannerTimer;
 }
 
-// Synthesize since readonly property from superclass is changed to readwrite.
-@synthesize baseViewController = _baseViewController;
-// Synthesize since readonly property from superclass is changed to readwrite.
-@synthesize browser = _browser;
-
-- (instancetype)initWithInfoBarDelegate:
-                    (infobars::InfoBarDelegate*)infoBarDelegate
-                           badgeSupport:(BOOL)badgeSupport
-                                   type:(InfobarType)infobarType {
-  self = [super initWithBaseViewController:nil browser:nil];
+- (instancetype)initWithBaseViewController:(UIViewController*)viewController
+                                   browser:(Browser*)browser
+                                      type:(InfobarType)infobarType {
+  self = [super initWithBaseViewController:viewController browser:browser];
   if (self) {
-    _infobarDelegate = infoBarDelegate;
+    CHECK(browser, base::NotFatalUntil::M145);
+    CHECK(viewController, base::NotFatalUntil::M145);
     _infobarType = infobarType;
     _shouldUseDefaultDismissal = YES;
   }
@@ -79,8 +79,8 @@
 - (void)stop {
   // Cancel any scheduled automatic dismissal block.
   _autoDismissBannerTimer.Stop();
-  _animatedFullscreenDisabler = nullptr;
-  _infobarDelegate = nil;
+  _fullscreenDisabler = nullptr;
+  _legacyAnimatedFullscreenDisabler = nullptr;
 }
 
 - (void)presentInfobarBannerAnimated:(BOOL)animated
@@ -97,10 +97,16 @@
   }
 
   // Make sure to display the Toolbar/s before presenting the Banner.
-  _animatedFullscreenDisabler =
-      std::make_unique<AnimatedScopedFullscreenDisabler>(
-          FullscreenController::FromBrowser(self.browser));
-  _animatedFullscreenDisabler->StartAnimation();
+  if (IsFullscreenRefactoringEnabled()) {
+    id<FullscreenCommands> handler = HandlerForProtocol(
+        self.browser->GetCommandDispatcher(), FullscreenCommands);
+    _fullscreenDisabler = std::make_unique<ScopedFullscreenDisabler>(handler);
+  } else {
+    _legacyAnimatedFullscreenDisabler =
+        std::make_unique<AnimatedScopedFullscreenDisabler>(
+            FullscreenController::FromBrowser(self.browser));
+    _legacyAnimatedFullscreenDisabler->StartAnimation();
+  }
 
   [self.bannerViewController
       setModalPresentationStyle:UIModalPresentationCustom];
@@ -158,16 +164,8 @@
 #pragma mark InfobarBannerDelegate
 
 - (void)bannerInfobarButtonWasPressed:(id)sender {
-  if (!self.infobarDelegate) {
-    return;
-  }
-
-  [self performInfobarAction];
-  // If the Banner Button will present the Modal then the banner shouldn't be
-  // dismissed.
-  if (![self infobarBannerActionWillPresentModal]) {
-    [self dismissInfobarBannerAnimated:YES completion:nil];
-  }
+  // This method must be implemented by child class
+  NOTREACHED();
 }
 
 - (void)presentInfobarModalFromBanner {
@@ -196,22 +194,22 @@
   [self configureAccessibilityForBannerInViewController:self.baseViewController
                                              presenting:NO];
   self.bannerTransitionDriver = nil;
-  _animatedFullscreenDisabler = nullptr;
+  _fullscreenDisabler = nullptr;
+  _legacyAnimatedFullscreenDisabler = nullptr;
   [self infobarWasDismissed];
 }
 
 #pragma mark InfobarBannerPositioner
 
 - (CGFloat)bannerYPosition {
+  if (!self.started || !self.browser) {
+    return 0;
+  }
   LayoutGuideCenter* layoutGuideCenter =
       LayoutGuideCenterForBrowser(self.browser);
-  UIView* topOmnibox =
-      [layoutGuideCenter referencedViewUnderName:kTopOmniboxGuide];
-  CGRect omniboxFrame = [topOmnibox convertRect:topOmnibox.bounds toView:nil];
-  CGFloat omniboxMaxY = CGRectGetMaxY(omniboxFrame);
 
-  // Use the top toolbar's layout guide when the omnibox is at the bottom.
-  if (topOmnibox.hidden) {
+  if (IsCurrentLayoutBottomOmnibox(self.browser)) {
+    // Use the top toolbar's layout guide when the omnibox is at the bottom.
     UIView* topToolbar =
         [layoutGuideCenter referencedViewUnderName:kPrimaryToolbarGuide];
     CGRect topToolbarFrame = [topToolbar convertRect:topToolbar.bounds
@@ -220,7 +218,11 @@
         CGRectGetMaxY(topToolbarFrame) + kInfobarTopPaddingBottomOmnibox;
     return topToolbarMaxY;
   }
-  return omniboxMaxY;
+
+  UIView* topOmnibox =
+      [layoutGuideCenter referencedViewUnderName:kTopOmniboxGuide];
+  CGRect omniboxFrame = [topOmnibox convertRect:topOmnibox.bounds toView:nil];
+  return CGRectGetMaxY(omniboxFrame);
 }
 
 - (UIView*)bannerView {
@@ -377,9 +379,8 @@
   [self.bannerTransitionDriver completePresentationTransitionIfRunning];
 
   // The banner dismiss can be triggered concurrently due to different events
-  // like swiping it up, entering the TabSwitcher, presenting another VC or the
-  // InfobarDelelgate being destroyed. Trying to dismiss it twice might cause a
-  // UIKit crash on iOS12.
+  // like swiping it up, entering the TabSwitcher or presenting another VC.
+  // Trying to dismiss it twice might cause a UIKit crash on iOS12.
   if (!self.bannerIsBeingDismissed &&
       self.bannerViewController.presentingViewController) {
     self.bannerIsBeingDismissed = YES;

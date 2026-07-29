@@ -8,8 +8,8 @@
 #include <set>
 #include <vector>
 
+#include "base/files/file_path.h"
 #include "base/functional/callback.h"
-#include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "ui/display/manager/display_configurator.h"
@@ -20,6 +20,8 @@ namespace display {
 class DISPLAY_MANAGER_EXPORT DisplayPortObserver
     : public DisplayConfigurator::Observer {
  public:
+  static void SetAllowedSysPathRootForTesting(const base::FilePath& root);
+
   explicit DisplayPortObserver(
       DisplayConfigurator* configurator,
       base::RepeatingCallback<void(const std::vector<uint32_t>&)>

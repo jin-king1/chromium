@@ -4,7 +4,9 @@
 
 #include "third_party/blink/renderer/platform/graphics/paint/paint_chunker.h"
 
+#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/renderer/platform/graphics/paint/drawing_display_item.h"
+#include "third_party/blink/renderer/platform/graphics/paint/foreign_layer_display_item.h"
 #include "third_party/blink/renderer/platform/graphics/paint/scrollbar_display_item.h"
 #include "ui/gfx/color_utils.h"
 
@@ -120,8 +122,17 @@ bool PaintChunker::IncrementDisplayItemIndex(const DisplayItemClient& client,
       DCHECK(chunk.has_text);
     }
   } else if (const auto* scrollbar = DynamicTo<ScrollbarDisplayItem>(item)) {
-    if (scrollbar->IsOpaque())
+    if (scrollbar->IsOpaque()) {
       chunk.rect_known_to_be_opaque = item.VisualRect();
+    }
+  } else if (const auto* foreign_item =
+                 DynamicTo<ForeignLayerDisplayItem>(item)) {
+    // Assume all OOP iframes contain text to prevent applying
+    // 2DScaleTransformWithCompositedDescendants on 2D-transformed ancestors,
+    // which can cause text blurriness in iframes.
+    if (foreign_item->GetId().type == DisplayItem::kForeignLayerRemoteFrame) {
+      chunk.has_text = true;
+    }
   }
 
   chunk.raster_effect_outset =
@@ -163,6 +174,22 @@ bool PaintChunker::AddHitTestDataToCurrentChunk(
       wheel_event_rects.push_back(rect);
     }
   }
+#if BUILDFLAG(IS_ANDROID)
+  // TODO: add appropriate condition here to check for interactable or
+  // occluding an interactable.
+  if (blink::features::IsXrDevice()) {
+    DOMNodeId dom_node_id = client.OwnerNodeId(/*is_internal_content=*/false);
+    if (dom_node_id != kInvalidDOMNodeId) {
+      CompositorElementId compositor_element_id =
+          CompositorElementIdFromDOMNodeId(dom_node_id);
+
+      auto& xr_regions = chunk.EnsureHitTestData().xr_regions;
+      if (xr_regions.empty() || xr_regions.back() != compositor_element_id) {
+        xr_regions.push_back(compositor_element_id);
+      }
+    }
+  }
+#endif
   return created_new_chunk;
 }
 
@@ -189,6 +216,30 @@ bool PaintChunker::AddRegionCaptureDataToCurrentChunk(
     chunk.region_capture_data = MakeGarbageCollected<RegionCaptureData>();
   }
   chunk.region_capture_data->map.insert_or_assign(crop_id, std::move(rect));
+  return created_new_chunk;
+}
+
+bool PaintChunker::AddTrackedElementDataToCurrentChunk(
+    const PaintChunk::Id& id,
+    const DisplayItemClient& client,
+    const gfx::Rect& element_paint_rect,
+    const TrackedElementSubRects& tracked_element_sub_rects) {
+  CheckNotFinished();
+  bool created_new_chunk = EnsureCurrentChunk(id, client);
+  for (const auto& [feature, sub_rect] : tracked_element_sub_rects) {
+    DCHECK(!sub_rect.id->is_zero());
+    gfx::Rect bounds = sub_rect.GetEffectiveBounds(element_paint_rect);
+    TrackedElementRect tracked_element_rect(
+        sub_rect.id, bounds, sub_rect.should_add_to_compositor_frame_metadata,
+        sub_rect.should_exclude_fixed_and_sticky_occlusions,
+        sub_rect.frame_token, sub_rect.parent_frame_token);
+
+    auto& chunk = chunks_.back();
+    if (!chunk.tracked_element_rects) {
+      chunk.tracked_element_rects = MakeGarbageCollected<TrackedElementRects>();
+    }
+    chunk.tracked_element_rects->map[feature].push_back(tracked_element_rect);
+  }
   return created_new_chunk;
 }
 

@@ -20,6 +20,8 @@
 #include "ui/gfx/geometry/point3_f.h"
 #include "ui/gfx/geometry/point_f.h"
 
+class SkPath;
+
 namespace base {
 class Value;
 namespace trace_event {
@@ -177,6 +179,10 @@ class CC_BASE_EXPORT MathUtil {
                                    const gfx::RectF& rect);
   static gfx::Rect ProjectEnclosingClippedRect(const gfx::Transform& transform,
                                                const gfx::Rect& rect);
+  static gfx::Rect ProjectEnclosingClippedRectIgnoringError(
+      const gfx::Transform& transform,
+      const gfx::Rect& rect,
+      float ignore_error);
   static gfx::RectF ProjectClippedRect(const gfx::Transform& transform,
                                        const gfx::RectF& rect);
 
@@ -242,6 +248,15 @@ class CC_BASE_EXPORT MathUtil {
   static gfx::Vector2dF ProjectVector(const gfx::Vector2dF& source,
                                       const gfx::Vector2dF& destination);
 
+  // Scales the input |point| by the inverse of the given |scale|.
+  // This function safeguards against a scale of 0 by using a minimum epsilon.
+  static gfx::PointF ScalePointByInverse(const gfx::PointF& point, float scale);
+
+  // Scales the input |vector| by the inverse of the given |scale|.
+  // This function safeguards against a scale of 0 by using a minimum epsilon.
+  static gfx::Vector2dF ScaleVectorByInverse(const gfx::Vector2dF& vector,
+                                             float scale);
+
   static bool FromValue(const base::Value*, gfx::Rect* out_rect);
 
   static void AddToTracedValue(const char* name,
@@ -282,6 +297,9 @@ class CC_BASE_EXPORT MathUtil {
                                base::trace_event::TracedValue* res);
   static void AddToTracedValue(const char* name,
                                const gfx::RRectF& rect,
+                               base::trace_event::TracedValue* res);
+  static void AddToTracedValue(const char* name,
+                               const SkPath&,
                                base::trace_event::TracedValue* res);
   static void AddCornerRadiiToTracedValue(const char* name,
                                           const gfx::RRectF& rect,

@@ -20,26 +20,26 @@ EnumTraits<viz::mojom::ContentFrameIntervalType,
       return viz::mojom::ContentFrameIntervalType::kAnimatingImage;
     case viz::ContentFrameIntervalType::kScrollBarFadeOutAnimation:
       return viz::mojom::ContentFrameIntervalType::kScrollBarFadeOutAnimation;
+    case viz::ContentFrameIntervalType::kCompositorScroll:
+      return viz::mojom::ContentFrameIntervalType::kCompositorScroll;
   }
   NOTREACHED();
 }
 
-bool EnumTraits<viz::mojom::ContentFrameIntervalType,
-                viz::ContentFrameIntervalType>::
-    FromMojom(viz::mojom::ContentFrameIntervalType input,
-              viz::ContentFrameIntervalType* out) {
+viz::ContentFrameIntervalType EnumTraits<viz::mojom::ContentFrameIntervalType,
+                                         viz::ContentFrameIntervalType>::
+    FromMojom(viz::mojom::ContentFrameIntervalType input) {
   switch (input) {
     case viz::mojom::ContentFrameIntervalType::kVideo:
-      *out = viz::ContentFrameIntervalType::kVideo;
-      return true;
+      return viz::ContentFrameIntervalType::kVideo;
     case viz::mojom::ContentFrameIntervalType::kAnimatingImage:
-      *out = viz::ContentFrameIntervalType::kAnimatingImage;
-      return true;
+      return viz::ContentFrameIntervalType::kAnimatingImage;
     case viz::mojom::ContentFrameIntervalType::kScrollBarFadeOutAnimation:
-      *out = viz::ContentFrameIntervalType::kScrollBarFadeOutAnimation;
-      return true;
+      return viz::ContentFrameIntervalType::kScrollBarFadeOutAnimation;
+    case viz::mojom::ContentFrameIntervalType::kCompositorScroll:
+      return viz::ContentFrameIntervalType::kCompositorScroll;
   }
-  return false;
+  NOTREACHED();
 }
 
 bool StructTraits<viz::mojom::ContentFrameIntervalInfoDataView,
@@ -63,7 +63,13 @@ bool StructTraits<viz::mojom::FrameIntervalInputsDataView,
   if (!inputs.ReadFrameTime(&out->frame_time)) {
     return false;
   }
+  out->has_user_input = inputs.has_user_input();
   out->has_input = inputs.has_input();
+  out->major_scroll_speed_in_pixels_per_second =
+      inputs.major_scroll_speed_in_pixels_per_second();
+  if (out->major_scroll_speed_in_pixels_per_second < 0.f) {
+    return false;
+  }
   if (!inputs.ReadContentIntervalInfo(&out->content_interval_info)) {
     return false;
   }

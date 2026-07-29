@@ -3,8 +3,8 @@
 // found in the LICENSE file.
 
 #include "extensions/common/manifest_constants.h"
+#include "extensions/common/manifest_handlers/manifest_url_handlers.h"
 #include "extensions/common/manifest_test.h"
-#include "extensions/common/manifest_url_handlers.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace extensions {
@@ -27,7 +27,7 @@ TEST_F(AboutPageManifestTest, AboutPageInSharedModules) {
       // Forbid absolute URLs.
       Testcase("shared_module_about_absolute.json",
                errors::kInvalidAboutPageExpectRelativePath)};
-  RunTestcases(testcases, EXPECT_TYPE_ERROR);
+  RunTestcases(testcases, ExpectType::kError);
 }
 
 }  // namespace extensions

@@ -4,6 +4,8 @@
 
 #include "ash/wm/overview/overview_window_drag_controller.h"
 
+#include <algorithm>
+
 #include "ash/display/screen_orientation_controller.h"
 #include "ash/display/screen_orientation_controller_test_api.h"
 #include "ash/shell.h"
@@ -28,10 +30,7 @@
 #include "ash/wm/splitview/split_view_drag_indicators.h"
 #include "ash/wm/tablet_mode/tablet_mode_controller.h"
 #include "ash/wm/window_util.h"
-#include "base/containers/contains.h"
 #include "base/memory/raw_ptr.h"
-#include "base/test/scoped_feature_list.h"
-#include "chromeos/constants/chromeos_features.h"
 #include "ui/aura/window_tree_host.h"
 #include "ui/display/test/display_manager_test_api.h"
 #include "ui/events/test/event_generator.h"
@@ -40,6 +39,8 @@
 #include "ui/views/widget/widget.h"
 
 namespace ash {
+
+using chromeos::AppType;
 
 namespace {
 
@@ -151,7 +152,7 @@ class OverviewWindowDragControllerTest : public AshTestBase {
 };
 
 TEST_F(OverviewWindowDragControllerTest, NoDragToCloseUsingMouse) {
-  auto window = CreateAppWindow(gfx::Rect(0, 0, 250, 100));
+  auto window = CreateWindowWithAppType(AppType::SYSTEM_APP, {250, 100});
   wm::ActivateWindow(window.get());
   EXPECT_EQ(window.get(), window_util::GetActiveWindow());
 
@@ -190,7 +191,8 @@ TEST_F(OverviewWindowDragControllerTest, DropTargetBoundsTest) {
   desk_controller->NewDesk(DesksCreationRemovalSource::kButton);
   ASSERT_EQ(2u, desk_controller->desks().size());
 
-  std::unique_ptr<aura::Window> window = CreateAppWindow();
+  std::unique_ptr<aura::Window> window =
+      CreateWindowWithAppType(AppType::SYSTEM_APP);
 
   OverviewController* overview_controller = OverviewController::Get();
   overview_controller->StartOverview(OverviewStartAction::kTests,
@@ -235,7 +237,7 @@ TEST_F(OverviewWindowDragControllerTest,
   controller->NewDesk(DesksCreationRemovalSource::kButton);
   ASSERT_EQ(2u, controller->desks().size());
 
-  auto window = CreateAppWindow(gfx::Rect(0, 0, 250, 100));
+  auto window = CreateWindowWithAppType(AppType::SYSTEM_APP, {250, 100});
   wm::ActivateWindow(window.get());
   EXPECT_EQ(window.get(), window_util::GetActiveWindow());
 
@@ -282,7 +284,7 @@ TEST_F(OverviewWindowDragControllerTest,
   EXPECT_TRUE(overview_controller->InOverviewSession());
   EXPECT_TRUE(overview_grid->empty());
   const Desk* desk_2 = controller->GetDeskAtIndex(1);
-  EXPECT_TRUE(base::Contains(desk_2->windows(), window.get()));
+  EXPECT_TRUE(std::ranges::contains(desk_2->windows(), window.get()));
   EXPECT_TRUE(const_cast<OverviewGrid*>(overview_grid)->no_windows_widget());
 }
 
@@ -290,7 +292,7 @@ TEST_F(OverviewWindowDragControllerTest,
 // drag should be reset.
 TEST_F(OverviewWindowDragControllerTest, WindowDestroyedDuringDragging) {
   std::unique_ptr<aura::Window> window =
-      CreateAppWindow(gfx::Rect(0, 0, 250, 100));
+      CreateWindowWithAppType(AppType::SYSTEM_APP, {250, 100});
   auto* overview_controller = Shell::Get()->overview_controller();
   EnterOverview();
   EXPECT_TRUE(overview_controller->InOverviewSession());
@@ -316,7 +318,7 @@ TEST_F(OverviewWindowDragControllerTest,
        DragAndDropWindowInPortraitModeWithOneDesk) {
   // Update the display to make it portrait mode.
   UpdateDisplay("768x1000");
-  auto window = CreateAppWindow(gfx::Rect(0, 0, 250, 100));
+  auto window = CreateWindowWithAppType(AppType::SYSTEM_APP, {250, 100});
 
   wm::ActivateWindow(window.get());
   EXPECT_EQ(window.get(), window_util::GetActiveWindow());
@@ -368,7 +370,8 @@ TEST_F(OverviewWindowDragControllerTest, DragWindowInPortraitMode) {
   // Create 10 windows with size the same as the maximized window's size.
   std::vector<std::unique_ptr<aura::Window>> windows;
   for (int i = 0; i < 10; ++i)
-    windows.push_back(CreateAppWindow(gfx::Rect(0, 0, 768, 1269)));
+    windows.push_back(
+        CreateWindowWithAppType(AppType::SYSTEM_APP, {768, 1269}));
 
   StartDraggingAndValidateDesksBarShifted(windows.back().get());
   const auto* desks_bar_view = overview_grid()->desks_bar_view();
@@ -387,7 +390,8 @@ TEST_F(OverviewWindowDragControllerTest, DragWindowInPortraitMode) {
 TEST_F(OverviewWindowDragControllerTest, DesksBarState) {
   UpdateDisplay("800x600, 800x600");
 
-  std::unique_ptr<aura::Window> window = CreateAppWindow();
+  std::unique_ptr<aura::Window> window =
+      CreateWindowWithAppType(AppType::SYSTEM_APP);
 
   EnterOverview();
   ASSERT_TRUE(OverviewController::Get()->InOverviewSession());
@@ -436,8 +440,7 @@ class OverviewWindowDragControllerDesksPortraitTabletTest
 
     // Setup a portrait internal display in tablet mode.
     UpdateDisplay("800x700");
-    const int64_t display_id =
-        display::Screen::GetScreen()->GetPrimaryDisplay().id();
+    const int64_t display_id = display::Screen::Get()->GetPrimaryDisplay().id();
     set_internal_ = std::make_unique<display::test::ScopedSetInternalDisplayId>(
         display_manager(), display_id);
     ScreenOrientationControllerTestApi test_api(
@@ -469,7 +472,7 @@ class OverviewWindowDragControllerDesksPortraitTabletTest
 
 TEST_F(OverviewWindowDragControllerDesksPortraitTabletTest,
        DragAndDropInEmptyArea) {
-  auto window = CreateAppWindow(gfx::Rect(0, 0, 250, 100));
+  auto window = CreateWindowWithAppType(AppType::SYSTEM_APP, {250, 100});
   StartDraggingAndValidateDesksBarShifted(window.get());
 
   // Dropping the window any where outside the bounds of the desks widget or the
@@ -483,7 +486,7 @@ TEST_F(OverviewWindowDragControllerDesksPortraitTabletTest,
 
 TEST_F(OverviewWindowDragControllerDesksPortraitTabletTest,
        DragAndDropInSnapAreas) {
-  auto window = CreateAppWindow(gfx::Rect(0, 0, 250, 100));
+  auto window = CreateWindowWithAppType(AppType::SYSTEM_APP, {250, 100});
   StartDraggingAndValidateDesksBarShifted(window.get());
 
   // Drag towards the area at the bottom of the display and note that the desks
@@ -525,7 +528,7 @@ TEST_F(OverviewWindowDragControllerDesksPortraitTabletTest,
 }
 
 TEST_F(OverviewWindowDragControllerDesksPortraitTabletTest, DragAndDropInDesk) {
-  auto window = CreateAppWindow(gfx::Rect(0, 0, 250, 100));
+  auto window = CreateWindowWithAppType(AppType::SYSTEM_APP, {250, 100});
   StartDraggingAndValidateDesksBarShifted(window.get());
 
   // Drag the window to the second desk's mini_view. While dragging is in
@@ -566,7 +569,7 @@ TEST_F(OverviewWindowDragControllerDesksPortraitTabletTest,
   // Create 9 windows to make sure we can use tablet mode grid layout.
   std::vector<std::unique_ptr<aura::Window>> windows;
   for (int i = 0; i < 9; ++i) {
-    windows.push_back(CreateAppWindow());
+    windows.push_back(CreateWindowWithAppType(AppType::SYSTEM_APP));
   }
 
   StartDraggingAndValidateDesksBarShifted(windows[4].get());
@@ -587,14 +590,9 @@ TEST_F(OverviewWindowDragControllerDesksPortraitTabletTest,
   const gfx::Rect desk_bar_bounds = desks_bar_view->GetBoundsInScreen();
   const gfx::Rect first_item_bounds =
       gfx::ToEnclosedRect(overview_grid()->item_list()[0]->target_bounds());
-  if (features::IsForestFeatureEnabled()) {
-    // With forest, a little overlap is ok since the desk bar is transparent.
-    // TODO(sammiequon|zxdan): Check if this gap is okay.
-    EXPECT_NEAR(desk_bar_bounds.bottom(), first_item_bounds.y(), 20);
-  } else {
-    // Check there's no overlap between overview items and desks bar view.
-    EXPECT_FALSE(desk_bar_bounds.Intersects(first_item_bounds));
-  }
+  // A little overlap is ok since the desk bar is transparent.
+  // TODO(sammiequon|zxdan): Check if this gap is okay.
+  EXPECT_NEAR(desk_bar_bounds.bottom(), first_item_bounds.y(), 20);
 }
 
 }  // namespace ash

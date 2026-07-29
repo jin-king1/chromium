@@ -41,7 +41,7 @@ MediaControlLoadingPanelElement::MediaControlLoadingPanelElement(
   setAttribute(html_names::kRoleAttr, AtomicString("group"));
   setAttribute(
       html_names::kAriaLabelAttr,
-      WTF::AtomicString(GetLocale().QueryString(IDS_AX_MEDIA_LOADING_PANEL)));
+      AtomicString(GetLocale().QueryString(IDS_AX_MEDIA_LOADING_PANEL)));
   setAttribute(html_names::kAriaLiveAttr, AtomicString("polite"));
   CreateUserAgentShadowRoot();
 
@@ -173,7 +173,7 @@ void MediaControlLoadingPanelElement::UpdateDisplayState() {
       // If the media controls are stopped then we should hide the loading
       // panel, but not until the current cycle of animations is complete.
       if (!IsInLoadingState(GetMediaControls())) {
-        SetAnimationIterationCount(WTF::String::Number(animation_count_ + 1));
+        SetAnimationIterationCount(String::Number(animation_count_ + 1));
         state_ = State::kCoolingDown;
       }
       break;

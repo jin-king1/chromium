@@ -7,19 +7,21 @@
 #include <algorithm>
 #include <string>
 #include <utility>
+#include <variant>
 
 #include "base/base64url.h"
 #include "base/containers/span.h"
 #include "base/files/important_file_writer.h"
 #include "base/functional/bind.h"
-#include "base/functional/overloaded.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/time/time.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/trusted_vault/download_keys_response_handler.h"
+#include "components/trusted_vault/features.h"
 #include "components/trusted_vault/proto/vault.pb.h"
 #include "components/trusted_vault/proto_string_bytes_conversion.h"
 #include "components/trusted_vault/securebox.h"
+#include "components/trusted_vault/standalone_trusted_vault_server_constants.h"
 #include "components/trusted_vault/trusted_vault_access_token_fetcher.h"
 #include "components/trusted_vault/trusted_vault_connection.h"
 #include "components/trusted_vault/trusted_vault_crypto.h"
@@ -28,6 +30,7 @@
 #include "components/trusted_vault/trusted_vault_server_constants.h"
 #include "net/base/url_util.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "third_party/abseil-cpp/absl/functional/overload.h"
 
 namespace trusted_vault {
 
@@ -122,7 +125,8 @@ GetLocalPhysicalDeviceType() {
 
 trusted_vault_pb::SecurityDomainMember CreateSecurityDomainMember(
     const SecureBoxPublicKey& public_key,
-    AuthenticationFactorType authentication_factor_type) {
+    AuthenticationFactorTypeAndRegistrationParams
+        authentication_factor_type_and_registration_params) {
   trusted_vault_pb::SecurityDomainMember member;
   std::string public_key_string;
   AssignBytesToProtoString(public_key.ExportToBytes(), &public_key_string);
@@ -137,8 +141,8 @@ trusted_vault_pb::SecurityDomainMember CreateSecurityDomainMember(
   // only to compute member name.
   member.set_public_key(public_key_string);
 
-  absl::visit(
-      base::Overloaded{
+  std::visit(
+      absl::Overload{
           [&member](const LocalPhysicalDevice&) {
             member.set_member_type(trusted_vault_pb::SecurityDomainMember::
                                        MEMBER_TYPE_PHYSICAL_DEVICE);
@@ -165,13 +169,14 @@ trusted_vault_pb::SecurityDomainMember CreateSecurityDomainMember(
             auto* member_metadata = member.mutable_member_metadata();
             auto* pin_metadata =
                 member_metadata->mutable_google_password_manager_pin_metadata();
-            pin_metadata->set_encrypted_pin_hash(gpm_pin_metadata.wrapped_pin);
+            pin_metadata->set_encrypted_pin_hash(
+                gpm_pin_metadata.usable_pin_metadata->wrapped_pin);
           },
           [&member](const ICloudKeychain&) {
             member.set_member_type(trusted_vault_pb::SecurityDomainMember::
                                        MEMBER_TYPE_ICLOUD_KEYCHAIN);
           }},
-      authentication_factor_type);
+      authentication_factor_type_and_registration_params);
   return member;
 }
 
@@ -179,8 +184,8 @@ void AddSharedMemberKeysFromSource(
     trusted_vault_pb::JoinSecurityDomainsRequest* request,
     const SecureBoxPublicKey& public_key,
     const MemberKeysSource& member_keys_source) {
-  absl::visit(
-      base::Overloaded{
+  std::visit(
+      absl::Overload{
           [request, &public_key](
               const std::vector<TrustedVaultKeyAndVersion>& key_and_versions) {
             for (const TrustedVaultKeyAndVersion&
@@ -200,19 +205,19 @@ trusted_vault_pb::JoinSecurityDomainsRequest CreateJoinSecurityDomainsRequest(
     SecurityDomainId security_domain,
     const MemberKeysSource& member_keys_source,
     const SecureBoxPublicKey& public_key,
-    AuthenticationFactorType authentication_factor_type) {
+    AuthenticationFactorTypeAndRegistrationParams
+        authentication_factor_type_and_registration_params) {
   trusted_vault_pb::JoinSecurityDomainsRequest request;
   request.mutable_security_domain()->set_name(
       GetSecurityDomainPath(security_domain));
-  *request.mutable_security_domain_member() =
-      CreateSecurityDomainMember(public_key, authentication_factor_type);
+  *request.mutable_security_domain_member() = CreateSecurityDomainMember(
+      public_key, authentication_factor_type_and_registration_params);
   AddSharedMemberKeysFromSource(&request, public_key, member_keys_source);
-  if (auto* unspecified_type =
-          absl::get_if<UnspecifiedAuthenticationFactorType>(
-              &authentication_factor_type)) {
+  if (auto* unspecified_type = std::get_if<UnspecifiedAuthenticationFactorType>(
+          &authentication_factor_type_and_registration_params)) {
     request.set_member_type_hint(unspecified_type->value());
-  } else if (auto* gpm_pin_metadata =
-                 absl::get_if<GpmPinMetadata>(&authentication_factor_type)) {
+  } else if (auto* gpm_pin_metadata = std::get_if<GpmPinMetadata>(
+                 &authentication_factor_type_and_registration_params)) {
     if (gpm_pin_metadata->public_key) {
       request.set_current_public_key_to_replace(*gpm_pin_metadata->public_key);
     }
@@ -442,13 +447,23 @@ class DownloadAuthenticationFactorsRegistrationStateRequest
       }
 
       if (member.member_type() == trusted_vault_pb::SecurityDomainMember::
-                                      MEMBER_TYPE_GOOGLE_PASSWORD_MANAGER_PIN &&
-          member.member_metadata().has_google_password_manager_pin_metadata()) {
-        const auto& pin_metadata =
-            member.member_metadata().google_password_manager_pin_metadata();
-        result_.gpm_pin_metadata.emplace(
-            member.public_key(), pin_metadata.encrypted_pin_hash(),
-            ToTime(pin_metadata.expiration_time()));
+                                      MEMBER_TYPE_GOOGLE_PASSWORD_MANAGER_PIN) {
+        if (member.member_metadata()
+                .has_google_password_manager_pin_metadata()) {
+          pin_status_ = TrustedVaultListSecurityDomainMembersPinStatus::
+              kPinPresentAndUsableForRecovery;
+          const auto& pin_metadata =
+              member.member_metadata().google_password_manager_pin_metadata();
+          result_.gpm_pin_metadata = GpmPinMetadata(
+              member.public_key(), UsableRecoveryPinMetadata(
+                                       pin_metadata.encrypted_pin_hash(),
+                                       ToTime(pin_metadata.expiration_time())));
+        } else {
+          result_.gpm_pin_metadata = GpmPinMetadata(
+              member.public_key(), /*pin_metadata=*/std::nullopt);
+          pin_status_ = TrustedVaultListSecurityDomainMembersPinStatus::
+              kPinPresentButUnusableForRecovery;
+        }
       } else if (member.member_type() ==
                  trusted_vault_pb::SecurityDomainMember::
                      MEMBER_TYPE_ICLOUD_KEYCHAIN) {
@@ -470,10 +485,8 @@ class DownloadAuthenticationFactorsRegistrationStateRequest
             membership->keys(), std::back_inserter(member_keys),
             [](const auto& key) {
               return MemberKeys(key.epoch(),
-                                std::vector<uint8_t>(key.wrapped_key().begin(),
-                                                     key.wrapped_key().end()),
-                                std::vector<uint8_t>(key.member_proof().begin(),
-                                                     key.member_proof().end()));
+                                ProtoStringToBytes(key.wrapped_key()),
+                                ProtoStringToBytes(key.member_proof()));
             });
         result_.icloud_keys.emplace_back(std::move(public_key),
                                          std::move(member_keys));
@@ -502,6 +515,8 @@ class DownloadAuthenticationFactorsRegistrationStateRequest
         "TrustedVault.DownloadAuthenticationFactorsRegistrationState." +
             GetSecurityDomainNameForUma(security_domain_),
         result_.state);
+    RecordTrustedVaultListSecurityDomainMembersPinStatus(security_domain_,
+                                                         pin_status_);
     std::move(callback_).Run(std::move(result_));
   }
 
@@ -515,13 +530,16 @@ class DownloadAuthenticationFactorsRegistrationStateRequest
   base::RepeatingClosure keep_alive_callback_;
   std::unique_ptr<TrustedVaultRequest> request_;
   DownloadAuthenticationFactorsRegistrationStateResult result_;
+  TrustedVaultListSecurityDomainMembersPinStatus pin_status_ =
+      TrustedVaultListSecurityDomainMembersPinStatus::kNoPinPresent;
 };
 
 TrustedVaultURLFetchReasonForUMA
 GetURLFetchReasonForUMAForJoinSecurityDomainsRequest(
-    AuthenticationFactorType authentication_factor_type) {
-  return absl::visit(
-      base::Overloaded{
+    AuthenticationFactorTypeAndRegistrationParams
+        authentication_factor_type_and_registration_params) {
+  return std::visit(
+      absl::Overload{
           [](const LocalPhysicalDevice&) {
             return TrustedVaultURLFetchReasonForUMA::kRegisterDevice;
           },
@@ -539,12 +557,121 @@ GetURLFetchReasonForUMAForJoinSecurityDomainsRequest(
           [](const ICloudKeychain&) {
             return TrustedVaultURLFetchReasonForUMA::kRegisterICloudKeychain;
           }},
-      authentication_factor_type);
+      authentication_factor_type_and_registration_params);
 }
 
 std::vector<TrustedVaultKeyAndVersion> ConstantKeySource() {
   return {{GetConstantTrustedVaultKey(),
            /*version=*/kUnknownConstantKeyVersion}};
+}
+
+void ProcessDownloadGaiaPasswordPublicKeyResponse(
+    TrustedVaultConnection::DownloadGaiaPasswordPublicKeyCallback callback,
+    TrustedVaultRequest::HttpStatus http_status,
+    const std::string& response_body) {
+  switch (http_status) {
+    case TrustedVaultRequest::HttpStatus::kSuccess:
+      break;
+    case TrustedVaultRequest::HttpStatus::kTransientAccessTokenFetchError:
+      std::move(callback).Run(TrustedVaultDownloadPasswordPublicKeyStatus::
+                                  kTransientAccessTokenFetchError,
+                              std::vector<uint8_t>());
+      return;
+    case TrustedVaultRequest::HttpStatus::kPersistentAccessTokenFetchError:
+      std::move(callback).Run(TrustedVaultDownloadPasswordPublicKeyStatus::
+                                  kPersistentAccessTokenFetchError,
+                              std::vector<uint8_t>());
+      return;
+    case TrustedVaultRequest::HttpStatus::
+        kPrimaryAccountChangeAccessTokenFetchError:
+      std::move(callback).Run(TrustedVaultDownloadPasswordPublicKeyStatus::
+                                  kPrimaryAccountChangeAccessTokenFetchError,
+                              std::vector<uint8_t>());
+      return;
+    case TrustedVaultRequest::HttpStatus::kNetworkError:
+      std::move(callback).Run(
+          TrustedVaultDownloadPasswordPublicKeyStatus::kNetworkError,
+          std::vector<uint8_t>());
+      return;
+    case TrustedVaultRequest::HttpStatus::kBadRequest:
+    case TrustedVaultRequest::HttpStatus::kNotFound:
+    case TrustedVaultRequest::HttpStatus::kConflict:
+    case TrustedVaultRequest::HttpStatus::kOtherError:
+      std::move(callback).Run(
+          TrustedVaultDownloadPasswordPublicKeyStatus::kOtherError,
+          std::vector<uint8_t>());
+      return;
+  }
+
+  trusted_vault_pb::GetCurrentGaiaPasswordEncryptionKeyDataResponse response;
+  if (!response.ParseFromString(response_body)) {
+    std::move(callback).Run(
+        TrustedVaultDownloadPasswordPublicKeyStatus::kOtherError,
+        std::vector<uint8_t>());
+    return;
+  }
+
+  const std::string& key_str =
+      response.current_gaia_password_encryption_key_data().public_key();
+  if (key_str.empty()) {
+    std::move(callback).Run(
+        TrustedVaultDownloadPasswordPublicKeyStatus::kOtherError,
+        std::vector<uint8_t>());
+    return;
+  }
+
+  std::move(callback).Run(TrustedVaultDownloadPasswordPublicKeyStatus::kSuccess,
+                          ProtoStringToBytes(key_str));
+}
+
+void ProcessRotateSharedKeyResponse(
+    TrustedVaultConnection::RotateSharedKeyCallback callback,
+    TrustedVaultRequest::HttpStatus http_status,
+    const std::string& response_body) {
+  switch (http_status) {
+    case TrustedVaultRequest::HttpStatus::kSuccess:
+      break;
+    case TrustedVaultRequest::HttpStatus::kNetworkError:
+      std::move(callback).Run(TrustedVaultKeyRotationStatus::kNetworkError, 0);
+      return;
+    case TrustedVaultRequest::HttpStatus::kOtherError:
+      std::move(callback).Run(TrustedVaultKeyRotationStatus::kOtherError, 0);
+      return;
+    case TrustedVaultRequest::HttpStatus::kTransientAccessTokenFetchError:
+      std::move(callback).Run(
+          TrustedVaultKeyRotationStatus::kTransientAccessTokenFetchError, 0);
+      return;
+    case TrustedVaultRequest::HttpStatus::kPersistentAccessTokenFetchError:
+      std::move(callback).Run(
+          TrustedVaultKeyRotationStatus::kPersistentAccessTokenFetchError, 0);
+      return;
+    case TrustedVaultRequest::HttpStatus::
+        kPrimaryAccountChangeAccessTokenFetchError:
+      std::move(callback).Run(TrustedVaultKeyRotationStatus::
+                                  kPrimaryAccountChangeAccessTokenFetchError,
+                              0);
+      return;
+    case TrustedVaultRequest::HttpStatus::kNotFound:
+      std::move(callback).Run(
+          TrustedVaultKeyRotationStatus::kEmptySecurityDomain, 0);
+      return;
+    case TrustedVaultRequest::HttpStatus::kBadRequest:
+      std::move(callback).Run(
+          TrustedVaultKeyRotationStatus::kMembershipMismatch, 0);
+      return;
+    case TrustedVaultRequest::HttpStatus::kConflict:
+      std::move(callback).Run(TrustedVaultKeyRotationStatus::kLocalDataObsolete,
+                              0);
+      return;
+  }
+
+  trusted_vault_pb::RotateSharedKeyResponse response;
+  if (!response.ParseFromString(response_body)) {
+    std::move(callback).Run(TrustedVaultKeyRotationStatus::kOtherError, 0);
+    return;
+  }
+  std::move(callback).Run(TrustedVaultKeyRotationStatus::kSuccess,
+                          response.new_epoch());
 }
 
 }  // namespace
@@ -581,11 +708,12 @@ TrustedVaultConnectionImpl::RegisterAuthenticationFactor(
     const CoreAccountInfo& account_info,
     const MemberKeysSource& member_keys_source,
     const SecureBoxPublicKey& authentication_factor_public_key,
-    AuthenticationFactorType authentication_factor_type,
+    AuthenticationFactorTypeAndRegistrationParams
+        authentication_factor_type_and_registration_params,
     RegisterAuthenticationFactorCallback callback) {
   return SendJoinSecurityDomainsRequest(
       account_info, member_keys_source, authentication_factor_public_key,
-      authentication_factor_type,
+      authentication_factor_type_and_registration_params,
       base::BindOnce(&RunRegisterAuthenticationFactorCallback,
                      std::move(callback)));
 }
@@ -655,17 +783,72 @@ TrustedVaultConnectionImpl::DownloadIsRecoverabilityDegraded(
 }
 
 std::unique_ptr<TrustedVaultConnection::Request>
+TrustedVaultConnectionImpl::DownloadGaiaPasswordPublicKey(
+    const CoreAccountInfo& account_info,
+    DownloadGaiaPasswordPublicKeyCallback callback) {
+  GURL url = GetDownloadGaiaPasswordPublicKeyURL(trusted_vault_service_url_);
+  auto request = std::make_unique<TrustedVaultRequest>(
+      security_domain_, account_info.account_id,
+      TrustedVaultRequest::HttpMethod::kGet, url,
+      /*serialized_request_proto=*/std::nullopt,
+      /*max_retry_duration=*/base::Seconds(0), GetOrCreateURLLoaderFactory(),
+      access_token_fetcher_->Clone(),
+      MakeFetchStatusCallback(
+          security_domain_,
+          TrustedVaultURLFetchReasonForUMA::kDownloadGaiaPasswordPublicKey));
+
+  request->FetchAccessTokenAndSendRequest(base::BindOnce(
+      &ProcessDownloadGaiaPasswordPublicKeyResponse, std::move(callback)));
+
+  return request;
+}
+
+std::unique_ptr<TrustedVaultConnection::Request>
+TrustedVaultConnectionImpl::RotateSharedKey(
+    const CoreAccountInfo& account_info,
+    const trusted_vault_pb::RotateSharedKeyRequest& request,
+    RotateSharedKeyCallback callback) {
+  auto http_request = std::make_unique<TrustedVaultRequest>(
+      security_domain_, account_info.account_id,
+      TrustedVaultRequest::HttpMethod::kPost,
+      GetRotateSharedKeyURL(trusted_vault_service_url_, security_domain_),
+      /*serialized_request_proto=*/request.SerializeAsString(),
+      /*max_retry_duration=*/kMaxKeyRotationRetryDuration,
+      GetOrCreateURLLoaderFactory(), access_token_fetcher_->Clone(),
+      MakeFetchStatusCallback(
+          security_domain_,
+          TrustedVaultURLFetchReasonForUMA::kRotateSharedKey));
+
+  http_request->FetchAccessTokenAndSendRequest(
+      base::BindOnce(&ProcessRotateSharedKeyResponse, std::move(callback)));
+
+  return http_request;
+}
+
+std::unique_ptr<TrustedVaultConnection::Request>
 TrustedVaultConnectionImpl::DownloadAuthenticationFactorsRegistrationState(
     const CoreAccountInfo& account_info,
     DownloadAuthenticationFactorsRegistrationStateCallback callback,
     base::RepeatingClosure keep_alive_callback) {
+  return DownloadAuthenticationFactorsRegistrationState(
+      account_info, {}, std::move(callback), std::move(keep_alive_callback));
+}
+
+std::unique_ptr<TrustedVaultConnection::Request>
+TrustedVaultConnectionImpl::DownloadAuthenticationFactorsRegistrationState(
+    const CoreAccountInfo& account_info,
+    std::set<trusted_vault_pb::SecurityDomainMember_MemberType>
+        recovery_factor_filter,
+    DownloadAuthenticationFactorsRegistrationStateCallback callback,
+    base::RepeatingClosure keep_alive_callback) {
+  GURL request_url = GetGetSecurityDomainMembersURL(
+      trusted_vault_service_url_, {security_domain_}, recovery_factor_filter);
+
   return std::make_unique<
       DownloadAuthenticationFactorsRegistrationStateRequest>(
-      security_domain_,
-      GetGetSecurityDomainMembersURL(trusted_vault_service_url_),
-      account_info.account_id, GetOrCreateURLLoaderFactory(),
-      access_token_fetcher_->Clone(), std::move(callback),
-      std::move(keep_alive_callback));
+      security_domain_, request_url, account_info.account_id,
+      GetOrCreateURLLoaderFactory(), access_token_fetcher_->Clone(),
+      std::move(callback), std::move(keep_alive_callback));
 }
 
 std::unique_ptr<TrustedVaultConnection::Request>
@@ -673,23 +856,25 @@ TrustedVaultConnectionImpl::SendJoinSecurityDomainsRequest(
     const CoreAccountInfo& account_info,
     const MemberKeysSource& member_keys_source,
     const SecureBoxPublicKey& authentication_factor_public_key,
-    AuthenticationFactorType authentication_factor_type,
+    AuthenticationFactorTypeAndRegistrationParams
+        authentication_factor_type_and_registration_params,
     JoinSecurityDomainsCallback callback) {
   auto request = std::make_unique<TrustedVaultRequest>(
       security_domain_, account_info.account_id,
       TrustedVaultRequest::HttpMethod::kPost,
       GetJoinSecurityDomainURL(trusted_vault_service_url_, security_domain_),
       /*serialized_request_proto=*/
-      CreateJoinSecurityDomainsRequest(security_domain_, member_keys_source,
-                                       authentication_factor_public_key,
-                                       authentication_factor_type)
+      CreateJoinSecurityDomainsRequest(
+          security_domain_, member_keys_source,
+          authentication_factor_public_key,
+          authentication_factor_type_and_registration_params)
           .SerializeAsString(),
       kMaxJoinSecurityDomainRetryDuration, GetOrCreateURLLoaderFactory(),
       access_token_fetcher_->Clone(),
       MakeFetchStatusCallback(
           security_domain_,
           GetURLFetchReasonForUMAForJoinSecurityDomainsRequest(
-              authentication_factor_type)));
+              authentication_factor_type_and_registration_params)));
 
   request->FetchAccessTokenAndSendRequest(
       base::BindOnce(&ProcessJoinSecurityDomainsResponse, std::move(callback)));

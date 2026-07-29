@@ -4,6 +4,8 @@
 
 package org.chromium.android_webview.test;
 
+import static com.google.common.truth.Truth.assertThat;
+
 import static org.chromium.android_webview.test.OnlyRunIn.ProcessMode.EITHER_PROCESS;
 
 import android.content.Intent;
@@ -13,6 +15,8 @@ import android.os.Handler;
 import android.os.Looper;
 
 import androidx.test.filters.MediumTest;
+
+import com.google.protobuf.ByteString;
 
 import org.junit.After;
 import org.junit.Assert;
@@ -26,6 +30,7 @@ import org.junit.runners.Parameterized.UseParametersRunnerFactory;
 import org.chromium.android_webview.common.AwSwitches;
 import org.chromium.android_webview.common.variations.VariationsServiceMetricsHelper;
 import org.chromium.android_webview.common.variations.VariationsUtils;
+import org.chromium.android_webview.proto.AwVariationsSeedOuterClass.AwVariationsSeed;
 import org.chromium.android_webview.test.services.MockVariationsSeedServer;
 import org.chromium.android_webview.test.util.VariationsTestUtils;
 import org.chromium.android_webview.variations.VariationsSeedLoader;
@@ -34,8 +39,10 @@ import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.HistogramWatcher;
+import org.chromium.components.variations.firstrun.VariationsSeedFetcher.SeedInfo;
 
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -62,7 +69,7 @@ public class VariationsSeedLoaderTest extends AwParameterizedTest {
         private volatile boolean mSeedRequested;
 
         public boolean wasSeedRequested() {
-            assert getCallCount() > 0;
+            assertThat(getCallCount()).isGreaterThan(0);
             return mSeedRequested;
         }
 
@@ -94,7 +101,7 @@ public class VariationsSeedLoaderTest extends AwParameterizedTest {
      * service Intent to match the test environment.
      */
     public static class TestLoader extends VariationsSeedLoader {
-        private TestLoaderResult mResult;
+        private final TestLoaderResult mResult;
 
         public TestLoader(TestLoaderResult result) {
             mResult = result;
@@ -176,26 +183,26 @@ public class VariationsSeedLoaderTest extends AwParameterizedTest {
     // Test that Seed and AppSeed Freshness diff is correct and recorded
     @Test
     @MediumTest
-    public void testRecordSeedDiff() throws Exception {
-        // The first line is needed to set the seed freshness to zero
-        // in order to calculate the diff correctly
-        VariationsSeedLoader.cacheSeedFreshness(0);
+    public void testRecordSeedDiff() {
+        // Should log diff no matter which way round the two values are received.
         long seedFreshnessInMinutes = 100;
         long appSeedFreshnessInMinutes = 40;
         long diff = seedFreshnessInMinutes - appSeedFreshnessInMinutes;
-        var histogramWatcherOne =
+        // This call resets everything to its default value (different values may have been set
+        // during other tests).
+        VariationsSeedLoader.recordAppSeedFreshnessDiff(0);
+        try (HistogramWatcher ignored =
                 HistogramWatcher.newSingleRecordWatcher(
-                        VariationsSeedLoader.SEED_FRESHNESS_DIFF_HISTOGRAM_NAME, (int) diff);
-        VariationsSeedLoader.cacheAppSeedFreshness(appSeedFreshnessInMinutes);
-        VariationsSeedLoader.cacheSeedFreshness(seedFreshnessInMinutes);
-        histogramWatcherOne.assertExpected();
-
-        var histogramWatcherTwo =
+                        VariationsSeedLoader.SEED_FRESHNESS_DIFF_HISTOGRAM_NAME, (int) diff)) {
+            VariationsSeedLoader.cacheAppSeedFreshness(appSeedFreshnessInMinutes);
+            VariationsSeedLoader.cacheSeedFreshness(seedFreshnessInMinutes);
+        }
+        try (HistogramWatcher ignored =
                 HistogramWatcher.newSingleRecordWatcher(
-                        VariationsSeedLoader.SEED_FRESHNESS_DIFF_HISTOGRAM_NAME, (int) diff);
-        VariationsSeedLoader.cacheSeedFreshness(seedFreshnessInMinutes);
-        VariationsSeedLoader.cacheAppSeedFreshness(appSeedFreshnessInMinutes);
-        histogramWatcherTwo.assertExpected();
+                        VariationsSeedLoader.SEED_FRESHNESS_DIFF_HISTOGRAM_NAME, (int) diff)) {
+            VariationsSeedLoader.cacheSeedFreshness(seedFreshnessInMinutes);
+            VariationsSeedLoader.cacheAppSeedFreshness(appSeedFreshnessInMinutes);
+        }
     }
 
     // Test the case that:
@@ -381,6 +388,45 @@ public class VariationsSeedLoaderTest extends AwParameterizedTest {
             seedRequested = runTestLoaderBlocking();
             Assert.assertFalse(
                     "New seed was requested when it should not have been", seedRequested);
+        } finally {
+            VariationsTestUtils.deleteSeeds();
+        }
+    }
+
+    // Test the case that:
+    // VariationsUtils.getSeedFile() - exists, timestamp = now (Old Raw Format)
+    // VariationsUtils.getNewSeedFile() - doesn't exist
+    // Verifies that native code can still parse the old format.
+    @Test
+    @MediumTest
+    public void testHaveFreshNewFormatSeed() throws Exception {
+        try {
+            File oldFile = VariationsUtils.getSeedFile();
+            Assert.assertTrue("Seed file already exists", oldFile.createNewFile());
+
+            // Write a seed with the new format, including a low_entropy_source.
+            SeedInfo mockSeed = VariationsTestUtils.createMockSeed();
+            final int lowEntropySource = 123;
+            FileOutputStream out = new FileOutputStream(oldFile);
+            AwVariationsSeed proto =
+                    AwVariationsSeed.newBuilder()
+                            .setSignature(mockSeed.signature)
+                            .setCountry(mockSeed.country)
+                            .setDate(mockSeed.date)
+                            .setIsGzipCompressed(mockSeed.isGzipCompressed)
+                            .setSeedData(ByteString.copyFrom(mockSeed.seedData))
+                            .setLowEntropySource(lowEntropySource)
+                            .build();
+            proto.writeTo(out);
+            out.close();
+
+            boolean seedRequested = runTestLoaderBlocking();
+
+            // Since there was a fresh (new format) seed, and the parser should handle it,
+            // we should not request another seed.
+            Assert.assertFalse(
+                    "New seed was requested when it should not have been (C++ parser failed?)",
+                    seedRequested);
         } finally {
             VariationsTestUtils.deleteSeeds();
         }

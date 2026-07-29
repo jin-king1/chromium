@@ -24,11 +24,16 @@
 
 #include "third_party/blink/renderer/core/css/css_math_function_value.h"
 #include "third_party/blink/renderer/core/css/css_resolution_units.h"
+#include "third_party/blink/renderer/core/css/css_unparsed_declaration_value.h"
+#include "third_party/blink/renderer/core/css/parser/css_parser.h"
+#include "third_party/blink/renderer/core/css/resolver/style_cascade.h"
 #include "third_party/blink/renderer/core/css/resolver/style_resolver.h"
+#include "third_party/blink/renderer/core/css/resolver/style_resolver_state.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
 #include "third_party/blink/renderer/core/svg/svg_element.h"
 #include "third_party/blink/renderer/core/svg/svg_length_functions.h"
+#include "third_party/blink/renderer/core/svg/svg_zoom_migration.h"
 #include "ui/gfx/geometry/size_f.h"
 
 namespace blink {
@@ -44,6 +49,45 @@ const ComputedStyle* RootElementStyle(const Element& element) {
   return nullptr;
 }
 
+const CSSValue* MaybeResolveUnparsedValueInternal(const Element* context,
+                                                  const CSSValue& value) {
+  const auto* unparsed_value = DynamicTo<CSSUnparsedDeclarationValue>(value);
+  if (!unparsed_value) {
+    return &value;
+  }
+
+  if (!context) {
+    return nullptr;
+  }
+
+  DCHECK(!context->GetDocument().InStyleRecalc());
+  // TODO: The const_cast here is currently safe because
+  // `StyleCascade::ResolveSubstitutions` does not modify the element.
+  // However, if this API changes in the future, this code will need to be
+  // updated accordingly.
+  StyleResolverState state(context->GetDocument(),
+                           const_cast<Element&>(*context));
+  state.EnsureParentStyle();
+  const ComputedStyle* computed_style = context->GetComputedStyle();
+  if (!computed_style) {
+    return nullptr;
+  }
+  state.CreateNewClonedStyle(*computed_style);
+  const CSSUnparsedDeclarationValue* substituted =
+      StyleCascade::ResolveSubstitutions(state, *unparsed_value,
+                                         &context->GetDocument(),
+                                         /*env_bindings=*/nullptr);
+
+  if (substituted) {
+    return CSSParser::ParseSingleValue(CSSPropertyID::kX,
+                                       substituted->CssText(),
+                                       unparsed_value->ParserContext());
+  }
+
+  // Could not resolve the unparsed value.
+  return nullptr;
+}
+
 }  // namespace
 
 SVGLengthConversionData::SVGLengthConversionData(const Element& context,
@@ -56,7 +100,9 @@ SVGLengthConversionData::SVGLengthConversionData(const Element& context,
                                 CSSToLengthConversionData::ContainerSizes(
                                     context.ParentOrShadowHostElement()),
                                 CSSToLengthConversionData::AnchorData(),
-                                1.0f,
+                                RuntimeEnabledFeatures::SvgNewZoomEnabled()
+                                    ? style.EffectiveZoom()
+                                    : 1.0f,
                                 ignored_flags_,
                                 &context) {}
 
@@ -87,6 +133,17 @@ const ComputedStyle* SVGLengthContext::ComputedStyleForLengthResolving(
   return ComputedStyle::GetInitialStyleSingleton();
 }
 
+float SVGLengthContext::GetZoom() const {
+  if (!RuntimeEnabledFeatures::SvgNewZoomEnabled()) {
+    return 1;
+  }
+  if (!context_) {
+    return 1;
+  }
+  const ComputedStyle* style = ComputedStyleForLengthResolving(*context_);
+  return style ? style->EffectiveZoom() : 1;
+}
+
 float SVGLengthContext::ResolveValue(const CSSMathFunctionValue& math_function,
                                      SVGLengthMode mode) const {
   if (!context_) {
@@ -99,6 +156,7 @@ float SVGLengthContext::ResolveValue(const CSSMathFunctionValue& math_function,
   const SVGLengthConversionData conversion_data(*context_, *style);
   const Length& length = math_function.ConvertToLength(conversion_data);
   const SVGViewportResolver viewport_resolver(*context_);
+  // We ignore this zoom factor if RuntimeEnabledFeatures::SvgNewZoomEnabled().
   return ValueForLength(length, viewport_resolver, 1.0f, mode);
 }
 
@@ -106,25 +164,26 @@ double SVGLengthContext::ConvertValueToUserUnitsUnclamped(
     float value,
     SVGLengthMode mode,
     CSSPrimitiveValue::UnitType from_unit) const {
+  const float zoom = GetZoom();
   // Handle absolute units.
   switch (from_unit) {
     case CSSPrimitiveValue::UnitType::kPixels:
     case CSSPrimitiveValue::UnitType::kNumber:
     case CSSPrimitiveValue::UnitType::kInteger:
     case CSSPrimitiveValue::UnitType::kUserUnits:
-      return value;
+      return zoom * value;
     case CSSPrimitiveValue::UnitType::kCentimeters:
-      return value * kCssPixelsPerCentimeter;
+      return zoom * value * kCssPixelsPerCentimeter;
     case CSSPrimitiveValue::UnitType::kMillimeters:
-      return value * kCssPixelsPerMillimeter;
+      return zoom * value * kCssPixelsPerMillimeter;
     case CSSPrimitiveValue::UnitType::kQuarterMillimeters:
-      return value * kCssPixelsPerQuarterMillimeter;
+      return zoom * value * kCssPixelsPerQuarterMillimeter;
     case CSSPrimitiveValue::UnitType::kInches:
-      return value * kCssPixelsPerInch;
+      return zoom * value * kCssPixelsPerInch;
     case CSSPrimitiveValue::UnitType::kPoints:
-      return value * kCssPixelsPerPoint;
+      return zoom * value * kCssPixelsPerPoint;
     case CSSPrimitiveValue::UnitType::kPicas:
-      return value * kCssPixelsPerPica;
+      return zoom * value * kCssPixelsPerPica;
     default:
       break;
   }
@@ -135,7 +194,10 @@ double SVGLengthContext::ConvertValueToUserUnitsUnclamped(
   if (from_unit == CSSPrimitiveValue::UnitType::kPercentage) {
     const float dimension =
         SVGViewportResolver(*context_).ViewportDimension(mode);
-    return value * dimension / 100;
+    if (RuntimeEnabledFeatures::SvgNewZoomEnabled()) {
+      return value * dimension / 100;
+    }
+    return zoom * value * dimension / 100;
   }
   // For remaining units, just instantiate a CSSToLengthConversionData object
   // and use that for resolving.
@@ -158,6 +220,43 @@ float SVGLengthContext::ConvertValueToUserUnits(
       ConvertValueToUserUnitsUnclamped(value, mode, from_unit));
 }
 
+namespace {
+
+float ConvertValueToAbsoluteUnit(float value,
+                                 CSSPrimitiveValue::UnitType to_unit,
+                                 float zoom) {
+  switch (to_unit) {
+    case CSSPrimitiveValue::UnitType::kPixels:
+    case CSSPrimitiveValue::UnitType::kNumber:
+    case CSSPrimitiveValue::UnitType::kInteger:
+    case CSSPrimitiveValue::UnitType::kUserUnits:
+      break;
+    case CSSPrimitiveValue::UnitType::kCentimeters:
+      value /= kCssPixelsPerCentimeter;
+      break;
+    case CSSPrimitiveValue::UnitType::kMillimeters:
+      value /= kCssPixelsPerMillimeter;
+      break;
+    case CSSPrimitiveValue::UnitType::kQuarterMillimeters:
+      value /= kCssPixelsPerQuarterMillimeter;
+      break;
+    case CSSPrimitiveValue::UnitType::kInches:
+      value /= kCssPixelsPerInch;
+      break;
+    case CSSPrimitiveValue::UnitType::kPoints:
+      value /= kCssPixelsPerPoint;
+      break;
+    case CSSPrimitiveValue::UnitType::kPicas:
+      value /= kCssPixelsPerPica;
+      break;
+    default:
+      NOTREACHED();
+  }
+  return NoopWillBeInvScaleScalar(value, zoom);
+}
+
+}  // namespace
+
 float SVGLengthContext::ConvertValueFromUserUnits(
     float value,
     SVGLengthMode mode,
@@ -168,19 +267,13 @@ float SVGLengthContext::ConvertValueFromUserUnits(
     case CSSPrimitiveValue::UnitType::kNumber:
     case CSSPrimitiveValue::UnitType::kInteger:
     case CSSPrimitiveValue::UnitType::kUserUnits:
-      return value;
     case CSSPrimitiveValue::UnitType::kCentimeters:
-      return value / kCssPixelsPerCentimeter;
     case CSSPrimitiveValue::UnitType::kMillimeters:
-      return value / kCssPixelsPerMillimeter;
     case CSSPrimitiveValue::UnitType::kQuarterMillimeters:
-      return value / kCssPixelsPerQuarterMillimeter;
     case CSSPrimitiveValue::UnitType::kInches:
-      return value / kCssPixelsPerInch;
     case CSSPrimitiveValue::UnitType::kPoints:
-      return value / kCssPixelsPerPoint;
     case CSSPrimitiveValue::UnitType::kPicas:
-      return value / kCssPixelsPerPica;
+      return ConvertValueToAbsoluteUnit(value, to_unit, GetZoom());
     default:
       break;
   }
@@ -210,6 +303,16 @@ float SVGLengthContext::ConvertValueFromUserUnits(
     return 0;
   }
   return ClampTo<float>(value / reference);
+}
+
+const CSSValue* SVGLengthContext::MaybeResolveUnparsedValue(
+    const CSSValue& value) const {
+  return MaybeResolveUnparsedValueInternal(context_, value);
+}
+
+const CSSValue* SVGLengthConversionData::MaybeResolveUnparsedValue(
+    const CSSValue& value) const {
+  return MaybeResolveUnparsedValueInternal(GetElement(), value);
 }
 
 }  // namespace blink

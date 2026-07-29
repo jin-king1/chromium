@@ -8,24 +8,27 @@ import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.ObserverList;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileKeyedMap;
 import org.chromium.components.content_settings.ContentSettingsType;
 
 /** Java equivalent of unused_site_permissions_bridge.cc. */
+@NullMarked
 class UnusedSitePermissionsBridge {
     interface Observer {
         void revokedPermissionsChanged();
     }
 
-    private static ProfileKeyedMap<UnusedSitePermissionsBridge> sProfileMap;
+    private static @Nullable ProfileKeyedMap<UnusedSitePermissionsBridge> sProfileMap;
 
     private final Profile mProfile;
     private final ObserverList<Observer> mObservers = new ObserverList<>();
 
     static UnusedSitePermissionsBridge getForProfile(Profile profile) {
         if (sProfileMap == null) {
-            sProfileMap = new ProfileKeyedMap<>(ProfileKeyedMap.NO_REQUIRED_CLEANUP_ACTION);
+            sProfileMap = new ProfileKeyedMap<>(ProfileKeyedMap.noRequiredCleanupAction());
         }
         return sProfileMap.getForProfile(profile, UnusedSitePermissionsBridge::new);
     }
@@ -51,7 +54,7 @@ class UnusedSitePermissionsBridge {
         notifyRevokedPermissionsChanged();
     }
 
-    void undoRegrantPermissions(PermissionsData permissionsData) {
+    void undoRegrantPermissions(@Nullable PermissionsData permissionsData) {
         UnusedSitePermissionsBridgeJni.get().undoRegrantPermissions(mProfile, permissionsData);
         notifyRevokedPermissionsChanged();
     }
@@ -61,7 +64,7 @@ class UnusedSitePermissionsBridge {
         notifyRevokedPermissionsChanged();
     }
 
-    void restoreRevokedPermissionsReviewList(PermissionsData[] permissionsDataList) {
+    void restoreRevokedPermissionsReviewList(PermissionsData @Nullable [] permissionsDataList) {
         UnusedSitePermissionsBridgeJni.get()
                 .restoreRevokedPermissionsReviewList(mProfile, permissionsDataList);
         notifyRevokedPermissionsChanged();
@@ -89,13 +92,14 @@ class UnusedSitePermissionsBridge {
 
         void undoRegrantPermissions(
                 @JniType("Profile*") Profile profile,
-                @JniType("PermissionsData") PermissionsData permissionsData);
+                @JniType("PermissionsData") @Nullable PermissionsData permissionsData);
 
         void clearRevokedPermissionsReviewList(@JniType("Profile*") Profile profile);
 
         void restoreRevokedPermissionsReviewList(
                 @JniType("Profile*") Profile profile,
-                @JniType("std::vector<PermissionsData>") PermissionsData[] permissionsDataList);
+                @JniType("std::vector<PermissionsData>")
+                        PermissionsData @Nullable [] permissionsDataList);
 
         @JniType("std::vector<std::u16string>")
         String[] contentSettingsTypeToString(

@@ -4,6 +4,8 @@
 
 package org.chromium.chrome.browser.firstrun;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.content.res.Configuration;
 import android.os.Bundle;
 import android.view.LayoutInflater;
@@ -15,27 +17,31 @@ import android.widget.FrameLayout;
 import androidx.fragment.app.Fragment;
 
 import org.chromium.base.Log;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
-import org.chromium.chrome.browser.signin.services.SigninMetricsUtils;
+import org.chromium.chrome.browser.signin.services.SigninManager;
 import org.chromium.chrome.browser.ui.signin.history_sync.HistorySyncConfig;
 import org.chromium.chrome.browser.ui.signin.history_sync.HistorySyncCoordinator;
 import org.chromium.chrome.browser.ui.signin.history_sync.HistorySyncView;
-import org.chromium.components.signin.identitymanager.ConsentLevel;
 import org.chromium.components.signin.metrics.SigninAccessPoint;
-import org.chromium.components.signin.metrics.SyncButtonClicked;
 
+@NullMarked
 public class HistorySyncFirstRunFragment extends Fragment
         implements FirstRunFragment, HistorySyncCoordinator.HistorySyncDelegate {
     private static final String TAG = "HistorySyncFREFrag";
 
-    private HistorySyncCoordinator mHistorySyncCoordinator;
+    private @Nullable HistorySyncCoordinator mHistorySyncCoordinator;
     private FrameLayout mFragmentView;
 
     @Override
     public View onCreateView(
-            LayoutInflater inflater, ViewGroup container, Bundle savedInstanceState) {
+            LayoutInflater inflater,
+            @Nullable ViewGroup container,
+            @Nullable Bundle savedInstanceState) {
         mFragmentView = new FrameLayout(getActivity());
 
         return mFragmentView;
@@ -69,15 +75,26 @@ public class HistorySyncFirstRunFragment extends Fragment
     private void maybeCreateCoordinator() {
         if (mHistorySyncCoordinator != null) return;
 
-        assert getPageDelegate().getProfileProviderSupplier().get() != null;
-        Profile profile = getPageDelegate().getProfileProviderSupplier().get().getOriginalProfile();
-        if (IdentityServicesProvider.get()
-                        .getSigninManager(profile)
-                        .getIdentityManager()
-                        .getPrimaryAccountInfo(ConsentLevel.SIGNIN)
-                == null) {
-            Log.w(TAG, "No primary account set, dismissing the history sync screen.");
-            getPageDelegate().advanceToNextPage();
+        FirstRunPageDelegate delegate = assumeNonNull(getPageDelegate());
+        Profile profile =
+                assumeNonNull(delegate.getProfileProviderSupplier().get()).getOriginalProfile();
+        SigninManager signinManager =
+                assumeNonNull(IdentityServicesProvider.get().getSigninManager(profile));
+
+        // When the user stays signed out and rotates the screen on the promo fragment,
+        // #onConfigurationChanged (and subsequent lifecycle calls) of hidden fragments like History
+        // Sync are triggered. To prevent these background fragments from incorrectly advancing the
+        // pager to the NTP, we skip calling advanceToNextPage() unless this fragment is actively
+        // resumed. Note that this is a safeguard -- FirstRunActivity#setCurrentItemForPager already
+        // contains logic to handle page mismatches, but this prevents the redundant advance trigger
+        // from occurring in the first place.
+        boolean canSkipAdvanceToNextPage = isFrePromoEnabled() && !isResumed();
+
+        if (signinManager.getIdentityManager().getPrimaryAccountInfo() == null) {
+            if (!canSkipAdvanceToNextPage) {
+                Log.w(TAG, "No primary account set, dismissing the history sync screen.");
+                getPageDelegate().advanceToNextPage();
+            }
             return;
         }
         mHistorySyncCoordinator =
@@ -85,7 +102,9 @@ public class HistorySyncFirstRunFragment extends Fragment
                         getActivity(),
                         this,
                         profile,
-                        new HistorySyncConfig(),
+                        new HistorySyncConfig(
+                                getActivity().getString(R.string.history_sync_title),
+                                getActivity().getString(R.string.history_sync_subtitle)),
                         SigninAccessPoint.START_PAGE,
                         false,
                         false,
@@ -104,35 +123,25 @@ public class HistorySyncFirstRunFragment extends Fragment
 
     /** Implements {@link HistorySyncDelegate} */
     @Override
-    public void dismissHistorySync(boolean isHistorySyncAccepted) {
-        getPageDelegate().advanceToNextPage();
+    public void dismissHistorySync(boolean didSignOut, boolean isHistorySyncAccepted) {
+        FirstRunPageDelegate delegate = getPageDelegate();
+        if (delegate == null) return;
+
+        if (isHistorySyncAccepted) {
+            delegate.recordFreProgressHistogram(MobileFreProgress.HISTORY_SYNC_ACCEPTED);
+        } else {
+            delegate.recordFreProgressHistogram(MobileFreProgress.HISTORY_SYNC_DISMISSED);
+        }
+
+        // We mark the step as completed no matter what the user chose.
+        if (ChromeFeatureList.isEnabled(ChromeFeatureList.DEFAULT_BROWSER_PROMO_FRE)) {
+            delegate.setHistorySyncStepCompleted(true);
+        }
+
+        delegate.advanceToNextPage();
         if (mHistorySyncCoordinator != null) {
             mHistorySyncCoordinator.destroy();
             mHistorySyncCoordinator = null;
-        }
-    }
-
-    /** Implements {@link HistorySyncDelegate} */
-    @Override
-    public void recordHistorySyncOptIn(
-            @SigninAccessPoint int accessPoint, @SyncButtonClicked int syncButtonClicked) {
-        switch (syncButtonClicked) {
-            case SyncButtonClicked.HISTORY_SYNC_OPT_IN_EQUAL_WEIGHTED:
-            case SyncButtonClicked.HISTORY_SYNC_OPT_IN_NOT_EQUAL_WEIGHTED:
-                getPageDelegate()
-                        .recordFreProgressHistogram(MobileFreProgress.HISTORY_SYNC_ACCEPTED);
-                SigninMetricsUtils.logHistorySyncAcceptButtonClicked(
-                        SigninAccessPoint.START_PAGE, syncButtonClicked);
-                break;
-            case SyncButtonClicked.HISTORY_SYNC_CANCEL_EQUAL_WEIGHTED:
-            case SyncButtonClicked.HISTORY_SYNC_CANCEL_NOT_EQUAL_WEIGHTED:
-                getPageDelegate()
-                        .recordFreProgressHistogram(MobileFreProgress.HISTORY_SYNC_DISMISSED);
-                SigninMetricsUtils.logHistorySyncDeclineButtonClicked(
-                        SigninAccessPoint.START_PAGE, syncButtonClicked);
-                break;
-            default:
-                throw new IllegalStateException("Unrecognized sync button type");
         }
     }
 
@@ -143,5 +152,9 @@ public class HistorySyncFirstRunFragment extends Fragment
             mHistorySyncCoordinator.destroy();
             mHistorySyncCoordinator = null;
         }
+    }
+
+    private boolean isFrePromoEnabled() {
+        return ChromeFeatureList.isEnabled(ChromeFeatureList.DEFAULT_BROWSER_PROMO_FRE);
     }
 }

@@ -9,14 +9,14 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sessions/session_service.h"
 #include "chrome/browser/sessions/session_service_factory.h"
-#include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_utils.h"
-#include "chrome/browser/ui/tabs/tab_group.h"
+#include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "components/saved_tab_groups/public/saved_tab_group.h"
 #include "components/saved_tab_groups/public/tab_group_sync_service.h"
 #include "components/saved_tab_groups/public/types.h"
 #include "components/sessions/core/session_id.h"
+#include "components/tabs/public/tab_group.h"
 
 namespace tab_groups {
 
@@ -27,7 +27,8 @@ SessionServiceTabGroupSyncObserver::SessionServiceTabGroupSyncObserver(
     : profile_(profile),
       tab_strip_model_(tab_strip_model),
       session_id_(session_id),
-      service_(tab_groups::SavedTabGroupUtils::GetServiceForProfile(profile_)) {
+      service_(
+          tab_groups::TabGroupSyncServiceFactory::GetForProfile(profile_)) {
   CHECK(service_);
   service_->AddObserver(this);
 }

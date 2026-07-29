@@ -35,6 +35,9 @@ void SetMemoryWarningInProgress(bool value);
 // the key as getting no memory is important information.
 void SetCurrentFreeMemoryInKB(int value);
 
+// Sets a key indicating the current remaining memory limit in KB.
+void SetCurrentMemoryLimitBytesRemainingInKB(int value);
+
 // Increases a key indicating the number of PDF tabs opened. If value is TRUE,
 // the counter is increased. If value is FALSE, the counter is decreased. If
 // counter falls to 0, the entry is removed. This function does not keep
@@ -106,6 +109,9 @@ void MediaStreamPlaybackDidStop();
 
 // Sets whether VoiceOver is currently running or not.
 void SetVoiceOverRunning(bool running);
+
+// Sets whether the Reading Mode web state is active on the visible tab.
+void SetCurrentlyInReaderMode(bool is_reader_mode_active);
 
 }  // namespace crash_keys
 

@@ -23,6 +23,7 @@
 #include "chrome/browser/ash/app_list/search/test/search_results_changed_waiter.h"
 #include "chrome/browser/ash/app_list/search/types.h"
 #include "chrome/browser/ash/app_list/test/chrome_app_list_test_support.h"
+#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/ash/system_web_apps/system_web_app_manager.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
@@ -107,12 +108,6 @@ class AppListSearchBrowserTest : public InProcessBrowserTest {
   }
 };
 
-class AppListSearchWithCustomizableShortcutsBrowserTest
-    : public AppListSearchBrowserTest {
-  base::test::ScopedFeatureList scoped_feature_list_{
-      features::kSearchCustomizableShortcutsInLauncher};
-};
-
 IN_PROC_BROWSER_TEST_F(AppListSearchBrowserTest, SearchBuiltInApps) {
   const std::string app_id = ash::kOsSettingsAppId;
   aura::Window* const primary_root_window = Shell::GetPrimaryRootWindow();
@@ -145,8 +140,9 @@ IN_PROC_BROWSER_TEST_F(AppListSearchBrowserTest, OpenFeedbackApp) {
 
   // Wait for the Feedback app to launch.
   navigation_observer.Wait();
-  Browser* feedback_browser = FindSystemWebAppBrowser(
-      browser()->profile(), SystemWebAppType::OS_FEEDBACK);
+  ash::BrowserDelegate* feedback_browser = FindSystemWebAppBrowser(
+      browser()->GetProfile(), SystemWebAppType::OS_FEEDBACK,
+      ash::BrowserType::kApp);
   EXPECT_TRUE(feedback_browser);
 }
 
@@ -165,13 +161,15 @@ IN_PROC_BROWSER_TEST_F(AppListSearchBrowserTest, OpenShortcutsApp) {
 
   // Wait for the Shortcut Customization app to launch.
   navigation_observer.Wait();
-  Browser* shortcut_customization_browser = FindSystemWebAppBrowser(
-      browser()->profile(), SystemWebAppType::SHORTCUT_CUSTOMIZATION);
+  ash::BrowserDelegate* shortcut_customization_browser =
+      FindSystemWebAppBrowser(browser()->GetProfile(),
+                              SystemWebAppType::SHORTCUT_CUSTOMIZATION,
+                              ash::BrowserType::kApp);
   EXPECT_TRUE(shortcut_customization_browser);
 }
 
 // Flaky. See http://crbug.com/324930012.
-IN_PROC_BROWSER_TEST_F(AppListSearchWithCustomizableShortcutsBrowserTest,
+IN_PROC_BROWSER_TEST_F(AppListSearchBrowserTest,
                        DISABLED_OpenShortcutsAppFromShortcut) {
   // Launch the app from the Launcher via searching for a shortcut
   aura::Window* const primary_root_window = Shell::GetPrimaryRootWindow();
@@ -188,8 +186,10 @@ IN_PROC_BROWSER_TEST_F(AppListSearchWithCustomizableShortcutsBrowserTest,
 
   // Wait for the Shortcut Customization app to launch.
   navigation_observer.Wait();
-  Browser* shortcut_customization_browser = FindSystemWebAppBrowser(
-      browser()->profile(), SystemWebAppType::SHORTCUT_CUSTOMIZATION);
+  ash::BrowserDelegate* shortcut_customization_browser =
+      FindSystemWebAppBrowser(browser()->GetProfile(),
+                              SystemWebAppType::SHORTCUT_CUSTOMIZATION,
+                              ash::BrowserType::kApp);
   EXPECT_TRUE(shortcut_customization_browser);
 }
 

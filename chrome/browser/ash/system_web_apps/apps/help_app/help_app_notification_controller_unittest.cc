@@ -7,6 +7,7 @@
 #include <memory>
 
 #include "ash/constants/ash_features.h"
+#include "ash/webui/help_app_ui/help_app_prefs.h"
 #include "base/feature_list.h"
 #include "base/memory/raw_ptr.h"
 #include "base/test/scoped_feature_list.h"
@@ -16,7 +17,6 @@
 #include "chrome/browser/notifications/system_notification_helper.h"
 #include "chrome/browser/policy/profile_policy_connector.h"
 #include "chrome/browser/profiles/chrome_version_service.h"
-#include "chrome/common/pref_names.h"
 #include "chrome/test/base/browser_with_test_window_test.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
@@ -43,7 +43,7 @@ class HelpAppNotificationControllerTest : public BrowserWithTestWindowTest {
 
   TestingProfile* CreateRegularProfile() {
     constexpr char kEmail[] = "user@gmail.com";
-    const GaiaId kFakeGaia("fakegaia");
+    const GaiaId kFakeGaia("fakegaia123");
     LogIn(kEmail, kFakeGaia);
     auto* profile = CreateProfile(kEmail);
     // Set profile creation version, otherwise it defaults to 1.0.0.0.
@@ -71,11 +71,15 @@ class HelpAppNotificationControllerTest : public BrowserWithTestWindowTest {
     notification_tester_->SetNotificationAddedClosure(base::BindRepeating(
         &HelpAppNotificationControllerTest::OnNotificationAdded,
         base::Unretained(this)));
+
+    // The notification is turned off by default since there is a chip shown in
+    // the birch bar. Turn it on for this test.
     scoped_feature_list_.InitWithFeatures(
         /*enabled_features=*/
         {features::kReleaseNotesNotificationAllChannels,
-         features::kHelpAppOpensInsteadOfReleaseNotesNotification},
-        /*disabled_features=*/{features::kForestFeature});
+         features::kHelpAppOpensInsteadOfReleaseNotesNotification,
+         features::kReleaseNotesNotificationAlwaysEligible},
+        /*disabled_features=*/{});
   }
 
   void TearDown() override {
@@ -86,14 +90,14 @@ class HelpAppNotificationControllerTest : public BrowserWithTestWindowTest {
 
   void OnNotificationAdded() { notification_count_++; }
 
-  void TurnOnBirchFeature() {
+  void TurnOffNotificationEligible() {
     scoped_feature_list_.Reset();
     scoped_feature_list_.InitWithFeatures(
         /*enabled_features=*/
         {features::kReleaseNotesNotificationAllChannels,
-         features::kHelpAppOpensInsteadOfReleaseNotesNotification,
-         features::kForestFeature},
-        /*disabled_features=*/{});
+         features::kHelpAppOpensInsteadOfReleaseNotesNotification},
+        /*disabled_features=*/{
+            features::kReleaseNotesNotificationAlwaysEligible});
   }
 
  protected:
@@ -125,7 +129,7 @@ class HelpAppNotificationControllerTestWithHelpAppOpensInsteadDisabled
             features::kReleaseNotesNotificationAllChannels,
         },
         /*disabled_features=*/{
-            features::kForestFeature,
+            features::kReleaseNotesNotificationAlwaysEligible,
             features::kHelpAppOpensInsteadOfReleaseNotesNotification});
     BrowserWithTestWindowTest::SetUp();
     help_app_notification_controller_ =
@@ -144,149 +148,81 @@ class HelpAppNotificationControllerTestWithHelpAppOpensInsteadDisabled
 TEST_F(HelpAppNotificationControllerTestWithHelpAppOpensInsteadDisabled,
        DoesNotShowAnyNotificationIfNewRegularProfile) {
   Profile* profile = CreateRegularProfile();
-  std::unique_ptr<HelpAppNotificationController> controller =
-      std::make_unique<HelpAppNotificationController>(profile);
+  auto controller = std::make_unique<HelpAppNotificationController>(profile);
 
   controller->MaybeShowReleaseNotesNotification();
-
   EXPECT_EQ(0, notification_count_);
-  EXPECT_EQ(false, HasReleaseNotesNotification());
+  EXPECT_FALSE(HasReleaseNotesNotification());
 }
 
 TEST_F(HelpAppNotificationControllerTestWithHelpAppOpensInsteadDisabled,
-       ShowsReleaseNotesNotificationIfShownInOlderMilestone) {
+       DoesNotShowsReleaseNotesNotificationIfShownInOlderMilestone) {
   Profile* profile = CreateRegularProfile();
-  profile->GetPrefs()->SetInteger(prefs::kHelpAppNotificationLastShownMilestone,
-                                  20);
-  std::unique_ptr<HelpAppNotificationController> controller =
-      std::make_unique<HelpAppNotificationController>(profile);
+  profile->GetPrefs()->SetInteger(
+      ash::help_app::prefs::kHelpAppNotificationLastShownMilestone, 20);
+  auto controller = std::make_unique<HelpAppNotificationController>(profile);
 
   controller->MaybeShowReleaseNotesNotification();
-  if (features::IsForestFeatureEnabled()) {
-    EXPECT_EQ(0, notification_count_);
-    EXPECT_EQ(false, HasReleaseNotesNotification());
-    EXPECT_EQ(20, profile->GetPrefs()->GetInteger(
-                      prefs::kHelpAppNotificationLastShownMilestone));
-  } else {
-    EXPECT_EQ(1, notification_count_);
-    EXPECT_EQ(true, HasReleaseNotesNotification());
-    EXPECT_EQ(CurrentMilestone(),
-              profile->GetPrefs()->GetInteger(
-                  prefs::kHelpAppNotificationLastShownMilestone));
-  }
+  EXPECT_EQ(0, notification_count_);
+  EXPECT_FALSE(HasReleaseNotesNotification());
 }
 
 TEST_F(HelpAppNotificationControllerTestWithHelpAppOpensInsteadDisabled,
        DoesNotShowReleaseNotificationIfAlreadyShownInCurrentMilestone) {
   Profile* profile = CreateRegularProfile();
-  profile->GetPrefs()->SetInteger(prefs::kHelpAppNotificationLastShownMilestone,
-                                  CurrentMilestone());
-  std::unique_ptr<HelpAppNotificationController> controller =
-      std::make_unique<HelpAppNotificationController>(profile);
+  profile->GetPrefs()->SetInteger(
+      ash::help_app::prefs::kHelpAppNotificationLastShownMilestone,
+      CurrentMilestone());
+  auto controller = std::make_unique<HelpAppNotificationController>(profile);
 
   controller->MaybeShowReleaseNotesNotification();
-
   EXPECT_EQ(0, notification_count_);
-  EXPECT_EQ(false, HasReleaseNotesNotification());
+  EXPECT_FALSE(HasReleaseNotesNotification());
 }
 
 // Tests for Child profile.
 TEST_F(HelpAppNotificationControllerTestWithHelpAppOpensInsteadDisabled,
        DoesNotShowAnyNotificationIfNewChildProfile) {
   Profile* profile = CreateChildProfile();
-  std::unique_ptr<HelpAppNotificationController> controller =
-      std::make_unique<HelpAppNotificationController>(profile);
+  auto controller = std::make_unique<HelpAppNotificationController>(profile);
 
   controller->MaybeShowReleaseNotesNotification();
-
   EXPECT_EQ(0, notification_count_);
-  EXPECT_EQ(false, HasReleaseNotesNotification());
-}
-
-TEST_F(HelpAppNotificationControllerTestWithHelpAppOpensInsteadDisabled,
-       DoesNotShowMoreThanOneNotificationPerMilestone) {
-  Profile* profile = CreateChildProfile();
-  profile->GetPrefs()->SetInteger(prefs::kHelpAppNotificationLastShownMilestone,
-                                  91);
-  std::unique_ptr<HelpAppNotificationController> controller =
-      std::make_unique<HelpAppNotificationController>(profile);
-
-  controller->MaybeShowReleaseNotesNotification();
-
-  if (features::IsForestFeatureEnabled()) {
-    EXPECT_EQ(0, notification_count_);
-    EXPECT_EQ(false, HasReleaseNotesNotification());
-  } else {
-    EXPECT_EQ(1, notification_count_);
-    EXPECT_EQ(true, HasReleaseNotesNotification());
-  }
-
-  controller->MaybeShowReleaseNotesNotification();
-
-  if (features::IsForestFeatureEnabled()) {
-    EXPECT_EQ(0, notification_count_);
-    EXPECT_EQ(false, HasReleaseNotesNotification());
-  } else {
-    EXPECT_EQ(1, notification_count_);
-    EXPECT_EQ(true, HasReleaseNotesNotification());
-  }
-}
-
-// Tests for suggestion chips.
-TEST_F(HelpAppNotificationControllerTestWithHelpAppOpensInsteadDisabled,
-       UpdatesReleaseNotesChipPrefWhenReleaseNotesNotificationShown) {
-  Profile* profile = CreateRegularProfile();
-  profile->GetPrefs()->SetInteger(prefs::kHelpAppNotificationLastShownMilestone,
-                                  20);
-  std::unique_ptr<HelpAppNotificationController> controller =
-      std::make_unique<HelpAppNotificationController>(profile);
-
-  EXPECT_EQ(0, profile->GetPrefs()->GetInteger(
-                   prefs::kReleaseNotesSuggestionChipTimesLeftToShow));
-
-  controller->MaybeShowReleaseNotesNotification();
-  if (features::IsForestFeatureEnabled()) {
-    EXPECT_EQ(0, profile->GetPrefs()->GetInteger(
-                     prefs::kReleaseNotesSuggestionChipTimesLeftToShow));
-  } else {
-    EXPECT_EQ(3, profile->GetPrefs()->GetInteger(
-                     prefs::kReleaseNotesSuggestionChipTimesLeftToShow));
-  }
+  EXPECT_FALSE(HasReleaseNotesNotification());
 }
 
 // Tests that help app opens instead of release notes notification by default.
 TEST_F(HelpAppNotificationControllerTest, DoesNotShowNotification) {
   Profile* profile = CreateRegularProfile();
-  profile->GetPrefs()->SetInteger(prefs::kHelpAppNotificationLastShownMilestone,
-                                  91);
-  std::unique_ptr<HelpAppNotificationController> controller =
-      std::make_unique<HelpAppNotificationController>(profile);
+  profile->GetPrefs()->SetInteger(
+      ash::help_app::prefs::kHelpAppNotificationLastShownMilestone, 91);
+  auto controller = std::make_unique<HelpAppNotificationController>(profile);
 
   controller->MaybeShowReleaseNotesNotification();
 
   EXPECT_EQ(0, notification_count_);
-  EXPECT_EQ(false, HasReleaseNotesNotification());
+  EXPECT_FALSE(HasReleaseNotesNotification());
   EXPECT_EQ(CurrentMilestone(),
             profile->GetPrefs()->GetInteger(
-                prefs::kHelpAppNotificationLastShownMilestone));
+                ash::help_app::prefs::kHelpAppNotificationLastShownMilestone));
 }
 
-// Tests that release notes don't auto open if the birch feature is enabled.
+// Tests that release notes don't auto open if the notification eligible feature
+// is disabled.
 TEST_F(HelpAppNotificationControllerTest,
        DoesNotOpenHelpAppIfBirchFeatureEnabled) {
-  TurnOnBirchFeature();
+  TurnOffNotificationEligible();
   Profile* profile = CreateRegularProfile();
-  profile->GetPrefs()->SetInteger(prefs::kHelpAppNotificationLastShownMilestone,
-                                  91);
-  std::unique_ptr<HelpAppNotificationController> controller =
-      std::make_unique<HelpAppNotificationController>(profile);
+  profile->GetPrefs()->SetInteger(
+      ash::help_app::prefs::kHelpAppNotificationLastShownMilestone, 91);
+  auto controller = std::make_unique<HelpAppNotificationController>(profile);
 
   controller->MaybeShowReleaseNotesNotification();
-
   EXPECT_EQ(0, notification_count_);
-  EXPECT_EQ(false, HasReleaseNotesNotification());
-  EXPECT_EQ(91, profile->GetPrefs()->GetInteger(
-                    prefs::kHelpAppNotificationLastShownMilestone));
+  EXPECT_FALSE(HasReleaseNotesNotification());
+  EXPECT_EQ(91,
+            profile->GetPrefs()->GetInteger(
+                ash::help_app::prefs::kHelpAppNotificationLastShownMilestone));
 }
 
 }  // namespace ash

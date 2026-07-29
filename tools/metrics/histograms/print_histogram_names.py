@@ -2,47 +2,26 @@
 # Copyright 2018 The Chromium Authors
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
-
 """Prints all histogram names."""
 
 from __future__ import print_function
 
 import argparse
-import os
+import io
 import subprocess
 import sys
-import tempfile
-import io
 
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'common'))
-import path_util
+import setup_modules  # pylint: disable=unused-import
 
-import extract_histograms
-import histogram_paths
-import merge_xml
-
-
-# Used in android_webview/java/res/raw/histograms_allowlist_check.py.
-def get_names(xml_files):
-  """Returns all histogram names generated from a list of xml files.
-
-  Args:
-    xml_files: A list of open file objects containing histogram definitions.
-  Returns:
-    The set of histogram names.
-  """
-  doc = merge_xml.MergeFiles(files=xml_files)
-  histograms, had_errors = extract_histograms.ExtractHistogramsFromDom(doc)
-  if had_errors:
-    raise ValueError("Error parsing inputs.")
-  return set(extract_histograms.ExtractNames(histograms))
+import chromium_src.tools.metrics.histograms.histogram_paths as histogram_paths
+import chromium_src.tools.metrics.histograms.histogram_utils as histogram_utils
 
 
 def histogram_xml_files():
   return [open(f, encoding="utf-8") for f in histogram_paths.ALL_XMLS]
 
 
-def _get_diff(revision):
+def get_histogram_diff(revision):
   """Returns the added / removed histogram names relative to git revision
 
   Args:
@@ -71,8 +50,8 @@ def _get_diff(revision):
       # Paths might not exist in the provided revision.
       continue
 
-  current_histogram_names = get_names(histogram_xml_files())
-  prev_histogram_names = get_names(prev_files)
+  current_histogram_names = histogram_utils.get_names(histogram_xml_files())
+  prev_histogram_names = histogram_utils.get_names(prev_files)
 
   added_names = sorted(list(current_histogram_names - prev_histogram_names))
   removed_names = sorted(list(prev_histogram_names - current_histogram_names))
@@ -80,7 +59,7 @@ def _get_diff(revision):
 
 
 def _print_diff_names(revision):
-  added_names, removed_names = _get_diff(revision)
+  added_names, removed_names = get_histogram_diff(revision)
   print("%d histograms added:" % len(added_names))
   for name in added_names:
     print(name)
@@ -91,18 +70,18 @@ def _print_diff_names(revision):
 
 
 def main(argv):
-  parser = argparse.ArgumentParser(description='Print histogram names.')
-  parser.add_argument('--diff',
+  parser = argparse.ArgumentParser(description="Print histogram names.")
+  parser.add_argument("--diff",
                       type=str,
-                      help='Git revision to diff against (e.g. HEAD~)')
+                      help="Git revision to diff against (e.g. HEAD~)")
   args = parser.parse_args(argv[1:])
   if args.diff is not None:
     _print_diff_names(args.diff)
   else:
-    name_set = get_names(_histogram_xml_files())
+    name_set = histogram_utils.get_names(histogram_xml_files())
     for name in sorted(list(name_set)):
       print(name)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
   main(sys.argv)

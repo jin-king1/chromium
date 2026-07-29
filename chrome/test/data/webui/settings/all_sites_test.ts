@@ -3,16 +3,15 @@
 // found in the LICENSE file.
 
 // clang-format off
-import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {flush} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 import type {AllSitesElement, SiteGroup} from 'chrome://settings/lazy_load.js';
-import {ContentSetting, ContentSettingsTypes, SiteSettingsPrefsBrowserProxyImpl, SortMethod} from 'chrome://settings/lazy_load.js';
-import {CrSettingsPrefs, DeleteBrowsingDataAction, MetricsBrowserProxyImpl, Router, routes} from 'chrome://settings/settings.js';
+import {ContentSetting, ContentSettingsTypes, SiteSettingsBrowserProxyImpl, SortMethod} from 'chrome://settings/lazy_load.js';
+import {CrSettingsPrefs, DeleteBrowsingDataAction, loadTimeData, MetricsBrowserProxyImpl, Router, routes} from 'chrome://settings/settings.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {isChildVisible, isVisible} from 'chrome://webui-test/test_util.js';
 import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
 
-import {TestSiteSettingsPrefsBrowserProxy} from './test_site_settings_prefs_browser_proxy.js';
+import {TestSiteSettingsBrowserProxy} from './test_site_settings_browser_proxy.js';
 import type {SiteSettingsPref} from './test_util.js';
 import {createContentSettingTypeToValuePair, createOriginInfo, createRawSiteException, createSiteGroup, createSiteSettingsPrefs, groupingKey} from './test_util.js';
 import {TestMetricsBrowserProxy} from './test_metrics_browser_proxy.js';
@@ -20,7 +19,7 @@ import {TestMetricsBrowserProxy} from './test_metrics_browser_proxy.js';
 
 // clang-format on
 
-suite('DisableRelatedWebsiteSets', function() {
+suite('WithoutRelatedWebsiteSetsData', function() {
   /**
    * An example eTLD+1 Object with multiple origins grouped under it.
    */
@@ -51,14 +50,10 @@ suite('DisableRelatedWebsiteSets', function() {
   /**
    * The mock proxy object to use during test.
    */
-  let browserProxy: TestSiteSettingsPrefsBrowserProxy;
+  let browserProxy: TestSiteSettingsBrowserProxy;
 
   suiteSetup(function() {
     CrSettingsPrefs.setInitialized();
-
-    loadTimeData.overrideValues({
-      firstPartySetsUIEnabled: false,
-    });
   });
 
   suiteTeardown(function() {
@@ -92,8 +87,8 @@ suite('DisableRelatedWebsiteSets', function() {
             }),
           ]),
     ]);
-    browserProxy = new TestSiteSettingsPrefsBrowserProxy();
-    SiteSettingsPrefsBrowserProxyImpl.setInstance(browserProxy);
+    browserProxy = new TestSiteSettingsBrowserProxy();
+    SiteSettingsBrowserProxyImpl.setInstance(browserProxy);
     metricsBrowserProxy = new TestMetricsBrowserProxy();
     MetricsBrowserProxyImpl.setInstance(metricsBrowserProxy);
     testElement = document.createElement('all-sites');
@@ -1094,7 +1089,7 @@ suite('EnableRelatedWebsiteSets', function() {
   /**
    * The mock proxy object to use during test.
    */
-  let browserProxy: TestSiteSettingsPrefsBrowserProxy;
+  let browserProxy: TestSiteSettingsBrowserProxy;
 
   let metricsBrowserProxy: TestMetricsBrowserProxy;
 
@@ -1106,10 +1101,6 @@ suite('EnableRelatedWebsiteSets', function() {
 
   suiteSetup(function() {
     CrSettingsPrefs.setInitialized();
-
-    loadTimeData.overrideValues({
-      firstPartySetsUIEnabled: true,
-    });
   });
 
   suiteTeardown(function() {
@@ -1121,8 +1112,8 @@ suite('EnableRelatedWebsiteSets', function() {
   setup(function() {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
 
-    browserProxy = new TestSiteSettingsPrefsBrowserProxy();
-    SiteSettingsPrefsBrowserProxyImpl.setInstance(browserProxy);
+    browserProxy = new TestSiteSettingsBrowserProxy();
+    SiteSettingsBrowserProxyImpl.setInstance(browserProxy);
     metricsBrowserProxy = new TestMetricsBrowserProxy();
     MetricsBrowserProxyImpl.setInstance(metricsBrowserProxy);
     createPage();
@@ -1264,7 +1255,8 @@ suite('EnableRelatedWebsiteSets', function() {
     assertEquals('', testElement.filter);
     // Click show related sites.
     assertTrue(!!menuItems[0]);
-    assertEquals(loadTimeData.getString('allSitesShowRwsButton'),
+    assertEquals(
+        loadTimeData.getString('relatedWebsiteSetsShowRelatedSitesButton'),
         menuItems[0].innerText.trim());
     menuItems[0].click();
     // Check the overflow menu is now closed.
@@ -1295,8 +1287,8 @@ suite('EnableRelatedWebsiteSets', function() {
   });
 
   test(
-      'site entry related website set information updated on site deletion',
-      function() {
+      'site entry RWS label updated on site deletion', async function() {
+        await createPage();
         TEST_RWS_SITE_GROUPS.forEach(siteGroup => {
           testElement.siteGroupMap.set(
               siteGroup.groupingKey, structuredClone(siteGroup));
@@ -1306,8 +1298,9 @@ suite('EnableRelatedWebsiteSets', function() {
         let siteEntries =
             testElement.$.listContainer.querySelectorAll('site-entry');
         assertEquals(testElement.$.allSitesList.items!.length, 2);
+        await browserProxy.whenCalled('getRwsMembershipLabel');
         assertEquals(
-            '· ' + loadTimeData.getString('allSitesRwsMembershipLabel'),
+            '· 2 sites in google.com\'s group',
             siteEntries[1]!.$.rwsMembership.innerText.trim());
 
         // Remove first site group.
@@ -1315,43 +1308,11 @@ suite('EnableRelatedWebsiteSets', function() {
         siteEntries =
             testElement.$.listContainer.querySelectorAll('site-entry');
         assertEquals(testElement.$.allSitesList.items!.length, 1);
+        await browserProxy.whenCalled('getRwsMembershipLabel');
         assertEquals(
-            '· ' + loadTimeData.getString('allSitesRwsMembershipLabel'),
+            '· 1 site in google.com\'s group',
             siteEntries[1]!.$.rwsMembership.innerText.trim());
       });
-
-      // TODO(crbug.com/396463421): Remove once RelatedWebsiteSetsUi launched.
-      test(
-        'site entry RWS information updated on site deletion when RWS UI V2 disabled',
-        async function() {
-          loadTimeData.overrideValues({
-            isRelatedWebsiteSetsV2UiEnabled: false,
-          });
-          await createPage();
-          TEST_RWS_SITE_GROUPS.forEach(siteGroup => {
-            testElement.siteGroupMap.set(
-                siteGroup.groupingKey, structuredClone(siteGroup));
-          });
-          testElement.forceListUpdateForTesting();
-          flush();
-          let siteEntries =
-              testElement.$.listContainer.querySelectorAll('site-entry');
-          assertEquals(testElement.$.allSitesList.items!.length, 2);
-          await browserProxy.whenCalled('getRwsMembershipLabel');
-          assertEquals(
-              '· 2 sites in google.com\'s group',
-              siteEntries[1]!.$.rwsMembership.innerText.trim());
-
-          // Remove first site group.
-          removeSiteViaOverflowMenu('action-button');
-          siteEntries =
-              testElement.$.listContainer.querySelectorAll('site-entry');
-          assertEquals(testElement.$.allSitesList.items!.length, 1);
-          await browserProxy.whenCalled('getRwsMembershipLabel');
-          assertEquals(
-              '· 1 site in google.com\'s group',
-              siteEntries[1]!.$.rwsMembership.innerText.trim());
-        });
 
   test(
       'site entry related website set constant member count on origin deletion',

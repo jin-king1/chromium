@@ -13,6 +13,7 @@
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/sequence_checker.h"
 #include "base/task/bind_post_task.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/thread_annotations.h"
@@ -22,8 +23,6 @@
 #include "base/uuid.h"
 #include "components/download/public/common/quarantine_connection.h"
 #include "components/services/storage/public/mojom/file_system_access_context.mojom.h"
-#include "content/browser/blob_storage/chrome_blob_storage_context.h"
-#include "content/browser/file_system_access/file_system_access.pb.h"
 #include "content/browser/file_system_access/file_system_access_lock_manager.h"
 #include "content/browser/file_system_access/file_system_access_watcher_manager.h"
 #include "content/browser/file_system_access/file_system_chooser.h"
@@ -46,6 +45,7 @@
 #include "third_party/blink/public/mojom/file_system_access/file_system_access_file_writer.mojom.h"
 #include "third_party/blink/public/mojom/file_system_access/file_system_access_manager.mojom.h"
 #include "third_party/blink/public/mojom/file_system_access/file_system_access_observer_host.mojom.h"
+#include "third_party/blink/public/mojom/file_system_access/file_system_access_permission_mode.mojom.h"
 #include "third_party/blink/public/mojom/permissions/permission_status.mojom.h"
 
 namespace blink {
@@ -57,11 +57,13 @@ class FileSystemContext;
 }  // namespace storage
 
 namespace content {
+class ChromeBlobStorageContext;
 class FileSystemAccessAccessHandleHostImpl;
 class FileSystemAccessDataTransferTokenImpl;
 class FileSystemAccessDirectoryHandleImpl;
 class FileSystemAccessFileHandleImpl;
 class FileSystemAccessFileWriterImpl;
+class FileSystemAccessHandleData;
 class FileSystemAccessTransferTokenImpl;
 class StoragePartitionImpl;
 
@@ -347,7 +349,29 @@ class CONTENT_EXPORT FileSystemAccessManagerImpl
 
   void SetFilePickerResultForTesting(std::optional<PathInfo> result_entry) {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-    auto_file_picker_result_for_test_ = result_entry;
+    if (result_entry) {
+      auto_file_picker_results_for_test_ = {std::move(*result_entry)};
+    } else {
+      auto_file_picker_results_for_test_.clear();
+    }
+  }
+
+  void SetFilePickerResultsForTesting(std::vector<PathInfo> result_entries) {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    auto_file_picker_results_for_test_ = std::move(result_entries);
+  }
+
+  // A callback used to create SharedHandleState instances for testing.
+  using SharedHandleStateCallback = base::RepeatingCallback<SharedHandleState(
+      scoped_refptr<FileSystemAccessPermissionGrant> read_grant,
+      scoped_refptr<FileSystemAccessPermissionGrant> write_grant)>;
+
+  // Sets a callback to be used to create SharedHandleState instances for
+  // testing.
+  void SetSharedHandleStateCallbackForTesting(
+      SharedHandleStateCallback callback) {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    shared_handle_state_callback_for_test_ = std::move(callback);
   }
 
   // Remove `writer` from `writer_receivers_`. It is an error to try to remove
@@ -389,6 +413,13 @@ class CONTENT_EXPORT FileSystemAccessManagerImpl
   // system.
   storage::FileSystemURL CreateFileSystemURLFromPath(const PathInfo& path_info);
 
+  // Returns the effective permission mode for operations that require write
+  // access. This currently returns kReadWrite, but will switch to kWrite only
+  // when the FileSystemAccessWriteMode feature is fully rolled out.
+  // See https://crbug.com/40276567.
+  static blink::mojom::FileSystemAccessPermissionMode
+  GetEffectiveWritePermissionMode();
+
   void Shutdown();
 
   // The File System Access API should not give access to files that might
@@ -398,7 +429,6 @@ class CONTENT_EXPORT FileSystemAccessManagerImpl
   // TODO(crbug.com/40159607): Merge this with
   // net::IsSafePortablePathComponent.
   bool IsSafePathComponent(storage::FileSystemType type,
-                           const url::Origin& origin,
                            const std::string& name);
 
   // Invokes `method` on the correct sequence on the FileSystemOperationRunner,
@@ -631,6 +661,26 @@ class CONTENT_EXPORT FileSystemAccessManagerImpl
 
   void FilePickerDeactivated(GlobalRenderFrameHostId global_rfh_id);
 
+  // Helper function to recurse `entries` to check sensitivity.
+  void ConfirmSensitiveEntryAccessForEntries(
+      const BindingContext& binding_context,
+      const FileSystemChooser::Options& options,
+      const std::string& starting_directory_id,
+      bool request_directory_write_access,
+      ChooseEntriesCallback callback,
+      std::vector<PathInfo> entries,
+      size_t current_entry_index);
+  // Helper function for `ConfirmSensitiveEntryAccessForEntries`.
+  void DidVerifySensitiveDirectoryAccessForIndex(
+      const BindingContext& binding_context,
+      const FileSystemChooser::Options& options,
+      const std::string& starting_directory_id,
+      bool request_directory_write_access,
+      ChooseEntriesCallback callback,
+      std::vector<PathInfo> entries,
+      size_t current_entry_index,
+      FileSystemAccessPermissionContext::SensitiveEntryResult result);
+
   SEQUENCE_CHECKER(sequence_checker_);
 
   const scoped_refptr<storage::FileSystemContext> context_;
@@ -704,7 +754,13 @@ class CONTENT_EXPORT FileSystemAccessManagerImpl
   std::set<GlobalRenderFrameHostId> rfhs_with_active_file_pickers_
       GUARDED_BY_CONTEXT(sequence_checker_);
 
-  std::optional<PathInfo> auto_file_picker_result_for_test_
+  std::vector<PathInfo> auto_file_picker_results_for_test_
+      GUARDED_BY_CONTEXT(sequence_checker_);
+
+  // An optional callback to be used to create SharedHandleState instances for
+  // testing. If this is null, the default SharedHandleState creation logic is
+  // used.
+  SharedHandleStateCallback shared_handle_state_callback_for_test_
       GUARDED_BY_CONTEXT(sequence_checker_);
 
   // The shared lock type for SyncAccessHandle's `readonly` mode.

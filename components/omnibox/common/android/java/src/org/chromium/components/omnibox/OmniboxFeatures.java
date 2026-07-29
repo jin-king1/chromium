@@ -4,20 +4,18 @@
 
 package org.chromium.components.omnibox;
 
+import android.content.Context;
 import android.content.SharedPreferences;
 import android.text.format.DateUtils;
 
 import androidx.annotation.IntDef;
-import androidx.annotation.VisibleForTesting;
 
 import com.google.android.gms.location.Priority;
 
-import org.chromium.base.BaseSwitches;
-import org.chromium.base.CommandLine;
 import org.chromium.base.ContextUtils;
-import org.chromium.base.ResettersForTesting;
 import org.chromium.base.SysUtils;
 import org.chromium.base.TimeUtils;
+import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.components.cached_flags.BooleanCachedFeatureParam;
@@ -25,10 +23,11 @@ import org.chromium.components.cached_flags.CachedFeatureParam;
 import org.chromium.components.cached_flags.CachedFlag;
 import org.chromium.components.cached_flags.IntCachedFeatureParam;
 import org.chromium.ui.base.DeviceFormFactor;
-import org.chromium.ui.base.DeviceInput;
 
+import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -43,6 +42,24 @@ public class OmniboxFeatures {
         int ENABLED_IN_PROD = 2;
     }
 
+    // LINT.IfChange(OmniboxJumpStartState)
+    @IntDef({
+        OmniboxJumpStartState.NOT_ELIGIBLE,
+        OmniboxJumpStartState.ENABLED,
+        OmniboxJumpStartState.DISABLED_BY_USER,
+        OmniboxJumpStartState.COUNT
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    @Target(ElementType.TYPE_USE)
+    public @interface OmniboxJumpStartState {
+        int NOT_ELIGIBLE = 0;
+        int ENABLED = 1;
+        int DISABLED_BY_USER = 2;
+        int COUNT = 3;
+    }
+
+    // LINT.ThenChange(//tools/metrics/histograms/metadata/android/enums.xml:OmniboxJumpStartState)
+
     private static final SharedPreferences sPrefs = ContextUtils.getAppSharedPreferences();
 
     /** The state of the Jump Start Omnibox feature. */
@@ -51,45 +68,33 @@ public class OmniboxFeatures {
     /** The timestamp representing the last time the user exited Chrome. */
     public static final String KEY_LAST_EXIT_TIMESTAMP = "last_exit_timestamp";
 
-    // Threshold for low RAM devices. We won't be showing suggestion images
-    // on devices that have less RAM than this to avoid bloat and reduce user-visible
-    // slowdown while spinning up an image decompression process.
-    // We set the threshold to 1.5GB to reduce number of users affected by this restriction.
-    private static final int LOW_MEMORY_THRESHOLD_KB = (int) (1.5 * 1024 * 1024);
-
     // Maximum number of attempts to retrieve page behind the default match per Omnibox input
     // session.
     public static final int DEFAULT_MAX_PREFETCHES_PER_OMNIBOX_SESSION = 5;
 
-    // Timeout requests after 30 minutes if we somehow fail to remove our listener.
+    // Timeout requests after 10 minutes if we somehow fail to remove our listener.
     private static final int DEFAULT_GEOLOCATION_REQUEST_TIMEOUT_MIN = 10;
 
     // Minimum number of characters required to trigger rich inline autocomplete.
     private static final int DEFAULT_RICH_INLINE_MIN_CHAR = 3;
 
-    // Auto-populated list of Omnibox cached feature flags.
+    // Autopopulated list of Omnibox cached feature flags.
     // Each flag created via newFlag() will be automatically added to this list.
     private static final List<CachedFlag> sCachedFlags = new ArrayList<>();
     private static final List<CachedFeatureParam<?>> sCachedParams = new ArrayList<>();
-
-    /// Holds the information whether logic should focus on preserving memory on this device.
-    private static @Nullable Boolean sIsLowMemoryDevice;
-
-    public static final CachedFlag sOmniboxAnswerActions =
-            newFlag(OmniboxFeatureList.OMNIBOX_ANSWER_ACTIONS, FeatureState.ENABLED_IN_TEST);
-
-    public static final CachedFlag sAnimateSuggestionsListAppearance =
-            newFlag(
-                    OmniboxFeatureList.ANIMATE_SUGGESTIONS_LIST_APPEARANCE,
-                    FeatureState.ENABLED_IN_TEST);
 
     public static final CachedFlag sTouchDownTriggerForPrefetch =
             newFlag(
                     OmniboxFeatureList.OMNIBOX_TOUCH_DOWN_TRIGGER_FOR_PREFETCH,
                     FeatureState.ENABLED_IN_PROD);
 
-    public static final CachedFlag sRichInlineAutocomplete =
-            newFlag(OmniboxFeatureList.RICH_AUTOCOMPLETION, FeatureState.ENABLED_IN_PROD);
+    public static final CachedFlag sOmniboxSearchPrefetchOnEnterKeyDown =
+            newFlag(
+                    OmniboxFeatureList.OMNIBOX_SEARCH_PREFETCH_ON_ENTER_KEY_DOWN,
+                    FeatureState.DISABLED);
+
+    public static final CachedFlag sUrlBarWithoutLigatures =
+            newFlag(OmniboxFeatureList.URL_BAR_WITHOUT_LIGATURES, FeatureState.ENABLED_IN_PROD);
 
     /**
      * Whether GeolocationHeader should use {@link
@@ -99,34 +104,106 @@ public class OmniboxFeatures {
     public static final CachedFlag sUseFusedLocationProvider =
             newFlag(OmniboxFeatureList.USE_FUSED_LOCATION_PROVIDER, FeatureState.ENABLED_IN_PROD);
 
+    public static final CachedFlag sOmniboxXGeoPermissionGranularity =
+            newFlag(
+                    OmniboxFeatureList.OMNIBOX_X_GEO_PERMISSION_GRANULARITY,
+                    FeatureState.ENABLED_IN_PROD);
+
+    public static final CachedFlag sPlatformAgnosticXGeo =
+            newFlag(OmniboxFeatureList.PLATFORM_AGNOSTIC_X_GEO, FeatureState.DISABLED);
+
+    public static final CachedFlag sInlineLocationSignaling =
+            newFlag(OmniboxFeatureList.INLINE_LOCATION_SIGNALING, FeatureState.DISABLED);
+
     public static final CachedFlag sAsyncViewInflation =
             newFlag(OmniboxFeatureList.OMNIBOX_ASYNC_VIEW_INFLATION, FeatureState.ENABLED_IN_TEST);
 
-    public static final CachedFlag sElegantTextHeight =
-            newFlag(OmniboxFeatureList.OMNIBOX_ELEGANT_TEXT_HEIGHT, FeatureState.ENABLED_IN_PROD);
+    public static final CachedFlag sFuseboxAsyncInflation =
+            newFlag(
+                    OmniboxFeatureList.OMNIBOX_FUSEBOX_ASYNC_INFLATION,
+                    FeatureState.ENABLED_IN_TEST);
+
+    public static final CachedFlag sOmniboxAimImageDownscaling =
+            newFlag(OmniboxFeatureList.OMNIBOX_AIM_IMAGE_DOWNSCALING, FeatureState.ENABLED_IN_TEST);
 
     public static final CachedFlag sJumpStartOmnibox =
             newFlag(OmniboxFeatureList.JUMP_START_OMNIBOX, FeatureState.ENABLED_IN_TEST);
 
-    /** See {@link #shouldRetainOmniboxOnFocus()}. */
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
-    public static final CachedFlag sRetainOmniboxOnFocus =
-            newFlag(OmniboxFeatureList.RETAIN_OMNIBOX_ON_FOCUS, FeatureState.ENABLED_IN_TEST);
-
-    public static final CachedFlag sAndroidHubSearch =
-            newFlag(OmniboxFeatureList.ANDROID_HUB_SEARCH, FeatureState.ENABLED_IN_TEST);
+    public static final CachedFlag sForceAndroidRealbox =
+            newFlag(OmniboxFeatureList.FORCE_ANDROID_REALBOX, FeatureState.DISABLED);
 
     public static final CachedFlag sPostDelayedTaskFocusTab =
             newFlag(OmniboxFeatureList.POST_DELAYED_TASK_FOCUS_TAB, FeatureState.ENABLED_IN_PROD);
 
-    public static final BooleanCachedFeatureParam sAnswerActionsShowAboveKeyboard =
-            newBooleanParam(sOmniboxAnswerActions, "AnswerActionsShowAboveKeyboard", false);
+    public static final CachedFlag sOmniboxSiteSearch =
+            newFlag(OmniboxFeatureList.OMNIBOX_SITE_SEARCH, FeatureState.ENABLED_IN_TEST);
 
-    public static final BooleanCachedFeatureParam sAnswerActionsShowIfUrlsPresent =
-            newBooleanParam(sOmniboxAnswerActions, "ShowIfUrlsPresent", false);
+    public static final CachedFlag sStarterPackExpansion =
+            newFlag(OmniboxFeatureList.STARTER_PACK_EXPANSION, FeatureState.ENABLED_IN_PROD);
 
-    public static final BooleanCachedFeatureParam sAnswerActionsShowRichCard =
-            newBooleanParam(sOmniboxAnswerActions, "ShowRichCard", false);
+    private static final CachedFlag sOmniboxMultimodalInput =
+            newFlag(OmniboxFeatureList.OMNIBOX_MULTIMODAL_INPUT, FeatureState.ENABLED_IN_TEST);
+
+    public static final BooleanCachedFeatureParam sMultiattachmentFusebox =
+            newBooleanParam(sOmniboxMultimodalInput, "multi_context", true);
+
+    public static final BooleanCachedFeatureParam sRedirectComposeplateButton =
+            newBooleanParam(sOmniboxMultimodalInput, "redirect_composeplate_button", false);
+
+    /** A necessary but not sufficient condition to show the current tab button. */
+    public static final BooleanCachedFeatureParam sAllowCurrentTab =
+            newBooleanParam(sOmniboxMultimodalInput, "allow_current_tab", true);
+
+    /**
+     * If the expanded set of inputs (model picker as well as canvas tool) should be options. These
+     * new types, as well as all existing types, should be driven through PEC instead of hard coded
+     * into the client when this param is enabled.
+     */
+    public static final BooleanCachedFeatureParam sShowModelPicker =
+            newBooleanParam(sOmniboxMultimodalInput, "show_model_picker", false);
+
+    /**
+     * Whether the bottom sheet popup should be shown. This is private to ensure that callers use
+     * {@link #shouldShowBottomSheetPopup()} which also checks if the platform is desktop.
+     */
+    private static final BooleanCachedFeatureParam sShowBottomSheetPopup =
+            newBooleanParam(sOmniboxMultimodalInput, "show_bottom_sheet_popup", false);
+
+    public static final BooleanCachedFeatureParam sUseAskHintForNtp =
+            newBooleanParam(sOmniboxMultimodalInput, "use_ask_hint_for_ntp", false);
+
+    public static final BooleanCachedFeatureParam sShowNtpPlusButton =
+            newBooleanParam(sOmniboxMultimodalInput, "show_ntp_plus_button", false);
+
+    public static final CachedFlag sAndroidDesktopAimGate =
+            newFlag(OmniboxFeatureList.ANDROID_DESKTOP_AIM_GATE, FeatureState.ENABLED_IN_TEST);
+
+    public static final CachedFlag sMultilineEditField =
+            newFlag(OmniboxFeatureList.MULTILINE_EDIT_FIELD, FeatureState.ENABLED_IN_PROD);
+
+    public static final BooleanCachedFeatureParam sWrapAutocompleteText =
+            newBooleanParam(sOmniboxMultimodalInput, "wrap_autocomplete_text", false);
+
+    public static final CachedFlag sAIMSuppressVerbatimMatch =
+            newFlag(OmniboxFeatureList.AIM_SUPPRESS_VERBATIM_MATCH, FeatureState.ENABLED_IN_PROD);
+
+    // Shows the preview match's favicon in the status view. Originally and incorrectly called exact
+    // match. The feature string remains exact, but java code should be updated to the right name.
+    public static final CachedFlag sPreviewMatchFavicons =
+            newFlag(OmniboxFeatureList.EXACT_MATCH_FAVICONS, FeatureState.ENABLED_IN_TEST);
+
+    public static final CachedFlag sServeJavaCachedZeroSuggest =
+            newFlag(
+                    OmniboxFeatureList.SERVE_JAVA_CACHED_ZERO_SUGGEST,
+                    FeatureState.ENABLED_IN_PROD);
+
+    public static final CachedFlag sResetSuggestionsScroll =
+            newFlag(OmniboxFeatureList.RESET_SUGGESTIONS_SCROLL, FeatureState.DISABLED);
+
+    public static final CachedFlag sOmniboxListMenuContextMenu =
+            newFlag(
+                    OmniboxFeatureList.OMNIBOX_LIST_MENU_CONTEXT_MENU,
+                    FeatureState.ENABLED_IN_PROD);
 
     public static final IntCachedFeatureParam sGeolocationRequestTimeoutMinutes =
             newIntParam(
@@ -162,7 +239,7 @@ public class OmniboxFeatures {
             newIntParam(sJumpStartOmnibox, "jump_start_memory_threshold_kb", 2 * 1024 * 1024);
 
     public static final IntCachedFeatureParam sJumpStartOmniboxMinAwayTimeMinutes =
-            newIntParam(sJumpStartOmnibox, "jump_start_min_away_time_minutes", 0 * 60);
+            newIntParam(sJumpStartOmnibox, "jump_start_min_away_time_minutes", 15);
 
     public static final IntCachedFeatureParam sJumpStartOmniboxMaxAwayTimeMinutes =
             newIntParam(sJumpStartOmnibox, "jump_start_max_away_time_minutes", 8 * 60);
@@ -175,19 +252,11 @@ public class OmniboxFeatures {
     public static final BooleanCachedFeatureParam sJumpStartOmniboxCoverRecentlyVisitedPage =
             newBooleanParam(sJumpStartOmnibox, "jump_start_cover_recently_visited_page", false);
 
-    // This parameter allows the user to click enter when on hub search to perform a search on the
-    // listed suggestions or perform a google search on the query if no suggestions are found.
-    public static final BooleanCachedFeatureParam sAndroidHubSearchEnterPerformsSearch =
-            newBooleanParam(sAndroidHubSearch, "enable_press_enter_to_search", false);
-
     // Omnibox Diagnostics
     private static final CachedFlag sDiagnostics =
             newFlag(OmniboxFeatureList.DIAGNOSTICS, FeatureState.DISABLED);
     public static final BooleanCachedFeatureParam sDiagInputConnection =
             newBooleanParam(sDiagnostics, "omnibox_diag_input_connection", false);
-
-    /** See {@link #setShouldRetainOmniboxOnFocusForTesting(boolean)}. */
-    private static @Nullable Boolean sShouldRetainOmniboxOnFocusForTesting;
 
     /** When enabled, Jump Start Omnibox is activated and can engage if the feature is enabled. */
     private static @Nullable Boolean sActivateJumpStartOmnibox;
@@ -262,27 +331,7 @@ public class OmniboxFeatures {
     }
 
     /**
-     * Returns whether the omnibox's recycler view pool should be pre-warmed prior to initial use.
-     */
-    public static boolean shouldPreWarmRecyclerViewPool() {
-        return !isLowMemoryDevice();
-    }
-
-    /**
-     * Returns whether the device is to be considered low-end for any memory intensive operations.
-     */
-    public static boolean isLowMemoryDevice() {
-        if (sIsLowMemoryDevice == null) {
-            sIsLowMemoryDevice =
-                    (SysUtils.amountOfPhysicalMemoryKB() < LOW_MEMORY_THRESHOLD_KB
-                            && !CommandLine.getInstance()
-                                    .hasSwitch(BaseSwitches.DISABLE_LOW_END_DEVICE_MODE));
-        }
-        return sIsLowMemoryDevice;
-    }
-
-    /**
-     * Returns whether a touch down event on a search suggestion should send a signal to prefetch
+     * Returns whether a touch-down event on a search suggestion should send a signal to prefetch
      * the corresponding page.
      */
     public static boolean isTouchDownTriggerForPrefetchEnabled() {
@@ -297,43 +346,6 @@ public class OmniboxFeatures {
         return sTouchDownTriggerMaxPrefetchesPerSession.getValue();
     }
 
-    /** Returns whether answer suggestions should be annotated with attached action chips. */
-    public static boolean shouldShowAnswerActions() {
-        return sOmniboxAnswerActions.isEnabled();
-    }
-
-    /** Returns whether answers with actions should be re-ordered to just above the keyboard */
-    public static boolean shouldShowAnswerWithActionsAboveKeyboard() {
-        return shouldShowAnswerActions() && sAnswerActionsShowAboveKeyboard.getValue();
-    }
-
-    /**
-     * Returns whether answers with actions should be displayed if there are url suggestions
-     * present.
-     */
-    public static boolean shouldShowAnswerWithActionsIfUrlsPresent() {
-        return shouldShowAnswerActions() && sAnswerActionsShowIfUrlsPresent.getValue();
-    }
-
-    /** Returns whether answers with actions should be presented as a rich card */
-    public static boolean shouldShowRichAnswerCard() {
-        return shouldShowAnswerActions() && sAnswerActionsShowRichCard.getValue();
-    }
-
-    /**
-     * Whether the appearance of the omnibox suggestions list should animated in sync with the soft
-     * keyboard.
-     */
-    public static boolean shouldAnimateSuggestionsListAppearance() {
-        return sAnimateSuggestionsListAppearance.isEnabled();
-    }
-
-    /** Indicate a low memory device for testing purposes. */
-    public static void setIsLowMemoryDeviceForTesting(boolean isLowMemDevice) {
-        sIsLowMemoryDevice = isLowMemDevice;
-        ResettersForTesting.register(() -> sIsLowMemoryDevice = null);
-    }
-
     /**
      * Returns whether the rich inline autocomplete URL should be shown.
      *
@@ -341,30 +353,37 @@ public class OmniboxFeatures {
      * @return Whether the rich inline autocomplete URL should be shown.
      */
     public static boolean shouldShowRichInlineAutocompleteUrl(int inputCount) {
-        return sRichInlineAutocomplete.isEnabled() && inputCount >= DEFAULT_RICH_INLINE_MIN_CHAR;
+        return inputCount >= DEFAULT_RICH_INLINE_MIN_CHAR;
     }
 
-    /** Modifies the output of {@link #shouldRetainOmniboxOnFocus()} for testing. */
-    public static void setShouldRetainOmniboxOnFocusForTesting(Boolean shouldRetainOmniboxOnFocus) {
-        sShouldRetainOmniboxOnFocusForTesting = shouldRetainOmniboxOnFocus;
-        ResettersForTesting.register(() -> sShouldRetainOmniboxOnFocusForTesting = null);
+    /** Modifies the output of {@link #shouldShowBottomSheetPopup()} for testing. */
+    public static void setShowBottomSheetPopupForTesting(boolean value) {
+        sShowBottomSheetPopup.setForTesting(value);
     }
 
     /**
-     * @return Whether the contents of the omnibox should be retained on focus as opposed to being
-     *     cleared. When {@code true} and the omnibox contents are retained, focus events will also
-     *     result in the omnibox contents being fully selected so as to allow for easy replacement
-     *     by the user. Note that only large screen devices with an attached keyboard and precision
-     *     pointer will exhibit a change in behavior when the feature flag is enabled.
+     * Returns whether the bottom sheet popup should be shown.
+     *
+     * <p>This checks both the feature param and whether the platform is desktop.
      */
-    public static boolean shouldRetainOmniboxOnFocus() {
-        if (sShouldRetainOmniboxOnFocusForTesting != null) {
-            return sShouldRetainOmniboxOnFocusForTesting;
+    public static boolean shouldShowBottomSheetPopup() {
+        return !OmniboxCapabilities.isDesktopPlatform() && sShowBottomSheetPopup.getValue();
+    }
+
+    /**
+     * Explicitly disable fusebox for desktop for release users, but not for tests or for local
+     * development. Fusebox feature checks should go through this instead of the feature directly.
+     * This should be removed in a milestone or two, before fusebox launch for desktop.
+     *
+     * <p>Checks whether the fusebox is enabled for the current combination of context, device and
+     * flag state, disabling the fusebox on unsupported device and experience configurations.
+     */
+    public static boolean isMultimodalInputEnabled(Context context) {
+        if (OmniboxCapabilities.isDesktopPlatform()
+                || OmniboxCapabilities.hasDesktopExperience(context)) {
+            return sAndroidDesktopAimGate.isEnabled() && sOmniboxMultimodalInput.isEnabled();
         }
-        return sRetainOmniboxOnFocus.isEnabled()
-                && DeviceFormFactor.isTablet()
-                && DeviceInput.supportsAlphabeticKeyboard()
-                && DeviceInput.supportsPrecisionPointer();
+        return sOmniboxMultimodalInput.isEnabled();
     }
 
     /**
@@ -390,6 +409,15 @@ public class OmniboxFeatures {
                             && SysUtils.amountOfPhysicalMemoryKB()
                                     <= sJumpStartOmniboxMemoryThresholdKb.getValue();
             sActivateJumpStartOmnibox = sPrefs.getBoolean(KEY_JUMP_START_OMNIBOX, isEligibleDevice);
+            @OmniboxJumpStartState
+            int state =
+                    isEligibleDevice
+                            ? sActivateJumpStartOmnibox
+                                    ? OmniboxJumpStartState.ENABLED // Eligible and activated
+                                    : OmniboxJumpStartState.DISABLED_BY_USER // Eligible only
+                            : OmniboxJumpStartState.NOT_ELIGIBLE; // Not eligible.
+            RecordHistogram.recordEnumeratedHistogram(
+                    "Android.Omnibox.JumpStartState", state, OmniboxJumpStartState.COUNT);
         }
         return sActivateJumpStartOmnibox;
     }
@@ -409,9 +437,5 @@ public class OmniboxFeatures {
     /** Record the current time as the time the User exited Chrome. */
     public static void updateLastExitTimestamp() {
         sPrefs.edit().putLong(KEY_LAST_EXIT_TIMESTAMP, TimeUtils.currentTimeMillis()).apply();
-    }
-
-    public static boolean shouldJumpStartOmnibox() {
-        return isJumpStartOmniboxEnabled();
     }
 }

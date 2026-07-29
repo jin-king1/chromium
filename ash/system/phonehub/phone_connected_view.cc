@@ -70,7 +70,7 @@ PhoneConnectedView::PhoneConnectedView(
   }
 
   auto* camera_roll_manager = phone_hub_manager->GetCameraRollManager();
-  if (features::IsPhoneHubCameraRollEnabled() && camera_roll_manager) {
+  if (camera_roll_manager) {
     AddChildView(std::make_unique<CameraRollView>(
         camera_roll_manager, phone_hub_manager->GetUserActionRecorder()));
   }
@@ -83,7 +83,7 @@ PhoneConnectedView::PhoneConnectedView(
   }
 
   auto* ping_manager = phone_hub_manager->GetPingManager();
-  if (features::IsPhoneHubPingOnBubbleOpenEnabled() && ping_manager) {
+  if (ping_manager) {
     ping_manager->SendPingRequest();
   }
 
@@ -123,9 +123,6 @@ phone_hub_metrics::Screen PhoneConnectedView::GetScreenForMetrics() const {
 
 void PhoneConnectedView::ShowAppStreamErrorDialog(bool is_different_network,
                                                   bool is_phone_on_cellular) {
-  if (!features::IsEcheNetworkConnectionStateEnabled()) {
-    return;
-  }
   app_stream_error_dialog_ = std::make_unique<AppStreamConnectionErrorDialog>(
       this,
       base::BindOnce(&PhoneConnectedView::OnAppStreamErrorDialogClosed,

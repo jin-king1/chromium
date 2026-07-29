@@ -13,6 +13,7 @@ import android.os.Parcel;
 import androidx.annotation.Nullable;
 
 import org.chromium.base.Callback;
+import org.chromium.base.UserData;
 import org.chromium.blink_public.input.SelectionGranularity;
 import org.chromium.content_public.browser.GlobalRenderFrameHostId;
 import org.chromium.content_public.browser.ImageDownloadCallback;
@@ -42,6 +43,16 @@ import org.chromium.url.GURL;
 public class MockWebContents implements WebContents, WebContentsObserver.Observable {
     public RenderFrameHost renderFrameHost;
     private GURL mLastCommittedUrl;
+    private boolean mIsBeingCaptured;
+
+    @Override
+    public boolean isBeingCaptured() {
+        return mIsBeingCaptured;
+    }
+
+    public void setIsBeingCaptured(boolean isBeingCaptured) {
+        mIsBeingCaptured = isBeingCaptured;
+    }
 
     @Override
     public void setDelegates(
@@ -147,6 +158,9 @@ public class MockWebContents implements WebContents, WebContentsObserver.Observa
     }
 
     @Override
+    public void discard(Runnable onDiscarded) {}
+
+    @Override
     public boolean isLoading() {
         return false;
     }
@@ -168,7 +182,7 @@ public class MockWebContents implements WebContents, WebContentsObserver.Observa
     public void stop() {}
 
     @Override
-    public void setImportance(int importance) {}
+    public void setPrimaryPageImportance(int mainFrameImportance, int subframeImportance) {}
 
     @Override
     public void suspendAllMediaPlayers() {}
@@ -350,6 +364,9 @@ public class MockWebContents implements WebContents, WebContentsObserver.Observa
     public void setDisplayCutoutSafeArea(Rect insets) {}
 
     @Override
+    public void showInterestInElement(int nodeID) {}
+
+    @Override
     public void notifyRendererPreferenceUpdate() {}
 
     @Override
@@ -378,9 +395,47 @@ public class MockWebContents implements WebContents, WebContentsObserver.Observa
     public void setLongPressLinkSelectText(boolean enabled) {}
 
     @Override
+    public void setCanAcceptLoadDrops(boolean enabled) {}
+
+    @Override
+    public boolean getCanAcceptLoadDropsForTesting() {
+        return true;
+    }
+
+    @Override
     public void updateOffsetTagDefinitions(
             BrowserControlsOffsetTagDefinitions offsetTagDefinitions) {}
 
     @Override
     public void setSupportsForwardTransitionAnimation(boolean supports) {}
+
+    @Override
+    public boolean hasOpener() {
+        return false;
+    }
+
+    @Override
+    public int getOriginalWindowOpenDisposition() {
+        return 0;
+    }
+
+    @Override
+    public void updateWindowControlsOverlay(Rect rect) {}
+
+    @Override
+    public void setSupportsDraggableRegions(boolean supportsDraggableRegions) {}
+
+    @Override
+    public <T extends UserData> @Nullable T getOrSetUserData(
+            Class<T> key, @Nullable UserDataFactory<T> userDataFactory) {
+        return null;
+    }
+
+    @Override
+    public <T extends UserData> void removeUserData(Class<T> key) {}
+
+    @Override
+    public @Nullable WebContents getDocumentPictureInPictureOpener() {
+        return null;
+    }
 }

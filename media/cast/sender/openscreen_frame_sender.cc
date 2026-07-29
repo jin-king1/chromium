@@ -20,6 +20,7 @@
 #include "media/cast/common/sender_encoded_frame.h"
 #include "media/cast/constants.h"
 #include "third_party/openscreen/src/cast/streaming/public/encoded_frame.h"
+#include "third_party/perfetto/include/perfetto/tracing/track.h"
 
 namespace media::cast {
 namespace {
@@ -72,8 +73,12 @@ OpenscreenFrameSender::OpenscreenFrameSender(
       client_(client),
       max_frame_rate_(config.max_frame_rate),
       is_audio_(config.is_audio()),
-      min_playout_delay_(config.min_playout_delay),
-      max_playout_delay_(config.max_playout_delay) {
+      min_playout_delay_(
+          std::min(config.min_playout_delay,
+                   base::Milliseconds(std::numeric_limits<uint16_t>::max()))),
+      max_playout_delay_(
+          std::min(config.max_playout_delay,
+                   base::Milliseconds(std::numeric_limits<uint16_t>::max()))) {
   CHECK_GT(sender_->config().rtp_timebase, 0);
 
   const std::chrono::milliseconds target_playout_delay =
@@ -217,21 +222,20 @@ CastStreamingFrameDropReason OpenscreenFrameSender::EnqueueFrame(
 
   if (!is_audio_) {
     // Used by chrome/browser/media/cast_mirroring_performance_browsertest.cc
-    TRACE_EVENT_INSTANT1("cast_perf_test", "VideoFrameEncoded",
-                         TRACE_EVENT_SCOPE_THREAD, "rtp_timestamp",
-                         encoded_frame->rtp_timestamp.lower_32_bits());
+    TRACE_EVENT_INSTANT("cast_perf_test", "VideoFrameEncoded", "rtp_timestamp",
+                        encoded_frame->rtp_timestamp.lower_32_bits());
   }
 
   if (send_target_playout_delay_) {
-    encoded_frame->new_playout_delay_ms =
-        target_playout_delay_.InMilliseconds();
+    encoded_frame->new_playout_delay = target_playout_delay_;
     send_target_playout_delay_ = false;
   }
 
-  static const char* name = is_audio_ ? "Audio Transport" : "Video Transport";
-  TRACE_EVENT_NESTABLE_ASYNC_BEGIN1(
+  static const perfetto::StaticString name =
+      is_audio_ ? "Audio Transport" : "Video Transport";
+  TRACE_EVENT_BEGIN(
       "cast.stream", name,
-      TRACE_ID_WITH_SCOPE(name, encoded_frame->frame_id.lower_32_bits()),
+      perfetto::NamedTrack(name, encoded_frame->frame_id.lower_32_bits()),
       "rtp_timestamp", encoded_frame->rtp_timestamp.lower_32_bits());
 
   // The `FrameId` given to us by child classes such as VideoSender should

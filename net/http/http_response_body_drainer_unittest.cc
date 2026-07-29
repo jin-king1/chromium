@@ -2,26 +2,25 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "net/http/http_response_body_drainer.h"
 
 #include <stdint.h>
 
-#include <cstring>
+#include <algorithm>
 #include <set>
+#include <string>
 #include <string_view>
 #include <utility>
 
+#include "base/byte_size.h"
 #include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/no_destructor.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/run_loop.h"
 #include "base/task/single_thread_task_runner.h"
 #include "net/base/completion_once_callback.h"
@@ -112,8 +111,12 @@ class MockHttpStream : public HttpStream {
   bool IsConnectionReused() const override { return false; }
   void SetConnectionReused() override {}
   bool CanReuseConnection() const override { return can_reuse_connection_; }
-  int64_t GetTotalReceivedBytes() const override { return 0; }
-  int64_t GetTotalSentBytes() const override { return 0; }
+  base::ByteSize GetTotalReceivedBytes() const override {
+    return base::ByteSize(0);
+  }
+  base::ByteSize GetTotalSentBytes() const override {
+    return base::ByteSize(0);
+  }
   bool GetAlternativeService(
       AlternativeService* alternative_service) const override {
     return false;
@@ -144,6 +147,9 @@ class MockHttpStream : public HttpStream {
   void Drain(HttpNetworkSession*) override {}
 
   void PopulateNetErrorDetails(NetErrorDetails* details) override { return; }
+
+  void PopulateLoadTimingInternalInfo(
+      LoadTimingInternalInfo* load_timing_internal_info) const override {}
 
   void SetPriority(RequestPriority priority) override {}
 
@@ -221,9 +227,8 @@ int MockHttpStream::ReadResponseBodyImpl(IOBuffer* buf, int buf_len) {
   if (is_last_chunk_zero_size_ && num_chunks_ == 1) {
     buf_len = 0;
   } else {
-    if (buf_len > kMagicChunkSize)
-      buf_len = kMagicChunkSize;
-    std::memset(buf->data(), 1, buf_len);
+    buf_len = std::min(buf_len, kMagicChunkSize);
+    std::ranges::fill(buf->first(base::checked_cast<size_t>(buf_len)), 1);
   }
   num_chunks_--;
   if (!num_chunks_)

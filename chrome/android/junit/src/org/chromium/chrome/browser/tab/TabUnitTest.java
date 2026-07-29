@@ -15,14 +15,18 @@ import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.app.Activity;
 import android.content.Context;
+import android.graphics.Color;
 import android.util.SparseArray;
 import android.view.View;
 import android.view.ViewStructure;
@@ -32,27 +36,36 @@ import androidx.annotation.Nullable;
 import androidx.test.filters.SmallTest;
 
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Captor;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
 
+import org.chromium.base.Callback;
 import org.chromium.base.Token;
-import org.chromium.base.supplier.ObservableSupplierImpl;
+import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.app.ChromeActivity;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.tabmodel.SettableLookAheadObservableSupplier;
 import org.chromium.chrome.browser.ui.native_page.NativePage;
-import org.chromium.components.autofill.AutofillFeatures;
 import org.chromium.components.autofill.AutofillProvider;
 import org.chromium.components.prefs.PrefService;
+import org.chromium.components.security_state.ConnectionSecurityLevel;
+import org.chromium.components.security_state.SecurityStateModel;
+import org.chromium.components.security_state.SecurityStateModelJni;
+import org.chromium.components.tabs.DetachReason;
 import org.chromium.components.user_prefs.UserPrefs;
 import org.chromium.components.user_prefs.UserPrefsJni;
-import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.content_public.browser.WebContents;
+import org.chromium.content_public.browser.WebContentsObserver;
 import org.chromium.ui.base.WindowAndroid;
 
 import java.lang.ref.WeakReference;
@@ -64,10 +77,10 @@ public class TabUnitTest {
     private static final int TAB1_ID = 456;
     private static final int TAB2_ID = 789;
 
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock private AutofillProvider mAutofillProvider;
     @Mock private Profile mProfile;
     @Mock private WindowAndroid mWindowAndroid;
-    @Mock private LoadUrlParams mLoadUrlParams;
     @Mock private EmptyTabObserver mObserver;
     @Mock private Context mContext;
     @Mock private WeakReference<Context> mWeakReferenceContext;
@@ -76,30 +89,38 @@ public class TabUnitTest {
     @Mock private NativePage mNativePage;
     @Mock private TabDelegateFactory mDelegateFactory;
     @Mock private TabWebContentsDelegateAndroid mTabWebContentsDelegateAndroid;
-    @Mock private WebContents mWebContents;
+
+    @Mock(extraInterfaces = {WebContentsObserver.Observable.class})
+    private WebContents mWebContents;
+
     @Mock private View mNativePageView;
     @Mock private ChromeActivity mChromeActivity;
     @Mock private UserPrefs.Natives mUserPrefsNatives;
     @Mock private PrefService mPrefs;
     @Mock TabImpl.Natives mNativeMock;
+    @Mock private SecurityStateModel.Natives mSecurityStateModelNatives;
+    @Captor private ArgumentCaptor<Callback<Tab>> mCallbackCaptor;
 
+    private final SettableLookAheadObservableSupplier<Tab> mTabSupplier =
+            new SettableLookAheadObservableSupplier<>();
     private TabImpl mTab;
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
 
         doReturn(mWeakReferenceActivity).when(mWindowAndroid).getActivity();
         doReturn(mWeakReferenceContext).when(mWindowAndroid).getContext();
-        doReturn(new ObservableSupplierImpl<>(false)).when(mWindowAndroid).getOcclusionSupplier();
+        doReturn(ObservableSuppliers.alwaysFalse()).when(mWindowAndroid).getOcclusionSupplier();
         doReturn(mActivity).when(mWeakReferenceActivity).get();
         doReturn(mContext).when(mWeakReferenceContext).get();
         doReturn(mContext).when(mContext).getApplicationContext();
         UserPrefsJni.setInstanceForTesting(mUserPrefsNatives);
+        SecurityStateModelJni.setInstanceForTesting(mSecurityStateModelNatives);
         when(mUserPrefsNatives.get(mProfile)).thenReturn(mPrefs);
 
         mTab =
-                new TabImpl(TAB1_ID, mProfile, TabLaunchType.FROM_CHROME_UI) {
+                new TabImpl(
+                        TAB1_ID, mProfile, TabLaunchType.FROM_CHROME_UI, /* isArchived= */ false) {
                     @Override
                     public boolean isInitialized() {
                         return true;
@@ -111,10 +132,48 @@ public class TabUnitTest {
 
     @Test
     @SmallTest
+    public void testOnAddedToTabModel_SendsDidInsertUpdate() {
+        TabImplJni.setInstanceForTesting(mNativeMock);
+        mTab.setNativePtrForTesting(1);
+
+        mTab.onAddedToTabModel(mTabSupplier, ignored -> false);
+        verify(mNativeMock).sendDidInsertUpdate(anyLong());
+    }
+
+    @Test
+    @SmallTest
+    public void testSendsDidActivateUpdate() {
+        TabImplJni.setInstanceForTesting(mNativeMock);
+        mTab.setNativePtrForTesting(1);
+
+        mTab.onAddedToTabModel(mTabSupplier, ignored -> false);
+        mTabSupplier.set(mTab);
+        verify(mNativeMock).sendDidActivateUpdate(anyLong());
+    }
+
+    @Test
+    @SmallTest
+    public void testSendsWillDeactivateUpdate() {
+        TabImplJni.setInstanceForTesting(mNativeMock);
+        mTab.setNativePtrForTesting(1);
+
+        mTab.onAddedToTabModel(mTabSupplier, ignored -> false);
+
+        // Set as active first to set mWasLastActive to true.
+        mTabSupplier.set(mTab);
+
+        mTabSupplier.set(null);
+        verify(mNativeMock).sendWillDeactivateUpdate(anyLong());
+    }
+
+    @Test
+    @SmallTest
     public void testSetRootIdWithChange() {
-        TabStateAttributes.createForTab(mTab, TabCreationState.FROZEN_ON_RESTORE);
+        TabStateAttributesRegistry.createAttributesForTab(
+                mTab, TabStateAttributes.StoreKey.class, TabCreationState.FROZEN_ON_RESTORE);
         assertThat(
-                TabStateAttributes.from(mTab).getDirtinessState(),
+                TabStateAttributesRegistry.getAttributesFor(mTab, TabStateAttributes.StoreKey.class)
+                        .getDirtinessState(),
                 equalTo(TabStateAttributes.DirtinessState.CLEAN));
         assertThat(mTab.getRootId(), equalTo(TAB1_ID));
 
@@ -124,35 +183,42 @@ public class TabUnitTest {
 
         assertThat(mTab.getRootId(), equalTo(TAB2_ID));
         assertThat(
-                TabStateAttributes.from(mTab).getDirtinessState(),
+                TabStateAttributesRegistry.getAttributesFor(mTab, TabStateAttributes.StoreKey.class)
+                        .getDirtinessState(),
                 equalTo(TabStateAttributes.DirtinessState.DIRTY));
     }
 
     @Test
     @SmallTest
     public void testSetRootIdWithoutChange() {
-        TabStateAttributes.createForTab(mTab, TabCreationState.FROZEN_ON_RESTORE);
+        TabStateAttributesRegistry.createAttributesForTab(
+                mTab, TabStateAttributes.StoreKey.class, TabCreationState.FROZEN_ON_RESTORE);
         assertThat(
-                TabStateAttributes.from(mTab).getDirtinessState(),
+                TabStateAttributesRegistry.getAttributesFor(mTab, TabStateAttributes.StoreKey.class)
+                        .getDirtinessState(),
                 equalTo(TabStateAttributes.DirtinessState.CLEAN));
         assertThat(mTab.getRootId(), equalTo(TAB1_ID));
-        TabStateAttributes.from(mTab).clearTabStateDirtiness();
+        TabStateAttributesRegistry.getAttributesFor(mTab, TabStateAttributes.StoreKey.class)
+                .clearTabStateDirtiness();
 
         mTab.setRootId(TAB1_ID);
 
         verify(mObserver, never()).onRootIdChanged(any(Tab.class), anyInt());
         assertThat(mTab.getRootId(), equalTo(TAB1_ID));
         assertThat(
-                TabStateAttributes.from(mTab).getDirtinessState(),
+                TabStateAttributesRegistry.getAttributesFor(mTab, TabStateAttributes.StoreKey.class)
+                        .getDirtinessState(),
                 equalTo(TabStateAttributes.DirtinessState.CLEAN));
     }
 
     @Test
     @SmallTest
     public void testSetTabGroupIdWithChange() {
-        TabStateAttributes.createForTab(mTab, TabCreationState.FROZEN_ON_RESTORE);
+        TabStateAttributesRegistry.createAttributesForTab(
+                mTab, TabStateAttributes.StoreKey.class, TabCreationState.FROZEN_ON_RESTORE);
         assertThat(
-                TabStateAttributes.from(mTab).getDirtinessState(),
+                TabStateAttributesRegistry.getAttributesFor(mTab, TabStateAttributes.StoreKey.class)
+                        .getDirtinessState(),
                 equalTo(TabStateAttributes.DirtinessState.CLEAN));
         assertNull(mTab.getTabGroupId());
 
@@ -173,7 +239,9 @@ public class TabUnitTest {
 
         verify(mObserver).onTabGroupIdChanged(mTab, token);
 
-        TabStateAttributes attributes = TabStateAttributes.from(mTab);
+        TabStateAttributes attributes =
+                TabStateAttributesRegistry.getAttributesFor(
+                        mTab, TabStateAttributes.StoreKey.class);
         assertThat(mTab.getTabGroupId(), equalTo(token));
         assertThat(
                 attributes.getDirtinessState(), equalTo(TabStateAttributes.DirtinessState.DIRTY));
@@ -184,27 +252,34 @@ public class TabUnitTest {
     @Test
     @SmallTest
     public void testSetTabGroupIdWithoutChange() {
-        TabStateAttributes.createForTab(mTab, TabCreationState.FROZEN_ON_RESTORE);
+        TabStateAttributesRegistry.createAttributesForTab(
+                mTab, TabStateAttributes.StoreKey.class, TabCreationState.FROZEN_ON_RESTORE);
         assertThat(
-                TabStateAttributes.from(mTab).getDirtinessState(),
+                TabStateAttributesRegistry.getAttributesFor(mTab, TabStateAttributes.StoreKey.class)
+                        .getDirtinessState(),
                 equalTo(TabStateAttributes.DirtinessState.CLEAN));
         assertNull(mTab.getTabGroupId());
-        TabStateAttributes.from(mTab).clearTabStateDirtiness();
+        TabStateAttributesRegistry.getAttributesFor(mTab, TabStateAttributes.StoreKey.class)
+                .clearTabStateDirtiness();
 
         mTab.setTabGroupId(null);
 
         verify(mObserver, never()).onTabGroupIdChanged(any(Tab.class), any());
         assertNull(mTab.getTabGroupId());
         assertThat(
-                TabStateAttributes.from(mTab).getDirtinessState(),
+                TabStateAttributesRegistry.getAttributesFor(mTab, TabStateAttributes.StoreKey.class)
+                        .getDirtinessState(),
                 equalTo(TabStateAttributes.DirtinessState.CLEAN));
     }
 
     @Test
     @SmallTest
     public void testSetTabHasSensitiveContentWithChange() {
-        TabStateAttributes.createForTab(mTab, TabCreationState.FROZEN_ON_RESTORE);
-        TabStateAttributes attributes = TabStateAttributes.from(mTab);
+        TabStateAttributesRegistry.createAttributesForTab(
+                mTab, TabStateAttributes.StoreKey.class, TabCreationState.FROZEN_ON_RESTORE);
+        TabStateAttributes attributes =
+                TabStateAttributesRegistry.getAttributesFor(
+                        mTab, TabStateAttributes.StoreKey.class);
 
         assertThat(
                 attributes.getDirtinessState(), equalTo(TabStateAttributes.DirtinessState.CLEAN));
@@ -220,8 +295,11 @@ public class TabUnitTest {
     @Test
     @SmallTest
     public void testSetTabHasSensitiveContentWithoutChange() {
-        TabStateAttributes.createForTab(mTab, TabCreationState.FROZEN_ON_RESTORE);
-        TabStateAttributes attributes = TabStateAttributes.from(mTab);
+        TabStateAttributesRegistry.createAttributesForTab(
+                mTab, TabStateAttributes.StoreKey.class, TabCreationState.FROZEN_ON_RESTORE);
+        TabStateAttributes attributes =
+                TabStateAttributesRegistry.getAttributesFor(
+                        mTab, TabStateAttributes.StoreKey.class);
 
         assertThat(
                 attributes.getDirtinessState(), equalTo(TabStateAttributes.DirtinessState.CLEAN));
@@ -237,6 +315,48 @@ public class TabUnitTest {
 
     @Test
     @SmallTest
+    public void testSetIsPinnedWithChange() {
+        TabStateAttributesRegistry.createAttributesForTab(
+                mTab, TabStateAttributes.StoreKey.class, TabCreationState.FROZEN_ON_RESTORE);
+        TabStateAttributes attributes =
+                TabStateAttributesRegistry.getAttributesFor(
+                        mTab, TabStateAttributes.StoreKey.class);
+
+        assertThat(
+                attributes.getDirtinessState(), equalTo(TabStateAttributes.DirtinessState.CLEAN));
+        assertFalse(mTab.getIsPinned());
+
+        mTab.setIsPinned(true);
+        verify(mObserver).onTabPinnedStateChanged(mTab, true);
+        assertTrue(mTab.getIsPinned());
+        assertThat(
+                attributes.getDirtinessState(), equalTo(TabStateAttributes.DirtinessState.DIRTY));
+    }
+
+    @Test
+    @SmallTest
+    public void testSetIsPinnedWithoutChange() {
+        TabStateAttributesRegistry.createAttributesForTab(
+                mTab, TabStateAttributes.StoreKey.class, TabCreationState.FROZEN_ON_RESTORE);
+        TabStateAttributes attributes =
+                TabStateAttributesRegistry.getAttributesFor(
+                        mTab, TabStateAttributes.StoreKey.class);
+
+        assertThat(
+                attributes.getDirtinessState(), equalTo(TabStateAttributes.DirtinessState.CLEAN));
+        assertFalse(mTab.getIsPinned());
+
+        mTab.setIsPinned(false);
+
+        verify(mObserver, never()).onTabPinnedStateChanged(any(Tab.class), anyBoolean());
+        assertFalse(mTab.getIsPinned());
+        assertThat(
+                attributes.getDirtinessState(), equalTo(TabStateAttributes.DirtinessState.CLEAN));
+    }
+
+    @Test
+    @SmallTest
+    @EnableFeatures({ChromeFeatureList.PDF_REUSE_FRAGMENT})
     public void testFreezeDetachedNativePage() {
         TabImplJni.setInstanceForTesting(mNativeMock);
 
@@ -252,7 +372,8 @@ public class TabUnitTest {
         doReturn(mChromeActivity).when(mWeakReferenceContext).get();
 
         mTab =
-                new TabImpl(TAB1_ID, mProfile, TabLaunchType.FROM_CHROME_UI) {
+                new TabImpl(
+                        TAB1_ID, mProfile, TabLaunchType.FROM_CHROME_UI, /* isArchived= */ false) {
                     @Override
                     public WindowAndroid getWindowAndroid() {
                         return mWindowAndroid;
@@ -295,21 +416,6 @@ public class TabUnitTest {
 
     @Test
     @SmallTest
-    @DisableFeatures({AutofillFeatures.AUTOFILL_VIRTUAL_VIEW_STRUCTURE_ANDROID})
-    public void testAutofillUnavailable() {
-        assertFalse(mTab.providesAutofillStructure());
-        mTab.setAutofillProvider(null);
-
-        mTab.onProvideAutofillVirtualStructure(mock(ViewStructure.class), 0);
-        verify(mAutofillProvider, never()).onProvideAutoFillVirtualStructure(any(), anyInt());
-
-        mTab.autofill(new SparseArray<AutofillValue>());
-        verify(mAutofillProvider, never()).autofill(any());
-    }
-
-    @Test
-    @SmallTest
-    @EnableFeatures({AutofillFeatures.AUTOFILL_VIRTUAL_VIEW_STRUCTURE_ANDROID})
     public void testAutofillUnavailableWithoutPref() {
         when(mPrefs.getBoolean(TabImpl.AUTOFILL_PREF_USES_VIRTUAL_STRUCTURE)).thenReturn(false);
         assertFalse(mTab.providesAutofillStructure());
@@ -318,13 +424,12 @@ public class TabUnitTest {
         mTab.onProvideAutofillVirtualStructure(mock(ViewStructure.class), 0);
         verify(mAutofillProvider, never()).onProvideAutoFillVirtualStructure(any(), anyInt());
 
-        mTab.autofill(new SparseArray<AutofillValue>());
+        mTab.autofill(new SparseArray<>());
         verify(mAutofillProvider, never()).autofill(any());
     }
 
     @Test
     @SmallTest
-    @EnableFeatures({AutofillFeatures.AUTOFILL_VIRTUAL_VIEW_STRUCTURE_ANDROID})
     public void testAutofillRequestsHandledByProvider() {
         when(mPrefs.getBoolean(TabImpl.AUTOFILL_PREF_USES_VIRTUAL_STRUCTURE)).thenReturn(true);
         when(mProfile.isNativeInitialized()).thenReturn(true);
@@ -337,7 +442,7 @@ public class TabUnitTest {
                 .onProvideAutoFillVirtualStructure(
                         structure, View.AUTOFILL_FLAG_INCLUDE_NOT_IMPORTANT_VIEWS);
 
-        SparseArray<AutofillValue> values = new SparseArray<AutofillValue>();
+        SparseArray<AutofillValue> values = new SparseArray<>();
         mTab.autofill(values);
         verify(mAutofillProvider).autofill(values);
     }
@@ -345,7 +450,132 @@ public class TabUnitTest {
     @Test
     @SmallTest
     public void testDefaultInvalidTimestamp() {
-        Tab tab = new TabImpl(1, mProfile, TabLaunchType.FROM_LINK);
+        Tab tab = new TabImpl(1, mProfile, TabLaunchType.FROM_LINK, /* isArchived= */ false);
         assertThat(tab.getTimestampMillis(), equalTo(TabImpl.INVALID_TIMESTAMP));
+    }
+
+    @Test
+    @SmallTest
+    public void testUpdateThemeColor_themingAllowed() {
+        when(mSecurityStateModelNatives.getSecurityLevelForWebContents(mWebContents))
+                .thenReturn(ConnectionSecurityLevel.NONE);
+        TabImpl tab =
+                new TabImpl(
+                        TAB1_ID, mProfile, TabLaunchType.FROM_CHROME_UI, /* isArchived= */ false) {
+                    @Override
+                    public boolean isInitialized() {
+                        return true;
+                    }
+
+                    @Override
+                    public WebContents getWebContents() {
+                        return mWebContents;
+                    }
+                };
+        tab.addObserver(mObserver);
+
+        tab.updateThemeColor(Color.RED);
+        verify(mObserver).onDidChangeThemeColor(tab, Color.RED);
+
+        tab.updateThemeColor(Color.RED);
+        // Not called a second time.
+        verify(mObserver).onDidChangeThemeColor(tab, Color.RED);
+    }
+
+    @Test
+    @SmallTest
+    public void testUpdateThemeColor_themingNotAllowed() {
+        when(mSecurityStateModelNatives.getSecurityLevelForWebContents(mWebContents))
+                .thenReturn(ConnectionSecurityLevel.NONE);
+        TabImpl tab =
+                new TabImpl(
+                        TAB1_ID, mProfile, TabLaunchType.FROM_CHROME_UI, /* isArchived= */ false) {
+                    @Override
+                    public boolean isInitialized() {
+                        return true;
+                    }
+
+                    @Override
+                    public WebContents getWebContents() {
+                        return mWebContents;
+                    }
+                };
+        tab.addObserver(mObserver);
+
+        // Set initial theme color while theming is allowed.
+        tab.updateThemeColor(Color.RED);
+        verify(mObserver).onDidChangeThemeColor(tab, Color.RED);
+
+        // Disallow theming.
+        when(mSecurityStateModelNatives.getSecurityLevelForWebContents(mWebContents))
+                .thenReturn(ConnectionSecurityLevel.DANGEROUS);
+
+        tab.updateThemeColor(Color.BLUE);
+        verify(mObserver).onDidChangeThemeColor(tab, TabState.UNSPECIFIED_THEME_COLOR);
+
+        // Calling again when already unspecified should not emit.
+        tab.updateThemeColor(Color.GREEN);
+        verify(mObserver, times(1)).onDidChangeThemeColor(tab, TabState.UNSPECIFIED_THEME_COLOR);
+    }
+
+    @Test
+    @SmallTest
+    public void testDidChangeVisibleSecurityState_themingNotAllowed() {
+        when(mSecurityStateModelNatives.getSecurityLevelForWebContents(mWebContents))
+                .thenReturn(ConnectionSecurityLevel.NONE);
+        when(mWebContents.getThemeColor()).thenReturn(Color.RED);
+        TabImpl tab =
+                new TabImpl(
+                        TAB1_ID, mProfile, TabLaunchType.FROM_CHROME_UI, /* isArchived= */ false) {
+                    @Override
+                    public boolean isInitialized() {
+                        return true;
+                    }
+
+                    @Override
+                    public WebContents getWebContents() {
+                        return mWebContents;
+                    }
+                };
+        tab.addObserver(mObserver);
+
+        TabWebContentsObserver tabWebContentsObserver = TabWebContentsObserver.from(tab);
+        tabWebContentsObserver.initWebContents(mWebContents);
+
+        // Set initial theme color while theming is allowed.
+        tab.updateThemeColor(Color.RED);
+        verify(mObserver).onDidChangeThemeColor(tab, Color.RED);
+
+        // Disallow theming and trigger security state change.
+        when(mSecurityStateModelNatives.getSecurityLevelForWebContents(mWebContents))
+                .thenReturn(ConnectionSecurityLevel.DANGEROUS);
+        tabWebContentsObserver.getWebContentsObserverForTesting().didChangeVisibleSecurityState();
+
+        verify(mObserver).onDidChangeThemeColor(tab, TabState.UNSPECIFIED_THEME_COLOR);
+
+        // Triggering again should not emit another theme color change.
+        tabWebContentsObserver.getWebContentsObserverForTesting().didChangeVisibleSecurityState();
+        verify(mObserver, times(1)).onDidChangeThemeColor(tab, TabState.UNSPECIFIED_THEME_COLOR);
+    }
+
+    @Test
+    @SmallTest
+    @EnableFeatures({ChromeFeatureList.ABORT_NAVIGATIONS_FROM_TAB_CLOSURES})
+    public void testDestroy_SendsWillDetachUpdate() {
+        TabImplJni.setInstanceForTesting(mNativeMock);
+        mTab.setNativePtrForTesting(1);
+        doAnswer(
+                        invocation -> {
+                            mTab.clearNativePtr();
+                            return null;
+                        })
+                .when(mNativeMock)
+                .destroy(1);
+
+        mTab.onAddedToTabModel(mTabSupplier, ignored -> false);
+        mTab.destroy();
+
+        verify(mNativeMock).sendWillDetachUpdate(1, DetachReason.DELETE);
+        verify(mNativeMock).destroy(1);
     }
 }

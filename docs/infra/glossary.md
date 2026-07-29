@@ -23,7 +23,9 @@ infrastructure.
     the child build only runs tests, we call this model a "builder/tester
     split". The child is referred to as the tester, and the parent (confusingly)
     referred to as the builder. The child might also be referred to as a "thin
-    tester" if it only runs tests remotely.
+    tester" if it only runs tests remotely. Read more about builder-tester
+    splits
+    [here](builder_types.md#parent_child-split-a_k_a_builder_tester-split).
   * __CI Builder__ or __Post-submit Builder__: A builder that compiles/tests a
     branch of Chromium. Often triggered when changes to the branch are
     submitted, these post-submit builders run on a continuous basis.
@@ -52,7 +54,9 @@ infrastructure.
     [linux-rel-compilator](https://ci.chromium.org/p/chromium/builders/try/linux-rel-compilator)
     is its compilator. This partitioning confines the busy-waiting phases of a
     build (ie: waiting for Swarming tests to finish) to the orchestrator,
-    allowing the compilator to quickly move on and pick up new requests.
+    allowing the compilator to quickly move on and pick up new requests. Read
+    more about orchestrators and compilators
+    [here](builder_types.md#orchestrator_compilator).
   * __Optional Trybot__: A trybot that's not a default CQ builder. These can
     be triggered manually by a developer. Or they can be required by the CQ
     if the CL includes changes to a specific file path. See
@@ -72,6 +76,12 @@ infrastructure.
     pool of bots (colloquially known as the "builderless pool") that's shared
     across a large group of builders. Any builder that runs builds in said
     pool is also referred to as being "builderless."
+
+* __Builderful__: The opposite of **Builderless** (see above). Any builder that
+    runs on a set of machines dedicated to just that builder is said to be
+    "builderful". This is enforced via the `builder:` Swarming dimension, whose
+    value is the name of the builder. Note that some builderful machines can be
+    dedicated to one or more builders.
 
 * __Builder Group__: A logical grouping of builders. For example, the
   "chromium.linux" builder group is a set of builders that test basic

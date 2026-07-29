@@ -47,6 +47,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/pickle.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "cc/paint/paint_flags.h"
@@ -56,6 +57,8 @@
 #include "third_party/skia/include/core/SkCanvas.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/accessibility/ax_node_data.h"
+#include "ui/base/cursor/cursor.h"
+#include "ui/base/cursor/mojom/cursor_type.mojom.h"
 #include "ui/base/dragdrop/drag_drop_types.h"
 #include "ui/base/dragdrop/mojom/drag_drop_types.mojom-shared.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -196,10 +199,13 @@ class PromiseIconBackground : public views::Background {
   PromiseIconBackground(ui::ColorId color_id,
                         const gfx::Rect& icon_bounds,
                         const gfx::Insets& insets)
-      : color_id_(color_id), icon_bounds_(icon_bounds), insets_(insets) {}
+      : icon_bounds_(icon_bounds), insets_(insets) {
+    SetColor(color_id);
+  }
 
   PromiseIconBackground(const PromiseIconBackground&) = delete;
   PromiseIconBackground& operator=(const PromiseIconBackground&) = delete;
+
   ~PromiseIconBackground() override = default;
 
   // views::Background:
@@ -212,18 +218,16 @@ class PromiseIconBackground : public views::Background {
 
     cc::PaintFlags flags;
     flags.setAntiAlias(true);
-    flags.setColor(get_color());
+    flags.setColor(color().ResolveToSkColor(view->GetColorProvider()));
 
     canvas->DrawCircle(bounds.CenterPoint(), radius, flags);
   }
 
   void OnViewThemeChanged(views::View* view) override {
-    SetNativeControlColor(view->GetColorProvider()->GetColor(color_id_));
     view->SchedulePaint();
   }
 
  private:
-  const ui::ColorId color_id_;
   const gfx::Rect icon_bounds_;
   const gfx::Insets insets_;
 };
@@ -663,6 +667,10 @@ AppListItemView::AppListItemView(const AppListConfig* app_list_config,
 
   icon_background_ = AddChildView(std::make_unique<views::View>());
   icon_background_->SetPaintToLayer(ui::LAYER_SOLID_COLOR);
+  icon_background_->SetBackground(
+      views::CreateLayerBasedSolidBackground(GetBackgroundLayerColorId()));
+  icon_background_->background()->SetInternalName(
+      "AppListItemView/icon-background");
   icon_background_->SetCanProcessEventsWithinSubtree(false);
   icon_background_->SetVisible(is_folder_);
 
@@ -879,7 +887,7 @@ gfx::Size AppListItemView::GetIconSize() const {
   if (is_folder_) {
     return app_list_config_->folder_icon_size();
   }
-  if (is_promise_app_ && features::ArePromiseIconsEnabled() && item_weak_) {
+  if (is_promise_app_ && item_weak_) {
     // Placeholder icons do not change size between states.
     if (ImageModelHasPlaceholderIcon()) {
       return gfx::Size(kPlaceholderIconDimension, kPlaceholderIconDimension);
@@ -1145,7 +1153,7 @@ bool AppListItemView::InitiateDrag(const gfx::Point& location,
   if (!IsItemDraggable()) {
     return false;
   }
-  drag_state_ = DragState::kInitialized;
+  SetDragState(DragState::kInitialized);
   SilentlyRequestFocus();
   return true;
 }
@@ -1153,7 +1161,7 @@ bool AppListItemView::InitiateDrag(const gfx::Point& location,
 void AppListItemView::OnDragStarted() {
   mouse_drag_timer_.Stop();
   touch_drag_timer_.Stop();
-  drag_state_ = DragState::kStarted;
+  SetDragState(DragState::kStarted);
   SetUIState(UI_STATE_DRAGGING);
   CancelContextMenu();
 }
@@ -1169,7 +1177,7 @@ void AppListItemView::OnDragEnded() {
     context_menu_for_folder_->set_owner_touch_dragging(false);
 
   SetUIState(UI_STATE_NORMAL);
-  drag_state_ = DragState::kNone;
+  SetDragState(DragState::kNone);
 }
 
 void AppListItemView::OnDragDone() {
@@ -1239,7 +1247,7 @@ void AppListItemView::OnContextMenuModelReceived(
     const gfx::Point& point,
     ui::mojom::MenuSourceType source_type,
     std::unique_ptr<ui::SimpleMenuModel> menu_model) {
-  waiting_for_context_menu_options_ = false;
+  SetWaitingForContextMenuOptions(false);
   if (!menu_model || IsShowingAppMenu()) {
     return;
   }
@@ -1331,6 +1339,7 @@ void AppListItemView::OnContextMenuModelReceived(
 
   item_menu_model_adapter_->Run(
       anchor_rect, views::MenuAnchorPosition::kBubbleRight, run_types);
+  views::FocusRing::Get(this)->Refresh();
 
   if (!context_menu_shown_callback_.is_null()) {
     context_menu_shown_callback_.Run();
@@ -1353,7 +1362,7 @@ void AppListItemView::ShowContextMenuForViewImpl(
   if (waiting_for_context_menu_options_) {
     return;
   }
-  waiting_for_context_menu_options_ = true;
+  SetWaitingForContextMenuOptions(true);
   views::InkDrop::Get(this)->SetMode(
       views::InkDropHost::InkDropMode::ON_NO_GESTURE_HANDLER);
   views::InkDrop::Get(this)->AnimateToState(views::InkDropState::ACTIVATED,
@@ -1491,7 +1500,7 @@ void AppListItemView::OnMouseReleased(const ui::MouseEvent& event) {
   if (drag_state_ == DragState::kInitialized &&
       ui_state_ == UI_STATE_DRAGGING) {
     SetMouseDragging(false);
-    drag_state_ = DragState::kNone;
+    SetDragState(DragState::kNone);
     return;
   } else {
     // Triggers the button's click handler callback, which might delete `this`.
@@ -1504,10 +1513,10 @@ void AppListItemView::OnMouseReleased(const ui::MouseEvent& event) {
 
   SetMouseDragging(false);
 
-    // Cancel drag timer set when the mouse was pressed, to prevent the app
-    // item from entering dragged state.
-    mouse_drag_timer_.Stop();
-    drag_state_ = DragState::kNone;
+  // Cancel drag timer set when the mouse was pressed, to prevent the app
+  // item from entering dragged state.
+  mouse_drag_timer_.Stop();
+  SetDragState(DragState::kNone);
 }
 
 void AppListItemView::OnMouseCaptureLost() {
@@ -1526,14 +1535,14 @@ void AppListItemView::OnFocus() {
     return;
   }
   grid_delegate_->SetSelectedView(this);
-  views::FocusRing::Get(this)->SchedulePaint();
+  views::FocusRing::Get(this)->Refresh();
 }
 
 void AppListItemView::OnBlur() {
   if (grid_delegate_->IsSelectedView(this)) {
     grid_delegate_->ClearSelectedView();
   }
-  views::FocusRing::Get(this)->SchedulePaint();
+  views::FocusRing::Get(this)->Refresh();
 }
 
 int AppListItemView::GetDragOperations(const gfx::Point& press_pt) {
@@ -1576,8 +1585,8 @@ bool AppListItemView::MaybeStartTouchDrag(const gfx::Point& location) {
 
   gfx::Point widget_location(location);
   views::View::ConvertPointToWidget(this, &widget_location);
-  widget->RunShellDrag(this, std::move(data), widget_location, drag_operations,
-                       ui::mojom::DragEventSource::kTouch);
+  widget->RunDragDropLoop(this, std::move(data), widget_location,
+                          drag_operations, ui::mojom::DragEventSource::kTouch);
   return true;
 }
 
@@ -1622,7 +1631,7 @@ void AppListItemView::OnGestureEvent(ui::GestureEvent* event) {
         // Reset `drag_state_` if there was an attempt to initiate it (i.e. the
         // touch drag timer fired) but was not properly started (i.e. the app
         // item was never actually dragged) before a release event occurred.
-        drag_state_ = DragState::kNone;
+        SetDragState(DragState::kNone);
       }
       touch_drag_timer_.Stop();
       SetTouchDragging(false);
@@ -1660,10 +1669,6 @@ void AppListItemView::OnThemeChanged() {
         is_folder_ ? GetColorProvider()->GetColor(cros_tokens::kIconColorBlue)
                    : item_weak_->GetNotificationBadgeColor();
     notification_indicator_->SetColor(notification_indicator_color);
-    if (icon_background_) {
-      icon_background_->layer()->SetColor(
-          GetColorProvider()->GetColor(GetBackgroundLayerColorId()));
-    }
   }
 
   UpdateIconView(/*update_item_icon=*/true);
@@ -1878,6 +1883,7 @@ void AppListItemView::OnMenuClosed() {
   // Release menu since its menu model delegate (AppContextMenu) could be
   // released as a result of menu command execution.
   item_menu_model_adapter_.reset();
+  views::FocusRing::Get(this)->Refresh();
 
   if (!menu_close_initiated_from_drag_) {
     // If the menu was not closed due to a drag sequence(e.g. multi touch) reset
@@ -2071,8 +2077,7 @@ bool AppListItemView::ImageModelHasPlaceholderIcon() const {
 }
 
 void AppListItemView::UpdateProgressIndicatorState() {
-  if ((!is_promise_app_ && !forced_progress_indicator_value_) ||
-      !features::ArePromiseIconsEnabled()) {
+  if ((!is_promise_app_ && !forced_progress_indicator_value_)) {
     return;
   }
 
@@ -2322,6 +2327,16 @@ void AppListItemView::UpdateTooltipText() {
     tooltip = l10n_util::GetStringFUTF16(IDS_APP_LIST_NEW_INSTALL, tooltip);
   }
   SetTooltipText(tooltip);
+}
+
+void AppListItemView::SetWaitingForContextMenuOptions(bool wait) {
+  waiting_for_context_menu_options_ = wait;
+  views::FocusRing::Get(this)->Refresh();
+}
+
+void AppListItemView::SetDragState(DragState state) {
+  drag_state_ = state;
+  views::FocusRing::Get(this)->Refresh();
 }
 
 BEGIN_METADATA(AppListItemView)

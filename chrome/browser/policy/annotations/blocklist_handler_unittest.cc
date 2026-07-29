@@ -21,7 +21,7 @@ const char kAutofillQueryPolicy[] = "PasswordManagerEnabled";
 
 class NetworkAnnotationBlocklistHandlerTest : public testing::Test {
  protected:
-  base::Value::Dict blocklist_prefs() {
+  base::DictValue blocklist_prefs() {
     return prefs_.AsDict()
         .FindDict(prefs::kNetworkAnnotationBlocklist)
         ->Clone();
@@ -39,7 +39,10 @@ class NetworkAnnotationBlocklistHandlerTest : public testing::Test {
   PolicyMap policies_;
 };
 
-TEST_F(NetworkAnnotationBlocklistHandlerTest, DisabledByDefault) {
+TEST_F(NetworkAnnotationBlocklistHandlerTest, DisabledWithFeature) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(features::kNetworkAnnotationMonitoring);
+
   EXPECT_FALSE(handler_.CheckPolicySettings(PolicyMap(), nullptr));
 }
 

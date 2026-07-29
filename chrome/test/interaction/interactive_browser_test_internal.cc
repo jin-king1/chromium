@@ -16,20 +16,18 @@
 #include "base/strings/stringprintf.h"
 #include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser_list.h"
-#include "chrome/browser/ui/browser_list_observer.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/test/base/devtools_agent_coverage_observer.h"
 #include "chrome/test/base/test_switches.h"
 #include "chrome/test/interaction/interaction_test_util_browser.h"
 #include "chrome/test/interaction/tracked_element_webcontents.h"
+#include "chrome/test/interaction/webcontents_interaction_test_util.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/interaction/element_tracker.h"
-#include "ui/base/interaction/framework_specific_implementation.h"
-#include "ui/gfx/native_widget_types.h"
-#include "ui/views/interaction/interactive_views_test_internal.h"
-#include "ui/views/interaction/widget_focus_observer.h"
+#include "ui/base/interaction/interactive_test_internal.h"
+#include "ui/base/interaction/safe_castable.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/views/widget/widget.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -39,61 +37,90 @@
 
 namespace internal {
 
-// Focus supplier that watches for browser activation specifically. For some
-// reason, on some platforms, in some circumstances, native widget activation
-// isn't properly communicated, so this serves as a backup.
-class BrowserWidgetFocusSupplier
-    : public views::test::internal::WidgetFocusSupplier,
-      public BrowserListObserver {
- public:
-  BrowserWidgetFocusSupplier() {
-    observation_.Observe(BrowserList::GetInstance());
-  }
-  ~BrowserWidgetFocusSupplier() override = default;
+DEFINE_SAFE_CAST_TARGET(InteractiveBrowserTestPrivate)
 
-  DECLARE_FRAMEWORK_SPECIFIC_METADATA()
-
-  void OnBrowserSetLastActive(Browser* browser) override {
-    if (auto* const view = BrowserView::GetBrowserViewForBrowser(browser)) {
-      if (auto* const widget = view->GetWidget()) {
-        if (gfx::NativeView native_view = widget->GetNativeView()) {
-          OnWidgetFocusChanged(native_view);
+// static
+const std::string_view InteractiveBrowserTestPrivate::kDumpElementsScript =
+    R"(
+  function gatherHtmlContent(node, active) {
+    const result = {
+      text: '',
+      children: [],
+    };
+    let hidden = false;
+    if (node instanceof ShadowRoot) {
+      result.text = '(shadow root)';
+      active = node.activeElement;
+    } else if (node instanceof Element) {
+      if (active === node && !node.shadowRoot) {
+        result.text += '[FOCUSED] ';
+      }
+      if (node.id) {
+        result.text += '#' + node.id + ' ';
+      }
+      result.text += node.tagName.toLowerCase();
+      const rect = node.getBoundingClientRect();
+      hidden = rect.width <= 0 || rect.height <= 0;
+      if (hidden) {
+        result.text += ' (not visible)';
+      } else {
+        const round = (n) => Math.round(n * 10) / 10;
+        // x:86-120 y:56-90 (34x34)
+        result.text +=
+            ' at x:' + round(rect.x) + '-' + round(rect.x + rect.width);
+        result.text +=
+            ' y:' + round(rect.y) + '-' + round(rect.y + rect.height);
+        result.text +=
+            ' (' + round(rect.width) + 'x' + round(rect.height) + ')';
+      }
+    } else {
+      return null;
+    }
+    if (!hidden) {
+      for (const child of node.childNodes) {
+        const childData = gatherHtmlContent(child, active);
+        if (childData) {
+          result.children.push(childData);
         }
       }
-    }
-  }
-
- protected:
-  views::Widget::Widgets GetAllWidgets() const override {
-#if BUILDFLAG(IS_CHROMEOS)
-    // On Ash, this call is required to include shell/desktop widgets in
-    // addition to other widgets - see documentation in widget_test_aura.cc.
-    views::Widget::Widgets result;
-    for (const auto& window : ash::Shell::GetAllRootWindows()) {
-      result.merge(views::Widget::GetAllChildWidgets(window->GetRootWindow()));
+      if (node instanceof Element && node.shadowRoot) {
+        result.children.push(gatherHtmlContent(node.shadowRoot));
+      }
     }
     return result;
-#else
-    return views::Widget::Widgets();
-#endif
   }
-
- private:
-  base::ScopedObservation<BrowserList, BrowserListObserver> observation_{this};
-};
-
-DEFINE_FRAMEWORK_SPECIFIC_METADATA(BrowserWidgetFocusSupplier)
+  function stringifyHtmlContent(node, prefix, last) {
+    let text = prefix;
+    if (!prefix) {
+      prefix += '  ';
+    } else {
+      if (last) {
+        text += '╰─';
+        prefix += '   ';
+      } else {
+        text += '├─';
+        prefix += '│  ';
+      }
+    }
+    text += node.text + '\n';
+    for (let i = 0; i < node.children.length; ++i) {
+      const last_child = (i == node.children.length - 1);
+      text += stringifyHtmlContent(node.children[i], prefix, last_child);
+    }
+    return text;
+  }
+  function dumpHtmlContent(node, active) {
+    return stringifyHtmlContent(gatherHtmlContent(node, active), '', false);
+  }
+)";
 
 InteractiveBrowserTestPrivate::InteractiveBrowserTestPrivate(
-    std::unique_ptr<InteractionTestUtilBrowser> test_util)
-    : InteractiveViewsTestPrivate(std::move(test_util)) {}
+    ui::test::internal::InteractiveTestPrivate& test_impl)
+    : ui::test::internal::InteractiveTestPrivateFrameworkBase(test_impl) {
+  InteractionTestUtilBrowser::PopulateSimulators(test_impl.test_util());
+}
 
 InteractiveBrowserTestPrivate::~InteractiveBrowserTestPrivate() = default;
-
-void InteractiveBrowserTestPrivate::DoTestSetUp() {
-  InteractiveViewsTestPrivate::DoTestSetUp();
-  widget_focus_suppliers().MaybeRegister<BrowserWidgetFocusSupplier>();
-}
 
 void InteractiveBrowserTestPrivate::DoTestTearDown() {
   // Release any remaining instrumented WebContents.
@@ -118,8 +145,6 @@ void InteractiveBrowserTestPrivate::DoTestTearDown() {
 
     coverage_observer_->CollectCoverage(test_name);
   }
-
-  InteractiveViewsTestPrivate::DoTestTearDown();
 }
 
 void InteractiveBrowserTestPrivate::MaybeStartWebUICodeCoverage() {
@@ -148,8 +173,7 @@ void InteractiveBrowserTestPrivate::AddInstrumentedWebContents(
     CHECK_NE(instrumented_web_contents->page_identifier(),
              existing->page_identifier());
   }
-  instrumented_web_contents_.emplace_back(std::move(instrumented_web_contents))
-      .get();
+  instrumented_web_contents_.emplace_back(std::move(instrumented_web_contents));
 }
 
 bool InteractiveBrowserTestPrivate::IsInstrumentedWebContents(
@@ -189,7 +213,7 @@ std::string InteractiveBrowserTestPrivate::DeepQueryToString(
 }
 
 gfx::NativeWindow InteractiveBrowserTestPrivate::GetNativeWindowFromElement(
-    ui::TrackedElement* el) const {
+    const ui::TrackedElement* el) const {
   gfx::NativeWindow window = gfx::NativeWindow();
 
   // For instrumented WebContents, we can get the native window directly from
@@ -199,31 +223,20 @@ gfx::NativeWindow InteractiveBrowserTestPrivate::GetNativeWindowFromElement(
     window = util->web_contents()->GetTopLevelNativeWindow();
   }
 
-  // If that did not work, fall back to the base implementation.
-  if (!window)
-    window = InteractiveViewsTestPrivate::GetNativeWindowFromElement(el);
   return window;
 }
 
 gfx::NativeWindow InteractiveBrowserTestPrivate::GetNativeWindowFromContext(
     ui::ElementContext context) const {
-  // Defer to the base implementation first, since there may be a cached value
-  // that is more accurate than what can be inferred from the context.
-  gfx::NativeWindow window =
-      InteractiveViewsTestPrivate::GetNativeWindowFromContext(context);
-
-  // If that didn't work, fall back to the top-level browser window for the
-  // context (assuming there is one).
-  if (!window) {
-    if (Browser* const browser =
-            InteractionTestUtilBrowser::GetBrowserFromContext(context)) {
-      if (BrowserView* const browser_view =
-              BrowserView::GetBrowserViewForBrowser(browser)) {
-        window = browser_view->GetNativeWindow();
-      }
+  // Use the top-level browser window for the context (assuming there is one).
+  if (auto* const browser =
+          InteractionTestUtilBrowser::GetBrowserFromContext(context)) {
+    if (BrowserView* const browser_view =
+            BrowserView::GetBrowserViewForBrowser(browser)) {
+      return browser_view->GetNativeWindow();
     }
   }
-  return window;
+  return gfx::NativeWindow();
 }
 
 std::string InteractiveBrowserTestPrivate::DebugDescribeContext(
@@ -231,7 +244,7 @@ std::string InteractiveBrowserTestPrivate::DebugDescribeContext(
   if (const auto* browser =
           InteractionTestUtilBrowser::GetBrowserFromContext(context)) {
     std::string type;
-    switch (browser->type()) {
+    switch (browser->GetType()) {
       case Browser::TYPE_APP:
         type = "App window";
         break;
@@ -251,42 +264,96 @@ std::string InteractiveBrowserTestPrivate::DebugDescribeContext(
         type = "Other browser window";
         break;
     }
-    if (browser->SupportsWindowFeature(Browser::FEATURE_TABSTRIP)) {
-      type += base::StringPrintf(", %d tab(s) (active: %d)",
-                                 browser->tab_strip_model()->count(),
-                                 browser->tab_strip_model()->active_index());
-    }
+    type += base::StringPrintf(", %d tab(s) (active: %d)",
+                               browser->GetTabStripModel()->count(),
+                               browser->GetTabStripModel()->active_index());
     return base::StringPrintf(
         "%s%s profile %s%s at %s",
-        (browser->window()->IsActive() ? "[ACTIVE] " : ""), type,
-        browser->profile()->GetDebugName(),
-        (browser->profile()->IsOffTheRecord() ? " (off-the-record)" : ""),
-        DebugDumpBounds(browser->window()->GetBounds()));
-  } else {
-    return InteractiveViewsTestPrivate::DebugDescribeContext(context);
+        (browser->GetWindow()->IsActive() ? "[ACTIVE] " : ""), type,
+        browser->GetProfile()->GetDebugName(),
+        (browser->GetProfile()->IsOffTheRecord() ? " (off-the-record)" : ""),
+        DebugDumpBounds(browser->GetWindow()->GetBounds()));
+  }
+
+  return std::string();
+}
+
+namespace {
+
+// Converts `dump_info` to debug tree nodes and adds it as a child of `node`.
+void AddWebDumpNodes(InteractiveBrowserTestPrivate::DebugTreeNode& node,
+                     const base::Value& dump_info) {
+  if (!dump_info.is_dict()) {
+    LOG(ERROR) << "Expected dict type but got "
+               << base::Value::GetTypeName(dump_info.type());
+    return;
+  }
+  const auto& dict = dump_info.GetDict();
+  const auto* const text = dict.FindString("text");
+  if (!text) {
+    LOG(ERROR)
+        << "Expected dict to have 'text' field but did not or was wrong type.";
+    return;
+  }
+  auto& new_node = node.children.emplace_back(*text);
+  const auto* const children = dict.FindList("children");
+  if (children) {
+    for (const auto& child : *children) {
+      AddWebDumpNodes(new_node, child);
+    }
   }
 }
 
-InteractiveBrowserTestPrivate::DebugTreeNode
-InteractiveBrowserTestPrivate::DebugDumpElement(
-    const ui::TrackedElement* el) const {
-  if (const auto* contents = el->AsA<TrackedElementWebContents>()) {
-    auto* const web_contents = contents->owner()->web_contents();
-    int index = TabStripModel::kNoTab;
-    if (const auto* browser =
-            InteractionTestUtilBrowser::GetBrowserFromContext(el->context())) {
-      index = browser->tab_strip_model()->GetIndexOfWebContents(web_contents);
+}  // namespace
+
+std::vector<InteractiveBrowserTestPrivate::DebugTreeNode>
+InteractiveBrowserTestPrivate::DebugDumpElements(
+    std::set<const ui::TrackedElement*>& elements) const {
+  std::vector<InteractiveBrowserTestPrivate::DebugTreeNode> nodes;
+  for (auto it = elements.begin(); it != elements.end();) {
+    auto* const el = *it;
+    if (const auto* contents = el->AsA<TrackedElementWebContents>()) {
+      auto* const web_contents = contents->owner()->web_contents();
+      int index = TabStripModel::kNoTab;
+      if (const auto* browser =
+              InteractionTestUtilBrowser::GetBrowserFromContext(
+                  el->context())) {
+        index =
+            browser->GetTabStripModel()->GetIndexOfWebContents(web_contents);
+      }
+      auto& new_node = nodes.emplace_back(base::StringPrintf(
+          "WebContents %s - %s at %s with URL \"%s\"",
+          (index == TabStripModel::kNoTab
+               ? "in secondary UI"
+               : base::StringPrintf("in tab %d", index).c_str()),
+          el->identifier().GetName(), DebugDumpBounds(el->GetScreenBounds()),
+          web_contents->GetURL().spec().c_str()));
+      it = elements.erase(it);
+      if (auto* const util =
+              const_cast<WebContentsInteractionTestUtil*>(contents->owner());
+          util && util->is_page_loaded()) {
+        std::string error_message;
+        const auto value = util->Evaluate(base::StringPrintf(
+                                              R"(function() {
+              %s;
+              return gatherHtmlContent(document.body, document.activeElement);
+            })",
+                                              kDumpElementsScript),
+                                          &error_message);
+        if (!error_message.empty()) {
+          LOG(ERROR) << "Unable to retrieve contents of " << *contents << ": "
+                     << error_message;
+        } else {
+          new_node.text +=
+              " (note that descendant bounds are relative to this element)";
+          AddWebDumpNodes(new_node, value);
+        }
+      }
+    } else {
+      ++it;
     }
-    return DebugTreeNode(base::StringPrintf(
-        "WebContents %s - %s at %s with URL \"%s\"",
-        (index == TabStripModel::kNoTab
-             ? "in secondary UI"
-             : base::StringPrintf("in tab %d", index).c_str()),
-        el->identifier().GetName(), DebugDumpBounds(el->GetScreenBounds()),
-        web_contents->GetURL().spec().c_str()));
-  } else {
-    return InteractiveViewsTestPrivate::DebugDumpElement(el);
   }
+  return nodes;
 }
 
 MatchableValue::MatchableValue() noexcept = default;

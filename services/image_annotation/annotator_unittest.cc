@@ -2,48 +2,40 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include <memory>
+#include "services/image_annotation/annotator.h"
 
-#include "base/memory/ptr_util.h"
-#include "base/test/scoped_feature_list.h"
-#include "base/values.h"
-#include "components/manta/anchovy/anchovy_provider.h"
-#include "components/manta/manta_status.h"
-#include "services/network/public/cpp/shared_url_loader_factory.h"
-#include "ui/accessibility/accessibility_features.h"
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
+#include <algorithm>
 #include <array>
 #include <cstring>
+#include <memory>
 #include <optional>
 
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
+#include "base/memory/ptr_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
+#include "base/values.h"
+#include "components/manta/anchovy/anchovy_provider.h"
+#include "components/manta/manta_status.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver_set.h"
 #include "net/base/net_errors.h"
 #include "net/http/http_status_code.h"
-#include "services/data_decoder/public/cpp/data_decoder.h"
-#include "services/data_decoder/public/cpp/test_support/in_process_data_decoder.h"
-#include "services/data_decoder/public/mojom/json_parser.mojom.h"
-#include "services/image_annotation/annotator.h"
 #include "services/image_annotation/image_annotation_metrics.h"
 #include "services/image_annotation/public/mojom/image_annotation.mojom.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/public/mojom/url_loader.mojom-shared.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/accessibility/accessibility_features.h"
 
 namespace image_annotation {
 
@@ -335,17 +327,16 @@ class TestServerURLLoaderFactory {
     }
 
     // Extract request body.
-    std::string actual_body;
+    std::string_view actual_body;
     if (request.request_body) {
-      const std::vector<network::DataElement>* const elements =
-          request.request_body->elements();
-
       // We only support the simplest body structure.
-      if (elements && elements->size() == 1 &&
-          (*elements)[0].type() ==
+      const std::vector<network::DataElement>& elements =
+          *request.request_body->elements();
+      if (elements.size() == 1 &&
+          elements[0].type() ==
               network::mojom::DataElementDataView::Tag::kBytes) {
-        actual_body = std::string(
-            (*elements)[0].As<network::DataElementBytes>().AsStringPiece());
+        actual_body =
+            elements[0].As<network::DataElementBytes>().AsStringView();
       }
     }
 
@@ -369,13 +360,10 @@ class TestServerURLLoaderFactory {
 // Returns a "canonically" formatted version of a JSON string by parsing and
 // then rewriting it.
 std::string ReformatJson(const std::string& in) {
-  const std::optional<base::Value> json = base::JSONReader::Read(in);
-  CHECK(json);
-
-  std::string out;
-  base::JSONWriter::Write(*json, &out);
-
-  return out;
+  return base::WriteJson(
+             base::JSONReader::Read(in, base::JSON_PARSE_CHROMIUM_EXTENSIONS)
+                 .value())
+      .value_or("");
 }
 
 // Receives the result of an annotation request and writes the result data into
@@ -408,11 +396,6 @@ class TestAnnotatorClient : public Annotator::Client {
   }
 
  private:
-  // Annotator::Client implementation:
-  void BindJsonParser(mojo::PendingReceiver<data_decoder::mojom::JsonParser>
-                          receiver) override {
-    decoder_.GetService()->BindJsonParser(std::move(receiver));
-  }
   std::vector<std::string> GetAcceptLanguages() override {
     return accept_langs_;
   }
@@ -420,7 +403,6 @@ class TestAnnotatorClient : public Annotator::Client {
   void RecordLanguageMetrics(const std::string& page_language,
                              const std::string& requested_language) override {}
 
-  data_decoder::DataDecoder decoder_;
   std::vector<std::string> accept_langs_ = {"en", "it", "fr"};
   std::vector<std::string> top_langs_;
 };
@@ -433,7 +415,6 @@ TEST(AnnotatorTest, OcrSuccessAndCache) {
       base::test::TaskEnvironment::TimeSource::MOCK_TIME);
   TestServerURLLoaderFactory test_url_factory(
       "https://ia-pa.googleapis.com/v1/");
-  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
   base::HistogramTester histogram_tester;
 
   Annotator annotator(
@@ -540,7 +521,6 @@ TEST(AnnotatorTest, DescriptionSuccess) {
       base::test::TaskEnvironment::TimeSource::MOCK_TIME);
   TestServerURLLoaderFactory test_url_factory(
       "https://ia-pa.googleapis.com/v1/");
-  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
   base::HistogramTester histogram_tester;
 
   Annotator annotator(
@@ -648,7 +628,6 @@ TEST(AnnotatorTest, DoubleOcrResult) {
       base::test::TaskEnvironment::TimeSource::MOCK_TIME);
   TestServerURLLoaderFactory test_url_factory(
       "https://ia-pa.googleapis.com/v1/");
-  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
   base::HistogramTester histogram_tester;
 
   Annotator annotator(
@@ -764,7 +743,6 @@ TEST(AnnotatorTest, HttpError) {
       base::test::TaskEnvironment::TimeSource::MOCK_TIME);
   TestServerURLLoaderFactory test_url_factory(
       "https://ia-pa.googleapis.com/v1/");
-  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
   base::HistogramTester histogram_tester;
 
   Annotator annotator(
@@ -821,7 +799,6 @@ TEST(AnnotatorTest, BackendError) {
       base::test::TaskEnvironment::TimeSource::MOCK_TIME);
   TestServerURLLoaderFactory test_url_factory(
       "https://ia-pa.googleapis.com/v1/");
-  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
   base::HistogramTester histogram_tester;
 
   Annotator annotator(
@@ -905,7 +882,6 @@ TEST(AnnotatorTest, OcrBackendError) {
       base::test::TaskEnvironment::TimeSource::MOCK_TIME);
   TestServerURLLoaderFactory test_url_factory(
       "https://ia-pa.googleapis.com/v1/");
-  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
   base::HistogramTester histogram_tester;
 
   Annotator annotator(
@@ -1000,7 +976,6 @@ TEST(AnnotatorTest, DescriptionBackendError) {
       base::test::TaskEnvironment::TimeSource::MOCK_TIME);
   TestServerURLLoaderFactory test_url_factory(
       "https://ia-pa.googleapis.com/v1/");
-  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
   base::HistogramTester histogram_tester;
 
   Annotator annotator(
@@ -1091,7 +1066,6 @@ TEST(AnnotatorTest, ServerError) {
       base::test::TaskEnvironment::TimeSource::MOCK_TIME);
   TestServerURLLoaderFactory test_url_factory(
       "https://ia-pa.googleapis.com/v1/");
-  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
   base::HistogramTester histogram_tester;
 
   Annotator annotator(
@@ -1150,7 +1124,6 @@ TEST(AnnotatorTest, AdultError) {
       base::test::TaskEnvironment::TimeSource::MOCK_TIME);
   TestServerURLLoaderFactory test_url_factory(
       "https://ia-pa.googleapis.com/v1/");
-  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
   base::HistogramTester histogram_tester;
 
   Annotator annotator(
@@ -1226,7 +1199,6 @@ TEST(AnnotatorTest, ProcessorFails) {
       base::test::TaskEnvironment::TimeSource::MOCK_TIME);
   TestServerURLLoaderFactory test_url_factory(
       "https://ia-pa.googleapis.com/v1/");
-  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
   base::HistogramTester histogram_tester;
 
   Annotator annotator(
@@ -1307,7 +1279,6 @@ TEST(AnnotatorTest, ProcessorFailedPreviously) {
       base::test::TaskEnvironment::TimeSource::MOCK_TIME);
   TestServerURLLoaderFactory test_url_factory(
       "https://ia-pa.googleapis.com/v1/");
-  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
   base::HistogramTester histogram_tester;
 
   Annotator annotator(
@@ -1377,7 +1348,6 @@ TEST(AnnotatorTest, ProcessorDies) {
       base::test::TaskEnvironment::TimeSource::MOCK_TIME);
   TestServerURLLoaderFactory test_url_factory(
       "https://ia-pa.googleapis.com/v1/");
-  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
   base::HistogramTester histogram_tester;
 
   Annotator annotator(
@@ -1453,7 +1423,6 @@ TEST(AnnotatorTest, ConcurrentSameBatch) {
       base::test::TaskEnvironment::TimeSource::MOCK_TIME);
   TestServerURLLoaderFactory test_url_factory(
       "https://ia-pa.googleapis.com/v1/");
-  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
   base::HistogramTester histogram_tester;
 
   Annotator annotator(
@@ -1541,7 +1510,6 @@ TEST(AnnotatorTest, ConcurrentSeparateBatches) {
       base::test::TaskEnvironment::TimeSource::MOCK_TIME);
   TestServerURLLoaderFactory test_url_factory(
       "https://ia-pa.googleapis.com/v1/");
-  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
   base::HistogramTester histogram_tester;
 
   Annotator annotator(
@@ -1686,7 +1654,6 @@ TEST(AnnotatorTest, DuplicateWork) {
       base::test::TaskEnvironment::TimeSource::MOCK_TIME);
   TestServerURLLoaderFactory test_url_factory(
       "https://ia-pa.googleapis.com/v1/");
-  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
   base::HistogramTester histogram_tester;
 
   Annotator annotator(
@@ -1795,7 +1762,6 @@ TEST(AnnotatorTest, DescPolicy) {
       base::test::TaskEnvironment::TimeSource::MOCK_TIME);
   TestServerURLLoaderFactory test_url_factory(
       "https://ia-pa.googleapis.com/v1/");
-  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
   base::HistogramTester histogram_tester;
 
   Annotator annotator(
@@ -2000,7 +1966,6 @@ TEST(AnnotatorTest, DescLanguage) {
       base::test::TaskEnvironment::TimeSource::MOCK_TIME);
   TestServerURLLoaderFactory test_url_factory(
       "https://ia-pa.googleapis.com/v1/");
-  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
   base::HistogramTester histogram_tester;
 
   Annotator annotator(
@@ -2199,7 +2164,6 @@ TEST(AnnotatorTest, LanguageFallback) {
       base::test::TaskEnvironment::TimeSource::MOCK_TIME);
   TestServerURLLoaderFactory test_url_factory(
       "https://ia-pa.googleapis.com/v1/");
-  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
   base::HistogramTester histogram_tester;
 
   Annotator annotator(
@@ -2299,7 +2263,6 @@ TEST(AnnotatorTest, LanguageFallback) {
 TEST(AnnotatorTest, ApiKey) {
   base::test::TaskEnvironment test_task_env(
       base::test::TaskEnvironment::TimeSource::MOCK_TIME);
-  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
 
   // A call to a secure Google-owner server URL should include the specified API
   // key.
@@ -2474,7 +2437,6 @@ TEST(AnnotatorTest, FetchServerLanguages) {
       base::test::TaskEnvironment::TimeSource::MOCK_TIME);
   TestServerURLLoaderFactory test_url_factory(
       "https://ia-pa.googleapis.com/v1/");
-  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
 
   Annotator annotator(
       GURL(kTestServerUrl), GURL(kLangsServerUrl), std::string() /* api_key */,
@@ -2484,7 +2446,7 @@ TEST(AnnotatorTest, FetchServerLanguages) {
 
   // Assert that initially server_languages_ doesn't contain the made-up
   // language code zz.
-  EXPECT_FALSE(base::Contains(annotator.server_languages_, "zz"));
+  EXPECT_FALSE(std::ranges::contains(annotator.server_languages_, "zz"));
 
   test_url_factory.ExpectRequestAndSimulateResponse(
       "langs", {} /* expected headers */, "" /* body */,
@@ -2500,7 +2462,7 @@ TEST(AnnotatorTest, FetchServerLanguages) {
       net::HTTP_OK);
   test_task_env.RunUntilIdle();
 
-  EXPECT_TRUE(base::Contains(annotator.server_languages_, "zz"));
+  EXPECT_TRUE(std::ranges::contains(annotator.server_languages_, "zz"));
 }
 
 // If the server langs don't contain English, they're ignored.
@@ -2509,7 +2471,6 @@ TEST(AnnotatorTest, ServerLanguagesMustContainEnglish) {
       base::test::TaskEnvironment::TimeSource::MOCK_TIME);
   TestServerURLLoaderFactory test_url_factory(
       "https://ia-pa.googleapis.com/v1/");
-  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
 
   Annotator annotator(
       GURL(kTestServerUrl), GURL(kLangsServerUrl), std::string() /* api_key */,
@@ -2519,7 +2480,7 @@ TEST(AnnotatorTest, ServerLanguagesMustContainEnglish) {
 
   // Assert that initially server_languages_ does contain "en" but
   // doesn't contain the made-up language code zz.
-  EXPECT_FALSE(base::Contains(annotator.server_languages_, "zz"));
+  EXPECT_FALSE(std::ranges::contains(annotator.server_languages_, "zz"));
 
   // The server response doesn't include "en", so we should ignore it.
   test_url_factory.ExpectRequestAndSimulateResponse(
@@ -2536,15 +2497,15 @@ TEST(AnnotatorTest, ServerLanguagesMustContainEnglish) {
 
   // We shouldn't have updated our languages because the response didn't
   // include "en".
-  EXPECT_TRUE(base::Contains(annotator.server_languages_, "en"));
-  EXPECT_FALSE(base::Contains(annotator.server_languages_, "zz"));
+  EXPECT_TRUE(std::ranges::contains(annotator.server_languages_, "en"));
+  EXPECT_FALSE(std::ranges::contains(annotator.server_languages_, "zz"));
 }
 
 // Alternative Routing Tests.
 
 class FakeAnchovyProvider : public manta::AnchovyProvider {
  public:
-  explicit FakeAnchovyProvider(base::Value::Dict fake_result)
+  explicit FakeAnchovyProvider(base::DictValue fake_result)
       : manta::AnchovyProvider(nullptr, nullptr, {}),
         fake_result_(std::move(fake_result)) {}
 
@@ -2562,7 +2523,7 @@ class FakeAnchovyProvider : public manta::AnchovyProvider {
   }
 
  private:
-  base::Value::Dict fake_result_;
+  base::DictValue fake_result_;
 };
 
 void RunAnchovyAnnotatorTest(
@@ -2613,12 +2574,12 @@ void SimpleAnchovySuccessTest(std::string str_type,
   const std::string other_text = "other";
   const double other_score = 0.8;
 
-  base::Value::List results;
-  results.Append(base::Value::Dict()
+  base::ListValue results;
+  results.Append(base::DictValue()
                      .Set("type", type)
                      .Set("score", best_score)
                      .Set("text", best_text));
-  results.Append(base::Value::Dict()
+  results.Append(base::DictValue()
                      .Set("type", type)
                      .Set("score", other_score)
                      .Set("text", other_text));
@@ -2626,11 +2587,11 @@ void SimpleAnchovySuccessTest(std::string str_type,
   std::vector<mojom::Annotation> annotations;
   RunAnchovyAnnotatorTest(
       std::make_unique<FakeAnchovyProvider>(
-          base::Value::Dict().Set("results", std::move(results))),
+          base::DictValue().Set("results", std::move(results))),
       &annotations);
 
   EXPECT_FALSE(annotations.empty());
-  EXPECT_EQ(1, (int)annotations.size());
+  EXPECT_EQ(1u, annotations.size());
   auto annotation = annotations[0];
   EXPECT_EQ(annotation.text, best_text);
   EXPECT_EQ(annotation.score, best_score);
@@ -2640,7 +2601,7 @@ void SimpleAnchovySuccessTest(std::string str_type,
 TEST(AnnotatorTest, EmptyResultIfDictIsEmpty) {
   std::vector<mojom::Annotation> annotations;
   RunAnchovyAnnotatorTest(
-      std::make_unique<FakeAnchovyProvider>(base::Value::Dict()), &annotations);
+      std::make_unique<FakeAnchovyProvider>(base::DictValue()), &annotations);
   EXPECT_TRUE(annotations.empty());
 }
 
@@ -2648,7 +2609,7 @@ TEST(AnnotatorTest, EmptyResultIfListIsEmpty) {
   std::vector<mojom::Annotation> annotations;
   RunAnchovyAnnotatorTest(
       std::make_unique<FakeAnchovyProvider>(
-          base::Value::Dict().Set("results", base::Value::List())),
+          base::DictValue().Set("results", base::ListValue())),
       &annotations);
   EXPECT_TRUE(annotations.empty());
 }
@@ -2660,12 +2621,12 @@ TEST(AnnotatorTest, AnchovySuccessMultiple) {
   const std::string text_caption = "caption";
   const std::string type_caption = "CAPTION";
 
-  base::Value::List results;
-  results.Append(base::Value::Dict()
+  base::ListValue results;
+  results.Append(base::DictValue()
                      .Set("type", type_ocr)
                      .Set("score", score)
                      .Set("text", text_ocr));
-  results.Append(base::Value::Dict()
+  results.Append(base::DictValue()
                      .Set("type", type_caption)
                      .Set("score", score)
                      .Set("text", text_caption));
@@ -2673,11 +2634,11 @@ TEST(AnnotatorTest, AnchovySuccessMultiple) {
   std::vector<mojom::Annotation> annotations;
   RunAnchovyAnnotatorTest(
       std::make_unique<FakeAnchovyProvider>(
-          base::Value::Dict().Set("results", std::move(results))),
+          base::DictValue().Set("results", std::move(results))),
       &annotations);
 
   EXPECT_FALSE(annotations.empty());
-  EXPECT_EQ(2, (int)annotations.size());
+  EXPECT_EQ(2u, annotations.size());
   auto annotation_caption = annotations[0];
   EXPECT_EQ(annotation_caption.text, text_caption);
   EXPECT_EQ(annotation_caption.score, score);
@@ -2701,12 +2662,12 @@ TEST(AnnotatorTest, AnchovySuccessLabel) {
 }
 
 TEST(AnnotatorTest, CrashIfNoText) {
-  base::Value::List results;
-  results.Append(base::Value::Dict().Set("type", "OCR").Set("score", 12));
+  base::ListValue results;
+  results.Append(base::DictValue().Set("type", "OCR").Set("score", 12));
 
   std::unique_ptr<manta::AnchovyProvider> fake_provider_ptr =
       std::make_unique<FakeAnchovyProvider>(
-          base::Value::Dict().Set("results", std::move(results)));
+          base::DictValue().Set("results", std::move(results)));
   EXPECT_DEATH_IF_SUPPORTED(
       RunAnchovyAnnotatorTest(std::move(fake_provider_ptr), {}), "");
 }

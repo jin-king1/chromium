@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 // Implementation of a client that produces output in the form of RGBA
 // buffers when receiving pointer/touch events. RGB contains the lower
@@ -29,7 +25,6 @@
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/message_loop/message_pump_type.h"
-#include "base/not_fatal_until.h"
 #include "base/scoped_generic.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/task/single_thread_task_executor.h"
@@ -211,7 +206,7 @@ void FeedbackDiscarded(void* data,
   auto it = std::ranges::find(
       presentation->scheduled_frames, presentation_feedback,
       [](std::unique_ptr<Frame>& frame) { return frame->feedback.get(); });
-  CHECK(it != presentation->scheduled_frames.end(), base::NotFatalUntil::M130);
+  CHECK(it != presentation->scheduled_frames.end());
   presentation->scheduled_frames.erase(it);
   LOG(WARNING) << "Frame discarded";
 }
@@ -415,12 +410,12 @@ int RectsClient::Run(const ClientBase::InitParams& params,
       }
 
       // Draw rotating rects.
-      SkScalar half_width = SkScalarHalf(size_.width());
-      SkScalar half_height = SkScalarHalf(size_.height());
-      SkIRect rect = SkIRect::MakeXYWH(-SkScalarHalf(half_width),
-                                       -SkScalarHalf(half_height), half_width,
-                                       half_height);
-      SkScalar rotation = schedule.time * kRotationSpeed / 1000;
+      float half_width = size_.width() / 2.f;
+      float half_height = size_.height() / 2.f;
+      SkIRect rect = SkIRect::MakeXYWH(static_cast<int>(-half_width / 2.f),
+                                       static_cast<int>(-half_height / 2.f),
+                                       half_width, half_height);
+      float rotation = schedule.time * kRotationSpeed / 1000;
       canvas->save();
       canvas->translate(half_width, half_height);
       for (size_t i = 0; i < num_rects; ++i) {

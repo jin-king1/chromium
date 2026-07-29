@@ -19,6 +19,15 @@ namespace syncer {
   case enum_parent::enum_value:            \
     return #enum_value
 
+const char* ProtoEnumToString(sync_pb::AiThreadSpecifics::ThreadType type) {
+  ASSERT_ENUM_BOUNDS(sync_pb::AiThreadSpecifics, ThreadType, UNKNOWN, AI_MODE);
+  switch (type) {
+    ENUM_CASE(sync_pb::AiThreadSpecifics, UNKNOWN);
+    ENUM_CASE(sync_pb::AiThreadSpecifics, AI_MODE);
+  }
+  NOTREACHED();
+}
+
 const char* ProtoEnumToString(
     sync_pb::AppListSpecifics::AppListItemType item_type) {
   ASSERT_ENUM_BOUNDS(sync_pb::AppListSpecifics, AppListItemType, TYPE_APP,
@@ -188,6 +197,17 @@ const char* ProtoEnumToString(
 }
 
 const char* ProtoEnumToString(
+    sync_pb::PaymentInstrument::ActionRequired action_required) {
+  ASSERT_ENUM_BOUNDS(sync_pb::PaymentInstrument, ActionRequired,
+                     ACTION_REQUIRED_UNKNOWN, ACCEPT_TOS);
+  switch (action_required) {
+    ENUM_CASE(sync_pb::PaymentInstrument, ACTION_REQUIRED_UNKNOWN);
+    ENUM_CASE(sync_pb::PaymentInstrument, ACCEPT_TOS);
+  }
+  NOTREACHED();
+}
+
+const char* ProtoEnumToString(
     sync_pb::PowerBookmarkSpecifics::PowerType power_type) {
   ASSERT_ENUM_BOUNDS(sync_pb::PowerBookmarkSpecifics, PowerType,
                      POWER_TYPE_UNSPECIFIED, POWER_TYPE_NOTE);
@@ -273,6 +293,18 @@ const char* ProtoEnumToString(sync_pb::SharedTabGroup::Color color) {
     ENUM_CASE(sync_pb::SharedTabGroup, PURPLE);
     ENUM_CASE(sync_pb::SharedTabGroup, CYAN);
     ENUM_CASE(sync_pb::SharedTabGroup, ORANGE);
+  }
+  NOTREACHED();
+}
+
+const char* ProtoEnumToString(
+    sync_pb::SyncEnums::GlicExperimentalTriggeringState state) {
+  ASSERT_ENUM_BOUNDS(sync_pb::SyncEnums, GlicExperimentalTriggeringState,
+                     UNAVAILABLE, READY);
+  switch (state) {
+    ENUM_CASE(sync_pb::SyncEnums, UNAVAILABLE);
+    ENUM_CASE(sync_pb::SyncEnums, NEEDS_OPT_IN);
+    ENUM_CASE(sync_pb::SyncEnums, READY);
   }
   NOTREACHED();
 }
@@ -367,7 +399,7 @@ const char* ProtoEnumToString(sync_pb::SyncEnums::ErrorType error_type) {
 
 const char* ProtoEnumToString(sync_pb::SyncEnums::GetUpdatesOrigin origin) {
   ASSERT_ENUM_BOUNDS(sync_pb::SyncEnums, GetUpdatesOrigin, UNKNOWN_ORIGIN,
-                     PROGRAMMATIC);
+                     DEVICE_STATISTICS_METRICS);
   switch (origin) {
     ENUM_CASE(sync_pb::SyncEnums, UNKNOWN_ORIGIN);
     ENUM_CASE(sync_pb::SyncEnums, PERIODIC);
@@ -376,8 +408,8 @@ const char* ProtoEnumToString(sync_pb::SyncEnums::GetUpdatesOrigin origin) {
     ENUM_CASE(sync_pb::SyncEnums, NEW_CLIENT);
     ENUM_CASE(sync_pb::SyncEnums, RECONFIGURATION);
     ENUM_CASE(sync_pb::SyncEnums, GU_TRIGGER);
-    ENUM_CASE(sync_pb::SyncEnums, RETRY);
     ENUM_CASE(sync_pb::SyncEnums, PROGRAMMATIC);
+    ENUM_CASE(sync_pb::SyncEnums, DEVICE_STATISTICS_METRICS);
   }
   NOTREACHED();
 }
@@ -610,6 +642,33 @@ const char* ProtoEnumToString(
 }
 
 const char* ProtoEnumToString(
+    sync_pb::WalletMaskedCreditCard::CardBenefitSource card_benefit_source) {
+  ASSERT_ENUM_BOUNDS(sync_pb::WalletMaskedCreditCard, CardBenefitSource,
+                     SOURCE_UNKNOWN, SOURCE_CURINOS);
+  switch (card_benefit_source) {
+    ENUM_CASE(sync_pb::WalletMaskedCreditCard, SOURCE_UNKNOWN);
+    ENUM_CASE(sync_pb::WalletMaskedCreditCard, SOURCE_AMEX);
+    ENUM_CASE(sync_pb::WalletMaskedCreditCard, SOURCE_BMO);
+    ENUM_CASE(sync_pb::WalletMaskedCreditCard, SOURCE_CURINOS);
+  }
+  NOTREACHED();
+}
+
+const char* ProtoEnumToString(
+    sync_pb::WalletMaskedCreditCard::CardCreationSource card_creation_source) {
+  ASSERT_ENUM_BOUNDS(sync_pb::WalletMaskedCreditCard, CardCreationSource,
+                     CREATION_SOURCE_UNSPECIFIED,
+                     CREATION_SOURCE_NON_CHROME_PAYMENTS);
+  switch (card_creation_source) {
+    ENUM_CASE(sync_pb::WalletMaskedCreditCard, CREATION_SOURCE_UNSPECIFIED);
+    ENUM_CASE(sync_pb::WalletMaskedCreditCard, CREATION_SOURCE_CHROME_PAYMENTS);
+    ENUM_CASE(sync_pb::WalletMaskedCreditCard,
+              CREATION_SOURCE_NON_CHROME_PAYMENTS);
+  }
+  NOTREACHED();
+}
+
+const char* ProtoEnumToString(
     sync_pb::WalletMaskedCreditCard::VirtualCardEnrollmentState
         virtual_card_enrollment_state) {
   ASSERT_ENUM_BOUNDS(sync_pb::WalletMaskedCreditCard,
@@ -673,7 +732,7 @@ const char* ProtoEnumToString(
 const char* ProtoEnumToString(
     sync_pb::CardBenefit::CategoryBenefitType category_benefit_type) {
   ASSERT_ENUM_BOUNDS(sync_pb::CardBenefit, CategoryBenefitType,
-                     CATEGORY_BENEFIT_TYPE_UNKNOWN, WHOLESALE_CLUBS);
+                     CATEGORY_BENEFIT_TYPE_UNKNOWN, CAR_RENTALS);
   switch (category_benefit_type) {
     ENUM_CASE(sync_pb::CardBenefit, CATEGORY_BENEFIT_TYPE_UNKNOWN);
     ENUM_CASE(sync_pb::CardBenefit, SUBSCRIPTION);
@@ -690,6 +749,8 @@ const char* ProtoEnumToString(
     ENUM_CASE(sync_pb::CardBenefit, TRANSIT);
     ENUM_CASE(sync_pb::CardBenefit, TRAVEL);
     ENUM_CASE(sync_pb::CardBenefit, WHOLESALE_CLUBS);
+    ENUM_CASE(sync_pb::CardBenefit, HOTELS);
+    ENUM_CASE(sync_pb::CardBenefit, CAR_RENTALS);
   }
   NOTREACHED();
 }
@@ -1012,19 +1073,16 @@ const char* ProtoEnumToString(
 }
 
 const char* ProtoEnumToString(
-    sync_pb::ThemeSpecifics::UserColorTheme::BrowserColorVariant
-        browser_color_variant) {
-  ASSERT_ENUM_BOUNDS(sync_pb::ThemeSpecifics::UserColorTheme,
-                     BrowserColorVariant, BROWSER_COLOR_VARIANT_UNSPECIFIED,
-                     EXPRESSIVE);
+    sync_pb::UserColorTheme::BrowserColorVariant browser_color_variant) {
+  ASSERT_ENUM_BOUNDS(sync_pb::UserColorTheme, BrowserColorVariant,
+                     BROWSER_COLOR_VARIANT_UNSPECIFIED, EXPRESSIVE);
   switch (browser_color_variant) {
-    ENUM_CASE(sync_pb::ThemeSpecifics::UserColorTheme,
-              BROWSER_COLOR_VARIANT_UNSPECIFIED);
-    ENUM_CASE(sync_pb::ThemeSpecifics::UserColorTheme, SYSTEM);
-    ENUM_CASE(sync_pb::ThemeSpecifics::UserColorTheme, TONAL_SPOT);
-    ENUM_CASE(sync_pb::ThemeSpecifics::UserColorTheme, NEUTRAL);
-    ENUM_CASE(sync_pb::ThemeSpecifics::UserColorTheme, VIBRANT);
-    ENUM_CASE(sync_pb::ThemeSpecifics::UserColorTheme, EXPRESSIVE);
+    ENUM_CASE(sync_pb::UserColorTheme, BROWSER_COLOR_VARIANT_UNSPECIFIED);
+    ENUM_CASE(sync_pb::UserColorTheme, SYSTEM);
+    ENUM_CASE(sync_pb::UserColorTheme, TONAL_SPOT);
+    ENUM_CASE(sync_pb::UserColorTheme, NEUTRAL);
+    ENUM_CASE(sync_pb::UserColorTheme, VIBRANT);
+    ENUM_CASE(sync_pb::UserColorTheme, EXPRESSIVE);
   }
   NOTREACHED();
 }
@@ -1038,6 +1096,47 @@ const char* ProtoEnumToString(
     ENUM_CASE(sync_pb::ThemeSpecifics, SYSTEM);
     ENUM_CASE(sync_pb::ThemeSpecifics, LIGHT);
     ENUM_CASE(sync_pb::ThemeSpecifics, DARK);
+  }
+}
+
+const char* ProtoEnumToString(sync_pb::SharedUrlContext::Source source) {
+  ASSERT_ENUM_BOUNDS(sync_pb::SharedUrlContext, Source, SOURCE_UNSPECIFIED,
+                     CANONICAL_URL);
+  switch (source) {
+    ENUM_CASE(sync_pb::SharedUrlContext, SOURCE_UNSPECIFIED);
+    ENUM_CASE(sync_pb::SharedUrlContext, OMNIBOX);
+    ENUM_CASE(sync_pb::SharedUrlContext, FROM_SYNC);
+    ENUM_CASE(sync_pb::SharedUrlContext, CANONICAL_URL);
+  }
+}
+
+const char* ProtoEnumToString(sync_pb::SkillSource skill_source) {
+  ASSERT_ENUM_BOUNDS(sync_pb, SkillSource, SKILL_SOURCE_UNKNOWN,
+                     SKILL_SOURCE_DERIVED_FROM_FIRST_PARTY);
+  switch (skill_source) {
+    ENUM_CASE(sync_pb, SKILL_SOURCE_UNKNOWN);
+    ENUM_CASE(sync_pb, SKILL_SOURCE_FIRST_PARTY);
+    ENUM_CASE(sync_pb, SKILL_SOURCE_USER_CREATED);
+    ENUM_CASE(sync_pb, SKILL_SOURCE_DERIVED_FROM_FIRST_PARTY);
+  }
+}
+
+const char* ProtoEnumToString(
+    sync_pb::AutofillValuableMetadataSpecifics::PassType pass_type) {
+  ASSERT_ENUM_BOUNDS(sync_pb::AutofillValuableMetadataSpecifics, PassType,
+                     PASS_TYPE_UNSPECIFIED, KNOWN_TRAVELER_NUMBER);
+  switch (pass_type) {
+    ENUM_CASE(sync_pb::AutofillValuableMetadataSpecifics,
+              PASS_TYPE_UNSPECIFIED);
+    ENUM_CASE(sync_pb::AutofillValuableMetadataSpecifics, LOYALTY_CARD);
+    ENUM_CASE(sync_pb::AutofillValuableMetadataSpecifics, VEHICLE_REGISTRATION);
+    ENUM_CASE(sync_pb::AutofillValuableMetadataSpecifics, FLIGHT_RESERVATION);
+    ENUM_CASE(sync_pb::AutofillValuableMetadataSpecifics, PASSPORT);
+    ENUM_CASE(sync_pb::AutofillValuableMetadataSpecifics, DRIVER_LICENSE);
+    ENUM_CASE(sync_pb::AutofillValuableMetadataSpecifics, NATIONAL_ID_CARD);
+    ENUM_CASE(sync_pb::AutofillValuableMetadataSpecifics, REDRESS_NUMBER);
+    ENUM_CASE(sync_pb::AutofillValuableMetadataSpecifics,
+              KNOWN_TRAVELER_NUMBER);
   }
 }
 

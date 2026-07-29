@@ -4,8 +4,11 @@
 
 #include "ui/accessibility/platform/inspect/ax_tree_formatter_mac.h"
 
+#include <ApplicationServices/ApplicationServices.h>
+
 #include <string>
 
+#include "base/apple/bridging.h"
 #include "base/files/file_path.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
@@ -20,9 +23,11 @@
 #include "ui/accessibility/platform/inspect/ax_property_node.h"
 #include "ui/accessibility/platform/inspect/ax_script_instruction.h"
 #include "ui/accessibility/platform/inspect/ax_transform_mac.h"
+#include "ui/gfx/native_ui_types.h"
 
-// This file uses the deprecated NSObject accessibility interface.
-// TODO(crbug.com/41450813): Migrate to the new NSAccessibility interface.
+using base::apple::CFToNSPtrCast;
+
+// TODO(https://crbug.com/406190900): Remove this deprecation pragma.
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 
@@ -45,8 +50,10 @@ AXTreeFormatterMac::~AXTreeFormatterMac() = default;
 void AXTreeFormatterMac::AddDefaultFilters(
     std::vector<AXPropertyFilter>* property_filters) {
   static NSArray* default_attributes = @[
-    @"AXAutocompleteValue", @"AXDescription", @"AXRole", @"AXSubrole",
-    @"AXTitle", @"AXTitleUIElement", @"AXValue"
+    @"AXAutocompleteValue", CFToNSPtrCast(kAXDescriptionAttribute),
+    CFToNSPtrCast(kAXRoleAttribute), CFToNSPtrCast(kAXSubroleAttribute),
+    CFToNSPtrCast(kAXTitleAttribute), CFToNSPtrCast(kAXTitleUIElementAttribute),
+    CFToNSPtrCast(kAXValueAttribute)
   ];
 
   for (NSString* attribute : default_attributes) {
@@ -58,32 +65,32 @@ void AXTreeFormatterMac::AddDefaultFilters(
   }
 }
 
-base::Value::Dict AXTreeFormatterMac::BuildTree(
+base::DictValue AXTreeFormatterMac::BuildTree(
     AXPlatformNodeDelegate* root) const {
   DCHECK(root);
-  return BuildTree(root->GetNativeViewAccessible());
+  return BuildTree(root->GetNativeViewAccessible().Get());
 }
 
-base::Value::Dict AXTreeFormatterMac::BuildTreeForSelector(
+base::DictValue AXTreeFormatterMac::BuildTreeForSelector(
     const AXTreeSelector& selector) const {
   base::apple::ScopedCFTypeRef<AXUIElementRef> node;
   std::tie(node, std::ignore) = FindAXUIElement(selector);
   if (!node) {
-    return base::Value::Dict();
+    return base::DictValue();
   }
   return BuildTreeForAXUIElement(node.get());
 }
 
-base::Value::Dict AXTreeFormatterMac::BuildTreeForAXUIElement(
+base::DictValue AXTreeFormatterMac::BuildTreeForAXUIElement(
     AXUIElementRef node) const {
   return BuildTree((__bridge id)node);
 }
 
-base::Value::Dict AXTreeFormatterMac::BuildTree(const id root) const {
+base::DictValue AXTreeFormatterMac::BuildTree(id root) const {
   DCHECK(root);
 
-  AXTreeIndexerMac indexer(root);
-  base::Value::Dict dict;
+  AXTreeIndexerMac indexer((gfx::NativeViewAccessible(root)));
+  base::DictValue dict;
 
   AXElementWrapper ax_element(root);
   NSPoint position = ax_element.Position();
@@ -115,7 +122,7 @@ std::string AXTreeFormatterMac::EvaluateScript(
     const std::vector<AXScriptInstruction>& instructions,
     size_t start_index,
     size_t end_index) const {
-  return EvaluateScript(root->GetNativeViewAccessible(), instructions,
+  return EvaluateScript(root->GetNativeViewAccessible().Get(), instructions,
                         start_index, end_index);
 }
 
@@ -124,8 +131,8 @@ std::string AXTreeFormatterMac::EvaluateScript(
     const std::vector<AXScriptInstruction>& instructions,
     size_t start_index,
     size_t end_index) const {
-  base::Value::List scripts;
-  AXTreeIndexerMac indexer(platform_root);
+  base::ListValue scripts;
+  AXTreeIndexerMac indexer((gfx::NativeViewAccessible(platform_root)));
   std::map<std::string, id> storage;
   AXCallStatementInvoker invoker(&indexer, &storage);
   for (size_t index = start_index; index < end_index; index++) {
@@ -164,29 +171,30 @@ std::string AXTreeFormatterMac::EvaluateScript(
   return contents;
 }
 
-base::Value::Dict AXTreeFormatterMac::BuildNode(
+base::DictValue AXTreeFormatterMac::BuildNode(
     AXPlatformNodeDelegate* node) const {
   DCHECK(node);
   return BuildNode(node->GetNativeViewAccessible());
 }
 
-base::Value::Dict AXTreeFormatterMac::BuildNodeForSelector(
+base::DictValue AXTreeFormatterMac::BuildNodeForSelector(
     const AXTreeSelector& selector) const {
   base::apple::ScopedCFTypeRef<AXUIElementRef> node;
   std::tie(node, std::ignore) = FindAXUIElement(selector);
   if (!node) {
-    return base::Value::Dict();
+    return base::DictValue();
   }
-  return BuildNode((__bridge id)node.get());
+  return BuildNode(gfx::NativeViewAccessible((__bridge id)node.get()));
 }
 
-base::Value::Dict AXTreeFormatterMac::BuildNode(const id node) const {
+base::DictValue AXTreeFormatterMac::BuildNode(
+    gfx::NativeViewAccessible node) const {
   DCHECK(node);
 
   AXTreeIndexerMac indexer(node);
-  base::Value::Dict dict;
+  base::DictValue dict;
 
-  AXElementWrapper ax_element(node);
+  AXElementWrapper ax_element(node.Get());
   NSPoint position = ax_element.Position();
   NSSize size = ax_element.Size();
   NSRect rect = NSMakeRect(position.x, position.y, size.width, size.height);
@@ -198,7 +206,7 @@ base::Value::Dict AXTreeFormatterMac::BuildNode(const id node) const {
 void AXTreeFormatterMac::RecursiveBuildTree(const AXElementWrapper& ax_element,
                                             const NSRect& root_rect,
                                             const AXTreeIndexerMac* indexer,
-                                            base::Value::Dict* dict) const {
+                                            base::DictValue* dict) const {
   AXPlatformNodeDelegate* platform_node = ax_element.IsNSAccessibilityElement()
                                               ? [ax_element.AsId() nodeDelegate]
                                               : nullptr;
@@ -211,9 +219,9 @@ void AXTreeFormatterMac::RecursiveBuildTree(const AXElementWrapper& ax_element,
     return;
 
   NSArray* children = ax_element.Children();
-  base::Value::List child_dict_list;
+  base::ListValue child_dict_list;
   for (id child in children) {
-    base::Value::Dict child_dict;
+    base::DictValue child_dict;
     RecursiveBuildTree(AXElementWrapper{child}, root_rect, indexer,
                        &child_dict);
     child_dict_list.Append(std::move(child_dict));
@@ -224,7 +232,7 @@ void AXTreeFormatterMac::RecursiveBuildTree(const AXElementWrapper& ax_element,
 void AXTreeFormatterMac::AddProperties(const AXElementWrapper& ax_element,
                                        const NSRect& root_rect,
                                        const AXTreeIndexerMac* indexer,
-                                       base::Value::Dict* dict) const {
+                                       base::DictValue* dict) const {
   // Chromium special attributes.
   dict->Set(kLocalPositionDictAttr,
             PopulateLocalPosition(ax_element, root_rect));
@@ -242,7 +250,8 @@ void AXTreeFormatterMac::AddProperties(const AXElementWrapper& ax_element,
   }
 
   // Otherwise dump attributes matching allow filters only.
-  std::string line_index = indexer->IndexBy(ax_element.AsId());
+  std::string line_index =
+      indexer->IndexBy(gfx::NativeViewAccessible(ax_element.AsId()));
   for (const AXPropertyNode& property_node :
        PropertyFilterNodesFor(line_index)) {
     AXCallStatementInvoker invoker(ax_element.AsId(), indexer);
@@ -260,7 +269,7 @@ void AXTreeFormatterMac::AddProperties(const AXElementWrapper& ax_element,
   }
 }
 
-base::Value::Dict AXTreeFormatterMac::PopulateLocalPosition(
+base::DictValue AXTreeFormatterMac::PopulateLocalPosition(
     const AXElementWrapper& ax_element,
     const NSRect& root_rect) const {
   // The NSAccessibility position of an object is in global coordinates and
@@ -279,7 +288,7 @@ base::Value::Dict AXTreeFormatterMac::PopulateLocalPosition(
 }
 
 std::string AXTreeFormatterMac::ProcessTreeForOutput(
-    const base::Value::Dict& dict) const {
+    const base::DictValue& dict) const {
   const std::string* error_value = dict.FindString("error");
   if (error_value)
     return *error_value;

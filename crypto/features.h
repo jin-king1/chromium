@@ -10,12 +10,9 @@
 
 namespace crypto::features {
 
-// Enable encryption for process bound strings, if supported by the platform.
-CRYPTO_EXPORT BASE_DECLARE_FEATURE(kProcessBoundStringEncryption);
-
-// Assign a label to unexportable keys on Windows instead of relying on
-// exporting wrapped keys.
-CRYPTO_EXPORT BASE_DECLARE_FEATURE(kLabelWindowsUnexportableKeys);
+// Migrate the accessibility attribute in the iOS keychain to "after first
+// unlock".
+CRYPTO_EXPORT BASE_DECLARE_FEATURE(kMigrateIOSKeychainAccessibility);
 
 }  // namespace crypto::features
 

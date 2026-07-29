@@ -13,17 +13,22 @@ import '/shared/settings/prefs/prefs.js';
 import '../controls/settings_toggle_button.js';
 import '../people_page/signout_dialog.js';
 import 'chrome://resources/cr_elements/md_select.css.js';
-// <if expr="not chromeos_ash">
+// <if expr="not is_chromeos">
 import '../relaunch_confirmation_dialog.js';
 // </if>
 import '../settings_shared.css.js';
-// <if expr="not chromeos_ash">
+// <if expr="not is_chromeos">
 import '//resources/cr_elements/cr_toast/cr_toast.js';
 import 'chrome://resources/cr_elements/cr_shared_style.css.js';
-
 // </if>
 
-import type {CrLinkRowElement} from '//resources/cr_elements/cr_link_row/cr_link_row.js';
+// <if expr="_google_chrome">
+// <if expr="is_chromeos">
+import 'chrome://resources/cr_elements/cr_link_row/cr_link_row.js';
+
+// </if>
+// </if>
+
 import type {CrToastElement} from '//resources/cr_elements/cr_toast/cr_toast.js';
 import {WebUiListenerMixin} from '//resources/cr_elements/web_ui_listener_mixin.js';
 import {assert} from '//resources/js/assert.js';
@@ -37,12 +42,11 @@ import {HelpBubbleMixin} from 'chrome://resources/cr_components/help_bubble/help
 import {I18nMixin} from 'chrome://resources/cr_elements/i18n_mixin.js';
 
 import type {SettingsToggleButtonElement} from '../controls/settings_toggle_button.js';
-import type {FocusConfig} from '../focus_config.js';
 import {loadTimeData} from '../i18n_setup.js';
+import {pageVisibility} from '../page_visibility.js';
 import type {PrivacyPageVisibility} from '../page_visibility.js';
 import type {SettingsSignoutDialogElement} from '../people_page/signout_dialog.js';
 import {RelaunchMixin, RestartType} from '../relaunch_mixin.js';
-import {Router} from '../router.js';
 
 import {getTemplate} from './personalization_options.html.js';
 
@@ -50,8 +54,6 @@ export interface SettingsPersonalizationOptionsElement {
   $: {
     toast: CrToastElement,
     signinAllowedToggle: SettingsToggleButtonElement,
-    metricsReportingControl: SettingsToggleButtonElement,
-    metricsReportingLink: CrLinkRowElement,
     urlCollectionToggle: SettingsToggleButtonElement,
     chromeSigninUserChoiceSelection: HTMLSelectElement,
     chromeSigninUserChoiceToast: CrToastElement,
@@ -77,21 +79,9 @@ export class SettingsPersonalizationOptionsElement extends
 
   static get properties() {
     return {
-      prefs: {
-        type: Object,
-        notify: true,
-      },
-
-      focusConfig: {
-        type: Object,
-        observer: 'onFocusConfigChange_',
-      },
-
-      pageVisibility: Object,
-
       syncStatus: Object,
 
-      // <if expr="_google_chrome and not chromeos_ash">
+      // <if expr="_google_chrome and not is_chromeos">
       // TODO(dbeam): make a virtual.* pref namespace and set/get this normally
       // (but handled differently in C++).
       metricsReportingPref_: {
@@ -106,7 +96,31 @@ export class SettingsPersonalizationOptionsElement extends
       showRestart_: Boolean,
       // </if>
 
+      showSearchAggregatorSuggest_: {
+        type: Boolean,
+        value: () => loadTimeData.getBoolean('showSearchAggregatorSuggest'),
+      },
+
+      searchAggregatorSuggestFakePref_: {
+        type: Object,
+        value() {
+          return {
+            key: 'enterprise_search_aggregator_settings.fake_pref',
+            type: chrome.settingsPrivate.PrefType.BOOLEAN,
+            value: true,
+            enforcement: chrome.settingsPrivate.Enforcement.ENFORCED,
+            controlledBy: chrome.settingsPrivate.ControlledBy.USER_POLICY,
+          };
+        },
+      },
+
       showSignoutDialog_: Boolean,
+
+      shouldUseMetricsConsentRestructure_: {
+        type: Boolean,
+        value: () =>
+            loadTimeData.getBoolean('shouldUseMetricsConsentRestructure'),
+      },
 
       syncFirstSetupInProgress_: {
         type: Boolean,
@@ -131,41 +145,30 @@ export class SettingsPersonalizationOptionsElement extends
         value: ChromeSigninUserChoice,
       },
       // </if>
-
-      enableAiSettingsPageRefresh_: {
-        type: Boolean,
-        value: () => loadTimeData.getBoolean('enableAiSettingsPageRefresh'),
-      },
-
-      showHistorySearchControl_: {
-        type: Boolean,
-        value() {
-          return loadTimeData.getBoolean('showHistorySearchControl');
-        },
-      },
     };
   }
 
-  pageVisibility: PrivacyPageVisibility;
-  focusConfig: FocusConfig;
-  syncStatus: SyncStatus;
+  declare syncStatus: SyncStatus;
 
-  // <if expr="_google_chrome and not chromeos_ash">
-  private metricsReportingPref_: chrome.settingsPrivate.PrefObject<boolean>;
-  private showRestart_: boolean;
+  // <if expr="_google_chrome and not is_chromeos">
+  declare private metricsReportingPref_:
+      chrome.settingsPrivate.PrefObject<boolean>;
+  declare private showRestart_: boolean;
   // </if>
 
-  private showSignoutDialog_: boolean;
-  private syncFirstSetupInProgress_: boolean;
+  declare private showSearchAggregatorSuggest_: boolean;
+  declare private searchAggregatorSuggestFakePref_:
+      chrome.settingsPrivate.PrefObject<boolean>;
+
+  declare private showSignoutDialog_: boolean;
+  declare private syncFirstSetupInProgress_: boolean;
+  declare private shouldUseMetricsConsentRestructure_: boolean;
 
   // <if expr="not is_chromeos">
-  private signinAvailable_: boolean;
+  declare private signinAvailable_: boolean;
 
-  private chromeSigninUserChoiceInfo_: ChromeSigninUserChoiceInfo;
+  declare private chromeSigninUserChoiceInfo_: ChromeSigninUserChoiceInfo;
   // </if>
-
-  private enableAiSettingsPageRefresh_: boolean;
-  private showHistorySearchControl_: boolean;
 
   private browserProxy_: PrivacyPageBrowserProxy =
       PrivacyPageBrowserProxyImpl.getInstance();
@@ -178,10 +181,16 @@ export class SettingsPersonalizationOptionsElement extends
   }
 
   private showPriceEmailNotificationsToggle_(): boolean {
+    if (!loadTimeData.getBoolean('changePriceEmailNotificationsEnabled') ||
+        !this.syncStatus) {
+      return false;
+    }
     // Only show the toggle when the user signed in.
-    return loadTimeData.getBoolean('changePriceEmailNotificationsEnabled') &&
-        !!this.syncStatus &&
-        this.syncStatus.signedInState === SignedInState.SYNCING;
+    if (loadTimeData.getBoolean('replaceSyncPromosWithSignInPromos') &&
+        this.syncStatus.signedInState === SignedInState.SIGNED_IN) {
+      return true;
+    }
+    return this.syncStatus.signedInState === SignedInState.SYNCING;
   }
 
   private getPriceEmailNotificationsPrefDesc_(): string {
@@ -192,7 +201,7 @@ export class SettingsPersonalizationOptionsElement extends
   override ready() {
     super.ready();
 
-    // <if expr="_google_chrome and not chromeos_ash">
+    // <if expr="_google_chrome and not is_chromeos">
     const setMetricsReportingPref = (metricsReporting: MetricsReporting) =>
         this.setMetricsReportingPref_(metricsReporting);
     this.addWebUiListener('metrics-reporting-change', setMetricsReportingPref);
@@ -209,10 +218,10 @@ export class SettingsPersonalizationOptionsElement extends
 
     this.registerHelpBubble(
         ANONYMIZED_URL_COLLECTION_ID,
-        this.$.urlCollectionToggle.getBubbleAnchor(), {anchorPaddingTop: 10});
+        this.$.urlCollectionToggle.getBubbleAnchor(), {paddingTop: 10});
   }
 
-  // <if expr="chromeos_ash">
+  // <if expr="is_chromeos">
   /**
    * @return the autocomplete search suggestions CrToggleElement.
    */
@@ -230,9 +239,11 @@ export class SettingsPersonalizationOptionsElement extends
   }
   // </if>
 
-  // <if expr="_google_chrome and not chromeos_ash">
+  // <if expr="_google_chrome and not is_chromeos">
   private onMetricsReportingChange_() {
-    const enabled = this.$.metricsReportingControl.checked;
+    const control = this.shadowRoot!.querySelector<SettingsToggleButtonElement>(
+        '#metricsReportingControl');
+    const enabled = control?.checked ?? false;
     this.browserProxy_.setMetricsReportingEnabled(enabled);
   }
 
@@ -262,18 +273,29 @@ export class SettingsPersonalizationOptionsElement extends
   // </if>
 
   private showSearchSuggestToggle_(): boolean {
-    if (this.pageVisibility === undefined) {
-      // pageVisibility isn't defined in non-Guest profiles (crbug.com/1288911).
+    if (pageVisibility?.privacy === undefined) {
+      // pageVisibility isn't defined in non-Guest profiles
+      // (crbug.com/40211731).
       return true;
     }
-    return this.pageVisibility.searchPrediction;
+    return (pageVisibility.privacy as PrivacyPageVisibility).searchPrediction;
+  }
+
+  // <if expr="is_chromeos">
+  private navigateToForTesting_?: (url: string) => void;
+
+  setNavigateToForTesting(navigateTo: (url: string) => void): void {
+    this.navigateToForTesting_ = navigateTo;
   }
 
   private navigateTo_(url: string): void {
+    if (this.navigateToForTesting_) {
+      this.navigateToForTesting_(url);
+      return;
+    }
     window.location.href = url;
   }
 
-  // <if expr="chromeos_ash">
   private onMetricsReportingLinkClick_() {
     // TODO(wesokuhara) Deep link directly to metrics toggle via settingId.
     this.navigateTo_(loadTimeData.getString('osSettingsPrivacyHubSubpageUrl'));
@@ -289,19 +311,15 @@ export class SettingsPersonalizationOptionsElement extends
     }
   }
 
-  // <if expr="not chromeos_ash">
+  // <if expr="not is_chromeos">
   private showSpellCheckControlToggle_(): boolean {
-    return (
-        !!(this.prefs as {spellcheck?: any}).spellcheck &&
-        this.getPref<string[]>('spellcheck.dictionaries').value.length > 0);
+    return this.getPref<string[]>('spellcheck.dictionaries').value.length > 0;
   }
   // </if><!-- not chromeos -->
 
-  // <if expr="chromeos_ash">
+  // <if expr="is_chromeos">
   private showSpellCheckControlLink_(): boolean {
-    return (
-        !!(this.prefs as {spellcheck?: any}).spellcheck &&
-        this.getPref<string[]>('spellcheck.dictionaries').value.length > 0);
+    return this.getPref<string[]>('spellcheck.dictionaries').value.length > 0;
   }
 
   private onUseSpellingServiceLinkClick_() {
@@ -338,15 +356,6 @@ export class SettingsPersonalizationOptionsElement extends
     this.performRestart(RestartType.RESTART);
   }
 
-  private shouldShowHistorySearchControl_(): boolean {
-    return this.showHistorySearchControl_ && !this.enableAiSettingsPageRefresh_;
-  }
-
-  private onHistorySearchRowClick_() {
-    const router = Router.getInstance();
-    router.navigateTo(router.getRoutes().HISTORY_SEARCH);
-  }
-
   // <if expr="not is_chromeos">
   private setChromeSigninUserChoiceInfo_(info: ChromeSigninUserChoiceInfo) {
     this.chromeSigninUserChoiceInfo_ = info;
@@ -359,10 +368,7 @@ export class SettingsPersonalizationOptionsElement extends
     const selected = Number(this.$.chromeSigninUserChoiceSelection.value);
     assert(selected !== ChromeSigninUserChoice.NO_CHOICE);
 
-    if (loadTimeData.getBoolean('isSnackbarForSettingsEnabled')) {
-      this.$.chromeSigninUserChoiceToast.show();
-    }
-
+    this.$.chromeSigninUserChoiceToast.show();
     this.syncBrowserProxy_.setChromeSigninUserChoice(
         selected, this.chromeSigninUserChoiceInfo_.signedInEmail);
   }

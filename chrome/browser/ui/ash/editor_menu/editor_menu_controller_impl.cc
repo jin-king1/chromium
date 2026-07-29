@@ -14,7 +14,9 @@
 #include "ash/shell.h"
 #include "ash/webui/settings/public/constants/routes.mojom.h"
 #include "ash/webui/settings/public/constants/setting.mojom.h"
+#include "base/check_deref.h"
 #include "base/feature_list.h"
+#include "base/memory/raw_ref.h"
 #include "base/notreached.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
@@ -79,7 +81,9 @@ std::unique_ptr<LobsterManager> CreateLobsterManager() {
 
 }  // namespace
 
-EditorMenuControllerImpl::EditorMenuControllerImpl() = default;
+EditorMenuControllerImpl::EditorMenuControllerImpl(
+    const ApplicationLocaleStorage* application_locale_storage)
+    : application_locale_storage_(CHECK_DEREF(application_locale_storage)) {}
 
 EditorMenuControllerImpl::~EditorMenuControllerImpl() = default;
 
@@ -205,7 +209,9 @@ void EditorMenuControllerImpl::OnPromoCardWidgetClosed(
   OnEditorCardHidden();
 }
 
-void EditorMenuControllerImpl::OnEditorMenuVisibilityChanged(bool visible) {
+void EditorMenuControllerImpl::OnEditorMenuVisibilityChanged(
+    bool visible,
+    bool destroy_session) {
   if (!card_session_ || card_session_->editor_manager() == nullptr) {
     return;
   }
@@ -213,7 +219,7 @@ void EditorMenuControllerImpl::OnEditorMenuVisibilityChanged(bool visible) {
   card_session_->editor_manager()->OnEditorMenuVisibilityChanged(visible);
 
   if (!visible) {
-    OnEditorCardHidden();
+    OnEditorCardHidden(destroy_session);
   }
 }
 
@@ -328,8 +334,8 @@ void EditorMenuControllerImpl::OnGetAnchorBoundsAndEditorContext(
       if (chromeos::features::IsMagicBoostRevampEnabled()) {
         NOTREACHED();
       }
-      editor_menu_widget_ =
-          EditorMenuPromoCardView::CreateWidget(anchor_bounds, this);
+      editor_menu_widget_ = EditorMenuPromoCardView::CreateWidget(
+          &application_locale_storage_.get(), anchor_bounds, this);
       editor_menu_widget_->ShowInactive();
       break;
     case TextAndImageMode::kEditorWriteOnly:
@@ -339,8 +345,8 @@ void EditorMenuControllerImpl::OnGetAnchorBoundsAndEditorContext(
     case TextAndImageMode::kEditorWriteAndLobster:
     case TextAndImageMode::kEditorRewriteAndLobster:
       editor_menu_widget_ = EditorMenuView::CreateWidget(
-          text_and_image_mode, editor_menu_card_context.preset_queries(),
-          anchor_bounds, this);
+          &application_locale_storage_.get(), text_and_image_mode,
+          editor_menu_card_context.preset_queries(), anchor_bounds, this);
       editor_menu_widget_->ShowInactive();
       break;
   }
@@ -363,10 +369,10 @@ void EditorMenuControllerImpl::OnGetAnchorBoundsAndEditorContext(
   }
 }
 
-void EditorMenuControllerImpl::OnEditorCardHidden() {
+void EditorMenuControllerImpl::OnEditorCardHidden(bool destroy_session) {
   // The currently visible card is closing and being removed from the user's
   // view, the EditorCardSession has ended.
-  if (card_session_) {
+  if (destroy_session && card_session_) {
     card_session_.reset();
   }
 }
@@ -460,10 +466,7 @@ void EditorMenuControllerImpl::EditorCardSession::OpenSettings() {
     case ActiveFeature::kEditor:
       setting_url = GURL(base::StrCat(
           {"chrome://os-settings/",
-           chromeos::MagicBoostState::Get() &&
-                   chromeos::MagicBoostState::Get()->IsMagicBoostAvailable()
-               ? chromeos::settings::mojom::kSystemPreferencesSectionPath
-               : chromeos::settings::mojom::kInputSubpagePath,
+           chromeos::settings::mojom::kSystemPreferencesSectionPath,
            "?settingId=",
            base::NumberToString(static_cast<int>(
                chromeos::settings::mojom::Setting::kShowOrca))}));

@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #import "chrome/browser/ui/cocoa/applescript/apple_event_util.h"
 
 #include <CoreServices/CoreServices.h>
@@ -41,8 +36,8 @@ std::string FourCharToString(FourCharCode code) {
 //
 // The -[NSAppleEventDescriptor description] method does this too, but the
 // problem is that it is implemented using AEPrintDescToHandle, which is both
-// flaky <http://crbug.com/239807> and constantly buffer-overflows and fails
-// ASan tests <http://crbug.com/177177>.
+// flaky <http://crbug.com/40317263> and constantly buffer-overflows and fails
+// ASan tests <http://crbug.com/40302460>.
 //
 // This function does not handle every type that AEPrintDescToHandle does, but
 // it covers the cases hit by the unit test, and fails in an obvious way should
@@ -226,16 +221,18 @@ TEST_F(AppleEventUtilTest, ValueToAppleEventDescriptor) {
        typeAEList},
   };
 
-  for (size_t i = 0; i < std::size(cases); ++i) {
-    std::optional<base::Value> value =
-        base::JSONReader::Read(cases[i].json_input);
+  int i = 0;
+  for (const auto& test_case : cases) {
+    std::optional<base::Value> value = base::JSONReader::Read(
+        test_case.json_input, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
     NSAppleEventDescriptor* descriptor =
         chrome::mac::ValueToAppleEventDescriptor(value.value());
 
-    EXPECT_EQ(cases[i].expected_aedesc_dump, AEDescToString(descriptor.aeDesc))
+    EXPECT_EQ(test_case.expected_aedesc_dump, AEDescToString(descriptor.aeDesc))
         << "i: " << i;
-    EXPECT_EQ(cases[i].expected_aedesc_type, descriptor.descriptorType)
+    EXPECT_EQ(test_case.expected_aedesc_type, descriptor.descriptorType)
         << "i: " << i;
+    ++i;
   }
 
   // Test boolean values separately because boolean NSAppleEventDescriptors

@@ -30,7 +30,18 @@ struct SupportedRanks {
   void IntersectWith(const SupportedRanks& other) {
     min = std::max(min, other.min);
     max = std::min(max, other.max);
+    // Use {0, 0} as a fallback when two rank range intervals don't overlap.
+    // This may happen when an operator is not implemented. {0, 0} technically
+    // means a scalar is allowed but combined with the data types being an
+    // empty set we can still represent an operator that is completely
+    // unsupported.
+    if (min > max) {
+      min = 0;
+      max = 0;
+    }
   }
+
+  bool Supports(uint32_t rank) const { return min <= rank && rank <= max; }
 
   friend bool operator==(const SupportedRanks& lhs, const SupportedRanks& rhs);
 };
@@ -50,7 +61,7 @@ struct SupportedTensors {
   bool Supports(const OperandDescriptor& operand_descriptor) const {
     uint32_t rank = operand_descriptor.Rank();
     return data_types.Has(operand_descriptor.data_type()) &&
-           ranks.min <= rank && rank <= ranks.max;
+           ranks.Supports(rank);
   }
 
   bool SupportsAll(

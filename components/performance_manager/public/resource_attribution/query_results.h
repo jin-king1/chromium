@@ -6,12 +6,13 @@
 #define COMPONENTS_PERFORMANCE_MANAGER_PUBLIC_RESOURCE_ATTRIBUTION_QUERY_RESULTS_H_
 
 #include <compare>
-#include <map>
 #include <optional>
 
+#include "base/byte_size.h"
 #include "base/time/time.h"
 #include "components/performance_manager/public/resource_attribution/resource_contexts.h"
 #include "components/performance_manager/public/resource_attribution/resource_types.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 
 namespace resource_attribution {
 
@@ -90,8 +91,11 @@ struct CPUTimeResult {
 // Results of a kMemorySummary query.
 struct MemorySummaryResult {
   ResultMetadata metadata;
-  uint64_t resident_set_size_kb = 0;
-  uint64_t private_footprint_kb = 0;
+  base::ByteSize resident_set_size;
+  base::ByteSize private_footprint;
+
+  // The private swapped memory. Only reported on Linux, ChromeOS and Android.
+  base::ByteSize private_swap;
 
   friend constexpr auto operator<=>(const MemorySummaryResult&,
                                     const MemorySummaryResult&) = default;
@@ -112,7 +116,7 @@ struct QueryResults {
 };
 
 // A map from a ResourceContext to all query results received for that context.
-using QueryResultMap = std::map<ResourceContext, QueryResults>;
+using QueryResultMap = absl::flat_hash_map<ResourceContext, QueryResults>;
 
 }  // namespace resource_attribution
 

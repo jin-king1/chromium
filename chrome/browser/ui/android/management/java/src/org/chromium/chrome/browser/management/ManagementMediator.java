@@ -8,6 +8,7 @@ import android.content.Context;
 import android.text.SpannableString;
 import android.text.SpannableStringBuilder;
 
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.enterprise.util.ManagedBrowserUtils;
 import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.profiles.Profile;
@@ -24,6 +25,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /** A mediator for the {@link ManagementCoordinator} responsible for handling business logic. */
+@NullMarked
 public class ManagementMediator {
     private static final String CHROME_MANAGED_LEARN_MORE_URL =
             "https://support.google.com/chrome/?p=is_chrome_managed";
@@ -80,6 +82,16 @@ public class ManagementMediator {
                         .with(
                                 ManagementProperties.SECURITY_EVENT_REPORTING_DESCRIPTION_TEXT,
                                 getSecurityEventReportingDescriptionText())
+                        .with(
+                                ManagementProperties.DOWNLOAD_ENTERPRISE_SCAN_ENABLED,
+                                ManagedBrowserUtils.isOnFileDownloadedEnterpriseConnectorEnabled(
+                                        profile))
+                        .with(
+                                ManagementProperties.DOWNLOAD_ENTERPRISE_SCAN_TEXT,
+                                getDownloadEnterpriseScanText())
+                        .with(
+                                ManagementProperties.DOWNLOAD_ENTERPRISE_SCAN_DESCRIPTION_TEXT,
+                                getDownloadEnterpriseScanDescriptionText())
                         .build();
     }
 
@@ -122,11 +134,10 @@ public class ManagementMediator {
                 .append(buildBulletString(R.string.management_profile_reporting_policy))
                 .append("\n");
 
-        SpannableString learn_more_link =
-                getLearnMoreClickableText(PROFILE_REPORTING_LEARN_MORE_URL);
-        learn_more_link.setSpan(
-                new ChromeBulletSpan(mHost.getContext()), 0, learn_more_link.length(), 0);
-        spannableString.append(learn_more_link);
+        SpannableString learnMoreLink = getLearnMoreClickableText(PROFILE_REPORTING_LEARN_MORE_URL);
+        learnMoreLink.setSpan(
+                new ChromeBulletSpan(mHost.getContext()), 0, learnMoreLink.length(), 0);
+        spannableString.append(learnMoreLink);
 
         return spannableString;
     }
@@ -157,6 +168,20 @@ public class ManagementMediator {
                 .append(buildString(R.string.management_connectors_visible_data))
                 .append(": ")
                 .append(buildString(R.string.management_enterprise_reporting_visible_data));
+    }
+
+    private SpannableStringBuilder getDownloadEnterpriseScanText() {
+        return new SpannableStringBuilder()
+                .append(buildString(R.string.management_connectors_event))
+                .append(": ")
+                .append(buildString(R.string.management_file_downloaded_event));
+    }
+
+    private SpannableStringBuilder getDownloadEnterpriseScanDescriptionText() {
+        return new SpannableStringBuilder()
+                .append(buildString(R.string.management_connectors_visible_data))
+                .append(": ")
+                .append(buildString(R.string.management_file_downloaded_visible_data));
     }
 
     private boolean isLegacyTechReportingEnabled(PrefService prefs) {

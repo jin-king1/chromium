@@ -15,8 +15,8 @@
 #include "base/win/scoped_gdi_object.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/gfx/geometry/size.h"
-#include "ui/gfx/icon_util.h"
 #include "ui/gfx/image/image_skia.h"
+#include "ui/gfx/win/icon_util.h"
 
 using chrome::mojom::IconSize;
 
@@ -29,7 +29,7 @@ gfx::ImageSkia LoadIcon(base::File file, int size, float scale) {
     return gfx::ImageSkia();
   }
 
-  HMODULE library = reinterpret_cast<HMODULE>(map.data());
+  HMODULE library = reinterpret_cast<HMODULE>(map.mutable_bytes().data());
   // Find the first icon referenced in the file.  This matches Explorer.
   LPWSTR id = nullptr;
   // Because the lambda below returns FALSE, EnumResourceNames() itself will

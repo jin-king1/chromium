@@ -20,7 +20,7 @@
 #include "url/gurl.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
-#include "ash/webui/system_apps/public/system_web_app_type.h"
+#include "chromeos/ash/components/system_web_apps/system_web_app_type.h"
 #endif
 
 namespace web_app {
@@ -74,6 +74,9 @@ struct ExternalInstallOptions {
 
   // URL of an icon that replaces the app's real icons.
   std::optional<GURL> override_icon_url;
+
+  // SHA256 hash of an icon that replaces the app's real icons.
+  std::optional<std::string> override_icon_hash;
 
   // If true, a shortcut is added to the Applications folder on macOS, and Start
   // Menu on Linux and Windows and launcher on Chrome OS. If false, we skip
@@ -212,7 +215,7 @@ struct ExternalInstallOptions {
 
 #if BUILDFLAG(IS_CHROMEOS)
   // The type of SystemWebApp, if this app is a System Web App.
-  std::optional<ash::SystemWebAppType> system_app_type = std::nullopt;
+  std::optional<ash::SystemWebAppType> system_app_type;
 #endif
 
   // Whether the app was installed by an OEM and should be placed in a special
@@ -244,7 +247,33 @@ struct ExternalInstallOptions {
   // downgrade an existing install.
   bool install_without_os_integration = false;
 
+  // Similar to `uninstall_and_replace`, however if this is set the app will not
+  // be installed if the app to be replaced was installed from any other
+  // sources, or if the app being installed is asking for a kBrowser display
+  // mode while the old app was (manually) changed to a standalone display mode.
+  // (and in those cases the old app will remain installed instead).
+  // If the user explicitly uninstalled the old (default installed) app, this
+  // replacement app will also not get installed.
+  const std::optional<webapps::AppId>&
+  only_uninstall_and_replace_when_compatible() const {
+    return only_uninstall_and_replace_when_compatible_;
+  }
+
+  class SetOnlyUninstallAndReplaceWhenCompatiblePassKey {
+    friend ExternalInstallOptions GetConfigForGoogleChat(
+        bool is_standalone,
+        bool only_for_new_users);
+    friend class PreinstalledWebAppMigrationTest;
+    SetOnlyUninstallAndReplaceWhenCompatiblePassKey() = default;
+  };
+  void SetOnlyUninstallAndReplaceWhenCompatible(
+      const webapps::AppId& overriding_app_id,
+      SetOnlyUninstallAndReplaceWhenCompatiblePassKey);
+
   // Note: All new fields must be added to AsDebugValue() and the == operator.
+ private:
+  std::optional<webapps::AppId> only_uninstall_and_replace_when_compatible_ =
+      std::nullopt;
 };
 
 WebAppInstallParams ConvertExternalInstallOptionsToParams(

@@ -108,6 +108,11 @@ struct COMPONENT_EXPORT(NETWORK_CPP_HOST_RESOLVER)
   static network::mojom::DnsConfigOverrides_Tristate
   allow_dns_over_https_upgrade(const net::DnsConfigOverrides& overrides);
 
+  static const std::optional<std::vector<net::IPEndPoint>>&
+  fallback_doh_nameservers(const net::DnsConfigOverrides& overrides) {
+    return overrides.fallback_doh_nameservers;
+  }
+
   static bool clear_hosts(const net::DnsConfigOverrides& overrides) {
     return overrides.clear_hosts;
   }
@@ -120,8 +125,7 @@ template <>
 struct COMPONENT_EXPORT(NETWORK_CPP_HOST_RESOLVER)
     EnumTraits<network::mojom::DnsQueryType, net::DnsQueryType> {
   static network::mojom::DnsQueryType ToMojom(net::DnsQueryType input);
-  static bool FromMojom(network::mojom::DnsQueryType input,
-                        net::DnsQueryType* output);
+  static net::DnsQueryType FromMojom(network::mojom::DnsQueryType input);
 };
 
 template <>
@@ -130,8 +134,8 @@ struct COMPONENT_EXPORT(NETWORK_CPP_HOST_RESOLVER)
                net::HostResolverSource> {
   static network::mojom::ResolveHostParameters_Source ToMojom(
       net::HostResolverSource input);
-  static bool FromMojom(network::mojom::ResolveHostParameters_Source input,
-                        net::HostResolverSource* output);
+  static net::HostResolverSource FromMojom(
+      network::mojom::ResolveHostParameters_Source input);
 };
 
 template <>
@@ -140,8 +144,8 @@ struct COMPONENT_EXPORT(NETWORK_CPP_HOST_RESOLVER)
                net::MdnsListenerUpdateType> {
   static network::mojom::MdnsListenClient_UpdateType ToMojom(
       net::MdnsListenerUpdateType input);
-  static bool FromMojom(network::mojom::MdnsListenClient_UpdateType input,
-                        net::MdnsListenerUpdateType* output);
+  static net::MdnsListenerUpdateType FromMojom(
+      network::mojom::MdnsListenClient_UpdateType input);
 };
 
 template <>
@@ -149,8 +153,7 @@ struct COMPONENT_EXPORT(NETWORK_CPP_HOST_RESOLVER)
     EnumTraits<network::mojom::SecureDnsMode, net::SecureDnsMode> {
   static network::mojom::SecureDnsMode ToMojom(
       net::SecureDnsMode secure_dns_mode);
-  static bool FromMojom(network::mojom::SecureDnsMode in,
-                        net::SecureDnsMode* out);
+  static net::SecureDnsMode FromMojom(network::mojom::SecureDnsMode in);
 };
 
 template <>
@@ -158,8 +161,7 @@ struct COMPONENT_EXPORT(NETWORK_CPP_HOST_RESOLVER)
     EnumTraits<network::mojom::SecureDnsPolicy, net::SecureDnsPolicy> {
   static network::mojom::SecureDnsPolicy ToMojom(
       net::SecureDnsPolicy secure_dns_mode);
-  static bool FromMojom(network::mojom::SecureDnsPolicy in,
-                        net::SecureDnsPolicy* out);
+  static net::SecureDnsPolicy FromMojom(network::mojom::SecureDnsPolicy in);
 };
 
 }  // namespace mojo

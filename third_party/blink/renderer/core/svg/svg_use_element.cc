@@ -37,6 +37,7 @@
 #include "third_party/blink/renderer/core/frame/deprecation/deprecation.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/layout/svg/layout_svg_transformable_container.h"
+#include "third_party/blink/renderer/core/svg/graphics/svg_image.h"
 #include "third_party/blink/renderer/core/svg/svg_animated_length.h"
 #include "third_party/blink/renderer/core/svg/svg_circle_element.h"
 #include "third_party/blink/renderer/core/svg/svg_ellipse_element.h"
@@ -51,9 +52,11 @@
 #include "third_party/blink/renderer/core/svg/svg_symbol_element.h"
 #include "third_party/blink/renderer/core/svg/svg_text_element.h"
 #include "third_party/blink/renderer/core/svg/svg_title_element.h"
+#include "third_party/blink/renderer/core/svg/svg_zoom_migration.h"
 #include "third_party/blink/renderer/core/svg_names.h"
 #include "third_party/blink/renderer/core/xlink_names.h"
 #include "third_party/blink/renderer/core/xml/parser/xml_document_parser.h"
+#include "third_party/blink/renderer/platform/geometry/path_builder.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/loader/fetch/fetch_initiator_type_names.h"
 #include "third_party/blink/renderer/platform/loader/fetch/fetch_parameters.h"
@@ -90,8 +93,6 @@ SVGUseElement::SVGUseElement(Document& document)
           SVGLength::Initial::kUnitlessZero)),
       element_url_is_local_(true),
       needs_shadow_tree_recreation_(false) {
-  DCHECK(HasCustomStyleCallbacks());
-
   CreateUserAgentShadowRoot();
 }
 
@@ -139,8 +140,11 @@ void SVGUseElement::RemovedFrom(ContainerNode& root_parent) {
 
 void SVGUseElement::DidMoveToNewDocument(Document& old_document) {
   SVGGraphicsElement::DidMoveToNewDocument(old_document);
-  if (load_event_delayer_) {
-    load_event_delayer_->DocumentChanged(GetDocument());
+  if (resource_load_event_delayer_) {
+    resource_load_event_delayer_->DocumentChanged(GetDocument());
+  }
+  if (attach_load_event_delayer_) {
+    attach_load_event_delayer_->DocumentChanged(GetDocument());
   }
   UpdateTargetReference();
 }
@@ -151,9 +155,13 @@ static void TransferUseWidthAndHeightIfNeeded(
     const SVGElement& original_element) {
   // Use |original_element| for checking the element type, because we will
   // have replaced a <symbol> with an <svg> in the instance tree.
+  // TODO(crbug.com/40550039): Should be possible to check shadow_element
+  // instead of 'original_element' when the Svg2Cascade runtime flag is removed
+  // (always enabled).
   if (!IsA<SVGSymbolElement>(original_element) &&
-      !IsA<SVGSVGElement>(original_element))
+      !IsA<SVGSVGElement>(original_element)) {
     return;
+  }
 
   // "The width and height properties on the 'use' element override the values
   // for the corresponding properties on a referenced 'svg' or 'symbol' element
@@ -190,30 +198,45 @@ void SVGUseElement::UpdateDocumentContent(
   if (document_content_ == document_content) {
     return;
   }
-  auto old_load_event_delayer = std::move(load_event_delayer_);
+  auto old_load_event_delayer = std::move(resource_load_event_delayer_);
+  notification_pending_ = false;
   if (document_content_) {
     document_content_->RemoveObserver(this);
   }
   document_content_ = document_content;
   if (document_content_) {
-    load_event_delayer_ =
+    resource_load_event_delayer_ =
         std::make_unique<IncrementLoadEventDelayCount>(GetDocument());
+    notification_pending_ = true;
     document_content_->AddObserver(this);
   }
 }
 
 void SVGUseElement::UpdateTargetReference() {
   const String& url_string = HrefString();
-  element_url_ = GetDocument().CompleteURL(url_string);
-  element_url_is_local_ = url_string.StartsWith('#');
-  if (!IsStructurallyExternal() || !GetDocument().IsActive()) {
+  // Resolve the URL using the originating document, which can be different if
+  // this element was sourced from a resource document.
+  Document& document =
+      RuntimeEnabledFeatures::SvgUseNestedResourceDocumentsEnabled()
+          ? OriginatingTreeScope().GetDocument()
+          : GetDocument();
+  element_url_ = document.CompleteURL(url_string);
+  element_url_is_local_ = url_string.starts_with('#');
+  if (!IsStructurallyExternal() || !GetDocument().IsActive() ||
+      !element_url_.IsValid()) {
     UpdateDocumentContent(nullptr);
     pending_event_.Cancel();
     return;
   }
-  if (!element_url_.HasFragmentIdentifier() ||
-      (document_content_ && EqualIgnoringFragmentIdentifier(
-                                element_url_, document_content_->Url()))) {
+
+  if (!element_url_.HasFragmentIdentifier() &&
+      !RuntimeEnabledFeatures::
+          AllowSvgUseToReferenceExternalDocumentRootEnabled()) {
+    return;
+  }
+
+  if (document_content_ &&
+      EqualIgnoringFragmentIdentifier(element_url_, document_content_->Url())) {
     return;
   }
 
@@ -246,7 +269,6 @@ void SVGUseElement::SvgAttributeChanged(
       UpdatePresentationAttributeStyle(params.property);
     }
 
-    UpdateRelativeLengthsInformation();
     if (SVGElement* instance_root = InstanceRoot()) {
       DCHECK(instance_root->CorrespondingElement());
       TransferUseWidthAndHeightIfNeeded(*this, *instance_root,
@@ -274,8 +296,9 @@ static bool IsDisallowedElement(const Element& element) {
   // 'circle', 'ellipse', 'image', 'line', 'path', 'polygon', 'polyline',
   // 'rect', 'text' Excluded are anything that is used by reference or that only
   // make sense to appear once in a document.
-  if (!element.IsSVGElement())
+  if (!element.IsSVGElement()) {
     return true;
+  }
 
   DEFINE_STATIC_LOCAL(HashSet<QualifiedName>, allowed_element_tags,
                       ({
@@ -301,6 +324,7 @@ void SVGUseElement::ScheduleShadowTreeRecreation() {
 
 void SVGUseElement::CancelShadowTreeRecreation() {
   needs_shadow_tree_recreation_ = false;
+  attach_load_event_delayer_.reset();
   GetDocument().UnscheduleUseShadowTreeUpdate(*this);
 }
 
@@ -311,12 +335,14 @@ void SVGUseElement::ClearResourceReference() {
 }
 
 Element* SVGUseElement::ResolveTargetElement() {
-  if (!element_url_.HasFragmentIdentifier())
-    return nullptr;
-  AtomicString element_identifier(DecodeURLEscapeSequences(
-      element_url_.FragmentIdentifier(), DecodeURLMode::kUTF8OrIsomorphic));
+  AtomicString element_identifier(DecodeUrlEscapeSequences(
+      element_url_.FragmentIdentifier(), DecodeUrlMode::kUtf8OrIsomorphic));
 
   if (!IsStructurallyExternal()) {
+    if (!element_url_.HasFragmentIdentifier()) {
+      return nullptr;
+    }
+
     // Only create observers for non-instance use elements.
     // Instances will be updated by their corresponding elements.
     if (InUseShadowTree()) {
@@ -324,8 +350,8 @@ Element* SVGUseElement::ResolveTargetElement() {
     } else {
       return ObserveTarget(
           target_id_observer_, OriginatingTreeScope(), element_identifier,
-          WTF::BindRepeating(&SVGUseElement::InvalidateTargetReference,
-                             WrapWeakPersistent(this)));
+          BindRepeating(&SVGUseElement::InvalidateTargetReference,
+                        WrapWeakPersistent(this)));
     }
   }
   if (!document_content_) {
@@ -348,8 +374,10 @@ SVGElement* SVGUseElement::InstanceRoot() const {
 void SVGUseElement::BuildPendingResource() {
   if (!isConnected()) {
     DCHECK(!needs_shadow_tree_recreation_);
+    DCHECK(!attach_load_event_delayer_);
     return;  // Already replaced by rebuilding ancestor.
   }
+  auto attach_load_event_delayer = std::move(attach_load_event_delayer_);
   CancelShadowTreeRecreation();
 
   // Check if this element is scheduled (by an ancestor) to be replaced.
@@ -368,6 +396,7 @@ void SVGUseElement::BuildPendingResource() {
     AttachShadowTree(*target);
   }
   DCHECK(!needs_shadow_tree_recreation_);
+  DCHECK(!attach_load_event_delayer_);
 }
 
 String SVGUseElement::title() const {
@@ -440,37 +469,11 @@ static void PostProcessInstanceTree(SVGElement& target_root,
   DCHECK(!instance_element);
 }
 
-static void MoveChildrenToReplacementElement(ContainerNode& source_root,
-                                             ContainerNode& destination_root) {
-  for (Node* child = source_root.firstChild(); child;) {
-    Node* next_child = child->nextSibling();
-    destination_root.AppendChild(child);
-    child = next_child;
-  }
-}
-
 SVGElement* SVGUseElement::CreateInstanceTree(SVGElement& target_root) const {
   NodeCloningData data{CloneOption::kIncludeDescendants};
   SVGElement* instance_root = &To<SVGElement>(target_root.CloneWithChildren(
-      data, /*document*/ nullptr, /*append_to*/ nullptr));
-  if (IsA<SVGSymbolElement>(target_root)) {
-    // Spec: The referenced 'symbol' and its contents are deep-cloned into
-    // the generated tree, with the exception that the 'symbol' is replaced
-    // by an 'svg'. This generated 'svg' will always have explicit values
-    // for attributes width and height. If attributes width and/or height
-    // are provided on the 'use' element, then these attributes will be
-    // transferred to the generated 'svg'. If attributes width and/or
-    // height are not specified, the generated 'svg' element will use
-    // values of 100% for these attributes.
-    auto* svg_element =
-        MakeGarbageCollected<SVGSVGElement>(target_root.GetDocument());
-    // Transfer all attributes from the <symbol> to the new <svg>
-    // element.
-    svg_element->CloneAttributesFrom(*instance_root);
-    // Move already cloned elements to the new <svg> element.
-    MoveChildrenToReplacementElement(*instance_root, *svg_element);
-    instance_root = svg_element;
-  }
+      data, /*document*/ nullptr, /*append_to*/ nullptr,
+      /*registry*/ nullptr, /*fallback_registry*/ nullptr));
   TransferUseWidthAndHeightIfNeeded(*this, *instance_root, target_root);
   PostProcessInstanceTree(target_root, *instance_root);
   return instance_root;
@@ -479,6 +482,7 @@ SVGElement* SVGUseElement::CreateInstanceTree(SVGElement& target_root) const {
 void SVGUseElement::AttachShadowTree(SVGElement& target) {
   DCHECK(!InstanceRoot());
   DCHECK(!needs_shadow_tree_recreation_);
+  DCHECK(!attach_load_event_delayer_);
 
   // Do not allow self-referencing.
   if (IsDisallowedElement(target) || HasCycleUseReferencing(*this, target))
@@ -511,7 +515,7 @@ void SVGUseElement::AttachShadowTree(SVGElement& target) {
 void SVGUseElement::DetachShadowTree() {
   ShadowRoot& shadow_root = UseShadowRoot();
   // FIXME: We should try to optimize this, to at least allow partial reclones.
-  shadow_root.RemoveChildren(kOmitSubtreeModifiedEvent);
+  shadow_root.RemoveChildren();
 }
 
 LayoutObject* SVGUseElement::CreateLayoutObject(const ComputedStyle&) {
@@ -532,11 +536,10 @@ Path SVGUseElement::ToClipPath() const {
     return Path();
 
   DCHECK(GetLayoutObject());
-  Path path = geometry_element->ToClipPath();
-  AffineTransform transform = GetLayoutObject()->LocalSVGTransform();
-  if (!transform.IsIdentity())
-    path.Transform(transform);
-  return path;
+  const AffineTransform transform = GetLayoutObject()->LocalSVGTransform();
+
+  return geometry_element->ToClipPath(transform.IsIdentity() ? nullptr
+                                                             : &transform);
 }
 
 SVGGraphicsElement* SVGUseElement::VisibleTargetGraphicsElementForClipping()
@@ -615,7 +618,8 @@ gfx::RectF SVGUseElement::GetBBox() {
   // SVGUseElement.
   gfx::RectF bbox = transformable_container.ObjectBoundingBox();
   bbox.Offset(transformable_container.AdditionalTranslation());
-  return bbox;
+  return NoopWillBeInvScaleRect(
+      bbox, transformable_container.StyleRef().EffectiveZoom());
 }
 
 void SVGUseElement::QueueOrDispatchPendingEvent(
@@ -632,9 +636,24 @@ void SVGUseElement::QueueOrDispatchPendingEvent(
 void SVGUseElement::ResourceNotifyFinished(
     SVGResourceDocumentContent* document_content) {
   DCHECK_EQ(document_content_, document_content);
-  load_event_delayer_.reset();
+  // Early-out if we've already been notified for this resource.
+  // This can happen when a resource revalidation causes all observing <use>
+  // elements to be notified, but we only want to rebuild the shadow tree when
+  // this element has initiated the resource fetch.
+  if (!notification_pending_) {
+    return;
+  }
+  auto load_event_delayer = std::move(resource_load_event_delayer_);
+  notification_pending_ = false;
   if (!isConnected())
     return;
+  // Don't keep delaying the 'load' event if this is within an isolated
+  // document, because we don't know when it will have its shadow trees
+  // rebuilt, so this could block them from loading.
+  if (RuntimeEnabledFeatures::SvgUseNestedResourceDocumentsDelayLoadEnabled() &&
+      InActiveDocument() && !SVGImage::IsInSVGImage(this)) {
+    attach_load_event_delayer_ = std::move(load_event_delayer);
+  }
   InvalidateShadowTree();
 
   const bool is_error = document_content->ErrorOccurred();
@@ -643,8 +662,8 @@ void SVGUseElement::ResourceNotifyFinished(
   DCHECK(!pending_event_.IsActive());
   pending_event_ = PostCancellableTask(
       *GetDocument().GetTaskRunner(TaskType::kDOMManipulation), FROM_HERE,
-      WTF::BindOnce(&SVGUseElement::QueueOrDispatchPendingEvent,
-                    WrapPersistent(this), event_name));
+      BindOnce(&SVGUseElement::QueueOrDispatchPendingEvent,
+               WrapPersistent(this), event_name));
 }
 
 SVGAnimatedPropertyBase* SVGUseElement::PropertyFromAttribute(

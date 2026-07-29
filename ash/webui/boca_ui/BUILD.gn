@@ -17,6 +17,8 @@ static_library("boca_ui") {
     "boca_app_page_handler.h",
     "boca_ui.cc",
     "boca_ui.h",
+    "boca_util.cc",
+    "boca_util.h",
     "provider/classroom_page_handler_impl.cc",
     "provider/classroom_page_handler_impl.h",
     "provider/content_settings_handler.cc",
@@ -25,17 +27,13 @@ static_library("boca_ui") {
     "provider/network_info_provider.h",
     "provider/tab_info_collector.cc",
     "provider/tab_info_collector.h",
-    "url_constants.h",
-    "webview_auth_delegate.cc",
-    "webview_auth_delegate.h",
-    "webview_auth_handler.cc",
-    "webview_auth_handler.h",
   ]
 
   deps = [
-    "resources:resources",
+    ":constants",
+    "resources",
     "//ash",
-    "//ash/constants:constants",
+    "//ash/constants",
     "//ash/public/cpp",
     "//ash/webui/boca_ui/mojom",
     "//ash/webui/common:chrome_os_webui_config",
@@ -47,8 +45,11 @@ static_library("boca_ui") {
     "//chrome/browser/profiles:profile",
     "//chromeos/ash/components/boca",
     "//chromeos/ash/components/boca:spotlight",
+    "//chromeos/ash/components/boca:spotlight_lib",
+    "//chromeos/ash/components/boca/gemini",
     "//chromeos/ash/components/boca/on_task",
     "//chromeos/ash/components/boca/proto",
+    "//chromeos/ash/components/boca/receiver",
     "//chromeos/ash/components/boca/session_api",
     "//chromeos/ash/components/browser_context_helper",
     "//chromeos/ui/frame",
@@ -58,7 +59,7 @@ static_library("boca_ui") {
     "//components/app_restore",
     "//components/content_settings/core/browser",
     "//components/content_settings/core/common",
-    "//components/permissions:permissions",
+    "//components/permissions",
     "//components/signin/public/base",
     "//components/signin/public/identity_manager",
     "//components/user_manager",
@@ -66,11 +67,16 @@ static_library("boca_ui") {
     "//google_apis",
     "//google_apis/classroom",
     "//google_apis/common",
-    "//skia",
+    "//skia:skia_core_public_headers",
+    "//third_party/webrtc_overrides:webrtc_component",
     "//ui/gfx",
     "//ui/webui",
     "//ui/wm",
   ]
+}
+
+source_set("constants") {
+  sources = [ "url_constants.h" ]
 }
 
 # Used to turn off tests that only work with our CIPD package.
@@ -87,7 +93,6 @@ source_set("unit_tests") {
     "boca_app_page_handler_unittest.cc",
     "provider/classroom_page_handler_impl_unittest.cc",
     "provider/network_info_provider_unittest.cc",
-    "webview_auth_handler_unittest.cc",
   ]
 
   deps = [
@@ -99,12 +104,16 @@ source_set("unit_tests") {
     "//chromeos/ash/components:test_support",
     "//chromeos/ash/components/boca",
     "//chromeos/ash/components/boca:spotlight",
+    "//chromeos/ash/components/boca/gemini",
     "//chromeos/ash/components/boca/proto",
+    "//chromeos/ash/components/boca/receiver",
     "//chromeos/ash/components/boca/session_api",
     "//chromeos/ash/components/browser_context_helper",
     "//chromeos/ash/components/browser_context_helper:test_support",
     "//chromeos/ash/services/network_config/public/cpp:test_support",
     "//chromeos/services/network_config/public/cpp:test_support",
+    "//components/session_manager/core",
+    "//components/session_manager/core:test_support",
     "//components/signin/public/identity_manager",
     "//components/user_manager",
     "//components/user_manager:test_support",
@@ -114,6 +123,7 @@ source_set("unit_tests") {
     "//mojo/public/cpp/bindings",
     "//net:test_support",
     "//services/network:test_support",
+    "//skia:skia_core_public_headers",
     "//testing/gmock",
     "//testing/gtest",
     "//ui/aura",

@@ -47,7 +47,6 @@ const SyncPrefsIndividualDataTypes: Array<keyof OsSyncPrefs> = [
 ];
 
 /**
- * TODO(https://crbug.com/1294178): Consider merging this with sync_controls.
  * @fileoverview
  * 'os-sync-controls-subpage' contains all OS sync data type controls.
  */
@@ -85,21 +84,19 @@ export class OsSyncControlsSubpageElement extends
         value: true,
         computed: `computeDataTypeTogglesDisabled_(osSyncPrefs.syncAllOsTypes)`,
       },
-
-      /**
-       * Used by DeepLinkingMixin to focus this page's deep links.
-       */
-      supportedSettingIds: {
-        type: Object,
-        value: () => new Set<Setting>([Setting.kSplitSyncOnOff]),
-      },
     };
   }
 
-  private areDataTypeTogglesDisabled_: boolean;
+  // DeepLinkingMixin override
+  override supportedSettingIds = new Set<Setting>([
+    Setting.kSplitSyncOnOff,
+  ]);
+
+  declare hidden: boolean;
+  declare private areDataTypeTogglesDisabled_: boolean;
   private supportedSettingsIds: Set<Setting>;
   private browserProxy_: OsSyncBrowserProxy;
-  private osSyncPrefs: OsSyncPrefs|undefined;
+  declare private osSyncPrefs: OsSyncPrefs|undefined;
   private cachedOsSyncPrefs_: Partial<Record<keyof OsSyncPrefs, any>>|null;
 
   constructor() {

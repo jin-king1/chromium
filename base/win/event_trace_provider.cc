@@ -1,7 +1,7 @@
 // Copyright 2012 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
-//
+
 #include "base/win/event_trace_provider.h"
 
 #include <windows.h>
@@ -17,7 +17,10 @@ EtwTraceProvider::EtwTraceProvider(const GUID& provider_name)
 
 EtwTraceProvider::EtwTraceProvider() = default;
 
-EtwTraceProvider::~EtwTraceProvider() {
+// NOOPT prevents dead code elimination of writes to member variables, to allow
+// accessing them after the object is destructed (even though that's UB.) See
+// crbug.com/483349684.
+NOINLINE NOOPT EtwTraceProvider::~EtwTraceProvider() {
   Unregister();
 }
 

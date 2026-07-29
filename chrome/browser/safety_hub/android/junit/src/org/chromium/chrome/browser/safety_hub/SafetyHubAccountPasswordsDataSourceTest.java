@@ -5,8 +5,12 @@
 package org.chromium.chrome.browser.safety_hub;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.app.Activity;
@@ -32,10 +36,9 @@ import org.chromium.chrome.browser.safety_hub.SafetyHubAccountPasswordsDataSourc
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.chrome.browser.signin.services.SigninManager;
 import org.chromium.components.prefs.PrefService;
-import org.chromium.components.signin.base.CoreAccountInfo;
-import org.chromium.components.signin.base.GaiaId;
-import org.chromium.components.signin.identitymanager.ConsentLevel;
+import org.chromium.components.signin.base.AccountInfo;
 import org.chromium.components.signin.identitymanager.IdentityManager;
+import org.chromium.google_apis.gaia.GaiaId;
 import org.chromium.ui.base.TestActivity;
 
 /** Robolectric tests for {@link SafetyHubAccountPasswordsDataSource}. */
@@ -47,7 +50,7 @@ public class SafetyHubAccountPasswordsDataSourceTest {
         @ModuleType int mModuleType;
 
         @Override
-        public void stateChanged(@ModuleType int moduleType) {
+        public void accountPasswordsStateChanged(@ModuleType int moduleType) {
             mModuleType = moduleType;
         }
 
@@ -58,7 +61,7 @@ public class SafetyHubAccountPasswordsDataSourceTest {
 
     private static final @DrawableRes int SAFE_ICON = R.drawable.material_ic_check_24dp;
     private static final @DrawableRes int INFO_ICON = R.drawable.btn_info;
-    private static final @DrawableRes int MANAGED_ICON = R.drawable.ic_business;
+    private static final @DrawableRes int MANAGED_ICON = R.drawable.ic_domain;
     private static final @DrawableRes int WARNING_ICON = R.drawable.ic_error;
 
     private static final String TEST_EMAIL_ADDRESS = "test@email.com";
@@ -98,17 +101,17 @@ public class SafetyHubAccountPasswordsDataSourceTest {
                         mSafetyHubFetchServiceMock,
                         mSigninManagerMock,
                         mProfile);
-        mDataSource.setObserver(mObserver);
+        mDataSource.addObserver(mObserver);
         mDataSource.setUp();
     }
 
     public void mockSignedInState(boolean isSignedIn) {
-        when(mIdentityManager.hasPrimaryAccount(ConsentLevel.SIGNIN)).thenReturn(isSignedIn);
-        when(mIdentityManager.getPrimaryAccountInfo(ConsentLevel.SIGNIN))
+        when(mIdentityManager.hasPrimaryAccount()).thenReturn(isSignedIn);
+        when(mIdentityManager.getPrimaryAccountInfo())
                 .thenReturn(
                         isSignedIn
-                                ? CoreAccountInfo.createFromEmailAndGaiaId(
-                                        TEST_EMAIL_ADDRESS, new GaiaId("0"))
+                                ? new AccountInfo.Builder(TEST_EMAIL_ADDRESS, new GaiaId("0"))
+                                        .build()
                                 : null);
         if (!isSignedIn) {
             doReturn(-1).when(mPrefServiceMock).getInteger(Pref.BREACHED_CREDENTIALS_COUNT);
@@ -123,6 +126,10 @@ public class SafetyHubAccountPasswordsDataSourceTest {
         doReturn(compromised).when(mPrefServiceMock).getInteger(Pref.BREACHED_CREDENTIALS_COUNT);
         doReturn(weak).when(mPrefServiceMock).getInteger(Pref.WEAK_CREDENTIALS_COUNT);
         doReturn(reused).when(mPrefServiceMock).getInteger(Pref.REUSED_CREDENTIALS_COUNT);
+    }
+
+    private void mockRunPasswordCheckup(boolean willRun) {
+        doReturn(willRun).when(mSafetyHubFetchServiceMock).runAccountPasswordCheckup();
     }
 
     @Test
@@ -240,6 +247,38 @@ public class SafetyHubAccountPasswordsDataSourceTest {
         assertEquals(
                 ModuleType.UNAVAILABLE_COMPROMISED_NO_WEAK_REUSED_PASSWORDS,
                 mObserver.getModuleType());
+    }
+
+    @Test
+    public void countsUnavailable_lastCheckLongAgo() {
+        mockTotalPasswordsCount(1);
+        mockSignedInState(true);
+        mockPasswordCounts(/* compromised= */ -1, /* weak= */ -1, /* reused= */ -1);
+        mockRunPasswordCheckup(true);
+
+        assertTrue(mDataSource.maybeTriggerPasswordCheckup());
+        verify(mSafetyHubFetchServiceMock, times(1)).runAccountPasswordCheckup();
+
+        mDataSource.accountPasswordCountsChanged();
+        mDataSource.onSavedPasswordsChanged(0);
+        mDataSource.updateState();
+        assertEquals(ModuleType.UNAVAILABLE_PASSWORDS, mObserver.getModuleType());
+    }
+
+    @Test
+    public void countsUnavailable_lastCheckRecently() {
+        mockTotalPasswordsCount(1);
+        mockSignedInState(true);
+        mockPasswordCounts(/* compromised= */ -1, /* weak= */ -1, /* reused= */ -1);
+        mockRunPasswordCheckup(false);
+
+        assertFalse(mDataSource.maybeTriggerPasswordCheckup());
+        verify(mSafetyHubFetchServiceMock, times(1)).runAccountPasswordCheckup();
+
+        mDataSource.accountPasswordCountsChanged();
+        mDataSource.onSavedPasswordsChanged(0);
+        mDataSource.updateState();
+        assertEquals(ModuleType.UNAVAILABLE_PASSWORDS, mObserver.getModuleType());
     }
 
     @Test

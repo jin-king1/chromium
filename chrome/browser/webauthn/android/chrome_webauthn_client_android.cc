@@ -4,11 +4,15 @@
 
 #include "chrome/browser/webauthn/android/chrome_webauthn_client_android.h"
 
+#include "base/feature_list.h"
+#include "chrome/browser/actor/actor_util.h"
 #include "chrome/browser/webauthn/android/webauthn_request_delegate_android.h"
+#include "components/password_manager/core/browser/features/password_features.h"
 #include "components/webauthn/android/webauthn_cred_man_delegate.h"
 #include "components/webauthn/android/webauthn_cred_man_delegate_factory.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
+#include "device/fido/public/features.h"
 
 ChromeWebAuthnClientAndroid::ChromeWebAuthnClientAndroid() = default;
 
@@ -16,24 +20,39 @@ ChromeWebAuthnClientAndroid::~ChromeWebAuthnClientAndroid() = default;
 
 void ChromeWebAuthnClientAndroid::OnWebAuthnRequestPending(
     content::RenderFrameHost* frame_host,
-    const std::vector<device::DiscoverableCredentialMetadata>& credentials,
-    bool is_conditional_request,
+    std::vector<device::DiscoverableCredentialMetadata> credentials,
+    webauthn::AssertionMediationType mediation_type,
     base::RepeatingCallback<void(const std::vector<uint8_t>& id)>
-        getAssertionCallback,
-    base::RepeatingCallback<void()> hybridCallback) {
+        passkey_callback,
+    base::RepeatingCallback<void(std::u16string_view, std::u16string_view)>
+        password_callback,
+    base::RepeatingClosure hybrid_closure,
+    base::RepeatingCallback<void(webauthn::NonCredentialReturnReason)>
+        non_credential_callback) {
   WebAuthnRequestDelegateAndroid* delegate =
-      WebAuthnRequestDelegateAndroid::GetRequestDelegate(
-          content::WebContents::FromRenderFrameHost(frame_host));
+      WebAuthnRequestDelegateAndroid::GetRequestDelegate(frame_host);
 
   delegate->OnWebAuthnRequestPending(
-      frame_host, credentials, is_conditional_request,
-      std::move(getAssertionCallback), std::move(hybridCallback));
+      frame_host, std::move(credentials), mediation_type,
+      std::move(passkey_callback), std::move(password_callback),
+      std::move(hybrid_closure), std::move(non_credential_callback));
 }
 
 void ChromeWebAuthnClientAndroid::CleanupWebAuthnRequest(
     content::RenderFrameHost* frame_host) {
-  WebAuthnRequestDelegateAndroid* webauthn_request_delegate =
-      WebAuthnRequestDelegateAndroid::GetRequestDelegate(
-          content::WebContents::FromRenderFrameHost(frame_host));
-  webauthn_request_delegate->CleanupWebAuthnRequest(frame_host);
+  if (auto* webauthn_request_delegate =
+          WebAuthnRequestDelegateAndroid::GetForCurrentDocument(frame_host)) {
+    webauthn_request_delegate->CleanupWebAuthnRequest();
+  }
+}
+
+bool ChromeWebAuthnClientAndroid::ShouldDisallowCredentialRequest(
+    content::RenderFrameHost* render_frame_host) {
+  if (!base::FeatureList::IsEnabled(device::kWebAuthnActorCheck) ||
+      !base::FeatureList::IsEnabled(password_manager::features::kActorLogin)) {
+    return false;
+  }
+  content::WebContents* web_contents =
+      content::WebContents::FromRenderFrameHost(render_frame_host);
+  return actor::HaveActiveTaskForContents(web_contents);
 }

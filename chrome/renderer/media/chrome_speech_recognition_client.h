@@ -34,7 +34,9 @@ class ChromeSpeechRecognitionClient
       public media::AudioDataS16Converter {
  public:
   using SendAudioToSpeechRecognitionServiceCallback =
-      base::RepeatingCallback<void(media::mojom::AudioDataS16Ptr audio_data)>;
+      base::RepeatingCallback<void(
+          media::mojom::AudioDataS16Ptr audio_data,
+          std::optional<base::TimeDelta> media_start_pts)>;
   using InitializeCallback = base::RepeatingCallback<void()>;
 
   explicit ChromeSpeechRecognitionClient(content::RenderFrame* render_frame);
@@ -47,7 +49,8 @@ class ChromeSpeechRecognitionClient
   void OnDestruct() override;
 
   // media::SpeechRecognitionClient
-  void AddAudio(scoped_refptr<media::AudioBuffer> buffer) override;
+  void AddAudio(scoped_refptr<media::AudioBuffer> buffer,
+                std::optional<base::TimeDelta> media_start_pts) override;
 
   // Must call Reconfigure() first and can't be called concurrently with
   // Reconfigure().
@@ -92,7 +95,8 @@ class ChromeSpeechRecognitionClient
                                  media::ChannelLayout channel_layout);
 
   void SendAudioToSpeechRecognitionService(
-      media::mojom::AudioDataS16Ptr audio_data);
+      media::mojom::AudioDataS16Ptr audio_data,
+      std::optional<base::TimeDelta> media_start_pts);
 
   // Called when the speech recognition context or the speech recognition
   // recognizer is disconnected. Sends an error message to the UI and halts
@@ -100,8 +104,6 @@ class ChromeSpeechRecognitionClient
   void OnRecognizerDisconnected();
 
   ChromeSpeechRecognitionClient::InitializeCallback initialize_callback_;
-
-  media::SpeechRecognitionClient::OnReadyCallback on_ready_callback_;
 
   base::RepeatingClosure reset_callback_;
 
@@ -131,6 +133,9 @@ class ChromeSpeechRecognitionClient
   // Protects `is_recognizer_bound_` when it's accessed from the main and
   // rendering threads concurrently.
   mutable base::Lock is_recognizer_bound_lock_;
+
+  media::SpeechRecognitionClient::OnReadyCallback on_ready_callback_
+      GUARDED_BY(is_recognizer_bound_lock_);
 
   // A flag indicating whether the speech recognition service supports
   // multichannel audio.

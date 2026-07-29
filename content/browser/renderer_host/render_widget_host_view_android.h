@@ -9,8 +9,8 @@
 #include <stdint.h>
 
 #include <deque>
-#include <map>
 #include <memory>
+#include <optional>
 
 #include "base/android/jni_android.h"
 #include "base/callback_list.h"
@@ -19,6 +19,7 @@
 #include "base/gtest_prod_util.h"
 #include "base/i18n/rtl.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/process/process.h"
 #include "base/scoped_observation.h"
@@ -27,6 +28,7 @@
 #include "cc/trees/render_frame_metadata.h"
 #include "components/input/android_input_helper.h"
 #include "components/viz/common/quads/selection.h"
+#include "components/viz/common/resources/release_callback.h"
 #include "components/viz/common/surfaces/parent_local_surface_id_allocator.h"
 #include "content/browser/device_posture/device_posture_platform_provider.h"
 #include "content/browser/renderer_host/input/input_transfer_handler_android.h"
@@ -37,9 +39,10 @@
 #include "content/browser/renderer_host/text_input_manager.h"
 #include "content/common/content_export.h"
 #include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/visibility.h"
 #include "third_party/blink/public/common/input/web_mouse_event.h"
+#include "third_party/blink/public/common/page/content_to_visible_time_request.h"
 #include "third_party/blink/public/mojom/input/input_handler.mojom-forward.h"
-#include "third_party/blink/public/mojom/widget/record_content_to_visible_time_request.mojom-forward.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/android/delegated_frame_host_android.h"
 #include "ui/android/view_android.h"
@@ -61,6 +64,10 @@ namespace cc::slim {
 class SurfaceLayer;
 }
 
+namespace gpu {
+class ClientSharedImage;
+}
+
 namespace input {
 struct NativeWebKeyboardEvent;
 }  // namespace input
@@ -70,19 +77,25 @@ struct BrowserControlsOffsetTagDefinitions;
 class MotionEventAndroid;
 class OverscrollRefreshHandler;
 struct DidOverscrollParams;
-}
+}  // namespace ui
+
+namespace viz {
+class RasterContextProvider;
+}  // namespace viz
 
 namespace content {
+class CompositorImpl;
 class GestureListenerManager;
 class ImeAdapterAndroid;
 class OverscrollControllerAndroid;
 class SelectionPopupController;
 class SynchronousCompositorHost;
 class SynchronousCompositorClient;
-class TextSuggestionHostAndroid;
 class TouchSelectionControllerClientManagerAndroid;
 class WebContentsAccessibilityAndroid;
 struct ContextMenuParams;
+
+BASE_FEATURE(kTooltips, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // -----------------------------------------------------------------------------
 // See comments in render_widget_host_view.h about this class and its members.
@@ -165,20 +178,30 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   void CopyFromSurface(
       const gfx::Rect& src_rect,
       const gfx::Size& output_size,
-      base::OnceCallback<void(const SkBitmap&)> callback) override;
-  void CopyFromExactSurfaceWithIpcPriority(
+      base::TimeDelta timeout,
+      base::OnceCallback<void(const content::CopyFromSurfaceResult&)> callback)
+      override;
+  ui::FilteredGestureProvider* GetFilteredGestureProviderForTesting() override;
+  void CopyFromExactSurfaceWithIpcDelay(
       const gfx::Rect& src_rect,
       const gfx::Size& output_size,
-      base::OnceCallback<void(const SkBitmap&)> callback,
-      CopyOutputIpcPriority ipc_priority) override;
+      base::OnceCallback<void(const content::CopyFromSurfaceResult&)> callback,
+      base::TimeDelta ipc_delay) override;
   void CopyFromExactSurface(
       const gfx::Rect& src_rect,
       const gfx::Size& output_size,
-      base::OnceCallback<void(const SkBitmap&)> callback) override;
-  void EnsureSurfaceSynchronizedForWebTest() override;
-  uint32_t GetCaptureSequenceNumber() const override;
+      base::OnceCallback<void(const content::CopyFromSurfaceResult&)> callback)
+      override;
+  void CopySharedImageFromExactSurface(
+      const gfx::Rect& src_rect,
+      const gfx::Size& output_size,
+      base::OnceCallback<void(scoped_refptr<gpu::ClientSharedImage>,
+                              viz::ReleaseCallback release_callback)> callback);
+
   int GetMouseWheelMinimumGranularity() const override;
   void UpdateCursor(const ui::Cursor& cursor) override;
+  void DisplayCursor(const ui::Cursor& cursor) override;
+  input::CursorManager* GetCursorManager() override;
   void SetIsLoading(bool is_loading) override;
   void FocusedNodeChanged(bool is_editable_node,
                           const gfx::Rect& node_bounds_in_screen) override;
@@ -189,13 +212,15 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
       blink::mojom::StylusWritingFocusResultPtr focus_result) override;
   void RenderProcessGone() override;
   void ShowWithVisibility(PageVisibilityState page_visibility) final;
+  void WasOccluded() override;
   void Destroy() override;
   void UpdateTooltipUnderCursor(const std::u16string& tooltip_text) override;
+  void UpdateTooltip(const std::u16string& tooltip_text) override;
   void UpdateTooltipFromKeyboard(const std::u16string& tooltip_text,
                                  const gfx::Rect& bounds) override;
   void ClearKeyboardTriggeredTooltip() override;
   void TransformPointToRootSurface(gfx::PointF* point) override;
-  gfx::Rect GetBoundsInRootWindow() override;
+  gfx::Rect GetBoundsInScreen() override;
   const viz::LocalSurfaceId& IncrementSurfaceIdForNavigation() override;
   void ProcessAckedTouchEvent(
       const input::TouchEventWithLatencyInfo& touch,
@@ -209,11 +234,14 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
       bool request_unadjusted_movement) override;
   blink::mojom::PointerLockResult ChangePointerLock(
       bool request_unadjusted_movement) override;
+  bool IsPointerLocked() override;
   void UnlockPointer() override;
+  bool LockKeyboard(std::optional<base::flat_set<ui::DomCode>> codes) override;
+  void UnlockKeyboard() override;
   void InvalidateLocalSurfaceIdAndAllocationGroup() override;
   void ClearFallbackSurfaceForCommitPending() override;
   void ResetFallbackToFirstNavigationSurface() override;
-  bool RequestRepaintForTesting() override;
+  bool RequestRepaintOnNewSurface() override;
   void DidOverscroll(const ui::DidOverscrollParams& params) override;
   bool CanSynchronizeVisualProperties() override;
   std::unique_ptr<SyntheticGestureTarget> CreateSyntheticGestureTarget()
@@ -229,6 +257,15 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
       const gfx::PointF& point,
       input::RenderWidgetHostViewInput* target_view,
       gfx::PointF* transformed_point) override;
+  bool IsTouchSequencePotentiallyActiveOnViz() override;
+  void RequestInputBackForDragAndDrop(
+      WeakDocumentPtr source_document,
+      blink::mojom::DragDataPtr drag_data,
+      blink::DragOperationsMask drag_operations_mask,
+      SkBitmap bitmap,
+      gfx::Vector2d cursor_offset_in_dip,
+      gfx::Rect drag_obj_rect_in_dip,
+      blink::mojom::DragEventSourceInfoPtr event_info) override;
   TouchSelectionControllerClientManager*
   GetTouchSelectionControllerClientManager() override;
   TouchSelectionControllerInputObserver*
@@ -247,6 +284,7 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   display::ScreenInfo GetScreenInfo() const override;
   ui::mojom::VirtualKeyboardMode GetVirtualKeyboardMode() override;
   viz::SurfaceId GetFallbackSurfaceIdForTesting() const override;
+  bool HasSavedCompositorFrame() const override;
   void ResetGestureDetection() override;
 
   // ui::EventHandlerAndroid implementation.
@@ -257,8 +295,11 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   void OnSizeChanged() override;
   void OnPhysicalBackingSizeChanged(
       std::optional<base::TimeDelta> deadline_override) override;
+  void OnWindowPositionChanged() override;
   void NotifyVirtualKeyboardOverlayRect(
       const gfx::Rect& keyboard_rect) override;
+  void ShowInterestInElement(int) override;
+  void OnPointerLockRelease() override;
 
   // ui::ViewAndroidObserver implementation:
   void OnAttachedToWindow() override;
@@ -273,7 +314,6 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   void OnAttachCompositor() override;
   void OnDetachCompositor() override;
   void OnAnimate(base::TimeTicks begin_frame_time) override;
-  void OnUnfoldStarted(base::TimeTicks unfold_begin_time) override;
   void OnActivityStopped() override;
   void OnActivityStarted() override;
 
@@ -304,7 +344,7 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   // Returns the temporary background color of the underlaying document, for
   // example, returns black during screen rotation.
   std::optional<SkColor> GetCachedBackgroundColor();
-  void SendKeyEvent(const input::NativeWebKeyboardEvent& event);
+  void SendKeyEvent(input::NativeWebKeyboardEvent& event);
   void SendMouseEvent(const blink::WebMouseEvent& event,
                       const ui::LatencyInfo& info);
   void SendMouseWheelEvent(const blink::WebMouseWheelEvent& event);
@@ -313,7 +353,7 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
 
   // AndroidInputHelper::Delegate implementation.
   void SendGestureEvent(const blink::WebGestureEvent& event) override;
-  ui::FilteredGestureProvider& GetGestureProvider() override;
+  scoped_refptr<ui::FilteredGestureProvider> GetGestureProvider() override;
 
   void set_ime_adapter(ImeAdapterAndroid* ime_adapter) {
     ime_adapter_android_ = ime_adapter;
@@ -324,13 +364,7 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   SelectionPopupController* selection_popup_controller() const {
     return selection_popup_controller_.get();
   }
-  void set_text_suggestion_host(
-      TextSuggestionHostAndroid* text_suggestion_host) {
-    text_suggestion_host_ = text_suggestion_host;
-  }
-  TextSuggestionHostAndroid* text_suggestion_host() const {
-    return text_suggestion_host_;
-  }
+
   void SetGestureListenerManager(GestureListenerManager* manager);
 
   // See
@@ -368,6 +402,7 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   }
 
   void OnOverscrollRefreshHandlerAvailable();
+  void ResetOverscrollController();
 
   // TextInputManager::Observer overrides.
   void OnUpdateTextInputStateCalled(TextInputManager* text_input_manager,
@@ -411,36 +446,30 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   gpu::SurfaceHandle GetRootSurfaceHandle() override;
   void SendStateOnTouchTransfer(const ui::MotionEvent& event,
                                 bool browser_would_have_handled) override;
+  bool IsMojoRIRDelegateConnectionSetup() override;
 
   // Methods called from Java
-  bool IsReady(JNIEnv* env, const base::android::JavaParamRef<jobject>& obj);
+  bool IsReady(JNIEnv* env);
 
-  void DismissTextHandles(JNIEnv* env,
-                          const base::android::JavaParamRef<jobject>& obj);
+  void DismissTextHandles(JNIEnv* env);
+
+  void SetIsGestureNavigationMode(JNIEnv* env, bool is_gesture_navigation_mode);
 
   // Returns an int equivalent to an Optional<SKColor>, with a value of 0
   // indicating SKTransparent for not set.
-  jint GetBackgroundColor(JNIEnv* env,
-                          const base::android::JavaParamRef<jobject>& obj);
+  int32_t GetBackgroundColor(JNIEnv* env);
 
-  void ShowContextMenuAtTouchHandle(
-      JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& obj,
-      jint x,
-      jint y);
+  void ShowContextMenuAtTouchHandle(JNIEnv* env, int32_t x, int32_t y);
 
   // Notifies that the Visual Viewport's inset bottom has changed.
-  void OnViewportInsetBottomChanged(
-      JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& obj);
+  void OnViewportInsetBottomChanged(JNIEnv* env);
 
   void WriteContentBitmapToDiskAsync(
       JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& obj,
-      jint width,
-      jint height,
-      const base::android::JavaParamRef<jstring>& jpath,
-      const base::android::JavaParamRef<jobject>& jcallback);
+      int32_t width,
+      int32_t height,
+      const jni_zero::JavaRef<jstring>& jpath,
+      const jni_zero::JavaRef<jobject>& jcallback);
 
   // Notifies that the parent activity has moved into the foreground.
   void OnResume(JNIEnv* env);
@@ -453,6 +482,8 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
 
   const cc::slim::SurfaceLayer* GetSurfaceLayer() const;
 
+  scoped_refptr<viz::RasterContextProvider> GetRasterContextProvider();
+
   void RegisterOffsetTags(
       const ui::BrowserControlsOffsetTagDefinitions& tag_definitions);
   void UnregisterOffsetTags(const cc::BrowserControlsOffsetTags& tags);
@@ -464,10 +495,7 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
     return input_transfer_handler_.get();
   }
 
-  void SetInputTransferHandlerForTesting(InputTransferHandlerAndroid* handler) {
-    input_transfer_handler_ =
-        std::unique_ptr<InputTransferHandlerAndroid>(handler);
-  }
+  void SetInputTransferHandlerForTesting(InputTransferHandlerAndroid* handler);
 
  protected:
   ~RenderWidgetHostViewAndroid() override;
@@ -477,14 +505,14 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   void UpdateBackgroundColor() override;
   bool HasFallbackSurface() const override;
   std::optional<DisplayFeature> GetDisplayFeature() override;
-  void SetDisplayFeatureForTesting(
+  void DisableDisplayFeatureOverrideForEmulation() override;
+  void OverrideDisplayFeatureForEmulation(
       const DisplayFeature* display_feature) override;
   void NotifyHostAndDelegateOnWasShown(
-      blink::mojom::RecordContentToVisibleTimeRequestPtr visible_time_request)
-      final;
+      std::optional<blink::RecordContentToVisibleTimeRequest>
+          visible_time_request) final;
   void RequestSuccessfulPresentationTimeFromHostOrDelegate(
-      blink::mojom::RecordContentToVisibleTimeRequestPtr visible_time_request)
-      final;
+      blink::RecordContentToVisibleTimeRequest visible_time_request) final;
   void CancelSuccessfulPresentationTimeRequestForHostAndDelegate() final;
   void EnterFullscreenMode(
       const blink::mojom::FullscreenOptions& options) override;
@@ -493,6 +521,12 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
       device::mojom::ScreenOrientationLockType orientation) override;
   void UnlockOrientation() override;
   void SetHasPersistentVideo(bool has_persistent_video) override;
+  void SetTouchpadOverscrollHistoryNavigation(bool enabled) override;
+  void OnUnconfirmedTapConvertedToTap() override;
+
+  // This method is used as a callback for `ViewAndroid::HitTest` to determine
+  // if the View is actually ready to send event.
+  bool IsHitTestReady();
 
  private:
   friend class RenderWidgetHostViewAndroidTest;
@@ -501,6 +535,9 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   FRIEND_TEST_ALL_PREFIXES(SitePerProcessBrowserTest,
                            GestureManagerListensToChildFrames);
   FRIEND_TEST_ALL_PREFIXES(RenderWidgetHostViewAndroidTest, DisplayFeature);
+  FRIEND_TEST_ALL_PREFIXES(RenderWidgetHostViewAndroidTest, UpdateControls);
+  FRIEND_TEST_ALL_PREFIXES(RenderWidgetHostViewAndroidFluidResizeBrowserTest,
+                           ResizeDefersSynchronizationToNextFrame);
 
   class ScreenStateChangeHandler {
    public:
@@ -524,6 +561,9 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
     void WasEvicted();
     void WasShownAfterEviction();
 
+    // Clears flags used to throttle SurfaceSync.
+    void Unthrottle();
+
    private:
     friend class RenderWidgetHostViewAndroidRotationTest;
 
@@ -535,9 +575,6 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
     // fullscreen, and Picture-in-Picture mode.
     bool HandleScreenStateChanges(const cc::DeadlinePolicy& deadline_policy,
                                   bool force_fullscreen_sync = false);
-
-    // Clears flags used to throttle SurfaceSync.
-    void Unthrottle();
 
     // The ScreenState of the current world, the pending visual properties, or
     // the properties from before we entered Picture-in-Picture mode.
@@ -572,13 +609,16 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   void OnDidUpdateVisualPropertiesComplete(
       const cc::RenderFrameMetadata& metadata);
 
-  void OnFinishGetContentBitmap(const base::android::JavaRef<jobject>& obj,
-                                const base::android::JavaRef<jobject>& callback,
+  void OnFinishGetContentBitmap(const base::android::JavaRef<jobject>& callback,
                                 const std::string& path,
-                                const SkBitmap& bitmap);
+                                const content::CopyFromSurfaceResult& result);
 
   void ShowInternal();
   void HideInternal();
+  void UpdateVisibility();
+  bool VisibilityNeedsDrawing() const;
+  void TryUpdateVisibilities(Visibility new_view_visibility,
+                             PageVisibilityState new_page_visibility);
   void AttachLayers();
   void RemoveLayers();
 
@@ -590,7 +630,7 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   void SynchronousCopyContents(
       const gfx::Rect& src_subrect_dip,
       const gfx::Size& dst_size_in_pixel,
-      base::OnceCallback<void(const SkBitmap&)> callback);
+      base::OnceCallback<void(const content::CopyFromSurfaceResult&)> callback);
 
   void MaybeCreateSynchronousCompositor();
   void ResetSynchronousCompositor();
@@ -621,6 +661,7 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   void BeginRotationEmbed();
   void EndRotationAndSyncIfNecessary();
   void EvictInternal();
+  CompositorImpl* GetCompositorImpl();
 
   // DevicePosturePlatformProvider::Observer.
   void OnDisplayFeatureBoundsChanged(
@@ -629,13 +670,17 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   void ComputeDisplayFeature();
   void SetDisplayFeatureBoundsForTesting(const gfx::Rect& bounds);
 
-  bool is_showing_;
+  // Update `tooltip_text_` returning `false` if already set to input string.
+  bool UpdateTooltipText(const std::u16string& tooltip_text);
+  // Return `tooltip_text_` clamped to `kMaxTooltipLength`.
+  std::u16string GetTrimmedTooltipText() const;
 
   // Window-specific bits that affect widget visibility.
   bool is_window_visible_;
   bool is_window_activity_started_;
 
   PageVisibilityState page_visibility_ = PageVisibilityState::kHidden;
+  Visibility view_visibility_ = Visibility::HIDDEN;
 
   // Specifies whether touch selection handles are hidden due to the dropdown
   // menu.
@@ -647,11 +692,14 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   // Specifies whether touch selection handles are hidden due to text selection.
   bool handles_hidden_by_selection_ui_ = false;
 
+  // Specifies whether the current input sequence is being handled completely by
+  // OverscrollController.
+  bool is_sequence_overscrolling_ = false;
   std::unique_ptr<input::AndroidInputHelper> input_helper_;
 
   raw_ptr<ImeAdapterAndroid> ime_adapter_android_;
   raw_ptr<SelectionPopupController> selection_popup_controller_;
-  raw_ptr<TextSuggestionHostAndroid> text_suggestion_host_;
+
   raw_ptr<GestureListenerManager> gesture_listener_manager_;
 
   mutable ui::ViewAndroid view_;
@@ -672,7 +720,7 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
 
   // Provides gesture synthesis given a stream of touch events (derived from
   // Android MotionEvent's) and touch event acks.
-  ui::FilteredGestureProvider gesture_provider_;
+  scoped_refptr<ui::FilteredGestureProvider> gesture_provider_;
 
   // Handles gesture based text selection
   StylusTextSelector stylus_text_selector_;
@@ -710,11 +758,15 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
 
   bool controls_initialized_ = false;
 
+  std::unique_ptr<input::CursorManager> cursor_manager_;
+  std::u16string tooltip_text_;
+
   float prev_top_shown_pix_;
   float prev_top_controls_pix_;
   float prev_top_controls_translate_;
   float prev_top_controls_min_height_offset_pix_;
   float prev_bottom_shown_pix_;
+  float prev_bottom_controls_pix_;
   float prev_bottom_controls_translate_;
   float prev_bottom_controls_min_height_offset_pix_;
   float page_scale_;
@@ -724,11 +776,8 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   base::TimeTicks prev_mousedown_timestamp_;
   gfx::Point prev_mousedown_point_;
   int left_click_count_ = 0;
-
   base::ObserverList<DestructionObserver>::Unchecked destruction_observers_;
-
   MouseWheelPhaseHandler mouse_wheel_phase_handler_;
-  uint32_t latest_capture_sequence_number_ = 0u;
 
   viz::ParentLocalSurfaceIdAllocator local_surface_id_allocator_;
   bool in_rotation_ = false;
@@ -773,7 +822,7 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   // are expressed in DIPs relative to the view. See display_feature.h for more
   // details.
   std::optional<DisplayFeature> display_feature_;
-  bool display_feature_overridden_for_testing_ = false;
+  bool display_feature_overridden_for_emulation_ = false;
   // Display feature bounds returned by the OS.
   gfx::Rect display_feature_bounds_;
 
@@ -785,7 +834,19 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
 
   base::android::ScopedJavaGlobalRef<jobject> obj_;
 
+  void CleanupDraggingCallback();
+
+  base::OneShotTimer cleanup_dragging_callback_timer_;
+
+  base::OnceCallback<void()> start_dragging_callback_;
+
   ScreenStateChangeHandler screen_state_change_handler_;
+
+  std::optional<base::flat_set<ui::DomCode>> locked_keyboard_keys_;
+
+  // Used to schedule a single visual properties update on the next vsync tick
+  // to achieve fluid resizing.
+  bool visual_properties_update_pending_ = false;
 
   base::WeakPtrFactory<RenderWidgetHostViewAndroid> weak_ptr_factory_{this};
 };

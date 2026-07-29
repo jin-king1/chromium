@@ -5,6 +5,7 @@
 #include "chromeos/ash/components/boca/session_api/remove_student_request.h"
 
 #include "base/json/json_writer.h"
+#include "base/strings/string_util.h"
 #include "base/values.h"
 #include "chromeos/ash/components/boca/session_api/constants.h"
 #include "google_apis/gaia/gaia_id.h"
@@ -59,16 +60,16 @@ bool RemoveStudentRequest::GetContentData(std::string* upload_content_type,
                                           std::string* upload_content) {
   *upload_content_type = boca::kContentTypeApplicationJson;
 
-  base::Value::Dict root;
-  base::Value::List students;
+  base::DictValue root;
+  base::ListValue students;
   for (auto id : student_ids_) {
-    base::Value::Dict item;
+    base::DictValue item;
     item.Set(kGaiaId, id);
     students.Append(std::move(item));
   }
   root.Set(kUsers, std::move(students));
 
-  base::JSONWriter::Write(root, upload_content);
+  *upload_content = base::WriteJson(root).value_or("");
   return true;
 }
 

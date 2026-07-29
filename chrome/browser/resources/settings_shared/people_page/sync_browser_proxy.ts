@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 // clang-format off
+import {assertNotReached} from 'chrome://resources/js/assert.js';
 import {sendWithPromise} from 'chrome://resources/js/cr.js';
 // clang-format on
 
@@ -65,6 +66,31 @@ export enum StatusAction {
   RETRIEVE_TRUSTED_VAULT_KEYS = 'retrieveTrustedVaultKeys',
   CONFIRM_SYNC_SETTINGS =
       'confirmSyncSettings',  // User needs to confirm sync settings.
+  SHOW_BOOKMARKS_LIMIT_HELP_ARTICLE =
+      'showBookmarksLimitHelpArticle',  // User needs to see bookmarks limit
+                                        // help article.
+}
+
+/**
+ * Checks whether the error associated with the given status action is
+ * configurable, meaning that the user should still be able to interact with the
+ * sync controls.
+ */
+export function shouldShowSyncTogglesForStatusAction(
+    statusAction: StatusAction): boolean {
+  switch (statusAction) {
+    case StatusAction.ENTER_PASSPHRASE:
+    case StatusAction.RETRIEVE_TRUSTED_VAULT_KEYS:
+    case StatusAction.CONFIRM_SYNC_SETTINGS:
+    case StatusAction.SHOW_BOOKMARKS_LIMIT_HELP_ARTICLE:
+      return true;
+    case StatusAction.NO_ACTION:
+    case StatusAction.REAUTHENTICATE:
+    case StatusAction.UPGRADE_CLIENT:
+      return false;
+    default:
+      assertNotReached();
+  }
 }
 
 /**
@@ -91,6 +117,7 @@ export interface SyncPrefs {
   extensionsManaged: boolean;
   extensionsRegistered: boolean;
   extensionsSynced: boolean;
+  localSyncEnabled: boolean;
   passphraseRequired: boolean;
   passwordsManaged: boolean;
   passwordsRegistered: boolean;
@@ -149,6 +176,26 @@ export const syncPrefsIndividualDataTypes: string[] = [
   'wifiConfigurationsSynced',
 ];
 
+// Always keep in sync with `UserSelectableType` (C++).
+// LINT.IfChange(UserSelectableType)
+export enum UserSelectableType {
+  BOOKMARKS = 0,
+  PREFERENCES = 1,
+  PASSWORDS = 2,
+  AUTOFILL = 3,
+  THEMES = 4,
+  HISTORY = 5,
+  EXTENSIONS = 6,
+  APPS = 7,
+  READING_LIST = 8,
+  TABS = 9,
+  SAVED_TAB_GROUPS = 10,
+  PAYMENTS = 11,
+  PRODUCT_COMPARISON = 12,
+  COOKIES = 13
+}
+// LINT.ThenChange(/components/sync/base/user_selectable_type.h:UserSelectableType)
+
 export enum PageStatus {
   SPINNER = 'spinner',      // Before the page has loaded.
   CONFIGURE = 'configure',  // Preferences ready to be configured.
@@ -177,13 +224,20 @@ export interface ChromeSigninUserChoiceInfo {
   signedInEmail: string;
 }
 
+// LINT.IfChange(ChromeSigninAccessPoint)
+export enum ChromeSigninAccessPoint {
+  SETTINGS = 0,
+  SETTINGS_YOUR_SAVED_INFO = 1,
+}
+// LINT.ThenChange(/chrome/browser/ui/webui/settings/people_handler.cc:ChromeSigninAccessPoint)
+
 export interface SyncBrowserProxy {
-  // <if expr="not chromeos_ash">
+  // <if expr="not is_chromeos">
   /**
    * Starts the signin process for the user. Does nothing if the user is
    * already signed in.
    */
-  startSignIn(): void;
+  startSignIn(accessPoint: ChromeSigninAccessPoint): void;
 
   /**
    * Signs out the signed-in user.
@@ -194,9 +248,24 @@ export interface SyncBrowserProxy {
    * Invalidates the Sync token without signing the user out.
    */
   pauseSync(): void;
+
+  recordSigninPendingOffered(): void;
+  recordSigninOffered(accessPoint: ChromeSigninAccessPoint): void;
   // </if>
 
-  // <if expr="chromeos_ash">
+  /**
+   * Sets a single type of data to sync.
+   */
+  setSyncDatatype(pref: UserSelectableType, value: boolean):
+      Promise<PageStatus>;
+
+  /**
+   * Function to invoke when the account settings page with the account storage
+   * per type settings is shown.
+   */
+  didNavigateToAccountSettingsPage(): void;
+
+  // <if expr="is_chromeos">
   /**
    * Signs the user out.
    */
@@ -218,6 +287,11 @@ export interface SyncBrowserProxy {
    * Starts the key retrieval process.
    */
   startKeyRetrieval(): void;
+
+  /**
+   * Forwards the user to the help center article about the bookmarks limit.
+   */
+  showBookmarkLimitExceededHelp(): void;
 
   /**
    * Displays the sync passphrase dialog for users to enter passphrase to enable
@@ -310,9 +384,9 @@ export interface SyncBrowserProxy {
 }
 
 export class SyncBrowserProxyImpl implements SyncBrowserProxy {
-  // <if expr="not chromeos_ash">
-  startSignIn() {
-    chrome.send('SyncSetupStartSignIn');
+  // <if expr="not is_chromeos">
+  startSignIn(accessPoint: ChromeSigninAccessPoint) {
+    chrome.send('SyncSetupStartSignIn', [accessPoint]);
   }
 
   signOut(deleteProfile: boolean) {
@@ -322,9 +396,25 @@ export class SyncBrowserProxyImpl implements SyncBrowserProxy {
   pauseSync() {
     chrome.send('SyncSetupPauseSync');
   }
+
+  recordSigninPendingOffered() {
+    chrome.send('RecordSigninPendingOffered');
+  }
+
+  recordSigninOffered(accessPoint: ChromeSigninAccessPoint) {
+    chrome.send('RecordSigninOffered', [accessPoint]);
+  }
   // </if>
 
-  // <if expr="chromeos_ash">
+  setSyncDatatype(pref: UserSelectableType, value: boolean) {
+    return sendWithPromise<PageStatus>('SetDatatype', pref, value);
+  }
+
+  didNavigateToAccountSettingsPage() {
+    chrome.send('ShowAccountSettingsUI');
+  }
+
+  // <if expr="is_chromeos">
   attemptUserExit() {
     chrome.send('AttemptUserExit');
   }
@@ -342,20 +432,24 @@ export class SyncBrowserProxyImpl implements SyncBrowserProxy {
     chrome.send('SyncStartKeyRetrieval');
   }
 
+  showBookmarkLimitExceededHelp() {
+    chrome.send('SyncShowBookmarkLimitExceededHelp');
+  }
+
   showSyncPassphraseDialog() {
     chrome.send('SyncShowSyncPassphraseDialog');
   }
 
   getSyncStatus() {
-    return sendWithPromise('SyncSetupGetSyncStatus');
+    return sendWithPromise<SyncStatus>('SyncSetupGetSyncStatus');
   }
 
   getStoredAccounts() {
-    return sendWithPromise('SyncSetupGetStoredAccounts');
+    return sendWithPromise<StoredAccount[]>('SyncSetupGetStoredAccounts');
   }
 
   getProfileAvatar() {
-    return sendWithPromise('SyncSetupGetProfileAvatar');
+    return sendWithPromise<string>('SyncSetupGetProfileAvatar');
   }
 
   didNavigateToSyncPage() {
@@ -367,15 +461,18 @@ export class SyncBrowserProxyImpl implements SyncBrowserProxy {
   }
 
   setSyncDatatypes(syncPrefs: SyncPrefs) {
-    return sendWithPromise('SyncSetupSetDatatypes', JSON.stringify(syncPrefs));
+    return sendWithPromise<PageStatus>(
+        'SyncSetupSetDatatypes', JSON.stringify(syncPrefs));
   }
 
   setEncryptionPassphrase(passphrase: string) {
-    return sendWithPromise('SyncSetupSetEncryptionPassphrase', passphrase);
+    return sendWithPromise<boolean>(
+        'SyncSetupSetEncryptionPassphrase', passphrase);
   }
 
   setDecryptionPassphrase(passphrase: string) {
-    return sendWithPromise('SyncSetupSetDecryptionPassphrase', passphrase);
+    return sendWithPromise<boolean>(
+        'SyncSetupSetDecryptionPassphrase', passphrase);
   }
 
   startSyncingWithEmail(email: string, isDefaultPromoAccount: boolean) {
@@ -402,7 +499,8 @@ export class SyncBrowserProxyImpl implements SyncBrowserProxy {
   }
 
   getChromeSigninUserChoiceInfo(): Promise<ChromeSigninUserChoiceInfo> {
-    return sendWithPromise('GetChromeSigninUserChoiceInfo');
+    return sendWithPromise<ChromeSigninUserChoiceInfo>(
+        'GetChromeSigninUserChoiceInfo');
   }
 
   static getInstance(): SyncBrowserProxy {

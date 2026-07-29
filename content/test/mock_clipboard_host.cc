@@ -2,17 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/342213636): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "content/test/mock_clipboard_host.h"
 
+#include <algorithm>
 #include <vector>
 
-#include "base/containers/contains.h"
 #include "base/notreached.h"
+#include "base/numerics/byte_conversions.h"
 #include "base/strings/strcat.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
@@ -37,30 +33,46 @@ void MockClipboardHost::Reset() {
   plain_text_ = std::u16string();
   html_text_ = std::u16string();
   svg_text_ = std::u16string();
+  standard_formats_present_.clear();
   url_ = GURL();
   png_.clear();
   custom_data_.clear();
   write_smart_paste_ = false;
   needs_reset_ = false;
+  ResetReadTracking();
+}
+
+void MockClipboardHost::ResetReadTracking() {
+  read_text_called_ = false;
+  read_html_called_ = false;
+  read_unsanitized_custom_format_called_ = false;
+  read_available_custom_and_standard_formats_called_ = false;
 }
 
 void MockClipboardHost::GetSequenceNumber(ui::ClipboardBuffer clipboard_buffer,
                                           GetSequenceNumberCallback callback) {
-  std::move(callback).Run(sequence_number_);
+  auto bytes = sequence_number_.value().AsBytes();
+  std::move(callback).Run(
+      absl::MakeUint128(base::U64FromLittleEndian(bytes.first<8>()),
+                        base::U64FromLittleEndian(bytes.last<8>())));
 }
 
 std::vector<std::u16string> MockClipboardHost::ReadStandardFormatNames() {
   std::vector<std::u16string> types;
-  if (!plain_text_.empty())
-    types.push_back(base::ASCIIToUTF16(ui::kMimeTypeText));
-  if (!html_text_.empty())
-    types.push_back(base::ASCIIToUTF16(ui::kMimeTypeHTML));
-  if (!svg_text_.empty())
-    types.push_back(base::ASCIIToUTF16(ui::kMimeTypeSvg));
-  if (!png_.empty())
-    types.push_back(base::ASCIIToUTF16(ui::kMimeTypePNG));
+  if (HasStandardFormat(StandardFormat::kPlainText)) {
+    types.push_back(ui::kMimeTypePlainText16);
+  }
+  if (HasStandardFormat(StandardFormat::kHtml)) {
+    types.push_back(ui::kMimeTypeHtml16);
+  }
+  if (HasStandardFormat(StandardFormat::kSvg)) {
+    types.push_back(ui::kMimeTypeSvg16);
+  }
+  if (HasStandardFormat(StandardFormat::kPng)) {
+    types.push_back(ui::kMimeTypePng16);
+  }
   for (auto& it : custom_data_) {
-    CHECK(!base::Contains(types, it.first));
+    CHECK(!std::ranges::contains(types, it.first));
     types.push_back(it.first);
   }
   return types;
@@ -79,10 +91,10 @@ void MockClipboardHost::IsFormatAvailable(blink::mojom::ClipboardFormat format,
   bool result = false;
   switch (format) {
     case blink::mojom::ClipboardFormat::kPlaintext:
-      result = !plain_text_.empty();
+      result = HasStandardFormat(StandardFormat::kPlainText);
       break;
     case blink::mojom::ClipboardFormat::kHtml:
-      result = !html_text_.empty();
+      result = HasStandardFormat(StandardFormat::kHtml);
       break;
     case blink::mojom::ClipboardFormat::kSmartPaste:
       result = write_smart_paste_;
@@ -96,11 +108,13 @@ void MockClipboardHost::IsFormatAvailable(blink::mojom::ClipboardFormat format,
 
 void MockClipboardHost::ReadText(ui::ClipboardBuffer clipboard_buffer,
                                  ReadTextCallback callback) {
+  read_text_called_ = true;
   std::move(callback).Run(plain_text_);
 }
 
 void MockClipboardHost::ReadHtml(ui::ClipboardBuffer clipboard_buffer,
                                  ReadHtmlCallback callback) {
+  read_html_called_ = true;
   std::move(callback).Run(html_text_, url_, 0, html_text_.length());
 }
 
@@ -137,6 +151,8 @@ void MockClipboardHost::WriteText(const std::u16string& text) {
   if (needs_reset_)
     Reset();
   plain_text_ = text;
+  standard_formats_present_.insert(StandardFormat::kPlainText);
+  OnClipboardDataChanged();
 }
 
 void MockClipboardHost::WriteHtml(const std::u16string& markup,
@@ -144,13 +160,16 @@ void MockClipboardHost::WriteHtml(const std::u16string& markup,
   if (needs_reset_)
     Reset();
   html_text_ = markup;
+  standard_formats_present_.insert(StandardFormat::kHtml);
   url_ = url;
+  OnClipboardDataChanged();
 }
 
 void MockClipboardHost::WriteSvg(const std::u16string& markup) {
   if (needs_reset_)
     Reset();
   svg_text_ = markup;
+  standard_formats_present_.insert(StandardFormat::kSvg);
 }
 
 void MockClipboardHost::WriteSmartPasteMarker() {
@@ -176,6 +195,11 @@ void MockClipboardHost::WriteImage(const SkBitmap& bitmap) {
   png_ =
       gfx::PNGCodec::EncodeBGRASkBitmap(bitmap, /*discard_transparency=*/false)
           .value_or(std::vector<uint8_t>());
+  standard_formats_present_.insert(StandardFormat::kPng);
+}
+
+bool MockClipboardHost::HasStandardFormat(StandardFormat format) const {
+  return standard_formats_present_.contains(format);
 }
 
 void MockClipboardHost::CommitWrite() {
@@ -185,6 +209,7 @@ void MockClipboardHost::CommitWrite() {
 
 void MockClipboardHost::ReadAvailableCustomAndStandardFormats(
     ReadAvailableCustomAndStandardFormatsCallback callback) {
+  read_available_custom_and_standard_formats_called_ = true;
   std::vector<std::u16string> format_names = ReadStandardFormatNames();
   for (const auto& item : unsanitized_custom_data_map_)
     format_names.emplace_back(item.first);
@@ -194,6 +219,7 @@ void MockClipboardHost::ReadAvailableCustomAndStandardFormats(
 void MockClipboardHost::ReadUnsanitizedCustomFormat(
     const std::u16string& format,
     ReadUnsanitizedCustomFormatCallback callback) {
+  read_unsanitized_custom_format_called_ = true;
   const auto it = unsanitized_custom_data_map_.find(format);
   if (it == unsanitized_custom_data_map_.end())
     return;
@@ -208,16 +234,39 @@ void MockClipboardHost::WriteUnsanitizedCustomFormat(
   if (needs_reset_)
     Reset();
   // Simulate the underlying platform copying this data.
-  std::vector<uint8_t> data_copy(data.data(), data.data() + data.size());
+  std::vector<uint8_t> data_copy(data.begin(), data.end());
   // Append the "web " prefix since it is removed by the clipboard writer during
   // write.
   std::u16string web_format =
-      base::StrCat({base::ASCIIToUTF16(ui::kWebClipboardFormatPrefix), format});
+      base::StrCat({ui::kWebClipboardFormatPrefix16, format});
   unsanitized_custom_data_map_[web_format] = std::move(data_copy);
+}
+
+void MockClipboardHost::RegisterClipboardListener(
+    mojo::PendingRemote<blink::mojom::ClipboardListener> listener) {
+  clipboard_listener_.reset();
+  clipboard_listener_.Bind(std::move(listener));
+}
+
+void MockClipboardHost::OnClipboardDataChanged() {
+  if (clipboard_listener_) {
+    auto sequence_number_bytes = sequence_number_.value().AsBytes();
+    clipboard_listener_->OnClipboardDataChanged(
+        ReadStandardFormatNames(),
+        absl::MakeUint128(
+            base::U64FromLittleEndian(sequence_number_bytes.first<8>()),
+            base::U64FromLittleEndian(sequence_number_bytes.last<8>())));
+  }
 }
 
 #if BUILDFLAG(IS_MAC)
 void MockClipboardHost::WriteStringToFindPboard(const std::u16string& text) {}
+
+void MockClipboardHost::GetPlatformPermissionState(
+    GetPlatformPermissionStateCallback callback) {
+  std::move(callback).Run(
+      blink::mojom::PlatformClipboardPermissionState::kAllow);
+}
 #endif
 
 }  // namespace content

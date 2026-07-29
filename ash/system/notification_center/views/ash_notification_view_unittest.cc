@@ -35,21 +35,23 @@
 #include "ash/test/ash_test_base.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
 #include "build/buildflag.h"
+#include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/data_transfer_policy/mock_data_transfer_policy_controller.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/compositor/layer.h"
-#include "ui/compositor/scoped_animation_duration_scale_mode.h"
 #include "ui/compositor/test/layer_animation_stopped_waiter.h"
 #include "ui/compositor/test/test_utils.h"
 #include "ui/events/test/test_event.h"
 #include "ui/gfx/color_utils.h"
 #include "ui/gfx/image/image_unittest_util.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/message_center/message_center.h"
 #include "ui/message_center/message_center_impl.h"
 #include "ui/message_center/message_center_observer.h"
@@ -66,8 +68,11 @@
 #include "ui/views/controls/button/label_button.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/controls/textfield/textfield.h"
+#include "ui/views/layout/layout_types.h"
 #include "ui/views/test/button_test_api.h"
 #include "ui/views/test/views_test_utils.h"
+#include "ui/views/view_tracker.h"
+#include "ui/views/view_utils.h"
 
 namespace ash {
 
@@ -207,6 +212,22 @@ class MockAshNotificationDragDropDelegate
 
   base::WeakPtrFactory<MockAshNotificationDragDropDelegate> weak_ptr_factory_{
       this};
+};
+
+class DeleteOnExpandDelegate : public message_center::NotificationDelegate {
+ public:
+  explicit DeleteOnExpandDelegate(base::RepeatingClosure delete_closure)
+      : delete_closure_(delete_closure) {}
+
+  void ExpandStateChanged(bool expanded) override {
+    if (delete_closure_) {
+      delete_closure_.Run();
+    }
+  }
+
+ private:
+  ~DeleteOnExpandDelegate() override = default;
+  base::RepeatingClosure delete_closure_;
 };
 
 }  // namespace
@@ -861,8 +882,8 @@ TEST_F(AshNotificationViewTest, AppIconAndExpandButtonAlignment) {
 
 TEST_F(AshNotificationViewTest, ExpandCollapseAnimationsRecordSmoothness) {
   // Enable animations.
-  ui::ScopedAnimationDurationScaleMode duration(
-      ui::ScopedAnimationDurationScaleMode::FAST_DURATION);
+  gfx::ScopedAnimationDurationScaleMode duration(
+      gfx::ScopedAnimationDurationScaleMode::FAST_DURATION);
 
   message_center::MessageCenter::Get()->RemoveAllNotifications(
       /*by_user=*/true, message_center::MessageCenter::RemoveType::ALL);
@@ -919,11 +940,10 @@ TEST_F(AshNotificationViewTest, ExpandCollapseAnimationsRecordSmoothness) {
       "Ash.NotificationView.ActionsRow.FadeIn.AnimationSmoothness");
 }
 
-// TODO(crbug.com/41495194): Re-enable this test
 TEST_F(AshNotificationViewTest, ImageExpandCollapseAnimationsRecordSmoothness) {
   // Enable animations.
-  ui::ScopedAnimationDurationScaleMode duration(
-      ui::ScopedAnimationDurationScaleMode::FAST_DURATION);
+  gfx::ScopedAnimationDurationScaleMode duration(
+      gfx::ScopedAnimationDurationScaleMode::FAST_DURATION);
 
   message_center::MessageCenter::Get()->RemoveAllNotifications(
       /*by_user=*/true, message_center::MessageCenter::RemoveType::ALL);
@@ -989,8 +1009,8 @@ TEST_F(AshNotificationViewTest, GroupExpandCollapseAnimationsRecordSmoothness) {
   base::HistogramTester histograms;
 
   // Enable animations.
-  ui::ScopedAnimationDurationScaleMode duration(
-      ui::ScopedAnimationDurationScaleMode::FAST_DURATION);
+  gfx::ScopedAnimationDurationScaleMode duration(
+      gfx::ScopedAnimationDurationScaleMode::FAST_DURATION);
 
   message_center::MessageCenter::Get()->RemoveAllNotifications(
       /*by_user=*/true, message_center::MessageCenter::RemoveType::ALL);
@@ -1058,8 +1078,8 @@ TEST_F(AshNotificationViewTest, SingleToGroupAnimationsRecordSmoothness) {
   base::HistogramTester histograms;
 
   // Enable animations.
-  ui::ScopedAnimationDurationScaleMode duration(
-      ui::ScopedAnimationDurationScaleMode::FAST_DURATION);
+  gfx::ScopedAnimationDurationScaleMode duration(
+      gfx::ScopedAnimationDurationScaleMode::FAST_DURATION);
 
   message_center::MessageCenter::Get()->RemoveAllNotifications(
       /*by_user=*/true, message_center::MessageCenter::RemoveType::ALL);
@@ -1092,8 +1112,8 @@ TEST_F(AshNotificationViewTest, InlineReplyAnimationsRecordSmoothness) {
   base::HistogramTester histograms;
 
   // Enable animations.
-  ui::ScopedAnimationDurationScaleMode duration(
-      ui::ScopedAnimationDurationScaleMode::FAST_DURATION);
+  gfx::ScopedAnimationDurationScaleMode duration(
+      gfx::ScopedAnimationDurationScaleMode::FAST_DURATION);
 
   message_center::MessageCenter::Get()->RemoveAllNotifications(
       /*by_user=*/true, message_center::MessageCenter::RemoveType::ALL);
@@ -1134,8 +1154,8 @@ TEST_F(AshNotificationViewTest, InlineSettingsAnimationsRecordSmoothness) {
   base::HistogramTester histograms;
 
   // Enable animations.
-  ui::ScopedAnimationDurationScaleMode duration(
-      ui::ScopedAnimationDurationScaleMode::FAST_DURATION);
+  gfx::ScopedAnimationDurationScaleMode duration(
+      gfx::ScopedAnimationDurationScaleMode::FAST_DURATION);
 
   message_center::MessageCenter::Get()->RemoveAllNotifications(
       /*by_user=*/true, message_center::MessageCenter::RemoveType::ALL);
@@ -1179,41 +1199,6 @@ TEST_F(AshNotificationViewTest, InlineSettingsAnimationsRecordSmoothness) {
       histograms, GetMainRightView(notification_view),
       "Ash.NotificationView.MainRightView.FadeIn.AnimationSmoothness",
       /*data_point_count=*/2);
-}
-
-TEST_F(AshNotificationViewTest,
-       GroupNotificationSlideOutAnimationRecordSmoothness) {
-  base::HistogramTester histograms;
-
-  message_center::MessageCenter::Get()->RemoveAllNotifications(
-      /*by_user=*/true, message_center::MessageCenter::RemoveType::ALL);
-
-  auto notification = CreateTestNotification();
-
-  notification_center_test_api()->ToggleBubble();
-  auto* notification_view =
-      GetNotificationViewFromMessageCenter(notification->id());
-  MakeNotificationGroupParent(
-      notification_view,
-      2 * message_center_style::kMaxGroupedNotificationsInCollapsedState);
-
-  notification_view->ToggleExpand();
-  EXPECT_TRUE(notification_view->IsExpanded());
-
-  // Enable animations.
-  ui::ScopedAnimationDurationScaleMode duration(
-      ui::ScopedAnimationDurationScaleMode::FAST_DURATION);
-
-  auto* child_view = GetFirstGroupedChildNotificationView(notification_view);
-  notification_view->RemoveGroupNotification(child_view->notification_id());
-
-  base::HistogramTester histogram;
-
-  // The child view should slide out before being deleted and the smoothness
-  // should be recorded.
-  CheckSmoothnessRecorded(
-      histograms, child_view,
-      "Ash.Notification.GroupNotification.SlideOut.AnimationSmoothness");
 }
 
 TEST_F(AshNotificationViewTest, RecordExpandButtonClickAction) {
@@ -1312,8 +1297,8 @@ TEST_F(AshNotificationViewTest, DuplicateGroupChildRemovalWithAnimation) {
   EXPECT_TRUE(notification_view->IsExpanded());
 
   // Enable animations.
-  ui::ScopedAnimationDurationScaleMode duration(
-      ui::ScopedAnimationDurationScaleMode::FAST_DURATION);
+  gfx::ScopedAnimationDurationScaleMode duration(
+      gfx::ScopedAnimationDurationScaleMode::FAST_DURATION);
 
   // Ensure a duplicate call to RemoveGroupNotification does not cause a crash.
   auto* child_view = GetFirstGroupedChildNotificationView(notification_view);
@@ -1374,6 +1359,19 @@ TEST_F(AshNotificationViewTest, LeftContentAndTitleRowHeightMatches) {
 
   EXPECT_EQ(GetLeftContent(notification_view())->height(),
             GetTitleRow(notification_view())->height());
+}
+
+TEST_F(AshNotificationViewTest, ProgressBarDoesNotOverpaint) {
+  std::unique_ptr<Notification> notification = CreateTestNotification(
+      /*has_image=*/false, /*show_snooze_button=*/false, /*has_message=*/true,
+      message_center::NOTIFICATION_TYPE_PROGRESS);
+  notification_view()->UpdateWithNotification(*notification);
+
+  EXPECT_EQ(notification_view()
+                ->progress_bar_view_for_testing()
+                ->CalculatePreferredSize(views::SizeBounds())
+                .height(),
+            4);
 }
 
 // AshNotificationLimitTest ----------------------------------------------------
@@ -2257,6 +2255,140 @@ TEST_F(DragAfterNotificationRemovalTest, Basics) {
 
   // Drag should NOT start.
   EXPECT_FALSE(notification_view->GetWidget()->dragged_view());
+}
+
+TEST_F(AshNotificationViewTest, TestDeleteOnToggleInlineSettings) {
+  auto* test_api = notification_center_test_api();
+  base::RepeatingClosure delete_closure = base::BindRepeating(
+      [](NotificationCenterTestApi* test_api, const std::string& id) {
+        auto* view = views::AsViewClass<AshNotificationView>(
+            test_api->GetNotificationViewForId(id));
+        if (view && view->GetWidget()) {
+          view->GetWidget()->CloseNow();
+        }
+      },
+      base::Unretained(test_api), "id");
+
+  scoped_refptr<DeleteOnExpandDelegate> delegate =
+      base::MakeRefCounted<DeleteOnExpandDelegate>(delete_closure);
+
+  message_center::RichNotificationData data;
+  data.settings_button_handler = message_center::SettingsButtonHandler::INLINE;
+  std::unique_ptr<Notification> notification = std::make_unique<Notification>(
+      message_center::NOTIFICATION_TYPE_SIMPLE, "id", u"title", u"message",
+      ui::ImageModel(), u"display source", GURL(),
+      message_center::NotifierId(message_center::NotifierType::APPLICATION,
+                                 "extension_id"),
+      data, delegate);
+
+  message_center::MessageCenter::Get()->AddNotification(
+      std::move(notification));
+
+  notification_center_test_api()->ToggleBubble();
+  auto* view = views::AsViewClass<AshNotificationView>(
+      notification_center_test_api()->GetNotificationViewForId("id"));
+  ASSERT_TRUE(view);
+
+  views::ViewTracker tracker(view);
+
+  // Toggle inline settings. This calls SetExpanded, which triggers
+  // ExpandStateChanged in the delegate, deleting the view.
+  // Without the weak ptr check, this will crash/UAF.
+  view->ToggleInlineSettings(ui::test::TestEvent());
+
+  EXPECT_EQ(tracker.view(), nullptr);
+
+  message_center::MessageCenter::Get()->RemoveNotification("id",
+                                                           /*by_user=*/false);
+}
+
+TEST_F(AshNotificationViewTest, TestDeleteOnToggleSnoozeSettings) {
+  auto* test_api = notification_center_test_api();
+  base::RepeatingClosure delete_closure = base::BindRepeating(
+      [](NotificationCenterTestApi* test_api, const std::string& id) {
+        auto* view = views::AsViewClass<AshNotificationView>(
+            test_api->GetNotificationViewForId(id));
+        if (view && view->GetWidget()) {
+          view->GetWidget()->CloseNow();
+        }
+      },
+      base::Unretained(test_api), "id");
+
+  scoped_refptr<DeleteOnExpandDelegate> delegate =
+      base::MakeRefCounted<DeleteOnExpandDelegate>(delete_closure);
+
+  message_center::RichNotificationData data;
+  data.should_show_snooze_button = true;
+  std::unique_ptr<Notification> notification = std::make_unique<Notification>(
+      message_center::NOTIFICATION_TYPE_SIMPLE, "id", u"title", u"message",
+      ui::ImageModel(), u"display source", GURL(),
+      message_center::NotifierId(message_center::NotifierType::APPLICATION,
+                                 "extension_id"),
+      data, delegate);
+
+  message_center::MessageCenter::Get()->AddNotification(
+      std::move(notification));
+
+  notification_center_test_api()->ToggleBubble();
+  auto* view = views::AsViewClass<AshNotificationView>(
+      notification_center_test_api()->GetNotificationViewForId("id"));
+  ASSERT_TRUE(view);
+  view->set_snooze_settings_enabled(true);
+
+  views::ViewTracker tracker(view);
+
+  // Toggle snooze settings. This calls SetExpanded, which triggers
+  // ExpandStateChanged in the delegate, deleting the view.
+  // Without the weak ptr check, this will crash/UAF.
+  view->ToggleSnoozeSettings(ui::test::TestEvent());
+
+  EXPECT_EQ(tracker.view(), nullptr);
+
+  message_center::MessageCenter::Get()->RemoveNotification("id",
+                                                           /*by_user=*/false);
+}
+
+TEST_F(AshNotificationViewTest, TestDeleteOnToggleExpand) {
+  auto* test_api = notification_center_test_api();
+  base::RepeatingClosure delete_closure = base::BindRepeating(
+      [](NotificationCenterTestApi* test_api, const std::string& id) {
+        auto* view = views::AsViewClass<AshNotificationView>(
+            test_api->GetNotificationViewForId(id));
+        if (view && view->GetWidget()) {
+          view->GetWidget()->CloseNow();
+        }
+      },
+      base::Unretained(test_api), "id");
+
+  scoped_refptr<DeleteOnExpandDelegate> delegate =
+      base::MakeRefCounted<DeleteOnExpandDelegate>(delete_closure);
+
+  std::unique_ptr<Notification> notification = std::make_unique<Notification>(
+      message_center::NOTIFICATION_TYPE_SIMPLE, "id", u"title", u"message",
+      ui::ImageModel(), u"display source", GURL(),
+      message_center::NotifierId(message_center::NotifierType::APPLICATION,
+                                 "extension_id"),
+      message_center::RichNotificationData(), delegate);
+
+  message_center::MessageCenter::Get()->AddNotification(
+      std::move(notification));
+
+  notification_center_test_api()->ToggleBubble();
+  auto* view = views::AsViewClass<AshNotificationView>(
+      notification_center_test_api()->GetNotificationViewForId("id"));
+  ASSERT_TRUE(view);
+
+  views::ViewTracker tracker(view);
+
+  // Toggle expand. This calls SetExpanded, which triggers
+  // ExpandStateChanged in the delegate, deleting the view.
+  // Without the weak ptr check, this will crash/UAF.
+  view->ToggleExpand();
+
+  EXPECT_EQ(tracker.view(), nullptr);
+
+  message_center::MessageCenter::Get()->RemoveNotification("id",
+                                                           /*by_user=*/false);
 }
 
 }  // namespace ash

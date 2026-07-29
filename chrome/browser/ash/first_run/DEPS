@@ -17,7 +17,6 @@ include_rules = [
   "+chrome/browser/ash/arc",
   "+chrome/browser/ash/login",
   "+chrome/browser/ash/system_web_apps",
-  "+chrome/browser/browser_process.h",
   "+chrome/browser/policy",
   "+chrome/browser/profiles",
   "+chrome/browser/signin",
@@ -25,5 +24,4 @@ include_rules = [
   "+chrome/browser/ui/ash/system_web_apps",
   "+chrome/common/chrome_switches.h",
   "+chrome/common/extensions",
-  "+chrome/common/pref_names.h",
 ]

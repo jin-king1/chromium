@@ -24,7 +24,7 @@ HelpBubbleFactoryRegistry::~HelpBubbleFactoryRegistry() {
     // Unsubscribe from the bubble before trying to close it so we don't try to
     // modify the map while we're iterating it.
     pr.second = base::CallbackListSubscription();
-    pr.first->Close();
+    pr.first->Close(HelpBubble::CloseReason::kBubbleDestroyed);
   }
 }
 
@@ -36,10 +36,7 @@ std::unique_ptr<HelpBubble> HelpBubbleFactoryRegistry::CreateHelpBubble(
     if (bubble_factory.CanBuildBubbleForTrackedElement(element)) {
       auto result = bubble_factory.CreateBubble(element, std::move(params));
       if (result) {
-        help_bubbles_.emplace(
-            result.get(), result->AddOnCloseCallback(base::BindOnce(
-                              &HelpBubbleFactoryRegistry::OnHelpBubbleClosed,
-                              base::Unretained(this))));
+        AddHelpBubble(result.get());
       }
       return result;
     }
@@ -77,9 +74,18 @@ HelpBubble* HelpBubbleFactoryRegistry::GetHelpBubble(
   return nullptr;
 }
 
-void HelpBubbleFactoryRegistry::OnHelpBubbleClosed(HelpBubble* bubble,
-                                                   HelpBubble::CloseReason) {
-  const auto result = help_bubbles_.erase(bubble);
+void HelpBubbleFactoryRegistry::AddHelpBubble(HelpBubble* help_bubble) {
+  CHECK(help_bubble);
+  CHECK(help_bubble->is_open());
+  help_bubbles_.emplace(help_bubble,
+                        help_bubble->AddOnClosingCallback(base::BindOnce(
+                            &HelpBubbleFactoryRegistry::OnHelpBubbleClosing,
+                            base::Unretained(this))));
+}
+
+void HelpBubbleFactoryRegistry::OnHelpBubbleClosing(const HelpBubble* bubble,
+                                                    HelpBubble::CloseReason) {
+  const auto result = help_bubbles_.erase(const_cast<HelpBubble*>(bubble));
   DCHECK(result);
 }
 

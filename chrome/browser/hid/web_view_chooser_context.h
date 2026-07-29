@@ -8,6 +8,7 @@
 #include <map>
 #include <string>
 
+#include "base/memory/raw_ptr.h"
 #include "base/scoped_observation.h"
 #include "components/permissions/object_permission_context_base.h"
 #include "services/device/public/mojom/hid.mojom.h"
@@ -19,7 +20,7 @@ class HidChooserContext;
 // disk.
 //
 // WebView permissions should be stored separately from other permissions for
-// security reasons, e.g., crbug/1462709.
+// security reasons, e.g., crbug.com/40066989.
 class WebViewChooserContext
     : public permissions::ObjectPermissionContextBase::PermissionObserver {
  public:

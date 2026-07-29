@@ -8,6 +8,8 @@ import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.content.Context;
 
+import androidx.annotation.VisibleForTesting;
+
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
@@ -30,8 +32,9 @@ import javax.annotation.concurrent.GuardedBy;
 @NullMarked
 public class PartnerBookmarksReader {
     private static final String TAG = "PartnerBMReader";
-    private static Set<FaviconUpdateObserver> sFaviconUpdateObservers = new HashSet<>();
+    private static final Set<FaviconUpdateObserver> sFaviconUpdateObservers = new HashSet<>();
     private static final float DESIRED_FAVICON_SIZE_DP = 16.0f;
+    @VisibleForTesting static final long NULL_NATIVE_POINTER = 0;
 
     /** Root bookmark id reserved for the implied root of the bookmarks */
     static final long ROOT_FOLDER_ID = 0;
@@ -39,7 +42,7 @@ public class PartnerBookmarksReader {
     /** ID used to indicate an invalid bookmark node. */
     static final long INVALID_BOOKMARK_ID = -1;
 
-    /** Storage for failed favicon retrieval attempts to throttle future requests. * */
+    /** Storage for failed favicon retrieval attempts to throttle future requests. */
     private @Nullable PartnerBookmarksFaviconThrottle mFaviconThrottle;
 
     // JNI c++ pointer
@@ -83,10 +86,10 @@ public class PartnerBookmarksReader {
      * from cache or server.
      */
     interface FetchFaviconCallback {
-        @CalledByNative("FetchFaviconCallback")
+        @CalledByNative
         void onFaviconFetched(@FaviconFetchResult int result);
 
-        @CalledByNative("FetchFaviconCallback")
+        @CalledByNative
         void onFaviconFetch();
     }
 
@@ -99,8 +102,25 @@ public class PartnerBookmarksReader {
      */
     public PartnerBookmarksReader(
             Context context, Profile profile, PartnerBrowserCustomizations browserCustomizations) {
+        this(context, browserCustomizations, PartnerBookmarksReaderJni.get().init(profile));
+    }
+
+    /**
+     * @param context A Context object.
+     * @param browserCustomizations Provides status of partner customizations.
+     * @param nativePartnerBookmarksReader Native counterpart to this class.
+     */
+    public PartnerBookmarksReader(
+            Context context,
+            PartnerBrowserCustomizations browserCustomizations,
+            long nativePartnerBookmarksReader) {
         mContext = context;
-        mNativePartnerBookmarksReader = PartnerBookmarksReaderJni.get().init(profile);
+        mNativePartnerBookmarksReader = nativePartnerBookmarksReader;
+        // Catch case where the underlying profile is null, bail out.
+        if (mNativePartnerBookmarksReader == NULL_NATIVE_POINTER) {
+            return;
+        }
+
         if (!browserCustomizations.isInitialized()) {
             browserCustomizations.initializeAsync(context);
         }
@@ -138,7 +158,7 @@ public class PartnerBookmarksReader {
     /** Asynchronously read bookmarks from the partner content provider */
     public void readBookmarks(PartnerBookmark.BookmarkIterator bookmarkIterator) {
         if (mNativePartnerBookmarksReader == 0) {
-            assert false : "readBookmarks called after PartnerBookmarksReaderJni.get().destroy.";
+            Log.e(TAG, "Partner bookmarks can't be read because the native counterpart is null.");
             return;
         }
         new ReadBookmarksTask(bookmarkIterator).executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
@@ -195,7 +215,6 @@ public class PartnerBookmarksReader {
         return PartnerBookmarksReaderJni.get()
                 .addPartnerBookmark(
                         mNativePartnerBookmarksReader,
-                        PartnerBookmarksReader.this,
                         url,
                         title,
                         isFolder,
@@ -231,8 +250,7 @@ public class PartnerBookmarksReader {
         }
         Log.i(TAG, "Partner bookmarks creation complete.");
         PartnerBookmarksReaderJni.get()
-                .partnerBookmarksCreationComplete(
-                        mNativePartnerBookmarksReader, PartnerBookmarksReader.this);
+                .partnerBookmarksCreationComplete(mNativePartnerBookmarksReader);
     }
 
     @GuardedBy("mProgressLock")
@@ -260,8 +278,7 @@ public class PartnerBookmarksReader {
                 observer.onCompletedFaviconLoading();
             }
         }
-        PartnerBookmarksReaderJni.get()
-                .destroy(mNativePartnerBookmarksReader, PartnerBookmarksReader.this);
+        PartnerBookmarksReaderJni.get().destroy(mNativePartnerBookmarksReader);
         mNativePartnerBookmarksReader = 0;
         mShutDown = true;
     }
@@ -289,8 +306,8 @@ public class PartnerBookmarksReader {
             }
 
             // Get a snapshot of the bookmarks.
-            LinkedHashMap<Long, PartnerBookmark> idMap = new LinkedHashMap<Long, PartnerBookmark>();
-            HashSet<String> urlSet = new HashSet<String>();
+            LinkedHashMap<Long, PartnerBookmark> idMap = new LinkedHashMap<>();
+            HashSet<String> urlSet = new HashSet<>();
 
             PartnerBookmark rootBookmarksFolder = createRootBookmarksFolderBookmark();
             idMap.put(ROOT_FOLDER_ID, rootBookmarksFolder);
@@ -332,7 +349,7 @@ public class PartnerBookmarksReader {
                 return null;
             }
 
-            readBookmarkHierarchy(rootBookmarksFolder, new HashSet<PartnerBookmark>());
+            readBookmarkHierarchy(rootBookmarksFolder, new HashSet<>());
 
             return null;
         }
@@ -416,13 +433,12 @@ public class PartnerBookmarksReader {
     interface Natives {
         long init(@JniType("Profile*") Profile profile);
 
-        void reset(long nativePartnerBookmarksReader, PartnerBookmarksReader caller);
+        void reset(long nativePartnerBookmarksReader);
 
-        void destroy(long nativePartnerBookmarksReader, PartnerBookmarksReader caller);
+        void destroy(long nativePartnerBookmarksReader);
 
         long addPartnerBookmark(
                 long nativePartnerBookmarksReader,
-                PartnerBookmarksReader caller,
                 @Nullable String url,
                 String title,
                 boolean isFolder,
@@ -433,8 +449,7 @@ public class PartnerBookmarksReader {
                 int desiredFaviconSizePx,
                 FetchFaviconCallback callback);
 
-        void partnerBookmarksCreationComplete(
-                long nativePartnerBookmarksReader, PartnerBookmarksReader caller);
+        void partnerBookmarksCreationComplete(long nativePartnerBookmarksReader);
 
         @JniType("std::string")
         String getNativeUrlString(@JniType("std::string") String url);

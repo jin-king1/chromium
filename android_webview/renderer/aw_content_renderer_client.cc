@@ -15,29 +15,33 @@
 #include "android_webview/renderer/aw_content_settings_client.h"
 #include "android_webview/renderer/aw_print_render_frame_helper_delegate.h"
 #include "android_webview/renderer/aw_render_frame_ext.h"
+#include "android_webview/renderer/aw_render_frame_observer.h"
 #include "android_webview/renderer/aw_render_view_ext.h"
 #include "android_webview/renderer/aw_url_loader_throttle_provider.h"
 #include "android_webview/renderer/browser_exposed_renderer_interfaces.h"
 #include "base/android/library_loader/library_prefetcher.h"
+#include "base/android/orderfile/orderfile_buildflags.h"
 #include "base/command_line.h"
+#include "base/feature_list.h"
 #include "base/i18n/rtl.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/strings/string_util.h"
 #include "base/task/thread_pool.h"
 #include "components/android_system_error_page/error_page_populator.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/cdm/renderer/key_system_support_update.h"
 #include "components/js_injection/renderer/js_communication.h"
+#include "components/metrics/call_stacks/call_stack_profile_builder.h"
+#include "components/metrics/public/mojom/call_stack_profile_collector.mojom.h"
 #include "components/network_hints/renderer/web_prescient_networking_impl.h"
 #include "components/page_load_metrics/renderer/metrics_render_frame_observer.h"
 #include "components/printing/renderer/print_render_frame_helper.h"
 #include "components/security_interstitials/content/renderer/security_interstitial_page_controller_delegate_impl.h"
+#include "components/visitedlink/common/visitedlink_common.h"
 #include "components/visitedlink/renderer/visitedlink_reader.h"
 #include "content/public/child/child_thread.h"
 #include "content/public/common/url_constants.h"
 #include "content/public/renderer/render_frame.h"
 #include "content/public/renderer/render_thread.h"
-#include "ipc/ipc_sync_channel.h"
 #include "mojo/public/cpp/bindings/binder_map.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
 #include "third_party/blink/public/platform/platform.h"
@@ -71,23 +75,39 @@ void AwContentRendererClient::RenderThreadStarted() {
   thread->AddObserver(aw_render_thread_observer_.get());
 
   visited_link_reader_ = std::make_unique<visitedlink::VisitedLinkReader>();
+  if (base::FeatureList::IsEnabled(features::kWebViewMigrateVisitedLinks)) {
+    visited_link_reader_->SetIsPseudoPartitioned(true);
+  }
 
   browser_interface_broker_ =
       blink::Platform::Current()->GetBrowserInterfaceBroker();
 
-  if (base::FeatureList::IsEnabled(features::kWebViewPrefetchNativeLibrary) &&
-      features::kWebViewPrefetchFromRenderer.Get()) {
+#if BUILDFLAG(SUPPORTS_CODE_ORDERING)
+  bool shouldPrefetchNativeLibrary =
+      base::FeatureList::IsEnabled(features::kWebViewPrefetchNativeLibrary) &&
+      features::kWebViewPrefetchFromRenderer.Get();
+
+  if (shouldPrefetchNativeLibrary) {
     base::ThreadPool::PostTask(
         FROM_HERE, base::BindOnce([] {
-          base::android::NativeLibraryPrefetcher::ForkAndPrefetchNativeLibrary(
-              false);
+          base::android::NativeLibraryPrefetcher::PrefetchNativeLibrary();
         }));
   }
+#endif
 
 #if BUILDFLAG(ENABLE_SPELLCHECK)
   if (!spellcheck_)
     spellcheck_ = std::make_unique<SpellCheck>(this);
 #endif
+
+  // Set up the profile collector pipe that the renderer process uses to send
+  // profiles to the browser_process.
+  if (base::FeatureList::IsEnabled(features::kWebViewMemoryProfilingClient)) {
+    mojo::PendingRemote<metrics::mojom::CallStackProfileCollector> collector;
+    thread->BindHostReceiver(collector.InitWithNewPipeAndPassReceiver());
+    metrics::CallStackProfileBuilder::SetParentProfileCollectorForChildProcess(
+        std::move(collector));
+  }
 }
 
 void AwContentRendererClient::ExposeInterfacesToBrowser(
@@ -184,6 +204,12 @@ void AwContentRendererClient::RenderFrameCreated(
 
   // Owned by |render_frame|.
   new page_load_metrics::MetricsRenderFrameObserver(render_frame);
+  // Currently, AwRenderFrameObserver is only used for orderfile
+  // instrumentation. So we avoid creating the observer unless orderfile
+  // instrumentation is enabled.
+#if BUILDFLAG(ORDERFILE_INSTRUMENTATION)
+  new AwRenderFrameObserver(render_frame);
+#endif
 }
 
 std::unique_ptr<blink::WebPrescientNetworking>
@@ -196,17 +222,18 @@ AwContentRendererClient::CreatePrescientNetworking(
 void AwContentRendererClient::
     SetRuntimeFeaturesDefaultsBeforeBlinkInitialization() {
   if (base::FeatureList::IsEnabled(
-          autofill::features::kAutofillSharedAutofill)) {
-    blink::WebRuntimeFeatures::EnableSharedAutofill(true);
+          autofill::features::kAutofillPolicyControlledFeatureAutofill)) {
+    blink::WebRuntimeFeatures::EnableAutofill(true);
+  }
+  if (base::FeatureList::IsEnabled(
+          autofill::features::kAutofillPolicyControlledFeatureManualText)) {
+    blink::WebRuntimeFeatures::EnableManualText(true);
   }
 
-  if (base::FeatureList::IsEnabled(
-          features::kWebViewMediaIntegrityApiBlinkExtension)) {
-    // Enable the overall android.webview namespace.
-    blink::WebRuntimeFeatures::EnableBlinkExtensionWebView(true);
-    // Enable the android.webview.getExperimentalMediaIntegrityProvider API.
-    blink::WebRuntimeFeatures::EnableBlinkExtensionWebViewMediaIntegrity(true);
-  }
+  // Enable the overall android.webview namespace.
+  blink::WebRuntimeFeatures::EnableBlinkExtensionWebView(true);
+  // Enable the android.webview.getExperimentalMediaIntegrityProvider API.
+  blink::WebRuntimeFeatures::EnableBlinkExtensionWebViewMediaIntegrity(true);
 }
 
 void AwContentRendererClient::WebViewCreated(
@@ -232,6 +259,10 @@ void AwContentRendererClient::PrepareErrorPage(
 
 uint64_t AwContentRendererClient::VisitedLinkHash(
     std::string_view canonical_url) {
+  if (base::FeatureList::IsEnabled(features::kWebViewMigrateVisitedLinks)) {
+    return visitedlink::VisitedLinkCommon::ComputePseudoPartitionedFingerprint(
+        canonical_url);
+  }
   return visited_link_reader_->ComputeURLFingerprint(canonical_url);
 }
 
@@ -239,8 +270,10 @@ uint64_t AwContentRendererClient::PartitionedVisitedLinkFingerprint(
     std::string_view canonical_link_url,
     const net::SchemefulSite& top_level_site,
     const url::Origin& frame_origin) {
-  // Android WebView does not support partitioned :visited links, so we return
-  // the null fingerprint value for all queries.
+  if (base::FeatureList::IsEnabled(features::kWebViewMigrateVisitedLinks)) {
+    return visitedlink::VisitedLinkCommon::ComputePseudoPartitionedFingerprint(
+        canonical_link_url);
+  }
   return 0;
 }
 
@@ -248,9 +281,10 @@ bool AwContentRendererClient::IsLinkVisited(uint64_t link_hash) {
   return visited_link_reader_->IsVisited(link_hash);
 }
 
-// Android WebView does not support partitioned :visited links. Since per-origin
-// salts are only used in the partitioned hashtable, AndroidWebView clients do
-// not need to take any action if a per-origin salt is received.
+// Android WebView uses a static salt in :visited links. Since per-origin
+// salts are only used in non-WebView uses of the partitioned hashtable,
+// Android WebView clients do not need to take any action if a per-origin salt
+// is received.
 void AwContentRendererClient::AddOrUpdateVisitedLinkSalt(
     const url::Origin& origin,
     uint64_t salt) {}
@@ -259,7 +293,16 @@ void AwContentRendererClient::RunScriptsAtDocumentStart(
     content::RenderFrame* render_frame) {
   js_injection::JsCommunication* communication =
       js_injection::JsCommunication::Get(render_frame);
-  communication->RunScriptsAtDocumentStart();
+  communication->RunScripts(
+      js_injection::mojom::DocumentInjectionTime::kDocumentStart);
+}
+
+void AwContentRendererClient::RunScriptsAtDocumentEnd(
+    content::RenderFrame* render_frame) {
+  js_injection::JsCommunication* communication =
+      js_injection::JsCommunication::Get(render_frame);
+  communication->RunScripts(
+      js_injection::mojom::DocumentInjectionTime::kDocumentEnd);
 }
 
 std::unique_ptr<media::KeySystemSupportRegistration>
@@ -282,8 +325,6 @@ void AwContentRendererClient::GetInterface(
     const std::string& interface_name,
     mojo::ScopedMessagePipeHandle interface_pipe) {
   // A dirty hack to make SpellCheckHost requests work on WebView.
-  // TODO(crbug.com/40560165): Use a WebView-specific service for SpellCheckHost
-  // and SafeBrowsing, instead of |content_browser|.
   RenderThread::Get()->BindHostReceiver(
       mojo::GenericPendingReceiver(interface_name, std::move(interface_pipe)));
 }

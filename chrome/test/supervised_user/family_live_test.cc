@@ -13,6 +13,7 @@
 #include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/notreached.h"
+#include "base/strings/strcat.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/profiles/profile.h"
@@ -30,13 +31,19 @@
 #include "components/supervised_user/core/browser/proto/kidsmanagement_messages.pb.h"
 #include "components/supervised_user/test_support/account_repository.h"
 #include "components/supervised_user/test_support/family_link_settings_state_management.h"
+#include "components/sync/base/data_type.h"
 #include "content/public/browser/storage_partition.h"
 #include "google_apis/gaia/gaia_urls.h"
 #include "google_apis/gaia/google_service_auth_error.h"
 #include "net/dns/mock_host_resolver.h"
 #include "ui/base/interaction/interactive_test_internal.h"
-#include "ui/compositor/scoped_animation_duration_scale_mode.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "url/gurl.h"
+
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/signin/signin_view_controller.h"
+#endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
 namespace supervised_user {
 namespace {
@@ -47,11 +54,6 @@ const char* kWaitForSyncInvalidationReadySwitch =
 // When enabled, the browser opens extra debugging tabs & the logging is more
 // detailed.
 const char* kDebugSwitch = "supervised-tests-debug-features";
-
-#if BUILDFLAG(ENABLE_DICE_SUPPORT)
-constexpr signin_metrics::AccessPoint kTestAccessPoint =
-    signin_metrics::AccessPoint::kProfileMenuSignoutConfirmationPrompt;
-#endif
 
 bool IsSwitchEnabled(const char* flag) {
   return base::CommandLine::ForCurrentProcess()->HasSwitch(flag);
@@ -75,24 +77,35 @@ bool HasAuthError(syncer::SyncServiceImpl* service) {
 
 class SyncSetupChecker : public SingleClientStatusChangeChecker {
  public:
-  explicit SyncSetupChecker(syncer::SyncServiceImpl* service)
-      : SingleClientStatusChangeChecker(service) {}
+  SyncSetupChecker(syncer::SyncServiceImpl* service,
+                   bool is_browser_user_supervised)
+      : SingleClientStatusChangeChecker(service),
+        is_browser_user_supervised_(is_browser_user_supervised) {}
 
   bool IsExitConditionSatisfied(std::ostream* os) override {
     *os << "Waiting for sync setup to complete";
     if (service()->GetTransportState() ==
-            syncer::SyncService::TransportState::ACTIVE &&
-        service()->IsSyncFeatureActive()) {
-      return true;
+        syncer::SyncService::TransportState::ACTIVE) {
+      if (!is_browser_user_supervised_) {
+        return true;
+      } else if (service()->GetActiveDataTypes().Has(
+                     syncer::SUPERVISED_USER_SETTINGS)) {
+        // For supervised user we wait until the sync service is active and the
+        // data type used for Family Link settings is active (i.e. can be
+        // received from the sync server).
+        return true;
+      }
     }
     // Sync is blocked by an auth error.
     if (HasAuthError(service())) {
       return true;
     }
-
     // Still waiting on sync setup.
     return false;
   }
+
+ private:
+  bool is_browser_user_supervised_ = false;
 };
 
 test_accounts::FamilyMember CreateTestAccountFromCredentialsSwitch(
@@ -151,13 +164,13 @@ BrowserUser& FamilyLiveTest::rpc_issuer() const {
   NOTREACHED();
 }
 
-void FamilyLiveTest::TurnOnSync() {
-  TurnOnSyncFor(*head_of_household_);
-  TurnOnSyncFor(*child_);
+void FamilyLiveTest::SigninToBrowser() {
+  SigninToBrowserFor(*head_of_household_);
+  SigninToBrowserFor(*child_);
 }
 
-void FamilyLiveTest::TurnOnSyncFor(BrowserUser& browser_user) {
-  browser_user.TurnOnSync();
+void FamilyLiveTest::SigninToBrowserFor(BrowserUser& browser_user) {
+  browser_user.SignInToBrowser();
   browser_user.browser().tab_strip_model()->CloseWebContentsAt(
       2, TabCloseTypes::CLOSE_CREATE_HISTORICAL_TAB);
   browser_user.browser().tab_strip_model()->CloseWebContentsAt(
@@ -170,13 +183,18 @@ void FamilyLiveTest::TurnOnSyncFor(BrowserUser& browser_user) {
   }
 
   if (IsSwitchEnabled(kWaitForSyncInvalidationReadySwitch)) {
-    // After turning the sync on, wait until this is fully initialized.
+    // After signing in the browser, wait until:
+    // the sync engine has started and it can listen for changed and
+    // receive parental controls synced data types for supervised user.
     LOG(INFO) << "Waiting for sync service to set up invalidations.";
     syncer::SyncServiceImpl* service =
         SyncServiceFactory::GetAsSyncServiceImplForProfileForTesting(
             &browser_user.profile());
     service->SetInvalidationsForSessionsEnabled(true);
-    CHECK(SyncSetupChecker(service).Wait()) << "SyncSetupChecker timed out.";
+    bool is_supervised_user = (&browser_user == child_.get());
+
+    CHECK(SyncSetupChecker(service, is_supervised_user).Wait())
+        << "SyncSetupChecker timed out.";
     CHECK(InvalidationsStatusChecker(service, /*expected_status=*/true).Wait())
         << "Invalidation checker timed out.";
     LOG(INFO) << "Invalidations ready.";
@@ -186,8 +204,8 @@ void FamilyLiveTest::TurnOnSyncFor(BrowserUser& browser_user) {
 void FamilyLiveTest::SetUp() {
   signin::test::LiveTest::SetUp();
   // Always disable animation for stability.
-  ui::ScopedAnimationDurationScaleMode disable_animation(
-      ui::ScopedAnimationDurationScaleMode::ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode disable_animation(
+      gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION);
 }
 
 void FamilyLiveTest::SetUpOnMainThread() {
@@ -251,9 +269,11 @@ void FamilyLiveTest::TearDownOnMainThread() {
     if (!user) {
       continue;
     }
-    user->browser().signin_view_controller()->SignoutOrReauthWithPrompt(
-        kTestAccessPoint,
-        signin_metrics::ProfileSignout::kUserClickedSignoutProfileMenu,
+    // Signs out the account, so the server is notified to no longer attempt to
+    // notify this client. Explicit sign-out is critical, otherwise server-side
+    // data structures can still think that the current client should receive
+    // sync updates.
+    user->browser().GetFeatures().signin_view_controller()->ShowGaiaLogoutTab(
         signin_metrics::SourceForRefreshTokenOperation::
             kUserMenu_SignOutAllAccounts);
   }
@@ -306,7 +326,7 @@ GURL FamilyLiveTest::GetRoutedUrl(std::string_view url_spec) const {
   GURL url(url_spec);
 
   for (std::string_view enabled_host : extra_enabled_hosts_) {
-    if (url.host() == enabled_host) {
+    if (url.GetHost() == enabled_host) {
       return url;
     }
   }
@@ -315,11 +335,12 @@ GURL FamilyLiveTest::GetRoutedUrl(std::string_view url_spec) const {
 
 InteractiveFamilyLiveTest::InteractiveFamilyLiveTest(
     FamilyLiveTest::RpcMode rpc_mode)
-    : InteractiveBrowserTestT<FamilyLiveTest>(rpc_mode) {}
+    : InteractiveBrowserTestMixin<FamilyLiveTest>(rpc_mode) {}
 InteractiveFamilyLiveTest::InteractiveFamilyLiveTest(
     FamilyLiveTest::RpcMode rpc_mode,
     const std::vector<std::string_view>& extra_enabled_hosts)
-    : InteractiveBrowserTestT<FamilyLiveTest>(rpc_mode, extra_enabled_hosts) {}
+    : InteractiveBrowserTestMixin<FamilyLiveTest>(rpc_mode,
+                                                  extra_enabled_hosts) {}
 
 ui::test::internal::InteractiveTestPrivate::MultiStep
 InteractiveFamilyLiveTest::WaitForStateSeeding(
@@ -339,7 +360,9 @@ InteractiveFamilyLiveTest::WaitForStateSeeding(
                  id,
                  [&]() {
                    SyncServiceFactory::GetForProfile(&browser_user.profile())
-                       ->TriggerRefresh(syncer::DataTypeSet::All());
+                       ->TriggerRefresh(
+                           syncer::SyncService::TriggerRefreshSource::kUnknown,
+                           syncer::DataTypeSet::All());
                    return state.Check(browser_user.GetServices());
                  },
                  /*polling_interval=*/base::Seconds(2)),

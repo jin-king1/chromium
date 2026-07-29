@@ -18,8 +18,14 @@
 @synthesize webStateCreationRequested = _webStateCreationRequested;
 @synthesize webStateClosingRequested = _webStateClosingRequested;
 @synthesize repostFormWarningRequested = _repostFormWarningRequested;
+@synthesize copyAllowedRequested = _copyAllowedRequested;
+@synthesize pasteAllowedRequested = _pasteAllowedRequested;
+@synthesize cutAllowedRequested = _cutAllowedRequested;
+@synthesize didFinishClipboardReadRequested = _didFinishClipboardReadRequested;
 @synthesize permissionsRequestHandled = _permissionsRequestHandled;
-@synthesize authenticationRequested = _authenticationRequested;
+@synthesize httpAuthenticationRequested = _httpAuthenticationRequested;
+@synthesize clientCertAuthenticationRequested =
+    _clientCertAuthenticationRequested;
 @synthesize isAppLaunchingAllowedForWebStateReturnValue =
     _isAppLaunchingAllowedForWebStateReturnValue;
 
@@ -50,6 +56,32 @@
   _repostFormWarningRequested = YES;
 }
 
+- (void)webState:(web::WebState*)webState
+    shouldAllowCopyWithDecisionHandler:(void (^)(BOOL))handler {
+  _webState = webState;
+  _copyAllowedRequested = YES;
+  handler(YES);
+}
+
+- (void)webState:(web::WebState*)webState
+    shouldAllowPasteWithDecisionHandler:(void (^)(BOOL))handler {
+  _webState = webState;
+  _pasteAllowedRequested = YES;
+  handler(YES);
+}
+
+- (void)webState:(web::WebState*)webState
+    shouldAllowCutWithDecisionHandler:(void (^)(BOOL))handler {
+  _webState = webState;
+  _cutAllowedRequested = YES;
+  handler(YES);
+}
+
+- (void)webStateDidFinishClipboardRead:(web::WebState*)webState {
+  _webState = webState;
+  _didFinishClipboardReadRequested = YES;
+}
+
 - (web::JavaScriptDialogPresenter*)javaScriptDialogPresenterForWebState:
     (web::WebState*)webState {
   _webState = webState;
@@ -71,7 +103,16 @@
                        completionHandler:(void (^)(NSString* username,
                                                    NSString* password))handler {
   _webState = webState;
-  _authenticationRequested = YES;
+  _httpAuthenticationRequested = YES;
+}
+
+- (void)webState:(web::WebState*)webState
+    didRequestClientCertAuthForProtectionSpace:
+        (NSURLProtectionSpace*)protectionSpace
+                             completionHandler:
+                                 (void (^)(SecIdentityRef))handler {
+  _webState = webState;
+  _clientCertAuthenticationRequested = YES;
 }
 
 - (const web::WebState::OpenURLParams*)openURLParams {

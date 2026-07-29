@@ -263,7 +263,7 @@ ASH_PUBLIC_EXPORT inline constexpr auto kAcceleratorData = std::to_array<
     {true, ui::VKEY_BROWSER_BACK, ui::EF_NONE,
      AcceleratorAction::kMinimizeTopWindowOnBack},
     {true, ui::VKEY_G, ui::EF_SHIFT_DOWN | ui::EF_COMMAND_DOWN,
-     AcceleratorAction::kCreateSnapGroup},
+     AcceleratorAction::kToggleSnapGroup},
     {true, ui::VKEY_D, ui::EF_SHIFT_DOWN | ui::EF_COMMAND_DOWN,
      AcceleratorAction::kToggleSnapGroupWindowsMinimizeAndRestore},
     {true, ui::VKEY_Z, ui::EF_COMMAND_DOWN,
@@ -297,9 +297,7 @@ ASH_PUBLIC_EXPORT inline constexpr auto kAcceleratorData = std::to_array<
     {true, ui::VKEY_OEM_103, ui::EF_NONE, AcceleratorAction::kMediaRewind},
     {true, ui::VKEY_OEM_104, ui::EF_NONE, AcceleratorAction::kMediaFastForward},
 
-    // Assistant shortcut. Assistant has two shortcuts, a dedicated Assistant
-    // key and Search+A. Search+A is defined below as
-    // `kAssistantSearchPlusAAcceleratorData`.
+    // Assistant shortcut.
     {true, ui::VKEY_ASSISTANT, ui::EF_NONE, AcceleratorAction::kStartAssistant},
 
     // IME mode change key.
@@ -349,18 +347,18 @@ ASH_PUBLIC_EXPORT inline constexpr auto kAcceleratorData = std::to_array<
 
     // Quick Insert.
     {false, ui::VKEY_QUICK_INSERT, ui::EF_NONE,
-     AcceleratorAction::kTogglePicker, true},
-    {true, ui::VKEY_F, ui::EF_COMMAND_DOWN, AcceleratorAction::kTogglePicker},
+     AcceleratorAction::kToggleQuickInsert, true},
+    {true, ui::VKEY_F, ui::EF_COMMAND_DOWN,
+     AcceleratorAction::kToggleQuickInsert},
 
     // Game Dashboard shortcut.
     {true, ui::VKEY_G, ui::EF_COMMAND_DOWN,
      AcceleratorAction::kToggleGameDashboard},
-});
 
-ASH_PUBLIC_EXPORT inline constexpr AcceleratorData
-    kAssistantSearchPlusAAcceleratorData[] = {
-        {true, ui::VKEY_A, ui::EF_COMMAND_DOWN,
-         AcceleratorAction::kStartAssistant}};
+    // Sunfish-session.
+    {true, ui::VKEY_SPACE, ui::EF_COMMAND_DOWN,
+     AcceleratorAction::kStartSunfishSession},
+});
 
 // Accelerators that are enabled/disabled with new accelerator mapping.
 // crbug.com/1067269
@@ -448,7 +446,7 @@ ASH_PUBLIC_EXPORT inline constexpr auto kTilingWindowResizeAcceleratorData =
 
 ASH_PUBLIC_EXPORT inline constexpr AcceleratorData kGeminiAcceleratorData[] = {
     {true, ui::VKEY_F23, ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN,
-     AcceleratorAction::kToggleGeminiApp},
+     AcceleratorAction::kToggleGeminiApp, /*accelerator_locked=*/true},
 };
 ASH_PUBLIC_EXPORT inline constexpr size_t kGeminiAcceleratorDataLength =
     std::size(kGeminiAcceleratorData);

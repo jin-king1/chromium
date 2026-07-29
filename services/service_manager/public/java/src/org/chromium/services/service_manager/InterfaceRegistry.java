@@ -5,6 +5,7 @@
 package org.chromium.services.service_manager;
 
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.mojo.bindings.Interface;
 import org.chromium.mojo.system.MessagePipeHandle;
 import org.chromium.mojo.system.MojoException;
@@ -27,8 +28,9 @@ public class InterfaceRegistry implements InterfaceProvider {
     private final Map<String, InterfaceBinder> mBinders = new HashMap<String, InterfaceBinder>();
 
     public <I extends Interface> void addInterface(
-            Interface.Manager<I, ? extends Interface.Proxy> manager, InterfaceFactory<I> factory) {
-        mBinders.put(manager.getName(), new InterfaceBinder<I>(manager, factory));
+            Interface.Manager<I, ? extends Interface.Proxy> manager,
+            InterfaceFactory<@Nullable I> factory) {
+        mBinders.put(manager.getName(), new InterfaceBinder<>(manager, factory));
     }
 
     public static InterfaceRegistry create(MessagePipeHandle pipe) {
@@ -59,12 +61,12 @@ public class InterfaceRegistry implements InterfaceProvider {
     InterfaceRegistry() {}
 
     private static class InterfaceBinder<I extends Interface> {
-        private Interface.Manager<I, ? extends Interface.Proxy> mManager;
-        private InterfaceFactory<I> mFactory;
+        private final Interface.Manager<I, ? extends Interface.Proxy> mManager;
+        private final InterfaceFactory<@Nullable I> mFactory;
 
         public InterfaceBinder(
                 Interface.Manager<I, ? extends Interface.Proxy> manager,
-                InterfaceFactory<I> factory) {
+                InterfaceFactory<@Nullable I> factory) {
             mManager = manager;
             mFactory = factory;
         }

@@ -257,17 +257,7 @@ export class SettingsInternetDetailPageElement extends
         value() {
           return loadTimeData.valueExists('showTechnologyBadge') &&
               loadTimeData.getBoolean('showTechnologyBadge');
-        },
-      },
 
-      /**
-       * Whether to show the Hidden toggle on configured wifi networks (flag).
-       */
-      showHiddenToggle_: {
-        type: Boolean,
-        value() {
-          return loadTimeData.valueExists('showHiddenToggle') &&
-              loadTimeData.getBoolean('showHiddenToggle');
         },
       },
 
@@ -335,38 +325,6 @@ export class SettingsInternetDetailPageElement extends
       proxyExpanded_: Boolean,
 
       dataUsageExpanded_: Boolean,
-
-      /**
-       * Used by DeepLinkingMixin to focus this page's deep links.
-       */
-      supportedSettingIds: {
-        type: Object,
-        value: () => new Set<Setting>([
-          Setting.kConfigureEthernet,
-          Setting.kEthernetAutoConfigureIp,
-          Setting.kEthernetDns,
-          Setting.kEthernetProxy,
-          Setting.kDisconnectWifiNetwork,
-          Setting.kPreferWifiNetwork,
-          Setting.kForgetWifiNetwork,
-          Setting.kWifiAutoConfigureIp,
-          Setting.kWifiDns,
-          Setting.kWifiHidden,
-          Setting.kWifiProxy,
-          Setting.kWifiAutoConnectToNetwork,
-          Setting.kCellularSimLock,
-          Setting.kCellularRoaming,
-          Setting.kCellularApn,
-          Setting.kDisconnectCellularNetwork,
-          Setting.kCellularAutoConfigureIp,
-          Setting.kCellularDns,
-          Setting.kCellularProxy,
-          Setting.kCellularAutoConnectToNetwork,
-          Setting.kDisconnectTetherNetwork,
-          Setting.kWifiMetered,
-          Setting.kCellularMetered,
-        ]),
-      },
     };
   }
 
@@ -384,48 +342,75 @@ export class SettingsInternetDetailPageElement extends
 
   /* eslint-disable-next-line @typescript-eslint/naming-convention */
   CR_EXPAND_BUTTON_TAG: string;
-  defaultNetwork: OncMojo.NetworkStateProperties|null;
-  globalPolicy?: GlobalPolicy;
-  guid: string;
-  managedNetworkAvailable: boolean;
-  private advancedExpanded_: boolean;
-  private alwaysOnVpn_: chrome.settingsPrivate.PrefObject<boolean>;
+  declare defaultNetwork: OncMojo.NetworkStateProperties|null;
+  declare globalPolicy?: GlobalPolicy;
+  declare guid: string;
+  declare managedNetworkAvailable: boolean;
+
+  // DeepLinkingMixin override
+  override supportedSettingIds = new Set<Setting>([
+    Setting.kConfigureEthernet,
+    Setting.kEthernetAutoConfigureIp,
+    Setting.kEthernetDns,
+    Setting.kEthernetProxy,
+    Setting.kDisconnectWifiNetwork,
+    Setting.kPreferWifiNetwork,
+    Setting.kForgetWifiNetwork,
+    Setting.kWifiAutoConfigureIp,
+    Setting.kWifiDns,
+    Setting.kWifiHidden,
+    Setting.kWifiProxy,
+    Setting.kWifiAutoConnectToNetwork,
+    Setting.kCellularSimLock,
+    Setting.kCellularRoaming,
+    Setting.kCellularApn,
+    Setting.kDisconnectCellularNetwork,
+    Setting.kCellularAutoConfigureIp,
+    Setting.kCellularDns,
+    Setting.kCellularProxy,
+    Setting.kCellularAutoConnectToNetwork,
+    Setting.kDisconnectTetherNetwork,
+    Setting.kWifiMetered,
+    Setting.kCellularMetered,
+  ]);
+
+  declare private advancedExpanded_: boolean;
+  declare private alwaysOnVpn_: chrome.settingsPrivate.PrefObject<boolean>;
   private applyingChanges_: boolean;
-  private autoConnectPref_: chrome.settingsPrivate.PrefObject<boolean>;
+  declare private autoConnectPref_: chrome.settingsPrivate.PrefObject<boolean>;
   private browserProxy_: InternetPageBrowserProxy;
-  private dataUsageExpanded_: boolean;
-  private deviceState_: OncMojo.DeviceStateProperties|null;
+  declare private dataUsageExpanded_: boolean;
+  declare private deviceState_: OncMojo.DeviceStateProperties|null;
   private didSetFocus_: boolean;
-  private disabled_: boolean;
-  private hiddenPref_: chrome.settingsPrivate.PrefObject<boolean>;
-  private ipAddress_: string;
-  private isApnRevampEnabled_: boolean;
+  declare private disabled_: boolean;
+  declare private hiddenPref_: chrome.settingsPrivate.PrefObject<boolean>;
+  declare private ipAddress_: string;
+  declare private isApnRevampEnabled_: boolean;
   private suppressTextMessagesOverride_: boolean;
-  private isApnRevampAndAllowApnModificationPolicyEnabled_: boolean;
-  private isSecondaryUser_: boolean;
-  private isTrafficCountersEnabled_: boolean;
-  private isTrafficCountersForWifiTestingEnabled_: boolean;
-  private isWifiSyncEnabled_: boolean;
-  private managedProperties_: ManagedProperties|undefined;
-  private meteredOverride_: boolean;
+  declare private isApnRevampAndAllowApnModificationPolicyEnabled_: boolean;
+  declare private isSecondaryUser_: boolean;
+  declare private isTrafficCountersEnabled_: boolean;
+  declare private isTrafficCountersForWifiTestingEnabled_: boolean;
+  declare private isWifiSyncEnabled_: boolean;
+  declare private managedProperties_: ManagedProperties|undefined;
+  declare private meteredOverride_: boolean;
   private networkConfig_: CrosNetworkConfigInterface;
-  private networkExpanded_: boolean;
+  declare private networkExpanded_: boolean;
   private osSyncBrowserProxy_: OsSyncBrowserProxy;
-  private outOfRange_: boolean;
+  declare private outOfRange_: boolean;
   private passpointService_: PasspointServiceInterface;
-  private passpointSubscription_: PasspointSubscription|null;
+  declare private passpointSubscription_: PasspointSubscription|null;
   private pendingSimLockDeepLink_: boolean;
-  private preferNetwork_: boolean;
-  private primaryUserEmail_: string;
+  declare private preferNetwork_: boolean;
+  declare private primaryUserEmail_: string;
   private propertiesReceived_: boolean;
-  private proxyExpanded_: boolean;
+  declare private proxyExpanded_: boolean;
   private shouldShowConfigureWhenNetworkLoaded_: boolean;
-  private showConfigurableSections_: boolean;
-  private showHiddenToggle_: boolean;
+  declare private showConfigurableSections_: boolean;
   private showMeteredToggle_: boolean;
-  private showTechnologyBadge_: string;
+  declare private showTechnologyBadge_: boolean;
   private trafficCountersAdapter_: TrafficCountersAdapter;
-  private trafficCountersAvailable_: boolean;
+  declare private trafficCountersAvailable_: boolean;
 
   constructor() {
     super();
@@ -502,8 +487,9 @@ export class SettingsInternetDetailPageElement extends
       this.afterRenderShowDeepLink_(
           settingId,
           () =>
-              this.shadowRoot!.querySelector('cellular-roaming-toggle-button')!
-                  .getCellularRoamingToggle());
+              this.shadowRoot!.querySelector('cellular-roaming-toggle-button')
+                  ?.getCellularRoamingToggle() ||
+              null);
       // Stop deep link attempt since we completed it manually.
       return false;
     }
@@ -512,8 +498,9 @@ export class SettingsInternetDetailPageElement extends
       this.networkExpanded_ = true;
       this.afterRenderShowDeepLink_(
           settingId,
-          () => this.shadowRoot!.querySelector(
-                                    'network-apnlist')!.getApnSelect());
+          () => this.shadowRoot!.querySelector('network-apnlist')
+                    ?.getApnSelect() ||
+              null);
       return false;
     }
 
@@ -523,8 +510,9 @@ export class SettingsInternetDetailPageElement extends
       this.networkExpanded_ = true;
       this.afterRenderShowDeepLink_(
           settingId,
-          () => this.shadowRoot!.querySelector('network-ip-config')!
-                    .getAutoConfigIpToggle());
+          () => this.shadowRoot!.querySelector('network-ip-config')
+                    ?.getAutoConfigIpToggle() ||
+              null);
       return false;
     }
 
@@ -533,8 +521,9 @@ export class SettingsInternetDetailPageElement extends
       this.networkExpanded_ = true;
       this.afterRenderShowDeepLink_(
           settingId,
-          () => this.shadowRoot!.querySelector('network-nameservers')!
-                    .getNameserverRadioButtons());
+          () => this.shadowRoot!.querySelector('network-nameservers')
+                    ?.getNameserverRadioButtons() ||
+              null);
       return false;
     }
 
@@ -544,8 +533,9 @@ export class SettingsInternetDetailPageElement extends
       this.proxyExpanded_ = true;
       this.afterRenderShowDeepLink_(
           settingId,
-          () => this.shadowRoot!.querySelector('network-proxy-section')!
-                    .getAllowSharedToggle());
+          () => this.shadowRoot!.querySelector('network-proxy-section')
+                    ?.getAllowSharedToggle() ||
+              null);
       return false;
     }
 
@@ -651,7 +641,7 @@ export class SettingsInternetDetailPageElement extends
     requestAnimationFrame(() => {
       // Clear network properties before navigating away to ensure that a future
       // navigation back to the details page does not show a flicker of
-      // incorrect text. See https://crbug.com/905986.
+      // incorrect text. See https://crbug.com/41426690.
       this.managedProperties_ = undefined;
       this.propertiesReceived_ = false;
 
@@ -815,7 +805,7 @@ export class SettingsInternetDetailPageElement extends
       return;
     }
     const config = this.getDefaultConfigProperties_();
-    config.autoConnect = {value: !!this.autoConnectPref_.value};
+    config.autoConnect = {value: this.autoConnectPref_.value};
     this.setMojoNetworkProperties_(config);
   }
 
@@ -824,7 +814,7 @@ export class SettingsInternetDetailPageElement extends
       return;
     }
     recordSettingChange(
-        Setting.kWifiHidden, {boolValue: !!this.hiddenPref_.value});
+        Setting.kWifiHidden, {boolValue: this.hiddenPref_.value});
     const config = this.getDefaultConfigProperties_();
     config.typeConfig.wifi!.hiddenSsid = this.hiddenPref_.value ?
         HiddenSsidMode.kEnabled :
@@ -949,8 +939,7 @@ export class SettingsInternetDetailPageElement extends
         !this.managedProperties_!.typeProperties.cellular!.allowTextMessages) {
       return;
     }
-    const config =
-        OncMojo.getDefaultConfigProperties(this.managedProperties_!.type);
+    const config = this.getDefaultConfigProperties_();
     config.typeConfig.cellular = {
       textMessageAllowState: {
         allowTextMessages: e.detail.value,
@@ -1104,6 +1093,8 @@ export class SettingsInternetDetailPageElement extends
         managedProperties.typeProperties.wifi!.signalStrength =
             networkState.typeState.wifi!.signalStrength;
         break;
+      default:
+        break;
     }
     this.updateManagedProperties_(managedProperties);
     this.propertiesReceived_ = true;
@@ -1118,7 +1109,7 @@ export class SettingsInternetDetailPageElement extends
   }
 
   private getDefaultConfigProperties_(): ConfigProperties {
-    return OncMojo.getDefaultConfigProperties(this.managedProperties_!.type);
+    return OncMojo.getBaselineConfigProperties(this.managedProperties_);
   }
 
   private async setMojoNetworkProperties_(config: ConfigProperties):
@@ -1261,7 +1252,7 @@ export class SettingsInternetDetailPageElement extends
     }
 
     if (managedProperties.type === NetworkType.kCellular &&
-        !!globalPolicy.allowOnlyPolicyCellularNetworks) {
+        globalPolicy.allowOnlyPolicyCellularNetworks) {
       return true;
     }
 
@@ -1270,9 +1261,9 @@ export class SettingsInternetDetailPageElement extends
     }
     const hexSsid =
         OncMojo.getActiveString(managedProperties.typeProperties.wifi!.hexSsid);
-    return !!globalPolicy.allowOnlyPolicyWifiNetworksToConnect ||
-        (!!globalPolicy.allowOnlyPolicyWifiNetworksToConnectIfAvailable &&
-         !!managedNetworkAvailable) ||
+    return globalPolicy.allowOnlyPolicyWifiNetworksToConnect ||
+        (globalPolicy.allowOnlyPolicyWifiNetworksToConnectIfAvailable &&
+         managedNetworkAvailable) ||
         (!!hexSsid && !!globalPolicy.blockedHexSsids &&
          globalPolicy.blockedHexSsids.includes(hexSsid));
   }
@@ -1563,9 +1554,8 @@ export class SettingsInternetDetailPageElement extends
   }
 
   private updateAlwaysOnVpnPrefValue_(): void {
-    this.alwaysOnVpn_.value = this.prefs.arc && this.prefs.arc.vpn &&
-        this.prefs.arc.vpn.always_on && this.prefs.arc.vpn.always_on.lockdown &&
-        this.prefs.arc.vpn.always_on.lockdown.value;
+    this.alwaysOnVpn_.value =
+        this.getPref<boolean>('arc.vpn.always_on.lockdown').value;
   }
 
   private getFakeVpnConfigPrefForEnforcement_():
@@ -1581,11 +1571,11 @@ export class SettingsInternetDetailPageElement extends
     // shown on non-VPN networks.
     if (this.managedProperties_ &&
         this.managedProperties_.type === NetworkType.kVPN && this.prefs &&
-        this.prefs.vpn_config_allowed && !this.prefs.vpn_config_allowed.value) {
+        !this.getPref<boolean>('vpn_config_allowed').value) {
       fakeAlwaysOnVpnEnforcementPref.enforcement =
           chrome.settingsPrivate.Enforcement.ENFORCED;
       fakeAlwaysOnVpnEnforcementPref.controlledBy =
-          this.prefs.vpn_config_allowed.controlledBy;
+          this.getPref('vpn_config_allowed').controlledBy;
     }
     return fakeAlwaysOnVpnEnforcementPref;
   }
@@ -1763,7 +1753,7 @@ export class SettingsInternetDetailPageElement extends
 
   private showHiddenNetworkWarning_(): boolean {
     return loadTimeData.getBoolean('showHiddenNetworkWarning') &&
-        !!this.autoConnectPref_.value && !!this.managedProperties_ &&
+        this.autoConnectPref_.value && !!this.managedProperties_ &&
         this.managedProperties_.type === NetworkType.kWiFi &&
         !!OncMojo.getActiveValue(
             this.managedProperties_.typeProperties.wifi!.hiddenSsid);
@@ -1967,10 +1957,6 @@ export class SettingsInternetDetailPageElement extends
   }
 
   private showHiddenNetworkToggle_(): boolean {
-    if (!this.showHiddenToggle_) {
-      return false;
-    }
-
     if (!this.managedProperties_) {
       return false;
     }
@@ -2000,16 +1986,13 @@ export class SettingsInternetDetailPageElement extends
   }
 
   private showAlwaysOnVpn_(managedProperties: ManagedProperties): boolean {
-    return this.isArcVpn_(managedProperties) && this.prefs.arc &&
-        this.prefs.arc.vpn && this.prefs.arc.vpn.always_on &&
-        this.prefs.arc.vpn.always_on.vpn_package &&
+    return this.isArcVpn_(managedProperties) &&
         OncMojo.getActiveValue(managedProperties.typeProperties.vpn!.host) ===
-        this.prefs.arc.vpn.always_on.vpn_package.value;
+        this.getPref('arc.vpn.always_on.vpn_package').value;
   }
 
   private alwaysOnVpnChanged_(): void {
-    if (this.prefs && this.prefs.arc && this.prefs.arc.vpn &&
-        this.prefs.arc.vpn.always_on && this.prefs.arc.vpn.always_on.lockdown) {
+    if (this.prefs) {
       this.set(
           'prefs.arc.vpn.always_on.lockdown.value', this.alwaysOnVpn_.value);
     }
@@ -2101,9 +2084,13 @@ export class SettingsInternetDetailPageElement extends
           case VpnType.kL2TPIPsec:
             fields.push('vpn.type', 'vpn.host', 'vpn.l2tp.username');
             break;
+          default:
+            break;
         }
         break;
       case NetworkType.kWiFi:
+        break;
+      default:
         break;
     }
     if (OncMojo.isRestrictedConnectivity(this.managedProperties_.portalState)) {
@@ -2169,7 +2156,11 @@ export class SettingsInternetDetailPageElement extends
                   'vpn.openVpn.tlsAuthContents', 'vpn.openVpn.keyDirection');
             }
             break;
+          default:
+            break;
         }
+        break;
+      default:
         break;
     }
     return fields;

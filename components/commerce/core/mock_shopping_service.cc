@@ -6,8 +6,6 @@
 
 #include "base/functional/callback.h"
 #include "base/task/sequenced_task_runner.h"
-#include "components/commerce/core/mock_cluster_manager.h"
-#include "components/commerce/core/product_specifications/mock_product_specifications_service.h"
 #include "components/sync/test/mock_data_type_local_change_processor.h"
 
 namespace commerce {
@@ -35,14 +33,6 @@ MockShoppingService::MockShoppingService()
                                 nullptr,
                                 nullptr,
                                 nullptr) {
-  product_specifications_service_ =
-      std::make_unique<testing::NiceMock<MockProductSpecificationsService>>();
-  ON_CALL(*this, GetProductSpecificationsService)
-      .WillByDefault(testing::Return(product_specifications_service_.get()));
-  cluster_manager_ = std::make_unique<testing::NiceMock<MockClusterManager>>(
-      product_specifications_service_.get());
-  ON_CALL(*this, GetClusterManager)
-      .WillByDefault(testing::Return(cluster_manager_.get()));
 }
 
 MockShoppingService::~MockShoppingService() = default;
@@ -67,7 +57,6 @@ void MockShoppingService::SetupPermissiveMock() {
   SetGetAllShoppingBookmarksValue(
       std::vector<const bookmarks::BookmarkNode*>());
   SetResponseForGetPriceInsightsInfoForUrl(std::nullopt);
-  SetGetAllParcelStatusesCallbackValue(std::vector<ParcelTrackingStatus>());
 }
 
 void MockShoppingService::SetAccountChecker(AccountChecker* account_checker) {
@@ -238,36 +227,6 @@ void MockShoppingService::SetResponseForGetDiscountInfoForUrl(
         base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
             FROM_HERE, base::BindOnce(std::move(callback), url, infos));
       });
-}
-
-void MockShoppingService::SetGetAllParcelStatusesCallbackValue(
-    std::vector<ParcelTrackingStatus> parcels) {
-  ON_CALL(*this, GetAllParcelStatuses)
-      .WillByDefault(
-          [parcels = std::move(parcels)](GetParcelStatusCallback callback) {
-            base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-                FROM_HERE,
-                base::BindOnce(
-                    std::move(callback), true,
-                    make_unique<std::vector<ParcelTrackingStatus>>(parcels)));
-          });
-}
-
-void StopTrackingParcel(const std::string& tracking_id,
-                        base::OnceCallback<void(bool)> callback) {}
-
-void MockShoppingService::SetResponseForGetProductSpecificationsForUrls(
-    ProductSpecifications specs) {
-  ON_CALL(*this, GetProductSpecificationsForUrls)
-      .WillByDefault(
-          [specs = std::move(specs)](const std::vector<GURL>& urls,
-                                     ProductSpecificationsCallback callback) {
-            std::vector<uint64_t> ids{0};
-            base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-                FROM_HERE, base::BindOnce(std::move(callback), std::move(ids),
-                                          std::optional<ProductSpecifications>(
-                                              std::move(specs))));
-          });
 }
 
 }  // namespace commerce

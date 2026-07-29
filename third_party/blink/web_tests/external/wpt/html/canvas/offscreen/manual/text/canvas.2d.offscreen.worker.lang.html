@@ -8,61 +8,68 @@
   <meta name="assert" content="An offscreen canvas in a worker respects the lang text attribute." />
   <script src="/common/reftest-wait.js"></script>
   <style>
-    #canvas-zh-CN {
+    #canvas-tr {
       position: absolute;
       top: 10px;
       left: 10px;
     }
-    #canvas-ja {
+    #canvas-en {
       position: absolute;
       top: 120px;
       left: 10px;
     }
   </style>
   <script type="text/javascript">
+    function createWorker(language) {
+      const placeholder_canvas = document.createElement('canvas');
+      placeholder_canvas.setAttribute('width', '300');
+      placeholder_canvas.setAttribute('height', '100');
+      const offscreen = placeholder_canvas.transferControlToOffscreen();
+
+      const worker = new Worker('text-lang-worker-' + language + '.js');
+      worker.postMessage({canvas: offscreen}, [offscreen]);
+
+      return placeholder_canvas;
+    }
+
     function runTest() {
-      const placeholder_canvas_zh = document.createElement('canvas');
-      placeholder_canvas_zh.setAttribute('width', '300');
-      placeholder_canvas_zh.setAttribute('height', '100');
-      const offscreen_zh = placeholder_canvas_zh.transferControlToOffscreen();
-
-      const worker_zh = new Worker('text-lang-worker-zh-CN.js');
-      worker_zh.postMessage({canvas: offscreen_zh}, [offscreen_zh]);
-
-      const placeholder_canvas_ja = document.createElement('canvas');
-      placeholder_canvas_ja.setAttribute('width', '300');
-      placeholder_canvas_ja.setAttribute('height', '100');
-      const offscreen_ja = placeholder_canvas_ja.transferControlToOffscreen();
-
-      const worker_ja = new Worker('text-lang-worker-ja.js');
-      worker_ja.postMessage({canvas: offscreen_ja}, [offscreen_ja]);
-
-      const canvas_zh = document.getElementById('canvas-zh-CN');
-      const ctx_zh = canvas_zh.getContext('2d', {willReadFrequently: true});
-      const canvas_ja = document.getElementById('canvas-ja');
-      const ctx_ja = canvas_ja.getContext('2d', {willReadFrequently: true});
-      function checkResult() {
+      const placeholder_canvas_tr = createWorker('tr');
+      const canvas_tr = document.getElementById('canvas-tr');
+      const ctx_tr = canvas_tr.getContext('2d', {willReadFrequently: true});
+      function checkFirstResult() {
         // Wait until frame propagates.
-        ctx_zh.drawImage(placeholder_canvas_zh, 0, 0);
-        const pixel_zh = ctx_zh.getImageData(0, 0, 1, 1).data;
-        ctx_ja.drawImage(placeholder_canvas_ja, 0, 0);
-        const pixel_ja = ctx_ja.getImageData(0, 0, 1, 1).data;
+        ctx_tr.drawImage(placeholder_canvas_tr, 0, 0);
+        const pixel_tr = ctx_tr.getImageData(0, 0, 1, 1).data;
 
-        if (pixel_zh[3] == 0 || pixel_ja[3] == 0) {
+        if (pixel_tr[3] == 0) {
           // Results not available, wait longer.
-          requestAnimationFrame(checkResult);
+          requestAnimationFrame(checkFirstResult);
         } else {
-          takeScreenshot();
+          const placeholder_canvas_en = createWorker('en');
+          const canvas_en = document.getElementById('canvas-en');
+          const ctx_en = canvas_en.getContext('2d', {willReadFrequently: true});
+          function checkSecondResult() {
+            ctx_en.drawImage(placeholder_canvas_en, 0, 0);
+            const pixel_en = ctx_en.getImageData(0, 0, 1, 1).data;
+
+            if (pixel_en[3] == 0) {
+              // Results not available, wait longer.
+              requestAnimationFrame(checkSecondResult);
+            } else {
+              takeScreenshot();
+            }
+          }
+          requestAnimationFrame(checkSecondResult);
         }
       }
-      requestAnimationFrame(checkResult);
+      requestAnimationFrame(checkFirstResult);
     }
   </script>
   <body onload="runTest()">
-    <canvas id="canvas-zh-CN" width="300" height="100">
+    <canvas id="canvas-tr" width="300" height="100">
       Browser does not support HTML5 Canvas.
     </canvas>
-    <canvas id="canvas-ja" width="300" height="100">
+    <canvas id="canvas-en" width="300" height="100">
       Browser does not support HTML5 Canvas.
     </canvas>
   </body>

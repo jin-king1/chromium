@@ -22,28 +22,24 @@
       <include name="IDR_READING_MODE_GDOC_HELPER_CONTENT_JS" file="reading_mode_gdocs_helper/content.js" type="BINDATA" />
       <include name="IDR_READING_MODE_GDOC_HELPER_GDOCS_SCRIPT_JS" file="reading_mode_gdocs_helper/gdocs_script.js" type="BINDATA" />
 
+      <include name="IDR_GLIC_EXTENSION_MANIFEST" file="glic/extension/manifest.json" resource_path="glic_extension/manifest.json" type="BINDATA" />
+      <include name="IDR_GLIC_EXTENSION_BACKGROUND_JS" file="${root_gen_dir}/chrome/browser/resources/glic/extension/tsc/background.js" use_base_dir="false" resource_path="glic_extension/background.js" type="BINDATA" />
+
       <!-- Hangout Services extension, included in Google Chrome builds only. -->
       <if expr="_google_chrome or enable_hangout_services_extension">
         <include name="IDR_HANGOUT_SERVICES_BACKGROUND_HTML" file="hangout_services/background.html" type="BINDATA" />
         <include name="IDR_HANGOUT_SERVICES_THUNK_JS" file="hangout_services/thunk.js" type="BINDATA" />
       </if>
 
-      <!-- Contact Center Insights extension, enabled on managed ChromeOS devices -->
-      <if expr="is_chromeos">
-        <include name="IDR_CONTACT_CENTER_INSIGHTS_BACKGROUND_JS" file="chromeos/contact_center_insights/background.js" type="BINDATA" />
-        <include name="IDR_CONTACT_CENTER_INSIGHTS_BACKGROUND_WRAPPER_JS" file="chromeos/contact_center_insights/background_wrapper.js" type="BINDATA" />
-        <!-- Generated dependency bundle used by the extension for reporting purposes -->
-        <include name="IDR_CONTACT_CENTER_INSIGHTS_CCAAS_DEPS_JS" file="${root_gen_dir}/chrome/browser/resources/chromeos/contact_center_insights/ccaas_deps.js" use_base_dir="false" resource_path="chromeos/contact_center_insights/ccaas_deps.js" type="BINDATA" />
-      </if>
 
       <!-- Desk API extension, enabled on managed ChromeOS devices -->
-      <if expr="chromeos_ash">
+      <if expr="is_chromeos">
         <include name="IDR_DESK_API_TEMPLATES_ICON" file="chromeos/desk_api/templates_icon.png" type="BINDATA" />
         <!-- Compiled TS -->
         <include name="IDR_DESK_API_DESK_API_BUNDLE_JS" file="${root_gen_dir}/chrome/browser/resources/chromeos/desk_api/desk_api_bundle.js" use_base_dir="false" resource_path="chromeos/desk_api/desk_api_bundle.js" type="BINDATA" />
       </if>
 
-      <if expr="chromeos_ash">
+      <if expr="is_chromeos">
         <include name="IDR_ARC_SUPPORT_BACKGROUND_JS" file="chromeos/arc_support/background.js" type="BINDATA" />
         <include name="IDR_ARC_SUPPORT_BUBBLE_CSS" file="chromeos/arc_support/bubble.css" flattenhtml="true" type="BINDATA" />
         <include name="IDR_ARC_SUPPORT_BUBBLE_JS" file="chromeos/arc_support/bubble.js" type="BINDATA" />
@@ -73,16 +69,11 @@
         <include name="IDR_ARC_SUPPORT_ICON_HEADER" file="chromeos/arc_support/images/header.png" type="BINDATA" />
         <include name="IDR_ARC_SUPPORT_UI_JS" file="chromeos/arc_support/ui.js" type="chrome_html" />
       </if>
-      <include name="IDS_READING_MODE_DEFAULT_PNG" file="side_panel/read_anything/images/read_anything_default.png" type="BINDATA" />
-      <include name="IDS_READING_MODE_LIGHT_PNG" file="side_panel/read_anything/images/read_anything_light.png" type="BINDATA" />
-      <include name="IDS_READING_MODE_DARK_PNG" file="side_panel/read_anything/images/read_anything_dark.png" type="BINDATA" />
-      <include name="IDS_READING_MODE_YELLOW_PNG" file="side_panel/read_anything/images/read_anything_yellow.png" type="BINDATA" />
-      <include name="IDS_READING_MODE_BLUE_PNG" file="side_panel/read_anything/images/read_anything_blue.png" type="BINDATA" />
     </includes>
 
     <!-- Game Controls lottie json files -->
     <structures>
-      <if expr="chromeos_ash">
+      <if expr="is_chromeos">
         <structure type="lottie" name="IDR_ARC_INPUT_OVERLAY_ONBOARDING_ILLUSTRATION_DARK_JSON" file="chromeos/arc_input_overlay/onboarding_illustration_dark.json" compress="gzip" />
         <structure type="lottie" name="IDR_ARC_INPUT_OVERLAY_ONBOARDING_ILLUSTRATION_LIGHT_JSON" file="chromeos/arc_input_overlay/onboarding_illustration_light.json" compress="gzip" />
         <structure type="lottie" name="IDR_ARC_INPUT_OVERLAY_KEY_EDIT_NUDGE_JSON" file="chromeos/arc_input_overlay/key_edit_nudge.json" compress="gzip" />

@@ -4,15 +4,12 @@
 
 #include "content/browser/preloading/prefetch/prefetch_cookie_listener.h"
 
-#include <memory>
-
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/test/test_renderer_host.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "services/network/public/mojom/cookie_manager.mojom.h"
 #include "services/network/public/mojom/network_context.mojom.h"
-#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace content {
@@ -40,7 +37,8 @@ class PrefetchCookieListenerTest : public RenderViewHostTestHarness {
   // partition using |cookie_manager_|.
   bool SetHostCookie(const GURL& url, const std::string& value) {
     std::unique_ptr<net::CanonicalCookie> cookie(
-        net::CanonicalCookie::CreateForTesting(url, value, base::Time::Now()));
+        net::CanonicalCookie::CreateForTesting(url, value, base::Time::Now(),
+                                               net::CookieSourceType::kOther));
     EXPECT_TRUE(cookie.get());
     EXPECT_TRUE(cookie->IsHostCookie());
 

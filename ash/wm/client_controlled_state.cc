@@ -49,7 +49,7 @@ void ClientControlledState::HandleTransitionEvents(WindowState* window_state,
     return;
 
   const WMEventType event_type = event->type();
-  bool pin_transition = window_state->IsTrustedPinned() ||
+  bool pin_transition = window_state->IsLockedFullscreen() ||
                         window_state->IsPinned() || event->IsPinEvent();
   // Pinned State transition is handled on server side.
   if (pin_transition) {
@@ -86,6 +86,15 @@ void ClientControlledState::HandleTransitionEvents(WindowState* window_state,
     default:
       NOTREACHED() << "Unknown event :" << event->type();
   }
+}
+
+void ClientControlledState::OnWMEvent(WindowState* window_state,
+                                      const WMEvent* event) {
+  // A window state change should not lead to the window destruction.
+  // It is the caller's responsibility to delete the window in a safe way
+  // after the transition is completed if necessary. (crbug.com/513489429)
+  aura::Window::ScopedDeleteBlocker blocker(window_state->window());
+  BaseState::OnWMEvent(window_state, event);
 }
 
 void ClientControlledState::AttachState(
@@ -125,7 +134,7 @@ void ClientControlledState::HandleWorkspaceEvents(WindowState* window_state,
       return;
     }
     const gfx::Rect bounds =
-        display::Screen::GetScreen()->InTabletMode()
+        display::Screen::Get()->InTabletMode()
             ? FloatController::GetFloatWindowTabletBounds(window)
             : FloatController::GetFloatWindowClamshellBounds(
                   window,
@@ -233,9 +242,8 @@ void ClientControlledState::HandleBoundsEvents(WindowState* window_state,
         bounds_change_animation_duration_ = set_bounds_event->duration();
         int64_t display_id = set_bounds_event->display_id();
         if (display_id == display::kInvalidDisplayId) {
-          display_id = display::Screen::GetScreen()
-                           ->GetDisplayNearestWindow(window)
-                           .id();
+          display_id =
+              display::Screen::Get()->GetDisplayNearestWindow(window).id();
         }
 #if DCHECK_IS_ON()
         gfx::Rect bounds_in_display(bounds);
@@ -280,7 +288,7 @@ bool ClientControlledState::EnterNextState(WindowState* window_state,
   // the window.
   auto* const float_controller = Shell::Get()->float_controller();
   if (next_state_type == WindowStateType::kFloated) {
-    if (display::Screen::GetScreen()->InTabletMode()) {
+    if (display::Screen::Get()->InTabletMode()) {
       float_controller->FloatForTablet(window, previous_state_type);
     } else {
       float_controller->FloatImpl(window);
@@ -316,7 +324,7 @@ WindowStateType ClientControlledState::GetResolvedNextWindowStateType(
 
   const WindowStateType next = GetStateForTransitionEvent(window_state, event);
 
-  if (display::Screen::GetScreen()->InTabletMode() &&
+  if (display::Screen::Get()->InTabletMode() &&
       next == WindowStateType::kNormal && window_state->CanMaximize()) {
     return WindowStateType::kMaximized;
   }
@@ -394,7 +402,7 @@ void ClientControlledState::UpdateWindowForTransitionEvents(
   } else if (next_state_type == WindowStateType::kFloated) {
     if (chromeos::wm::CanFloatWindow(window)) {
       const gfx::Rect bounds =
-          display::Screen::GetScreen()->InTabletMode()
+          display::Screen::Get()->InTabletMode()
               ? FloatController::GetFloatWindowTabletBounds(window)
               : FloatController::GetFloatWindowClamshellBounds(
                     window, event_type == WM_EVENT_FLOAT

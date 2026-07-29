@@ -12,10 +12,12 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
+#include "chrome/browser/media/router/discovery/access_code/access_code_cast_discovery_interface.h"
 #include "chrome/browser/media/router/discovery/access_code/access_code_cast_feature.h"
 #include "chrome/browser/media/router/discovery/access_code/access_code_cast_pref_updater_impl.h"
 #include "chrome/browser/media/router/discovery/access_code/access_code_media_sink_util.h"
 #include "chrome/browser/media/router/discovery/discovery_network_monitor.h"
+#include "chrome/browser/media/router/discovery/mdns/cast_media_sink_service_impl.h"
 #include "chrome/browser/media/router/discovery/mdns/media_sink_util.h"
 #include "chrome/browser/media/router/discovery/media_sink_discovery_metrics.h"
 #include "chrome/browser/media/router/providers/cast/dual_media_sink_service.h"
@@ -142,8 +144,7 @@ AccessCodeCastSinkService::AccessCodeCastSinkService(Profile* profile)
     : AccessCodeCastSinkService(
           profile,
           MediaRouterFactory::GetApiForBrowserContext(profile),
-          media_router::DualMediaSinkService::GetInstance()
-              ->GetCastMediaSinkServiceImpl(),
+          DualMediaSinkService::GetInstance()->GetCastMediaSinkServiceImpl(),
           DiscoveryNetworkMonitor::GetInstance(),
           profile->GetPrefs(),
           /* pref_updater */ nullptr) {}
@@ -685,7 +686,7 @@ void AccessCodeCastSinkService::FetchAndValidateStoredDevices(
 void AccessCodeCastSinkService::ValidateStoredDevices(
     base::OnceCallback<void(const std::vector<MediaSinkInternal>&)>
         on_device_validated_callback,
-    base::Value::Dict stored_sinks) {
+    base::DictValue stored_sinks) {
   if (stored_sinks.empty()) {
     LogInfo("There are no saved Access Code Cast devices for this profile.",
             "");
@@ -732,7 +733,7 @@ void AccessCodeCastSinkService::ValidateStoredDevices(
 
 void AccessCodeCastSinkService::InitExpirationTimers(
     const std::vector<MediaSinkInternal>& cast_sinks) {
-  for (auto cast_sink : cast_sinks) {
+  for (const auto& cast_sink : cast_sinks) {
     SetExpirationTimer(cast_sink.id());
   }
 }
@@ -912,7 +913,7 @@ void AccessCodeCastSinkService::StoreSinkAndSetExpirationTimer(
 void AccessCodeCastSinkService::AddStoredDevicesToMediaRouter(
     const std::vector<MediaSinkInternal>& cast_sinks) {
   std::vector<MediaSinkInternal> cast_sinks_to_add;
-  for (auto cast_sink : cast_sinks) {
+  for (const auto& cast_sink : cast_sinks) {
     AddSinkResultCallback callback =
         base::BindOnce(AddRememberedSinkMetricsCallback);
     AddSinkToMediaRouter(cast_sink, std::move(callback));

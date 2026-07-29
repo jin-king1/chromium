@@ -4,18 +4,24 @@
 
 #include "components/feedback/feedback_uploader.h"
 
+#include <string>
+
 #include "base/command_line.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
+#include "build/branding_buildflags.h"
+#include "build/build_config.h"
 #include "components/feedback/features.h"
 #include "components/feedback/feedback_report.h"
 #include "components/feedback/feedback_switches.h"
 #include "components/variations/net/variations_http_headers.h"
 #include "net/base/load_flags.h"
+#include "net/http/http_response_headers.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/simple_url_loader.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
@@ -38,8 +44,12 @@ enum class FeedbackReportSendingResult {
 constexpr base::FilePath::CharType kFeedbackReportPath[] =
     FILE_PATH_LITERAL("Feedback Reports");
 
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
 constexpr char kFeedbackPostUrl[] =
     "https://www.google.com/tools/feedback/chrome/__submit";
+#else
+constexpr char kFeedbackPostUrl[] = "";
+#endif
 
 constexpr char kProtoBufMimeType[] = "application/x-protobuf";
 
@@ -264,7 +274,7 @@ void FeedbackUploader::DispatchReport() {
     DCHECK(url_loader_factory_);
   }
 
-  simple_url_loader_ptr->DownloadToStringOfUnboundedSizeUntilCrashAndDie(
+  simple_url_loader_ptr->DownloadHeadersOnly(
       url_loader_factory_.get(),
       base::BindOnce(&FeedbackUploader::OnDispatchComplete,
                      base::Unretained(this), std::move(it)));
@@ -272,13 +282,12 @@ void FeedbackUploader::DispatchReport() {
 
 void FeedbackUploader::OnDispatchComplete(
     UrlLoaderList::iterator it,
-    std::unique_ptr<std::string> response_body) {
+    scoped_refptr<net::HttpResponseHeaders> headers) {
   std::stringstream error_stream;
   network::SimpleURLLoader* simple_url_loader = it->get();
   int response_code = kHttpPostFailNoConnection;
-  if (simple_url_loader->ResponseInfo() &&
-      simple_url_loader->ResponseInfo()->headers) {
-    response_code = simple_url_loader->ResponseInfo()->headers->response_code();
+  if (headers) {
+    response_code = headers->response_code();
   }
   if (response_code == kHttpPostSuccessNoContent) {
     error_stream << "Success";
@@ -340,6 +349,12 @@ void FeedbackUploader::UpdateUploadTimer() {
     upload_timer_.Start(FROM_HERE, delay, this,
                         &FeedbackUploader::UpdateUploadTimer);
   }
+}
+
+GURL FeedbackUploader::SetFeedbackGURLForTesting(GURL url) {
+  GURL previous_url = feedback_post_url_;
+  feedback_post_url_ = std::move(url);
+  return previous_url;
 }
 
 }  // namespace feedback

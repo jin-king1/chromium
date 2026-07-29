@@ -5,6 +5,7 @@
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/threading/thread_restrictions.h"
@@ -19,6 +20,7 @@
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/cookie_config/cookie_store_util.h"
+#include "components/os_crypt/async/browser/test_utils.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/network_service_instance.h"
 #include "content/public/browser/network_service_util.h"
@@ -63,7 +65,8 @@ void SetCookie(network::mojom::CookieManager* cookie_manager) {
   auto cookie = net::CanonicalCookie::CreateUnsafeCookieForTesting(
       kCookieName, kCookieValue, "www.test.com", "/", t, t + base::Days(1),
       base::Time(), base::Time(), /*secure=*/true, /*http-only=*/false,
-      net::CookieSameSite::NO_RESTRICTION, net::COOKIE_PRIORITY_DEFAULT);
+      net::CookieSameSite::NO_RESTRICTION, net::COOKIE_PRIORITY_DEFAULT,
+      net::CookieSourceType::kOther);
   base::RunLoop run_loop;
   cookie_manager->SetCanonicalCookie(
       *cookie, net::cookie_util::SimulatedCookieSource(*cookie, "https"),
@@ -137,10 +140,16 @@ class ChromeNetworkServiceBrowserTest
 IN_PROC_BROWSER_TEST_P(ChromeNetworkServiceBrowserTest,
                        PRE_PRE_EncryptedCookies) {
   // These test is only valid if crypto is enabled on the platform.
-  auto crypto_delegate = cookie_config::GetCookieCryptoDelegate();
+  auto os_crypt_async = os_crypt_async::GetTestOSCryptAsyncForTesting(
+      /*is_sync_for_unittests=*/true);
+  auto crypto_delegate = cookie_config::GetCookieCryptoDelegate(
+      os_crypt_async.get(), base::SequencedTaskRunner::GetCurrentDefault());
   if (!crypto_delegate) {
     GTEST_SKIP() << "No crypto on this platform.";
   }
+  base::RunLoop run_loop;
+  crypto_delegate->Init(run_loop.QuitClosure());
+  run_loop.Run();
   std::string ciphertext;
   crypto_delegate->EncryptString(kCookieValue, &ciphertext);
   ASSERT_NE(ciphertext, kCookieValue) << "Crypto should really encrypt.";
@@ -209,7 +218,7 @@ IN_PROC_BROWSER_TEST_F(ChromeNetworkServiceBrowserCookieLockTest,
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(), embedded_test_server()->GetURL("/title1.html")));
   base::FilePath cookie_filename = browser()
-                                       ->profile()
+                                       ->GetProfile()
                                        ->GetPath()
                                        .Append(chrome::kNetworkDataDirname)
                                        .Append(chrome::kCookieFilename);
@@ -263,7 +272,7 @@ class ChromeNetworkServiceMigrationBrowserTest : public InProcessBrowserTest {
  protected:
   void VerifyCookiePresent() {
     auto* cookie_manager = browser()
-                               ->profile()
+                               ->GetProfile()
                                ->GetDefaultStoragePartition()
                                ->GetCookieManagerForBrowserProcess();
     auto cookies = GetCookies(cookie_manager);
@@ -273,12 +282,12 @@ class ChromeNetworkServiceMigrationBrowserTest : public InProcessBrowserTest {
   }
 
   base::FilePath GetOldCookieLocation() {
-    return browser()->profile()->GetPath().Append(chrome::kCookieFilename);
+    return browser()->GetProfile()->GetPath().Append(chrome::kCookieFilename);
   }
 
   base::FilePath GetNewCookieLocation() {
     return browser()
-        ->profile()
+        ->GetProfile()
         ->GetPath()
         .Append(chrome::kNetworkDataDirname)
         .Append(chrome::kCookieFilename);

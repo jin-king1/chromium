@@ -10,7 +10,6 @@
 #include <string_view>
 
 #include "base/containers/fixed_flat_map.h"
-#include "base/feature_list.h"
 #include "extensions/common/api/declarative_net_request/constants.h"
 
 namespace extensions::declarative_net_request {
@@ -28,6 +27,7 @@ enum class ParseResult {
   ERROR_EMPTY_DOMAINS_LIST,
   ERROR_EMPTY_INITIATOR_DOMAINS_LIST,
   ERROR_EMPTY_REQUEST_DOMAINS_LIST,
+  ERROR_EMPTY_TOP_DOMAINS_LIST,
   ERROR_DOMAINS_AND_INITIATOR_DOMAINS_BOTH_SPECIFIED,
   ERROR_EXCLUDED_DOMAINS_AND_EXCLUDED_INITIATOR_DOMAINS_BOTH_SPECIFIED,
   ERROR_EMPTY_RESOURCE_TYPES_LIST,
@@ -44,6 +44,8 @@ enum class ParseResult {
   ERROR_NON_ASCII_EXCLUDED_INITIATOR_DOMAIN,
   ERROR_NON_ASCII_REQUEST_DOMAIN,
   ERROR_NON_ASCII_EXCLUDED_REQUEST_DOMAIN,
+  ERROR_NON_ASCII_TOP_DOMAIN,
+  ERROR_NON_ASCII_EXCLUDED_TOP_DOMAIN,
 
   ERROR_INVALID_URL_FILTER,
   ERROR_INVALID_REDIRECT,
@@ -112,10 +114,11 @@ enum class UpdateDynamicRulesStatus {
   kErrorWriteJson = 17,
   kErrorWriteFlatbuffer = 18,
   kErrorUnsafeRuleCountExceeded = 19,
+  kErrorCreateMatcher_RulesetFileSizeLimitExceeded = 20,
 
   // Magic constant used by histograms code. Should be equal to the largest enum
   // value.
-  kMaxValue = kErrorUnsafeRuleCountExceeded,
+  kMaxValue = kErrorCreateMatcher_RulesetFileSizeLimitExceeded,
 };
 
 // Describes the result of loading a single JSON Ruleset.
@@ -146,9 +149,12 @@ enum class LoadRulesetResult {
   // prefs.
   kErrorChecksumNotFound = 5,
 
+  // Ruleset loading failed because the indexed file exceeded the size limit.
+  kErrorRulesetFileSizeLimitExceeded = 6,
+
   // Magic constant used by histograms code. Should be equal to the largest enum
   // value.
-  kMaxValue = kErrorChecksumNotFound,
+  kMaxValue = kErrorRulesetFileSizeLimitExceeded,
 };
 
 // Specifies whether and how extensions require host permissions to modify the
@@ -264,6 +270,7 @@ extern const char kIncrementActionCountWithoutUseAsBadgeTextError[];
 extern const char kInvalidTestURLError[];
 extern const char kInvalidTestInitiatorError[];
 extern const char kInvalidTestTabIdError[];
+extern const char kInvalidTestTopURLError[];
 extern const char kInvalidResponseHeaderObjectError[];
 extern const char kInvalidResponseHeaderNameError[];
 extern const char kInvalidResponseHeaderValueError[];

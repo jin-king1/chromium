@@ -6,6 +6,9 @@ package org.chromium.chrome.browser.firstrun;
 
 import static androidx.annotation.VisibleForTesting.PRIVATE;
 
+import static org.chromium.build.NullUtil.assertNonNull;
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.animation.Animator;
 import android.animation.ValueAnimator;
 import android.app.Activity;
@@ -17,41 +20,50 @@ import android.view.MotionEvent;
 import android.view.View;
 
 import androidx.annotation.CallSuper;
-import androidx.annotation.Nullable;
+import androidx.annotation.ColorInt;
 import androidx.annotation.StringRes;
 import androidx.annotation.VisibleForTesting;
-import androidx.fragment.app.Fragment;
 import androidx.viewpager2.widget.ViewPager2;
 
 import org.chromium.base.ActivityState;
 import org.chromium.base.ApplicationStatus;
 import org.chromium.base.ApplicationStatus.ActivityStateListener;
-import org.chromium.base.BuildInfo;
+import org.chromium.base.DeviceInfo;
+import org.chromium.base.FeatureList;
 import org.chromium.base.Promise;
+import org.chromium.base.ResettersForTesting;
 import org.chromium.base.metrics.RecordHistogram;
+import org.chromium.base.shared_preferences.SharedPreferencesManager;
+import org.chromium.build.annotations.Initializer;
+import org.chromium.build.annotations.MonotonicNonNull;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.back_press.SecondaryActivityBackPressUma.SecondaryActivity;
 import org.chromium.chrome.browser.customtabs.CustomTabActivity;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.metrics.UmaUtils;
-import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
+import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
+import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.search_engines.TemplateUrlServiceFactory;
 import org.chromium.chrome.browser.signin.SigninCheckerProvider;
 import org.chromium.chrome.browser.signin.SigninFirstRunFragment;
+import org.chromium.chrome.browser.ui.default_browser_promo.DefaultBrowserPromoUtils;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeUtils;
 import org.chromium.chrome.browser.ui.signin.DialogWhenLargeContentLayout;
-import org.chromium.chrome.browser.ui.signin.SigninUtils;
 import org.chromium.chrome.browser.ui.signin.fullscreen_signin.FullscreenSigninMediator;
 import org.chromium.chrome.browser.ui.signin.history_sync.HistorySyncHelper;
 import org.chromium.chrome.browser.ui.system.StatusBarColorController;
 import org.chromium.components.browser_ui.modaldialog.AppModalPresenter;
+import org.chromium.components.browser_ui.styles.SemanticColorUtils;
 import org.chromium.components.feature_engagement.EventConstants;
 import org.chromium.components.metrics.LowEntropySource;
 import org.chromium.components.signin.metrics.SigninAccessPoint;
 import org.chromium.ui.base.ActivityWindowAndroid;
 import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.base.LocalizationUtils;
+import org.chromium.ui.edge_to_edge.EdgeToEdgeSystemBarColorHelper;
 import org.chromium.ui.interpolators.Interpolators;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modaldialog.ModalDialogManager.ModalDialogType;
@@ -73,6 +85,7 @@ import java.util.function.BooleanSupplier;
  *
  * The activity might be run more than once, e.g. 1) for ToS and sign-in, and 2) for intro.
  */
+@NullMarked
 public class FirstRunActivity extends FirstRunActivityBase implements FirstRunPageDelegate {
 
     /**
@@ -172,35 +185,31 @@ public class FirstRunActivity extends FirstRunActivityBase implements FirstRunPa
         void onExitFirstRun(FirstRunActivity caller);
     }
 
+    private static final String KEY_LAST_PAGER_INDEX = "LAST_PAGER_INDEX";
+    private static final String KEY_PROMO_DIALOG_TRIGGERED =
+            "DEFAULT_BROWSER_ROLE_MANAGER_DIALOG_TRIGGERED";
+    private static final String KEY_HISTORY_SYNC_STEP_COMPLETED = "HISTORY_SYNC_STEP_COMPLETED";
+
     private static final int TRANSITION_DELAY_MS = 450;
 
     private final BitSet mFreProgressStepsRecorded = new BitSet(MobileFreProgress.MAX);
 
-    @Nullable private static FirstRunActivityObserver sObserver;
+    private static @Nullable FirstRunActivityObserver sObserver;
 
     private static boolean sIsAnimationDisabled;
 
-    /** Prevents Tapjacking on T-. See crbug.com/1430867 */
+    /** Prevents Tapjacking on T-. See crbug.com/40063907 */
     private static final boolean sPreventTouches =
             Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU;
-
-    /**
-     * The last MotionEvent object blocked due to the activity being in paused state. We're
-     * interested in MotionEvent#ACTION_DOWN which is likely the very first event received when
-     * multi-window mode is entered. We inject this one after the activity is resumed (or it regains
-     * the focus) in order to recover the corresponding user gesture which otherwise would have gone
-     * missing.
-     */
-    private MotionEvent mBlockedEvent;
 
     private boolean mPostNativeAndPolicyPagesCreated;
 
     /** Use {@link Promise#isFulfilled()} to verify whether the native has been initialized. */
-    private final Promise<Void> mNativeInitializationPromise = new Promise<>();
+    private final Promise<@Nullable Void> mNativeInitializationPromise = new Promise<>();
 
     private FirstRunFlowSequencer mFirstRunFlowSequencer;
 
-    private Bundle mFreProperties;
+    private @MonotonicNonNull Bundle mFreProperties;
 
     /**
      * Whether the first run activity was launched as a result of the user launching Chrome from the
@@ -209,6 +218,7 @@ public class FirstRunActivity extends FirstRunActivityBase implements FirstRunPa
     private boolean mLaunchedFromChromeIcon;
 
     private boolean mLaunchedFromCct;
+    private boolean mTemplateUrlServiceLoaded;
 
     /**
      * {@link SystemClock} timestamp from when the FRE intent was initially created. This marks when
@@ -222,13 +232,52 @@ public class FirstRunActivity extends FirstRunActivityBase implements FirstRunPa
     private FirstRunPageTransformer mPageTransformer;
     private ViewPager2 mPager;
 
-    private ValueAnimator mAnimator;
+    private @Nullable ValueAnimator mAnimator;
 
     /** The pager adapter, which provides the pages to the view pager widget. */
     private FirstRunPagerAdapter mPagerAdapter;
 
+    /** Tracks if the role manager dialog has been shown in default browser promo. */
+    private boolean mPromoRoleManagerDialogTriggered;
+
+    /** Tracks whether the History Sync page has been completed (either opted in or not). */
+    private boolean mHistorySyncStepCompleted;
+
     private boolean isFlowKnown() {
         return mFreProperties != null;
+    }
+
+    @Override
+    public void onSaveInstanceState(Bundle outState) {
+        if (ChromeFeatureList.sDefaultBrowserPromoFre.isEnabled()) {
+            // Called by Android right before the First Run Activity is destroyed (toggle dark mode,
+            // etc.). Before activity recreation, store which page the user was looking at.
+            outState.putInt(KEY_LAST_PAGER_INDEX, mPager.getCurrentItem());
+            outState.putBoolean(KEY_PROMO_DIALOG_TRIGGERED, mPromoRoleManagerDialogTriggered);
+            outState.putBoolean(KEY_HISTORY_SYNC_STEP_COMPLETED, mHistorySyncStepCompleted);
+        }
+
+        super.onSaveInstanceState(outState);
+    }
+
+    @Override
+    public boolean getPromoRoleManagerDialogTriggered() {
+        return mPromoRoleManagerDialogTriggered;
+    }
+
+    @Override
+    public void setPromoRoleManagerDialogTriggered(boolean val) {
+        mPromoRoleManagerDialogTriggered = val;
+    }
+
+    @Override
+    public boolean getHistorySyncStepCompleted() {
+        return mHistorySyncStepCompleted;
+    }
+
+    @Override
+    public void setHistorySyncStepCompleted(boolean val) {
+        mHistorySyncStepCompleted = val;
     }
 
     /** Creates first page and sets up adapter. Should result UI being shown on the screen. */
@@ -259,8 +308,11 @@ public class FirstRunActivity extends FirstRunActivityBase implements FirstRunPa
         //
         // TODO(b/245912657): explicitly sign in supervised users in {@link
         // FullscreenSigninMediator#handleContinueWithNative} rather than relying on SigninChecker.
-        SigninCheckerProvider.get(getProfileProviderSupplier().get().getOriginalProfile());
+        Profile originalProfile =
+                assumeNonNull(getProfileProviderSupplier().get()).getOriginalProfile();
+        SigninCheckerProvider.get(originalProfile);
 
+        assumeNonNull(mFreProperties);
         mFirstRunFlowSequencer.updateFirstRunProperties(mFreProperties);
 
         BooleanSupplier showSearchEnginePromo =
@@ -276,15 +328,62 @@ public class FirstRunActivity extends FirstRunActivityBase implements FirstRunPa
 
         // An optional history sync opt-in page, the visibility of this page will be decided on the
         // fly according to the situation.
-        BooleanSupplier showHistorySync = () -> mFreProperties.getBoolean(SHOW_HISTORY_SYNC_PAGE);
+        BooleanSupplier showHistorySync =
+                () -> {
+                    if (ChromeFeatureList.isEnabled(ChromeFeatureList.DEFAULT_BROWSER_PROMO_FRE)) {
+                        return mFreProperties.getBoolean(SHOW_HISTORY_SYNC_PAGE)
+                                && !mHistorySyncStepCompleted;
+                    } else {
+                        return mFreProperties.getBoolean(SHOW_HISTORY_SYNC_PAGE);
+                    }
+                };
         if (!showHistorySync.getAsBoolean()) {
-            HistorySyncHelper historySyncHelper =
-                    HistorySyncHelper.getForProfile(
-                            getProfileProviderSupplier().get().getOriginalProfile());
+            HistorySyncHelper historySyncHelper = HistorySyncHelper.getForProfile(originalProfile);
             historySyncHelper.recordHistorySyncNotShown(SigninAccessPoint.START_PAGE);
         }
         mPages.add(new FirstRunPage<>(HistorySyncFirstRunFragment.class, showHistorySync));
         mFreProgressStates.add(MobileFreProgress.HISTORY_SYNC_OPT_IN_SHOWN);
+
+        if (ChromeFeatureList.isEnabled(ChromeFeatureList.DEFAULT_BROWSER_PROMO_FRE)) {
+            int promoIndex = mPages.size();
+            BooleanSupplier showDefaultBrowserPromo =
+                    () -> {
+                        // When FRA gets destroyed and recreated (due to a theme change, etc.),
+                        // ViewPager2 gets temporarily reset (index is at 0 again) and the page
+                        // sequence is rebuilt. If the default browser promo fragment was showing
+                        // previously, it should be allowed to show again even though
+                        // #shouldShowRoleManagerPromoForFre will return false if the Role Manager
+                        // Dialog (RMD) was just shown. If RMD was showing, Android will
+                        // automatically re-display it after the recreation.
+                        Bundle savedState = getSavedInstanceState();
+                        if (savedState != null
+                                && savedState.getInt(KEY_LAST_PAGER_INDEX, -1) == promoIndex) {
+                            return true;
+                        }
+
+                        // Skip CCT.
+                        if (isLaunchedFromCct()) return false;
+
+                        // Restrict promos to FRE triggered via main intents only (exclude FRE
+                        // before CCTs/PWAs/TWAs).
+                        if (!mLaunchedFromChromeIcon) return false;
+
+                        return DefaultBrowserPromoUtils.getInstance()
+                                .shouldShowRoleManagerPromoForFre(this);
+                    };
+
+            mPages.add(
+                    new FirstRunPage<>(
+                            DefaultBrowserPromoFirstRunFragment.class, showDefaultBrowserPromo));
+            mFreProgressStates.add(MobileFreProgress.DEFAULT_BROWSER_PROMO_SHOWN);
+        }
+
+        if (ChromeFeatureList.sSafetyFrePromo.isEnabled()
+                && ChromeFeatureList.sSafetyFrePromoArm.getValue()
+                        == FirstRunUtils.SafetyFrePromoArm.ANIMATED_ILLUSTRATION) {
+            mPages.add(new FirstRunPage<>(SafetyPromoFirstRunFragment.class, () -> true));
+            mFreProgressStates.add(MobileFreProgress.SAFETY_PROMO_SHOWN);
+        }
 
         if (mPagerAdapter != null) {
             mPagerAdapter.notifyDataSetChanged();
@@ -306,7 +405,7 @@ public class FirstRunActivity extends FirstRunActivityBase implements FirstRunPa
         // To solve this, we apply Theme.Chromium.TabbedMode on Tablet and Automotive here, to use
         // the same window background as other tabbed mode activities using the same theme.
         boolean isTabletOrAuto =
-                BuildInfo.getInstance().isAutomotive
+                DeviceInfo.isAutomotive()
                         || DeviceFormFactor.isNonMultiDisplayContextOnTablet(this);
         if (isTabletOrAuto) {
             setTheme(R.style.Theme_Chromium_TabbedMode);
@@ -318,14 +417,29 @@ public class FirstRunActivity extends FirstRunActivityBase implements FirstRunPa
                     (getEdgeToEdgeManager() != null)
                             ? getEdgeToEdgeManager().getEdgeToEdgeSystemBarColorHelper()
                             : null,
-                    getWindow(),
+                    this,
                     Color.BLACK);
         }
         super.onPreCreate();
     }
 
     @Override
-    protected Bundle transformSavedInstanceStateForOnCreate(Bundle savedInstanceState) {
+    protected void initializeSystemBarColors(
+            EdgeToEdgeSystemBarColorHelper edgeToEdgeSystemBarColorHelper) {
+        if (DialogWhenLargeContentLayout.shouldShowAsDialog(this)) {
+            @ColorInt int backgroundColor = SemanticColorUtils.getColorSurfaceContainerLow(this);
+
+            StatusBarColorController.setStatusBarColor(
+                    edgeToEdgeSystemBarColorHelper, this, backgroundColor);
+            edgeToEdgeSystemBarColorHelper.setNavigationBarColor(backgroundColor);
+        } else {
+            super.initializeSystemBarColors(edgeToEdgeSystemBarColorHelper);
+        }
+    }
+
+    @Override
+    protected @Nullable Bundle transformSavedInstanceStateForOnCreate(
+            @Nullable Bundle savedInstanceState) {
         // We pass null to Activity.onCreate() so that it doesn't automatically restore
         // the FragmentManager state - as that may cause fragments to be loaded that have
         // dependencies on native before native has been loaded (and then crash). Instead,
@@ -352,10 +466,12 @@ public class FirstRunActivity extends FirstRunActivityBase implements FirstRunPa
 
         mPager.setId(R.id.fre_pager);
         mPager.setOffscreenPageLimit(3);
-        return SigninUtils.wrapInDialogWhenLargeLayout(mPager);
+        return DialogWhenLargeContentLayout.wrapInDialogWhenLargeLayout(
+                mPager, SemanticColorUtils.getColorSurfaceContainerLow(this));
     }
 
     @Override
+    @Initializer
     public void triggerLayoutInflation() {
         super.triggerLayoutInflation();
 
@@ -374,7 +490,8 @@ public class FirstRunActivity extends FirstRunActivityBase implements FirstRunPa
 
         mFirstRunFlowSequencer =
                 new FirstRunFlowSequencer(
-                        getProfileProviderSupplier(), getChildAccountStatusSupplier()) {
+                        getProfileProviderSupplier(),
+                        assertNonNull(getChildAccountStatusSupplier())) {
                     @Override
                     public void onFlowIsKnown(boolean isChild) {
                         mFreProperties = new Bundle();
@@ -389,21 +506,6 @@ public class FirstRunActivity extends FirstRunActivityBase implements FirstRunPa
                         RecordHistogram.recordTimesHistogram(
                                 "MobileFre.FromLaunch.FirstFragmentInflatedV2",
                                 inflationCompletion - mIntentCreationElapsedRealtimeMs);
-                        getAppRestrictionSupplier()
-                                .getCompletionElapsedRealtimeMs(
-                                        restrictionsCompletion -> {
-                                            if (restrictionsCompletion > inflationCompletion) {
-                                                RecordHistogram.recordTimesHistogram(
-                                                        "MobileFre.FragmentInflationSpeed.FasterThanAppRestriction",
-                                                        restrictionsCompletion
-                                                                - inflationCompletion);
-                                            } else {
-                                                RecordHistogram.recordTimesHistogram(
-                                                        "MobileFre.FragmentInflationSpeed.SlowerThanAppRestriction",
-                                                        inflationCompletion
-                                                                - restrictionsCompletion);
-                                            }
-                                        });
                     }
                 };
         mFirstRunFlowSequencer.start();
@@ -420,25 +522,34 @@ public class FirstRunActivity extends FirstRunActivityBase implements FirstRunPa
     public void finishNativeInitialization() {
         super.finishNativeInitialization();
 
-        Runnable onNativeFinished =
+        Runnable onTemplateUrlServiceLoaded =
                 () -> {
                     if (isActivityFinishingOrDestroyed()) return;
 
+                    mTemplateUrlServiceLoaded = true;
                     onNativeDependenciesFullyInitialized();
                 };
-        Profile profile = getProfileProviderSupplier().get().getOriginalProfile();
-        TemplateUrlServiceFactory.getForProfile(profile).runWhenLoaded(onNativeFinished);
+        Profile profile = assumeNonNull(getProfileProviderSupplier().get()).getOriginalProfile();
+        TemplateUrlServiceFactory.getForProfile(profile).runWhenLoaded(onTemplateUrlServiceLoaded);
         // Notify feature engagement that FRE occurred.
         TrackerFactory.getTrackerForProfile(profile)
                 .notifyEvent(EventConstants.RESTORE_TABS_ON_FIRST_RUN_SHOW_PROMO);
         RecordHistogram.recordTimesHistogram(
                 "MobileFre.NativeInitialized", SystemClock.elapsedRealtime() - getStartTime());
+
+        assert FeatureList.isNativeInitialized()
+                : "Expected feature list to be initialized during FRE.";
+        if (ChromeFeatureList.sXplatSyncedSetup.isEnabled()) {
+            SharedPreferencesManager prefManager = ChromeSharedPreferences.getInstance();
+            prefManager.writeBoolean(
+                    ChromePreferenceKeys.CROSS_DEVICE_IMPORTED_BOTTOM_OMNIBOX, false);
+            prefManager.writeBoolean(
+                    ChromePreferenceKeys.CROSS_DEVICE_IMPORTED_ALL_SETTINGS, false);
+        }
     }
 
     private void onNativeDependenciesFullyInitialized() {
-        mNativeInitializationPromise.fulfill(null);
         mPager.setOffscreenPageLimit(ViewPager2.OFFSCREEN_PAGE_LIMIT_DEFAULT);
-
         onInternalStateChanged();
     }
 
@@ -455,6 +566,11 @@ public class FirstRunActivity extends FirstRunActivityBase implements FirstRunPa
     private void onInternalStateChanged() {
         if (!isFlowKnown()) {
             return;
+        }
+
+        if (mTemplateUrlServiceLoaded && mNativeInitializationPromise.isPending()) {
+            // `mNativeInitializationPromise` should only be set after flow is known.
+            mNativeInitializationPromise.fulfill(null);
         }
 
         if (mPagerAdapter == null) {
@@ -485,7 +601,7 @@ public class FirstRunActivity extends FirstRunActivityBase implements FirstRunPa
         // Debounce page changes while animation is in flight.
         if (mAnimator != null) return false;
 
-        mFirstRunFlowSequencer.updateFirstRunProperties(mFreProperties);
+        mFirstRunFlowSequencer.updateFirstRunProperties(assumeNonNull(mFreProperties));
 
         int position = mPager.getCurrentItem() + 1;
         while (position < mPagerAdapter.getItemCount() && !mPages.get(position).shouldShow()) {
@@ -498,28 +614,8 @@ public class FirstRunActivity extends FirstRunActivityBase implements FirstRunPa
     }
 
     // Activity:
-
     @Override
-    public void onAttachFragment(Fragment fragment) {
-        if (!(fragment instanceof FirstRunFragment)) return;
-
-        FirstRunFragment page = (FirstRunFragment) fragment;
-        // Delay notifying the child page until native and the TemplateUrlService are initialized.
-        // Tracked by mNativeSideIsInitialized is ready. Otherwise if the next page handles
-        // the default search engine, it will be missing dependencies. See https://crbug.com/1275950
-        // for when this didn't work.
-        if (mNativeInitializationPromise.isFulfilled()) {
-            page.onNativeInitialized();
-        } else {
-            mNativeInitializationPromise.then(
-                    (ignored) -> {
-                        page.onNativeInitialized();
-                    });
-        }
-    }
-
-    @Override
-    public void onRestoreInstanceState(Bundle state) {
+    public void onRestoreInstanceState(@Nullable Bundle state) {
         // Don't automatically restore state here. This is a counterpart to the override
         // of transformSavedInstanceStateForOnCreate() as the two need to be consistent.
         // The default implementation of this would restore the state of the views, which
@@ -558,9 +654,17 @@ public class FirstRunActivity extends FirstRunActivityBase implements FirstRunPa
             return BackPressResult.SUCCESS;
         }
 
-        mFirstRunFlowSequencer.updateFirstRunProperties(mFreProperties);
-
         int position = mPager.getCurrentItem() - 1;
+
+        if (ChromeFeatureList.sDefaultBrowserPromoFre.isEnabled()
+                && position >= 0
+                && mPages.get(position).getFragmentClass() == HistorySyncFirstRunFragment.class) {
+            // The user can now go back to history sync.
+            setHistorySyncStepCompleted(false);
+        }
+
+        mFirstRunFlowSequencer.updateFirstRunProperties(assumeNonNull(mFreProperties));
+
         while (position > 0 && !mPages.get(position).shouldShow()) {
             --position;
         }
@@ -576,7 +680,7 @@ public class FirstRunActivity extends FirstRunActivityBase implements FirstRunPa
 
     @Override
     public boolean dispatchTouchEvent(MotionEvent ev) {
-        if (sPreventTouches && shouldPreventTouch(ev)) {
+        if (sPreventTouches && shouldPreventTouch()) {
             // Discard the events which may be trickling down from an overlay activity above.
             return true;
         }
@@ -584,39 +688,12 @@ public class FirstRunActivity extends FirstRunActivityBase implements FirstRunPa
     }
 
     @VisibleForTesting(otherwise = PRIVATE)
-    boolean shouldPreventTouch(MotionEvent ev) {
+    boolean shouldPreventTouch() {
         if (ApplicationStatus.getStateForActivity(this) == ActivityState.RESUMED) return false;
-        mBlockedEvent = ev;
         return true;
     }
 
-    @Override
-    public void onWindowFocusChanged(boolean hasFocus) {
-        super.onWindowFocusChanged(hasFocus);
-        // No need to do the following from Q and onward where multi-resume state is supported
-        // in split screen mode.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) return;
-
-        if (hasFocus
-                && mBlockedEvent != null
-                && MultiWindowUtils.getInstance().isInMultiWindowMode(this)) {
-            mBlockedEvent.setAction(MotionEvent.ACTION_DOWN);
-            super.dispatchTouchEvent(mBlockedEvent); // Inject the blocked event
-            mBlockedEvent = null;
-        }
-    }
-
-    @Override
-    public int getSecondaryActivity() {
-        return SecondaryActivity.FIRST_RUN;
-    }
-
     // FirstRunPageDelegate:
-    @Override
-    public Bundle getProperties() {
-        return mFreProperties;
-    }
-
     @Override
     public boolean advanceToNextPage() {
         return advanceToNextPageInternal(true);
@@ -683,11 +760,6 @@ public class FirstRunActivity extends FirstRunActivityBase implements FirstRunPa
     }
 
     @Override
-    public boolean didAcceptTermsOfService() {
-        return FirstRunUtils.didAcceptTermsOfService();
-    }
-
-    @Override
     public boolean isLaunchedFromCct() {
         return mLaunchedFromCct;
     }
@@ -710,6 +782,20 @@ public class FirstRunActivity extends FirstRunActivityBase implements FirstRunPa
 
     /** Initialize local state from launch intent and from saved instance state. */
     private void initializeStateFromLaunchData() {
+        if (ChromeFeatureList.sDefaultBrowserPromoFre.isEnabled()) {
+            // When a configuration change (like a theme toggle) occurs, the FirstRunActivity
+            // instance is destroyed and recreated. We restore the saved state from the previous
+            // instance's Bundle to ensure the user's progress in the FRE flow is preserved.
+            Bundle savedState = getSavedInstanceState();
+
+            if (savedState != null) {
+                mPromoRoleManagerDialogTriggered =
+                        savedState.getBoolean(KEY_PROMO_DIALOG_TRIGGERED, false);
+                mHistorySyncStepCompleted =
+                        savedState.getBoolean(KEY_HISTORY_SYNC_STEP_COMPLETED, false);
+            }
+        }
+
         if (getIntent() != null) {
             mLaunchedFromChromeIcon =
                     getIntent().getBooleanExtra(EXTRA_COMING_FROM_CHROME_ICON, false);
@@ -738,7 +824,7 @@ public class FirstRunActivity extends FirstRunActivityBase implements FirstRunPa
 
         int oldPosition = mPager.getCurrentItem();
 
-        // Set A11y focus if possible. See https://crbug.com/1094064 for more context.
+        // Set A11y focus if possible. See https://crbug.com/40699257 for more context.
         // The screen reader can lose focus when switching between pages with ViewPager2.
         FirstRunFragment currentFragment = mPagerAdapter.getFirstRunFragment(position);
         if (currentFragment != null) {
@@ -781,7 +867,7 @@ public class FirstRunActivity extends FirstRunActivityBase implements FirstRunPa
             mAnimator.addUpdateListener(new UpdateListener());
 
             mAnimator.addListener(
-                    new ValueAnimator.AnimatorListener() {
+                    new Animator.AnimatorListener() {
                         @Override
                         public void onAnimationStart(Animator animation) {
                             mPager.beginFakeDrag();
@@ -790,6 +876,14 @@ public class FirstRunActivity extends FirstRunActivityBase implements FirstRunPa
                         @Override
                         public void onAnimationEnd(Animator animation) {
                             mPager.endFakeDrag();
+                            if (ChromeFeatureList.sDefaultBrowserPromoFre.isEnabled()
+                                    && mPager.getCurrentItem() != position) {
+                                // When the user stays signed out, we jump from index 0 (sign-in
+                                // page) to index 2 (promo page) and skip index 1 (History sync).
+                                // Fake dragging seems to fail in multipage jumps, so we manually
+                                // jump to the target position.
+                                mPager.setCurrentItem(position, false);
+                            }
                             mAnimator = null;
                             // No need to call `mPager.setCurrentItem(position, false)`.
                         }
@@ -839,8 +933,13 @@ public class FirstRunActivity extends FirstRunActivityBase implements FirstRunPa
     @Override
     public void recordLoadCompletedHistograms(
             @FullscreenSigninMediator.LoadPoint int slowestLoadPoint) {
+        // TODO: crbug.com/462005651 - Remove obsolete
+        // "MobileFre.FromLaunch.NativePolicyAndChildStatusLoaded" histogram.
         RecordHistogram.recordTimesHistogram(
                 "MobileFre.FromLaunch.NativePolicyAndChildStatusLoaded",
+                SystemClock.elapsedRealtime() - mIntentCreationElapsedRealtimeMs);
+        RecordHistogram.recordTimesHistogram(
+                "MobileFre.FromLaunch.InitialLoadCompleted",
                 SystemClock.elapsedRealtime() - mIntentCreationElapsedRealtimeMs);
         RecordHistogram.recordEnumeratedHistogram(
                 "MobileFre.SlowestLoadPoint",
@@ -862,17 +961,18 @@ public class FirstRunActivity extends FirstRunActivityBase implements FirstRunPa
     }
 
     @Override
-    public Promise<Void> getNativeInitializationPromise() {
+    public Promise<@Nullable Void> getNativeInitializationPromise() {
         return mNativeInitializationPromise;
     }
 
-    public FirstRunFragment getCurrentFragmentForTesting() {
+    public @Nullable FirstRunFragment getCurrentFragmentForTesting() {
         return mPagerAdapter.getFirstRunFragment(mPager.getCurrentItem());
     }
 
     public static void setObserverForTest(FirstRunActivityObserver observer) {
         assert sObserver == null;
         sObserver = observer;
+        ResettersForTesting.register(() -> sObserver = null);
     }
 
     public static void disableAnimationForTesting(boolean isAnimationDisabled) {
@@ -886,6 +986,6 @@ public class FirstRunActivity extends FirstRunActivityBase implements FirstRunPa
                 /* listenToActivityState= */ true,
                 getIntentRequestTracker(),
                 getInsetObserver(),
-                /* trackOcclusion= */ true);
+                /* occlusionTrackingAllowed= */ true);
     }
 }

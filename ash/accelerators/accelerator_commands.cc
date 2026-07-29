@@ -13,7 +13,6 @@
 #include "ash/accessibility/magnifier/docked_magnifier_controller.h"
 #include "ash/accessibility/magnifier/fullscreen_magnifier_controller.h"
 #include "ash/app_list/app_list_controller_impl.h"
-#include "ash/assistant/assistant_controller_impl.h"
 #include "ash/capture_mode/capture_mode_camera_controller.h"
 #include "ash/capture_mode/capture_mode_controller.h"
 #include "ash/clipboard/clipboard_history_controller_impl.h"
@@ -24,7 +23,7 @@
 #include "ash/display/privacy_screen_controller.h"
 #include "ash/display/screen_orientation_controller.h"
 #include "ash/focus/focus_cycler.h"
-#include "ash/frame/non_client_frame_view_ash.h"
+#include "ash/frame/frame_view_ash.h"
 #include "ash/game_dashboard/game_dashboard_controller.h"
 #include "ash/glanceables/glanceables_controller.h"
 #include "ash/ime/ime_controller_impl.h"
@@ -33,12 +32,13 @@
 #include "ash/public/cpp/accelerator_actions.h"
 #include "ash/public/cpp/annotator/annotator_controller_base.h"
 #include "ash/public/cpp/app_types_util.h"
-#include "ash/public/cpp/assistant/assistant_state.h"
+#include "ash/public/cpp/capture_mode/capture_mode_api.h"
 #include "ash/public/cpp/new_window_delegate.h"
 #include "ash/public/cpp/system/toast_data.h"
 #include "ash/quick_insert/quick_insert_controller.h"
 #include "ash/root_window_controller.h"
 #include "ash/rotator/window_rotation.h"
+#include "ash/scanner/scanner_metrics.h"
 #include "ash/session/session_controller_impl.h"
 #include "ash/shelf/shelf.h"
 #include "ash/shelf/shelf_focus_cycler.h"
@@ -95,7 +95,7 @@
 #include "base/time/time.h"
 #include "chromeos/ash/components/audio/cras_audio_handler.h"
 #include "chromeos/ash/components/dbus/biod/fake_biod_client.h"
-#include "chromeos/ash/services/assistant/public/cpp/assistant_enums.h"
+#include "chromeos/ash/services/assistant/public/cpp/assistant_browser_delegate.h"
 #include "chromeos/dbus/power/power_manager_client.h"
 #include "chromeos/ui/base/display_util.h"
 #include "chromeos/ui/base/window_properties.h"
@@ -129,7 +129,6 @@
 namespace ash {
 
 const char kAccelWindowSnap[] = "Ash.Accelerators.WindowSnap";
-const char kAccelRotation[] = "Ash.Accelerators.Rotation.Usage";
 const char kAccelActivateDeskByIndex[] = "Ash.Accelerators.ActivateDeskByIndex";
 const char kAccelToggleQuickInsert[] = "Ash.Accelerators.TogglePicker.Action";
 
@@ -143,24 +142,12 @@ using ::chromeos::WindowStateType;
 // Percent by which the volume should be changed when a volume key is pressed.
 constexpr double kStepPercentage = 4.0;
 constexpr char kVirtualDesksToastId[] = "virtual_desks_toast";
-// Toast id for Assistant shortcuts.
-constexpr char kAssistantErrorToastId[] = "assistant_error";
 // Toast ID for the notification center tray "No notifications" toast.
 constexpr char kNotificationCenterTrayNoNotificationsToastId[] =
     "notification_center_tray_toast_ids.no_notifications";
 // Toast IDs for the Toggle Camera Allowed shortcut.
 constexpr char kToggleCameraToastId[] = "toggle_camera_toast";
 constexpr char kCameraForceDisabledToastId[] = "camera_force_disabled_toast";
-
-// These values are written to logs.  New enum values can be added, but existing
-// enums must never be renumbered or deleted and reused.
-// Records the result of triggering the rotation accelerator.
-enum class RotationAcceleratorAction {
-  kCancelledDialog = 0,
-  kAcceptedDialog = 1,
-  kAlreadyAcceptedDialog = 2,
-  kMaxValue = kAlreadyAcceptedDialog,
-};
 
 // Record which desk is activated.
 enum class ActivateDeskAcceleratorAction {
@@ -182,10 +169,6 @@ enum class ToggleQuickInsertAction {
   kToggleQuickInsert = 1,
   kMaxValue = kToggleQuickInsert,
 };
-
-void RecordRotationAcceleratorAction(const RotationAcceleratorAction& action) {
-  UMA_HISTOGRAM_ENUMERATION(kAccelRotation, action);
-}
 
 void RecordActivateDeskByIndexAcceleratorAction(
     const ActivateDeskAcceleratorAction& action) {
@@ -221,7 +204,7 @@ display::Display::Rotation GetNextRotationInTabletMode(
     int64_t display_id,
     display::Display::Rotation current) {
   Shell* shell = Shell::Get();
-  DCHECK(display::Screen::GetScreen()->InTabletMode());
+  DCHECK(display::Screen::Get()->InTabletMode());
 
   if (!display::HasInternalDisplay() ||
       display_id != display::Display::InternalDisplayId()) {
@@ -291,8 +274,8 @@ bool ShouldLockRotation(int64_t display_id) {
 }
 
 int64_t GetDisplayIdForRotation() {
-  const gfx::Point point = display::Screen::GetScreen()->GetCursorScreenPoint();
-  return display::Screen::GetScreen()->GetDisplayNearestPoint(point).id();
+  const gfx::Point point = display::Screen::Get()->GetCursorScreenPoint();
+  return display::Screen::Get()->GetDisplayNearestPoint(point).id();
 }
 
 void RotateScreenImpl() {
@@ -302,7 +285,7 @@ void RotateScreenImpl() {
       shell->display_manager()->GetDisplayInfo(display_id);
   const auto active_rotation = display_info.GetActiveRotation();
   const auto next_rotation =
-      display::Screen::GetScreen()->InTabletMode()
+      display::Screen::Get()->InTabletMode()
           ? GetNextRotationInTabletMode(display_id, active_rotation)
           : GetNextRotationInClamshell(active_rotation);
   if (active_rotation == next_rotation)
@@ -320,15 +303,10 @@ void RotateScreenImpl() {
 }
 
 void OnRotationDialogAccepted() {
-  RecordRotationAcceleratorAction(RotationAcceleratorAction::kAcceptedDialog);
   RotateScreenImpl();
   Shell::Get()
       ->accessibility_controller()
       ->SetDisplayRotationAcceleratorDialogBeenAccepted();
-}
-
-void OnRotationDialogCancelled() {
-  RecordRotationAcceleratorAction(RotationAcceleratorAction::kCancelledDialog);
 }
 
 // Return false if the accessibility shortcuts have been disabled, or if
@@ -421,7 +399,7 @@ chromeos::FrameSizeButton* GetFrameSizeButton(aura::Window* window) {
   if (!window) {
     return nullptr;
   }
-  auto* frame_view = NonClientFrameViewAsh::Get(window);
+  auto* frame_view = FrameViewAsh::Get(window);
   if (!frame_view) {
     return nullptr;
   }
@@ -459,7 +437,7 @@ GetIndependentWindowPairForSnapGroupCreation() {
   }
 
   aura::Window* root_window = window_util::GetRootWindowAt(
-      display::Screen::GetScreen()->GetCursorScreenPoint());
+      display::Screen::Get()->GetCursorScreenPoint());
   aura::Window::Windows windows = GetActiveDeskAppWindowsInZOrder(root_window);
   aura::Window::Windows window_pair_list;
   for (size_t i = 0; i < windows.size() && window_pair_list.size() < 2; i++) {
@@ -499,73 +477,7 @@ void ToggleTray(TrayBackgroundView* tray) {
   }
 }
 
-}  // namespace
-
-bool CanActivateTouchHud() {
-  return RootWindowController::ForTargetRootWindow()->touch_hud_debug();
-}
-
-bool CanCreateNewIncognitoWindow() {
-  // Guest mode does not use incognito windows. The browser may have other
-  // restrictions on incognito mode (e.g. enterprise policy) but those are rare.
-  // For non-guest mode, consume the key and defer the decision to the browser.
-  std::optional<user_manager::UserType> user_type =
-      Shell::Get()->session_controller()->GetUserType();
-  return user_type && *user_type != user_manager::UserType::kGuest;
-}
-
-bool CanCycleInputMethod() {
-  return Shell::Get()->ime_controller()->CanSwitchIme();
-}
-
-bool CanCycleMru() {
-  // Don't do anything when Alt+Tab is hit while a virtual keyboard is showing.
-  // Touchscreen users have better window switching options. It would be
-  // preferable if we could tell whether this event actually came from a virtual
-  // keyboard, but there's no easy way to do so, thus we block Alt+Tab when the
-  // virtual keyboard is showing, even if it came from a real keyboard. See
-  // http://crbug.com/638269
-  return !keyboard::KeyboardUIController::Get()->IsKeyboardVisible();
-}
-
-bool CanCycleSameAppWindows() {
-  return features::IsSameAppWindowCycleEnabled() && CanCycleMru();
-}
-
-bool CanCycleUser() {
-  return Shell::Get()->session_controller()->NumberOfLoggedInUsers() > 1;
-}
-
-bool CanFindPipWidget() {
-  return !!FindPipWidget();
-}
-
-bool CanFocusCameraPreview() {
-  auto* controller = CaptureModeController::Get();
-  // Only use the shortcut to focus the camera preview while video recording is
-  // in progress. As focus traversal of the camera preview in the capture
-  // session will be handled by CaptureModeSessionFocusCycler instead.
-  if (controller->IsActive() || !controller->is_recording_in_progress())
-    return false;
-
-  auto* camera_controller = controller->camera_controller();
-  DCHECK(camera_controller);
-  auto* preview_widget = camera_controller->camera_preview_widget();
-  return preview_widget && preview_widget->IsVisible();
-}
-
-bool CanLock() {
-  return Shell::Get()->session_controller()->CanLockScreen();
-}
-
-bool CanCreateSnapGroup() {
-  return SnapGroupController::Get();
-}
-
-void CreateSnapGroup() {
-  SnapGroupController* snap_group_controller = SnapGroupController::Get();
-  CHECK(snap_group_controller);
-
+void TryCreateOrReplaceSnapGroup(SnapGroupController* snap_group_controller) {
   auto maybe_create_snap_group =
       [&](aura::Window* window1, aura::Window* window2,
           std::optional<base::TimeTicks> carry_over_creation_time) {
@@ -647,6 +559,70 @@ void CreateSnapGroup() {
                           carry_over_creation_time);
 }
 
+}  // namespace
+
+bool CanActivateTouchHud() {
+  return RootWindowController::ForTargetRootWindow()->touch_hud_debug();
+}
+
+bool CanCreateNewIncognitoWindow() {
+  // Guest mode does not use incognito windows. The browser may have other
+  // restrictions on incognito mode (e.g. enterprise policy) but those are rare.
+  // For non-guest mode, consume the key and defer the decision to the browser.
+  std::optional<user_manager::UserType> user_type =
+      Shell::Get()->session_controller()->GetUserType();
+  return user_type && *user_type != user_manager::UserType::kGuest;
+}
+
+bool CanCycleInputMethod() {
+  return Shell::Get()->ime_controller()->CanSwitchIme();
+}
+
+bool CanCycleMru() {
+  // Don't do anything when Alt+Tab is hit while a virtual keyboard is showing.
+  // Touchscreen users have better window switching options. It would be
+  // preferable if we could tell whether this event actually came from a virtual
+  // keyboard, but there's no easy way to do so, thus we block Alt+Tab when the
+  // virtual keyboard is showing, even if it came from a real keyboard. See
+  // http://crbug.com/638269
+  return !keyboard::KeyboardUIController::Get()->IsKeyboardVisible();
+}
+
+bool CanCycleSameAppWindows() {
+  return features::IsSameAppWindowCycleEnabled() && CanCycleMru();
+}
+
+bool CanCycleUser() {
+  return Shell::Get()->session_controller()->NumberOfLoggedInUsers() > 1;
+}
+
+bool CanFindPipWidget() {
+  return !!FindPipWidget();
+}
+
+bool CanFocusCameraPreview() {
+  auto* controller = CaptureModeController::Get();
+  // Only use the shortcut to focus the camera preview while video recording is
+  // in progress. As focus traversal of the camera preview in the capture
+  // session will be handled by CaptureModeSessionFocusCycler instead.
+  if (controller->IsActive() || !controller->is_recording_in_progress()) {
+    return false;
+  }
+
+  auto* camera_controller = controller->camera_controller();
+  DCHECK(camera_controller);
+  auto* preview_widget = camera_controller->camera_preview_widget();
+  return preview_widget && preview_widget->IsVisible();
+}
+
+bool CanLock() {
+  return Shell::Get()->session_controller()->CanLockScreen();
+}
+
+bool CanToggleSnapGroup() {
+  return SnapGroupController::Get();
+}
+
 bool CanMinimizeTopWindowOnBack() {
   return window_util::ShouldMinimizeTopWindowOnBack();
 }
@@ -683,8 +659,13 @@ bool CanStopScreenRecording() {
   return CaptureModeController::Get()->is_recording_in_progress();
 }
 
+bool CanStartSunfishSession() {
+  return CanShowSunfishOrScannerUi() &&
+         !Shell::Get()->session_controller()->IsUserSessionBlocked();
+}
+
 bool CanSwapPrimaryDisplay() {
-  return display::Screen::GetScreen()->GetNumDisplays() > 1;
+  return display::Screen::Get()->GetNumDisplays() > 1;
 }
 
 bool CanTilingWindowResize() {
@@ -713,7 +694,7 @@ bool CanToggleMultitaskMenu() {
   if (!window) {
     return false;
   }
-  if (display::Screen::GetScreen()->InTabletMode()) {
+  if (display::Screen::Get()->InTabletMode()) {
     // In tablet mode, the window just has to be able to maximize.
     return WindowState::Get(window)->CanMaximize();
   }
@@ -756,7 +737,7 @@ bool CanToggleResizeLockMenu() {
   if (!window) {
     return false;
   }
-  auto* frame_view = NonClientFrameViewAsh::Get(window);
+  auto* frame_view = FrameViewAsh::Get(window);
   return frame_view && frame_view->GetToggleResizeLockMenuCallback();
 }
 
@@ -1058,17 +1039,17 @@ void NewDesk() {
 }
 
 void NewIncognitoWindow() {
-  NewWindowDelegate::GetPrimary()->NewWindow(
+  NewWindowDelegate::GetInstance()->NewWindow(
       /*is_incognito=*/true,
       /*should_trigger_session_restore=*/false);
 }
 
 void NewTab() {
-  NewWindowDelegate::GetPrimary()->NewTab();
+  NewWindowDelegate::GetInstance()->NewTab();
 }
 
 void NewWindow() {
-  NewWindowDelegate::GetPrimary()->NewWindow(
+  NewWindowDelegate::GetInstance()->NewWindow(
       /*is_incognito=*/false,
       /*should_trigger_session_restore=*/false);
 }
@@ -1162,9 +1143,9 @@ void RemoveCurrentDesk() {
 void ResetDisplayZoom() {
   base::RecordAction(base::UserMetricsAction("Accel_Scale_Ui_Reset"));
   display::DisplayManager* display_manager = Shell::Get()->display_manager();
-  gfx::Point point = display::Screen::GetScreen()->GetCursorScreenPoint();
+  gfx::Point point = display::Screen::Get()->GetCursorScreenPoint();
   display::Display display =
-      display::Screen::GetScreen()->GetDisplayNearestPoint(point);
+      display::Screen::Get()->GetDisplayNearestPoint(point);
   display_manager->ResetDisplayZoom(display.id());
 }
 
@@ -1173,7 +1154,7 @@ void ResizePipWindow() {
 }
 
 void RestoreTab() {
-  NewWindowDelegate::GetPrimary()->RestoreTab();
+  NewWindowDelegate::GetInstance()->RestoreTab();
 }
 
 void RotateActiveWindow() {
@@ -1212,11 +1193,9 @@ void RotateScreen() {
         l10n_util::GetStringUTF16(IDS_ASH_CONTINUE_BUTTON),
         l10n_util::GetStringUTF16(IDS_APP_CANCEL),
         base::BindOnce(&OnRotationDialogAccepted),
-        base::BindOnce(&OnRotationDialogCancelled),
+        /*on_cancel_callback=*/base::DoNothing(),
         /*on_close_callback=*/base::DoNothing());
   } else {
-    RecordRotationAcceleratorAction(
-        RotationAcceleratorAction::kAlreadyAcceptedDialog);
     RotateScreenImpl();
   }
 }
@@ -1227,7 +1206,7 @@ void ShiftPrimaryDisplay() {
   CHECK_GE(display_manager->GetNumDisplays(), 2U);
 
   const int64_t primary_display_id =
-      display::Screen::GetScreen()->GetPrimaryDisplay().id();
+      display::Screen::Get()->GetPrimaryDisplay().id();
 
   const display::Displays& active_display_list =
       display_manager->active_display_list();
@@ -1257,7 +1236,14 @@ void ShowShortcutCustomizationApp() {
 }
 
 void ShowTaskManager() {
-  NewWindowDelegate::GetInstance()->ShowTaskManager();
+  NewWindowDelegate::GetInstance()->ShowTaskManager(
+      /*from_context_menu=*/false);
+}
+
+void StartSunfishSession() {
+  RecordScannerFeatureUserState(
+      ScannerFeatureUserState::kSunfishSessionStartedFromKeyboardShortcut);
+  CaptureModeController::Get()->StartSunfishSession();
 }
 
 void StopScreenRecording() {
@@ -1288,7 +1274,7 @@ void ToggleAppList(AppListShowSource show_source,
                    base::TimeTicks event_time_stamp) {
   aura::Window* const root_window = Shell::GetRootWindowForNewWindows();
   Shell::Get()->app_list_controller()->ToggleAppList(
-      display::Screen::GetScreen()->GetDisplayNearestWindow(root_window).id(),
+      display::Screen::Get()->GetDisplayNearestWindow(root_window).id(),
       show_source, event_time_stamp);
 }
 
@@ -1335,73 +1321,7 @@ void ToggleAssignToAllDesk() {
 }
 
 void ToggleAssistant() {
-  using assistant::AssistantAllowedState;
-  switch (AssistantState::Get()->allowed_state().value_or(
-      AssistantAllowedState::ALLOWED)) {
-    case AssistantAllowedState::DISALLOWED_BY_NONPRIMARY_USER:
-      // Show a toast if the active user is not primary.
-      ShowToast(kAssistantErrorToastId, ToastCatalogName::kAssistantError,
-                l10n_util::GetStringUTF16(
-                    IDS_ASH_ASSISTANT_SECONDARY_USER_TOAST_MESSAGE));
-      return;
-    case AssistantAllowedState::DISALLOWED_BY_LOCALE:
-      // Show a toast if the Assistant is disabled due to unsupported
-      // locales.
-      ShowToast(kAssistantErrorToastId, ToastCatalogName::kAssistantError,
-                l10n_util::GetStringUTF16(
-                    IDS_ASH_ASSISTANT_LOCALE_UNSUPPORTED_TOAST_MESSAGE));
-      return;
-    case AssistantAllowedState::DISALLOWED_BY_POLICY:
-      // Show a toast if the Assistant is disabled due to enterprise policy.
-      ShowToast(kAssistantErrorToastId, ToastCatalogName::kAssistantError,
-                l10n_util::GetStringUTF16(
-                    IDS_ASH_ASSISTANT_DISABLED_BY_POLICY_MESSAGE));
-      return;
-    case AssistantAllowedState::DISALLOWED_BY_DEMO_MODE:
-      // Show a toast if the Assistant is disabled due to being in Demo
-      // Mode.
-      ShowToast(kAssistantErrorToastId, ToastCatalogName::kAssistantError,
-                l10n_util::GetStringUTF16(
-                    IDS_ASH_ASSISTANT_DISABLED_IN_DEMO_MODE_MESSAGE));
-      return;
-    case AssistantAllowedState::DISALLOWED_BY_PUBLIC_SESSION:
-      // Show a toast if the Assistant is disabled due to being in public
-      // session.
-      ShowToast(kAssistantErrorToastId, ToastCatalogName::kAssistantError,
-                l10n_util::GetStringUTF16(
-                    IDS_ASH_ASSISTANT_DISABLED_IN_PUBLIC_SESSION_MESSAGE));
-      return;
-    case AssistantAllowedState::DISALLOWED_BY_INCOGNITO:
-      // Show a toast if the Assistant is disabled due to being in Incognito
-      // mode.
-      ShowToast(kAssistantErrorToastId, ToastCatalogName::kAssistantError,
-                l10n_util::GetStringUTF16(
-                    IDS_ASH_ASSISTANT_DISABLED_IN_GUEST_MESSAGE));
-      return;
-    case AssistantAllowedState::DISALLOWED_BY_ACCOUNT_TYPE:
-      // Show a toast if the Assistant is disabled due to the account type.
-      ShowToast(kAssistantErrorToastId, ToastCatalogName::kAssistantError,
-                l10n_util::GetStringUTF16(
-                    IDS_ASH_ASSISTANT_DISABLED_BY_ACCOUNT_MESSAGE));
-      return;
-    case AssistantAllowedState::DISALLOWED_BY_KIOSK_MODE:
-      // No need to show toast in KIOSK mode.
-      return;
-    case AssistantAllowedState::DISALLOWED_BY_NO_BINARY:
-      // No need to show toast.
-      return;
-    case AssistantAllowedState::DISALLOWED_BY_NEW_ENTRY_POINT:
-      // Showing new entry point instead.
-      AssistantUiController::Get()->ShowUi(
-          assistant::AssistantEntryPoint::kHotkey);
-      return;
-    case AssistantAllowedState::ALLOWED:
-      // Nothing need to do if allowed.
-      break;
-  }
-  AssistantUiController::Get()->ToggleUi(
-      /*entry_point=*/assistant::AssistantEntryPoint::kHotkey,
-      /*exit_point=*/assistant::AssistantExitPoint::kHotkey);
+  assistant::AssistantBrowserDelegate::Get()->OpenNewEntryPoint();
 }
 
 void ToggleCalendar() {
@@ -1793,6 +1713,22 @@ void ToggleMouseKeys() {
   Shell::Get()->accessibility_controller()->ToggleMouseKeys();
 }
 
+void ToggleSnapGroup() {
+  SnapGroupController* snap_group_controller = SnapGroupController::Get();
+  CHECK(snap_group_controller);
+
+  aura::Window* root_window = window_util::GetRootWindowAt(
+      display::Screen::Get()->GetCursorScreenPoint());
+  SnapGroup* top_group = snap_group_controller->GetTopmostVisibleSnapGroup(
+      root_window, /*topwindow_only=*/true);
+  if (top_group) {
+    snap_group_controller->RemoveSnapGroup(
+        top_group, SnapGroupExitPoint::kToggleSnapGroupAccelerator);
+  } else {
+    TryCreateOrReplaceSnapGroup(snap_group_controller);
+  }
+}
+
 void ToggleSnapGroupsMinimize() {
   // TODO(b/333772909): Remove this workaroound to disable shortcut when the
   // mojom conversion is disabled for deprecated shortcuts.
@@ -1801,7 +1737,7 @@ void ToggleSnapGroupsMinimize() {
 
 void ToggleResizeLockMenu() {
   aura::Window* window = GetTargetWindow();
-  auto* frame_view = NonClientFrameViewAsh::Get(window);
+  auto* frame_view = FrameViewAsh::Get(window);
   frame_view->GetToggleResizeLockMenuCallback().Run();
 }
 
@@ -1836,7 +1772,7 @@ void ToggleMirrorMode() {
 void ToggleMultitaskMenu() {
   aura::Window* window = GetTargetWindow();
   DCHECK(window);
-  if (display::Screen::GetScreen()->InTabletMode()) {
+  if (display::Screen::Get()->InTabletMode()) {
     auto* multitask_menu_controller =
         Shell::Get()
             ->tablet_mode_controller()
@@ -1846,13 +1782,13 @@ void ToggleMultitaskMenu() {
     multitask_menu_controller->ShowMultitaskMenu(window);
     return;
   }
-  auto* frame_view = NonClientFrameViewAsh::Get(window);
+  auto* frame_view = FrameViewAsh::Get(window);
   if (!frame_view) {
     // If `window` doesn't have a frame, it must be the multitask menu and have
     // a transient parent for `CanToggleMultitaskMenu()` to arrive here.
     auto* transient_parent = wm::GetTransientParent(window);
     DCHECK(transient_parent);
-    frame_view = NonClientFrameViewAsh::Get(transient_parent);
+    frame_view = FrameViewAsh::Get(transient_parent);
   }
   DCHECK(frame_view);
   auto* size_button =
@@ -1974,7 +1910,7 @@ void WindowMinimize() {
 
 void WindowSnap(AcceleratorAction action) {
   Shell* shell = Shell::Get();
-  const bool in_tablet = display::Screen::GetScreen()->InTabletMode();
+  const bool in_tablet = display::Screen::Get()->InTabletMode();
   const bool in_overview = shell->overview_controller()->InOverviewSession();
   if (action == AcceleratorAction::kWindowCycleSnapLeft) {
     if (in_tablet) {
@@ -2027,9 +1963,9 @@ bool ZoomDisplay(bool up) {
 
   display::DisplayManager* display_manager = Shell::Get()->display_manager();
 
-  gfx::Point point = display::Screen::GetScreen()->GetCursorScreenPoint();
+  gfx::Point point = display::Screen::Get()->GetCursorScreenPoint();
   display::Display display =
-      display::Screen::GetScreen()->GetDisplayNearestPoint(point);
+      display::Screen::Get()->GetDisplayNearestPoint(point);
   return display_manager->ZoomDisplay(display.id(), up);
 }
 

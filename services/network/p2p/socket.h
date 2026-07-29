@@ -12,6 +12,7 @@
 
 #include "base/component_export.h"
 #include "base/containers/span.h"
+#include "base/feature.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/unguessable_token.h"
@@ -35,6 +36,9 @@ namespace network {
 class ProxyResolvingClientSocketFactory;
 class P2PMessageThrottler;
 
+COMPONENT_EXPORT(NETWORK_SERVICE)
+BASE_DECLARE_FEATURE(kEnforceP2PSocketPortRestrictions);
+
 // Base class for P2P sockets.
 class COMPONENT_EXPORT(NETWORK_SERVICE) P2PSocket : public mojom::P2PSocket {
  public:
@@ -45,10 +49,6 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) P2PSocket : public mojom::P2PSocket {
 
     // Destroys |socket| and removes it from the list of sockets.
     virtual void DestroySocket(P2PSocket* socket) = 0;
-
-    // Called by P2PSocketTcpServer after a new socket is created for an
-    // incoming connection.
-    virtual void AddAcceptedConnection(std::unique_ptr<P2PSocket> socket) = 0;
 
     // Called for each incoming/outgoing packet.
     virtual void DumpPacket(base::span<const uint8_t> data, bool incoming) = 0;

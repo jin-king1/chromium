@@ -4,6 +4,9 @@
 
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service.h"
 
+#import <set>
+#import <string>
+
 #import "base/memory/raw_ptr.h"
 #import "components/signin/public/base/signin_pref_names.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
@@ -37,7 +40,8 @@ class ChromeAccountManagerServiceObserver
     on_identity_in_profile_updated_called_count += 1;
   }
   void OnAccessTokenRefreshFailed(id<SystemIdentity> identity,
-                                  id<RefreshAccessTokenError> error) final {
+                                  id<RefreshAccessTokenError> error,
+                                  const std::set<std::string>& scoopes) final {
     on_access_token_refresh_failed_called_count += 1;
   }
 
@@ -71,7 +75,7 @@ class ChromeAccountManagerServiceTest : public PlatformTest {
 
   // Sets a restricted pattern.
   void SetPattern(const std::string& pattern) {
-    base::Value::List allowed_patterns;
+    base::ListValue allowed_patterns;
     allowed_patterns.Append(pattern);
     GetApplicationContext()->GetLocalState()->SetList(
         prefs::kRestrictAccountsToPatterns, std::move(allowed_patterns));
@@ -79,7 +83,7 @@ class ChromeAccountManagerServiceTest : public PlatformTest {
 
  protected:
   IOSChromeScopedTestingLocalState scoped_testing_local_state_;
-  base::test::TaskEnvironment task_environment_;
+  web::WebTaskEnvironment task_environment_;
   std::unique_ptr<TestProfileIOS> profile_;
   raw_ptr<ChromeAccountManagerService> account_manager_;
 };
@@ -101,18 +105,22 @@ TEST_F(ChromeAccountManagerServiceTest,
   EXPECT_EQ(account_manager_->HasIdentities(), true);
 
   SetPattern("*gmail.com");
-  EXPECT_EQ(account_manager_->IsValidIdentity(gmail_identity), true);
-  EXPECT_EQ(account_manager_->IsValidIdentity(google_identity), false);
-  EXPECT_EQ(account_manager_->IsValidIdentity(chromium_identity1), false);
-  EXPECT_EQ(account_manager_->IsValidIdentity(chromium_identity2), false);
+  EXPECT_EQ(account_manager_->IsValidIdentity(gmail_identity.gaiaId), true);
+  EXPECT_EQ(account_manager_->IsValidIdentity(google_identity.gaiaId), false);
+  EXPECT_EQ(account_manager_->IsValidIdentity(chromium_identity1.gaiaId),
+            false);
+  EXPECT_EQ(account_manager_->IsValidIdentity(chromium_identity2.gaiaId),
+            false);
   EXPECT_EQ(account_manager_->HasIdentities(), true);
   EXPECT_EQ((int)[account_manager_->GetAllIdentities() count], 1);
 
   SetPattern("foo2@google.com");
-  EXPECT_EQ(account_manager_->IsValidIdentity(gmail_identity), false);
-  EXPECT_EQ(account_manager_->IsValidIdentity(google_identity), true);
-  EXPECT_EQ(account_manager_->IsValidIdentity(chromium_identity1), false);
-  EXPECT_EQ(account_manager_->IsValidIdentity(chromium_identity2), false);
+  EXPECT_EQ(account_manager_->IsValidIdentity(gmail_identity.gaiaId), false);
+  EXPECT_EQ(account_manager_->IsValidIdentity(google_identity.gaiaId), true);
+  EXPECT_EQ(account_manager_->IsValidIdentity(chromium_identity1.gaiaId),
+            false);
+  EXPECT_EQ(account_manager_->IsValidIdentity(chromium_identity2.gaiaId),
+            false);
   EXPECT_EQ(account_manager_->HasIdentities(), true);
   EXPECT_EQ((int)[account_manager_->GetAllIdentities() count], 1);
 }
@@ -125,10 +133,10 @@ TEST_F(ChromeAccountManagerServiceTest,
   EXPECT_EQ(account_manager_->HasIdentities(), true);
 
   SetPattern("*chromium.com");
-  EXPECT_EQ(account_manager_->IsValidIdentity(gmail_identity), false);
-  EXPECT_EQ(account_manager_->IsValidIdentity(google_identity), false);
-  EXPECT_EQ(account_manager_->IsValidIdentity(chromium_identity1), true);
-  EXPECT_EQ(account_manager_->IsValidIdentity(chromium_identity2), true);
+  EXPECT_EQ(account_manager_->IsValidIdentity(gmail_identity.gaiaId), false);
+  EXPECT_EQ(account_manager_->IsValidIdentity(google_identity.gaiaId), false);
+  EXPECT_EQ(account_manager_->IsValidIdentity(chromium_identity1.gaiaId), true);
+  EXPECT_EQ(account_manager_->IsValidIdentity(chromium_identity2.gaiaId), true);
   EXPECT_EQ(account_manager_->HasIdentities(), true);
   EXPECT_EQ((int)[account_manager_->GetAllIdentities() count], 2);
 }
@@ -140,10 +148,12 @@ TEST_F(ChromeAccountManagerServiceTest,
   EXPECT_EQ(account_manager_->HasIdentities(), true);
 
   SetPattern("*none.com");
-  EXPECT_EQ(account_manager_->IsValidIdentity(gmail_identity), false);
-  EXPECT_EQ(account_manager_->IsValidIdentity(google_identity), false);
-  EXPECT_EQ(account_manager_->IsValidIdentity(chromium_identity1), false);
-  EXPECT_EQ(account_manager_->IsValidIdentity(chromium_identity2), false);
+  EXPECT_EQ(account_manager_->IsValidIdentity(gmail_identity.gaiaId), false);
+  EXPECT_EQ(account_manager_->IsValidIdentity(google_identity.gaiaId), false);
+  EXPECT_EQ(account_manager_->IsValidIdentity(chromium_identity1.gaiaId),
+            false);
+  EXPECT_EQ(account_manager_->IsValidIdentity(chromium_identity2.gaiaId),
+            false);
   EXPECT_EQ(account_manager_->HasIdentities(), false);
   EXPECT_EQ((int)[account_manager_->GetAllIdentities() count], 0);
 }
@@ -155,10 +165,10 @@ TEST_F(ChromeAccountManagerServiceTest,
   EXPECT_EQ(account_manager_->HasIdentities(), true);
 
   SetPattern("*");
-  EXPECT_EQ(account_manager_->IsValidIdentity(gmail_identity), true);
-  EXPECT_EQ(account_manager_->IsValidIdentity(google_identity), true);
-  EXPECT_EQ(account_manager_->IsValidIdentity(chromium_identity1), true);
-  EXPECT_EQ(account_manager_->IsValidIdentity(chromium_identity2), true);
+  EXPECT_EQ(account_manager_->IsValidIdentity(gmail_identity.gaiaId), true);
+  EXPECT_EQ(account_manager_->IsValidIdentity(google_identity.gaiaId), true);
+  EXPECT_EQ(account_manager_->IsValidIdentity(chromium_identity1.gaiaId), true);
+  EXPECT_EQ(account_manager_->IsValidIdentity(chromium_identity2.gaiaId), true);
   EXPECT_EQ(account_manager_->HasIdentities(), true);
   EXPECT_EQ((int)[account_manager_->GetAllIdentities() count], 4);
 }
@@ -184,11 +194,13 @@ TEST_F(ChromeAccountManagerServiceTest, TestFilterIdentityUpdate) {
   EXPECT_EQ(observer.on_access_token_refresh_failed_called_count, 0);
 
   // Google identity is filtered out, an update doesn't call the observer.
-  account_manager_->OnIdentityAccessTokenRefreshFailed(google_identity, nil);
+  account_manager_->OnIdentityAccessTokenRefreshFailed(google_identity, nil,
+                                                       std::set<std::string>());
   EXPECT_EQ(observer.on_identity_in_profile_updated_called_count, 1);
   EXPECT_EQ(observer.on_access_token_refresh_failed_called_count, 0);
   // Chromium identity is not filtered out, an update calls the observer.
-  account_manager_->OnIdentityAccessTokenRefreshFailed(chromium_identity1, nil);
+  account_manager_->OnIdentityAccessTokenRefreshFailed(chromium_identity1, nil,
+                                                       std::set<std::string>());
   EXPECT_EQ(observer.on_identity_in_profile_updated_called_count, 1);
   EXPECT_EQ(observer.on_access_token_refresh_failed_called_count, 1);
 

@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "components/download/public/common/download_file_impl.h"
 
 #include <algorithm>
@@ -16,6 +11,7 @@
 
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
+#include "base/strings/string_util.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
@@ -33,6 +29,7 @@
 #include "crypto/sha2.h"
 #include "mojo/public/c/system/types.h"
 #include "net/base/io_buffer.h"
+#include "third_party/perfetto/include/perfetto/tracing/track.h"
 
 #if BUILDFLAG(IS_ANDROID)
 #include "base/android/content_uri_utils.h"
@@ -194,10 +191,9 @@ DownloadFileImpl::DownloadFileImpl(
       download_id_(download_id),
       main_task_runner_(base::SingleThreadTaskRunner::GetCurrentDefault()),
       observer_(observer) {
-  TRACE_EVENT_INSTANT0("download", "DownloadFileCreated",
-                       TRACE_EVENT_SCOPE_THREAD);
-  TRACE_EVENT_NESTABLE_ASYNC_BEGIN0("download", "DownloadFileActive",
-                                    download_id);
+  TRACE_EVENT_INSTANT("download", "DownloadFileCreated");
+  TRACE_EVENT_BEGIN("download", "DownloadFileActive",
+                    perfetto::Track(download_id));
 
   source_streams_.insert(
       {save_info_->offset,
@@ -211,8 +207,8 @@ DownloadFileImpl::DownloadFileImpl(
 DownloadFileImpl::~DownloadFileImpl() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  TRACE_EVENT_NESTABLE_ASYNC_END0("download", "DownloadFileActive",
-                                  download_id_);
+  TRACE_EVENT_END("download",
+                  /* DownloadFileActive */ perfetto::Track(download_id_));
 }
 
 void DownloadFileImpl::Initialize(
@@ -309,34 +305,29 @@ void DownloadFileImpl::OnSourceStreamAdded(SourceStream* source_stream) {
 
 DownloadInterruptReason DownloadFileImpl::ValidateAndWriteDataToFile(
     int64_t offset,
-    const char* data,
-    size_t bytes_to_validate,
-    size_t bytes_to_write) {
+    base::span<const uint8_t> to_validate,
+    base::span<const uint8_t> to_write) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   // Check if some of the data is for validation purpose.
-  bool should_validate = bytes_to_validate > 0;
+  bool should_validate = to_validate.size() > 0;
 #if BUILDFLAG(ENTERPRISE_CONTENT_ANALYSIS)
   should_validate = should_validate && !obfuscator_;
 #endif
-  if (should_validate &&
-      !file_.ValidateDataInFile(offset, data, bytes_to_validate)) {
+  if (should_validate && !file_.ValidateDataInFile(offset, to_validate)) {
     return DOWNLOAD_INTERRUPT_REASON_FILE_HASH_MISMATCH;
   }
   // If there is no data to write, just return DOWNLOAD_INTERRUPT_REASON_NONE
   // and read the next chunk.
-  if (bytes_to_write <= 0)
+  if (to_write.size() <= 0) {
     return DOWNLOAD_INTERRUPT_REASON_NONE;
+  }
 
 #if BUILDFLAG(ENTERPRISE_CONTENT_ANALYSIS)
   if (obfuscator_) {
-    bool is_last_chunk =
-        save_info_->total_bytes > 0 &&
-        static_cast<int64_t>(offset + bytes_to_validate + bytes_to_write) ==
-            save_info_->total_bytes;
-    auto obfuscated_data = obfuscator_->ObfuscateChunk(
-        base::span(reinterpret_cast<const uint8_t*>(data + bytes_to_validate),
-                   bytes_to_write),
-        is_last_chunk);
+    // All data chunks are obfuscated with `is_last_chunk = false`. An empty
+    // chunk with `is_last_chunk = true` is appended in `OnDownloadCompleted()`.
+    auto obfuscated_data =
+        obfuscator_->ObfuscateChunk(to_write, /*is_last_chunk=*/false);
 
     // TODO(b/367259664): Add better error handling for file obfuscation.
     if (!obfuscated_data.has_value()) {
@@ -344,17 +335,13 @@ DownloadInterruptReason DownloadFileImpl::ValidateAndWriteDataToFile(
     }
 
     WillWriteToDisk(obfuscated_data.value().size());
-    return file_.WriteDataToFile(
-        file_.bytes_so_far(),
-        reinterpret_cast<const char*>(obfuscated_data.value().data()),
-        obfuscated_data.value().size());
+    return file_.WriteDataToFile(file_.bytes_so_far(), obfuscated_data.value());
   }
 #endif
 
   // Write the remaining data to disk.
-  WillWriteToDisk(bytes_to_write);
-  return file_.WriteDataToFile(offset + bytes_to_validate,
-                               data + bytes_to_validate, bytes_to_write);
+  WillWriteToDisk(to_write.size());
+  return file_.WriteDataToFile(offset + to_validate.size(), to_write);
 }
 
 bool DownloadFileImpl::CalculateBytesToWrite(SourceStream* source_stream,
@@ -666,7 +653,8 @@ void DownloadFileImpl::StreamActive(SourceStream* source_stream,
         DCHECK_GE(incoming_data_size, bytes_to_write);
         reason = ValidateAndWriteDataToFile(
             source_stream->offset() + source_stream->bytes_read(),
-            incoming_data->data(), bytes_to_validate, bytes_to_write);
+            incoming_data->span().first(bytes_to_validate),
+            incoming_data->span().subspan(bytes_to_validate, bytes_to_write));
         bytes_seen_ += bytes_to_write;
         total_incoming_data_size += incoming_data_size;
         if (reason == DOWNLOAD_INTERRUPT_REASON_NONE) {
@@ -719,9 +707,8 @@ void DownloadFileImpl::StreamActive(SourceStream* source_stream,
   else
     NotifyObserver(source_stream, reason, state, should_terminate);
 
-  TRACE_EVENT_INSTANT2("download", "DownloadStreamDrained",
-                       TRACE_EVENT_SCOPE_THREAD, "stream_size",
-                       total_incoming_data_size, "num_buffers", num_buffers);
+  TRACE_EVENT_INSTANT("download", "DownloadStreamDrained", "stream_size",
+                      total_incoming_data_size, "num_buffers", num_buffers);
 }
 
 void DownloadFileImpl::OnStreamCompleted(SourceStream* source_stream) {
@@ -778,19 +765,18 @@ void DownloadFileImpl::OnDownloadCompleted() {
   weak_factory_.InvalidateWeakPtrs();
 
 #if BUILDFLAG(ENTERPRISE_CONTENT_ANALYSIS)
-  // If total bytes not provided, we append an empty obfuscated chunk to
-  // protect against truncation.
-  if (obfuscator_ && save_info_->total_bytes == 0) {
-    auto obfuscated_empty_data = obfuscator_->ObfuscateChunk({}, true);
+  // Append an empty obfuscated chunk to securely mark the end of the file
+  // and protect against truncation.
+  if (obfuscator_) {
+    auto obfuscated_empty_data =
+        obfuscator_->ObfuscateChunk({}, /*is_last_chunk=*/true);
     if (!obfuscated_empty_data.has_value()) {
       SendErrorUpdateIfFinished(DOWNLOAD_INTERRUPT_REASON_FILE_FAILED);
       return;
     }
 
     DownloadInterruptReason reason = file_.WriteDataToFile(
-        file_.bytes_so_far(),
-        reinterpret_cast<const char*>(obfuscated_empty_data.value().data()),
-        obfuscated_empty_data.value().size());
+        file_.bytes_so_far(), obfuscated_empty_data.value());
 
     if (reason != DOWNLOAD_INTERRUPT_REASON_NONE) {
       SendErrorUpdateIfFinished(reason);

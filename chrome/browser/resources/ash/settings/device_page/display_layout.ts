@@ -24,7 +24,8 @@ import type {Constructor} from '../common/types.js';
 import type {DevicePageBrowserProxy} from './device_page_browser_proxy.js';
 import {DevicePageBrowserProxyImpl} from './device_page_browser_proxy.js';
 import {getTemplate} from './display_layout.html.js';
-import type {LayoutMixinInterface, Position} from './layout_mixin.js';
+import type {Position} from './drag_mixin.js';
+import type {LayoutMixinInterface} from './layout_mixin.js';
 import {LayoutMixin} from './layout_mixin.js';
 
 import Bounds = chrome.system.display.Bounds;
@@ -93,15 +94,15 @@ export class DisplayLayoutElement extends DisplayLayoutElementBase {
     };
   }
 
-  displays: DisplayUnitInfo[];
-  selectedDisplay?: DisplayUnitInfo;
-  visualScale: number;
+  declare displays: DisplayUnitInfo[];
+  declare selectedDisplay?: DisplayUnitInfo;
+  declare visualScale: number;
   private allowDisplayAlignmentApi_: boolean;
   private browserProxy_: DevicePageBrowserProxy;
   private hasDragStarted_: boolean;
   private invalidDisplayId_: string;
   private lastDragCoordinates_: {x: number, y: number}|null;
-  private mirroringDestinationIds_: string[];
+  declare private mirroringDestinationIds_: string[];
   private visualOffset_: {left: number, top: number};
 
   constructor() {

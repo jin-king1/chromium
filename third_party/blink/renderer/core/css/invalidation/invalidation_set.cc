@@ -34,6 +34,7 @@
 #include <utility>
 
 #include "base/memory/values_equivalent.h"
+#include "third_party/blink/renderer/core/css/container_query_evaluator.h"
 #include "third_party/blink/renderer/core/css/invalidation/invalidation_tracing_flag.h"
 #include "third_party/blink/renderer/core/css/resolver/style_resolver.h"
 #include "third_party/blink/renderer/core/dom/element.h"
@@ -105,6 +106,8 @@ bool InvalidationSet::operator==(const InvalidationSet& other) const {
          BackingEqual(backing_flags_, ids_, other.backing_flags_, other.ids_) &&
          BackingEqual(backing_flags_, tag_names_, other.backing_flags_,
                       other.tag_names_) &&
+         BackingEqual(backing_flags_, custom_pseudo_names_,
+                      other.backing_flags_, other.custom_pseudo_names_) &&
          BackingEqual(backing_flags_, attributes_, other.backing_flags_,
                       other.attributes_);
 }
@@ -112,8 +115,7 @@ bool InvalidationSet::operator==(const InvalidationSet& other) const {
 InvalidationSet::InvalidationSet(InvalidationType type)
     : type_(static_cast<unsigned>(type)),
       invalidates_self_(false),
-      invalidates_nth_(false),
-      is_alive_(true) {}
+      invalidates_nth_(false) {}
 
 bool InvalidationSet::InvalidatesElement(Element& element) const {
   if (invalidation_flags_.WholeSubtreeInvalid()) {
@@ -144,6 +146,17 @@ bool InvalidationSet::InvalidatesElement(Element& element) const {
     }
   }
 
+  if (HasCustomPseudoNames()) {
+    if (const AtomicString& pseudo_id = element.ShadowPseudoId();
+        pseudo_id != g_null_atom) {
+      if (HasCustomPseudoName(pseudo_id)) {
+        TRACE_STYLE_INVALIDATOR_INVALIDATION_SELECTORPART_IF_ENABLED(
+            element, kInvalidationSetMatchedCustomPseudoName, *this, pseudo_id);
+        return true;
+      }
+    }
+  }
+
   if (element.hasAttributes() && HasAttributes()) {
     if (const AtomicString* attribute = FindAnyAttribute(element)) {
       TRACE_STYLE_INVALIDATOR_INVALIDATION_SELECTORPART_IF_ENABLED(
@@ -158,23 +171,30 @@ bool InvalidationSet::InvalidatesElement(Element& element) const {
     return true;
   }
 
-  return false;
-}
-
-bool InvalidationSet::InvalidatesTagName(Element& element) const {
-  if (HasTagNames() && HasTagName(element.LocalNameForSelectorMatching())) {
-    TRACE_STYLE_INVALIDATOR_INVALIDATION_SELECTORPART_IF_ENABLED(
-        element, kInvalidationSetMatchedTagName, *this,
-        element.LocalNameForSelectorMatching());
-    return true;
+  if (invalidation_flags_.InvalidatesTreeCounting()) {
+    if (const ComputedStyle* style = element.GetComputedStyle()) {
+      auto has_sibling_functions = [](const ComputedStyle& style) {
+        return style.HasSiblingFunctions();
+      };
+      if (has_sibling_functions(*style) ||
+          element.PseudoElementStylesDependOnFunc(has_sibling_functions)) {
+        TRACE_STYLE_INVALIDATOR_INVALIDATION_SELECTORPART_IF_ENABLED(
+            element, kInvalidationSetInvalidatesTreeCounting, *this,
+            g_empty_atom);
+        return true;
+      }
+      if (ContainerQueryEvaluator* evaluator =
+              element.GetContainerQueryEvaluator()) {
+        if (evaluator->DependsOnTreeCounting()) {
+          return true;
+        }
+      }
+    }
   }
-
   return false;
 }
 
 void InvalidationSet::Combine(const InvalidationSet& other) {
-  CHECK(is_alive_);
-  CHECK(other.is_alive_);
   CHECK_EQ(GetType(), other.GetType());
 
   if (IsSelfInvalidationSet()) {
@@ -228,10 +248,6 @@ void InvalidationSet::Combine(const InvalidationSet& other) {
     return;
   }
 
-  if (other.CustomPseudoInvalid()) {
-    SetCustomPseudoInvalid();
-  }
-
   if (other.TreeBoundaryCrossing()) {
     SetTreeBoundaryCrossing();
   }
@@ -248,6 +264,10 @@ void InvalidationSet::Combine(const InvalidationSet& other) {
     SetInvalidatesParts();
   }
 
+  if (other.InvalidatesTreeCounting()) {
+    SetInvalidatesTreeCounting();
+  }
+
   for (const auto& class_name : other.Classes()) {
     AddClass(class_name);
   }
@@ -258,6 +278,10 @@ void InvalidationSet::Combine(const InvalidationSet& other) {
 
   for (const auto& tag_name : other.TagNames()) {
     AddTagName(tag_name);
+  }
+
+  for (const auto& custom_pseudo_name : other.CustomPseudoNames()) {
+    AddCustomPseudoName(custom_pseudo_name);
   }
 
   for (const auto& attribute : other.Attributes()) {
@@ -278,12 +302,14 @@ void InvalidationSet::ClearAllBackings() {
   classes_.Clear(backing_flags_);
   ids_.Clear(backing_flags_);
   tag_names_.Clear(backing_flags_);
+  custom_pseudo_names_.Clear(backing_flags_);
   attributes_.Clear(backing_flags_);
 }
 
 bool InvalidationSet::HasEmptyBackings() const {
   return classes_.IsEmpty(backing_flags_) && ids_.IsEmpty(backing_flags_) &&
          tag_names_.IsEmpty(backing_flags_) &&
+         custom_pseudo_names_.IsEmpty(backing_flags_) &&
          attributes_.IsEmpty(backing_flags_);
 }
 
@@ -349,6 +375,15 @@ void InvalidationSet::AddTagName(const AtomicString& tag_name) {
   tag_names_.Add(backing_flags_, tag_name);
 }
 
+void InvalidationSet::AddCustomPseudoName(
+    const AtomicString& custom_pseudo_name) {
+  if (WholeSubtreeInvalid()) {
+    return;
+  }
+  CHECK(!custom_pseudo_name.empty());
+  custom_pseudo_names_.Add(backing_flags_, custom_pseudo_name);
+}
+
 void InvalidationSet::AddAttribute(const AtomicString& attribute) {
   if (WholeSubtreeInvalid()) {
     return;
@@ -363,11 +398,11 @@ void InvalidationSet::SetWholeSubtreeInvalid() {
   }
 
   invalidation_flags_.SetWholeSubtreeInvalid(true);
-  invalidation_flags_.SetInvalidateCustomPseudo(false);
   invalidation_flags_.SetTreeBoundaryCrossing(false);
   invalidation_flags_.SetInsertionPointCrossing(false);
   invalidation_flags_.SetInvalidatesSlotted(false);
   invalidation_flags_.SetInvalidatesParts(false);
+  invalidation_flags_.SetInvalidatesTreeCounting(false);
   ClearAllBackings();
 }
 
@@ -386,6 +421,13 @@ scoped_refptr<DescendantInvalidationSet> CreatePartInvalidationSet() {
   return new_set;
 }
 
+scoped_refptr<NthSiblingInvalidationSet> CreateTreeCountingInvalidationSet() {
+  auto new_set = NthSiblingInvalidationSet::Create();
+  new_set->SetInvalidatesTreeCounting();
+  new_set->SetInvalidatesSelf();
+  return new_set;
+}
+
 }  // namespace
 
 InvalidationSet* InvalidationSet::SelfInvalidationSet() {
@@ -398,6 +440,12 @@ InvalidationSet* InvalidationSet::PartInvalidationSet() {
   return singleton_;
 }
 
+InvalidationSet* InvalidationSet::TreeCountingInvalidationSet() {
+  DEFINE_STATIC_REF(InvalidationSet, singleton_,
+                    CreateTreeCountingInvalidationSet());
+  return singleton_;
+}
+
 void InvalidationSet::WriteIntoTrace(perfetto::TracedValue context) const {
   auto dict = std::move(context).WriteDictionary();
 
@@ -405,9 +453,6 @@ void InvalidationSet::WriteIntoTrace(perfetto::TracedValue context) const {
 
   if (invalidation_flags_.WholeSubtreeInvalid()) {
     dict.Add("allDescendantsMightBeInvalid", true);
-  }
-  if (invalidation_flags_.InvalidateCustomPseudo()) {
-    dict.Add("customPseudoInvalid", true);
   }
   if (invalidation_flags_.TreeBoundaryCrossing()) {
     dict.Add("treeBoundaryCrossing", true);
@@ -421,6 +466,9 @@ void InvalidationSet::WriteIntoTrace(perfetto::TracedValue context) const {
   if (invalidation_flags_.InvalidatesParts()) {
     dict.Add("invalidatesParts", true);
   }
+  if (invalidation_flags_.InvalidatesTreeCounting()) {
+    dict.Add("invalidatesTreeCounting", true);
+  }
 
   if (HasIds()) {
     dict.Add("ids", Ids());
@@ -432,6 +480,10 @@ void InvalidationSet::WriteIntoTrace(perfetto::TracedValue context) const {
 
   if (HasTagNames()) {
     dict.Add("tagNames", TagNames());
+  }
+
+  if (HasCustomPseudoNames()) {
+    dict.Add("customPseudoNames", CustomPseudoNames());
   }
 
   if (HasAttributes()) {
@@ -447,7 +499,7 @@ String InvalidationSet::ToString() const {
     for (const auto& str : range) {
       names.push_back(str);
     }
-    std::sort(names.begin(), names.end(), WTF::CodeUnitCompareLessThan);
+    std::sort(names.begin(), names.end(), CodeUnitCompareLessThan);
 
     for (const auto& name : names) {
       if (!builder.empty()) {
@@ -474,6 +526,10 @@ String InvalidationSet::ToString() const {
     features.Append(!features.empty() ? " " : "");
     features.Append(format_backing(TagNames(), "", ""));
   }
+  if (HasCustomPseudoNames()) {
+    features.Append(!features.empty() ? " " : "");
+    features.Append(format_backing(CustomPseudoNames(), "", ""));
+  }
   if (HasAttributes()) {
     features.Append(!features.empty() ? " " : "");
     features.Append(format_backing(Attributes(), "[", "]"));
@@ -498,11 +554,11 @@ String InvalidationSet::ToString() const {
   metadata.Append(InvalidatesSelf() ? "$" : "");
   metadata.Append(InvalidatesNth() ? "N" : "");
   metadata.Append(invalidation_flags_.WholeSubtreeInvalid() ? "W" : "");
-  metadata.Append(invalidation_flags_.InvalidateCustomPseudo() ? "C" : "");
   metadata.Append(invalidation_flags_.TreeBoundaryCrossing() ? "T" : "");
   metadata.Append(invalidation_flags_.InsertionPointCrossing() ? "I" : "");
   metadata.Append(invalidation_flags_.InvalidatesSlotted() ? "S" : "");
   metadata.Append(invalidation_flags_.InvalidatesParts() ? "P" : "");
+  metadata.Append(invalidation_flags_.InvalidatesTreeCounting() ? "t" : "");
   metadata.Append(format_max_direct_adjancent(this));
 
   StringBuilder main;

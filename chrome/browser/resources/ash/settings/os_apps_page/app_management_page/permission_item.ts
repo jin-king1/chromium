@@ -8,13 +8,11 @@ import '../../os_privacy_page/privacy_hub_allow_sensor_access_dialog.js';
 import {assert, assertNotReached} from '//resources/js/assert.js';
 import {PrefsMixin} from '/shared/settings/prefs/prefs_mixin.js';
 import type {App, Permission} from 'chrome://resources/cr_components/app_management/app_management.mojom-webui.js';
-import {InstallReason, PermissionType, TriState} from 'chrome://resources/cr_components/app_management/app_management.mojom-webui.js';
-import {BrowserProxy} from 'chrome://resources/cr_components/app_management/browser_proxy.js';
+import {browserProxyFactory, InstallReason, PermissionType, TriState} from 'chrome://resources/cr_components/app_management/app_management.mojom-webui.js';
 import {AppManagementUserAction} from 'chrome://resources/cr_components/app_management/constants.js';
 import type {PermissionTypeIndex} from 'chrome://resources/cr_components/app_management/permission_constants.js';
 import {createBoolPermission, createTriStatePermission, getBoolPermissionValue, getTriStatePermissionValue, isBoolValue, isTriStateValue} from 'chrome://resources/cr_components/app_management/permission_util.js';
 import {getPermission, getPermissionValueBool, recordAppManagementUserAction} from 'chrome://resources/cr_components/app_management/util.js';
-import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
 import {MediaDevicesProxy} from '../../common/media_devices_proxy.js';
@@ -105,16 +103,16 @@ export class AppManagementPermissionItemElement extends
     };
   }
 
-  app: App;
-  permissionLabel: string;
-  permissionType: PermissionTypeIndex;
-  icon: string;
-  private syncPermissionManually: boolean;
-  private available_: boolean;
-  private disabled_: boolean;
-  private sensorAvailable_: boolean;
-  private showAllowSensorAccessDialog_: boolean;
-  private showPermissionDescriptionString_: boolean;
+  declare app: App;
+  declare permissionLabel: string;
+  declare permissionType: PermissionTypeIndex;
+  declare icon: string;
+  declare private syncPermissionManually: boolean;
+  declare private available_: boolean;
+  declare private disabled_: boolean;
+  declare private sensorAvailable_: boolean;
+  declare private showAllowSensorAccessDialog_: boolean;
+  declare private showPermissionDescriptionString_: boolean;
 
   override ready(): void {
     super.ready();
@@ -178,7 +176,7 @@ export class AppManagementPermissionItemElement extends
       case PermissionType.kMicrophone:
       case PermissionType.kContacts:
       case PermissionType.kStorage:
-        return loadTimeData.getBoolean('privacyHubAppPermissionsV2Enabled');
+        return true;
       case PermissionType.kNotifications:
       case PermissionType.kPrinting:
       case PermissionType.kFileHandling:
@@ -240,7 +238,7 @@ export class AppManagementPermissionItemElement extends
       assertNotReached();
     }
 
-    BrowserProxy.getInstance().handler.setPermission(
+    browserProxyFactory.getInstance().handler.setPermission(
         this.app.id, newPermission);
 
     recordAppManagementUserAction(

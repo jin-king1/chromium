@@ -30,8 +30,9 @@ class TestSyncUserSettings : public SyncUserSettings {
   bool IsInitialSyncFeatureSetupComplete() const override;
 
 #if !BUILDFLAG(IS_CHROMEOS)
-  void SetInitialSyncFeatureSetupComplete(
-      SyncFirstSetupCompleteSource source) override;
+  void SetInitialSyncFeatureSetupComplete() override;
+#else   // BUILDFLAG(IS_CHROMEOS)
+  void SetInitialSyncFeatureSetupComplete();
 #endif  // !BUILDFLAG(IS_CHROMEOS)
 
   bool IsSyncEverythingEnabled() const override;
@@ -45,12 +46,13 @@ class TestSyncUserSettings : public SyncUserSettings {
   void SetSelectedType(UserSelectableType type, bool is_type_on) override;
   void ResetSelectedType(UserSelectableType type) override;
   void KeepAccountSettingsPrefsOnlyForUsers(
-      const std::vector<signin::GaiaIdHash>& available_gaia_ids) override;
+      const std::vector<GaiaId>& available_gaia_ids) override;
   DataTypeSet GetPreferredDataTypes() const;
   UserSelectableTypeSet GetRegisteredSelectableTypes() const override;
 
 #if BUILDFLAG(IS_CHROMEOS)
   bool IsSyncFeatureDisabledViaDashboard() const override;
+  void ClearSyncFeatureDisabledViaDashboard() override;
   bool IsSyncAllOsTypesEnabled() const override;
   UserSelectableOsTypeSet GetSelectedOsTypes() const override;
   bool IsOsTypeManagedByPolicy(UserSelectableOsType type) const override;
@@ -68,6 +70,7 @@ class TestSyncUserSettings : public SyncUserSettings {
   bool IsPassphrasePromptMutedForCurrentProductVersion() const override;
   void MarkPassphrasePromptMutedForCurrentProductVersion() override;
   bool IsTrustedVaultKeyRequired() const override;
+  bool IsKeystoreKeyRequiredForTesting() const override;
   bool IsTrustedVaultKeyRequiredForPreferredDataTypes() const override;
   bool IsTrustedVaultRecoverabilityDegraded() const override;
   bool IsUsingExplicitPassphrase() const override;
@@ -76,13 +79,8 @@ class TestSyncUserSettings : public SyncUserSettings {
 
   void SetEncryptionPassphrase(const std::string& passphrase) override;
   bool SetDecryptionPassphrase(const std::string& passphrase) override;
-  void SetExplicitPassphraseDecryptionNigoriKey(
-      std::unique_ptr<Nigori> nigori) override;
-  std::unique_ptr<Nigori> GetExplicitPassphraseDecryptionNigoriKey()
-      const override;
 
   void SetRegisteredSelectableTypes(UserSelectableTypeSet types);
-  void SetInitialSyncFeatureSetupComplete();
   void ClearInitialSyncFeatureSetupComplete();
   void SetTypeIsManagedByPolicy(UserSelectableType type, bool managed);
   void SetTypeIsManagedByCustodian(UserSelectableType type, bool managed);
@@ -98,8 +96,10 @@ class TestSyncUserSettings : public SyncUserSettings {
   void SetPassphraseType(PassphraseType type);
   void SetExplicitPassphraseTime(base::Time t);
 
+  void SetDisabledType(UserSelectableType type);
+
 #if BUILDFLAG(IS_CHROMEOS)
-  void SetSyncFeatureDisabledViaDashboard(bool disabled_via_dashboard);
+  void SetSyncFeatureDisabledViaDashboard();
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
   const std::string& GetEncryptionPassphrase() const;
@@ -118,6 +118,10 @@ class TestSyncUserSettings : public SyncUserSettings {
   UserSelectableTypeSet selected_types_ = UserSelectableTypeSet::All();
   UserSelectableTypeSet managed_by_policy_types_;
   UserSelectableTypeSet managed_by_custodian_types_;
+
+  // This can be populated through `SetDisabledType()`. Types are removed from
+  // this set once they are enabled again.
+  UserSelectableTypeSet disabled_types_;
 
   bool initial_sync_feature_setup_complete_ = true;
   bool sync_everything_enabled_ = true;

@@ -45,7 +45,7 @@ class POLICY_EXPORT RemoteCommandsService
   //   (a) existing enumerated constants should never be deleted or reordered
   //   (b) new constants should only be appended at the end of the enumeration
   //       (update RemoteCommandReceivedStatus in
-  //       tools/metrics/histograms/enums.xml as well).
+  //       tools/metrics/histograms/metadata/enterprise/enums.xml as well).
   enum class MetricReceivedRemoteCommand {
     // Invalid remote commands.
     kInvalidSignature = 0,
@@ -72,8 +72,10 @@ class POLICY_EXPORT RemoteCommandsService
     kBrowserRotateAttestationCredential = 20,
     kFetchCrdAvailabilityInfo = 21,
     kFetchSupportPacket = 22,
+    kQueryGeolocation = 23,
+    kBrowserExtensionUpdateCheck = 24,
     // Used by UMA histograms. Shall refer to the last enumeration.
-    kMaxValue = kFetchSupportPacket
+    kMaxValue = kBrowserExtensionUpdateCheck
   };
 
   // Signature type that will be used for the requests.
@@ -135,6 +137,13 @@ class POLICY_EXPORT RemoteCommandsService
       const enterprise_management::SignedData& signed_command);
   void EnqueueCommand(const enterprise_management::RemoteCommand& command,
                       const enterprise_management::SignedData& signed_command);
+
+  // Returns true if we can fetch remote commands.
+  // We can't fetch remote command for many reasons, such as
+  // - the client is not registered.
+  // - there is a command fetch on going.
+  // - CEC is not enabled.
+  bool CanFetchRemoteCommands();
 
   // RemoteCommandsQueue::Observer:
   void OnJobStarted(RemoteCommandJob* command) override;

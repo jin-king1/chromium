@@ -27,16 +27,15 @@ class DesktopUI(perf_benchmark.PerfBenchmark):
   SUPPORTED_PLATFORMS = [story.expectations.ALL_DESKTOP]
 
   def CreateStorySet(self, options):
-    exhaustive = hasattr(options, 'story_set_should_be_exhaustive_for_test')
-    return page_sets.DesktopUIStorySet(exhaustive=exhaustive)
+    return page_sets.DesktopUIStorySet()
 
   def CreateCoreTimelineBasedMeasurementOptions(self):
     category_filter = chrome_trace_category_filter.ChromeTraceCategoryFilter(
-        filter_string='uma')
+        filter_string='uma,disabled-by-default-histogram_samples')
     options = timeline_based_measurement.Options(category_filter)
     # Add more buffer since we are opening a lot of tabs.
     options.config.chrome_trace_config.SetTraceBufferSizeInKb(600 * 1024)
-    options.SetTimelineBasedMetrics(['umaMetric'])
+    options.SetTimelineBasedMetrics(['umaMetric', 'tbmv3:uma_metrics'])
     return options
 
   def SetExtraBrowserOptions(self, options):

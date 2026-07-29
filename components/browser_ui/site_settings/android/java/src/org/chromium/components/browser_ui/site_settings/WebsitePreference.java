@@ -32,8 +32,8 @@ import org.chromium.url.GURL;
 /**
  * A preference that displays a website's favicon and URL and, optionally, the amount of local
  * storage used by the site. This preference can also display an additional icon on the right side
- * of the preference. See {@link ChromeImageViewPreference} for more details on how this icon
- * can be used.
+ * of the preference. See {@link ChromeImageViewPreference} for more details on how this icon can be
+ * used.
  */
 @NullMarked
 class WebsitePreference extends ChromeImageViewPreference {
@@ -124,7 +124,7 @@ class WebsitePreference extends ChromeImageViewPreference {
             return mSite.getTitleForPreferenceRow();
         }
 
-        return mSite.getTitle();
+        return mSite.getTitleForContentSetting(mCategory.getContentSettingsType());
     }
 
     protected String buildExpirationSummary(ContentSettingException exception) {
@@ -141,8 +141,7 @@ class WebsitePreference extends ChromeImageViewPreference {
     }
 
     protected @Nullable String buildSummary() {
-        if (mSiteSettingsDelegate.isPrivacySandboxFirstPartySetsUiFeatureEnabled()
-                && mSiteSettingsDelegate.isRelatedWebsiteSetsDataAccessEnabled()
+        if (mSiteSettingsDelegate.isRelatedWebsiteSetsDataAccessEnabled()
                 && mSite.getRwsCookieInfo() != null) {
             var rwsInfo = mSite.getRwsCookieInfo();
             return getContext()
@@ -240,18 +239,18 @@ class WebsitePreference extends ChromeImageViewPreference {
             return;
         }
 
-        if (mSiteSettingsDelegate.isPermissionSiteSettingsRadioButtonFeatureEnabled()) {
-            setImageView(
-                    R.drawable.ic_more_vert_24dp,
-                    null,
-                    (OnClickListener)
-                            view -> {
-                                performClick(view);
-                            });
-            setImageViewEnabled(true);
-            setImagePadding(25, 0, 0, 0);
-            return;
-        }
+        setImageView(
+                R.drawable.ic_more_vert_24dp,
+                getContext()
+                        .getString(
+                                R.string.website_settings_site_more_options_a11y_label,
+                                buildTitle()),
+                (OnClickListener)
+                        view -> {
+                            performClick(view);
+                        });
+        setImageViewEnabled(true);
+        setImagePadding(25, 0, 0, 0);
     }
 
     protected void refresh() {
@@ -277,7 +276,6 @@ class WebsitePreference extends ChromeImageViewPreference {
     public void onBindViewHolder(PreferenceViewHolder holder) {
         super.onBindViewHolder(holder);
         TextView usageText = (TextView) holder.findViewById(R.id.usage_text);
-        assumeNonNull(usageText);
         usageText.setVisibility(View.GONE);
         if (mCategory.getType() == SiteSettingsCategory.Type.USE_STORAGE) {
             long totalUsage = mSite.getTotalUsage();
@@ -288,7 +286,6 @@ class WebsitePreference extends ChromeImageViewPreference {
         }
         if (mCategory.getType() == SiteSettingsCategory.Type.ZOOM) {
             TextView summaryText = (TextView) holder.findViewById(android.R.id.summary);
-            assumeNonNull(summaryText);
             long readableZoomLevel =
                     Math.round(
                             100
@@ -302,7 +299,6 @@ class WebsitePreference extends ChromeImageViewPreference {
 
         // Manually apply ListItemStartIcon style to draw the outer circle in the right size.
         ImageView icon = (ImageView) holder.findViewById(android.R.id.icon);
-        assumeNonNull(icon);
         FaviconViewUtils.formatIconForFavicon(getContext().getResources(), icon);
 
         if (!mFaviconFetched && faviconUrl().isValid()) {

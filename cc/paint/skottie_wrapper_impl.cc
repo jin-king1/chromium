@@ -2,8 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "cc/paint/skottie_wrapper.h"
-
+#include <algorithm>
 #include <functional>
 #include <memory>
 #include <string_view>
@@ -11,15 +10,18 @@
 #include <vector>
 
 #include "base/containers/flat_map.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/hash/hash.h"
 #include "base/logging.h"
-#include "base/notreached.h"
+#include "base/notimplemented.h"
+#include "base/strings/string_view_util.h"
 #include "base/synchronization/lock.h"
 #include "base/thread_annotations.h"
 #include "base/trace_event/trace_event.h"
 #include "cc/paint/skottie_mru_resource_provider.h"
+#include "cc/paint/skottie_wrapper.h"
 #include "skia/ext/font_utils.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "third_party/skia/include/core/SkFontMgr.h"
@@ -252,8 +254,7 @@ class SkottieWrapperImpl : public SkottieWrapper {
                 base::BindRepeating(
                     &SkottieWrapperImpl::RunCurrentFrameDataCallback,
                     base::Unretained(this)),
-                std::string_view(reinterpret_cast<const char*>(data.data()),
-                                 data.size()))) {}
+                base::as_string_view(data))) {}
 
   SkottieWrapperImpl(const SkottieWrapperImpl&) = delete;
   SkottieWrapperImpl& operator=(const SkottieWrapperImpl&) = delete;
@@ -324,6 +325,15 @@ class SkottieWrapperImpl : public SkottieWrapper {
   }
 
   float duration() const override { return animation_->duration(); }
+
+  float GetNormalizedTimeForFrame(float frame) const override {
+    float in_point = animation_->inPoint();
+    float out_point = animation_->outPoint();
+    if (out_point <= in_point) {
+      return 0.f;
+    }
+    return std::clamp((frame - in_point) / (out_point - in_point), 0.f, 1.f);
+  }
 
   SkSize size() const override { return animation_->size(); }
 

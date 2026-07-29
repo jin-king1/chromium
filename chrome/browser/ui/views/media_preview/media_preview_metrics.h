@@ -17,6 +17,13 @@ struct Context {
   Context(UiLocation ui_location, PreviewType preview_type);
   ~Context();
 
+  // This class is move- and copy-constructible:
+  Context(const Context& other);
+  Context(Context&& other);
+
+  Context& operator=(const Context& other) = delete;
+  Context& operator=(Context&& other) = delete;
+
   const UiLocation ui_location;
   const PreviewType preview_type;
 };
@@ -52,8 +59,6 @@ void RecordTimeToActionWithoutPreview(const Context& context,
                                       const base::TimeDelta& delta);
 void RecordPreviewDelayTime(const Context& context,
                             const base::TimeDelta& delta);
-
-void RecordOriginTrialAllowed(UiLocation location, bool allowed);
 
 void RecordVideoCaptureError(const Context& context,
                              media::VideoCaptureError received_error);

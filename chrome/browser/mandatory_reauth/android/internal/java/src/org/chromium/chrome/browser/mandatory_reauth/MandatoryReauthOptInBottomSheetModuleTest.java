@@ -26,7 +26,6 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.mockito.quality.Strictness;
@@ -59,7 +58,6 @@ public class MandatoryReauthOptInBottomSheetModuleTest {
 
     @Before
     public void setUp() {
-        MockitoAnnotations.openMocks(this);
         MandatoryReauthOptInBottomSheetControllerBridgeJni.setInstanceForTesting(
                 mControllerBridgeJniMock);
         setUpBottomSheetController();
@@ -95,12 +93,12 @@ public class MandatoryReauthOptInBottomSheetModuleTest {
         TextView explanationView = (TextView) getView(R.id.mandatory_reauth_opt_in_explanation);
 
         // Check that the custom view contains the expected title and explanation.
-        assertThat(titleView.getText(), is("Turn on manual verification?"));
+        assertThat(titleView.getText(), is("Verify it's you to autofill payment methods?"));
         assertThat(
                 explanationView.getText(),
                 is(
-                        "If you share this device, Chromium can ask you to verify every time you"
-                                + " pay using autofill"));
+                        "For added protection, always use your fingerprint, face, or other screen"
+                                + " lock when you pay using autofill"));
 
         Button acceptButton = (Button) getView(R.id.mandatory_reauth_opt_in_accept_button);
         Button cancelButton = (Button) getView(R.id.mandatory_reauth_opt_in_cancel_button);

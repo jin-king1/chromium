@@ -9,7 +9,8 @@
 #include <memory>
 #include <string>
 
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/values.h"
 #include "chrome/common/webui_url_constants.h"
 #include "components/prefs/pref_change_registrar.h"
@@ -61,9 +62,13 @@ class InspectUI : public content::WebUIController,
                                         const std::string& browser_id,
                                         const GURL& frontend_url);
 
-  void PopulateNativeUITargets(const base::Value::List& targets);
+  void PopulateNativeUITargets(const base::ListValue& targets);
   void ShowNativeUILaunchButton(bool enabled);
   void SetHostVersion(const std::string& version);
+  void SetRemoteDebuggingEnabled(bool enabled);
+
+  void StartListeningNotifications();
+  void StopListeningNotifications();
 
   static void InspectDevices(Browser* browser);
 
@@ -71,15 +76,13 @@ class InspectUI : public content::WebUIController,
   // content::WebContentsObserver:
   void WebContentsDestroyed() override;
 
-  void StartListeningNotifications();
-  void StopListeningNotifications();
-
   void UpdateDiscoverUsbDevicesEnabled();
   void UpdatePortForwardingEnabled();
   void UpdatePortForwardingConfig();
   void UpdateTCPDiscoveryEnabled();
   void UpdateTCPDiscoveryConfig();
   void UpdateBubbleLockingCheckbox();
+  void UpdateRemoteDebuggingEnabled();
 
   void SetPortForwardingDefaults();
 
@@ -106,6 +109,8 @@ class InspectUI : public content::WebUIController,
       target_handlers_;
 
   std::unique_ptr<PortForwardingStatusSerializer> port_status_serializer_;
+
+  base::WeakPtrFactory<InspectUI> weak_factory_{this};
 };
 
 #endif  // CHROME_BROWSER_UI_WEBUI_INSPECT_INSPECT_UI_H_

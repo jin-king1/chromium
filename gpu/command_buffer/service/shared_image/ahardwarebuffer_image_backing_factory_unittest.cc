@@ -2,20 +2,18 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "gpu/command_buffer/service/shared_image/ahardwarebuffer_image_backing_factory.h"
 
-#include "base/android/android_hardware_buffer_compat.h"
+#include <android/hardware_buffer.h>
+
 #include "base/android/scoped_hardware_buffer_fence_sync.h"
+#include "base/compiler_specific.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "components/viz/common/gpu/vulkan_context_provider.h"
 #include "components/viz/common/resources/shared_image_format_utils.h"
 #include "gpu/command_buffer/common/mailbox.h"
+#include "gpu/command_buffer/common/shared_image_info.h"
 #include "gpu/command_buffer/common/shared_image_usage.h"
 #include "gpu/command_buffer/service/shared_context_state.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_backing.h"
@@ -62,9 +60,6 @@ class AHardwareBufferImageBackingFactoryTest
   void SetUp() override {
     // AHardwareBuffer is only supported on ANDROID O+. Hence these tests
     // should not be run on android versions less that O.
-    if (!base::AndroidHardwareBufferCompat::IsSupportAvailable()) {
-      GTEST_SKIP() << "AHardwareBuffer not supported";
-    }
 
     if (IsGraphiteDawn() && !IsGraphiteDawnSupported()) {
       GTEST_SKIP() << "Graphite/Dawn not supported";
@@ -153,7 +148,7 @@ TEST_P(AHardwareBufferImageBackingFactoryTest, Basic) {
 // Test to check interaction between GL and skia representations.
 // We write to a GL texture using gl representation and then read from skia
 // representation.
-TEST_F(AHardwareBufferImageBackingFactoryTest, GLWriteSkiaRead) {
+TEST_P(AHardwareBufferImageBackingFactoryTest, GLWriteSkiaRead) {
   // Create a backing using mailbox.
   auto mailbox = Mailbox::Generate();
   auto format = viz::SinglePlaneFormat::kRGBA_8888;
@@ -165,8 +160,10 @@ TEST_F(AHardwareBufferImageBackingFactoryTest, GLWriteSkiaRead) {
       SHARED_IMAGE_USAGE_GLES2_WRITE | SHARED_IMAGE_USAGE_DISPLAY_READ;
   gpu::SurfaceHandle surface_handle = gpu::kNullSurfaceHandle;
   auto backing = backing_factory_->CreateSharedImage(
-      mailbox, format, surface_handle, size, color_space, surface_origin,
-      alpha_type, usage, "TestLabel", /*is_thread_safe=*/false);
+      mailbox,
+      {format, size, color_space, surface_origin, alpha_type, usage,
+       "TestLabel"},
+      surface_handle, /*is_thread_safe=*/false);
   EXPECT_TRUE(backing);
 
   GLenum expected_target = GL_TEXTURE_2D;
@@ -221,8 +218,10 @@ TEST_P(AHardwareBufferImageBackingFactoryTest, ProduceDawnOpenGLES) {
                                    SHARED_IMAGE_USAGE_SCANOUT;
   gpu::SurfaceHandle surface_handle = gpu::kNullSurfaceHandle;
   auto backing = backing_factory_->CreateSharedImage(
-      mailbox, format, surface_handle, size, color_space, surface_origin,
-      alpha_type, usage, "TestLabel", /*is_thread_safe=*/false);
+      mailbox,
+      {format, size, color_space, surface_origin, alpha_type, usage,
+       "TestLabel"},
+      surface_handle, /*is_thread_safe=*/false);
   EXPECT_TRUE(backing);
 
   std::unique_ptr<SharedImageRepresentationFactoryRef> factory_ref =
@@ -327,17 +326,19 @@ TEST_P(AHardwareBufferImageBackingFactoryTest, InitialData) {
   SkBitmap expected_bitmap;
   expected_bitmap.allocPixels(image_info);
 
-  base::span<uint8_t> pixel_span(
+  base::span<uint8_t> UNSAFE_TODO(pixel_span(
       static_cast<uint8_t*>(expected_bitmap.pixmap().writable_addr()),
-      expected_bitmap.computeByteSize());
+      expected_bitmap.computeByteSize()));
   for (size_t i = 0; i < pixel_span.size(); i++) {
     pixel_span[i] = static_cast<uint8_t>(i);
   }
 
   // Create a SharedImage whose contents will be read out by Skia.
   auto backing = backing_factory_->CreateSharedImage(
-      mailbox, format, size, color_space, surface_origin, alpha_type, usage,
-      "TestLabel", /*is_thread_safe=*/false, pixel_span);
+      mailbox,
+      {format, size, color_space, surface_origin, alpha_type, usage,
+       "TestLabel"},
+      /*is_thread_safe=*/false, pixel_span);
   EXPECT_TRUE(backing);
 
   std::unique_ptr<SharedImageRepresentationFactoryRef> factory_ref =
@@ -351,7 +352,7 @@ TEST_P(AHardwareBufferImageBackingFactoryTest, InitialData) {
 // Test to check invalid format support.
 TEST_P(AHardwareBufferImageBackingFactoryTest, InvalidFormat) {
   auto mailbox = Mailbox::Generate();
-  auto format = viz::MultiPlaneFormat::kNV12;
+  auto format = viz::MultiPlaneFormat::kP010;
   gfx::Size size(256, 256);
   auto color_space = gfx::ColorSpace::CreateSRGB();
   GrSurfaceOrigin surface_origin = kTopLeft_GrSurfaceOrigin;
@@ -362,9 +363,89 @@ TEST_P(AHardwareBufferImageBackingFactoryTest, InvalidFormat) {
   // the fact that the passed-in *format* is not supported.
   gpu::SharedImageUsageSet usage = SHARED_IMAGE_USAGE_GLES2_READ;
   auto backing = backing_factory_->CreateSharedImage(
-      mailbox, format, surface_handle, size, color_space, surface_origin,
-      alpha_type, usage, "TestLabel", /*is_thread_safe=*/false);
+      mailbox,
+      {format, size, color_space, surface_origin, alpha_type, usage,
+       "TestLabel"},
+      surface_handle, /*is_thread_safe=*/false);
   EXPECT_FALSE(backing);
+}
+
+TEST_P(AHardwareBufferImageBackingFactoryTest,
+       CanCreateMultiplanarBackingWhenPassedGMBHandle) {
+  auto mailbox = Mailbox::Generate();
+  auto format = viz::MultiPlaneFormat::kNV12;
+  gfx::Size size(256, 256);
+  auto color_space = gfx::ColorSpace::CreateSRGB();
+  GrSurfaceOrigin surface_origin = kTopLeft_GrSurfaceOrigin;
+  SkAlphaType alpha_type = kPremul_SkAlphaType;
+  gpu::SharedImageUsageSet usage =
+      SHARED_IMAGE_USAGE_CPU_READ | SHARED_IMAGE_USAGE_CPU_WRITE_ONLY;
+
+  AHardwareBuffer* buffer = nullptr;
+  AHardwareBuffer_Desc hwb_desc = {};
+  hwb_desc.width = size.width();
+  hwb_desc.height = size.height();
+  hwb_desc.layers = 1;
+  hwb_desc.format = AHARDWAREBUFFER_FORMAT_Y8Cb8Cr8_420;
+  hwb_desc.usage = AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN;
+  AHardwareBuffer_allocate(&hwb_desc, &buffer);
+  ASSERT_NE(buffer, nullptr);
+
+  gfx::GpuMemoryBufferHandle handle;
+  handle.type = gfx::ANDROID_HARDWARE_BUFFER;
+  handle.android_hardware_buffer =
+      base::android::ScopedHardwareBufferHandle::Adopt(buffer);
+
+  auto backing = backing_factory_->CreateSharedImage(
+      mailbox,
+      {format, size, color_space, surface_origin, alpha_type, usage,
+       "TestLabel"},
+      /*is_thread_safe=*/false, std::move(handle));
+  EXPECT_TRUE(backing);
+}
+
+TEST_P(AHardwareBufferImageBackingFactoryTest, MultiplanarAHB) {
+  if (IsGraphiteDawn()) {
+    GTEST_SKIP() << "Graphite/Dawn not supported";
+  }
+
+  auto mailbox = Mailbox::Generate();
+  auto format = viz::MultiPlaneFormat::kNV12;
+  format.SetPrefersExternalSampler();
+  gfx::Size size(256, 256);
+  auto color_space = gfx::ColorSpace::CreateSRGB();
+  GrSurfaceOrigin surface_origin = kTopLeft_GrSurfaceOrigin;
+  SkAlphaType alpha_type = kPremul_SkAlphaType;
+  gpu::SharedImageUsageSet usage = SHARED_IMAGE_USAGE_DISPLAY_READ;
+
+  AHardwareBuffer* buffer = nullptr;
+  AHardwareBuffer_Desc hwb_desc = {};
+  hwb_desc.width = size.width();
+  hwb_desc.height = size.height();
+  hwb_desc.layers = 1;
+  hwb_desc.format = AHARDWAREBUFFER_FORMAT_Y8Cb8Cr8_420;
+  hwb_desc.usage = AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE;
+  AHardwareBuffer_allocate(&hwb_desc, &buffer);
+  ASSERT_NE(buffer, nullptr);
+
+  gfx::GpuMemoryBufferHandle handle;
+  handle.type = gfx::ANDROID_HARDWARE_BUFFER;
+  handle.android_hardware_buffer =
+      base::android::ScopedHardwareBufferHandle::Adopt(buffer);
+
+  auto backing = backing_factory_->CreateSharedImage(
+      mailbox,
+      {format, size, color_space, surface_origin, alpha_type, usage,
+       "TestLabel"},
+      /*is_thread_safe=*/false, std::move(handle));
+  EXPECT_TRUE(backing);
+
+  std::unique_ptr<SharedImageRepresentationFactoryRef> factory_ref =
+      shared_image_manager_.Register(std::move(backing), &memory_type_tracker_);
+
+  auto skia_representation = shared_image_representation_factory_.ProduceSkia(
+      mailbox, context_state_.get());
+  EXPECT_TRUE(skia_representation);
 }
 
 // Test to check invalid size support.
@@ -381,14 +462,18 @@ TEST_P(AHardwareBufferImageBackingFactoryTest, InvalidSize) {
   // the fact that the passed-in *size* is not supported.
   gpu::SharedImageUsageSet usage = SHARED_IMAGE_USAGE_GLES2_READ;
   auto backing = backing_factory_->CreateSharedImage(
-      mailbox, format, surface_handle, size, color_space, surface_origin,
-      alpha_type, usage, "TestLabel", /*is_thread_safe=*/false);
+      mailbox,
+      {format, size, color_space, surface_origin, alpha_type, usage,
+       "TestLabel"},
+      surface_handle, /*is_thread_safe=*/false);
   EXPECT_FALSE(backing);
 
   size = gfx::Size(INT_MAX, INT_MAX);
   backing = backing_factory_->CreateSharedImage(
-      mailbox, format, surface_handle, size, color_space, surface_origin,
-      alpha_type, usage, "TestLabel", /*is_thread_safe=*/false);
+      mailbox,
+      {format, size, color_space, surface_origin, alpha_type, usage,
+       "TestLabel"},
+      surface_handle, /*is_thread_safe=*/false);
   EXPECT_FALSE(backing);
 }
 
@@ -404,8 +489,10 @@ TEST_P(AHardwareBufferImageBackingFactoryTest, EstimatedSize) {
   // the factory.
   gpu::SharedImageUsageSet usage = SHARED_IMAGE_USAGE_GLES2_READ;
   auto backing = backing_factory_->CreateSharedImage(
-      mailbox, format, surface_handle, size, color_space, surface_origin,
-      alpha_type, usage, "TestLabel", /*is_thread_safe=*/false);
+      mailbox,
+      {format, size, color_space, surface_origin, alpha_type, usage,
+       "TestLabel"},
+      surface_handle, /*is_thread_safe=*/false);
   EXPECT_TRUE(backing);
 
   size_t backing_estimated_size = backing->GetEstimatedSize();
@@ -627,8 +714,10 @@ GlLegacySharedImage::GlLegacySharedImage(
     usage |= SharedImageUsageSet({SHARED_IMAGE_USAGE_CONCURRENT_READ_WRITE});
   }
   backing_ = backing_factory->CreateSharedImage(
-      mailbox_, format, surface_handle, size_, color_space, surface_origin,
-      alpha_type, usage, "TestLabel", is_thread_safe);
+      mailbox_,
+      {format, size_, color_space, surface_origin, alpha_type, usage,
+       "TestLabel"},
+      surface_handle, is_thread_safe);
   EXPECT_TRUE(backing_);
 
   // Check clearing.

@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "base/base_export.h"
+#include "base/byte_size.h"
 #include "base/compiler_specific.h"
 #include "base/gtest_prod_util.h"
 #include "base/trace_event/memory_dump_request_args.h"
@@ -109,8 +110,8 @@ class BASE_EXPORT TraceConfig {
     void Clear();
     void Merge(const ProcessFilterConfig&);
 
-    void InitializeFromConfigDict(const Value::Dict&);
-    void ToDict(Value::Dict& dict) const;
+    void InitializeFromConfigDict(const DictValue&);
+    void ToDict(DictValue& dict) const;
 
     bool IsEnabled(base::ProcessId) const;
     const std::unordered_set<base::ProcessId>& included_process_ids() const {
@@ -135,11 +136,11 @@ class BASE_EXPORT TraceConfig {
 
     bool IsEquivalentTo(const EventFilterConfig& other) const;
 
-    void InitializeFromConfigDict(const Value::Dict& event_filter);
+    void InitializeFromConfigDict(const DictValue& event_filter);
 
     void SetCategoryFilter(const TraceConfigCategoryFilter& category_filter);
 
-    void ToDict(Value::Dict& filter_dict) const;
+    void ToDict(DictValue& filter_dict) const;
 
     bool GetArgAsSet(const char* key, std::unordered_set<std::string>*) const;
 
@@ -148,7 +149,7 @@ class BASE_EXPORT TraceConfig {
     const std::string& predicate_name() const LIFETIME_BOUND {
       return predicate_name_;
     }
-    const Value::Dict& filter_args() const LIFETIME_BOUND { return args_; }
+    const DictValue& filter_args() const LIFETIME_BOUND { return args_; }
     const TraceConfigCategoryFilter& category_filter() const LIFETIME_BOUND {
       return category_filter_;
     }
@@ -156,7 +157,7 @@ class BASE_EXPORT TraceConfig {
    private:
     std::string predicate_name_;
     TraceConfigCategoryFilter category_filter_;
-    Value::Dict args_;
+    DictValue args_;
   };
   typedef std::vector<EventFilterConfig> EventFilters;
 
@@ -232,7 +233,7 @@ class BASE_EXPORT TraceConfig {
 
   // Functionally identical to the above, but takes a parsed dictionary as input
   // instead of its JSON serialization.
-  explicit TraceConfig(const Value::Dict& config);
+  explicit TraceConfig(const DictValue& config);
 
   TraceConfig(const TraceConfig& tc);
 
@@ -246,7 +247,9 @@ class BASE_EXPORT TraceConfig {
   size_t GetTraceBufferSizeInEvents() const {
     return trace_buffer_size_in_events_;
   }
-  size_t GetTraceBufferSizeInKb() const { return trace_buffer_size_in_kb_; }
+  ByteSize GetTraceBufferSizeInBytes() const {
+    return trace_buffer_size_in_bytes_;
+  }
   bool IsSystraceEnabled() const { return enable_systrace_; }
   bool IsArgumentFilterEnabled() const { return enable_argument_filter_; }
 
@@ -254,7 +257,9 @@ class BASE_EXPORT TraceConfig {
   void SetTraceBufferSizeInEvents(size_t size) {
     trace_buffer_size_in_events_ = size;
   }
-  void SetTraceBufferSizeInKb(size_t size) { trace_buffer_size_in_kb_ = size; }
+  void SetTraceBufferSizeInBytes(ByteSize bytes) {
+    trace_buffer_size_in_bytes_ = bytes;
+  }
   void EnableSystrace() { enable_systrace_ = true; }
   void EnableSystraceEvent(const std::string& systrace_event);
   void EnableArgumentFilter() { enable_argument_filter_ = true; }
@@ -343,7 +348,7 @@ class BASE_EXPORT TraceConfig {
   void InitializeDefault();
 
   // Initialize from a config dictionary.
-  void InitializeFromConfigDict(const Value::Dict& dict);
+  void InitializeFromConfigDict(const DictValue& dict);
 
   // Initialize from a config string.
   void InitializeFromConfigString(std::string_view config_string);
@@ -352,16 +357,16 @@ class BASE_EXPORT TraceConfig {
   void InitializeFromStrings(std::string_view category_filter_string,
                              std::string_view trace_options_string);
 
-  void SetMemoryDumpConfigFromConfigDict(const Value::Dict& memory_dump_config);
+  void SetMemoryDumpConfigFromConfigDict(const DictValue& memory_dump_config);
   void SetDefaultMemoryDumpConfig();
 
-  void SetHistogramNamesFromConfigList(const Value::List& histogram_names);
-  void SetEventFiltersFromConfigList(const Value::List& event_filters);
+  void SetHistogramNamesFromConfigList(const ListValue& histogram_names);
+  void SetEventFiltersFromConfigList(const ListValue& event_filters);
   Value ToValue() const;
 
   TraceRecordMode record_mode_;
   size_t trace_buffer_size_in_events_ = 0;  // 0 specifies default size
-  size_t trace_buffer_size_in_kb_ = 0;      // 0 specifies default size
+  ByteSize trace_buffer_size_in_bytes_;
   bool enable_systrace_ : 1;
   bool enable_argument_filter_ : 1;
 

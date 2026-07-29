@@ -11,24 +11,26 @@
 #import "base/test/bind.h"
 #import "base/test/ios/wait_util.h"
 #import "base/test/metrics/histogram_tester.h"
+#import "base/test/scoped_feature_list.h"
 #import "base/test/with_feature_override.h"
 #import "base/time/time.h"
 #import "base/unguessable_token.h"
 #import "components/autofill/core/common/autofill_features.h"
+#import "components/autofill/core/common/autofill_test_utils.h"
 #import "components/autofill/core/common/form_data.h"
 #import "components/autofill/core/common/form_field_data.h"
 #import "components/autofill/core/common/unique_ids.h"
 #import "components/autofill/ios/browser/autofill_java_script_feature.h"
 #import "components/autofill/ios/browser/autofill_util.h"
-#import "components/autofill/ios/browser/test_autofill_java_script_feature_container.h"
+#import "components/autofill/ios/common/autofill_optimization_features.h"
 #import "components/autofill/ios/common/features.h"
 #import "components/autofill/ios/common/javascript_feature_util.h"
 #import "components/autofill/ios/form_util/autofill_form_features_java_script_feature.h"
 #import "components/autofill/ios/form_util/autofill_test_with_web_state.h"
 #import "components/autofill/ios/form_util/form_activity_observer.h"
 #import "components/autofill/ios/form_util/form_handlers_java_script_feature.h"
-#import "components/autofill/ios/form_util/form_util_java_script_feature.h"
 #import "components/autofill/ios/form_util/programmatic_form_submission_handler_java_script_feature.h"
+#import "components/autofill/ios/form_util/renderer_id_test_util.h"
 #import "components/autofill/ios/form_util/test_form_activity_observer.h"
 #import "ios/web/public/js_messaging/java_script_feature.h"
 #import "ios/web/public/js_messaging/web_frame.h"
@@ -45,7 +47,9 @@ namespace {
 using base::test::WithFeatureOverride;
 using base::test::ios::kWaitForJSCompletionTimeout;
 using base::test::ios::WaitUntilConditionOrTimeout;
+using test::FormDataEq;
 using test::kTrackFormMutationsDelayInMs;
+using test::WithoutUnserializedData;
 using ::testing::Each;
 using ::testing::ElementsAre;
 using ::testing::Field;
@@ -58,8 +62,6 @@ using ::testing::VariantWith;
 using web::JavaScriptFeature;
 using web::WebFrame;
 
-// Default maximum length for text input fields defined by W3C.
-constexpr uint64_t kTextInputFieldMaxLength = 524288;
 // HTML containing one form with a text field and a submit button.
 constexpr NSString* kTestHTMLForm = @"<form name='form-name'>"
                                      "<input type='text' id='text'/>"
@@ -76,24 +78,30 @@ constexpr NSString* kTestHTMLFormWithIframes =
 
 // Returns the `FormData` representation of the form in `kTestHTMLForm`.
 [[nodiscard]] FormData BuildTestFormData(std::string frame_id) {
-  FormData test_form_data;
-  test_form_data.set_name(u"form-name");
-  test_form_data.set_url(GURL("https://chromium.test/"));
-  test_form_data.set_action(GURL("https://chromium.test/"));
-  test_form_data.set_name_attribute(u"form-name");
-  test_form_data.set_renderer_id(FormRendererId(1));
   std::optional<base::UnguessableToken> host_frame =
       DeserializeJavaScriptFrameId(frame_id);
+  GURL url = GURL("https://chromium.test/");
+
+  FormData test_form_data;
+  test_form_data.set_name(u"form-name");
+  test_form_data.set_main_frame_origin(url::Origin::Create(url));
+  test_form_data.set_url(url);
+  test_form_data.set_action(url);
+  test_form_data.set_name_attribute(u"form-name");
+  test_form_data.set_renderer_id(FormRendererId(1));
   test_form_data.set_host_frame(LocalFrameToken(*host_frame));
 
   FormFieldData test_field_data;
   test_field_data.set_name(u"text");
+  test_field_data.set_origin(url::Origin::Create(url));
   test_field_data.set_form_control_type(FormControlType::kInputText);
+  test_field_data.set_host_frame(LocalFrameToken(*host_frame));
+  test_field_data.set_host_form_id(test_form_data.renderer_id());
+  test_field_data.set_host_form_signature(
+      FormSignature(14616800528926333697ul));
   test_field_data.set_renderer_id(FieldRendererId(2));
   test_field_data.set_id_attribute(u"text");
-  // user_edited is true when the sources of inputs are not being tracked.
-  test_field_data.set_is_user_edited(true);
-  test_field_data.set_max_length(kTextInputFieldMaxLength);
+  test_field_data.set_max_length(FormFieldData::kDefaultMaxLength);
 
   test_form_data.set_fields({test_field_data});
 
@@ -102,7 +110,7 @@ constexpr NSString* kTestHTMLFormWithIframes =
 
 }  // namespace
 
-// Tests fixture for autofill::FormActivityTabHelper class.
+// Tests fixture for FormActivityTabHelper class.
 class FormActivityTabHelperTest : public AutofillTestWithWebState {
  public:
   FormActivityTabHelperTest()
@@ -110,7 +118,6 @@ class FormActivityTabHelperTest : public AutofillTestWithWebState {
     web::FakeWebClient* web_client =
         static_cast<web::FakeWebClient*>(GetWebClient());
     std::vector<JavaScriptFeature*> features = {
-        FormUtilJavaScriptFeature::GetInstance(),
         FormHandlersJavaScriptFeature::GetInstance(),
         AutofillJavaScriptFeature::GetInstance(),
         ProgrammaticFormSubmissionHandlerJavaScriptFeature::GetInstance(),
@@ -160,9 +167,103 @@ class FormActivityTabHelperTest : public AutofillTestWithWebState {
     EXPECT_EQ(params, expected_activity_params);
   }
 
+  // Returns the value of `__gCrHasBeenPassword` symbol for the specified HTML
+  // element
+  id GetHasBeenPasswordForElement(NSString* element_id) {
+    NSString* script =
+        [NSString stringWithFormat:@"document.getElementById('%@')[Symbol.for('"
+                                   @"__gCrHasBeenPassword')]",
+                                   element_id];
+    return ExecuteJavaScript(script);
+  }
+
   base::HistogramTester histogram_tester_;
   std::unique_ptr<TestFormActivityObserver> observer_;
 };
+
+// Tests that a password input element added dynamically is marked as has been
+// password.
+TEST_F(FormActivityTabHelperTest, TestPasswordSymbolSetOnNewElement) {
+  base::test::ScopedFeatureList feature_list(kAutofillTrackPasswordFieldsIos);
+
+  // Load an empty page so main_frame exists.
+  LoadHtml(@"<div />");
+
+  web::WebFramesManager* frames_manager =
+      AutofillJavaScriptFeature::GetInstance()->GetWebFramesManager(
+          web_state());
+  web::WebFrame* main_frame = frames_manager->GetMainWebFrame();
+  ASSERT_TRUE(main_frame);
+
+  FormHandlersJavaScriptFeature::GetInstance()->TrackFormMutations(
+      main_frame, /*mutation_tracking_delay=*/200);
+
+  // Adds a password input in the page to see if the mutation callback
+  // will set the attribute correctly.
+  ExecuteJavaScript(
+      @"document.body.innerHTML = '<input type=\"password\" id=\"pw\"/>';");
+
+  EXPECT_TRUE(WaitUntilConditionOrTimeout(kWaitForJSCompletionTimeout, ^bool {
+    return [GetHasBeenPasswordForElement(@"pw") isEqual:@YES];
+  }));
+}
+
+// Tests that an input is marked as has been password when the type changes to
+// password.
+TEST_F(FormActivityTabHelperTest, TestPasswordSymbolSetOnTypeChange) {
+  base::test::ScopedFeatureList feature_list(kAutofillTrackPasswordFieldsIos);
+
+  LoadHtml(@"<input type='text' id='user'/>"
+            "<input type='email' id='email'/>"
+            "<input type='password' id='pw'/>");
+
+  web::WebFramesManager* frames_manager =
+      AutofillJavaScriptFeature::GetInstance()->GetWebFramesManager(
+          web_state());
+  web::WebFrame* main_frame = frames_manager->GetMainWebFrame();
+  ASSERT_TRUE(main_frame);
+
+  FormHandlersJavaScriptFeature::GetInstance()->TrackFormMutations(
+      main_frame, /*mutation_tracking_delay=*/200);
+
+  // Loading the page should have set the attribute since the input is a
+  // password.
+  EXPECT_TRUE(WaitUntilConditionOrTimeout(kWaitForJSCompletionTimeout, ^bool {
+    return [GetHasBeenPasswordForElement(@"pw") isEqual:@YES];
+  }));
+
+  // Change the type to text to simulate `Show Password`.
+  ExecuteJavaScript(@"document.getElementById('pw').type = 'text';"
+                     "document.getElementById('email').remove();");
+
+  // The input still have the attribute set correctly.
+  EXPECT_TRUE(WaitUntilConditionOrTimeout(kWaitForJSCompletionTimeout, ^bool {
+    return [GetHasBeenPasswordForElement(@"pw") isEqual:@YES];
+  }));
+}
+
+// Tests that a password input is not marked as has been password if the feature
+// is disabled.
+TEST_F(FormActivityTabHelperTest, TestPasswordSymbolFeatureDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(kAutofillTrackPasswordFieldsIos);
+
+  LoadHtml(@"<input type='password' id='pw'/>");
+
+  web::WebFramesManager* frames_manager =
+      AutofillJavaScriptFeature::GetInstance()->GetWebFramesManager(
+          web_state());
+  web::WebFrame* main_frame = frames_manager->GetMainWebFrame();
+  ASSERT_TRUE(main_frame);
+
+  FormHandlersJavaScriptFeature::GetInstance()->TrackFormMutations(
+      main_frame, /*mutation_tracking_delay=*/200);
+
+  // The Has Been Password symbol is not set since the feature is disabled
+  EXPECT_TRUE(WaitUntilConditionOrTimeout(kWaitForJSCompletionTimeout, ^bool {
+    return GetHasBeenPasswordForElement(@"pw") == nil;
+  }));
+}
 
 // Tests that observer is called on form submission using submit control.
 TEST_F(FormActivityTabHelperTest, TestObserverDocumentSubmitted) {
@@ -177,9 +278,11 @@ TEST_F(FormActivityTabHelperTest, TestObserverDocumentSubmitted) {
 
   ExecuteJavaScript(@"document.getElementById('button').click();");
   ASSERT_TRUE(observer_->submit_document_info());
-  EXPECT_EQ(web_state(), observer_->submit_document_info()->web_state);
-  EXPECT_EQ(main_frame, observer_->submit_document_info()->sender_frame);
-  EXPECT_EQ(test_form_data, observer_->submit_document_info()->form_data);
+  EXPECT_EQ(main_frame->GetFrameId(),
+            observer_->submit_document_info()->sender_frame_id);
+  EXPECT_THAT(
+      WithoutUnserializedData(observer_->submit_document_info()->form_data),
+      FormDataEq(WithoutUnserializedData(test_form_data)));
 
   EXPECT_FALSE(observer_->submit_document_info()->has_user_gesture);
 
@@ -236,8 +339,8 @@ TEST_F(FormActivityTabHelperTest,
       base::test::ios::kWaitForJSCompletionTimeout, ^bool {
         return observer_->form_activity_info() != nullptr;
       }));
-  EXPECT_EQ(web_state(), observer_->form_activity_info()->web_state);
-  EXPECT_EQ(main_frame, observer_->form_activity_info()->sender_frame);
+  EXPECT_EQ(main_frame->GetFrameId(),
+            observer_->form_activity_info()->sender_frame_id);
   EXPECT_EQ("form-name",
             observer_->form_activity_info()->form_activity.form_name);
   EXPECT_EQ("text", observer_->form_activity_info()->form_activity.field_type);
@@ -270,7 +373,9 @@ TEST_F(FormActivityTabHelperTest, FocusMainFrame) {
             "<input type='password' name='password' id='id2'>"
             "</form>");
   ASSERT_FALSE(observer_->form_activity_info());
-  ExecuteJavaScript(@"document.getElementById('id1').focus();");
+  ExecuteJavaScript(@"var el = document.getElementById('id1');"
+                    @"el.focus();"
+                    @"el.dispatchEvent(new Event('focus', {bubbles: true}));");
   TestFormActivityObserver* block_observer = observer_.get();
   ASSERT_TRUE(WaitUntilConditionOrTimeout(kWaitForJSCompletionTimeout, ^{
     return block_observer->form_activity_info() != nullptr;
@@ -293,8 +398,10 @@ TEST_F(FormActivityTabHelperTest, FocusSameOriginIFrame) {
        "</form>'");
 
   ExecuteJavaScript(
-      @"document.getElementById('frame1').contentDocument.getElementById('id1')"
-      @".focus()");
+      @"var doc = document.getElementById('frame1').contentDocument;"
+      @"var el = doc.getElementById('id1');"
+      @"el.focus();"
+      @"el.dispatchEvent(new Event('focus', {bubbles: true}));");
   TestFormActivityObserver* block_observer = observer_.get();
   ASSERT_TRUE(WaitUntilConditionOrTimeout(kWaitForJSCompletionTimeout, ^{
     return block_observer->form_activity_info() != nullptr;
@@ -327,8 +434,12 @@ TEST_F(FormActivityTabHelperTest, AddCustomElement) {
 
 // Test fixture verifying the behavior of FormActivityTabHelper when handling
 // form mutation events.
-class FormMutationTest : public FormActivityTabHelperTest {
+class FormMutationTest : public base::test::WithFeatureOverride,
+                         public FormActivityTabHelperTest {
  public:
+  FormMutationTest()
+      : base::test::WithFeatureOverride(
+            features::kAutofillTrackFormMutationsOptimizationIos) {}
   void SetUp() override { FormActivityTabHelperTest::SetUp(); }
 
  protected:
@@ -376,8 +487,7 @@ class FormMutationTest : public FormActivityTabHelperTest {
     web::WebFrame* main_frame = WaitForMainFrame();
     CHECK(main_frame);
 
-    EXPECT_EQ(web_state(), info->web_state);
-    EXPECT_EQ(main_frame, info->sender_frame);
+    EXPECT_EQ(main_frame->GetFrameId(), info->sender_frame_id);
     EXPECT_THAT(info->form_removal_params.frame_id,
                 StrEq(main_frame->GetFrameId()));
 
@@ -406,7 +516,7 @@ class FormMutationTest : public FormActivityTabHelperTest {
 };
 
 // Tests that observer is called on form removal.
-TEST_F(FormMutationTest, PasswordFormRemovalRegistered) {
+TEST_P(FormMutationTest, PasswordFormRemovalRegistered) {
   LoadHtmlForMutationTest(
       @"<form name=\"form1\" id=\"form1\">"
        "<input type=\"text\" name=\"username\" id=\"id1\">"
@@ -424,26 +534,45 @@ TEST_F(FormMutationTest, PasswordFormRemovalRegistered) {
               ElementsAre(FormRendererId(1)));
   EXPECT_THAT(form_removal_params.value().removed_unowned_fields, IsEmpty());
 
-  histogram_tester_.ExpectUniqueSample("Autofill.iOS.FormActivity.DropCount",
-                                       /*sample=*/0,
-                                       /*expected_bucket_count=*/1);
-  histogram_tester_.ExpectUniqueSample("Autofill.iOS.FormActivity.SendCount",
-                                       /*sample=*/1,
-                                       /*expected_bucket_count=*/1);
-  histogram_tester_.ExpectUniqueSample("Autofill.iOS.FormActivity.SendRatio",
-                                       /*sample=*/100,
-                                       /*expected_bucket_count=*/1);
+  if (IsParamFeatureEnabled()) {
+    // Wait for the second event (form_changed) to be received.
+    ASSERT_TRUE(WaitUntilConditionOrTimeout(kWaitForJSCompletionTimeout, ^bool {
+      return observer_->form_activity_info() != nullptr;
+    }));
+    ValidateParamsAfterFormChangedEvent(
+        observer_->form_activity_info()->form_activity);
 
-  // Validate that only one removal event is received.
-  ASSERT_FALSE(WaitUntilConditionOrTimeout(
-      base::Milliseconds(kTrackFormMutationsDelayInMs * 2), ^bool {
-        return observer_->number_of_events_received() > 1;
-      }));
+    histogram_tester_.ExpectUniqueSample("Autofill.iOS.FormActivity.DropCount",
+                                         /*sample=*/0,
+                                         /*expected_bucket_count=*/1);
+    histogram_tester_.ExpectUniqueSample("Autofill.iOS.FormActivity.SendCount",
+                                         /*sample=*/2,
+                                         /*expected_bucket_count=*/1);
+    histogram_tester_.ExpectUniqueSample("Autofill.iOS.FormActivity.SendRatio",
+                                         /*sample=*/100,
+                                         /*expected_bucket_count=*/1);
+  } else {
+    histogram_tester_.ExpectUniqueSample("Autofill.iOS.FormActivity.DropCount",
+                                         /*sample=*/0,
+                                         /*expected_bucket_count=*/1);
+    histogram_tester_.ExpectUniqueSample("Autofill.iOS.FormActivity.SendCount",
+                                         /*sample=*/1,
+                                         /*expected_bucket_count=*/1);
+    histogram_tester_.ExpectUniqueSample("Autofill.iOS.FormActivity.SendRatio",
+                                         /*sample=*/100,
+                                         /*expected_bucket_count=*/1);
+
+    // Validate that only one removal event is received.
+    ASSERT_FALSE(WaitUntilConditionOrTimeout(
+        base::Milliseconds(kTrackFormMutationsDelayInMs * 2), ^bool {
+          return observer_->number_of_events_received() > 1;
+        }));
+  }
 }
 
 // Tests that removing non-password form triggers
 // 'form_removed" event.
-TEST_F(FormMutationTest, RemoveNonPasswordForm) {
+TEST_P(FormMutationTest, RemoveNonPasswordForm) {
   // Load html with one form.
   LoadHtmlForMutationTest(@"<form id='form1'>"
                            "<input type='text'>"
@@ -460,7 +589,7 @@ TEST_F(FormMutationTest, RemoveNonPasswordForm) {
 
 // Tests that removing multiple forms triggers
 // 'form_removed" event.
-TEST_F(FormMutationTest, RemoveMultipleForms) {
+TEST_P(FormMutationTest, RemoveMultipleForms) {
   // Load html with multiple forms.
   LoadHtmlForMutationTest(@"<div id='div'>"
                            "<form id='form1'>"
@@ -491,7 +620,7 @@ TEST_F(FormMutationTest, RemoveMultipleForms) {
 
 // Tests that removing unowned password fields triggers 'password_form_removed"
 // event.
-TEST_F(FormMutationTest, RemoveFormlessPasswordFields) {
+TEST_P(FormMutationTest, RemoveFormlessPasswordFields) {
   LoadHtmlForMutationTest(
       @"<body><div>"
        "<input type=\"password\" name=\"password\" id=\"pw\">"
@@ -529,7 +658,7 @@ TEST_F(FormMutationTest, RemoveFormlessPasswordFields) {
 
 // Tests that removing multiple forms and formless fields triggers
 // 'form_removed" event.
-TEST_F(FormMutationTest, RemoveMultipleFormsAndFormlessFields) {
+TEST_P(FormMutationTest, RemoveMultipleFormsAndFormlessFields) {
   // Load html with multiple forms and formless fields.
   LoadHtmlForMutationTest(@"<div id='div'>"
                            "<form id='form1'>"
@@ -564,7 +693,7 @@ TEST_F(FormMutationTest, RemoveMultipleFormsAndFormlessFields) {
 // Tests that removing a form control element and adding a new one in the same
 // mutations batch is notified with a message for each mutation, sent
 // back-to-back.
-TEST_F(FormMutationTest, RemovedAndAddedFormsRegistered) {
+TEST_P(FormMutationTest, RemovedAndAddedFormsRegistered) {
   // Basic HTML page in which we add a HTML form.
   NSString* const html = @"<html><body><form id=\"form1\">"
                           "<input type=\"password\"></form></body></html>";
@@ -623,7 +752,7 @@ TEST_F(FormMutationTest, RemovedAndAddedFormsRegistered) {
 
 // Tests that messages that were batched and dropped are correctly recorded as
 // such.
-TEST_F(FormMutationTest, RemovedAndAddedFormsRegistered_WithDroppedMessages) {
+TEST_P(FormMutationTest, RemovedAndAddedFormsRegistered_WithDroppedMessages) {
   // Basic HTML page with 2 password forms and one formless password form.
   NSString* const html = @"<html><body><form id=\"form1\">"
                           "<input type=\"password\"></form>"
@@ -662,27 +791,50 @@ TEST_F(FormMutationTest, RemovedAndAddedFormsRegistered_WithDroppedMessages) {
            observer_->form_activity_info() != nullptr;
   }));
 
-  EXPECT_THAT(observer_->form_removal_info()->form_removal_params.removed_forms,
-              ElementsAre(FormRendererId(1)));
-  EXPECT_THAT(observer_->form_removal_info()
-                  ->form_removal_params.removed_unowned_fields,
-              IsEmpty());
-  ValidateParamsAfterFormChangedEvent(
-      observer_->form_activity_info()->form_activity);
+  if (base::FeatureList::IsEnabled(
+          features::kAutofillTrackFormMutationsOptimizationIos)) {
+    EXPECT_THAT(
+        observer_->form_removal_info()->form_removal_params.removed_forms,
+        UnorderedElementsAre(FormRendererId(1), FormRendererId(3)));
+    EXPECT_THAT(observer_->form_removal_info()
+                    ->form_removal_params.removed_unowned_fields,
+                ElementsAre(FieldRendererId(5)));
+    ValidateParamsAfterFormChangedEvent(
+        observer_->form_activity_info()->form_activity);
 
-  histogram_tester_.ExpectUniqueSample("Autofill.iOS.FormActivity.DropCount",
-                                       /*sample=*/4,
-                                       /*expected_bucket_count=*/1);
-  histogram_tester_.ExpectUniqueSample("Autofill.iOS.FormActivity.SendCount",
-                                       /*sample=*/2,
-                                       /*expected_bucket_count=*/1);
-  histogram_tester_.ExpectUniqueSample("Autofill.iOS.FormActivity.SendRatio",
-                                       /*sample=*/33,
-                                       /*expected_bucket_count=*/1);
+    histogram_tester_.ExpectUniqueSample("Autofill.iOS.FormActivity.DropCount",
+                                         /*sample=*/0,
+                                         /*expected_bucket_count=*/1);
+    histogram_tester_.ExpectUniqueSample("Autofill.iOS.FormActivity.SendCount",
+                                         /*sample=*/2,
+                                         /*expected_bucket_count=*/1);
+    histogram_tester_.ExpectUniqueSample("Autofill.iOS.FormActivity.SendRatio",
+                                         /*sample=*/100,
+                                         /*expected_bucket_count=*/1);
+  } else {
+    EXPECT_THAT(
+        observer_->form_removal_info()->form_removal_params.removed_forms,
+        ElementsAre(FormRendererId(1)));
+    EXPECT_THAT(observer_->form_removal_info()
+                    ->form_removal_params.removed_unowned_fields,
+                IsEmpty());
+    ValidateParamsAfterFormChangedEvent(
+        observer_->form_activity_info()->form_activity);
+
+    histogram_tester_.ExpectUniqueSample("Autofill.iOS.FormActivity.DropCount",
+                                         /*sample=*/4,
+                                         /*expected_bucket_count=*/1);
+    histogram_tester_.ExpectUniqueSample("Autofill.iOS.FormActivity.SendCount",
+                                         /*sample=*/2,
+                                         /*expected_bucket_count=*/1);
+    histogram_tester_.ExpectUniqueSample("Autofill.iOS.FormActivity.SendRatio",
+                                         /*sample=*/33,
+                                         /*expected_bucket_count=*/1);
+  }
 }
 
 // Tests that removing input fields triggers the right events.
-TEST_F(FormMutationTest, RemoveFormlessFields) {
+TEST_P(FormMutationTest, RemoveFormlessFields) {
   LoadHtmlForMutationTest(@"<body><div id='div'>"
                            "<input type='password' id='password'/>"
                            "<input type='text' id='text'/>"
@@ -712,21 +864,18 @@ TEST_F(FormMutationTest, RemoveFormlessFields) {
   const FieldRendererId phone_id = FieldRendererId(4);
   const FieldRendererId url_id = FieldRendererId(5);
   const FieldRendererId number_id = FieldRendererId(6);
-  const FieldRendererId checkbox_id = FieldRendererId(7);
-  const FieldRendererId radio_id = FieldRendererId(8);
-  const FieldRendererId select_id = FieldRendererId(9);
-  const FieldRendererId textarea_id = FieldRendererId(10);
+  const FieldRendererId select_id = FieldRendererId(7);
+  const FieldRendererId textarea_id = FieldRendererId(8);
 
   EXPECT_THAT(form_removal_params.value().removed_forms, IsEmpty());
 
   EXPECT_THAT(form_removal_params.value().removed_unowned_fields,
               UnorderedElementsAre(password_id, text_id, email_id, phone_id,
-                                   url_id, number_id, checkbox_id, radio_id,
-                                   select_id, textarea_id));
+                                   url_id, number_id, select_id, textarea_id));
 }
 
 // Tests that a new form triggers form_changed event.
-TEST_F(FormMutationTest, AddForm) {
+TEST_P(FormMutationTest, AddForm) {
   LoadHtmlForMutationTest(@"<body></body>");
 
   web::WebFrame* main_frame = WaitForMainFrame();
@@ -743,6 +892,49 @@ TEST_F(FormMutationTest, AddForm) {
 
   ValidateParamsAfterFormChangedEvent(info->form_activity);
 }
+
+// Tests that mutations happening in separate event loop tasks before the
+// scheduling delay elapses are throttled and recorded as dropped.
+TEST_P(FormMutationTest, OptimizedFormMutations_ThrottledAcrossTicks) {
+  LoadHtmlForMutationTest(@"<body></body>");
+
+  WebFrame* main_frame = WaitForMainFrame();
+  ASSERT_TRUE(main_frame);
+
+  // 1. Trigger the first mutation task.
+  ExecuteJavaScript(@"var form1 = document.createElement('form');"
+                    @"document.body.appendChild(form1);");
+
+  // 2. Trigger the second mutation task immediately, without waiting for
+  // background tasks or timers to settle.
+  ExecuteJavaScript(@"var form2 = document.createElement('form');"
+                    @"document.body.appendChild(form2);");
+
+  // 3. Wait for the native side to receive the single permitted event.
+  TestFormActivityObserver* block_observer = observer_.get();
+  ASSERT_TRUE(WaitUntilConditionOrTimeout(kWaitForJSCompletionTimeout, ^{
+    return block_observer->form_activity_info() != nullptr;
+  }));
+
+  // Allow any other potential scheduled messages to clear.
+  base::test::ios::SpinRunLoopWithMinDelay(
+      base::Milliseconds(kTrackFormMutationsDelayInMs * 2));
+
+  // Confirm only 1 event was received by the observer (the second was dropped).
+  EXPECT_EQ(observer_->number_of_events_received(), 1);
+
+  bool optimization_enabled = base::FeatureList::IsEnabled(
+      autofill::features::kAutofillTrackFormMutationsOptimizationIos);
+  int expected_drop_count = optimization_enabled ? 0 : 1;
+  histogram_tester_.ExpectUniqueSample("Autofill.iOS.FormActivity.DropCount",
+                                       /*sample=*/expected_drop_count,
+                                       /*expected_bucket_count=*/1);
+  histogram_tester_.ExpectUniqueSample("Autofill.iOS.FormActivity.SendCount",
+                                       /*sample=*/1,
+                                       /*expected_bucket_count=*/1);
+}
+
+INSTANTIATE_FEATURE_OVERRIDE_TEST_SUITE(FormMutationTest);
 
 // Test fixture verifying the behavior of FormActivityTabHelper when handling
 // mutations involving form control elements.
@@ -817,19 +1009,19 @@ INSTANTIATE_TEST_SUITE_P(
 // in the isolated world enabled.
 // TODO(crbug.com/359538514): Remove this fixture and move test back to
 // FormActivityTabHelperTest once isolated world for Autofill is launched.
-class FormSubmittedHookTest : public WithFeatureOverride,
-                              public FormActivityTabHelperTest {
+class FormSubmittedHookTest : public FormActivityTabHelperTest {
  public:
-  FormSubmittedHookTest()
-      : WithFeatureOverride(kAutofillIsolatedWorldForJavascriptIos),
-        FormActivityTabHelperTest() {
+  FormSubmittedHookTest() : FormActivityTabHelperTest() {
     web::FakeWebClient* web_client =
         static_cast<web::FakeWebClient*>(GetWebClient());
+
+    renderer_id_feature_ = test::CreateRendererIdTestJavaScriptFeature();
+
     web_client->SetJavaScriptFeatures({
-        FormUtilJavaScriptFeature::GetInstance(),
-        feature_container_.form_handlers_java_script_feature(),
-        feature_container_.autofill_java_script_feature(),
+        FormHandlersJavaScriptFeature::GetInstance(),
+        AutofillJavaScriptFeature::GetInstance(),
         ProgrammaticFormSubmissionHandlerJavaScriptFeature::GetInstance(),
+        renderer_id_feature_.get(),
     });
   }
 
@@ -842,7 +1034,7 @@ class FormSubmittedHookTest : public WithFeatureOverride,
       return false;
     }
     __block bool finished = false;
-    feature_container_.autofill_java_script_feature()->FetchForms(
+    AutofillJavaScriptFeature::GetInstance()->FetchForms(
         main_frame, base::BindOnce(^(NSString* result) {
           finished = true;
         }));
@@ -852,32 +1044,27 @@ class FormSubmittedHookTest : public WithFeatureOverride,
     });
   }
 
-  //  Test instances of JavaScriptFeature's that are injected in a different
-  //  content world depending on kAutofillIsolatedWorldForJavascriptIos.
-  //  TODO(crbug.com/359538514): Remove this variable and use
-  //  the statically stored instances once Autofill in the isolated
-  //  world is launched.
-  TestAutofillJavaScriptFeatureContainer feature_container_;
+ private:
+  std::unique_ptr<web::JavaScriptFeature> renderer_id_feature_;
 };
 
 // Validate that programmatic form submissions are detected and sent to
 // observers of the tab helper.
-TEST_P(FormSubmittedHookTest, TestFormSubmittedHook) {
+TEST_F(FormSubmittedHookTest, TestFormSubmittedHook) {
   LoadHtml(kTestHTMLForm);
 
   WebFrame* main_frame = WaitForMainFrame();
   ASSERT_TRUE(main_frame);
 
-  AutofillFormFeaturesJavaScriptFeature::GetInstance()
-      ->SetAutofillIsolatedContentWorld(main_frame, IsParamFeatureEnabled());
-
   web::test::ExecuteJavaScriptForFeature(
       web_state(),
       @"var form = document.forms[0];"
-       "__gCrWeb.fill.setUniqueIDIfNeeded(form);"
+       "__gCrWeb.getRegisteredApi('renderer_id_test').getFunction('"
+       "setUniqueIDIfNeeded')(form);"
        "var input = document.getElementById('text');"
-       "__gCrWeb.fill.setUniqueIDIfNeeded(input);",
-      feature_container_.autofill_java_script_feature());
+       "__gCrWeb.getRegisteredApi('renderer_id_test').getFunction('"
+       "setUniqueIDIfNeeded')(input);",
+      AutofillJavaScriptFeature::GetInstance());
 
   ASSERT_FALSE(observer_->submit_document_info());
 
@@ -887,12 +1074,14 @@ TEST_P(FormSubmittedHookTest, TestFormSubmittedHook) {
       web_state(), @"document.forms[0].submit();",
       ProgrammaticFormSubmissionHandlerJavaScriptFeature::GetInstance());
 
-  FormData kTestFormData = BuildTestFormData(main_frame->GetFrameId());
+  FormData test_form_data = BuildTestFormData(main_frame->GetFrameId());
 
   ASSERT_TRUE(observer_->submit_document_info());
-  EXPECT_EQ(web_state(), observer_->submit_document_info()->web_state);
-  EXPECT_EQ(main_frame, observer_->submit_document_info()->sender_frame);
-  EXPECT_EQ(kTestFormData, observer_->submit_document_info()->form_data);
+  EXPECT_EQ(main_frame->GetFrameId(),
+            observer_->submit_document_info()->sender_frame_id);
+  EXPECT_THAT(
+      WithoutUnserializedData(observer_->submit_document_info()->form_data),
+      FormDataEq(WithoutUnserializedData(test_form_data)));
   EXPECT_FALSE(observer_->submit_document_info()->has_user_gesture);
 
   histogram_tester_.ExpectUniqueSample(kProgrammaticFormSubmissionHistogram,
@@ -907,26 +1096,15 @@ TEST_P(FormSubmittedHookTest, TestFormSubmittedHook) {
 
 // Validate that programmatic form submissions are detected and sent to
 // observers of the tab helper.
-TEST_P(FormSubmittedHookTest, TestFormSubmittedHookAcrossIframes) {
-  base::test::ScopedFeatureList feature(features::kAutofillAcrossIframesIos);
+TEST_F(FormSubmittedHookTest, TestFormSubmittedHookAcrossIframes) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      autofill::features::kAutofillAcrossIframesIos);
 
   LoadHtml(kTestHTMLFormWithIframes);
 
   WebFrame* main_frame = WaitForMainFrame();
   ASSERT_TRUE(main_frame);
-
-  // Set feature flags in both worlds.
-  AutofillFormFeaturesJavaScriptFeature::GetInstance()
-      ->SetAutofillIsolatedContentWorld(main_frame, IsParamFeatureEnabled());
-  AutofillFormFeaturesJavaScriptFeature::GetInstance()
-      ->SetAutofillAcrossIframes(main_frame, true);
-  AutofillFormFeaturesJavaScriptFeature::GetInstance()
-      ->SetAutofillIsolatedContentWorld(
-          WaitForMainFrame(web::ContentWorld::kPageContentWorld),
-          IsParamFeatureEnabled());
-  AutofillFormFeaturesJavaScriptFeature::GetInstance()
-      ->SetAutofillAcrossIframes(
-          WaitForMainFrame(web::ContentWorld::kPageContentWorld), true);
 
   // Trigger form extraction so child frame tokens are set in the isolated
   // world. Page scripts will be able to access the tokens through the fallback
@@ -950,5 +1128,4 @@ TEST_P(FormSubmittedHookTest, TestFormSubmittedHookAcrossIframes) {
                          VariantWith<RemoteFrameToken>(IsTrue()))));
 }
 
-INSTANTIATE_FEATURE_OVERRIDE_TEST_SUITE(FormSubmittedHookTest);
 }  // namespace autofill

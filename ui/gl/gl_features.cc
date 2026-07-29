@@ -4,32 +4,40 @@
 
 #include "ui/gl/gl_features.h"
 
+#include "base/byte_size.h"
 #include "base/command_line.h"
 #include "base/feature_list.h"
 #include "base/strings/string_split.h"
-#include "base/win/windows_version.h"
+#include "base/system/sys_info.h"
 #include "build/build_config.h"
 #include "ui/gl/gl_switches.h"
+
+#if BUILDFLAG(IS_WIN)
+#include "base/win/windows_version.h"
+#endif
 
 #if BUILDFLAG(IS_MAC)
 #include "base/mac/mac_util.h"
 #endif
 
 #if BUILDFLAG(IS_ANDROID)
-#include "base/android/build_info.h"
+#include "base/android/android_info.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/strings/pattern.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
-#include "third_party/angle/src/gpu_info_util/SystemInfo.h"  // nogncheck
 #include "ui/gfx/android/achoreographer_compat.h"
 #include "ui/gfx/android/android_surface_control_compat.h"
+#endif
+
+#if BUILDFLAG(IS_CHROMEOS)
+#include "ash/constants/ash_switches.h"
 #endif
 
 namespace features {
 namespace {
 
-#if BUILDFLAG(IS_ANDROID) && BUILDFLAG(ENABLE_VALIDATING_COMMAND_DECODER)
+#if BUILDFLAG(IS_ANDROID)
 const base::FeatureParam<std::string>
     kPassthroughCommandDecoderBlockListByBrand{
         &kDefaultPassthroughCommandDecoder, "BlockListByBrand", ""};
@@ -46,9 +54,11 @@ const base::FeatureParam<std::string>
     kPassthroughCommandDecoderBlockListByManufacturer{
         &kDefaultPassthroughCommandDecoder, "BlockListByManufacturer", ""};
 
+// b/455412928 flickering issue with WebView on the following XR devices
 const base::FeatureParam<std::string>
     kPassthroughCommandDecoderBlockListByModel{
-        &kDefaultPassthroughCommandDecoder, "BlockListByModel", ""};
+        &kDefaultPassthroughCommandDecoder, "BlockListByModel",
+        "SM-I610|SM-I610H|Robin XR|Android XR Puck|Aura"};
 
 const base::FeatureParam<std::string>
     kPassthroughCommandDecoderBlockListByBoard{
@@ -58,11 +68,7 @@ const base::FeatureParam<std::string>
     kPassthroughCommandDecoderBlockListByAndroidBuildFP{
         &kDefaultPassthroughCommandDecoder, "BlockListByAndroidBuildFP", ""};
 
-const base::FeatureParam<std::string>
-    kPassthroughCommandDecoderBlockListByGPUVendorId{
-        &kDefaultPassthroughCommandDecoder, "BlockListByGPUVendorId", ""};
-
-bool IsDeviceBlocked(const char* field, const std::string& block_list) {
+bool IsDeviceBlocked(const std::string& field, const std::string& block_list) {
   auto disable_patterns = base::SplitString(
       block_list, "|", base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL);
   for (const auto& disable_pattern : disable_patterns) {
@@ -71,28 +77,9 @@ bool IsDeviceBlocked(const char* field, const std::string& block_list) {
   }
   return false;
 }
-bool IsDeviceBlocked(angle::VendorID vendor_id, const std::string& block_list) {
-  auto disable_vendors = base::SplitString(
-      block_list, "|", base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL);
-  for (const auto& disable_vendor_str : disable_vendors) {
-    angle::VendorID disable_vendor = 0;
-    if (!base::StringToUint(disable_vendor_str, &disable_vendor)) {
-      DCHECK(false) << "BlockListByGPUVendorId vendor \"" << disable_vendor_str
-                    << "\" failed to parse as a VendorID.";
-      return false;
-    }
-
-    if (vendor_id == disable_vendor) {
-      return true;
-    }
-  }
-  return false;
-}
 #endif
 
-BASE_FEATURE(kForceANGLEFeatures,
-             "ForceANGLEFeatures",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kForceANGLEFeatures, base::FEATURE_DISABLED_BY_DEFAULT);
 
 const base::FeatureParam<std::string> kForcedANGLEEnabledFeaturesFP{
     &kForceANGLEFeatures, "EnabledFeatures", ""};
@@ -110,9 +97,9 @@ void SplitAndAppendANGLEFeatureList(const std::string& list,
 }  // namespace
 
 #if BUILDFLAG(IS_APPLE)
-BASE_FEATURE(kGpuVsync, "GpuVsync", base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kGpuVsync, base::FEATURE_DISABLED_BY_DEFAULT);
 #else
-BASE_FEATURE(kGpuVsync, "GpuVsync", base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kGpuVsync, base::FEATURE_ENABLED_BY_DEFAULT);
 #endif
 
 #if BUILDFLAG(ENABLE_VALIDATING_COMMAND_DECODER)
@@ -121,52 +108,20 @@ BASE_FEATURE(kGpuVsync, "GpuVsync", base::FEATURE_ENABLED_BY_DEFAULT);
 // Feature lives in ui/gl because it affects the GL binding initialization on
 // platforms that would otherwise not default to using EGL bindings.
 BASE_FEATURE(kDefaultPassthroughCommandDecoder,
-             "DefaultPassthroughCommandDecoder",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
+#endif  // BUILDFLAG(ENABLE_VALIDATING_COMMAND_DECODER)
 
-// Add a small delay in shader compiling if validating command decoder is used.
-// This is to verify if passthrough command decoder impacting negatively top
-// level metrics could be due to slower shader compiling.
-BASE_FEATURE(kAddDelayToGLCompileShader,
-             "AddDelayToGLCompileShader",
-             base::FEATURE_DISABLED_BY_DEFAULT);
-// Histogram |GrCompileShaderUs| mean is 1.8ms (native) vs 3.1ms (ANGLE).
-// Therefore, we add a 1.3ms delay to shader compiling.
-constexpr base::FeatureParam<base::TimeDelta> kGLCompileShaderDelay = {
-    &kAddDelayToGLCompileShader, /*name=*/"interval",
-    /*default_value=*/base::Microseconds(1300)};
-#endif  // !defined(PASSTHROUGH_COMMAND_DECODER_LAUNCHED)
-
-#if BUILDFLAG(IS_MAC)
-// If true, metal shader programs are written to disk.
-//
-// As the gpu process writes to disk when this is set, you must also disable
-// the sandbox.
-//
-// The path the shaders are written to is controlled via the command line switch
-// --shader-cache-path (default is /tmp/shaders).
-BASE_FEATURE(kWriteMetalShaderCacheToDisk,
-             "WriteMetalShaderCacheToDisk",
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-// If true, the metal shader cache is read from a file and put into BlobCache
-// during startup.
-BASE_FEATURE(kUseBuiltInMetalShaderCache,
-             "UseBuiltInMetalShaderCache",
-             base::FEATURE_DISABLED_BY_DEFAULT);
-#endif
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS)
+// Controls whether the GPU process falls back to software if GLES3 is not
+// supported.
+BASE_FEATURE(kFallbackToSWIfGLES3NotSupported,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(IS_WIN)
-// If true, VSyncThreadWin will use the primary monitor's
-// refresh rate as the vsync interval.
-BASE_FEATURE(kUsePrimaryMonitorVSyncIntervalOnSV3,
-             "UsePrimaryMonitorVSyncIntervalOnSV3",
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
 // If true, VsyncThreadWin will use the compositor clock
 // to determine the vsync interval.
 BASE_FEATURE(kUseCompositorClockVSyncInterval,
-             "UseCompositorClockVSyncInterval",
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 bool UseCompositorClockVSyncInterval() {
@@ -174,6 +129,35 @@ bool UseCompositorClockVSyncInterval() {
          base::FeatureList::IsEnabled(
              features::kUseCompositorClockVSyncInterval);
 }
+
+// Enables DirectComposition textures backed by D3D12 resources.
+// When this feature is enabled, the GPU pipeline may create and present DComp-
+// backed surfaces using the D3D12 path and leverage Dawn’s D3D12 device. This
+// allows unified resource sharing and fences between Dawn (WebGPU), Skia
+// Graphite, and DComp when the system supports D3D12.
+//
+// Important notes:
+// - Keyed-mutex resources are not compatible with the D3D12 unwrap path and
+//   will continue using D3D11.
+// - WebGL will continue to use the D3D11 runtime backed by D3D11 drivers with
+//   ANGLE's D3D11 device.
+// - Certain SharedImage functionality such as copies to staging
+//   textures rely on the D3D11 DDI. These code paths will use
+//   D3D11on12 when this feature is enabled.
+//
+// This feature requires SkiaGraphite with a dawn-d3d12 backend, BufferQueue to
+// be enabled, and either DelegatedCompositing to be disabled or in full
+// mode. As there is currently no support for D3D12 swapchains or DComp
+// surfaces, BufferQueue is required to manage presentation. BufferQueue is not
+// supported on Windows with partial delegated compositing, so in that mode this
+// feature will not work.
+//
+// Example command line to enable this feature:
+// --enable-features=SkiaGraphite,BufferQueue,DCompOnD3D12 AND
+// --disable-features=DelegatedCompositing or
+// --enable-features=DelegatedCompositing:mode/full AND
+// --skia-graphite-backend=dawn-d3d12
+BASE_FEATURE(kDCompOnD3D12, base::FEATURE_DISABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_WIN)
 
 bool UseGpuVsync() {
@@ -184,11 +168,11 @@ bool UseGpuVsync() {
 
 bool IsAndroidFrameDeadlineEnabled() {
 #if BUILDFLAG(IS_ANDROID)
-  static bool enabled =
-      base::android::BuildInfo::GetInstance()->is_at_least_t() &&
-      gfx::AChoreographerCompat33::Get().supported &&
-      gfx::SurfaceControl::SupportsSetFrameTimeline() &&
-      gfx::SurfaceControl::SupportsSetEnableBackPressure();
+  static bool enabled = base::android::android_info::sdk_int() >=
+                            base::android::android_info::SDK_VERSION_T &&
+                        gfx::AChoreographerCompat33::Get().supported &&
+                        gfx::SurfaceControl::SupportsSetFrameTimeline() &&
+                        gfx::SurfaceControl::SupportsSetEnableBackPressure();
   return enabled;
 #else
   return false;
@@ -205,52 +189,35 @@ bool UsePassthroughCommandDecoder() {
 
 #if BUILDFLAG(IS_ANDROID)
   // Check block list against build info.
-  const auto* build_info = base::android::BuildInfo::GetInstance();
-  if (IsDeviceBlocked(build_info->brand(),
-                      kPassthroughCommandDecoderBlockListByBrand.Get()))
+  if (IsDeviceBlocked(base::android::android_info::brand(),
+                      kPassthroughCommandDecoderBlockListByBrand.Get())) {
     return false;
-  if (IsDeviceBlocked(build_info->device(),
-                      kPassthroughCommandDecoderBlockListByDevice.Get()))
-    return false;
-  if (IsDeviceBlocked(
-          build_info->android_build_id(),
-          kPassthroughCommandDecoderBlockListByAndroidBuildId.Get()))
-    return false;
-  if (IsDeviceBlocked(build_info->manufacturer(),
-                      kPassthroughCommandDecoderBlockListByManufacturer.Get()))
-    return false;
-  if (IsDeviceBlocked(build_info->model(),
-                      kPassthroughCommandDecoderBlockListByModel.Get()))
-    return false;
-  if (IsDeviceBlocked(build_info->board(),
-                      kPassthroughCommandDecoderBlockListByBoard.Get()))
-    return false;
-  if (IsDeviceBlocked(
-          build_info->android_build_fp(),
-          kPassthroughCommandDecoderBlockListByAndroidBuildFP.Get()))
-    return false;
-
-  // Only check system info once and cache if the vendor is blocked.
-  static std::optional<bool> gpu_vendor_blocked;
-  if (!gpu_vendor_blocked.has_value()) {
-    angle::SystemInfo angle_system_info;
-    if (angle::GetSystemInfo(&angle_system_info) &&
-        !angle_system_info.gpus.empty()) {
-      angle::VendorID gpu_vendor_id =
-          angle_system_info.gpus[angle_system_info.activeGPUIndex].vendorId;
-      gpu_vendor_blocked = IsDeviceBlocked(
-          gpu_vendor_id,
-          kPassthroughCommandDecoderBlockListByGPUVendorId.Get());
-    } else {
-      // If system info collection fails, do not blocklist this device by GPU
-      // vendor ID. Instead rely on individual device model or device ID
-      // blocking.
-      gpu_vendor_blocked = false;
-    }
   }
-
-  DCHECK(gpu_vendor_blocked.has_value());
-  if (gpu_vendor_blocked.value()) {
+  if (IsDeviceBlocked(base::android::android_info::device(),
+                      kPassthroughCommandDecoderBlockListByDevice.Get())) {
+    return false;
+  }
+  if (IsDeviceBlocked(
+          base::android::android_info::android_build_id(),
+          kPassthroughCommandDecoderBlockListByAndroidBuildId.Get())) {
+    return false;
+  }
+  if (IsDeviceBlocked(
+          base::android::android_info::manufacturer(),
+          kPassthroughCommandDecoderBlockListByManufacturer.Get())) {
+    return false;
+  }
+  if (IsDeviceBlocked(base::android::android_info::model(),
+                      kPassthroughCommandDecoderBlockListByModel.Get())) {
+    return false;
+  }
+  if (IsDeviceBlocked(base::android::android_info::board(),
+                      kPassthroughCommandDecoderBlockListByBoard.Get())) {
+    return false;
+  }
+  if (IsDeviceBlocked(
+          base::android::android_info::android_build_fp(),
+          kPassthroughCommandDecoderBlockListByAndroidBuildFP.Get())) {
     return false;
   }
 #endif  // BUILDFLAG(IS_ANDROID)
@@ -265,15 +232,21 @@ bool IsANGLEValidationEnabled() {
 }
 #else
 // Enables the use of ANGLE validation for EGL and GL (non-WebGL) contexts.
-BASE_FEATURE(kDefaultEnableANGLEValidation,
-             "DefaultEnableANGLEValidation",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kDefaultEnableANGLEValidation, base::FEATURE_DISABLED_BY_DEFAULT);
 
 bool IsANGLEValidationEnabled() {
   return base::FeatureList::IsEnabled(kDefaultEnableANGLEValidation) &&
          UsePassthroughCommandDecoder();
 }
 #endif
+
+// Killswitch feature for allowing ANGLE to pass untranslated shaders to the
+// driver.
+BASE_FEATURE(kAllowANGLEPassthroughShaders, base::FEATURE_ENABLED_BY_DEFAULT);
+
+bool IsANGLEPassthroughShadersAllowed() {
+  return base::FeatureList::IsEnabled(kAllowANGLEPassthroughShaders);
+}
 
 void GetANGLEFeaturesFromCommandLineAndFinch(
     const base::CommandLine* command_line,
@@ -292,20 +265,29 @@ void GetANGLEFeaturesFromCommandLineAndFinch(
     SplitAndAppendANGLEFeatureList(kForcedANGLEDisabledFeaturesFP.Get(),
                                    disabled_angle_features);
   }
+}
 
-#if BUILDFLAG(IS_MAC)
-  if (base::FeatureList::IsEnabled(features::kWriteMetalShaderCacheToDisk)) {
-    disabled_angle_features.push_back("enableParallelMtlLibraryCompilation");
-    enabled_angle_features.push_back("compileMetalShaders");
-    enabled_angle_features.push_back("disableProgramCaching");
-  }
-  if (base::FeatureList::IsEnabled(features::kUseBuiltInMetalShaderCache)) {
-    enabled_angle_features.push_back("loadMetalShadersFromBlobCache");
-  }
-#endif
+bool ShouldFallbackToSWIfGLES3NotSupported() {
+#if BUILDFLAG(IS_CHROMEOS)
+  static bool is_enabled =
+      !base::CommandLine::ForCurrentProcess()->HasSwitch(
+          ash::switches::kRevenBranding) &&
+      base::FeatureList::IsEnabled(kFallbackToSWIfGLES3NotSupported);
+  return is_enabled;
+#elif BUILDFLAG(IS_WIN)
+  return base::FeatureList::IsEnabled(kFallbackToSWIfGLES3NotSupported);
+#else   // BUILDFLAG(IS_CHROMEOS)
+  return true;
+#endif  // BUILDFLAG(IS_CHROMEOS)
 }
 
 #if BUILDFLAG(ENABLE_SWIFTSHADER)
+#if BUILDFLAG(IS_FUCHSIA)
+// SwiftShader is always used on Fuchsia, sometimes at the system level.
+bool IsSwiftShaderAllowedByCommandLine(const base::CommandLine* command_line) {
+  return true;
+}
+#else
 bool IsSwiftShaderAllowedByCommandLine(const base::CommandLine* command_line) {
   // If the switch to opt-into unsafe SwiftShader is present, always allow
   // SwiftShader.
@@ -315,7 +297,8 @@ bool IsSwiftShaderAllowedByCommandLine(const base::CommandLine* command_line) {
 
   std::string angle_name =
       command_line->GetSwitchValueASCII(switches::kUseANGLE);
-  if (angle_name == gl::kANGLEImplementationSwiftShaderName) {
+  if (angle_name == gl::kANGLEImplementationSwiftShaderName ||
+      angle_name == gl::kANGLEImplementationSwiftShaderForWebGLName) {
     // If SwiftShader is specifically requested with the --use-angle command
     // line flag, allow it.
     return true;
@@ -324,11 +307,20 @@ bool IsSwiftShaderAllowedByCommandLine(const base::CommandLine* command_line) {
   return false;
 }
 
+bool IsSwiftShaderUsedForWebGLByCommandLine(
+    const base::CommandLine* command_line) {
+  std::string use_gl = command_line->GetSwitchValueASCII(switches::kUseGL);
+  if (!use_gl.empty() && use_gl != gl::kGLImplementationANGLEName) {
+    return false;
+  }
+  return command_line->GetSwitchValueASCII(switches::kUseANGLE) ==
+         gl::kANGLEImplementationSwiftShaderForWebGLName;
+}
+#endif
+
 // Allow fallback to SwfitShader without command line flags during the
 // deprecation period.
-BASE_FEATURE(kAllowSwiftShaderFallback,
-             "AllowSwiftShaderFallback",
-             base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kAllowSwiftShaderFallback, base::FEATURE_DISABLED_BY_DEFAULT);
 
 bool IsSwiftShaderAllowedByFeature() {
   return base::FeatureList::IsEnabled(kAllowSwiftShaderFallback);
@@ -341,6 +333,10 @@ bool IsSwiftShaderAllowedByCommandLine(const base::CommandLine*) {
 bool IsSwiftShaderAllowedByFeature() {
   return false;
 }
+
+bool IsSwiftShaderUsedForWebGLByCommandLine(const base::CommandLine*) {
+  return false;
+}
 #endif
 
 bool IsSwiftShaderAllowed(const base::CommandLine* command_line) {
@@ -348,17 +344,47 @@ bool IsSwiftShaderAllowed(const base::CommandLine* command_line) {
          IsSwiftShaderAllowedByFeature();
 }
 
-base::TimeDelta GetGLCompileShaderDelay() {
-#if BUILDFLAG(ENABLE_VALIDATING_COMMAND_DECODER)
-  if (UsePassthroughCommandDecoder()) {
-    return base::TimeDelta();
+#if BUILDFLAG(IS_WIN)
+BASE_FEATURE(kAllowD3D11WarpFallback, base::FEATURE_ENABLED_BY_DEFAULT);
+
+bool IsWARPAllowed(const base::CommandLine* command_line) {
+  if (command_line->HasSwitch(switches::kDisableD3D11Warp)) {
+    return false;
   }
-  if (!base::FeatureList::IsEnabled(kAddDelayToGLCompileShader)) {
-    return base::TimeDelta();
-  }
-  return kGLCompileShaderDelay.Get();
-#else
-  return base::TimeDelta();
-#endif  // BUILDFLAG(ENABLE_VALIDATING_COMMAND_DECODER)
+  return base::FeatureList::IsEnabled(kAllowD3D11WarpFallback);
 }
+#else
+bool IsWARPAllowed(const base::CommandLine*) {
+  return false;
+}
+#endif
+
+bool IsAnySoftwareGLAllowed(const base::CommandLine* command_line) {
+  return IsWARPAllowed(command_line) || IsSwiftShaderAllowed(command_line);
+}
+
+BASE_FEATURE(kAllowSoftwareGLFallbackDueToCrashes,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+bool IsSoftwareGLFallbackDueToCrashesAllowed(
+    const base::CommandLine* command_line) {
+  if (!IsAnySoftwareGLAllowed(command_line)) {
+    return false;
+  }
+
+  return base::FeatureList::IsEnabled(kAllowSoftwareGLFallbackDueToCrashes);
+}
+
+#if BUILDFLAG(IS_ANDROID)
+BASE_FEATURE(kAndroidLimitRgb565DisplayToApi32,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+bool PreferRGB565ResourcesForDisplay() {
+  return base::SysInfo::AmountOfTotalPhysicalMemory().InMiB() <= 512 &&
+         (base::android::android_info::sdk_int() <=
+              base::android::android_info::SDK_VERSION_Sv2 ||
+          !base::FeatureList::IsEnabled(kAndroidLimitRgb565DisplayToApi32));
+}
+#endif
+
 }  // namespace features

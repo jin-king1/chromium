@@ -7,99 +7,79 @@
 
 #include "base/auto_reset.h"
 #include "base/callback_list.h"
-#include "base/functional/callback_forward.h"
+#include "base/functional/callback.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/observer_list_types.h"
 #include "base/time/time.h"
+#include "chrome/browser/ui/views/profiles/avatar_toolbar_button_state_manager.h"
+#include "chrome/browser/ui/views/profiles/avatar_toolbar_button_types.h"
+#include "chrome/browser/ui/views/toolbar/avatar_toolbar_button_interface.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_button.h"
 #include "components/signin/public/base/signin_buildflags.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/events/event.h"
 
-class AvatarToolbarButtonDelegate;
-class Browser;
 class BrowserView;
 struct AccountInfo;
-class GaiaId;
-
-// Enum used for testing. It allows overriding different delay values based on
-// their usage in the `AvatarToolbarButton` through helper testing functions.
-enum class AvatarDelayType {
-  // Delay for the name to stop showing.
-  kNameGreeting,
-  // Delay for the SigninPending mode to show the "Verify it's you" text.
-  kSigninPendingText,
-};
+class StateProvider;
+class AvatarToolbarButtonTestAccessor;
 
 // This class takes care the Profile Avatar Button.
 // Primarily applies UI configuration.
 // It's data (text, icon, etc...) content are computed through the
-// `AvatarToolbarButtonDelegate`, when relying on Chrome and Profile changes in
-// order to adapt the expected content shown in the button.
-class AvatarToolbarButton : public ToolbarButton {
+// `AvatarToolbarButtonStateManager`, when relying on Chrome and Profile changes
+// in order to adapt the expected content shown in the button.
+class AvatarToolbarButton : public ToolbarButton,
+                            public AvatarToolbarButtonInterface {
   METADATA_HEADER(AvatarToolbarButton, ToolbarButton)
-
  public:
-  class Observer : public base::CheckedObserver {
-   public:
-    virtual void OnMouseExited() {}
-    virtual void OnBlur() {}
-    virtual void OnIPHPromoChanged(bool has_promo) {}
-    virtual void OnIconUpdated() {}
-
-    ~Observer() override = default;
-  };
+  using Observer = AvatarToolbarButtonInterface::Observer;
 
   explicit AvatarToolbarButton(BrowserView* browser);
   AvatarToolbarButton(const AvatarToolbarButton&) = delete;
   AvatarToolbarButton& operator=(const AvatarToolbarButton&) = delete;
   ~AvatarToolbarButton() override;
 
-  void UpdateText();
-
-  // Expands the pill to show the intercept text.
-  // Returns a callback to be used when the shown text should be hidden.
-  [[nodiscard]] base::ScopedClosureRunner ShowExplicitText(
-      const std::u16string& text,
-      std::optional<std::u16string> accessibility_label);
-
-  // Changes the button pressed action.
-  // Returns a callback to be used when the new action should stop being used.
-  [[nodiscard]] base::ScopedClosureRunner SetExplicitButtonAction(
-      base::RepeatingClosure explicit_closure);
-
-  // Returns whether the button currently has a explicit action already set.
-  bool HasExplicitButtonAction() const;
-
-  // Control whether the button action is active or not.
-  // One reason to disable the action; when a bubble is shown from this button
-  // (and not the profile menu), we want to disable the button action, however
-  // the button should remain in an "active" state from a UI perspective.
-  void SetButtonActionDisabled(bool disabled);
-  bool IsButtonActionDisabled() const;
-
-  // Attempts showing the In-Produce-Help for profile Switching.
-  void MaybeShowProfileSwitchIPH();
-
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
-  // Attempts showing the In-Produce-Help when a supervised user signs-in in a
-  // profile.
-  void MaybeShowSupervisedUserSignInIPH();
-#endif
-
   // Attempts showing the In-Product-Help in a subsequent web sign-in when the
   // explicit browser sign-in preference was remembered.
   void MaybeShowExplicitBrowserSigninPreferenceRememberedIPH(
       const AccountInfo& account_info);
 
-  // Attempts showing the In-Produce-Help for web sign out.
-  void MaybeShowWebSignoutIPH(const GaiaId& gaia_id);
-
   // Returns true if a text is set and is visible.
   bool IsLabelPresentAndVisible() const;
+
+  // AvatarToolbarButtonInterface:
+  bool IsMouseHovered() const override;
+  bool HasFocus() const override;
+  views::DialogDelegate* GetDialogDelegate() override;
+  void ButtonPressed(bool is_source_accelerator) override;
+  [[nodiscard]] base::ScopedClosureRunner SetExplicitButtonState(
+      const std::u16string& text,
+      std::optional<std::u16string> accessibility_label,
+      std::optional<base::RepeatingCallback<void(bool is_source_accelerator)>>
+          explicit_action,
+      bool should_announce) override;
+  bool HasExplicitButtonState() const override;
+  void AddObserver(Observer* observer) override;
+  void RemoveObserver(Observer* observer) override;
+  // void UpdateIcon() also overrides ToolbarButton
+  void UpdateText() override;
+  void SetAnnounceCallbackForTesting(
+      base::OnceCallback<void(std::u16string)> callback) override;
+  void MaybeShowProfileSwitchIPH() override;
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+  void MaybeShowSupervisedUserSignInIPH() override;
+  void MaybeShowSignInBenefitsIPH() override;
+#endif
+  void ClearActiveStateForTesting() override;
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+  void ForceShowingPromoForTesting() override;
+  bool GetStateAndFireSignedOutTriggerDelayTimerForTesting() override;
+#endif
 
   // ToolbarButton:
   void OnMouseExited(const ui::MouseEvent& event) override;
@@ -107,51 +87,27 @@ class AvatarToolbarButton : public ToolbarButton {
   void OnThemeChanged() override;
   void UpdateIcon() override;
   void Layout(PassKey) override;
-  int GetIconSize() const override;
   SkColor GetForegroundColor(ButtonState state) const override;
   std::optional<SkColor> GetHighlightTextColor() const override;
   std::optional<SkColor> GetHighlightBorderColor() const override;
   bool ShouldPaintBorder() const override;
   bool ShouldBlendHighlightColor() const override;
   void AddedToWidget() override;
-
-  void ButtonPressed(bool is_source_accelerator = false);
-
-  // Methods to register or remove observers.
-  void AddObserver(Observer* observer);
-  void RemoveObserver(Observer* observer);
-
-  // Can be used in tests to reduce or remove the delay before showing the IPH.
-  [[nodiscard]] static base::AutoReset<base::TimeDelta>
-  SetScopedIPHMinDelayAfterCreationForTesting(base::TimeDelta delay);
-
-  // These helper functions allow tests to be time independent; tests that are
-  // time dependent tend to create a lot of flakiness.
-  //
-  // This function allows to set an infinite delay for time dependent parts. By
-  // default tests should have this function called for all types, and then
-  // calling `TriggerTimeoutForTesting()` when needing to force trigger the
-  // ending of the delay. This allows to properly test the behavior before and
-  // after delay expiry while controlling those events..
-  [[nodiscard]] static base::AutoReset<std::optional<base::TimeDelta>>
-  CreateScopedInfiniteDelayOverrideForTesting(AvatarDelayType delay_type);
-  // Force stop any ongoing delay, this expects the proper state to be active.
-  void TriggerTimeoutForTesting(AvatarDelayType delay_type);
-  // Specific override for the SigninPending text delay. Setting a zero value
-  // make it possible to test the creation of browser after the delay has
-  // reached.
-  // The delay start time is shared in a ProfileUserData which makes it harder
-  // to access in case no browser are visible anymore, making the
-  // `TriggerTimeoutForTesting()` not enough for testing.
-  [[nodiscard]] static base::AutoReset<std::optional<base::TimeDelta>>
-  CreateScopedZeroDelayOverrideSigninPendingTextForTesting();
+  void OnBoundsChanged(const gfx::Rect& previous_bounds) override;
 
  private:
+  // Used by tests to access the private state_manager_ for verification.
+  friend class ::AvatarToolbarButtonTestAccessor;
   FRIEND_TEST_ALL_PREFIXES(AvatarToolbarButtonTest,
                            HighlightMeetsMinimumContrast);
 
   // ui::PropertyHandler:
   void AfterPropertyChange(const void* key, int64_t old_value) override;
+
+  // Swaps STATE_NORMAL icon between normal and hovered versions based on
+  // ink drop highlight state. Called when the highlight changes in
+  // forced-colors mode.
+  void OnInkDropHighlightedChanged();
 
   // Updates the layout insets depending on whether it is a chip or a button.
   void UpdateLayoutInsets();
@@ -160,36 +116,35 @@ class AvatarToolbarButton : public ToolbarButton {
   // and whether the chip is expanded.
   void UpdateInkdrop();
 
-  // Used as a callback to reset the explicit button action.
-  void ResetButtonAction();
-
+  // Animates hiding/shrinking the button according to the text changes.
+  void AnimateTextChange(StateProvider* state_provider,
+                         const ui::ColorProvider* color_provider);
   void UpdateAccessibilityLabel();
+  void AnnounceInternal(std::u16string text);
 
-  // Lists of observers.
-  base::ObserverList<Observer, true> observer_list_;
+  // views::View:
+  gfx::Size CalculatePreferredSize(
+      const views::SizeBounds& available_size) const override;
+  gfx::Size GetMinimumSize() const override;
 
-  std::unique_ptr<AvatarToolbarButtonDelegate> delegate_;
+  // gfx::AnimationDelegate:
+  void AnimationProgressed(const gfx::Animation* animation) override;
+  void AnimationEnded(const gfx::Animation* animation) override;
 
-  const raw_ptr<Browser> browser_;
+  AvatarToolbarButtonStateManager state_manager_;
 
-  // Time when this object was created.
-  const base::TimeTicks creation_time_;
+  // Cached icons for the placeholder avatar in forced-colors mode, to avoid
+  // recomputing on every ink drop highlight change. Empty when not in
+  // forced-colors mode or when the icon is not a placeholder.
+  ui::ImageModel forced_colors_normal_icon_;
+  ui::ImageModel forced_colors_hovered_icon_;
 
-  // Do not show the IPH right when creating the window, so that the IPH has a
-  // separate animation.
-  static base::TimeDelta g_iph_min_delay_after_creation;
+  // Subscription for ink drop highlight changes (forced-colors mode).
+  base::CallbackListSubscription ink_drop_highlight_subscription_;
 
-  // Controls the action of the button, on press.
-  // Setting this to true will stop the button reaction but the button will
-  // remain in active state, not affecting it's UI in any way.
-  bool button_action_disabled_ = false;
-  // Explicit button action set by external calls.
-  base::RepeatingClosure explicit_button_pressed_action_;
-  // Internal pointer to the current explicit closure. This is used to
-  // invalidate an existing reset callback if an explicit action is being set
-  // while an existing already exists. Priority to the last call.
-  raw_ptr<base::ScopedClosureRunner> reset_button_action_button_closure_ptr_ =
-      nullptr;
+  gfx::SlideAnimation slide_animation_;
+
+  base::OnceCallback<void(std::u16string)> announce_callback_for_testing_;
 
   base::WeakPtrFactory<AvatarToolbarButton> weak_ptr_factory_{this};
 };

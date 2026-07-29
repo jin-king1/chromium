@@ -5,9 +5,12 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_PAYMENTS_AUTOFILL_SAVE_CARD_DELEGATE_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_PAYMENTS_AUTOFILL_SAVE_CARD_DELEGATE_H_
 
+#include <variant>
+
+#include "base/functional/callback_forward.h"
+#include "base/functional/callback_helpers.h"
 #include "components/autofill/core/browser/metrics/autofill_metrics.h"
 #include "components/autofill/core/browser/payments/payments_autofill_client.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 
 namespace autofill {
 
@@ -17,17 +20,24 @@ class AutofillSaveCardInfoBarDelegateMobileTest;
 class AutofillSaveCardDelegate {
  public:
   AutofillSaveCardDelegate(
-      absl::variant<
+      std::variant<
           payments::PaymentsAutofillClient::LocalSaveCardPromptCallback,
-          payments::PaymentsAutofillClient::UploadSaveCardPromptCallback>
+          payments::PaymentsAutofillClient::UploadSaveCardPromptCallback,
+          payments::PaymentsAutofillClient::CardSaveAndFillDialogCallback>
           save_card_callback,
       payments::PaymentsAutofillClient::SaveCreditCardOptions options);
 
   virtual ~AutofillSaveCardDelegate();
 
   bool is_for_upload() const {
-    return absl::holds_alternative<
+    return std::holds_alternative<
         payments::PaymentsAutofillClient::UploadSaveCardPromptCallback>(
+        save_card_callback_);
+  }
+
+  bool is_for_local_save() const {
+    return std::holds_alternative<
+        payments::PaymentsAutofillClient::LocalSaveCardPromptCallback>(
         save_card_callback_);
   }
 
@@ -45,8 +55,11 @@ class AutofillSaveCardDelegate {
   // finished.
   virtual void OnUiAccepted(
       base::OnceClosure on_save_card_completed = base::NullCallback());
-  void OnUiUpdatedAndAccepted(
+  virtual void OnUiUpdatedAndAccepted(
       payments::PaymentsAutofillClient::UserProvidedCardDetails
+          user_provided_details);
+  virtual void OnUiUpdatedAndAcceptedForSaveAndFill(
+      payments::PaymentsAutofillClient::UserProvidedCardSaveAndFillDetails
           user_provided_details);
   virtual void OnUiCanceled();
   virtual void OnUiIgnored();
@@ -74,6 +87,14 @@ class AutofillSaveCardDelegate {
       payments::PaymentsAutofillClient::UserProvidedCardDetails
           user_provided_details);
 
+  // Runs the appropriate save and fill callback with the given |user_decision|,
+  // using the |user_provided_details|.
+  void RunSaveAndFillCardDialogCallback(
+      payments::PaymentsAutofillClient::CardSaveAndFillDialogUserDecision
+          user_decision,
+      payments::PaymentsAutofillClient::UserProvidedCardSaveAndFillDetails
+          user_provided_details);
+
   // TODO(crbug.com/40283111): Make GatherAdditionalConsentIfApplicable() a pure
   //                          virtual function.
   // This function by default saves the credit card, but allows subclasses to
@@ -96,8 +117,9 @@ class AutofillSaveCardDelegate {
 
   // The callback to run once the user makes a decision with respect to the
   // credit card offer-to-save prompt.
-  absl::variant<payments::PaymentsAutofillClient::LocalSaveCardPromptCallback,
-                payments::PaymentsAutofillClient::UploadSaveCardPromptCallback>
+  std::variant<payments::PaymentsAutofillClient::LocalSaveCardPromptCallback,
+               payments::PaymentsAutofillClient::UploadSaveCardPromptCallback,
+               payments::PaymentsAutofillClient::CardSaveAndFillDialogCallback>
       save_card_callback_;
 
   // Callback to run immediately after `save_card_callback_`. An example of a

@@ -16,7 +16,7 @@ import {afterNextRender, PolymerElement} from 'chrome://resources/polymer/v3_0/p
 import {getTemplate} from './scanner_select.html.js';
 import type {Scanner} from './scanning.mojom-webui.js';
 import type {ScannerInfo} from './scanning_app_types.js';
-import {alphabeticalCompare, getScannerDisplayName, tokenToString} from './scanning_app_util.js';
+import {alphabeticalCompare, getScannerDisplayName} from './scanning_app_util.js';
 
 /**
  * @fileoverview
@@ -59,22 +59,14 @@ export class ScannerSelectElement extends ScannerSelectElementBase {
     return ['scannersChanged(scanners.*)'];
   }
 
-  disabled: boolean;
-  scanners: Scanner[];
-  selectedScannerId: string;
-  scannerInfoMap: Map<string, ScannerInfo>;
-  lastUsedScannerId: string;
+  declare disabled: boolean;
+  declare scanners: Scanner[];
+  declare selectedScannerId: string;
+  declare scannerInfoMap: Map<string, ScannerInfo>;
+  declare lastUsedScannerId: string;
 
   private getScannerDisplayName(scanner: Scanner): string {
     return getScannerDisplayName(scanner);
-  }
-
-  /**
-   * Converts an unguessable token to a string so it can be used as the value of
-   * an option.
-   */
-  private getTokenAsString(scanner: Scanner): string {
-    return tokenToString(scanner.id);
   }
 
   /**
@@ -93,7 +85,7 @@ export class ScannerSelectElement extends ScannerSelectElementBase {
     // the dropdown.
     if (this.scanners.length > 0) {
       if (!this.lastUsedScannerId) {
-        this.selectedScannerId = tokenToString(this.scanners[0].id);
+        this.selectedScannerId = this.scanners[0].id;
         return;
       }
 

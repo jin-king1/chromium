@@ -10,7 +10,6 @@ import android.os.SystemClock;
 import android.view.View;
 import android.view.accessibility.AccessibilityEvent;
 
-import androidx.annotation.IntDef;
 import androidx.annotation.Nullable;
 import androidx.annotation.Px;
 import androidx.annotation.VisibleForTesting;
@@ -22,9 +21,9 @@ import org.chromium.blink.mojom.RpMode;
 import org.chromium.chrome.browser.customtabs.CustomTabActivity;
 import org.chromium.chrome.browser.tab.EmptyTabObserver;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabFavicon;
 import org.chromium.chrome.browser.tab.TabObserver;
 import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.AccountProperties;
-import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.AddAccountButtonProperties;
 import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.ButtonData;
 import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.ContinueButtonProperties;
 import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.DataSharingConsentProperties;
@@ -33,11 +32,13 @@ import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.H
 import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.HeaderProperties.HeaderType;
 import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.IdpSignInProperties;
 import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.ItemProperties;
+import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.LoginButtonProperties;
 import org.chromium.chrome.browser.ui.android.webid.data.Account;
 import org.chromium.chrome.browser.ui.android.webid.data.ClientIdMetadata;
 import org.chromium.chrome.browser.ui.android.webid.data.IdentityCredentialTokenError;
 import org.chromium.chrome.browser.ui.android.webid.data.IdentityProviderData;
 import org.chromium.chrome.browser.ui.android.webid.data.IdentityProviderMetadata;
+import org.chromium.chrome.browser.ui.android.webid.data.RelyingPartyData;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController.SheetState;
@@ -59,138 +60,20 @@ import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.url.GURL;
 
-import java.lang.annotation.Retention;
-import java.lang.annotation.RetentionPolicy;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Contains the logic for the AccountSelection component. It sets the state of the model and reacts
  * to events like clicks.
  */
 class AccountSelectionMediator {
-    /**
-     * The following integers are used for histograms. Do not remove or modify existing values, but
-     * you may add new values at the end and increase NUM_ENTRIES. This enum should be kept in sync
-     * with SheetType in chrome/browser/ui/views/webid/fedcm_account_selection_view_desktop.h as
-     * well as with FedCmSheetType in tools/metrics/histograms/enums.xml.
-     */
-    @IntDef({
-        SheetType.ACCOUNT_SELECTION,
-        SheetType.VERIFYING,
-        SheetType.AUTO_REAUTHN,
-        SheetType.SIGN_IN_TO_IDP_STATIC,
-        SheetType.SIGN_IN_ERROR,
-        SheetType.LOADING,
-        SheetType.NUM_ENTRIES
-    })
-    @Retention(RetentionPolicy.SOURCE)
-    private @interface SheetType {
-        int ACCOUNT_SELECTION = 0;
-        int VERIFYING = 1;
-        int AUTO_REAUTHN = 2;
-        int SIGN_IN_TO_IDP_STATIC = 3;
-        int SIGN_IN_ERROR = 4;
-        int LOADING = 5;
-
-        int NUM_ENTRIES = 6;
-    }
-
-    /**
-     * The following integers are used for histograms. Do not remove or modify existing values, but
-     * you may add new values at the end and increase NUM_ENTRIES. This enum should be kept in sync
-     * with AccountChooserResult in
-     * chrome/browser/ui/views/webid/fedcm_account_selection_view_desktop.h as well as with
-     * FedCmAccountChooserResult in tools/metrics/histograms/enums.xml.
-     */
-    @IntDef({
-        AccountChooserResult.ACCOUNT_ROW,
-        AccountChooserResult.CANCEL_BUTTON,
-        AccountChooserResult.USE_OTHER_ACCOUNT_BUTTON,
-        AccountChooserResult.TAB_CLOSED,
-        AccountChooserResult.SWIPE,
-        AccountChooserResult.BACK_PRESS,
-        AccountChooserResult.TAP_SCRIM,
-        AccountChooserResult.NUM_ENTRIES
-    })
-    @Retention(RetentionPolicy.SOURCE)
-    @VisibleForTesting
-    @interface AccountChooserResult {
-        int ACCOUNT_ROW = 0;
-        int CANCEL_BUTTON = 1;
-        int USE_OTHER_ACCOUNT_BUTTON = 2;
-        int TAB_CLOSED = 3;
-        int SWIPE = 4;
-        int BACK_PRESS = 5;
-        int TAP_SCRIM = 6;
-
-        int NUM_ENTRIES = 7;
-    }
-
-    /**
-     * The following integers are used for histograms. Do not remove or modify existing values, but
-     * you may add new values at the end and increase NUM_ENTRIES. This enum should be kept in sync
-     * with LoadingDialogResult in
-     * chrome/browser/ui/views/webid/fedcm_account_selection_view_desktop.h as well as with
-     * FedCmLoadingDialogResult in tools/metrics/histograms/enums.xml.
-     */
-    @IntDef({
-        LoadingDialogResult.PROCEED,
-        LoadingDialogResult.CANCEL,
-        LoadingDialogResult.PROCEED_THROUGH_POPUP,
-        LoadingDialogResult.DESTROY,
-        LoadingDialogResult.SWIPE,
-        LoadingDialogResult.BACK_PRESS,
-        LoadingDialogResult.TAP_SCRIM,
-        LoadingDialogResult.NUM_ENTRIES
-    })
-    @Retention(RetentionPolicy.SOURCE)
-    @VisibleForTesting
-    @interface LoadingDialogResult {
-        int PROCEED = 0;
-        int CANCEL = 1;
-        int PROCEED_THROUGH_POPUP = 2;
-        int DESTROY = 3;
-        int SWIPE = 4;
-        int BACK_PRESS = 5;
-        int TAP_SCRIM = 6;
-
-        int NUM_ENTRIES = 7;
-    }
-
-    /**
-     * The following integers are used for histograms. Do not remove or modify existing values, but
-     * you may add new values at the end and increase NUM_ENTRIES. This enum should be kept in sync
-     * with DisclosureDialogResult in
-     * chrome/browser/ui/views/webid/fedcm_account_selection_view_desktop.h as well as with
-     * FedCmDisclosureDialogResult in tools/metrics/histograms/enums.xml.
-     */
-    @IntDef({
-        DisclosureDialogResult.CONTINUE,
-        DisclosureDialogResult.CANCEL,
-        DisclosureDialogResult.BACK,
-        DisclosureDialogResult.DESTROY,
-        DisclosureDialogResult.SWIPE,
-        DisclosureDialogResult.BACK_PRESS,
-        DisclosureDialogResult.TAP_SCRIM,
-        DisclosureDialogResult.NUM_ENTRIES
-    })
-    @Retention(RetentionPolicy.SOURCE)
-    @VisibleForTesting
-    @interface DisclosureDialogResult {
-        int CONTINUE = 0;
-        int CANCEL = 1;
-        int BACK = 2;
-        int DESTROY = 3;
-        int SWIPE = 4;
-        int BACK_PRESS = 5;
-        int TAP_SCRIM = 6;
-
-        int NUM_ENTRIES = 7;
-    }
-
     private boolean mRegisteredObservers;
     private boolean mWasDismissed;
+    private boolean mCanShowUi = true;
     // Keeps track of the last bottom sheet seen by the BottomSheetObserver. Used to know whether a
     // sheet state change affects the BottomSheet owned by this object or not.
     private BottomSheetContent mLastSheetSeen;
@@ -214,11 +97,13 @@ class AccountSelectionMediator {
     public static final long POTENTIALLY_UNINTENDED_INPUT_THRESHOLD = 500;
 
     private HeaderType mHeaderType;
-    private String mRpForDisplay;
+    private RelyingPartyData mRpData;
     private String mIdpForDisplay;
-    private Bitmap mIdpBrandIcon;
-    private Bitmap mRpBrandIcon;
-    private boolean mIsAutoReauthn;
+    // The icon to be displayed in the title of the dialog. Corresponds to the IDP icon when one IDP
+    // is involved or the RP icon when multiple IDPs are involved.
+    private Bitmap mHeaderIcon;
+    // The RP brand icon provided by the IDP. Used only in active mode.
+    private @Nullable Bitmap mRpBrandIcon;
     private @RpContext.EnumType int mRpContext;
     private IdentityCredentialTokenError mError;
     private UkmRecorder mUkmRecorder;
@@ -263,11 +148,19 @@ class AccountSelectionMediator {
     // recorded for active mode.
     private @Nullable Integer mDisclosureDialogState;
 
+    // The current state of the mismatch dialog if opened for metrics purposes.
+    private @Nullable Integer mMismatchDialogState;
+
+    // Whether the user clicked the continue button for the mismatch dialog.
+    // This button also dismisses the dialog, so we use this to prevent us from double counting the
+    // Blink.FedCm.IdpSigninStatus.MismatchDialogResult metric
+    private boolean mIsMismatchContinueClicked;
+
     // Whether there was a login to IDP CCT that was closed while the loading dialog is open. This
     // could mean that the user successfully completed the login to IDP flow.
     private boolean mIsLoadingDialogLoginToIdpClosed;
 
-    private KeyboardVisibilityListener mKeyboardVisibilityListener =
+    private final KeyboardVisibilityListener mKeyboardVisibilityListener =
             new KeyboardVisibilityListener() {
                 @Override
                 public void keyboardVisibilityChanged(boolean isShowing) {
@@ -289,7 +182,8 @@ class AccountSelectionMediator {
             @Px int desiredAvatarSize,
             @RpMode.EnumType int rpMode,
             Context context,
-            ModalDialogManager modalDialogManager) {
+            ModalDialogManager modalDialogManager,
+            boolean canShowUi) {
         assert tab != null;
         mTab = tab;
         assert delegate != null;
@@ -303,6 +197,7 @@ class AccountSelectionMediator {
         mContext = context;
         mModalDialogManager = modalDialogManager;
         mLastSheetSeen = mBottomSheetContent;
+        mCanShowUi = canShowUi;
         if (mTab != null && mTab.getWebContents() != null) {
             mUkmRecorder = new UkmRecorder(mTab.getWebContents(), "Blink.FedCm");
         }
@@ -372,6 +267,10 @@ class AccountSelectionMediator {
                                             mHeaderType == HeaderType.REQUEST_PERMISSION_MODAL
                                                     ? DisclosureDialogResult.SWIPE
                                                     : null;
+                                    mMismatchDialogState =
+                                            mHeaderType == HeaderType.SIGN_IN_TO_IDP_STATIC
+                                                    ? MismatchDialogResult.SWIPE
+                                                    : null;
                                 } else if (reason
                                         == BottomSheetController.StateChangeReason.BACK_PRESS) {
                                     dismissReason = IdentityRequestDialogDismissReason.BACK_PRESS;
@@ -385,6 +284,10 @@ class AccountSelectionMediator {
                                     mLoadingDialogState =
                                             mHeaderType == HeaderType.LOADING
                                                     ? LoadingDialogResult.BACK_PRESS
+                                                    : null;
+                                    mMismatchDialogState =
+                                            mHeaderType == HeaderType.SIGN_IN_TO_IDP_STATIC
+                                                    ? MismatchDialogResult.BACK_PRESS
                                                     : null;
                                 } else if (reason
                                         == BottomSheetController.StateChangeReason.TAP_SCRIM) {
@@ -404,6 +307,14 @@ class AccountSelectionMediator {
                                             mHeaderType == HeaderType.REQUEST_PERMISSION_MODAL
                                                     ? DisclosureDialogResult.TAP_SCRIM
                                                     : null;
+                                    mMismatchDialogState =
+                                            mHeaderType == HeaderType.SIGN_IN_TO_IDP_STATIC
+                                                    ? MismatchDialogResult.TAP_SCRIM
+                                                    : null;
+                                } else if (reason
+                                        == BottomSheetController.StateChangeReason.CLOSE_BUTTON) {
+                                    dismissReason = IdentityRequestDialogDismissReason.CLOSE_BUTTON;
+                                    recordCloseSheetMetrics();
                                 }
                                 onDismissed(dismissReason);
                             }
@@ -477,6 +388,9 @@ class AccountSelectionMediator {
     }
 
     private void handleBackPress() {
+        if (mWasDismissed) {
+            return;
+        }
         mSelectedAccount = null;
         if (mHeaderType == HeaderType.REQUEST_PERMISSION_MODAL) {
             mDisclosureDialogState = DisclosureDialogResult.BACK_PRESS;
@@ -488,28 +402,26 @@ class AccountSelectionMediator {
     private PropertyModel createHeaderItem(
             HeaderType headerType,
             String rpForDisplay,
+            String iframeForDisplay,
             String idpForDisplay,
             @RpContext.EnumType int rpContext,
             Boolean isMultipleIdps) {
-        Runnable closeOnClickRunnable =
-                () -> {
-                    onDismissed(IdentityRequestDialogDismissReason.CLOSE_BUTTON);
-
-                    RecordHistogram.recordBooleanHistogram(
-                            "Blink.FedCm.CloseVerifySheet.Android",
-                            mHeaderType == HeaderType.VERIFY);
-                    RecordHistogram.recordEnumeratedHistogram(
-                            "Blink.FedCm.ClosedSheetType.Android",
-                            getSheetType(),
-                            SheetType.NUM_ENTRIES);
-                };
+        Runnable closeOnClickRunnable = null;
+        if (!mBottomSheetController.isLargeFormFactorUiEnabled(mBottomSheetContent)) {
+            closeOnClickRunnable =
+                    () -> {
+                        onDismissed(IdentityRequestDialogDismissReason.CLOSE_BUTTON);
+                        recordCloseSheetMetrics();
+                    };
+        }
 
         return new PropertyModel.Builder(HeaderProperties.ALL_KEYS)
-                .with(HeaderProperties.IDP_BRAND_ICON, mIdpBrandIcon)
+                .with(HeaderProperties.HEADER_ICON, mHeaderIcon)
                 .with(HeaderProperties.RP_BRAND_ICON, mRpBrandIcon)
                 .with(HeaderProperties.CLOSE_ON_CLICK_LISTENER, closeOnClickRunnable)
                 .with(HeaderProperties.IDP_FOR_DISPLAY, idpForDisplay)
                 .with(HeaderProperties.RP_FOR_DISPLAY, rpForDisplay)
+                .with(HeaderProperties.IFRAME_FOR_DISPLAY, iframeForDisplay)
                 .with(HeaderProperties.TYPE, headerType)
                 .with(HeaderProperties.RP_CONTEXT, rpContext)
                 .with(HeaderProperties.RP_MODE, mRpMode)
@@ -547,7 +459,6 @@ class AccountSelectionMediator {
             boolean areAccountsClickable,
             boolean skipAddAccountRows) {
         mSheetAccountItems.clear();
-        if (accounts == null) return;
         // In the request permission dialog, account is shown as an account chip instead of in the
         // accounts list. In the active mode verifying dialog, we do not show accounts.
         if (mRpMode == RpMode.ACTIVE
@@ -563,16 +474,23 @@ class AccountSelectionMediator {
                     new ListItem(AccountSelectionProperties.ITEM_TYPE_ACCOUNT, model));
         }
 
-        // TODO(crbug.com/392142580): add multi IDP mismatch UI.
-        if (skipAddAccountRows || identityProviders == null) {
+        if (skipAddAccountRows) {
             return;
         }
+        boolean hasAddedLoginButton = false;
         for (IdentityProviderData identityProvider : identityProviders) {
-            if (identityProvider.getIdpMetadata().showUseDifferentAccountButton()) {
-                final PropertyModel model =
-                        createAddAccountBtnItem(identityProvider.getIdpMetadata());
+            if (identityProvider.getIdpMetadata().showUseDifferentAccountButton()
+                    || identityProvider.hasLoginStatusMismatch()) {
+                if (!hasAddedLoginButton && !accounts.isEmpty() && mRpMode == RpMode.PASSIVE) {
+                    mSheetAccountItems.add(
+                            new ListItem(
+                                    AccountSelectionProperties.ITEM_TYPE_SEPARATOR,
+                                    new PropertyModel()));
+                }
+                final PropertyModel model = createLoginBtnItem(identityProvider);
                 mSheetAccountItems.add(
-                        new ListItem(AccountSelectionProperties.ITEM_TYPE_ADD_ACCOUNT, model));
+                        new ListItem(AccountSelectionProperties.ITEM_TYPE_LOGIN, model));
+                hasAddedLoginButton = true;
             }
         }
     }
@@ -586,39 +504,21 @@ class AccountSelectionMediator {
         return currentTime - mComponentShowTime > POTENTIALLY_UNINTENDED_INPUT_THRESHOLD;
     }
 
-    private boolean isValidBrandIcon(Bitmap bitmap) {
+    private boolean isValidBrandIcon(Bitmap bitmap, boolean shouldCircleCrop) {
         return bitmap != null
                 && bitmap.getWidth() == bitmap.getHeight()
-                && bitmap.getWidth() >= AccountSelectionBridge.getBrandIconMinimumSize(mRpMode);
-    }
-
-    private void updateIdpBrandIcon(Bitmap bitmap) {
-        if (!isValidBrandIcon(bitmap)) {
-            return;
-        }
-        mIdpBrandIcon = bitmap;
-        updateHeader();
-
-        // Resizes bottom sheet to the desired height, taking the icon into account.
-        mBottomSheetController.expandSheet();
-    }
-
-    private void updateRpBrandIcon(Bitmap bitmap) {
-        if (!isValidBrandIcon(bitmap)) {
-            return;
-        }
-        mRpBrandIcon = bitmap;
-        updateHeader();
-
-        // Resizes bottom sheet to the desired height, taking the icon into account.
-        mBottomSheetController.expandSheet();
+                && (!shouldCircleCrop
+                        || bitmap.getWidth()
+                                >= AccountSelectionBridge.getBrandIconMinimumSize(mRpMode));
     }
 
     private void maybeRecordAccountChooserResult(int result) {
         if (mAccountChooserState == null) return;
 
         RecordHistogram.recordEnumeratedHistogram(
-                "Blink.FedCm.Button.AccountChooserResult", result, SheetType.NUM_ENTRIES);
+                "Blink.FedCm.Button.AccountChooserResult",
+                result,
+                AccountChooserResult.MAX_VALUE + 1);
         if (mUkmRecorder != null) {
             mUkmRecorder.addMetric("Button.AccountChooserResult", result).record();
         }
@@ -642,10 +542,12 @@ class AccountSelectionMediator {
         RecordHistogram.recordEnumeratedHistogram(
                 "Blink.FedCm.Button.LoadingDialogResult",
                 mLoadingDialogState,
-                SheetType.NUM_ENTRIES);
+                LoadingDialogResult.MAX_VALUE + 1);
         if (mUkmRecorder != null) {
             mUkmRecorder.addMetric("Button.LoadingDialogResult", mLoadingDialogState).record();
         }
+
+        // Reset the state to prevent double-recording.
         mLoadingDialogState = null;
     }
 
@@ -665,13 +567,38 @@ class AccountSelectionMediator {
         RecordHistogram.recordEnumeratedHistogram(
                 "Blink.FedCm.Button.DisclosureDialogResult",
                 mDisclosureDialogState,
-                SheetType.NUM_ENTRIES);
+                DisclosureDialogResult.MAX_VALUE + 1);
         if (mUkmRecorder != null) {
             mUkmRecorder
                     .addMetric("Button.DisclosureDialogResult", mDisclosureDialogState)
                     .record();
         }
+
+        // Reset the state to prevent double-recording.
         mDisclosureDialogState = null;
+    }
+
+    private void maybeRecordMismatchDialogResult() {
+        // mMismatchDialogState is set on dismissal e.g. tap scrim, back press or if the user
+        // presses continue. If it hasn't been set but onDismissed is called while the mismatch
+        // dialog is being shown, then we don't know what caused the dismissal.
+        if (!mIsMismatchContinueClicked
+                && mMismatchDialogState == null
+                && mHeaderType == HeaderType.SIGN_IN_TO_IDP_STATIC) {
+            mMismatchDialogState = MismatchDialogResult.DISMISSED_FOR_OTHER_REASONS;
+        }
+
+        if (mMismatchDialogState == null) return;
+
+        assert mHeaderType == HeaderType.SIGN_IN_TO_IDP_STATIC;
+
+        RecordHistogram.recordEnumeratedHistogram(
+                "Blink.FedCm.IdpSigninStatus.MismatchDialogResult",
+                mMismatchDialogState,
+                MismatchDialogResult.MAX_VALUE + 1);
+
+        // Reset the state to prevent double-recording.
+        mMismatchDialogState = null;
     }
 
     boolean showVerifySheet(Account account) {
@@ -684,15 +611,21 @@ class AccountSelectionMediator {
             mHeaderType = HeaderType.VERIFY;
             if (!updateSheet(
                     Arrays.asList(account),
-                    /* identityProviders= */ null,
+                    /* identityProviders= */ Collections.emptyList(),
                     /* areAccountsClickable= */ false)) {
                 return false;
             }
             updateBackPressBehavior();
         } else {
-            // We call showVerifySheet() from updateSheet()->onAccountSelected() in this case, so do
-            // not invoke updateSheet() as that would cause a loop and isn't needed.
             assert mHeaderType == HeaderType.VERIFY_AUTO_REAUTHN;
+            // Auto reauthn is triggered without showAccounts so we need to update the sheet
+            // explicitly.
+            if (!updateSheet(
+                    Arrays.asList(account),
+                    /* identityProviders= */ Collections.emptyList(),
+                    /* areAccountsClickable= */ false)) {
+                return false;
+            }
         }
         return true;
     }
@@ -701,7 +634,7 @@ class AccountSelectionMediator {
         mHeaderType = HeaderType.REQUEST_PERMISSION_MODAL;
         if (!updateSheet(
                 Arrays.asList(account),
-                /* identityProviders= */ null,
+                /* identityProviders= */ Collections.emptyList(),
                 /* areAccountsClickable= */ false)) {
             return false;
         }
@@ -715,22 +648,18 @@ class AccountSelectionMediator {
     }
 
     boolean showAccounts(
-            String rpForDisplay,
+            RelyingPartyData rpData,
             List<Account> accounts,
             List<IdentityProviderData> idpDataList,
-            boolean isAutoReauthn,
             List<Account> newAccounts) {
-        mRpForDisplay = rpForDisplay;
-        // Only show the IDP in the title if there is a single IDP in the list.
+        if (mWasDismissed) {
+            return false;
+        }
+        mRpData = rpData;
         mAccounts = accounts;
         mIdpDataListForShowAccounts = idpDataList;
         mIdpMetadataForLoginOrError = null;
-        mIdpForDisplay =
-                mIdpDataListForShowAccounts.size() == 1
-                        ? mIdpDataListForShowAccounts.get(0).getIdpForDisplay()
-                        : null;
-        mIsMultipleIdps = mIdpDataListForShowAccounts.size() > 1;
-        mIsAutoReauthn = isAutoReauthn;
+        setIsMultipleIdps(mIdpDataListForShowAccounts.size() > 1);
         mRpContext = mIdpDataListForShowAccounts.get(0).getRpContext();
         mSelectedAccount = null;
         mLoadingDialogState =
@@ -740,33 +669,15 @@ class AccountSelectionMediator {
         maybeRecordLoadingDialogResult();
 
         if (accounts.size() == 1) {
-            // An account is automatically 'selected' if auto reauthenticating or if that is the
+            // An account is automatically 'selected' if that is the
             // only option.
-            if (isAutoReauthn
-                    || (!mIsMultipleIdps
-                            && !mIdpDataListForShowAccounts
-                                    .get(0)
-                                    .getIdpMetadata()
-                                    .showUseDifferentAccountButton())) {
+            if (!mIsMultipleIdps
+                    && !mIdpDataListForShowAccounts
+                            .get(0)
+                            .getIdpMetadata()
+                            .showUseDifferentAccountButton()) {
                 mSelectedAccount = accounts.get(0);
             }
-        }
-
-        // Auto re-authn in active mode does not update the loading UI.
-        if (mRpMode == RpMode.ACTIVE && isAutoReauthn) {
-            mDelegate.onAccountSelected(mSelectedAccount);
-            return true;
-        }
-
-        if (!mIsMultipleIdps) {
-            updateIdpBrandIcon(
-                    mIdpDataListForShowAccounts.get(0).getIdpMetadata().getBrandIconBitmap());
-        }
-        assert mRpMode == RpMode.PASSIVE || !mIsMultipleIdps;
-        // RP brand icon is fetched here, but not shown until the request permission dialog.
-        if (mRpMode == RpMode.ACTIVE) {
-            updateRpBrandIcon(
-                    mIdpDataListForShowAccounts.get(0).getClientMetadata().getBrandIconBitmap());
         }
 
         if (!showAccountsInternal(newAccounts)) {
@@ -777,53 +688,59 @@ class AccountSelectionMediator {
     }
 
     boolean showFailureDialog(
-            String rpForDisplay,
+            RelyingPartyData rpData,
             String idpForDisplay,
             IdentityProviderMetadata idpMetadata,
             @RpContext.EnumType int rpContext) {
-        mRpForDisplay = rpForDisplay;
+        mRpData = rpData;
         mIdpForDisplay = idpForDisplay;
         mIdpMetadataForLoginOrError = idpMetadata;
         mIdpDataListForShowAccounts = null;
         mRpContext = rpContext;
-        mIsMultipleIdps = false;
         mHeaderType = HeaderProperties.HeaderType.SIGN_IN_TO_IDP_STATIC;
+        mIsMismatchContinueClicked = false;
+        mMismatchDialogState = null;
         if (!updateSheet(
-                /* accounts= */ null,
-                /* identityProviders= */ null,
+                /* accounts= */ Collections.emptyList(),
+                /* identityProviders= */ Collections.emptyList(),
                 /* areAccountsClickable= */ false)) {
             return false;
         }
         setComponentShowTime(SystemClock.elapsedRealtime());
-        updateIdpBrandIcon(idpMetadata.getBrandIconBitmap());
+        updateHeader(
+                idpMetadata.getBrandIconBitmap(),
+                /* shouldCircleCrop= */ true,
+                /* rpBrandIcon= */ null);
         return true;
     }
 
     boolean showErrorDialog(
-            String rpForDisplay,
+            RelyingPartyData rpData,
             String idpForDisplay,
             IdentityProviderMetadata idpMetadata,
             @RpContext.EnumType int rpContext,
             IdentityCredentialTokenError error) {
-        mRpForDisplay = rpForDisplay;
+        mRpData = rpData;
         mIdpForDisplay = idpForDisplay;
         mIdpMetadataForLoginOrError = idpMetadata;
         mIdpDataListForShowAccounts = null;
         mRpContext = rpContext;
         mError = error;
-        mIsMultipleIdps = false;
         mHeaderType = HeaderProperties.HeaderType.SIGN_IN_ERROR;
         setComponentShowTime(SystemClock.elapsedRealtime());
 
         // Update the bottom sheet into an error bottom sheet for passive mode.
         if (mRpMode == RpMode.PASSIVE) {
             if (!updateSheet(
-                    /* accounts= */ null,
-                    /* identityProviders= */ null,
+                    /* accounts= */ Collections.emptyList(),
+                    /* identityProviders= */ Collections.emptyList(),
                     /* areAccountsClickable= */ false)) {
                 return false;
             }
-            updateIdpBrandIcon(idpMetadata.getBrandIconBitmap());
+            updateHeader(
+                    idpMetadata.getBrandIconBitmap(),
+                    /* shouldCircleCrop= */ true,
+                    /* rpBrandIcon= */ null);
             return true;
         }
 
@@ -845,7 +762,7 @@ class AccountSelectionMediator {
                         });
         ErrorProperties.Properties properties = new ErrorProperties.Properties();
         properties.mIdpForDisplay = idpForDisplay;
-        properties.mRpForDisplay = rpForDisplay;
+        properties.mRpForDisplay = mRpData.getRpForDisplay();
         properties.mError = error;
         properties.mMoreDetailsClickRunnable =
                 !error.getUrl().isEmpty() ? this::onMoreDetails : null;
@@ -878,20 +795,45 @@ class AccountSelectionMediator {
     }
 
     boolean showLoadingDialog(
-            String rpForDisplay, String idpForDisplay, @RpContext.EnumType int rpContext) {
-        mRpForDisplay = rpForDisplay;
+            RelyingPartyData rpData, String idpForDisplay, @RpContext.EnumType int rpContext) {
+        mRpData = rpData;
         mIdpForDisplay = idpForDisplay;
         mRpContext = rpContext;
-        mIsMultipleIdps = false;
         mHeaderType = HeaderProperties.HeaderType.LOADING;
         if (!updateSheet(
-                /* accounts= */ null,
-                /* identityProviders= */ null,
+                /* accounts= */ Collections.emptyList(),
+                /* identityProviders= */ Collections.emptyList(),
                 /* areAccountsClickable= */ false)) {
             return false;
         }
         setComponentShowTime(SystemClock.elapsedRealtime());
         return true;
+    }
+
+    boolean showVerifyingDialog(RelyingPartyData rpData, Account account, boolean isAutoReauthn) {
+        mRpData = rpData;
+        mHeaderType = isAutoReauthn ? HeaderType.VERIFY_AUTO_REAUTHN : HeaderType.VERIFY;
+        mSelectedAccount = account;
+
+        // Auto re-authn in active mode does not update the loading UI.
+        if (mRpMode == RpMode.ACTIVE && isAutoReauthn) {
+            return true;
+        }
+
+        showVerifySheet(mSelectedAccount);
+        return true;
+    }
+
+    public void setCanShowUi(boolean canShowUi) {
+        if (mCanShowUi == canShowUi) {
+            return;
+        }
+        mCanShowUi = canShowUi;
+        if (!mCanShowUi) {
+            mBottomSheetController.hideContent(mBottomSheetContent, true);
+        } else {
+            showContent();
+        }
     }
 
     void showUrl(Context context, @IdentityRequestDialogLinkType int linkType, GURL url) {
@@ -937,7 +879,7 @@ class AccountSelectionMediator {
                         ? newAccounts.get(0)
                         : null;
 
-        if (!mIsAutoReauthn && newlySignedInAccount != null && mRpMode == RpMode.ACTIVE) {
+        if (newlySignedInAccount != null && mRpMode == RpMode.ACTIVE) {
             mSelectedAccount = newlySignedInAccount;
 
             // The browser trusted login state controls whether we'd skip the next
@@ -954,16 +896,10 @@ class AccountSelectionMediator {
                 return showVerifySheet(mSelectedAccount);
             }
 
-            // The IDP claimed login state controls whether we show disclosure text,
-            // if we do not skip the next dialog. Also skip when request_permission
-            // is false (controlled by the fields API).
-            boolean shouldShowRequestPermissionDialog =
-                    !newlySignedInAccount.isSignIn()
-                            && newlySignedInAccount
-                                            .getIdentityProviderData()
-                                            .getDisclosureFields()
-                                            .length
-                                    > 0;
+            // We should show the permission dialog / disclosure text if fields
+            // is not empty. This is affected by the login status as well as
+            // the requested fields.
+            boolean shouldShowRequestPermissionDialog = newlySignedInAccount.getFields().length > 0;
             if (shouldShowRequestPermissionDialog) {
                 return showRequestPermissionModalSheet(mSelectedAccount);
             }
@@ -973,17 +909,23 @@ class AccountSelectionMediator {
             // request permission UI without disclosure text.
         }
 
-        mHeaderType = mIsAutoReauthn ? HeaderType.VERIFY_AUTO_REAUTHN : HeaderType.SIGN_IN;
+        mHeaderType = HeaderType.SIGN_IN;
+        // Show the selected account's IDP or only show the IDP if there is just one.
+        if (mSelectedAccount != null) {
+            mIdpForDisplay = mSelectedAccount.getIdentityProviderData().getIdpForDisplay();
+        } else if (mIdpDataListForShowAccounts.size() == 1) {
+            mIdpForDisplay = mIdpDataListForShowAccounts.get(0).getIdpForDisplay();
+        } else {
+            mIdpForDisplay = null;
+        }
+
         // We want the accounts to be clickable if there is no preselected account or if we're not
-        // going to show the disclosure text, which happens when the account is a signIn or when
-        // fields is empty.
+        // going to show the disclosure text, which happens when fields is empty.
         if (!updateSheet(
                 mSelectedAccount != null ? Arrays.asList(mSelectedAccount) : mAccounts,
-                mSelectedAccount != null ? null : mIdpDataListForShowAccounts,
+                mSelectedAccount != null ? Collections.emptyList() : mIdpDataListForShowAccounts,
                 /* areAccountsClickable= */ mSelectedAccount == null
-                        || mSelectedAccount.isSignIn()
-                        || mSelectedAccount.getIdentityProviderData().getDisclosureFields().length
-                                == 0)) {
+                        || mSelectedAccount.getFields().length == 0)) {
             return false;
         }
         updateBackPressBehavior();
@@ -993,7 +935,7 @@ class AccountSelectionMediator {
         // other account button or swiped down. If we do not receive any of these actions by time
         // onDismissed() is called, it means our placeholder assumption is true i.e. the user has
         // closed the tab.
-        if (mRpMode == RpMode.ACTIVE && !mIsAutoReauthn) {
+        if (mRpMode == RpMode.ACTIVE) {
             // If there was already an account chooser state from a previously shown account
             // chooser, record the outcome and reset the state.
             if (mAccountChooserState != null) {
@@ -1006,27 +948,33 @@ class AccountSelectionMediator {
 
     // Update the sheet so that it includes the provided accounts and identity providers. The
     // identity providers are needed for use other account as well as for mismatch UI. Note that
-    // these may be null lists, depending on the UI being displayed (loading UI, error, etc.). This
+    // these may be empty lists, depending on the UI being displayed (loading UI, error, etc.). This
     // is determined by querying the mHeaderType, which must be up to date.
     private boolean updateSheet(
             List<Account> accounts,
             List<IdentityProviderData> identityProviders,
             boolean areAccountsClickable) {
-        IdentityProviderMetadata firstAccountIdpMetadata =
-                accounts != null
-                        ? accounts.get(0).getIdentityProviderData().getIdpMetadata()
-                        : null;
+        IdentityProviderData firstAccountIdp =
+                !accounts.isEmpty() ? accounts.get(0).getIdentityProviderData() : null;
 
-        boolean isSingleAccountChooser =
-                accounts != null && accounts.size() == 1 && !accounts.get(0).isFilteredOut();
+        boolean isSingleAccountChooser = accounts.size() == 1 && !accounts.get(0).isFilteredOut();
+
+        // Check everything we need to render to determine if multiple IDPs are involved or not.
+        Set<IdentityProviderData> distinctIdps = new HashSet<>(identityProviders);
+        for (Account account : accounts) {
+            distinctIdps.add(account.getIdentityProviderData());
+        }
+        setIsMultipleIdps(distinctIdps.size() > 1);
+        IdentityProviderData uniqueIdp =
+                distinctIdps.size() == 1 ? distinctIdps.iterator().next() : null;
 
         boolean showUseDifferentAccountInSingleAccountChooserActiveMode =
                 isSingleAccountChooser
                         && mRpMode == RpMode.ACTIVE
                         && mHeaderType == HeaderType.SIGN_IN
                         && areAccountsClickable
-                        && firstAccountIdpMetadata != null
-                        && firstAccountIdpMetadata.showUseDifferentAccountButton();
+                        && firstAccountIdp != null
+                        && firstAccountIdp.getIdpMetadata().showUseDifferentAccountButton();
         // We add the add account button alongside the accounts if supported in passive mode and in
         // the multi-account UI of active mode.
         updateAccounts(
@@ -1034,31 +982,35 @@ class AccountSelectionMediator {
                 identityProviders,
                 areAccountsClickable,
                 showUseDifferentAccountInSingleAccountChooserActiveMode);
+        Bitmap headerIcon =
+                uniqueIdp != null
+                        ? uniqueIdp.getIdpMetadata().getBrandIconBitmap()
+                        : (mIsMultipleIdps ? TabFavicon.getBitmap(mTab) : null);
+        assert mRpMode == RpMode.PASSIVE || !mIsMultipleIdps;
+        Bitmap rpBrandIcon =
+                mRpMode == RpMode.ACTIVE && mIdpDataListForShowAccounts != null
+                        ? mIdpDataListForShowAccounts
+                                .get(0)
+                                .getClientMetadata()
+                                .getBrandIconBitmap()
+                        : null;
         // If there is a change in the header, setFocusView() will be called and focus will land on
         // the header when screen reader is on. Since the header is updated before any item is
         // created, the header will always take precedence for focus. Do not reorder this
         // updateHeader() call to happen after item creation.
-        updateHeader();
+        updateHeader(headerIcon, /* shouldCircleCrop= */ uniqueIdp != null, rpBrandIcon);
 
         boolean isDataSharingConsentVisible = false;
         Callback<ButtonData> continueButtonCallback = null;
         if (mHeaderType == HeaderType.SIGN_IN && mSelectedAccount != null) {
-            // Only show the user data sharing consent text for sign up and only
-            // if we're asked to request permission.
-            isDataSharingConsentVisible =
-                    !mSelectedAccount.isSignIn()
-                            && mSelectedAccount
-                                            .getIdentityProviderData()
-                                            .getDisclosureFields()
-                                            .length
-                                    > 0;
+            isDataSharingConsentVisible = mSelectedAccount.getFields().length > 0;
             continueButtonCallback = this::onClickAccountSelected;
         }
 
         if (mHeaderType == HeaderType.VERIFY_AUTO_REAUTHN) {
             assert mSelectedAccount != null;
-            assert mSelectedAccount.isSignIn();
-            onAccountSelected(new ButtonData(mSelectedAccount, /* idpMetadata= */ null));
+            assert mSelectedAccount.isIdpClaimedSignIn()
+                    || mSelectedAccount.isBrowserTrustedSignIn();
         }
 
         if (mHeaderType == HeaderType.SIGN_IN_TO_IDP_STATIC) {
@@ -1095,9 +1047,7 @@ class AccountSelectionMediator {
                             ? createDataSharingConsentItem(
                                     mIdpForDisplay,
                                     mSelectedAccount.getIdentityProviderData().getClientMetadata(),
-                                    mSelectedAccount
-                                            .getIdentityProviderData()
-                                            .getDisclosureFields())
+                                    mSelectedAccount.getFields())
                             : null);
         }
         mModel.set(
@@ -1123,9 +1073,7 @@ class AccountSelectionMediator {
                             ? createDataSharingConsentItem(
                                     mIdpForDisplay,
                                     mSelectedAccount.getIdentityProviderData().getClientMetadata(),
-                                    mSelectedAccount
-                                            .getIdentityProviderData()
-                                            .getDisclosureFields())
+                                    mSelectedAccount.getFields())
                             : null);
         }
         mModel.set(
@@ -1136,13 +1084,13 @@ class AccountSelectionMediator {
         mModel.set(
                 ItemProperties.ERROR_TEXT,
                 mHeaderType == HeaderType.SIGN_IN_ERROR
-                        ? createErrorTextItem(mIdpForDisplay, mRpForDisplay, mError)
+                        ? createErrorTextItem(mIdpForDisplay, mError)
                         : null);
         // The add account button is added separately for active mode single account chooser.
         mModel.set(
                 ItemProperties.ADD_ACCOUNT_BUTTON,
                 showUseDifferentAccountInSingleAccountChooserActiveMode
-                        ? createAddAccountBtnItem(firstAccountIdpMetadata)
+                        ? createLoginBtnItem(firstAccountIdp)
                         : null);
         mModel.set(
                 ItemProperties.ACCOUNT_CHIP,
@@ -1156,6 +1104,11 @@ class AccountSelectionMediator {
                                 || mHeaderType == HeaderType.VERIFY
                                 || mHeaderType == HeaderType.VERIFY_AUTO_REAUTHN));
 
+        // In passive mode, the dragbar visibility depends on whether there are multiple IDPs or
+        // not.
+        mModel.set(
+                ItemProperties.DRAGBAR_HANDLE_VISIBLE, mRpMode == RpMode.ACTIVE || mIsMultipleIdps);
+
         mBottomSheetController.expandSheet();
         // When a user opens a page that invokes the FedCM API in a new tab, the tab will be hidden
         // and we should not show the bottom sheet to avoid confusion.
@@ -1166,10 +1119,24 @@ class AccountSelectionMediator {
         return true;
     }
 
-    private void updateHeader() {
+    private void updateHeader(Bitmap headerIcon, boolean shouldCircleCrop, Bitmap rpBrandIcon) {
+        mHeaderIcon = isValidBrandIcon(headerIcon, shouldCircleCrop) ? headerIcon : null;
+        mRpBrandIcon =
+                isValidBrandIcon(rpBrandIcon, /* shouldCircleCrop= */ true) ? rpBrandIcon : null;
+        String rpForDisplay = "";
+        String iframeForDisplay = "";
+        if (!mRpData.getDisplayStringsMayChange()) {
+            rpForDisplay = mRpData.getRpForDisplay();
+            iframeForDisplay = mRpData.getIframeForDisplay();
+        }
         PropertyModel headerModel =
                 createHeaderItem(
-                        mHeaderType, mRpForDisplay, mIdpForDisplay, mRpContext, mIsMultipleIdps);
+                        mHeaderType,
+                        rpForDisplay,
+                        iframeForDisplay,
+                        mIdpForDisplay,
+                        mRpContext,
+                        mIsMultipleIdps);
         mModel.set(ItemProperties.HEADER, headerModel);
     }
 
@@ -1179,7 +1146,7 @@ class AccountSelectionMediator {
      * controller queue and notifies the delegate of the dismissal.
      */
     private boolean showContent() {
-        if (mWasDismissed || mIsModalDialogOpen) {
+        if (mWasDismissed || mIsModalDialogOpen || !mCanShowUi) {
             return true;
         }
         // When active mode is triggered, if there's a pending passive mode request, we should
@@ -1205,7 +1172,7 @@ class AccountSelectionMediator {
         mBottomSheetController.addObserver(mBottomSheetObserver);
         KeyboardVisibilityDelegate.getInstance()
                 .addKeyboardVisibilityListener(mKeyboardVisibilityListener);
-        if (!mTab.hasObserver(mTabObserver)) mTab.addObserver(mTabObserver);
+        mTab.addObserver(mTabObserver);
         return true;
     }
 
@@ -1222,12 +1189,25 @@ class AccountSelectionMediator {
 
     private void requestAvatarImage(PropertyModel accountModel) {
         Account account = accountModel.get(AccountProperties.ACCOUNT);
-        final String name = account.getName();
-        final Bitmap picture = account.getPictureBitmap();
-
+        final String displayName = account.getDisplayName();
+        final Bitmap picture =
+                mIsMultipleIdps
+                        ? account.getCircledBadgedPictureBitmap()
+                        : account.getPictureBitmap();
+        int avatarSize =
+                mIsMultipleIdps
+                        ? mContext.getResources()
+                                .getDimensionPixelSize(
+                                        R.dimen.account_selection_account_avatar_multi_idp_size)
+                        : mDesiredAvatarSize;
         accountModel.set(
                 AccountProperties.AVATAR,
-                new AccountProperties.Avatar(name, picture, mDesiredAvatarSize));
+                new AccountProperties.Avatar(displayName, picture, avatarSize));
+    }
+
+    private void setIsMultipleIdps(boolean isMultipleIdps) {
+        mIsMultipleIdps = isMultipleIdps;
+        mBottomSheetContent.setIsMultipleIdps(isMultipleIdps);
     }
 
     boolean wasDismissed() {
@@ -1242,6 +1222,11 @@ class AccountSelectionMediator {
         assert buttonData.mIdpMetadata != null;
         assert buttonData.mAccount == null;
         if (!shouldInputBeProcessed()) return;
+        if (mHeaderType == HeaderType.SIGN_IN_TO_IDP_STATIC) {
+            mIsMismatchContinueClicked = true;
+            mMismatchDialogState = MismatchDialogResult.CONTINUED;
+            maybeRecordMismatchDialogResult();
+        }
         maybeRecordAccountChooserResult(AccountChooserResult.USE_OTHER_ACCOUNT_BUTTON);
         mDelegate.onLoginToIdP(
                 buttonData.mIdpMetadata.getConfigUrl(), buttonData.mIdpMetadata.getLoginUrl());
@@ -1273,7 +1258,6 @@ class AccountSelectionMediator {
         // This method only has an Account to match the type of the event listener. However, it
         // should be non-null because an account must have been selected in order to reach an error
         // dialog.
-        assert buttonData.mIdpMetadata == null;
         assert buttonData.mAccount != null;
         if (!shouldInputBeProcessed()) return;
         onDismissed(IdentityRequestDialogDismissReason.GOT_IT_BUTTON);
@@ -1289,24 +1273,13 @@ class AccountSelectionMediator {
         // FedCM.
         Account oldSelectedAccount = mSelectedAccount;
         mSelectedAccount = buttonData.mAccount;
-        // If we were in multi IDP mode, we had not set the IDP brand icon yet. Set it now.
-        if (mIsMultipleIdps) {
-            updateIdpBrandIcon(
-                    mSelectedAccount
-                            .getIdentityProviderData()
-                            .getIdpMetadata()
-                            .getBrandIconBitmap());
-        }
-        mIsMultipleIdps = false;
 
-        // If the account is a returning user or if the account is selected from UI which shows the
-        // disclosure text or if the browser doesn't need to request permission because the IDP
-        // prefers asking for permission by themselves, skip the disclosure UI and proceed to the
-        // verifying sheet.
+        // If the account is selected from UI which shows the disclosure text or
+        // if the browser doesn't need to request permission, skip the
+        // disclosure UI and proceed to the verifying sheet.
         if ((mRpMode == RpMode.PASSIVE && oldSelectedAccount != null)
-                || mSelectedAccount.isSignIn()
                 || mHeaderType == HeaderType.REQUEST_PERMISSION_MODAL
-                || mSelectedAccount.getIdentityProviderData().getDisclosureFields().length == 0) {
+                || mSelectedAccount.getFields().length == 0) {
             mDelegate.onAccountSelected(mSelectedAccount);
             showVerifySheet(mSelectedAccount);
             return;
@@ -1323,7 +1296,17 @@ class AccountSelectionMediator {
         showAccountsInternal(/* newAccounts= */ null);
     }
 
+    private void recordCloseSheetMetrics() {
+        RecordHistogram.recordBooleanHistogram(
+                "Blink.FedCm.CloseVerifySheet.Android", mHeaderType == HeaderType.VERIFY);
+        RecordHistogram.recordEnumeratedHistogram(
+                "Blink.FedCm.ClosedSheetType.Android", getSheetType(), SheetType.MAX_VALUE + 1);
+    }
+
     void onDismissed(@IdentityRequestDialogDismissReason int dismissReason) {
+        if (mWasDismissed) {
+            return;
+        }
         boolean isUseOtherAccountCctDismissed =
                 mHeaderType == HeaderType.SIGN_IN && mIsModalDialogOpen;
         // If dismissed from use other account CCT, reshow the accounts dialog.
@@ -1334,11 +1317,19 @@ class AccountSelectionMediator {
             return;
         }
 
+        // If dismissed from the close button for mismatch dialog, set the dialog state for
+        // recording the dialog result.
+        if (dismissReason == IdentityRequestDialogDismissReason.CLOSE_BUTTON
+                && mHeaderType == HeaderType.SIGN_IN_TO_IDP_STATIC) {
+            mMismatchDialogState = MismatchDialogResult.DISMISSED_BY_CLOSE_ICON;
+        }
+
         if (mAccountChooserState != null) {
             maybeRecordAccountChooserResult(mAccountChooserState);
         }
         maybeRecordLoadingDialogResult();
         maybeRecordDisclosureDialogResult();
+        maybeRecordMismatchDialogResult();
         dismissContent();
         mDelegate.onDismissed(dismissReason);
     }
@@ -1352,6 +1343,7 @@ class AccountSelectionMediator {
                                 isAccountClickable && !account.isFilteredOut()
                                         ? this::onClickAccountSelected
                                         : null)
+                        .with(AccountProperties.SHOW_IDP, mIsMultipleIdps)
                         .build();
         requestAvatarImage(model);
         return model;
@@ -1377,14 +1369,14 @@ class AccountSelectionMediator {
                 .build();
     }
 
-    private PropertyModel createAddAccountBtnItem(IdentityProviderMetadata idpMetadata) {
-        AddAccountButtonProperties.Properties properties =
-                new AddAccountButtonProperties.Properties();
-        properties.mIdpMetadata = idpMetadata;
+    private PropertyModel createLoginBtnItem(IdentityProviderData identityProvider) {
+        LoginButtonProperties.Properties properties = new LoginButtonProperties.Properties();
+        properties.mIdentityProvider = identityProvider;
         properties.mOnClickListener = this::onLoginToIdP;
         properties.mRpMode = mRpMode;
-        return new PropertyModel.Builder(AddAccountButtonProperties.ALL_KEYS)
-                .with(AddAccountButtonProperties.PROPERTIES, properties)
+        properties.mShowIdp = mIsMultipleIdps;
+        return new PropertyModel.Builder(LoginButtonProperties.ALL_KEYS)
+                .with(LoginButtonProperties.PROPERTIES, properties)
                 .build();
     }
 
@@ -1426,10 +1418,10 @@ class AccountSelectionMediator {
     }
 
     private PropertyModel createErrorTextItem(
-            String idpForDisplay, String rpForDisplay, IdentityCredentialTokenError error) {
+            String idpForDisplay, IdentityCredentialTokenError error) {
         ErrorProperties.Properties properties = new ErrorProperties.Properties();
         properties.mIdpForDisplay = idpForDisplay;
-        properties.mRpForDisplay = rpForDisplay;
+        properties.mRpForDisplay = mRpData.getRpForDisplay();
         properties.mError = error;
         properties.mMoreDetailsClickRunnable =
                 !error.getUrl().isEmpty() ? this::onMoreDetails : null;

@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
@@ -24,6 +25,7 @@
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
+#include "base/strings/string_util_win.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
@@ -36,6 +38,7 @@
 #include "base/win/atl.h"
 #include "base/win/scoped_bstr.h"
 #include "base/win/win_util.h"
+#include "chrome/browser/google/google_update_app_command.h"
 #include "chrome/browser/google/switches.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/grit/generated_resources.h"
@@ -44,7 +47,6 @@
 #include "chrome/installer/util/helper.h"
 #include "chrome/installer/util/install_util.h"
 #include "ui/base/l10n/l10n_util.h"
-#include "ui/base/win/atl_module.h"
 
 namespace {
 
@@ -117,18 +119,6 @@ GoogleUpdateErrorCode CanUpdateCurrentChrome(
              : CANNOT_UPGRADE_CHROME_IN_THIS_DIRECTORY;
 }
 
-// Explicitly allow the Google Update service to impersonate the client since
-// some COM code elsewhere in the browser process may have previously used
-// CoInitializeSecurity to set the impersonation level to something other than
-// the default. Ignore errors since an attempt to use Google Update may succeed
-// regardless.
-void ConfigureProxyBlanket(IUnknown* interface_pointer) {
-  ::CoSetProxyBlanket(
-      interface_pointer, RPC_C_AUTHN_DEFAULT, RPC_C_AUTHZ_DEFAULT,
-      COLE_DEFAULT_PRINCIPAL, RPC_C_AUTHN_LEVEL_PKT_PRIVACY,
-      RPC_C_IMP_LEVEL_IMPERSONATE, nullptr, EOAC_DYNAMIC_CLOAKING);
-}
-
 // Creates a class factory for a COM Local Server class using the Elevation
 // moniker. |hwnd| must refer to a foregound window in order to get the UAC
 // prompt to appear in the foreground if running on Vista+. It can also be NULL
@@ -146,10 +136,7 @@ HRESULT CoGetClassObjectAsAdmin(gfx::AcceleratedWidget hwnd,
   const std::wstring elevation_moniker_name =
       L"Elevation:Administrator!clsid:" + base::win::WStringFromGUID(class_id);
 
-  BIND_OPTS3 bind_opts;
-  // An explicit memset is needed rather than relying on value initialization
-  // since BIND_OPTS3 is not an aggregate (it is a derived type).
-  memset(&bind_opts, 0, sizeof(bind_opts));
+  BIND_OPTS3 bind_opts = {};
   bind_opts.cbStruct = sizeof(bind_opts);
   bind_opts.dwClassContext = CLSCTX_LOCAL_SERVER;
   bind_opts.hwnd = hwnd;
@@ -550,9 +537,6 @@ UpdateCheckResult UpdateCheckDriver::BeginUpdateCheckInternal() {
 
     system_level_install_ = !InstallUtil::IsPerUserInstall();
 
-    // Make sure ATL is initialized in this module.
-    ui::win::CreateATLModuleIfNeeded();
-
     const GoogleUpdateErrorCode error_code =
         CanUpdateCurrentChrome(chrome_exe, system_level_install_);
     if (error_code != GOOGLE_UPDATE_NO_ERROR) {
@@ -609,12 +593,6 @@ UpdateCheckResult UpdateCheckDriver::BeginUpdateCheckInternal() {
     if (FAILED(hresult)) {
       return {error_code, hresult};
     }
-    if (elevation_window_) {
-      // Likewise, a failure to set the parent window need not block an update
-      // check.
-      app_bundle->put_parentHWND(
-          reinterpret_cast<ULONG_PTR>(elevation_window_));
-    }
     app_bundle_.Swap(app_bundle);
   }
 
@@ -627,8 +605,8 @@ UpdateCheckResult UpdateCheckDriver::BeginUpdateCheckInternal() {
     Microsoft::WRL::ComPtr<IDispatch> dispatch;
     // It is common for this call to fail with APP_USING_EXTERNAL_UPDATER if
     // an auto update is in progress.
-    hresult =
-        app_bundle_->createInstalledApp(base::win::ScopedBstr(app_guid).Get());
+    hresult = app_bundle_->createInstalledApp(
+        base::win::ScopedBstr(base::ToLowerASCII(app_guid)).Get());
     if (FAILED(hresult)) {
       return {error_code, hresult};
     }
@@ -998,7 +976,7 @@ void SetGoogleUpdateFactoryForTesting(
 }
 
 // TODO(calamity): Remove once a MockTimer is implemented in
-// TaskEnvironment. See https://crbug.com/708584.
+// TaskEnvironment. See https://crbug.com/40514143.
 void SetUpdateDriverTaskRunnerForTesting(
     base::SingleThreadTaskRunner* task_runner) {
   g_update_driver_task_runner = task_runner;

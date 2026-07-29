@@ -4,11 +4,13 @@
 
 package org.chromium.android_webview;
 
+import androidx.annotation.IntDef;
+
 import org.chromium.android_webview.AwContents.VisualStateCallback;
 import org.chromium.android_webview.common.Lifetime;
+import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
-import org.chromium.build.annotations.Nullable;
 import org.chromium.content_public.browser.GlobalRenderFrameHostId;
 import org.chromium.content_public.browser.LifecycleState;
 import org.chromium.content_public.browser.NavigationHandle;
@@ -21,43 +23,16 @@ import org.chromium.ui.base.PageTransition;
 import org.chromium.url.GURL;
 
 import java.lang.ref.WeakReference;
-import java.util.WeakHashMap;
 
 /** Routes notifications from WebContents to AwContentsClient and other listeners. */
 @Lifetime.WebView
-public class AwWebContentsObserver extends WebContentsObserver
-        implements Page.PageDeletionListener {
+public class AwWebContentsObserver extends WebContentsObserver {
     // TODO(tobiasjs) similarly to WebContentsObserver.mWebContents, mAwContents
     // needs to be a WeakReference, which suggests that there exists a strong
     // reference to an AwWebContentsObserver instance. This is not intentional,
     // and should be found and cleaned up.
     private final WeakReference<AwContents> mAwContents;
     private final WeakReference<AwContentsClient> mAwContentsClient;
-
-    // Maps a NavigationHandle to its associated AwNavigation object. Since the AwNavigation object
-    // subclasses AwSupportLibIsomorphic in order to hold onto a reference to the client-side
-    // object and we want to keep it stable (so that apps can use the object itself as implicit
-    // IDs), we need to keep a mapping. Some important points:
-    // - If the app keeps a reference to the app-facing navigation object around, that object will
-    //   reference the AwNavigation, which references the NavigationHandle, and so all these
-    //   objects will be kept alive: the map will continue to associate the two so that future
-    //   callbacks use the same object, and the app can also continue calling the getters even
-    //   after //content's native code is no longer keeping the handle around.
-    // - If the app doesn't keep a reference to the app-facing navigation object, then the
-    //   NavigationHandle will be kept alive by //content for as long as the navigation is in
-    //   progress, which will also keep the entry in the hashmap alive, but because the hashmap
-    //   value is a weak reference then this will not keep the AwNavigation alive and it might get
-    //   GCed in between callbacks; we would have to create a new AwNavigation wrapper if that
-    //   happens to call the next callback which is not ideal for performance but doesn't affect
-    //   the app-visible behavior of the API much: they didn't keep a reference to the
-    //   navigation around the first time and so they can't tell whether the second time is the
-    //   same object or not.
-    // - The app unfortunately can tell if they store a weak reference to the navigation object,
-    //   but there's no need for them to do that here: strongly referencing the object doesn't
-    //   leak the WebView or anything.
-    WeakHashMap<NavigationHandle, WeakReference<AwNavigation>> mNavigationMap;
-    // Similar reason as above, but between Page and AwPage.
-    WeakHashMap<Page, WeakReference<AwPage>> mPageMap;
 
     // Whether this webcontents has ever committed any navigation.
     private boolean mCommittedNavigation;
@@ -83,41 +58,6 @@ public class AwWebContentsObserver extends WebContentsObserver
         return null;
     }
 
-    private AwNavigation getAwNavigationFor(NavigationHandle navigation) {
-        WeakReference<AwNavigation> awNavigationRef = mNavigationMap.get(navigation);
-        if (awNavigationRef != null) {
-            AwNavigation awNavigation = awNavigationRef.get();
-            if (awNavigation != null) {
-                return awNavigation;
-            }
-        }
-        AwNavigation awNavigation =
-                new AwNavigation(navigation, getAwPageFor(navigation.getCommittedPage()));
-        mNavigationMap.put(navigation, new WeakReference<>(awNavigation));
-        return awNavigation;
-    }
-
-    private @Nullable AwPage getAwPageFor(@Nullable Page page) {
-        if (page == null) {
-            return null;
-        }
-        WeakReference<AwPage> awPageRef = mPageMap.get(page);
-        if (awPageRef != null) {
-            AwPage awPage = awPageRef.get();
-            if (awPage != null) {
-                return awPage;
-            }
-        }
-        AwPage awPage = new AwPage(page);
-        // We only keep track of pages that have been the primary page (either the current primary
-        // page, or a previously primary but now bfcached / pending deletion page).
-        assert !awPage.isPrerendering();
-        // Make sure we always track deletion of a non-prerendering page.
-        page.setPageDeletionListener(this);
-        mPageMap.put(page, new WeakReference<>(awPage));
-        return awPage;
-    }
-
     @Override
     public void didFinishLoadInPrimaryMainFrame(
             Page page,
@@ -133,10 +73,7 @@ public class AwWebContentsObserver extends WebContentsObserver
 
         AwContents awContents = mAwContents.get();
         if (awContents != null) {
-            AwNavigationClient client = awContents.getNavigationClient();
-            if (client != null) {
-                client.onPageLoadEventFired(getAwPageFor(page));
-            }
+            awContents.getNavigationClient().onPageLoadEventFired(page);
         }
     }
 
@@ -145,21 +82,7 @@ public class AwWebContentsObserver extends WebContentsObserver
             Page page, GlobalRenderFrameHostId rfhId, @LifecycleState int rfhLifecycleState) {
         AwContents awContents = mAwContents.get();
         if (awContents != null) {
-            AwNavigationClient client = awContents.getNavigationClient();
-            if (client != null) {
-                client.onPageDOMContentLoadedEventFired(getAwPageFor(page));
-            }
-        }
-    }
-
-    @Override
-    public void firstContentfulPaintInPrimaryMainFrame(Page page) {
-        AwContents awContents = mAwContents.get();
-        if (awContents != null) {
-            AwNavigationClient client = awContents.getNavigationClient();
-            if (client != null) {
-                client.onFirstContentfulPaint(getAwPageFor(page));
-            }
+            awContents.getNavigationClient().onPageDOMContentLoadedEventFired(page);
         }
     }
 
@@ -233,22 +156,43 @@ public class AwWebContentsObserver extends WebContentsObserver
     public void didStartNavigationInPrimaryMainFrame(NavigationHandle navigation) {
         AwContents awContents = mAwContents.get();
         if (awContents != null) {
-            AwNavigationClient client = awContents.getNavigationClient();
-            if (client != null) {
-                client.onNavigationStarted(getAwNavigationFor(navigation));
-            }
+            awContents.getNavigationClient().onNavigationStarted(navigation);
         }
     }
 
     @Override
     public void didRedirectNavigation(NavigationHandle navigation) {
-        AwContents awContents = mAwContents.get();
-        if (awContents != null) {
-            AwNavigationClient client = awContents.getNavigationClient();
-            if (client != null && navigation.isInPrimaryMainFrame()) {
-                client.onNavigationRedirected(getAwNavigationFor(navigation));
+        if (navigation.isInPrimaryMainFrame()) {
+            AwContents awContents = mAwContents.get();
+            if (awContents != null) {
+                awContents.getNavigationClient().onNavigationRedirected(navigation);
             }
         }
+    }
+
+    // Used to record the UMA histogram Android.WebView.Navigation.MainFrame. Since these
+    // values are persisted to logs, they should never be renumbered or reused.
+    @IntDef({
+        NavigationType.INITIAL,
+        NavigationType.SAME_DOCUMENT,
+        NavigationType.BROWSER_INITIATED_SAME_ORIGIN,
+        NavigationType.BROWSER_INITIATED_CROSS_ORIGIN,
+        NavigationType.RENDERER_INITIATED_SAME_ORIGIN,
+        NavigationType.RENDERER_INITIATED_CROSS_ORIGIN,
+    })
+    public @interface NavigationType {
+        int INITIAL = 0;
+        int SAME_DOCUMENT = 1;
+        int BROWSER_INITIATED_SAME_ORIGIN = 2;
+        int BROWSER_INITIATED_CROSS_ORIGIN = 3;
+        int RENDERER_INITIATED_SAME_ORIGIN = 4;
+        int RENDERER_INITIATED_CROSS_ORIGIN = 5;
+        int COUNT = 6;
+    }
+
+    private static void recordMainFrameNavigationType(@NavigationType int value) {
+        RecordHistogram.recordEnumeratedHistogram(
+                "Android.WebView.Navigation.MainFrame", value, NavigationType.COUNT);
     }
 
     @Override
@@ -257,12 +201,53 @@ public class AwWebContentsObserver extends WebContentsObserver
         if (navigation.errorCode() != NetError.OK && !navigation.isDownload()) {
             processFailedLoad(true, navigation.errorCode(), navigation.getUrl());
         }
+        AwContentsClient client = mAwContentsClient.get();
+
+        // Invoke synthetic onPageFinished callbacks for duplicate navigations ignored by the
+        // IgnoreDuplicateNavs optimization. Without this optimization, a duplicate request would
+        // cancel the ongoing navigation (net::ERR_ABORTED) and start a new navigation. We mimic
+        // that signal here to maintain backward compatibility for apps that expect a callback for
+        // every attempt, consistent with `processFailedLoad()`.
+        if (client != null) {
+            int ignoredCount = navigation.getIgnoredDuplicateNavigationCount();
+            for (int i = 0; i < ignoredCount; i++) {
+                client.getCallbackHelper().postOnPageFinished(url);
+            }
+        }
+
+        if (navigation.isInPrimaryMainFrame()) {
+            AwContents awContents = mAwContents.get();
+            if (awContents != null) {
+                awContents.getNavigationClient().onNavigationCompleted(navigation);
+            }
+        }
 
         if (!navigation.hasCommitted()) return;
 
+        if (navigation.isInPrimaryMainFrame()) {
+            if (!mCommittedNavigation) {
+                recordMainFrameNavigationType(NavigationType.INITIAL);
+            } else if (navigation.isSameDocument()) {
+                recordMainFrameNavigationType(NavigationType.SAME_DOCUMENT);
+            } else if (navigation.isRendererInitiated()) {
+                if (navigation.isSameOrigin()) {
+                    recordMainFrameNavigationType(NavigationType.RENDERER_INITIATED_SAME_ORIGIN);
+                } else {
+                    recordMainFrameNavigationType(NavigationType.RENDERER_INITIATED_CROSS_ORIGIN);
+                }
+            } else {
+                if (navigation.isSameOrigin()) {
+                    recordMainFrameNavigationType(NavigationType.BROWSER_INITIATED_SAME_ORIGIN);
+                } else {
+                    recordMainFrameNavigationType(NavigationType.BROWSER_INITIATED_CROSS_ORIGIN);
+                }
+            }
+        }
+
         mCommittedNavigation = true;
 
-        AwContentsClient client = mAwContentsClient.get();
+        navigation.getCommittedPage().setUrl(navigation.getUrl());
+
         if (client != null) {
             // OnPageStarted is not called for in-page navigations, which include fragment
             // navigations and navigation from history.push/replaceState.
@@ -278,14 +263,6 @@ public class AwWebContentsObserver extends WebContentsObserver
                     (navigation.pageTransition() & PageTransition.CORE_MASK)
                             == PageTransition.RELOAD;
             client.getCallbackHelper().postDoUpdateVisitedHistory(url, isReload);
-        }
-
-        AwContents awContents = mAwContents.get();
-        if (awContents != null) {
-            AwNavigationClient navClient = awContents.getNavigationClient();
-            if (navClient != null && navigation.isInPrimaryMainFrame()) {
-                navClient.onNavigationCompleted(getAwNavigationFor(navigation));
-            }
         }
 
         // Only invoke the onPageCommitVisible callback when navigating to a different document,
@@ -322,17 +299,9 @@ public class AwWebContentsObserver extends WebContentsObserver
         // no longer consider it as one.
         page.setIsPrerendering(false);
         // Make sure we track the deletion of this new page.
-        page.setPageDeletionListener(this);
-    }
-
-    @Override
-    public void onWillDeletePage(Page page) {
         AwContents awContents = mAwContents.get();
         if (awContents != null) {
-            AwNavigationClient navClient = awContents.getNavigationClient();
-            if (navClient != null && !page.isPrerendering()) {
-                navClient.onPageDeleted(getAwPageFor(page));
-            }
+            page.setPageDeletionListener(awContents.getNavigationClient());
         }
     }
 

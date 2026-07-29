@@ -5,6 +5,7 @@
 #ifndef COMPONENTS_VIZ_SERVICE_DISPLAY_EMBEDDER_SKIA_RENDER_COPY_RESULTS_H_
 #define COMPONENTS_VIZ_SERVICE_DISPLAY_EMBEDDER_SKIA_RENDER_COPY_RESULTS_H_
 
+#include <array>
 #include <memory>
 #include <vector>
 
@@ -29,12 +30,12 @@ class SkiaOutputSurfaceImplOnGpu;
 class AsyncReadResultLock
     : public base::RefCountedThreadSafe<AsyncReadResultLock> {
  public:
-  AsyncReadResultLock() = default;
+  AsyncReadResultLock();
   base::Lock& lock() { return lock_; }
 
  private:
   friend class base::RefCountedThreadSafe<AsyncReadResultLock>;
-  ~AsyncReadResultLock() = default;
+  ~AsyncReadResultLock();
 
   base::Lock lock_;
 };
@@ -67,12 +68,14 @@ struct ReadPixelsContext {
   ReadPixelsContext(std::unique_ptr<CopyOutputRequest> request,
                     const gfx::Rect& result_rect,
                     const gfx::ColorSpace& color_space,
+                    const TrackedElementRects& tracked_element_rects,
                     base::WeakPtr<SkiaOutputSurfaceImplOnGpu> impl_on_gpu);
   ~ReadPixelsContext();
 
   std::unique_ptr<CopyOutputRequest> request;
   gfx::Rect result_rect;
   gfx::ColorSpace color_space;
+  TrackedElementRects tracked_element_rects;
   base::WeakPtr<SkiaOutputSurfaceImplOnGpu> impl_on_gpu;
 };
 

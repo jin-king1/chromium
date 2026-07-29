@@ -8,7 +8,7 @@
 #include <optional>
 
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/token.h"
 #include "content/public/browser/browser_context.h"
@@ -27,7 +27,7 @@ namespace {
 class FakeLaunchedVideoCaptureDevice
     : public content::LaunchedVideoCaptureDevice {
  public:
-  FakeLaunchedVideoCaptureDevice(
+  explicit FakeLaunchedVideoCaptureDevice(
       std::unique_ptr<media::VideoCaptureDevice> device)
       : device_(std::move(device)) {}
 
@@ -89,22 +89,24 @@ void FakeVideoCaptureDeviceLauncher::LaunchDeviceAsync(
     base::WeakPtr<media::VideoFrameReceiver> receiver,
     base::OnceClosure connection_lost_cb,
     Callbacks* callbacks,
-    base::OnceClosure done_cb,
-    mojo::PendingRemote<video_effects::mojom::VideoEffectsProcessor>
-        video_effects_processor,
-    mojo::PendingRemote<media::mojom::ReadonlyVideoEffectsManager>
-        readonly_video_effects_manager) {
-  auto device = system_->CreateDevice(device_id).ReleaseDevice();
+    base::OnceClosure done_cb) {
+  media::VideoCaptureErrorOrDevice device_or_error =
+      system_->CreateDevice(device_id);
+  if (!device_or_error.ok()) {
+    callbacks->OnDeviceLaunchFailed(device_or_error.error());
+    std::move(done_cb).Run();
+    return;
+  }
+  std::unique_ptr<media::VideoCaptureDevice> device =
+      device_or_error.ReleaseDevice();
 #if BUILDFLAG(IS_WIN)
-  scoped_refptr<media::VideoCaptureBufferPool> buffer_pool(
-      new media::VideoCaptureBufferPoolImpl(
-          params.buffer_type, 10,
-          std::make_unique<media::VideoCaptureBufferTrackerFactoryImpl>(
-              system_->GetFactory()->GetDxgiDeviceManager())));
+  auto buffer_pool = base::MakeRefCounted<media::VideoCaptureBufferPoolImpl>(
+      params.buffer_type, 10,
+      std::make_unique<media::VideoCaptureBufferTrackerFactoryImpl>(
+          system_->GetFactory()->GetDxgiDeviceManager()));
 #else
-  scoped_refptr<media::VideoCaptureBufferPool> buffer_pool(
-      new media::VideoCaptureBufferPoolImpl(
-          media::VideoCaptureBufferType::kSharedMemory));
+  auto buffer_pool = base::MakeRefCounted<media::VideoCaptureBufferPoolImpl>(
+      media::VideoCaptureBufferType::kSharedMemory);
 #endif  // BUILDFLAG(IS_WIN)
 #if BUILDFLAG(IS_CHROMEOS)
   auto device_client = std::make_unique<media::VideoCaptureDeviceClient>(
@@ -117,7 +119,7 @@ void FakeVideoCaptureDeviceLauncher::LaunchDeviceAsync(
   auto device_client = std::make_unique<media::VideoCaptureDeviceClient>(
       std::make_unique<media::VideoFrameReceiverOnTaskRunner>(
           receiver, base::SingleThreadTaskRunner::GetCurrentDefault()),
-      std::move(buffer_pool), std::nullopt);
+      std::move(buffer_pool));
 #endif  // BUILDFLAG(IS_CHROMEOS)
   device->AllocateAndStart(params, std::move(device_client));
   auto launched_device =

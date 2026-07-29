@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "chrome/test/chromedriver/logging.h"
 
@@ -62,14 +58,14 @@ TEST(Logging, NameToLevelErrors) {
 
 namespace {
 
-void ValidateLogEntry(const base::Value::List& entries,
+void ValidateLogEntry(const base::ListValue& entries,
                       size_t index,
                       const std::string& expected_level,
                       const std::string& expected_message) {
   ASSERT_LT(index, entries.size());
   const base::Value& entry_value = entries[index];
   ASSERT_TRUE(entry_value.is_dict());
-  const base::Value::Dict& entry = entry_value.GetDict();
+  const base::DictValue& entry = entry_value.GetDict();
 
   const std::string* level = entry.FindString("level");
   ASSERT_TRUE(level);
@@ -89,7 +85,7 @@ TEST(WebDriverLog, Levels) {
   log.AddEntry(Log::kError, "severe message");
   log.AddEntry(Log::kDebug, "debug message");  // Must not log
 
-  base::Value::List entries = log.GetAndClearEntries();
+  base::ListValue entries = log.GetAndClearEntries();
 
   ASSERT_EQ(2u, entries.size());
   ValidateLogEntry(entries, 0u, "INFO", "info message");
@@ -101,7 +97,7 @@ TEST(WebDriverLog, Off) {
   log.AddEntry(Log::kError, "severe message");  // Must not log
   log.AddEntry(Log::kDebug, "debug message");  // Must not log
 
-  base::Value::List entries = log.GetAndClearEntries();
+  base::ListValue entries = log.GetAndClearEntries();
   EXPECT_TRUE(entries.empty());
 }
 
@@ -110,7 +106,7 @@ TEST(WebDriverLog, All) {
   log.AddEntry(Log::kError, "severe message");
   log.AddEntry(Log::kDebug, "debug message");
 
-  base::Value::List entries = log.GetAndClearEntries();
+  base::ListValue entries = log.GetAndClearEntries();
 
   ASSERT_EQ(2u, entries.size());
   ValidateLogEntry(entries, 0u, "SEVERE", "severe message");
@@ -191,7 +187,7 @@ TEST(Logging, OverflowLogs) {
     log.AddEntry(Log::kInfo, base::StringPrintf("%" PRIuS, i));
   log.AddEntry(Log::kError, "the 1st error is in the 2nd batch");
   ASSERT_EQ("the 1st error is in the 2nd batch", log.GetFirstErrorMessage());
-  base::Value::List entries = log.GetAndClearEntries();
+  base::ListValue entries = log.GetAndClearEntries();
   EXPECT_EQ(internal::kMaxReturnedEntries, entries.size());
   entries = log.GetAndClearEntries();
   EXPECT_EQ(1u, entries.size());

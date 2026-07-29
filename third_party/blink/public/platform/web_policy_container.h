@@ -7,6 +7,8 @@
 
 #include <vector>
 
+#include "services/network/public/cpp/connection_allowlist.h"
+#include "services/network/public/cpp/integrity_policy.h"
 #include "services/network/public/mojom/cross_origin_embedder_policy.mojom-shared.h"
 #include "services/network/public/mojom/ip_address_space.mojom-shared.h"
 #include "services/network/public/mojom/referrer_policy.mojom-shared.h"
@@ -20,8 +22,11 @@ namespace blink {
 // TODO(antoniosartori): Remove this when CommitNavigation IPC will be handled
 // directly in blink.
 struct WebPolicyContainerPolicies {
+  network::ConnectionAllowlists connection_allowlists;
   network::mojom::CrossOriginEmbedderPolicyValue cross_origin_embedder_policy =
       network::mojom::CrossOriginEmbedderPolicyValue::kNone;
+  network::IntegrityPolicy integrity_policy;
+  network::IntegrityPolicy integrity_policy_report_only;
   network::mojom::ReferrerPolicy referrer_policy =
       network::mojom::ReferrerPolicy::kDefault;
   std::vector<WebContentSecurityPolicy> content_security_policies;
@@ -31,10 +36,6 @@ struct WebPolicyContainerPolicies {
   network::mojom::IPAddressSpace ip_address_space =
       network::mojom::IPAddressSpace::kUnknown;
   bool can_navigate_top_without_user_gesture = true;
-  // An extra bit ensuring that the document cannot be cross-origin-isolated
-  // when it's false. Note that it is a necessary condition but not a sufficient
-  // condition on its own.
-  bool allow_cross_origin_isolation = false;
   bool cross_origin_isolation_enabled_by_dip = false;
 };
 

@@ -2,14 +2,22 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# This file contains suite definitions that can be used in
-# //testing/buildbot/waterfalls.pyl and will also be usable for builders that
-# set their tests in starlark (once that is ready). The legacy_ prefix on the
-# declarations indicates the capability to be used in //testing/buildbot. Once a
-# suite is no longer needed in //testing/buildbot, targets.bundle (which does
-# not yet exist) can be used for grouping tests in a more flexible manner.
+"""Basic suite definitions
 
-load("//lib/targets.star", "targets")
+Basic suites are a collection of tests that can be referenced by a builder in
+//testing/buildbot/waterfalls.pyl or by compound suites and matrix compound
+suites (defined in ./compound_suites.star and ./matrix_compound_suites.star
+respectively). Suites also define a bundle containing the same tests as the
+suite, so they can be used wherever a bundle is expected.
+
+The legacy_ prefix denotes the ability for basic suites to be referenced in
+//testing/buildbot. Once a suite is no longer referenced via //testing/buildbot,
+targets.bundle can be used for grouping tests in a more flexible manner (mixing
+test types and/or compile targets and arbitrary nesting). Named bundles are
+defined in ./bundles.star.
+"""
+
+load("@chromium-luci//targets.star", "targets")
 
 # TODO(gbeaty) - Make the resultdb information for tests using the same binaries
 # consistent and move the information onto the binaries
@@ -26,7 +34,7 @@ targets.legacy_basic_suite(
 targets.legacy_basic_suite(
     name = "blink_unittests_suite",
     tests = {
-        "blink_unit_tests": targets.legacy_test_config(),
+        "blink_unittests": targets.legacy_test_config(),
     },
 )
 
@@ -86,16 +94,14 @@ targets.legacy_basic_suite(
     tests = {
         "chrome_all_tast_tests": targets.legacy_test_config(
             skylab = targets.skylab(
-                # `tast_expr` must be a non-empty string to run the tast tests. But the value of
-                # would be overridden by `tast_arrt_expr` defined in chromeos/BUILD.gn, so that we
-                # put the stub string here.
-                tast_expr = "STUB_STRING_TO_RUN_TAST_TESTS",
-                # Temporary increases the maximum retries due to the unstable cloudbots (b/377616158)
-                test_level_retries = 2,
-                # Number of shards. Might be overriden for slower boards.
-                shards = 15,
-                # Timeout including DUT privisioning.
                 timeout_sec = 14400,
+                cros_ctp_suite_name = "chrome-uprev-hw",
+                cros_test_names_exclude_from_file = [
+                    "chromeos/tast_control_disabled_tests.txt",
+                    "chromeos/tast_control_flaky_tests.txt",
+                ],
+                cros_test_tags = ["group:mainline", "dep:chrome"],
+                cros_test_tags_exclude = ["informational", "dep:no_chrome_dcheck"],
             ),
         ),
     },
@@ -108,13 +114,13 @@ targets.legacy_basic_suite(
         "chrome_criticalstaging_tast_tests": targets.legacy_test_config(
             ci_only = True,
             skylab = targets.skylab(
-                # `tast_expr` must be a non-empty string to run the tast tests. But the value of
-                # would be overridden by `tast_arrt_expr` defined in chromeos/BUILD.gn, so that we
-                # put the stub string here.
-                tast_expr = "STUB_STRING_TO_RUN_TAST_TESTS",
-                test_level_retries = 2,
-                shards = 3,
                 timeout_sec = 14400,
+                cros_test_names_exclude_from_file = [
+                    "chromeos/tast_control_disabled_tests.txt",
+                    "chromeos/tast_control_flaky_tests.txt",
+                ],
+                cros_test_tags = ["group:mainline", "dep:chrome", "informational", "group:criticalstaging"],
+                cros_test_tags_exclude = ["dep:lacros", "dep:no_chrome_dcheck"],
             ),
             experiment_percentage = 100,
         ),
@@ -129,14 +135,32 @@ targets.legacy_basic_suite(
         "chrome_disabled_tast_tests": targets.legacy_test_config(
             ci_only = True,
             skylab = targets.skylab(
-                # `tast_expr` must be a non-empty string to run the tast tests. But the value of
-                # would be overridden by `tast_arrt_expr` defined in chromeos/BUILD.gn, so that we
-                # put the stub string here.
-                tast_expr = "STUB_STRING_TO_RUN_TAST_TESTS",
-                test_level_retries = 1,
-                shards = 2,
                 timeout_sec = 14400,
+                cros_test_names_from_file = ["chromeos/tast_control_disabled_tests.txt"],
             ),
+            args = [
+                "-retries=0",
+            ],
+            experiment_percentage = 100,
+        ),
+    },
+)
+
+# Test suite for running flaky Tast tests to collect data.
+# The test suite should not be critical to builders.
+targets.legacy_basic_suite(
+    name = "chromeos_chrome_flaky_tast_tests",
+    tests = {
+        "chrome_flaky_tast_tests": targets.legacy_test_config(
+            ci_only = True,
+            skylab = targets.skylab(
+                timeout_sec = 7200,
+                cros_test_names_from_file = ["chromeos/tast_control_flaky_tests.txt"],
+                # TODO(yoshiki): set shard_level_retries_on_ctp when ready.
+            ),
+            args = [
+                "-retries=2",
+            ],
             experiment_percentage = 100,
         ),
     },
@@ -148,14 +172,23 @@ targets.legacy_basic_suite(
 targets.legacy_basic_suite(
     name = "chromeos_device_only_gtests",
     tests = {
-        "base_unittests": targets.legacy_test_config(),
+        "base_unittests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+            ),
+        ),
     },
 )
 
 targets.legacy_basic_suite(
     name = "chromeos_integration_tests_suite",
     tests = {
-        "chromeos_integration_tests": targets.legacy_test_config(),
+        "chromeos_integration_tests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+                timeout_sec = 5400,
+            ),
+        ),
     },
 )
 
@@ -168,12 +201,22 @@ targets.legacy_basic_suite(
     name = "chromeos_system_friendly_gtests",
     tests = {
         "aura_unittests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+            ),
             args = [
                 "--ozone-platform=headless",
             ],
         ),
-        "base_unittests": targets.legacy_test_config(),
+        "base_unittests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+            ),
+        ),
         "capture_unittests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+            ),
             args = [
                 "--test-launcher-jobs=1",
                 # Don't run CaptureMJpeg tests on ChromeOS VM because vivid,
@@ -181,38 +224,87 @@ targets.legacy_basic_suite(
                 "--gtest_filter=-*UsingRealWebcam_CaptureMjpeg*",
             ],
         ),
-        "cc_unittests": targets.legacy_test_config(),
-        "crypto_unittests": targets.legacy_test_config(),
-        "display_unittests": targets.legacy_test_config(),
+        "cc_unittests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+            ),
+        ),
+        "crypto_unittests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+            ),
+        ),
+        "display_unittests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+            ),
+        ),
         "video_decode_accelerator_tests_fake_vaapi_vp9": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+            ),
             ci_only = True,
         ),
         "video_decode_accelerator_tests_fake_vaapi_vp8": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+            ),
             ci_only = True,
             experiment_percentage = 100,
         ),
         "video_decode_accelerator_tests_fake_vaapi_av1": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+            ),
             ci_only = True,
             experiment_percentage = 100,
         ),
         "fake_libva_driver_unittest": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+            ),
             experiment_percentage = 100,
         ),
-        "google_apis_unittests": targets.legacy_test_config(),
-        "ipc_tests": targets.legacy_test_config(),
-        "latency_unittests": targets.legacy_test_config(),
-        "libcups_unittests": targets.legacy_test_config(),
+        "google_apis_unittests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+            ),
+        ),
+        "ipc_tests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+            ),
+        ),
+        "latency_unittests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+            ),
+        ),
         "media_unittests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+            ),
             args = [
                 "--test-launcher-filter-file=../../testing/buildbot/filters/chromeos.media_unittests.filter",
             ],
         ),
-        "midi_unittests": targets.legacy_test_config(),
-        "mojo_unittests": targets.legacy_test_config(),
+        "midi_unittests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+            ),
+        ),
+        "mojo_unittests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+            ),
+        ),
         # net_unittests has a test-time dependency on vpython. So add a CIPD'ed
         # vpython of the right arch to the task, and tell the test runner to copy
         # it over to the VM before the test runs.
         "net_unittests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+            ),
             args = [
                 "--vpython-dir=../../vpython_dir_linux_amd64",
                 # PythonUtils.PythonRunTime (as opposed to Python3RunTime) requires a
@@ -245,22 +337,52 @@ targets.legacy_basic_suite(
             ),
         ),
         "ozone_gl_unittests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+            ),
             args = [
                 "--stop-ui",
             ],
         ),
-        "ozone_unittests": targets.legacy_test_config(),
-        "pdf_unittests": targets.legacy_test_config(),
-        "printing_unittests": targets.legacy_test_config(),
+        "ozone_unittests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+            ),
+        ),
+        "pdf_unittests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+            ),
+        ),
+        "printing_unittests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+            ),
+        ),
         "profile_provider_unittest": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+            ),
             args = [
                 "--stop-ui",
                 "--test-launcher-jobs=1",
             ],
         ),
-        "rust_gtest_interop_unittests": targets.legacy_test_config(),
-        "sql_unittests": targets.legacy_test_config(),
-        "url_unittests": targets.legacy_test_config(),
+        "rust_gtest_interop_unittests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+            ),
+        ),
+        "sql_unittests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+            ),
+        ),
+        "url_unittests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+            ),
+        ),
     },
 )
 
@@ -269,12 +391,25 @@ targets.legacy_basic_suite(
     name = "chromeos_system_friendly_gtests_vmlab",
     tests = {
         "aura_unittests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+                timeout_sec = 5400,
+            ),
             args = [
                 "--ozone-platform=headless",
             ],
         ),
-        "base_unittests": targets.legacy_test_config(),
+        "base_unittests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+                timeout_sec = 5400,
+            ),
+        ),
         "capture_unittests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+                timeout_sec = 5400,
+            ),
             args = [
                 "--test-launcher-jobs=1",
                 # Don't run CaptureMJpeg tests on ChromeOS VM because vivid,
@@ -282,65 +417,159 @@ targets.legacy_basic_suite(
                 "--gtest_filter=-*UsingRealWebcam_CaptureMjpeg*",
             ],
         ),
-        "cc_unittests": targets.legacy_test_config(),
-        "crypto_unittests": targets.legacy_test_config(),
-        "display_unittests": targets.legacy_test_config(),
-        "google_apis_unittests": targets.legacy_test_config(),
-        "ipc_tests": targets.legacy_test_config(),
-        "latency_unittests": targets.legacy_test_config(),
-        "libcups_unittests": targets.legacy_test_config(),
+        "cc_unittests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+                timeout_sec = 5400,
+            ),
+        ),
+        "crypto_unittests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+                timeout_sec = 5400,
+            ),
+        ),
+        "display_unittests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+                timeout_sec = 5400,
+            ),
+        ),
+        "google_apis_unittests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+                timeout_sec = 5400,
+            ),
+        ),
+        "ipc_tests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+                timeout_sec = 5400,
+            ),
+        ),
+        "latency_unittests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+                timeout_sec = 5400,
+            ),
+        ),
         "media_unittests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+                timeout_sec = 5400,
+            ),
             args = [
                 # TODO(b/351276191): Switch to gerneral chromeos.betty.media_unittests.filter
                 "--test-launcher-filter-file=../../testing/buildbot/filters/chromeos.betty.media_unittests.filter",
             ],
         ),
-        "midi_unittests": targets.legacy_test_config(),
-        "mojo_unittests": targets.legacy_test_config(),
+        "midi_unittests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+                timeout_sec = 5400,
+            ),
+        ),
+        "mojo_unittests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+                timeout_sec = 5400,
+            ),
+        ),
         "net_unittests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+                timeout_sec = 5400,
+            ),
             args = [
                 # TODO(b/352673853): These tests require vpython on DUT.
                 "--test-launcher-filter-file=../../testing/buildbot/filters/chromeos.betty.net_unittests.filter",
             ],
         ),
         "ozone_gl_unittests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+                timeout_sec = 5400,
+            ),
             args = [
                 "--stop-ui",
             ],
         ),
-        "ozone_unittests": targets.legacy_test_config(),
-        "pdf_unittests": targets.legacy_test_config(),
-        "printing_unittests": targets.legacy_test_config(),
+        "ozone_unittests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+                timeout_sec = 5400,
+            ),
+        ),
+        "pdf_unittests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+                timeout_sec = 5400,
+            ),
+        ),
+        "printing_unittests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+                timeout_sec = 5400,
+            ),
+        ),
         "profile_provider_unittest": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+                timeout_sec = 5400,
+            ),
             args = [
                 "--stop-ui",
                 "--test-launcher-jobs=1",
             ],
         ),
-        "rust_gtest_interop_unittests": targets.legacy_test_config(),
-        "sql_unittests": targets.legacy_test_config(),
-        "url_unittests": targets.legacy_test_config(),
-    },
-)
-
-# TODO: merge back into chromeos_system_friendly_gtests once everything is fixed.
-targets.legacy_basic_suite(
-    name = "chromeos_system_friendly_gtests_fails_vmlab",
-    tests = {
-        "video_decode_accelerator_tests_fake_vaapi_vp9": targets.legacy_test_config(
-            ci_only = True,
-        ),
-        # TODO(b/370554776): Promote following tests out of experimental
-        "video_decode_accelerator_tests_fake_vaapi_vp8": targets.legacy_test_config(
-            ci_only = True,
+        "rlz_unittests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+                timeout_sec = 5400,
+            ),
             experiment_percentage = 100,
+        ),
+        "rust_gtest_interop_unittests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+                timeout_sec = 5400,
+            ),
+        ),
+        "sql_unittests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+                timeout_sec = 5400,
+            ),
+        ),
+        "url_unittests": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+                timeout_sec = 5400,
+            ),
+        ),
+        "video_decode_accelerator_tests_fake_vaapi_vp9": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+                timeout_sec = 5400,
+            ),
+        ),
+        "video_decode_accelerator_tests_fake_vaapi_vp8": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+                timeout_sec = 5400,
+            ),
         ),
         "video_decode_accelerator_tests_fake_vaapi_av1": targets.legacy_test_config(
-            ci_only = True,
-            experiment_percentage = 100,
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+                timeout_sec = 5400,
+            ),
         ),
         "fake_libva_driver_unittest": targets.legacy_test_config(
-            experiment_percentage = 100,
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+                timeout_sec = 5400,
+            ),
         ),
     },
 )
@@ -351,6 +580,9 @@ targets.legacy_basic_suite(
     name = "chromeos_vaapi_gtests",
     tests = {
         "vaapi_unittest": targets.legacy_test_config(
+            skylab = targets.skylab(
+                autotest_name = "chromium",
+            ),
             mixins = [
                 "vaapi_unittest_args",
             ],
@@ -372,6 +604,14 @@ targets.legacy_basic_suite(
         "blink_common_unittests": targets.legacy_test_config(),
         "blink_heap_unittests": targets.legacy_test_config(),
         "blink_platform_unittests": targets.legacy_test_config(),
+        "blink_unittests": targets.legacy_test_config(
+            swarming = targets.swarming(
+                shards = 2,
+            ),
+            android_swarming = targets.swarming(
+                shards = 6,
+            ),
+        ),
         "boringssl_crypto_tests": targets.legacy_test_config(),
         "boringssl_ssl_tests": targets.legacy_test_config(),
         "capture_unittests": targets.legacy_test_config(
@@ -430,6 +670,7 @@ targets.legacy_basic_suite(
             ),
         ),
         "perfetto_unittests": targets.legacy_test_config(),
+        "puffin_unittests": targets.legacy_test_config(),
         # TODO(crbug.com/40274401): Enable this.
         # "rust_gtest_interop_unittests": None,
         "services_unittests": targets.legacy_test_config(),
@@ -440,11 +681,6 @@ targets.legacy_basic_suite(
         "ui_base_unittests": targets.legacy_test_config(),
         "ui_touch_selection_unittests": targets.legacy_test_config(),
         "url_unittests": targets.legacy_test_config(),
-        "webkit_unit_tests": targets.legacy_test_config(
-            android_swarming = targets.swarming(
-                shards = 6,
-            ),
-        ),
         "wtf_unittests": targets.legacy_test_config(),
         "zlib_unittests": targets.legacy_test_config(),
     },
@@ -458,7 +694,7 @@ targets.legacy_basic_suite(
         "display_unittests": targets.legacy_test_config(),
         "gfx_unittests": targets.legacy_test_config(),
         "unit_tests": targets.legacy_test_config(
-            android_swarming = targets.swarming(
+            swarming = targets.swarming(
                 shards = 2,
             ),
         ),
@@ -513,7 +749,7 @@ targets.legacy_basic_suite(
 )
 
 targets.legacy_basic_suite(
-    name = "chromium_webkit_isolated_scripts",
+    name = "chromium_blink_isolated_scripts",
     tests = {
         "blink_web_tests": targets.legacy_test_config(
             swarming = targets.swarming(
@@ -549,7 +785,6 @@ targets.legacy_basic_suite(
 targets.legacy_basic_suite(
     name = "client_v8_chromium_gtests",
     tests = {
-        "app_shell_unittests": targets.legacy_test_config(),
         "browser_tests": targets.legacy_test_config(
             swarming = targets.swarming(
                 shards = 10,
@@ -563,7 +798,6 @@ targets.legacy_basic_suite(
         "content_browsertests": targets.legacy_test_config(),
         "content_unittests": targets.legacy_test_config(),
         "device_unittests": targets.legacy_test_config(),
-        "extensions_browsertests": targets.legacy_test_config(),
         "extensions_unittests": targets.legacy_test_config(),
         "gcm_unit_tests": targets.legacy_test_config(),
         "gin_unittests": targets.legacy_test_config(),
@@ -678,46 +912,6 @@ targets.legacy_basic_suite(
                 "gpu_integration_test_common_args",
             ],
         ),
-    },
-)
-
-targets.legacy_basic_suite(
-    name = "gpu_gl_passthrough_ganesh_telemetry_tests",
-    tests = {
-        "context_lost_gl_passthrough_ganesh_tests": targets.legacy_test_config(),
-        "expected_color_pixel_gl_passthrough_ganesh_test": targets.legacy_test_config(),
-        "gpu_process_launch_tests": targets.legacy_test_config(
-            mixins = [
-                "gpu_integration_test_common_args",
-            ],
-        ),
-        "hardware_accelerated_feature_tests": targets.legacy_test_config(
-            mixins = [
-                "gpu_integration_test_common_args",
-            ],
-        ),
-        "pixel_skia_gold_gl_passthrough_ganesh_test": targets.legacy_test_config(),
-        "screenshot_sync_gl_passthrough_ganesh_tests": targets.legacy_test_config(),
-    },
-)
-
-targets.legacy_basic_suite(
-    name = "gpu_metal_passthrough_ganesh_telemetry_tests",
-    tests = {
-        "context_lost_metal_passthrough_ganesh_tests": targets.legacy_test_config(),
-        "expected_color_pixel_metal_passthrough_ganesh_test": targets.legacy_test_config(),
-        "gpu_process_launch_tests": targets.legacy_test_config(
-            mixins = [
-                "gpu_integration_test_common_args",
-            ],
-        ),
-        "hardware_accelerated_feature_tests": targets.legacy_test_config(
-            mixins = [
-                "gpu_integration_test_common_args",
-            ],
-        ),
-        "pixel_skia_gold_metal_passthrough_ganesh_test": targets.legacy_test_config(),
-        "screenshot_sync_metal_passthrough_ganesh_tests": targets.legacy_test_config(),
     },
 )
 
@@ -839,20 +1033,6 @@ targets.legacy_basic_suite(
 )
 
 targets.legacy_basic_suite(
-    name = "gpu_webcodecs_gl_passthrough_ganesh_telemetry_test",
-    tests = {
-        "webcodecs_gl_passthrough_ganesh_tests": targets.legacy_test_config(),
-    },
-)
-
-targets.legacy_basic_suite(
-    name = "gpu_webcodecs_metal_passthrough_ganesh_telemetry_test",
-    tests = {
-        "webcodecs_metal_passthrough_ganesh_tests": targets.legacy_test_config(),
-    },
-)
-
-targets.legacy_basic_suite(
     name = "gpu_webcodecs_metal_passthrough_graphite_telemetry_test",
     tests = {
         "webcodecs_metal_passthrough_graphite_tests": targets.legacy_test_config(),
@@ -860,22 +1040,23 @@ targets.legacy_basic_suite(
 )
 
 targets.legacy_basic_suite(
-    name = "gpu_webgl2_conformance_d3d11_passthrough_telemetry_tests",
+    name = "gpu_webrtc_telemetry_test",
     tests = {
-        "webgl2_conformance_d3d11_passthrough_tests": targets.legacy_test_config(
-            swarming = targets.swarming(
-                # These tests currently take about an hour and fifteen minutes
-                # to run. Split them into roughly 5-minute shards.
-                shards = 20,
-            ),
-        ),
+        "webrtc_tests": targets.legacy_test_config(),
     },
 )
 
 targets.legacy_basic_suite(
-    name = "gpu_webgl2_conformance_gl_passthrough_ganesh_telemetry_tests",
+    name = "gpu_webrtc_metal_passthrough_graphite_telemetry_test",
     tests = {
-        "webgl2_conformance_gl_passthrough_ganesh_tests": targets.legacy_test_config(
+        "webrtc_metal_passthrough_graphite_tests": targets.legacy_test_config(),
+    },
+)
+
+targets.legacy_basic_suite(
+    name = "gpu_webgl2_conformance_d3d11_passthrough_telemetry_tests",
+    tests = {
+        "webgl2_conformance_d3d11_passthrough_tests": targets.legacy_test_config(
             swarming = targets.swarming(
                 # These tests currently take about an hour and fifteen minutes
                 # to run. Split them into roughly 5-minute shards.
@@ -935,28 +1116,6 @@ targets.legacy_basic_suite(
 )
 
 targets.legacy_basic_suite(
-    name = "gpu_webgl_conformance_d3d9_passthrough_telemetry_tests",
-    tests = {
-        "webgl_conformance_d3d9_passthrough_tests": targets.legacy_test_config(
-            swarming = targets.swarming(
-                shards = 2,
-            ),
-        ),
-    },
-)
-
-targets.legacy_basic_suite(
-    name = "gpu_webgl_conformance_gl_passthrough_ganesh_telemetry_tests",
-    tests = {
-        "webgl_conformance_gl_passthrough_ganesh_tests": targets.legacy_test_config(
-            swarming = targets.swarming(
-                shards = 2,
-            ),
-        ),
-    },
-)
-
-targets.legacy_basic_suite(
     name = "gpu_webgl_conformance_gl_passthrough_telemetry_tests",
     tests = {
         "webgl_conformance_gl_passthrough_tests": targets.legacy_test_config(
@@ -978,13 +1137,6 @@ targets.legacy_basic_suite(
                 shards = 6,
             ),
         ),
-    },
-)
-
-targets.legacy_basic_suite(
-    name = "gpu_webgl_conformance_metal_passthrough_ganesh_telemetry_tests",
-    tests = {
-        "webgl_conformance_metal_passthrough_ganesh_tests": targets.legacy_test_config(),
     },
 )
 
@@ -1184,7 +1336,6 @@ targets.legacy_basic_suite(
     name = "non_android_chromium_gtests",
     tests = {
         "accessibility_unittests": targets.legacy_test_config(),
-        "app_shell_unittests": targets.legacy_test_config(),
         "blink_fuzzer_unittests": targets.legacy_test_config(),
         "browser_tests": targets.legacy_test_config(
             swarming = targets.swarming(
@@ -1193,7 +1344,6 @@ targets.legacy_basic_suite(
         ),
         "chrome_app_unittests": targets.legacy_test_config(),
         "chromedriver_unittests": targets.legacy_test_config(),
-        "extensions_browsertests": targets.legacy_test_config(),
         "extensions_unittests": targets.legacy_test_config(),
         "filesystem_service_unittests": targets.legacy_test_config(),  # https://crbug.com/862712
         "interactive_ui_tests": targets.legacy_test_config(
@@ -1202,10 +1352,8 @@ targets.legacy_basic_suite(
             ),
         ),
         "message_center_unittests": targets.legacy_test_config(),
-        "nacl_loader_unittests": targets.legacy_test_config(),
         "native_theme_unittests": targets.legacy_test_config(),
         "pdf_unittests": targets.legacy_test_config(),
-        "ppapi_unittests": targets.legacy_test_config(),
         "printing_unittests": targets.legacy_test_config(),
         "remoting_unittests": targets.legacy_test_config(),
         "snapshot_unittests": targets.legacy_test_config(),
@@ -1271,6 +1419,36 @@ targets.legacy_basic_suite(
     },
 )
 
+# TODO(b:484388901): Enable GPU backedn testing when the issue is fixed.
+# targets.legacy_basic_suite(
+#     name = "litert_e2e_tests_gpu_suite",
+#     tests = {
+#         "litert_e2e_tests_gpu": targets.legacy_test_config(),
+#     },
+# )
+
+targets.legacy_basic_suite(
+    name = "litert_e2e_tests_cpu_suite",
+    tests = {
+        "litert_e2e_tests_cpu": targets.legacy_test_config(),
+    },
+)
+
+targets.legacy_basic_suite(
+    name = "litert_lm_advanced_main_legacy_tests_cpu_suite",
+    tests = {
+        "litert_lm_advanced_main_legacy_tests_cpu": targets.legacy_test_config(),
+    },
+)
+
+# TODO(b:484388901): Enable GPU backedn testing when the issue is fixed.
+# targets.legacy_basic_suite(
+#     name = "litert_lm_advanced_main_legacy_tests_gpu_suite",
+#     tests = {
+#         "litert_lm_advanced_main_legacy_tests_gpu": targets.legacy_test_config(),
+#     },
+# )
+
 targets.legacy_basic_suite(
     name = "opt_target_coverage_test_suite",
     tests = {
@@ -1285,25 +1463,98 @@ targets.legacy_basic_suite(
     },
 )
 
+_CHROME_AI_WPT_TEST_CONFIG = targets.legacy_test_config(
+    mixins = [
+        "has_native_resultdb_integration",
+        "blink_tests_write_run_histories",
+    ],
+    # Hardcoded '--child-processes=1' to enforce sequential execution by default
+    # and prevent timeouts. The slower x64 builders are sharded to 8 shards
+    # using the 'x64_ai_wpt_shards' mixin to compensate for sequential
+    # execution.
+    args = [
+        "--release",
+        "--timeout-multiplier=5",
+        "--child-processes=1",
+    ],
+    mac_args = [
+        "--driver-name",
+        "Google Chrome",
+    ],
+    swarming = targets.swarming(
+        shards = 4,
+    ),
+)
+
+_CHROME_AI_WPT_GPU_HIGH_TIER_TEST_CONFIG = targets.legacy_test_config(
+    mixins = [
+        "has_native_resultdb_integration",
+        "blink_tests_write_run_histories",
+    ],
+    # Hardcoded '--child-processes=1' to enforce sequential execution by default
+    # and prevent timeouts. The slower x64 builders are sharded to 8 shards
+    # using the 'x64_ai_wpt_shards' mixin to compensate for sequential
+    # execution.
+    args = [
+        "--release",
+        "--timeout-multiplier=5",
+        "--child-processes=1",
+    ],
+    # Lower minimum VRAM requirement to 5000 MB for Windows AI WPT runner bots
+    # equipped with NVIDIA GeForce GTX 1660 GPUs (which report 5981 MB VRAM,
+    # slightly below the default 6000 MB threshold).
+    win_args = [
+        "--additional-driver-flag=--enable-features=OnDeviceModelGpuAudioInput:on_device_model_audio_input_vram_min/5000",
+    ],
+    mac_args = [
+        "--driver-name",
+        "Google Chrome",
+    ],
+    swarming = targets.swarming(
+        shards = 4,
+    ),
+)
+
+targets.legacy_basic_suite(
+    name = "chrome_ai_wpt_tests_manifest_suite",
+    tests = {
+        "chrome_ai_wpt_tests_manifest_cpu": _CHROME_AI_WPT_TEST_CONFIG,
+        "chrome_ai_wpt_tests_manifest_gpu_high_tier": _CHROME_AI_WPT_GPU_HIGH_TIER_TEST_CONFIG,
+        "chrome_ai_wpt_tests_manifest_gpu_low_tier": _CHROME_AI_WPT_TEST_CONFIG,
+    },
+)
+
+targets.legacy_basic_suite(
+    name = "chrome_ai_wpt_tests_manifest_cpu_suite",
+    tests = {
+        "chrome_ai_wpt_tests_manifest_cpu": _CHROME_AI_WPT_TEST_CONFIG,
+    },
+)
+
+targets.legacy_basic_suite(
+    name = "chrome_ai_wpt_tests_manifest_gpu_high_tier_suite",
+    tests = {
+        "chrome_ai_wpt_tests_manifest_gpu_high_tier": _CHROME_AI_WPT_GPU_HIGH_TIER_TEST_CONFIG,
+    },
+)
+
+targets.legacy_basic_suite(
+    name = "chrome_ai_wpt_tests_manifest_gpu_low_tier_suite",
+    tests = {
+        "chrome_ai_wpt_tests_manifest_gpu_low_tier": _CHROME_AI_WPT_TEST_CONFIG,
+    },
+)
+
 targets.legacy_basic_suite(
     name = "chrome_ai_wpt_tests_suite",
     tests = {
-        "chrome_ai_wpt_tests": targets.legacy_test_config(
-            mixins = [
-                "has_native_resultdb_integration",
-                "blink_tests_write_run_histories",
-            ],
-            args = [
-                "--release",
-            ],
-            mac_args = [
-                "--driver-name",
-                "Google Chrome",
-            ],
-            swarming = targets.swarming(
-                shards = 1,
-            ),
-        ),
+        "chrome_ai_wpt_tests_gpu": _CHROME_AI_WPT_TEST_CONFIG,
+        "chrome_ai_wpt_tests_cpu": _CHROME_AI_WPT_TEST_CONFIG,
+        "chrome_ai_wpt_tests_litert_cpu": _CHROME_AI_WPT_TEST_CONFIG,
+        "chrome_ai_wpt_tests_litert_gpu": _CHROME_AI_WPT_TEST_CONFIG,
+        "chrome_ai_wpt_tests_manifest_gpu_high_tier": _CHROME_AI_WPT_GPU_HIGH_TIER_TEST_CONFIG,
+        "chrome_ai_wpt_tests_manifest_gpu_low_tier": _CHROME_AI_WPT_TEST_CONFIG,
+        "chrome_ai_wpt_tests_manifest_cpu": _CHROME_AI_WPT_TEST_CONFIG,
     },
 )
 
@@ -1341,11 +1592,6 @@ targets.legacy_basic_suite(
                 "--use-xvfb",
             ],
         ),
-        "optimization_guide_browser_tests": targets.legacy_test_config(
-            linux_args = [
-                "--use-xvfb",
-            ],
-        ),
         "optimization_guide_unittests": targets.legacy_test_config(
             linux_args = [
                 "--use-xvfb",
@@ -1362,7 +1608,46 @@ targets.legacy_basic_suite(
                 "--ui-test-action-timeout=30000",
             ],
             linux_args = [
-                "-use-xvfb",
+                "--use-xvfb",
+            ],
+        ),
+        "optimization_guide_services_unittests": targets.legacy_test_config(
+            args = [
+                "--ui-test-action-timeout=30000",
+            ],
+            linux_args = [
+                "--no-xvfb",
+            ],
+        ),
+    },
+)
+
+# TODO: crbug.com/433525769 - When builders using this suite are all migrated to
+# starlark, this should be combined with optimization_guide_gpu_gtests.
+targets.legacy_basic_suite(
+    name = "optimization_guide_gpu_isolated_scripts",
+    tests = {
+        "blink_wpt_tests": targets.legacy_test_config(
+            args = [
+                # Ensure that the platform-specific backends are disabled so
+                # that TFLite is used.
+                "--additional-driver-flag=--disable-features=WebNNCoreML,WebNNDirectML,WebNNOnnxRuntime",
+                "--ignore-default-expectations",
+                "--additional-expectations=../../third_party/blink/web_tests/OptimizationGuideExpectations",
+                "--test-launcher-filter-file=../../third_party/blink/web_tests/TestLists/optimization_guide.filter",
+            ],
+        ),
+    },
+)
+
+targets.legacy_basic_suite(
+    name = "translatekit_script_tests",
+    tests = {
+        "chrome_wpt_tests": targets.legacy_test_config(
+            args = [
+                "-t",
+                "Release",
+                "external/wpt/ai/translator",
             ],
         ),
     },

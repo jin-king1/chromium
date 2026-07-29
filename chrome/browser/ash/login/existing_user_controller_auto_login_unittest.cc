@@ -11,18 +11,21 @@
 #include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
 #include "chrome/browser/ash/settings/device_settings_service.h"
 #include "chrome/browser/ash/settings/scoped_cros_settings_test_helper.h"
+#include "chrome/browser/global_features.h"
 #include "chrome/browser/ui/ash/login/mock_login_display_host.h"
-#include "chrome/test/base/scoped_testing_local_state.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chromeos/ash/components/dbus/session_manager/fake_session_manager_client.h"
 #include "chromeos/ash/components/login/auth/auth_events_recorder.h"
+#include "chromeos/ash/components/policy/device_local_account/device_local_account_type.h"
 #include "chromeos/ash/components/settings/cros_settings.h"
 #include "chromeos/ash/components/settings/cros_settings_names.h"
 #include "components/ownership/mock_owner_key_util.h"
-#include "components/policy/core/common/device_local_account_type.h"
+#include "components/session_manager/core/fake_session_manager_delegate.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/user_manager/scoped_user_manager.h"
 #include "content/public/test/browser_task_environment.h"
+#include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
+#include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -44,13 +47,23 @@ const int kAutoLoginDelay2 = 180000;
 class ExistingUserControllerAutoLoginTest : public ::testing::Test {
  protected:
   ExistingUserControllerAutoLoginTest()
-      : local_state_(TestingBrowserProcess::GetGlobal()),
-        fake_user_manager_(std::make_unique<FakeChromeUserManager>()) {
+      : fake_user_manager_(std::make_unique<FakeChromeUserManager>()) {
     auth_events_recorder_ = ash::AuthEventsRecorder::CreateForTesting();
   }
 
   void SetUp() override {
-    existing_user_controller_ = std::make_unique<ExistingUserController>();
+    TestingBrowserProcess::GetGlobal()->SetSharedURLLoaderFactory(
+        test_url_loader_factory_.GetSafeWeakWrapper());
+
+    existing_user_controller_ = std::make_unique<ExistingUserController>(
+        TestingBrowserProcess::GetGlobal()->local_state(),
+        TestingBrowserProcess::GetGlobal()
+            ->GetFeatures()
+            ->application_locale_storage(),
+        TestingBrowserProcess::GetGlobal()->shared_url_loader_factory(),
+        TestingBrowserProcess::GetGlobal()
+            ->platform_part()
+            ->browser_policy_connector_ash());
     mock_login_display_host_ = std::make_unique<MockLoginDisplayHost>();
 
     ON_CALL(*mock_login_display_host_, GetExistingUserController())
@@ -60,16 +73,17 @@ class ExistingUserControllerAutoLoginTest : public ::testing::Test {
 
     settings_helper_.ReplaceDeviceSettingsProviderWithStub();
 
-    DeviceSettingsService::Get()->SetSessionManager(
+    DeviceSettingsService::Get()->StartProcessing(
+        TestingBrowserProcess::GetGlobal()->local_state(),
         FakeSessionManagerClient::Get(), new ownership::MockOwnerKeyUtil());
     DeviceSettingsService::Get()->Load();
 
-    base::Value::Dict account;
+    base::DictValue account;
     account.Set(kAccountsPrefDeviceLocalAccountsKeyId, auto_login_user_id_);
     account.Set(
         kAccountsPrefDeviceLocalAccountsKeyType,
         static_cast<int>(policy::DeviceLocalAccountType::kPublicSession));
-    base::Value::List accounts;
+    base::ListValue accounts;
     accounts.Append(std::move(account));
     settings_helper_.Set(kAccountsPrefDeviceLocalAccounts,
                          base::Value(std::move(accounts)));
@@ -81,6 +95,12 @@ class ExistingUserControllerAutoLoginTest : public ::testing::Test {
 
     session_manager_.SetSessionState(
         session_manager::SessionState::LOGIN_PRIMARY);
+  }
+
+  void TearDown() override {
+    mock_login_display_host_.reset();
+    existing_user_controller_.reset();
+    TestingBrowserProcess::GetGlobal()->SetSharedURLLoaderFactory(nullptr);
   }
 
   ExistingUserController* existing_user_controller() const {
@@ -136,15 +156,16 @@ class ExistingUserControllerAutoLoginTest : public ::testing::Test {
  private:
   std::unique_ptr<MockLoginDisplayHost> mock_login_display_host_;
   content::BrowserTaskEnvironment task_environment_;
-  ScopedTestingLocalState local_state_;
 
   // Required by ExistingUserController:
   FakeSessionManagerClient fake_session_manager_client_;
   ScopedCrosSettingsTestHelper settings_helper_;
   user_manager::TypedScopedUserManager<ash::FakeChromeUserManager>
       fake_user_manager_;
+  network::TestURLLoaderFactory test_url_loader_factory_;
 
-  session_manager::SessionManager session_manager_;
+  session_manager::SessionManager session_manager_{
+      std::make_unique<session_manager::FakeSessionManagerDelegate>()};
 
   // `existing_user_controller_` must be destroyed before
   // `device_settings_test_helper_`.

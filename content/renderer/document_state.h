@@ -7,14 +7,14 @@
 
 #include <memory>
 
+#include "base/memory/weak_ptr.h"
 #include "content/common/content_export.h"
+#include "content/renderer/navigation_state.h"
 #include "net/http/http_response_info.h"
 #include "third_party/blink/public/web/web_document_loader.h"
 #include "url/gurl.h"
 
 namespace content {
-
-class NavigationState;
 
 // RenderFrameImpl stores an instance of this class in the "extra data" of each
 // WebDocumentLoader.
@@ -70,7 +70,13 @@ class CONTENT_EXPORT DocumentState
 
   NavigationState* navigation_state() { return navigation_state_.get(); }
   void set_navigation_state(std::unique_ptr<NavigationState> navigation_state);
-  void clear_navigation_state() { navigation_state_.reset(); }
+  std::unique_ptr<NavigationState> TakeNavigationState() {
+    return std::move(navigation_state_);
+  }
+
+  base::WeakPtr<DocumentState> GetWeakPtr() {
+    return weak_factory_.GetWeakPtr();
+  }
 
  private:
   bool was_load_data_with_base_url_request_ = false;
@@ -78,6 +84,7 @@ class CONTENT_EXPORT DocumentState
   bool is_overriding_user_agent_ = false;
   int request_id_ = -1;
   std::unique_ptr<NavigationState> navigation_state_;
+  base::WeakPtrFactory<DocumentState> weak_factory_{this};
 };
 
 }  // namespace content

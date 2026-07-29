@@ -89,9 +89,6 @@ class PaymentRequestSheetController {
   // calls FillContentView again to re-populate it with updated views.
   void UpdateContentView();
 
-  // Clears and recreates the header view for this sheet.
-  void UpdateHeaderView();
-
   // Update the focus to |focused_view|.
   void UpdateFocus(views::View* focused_view);
 
@@ -200,6 +197,9 @@ class PaymentRequestSheetController {
   // concrete (aka leaf) class in order to avoid subtle use-after-destroy
   // issues.
   virtual base::WeakPtr<PaymentRequestSheetController> GetWeakPtr() = 0;
+
+ protected:
+  views::View* header_view() { return header_view_; }
 
  private:
   // Add the primary/secondary buttons to |container|.

@@ -4,6 +4,7 @@
 
 #include "chrome/browser/autofill/autofill_uitest.h"
 
+#include <optional>
 #include <string>
 
 #include "base/functional/bind.h"
@@ -155,10 +156,14 @@ void AutofillUiTest::SetUpOnMainThread() {
 
   // Wait for Personal Data Manager to be fully loaded to prevent that
   // spurious notifications deceive the tests.
-  WaitForPersonalDataManagerToBeLoaded(browser()->profile());
+  WaitForPersonalDataManagerToBeLoaded(browser()->GetProfile());
 
-  disable_animation_ = std::make_unique<ui::ScopedAnimationDurationScaleMode>(
-      ui::ScopedAnimationDurationScaleMode::ZERO_DURATION);
+  // Disable the caret blinking to not generate any compositor frames from just
+  // a blinking cursor.
+  os_settings_provider_.SetCaretBlinkInterval(base::TimeDelta());
+
+  disable_animation_ = std::make_unique<gfx::ScopedAnimationDurationScaleMode>(
+      gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION);
 
   // If the mouse happened to be over where the suggestions are shown, then
   // the preview will show up and will fail the tests. We need to give it a
@@ -172,8 +177,8 @@ void AutofillUiTest::TearDownOnMainThread() {
   // Make sure to close any showing popups prior to tearing down the UI.
   BrowserAutofillManager* autofill_manager = GetBrowserAutofillManager();
   if (autofill_manager)
-    autofill_manager->client().HideAutofillSuggestions(
-        SuggestionHidingReason::kTabGone);
+    autofill_manager->client().HideSuggestions(SuggestionHidingReason::kTabGone,
+                                               /*product=*/std::nullopt);
   current_main_rfh_ = nullptr;
   InProcessBrowserTest::TearDownOnMainThread();
 }

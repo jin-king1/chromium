@@ -5,8 +5,11 @@
 #ifndef EXTENSIONS_BROWSER_API_WEB_REQUEST_WEB_REQUEST_EVENT_ROUTER_FACTORY_H_
 #define EXTENSIONS_BROWSER_API_WEB_REQUEST_WEB_REQUEST_EVENT_ROUTER_FACTORY_H_
 
-#include "base/memory/singleton.h"
+#include "base/no_destructor.h"
 #include "components/keyed_service/content/browser_context_keyed_service_factory.h"
+#include "extensions/buildflags/buildflags.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace content {
 class BrowserContext;
@@ -27,7 +30,7 @@ class WebRequestEventRouterFactory : public BrowserContextKeyedServiceFactory {
   static WebRequestEventRouterFactory* GetInstance();
 
  private:
-  friend struct base::DefaultSingletonTraits<WebRequestEventRouterFactory>;
+  friend base::NoDestructor<WebRequestEventRouterFactory>;
 
   WebRequestEventRouterFactory();
   ~WebRequestEventRouterFactory() override;

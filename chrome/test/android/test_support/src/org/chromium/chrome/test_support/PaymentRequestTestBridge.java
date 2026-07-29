@@ -20,8 +20,7 @@ import org.chromium.components.payments.PaymentApp;
 import org.chromium.components.payments.PaymentRequestService;
 import org.chromium.components.payments.PaymentRequestService.NativeObserverForTest;
 import org.chromium.components.payments.PaymentUiServiceTestInterface;
-import org.chromium.components.payments.secure_payment_confirmation.SecurePaymentConfirmationAuthnController;
-import org.chromium.components.payments.secure_payment_confirmation.SecurePaymentConfirmationNoMatchingCredController;
+import org.chromium.components.payments.secure_payment_confirmation.SecurePaymentConfirmationController;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.payments.mojom.PaymentItem;
 
@@ -83,7 +82,7 @@ public class PaymentRequestTestBridge {
         }
 
         @Override
-        public String getInvalidSslCertificateErrorMessage() {
+        public @Nullable String getInvalidSslCertificateErrorMessage() {
             if (mIsValidSsl) return null;
             return "Invalid SSL certificate";
         }
@@ -325,47 +324,27 @@ public class PaymentRequestTestBridge {
 
     @CalledByNative
     private static boolean closeDialogForTest() {
-        SecurePaymentConfirmationAuthnController authnUi = getSecurePaymentConfirmationAuthnUi();
-        if (authnUi != null) return authnUi.cancelForTest();
-
-        SecurePaymentConfirmationNoMatchingCredController noMatchingUi =
-                getSecurePaymentConfirmationNoMatchingCredUi();
-        if (noMatchingUi != null) {
-            noMatchingUi.closeForTest();
-            return true;
-        }
+        SecurePaymentConfirmationController controller = getSecurePaymentConfirmation();
+        if (controller != null) return controller.cancelForTest();
 
         return sUiService == null || sUiService.closeDialogForTest();
     }
 
     @CalledByNative
     private static boolean clickSecurePaymentConfirmationOptOutForTest() {
-        SecurePaymentConfirmationAuthnController authnUi = getSecurePaymentConfirmationAuthnUi();
-        if (authnUi != null) return authnUi.optOutForTest();
-        SecurePaymentConfirmationNoMatchingCredController noMatchingUi =
-                getSecurePaymentConfirmationNoMatchingCredUi();
-        if (noMatchingUi != null) return noMatchingUi.optOutForTest();
+        SecurePaymentConfirmationController controller = getSecurePaymentConfirmation();
+        if (controller != null) return controller.optOutForTest();
+
         return false;
     }
 
     @Nullable
-    private static SecurePaymentConfirmationAuthnController getSecurePaymentConfirmationAuthnUi() {
+    private static SecurePaymentConfirmationController getSecurePaymentConfirmation() {
         ChromePaymentRequestService chromeService =
                 (ChromePaymentRequestService)
                         PaymentRequestService.getBrowserPaymentRequestForTesting();
         return chromeService != null
-                ? chromeService.getSecurePaymentConfirmationAuthnUiForTesting()
-                : null;
-    }
-
-    @Nullable
-    private static SecurePaymentConfirmationNoMatchingCredController
-            getSecurePaymentConfirmationNoMatchingCredUi() {
-        ChromePaymentRequestService chromeService =
-                (ChromePaymentRequestService)
-                        PaymentRequestService.getBrowserPaymentRequestForTesting();
-        return chromeService != null
-                ? chromeService.getSecurePaymentConfirmationNoMatchingCredUiForTesting()
+                ? chromeService.getSecurePaymentConfirmationForTesting()
                 : null;
     }
 

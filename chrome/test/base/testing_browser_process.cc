@@ -7,9 +7,11 @@
 #include <memory>
 
 #include "base/functional/bind.h"
+#include "base/notimplemented.h"
 #include "base/notreached.h"
 #include "base/path_service.h"
 #include "base/strings/string_util.h"
+#include "base/test/task_environment.h"
 #include "base/time/default_clock.h"
 #include "base/time/default_tick_clock.h"
 #include "build/build_config.h"
@@ -24,6 +26,7 @@
 #include "chrome/browser/notifications/system_notification_helper.h"
 #include "chrome/browser/permissions/chrome_permissions_client.h"
 #include "chrome/browser/policy/chrome_browser_policy_connector.h"
+#include "chrome/browser/prefs/browser_prefs.h"
 #include "chrome/browser/printing/print_job_manager.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/resource_coordinator/resource_coordinator_parts.h"
@@ -32,6 +35,9 @@
 #include "chrome/browser/status_icons/status_tray.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/testing_browser_process_platform_part.h"
+#include "chrome/test/base/testing_profile_manager.h"
+#include "components/activity_reporter/activity_reporter.h"
+#include "components/application_locale_storage/application_locale_storage.h"
 #include "components/embedder_support/origin_trials/origin_trials_settings_storage.h"
 #include "components/metrics/metrics_service.h"
 #include "components/network_time/network_time_tracker.h"
@@ -39,7 +45,10 @@
 #include "components/permissions/permissions_client.h"
 #include "components/policy/core/browser/browser_policy_connector.h"
 #include "components/prefs/pref_service.h"
-#include "components/subresource_filter/content/shared/browser/ruleset_service.h"
+#include "components/prefs/testing_pref_service.h"
+#include "components/subresource_filter/content/browser/ruleset_service.h"
+#include "components/supervised_user/core/browser/device_parental_controls.h"
+#include "components/supervised_user/core/browser/device_parental_controls_noop_impl.h"
 #include "content/public/browser/network_service_instance.h"
 #include "extensions/buildflags/buildflags.h"
 #include "media/media_buildflags.h"
@@ -51,9 +60,9 @@
 #include "testing/gtest/include/gtest/gtest.h"
 
 #if BUILDFLAG(OS_LEVEL_GEOLOCATION_PERMISSION_SUPPORTED)
-#include "services/device/public/cpp/device_features.h"
-#include "services/device/public/cpp/geolocation/geolocation_system_permission_manager.h"
-#include "services/device/public/cpp/test/fake_geolocation_system_permission_manager.h"
+#include "services/device/public/cpp/device_features.h"  // nogncheck
+#include "services/device/public/cpp/geolocation/geolocation_system_permission_manager.h"  // nogncheck
+#include "services/device/public/cpp/test/fake_geolocation_system_permission_manager.h"  // nogncheck
 #endif
 
 #if BUILDFLAG(ENABLE_BACKGROUND_MODE)
@@ -62,15 +71,13 @@
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
 #include "chrome/browser/apps/platform_apps/chrome_apps_browser_api_provider.h"
-#include "chrome/browser/extensions/chrome_extensions_browser_client.h"
-#include "chrome/browser/media_galleries/media_file_system_registry.h"
 #include "chrome/browser/ui/apps/chrome_app_window_client.h"
-#include "components/storage_monitor/storage_monitor.h"
-#include "components/storage_monitor/test_storage_monitor.h"
+#include "components/storage_monitor/storage_monitor.h"  // nogncheck crbug.com/40147906
+#include "components/storage_monitor/test_storage_monitor.h"  // nogncheck crbug.com/40147906
 #endif
 
-#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
-#include "chrome/browser/extensions/desktop_android/desktop_android_extensions_browser_client.h"
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+#include "chrome/browser/extensions/chrome_extensions_browser_client.h"
 #endif
 
 #if BUILDFLAG(ENABLE_PRINT_PREVIEW)
@@ -86,6 +93,7 @@
 #include "chrome/browser/hid/hid_status_icon.h"
 #include "chrome/browser/usb/usb_status_icon.h"
 #endif  // BUILDFLAG(IS_CHROMEOS)
+#include "chrome/browser/web_applications/isolated_web_apps/runtime_init.h"
 #include "components/component_updater/component_updater_service.h"
 #include "components/keep_alive_registry/keep_alive_registry.h"
 #if !BUILDFLAG(IS_CHROMEOS)
@@ -95,11 +103,28 @@
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ash/policy/core/browser_policy_connector_ash.h"
+#include "chrome/browser/media_galleries/media_file_system_registry.h"
 #endif
 
 #if BUILDFLAG(ENABLE_CHROME_NOTIFICATIONS)
 #include "chrome/browser/notifications/notification_ui_manager.h"
 #endif
+
+#if BUILDFLAG(IS_ANDROID)
+#include "components/supervised_user/core/browser/android/android_parental_controls.h"
+#endif  // BUILDFLAG(IS_ANDROID)
+
+namespace {
+
+class TestActivityReporter : public activity_reporter::ActivityReporter {
+ public:
+  TestActivityReporter() = default;
+  void ReportActive() override {
+    // Do nothing.
+  }
+};
+
+}  // namespace
 
 // static
 TestingBrowserProcess* TestingBrowserProcess::GetGlobal() {
@@ -130,48 +155,135 @@ void TestingBrowserProcess::CreateInstance() {
 
 // static
 void TestingBrowserProcess::DeleteInstance() {
-  // g_browser_process must be null during its own destruction.
-  BrowserProcess* browser_process = g_browser_process;
-  g_browser_process = nullptr;
-  delete browser_process;
-}
-
-// static
-void TestingBrowserProcess::StartTearDown() {
-  TestingBrowserProcess* browser_process = TestingBrowserProcess::GetGlobal();
-  if (browser_process) {
-    browser_process->ShutdownBrowserPolicyConnector();
-  }
+  delete g_browser_process;
 }
 
 // static
 void TestingBrowserProcess::TearDownAndDeleteInstance() {
-  TestingBrowserProcess::StartTearDown();
   TestingBrowserProcess::DeleteInstance();
 }
 
 TestingBrowserProcess::TestingBrowserProcess()
-    : app_locale_("en"),
+    : testing_local_state_(std::make_unique<TestingPrefServiceSimple>()),
+#if BUILDFLAG(IS_ANDROID)
+      device_parental_controls_(
+          std::make_unique<supervised_user::AndroidParentalControls>()),
+#else
+      device_parental_controls_(
+          std::make_unique<supervised_user::DeviceParentalControlsNoOpImpl>()),
+#endif
       platform_part_(std::make_unique<TestingBrowserProcessPlatformPart>()),
       os_crypt_async_(os_crypt_async::GetTestOSCryptAsyncForTesting()) {
+  RegisterLocalState(testing_local_state_->registry());
+
+  // Observe TaskEnvironment to get a chance to teardown components before
+  // ThreadPool is destroyed.
+  // In production, BrowserProcess is destroyed while ThreadPool is still
+  // active.
+  base::test::TaskEnvironment::AddDestructionObserver(this);
 }
 
 TestingBrowserProcess::~TestingBrowserProcess() {
-  EXPECT_FALSE(local_state_);
+  // Ensure `TearDownGlobalFeaturesForTesting()` is run if it has not yet done
+  // so to ensure global feature lifecycle hooks are invoked in the correct
+  // order.
+  // Code in these hooks expects g_browser_process to be valid and must be run
+  // before g_browser_process is nullified. `TearDownGlobalFeaturesForTesting()`
+  // will no-op if this teardown phase has already occurred.
+  // TODO(crbug.com/485923746): Explore whether we can guarantee
+  // `TearDownGlobalFeaturesForTesting()` is called only once during
+  // destruction.
+  TearDownGlobalFeaturesForTesting();
+  g_browser_process = nullptr;
+
+  base::test::TaskEnvironment::RemoveDestructionObserver(this);
+
+  // Tear down components for tests that do not have TaskEnvironment.
+  MaybeStartTearDown();
+
 #if BUILDFLAG(ENABLE_EXTENSIONS)
   extensions::ExtensionsBrowserClient::Set(nullptr);
   extensions::AppWindowClient::Set(nullptr);
 #endif
 
-  if (test_network_connection_tracker_)
+  if (test_network_connection_tracker_) {
     content::SetNetworkConnectionTrackerForTesting(nullptr);
+  }
+
+  // Destroy objects in the same way as BrowserProcessImpl does.
+  serial_policy_allowed_ports_.reset();
+  testing_local_state_.reset();
+  browser_policy_connector_.reset();
 
   // Destructors for some objects owned by TestingBrowserProcess will use
   // g_browser_process if it is not null, so it must be null before proceeding.
   DCHECK_EQ(static_cast<BrowserProcess*>(nullptr), g_browser_process);
 }
 
+raw_ptr<TestingProfileManager>
+TestingBrowserProcess::SetUpGlobalFeaturesForTesting(bool profile_manager) {
+  CreateGlobalFeaturesPreProfileManager();
+  is_global_features_torn_down_ = false;
+
+  raw_ptr<TestingProfileManager> testing_profile_manager = nullptr;
+  if (profile_manager) {
+    testing_profile_manager_ = std::make_unique<TestingProfileManager>(
+        TestingBrowserProcess::GetGlobal());
+    CHECK(testing_profile_manager_->SetUp());
+    testing_profile_manager = testing_profile_manager_.get();
+  }
+
+  CreateGlobalFeaturesPostProfileManager();
+
+  return testing_profile_manager;
+}
+
+void TestingBrowserProcess::TearDownGlobalFeaturesForTesting() {
+  if (is_global_features_torn_down_) {
+    return;
+  }
+  is_global_features_torn_down_ = true;
+
+  CHECK(features_);
+  features_->PostMainMessageLoopRun();
+
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+  extensions_browser_client_->StartTearDown();
+#endif
+
+  testing_profile_manager_.reset();
+
+  profile_manager_.reset();
+
+  // ResourceCoordinatorParts owns TabLifecycleUnitSource, which depends on a
+  // Global Feature (GlobalBrowserCollection). Thus, we need to make sure
+  // ResourceCoordinatorParts is destroyed before GlobalFeatures is completely
+  // shut down.
+  resource_coordinator_parts_.reset();
+
+  features_->PostDestroyThreads();
+}
+
+ui::UnownedUserDataHost& TestingBrowserProcess::GetUnownedUserDataHost() {
+  return unowned_user_data_host_;
+}
+
+const ui::UnownedUserDataHost& TestingBrowserProcess::GetUnownedUserDataHost()
+    const {
+  return unowned_user_data_host_;
+}
+
 void TestingBrowserProcess::Init() {
+  features_ = GlobalFeatures::CreateGlobalFeatures();
+  features_->Init();
+  // Only initialize core features for now. If needed unit tests can call
+  // TestingBrowserProcess::CreateGlobalFeaturesForTesting() to initialize rest
+  // of the features.
+  features_->PostBrowserProcessInitCore();
+
+  // Assume locale is initialized to "en" during initialization.
+  features_->application_locale_storage()->Set("en");
+
   // See comment in constructor.
   if (!network::TestNetworkConnectionTracker::HasInstance()) {
     test_network_connection_tracker_ =
@@ -180,23 +292,25 @@ void TestingBrowserProcess::Init() {
         test_network_connection_tracker_.get());
   }
 
-#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
-  extensions_browser_client_ =
-      std::make_unique<extensions::DesktopAndroidExtensionsBrowserClient>();
-  extensions::ExtensionsBrowserClient::Set(extensions_browser_client_.get());
-#elif BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   extensions_browser_client_ =
       std::make_unique<extensions::ChromeExtensionsBrowserClient>();
+  extensions_browser_client_->Init();
+  extensions::ExtensionsBrowserClient::Set(extensions_browser_client_.get());
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+
+#if BUILDFLAG(ENABLE_EXTENSIONS)
   extensions_browser_client_->AddAPIProvider(
       std::make_unique<chrome_apps::ChromeAppsBrowserAPIProvider>());
   extensions::AppWindowClient::Set(ChromeAppWindowClient::GetInstance());
-  extensions::ExtensionsBrowserClient::Set(extensions_browser_client_.get());
 #endif
 
   // Make sure permissions client has been set.
   ChromePermissionsClient::GetInstance();
 
 #if !BUILDFLAG(IS_ANDROID)
+  web_app::InitializeIsolatedWebAppRuntime(
+      base::PassKey<TestingBrowserProcess>());
   KeepAliveRegistry::GetInstance()->SetIsShuttingDown(false);
 #if BUILDFLAG(IS_CHROMEOS)
   hid_system_tray_icon_ = std::make_unique<HidPinnedNotification>();
@@ -208,15 +322,7 @@ void TestingBrowserProcess::Init() {
 #endif  // !BUILDFLAG(IS_ANDROID)
 }
 
-void TestingBrowserProcess::FlushLocalStateAndReply(base::OnceClosure reply) {
-  // This could be implemented the same way as in BrowserProcessImpl but it's
-  // not currently expected to be used by TestingBrowserProcess users so we
-  // don't bother.
-  NOTREACHED();
-}
-
-void TestingBrowserProcess::EndSession() {
-}
+void TestingBrowserProcess::EndSession() {}
 
 metrics_services_manager::MetricsServicesManager*
 TestingBrowserProcess::GetMetricsServicesManager() {
@@ -270,7 +376,7 @@ void TestingBrowserProcess::SetProfileManager(
   // NotificationUIManager can contain references to elements in the current
   // ProfileManager. So when we change the ProfileManager (typically during test
   // shutdown) make sure to reset any objects that might maintain references to
-  // it. See SetLocalState() for a description of a similar situation.
+  // it.
   notification_ui_manager_.reset();
 #endif
   profile_manager_ = std::move(profile_manager);
@@ -282,7 +388,7 @@ void TestingBrowserProcess::SetVariationsService(
 }
 
 PrefService* TestingBrowserProcess::local_state() {
-  return local_state_;
+  return testing_local_state_.get();
 }
 
 signin::ActivePrimaryAccountsMetricsRecorder*
@@ -301,9 +407,6 @@ StartupData* TestingBrowserProcess::startup_data() {
 policy::ChromeBrowserPolicyConnector*
 TestingBrowserProcess::browser_policy_connector() {
   if (!browser_policy_connector_) {
-    EXPECT_FALSE(created_browser_policy_connector_);
-    created_browser_policy_connector_ = true;
-
 #if BUILDFLAG(IS_POSIX) && !BUILDFLAG(IS_MAC)
     // Make sure that the machine policy directory does not exist so that
     // machine-wide policies do not affect tests.
@@ -375,19 +478,15 @@ TestingBrowserProcess::subresource_filter_ruleset_service() {
   return subresource_filter_ruleset_service_.get();
 }
 
-subresource_filter::RulesetService*
-TestingBrowserProcess::fingerprinting_protection_ruleset_service() {
-  return fingerprinting_protection_ruleset_service_.get();
-}
-
 BrowserProcessPlatformPart* TestingBrowserProcess::platform_part() {
   return platform_part_.get();
 }
 
 NotificationUIManager* TestingBrowserProcess::notification_ui_manager() {
 #if BUILDFLAG(ENABLE_CHROME_NOTIFICATIONS)
-  if (!notification_ui_manager_.get())
+  if (!notification_ui_manager_.get()) {
     notification_ui_manager_ = NotificationUIManager::Create();
+  }
   return notification_ui_manager_.get();
 #else
   return nullptr;
@@ -411,8 +510,7 @@ IntranetRedirectDetector* TestingBrowserProcess::intranet_redirect_detector() {
 
 void TestingBrowserProcess::CreateDevToolsProtocolHandler() {}
 
-void TestingBrowserProcess::CreateDevToolsAutoOpener() {
-}
+void TestingBrowserProcess::CreateDevToolsAutoOpener() {}
 
 bool TestingBrowserProcess::IsShuttingDown() {
   return is_shutting_down_;
@@ -420,8 +518,9 @@ bool TestingBrowserProcess::IsShuttingDown() {
 
 printing::PrintJobManager* TestingBrowserProcess::print_job_manager() {
 #if BUILDFLAG(ENABLE_PRINTING)
-  if (!print_job_manager_.get())
+  if (!print_job_manager_.get()) {
     print_job_manager_ = std::make_unique<printing::PrintJobManager>();
+  }
   return print_job_manager_.get();
 #else
   NOTIMPLEMENTED();
@@ -457,13 +556,29 @@ TestingBrowserProcess::background_printing_manager() {
 #endif
 }
 
+#if BUILDFLAG(IS_ANDROID)
+supervised_user::AndroidParentalControls&
+TestingBrowserProcess::android_parental_controls() {
+  return *device_parental_controls_;
+}
+#endif  // BUILDFLAG(IS_ANDROID)
+
+supervised_user::DeviceParentalControls&
+TestingBrowserProcess::device_parental_controls() {
+  return *device_parental_controls_;
+}
+
 const std::string& TestingBrowserProcess::GetApplicationLocale() {
-  return app_locale_;
+  CHECK(features_);
+  CHECK(features_->application_locale_storage());
+  return features_->application_locale_storage()->Get();
 }
 
 void TestingBrowserProcess::SetApplicationLocale(
     const std::string& actual_locale) {
-  app_locale_ = actual_locale;
+  CHECK(features_);
+  CHECK(features_->application_locale_storage());
+  return features_->application_locale_storage()->Set(actual_locale);
 }
 
 DownloadStatusUpdater* TestingBrowserProcess::download_status_updater() {
@@ -471,9 +586,18 @@ DownloadStatusUpdater* TestingBrowserProcess::download_status_updater() {
 }
 
 DownloadRequestLimiter* TestingBrowserProcess::download_request_limiter() {
-  if (!download_request_limiter_)
+  if (!download_request_limiter_) {
     download_request_limiter_ = base::MakeRefCounted<DownloadRequestLimiter>();
+  }
   return download_request_limiter_.get();
+}
+
+activity_reporter::ActivityReporter*
+TestingBrowserProcess::activity_reporter() {
+  if (!activity_reporter_) {
+    activity_reporter_ = std::make_unique<TestActivityReporter>();
+  }
+  return activity_reporter_.get();
 }
 
 component_updater::ComponentUpdateService*
@@ -485,27 +609,24 @@ TestingBrowserProcess::component_updater() {
 #endif
 }
 
+#if BUILDFLAG(IS_CHROMEOS)
 MediaFileSystemRegistry* TestingBrowserProcess::media_file_system_registry() {
-#if BUILDFLAG(IS_ANDROID)
-  NOTIMPLEMENTED();
-  return nullptr;
-#else
-  if (!media_file_system_registry_)
+  if (!media_file_system_registry_) {
     media_file_system_registry_ = std::make_unique<MediaFileSystemRegistry>();
+  }
   return media_file_system_registry_.get();
-#endif
 }
+#endif
 
 network_time::NetworkTimeTracker*
 TestingBrowserProcess::network_time_tracker() {
   if (!network_time_tracker_) {
-    if (!local_state_)
-      return nullptr;
-
+    CHECK(local_state());
     network_time_tracker_ = std::make_unique<network_time::NetworkTimeTracker>(
         std::unique_ptr<base::Clock>(new base::DefaultClock()),
         std::unique_ptr<base::TickClock>(new base::DefaultTickClock()),
-        local_state_, nullptr, std::nullopt);
+        local_state(), nullptr,
+        network_time::NetworkTimeTracker::FETCHES_ON_DEMAND_ONLY);
   }
   return network_time_tracker_.get();
 }
@@ -538,8 +659,18 @@ HidSystemTrayIcon* TestingBrowserProcess::hid_system_tray_icon() {
   return hid_system_tray_icon_.get();
 }
 
+void TestingBrowserProcess::set_hid_system_tray_icon_for_test(
+    std::unique_ptr<HidSystemTrayIcon> icon) {
+  hid_system_tray_icon_ = std::move(icon);
+}
+
 UsbSystemTrayIcon* TestingBrowserProcess::usb_system_tray_icon() {
   return usb_system_tray_icon_.get();
+}
+
+void TestingBrowserProcess::set_usb_system_tray_icon_for_test(
+    std::unique_ptr<UsbSystemTrayIcon> icon) {
+  usb_system_tray_icon_ = std::move(icon);
 }
 #endif
 
@@ -566,9 +697,33 @@ GlobalFeatures* TestingBrowserProcess::GetFeatures() {
   return features_.get();
 }
 
-void TestingBrowserProcess::CreateGlobalFeaturesForTesting() {
+void TestingBrowserProcess::CreateGlobalFeaturesPreProfileManager() {
+  // To replace the GlobalFeatures, shutdown the default instance first.
+  CHECK(features_);
+  features_->PostMainMessageLoopRun();
+
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+  extensions_browser_client_->StartTearDown();
+#endif
+
+  features_->PostDestroyThreads();
+  features_.reset();
+
   features_ = GlobalFeatures::CreateGlobalFeatures();
   features_->Init();
+}
+
+void TestingBrowserProcess::CreateGlobalFeaturesPostProfileManager() {
+  features_->PostBrowserProcessInit();
+
+  // Assume locale is initialized to "en" during initialization.
+  features_->application_locale_storage()->Set("en");
+}
+
+void TestingBrowserProcess::WillDestroyCurrentTaskEnvironment() {
+  // BrowserProcessImpl::StartTearDown() is triggered on PostMainMessageLoop in
+  // production, which happens before ThreadPool is destroyed.
+  MaybeStartTearDown();
 }
 
 resource_coordinator::TabManager* TestingBrowserProcess::GetTabManager() {
@@ -592,26 +747,17 @@ void TestingBrowserProcess::SetSystemNotificationHelper(
   system_notification_helper_ = std::move(system_notification_helper);
 }
 
-void TestingBrowserProcess::SetLocalState(PrefService* local_state) {
-  if (!local_state) {
-    // The local_state_ PrefService is owned outside of TestingBrowserProcess,
-    // but some of the members of TestingBrowserProcess hold references to it
-    // (for example, via PrefNotifier members). But given our test
-    // infrastructure which tears down individual tests before freeing the
-    // TestingBrowserProcess, there's not a good way to make local_state outlive
-    // these dependencies. As a workaround, whenever local_state_ is cleared
-    // (assumedly as part of exiting the test and freeing TestingBrowserProcess)
-    // any components owned by TestingBrowserProcess that depend on local_state
-    // are also freed.
-    network_time_tracker_.reset();
-#if BUILDFLAG(ENABLE_CHROME_NOTIFICATIONS)
-    notification_ui_manager_.reset();
-#endif
-    serial_policy_allowed_ports_.reset();
-    ShutdownBrowserPolicyConnector();
-    created_browser_policy_connector_ = false;
+void TestingBrowserProcess::MaybeStartTearDown() {
+  if (is_torn_down_) {
+    return;
   }
-  local_state_ = local_state;
+  is_torn_down_ = true;
+
+  network_time_tracker_.reset();
+#if BUILDFLAG(ENABLE_CHROME_NOTIFICATIONS)
+  notification_ui_manager_.reset();
+#endif
+  ShutdownBrowserPolicyConnector();
 }
 
 void TestingBrowserProcess::ShutdownBrowserPolicyConnector() {
@@ -629,7 +775,6 @@ void TestingBrowserProcess::ShutdownBrowserPolicyConnector() {
 #endif
     browser_policy_connector_->Shutdown();
   }
-  browser_policy_connector_.reset();
 }
 
 TestingBrowserProcessPlatformPart*
@@ -652,11 +797,6 @@ void TestingBrowserProcess::SetRulesetService(
   subresource_filter_ruleset_service_.swap(ruleset_service);
 }
 
-void TestingBrowserProcess::SetFingerprintingProtectionRulesetService(
-    std::unique_ptr<subresource_filter::RulesetService> ruleset_service) {
-  fingerprinting_protection_ruleset_service_.swap(ruleset_service);
-}
-
 void TestingBrowserProcess::SetShuttingDown(bool is_shutting_down) {
   is_shutting_down_ = is_shutting_down;
 }
@@ -672,17 +812,11 @@ void TestingBrowserProcess::SetComponentUpdater(
         component_updater) {
   component_updater_ = std::move(component_updater);
 }
-
-void TestingBrowserProcess::SetHidSystemTrayIcon(
-    std::unique_ptr<HidSystemTrayIcon> hid_system_tray_icon) {
-  hid_system_tray_icon_ = std::move(hid_system_tray_icon);
-}
-
-void TestingBrowserProcess::SetUsbSystemTrayIcon(
-    std::unique_ptr<UsbSystemTrayIcon> usb_system_tray_icon) {
-  usb_system_tray_icon_ = std::move(usb_system_tray_icon);
-}
 #endif
+
+TestingPrefServiceSimple* TestingBrowserProcess::GetTestingLocalState() {
+  return testing_local_state_.get();
+}
 
 ///////////////////////////////////////////////////////////////////////////////
 

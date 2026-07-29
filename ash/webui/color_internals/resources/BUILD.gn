@@ -11,13 +11,13 @@ build_webui("build") {
   grd_prefix = "ash_color_internals"
 
   # When adding a new file to color internals, add it to one of the lists
-  # below. `non_web_component_files` are plain ts files, `web_component_files` are
+  # below. `ts_files` are plain ts files, `web_component_files` are
   # polymer based ts files, `css_files` are Polymer css files,
   # `static_files` are non-js files, e.g. image, html, plain css.
 
   static_files = [ "index.html" ]
 
-  non_web_component_files = [
+  ts_files = [
     "index.ts",
     "utils.ts",
     "wallpaper_colors.ts",
@@ -33,6 +33,7 @@ build_webui("build") {
   ]
 
   webui_context_type = "trusted"
+  ts_composite = true
   extra_grdp_files = [ "$target_gen_dir/webui_cros_styles_resources.grdp" ]
   extra_grdp_deps = [ ":build_cros_styles_grdp" ]
   grit_output_dir = "$root_gen_dir/ash/webui"

@@ -17,6 +17,7 @@ import './metrics_consent_toggle_button.js';
 import {PrefsMixin} from '/shared/settings/prefs/prefs_mixin.js';
 import {I18nMixin} from 'chrome://resources/ash/common/cr_elements/i18n_mixin.js';
 import {WebUiListenerMixin} from 'chrome://resources/ash/common/cr_elements/web_ui_listener_mixin.js';
+import {assertNotReached} from 'chrome://resources/js/assert.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
@@ -30,11 +31,10 @@ import {Router, routes} from '../router.js';
 import type {PrivacyHubBrowserProxy} from './privacy_hub_browser_proxy.js';
 import {PrivacyHubBrowserProxyImpl} from './privacy_hub_browser_proxy.js';
 import {GeolocationAccessLevel} from './privacy_hub_geolocation_subpage.js';
-import {PrivacyHubSensorSubpageUserAction} from './privacy_hub_metrics_util.js';
 import {getTemplate} from './privacy_hub_subpage.html.js';
 
 /**
- * These values are persisted to logs and should not be renumbered or re-used.
+ * These values are persisted to logs and should not be renumbered or reused.
  * Keep in sync with PrivacyHubNavigationOrigin in
  * tools/metrics/histograms/enums.xml and
  * ash/system/privacy_hub/privacy_hub_metrics.h.
@@ -66,6 +66,14 @@ export class SettingsPrivacyHubSubpage extends SettingsPrivacyHubSubpageBase {
         readOnly: true,
         value: function() {
           return loadTimeData.getBoolean('showPrivacyHubLocationControl');
+        },
+      },
+
+      shouldUseMetricsConsentRestructure_: {
+        type: Boolean,
+        readOnly: true,
+        value: function() {
+          return loadTimeData.getBoolean('shouldUseMetricsConsentRestructure');
         },
       },
 
@@ -143,36 +151,33 @@ export class SettingsPrivacyHubSubpage extends SettingsPrivacyHubSubpageBase {
         computed: 'computeMicrophoneToggleTooltipText_(isMicListEmpty_, ' +
             'microphoneHardwareToggleActive_)',
       },
-
-      /**
-       * Used by DeepLinkingMixin to focus this page's deep links.
-       */
-      supportedSettingIds: {
-        type: Object,
-        value: () => new Set<Setting>([
-          Setting.kCameraOnOff,
-          Setting.kMicrophoneOnOff,
-          Setting.kSpeakOnMuteDetectionOnOff,
-          Setting.kGeolocationOnOff,
-          Setting.kUsageStatsAndCrashReports,
-        ]),
-      },
     };
   }
 
+  // DeepLinkingMixin override
+  override supportedSettingIds = new Set<Setting>([
+    Setting.kCameraOnOff,
+    Setting.kMicrophoneOnOff,
+    Setting.kSpeakOnMuteDetectionOnOff,
+    Setting.kGeolocationOnOff,
+    Setting.kUsageStatsAndCrashReports,
+  ]);
+
   private browserProxy_: PrivacyHubBrowserProxy;
-  private showPrivacyHubLocationControl_: boolean;
-  private locationSublabel_: string;
-  private cameraFallbackMechanismEnabled_: boolean;
-  private cameraRowSubtext_: string;
-  private isCameraListEmpty_: boolean;
-  private isMicListEmpty_: boolean;
-  private microphoneRowSubtext_: string;
-  private microphoneHardwareToggleActive_: boolean;
-  private shouldDisableMicrophoneToggle_: boolean;
-  private cameraSwitchForceDisabled_: boolean;
-  private shouldDisableCameraToggle_: boolean;
-  private showSpeakOnMuteDetectionPage_: boolean;
+  declare private showPrivacyHubLocationControl_: boolean;
+  declare private shouldUseMetricsConsentRestructure_: boolean;
+  declare private locationSubLabel_: string;
+  declare private cameraFallbackMechanismEnabled_: boolean;
+  declare private cameraRowSubtext_: string;
+  declare private isCameraListEmpty_: boolean;
+  declare private isMicListEmpty_: boolean;
+  declare private microphoneRowSubtext_: string;
+  declare private microphoneHardwareToggleActive_: boolean;
+  declare private microphoneToggleTooltipText_: string;
+  declare private shouldDisableMicrophoneToggle_: boolean;
+  declare private cameraSwitchForceDisabled_: boolean;
+  declare private shouldDisableCameraToggle_: boolean;
+  declare private showSpeakOnMuteDetectionPage_: boolean;
 
   constructor() {
     super();
@@ -257,29 +262,14 @@ export class SettingsPrivacyHubSubpage extends SettingsPrivacyHubSubpageBase {
   }
 
   private onCameraSubpageLinkClick_(): void {
-    chrome.metricsPrivate.recordEnumerationValue(
-        'ChromeOS.PrivacyHub.CameraSubpage.UserAction',
-        PrivacyHubSensorSubpageUserAction.SUBPAGE_OPENED,
-        Object.keys(PrivacyHubSensorSubpageUserAction).length);
-
     Router.getInstance().navigateTo(routes.PRIVACY_HUB_CAMERA);
   }
 
   private onMicrophoneSubpageLinkClick_(): void {
-    chrome.metricsPrivate.recordEnumerationValue(
-        'ChromeOS.PrivacyHub.MicrophoneSubpage.UserAction',
-        PrivacyHubSensorSubpageUserAction.SUBPAGE_OPENED,
-        Object.keys(PrivacyHubSensorSubpageUserAction).length);
-
     Router.getInstance().navigateTo(routes.PRIVACY_HUB_MICROPHONE);
   }
 
   private onGeolocationAreaClick_(): void {
-    chrome.metricsPrivate.recordEnumerationValue(
-        'ChromeOS.PrivacyHub.LocationSubpage.UserAction',
-        PrivacyHubSensorSubpageUserAction.SUBPAGE_OPENED,
-        Object.keys(PrivacyHubSensorSubpageUserAction).length);
-
     Router.getInstance().navigateTo(routes.PRIVACY_HUB_GEOLOCATION);
   }
 
@@ -300,6 +290,8 @@ export class SettingsPrivacyHubSubpage extends SettingsPrivacyHubSubpageBase {
         return this.i18n('geolocationAreaOnlyAllowedForSystemSubtext');
       case GeolocationAccessLevel.DISALLOWED:
         return this.i18n('geolocationAreaDisallowedSubtext');
+      default:
+        assertNotReached();
     }
   }
 

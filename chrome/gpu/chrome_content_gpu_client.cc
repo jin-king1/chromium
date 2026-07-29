@@ -14,7 +14,6 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/token.h"
 #include "build/build_config.h"
-#include "build/chromeos_buildflags.h"
 #include "chrome/common/profiler/chrome_thread_group_profiler_client.h"
 #include "chrome/common/profiler/chrome_thread_profiler_client.h"
 #include "chrome/common/profiler/core_unwinders.h"
@@ -29,15 +28,12 @@
 #include "media/media_buildflags.h"
 #include "services/tracing/public/cpp/stack_sampling/tracing_sampler_profiler.h"
 
-#if BUILDFLAG(IS_CHROMEOS_ASH)
-#include "chromeos/ash/experiences/arc/video_accelerator/protected_buffer_manager.h"
-#include "ui/ozone/public/ozone_platform.h"         // nogncheck
-#include "ui/ozone/public/surface_factory_ozone.h"  // nogncheck
-#endif
-
 #if BUILDFLAG(IS_CHROMEOS)
+#include "chromeos/ash/experiences/arc/video_accelerator/protected_buffer_manager.h"
 #include "chromeos/components/cdm_factory_daemon/chromeos_cdm_factory.h"
 #include "chromeos/components/cdm_factory_daemon/mojom/browser_cdm_factory.mojom.h"
+#include "ui/ozone/public/ozone_platform.h"         // nogncheck
+#include "ui/ozone/public/surface_factory_ozone.h"  // nogncheck
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 ChromeContentGpuClient::ChromeContentGpuClient() {
@@ -53,7 +49,7 @@ ChromeContentGpuClient::ChromeContentGpuClient() {
   main_thread_profiler_ =
       sampling_profiler::ThreadProfiler::CreateAndStartOnMainThread();
 #endif
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
   protected_buffer_manager_ = new arc::ProtectedBufferManager();
 #endif
 }
@@ -61,15 +57,12 @@ ChromeContentGpuClient::ChromeContentGpuClient() {
 ChromeContentGpuClient::~ChromeContentGpuClient() = default;
 
 void ChromeContentGpuClient::GpuServiceInitialized() {
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
   ui::OzonePlatform::GetInstance()
       ->GetSurfaceFactoryOzone()
       ->SetGetProtectedNativePixmapDelegate(base::BindRepeating(
           &arc::ProtectedBufferManager::GetProtectedNativePixmapFor,
           base::Unretained(protected_buffer_manager_.get())));
-#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
-
-#if BUILDFLAG(IS_CHROMEOS)
   content::ChildThread::Get()->BindHostReceiver(
       chromeos::ChromeOsCdmFactory::GetBrowserCdmFactoryReceiver());
 #endif  // BUILDFLAG(IS_CHROMEOS)
@@ -100,14 +93,15 @@ void ChromeContentGpuClient::GpuServiceInitialized() {
 }
 
 void ChromeContentGpuClient::ExposeInterfacesToBrowser(
+    viz::GpuServiceImpl* gpu_service,
     const gpu::GpuPreferences& gpu_preferences,
     const gpu::GpuDriverBugWorkarounds& gpu_workarounds,
     mojo::BinderMap* binders) {
   // NOTE: Do not add binders directly within this method. Instead, modify the
   // definition of |ExposeChromeGpuInterfacesToBrowser()|, as this ensures
   // security review coverage.
-  ExposeChromeGpuInterfacesToBrowser(this, gpu_preferences, gpu_workarounds,
-                                     binders);
+  ExposeChromeGpuInterfacesToBrowser(this, gpu_service, gpu_preferences,
+                                     gpu_workarounds, binders);
 }
 
 void ChromeContentGpuClient::PostSandboxInitialized() {
@@ -142,9 +136,18 @@ void ChromeContentGpuClient::PostCompositorThreadCreated(
                                     &CreateCoreUnwindersFactory)));
 }
 
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+void ChromeContentGpuClient::PostDisplayCompositorGpuThreadCreated(
+    base::SingleThreadTaskRunner* task_runner) {
+  task_runner->PostTask(
+      FROM_HERE,
+      base::BindOnce(
+          &sampling_profiler::ThreadProfiler::StartOnChildThread,
+          sampling_profiler::ProfilerThreadType::kDisplayCompositorGpu));
+}
+
+#if BUILDFLAG(IS_CHROMEOS)
 scoped_refptr<arc::ProtectedBufferManager>
 ChromeContentGpuClient::GetProtectedBufferManager() {
   return protected_buffer_manager_;
 }
-#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+#endif  // BUILDFLAG(IS_CHROMEOS)

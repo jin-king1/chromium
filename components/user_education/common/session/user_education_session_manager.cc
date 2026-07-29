@@ -9,7 +9,6 @@
 #include "base/callback_list.h"
 #include "base/check_op.h"
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/user_metrics.h"
@@ -147,6 +146,7 @@ void UserEducationSessionManager::UpdateLastActiveTime(
       old_start_time, old_active_time, new_active_time);
   if (is_new_session) {
     session_data.start_time = new_active_time;
+    ++session_data.session_number;
   }
   // Save the session data before calling OnNewSession, since some listeners
   // will be relying on the data being current.

@@ -42,7 +42,7 @@ bool IsConfigRelatedUpdateOriginValue(
     case sync_pb::SyncEnums::UNKNOWN_ORIGIN:
     case sync_pb::SyncEnums::PERIODIC:
     case sync_pb::SyncEnums::GU_TRIGGER:
-    case sync_pb::SyncEnums::RETRY:
+    case sync_pb::SyncEnums::DEVICE_STATISTICS_METRICS:
       return false;
   }
   NOTREACHED();
@@ -61,17 +61,15 @@ bool ShouldRequestEarlyExit(const SyncProtocolError& error) {
     case CLIENT_DATA_OBSOLETE:
     case DISABLED_BY_ADMIN:
     case ENCRYPTION_OBSOLETE:
-      // If we send terminate sync early then `sync_cycle_ended` notification
-      // would not be sent. If there were no actions then `ACTIONABLE_ERROR`
-      // notification wouldn't be sent either. Then the UI layer would be left
-      // waiting forever. So assert we would send something.
-      DCHECK_NE(error.action, UNKNOWN_ACTION);
       return true;
     case CONFLICT:
     case INVALID_MESSAGE:
-      NOTREACHED();
+      // These cases should not occur here, but since the error ultimately comes
+      // from the server, handle them gracefully (by not doing anything in
+      // particular).
+      return false;
   }
-  return false;
+  NOTREACHED();
 }
 
 bool IsActionableProtocolError(const SyncProtocolError& error) {
@@ -115,10 +113,10 @@ void SyncSchedulerImpl::OnCredentialsUpdated() {
 }
 
 void SyncSchedulerImpl::OnConnectionStatusChange(
-    network::mojom::ConnectionType type) {
+    net::NetworkChangeNotifier::ConnectionType type) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  if (type != network::mojom::ConnectionType::CONNECTION_NONE &&
+  if (type != net::NetworkChangeNotifier::ConnectionType::CONNECTION_NONE &&
       HttpResponse::CONNECTION_UNAVAILABLE ==
           cycle_context_->connection_manager()->server_status()) {
     // Optimistically assume that the connection is fixed and try
@@ -171,8 +169,6 @@ void SyncSchedulerImpl::Start(Mode mode, base::Time last_poll_time) {
 
     AdjustPolling(UPDATE_INTERVAL);  // Will kick start poll timer if needed.
 
-    // Update our current time before checking IsRetryRequired().
-    nudge_tracker_.SetSyncCycleStartTime(TimeTicks::Now());
     if (nudge_tracker_.IsSyncRequired(GetEnabledAndUnblockedTypes()) &&
         CanRunNudgeJobNow(RespectGlobalBackoff(true))) {
       TrySyncCycleJob(RespectGlobalBackoff(true));
@@ -244,8 +240,8 @@ bool SyncSchedulerImpl::CanRunJobNow(RespectGlobalBackoff respect_backoff) {
   }
 
   if (!ignore_auth_credentials_ &&
-      cycle_context_->connection_manager()->HasInvalidAccessToken()) {
-    SDVLOG(1) << "Unable to run a job because we have no valid access token.";
+      !cycle_context_->connection_manager()->HasAccessToken()) {
+    SDVLOG(1) << "Unable to run a job because we have no access token.";
     return false;
   }
 
@@ -469,8 +465,8 @@ void SyncSchedulerImpl::HandleFailure(
             ? wait_interval_->length
             : delay_provider_->GetInitialDelay(model_neutral_state);
     base::TimeDelta next_delay = delay_provider_->GetDelay(previous_delay);
-    wait_interval_ = std::make_unique<WaitInterval>(
-        WaitInterval::BlockingMode::kExponentialBackoff, next_delay);
+    wait_interval_.emplace(WaitInterval::BlockingMode::kExponentialBackoff,
+                           next_delay);
     SDVLOG(2) << "Sync cycle failed.  Will back off for "
               << wait_interval_->length.InMilliseconds() << "ms.";
   }
@@ -602,8 +598,6 @@ void SyncSchedulerImpl::TrySyncCycleJobImpl(
     RespectGlobalBackoff respect_backoff) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  nudge_tracker_.SetSyncCycleStartTime(TimeTicks::Now());
-
   if (mode_ == CONFIGURATION_MODE) {
     if (pending_configure_params_) {
       SDVLOG(2) << "Found pending configure job";
@@ -627,7 +621,7 @@ void SyncSchedulerImpl::TrySyncCycleJobImpl(
     // We must be in an error state. Transitioning out of each of these
     // error states should trigger a sync cycle job.
     DCHECK(IsGlobalThrottle() || IsGlobalBackoff() ||
-           cycle_context_->connection_manager()->HasInvalidAccessToken());
+           !cycle_context_->connection_manager()->HasAccessToken());
   }
 
   RestartWaiting();
@@ -637,10 +631,6 @@ void SyncSchedulerImpl::PollTimerCallback() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(!syncer_->IsSyncing());
 
-  TrySyncCycleJob(RespectGlobalBackoff(true));
-}
-
-void SyncSchedulerImpl::RetryTimerCallback() {
   TrySyncCycleJob(RespectGlobalBackoff(true));
 }
 
@@ -736,8 +726,8 @@ bool SyncSchedulerImpl::IsGlobalBackoff() const {
 void SyncSchedulerImpl::OnThrottled(const base::TimeDelta& throttle_duration) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   base::UmaHistogramBoolean("Sync.ThrottledAllDataTypes", true);
-  wait_interval_ = std::make_unique<WaitInterval>(
-      WaitInterval::BlockingMode::kThrottled, throttle_duration);
+  wait_interval_.emplace(WaitInterval::BlockingMode::kThrottled,
+                         throttle_duration);
   for (SyncEngineEventListener& observer : *cycle_context_->listeners()) {
     observer.OnThrottledTypesChanged(DataTypeSet::All());
   }
@@ -822,14 +812,6 @@ void SyncSchedulerImpl::OnSyncProtocolError(
       observer.OnActionableProtocolError(sync_protocol_error);
     }
   }
-}
-
-void SyncSchedulerImpl::OnReceivedGuRetryDelay(const base::TimeDelta& delay) {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-
-  nudge_tracker_.SetNextRetryTime(TimeTicks::Now() + delay);
-  retry_timer_.Start(FROM_HERE, delay, this,
-                     &SyncSchedulerImpl::RetryTimerCallback);
 }
 
 void SyncSchedulerImpl::OnReceivedMigrationRequest(DataTypeSet types) {

@@ -1,6 +1,7 @@
 // Copyright 2024 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
+
 #include "components/autofill/core/browser/payments/payments_network_interface_test_base.h"
 
 #include <string>
@@ -45,14 +46,14 @@ void PaymentsNetworkInterfaceTestBase::SetUpTest() {
           &test_url_loader_factory_);
   test_personal_data_.test_payments_data_manager().SetAccountInfoForPayments(
       identity_test_env_.MakePrimaryAccountAvailable(
-          "example@gmail.com", signin::ConsentLevel::kSync));
+          "example@gmail.com", signin::ConsentLevel::kSignin));
 }
 
 void PaymentsNetworkInterfaceTestBase::CreateFieldTrialWithId(
     const std::string& trial_name,
     const std::string& group_name,
     int variation_id) {
-  variations::AssociateGoogleVariationID(
+  variations::AssociateGoogleVariationIDForTesting(
       variations::GOOGLE_WEB_PROPERTIES_ANY_CONTEXT, trial_name, group_name,
       static_cast<variations::VariationID>(variation_id));
   base::FieldTrialList::CreateFieldTrial(trial_name, group_name)->Activate();
@@ -75,16 +76,6 @@ void PaymentsNetworkInterfaceTestBase::ReturnResponse(
     const std::string& response_body) {
   payments_network_interface_base->OnSimpleLoaderCompleteInternal(
       response_code, response_body);
-}
-
-void PaymentsNetworkInterfaceTestBase::assertIncludedInRequest(
-    std::string field_name_or_value) {
-  EXPECT_TRUE(GetUploadData().find(field_name_or_value) != std::string::npos);
-}
-
-void PaymentsNetworkInterfaceTestBase::assertNotIncludedInRequest(
-    std::string field_name_or_value) {
-  EXPECT_TRUE(GetUploadData().find(field_name_or_value) == std::string::npos);
 }
 
 }  // namespace autofill::payments

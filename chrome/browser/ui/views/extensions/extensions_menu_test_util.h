@@ -12,9 +12,9 @@
 #include "ui/views/view_observer.h"
 
 class Browser;
-class ExtensionMenuItemView;
 class ExtensionsMenuView;
-class ExtensionsToolbarContainer;
+class ExtensionsToolbarDesktop;
+class HoverButton;
 
 // An implementation of ExtensionActionTestHelper that works with the
 // ExtensionsMenu.
@@ -50,17 +50,15 @@ class ExtensionsMenuTestUtil : public ExtensionActionTestHelper,
   // Returns whether the extensions menu created by this test helper is showing.
   bool IsExtensionsMenuShowing();
 
-  // Returns the ExtensionMenuItemView for the given `id` from the
-  // `menu_view`.
-  ExtensionMenuItemView* GetMenuItemViewForId(
-      const extensions::ExtensionId& id);
+  // Returns the action button for the given `id` from the `menu_view_`.
+  HoverButton* GetActionButton(const extensions::ExtensionId& id);
 
   // An override to allow test instances of the ExtensionsMenuView.
   // This has to be defined before |menu_view_| below.
   base::AutoReset<bool> scoped_allow_extensions_menu_instances_;
 
   const raw_ptr<Browser, DanglingUntriaged> browser_;
-  raw_ptr<ExtensionsToolbarContainer, DanglingUntriaged> extensions_container_ =
+  raw_ptr<ExtensionsToolbarDesktop, DanglingUntriaged> extensions_toolbar_ =
       nullptr;
 
   // The actual pointer to an ExtensionsMenuView, non-null if alive.

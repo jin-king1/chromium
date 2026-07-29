@@ -7,11 +7,15 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/grit/generated_resources.h"
-#include "components/history_embeddings/history_embeddings_features.h"
+#include "components/history_embeddings/core/history_embeddings_features.h"
+#include "components/optimization_guide/core/feature_registry/feature_registration.h"
+#include "components/optimization_guide/core/model_execution/model_execution_prefs.h"
 #include "components/optimization_guide/core/model_execution/model_execution_util.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
+#include "components/prefs/pref_service.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/variations/service/variations_service.h"
 #include "content/public/browser/web_ui_data_source.h"
@@ -53,12 +57,7 @@ constexpr auto kEnabledByDefaultForDesktopOnly =
 #endif
 
 // These are the kill switches for the launched history embeddings features.
-BASE_FEATURE(kLaunchedHistoryEmbeddings,
-             "LaunchedHistoryEmbeddings",
-             kEnabledByDefaultForDesktopOnly);
-BASE_FEATURE(kLaunchedHistoryEmbeddingsAnswers,
-             "LaunchedHistoryEmbeddingsAnswers",
-             kEnabledByDefaultForDesktopOnly);
+BASE_FEATURE(kLaunchedHistoryEmbeddings, kEnabledByDefaultForDesktopOnly);
 
 bool IsHistoryEmbeddingsEnabledForProfile(Profile* profile) {
   if (!IsHistoryEmbeddingsFeatureEnabled()) {
@@ -126,8 +125,8 @@ void PopulateSourceForWebUI(content::WebUIDataSource* source,
       "enableHistoryEmbeddingsImages",
       history_embeddings::GetFeatureParameters().enable_images_for_results);
   static constexpr webui::LocalizedString kHistoryEmbeddingsStrings[] = {
+      {"foundSearchResults", IDS_HISTORY_FOUND_SEARCH_RESULTS},
       {"historyEmbeddingsSearchPrompt", IDS_HISTORY_EMBEDDINGS_SEARCH_PROMPT},
-      {"historyEmbeddingsDisclaimer", IDS_HISTORY_EMBEDDINGS_DISCLAIMER},
       {"historyEmbeddingsHeading", IDS_HISTORY_EMBEDDINGS_HEADING},
       {"historyEmbeddingsWithAnswersResultsHeading",
        IDS_HISTORY_EMBEDDINGS_WITH_ANSWERS_RESULTS_HEADING},
@@ -153,11 +152,22 @@ void PopulateSourceForWebUI(content::WebUIDataSource* source,
   source->AddInteger("historyEmbeddingsSearchMinimumWordCount",
                      history_embeddings::GetFeatureParameters()
                          .search_query_minimum_word_count);
-  source->AddString(
-      "historyEmbeddingsSettingsUrl",
-      optimization_guide::features::IsAiSettingsPageRefreshEnabled()
-          ? chrome::kHistorySearchV2SettingURL
-          : chrome::kHistorySearchSettingURL);
+  source->AddString("historyEmbeddingsSettingsUrl",
+                    chrome::kHistorySearchSettingURL);
+
+  bool logging_disabled_by_enterprise =
+      profile->GetPrefs()->GetInteger(
+          optimization_guide::prefs::kHistorySearchEnterprisePolicyAllowed) ==
+      static_cast<int>(
+          optimization_guide::model_execution::prefs::
+              ModelExecutionEnterprisePolicyValue::kAllowWithoutLogging);
+  if (logging_disabled_by_enterprise) {
+    source->AddLocalizedString("historyEmbeddingsDisclaimer",
+                               IDS_HISTORY_EMBEDDINGS_DISCLAIMER_LOGGING_OFF);
+  } else {
+    source->AddLocalizedString("historyEmbeddingsDisclaimer",
+                               IDS_HISTORY_EMBEDDINGS_DISCLAIMER);
+  }
 }
 
 bool IsHistoryEmbeddingsFeatureEnabled() {
@@ -185,10 +195,8 @@ bool IsHistoryEmbeddingsAnswersFeatureEnabled() {
           .has_value()) {
     return base::FeatureList::IsEnabled(kHistoryEmbeddingsAnswers);
   }
-  // Otherwise return true for "us" and "en-US", leaving a Finch hook just in
-  // case.
-  return IsCountryAndLocale("us", "en-US") &&
-         base::FeatureList::IsEnabled(kLaunchedHistoryEmbeddingsAnswers);
+
+  return false;
 }
 
 }  // namespace history_embeddings

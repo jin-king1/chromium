@@ -23,16 +23,16 @@
 namespace supervised_user {
 
 // Refers to the family prefix in resources/signin/test_accounts.json
-const char* const kAccountRepositoryPath =
+inline constexpr char kAccountRepositoryPath[] =
     "supervised-tests-account-repository-path";
-const char* const kFamilyFeatureIdentifierSwitch =
+inline constexpr char kFamilyFeatureIdentifierSwitch[] =
     "supervised-tests-family-identifier";
 
 // Alternatively, use these two to provide head of household's and child's
 // credentials directly, in <username>:<password> syntax (colon separated).
-const char* const kHeadOfHouseholdCredentialsSwitch =
+inline constexpr char kHeadOfHouseholdCredentialsSwitch[] =
     "supervised-tests-hoh-credentials";
-const char* const kChildCredentialsSwitch =
+inline constexpr char kChildCredentialsSwitch[] =
     "supervised-tests-child-credentials";
 
 // A LiveTest which assumes a specific structure of provided test accounts,
@@ -62,13 +62,13 @@ class FamilyLiveTest : public signin::test::LiveTest {
 
   ~FamilyLiveTest() override;
 
-  // Turns on sync for eligible users depending on the ::rpc_mode_
-  // (see ::TurnOnSyncFor).
-  void TurnOnSync();
-
-  // Turns on sync and waits for the sync subsystem to start. Manages the list
-  // of open service tabs.
-  void TurnOnSyncFor(BrowserUser& browser_user);
+  // Signs in the user to the browser for eligible users depending on the
+  // ::rpc_mode_ (see ::SigninToBrowserFor).
+  void SigninToBrowser();
+  // Sings in the user to the browser and waits for the sync subsystem available
+  // to signed-in users to start.
+  // Manages the list of open service tabs.
+  void SigninToBrowserFor(BrowserUser& browser_user);
 
  protected:
   void SetUp() override;
@@ -119,7 +119,7 @@ std::string ToString(FamilyLiveTest::RpcMode rpc_mode);
 // Fixture that combines InProcessBrowserTest with InteractiveBrowserTest,
 // adding Family test related utilities.
 class InteractiveFamilyLiveTest
-    : public InteractiveBrowserTestT<FamilyLiveTest> {
+    : public InteractiveBrowserTestMixin<FamilyLiveTest> {
  public:
   // Observes if the browser has reached the intended state.
   using InIntendedStateObserver = ui::test::PollingStateObserver<bool>;

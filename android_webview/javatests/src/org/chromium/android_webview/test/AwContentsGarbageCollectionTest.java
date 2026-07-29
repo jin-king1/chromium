@@ -5,11 +5,11 @@
 package org.chromium.android_webview.test;
 
 import static org.chromium.android_webview.test.AwActivityTestRule.CHECK_INTERVAL;
+import static org.chromium.build.NullUtil.assertNonNull;
 
 import android.app.Activity;
 import android.content.Context;
 import android.content.ContextWrapper;
-import android.os.Build;
 import android.os.ResultReceiver;
 import android.util.Pair;
 import android.view.Window;
@@ -30,9 +30,8 @@ import org.junit.runners.Parameterized;
 import org.junit.runners.Parameterized.UseParametersRunnerFactory;
 
 import org.chromium.android_webview.AwContents;
-import org.chromium.android_webview.gfx.AwGLFunctor;
+import org.chromium.android_webview.gfx.AwDrawFnImpl;
 import org.chromium.android_webview.test.AwActivityTestRule.TestDependencyFactory;
-import org.chromium.base.BaseFeatures;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
@@ -40,7 +39,6 @@ import org.chromium.base.test.util.CriteriaNotSatisfiedException;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Feature;
-import org.chromium.base.test.util.Features;
 import org.chromium.content_public.browser.ImeAdapter;
 import org.chromium.content_public.browser.WebContentsAccessibility;
 import org.chromium.content_public.common.ContentUrlConstants;
@@ -122,15 +120,6 @@ public class AwContentsGarbageCollectionTest extends AwParameterizedTest {
     @DisableHardwareAcceleration
     @SmallTest
     @Feature({"AndroidWebView"})
-    @Features.EnableFeatures({BaseFeatures.COLLECT_ANDROID_FRAME_TIMELINE_METRICS})
-    public void testCreateWithMetricsCollectionAndGcOneTime() throws Throwable {
-        testCreateAndGcOneTime();
-    }
-
-    @Test
-    @DisableHardwareAcceleration
-    @SmallTest
-    @Feature({"AndroidWebView"})
     public void testCreateAndGcOneTime() throws Throwable {
         runAwContentsGcTest(
                 () -> {
@@ -168,8 +157,9 @@ public class AwContentsGarbageCollectionTest extends AwParameterizedTest {
                     ResultReceiver resultReceiver =
                             ThreadUtils.runOnUiThreadBlocking(
                                     () ->
-                                            ImeAdapter.fromWebContents(
-                                                            containerView.getWebContents())
+                                            assertNonNull(
+                                                            ImeAdapter.fromWebContents(
+                                                                    containerView.getWebContents()))
                                                     .getNewShowKeyboardReceiver());
 
                     return resultReceiver;
@@ -296,12 +286,13 @@ public class AwContentsGarbageCollectionTest extends AwParameterizedTest {
     @DisableHardwareAcceleration
     @SmallTest
     @Feature({"AndroidWebView"})
+    @SuppressWarnings("UnusedMethod")
     public void testGcAfterUsingJavascriptObject() throws Throwable {
         runAwContentsGcTest(
                 () -> {
                     // Javascript object with a reference to WebView.
-                    class Test {
-                        Test(int value, AwContents awContents) {
+                    class Foo {
+                        Foo(int value, AwContents awContents) {
                             mValue = value;
                             mAwContents = awContents;
                         }
@@ -315,8 +306,8 @@ public class AwContentsGarbageCollectionTest extends AwParameterizedTest {
                             return mAwContents;
                         }
 
-                        private int mValue;
-                        private AwContents mAwContents;
+                        private final int mValue;
+                        private final AwContents mAwContents;
                     }
                     String html = "<html>Hello World</html>";
                     TestAwContentsClient contentsClient = new TestAwContentsClient();
@@ -324,7 +315,7 @@ public class AwContentsGarbageCollectionTest extends AwParameterizedTest {
                             mActivityTestRule.createAwTestContainerViewOnMainSync(contentsClient);
                     AwActivityTestRule.enableJavaScriptOnUiThread(containerView.getAwContents());
                     final AwContents awContents = containerView.getAwContents();
-                    final Test jsObject = new Test(42, awContents);
+                    final Foo jsObject = new Foo(42, awContents);
                     AwActivityTestRule.addJavascriptInterfaceOnUiThread(
                             awContents, jsObject, "test");
                     mActivityTestRule.loadDataSync(
@@ -401,9 +392,7 @@ public class AwContentsGarbageCollectionTest extends AwParameterizedTest {
 
             gcAndCheckAllAwContentsDestroyed();
         } finally {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                Reference.reachabilityFence(heldObject);
-            }
+            Reference.reachabilityFence(heldObject);
         }
     }
 
@@ -424,7 +413,7 @@ public class AwContentsGarbageCollectionTest extends AwParameterizedTest {
                                         () -> {
                                             return Pair.create(
                                                     AwContents.getNativeInstanceCount(),
-                                                    AwGLFunctor.getNativeInstanceCount());
+                                                    AwDrawFnImpl.getReferenceInstanceCount());
                                         });
                     } catch (Exception e) {
                         throw new CriteriaNotSatisfiedException(e);
@@ -432,7 +421,7 @@ public class AwContentsGarbageCollectionTest extends AwParameterizedTest {
                     Criteria.checkThat(
                             "AwContents count", (int) nativeCounts.first, Matchers.is(0));
                     Criteria.checkThat(
-                            "AwGLFunctor count", (int) nativeCounts.second, Matchers.is(0));
+                            "DrawFunctor count", (int) nativeCounts.second, Matchers.is(0));
                 };
 
         // Depending on a single gc call can make this test flaky. It's possible

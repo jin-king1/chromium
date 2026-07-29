@@ -31,6 +31,7 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/models/image_model.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/chromeos/styles/cros_tokens_color_mappings.h"
 #include "ui/color/color_id.h"
 #include "ui/strings/grit/ui_strings.h"
@@ -103,7 +104,7 @@ class Separator : public views::View {
         views::Builder<views::View>()
             // make sure that the view is displayed by setting non-zero size
             .SetPreferredSize(gfx::Size(1, 1))
-            .SetBorder(views::CreateThemedSolidSidedBorder(
+            .SetBorder(views::CreateSolidSidedBorder(
                 gfx::Insets::TLBR(0, 0, kUnifiedNotificationSeparatorThickness,
                                   0),
                 cros_tokens::kCrosSysSeparator))
@@ -251,7 +252,9 @@ UserItemButton::UserItemButton(PressedCallback callback,
         base::BindRepeating(
             &UserChooserDetailedViewController::TransitionToMainView,
             base::Unretained(controller)),
-        IconButton::Type::kMedium, &views::kIcCloseIcon,
+        IconButton::Type::kMedium,
+        &(::features::IsRoundedIconsEnabled() ? views::kCloseIcon
+                                              : views::kIcCloseOldIcon),
         IDS_APP_ACCNAME_CLOSE));
   }
 
@@ -366,7 +369,7 @@ UserChooserView::UserChooserView(
           session_manager::kMaximumNumberOfUserSessions)));
       break;
     case AddUserSessionPolicy::ERROR_NO_ELIGIBLE_USERS:
-      AddChildView(CreateAddUserErrorView(
+      AddChildViewRaw(CreateAddUserErrorView(
           l10n_util::GetStringUTF16(IDS_ASH_STATUS_TRAY_MESSAGE_OUT_OF_USERS)));
       break;
     case AddUserSessionPolicy::ERROR_LOCKED_TO_SINGLE_USER:

@@ -8,10 +8,10 @@
 #include <vector>
 
 #include "base/functional/callback_forward.h"
+#include "base/memory/weak_ptr.h"
 #include "components/affiliations/core/browser/affiliation_source.h"
 #include "components/affiliations/core/browser/affiliation_utils.h"
 #include "components/keyed_service/core/keyed_service.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 
 class GURL;
 
@@ -22,17 +22,6 @@ namespace affiliations {
 // See affiliation_utils.h for details of what this means.
 class AffiliationService : public KeyedService {
  public:
-  // Controls whether to send a network request or fail on a cache miss.
-  enum class StrategyOnCacheMiss {
-    // Affiliation service will keep trying to send request with exponential
-    // backlog.
-    FETCH_OVER_NETWORK,
-    // Request will fail immediately.
-    FAIL,
-    // After first request failure affiliation service will stop trying.
-    TRY_ONCE_OVER_NETWORK
-  };
-
   using ResultCallback =
       base::OnceCallback<void(const AffiliatedFacets& /* results */,
                               bool /* success */)>;
@@ -40,10 +29,11 @@ class AffiliationService : public KeyedService {
   using GroupsCallback =
       base::OnceCallback<void(const std::vector<GroupedFacets>&)>;
 
-  // Prefetches change password URLs for sites requested. Receives a callback to
-  // run when the prefetch finishes.
-  virtual void PrefetchChangePasswordURL(const GURL& urls,
-                                         base::OnceClosure callback) = 0;
+  // Fetches change password URLs for sites requested. Receives a callback to
+  // run when the fetch finishes.
+  virtual void FetchChangePasswordURL(
+      const GURL& url,
+      base::OnceCallback<void(GURL)> callback) = 0;
 
   // Returns a URL with change password form for a site requested.
   virtual GURL GetChangePasswordURL(const GURL& url) const = 0;
@@ -96,7 +86,7 @@ class AffiliationService : public KeyedService {
   // Retrieves psl extension list. This list includes domain which shouldn't be
   // considered as PSL match.
   virtual void GetPSLExtensions(
-      base::OnceCallback<void(std::vector<std::string>)> callback) const = 0;
+      base::OnceCallback<void(std::vector<std::string>)> callback) = 0;
 
   // This method will fetch the latest affiliation and branding information for
   // |facets| even if local cache is still fresh. |callback| is invoked on
@@ -110,6 +100,8 @@ class AffiliationService : public KeyedService {
   // the prefetcher, and observed for changes in their underlying data model to
   // keep an updated cache of affiliations.
   virtual void RegisterSource(std::unique_ptr<AffiliationSource> source) = 0;
+
+  virtual base::WeakPtr<AffiliationService> AsWeakPtr() = 0;
 };
 
 }  // namespace affiliations

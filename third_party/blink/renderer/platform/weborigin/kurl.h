@@ -41,13 +41,19 @@
 #include "url/url_canon.h"
 #include "url/url_util.h"
 
+class GURL;
+
+namespace blink {
+
+class TextEncoding;
+
 // KURL stands for the URL parser in KDE's HTML Widget (KHTML). The name hasn't
 // changed since Blink forked WebKit, which in turn forked KHTML.
 //
 // KURL is Blink's URL class and is the analog to GURL in other Chromium
 // code. KURL and GURL both share the same underlying URL parser, whose code is
-// located in //url, but KURL is backed by Blink specific WTF::Strings. This
-// means that KURLs are usually cheap to copy due to WTF::Strings being
+// located in //url, but KURL is backed by Blink specific blink::Strings. This
+// means that KURLs are usually cheap to copy due to blink::Strings being
 // internally ref-counted. However, please don't copy KURLs if you can use a
 // const ref, since the size of the parsed structure and related metadata is
 // non-trivial.
@@ -58,14 +64,6 @@
 // - Internal reference to the URL protocol (scheme) to avoid String allocation
 //   for the callers that require it. Common protocols like http and https are
 //   stored as shared static strings.
-namespace WTF {
-class TextEncoding;
-}
-
-class GURL;
-
-namespace blink {
-
 class PLATFORM_EXPORT KURL {
   USING_FAST_MALLOC(KURL);
 
@@ -85,7 +83,7 @@ class PLATFORM_EXPORT KURL {
   //
   // It is usually best to avoid repeatedly parsing a String, unless memory
   // saving outweigh the possible slow-downs.
-  explicit KURL(const String&);
+  explicit KURL(const StringView&);
 
   // Resolves the relative URL with the given base URL. If provided, the
   // TextEncoding is used to encode non-ASCII characters. The base URL can be
@@ -94,8 +92,8 @@ class PLATFORM_EXPORT KURL {
   // FIXME: If the base URL is invalid, this always creates an invalid
   // URL. Instead I think it would be better to treat all invalid base URLs
   // the same way we treate null and empty base URLs.
-  KURL(const KURL& base, const String& relative);
-  KURL(const KURL& base, const String& relative, const WTF::TextEncoding&);
+  KURL(const KURL& base, const StringView& relative);
+  KURL(const KURL& base, const StringView& relative, const TextEncoding&);
 
   // For conversions from other structures that have already parsed and
   // canonicalized the URL. The input must be exactly what KURL would have
@@ -152,11 +150,7 @@ class PLATFORM_EXPORT KURL {
   bool CanRemoveHost() const;
 
   // Return true if this URL is hierarchical, which is equivalent to standard
-  // URLs.
-  //
-  // Important note: If kStandardCompliantNonSpecialSchemeURLParsing flag is
-  // enabled, returns true also for non-special URLs which don't have an opaque
-  // path.
+  // URLs, or non-specials URLs that don't have an opaque path.
   bool IsHierarchical() const;
 
   // Return true if this URL is a standard URL.
@@ -198,18 +192,19 @@ class PLATFORM_EXPORT KURL {
   // This includes at least about:blank and about:srcdoc.
   bool ProtocolIsAbout() const { return ProtocolIs("about"); }
   bool ProtocolIsJavaScript() const;
-  bool ProtocolIsInHTTPFamily() const;
+  bool ProtocolIsInHttpFamily() const;
   bool IsLocalFile() const;
-  bool IsAboutBlankURL() const;   // Is about:blank, ignoring query/ref strings.
-  bool IsAboutSrcdocURL() const;  // Is about:srcdoc, ignoring query/ref
+  bool IsAboutBlankUrl() const;   // Is about:blank, ignoring query/ref strings.
+  bool IsAboutSrcdocUrl() const;  // Is about:srcdoc, ignoring query/ref
                                   // strings..
 
-  bool SetProtocol(const String&);
+  bool SetProtocol(const StringView&);
   void SetHost(const String&);
 
   void RemovePort();
   void SetPort(uint16_t);
-  void SetPort(const String&);
+  // Returns false if the port string is invalid and true otherwise.
+  bool SetPort(const String&);
 
   // Input is like "foo.com" or "foo.com:8000".
   void SetHostAndPort(const String&);
@@ -243,10 +238,14 @@ class PLATFORM_EXPORT KURL {
 
   const url::Parsed& GetParsed() const { return parsed_; }
 
-  const KURL* InnerURL() const { return inner_url_.get(); }
+  const KURL* InnerUrl() const { return inner_url_.get(); }
 
   bool PotentiallyDanglingMarkup() const {
     return parsed_.potentially_dangling_markup;
+  }
+
+  void SetPotentiallyDanglingMarkup() {
+    parsed_.potentially_dangling_markup = true;
   }
 
   // Returns a GURL with the same properties. This can be used in platform/ and
@@ -257,13 +256,13 @@ class PLATFORM_EXPORT KURL {
   void WriteIntoTrace(perfetto::TracedValue context) const;
 
  private:
-  friend struct WTF::HashTraits<blink::KURL>;
+  friend struct HashTraits<KURL>;
 
   void Init(const KURL& base,
-            const String& relative,
-            const WTF::TextEncoding* query_encoding);
+            const StringView& relative,
+            const TextEncoding* query_encoding);
 
-  bool IsAboutURL(const char* allowed_path) const;
+  bool IsAboutUrl(const char* allowed_path) const;
 
   StringView ComponentStringView(const url::Component&) const;
   String ComponentString(const url::Component&) const;
@@ -275,11 +274,11 @@ class PLATFORM_EXPORT KURL {
   void ReplaceComponents(const url::Replacements<CHAR>&,
                          bool preserve_validity = false);
 
-  void InitInnerURL();
+  void InitInnerUrl();
   void InitProtocolMetadata();
 
   // Asserts that `string_` is an ASCII string in DCHECK builds.
-  void AssertStringSpecIsASCII();
+  void AssertStringSpecIsAscii();
 
   // URL Standard: https://url.spec.whatwg.org/#include-credentials
   bool IncludesCredentials() const {
@@ -304,9 +303,13 @@ class PLATFORM_EXPORT KURL {
 PLATFORM_EXPORT bool operator==(const KURL&, const KURL&);
 PLATFORM_EXPORT bool operator==(const KURL&, const String&);
 PLATFORM_EXPORT bool operator==(const String&, const KURL&);
-PLATFORM_EXPORT bool operator!=(const KURL&, const KURL&);
-PLATFORM_EXPORT bool operator!=(const KURL&, const String&);
-PLATFORM_EXPORT bool operator!=(const String&, const KURL&);
+// Resolve ambiguity when comparing a string literal and a KURL.
+inline bool operator==(const char* literal, const KURL& url) {
+  return String(literal) == url;
+}
+inline bool operator==(const KURL& url, const char* literal) {
+  return String(literal) == url;
+}
 
 // Pretty printer for gtest and base/logging.*.  It prepends and appends
 // double-quotes, and escapes characters other than ASCII printables.
@@ -314,9 +317,9 @@ PLATFORM_EXPORT std::ostream& operator<<(std::ostream&, const KURL&);
 
 PLATFORM_EXPORT bool EqualIgnoringFragmentIdentifier(const KURL&, const KURL&);
 
-PLATFORM_EXPORT const KURL& BlankURL();
-PLATFORM_EXPORT const KURL& SrcdocURL();
-PLATFORM_EXPORT const KURL& NullURL();
+PLATFORM_EXPORT const KURL& BlankUrl();
+PLATFORM_EXPORT const KURL& SrcdocUrl();
+PLATFORM_EXPORT const KURL& NullUrl();
 
 // Functions to do URL operations on strings.
 // These are operations that aren't faster on a parsed URL.
@@ -324,12 +327,12 @@ PLATFORM_EXPORT const KURL& NullURL();
 // the string to be a valid and parsable URL.  This is especially important
 // because valid javascript URLs are not necessarily considered valid by KURL.
 
-PLATFORM_EXPORT bool ProtocolIs(const String& url, const char* protocol);
-PLATFORM_EXPORT bool ProtocolIsJavaScript(const String& url);
+PLATFORM_EXPORT bool ProtocolIs(const StringView& url, const char* protocol);
+PLATFORM_EXPORT bool ProtocolIsJavaScript(const StringView& url);
 
-PLATFORM_EXPORT bool IsValidProtocol(const String&);
+PLATFORM_EXPORT bool IsValidProtocol(const StringView&);
 
-using DecodeURLMode = url::DecodeURLMode;
+using DecodeUrlMode = url::DecodeUrlMode;
 // Unescapes the given string using URL escaping rules.
 //
 // DANGER: If the URL has "%00" in it, the resulting string will have embedded
@@ -338,34 +341,24 @@ using DecodeURLMode = url::DecodeURLMode;
 // This function is also used to decode javascript: URLs and as a general
 // purpose unescaping function.
 //
-// Caution: Specifying kUTF8OrIsomorphic to the second argument doesn't conform
+// Caution: Specifying kUtf8OrIsomorphic to the second argument doesn't conform
 // to specifications in many cases.
-PLATFORM_EXPORT String DecodeURLEscapeSequences(const StringView&,
-                                                DecodeURLMode mode);
+PLATFORM_EXPORT String DecodeUrlEscapeSequences(const StringView&,
+                                                DecodeUrlMode mode);
 
-PLATFORM_EXPORT String EncodeWithURLEscapeSequences(const StringView&);
+PLATFORM_EXPORT String EncodeWithUrlEscapeSequences(const StringView&);
 
 // Checks an arbitrary string for invalid escape sequences.
 //
 // A valid percent-encoding is '%' followed by exactly two hex-digits. This
 // function returns true if an occurrence of '%' is found and followed by
 // anything other than two hex-digits.
-PLATFORM_EXPORT bool HasInvalidURLEscapeSequences(const String&);
-
-}  // namespace blink
-
-namespace WTF {
+PLATFORM_EXPORT bool HasInvalidUrlEscapeSequences(const StringView&);
 
 // Defined in kurl_hash.h.
 template <>
 struct HashTraits<blink::KURL>;
 
-template <>
-struct CrossThreadCopier<blink::KURL>
-    : public CrossThreadCopierPassThrough<blink::KURL> {
-  STATIC_ONLY(CrossThreadCopier);
-};
-
-}  // namespace WTF
+}  // namespace blink
 
 #endif  // THIRD_PARTY_BLINK_RENDERER_PLATFORM_WEBORIGIN_KURL_H_

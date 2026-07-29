@@ -13,10 +13,8 @@
 #include "base/memory/raw_ptr.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
-#include "base/test/scoped_feature_list.h"
 #include "chrome/browser/ash/app_list/search/chrome_search_result.h"
 #include "chrome/browser/ash/app_list/search/test/test_search_controller.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/test/base/chrome_ash_test_base.h"
 #include "chrome/test/base/testing_profile.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -142,12 +140,6 @@ class FakeSearchHandler : public ash::shortcut_ui::SearchHandler {
 };
 
 class CustomizableKeyboardShortcutProviderTest : public ChromeAshTestBase {
- public:
-  CustomizableKeyboardShortcutProviderTest() {
-    scoped_feature_list_.InitAndEnableFeature(
-        ash::features::kSearchCustomizableShortcutsInLauncher);
-  }
-
  protected:
   void SetUp() override {
     ChromeAshTestBase::SetUp();
@@ -172,8 +164,6 @@ class CustomizableKeyboardShortcutProviderTest : public ChromeAshTestBase {
     search_controller_->AddProvider(std::move(provider));
   }
 
-  void Wait() { task_environment()->RunUntilIdle(); }
-
   const SearchProvider::Results& results() {
     return search_controller_->last_results();
   }
@@ -181,8 +171,6 @@ class CustomizableKeyboardShortcutProviderTest : public ChromeAshTestBase {
   void StartSearch(const std::u16string& query) {
     search_controller_->StartSearch(query);
   }
-
-  base::test::ScopedFeatureList scoped_feature_list_;
 
   std::unique_ptr<ash::local_search_service::LocalSearchServiceProxy>
       local_search_service_proxy_;
@@ -202,7 +190,6 @@ TEST_F(CustomizableKeyboardShortcutProviderTest, ResultOverwritten) {
   search_handler_->SetSearchResults(std::move(search_results));
 
   StartSearch(kText);
-  Wait();
 
   EXPECT_TRUE(results().empty());
 }
@@ -215,7 +202,6 @@ TEST_F(CustomizableKeyboardShortcutProviderTest, FourQualifiedReturnThree) {
   search_handler_->SetSearchResults(std::move(search_results));
 
   StartSearch(kText);
-  Wait();
 
   EXPECT_EQ(kMaxResults, results().size());
   for (const auto& result : results()) {
@@ -231,7 +217,6 @@ TEST_F(CustomizableKeyboardShortcutProviderTest, NoneQualifiedReturnEmpty) {
   search_handler_->SetSearchResults(std::move(search_results));
 
   StartSearch(kText);
-  Wait();
 
   EXPECT_TRUE(results().empty());
 }
@@ -245,7 +230,6 @@ TEST_F(CustomizableKeyboardShortcutProviderTest,
   search_handler_->SetSearchResults(std::move(search_results));
 
   StartSearch(kText);
-  Wait();
 
   EXPECT_EQ(2u, results().size());
   for (const auto& result : results()) {
@@ -264,7 +248,6 @@ TEST_F(CustomizableKeyboardShortcutProviderTest,
   search_handler_->SetSearchResults(std::move(search_results));
 
   StartSearch(kText);
-  Wait();
 
   EXPECT_EQ(3u, results().size());
 }

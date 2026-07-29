@@ -10,10 +10,10 @@
 
 #include "ash/public/cpp/app_types_util.h"
 #include "ash/webui/settings/public/constants/routes.mojom.h"
+#include "base/check_deref.h"
 #include "base/feature_list.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
 #include "base/numerics/safe_conversions.h"
@@ -37,11 +37,12 @@
 #include "chrome/browser/sharesheet/sharesheet_service.h"
 #include "chrome/browser/sharesheet/sharesheet_service_factory.h"
 #include "chrome/browser/sharesheet/sharesheet_types.h"
-#include "chrome/browser/ui/settings_window_manager_chromeos.h"
 #include "chrome/browser/webshare/prepare_directory_task.h"
 #include "chrome/common/chrome_paths_internal.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/experiences/arc/arc_features.h"
 #include "chromeos/ash/experiences/arc/arc_util.h"
+#include "chromeos/ash/experiences/settings_ui/settings_app_manager.h"
 #include "components/services/app_service/public/cpp/intent.h"
 #include "components/services/app_service/public/cpp/intent_util.h"
 #include "content/public/browser/browser_thread.h"
@@ -99,7 +100,8 @@ void DoDeleteShareCacheFilePaths(const base::FilePath& profile_path,
 static int64_t CalculateRequiredSpace(const base::FilePath& share_dir,
                                       const uint64_t total_file_size) {
   DVLOG(1) << __func__;
-  int64_t free_disk_space = base::SysInfo::AmountOfFreeDiskSpace(share_dir);
+  int64_t free_disk_space =
+      base::SysInfo::AmountOfFreeDiskSpace(share_dir).value_or(-1);
   VLOG(1) << "Free disk space: " << free_disk_space;
   int64_t shared_files_size =
       static_cast<int64_t>(cryptohome::kMinFreeSpaceInBytes + total_file_size);
@@ -167,7 +169,7 @@ NearbyShareSessionImpl::NearbyShareSessionImpl(
                                   weak_ptr_factory_.GetWeakPtr(), arc_window));
   } else {
     VLOG(1) << "No ARC window found for task ID: " << task_id_;
-    env_observation_.Observe(aura::Env::GetInstance());
+    exo_observation_.Observe(exo::WMHelper::GetInstance());
     window_initialization_timer_.Start(FROM_HERE, kWindowInitializationTimeout,
                                        this,
                                        &NearbyShareSessionImpl::OnTimerFired);
@@ -200,38 +202,19 @@ void NearbyShareSessionImpl::OnNearbyShareClosed(
   CleanupSession(should_cleanup_files);
 }
 
-// Overridden from aura::EnvObserver:
-void NearbyShareSessionImpl::OnWindowInitialized(aura::Window* const window) {
+void NearbyShareSessionImpl::OnExoWindowCreated(aura::Window* const window) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(window);
 
   DVLOG(1) << __func__;
   if (!IsValidArcWindow(window, task_id_)) {
     return;
   }
 
-  env_observation_.Reset();
-  arc_window_observation_.Observe(window);
-}
-
-// Overridden from aura::WindowObserver
-void NearbyShareSessionImpl::OnWindowVisibilityChanged(
-    aura::Window* const window,
-    bool visible) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-
-  DVLOG(1) << __func__;
-  if (!IsValidArcWindow(window, task_id_) || !visible) {
-    return;
-  }
-
-  VLOG(1) << "ARC Window is visible.";
+  VLOG(1) << "ARC Window is created.";
   if (window_initialization_timer_.IsRunning()) {
     window_initialization_timer_.Stop();
   }
-  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
-      FROM_HERE, base::BindOnce(&NearbyShareSessionImpl::OnArcWindowFound,
-                                weak_ptr_factory_.GetWeakPtr(), window));
+  OnArcWindowFound(window);
 }
 
 void NearbyShareSessionImpl::OnArcWindowFound(aura::Window* const arc_window) {
@@ -252,7 +235,7 @@ void NearbyShareSessionImpl::OnArcWindowFound(aura::Window* const arc_window) {
   const base::FilePath arc_nearby_share_directory =
       GetUserCacheFilePath(profile_);
 
-  file_handler_ = base::MakeRefCounted<ShareInfoFileHandler>(
+  file_handler_ = std::make_unique<ShareInfoFileHandler>(
       profile_, share_info_.get(), arc_nearby_share_directory,
       backend_task_runner_);
 
@@ -454,7 +437,6 @@ void NearbyShareSessionImpl::ShowNearbyShareBubbleInArcWindow(
 void NearbyShareSessionImpl::OnTimerFired() {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
-  // TODO(b/191232397): Handle error case.
   LOG(ERROR) << "ARC window didn't get initialized within "
              << kWindowInitializationTimeout.InSeconds() << " second(s).";
   UpdateNearbyShareWindowFound(false);
@@ -527,8 +509,6 @@ void NearbyShareSessionImpl::FinishSession() {
 
   DVLOG(1) << __func__;
   // Stop timers and destroy any lingering UI surfaces or observers.
-  arc_window_observation_.Reset();
-  env_observation_.Reset();
   if (window_initialization_timer_.IsRunning()) {
     window_initialization_timer_.Stop();
   }
@@ -566,8 +546,10 @@ void NearbyShareSessionImpl::OnShowLowDiskSpaceDialog(
 void NearbyShareSessionImpl::OnLowStorageDialogClosed(
     bool should_open_storage_settings) {
   if (should_open_storage_settings) {
-    chrome::SettingsWindowManager::GetInstance()->ShowOSSettings(
-        profile_, chromeos::settings::mojom::kStorageSubpagePath);
+    ash::SettingsAppManager::Get()->Open(
+        CHECK_DEREF(ash::BrowserContextHelper::Get()->GetUserByBrowserContext(
+            profile_)),
+        {.sub_page = chromeos::settings::mojom::kStorageSubpagePath});
   }
   CleanupSession(/*should_cleanup_files=*/true);
 }

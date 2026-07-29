@@ -4,11 +4,11 @@
 
 #include "ash/webui/projector_app/projector_xhr_sender.h"
 
+#include <optional>
 #include <string>
 
 #include "ash/constants/ash_features.h"
 #include "ash/webui/projector_app/projector_app_client.h"
-#include "ash/webui/projector_app/public/mojom/projector_types.mojom-shared.h"
 #include "ash/webui/projector_app/public/mojom/projector_types.mojom.h"
 #include "base/containers/flat_map.h"
 #include "base/functional/bind.h"
@@ -23,9 +23,11 @@
 #include "net/http/http_status_code.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/simple_url_loader.h"
+#include "services/network/public/mojom/fetch_api.mojom-shared.h"
 #include "services/network/public/mojom/url_loader_factory.mojom.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "url/gurl.h"
+#include "url/origin.h"
 
 namespace ash {
 
@@ -96,33 +98,66 @@ constexpr char kAuthorizationHeaderPrefix[] = "Bearer ";
 
 constexpr char kApiKeyParam[] = "key";
 
-// List of URL prefix supported by `ProjectorXhrSender`.
-const char* kUrlAllowlist[] = {
-    "https://www.googleapis.com/drive/v3/files/",
-    "https://www.googleapis.com/upload/drive/v3/files/",
+struct AllowedPrefix {
+  const char* origin;       // E.g., "https://www.googleapis.com"
+  const char* path_prefix;  // E.g., "/drive/v3/files/"
+};
+
+constexpr AllowedPrefix kUrlAllowlist[] = {
+    {"https://www.googleapis.com", "/drive/v3/files/"},
+    {"https://www.googleapis.com", "/upload/drive/v3/files/"},
     // TODO(b/229792620): Remove this URL prefix once web component is updated
     // with the base URL that force using primary account credential.
-    "https://drive.google.com/get_video_info",
-    "https://drive.google.com/u/0/get_video_info",
-    "https://translation.googleapis.com/language/translate/v2"};
+    {"https://drive.google.com", "/get_video_info"},
+    {"https://drive.google.com", "/u/0/get_video_info"},
+    {"https://translation.googleapis.com", "/language/translate/v2"}};
 
-bool IsDVSPlaybackUrl(const std::string& url) {
+bool IsDVSPlaybackUrl(const GURL& gurl) {
+  if (!gurl.is_valid()) {
+    return false;
+  }
+
+  // Use url::Origin to compare origins cleanly and safely.
+  const url::Origin expected_origin =
+      url::Origin::Create(GURL("https://workspacevideo-pa.googleapis.com"));
+  if (url::Origin::Create(gurl) != expected_origin) {
+    return false;
+  }
+
   return base::MatchPattern(
-      url,
+      gurl.spec(),
       "https://workspacevideo-pa.googleapis.com/v1/drive/media/*/playback");
 }
 
-// Return true if the url matches the allowed URL prefix.
-bool IsUrlAllowlisted(const std::string& url) {
+bool IsUrlAllowlisted(const std::string& url_string) {
+  const GURL gurl(url_string);
+
+  if (!gurl.is_valid()) {
+    return false;
+  }
+
   if (features::IsProjectorUseDVSPlaybackEndpointEnabled() &&
-      IsDVSPlaybackUrl(url)) {
+      IsDVSPlaybackUrl(gurl)) {
     return true;
   }
 
-  for (auto* urlPrefix : kUrlAllowlist) {
-    if (base::StartsWith(url, urlPrefix, base::CompareCase::SENSITIVE))
+  const url::Origin target_origin = url::Origin::Create(gurl);
+  const std::string_view canonical_path = gurl.path();
+
+  for (const auto& allowed : kUrlAllowlist) {
+    const url::Origin allowed_origin =
+        url::Origin::Create(GURL(allowed.origin));
+
+    if (target_origin != allowed_origin) {
+      continue;
+    }
+
+    if (base::StartsWith(canonical_path, allowed.path_prefix,
+                         base::CompareCase::SENSITIVE)) {
       return true;
+    }
   }
+
   return false;
 }
 
@@ -179,7 +214,7 @@ projector::mojom::XhrResponsePtr CreateXhrResposne(
     std::string response_body,
     projector::mojom::XhrResponseCode resposne_code) {
   auto response = projector::mojom::XhrResponse::New();
-  response->response = response_body;
+  response->response = std::move(response_body);
   response->response_code = resposne_code;
   return response;
 }
@@ -187,8 +222,10 @@ projector::mojom::XhrResponsePtr CreateXhrResposne(
 }  // namespace
 
 ProjectorXhrSender::ProjectorXhrSender(
+    signin::IdentityManager* identity_manager,
     network::mojom::URLLoaderFactory* url_loader_factory)
-    : url_loader_factory_(url_loader_factory) {}
+    : oauth_token_fetcher_(identity_manager),
+      url_loader_factory_(url_loader_factory) {}
 ProjectorXhrSender::~ProjectorXhrSender() = default;
 
 void ProjectorXhrSender::Send(
@@ -233,10 +270,7 @@ void ProjectorXhrSender::Send(
   if (account_email.has_value() && !account_email->empty()) {
     email = *account_email;
   } else {
-    email = ProjectorAppClient::Get()
-                ->GetIdentityManager()
-                ->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin)
-                .email;
+    email = oauth_token_fetcher_.GetPrimaryAccountInfo().email;
   }
 
   // Fetch OAuth token for authorizing the request.
@@ -280,6 +314,12 @@ void ProjectorXhrSender::SendRequest(
   auto resource_request = std::make_unique<network::ResourceRequest>();
   resource_request->url = url;
   resource_request->method = RequestTypeToString(method);
+  // Projector will not navigate to any additional URLs outside of Drive so
+  // we disable redirects of any kind.
+  resource_request->redirect_mode = network::mojom::RedirectMode::kError;
+  resource_request->credentials_mode =
+      allow_cookie ? network::mojom::CredentialsMode::kInclude
+                   : network::mojom::CredentialsMode::kOmit;
   // The OAuth token will be empty if the request is using end user credentials
   // for authorization.
   if (!token.empty()) {
@@ -325,7 +365,7 @@ void ProjectorXhrSender::OnSimpleURLLoaderComplete(
     int request_id,
     SendRequestCallback callback,
     const std::string& token,
-    std::unique_ptr<std::string> response_body) {
+    std::optional<std::string> response_body) {
   auto& loader = loader_map_[request_id];
 
   auto hasHeaders = loader->ResponseInfo() && loader->ResponseInfo()->headers;
@@ -338,7 +378,8 @@ void ProjectorXhrSender::OnSimpleURLLoaderComplete(
   // 2XX.
   bool is_success =
       response_body && response_code >= 200 && response_code < 300;
-  auto response_body_or_empty = response_body ? *response_body : std::string();
+  auto response_body_or_empty =
+      std::move(response_body).value_or(std::string());
   auto xhr_response_code =
       is_success ? projector::mojom::XhrResponseCode::kSuccess
                  : projector::mojom::XhrResponseCode::kXhrFetchFailure;

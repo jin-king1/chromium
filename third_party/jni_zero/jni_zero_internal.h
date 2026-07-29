@@ -7,6 +7,10 @@
 
 #include <jni.h>
 
+#include <cstdint>
+#include <utility>  // for std::forward
+
+#include "third_party/jni_zero/compiler_specific.h"
 #include "third_party/jni_zero/default_conversions.h"
 #include "third_party/jni_zero/jni_export.h"
 #include "third_party/jni_zero/jni_zero.h"
@@ -32,16 +36,51 @@ inline constexpr uint64_t kJniStackMarkerValue = 0xbdbdef1bebcade1b;
 
 // The method will initialize |atomic_class_id| to contain a global ref to the
 // class. And will return that ref on subsequent calls.
+// CHECKS that the class lookup succeeds.
 JNI_ZERO_COMPONENT_BUILD_EXPORT jclass
 LazyGetClass(JNIEnv* env,
              const char* class_name,
-             const char* split_name,
              std::atomic<jclass>* atomic_class_id);
 
-JNI_ZERO_COMPONENT_BUILD_EXPORT jclass
-LazyGetClass(JNIEnv* env,
-             const char* class_name,
-             std::atomic<jclass>* atomic_class_id);
+JNI_ZERO_COMPONENT_BUILD_EXPORT jclass GetClassInternal(JNIEnv* env,
+                                                        const char* class_name);
+
+// This class is a wrapper for JNIEnv Get(Static)FieldID.
+class JNI_ZERO_COMPONENT_BUILD_EXPORT FieldID {
+ public:
+  enum Type {
+    TYPE_STATIC,
+    TYPE_INSTANCE,
+  };
+
+  // Returns the field ID for the field with the specified name and signature.
+  // This method triggers a fatal assertion if the field could not be found.
+  template <Type type>
+  static jfieldID Get(JNIEnv* env,
+                      jclass clazz,
+                      const char* field_name,
+                      const char* jni_signature);
+
+  // The caller is responsible to zero-initialize |atomic_field_id|.
+  // It's fine to simultaneously call this on multiple threads referencing the
+  // same |atomic_field_id|.
+  template <Type type>
+  static jfieldID LazyGet(JNIEnv* env,
+                          jclass clazz,
+                          const char* field_name,
+                          const char* jni_signature,
+                          std::atomic<jfieldID>* atomic_field_id);
+};
+
+template <FieldID::Type type>
+inline void InitializeFieldID(JNIEnv* env,
+                              jclass clazz,
+                              const char* field_name,
+                              const char* jni_signature,
+                              std::atomic<jfieldID>* atomic_field_id) {
+  FieldID::LazyGet<type>(env, clazz, field_name, jni_signature,
+                         atomic_field_id);
+}
 
 // Context about the JNI call with exception checked to be stored in stack.
 template <bool checked>
@@ -66,8 +105,9 @@ class JNI_ZERO_COMPONENT_BUILD_EXPORT JniJavaCallContext {
                                   std::atomic<jmethodID>* atomic_method_id) {
     env_ = env;
 
-    // Make sure compiler doesn't optimize out the assignment.
-    memcpy(&marker_, &kJniStackMarkerValue, sizeof(kJniStackMarkerValue));
+    // marker_ is volatile to prevent the compiler from optimizing out this
+    // write, which is scanned on the stack by crash reporting tools.
+    marker_ = kJniStackMarkerValue;
     // Gets PC of the calling function.
     pc_ = reinterpret_cast<uintptr_t>(__builtin_return_address(0));
 
@@ -76,8 +116,9 @@ class JNI_ZERO_COMPONENT_BUILD_EXPORT JniJavaCallContext {
   }
 
   JNI_ZERO_NEVER_INLINE ~JniJavaCallContext() {
-    // Reset so that spurious marker finds are avoided.
-    memset(&marker_, 0, sizeof(marker_));
+    // Reset to prevent spurious marker finds in stack scans. Volatile ensures
+    // the compiler does not optimize this out as a dead store.
+    marker_ = 0;
     if (checked) {
       CheckException(env_);
     }
@@ -86,7 +127,7 @@ class JNI_ZERO_COMPONENT_BUILD_EXPORT JniJavaCallContext {
   jmethodID method_id() { return method_id_; }
 
  private:
-  uint64_t marker_;
+  volatile uint64_t marker_;
   uintptr_t sp_;
   uintptr_t pc_;
   JNIEnv* env_;

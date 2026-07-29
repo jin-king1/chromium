@@ -8,7 +8,6 @@
 #include <memory>
 #include <string>
 
-#include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "chrome/browser/speech/chrome_speech_recognition_service.h"
 #include "chrome/browser/speech/fake_speech_recognizer.h"
@@ -18,7 +17,6 @@
 #include "media/mojo/mojom/speech_recognition_service.mojom.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/receiver_set.h"
-#include "mojo/public/cpp/bindings/remote.h"
 
 namespace speech {
 

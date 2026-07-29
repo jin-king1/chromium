@@ -6,6 +6,7 @@
 
 #include <memory>
 
+#include "ash/constants/ash_paths.h"
 #include "base/functional/bind.h"
 #include "base/path_service.h"
 #include "base/task/task_traits.h"
@@ -18,7 +19,6 @@
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/browser_process_platform_part.h"
-#include "chrome/common/chrome_paths.h"
 #include "chromeos/ash/components/dbus/userdataauth/userdataauth_client.h"
 #include "chromeos/ash/components/early_prefs/early_prefs_reader.h"
 #include "chromeos/ash/components/osauth/impl/early_login_auth_policy_connector.h"
@@ -110,7 +110,9 @@ void ChromeLoginPerformer::RunOnlineAllowlistCheck(
   if (connector->IsCloudManaged() && wildcard_match &&
       signin::AccountManagedStatusFinder::MayBeEnterpriseUserBasedOnEmail(
           account_id.GetUserEmail())) {
-    wildcard_login_checker_ = std::make_unique<policy::WildcardLoginChecker>();
+    // TODO(crbug.com/404133029): Avoid using g_browser_process.
+    wildcard_login_checker_ = std::make_unique<policy::WildcardLoginChecker>(
+        g_browser_process->shared_url_loader_factory());
     if (refresh_token.empty()) {
       NOTREACHED() << "Refresh token must be present.";
     } else {
@@ -130,8 +132,8 @@ void ChromeLoginPerformer::LoadAndApplyEarlyPrefs(
     std::unique_ptr<UserContext> context,
     AuthOperationCallback callback) {
   base::FilePath early_prefs_dir;
-  bool success = base::PathService::Get(chrome::DIR_CHROMEOS_HOMEDIR_MOUNT,
-                                        &early_prefs_dir);
+  bool success =
+      base::PathService::Get(ash::DIR_HOMEDIR_MOUNT, &early_prefs_dir);
   CHECK(success);
   early_prefs_dir = early_prefs_dir.Append(context->GetUserIDHash());
 
@@ -160,8 +162,8 @@ void ChromeLoginPerformer::OnEarlyPrefsRead(
       std::make_unique<EarlyLoginAuthPolicyConnector>(
           context->GetAccountId(), std::move(early_prefs_reader_)));
   auth_factor_updater_ = std::make_unique<AuthFactorUpdater>(
-      AuthParts::Get()->GetAuthPolicyConnector(), UserDataAuthClient::Get(),
-      g_browser_process->local_state());
+      g_browser_process->local_state(),
+      AuthParts::Get()->GetAuthPolicyConnector(), UserDataAuthClient::Get());
   auth_factor_updater_->Run(std::move(context), std::move(callback));
 }
 

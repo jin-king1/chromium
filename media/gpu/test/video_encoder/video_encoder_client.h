@@ -18,6 +18,7 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/threading/thread.h"
 #include "base/time/time.h"
+#include "gpu/command_buffer/client/test_shared_image_interface.h"
 #include "media/base/bitstream_buffer.h"
 #include "media/base/video_bitrate_allocation.h"
 #include "media/gpu/test/bitstream_helpers.h"
@@ -148,6 +149,8 @@ class VideoEncoderClient : public VideoEncodeAccelerator::Client {
   // event is always sent after all associated kFrameEncoded events.
   void Flush();
 
+  bool IsFlushSupported() { return encoder_->IsFlushSupported(); }
+
   // Updates bitrate based on the specified |bitrate| and |framerate|.
   void UpdateBitrate(const VideoBitrateAllocation& bitrate, uint32_t framerate);
 
@@ -161,6 +164,8 @@ class VideoEncoderClient : public VideoEncodeAccelerator::Client {
   // Get/Reset video encode statistics.
   VideoEncoderStats GetStats() const;
   void ResetStats();
+
+  bool IsHardwareAccelerated();
 
   // VideoEncodeAccelerator::Client implementation
   void RequireBitstreamBuffers(unsigned int input_count,
@@ -279,7 +284,10 @@ class VideoEncoderClient : public VideoEncodeAccelerator::Client {
   bool force_keyframe_ = false;
 
   VideoEncoderStats current_stats_ GUARDED_BY(stats_lock_);
+  VideoEncoderInfo encoder_info_ GUARDED_BY(stats_lock_);
   mutable base::Lock stats_lock_;
+
+  scoped_refptr<gpu::TestSharedImageInterface> test_sii_;
 
   SEQUENCE_CHECKER(test_sequence_checker_);
   SEQUENCE_CHECKER(encoder_client_sequence_checker_);

@@ -2,17 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include <algorithm>
+#include <array>
 #include <memory>
 #include <string_view>
 #include <utility>
 #include <vector>
 
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/memory/ptr_util.h"
@@ -81,7 +79,7 @@ class TestMessageBase {
 
  protected:
   virtual void GetSerializedSize(size_t* num_bytes, size_t* num_handles) = 0;
-  virtual void SerializeHandles(MojoHandle* handles) = 0;
+  virtual void SerializeHandles(base::span<MojoHandle> handles) = 0;
   virtual void SerializePayload(void* buffer) = 0;
 
  private:
@@ -92,8 +90,9 @@ class TestMessageBase {
     size_t num_handles = 0;
     message->GetSerializedSize(&num_bytes, &num_handles);
     std::vector<MojoHandle> handles(num_handles);
-    if (num_handles)
-      message->SerializeHandles(handles.data());
+    if (num_handles) {
+      message->SerializeHandles(handles);
+    }
 
     MojoAppendMessageDataOptions options;
     options.struct_size = sizeof(options);
@@ -106,8 +105,9 @@ class TestMessageBase {
         &buffer_size);
     DCHECK_EQ(MOJO_RESULT_OK, rv);
     DCHECK_GE(buffer_size, base::checked_cast<uint32_t>(num_bytes));
-    if (num_bytes)
+    if (num_bytes) {
       message->SerializePayload(buffer);
+    }
   }
 
   static void DestroyMessageContext(uintptr_t context) {
@@ -125,8 +125,9 @@ class NeverSerializedMessage : public TestMessageBase {
   NeverSerializedMessage& operator=(const NeverSerializedMessage&) = delete;
 
   ~NeverSerializedMessage() override {
-    if (destruction_callback_)
+    if (destruction_callback_) {
       std::move(destruction_callback_).Run();
+    }
   }
 
  private:
@@ -134,7 +135,9 @@ class NeverSerializedMessage : public TestMessageBase {
   void GetSerializedSize(size_t* num_bytes, size_t* num_handles) override {
     NOTREACHED();
   }
-  void SerializeHandles(MojoHandle* handles) override { NOTREACHED(); }
+  void SerializeHandles(base::span<MojoHandle> handles) override {
+    NOTREACHED();
+  }
   void SerializePayload(void* buffer) override { NOTREACHED(); }
 
   base::OnceClosure destruction_callback_;
@@ -151,8 +154,9 @@ class SimpleMessage : public TestMessageBase {
   SimpleMessage& operator=(const SimpleMessage&) = delete;
 
   ~SimpleMessage() override {
-    if (destruction_callback_)
+    if (destruction_callback_) {
       std::move(destruction_callback_).Run();
+    }
   }
 
   void AddMessagePipe(mojo::ScopedMessagePipeHandle handle) {
@@ -168,10 +172,11 @@ class SimpleMessage : public TestMessageBase {
     *num_handles = handles_.size();
   }
 
-  void SerializeHandles(MojoHandle* handles) override {
+  void SerializeHandles(base::span<MojoHandle> handles) override {
     ASSERT_TRUE(!handles_.empty());
-    for (size_t i = 0; i < handles_.size(); ++i)
+    for (size_t i = 0; i < handles_.size(); ++i) {
       handles[i] = handles_[i].release().value();
+    }
     handles_.clear();
   }
 
@@ -300,8 +305,8 @@ TEST_F(MessageTest, MAYBE_SerializeDynamicallySizedMessage) {
                                   message, sizeof(kTestMessageWithContext1) - 1,
                                   nullptr, 0, &options, &buffer, &buffer_size));
 
-    memcpy(buffer, kTestMessageWithContext1,
-           sizeof(kTestMessageWithContext1) - 1);
+    UNSAFE_TODO(memcpy(buffer, kTestMessageWithContext1,
+                       sizeof(kTestMessageWithContext1) - 1));
     MojoWriteMessage(h, message, nullptr);
   });
 }
@@ -394,8 +399,10 @@ TEST_F(MessageTest, SendLocalSimpleMessageWithHandlesWithContext) {
   auto* original_message = message.get();
   mojo::MessagePipe pipes[4];
   MojoHandle original_handles[4] = {
-      pipes[0].handle0.get().value(), pipes[1].handle0.get().value(),
-      pipes[2].handle0.get().value(), pipes[3].handle0.get().value(),
+      pipes[0].handle0.get().value(),
+      pipes[1].handle0.get().value(),
+      pipes[2].handle0.get().value(),
+      pipes[3].handle0.get().value(),
   };
   message->AddMessagePipe(std::move(pipes[0].handle0));
   message->AddMessagePipe(std::move(pipes[1].handle0));
@@ -468,7 +475,7 @@ TEST_F(MessageTest, GetMessageDataWithHandles) {
             MojoAppendMessageData(
                 message_handle, static_cast<uint32_t>(kTestMessage.size()), h,
                 2, &append_data_options, &buffer, &buffer_size));
-  memcpy(buffer, kTestMessage.data(), kTestMessage.size());
+  UNSAFE_TODO(memcpy(buffer, kTestMessage.data(), kTestMessage.size()));
 
   // Ignore handles the first time around. This should mean a subsequent call is
   // allowed to grab the handles.
@@ -659,7 +666,8 @@ TEST_F(MessageTest, ExtendMessagePayload) {
                 message, static_cast<uint32_t>(kTestMessagePart1.size()),
                 nullptr, 0, nullptr, &buffer, &buffer_size));
   ASSERT_GE(buffer_size, static_cast<uint32_t>(kTestMessagePart1.size()));
-  memcpy(buffer, kTestMessagePart1.data(), kTestMessagePart1.size());
+  UNSAFE_TODO(
+      memcpy(buffer, kTestMessagePart1.data(), kTestMessagePart1.size()));
 
   const std::string kTestMessagePart2 = " in ur computer.";
   const std::string kTestMessageCombined1 =
@@ -668,8 +676,8 @@ TEST_F(MessageTest, ExtendMessagePayload) {
             MojoAppendMessageData(
                 message, static_cast<uint32_t>(kTestMessagePart2.size()),
                 nullptr, 0, nullptr, &buffer, &buffer_size));
-  memcpy(static_cast<uint8_t*>(buffer) + kTestMessagePart1.size(),
-         kTestMessagePart2.data(), kTestMessagePart2.size());
+  UNSAFE_TODO(memcpy(static_cast<uint8_t*>(buffer) + kTestMessagePart1.size(),
+                     kTestMessagePart2.data(), kTestMessagePart2.size()));
 
   const std::string kTestMessagePart3 = kTestMessagePart2 + " carry ur bits.";
   const std::string kTestMessageCombined2 =
@@ -678,8 +686,9 @@ TEST_F(MessageTest, ExtendMessagePayload) {
             MojoAppendMessageData(
                 message, static_cast<uint32_t>(kTestMessagePart3.size()),
                 nullptr, 0, nullptr, &buffer, &buffer_size));
-  memcpy(static_cast<uint8_t*>(buffer) + kTestMessageCombined1.size(),
-         kTestMessagePart3.data(), kTestMessagePart3.size());
+  UNSAFE_TODO(
+      memcpy(static_cast<uint8_t*>(buffer) + kTestMessageCombined1.size(),
+             kTestMessagePart3.data(), kTestMessagePart3.size()));
 
   void* payload;
   uint32_t payload_size;
@@ -697,8 +706,8 @@ TEST_F(MessageTest, ExtendMessagePayload) {
             MojoGetMessageData(message, nullptr, &payload, &payload_size,
                                nullptr, nullptr));
   EXPECT_EQ(kTestMessageCombined2.size(), payload_size);
-  EXPECT_EQ(0, memcmp(payload, kTestMessageCombined2.data(),
-                      kTestMessageCombined2.size()));
+  EXPECT_EQ(0, UNSAFE_TODO(memcmp(payload, kTestMessageCombined2.data(),
+                                  kTestMessageCombined2.size())));
 
   EXPECT_EQ(MOJO_RESULT_OK, MojoDestroyMessage(message));
 }
@@ -735,7 +744,7 @@ TEST_F(MessageTest, PreallocateEnoughMemoryForMessage) {
       MOJO_RESULT_OK,
       MojoAppendMessageData(message, static_cast<uint32_t>(kMsgPart1.size()),
                             nullptr, 0, nullptr, &buffer, &buffer_size));
-  memcpy(buffer, kMsgPart1.data(), kMsgPart1.size());
+  UNSAFE_TODO(memcpy(buffer, kMsgPart1.data(), kMsgPart1.size()));
   // No reallocation expected since enough capacity should be reserved.
   EXPECT_EQ(buffer_size, prev_buffer_size);
   void* prev_buffer = buffer;
@@ -745,8 +754,8 @@ TEST_F(MessageTest, PreallocateEnoughMemoryForMessage) {
       MOJO_RESULT_OK,
       MojoAppendMessageData(message, static_cast<uint32_t>(kMsgPart2.size()),
                             nullptr, 0, nullptr, &buffer, &buffer_size));
-  memcpy(static_cast<uint8_t*>(buffer) + kMsgPart1.size(), kMsgPart2.data(),
-         kMsgPart2.size());
+  UNSAFE_TODO(memcpy(static_cast<uint8_t*>(buffer) + kMsgPart1.size(),
+                     kMsgPart2.data(), kMsgPart2.size()));
   // No reallocation expected since enough capacity should be reserved.
   EXPECT_EQ(buffer, prev_buffer);
   EXPECT_EQ(buffer_size, prev_buffer_size);
@@ -766,7 +775,8 @@ TEST_F(MessageTest, PreallocateEnoughMemoryForMessage) {
                                nullptr, nullptr));
   EXPECT_GE(estimated_size, payload_size);
   EXPECT_EQ(kCombined.size(), payload_size);
-  EXPECT_EQ(0, memcmp(payload, kCombined.data(), kCombined.size()));
+  EXPECT_EQ(0,
+            UNSAFE_TODO(memcmp(payload, kCombined.data(), kCombined.size())));
 
   EXPECT_EQ(MOJO_RESULT_OK, MojoDestroyMessage(message));
 }
@@ -803,7 +813,7 @@ TEST_F(MessageTest, PreallocateNotEnoughMemoryForMessage) {
       MOJO_RESULT_OK,
       MojoAppendMessageData(message, static_cast<uint32_t>(kMsgPart1.size()),
                             nullptr, 0, nullptr, &buffer, &buffer_size));
-  memcpy(buffer, kMsgPart1.data(), kMsgPart1.size());
+  UNSAFE_TODO(memcpy(buffer, kMsgPart1.data(), kMsgPart1.size()));
   // No reallocation expected since enough capacity should be reserved.
   EXPECT_EQ(buffer_size, prev_buffer_size);
 
@@ -812,8 +822,8 @@ TEST_F(MessageTest, PreallocateNotEnoughMemoryForMessage) {
       MOJO_RESULT_OK,
       MojoAppendMessageData(message, static_cast<uint32_t>(kMsgPart2.size()),
                             nullptr, 0, nullptr, &buffer, &buffer_size));
-  memcpy(static_cast<uint8_t*>(buffer) + kMsgPart1.size(), kMsgPart2.data(),
-         kMsgPart2.size());
+  UNSAFE_TODO(memcpy(static_cast<uint8_t*>(buffer) + kMsgPart1.size(),
+                     kMsgPart2.data(), kMsgPart2.size()));
   // Since the preallocated size was intentionally underestimated, this
   // should reallocate and grow the buffer.
   EXPECT_GT(buffer_size, prev_buffer_size);
@@ -834,7 +844,8 @@ TEST_F(MessageTest, PreallocateNotEnoughMemoryForMessage) {
                                nullptr, nullptr));
   EXPECT_LT(estimated_size, payload_size);
   EXPECT_EQ(kCombined.size(), payload_size);
-  EXPECT_EQ(0, memcmp(payload, kCombined.data(), kCombined.size()));
+  EXPECT_EQ(0,
+            UNSAFE_TODO(memcmp(payload, kCombined.data(), kCombined.size())));
 
   EXPECT_EQ(MOJO_RESULT_OK, MojoDestroyMessage(message));
 }
@@ -854,7 +865,8 @@ TEST_F(MessageTest, ExtendMessageWithHandlesPayload) {
                 message, static_cast<uint32_t>(kTestMessagePart1.size()),
                 handles, 2, nullptr, &buffer, &buffer_size));
   ASSERT_GE(buffer_size, static_cast<uint32_t>(kTestMessagePart1.size()));
-  memcpy(buffer, kTestMessagePart1.data(), kTestMessagePart1.size());
+  UNSAFE_TODO(
+      memcpy(buffer, kTestMessagePart1.data(), kTestMessagePart1.size()));
 
   const std::string kTestMessagePart2 = " in ur computer.";
   const std::string kTestMessageCombined1 =
@@ -866,8 +878,8 @@ TEST_F(MessageTest, ExtendMessageWithHandlesPayload) {
             MojoAppendMessageData(
                 message, static_cast<uint32_t>(kTestMessagePart2.size()),
                 nullptr, 0, &options, &buffer, &buffer_size));
-  memcpy(static_cast<uint8_t*>(buffer) + kTestMessagePart1.size(),
-         kTestMessagePart2.data(), kTestMessagePart2.size());
+  UNSAFE_TODO(memcpy(static_cast<uint8_t*>(buffer) + kTestMessagePart1.size(),
+                     kTestMessagePart2.data(), kTestMessagePart2.size()));
 
   void* payload;
   uint32_t payload_size;
@@ -877,8 +889,8 @@ TEST_F(MessageTest, ExtendMessageWithHandlesPayload) {
                                handles, &num_handles));
   EXPECT_EQ(2u, num_handles);
   EXPECT_EQ(kTestMessageCombined1.size(), payload_size);
-  EXPECT_EQ(0, memcmp(payload, kTestMessageCombined1.data(),
-                      kTestMessageCombined1.size()));
+  EXPECT_EQ(0, UNSAFE_TODO(memcmp(payload, kTestMessageCombined1.data(),
+                                  kTestMessageCombined1.size())));
 
   EXPECT_EQ(MOJO_RESULT_OK, MojoClose(handles[0]));
   EXPECT_EQ(MOJO_RESULT_OK, MojoClose(handles[1]));
@@ -904,7 +916,8 @@ TEST_F(MessageTest, ExtendMessagePayloadLarge) {
                   message, static_cast<uint32_t>(kTestMessageHeader.size()),
                   handles, 2, nullptr, &buffer, &buffer_size));
     ASSERT_GE(buffer_size, static_cast<uint32_t>(kTestMessageHeader.size()));
-    memcpy(buffer, kTestMessageHeader.data(), kTestMessageHeader.size());
+    UNSAFE_TODO(
+        memcpy(buffer, kTestMessageHeader.data(), kTestMessageHeader.size()));
 
     // 512 kB should be well beyond any reasonable default buffer size for the
     // system implementation to choose, meaning that this test should guarantee
@@ -930,8 +943,9 @@ TEST_F(MessageTest, ExtendMessagePayloadLarge) {
                     message, static_cast<uint32_t>(current_chunk_size), nullptr,
                     0, nullptr, &buffer, &buffer_size));
       EXPECT_GE(buffer_size, static_cast<uint32_t>(current_total_size));
-      memcpy(static_cast<uint8_t*>(buffer) + previous_total_size,
-             &test_payload[previous_payload_size], current_chunk_size);
+      UNSAFE_TODO(memcpy(static_cast<uint8_t*>(buffer) + previous_total_size,
+                         &test_payload[previous_payload_size],
+                         current_chunk_size));
     }
 
     MojoAppendMessageDataOptions options;
@@ -950,11 +964,11 @@ TEST_F(MessageTest, ExtendMessagePayloadLarge) {
     EXPECT_EQ(static_cast<uint32_t>(kTestMessageHeader.size() +
                                     kTestMessagePayloadSize),
               payload_size);
-    EXPECT_EQ(0, memcmp(payload, kTestMessageHeader.data(),
-                        kTestMessageHeader.size()));
-    EXPECT_EQ(0,
-              memcmp(static_cast<uint8_t*>(payload) + kTestMessageHeader.size(),
-                     test_payload.data(), kTestMessagePayloadSize));
+    EXPECT_EQ(0, UNSAFE_TODO(memcmp(payload, kTestMessageHeader.data(),
+                                    kTestMessageHeader.size())));
+    EXPECT_EQ(0, UNSAFE_TODO(memcmp(
+                     static_cast<uint8_t*>(payload) + kTestMessageHeader.size(),
+                     test_payload.data(), kTestMessagePayloadSize)));
 
     EXPECT_EQ(MOJO_RESULT_OK, MojoClose(handles[0]));
     EXPECT_EQ(MOJO_RESULT_OK, MojoClose(handles[1]));
@@ -975,7 +989,7 @@ TEST_F(MessageTest, CorrectPayloadBufferBoundaries) {
             MojoAppendMessageData(message, 0, nullptr, 0, nullptr, &buffer,
                                   &buffer_size));
   // Fill the buffer end-to-end.
-  memset(buffer, 'x', buffer_size);
+  UNSAFE_TODO(memset(buffer, 'x', buffer_size));
 
   // Continuously grow and fill the message buffer several more times. Should
   // not crash.
@@ -985,7 +999,7 @@ TEST_F(MessageTest, CorrectPayloadBufferBoundaries) {
     EXPECT_EQ(MOJO_RESULT_OK,
               MojoAppendMessageData(message, kChunkSize, nullptr, 0, nullptr,
                                     &buffer, &buffer_size));
-    memset(buffer, 'x', buffer_size);
+    UNSAFE_TODO(memset(buffer, 'x', buffer_size));
   }
 
   EXPECT_EQ(MOJO_RESULT_OK, MojoDestroyMessage(message));
@@ -1063,7 +1077,7 @@ TEST_F(MessageTest, MAYBE_ExtendPayloadWithHandlesAttached) {
             MojoAppendMessageData(message, payload_size, nullptr, 0, &options,
                                   &buffer, &buffer_size));
   ASSERT_GE(buffer_size, payload_size);
-  memset(buffer, 'x', payload_size);
+  UNSAFE_TODO(memset(buffer, 'x', payload_size));
 
   RunTestClient("ReadAndIgnoreMessage", [&](MojoHandle h) {
     // Send the message out of process to exercise the regression path where
@@ -1078,8 +1092,9 @@ DEFINE_TEST_CLIENT_TEST_WITH_PIPE(ReadAndIgnoreMessage, MessageTest, h) {
 
   MojoHandle handles[5];
   MojoTestBase::ReadMessageWithHandles(h, handles, 5);
-  for (size_t i = 0; i < 5; ++i)
-    EXPECT_EQ(MOJO_RESULT_OK, MojoClose(handles[i]));
+  for (size_t i = 0; i < 5; ++i) {
+    EXPECT_EQ(MOJO_RESULT_OK, MojoClose(UNSAFE_TODO(handles[i])));
+  }
   EXPECT_EQ(MOJO_RESULT_OK, MojoClose(h));
 }
 
@@ -1092,7 +1107,7 @@ DEFINE_TEST_CLIENT_TEST_WITH_PIPE(ReadAndIgnoreMessage, MessageTest, h) {
   ExtendPayloadWithHandlesAttachedViaExtension
 #endif  // BUILDFLAG(IS_IOS)
 TEST_F(MessageTest, MAYBE_ExtendPayloadWithHandlesAttachedViaExtension) {
-  MojoHandle handles[5];
+  std::array<MojoHandle, 5> handles;
   CreateMessagePipe(&handles[0], &handles[4]);
   PlatformChannel channel;
   handles[1] =
@@ -1110,22 +1125,26 @@ TEST_F(MessageTest, MAYBE_ExtendPayloadWithHandlesAttachedViaExtension) {
   uint32_t buffer_size = 0;
   EXPECT_EQ(MOJO_RESULT_OK, MojoCreateMessage(nullptr, &message));
   EXPECT_EQ(MOJO_RESULT_OK,
-            MojoAppendMessageData(message, 0, handles, 1, nullptr, &buffer,
-                                  &buffer_size));
+            MojoAppendMessageData(message, 0, handles.data(), 1, nullptr,
+                                  &buffer, &buffer_size));
   uint32_t payload_size = buffer_size * 64;
   EXPECT_EQ(MOJO_RESULT_OK,
             MojoAppendMessageData(message, payload_size, nullptr, 0, nullptr,
                                   &buffer, nullptr));
 
   // Add more handles.
-  EXPECT_EQ(MOJO_RESULT_OK, MojoAppendMessageData(message, 0, handles + 1, 1,
-                                                  nullptr, &buffer, nullptr));
+  EXPECT_EQ(
+      MOJO_RESULT_OK,
+      MojoAppendMessageData(message, 0, base::span(handles).subspan(1u).data(),
+                            1, nullptr, &buffer, nullptr));
   MojoAppendMessageDataOptions options;
   options.struct_size = sizeof(options);
   options.flags = MOJO_APPEND_MESSAGE_DATA_FLAG_COMMIT_SIZE;
-  EXPECT_EQ(MOJO_RESULT_OK, MojoAppendMessageData(message, 0, handles + 2, 3,
-                                                  &options, &buffer, nullptr));
-  memset(buffer, 'x', payload_size);
+  EXPECT_EQ(
+      MOJO_RESULT_OK,
+      MojoAppendMessageData(message, 0, base::span(handles).subspan(2u).data(),
+                            3, &options, &buffer, nullptr));
+  UNSAFE_TODO(memset(buffer, 'x', payload_size));
 
   RunTestClient("ReadMessageAndCheckPipe", [&](MojoHandle h) {
     // Send the message out of process to exercise the regression path where
@@ -1144,8 +1163,9 @@ DEFINE_TEST_CLIENT_TEST_WITH_PIPE(ReadMessageAndCheckPipe, MessageTest, h) {
   MojoTestBase::WriteMessage(handles[0], kTestMessage);
   MojoTestBase::WaitForSignals(handles[4], MOJO_HANDLE_SIGNAL_READABLE);
   EXPECT_EQ(kTestMessage, MojoTestBase::ReadMessage(handles[4]));
-  for (size_t i = 0; i < 5; ++i)
-    EXPECT_EQ(MOJO_RESULT_OK, MojoClose(handles[i]));
+  for (size_t i = 0; i < 5; ++i) {
+    EXPECT_EQ(MOJO_RESULT_OK, MojoClose(UNSAFE_TODO(handles[i])));
+  }
   EXPECT_EQ(MOJO_RESULT_OK, MojoClose(h));
 }
 
@@ -1166,7 +1186,8 @@ TEST_F(MessageTest, PartiallySerializedMessagesDontLeakHandles) {
                 message, static_cast<uint32_t>(kTestMessagePart1.size()),
                 nullptr, 0, nullptr, &buffer, &buffer_size));
   ASSERT_GE(buffer_size, static_cast<uint32_t>(kTestMessagePart1.size()));
-  memcpy(buffer, kTestMessagePart1.data(), kTestMessagePart1.size());
+  UNSAFE_TODO(
+      memcpy(buffer, kTestMessagePart1.data(), kTestMessagePart1.size()));
 
   EXPECT_EQ(MOJO_RESULT_OK,
             MojoAppendMessageData(message, 0, handles, 1, nullptr, &buffer,

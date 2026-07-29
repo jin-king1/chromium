@@ -5,6 +5,7 @@
 The commands module wraps operations that have side-effects.
 """
 
+import asyncio
 import os
 import platform
 import plistlib
@@ -102,6 +103,32 @@ def run_command_output(args, **kwargs):
     return subprocess.check_output(args, **kwargs)
 
 
+async def run_command_output_async(args, **kwargs):
+    logger.info('Running command: %s', args)
+    process = await asyncio.create_subprocess_exec(
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        **kwargs)
+    stdout, stderr = await process.communicate()
+    if process.returncode:
+        logger.error('%s failed. stdout: %s stderr: %s', args, stdout, stderr)
+        raise subprocess.CalledProcessError(
+            process.returncode, args, output=stdout, stderr=stderr)
+    return stdout
+
+
+async def run_command_all_output_async(args, **kwargs):
+    logger.info('Running command: %s', args)
+    process = await asyncio.create_subprocess_exec(
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        **kwargs)
+    stdout, stderr = await process.communicate()
+    return ('%s' % args, process.returncode, stdout, stderr)
+
+
 def lenient_run_command_output(args, **kwargs):
     """Runs a command, being fairly tolerant of errors.
 
@@ -120,16 +147,6 @@ def lenient_run_command_output(args, **kwargs):
     (stdout, stderr) = process.communicate()
 
     return (process.wait(), stdout, stderr)
-
-
-def macos_version():
-    """Determines the macOS version of the running system.
-
-    Returns:
-        A list containing one element for each component of the version number,
-        such as [10, 15, 6] and [11, 0].
-    """
-    return [int(x) for x in platform.mac_ver()[0].split('.')]
 
 
 def read_plist(path):

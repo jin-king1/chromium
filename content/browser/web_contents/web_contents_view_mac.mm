@@ -13,6 +13,7 @@
 #include <utility>
 
 #include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #import "base/mac/mac_util.h"
 #import "base/mac/scoped_sending_event.h"
 #import "base/message_loop/message_pump_apple.h"
@@ -32,13 +33,17 @@
 #include "content/browser/web_contents/web_contents_impl.h"
 #import "content/browser/web_contents/web_drag_dest_mac.h"
 #include "content/common/web_contents_ns_view_bridge.mojom-shared.h"
+#include "content/public/browser/browser_context.h"
+#include "content/public/browser/clipboard_types.h"
 #include "content/public/browser/web_contents_delegate.h"
 #include "content/public/browser/web_contents_view_delegate.h"
 #include "mojo/public/cpp/bindings/pending_associated_receiver.h"
 #include "mojo/public/cpp/bindings/pending_associated_remote.h"
+#include "third_party/blink/public/common/tokens/tokens.h"
 #include "ui/base/dragdrop/mojom/drag_drop_types.mojom.h"
 #include "ui/display/display_util.h"
 #include "ui/gfx/mac/coordinate_conversion.h"
+#include "ui/gfx/native_ui_types.h"
 
 using blink::DragOperationsMask;
 using remote_cocoa::mojom::DraggingInfoPtr;
@@ -63,8 +68,7 @@ namespace {
 // stream.
 void PromiseWriterHelper(const DropData& drop_data, base::File file) {
   DCHECK(file.IsValid());
-  UNSAFE_TODO(file.WriteAtCurrentPos(drop_data.file_contents.data(),
-                                     drop_data.file_contents.length()));
+  file.WriteAtCurrentPos(drop_data.file_contents);
 }
 
 WebContentsViewMac::RenderWidgetHostViewCreateFunction
@@ -130,23 +134,26 @@ WebContentsViewCocoa* WebContentsViewMac::GetInProcessNSView() const {
 }
 
 gfx::NativeView WebContentsViewMac::GetNativeView() const {
-  return GetInProcessNSView();
+  return gfx::NativeView(GetInProcessNSView());
 }
 
 gfx::NativeView WebContentsViewMac::GetContentNativeView() const {
   RenderWidgetHostView* rwhv = web_contents_->GetRenderWidgetHostView();
-  if (!rwhv)
-    return nullptr;
+  if (!rwhv) {
+    return gfx::NativeView();
+  }
   return rwhv->GetNativeView();
 }
 
 gfx::NativeWindow WebContentsViewMac::GetTopLevelNativeWindow() const {
   NSWindow* window = [GetInProcessNSView() window];
-  if (window)
-    return window;
-  if (delegate_)
+  if (window) {
+    return gfx::NativeWindow(window);
+  }
+  if (delegate_) {
     return delegate_->GetNativeWindow();
-  return nullptr;
+  }
+  return gfx::NativeWindow();
 }
 
 gfx::Rect WebContentsViewMac::GetContainerBounds() const {
@@ -186,16 +193,6 @@ void WebContentsViewMac::OnCapturerCountChanged() {}
 
 void WebContentsViewMac::FullscreenStateChanged(bool is_fullscreen) {}
 
-void WebContentsViewMac::UpdateWindowControlsOverlay(
-    const gfx::Rect& bounding_rect) {
-  window_controls_overlay_bounding_rect_ = bounding_rect;
-  if (remote_ns_view_) {
-    remote_ns_view_->UpdateWindowControlsOverlay(bounding_rect);
-  } else {
-    in_process_ns_view_bridge_->UpdateWindowControlsOverlay(bounding_rect);
-  }
-}
-
 BackForwardTransitionAnimationManager*
 WebContentsViewMac::GetBackForwardTransitionAnimationManager() {
   return nullptr;
@@ -204,14 +201,20 @@ WebContentsViewMac::GetBackForwardTransitionAnimationManager() {
 void WebContentsViewMac::DestroyBackForwardTransitionAnimationManager() {}
 
 void WebContentsViewMac::StartDragging(
+    RenderFrameHost& source_rfh,
     const DropData& drop_data,
-    const url::Origin& source_origin,
     DragOperationsMask allowed_operations,
     const gfx::ImageSkia& image,
     const gfx::Vector2d& cursor_offset,
     const gfx::Rect& drag_obj_rect,
-    const blink::mojom::DragEventSourceInfo& event_info,
-    RenderWidgetHostImpl* source_rwh) {
+    const blink::mojom::DragEventSourceInfo& event_info) {
+  RenderWidgetHostImpl* source_rwh =
+      static_cast<RenderWidgetHostImpl*>(source_rfh.GetRenderWidgetHost());
+  // Disallow reentrant drag which could be an attempt to exploit drag state.
+  if (drag_source_start_rwh_) {
+    return;
+  }
+  url::Origin source_origin = source_rfh.GetLastCommittedOrigin();
   // By allowing nested tasks, the code below also allows Close(),
   // which would deallocate |this|.  The same problem can occur while
   // processing -sendEvent:, so Close() is deferred in that case.
@@ -222,6 +225,16 @@ void WebContentsViewMac::StartDragging(
   // The drag invokes a nested event loop, arrange to continue
   // processing events.
   base::CurrentThread::ScopedAllowApplicationTasksInNativeNestedLoop allow;
+
+  ClipboardEndpoint source_endpoint = CreateClipboardEndpoint(source_rfh);
+
+  // Checks if the drag operation is allowed by enterprise policies
+  if (!GetContentClient()->browser()->IsDragAllowedByPolicy(source_endpoint,
+                                                            drop_data)) {
+    web_contents_->SystemDragEnded(source_rwh);
+    return;
+  }
+
   NSDragOperation mask = static_cast<NSDragOperation>(allowed_operations);
 
   [drag_dest_ initiateDragWithRenderWidgetHost:source_rwh dropData:drop_data];
@@ -233,11 +246,17 @@ void WebContentsViewMac::StartDragging(
 
   // TODO(crbug.com/40825138): The param `drag_obj_rect` is unused.
 
+  const content::ChildProcessId render_process_id =
+      source_rfh.GetProcess()->GetID();
+  const blink::DocumentToken& document_token =
+      static_cast<RenderFrameHostImpl&>(source_rfh).GetDocumentToken();
   if (remote_ns_view_) {
-    remote_ns_view_->StartDrag(drop_data, source_origin, mask, image,
-                               cursor_offset, is_privileged);
+    remote_ns_view_->StartDrag(render_process_id, document_token, source_origin,
+                               drop_data, mask, image, cursor_offset,
+                               is_privileged);
   } else {
-    in_process_ns_view_bridge_->StartDrag(drop_data, source_origin, mask, image,
+    in_process_ns_view_bridge_->StartDrag(render_process_id, document_token,
+                                          source_origin, drop_data, mask, image,
                                           cursor_offset, is_privileged);
   }
 }
@@ -336,6 +355,7 @@ void WebContentsViewMac::ShowContextMenu(RenderFrameHost& render_frame_host,
     DLOG(ERROR) << "Cannot show context menus without a delegate.";
 }
 
+#if BUILDFLAG(USE_EXTERNAL_POPUP_MENU)
 void WebContentsViewMac::ShowPopupMenu(
     RenderFrameHost* render_frame_host,
     mojo::PendingRemote<blink::mojom::PopupMenuClient> popup_client,
@@ -352,6 +372,7 @@ void WebContentsViewMac::ShowPopupMenu(
                                     allow_multiple_selection);
   // Note: |this| may be deleted here.
 }
+#endif
 
 void WebContentsViewMac::OnMenuClosed() {
   popup_menu_helper_.reset();
@@ -363,6 +384,23 @@ gfx::Rect WebContentsViewMac::GetViewBounds() const {
   window_bounds.origin =
       [GetInProcessNSView().window convertPointToScreen:window_bounds.origin];
   return gfx::ScreenRectFromNSRect(window_bounds);
+}
+
+void WebContentsViewMac::Resize(const gfx::Rect& new_bounds) {
+  NSView* view = GetNativeView().GetNativeNSView();
+  NSRect old_wcv_frame = view.frame;
+  CGFloat new_x = old_wcv_frame.origin.x;
+  CGFloat new_y = old_wcv_frame.origin.y +
+                  (old_wcv_frame.size.height - new_bounds.size().height());
+  NSRect new_wcv_frame = NSMakeRect(new_x, new_y, new_bounds.size().width(),
+                                    new_bounds.size().height());
+  view.frame = new_wcv_frame;
+}
+
+gfx::Size WebContentsViewMac::GetSize() const {
+  NSView* view = GetNativeView().GetNativeNSView();
+  NSRect frame = view.frame;
+  return gfx::Size(NSWidth(frame), NSHeight(frame));
 }
 
 void WebContentsViewMac::CreateView(gfx::NativeView context) {
@@ -403,7 +441,8 @@ RenderWidgetHostViewBase* WebContentsViewMac::CreateViewForWidget(
     auto* remote_cocoa_application = views_host_->GetRemoteCocoaApplication();
     view->MigrateNSViewBridge(remote_cocoa_application, ns_view_id_);
     view->SetParentUiLayer(views_host_->GetUiLayer());
-    view->SetParentAccessibilityElement(views_host_accessibility_element_);
+    view->SetParentAccessibilityElement(
+        views_host_accessibility_element_.Get());
   }
 
   // Fancy layout comes later; for now just make it our size and resize it
@@ -561,12 +600,21 @@ bool WebContentsViewMac::PerformDragOperation(DraggingInfoPtr dragging_info,
   return true;
 }
 
-bool WebContentsViewMac::DragPromisedFileTo(const base::FilePath& file_path,
-                                            const DropData& drop_data,
-                                            const GURL& download_url,
-                                            const url::Origin& source_origin,
-                                            base::FilePath* out_file_path) {
+bool WebContentsViewMac::DragPromisedFileTo(
+    content::ChildProcessId render_process_id,
+    const blink::DocumentToken& document_token,
+    const base::FilePath& file_path,
+    const DropData& drop_data,
+    base::FilePath* out_file_path) {
   *out_file_path = file_path;
+
+  RenderFrameHostImpl* source_rfh =
+      RenderFrameHostImpl::FromDocumentToken(render_process_id, document_token);
+  if (!source_rfh) {
+    *out_file_path = base::FilePath();
+    return true;
+  }
+
   // This is called by -namesOfPromisedFilesDroppedAtDestination, which is
   // requesting, on the UI thread, the name of the file that will be written
   // by a drag operation. To know the name of this file, it is necessary to
@@ -580,12 +628,13 @@ bool WebContentsViewMac::DragPromisedFileTo(const base::FilePath& file_path,
 
   SetReadWritePermissionsForFile(file);
 
-  if (download_url.is_valid() && web_contents_) {
+  if (drop_data.download_metadata && web_contents_) {
     auto drag_file_downloader = std::make_unique<DragDownloadFile>(
-        *out_file_path, std::move(file), download_url,
-        content::Referrer(web_contents_->GetLastCommittedURL(),
+        source_rfh->GetWeakDocumentPtr(), *out_file_path, std::move(file),
+        drop_data.download_metadata->url,
+        content::Referrer(source_rfh->GetLastCommittedURL(),
                           drop_data.referrer_policy),
-        web_contents_->GetEncoding(), source_origin, web_contents_);
+        source_rfh->GetPage().GetEncoding());
 
     DragDownloadFile* downloader = drag_file_downloader.get();
     // The finalizer will take care of closing and deletion.
@@ -598,10 +647,6 @@ bool WebContentsViewMac::DragPromisedFileTo(const base::FilePath& file_path,
         base::BindOnce(&PromiseWriterHelper, drop_data, std::move(file)));
   }
 
-  // The DragDownloadFile constructor may have altered the value of
-  // |*out_file_path| if, say, an existing file at the drop site has the same
-  // name. Return the actual name that was used to write the file.
-  *out_file_path = file_path;
   return true;
 }
 
@@ -629,7 +674,7 @@ void WebContentsViewMac::PerformEndDrag(uint32_t drag_operation,
   // non-root RenderWidgetHosts they need to be transformed.
   gfx::PointF transformed_point = local_point;
   gfx::PointF transformed_screen_point = screen_point;
-  if (drag_source_start_rwh_ && web_contents_->GetRenderWidgetHostView()) {
+  if (web_contents_->GetRenderWidgetHostView()) {
     content::RenderWidgetHostViewBase* contentsViewBase =
         static_cast<content::RenderWidgetHostViewBase*>(
             web_contents_->GetRenderWidgetHostView());
@@ -647,6 +692,8 @@ void WebContentsViewMac::PerformEndDrag(uint32_t drag_operation,
       transformed_screen_point.x(), transformed_screen_point.y(),
       static_cast<ui::mojom::DragOperation>(drag_operation),
       drag_source_start_rwh_.get());
+
+  drag_source_start_rwh_.reset();
 }
 
 void WebContentsViewMac::DraggingEntered(DraggingInfoPtr dragging_info,
@@ -672,13 +719,13 @@ void WebContentsViewMac::PerformDragOperation(
 }
 
 void WebContentsViewMac::DragPromisedFileTo(
+    content::ChildProcessId render_process_id,
+    const blink::DocumentToken& document_token,
     const base::FilePath& file_path,
     const DropData& drop_data,
-    const GURL& download_url,
-    const url::Origin& source_origin,
     DragPromisedFileToCallback callback) {
   base::FilePath actual_file_path;
-  DragPromisedFileTo(file_path, drop_data, download_url, source_origin,
+  DragPromisedFileTo(render_process_id, document_token, file_path, drop_data,
                      &actual_file_path);
   std::move(callback).Run(actual_file_path);
 }
@@ -712,10 +759,6 @@ void WebContentsViewMac::ViewsHostableAttach(
     remote_cocoa_application->CreateWebContentsNSView(
         ns_view_id_, std::move(stub_host), std::move(stub_ns_view_receiver));
     remote_ns_view_->SetParentNSView(views_host_->GetNSViewId());
-    if (!window_controls_overlay_bounding_rect_.IsEmpty()) {
-      remote_ns_view_->UpdateWindowControlsOverlay(
-          window_controls_overlay_bounding_rect_);
-    }
 
     // Because this view is being displayed from a remote process, reset the
     // in-process NSView's client pointer, so that the in-process NSView will
@@ -760,11 +803,12 @@ void WebContentsViewMac::ViewsHostableDetach() {
 }
 
 void WebContentsViewMac::ViewsHostableSetBounds(
-    const gfx::Rect& bounds_in_window) {
+    const gfx::Rect& bounds_in_superview,
+    int superview_height) {
   // Update both the in-process and out-of-process NSViews' bounds.
-  in_process_ns_view_bridge_->SetBounds(bounds_in_window);
+  in_process_ns_view_bridge_->SetBounds(bounds_in_superview, superview_height);
   if (remote_ns_view_)
-    remote_ns_view_->SetBounds(bounds_in_window);
+    remote_ns_view_->SetBounds(bounds_in_superview, superview_height);
 }
 
 void WebContentsViewMac::ViewsHostableSetVisible(bool visible) {
@@ -786,7 +830,8 @@ void WebContentsViewMac::ViewsHostableSetParentAccessible(
     gfx::NativeViewAccessible parent_accessibility_element) {
   views_host_accessibility_element_ = parent_accessibility_element;
   for (auto* rwhv_mac : GetChildViews())
-    rwhv_mac->SetParentAccessibilityElement(views_host_accessibility_element_);
+    rwhv_mac->SetParentAccessibilityElement(
+        views_host_accessibility_element_.Get());
 }
 
 gfx::NativeViewAccessible
@@ -797,8 +842,9 @@ WebContentsViewMac::ViewsHostableGetParentAccessible() {
 gfx::NativeViewAccessible
 WebContentsViewMac::ViewsHostableGetAccessibilityElement() {
   RenderWidgetHostView* rwhv = web_contents_->GetRenderWidgetHostView();
-  if (!rwhv)
-    return nil;
+  if (!rwhv) {
+    return gfx::NativeViewAccessible();
+  }
   return rwhv->GetNativeViewAccessible();
 }
 

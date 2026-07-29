@@ -8,6 +8,7 @@
 #include <cras_client.h>
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -15,10 +16,15 @@
 
 namespace media {
 
+const int kCrasConnectTimeoutMs = 1000;
+
 enum class DeviceType { kInput, kOutput };
 
 struct MEDIA_EXPORT CrasDevice {
   CrasDevice();
+  CrasDevice(const CrasDevice&);
+  ~CrasDevice();
+
   explicit CrasDevice(struct libcras_node_info* node, DeviceType type);
   explicit CrasDevice(DeviceType type,
                       uint64_t id,
@@ -49,7 +55,8 @@ class MEDIA_EXPORT CrasUtil {
 
   // Enumerates all devices of |type|.
   // Virtual for testing.
-  virtual std::vector<CrasDevice> CrasGetAudioDevices(DeviceType type);
+  virtual std::optional<std::vector<CrasDevice>> CrasGetAudioDevices(
+      DeviceType type);
 
   // Returns if system AEC is supported in CRAS.
   // Virtual for testing.

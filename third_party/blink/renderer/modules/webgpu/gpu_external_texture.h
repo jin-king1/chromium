@@ -61,9 +61,6 @@ class ExternalTextureCache : public GarbageCollected<ExternalTextureCache> {
   void Add(VideoFrame* frame, GPUExternalTexture* external_texture);
   void Remove(VideoFrame* frame);
 
-  void ReferenceUntilGPUIsFinished(
-      scoped_refptr<WebGPUMailboxTexture> mailbox_texture);
-
   void Trace(Visitor* visitor) const;
   GPUDevice* device() const;
 
@@ -114,9 +111,11 @@ class GPUExternalTexture : public DawnObject<wgpu::ExternalTexture> {
   GPUExternalTexture(const GPUExternalTexture&) = delete;
   GPUExternalTexture& operator=(const GPUExternalTexture&) = delete;
 
+  // gpu_external_texture.idl {{{
   bool isZeroCopy() const;
-  bool isReadLockFenceEnabled() const;
+  // }}} End of WebIDL binding implementation.
 
+  bool IsReadLockFenceEnabled() const;
   void Destroy();
   void Expire();
   void Refresh();
@@ -156,13 +155,11 @@ class GPUExternalTexture : public DawnObject<wgpu::ExternalTexture> {
       ExternalTextureCache* cache,
       const GPUExternalTextureDescriptor* webgpu_desc,
       scoped_refptr<media::VideoFrame> media_video_frame,
-      media::PaintCanvasVideoRenderer* video_renderer,
       std::optional<media::VideoFrame::ID> media_video_frame_unique_id,
       ExceptionState& exception_state);
 
-  void setLabelImpl(const String& value) override {
-    std::string utf8_label = value.Utf8();
-    GetHandle().SetLabel(utf8_label.c_str());
+  void SetLabelImpl(std::string_view value) override {
+    GetHandle().SetLabel(value);
   }
 
   bool IsCurrentFrameFromHTMLVideoElementValid();
@@ -177,9 +174,9 @@ class GPUExternalTexture : public DawnObject<wgpu::ExternalTexture> {
   // frame multiple time cases.
   void RemoveFromCache();
 
-  bool active() const;
-  bool expired() const;
-  bool destroyed() const;
+  bool IsActive() const;
+  bool IsExpired() const;
+  bool IsDestroyed() const;
 
   scoped_refptr<WebGPUMailboxTexture> mailbox_texture_;
   bool is_zero_copy_ = false;

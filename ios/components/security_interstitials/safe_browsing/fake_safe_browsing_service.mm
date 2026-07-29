@@ -19,6 +19,26 @@
 
 namespace {
 
+using safe_browsing::SBThreatType;
+
+// Helper for mapping test urls to safe browsing threat types.
+SBThreatType GetThreatTypeForUrl(const GURL& url) {
+  if (url.GetHost() == FakeSafeBrowsingService::kUnsafeHost ||
+      url.GetHost() == FakeSafeBrowsingService::kAsyncUnsafeHost) {
+    return SBThreatType::SB_THREAT_TYPE_URL_PHISHING;
+  }
+
+  if (url.GetHost() == FakeSafeBrowsingService::kEnterpriseBlockHost) {
+    return SBThreatType::SB_THREAT_TYPE_MANAGED_POLICY_BLOCK;
+  }
+
+  if (url.GetHost() == FakeSafeBrowsingService::kEnterpriseWarnHost) {
+    return SBThreatType::SB_THREAT_TYPE_MANAGED_POLICY_WARN;
+  }
+
+  return SBThreatType::SB_THREAT_TYPE_SAFE;
+}
+
 // This is used to vend a RepeatingCallback which runs the
 // NativeCheckUrlCallback on only the first run.
 class CheckUrlCallbackRunner {
@@ -54,9 +74,11 @@ void RunCheckUrlCallback(
   if (is_url_unsafe) {
     security_interstitials::UnsafeResource resource;
     resource.url = url;
-    resource.threat_type =
-        safe_browsing::SBThreatType::SB_THREAT_TYPE_URL_PHISHING;
-    resource.threat_source = safe_browsing::ThreatSource::LOCAL_PVER4;
+    resource.threat_type = GetThreatTypeForUrl(url);
+    resource.threat_source =
+        base::FeatureList::IsEnabled(safe_browsing::kLocalListsUseSBv5)
+            ? safe_browsing::ThreatSource::LOCAL_PVER5_LOCAL_BLOCKLIST
+            : safe_browsing::ThreatSource::LOCAL_PVER4;
     resource.callback = base::BindRepeating(
         &CheckUrlCallbackRunner::MaybeRunCallback,
         std::make_unique<CheckUrlCallbackRunner>(std::move(callback)));
@@ -108,11 +130,13 @@ class FakeSafeBrowsingUrlCheckerImpl
             web::GetUIThreadTaskRunner({}),
             /*url_lookup_service_on_ui=*/nullptr,
             /*hash_realtime_service_on_ui=*/nullptr,
+            /*hash_realtime_selection=*/
             safe_browsing::hash_realtime_utils::HashRealTimeSelection::kNone,
             /*is_async_check=*/false,
             /*check_allowlist_before_hash_database=*/false,
-            SessionID::InvalidValue(),
-            /*referring_app_info=*/std::nullopt) {}
+            /*tab_id=*/SessionID::InvalidValue(),
+            /*referring_app_info=*/std::nullopt,
+            /*v5_get_hash_protocol_manager=*/nullptr) {}
 
   FakeSafeBrowsingUrlCheckerImpl(
       network::mojom::RequestDestination request_destination,
@@ -155,7 +179,9 @@ class FakeSafeBrowsingUrlCheckerImpl
  protected:
   // Returns true if the given `url` should be deemed unsafe.
   virtual bool IsUrlUnsafe(const GURL& url) {
-    return url.host() == FakeSafeBrowsingService::kUnsafeHost;
+    return url.GetHost() == FakeSafeBrowsingService::kUnsafeHost ||
+           url.GetHost() == FakeSafeBrowsingService::kEnterpriseBlockHost ||
+           url.GetHost() == FakeSafeBrowsingService::kEnterpriseWarnHost;
   }
 
   raw_ptr<FakeSafeBrowsingClient> client_ = nullptr;
@@ -180,7 +206,7 @@ class FakeAsyncSafeBrowsingUrlCheckerImpl
 
  protected:
   bool IsUrlUnsafe(const GURL& url) override {
-    if (url.host() == FakeSafeBrowsingService::kAsyncUnsafeHost) {
+    if (url.GetHost() == FakeSafeBrowsingService::kAsyncUnsafeHost) {
       return true;
     }
     return FakeSafeBrowsingUrlCheckerImpl::IsUrlUnsafe(url);
@@ -194,6 +220,12 @@ const std::string FakeSafeBrowsingService::kUnsafeHost =
     "safe.browsing.unsafe.chromium.test";
 const std::string FakeSafeBrowsingService::kAsyncUnsafeHost =
     "safe.browsing.async.unsafe.chromium.test";
+
+const std::string FakeSafeBrowsingService::kEnterpriseBlockHost =
+    "enterprise.block.chromium.test";
+
+const std::string FakeSafeBrowsingService::kEnterpriseWarnHost =
+    "enterprise.warn.chromium.test";
 
 FakeSafeBrowsingService::FakeSafeBrowsingService() = default;
 

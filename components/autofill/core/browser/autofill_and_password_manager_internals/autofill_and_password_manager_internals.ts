@@ -250,7 +250,12 @@ function setUpStopRecording() {
   resetTimeout();
 }
 
-function setUpAutofillInternals(autofillAiEnabled: boolean) {
+interface OnLoadArgument {
+  autofillAiServerModelEnabled: boolean;
+  showDomNodeIDsEnabled: boolean;
+}
+
+function setUpAutofillInternals(onLoadArgument: OnLoadArgument) {
   document.title = 'Autofill Internals';
   getRequiredElement('h1-title').textContent = 'Autofill Internals';
   getRequiredElement('logging-note').innerText =
@@ -259,11 +264,17 @@ function setUpAutofillInternals(autofillAiEnabled: boolean) {
   getRequiredElement('logging-note-incognito').innerText =
       'Captured autofill logs are not available in Incognito.';
   setUpScopeCheckboxes();
-  setUpSettingCheckboxe();
+  setUpSettingCheckboxes();
   setUpMarker();
+  setUpDumpAddressesButton();
   setUpSubmittedFormsJSONDataDownload();
+  setUpCheckAutofillAiPermissions();
+  setUpCheckAtMemoryPermissions();
+  if (onLoadArgument.showDomNodeIDsEnabled) {
+    setUpButtonForDomNodeIdCapture();
+  }
   setUpDownload('autofill');
-  if (autofillAiEnabled) {
+  if (onLoadArgument.autofillAiServerModelEnabled) {
     addAutofillTabs();
   }
   setUpStopRecording();
@@ -277,27 +288,27 @@ function setUpPasswordManagerInternals() {
       no longer captured when all password-manager-internals pages are closed.';
   getRequiredElement('logging-note-incognito').innerText =
       'Captured password manager logs are not available in Incognito.';
-  setUpSettingCheckboxe();
+  setUpSettingCheckboxes();
   setUpMarker();
   setUpDownload('password-manager');
   setUpStopRecording();
-  // <if expr="is_android">
-  getRequiredElement('reset-upm-eviction-fake-button').style.display = 'inline';
-  addWebUiListener(
-      'enable-reset-upm-eviction-button', enableResetUpmEvictionButton);
-  // </if>
+
+  const overrideContainer =
+      getRequiredElement('password-change-override-container');
+  overrideContainer.style.display = 'block';
+
+  const overrideInput =
+      getRequiredElement<HTMLInputElement>('password-change-override-url');
+  const overrideButton = getRequiredElement('password-change-override-button');
+  overrideButton.addEventListener('click', () => {
+    chrome.send('setPasswordChangeOverrideUrl', [overrideInput.value]);
+    overrideInput.value = '';
+  });
 }
 
 function enableResetCacheButton() {
   getRequiredElement('reset-cache-fake-button').style.display = 'inline';
 }
-
-// <if expr="is_android">
-function enableResetUpmEvictionButton(isEnabled: boolean) {
-  getRequiredElement('reset-upm-eviction-fake-button').innerText =
-      isEnabled ? 'Reset UPM eviction' : 'Evict from UPM';
-}
-// </if>
 
 function notifyAboutIncognito(isIncognito: boolean) {
   document.body.dataset['incognito'] = isIncognito.toString();
@@ -367,12 +378,6 @@ function setUpDownload(moduleName: string) {
     window.URL.revokeObjectURL(url);
     a.remove();
   });
-  // <if expr="is_ios">
-  // Hide this until downloading a file works on iOS, see
-  // https://bugs.webkit.org/show_bug.cgi?id=167341
-  // https://bugs.chromium.org/p/chromium/issues/detail?id=1252380
-  downloadFakeButton.style.display = 'none';
-  // </if>
 }
 
 interface SubmittedFormTopLevelData {
@@ -411,7 +416,7 @@ function getSubmittedFormTopLevelData(form: HTMLElement):
   // Include the submission timestamp information.
   const getSubmissionTimestamp = (): string => {
     // Find the substring "timestamp: 123456789";
-    const timestampSection = form.textContent!.match(/timestamp: ([0-9]+)/);
+    const timestampSection = form.textContent.match(/timestamp: ([0-9]+)/);
     return timestampSection ? timestampSection[1]! : 'Not found';
   };
 
@@ -518,11 +523,122 @@ function setUpSubmittedFormsJSONDataDownload() {
     a.click();
     a.remove();
   });
-  // <if expr="is_ios">
-  // Hide this until downloading a file works on iOS, see
-  // https://bugs.webkit.org/show_bug.cgi?id=167341
-  // https://bugs.chromium.org/p/chromium/issues/detail?id=1252380
-  downloadSubmittedFormJSONDataButton.style.display = 'none';
+}
+
+function setUpCheckAutofillAiPermissions() {
+  // <if expr="not is_android and not is_ios" >
+  const button = document.getElementById('check-autofill-ai-permissions')!;
+  button.style.display = 'inline';
+  button.addEventListener('click', () => {
+    chrome.send('checkAutofillAiPermissions');
+  });
+  // </if>
+}
+
+function setUpCheckAtMemoryPermissions() {
+  // <if expr="not is_ios" >
+  function showAtMemoryPermissionsDialog() {
+    const dialog = document.createElement('div');
+    dialog.className = 'modal-dialog';
+    dialog.style.height = 'auto';
+    dialog.style.minHeight = '100px';
+
+    const content = document.createElement('div');
+    content.className = 'modal-dialog-content';
+
+    const closeButton = document.createElement('span');
+    closeButton.className = 'modal-dialog-close-button fake-button';
+    closeButton.innerText = 'Close';
+
+    const select = document.createElement('select');
+    select.style.marginRight = '10px';
+    // LINT.IfChange(AtMemoryAction)
+    const actions = [
+      {value: 'kTriggerSearchUI', text: 'Trigger search UI'},
+      {value: 'kShowAtMemoryInSettings', text: 'Show AtMemory in settings'},
+      {
+        value: 'kAllowCustomizeAtMemoryShortcut',
+        text: 'Allow customize AtMemory shortcut',
+      },
+      {value: 'kShowIph', text: 'Show IPH'},
+      {
+        value: 'kShowAutocompleteAtMemoryButton',
+        text: 'Show autocomplete AtMemory button',
+      },
+      {
+        value: 'kRetrievePaymentsForFilling',
+        text: 'Retrieve payments for filling',
+      },
+      {
+        value: 'kRetrieveContactInfoForFilling',
+        text: 'Retrieve contact info for filling',
+      },
+      {
+        value: 'kRetrieveIdentityDocsForFilling',
+        text: 'Retrieve identity docs for filling',
+      },
+      {
+        value: 'kRetrieveTravelDataForFilling',
+        text: 'Retrieve travel data for filling',
+      },
+      {
+        value: 'kRetrieveShoppingDataForFilling',
+        text: 'Retrieve shopping data for filling',
+      },
+    ];
+    // LINT.ThenChange(/components/autofill/core/browser/at_memory/at_memory_enablement_utils.h:AtMemoryAction)
+    for (const action of actions) {
+      const option = document.createElement('option');
+      option.value = action.value;
+      option.innerText = action.text;
+      select.appendChild(option);
+    }
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = 'https://example.com';
+    input.style.marginRight = '10px';
+    input.style.width = '250px';
+
+    const checkButton = document.createElement('span');
+    checkButton.className = 'fake-button';
+    checkButton.innerText = 'Check';
+    checkButton.addEventListener('click', () => {
+      chrome.send('checkAtMemoryPermissions', [select.value, input.value]);
+    });
+
+    const resultContainer = document.createElement('p');
+    resultContainer.id = 'at-memory-permission-result';
+    resultContainer.className = 'modal-dialog-text';
+
+    content.appendChild(closeButton);
+    content.appendChild(select);
+    content.appendChild(input);
+    content.appendChild(checkButton);
+    content.appendChild(resultContainer);
+    dialog.appendChild(content);
+    window.document.body.append(dialog);
+
+    closeButton.addEventListener('click', () => {
+      window.document.body.removeChild(dialog);
+    });
+  }
+
+  const button = document.getElementById('check-at-memory-permissions')!;
+  button.style.display = 'inline';
+  button.addEventListener('click', () => {
+    showAtMemoryPermissionsDialog();
+  });
+  // </if>
+}
+
+function setUpButtonForDomNodeIdCapture() {
+  // <if expr="not is_android and not is_ios" >
+  const button = document.getElementById('set-dom-node-id')!;
+  button.style.display = 'inline';
+  button.addEventListener('click', () => {
+    chrome.send('setDomNodeId');
+  });
   // </if>
 }
 
@@ -577,13 +693,17 @@ function setUpScopeCheckboxes() {
     {id: 'Metrics'},
     {id: 'AddressProfileFormImport'},
     {id: 'WebsiteModifiedFieldValue'},
-    {id: 'FastCheckout', uncheckedByDefault: true},
     {id: 'TouchToFill'},
     {id: 'AutofillAi'},
+    {id: 'AutofillActor'},
   ];
-  for (const scope of SCOPES) {
+
+  interface ScopeCheckbox {
+    input: HTMLInputElement;
+    changeHandler: () => void;
+  }
+  const checkboxes: ScopeCheckbox[] = SCOPES.map(scope => {
     const input = createCheckbox(scope);
-    scopesPlaceholder.appendChild(input.parentElement!);
     function changeHandler() {
       const cls = `hide-${scope.id}`;
       const scrollAfterInsert = needsScrollDown();
@@ -596,13 +716,35 @@ function setUpScopeCheckboxes() {
         scrollDown();
       }
     }
-    input.addEventListener('change', changeHandler);
-    changeHandler();  // Call once to initialize |logDiv|'s classes.
+    return {input, changeHandler};
+  });
+
+  function uncheckAllExcept(checkbox: ScopeCheckbox) {
+    for (const otherCheckbox of checkboxes) {
+      if (otherCheckbox !== checkbox && otherCheckbox.input.checked === true) {
+        otherCheckbox.input.checked = false;
+        otherCheckbox.changeHandler();
+      }
+    }
+    if (checkbox.input.checked === false) {
+      checkbox.input.checked = true;
+      checkbox.changeHandler();
+    }
+  }
+
+  for (const checkbox of checkboxes) {
+    checkbox.input.addEventListener('change', checkbox.changeHandler);
+    checkbox.changeHandler();  // Call once to initialize `logDiv`'s classes.
+    checkbox.input.parentElement!.addEventListener('dblclick', function(e) {
+      uncheckAllExcept(checkbox);
+      e.preventDefault();
+    });
+    scopesPlaceholder.appendChild(checkbox.input.parentElement!);
   }
 }
 
 // Sets up another bar of checkboxes to configure the page's behavior.
-function setUpSettingCheckboxe() {
+function setUpSettingCheckboxes() {
   const settingsPlaceholder =
       getRequiredElement('settings-checkbox-placeholder');
 
@@ -647,18 +789,31 @@ function addTabLink(linkText: string, tabId: string) {
 function onTabShown(tabId: string) {
   if (tabId === 'tab-autofill-ai-cache') {
     chrome.send('getAutofillAiCache');
+  } else if (tabId === 'tab-autofill-ai-entities') {
+    getRequiredElement('tab-autofill-ai-entities').innerText =
+        'Loading entities';
+    chrome.send('getAutofillAiEntities');
   }
 }
 
 function addAutofillTabs() {
   addTabLink('Autofill logs', 'tab-logs');
   addTabLink('AutofillAI cache', 'tab-autofill-ai-cache');
+  addTabLink('AutofillAI entities', 'tab-autofill-ai-entities');
   getRequiredElement('tab-links').style.display = 'block';
+}
+
+interface AutofillAiFieldCacheEntry {
+  signature: string;
+  rank: string;
+  type: string;
+  format?: string;
 }
 
 interface AutofillAiCacheEntry {
   formSignature: string;
   creationTime: string;
+  fields: AutofillAiFieldCacheEntry[];
 }
 
 function displayAutofillAiCache(entries: AutofillAiCacheEntry[]) {
@@ -670,10 +825,108 @@ function displayAutofillAiCache(entries: AutofillAiCacheEntry[]) {
 
   container.innerText = '';
   for (const entry of entries) {
-    const entryDiv = document.createElement('div');
-    entryDiv.innerText = 'Form signature: ' + entry.formSignature +
-        ', creation time: ' + entry.creationTime;
-    container.appendChild(entryDiv);
+    const entryTable = document.createElement('table');
+    entryTable.className = 'cache-entry';
+    const entryHeader = document.createElement('th');
+
+    entryHeader.innerText = `Form signature: ${
+        entry.formSignature}, creation time: ${entry.creationTime}.`;
+    const deleteButton = document.createElement('span');
+    deleteButton.innerText = 'Remove';
+    deleteButton.className = 'fake-button delete-cache-entry-button';
+    deleteButton.addEventListener('click', () => {
+      chrome.send('removeAutofillAiCacheEntry', [entry.formSignature]);
+      chrome.send('getAutofillAiCache');
+    });
+    entryHeader.appendChild(deleteButton);
+    entryTable.appendChild(entryHeader);
+
+    for (const field of entry.fields) {
+      const row = document.createElement('tr');
+      row.innerText = `Signature = ${field.signature}, rank = ${
+          field.rank}, type = ${field.type}`;
+      if (field.format) {
+        row.innerText += `, format = ${field.format}`;
+      }
+      entryTable.appendChild(row);
+    }
+    container.appendChild(entryTable);
+    container.appendChild(document.createElement('hr'));
+  }
+}
+
+interface AutofillAiAttributeEntry {
+  name: string;
+  value: string;
+}
+
+interface AutofillAiEntityEntry {
+  guid: string;
+  nickname: string;
+  entityType: string;
+  recordType: string;
+  attributes: AutofillAiAttributeEntry[];
+}
+
+function displayAutofillAiEntities(entries: AutofillAiEntityEntry[]) {
+  const container = getRequiredElement('tab-autofill-ai-entities');
+  if (entries.length === 0) {
+    container.innerText = 'No entities found.';
+    return;
+  }
+
+  container.innerText = '';
+  const groupedEntities =
+      new Map<string, Map<string, AutofillAiEntityEntry[]>>();
+  for (const entry of entries) {
+    if (!groupedEntities.has(entry.entityType)) {
+      groupedEntities.set(
+          entry.entityType, new Map<string, AutofillAiEntityEntry[]>());
+    }
+    const recordTypeMap = groupedEntities.get(entry.entityType)!;
+    if (!recordTypeMap.has(entry.recordType)) {
+      recordTypeMap.set(entry.recordType, []);
+    }
+    recordTypeMap.get(entry.recordType)!.push(entry);
+  }
+
+  for (const [entityType, recordTypeMap] of groupedEntities) {
+    const typeHeader = document.createElement('h2');
+    typeHeader.innerText = `Entity type: ${entityType}`;
+    container.appendChild(typeHeader);
+
+    for (const [recordType, entityList] of recordTypeMap) {
+      const recordHeader = document.createElement('h3');
+      recordHeader.innerText = `Record type: ${recordType}`;
+      container.appendChild(recordHeader);
+
+      for (const entity of entityList) {
+        const entryTable = document.createElement('table');
+        entryTable.className = 'cache-entry';
+        const entryHeaderRow = document.createElement('tr');
+        const entryHeader = document.createElement('th');
+        entryHeader.colSpan = 2;
+        entryHeader.innerText = `GUID: ${entity.guid}`;
+        if (entity.nickname) {
+          entryHeader.innerText += `, Nickname: ${entity.nickname}`;
+        }
+        entryHeaderRow.appendChild(entryHeader);
+        entryTable.appendChild(entryHeaderRow);
+
+        for (const attribute of entity.attributes) {
+          const row = document.createElement('tr');
+          const nameCell = document.createElement('td');
+          nameCell.innerText = attribute.name;
+          const valueCell = document.createElement('td');
+          valueCell.innerText = attribute.value;
+          row.appendChild(nameCell);
+          row.appendChild(valueCell);
+          entryTable.appendChild(row);
+        }
+        container.appendChild(entryTable);
+        container.appendChild(document.createElement('hr'));
+      }
+    }
   }
 }
 
@@ -683,8 +936,18 @@ document.addEventListener('DOMContentLoaded', () => {
   addWebUiListener('notify-about-variations', notifyAboutVariations);
   addWebUiListener(
       'notify-reset-done', (message: string) => showModalDialog(message));
+  addWebUiListener(
+      'on-autofill-ai-permission-check-done',
+      (message: string) => showModalDialog(message));
+  addWebUiListener('on-at-memory-permission-check-done', (message: string) => {
+    const resultEl = document.getElementById('at-memory-permission-result');
+    if (resultEl) {
+      resultEl.innerText = message;
+    }
+  });
   addWebUiListener('add-structured-log', addStructuredLog);
   addWebUiListener('display-autofill-ai-cache', displayAutofillAiCache);
+  addWebUiListener('display-autofill-ai-entities', displayAutofillAiEntities);
   addWebUiListener('setup-autofill-internals', setUpAutofillInternals);
   addWebUiListener(
       'setup-password-manager-internals', setUpPasswordManagerInternals);
@@ -696,9 +959,13 @@ document.addEventListener('DOMContentLoaded', () => {
     chrome.send('resetCache');
   });
 
-  const resetUpmEvictionButton =
-      getRequiredElement('reset-upm-eviction-fake-button');
-  resetUpmEvictionButton.addEventListener('click', () => {
-    chrome.send('resetUpmEviction');
+  const dumpAddressesFakeButton =
+      getRequiredElement('dump-addresses-fake-button');
+  dumpAddressesFakeButton.addEventListener('click', () => {
+    chrome.send('dumpAddresses');
   });
 });
+
+function setUpDumpAddressesButton() {
+  getRequiredElement('dump-addresses-fake-button').style.display = 'inline';
+}

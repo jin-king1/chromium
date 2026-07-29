@@ -62,6 +62,7 @@
           "appcache": {
             "type": "boolean",
             "optional": true,
+            "deprecated": "Support for appcache has been removed. This data type will be ignored.",
             "description": "Websites' appcaches."
           },
           "cache": {
@@ -118,6 +119,7 @@
           "passwords": {
             "type": "boolean",
             "optional": true,
+            "deprecated": "Support for password deletion through extensions has been removed. This data type will be ignored.",
             "description": "Stored passwords."
           },
           "pluginData": {
@@ -134,6 +136,7 @@
           "webSQL": {
             "type": "boolean",
             "optional": true,
+            "deprecated": "Support for WebSQL has been removed. This data type will be ignored.",
             "description": "Websites' WebSQL data."
           }
         }
@@ -185,13 +188,14 @@
         ],
         "returns_async": {
           "name": "callback",
-          "description": "Called when deletion has completed.",
+          "description": "Resolves when deletion has completed.",
           "optional": true,
           "parameters": []
         }
       },
       {
         "name": "removeAppcache",
+        "deprecated": "Support for appcache has been removed. This function has no effect.",
         "description": "Clears websites' appcache data.",
         "type": "function",
         "parameters": [
@@ -202,7 +206,7 @@
         ],
         "returns_async": {
           "name": "callback",
-          "description": "Called when websites' appcache data has been cleared.",
+          "description": "Resolves when websites' appcache data has been cleared.",
           "optional": true,
           "parameters": []
         }
@@ -219,7 +223,7 @@
         ],
         "returns_async": {
           "name": "callback",
-          "description": "Called when the browser's cache has been cleared.",
+          "description": "Resolves when the browser's cache has been cleared.",
           "optional": true,
           "parameters": []
         }
@@ -236,7 +240,7 @@
         ],
         "returns_async": {
           "name": "callback",
-          "description": "Called when websites' cache storage has been cleared.",
+          "description": "Resolves when websites' cache storage has been cleared.",
           "optional": true,
           "parameters": []
         }
@@ -253,7 +257,7 @@
         ],
         "returns_async": {
           "name": "callback",
-          "description": "Called when the browser's cookies and server-bound certificates have been cleared.",
+          "description": "Resolves when the browser's cookies and server-bound certificates have been cleared.",
           "optional": true,
           "parameters": []
         }
@@ -270,7 +274,7 @@
         ],
         "returns_async": {
           "name": "callback",
-          "description": "Called when the browser's list of downloaded files has been cleared.",
+          "description": "Resolves when the browser's list of downloaded files has been cleared.",
           "optional": true,
           "parameters": []
         }
@@ -287,7 +291,7 @@
         ],
         "returns_async": {
           "name": "callback",
-          "description": "Called when websites' file systems have been cleared.",
+          "description": "Resolves when websites' file systems have been cleared.",
           "optional": true,
           "parameters": []
         }
@@ -304,7 +308,7 @@
         ],
         "returns_async": {
           "name": "callback",
-          "description": "Called when the browser's form data has been cleared.",
+          "description": "Resolves when the browser's form data has been cleared.",
           "optional": true,
           "parameters": []
         }
@@ -321,7 +325,7 @@
         ],
         "returns_async": {
           "name": "callback",
-          "description": "Called when the browser's history has cleared.",
+          "description": "Resolves when the browser's history has cleared.",
           "optional": true,
           "parameters": []
         }
@@ -338,7 +342,7 @@
         ],
         "returns_async": {
           "name": "callback",
-          "description": "Called when websites' IndexedDB data has been cleared.",
+          "description": "Resolves when websites' IndexedDB data has been cleared.",
           "optional": true,
           "parameters": []
         }
@@ -355,7 +359,7 @@
         ],
         "returns_async": {
           "name": "callback",
-          "description": "Called when websites' local storage has been cleared.",
+          "description": "Resolves when websites' local storage has been cleared.",
           "optional": true,
           "parameters": []
         }
@@ -373,7 +377,7 @@
         ],
         "returns_async": {
           "name": "callback",
-          "description": "Called when plugins' data has been cleared.",
+          "description": "Resolves when plugins' data has been cleared.",
           "optional": true,
           "parameters": []
         }
@@ -381,6 +385,7 @@
       {
         "name": "removePasswords",
         "description": "Clears the browser's stored passwords.",
+        "deprecated": "Support for password deletion through extensions has been removed. This function has no effect.",
         "type": "function",
         "parameters": [
           {
@@ -390,7 +395,7 @@
         ],
         "returns_async": {
           "name": "callback",
-          "description": "Called when the browser's passwords have been cleared.",
+          "description": "Resolves when the browser's passwords have been cleared.",
           "optional": true,
           "parameters": []
         }
@@ -407,13 +412,14 @@
         ],
         "returns_async": {
           "name": "callback",
-          "description": "Called when websites' service workers have been cleared.",
+          "description": "Resolves when websites' service workers have been cleared.",
           "optional": true,
           "parameters": []
         }
       },
       {
         "name": "removeWebSQL",
+        "deprecated": "Support for WebSQL has been removed. This function has no effect.",
         "description": "Clears websites' WebSQL data.",
         "type": "function",
         "parameters": [
@@ -424,7 +430,7 @@
         ],
         "returns_async": {
           "name": "callback",
-          "description": "Called when websites' WebSQL databases have been cleared.",
+          "description": "Resolves when websites' WebSQL databases have been cleared.",
           "optional": true,
           "parameters": []
         }

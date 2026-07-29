@@ -38,11 +38,18 @@ namespace webauthn {
 
 InternalAuthenticatorAndroid::InternalAuthenticatorAndroid(
     content::RenderFrameHost* render_frame_host)
-    : render_frame_host_id_(render_frame_host->GetGlobalId()) {
+    : render_frame_host_id_(render_frame_host
+                                ? render_frame_host->GetGlobalId()
+                                : content::GlobalRenderFrameHostId()) {
   JNIEnv* env = AttachCurrentThread();
-  java_internal_authenticator_ref_ = Java_InternalAuthenticator_create(
-      env, reinterpret_cast<intptr_t>(this),
-      render_frame_host->GetJavaRenderFrameHost());
+  if (render_frame_host) {
+    java_internal_authenticator_ref_ = Java_InternalAuthenticator_create(
+        env, reinterpret_cast<intptr_t>(this),
+        render_frame_host->GetJavaRenderFrameHost());
+  } else {
+    java_internal_authenticator_ref_ = Java_InternalAuthenticator_create(
+        env, reinterpret_cast<intptr_t>(this));
+  }
 }
 
 InternalAuthenticatorAndroid::~InternalAuthenticatorAndroid() {
@@ -70,7 +77,7 @@ void InternalAuthenticatorAndroid::SetPaymentOptions(
 
   std::vector<uint8_t> byte_vector =
       blink::mojom::PaymentOptions::Serialize(&payment);
-  ScopedJavaLocalRef<jobject> byte_buffer = ScopedJavaLocalRef<jobject>(
+  auto byte_buffer = jni_zero::AdoptRef(
       env, env->NewDirectByteBuffer(byte_vector.data(), byte_vector.size()));
   base::android::CheckException(env);
 
@@ -88,7 +95,7 @@ void InternalAuthenticatorAndroid::MakeCredential(
 
   std::vector<uint8_t> byte_vector =
       blink::mojom::PublicKeyCredentialCreationOptions::Serialize(&options);
-  ScopedJavaLocalRef<jobject> byte_buffer = ScopedJavaLocalRef<jobject>(
+  auto byte_buffer = jni_zero::AdoptRef(
       env, env->NewDirectByteBuffer(byte_vector.data(), byte_vector.size()));
   base::android::CheckException(env);
 
@@ -106,7 +113,7 @@ void InternalAuthenticatorAndroid::GetAssertion(
 
   std::vector<uint8_t> byte_vector =
       blink::mojom::PublicKeyCredentialRequestOptions::Serialize(&options);
-  ScopedJavaLocalRef<jobject> byte_buffer = ScopedJavaLocalRef<jobject>(
+  auto byte_buffer = jni_zero::AdoptRef(
       env, env->NewDirectByteBuffer(byte_vector.data(), byte_vector.size()));
   base::android::CheckException(env);
 
@@ -165,13 +172,13 @@ content::RenderFrameHost* InternalAuthenticatorAndroid::GetRenderFrameHost() {
 
 void InternalAuthenticatorAndroid::InvokeMakeCredentialResponse(
     JNIEnv* env,
-    jint status,
-    const base::android::JavaParamRef<jobject>& byte_buffer) {
+    int32_t status,
+    const base::android::JavaRef<jobject>& byte_buffer) {
   blink::mojom::MakeCredentialAuthenticatorResponsePtr response;
 
   // |byte_buffer| may be null if authentication failed.
   if (byte_buffer) {
-    auto span = base::android::JavaByteBufferToSpan(env, byte_buffer.obj());
+    auto span = base::android::JavaByteBufferToSpan(env, byte_buffer);
     blink::mojom::MakeCredentialAuthenticatorResponse::Deserialize(
         span.data(), span.size(), &response);
   }
@@ -187,13 +194,13 @@ void InternalAuthenticatorAndroid::InvokeMakeCredentialResponse(
 
 void InternalAuthenticatorAndroid::InvokeGetAssertionResponse(
     JNIEnv* env,
-    jint status,
-    const base::android::JavaParamRef<jobject>& byte_buffer) {
+    int32_t status,
+    const base::android::JavaRef<jobject>& byte_buffer) {
   blink::mojom::GetAssertionAuthenticatorResponsePtr response;
 
   // |byte_buffer| may be null if authentication failed.
   if (byte_buffer) {
-    auto span = base::android::JavaByteBufferToSpan(env, byte_buffer.obj());
+    auto span = base::android::JavaByteBufferToSpan(env, byte_buffer);
     blink::mojom::GetAssertionAuthenticatorResponse::Deserialize(
         span.data(), span.size(), &response);
   }
@@ -208,15 +215,14 @@ void InternalAuthenticatorAndroid::InvokeGetAssertionResponse(
 }
 
 void InternalAuthenticatorAndroid::
-    InvokeIsUserVerifyingPlatformAuthenticatorAvailableResponse(
-        JNIEnv* env,
-        jboolean is_uvpaa) {
-  std::move(is_uvpaa_callback_).Run(static_cast<bool>(is_uvpaa));
+    InvokeIsUserVerifyingPlatformAuthenticatorAvailableResponse(JNIEnv* env,
+                                                                bool is_uvpaa) {
+  std::move(is_uvpaa_callback_).Run(is_uvpaa);
 }
 
 void InternalAuthenticatorAndroid::InvokeGetMatchingCredentialIdsResponse(
     JNIEnv* env,
-    const base::android::JavaParamRef<jobjectArray>& credential_ids_array) {
+    const base::android::JavaRef<jobjectArray>& credential_ids_array) {
   std::vector<std::vector<uint8_t>> credential_ids;
   JavaArrayOfByteArrayToBytesVector(env, credential_ids_array, &credential_ids);
   std::move(get_matching_credential_ids_callback_)
@@ -224,13 +230,10 @@ void InternalAuthenticatorAndroid::InvokeGetMatchingCredentialIdsResponse(
 }
 
 JavaRef<jobject>& InternalAuthenticatorAndroid::GetJavaObject() {
-  if (java_internal_authenticator_ref_.is_null()) {
-    JNIEnv* env = AttachCurrentThread();
-    java_internal_authenticator_ref_ = Java_InternalAuthenticator_create(
-        env, reinterpret_cast<intptr_t>(this),
-        GetRenderFrameHost()->GetJavaRenderFrameHost());
-  }
+  CHECK(java_internal_authenticator_ref_);
   return java_internal_authenticator_ref_;
 }
 
 }  // namespace webauthn
+
+DEFINE_JNI(InternalAuthenticator)

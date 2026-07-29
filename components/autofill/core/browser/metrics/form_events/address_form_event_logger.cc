@@ -4,26 +4,38 @@
 
 #include "components/autofill/core/browser/metrics/form_events/address_form_event_logger.h"
 
-#include <algorithm>
-#include <iterator>
-#include <memory>
-#include <string>
+#include <stdint.h>
 
+#include <optional>
+#include <string>
+#include <vector>
+
+#include "base/check.h"
+#include "base/containers/span.h"
+#include "base/feature_list.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/metrics/user_metrics.h"
 #include "base/metrics/user_metrics_action.h"
-#include "base/strings/levenshtein_distance.h"
+#include "base/strings/strcat.h"
+#include "components/autofill/core/browser/autofill_field.h"
 #include "components/autofill/core/browser/autofill_trigger_source.h"
+#include "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #include "components/autofill/core/browser/data_quality/autofill_data_util.h"
 #include "components/autofill/core/browser/field_types.h"
+#include "components/autofill/core/browser/form_types.h"
 #include "components/autofill/core/browser/foundations/autofill_driver.h"
-#include "components/autofill/core/browser/logging/log_manager.h"
 #include "components/autofill/core/browser/metrics/autofill_metrics_utils.h"
+#include "components/autofill/core/browser/metrics/form_events/form_event_logger_base.h"
+#include "components/autofill/core/browser/metrics/form_events/form_events.h"
 #include "components/autofill/core/browser/metrics/form_interactions_ukm_logger.h"
+#include "components/autofill/core/browser/suggestions/addresses/address_suggestion_generator.h"
+#include "components/autofill/core/browser/suggestions/suggestion.h"
+#include "components/autofill/core/browser/suggestions/suggestion_util.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_internals/log_message.h"
 #include "components/autofill/core/common/autofill_internals/logging_scope.h"
+#include "components/autofill/core/common/dense_set.h"
+#include "components/autofill/core/common/signatures.h"
 #include "components/autofill/core/common/unique_ids.h"
 
 namespace autofill::autofill_metrics {
@@ -47,6 +59,12 @@ CategoryResolvedKeyMetricBucket ProfileCategoriesToMetricBucket(
       return CategoryResolvedKeyMetricBucket::kAccountChrome;
     case AutofillProfileRecordTypeCategory::kAccountNonChrome:
       return CategoryResolvedKeyMetricBucket::kAccountNonChrome;
+    case AutofillProfileRecordTypeCategory::kAccountHome:
+      return CategoryResolvedKeyMetricBucket::kAccountHome;
+    case AutofillProfileRecordTypeCategory::kAccountWork:
+      return CategoryResolvedKeyMetricBucket::kAccountWork;
+    case AutofillProfileRecordTypeCategory::kAccountNameEmail:
+      return CategoryResolvedKeyMetricBucket::kAccountNameEmail;
   }
 }
 
@@ -55,41 +73,7 @@ CategoryResolvedKeyMetricBucket ProfileCategoriesToMetricBucket(
 AddressFormEventLogger::AddressFormEventLogger(BrowserAutofillManager* owner)
     : FormEventLoggerBase("Address", owner) {}
 
-AddressFormEventLogger::~AddressFormEventLogger() {
-  // Once a `SuggestionType::kAutofillAddressOnTyping` suggestion
-  // is accepted, we remove it from
-  // `fields_where_autofill_on_typing_was_shown_`. Therefore for
-  // the remaining fields, log that they were not accepted
-  for (const auto& [field_global_id, field_types_used] :
-       fields_where_autofill_on_typing_was_shown_) {
-    base::UmaHistogramBoolean("Autofill.AddressSuggestionOnTypingAcceptance",
-                              false);
-    for (FieldType field_type : field_types_used) {
-      base::UmaHistogramSparse(
-          "Autofill.AddressSuggestionOnTypingAcceptance.PerFieldType",
-          GetBucketForAcceptanceMetricsGroupedByFieldType(
-              field_type, /*suggestion_accepted=*/false));
-    }
-  }
-
-  // Log information about `SuggestionType::kAutofillAddressOnTyping`
-  // suggestions and profile usage.
-  for (auto [guid, last_used_time] :
-       autofill_on_typing_suggestion_profile_last_used_time_per_guid_) {
-    base::UmaHistogramCounts1000(
-        "Autofill.AddressSuggestionOnTypingShown.DaysSinceLastUse.Profile",
-        last_used_time.InDays());
-  }
-
-  for (const std::string& profile_accepted_guid :
-       autofill_on_typing_suggestion_accepted_profile_used_) {
-    base::UmaHistogramCounts1000(
-        "Autofill.AddressSuggestionOnTypingAccepted.DaysSinceLastUse.Profile",
-        autofill_on_typing_suggestion_profile_last_used_time_per_guid_
-            [profile_accepted_guid]
-                .InDays());
-  }
-}
+AddressFormEventLogger::~AddressFormEventLogger() = default;
 
 void AddressFormEventLogger::UpdateProfileAvailabilityForReadiness(
     const std::vector<const AutofillProfile*>& profiles) {
@@ -100,13 +84,40 @@ void AddressFormEventLogger::UpdateProfileAvailabilityForReadiness(
   }
 }
 
+void AddressFormEventLogger::OnDidShowSuggestions(
+    const FormStructure& form,
+    const AutofillField& field,
+    base::TimeTicks form_parsed_timestamp,
+    bool off_the_record,
+    base::span<const Suggestion> suggestions) {
+  FormEventLoggerBase::OnDidShowSuggestions(
+      form, field, field.Type().GetAddressType(), form_parsed_timestamp,
+      off_the_record, suggestions);
+
+  const AddressDataManager& address_data_manager =
+      client().GetPersonalDataManager().address_data_manager();
+
+  home_profile_suggestion_present_ =
+      home_profile_suggestion_present_ ||
+      ContainsProfileSuggestionWithRecordType(
+          suggestions, address_data_manager,
+          AutofillProfile::RecordType::kAccountHome);
+
+  work_profile_suggestion_present_ =
+      work_profile_suggestion_present_ ||
+      ContainsProfileSuggestionWithRecordType(
+          suggestions, address_data_manager,
+          AutofillProfile::RecordType::kAccountWork);
+}
+
 void AddressFormEventLogger::OnDidFillFormFillingSuggestion(
     const AutofillProfile& profile,
     const FormStructure& form,
     const AutofillField& field,
     const AutofillTriggerSource trigger_source) {
   client().GetFormInteractionsUkmLogger().LogDidFillSuggestion(
-      driver().GetPageUkmSourceId(), form, field);
+      driver().GetPageUkmSourceId(), form, field,
+      /*record_type=*/std::nullopt);
   Log(FORM_EVENT_LOCAL_SUGGESTION_FILLED, form);
   if (!has_logged_form_filling_suggestion_filled_) {
     has_logged_form_filling_suggestion_filled_ = true;
@@ -115,14 +126,10 @@ void AddressFormEventLogger::OnDidFillFormFillingSuggestion(
   base::RecordAction(
       base::UserMetricsAction("Autofill_FilledProfileSuggestion"));
 
-  FieldType field_type = field.Type().GetStorableType();
+  FieldType field_type = field.Type().GetAddressType();
   field_types_with_shown_suggestions_.erase(field_type);
   field_types_with_accepted_suggestions_.insert(field_type);
-
-  if (trigger_source != AutofillTriggerSource::kFastCheckout) {
-    ++form_interaction_counts_.autofill_fills;
-  }
-  UpdateFlowId();
+  ++form_interaction_counts_.autofill_fills;
 
   profile_categories_filled_.insert(GetCategoryOfProfile(profile));
 }
@@ -132,51 +139,21 @@ void AddressFormEventLogger::OnDidUndoAutofill() {
   base::RecordAction(base::UserMetricsAction("Autofill_UndoAddressAutofill"));
 }
 
-void AddressFormEventLogger::OnDidShownAutofillOnTyping(
-    FieldGlobalId field_global_id,
-    FieldTypeSet field_types_used,
-    std::map<std::string, base::TimeDelta> profile_last_used_time_per_guid) {
-  if (fields_where_autofill_on_typing_was_shown_.contains(field_global_id)) {
-    fields_where_autofill_on_typing_was_shown_[field_global_id].insert_all(
-        field_types_used);
-  } else {
-    fields_where_autofill_on_typing_was_shown_[field_global_id] =
-        field_types_used;
-  }
-  for (auto [guid, last_used_time] : profile_last_used_time_per_guid) {
-    autofill_on_typing_suggestion_profile_last_used_time_per_guid_[guid] =
-        last_used_time;
-  }
-}
+void AddressFormEventLogger::OnDestroyed() {
+  FormEventLoggerBase::OnDestroyed();
 
-void AddressFormEventLogger::OnDidAcceptAutofillOnTyping(
-    FieldGlobalId field_global_id,
-    const std::u16string& value,
-    FieldType field_type_used_to_build_suggestion,
-    const std::string profile_used_guid) {
-  if (value.empty()) {
-    return;
+  if (has_logged_suggestions_shown_) {
+    if (profile_categories_available_.contains(
+            AutofillProfileRecordTypeCategory::kAccountHome)) {
+      base::UmaHistogramBoolean("Autofill.HomeAndWork.SuggestionPresent.Home",
+                                home_profile_suggestion_present_);
+    }
+    if (profile_categories_available_.contains(
+            AutofillProfileRecordTypeCategory::kAccountWork)) {
+      base::UmaHistogramBoolean("Autofill.HomeAndWork.SuggestionPresent.Work",
+                                work_profile_suggestion_present_);
+    }
   }
-
-  CHECK(fields_where_autofill_on_typing_was_shown_.contains(field_global_id));
-  CHECK(autofill_on_typing_suggestion_profile_last_used_time_per_guid_.contains(
-      profile_used_guid));
-  autofill_on_typing_value_used_[field_global_id] = value;
-  base::UmaHistogramBoolean("Autofill.AddressSuggestionOnTypingAcceptance",
-                            true);
-  for (FieldType field_type :
-       fields_where_autofill_on_typing_was_shown_[field_global_id]) {
-    base::UmaHistogramSparse(
-        "Autofill.AddressSuggestionOnTypingAcceptance.PerFieldType",
-        GetBucketForAcceptanceMetricsGroupedByFieldType(
-            field_type, /*suggestion_accepted=*/field_type ==
-                            field_type_used_to_build_suggestion));
-  }
-  // Stores the accepted profile and log on destruction as a way to avoid
-  // logging acceptance multiple times for the same profile.
-  autofill_on_typing_suggestion_accepted_profile_used_.insert(
-      profile_used_guid);
-  fields_where_autofill_on_typing_was_shown_.erase(field_global_id);
 }
 
 void AddressFormEventLogger::OnLog(const std::string& name,
@@ -184,18 +161,13 @@ void AddressFormEventLogger::OnLog(const std::string& name,
                                    const FormStructure& form) const {
   uint32_t groups = data_util::DetermineGroups(form);
   base::UmaHistogramEnumeration(
-      name + data_util::GetSuffixForProfileFormType(groups), event,
-      NUM_FORM_EVENTS);
+      base::StrCat({name, data_util::GetSuffixForProfileFormType(groups)}),
+      event, NUM_FORM_EVENTS);
   if (data_util::ContainsAddress(groups) &&
       (data_util::ContainsPhone(groups) || data_util::ContainsEmail(groups))) {
     base::UmaHistogramEnumeration(name + ".AddressPlusContact", event,
                                   NUM_FORM_EVENTS);
   }
-}
-
-void AddressFormEventLogger::RecordPollSuggestions() {
-  base::RecordAction(
-      base::UserMetricsAction("Autofill_PolledProfileSuggestions"));
 }
 
 void AddressFormEventLogger::RecordParseForm() {
@@ -219,54 +191,6 @@ void AddressFormEventLogger::RecordFillingAssistance(LogBuffer& logs) const {
   base::UmaHistogramEnumeration(
       "Autofill.Leipzig.FillingAssistanceCategory",
       ProfileCategoriesToMetricBucket(profile_categories_filled_));
-}
-
-void AddressFormEventLogger::LogAutofillAddressOnTypingCorrectnessMetrics(
-    const FormStructure& form) {
-  const std::vector<std::unique_ptr<AutofillField>>& submitted_form_fields =
-      form.fields();
-
-  // For each field in the submitted form, record its value.
-  auto submitted_fields_values =
-      base::MakeFlatMap<FieldGlobalId, std::u16string>(
-          submitted_form_fields, {},
-          [](const std::unique_ptr<AutofillField>& field) {
-            return std::make_pair(field->global_id(),
-                                  field->value(ValueSemantics::kCurrent));
-          });
-  // Used to delete fields for which correctness was logged from
-  // `autofill_on_typing_value_used_`.
-  std::set<FieldGlobalId> logged_correctness_for_field;
-  for (const auto& [field_global_id, filled_value] :
-       autofill_on_typing_value_used_) {
-    if (submitted_fields_values.contains(field_global_id)) {
-      const std::u16string submitted_value =
-          submitted_fields_values.at(field_global_id);
-      base::UmaHistogramBoolean(
-          "Autofill.EditedAutofilledFieldAtSubmission.AddressOnTyping",
-          filled_value == submitted_fields_values.at(field_global_id));
-      logged_correctness_for_field.insert(field_global_id);
-      size_t filled_value_and_submitted_value_distance =
-          base::LevenshteinDistance(filled_value, submitted_value);
-      base::UmaHistogramCounts100(
-          "Autofill.EditedDistanceAutofilledFieldAtSubmission.AddressOnTyping",
-          filled_value_and_submitted_value_distance);
-
-      int edited_percentage = 100 *
-                                filled_value_and_submitted_value_distance /
-                                filled_value.length();
-      base::UmaHistogramCounts100(
-          "Autofill.EditedPercentageAutofilledFieldAtSubmission."
-          "AddressOnTyping",
-          edited_percentage);
-    }
-  }
-
-  // Remove from `autofill_on_typing_value_used_` fields for which correctness
-  // metrics were logged.
-  for (const FieldGlobalId field : logged_correctness_for_field) {
-    autofill_on_typing_value_used_.erase(field);
-  }
 }
 
 void AddressFormEventLogger::RecordFillingCorrectness(LogBuffer& logs) const {
@@ -303,8 +227,9 @@ AddressFormEventLogger::GetSupportedFormTypeNamesForLogging() const {
 }
 
 DenseSet<FormTypeNameForLogging> AddressFormEventLogger::GetFormTypesForLogging(
-    const FormStructure& form) const {
-  return GetAddressFormTypesForLogging(form);
+    const FormStructure& form,
+    AutocompleteUnrecognizedBehavior ac_unrecognized_behavior) const {
+  return GetAddressFormTypesForLogging(form, ac_unrecognized_behavior);
 }
 
 }  // namespace autofill::autofill_metrics

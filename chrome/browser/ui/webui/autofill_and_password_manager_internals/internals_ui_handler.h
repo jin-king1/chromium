@@ -10,7 +10,9 @@
 
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
+#include "base/scoped_observation.h"
 #include "base/values.h"
+#include "components/autofill/core/browser/data_manager/autofill_ai/entity_data_manager.h"
 #include "components/autofill/core/browser/logging/log_receiver.h"
 #include "content/public/browser/browsing_data_remover.h"
 #include "content/public/browser/web_ui_message_handler.h"
@@ -27,10 +29,11 @@ class Profile;
 
 namespace autofill {
 
-constexpr char kCacheResetDone[] =
+inline constexpr char kCacheResetDone[] =
     "Done. Please close and reopen all tabs that should be affected by the "
     "cache reset.";
-constexpr char kCacheResetAlreadyInProgress[] = "Reset already in progress";
+inline constexpr char kCacheResetAlreadyInProgress[] =
+    "Reset already in progress";
 
 void CreateAndAddInternalsHTMLSource(Profile* profile,
                                      const std::string& source_name);
@@ -58,10 +61,11 @@ class AutofillCacheResetter : public content::BrowsingDataRemover::Observer {
 // chrome://autofill-internals that takes care of subscribing to the autofill
 // logging instance.
 class InternalsUIHandler : public content::WebUIMessageHandler,
-                           public autofill::LogReceiver {
+                           public LogReceiver,
+                           public EntityDataManager::Observer {
  public:
   using GetLogRouterFunction =
-      base::RepeatingCallback<autofill::LogRouter*(content::BrowserContext*)>;
+      base::RepeatingCallback<LogRouter*(content::BrowserContext*)>;
 
   InternalsUIHandler(std::string call_on_load,
                      base::Value call_on_load_argument,
@@ -81,16 +85,29 @@ class InternalsUIHandler : public content::WebUIMessageHandler,
   void OnJavascriptDisallowed() override;
 
   // LogReceiver implementation.
-  void LogEntry(const base::Value::Dict& entry) override;
+  void LogEntry(const base::DictValue& entry) override;
 
   void StartSubscription();
   void EndSubscription();
 
+  // EntityDataManager::Observer:
+  void OnEntityInstancesChanged() override;
+
+  void SendAutofillAiEntitiesToWebUI();
+
   // JavaScript call handler.
-  void OnGetAutofillAiCache(const base::Value::List& args);
-  void OnLoaded(const base::Value::List& args);
-  void OnResetCache(const base::Value::List& args);
-  void OnResetUpmEviction(const base::Value::List& args);
+  void OnDeleteAutofillAiCacheEntry(const base::ListValue& args);
+  void OnGetAutofillAiCache(const base::ListValue& args);
+  void OnGetAutofillAiEntities(const base::ListValue& args);
+  void OnLoaded(const base::ListValue& args);
+  void OnResetCache(const base::ListValue& args);
+  void OnDumpAddresses(const base::ListValue& args);
+  void OnSetPasswordChangeOverrideUrl(const base::ListValue& args);
+  void CheckAtMemoryPermissions(const base::ListValue& args);
+#if !BUILDFLAG(IS_ANDROID)
+  void CheckAutofillAiPermissions(const base::ListValue& args);
+  void SetDomNodeId(const base::ListValue& args);
+#endif
 
   void OnResetCacheDone(const std::string& message);
 
@@ -102,6 +119,9 @@ class InternalsUIHandler : public content::WebUIMessageHandler,
 
   // Whether |this| is registered as a log receiver with the LogRouter.
   bool registered_with_log_router_ = false;
+
+  base::ScopedObservation<EntityDataManager, EntityDataManager::Observer>
+      entity_data_observation_{this};
 
   std::optional<AutofillCacheResetter> autofill_cache_resetter_;
 };

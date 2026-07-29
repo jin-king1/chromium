@@ -4,12 +4,14 @@
 
 #include "base/run_loop.h"
 #include "base/test/scoped_feature_list.h"
+#include "chrome/browser/extensions/sync/account_extension_tracker.h"
 #include "chrome/browser/policy/profile_policy_connector.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/sync/test/integration/bookmarks_helper.h"
 #include "chrome/browser/sync/test/integration/contact_info_helper.h"
 #include "chrome/browser/sync/test/integration/encryption_helper.h"
 #include "chrome/browser/sync/test/integration/passwords_helper.h"
+#include "chrome/browser/sync/test/integration/sync_extension_helper.h"
 #include "chrome/browser/sync/test/integration/sync_integration_test_util.h"
 #include "chrome/browser/sync/test/integration/sync_service_impl_harness.h"
 #include "chrome/browser/sync/test/integration/sync_test.h"
@@ -17,9 +19,11 @@
 #include "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
 #include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/common/autofill_features.h"
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/bookmarks/browser/bookmark_node.h"
 #include "components/password_manager/core/browser/password_form.h"
+#include "components/password_manager/core/browser/password_store/password_form_converters.h"
 #include "components/policy/core/browser/browser_policy_connector.h"
 #include "components/policy/core/common/mock_configuration_policy_provider.h"
 #include "components/policy/core/common/policy_map.h"
@@ -36,14 +40,22 @@
 #include "components/sync/test/nigori_test_utils.h"
 #include "components/sync_bookmarks/switches.h"
 #include "content/public/test/browser_test.h"
+#include "extensions/common/extension.h"
+#include "extensions/common/extension_builder.h"
+#include "extensions/common/extension_id.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+#include "chrome/browser/enterprise/util/managed_browser_utils.h"
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
 namespace {
 
 using autofill::AutofillProfile;
 using bookmarks::BookmarkNode;
 using contact_info_helper::AddressDataManagerProfileChecker;
+using extensions::AccountExtensionTracker;
 using passwords_helper::CreateTestPasswordForm;
 using testing::UnorderedElementsAre;
 
@@ -59,16 +71,25 @@ class SelectTypeAndMigrateLocalDataItemsWhenActiveTest : public SyncTest {
  public:
   SelectTypeAndMigrateLocalDataItemsWhenActiveTest()
       : SyncTest(SINGLE_CLIENT),
-        address_(autofill::test::GetFullProfile()),
-        password_(CreateTestPasswordForm(0)) {
+        password_(
+            CreateTestPasswordForm(0, PasswordForm::Store::kProfileStore)) {
     feature_list_.InitWithFeatures(
         /*enabled_features=*/
-        {switches::kImprovedSigninUIOnDesktop,
-         switches::kExplicitBrowserSigninUIOnDesktop,
-         switches::kSyncEnableBookmarksInTransportMode,
-         switches::kSyncMinimizeDeletionsDuringBookmarkBatchUpload},
-        /*disabled_features=*/{
-            syncer::kSyncEnableContactInfoDataTypeForCustomPassphraseUsers});
+        {switches::kSyncEnableBookmarksInTransportMode,
+         autofill::features::kAutofillSupportSplitZipCode,
+         syncer::kReplaceSyncPromosWithSignInPromos,
+         syncer::kUnoPhase2FollowUp},
+        /*disabled_features=*/{});
+
+    // Ensure profile creation occurs after flag initialization to guarantee
+    // their effectiveness within the profile's constructor.
+    address_ =
+        std::make_unique<AutofillProfile>(autofill::test::GetFullProfile());
+  }
+
+  // This feature is specific to sync transport mode.
+  SyncTest::SetupSyncMode GetSetupSyncMode() const override {
+    return SetupSyncMode::kSyncTransportOnly;
   }
 
   // In SINGLE_CLIENT tests, there's only a single PersonalDataManager.
@@ -76,13 +97,12 @@ class SelectTypeAndMigrateLocalDataItemsWhenActiveTest : public SyncTest {
     return contact_info_helper::GetPersonalDataManager(GetProfile(0));
   }
 
-  const AutofillProfile& address() { return address_; }
+  const AutofillProfile& address() { return *address_; }
   const PasswordForm& password() { return password_; }
 
-  // Sign in with `signin::ConsentLevel::kSignin`.
-  void SignIn() {
-    ASSERT_TRUE(
-        GetClient(0)->SignInPrimaryAccount(signin::ConsentLevel::kSignin));
+  // Sign in with `signin::ConsentLevel::kSignin` and enable bookmarks.
+  void SignInAndEnableBookmarks() {
+    ASSERT_TRUE(SyncTest::SignIn());
     // Enable account storage for bookmarks.
     SigninPrefs(*GetProfile(0)->GetPrefs())
         .SetBookmarksExplicitBrowserSignin(
@@ -91,10 +111,10 @@ class SelectTypeAndMigrateLocalDataItemsWhenActiveTest : public SyncTest {
   }
 
   void SaveLocalAddress() {
-    GetPersonalDataManager()->address_data_manager().AddProfile(address_);
+    GetPersonalDataManager()->address_data_manager().AddProfile(*address_);
     EXPECT_TRUE(AddressDataManagerProfileChecker(
                     &GetPersonalDataManager()->address_data_manager(),
-                    UnorderedElementsAre(address_))
+                    UnorderedElementsAre(*address_))
                     .Wait());
   }
 
@@ -102,6 +122,12 @@ class SelectTypeAndMigrateLocalDataItemsWhenActiveTest : public SyncTest {
     return bookmark_model()->AddURL(bookmark_model()->bookmark_bar_node(),
                                     /*index=*/0, u"Local",
                                     GURL("http://local.com/"));
+  }
+
+  extensions::ExtensionId SaveLocalExtension() {
+    return SyncExtensionHelper::GetInstance()->InstallExtension(
+        GetProfile(0), "simple_with_file",
+        extensions::Manifest::Type::kExtension);
   }
 
   std::vector<const AutofillProfile*> GetLocalAddresses() {
@@ -123,7 +149,7 @@ class SelectTypeAndMigrateLocalDataItemsWhenActiveTest : public SyncTest {
 
  private:
   base::test::ScopedFeatureList feature_list_;
-  AutofillProfile address_;
+  std::unique_ptr<AutofillProfile> address_;
   PasswordForm password_;
 };
 
@@ -131,19 +157,22 @@ IN_PROC_BROWSER_TEST_F(SelectTypeAndMigrateLocalDataItemsWhenActiveTest,
                        ShouldSelectTypeEvenIfPreviouslyDeselected) {
   ASSERT_TRUE(SetupClients());
 
-  SignIn();
+  SignInAndEnableBookmarks();
   GetSyncService(0)->GetUserSettings()->SetSelectedType(
       syncer::UserSelectableType::kPasswords, false);
   GetSyncService(0)->GetUserSettings()->SetSelectedType(
       syncer::UserSelectableType::kAutofill, false);
   GetSyncService(0)->GetUserSettings()->SetSelectedType(
       syncer::UserSelectableType::kBookmarks, false);
+  GetSyncService(0)->GetUserSettings()->SetSelectedType(
+      syncer::UserSelectableType::kExtensions, false);
 
   ASSERT_TRUE(GetClient(0)->AwaitSyncTransportActive());
   ASSERT_FALSE(GetSyncService(0)->GetActiveDataTypes().Has(syncer::PASSWORDS));
   ASSERT_FALSE(
       GetSyncService(0)->GetActiveDataTypes().Has(syncer::CONTACT_INFO));
   ASSERT_FALSE(GetSyncService(0)->GetActiveDataTypes().Has(syncer::BOOKMARKS));
+  ASSERT_FALSE(GetSyncService(0)->GetActiveDataTypes().Has(syncer::EXTENSIONS));
 
   // This should turn on account storage for the respective types.
   GetSyncService(0)->SelectTypeAndMigrateLocalDataItemsWhenActive(
@@ -152,12 +181,15 @@ IN_PROC_BROWSER_TEST_F(SelectTypeAndMigrateLocalDataItemsWhenActiveTest,
       syncer::CONTACT_INFO, {});
   GetSyncService(0)->SelectTypeAndMigrateLocalDataItemsWhenActive(
       syncer::BOOKMARKS, {});
+  GetSyncService(0)->SelectTypeAndMigrateLocalDataItemsWhenActive(
+      syncer::EXTENSIONS, {});
 
   ASSERT_TRUE(GetClient(0)->AwaitSyncTransportActive());
   EXPECT_TRUE(GetSyncService(0)->GetActiveDataTypes().Has(syncer::PASSWORDS));
   EXPECT_TRUE(
       GetSyncService(0)->GetActiveDataTypes().Has(syncer::CONTACT_INFO));
   EXPECT_TRUE(GetSyncService(0)->GetActiveDataTypes().Has(syncer::BOOKMARKS));
+  EXPECT_TRUE(GetSyncService(0)->GetActiveDataTypes().Has(syncer::EXTENSIONS));
 }
 
 IN_PROC_BROWSER_TEST_F(SelectTypeAndMigrateLocalDataItemsWhenActiveTest,
@@ -167,7 +199,7 @@ IN_PROC_BROWSER_TEST_F(SelectTypeAndMigrateLocalDataItemsWhenActiveTest,
   SaveLocalAddress();
   ASSERT_EQ(1u, GetLocalAddresses().size());
 
-  SignIn();
+  SignInAndEnableBookmarks();
   ASSERT_EQ(
       0u, fake_server_->GetSyncEntitiesByDataType(syncer::CONTACT_INFO).size());
 
@@ -184,10 +216,11 @@ IN_PROC_BROWSER_TEST_F(SelectTypeAndMigrateLocalDataItemsWhenActiveTest,
   ASSERT_TRUE(SetupClients());
 
   // Set up a locally saved password.
-  passwords_helper::GetProfilePasswordStoreInterface(0)->AddLogin(password());
+  passwords_helper::GetProfilePasswordStoreInterface(0)->AddLogin(
+      password_manager::FromPasswordForm(password()));
   ASSERT_EQ(1u, GetLocalPasswords().size());
 
-  SignIn();
+  SignInAndEnableBookmarks();
   ASSERT_EQ(0u,
             fake_server_->GetSyncEntitiesByDataType(syncer::PASSWORDS).size());
 
@@ -206,7 +239,7 @@ IN_PROC_BROWSER_TEST_F(SelectTypeAndMigrateLocalDataItemsWhenActiveTest,
   const BookmarkNode* bookmark = SaveLocalBookmark();
   ASSERT_EQ(1u, bookmark_model()->bookmark_bar_node()->children().size());
 
-  SignIn();
+  SignInAndEnableBookmarks();
   ASSERT_EQ(0u,
             fake_server_->GetSyncEntitiesByDataType(syncer::BOOKMARKS).size());
 
@@ -221,17 +254,41 @@ IN_PROC_BROWSER_TEST_F(SelectTypeAndMigrateLocalDataItemsWhenActiveTest,
 }
 
 IN_PROC_BROWSER_TEST_F(SelectTypeAndMigrateLocalDataItemsWhenActiveTest,
+                       ShouldUploadExtension) {
+  ASSERT_TRUE(SetupClients());
+
+  const extensions::ExtensionId extension_id = SaveLocalExtension();
+
+  SignInAndEnableBookmarks();
+  ASSERT_EQ(AccountExtensionTracker::AccountExtensionType::kLocal,
+            AccountExtensionTracker::Get(GetProfile(0))
+                ->GetAccountExtensionType(extension_id));
+
+  // This should migrate the extension.
+  GetSyncService(0)->SelectTypeAndMigrateLocalDataItemsWhenActive(
+      syncer::EXTENSIONS, {extension_id});
+
+  EXPECT_TRUE(ServerCountMatchStatusChecker(syncer::EXTENSIONS, 1).Wait());
+  EXPECT_EQ(
+      AccountExtensionTracker::AccountExtensionType::kAccountInstalledSignedIn,
+      AccountExtensionTracker::Get(GetProfile(0))
+          ->GetAccountExtensionType(extension_id));
+}
+
+IN_PROC_BROWSER_TEST_F(SelectTypeAndMigrateLocalDataItemsWhenActiveTest,
                        ShouldUploadMultiplePasswords) {
   ASSERT_TRUE(SetupClients());
 
   // Set up two locally saved passwords.
-  PasswordForm second_password = CreateTestPasswordForm(1);
-  passwords_helper::GetProfilePasswordStoreInterface(0)->AddLogin(password());
+  PasswordForm second_password =
+      CreateTestPasswordForm(1, PasswordForm::Store::kProfileStore);
   passwords_helper::GetProfilePasswordStoreInterface(0)->AddLogin(
-      second_password);
+      password_manager::FromPasswordForm(password()));
+  passwords_helper::GetProfilePasswordStoreInterface(0)->AddLogin(
+      password_manager::FromPasswordForm(second_password));
   ASSERT_EQ(2u, GetLocalPasswords().size());
 
-  SignIn();
+  SignInAndEnableBookmarks();
   ASSERT_EQ(0u,
             fake_server_->GetSyncEntitiesByDataType(syncer::PASSWORDS).size());
 
@@ -242,55 +299,6 @@ IN_PROC_BROWSER_TEST_F(SelectTypeAndMigrateLocalDataItemsWhenActiveTest,
 
   EXPECT_TRUE(ServerCountMatchStatusChecker(syncer::PASSWORDS, 2).Wait());
   EXPECT_EQ(0u, GetLocalPasswords().size());
-}
-
-// Remove this test and replace it with the one in
-// `SelectTypeAndMigrateLocalDataItemsWhenActiveWithContactInfoForCustomPassphraseUsersTest`
-// once `kSyncEnableContactInfoDataTypeForCustomPassphraseUsers` is enabled by
-// default.
-IN_PROC_BROWSER_TEST_F(SelectTypeAndMigrateLocalDataItemsWhenActiveTest,
-                       ShouldNotUploadAddressWithCustomPassphrase) {
-  ASSERT_TRUE(SetupClients());
-
-  // Set up a custom passphrase.
-  const syncer::KeyParamsForTesting kCustomPassphraseKeyParams =
-      syncer::Pbkdf2PassphraseKeyParamsForTesting("hritika");
-  SetNigoriInFakeServer(
-      BuildCustomPassphraseNigoriSpecifics(kCustomPassphraseKeyParams),
-      GetFakeServer());
-
-  SaveLocalAddress();
-  ASSERT_EQ(1u, GetLocalAddresses().size());
-
-  SignIn();
-  ASSERT_TRUE(PassphraseRequiredChecker(GetSyncService(0)).Wait());
-  ASSERT_EQ(
-      0u, fake_server_->GetSyncEntitiesByDataType(syncer::CONTACT_INFO).size());
-
-  // This should not turn on account storage. The address will stay local.
-  // Entering the passphrase does not change that.
-  GetSyncService(0)->SelectTypeAndMigrateLocalDataItemsWhenActive(
-      syncer::CONTACT_INFO, {address().guid()});
-  EXPECT_EQ(1u,
-            GetSyncService(0)->GetQueuedLocalDataMigrationItemCountForTest());
-  ASSERT_TRUE(GetSyncService(0)->GetUserSettings()->SetDecryptionPassphrase(
-      kCustomPassphraseKeyParams.password));
-  ASSERT_TRUE(PassphraseAcceptedChecker(GetSyncService(0)).Wait());
-  ASSERT_TRUE(GetClient(0)->AwaitSyncTransportActive());
-  ASSERT_FALSE(
-      GetSyncService(0)->GetActiveDataTypes().Has(syncer::CONTACT_INFO));
-
-  EXPECT_EQ(
-      0u, fake_server_->GetSyncEntitiesByDataType(syncer::CONTACT_INFO).size());
-  EXPECT_EQ(1u, GetLocalAddresses().size());
-
-  // The address is still in the queue, but will be cleared once the user signs
-  // out.
-  EXPECT_EQ(1u,
-            GetSyncService(0)->GetQueuedLocalDataMigrationItemCountForTest());
-  GetClient(0)->SignOutPrimaryAccount();
-  EXPECT_EQ(0u,
-            GetSyncService(0)->GetQueuedLocalDataMigrationItemCountForTest());
 }
 
 IN_PROC_BROWSER_TEST_F(SelectTypeAndMigrateLocalDataItemsWhenActiveTest,
@@ -305,10 +313,11 @@ IN_PROC_BROWSER_TEST_F(SelectTypeAndMigrateLocalDataItemsWhenActiveTest,
       GetFakeServer());
 
   // Set up a locally saved password.
-  passwords_helper::GetProfilePasswordStoreInterface(0)->AddLogin(password());
+  passwords_helper::GetProfilePasswordStoreInterface(0)->AddLogin(
+      password_manager::FromPasswordForm(password()));
   ASSERT_EQ(1u, GetLocalPasswords().size());
 
-  SignIn();
+  SignInAndEnableBookmarks();
   ASSERT_TRUE(PassphraseRequiredChecker(GetSyncService(0)).Wait());
   ASSERT_EQ(0u,
             fake_server_->GetSyncEntitiesByDataType(syncer::PASSWORDS).size());
@@ -342,10 +351,11 @@ IN_PROC_BROWSER_TEST_F(SelectTypeAndMigrateLocalDataItemsWhenActiveTest,
       GetFakeServer());
 
   // Set up a locally saved password.
-  passwords_helper::GetProfilePasswordStoreInterface(0)->AddLogin(password());
+  passwords_helper::GetProfilePasswordStoreInterface(0)->AddLogin(
+      password_manager::FromPasswordForm(password()));
   ASSERT_EQ(1u, GetLocalPasswords().size());
 
-  SignIn();
+  SignInAndEnableBookmarks();
   ASSERT_TRUE(PassphraseRequiredChecker(GetSyncService(0)).Wait());
   ASSERT_EQ(0u,
             fake_server_->GetSyncEntitiesByDataType(syncer::PASSWORDS).size());
@@ -362,7 +372,7 @@ IN_PROC_BROWSER_TEST_F(SelectTypeAndMigrateLocalDataItemsWhenActiveTest,
   GetClient(0)->SignOutPrimaryAccount();
   ASSERT_EQ(GetSyncService(0)->GetTransportState(),
             syncer::SyncService::TransportState::DISABLED);
-  SignIn();
+  SignInAndEnableBookmarks();
   ASSERT_TRUE(PassphraseRequiredChecker(GetSyncService(0)).Wait());
   ASSERT_TRUE(GetSyncService(0)->GetUserSettings()->SetDecryptionPassphrase(
       kCustomPassphraseKeyParams.password));
@@ -408,7 +418,7 @@ IN_PROC_BROWSER_TEST_F(
   ASSERT_EQ(1u, GetLocalAddresses().size());
 
   // Disable addresses via the kSyncTypesListDisabled policy.
-  base::Value::List disabled_types;
+  base::ListValue disabled_types;
   disabled_types.Append("autofill");
   policy::PolicyMap policies;
   policies.Set(policy::key::kSyncTypesListDisabled,
@@ -417,7 +427,7 @@ IN_PROC_BROWSER_TEST_F(
                base::Value(std::move(disabled_types)), nullptr);
   policy_provider()->UpdateChromePolicy(policies);
 
-  SignIn();
+  SignInAndEnableBookmarks();
   ASSERT_EQ(
       0u, fake_server_->GetSyncEntitiesByDataType(syncer::CONTACT_INFO).size());
 
@@ -441,11 +451,12 @@ IN_PROC_BROWSER_TEST_F(
   ASSERT_TRUE(SetupClients());
 
   // Set up a locally saved password.
-  passwords_helper::GetProfilePasswordStoreInterface(0)->AddLogin(password());
+  passwords_helper::GetProfilePasswordStoreInterface(0)->AddLogin(
+      password_manager::FromPasswordForm(password()));
   ASSERT_EQ(1u, GetLocalPasswords().size());
 
   // Disable passwords via the kSyncTypesListDisabled policy.
-  base::Value::List disabled_types;
+  base::ListValue disabled_types;
   disabled_types.Append("passwords");
   policy::PolicyMap policies;
   policies.Set(policy::key::kSyncTypesListDisabled,
@@ -454,7 +465,7 @@ IN_PROC_BROWSER_TEST_F(
                base::Value(std::move(disabled_types)), nullptr);
   policy_provider()->UpdateChromePolicy(policies);
 
-  SignIn();
+  SignInAndEnableBookmarks();
 
   // This should not turn on account storage. The password will stay local.
   GetSyncService(0)->SelectTypeAndMigrateLocalDataItemsWhenActive(
@@ -473,17 +484,12 @@ class
     SelectTypeAndMigrateLocalDataItemsWhenActiveWithContactInfoForCustomPassphraseUsersTest
     : public SelectTypeAndMigrateLocalDataItemsWhenActiveTest {
  public:
-  SelectTypeAndMigrateLocalDataItemsWhenActiveWithContactInfoForCustomPassphraseUsersTest() {
-    feature_list_.InitWithFeatures(
-        /*enabled_features=*/
-        {switches::kImprovedSigninUIOnDesktop,
-         switches::kExplicitBrowserSigninUIOnDesktop,
-         syncer::kSyncEnableContactInfoDataTypeForCustomPassphraseUsers},
-        /*disabled_features=*/{});
-  }
+  SelectTypeAndMigrateLocalDataItemsWhenActiveWithContactInfoForCustomPassphraseUsersTest() =
+      default;
 
  private:
-  base::test::ScopedFeatureList feature_list_;
+  base::test::ScopedFeatureList feature_list_{
+      syncer::kSyncEnableContactInfoDataTypeForCustomPassphraseUsers};
 };
 
 IN_PROC_BROWSER_TEST_F(
@@ -501,7 +507,7 @@ IN_PROC_BROWSER_TEST_F(
   SaveLocalAddress();
   ASSERT_EQ(1u, GetLocalAddresses().size());
 
-  SignIn();
+  SignInAndEnableBookmarks();
   ASSERT_TRUE(PassphraseRequiredChecker(GetSyncService(0)).Wait());
   ASSERT_EQ(
       0u, fake_server_->GetSyncEntitiesByDataType(syncer::CONTACT_INFO).size());
@@ -514,45 +520,21 @@ IN_PROC_BROWSER_TEST_F(
   EXPECT_EQ(0u, GetLocalAddresses().size());
 }
 
-// Overwrite the Sync test account with a non-gmail account. This treats it as
-// a Dasher account.
-class SelectTypeAndMigrateLocalDataItemsWhenActiveWithManagedAccountTest
-    : public SelectTypeAndMigrateLocalDataItemsWhenActiveTest {
- public:
-  SelectTypeAndMigrateLocalDataItemsWhenActiveWithManagedAccountTest() {
-    // This can't be done in `SetUpCommandLine()` because `SyncTest::SetUp()`
-    // already consumes the parameter.
-    base::CommandLine::ForCurrentProcess()->AppendSwitchASCII(
-        switches::kSyncUserForTest, "user@managed-domain.com");
-  }
-
-  void SignIn(const std::string& hosted_domain) {
-    ASSERT_TRUE(
-        GetClient(0)->SignInPrimaryAccount(signin::ConsentLevel::kSignin));
-
-    signin::IdentityManager* identity_manager =
-        IdentityManagerFactory::GetForProfile(GetProfile(0));
-    CoreAccountInfo account =
-        identity_manager->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin);
-
-    signin::SimulateSuccessfulFetchOfAccountInfo(
-        identity_manager, account.account_id, account.email, account.gaia,
-        hosted_domain, "Full Name", "Given Name", "en-US", "");
-
-    ASSERT_TRUE(GetClient(0)->AwaitSyncTransportActive());
-  }
-};
-
-IN_PROC_BROWSER_TEST_F(
-    SelectTypeAndMigrateLocalDataItemsWhenActiveWithManagedAccountTest,
-    ShouldNotUploadAddressWithManagedAccount) {
+IN_PROC_BROWSER_TEST_F(SelectTypeAndMigrateLocalDataItemsWhenActiveTest,
+                       ShouldNotUploadAddressToManagedAccount) {
   ASSERT_TRUE(SetupClients());
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+  auto enable_disclaimer_on_primary_account_change_resetter =
+      enterprise_util::DisableAutomaticManagementDisclaimerUntilReset(
+          GetProfile(0));
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
   SaveLocalAddress();
   ASSERT_EQ(1u, GetLocalAddresses().size());
 
   // Sign in with a managed account.
-  SignIn(/*hosted_domain=*/"managed-domain.com");
+  ASSERT_TRUE(SignIn(SyncTestAccount::kEnterpriseAccount1));
 
   // This should not turn on account storage. The address will stay local.
   GetSyncService(0)->SelectTypeAndMigrateLocalDataItemsWhenActive(
@@ -571,26 +553,18 @@ IN_PROC_BROWSER_TEST_F(
             GetSyncService(0)->GetQueuedLocalDataMigrationItemCountForTest());
 }
 
-// Overwrite the Sync test account with an @google.com managed account.
-class SelectTypeAndMigrateLocalDataItemsWhenActiveWithGoogleManagedAccountTest
-    : public SelectTypeAndMigrateLocalDataItemsWhenActiveWithManagedAccountTest {
- public:
-  SelectTypeAndMigrateLocalDataItemsWhenActiveWithGoogleManagedAccountTest() {
-    base::CommandLine::ForCurrentProcess()->AppendSwitchASCII(
-        switches::kSyncUserForTest, "user@google.com");
-  }
-};
-
-IN_PROC_BROWSER_TEST_F(
-    SelectTypeAndMigrateLocalDataItemsWhenActiveWithGoogleManagedAccountTest,
-    ShouldUploadAddressWithGoogleManagedAccount) {
+IN_PROC_BROWSER_TEST_F(SelectTypeAndMigrateLocalDataItemsWhenActiveTest,
+                       ShouldUploadAddressToManagedGoogleDotComAccount) {
   ASSERT_TRUE(SetupClients());
 
   SaveLocalAddress();
   ASSERT_EQ(1u, GetLocalAddresses().size());
 
   // Sign in with a Google managed account.
-  SignIn(/*hosted_domain=*/"google.com");
+  ASSERT_TRUE(GetClient(0)->SignInNoWaitForCompletion(
+      SyncTestAccount::kGoogleDotComAccount1));
+  enterprise_util::SetUserAcceptedAccountManagement(GetProfile(0), true);
+  ASSERT_TRUE(GetClient(0)->AwaitSyncTransportActive());
   ASSERT_EQ(
       0u, fake_server_->GetSyncEntitiesByDataType(syncer::CONTACT_INFO).size());
 
@@ -600,6 +574,72 @@ IN_PROC_BROWSER_TEST_F(
 
   EXPECT_TRUE(ServerCountMatchStatusChecker(syncer::CONTACT_INFO, 1).Wait());
   EXPECT_EQ(0u, GetLocalAddresses().size());
+  EXPECT_EQ(0u,
+            GetSyncService(0)->GetQueuedLocalDataMigrationItemCountForTest());
+}
+
+class
+    SelectTypeAndMigrateLocalDataItemsWhenActiveWithoutContactInfoForCustomPassphraseUsersTest
+    : public SelectTypeAndMigrateLocalDataItemsWhenActiveTest {
+ public:
+  SelectTypeAndMigrateLocalDataItemsWhenActiveWithoutContactInfoForCustomPassphraseUsersTest() {
+    feature_list_.InitWithFeatures(
+        /*enabled_features=*/{},
+        /*disabled_features=*/{
+            syncer::kSyncEnableContactInfoDataTypeForCustomPassphraseUsers,
+            syncer::kReplaceSyncPromosWithSigninPromosNewSignin});
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+// Remove this test and replace it with the one in
+// `SelectTypeAndMigrateLocalDataItemsWhenActiveWithContactInfoForCustomPassphraseUsersTest`
+// once `kSyncEnableContactInfoDataTypeForCustomPassphraseUsers` is enabled by
+// default.
+IN_PROC_BROWSER_TEST_F(
+    SelectTypeAndMigrateLocalDataItemsWhenActiveWithoutContactInfoForCustomPassphraseUsersTest,
+    ShouldNotUploadAddressWithCustomPassphrase) {
+  ASSERT_TRUE(SetupClients());
+
+  // Set up a custom passphrase.
+  const syncer::KeyParamsForTesting kCustomPassphraseKeyParams =
+      syncer::Pbkdf2PassphraseKeyParamsForTesting("hritika");
+  SetNigoriInFakeServer(
+      BuildCustomPassphraseNigoriSpecifics(kCustomPassphraseKeyParams),
+      GetFakeServer());
+
+  SaveLocalAddress();
+  ASSERT_EQ(1u, GetLocalAddresses().size());
+
+  SignInAndEnableBookmarks();
+  ASSERT_TRUE(PassphraseRequiredChecker(GetSyncService(0)).Wait());
+  ASSERT_EQ(
+      0u, fake_server_->GetSyncEntitiesByDataType(syncer::CONTACT_INFO).size());
+
+  // This should not turn on account storage. The address will stay local.
+  // Entering the passphrase does not change that.
+  GetSyncService(0)->SelectTypeAndMigrateLocalDataItemsWhenActive(
+      syncer::CONTACT_INFO, {address().guid()});
+  EXPECT_EQ(1u,
+            GetSyncService(0)->GetQueuedLocalDataMigrationItemCountForTest());
+  ASSERT_TRUE(GetSyncService(0)->GetUserSettings()->SetDecryptionPassphrase(
+      kCustomPassphraseKeyParams.password));
+  ASSERT_TRUE(PassphraseAcceptedChecker(GetSyncService(0)).Wait());
+  ASSERT_TRUE(GetClient(0)->AwaitSyncTransportActive());
+  ASSERT_FALSE(
+      GetSyncService(0)->GetActiveDataTypes().Has(syncer::CONTACT_INFO));
+
+  EXPECT_EQ(
+      0u, fake_server_->GetSyncEntitiesByDataType(syncer::CONTACT_INFO).size());
+  EXPECT_EQ(1u, GetLocalAddresses().size());
+
+  // The address is still in the queue, but will be cleared once the user signs
+  // out.
+  EXPECT_EQ(1u,
+            GetSyncService(0)->GetQueuedLocalDataMigrationItemCountForTest());
+  GetClient(0)->SignOutPrimaryAccount();
   EXPECT_EQ(0u,
             GetSyncService(0)->GetQueuedLocalDataMigrationItemCountForTest());
 }

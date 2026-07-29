@@ -6,16 +6,14 @@
 #define COMPONENTS_PERFORMANCE_MANAGER_SCENARIO_API_PERFORMANCE_SCENARIOS_H_
 
 #include <atomic>
+#include <compare>
 #include <utility>
 
 #include "base/component_export.h"
 #include "base/containers/enum_set.h"
 #include "base/memory/raw_ptr_exclusion.h"
-#include "base/memory/read_only_shared_memory_region.h"
-#include "base/memory/ref_counted.h"
 #include "base/memory/scoped_refptr.h"
-#include "base/memory/shared_memory_safety_checker.h"
-#include "base/memory/structured_shared_memory.h"
+#include "components/performance_manager/scenario_api/performance_scenario_memory_forward.h"
 
 namespace performance_scenarios {
 
@@ -29,33 +27,45 @@ namespace performance_scenarios {
 // child processes over shared memory. Each process can view a global scenario
 // list over the entire browser (eg. some page is loading) or a scenario list
 // targeted only to that process (eg. a page hosted in this process is loading).
+//
+// Additional functions to let the browser process query the performance
+// scenarios for a child process are in
+// components/performance_manager/public/scenarios/process_performance_scenarios.h.
 
-// Scenarios indicating a page is loading.
+// Scenarios indicating a page is loading, ordered from least-specific to
+// most-specific.
 enum class LoadingScenario {
   // No pages covered by the scenario are loading.
   kNoPageLoading = 0,
-  // The focused page is loading. Implies the page is also visible.
-  kFocusedPageLoading,
-  // The focused page (if any) is not loading, but a visible page is loading.
-  kVisiblePageLoading,
   // No visible pages are loading, but a non-visible page is.
   kBackgroundPageLoading,
+  // The focused page (if any) is not loading, but a visible page is.
+  kVisiblePageLoading,
+  // The focused page is loading. Implies the page is also visible.
+  kFocusedPageLoading,
+  kMax = kFocusedPageLoading,
 };
-using LoadingScenarios =
-    base::EnumSet<LoadingScenario,
-                  /*Min=*/LoadingScenario::kNoPageLoading,
-                  /*Max=*/LoadingScenario::kBackgroundPageLoading>;
+using LoadingScenarios = base::EnumSet<LoadingScenario,
+                                       LoadingScenario::kNoPageLoading,
+                                       LoadingScenario::kMax>;
 
-// Scenarios indicating user input.
+// Scenarios indicating user input, ordered from least-specific to
+// most-specific.
 enum class InputScenario {
   // No input was detected.
   kNoInput = 0,
-  // The user is typing in the focused page.
+  // The user is typing in a focused page. There were no recent taps or scrolls.
   kTyping,
+  // The user tapped a focused page. There may be recent typing, but not
+  // scrolls.
+  kTap,
+  // The user is scrolling in a focused page. There may also be recent typing or
+  // taps.
+  kScroll,
+  kMax = kScroll,
 };
-using InputScenarios = base::EnumSet<InputScenario,
-                                     /*Min=*/InputScenario::kNoInput,
-                                     /*Max=*/InputScenario::kTyping>;
+using InputScenarios =
+    base::EnumSet<InputScenario, InputScenario::kNoInput, InputScenario::kMax>;
 
 // The scope that a scenario covers.
 enum class ScenarioScope {
@@ -85,6 +95,16 @@ struct COMPONENT_EXPORT(SCENARIO_API) ScenarioPattern {
   // Set of InputScenarios that match the pattern. If this is empty, any
   // InputScenario matches.
   InputScenarios input;
+
+  // Comparators and hashers.
+
+  friend bool operator==(ScenarioPattern a, ScenarioPattern b) = default;
+  friend auto operator<=>(ScenarioPattern a, ScenarioPattern b) = default;
+
+  template <typename H>
+  friend H AbslHashValue(H h, ScenarioPattern s) {
+    return H::combine(std::move(h), s.loading, s.input);
+  }
 };
 
 // A ScenarioPattern for a scope that's considered "idle": only background pages
@@ -96,24 +116,6 @@ inline constexpr ScenarioPattern kDefaultIdleScenarios{
                 LoadingScenario::kBackgroundPageLoading},
     .input = {InputScenario::kNoInput},
 };
-
-// The full scenario state to copy over shared memory.
-// TODO(crbug.com/365586676): Move this to a separate header since it's part of
-// the plumbing, not the general API.
-#pragma clang diagnostic push
-#pragma clang diagnostic error "-Wpadded"
-struct COMPONENT_EXPORT(SCENARIO_API) ScenarioState {
-  base::subtle::SharedAtomic<LoadingScenario> loading;
-  base::subtle::SharedAtomic<InputScenario> input;
-};
-#pragma clang diagnostic pop
-
-// Pointers to the mapped shared memory are held in thread-safe scoped_refptr's.
-// The memory will be unmapped when the final reference is dropped. Functions
-// that copy values out of the shared memory must hold a reference to it so that
-// it's not unmapped while reading.
-using RefCountedScenarioMapping = base::RefCountedData<
-    base::StructuredSharedMemory<ScenarioState>::ReadOnlyMapping>;
 
 // A wrapper around a std::atomic<T> that's stored in shared memory. The wrapper
 // prevents the shared memory from being unmapped while a caller has a reference
@@ -150,30 +152,6 @@ class SharedAtomicRef {
 
   // A reference into `mapping_`, not PartitionAlloc memory.
   RAW_PTR_EXCLUSION const std::atomic<T>& wrapped_atomic_;
-};
-
-// A scoped object that maps shared memory for the scenario state into the
-// current process as long as it exists.
-// TODO(crbug.com/365586676): Move this to a separate header since it's part of
-// the plumbing, not the general API.
-class COMPONENT_EXPORT(SCENARIO_API) ScopedReadOnlyScenarioMemory {
- public:
-  // Maps `region` into the current process, as a read-only view of the memory
-  // holding the scenario state for `scope`.
-  ScopedReadOnlyScenarioMemory(ScenarioScope scope,
-                               base::ReadOnlySharedMemoryRegion region);
-  ~ScopedReadOnlyScenarioMemory();
-
-  ScopedReadOnlyScenarioMemory(const ScopedReadOnlyScenarioMemory&) = delete;
-  ScopedReadOnlyScenarioMemory& operator=(const ScopedReadOnlyScenarioMemory&) =
-      delete;
-
-  // Returns a pointer to the mapping registered for `scope`, if any.
-  static scoped_refptr<RefCountedScenarioMapping> GetMappingForTesting(
-      ScenarioScope scope);
-
- private:
-  ScenarioScope scope_;
 };
 
 // Functions to query performance scenarios.

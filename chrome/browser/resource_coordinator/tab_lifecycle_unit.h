@@ -5,14 +5,15 @@
 #ifndef CHROME_BROWSER_RESOURCE_COORDINATOR_TAB_LIFECYCLE_UNIT_H_
 #define CHROME_BROWSER_RESOURCE_COORDINATOR_TAB_LIFECYCLE_UNIT_H_
 
+#include "base/byte_size.h"
+#include "base/callback_list.h"
 #include "base/memory/raw_ptr.h"
-#include "base/observer_list.h"
 #include "base/time/time.h"
 #include "chrome/browser/resource_coordinator/lifecycle_unit_base.h"
 #include "chrome/browser/resource_coordinator/tab_lifecycle_unit_external.h"
 #include "chrome/browser/resource_coordinator/tab_lifecycle_unit_source.h"
 #include "chrome/browser/resource_coordinator/time.h"
-#include "components/performance_manager/public/mojom/coordination_unit.mojom-forward.h"
+#include "components/performance_manager/public/mojom/lifecycle.mojom-forward.h"
 #include "content/public/browser/visibility.h"
 #include "content/public/browser/web_contents_observer.h"
 
@@ -23,16 +24,6 @@ class WebContents;
 }  // namespace content
 
 namespace resource_coordinator {
-
-class TabLifecycleObserver;
-
-// Time during which backgrounded tabs are protected from urgent discarding
-// (not on ChromeOS).
-inline constexpr base::TimeDelta kBackgroundUrgentProtectionTime =
-    base::Minutes(10);
-
-// Time during which a tab cannot be discarded after having played audio.
-inline constexpr base::TimeDelta kTabAudioProtectionTime = base::Minutes(1);
 
 // Represents a tab.
 class TabLifecycleUnitSource::TabLifecycleUnit
@@ -46,12 +37,9 @@ class TabLifecycleUnitSource::TabLifecycleUnit
   // constructor is invoked. |web_contents| and |tab_strip_model| are the
   // WebContents and TabStripModel associated with this tab. The |source| is
   // optional and may be nullptr.
-  TabLifecycleUnit(
-      TabLifecycleUnitSource* source,
-      base::ObserverList<TabLifecycleObserver>::UncheckedAndDanglingUntriaged*
-          observers,
-      content::WebContents* web_contents,
-      TabStripModel* tab_strip_model);
+  TabLifecycleUnit(TabLifecycleUnitSource* source,
+                   content::WebContents* web_contents,
+                   TabStripModel* tab_strip_model);
 
   TabLifecycleUnit(const TabLifecycleUnit&) = delete;
   TabLifecycleUnit& operator=(const TabLifecycleUnit&) = delete;
@@ -69,7 +57,8 @@ class TabLifecycleUnitSource::TabLifecycleUnit
   // content is displayed).
   void SetWebContents(content::WebContents* web_contents);
 
-  // Invoked when the tab gains or loses focus.
+  // Invoked when the tab gains or loses focus. This will attempt to load the
+  // tab if it was discarded, and focus it if that load was successful.
   void SetFocused(bool focused);
 
   // Sets the "recently audible" state of this tab. A tab is "recently audible"
@@ -85,12 +74,8 @@ class TabLifecycleUnitSource::TabLifecycleUnit
   // LifecycleUnit:
   TabLifecycleUnitExternal* AsTabLifecycleUnitExternal() override;
   base::TimeTicks GetLastFocusedTimeTicks() const override;
-  SortKey GetSortKey() const override;
-  content::Visibility GetVisibility() const override;
   LifecycleUnitLoadingState GetLoadingState() const override;
   bool Load() override;
-  bool CanDiscard(LifecycleUnitDiscardReason reason,
-                  DecisionDetails* decision_details) const override;
   LifecycleUnitDiscardReason GetDiscardReason() const override;
   bool Discard(LifecycleUnitDiscardReason discard_reason,
                uint64_t memory_footprint_estimate) override;
@@ -103,12 +88,20 @@ class TabLifecycleUnitSource::TabLifecycleUnit
                   uint64_t memory_footprint_estimate) override;
   mojom::LifecycleUnitState GetTabState() const override;
 
+  // content::WebContentsObserver:
+  void DidStartLoading() override;
+  void DidStopLoading() override;
+
   // LifecycleUnit and TabLifecycleUnitExternal:
   base::Time GetLastFocusedTime() const override;
 
   base::TimeTicks GetWallTimeWhenHiddenForTesting() const {
     return wall_time_when_hidden_;
   }
+
+  // Attempt to load the tab if it is discarded. Returns whether the load was
+  // successful. This doesn't focus the loaded tab.
+  bool MaybeLoad();
 
  protected:
   friend class TabManagerTest;
@@ -118,57 +111,41 @@ class TabLifecycleUnitSource::TabLifecycleUnit
   friend class TabLifecycleUnitSource;
 
  private:
-  void RecomputeLifecycleUnitState(LifecycleUnitStateChangeReason reason);
+  void RecomputeLifecycleUnitState();
 
   // Same as GetSource, but cast to the most derived type.
   TabLifecycleUnitSource* GetTabSource() const;
 
-  // Updates |decision_details| based on media usage by the tab.
-  void CheckMediaUsage(DecisionDetails* decision_details) const;
-
   // Creates or updates the existing PreDiscardResourceUsage tab helper for the
   // tab's `web_contents` with `discard_reason` and
-  // `tab_resident_set_size_estimate`.
+  // `tab_resident_set_size_estimate`. `tab_resident_set_size_estimate` is in
+  // KiB.
   void UpdatePreDiscardResourceUsage(content::WebContents* web_contents,
                                      LifecycleUnitDiscardReason discard_reason,
                                      uint64_t tab_resident_set_size_estimate);
 
   // Finishes a tab discard, invoked by Discard().
+  // `tab_resident_set_size_estimate` is in KiB.
   void FinishDiscard(LifecycleUnitDiscardReason discard_reason,
                      uint64_t tab_resident_set_size_estimate);
 
   // Finishes a tab discard and preserves the associated web contents. Used only
-  // when kWebContentsDiscard is enabled.
+  // when kWebContentsDiscard is enabled. `tab_resident_set_size_estimate` is in
+  // KiB.
   void FinishDiscardAndPreserveWebContents(
       LifecycleUnitDiscardReason discard_reason,
-      uint64_t tab_resident_set_size_estimate);
-
-  // Attempts to fast kill the process hosting the main frame of `web_contents`
-  // if only hosting the main frame.
-  void AttemptFastKillForDiscard(content::WebContents* web_contents,
-                                 LifecycleUnitDiscardReason discard_reason);
-
-  // LifecycleUnitBase:
-  void OnLifecycleUnitStateChanged(
-      LifecycleUnitState last_state,
-      LifecycleUnitStateChangeReason reason) override;
+      uint64_t tab_resident_set_size_estimate,
+      base::TimeTicks discard_start_time);
 
   // content::WebContentsObserver:
-  void DidStartLoading() override;
   void OnVisibilityChanged(content::Visibility visibility) override;
 
-  // Updates |decision_details| based on device usage by the tab (USB or
-  // Bluetooth).
-  void CheckDeviceUsage(DecisionDetails* decision_details) const;
-
-  // List of observers to notify when the discarded state or the auto-
-  // discardable state of this tab changes.
-  raw_ptr<
-      base::ObserverList<TabLifecycleObserver>::UncheckedAndDanglingUntriaged>
-      observers_;
+  // Helper to record metrics when a tab transitions from Discarded -> Loading.
+  // Called from DidStartLoading (background) or MaybeLoad (foreground).
+  void RecordDiscardReloadMetrics();
 
   // TabStripModel to which this tab belongs.
-  raw_ptr<TabStripModel, DanglingUntriaged> tab_strip_model_;
+  raw_ptr<TabStripModel> tab_strip_model_;
 
   // Last time ticks at which this tab was focused, or TimeTicks::Max() if it is
   // currently focused. For tabs that aren't currently focused this is
@@ -211,6 +188,21 @@ class TabLifecycleUnitSource::TabLifecycleUnit
   performance_manager::mojom::LifecycleState page_lifecycle_state_ =
       performance_manager::mojom::LifecycleState::kRunning;
   bool is_discarded_ = false;
+
+  // The timestamp when the tab was last discarded.
+  base::TimeTicks last_discard_time_;
+
+  // The estimated memory saved during the last discard.
+  base::ByteSize last_discard_memory_estimate_;
+
+  // Timestamps to measure the efficiency of the reload.
+  base::TimeTicks reload_start_time_;
+
+  // Flag to indicate we are currently reloading a previously discarded tab.
+  // This ensures we don't log metrics for normal navigations.
+  bool is_reloading_from_discard_ = false;
+
+  base::CallbackListSubscription recently_audible_subscription_;
 };
 
 }  // namespace resource_coordinator

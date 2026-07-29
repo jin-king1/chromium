@@ -26,6 +26,7 @@ namespace ui {
 
 class WaylandBufferHandle;
 class WaylandConnection;
+class WaylandFrameTimingObserver;
 class WaylandWindow;
 class WaylandSurface;
 class WaylandSubsurface;
@@ -62,7 +63,7 @@ struct WaylandFrame {
   friend class WaylandFrameManagerTest;
 
   uint32_t frame_id;
-  raw_ptr<WaylandSurface, DanglingUntriaged> root_surface;
+  raw_ptr<WaylandSurface> root_surface;
   wl::WaylandOverlayConfig root_config;
   base::circular_deque<std::pair<WaylandSubsurface*, wl::WaylandOverlayConfig>>
       subsurfaces_to_overlays;
@@ -144,6 +145,11 @@ class WaylandFrameManager {
 
   static base::TimeDelta GetPresentationFlushTimerDurationForTesting();
 
+  void AddFrameTimingObserver(WaylandFrameTimingObserver* observer);
+  void RemoveFrameTimingObserver(WaylandFrameTimingObserver* observer);
+
+  void RequestFrameCallback();
+
  private:
   friend class WaylandFrameManagerTest;
 
@@ -187,10 +193,13 @@ class WaylandFrameManager {
   // presentation feedback info.
   void ClearProcessedSubmittedFrames();
 
+  // TODO(crbug.com/422765424): These 2 functions can be merged into one.
   void OnExplicitBufferRelease(WaylandSurface* surface,
                                wl_buffer* wl_buffer,
                                base::ScopedFD fence);
-  void OnWlBufferRelease(WaylandSurface* surface, wl_buffer* wl_buffer);
+  void OnWlBufferRelease(WaylandSurface* surface,
+                         wl_buffer* wl_buffer,
+                         bool is_destruct);
 
   // wl_callback_listener callbacks:
   static void OnFrameDone(void* data, wl_callback* callback, uint32_t time);
@@ -270,7 +279,7 @@ class WaylandFrameManager {
   // This is set when that is detected and a fallback rendering can be used
   // during tab capture without relying on frame callbacks. See
   // |should_skip_frame_callbacks_| below.
-  int frame_callback_freeze_detected_ = false;
+  bool frame_callback_freeze_detected_ = false;
 
   // Indicates if fallback rendering should be used by not relying on frame
   // callbacks to drive playback when |frame_callback_freeze_detected_| is true
@@ -286,6 +295,12 @@ class WaylandFrameManager {
   // suspended state which may be sent a few seconds after the window gets
   // occluded, as is the case in mutter.
   bool should_ack_swap_without_commit_ = false;
+
+  // Frame callback without a buffer commit, used to maintain frame pacing
+  // for the begin frame source when viz has no damage.
+  wl::Object<wl_callback> no_damage_frame_callback_;
+
+  raw_ptr<WaylandFrameTimingObserver> frame_timing_observer_ = nullptr;
 
   base::WeakPtrFactory<WaylandFrameManager> weak_factory_;
 };

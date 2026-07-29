@@ -6,12 +6,18 @@
 
 namespace data_controls {
 
-BASE_FEATURE(kEnableScreenshotProtection,
-             "EnableScreenshotProtection",
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
+#if BUILDFLAG(IS_ANDROID)
 BASE_FEATURE(kEnableClipboardDataControlsAndroid,
-             "EnableClipboardDataControlsAndroid",
+             base::FEATURE_ENABLED_BY_DEFAULT);
+#endif
+
+BASE_FEATURE(kEnableDownloadDataControls, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kDataControlsSearchWith, base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kDataControlsGlic, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kDataControlsUrlRegexAndSizeAttributes,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 }  // namespace data_controls

@@ -38,6 +38,8 @@ void TestPageBroadcast::ActivatePrerenderedPage(
   std::move(callback).Run();
 }
 
+void TestPageBroadcast::UpgradePrerenderUntilScriptToFullPrerender() {}
+
 void TestPageBroadcast::UpdateWebPreferences(
     const blink::web_pref::WebPreferences& preferences) {}
 
@@ -56,16 +58,17 @@ void TestPageBroadcast::CreateRemoteMainFrame(
     blink::mojom::FrameReplicationStatePtr replication_state,
     bool is_loading,
     const base::UnguessableToken& devtools_frame_token,
+    const std::optional<base::UnguessableToken>& navigation_metrics_token,
     blink::mojom::RemoteFrameInterfacesFromBrowserPtr remote_frame_interfaces,
     blink::mojom::RemoteMainFrameInterfacesPtr remote_main_frame_interfaces) {}
 
 void TestPageBroadcast::UpdatePageBrowsingContextGroup(
-    const blink::BrowsingContextGroupInfo& browsing_context_group_info) {}
-
-void TestPageBroadcast::SetPageAttributionSupport(
-    network::mojom::AttributionSupport support) {}
+    const base::UnguessableToken& browsing_context_group_token) {}
 
 void TestPageBroadcast::UpdateColorProviders(
     const blink::ColorProviderColorMaps& color_provider_colors) {}
+
+void TestPageBroadcast::SetSupportsDraggableRegions(
+    bool supports_draggable_regions) {}
 
 }  // namespace content

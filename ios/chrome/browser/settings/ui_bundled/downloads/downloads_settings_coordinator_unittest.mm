@@ -5,9 +5,12 @@
 #import "ios/chrome/browser/settings/ui_bundled/downloads/downloads_settings_coordinator.h"
 
 #import "base/apple/foundation_util.h"
-#import "base/test/task_environment.h"
 #import "components/signin/public/identity_manager/identity_test_environment.h"
+#import "components/test/ios/test_utils.h"
+#import "ios/chrome/browser/authentication/add_account_signin/coordinator/add_account_signin_coordinator.h"
+#import "ios/chrome/browser/authentication/ui_bundled/continuation.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_constants.h"
+#import "ios/chrome/browser/authentication/ui_bundled/signin/signin_coordinator.h"
 #import "ios/chrome/browser/photos/model/photos_service_factory.h"
 #import "ios/chrome/browser/settings/ui_bundled/downloads/downloads_settings_table_view_controller.h"
 #import "ios/chrome/browser/settings/ui_bundled/downloads/downloads_settings_table_view_controller_action_delegate.h"
@@ -18,8 +21,8 @@
 #import "ios/chrome/browser/settings/ui_bundled/downloads/save_to_photos/save_to_photos_settings_mediator.h"
 #import "ios/chrome/browser/shared/model/browser/test/test_browser.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
-#import "ios/chrome/browser/shared/public/commands/application_commands.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
+#import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/shared/public/commands/settings_commands.h"
 #import "ios/chrome/browser/shared/public/commands/show_signin_command.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service_factory.h"
@@ -30,6 +33,7 @@
 #import "ios/chrome/browser/signin/model/system_identity.h"
 #import "ios/chrome/test/fakes/fake_ui_navigation_controller.h"
 #import "ios/chrome/test/fakes/fake_ui_view_controller.h"
+#import "ios/web/public/test/web_task_environment.h"
 #import "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
 #import "third_party/ocmock/gtest_support.h"
@@ -52,11 +56,6 @@ class DownloadsSettingsCoordinatorTest : public PlatformTest {
 
     base_navigation_controller_ = [[FakeUINavigationController alloc] init];
 
-    mock_application_commands_handler_ =
-        OCMStrictProtocolMock(@protocol(ApplicationCommands));
-    [browser_->GetCommandDispatcher()
-        startDispatchingToTarget:mock_application_commands_handler_
-                     forProtocol:@protocol(ApplicationCommands)];
     mock_settings_commands_handler_ =
         OCMStrictProtocolMock(@protocol(SettingsCommands));
     [browser_->GetCommandDispatcher()
@@ -65,10 +64,10 @@ class DownloadsSettingsCoordinatorTest : public PlatformTest {
   }
 
   void TearDown() final {
-    [mock_save_to_photos_settings_mediator_ stopMocking];
-    [mock_downloads_settings_table_view_controller_ stopMocking];
-    [mock_save_to_photos_settings_account_selection_view_controller_
-        stopMocking];
+    EXPECT_OCMOCK_VERIFY(mock_save_to_photos_settings_mediator_);
+    EXPECT_OCMOCK_VERIFY(mock_downloads_settings_table_view_controller_);
+    EXPECT_OCMOCK_VERIFY(
+        mock_save_to_photos_settings_account_selection_view_controller_);
     PlatformTest::TearDown();
   }
 
@@ -135,7 +134,7 @@ class DownloadsSettingsCoordinatorTest : public PlatformTest {
     }
   }
 
-  base::test::TaskEnvironment task_environment_;
+  web::WebTaskEnvironment task_environment_;
   std::unique_ptr<TestProfileIOS> profile_;
   std::unique_ptr<TestBrowser> browser_;
   FakeUINavigationController* base_navigation_controller_;
@@ -143,7 +142,6 @@ class DownloadsSettingsCoordinatorTest : public PlatformTest {
   id mock_save_to_photos_settings_mediator_;
   id mock_downloads_settings_table_view_controller_;
   id mock_save_to_photos_settings_account_selection_view_controller_;
-  id mock_application_commands_handler_;
   id mock_settings_commands_handler_;
 };
 
@@ -311,27 +309,31 @@ TEST_F(DownloadsSettingsCoordinatorTest,
   CreateMockDownloadsSettingsTableViewControllerStubbed(true);
   CreateMockSaveToPhotosSettingsAccountSelectionViewControllerStubbed(true);
   [coordinator start];
+  AddAccountSigninCoordinator* signin_coordinator_mock =
+      OCMClassMock([AddAccountSigninCoordinator class]);
+  OCMExpect([(id)signin_coordinator_mock alloc])
+      .andReturn(signin_coordinator_mock);
+  OCMExpect([signin_coordinator_mock
+                initWithBaseViewController:[OCMArg any]
+                                   browser:browser_.get()
+                              contextStyle:SigninContextStyle::kDefault
+                               accessPoint:signin_metrics::AccessPoint::
+                                               kSaveToPhotosIos
+                               promoAction:signin_metrics::PromoAction::
+                                               PROMO_ACTION_NO_SIGNIN_PROMO
+                              signinIntent:AddAccountSigninIntent::kAddAccount
+                            prefilledEmail:nil
+                      continuationProvider:DoNothingContinuationProvider()])
+      .ignoringNonObjectArgs()
+      .andReturn(signin_coordinator_mock);
 
   // Expect that a ShowSigninCommand is dispatched to show the Add account view
   // when -saveToPhotosSettingsAccountSelectionViewControllerAddAccount is
   // called.
   __block SigninCoordinatorCompletionCallback show_signin_callback = nil;
-  OCMExpect([mock_application_commands_handler_
-              showSignin:[OCMArg checkWithBlock:^BOOL(
-                                     ShowSigninCommand* command) {
-                EXPECT_TRUE(command.completion);
-                show_signin_callback = command.completion;
-                EXPECT_EQ(AuthenticationOperation::kAddAccount,
-                          command.operation);
-                EXPECT_FALSE(command.identity);
-                EXPECT_EQ(signin_metrics::AccessPoint::kSaveToPhotosIos,
-                          command.accessPoint);
-                EXPECT_EQ(
-                    signin_metrics::PromoAction::PROMO_ACTION_NO_SIGNIN_PROMO,
-                    command.promoAction);
-                return YES;
-              }]
-      baseViewController:base_navigation_controller_]);
+
+  OCMExpect([signin_coordinator_mock
+      setSigninCompletion:AssignValueToVariable(show_signin_callback)]);
 
   // Call the coordinator through the action delegate protocol and verify the
   // ShowSigninCommand was dispatched.
@@ -343,16 +345,18 @@ TEST_F(DownloadsSettingsCoordinatorTest,
       id<SaveToPhotosSettingsAccountSelectionViewControllerActionDelegate>>(
       coordinator)
       saveToPhotosSettingsAccountSelectionViewControllerAddAccount];
-  EXPECT_OCMOCK_VERIFY(mock_application_commands_handler_);
 
   // Expect that the selected identity Gaia ID is set to the Gaia ID of the
   // identity that was just added.
   id<SystemIdentity> added_identity = [FakeSystemIdentity fakeIdentity1];
   ASSERT_TRUE(show_signin_callback);
   OCMExpect([mock_save_to_photos_settings_mediator_
-      setSelectedIdentityGaiaID:added_identity.gaiaID]);
-  show_signin_callback(SigninCoordinatorResultSuccess, added_identity);
+                setSelectedIdentityGaiaID:ios::OCM::AnyPointer<const GaiaId>()])
+      .andCompareObjectAtIndex(added_identity.gaiaId, 0);
+  show_signin_callback(signin_coordinator_mock, SigninCoordinatorResultSuccess,
+                       added_identity);
   EXPECT_OCMOCK_VERIFY(mock_save_to_photos_settings_mediator_);
 
   [coordinator stop];
+  EXPECT_OCMOCK_VERIFY((id)signin_coordinator_mock);
 }

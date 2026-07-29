@@ -4,10 +4,8 @@
 
 #include "chrome/browser/ui/views/autofill/payments/payments_window_user_consent_dialog_view.h"
 
-#include "base/functional/callback_forward.h"
 #include "base/notreached.h"
 #include "chrome/browser/ui/autofill/payments/payments_view_factory.h"
-#include "chrome/browser/ui/views/autofill/payments/dialog_view_ids.h"
 #include "chrome/browser/ui/views/autofill/payments/payments_view_util.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/chrome_typography.h"
@@ -17,7 +15,6 @@
 #include "content/public/browser/web_contents.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
-#include "ui/base/ui_base_types.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/bubble/bubble_frame_view.h"
 #include "ui/views/controls/label.h"
@@ -80,6 +77,7 @@ PaymentsWindowUserConsentDialogView::PaymentsWindowUserConsentDialogView(
       payments_window_user_consent_dialog_controller_->GetOkButtonLabel());
   SetShowCloseButton(false);
   RegisterWindowWillCloseCallback(
+      RegisterWillCloseCallbackPassKey(),
       base::BindOnce(&PaymentsWindowUserConsentDialogView::OnDialogClosing,
                      weak_ptr_factory_.GetWeakPtr()));
   SetModalType(ui::mojom::ModalType::kChild);

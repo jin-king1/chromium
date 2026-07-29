@@ -8,12 +8,12 @@ import static org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeBottomChinPr
 import static org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeBottomChinProperties.DIVIDER_COLOR;
 import static org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeBottomChinProperties.HAS_CONSTRAINT;
 import static org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeBottomChinProperties.HEIGHT;
+import static org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeBottomChinProperties.IS_VISIBLE;
 import static org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeBottomChinProperties.OFFSET_TAG;
 import static org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeBottomChinProperties.Y_OFFSET;
 import static org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeUtils.isBottomChinAllowed;
 
-import androidx.annotation.NonNull;
-
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.browser_controls.BottomControlsLayer;
 import org.chromium.chrome.browser.browser_controls.BottomControlsStacker;
 import org.chromium.chrome.browser.browser_controls.BottomControlsStacker.LayerScrollBehavior;
@@ -25,13 +25,16 @@ import org.chromium.chrome.browser.fullscreen.FullscreenOptions;
 import org.chromium.chrome.browser.layouts.LayoutManager;
 import org.chromium.chrome.browser.layouts.LayoutStateProvider;
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.components.browser_ui.edge_to_edge.EdgeToEdgeSupplier;
 import org.chromium.ui.KeyboardVisibilityDelegate;
+import org.chromium.ui.edge_to_edge.EdgeToEdgeSupplier;
+import org.chromium.ui.insets.InsetObserver;
 import org.chromium.ui.modelutil.PropertyModel;
 
+@NullMarked
 class EdgeToEdgeBottomChinMediator
         implements LayoutStateProvider.LayoutStateObserver,
                 KeyboardVisibilityDelegate.KeyboardVisibilityListener,
+                InsetObserver.WindowInsetObserver,
                 EdgeToEdgeSupplier.ChangeObserver,
                 FullscreenManager.Observer,
                 BottomControlsLayer {
@@ -40,15 +43,14 @@ class EdgeToEdgeBottomChinMediator
     /** The model for the bottom controls component that holds all of its view state. */
     private final PropertyModel mModel;
 
-    private int mEdgeToEdgeBottomInsetDp;
     private int mEdgeToEdgeBottomInsetPx;
     private boolean mIsDrawingToEdge;
     private boolean mIsPagedOptedIntoEdgeToEdge;
 
-    // The offset of the composited view in the renderer. When BCIV is enabled, this will usually
-    // not be equal to the property model's Y_OFFSET value, since the composited view will be moved
-    // by viz instead of the browser.
-    private int mRendererOffset;
+    // The offset of the composited view in the browser. When BCIV is enabled, this will usually
+    // not be equal to the offset in the renderer, since the composited view will be moved by viz
+    // instead of the browser.
+    private int mYOffset;
 
     private int mNavigationBarColor;
     private int mDividerColor;
@@ -60,13 +62,16 @@ class EdgeToEdgeBottomChinMediator
     private @LayerVisibility int mLatestLayerVisibility;
 
     private boolean mIsKeyboardVisible;
+    private int mKeyboardInset;
     private boolean mHasSafeAreaConstraint;
 
-    private final @NonNull KeyboardVisibilityDelegate mKeyboardVisibilityDelegate;
-    private final @NonNull LayoutManager mLayoutManager;
-    private final @NonNull EdgeToEdgeController mEdgeToEdgeController;
-    private final @NonNull BottomControlsStacker mBottomControlsStacker;
-    private final @NonNull FullscreenManager mFullscreenManager;
+    private final KeyboardVisibilityDelegate mKeyboardVisibilityDelegate;
+    private final InsetObserver mInsetObserver;
+    private final LayoutManager mLayoutManager;
+    private final EdgeToEdgeController mEdgeToEdgeController;
+    private final BottomControlsStacker mBottomControlsStacker;
+    private final FullscreenManager mFullscreenManager;
+    private final boolean mDefaultVisibility;
     private final boolean mIsConstraintChinScrollableWhenStacking;
 
     /**
@@ -76,31 +81,37 @@ class EdgeToEdgeBottomChinMediator
      *     bottom chin component.
      * @param keyboardVisibilityDelegate A {@link KeyboardVisibilityDelegate} for watching keyboard
      *     visibility events.
+     * @param insetObserver The {@link InsetObserver} for checking IME insets.
      * @param layoutManager The {@link LayoutManager} for observing active layout type.
      * @param edgeToEdgeController The {@link EdgeToEdgeController} for observing the edge-to-edge
      *     status and window bottom insets.
      * @param bottomControlsStacker The {@link BottomControlsStacker} for observing and changing
      *     browser controls heights.
      * @param fullscreenManager The {@link FullscreenManager} for provide the fullscreen state.
+     * @param defaultVisibility Whether the bottom chin should be visible by default.
      */
     EdgeToEdgeBottomChinMediator(
             PropertyModel model,
-            @NonNull KeyboardVisibilityDelegate keyboardVisibilityDelegate,
-            @NonNull LayoutManager layoutManager,
-            @NonNull EdgeToEdgeController edgeToEdgeController,
-            @NonNull BottomControlsStacker bottomControlsStacker,
-            @NonNull FullscreenManager fullscreenManager) {
+            KeyboardVisibilityDelegate keyboardVisibilityDelegate,
+            InsetObserver insetObserver,
+            LayoutManager layoutManager,
+            EdgeToEdgeController edgeToEdgeController,
+            BottomControlsStacker bottomControlsStacker,
+            FullscreenManager fullscreenManager,
+            boolean defaultVisibility) {
         mModel = model;
         mKeyboardVisibilityDelegate = keyboardVisibilityDelegate;
+        mInsetObserver = insetObserver;
         mLayoutManager = layoutManager;
         mEdgeToEdgeController = edgeToEdgeController;
         mBottomControlsStacker = bottomControlsStacker;
         mFullscreenManager = fullscreenManager;
-        mIsConstraintChinScrollableWhenStacking =
-                EdgeToEdgeUtils.isConstraintBottomChinScrollableWhenStacking();
+        mDefaultVisibility = defaultVisibility;
+        mIsConstraintChinScrollableWhenStacking = true;
 
         // Add observers.
         mKeyboardVisibilityDelegate.addKeyboardVisibilityListener(this);
+        mInsetObserver.addObserver(this);
         mLayoutManager.addObserver(this);
         mEdgeToEdgeController.registerObserver(this);
         mBottomControlsStacker.addLayer(this);
@@ -112,17 +123,21 @@ class EdgeToEdgeBottomChinMediator
                 mEdgeToEdgeController.getBottomInsetPx(),
                 mEdgeToEdgeController.isDrawingToEdge(),
                 mEdgeToEdgeController.isPageOptedIntoEdgeToEdge());
+        if (!mDefaultVisibility) mModel.set(Y_OFFSET, mModel.get(HEIGHT));
+        mModel.set(IS_VISIBLE, isVisible());
         updateHeightAndVisibility();
     }
 
     void destroy() {
         assert mKeyboardVisibilityDelegate != null;
+        assert mInsetObserver != null;
         assert mLayoutManager != null;
         assert mEdgeToEdgeController != null;
         assert mBottomControlsStacker != null;
         assert mFullscreenManager != null;
 
         mKeyboardVisibilityDelegate.removeKeyboardVisibilityListener(this);
+        mInsetObserver.removeObserver(this);
         mLayoutManager.removeObserver(this);
         mEdgeToEdgeController.unregisterObserver(this);
         mBottomControlsStacker.removeLayer(this);
@@ -130,7 +145,13 @@ class EdgeToEdgeBottomChinMediator
     }
 
     private boolean isVisible() {
-        return mRendererOffset < mModel.get(HEIGHT);
+        // This assumes the chin is at the very bottom, or all layers below the chin are scrollable.
+        if (mModel.get(OFFSET_TAG) != null) {
+            return mBottomControlsStacker.getBrowserControls().getBottomControlOffset()
+                    < mModel.get(HEIGHT);
+        } else {
+            return mYOffset < mModel.get(HEIGHT);
+        }
     }
 
     /** Change the color of the bottom chin. */
@@ -159,18 +180,21 @@ class EdgeToEdgeBottomChinMediator
      */
     private void updateHeightAndVisibility() {
         int newHeight = mEdgeToEdgeBottomInsetPx;
+        boolean isKeyboardVisible = mIsKeyboardVisible && mKeyboardInset > 0;
         boolean newVisibility =
                 mIsDrawingToEdge
                         && isBottomChinAllowed(
-                                mLayoutManager.getActiveLayoutType(), mEdgeToEdgeBottomInsetDp)
+                                mLayoutManager.getActiveLayoutType(), mEdgeToEdgeBottomInsetPx)
                         && !mFullscreenManager.getPersistentFullscreenMode()
-                        && !mIsKeyboardVisible;
+                        && !isKeyboardVisible;
 
         boolean heightChanged = mModel.get(HEIGHT) != newHeight;
         boolean visibilityChanged = mModel.get(CAN_SHOW) != newVisibility;
 
         if (heightChanged) mModel.set(HEIGHT, newHeight);
         if (visibilityChanged) mModel.set(CAN_SHOW, newVisibility);
+
+        mModel.set(IS_VISIBLE, isVisible());
 
         boolean layerVisibilityChanged = mLatestLayerVisibility != getLayerVisibility();
         mLatestLayerVisibility = getLayerVisibility();
@@ -192,14 +216,13 @@ class EdgeToEdgeBottomChinMediator
     @Override
     public void onToEdgeChange(
             int bottomInset, boolean isDrawingToEdge, boolean isPageOptInToEdge) {
-        if (mEdgeToEdgeBottomInsetDp == bottomInset
+        if (mEdgeToEdgeBottomInsetPx == bottomInset
                 && mIsDrawingToEdge == isDrawingToEdge
                 && mIsPagedOptedIntoEdgeToEdge == isPageOptInToEdge) {
             return;
         }
 
-        mEdgeToEdgeBottomInsetDp = bottomInset;
-        mEdgeToEdgeBottomInsetPx = mEdgeToEdgeController.getSystemBottomInsetPx();
+        mEdgeToEdgeBottomInsetPx = bottomInset;
         mIsDrawingToEdge = isDrawingToEdge;
         mIsPagedOptedIntoEdgeToEdge = isPageOptInToEdge;
         updateHeightAndVisibility();
@@ -220,6 +243,14 @@ class EdgeToEdgeBottomChinMediator
     @Override
     public void keyboardVisibilityChanged(boolean isShowing) {
         mIsKeyboardVisible = isShowing;
+        updateHeightAndVisibility();
+    }
+
+    // Inset
+
+    @Override
+    public void onKeyboardInsetChanged(int inset) {
+        mKeyboardInset = inset;
         updateHeightAndVisibility();
     }
 
@@ -258,16 +289,19 @@ class EdgeToEdgeBottomChinMediator
 
     @Override
     public @LayerVisibility int getLayerVisibility() {
-        return (mModel.get(CAN_SHOW) && !mIsPagedOptedIntoEdgeToEdge)
+        if (mIsKeyboardVisible && mKeyboardInset > 0) return LayerVisibility.HIDDEN;
+        if (mIsPagedOptedIntoEdgeToEdge || !mDefaultVisibility) {
+            return LayerVisibility.VISIBLE_IF_OTHERS_VISIBLE;
+        }
+
+        return mModel.get(CAN_SHOW)
                 ? LayerVisibility.VISIBLE
                 : LayerVisibility.VISIBLE_IF_OTHERS_VISIBLE;
     }
 
     @Override
     public void onBrowserControlsOffsetUpdate(int layerYOffset) {
-        assert BottomControlsStacker.isDispatchingYOffset();
-
-        mRendererOffset = layerYOffset;
+        mYOffset = layerYOffset;
 
         if (isVisible()) {
             // If the chin isn't visible, cache the color and update it when the chin is visible.
@@ -278,6 +312,7 @@ class EdgeToEdgeBottomChinMediator
             changeBottomChinDividerColor(mDividerColor);
         }
 
+        mModel.set(IS_VISIBLE, isVisible());
         mModel.set(Y_OFFSET, layerYOffset);
     }
 

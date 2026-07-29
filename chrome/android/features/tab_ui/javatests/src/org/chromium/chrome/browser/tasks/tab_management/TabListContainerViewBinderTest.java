@@ -12,7 +12,6 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -21,6 +20,9 @@ import static org.mockito.hamcrest.MockitoHamcrest.intThat;
 import android.app.Activity;
 import android.os.Build;
 import android.view.View;
+import android.widget.FrameLayout;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
 
 import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.recyclerview.widget.LinearLayoutManager;
@@ -36,11 +38,17 @@ import org.junit.runner.RunWith;
 import org.mockito.Spy;
 
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableNonNullObservableSupplier;
 import org.chromium.base.test.BaseActivityTestRule;
 import org.chromium.base.test.util.Batch;
+import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.MinAndroidSdkLevel;
+import org.chromium.chrome.R;
+import org.chromium.chrome.browser.tab_ui.TabListMode;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.R;
+import org.chromium.ui.base.DeviceFormFactor;
+import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
 import org.chromium.ui.test.util.BlankUiTestActivity;
@@ -53,36 +61,44 @@ public class TabListContainerViewBinderTest {
     public static BaseActivityTestRule<BlankUiTestActivity> sActivityTestRule =
             new BaseActivityTestRule<>(BlankUiTestActivity.class);
 
-    private static Activity sActivity;
-
     private PropertyModel mContainerModel;
     private PropertyModelChangeProcessor mMCP;
+    private TabListContainerViewBinder.ViewHolder mViewHolder;
     private TabListRecyclerView mRecyclerView;
+    private FrameLayout mContentView;
+    private ImageView mHairline;
+    private LinearLayout mSupplementaryContainer;
     @Spy private GridLayoutManager mGridLayoutManager;
     @Spy private LinearLayoutManager mLinearLayoutManager;
 
     @BeforeClass
     public static void setupSuite() {
-        sActivity = sActivityTestRule.launchActivity(null);
+        sActivityTestRule.launchActivity(null);
     }
 
     @Before
     public void setUp() throws Exception {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    sActivity.setContentView(R.layout.tab_list_recycler_view_layout);
-                    mRecyclerView = sActivity.findViewById(R.id.tab_list_recycler_view);
-                });
-
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
+                    Activity activity = sActivityTestRule.getActivity();
+                    activity.setContentView(R.layout.tab_switcher_pane_layout);
+                    mContentView = activity.findViewById(android.R.id.content);
+                    mRecyclerView =
+                            (TabListRecyclerView)
+                                    activity.getLayoutInflater()
+                                            .inflate(R.layout.tab_list_recycler_view_layout, null);
+                    ((FrameLayout) mContentView.findViewById(R.id.tab_list_container))
+                            .addView(mRecyclerView);
+                    mHairline = mContentView.findViewById(R.id.pane_hairline);
+                    mSupplementaryContainer = new LinearLayout(activity);
                     mContainerModel = new PropertyModel(TabListContainerProperties.ALL_KEYS);
+                    mViewHolder =
+                            new TabListContainerViewBinder.ViewHolder(
+                                    mRecyclerView, mHairline, mSupplementaryContainer);
 
                     mMCP =
                             PropertyModelChangeProcessor.create(
-                                    mContainerModel,
-                                    mRecyclerView,
-                                    TabListContainerViewBinder::bind);
+                                    mContainerModel, mViewHolder, TabListContainerViewBinder::bind);
                 });
     }
 
@@ -94,16 +110,9 @@ public class TabListContainerViewBinderTest {
     private void setUpGridLayoutManager() {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    mGridLayoutManager = spy(new GridLayoutManager(sActivity, 2));
+                    mGridLayoutManager =
+                            spy(new GridLayoutManager(sActivityTestRule.getActivity(), 2));
                     mRecyclerView.setLayoutManager(mGridLayoutManager);
-                });
-    }
-
-    private void setUpLinearLayoutManager() {
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    mLinearLayoutManager = spy(new LinearLayoutManager(sActivity));
-                    mRecyclerView.setLayoutManager(mLinearLayoutManager);
                 });
     }
 
@@ -144,12 +153,13 @@ public class TabListContainerViewBinderTest {
 
     @Test
     @MediumTest
+    @DisableIf.Device(DeviceFormFactor.DESKTOP) // crbug.com/376527109
     @UiThreadTest
     public void testSetInitialScrollIndex_Grid() {
         setUpGridLayoutManager();
         mRecyclerView.layout(0, 0, 100, 500);
 
-        mContainerModel.set(TabListContainerProperties.MODE, TabListCoordinator.TabListMode.GRID);
+        mContainerModel.set(TabListContainerProperties.MODE, TabListMode.GRID);
         mContainerModel.set(TabListContainerProperties.INITIAL_SCROLL_INDEX, 5);
 
         // Offset will be view height (500) / 2 - tab card height calculated from TabUtils / 2
@@ -157,39 +167,6 @@ public class TabListContainerViewBinderTest {
                 .scrollToPositionWithOffset(
                         eq(5),
                         intThat(allOf(lessThan(mRecyclerView.getHeight() / 2), greaterThan(0))));
-    }
-
-    @Test
-    @MediumTest
-    @UiThreadTest
-    public void testSetInitialScrollIndex_List_NoTabs() {
-        setUpLinearLayoutManager();
-        mRecyclerView.layout(0, 0, 100, 500);
-
-        mContainerModel.set(TabListContainerProperties.MODE, TabListCoordinator.TabListMode.LIST);
-        mContainerModel.set(TabListContainerProperties.INITIAL_SCROLL_INDEX, 7);
-
-        // Offset will be 0 to avoid divide by 0 with no tabs.
-        verify(mLinearLayoutManager, times(1)).scrollToPositionWithOffset(eq(7), eq(0));
-    }
-
-    @Test
-    @MediumTest
-    @UiThreadTest
-    public void testSetInitialScrollIndex_List_WithTabs() {
-        setUpLinearLayoutManager();
-        mRecyclerView.layout(0, 0, 100, 500);
-
-        doReturn(9).when(mLinearLayoutManager).getItemCount();
-        int range = mRecyclerView.computeVerticalScrollRange();
-
-        mContainerModel.set(TabListContainerProperties.MODE, TabListCoordinator.TabListMode.LIST);
-        mContainerModel.set(TabListContainerProperties.INITIAL_SCROLL_INDEX, 5);
-
-        // 9 Tabs at 900 scroll extent = 100 per tab. With view height of 500 the offset is
-        // 500 / 2 - range / 9 / 2 = result.
-        verify(mLinearLayoutManager, times(1))
-                .scrollToPositionWithOffset(eq(5), eq(250 - range / 9 / 2));
     }
 
     @Test
@@ -204,5 +181,159 @@ public class TabListContainerViewBinderTest {
         assertEquals(View.CONTENT_SENSITIVITY_SENSITIVE, mRecyclerView.getContentSensitivity());
         mContainerModel.set(TabListContainerProperties.IS_CONTENT_SENSITIVE, false);
         assertEquals(View.CONTENT_SENSITIVITY_NOT_SENSITIVE, mRecyclerView.getContentSensitivity());
+    }
+
+    @Test
+    @MediumTest
+    @UiThreadTest
+    public void testHairlineVisibility() {
+        SettableNonNullObservableSupplier<Boolean> isAnimatingSupplier =
+                ObservableSuppliers.createNonNull(false);
+        // The hairline is hidden when the pinned tab strip is animating.
+        mContainerModel.set(
+                TabListContainerProperties.IS_PINNED_TAB_STRIP_ANIMATING_SUPPLIER,
+                isAnimatingSupplier);
+        mContainerModel.set(TabListContainerProperties.IS_NON_ZERO_Y_OFFSET, true);
+        assertEquals(View.VISIBLE, mHairline.getVisibility());
+
+        // The hairline is not visible when IS_HAIRLINE_VISIBLE is false.
+        mContainerModel.set(TabListContainerProperties.IS_NON_ZERO_Y_OFFSET, false);
+        assertEquals(View.GONE, mHairline.getVisibility());
+
+        // When the animation starts, the hairline becomes invisible.
+        isAnimatingSupplier.set(true);
+
+        mContainerModel.set(TabListContainerProperties.IS_NON_ZERO_Y_OFFSET, true);
+        assertEquals(View.GONE, mHairline.getVisibility());
+
+        isAnimatingSupplier.set(false);
+        assertEquals(View.VISIBLE, mHairline.getVisibility());
+    }
+
+    @Test
+    @MediumTest
+    @UiThreadTest
+    public void testHairlineVisibility_InitialState() {
+        SettableNonNullObservableSupplier<Boolean> isAnimatingSupplier =
+                ObservableSuppliers.createNonNull(false);
+
+        // Initial state: not visible, not animating
+        mContainerModel.set(TabListContainerProperties.IS_NON_ZERO_Y_OFFSET, false);
+        mContainerModel.set(
+                TabListContainerProperties.IS_PINNED_TAB_STRIP_ANIMATING_SUPPLIER,
+                isAnimatingSupplier);
+        assertEquals(View.GONE, mHairline.getVisibility());
+
+        // Initial state: visible, not animating
+        mContainerModel = new PropertyModel(TabListContainerProperties.ALL_KEYS);
+        mViewHolder =
+                new TabListContainerViewBinder.ViewHolder(
+                        mRecyclerView, mHairline, mSupplementaryContainer);
+        mMCP =
+                PropertyModelChangeProcessor.create(
+                        mContainerModel, mViewHolder, TabListContainerViewBinder::bind);
+        mContainerModel.set(TabListContainerProperties.IS_NON_ZERO_Y_OFFSET, true);
+        mContainerModel.set(
+                TabListContainerProperties.IS_PINNED_TAB_STRIP_ANIMATING_SUPPLIER,
+                isAnimatingSupplier);
+        assertEquals(View.VISIBLE, mHairline.getVisibility());
+    }
+
+    @Test
+    @MediumTest
+    @UiThreadTest
+    public void testAnimateSupplementaryContainer() {
+        // Mock the necessary suppliers.
+        SettableNonNullObservableSupplier<Boolean> manualAnimationSupplier =
+                ObservableSuppliers.createNonNull(false);
+        SettableNonNullObservableSupplier<Boolean> hubVisibilitySupplier =
+                ObservableSuppliers.createNonNull(false);
+        SettableNonNullObservableSupplier<Float> fractionSupplier =
+                ObservableSuppliers.createNonNull(0f);
+
+        mContainerModel.set(
+                TabListContainerProperties.MANUAL_SEARCH_BOX_ANIMATION_SUPPLIER,
+                manualAnimationSupplier);
+        mContainerModel.set(
+                TabListContainerProperties.HUB_SEARCH_BOX_VISIBILITY_SUPPLIER,
+                hubVisibilitySupplier);
+        mContainerModel.set(
+                TabListContainerProperties.SEARCH_BOX_VISIBILITY_FRACTION_SUPPLIER,
+                fractionSupplier);
+
+        // Simulate animation to show search box.
+        TabListContainerProperties.SupplementaryContainerAnimationMetadata metadata =
+                new TabListContainerProperties.SupplementaryContainerAnimationMetadata(true, false);
+        mContainerModel.set(TabListContainerProperties.ANIMATE_SUPPLEMENTARY_CONTAINER, metadata);
+
+        // Verify initial animation state.
+        assertTrue(manualAnimationSupplier.get());
+        assertTrue(hubVisibilitySupplier.get());
+        assertEquals(0f, fractionSupplier.get(), 0.001f);
+
+        // Simulate animation end.
+        mViewHolder.mSupplementaryContainerAnimationHandler.forceFinishAnimation();
+        assertFalse(manualAnimationSupplier.get());
+        assertTrue(hubVisibilitySupplier.get());
+        assertEquals(1f, fractionSupplier.get(), 0.001f);
+
+        // Simulate animation to hide search box.
+        metadata =
+                new TabListContainerProperties.SupplementaryContainerAnimationMetadata(
+                        false, false);
+        mContainerModel.set(TabListContainerProperties.ANIMATE_SUPPLEMENTARY_CONTAINER, metadata);
+
+        // Verify initial animation state for hiding.
+        assertTrue(manualAnimationSupplier.get());
+        assertTrue(hubVisibilitySupplier.get());
+        assertEquals(1f, fractionSupplier.get(), 0.001f);
+
+        // Simulate animation end.
+        mViewHolder.mSupplementaryContainerAnimationHandler.forceFinishAnimation();
+        assertFalse(manualAnimationSupplier.get());
+        assertFalse(hubVisibilitySupplier.get());
+        assertEquals(0f, fractionSupplier.get(), 0.001f);
+
+        // Test forced update when already at target.
+        metadata =
+                new TabListContainerProperties.SupplementaryContainerAnimationMetadata(true, false);
+        float targetTranslationY =
+                mRecyclerView.getResources().getDimensionPixelSize(R.dimen.hub_search_box_gap);
+        mSupplementaryContainer.setTranslationY(targetTranslationY);
+        mContainerModel.set(TabListContainerProperties.ANIMATE_SUPPLEMENTARY_CONTAINER, metadata);
+
+        // No animation should start if not forced and already at target.
+        assertFalse(mViewHolder.mSupplementaryContainerAnimationHandler.isAnimationPresent());
+
+        metadata =
+                new TabListContainerProperties.SupplementaryContainerAnimationMetadata(
+                        true, true); // Forced to true
+        mContainerModel.set(TabListContainerProperties.ANIMATE_SUPPLEMENTARY_CONTAINER, metadata);
+
+        // Animation should start because it's forced.
+        assertTrue(mViewHolder.mSupplementaryContainerAnimationHandler.isAnimationPresent());
+    }
+
+    @Test
+    @MediumTest
+    @UiThreadTest
+    public void testAnimateSupplementaryContainer_NoContainer() {
+        PropertyModel containerModelWithoutSupplementaryContainer =
+                new PropertyModel(TabListContainerProperties.ALL_KEYS);
+        PropertyModelChangeProcessor<
+                        PropertyModel, TabListContainerViewBinder.ViewHolder, PropertyKey>
+                cpWithoutSupplementaryContainer =
+                        PropertyModelChangeProcessor.create(
+                                containerModelWithoutSupplementaryContainer,
+                                new TabListContainerViewBinder.ViewHolder(
+                                        mRecyclerView, mHairline, null),
+                                TabListContainerViewBinder::bind);
+
+        // Ensure no crash when supplementaryDataContainer is null.
+        TabListContainerProperties.SupplementaryContainerAnimationMetadata metadata =
+                new TabListContainerProperties.SupplementaryContainerAnimationMetadata(true, false);
+        containerModelWithoutSupplementaryContainer.set(
+                TabListContainerProperties.ANIMATE_SUPPLEMENTARY_CONTAINER, metadata);
+        cpWithoutSupplementaryContainer.destroy();
     }
 }

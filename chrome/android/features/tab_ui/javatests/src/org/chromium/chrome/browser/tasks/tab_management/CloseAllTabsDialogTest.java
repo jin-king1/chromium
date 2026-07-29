@@ -5,17 +5,21 @@
 package org.chromium.chrome.browser.tasks.tab_management;
 
 import static androidx.test.espresso.action.ViewActions.click;
-import static androidx.test.espresso.assertion.ViewAssertions.matches;
-import static androidx.test.espresso.matcher.ViewMatchers.withEffectiveVisibility;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
 
-import static org.hamcrest.Matchers.greaterThanOrEqualTo;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertThat;
+import static com.google.common.truth.Truth.assertThat;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
+import static org.chromium.chrome.test.util.ChromeTabUtils.getTabCountOnUiThread;
 import static org.chromium.ui.test.util.ViewUtils.onViewWaiting;
 
-import androidx.test.espresso.matcher.ViewMatchers;
+import android.os.SystemClock;
+import android.view.MotionEvent;
+
 import androidx.test.filters.LargeTest;
 import androidx.test.filters.MediumTest;
 
@@ -29,15 +33,23 @@ import org.chromium.base.test.params.ParameterAnnotations;
 import org.chromium.base.test.params.ParameterAnnotations.UseRunnerDelegate;
 import org.chromium.base.test.params.ParameterSet;
 import org.chromium.base.test.params.ParameterizedRunner;
+import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.base.test.util.TestAnimations.EnableAnimations;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.ui.appmenu.AppMenuTestSupport;
+import org.chromium.chrome.browser.ui.messages.snackbar.Snackbar;
 import org.chromium.chrome.test.ChromeJUnit4RunnerDelegate;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.page.WebPageStation;
+import org.chromium.components.browser_ui.util.motion.MotionEventInfo;
+import org.chromium.components.browser_ui.util.motion.MotionEventTestUtils;
 import org.chromium.ui.base.DeviceFormFactor;
 
 import java.util.Arrays;
@@ -47,25 +59,36 @@ import java.util.List;
 @RunWith(ParameterizedRunner.class)
 @UseRunnerDelegate(ChromeJUnit4RunnerDelegate.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
+@Batch(Batch.PER_CLASS)
 public class CloseAllTabsDialogTest {
     @ParameterAnnotations.ClassParameter
-    private static List<ParameterSet> sClassParams =
+    private static final List<ParameterSet> sClassParams =
             Arrays.asList(
-                    new ParameterSet().value(false).name("NonIncognito"),
-                    new ParameterSet().value(true).name("Incognito"));
+                    new ParameterSet()
+                            .value(false, false)
+                            .name("NonIncognito_ClickAppMenuViaTouchScreen"),
+                    new ParameterSet().value(false, true).name("NonIncognito_ClickAppMenuViaMouse"),
+                    new ParameterSet()
+                            .value(true, false)
+                            .name("Incognito_ClickAppMenuViaTouchScreen"),
+                    new ParameterSet().value(true, true).name("Incognito_ClickAppMenuViaMouse"));
 
     @Rule
-    public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
+    public AutoResetCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.fastAutoResetCtaActivityRule();
 
     private final boolean mIsIncognito;
+    private final boolean mClickAppMenuViaMouse;
+    private WebPageStation mInitialPage;
 
-    public CloseAllTabsDialogTest(boolean isIncognito) {
+    public CloseAllTabsDialogTest(boolean isIncognito, boolean clickAppMenuViaMouse) {
         mIsIncognito = isIncognito;
+        mClickAppMenuViaMouse = clickAppMenuViaMouse;
     }
 
     @Before
     public void setUp() {
-        mActivityTestRule.startMainActivityWithURL("about:blank");
+        mInitialPage = mActivityTestRule.startOnBlankPage();
     }
 
     /** Tests that close all tabs works after modal dialog. */
@@ -78,11 +101,12 @@ public class CloseAllTabsDialogTest {
 
         if (mIsIncognito) mActivityTestRule.newIncognitoTabFromMenu();
         navigateToCloseAllTabsDialog(selector);
-        onViewWaiting(withId(org.chromium.chrome.test.R.id.positive_button), true).perform(click());
+        onViewWaiting(withId(R.id.positive_button)).perform(click());
 
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     assertEquals(0, selector.getModel(mIsIncognito).getCount());
+                    assertUndoSnackbar(/* wasCloseAllTabsConfirmed= */ true);
                 });
     }
 
@@ -97,11 +121,12 @@ public class CloseAllTabsDialogTest {
         if (mIsIncognito) mActivityTestRule.newIncognitoTabFromMenu();
         navigateToCloseAllTabsDialog(selector);
 
-        onViewWaiting(withId(org.chromium.chrome.test.R.id.negative_button), true).perform(click());
+        onViewWaiting(withId(R.id.negative_button)).perform(click());
 
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     assertEquals(1, selector.getModel(mIsIncognito).getCount());
+                    assertUndoSnackbar(/* wasCloseAllTabsConfirmed= */ false);
                 });
     }
 
@@ -120,14 +145,16 @@ public class CloseAllTabsDialogTest {
 
         TabUiTestHelper.createTabs(mActivityTestRule.getActivity(), mIsIncognito, 8);
         navigateToCloseAllTabsDialog(selector);
-        onViewWaiting(withId(org.chromium.chrome.test.R.id.positive_button), true).perform(click());
+        onViewWaiting(withId(R.id.positive_button)).perform(click());
 
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> assertUndoSnackbar(/* wasCloseAllTabsConfirmed= */ true));
         CriteriaHelper.pollUiThread(() -> 0 == selector.getModel(mIsIncognito).getCount());
     }
 
     private void navigateToCloseAllTabsDialog(TabModelSelector selector) {
-
-        assertThat(selector.getModel(mIsIncognito).getCount(), greaterThanOrEqualTo(1));
+        int tabCount = getTabCountOnUiThread(selector.getModel(mIsIncognito));
+        assertThat(tabCount).isAtLeast(1);
 
         // Open the AppMenu in the Tab Switcher and ensure it shows.
         TabUiTestHelper.enterTabSwitcher(mActivityTestRule.getActivity());
@@ -136,24 +163,53 @@ public class CloseAllTabsDialogTest {
                     AppMenuTestSupport.showAppMenu(
                             mActivityTestRule.getAppMenuCoordinator(), null, false);
                 });
-        onViewWaiting(withId(org.chromium.chrome.test.R.id.app_menu_list))
-                .check(matches(withEffectiveVisibility(ViewMatchers.Visibility.VISIBLE)));
+        waitForView(withId(R.id.app_menu_list));
 
         // Click close all tabs.
-        if (mIsIncognito) {
-            ThreadUtils.runOnUiThreadBlocking(
-                    () -> {
+        ThreadUtils.runOnUiThreadBlocking(
+                () ->
                         AppMenuTestSupport.callOnItemClick(
                                 mActivityTestRule.getAppMenuCoordinator(),
-                                org.chromium.chrome.test.R.id.close_all_incognito_tabs_menu_id);
-                    });
+                                mIsIncognito
+                                        ? R.id.close_all_incognito_tabs_menu_id
+                                        : R.id.close_all_tabs_menu_id,
+                                mClickAppMenuViaMouse
+                                        ? createClickTriggeringMotionFromMouse()
+                                        : null));
+    }
+
+    /**
+     * Creates a {@link MotionEventInfo} that matches one from a mouse and would trigger a click.
+     */
+    private static MotionEventInfo createClickTriggeringMotionFromMouse() {
+        long downTime = SystemClock.uptimeMillis();
+        return MotionEventTestUtils.createMouseMotionInfo(
+                downTime, /* eventTime= */ downTime + 50, MotionEvent.ACTION_UP);
+    }
+
+    /**
+     * Asserts presence of undo snackbar after "close all tabs" dialog is closed.
+     *
+     * @param wasCloseAllTabsConfirmed whether "close all tabs" was confirmed via the dialog, i.e.,
+     *     whether the positive button was clicked.
+     */
+    private void assertUndoSnackbar(boolean wasCloseAllTabsConfirmed) {
+        @Nullable Snackbar snackbar =
+                mActivityTestRule.getActivity().getSnackbarManager().getCurrentSnackbarForTesting();
+        if (!wasCloseAllTabsConfirmed) {
+            assertNull("Cancelling the dialog should never show the undo snackbar", snackbar);
             return;
         }
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    AppMenuTestSupport.callOnItemClick(
-                            mActivityTestRule.getAppMenuCoordinator(),
-                            org.chromium.chrome.test.R.id.close_all_tabs_menu_id);
-                });
+
+        if (mIsIncognito) {
+            assertNull("Incognito mode should never show the undo snackbar", snackbar);
+            return;
+        }
+
+        if (mClickAppMenuViaMouse) {
+            assertNull("Closing all tabs with a mouse shouldn't show the undo snackbar", snackbar);
+        } else {
+            assertNotNull("Non-incognito mode should show the undo snackbar", snackbar);
+        }
     }
 }

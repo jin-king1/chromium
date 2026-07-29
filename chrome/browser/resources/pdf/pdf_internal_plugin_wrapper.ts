@@ -10,7 +10,7 @@ import type {SwipeDirection} from './swipe_detector.js';
 import {SwipeDetector} from './swipe_detector.js';
 
 interface InProcessPdfPluginElement extends HTMLEmbedElement {
-  postMessage(message: any): void;
+  postMessage(message: unknown): void;
 }
 
 const channel = new MessageChannel();
@@ -27,6 +27,7 @@ if (parentOrigin === 'chrome-untrusted://print') {
 
 // Plugin-to-parent message handlers. All messages are passed through, but some
 // messages may affect this frame, too.
+let caretBrowsingEnabled: boolean = false;
 let isFormFieldFocused: boolean = false;
 plugin.addEventListener('message', e => {
   const message = (e as MessageEvent).data;
@@ -36,6 +37,13 @@ plugin.addEventListener('message', e => {
       // interesting keyboard events first.
       const focusedData = convertFormFocusChangeMessage(message);
       isFormFieldFocused = focusedData.focused !== FormFieldFocusType.NONE;
+      break;
+    case 'rendererPreferencesUpdated':
+      const caretBrowsingEnabledData =
+          message as unknown as {caretBrowsingEnabled: boolean};
+      caretBrowsingEnabled = caretBrowsingEnabledData.caretBrowsingEnabled;
+      break;
+    default:
       break;
   }
 
@@ -48,12 +56,8 @@ plugin.addEventListener('message', e => {
 let isPresentationMode = false;
 channel.port1.onmessage = e => {
   switch (e.data.type) {
-    case 'loadArray':
-      if (plugin.src.startsWith('blob:')) {
-        URL.revokeObjectURL(plugin.src);
-      }
-      plugin.src = URL.createObjectURL(new Blob([e.data.dataToLoad]));
-      plugin.setAttribute('has-edits', '');
+    case 'focus':
+      plugin.focus();
       return;
 
     case 'setPresentationMode':
@@ -65,17 +69,14 @@ channel.port1.onmessage = e => {
         document.documentElement.className = 'fullscreen';
       } else {
         document.documentElement.className = '';
-
-        // Ensure that directional keys still work after exiting.
-        plugin.focus();
       }
       break;
 
     case 'syncScrollToRemote':
-      // TODO(crbug.com/40218278): Implement smooth scrolling correctly.
       window.scrollTo({
         left: e.data.x,
         top: e.data.y,
+        behavior: e.data.isSmooth ? 'smooth' : 'auto',
       });
       channel.port1.postMessage({
         type: 'ackScrollToRemote',
@@ -106,6 +107,9 @@ channel.port1.onmessage = e => {
             break;
         }
       }
+      break;
+
+    default:
       break;
   }
 
@@ -160,6 +164,21 @@ function relaySwipe(e: Event): void {
 const swipeDetector = new SwipeDetector(plugin);
 swipeDetector.getEventTarget().addEventListener('swipe', relaySwipe);
 
+// <if expr="enable_pdf_ink2">
+document.addEventListener('pointerdown', e => {
+  // Only forward left click.
+  if (e.button !== 0) {
+    return;
+  }
+
+  channel.port1.postMessage({
+    type: 'sendClickEvent',
+    x: e.clientX,
+    y: e.clientY,
+  });
+});
+// </if>
+
 document.addEventListener('keydown', e => {
   // Only forward potential shortcut keys.
   switch (e.key) {
@@ -179,6 +198,12 @@ document.addEventListener('keydown', e => {
     case 'ArrowLeft':
     case 'ArrowRight':
     case 'ArrowUp':
+      if (caretBrowsingEnabled) {
+        // Do not prevent default, otherwise the plugin will not handle
+        // directional key events.
+        break;
+      }
+
       // Don't prevent arrow navigation in form fields, or if modified.
       if (!isFormFieldFocused && !hasKeyModifiers(e)) {
         e.preventDefault();
@@ -186,6 +211,10 @@ document.addEventListener('keydown', e => {
       }
       return;
 
+    // <if expr="enable_pdf_ink2">
+    case 'Enter':
+      // Enter is used to create new text annotations.
+    // </if>
     case 'Escape':
     case 'Tab':
       // Print Preview is interested in Escape and Tab.
@@ -242,6 +271,8 @@ document.addEventListener('keypress', e => {
         e.preventDefault();
       }
       break;
+    default:
+      break;
   }
 });
 
@@ -265,5 +296,5 @@ function hasCtrlModifierOnly(e: KeyboardEvent): boolean {
 
 // TODO(crbug.com/40792950): Load from chrome://resources/js/util.js instead.
 function hasKeyModifiers(e: KeyboardEvent): boolean {
-  return !!(e.altKey || e.ctrlKey || e.metaKey || e.shiftKey);
+  return e.altKey || e.ctrlKey || e.metaKey || e.shiftKey;
 }

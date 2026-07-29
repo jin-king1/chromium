@@ -8,6 +8,10 @@
 #include <string_view>
 
 #include "base/command_line.h"
+#include "base/containers/lru_cache.h"
+#include "base/feature_list.h"
+#include "base/no_destructor.h"
+#include "base/not_fatal_until.h"
 #include "content/browser/devtools/network_service_devtools_observer.h"
 #include "content/browser/renderer_host/frame_tree_node.h"
 #include "content/browser/renderer_host/navigation_request.h"
@@ -17,10 +21,11 @@
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/runtime_feature_state/runtime_feature_state_document_data.h"
+#include "content/public/common/child_process_id_util.h"
 #include "content/public/common/content_client.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/common/url_constants.h"
-#include "ipc/ipc_message.h"
+#include "net/base/features.h"
 #include "net/base/isolation_info.h"
 #include "net/cookies/cookie_setting_override.h"
 #include "services/network/public/cpp/is_potentially_trustworthy.h"
@@ -74,19 +79,32 @@ network::mojom::URLLoaderFactoryParamsPtr CreateParams(
         trust_token_redemption_policy,
     net::CookieSettingOverrides cookie_setting_overrides,
     std::string_view debug_tag,
-    bool require_cross_site_request_for_cookies) {
+    bool require_cross_site_request_for_cookies,
+    bool is_for_service_worker,
+    const base::UnguessableToken& network_restrictions_id,
+    bool has_effective_top_frame_for_storage_partitioning,
+    bool is_outermost_main_frame = false) {
   DCHECK(process);
 
   network::mojom::URLLoaderFactoryParamsPtr params =
       network::mojom::URLLoaderFactoryParams::New();
 
-  params->process_id = process->GetDeprecatedID();
+  params->process_id = ToOriginatingProcessId(process->GetID());
   params->request_initiator_origin_lock = request_initiator_origin_lock;
 
   params->is_trusted = is_trusted;
+  params->is_outermost_main_frame = is_outermost_main_frame;
   if (top_frame_token)
     params->top_frame_id = top_frame_token.value().value();
+
+  CHECK(!network_restrictions_id.is_empty(), base::NotFatalUntil::M163);
+  params->network_restrictions_id = network_restrictions_id;
   params->isolation_info = isolation_info;
+
+  if (URLLoaderFactoryParamsHelper::ShouldPreferFactorySiteForCookies(
+          has_effective_top_frame_for_storage_partitioning, isolation_info)) {
+    params->prefer_factory_site_for_cookies = true;
+  }
 
   params->disable_web_security =
       base::CommandLine::ForCurrentProcess()->HasSwitch(
@@ -114,7 +132,7 @@ network::mojom::URLLoaderFactoryParamsPtr CreateParams(
 
   GetContentClient()->browser()->OverrideURLLoaderFactoryParams(
       process->GetBrowserContext(), origin, is_for_isolated_world,
-      params.get());
+      is_for_service_worker, params.get());
 
   params->cookie_observer = std::move(cookie_observer);
   params->trust_token_observer = std::move(trust_token_observer);
@@ -131,7 +149,18 @@ network::mojom::URLLoaderFactoryParamsPtr CreateParams(
   params->require_cross_site_request_for_cookies =
       require_cross_site_request_for_cookies;
 
+  if (URLLoaderFactoryParamsHelper::IsMainFrameOriginRecentlyAccessed(
+          isolation_info)) {
+    params->is_main_frame_origin_recently_accessed = true;
+  }
+
   return params;
+}
+
+base::LRUCacheSet<url::Origin>& GetRecentlyAccessedOriginSet() {
+  static base::NoDestructor<base::LRUCacheSet<url::Origin>> origin_set(
+      net::features::kRecentlyAccessedOriginCacheSize.Get());
+  return *origin_set;
 }
 
 }  // namespace
@@ -153,7 +182,11 @@ URLLoaderFactoryParamsHelper::CreateForFrame(
     network::mojom::TrustTokenOperationPolicyVerdict
         trust_token_redemption_policy,
     net::CookieSettingOverrides cookie_setting_overrides,
+    const base::UnguessableToken& network_restrictions_id,
     std::string_view debug_tag) {
+  const bool has_effective_top_frame_for_storage_partitioning =
+      GetContentClient()->browser()->GetEffectiveTopFrameForPartitioning(
+          frame) != nullptr;
   return CreateParams(
       process,
       frame_origin,  // origin
@@ -164,14 +197,18 @@ URLLoaderFactoryParamsHelper::CreateForFrame(
       std::move(dip_reporter),
       frame->GetOrCreateWebPreferences().allow_universal_access_from_file_urls,
       false,  // is_for_isolated_world
-      frame->CreateCookieAccessObserver(),
+      frame->CreateCookieAccessObserver(
+          CookieAccessDetails::Source::kNonNavigation),
       frame->CreateTrustTokenAccessObserver(),
       frame->CreateSharedDictionaryAccessObserver(),
       frame->CreateURLLoaderNetworkObserver(),
       NetworkServiceDevToolsObserver::MakeSelfOwned(frame->frame_tree_node()),
       frame->CreateDeviceBoundSessionObserver(), trust_token_issuance_policy,
       trust_token_redemption_policy, cookie_setting_overrides, debug_tag,
-      /*require_cross_site_request_for_cookies=*/false);
+      /*require_cross_site_request_for_cookies=*/false,
+      /*is_for_service_worker=*/false, network_restrictions_id,
+      has_effective_top_frame_for_storage_partitioning,
+      frame->IsOutermostMainFrame());
 }
 
 // static
@@ -187,6 +224,9 @@ URLLoaderFactoryParamsHelper::CreateForIsolatedWorld(
     network::mojom::TrustTokenOperationPolicyVerdict
         trust_token_redemption_policy,
     net::CookieSettingOverrides cookie_setting_overrides) {
+  const bool has_effective_top_frame_for_storage_partitioning =
+      GetContentClient()->browser()->GetEffectiveTopFrameForPartitioning(
+          frame) != nullptr;
   return CreateParams(
       frame->GetProcess(),
       isolated_world_origin,  // origin
@@ -198,7 +238,8 @@ URLLoaderFactoryParamsHelper::CreateForIsolatedWorld(
       mojo::NullRemote(),  // dip_reporter
       frame->GetOrCreateWebPreferences().allow_universal_access_from_file_urls,
       true,  // is_for_isolated_world
-      frame->CreateCookieAccessObserver(),
+      frame->CreateCookieAccessObserver(
+          CookieAccessDetails::Source::kNonNavigation),
       frame->CreateTrustTokenAccessObserver(),
       frame->CreateSharedDictionaryAccessObserver(),
       frame->CreateURLLoaderNetworkObserver(),
@@ -206,14 +247,21 @@ URLLoaderFactoryParamsHelper::CreateForIsolatedWorld(
       frame->CreateDeviceBoundSessionObserver(), trust_token_issuance_policy,
       trust_token_redemption_policy, cookie_setting_overrides,
       "ParamHelper::CreateForIsolatedWorld",
-      /*require_cross_site_request_for_cookies=*/false);
+      /*require_cross_site_request_for_cookies=*/false,
+      /*is_for_service_worker=*/false,
+      // Extensions and isolated worlds are out of scope for
+      // Connection-Allowlists.
+      network::GetNoOpNetworkRestrictionsId(),
+      has_effective_top_frame_for_storage_partitioning,
+      frame->IsOutermostMainFrame());
 }
 
 network::mojom::URLLoaderFactoryParamsPtr
 URLLoaderFactoryParamsHelper::CreateForPrefetch(
     RenderFrameHostImpl* frame,
     network::mojom::ClientSecurityStatePtr client_security_state,
-    net::CookieSettingOverrides cookie_setting_overrides) {
+    net::CookieSettingOverrides cookie_setting_overrides,
+    const base::UnguessableToken& network_restrictions_id) {
   // The factory client |is_trusted| to control the |network_isolation_key| in
   // each separate request (rather than forcing the client to use the key
   // specified in URLLoaderFactoryParams).
@@ -230,7 +278,8 @@ URLLoaderFactoryParamsHelper::CreateForPrefetch(
       mojo::NullRemote(),  // dip_reporter
       frame->GetOrCreateWebPreferences().allow_universal_access_from_file_urls,
       false,  // is_for_isolated_world
-      frame->CreateCookieAccessObserver(),
+      frame->CreateCookieAccessObserver(
+          CookieAccessDetails::Source::kNonNavigation),
       frame->CreateTrustTokenAccessObserver(),
       frame->CreateSharedDictionaryAccessObserver(),
       frame->CreateURLLoaderNetworkObserver(),
@@ -239,7 +288,13 @@ URLLoaderFactoryParamsHelper::CreateForPrefetch(
       network::mojom::TrustTokenOperationPolicyVerdict::kForbid,
       network::mojom::TrustTokenOperationPolicyVerdict::kForbid,
       cookie_setting_overrides, "ParamHelper::CreateForPrefetch",
-      /*require_cross_site_request_for_cookies=*/false);
+      /*require_cross_site_request_for_cookies=*/false,
+      /*is_for_service_worker=*/false, network_restrictions_id,
+      // TODO(crbug.com/495538206): Revisit if prefetch from a frame with
+      // an effective top frame for storage partitioning needs the same
+      // browser-side `site_for_cookies` override.
+      /*has_effective_top_frame_for_storage_partitioning=*/false,
+      frame->IsOutermostMainFrame());
 }
 
 // static
@@ -260,8 +315,10 @@ URLLoaderFactoryParamsHelper::CreateForWorker(
         url_loader_network_observer,
     mojo::PendingRemote<network::mojom::DevToolsObserver> devtools_observer,
     network::mojom::ClientSecurityStatePtr client_security_state,
+    const base::UnguessableToken& network_restrictions_id,
     std::string_view debug_tag,
-    bool require_cross_site_request_for_cookies) {
+    bool require_cross_site_request_for_cookies,
+    bool is_for_service_worker) {
   return CreateParams(
       process,
       request_initiator,  // origin
@@ -288,7 +345,13 @@ URLLoaderFactoryParamsHelper::CreateForWorker(
       network::mojom::TrustTokenOperationPolicyVerdict::kPotentiallyPermit,
       network::mojom::TrustTokenOperationPolicyVerdict::kPotentiallyPermit,
       net::CookieSettingOverrides(), debug_tag,
-      require_cross_site_request_for_cookies);
+      require_cross_site_request_for_cookies, is_for_service_worker,
+      network_restrictions_id,
+      // TODO(crbug.com/495538206): Revisit if workers attached to a
+      // frame with an effective top frame for storage partitioning need
+      // the same browser-side `site_for_cookies` override.
+      /*has_effective_top_frame_for_storage_partitioning=*/false,
+      /*is_outermost_main_frame=*/false);
 }
 
 // static
@@ -332,9 +395,15 @@ URLLoaderFactoryParamsHelper::CreateForEarlyHintsPreload(
           early_hints.headers->cross_origin_embedder_policy,
           network::IsOriginPotentiallyTrustworthy(tentative_origin),
           early_hints.ip_address_space,
-          network::mojom::PrivateNetworkRequestPolicy::kBlock,
+          network::mojom::LocalNetworkAccessRequestPolicy::kBlock,
           network::DocumentIsolationPolicy());
 
+  // A NoOp network restrictions ID is used for Early Hints
+  // URLLoaderFactoryParams because the connection allowlists check is done by
+  // `NavigationEarlyHintsManager::HandleEarlyHints`. The check does not depend
+  // on the network restrictions ID. Instead, the URL of the preload and
+  // preconnect triggered by the Link header is checked against the connection
+  // allowlists in the Early Hints response directly.
   return CreateParams(
       process, /*origin=*/tentative_origin,
       /*request_initiator_origin_lock=*/tentative_origin,
@@ -351,7 +420,63 @@ URLLoaderFactoryParamsHelper::CreateForEarlyHintsPreload(
       network::mojom::TrustTokenOperationPolicyVerdict::kForbid,
       network::mojom::TrustTokenOperationPolicyVerdict::kForbid,
       net::CookieSettingOverrides(), "ParamHelper::CreateForEarlyHintsPreload",
-      /*require_cross_site_request_for_cookies=*/false);
+      /*require_cross_site_request_for_cookies=*/false,
+      /*is_for_service_worker=*/false,
+      /*network_restrictions_id=*/network::GetNoOpNetworkRestrictionsId(),
+      // TODO(crbug.com/495538206): Revisit if early-hints preloads
+      // initiated from a frame with an effective top frame for storage
+      // partitioning need the same browser-side `site_for_cookies`
+      // override.
+      /*has_effective_top_frame_for_storage_partitioning=*/false,
+      navigation_request.frame_tree_node()->IsOutermostMainFrame());
+}
+
+// static
+void URLLoaderFactoryParamsHelper::OnMainFrameNavigation(url::Origin origin) {
+  if (base::FeatureList::IsEnabled(
+          net::features::kUpdateIsMainFrameOriginRecentlyAccessed)) {
+    GetRecentlyAccessedOriginSet().Put(std::move(origin));
+  }
+}
+
+// static
+bool URLLoaderFactoryParamsHelper::IsMainFrameOriginRecentlyAccessed(
+    const net::IsolationInfo& isolation_info) {
+  if (!base::FeatureList::IsEnabled(
+          net::features::kUpdateIsMainFrameOriginRecentlyAccessed)) {
+    return false;
+  }
+
+  const std::optional<url::Origin> top_frame_origin =
+      isolation_info.top_frame_origin();
+  if (!top_frame_origin) {
+    return false;
+  }
+
+  auto& origin_set = GetRecentlyAccessedOriginSet();
+  return origin_set.Peek(top_frame_origin.value()) != origin_set.end();
+}
+
+// static
+bool URLLoaderFactoryParamsHelper::ShouldPreferFactorySiteForCookies(
+    bool has_effective_top_frame_for_storage_partitioning,
+    const net::IsolationInfo& isolation_info) {
+  // When the frame's effective top frame for storage partitioning matches
+  // the actual top frame, the renderer-computed
+  // `ResourceRequest::site_for_cookies` is already correct, so the flag
+  // is redundant. The browser-side override in
+  // `RenderFrameHostImpl::ComputeIsolationInfoInternal()` only diverges
+  // from the renderer when the two top frames differ.
+  if (!has_effective_top_frame_for_storage_partitioning) {
+    return false;
+  }
+  const net::SiteForCookies& site_for_cookies =
+      isolation_info.site_for_cookies();
+  if (site_for_cookies.IsNull()) {
+    return false;
+  }
+  return GetContentClient()->browser()->ShouldUseFirstPartyStorageKey(
+      url::Origin::Create(site_for_cookies.RepresentativeUrl()));
 }
 
 }  // namespace content

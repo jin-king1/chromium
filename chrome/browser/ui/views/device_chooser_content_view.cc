@@ -11,14 +11,15 @@
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/strcat.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
-#include "chrome/grit/branded_strings.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/vector_icons/vector_icons.h"
+#include "ui/base/interaction/element_identifier.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/base/resource/resource_bundle.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/gfx/color_palette.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect.h"
@@ -38,7 +39,11 @@
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/fill_layout.h"
 #include "ui/views/layout/layout_provider.h"
+#include "ui/views/view_class_properties.h"
 #include "ui/views/widget/widget.h"
+
+DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(DeviceChooserContentView,
+                                      kDeviceChooserDialogBubbleElementId);
 
 DeviceChooserContentView::DeviceChooserContentView(
     views::TableViewObserver* table_view_observer,
@@ -47,6 +52,8 @@ DeviceChooserContentView::DeviceChooserContentView(
   chooser_controller_->set_view(this);
 
   SetPreferredSize(gfx::Size(402, 320));
+  SetProperty(views::kElementIdentifierKey,
+              kDeviceChooserDialogBubbleElementId);
 
   if (chooser_controller_->ShouldShowSelectAllCheckbox()) {
     SetLayoutManager(std::make_unique<views::BoxLayout>(
@@ -179,9 +186,11 @@ ui::ImageModel DeviceChooserContentView::GetIcon(size_t row) {
   DCHECK_LT(row, RowCount());
 
   if (chooser_controller_->IsConnected(row)) {
-    return ui::ImageModel::FromVectorIcon(vector_icons::kBluetoothConnectedIcon,
-                                          ui::kColorIcon,
-                                          TableModel::kIconSize);
+    return ui::ImageModel::FromVectorIcon(
+        features::IsRoundedIconsEnabled()
+            ? vector_icons::kBluetoothConnectedIcon
+            : vector_icons::kBluetoothConnectedOldIcon,
+        ui::kColorIcon, TableModel::kIconSize);
   }
 
   int level = chooser_controller_->GetSignalStrengthLevel(row);
@@ -288,7 +297,8 @@ std::unique_ptr<views::View> DeviceChooserContentView::CreateExtraView() {
     help_button = views::ImageButton::CreateIconButton(
         base::BindRepeating(&permissions::ChooserController::OpenHelpCenterUrl,
                             base::Unretained(chooser_controller_.get())),
-        vector_icons::kHelpOutlineIcon,
+        features::IsRoundedIconsEnabled() ? vector_icons::kHelpIcon
+                                          : vector_icons::kHelpOutlineOldIcon,
         l10n_util::GetStringUTF16(IDS_LEARN_MORE),
         views::ImageButton::MaterialIconStyle::kLarge,
         views::LayoutProvider::Get()->GetInsetsMetric(

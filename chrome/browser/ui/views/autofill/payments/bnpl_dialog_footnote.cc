@@ -4,23 +4,33 @@
 
 #include "chrome/browser/ui/views/autofill/payments/bnpl_dialog_footnote.h"
 
+#include "chrome/browser/ui/views/autofill/payments/payments_view_util.h"
+#include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
-#include "ui/gfx/geometry/insets.h"
-#include "ui/views/controls/label.h"
+#include "ui/views/controls/styled_label.h"
 #include "ui/views/layout/box_layout.h"
-#include "ui/views/view_class_properties.h"
 
 namespace autofill::payments {
 
-BnplDialogFootnote::BnplDialogFootnote() {
+BnplDialogFootnote::BnplDialogFootnote(const std::u16string& footnote_text,
+                                       const TextLinkInfo& text_link_info) {
   SetOrientation(views::BoxLayout::Orientation::kHorizontal);
-  SetInsideBorderInsets(gfx::Insets::TLBR(10, 10, 10, 10));
-  AddChildView(
-      views::Builder<views::Label>()
-          // TODO(crbug.com/356443046): Move to resources and translate string.
-          .SetText(u"To hide pay over time options, go to payment settings")
-          .SetProperty(views::kMarginsKey, gfx::Insets::TLBR(5, 10, 5, 0))
-          .Build());
+  SetInsideBorderInsets(ChromeLayoutProvider::Get()->GetInsetsMetric(
+      views::INSETS_DIALOG_FOOTNOTE));
+
+  views::StyledLabel::RangeStyleInfo style_info =
+      views::StyledLabel::RangeStyleInfo::CreateForLink(
+          text_link_info.callback);
+
+  views::StyledLabel* label =
+      AddChildView(std::make_unique<views::StyledLabel>());
+  label->SetText(footnote_text);
+  label->AddStyleRange(text_link_info.offset, style_info);
+  if (!text_link_info.bold_range.is_empty()) {
+    views::StyledLabel::RangeStyleInfo bold_style;
+    bold_style.text_style = views::style::STYLE_EMPHASIZED;
+    label->AddStyleRange(text_link_info.bold_range, bold_style);
+  }
 }
 
 BnplDialogFootnote::~BnplDialogFootnote() = default;

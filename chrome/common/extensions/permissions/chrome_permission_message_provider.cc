@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/common/extensions/permissions/chrome_permission_message_provider.h"
 
 #include <algorithm>
@@ -14,6 +9,7 @@
 #include <tuple>
 #include <vector>
 
+#include "base/compiler_specific.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/field_trial.h"
 #include "base/stl_util.h"
@@ -149,9 +145,10 @@ void ChromePermissionMessageProvider::AddHostPermissions(
   // Since platform apps always use isolated storage, they can't (silently)
   // access user data on other domains, so there's no need to prompt.
   // Note: this must remain consistent with IsHostPrivilegeIncrease.
-  // See crbug.com/255229.
-  if (extension_type == Manifest::TYPE_PLATFORM_APP)
+  // See crbug.com/40323545.
+  if (extension_type == Manifest::Type::kPlatformApp) {
     return;
+  }
 
   if (permissions.ShouldWarnAllHosts()) {
     permission_ids->insert(APIPermissionID::kHostsAll);
@@ -190,13 +187,6 @@ bool ChromePermissionMessageProvider::IsAPIOrManifestPrivilegeIncrease(
   if (requested_permissions.ShouldWarnAllHosts())
     potential_total_ids.insert(APIPermissionID::kHostsAll);
 
-  // For M62, we added a new permission ID for new tab page overrides. Consider
-  // the addition of this permission to not result in a privilege increase for
-  // the time being.
-  // TODO(robertshield): Remove this once most of the population is on M62+
-  granted_ids.erase(APIPermissionID::kNewTabPageOverride);
-  potential_total_ids.erase(APIPermissionID::kNewTabPageOverride);
-
   // If all the IDs were already there, it's not a privilege increase.
   if (granted_ids.Includes(potential_total_ids))
     return false;
@@ -229,8 +219,9 @@ bool ChromePermissionMessageProvider::IsHostPrivilegeIncrease(
     Manifest::Type extension_type) const {
   // Platform apps host permission changes do not count as privilege increases.
   // Note: this must remain consistent with AddHostPermissions.
-  if (extension_type == Manifest::TYPE_PLATFORM_APP)
+  if (extension_type == Manifest::Type::kPlatformApp) {
     return false;
+  }
 
   // If the granted permission set can access any host, then it can't be
   // elevated.
@@ -262,8 +253,8 @@ bool ChromePermissionMessageProvider::IsHostPrivilegeIncrease(
     const std::string_view unmatched(requested);
     for (const auto& granted : granted_hosts_set) {
       if (granted.size() > 2 && granted[0] == '*' && granted[1] == '.') {
-        const std::string_view stripped_granted(granted.data() + 1,
-                                                granted.length() - 1);
+        const std::string_view stripped_granted =
+            std::string_view(granted).substr(1);
         // If the unmatched host ends with the the granted host,
         // after removing the '*', then it's a match. In addition,
         // because we consider having access to "*.domain.com" as

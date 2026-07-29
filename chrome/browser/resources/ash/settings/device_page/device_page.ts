@@ -22,7 +22,7 @@ import {WebUiListenerMixin} from 'chrome://resources/ash/common/cr_elements/web_
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
-import {isExternalStorageEnabled, isInputDeviceSettingsSplitEnabled} from '../common/load_time_booleans.js';
+import {isExternalStorageEnabled} from '../common/load_time_booleans.js';
 import {RouteOriginMixin} from '../common/route_origin_mixin.js';
 import type {PrefsState} from '../common/types.js';
 import type {KeyboardPolicies, MousePolicies} from '../mojom-webui/input_device_settings.mojom-webui.js';
@@ -91,17 +91,6 @@ export class SettingsDevicePageElement extends SettingsDevicePageElementBase {
       hasStylus_: {
         type: Boolean,
         value: false,
-      },
-
-      /**
-       * Whether settings should be split per device.
-       */
-      isDeviceSettingsSplitEnabled_: {
-        type: Boolean,
-        value() {
-          return isInputDeviceSettingsSplitEnabled();
-        },
-        readOnly: true,
       },
 
       /**
@@ -178,24 +167,26 @@ export class SettingsDevicePageElement extends SettingsDevicePageElementBase {
     ];
   }
 
-  languages: LanguagesModel|undefined;
-  languageHelper: LanguageHelper|undefined;
-  prefs: PrefsState|undefined;
+  declare languages: LanguagesModel|undefined;
+  declare languageHelper: LanguageHelper|undefined;
+  declare prefs: PrefsState|undefined;
 
-  protected pointingSticks: PointingStick[];
-  protected keyboards: Keyboard[];
-  protected keyboardPolicies: KeyboardPolicies;
-  protected touchpads: Touchpad[];
-  protected mice: Mouse[];
-  protected mousePolicies: MousePolicies;
-  protected graphicsTablets: GraphicsTablet[];
+  declare protected pointingSticks: PointingStick[];
+  declare protected keyboards: Keyboard[];
+  declare protected keyboardPolicies: KeyboardPolicies;
+  declare protected touchpads: Touchpad[];
+  declare protected mice: Mouse[];
+  declare protected mousePolicies: MousePolicies;
+  declare protected graphicsTablets: GraphicsTablet[];
   private browserProxy_: DevicePageBrowserProxy;
-  private hasMouse_: boolean;
-  private hasPointingStick_: boolean;
-  private hasTouchpad_: boolean;
-  private hasHapticTouchpad_: boolean;
-  private isDeviceSettingsSplitEnabled_: boolean;
-  private isPeripheralCustomizationEnabled: boolean;
+  declare private hasMouse_: boolean;
+  declare private hasPointingStick_: boolean;
+  declare private hasStylus_: boolean;
+  declare private hasTouchpad_: boolean;
+  declare private hasHapticTouchpad_: boolean;
+  declare private inputMethodDisplayName_: string;
+  declare private isExternalStorageEnabled_: boolean;
+  declare private isPeripheralCustomizationEnabled: boolean;
   private pointingStickSettingsObserverReceiver:
       PointingStickSettingsObserverReceiver;
   private keyboardSettingsObserverReceiver: KeyboardSettingsObserverReceiver;
@@ -204,7 +195,7 @@ export class SettingsDevicePageElement extends SettingsDevicePageElementBase {
   private mouseSettingsObserverReceiver: MouseSettingsObserverReceiver;
   private graphicsTabletSettingsObserverReceiver:
       GraphicsTabletSettingsObserverReceiver;
-  private section_: Section;
+  declare private section_: Section;
 
   constructor() {
     super();
@@ -213,38 +204,18 @@ export class SettingsDevicePageElement extends SettingsDevicePageElementBase {
     this.route = routes.DEVICE;
 
     this.browserProxy_ = DevicePageBrowserProxyImpl.getInstance();
-    if (this.isDeviceSettingsSplitEnabled_) {
-      this.inputDeviceSettingsProvider = getInputDeviceSettingsProvider();
-      this.observePointingStickSettings();
-      this.observeKeyboardSettings();
-      this.observeTouchpadSettings();
-      this.observeMouseSettings();
-      if (this.isPeripheralCustomizationEnabled) {
-        // The flag `isPeripheralCustomizationEnabled` should only be enabled
-        // when `isDeviceSettingsSplitEnabled_` is enabled. Will not call
-        // `getInputDeviceSettingsProvider` here again.
-        this.observeGraphicsTabletSettings();
-      }
+    this.inputDeviceSettingsProvider = getInputDeviceSettingsProvider();
+    this.observePointingStickSettings();
+    this.observeKeyboardSettings();
+    this.observeTouchpadSettings();
+    this.observeMouseSettings();
+    if (this.isPeripheralCustomizationEnabled) {
+      this.observeGraphicsTabletSettings();
     }
-
   }
 
   override connectedCallback(): void {
     super.connectedCallback();
-
-    if (!this.isDeviceSettingsSplitEnabled_) {
-      this.addWebUiListener(
-          'has-mouse-changed', this.set.bind(this, 'hasMouse_'));
-      this.addWebUiListener(
-          'has-pointing-stick-changed',
-          this.set.bind(this, 'hasPointingStick_'));
-      this.addWebUiListener(
-          'has-touchpad-changed', this.set.bind(this, 'hasTouchpad_'));
-      this.addWebUiListener(
-          'has-haptic-touchpad-changed',
-          this.set.bind(this, 'hasHapticTouchpad_'));
-      this.browserProxy_.initializePointers();
-    }
 
     this.addWebUiListener(
         'has-stylus-changed', this.set.bind(this, 'hasStylus_'));
@@ -400,13 +371,6 @@ export class SettingsDevicePageElement extends SettingsDevicePageElementBase {
   /**
    * Handler for tapping the mouse and touchpad settings menu item.
    */
-  private onPointersClick_(): void {
-    Router.getInstance().navigateTo(routes.POINTERS);
-  }
-
-  /**
-   * Handler for tapping the mouse and touchpad settings menu item.
-   */
   private onPerDeviceKeyboardClick_(): void {
     Router.getInstance().navigateTo(routes.PER_DEVICE_KEYBOARD);
   }
@@ -430,13 +394,6 @@ export class SettingsDevicePageElement extends SettingsDevicePageElementBase {
    */
   private onPerDevicePointingStickClick_(): void {
     Router.getInstance().navigateTo(routes.PER_DEVICE_POINTING_STICK);
-  }
-
-  /**
-   * Handler for tapping the Keyboard settings menu item.
-   */
-  private onKeyboardClick_(): void {
-    Router.getInstance().navigateTo(routes.KEYBOARD);
   }
 
   /**
@@ -529,24 +486,16 @@ export class SettingsDevicePageElement extends SettingsDevicePageElementBase {
     }
   }
 
-  private showPointersRow_(): boolean {
-    return (this.hasMouse_ || this.hasTouchpad_ || this.hasPointingStick_) &&
-        !this.isDeviceSettingsSplitEnabled_;
-  }
-
   private showPerDeviceMouseRow_(): boolean {
-    return this.isDeviceSettingsSplitEnabled_ && this.mice &&
-        this.mice.length !== 0;
+    return this.mice && this.mice.length !== 0;
   }
 
   private showPerDeviceTouchpadRow_(touchpads: Touchpad[]): boolean {
-    return this.isDeviceSettingsSplitEnabled_ && touchpads &&
-        touchpads.length !== 0;
+    return touchpads && touchpads.length !== 0;
   }
 
   private showPerDevicePointingStickRow_(): boolean {
-    return this.isDeviceSettingsSplitEnabled_ && this.pointingSticks &&
-        this.pointingSticks.length !== 0;
+    return this.pointingSticks && this.pointingSticks.length !== 0;
   }
 
   private showGraphicsTabletRow_(): boolean {

@@ -21,4 +21,5 @@ const char kSendTabNotifClientStatusByProviderHistogram[] =
     "IOS.Notifications.SendTab.ClientStatus.Enabled.ByProvider";
 const char kPriceTrackingClientStatusByProviderHistogram[] =
     "IOS.Notifications.PriceTracking.ClientStatus.Enabled.ByProvider";
-const char kFeedEnabledHistogram[] = "ContentSuggestions.Feed.CanBeShown";
+const char kRemindersClientStatusByProviderHistogram[] =
+    "IOS.Notifications.Reminders.ClientStatus.Enabled.ByProvider";

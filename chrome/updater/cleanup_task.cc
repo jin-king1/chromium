@@ -5,6 +5,7 @@
 #include "chrome/updater/cleanup_task.h"
 
 #include <optional>
+#include <utility>
 
 #include "base/check_op.h"
 #include "base/files/file_enumerator.h"
@@ -16,13 +17,19 @@
 #include "base/process/launch.h"
 #include "base/process/process.h"
 #include "base/sequence_checker.h"
+#include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
 #include "base/time/time.h"
 #include "base/version.h"
 #include "build/build_config.h"
 #include "chrome/updater/app/app_uninstall.h"
+#include "chrome/updater/configurator.h"
+#include "chrome/updater/persisted_data.h"
+#include "chrome/updater/updater_scope.h"
 #include "chrome/updater/updater_version.h"
 #include "chrome/updater/util/util.h"
+#include "components/update_client/crx_cache.h"
+#include "components/update_client/utils.h"
 
 #if BUILDFLAG(IS_WIN)
 #include "chrome/updater/util/win_util.h"
@@ -65,17 +72,39 @@ void CleanupOldUpdaterVersions(UpdaterScope scope) {
                 scope, item.Append(GetExecutableRelativePath())),
             {});
         if (process.IsValid()) {
-          process.WaitForExitWithTimeout(base::Minutes(5), nullptr);
+          int exit_code = 0;
+          process.WaitForExitWithTimeout(base::Minutes(5), &exit_code);
+          VLOG_IF(1, exit_code != 0) << "Failed to uninstall " << item
+                                     << " with exit code " << exit_code;
+        } else {
+          VLOG(1) << "Failed to launch uninstall process for " << item;
         }
 
-        // Recursively delete the directory in case uninstall fails.
-        base::DeletePathRecursively(item);
+        // Give time for any child processes to finish.
+        base::PlatformThread::Sleep(base::Seconds(3));
+
+        // Recursively delete the directory in case uninstall fails with
+        // retries, in cases where a file cannot be deleted because it is
+        // locked by another process.
+        const bool success = update_client::RetryFileOperation(
+            &base::DeletePathRecursively, item, /*tries=*/5,
+            /*time_between_tries=*/base::Seconds(30));
+        VLOG_IF(1, !success) << "Failed to delete " << item;
       });
+}
+
+void CleanupOldUpdateClientTempFiles(UpdaterScope scope) {
+  EnumerateUpdateClientTempDirectories(scope, [](const base::FilePath& dir) {
+    const bool success =
+        update_client::RetryFileOperation(&base::DeletePathRecursively, dir);
+    VLOG_IF(1, !success) << "Failed to delete " << dir;
+  });
 }
 
 }  // namespace
 
-CleanupTask::CleanupTask(UpdaterScope scope) : scope_(scope) {}
+CleanupTask::CleanupTask(UpdaterScope scope, scoped_refptr<Configurator> config)
+    : scope_(scope), config_(config) {}
 
 CleanupTask::~CleanupTask() = default;
 
@@ -88,13 +117,19 @@ void CleanupTask::Run(base::OnceClosure callback) {
           [](UpdaterScope scope) {
             CleanupGoogleUpdate(scope);
             CleanupOldUpdaterVersions(scope);
-#if BUILDFLAG(IS_MAC)
-            // TODO(crbug.com/394302692): Delete after M140.
-            CleanOldCrxCache();
-#endif  // IS_MAC
+            CleanupOldUpdateClientTempFiles(scope);
           },
           scope_),
-      std::move(callback));
+      base::BindOnce(
+          [](scoped_refptr<Configurator> config, base::OnceClosure callback) {
+            config->GetCrxCache()->RemoveIfNot(
+                config->GetUpdaterPersistedData()->GetAppIds(),
+                std::move(callback));
+            if (config->GetUpdaterPersistedData()->HasApp("")) {
+              config->GetUpdaterPersistedData()->RemoveApp("");
+            }
+          },
+          config_, std::move(callback)));
 }
 
 }  // namespace updater

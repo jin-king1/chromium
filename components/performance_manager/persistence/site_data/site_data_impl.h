@@ -9,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/byte_size.h"
 #include "base/functional/callback_forward.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
@@ -118,7 +119,7 @@ class SiteDataImpl : public base::RefCounted<SiteDataImpl> {
   void NotifyLoadTimePerformanceMeasurement(
       base::TimeDelta load_duration,
       base::TimeDelta cpu_usage_estimate,
-      uint64_t private_footprint_kb_estimate);
+      base::ByteSize private_footprint_estimate);
 
   base::TimeDelta last_loaded_time_for_testing() const {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
@@ -225,8 +226,7 @@ class SiteDataImpl : public base::RefCounted<SiteDataImpl> {
 
   // Helper function to update a given |SiteDataFeatureProto| when a
   // feature gets used.
-  void NotifyFeatureUsage(SiteDataFeatureProto* feature_proto,
-                          const char* feature_name);
+  void NotifyFeatureUsage(SiteDataFeatureProto* feature_proto);
 
   bool IsLoaded() const {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);

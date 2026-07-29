@@ -5,35 +5,33 @@
 #include "chrome/browser/devtools/aida_client.h"
 
 #include <string>
+#include <variant>
 
 #include "base/check_is_test.h"
 #include "base/containers/fixed_flat_set.h"
 #include "base/json/json_string_value_serializer.h"
 #include "base/json/string_escape.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/metrics/user_metrics.h"
 #include "base/no_destructor.h"
 #include "base/strings/string_util.h"
-#include "chrome/browser/browser_features.h"
+#include "base/time/time.h"
+#include "build/branding_buildflags.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/common/pref_names.h"
 #include "components/prefs/scoped_user_pref_update.h"
+#include "components/signin/public/base/oauth_consumer_id.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/variations/service/variations_service.h"
 #include "components/variations/service/variations_service_utils.h"
-#include "google_apis/gaia/gaia_constants.h"
 #include "net/base/load_flags.h"
-
-const char kAidaEndpointUrl[] =
-    "https://aida.googleapis.com/v1/aida:doConversation";
 
 constexpr auto kLoggingDisallowedCountries =
     base::MakeFixedFlatSet<std::string_view>(
-        {"at", "be", "bg", "ch", "cy", "cz", "de", "dk", "ee", "es", "fi",
-         "fr", "gb", "gr", "hr", "hu", "ie", "is", "it", "li", "lt", "lu",
-         "lv", "mt", "nl", "no", "pl", "pt", "ro", "se", "si", "sk"});
+        {"at", "be", "bg", "cy", "cz", "de", "dk", "ee", "es", "fi", "fr",
+         "gb", "gr", "hr", "hu", "ie", "is", "it", "li", "lt", "lu", "lv",
+         "mt", "nl", "no", "pl", "pt", "ro", "se", "si", "sk"});
 
 constexpr auto kAidaSupportedCountries =
     base::MakeFixedFlatSet<std::string_view>(
@@ -56,10 +54,7 @@ constexpr auto kAidaSupportedCountries =
          "tv", "tw", "tz", "ug", "um", "us", "uy", "uz", "vc", "ve", "vg", "vi",
          "vn", "vu", "wf", "ws", "ye", "za", "zm", "zw"});
 
-AidaClient::AidaClient(Profile* profile)
-    : profile_(*profile),
-      aida_endpoint_(kAidaEndpointUrl),
-      aida_scope_(GaiaConstants::kAidaOAuth2Scope) {}
+AidaClient::AidaClient(Profile* profile) : profile_(*profile) {}
 
 AidaClient::~AidaClient() = default;
 
@@ -81,7 +76,8 @@ bool IsAidaBlockedByAge(std::optional<AccountInfo> account_info) {
     return true;
   }
   return account_info.value()
-             .capabilities.can_use_devtools_generative_ai_features() !=
+             .GetAccountCapabilities()
+             .can_use_devtools_generative_ai_features() !=
          signin::Tribool::kTrue;
 }
 
@@ -112,8 +108,10 @@ bool IsAidaBlockedByGeo(std::string country_code) {
 
 AidaClient::Availability AidaClient::CanUseAida(Profile* profile) {
   struct Availability result;
-  // AidaClient is only available on branded builds
-#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
+  // AidaClient is only available on branded builds.
+  // Currently it's also not available on Android.
+  // TODO(b/532900989): Enable this on Android.
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING) && !BUILDFLAG(IS_ANDROID)
   result.available = true;
   auto account_info = AccountInfoForProfile(profile);
   result.blocked_by_age = IsAidaBlockedByAge(account_info);
@@ -150,20 +148,13 @@ AidaClient::ScopedOverride AidaClient::OverrideCountryForTesting(
       base::BindOnce([]() { GetCountryCodeOverride().reset(); }));
 }
 
-void AidaClient::OverrideAidaEndpointAndScopeForTesting(
-    const std::string& aida_endpoint,
-    const std::string& aida_scope) {
-  aida_endpoint_ = aida_endpoint;
-  aida_scope_ = aida_scope;
-}
-
 void AidaClient::RemoveAccessToken() {
   access_token_.clear();
 }
 
 void AidaClient::PrepareRequestOrFail(
     base::OnceCallback<
-        void(absl::variant<network::ResourceRequest, std::string>)> callback) {
+        void(std::variant<network::ResourceRequest, std::string>)> callback) {
   if (!access_token_.empty() && base::Time::Now() < access_token_expiration_) {
     PrepareAidaRequest(std::move(callback));
     return;
@@ -176,7 +167,7 @@ void AidaClient::PrepareRequestOrFail(
   CoreAccountId account_id =
       identity_manager->GetPrimaryAccountId(signin::ConsentLevel::kSignin);
   access_token_fetcher_ = identity_manager->CreateAccessTokenFetcherForAccount(
-      account_id, "AIDA client", signin::ScopeSet{aida_scope_},
+      account_id, signin::OAuthConsumerId::kDevtoolsAida,
       base::BindOnce(&AidaClient::AccessTokenFetchFinished,
                      base::Unretained(this), std::move(callback)),
       signin::AccessTokenFetcher::Mode::kImmediate);
@@ -184,7 +175,7 @@ void AidaClient::PrepareRequestOrFail(
 
 void AidaClient::AccessTokenFetchFinished(
     base::OnceCallback<
-        void(absl::variant<network::ResourceRequest, std::string>)> callback,
+        void(std::variant<network::ResourceRequest, std::string>)> callback,
     GoogleServiceAuthError error,
     signin::AccessTokenInfo access_token_info) {
   if (error.state() != GoogleServiceAuthError::NONE) {
@@ -201,11 +192,10 @@ void AidaClient::AccessTokenFetchFinished(
 
 void AidaClient::PrepareAidaRequest(
     base::OnceCallback<
-        void(absl::variant<network::ResourceRequest, std::string>)> callback) {
+        void(std::variant<network::ResourceRequest, std::string>)> callback) {
   CHECK(!access_token_.empty());
 
   network::ResourceRequest aida_request;
-  aida_request.url = GURL(aida_endpoint_);
   aida_request.load_flags = net::LOAD_DISABLE_CACHE;
   aida_request.credentials_mode = network::mojom::CredentialsMode::kOmit;
   aida_request.method = "POST";

@@ -14,7 +14,6 @@
 #include "base/test/test_future.h"
 #include "base/time/time.h"
 #include "chrome/browser/ash/system/user_removal_manager.h"
-#include "chrome/test/base/scoped_testing_local_state.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "components/policy/core/common/cloud/mock_cloud_policy_client.h"
 #include "components/policy/core/common/cloud/policy_invalidation_scope.h"
@@ -68,7 +67,8 @@ std::unique_ptr<RemoteCommandJob> CreateWipeUsersJob(
   command_proto.set_age_of_command(age_of_command.InMilliseconds());
 
   // Create the job and validate.
-  auto job = std::make_unique<DeviceCommandWipeUsersJob>(service);
+  auto job = std::make_unique<DeviceCommandWipeUsersJob>(
+      TestingBrowserProcess::GetGlobal()->local_state(), service);
 
   EXPECT_TRUE(job->Init(base::TimeTicks::Now(), command_proto,
                         enterprise_management::SignedData()));
@@ -90,14 +90,12 @@ class DeviceCommandWipeUsersJobTest : public testing::Test {
 
   content::BrowserTaskEnvironment task_environment_;
 
-  ScopedTestingLocalState local_state_;
   const std::unique_ptr<MockCloudPolicyClient> client_;
   const std::unique_ptr<TestingRemoteCommandsService> service_;
 };
 
 DeviceCommandWipeUsersJobTest::DeviceCommandWipeUsersJobTest()
-    : local_state_(TestingBrowserProcess::GetGlobal()),
-      client_(std::make_unique<MockCloudPolicyClient>()),
+    : client_(std::make_unique<MockCloudPolicyClient>()),
       service_(std::make_unique<TestingRemoteCommandsService>(client_.get())) {}
 
 DeviceCommandWipeUsersJobTest::~DeviceCommandWipeUsersJobTest() = default;

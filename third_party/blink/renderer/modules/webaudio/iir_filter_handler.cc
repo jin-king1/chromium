@@ -2,15 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "third_party/blink/renderer/modules/webaudio/iir_filter_handler.h"
 
 #include <memory>
 
+#include "base/compiler_specific.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/inspector/console_message.h"
 #include "third_party/blink/renderer/modules/webaudio/audio_node.h"
@@ -21,6 +17,7 @@
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_copier_base.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
+#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 
 namespace blink {
 
@@ -47,25 +44,25 @@ IIRFilterHandler::~IIRFilterHandler() {
 
 // Get the magnitude and phase response of the filter at the given set of
 // frequencies (in Hz). The phase response is in radians.
-void IIRFilterHandler::GetFrequencyResponse(int n_frequencies,
-                                            const float* frequency_hz,
-                                            float* mag_response,
-                                            float* phase_response) const {
-  DCHECK_GE(n_frequencies, 0);
-  DCHECK(frequency_hz);
-  DCHECK(mag_response);
-  DCHECK(phase_response);
+void IIRFilterHandler::GetFrequencyResponse(
+    base::span<const float> frequency_hz,
+    base::span<float> mag_response,
+    base::span<float> phase_response) const {
+  DCHECK(!frequency_hz.empty());
+  DCHECK(!mag_response.empty());
+  DCHECK(!phase_response.empty());
 
-  Vector<float> frequency(n_frequencies);
+  const wtf_size_t size = base::checked_cast<wtf_size_t>(frequency_hz.size());
+  Vector<float> frequency(size);
 
   // Convert from frequency in Hz to normalized frequency (0 -> 1),
   // with 1 equal to the Nyquist frequency.
-  for (int k = 0; k < n_frequencies; ++k) {
+  for (wtf_size_t k = 0; k < size; ++k) {
     frequency[k] = frequency_hz[k] / nyquist_frequency_;
   }
 
-  response_kernel_->GetFrequencyResponse(n_frequencies, frequency.data(),
-                                         mag_response, phase_response);
+  response_kernel_->GetFrequencyResponse(frequency, mag_response,
+                                         phase_response);
 }
 
 IIRFilterHandler::IIRFilterHandler(AudioNode& node,
@@ -90,8 +87,8 @@ IIRFilterHandler::IIRFilterHandler(AudioNode& node,
 
   feedforward_.Allocate(feedforward_length);
   feedback_.Allocate(feedback_length);
-  feedforward_.CopyToRange(feedforward_coef.data(), 0, feedforward_length);
-  feedback_.CopyToRange(feedback_coef.data(), 0, feedback_length);
+  feedforward_.as_span().first(feedforward_length).copy_from(feedforward_coef);
+  feedback_.as_span().first(feedback_length).copy_from(feedback_coef);
 
   // Need to scale the feedback and feedforward coefficients appropriately.
   // (It's up to the caller to ensure feedbackCoef[0] is not 0.)
@@ -109,7 +106,7 @@ IIRFilterHandler::IIRFilterHandler(AudioNode& node,
     //
     // Thus, the feedback and feedforward coefficients need to be scaled by
     // 1/a[0].
-    const float scale = feedback_coef[0];
+    const double scale = feedback_coef[0];
     for (unsigned k = 1; k < feedback_length; ++k) {
       feedback_[k] /= scale;
     }
@@ -123,9 +120,8 @@ IIRFilterHandler::IIRFilterHandler(AudioNode& node,
   }
 
   response_kernel_ = std::make_unique<IIRFilter>(&feedforward_, &feedback_);
-  tail_time_ = response_kernel_->TailTime(
-      sample_rate, is_filter_stable,
-      node.context()->GetDeferredTaskHandler().RenderQuantumFrames());
+  tail_time_ = response_kernel_->TailTime(sample_rate, is_filter_stable,
+                                          node.context()->renderQuantumSize());
 }
 
 void IIRFilterHandler::Process(uint32_t frames_to_process) {
@@ -149,9 +145,10 @@ void IIRFilterHandler::Process(uint32_t frames_to_process) {
       DCHECK_EQ(source_bus->NumberOfChannels(), kernels_.size());
 
       for (unsigned i = 0; i < kernels_.size(); ++i) {
-        kernels_[i]->Process(source_bus->Channel(i)->Data(),
-                             destination_bus->Channel(i)->MutableData(),
-                             frames_to_process);
+        kernels_[i]->Process(
+            source_bus->Channel(i)->Span().first(frames_to_process),
+            destination_bus->Channel(i)->MutableSpan().first(
+                frames_to_process));
       }
     } else {
       // Unfortunately, the kernel is being processed by another thread.
@@ -224,7 +221,7 @@ void IIRFilterHandler::CheckNumberOfChannelsForInput(AudioNodeInput* input) {
     // the chain...
     Output(0).SetNumberOfChannels(number_of_channels);
 
-    // Re-initialize the processor with the new channel count.
+    // Re-initialize the handler with the new channel count.
     Initialize();
   }
 
@@ -253,7 +250,7 @@ bool IIRFilterHandler::HasNonFiniteOutput() const {
 
   for (wtf_size_t k = 0; k < output_bus->NumberOfChannels(); ++k) {
     AudioChannel* channel = output_bus->Channel(k);
-    if (channel->length() > 0 && !std::isfinite(channel->Data()[0])) {
+    if (channel->length() > 0 && !std::isfinite(channel->Span()[0])) {
       return true;
     }
   }
@@ -271,7 +268,8 @@ void IIRFilterHandler::NotifyBadState() const {
       MakeGarbageCollected<ConsoleMessage>(
           mojom::blink::ConsoleMessageSource::kJavaScript,
           mojom::blink::ConsoleMessageLevel::kWarning,
-          NodeTypeName() + ": state is bad, probably due to unstable filter."));
+          StrCat({NodeTypeName(),
+                  ": state is bad, probably due to unstable filter."})));
 }
 
 }  // namespace blink

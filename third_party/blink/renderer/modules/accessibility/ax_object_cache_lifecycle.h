@@ -7,11 +7,9 @@
 
 #include "base/check_op.h"
 #include "base/dcheck_is_on.h"
+#include "third_party/blink/renderer/modules/modules_export.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
-
-namespace WTF {
-class String;
-}  // namespace WTF
+#include "third_party/blink/renderer/platform/wtf/forward.h"
 
 namespace blink {
 
@@ -22,7 +20,7 @@ namespace blink {
 // - Ensure completeness of generated data, such as the tree structure and
 //   cached properties, as appropriate for the given stage.
 
-class AXObjectCacheLifecycle {
+class MODULES_EXPORT AXObjectCacheLifecycle {
   DISALLOW_NEW();
 
  public:
@@ -88,7 +86,7 @@ class AXObjectCacheLifecycle {
   void AdvanceTo(LifecycleState);
   void EnsureStateAtMost(LifecycleState);
 
-  WTF::String ToString() const;
+  String ToString() const;
 
 #if DCHECK_IS_ON()
   bool CanAdvanceTo(LifecycleState) const;

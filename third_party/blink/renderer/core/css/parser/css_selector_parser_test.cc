@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "third_party/blink/renderer/core/css/parser/css_selector_parser.h"
 
 #include "testing/gtest/include/gtest/gtest.h"
@@ -19,12 +14,30 @@
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/execution_context/security_context.h"
 #include "third_party/blink/renderer/core/testing/dummy_page_holder.h"
+#include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
+#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 #include "third_party/blink/renderer/platform/testing/task_environment.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 
 namespace blink {
+
+namespace {
+
+HeapVector<CSSSelector> ParseSelector(String s) {
+  HeapVector<CSSSelector> arena;
+  CSSParserTokenStream stream(s);
+  base::span<CSSSelector> vector = CSSSelectorParser::ParseSelector(
+      stream,
+      MakeGarbageCollected<CSSParserContext>(
+          kUASheetMode, SecureContextMode::kInsecureContext),
+      CSSNestingType::kNone, /*parent_rule_for_nesting=*/nullptr,
+      /*semicolon_aborts_nested_selector=*/false, nullptr, arena);
+  return HeapVector<CSSSelector>(vector);
+}
+
+}  // namespace
 
 typedef struct {
   const char* input;
@@ -199,6 +212,8 @@ TEST(CSSSelectorParserTest, ValidSimpleAfterPseudoElementInCompound) {
 
 TEST(CSSSelectorParserTest, InvalidSimpleAfterPseudoElementInCompound) {
   test::TaskEnvironment task_environment;
+  // Ensure the feature is off so that ::after:hover etc. remain invalid.
+  ScopedPseudoElementsHoverableForTest scoped_feature(false);
   const char* test_cases[] = {
       "::before#id",
       "::after:hover",
@@ -235,6 +250,31 @@ TEST(CSSSelectorParserTest, InvalidSimpleAfterPseudoElementInCompound) {
   }
 }
 
+TEST(CSSSelectorParserTest,
+     UserActionPseudoClassValidAfterHoverablePseudoElements) {
+  test::TaskEnvironment task_environment;
+  ScopedPseudoElementsHoverableForTest scoped_feature(true);
+  // When PseudoElementsHoverable is enabled, user-action pseudo-classes
+  // like :hover are valid after ::before, ::after, and ::marker.
+  const char* test_cases[] = {
+      "::after:hover",
+      "::before:hover",
+      "::marker:hover",
+  };
+
+  HeapVector<CSSSelector> arena;
+  for (StringView test_case : test_cases) {
+    CSSParserTokenStream stream(test_case);
+    base::span<CSSSelector> vector = CSSSelectorParser::ParseSelector(
+        stream,
+        MakeGarbageCollected<CSSParserContext>(
+            kHTMLStandardMode, SecureContextMode::kInsecureContext),
+        CSSNestingType::kNone, /*parent_rule_for_nesting=*/nullptr,
+        /*semicolon_aborts_nested_selector=*/false, nullptr, arena);
+    EXPECT_GT(vector.size(), 0u) << test_case;
+  }
+}
+
 TEST(CSSSelectorParserTest, TransitionPseudoStyles) {
   test::TaskEnvironment task_environment;
   struct TestCase {
@@ -251,6 +291,8 @@ TEST(CSSSelectorParserTest, TransitionPseudoStyles) {
        CSSSelector::kPseudoViewTransitionGroup},
       {"html::view-transition-image-pair(foo)", true, "foo",
        CSSSelector::kPseudoViewTransitionImagePair},
+      {"html::view-transition-group-children(foo)", true, "foo",
+       CSSSelector::kPseudoViewTransitionGroupChildren},
       {"html::view-transition-old(foo)", true, "foo",
        CSSSelector::kPseudoViewTransitionOld},
       {"html::view-transition-new(foo)", true, "foo",
@@ -559,31 +601,249 @@ TEST(CSSSelectorParserTest, ColumnPseudo) {
   }
 }
 
+TEST(CSSSelectorParserTest, PseudoChild_Before_FeatureDisabled) {
+  ScopedCSSLogicalCombinationPseudoForTest scoped_feature(false);
+  test::TaskEnvironment task_environment;
+
+  HeapVector<CSSSelector> vector = ParseSelector("div::before");
+  ASSERT_EQ(2u, vector.size());
+
+  // div
+  EXPECT_EQ(CSSSelector::MatchType::kTag, vector[0].Match());
+  EXPECT_EQ(CSSSelector::RelationType::kSubSelector, vector[0].Relation());
+
+  // ::before
+  EXPECT_EQ(CSSSelector::MatchType::kPseudoElement, vector[1].Match());
+  EXPECT_EQ(CSSSelector::RelationType::kSubSelector, vector[1].Relation());
+  EXPECT_EQ(CSSSelector::PseudoType::kPseudoBefore, vector[1].GetPseudoType());
+}
+
+TEST(CSSSelectorParserTest, PseudoChild_Before) {
+  ScopedCSSLogicalCombinationPseudoForTest scoped_feature(true);
+  test::TaskEnvironment task_environment;
+
+  HeapVector<CSSSelector> vector = ParseSelector("div::before");
+  ASSERT_EQ(2u, vector.size());
+
+  // ::before
+  EXPECT_EQ(CSSSelector::MatchType::kPseudoElement, vector[0].Match());
+  EXPECT_EQ(CSSSelector::RelationType::kPseudoChild, vector[0].Relation());
+  EXPECT_EQ(CSSSelector::PseudoType::kPseudoBefore, vector[0].GetPseudoType());
+
+  // div
+  EXPECT_EQ(CSSSelector::MatchType::kTag, vector[1].Match());
+  EXPECT_EQ(CSSSelector::RelationType::kSubSelector, vector[1].Relation());
+}
+
+TEST(CSSSelectorParserTest, PseudoChild_After) {
+  ScopedCSSLogicalCombinationPseudoForTest scoped_feature(true);
+  test::TaskEnvironment task_environment;
+
+  HeapVector<CSSSelector> vector = ParseSelector("div::after");
+  ASSERT_EQ(2u, vector.size());
+
+  // ::after
+  EXPECT_EQ(CSSSelector::MatchType::kPseudoElement, vector[0].Match());
+  EXPECT_EQ(CSSSelector::RelationType::kPseudoChild, vector[0].Relation());
+  EXPECT_EQ(CSSSelector::PseudoType::kPseudoAfter, vector[0].GetPseudoType());
+
+  // div
+  EXPECT_EQ(CSSSelector::MatchType::kTag, vector[1].Match());
+  EXPECT_EQ(CSSSelector::RelationType::kSubSelector, vector[1].Relation());
+}
+
+TEST(CSSSelectorParserTest, PseudoChild_BeforeMarker) {
+  ScopedCSSLogicalCombinationPseudoForTest scoped_feature(true);
+  test::TaskEnvironment task_environment;
+
+  HeapVector<CSSSelector> vector = ParseSelector("div::before::marker");
+  ASSERT_EQ(3u, vector.size());
+
+  // ::marker
+  EXPECT_EQ(CSSSelector::MatchType::kPseudoElement, vector[0].Match());
+  EXPECT_EQ(CSSSelector::RelationType::kPseudoChild, vector[0].Relation());
+  EXPECT_EQ(CSSSelector::PseudoType::kPseudoMarker, vector[0].GetPseudoType());
+
+  // ::before
+  EXPECT_EQ(CSSSelector::MatchType::kPseudoElement, vector[1].Match());
+  EXPECT_EQ(CSSSelector::RelationType::kPseudoChild, vector[1].Relation());
+  EXPECT_EQ(CSSSelector::PseudoType::kPseudoBefore, vector[1].GetPseudoType());
+
+  // div
+  EXPECT_EQ(CSSSelector::MatchType::kTag, vector[2].Match());
+  EXPECT_EQ(CSSSelector::RelationType::kSubSelector, vector[2].Relation());
+}
+
+TEST(CSSSelectorParserTest, PseudoChild_UniversalOriginating) {
+  ScopedCSSLogicalCombinationPseudoForTest scoped_feature(true);
+  test::TaskEnvironment task_environment;
+
+  HeapVector<CSSSelector> vector = ParseSelector("*::after");
+  ASSERT_EQ(2u, vector.size());
+
+  // ::after
+  EXPECT_EQ(CSSSelector::MatchType::kPseudoElement, vector[0].Match());
+  EXPECT_EQ(CSSSelector::RelationType::kPseudoChild, vector[0].Relation());
+  EXPECT_EQ(CSSSelector::PseudoType::kPseudoAfter, vector[0].GetPseudoType());
+
+  // *
+  EXPECT_EQ(CSSSelector::MatchType::kUniversalTag, vector[1].Match());
+  EXPECT_EQ(CSSSelector::RelationType::kSubSelector, vector[1].Relation());
+}
+
+TEST(CSSSelectorParserTest, PseudoChild_NoOriginating) {
+  ScopedCSSLogicalCombinationPseudoForTest scoped_feature(true);
+  test::TaskEnvironment task_environment;
+
+  HeapVector<CSSSelector> vector = ParseSelector("::after");
+  ASSERT_EQ(2u, vector.size());
+
+  // ::after
+  EXPECT_EQ(CSSSelector::MatchType::kPseudoElement, vector[0].Match());
+  EXPECT_EQ(CSSSelector::RelationType::kPseudoChild, vector[0].Relation());
+  EXPECT_EQ(CSSSelector::PseudoType::kPseudoAfter, vector[0].GetPseudoType());
+
+  // * (implicitly inserted)
+  EXPECT_EQ(CSSSelector::MatchType::kUniversalTag, vector[1].Match());
+  EXPECT_EQ(CSSSelector::RelationType::kSubSelector, vector[1].Relation());
+}
+
+TEST(CSSSelectorParserTest, PseudoChild_InPseudoIs) {
+  ScopedCSSLogicalCombinationPseudoForTest scoped_feature(true);
+  test::TaskEnvironment task_environment;
+
+  HeapVector<CSSSelector> vector = ParseSelector(":is(div::after)");
+  ASSERT_EQ(1u, vector.size());
+
+  // :is()
+  EXPECT_EQ(CSSSelector::MatchType::kPseudoClass, vector[0].Match());
+  EXPECT_EQ(CSSSelector::RelationType::kSubSelector, vector[0].Relation());
+  EXPECT_EQ(CSSSelector::PseudoType::kPseudoIs, vector[0].GetPseudoType());
+  ASSERT_TRUE(vector[0].SelectorList());
+
+  // Inside :is():
+
+  // ::after
+  const CSSSelector* first = vector[0].SelectorList()->First();
+  ASSERT_TRUE(first);
+  EXPECT_EQ(CSSSelector::MatchType::kPseudoElement, first->Match());
+  EXPECT_EQ(CSSSelector::RelationType::kPseudoChild, first->Relation());
+  EXPECT_EQ(CSSSelector::PseudoType::kPseudoAfter, first->GetPseudoType());
+
+  // div
+  const CSSSelector* second = first->NextSimpleSelector();
+  ASSERT_TRUE(second);
+  EXPECT_EQ(CSSSelector::MatchType::kTag, second->Match());
+  EXPECT_EQ(CSSSelector::RelationType::kSubSelector, second->Relation());
+}
+
+TEST(CSSSelectorParserTest, PseudoChild_InPseudoWhere) {
+  ScopedCSSLogicalCombinationPseudoForTest scoped_feature(true);
+  test::TaskEnvironment task_environment;
+
+  HeapVector<CSSSelector> vector = ParseSelector(":where(div::after)");
+  ASSERT_EQ(1u, vector.size());
+
+  // :where()
+  EXPECT_EQ(CSSSelector::MatchType::kPseudoClass, vector[0].Match());
+  EXPECT_EQ(CSSSelector::RelationType::kSubSelector, vector[0].Relation());
+  EXPECT_EQ(CSSSelector::PseudoType::kPseudoWhere, vector[0].GetPseudoType());
+  ASSERT_TRUE(vector[0].SelectorList());
+
+  // Inside :where():
+
+  // ::after
+  const CSSSelector* first = vector[0].SelectorList()->First();
+  ASSERT_TRUE(first);
+  EXPECT_EQ(CSSSelector::MatchType::kPseudoElement, first->Match());
+  EXPECT_EQ(CSSSelector::RelationType::kPseudoChild, first->Relation());
+  EXPECT_EQ(CSSSelector::PseudoType::kPseudoAfter, first->GetPseudoType());
+
+  // div
+  const CSSSelector* second = first->NextSimpleSelector();
+  ASSERT_TRUE(second);
+  EXPECT_EQ(CSSSelector::MatchType::kTag, second->Match());
+  EXPECT_EQ(CSSSelector::RelationType::kSubSelector, second->Relation());
+}
+
+TEST(CSSSelectorParserTest, PseudoChild_InPseudoNot) {
+  ScopedCSSLogicalCombinationPseudoForTest scoped_feature(true);
+  test::TaskEnvironment task_environment;
+
+  HeapVector<CSSSelector> vector = ParseSelector(":not(div::after)");
+  ASSERT_EQ(1u, vector.size());
+
+  // :not()
+  EXPECT_EQ(CSSSelector::MatchType::kPseudoClass, vector[0].Match());
+  EXPECT_EQ(CSSSelector::RelationType::kSubSelector, vector[0].Relation());
+  EXPECT_EQ(CSSSelector::PseudoType::kPseudoNot, vector[0].GetPseudoType());
+  ASSERT_TRUE(vector[0].SelectorList());
+
+  // Inside :not():
+
+  // ::after
+  const CSSSelector* first = vector[0].SelectorList()->First();
+  ASSERT_TRUE(first);
+  EXPECT_EQ(CSSSelector::MatchType::kPseudoElement, first->Match());
+  EXPECT_EQ(CSSSelector::RelationType::kPseudoChild, first->Relation());
+  EXPECT_EQ(CSSSelector::PseudoType::kPseudoAfter, first->GetPseudoType());
+
+  // div
+  const CSSSelector* second = first->NextSimpleSelector();
+  ASSERT_TRUE(second);
+  EXPECT_EQ(CSSSelector::MatchType::kTag, second->Match());
+  EXPECT_EQ(CSSSelector::RelationType::kSubSelector, second->Relation());
+}
+
+TEST(CSSSelectorParserTest, PseudoChild_InPseudoList_FeatureDisabled) {
+  ScopedCSSLogicalCombinationPseudoForTest scoped_feature(false);
+  test::TaskEnvironment task_environment;
+
+  // Note: :is()/:where() parses a *forgiving* selector list,
+  // which means an invalid argument doesn't make the outer selector
+  // invalid.
+
+  // :is()
+  HeapVector<CSSSelector> is = ParseSelector(":is(div::after)");
+  ASSERT_EQ(1u, is.size());
+  ASSERT_TRUE(is[0].SelectorList());
+  EXPECT_FALSE(is[0].SelectorList()->IsValid());
+
+  // :where()
+  HeapVector<CSSSelector> where = ParseSelector(":where(div::after)");
+  ASSERT_EQ(1u, where.size());
+  ASSERT_TRUE(where[0].SelectorList());
+  EXPECT_FALSE(where[0].SelectorList()->IsValid());
+
+  // :not() (unforgiving)
+  EXPECT_TRUE(ParseSelector(":not(div::after)").empty());
+}
+
 // Pseudo-elements are not valid within :is() as per the spec:
 // https://drafts.csswg.org/selectors-4/#matches
 static const SelectorTestCase invalid_pseudo_is_argments_data[] = {
     // clang-format off
-    {":is(::-webkit-progress-bar)", ":is()"},
-    {":is(::-webkit-progress-value)", ":is()"},
-    {":is(::-webkit-slider-runnable-track)", ":is()"},
-    {":is(::-webkit-slider-thumb)", ":is()"},
-    {":is(::after)", ":is()"},
-    {":is(::backdrop)", ":is()"},
-    {":is(::before)", ":is()"},
-    {":is(::cue)", ":is()"},
-    {":is(::first-letter)", ":is()"},
-    {":is(::first-line)", ":is()"},
-    {":is(::grammar-error)", ":is()"},
-    {":is(::marker)", ":is()"},
-    {":is(::placeholder)", ":is()"},
-    {":is(::selection)", ":is()"},
-    {":is(::slotted)", ":is()"},
-    {":is(::spelling-error)", ":is()"},
-    {":is(:after)", ":is()"},
-    {":is(:before)", ":is()"},
-    {":is(:cue)", ":is()"},
-    {":is(:first-letter)", ":is()"},
-    {":is(:first-line)", ":is()"},
+    {":is(::-webkit-progress-bar)"},
+    {":is(::-webkit-progress-value)"},
+    {":is(::-webkit-slider-runnable-track)"},
+    {":is(::-webkit-slider-thumb)"},
+    {":is(::after)"},
+    {":is(::backdrop)"},
+    {":is(::before)"},
+    {":is(::cue)"},
+    {":is(::first-letter)"},
+    {":is(::first-line)"},
+    {":is(::grammar-error)"},
+    {":is(::marker)"},
+    {":is(::placeholder)"},
+    {":is(::selection)"},
+    {":is(::slotted)"},
+    {":is(::spelling-error)"},
+    {":is(:after)"},
+    {":is(:before)"},
+    {":is(:cue)"},
+    {":is(:first-letter)"},
+    {":is(:first-line)"},
     // If the selector is nest-containing, it serializes as-is:
     // https://drafts.csswg.org/css-nesting-1/#syntax
     {":is(:unknown(&))"},
@@ -597,40 +857,37 @@ INSTANTIATE_TEST_SUITE_P(InvalidPseudoIsArguments,
 static const SelectorTestCase is_where_nesting_data[] = {
     // clang-format off
     // These pseudos only accept compound selectors:
-    {"::slotted(:is(.a .b))", "::slotted(:is())"},
-    {"::slotted(:is(.a + .b))", "::slotted(:is())"},
-    {"::slotted(:is(.a, .b + .c))", "::slotted(:is(.a))"},
-    {":host(:is(.a .b))", ":host(:is())"},
-    {":host(:is(.a + .b))", ":host(:is())"},
-    {":host(:is(.a, .b + .c))", ":host(:is(.a))"},
-    {":host-context(:is(.a .b))", ":host-context(:is())"},
-    {":host-context(:is(.a + .b))", ":host-context(:is())"},
-    {":host-context(:is(.a, .b + .c))", ":host-context(:is(.a))"},
-    {"::cue(:is(.a .b))", "::cue(:is())"},
-    {"::cue(:is(.a + .b))", "::cue(:is())"},
-    {"::cue(:is(.a, .b + .c))", "::cue(:is(.a))"},
+    {"::slotted(:is(.a .b))"},
+    {"::slotted(:is(.a + .b))"},
+    {"::slotted(:is(.a, .b + .c))"},
+    {":host(:is(.a .b))"},
+    {":host(:is(.a + .b))"},
+    {":host(:is(.a, .b + .c))"},
+    {":host-context(:is(.a .b))"},
+    {":host-context(:is(.a + .b))"},
+    {":host-context(:is(.a, .b + .c))"},
+    {"::cue(:is(.a .b))"},
+    {"::cue(:is(.a + .b))"},
+    {"::cue(:is(.a, .b + .c))"},
     // Structural pseudos are not allowed after ::part().
-    {"::part(foo):is(.a)", "::part(foo):is()"},
-    {"::part(foo):is(.a:hover)", "::part(foo):is()"},
-    {"::part(foo):is(:hover.a)", "::part(foo):is()"},
-    {"::part(foo):is(:hover + .a)", "::part(foo):is()"},
-    {"::part(foo):is(.a + :hover)", "::part(foo):is()"},
-    {"::part(foo):is(:hover:first-child)", "::part(foo):is()"},
-    {"::part(foo):is(:first-child:hover)", "::part(foo):is()"},
-    {"::part(foo):is(:hover, :where(.a))",
-     "::part(foo):is(:hover, :where())"},
-    {"::part(foo):is(:hover, .a)", "::part(foo):is(:hover)"},
-    {"::part(foo):is(:state(bar), .a)", "::part(foo):is(:state(bar))"},
-    {"::part(foo):is(:first-child)", "::part(foo):is()"},
+    {"::part(foo):is(.a)"},
+    {"::part(foo):is(.a:hover)"},
+    {"::part(foo):is(:hover.a)"},
+    {"::part(foo):is(:hover + .a)"},
+    {"::part(foo):is(.a + :hover)"},
+    {"::part(foo):is(:hover:first-child)"},
+    {"::part(foo):is(:first-child:hover)"},
+    {"::part(foo):is(:hover, :where(.a))"},
+    {"::part(foo):is(:hover, .a)"},
+    {"::part(foo):is(:state(bar), .a)"},
+    {"::part(foo):is(:first-child)"},
     // Only scrollbar pseudos after kPseudoScrollbar:
-    {"::-webkit-scrollbar:is(:focus)", "::-webkit-scrollbar:is()"},
+    {"::-webkit-scrollbar:is(:focus)"},
     // Only :window-inactive after kPseudoSelection:
-    {"::selection:is(:focus)", "::selection:is()"},
+    {"::selection:is(:focus)"},
     // Only user-action pseudos after webkit pseudos:
-    {"::-webkit-input-placeholder:is(:enabled)",
-     "::-webkit-input-placeholder:is()"},
-    {"::-webkit-input-placeholder:is(:not(:enabled))",
-     "::-webkit-input-placeholder:is()"},
+    {"::-webkit-input-placeholder:is(:enabled)"},
+    {"::-webkit-input-placeholder:is(:not(:enabled))"},
 
     // Valid selectors:
     {":is(.a, .b)"},
@@ -680,23 +937,24 @@ static const SelectorTestCase is_where_forgiving_data[] = {
     // clang-format off
     {":is():where()"},
     {":is(.a, .b):where(.c)"},
-    {":is(.a, :unknown, .b)", ":is(.a, .b)"},
-    {":where(.a, :unknown, .b)", ":where(.a, .b)"},
-    {":is(.a, :unknown)", ":is(.a)"},
-    {":is(:unknown, .a)", ":is(.a)"},
-    {":is(:unknown)", ":is()"},
-    {":is(:unknown, :where(.a))", ":is(:where(.a))"},
-    {":is(:unknown, :where(:unknown))", ":is(:where())"},
-    {":is(.a, :is(.b, :unknown), .c)", ":is(.a, :is(.b), .c)"},
-    {":host(:is(.a, .b + .c, .d))", ":host(:is(.a, .d))"},
-    {":is(,,  ,, )", ":is()"},
-    {":is(.a,,,,)", ":is(.a)"},
-    {":is(,,.a,,)", ":is(.a)"},
-    {":is(,,,,.a)", ":is(.a)"},
-    {":is(@x {,.b,}, .a)", ":is(.a)"},
-    {":is({,.b,} @x, .a)", ":is(.a)"},
-    {":is((@x), .a)", ":is(.a)"},
-    {":is((.b), .a)", ":is(.a)"},
+    {":is(.a, :unknown, .b)"},
+    {":where(.a, :unknown, .b)"},
+    {":is(.a, :unknown)"},
+    {":is(:unknown, .a)"},
+    {":is(:unknown)"},
+    {":is(:unknown, :where(.a))"},
+    {":is(:unknown, :where(:unknown))"},
+    {":is(.a, :is(.b, :unknown), .c)"},
+    {":host(:is(.a, .b + .c, .d))"},
+    {":host(:is(,,,,))", ":host(:is(, , , , ))"},
+    {":is(,,  ,, )", ":is(, , , , )"},
+    {":is(.a,,,,)", ":is(.a, , , , )"},
+    {":is(,,.a,,)", ":is(, , .a, , )"},
+    {":is(,,,,.a)", ":is(, , , , .a)"},
+    {":is(@x {,.b,}, .a)"},
+    {":is({,.b,} @x, .a)"},
+    {":is((@x), .a)"},
+    {":is((.b), .a)"},
     // clang-format on
 };
 
@@ -1081,9 +1339,9 @@ static const SelectorTestCase invalid_pseudo_has_arguments_data[] = {
     {":has(.a, :has(.b), .c)", ""},
     {":has(.a, :has(.b))", ""},
     {":has(:has(.a), .b)", ""},
-    {":has(:is(:has(.a)))", ":has(:is())"},
+    {":has(:is(:has(.a)))"},
 
-    // restrict use of pseudo element inside :has()
+    // restrict use of pseudo-element inside :has()
     {":has(::-webkit-progress-bar)", ""},
     {":has(::-webkit-progress-value)", ""},
     {":has(::-webkit-slider-runnable-track)", ""},
@@ -1134,7 +1392,7 @@ static const SelectorTestCase has_nesting_data[] = {
     {":host(:has(.a))", ""},
     {":host-context(:has(.a))", ""},
     {"::cue(:has(.a))", ""},
-    // :has() is not allowed after pseudo elements:
+    // :has() is not allowed after pseudo-elements:
     {"::part(foo):has(:hover)", ""},
     {"::part(foo):has(:hover:focus)", ""},
     {"::part(foo):has(:focus, :hover)", ""},
@@ -1187,19 +1445,18 @@ static std::optional<CSSSelector> GetImplicitlyAddedSelector(
     return std::nullopt;
   }
 
-  Vector<const CSSSelector*> selectors;
+  const CSSSelector* leftmost_simple = nullptr;
   for (const CSSSelector* selector = list->First(); selector;
        selector = selector->NextSimpleSelector()) {
-    selectors.push_back(selector);
+    leftmost_simple = selector;
   }
-  // The back of `selectors` now contains the leftmost simple CSSSelector.
 
-  const CSSSelector* back = !selectors.empty() ? selectors.back() : nullptr;
-  if (!back || back->Match() != CSSSelector::kPseudoClass ||
-      !back->IsImplicit()) {
+  if (!leftmost_simple ||
+      leftmost_simple->Match() != CSSSelector::kPseudoClass ||
+      !leftmost_simple->IsImplicit()) {
     return std::nullopt;
   }
-  return *back;
+  return *leftmost_simple;
 }
 
 static std::optional<CSSSelector::PseudoType> GetImplicitlyAddedPseudo(
@@ -1307,7 +1564,7 @@ static HeapVector<CSSSelector> FlattenSelector(const CSSSelector* selector) {
     if (const CSSSelectorList* list = selector->SelectorList()) {
       for (const CSSSelector* s = list->First(); s;
            s = CSSSelectorList::Next(*s)) {
-        result.AppendVector(FlattenSelector(s));
+        result.append_range(FlattenSelector(s));
       }
     }
     selector = selector->NextSimpleSelector();
@@ -1484,6 +1741,1611 @@ TEST(CSSSelectorParserTest, ImplicitSelectorIsScopeContaining) {
   EXPECT_TRUE(GetImplicitlyAddedSelector(".a", CSSNestingType::kScope)
                   .value_or(CSSSelector())
                   .IsScopeContaining());
+}
+
+// Helper function for :lang() parsing validation tests
+bool ValidateLang(const String& selector_text) {
+  CSSSelectorList* selector_list =
+      css_test_helpers::ParseSelectorList(selector_text);
+  return selector_list && selector_list->First();
+}
+
+// This class is used to validate :lang() parsing against the RFC 4647 basic
+// language range grammar, regardless of the value of CSSLangExtendedRanges.
+// language-range = (1*8ALPHA *("-" 1*8alphanum)) / "*"
+class LangParsingInvariantTest : public testing::TestWithParam<bool>,
+                                 public ScopedCSSLangExtendedRangesForTest {
+ public:
+  LangParsingInvariantTest() : ScopedCSSLangExtendedRangesForTest(GetParam()) {}
+
+ private:
+  test::TaskEnvironment task_environment_;
+};
+
+INSTANTIATE_TEST_SUITE_P(CSSSelectorParser,
+                         LangParsingInvariantTest,
+                         testing::Bool());
+
+// Test class for values that only parse when the runtime flag is enabled.
+class LangParsingFlagDependentTest : public testing::TestWithParam<bool>,
+                                     public ScopedCSSLangExtendedRangesForTest {
+ public:
+  LangParsingFlagDependentTest()
+      : ScopedCSSLangExtendedRangesForTest(GetParam()) {}
+
+ private:
+  test::TaskEnvironment task_environment_;
+};
+
+INSTANTIATE_TEST_SUITE_P(CSSSelectorParser,
+                         LangParsingFlagDependentTest,
+                         testing::Bool());
+
+TEST_P(LangParsingInvariantTest, EmptyTest) {
+  EXPECT_FALSE(ValidateLang(":lang()"));
+}
+
+// A CSS ident containing a valid language range.
+TEST_P(LangParsingInvariantTest, LanguageRangeIdentTest) {
+  EXPECT_TRUE(ValidateLang(":lang(en)"));
+  EXPECT_TRUE(ValidateLang(":lang(pt-BR)"));
+  EXPECT_TRUE(ValidateLang(":lang(zh-Hant)"));
+  EXPECT_TRUE(ValidateLang(":lang(zh-cmn-Hans-CN)"));
+
+  // Whitespace around the ident is ignored.
+  EXPECT_TRUE(ValidateLang(":lang( en)"));
+  EXPECT_TRUE(ValidateLang(":lang(en )"));
+  EXPECT_TRUE(ValidateLang(":lang( en )"));
+}
+
+// A CSS ident can contain wildcards as long as they are escaped.
+TEST_P(LangParsingInvariantTest, EscapedWildcardsLanguageRangeIdentTest) {
+  EXPECT_TRUE(ValidateLang(":lang(\\*)"));
+  EXPECT_TRUE(ValidateLang(":lang(\\*-US)"));
+  EXPECT_TRUE(ValidateLang(":lang(en-\\*)"));
+  EXPECT_TRUE(ValidateLang(":lang(\\*-\\*)"));
+}
+
+// A CSS ident containing a malformed range should be accepted by the parser.
+TEST_P(LangParsingInvariantTest, MalformedLanguageRangeIdentTest) {
+  // Hyphens in unexpected positions.
+  EXPECT_TRUE(ValidateLang(":lang(--)"));
+  EXPECT_TRUE(ValidateLang(":lang(-en)"));
+  EXPECT_TRUE(ValidateLang(":lang(en-)"));
+  EXPECT_TRUE(ValidateLang(":lang(en--US)"));
+  EXPECT_TRUE(ValidateLang(":lang(en--23)"));
+  EXPECT_TRUE(ValidateLang(":lang(--2)"));
+
+  // Numbers in first tag.
+  EXPECT_TRUE(ValidateLang(":lang(en123)"));
+  EXPECT_TRUE(ValidateLang(":lang(e123n)"));
+
+  // Tag too long.
+  EXPECT_TRUE(ValidateLang(":lang(ninechars)"));
+  EXPECT_TRUE(ValidateLang(":lang(en-123456789)"));
+  EXPECT_TRUE(ValidateLang(":lang(en-ninechars)"));
+  EXPECT_TRUE(ValidateLang(":lang(en-US-ninechars)"));
+}
+
+// A CSS ident containing invalid characters should be accepted by the parser.
+TEST_P(LangParsingInvariantTest, InvalidCharsLanguageRangeIdentTest) {
+  // Non-ASCII characters.
+  EXPECT_TRUE(ValidateLang(":lang(café)"));
+  EXPECT_TRUE(ValidateLang(":lang(es-España)"));
+  EXPECT_TRUE(ValidateLang(":lang(日本語)"));
+
+  // Underscore and escaped special characters.
+  EXPECT_TRUE(ValidateLang(":lang(en_US)"));
+  EXPECT_TRUE(ValidateLang(":lang( my\\.thing )"));
+  EXPECT_TRUE(ValidateLang(":lang( you\\&me )"));
+  EXPECT_TRUE(ValidateLang(":lang( j\\ a )"));
+  EXPECT_TRUE(ValidateLang(":lang(me\\ \\&\\ you)"));
+}
+
+// Content is not a valid CSS ident.
+TEST_P(LangParsingInvariantTest, NotIdentTest) {
+  // Single hyphen is not a valid ident.
+  EXPECT_FALSE(ValidateLang(":lang(-)"));
+
+  // Hyphen followed by digit or wildcard.
+  EXPECT_FALSE(ValidateLang(":lang(-1)"));
+  EXPECT_FALSE(ValidateLang(":lang(-*)"));
+
+  // Digit at start.
+  EXPECT_FALSE(ValidateLang(":lang(3en)"));
+  EXPECT_FALSE(ValidateLang(":lang(1-en)"));
+  EXPECT_FALSE(ValidateLang(":lang(3.14)"));
+
+  // Unescaped wildcards and other special characters.
+  EXPECT_FALSE(ValidateLang(":lang(*)"));
+  EXPECT_FALSE(ValidateLang(":lang(en-*)"));
+  EXPECT_FALSE(ValidateLang(":lang(en*US)"));
+  EXPECT_FALSE(ValidateLang(":lang(+)"));
+  EXPECT_FALSE(ValidateLang(":lang(.)"));
+  EXPECT_FALSE(ValidateLang(":lang(!)"));
+  EXPECT_FALSE(ValidateLang(":lang(@)"));
+
+  // Space in the middle.
+  EXPECT_FALSE(ValidateLang(":lang( - en )"));
+  EXPECT_FALSE(ValidateLang(":lang( en - )"));
+  EXPECT_FALSE(ValidateLang(":lang( en -US )"));
+  EXPECT_FALSE(ValidateLang(":lang( en- US )"));
+  EXPECT_FALSE(ValidateLang(":lang( en - US )"));
+
+  // Invalid comma usage.
+  EXPECT_FALSE(ValidateLang(":lang(,)"));
+  EXPECT_FALSE(ValidateLang(":lang(en,)"));
+  EXPECT_FALSE(ValidateLang(":lang(,en)"));
+  EXPECT_FALSE(ValidateLang(":lang(en,,fr)"));
+  EXPECT_FALSE(ValidateLang(":lang(en, fr,)"));
+  EXPECT_FALSE(ValidateLang(":lang(en fr, de)"));
+
+  // Multiple values without comma separator.
+  EXPECT_FALSE(ValidateLang(":lang(en fr)"));
+  EXPECT_FALSE(ValidateLang(":lang(\"en\" fr)"));
+  EXPECT_FALSE(ValidateLang(":lang(en \"fr\")"));
+  EXPECT_FALSE(ValidateLang(":lang(\"en\" \"fr\")"));
+
+  // String combined with idents and hyphens.
+  EXPECT_FALSE(ValidateLang(":lang(en')"));
+  EXPECT_FALSE(ValidateLang(":lang(en\")"));
+  EXPECT_FALSE(ValidateLang(":lang(\"en\"- )"));
+  EXPECT_FALSE(ValidateLang(":lang(\"en\"-US)"));
+  EXPECT_FALSE(ValidateLang(":lang(en-\"US\")"));
+  EXPECT_FALSE(ValidateLang(":lang(\"en\"-\"US\")"));
+
+  // Numbers and dimensions.
+  EXPECT_FALSE(ValidateLang(":lang(123)"));
+  EXPECT_FALSE(ValidateLang(":lang(1e2)"));
+  EXPECT_FALSE(ValidateLang(":lang(50% )"));
+  EXPECT_FALSE(ValidateLang(":lang(2em )"));
+  EXPECT_FALSE(ValidateLang(":lang(#FFF )"));
+}
+
+// Values that are not parsed regardless of the runtime flag.
+TEST_P(LangParsingInvariantTest, InvalidListValues) {
+  EXPECT_FALSE(ValidateLang(":lang(en,  *  )"));
+  EXPECT_FALSE(ValidateLang(":lang(en,  -  )"));
+  EXPECT_FALSE(ValidateLang(":lang(en, en-*)"));
+  EXPECT_FALSE(ValidateLang(":lang(en, 123 )"));
+  EXPECT_FALSE(ValidateLang(":lang(en, 1e2 )"));
+  EXPECT_FALSE(ValidateLang(":lang(en, 50% )"));
+  EXPECT_FALSE(ValidateLang(":lang(en, 2em )"));
+  EXPECT_FALSE(ValidateLang(":lang(en, #FFF)"));
+}
+
+// Values that only parse when extended lang ranges are enabled.
+TEST_P(LangParsingFlagDependentTest, ExtendedLangRangesParsing) {
+  // Comma-separated lists.
+  EXPECT_EQ(ValidateLang(":lang(en, fr)"), GetParam());
+  EXPECT_EQ(ValidateLang(":lang(en-US, fr-FR, ja-JP)"), GetParam());
+  EXPECT_EQ(ValidateLang(":lang(en, fr, de)"), GetParam());
+
+  // Lists mixing valid and malformed ranges, as long as all parse as idents.
+  EXPECT_EQ(ValidateLang(":lang(my\\.thing, en)"), GetParam());
+  EXPECT_EQ(ValidateLang(":lang(fr, en_US, ---)"), GetParam());
+  EXPECT_EQ(ValidateLang(":lang( café, en_US, j\\ a )"), GetParam());
+
+  // Strings.
+  EXPECT_EQ(ValidateLang(":lang(\"en\")"), GetParam());
+  EXPECT_EQ(ValidateLang(":lang(\"\")"), GetParam());
+  EXPECT_EQ(ValidateLang(":lang(\"  \")"), GetParam());
+  EXPECT_EQ(ValidateLang(":lang(\"*\")"), GetParam());
+  EXPECT_EQ(ValidateLang(":lang(\"*-US\")"), GetParam());
+  EXPECT_EQ(ValidateLang(":lang(\"en-*\")"), GetParam());
+  EXPECT_EQ(ValidateLang(":lang(\"*-*-*\")"), GetParam());
+
+  // Single-quote strings.
+  EXPECT_EQ(ValidateLang(":lang('en')"), GetParam());
+  EXPECT_EQ(ValidateLang(":lang('*-US')"), GetParam());
+
+  // Strings containing characters that are not allowed unescaped in idents.
+  EXPECT_EQ(ValidateLang(":lang(\"en US\")"), GetParam());
+  EXPECT_EQ(ValidateLang(":lang(\"en.US\")"), GetParam());
+
+  // List with idents and strings.
+  EXPECT_EQ(ValidateLang(":lang(en, \"*-US\")"), GetParam());
+  EXPECT_EQ(ValidateLang(":lang(\"*\", en)"), GetParam());
+  EXPECT_EQ(ValidateLang(":lang(en, \"fr-*\", ja)"), GetParam());
+  EXPECT_EQ(ValidateLang(":lang(\"en\", fr)"), GetParam());
+
+  // List with whitespace.
+  EXPECT_EQ(ValidateLang(":lang(  en  ,  fr  ,  de  )"), GetParam());
+  EXPECT_EQ(ValidateLang(":lang( \"*\" , en )"), GetParam());
+}
+
+TEST(CSSSelectorParserTest, ToolFormSubmitActive_Disabled) {
+  ScopedWebMCPForTest scoped_webmcp_feature(false);
+  ScopedWebMCPTestingForTest scoped_webmcp_testing_feature(false);
+  ScopedWebMCPDeclarativeFileInputForTest scoped_webmcp_file_input_feature(
+      false);
+  ScopedWebMCPFormAssociatedCustomElementsForTest scoped_webmcp_face_feature(
+      false);
+  test::TaskEnvironment task_environment;
+
+  auto dummy_holder = std::make_unique<DummyPageHolder>(gfx::Size(500, 500));
+  Document& document = dummy_holder->GetDocument();
+  auto* context = MakeGarbageCollected<CSSParserContext>(document);
+
+  // Test that these pseudo classes are not valid with the WebMCP flag disabled
+  HeapVector<CSSSelector> arena;
+  CSSParserTokenStream stream1(":tool-form-active");
+  base::span<CSSSelector> tool_form_active = CSSSelectorParser::ParseSelector(
+      stream1, context, CSSNestingType::kNone, nullptr, false, nullptr, arena);
+  EXPECT_EQ(tool_form_active.size(), 0u);
+
+  CSSParserTokenStream stream2(":tool-submit-active");
+  base::span<CSSSelector> tool_submit_active = CSSSelectorParser::ParseSelector(
+      stream2, context, CSSNestingType::kNone, nullptr, false, nullptr, arena);
+  EXPECT_EQ(tool_submit_active.size(), 0u);
+}
+
+TEST(CSSSelectorParserTest, UnparsedInvalid) {
+  for (bool feature_enabled : {false, true}) {
+    SCOPED_TRACE(testing::Message() << "feature_enabled: " << feature_enabled);
+    ScopedSerializeInvalidSelectorsInForgivingSelectorListForTest
+        scoped_feature(feature_enabled);
+
+    {
+      HeapVector<CSSSelector> vector = ParseSelector(":is(:unknown)");
+      ASSERT_EQ(1u, vector.size());
+      const CSSSelector& selector = vector.front();
+      EXPECT_EQ(feature_enabled ? ":is(:unknown)" : ":is()",
+                selector.SelectorText());
+
+      // :is()
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoIs, selector.GetPseudoType());
+      const CSSSelectorList* selector_list = selector.SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_FALSE(selector_list->IsValid());
+
+      // Arguments (normal iteration)
+      EXPECT_FALSE(selector_list->First());
+
+      // Arguments (including unparsed invalid)
+      const CSSSelector* arg = selector_list->FirstIncludingUnparsedInvalid();
+      if (feature_enabled) {
+        // 1st: unparsed selector containing invalid selector :unknown
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kInvalidList, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ(":unknown", arg->Value());
+        // End of arguments.
+        EXPECT_FALSE(CSSSelectorList::NextIncludingUnparsedInvalid(*arg));
+      } else {
+        EXPECT_FALSE(selector_list->FirstIncludingUnparsedInvalid());
+      }
+    }
+
+    {
+      HeapVector<CSSSelector> vector = ParseSelector(":is(.a:unknown)");
+      ASSERT_EQ(1u, vector.size());
+      const CSSSelector& selector = vector.front();
+      EXPECT_EQ(feature_enabled ? ":is(.a:unknown)" : ":is()",
+                selector.SelectorText());
+
+      // :is()
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoIs, selector.GetPseudoType());
+      const CSSSelectorList* selector_list = selector.SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_FALSE(selector_list->IsValid());
+
+      // Arguments (normal iteration)
+      EXPECT_FALSE(selector_list->First());
+
+      // Arguments (including unparsed invalid)
+      const CSSSelector* arg = selector_list->FirstIncludingUnparsedInvalid();
+      if (feature_enabled) {
+        // 1st: unparsed selector containing invalid selector .a:unknown
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kInvalidList, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ(".a:unknown", arg->Value());
+        // End of arguments.
+        EXPECT_FALSE(CSSSelectorList::NextIncludingUnparsedInvalid(*arg));
+      } else {
+        EXPECT_FALSE(arg);
+      }
+    }
+
+    {
+      HeapVector<CSSSelector> vector = ParseSelector(":is(:unknown.a)");
+      ASSERT_EQ(1u, vector.size());
+      const CSSSelector& selector = vector.front();
+      EXPECT_EQ(feature_enabled ? ":is(:unknown.a)" : ":is()",
+                selector.SelectorText());
+
+      // :is()
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoIs, selector.GetPseudoType());
+      const CSSSelectorList* selector_list = selector.SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_FALSE(selector_list->IsValid());
+
+      // Arguments (normal iteration)
+      EXPECT_FALSE(selector_list->First());
+
+      // Arguments (including unparsed invalid)
+      const CSSSelector* arg = selector_list->FirstIncludingUnparsedInvalid();
+      if (feature_enabled) {
+        // 1st: unparsed selector containing invalid selector :unknown.a
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kInvalidList, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ(":unknown.a", arg->Value());
+        // End of arguments.
+        EXPECT_FALSE(CSSSelectorList::NextIncludingUnparsedInvalid(*arg));
+      } else {
+        EXPECT_FALSE(arg);
+      }
+    }
+
+    {
+      HeapVector<CSSSelector> vector = ParseSelector(":is(.a:not(:unknown))");
+      ASSERT_EQ(1u, vector.size());
+      const CSSSelector& selector = vector.front();
+      EXPECT_EQ(feature_enabled ? ":is(.a:not(:unknown))" : ":is()",
+                selector.SelectorText());
+
+      // :is()
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoIs, selector.GetPseudoType());
+      const CSSSelectorList* selector_list = selector.SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_FALSE(selector_list->IsValid());
+
+      // Arguments (normal iteration)
+      EXPECT_FALSE(selector_list->First());
+
+      // Arguments (including unparsed invalid)
+      const CSSSelector* arg = selector_list->FirstIncludingUnparsedInvalid();
+      if (feature_enabled) {
+        // 1st: unparsed selector containing invalid selector .a:not(:unknown)
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kInvalidList, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ(".a:not(:unknown)", arg->Value());
+        // End of arguments.
+        EXPECT_FALSE(CSSSelectorList::NextIncludingUnparsedInvalid(*arg));
+      } else {
+        EXPECT_FALSE(arg);
+      }
+    }
+
+    {
+      HeapVector<CSSSelector> vector = ParseSelector(":not(:is(:unknown))");
+      ASSERT_EQ(1u, vector.size());
+      const CSSSelector& selector = vector.front();
+      EXPECT_EQ(feature_enabled ? ":not(:is(:unknown))" : ":not(:is())",
+                selector.SelectorText());
+
+      // :not()
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoNot, selector.GetPseudoType());
+      const CSSSelectorList* selector_list = selector.SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_TRUE(selector_list->IsValid());
+
+      // :is()
+      ASSERT_TRUE(selector_list->First());
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoIs,
+                selector_list->First()->GetPseudoType());
+      selector_list = selector_list->First()->SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_FALSE(selector_list->IsValid());
+
+      // Arguments (normal iteration)
+      EXPECT_FALSE(selector_list->First());
+
+      // Arguments (including unparsed invalid)
+      const CSSSelector* arg = selector_list->FirstIncludingUnparsedInvalid();
+      if (feature_enabled) {
+        // 1st: unparsed selector containing invalid selector :unknown
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kInvalidList, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ(":unknown", arg->Value());
+        // End of arguments.
+        EXPECT_FALSE(CSSSelectorList::NextIncludingUnparsedInvalid(*arg));
+      } else {
+        EXPECT_FALSE(arg);
+      }
+    }
+
+    {
+      HeapVector<CSSSelector> vector = ParseSelector(":is(:unknown .a)");
+      ASSERT_EQ(1u, vector.size());
+      const CSSSelector& selector = vector.front();
+      EXPECT_EQ(feature_enabled ? ":is(:unknown .a)" : ":is()",
+                selector.SelectorText());
+
+      // :is()
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoIs, selector.GetPseudoType());
+      const CSSSelectorList* selector_list = selector.SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_FALSE(selector_list->IsValid());
+
+      // Arguments (normal iteration)
+      EXPECT_FALSE(selector_list->First());
+
+      // Arguments (including unparsed invalid)
+      const CSSSelector* arg = selector_list->FirstIncludingUnparsedInvalid();
+      if (feature_enabled) {
+        // 1st: unparsed selector containing invalid selector :unknown .a
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kInvalidList, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ(":unknown .a", arg->Value());
+        // End of arguments.
+        EXPECT_FALSE(CSSSelectorList::NextIncludingUnparsedInvalid(*arg));
+      } else {
+        EXPECT_FALSE(arg);
+      }
+    }
+
+    {
+      HeapVector<CSSSelector> vector = ParseSelector(":is(, :unknown)");
+      ASSERT_EQ(1u, vector.size());
+      const CSSSelector& selector = vector.front();
+      EXPECT_EQ(feature_enabled ? ":is(, :unknown)" : ":is()",
+                selector.SelectorText());
+
+      // :is()
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoIs, selector.GetPseudoType());
+      const CSSSelectorList* selector_list = selector.SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_FALSE(selector_list->IsValid());
+
+      // Arguments (normal iteration)
+      EXPECT_FALSE(selector_list->First());
+
+      // Arguments (including unparsed invalid)
+      const CSSSelector* arg = selector_list->FirstIncludingUnparsedInvalid();
+      if (feature_enabled) {
+        // 1st: unparsed selector containing invalid empty selector
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kInvalidList, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ("", arg->Value());
+        // 2nd: unparsed selector containing invalid selector :unknown
+        arg = CSSSelectorList::NextIncludingUnparsedInvalid(*arg);
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kPseudoClass, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ(":unknown", arg->Value());
+        // End of arguments.
+        EXPECT_FALSE(CSSSelectorList::NextIncludingUnparsedInvalid(*arg));
+      } else {
+        EXPECT_FALSE(arg);
+      }
+    }
+
+    {
+      HeapVector<CSSSelector> vector =
+          ParseSelector(":is(:unknown1, :unknown2, :unknown3)");
+      ASSERT_EQ(1u, vector.size());
+      const CSSSelector& selector = vector.front();
+      EXPECT_EQ(
+          feature_enabled ? ":is(:unknown1, :unknown2, :unknown3)" : ":is()",
+          selector.SelectorText());
+
+      // :is()
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoIs, selector.GetPseudoType());
+      const CSSSelectorList* selector_list = selector.SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_FALSE(selector_list->IsValid());
+
+      // Arguments (normal iteration)
+      EXPECT_FALSE(selector_list->First());
+
+      // Arguments (including unparsed invalid)
+      const CSSSelector* arg = selector_list->FirstIncludingUnparsedInvalid();
+      if (feature_enabled) {
+        // 1st: unparsed selector containing invalid selector :unknown1
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kInvalidList, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ(":unknown1", arg->Value());
+        // 2nd: unparsed selector containing invalid selector :unknown2
+        arg = CSSSelectorList::NextIncludingUnparsedInvalid(*arg);
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kPseudoClass, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ(":unknown2", arg->Value());
+        // 3rd: unparsed selector containing invalid selector :unknown3
+        arg = CSSSelectorList::NextIncludingUnparsedInvalid(*arg);
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kPseudoClass, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ(":unknown3", arg->Value());
+        // End of arguments.
+        EXPECT_FALSE(CSSSelectorList::NextIncludingUnparsedInvalid(*arg));
+      } else {
+        EXPECT_FALSE(arg);
+      }
+    }
+
+    {
+      HeapVector<CSSSelector> vector =
+          ParseSelector(":is(.a, :unknown1, :unknown2)");
+      ASSERT_EQ(1u, vector.size());
+      const CSSSelector& selector = vector.front();
+      EXPECT_EQ(feature_enabled ? ":is(.a, :unknown1, :unknown2)" : ":is(.a)",
+                selector.SelectorText());
+
+      // :is()
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoIs, selector.GetPseudoType());
+      const CSSSelectorList* selector_list = selector.SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_TRUE(selector_list->IsValid());
+
+      // Arguments (normal iteration)
+      // 1st: .a
+      const CSSSelector* arg = selector_list->First();
+      ASSERT_TRUE(arg);
+      EXPECT_EQ(CSSSelector::MatchType::kClass, arg->Match());
+      EXPECT_EQ("a", arg->Value());
+      // End of arguments.
+      EXPECT_FALSE(CSSSelectorList::Next(*arg));
+
+      // Arguments (including unparsed invalid)
+      arg = selector_list->FirstIncludingUnparsedInvalid();
+      if (feature_enabled) {
+        // 1st: .a
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kClass, arg->Match());
+        EXPECT_EQ("a", arg->Value());
+        // 2nd: unparsed selector containing invalid selector :unknown1
+        arg = CSSSelectorList::NextIncludingUnparsedInvalid(*arg);
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kPseudoClass, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ(":unknown1", arg->Value());
+        // 3rd: unparsed selector containing invalid selector :unknown2
+        arg = CSSSelectorList::NextIncludingUnparsedInvalid(*arg);
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kPseudoClass, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ(":unknown2", arg->Value());
+        // End of arguments.
+        EXPECT_FALSE(CSSSelectorList::NextIncludingUnparsedInvalid(*arg));
+      } else {
+        // 1st: .a
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kClass, arg->Match());
+        EXPECT_EQ("a", arg->Value());
+        // End of arguments.
+        EXPECT_FALSE(CSSSelectorList::NextIncludingUnparsedInvalid(*arg));
+      }
+    }
+
+    {
+      HeapVector<CSSSelector> vector =
+          ParseSelector(":is(:unknown1, .a, :unknown2)");
+      ASSERT_EQ(1u, vector.size());
+      const CSSSelector& selector = vector.front();
+      EXPECT_EQ(feature_enabled ? ":is(:unknown1, .a, :unknown2)" : ":is(.a)",
+                selector.SelectorText());
+
+      // :is()
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoIs, selector.GetPseudoType());
+      const CSSSelectorList* selector_list = selector.SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_TRUE(selector_list->IsValid());
+
+      // Arguments (normal iteration)
+      // 1st: .a
+      const CSSSelector* arg = selector_list->First();
+      ASSERT_TRUE(arg);
+      EXPECT_EQ(CSSSelector::MatchType::kClass, arg->Match());
+      EXPECT_EQ("a", arg->Value());
+      // End of arguments.
+      EXPECT_FALSE(CSSSelectorList::Next(*arg));
+
+      // Arguments (including unparsed invalid)
+      arg = selector_list->FirstIncludingUnparsedInvalid();
+      if (feature_enabled) {
+        // 1st: unparsed selector containing invalid selector :unknown1
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kPseudoClass, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ(":unknown1", arg->Value());
+        // 2nd: .a
+        arg = CSSSelectorList::NextIncludingUnparsedInvalid(*arg);
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kClass, arg->Match());
+        EXPECT_EQ("a", arg->Value());
+        // 3rd: unparsed selector containing invalid selector :unknown2
+        arg = CSSSelectorList::NextIncludingUnparsedInvalid(*arg);
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kPseudoClass, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ(":unknown2", arg->Value());
+        // End of arguments.
+        EXPECT_FALSE(CSSSelectorList::NextIncludingUnparsedInvalid(*arg));
+      } else {
+        // 1st: .a
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kClass, arg->Match());
+        EXPECT_EQ("a", arg->Value());
+        // End of arguments.
+        EXPECT_FALSE(CSSSelectorList::Next(*arg));
+      }
+    }
+
+    {
+      HeapVector<CSSSelector> vector =
+          ParseSelector(":is(:unknown1, :unknown2, .a)");
+      ASSERT_EQ(1u, vector.size());
+      const CSSSelector& selector = vector.front();
+      EXPECT_EQ(feature_enabled ? ":is(:unknown1, :unknown2, .a)" : ":is(.a)",
+                selector.SelectorText());
+
+      // :is()
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoIs, selector.GetPseudoType());
+      const CSSSelectorList* selector_list = selector.SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_TRUE(selector_list->IsValid());
+
+      // Arguments (normal iteration)
+      // 1st: .a
+      const CSSSelector* arg = selector_list->First();
+      ASSERT_TRUE(arg);
+      EXPECT_EQ(CSSSelector::MatchType::kClass, arg->Match());
+      EXPECT_EQ("a", arg->Value());
+      // End of arguments.
+      EXPECT_FALSE(CSSSelectorList::Next(*arg));
+
+      // Arguments (including unparsed invalid)
+      arg = selector_list->FirstIncludingUnparsedInvalid();
+      if (feature_enabled) {
+        // 1st: unparsed selector containing invalid selector :unknown1
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kPseudoClass, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ(":unknown1", arg->Value());
+        // 2nd: unparsed selector containing invalid selector :unknown2
+        arg = CSSSelectorList::NextIncludingUnparsedInvalid(*arg);
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kPseudoClass, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ(":unknown2", arg->Value());
+        // 3rd: .a
+        arg = CSSSelectorList::NextIncludingUnparsedInvalid(*arg);
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kClass, arg->Match());
+        EXPECT_EQ("a", arg->Value());
+        // End of arguments.
+        EXPECT_FALSE(CSSSelectorList::NextIncludingUnparsedInvalid(*arg));
+      } else {
+        // 1st: .a
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kClass, arg->Match());
+        EXPECT_EQ("a", arg->Value());
+        // End of arguments.
+        EXPECT_FALSE(CSSSelectorList::Next(*arg));
+      }
+    }
+
+    {
+      HeapVector<CSSSelector> vector = ParseSelector(":host(:is(:unknown))");
+      ASSERT_EQ(1u, vector.size());
+      const CSSSelector& selector = vector.front();
+      EXPECT_EQ(feature_enabled ? ":host(:is(:unknown))" : ":host(:is())",
+                selector.SelectorText());
+
+      // :host()
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoHost, selector.GetPseudoType());
+      const CSSSelectorList* selector_list = selector.SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_TRUE(selector_list->IsValid());
+
+      // :is()
+      ASSERT_TRUE(selector_list->First());
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoIs,
+                selector_list->First()->GetPseudoType());
+      selector_list = selector_list->First()->SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_FALSE(selector_list->IsValid());
+
+      // Arguments (normal iteration)
+      EXPECT_FALSE(selector_list->First());
+
+      // Arguments (including unparsed invalid)
+      const CSSSelector* arg = selector_list->FirstIncludingUnparsedInvalid();
+      if (feature_enabled) {
+        // 1st: unparsed selector containing invalid selector :unknown
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kInvalidList, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ(":unknown", arg->Value());
+        // End of arguments.
+        EXPECT_FALSE(CSSSelectorList::NextIncludingUnparsedInvalid(*arg));
+      } else {
+        EXPECT_FALSE(arg);
+      }
+    }
+
+    {
+      HeapVector<CSSSelector> vector = ParseSelector(":host(:is(.a .b))");
+      ASSERT_EQ(1u, vector.size());
+      const CSSSelector& selector = vector.front();
+      EXPECT_EQ(feature_enabled ? ":host(:is(.a .b))" : ":host(:is())",
+                selector.SelectorText());
+
+      // :host()
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoHost, selector.GetPseudoType());
+      const CSSSelectorList* selector_list = selector.SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_TRUE(selector_list->IsValid());
+
+      // :is()
+      ASSERT_TRUE(selector_list->First());
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoIs,
+                selector_list->First()->GetPseudoType());
+      selector_list = selector_list->First()->SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_FALSE(selector_list->IsValid());
+
+      // Arguments (normal iteration)
+      EXPECT_FALSE(selector_list->First());
+
+      // Arguments (including unparsed invalid)
+      const CSSSelector* arg = selector_list->FirstIncludingUnparsedInvalid();
+      if (feature_enabled) {
+        // 1st: unparsed selector containing complex selector .a .b, which is
+        // not allowed inside :host().
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kInvalidList, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ(".a .b", arg->Value());
+        // End of arguments.
+        EXPECT_FALSE(CSSSelectorList::NextIncludingUnparsedInvalid(*arg));
+      } else {
+        EXPECT_FALSE(arg);
+      }
+    }
+
+    {
+      HeapVector<CSSSelector> vector = ParseSelector(":host(:is(, :unknown))");
+      ASSERT_EQ(1u, vector.size());
+      const CSSSelector& selector = vector.front();
+      EXPECT_EQ(feature_enabled ? ":host(:is(, :unknown))" : ":host(:is())",
+                selector.SelectorText());
+
+      // :host()
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoHost, selector.GetPseudoType());
+      const CSSSelectorList* selector_list = selector.SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_TRUE(selector_list->IsValid());
+
+      // :is()
+      ASSERT_TRUE(selector_list->First());
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoIs,
+                selector_list->First()->GetPseudoType());
+      selector_list = selector_list->First()->SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_FALSE(selector_list->IsValid());
+
+      // Arguments (normal iteration)
+      EXPECT_FALSE(selector_list->First());
+
+      // Arguments (including unparsed invalid)
+      const CSSSelector* arg = selector_list->FirstIncludingUnparsedInvalid();
+      if (feature_enabled) {
+        // 1st: unparsed selector containing invalid empty selector
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kInvalidList, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ("", arg->Value());
+        // 2nd: unparsed selector containing invalid selector :unknown
+        arg = CSSSelectorList::NextIncludingUnparsedInvalid(*arg);
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kPseudoClass, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ(":unknown", arg->Value());
+        // End of arguments.
+        EXPECT_FALSE(CSSSelectorList::NextIncludingUnparsedInvalid(*arg));
+      } else {
+        EXPECT_FALSE(arg);
+      }
+    }
+
+    {
+      HeapVector<CSSSelector> vector =
+          ParseSelector(":host(:is(:unknown1, :unknown2, :unknown3))");
+      ASSERT_EQ(1u, vector.size());
+      const CSSSelector& selector = vector.front();
+      EXPECT_EQ(feature_enabled ? ":host(:is(:unknown1, :unknown2, :unknown3))"
+                                : ":host(:is())",
+                selector.SelectorText());
+
+      // :host()
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoHost, selector.GetPseudoType());
+      const CSSSelectorList* selector_list = selector.SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_TRUE(selector_list->IsValid());
+
+      // :is()
+      ASSERT_TRUE(selector_list->First());
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoIs,
+                selector_list->First()->GetPseudoType());
+      selector_list = selector_list->First()->SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_FALSE(selector_list->IsValid());
+
+      // Arguments (normal iteration)
+      EXPECT_FALSE(selector_list->First());
+
+      // Arguments (including unparsed invalid)
+      const CSSSelector* arg = selector_list->FirstIncludingUnparsedInvalid();
+      if (feature_enabled) {
+        // 1st: unparsed selector containing invalid selector :unknown1
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kInvalidList, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ(":unknown1", arg->Value());
+        // 2nd: unparsed selector containing invalid selector :unknown2
+        arg = CSSSelectorList::NextIncludingUnparsedInvalid(*arg);
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kPseudoClass, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ(":unknown2", arg->Value());
+        // 3rd: unparsed selector containing invalid selector :unknown3
+        arg = CSSSelectorList::NextIncludingUnparsedInvalid(*arg);
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kPseudoClass, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ(":unknown3", arg->Value());
+        // End of arguments.
+        EXPECT_FALSE(CSSSelectorList::NextIncludingUnparsedInvalid(*arg));
+      } else {
+        EXPECT_FALSE(arg);
+      }
+    }
+
+    {
+      HeapVector<CSSSelector> vector =
+          ParseSelector(":host(:is(.a, :unknown1, :unknown2))");
+      ASSERT_EQ(1u, vector.size());
+      const CSSSelector& selector = vector.front();
+      EXPECT_EQ(feature_enabled ? ":host(:is(.a, :unknown1, :unknown2))"
+                                : ":host(:is(.a))",
+                selector.SelectorText());
+
+      // :host()
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoHost, selector.GetPseudoType());
+      const CSSSelectorList* selector_list = selector.SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_TRUE(selector_list->IsValid());
+
+      // :is()
+      ASSERT_TRUE(selector_list->First());
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoIs,
+                selector_list->First()->GetPseudoType());
+      selector_list = selector_list->First()->SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_TRUE(selector_list->IsValid());
+
+      // Arguments (normal iteration)
+      // 1st: .a
+      const CSSSelector* arg = selector_list->First();
+      ASSERT_TRUE(arg);
+      EXPECT_EQ(CSSSelector::MatchType::kClass, arg->Match());
+      EXPECT_EQ("a", arg->Value());
+      // End of arguments.
+      EXPECT_FALSE(CSSSelectorList::Next(*arg));
+
+      // Arguments (including unparsed invalid)
+      arg = selector_list->FirstIncludingUnparsedInvalid();
+      if (feature_enabled) {
+        // 1st: .a
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kClass, arg->Match());
+        EXPECT_EQ("a", arg->Value());
+        // 2nd: unparsed selector containing invalid selector :unknown1
+        arg = CSSSelectorList::NextIncludingUnparsedInvalid(*arg);
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kPseudoClass, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ(":unknown1", arg->Value());
+        // 3rd: unparsed selector containing invalid selector :unknown2
+        arg = CSSSelectorList::NextIncludingUnparsedInvalid(*arg);
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kPseudoClass, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ(":unknown2", arg->Value());
+        // End of arguments.
+        EXPECT_FALSE(CSSSelectorList::NextIncludingUnparsedInvalid(*arg));
+      } else {
+        // 1st: .a
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kClass, arg->Match());
+        EXPECT_EQ("a", arg->Value());
+        // End of arguments.
+        EXPECT_FALSE(CSSSelectorList::NextIncludingUnparsedInvalid(*arg));
+      }
+    }
+
+    {
+      HeapVector<CSSSelector> vector =
+          ParseSelector(":host(:is(:unknown1, .a, :unknown2))");
+      ASSERT_EQ(1u, vector.size());
+      const CSSSelector& selector = vector.front();
+      EXPECT_EQ(feature_enabled ? ":host(:is(:unknown1, .a, :unknown2))"
+                                : ":host(:is(.a))",
+                selector.SelectorText());
+
+      // :host()
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoHost, selector.GetPseudoType());
+      const CSSSelectorList* selector_list = selector.SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_TRUE(selector_list->IsValid());
+
+      // :is()
+      ASSERT_TRUE(selector_list->First());
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoIs,
+                selector_list->First()->GetPseudoType());
+      selector_list = selector_list->First()->SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_TRUE(selector_list->IsValid());
+
+      // Arguments (normal iteration)
+      // 1st: .a
+      const CSSSelector* arg = selector_list->First();
+      ASSERT_TRUE(arg);
+      EXPECT_EQ(CSSSelector::MatchType::kClass, arg->Match());
+      EXPECT_EQ("a", arg->Value());
+      // End of arguments.
+      EXPECT_FALSE(CSSSelectorList::Next(*arg));
+
+      // Arguments (including unparsed invalid)
+      arg = selector_list->FirstIncludingUnparsedInvalid();
+      if (feature_enabled) {
+        // 1st: unparsed selector containing invalid selector :unknown1
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kPseudoClass, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ(":unknown1", arg->Value());
+        // 2nd: .a
+        arg = CSSSelectorList::NextIncludingUnparsedInvalid(*arg);
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kClass, arg->Match());
+        EXPECT_EQ("a", arg->Value());
+        // 3rd: unparsed selector containing invalid selector :unknown2
+        arg = CSSSelectorList::NextIncludingUnparsedInvalid(*arg);
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kPseudoClass, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ(":unknown2", arg->Value());
+        // End of arguments.
+        EXPECT_FALSE(CSSSelectorList::NextIncludingUnparsedInvalid(*arg));
+      } else {
+        // 1st: .a
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kClass, arg->Match());
+        EXPECT_EQ("a", arg->Value());
+        // End of arguments.
+        EXPECT_FALSE(CSSSelectorList::Next(*arg));
+      }
+    }
+
+    {
+      HeapVector<CSSSelector> vector =
+          ParseSelector(":host(:is(:unknown1, :unknown2, .a))");
+      ASSERT_EQ(1u, vector.size());
+      const CSSSelector& selector = vector.front();
+      EXPECT_EQ(feature_enabled ? ":host(:is(:unknown1, :unknown2, .a))"
+                                : ":host(:is(.a))",
+                selector.SelectorText());
+
+      // :host()
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoHost, selector.GetPseudoType());
+      const CSSSelectorList* selector_list = selector.SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_TRUE(selector_list->IsValid());
+
+      // :is()
+      ASSERT_TRUE(selector_list->First());
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoIs,
+                selector_list->First()->GetPseudoType());
+      selector_list = selector_list->First()->SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_TRUE(selector_list->IsValid());
+
+      // Arguments (normal iteration)
+      // 1st: .a
+      const CSSSelector* arg = selector_list->First();
+      ASSERT_TRUE(arg);
+      EXPECT_EQ(CSSSelector::MatchType::kClass, arg->Match());
+      EXPECT_EQ("a", arg->Value());
+      // End of arguments.
+      EXPECT_FALSE(CSSSelectorList::Next(*arg));
+
+      // Arguments (including unparsed invalid)
+      arg = selector_list->FirstIncludingUnparsedInvalid();
+      if (feature_enabled) {
+        // 1st: unparsed selector containing invalid selector :unknown1
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kPseudoClass, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ(":unknown1", arg->Value());
+        // 2nd: unparsed selector containing invalid selector :unknown2
+        arg = CSSSelectorList::NextIncludingUnparsedInvalid(*arg);
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kPseudoClass, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ(":unknown2", arg->Value());
+        // 3rd: .a
+        arg = CSSSelectorList::NextIncludingUnparsedInvalid(*arg);
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kClass, arg->Match());
+        EXPECT_EQ("a", arg->Value());
+        // End of arguments.
+        EXPECT_FALSE(CSSSelectorList::NextIncludingUnparsedInvalid(*arg));
+      } else {
+        // 1st: .a
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kClass, arg->Match());
+        EXPECT_EQ("a", arg->Value());
+        // End of arguments.
+        EXPECT_FALSE(CSSSelectorList::Next(*arg));
+      }
+    }
+
+    {
+      HeapVector<CSSSelector> vector = ParseSelector(":is()");
+      ASSERT_EQ(1u, vector.size());
+      const CSSSelector& selector = vector.front();
+      EXPECT_EQ(":is()", selector.SelectorText());
+
+      // :is()
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoIs, selector.GetPseudoType());
+      const CSSSelectorList* selector_list = selector.SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_FALSE(selector_list->IsValid());
+
+      // Arguments (normal iteration)
+      EXPECT_FALSE(selector_list->First());
+
+      // Arguments (including unparsed invalid)
+      const CSSSelector* arg = selector_list->FirstIncludingUnparsedInvalid();
+      if (feature_enabled) {
+        // 1st: unparsed selector containing invalid empty selector
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kInvalidList, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ("", arg->Value());
+        // End of arguments.
+        EXPECT_FALSE(CSSSelectorList::NextIncludingUnparsedInvalid(*arg));
+      } else {
+        // End of arguments.
+        EXPECT_FALSE(arg);
+      }
+    }
+
+    {
+      HeapVector<CSSSelector> vector = ParseSelector(":is(   )");
+      ASSERT_EQ(1u, vector.size());
+      const CSSSelector& selector = vector.front();
+      EXPECT_EQ(":is()", selector.SelectorText());
+
+      // :is()
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoIs, selector.GetPseudoType());
+      const CSSSelectorList* selector_list = selector.SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_FALSE(selector_list->IsValid());
+
+      // Arguments (normal iteration)
+      EXPECT_FALSE(selector_list->First());
+
+      // Arguments (including unparsed invalid)
+      const CSSSelector* arg = selector_list->FirstIncludingUnparsedInvalid();
+      if (feature_enabled) {
+        // 1st: unparsed selector containing invalid empty selector
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kInvalidList, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ("", arg->Value());
+        // End of arguments.
+        EXPECT_FALSE(CSSSelectorList::NextIncludingUnparsedInvalid(*arg));
+      } else {
+        // End of arguments.
+        EXPECT_FALSE(arg);
+      }
+    }
+
+    {
+      HeapVector<CSSSelector> vector = ParseSelector(":is(,,)");
+      ASSERT_EQ(1u, vector.size());
+      const CSSSelector& selector = vector.front();
+      EXPECT_EQ(feature_enabled ? ":is(, , )" : ":is()",
+                selector.SelectorText());
+
+      // :is()
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoIs, selector.GetPseudoType());
+      const CSSSelectorList* selector_list = selector.SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_FALSE(selector_list->IsValid());
+
+      // Arguments (normal iteration)
+      EXPECT_FALSE(selector_list->First());
+
+      // Arguments (including unparsed invalid)
+      const CSSSelector* arg = selector_list->FirstIncludingUnparsedInvalid();
+      if (feature_enabled) {
+        // 1st: unparsed selector containing invalid empty selector
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kInvalidList, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ("", arg->Value());
+        // 2nd: unparsed selector containing invalid empty selector
+        arg = CSSSelectorList::NextIncludingUnparsedInvalid(*arg);
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kPseudoClass, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ("", arg->Value());
+        // 3rd: unparsed selector containing invalid empty selector
+        arg = CSSSelectorList::NextIncludingUnparsedInvalid(*arg);
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kPseudoClass, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ("", arg->Value());
+        // End of arguments.
+        EXPECT_FALSE(CSSSelectorList::NextIncludingUnparsedInvalid(*arg));
+      } else {
+        // End of arguments.
+        EXPECT_FALSE(arg);
+      }
+    }
+
+    {
+      HeapVector<CSSSelector> vector = ParseSelector(":host(:is())");
+      ASSERT_EQ(1u, vector.size());
+      const CSSSelector& selector = vector.front();
+      EXPECT_EQ(":host(:is())", selector.SelectorText());
+
+      // :host()
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoHost, selector.GetPseudoType());
+      const CSSSelectorList* selector_list = selector.SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_TRUE(selector_list->IsValid());
+
+      // :is()
+      ASSERT_TRUE(selector_list->First());
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoIs,
+                selector_list->First()->GetPseudoType());
+      selector_list = selector_list->First()->SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_FALSE(selector_list->IsValid());
+
+      // Arguments (normal iteration)
+      EXPECT_FALSE(selector_list->First());
+
+      // Arguments (including unparsed invalid)
+      const CSSSelector* arg = selector_list->FirstIncludingUnparsedInvalid();
+      if (feature_enabled) {
+        // 1st: unparsed selector containing invalid empty selector
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kInvalidList, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ("", arg->Value());
+        // End of arguments.
+        EXPECT_FALSE(CSSSelectorList::NextIncludingUnparsedInvalid(*arg));
+      } else {
+        // End of arguments.
+        EXPECT_FALSE(arg);
+      }
+    }
+
+    {
+      HeapVector<CSSSelector> vector = ParseSelector(":host(:is(   ))");
+      ASSERT_EQ(1u, vector.size());
+      const CSSSelector& selector = vector.front();
+      EXPECT_EQ(":host(:is())", selector.SelectorText());
+
+      // :host()
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoHost, selector.GetPseudoType());
+      const CSSSelectorList* selector_list = selector.SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_TRUE(selector_list->IsValid());
+
+      // :is()
+      ASSERT_TRUE(selector_list->First());
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoIs,
+                selector_list->First()->GetPseudoType());
+      selector_list = selector_list->First()->SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_FALSE(selector_list->IsValid());
+
+      // Arguments (normal iteration)
+      EXPECT_FALSE(selector_list->First());
+
+      // Arguments (including unparsed invalid)
+      const CSSSelector* arg = selector_list->FirstIncludingUnparsedInvalid();
+      if (feature_enabled) {
+        // 1st: unparsed selector containing invalid empty selector
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kInvalidList, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ("", arg->Value());
+        // End of arguments.
+        EXPECT_FALSE(CSSSelectorList::NextIncludingUnparsedInvalid(*arg));
+      } else {
+        // End of arguments.
+        EXPECT_FALSE(arg);
+      }
+    }
+
+    {
+      HeapVector<CSSSelector> vector = ParseSelector(":host(:is(,,))");
+      ASSERT_EQ(1u, vector.size());
+      const CSSSelector& selector = vector.front();
+      EXPECT_EQ(feature_enabled ? ":host(:is(, , ))" : ":host(:is())",
+                selector.SelectorText());
+
+      // :host()
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoHost, selector.GetPseudoType());
+      const CSSSelectorList* selector_list = selector.SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_TRUE(selector_list->IsValid());
+
+      // :is()
+      ASSERT_TRUE(selector_list->First());
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoIs,
+                selector_list->First()->GetPseudoType());
+      selector_list = selector_list->First()->SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_FALSE(selector_list->IsValid());
+
+      // Arguments (normal iteration)
+      EXPECT_FALSE(selector_list->First());
+
+      // Arguments (including unparsed invalid)
+      const CSSSelector* arg = selector_list->FirstIncludingUnparsedInvalid();
+      if (feature_enabled) {
+        // 1st: unparsed selector containing invalid empty selector
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kInvalidList, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ("", arg->Value());
+        // 2nd: unparsed selector containing invalid empty selector
+        arg = CSSSelectorList::NextIncludingUnparsedInvalid(*arg);
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kPseudoClass, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ("", arg->Value());
+        // 3rd: unparsed selector containing invalid empty selector
+        arg = CSSSelectorList::NextIncludingUnparsedInvalid(*arg);
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kPseudoClass, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ("", arg->Value());
+        // End of arguments.
+        EXPECT_FALSE(CSSSelectorList::NextIncludingUnparsedInvalid(*arg));
+      } else {
+        // End of arguments.
+        EXPECT_FALSE(arg);
+      }
+    }
+
+    {
+      HeapVector<CSSSelector> vector = ParseSelector(":has(:is(:has(.a)))");
+      ASSERT_EQ(1u, vector.size());
+      const CSSSelector& selector = vector.front();
+      EXPECT_EQ(feature_enabled ? ":has(:is(:has(.a)))" : ":has(:is())",
+                selector.SelectorText());
+
+      // :has()
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoHas, selector.GetPseudoType());
+      const CSSSelectorList* selector_list = selector.SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_TRUE(selector_list->IsValid());
+
+      // :is()
+      ASSERT_TRUE(selector_list->First());
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoIs,
+                selector_list->First()->GetPseudoType());
+      selector_list = selector_list->First()->SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_FALSE(selector_list->IsValid());
+
+      // Arguments (normal iteration)
+      EXPECT_FALSE(selector_list->First());
+
+      // Arguments (including unparsed invalid)
+      const CSSSelector* arg = selector_list->FirstIncludingUnparsedInvalid();
+      if (feature_enabled) {
+        // 1st: unparsed selector containing complex selector :has(.a), which
+        // is not allowed inside :has().
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kInvalidList, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ(":has(.a)", arg->Value());
+        // End of arguments.
+        EXPECT_FALSE(CSSSelectorList::NextIncludingUnparsedInvalid(*arg));
+      } else {
+        EXPECT_FALSE(arg);
+      }
+    }
+
+    {
+      HeapVector<CSSSelector> vector = ParseSelector(":is(.a)");
+      ASSERT_EQ(1u, vector.size());
+      const CSSSelector& selector = vector.front();
+      EXPECT_EQ(":is(.a)", selector.SelectorText());
+
+      // :is()
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoIs, selector.GetPseudoType());
+      const CSSSelectorList* selector_list = selector.SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_TRUE(selector_list->IsValid());
+
+      // Arguments (normal iteration)
+      const CSSSelector* arg = selector_list->First();
+      // 1st: .a
+      ASSERT_TRUE(arg);
+      EXPECT_EQ(CSSSelector::MatchType::kClass, arg->Match());
+      EXPECT_EQ("a", arg->Value());
+      // End of arguments.
+      EXPECT_FALSE(CSSSelectorList::Next(*arg));
+
+      // Arguments (including unparsed invalid)
+      selector_list->FirstIncludingUnparsedInvalid();
+      // 1st: .a
+      ASSERT_TRUE(arg);
+      EXPECT_EQ(CSSSelector::MatchType::kClass, arg->Match());
+      EXPECT_EQ("a", arg->Value());
+      // End of arguments.
+      EXPECT_FALSE(CSSSelectorList::NextIncludingUnparsedInvalid(*arg));
+    }
+
+    {
+      HeapVector<CSSSelector> vector = ParseSelector(":host(:is(.a))");
+      ASSERT_EQ(1u, vector.size());
+      const CSSSelector& selector = vector.front();
+      EXPECT_EQ(":host(:is(.a))", selector.SelectorText());
+
+      // :host()
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoHost, selector.GetPseudoType());
+      const CSSSelectorList* selector_list = selector.SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_TRUE(selector_list->IsValid());
+
+      // :is()
+      ASSERT_TRUE(selector_list->First());
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoIs,
+                selector_list->First()->GetPseudoType());
+      selector_list = selector_list->First()->SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_TRUE(selector_list->IsValid());
+
+      // Arguments (normal iteration)
+      const CSSSelector* arg = selector_list->First();
+      // 1st: .a
+      ASSERT_TRUE(arg);
+      EXPECT_EQ(CSSSelector::MatchType::kClass, arg->Match());
+      EXPECT_EQ("a", arg->Value());
+      // End of arguments.
+      EXPECT_FALSE(CSSSelectorList::Next(*arg));
+
+      // Arguments (including unparsed invalid)
+      selector_list->FirstIncludingUnparsedInvalid();
+      // 1st: .a
+      ASSERT_TRUE(arg);
+      EXPECT_EQ(CSSSelector::MatchType::kClass, arg->Match());
+      EXPECT_EQ("a", arg->Value());
+      // End of arguments.
+      EXPECT_FALSE(CSSSelectorList::NextIncludingUnparsedInvalid(*arg));
+    }
+
+    {
+      HeapVector<CSSSelector> vector = ParseSelector(":is(   :unknown   )");
+      ASSERT_EQ(1u, vector.size());
+      const CSSSelector& selector = vector.front();
+      EXPECT_EQ(feature_enabled ? ":is(:unknown)" : ":is()",
+                selector.SelectorText());
+
+      // :is()
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoIs, selector.GetPseudoType());
+      const CSSSelectorList* selector_list = selector.SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_FALSE(selector_list->IsValid());
+
+      // Arguments (normal iteration)
+      EXPECT_FALSE(selector_list->First());
+
+      // Arguments (including unparsed invalid)
+      const CSSSelector* arg = selector_list->FirstIncludingUnparsedInvalid();
+      if (feature_enabled) {
+        // 1st: unparsed selector containing invalid selector :unknown
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kInvalidList, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ(":unknown", arg->Value());
+        // End of arguments.
+        EXPECT_FALSE(CSSSelectorList::NextIncludingUnparsedInvalid(*arg));
+      } else {
+        EXPECT_FALSE(selector_list->FirstIncludingUnparsedInvalid());
+      }
+    }
+
+    {
+      HeapVector<CSSSelector> vector =
+          ParseSelector(":host(:is(   :unknown   ))");
+      ASSERT_EQ(1u, vector.size());
+      const CSSSelector& selector = vector.front();
+      EXPECT_EQ(feature_enabled ? ":host(:is(:unknown))" : ":host(:is())",
+                selector.SelectorText());
+
+      // :host()
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoHost, selector.GetPseudoType());
+      const CSSSelectorList* selector_list = selector.SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_TRUE(selector_list->IsValid());
+
+      // :is()
+      ASSERT_TRUE(selector_list->First());
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoIs,
+                selector_list->First()->GetPseudoType());
+      selector_list = selector_list->First()->SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_FALSE(selector_list->IsValid());
+
+      // Arguments (normal iteration)
+      EXPECT_FALSE(selector_list->First());
+
+      // Arguments (including unparsed invalid)
+      const CSSSelector* arg = selector_list->FirstIncludingUnparsedInvalid();
+      if (feature_enabled) {
+        // 1st: unparsed selector containing invalid selector :unknown
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kInvalidList, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ(":unknown", arg->Value());
+        // End of arguments.
+        EXPECT_FALSE(CSSSelectorList::NextIncludingUnparsedInvalid(*arg));
+      } else {
+        EXPECT_FALSE(selector_list->FirstIncludingUnparsedInvalid());
+      }
+    }
+
+    {
+      HeapVector<CSSSelector> vector =
+          ParseSelector(":is(::before:HOVER    , .a)");
+      ASSERT_EQ(1u, vector.size());
+      const CSSSelector& selector = vector.front();
+      EXPECT_EQ(feature_enabled ? ":is(::before:HOVER, .a)" : ":is(.a)",
+                selector.SelectorText());
+
+      // :is()
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoIs, selector.GetPseudoType());
+      const CSSSelectorList* selector_list = selector.SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_TRUE(selector_list->IsValid());
+
+      // Arguments (normal iteration)
+      // 1st: div
+      const CSSSelector* arg = selector_list->First();
+      ASSERT_TRUE(arg);
+      EXPECT_EQ(CSSSelector::MatchType::kClass, arg->Match());
+      EXPECT_EQ("a", arg->Value());
+      // End of arguments.
+      EXPECT_FALSE(CSSSelectorList::Next(*arg));
+
+      // Arguments (including unparsed invalid)
+      arg = selector_list->FirstIncludingUnparsedInvalid();
+      if (feature_enabled) {
+        // 1st: unparsed selector containing invalid selector :unknown
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kPseudoClass, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ("::before:HOVER", arg->Value());
+        // 2nd: div
+        arg = CSSSelectorList::NextIncludingUnparsedInvalid(*arg);
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kClass, arg->Match());
+        EXPECT_EQ("a", arg->Value());
+        // End of arguments.
+        EXPECT_FALSE(CSSSelectorList::NextIncludingUnparsedInvalid(*arg));
+      } else {
+        // 1st: div
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kClass, arg->Match());
+        EXPECT_EQ("a", arg->Value());
+        // End of arguments.
+        EXPECT_FALSE(CSSSelectorList::NextIncludingUnparsedInvalid(*arg));
+      }
+    }
+
+    {
+      HeapVector<CSSSelector> vector =
+          ParseSelector(":host(:is(::before:HOVER    , .a))");
+      ASSERT_EQ(1u, vector.size());
+      const CSSSelector& selector = vector.front();
+      EXPECT_EQ(
+          feature_enabled ? ":host(:is(::before:HOVER, .a))" : ":host(:is(.a))",
+          selector.SelectorText());
+
+      // :host()
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoHost, selector.GetPseudoType());
+      const CSSSelectorList* selector_list = selector.SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_TRUE(selector_list->IsValid());
+
+      // :is()
+      ASSERT_TRUE(selector_list->First());
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoIs,
+                selector_list->First()->GetPseudoType());
+      selector_list = selector_list->First()->SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_TRUE(selector_list->IsValid());
+
+      // Arguments (normal iteration)
+      // 1st: div
+      const CSSSelector* arg = selector_list->First();
+      ASSERT_TRUE(arg);
+      EXPECT_EQ(CSSSelector::MatchType::kClass, arg->Match());
+      EXPECT_EQ("a", arg->Value());
+      // End of arguments.
+      EXPECT_FALSE(CSSSelectorList::Next(*arg));
+
+      // Arguments (including unparsed invalid)
+      arg = selector_list->FirstIncludingUnparsedInvalid();
+      if (feature_enabled) {
+        // 1st: unparsed selector containing invalid selector :unknown
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kPseudoClass, arg->Match());
+        EXPECT_TRUE(arg->IsUnparsedInvalid());
+        EXPECT_EQ("::before:HOVER", arg->Value());
+        // 2nd: div
+        arg = CSSSelectorList::NextIncludingUnparsedInvalid(*arg);
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kClass, arg->Match());
+        EXPECT_EQ("a", arg->Value());
+        // End of arguments.
+        EXPECT_FALSE(CSSSelectorList::NextIncludingUnparsedInvalid(*arg));
+      } else {
+        // 1st: div
+        ASSERT_TRUE(arg);
+        EXPECT_EQ(CSSSelector::MatchType::kClass, arg->Match());
+        EXPECT_EQ("a", arg->Value());
+        // End of arguments.
+        EXPECT_FALSE(CSSSelectorList::NextIncludingUnparsedInvalid(*arg));
+      }
+    }
+
+    {
+      HeapVector<CSSSelector> vector = ParseSelector(":is(col.selected || td)");
+      ASSERT_EQ(1u, vector.size());
+      const CSSSelector& selector = vector.front();
+      EXPECT_EQ(feature_enabled ? ":is(col.selected || td)" : ":is()",
+                selector.SelectorText());
+
+      // :is()
+      EXPECT_EQ(CSSSelector::PseudoType::kPseudoIs, selector.GetPseudoType());
+      const CSSSelectorList* selector_list = selector.SelectorList();
+      ASSERT_TRUE(selector_list);
+      EXPECT_FALSE(selector_list->IsValid());
+
+      // Arguments (normal iteration)
+      EXPECT_FALSE(selector_list->First());
+
+      // Arguments (including unparsed invalid)
+      const CSSSelector* arg = selector_list->FirstIncludingUnparsedInvalid();
+      if (feature_enabled) {
+        // 1st: unparsed selector containing a column combinator (||), which is
+        // not supported yet.
+        EXPECT_TRUE(arg);
+        if (arg) {
+          EXPECT_EQ(CSSSelector::MatchType::kInvalidList, arg->Match());
+          EXPECT_TRUE(arg->IsUnparsedInvalid());
+          EXPECT_EQ("col.selected || td", arg->Value());
+          // End of arguments.
+          EXPECT_FALSE(CSSSelectorList::NextIncludingUnparsedInvalid(*arg));
+        }
+      } else {
+        EXPECT_FALSE(arg);
+      }
+    }
+  }
 }
 
 }  // namespace blink

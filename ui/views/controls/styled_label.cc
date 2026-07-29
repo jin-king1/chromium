@@ -10,15 +10,17 @@
 #include <limits>
 #include <optional>
 #include <utility>
+#include <variant>
 
+#include "base/functional/callback_helpers.h"
 #include "base/i18n/rtl.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/string_util.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_provider.h"
+#include "ui/events/event.h"
 #include "ui/gfx/font_list.h"
 #include "ui/gfx/text_constants.h"
 #include "ui/gfx/text_elider.h"
@@ -27,6 +29,7 @@
 #include "ui/views/controls/label.h"
 #include "ui/views/controls/link.h"
 #include "ui/views/controls/link_fragment.h"
+#include "ui/views/property_effects.h"
 #include "ui/views/style/typography.h"
 #include "ui/views/style/typography_provider.h"
 #include "ui/views/view_class_properties.h"
@@ -35,6 +38,18 @@
 namespace views {
 
 DEFINE_UI_CLASS_PROPERTY_KEY(bool, kStyledLabelCustomViewKey, false)
+
+namespace {
+
+// Returns true when text_style is one of the link styles for which
+// CreateLabel() builds a LinkFragment rather than a plain Label.
+bool IsLinkTextStyle(const std::optional<int>& text_style) {
+  return text_style == style::STYLE_LINK || text_style == style::STYLE_LINK_2 ||
+         text_style == style::STYLE_LINK_3 ||
+         text_style == style::STYLE_LINK_4 || text_style == style::STYLE_LINK_5;
+}
+
+}  // namespace
 
 StyledLabel::RangeStyleInfo::RangeStyleInfo() = default;
 StyledLabel::RangeStyleInfo::RangeStyleInfo(const RangeStyleInfo&) = default;
@@ -46,9 +61,7 @@ StyledLabel::RangeStyleInfo::~RangeStyleInfo() = default;
 StyledLabel::RangeStyleInfo StyledLabel::RangeStyleInfo::CreateForLink(
     base::RepeatingClosure callback) {
   // Adapt this closure to a Link::ClickedCallback by discarding the extra arg.
-  return CreateForLink(base::BindRepeating(
-      [](base::RepeatingClosure closure, const ui::Event&) { closure.Run(); },
-      std::move(callback)));
+  return CreateForLink(base::IgnoreArgs<const ui::Event&>(std::move(callback)));
 }
 
 // static
@@ -83,9 +96,7 @@ struct StyledLabel::LayoutViews {
 };
 
 StyledLabel::StyledLabel() {
-  GetViewAccessibility().SetRole(text_context_ == style::CONTEXT_DIALOG_TITLE
-                                     ? ax::mojom::Role::kTitleBar
-                                     : ax::mojom::Role::kStaticText);
+  UpdateAccessibleRole();
 }
 
 StyledLabel::~StyledLabel() = default;
@@ -106,8 +117,9 @@ void StyledLabel::SetText(std::u16string text) {
   text_ = text;
   GetViewAccessibility().SetName(text_);
   style_ranges_.clear();
+  UpdateAccessibleRole();
   RemoveOrDeleteAllChildViews();
-  OnPropertyChanged(&text_, kPropertyEffectsPreferredSizeChanged);
+  OnPropertyChanged(&text_, PropertyEffects::kPreferredSizeChanged);
 }
 
 gfx::FontList StyledLabel::GetFontList(const RangeStyleInfo& style_info) const {
@@ -125,6 +137,7 @@ void StyledLabel::AddStyleRange(const gfx::Range& range,
   StyleRanges new_range;
   new_range.emplace_front(range, style_info);
   style_ranges_.merge(new_range);
+  UpdateAccessibleRole();
 
   PreferredSizeChanged();
 }
@@ -145,10 +158,8 @@ void StyledLabel::SetTextContext(int text_context) {
   }
 
   text_context_ = text_context;
-  GetViewAccessibility().SetRole(text_context_ == style::CONTEXT_DIALOG_TITLE
-                                     ? ax::mojom::Role::kTitleBar
-                                     : ax::mojom::Role::kStaticText);
-  OnPropertyChanged(&text_context_, kPropertyEffectsPreferredSizeChanged);
+  UpdateAccessibleRole();
+  OnPropertyChanged(&text_context_, PropertyEffects::kPreferredSizeChanged);
 }
 
 int StyledLabel::GetDefaultTextStyle() const {
@@ -161,7 +172,8 @@ void StyledLabel::SetDefaultTextStyle(int text_style) {
   }
 
   default_text_style_ = text_style;
-  OnPropertyChanged(&default_text_style_, kPropertyEffectsPreferredSizeChanged);
+  OnPropertyChanged(&default_text_style_,
+                    PropertyEffects::kPreferredSizeChanged);
 }
 
 std::optional<ui::ColorId> StyledLabel::GetDefaultEnabledColorId() const {
@@ -175,7 +187,7 @@ void StyledLabel::SetDefaultEnabledColorId(
   }
 
   default_enabled_color_id_ = enabled_color_id;
-  OnPropertyChanged(&default_enabled_color_id_, kPropertyEffectsPaint);
+  OnPropertyChanged(&default_enabled_color_id_, PropertyEffects::kPaint);
 }
 
 int StyledLabel::GetLineHeight() const {
@@ -189,7 +201,7 @@ void StyledLabel::SetLineHeight(int line_height) {
   }
 
   line_height_ = line_height;
-  OnPropertyChanged(&line_height_, kPropertyEffectsPreferredSizeChanged);
+  OnPropertyChanged(&line_height_, PropertyEffects::kPreferredSizeChanged);
 }
 
 std::optional<ui::ColorVariant> StyledLabel::GetDisplayedOnBackgroundColor()
@@ -208,7 +220,7 @@ void StyledLabel::SetDisplayedOnBackgroundColor(ui::ColorVariant color) {
     UpdateLabelBackgroundColor();
   }
 
-  OnPropertyChanged(&displayed_on_background_color_, kPropertyEffectsPaint);
+  OnPropertyChanged(&displayed_on_background_color_, PropertyEffects::kPaint);
 }
 
 bool StyledLabel::GetAutoColorReadabilityEnabled() const {
@@ -221,7 +233,7 @@ void StyledLabel::SetAutoColorReadabilityEnabled(bool auto_color_readability) {
   }
 
   auto_color_readability_enabled_ = auto_color_readability;
-  OnPropertyChanged(&auto_color_readability_enabled_, kPropertyEffectsPaint);
+  OnPropertyChanged(&auto_color_readability_enabled_, PropertyEffects::kPaint);
 }
 
 bool StyledLabel::GetSubpixelRenderingEnabled() const {
@@ -234,7 +246,7 @@ void StyledLabel::SetSubpixelRenderingEnabled(bool subpixel_rendering_enabled) {
   }
 
   subpixel_rendering_enabled_ = subpixel_rendering_enabled;
-  OnPropertyChanged(&subpixel_rendering_enabled_, kPropertyEffectsPaint);
+  OnPropertyChanged(&subpixel_rendering_enabled_, PropertyEffects::kPaint);
 }
 
 const StyledLabel::LayoutSizeInfo& StyledLabel::GetLayoutSizeInfoForWidth(
@@ -322,6 +334,7 @@ void StyledLabel::SetHorizontalAlignment(gfx::HorizontalAlignment alignment) {
 
 void StyledLabel::ClearStyleRanges() {
   style_ranges_.clear();
+  UpdateAccessibleRole();
   PreferredSizeChanged();
 }
 
@@ -560,20 +573,30 @@ std::unique_ptr<Label> StyledLabel::CreateLabel(
     const gfx::Range& range,
     LinkFragment** previous_link_fragment) const {
   std::unique_ptr<Label> result;
-  if (style_info.text_style == style::STYLE_LINK ||
-      style_info.text_style == style::STYLE_LINK_3 ||
-      style_info.text_style == style::STYLE_LINK_4 ||
-      style_info.text_style == style::STYLE_LINK_5) {
+  if (IsLinkTextStyle(style_info.text_style)) {
     // Nothing should (and nothing does) use a custom font for links.
     DCHECK(!style_info.custom_font);
 
     // Note this ignores |default_text_style_|, in favor of `style::STYLE_LINK`.
     auto link = std::make_unique<LinkFragment>(
         text, text_context_, *style_info.text_style, *previous_link_fragment);
+    const bool is_first_fragment = (*previous_link_fragment == nullptr);
     *previous_link_fragment = link.get();
     link->SetCallback(style_info.callback);
-    if (!style_info.accessible_name.empty()) {
-      link->GetViewAccessibility().SetName(style_info.accessible_name);
+
+    // For multi-line links, only the first fragment is focusable and has the
+    // full accessible name. Subsequent fragments are ignored to avoid redundant
+    // announcements and extra tab stops.
+    if (is_first_fragment) {
+      if (!style_info.accessible_name.empty()) {
+        link->GetViewAccessibility().SetName(style_info.accessible_name);
+      } else {
+        link->GetViewAccessibility().SetName(
+            text_.substr(range.start(), range.length()));
+      }
+    } else {
+      link->GetViewAccessibility().SetIsIgnored(true);
+      link->SetFocusBehavior(View::FocusBehavior::NEVER);
     }
 
     result = std::move(link);
@@ -596,7 +619,8 @@ std::unique_ptr<Label> StyledLabel::CreateLabel(
   if (!style_info.tooltip.empty()) {
     result->SetCustomTooltipText(style_info.tooltip);
   }
-  if (!style_info.accessible_name.empty()) {
+  if (!style_info.accessible_name.empty() &&
+      !IsViewClass<LinkFragment>(result.get())) {
     result->GetViewAccessibility().SetName(style_info.accessible_name);
   }
   if (displayed_on_background_color_) {
@@ -631,6 +655,24 @@ void StyledLabel::RemoveOrDeleteAllChildViews() {
       pending_delete_views_.push_back(std::move(view));
     }
   }
+}
+
+void StyledLabel::UpdateAccessibleRole() {
+  if (text_context_ == style::CONTEXT_DIALOG_TITLE) {
+    GetViewAccessibility().SetRole(ax::mojom::Role::kTitleBar);
+    return;
+  }
+
+  // Inline links and custom views make this a paragraph rather than static
+  // text, so those children remain reachable to accessibility clients.
+  const bool has_non_text_range =
+      std::ranges::any_of(style_ranges_, [](const StyleRange& style_range) {
+        return style_range.style_info.custom_view ||
+               IsLinkTextStyle(style_range.style_info.text_style);
+      });
+  GetViewAccessibility().SetRole(has_non_text_range
+                                     ? ax::mojom::Role::kParagraph
+                                     : ax::mojom::Role::kStaticText);
 }
 
 void StyledLabel::RecreateChildViews() {
@@ -707,8 +749,8 @@ ADD_PROPERTY_METADATA(int, TextContext)
 ADD_PROPERTY_METADATA(int, DefaultTextStyle)
 ADD_PROPERTY_METADATA(int, LineHeight)
 ADD_PROPERTY_METADATA(bool, AutoColorReadabilityEnabled)
-ADD_PROPERTY_METADATA(std::optional<ui::ColorVariant>,
-                      DisplayedOnBackgroundColor)
+ADD_READONLY_PROPERTY_METADATA(std::optional<ui::ColorVariant>,
+                               DisplayedOnBackgroundColor)
 ADD_PROPERTY_METADATA(std::optional<ui::ColorId>, DefaultEnabledColorId)
 END_METADATA
 

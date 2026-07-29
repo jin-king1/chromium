@@ -14,13 +14,7 @@
 
 namespace media::mp4 {
 
-AAC::AAC()
-    : profile_(0),
-      frequency_index_(0),
-      channel_config_(0),
-      frequency_(0),
-      extension_frequency_(0),
-      channel_layout_(CHANNEL_LAYOUT_UNSUPPORTED) {}
+AAC::AAC() = default;
 
 AAC::AAC(const AAC& other) = default;
 
@@ -33,7 +27,7 @@ bool AAC::Parse(base::span<const uint8_t> data, MediaLog* media_log) {
     return false;
   }
 
-  BitReader reader(data.data(), data.size());
+  BitReader reader(data);
   uint8_t extension_type = 0;
   bool ps_present = false;
   uint8_t extension_frequency_index = 0xff;
@@ -174,31 +168,31 @@ int AAC::GetOutputSamplesPerSecond(bool sbr_in_mimetype) const {
   // Table 1.25. (Table 1.11 refers to the capping to 48000, Table 1.25 refers
   // to SBR doubling the AAC sample rate.)
   // TODO(acolwell) : Extend sample rate cap to 96kHz for Level 5 content.
-  DCHECK_GT(frequency_, 0);
-  return std::min(2 * frequency_, 48000);
+  return std::min(2 * frequency_, 48000u);
 }
 
-ChannelLayout AAC::GetChannelLayout(bool sbr_in_mimetype) const {
+ChannelLayoutConfig AAC::GetChannelLayout(bool sbr_in_mimetype) const {
   // Check for implicit signalling of HE-AAC and indicate stereo output
   // if the mono channel configuration is signalled.
   // See ISO 14496-3:2009 Section 1.6.5.3 for details about this special casing.
   if (sbr_in_mimetype && channel_config_ == 1) {
-    return CHANNEL_LAYOUT_STEREO;
+    return ChannelLayoutConfig::Stereo();
   }
 
-  return channel_layout_;
+  return ChannelLayoutConfig::FromLayout(channel_layout_);
 }
 
 base::HeapArray<uint8_t> AAC::CreateAdtsFromEsds(
     base::span<const uint8_t> buffer,
-    int* adts_header_size) const {
+    size_t* adts_header_size) const {
   *adts_header_size = 0;
-  if (profile_ == kXHeAAcType) {
+  if (!fits_in_adts()) {
     return {};
   }
 
-  DCHECK(profile_ >= 1 && profile_ <= 4 && frequency_index_ != 0xf &&
-         channel_config_ <= 7);
+  DCHECK_GE(profile_, 1);
+  DCHECK_LE(profile_, 4);
+  DCHECK_LE(channel_config_, 7);
 
   // `total_size` might be too big; ADTS represents packet size in 13 bits.
   const size_t total_size = buffer.size() + kADTSHeaderMinSize;

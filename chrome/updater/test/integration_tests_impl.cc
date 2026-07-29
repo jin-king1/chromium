@@ -17,7 +17,7 @@
 
 #include "base/base_paths.h"
 #include "base/command_line.h"
-#include "base/containers/contains.h"
+#include "base/containers/to_vector.h"
 #include "base/files/file_enumerator.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
@@ -26,6 +26,7 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
+#include "base/functional/function_ref.h"
 #include "base/json/json_file_value_serializer.h"
 #include "base/json/json_reader.h"
 #include "base/logging.h"
@@ -38,12 +39,12 @@
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
-#include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
 #include "base/test/bind.h"
+#include "base/test/scoped_run_loop_timeout.h"
 #include "base/test/test_timeouts.h"
 #include "base/time/time.h"
 #include "base/values.h"
@@ -55,8 +56,8 @@
 #include "chrome/enterprise_companion/global_constants.h"
 #include "chrome/enterprise_companion/installer_paths.h"
 #include "chrome/updater/activity.h"
+#include "chrome/updater/branded_constants.h"
 #include "chrome/updater/constants.h"
-#include "chrome/updater/device_management/dm_policy_builder_for_testing.h"
 #include "chrome/updater/external_constants_builder.h"
 #include "chrome/updater/external_constants_override.h"
 #include "chrome/updater/persisted_data.h"
@@ -64,6 +65,7 @@
 #include "chrome/updater/protos/omaha_settings.pb.h"
 #include "chrome/updater/registration_data.h"
 #include "chrome/updater/service_proxy_factory.h"
+#include "chrome/updater/test/dm_policy_builder.h"
 #include "chrome/updater/test/request_matcher.h"
 #include "chrome/updater/test/server.h"
 #include "chrome/updater/test/test_scope.h"
@@ -74,14 +76,17 @@
 #include "chrome/updater/updater_version.h"
 #include "chrome/updater/util/util.h"
 #include "components/policy/proto/device_management_backend.pb.h"
+#include "components/update_client/utils.h"
 #include "crypto/sha2.h"
 #include "net/http/http_status_code.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/strings/str_format.h"
 #include "third_party/re2/src/re2/re2.h"
 #include "url/gurl.h"
 
 #if BUILDFLAG(IS_WIN)
 #include "base/file_version_info_win.h"
+#include "base/win/elevation_util.h"
 #include "base/win/registry.h"
 #include "chrome/updater/util/win_util.h"
 #include "chrome/updater/win/test/test_executables.h"
@@ -99,7 +104,10 @@ constexpr char kSelfUpdateCRXName[] = "updater_selfupdate.crx3";
 constexpr char kSelfUpdateCRXRun[] = PRODUCT_FULLNAME_STRING "_test.app";
 constexpr char kDoNothingCRXName[] = "updater_qualification_app_dmg.crx";
 constexpr char kDoNothingCRXRun[] = "updater_qualification_app_dmg.dmg";
-constexpr char kEnterpriseCompanionCRXRun[] = "enterprise_companion_test.zip";
+
+// On Mac, the install scripts are in the root ('.') directory of the CRX.
+constexpr char kEnterpriseCompanionCRXRun[] = ".";
+
 // On Mac, the test companion app does not have a different name.
 constexpr base::FilePath::CharType kCompanionAppTestExecutableName[] =
     BROWSER_NAME_STRING "EnterpriseCompanion";
@@ -141,18 +149,67 @@ std::string GetHashHex(const base::FilePath& file) {
 // The fingerprint is formatted as app_id.1.hash_hex to make the fingerprint
 // unique in the scope of the integration tests, which sometimes reuse the
 // same update file payload for different app ids.
-std::string GetUpdateResponseForApp(
-    const std::string& app_id,
-    const std::string& install_data_index,
-    const std::string& codebase,
-    const base::Version& version,
-    const base::FilePath& update_file,
-    const std::string& run_action,
-    const std::string& arguments,
-    std::optional<std::string> file_hash = std::nullopt,
-    std::optional<std::string> status = std::nullopt) {
+std::string GetUpdateResponseForAppV4(const std::string& app_id,
+                                      const std::string& install_data_index,
+                                      const std::string& codebase,
+                                      const base::Version& version,
+                                      const base::FilePath& update_file,
+                                      const std::string& run_action,
+                                      const std::string& arguments,
+                                      std::optional<std::string> file_hash,
+                                      std::optional<std::string> status,
+                                      bool use_xz) {
+  const std::string hash = file_hash ? *file_hash : GetHashHex(update_file);
+  return absl::StrFormat(
+      R"(    {)"
+      R"(      "appid":"%s",)"
+      R"(      "status":"%s",)"
+      R"(%s)"
+      R"(      "updatecheck":{)"
+      R"(        "status":"ok",)"
+      R"(        "nextversion":"%s",)"
+      R"(        "pipelines":[)"
+      R"(          {"operations":[)"
+      R"(            { "type":"download",)"
+      R"(              "urls":[{"url":"%s/%s"}],)"
+      R"(              "out":{"sha256":"%s"},)"
+      R"(              "size": %d},)"
+      R"(            %s)"
+      R"(            { "type":"crx3",)"
+      R"(              "arguments":"%s",)"
+      R"(              "path":"%s",)"
+      R"(              "in":{"sha256":"%s"}})"
+      R"(          ]})"
+      R"(        ])"
+      R"(      })"
+      R"(    })",
+      base::ToLowerASCII(app_id).c_str(), status ? status->c_str() : "ok",
+      install_data_index.empty()
+          ? ""
+          : absl::StrFormat(
+                R"(     "data":[{ "status":"ok", "name":"install", )"
+                R"("index":"%s", "#text":"%s_text" }],)",
+                install_data_index.c_str(), install_data_index.c_str())
+                .c_str(),
+      version.GetString().c_str(), codebase.c_str(),
+      update_file.BaseName().AsUTF8Unsafe().c_str(), hash.c_str(),
+      base::GetFileSize(update_file).value_or(10),
+      use_xz ? R"({"type":"xz"},)" : "", arguments.c_str(), run_action.c_str(),
+      hash.c_str());
+}
+
+std::string GetUpdateResponseForAppV3(const std::string& app_id,
+                                      const std::string& install_data_index,
+                                      const std::string& codebase,
+                                      const base::Version& version,
+                                      const base::FilePath& update_file,
+                                      const std::string& run_action,
+                                      const std::string& arguments,
+                                      std::optional<std::string> file_hash,
+                                      std::optional<std::string> status,
+                                      bool use_xz) {
   const std::string hash = file_hash.value_or(GetHashHex(update_file));
-  return base::StringPrintf(
+  return absl::StrFormat(
       R"(    {)"
       R"(      "appid":"%s",)"
       R"(      "status":"%s",)"
@@ -174,7 +231,7 @@ std::string GetUpdateResponseForApp(
       R"(    })",
       base::ToLowerASCII(app_id).c_str(), status.value_or("ok").c_str(),
       !install_data_index.empty()
-          ? base::StringPrintf(
+          ? absl::StrFormat(
                 R"(     "data":[{ "status":"ok", "name":"install", )"
                 R"("index":"%s", "#text":"%s_text" }],)",
                 install_data_index.c_str(), install_data_index.c_str())
@@ -185,8 +242,20 @@ std::string GetUpdateResponseForApp(
       hash.c_str(), base::StrCat({app_id, ".1.", hash}).c_str());
 }
 
-std::string GetUpdateResponse(const std::vector<std::string>& app_responses) {
-  return base::StringPrintf(
+std::string GetUpdateResponseV4(const std::vector<std::string>& app_responses) {
+  return absl::StrFormat(
+      ")]}'\n"
+      R"({"response":{)"
+      R"(  "protocol":"4.0",)"
+      R"(  "apps":[)"
+      R"(%s)"
+      R"(  ])"
+      R"(}})",
+      base::JoinString(app_responses, ",\n").c_str());
+}
+
+std::string GetUpdateResponseV3(const std::vector<std::string>& app_responses) {
+  return absl::StrFormat(
       ")]}'\n"
       R"({"response":{)"
       R"(  "protocol":"3.1",)"
@@ -204,23 +273,15 @@ std::string GetUpdateResponse(const std::string& app_id,
                               const base::FilePath& update_file,
                               const std::string& run_action,
                               const std::string& arguments,
-                              const std::string& file_hash) {
-  return GetUpdateResponse(
-      {GetUpdateResponseForApp(app_id, install_data_index, codebase, version,
-                               update_file, run_action, arguments, file_hash)
-           .c_str()});
-}
-
-std::string GetUpdateResponse(const std::string& app_id,
-                              const std::string& install_data_index,
-                              const std::string& codebase,
-                              const base::Version& version,
-                              const base::FilePath& update_file,
-                              const std::string& run_action,
-                              const std::string& arguments) {
-  return GetUpdateResponse(app_id, install_data_index, codebase, version,
-                           update_file, run_action, arguments,
-                           GetHashHex(update_file));
+                              const std::string& file_hash,
+                              bool use_xz,
+                              bool v4) {
+  auto ResponseFunc = v4 ? GetUpdateResponseV4 : GetUpdateResponseV3;
+  auto ResponseFuncApp =
+      v4 ? GetUpdateResponseForAppV4 : GetUpdateResponseForAppV3;
+  return ResponseFunc({ResponseFuncApp(
+      app_id, install_data_index, codebase, version, update_file, run_action,
+      arguments, file_hash, std::nullopt, use_xz)});
 }
 
 void RunUpdaterWithSwitches(const base::Version& version,
@@ -246,7 +307,7 @@ void RunUpdaterWithSwitches(const base::Version& version,
 }
 
 void ExpectUpdateCheckSequence(UpdaterScope scope,
-                               ScopedServer* test_server,
+                               ScopedServer& test_server,
                                const std::string& app_id,
                                UpdateService::Priority priority,
                                int event_type,
@@ -260,24 +321,26 @@ void ExpectUpdateCheckSequence(UpdaterScope scope,
   ASSERT_TRUE(base::PathExists(crx_path));
 
   // First request: update check.
-  test_server->ExpectOnce(
-      {request::GetPathMatcher(test_server->update_path()),
+  test_server.ExpectOnce(
+      {request::GetPathMatcher(test_server.update_path()),
        request::GetUpdaterUserAgentMatcher(updater_version),
        request::GetContentMatcher(
-           {base::StringPrintf(R"(.*"appid":"%s".*)", app_id.c_str())}),
+           {absl::StrFormat(R"(.*"appid":"%s".*)", app_id)}),
        request::GetScopeMatcher(scope),
        request::GetAppPriorityMatcher(app_id, priority),
        request::GetUpdaterEnableUpdatesMatcher()},
-      GetUpdateResponse(app_id, "", test_server->download_url().spec(),
-                        to_version, crx_path, kDoNothingCRXRun, {}));
+      base::BindRepeating(&GetUpdateResponse, app_id, "",
+                          test_server.download_url().spec(), to_version,
+                          crx_path, kDoNothingCRXRun, "", GetHashHex(crx_path),
+                          false));
 
   // Second request: event ping with an error because the update check response
   // is ignored by the client:
   // {errorCategory::kService, ServiceError::CHECK_FOR_UPDATE_ONLY}
-  test_server->ExpectOnce(
-      {request::GetPathMatcher(test_server->update_path()),
+  test_server.ExpectOnce(
+      {request::GetPathMatcher(test_server.update_path()),
        request::GetUpdaterUserAgentMatcher(updater_version),
-       request::GetContentMatcher({base::StringPrintf(
+       request::GetContentMatcher({absl::StrFormat(
            R"(.*"errorcat":4,"errorcode":4,"eventresult":0,"eventtype":%d,)"
            R"(("nextfp":.*,)?"nextversion":"%s","previousversion":"%s".*)",
            event_type, to_version.GetString().c_str(),
@@ -286,54 +349,53 @@ void ExpectUpdateCheckSequence(UpdaterScope scope,
       ")]}'\n");
 }
 
-void ExpectUpdateSequence(
-    UpdaterScope scope,
-    ScopedServer* test_server,
-    const std::string& app_id,
-    const std::string& install_data_index,
-    UpdateService::Priority priority,
-    int event_type,
-    const base::Version& from_version,
-    const base::Version& to_version,
-    bool do_fault_injection,
-    bool skip_download,
-    const base::FilePath& crx_path,
-    const std::string& run_action,
-    const std::string& arguments,
-    const base::Version& updater_version = base::Version(kUpdaterVersion),
-    const std::string& event_regex = ".*") {
+void ExpectUpdateSequence(UpdaterScope scope,
+                          ScopedServer& test_server,
+                          const std::string& app_id,
+                          const std::string& install_data_index,
+                          UpdateService::Priority priority,
+                          int event_type,
+                          const base::Version& from_version,
+                          const base::Version& to_version,
+                          bool do_fault_injection,
+                          bool skip_download,
+                          const base::FilePath& crx_path,
+                          const std::string& run_action,
+                          const std::string& arguments,
+                          const base::Version& updater_version,
+                          const std::string& event_regex,
+                          bool use_xz) {
   ASSERT_TRUE(base::PathExists(crx_path));
 
   // First request: update check.
   if (do_fault_injection) {
-    test_server->ExpectOnce({}, "", net::HTTP_INTERNAL_SERVER_ERROR);
+    test_server.ExpectOnce({}, "", net::HTTP_INTERNAL_SERVER_ERROR);
   }
-  test_server->ExpectOnce(
-      {request::GetPathMatcher(test_server->update_path()),
+  test_server.ExpectOnce(
+      {request::GetPathMatcher(test_server.update_path()),
        request::GetUpdaterUserAgentMatcher(updater_version),
        request::GetContentMatcher(
-           {base::StringPrintf(R"("appid":"%s")", app_id.c_str()),
+           {absl::StrFormat(R"("appid":"%s")", app_id),
             install_data_index.empty()
                 ? ""
-                : base::StringPrintf(
+                : absl::StrFormat(
                       R"("data":\[{"index":"%s","name":"install"}],.*)",
-                      install_data_index.c_str())
-                      .c_str()}),
+                      install_data_index)}),
        request::GetScopeMatcher(scope),
        request::GetAppPriorityMatcher(app_id, priority),
        request::GetUpdaterEnableUpdatesMatcher()},
-      GetUpdateResponse(app_id, install_data_index,
-                        test_server->download_url().spec(), to_version,
-                        crx_path, run_action, arguments));
-
+      base::BindRepeating(&GetUpdateResponse, app_id, install_data_index,
+                          test_server.download_url().spec(), to_version,
+                          crx_path, run_action, arguments, GetHashHex(crx_path),
+                          use_xz));
   // Second request: update download.
   if (!skip_download) {
     if (do_fault_injection) {
-      test_server->ExpectOnce({}, "", net::HTTP_INTERNAL_SERVER_ERROR);
+      test_server.ExpectOnce({}, "", net::HTTP_INTERNAL_SERVER_ERROR);
     }
     std::string crx_bytes;
     base::ReadFileToString(crx_path, &crx_bytes);
-    test_server->ExpectOnce(
+    test_server.ExpectOnce(
         {request::GetUpdaterUserAgentMatcher(updater_version),
          request::GetContentMatcher({""})},
         crx_bytes);
@@ -341,12 +403,12 @@ void ExpectUpdateSequence(
 
   // Third request: event ping.
   if (do_fault_injection) {
-    test_server->ExpectOnce({}, "", net::HTTP_INTERNAL_SERVER_ERROR);
+    test_server.ExpectOnce({}, "", net::HTTP_INTERNAL_SERVER_ERROR);
   }
-  test_server->ExpectOnce(
-      {request::GetPathMatcher(test_server->update_path()),
+  test_server.ExpectOnce(
+      {request::GetPathMatcher(test_server.update_path()),
        request::GetUpdaterUserAgentMatcher(updater_version),
-       request::GetContentMatcher({base::StringPrintf(
+       request::GetContentMatcher({absl::StrFormat(
            R"(.*"eventresult":1,"eventtype":%d,("nextfp":.*,)?)"
            R"("nextversion":"%s",("previousfp":.*,)?)"
            R"("previousversion":"%s".*)",
@@ -357,62 +419,16 @@ void ExpectUpdateSequence(
       ")]}'\n");
 }
 
-void ExpectDeviceManagementRequest(ScopedServer* test_server,
-                                   const std::string& request_type,
-                                   const std::string& authorization_type,
-                                   const std::string& authorization_token,
-                                   net::HttpStatusCode response_status,
-                                   const std::string& response,
-                                   std::optional<GURL> target_url = {}) {
-  request::MatcherGroup request_matchers = {
-      request::GetPathMatcher(base::StringPrintf(
-          R"(%s\?request=%s&apptype=Chrome&)"
-          R"(agent=%s\+%s&platform=.*&deviceid=%s)",
-          test_server->device_management_path().c_str(), request_type.c_str(),
-          PRODUCT_FULLNAME_STRING, kUpdaterVersion,
-          device_management_storage::GetDefaultDMStorage()
-              ->GetDeviceID()
-              .c_str())),
-      request::GetUpdaterUserAgentMatcher(),
-      request::GetHeaderMatcher(
-          {{"Authorization",
-            base::StringPrintf("%s token=%s", authorization_type.c_str(),
-                               authorization_token.c_str())},
-           {"Content-Type", "application/x-protobuf"}})};
-  if (target_url) {
-    request_matchers.push_back(request::GetTargetURLMatcher(*target_url));
-  }
-  test_server->ExpectOnce(request_matchers, response, response_status);
-}
+// Extends the run loop timeout during app installation or updates. This
+// ensures that CRX verification, which can be time-consuming, completes
+// without being interrupted by the default timeout.
+class ScopedAppInstallTimeout {
+ public:
+  ScopedAppInstallTimeout() = default;
 
-void ExpectDeviceManagementRequestViaCompanionApp(
-    ScopedServer* test_server,
-    const std::string& request_type,
-    const std::string& authorization_type,
-    const std::string& authorization_token,
-    net::HttpStatusCode response_status,
-    const std::string& response,
-    std::optional<GURL> target_url = {}) {
-  request::MatcherGroup request_matchers = {
-      request::GetPathMatcher(base::StringPrintf(
-          R"(%s\?.*agent=%sEnterpriseCompanion\+%s&apptype=Chrome)"
-          R"(&deviceid=%s.*&platform=.*&request=%s)",
-          test_server->device_management_path().c_str(), BROWSER_NAME_STRING,
-          kUpdaterVersion,
-          device_management_storage::GetDefaultDMStorage()
-              ->GetDeviceID()
-              .c_str(),
-          request_type.c_str())),
-      request::GetHeaderMatcher(
-          {{"Authorization",
-            base::StringPrintf("%s token=%s", authorization_type.c_str(),
-                               authorization_token.c_str())},
-           {"Content-Type", "application/protobuf"}})};
-  if (target_url) {
-    request_matchers.push_back(request::GetTargetURLMatcher(*target_url));
-  }
-  test_server->ExpectOnce(request_matchers, response, response_status);
-}
+ private:
+  base::test::ScopedRunLoopTimeout timeout_{FROM_HERE, base::Minutes(3)};
+};
 
 }  // namespace
 
@@ -475,7 +491,7 @@ void RegisterApp(UpdaterScope scope, const RegistrationRequest& registration) {
   loop.Run();
 }
 
-void RegisterAppByValue(UpdaterScope scope, const base::Value::Dict& value) {
+void RegisterAppByValue(UpdaterScope scope, const base::DictValue& value) {
   RegistrationRequest registration;
   registration.app_id = *value.FindString("app_id");
   registration.brand_code = *value.FindString("brand_code");
@@ -485,7 +501,7 @@ void RegisterAppByValue(UpdaterScope scope, const base::Value::Dict& value) {
   registration.ap_path =
       base::FilePath::FromUTF8Unsafe(*value.FindString("ap_path"));
   registration.ap_key = *value.FindString("ap_key");
-  registration.version = base::Version(*value.FindString("version"));
+  registration.version = *value.FindString("version");
   registration.version_path =
       base::FilePath::FromUTF8Unsafe(*value.FindString("version_path"));
   registration.version_key = *value.FindString("version_key");
@@ -499,28 +515,34 @@ void RegisterAppByValue(UpdaterScope scope, const base::Value::Dict& value) {
 
 void EnterTestMode(const GURL& update_url,
                    const GURL& crash_upload_url,
-                   const GURL& device_management_url,
                    const GURL& app_logo_url,
+                   const GURL& event_logging_url,
                    base::TimeDelta idle_timeout,
                    base::TimeDelta server_keep_alive_time,
-                   base::TimeDelta ceca_connection_timeout) {
+                   base::TimeDelta ceca_connection_timeout,
+                   std::optional<EventLoggingPermissionProvider>
+                       event_logging_permission_provider) {
   ASSERT_TRUE(
       ExternalConstantsBuilder()
           .SetUpdateURL(std::vector<std::string>{update_url.spec()})
           .SetCrashUploadURL(crash_upload_url.spec())
-          .SetDeviceManagementURL(device_management_url.spec())
           .SetAppLogoURL(app_logo_url.spec())
+          .SetEventLoggingUrl(event_logging_url.spec())
+          .SetEventLoggingPermissionProvider(
+              std::move(event_logging_permission_provider))
+          .SetMinimumEventLoggingCooldown(base::Seconds(0))
           .SetUseCUP(false)
           .SetInitialDelay(base::Milliseconds(100))
           .SetServerKeepAliveTime(server_keep_alive_time)
           .SetCrxVerifierFormat(crx_file::VerifierFormat::CRX3)
+          .SetCrxPublicKeyHash(std::nullopt)
           .SetOverinstallTimeout(GetOverinstallTimeoutForEnterTestMode())
           .SetIdleCheckPeriod(idle_timeout)
           .SetCecaConnectionTimeout(ceca_connection_timeout)
           .Modify());
 }
 
-void SetDictPolicies(const base::Value::Dict& values) {
+void SetDictPolicies(const base::DictValue& values) {
   ASSERT_TRUE(ExternalConstantsBuilder().SetDictPolicies(values).Modify());
 }
 
@@ -551,7 +573,7 @@ void ExpectVersionNotActive(UpdaterScope scope, const std::string& version) {
   EXPECT_NE(prefs->GetActiveVersion(), version);
 }
 
-void Install(UpdaterScope scope, const base::Value::List& switches) {
+void Install(UpdaterScope scope, const base::ListValue& switches) {
   const base::FilePath path = GetSetupExecutablePath();
   ASSERT_FALSE(path.empty());
   base::CommandLine command_line(path);
@@ -574,7 +596,7 @@ void InstallUpdaterAndApp(UpdaterScope scope,
                           const bool expect_success,
                           const bool wait_for_the_installer,
                           const int expected_exit_code,
-                          const base::Value::List& additional_switches,
+                          const base::ListValue& additional_switches,
                           const base::FilePath& updater_path) {
   ASSERT_FALSE(updater_path.empty());
   base::CommandLine command_line(updater_path);
@@ -641,8 +663,8 @@ std::vector<base::FilePath> GetUpdaterLogFilesInTmp() {
 #if BUILDFLAG(IS_WIN)
   EXPECT_TRUE(
       base::PathService::Get(IsSystemInstall(GetUpdaterScopeForTesting())
-                                 ? static_cast<int>(base::DIR_SYSTEM_TEMP)
-                                 : static_cast<int>(base::DIR_TEMP),
+                                 ? std::to_underlying(base::DIR_SYSTEM_TEMP)
+                                 : std::to_underlying(base::DIR_TEMP),
                              &temp_dir));
 #endif
   if (temp_dir.empty()) {
@@ -702,7 +724,7 @@ void CopyLog(const base::FilePath& src_dir, const std::string& infix) {
           dest_dir.AppendUTF8(base::StrCat({"updater", real_infix, ".log"}));
       for (int i = 1; i < 10 && base::PathExists(path); ++i) {
         path = dest_dir.AppendUTF8(
-            base::StringPrintf("updater%s.%d.log", real_infix.c_str(), i));
+            absl::StrFormat("updater%s.%d.log", real_infix.c_str(), i));
       }
       return path;
     }();
@@ -746,82 +768,109 @@ void ExpectNoCrashes(UpdaterScope scope) {
 }
 
 void ExpectAppsUpdateSequence(UpdaterScope scope,
-                              ScopedServer* test_server,
-                              const base::Value::Dict& request_attributes,
+                              ScopedServer& test_server,
+                              const base::DictValue& request_attributes,
                               const std::vector<AppUpdateExpectation>& apps,
                               const base::Version& updater_version) {
-#if BUILDFLAG(IS_WIN)
-  const base::FilePath::StringType kExeExtension = FILE_PATH_LITERAL(".exe");
-#else
-  const base::FilePath::StringType kExeExtension = FILE_PATH_LITERAL(".zip");
-#endif  // BUILDFLAG(IS_WIN)
-
   base::FilePath exe_path;
   ASSERT_TRUE(base::PathService::Get(base::DIR_EXE, &exe_path));
 
   // First request: update check.
   std::vector<std::string> attributes;
   for (const auto [key, value] : request_attributes) {
-    attributes.push_back(base::StringPrintf(R"("%s":"%s")", key.c_str(),
-                                            value.GetString().c_str()));
+    attributes.push_back(
+        absl::StrFormat(R"("%s":"%s")", key, value.GetString()));
   }
   std::vector<std::string> app_requests;
-  std::vector<std::string> app_responses;
+  std::vector<base::RepeatingCallback<std::string(bool)>>
+      app_response_providers;
   for (const AppUpdateExpectation& app : apps) {
-    app_requests.push_back(
-        base::StringPrintf(R"("appid":"%s")", app.app_id.c_str()));
+    app_requests.push_back(absl::StrFormat(R"("appid":"%s")", app.app_id));
     if (app.allow_rollback) {
       app_requests.push_back(R"("rollback_allowed":true,)");
     }
     if (!app.target_version_prefix.empty()) {
-      app_requests.push_back(base::StringPrintf(
-          R"("targetversionprefix":"%s")", app.target_version_prefix.c_str()));
+      app_requests.push_back(absl::StrFormat(R"("targetversionprefix":"%s")",
+                                             app.target_version_prefix));
     }
     if (!app.target_channel.empty()) {
-      app_requests.push_back(base::StringPrintf(R"("release_channel":"%s",)",
-                                                app.target_channel.c_str()));
+      app_requests.push_back(
+          absl::StrFormat(R"("release_channel":"%s",)", app.target_channel));
     }
     if (!app.custom_app_response.empty()) {
-      app_responses.push_back(app.custom_app_response);
+      app_response_providers.push_back(base::BindRepeating(
+          [](const std::string& response, bool v4) { return response; },
+          app.custom_app_response));
       continue;
     }
     const base::FilePath crx_path = exe_path.Append(app.crx_relative_path);
     const base::FilePath base_name = crx_path.BaseName().RemoveExtension();
-    const base::FilePath run_action =
-        base_name.Extension().empty() ? base_name.AddExtension(kExeExtension)
-                                      : base_name;
-    app_responses.push_back(GetUpdateResponseForApp(
-        app.app_id, "", test_server->download_url().spec(), app.to_version,
-        crx_path, run_action.AsUTF8Unsafe().c_str(), app.args, std::nullopt,
-        app.response_status));
-  }
-  test_server->ExpectOnce({request::GetPathMatcher(test_server->update_path()),
-                           request::GetUpdaterUserAgentMatcher(updater_version),
-                           request::GetContentMatcher(attributes),
-                           request::GetContentMatcher(app_requests),
-                           request::GetScopeMatcher(scope),
-                           request::GetUpdaterEnableUpdatesMatcher()},
-                          GetUpdateResponse(app_responses));
 
+#if BUILDFLAG(IS_WIN)
+    const base::FilePath run_action =
+        base_name.Extension().empty()
+            ? base_name.AddExtension(FILE_PATH_LITERAL(".exe"))
+            : base_name;
+#else
+    const base::FilePath run_action =
+        base_name.Extension().empty() ? base::FilePath(".") : base_name;
+#endif  // BUILDFLAG(IS_WIN)
+    app_response_providers.push_back(base::BindRepeating(
+        [](const std::string& app_id, const std::string& url,
+           const base::Version& to_version, const base::FilePath& crx_path,
+           const std::string& run_action, const std::string& args,
+           std::optional<std::string> response_status, bool use_xz, bool v4) {
+          auto func =
+              v4 ? GetUpdateResponseForAppV4 : GetUpdateResponseForAppV3;
+          return func(app_id, "", url, to_version, crx_path, run_action, args,
+                      std::nullopt, response_status, use_xz);
+        },
+        app.app_id, test_server.download_url().spec(), app.to_version, crx_path,
+        run_action.AsUTF8Unsafe(), app.args, app.response_status, false));
+  }
+  test_server.ExpectOnce(
+      {request::GetPathMatcher(test_server.update_path()),
+       request::GetUpdaterUserAgentMatcher(updater_version),
+       request::GetContentMatcher(attributes),
+       request::GetContentMatcher(app_requests),
+       request::GetScopeMatcher(scope),
+       request::GetUpdaterEnableUpdatesMatcher()},
+      base::BindRepeating(
+          [](std::vector<base::RepeatingCallback<std::string(bool)>>
+                 app_response_providers,
+             bool v4) {
+            std::vector<std::string> app_responses = base::ToVector(
+                app_response_providers,
+                [v4](const base::RepeatingCallback<std::string(bool)>&
+                         provider) { return provider.Run(v4); });
+            return v4 ? GetUpdateResponseV4(app_responses)
+                      : GetUpdateResponseV3(app_responses);
+          },
+          app_response_providers));
+
+  std::set<base::FilePath> downloaded_crxes;
   for (const AppUpdateExpectation& app : apps) {
-    if (app.should_update || app.always_serve_crx) {
+    if ((app.should_update || app.always_serve_crx) &&
+        (app.from_version != app.to_version) &&
+        !downloaded_crxes.contains(app.crx_relative_path)) {
       // Download requests for apps that install/update
       const base::FilePath crx_path = exe_path.Append(app.crx_relative_path);
       ASSERT_TRUE(base::PathExists(crx_path));
       std::string crx_bytes;
       base::ReadFileToString(crx_path, &crx_bytes);
-      test_server->ExpectOnce(
+      test_server.ExpectOnce(
           {request::GetUpdaterUserAgentMatcher(updater_version),
            request::GetContentMatcher({""})},
           crx_bytes);
+      downloaded_crxes.insert(app.crx_relative_path);
     }
 
     if (app.should_update) {
       // Followed by event ping.
-      test_server->ExpectOnce(
-          {request::GetPathMatcher(test_server->update_path()),
+      test_server.ExpectOnce(
+          {request::GetPathMatcher(test_server.update_path()),
            request::GetUpdaterUserAgentMatcher(updater_version),
-           request::GetContentMatcher({base::StringPrintf(
+           request::GetContentMatcher({absl::StrFormat(
                R"(.*"appid":"%s",.*)"
                R"("eventresult":1,"eventtype":%d,("nextfp":.*,)?)"
                R"("nextversion":"%s","previousversion":"%s".*)"
@@ -833,16 +882,16 @@ void ExpectAppsUpdateSequence(UpdaterScope scope,
           ")]}'\n");
     } else if (app.custom_app_response.empty() && app.response_status == "ok") {
       // Event ping for apps that doesn't update.
-      test_server->ExpectOnce(
-          {request::GetPathMatcher(test_server->update_path()),
+      test_server.ExpectOnce(
+          {request::GetPathMatcher(test_server.update_path()),
            request::GetUpdaterUserAgentMatcher(updater_version),
-           request::GetContentMatcher({base::StringPrintf(
+           request::GetContentMatcher({absl::StrFormat(
                R"(.*"appid":"%s",.*)"
                R"(.*"errorcat":%d,"errorcode":%d,)"
                R"("eventresult":0,"eventtype":%d,("nextfp":.*,)?)"
                R"("nextversion":"%s","previousversion":"%s".*)"
                R"("version":"%s".*)",
-               app.app_id.c_str(), static_cast<int>(app.error_category),
+               app.app_id.c_str(), std::to_underlying(app.error_category),
                app.error_code, app.event_type,
                app.to_version.GetString().c_str(),
                app.from_version.GetString().c_str(),
@@ -899,6 +948,13 @@ void RunServer(UpdaterScope scope, int expected_exit_code, bool internal) {
   ASSERT_EQ(exit_code, expected_exit_code);
 }
 
+void RunUpdateApps(UpdaterScope scope,
+                   int expected_exit_code,
+                   const base::Version& version) {
+  RunUpdaterWithSwitches(version, scope, {kUpdateAppsSwitch},
+                         expected_exit_code);
+}
+
 void CheckForUpdate(UpdaterScope scope, const std::string& app_id) {
   scoped_refptr<UpdateService> update_service = CreateUpdateServiceProxy(scope);
   base::RunLoop loop;
@@ -927,7 +983,8 @@ void ExpectCheckForUpdateOppositeScopeFails(UpdaterScope scope,
       }));
   loop.Run();
   ASSERT_TRUE(result == UpdateService::Result::kServiceFailed ||
-              result == UpdateService::Result::kIPCConnectionFailed)
+              result == UpdateService::Result::kIPCConnectionFailed ||
+              result == UpdateService::Result::kInvalidArgument)
       << "result == " << result;
 }
 
@@ -936,6 +993,7 @@ void Update(UpdaterScope scope,
             const std::string& install_data_index) {
   scoped_refptr<UpdateService> update_service = CreateUpdateServiceProxy(scope);
   base::RunLoop loop;
+  ScopedAppInstallTimeout runloop_timeout;
   update_service->Update(
       app_id, install_data_index, UpdateService::Priority::kForeground,
       UpdateService::PolicySameVersionUpdate::kNotAllowed,
@@ -948,6 +1006,7 @@ void Update(UpdaterScope scope,
 void UpdateAll(UpdaterScope scope) {
   scoped_refptr<UpdateService> update_service = CreateUpdateServiceProxy(scope);
   base::RunLoop loop;
+  ScopedAppInstallTimeout runloop_timeout;
   update_service->UpdateAll(
       base::DoNothing(),
       base::BindLambdaForTesting(
@@ -957,14 +1016,15 @@ void UpdateAll(UpdaterScope scope) {
 
 void InstallAppViaService(UpdaterScope scope,
                           const std::string& appid,
-                          const base::Value::Dict& expected_final_values) {
+                          const base::DictValue& expected_final_values) {
   RegistrationRequest registration;
   registration.app_id = appid;
-  registration.version = base::Version({0, 0, 0, 0});
+  registration.version = kNullVersion;
   scoped_refptr<UpdateService> update_service = CreateUpdateServiceProxy(scope);
   UpdateService::UpdateState final_update_state;
   UpdateService::Result final_result;
   base::RunLoop loop;
+  ScopedAppInstallTimeout runloop_timeout;
   update_service->Install(
       registration, /*client_install_data=*/"", /*install_data_index=*/"",
       UpdateService::Priority::kForeground,
@@ -979,7 +1039,7 @@ void InstallAppViaService(UpdaterScope scope,
       }));
   loop.Run();
 
-  const base::Value::Dict* expected_update_state =
+  const base::DictValue* expected_update_state =
       expected_final_values.FindDict("expected_update_state");
   if (expected_update_state) {
 #define CHECK_STATE_MEMBER_STRING(p)                 \
@@ -1003,7 +1063,7 @@ void InstallAppViaService(UpdaterScope scope,
 
     CHECK_STATE_MEMBER_STRING(app_id);
     CHECK_STATE_MEMBER_INT(state);
-    CHECK_STATE_MEMBER_VERSION(next_version);
+    CHECK_STATE_MEMBER_STRING(next_version);
     CHECK_STATE_MEMBER_INT(downloaded_bytes);
     CHECK_STATE_MEMBER_INT(total_bytes);
     CHECK_STATE_MEMBER_INT(install_progress);
@@ -1022,11 +1082,13 @@ void InstallAppViaService(UpdaterScope scope,
           expected_final_values.FindInt("expected_result");
       expected_result) {
     EXPECT_EQ(static_cast<int>(final_result), *expected_result);
+  } else if (expected_final_values.FindBool("expect_failure").value_or(false)) {
+    EXPECT_NE(final_result, UpdateService::Result::kSuccess);
   }
 }
 
 void GetAppStates(UpdaterScope updater_scope,
-                  const base::Value::Dict& expected_app_states) {
+                  const base::DictValue& expected_app_states) {
   scoped_refptr<UpdateService> update_service =
       CreateUpdateServiceProxy(updater_scope);
 
@@ -1042,22 +1104,42 @@ void GetAppStates(UpdaterScope updater_scope,
                                                         expected_app_id);
               });
           ASSERT_TRUE(it != std::end(states));
-          const base::Value::Dict* expected = expected_state.GetIfDict();
+          const base::DictValue* expected = expected_state.GetIfDict();
           ASSERT_TRUE(expected);
-          EXPECT_EQ(it->app_id, *expected->FindString("app_id"));
-          EXPECT_EQ(it->version.GetString(), *expected->FindString("version"));
-          EXPECT_EQ(it->ap, *expected->FindString("ap"));
-          EXPECT_EQ(it->brand_code, *expected->FindString("brand_code"));
-#if BUILDFLAG(IS_WIN)
-          EXPECT_EQ(base::WideToUTF8(it->brand_path.value()),
-                    *expected->FindString("brand_path"));
-          EXPECT_EQ(base::WideToUTF8(it->ecp.value()),
-                    *expected->FindString("ecp"));
-#else
-          EXPECT_EQ(it->brand_path.value(),
-                    *expected->FindString("brand_path"));
-          EXPECT_EQ(it->ecp.value(), *expected->FindString("ecp"));
-#endif  // BUILDFLAG(IS_WIN)
+          bool checked_anything = false;
+          if (const std::string* expected_app_id_str =
+                  expected->FindString("app_id")) {
+            EXPECT_EQ(it->app_id, *expected_app_id_str);
+            checked_anything = true;
+          }
+          if (const std::string* expected_version =
+                  expected->FindString("version")) {
+            EXPECT_EQ(it->version, *expected_version);
+            checked_anything = true;
+          }
+          if (const std::string* expected_ap = expected->FindString("ap")) {
+            EXPECT_EQ(it->ap, *expected_ap);
+            checked_anything = true;
+          }
+          if (const std::string* expected_brand_code =
+                  expected->FindString("brand_code")) {
+            EXPECT_EQ(it->brand_code, *expected_brand_code);
+            checked_anything = true;
+          }
+          if (const std::string* expected_brand_path =
+                  expected->FindString("brand_path")) {
+            EXPECT_EQ(update_client::StringTypeToUTF8(it->brand_path.value()),
+                      *expected_brand_path);
+            checked_anything = true;
+          }
+          if (const std::string* expected_ecp = expected->FindString("ecp")) {
+            EXPECT_EQ(update_client::StringTypeToUTF8(it->ecp.value()),
+                      *expected_ecp);
+            checked_anything = true;
+          }
+          EXPECT_TRUE(checked_anything)
+              << "TEST ISSUE: GetAppStates had no expectations for app "
+              << expected_app_id;
         }
         loop.Quit();
       }));
@@ -1152,7 +1234,7 @@ void ExpectLogRotated(UpdaterScope scope) {
 }
 
 void ExpectRegistered(UpdaterScope scope, const std::string& app_id) {
-  ASSERT_TRUE(base::Contains(
+  ASSERT_TRUE(std::ranges::contains(
       base::MakeRefCounted<PersistedData>(
           scope, CreateGlobalPrefs(scope)->GetPrefService(), nullptr)
           ->GetAppIds(),
@@ -1160,7 +1242,7 @@ void ExpectRegistered(UpdaterScope scope, const std::string& app_id) {
 }
 
 void ExpectNotRegistered(UpdaterScope scope, const std::string& app_id) {
-  ASSERT_FALSE(base::Contains(
+  ASSERT_FALSE(std::ranges::contains(
       base::MakeRefCounted<PersistedData>(
           scope, CreateGlobalPrefs(scope)->GetPrefService(), nullptr)
           ->GetAppIds(),
@@ -1185,14 +1267,18 @@ void SetAppTag(UpdaterScope scope,
   PrefsCommitPendingWrites(global_prefs->GetPrefService());
 }
 
-void Run(UpdaterScope scope, base::CommandLine command_line, int* exit_code) {
+void Run(
+    UpdaterScope scope,
+    base::CommandLine command_line,
+    int* exit_code,
+    base::FunctionRef<base::Process(const base::CommandLine&)> launch_process) {
   base::ScopedAllowBaseSyncPrimitivesForTesting allow_wait_process;
   if (IsSystemInstall(scope)) {
     command_line.AppendSwitch(kSystemSwitch);
     command_line = MakeElevated(command_line);
   }
   VLOG(0) << " Run command: " << command_line.GetCommandLineString();
-  base::Process process = base::LaunchProcess(command_line, {});
+  base::Process process = launch_process(command_line);
   VPLOG_IF(0, !process.IsValid());
   ASSERT_TRUE(process.IsValid());
 
@@ -1205,6 +1291,24 @@ void Run(UpdaterScope scope, base::CommandLine command_line, int* exit_code) {
       2 * TestTimeouts::action_max_timeout(), exit_code);
   VPLOG_IF(0, !succeeded);
   ASSERT_TRUE(succeeded);
+}
+
+void RunDeElevated(UpdaterScope scope,
+                   base::CommandLine command_line,
+                   int* exit_code) {
+#if BUILDFLAG(IS_WIN)
+  if (IsElevatedWithUACOn()) {
+    Run(scope, command_line, exit_code,
+        [](const base::CommandLine& command_line) {
+          auto process = base::win::RunDeElevated(command_line);
+          VPLOG_IF(0, !process.has_value() || !process->IsValid())
+              << process.error();
+          return process.has_value() ? process->Duplicate() : base::Process();
+        });
+    return;
+  }
+#endif
+  Run(scope, command_line, exit_code);
 }
 
 void ExpectCliResult(base::CommandLine command_line,
@@ -1238,48 +1342,65 @@ std::vector<TestUpdaterVersion> GetRealUpdaterVersions() {
   return v;
 }
 
-void SetupRealUpdater(UpdaterScope scope, const base::FilePath& updater_path) {
+void SetupRealUpdater(UpdaterScope scope,
+                      const base::FilePath& updater_path,
+                      const base::ListValue& switches) {
   base::CommandLine command_line(updater_path);
   command_line.AppendSwitch(kInstallSwitch);
+  for (const base::Value& cmd_line_switch : switches) {
+    command_line.AppendSwitch(cmd_line_switch.GetString());
+  }
   int exit_code = -1;
   Run(scope, command_line, &exit_code);
   ASSERT_EQ(exit_code, 0);
 }
 
 void ExpectPing(UpdaterScope scope,
-                ScopedServer* test_server,
+                ScopedServer& test_server,
                 int event_type,
                 std::optional<GURL> target_url) {
-  ASSERT_TRUE(test_server) << "TEST ISSUE - nil `test_server` in ExpectPing";
   request::MatcherGroup request_matchers = {
-      request::GetPathMatcher(test_server->update_path()),
+      request::GetPathMatcher(test_server.update_path()),
       request::GetUpdaterUserAgentMatcher(),
       request::GetContentMatcher(
-          {base::StringPrintf(R"(.*"eventtype":%d,.*)", event_type)}),
+          {absl::StrFormat(R"(.*"eventtype":%d,.*)", event_type)}),
       request::GetScopeMatcher(scope)};
-
   if (target_url) {
     request_matchers.push_back(request::GetTargetURLMatcher(*target_url));
   }
-  test_server->ExpectOnce(request_matchers, ")]}'\n");
+  test_server.ExpectOnce(request_matchers, ")]}'\n");
+}
+
+void ExpectInstallSource(UpdaterScope scope,
+                         ScopedServer& test_server,
+                         const std::string& install_source) {
+  test_server.ExpectOnce({request::GetPathMatcher(test_server.update_path()),
+                          request::GetUpdaterUserAgentMatcher(),
+                          request::GetContentMatcher(
+                              {absl::StrFormat(R"(.*"eventtype":%d,.*)", 2)}),
+                          request::GetContentMatcher({absl::StrFormat(
+                              R"(.*"installsource":"%s",.*)", install_source)}),
+                          request::GetScopeMatcher(scope)},
+                         ")]}'\n");
 }
 
 void ExpectAppCommandPing(UpdaterScope scope,
-                          ScopedServer* test_server,
+                          ScopedServer& test_server,
                           const std::string& appid,
                           const std::string& appcommandid,
                           int errorcode,
                           int eventresult,
                           int event_type,
-                          const base::Version& version) {
-  test_server->ExpectOnce(
+                          const base::Version& version,
+                          const base::Version& updater_version) {
+  test_server.ExpectOnce(
       {
-          request::GetPathMatcher(test_server->update_path()),
-          request::GetUpdaterUserAgentMatcher(),
-          request::GetContentMatcher({base::StringPrintf(
-              R"(.*"appid":"%s","enabled":true,"event":\[{"appcommandid":"%s",)"
-              R"("errorcode":%d,"eventresult":%d,"eventtype":%d,)"
-              R"("previousversion":"%s"}\])",
+          request::GetPathMatcher(test_server.update_path()),
+          request::GetUpdaterUserAgentMatcher(updater_version),
+          request::GetContentMatcher({absl::StrFormat(
+              R"(.*"appid":"%s","enabled":true,"events?":\[{)"
+              R"("appcommandid":"%s","errorcode":%d,"eventresult":%d,)"
+              R"("eventtype":%d,"previousversion":"%s"}\])",
               appid.c_str(), appcommandid.c_str(), errorcode, eventresult,
               event_type, version.GetString().c_str())}),
           request::GetScopeMatcher(scope),
@@ -1287,49 +1408,50 @@ void ExpectAppCommandPing(UpdaterScope scope,
       ")]}'\n");
 }
 
-void ExpectSelfUpdateSequence(UpdaterScope scope, ScopedServer* test_server) {
+void ExpectSelfUpdateSequence(UpdaterScope scope, ScopedServer& test_server) {
   base::FilePath test_data_path;
   ASSERT_TRUE(base::PathService::Get(base::DIR_EXE, &test_data_path));
   base::FilePath crx_path = test_data_path.AppendUTF8(kSelfUpdateCRXName);
   ASSERT_TRUE(base::PathExists(crx_path));
 
   // First request: update check.
-  test_server->ExpectOnce(
-      {request::GetPathMatcher(test_server->update_path()),
+  test_server.ExpectOnce(
+      {request::GetPathMatcher(test_server.update_path()),
        request::GetContentMatcher(
-           {base::StringPrintf(R"(.*"appid":"%s".*)", kUpdaterAppId)}),
+           {absl::StrFormat(R"(.*"appid":"%s".*)", kUpdaterAppId)}),
        request::GetScopeMatcher(scope)},
-      GetUpdateResponse(
-          kUpdaterAppId, "", test_server->download_url().spec(),
-          base::Version(kUpdaterVersion), crx_path, kSelfUpdateCRXRun,
-          base::StrCat(
-              {"--update", IsSystemInstall(scope) ? " --system" : ""})));
+      base::BindRepeating(
+          &GetUpdateResponse, kUpdaterAppId, "",
+          test_server.download_url().spec(), base::Version(kUpdaterVersion),
+          crx_path, kSelfUpdateCRXRun,
+          base::StrCat({"--update", IsSystemInstall(scope) ? " --system" : ""}),
+          GetHashHex(crx_path), false));
 
   // Second request: update download.
   std::string crx_bytes;
   base::ReadFileToString(crx_path, &crx_bytes);
-  test_server->ExpectOnce({request::GetContentMatcher({""})}, crx_bytes);
+  test_server.ExpectOnce({request::GetContentMatcher({""})}, crx_bytes);
 
   // Third request: event ping.
-  test_server->ExpectOnce({request::GetPathMatcher(test_server->update_path()),
-                           request::GetContentMatcher({base::StringPrintf(
-                               R"(.*"eventresult":1,"eventtype":3,)"
-                               R"(("nextfp":.*,)?"nextversion":"%s",.*)",
-                               kUpdaterVersion)}),
-                           request::GetScopeMatcher(scope)},
-                          ")]}'\n");
+  test_server.ExpectOnce({request::GetPathMatcher(test_server.update_path()),
+                          request::GetContentMatcher({absl::StrFormat(
+                              R"(.*"eventresult":1,"eventtype":3,)"
+                              R"(("nextfp":.*,)?"nextversion":"%s".*)",
+                              kUpdaterVersion)}),
+                          request::GetScopeMatcher(scope)},
+                         ")]}'\n");
 }
 
-void ExpectUpdateCheckRequest(UpdaterScope scope, ScopedServer* test_server) {
-  test_server->ExpectOnce({request::GetPathMatcher(test_server->update_path()),
-                           request::GetUpdaterUserAgentMatcher(),
-                           request::GetContentMatcher({R"("updatecheck":{})"}),
-                           request::GetScopeMatcher(scope)},
-                          GetUpdateResponse({}));
+void ExpectUpdateCheckRequest(UpdaterScope scope, ScopedServer& test_server) {
+  test_server.ExpectOnce({request::GetPathMatcher(test_server.update_path()),
+                          request::GetUpdaterUserAgentMatcher(),
+                          request::GetContentMatcher({R"("updatecheck":{})"}),
+                          request::GetScopeMatcher(scope)},
+                         GetUpdateResponseV4({}));
 }
 
 void ExpectUpdateCheckSequence(UpdaterScope scope,
-                               ScopedServer* test_server,
+                               ScopedServer& test_server,
                                const std::string& app_id,
                                UpdateService::Priority priority,
                                const base::Version& from_version,
@@ -1341,7 +1463,7 @@ void ExpectUpdateCheckSequence(UpdaterScope scope,
 }
 
 void ExpectUpdateSequence(UpdaterScope scope,
-                          ScopedServer* test_server,
+                          ScopedServer& test_server,
                           const std::string& app_id,
                           const std::string& install_data_index,
                           UpdateService::Priority priority,
@@ -1350,20 +1472,24 @@ void ExpectUpdateSequence(UpdaterScope scope,
                           bool do_fault_injection,
                           bool skip_download,
                           const base::Version& updater_version,
-                          const std::string& event_regex) {
+                          const std::string& event_regex,
+                          bool use_xz) {
   base::FilePath test_data_path;
   ASSERT_TRUE(base::PathService::Get(chrome::DIR_TEST_DATA, &test_data_path));
   base::FilePath crx_path = test_data_path.Append(FILE_PATH_LITERAL("updater"))
-                                .AppendUTF8(kDoNothingCRXName);
+                                .AppendASCII(kDoNothingCRXName);
+  if (use_xz) {
+    crx_path = crx_path.AddExtension(FILE_PATH_LITERAL(".xz"));
+  }
   ExpectUpdateSequence(scope, test_server, app_id, install_data_index, priority,
                        /*event_type=*/3, from_version, to_version,
                        do_fault_injection, skip_download, crx_path,
                        kDoNothingCRXRun, /*arguments=*/{}, updater_version,
-                       event_regex);
+                       event_regex, use_xz);
 }
 
 void ExpectUpdateSequenceBadHash(UpdaterScope scope,
-                                 ScopedServer* test_server,
+                                 ScopedServer& test_server,
                                  const std::string& app_id,
                                  const std::string& install_data_index,
                                  UpdateService::Priority priority,
@@ -1376,36 +1502,37 @@ void ExpectUpdateSequenceBadHash(UpdaterScope scope,
   ASSERT_TRUE(base::PathExists(crx_path));
 
   // First request: update check.
-  test_server->ExpectOnce(
-      {request::GetPathMatcher(test_server->update_path()),
+  test_server.ExpectOnce(
+      {request::GetPathMatcher(test_server.update_path()),
        request::GetUpdaterUserAgentMatcher(),
        request::GetContentMatcher(
-           {base::StringPrintf(R"("appid":"%s")", app_id.c_str()),
+           {absl::StrFormat(R"("appid":"%s")", app_id.c_str()),
             install_data_index.empty()
                 ? ""
-                : base::StringPrintf(
+                : absl::StrFormat(
                       R"("data":\[{"index":"%s","name":"install"}],.*)",
                       install_data_index.c_str())
                       .c_str()}),
        request::GetScopeMatcher(scope),
        request::GetAppPriorityMatcher(app_id, priority)},
-      GetUpdateResponse(
-          app_id, install_data_index, test_server->download_url().spec(),
-          to_version, crx_path, kDoNothingCRXRun, {},
-          "badbadbadbadbadbadbadbadbadbadbadbadbadbadbadbadbadbadbadbadbad1"));
-
+      base::BindRepeating(
+          &GetUpdateResponse, app_id, install_data_index,
+          test_server.download_url().spec(), to_version, crx_path,
+          kDoNothingCRXRun, "",
+          "badbadbadbadbadbadbadbadbadbadbadbadbadbadbadbadbadbadbadbadbad1",
+          false));
   // Second request: update download.
   std::string crx_bytes;
   base::ReadFileToString(crx_path, &crx_bytes);
-  test_server->ExpectOnce(
+  test_server.ExpectOnce(
       {request::GetUpdaterUserAgentMatcher(), request::GetContentMatcher({""})},
       crx_bytes);
 
   // Third request: event ping.
-  test_server->ExpectOnce(
-      {request::GetPathMatcher(test_server->update_path()),
+  test_server.ExpectOnce(
+      {request::GetPathMatcher(test_server.update_path()),
        request::GetUpdaterUserAgentMatcher(),
-       request::GetContentMatcher({base::StringPrintf(
+       request::GetContentMatcher({absl::StrFormat(
            R"(.*"errorcat":1,"errorcode":12,"eventresult":0,"eventtype":3,)"
            R"(("nextfp":.*,)?"nextversion":"%s","previousversion":"%s".*)",
            to_version.GetString().c_str(), from_version.GetString().c_str())}),
@@ -1414,7 +1541,7 @@ void ExpectUpdateSequenceBadHash(UpdaterScope scope,
 }
 
 void ExpectInstallSequence(UpdaterScope scope,
-                           ScopedServer* test_server,
+                           ScopedServer& test_server,
                            const std::string& app_id,
                            const std::string& install_data_index,
                            UpdateService::Priority priority,
@@ -1432,10 +1559,10 @@ void ExpectInstallSequence(UpdaterScope scope,
                        /*event_type=*/2, from_version, to_version,
                        do_fault_injection, skip_download, crx_path,
                        kDoNothingCRXRun, /*arguments=*/{}, updater_version,
-                       event_regex);
+                       event_regex, false);
 }
 
-void ExpectEnterpriseCompanionAppOTAInstallSequence(ScopedServer* test_server) {
+void ExpectEnterpriseCompanionAppOTAInstallSequence(ScopedServer& test_server) {
   base::FilePath test_data_path;
   ASSERT_TRUE(base::PathService::Get(base::DIR_EXE, &test_data_path));
   base::FilePath crx_path =
@@ -1446,7 +1573,8 @@ void ExpectEnterpriseCompanionAppOTAInstallSequence(ScopedServer* test_server) {
       /*event_type=*/2, base::Version({0, 0, 0, 0}),
       base::Version(kEnterpriseCompanionVersion),
       /*do_fault_injection=*/false, /*skip_download=*/false, crx_path,
-      kEnterpriseCompanionCRXRun, kEnterpriseCompanionCRXArguments);
+      kEnterpriseCompanionCRXRun, kEnterpriseCompanionCRXArguments,
+      base::Version(kUpdaterVersion), ".*", false);
 }
 
 // Runs multiple cycles of instantiating the update service, calling
@@ -1460,9 +1588,9 @@ void StressUpdateService(UpdaterScope scope) {
   // Delay in milliseconds between successive cycles.
 #if BUILDFLAG(IS_LINUX)
   // Looping too tightly causes socket connections to be dropped on Linux.
-  const int kDelayBetweenLoopsMS = 10;
+  constexpr int kDelayBetweenLoopsMS = 10;
 #else
-  const int kDelayBetweenLoopsMS = 0;
+  constexpr int kDelayBetweenLoopsMS = 0;
 #endif
 
   // Runs on the main sequence.
@@ -1537,8 +1665,7 @@ void CallServiceUpdate(UpdaterScope updater_scope,
   service_proxy->Update(
       app_id, install_data_index, UpdateService::Priority::kForeground,
       policy_same_version_update,
-      /*language=*/{},
-      base::BindLambdaForTesting([](const UpdateService::UpdateState&) {}),
+      /*language=*/{}, base::DoNothing(),
       base::BindLambdaForTesting([&](UpdateService::Result result) {
         EXPECT_EQ(result, UpdateService::Result::kSuccess);
         loop.Quit();
@@ -1617,6 +1744,10 @@ VersionProcessFilter::VersionProcessFilter()
         for (const auto& updater_version : GetRealUpdaterVersions()) {
           versions.push_back(updater_version.version);
         }
+        for (const auto& updater_version :
+             GetRealUpdaterLowerVersions("_sans_iid")) {
+          versions.push_back(updater_version.version);
+        }
         return versions;
       }()) {}
 
@@ -1642,7 +1773,7 @@ bool VersionProcessFilter::Includes(const base::ProcessEntry& entry) const {
     return false;
   }
   const base::Version version(base::UTF16ToUTF8(version_info->file_version()));
-  return version.IsValid() && base::Contains(versions_, version);
+  return version.IsValid() && std::ranges::contains(versions_, version);
 }
 #endif  // BUILDFLAG(IS_WIN)
 
@@ -1679,7 +1810,10 @@ void ExpectCleanProcesses() {
 #if !BUILDFLAG(IS_WIN)
 void RunOfflineInstall(UpdaterScope scope,
                        bool is_legacy_install,
-                       bool is_silent_install) {
+                       bool is_silent_install,
+                       int installer_result,
+                       int installer_error,
+                       const std::string& install_source) {
   ADD_FAILURE();
 }
 
@@ -1687,6 +1821,21 @@ void RunOfflineInstallOsNotSupported(UpdaterScope scope,
                                      bool is_legacy_install,
                                      bool is_silent_install,
                                      const std::string& language) {
+  ADD_FAILURE();
+}
+
+void RunMockOfflineMetaInstall(UpdaterScope scope,
+                               const std::string& app_id,
+                               const base::Version& version,
+                               const std::string& tag,
+                               const base::FilePath& installer_path,
+                               const std::string& arguments,
+                               bool is_silent_install,
+                               const std::string& platform,
+                               const std::string& installer_text,
+                               const bool always_launch_cmd,
+                               const int expected_exit_code,
+                               bool expect_success) {
   ADD_FAILURE();
 }
 #endif  // !BUILDFLAG(IS_WIN)
@@ -1742,33 +1891,8 @@ void InstallEnterpriseCompanionApp() {
                                              &exit_code));
 }
 
-void InstallBrokenEnterpriseCompanionApp() {
-  std::optional<base::FilePath> exe_path =
-      enterprise_companion::GetInstallDirectory();
-  ASSERT_TRUE(exe_path);
-  exe_path = exe_path->Append(GetEnterpriseCompanionAppExeRelativePath());
-
-  ASSERT_TRUE(base::CreateDirectory(exe_path->DirName()));
-  ASSERT_TRUE(base::WriteFile(*exe_path, "broken enterprise companion app"));
-  VLOG(1) << "Broken enterprise companion app installed.";
-}
-
-void UninstallBrokenEnterpriseCompanionApp() {
-  std::optional<base::FilePath> install_dir =
-      enterprise_companion::GetInstallDirectory();
-  ASSERT_TRUE(install_dir);
-  for (const base::FilePath::StringType& process_name :
-       GetCompanionAppProcessNames()) {
-    KillProcesses(process_name, -1);
-    WaitForProcessesToExit(process_name, TestTimeouts::action_timeout());
-    EXPECT_FALSE(IsProcessRunning(process_name)) << process_name;
-  }
-  ASSERT_TRUE(base::DeletePathRecursively(*install_dir));
-  VLOG(1) << "Enterprise companion app manually uninstalled.";
-}
-
 void InstallEnterpriseCompanionAppOverrides(
-    const base::Value::Dict& external_overrides) {
+    const base::DictValue& external_overrides) {
   std::optional<base::FilePath> json_path =
       enterprise_companion::GetOverridesFilePath();
   EXPECT_TRUE(json_path);
@@ -1803,13 +1927,38 @@ void UninstallEnterpriseCompanionApp() {
     VLOG(1) << "Enterprise companion app is removed.";
     return;
   }
+}
 
-  // Forcefully remove the installation in case a broken one exists.
-  ASSERT_NO_FATAL_FAILURE(UninstallBrokenEnterpriseCompanionApp());
+void ExpectDeviceManagementRequest(ScopedServer& test_server,
+                                   const std::string& request_type,
+                                   const std::string& authorization_type,
+                                   const std::string& authorization_token,
+                                   net::HttpStatusCode response_status,
+                                   const std::string& response,
+                                   std::optional<GURL> target_url) {
+  request::MatcherGroup request_matchers = {
+      request::GetPathMatcher(absl::StrFormat(
+          R"(%s\?.*agent=%sEnterpriseCompanion\+%s&apptype=Chrome)"
+          R"(&deviceid=%s.*&platform=.*&request=%s)",
+          test_server.device_management_path().c_str(), BROWSER_NAME_STRING,
+          kUpdaterVersion,
+          device_management_storage::GetDefaultDMStorage()
+              ->GetDeviceID()
+              .c_str(),
+          request_type.c_str())),
+      request::GetHeaderMatcher(
+          {{"Authorization",
+            absl::StrFormat("%s token=%s", authorization_type.c_str(),
+                            authorization_token.c_str())},
+           {"Content-Type", "application/protobuf"}})};
+  if (target_url) {
+    request_matchers.push_back(request::GetTargetURLMatcher(*target_url));
+  }
+  test_server.ExpectOnce(request_matchers, response, response_status);
 }
 
 void ExpectDeviceManagementRegistrationRequest(
-    ScopedServer* test_server,
+    ScopedServer& test_server,
     const std::string& enrollment_token,
     const std::string& dm_token) {
   ExpectDeviceManagementRequest(
@@ -1823,7 +1972,7 @@ void ExpectDeviceManagementRegistrationRequest(
 }
 
 void ExpectDeviceManagementPolicyFetchRequest(
-    ScopedServer* test_server,
+    ScopedServer& test_server,
     const std::string& dm_token,
     const ::wireless_android_enterprise_devicemanagement::
         OmahaSettingsClientProto& omaha_settings,
@@ -1836,8 +1985,7 @@ void ExpectDeviceManagementPolicyFetchRequest(
         std::unique_ptr<::enterprise_management::DeviceManagementResponse>
             dm_response = GetDMResponseForOmahaPolicy(
                 first_request, rotate_public_key,
-                DMPolicyBuilderForTesting::SigningOption::kSignNormally,
-                dm_token,
+                DMPolicyBuilder::SigningOption::kSignNormally, dm_token,
                 device_management_storage::GetDefaultDMStorage()->GetDeviceID(),
                 omaha_settings);
         return dm_response->SerializeAsString();
@@ -1845,120 +1993,22 @@ void ExpectDeviceManagementPolicyFetchRequest(
       target_url);
 }
 
-void ExpectDeviceManagementPolicyFetchWithNewPublicKeyRequest(
-    ScopedServer* test_server,
-    const std::string& dm_token,
-    const ::wireless_android_enterprise_devicemanagement::
-        OmahaSettingsClientProto& omaha_settings) {
-  ExpectDeviceManagementRequest(
-      test_server, "policy", "GoogleDMToken", dm_token, net::HTTP_OK,
-      [&dm_token, &omaha_settings] {
-        std::unique_ptr<::enterprise_management::DeviceManagementResponse>
-            dm_response =
-                DMPolicyBuilderForTesting::CreateInstanceWithOptions(
-                    /*first_request=*/false, /*rotate_to_new_key=*/true,
-                    DMPolicyBuilderForTesting::SigningOption::kSignNormally,
-                    dm_token,
-                    device_management_storage::GetDefaultDMStorage()
-                        ->GetDeviceID())
-                    ->BuildDMResponseForPolicies(
-                        {{"a-mock-policy-type-without-new-public-key",
-                          omaha_settings.SerializeAsString()},
-                         {"google/machine-level-omaha",
-                          omaha_settings.SerializeAsString()},
-                         {"yet-another-policy-type-without-new-public-key",
-                          omaha_settings.SerializeAsString()}});
-        return dm_response->SerializeAsString();
-      }());
-}
-
-void ExpectDeviceManagementTokenDeletionRequest(ScopedServer* test_server,
-                                                const std::string& dm_token,
-                                                bool invalidate_token) {
-  ::enterprise_management::DeviceManagementErrorDetail error_detail =
-      invalidate_token ? ::enterprise_management::
-                             CBCM_DELETION_POLICY_PREFERENCE_INVALIDATE_TOKEN
-                       : ::enterprise_management::
-                             CBCM_DELETION_POLICY_PREFERENCE_DELETE_TOKEN;
-  ExpectDeviceManagementRequest(
-      test_server, "policy", "GoogleDMToken", dm_token, net::HTTP_GONE,
-      [&dm_token, error_detail] {
-        std::unique_ptr<::enterprise_management::DeviceManagementResponse>
-            dm_response =
-                DMPolicyBuilderForTesting::CreateInstanceWithOptions(
-                    /*first_request=*/false, /*rotate_to_new_key=*/false,
-                    DMPolicyBuilderForTesting::SigningOption::kSignNormally,
-                    dm_token,
-                    device_management_storage::GetDefaultDMStorage()
-                        ->GetDeviceID())
-                    ->BuildDMResponseWithError(error_detail);
-        return dm_response->SerializeAsString();
-      }());
-}
-
-void ExpectDeviceManagementPolicyValidationRequest(
-    ScopedServer* test_server,
-    const std::string& dm_token) {
-  ExpectDeviceManagementRequest(test_server, "policy_validation_report",
-                                "GoogleDMToken", dm_token, net::HTTP_OK, "");
-}
-
-void ExpectDeviceManagementRegistrationRequestViaCompanionApp(
-    ScopedServer* test_server,
-    const std::string& enrollment_token,
-    const std::string& dm_token) {
-  ExpectDeviceManagementRequestViaCompanionApp(
-      test_server, "register_policy_agent", "GoogleEnrollmentToken",
-      enrollment_token, net::HTTP_OK, [&dm_token] {
-        enterprise_management::DeviceManagementResponse dm_response;
-        dm_response.mutable_register_response()->set_device_management_token(
-            dm_token);
-        return dm_response.SerializeAsString();
-      }());
-}
-
-void ExpectDeviceManagementPolicyFetchRequestViaCompanionApp(
-    ScopedServer* test_server,
-    const std::string& dm_token,
-    const ::wireless_android_enterprise_devicemanagement::
-        OmahaSettingsClientProto& omaha_settings,
-    bool first_request,
-    bool rotate_public_key,
-    std::optional<GURL> target_url) {
-  ExpectDeviceManagementRequestViaCompanionApp(
-      test_server, "policy", "GoogleDMToken", dm_token, net::HTTP_OK,
-      [&dm_token, &omaha_settings, first_request, rotate_public_key] {
-        std::unique_ptr<::enterprise_management::DeviceManagementResponse>
-            dm_response = GetDMResponseForOmahaPolicy(
-                first_request, rotate_public_key,
-                DMPolicyBuilderForTesting::SigningOption::kSignNormally,
-                dm_token,
-                device_management_storage::GetDefaultDMStorage()->GetDeviceID(),
-                omaha_settings);
-        return dm_response->SerializeAsString();
-      }(),
-      target_url);
-}
-
-void ExpectDeviceManagementPolicyValidationRequestViaCompanionApp(
-    ScopedServer* test_server,
-    const std::string& dm_token) {
-  enterprise_management::DeviceManagementResponse dm_response;
-  *dm_response.mutable_policy_validation_report_response() =
-      enterprise_management::PolicyValidationReportResponse();
-  ExpectDeviceManagementRequestViaCompanionApp(
-      test_server, "policy_validation_report", "GoogleDMToken", dm_token,
-      net::HTTP_OK, dm_response.SerializeAsString());
-}
-
-void ExpectProxyPacScriptRequest(ScopedServer* test_server) {
-  test_server->ExpectOnce(
-      {request::GetPathMatcher(test_server->proxy_pac_path()),
+void ExpectProxyPacScriptRequest(ScopedServer& test_server) {
+  test_server.ExpectOnce(
+      {request::GetPathMatcher(test_server.proxy_pac_path()),
        request::GetHeaderMatcher(
            {{"User-Agent", "WinHttp-Autoproxy-Service.*"}})},
-      base::StringPrintf(
+      absl::StrFormat(
           "function FindProxyForURL(url, host) { return \"PROXY %s\"; }",
-          test_server->host_port_pair().c_str()));
+          test_server.host_port_pair().c_str()));
+}
+
+base::FilePath GetNonExistentPath() {
+  base::ScopedTempDir temp_dir;
+  if (!temp_dir.CreateUniqueTempDir()) {
+    return {};
+  }
+  return temp_dir.GetPath().Append(FILE_PATH_LITERAL("non_existent_file"));
 }
 
 }  // namespace updater::test

@@ -13,7 +13,6 @@
 #include "chrome/browser/webauthn/local_authentication_token.h"
 #include "components/device_event_log/device_event_log.h"
 #include "content/public/browser/browser_thread.h"
-#include "crypto/scoped_lacontext.h"
 #include "device/fido/mac/util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/gfx/canvas.h"
@@ -31,7 +30,7 @@ constexpr float kErrorAnimationLength = 1;
 // with the animation.
 constexpr float kSuccessAnimationLength = 1.6;
 
-struct API_AVAILABLE(macos(12.0)) MacAuthenticationView::ObjCStorage {
+struct MacAuthenticationView::ObjCStorage {
   LAContext* __strong context;
   LAAuthenticationView* __strong auth_view;
 };

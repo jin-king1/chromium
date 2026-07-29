@@ -36,8 +36,6 @@ base::RepeatingCallback<bool(OverlayRequest*)> ConfigAndInfoBarMatcher(
 }
 }  // namespace
 
-WEB_STATE_USER_DATA_KEY_IMPL(TranslateOverlayTabHelper)
-
 TranslateOverlayTabHelper::TranslateOverlayTabHelper(web::WebState* web_state)
     : translate_step_observer_(this),
       translate_infobar_observer_(web_state, this),
@@ -106,8 +104,13 @@ void TranslateOverlayTabHelper::TranslateDidFinish(infobars::InfoBar* infobar,
   }
 }
 
-void TranslateOverlayTabHelper::TranslateInfoBarAdded(InfoBarIOS* infobar) {
+void TranslateOverlayTabHelper::TranslateInfoBarAdded(
+    InfoBarIOS* infobar,
+    translate::TranslateStep step) {
   translate_step_observer_.SetTranslateInfoBar(infobar);
+  if (step == translate::TranslateStep::TRANSLATE_STEP_AFTER_TRANSLATE) {
+    infobar->set_accepted(true);
+  }
 }
 
 void TranslateOverlayTabHelper::UpdateForWebStateDestroyed() {
@@ -141,6 +144,7 @@ void TranslateOverlayTabHelper::TranslateStepObserver::OnTranslateStepChanged(
       break;
     case translate::TranslateStep::TRANSLATE_STEP_BEFORE_TRANSLATE:
     case translate::TranslateStep::TRANSLATE_STEP_NEVER_TRANSLATE:
+    case translate::TranslateStep::TRANSLATE_STEP_AFTER_UNDO:
       break;
   }
 }
@@ -185,14 +189,10 @@ TranslateOverlayTabHelper::TranslateInfobarObserver::TranslateInfobarObserver(
   DCHECK(manager);
   infobar_manager_scoped_observation_.Observe(manager);
 
-  if (IsSegmentationTipsManagerEnabled()) {
-    ProfileIOS* const profile =
-        ProfileIOS::FromBrowserState(web_state->GetBrowserState());
+  ProfileIOS* const profile =
+      ProfileIOS::FromBrowserState(web_state->GetBrowserState());
 
-    tips_manager_ = TipsManagerIOSFactory::GetForProfile(profile);
-
-    CHECK(tips_manager_);
-  }
+  tips_manager_ = TipsManagerIOSFactory::GetForProfile(profile);
 }
 
 TranslateOverlayTabHelper::TranslateInfobarObserver::
@@ -205,20 +205,21 @@ void TranslateOverlayTabHelper::TranslateInfobarObserver::OnInfoBarAdded(
   translate::TranslateInfoBarDelegate* delegate =
       infobar->delegate()->AsTranslateInfoBarDelegate();
   if (delegate) {
-    tab_helper_->TranslateInfoBarAdded(static_cast<InfoBarIOS*>(infobar));
+    tab_helper_->TranslateInfoBarAdded(static_cast<InfoBarIOS*>(infobar),
+                                       delegate->translate_step());
   }
 
   // Records a visit to a website in a language different from the user's
   // default language. This allows the Tips Manager to offer assistance
   // with translation features if available.
-  if (IsSegmentationTipsManagerEnabled() && tips_manager_) {
+  if (tips_manager_) {
     tips_manager_->NotifySignal(segmentation_platform::tips_manager::signals::
                                     kOpenedWebsiteInAnotherLanguage);
   }
 }
 
-void TranslateOverlayTabHelper::TranslateInfobarObserver::OnManagerShuttingDown(
-    infobars::InfoBarManager* manager) {
+void TranslateOverlayTabHelper::TranslateInfobarObserver::
+    OnManagerWillBeDestroyed(infobars::InfoBarManager* manager) {
   DCHECK(infobar_manager_scoped_observation_.IsObservingSource(manager));
   infobar_manager_scoped_observation_.Reset();
 }

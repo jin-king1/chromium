@@ -18,6 +18,8 @@ namespace user_education {
 // numeric values should never be reused.
 //
 // Represents the reason that a promo was ended/promo bubble was closed.
+// GENERATED_JAVA_ENUM_PACKAGE: org.chromium.components.user_education
+// GENERATED_JAVA_PREFIX_TO_STRIP: k
 enum class FeaturePromoClosedReason {
   // Actions within the FeaturePromo.
   kDismiss = 0,  // Promo dismissed by user.
@@ -99,6 +101,15 @@ struct UserEducationSessionData {
 
   // The last known time the browser was active.
   base::Time most_recent_active_time;
+
+  // The (potentially non-monotonic but generally increasing) session number.
+  // Any code which relies on this number should respond to an out-of-order
+  // value as a cue to reset anything session-count-related, as it likely means
+  // the user has reset session data from the User Education internals page.
+  //
+  // Note that zero is a null/invalid value and should never be returned from a
+  // data read.
+  int session_number = 1;
 };
 
 // Data that must be kept across browser restart to support the feature promo
@@ -138,6 +149,59 @@ struct ProductMessagingData {
 
   // Notices that were shown this session.
   std::set<std::string> shown_notices;
+};
+
+// Data pertaining to a single NTP promo.
+struct NtpPromoData {
+  NtpPromoData();
+  NtpPromoData(const NtpPromoData&);
+  NtpPromoData(NtpPromoData&&) noexcept;
+  NtpPromoData& operator=(const NtpPromoData&);
+  NtpPromoData& operator=(NtpPromoData&&) noexcept;
+  ~NtpPromoData();
+
+  bool operator<=>(const NtpPromoData& other) const = default;
+
+  // Time at which the promo was most recently clicked.
+  base::Time last_clicked;
+
+  // Time at which the promo was first seen to be complete.
+  base::Time completed;
+
+  // The session in which this promo was last shown in the top spot.
+  int last_session = 0;
+
+  // The number of session this promo has been shown in the top spot, since
+  // it most recently claimed the top spot. When reclaiming top spot,
+  // this value must be reset.
+  int session_count_in_term = 0;
+
+  // The number of times this promo has started a run of sessions in the top
+  // spot.
+  int term_count = 0;
+
+  // Timestamp of when the promo started a run of sessions in the top spot.
+  base::Time term_start_time;
+
+  // Time at which the promo was dismissed by the user.
+  base::Time dismissed_time;
+};
+
+using KeyedNtpPromoDataMap = std::map<std::string, NtpPromoData>;
+
+// Data pertaining to the NTP promo system as a whole.
+struct NtpPromoPreferences {
+  NtpPromoPreferences();
+  NtpPromoPreferences(const NtpPromoPreferences&);
+  NtpPromoPreferences(NtpPromoPreferences&&) noexcept;
+  NtpPromoPreferences& operator=(const NtpPromoPreferences&);
+  NtpPromoPreferences& operator=(NtpPromoPreferences&&) noexcept;
+  ~NtpPromoPreferences();
+
+  bool operator<=>(const NtpPromoPreferences& other) const = default;
+
+  // Whether all promos are disabled.
+  bool disabled = false;
 };
 
 }  // namespace user_education

@@ -11,7 +11,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <array>
+
+#include "base/containers/span.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/raw_span.h"
 #include "media/base/media_export.h"
 #include "media/parsers/vp8_bool_decoder.h"
 
@@ -31,10 +35,10 @@ struct Vp8SegmentationHeader {
   bool update_segment_feature_data;
   SegmentFeatureMode segment_feature_mode;
 
-  int8_t quantizer_update_value[kMaxMBSegments];
-  int8_t lf_update_value[kMaxMBSegments];
+  std::array<int8_t, kMaxMBSegments> quantizer_update_value;
+  std::array<int8_t, kMaxMBSegments> lf_update_value;
   static const int kDefaultSegmentProb = 255;
-  uint8_t segment_prob[kNumMBFeatureTreeProbs];
+  std::array<uint8_t, kNumMBFeatureTreeProbs> segment_prob;
 };
 
 const size_t kNumBlockContexts = 4;
@@ -49,8 +53,8 @@ struct Vp8LoopFilterHeader {
   bool loop_filter_adj_enable;
   bool mode_ref_lf_delta_update;
 
-  int8_t ref_frame_delta[kNumBlockContexts];
-  int8_t mb_mode_delta[kNumBlockContexts];
+  std::array<int8_t, kNumBlockContexts> ref_frame_delta;
+  std::array<int8_t, kNumBlockContexts> mb_mode_delta;
 };
 
 // Member of Vp8FrameHeader and will be 0-initialized
@@ -78,13 +82,16 @@ const size_t kNumUVModeProbs = 3;
 // Member of Vp8FrameHeader and will be 0-initialized
 // in Vp8FrameHeader's constructor.
 struct Vp8EntropyHeader {
-  uint8_t coeff_probs[kNumBlockTypes][kNumCoeffBands][kNumPrevCoeffContexts]
-                     [kNumEntropyNodes];
+  std::array<std::array<std::array<std::array<uint8_t, kNumEntropyNodes>,
+                                   kNumPrevCoeffContexts>,
+                        kNumCoeffBands>,
+             kNumBlockTypes>
+      coeff_probs;
 
-  uint8_t y_mode_probs[kNumYModeProbs];
-  uint8_t uv_mode_probs[kNumUVModeProbs];
+  std::array<uint8_t, kNumYModeProbs> y_mode_probs;
+  std::array<uint8_t, kNumUVModeProbs> uv_mode_probs;
 
-  uint8_t mv_probs[kNumMVContexts][kNumMVProbs];
+  std::array<std::array<uint8_t, kNumMVProbs>, kNumMVContexts> mv_probs;
 };
 
 const size_t kMaxDCTPartitions = 8;
@@ -155,7 +162,7 @@ struct MEDIA_EXPORT Vp8FrameHeader {
   raw_ptr<const uint8_t, AllowPtrArithmetic | DanglingUntriaged> data = nullptr;
   size_t frame_size = 0;
 
-  size_t dct_partition_sizes[kMaxDCTPartitions] = {};
+  std::array<size_t, kMaxDCTPartitions> dct_partition_sizes = {};
   // Offset in bytes from data.
   off_t first_part_offset = 0;
   // Offset in bits from first_part_offset.
@@ -184,7 +191,7 @@ class MEDIA_EXPORT Vp8Parser {
   // filling the parsed data in |fhdr|. Return true on success.
   // Size has to be exactly the size of the frame and coming from the caller,
   // who needs to acquire it from elsewhere (normally from a container).
-  bool ParseFrame(const uint8_t* ptr, size_t size, Vp8FrameHeader* fhdr);
+  bool ParseFrame(base::span<const uint8_t> frame, Vp8FrameHeader* fhdr);
 
  private:
   bool ParseFrameTag(Vp8FrameHeader* fhdr);
@@ -207,8 +214,7 @@ class MEDIA_EXPORT Vp8Parser {
   Vp8LoopFilterHeader curr_loopfilter_hdr_;
   Vp8EntropyHeader curr_entropy_hdr_;
 
-  raw_ptr<const uint8_t, AllowPtrArithmetic | DanglingUntriaged> stream_;
-  size_t bytes_left_;
+  base::raw_span<const uint8_t> stream_;
   Vp8BoolDecoder bd_;
 };
 

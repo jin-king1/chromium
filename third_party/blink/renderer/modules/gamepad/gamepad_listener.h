@@ -6,9 +6,7 @@
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_GAMEPAD_GAMEPAD_LISTENER_H_
 
 namespace device {
-template <class T>
-class GamepadImpl;
-using Gamepad = GamepadImpl<void>;
+class Gamepad;
 }
 
 namespace blink {
@@ -28,11 +26,11 @@ class GamepadListener {
   virtual void DidDisconnectGamepad(uint32_t index,
                                     const device::Gamepad& gamepad) = 0;
 
-  // Called when a button or axis is changed on a connected gamepad. |index| is
-  // the index of the gamepad in the gamepad array, and |gamepad| is a reference
-  // to the gamepad.
-  virtual void ButtonOrAxisDidChange(uint32_t index,
-                                     const device::Gamepad& gamepad) = 0;
+  // Called when any raw input data (buttons, axes, touches, etc.) changes
+  // on a connected gamepad. |index| is the gamepad's index in the array,
+  // and |gamepad| is a reference to the updated gamepad state.
+  virtual void DidChangeGamepadRawInput(uint32_t index,
+                                        const device::Gamepad& gamepad) = 0;
 };
 
 }  // namespace blink

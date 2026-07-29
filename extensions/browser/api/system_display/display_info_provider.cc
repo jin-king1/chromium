@@ -5,11 +5,15 @@
 #include "extensions/browser/api/system_display/display_info_provider.h"
 
 #include "base/functional/bind.h"
+#include "base/notimplemented.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/task/thread_pool.h"
+#include "extensions/buildflags/buildflags.h"
 #include "ui/display/display.h"
 #include "ui/display/screen.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace extensions {
 
@@ -97,8 +101,8 @@ void DisplayInfoProvider::SetDisplayProperties(
   NOTREACHED() << "SetDisplayProperties not implemented";
 }
 
-void DisplayInfoProvider::SetDisplayLayout(const DisplayLayoutList& layouts,
-                                           ErrorCallback callback) {
+base::expected<void, std::string> DisplayInfoProvider::SetDisplayLayout(
+    const DisplayLayoutList& layouts) {
   NOTREACHED() << "SetDisplayLayout not implemented";
 }
 
@@ -123,7 +127,7 @@ void DisplayInfoProvider::GetAllDisplaysInfo(
     bool /* single_unified*/,
     base::OnceCallback<void(DisplayUnitInfoList result)> callback) {
   const display::Screen* screen =
-      provided_screen_ ? provided_screen_.get() : display::Screen::GetScreen();
+      provided_screen_ ? provided_screen_.get() : display::Screen::Get();
   int64_t primary_id = screen->GetPrimaryDisplay().id();
   std::vector<display::Display> displays = screen->GetAllDisplays();
   base::ThreadPool::PostTaskAndReplyWithResult(
@@ -134,8 +138,7 @@ void DisplayInfoProvider::GetAllDisplaysInfo(
       std::move(callback));
 }
 
-void DisplayInfoProvider::GetDisplayLayout(
-    base::OnceCallback<void(DisplayLayoutList result)> callback) {
+DisplayInfoProvider::DisplayLayoutList DisplayInfoProvider::GetDisplayLayout() {
   NOTREACHED();  // Implemented on Chrome OS only in override.
 }
 

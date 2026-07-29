@@ -4,17 +4,21 @@
 
 #include "components/autofill/core/browser/form_parsing/price_field_parser.h"
 
-#include "components/autofill/core/browser/autofill_field.h"
+#include <memory>
+#include <optional>
+#include <utility>
+
+#include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/form_parsing/autofill_scanner.h"
-#include "components/autofill/core/browser/form_parsing/regex_patterns.h"
-#include "components/autofill/core/common/autofill_regex_constants.h"
+#include "components/autofill/core/browser/form_parsing/field_candidates.h"
+#include "components/autofill/core/browser/form_parsing/form_field_parser.h"
 
 namespace autofill {
 
 // static
 std::unique_ptr<FormFieldParser> PriceFieldParser::Parse(
     ParsingContext& context,
-    AutofillScanner* scanner) {
+    AutofillScanner& scanner) {
   std::optional<FieldAndMatchInfo> match;
   if (ParseField(context, scanner, "PRICE", &match)) {
     return std::make_unique<PriceFieldParser>(std::move(*match));
@@ -27,7 +31,7 @@ PriceFieldParser::PriceFieldParser(FieldAndMatchInfo match)
 
 void PriceFieldParser::AddClassifications(
     FieldCandidatesMap& field_candidates) const {
-  AddClassification(match_, PRICE, kBasePriceParserScore, field_candidates);
+  AddClassification(match_, PRICE, HeuristicParser::kPrice, field_candidates);
 }
 
 }  // namespace autofill

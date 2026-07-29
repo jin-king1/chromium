@@ -7,6 +7,7 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "build/build_config.h"
+#include "chrome/browser/autofill/autofill_entity_data_manager_factory.h"
 #include "chrome/browser/autofill/personal_data_manager_factory.h"
 #include "chrome/browser/browsing_data/counters/browsing_data_counter_utils.h"
 #include "chrome/browser/browsing_data/counters/cache_counter.h"
@@ -18,11 +19,10 @@
 #include "chrome/browser/custom_handlers/protocol_handler_registry_factory.h"
 #include "chrome/browser/history/history_service_factory.h"
 #include "chrome/browser/history/web_history_service_factory.h"
-#include "chrome/browser/password_manager/account_password_store_factory.h"
-#include "chrome/browser/password_manager/profile_password_store_factory.h"
+#include "chrome/browser/password_manager/factories/account_password_store_factory.h"
+#include "chrome/browser/password_manager/factories/profile_password_store_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sync/sync_service_factory.h"
-#include "chrome/browser/webauthn/chrome_authenticator_request_delegate.h"
 #include "chrome/browser/webdata_services/web_data_service_factory.h"
 #include "components/browsing_data/core/counters/autofill_counter.h"
 #include "components/browsing_data/core/counters/browsing_data_counter.h"
@@ -34,7 +34,7 @@
 #include "components/sync/service/sync_service.h"
 #include "extensions/buildflags/buildflags.h"
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_HOSTED_APPS)
 #include "chrome/browser/browsing_data/counters/hosted_apps_counter.h"
 #endif
 
@@ -68,22 +68,13 @@ BrowsingDataCounterFactory::GetForProfileAndPref(Profile* profile,
                             base::Unretained(profile)),
         SyncServiceFactory::GetForProfile(profile));
   }
-  if (pref_name == browsing_data::prefs::kDeleteBrowsingHistoryBasic) {
-    // The history option on the basic tab doesn't use a counter.
-    return nullptr;
-  }
 
-  if (pref_name == browsing_data::prefs::kDeleteCache ||
-      pref_name == browsing_data::prefs::kDeleteCacheBasic) {
+  if (pref_name == browsing_data::prefs::kDeleteCache) {
     return std::make_unique<CacheCounter>(profile);
   }
 
   if (pref_name == browsing_data::prefs::kDeleteCookies) {
     return std::make_unique<SiteDataCounter>(profile);
-  }
-  if (pref_name == browsing_data::prefs::kDeleteCookiesBasic) {
-    // The cookies option on the basic tab doesn't use a counter.
-    return nullptr;
   }
 
   if (pref_name == browsing_data::prefs::kDeletePasswords) {
@@ -108,6 +99,7 @@ BrowsingDataCounterFactory::GetForProfileAndPref(Profile* profile,
         autofill::PersonalDataManagerFactory::GetForBrowserContext(profile),
         WebDataServiceFactory::GetAutofillWebDataForProfile(
             profile, ServiceAccessType::EXPLICIT_ACCESS),
+        autofill::AutofillEntityDataManagerFactory::GetForProfile(profile),
         SyncServiceFactory::GetForProfile(profile));
   }
 
@@ -127,7 +119,7 @@ BrowsingDataCounterFactory::GetForProfileAndPref(Profile* profile,
         profile->GetPrefs());
   }
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_HOSTED_APPS)
   if (pref_name == browsing_data::prefs::kDeleteHostedAppsData) {
     return std::make_unique<HostedAppsCounter>(profile);
   }

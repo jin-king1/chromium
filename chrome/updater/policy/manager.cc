@@ -9,23 +9,11 @@
 #include <vector>
 
 #include "base/memory/ref_counted.h"
-#include "base/memory/scoped_refptr.h"
 #include "base/time/time.h"
 #include "chrome/updater/constants.h"
+#include "third_party/abseil-cpp/absl/strings/str_format.h"
 
 namespace updater {
-
-bool UpdatesSuppressedTimes::operator==(
-    const UpdatesSuppressedTimes& other) const {
-  return start_hour_ == other.start_hour_ &&
-         start_minute_ == other.start_minute_ &&
-         duration_minute_ == other.duration_minute_;
-}
-
-bool UpdatesSuppressedTimes::operator!=(
-    const UpdatesSuppressedTimes& other) const {
-  return !(*this == other);
-}
 
 bool UpdatesSuppressedTimes::valid() const {
   return start_hour_ != kPolicyNotSet && start_minute_ != kPolicyNotSet &&
@@ -45,6 +33,11 @@ bool UpdatesSuppressedTimes::contains(int hour, int minute) const {
     return true;
   }
   return false;
+}
+
+std::string UpdatesSuppressedTimes::ToString() const {
+  return absl::StrFormat("%d, %d, %d", start_hour_, start_minute_,
+                         duration_minute_);
 }
 
 // DefaultValuesPolicyManager returns the default values for policies when no
@@ -74,6 +67,10 @@ class DefaultValuesPolicyManager : public PolicyManagerInterface {
   std::optional<std::string> GetTargetVersionPrefix(
       const std::string& app_id) const override;
   std::optional<bool> IsRollbackToTargetVersionAllowed(
+      const std::string& app_id) const override;
+  std::optional<int> GetMajorVersionRolloutPolicy(
+      const std::string& app_id) const override;
+  std::optional<int> GetMinorVersionRolloutPolicy(
       const std::string& app_id) const override;
   std::optional<std::string> GetProxyMode() const override;
   std::optional<std::string> GetProxyPacUrl() const override;
@@ -148,6 +145,16 @@ std::optional<bool>
 DefaultValuesPolicyManager::IsRollbackToTargetVersionAllowed(
     const std::string& app_id) const {
   return false;
+}
+
+std::optional<int> DefaultValuesPolicyManager::GetMajorVersionRolloutPolicy(
+    const std::string& app_id) const {
+  return std::nullopt;
+}
+
+std::optional<int> DefaultValuesPolicyManager::GetMinorVersionRolloutPolicy(
+    const std::string& app_id) const {
+  return std::nullopt;
 }
 
 std::optional<std::string> DefaultValuesPolicyManager::GetProxyMode() const {

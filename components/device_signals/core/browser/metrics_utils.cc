@@ -51,6 +51,12 @@ std::string GetHistogramVariant(SignalName signal_name) {
       return "SystemSettings";
     case SignalName::kAgent:
       return "Agent";
+    case SignalName::kOsSignals:
+      return "OsSignals";
+    case SignalName::kBrowserContextSignals:
+      return "BrowserContextSignals";
+    case SignalName::kCertificates:
+      return "Certificates";
   }
 }
 
@@ -133,6 +139,25 @@ void LogCrowdStrikeParsingError(SignalsParsingError error) {
   static constexpr char kCrowdStrikeErrorHistogram[] =
       "Enterprise.DeviceSignals.Collection.CrowdStrike.Error";
   base::UmaHistogramEnumeration(kCrowdStrikeErrorHistogram, error);
+}
+
+void LogCertificateCollectionError(CertificateCollectionError error) {
+  static constexpr char kCertErrorHistogram[] =
+      "Enterprise.DeviceSignals.Collection.Certificates.Error";
+  base::UmaHistogramEnumeration(kCertErrorHistogram, error);
+}
+
+void LogSystemSignalCollectionDisconnect(size_t pending_requests) {
+  static constexpr char kSystemSignalsServiceDisconnectCountHistogram[] =
+      "Enterprise.DeviceSignals.SystemSignalsService.Disconnect.ItemsCount";
+  base::UmaHistogramCounts100(kSystemSignalsServiceDisconnectCountHistogram,
+                              pending_requests);
+}
+
+void LogSystemSignalCollectionMissingPendingCallback() {
+  static constexpr char kSystemSignalsServiceMissingPendingCallback[] =
+      "Enterprise.DeviceSignals.SystemSignalsService.MissingPendingCallback";
+  base::UmaHistogramBoolean(kSystemSignalsServiceMissingPendingCallback, true);
 }
 
 }  // namespace device_signals

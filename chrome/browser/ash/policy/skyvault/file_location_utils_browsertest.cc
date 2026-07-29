@@ -5,6 +5,7 @@
 #include "chrome/browser/ash/policy/skyvault/file_location_utils.h"
 
 #include "chrome/browser/ash/drive/drive_integration_service.h"
+#include "chrome/browser/ash/drive/drive_integration_service_factory.h"
 #include "chrome/browser/ash/file_manager/path_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
@@ -18,7 +19,7 @@ namespace policy::local_user_files {
 IN_PROC_BROWSER_TEST_F(FileLocationUtilsTest, ResolveGoogleDrive) {
   auto* drive_integration_service =
       drive::DriveIntegrationServiceFactory::FindForProfile(
-          browser()->profile());
+          browser()->GetProfile());
   ASSERT_FALSE(drive_integration_service->GetMountPointPath().empty());
   EXPECT_EQ(drive_integration_service->GetMountPointPath()
                 .AppendASCII("root")
@@ -39,7 +40,7 @@ IN_PROC_BROWSER_TEST_F(FileLocationUtilsTest, ResolveRegular) {
 
 IN_PROC_BROWSER_TEST_F(FileLocationUtilsTest, ResolveEmpty) {
   EXPECT_EQ(
-      file_manager::util::GetDownloadsFolderForProfile(browser()->profile()),
+      file_manager::util::GetDownloadsFolderForProfile(browser()->GetProfile()),
       ResolvePath(""));
 }
 

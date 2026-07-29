@@ -9,6 +9,7 @@ import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.Callback;
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.profiles.Profile;
 
 import java.util.Arrays;
@@ -16,6 +17,7 @@ import java.util.Collections;
 import java.util.List;
 
 /** Bridge, providing access to the native-side Privacy Sandbox configuration. */
+@NullMarked
 public class PrivacySandboxBridge {
 
     private final Profile mProfile;
@@ -86,14 +88,6 @@ public class PrivacySandboxBridge {
         PrivacySandboxBridgeJni.get().setFledgeJoiningAllowed(mProfile, topFrameEtldPlus1, allowed);
     }
 
-    public @PromptType int getRequiredPromptType(@SurfaceType int surfaceType) {
-        return PrivacySandboxBridgeJni.get().getRequiredPromptType(mProfile, surfaceType);
-    }
-
-    public void promptActionOccurred(@PromptAction int action, @SurfaceType int surfaceType) {
-        PrivacySandboxBridgeJni.get().promptActionOccurred(mProfile, action, surfaceType);
-    }
-
     public boolean isRelatedWebsiteSetsDataAccessEnabled() {
         return PrivacySandboxBridgeJni.get().isRelatedWebsiteSetsDataAccessEnabled(mProfile);
     }
@@ -126,15 +120,6 @@ public class PrivacySandboxBridge {
 
     public void setAllPrivacySandboxAllowedForTesting() {
         PrivacySandboxBridgeJni.get().setAllPrivacySandboxAllowedForTesting(mProfile); // IN-TEST
-    }
-
-    public void recordActivityType(@PrivacySandboxStorageActivityType int activityType) {
-        PrivacySandboxBridgeJni.get().recordActivityType(mProfile, activityType);
-    }
-
-    public boolean privacySandboxPrivacyGuideShouldShowAdTopicsCard() {
-        return PrivacySandboxBridgeJni.get()
-                .privacySandboxPrivacyGuideShouldShowAdTopicsCard(mProfile);
     }
 
     public boolean shouldUsePrivacyPolicyChinaDomain() {
@@ -187,17 +172,9 @@ public class PrivacySandboxBridge {
 
         void setFledgeJoiningAllowed(Profile profile, String topFrameEtldPlus1, boolean allowed);
 
-        int getRequiredPromptType(Profile profile, int surfaceType);
-
-        void promptActionOccurred(Profile profile, int action, int surfaceType);
-
         void topicsToggleChanged(Profile profile, boolean newValue);
 
         void setAllPrivacySandboxAllowedForTesting(Profile profile); // IN-TEST
-
-        void recordActivityType(Profile profile, int activityType);
-
-        boolean privacySandboxPrivacyGuideShouldShowAdTopicsCard(Profile profile);
 
         boolean shouldUsePrivacyPolicyChinaDomain(Profile profile);
 

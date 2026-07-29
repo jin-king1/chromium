@@ -13,7 +13,6 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
-import static org.chromium.base.test.util.Restriction.RESTRICTION_TYPE_NON_LOW_END_DEVICE;
 import static org.chromium.chrome.browser.tasks.tab_management.TabUiTestHelper.createTabs;
 import static org.chromium.chrome.browser.tasks.tab_management.TabUiTestHelper.enterTabSwitcher;
 import static org.chromium.chrome.browser.tasks.tab_management.TabUiTestHelper.leaveTabSwitcher;
@@ -35,7 +34,6 @@ import androidx.test.filters.MediumTest;
 
 import org.junit.After;
 import org.junit.Before;
-import org.junit.ClassRule;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -45,17 +43,17 @@ import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisableIf;
-import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Restriction;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.layouts.LayoutType;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
-import org.chromium.chrome.test.R;
-import org.chromium.chrome.test.batch.BlankCTATabInitialStateRule;
+import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.util.ActivityTestUtils;
-import org.chromium.components.omnibox.OmniboxFeatureList;
 import org.chromium.ui.base.DeviceFormFactor;
 
 import java.lang.annotation.Retention;
@@ -68,7 +66,6 @@ import java.util.List;
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Restriction(DeviceFormFactor.PHONE)
-@DisableFeatures(OmniboxFeatureList.ANDROID_HUB_SEARCH)
 @Batch(Batch.PER_CLASS)
 public class TabGridAccessibilityHelperTest {
     @IntDef({
@@ -86,27 +83,26 @@ public class TabGridAccessibilityHelperTest {
         int NUM_ENTRIES = 4;
     }
 
-    @ClassRule
-    public static ChromeTabbedActivityTestRule sActivityTestRule =
-            new ChromeTabbedActivityTestRule();
-
     @Rule
-    public BlankCTATabInitialStateRule mBlankCTATabInitialStateRule =
-            new BlankCTATabInitialStateRule(sActivityTestRule, false);
+    public AutoResetCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.fastAutoResetCtaActivityRule();
+
+    private WebPageStation mPage;
 
     @Before
     public void setUp() {
+        mPage = mActivityTestRule.startOnBlankPage();
         CriteriaHelper.pollUiThread(
-                sActivityTestRule.getActivity().getTabModelSelector()::isTabStateInitialized);
+                mActivityTestRule.getActivity().getTabModelSelector()::isTabStateInitialized);
 
-        TabUiTestHelper.getTabSwitcherLayoutAndVerify(sActivityTestRule.getActivity());
+        TabUiTestHelper.getTabSwitcherLayoutAndVerify(mActivityTestRule.getActivity());
     }
 
     @After
     public void tearDown() {
-        ActivityTestUtils.clearActivityOrientation(sActivityTestRule.getActivity());
-        final ChromeTabbedActivity cta = sActivityTestRule.getActivity();
-        if (cta != null && cta.getLayoutManager().isLayoutVisible(LayoutType.TAB_SWITCHER)) {
+        ActivityTestUtils.clearActivityOrientation(mActivityTestRule.getActivity());
+        final ChromeTabbedActivity cta = mActivityTestRule.getActivity();
+        if (cta != null && cta.getLayoutManager().isLayoutVisible(LayoutType.HUB)) {
             leaveTabSwitcher(cta);
         }
     }
@@ -114,13 +110,13 @@ public class TabGridAccessibilityHelperTest {
     @Test
     @MediumTest
     // Low-end uses list mode.
-    @Restriction(RESTRICTION_TYPE_NON_LOW_END_DEVICE)
     // Fails to rotate on some ARM devices.
     // TODO(crbug.com/40917078): fix and re-enable on ARM devices.
     @DisableIf.Build(supported_abis_includes = "armeabi-v7a")
     @DisableIf.Build(supported_abis_includes = "arm64-v8a")
+    @DisabledTest(message = "crbug.com/405433153")
     public void testGetPotentialActionsForView() throws Exception {
-        final ChromeTabbedActivity cta = sActivityTestRule.getActivity();
+        final ChromeTabbedActivity cta = mActivityTestRule.getActivity();
         final AccessibilityActionChecker checker = new AccessibilityActionChecker(cta);
         createTabs(cta, false, 5);
         enterTabSwitcher(cta);
@@ -264,13 +260,13 @@ public class TabGridAccessibilityHelperTest {
     @Test
     @MediumTest
     // Low-end uses list mode.
-    @Restriction(RESTRICTION_TYPE_NON_LOW_END_DEVICE)
     // Fails to rotate on some ARM devices.
     // TODO(crbug.com/40917078): fix and re-enable on ARM devices.
     @DisableIf.Build(supported_abis_includes = "armeabi-v7a")
     @DisableIf.Build(supported_abis_includes = "arm64-v8a")
+    @DisabledTest(message = "crbug.com/405433153")
     public void testGetPositionsOfReorderAction() throws Exception {
-        final ChromeTabbedActivity cta = sActivityTestRule.getActivity();
+        final ChromeTabbedActivity cta = mActivityTestRule.getActivity();
         int leftActionId = R.id.move_tab_left;
         int rightActionId = R.id.move_tab_right;
         int upActionId = R.id.move_tab_up;
@@ -434,7 +430,7 @@ public class TabGridAccessibilityHelperTest {
                             action.getLabel());
                     break;
                 default:
-                    assert false;
+                    throw new AssertionError();
             }
         }
     }

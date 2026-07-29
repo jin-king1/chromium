@@ -63,7 +63,7 @@ class IsolatedSVGDocumentHost::LocalFrameClient : public EmptyLocalFrameClient {
     // SVG Images have unique security rules that prevent all subresource
     // requests except for data urls.
     return base::MakeRefCounted<network::SingleRequestURLLoaderFactory>(
-        WTF::BindOnce(
+        BindOnce(
             [](const network::ResourceRequest& resource_request,
                mojo::PendingReceiver<network::mojom::URLLoader> receiver,
                mojo::PendingRemote<network::mojom::URLLoaderClient> client) {
@@ -84,6 +84,7 @@ IsolatedSVGDocumentHost::IsolatedSVGDocumentHost(
     IsolatedSVGChromeClient& chrome_client,
     AgentGroupScheduler& agent_group_scheduler,
     scoped_refptr<const SharedBuffer> data,
+    const KURL& base_url,
     base::OnceClosure async_load_callback,
     const Settings* inherited_settings,
     const ColorProviderColorMaps* inherited_color_maps,
@@ -137,7 +138,7 @@ IsolatedSVGDocumentHost::IsolatedSVGDocumentHost(
     frame->Init(/*opener=*/nullptr, DocumentToken(),
                 /*policy_container=*/nullptr, StorageKey(),
                 /*document_ukm_source_id=*/ukm::kInvalidSourceId,
-                /*creator_base_url=*/KURL());
+                /*creator_base_url=*/NullUrl());
   }
 
   // SVG Images will always synthesize a viewBox, if it's not available, and
@@ -149,8 +150,8 @@ IsolatedSVGDocumentHost::IsolatedSVGDocumentHost(
   {
     TRACE_EVENT("blink",
                 "IsolatedSVGDocumentHost::IsolatedSVGDocumentHost::load");
-    frame->ForceSynchronousDocumentInstall(AtomicString("image/svg+xml"),
-                                           *data);
+    frame->ForceSynchronousDocumentInstall(AtomicString("image/svg+xml"), *data,
+                                           base_url);
   }
 
   // Set up our Page reference after installing our document. This avoids
@@ -196,6 +197,8 @@ void IsolatedSVGDocumentHost::CopySettingsFrom(
   settings.SetPreferredColorScheme(
       inherited_settings.GetPreferredColorScheme());
   settings.SetInForcedColors(inherited_settings.GetInForcedColors());
+
+  settings.SetAcceptLanguages(inherited_settings.GetAcceptLanguages());
 }
 
 LocalFrame* IsolatedSVGDocumentHost::GetFrame() {
@@ -213,21 +216,26 @@ void IsolatedSVGDocumentHost::LoadCompleted() {
       break;
 
     case kWaitingForAsyncLoadCompletion:
-      load_state_ = kCompleted;
-
       // Because LoadCompleted() is called synchronously from
-      // Document::ImplicitClose(), we defer AsyncLoadCompleted() to avoid
-      // potential bugs and timing dependencies around ImplicitClose() and
-      // to make LoadEventFinished() true when AsyncLoadCompleted() is called.
+      // Document::DispatchLoadEventAndFinalize(), we defer AsyncLoadCompleted()
+      // to avoid potential bugs and timing dependencies around
+      // DispatchLoadEventAndFinalize() and to make LoadEventFinished() true
+      // when AsyncLoadCompleted() is called.
       async_load_task_handle_ = PostCancellableTask(
           *GetFrame()->GetTaskRunner(TaskType::kInternalLoading), FROM_HERE,
-          std::move(async_load_callback_));
+          BindOnce(&IsolatedSVGDocumentHost::AsyncLoadCompleted,
+                   WrapPersistent(this)));
       break;
 
     case kNotStarted:
     case kCompleted:
       NOTREACHED();
   }
+}
+
+void IsolatedSVGDocumentHost::AsyncLoadCompleted() {
+  load_state_ = kCompleted;
+  std::move(async_load_callback_).Run();
 }
 
 void IsolatedSVGDocumentHost::Shutdown() {

@@ -23,7 +23,7 @@ import {assert} from 'chrome://resources/js/assert.js';
 import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
 import {DeepLinkingMixin} from '../common/deep_linking_mixin.js';
-import {isAssistantAllowed, isLobsterSettingsToggleVisible, isMagicBoostFeatureEnabled, isMagicBoostNoticeBannerVisible, isQuickAnswersSupported, isScannerSettingsToggleVisible, isSunfishSettingsToggleVisible} from '../common/load_time_booleans.js';
+import {isLobsterSettingsToggleVisible, isMagicBoostFeatureEnabled, isMagicBoostNoticeBannerVisible, isQuickAnswersSupported, isScannerSettingsToggleVisible} from '../common/load_time_booleans.js';
 import {RouteOriginMixin} from '../common/route_origin_mixin.js';
 import type {PrefsState} from '../common/types.js';
 import {Setting} from '../mojom-webui/setting.mojom-webui.js';
@@ -82,20 +82,18 @@ export class SearchAndAssistantSettingsCardElement extends
         },
       },
 
-      isSunfishSettingsToggleVisible_: {
-        type: Boolean,
-        readOnly: true,
-        value: () => {
-          return isSunfishSettingsToggleVisible();
-        },
-      },
-
       isScannerSettingsToggleVisible_: {
         type: Boolean,
         readOnly: true,
         value: () => {
           return isScannerSettingsToggleVisible();
         },
+      },
+
+      isLobsterAllowedByEnterprisePolicy_: {
+        type: Boolean,
+        computed: 'isEnterprisePolicyAllowed_(' +
+            'prefs.settings.lobster.enterprise_settings.value)',
       },
 
       isScannerAllowedByEnterprisePolicy_: {
@@ -121,39 +119,32 @@ export class SearchAndAssistantSettingsCardElement extends
         readOnly: true,
         value: () => [ENTERPRISE_POLICY_DISALLOWED],
       },
-
-      /** Can be disallowed due to flag, policy, locale, etc. */
-      isAssistantAllowed_: {
-        type: Boolean,
-        value: () => {
-          return isAssistantAllowed();
-        },
-      },
-
-      /**
-       * Used by DeepLinkingMixin to focus this page's deep links.
-       */
-      supportedSettingIds: {
-        type: Object,
-        value: () => new Set<Setting>([
-          Setting.kPreferredSearchEngine,
-          Setting.kMagicBoostOnOff,
-          Setting.kMahiOnOff,
-          Setting.kShowOrca,
-          Setting.kLobsterOnOff,
-          Setting.kSunfishOnOff,
-          Setting.kScannerOnOff,
-        ]),
-      },
     };
   }
 
-  prefs: PrefsState;
-  private isAssistantAllowed_: boolean;
-  private isQuickAnswersSupported_: boolean;
-  private isMagicBoostFeatureEnabled_: boolean;
-  private readonly isSunfishSettingsToggleVisible_: boolean;
-  private readonly isScannerSettingsToggleVisible_: boolean;
+  declare prefs: PrefsState;
+
+  // DeepLinkingMixin override
+  override supportedSettingIds = new Set<Setting>([
+    Setting.kPreferredSearchEngine,
+    Setting.kMagicBoostOnOff,
+    Setting.kMahiOnOff,
+    Setting.kShowOrca,
+    Setting.kLobsterOnOff,
+    Setting.kSunfishOnOff,
+    Setting.kScannerOnOff,
+  ]);
+
+  declare private readonly enterprisePolicyToggleUncheckedValues_: number[];
+  declare private isHmrAllowedByEnterprisePolicy_: boolean;
+  declare private isHmwAllowedByEnterprisePolicy_: boolean;
+  declare private isLobsterAllowedByEnterprisePolicy_: boolean;
+  declare private readonly isLobsterSettingsToggleVisible_: boolean;
+  declare private readonly isMagicBoostNoticeBannerVisible_: boolean;
+  declare private isMagicBoostFeatureEnabled_: boolean;
+  declare private isQuickAnswersSupported_: boolean;
+  declare private isScannerAllowedByEnterprisePolicy_: boolean;
+  declare private readonly isScannerSettingsToggleVisible_: boolean;
 
   constructor() {
     super();
@@ -166,7 +157,6 @@ export class SearchAndAssistantSettingsCardElement extends
     super.ready();
 
     this.addFocusConfig(routes.SEARCH_SUBPAGE, '#searchRow');
-    this.addFocusConfig(routes.GOOGLE_ASSISTANT, '#assistantRow');
   }
 
   override currentRouteChanged(newRoute: Route, oldRoute?: Route): void {
@@ -183,18 +173,6 @@ export class SearchAndAssistantSettingsCardElement extends
   private onSearchClick_(): void {
     assert(this.isQuickAnswersSupported_);
     Router.getInstance().navigateTo(routes.SEARCH_SUBPAGE);
-  }
-
-  private onGoogleAssistantClick_(): void {
-    assert(this.isAssistantAllowed_);
-    Router.getInstance().navigateTo(routes.GOOGLE_ASSISTANT);
-  }
-
-  private getAssistantEnabledDisabledLabel_(isAssistantEnabled: boolean):
-      string {
-    return this.i18n(
-        isAssistantEnabled ? 'searchGoogleAssistantEnabled' :
-                             'searchGoogleAssistantDisabled');
   }
 
   private isEnterprisePolicyAllowed_(value: number): boolean {

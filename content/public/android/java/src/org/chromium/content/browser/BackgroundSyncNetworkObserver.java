@@ -56,7 +56,7 @@ public class BackgroundSyncNetworkObserver implements NetworkChangeNotifierAutoD
     private static @Nullable BackgroundSyncNetworkObserver sInstance;
 
     // List of native observers. These are each called when the network state changes.
-    private List<Long> mNativePtrs;
+    private final List<Long> mNativePtrs;
 
     private @ConnectionType int mLastBroadcastConnectionType;
     private boolean mHasBroadcastConnectionType;
@@ -117,9 +117,7 @@ public class BackgroundSyncNetworkObserver implements NetworkChangeNotifierAutoD
         mNotifier.updateCurrentNetworkState();
         BackgroundSyncNetworkObserverJni.get()
                 .notifyConnectionTypeChanged(
-                        nativePtr,
-                        BackgroundSyncNetworkObserver.this,
-                        mNotifier.getCurrentNetworkState().getConnectionType());
+                        nativePtr, mNotifier.getCurrentNetworkState().getConnectionType());
     }
 
     @CalledByNative
@@ -142,8 +140,7 @@ public class BackgroundSyncNetworkObserver implements NetworkChangeNotifierAutoD
         mLastBroadcastConnectionType = newConnectionType;
         for (Long nativePtr : mNativePtrs) {
             BackgroundSyncNetworkObserverJni.get()
-                    .notifyConnectionTypeChanged(
-                            nativePtr, BackgroundSyncNetworkObserver.this, newConnectionType);
+                    .notifyConnectionTypeChanged(nativePtr, newConnectionType);
         }
     }
 
@@ -195,7 +192,6 @@ public class BackgroundSyncNetworkObserver implements NetworkChangeNotifierAutoD
     @NativeMethods
     interface Natives {
         @NativeClassQualifiedName("BackgroundSyncNetworkObserverAndroid::Observer")
-        void notifyConnectionTypeChanged(
-                long nativePtr, BackgroundSyncNetworkObserver caller, int newConnectionType);
+        void notifyConnectionTypeChanged(long nativePtr, int newConnectionType);
     }
 }

@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <variant>
 
 #include "base/time/time.h"
 #include "media/base/audio_encoder.h"
@@ -28,6 +29,10 @@ class AudioParameters;
 // is how the output is delivered.
 class MEDIA_EXPORT Muxer {
  public:
+  // Force callback data output at a maximum rate of 10 Hz.
+  static constexpr base::TimeDelta kMinimumForcedOutputDuration =
+      base::Milliseconds(100);
+
   // Defines the type of a callback to be called when a derived muxer (e.g.
   // WebmMuxer or Mp4Muxer) is ready to write a chunk of data.
   using WriteDataCB = base::RepeatingCallback<void(base::span<const uint8_t>)>;
@@ -58,7 +63,7 @@ class MEDIA_EXPORT Muxer {
   struct MEDIA_EXPORT EncodedFrame {
     EncodedFrame();
     EncodedFrame(
-        absl::variant<AudioParameters, VideoParameters> params,
+        std::variant<AudioParameters, VideoParameters> params,
         std::optional<media::AudioEncoder::CodecDescription> codec_description,
         scoped_refptr<DecoderBuffer> data);
     EncodedFrame(EncodedFrame&&);
@@ -67,7 +72,7 @@ class MEDIA_EXPORT Muxer {
     ~EncodedFrame();
     // Parameters for frame. Presence of either indicates the type of data
     // below.
-    absl::variant<AudioParameters, VideoParameters> params;
+    std::variant<AudioParameters, VideoParameters> params;
     // Codec description for data.
     std::optional<media::AudioEncoder::CodecDescription> codec_description;
     // Audio or Video frame data.
@@ -87,6 +92,10 @@ class MEDIA_EXPORT Muxer {
   // The held variant in params indicates audio or video.
   virtual bool PutFrame(EncodedFrame frame,
                         base::TimeDelta relative_timestamp) = 0;
+
+  // Signals that the video track has ended. This is expected to unblock data
+  // output by not waiting for more data on the relevant track.
+  virtual void OnVideoEnded() {}
 };
 
 static_assert(std::is_same<media::AudioEncoder::CodecDescription,

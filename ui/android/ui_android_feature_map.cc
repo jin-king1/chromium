@@ -9,7 +9,7 @@
 #include "ui/base/ui_base_features.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
-#include "ui/android/ui_android_jni_headers/UiAndroidFeatureMap_jni.h"
+#include "ui/android/ui_android_feature_map_jni/UiAndroidFeatureMap_jni.h"
 
 namespace ui {
 
@@ -17,15 +17,27 @@ namespace {
 
 // Array of features exposed through the Java UiAndroidFeatureMap API.
 const base::Feature* const kFeaturesExposedToJava[] = {
-    &ui::kConvertTrackpadEventsToMouse,
+    &ui::kAndroidUseCorrectDisplayWorkArea,
+    &ui::kAndroidUseCorrectWindowBounds,
+    &ui::kAndroidUseDisplayTopology,
+    &ui::kAndroidWindowOcclusion,
+    &ui::kBlockMouseEventsOnView,
+    &ui::kCachedGestureNavMetrics,
+    &ui::kCheckIntentCallerPermission,
+    &ui::kClipboardConfusedDeputyDefenseText,
+    &ui::kClipboardConfusedDeputyDefenseImages,
+    &ui::kClipboardConfusedDeputyDefenseFiles,
     &ui::kDeprecatedExternalPickerFunction,
-    &ui::kMirrorBackForwardGesturesInRTL,
-    &ui::kReportAllAvailablePointerTypes,
+    &ui::kDisablePhotoPickerForVideoCapture,
+    &ui::kMaximumWindowForGestureNavDetection,
+    &ui::kRefactorMinWidthContextOverride,
+    &ui::kReportBottomOverscrolls,
     &ui::kRequireLeadingInTextViewWithLeading,
     &ui::kSelectFileOpenDocument,
-    &ui::kCheckIntentCallerPermission,
-    &ui::kDisablePhotoPickerForVideoCapture,
-    &ui::kUsingCorrectWorkArea,
+    &ui::kAndroidUpdateDisplayForContext,
+    &ui::kSupportKeyboard,
+    &ui::kAndroidTouchpadOverscrollHistoryNavigation,
+    &ui::kUpdatePaddingForDisplayCalculation,
 };
 
 // static
@@ -37,8 +49,10 @@ base::android::FeatureMap* GetFeatureMap() {
 
 }  // namespace
 
-static jlong JNI_UiAndroidFeatureMap_GetNativeMap(JNIEnv* env) {
-  return reinterpret_cast<jlong>(GetFeatureMap());
+static int64_t JNI_UiAndroidFeatureMap_GetNativeMap(JNIEnv* env) {
+  return reinterpret_cast<int64_t>(GetFeatureMap());
 }
 
 }  // namespace ui
+
+DEFINE_JNI(UiAndroidFeatureMap)

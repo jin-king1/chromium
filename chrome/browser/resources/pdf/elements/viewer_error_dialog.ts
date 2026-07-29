@@ -29,9 +29,9 @@ export class ViewerErrorDialogElement extends CrLitElement {
     };
   }
 
-  reloadFn?: (() => void)|null;
+  accessor reloadFn: (() => void)|null|undefined;
 
-  protected onReload_() {
+  protected onReloadClick_() {
     if (this.reloadFn) {
       this.reloadFn();
     }

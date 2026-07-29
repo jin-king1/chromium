@@ -4,9 +4,10 @@
 package org.chromium.support_lib_glue;
 
 import org.chromium.android_webview.AwNavigation;
-import org.chromium.android_webview.AwNavigationClient;
+import org.chromium.android_webview.AwNavigationListener;
 import org.chromium.android_webview.AwPage;
 import org.chromium.android_webview.common.Lifetime;
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.support_lib_boundary.WebViewNavigationClientBoundaryInterface;
 import org.chromium.support_lib_boundary.util.BoundaryInterfaceReflectionUtil;
 import org.chromium.support_lib_boundary.util.Features;
@@ -15,27 +16,28 @@ import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Proxy;
 
 /**
- * Support library glue navigation client callback dapter.
+ * Support library glue navigation client callback adapter.
  *
  * <p>A new instance of this class is created transiently for every shared library WebViewCompat
  * call. Do not store state here.
  */
 @Lifetime.Temporary
-class SupportLibWebViewNavigationClientAdapter implements AwNavigationClient {
-    private WebViewNavigationClientBoundaryInterface mImpl;
-    private String[] mSupportedFeatures;
+@NullMarked
+class SupportLibWebViewNavigationClientAdapter implements AwNavigationListener {
+    private final WebViewNavigationClientBoundaryInterface mClientImpl;
+    private final String[] mSupportedFeatures;
 
     public SupportLibWebViewNavigationClientAdapter(
             /* WebViewNavigationClient */ InvocationHandler invocationHandler) {
-        mImpl =
+        mClientImpl =
                 BoundaryInterfaceReflectionUtil.castToSuppLibClass(
                         WebViewNavigationClientBoundaryInterface.class, invocationHandler);
-        mSupportedFeatures = mImpl.getSupportedFeatures();
+        mSupportedFeatures = mClientImpl.getSupportedFeatures();
     }
 
     @Override
     public /* WebViewNavigationClient */ InvocationHandler getSupportLibInvocationHandler() {
-        return Proxy.getInvocationHandler(mImpl);
+        return Proxy.getInvocationHandler(mClientImpl);
     }
 
     @Override
@@ -44,7 +46,7 @@ class SupportLibWebViewNavigationClientAdapter implements AwNavigationClient {
                 mSupportedFeatures, Features.WEB_VIEW_NAVIGATION_CLIENT_BASIC_USAGE)) {
             return;
         }
-        mImpl.onNavigationStarted(
+        mClientImpl.onNavigationStarted(
                 BoundaryInterfaceReflectionUtil.createInvocationHandlerFor(
                         new SupportLibWebViewNavigationAdapter(navigation)));
     }
@@ -55,7 +57,7 @@ class SupportLibWebViewNavigationClientAdapter implements AwNavigationClient {
                 mSupportedFeatures, Features.WEB_VIEW_NAVIGATION_CLIENT_BASIC_USAGE)) {
             return;
         }
-        mImpl.onNavigationRedirected(
+        mClientImpl.onNavigationRedirected(
                 BoundaryInterfaceReflectionUtil.createInvocationHandlerFor(
                         new SupportLibWebViewNavigationAdapter(navigation)));
     }
@@ -66,20 +68,62 @@ class SupportLibWebViewNavigationClientAdapter implements AwNavigationClient {
                 mSupportedFeatures, Features.WEB_VIEW_NAVIGATION_CLIENT_BASIC_USAGE)) {
             return;
         }
-        mImpl.onNavigationCompleted(
+        mClientImpl.onNavigationCompleted(
                 BoundaryInterfaceReflectionUtil.createInvocationHandlerFor(
                         new SupportLibWebViewNavigationAdapter(navigation)));
     }
 
     @Override
-    public void onPageDeleted(AwPage page) {}
+    public void onPageDeleted(AwPage page) {
+        if (!BoundaryInterfaceReflectionUtil.containsFeature(
+                mSupportedFeatures, Features.WEB_VIEW_NAVIGATION_CLIENT_BASIC_USAGE)) {
+            return;
+        }
+        mClientImpl.onPageDeleted(
+                BoundaryInterfaceReflectionUtil.createInvocationHandlerFor(
+                        new SupportLibWebViewPageAdapter(page)));
+    }
 
     @Override
-    public void onPageLoadEventFired(AwPage page) {}
+    public void onPageLoadEventFired(AwPage page) {
+        if (!BoundaryInterfaceReflectionUtil.containsFeature(
+                mSupportedFeatures, Features.WEB_VIEW_NAVIGATION_CLIENT_BASIC_USAGE)) {
+            return;
+        }
+        mClientImpl.onPageLoadEventFired(
+                BoundaryInterfaceReflectionUtil.createInvocationHandlerFor(
+                        new SupportLibWebViewPageAdapter(page)));
+    }
 
     @Override
-    public void onPageDOMContentLoadedEventFired(AwPage page) {}
+    public void onPageDOMContentLoadedEventFired(AwPage page) {
+        if (!BoundaryInterfaceReflectionUtil.containsFeature(
+                mSupportedFeatures, Features.WEB_VIEW_NAVIGATION_CLIENT_BASIC_USAGE)) {
+            return;
+        }
+        mClientImpl.onPageDOMContentLoadedEventFired(
+                BoundaryInterfaceReflectionUtil.createInvocationHandlerFor(
+                        new SupportLibWebViewPageAdapter(page)));
+    }
 
     @Override
-    public void onFirstContentfulPaint(AwPage page) {}
+    public void onFirstContentfulPaint(AwPage page, long loadTimeUs) {
+        if (!BoundaryInterfaceReflectionUtil.containsFeature(
+                mSupportedFeatures, Features.WEB_VIEW_NAVIGATION_CLIENT_BASIC_USAGE)) {
+            return;
+        }
+        mClientImpl.onFirstContentfulPaint(
+                BoundaryInterfaceReflectionUtil.createInvocationHandlerFor(
+                        new SupportLibWebViewPageAdapter(page)));
+    }
+
+    // Not implemented as this navigation client is set to be deprecated in favour of
+    // {@link #AwNavigationListener}
+    @Override
+    public void onLargestContentfulPaint(AwPage page, long durationMs) {}
+
+    // Not implemented as this navigation client is set to be deprecated in favour of
+    // {@link #AwNavigationListener}
+    @Override
+    public void onPerformanceMark(AwPage page, String markName, long markNameMs) {}
 }

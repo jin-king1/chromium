@@ -9,6 +9,8 @@
 
 #include <memory>
 #include <sstream>
+#include <utility>
+#include <variant>
 
 #include "base/command_line.h"
 #include "base/functional/bind.h"
@@ -19,16 +21,22 @@
 #include "base/trace_event/trace_event.h"
 #include "components/viz/common/features.h"
 #include "gpu/command_buffer/common/swap_buffers_complete_params.h"
+#include "gpu/config/gpu_finch_features.h"
 #include "gpu/ipc/service/gpu_channel_manager.h"
 #include "gpu/ipc/service/gpu_channel_manager_delegate.h"
 #include "ui/accelerated_widget_mac/ca_layer_tree_coordinator.h"
+#include "ui/accelerated_widget_mac/ca_renderer_layer_tree.h"
 #include "ui/gfx/geometry/rect_conversions.h"
 #include "ui/gfx/gpu_fence.h"
 #include "ui/gfx/overlay_plane_data.h"
 #include "ui/gl/ca_renderer_layer_params.h"
 
-#if BUILDFLAG(IS_IOS)
+#if BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_IOS_TVOS)
 #include "gpu/ipc/common/ios/be_layer_hierarchy_transport.h"
+#endif
+
+#if BUILDFLAG(SKIA_USE_DAWN)
+#include "gpu/command_buffer/service/dawn_context_provider.h"
 #endif
 
 // From ANGLE's EGL/eglext_angle.h. This should be included instead of being
@@ -51,10 +59,6 @@ BASE_FEATURE(kAVFoundationOverlays,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 #if BUILDFLAG(IS_MAC)
-BASE_FEATURE(kPresentationDelayForInteractiveFrames,
-             "PresentationDelayForInteractiveFrames",
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
 // Record the delay from the system CVDisplayLink or CADisplaylink source to
 // CrGpuMain OnVSyncPresentation().
 void RecordVSyncCallbackDelay(base::TimeDelta delay) {
@@ -65,23 +69,73 @@ void RecordVSyncCallbackDelay(base::TimeDelta delay) {
 }
 #endif  // BUILDFLAG(IS_MAC)
 
+id<MTLDevice> GetMTLDevice(scoped_refptr<SharedContextState> context_state) {
+#if BUILDFLAG(SKIA_USE_DAWN)
+  if (context_state->IsGraphiteDawnMetal()) {
+    CHECK(context_state->dawn_context_provider());
+    return dawn::native::metal::GetMTLDevice(
+        context_state->dawn_context_provider()->GetDevice().Get());
+  }
+#endif
+  if (context_state->GrContextIsGL()) {
+    EGLAttrib angle_device_attrib = 0;
+    if (eglQueryDisplayAttribEXT(context_state->display()->GetDisplay(),
+                                 EGL_DEVICE_EXT, &angle_device_attrib)) {
+      EGLDeviceEXT angle_device =
+          reinterpret_cast<EGLDeviceEXT>(angle_device_attrib);
+      EGLAttrib metal_device_attrib = 0;
+      if (eglQueryDeviceAttribEXT(angle_device, EGL_METAL_DEVICE_ANGLE,
+                                  &metal_device_attrib)) {
+        return (__bridge id)(void*)metal_device_attrib;
+      }
+    }
+  }
+  return nil;
+}
+
+void BufferPresented(base::WeakPtr<gpu::ImageTransportSurfaceOverlayMacEGL>
+                         image_transfer_weak_ptr,
+                     gl::GLSurface::PresentationCallback callback,
+                     const gfx::PresentationFeedback& feedback) {
+  if (!image_transfer_weak_ptr) {
+    return;
+  }
+
+  DCHECK(!callback.is_null());
+  std::move(callback).Run(feedback);
+}
+
 }  // namespace
 
 ImageTransportSurfaceOverlayMacEGL::ImageTransportSurfaceOverlayMacEGL(
-    SurfaceHandle surface_handle,
-    DawnContextProvider* dawn_context_provider)
-    : dawn_context_provider_(dawn_context_provider), weak_ptr_factory_(this) {
+    scoped_refptr<SharedContextState> context_state,
+    SurfaceHandle surface_handle)
+    : weak_ptr_factory_(this) {
   static bool av_disabled_at_command_line =
       !base::FeatureList::IsEnabled(kAVFoundationOverlays);
 
   auto buffer_presented_callback =
-      base::BindRepeating(&ImageTransportSurfaceOverlayMacEGL::BufferPresented,
-                          weak_ptr_factory_.GetWeakPtr());
+      base::BindRepeating(&BufferPresented, weak_ptr_factory_.GetWeakPtr());
+
+  auto gl_make_current_callback =
+      base::BindRepeating(&SharedContextState::MakeCurrent, context_state,
+                          /*surface=*/nullptr, /*needs_gl=*/true);
+
+  // Allows running completion callbacks and presentation callbacks directly
+  // without posting tasks first.
+  bool no_post_task_for_callback = false;
+#if BUILDFLAG(IS_MAC)
+  no_post_task_for_callback =
+      ui::SkipPostTaskForCallbacks() ||
+      ui::DisplayLinkMac::SupportsDisplayLinkMacInBrowser();
+#endif
 
   ca_layer_tree_coordinator_ = std::make_unique<ui::CALayerTreeCoordinator>(
-      !av_disabled_at_command_line, std::move(buffer_presented_callback));
+      !av_disabled_at_command_line, std::move(buffer_presented_callback),
+      std::move(gl_make_current_callback), GetMTLDevice(context_state),
+      no_post_task_for_callback);
 
-#if BUILDFLAG(IS_IOS)
+#if BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_IOS_TVOS)
   // The BELayerHierarchy needs to be created on a thread that supports
   // libdispatch, so we proxy over to the main dispatch queue to do that.
   CALayer* root_ca_layer = ca_layer_tree_coordinator_->root_ca_layer();
@@ -101,22 +155,35 @@ ImageTransportSurfaceOverlayMacEGL::ImageTransportSurfaceOverlayMacEGL(
 #endif
 }
 
+// For testing
+ImageTransportSurfaceOverlayMacEGL::ImageTransportSurfaceOverlayMacEGL(
+    std::unique_ptr<ui::CALayerTreeCoordinator> ca_layer_tree_coordinator
+#if BUILDFLAG(IS_MAC)
+    ,
+    std::unique_ptr<ui::VSyncCallbackMac> vsync_callback_mac
+#endif
+    )
+    : ca_layer_tree_coordinator_(std::move(ca_layer_tree_coordinator)),
+#if BUILDFLAG(IS_MAC)
+      vsync_callback_mac_(std::move(vsync_callback_mac)),
+#endif
+      weak_ptr_factory_(this) {
+}
+
 ImageTransportSurfaceOverlayMacEGL::~ImageTransportSurfaceOverlayMacEGL() {
   ca_layer_tree_coordinator_.reset();
 
-#if BUILDFLAG(IS_IOS)
-  BELayerHierarchy* layer_hierarchy = std::move(layer_hierarchy_);
+#if BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_IOS_TVOS)
+  // Capture and retain the BELayerHierarchy in a local __block var before
+  // dropping the member var ref. Do this before dispatch_async() to avoid a
+  // dealloc race between the block and the member var releasing the last ref.
+  __block BELayerHierarchy* layer_hierarchy =
+      std::exchange(layer_hierarchy_, nil);
   dispatch_async(dispatch_get_main_queue(), ^{
     [layer_hierarchy invalidate];
+    layer_hierarchy = nil;
   });
 #endif
-}
-
-void ImageTransportSurfaceOverlayMacEGL::BufferPresented(
-    PresentationCallback callback,
-    const gfx::PresentationFeedback& feedback) {
-  DCHECK(!callback.is_null());
-  std::move(callback).Run(feedback);
 }
 
 void ImageTransportSurfaceOverlayMacEGL::Present(
@@ -129,7 +196,7 @@ void ImageTransportSurfaceOverlayMacEGL::Present(
   // Commit the first pending frame before adding one more in Present() if there
   // are more than supported .
   if (ca_layer_tree_coordinator_->NumPendingSwaps() >= cap_max_pending_swaps_) {
-    TRACE_EVENT0("gpu", "Commit now. Exceeds the max pending swaps.");
+    TRACE_EVENT0("gpu", "Exceeds the max pending swaps. Commit now.");
     CommitPresentedFrameToCA();
   }
 
@@ -137,37 +204,6 @@ void ImageTransportSurfaceOverlayMacEGL::Present(
   // at the CoreAnimation level.
   ca_layer_tree_coordinator_->GetPendingCARendererLayerTree()
       ->SetDisplayHDRHeadroom(data.display_hdr_headroom);
-
-  // Query the underlying Metal device, if one exists. This is needed to ensure
-  // synchronization between the display compositor and the HDRCopierLayer.
-  // https://crbug.com/1372898
-  if (gl::GLDisplayEGL* display =
-          gl::GLDisplayEGL::GetDisplayForCurrentContext()) {
-    // With SkiaGraphite, we pass the Graphite-Dawn MTLDevice for creating
-    // CAMetalLayer used to display HDR IOSurfaces. With SkiaGanesh, we pass the
-    // ANGLE MTLDevice instead.
-    if (dawn_context_provider_ &&
-        dawn_context_provider_->backend_type() == wgpu::BackendType::Metal) {
-      id<MTLDevice> metal_device = dawn::native::metal::GetMTLDevice(
-          dawn_context_provider_->GetDevice().Get());
-      ca_layer_tree_coordinator_->GetPendingCARendererLayerTree()
-          ->SetMetalDevice(metal_device);
-    } else {
-      EGLAttrib angle_device_attrib = 0;
-      if (eglQueryDisplayAttribEXT(display->GetDisplay(), EGL_DEVICE_EXT,
-                                   &angle_device_attrib)) {
-        EGLDeviceEXT angle_device =
-            reinterpret_cast<EGLDeviceEXT>(angle_device_attrib);
-        EGLAttrib metal_device_attrib = 0;
-        if (eglQueryDeviceAttribEXT(angle_device, EGL_METAL_DEVICE_ANGLE,
-                                    &metal_device_attrib)) {
-          id<MTLDevice> metal_device = (__bridge id)(void*)metal_device_attrib;
-          ca_layer_tree_coordinator_->GetPendingCARendererLayerTree()
-              ->SetMetalDevice(metal_device);
-        }
-      }
-    }
-  }
 
   ca_layer_tree_coordinator_->Present(std::move(completion_callback),
                                       std::move(presentation_callback));
@@ -180,18 +216,23 @@ void ImageTransportSurfaceOverlayMacEGL::Present(
             weak_ptr_factory_.GetWeakPtr()));
   }
 
-  bool delay_presenetation_until_next_vsync =
-      features::IsVSyncAlignedPresentEnabled();
+  bool delay_presentation_until_next_vsync =
+      features::IsVSyncAligned() ||
+      (features::IsVSyncAlignedForScrolling() && data.is_handling_interaction);
 
-  if (base::FeatureList::IsEnabled(kPresentationDelayForInteractiveFrames) &&
-      !ca_layer_tree_coordinator_->NumPendingSwaps() &&
-      !data.is_handling_interaction_or_animation) {
-    delay_presenetation_until_next_vsync = false;
+  // The current frame has been added to
+  // ca_layer_tree_coordinator_->NumPendingSwaps() after calling
+  // ca_layer_tree_coordinator_->Present(). Check NumPendingSwaps() > 1 to see
+  // whether there is any previous pending frame. The current frame must wait in
+  // the queue if there is already one before this.
+  if ((features::IsVSyncAligned() || features::IsVSyncAlignedForScrolling()) &&
+      ca_layer_tree_coordinator_->NumPendingSwaps() > 1) {
+    delay_presentation_until_next_vsync = true;
   }
 
   if (vsync_callback_mac_) {
     vsync_callback_mac_keep_alive_counter_ = kMaxKeepAliveCounter;
-    if (delay_presenetation_until_next_vsync) {
+    if (delay_presentation_until_next_vsync) {
       // Delay CommitPresentedFrameToCA() until OnVSyncPresentation().
       return;
     }
@@ -213,7 +254,6 @@ void ImageTransportSurfaceOverlayMacEGL::CommitPresentedFrameToCA() {
 
   // Update the CALayer tree in the GPU process.
   {
-    base::TimeTicks before_transaction_time = base::TimeTicks::Now();
     base::TimeTicks display_time;
     base::TimeDelta frame_interval;
 #if BUILDFLAG(IS_MAC)
@@ -224,53 +264,14 @@ void ImageTransportSurfaceOverlayMacEGL::CommitPresentedFrameToCA() {
                  (display_time - base::TimeTicks::Now()).InMicroseconds());
     ca_layer_tree_coordinator_->CommitPresentedFrameToCA(frame_interval,
                                                          display_time);
-
-    base::TimeDelta transaction_time =
-        base::TimeTicks::Now() - before_transaction_time;
-    UMA_HISTOGRAM_CUSTOM_MICROSECONDS_TIMES(
-        "GPU.IOSurface.CATransactionTimeUs", transaction_time,
-        kHistogramMinTime, kHistogramMaxTime, kHistogramTimeBuckets);
   }
-}
-
-bool ImageTransportSurfaceOverlayMacEGL::ScheduleOverlayPlane(
-    gl::OverlayImage image,
-    std::unique_ptr<gfx::GpuFence> gpu_fence,
-    const gfx::OverlayPlaneData& overlay_plane_data) {
-  if (absl::get<gfx::OverlayTransform>(overlay_plane_data.plane_transform) !=
-      gfx::OVERLAY_TRANSFORM_NONE) {
-    DLOG(ERROR) << "Invalid overlay plane transform.";
-    return false;
-  }
-  if (overlay_plane_data.z_order) {
-    DLOG(ERROR) << "Invalid non-zero Z order.";
-    return false;
-  }
-  // TODO(crbug.com/40818047): the display_bounds might not need to be rounded
-  // to the nearest rect as this eventually gets made into a CALayer. CALayers
-  // work in floats.
-  const ui::CARendererLayerParams overlay_as_calayer_params(
-      /*is_clipped=*/false,
-      /*clip_rect=*/gfx::Rect(),
-      /*rounded_corner_bounds=*/gfx::RRectF(),
-      /*sorting_context_id=*/0, gfx::Transform(), image,
-      overlay_plane_data.color_space,
-      /*contents_rect=*/overlay_plane_data.crop_rect,
-      /*rect=*/gfx::ToNearestRect(overlay_plane_data.display_bounds),
-      /*background_color=*/SkColors::kTransparent,
-      /*edge_aa_mask=*/0,
-      /*opacity=*/1.f,
-      /*nearest_neighbor_filter=*/GL_LINEAR,
-      /*hdr_metadata=*/gfx::HDRMetadata(),
-      /*protected_video_type=*/gfx::ProtectedVideoType::kClear,
-      /*is_render_pass_draw_quad=*/false);
-
-  return ca_layer_tree_coordinator_->GetPendingCARendererLayerTree()
-      ->ScheduleCALayer(overlay_as_calayer_params);
 }
 
 bool ImageTransportSurfaceOverlayMacEGL::ScheduleCALayer(
-    const ui::CARendererLayerParams& params) {
+    const ui::CARendererLayerParams& params,
+    std::vector<gfx::MTLSharedEventFence> backpressure_fences) {
+  ca_layer_tree_coordinator_->EnqueueBackpressureFences(
+      std::move(backpressure_fences));
   return ca_layer_tree_coordinator_->GetPendingCARendererLayerTree()
       ->ScheduleCALayer(params);
 }
@@ -296,20 +297,23 @@ void ImageTransportSurfaceOverlayMacEGL::SetMaxPendingSwaps(
 }
 
 #if BUILDFLAG(IS_MAC)
-void ImageTransportSurfaceOverlayMacEGL::SetVSyncDisplayID(int64_t display_id) {
-  if ((!display_link_mac_ || display_id != display_id_) &&
-      display_id != display::kInvalidDisplayId) {
-    vsync_callback_mac_ = nullptr;
-
-    // Commit all pending frames before switching to the new monitor.
-    while (ca_layer_tree_coordinator_->NumPendingSwaps()) {
-      vsync_callback_mac_keep_alive_counter_ =
-          std::max(vsync_callback_mac_keep_alive_counter_, 1);
-      OnVSyncPresentation(ui::VSyncParamsMac());
-    }
-
-    display_link_mac_ = ui::DisplayLinkMac::GetForDisplay(display_id);
+void ImageTransportSurfaceOverlayMacEGL::SetVSyncDisplayID(int64_t display_id,
+                                                           bool force_update) {
+  if (display_id_ == display_id && !force_update) {
+    return;
   }
+
+  vsync_callback_mac_ = nullptr;
+
+  // Commit all pending frames before switching to the new monitor.
+  while (ca_layer_tree_coordinator_->NumPendingSwaps()) {
+    vsync_callback_mac_keep_alive_counter_ =
+        std::max(vsync_callback_mac_keep_alive_counter_, 1);
+    OnVSyncPresentation(ui::VSyncParamsMac());
+  }
+
+  display_link_mac_ = ui::DisplayLinkMac::GetForDisplay(display_id);
+
   display_id_ = display_id;
 }
 
@@ -385,5 +389,4 @@ void ImageTransportSurfaceOverlayMacEGL::OnVSyncPresentation(
   }
 }
 #endif
-
 }  // namespace gpu

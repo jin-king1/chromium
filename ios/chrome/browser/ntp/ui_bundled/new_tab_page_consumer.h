@@ -6,6 +6,10 @@
 #define IOS_CHROME_BROWSER_NTP_UI_BUNDLED_NEW_TAB_PAGE_CONSUMER_H_
 
 #import <Foundation/Foundation.h>
+#import <UIKit/UITraitCollection.h>
+
+@class HomeCustomizationFramingCoordinates;
+@class NewTabPageColorPalette;
 
 // Handles updates to the NTP ViewController.
 @protocol NewTabPageConsumer <NSObject>
@@ -22,6 +26,9 @@
 // Whether the Magic Stack module is visible on the NTP.
 @property(nonatomic, assign) BOOL magicStackVisible;
 
+// Collection of trait-specific override values for customizing NTP appearance
+@property(nonatomic, readonly) id<UITraitOverrides> traitOverrides;
+
 // Indicates that the omnibox has become the first responder to the keyboard.
 - (void)omniboxDidBecomeFirstResponder;
 
@@ -30,7 +37,7 @@
 - (void)omniboxWillResignFirstResponder;
 
 // Indicates that the omnibox stopped being the first responder to the keyboard.
-- (void)omniboxDidResignFirstResponder;
+- (void)omniboxDidEndEditing;
 
 // Restores a given scroll position if applicable.
 - (void)restoreScrollPosition:(CGFloat)scrollPosition;
@@ -50,6 +57,19 @@
 // Returns the Y value to use for the scroll view's contentOffset when scrolling
 // the omnibox to the top of the screen.
 - (CGFloat)pinnedOffsetY;
+
+// Sets the background image of the NTP. Removes the current background image
+// if nil is passed. If framing coordinates are non-nil, they will be used to
+// position the image.
+- (void)setBackgroundImage:(UIImage*)backgroundImage
+        framingCoordinates:
+            (HomeCustomizationFramingCoordinates*)framingCoordinates;
+
+// Whether AIM is allowed.
+- (void)setAIMAllowed:(BOOL)allowed;
+
+// Sets whether the omnibox is in the bottom position.
+- (void)setOmniboxInBottomPosition:(BOOL)isBottomOmnibox;
 
 @end
 

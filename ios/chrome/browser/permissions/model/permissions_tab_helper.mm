@@ -4,6 +4,7 @@
 
 #import "ios/chrome/browser/permissions/model/permissions_tab_helper.h"
 
+#import "base/task/sequenced_task_runner.h"
 #import "base/timer/timer.h"
 #import "ios/chrome/browser/infobars/model/infobar_ios.h"
 #import "ios/chrome/browser/infobars/model/infobar_manager_impl.h"
@@ -31,7 +32,17 @@ void HandlePermissionDialogResponse(
       dialog_response && dialog_response->capture_allow()
           ? web::PermissionDecisionGrant
           : web::PermissionDecisionDeny;
-  handler(decision);
+  // Post the decision handler asynchronously to prevent synchronous re-entrancy
+  // and stack overflow if WebKit immediately initiates another permission
+  // request upon decision completion (e.g., when permissions are repeatedly
+  // requested in a recursion loop).
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, base::BindOnce(
+                     [](web::WebStatePermissionDecisionHandler callback,
+                        web::PermissionDecision permission_decision) {
+                       callback(permission_decision);
+                     },
+                     handler, decision));
 }
 
 }  // namespace
@@ -126,7 +137,7 @@ void PermissionsTabHelper::OnInfoBarRemoved(infobars::InfoBar* infobar,
   }
 }
 
-void PermissionsTabHelper::OnManagerShuttingDown(
+void PermissionsTabHelper::OnManagerWillBeDestroyed(
     infobars::InfoBarManager* manager) {
   DCHECK(infobar_manager_scoped_observation_.IsObservingSource(manager));
   infobar_manager_scoped_observation_.Reset();
@@ -180,5 +191,3 @@ void PermissionsTabHelper::UpdateIsInfoBarAccepted() {
   }
   static_cast<InfoBarIOS*>(infobar_)->set_accepted(accepted);
 }
-
-WEB_STATE_USER_DATA_KEY_IMPL(PermissionsTabHelper)

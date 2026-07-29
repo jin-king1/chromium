@@ -8,7 +8,6 @@
 #include <memory>
 #include <optional>
 #include <string>
-#include <unordered_set>
 
 #include "base/memory/raw_ptr.h"
 #include "components/sync/engine/commit_and_get_updates_types.h"
@@ -62,9 +61,6 @@ class ClientTagBasedRemoteUpdateHandler {
                        ProcessorEntity* entity,
                        EntityChangeList* changes,
                        std::string* storage_key_to_clear);
-
-  // Gets the entity for the given tag hash, or null if there isn't one.
-  ProcessorEntity* GetEntityForTagHash(const ClientTagHash& tag_hash);
 
   // Creates an entity in the entity tracker for `storage_key` queried from the
   // bridge for the given `update`. Provided `storage_key` (if any, i.e. if

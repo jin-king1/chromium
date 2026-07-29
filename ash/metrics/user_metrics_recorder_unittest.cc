@@ -74,10 +74,9 @@ TEST_F(UserMetricsRecorderTest, VerifyIsUserInActiveDesktopEnvironmentValues) {
   EXPECT_FALSE(test_api().IsUserInActiveDesktopEnvironment());
 
   // Kiosk logins are not considered active.
-  client->Reset();
-  client->AddUserSession({"app@kiosk-apps.device-local.localhost",
-                          user_manager::UserType::kKioskApp});
-  client->SetSessionState(session_manager::SessionState::ACTIVE);
+  ClearLogin();
+  SimulateUserLogin({"app@kiosk-apps.device-local.localhost",
+                     user_manager::UserType::kKioskChromeApp});
   EXPECT_FALSE(test_api().IsUserInActiveDesktopEnvironment());
 }
 

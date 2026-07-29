@@ -19,13 +19,15 @@ import android.content.Intent;
 import androidx.test.filters.SmallTest;
 
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Captor;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
 import org.mockito.Spy;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.RuntimeEnvironment;
 import org.robolectric.annotation.Config;
 
@@ -33,7 +35,6 @@ import org.chromium.base.ContextUtils;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.shared_preferences.SharedPreferencesManager;
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.version_info.VersionInfo;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
@@ -49,11 +50,11 @@ import org.chromium.components.search_engines.TemplateUrlService;
 /** Unit tests for {@link SearchEngineChoiceNotification}. */
 @RunWith(BaseRobolectricTestRunner.class)
 @Config(manifest = Config.NONE)
-@EnableFeatures({})
 public final class SearchEngineChoiceNotificationTest {
     private static final String TEST_INITIAL_ENGINE = "google.com";
     private static final String TEST_ALTERNATIVE_ENGINE = "duckduckgo.com";
 
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Spy private Context mContext = RuntimeEnvironment.application.getApplicationContext();
     @Mock private SnackbarManager mSnackbarManager;
     @Mock private TemplateUrlService mTemplateUrlService;
@@ -65,7 +66,6 @@ public final class SearchEngineChoiceNotificationTest {
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
         ContextUtils.initApplicationContextForTests(mContext);
 
         // Sets up appropriate responses from Template URL service.

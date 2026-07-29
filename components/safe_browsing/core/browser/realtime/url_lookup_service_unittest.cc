@@ -14,9 +14,11 @@
 #include "base/test/mock_callback.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
+#include "base/test/test_future.h"
 #include "build/build_config.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "components/safe_browsing/buildflags.h"
+#include "components/safe_browsing/core/browser/intelligent_scan_delegate.h"
 #include "components/safe_browsing/core/browser/referrer_chain_provider.h"
 #include "components/safe_browsing/core/browser/referring_app_info.h"
 #include "components/safe_browsing/core/browser/safe_browsing_token_fetcher.h"
@@ -32,6 +34,7 @@
 #include "net/http/http_status_code.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
+#include "services/network/test/test_network_context.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "services/network/test/test_utils.h"
 #include "testing/platform_test.h"
@@ -77,6 +80,28 @@ class MockReferrerChainProvider : public ReferrerChainProvider {
                                  ReferrerChain* out_referrer_chain));
 };
 
+class MockIntelligentScanDelegate : public IntelligentScanDelegate {
+ public:
+  MOCK_METHOD(bool,
+              ShouldRequestIntelligentScan,
+              (ClientPhishingRequest*),
+              (override));
+  MOCK_METHOD(ModelType, GetIntelligentScanModelType, (bool), (override));
+  MOCK_METHOD(std::optional<base::UnguessableToken>,
+              StartIntelligentScan,
+              (std::string, IntelligentScanDoneCallback),
+              (override));
+  MOCK_METHOD(bool,
+              CancelIntelligentScan,
+              (const base::UnguessableToken&),
+              (override));
+  MOCK_METHOD(bool,
+              ShouldShowScamWarning,
+              (std::optional<IntelligentScanVerdict>),
+              (override));
+  MOCK_METHOD(void, OnScamWarningShown, (), (override));
+};
+
 bool GetRequestProto(const network::ResourceRequest& request,
                      RTLookupRequest* request_proto) {
   if (!request.request_body || !request.request_body->elements()) {
@@ -118,6 +143,82 @@ class MustRunInterceptor {
   bool has_run_;
 };
 
+// Has same API as base::MockCallback<RTLookupResponseCallback>, but exposes
+// Wait() to wait for method to be called.
+class WaitableMockRTLookupResponseCallback {
+ public:
+  MOCK_METHOD3(Run, void(bool, bool, std::unique_ptr<RTLookupResponse>));
+
+  void Wait() { run_loop_.Run(); }
+
+  RTLookupResponseCallback Get() {
+    return base::BindOnce(&WaitableMockRTLookupResponseCallback::RunInternal,
+                          base::Unretained(this));
+  }
+
+ private:
+  base::RunLoop run_loop_;
+
+  void RunInternal(bool is_rt_lookup_successful,
+                   bool is_cached_response,
+                   std::unique_ptr<RTLookupResponse> response) {
+    Run(is_rt_lookup_successful, is_cached_response, std::move(response));
+    run_loop_.Quit();
+  }
+};
+
+class MockDnsNetworkContext : public network::TestNetworkContext {
+ public:
+  void ResolveHost(
+      network::mojom::HostResolverHostPtr host,
+      const net::NetworkAnonymizationKey& network_anonymization_key,
+      network::mojom::ResolveHostParametersPtr optional_parameters,
+      mojo::PendingRemote<network::mojom::ResolveHostClient> response_client)
+      override {
+    resolve_host_called_count_++;
+    mojo::Remote<network::mojom::ResolveHostClient> client(
+        std::move(response_client));
+
+    if (simulate_timeout_) {
+      // Keep the client alive to simulate a timeout without mojo disconnecting.
+      pending_clients_.push_back(std::move(client));
+      return;
+    }
+
+    if (simulated_error_ != net::OK) {
+      client->OnComplete(simulated_error_,
+                         net::ResolveErrorInfo(simulated_error_),
+                         /*resolved_addresses=*/net::AddressList(),
+                         /*alternative_endpoints=*/{});
+      return;
+    }
+
+    net::IPAddress address_ipv4;
+    CHECK(address_ipv4.AssignFromIPLiteral("192.168.1.1"));
+
+    net::IPAddress address_ipv6;
+    CHECK(address_ipv6.AssignFromIPLiteral("2001:db8::1"));
+
+    std::vector<net::IPEndPoint> endpoints = {net::IPEndPoint(address_ipv4, 0),
+                                              net::IPEndPoint(address_ipv6, 0)};
+
+    client->OnComplete(net::OK, net::ResolveErrorInfo(net::OK),
+                       net::AddressList(endpoints),
+                       /*alternative_endpoints=*/{});
+  }
+
+  int resolve_host_called_count() const { return resolve_host_called_count_; }
+  void reset_called_count() { resolve_host_called_count_ = 0; }
+  void set_simulate_timeout(bool timeout) { simulate_timeout_ = timeout; }
+  void set_simulated_error(net::Error error) { simulated_error_ = error; }
+
+ private:
+  int resolve_host_called_count_ = 0;
+  bool simulate_timeout_ = false;
+  net::Error simulated_error_ = net::OK;
+  std::vector<mojo::Remote<network::mojom::ResolveHostClient>> pending_clients_;
+};
+
 }  // namespace
 
 class RealTimeUrlLookupServiceTest : public PlatformTest {
@@ -140,6 +241,8 @@ class RealTimeUrlLookupServiceTest : public PlatformTest {
         &test_pref_service_,
         /*sync_observer=*/nullptr);
     referrer_chain_provider_ = std::make_unique<MockReferrerChainProvider>();
+    intelligent_scan_delegate_ =
+        std::make_unique<MockIntelligentScanDelegate>();
 
     auto token_fetcher = std::make_unique<TestSafeBrowsingTokenFetcher>();
     raw_token_fetcher_ = token_fetcher->AsWeakPtr();
@@ -174,7 +277,13 @@ class RealTimeUrlLookupServiceTest : public PlatformTest {
                                 GetMinAllowedTimestampForReferrerChains,
                             base::Unretained(this)),
         referrer_chain_provider_.get(),
-        /*webui_delegate=*/nullptr);
+        /*webui_delegate=*/nullptr, intelligent_scan_delegate_.get(),
+        base::BindRepeating(
+            [](RealTimeUrlLookupServiceTest* test)
+                -> network::mojom::NetworkContext* {
+              return &test->mock_network_context_;
+            },
+            base::Unretained(this)));
   }
 
   void TearDown() override {
@@ -190,20 +299,32 @@ class RealTimeUrlLookupServiceTest : public PlatformTest {
   bool CanSendRTSampleRequest() {
     return rt_service_->CanSendRTSampleRequest();
   }
-  std::unique_ptr<RTLookupRequest> FillRequestProto(
+
+  std::unique_ptr<RTLookupRequest> StartFillingRequestProto(
       const GURL& url,
       bool is_sampled_report,
       std::optional<internal::ReferringAppInfo> referring_app_info =
           std::nullopt) {
-    return rt_service_->FillRequestProto(
-        url, is_sampled_report, SessionID::InvalidValue(), referring_app_info);
+    base::test::TestFuture<std::unique_ptr<RTLookupRequest>> future;
+
+    // Needed because these unittests all skip MaybeSendRequest()
+    RealTimeUrlLookupServiceBase::PendingRTLookupRequestData request_data;
+    rt_service_->pending_requests_.emplace(url, std::move(request_data));
+
+    rt_service_->StartFillingRequestProto(
+        url, is_sampled_report, SessionID::InvalidValue(), referring_app_info,
+        future.GetCallback());
+    auto request = future.Take();
+    rt_service_->pending_requests_.erase(url);
+    return request;
   }
+
   std::unique_ptr<RTLookupResponse> GetCachedRealTimeUrlVerdict(
       const GURL& url) {
     return rt_service_->GetCachedRealTimeUrlVerdict(url);
   }
 
-  void MayBeCacheRealTimeUrlVerdict(
+  void MayBeCacheRealTimeUrlVerdictSync(
       RTLookupResponse::ThreatInfo::VerdictType verdict_type,
       RTLookupResponse::ThreatInfo::ThreatType threat_type,
       int cache_duration_sec,
@@ -219,6 +340,10 @@ class RealTimeUrlLookupServiceTest : public PlatformTest {
     new_threat_info->set_cache_expression_match_type(
         cache_expression_match_type);
     rt_service_->MayBeCacheRealTimeUrlVerdict(response);
+
+    // Call RunUntilIdle() in order to execute task which was posted by
+    // RealTimeUrlLookupServiceBase::MayBeCacheRealTimeUrlVerdict().
+    task_environment_.RunUntilIdle();
   }
 
   void SetUpRTLookupResponse(
@@ -267,6 +392,8 @@ class RealTimeUrlLookupServiceTest : public PlatformTest {
   }
 
   void EnableExtendedReporting() {
+    feature_list_.InitAndDisableFeature(
+        safe_browsing::kExtendedReportingRemovePrefDependency);
     EnableMbb();
     test_pref_service_.SetUserPref(prefs::kSafeBrowsingEnabled,
                                    std::make_unique<base::Value>(true));
@@ -352,7 +479,7 @@ class RealTimeUrlLookupServiceTest : public PlatformTest {
     base::MockCallback<network::TestURLLoaderFactory::Interceptor>
         request_callback;
     test_url_loader_factory_.SetInterceptor(request_callback.Get());
-    base::MockCallback<RTLookupResponseCallback> response_callback;
+    WaitableMockRTLookupResponseCallback response_callback;
     EXPECT_CALL(request_callback, Run(_)).Times(1);
     EXPECT_CALL(response_callback, Run(/* is_rt_lookup_successful */ false,
                                        /* is_cached_response */ false, _));
@@ -360,7 +487,7 @@ class RealTimeUrlLookupServiceTest : public PlatformTest {
                               base::SequencedTaskRunner::GetCurrentDefault(),
                               SessionID::InvalidValue(),
                               /*referring_app_info=*/std::nullopt);
-    task_environment_.RunUntilIdle();
+    response_callback.Wait();
   }
 
   network::TestURLLoaderFactory test_url_loader_factory_;
@@ -376,13 +503,56 @@ class RealTimeUrlLookupServiceTest : public PlatformTest {
   sync_preferences::TestingPrefServiceSyncable test_pref_service_;
   base::test::ScopedFeatureList feature_list_;
   std::unique_ptr<MockReferrerChainProvider> referrer_chain_provider_;
+  std::unique_ptr<MockIntelligentScanDelegate> intelligent_scan_delegate_;
+  MockDnsNetworkContext mock_network_context_;
 };
 
-TEST_F(RealTimeUrlLookupServiceTest, TestFillRequestProto) {
+class RealTimeUrlLookupServiceStartFillingRequestProtoTest
+    : public RealTimeUrlLookupServiceTest,
+      public ::testing::WithParamInterface<bool> {
+ public:
+  RealTimeUrlLookupServiceStartFillingRequestProtoTest() {
+    feature_list_.InitWithFeatureState(kSafeBrowsingWaitForDnsForRealTimeLookup,
+                                       GetParam());
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         RealTimeUrlLookupServiceStartFillingRequestProtoTest,
+                         ::testing::Bool());
+
+TEST_P(RealTimeUrlLookupServiceStartFillingRequestProtoTest,
+       StartFillingRequestProto) {
   GURL url("http://example.com/");
+
+  EXPECT_CALL(*referrer_chain_provider_,
+              IdentifyReferrerChainByPendingEventURL(_, _, _))
+      .WillRepeatedly([](const GURL& event_url, int user_gesture_count_limit,
+                         ReferrerChain* out_referrer_chain) {
+        out_referrer_chain->Add();
+        return ReferrerChainProvider::SUCCESS;
+      });
+
   for (size_t i = 0; i < 2; i++) {
-    auto result = FillRequestProto(url, /*is_sampled_report=*/i % 2 == 0);
+    mock_network_context_.reset_called_count();
+    auto result =
+        StartFillingRequestProto(url, /*is_sampled_report=*/i % 2 == 0);
+    ASSERT_TRUE(result);
     EXPECT_EQ(url, result->url());
+
+    // kSafeBrowsingWaitForDnsForRealTimeLookup path
+    if (GetParam()) {
+      EXPECT_EQ(mock_network_context_.resolve_host_called_count(), 1);
+      ASSERT_EQ(result->referrer_chain_size(), 1);
+      ASSERT_EQ(result->referrer_chain(0).ip_addresses_size(), 1);
+      EXPECT_EQ(result->referrer_chain(0).ip_addresses(0), "192.168.1.1");
+    } else {
+      EXPECT_EQ(mock_network_context_.resolve_host_called_count(), 0);
+    }
+
     if (i % 2 == 0) {
       EXPECT_EQ(/* sampled report */ 2, result->report_type());
     } else {
@@ -404,11 +574,174 @@ TEST_F(RealTimeUrlLookupServiceTest, TestFillRequestProto) {
   }
 }
 
+TEST_F(RealTimeUrlLookupServiceTest, DnsResolutionFails) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(kSafeBrowsingWaitForDnsForRealTimeLookup);
+  mock_network_context_.set_simulated_error(net::ERR_NAME_NOT_RESOLVED);
+
+  GURL url("http://example.com/");
+  EXPECT_CALL(*referrer_chain_provider_,
+              IdentifyReferrerChainByPendingEventURL(_, _, _))
+      .WillRepeatedly([](const GURL& event_url, int user_gesture_count_limit,
+                         ReferrerChain* out_referrer_chain) {
+        out_referrer_chain->Add();
+        return ReferrerChainProvider::SUCCESS;
+      });
+
+  base::HistogramTester histogram_tester;
+  auto result = StartFillingRequestProto(url, /*is_sampled_report=*/false);
+  ASSERT_TRUE(result);
+  EXPECT_EQ(mock_network_context_.resolve_host_called_count(), 1);
+  ASSERT_EQ(result->referrer_chain_size(), 1);
+  // IP addresses should be empty since DNS failed.
+  EXPECT_EQ(result->referrer_chain(0).ip_addresses_size(), 0);
+
+  histogram_tester.ExpectUniqueSample(
+      "SafeBrowsing.RT.DnsResolution.Result",
+      RealTimeUrlLookupServiceBase::DnsResolutionResult::kError, 1);
+  histogram_tester.ExpectTotalCount("SafeBrowsing.RT.DnsResolution.Time", 1);
+}
+
+TEST_F(RealTimeUrlLookupServiceTest, DnsResolutionTimesOut) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(kSafeBrowsingWaitForDnsForRealTimeLookup);
+  mock_network_context_.set_simulate_timeout(true);
+
+  GURL url("http://example.com/");
+  EXPECT_CALL(*referrer_chain_provider_,
+              IdentifyReferrerChainByPendingEventURL(_, _, _))
+      .WillRepeatedly([](const GURL& event_url, int user_gesture_count_limit,
+                         ReferrerChain* out_referrer_chain) {
+        out_referrer_chain->Add();
+        return ReferrerChainProvider::SUCCESS;
+      });
+
+  base::HistogramTester histogram_tester;
+  auto result = StartFillingRequestProto(url, /*is_sampled_report=*/false);
+  ASSERT_TRUE(result);
+  EXPECT_EQ(mock_network_context_.resolve_host_called_count(), 1);
+  ASSERT_EQ(result->referrer_chain_size(), 1);
+  // IP addresses should be empty since DNS timed out.
+  EXPECT_EQ(result->referrer_chain(0).ip_addresses_size(), 0);
+
+  histogram_tester.ExpectUniqueSample(
+      "SafeBrowsing.RT.DnsResolution.Result",
+      RealTimeUrlLookupServiceBase::DnsResolutionResult::kTimeout, 1);
+  histogram_tester.ExpectTotalCount("SafeBrowsing.RT.DnsResolution.Time", 1);
+}
+
+TEST_F(RealTimeUrlLookupServiceTest, DnsResolutionSkipped) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(kSafeBrowsingWaitForDnsForRealTimeLookup);
+  mock_network_context_.set_simulated_error(net::ERR_DNS_DIRECT_ONLY);
+
+  GURL url("http://example.com/");
+  EXPECT_CALL(*referrer_chain_provider_,
+              IdentifyReferrerChainByPendingEventURL(_, _, _))
+      .WillRepeatedly([](const GURL& event_url, int user_gesture_count_limit,
+                         ReferrerChain* out_referrer_chain) {
+        out_referrer_chain->Add();
+        return ReferrerChainProvider::SUCCESS;
+      });
+
+  base::HistogramTester histogram_tester;
+  auto result = StartFillingRequestProto(url, /*is_sampled_report=*/false);
+  ASSERT_TRUE(result);
+  EXPECT_EQ(mock_network_context_.resolve_host_called_count(), 1);
+  ASSERT_EQ(result->referrer_chain_size(), 1);
+  // IP addresses should be empty since DNS was skipped.
+  EXPECT_EQ(result->referrer_chain(0).ip_addresses_size(), 0);
+
+  histogram_tester.ExpectUniqueSample(
+      "SafeBrowsing.RT.DnsResolution.Result",
+      RealTimeUrlLookupServiceBase::DnsResolutionResult::kSkipped, 1);
+  histogram_tester.ExpectTotalCount("SafeBrowsing.RT.DnsResolution.Time", 1);
+}
+
+class RealTimeUrlLookupServiceWithDmToken : public RealTimeUrlLookupService {
+ public:
+  using RealTimeUrlLookupService::RealTimeUrlLookupService;
+  std::optional<std::string> GetDMTokenString() const override {
+    return "dummy-dm-token";
+  }
+};
+
+TEST_F(RealTimeUrlLookupServiceTest, LocalIpAndDnsResolutionCompletes) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(kSafeBrowsingWaitForDnsForRealTimeLookup);
+
+  auto token_fetcher = std::make_unique<TestSafeBrowsingTokenFetcher>();
+  raw_token_fetcher_ = token_fetcher->AsWeakPtr();
+  rt_service_ = std::make_unique<RealTimeUrlLookupServiceWithDmToken>(
+      test_shared_loader_factory_, cache_manager_.get(),
+      base::BindRepeating(
+          [](PrefService* pref_service) {
+            ChromeUserPopulation population;
+            population.set_user_population(
+                IsEnhancedProtectionEnabled(*pref_service)
+                    ? ChromeUserPopulation::ENHANCED_PROTECTION
+                : IsExtendedReportingEnabled(*pref_service)
+                    ? ChromeUserPopulation::EXTENDED_REPORTING
+                    : ChromeUserPopulation::SAFE_BROWSING);
+            population.set_profile_management_status(
+                ChromeUserPopulation::NOT_MANAGED);
+            population.set_is_history_sync_enabled(true);
+            population.set_is_under_advanced_protection(true);
+            population.set_is_incognito(false);
+            return population;
+          },
+          &test_pref_service_),
+      &test_pref_service_, std::move(token_fetcher),
+      base::BindRepeating(
+          &RealTimeUrlLookupServiceTest::AreTokenFetchesConfiguredInClient,
+          base::Unretained(this)),
+      /*is_off_the_record=*/false,
+      /*variations_service_getter=*/
+      base::BindRepeating(
+          []() -> variations::VariationsService* { return nullptr; }),
+      base::BindRepeating(&RealTimeUrlLookupServiceTest::
+                              GetMinAllowedTimestampForReferrerChains,
+                          base::Unretained(this)),
+      referrer_chain_provider_.get(),
+      /*webui_delegate=*/nullptr, intelligent_scan_delegate_.get(),
+      base::BindRepeating(
+          [](RealTimeUrlLookupServiceTest* test)
+              -> network::mojom::NetworkContext* {
+            return &test->mock_network_context_;
+          },
+          base::Unretained(this)));
+
+  GURL url("http://example.com/");
+  EXPECT_CALL(*referrer_chain_provider_,
+              IdentifyReferrerChainByPendingEventURL(_, _, _))
+      .WillRepeatedly([](const GURL& event_url, int user_gesture_count_limit,
+                         ReferrerChain* out_referrer_chain) {
+        out_referrer_chain->Add();
+        return ReferrerChainProvider::SUCCESS;
+      });
+
+  base::HistogramTester histogram_tester;
+  auto result = StartFillingRequestProto(url, /*is_sampled_report=*/false);
+  ASSERT_TRUE(result);
+  EXPECT_EQ(mock_network_context_.resolve_host_called_count(), 1);
+  ASSERT_EQ(result->referrer_chain_size(), 1);
+  // IP addresses should be populated.
+  ASSERT_EQ(result->referrer_chain(0).ip_addresses_size(), 1);
+  EXPECT_EQ(result->referrer_chain(0).ip_addresses(0), "192.168.1.1");
+
+  // TODO(crbug.com/394602691): Remove Android build exclusion once IP address
+  // support becomes a requirement for Android devices.
+#if !BUILDFLAG(IS_ANDROID)
+  EXPECT_FALSE(result->local_ips().empty());
+#endif
+
+  histogram_tester.ExpectUniqueSample(
+      "SafeBrowsing.RT.DnsResolution.Result",
+      RealTimeUrlLookupServiceBase::DnsResolutionResult::kSuccess, 1);
+  histogram_tester.ExpectTotalCount("SafeBrowsing.RT.DnsResolution.Time", 1);
+}
+
 TEST_F(RealTimeUrlLookupServiceTest, TestFillReferringAppInfo) {
-  // The features kAddReferringAppInfoToProtegoPings and
-  // kAddReferringWebApkToProtegoPings are relevant to this functionality, but
-  // the actual check for the feature state is earlier (not in
-  // RealTimeUrlLookupService).
   EnableRealTimeUrlLookup({}, {});
   struct {
     bool is_enhanced_protection;
@@ -461,7 +794,7 @@ TEST_F(RealTimeUrlLookupServiceTest, TestFillReferringAppInfo) {
           test_case.is_enhanced_protection,
           test_case.has_referring_webapk_start_url, is_sampled_report));
       auto result =
-          FillRequestProto(url, is_sampled_report, referring_app_info);
+          StartFillingRequestProto(url, is_sampled_report, referring_app_info);
       EXPECT_EQ(result->has_referring_app_info(),
                 test_case.expect_has_referring_app_info);
       if (result->has_referring_app_info()) {
@@ -478,6 +811,47 @@ TEST_F(RealTimeUrlLookupServiceTest, TestFillReferringAppInfo) {
       }
     }
   }
+}
+
+TEST_F(RealTimeUrlLookupServiceTest, TestFillLlamaForcedTriggerCapability) {
+  SetSafeBrowsingState(&test_pref_service_,
+                       SafeBrowsingState::ENHANCED_PROTECTION);
+  struct {
+    IntelligentScanDelegate::ModelType model_type;
+    IntelligentScanModelType expected_proto_model_type;
+  } kTestCases[] = {
+      {IntelligentScanDelegate::ModelType::kNotSupportedOnDevice,
+       IntelligentScanModelType::NOT_SUPPORTED},
+      {IntelligentScanDelegate::ModelType::kNotSupportedServerSide,
+       IntelligentScanModelType::NOT_SUPPORTED},
+      {IntelligentScanDelegate::ModelType::kOnDevice,
+       IntelligentScanModelType::ON_DEVICE_MODEL},
+      {IntelligentScanDelegate::ModelType::kServerSide,
+       IntelligentScanModelType::SERVER_SIDE_MODEL},
+  };
+
+  for (const auto& test_case : kTestCases) {
+    SCOPED_TRACE(base::StringPrintf("model_type: %d",
+                                    static_cast<int>(test_case.model_type)));
+    EXPECT_CALL(*intelligent_scan_delegate_, GetIntelligentScanModelType(_))
+        .WillOnce(Return(test_case.model_type));
+    auto result = StartFillingRequestProto(GURL("http://example.com/"),
+                                           /*is_sampled_report=*/false);
+    EXPECT_EQ(result->llama_forced_trigger_capability().supported_model_type(),
+              test_case.expected_proto_model_type);
+  }
+}
+
+TEST_F(RealTimeUrlLookupServiceTest,
+       TestFillLlamaForcedTriggerCapability_EnhancedProtectionDisabled) {
+  SetSafeBrowsingState(&test_pref_service_,
+                       SafeBrowsingState::STANDARD_PROTECTION);
+  EXPECT_CALL(*intelligent_scan_delegate_, GetIntelligentScanModelType(_))
+      .Times(0);
+  auto result = StartFillingRequestProto(GURL("http://example.com/"),
+                                         /*is_sampled_report=*/false);
+  EXPECT_EQ(result->llama_forced_trigger_capability().supported_model_type(),
+            IntelligentScanModelType::NOT_SUPPORTED);
 }
 
 TEST_F(RealTimeUrlLookupServiceTest, TestSanitizeURL) {
@@ -502,7 +876,7 @@ TEST_F(RealTimeUrlLookupServiceTest, TestFillPageLoadToken_FeatureEnabled) {
 
   cache_manager_->SetPageLoadTokenForTesting(
       url, CreatePageLoadToken("url_page_load_token"));
-  auto request = FillRequestProto(url, /*is_sampled_report=*/false);
+  auto request = StartFillingRequestProto(url, /*is_sampled_report=*/false);
   ASSERT_EQ(1, request->population().page_load_tokens_size());
   // The token should be re-generated for the mainframe URL.
   EXPECT_NE("url_page_load_token",
@@ -542,6 +916,23 @@ TEST_F(RealTimeUrlLookupServiceTest, TestGetSBThreatTypeForRTThreatType) {
             RealTimeUrlLookupServiceBase::GetSBThreatTypeForRTThreatType(
                 RTLookupResponse::ThreatInfo::MANAGED_POLICY,
                 RTLookupResponse::ThreatInfo::SAFE));
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndEnableFeature(kSuspiciousSiteWarnings);
+    EXPECT_EQ(SB_THREAT_TYPE_WARNABLE_SUSPICIOUS_SITE,
+              RealTimeUrlLookupServiceBase::GetSBThreatTypeForRTThreatType(
+                  RTLookupResponse::ThreatInfo::SOCIAL_ENGINEERING,
+                  RTLookupResponse::ThreatInfo::WARN));
+  }
+
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndDisableFeature(kSuspiciousSiteWarnings);
+    EXPECT_EQ(SB_THREAT_TYPE_SAFE,
+              RealTimeUrlLookupServiceBase::GetSBThreatTypeForRTThreatType(
+                  RTLookupResponse::ThreatInfo::SOCIAL_ENGINEERING,
+                  RTLookupResponse::ThreatInfo::WARN));
+  }
   EXPECT_EQ(SB_THREAT_TYPE_SAFE,
             RealTimeUrlLookupServiceBase::GetSBThreatTypeForRTThreatType(
                 RTLookupResponse::ThreatInfo::UNWANTED_SOFTWARE,
@@ -573,11 +964,11 @@ TEST_F(RealTimeUrlLookupServiceTest, TestCacheNotInCacheManager) {
 
 TEST_F(RealTimeUrlLookupServiceTest, TestCacheInCacheManager) {
   GURL url("https://a.example.test/path1/path2");
-  MayBeCacheRealTimeUrlVerdict(RTLookupResponse::ThreatInfo::DANGEROUS,
-                               RTLookupResponse::ThreatInfo::SOCIAL_ENGINEERING,
-                               60, "a.example.test/path1/path2",
-                               RTLookupResponse::ThreatInfo::COVERING_MATCH);
-  task_environment_.RunUntilIdle();
+  MayBeCacheRealTimeUrlVerdictSync(
+      RTLookupResponse::ThreatInfo::DANGEROUS,
+      RTLookupResponse::ThreatInfo::SOCIAL_ENGINEERING, 60,
+      "a.example.test/path1/path2",
+      RTLookupResponse::ThreatInfo::COVERING_MATCH);
 
   std::unique_ptr<RTLookupResponse> cache_response =
       GetCachedRealTimeUrlVerdict(url);
@@ -590,7 +981,7 @@ TEST_F(RealTimeUrlLookupServiceTest, TestCacheInCacheManager) {
 
 TEST_F(RealTimeUrlLookupServiceTest, TestStartLookup_PendingRequestForSameUrl) {
   base::HistogramTester histograms;
-  EnableRealTimeUrlLookup({kSafeBrowsingRemoveCookiesInAuthRequests}, {});
+  EnableRealTimeUrlLookup({}, {});
   GURL url(kTestUrl);
   SetUpRTLookupResponse(RTLookupResponse::ThreatInfo::DANGEROUS,
                         RTLookupResponse::ThreatInfo::SOCIAL_ENGINEERING, 60,
@@ -603,13 +994,13 @@ TEST_F(RealTimeUrlLookupServiceTest, TestStartLookup_PendingRequestForSameUrl) {
   test_url_loader_factory_.SetInterceptor(request_callback.Get());
   EXPECT_CALL(request_callback, Run(_)).Times(1);
 
-  base::MockCallback<RTLookupResponseCallback> response_callback_1;
+  WaitableMockRTLookupResponseCallback response_callback_1;
   rt_service()->StartLookup(url, response_callback_1.Get(),
                             base::SequencedTaskRunner::GetCurrentDefault(),
                             SessionID::InvalidValue(),
                             /*referring_app_info=*/std::nullopt);
 
-  base::MockCallback<RTLookupResponseCallback> response_callback_2;
+  WaitableMockRTLookupResponseCallback response_callback_2;
   rt_service()->StartLookup(url, response_callback_2.Get(),
                             base::SequencedTaskRunner::GetCurrentDefault(),
                             SessionID::InvalidValue(),
@@ -621,7 +1012,8 @@ TEST_F(RealTimeUrlLookupServiceTest, TestStartLookup_PendingRequestForSameUrl) {
   EXPECT_CALL(response_callback_2, Run(/* is_rt_lookup_successful */ true,
                                        /* is_cached_response */ false, _));
 
-  task_environment_.RunUntilIdle();
+  response_callback_1.Wait();
+  response_callback_2.Wait();
 
   // The first request is considered not concurrent, the second one is.
   histograms.ExpectBucketCount("SafeBrowsing.RT.Request.Concurrent",
@@ -635,18 +1027,17 @@ TEST_F(RealTimeUrlLookupServiceTest, TestStartLookup_PendingRequestForSameUrl) {
 TEST_F(RealTimeUrlLookupServiceTest, TestStartLookup_ResponseIsAlreadyCached) {
   base::HistogramTester histograms;
   GURL url(kTestUrl);
-  MayBeCacheRealTimeUrlVerdict(RTLookupResponse::ThreatInfo::DANGEROUS,
-                               RTLookupResponse::ThreatInfo::SOCIAL_ENGINEERING,
-                               60, "example.test/",
-                               RTLookupResponse::ThreatInfo::COVERING_MATCH);
-  task_environment_.RunUntilIdle();
+  MayBeCacheRealTimeUrlVerdictSync(
+      RTLookupResponse::ThreatInfo::DANGEROUS,
+      RTLookupResponse::ThreatInfo::SOCIAL_ENGINEERING, 60, "example.test/",
+      RTLookupResponse::ThreatInfo::COVERING_MATCH);
 
   base::MockCallback<network::TestURLLoaderFactory::Interceptor>
       request_callback;
   test_url_loader_factory_.SetInterceptor(request_callback.Get());
   EXPECT_CALL(request_callback, Run(_)).Times(0);
 
-  base::MockCallback<RTLookupResponseCallback> response_callback;
+  WaitableMockRTLookupResponseCallback response_callback;
   rt_service()->StartLookup(url, response_callback.Get(),
                             base::SequencedTaskRunner::GetCurrentDefault(),
                             SessionID::InvalidValue(),
@@ -655,7 +1046,7 @@ TEST_F(RealTimeUrlLookupServiceTest, TestStartLookup_ResponseIsAlreadyCached) {
   EXPECT_CALL(response_callback, Run(/* is_rt_lookup_successful */ true,
                                      /* is_cached_response */ true, _));
 
-  task_environment_.RunUntilIdle();
+  response_callback.Wait();
 
   // This metric is not recorded because the response is obtained from the
   // cache.
@@ -670,7 +1061,7 @@ TEST_F(RealTimeUrlLookupServiceTest, TestStartLookup_ResponseIsAlreadyCached) {
 TEST_F(RealTimeUrlLookupServiceTest,
        TestStartLookup_PingWithTokenUpdatesEsbProtegoPingWithTokenLastLogTime) {
   base::HistogramTester histograms;
-  EnableRealTimeUrlLookup({kSafeBrowsingRemoveCookiesInAuthRequests}, {});
+  EnableRealTimeUrlLookup({}, {});
   EnableTokenFetchesInClient();
   SetSafeBrowsingState(&test_pref_service_,
                        SafeBrowsingState::ENHANCED_PROTECTION);
@@ -680,12 +1071,13 @@ TEST_F(RealTimeUrlLookupServiceTest,
                         "example.test/",
                         RTLookupResponse::ThreatInfo::COVERING_MATCH);
 
+  WaitableMockRTLookupResponseCallback callback;
   rt_service()->StartLookup(
-      url, base::DoNothing(), base::SequencedTaskRunner::GetCurrentDefault(),
+      url, callback.Get(), base::SequencedTaskRunner::GetCurrentDefault(),
       SessionID::InvalidValue(), /*referring_app_info=*/std::nullopt);
 
   FulfillAccessTokenRequest("access_token_string");
-  task_environment_.RunUntilIdle();
+  callback.Wait();
 
   EXPECT_EQ(test_pref_service_.GetTime(
                 prefs::kSafeBrowsingEsbProtegoPingWithTokenLastLogTime),
@@ -700,7 +1092,7 @@ TEST_F(RealTimeUrlLookupServiceTest,
 TEST_F(
     RealTimeUrlLookupServiceTest,
     TestStartLookup_PingWithoutTokenSetsEsbProtegoPingWithoutTokenLastLogTime) {
-  EnableRealTimeUrlLookup({kSafeBrowsingRemoveCookiesInAuthRequests}, {});
+  EnableRealTimeUrlLookup({}, {});
   DisableTokenFetchesInClient();
   SetSafeBrowsingState(&test_pref_service_,
                        SafeBrowsingState::ENHANCED_PROTECTION);
@@ -710,11 +1102,12 @@ TEST_F(
                         "example.test/",
                         RTLookupResponse::ThreatInfo::COVERING_MATCH);
 
+  WaitableMockRTLookupResponseCallback callback;
   rt_service()->StartLookup(
-      url, base::DoNothing(), base::SequencedTaskRunner::GetCurrentDefault(),
+      url, callback.Get(), base::SequencedTaskRunner::GetCurrentDefault(),
       SessionID::InvalidValue(), /*referring_app_info=*/std::nullopt);
 
-  task_environment_.RunUntilIdle();
+  callback.Wait();
 
   EXPECT_EQ(test_pref_service_.GetTime(
                 prefs::kSafeBrowsingEsbProtegoPingWithoutTokenLastLogTime),
@@ -724,22 +1117,22 @@ TEST_F(
 TEST_F(
     RealTimeUrlLookupServiceTest,
     TestStartLookup_DoesNotSetEsbProtegoPingWithTokenLastLogTimeWhenCacheIsHit) {
-  EnableRealTimeUrlLookup({kSafeBrowsingRemoveCookiesInAuthRequests}, {});
+  EnableRealTimeUrlLookup({}, {});
   EnableTokenFetchesInClient();
   SetSafeBrowsingState(&test_pref_service_,
                        SafeBrowsingState::ENHANCED_PROTECTION);
   GURL url(kTestUrl);
-  MayBeCacheRealTimeUrlVerdict(RTLookupResponse::ThreatInfo::DANGEROUS,
-                               RTLookupResponse::ThreatInfo::SOCIAL_ENGINEERING,
-                               60, "example.test/",
-                               RTLookupResponse::ThreatInfo::COVERING_MATCH);
-  task_environment_.RunUntilIdle();
+  MayBeCacheRealTimeUrlVerdictSync(
+      RTLookupResponse::ThreatInfo::DANGEROUS,
+      RTLookupResponse::ThreatInfo::SOCIAL_ENGINEERING, 60, "example.test/",
+      RTLookupResponse::ThreatInfo::COVERING_MATCH);
 
+  WaitableMockRTLookupResponseCallback callback;
   rt_service()->StartLookup(
-      url, base::DoNothing(), base::SequencedTaskRunner::GetCurrentDefault(),
+      url, callback.Get(), base::SequencedTaskRunner::GetCurrentDefault(),
       SessionID::InvalidValue(), /*referring_app_info=*/std::nullopt);
 
-  task_environment_.RunUntilIdle();
+  callback.Wait();
 
   EXPECT_EQ(test_pref_service_.GetTime(
                 prefs::kSafeBrowsingEsbProtegoPingWithTokenLastLogTime),
@@ -749,23 +1142,23 @@ TEST_F(
 TEST_F(
     RealTimeUrlLookupServiceTest,
     TestStartLookup_DoesNotSetEsbProtegoPingWithoutTokenLastLogTimeWhenCacheIsHit) {
-  EnableRealTimeUrlLookup({kSafeBrowsingRemoveCookiesInAuthRequests}, {});
+  EnableRealTimeUrlLookup({}, {});
   DisableTokenFetchesInClient();
   SetSafeBrowsingState(&test_pref_service_,
                        SafeBrowsingState::ENHANCED_PROTECTION);
 
   GURL url(kTestUrl);
-  MayBeCacheRealTimeUrlVerdict(RTLookupResponse::ThreatInfo::DANGEROUS,
-                               RTLookupResponse::ThreatInfo::SOCIAL_ENGINEERING,
-                               60, "example.test/",
-                               RTLookupResponse::ThreatInfo::COVERING_MATCH);
-  task_environment_.RunUntilIdle();
+  MayBeCacheRealTimeUrlVerdictSync(
+      RTLookupResponse::ThreatInfo::DANGEROUS,
+      RTLookupResponse::ThreatInfo::SOCIAL_ENGINEERING, 60, "example.test/",
+      RTLookupResponse::ThreatInfo::COVERING_MATCH);
 
+  WaitableMockRTLookupResponseCallback callback;
   rt_service()->StartLookup(
-      url, base::DoNothing(), base::SequencedTaskRunner::GetCurrentDefault(),
+      url, callback.Get(), base::SequencedTaskRunner::GetCurrentDefault(),
       SessionID::InvalidValue(), /*referring_app_info=*/std::nullopt);
 
-  task_environment_.RunUntilIdle();
+  callback.Wait();
 
   EXPECT_EQ(test_pref_service_.GetTime(
                 prefs::kSafeBrowsingEsbProtegoPingWithoutTokenLastLogTime),
@@ -775,7 +1168,7 @@ TEST_F(
 TEST_F(
     RealTimeUrlLookupServiceTest,
     TestStartLookup_DoesNotSetEsbProtegoPingWithTokenLastLogTimeWhenEsbIsDisabled) {
-  EnableRealTimeUrlLookup({kSafeBrowsingRemoveCookiesInAuthRequests}, {});
+  EnableRealTimeUrlLookup({}, {});
   SetSafeBrowsingState(&test_pref_service_,
                        SafeBrowsingState::STANDARD_PROTECTION);
   EnableTokenFetchesInClient();
@@ -785,12 +1178,13 @@ TEST_F(
                         "example.test/",
                         RTLookupResponse::ThreatInfo::COVERING_MATCH);
 
+  WaitableMockRTLookupResponseCallback callback;
   rt_service()->StartLookup(
-      url, base::DoNothing(), base::SequencedTaskRunner::GetCurrentDefault(),
+      url, callback.Get(), base::SequencedTaskRunner::GetCurrentDefault(),
       SessionID::InvalidValue(), /*referring_app_info=*/std::nullopt);
 
   FulfillAccessTokenRequest("access_token_string");
-  task_environment_.RunUntilIdle();
+  callback.Wait();
 
   EXPECT_EQ(test_pref_service_.GetTime(
                 prefs::kSafeBrowsingEsbProtegoPingWithTokenLastLogTime),
@@ -800,7 +1194,7 @@ TEST_F(
 TEST_F(
     RealTimeUrlLookupServiceTest,
     TestStartLookup_DoesNotSetEsbProtegoPingWithoutTokenLastLogTimeWhenEsbIsDisabled) {
-  EnableRealTimeUrlLookup({kSafeBrowsingRemoveCookiesInAuthRequests}, {});
+  EnableRealTimeUrlLookup({}, {});
   SetSafeBrowsingState(&test_pref_service_,
                        SafeBrowsingState::STANDARD_PROTECTION);
   DisableTokenFetchesInClient();
@@ -810,12 +1204,13 @@ TEST_F(
                         "example.test/",
                         RTLookupResponse::ThreatInfo::COVERING_MATCH);
 
+  WaitableMockRTLookupResponseCallback callback;
   rt_service()->StartLookup(
-      url, base::DoNothing(), base::SequencedTaskRunner::GetCurrentDefault(),
+      url, callback.Get(), base::SequencedTaskRunner::GetCurrentDefault(),
       SessionID::InvalidValue(), /*referring_app_info=*/std::nullopt);
 
   FulfillAccessTokenRequest("access_token_string");
-  task_environment_.RunUntilIdle();
+  callback.Wait();
 
   EXPECT_EQ(test_pref_service_.GetTime(
                 prefs::kSafeBrowsingEsbProtegoPingWithoutTokenLastLogTime),
@@ -825,8 +1220,7 @@ TEST_F(
 TEST_F(RealTimeUrlLookupServiceTest,
        TestStartLookup_AttachTokenWhenWithTokenIsEnabled) {
   base::HistogramTester histograms;
-  EnableRealTimeUrlLookup(
-      {kSafeBrowsingRemoveCookiesInAuthRequests, kLocalIpAddressInEvents}, {});
+  EnableRealTimeUrlLookup({}, {});
   EnableTokenFetchesInClient();
   GURL url(kTestUrl);
   SetUpRTLookupResponse(RTLookupResponse::ThreatInfo::DANGEROUS,
@@ -834,7 +1228,7 @@ TEST_F(RealTimeUrlLookupServiceTest,
                         "example.test/",
                         RTLookupResponse::ThreatInfo::COVERING_MATCH);
 
-  base::MockCallback<RTLookupResponseCallback> response_callback;
+  WaitableMockRTLookupResponseCallback response_callback;
   EXPECT_CALL(response_callback, Run(/* is_rt_lookup_successful */ true,
                                      /* is_cached_response */ false, _));
 
@@ -844,14 +1238,14 @@ TEST_F(RealTimeUrlLookupServiceTest,
         ASSERT_TRUE(GetRequestProto(request, &request_proto));
         EXPECT_FALSE(request_proto.has_dm_token());
         EXPECT_FALSE(request_proto.has_email());
+        EXPECT_FALSE(request_proto.has_content_area_account_email());
         EXPECT_FALSE(request_proto.has_browser_dm_token());
         EXPECT_FALSE(request_proto.has_profile_dm_token());
         EXPECT_FALSE(request_proto.has_client_reporting_metadata());
         EXPECT_TRUE(request_proto.local_ips().empty());
-
-        // Cookies should be removed when token is set.
+        // Cookies should still be included when token is set.
         EXPECT_EQ(request.credentials_mode,
-                  network::mojom::CredentialsMode::kOmit);
+                  network::mojom::CredentialsMode::kInclude);
         EXPECT_THAT(
             request.headers.GetHeader(net::HttpRequestHeaders::kAuthorization),
             testing::Optional(std::string("Bearer access_token_string")));
@@ -866,7 +1260,7 @@ TEST_F(RealTimeUrlLookupServiceTest,
   EXPECT_TRUE(raw_token_fetcher()->WasStartCalled());
   FulfillAccessTokenRequest("access_token_string");
   EXPECT_CALL(*raw_token_fetcher(), OnInvalidAccessToken(_)).Times(0);
-  task_environment_.RunUntilIdle();
+  response_callback.Wait();
 
   // Check the response is cached.
   std::unique_ptr<RTLookupResponse> cache_response =
@@ -876,13 +1270,21 @@ TEST_F(RealTimeUrlLookupServiceTest,
   histograms.ExpectUniqueSample("SafeBrowsing.RT.ThreatInfoSize",
                                 /* sample */ 1,
                                 /* expected_count */ 1);
+  histograms.ExpectUniqueSample("SafeBrowsing.RT.HasAccessTokenFromFetcher",
+                                /*sample=*/true, /*expected_bucket_count=*/1);
+  histograms.ExpectUniqueSample(
+      "SafeBrowsing.RT.HasAccessTokenFromFetcher.Consumer", /*sample=*/true,
+      /*expected_bucket_count=*/1);
+  histograms.ExpectTotalCount("SafeBrowsing.RT.GetToken.TimeTaken",
+                              /*expected_count=*/1);
+  histograms.ExpectTotalCount("SafeBrowsing.RT.GetToken.TimeTaken.Consumer",
+                              /*expected_count=*/1);
 }
 
 TEST_F(RealTimeUrlLookupServiceTest,
        TestStartLookup_NoTokenWhenTokenIsUnavailable) {
   base::HistogramTester histograms;
-  EnableRealTimeUrlLookup(
-      {kSafeBrowsingRemoveCookiesInAuthRequests, kLocalIpAddressInEvents}, {});
+  EnableRealTimeUrlLookup({}, {});
   EnableTokenFetchesInClient();
   GURL url(kTestUrl);
   SetUpRTLookupResponse(RTLookupResponse::ThreatInfo::DANGEROUS,
@@ -890,7 +1292,7 @@ TEST_F(RealTimeUrlLookupServiceTest,
                         "example.test/",
                         RTLookupResponse::ThreatInfo::COVERING_MATCH);
 
-  base::MockCallback<RTLookupResponseCallback> response_callback;
+  WaitableMockRTLookupResponseCallback response_callback;
   EXPECT_CALL(response_callback, Run(/* is_rt_lookup_successful */ true,
                                      /* is_cached_response */ false, _));
 
@@ -900,6 +1302,7 @@ TEST_F(RealTimeUrlLookupServiceTest,
         ASSERT_TRUE(GetRequestProto(request, &request_proto));
         EXPECT_FALSE(request_proto.has_dm_token());
         EXPECT_FALSE(request_proto.has_email());
+        EXPECT_FALSE(request_proto.has_content_area_account_email());
         EXPECT_FALSE(request_proto.has_browser_dm_token());
         EXPECT_FALSE(request_proto.has_profile_dm_token());
         EXPECT_FALSE(request_proto.has_client_reporting_metadata());
@@ -918,7 +1321,7 @@ TEST_F(RealTimeUrlLookupServiceTest,
   EXPECT_TRUE(raw_token_fetcher()->WasStartCalled());
   // Token fetcher returns empty string when the token is unavailable.
   FulfillAccessTokenRequest("");
-  task_environment_.RunUntilIdle();
+  response_callback.Wait();
 
   histograms.ExpectUniqueSample("SafeBrowsing.RT.HasTokenInRequest",
                                 /* sample */ 0,
@@ -934,7 +1337,7 @@ TEST_F(RealTimeUrlLookupServiceTest,
                         "example.test/",
                         RTLookupResponse::ThreatInfo::COVERING_MATCH);
 
-  base::MockCallback<RTLookupResponseCallback> response_callback;
+  WaitableMockRTLookupResponseCallback response_callback;
   EXPECT_CALL(response_callback, Run(/* is_rt_lookup_successful */ true,
                                      /* is_cached_response */ false, _));
   MustRunInterceptor interceptor(
@@ -953,7 +1356,7 @@ TEST_F(RealTimeUrlLookupServiceTest,
                             SessionID::InvalidValue(),
                             /*referring_app_info=*/std::nullopt);
 
-  task_environment_.RunUntilIdle();
+  response_callback.Wait();
 
   // Check the response is cached.
   std::unique_ptr<RTLookupResponse> cache_response =
@@ -970,7 +1373,7 @@ TEST_F(RealTimeUrlLookupServiceTest,
 
   base::MockCallback<network::TestURLLoaderFactory::Interceptor>
       request_callback;
-  base::MockCallback<RTLookupResponseCallback> response_callback;
+  WaitableMockRTLookupResponseCallback response_callback;
   test_url_loader_factory_.SetInterceptor(request_callback.Get());
   EXPECT_CALL(request_callback, Run(_)).Times(1);
   EXPECT_CALL(response_callback, Run(/* is_rt_lookup_successful */ false,
@@ -985,7 +1388,7 @@ TEST_F(RealTimeUrlLookupServiceTest,
   EXPECT_CALL(*raw_token_fetcher(),
               OnInvalidAccessToken("invalid_token_string"))
       .Times(1);
-  task_environment_.RunUntilIdle();
+  response_callback.Wait();
 }
 
 TEST_F(RealTimeUrlLookupServiceTest,
@@ -995,7 +1398,7 @@ TEST_F(RealTimeUrlLookupServiceTest,
   GURL url(kTestUrl);
   SetUpFailureResponse(net::HTTP_FORBIDDEN);
 
-  base::MockCallback<RTLookupResponseCallback> response_callback;
+  WaitableMockRTLookupResponseCallback response_callback;
   EXPECT_CALL(response_callback, Run(/* is_rt_lookup_successful */ false,
                                      /* is_cached_response */ false, _));
 
@@ -1006,7 +1409,7 @@ TEST_F(RealTimeUrlLookupServiceTest,
 
   FulfillAccessTokenRequest("invalid_token_string");
   EXPECT_CALL(*raw_token_fetcher(), OnInvalidAccessToken(_)).Times(0);
-  task_environment_.RunUntilIdle();
+  response_callback.Wait();
 }
 
 TEST_F(RealTimeUrlLookupServiceTest, TestReferrerChain_ReferrerChainAttached) {
@@ -1041,7 +1444,7 @@ TEST_F(RealTimeUrlLookupServiceTest, TestReferrerChain_ReferrerChainAttached) {
                   url, _, /*user_gesture_count_limit=*/2, _))
       .Times(0);
 
-  base::MockCallback<RTLookupResponseCallback> response_callback;
+  WaitableMockRTLookupResponseCallback response_callback;
   EXPECT_CALL(response_callback, Run(/* is_rt_lookup_successful */ true,
                                      /* is_cached_response */ false, _));
   bool request_validated;
@@ -1065,7 +1468,7 @@ TEST_F(RealTimeUrlLookupServiceTest, TestReferrerChain_ReferrerChainAttached) {
                             SessionID::InvalidValue(),
                             /*referring_app_info=*/std::nullopt);
 
-  task_environment_.RunUntilIdle();
+  response_callback.Wait();
   EXPECT_TRUE(request_validated);
 }
 
@@ -1102,7 +1505,7 @@ TEST_F(RealTimeUrlLookupServiceTest,
       .Times(0);
 
   bool request_validated;
-  base::MockCallback<RTLookupResponseCallback> response_callback;
+  WaitableMockRTLookupResponseCallback response_callback;
   MustRunInterceptor interceptor(
       base::BindLambdaForTesting([&](const network::ResourceRequest& request) {
         RTLookupRequest request_proto;
@@ -1147,7 +1550,7 @@ TEST_F(RealTimeUrlLookupServiceTest,
                             SessionID::InvalidValue(),
                             /*referring_app_info=*/std::nullopt);
 
-  task_environment_.RunUntilIdle();
+  response_callback.Wait();
   EXPECT_TRUE(request_validated);
 }
 
@@ -1187,7 +1590,7 @@ TEST_F(RealTimeUrlLookupServiceTest,
       .Times(0);
 
   bool request_validated;
-  base::MockCallback<RTLookupResponseCallback> response_callback;
+  WaitableMockRTLookupResponseCallback response_callback;
   MustRunInterceptor interceptor(
       base::BindLambdaForTesting([&](const network::ResourceRequest& request) {
         RTLookupRequest request_proto;
@@ -1226,7 +1629,7 @@ TEST_F(RealTimeUrlLookupServiceTest,
                             SessionID::InvalidValue(),
                             /*referring_app_info=*/std::nullopt);
 
-  task_environment_.RunUntilIdle();
+  response_callback.Wait();
   EXPECT_TRUE(request_validated);
 }
 
@@ -1262,7 +1665,7 @@ TEST_F(RealTimeUrlLookupServiceTest,
                   url, _, /*user_gesture_count_limit=*/2, _))
       .Times(0);
 
-  base::MockCallback<RTLookupResponseCallback> response_callback;
+  WaitableMockRTLookupResponseCallback response_callback;
   EXPECT_CALL(response_callback, Run(/* is_rt_lookup_successful */ true,
                                      /* is_cached_response */ false, _));
 
@@ -1313,7 +1716,7 @@ TEST_F(RealTimeUrlLookupServiceTest,
                             SessionID::InvalidValue(),
                             /*referring_app_info=*/std::nullopt);
 
-  task_environment_.RunUntilIdle();
+  response_callback.Wait();
   EXPECT_TRUE(request_validated);
 }
 
@@ -1354,7 +1757,7 @@ TEST_F(RealTimeUrlLookupServiceTest,
                   url, _, /*user_gesture_count_limit=*/2, _))
       .Times(0);
 
-  base::MockCallback<RTLookupResponseCallback> response_callback;
+  WaitableMockRTLookupResponseCallback response_callback;
   EXPECT_CALL(response_callback, Run(/* is_rt_lookup_successful */ true,
                                      /* is_cached_response */ false, _));
 
@@ -1400,7 +1803,7 @@ TEST_F(RealTimeUrlLookupServiceTest,
                             SessionID::InvalidValue(),
                             /*referring_app_info=*/std::nullopt);
 
-  task_environment_.RunUntilIdle();
+  response_callback.Wait();
   EXPECT_TRUE(request_validated);
 }
 
@@ -1441,7 +1844,7 @@ TEST_F(RealTimeUrlLookupServiceTest,
       .WillOnce(DoAll(SetArgPointee<3>(returned_referrer_chain),
                       Return(ReferrerChainProvider::SUCCESS)));
 
-  base::MockCallback<RTLookupResponseCallback> response_callback;
+  WaitableMockRTLookupResponseCallback response_callback;
   EXPECT_CALL(response_callback, Run(/* is_rt_lookup_successful */ true,
                                      /* is_cached_response */ false, _));
   bool request_validated;
@@ -1462,7 +1865,7 @@ TEST_F(RealTimeUrlLookupServiceTest,
                             base::SequencedTaskRunner::GetCurrentDefault(),
                             SessionID::InvalidValue(),
                             /*referring_app_info=*/std::nullopt);
-  task_environment_.RunUntilIdle();
+  response_callback.Wait();
   EXPECT_TRUE(request_validated);
 }
 
@@ -1497,10 +1900,11 @@ TEST_F(RealTimeUrlLookupServiceTest, TestShutdown_CacheManagerReset) {
   content_setting_map_.reset();
 
   // Post a task to cache_manager_ to cache the verdict.
-  MayBeCacheRealTimeUrlVerdict(RTLookupResponse::ThreatInfo::DANGEROUS,
-                               RTLookupResponse::ThreatInfo::SOCIAL_ENGINEERING,
-                               60, "a.example.test/path1/path2",
-                               RTLookupResponse::ThreatInfo::COVERING_MATCH);
+  MayBeCacheRealTimeUrlVerdictSync(
+      RTLookupResponse::ThreatInfo::DANGEROUS,
+      RTLookupResponse::ThreatInfo::SOCIAL_ENGINEERING, 60,
+      "a.example.test/path1/path2",
+      RTLookupResponse::ThreatInfo::COVERING_MATCH);
 
   // The task to cache_manager_ should be cancelled and not cause crash.
   task_environment_.RunUntilIdle();
@@ -1583,6 +1987,19 @@ TEST_F(RealTimeUrlLookupServiceTest, TestConcurrentSendSampledRequests) {
 
 TEST_F(RealTimeUrlLookupServiceTest,
        TestCanSendRTSampleRequest_FeatureEnabled) {
+  feature_list_.InitAndEnableFeature(
+      safe_browsing::kExtendedReportingRemovePrefDependency);
+  // When SBER is deprecated, sample requests are only sent when ESB is
+  // enabled.
+  EXPECT_FALSE(CanSendRTSampleRequest());
+  SetSafeBrowsingState(&test_pref_service_,
+                       SafeBrowsingState::ENHANCED_PROTECTION);
+  rt_service()->set_bypass_probability_for_tests(true);
+  EXPECT_TRUE(CanSendRTSampleRequest());
+}
+
+TEST_F(RealTimeUrlLookupServiceTest,
+       TestCanSendRTSampleRequest_WithoutSBERDeprecation) {
   // When extended reporting is not enabled,
   // sample request will not be sent.
   EXPECT_FALSE(CanSendRTSampleRequest());
@@ -1602,14 +2019,14 @@ TEST_F(RealTimeUrlLookupServiceTest, TestBackoffModeSet) {
         request_callback;
     test_url_loader_factory_.SetInterceptor(request_callback.Get());
     EXPECT_CALL(request_callback, Run(_)).Times(1);
-    base::MockCallback<RTLookupResponseCallback> response_callback;
+    WaitableMockRTLookupResponseCallback response_callback;
     EXPECT_CALL(response_callback, Run(/* is_rt_lookup_successful */ !make_fail,
                                        /* is_cached_response */ false, _));
     rt_service()->StartLookup(url, response_callback.Get(),
                               base::SequencedTaskRunner::GetCurrentDefault(),
                               SessionID::InvalidValue(),
                               /*referring_app_info=*/std::nullopt);
-    task_environment_.RunUntilIdle();
+    response_callback.Wait();
   };
   auto perform_failing_lookup = [perform_lookup]() { perform_lookup(true); };
   auto perform_successful_lookup = [perform_lookup]() {
@@ -1654,14 +2071,14 @@ TEST_F(RealTimeUrlLookupServiceTest, TestBackoffModeSet_UnparseableResponse) {
     test_url_loader_factory_.SetInterceptor(request_callback.Get());
     EXPECT_CALL(request_callback, Run(_)).Times(1);
 
-    base::MockCallback<RTLookupResponseCallback> response_callback;
+    WaitableMockRTLookupResponseCallback response_callback;
     EXPECT_CALL(response_callback, Run(/* is_rt_lookup_successful */ false,
                                        /* is_cached_response */ false, _));
     rt_service()->StartLookup(url, response_callback.Get(),
                               base::SequencedTaskRunner::GetCurrentDefault(),
                               SessionID::InvalidValue(),
                               /*referring_app_info=*/std::nullopt);
-    task_environment_.RunUntilIdle();
+    response_callback.Wait();
   };
 
   perform_failing_lookup();
@@ -1676,11 +2093,10 @@ TEST_F(RealTimeUrlLookupServiceTest, TestBackoffModeRespected_Cached) {
 
   // Cache a response for |cached_url|.
   GURL cached_url = GURL("https://example.cached.url");
-  MayBeCacheRealTimeUrlVerdict(RTLookupResponse::ThreatInfo::DANGEROUS,
-                               RTLookupResponse::ThreatInfo::SOCIAL_ENGINEERING,
-                               60, "example.cached.url/",
-                               RTLookupResponse::ThreatInfo::COVERING_MATCH);
-  task_environment_.RunUntilIdle();
+  MayBeCacheRealTimeUrlVerdictSync(
+      RTLookupResponse::ThreatInfo::DANGEROUS,
+      RTLookupResponse::ThreatInfo::SOCIAL_ENGINEERING, 60,
+      "example.cached.url/", RTLookupResponse::ThreatInfo::COVERING_MATCH);
 
   // Enable backoff mode by running 3 failing requests.
   GURL url(kTestUrl);
@@ -1694,7 +2110,7 @@ TEST_F(RealTimeUrlLookupServiceTest, TestBackoffModeRespected_Cached) {
   // due to backoff.
   base::MockCallback<network::TestURLLoaderFactory::Interceptor>
       request_callback;
-  base::MockCallback<RTLookupResponseCallback> response_callback;
+  WaitableMockRTLookupResponseCallback response_callback;
   EXPECT_CALL(request_callback, Run(_)).Times(0);
   EXPECT_CALL(response_callback, Run(/* is_rt_lookup_successful */ true,
                                      /* is_cached_response */ true, _));
@@ -1704,7 +2120,7 @@ TEST_F(RealTimeUrlLookupServiceTest, TestBackoffModeRespected_Cached) {
                             SessionID::InvalidValue(),
                             /*referring_app_info=*/std::nullopt);
 
-  task_environment_.RunUntilIdle();
+  response_callback.Wait();
 }
 
 TEST_F(RealTimeUrlLookupServiceTest, TestBackoffModeRespected_NotCached) {
@@ -1721,7 +2137,7 @@ TEST_F(RealTimeUrlLookupServiceTest, TestBackoffModeRespected_NotCached) {
   // service is in backoff mode.
   base::MockCallback<network::TestURLLoaderFactory::Interceptor>
       request_callback;
-  base::MockCallback<RTLookupResponseCallback> response_callback;
+  WaitableMockRTLookupResponseCallback response_callback;
   EXPECT_CALL(request_callback, Run(_)).Times(0);
   EXPECT_CALL(response_callback, Run(/* is_rt_lookup_successful */ false,
                                      /* is_cached_response */ false, _));
@@ -1731,7 +2147,7 @@ TEST_F(RealTimeUrlLookupServiceTest, TestBackoffModeRespected_NotCached) {
                             SessionID::InvalidValue(),
                             /*referring_app_info=*/std::nullopt);
 
-  task_environment_.RunUntilIdle();
+  response_callback.Wait();
 }
 
 TEST_F(RealTimeUrlLookupServiceTest, TestRetriableErrors) {
@@ -1745,14 +2161,14 @@ TEST_F(RealTimeUrlLookupServiceTest, TestRetriableErrors) {
     test_url_loader_factory_.SetInterceptor(request_callback.Get());
     EXPECT_CALL(request_callback, Run(_)).Times(1);
 
-    base::MockCallback<RTLookupResponseCallback> response_callback;
+    WaitableMockRTLookupResponseCallback response_callback;
     EXPECT_CALL(response_callback, Run(/* is_rt_lookup_successful */ false,
                                        /* is_cached_response */ false, _));
     rt_service()->StartLookup(url, response_callback.Get(),
                               base::SequencedTaskRunner::GetCurrentDefault(),
                               SessionID::InvalidValue(),
                               /*referring_app_info=*/std::nullopt);
-    task_environment_.RunUntilIdle();
+    response_callback.Wait();
   };
 
   // Retriable errors should not trigger backoff mode.
@@ -1771,6 +2187,31 @@ TEST_F(RealTimeUrlLookupServiceTest, TestRetriableErrors) {
   EXPECT_FALSE(IsInBackoffMode());
   perform_failing_lookup(net::ERR_FAILED);
   EXPECT_TRUE(IsInBackoffMode());
+}
+
+TEST_F(RealTimeUrlLookupServiceTest, TestVerdictCacheBypass) {
+  // Cache url response
+  EnableRealTimeUrlLookup({}, {});
+  GURL url(kTestUrl);
+  SetUpRTLookupResponse(RTLookupResponse::ThreatInfo::DANGEROUS,
+                        RTLookupResponse::ThreatInfo::SOCIAL_ENGINEERING, 60,
+                        "example.test/",
+                        RTLookupResponse::ThreatInfo::COVERING_MATCH);
+
+  // Exactly one network request should be made.
+  base::MockCallback<network::TestURLLoaderFactory::Interceptor>
+      request_callback;
+  test_url_loader_factory_.SetInterceptor(request_callback.Get());
+  EXPECT_CALL(request_callback, Run(_)).Times(1);
+
+  WaitableMockRTLookupResponseCallback response_callback;
+  EXPECT_CALL(response_callback, Run(/* is_rt_lookup_successful */ true,
+                                     /* is_cached_response */ false, _));
+  rt_service()->StartMaybeCachedLookup(
+      GURL(kTestUrl), response_callback.Get(),
+      base::SequencedTaskRunner::GetCurrentDefault(), SessionID::InvalidValue(),
+      std::nullopt, false);
+  response_callback.Wait();
 }
 
 }  // namespace safe_browsing

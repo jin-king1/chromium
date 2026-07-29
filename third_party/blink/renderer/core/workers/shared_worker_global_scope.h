@@ -66,6 +66,7 @@ class CORE_EXPORT SharedWorkerGlobalScope final : public WorkerGlobalScope {
       const KURL& response_url,
       network::mojom::ReferrerPolicy response_referrer_policy,
       Vector<network::mojom::blink::ContentSecurityPolicyPtr> response_csp,
+      DocumentPolicy::DocumentPolicyBundle response_document_policy,
       const Vector<String>* response_origin_trial_tokens) override;
   void FetchAndRunClassicScript(
       const KURL& script_url,
@@ -82,8 +83,7 @@ class CORE_EXPORT SharedWorkerGlobalScope final : public WorkerGlobalScope {
       std::unique_ptr<PolicyContainer> policy_container,
       const FetchClientSettingsObjectSnapshot& outside_settings_object,
       WorkerResourceTimingNotifier& outside_resource_timing_notifier,
-      network::mojom::CredentialsMode,
-      RejectCoepUnsafeNone reject_coep_unsafe_none) override;
+      network::mojom::CredentialsMode) override;
 
   // shared_worker_global_scope.idl
   const String name() const;

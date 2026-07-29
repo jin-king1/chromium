@@ -11,19 +11,15 @@
 #include <optional>
 #include <string_view>
 
-#include "base/feature_list.h"
-#include "base/strings/string_util.h"
+#include "base/memory/safety_checks.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/omnibox/omnibox_theme.h"
 #include "chrome/browser/ui/views/chrome_typography.h"
-#include "components/omnibox/browser/omnibox_field_trial.h"
-#include "components/omnibox/common/omnibox_features.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/color/color_provider.h"
 #include "ui/gfx/canvas.h"
-#include "ui/gfx/color_palette.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/range/range.h"
 #include "ui/gfx/render_text.h"
@@ -36,53 +32,26 @@ namespace {
 // we use OmniboxTheme for that.
 constexpr int kTextStyle = views::style::STYLE_PRIMARY;
 
-// Indicates to use CONTEXT_OMNIBOX_PRIMARY when picking a font size in legacy
-// code paths.
-constexpr int kInherit = INT_MIN;
-
 // The vertical padding to provide each RenderText in addition to the height
 // of the font. Where possible, RenderText uses this additional space to
 // vertically center the cap height of the font instead of centering the
 // entire font.
 static constexpr int kVerticalPadding = 3;
 
-struct TextStyle {
-  OmniboxPart part;
-
-  // The legacy size delta, relative to the ui::ResourceBundle BaseFont, or
-  // kInherit to use CONTEXT_OMNIBOX_PRIMARY, to match the omnibox font.
-  // Note: the actual font size may differ due to |baseline| altering the size.
-  int legacy_size_delta = kInherit;
-
-  // The size delta from the Touchable chrome spec. This is always relative to
-  // CONTEXT_OMNIBOX_PRIMARY, which defaults to 15pt under touch. Only negative
-  // deltas are supported correctly (the line height will not increase to fit).
-  int touchable_size_delta = 0;
-
-  // The baseline shift. Ignored under touch (text is always baseline-aligned).
-  gfx::BaselineStyle baseline = gfx::BaselineStyle::kNormalBaseline;
-};
-
-void ApplyTextStyleFromColorType(
-    const std::optional<omnibox::FormattedString::ColorType>& color_type,
-    OmniboxResultView* result_view,
-    gfx::RenderText* render_text,
-    const gfx::Range& range) {
+void ApplyTextStyleForAnswer(OmniboxResultView* result_view,
+                             gfx::RenderText* render_text,
+                             const gfx::Range& range,
+                             bool is_headline) {
   render_text->ApplyWeight(gfx::Font::Weight::NORMAL, range);
   render_text->ApplyBaselineStyle(gfx::BaselineStyle::kNormalBaseline, range);
   const bool selected =
       result_view->GetThemeState() == OmniboxPartState::SELECTED;
   ui::ColorId id;
-  if (color_type.value() ==
-      omnibox::FormattedString::COLOR_ON_SURFACE_POSITIVE) {
-    id = selected ? kColorOmniboxResultsTextPositiveSelected
-                  : kColorOmniboxResultsTextPositive;
-  } else if (color_type.value() ==
-             omnibox::FormattedString::COLOR_ON_SURFACE_NEGATIVE) {
-    id = selected ? kColorOmniboxResultsTextNegativeSelected
-                  : kColorOmniboxResultsTextNegative;
+  if (is_headline) {
+    id = selected ? kColorOmniboxResultsTextSelected : kColorOmniboxText;
   } else {
-    return;
+    id = selected ? kColorOmniboxResultsTextDimmedSelected
+                  : kColorOmniboxResultsTextDimmed;
   }
   render_text->ApplyColor(result_view->GetColorProvider()->GetColor(id), range);
 }
@@ -130,6 +99,10 @@ gfx::Size OmniboxTextView::CalculatePreferredSize(
 }
 
 void OmniboxTextView::OnPaint(gfx::Canvas* canvas) {
+  // Omnibox interaction is a critical user journey we exclude it from
+  // additional memory safety checks.
+  // TODO(crbug.com/478634529): Optimize and remove if possible.
+  base::ScopedSafetyChecksExclusion excluded;
   View::OnPaint(canvas);
 
   if (!render_text_) {
@@ -181,10 +154,11 @@ void OmniboxTextView::SetTextWithStyling(
   ReapplyStyling();
 }
 
-void OmniboxTextView::AppendTextWithStyling(
+void OmniboxTextView::AppendAndStyleAnswerText(
     const omnibox::FormattedString& formatted_string,
     size_t fragment_index,
-    const omnibox::AnswerType& answer_type) {
+    const omnibox::AnswerType& answer_type,
+    bool is_headline) {
   cached_classifications_.reset();
   wrap_text_lines_ = AnswerHasDefinedMaxLines(answer_type);
   const auto fragments_size =
@@ -197,13 +171,13 @@ void OmniboxTextView::AppendTextWithStyling(
     size_t offset = render_text_ ? render_text_->text().length() : 0u;
     gfx::Range range(offset, offset + append_text.length());
     render_text_->AppendText(append_text);
-    ApplyTextStyleFromColorType(formatted_string.fragments(i).color(),
-                                result_view_, render_text_.get(), range);
+    ApplyTextStyleForAnswer(result_view_, render_text_.get(), range,
+                            is_headline);
   }
   OnStyleChanged();
 }
 
-void OmniboxTextView::SetMultilineText(
+void OmniboxTextView::SetMultilineAnswerText(
     const omnibox::FormattedString& formatted_string,
     const omnibox::AnswerType& answer_type) {
   render_text_ = CreateRenderText(u"");
@@ -212,7 +186,8 @@ void OmniboxTextView::SetMultilineText(
     render_text_->SetMultiline(true);
     render_text_->SetMaxLines(1);
   }
-  AppendTextWithStyling(formatted_string, /*fragment_index=*/0u, answer_type);
+  AppendAndStyleAnswerText(formatted_string, /*fragment_index=*/0u, answer_type,
+                           /*is_headline=*/false);
 }
 
 void OmniboxTextView::SetMultilineText(const std::u16string& text) {
@@ -262,6 +237,13 @@ void OmniboxTextView::ReapplyStyling() {
     // Calculate style-related data.
     if ((*cached_classifications_)[i].style & ACMatchClassification::MATCH) {
       render_text_->ApplyWeight(gfx::Font::Weight::BOLD, current_range);
+    } else if ((*cached_classifications_)[i].style &
+               ACMatchClassification::TOOLBELT) {
+      // TODO(crbug.com/430318151): Investigate whether this font weight and
+      // size handling can be done in chrome_typography.cc, like other omnibox
+      // text.
+      render_text_->ApplyWeight(gfx::Font::Weight::MEDIUM, current_range);
+      render_text_->ApplyFontSizeOverride(12, current_range);
     }
 
     const bool selected =
@@ -322,6 +304,6 @@ void OmniboxTextView::OnStyleChanged() {
 }
 
 BEGIN_METADATA(OmniboxTextView)
-ADD_PROPERTY_METADATA(std::u16string_view, Text)
+ADD_PROPERTY_METADATA(std::u16string, Text)
 ADD_READONLY_PROPERTY_METADATA(int, LineHeight)
 END_METADATA

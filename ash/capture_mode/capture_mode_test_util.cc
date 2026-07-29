@@ -37,6 +37,7 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/bind.h"
 #include "base/threading/scoped_blocking_call.h"
+#include "base/threading/thread_restrictions.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/ime/constants.h"
 #include "ui/events/test/event_generator.h"
@@ -237,7 +238,7 @@ views::Widget* EnableAndGetAutoClickBubbleWidget() {
 
   views::Widget* autoclick_bubble_widget =
       autoclick_controller->GetMenuBubbleControllerForTesting()
-          ->GetBubbleWidgetForTesting();
+          ->bubble_widget();
   EXPECT_TRUE(autoclick_bubble_widget->IsVisible());
   return autoclick_bubble_widget;
 }
@@ -452,11 +453,10 @@ void ProjectorCaptureModeIntegrationHelper::SetUp() {
   annotator_helper_.SetUp();
   auto* projector_controller = ProjectorController::Get();
   projector_controller->SetClient(&projector_client_);
-  ON_CALL(projector_client_, StopSpeechRecognition)
-      .WillByDefault(testing::Invoke([]() {
-        ProjectorController::Get()->OnSpeechRecognitionStopped(
-            /*forced=*/false);
-      }));
+  ON_CALL(projector_client_, StopSpeechRecognition).WillByDefault([]() {
+    ProjectorController::Get()->OnSpeechRecognitionStopped(
+        /*forced=*/false);
+  });
 
   // Simulate the availability of speech recognition.
   SpeechRecognitionAvailability availability;
@@ -503,7 +503,8 @@ void ViewVisibilityChangeWaiter::Wait() {
 
 void ViewVisibilityChangeWaiter::OnViewVisibilityChanged(
     views::View* observed_view,
-    views::View* starting_view) {
+    views::View* starting_view,
+    bool visible) {
   wait_loop_.Quit();
 }
 

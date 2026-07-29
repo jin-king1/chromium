@@ -6,6 +6,7 @@
 #define ANDROID_WEBVIEW_LIB_AW_MAIN_DELEGATE_H_
 
 #include <memory>
+#include <variant>
 
 #include "android_webview/browser/aw_feature_list_creator.h"
 #include "android_webview/common/aw_content_client.h"
@@ -42,10 +43,11 @@ class AwMainDelegate : public content::ContentMainDelegate {
   // content::ContentMainDelegate implementation:
   std::optional<int> BasicStartupComplete() override;
   void PreSandboxStartup() override;
-  absl::variant<int, content::MainFunctionParams> RunProcess(
+  std::variant<int, content::MainFunctionParams> RunProcess(
       const std::string& process_type,
       content::MainFunctionParams main_function_params) override;
   void ProcessExiting(const std::string& process_type) override;
+  std::optional<int> PreBrowserMain() override;
   bool ShouldCreateFeatureList(InvokedIn invoked_in) override;
   bool ShouldInitializeMojo(InvokedIn invoked_in) override;
   variations::VariationsIdsProvider* CreateVariationsIdsProvider() override;
@@ -54,6 +56,7 @@ class AwMainDelegate : public content::ContentMainDelegate {
   content::ContentBrowserClient* CreateContentBrowserClient() override;
   content::ContentGpuClient* CreateContentGpuClient() override;
   content::ContentRendererClient* CreateContentRendererClient() override;
+  bool ShouldInitializePerfetto(InvokedIn invoked_in) override;
 
   void InitializeMemorySystem(const bool is_browser_process);
 

@@ -4,6 +4,9 @@
 
 package org.chromium.components.browser_ui.widget;
 
+import static androidx.core.view.WindowInsetsCompat.Type.navigationBars;
+import static androidx.core.view.WindowInsetsCompat.Type.statusBars;
+
 import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.app.Activity;
@@ -11,11 +14,11 @@ import android.graphics.Color;
 import android.graphics.Rect;
 import android.graphics.drawable.ColorDrawable;
 import android.os.Build;
-import android.provider.Settings;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.View.OnDragListener;
 import android.view.View.OnLayoutChangeListener;
+import android.view.ViewGroup;
 import android.view.ViewGroup.LayoutParams;
 import android.view.Window;
 import android.view.WindowManager;
@@ -23,18 +26,30 @@ import android.view.animation.Animation;
 import android.view.animation.ScaleAnimation;
 import android.widget.FrameLayout;
 
-import org.chromium.base.ContextUtils;
+import androidx.activity.OnBackPressedCallback;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
+
+import org.chromium.base.Callback;
+import org.chromium.base.ResettersForTesting;
 import org.chromium.build.annotations.EnsuresNonNullIf;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.components.browser_ui.widget.gesture.BackPressHandler;
 import org.chromium.ui.UiUtils;
 import org.chromium.ui.accessibility.AccessibilityState;
 import org.chromium.ui.animation.EmptyAnimationListener;
+import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.dragdrop.DragEventDispatchHelper;
 import org.chromium.ui.dragdrop.DragEventDispatchHelper.DragEventDispatchDestination;
+import org.chromium.ui.hierarchicalmenu.HierarchicalMenuController;
+import org.chromium.ui.insets.InsetObserver;
 import org.chromium.ui.interpolators.Interpolators;
+import org.chromium.ui.listmenu.ListMenuUtils;
 import org.chromium.ui.util.ColorUtils;
 import org.chromium.ui.widget.AnchoredPopupWindow;
+import org.chromium.ui.widget.FlyoutPopupSpecCalculator;
 import org.chromium.ui.widget.RectProvider;
 
 /**
@@ -44,41 +59,61 @@ import org.chromium.ui.widget.RectProvider;
 @NullMarked
 public class ContextMenuDialog extends AlwaysDismissedDialog {
     public static final int NO_CUSTOM_MARGIN = -1;
-
     private static final long ENTER_ANIMATION_DURATION_MS = 250;
     // Exit animation duration should be set to 60% of the enter animation duration.
     private static final long EXIT_ANIMATION_DURATION_MS = 150;
+
+    /**
+     * Threshold for height change in the layout listener. We ignore minor height changes (e.g. from
+     * the keyboard or system bars showing/hiding slightly differently) to avoid dismissing the
+     * context menu unnecessarily.
+     */
+    private static final int HEIGHT_DELTA = 50;
+
+    private static boolean sForceEmptyForTesting;
+
     private final Activity mActivity;
+    private final @Nullable WindowAndroid mWindowAndroid;
     private final View mContentView;
     private final boolean mIsPopup;
+    private final boolean mIsFlyout;
     private final boolean mShouldRemoveScrim;
-    private final boolean mShouldSysUiMatchActivity;
 
     private float mContextMenuSourceXPx;
     private float mContextMenuSourceYPx;
     private int mContextMenuFirstLocationYPx;
     private @Nullable AnchoredPopupWindow mPopupWindow;
-    private View mLayout;
+    private final View mLayout;
     private @Nullable OnLayoutChangeListener mOnLayoutChangeListener;
     private @Nullable DragEventDispatchHelper mDragEventDispatchHelper;
-    private Rect mRect;
+    private final Rect mRect;
+    private final int mFlyoutExtraPaddingY;
 
-    private int mTopMarginPx;
-    private int mBottomMarginPx;
+    private final int mTopMarginPx;
+    private final int mBottomMarginPx;
 
-    private @Nullable Integer mPopupMargin;
-    private @Nullable Integer mDesiredPopupContentWidth;
+    private final @Nullable Integer mPopupMargin;
+    private final @Nullable Integer mDesiredPopupContentWidth;
+
+    private final @Nullable Runnable mOnDismissCallback;
+
+    private boolean mDismissedForTesting;
 
     /**
      * View that is showing behind the context menu. If menu is shown as a popup without scrim, this
      * view will be used to dispatch touch events other than ACTION_DOWN.
      */
-    private @Nullable View mTouchEventDelegateView;
+    private final @Nullable View mTouchEventDelegateView;
+
+    private @Nullable BackPressHandler mBackPressHandler;
+    private @Nullable OnBackPressedCallback mBackPressCallback;
+    private @Nullable Callback<Boolean> mBackPressCallbackObserver;
 
     /**
      * Creates an instance of the ContextMenuDialog.
      *
      * @param ownerActivity The activity in which the dialog should run
+     * @param windowAndroid The {@link WindowAndroid} associated with the activity.
      * @param theme A style resource describing the theme to use for the window, or {@code 0} to use
      *     the default dialog theme
      * @param topMarginPx An explicit top margin for the dialog, or -1 to use default defined in
@@ -88,10 +123,9 @@ public class ContextMenuDialog extends AlwaysDismissedDialog {
      * @param layout The context menu layout that will house the menu.
      * @param contentView The context menu view to display on the dialog.
      * @param isPopup Whether the context menu is being shown in a {@link AnchoredPopupWindow}.
+     * @param isFlyout Whether the popup is a flyout.
      * @param shouldRemoveScrim Whether the context menu should removes the scrim behind the dialog
      *     visually.
-     * @param shouldSysUiMatchActivity Whether the status bar and navigation bar for the dialog
-     *     window should be styled to match the {@code ownerActivity}.
      * @param popupMargin The margin for the context menu.
      * @param desiredPopupContentWidth The desired width for the content of the context menu.
      * @param touchEventDelegateView View View that is showing behind the context menu. If menu is
@@ -99,34 +133,45 @@ public class ContextMenuDialog extends AlwaysDismissedDialog {
      *     touch events other than ACTION_DOWN.
      * @param rect Rect location where context menu is triggered. If this menu is a popup, the
      *     coordinates are expected to be screen coordinates.
+     * @param shouldPadForWindowInsets If a wrapper layout should be applied to window inset
+     *     padding.
+     * @param onDismissCallback Callback to run when the dialog is dismissed.
+     * @param flyoutExtraPaddingY Extra vertical padding for flyout positioning.
      */
     public ContextMenuDialog(
             Activity ownerActivity,
+            @Nullable WindowAndroid windowAndroid,
             int theme,
             int topMarginPx,
             int bottomMarginPx,
             View layout,
             View contentView,
             boolean isPopup,
+            boolean isFlyout,
             boolean shouldRemoveScrim,
-            boolean shouldSysUiMatchActivity,
             @Nullable Integer popupMargin,
             @Nullable Integer desiredPopupContentWidth,
             @Nullable View touchEventDelegateView,
-            Rect rect) {
-        super(ownerActivity, theme);
+            Rect rect,
+            boolean shouldPadForWindowInsets,
+            @Nullable Runnable onDismissCallback,
+            int flyoutExtraPaddingY) {
+        super(ownerActivity, theme, shouldPadForWindowInsets);
         mActivity = ownerActivity;
+        mWindowAndroid = windowAndroid;
         mTopMarginPx = topMarginPx;
         mBottomMarginPx = bottomMarginPx;
         mContentView = contentView;
         mLayout = layout;
         mIsPopup = isPopup;
+        mIsFlyout = isFlyout;
         mShouldRemoveScrim = shouldRemoveScrim;
-        mShouldSysUiMatchActivity = shouldSysUiMatchActivity;
         mPopupMargin = popupMargin;
         mDesiredPopupContentWidth = desiredPopupContentWidth;
         mTouchEventDelegateView = touchEventDelegateView;
         mRect = rect;
+        mOnDismissCallback = onDismissCallback;
+        mFlyoutExtraPaddingY = flyoutExtraPaddingY;
     }
 
     @Override
@@ -138,25 +183,59 @@ public class ContextMenuDialog extends AlwaysDismissedDialog {
         if (mShouldRemoveScrim) {
             dialogWindow.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
             dialogWindow.addFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL);
-        }
-        if (mShouldRemoveScrim || mShouldSysUiMatchActivity) {
-            Window activityWindow = mActivity.getWindow();
-            dialogWindow.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
-            // Set the navigation bar when API level >= 27 to match android:navigationBarColor
-            // reference in styles.xml.
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-                dialogWindow.setNavigationBarColor(activityWindow.getNavigationBarColor());
-                UiUtils.setNavigationBarIconColor(
-                        dialogWindow.getDecorView(),
-                        mActivity.getResources().getBoolean(R.bool.window_light_navigation_bar));
+
+            if (mIsFlyout) {
+                dialogWindow.addFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE);
             }
-            // Apply the status bar color in case the website had override them.
-            int statusBarColor = activityWindow.getStatusBarColor();
-            UiUtils.setStatusBarColor(dialogWindow, statusBarColor);
-            UiUtils.setStatusBarIconColor(
-                    dialogWindow.getDecorView().getRootView(),
-                    !ColorUtils.shouldUseLightForegroundOnBackground(statusBarColor));
         }
+        Window activityWindow = mActivity.getWindow();
+        WindowInsetsControllerCompat activityInsetsController =
+                WindowCompat.getInsetsController(activityWindow, activityWindow.getDecorView());
+        WindowInsetsControllerCompat dialogInsetsController =
+                WindowCompat.getInsetsController(dialogWindow, dialogWindow.getDecorView());
+
+        dialogWindow
+                .getDecorView()
+                .setSystemUiVisibility(activityWindow.getDecorView().getSystemUiVisibility());
+        if ((activityWindow.getAttributes().flags & WindowManager.LayoutParams.FLAG_FULLSCREEN)
+                != 0) {
+            dialogWindow.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+        }
+
+        InsetObserver insetObserver =
+                mWindowAndroid == null ? null : mWindowAndroid.getInsetObserver();
+        WindowInsetsCompat insets =
+                insetObserver == null ? null : insetObserver.getLastRawWindowInsets();
+        if (insets != null) {
+            int typesToHide = 0;
+            if (!insets.isVisible(statusBars())) {
+                typesToHide |= statusBars();
+            }
+            if (!insets.isVisible(navigationBars())) {
+                typesToHide |= navigationBars();
+            }
+            if (typesToHide != 0) {
+                dialogInsetsController.hide(typesToHide);
+            }
+            dialogInsetsController.setSystemBarsBehavior(
+                    activityInsetsController.getSystemBarsBehavior());
+        }
+
+        dialogWindow.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
+        // Set the navigation bar when API level >= 27 to match android:navigationBarColor
+        // reference in styles.xml.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            dialogWindow.setNavigationBarColor(activityWindow.getNavigationBarColor());
+            UiUtils.setNavigationBarIconColor(
+                    dialogWindow.getDecorView(),
+                    mActivity.getResources().getBoolean(R.bool.window_light_navigation_bar));
+        }
+        // Apply the status bar color in case the website had override them.
+        int statusBarColor = activityWindow.getStatusBarColor();
+        UiUtils.setStatusBarColor(dialogWindow, statusBarColor);
+        UiUtils.setStatusBarIconColor(
+                dialogWindow.getDecorView().getRootView(),
+                !ColorUtils.shouldUseLightForegroundOnBackground(statusBarColor));
 
         // Both bottom margin and top margin must be set together to ensure default
         // values are not relied upon for custom behavior.
@@ -168,6 +247,9 @@ public class ContextMenuDialog extends AlwaysDismissedDialog {
             layoutParams.bottomMargin = mBottomMarginPx;
             layoutParams.topMargin = mTopMarginPx;
         }
+
+        final int threshold =
+                (int) (HEIGHT_DELTA * mActivity.getResources().getDisplayMetrics().density);
 
         mOnLayoutChangeListener =
                 new OnLayoutChangeListener() {
@@ -200,35 +282,66 @@ public class ContextMenuDialog extends AlwaysDismissedDialog {
                             // point.
                             // We'll dismiss the context menu and remove the listener.
                             if (mPopupWindow != null && mPopupWindow.isShowing()) {
+                                if (left == oldLeft
+                                        && right == oldRight
+                                        && Math.abs((bottom - top) - (oldBottom - oldTop))
+                                                < threshold) {
+                                    return;
+                                }
                                 dismiss();
                                 return;
                             }
-                            mPopupWindow =
-                                    new AnchoredPopupWindow(
-                                            mActivity,
-                                            mLayout,
-                                            new ColorDrawable(Color.TRANSPARENT),
-                                            mContentView,
-                                            new RectProvider(mRect));
+
+                            // Convert absolute screen coordinates to Dialog-relative coordinates.
+                            int[] layoutScreenLocation = new int[2];
+                            mLayout.getLocationOnScreen(layoutScreenLocation);
+                            Rect popupRect = new Rect(mRect);
+                            popupRect.offset(-layoutScreenLocation[0], -layoutScreenLocation[1]);
+
+                            AnchoredPopupWindow.Builder builder =
+                                    new AnchoredPopupWindow.Builder(
+                                                    mActivity,
+                                                    mLayout,
+                                                    new ColorDrawable(Color.TRANSPARENT),
+                                                    () -> mContentView,
+                                                    new RectProvider(popupRect))
+                                            .setSmartAnchorWithMaxWidth(true)
+                                            .setVerticalOverlapAnchor(true)
+                                            .setOutsideTouchable(true)
+                                            .setAnimateFromAnchor(true)
+                                            // Set popup focusable so the screen reader can announce
+                                            // the popup properly, and key press events are handled
+                                            // correctly for context menu keyboard navigation.
+                                            .setFocusable(true)
+                                            // Set touch modal false (outside touches will be sent
+                                            // to other windows behind it) so that touches from
+                                            // drag-drop will dismiss the context menu.
+                                            .setTouchModal(false)
+                                            // If the popup is dismissed, dismiss this dialog as
+                                            // well. This is required when the popup is dismissed
+                                            // through backpress / hardware accessories where the
+                                            // #dismiss is not triggered by #onTouchEvent.
+                                            .addOnDismissListener(
+                                                    () -> {
+                                                        if (mOnDismissCallback != null) {
+                                                            mOnDismissCallback.run();
+                                                        }
+                                                        ContextMenuDialog.this.dismiss();
+                                                    });
+
                             if (mPopupMargin != null) {
-                                mPopupWindow.setMargin(mPopupMargin);
+                                builder.setMargin(mPopupMargin);
                             }
                             if (mDesiredPopupContentWidth != null) {
-                                mPopupWindow.setDesiredContentWidth(mDesiredPopupContentWidth);
+                                builder.setDesiredContentWidth(mDesiredPopupContentWidth);
                             }
-                            mPopupWindow.setSmartAnchorWithMaxWidth(true);
-                            mPopupWindow.setVerticalOverlapAnchor(true);
-                            mPopupWindow.setOutsideTouchable(false);
-                            mPopupWindow.setAnimateFromAnchor(true);
-                            // Set popup focusable so the screen reader can announce the popup
-                            // properly.
-                            if (AccessibilityState.isScreenReaderEnabled()) {
-                                mPopupWindow.setFocusable(true);
+                            if (mIsFlyout) {
+                                builder.setSpecCalculator(
+                                        new FlyoutPopupSpecCalculator(mFlyoutExtraPaddingY));
+                                builder.setAnimationStyle(R.style.PopupWindowAnimFade);
                             }
-                            // If the popup is dismissed, dismiss this dialog as well. This is
-                            // required when the popup is dismissed through backpress / hardware
-                            // accessiries where the #dismiss is not triggered by #onTouchEvent.
-                            mPopupWindow.addOnDismissListener(ContextMenuDialog.this::dismiss);
+
+                            mPopupWindow = builder.build();
                             mPopupWindow.show();
                         } else {
                             // Otherwise, the menu will already be in the hierarchy, and we need to
@@ -255,8 +368,26 @@ public class ContextMenuDialog extends AlwaysDismissedDialog {
     }
 
     /**
-     * Start the entering animation for context menu dialog. Only used when dialog is presenting
-     * as a full screen dialog.
+     * Gets the {@link Rect} of this dialog, relative to the application window.
+     *
+     * @return {@link Rect} of this popup.
+     */
+    public Rect getDialogRect() {
+        if (mContentView == null) {
+            return new Rect();
+        }
+
+        return ListMenuUtils.getViewRectRelativeToItsRootView(mContentView);
+    }
+
+    /** Returns the content view of this dialog. */
+    public View getContentView() {
+        return mContentView;
+    }
+
+    /**
+     * Start the entering animation for context menu dialog. Only used when dialog is presenting as
+     * a full screen dialog.
      */
     private void startEnterAnimation() {
         Rect windowRect = new Rect();
@@ -281,8 +412,61 @@ public class ContextMenuDialog extends AlwaysDismissedDialog {
         mContentView.startAnimation(animation);
     }
 
+    private void cleanupBackPressHandler() {
+        if (mBackPressHandler != null && mBackPressCallbackObserver != null) {
+            mBackPressHandler
+                    .getHandleBackPressChangedSupplier()
+                    .removeObserver(mBackPressCallbackObserver);
+        }
+        if (mBackPressCallback != null) {
+            mBackPressCallback.remove();
+        }
+        mBackPressCallbackObserver = null;
+        mBackPressCallback = null;
+    }
+
+    /** Sets a {@link BackPressHandler} to intercept back presses when the dialog/menu is open. */
+    public void setBackPressHandler(@Nullable BackPressHandler backPressHandler) {
+        cleanupBackPressHandler();
+        mBackPressHandler = backPressHandler;
+        if (backPressHandler != null) {
+            mBackPressCallback =
+                    new OnBackPressedCallback(false) {
+                        @Override
+                        public void handleOnBackPressed() {
+                            if (mBackPressHandler != null) {
+                                mBackPressHandler.handleBackPress();
+                            }
+                        }
+                    };
+            mBackPressCallbackObserver = mBackPressCallback::setEnabled;
+            backPressHandler
+                    .getHandleBackPressChangedSupplier()
+                    .addSyncObserverAndPostIfNonNull(mBackPressCallbackObserver);
+            getOnBackPressedDispatcher().addCallback(mBackPressCallback);
+        }
+    }
+
+    @Override
+    public void show() {
+        if (sForceEmptyForTesting) return;
+        super.show();
+    }
+
+    @Override
+    protected void onStop() {
+        super.onStop();
+        cleanupBackPressHandler();
+    }
+
     @Override
     public void dismiss() {
+        cleanupBackPressHandler();
+        if (sForceEmptyForTesting) {
+            mDismissedForTesting = true;
+            return;
+        }
+
         if (mIsPopup) {
             if (mPopupWindow != null) {
                 mPopupWindow.dismiss();
@@ -325,6 +509,27 @@ public class ContextMenuDialog extends AlwaysDismissedDialog {
         mContentView.startAnimation(exitAnimation);
     }
 
+    public boolean getShouldRemoveScrimForTesting() {
+        return mShouldRemoveScrim;
+    }
+
+    public @Nullable View getTouchEventDelegateViewForTesting() {
+        return mTouchEventDelegateView;
+    }
+
+    public Rect getRectForTesting() {
+        return mRect;
+    }
+
+    public boolean isDismissedForTesting() {
+        return mDismissedForTesting;
+    }
+
+    public static void setForceEmptyForTesting(boolean forceEmpty) {
+        sForceEmptyForTesting = forceEmpty;
+        ResettersForTesting.register(() -> sForceEmptyForTesting = false);
+    }
+
     @Override
     public boolean onTouchEvent(MotionEvent event) {
         if (event.getAction() == MotionEvent.ACTION_DOWN) {
@@ -364,13 +569,7 @@ public class ContextMenuDialog extends AlwaysDismissedDialog {
                         pivotY);
 
         long duration = isEnterAnimation ? ENTER_ANIMATION_DURATION_MS : EXIT_ANIMATION_DURATION_MS;
-        float durationScale =
-                Settings.Global.getFloat(
-                        ContextUtils.getApplicationContext().getContentResolver(),
-                        Settings.Global.ANIMATOR_DURATION_SCALE,
-                        1f);
-
-        animation.setDuration((long) (duration * durationScale));
+        animation.setDuration((long) (duration * AccessibilityState.getAnimatorDurationScale()));
         animation.setInterpolator(Interpolators.LINEAR_OUT_SLOW_IN_INTERPOLATOR);
         return animation;
     }
@@ -383,5 +582,14 @@ public class ContextMenuDialog extends AlwaysDismissedDialog {
     @Nullable
     OnDragListener getOnDragListenerForTesting() {
         return mDragEventDispatchHelper;
+    }
+
+    /**
+     * Set the focus state for this dialog's content view.
+     *
+     * @param hasFocus Whether this dialog's content should have focus.
+     */
+    public void setWindowFocusForFlyoutMenus(boolean hasFocus) {
+        HierarchicalMenuController.setWindowFocusForFlyoutMenus((ViewGroup) mContentView, hasFocus);
     }
 }

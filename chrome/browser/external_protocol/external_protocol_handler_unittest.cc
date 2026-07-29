@@ -190,7 +190,6 @@ class ExternalProtocolHandlerTest : public testing::Test {
   void TearDown() override {
     // Ensure that g_accept_requests gets set back to true after test execution.
     ExternalProtocolHandler::PermitLaunchUrl();
-    TestingBrowserProcess::GetGlobal()->SetLocalState(nullptr);
   }
 
   enum class Action { PROMPT, LAUNCH, BLOCK, NONE };
@@ -361,9 +360,7 @@ TEST_F(ExternalProtocolHandlerTest, TestNoDialogWithoutManager) {
 class MockInterceptNavigationDelegate
     : public navigation_interception::InterceptNavigationDelegate {
  public:
-  MockInterceptNavigationDelegate()
-      : InterceptNavigationDelegate(base::android::AttachCurrentThread(),
-                                    nullptr) {}
+  MockInterceptNavigationDelegate() = default;
 
   MOCK_METHOD5(HandleSubframeExternalProtocol,
                void(const GURL&,
@@ -463,7 +460,7 @@ TEST_F(ExternalProtocolHandlerTest, TestGetBlockStateDefaultBlock) {
   block_state = ExternalProtocolHandler::GetBlockState("ie.http", nullptr,
                                                        profile_.get());
   EXPECT_EQ(ExternalProtocolHandler::BLOCK, block_state);
-  EXPECT_EQ("mk", GURL("mk:@FooBar:ie.http:res://foo.bar/baz").scheme());
+  EXPECT_EQ("mk", GURL("mk:@FooBar:ie.http:res://foo.bar/baz").GetScheme());
   block_state =
       ExternalProtocolHandler::GetBlockState("mk", nullptr, profile_.get());
   EXPECT_EQ(ExternalProtocolHandler::BLOCK, block_state);
@@ -568,24 +565,23 @@ TEST_F(ExternalProtocolHandlerTest, TestSetBlockState) {
       ExternalProtocolHandler::kBlockStateMetric,
       ExternalProtocolHandler::BlockStateMetric::kPrompt, 9);
 
-  const base::Value::Dict& protocol_origin_pairs =
-      profile_->GetPrefs()->GetDict(
-          prefs::kProtocolHandlerPerOriginAllowedProtocols);
-  base::Value::Dict expected_allowed_protocols_for_example_origin_1;
+  const base::DictValue& protocol_origin_pairs = profile_->GetPrefs()->GetDict(
+      prefs::kProtocolHandlerPerOriginAllowedProtocols);
+  base::DictValue expected_allowed_protocols_for_example_origin_1;
   expected_allowed_protocols_for_example_origin_1.Set(kScheme_1, true);
-  const base::Value::Dict* allowed_protocols_for_example_origin_1 =
+  const base::DictValue* allowed_protocols_for_example_origin_1 =
       protocol_origin_pairs.FindDict(example_origin_1.Serialize());
   EXPECT_EQ(expected_allowed_protocols_for_example_origin_1,
             *allowed_protocols_for_example_origin_1);
-  base::Value::Dict expected_allowed_protocols_for_example_origin_2;
+  base::DictValue expected_allowed_protocols_for_example_origin_2;
   expected_allowed_protocols_for_example_origin_2.Set(kScheme_2, true);
-  const base::Value::Dict* allowed_protocols_for_example_origin_2 =
+  const base::DictValue* allowed_protocols_for_example_origin_2 =
       protocol_origin_pairs.FindDict(example_origin_2.Serialize());
   EXPECT_EQ(expected_allowed_protocols_for_example_origin_2,
             *allowed_protocols_for_example_origin_2);
 
   // Note: BLOCK is no longer supported (it triggers a DCHECK in SetBlockState;
-  // see https://crbug.com/724919).
+  // see https://crbug.com/41320718).
 
   // Set back to UNKNOWN, and make sure this results in an empty dictionary.
   ExternalProtocolHandler::SetBlockState(kScheme_1, example_origin_1,

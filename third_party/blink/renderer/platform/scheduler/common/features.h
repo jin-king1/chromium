@@ -17,13 +17,8 @@ BASE_FEATURE(kDedicatedWorkerThrottling,
              "BlinkSchedulerWorkerThrottling",
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kBestEffortPriorityForFindInPage,
-             "BlinkSchedulerBestEffortPriorityForFindInPage",
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
 // Enable setting high priority database task type from field trial parameters.
 BASE_FEATURE(kHighPriorityDatabaseTaskType,
-             "HighPriorityDatabaseTaskType",
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 // When features::kIntensiveWakeUpThrottling is enabled, wake ups from timers
@@ -63,22 +58,12 @@ PLATFORM_EXPORT base::TimeDelta GetIntensiveWakeUpThrottlingGracePeriod(
 // base::SequencedTaskRunner::GetCurrentDefault() returns the current active
 // per-ASG task runner instead of the per-thread task runner.
 BASE_FEATURE(kMbiOverrideTaskRunnerHandle,
-             "MbiOverrideTaskRunnerHandle",
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-// Buffer time that we want to extend the loading state after the FMP is
-// received.
-PLATFORM_EXPORT base::TimeDelta
-GetLoadingPhaseBufferTimeAfterFirstMeaningfulPaint();
+PLATFORM_EXPORT BASE_DECLARE_FEATURE(kBusyLoopOnRendererMain);
+PLATFORM_EXPORT BASE_DECLARE_FEATURE_PARAM(base::TimeDelta, kBusyLoopTime);
 
-// Returns the threshold to consider rendering starved during threaded
-// scrolling. If `kThreadedScrollPreventRenderingStarvation` is enabled, this
-// returns value of the associated "threshold_ms" FeatureParam; otherwise this
-// returns TimeDelta::Max().
-PLATFORM_EXPORT base::TimeDelta GetThreadedScrollRenderingStarvationThreshold();
-
-// Kill switch for throttling timed-out requestIdleCallback tasks.
-PLATFORM_EXPORT BASE_DECLARE_FEATURE(kThrottleTimedOutIdleTasks);
+PLATFORM_EXPORT BASE_DECLARE_FEATURE(kBusyLoopLessWhenCompositorGesture);
 
 }  // namespace scheduler
 }  // namespace blink

@@ -12,6 +12,7 @@
 #include <optional>
 #include <string>
 
+#include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/scoped_observation.h"
 #include "base/values.h"
@@ -24,7 +25,6 @@
 #include "mojo/public/cpp/bindings/remote.h"
 #include "net/cookies/canonical_cookie.h"
 #include "net/cookies/cookie_access_result.h"
-#include "net/cookies/cookie_change_dispatcher.h"
 #include "services/network/public/mojom/cookie_manager.mojom.h"
 #include "url/gurl.h"
 
@@ -45,8 +45,11 @@ class CookiesEventRouter : public ProfileObserver {
 
   // ProfileObserver:
   void OnOffTheRecordProfileCreated(Profile* off_the_record) override;
+  void OnProfileWillBeDestroyed(Profile* profile) override;
 
  private:
+  FRIEND_TEST_ALL_PREFIXES(ExtensionApiTest, OTRReceiverMojoConnectionError);
+
   // This helper class connects to the CookieMonster over Mojo, and relays Mojo
   // messages to the owning CookiesEventRouter. This rather clumsy arrangement
   // is necessary to differentiate which CookieMonster the Mojo message comes
@@ -81,12 +84,14 @@ class CookiesEventRouter : public ProfileObserver {
   void DispatchEvent(content::BrowserContext* context,
                      events::HistogramValue histogram_value,
                      const std::string& event_name,
-                     base::Value::List event_args,
+                     base::ListValue event_args,
                      const GURL& cookie_domain);
 
   raw_ptr<Profile> profile_;
 
   base::ScopedObservation<Profile, ProfileObserver> profile_observation_;
+
+  base::ScopedObservation<Profile, ProfileObserver> otr_profile_observation_;
 
   // To listen to cookie changes in both the original and the off the record
   // profiles, we need a pair of bindings, as well as a pair of
@@ -246,6 +251,10 @@ class CookiesAPI : public BrowserContextKeyedAPI, public EventRouter::Observer {
 
   // EventRouter::Observer implementation.
   void OnListenerAdded(const EventListenerInfo& details) override;
+
+  CookiesEventRouter* GetCookiesEventRouterForTesting() {
+    return cookies_event_router_.get();
+  }
 
  private:
   friend class BrowserContextKeyedAPIFactory<CookiesAPI>;

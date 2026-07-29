@@ -9,6 +9,7 @@
 #include "ash/constants/ash_features.h"
 #include "ash/public/cpp/new_window_delegate.h"
 #include "ash/public/cpp/window_properties.h"
+#include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "base/functional/callback_helpers.h"
 #include "base/notreached.h"
@@ -25,6 +26,7 @@
 #include "ui/aura/window.h"
 #include "ui/display/screen.h"
 #include "ui/display/tablet_state.h"
+#include "ui/gfx/image/image.h"
 
 namespace ash {
 
@@ -164,7 +166,7 @@ CameraAppUIDelegate::WifiConfig FromMojoWifiConfig(
 }
 
 bool HasExternalScreen() {
-  for (const auto& display : display::Screen::GetScreen()->GetAllDisplays()) {
+  for (const auto& display : display::Screen::Get()->GetAllDisplays()) {
     if (!display.IsInternal()) {
       return true;
     }
@@ -215,8 +217,8 @@ CameraAppHelperImpl::CameraAppHelperImpl(
   DCHECK(camera_app_ui);
   DCHECK(window);
   window->SetProperty(kCanConsumeSystemKeysKey, true);
-  ScreenBacklight::Get()->AddObserver(this);
-  ash::SessionManagerClient::Get()->AddObserver(this);
+  screen_backlight_observation_.Observe(ScreenBacklight::Get());
+  session_manager_client_observation_.Observe(ash::SessionManagerClient::Get());
   sw_privacy_switch_state_observer_ =
       std::make_unique<media::CrosCameraSWPrivacySwitchStateObserver>(
           base::BindRepeating(
@@ -225,8 +227,6 @@ CameraAppHelperImpl::CameraAppHelperImpl(
 }
 
 CameraAppHelperImpl::~CameraAppHelperImpl() {
-  ash::SessionManagerClient::Get()->RemoveObserver(this);
-  ScreenBacklight::Get()->RemoveObserver(this);
 
   if (pending_intent_id_.has_value()) {
     camera_result_callback_.Run(*pending_intent_id_,
@@ -256,7 +256,7 @@ void CameraAppHelperImpl::HandleCameraResult(
 }
 
 void CameraAppHelperImpl::IsTabletMode(IsTabletModeCallback callback) {
-  std::move(callback).Run(display::Screen::GetScreen()->InTabletMode());
+  std::move(callback).Run(display::Screen::Get()->InTabletMode());
 }
 
 void CameraAppHelperImpl::StartPerfEventTrace(const std::string& event) {
@@ -273,7 +273,7 @@ void CameraAppHelperImpl::SetTabletMonitor(
     mojo::PendingRemote<TabletModeMonitor> monitor,
     SetTabletMonitorCallback callback) {
   tablet_mode_monitor_ = mojo::Remote<TabletModeMonitor>(std::move(monitor));
-  std::move(callback).Run(display::Screen::GetScreen()->InTabletMode());
+  std::move(callback).Run(display::Screen::Get()->InTabletMode());
 }
 
 void CameraAppHelperImpl::SetScreenStateMonitor(
@@ -343,7 +343,7 @@ void CameraAppHelperImpl::OpenFeedbackDialog(const std::string& placeholder) {
 }
 
 void CameraAppHelperImpl::OpenUrlInBrowser(const GURL& url) {
-  NewWindowDelegate::GetPrimary()->OpenUrl(
+  NewWindowDelegate::GetInstance()->OpenUrl(
       url, NewWindowDelegate::OpenUrlFrom::kUserInteraction,
       NewWindowDelegate::Disposition::kNewForegroundTab);
 }
@@ -361,8 +361,22 @@ void CameraAppHelperImpl::GetWindowStateController(
   std::move(callback).Run(std::move(controller_remote));
 }
 
-void CameraAppHelperImpl::SendNewCaptureBroadcast(bool is_video,
-                                                  const std::string& name) {
+void CameraAppHelperImpl::ProcessCapturedFile(
+    camera_app::mojom::FileType file_type,
+    camera_app::mojom::CaptureDestinationPtr destination,
+    ProcessCapturedFileCallback callback) {
+  const std::string& name = destination->is_local_file()
+                                ? destination->get_local_file()->file_name
+                                : destination->get_cloud_upload()->file_name;
+  if (destination->is_cloud_upload()) {
+    const auto thumbnail = gfx::Image::CreateFrom1xPNGBytes(
+        destination->get_cloud_upload()->thumbnail);
+    camera_app_ui_->delegate()->UploadFile(name, thumbnail,
+                                           std::move(callback));
+  } else {
+    // Return success immediately for local files.
+    std::move(callback).Run(true);
+  }
   auto file_path = camera_app_ui_->delegate()->GetFilePathInArcByName(name);
   if (file_path.empty()) {
     LOG(ERROR) << "Drop the broadcast request due to invalid file path in ARC "
@@ -370,7 +384,8 @@ void CameraAppHelperImpl::SendNewCaptureBroadcast(bool is_video,
                << name;
     return;
   }
-  send_broadcast_callback_.Run(is_video, file_path);
+  send_broadcast_callback_.Run(file_type == camera_app::mojom::FileType::kVideo,
+                               file_path);
 }
 
 void CameraAppHelperImpl::MonitorFileDeletion(

@@ -2,7 +2,7 @@
 <html>
 <head>
   <style>
-    permission {
+    usermedia, geolocation {
       font-size: xxx-large;
       margin: 0px;
       border: 0px;
@@ -13,18 +13,22 @@
 </head>
 <body>
   <div id="parent">
-    <permission id="geolocation" type="geolocation">
-    <permission id="microphone" type="microphone">
-    <permission id="camera" type="camera">
-    <permission id="invalid" type="invalid microphone">
-    <permission id="camera-microphone" type="camera microphone">
+    <geolocation id="geolocation"></geolocation>
+    <usermedia id="microphone" type="microphone"></usermedia>
+    <usermedia id="camera" type="camera"></usermedia>
+    <usermedia id="invalid" type="invalid microphone"></usermedia>
+    <usermedia id="camera-microphone" type="camera microphone"></usermedia>
   </div>
   <script>
-    document.getElementById('parent').addEventListener('resolve', (event) => {
-      console.log(event.target.id + '-resolve');
+    document.querySelectorAll('usermedia').forEach((el) => {
+      el.setConstraints({video: {}, audio: {}});
     });
-    document.getElementById('parent').addEventListener('dismiss', (event) => {
-      console.log(event.target.id + '-dismiss');
+
+    document.getElementById('parent').addEventListener('promptaction', (event) => {
+      console.log(event.target.id + '-promptaction');
+    });
+    document.getElementById('parent').addEventListener('promptdismiss', (event) => {
+      console.log(event.target.id + '-promptdismiss');
     });
 
     function clickById(element_id) {
@@ -47,7 +51,10 @@
     }
 
     function setFontSizeSmall() {
-      document.querySelectorAll('permission').forEach((el) => {
+      document.querySelectorAll('usermedia').forEach((el) => {
+        el.style.fontSize = 'small';
+      });
+      document.querySelectorAll('geolocation').forEach((el) => {
         el.style.fontSize = 'small';
       });
     }

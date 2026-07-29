@@ -36,11 +36,10 @@ import type {Route} from '../router.js';
 import {Router, routes} from '../router.js';
 
 import {getTemplate} from './cursor_and_touchpad_page.html.js';
-import type {CursorAndTouchpadPageBrowserProxy} from './cursor_and_touchpad_page_browser_proxy.js';
-import {CursorAndTouchpadPageBrowserProxyImpl} from './cursor_and_touchpad_page_browser_proxy.js';
 import {DisableTouchpadMode} from './disable_touchpad_constants.js';
 
 const DEFAULT_BLACK_CURSOR_COLOR = 0;
+const INVERTED_CURSOR_COLOR = 1;
 interface Option {
   name: string;
   value: number;
@@ -138,7 +137,7 @@ export class SettingsCursorAndTouchpadPageElement extends
         readOnly: true,
         type: Array,
         value() {
-          return [
+          const options = [
             {
               value: DEFAULT_BLACK_CURSOR_COLOR,
               name: loadTimeData.getString('cursorColorBlack'),
@@ -171,8 +170,15 @@ export class SettingsCursorAndTouchpadPageElement extends
               value: 0xf50057,  // Pink A400
               name: loadTimeData.getString('cursorColorPink'),
             },
-
           ];
+          if (loadTimeData.getBoolean(
+                  'isAccessibilityInvertedMouseCursorEnabled')) {
+            options.push({
+              value: INVERTED_CURSOR_COLOR,
+              name: loadTimeData.getString('cursorColorInverted'),
+            });
+          }
+          return options;
         },
       },
 
@@ -267,23 +273,6 @@ export class SettingsCursorAndTouchpadPageElement extends
       },
 
       /**
-       * Used by DeepLinkingMixin to focus this page's deep links.
-       */
-      supportedSettingIds: {
-        type: Object,
-        value: () => new Set<Setting>([
-          Setting.kAutoClickWhenCursorStops,
-          Setting.kDisableTouchpad,
-          Setting.kEnableCursorColor,
-          Setting.kHighlightCursorWhileMoving,
-          Setting.kLargeCursor,
-          Setting.kMouseKeysEnabled,
-          Setting.kOverscrollEnabled,
-          Setting.kTabletNavigationButtons,
-        ]),
-      },
-
-      /**
        * Check if at least one mouse is connected.
        */
       hasMouse_: {
@@ -313,33 +302,41 @@ export class SettingsCursorAndTouchpadPageElement extends
     ];
   }
 
-  private autoClickDelayOptions_: Option[];
-  private autoClickMovementThresholdOptions_: Option[];
-  private cursorAndTouchpadBrowserProxy_: CursorAndTouchpadPageBrowserProxy;
-  private cursorColorOptions_: Option[];
+  // DeepLinkingMixin override
+  override supportedSettingIds = new Set<Setting>([
+    Setting.kAutoClickWhenCursorStops,
+    Setting.kDisableTouchpad,
+    Setting.kEnableCursorColor,
+    Setting.kHighlightCursorWhileMoving,
+    Setting.kLargeCursor,
+    Setting.kMouseKeysEnabled,
+    Setting.kOverscrollEnabled,
+    Setting.kTabletNavigationButtons,
+  ]);
+
+  declare private autoClickDelayOptions_: Option[];
+  declare private autoClickMovementThresholdOptions_: Option[];
+  declare private cursorColorOptions_: Option[];
   private deviceBrowserProxy_: DevicePageBrowserProxy;
-  private disableTouchpadOptions_: Option[];
-  private readonly isKioskModeActive_: boolean;
-  private shelfNavigationButtonsImplicitlyEnabled_: boolean;
-  private shelfNavigationButtonsPref_:
+  declare private disableTouchpadOptions_: Option[];
+  declare private readonly isKioskModeActive_: boolean;
+  declare private shelfNavigationButtonsImplicitlyEnabled_: boolean;
+  declare private shelfNavigationButtonsPref_:
       chrome.settingsPrivate.PrefObject<boolean>;
-  private showShelfNavigationButtonsSettings_: boolean;
-  private readonly isAccessibilityDisableTouchpadEnabled_: boolean;
-  private readonly isAccessibilityFaceGazeEnabled_: boolean;
-  private readonly isAccessibilityMouseKeysEnabled_: boolean;
+  declare private showFaceGazeRow_: boolean;
+  declare private showShelfNavigationButtonsSettings_: boolean;
+  declare private readonly isAccessibilityDisableTouchpadEnabled_: boolean;
+  declare private readonly isAccessibilityMouseKeysEnabled_: boolean;
   private readonly largeCursorMaxSize_: number;
-  private hasMouse_: boolean;
-  private hasTouchpad_: boolean;
-  private hasPointingStick_: boolean;
+  declare private hasMouse_: boolean;
+  declare private hasTouchpad_: boolean;
+  declare private hasPointingStick_: boolean;
 
   constructor() {
     super();
 
     /** RouteOriginMixin override */
     this.route = routes.A11Y_CURSOR_AND_TOUCHPAD;
-
-    this.cursorAndTouchpadBrowserProxy_ =
-        CursorAndTouchpadPageBrowserProxyImpl.getInstance();
 
     this.deviceBrowserProxy_ = DevicePageBrowserProxyImpl.getInstance();
   }
@@ -362,15 +359,11 @@ export class SettingsCursorAndTouchpadPageElement extends
   override ready(): void {
     super.ready();
 
-    if (loadTimeData.getBoolean('enableInputDeviceSettingsSplit')) {
-      this.addFocusConfig(routes.DEVICE, '#pointerSubpageButton');
-      this.addFocusConfig(routes.PER_DEVICE_TOUCHPAD, '#pointerSubpageButton');
-      this.addFocusConfig(routes.PER_DEVICE_MOUSE, '#pointerSubpageButton');
-      this.addFocusConfig(
-          routes.PER_DEVICE_POINTING_STICK, '#pointerSubpageButton');
-    } else {
-      this.addFocusConfig(routes.POINTERS, '#pointerSubpageButton');
-    }
+    this.addFocusConfig(routes.DEVICE, '#pointerSubpageButton');
+    this.addFocusConfig(routes.PER_DEVICE_TOUCHPAD, '#pointerSubpageButton');
+    this.addFocusConfig(routes.PER_DEVICE_MOUSE, '#pointerSubpageButton');
+    this.addFocusConfig(
+        routes.PER_DEVICE_POINTING_STICK, '#pointerSubpageButton');
     this.addFocusConfig(
         routes.MANAGE_FACEGAZE_SETTINGS, '#faceGazeSubpageButton');
   }
@@ -401,25 +394,14 @@ export class SettingsCursorAndTouchpadPageElement extends
   }
 
   /**
-   * If enableInputDeviceSettingsSplit feature flag is enabled:
    * If there is only touchpad connected, navigate to touchpad subpage.
    * If there is only mouse connected, navigate to mouse subpage.
    * If there is only pointing stick connected, navigate to pointing stick
    * subpage. If there are more than one types device connected, navigate to
    * device subpage. If there is no mouse or touchpad or pointing stick
    * connected, navigate to device subpage.
-   *
-   * If enableInputDeviceSettingsSplit feature flag is disabled:
-   * Navigate to pointers page.
    */
   onNavigateToSubpageClick(): void {
-    if (!loadTimeData.getBoolean('enableInputDeviceSettingsSplit')) {
-      Router.getInstance().navigateTo(
-          routes.POINTERS,
-          /* dynamicParams= */ undefined, /* removeSearch= */ true);
-      return;
-    }
-
     if (this.hasMouse_ && !this.hasTouchpad_ && !this.hasPointingStick_) {
       Router.getInstance().navigateTo(
           routes.PER_DEVICE_MOUSE,
@@ -447,8 +429,7 @@ export class SettingsCursorAndTouchpadPageElement extends
   }
 
   private computeShowFaceGazeRow_(): boolean {
-    return !this.isKioskModeActive_ &&
-        loadTimeData.getBoolean('isAccessibilityFaceGazeEnabled');
+    return !this.isKioskModeActive_;
   }
 
   /**
@@ -509,17 +490,17 @@ export class SettingsCursorAndTouchpadPageElement extends
                             '#shelfNavigationButtonsEnabledControl')!.checked;
     this.setPrefValue(
         'settings.a11y.tablet_mode_shelf_nav_buttons_enabled', enabled);
-    this.cursorAndTouchpadBrowserProxy_
-        .recordSelectedShowShelfNavigationButtonValue(enabled);
   }
 
   private onA11yCursorColorChange_(): void {
     // Custom cursor color is enabled when the color is not set to black.
-    const a11yCursorColorOn =
-        this.getPref<number>('settings.a11y.cursor_color').value !==
-        DEFAULT_BLACK_CURSOR_COLOR;
+    const color = this.getPref<number>('settings.a11y.cursor_color').value;
+    const a11yCursorColorOn = color !== DEFAULT_BLACK_CURSOR_COLOR;
     this.set(
         'prefs.settings.a11y.cursor_color_enabled.value', a11yCursorColorOn);
+
+    chrome.metricsPrivate.recordSparseValue(
+        'ChromeOS.Settings.Accessibility.CursorColor.Value', color);
   }
 
   private showTouchpadEnableMessage_(trackpadMode: number): boolean {

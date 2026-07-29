@@ -11,6 +11,9 @@
 #include "base/memory/singleton.h"
 #include "base/observer_list.h"
 #include "chrome/browser/extensions/window_controller.h"
+#include "extensions/buildflags/buildflags.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 class ExtensionFunction;
 
@@ -34,6 +37,12 @@ class WindowControllerList {
   void RemoveExtensionWindow(WindowController* window);
   void NotifyWindowBoundsChanged(WindowController* window);
 
+  // Notifies that the focus of the given |window| is changed.
+  //
+  // As of Sep 23, 2025, this API was only used on desktop Android.
+  // TODO(http://crbug.com/446925633): Use this API on non-Android OSes.
+  void NotifyWindowFocusChanged(WindowController* window, bool has_focus);
+
   void AddObserver(WindowControllerListObserver* observer);
   void RemoveObserver(WindowControllerListObserver* observer);
 
@@ -46,23 +55,21 @@ class WindowControllerList {
   WindowController* get(size_t index) const { return windows_[index]; }
 
   // Returns a window matching the context the function was invoked in
-  // using |filter|.
+  // using `filter`.
   WindowController* FindWindowForFunctionByIdWithFilter(
       const ExtensionFunction* function,
       int id,
       WindowController::TypeFilter filter) const;
 
-#if !BUILDFLAG(IS_ANDROID)
   // Returns the focused or last added window matching the context the function
   // was invoked in.
   WindowController* CurrentWindowForFunction(ExtensionFunction* function) const;
 
   // Returns the focused or last added window matching the context the function
-  // was invoked in using |filter|.
+  // was invoked in using `filter`.
   WindowController* CurrentWindowForFunctionWithFilter(
       ExtensionFunction* function,
       WindowController::TypeFilter filter) const;
-#endif  // !BUILDFLAG(IS_ANDROID)
 
   static WindowControllerList* GetInstance();
 

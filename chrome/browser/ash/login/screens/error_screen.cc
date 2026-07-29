@@ -6,13 +6,14 @@
 
 #include <memory>
 
+#include "ash/constants/chrome_webui_url_constants.h"
+#include "base/check_deref.h"
 #include "base/command_line.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "chrome/browser/app_mode/app_mode_utils.h"
-#include "chrome/browser/apps/app_service/app_launch_params.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/apps/app_service/browser_app_launcher.h"
@@ -41,12 +42,13 @@
 #include "chromeos/ash/components/network/network_state_handler.h"
 #include "chromeos/ash/components/settings/cros_settings.h"
 #include "chromeos/dbus/power/power_manager_client.h"
+#include "components/services/app_service/public/cpp/app_launch_params.h"
 #include "components/user_manager/user_manager.h"
 #include "components/user_manager/user_names.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
 #include "third_party/cros_system_api/dbus/service_constants.h"
 #include "ui/base/l10n/l10n_util.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 
 namespace ash {
 
@@ -89,8 +91,10 @@ constexpr const char kUserActionCancel[] = "cancel";
 constexpr const char kUserActionContinueAppLaunch[] = "continue-app-launch";
 constexpr const char kUserActionOfflineLogin[] = "offline-login";
 
-ErrorScreen::ErrorScreen(base::WeakPtr<ErrorScreenView> view)
+ErrorScreen::ErrorScreen(const PrefService* local_state,
+                         base::WeakPtr<ErrorScreenView> view)
     : BaseScreen(ErrorScreenView::kScreenId, OobeScreenPriority::DEFAULT),
+      local_state_(CHECK_DEREF(local_state)),
       view_(std::move(view)) {
   network_state_informer_ = new NetworkStateInformer();
   network_state_informer_->Init();
@@ -112,12 +116,15 @@ void ErrorScreen::DisallowOfflineLogin() {
 }
 
 void ErrorScreen::ShowOfflineLoginOption(bool show) {
+  is_offline_login_link_shown_ = show;
   if (view_) {
     view_->SetOfflineSigninAllowed(show);
   }
 }
 
 void ErrorScreen::OnOfflineLoginClicked() {
+  CHECK(is_offline_login_link_shown_)
+      << "Offline login option selected, while it shall not be displayed.";
   // Reset hide callback as we advance to OfflineLoginScreen. Exit from this
   // screen is handled by WizardController.
   on_hide_callback_ = base::OnceClosure();
@@ -233,9 +240,13 @@ void ErrorScreen::MaybeInitCaptivePortalWindowProxy(
   }
 }
 
-void ErrorScreen::ShowNetworkErrorMessage(NetworkStateInformer::State state,
-                                          NetworkError::ErrorReason reason) {
-  LOG(WARNING) << __func__ << " state = " << state << " reason = " << reason;
+void ErrorScreen::ShowNetworkErrorMessage(
+    NetworkStateInformer::State state,
+    NetworkError::ErrorReason reason,
+    bool show_offline_login_option_if_allowed) {
+  LOG(WARNING) << __func__ << " state = " << state << " reason = " << reason
+               << " show_offline_login_option_if_allowed = "
+               << show_offline_login_option_if_allowed;
   const std::string network_path = network_state_informer_->network_path();
   const std::string network_name =
       NetworkStateInformer::GetNetworkName(network_path);
@@ -268,7 +279,8 @@ void ErrorScreen::ShowNetworkErrorMessage(NetworkStateInformer::State state,
   AllowGuestSignin(guest_signin_allowed);
   ShowOfflineLoginOption(
       g_offline_login_allowed_ && g_offline_login_per_user_allowed_ &&
-      GetErrorState() != NetworkError::ERROR_STATE_LOADING_TIMEOUT);
+      GetErrorState() != NetworkError::ERROR_STATE_LOADING_TIMEOUT &&
+      show_offline_login_option_if_allowed);
 
   // No need to show the screen again if it is already shown.
   if (is_hidden()) {
@@ -305,7 +317,7 @@ void ErrorScreen::HideImpl() {
   }
 }
 
-void ErrorScreen::OnUserAction(const base::Value::List& args) {
+void ErrorScreen::OnUserAction(const base::ListValue& args) {
   const std::string& action_id = args[0].GetString();
   if (action_id == kUserActionShowCaptivePortalClicked) {
     ShowCaptivePortal();
@@ -357,7 +369,7 @@ void ErrorScreen::OnConfigureCerts() {
   LoginWebDialog* dialog = new LoginWebDialog(
       GetAppProfile(), native_window,
       l10n_util::GetStringUTF16(IDS_CERTIFICATE_MANAGER_TITLE),
-      GURL(chrome::kChromeUICertificateManagerDialogURL));
+      GURL(ash::chrome_urls::kChromeUICertificateManagerDialogURL));
   // The width matches the Settings UI width.
   dialog->set_dialog_size(gfx::Size{640, 480});
   dialog->Show();
@@ -409,8 +421,11 @@ void ErrorScreen::LaunchHelpApp(int help_topic_id) {
       static_cast<HelpAppLauncher::HelpTopic>(help_topic_id));
 }
 
-void ErrorScreen::ConnectToNetworkRequested(const std::string& service_path) {
+ConnectToNetworkRequestVerdict ErrorScreen::ConnectToNetworkRequested(
+    const std::string& service_path) {
   connect_request_callbacks_.Notify();
+
+  return ConnectToNetworkRequestVerdict::kProceed;
 }
 
 void ErrorScreen::StartGuestSessionAfterOwnershipCheck(
@@ -443,7 +458,7 @@ void ErrorScreen::StartGuestSessionAfterOwnershipCheck(
   }
 
   // If EULA was not accepted yet, Show the Guest ToS screen.
-  if (!StartupUtils::IsEulaAccepted()) {
+  if (!StartupUtils::IsEulaAccepted(local_state_.get())) {
     if (LoginDisplayHost::default_host()) {
       LoginDisplayHost::default_host()->ShowGuestTosScreen();
     } else {

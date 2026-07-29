@@ -13,7 +13,6 @@
 
 #include "base/check.h"
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
 #include "base/functional/callback_helpers.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
@@ -45,9 +44,12 @@
 #include "components/sync/protocol/entity_data.h"
 #include "components/sync/protocol/saved_tab_group_specifics.pb.h"
 #include "google_apis/gaia/gaia_id.h"
+#include "url/gurl.h"
 
 namespace tab_groups {
 namespace {
+
+BASE_FEATURE(kUpdatePostionsOnTabClose, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Time period for orphaned tabs/groups to live till. once this threshold is
 // passed, on the next merge, they will be deleted.
@@ -152,11 +154,6 @@ SavedTabGroupSyncBridge::~SavedTabGroupSyncBridge() = default;
 void SavedTabGroupSyncBridge::OnSyncStarting(
     const syncer::DataTypeActivationRequest& request) {}
 
-std::unique_ptr<syncer::MetadataChangeList>
-SavedTabGroupSyncBridge::CreateMetadataChangeList() {
-  return syncer::DataTypeStore::WriteBatch::CreateMetadataChangeList();
-}
-
 std::optional<syncer::ModelError> SavedTabGroupSyncBridge::MergeFullSyncData(
     std::unique_ptr<syncer::MetadataChangeList> metadata_change_list,
     syncer::EntityChangeList entity_changes) {
@@ -167,8 +164,8 @@ std::optional<syncer::ModelError> SavedTabGroupSyncBridge::MergeFullSyncData(
   // error after the scoped write batch is destroyed (otherwise, changes would
   // be committed in case of error).
   base::ScopedClosureRunner scoped_write_batch_destroy_runner =
-      MaybeCreateScopedWriteBatch(
-          /*commit_write_batch_on_destroy=*/false);
+      MaybeCreateScopedWriteBatch(/*commit_write_batch_on_destroy=*/false,
+                                  std::move(metadata_change_list));
   CHECK(ongoing_write_batch_);
 
   std::set<std::string> synced_items;
@@ -184,7 +181,7 @@ std::optional<syncer::ModelError> SavedTabGroupSyncBridge::MergeFullSyncData(
   for (const auto& change : entity_changes) {
     synced_items.insert(change->storage_key());
     AddDataToLocalStorage(std::move(change->data().specifics.saved_tab_group()),
-                          metadata_change_list.get(),
+                          ongoing_write_batch_->GetMetadataChangeList(),
                           ongoing_write_batch_.get(),
                           /*notify_sync=*/true);
   }
@@ -199,18 +196,15 @@ std::optional<syncer::ModelError> SavedTabGroupSyncBridge::MergeFullSyncData(
         continue;
       }
       SendToSync(SavedTabGroupTabToData(tab).specifics(),
-                 metadata_change_list.get());
+                 ongoing_write_batch_->GetMetadataChangeList());
     }
 
     if (synced_items.count(group->saved_guid().AsLowercaseString())) {
       continue;
     }
     SendToSync(SavedTabGroupToData(*group).specifics(),
-               metadata_change_list.get());
+               ongoing_write_batch_->GetMetadataChangeList());
   }
-
-  ongoing_write_batch_->TakeMetadataChangesFrom(
-      std::move(metadata_change_list));
 
   // Successfully applied all the changes. Explicitly commit the write batch to
   // store.
@@ -228,8 +222,8 @@ SavedTabGroupSyncBridge::ApplyIncrementalSyncChanges(
   // ApplyIncrementalSyncChanges().
   CHECK(!ongoing_write_batch_);
   base::ScopedClosureRunner scoped_write_batch_destroy_runner =
-      MaybeCreateScopedWriteBatch(
-          /*commit_write_batch_on_destroy=*/false);
+      MaybeCreateScopedWriteBatch(/*commit_write_batch_on_destroy=*/false,
+                                  std::move(metadata_change_list));
   CHECK(ongoing_write_batch_);
 
   std::vector<std::string> deleted_entities;
@@ -243,7 +237,8 @@ SavedTabGroupSyncBridge::ApplyIncrementalSyncChanges(
       case syncer::EntityChange::ACTION_UPDATE: {
         AddDataToLocalStorage(
             std::move(change->data().specifics.saved_tab_group()),
-            metadata_change_list.get(), ongoing_write_batch_.get(),
+            ongoing_write_batch_->GetMetadataChangeList(),
+            ongoing_write_batch_.get(),
             /*notify_sync=*/false);
         break;
       }
@@ -263,9 +258,6 @@ SavedTabGroupSyncBridge::ApplyIncrementalSyncChanges(
 
   ResolveTabsMissingGroups(ongoing_write_batch_.get());
   ResolveGroupsMissingTabs(ongoing_write_batch_.get());
-
-  ongoing_write_batch_->TakeMetadataChangesFrom(
-      std::move(metadata_change_list));
 
   // Successfully applied all the changes. Explicitly commit the write batch to
   // store.
@@ -289,7 +281,7 @@ syncer::ConflictResolution SavedTabGroupSyncBridge::ResolveConflict(
   base::Time local_timestamp;
   if (remote_specifics.has_group()) {
     if (const SavedTabGroup* group = model_wrapper_->GetGroup(guid)) {
-      local_timestamp = group->update_time_windows_epoch_micros();
+      local_timestamp = group->update_time();
     }
   } else {
     CHECK(remote_specifics.has_tab());
@@ -297,7 +289,7 @@ syncer::ConflictResolution SavedTabGroupSyncBridge::ResolveConflict(
         base::Uuid::ParseLowercase(remote_specifics.tab().group_guid());
     const SavedTabGroup* group = model_wrapper_->GetGroup(group_guid);
     if (const SavedTabGroupTab* tab = group ? group->GetTab(guid) : nullptr) {
-      local_timestamp = tab->update_time_windows_epoch_micros();
+      local_timestamp = tab->update_time();
     }
   }
 
@@ -316,10 +308,9 @@ void SavedTabGroupSyncBridge::ApplyDisableSyncChanges(
   // They should still exist in sync server.
   CHECK(!ongoing_write_batch_);
   base::ScopedClosureRunner scoped_write_batch_destroy_runner =
-      MaybeCreateScopedWriteBatch(/*commit_write_batch_on_destroy=*/true);
-  CHECK(ongoing_write_batch_);
-  ongoing_write_batch_->TakeMetadataChangesFrom(
-      std::move(delete_metadata_change_list));
+      MaybeCreateScopedWriteBatch(/*commit_write_batch_on_destroy=*/true,
+                                  std::move(delete_metadata_change_list));
+
   std::vector<base::Uuid> groups_to_close_locally;
   for (const SavedTabGroup* group : model_wrapper_->GetTabGroups()) {
     if (group->created_before_syncing_tab_groups()) {
@@ -357,12 +348,12 @@ void SavedTabGroupSyncBridge::ApplyDisableSyncChanges(
 }
 
 std::string SavedTabGroupSyncBridge::GetStorageKey(
-    const syncer::EntityData& entity_data) {
+    const syncer::EntityData& entity_data) const {
   return entity_data.specifics.saved_tab_group().guid();
 }
 
 std::string SavedTabGroupSyncBridge::GetClientTag(
-    const syncer::EntityData& entity_data) {
+    const syncer::EntityData& entity_data) const {
   return GetStorageKey(entity_data);
 }
 
@@ -408,11 +399,121 @@ bool SavedTabGroupSyncBridge::IsEntityDataValid(
   return specifics.has_group() || specifics.has_tab();
 }
 
+sync_pb::EntitySpecifics
+SavedTabGroupSyncBridge::TrimAllSupportedFieldsFromRemoteSpecifics(
+    const sync_pb::EntitySpecifics& entity_specifics) const {
+  // LINT.IfChange(TrimAllSupportedFieldsFromRemoteSpecifics)
+  sync_pb::SavedTabGroupSpecifics trimmed_specifics =
+      entity_specifics.saved_tab_group();
+  trimmed_specifics.clear_guid();
+  trimmed_specifics.clear_creation_time_windows_epoch_micros();
+  trimmed_specifics.clear_update_time_windows_epoch_micros();
+  trimmed_specifics.clear_version();
+
+  if (trimmed_specifics.has_tab()) {
+    sync_pb::SavedTabGroupTab* tab = trimmed_specifics.mutable_tab();
+    tab->clear_group_guid();
+    tab->clear_position();
+    tab->clear_url();
+    tab->clear_title();
+
+    if (tab->ByteSizeLong() == 0) {
+      trimmed_specifics.clear_tab();
+    }
+  }
+
+  if (trimmed_specifics.has_group()) {
+    sync_pb::SavedTabGroup* tab_group = trimmed_specifics.mutable_group();
+    tab_group->clear_position();
+    tab_group->clear_title();
+    tab_group->clear_color();
+    tab_group->clear_pinned_position();
+    tab_group->clear_bookmark_node_id();
+    tab_group->clear_projects_position();
+
+    if (tab_group->ByteSizeLong() == 0) {
+      trimmed_specifics.clear_group();
+    }
+  }
+
+  if (trimmed_specifics.has_attribution_metadata()) {
+    sync_pb::AttributionMetadata* attribution_metadata =
+        trimmed_specifics.mutable_attribution_metadata();
+    if (attribution_metadata->has_created()) {
+      sync_pb::AttributionMetadata::Attribution* created =
+          attribution_metadata->mutable_created();
+      if (created->has_device_info()) {
+        created->mutable_device_info()->clear_cache_guid();
+        if (created->mutable_device_info()->ByteSizeLong() == 0) {
+          created->clear_device_info();
+        }
+      }
+      if (created->ByteSizeLong() == 0) {
+        attribution_metadata->clear_created();
+      }
+    }
+
+    if (attribution_metadata->has_updated()) {
+      sync_pb::AttributionMetadata::Attribution* updated =
+          attribution_metadata->mutable_updated();
+      if (updated->has_device_info()) {
+        updated->mutable_device_info()->clear_cache_guid();
+        if (updated->mutable_device_info()->ByteSizeLong() == 0) {
+          updated->clear_device_info();
+        }
+      }
+      if (updated->ByteSizeLong() == 0) {
+        attribution_metadata->clear_updated();
+      }
+    }
+
+    if (attribution_metadata->ByteSizeLong() == 0) {
+      trimmed_specifics.clear_attribution_metadata();
+    }
+  }
+
+  // LINT.ThenChange(//components/sync/protocol/saved_tab_group_specifics.proto:SavedTabGroupSpecifics)
+
+  sync_pb::EntitySpecifics trimmed_entity_specifics;
+  if (trimmed_specifics.ByteSizeLong() > 0) {
+    *trimmed_entity_specifics.mutable_saved_tab_group() =
+        std::move(trimmed_specifics);
+  }
+  return trimmed_entity_specifics;
+}
+
+proto::SavedTabGroupData SavedTabGroupSyncBridge::SavedTabGroupToData(
+    const SavedTabGroup& group) const {
+  sync_pb::SavedTabGroupSpecifics trimmed_specifics;
+  if (change_processor()->IsTrackingMetadata()) {
+    trimmed_specifics = change_processor()
+                            ->GetPossiblyTrimmedRemoteSpecifics(
+                                group.saved_guid().AsLowercaseString())
+                            .saved_tab_group();
+  }
+
+  return tab_groups::SavedTabGroupToData(group, trimmed_specifics);
+}
+
+proto::SavedTabGroupData SavedTabGroupSyncBridge::SavedTabGroupTabToData(
+    const SavedTabGroupTab& tab) const {
+  sync_pb::SavedTabGroupSpecifics trimmed_specifics;
+  if (change_processor()->IsTrackingMetadata()) {
+    trimmed_specifics = change_processor()
+                            ->GetPossiblyTrimmedRemoteSpecifics(
+                                tab.saved_tab_guid().AsLowercaseString())
+                            .saved_tab_group();
+  }
+
+  return tab_groups::SavedTabGroupTabToData(tab, trimmed_specifics);
+}
+
 // SavedTabGroupModelObserver
 void SavedTabGroupSyncBridge::SavedTabGroupAddedLocally(
     const base::Uuid& guid) {
   base::ScopedClosureRunner scoped_write_batch_destroy_runner =
-      MaybeCreateScopedWriteBatch(/*commit_write_batch_on_destroy=*/true);
+      MaybeCreateScopedWriteBatch(/*commit_write_batch_on_destroy=*/true,
+                                  /*metadata_change_list=*/nullptr);
   CHECK(ongoing_write_batch_);
 
   const SavedTabGroup* group = model_wrapper_->GetGroup(guid);
@@ -436,7 +537,8 @@ void SavedTabGroupSyncBridge::SavedTabGroupAddedLocally(
 void SavedTabGroupSyncBridge::SavedTabGroupRemovedLocally(
     const SavedTabGroup& removed_group) {
   base::ScopedClosureRunner scoped_write_batch_destroy_runner =
-      MaybeCreateScopedWriteBatch(/*commit_write_batch_on_destroy=*/true);
+      MaybeCreateScopedWriteBatch(/*commit_write_batch_on_destroy=*/true,
+                                  /*metadata_change_list=*/nullptr);
   CHECK(ongoing_write_batch_);
 
   // Intentionally only remove the group (creating orphaned tabs in the
@@ -460,7 +562,8 @@ void SavedTabGroupSyncBridge::SavedTabGroupUpdatedLocally(
     const base::Uuid& group_guid,
     const std::optional<base::Uuid>& tab_guid) {
   base::ScopedClosureRunner scoped_write_batch_destroy_runner =
-      MaybeCreateScopedWriteBatch(/*commit_write_batch_on_destroy=*/true);
+      MaybeCreateScopedWriteBatch(/*commit_write_batch_on_destroy=*/true,
+                                  /*metadata_change_list=*/nullptr);
   CHECK(ongoing_write_batch_);
 
   const SavedTabGroup* const group = model_wrapper_->GetGroup(group_guid);
@@ -469,12 +572,19 @@ void SavedTabGroupSyncBridge::SavedTabGroupUpdatedLocally(
   if (tab_guid.has_value()) {
     if (!group->ContainsTab(tab_guid.value())) {
       RemoveEntitySpecific(tab_guid.value(), ongoing_write_batch_.get());
+      if (base::FeatureList::IsEnabled(kUpdatePostionsOnTabClose)) {
+        // Remaining tabs in the group have their positions updated.
+        SavedTabGroupTabsReorderedLocally(group_guid);
+      }
     } else {
       int tab_index = group->GetIndexOfTab(tab_guid.value()).value();
       const SavedTabGroupTab& tab = group->saved_tabs()[tab_index];
       UpsertEntitySpecific(
           SavedTabGroupTabToData(group->saved_tabs()[tab_index]),
           ongoing_write_batch_.get(), /*send_to_sync=*/!tab.is_pending_ntp());
+      // TODO(https://crbug.com/437033786): If a new tab is inserted in the
+      // middle of the group we need to update the positions of the existing
+      // tabs.
     }
 
     // There might be an updated user interaction time for the group. Hence
@@ -491,7 +601,8 @@ void SavedTabGroupSyncBridge::SavedTabGroupUpdatedLocally(
 void SavedTabGroupSyncBridge::SavedTabGroupTabsReorderedLocally(
     const base::Uuid& group_guid) {
   base::ScopedClosureRunner scoped_write_batch_destroy_runner =
-      MaybeCreateScopedWriteBatch(/*commit_write_batch_on_destroy=*/true);
+      MaybeCreateScopedWriteBatch(/*commit_write_batch_on_destroy=*/true,
+                                  /*metadata_change_list=*/nullptr);
   CHECK(ongoing_write_batch_);
 
   const SavedTabGroup* const group = model_wrapper_->GetGroup(group_guid);
@@ -509,7 +620,8 @@ void SavedTabGroupSyncBridge::SavedTabGroupTabsReorderedLocally(
 void SavedTabGroupSyncBridge::SavedTabGroupLocalIdChanged(
     const base::Uuid& group_guid) {
   base::ScopedClosureRunner scoped_write_batch_destroy_runner =
-      MaybeCreateScopedWriteBatch(/*commit_write_batch_on_destroy=*/true);
+      MaybeCreateScopedWriteBatch(/*commit_write_batch_on_destroy=*/true,
+                                  /*metadata_change_list=*/nullptr);
   CHECK(ongoing_write_batch_);
 
   const SavedTabGroup* const group = model_wrapper_->GetGroup(group_guid);
@@ -526,7 +638,8 @@ void SavedTabGroupSyncBridge::SavedTabGroupLastUserInteractionTimeUpdated(
   CHECK(group);
 
   base::ScopedClosureRunner scoped_write_batch_destroy_runner =
-      MaybeCreateScopedWriteBatch(/*commit_write_batch_on_destroy=*/true);
+      MaybeCreateScopedWriteBatch(/*commit_write_batch_on_destroy=*/true,
+                                  /*metadata_change_list=*/nullptr);
   CHECK(ongoing_write_batch_);
   proto::SavedTabGroupData data = SavedTabGroupToData(*group);
   ongoing_write_batch_->WriteData(data.specifics().guid(),
@@ -535,7 +648,8 @@ void SavedTabGroupSyncBridge::SavedTabGroupLastUserInteractionTimeUpdated(
 
 void SavedTabGroupSyncBridge::SavedTabGroupReorderedLocally() {
   base::ScopedClosureRunner scoped_write_batch_destroy_runner =
-      MaybeCreateScopedWriteBatch(/*commit_write_batch_on_destroy=*/true);
+      MaybeCreateScopedWriteBatch(/*commit_write_batch_on_destroy=*/true,
+                                  /*metadata_change_list=*/nullptr);
   CHECK(ongoing_write_batch_);
 
   for (const SavedTabGroup* group : model_wrapper_->GetTabGroups()) {
@@ -551,11 +665,11 @@ std::optional<std::string> SavedTabGroupSyncBridge::GetLocalCacheGuid() const {
   return change_processor()->TrackedCacheGuid();
 }
 
-std::optional<GaiaId> SavedTabGroupSyncBridge::GetTrackedAccountId() const {
+std::optional<GaiaId> SavedTabGroupSyncBridge::GetTrackedGaiaId() const {
   if (!change_processor()->IsTrackingMetadata()) {
     return std::nullopt;
   }
-  return GaiaId(change_processor()->TrackedAccountId());
+  return change_processor()->TrackedGaiaId();
 }
 
 bool SavedTabGroupSyncBridge::IsSyncing() const {
@@ -574,7 +688,9 @@ SavedTabGroup SavedTabGroupSyncBridge::SpecificsToSavedTabGroupForTest(
 sync_pb::SavedTabGroupSpecifics
 SavedTabGroupSyncBridge::SavedTabGroupToSpecificsForTest(
     const SavedTabGroup& group) {
-  return SavedTabGroupToData(group).specifics();
+  return tab_groups::SavedTabGroupToData(group,
+                                         sync_pb::SavedTabGroupSpecifics())
+      .specifics();
 }
 
 // static
@@ -589,7 +705,9 @@ SavedTabGroupTab SavedTabGroupSyncBridge::SpecificsToSavedTabGroupTabForTest(
 sync_pb::SavedTabGroupSpecifics
 SavedTabGroupSyncBridge::SavedTabGroupTabToSpecificsForTest(
     const SavedTabGroupTab& tab) {
-  return SavedTabGroupTabToData(tab).specifics();
+  return tab_groups::SavedTabGroupTabToData(tab,
+                                            sync_pb::SavedTabGroupSpecifics())
+      .specifics();
 }
 
 // static
@@ -601,7 +719,8 @@ SavedTabGroup SavedTabGroupSyncBridge::DataToSavedTabGroupForTest(
 // static
 proto::SavedTabGroupData SavedTabGroupSyncBridge::SavedTabGroupToDataForTest(
     const SavedTabGroup& group) {
-  return SavedTabGroupToData(group);
+  return tab_groups::SavedTabGroupToData(group,
+                                         sync_pb::SavedTabGroupSpecifics());
 }
 
 // static
@@ -613,7 +732,8 @@ SavedTabGroupTab SavedTabGroupSyncBridge::DataToSavedTabGroupTabForTest(
 // static
 proto::SavedTabGroupData SavedTabGroupSyncBridge::SavedTabGroupTabToDataForTest(
     const SavedTabGroupTab& tab) {
-  return SavedTabGroupTabToData(tab);
+  return tab_groups::SavedTabGroupTabToData(tab,
+                                            sync_pb::SavedTabGroupSpecifics());
 }
 
 void SavedTabGroupSyncBridge::UpsertEntitySpecific(
@@ -657,6 +777,19 @@ void SavedTabGroupSyncBridge::AddDataToLocalStorage(
 
   proto::SavedTabGroupData data;
   data.set_allocated_specifics(new sync_pb::SavedTabGroupSpecifics(specifics));
+
+  // Sanitize incoming remote URLs before writing to the local database. This
+  // ensures we don't store unsafe URLs (e.g. from a compromised sync server)
+  // while allowing locally created unsyncable URLs (like file://) to be
+  // preserved.
+  if (data.specifics().has_tab()) {
+    if (!IsURLValidForSavedTabGroups(GURL(data.specifics().tab().url()))) {
+      data.mutable_specifics()->mutable_tab()->set_url(
+          kChromeSavedTabGroupUnsupportedURL);
+      data.mutable_specifics()->mutable_tab()->clear_title();
+    }
+  }
+
   std::string guid = data.specifics().guid();
 
   // Cases where `specifics` is a group.
@@ -674,6 +807,7 @@ void SavedTabGroupSyncBridge::AddDataToLocalStorage(
           TimeFromWindowsEpochMicros(
               specifics.update_time_windows_epoch_micros()),
           /*updated_by=*/GaiaId());
+
       proto::SavedTabGroupData updated_data =
           SavedTabGroupToData(*existing_group);
 
@@ -793,7 +927,7 @@ void SavedTabGroupSyncBridge::ResolveGroupsMissingTabs(
       continue;
     }
 
-    if ((base::Time::Now() - group->update_time_windows_epoch_micros()) <
+    if ((base::Time::Now() - group->update_time()) <
         kOrphanedObjectDiscardThreshold) {
       continue;
     }
@@ -891,8 +1025,8 @@ void SavedTabGroupSyncBridge::MigrateSpecificsToSavedTabGroupData(
   // write batch commit logic and hence should be committed explicitly.
   CHECK(!ongoing_write_batch_);
   base::ScopedClosureRunner scoped_write_batch_destroy_runner =
-      MaybeCreateScopedWriteBatch(
-          /*commit_write_batch_on_destroy=*/false);
+      MaybeCreateScopedWriteBatch(/*commit_write_batch_on_destroy=*/false,
+                                  /*metadata_change_list=*/nullptr);
   CHECK(ongoing_write_batch_);
 
   int parse_failure_count = 0;
@@ -960,7 +1094,7 @@ void SavedTabGroupSyncBridge::OnReadAllMetadata(
   if (error) {
     stats::RecordMigrationResult(
         stats::MigrationResult::kReadAllMetadataFailed);
-    change_processor()->ReportError({FROM_HERE, "Failed to read metadata."});
+    change_processor()->ReportError(*error);
     return;
   }
 
@@ -993,7 +1127,7 @@ void SavedTabGroupSyncBridge::OnReadAllMetadata(
 void SavedTabGroupSyncBridge::OnDatabaseSave(
     const std::optional<syncer::ModelError>& error) {
   if (error) {
-    change_processor()->ReportError({FROM_HERE, "Failed to save metadata."});
+    change_processor()->ReportError(*error);
     return;
   }
 
@@ -1035,16 +1169,22 @@ bool SavedTabGroupSyncBridge::IsRemoteGroup(const SavedTabGroup& group) {
 }
 
 base::ScopedClosureRunner SavedTabGroupSyncBridge::MaybeCreateScopedWriteBatch(
-    bool commit_write_batch_on_destroy) {
+    bool commit_write_batch_on_destroy,
+    std::unique_ptr<syncer::MetadataChangeList> metadata_change_list) {
   if (ongoing_write_batch_) {
     // There is an ongoing write batch, hence do not create a new one and do not
     // destroy the existing one in the current scope.
+    if (metadata_change_list) {
+      ongoing_write_batch_->TakeMetadataChangesFrom(
+          std::move(metadata_change_list));
+    }
     return base::ScopedClosureRunner(base::DoNothing());
   }
 
   // This is not a reentrant call, create a new write batch and return a scoped
   // closure runner that will destroy it when it goes out of scope.
-  ongoing_write_batch_ = store_->CreateWriteBatch();
+  ongoing_write_batch_ =
+      store_->CreateWriteBatch(std::move(metadata_change_list));
   return base::ScopedClosureRunner(base::BindOnce(
       &SavedTabGroupSyncBridge::DestroyOngoingWriteBatch,
       weak_ptr_factory_.GetWeakPtr(), commit_write_batch_on_destroy));

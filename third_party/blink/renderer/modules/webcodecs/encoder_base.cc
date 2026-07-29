@@ -40,6 +40,7 @@
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
 #include "third_party/blink/renderer/platform/scheduler/public/thread.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
+#include "third_party/perfetto/include/perfetto/tracing/track.h"
 
 namespace blink {
 
@@ -52,7 +53,7 @@ base::AtomicSequenceNumber g_sequence_num_for_counters;
 // static
 template <typename Traits>
 const CodecTraceNames* EncoderBase<Traits>::GetTraceNames() {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(CodecTraceNames, trace_names,
+  DEFINE_THREAD_SAFE_STATIC_LOCAL(const CodecTraceNames, trace_names,
                                   (Traits::GetName()));
   return &trace_names;
 }
@@ -86,11 +87,10 @@ EncoderBase<Traits>::EncoderBase(ScriptState* script_state,
 template <typename Traits>
 EncoderBase<Traits>::~EncoderBase() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  base::UmaHistogramSparse(
+  base::UmaHistogramSparse(UNSAFE_TODO(
       String::Format("Blink.WebCodecs.%s.FinalStatus", Traits::GetName())
-          .Ascii()
-          .c_str(),
-      static_cast<int>(logger_->status_code()));
+          .Ascii(),
+      static_cast<int>(logger_->status_code())));
 }
 
 template <typename Traits>
@@ -101,7 +101,7 @@ void EncoderBase<Traits>::configure(const ConfigType* config,
   if (ThrowIfCodecStateClosed(state_, "configure", exception_state))
     return;
 
-  InternalConfigType* parsed_config = ParseConfig(config, exception_state);
+  InternalConfigType* parsed_config = OnNewConfigure(config, exception_state);
   if (!parsed_config) {
     DCHECK(exception_state.HadException());
     return;
@@ -136,6 +136,11 @@ void EncoderBase<Traits>::encode(InputType* input,
 
   DCHECK(active_config_);
 
+  OnNewEncode(input, exception_state);
+  if (exception_state.HadException()) {
+    return;
+  }
+
   // This will fail if |input| is already closed.
   // Remove exceptions relating to cloning closed input.
   auto* internal_input = input->clone(IGNORE_EXCEPTION);
@@ -169,6 +174,7 @@ void EncoderBase<Traits>::close(ExceptionState& exception_state) {
       DOMExceptionCode::kAbortError, "Aborted due to close()"));
   output_callback_.Clear();
   error_callback_.Clear();
+  logger_->log()->OnWebMediaPlayerDestroyed();
 }
 
 template <typename Traits>
@@ -247,8 +253,8 @@ void EncoderBase<Traits>::ResetInternal(DOMException* ex) {
 template <typename Traits>
 void EncoderBase<Traits>::QueueHandleError(DOMException* ex) {
   callback_runner_->PostTask(
-      FROM_HERE, WTF::BindOnce(&EncoderBase<Traits>::HandleError,
-                               WrapWeakPersistent(this), WrapPersistent(ex)));
+      FROM_HERE, BindOnce(&EncoderBase<Traits>::HandleError,
+                          WrapWeakPersistent(this), WrapPersistent(ex)));
 }
 
 template <typename Traits>
@@ -270,6 +276,7 @@ void EncoderBase<Traits>::HandleError(DOMException* ex) {
   output_callback_.Clear();
 
   // Prevent further logging.
+  logger_->log()->OnWebMediaPlayerDestroyed();
   logger_->Neuter();
 
   if (!script_state_->ContextIsValid() || !error_callback)
@@ -418,9 +425,8 @@ void EncoderBase<Traits>::ScheduleDequeueEvent() {
   event->async_task_context()->Schedule(GetExecutionContext(), event->type());
 
   callback_runner_->PostTask(
-      FROM_HERE,
-      WTF::BindOnce(&EncoderBase<Traits>::DispatchDequeueEvent,
-                    WrapWeakPersistent(this), WrapPersistent(event)));
+      FROM_HERE, BindOnce(&EncoderBase<Traits>::DispatchDequeueEvent,
+                          WrapWeakPersistent(this), WrapPersistent(event)));
 }
 
 template <typename Traits>
@@ -476,9 +482,10 @@ void EncoderBase<Traits>::Request::StartTracingVideoEncode(
   DCHECK(!is_tracing);
   is_tracing = true;
 #endif
-  TRACE_EVENT_NESTABLE_ASYNC_BEGIN2(kCategory, TraceNameFromType(), this,
-                                    "key_frame", is_keyframe, "timestamp",
-                                    timestamp);
+  TRACE_EVENT_BEGIN(kCategory, perfetto::StaticString(TraceNameFromType()),
+                    perfetto::NamedTrack::FromPointer(
+                        perfetto::StaticString(Traits::GetName()), this),
+                    "key_frame", is_keyframe, "timestamp", timestamp);
 }
 
 template <typename Traits>
@@ -487,7 +494,9 @@ void EncoderBase<Traits>::Request::StartTracing() {
   DCHECK(!is_tracing);
   is_tracing = true;
 #endif
-  TRACE_EVENT_NESTABLE_ASYNC_BEGIN0(kCategory, TraceNameFromType(), this);
+  TRACE_EVENT_BEGIN(kCategory, perfetto::StaticString(TraceNameFromType()),
+                    perfetto::NamedTrack::FromPointer(
+                        perfetto::StaticString(Traits::GetName()), this));
 }
 
 template <typename Traits>
@@ -496,8 +505,10 @@ void EncoderBase<Traits>::Request::EndTracing(bool aborted) {
   DCHECK(is_tracing);
   is_tracing = false;
 #endif
-  TRACE_EVENT_NESTABLE_ASYNC_END1(kCategory, TraceNameFromType(), this,
-                                  "aborted", aborted);
+  TRACE_EVENT_END(kCategory,
+                  perfetto::NamedTrack::FromPointer(
+                      perfetto::StaticString(Traits::GetName()), this),
+                  "aborted", aborted);
 }
 
 template class EncoderBase<VideoEncoderTraits>;

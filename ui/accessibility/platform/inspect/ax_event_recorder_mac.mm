@@ -4,6 +4,7 @@
 
 #include "ui/accessibility/platform/inspect/ax_event_recorder_mac.h"
 
+#include <ApplicationServices/ApplicationServices.h>
 #import <Cocoa/Cocoa.h>
 
 #include <algorithm>
@@ -17,10 +18,14 @@
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/sys_string_conversions.h"
+#include "ui/accessibility/platform/ax_platform_node.h"
 #include "ui/accessibility/platform/ax_platform_tree_manager.h"
 #include "ui/accessibility/platform/ax_private_webkit_constants_mac.h"
 #include "ui/accessibility/platform/inspect/ax_inspect_utils_mac.h"
 #include "ui/accessibility/platform/inspect/ax_tree_formatter_mac.h"
+#include "ui/gfx/native_ui_types.h"
+
+using base::apple::CFToNSPtrCast;
 
 namespace ui {
 
@@ -65,28 +70,28 @@ AXEventRecorderMac::AXEventRecorderMac(
 
   // Add the notifications we care about to the observer.
   static NSArray* notifications = @[
-    @"AXAutocorrectionOccurred",
-    @"AXElementBusyChanged",
-    @"AXExpandedChanged",
-    @"AXInvalidStatusChanged",
-    @"AXLiveRegionChanged",
-    @"AXLiveRegionCreated",
-    @"AXLoadComplete",
-    @"AXMenuItemSelected",
-    (NSString*)kAXMenuClosedNotification,
-    (NSString*)kAXMenuOpenedNotification,
     NSAccessibilityAnnouncementRequestedNotification,
     NSAccessibilityApplicationActivatedNotification,
     NSAccessibilityApplicationDeactivatedNotification,
     NSAccessibilityApplicationHiddenNotification,
     NSAccessibilityApplicationShownNotification,
+    NSAccessibilityAutocorrectionOccurredNotification,
     NSAccessibilityCreatedNotification,
     NSAccessibilityDrawerCreatedNotification,
+    CFToNSPtrCast(kAXElementBusyChangedNotification),
+    CFToNSPtrCast(kAXExpandedChangedNotification),
     NSAccessibilityFocusedUIElementChangedNotification,
     NSAccessibilityFocusedWindowChangedNotification,
     NSAccessibilityHelpTagCreatedNotification,
+    CFToNSPtrCast(kAXInvalidStatusChangedNotification),
     NSAccessibilityLayoutChangedNotification,
+    CFToNSPtrCast(kAXLiveRegionChangedNotification),
+    CFToNSPtrCast(kAXLiveRegionCreatedNotification),
+    CFToNSPtrCast(kAXLoadCompleteNotification),
     NSAccessibilityMainWindowChangedNotification,
+    CFToNSPtrCast(kAXMenuClosedNotification),
+    CFToNSPtrCast(kAXMenuItemSelectedNotification),
+    CFToNSPtrCast(kAXMenuOpenedNotification),
     NSAccessibilityMovedNotification,
     NSAccessibilityResizedNotification,
     NSAccessibilityRowCollapsedNotification,
@@ -145,12 +150,26 @@ void AXEventRecorderMac::EventReceived(AXUIElementRef element,
     return;
   }
 
+  AXPlatformNode* ax_platform_node = GetAXPlatformNode(element, manager_);
+
+  bool is_web_content = ax_platform_node && ax_platform_node->IsWebContent();
+  if (only_web_events_ && !is_web_content) {
+    return;
+  }
+
+  // Log the AXNodeData for incoming events, for easier debugging.
+  if (ax_platform_node) {
+    DVLOG(1) << "Receiving event: " << notification_str
+             << " with AXNodeData: " << ax_platform_node->ToString();
+  }
+
   auto formatter = AXTreeFormatterMac();
   formatter.SetPropertyFilters(property_filters_,
                                AXTreeFormatter::kFiltersDefaultSet);
 
+  gfx::NativeViewAccessible element_accessible((__bridge id)element);
   std::string element_str =
-      formatter.FormatTree(formatter.BuildNode((__bridge id)element));
+      formatter.FormatTree(formatter.BuildNode(element_accessible));
 
   // Element dumps contain a new line character at the end, remove it.
   if (!element_str.empty() && element_str.back() == '\n') {
@@ -161,8 +180,13 @@ void AXEventRecorderMac::EventReceived(AXUIElementRef element,
                                        element_str.c_str());
 
   if (notification_str ==
-      base::SysNSStringToUTF8(NSAccessibilitySelectedTextChangedNotification))
-    log += " " + SerializeTextSelectionChangedProperties(user_info);
+      base::SysNSStringToUTF8(NSAccessibilitySelectedTextChangedNotification)) {
+    const std::string serialized_info =
+        SerializeTextSelectionChangedProperties(user_info);
+    if (!serialized_info.empty()) {
+      log += " " + serialized_info;
+    }
+  }
 
   OnEvent(log);
 }
@@ -173,7 +197,7 @@ std::string AXEventRecorderMac::SerializeTextSelectionChangedProperties(
     return {};
   }
 
-  NSDictionary* ns_user_info = base::apple::CFToNSPtrCast(user_info);
+  NSDictionary* ns_user_info = CFToNSPtrCast(user_info);
   std::vector<std::string> serialized_info;
   for (NSString* key in ns_user_info) {
     NSNumber* value = base::apple::ObjCCast<NSNumber>(ns_user_info[key]);

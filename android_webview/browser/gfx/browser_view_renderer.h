@@ -19,7 +19,7 @@
 #include "base/cancelable_callback.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/trace_event/trace_event.h"
 #include "components/viz/common/surfaces/frame_sink_id.h"
@@ -53,7 +53,6 @@ class BrowserViewRenderer : public content::SynchronousCompositorClient,
                             public CompositorFrameProducer,
                             public RootFrameSinkProxyClient {
  public:
-  static void CalculateTileMemoryPolicy();
   static BrowserViewRenderer* FromWebContents(
       content::WebContents* web_contents);
 

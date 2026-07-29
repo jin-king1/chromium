@@ -4,7 +4,6 @@
 
 #include "chromeos/ash/services/wifi_direct/wifi_direct_manager.h"
 
-#include "ash/constants/ash_features.h"
 #include "base/sync_socket.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
@@ -60,7 +59,6 @@ class WifiDirectManagerTest : public testing::Test {
   void SetUp() override {
     shill_clients::InitializeFakes();
     PatchPanelClient::InitializeFake();
-    feature_list_.InitAndEnableFeature(features::kWifiDirect);
     WifiP2PController::Initialize();
     wifi_direct_manager_ = std::make_unique<WifiDirectManager>();
   }
@@ -308,11 +306,11 @@ TEST_F(WifiDirectManagerTest, GroupClientEvents) {
 
   task_environment_.FastForwardBy(kDurationTime);
   auto p2pclient_dict =
-      base::Value::Dict().Set(shill::kP2PClientInfoShillIDProperty, 0);
+      base::DictValue().Set(shill::kP2PClientInfoShillIDProperty, 0);
   p2pclient_dict.Set(shill::kP2PClientInfoStateProperty,
                      shill::kP2PClientInfoStateIdle);
 
-  base::Value::List p2pclient_list;
+  base::ListValue p2pclient_list;
   p2pclient_list.Append(std::move(p2pclient_dict));
 
   ShillManagerClient::Get()->GetTestInterface()->SetManagerProperty(
@@ -360,11 +358,11 @@ TEST_F(WifiDirectManagerTest, GroupOwnerEvents) {
 
   task_environment_.FastForwardBy(kDurationTime);
   auto p2pgroup_dict =
-      base::Value::Dict().Set(shill::kP2PGroupInfoShillIDProperty, 0);
+      base::DictValue().Set(shill::kP2PGroupInfoShillIDProperty, 0);
   p2pgroup_dict.Set(shill::kP2PGroupInfoStateProperty,
                     shill::kP2PGroupInfoStateIdle);
 
-  base::Value::List p2pgroup_list;
+  base::ListValue p2pgroup_list;
   p2pgroup_list.Append(std::move(p2pgroup_dict));
 
   ShillManagerClient::Get()->GetTestInterface()->SetManagerProperty(
@@ -382,8 +380,8 @@ TEST_F(WifiDirectManagerTest, GroupOwnerEvents) {
 
 TEST_F(WifiDirectManagerTest, GetWifiP2PCapabilities) {
   auto capabilities_dict =
-      base::Value::Dict().Set(shill::kP2PCapabilitiesGroupReadinessProperty,
-                              shill::kP2PCapabilitiesGroupReadinessReady);
+      base::DictValue().Set(shill::kP2PCapabilitiesGroupReadinessProperty,
+                            shill::kP2PCapabilitiesGroupReadinessReady);
   capabilities_dict.Set(shill::kP2PCapabilitiesClientReadinessProperty,
                         shill::kP2PCapabilitiesClientReadinessReady);
   ShillManagerClient::Get()->GetTestInterface()->SetManagerProperty(

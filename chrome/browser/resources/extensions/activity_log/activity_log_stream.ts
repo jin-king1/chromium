@@ -94,15 +94,25 @@ export class ActivityLogStreamElement extends CrLitElement {
     };
   }
 
-  extensionId: string = '';
-  delegate: ActivityLogEventDelegate = new DummyActivityLogEventDelegate();
-  protected isStreamOn_: boolean = false;
-  private activityStream_: StreamItem[] = [];
-  protected filteredActivityStream_: StreamItem[] = [];
-  private lastSearch_: string = '';
+  accessor extensionId: string = '';
+  accessor delegate: ActivityLogEventDelegate =
+      new DummyActivityLogEventDelegate();
+  protected accessor isStreamOn_: boolean = false;
+  private accessor activityStream_: StreamItem[] = [];
+  protected accessor filteredActivityStream_: StreamItem[] = [];
+  private accessor lastSearch_: string = '';
   // Instance of |extensionActivityListener_| bound to |this|.
   private listenerInstance_:
       (type: chrome.activityLogPrivate.ExtensionActivity) => void = () => {};
+
+  override connectedCallback() {
+    super.connectedCallback();
+
+    // Since this component is not restamped, this will only be called once
+    // in its lifecycle.
+    this.listenerInstance_ = this.extensionActivityListener_.bind(this);
+    this.startStream();
+  }
 
   override willUpdate(changedProperties: PropertyValues<this>) {
     super.willUpdate(changedProperties);
@@ -115,13 +125,8 @@ export class ActivityLogStreamElement extends CrLitElement {
     }
   }
 
-  override connectedCallback() {
-    super.connectedCallback();
-
-    // Since this component is not restamped, this will only be called once
-    // in its lifecycle.
-    this.listenerInstance_ = this.extensionActivityListener_.bind(this);
-    this.startStream();
+  protected onClearStreamClick_() {
+    this.clearStream();
   }
 
   clearStream() {
@@ -201,11 +206,11 @@ export class ActivityLogStreamElement extends CrLitElement {
       'name',
       'pageUrl',
       'activityType',
-    ];
+    ] as const;
 
     return this.activityStream_.filter(act => {
       return propNames.some(prop => {
-        const value = (act as {[index: string]: any})[prop];
+        const value = act[prop];
         return value && value.toLowerCase().includes(this.lastSearch_);
       });
     });

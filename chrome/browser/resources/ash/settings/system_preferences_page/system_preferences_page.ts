@@ -24,7 +24,7 @@ import {I18nMixin} from 'chrome://resources/ash/common/cr_elements/i18n_mixin.js
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
-import {isAssistantAllowed, isExternalStorageEnabled, isGuest, isPowerwashAllowed, isQuickAnswersSupported, shouldShowStartup} from '../common/load_time_booleans.js';
+import {isExternalStorageEnabled, isGuest, isPowerwashAllowed, isQuickAnswersSupported, shouldShowStartup} from '../common/load_time_booleans.js';
 import type {PrefsState} from '../common/types.js';
 import {Section} from '../mojom-webui/routes.mojom-webui.js';
 import type {LanguageHelper, LanguagesModel} from '../os_languages_page/languages_types.js';
@@ -97,13 +97,6 @@ export class SettingsSystemPreferencesPageElement extends
         },
       },
 
-      isAssistantAllowed_: {
-        type: Boolean,
-        value: () => {
-          return isAssistantAllowed();
-        },
-      },
-
       isExternalStorageEnabled_: {
         type: Boolean,
         value: () => {
@@ -138,34 +131,33 @@ export class SettingsSystemPreferencesPageElement extends
     };
   }
 
-  prefs: PrefsState|undefined;
+  declare prefs: PrefsState|undefined;
 
   // Languages subsection
-  languages: LanguagesModel|undefined;
-  languageHelper: LanguageHelper|undefined;
+  declare languages: LanguagesModel|undefined;
+  declare languageHelper: LanguageHelper|undefined;
 
-  private section_: Section;
+  declare private section_: Section;
 
   // Date and Time subsection
-  private activeTimeZoneDisplayName_: string;
+  declare private activeTimeZoneDisplayName_: string;
 
   // Files subsection
-  private shouldShowFilesSettingsCard_: boolean;
-  private shouldStampGoogleDriveSubpage_: boolean;
-  private shouldStampOfficeSubpage_: boolean;
+  declare private shouldShowFilesSettingsCard_: boolean;
+  declare private shouldStampGoogleDriveSubpage_: boolean;
+  declare private shouldStampOfficeSubpage_: boolean;
 
   // Reset subsection
-  private shouldShowResetSettingsCard_: boolean;
+  declare private shouldShowResetSettingsCard_: boolean;
 
-  // Search and Assistant subsection
-  private isQuickAnswersSupported_: boolean;
-  private isAssistantAllowed_: boolean;
+  // Search subsection
+  declare private isQuickAnswersSupported_: boolean;
 
   // Startup subsection
-  private readonly shouldShowStartupSettingsCard_: boolean;
+  declare private readonly shouldShowStartupSettingsCard_: boolean;
 
   // Storage and Power subsection
-  private isExternalStorageEnabled_: boolean;
+  declare private isExternalStorageEnabled_: boolean;
 }
 
 declare global {

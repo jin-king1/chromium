@@ -5,14 +5,15 @@
 #ifndef CHROME_UPDATER_EXTERNAL_CONSTANTS_BUILDER_H_
 #define CHROME_UPDATER_EXTERNAL_CONSTANTS_BUILDER_H_
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
 
-#include "base/files/file_path.h"
 #include "base/values.h"
 
 namespace base {
+class FilePath;
 class TimeDelta;
 }
 
@@ -21,6 +22,8 @@ enum class VerifierFormat;
 }
 
 namespace updater {
+
+struct EventLoggingPermissionProvider;
 
 // ExternalConstantsBuilder uses the Builder design pattern to write a set of
 // overrides for default constant values to the file loaded by
@@ -45,11 +48,20 @@ class ExternalConstantsBuilder {
   ExternalConstantsBuilder& SetCrashUploadURL(const std::string& url);
   ExternalConstantsBuilder& ClearCrashUploadURL();
 
-  ExternalConstantsBuilder& SetDeviceManagementURL(const std::string& url);
-  ExternalConstantsBuilder& ClearDeviceManagementURL();
-
   ExternalConstantsBuilder& SetAppLogoURL(const std::string& url);
   ExternalConstantsBuilder& ClearAppLogoURL();
+
+  ExternalConstantsBuilder& SetEventLoggingUrl(const std::string& url);
+  ExternalConstantsBuilder& ClearEventLoggingUrl();
+
+  ExternalConstantsBuilder& SetEventLoggingPermissionProvider(
+      std::optional<EventLoggingPermissionProvider>
+          event_logging_permission_provider);
+  ExternalConstantsBuilder& ClearEventLoggingPermissionProvider();
+
+  ExternalConstantsBuilder& SetMinimumEventLoggingCooldown(
+      base::TimeDelta cooldown);
+  ExternalConstantsBuilder& ClearMinimumEventLoggingCooldown();
 
   ExternalConstantsBuilder& SetUseCUP(bool use_cup);
   ExternalConstantsBuilder& ClearUseCUP();
@@ -65,8 +77,12 @@ class ExternalConstantsBuilder {
       crx_file::VerifierFormat crx_verifier_format);
   ExternalConstantsBuilder& ClearCrxVerifierFormat();
 
+  ExternalConstantsBuilder& SetCrxPublicKeyHash(
+      std::optional<std::vector<uint8_t>> crx_public_key_hash);
+  ExternalConstantsBuilder& ClearCrxPublicKeyHash();
+
   ExternalConstantsBuilder& SetDictPolicies(
-      const base::Value::Dict& dict_policies);
+      const base::DictValue& dict_policies);
   ExternalConstantsBuilder& ClearDictPolicies();
 
   ExternalConstantsBuilder& SetOverinstallTimeout(
@@ -98,7 +114,7 @@ class ExternalConstantsBuilder {
   bool Modify();
 
  private:
-  base::Value::Dict overrides_;
+  base::DictValue overrides_;
   bool written_ = false;
 };
 

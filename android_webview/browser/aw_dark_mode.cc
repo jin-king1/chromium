@@ -8,7 +8,6 @@
 #include "android_webview/common/aw_features.h"
 #include "base/android/scoped_java_ref.h"
 #include "base/memory/ptr_util.h"
-#include "base/metrics/histogram_macros.h"
 #include "content/public/browser/navigation_details.h"
 #include "content/public/browser/web_contents.h"
 #include "third_party/blink/public/common/web_preferences/web_preferences.h"
@@ -17,7 +16,7 @@
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "android_webview/browser_jni_headers/AwDarkMode_jni.h"
 
-using base::android::JavaParamRef;
+using base::android::JavaRef;
 using base::android::ScopedJavaLocalRef;
 
 namespace android_webview {
@@ -32,16 +31,16 @@ bool IsForceDarkEnabled(content::WebContents* web_contents) {
 }  // namespace
 
 // static
-jlong JNI_AwDarkMode_Init(JNIEnv* env,
-                          const JavaParamRef<jobject>& caller,
-                          const JavaParamRef<jobject>& java_web_contents) {
+static int64_t JNI_AwDarkMode_Init(JNIEnv* env,
+                                   const JavaRef<jobject>& obj,
+                                   const JavaRef<jobject>& java_web_contents) {
   content::WebContents* web_contents =
       content::WebContents::FromJavaWebContents(java_web_contents);
   DCHECK(web_contents);
-  return reinterpret_cast<intptr_t>(new AwDarkMode(env, caller, web_contents));
+  return reinterpret_cast<intptr_t>(new AwDarkMode(env, obj, web_contents));
 }
 
-void JNI_AwDarkMode_EnableSimplifiedDarkMode(JNIEnv* env) {
+static void JNI_AwDarkMode_EnableSimplifiedDarkMode(JNIEnv* env) {
   sShouldEnableSimplifiedDarkMode = true;
 }
 
@@ -158,26 +157,10 @@ bool AwDarkMode::IsAppUsingDarkTheme() {
   return Java_AwDarkMode_isAppUsingDarkTheme(env, scoped_obj);
 }
 
-void AwDarkMode::DetachFromJavaObject(JNIEnv* env,
-                                      const JavaParamRef<jobject>& jcaller) {
+void AwDarkMode::DetachFromJavaObject(JNIEnv* env) {
   jobj_.reset();
 }
 
-void AwDarkMode::NavigationEntryCommitted(
-    const content::LoadCommittedDetails& load_details) {
-  if (!load_details.is_main_frame)
-    return;
-  UMA_HISTOGRAM_BOOLEAN("Android.WebView.DarkMode.PrefersDarkFromTheme",
-                        prefers_dark_from_theme_);
-}
-
-void AwDarkMode::InferredColorSchemeUpdated(
-    std::optional<blink::mojom::PreferredColorScheme> color_scheme) {
-  if (prefers_dark_from_theme_ && color_scheme.has_value()) {
-    UMA_HISTOGRAM_BOOLEAN(
-        "Android.WebView.DarkMode.PageDarkenedAccordingToAppTheme",
-        color_scheme.value() == blink::mojom::PreferredColorScheme::kDark);
-  }
-}
-
 }  // namespace android_webview
+
+DEFINE_JNI(AwDarkMode)

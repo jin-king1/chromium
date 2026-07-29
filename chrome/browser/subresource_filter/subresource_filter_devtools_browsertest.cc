@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include <string>
 
@@ -60,11 +56,11 @@ class ScopedDevtoolsOpener {
 
   void EnableAdBlocking(bool enabled) {
     // Send Page.setAdBlockingEnabled, should force activation.
-    base::Value::Dict ad_blocking_command =
-        base::Value::Dict()
+    base::DictValue ad_blocking_command =
+        base::DictValue()
             .Set("id", 1)
             .Set("method", "Page.setAdBlockingEnabled")
-            .Set("params", base::Value::Dict().Set("enabled", enabled));
+            .Set("params", base::DictValue().Set("enabled", enabled));
     std::string json_string;
     JSONStringValueSerializer serializer(&json_string);
     ASSERT_TRUE(serializer.Serialize(ad_blocking_command));
@@ -177,8 +173,8 @@ class SubresourceFilterDevtoolsBrowserTestWithSitePerProcess
   base::test::ScopedFeatureList feature_list_;
 };
 
-// See crbug.com/813197, where agent hosts from subframes could send messages to
-// disable ad blocking when they are detached (e.g. when the subframe goes
+// See crbug.com/40563389, where agent hosts from subframes could send messages
+// to disable ad blocking when they are detached (e.g. when the subframe goes
 // away).
 IN_PROC_BROWSER_TEST_F(SubresourceFilterDevtoolsBrowserTestWithSitePerProcess,
                        IsolatedSubframe_DoesNotSendAdBlockingMessages) {

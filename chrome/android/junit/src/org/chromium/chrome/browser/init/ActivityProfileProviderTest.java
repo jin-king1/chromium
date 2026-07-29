@@ -11,13 +11,14 @@ import android.app.Activity;
 
 import androidx.annotation.Nullable;
 
-import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.CallbackHelper;
@@ -29,28 +30,21 @@ import org.chromium.chrome.browser.profiles.ProfileProvider;
 /** Tests for ActivityProfileProviderInitializer. */
 @RunWith(BaseRobolectricTestRunner.class)
 public class ActivityProfileProviderTest {
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock private Profile mOriginalProfile;
     @Mock private Activity mActivity;
 
-    private TestActivityLifecycleDispatcherImpl mLifecycleDispatcher;
+    private ActivityLifecycleDispatcherImpl mLifecycleDispatcher;
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
-
-        ProfileManager.setLastUsedProfileForTesting(mOriginalProfile);
-        mLifecycleDispatcher = new TestActivityLifecycleDispatcherImpl(mActivity);
-    }
-
-    @After
-    public void tearDown() {
-        ProfileManager.resetForTesting();
+        mLifecycleDispatcher = new ActivityLifecycleDispatcherImpl(mActivity);
     }
 
     @Test
     public void testProfileManager_AlreadyInitialized() {
         Assert.assertFalse(ProfileManager.isInitialized());
-        ProfileManager.onProfileAdded(mOriginalProfile);
+        ProfileManager.setLastUsedProfileForTesting(mOriginalProfile);
         Assert.assertTrue(ProfileManager.isInitialized());
 
         ActivityProfileProvider provider = new ActivityProfileProvider(mLifecycleDispatcher);
@@ -62,7 +56,7 @@ public class ActivityProfileProviderTest {
     public void testProfileManager_DeferredInitialization() {
         ActivityProfileProvider provider = new ActivityProfileProvider(mLifecycleDispatcher);
         Assert.assertFalse(ProfileManager.isInitialized());
-        ProfileManager.onProfileAdded(mOriginalProfile);
+        ProfileManager.setLastUsedProfileForTesting(mOriginalProfile);
         Assert.assertTrue(ProfileManager.isInitialized());
 
         Assert.assertNotNull(provider.get());
@@ -75,7 +69,7 @@ public class ActivityProfileProviderTest {
         Assert.assertFalse(ProfileManager.isInitialized());
         mLifecycleDispatcher.dispatchOnDestroy();
 
-        ProfileManager.onProfileAdded(mOriginalProfile);
+        ProfileManager.setLastUsedProfileForTesting(mOriginalProfile);
         Assert.assertTrue(ProfileManager.isInitialized());
 
         Assert.assertNull(provider.get());
@@ -86,14 +80,11 @@ public class ActivityProfileProviderTest {
         ActivityProfileProvider providerSupplier =
                 new ActivityProfileProvider(mLifecycleDispatcher);
 
-        ProfileManager.onProfileAdded(mOriginalProfile);
+        ProfileManager.setLastUsedProfileForTesting(mOriginalProfile);
         Assert.assertTrue(ProfileManager.isInitialized());
 
         ProfileProvider provider = providerSupplier.get();
         Assert.assertNotNull(provider);
-
-        provider.hasOffTheRecordProfile();
-        verify(mOriginalProfile).hasPrimaryOtrProfile();
 
         provider.getOffTheRecordProfile(false);
         verify(mOriginalProfile).getPrimaryOtrProfile(eq(false));
@@ -117,7 +108,7 @@ public class ActivityProfileProviderTest {
                     }
                 };
 
-        ProfileManager.onProfileAdded(mOriginalProfile);
+        ProfileManager.setLastUsedProfileForTesting(mOriginalProfile);
         Assert.assertTrue(ProfileManager.isInitialized());
 
         ProfileProvider provider = providerSupplier.get();
@@ -126,26 +117,11 @@ public class ActivityProfileProviderTest {
         provider.getOriginalProfile();
         Assert.assertEquals(0, otrProfileIdHelper.getCallCount());
 
-        provider.hasOffTheRecordProfile();
-        verify(mOriginalProfile).hasOffTheRecordProfile(eq(otrProfileId));
-
         provider.getOffTheRecordProfile(false);
         verify(mOriginalProfile).getOffTheRecordProfile(eq(otrProfileId), eq(false));
 
         provider.getOffTheRecordProfile(true);
         verify(mOriginalProfile).getOffTheRecordProfile(eq(otrProfileId), eq(true));
         Assert.assertEquals(1, otrProfileIdHelper.getCallCount());
-    }
-
-    private static class TestActivityLifecycleDispatcherImpl
-            extends ActivityLifecycleDispatcherImpl {
-        public TestActivityLifecycleDispatcherImpl(Activity activity) {
-            super(activity);
-        }
-
-        @Override
-        public void dispatchOnDestroy() {
-            super.dispatchOnDestroy();
-        }
     }
 }

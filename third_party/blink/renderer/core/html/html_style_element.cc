@@ -23,9 +23,8 @@
 
 #include "third_party/blink/renderer/core/html/html_style_element.h"
 
+#include "base/task/single_thread_task_runner.h"
 #include "third_party/blink/public/platform/task_type.h"
-#include "third_party/blink/renderer/core/css/media_list.h"
-#include "third_party/blink/renderer/core/css/style_engine.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/events/event.h"
 #include "third_party/blink/renderer/core/dom/shadow_root.h"
@@ -46,11 +45,8 @@ void HTMLStyleElement::ParseAttribute(
     const AttributeModificationParams& params) {
   if (params.name == html_names::kTitleAttr && sheet_ && IsInDocumentTree()) {
     sheet_->SetTitle(params.new_value);
-  } else if (params.name == html_names::kMediaAttr && isConnected() &&
-             GetDocument().IsActive() && sheet_) {
-    sheet_->SetMediaQueries(
-        MediaQuerySet::Create(params.new_value, GetExecutionContext()));
-    GetDocument().GetStyleEngine().SetNeedsActiveStyleUpdate(GetTreeScope());
+  } else if (params.name == html_names::kMediaAttr) {
+    MediaAttributeChanged(*this, params.new_value);
   } else if (params.name == html_names::kTypeAttr) {
     HTMLElement::ParseAttribute(params);
     StyleElement::ChildrenChanged(*this);
@@ -134,7 +130,7 @@ void HTMLStyleElement::NotifyLoadedSheetAndAllCriticalSubresources(
       .GetTaskRunner(TaskType::kNetworking)
       ->PostTask(
           FROM_HERE,
-          WTF::BindOnce(
+          BindOnce(
               &HTMLStyleElement::DispatchPendingEvent, WrapPersistent(this),
               std::make_unique<IncrementLoadEventDelayCount>(GetDocument()),
               is_load_event));

@@ -52,18 +52,12 @@ class PerfettoService : public mojom::PerfettoService {
       uint64_t shared_memory_buffer_page_size_bytes) override;
 
   perfetto::TracingService* GetService() const;
+  bool GetSessionPrivacyFilteringEnabled(const std::string& session_name) const;
 
   // Called when a ConsumerHost::TracingSession is created/destroyed (i.e. when
   // a consumer starts/finishes tracing.
   void RegisterTracingSession(ConsumerHost::TracingSession* consumer_host);
   void UnregisterTracingSession(ConsumerHost::TracingSession* consumer_host);
-
-  // Make a request of the service for whether or not a TracingSession
-  // should be allowed to start tracing, in case of pre-existing sessions.
-  // |callback| will eventually be called once a session is allowed, or it
-  // will be destroyed.
-  void RequestTracingSession(mojom::TracingClientPriority priority,
-                             base::OnceClosure callback);
 
   // Called by TracingService to notify the perfetto service of the PIDs of
   // actively running services (whenever a service starts or stops).

@@ -5,10 +5,18 @@
 #ifndef NET_DEVICE_BOUND_SESSIONS_SESSION_STORE_H_
 #define NET_DEVICE_BOUND_SESSIONS_SESSION_STORE_H_
 
+#include <map>
 #include <memory>
 #include <string>
 
+#include "base/functional/callback.h"
+#include "components/unexportable_keys/unexportable_key_service.h"
 #include "net/device_bound_sessions/session.h"
+#include "net/device_bound_sessions/session_key.h"
+
+namespace base {
+class FilePath;
+}  // namespace base
 
 namespace net {
 class SchemefulSite;
@@ -21,34 +29,49 @@ namespace net::device_bound_sessions {
 class NET_EXPORT SessionStore {
  public:
   static std::unique_ptr<SessionStore> Create(
-      const base::FilePath& db_storage_path);
+      const base::FilePath& db_storage_path,
+      unexportable_keys::UnexportableKeyService* unexportable_key_service);
 
   virtual ~SessionStore() = default;
 
   SessionStore(const SessionStore&) = delete;
   SessionStore& operator=(const SessionStore&) = delete;
 
-  using SessionsMap = std::multimap<SchemefulSite, std::unique_ptr<Session>>;
+  using SessionsMap = std::map<SessionKey, std::unique_ptr<Session>>;
   using LoadSessionsCallback = base::OnceCallback<void(SessionsMap)>;
   virtual void LoadSessions(LoadSessionsCallback callback) = 0;
 
-  virtual void SaveSession(const SchemefulSite& site,
-                           const Session& session) = 0;
+  enum class SaveSessionMode {
+    kNewSession,
+    kRefresh,
+  };
 
-  virtual void DeleteSession(const SchemefulSite& site,
-                             const Session::Id& session_id) = 0;
+  virtual void SaveSession(const SchemefulSite& site,
+                           const Session& session,
+                           SaveSessionMode mode) = 0;
+
+  virtual void DeleteSession(const SessionKey& key) = 0;
 
   // Returns session objects created from currently cached store data.
   virtual SessionsMap GetAllSessions() const = 0;
 
   // Asynchronously retrieves the unwrapped session binding key
   // from its persistent form saved in the store.
-  using RestoreSessionBindingKeyCallback = base::OnceCallback<void(
-      unexportable_keys::ServiceErrorOr<unexportable_keys::UnexportableKeyId>)>;
+  using RestoreSessionBindingKeyCallback =
+      base::OnceCallback<void(unexportable_keys::ServiceErrorOr<
+                              unexportable_keys::UnexportableSigningKeyId>)>;
   virtual void RestoreSessionBindingKey(
-      const SchemefulSite& site,
-      const Session::Id& session_id,
+      const SessionKey& session_key,
       RestoreSessionBindingKeyCallback callback) = 0;
+
+  // Asynchronously retrieves the unwrapped session attestation key
+  // from its persistent form saved in the store.
+  using RestoreSessionAttestationKeyCallback = base::OnceCallback<void(
+      unexportable_keys::ServiceErrorOr<
+          unexportable_keys::UnexportableAttestationKeyId>)>;
+  virtual void RestoreSessionAttestationKey(
+      const SessionKey& session_key,
+      RestoreSessionAttestationKeyCallback callback) = 0;
 
  protected:
   SessionStore() = default;

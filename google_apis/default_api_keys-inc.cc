@@ -23,6 +23,13 @@
 #define GOOGLE_METRICS_SIGNING_KEY google_apis::DefaultApiKeys::kUnsetApiToken
 #endif
 
+#if BUILDFLAG(SUPPORT_CDM_SERVER_CERTIFICATE)
+#if !defined(GOOGLE_CDM_SERVER_CERTIFICATE)
+#define GOOGLE_CDM_SERVER_CERTIFICATE \
+  google_apis::DefaultApiKeys::kUnsetApiToken
+#endif
+#endif  // #if BUILDFLAG(SUPPORT_CDM_SERVER_CERTIFICATE)
+
 #if !defined(GOOGLE_CLIENT_ID_MAIN)
 #define GOOGLE_CLIENT_ID_MAIN google_apis::DefaultApiKeys::kUnsetApiToken
 #endif
@@ -66,6 +73,12 @@
 #define GOOGLE_API_KEY_SODA google_apis::DefaultApiKeys::kUnsetApiToken
 #endif
 
+// API key for the Translate Private API.
+#if !defined(GOOGLE_API_KEY_PARTIAL_TRANSLATE)
+#define GOOGLE_API_KEY_PARTIAL_TRANSLATE \
+  google_apis::DefaultApiKeys::kUnsetApiToken
+#endif
+
 #if !BUILDFLAG(IS_ANDROID)
 // API key for the HaTS API.
 #if !defined(GOOGLE_API_KEY_HATS)
@@ -92,6 +105,19 @@
 #if !defined(GOOGLE_API_KEY_BOCA)
 #define GOOGLE_API_KEY_BOCA google_apis::DefaultApiKeys::kUnsetApiToken
 #endif
+
+// API key for ChromeOS system services to resolve location.
+#if !defined(GOOGLE_API_KEY_CROS_SYSTEM_GEO)
+#define GOOGLE_API_KEY_CROS_SYSTEM_GEO \
+  google_apis::DefaultApiKeys::kUnsetApiToken
+#endif
+
+// API key for ChromeOS Chrome to resolve location.
+#if !defined(GOOGLE_API_KEY_CROS_CHROME_GEO)
+#define GOOGLE_API_KEY_CROS_CHROME_GEO \
+  google_apis::DefaultApiKeys::kUnsetApiToken
+#endif
+
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 // These are used as shortcuts for developers and users providing
@@ -113,8 +139,16 @@ constexpr ::google_apis::DefaultApiKeys GetDefaultApiKeysFromDefinedValues() {
       .allow_unset_values =
           !BUILDFLAG(GOOGLE_CHROME_BRANDING) || BUILDFLAG(IS_FUCHSIA),
       .allow_override_via_environment = !BUILDFLAG(GOOGLE_CHROME_BRANDING),
+#if defined(USE_OFFICIAL_GOOGLE_API_KEYS)
+      .is_using_google_chrome_keys = true,
+#else
+      .is_using_google_chrome_keys = false,
+#endif
       .google_api_key = GOOGLE_API_KEY,
       .google_metrics_signing_key = GOOGLE_METRICS_SIGNING_KEY,
+#if BUILDFLAG(SUPPORT_CDM_SERVER_CERTIFICATE)
+      .google_cdm_server_certificate = GOOGLE_CDM_SERVER_CERTIFICATE,
+#endif
 #if BUILDFLAG(IS_ANDROID)
       .google_api_key_android_non_stable = GOOGLE_API_KEY_ANDROID_NON_STABLE,
 #else
@@ -122,11 +156,14 @@ constexpr ::google_apis::DefaultApiKeys GetDefaultApiKeysFromDefinedValues() {
 #endif  // BUILDFLAG(IS_ANDROID)
       .google_api_key_remoting = GOOGLE_API_KEY_REMOTING,
       .google_api_key_soda = GOOGLE_API_KEY_SODA,
+      .google_api_key_partial_translate = GOOGLE_API_KEY_PARTIAL_TRANSLATE,
 #if BUILDFLAG(IS_CHROMEOS)
       .google_api_key_sharing = GOOGLE_API_KEY_SHARING,
       .google_api_key_read_aloud = GOOGLE_API_KEY_READ_ALOUD,
       .google_api_key_fresnel = GOOGLE_API_KEY_FRESNEL,
       .google_api_key_boca = GOOGLE_API_KEY_BOCA,
+      .google_api_key_cros_system_geo_ = GOOGLE_API_KEY_CROS_SYSTEM_GEO,
+      .google_api_key_cros_chrome_geo_ = GOOGLE_API_KEY_CROS_CHROME_GEO,
 #endif
       .google_client_id_main = GOOGLE_CLIENT_ID_MAIN,
       .google_client_secret_main = GOOGLE_CLIENT_SECRET_MAIN,

@@ -4,10 +4,11 @@
 
 #import "ios/chrome/app/profile/profile_state.h"
 
+#import <utility>
+
 #import "base/check.h"
 #import "base/ios/crb_protocol_observers.h"
 #import "base/memory/weak_ptr.h"
-#import "base/types/cxx23_to_underlying.h"
 #import "ios/chrome/app/application_delegate/app_state.h"
 #import "ios/chrome/app/application_delegate/startup_information.h"
 #import "ios/chrome/app/deferred_initialization_queue.h"
@@ -16,6 +17,7 @@
 #import "ios/chrome/app/profile/profile_state_observer.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state_observer.h"
+#import "ios/chrome/browser/shared/coordinator/scene/state/scene_ui_blocker_state.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 
 #pragma mark - ProfileStateObserverList
@@ -110,8 +112,11 @@
 }
 
 - (void)setProfile:(ProfileIOS*)profile {
-  CHECK(profile);
-  _profile = profile->AsWeakPtr();
+  if (profile) {
+    _profile = profile->AsWeakPtr();
+  } else {
+    _profile.reset();
+  }
 }
 
 - (SceneState*)foregroundActiveScene {
@@ -152,8 +157,7 @@
   } else {
     // After kLoadProfile, the init stages must be incremented by one only. If a
     // stage needs to be skipped, it can just be a no-op.
-    CHECK_EQ(base::to_underlying(initStage),
-             base::to_underlying(_initStage) + 1);
+    CHECK_EQ(std::to_underlying(initStage), std::to_underlying(_initStage) + 1);
   }
 
   const ProfileInitStage fromStage = _initStage;
@@ -179,7 +183,7 @@
     // overlay.
     BOOL shouldPresentOverlay =
         (uiBlockerTarget != nil) && (scene != uiBlockerTarget);
-    scene.presentingModalOverlay = shouldPresentOverlay;
+    scene.uiBlockerState.presentingModalOverlay = shouldPresentOverlay;
   }
 }
 
@@ -207,7 +211,7 @@
       [observer respondsToSelector:@selector
                 (profileState:didTransitionToInitStage:fromInitStage:)]) {
     const ProfileInitStage prevStage =
-        static_cast<ProfileInitStage>(base::to_underlying(_initStage) - 1);
+        static_cast<ProfileInitStage>(std::to_underlying(_initStage) - 1);
 
     // Trigger an update on the newly added observer.
     [observer profileState:self
@@ -229,6 +233,7 @@
 }
 
 - (void)sceneStateConnected:(SceneState*)sceneState {
+  _lastSceneConnection = base::TimeTicks::Now();
   [sceneState addObserver:self];
   [_connectedSceneStates addObject:sceneState];
   [_observers profileState:self sceneConnected:sceneState];
@@ -245,7 +250,7 @@
   _isIncrementingInitStage = true;
 
   const ProfileInitStage nextStage =
-      static_cast<ProfileInitStage>(base::to_underlying(_initStage) + 1);
+      static_cast<ProfileInitStage>(std::to_underlying(_initStage) + 1);
   [self setInitStage:nextStage];
 
   _isIncrementingInitStage = false;
@@ -266,8 +271,9 @@
       break;
 
     case SceneActivationLevelDisconnected:
-      [_connectedSceneStates removeObject:sceneState];
       [sceneState removeObserver:self];
+      [_connectedSceneStates removeObject:sceneState];
+      [_observers profileState:self sceneDisconnected:sceneState];
       break;
 
     case SceneActivationLevelBackground:
@@ -277,7 +283,7 @@
 
     case SceneActivationLevelForegroundActive:
       [_observers profileState:self sceneDidBecomeActive:sceneState];
-      sceneState.presentingModalOverlay =
+      sceneState.uiBlockerState.presentingModalOverlay =
           currentUIBlocker && currentUIBlocker != sceneState;
       break;
   }

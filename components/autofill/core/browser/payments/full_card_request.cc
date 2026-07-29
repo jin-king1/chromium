@@ -5,26 +5,35 @@
 #include "components/autofill/core/browser/payments/full_card_request.h"
 
 #include <memory>
+#include <optional>
+#include <string>
+#include <utility>
 
+#include "base/check.h"
 #include "base/check_deref.h"
 #include "base/check_op.h"
 #include "base/functional/bind.h"
+#include "base/memory/weak_ptr.h"
 #include "base/notreached.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
+#include "base/values.h"
 #include "build/build_config.h"
 #include "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
 #include "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
+#include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
 #include "components/autofill/core/browser/metrics/autofill_metrics.h"
 #include "components/autofill/core/browser/metrics/payments/better_auth_metrics.h"
 #include "components/autofill/core/browser/metrics/payments/card_unmask_authentication_metrics.h"
 #include "components/autofill/core/browser/payments/autofill_payments_feature_availability.h"
+#include "components/autofill/core/browser/payments/card_unmask_challenge_option.h"
+#include "components/autofill/core/browser/payments/client_behavior_constants.h"
 #include "components/autofill/core/browser/payments/payments_network_interface.h"
+#include "components/autofill/core/browser/payments/payments_request_details.h"
 #include "components/autofill/core/browser/payments/payments_util.h"
-#include "components/autofill/core/common/autofill_clock.h"
-#include "components/autofill/core/common/autofill_payments_features.h"
+#include "components/autofill/core/browser/ui/payments/card_unmask_prompt_options.h"
 #include "url/origin.h"
 
 namespace autofill::payments {
@@ -37,13 +46,13 @@ FullCardRequest::FullCardRequest(AutofillClient* autofill_client)
 FullCardRequest::~FullCardRequest() = default;
 
 void FullCardRequest::GetFullCard(
-    const CreditCard& card,
+    CreditCard card,
     PaymentsAutofillClient::UnmaskCardReason reason,
     base::WeakPtr<ResultDelegate> result_delegate,
     base::WeakPtr<UIDelegate> ui_delegate,
     std::optional<std::string> context_token) {
   DCHECK(ui_delegate);
-  GetFullCardImpl(card, reason, result_delegate, ui_delegate,
+  GetFullCardImpl(std::move(card), reason, result_delegate, ui_delegate,
                   /*fido_assertion_info=*/std::nullopt,
                   /*last_committed_primary_main_frame_origin=*/std::nullopt,
                   /*context_token=*/std::move(context_token),
@@ -51,48 +60,50 @@ void FullCardRequest::GetFullCard(
 }
 
 void FullCardRequest::GetFullVirtualCardViaCVC(
-    const CreditCard& card,
+    CreditCard card,
     PaymentsAutofillClient::UnmaskCardReason reason,
     base::WeakPtr<ResultDelegate> result_delegate,
     base::WeakPtr<UIDelegate> ui_delegate,
-    const GURL& last_committed_primary_main_frame_origin,
-    const std::string& vcn_context_token,
-    const CardUnmaskChallengeOption& selected_challenge_option) {
+    GURL last_committed_primary_main_frame_origin,
+    std::string vcn_context_token,
+    CardUnmaskChallengeOption selected_challenge_option) {
   DCHECK(ui_delegate);
   DCHECK(last_committed_primary_main_frame_origin.is_valid());
   DCHECK(!vcn_context_token.empty());
   DCHECK(selected_challenge_option.type == CardUnmaskChallengeOptionType::kCvc);
-  GetFullCardImpl(card, reason, result_delegate, ui_delegate,
+  GetFullCardImpl(std::move(card), reason, result_delegate, ui_delegate,
                   /*fido_assertion_info=*/std::nullopt,
-                  last_committed_primary_main_frame_origin, vcn_context_token,
-                  selected_challenge_option);
+                  std::move(last_committed_primary_main_frame_origin),
+                  std::move(vcn_context_token),
+                  std::move(selected_challenge_option));
 }
 
 void FullCardRequest::GetFullCardViaFIDO(
-    const CreditCard& card,
+    CreditCard card,
     PaymentsAutofillClient::UnmaskCardReason reason,
     base::WeakPtr<ResultDelegate> result_delegate,
-    base::Value::Dict fido_assertion_info,
+    base::DictValue fido_assertion_info,
     std::optional<GURL> last_committed_primary_main_frame_origin,
     std::optional<std::string> context_token) {
-  GetFullCardImpl(
-      card, reason, result_delegate, nullptr, std::move(fido_assertion_info),
-      std::move(last_committed_primary_main_frame_origin),
-      std::move(context_token), /*selected_challenge_option=*/std::nullopt);
+  GetFullCardImpl(std::move(card), reason, result_delegate, nullptr,
+                  std::move(fido_assertion_info),
+                  std::move(last_committed_primary_main_frame_origin),
+                  std::move(context_token),
+                  /*selected_challenge_option=*/std::nullopt);
 }
 
 void FullCardRequest::GetFullCardImpl(
-    const CreditCard& card,
+    CreditCard card,
     PaymentsAutofillClient::UnmaskCardReason reason,
     base::WeakPtr<ResultDelegate> result_delegate,
     base::WeakPtr<UIDelegate> ui_delegate,
-    std::optional<base::Value::Dict> fido_assertion_info,
+    std::optional<base::DictValue> fido_assertion_info,
     std::optional<GURL> last_committed_primary_main_frame_origin,
     std::optional<std::string> context_token,
     std::optional<CardUnmaskChallengeOption> selected_challenge_option) {
   // Retrieval of card information should happen via CVC auth or FIDO, but not
-  // both. Use |ui_delegate|'s existence as evidence of doing CVC auth and
-  // |fido_assertion_info| as evidence of doing FIDO auth.
+  // both. Use `ui_delegate`'s existence as evidence of doing CVC auth and
+  // `fido_assertion_info` as evidence of doing FIDO auth.
   DCHECK_NE(fido_assertion_info.has_value(), !!ui_delegate);
   DCHECK(result_delegate);
 
@@ -103,8 +114,7 @@ void FullCardRequest::GetFullCardImpl(
   DCHECK_NE(card_type, CreditCard::RecordType::kFullServerCard);
 
   // Only one request can be active at a time. If the member variable
-  // |result_delegate_| is already set, then immediately reject the new request
-  // through the method parameter |result_delegate|.
+  // `result_delegate_` is already set, then immediately reject the new request.
   if (result_delegate_) {
     result_delegate->OnFullCardRequestFailed(card_type,
                                              FailureType::GENERIC_FAILURE);
@@ -114,23 +124,19 @@ void FullCardRequest::GetFullCardImpl(
   ui_delegate_ = ui_delegate;
 
   // If unmasking is for a virtual card then
-  // |last_committed_primary_main_frame_origin| should not be empty.
-  if (card.record_type() == CreditCard::RecordType::kVirtualCard &&
-      !last_committed_primary_main_frame_origin.has_value()) {
-    NOTREACHED();
-  }
+  // `last_committed_primary_main_frame_origin` should not be empty.
+  CHECK(card.record_type() != CreditCard::RecordType::kVirtualCard ||
+        last_committed_primary_main_frame_origin.has_value());
 
   request_ = std::make_unique<UnmaskRequestDetails>();
-  request_->card = card;
+  request_->card = std::move(card);
   request_->last_committed_primary_main_frame_origin =
       last_committed_primary_main_frame_origin;
-  if (context_token)
-    request_->context_token = *context_token;
-  if (selected_challenge_option)
-    request_->selected_challenge_option = selected_challenge_option;
+  request_->context_token = std::move(context_token).value_or({});
+  request_->selected_challenge_option = std::move(selected_challenge_option);
 
-  should_unmask_card_ = card.masked() ||
-                        (card_type == CreditCard::RecordType::kVirtualCard);
+  should_unmask_card_ = request_->card.masked() ||
+                        card_type == CreditCard::RecordType::kVirtualCard;
   if (should_unmask_card_) {
     GetPaymentsNetworkInterface()->Prepare();
     request_->billing_customer_number =
@@ -141,21 +147,21 @@ void FullCardRequest::GetFullCardImpl(
 
   // Add appropriate ClientBehaviorConstants to the request based on the
   // user experience.
-  if (ShouldShowCardMetadata(card)) {
+  if (ShouldShowCardMetadata(request_->card)) {
     request_->client_behavior_signals.push_back(
         ClientBehaviorConstants::kShowingCardArtImageAndCardProductName);
   }
-  if (DidDisplayBenefitForCard(card, autofill_client_.get())) {
+  if (DidDisplayBenefitForCard(request_->card, autofill_client_.get())) {
     request_->client_behavior_signals.push_back(
         ClientBehaviorConstants::kShowingCardBenefits);
   }
 
   // If there is a UI delegate, then perform a CVC check.
-  // Otherwise, continue and use |fido_assertion_info| to unmask.
+  // Otherwise, continue and use `fido_assertion_info` to unmask.
   if (ui_delegate_) {
     ui_delegate_->ShowUnmaskPrompt(
         request_->card,
-        CardUnmaskPromptOptions(selected_challenge_option, reason),
+        CardUnmaskPromptOptions(request_->selected_challenge_option, reason),
         weak_ptr_factory_.GetWeakPtr());
   }
 

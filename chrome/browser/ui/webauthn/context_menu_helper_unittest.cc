@@ -17,6 +17,7 @@
 #include "components/autofill/core/browser/form_structure.h"
 #include "components/autofill/core/browser/foundations/autofill_driver.h"
 #include "components/autofill/core/browser/foundations/autofill_manager.h"
+#include "components/autofill/core/browser/foundations/autofill_manager_test_api.h"
 #include "components/autofill/core/browser/foundations/browser_autofill_manager.h"
 #include "components/autofill/core/browser/foundations/test_autofill_manager_waiter.h"
 #include "components/autofill/core/browser/foundations/test_browser_autofill_manager.h"
@@ -33,22 +34,6 @@ using webauthn::IsPasskeyFromAnotherDeviceContextMenuEnabled;
 
 constexpr uint64_t kFormRendererId = 1;
 constexpr uint64_t kFieldRendererId = 1;
-
-class MockBrowserAutofillManager : public autofill::TestBrowserAutofillManager {
- public:
-  using autofill::TestBrowserAutofillManager::TestBrowserAutofillManager;
-  MOCK_METHOD(autofill::FormStructure*,
-              FindCachedFormById,
-              (autofill::FormGlobalId),
-              (const override));
-};
-
-class MockAutofillDriver : public autofill::ContentAutofillDriver {
- public:
-  using ContentAutofillDriver::ContentAutofillDriver;
-
-  MOCK_METHOD(autofill::AutofillManager&, GetAutofillManager, (), (override));
-};
 
 class ContextMenuHelperBaseTest : public ChromeRenderViewHostTestHarness {
  public:
@@ -91,7 +76,8 @@ class ContextMenuHelperWithAfTest : public ContextMenuHelperBaseTest {
   void NotifyFormManagerAndWait(autofill::FormData form) {
     autofill::TestAutofillManagerWaiter waiter(
         autofill_manager(), {autofill::AutofillManagerEvent::kFormsSeen});
-    autofill_manager().OnFormsSeen({form}, {});
+    autofill_manager().OnFormsSeen(
+        {form}, {}, autofill::AutofillManagerTestApi::pass_key());
     ASSERT_TRUE(waiter.Wait());
   }
 
@@ -109,7 +95,7 @@ class ContextMenuHelperWithAfTest : public ContextMenuHelperBaseTest {
       af_client_injector;
   autofill::TestAutofillDriverInjector<autofill::TestContentAutofillDriver>
       af_driver_injector_;
-  autofill::TestAutofillManagerInjector<MockBrowserAutofillManager>
+  autofill::TestAutofillManagerInjector<autofill::TestBrowserAutofillManager>
       af_manager_injector_;
 };
 

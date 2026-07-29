@@ -13,7 +13,6 @@ namespace blink {
 class MODULES_EXPORT ModulesInitializer : public CoreInitializer {
  public:
   void Initialize() override;
-  void RegisterInterfaces(mojo::BinderMap&) override;
 
  protected:
   void InitLocalFrame(LocalFrame&) const override;
@@ -30,6 +29,8 @@ class MODULES_EXPORT ModulesInitializer : public CoreInitializer {
                                  InspectorDOMAgent*,
                                  InspectedFrames*,
                                  Page*) const override;
+  void InitWorkerInspectorAgentSession(DevToolsSession*,
+                                       WorkerGlobalScope*) const override;
   std::unique_ptr<WebMediaPlayer> CreateWebMediaPlayer(
       WebLocalFrameClient*,
       HTMLMediaElement&,

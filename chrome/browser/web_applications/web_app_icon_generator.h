@@ -5,17 +5,19 @@
 #ifndef CHROME_BROWSER_WEB_APPLICATIONS_WEB_APP_ICON_GENERATOR_H_
 #define CHROME_BROWSER_WEB_APPLICATIONS_WEB_APP_ICON_GENERATOR_H_
 
-#include <map>
 #include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "build/build_config.h"
-#include "chrome/browser/web_applications/web_app_install_info.h"
+#include "chrome/browser/web_applications/model/web_app_icon_types.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkColor.h"
-#include "ui/gfx/image/image_skia.h"
-#include "url/gurl.h"
+
+namespace gfx {
+class ImageSkia;
+}
 
 namespace web_app {
 
@@ -49,8 +51,6 @@ inline constexpr int kInstallIconSize = icon_size::k48;
 inline constexpr int kLauncherIconSize = icon_size::k128;
 #endif
 
-using SizeToBitmap = std::map<SquareSizePx, SkBitmap>;
-
 // Returns icon sizes to be generated from downloaded icons.
 std::set<SquareSizePx> SizesToGenerate();
 
@@ -58,22 +58,23 @@ std::set<SquareSizePx> SizesToGenerate();
 // |sizes| and resizes it to that size. This returns a map of sizes to bitmaps
 // which contains only bitmaps of a size in |sizes| and at most one bitmap of
 // each size.
-SizeToBitmap ConstrainBitmapsToSizes(const std::vector<SkBitmap>& bitmaps,
-                                     const std::set<SquareSizePx>& sizes);
+OrderedSizeToBitmap ConstrainBitmapsToSizes(
+    const std::vector<SkBitmap>& bitmaps,
+    const std::set<SquareSizePx>& sizes);
 
 // Resize icons to the accepted sizes, and generate any that are missing.
 // Note that |icon_letter| is the first letter of app name if available
 // otherwise the first letter of app url.
 // Output: |is_generated_icon| represents whether the icons were generated.
-SizeToBitmap ResizeIconsAndGenerateMissing(
+OrderedSizeToBitmap ResizeIconsAndGenerateMissing(
     const std::vector<SkBitmap>& icons,
     const std::set<SquareSizePx>& sizes_to_generate,
-    char32_t icon_letter,
+    std::u16string_view icon_letter,
     bool* is_generated_icon);
 
 // Generate icons for default sizes, using the first letter of the application
-// name. |app_name| is encoded as UTF8.
-SizeToBitmap GenerateIcons(const std::string& app_name);
+// name.
+OrderedSizeToBitmap GenerateIcons(std::u16string_view app_name);
 
 // Converts any image with arbitrary RGB channels to a monochrome image
 // according to the spec.

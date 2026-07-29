@@ -229,6 +229,9 @@ void DownloadDriverImpl::Start(
   }
   download_url_params->set_update_first_party_url_on_redirect(
       request_params.update_first_party_url_on_redirect);
+  if (request_params.initiator) {
+    download_url_params->set_initiator(request_params.initiator.value());
+  }
 
   download_manager_coordinator_->DownloadUrl(std::move(download_url_params));
 }
@@ -317,13 +320,31 @@ void DownloadDriverImpl::OnDownloadUpdated(
   download::DownloadInterruptReason reason = item->GetLastReason();
   DriverEntry entry = CreateDriverEntry(item);
 
-  if (state == DownloadState::COMPLETE) {
+  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE,
+      base::BindOnce(&DownloadDriverImpl::NotifyClientOfUpdatedState,
+                     weak_ptr_factory_.GetWeakPtr(), entry, state, reason));
+}
+
+void DownloadDriverImpl::NotifyClientOfUpdatedState(
+    const DriverEntry& entry,
+    download::DownloadItem::DownloadState state,
+    download::DownloadInterruptReason reason) {
+  if (!client_) {
+    return;
+  }
+  if (guid_to_remove_.find(entry.guid) != guid_to_remove_.end()) {
+    return;
+  }
+
+  if (state == download::DownloadItem::DownloadState::COMPLETE) {
     client_->OnDownloadSucceeded(entry);
-  } else if (state == DownloadState::IN_PROGRESS) {
+  } else if (state == download::DownloadItem::DownloadState::IN_PROGRESS) {
     client_->OnDownloadUpdated(entry);
   } else if (reason != DOWNLOAD_INTERRUPT_REASON_NONE) {
-    if (client_->IsTrackingDownload(item->GetGuid()))
+    if (client_->IsTrackingDownload(entry.guid)) {
       LogDownloadInterruptReason(reason);
+    }
     client_->OnDownloadFailed(entry, FailureTypeFromInterruptReason(reason));
   }
 }
@@ -354,8 +375,24 @@ void DownloadDriverImpl::OnDownloadCreated(
 
   // Only notifies the client about new downloads. Existing download data will
   // be loaded before the driver is ready.
-  if (IsReady())
+  if (IsReady()) {
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(&DownloadDriverImpl::NotifyClientOfCreatedState,
+                       weak_ptr_factory_.GetWeakPtr(), entry));
+  }
+}
+
+void DownloadDriverImpl::NotifyClientOfCreatedState(const DriverEntry& entry) {
+  if (!client_) {
+    return;
+  }
+  if (guid_to_remove_.find(entry.guid) != guid_to_remove_.end()) {
+    return;
+  }
+  if (IsReady()) {
     client_->OnDownloadCreated(entry);
+  }
 }
 
 void DownloadDriverImpl::OnUploadProgress(const std::string& guid,

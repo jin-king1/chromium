@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "gin/array_buffer.h"
 
 #include <stddef.h>
@@ -14,6 +9,7 @@
 
 #include "base/bits.h"
 #include "base/check_op.h"
+#include "base/compiler_specific.h"
 #include "base/no_destructor.h"
 #include "build/build_config.h"
 #include "gin/per_isolate_data.h"
@@ -61,8 +57,7 @@ void* ArrayBufferAllocator::AllocateInternal(size_t length) {
 #else
   constexpr auto new_flags = flags;
 #endif
-  return partition_->AllocInline<new_flags>(length,
-                                            "gin::ArrayBufferAllocator");
+  return partition_->Alloc<new_flags>(length, "gin::ArrayBufferAllocator");
 }
 
 void ArrayBufferAllocator::Free(void* data, size_t length) {
@@ -86,15 +81,6 @@ void ArrayBufferAllocator::InitializePartition() {
   opts.backup_ref_ptr = partition_alloc::PartitionOptions::kDisabled;
   opts.use_configurable_pool = partition_alloc::PartitionOptions::kAllowed;
 
-  // TODO(crbug.com/40274683): This will disappear when we reduce
-  // freelist impl selection to a compile-time seam.
-  opts.use_pool_offset_freelists = partition_alloc::PartitionOptions::kEnabled;
-
-  // TODO(crbug.com/333443437): Remove this user-configurable toggle and
-  // default all buckets to "small" single-slot spans.
-  opts.use_small_single_slot_spans =
-      partition_alloc::PartitionOptions::kEnabled;
-
   static base::NoDestructor<partition_alloc::PartitionAllocator>
       partition_allocator(opts);
 
@@ -104,21 +90,37 @@ void ArrayBufferAllocator::InitializePartition() {
 // ArrayBuffer ----------------------------------------------------------------
 ArrayBuffer::ArrayBuffer() = default;
 
-ArrayBuffer::ArrayBuffer(v8::Isolate* isolate, v8::Local<v8::ArrayBuffer> array)
+ArrayBuffer::ArrayBuffer(v8::Local<v8::ArrayBuffer> array)
     : backing_store_(array->GetBackingStore()) {}
 
 ArrayBuffer::~ArrayBuffer() = default;
 
 ArrayBuffer& ArrayBuffer::operator=(const ArrayBuffer& other) = default;
 
+base::span<uint8_t> ArrayBuffer::span() {
+  if (!backing_store_) {
+    return {};
+  }
+
+  // SAFETY: Provided by `BackingStore`.
+  return UNSAFE_BUFFERS(
+      base::span<uint8_t>(static_cast<uint8_t*>(backing_store_->Data()),
+                          backing_store_->ByteLength()));
+}
+
+base::span<const uint8_t> ArrayBuffer::span() const {
+  return const_cast<ArrayBuffer*>(this)->span();
+}
+
 // Converter<ArrayBuffer> -----------------------------------------------------
 
-bool Converter<ArrayBuffer>::FromV8(v8::Isolate* isolate,
+bool Converter<ArrayBuffer>::FromV8(v8::Isolate* /*isolate*/,
                                     v8::Local<v8::Value> val,
                                     ArrayBuffer* out) {
-  if (!val->IsArrayBuffer())
+  if (!val->IsArrayBuffer()) {
     return false;
-  *out = ArrayBuffer(isolate, v8::Local<v8::ArrayBuffer>::Cast(val));
+  }
+  *out = ArrayBuffer(v8::Local<v8::ArrayBuffer>::Cast(val));
   return true;
 }
 
@@ -129,26 +131,33 @@ ArrayBufferView::ArrayBufferView()
       num_bytes_(0) {
 }
 
-ArrayBufferView::ArrayBufferView(v8::Isolate* isolate,
-                                 v8::Local<v8::ArrayBufferView> view)
-    : array_buffer_(isolate, view->Buffer()),
+ArrayBufferView::ArrayBufferView(v8::Local<v8::ArrayBufferView> view)
+    : array_buffer_(view->Buffer()),
       offset_(view->ByteOffset()),
-      num_bytes_(view->ByteLength()) {
-}
+      num_bytes_(view->ByteLength()) {}
 
 ArrayBufferView::~ArrayBufferView() = default;
 
 ArrayBufferView& ArrayBufferView::operator=(const ArrayBufferView& other) =
     default;
 
+base::span<uint8_t> ArrayBufferView::span() {
+  return array_buffer_.span().subspan(offset_, num_bytes_);
+}
+
+base::span<const uint8_t> ArrayBufferView::span() const {
+  return const_cast<ArrayBufferView*>(this)->span();
+}
+
 // Converter<ArrayBufferView> -------------------------------------------------
 
-bool Converter<ArrayBufferView>::FromV8(v8::Isolate* isolate,
+bool Converter<ArrayBufferView>::FromV8(v8::Isolate* /*isolate*/,
                                         v8::Local<v8::Value> val,
                                         ArrayBufferView* out) {
-  if (!val->IsArrayBufferView())
+  if (!val->IsArrayBufferView()) {
     return false;
-  *out = ArrayBufferView(isolate, v8::Local<v8::ArrayBufferView>::Cast(val));
+  }
+  *out = ArrayBufferView(v8::Local<v8::ArrayBufferView>::Cast(val));
   return true;
 }
 
@@ -199,7 +208,7 @@ class ArrayBufferSharedMemoryMapper : public base::SharedMemoryMapper {
     if (!mapping)
       return std::nullopt;
 
-    return base::span(reinterpret_cast<uint8_t*>(mapping), size);
+    return UNSAFE_TODO(base::span(reinterpret_cast<uint8_t*>(mapping), size));
   }
 
   void Unmap(base::span<uint8_t> mapping) override {

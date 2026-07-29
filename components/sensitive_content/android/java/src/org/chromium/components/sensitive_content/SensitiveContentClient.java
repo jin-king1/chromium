@@ -20,13 +20,13 @@ import org.jni_zero.NativeMethods;
 
 import org.chromium.base.ObserverList;
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.base.ViewAndroidDelegate;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.ref.WeakReference;
-import java.util.Optional;
 
 /**
  * Java counterpart of the `AndroidSensitiveContentClient`. Used to retrieve the container view and
@@ -37,7 +37,7 @@ import java.util.Optional;
 public class SensitiveContentClient implements ViewAndroidDelegate.ContainerViewObserver {
     /** Used to update the content sensitivity of the current container view. */
     @VisibleForTesting
-    static interface ContentSensitivitySetter {
+    interface ContentSensitivitySetter {
         /**
          * Updates the content sensitivity of the given {@code containerView} to {@code
          * contentIsSensitive}.
@@ -92,7 +92,7 @@ public class SensitiveContentClient implements ViewAndroidDelegate.ContainerView
      * Has value if the content sensitivity was restored from tab state. The value is true if the
      * content is sensitive, and false otherwise.
      */
-    private Optional<Boolean> mContentRestoredFromTabStateIsSensitive = Optional.empty();
+    private @Nullable Boolean mContentRestoredFromTabStateIsSensitive;
 
     /**
      * Retrieves the client from {@link WebContents}, by calling the native client. The native
@@ -156,7 +156,7 @@ public class SensitiveContentClient implements ViewAndroidDelegate.ContainerView
         // This is ok, because {@link TabImpl} is both the observer and the one that calls this
         // method, so it is aware of the content sensitivity.
         mContentIsSensitive = contentIsSensitive;
-        mContentRestoredFromTabStateIsSensitive = Optional.of(contentIsSensitive);
+        mContentRestoredFromTabStateIsSensitive = contentIsSensitive;
         setContentSensitivity(contentIsSensitive);
     }
 
@@ -167,7 +167,7 @@ public class SensitiveContentClient implements ViewAndroidDelegate.ContainerView
      * @param view The new container view.
      */
     @Override
-    public void onUpdateContainerView(ViewGroup view) {
+    public void onUpdateContainerView(@Nullable ViewGroup view) {
         assert view == assumeNonNull(mViewAndroidDelegate.get()).getContainerView();
         setContentSensitivity(mContentIsSensitive);
     }
@@ -218,13 +218,13 @@ public class SensitiveContentClient implements ViewAndroidDelegate.ContainerView
     }
 
     @VisibleForTesting
-    public Optional<Boolean> getContentRestoredFromTabStateIsSensitive() {
+    public @Nullable Boolean getContentRestoredFromTabStateIsSensitive() {
         return mContentRestoredFromTabStateIsSensitive;
     }
 
     /** Observes changes made by the {@link SensitiveContentClient}. */
     @FunctionalInterface
-    public static interface Observer {
+    public interface Observer {
         /**
          * Called when the content sensitivity changed.
          *

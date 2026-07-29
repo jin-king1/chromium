@@ -14,6 +14,7 @@
 #include "base/strings/escape.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/stringprintf.h"
 #include "base/values.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "services/network/public/cpp/resource_request.h"
@@ -62,7 +63,7 @@ void HttpExchange::AddParamString(const std::string& name,
 void HttpExchange::AddParamArrayString(const std::string& name,
                                        const std::vector<std::string>& value) {
   DCHECK(!name.empty());
-  base::Value::List list_node;
+  base::ListValue list_node;
   for (const auto& value_element : value) {
     list_node.Append(value_element);
   }
@@ -159,7 +160,7 @@ void HttpExchange::OnURLLoaderCompleted(
     int success_http_status,
     int error_http_status,
     OnExchangeCompletedCallback callback,
-    std::unique_ptr<std::string> response_body) {
+    std::optional<std::string> response_body) {
   // Checks for connection errors.
   const int net_error = url_loader_->NetError();
   if (!(net_error == net::OK && url_loader_->ResponseInfo() &&
@@ -209,7 +210,8 @@ void HttpExchange::OnURLLoaderCompleted(
     std::move(callback).Run(StatusCode::kInvalidResponse);
     return;
   }
-  auto parsed = base::JSONReader::ReadDict(*response_body);
+  auto parsed = base::JSONReader::ReadDict(
+      *response_body, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   if (!parsed) {
     error_msg_ = "Cannot parse JSON payload.";
     std::move(callback).Run(StatusCode::kInvalidResponse);
@@ -292,7 +294,7 @@ bool HttpExchange::ParamArrayStringEquals(
     error_msg_ = base::StrCat({"Field ", name, " must be an array"});
     return false;
   }
-  const base::Value::List& node_as_list = node->GetList();
+  const base::ListValue& node_as_list = node->GetList();
   if (node_as_list.size() == value.size()) {
     // Compares the vectors, element by element.
     bool are_equal = true;
@@ -371,7 +373,7 @@ bool HttpExchange::ParamURLGet(const std::string& name,
     return false;
   }
   GURL gurl(node->GetString());
-  if (gurl.is_valid() && gurl.IsStandard() && gurl.scheme() == "https") {
+  if (gurl.is_valid() && gurl.IsStandard() && gurl.GetScheme() == "https") {
     // Success!
     if (value) {
       *value = gurl;

@@ -4,83 +4,94 @@
 
 package org.chromium.chrome.browser.ui.signin.fullscreen_signin;
 
-import android.os.Parcel;
-import android.os.Parcelable;
+import android.text.TextUtils;
 
 import androidx.annotation.DrawableRes;
-import androidx.annotation.StringRes;
 
-import org.chromium.chrome.browser.ui.signin.R;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.ui.signin.SigninAndHistorySyncCoordinator;
+import org.chromium.chrome.browser.ui.signin.SigninSurveyController;
 
-/* Class containing IDs of resources for the fullscreen sign-in view. */
-public final class FullscreenSigninConfig implements Parcelable {
-    public final @StringRes int titleId;
-    public final @StringRes int subtitleId;
-    public final @StringRes int dismissTextId;
+import java.util.Objects;
+
+/** Class containing resources for the fullscreen sign-in view. */
+@NullMarked
+public final class FullscreenSigninConfig {
+    public final String title;
+    public final String subtitle;
+    public final String dismissText;
     public final @DrawableRes int logoId;
-
-    public static final Parcelable.Creator<FullscreenSigninConfig> CREATOR =
-            new Parcelable.Creator<FullscreenSigninConfig>() {
-                @Override
-                public FullscreenSigninConfig createFromParcel(Parcel in) {
-                    return new FullscreenSigninConfig(in);
-                }
-
-                @Override
-                public FullscreenSigninConfig[] newArray(int size) {
-                    return new FullscreenSigninConfig[size];
-                }
-            };
-
-    /** Constructor of FullscreenSigninConfig using default values. */
-    public FullscreenSigninConfig() {
-        this(
-                /* titleId= */ R.string.signin_fre_title,
-                /* subtitleId= */ R.string.signin_fre_subtitle,
-                /* dismissTextId= */ R.string.signin_fre_dismiss_button,
-                /* logoId= */ 0);
-    }
+    public final boolean shouldDisableSignin;
+    public final @Nullable @SigninSurveyController.SigninSurveyType Integer signinSurveyType;
+    public final @Nullable String selectedAccountEmail;
+    public final @SigninAndHistorySyncCoordinator.SigninFlow int signinFlow;
 
     /**
      * Constructor of FullscreenSigninConfig.
      *
-     * @param titleId the resource ID of the title string.
-     * @param subtitleId the resource ID of the subtitle string.
-     * @param dismissTextId the resource ID of the dismiss button string.
+     * @param title The title string.
+     * @param subtitle The subtitle string.
+     * @param dismissText The dismiss button string.
      * @param logoId the resource ID of the logo drawable. Can be set to 0 to use the default
      *     sign-in logo.
+     * @param shouldDisableSignin Whether the sign-in should always be disabled for sign-in flows
+     *     started by the caller. The sign-in screen will show a generic title and a continue
+     *     button.
+     * @param surveyType The survey type to use for the sign-in flow.
+     * @param selectedAccountEmail the email of the account to auto-select in the sign-in flow.
+     * @param signinFlow The {@link SigninAndHistorySyncCoordinator.SigninFlow} for the sign-in
+     *     routine.
      */
     public FullscreenSigninConfig(
-            @StringRes int titleId,
-            @StringRes int subtitleId,
-            @StringRes int dismissTextId,
-            @DrawableRes int logoId) {
-        this.titleId = titleId;
-        this.subtitleId = subtitleId;
-        this.dismissTextId = dismissTextId;
+            String title,
+            String subtitle,
+            String dismissText,
+            @DrawableRes int logoId,
+            boolean shouldDisableSignin,
+            @Nullable @SigninSurveyController.SigninSurveyType Integer surveyType,
+            @Nullable String selectedAccountEmail,
+            @SigninAndHistorySyncCoordinator.SigninFlow int signinFlow) {
+        assert !TextUtils.isEmpty(title);
+        assert !TextUtils.isEmpty(subtitle);
+        assert !TextUtils.isEmpty(dismissText);
+        this.title = title;
+        this.subtitle = subtitle;
+        this.dismissText = dismissText;
         this.logoId = logoId;
+        this.shouldDisableSignin = shouldDisableSignin;
+        this.signinSurveyType = surveyType;
+        this.selectedAccountEmail = selectedAccountEmail;
+        this.signinFlow = signinFlow;
     }
 
-    private FullscreenSigninConfig(Parcel in) {
-        this(
-                /* titleId= */ in.readInt(),
-                /* subtitleId= */ in.readInt(),
-                /* dismissTextId= */ in.readInt(),
-                /* logoId= */ in.readInt());
-    }
-
-    /** Implements {@link Parcelable} */
     @Override
-    public int describeContents() {
-        return 0;
+    public boolean equals(@Nullable Object object) {
+        if (!(object instanceof FullscreenSigninConfig)) {
+            return false;
+        }
+
+        FullscreenSigninConfig other = (FullscreenSigninConfig) object;
+        return Objects.equals(title, other.title)
+                && Objects.equals(subtitle, other.subtitle)
+                && Objects.equals(dismissText, other.dismissText)
+                && logoId == other.logoId
+                && shouldDisableSignin == other.shouldDisableSignin
+                && Objects.equals(signinSurveyType, other.signinSurveyType)
+                && Objects.equals(selectedAccountEmail, other.selectedAccountEmail)
+                && signinFlow == other.signinFlow;
     }
 
-    /** Implements {@link Parcelable} */
     @Override
-    public void writeToParcel(Parcel out, int flags) {
-        out.writeInt(titleId);
-        out.writeInt(subtitleId);
-        out.writeInt(dismissTextId);
-        out.writeInt(logoId);
+    public int hashCode() {
+        return Objects.hash(
+                title,
+                subtitle,
+                dismissText,
+                logoId,
+                shouldDisableSignin,
+                signinSurveyType,
+                selectedAccountEmail,
+                signinFlow);
     }
 }

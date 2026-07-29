@@ -9,6 +9,7 @@
 
 @class TabGroupFaviconsGrid;
 @class TabGroupsPanelItem;
+@protocol FacePileProviding;
 
 // Represents a synced tab group in the Tab Groups panel.
 @interface TabGroupsPanelCell : UICollectionViewCell
@@ -19,15 +20,15 @@
 @property(nonatomic, strong, readonly) UILabel* titleLabel;
 @property(nonatomic, strong, readonly) UILabel* subtitleLabel;
 
+// The FacePileProvider, to be set externally. Held as a strong reference to
+// ensure the provider's lifecycle is maintained for managing and updating the
+// FacePileView's content.
+@property(nonatomic, strong) id<FacePileProviding> facePileProvider;
+
 // Associated item, identifying the represented tab group.
 @property(nonatomic, strong) TabGroupsPanelItem* item;
 
 - (instancetype)initWithCoder:(NSCoder*)coder NS_UNAVAILABLE;
-
-// Configures the `facePileViewController` with its `parentViewController`. The
-// parent must be non-nil if the face pile is non nil.
-- (void)setFacePileViewController:(UIViewController*)facePileViewController
-             parentViewController:(UIViewController*)parentViewController;
 
 @end
 

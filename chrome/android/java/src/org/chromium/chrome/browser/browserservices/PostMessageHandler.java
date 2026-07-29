@@ -4,6 +4,8 @@
 
 package org.chromium.chrome.browser.browserservices;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.net.Uri;
 import android.os.Bundle;
 
@@ -14,9 +16,10 @@ import androidx.browser.customtabs.PostMessageBackend;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
 import org.chromium.base.TerminationStatus;
-import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.components.content_relationship_verification.OriginVerifier;
 import org.chromium.components.content_relationship_verification.OriginVerifier.OriginVerificationListener;
@@ -36,6 +39,7 @@ import org.chromium.url.GURL;
 /**
  * A class that handles postMessage communications with a designated {@link CustomTabsSessionToken}.
  */
+@NullMarked
 public class PostMessageHandler implements OriginVerificationListener {
     private static final String TAG = "PostMessageHandler";
 
@@ -45,16 +49,17 @@ public class PostMessageHandler implements OriginVerificationListener {
 
     private final MessageCallback mMessageCallback;
     private final PostMessageBackend mPostMessageBackend;
-    private WebContents mWebContents;
-    private MessagePort[] mChannel;
-    private Uri mPostMessageSourceUri;
-    private Uri mPostMessageTargetUri;
+    private @Nullable WebContents mWebContents;
+    private MessagePort @Nullable [] mChannel;
+    private @Nullable Uri mPostMessageSourceUri;
+    private @Nullable Uri mPostMessageTargetUri;
 
     /**
      * Basic constructor. Everytime the given {@link CustomTabsSessionToken} is associated with a
      * new {@link WebContents},
      * {@link PostMessageHandler#reset(WebContents)} should be called to
      * reset all internal state.
+     *
      * @param postMessageBackend The {@link PostMessageBackend} to which updates about the channel
      *                           and posted messages will be sent.
      */
@@ -62,6 +67,11 @@ public class PostMessageHandler implements OriginVerificationListener {
         mPostMessageBackend = postMessageBackend;
         mMessageCallback =
                 (messagePayload, sentPorts) -> {
+                    if (mChannel == null) {
+                        Log.e(TAG, "Discarding postMessage as channel is null.");
+                        return;
+                    }
+
                     if (mChannel[0].isTransferred()) {
                         Log.e(TAG, "Discarding postMessage as channel has been transferred.");
                         return;
@@ -79,9 +89,8 @@ public class PostMessageHandler implements OriginVerificationListener {
                         bundle = new Bundle();
                         bundle.putString(POST_MESSAGE_ORIGIN, origin);
                     }
+                    assumeNonNull(messagePayload.getAsString());
                     mPostMessageBackend.onPostMessage(messagePayload.getAsString(), bundle);
-                    RecordHistogram.recordBooleanHistogram(
-                            "CustomTabs.PostMessage.OnMessage", true);
                 };
     }
 
@@ -92,7 +101,7 @@ public class PostMessageHandler implements OriginVerificationListener {
      * @param webContents The new {@link WebContents} that the session got associated with. If this
      *                    is null, the handler disconnects and unbinds from service.
      */
-    public void reset(final WebContents webContents) {
+    public void reset(final @Nullable WebContents webContents) {
         if (webContents == null || webContents.isDestroyed()) {
             disconnectChannel();
             return;
@@ -100,17 +109,14 @@ public class PostMessageHandler implements OriginVerificationListener {
         // Can't reset with the same web contents twice.
         if (webContents.equals(mWebContents)) return;
         mWebContents = webContents;
-        if (mPostMessageSourceUri == null) return;
         new WebContentsObserver(webContents) {
             private boolean mNavigatedOnce;
 
             @Override
             public void didFinishNavigationInPrimaryMainFrame(NavigationHandle navigation) {
-                if (mNavigatedOnce
-                        && navigation.hasCommitted()
-                        && !navigation.isSameDocument()
-                        && mChannel != null) {
+                if (mNavigatedOnce && navigation.hasCommitted() && !navigation.isSameDocument()) {
                     observe(null);
+                    mPostMessageSourceUri = null;
                     disconnectChannel();
                     return;
                 }
@@ -128,7 +134,7 @@ public class PostMessageHandler implements OriginVerificationListener {
                     Page page,
                     GlobalRenderFrameHostId rfhId,
                     @LifecycleState int rfhLifecycleState) {
-                if (mChannel != null) {
+                if (mChannel != null || mPostMessageSourceUri == null) {
                     return;
                 }
                 initializeWithWebContents(webContents);
@@ -140,6 +146,7 @@ public class PostMessageHandler implements OriginVerificationListener {
         mChannel = webContents.createMessageChannel();
         mChannel[0].setMessageCallback(mMessageCallback, null);
 
+        assumeNonNull(mPostMessageSourceUri);
         webContents.postMessageToMainFrame(
                 new MessagePayload(""),
                 mPostMessageSourceUri.toString(),
@@ -161,7 +168,7 @@ public class PostMessageHandler implements OriginVerificationListener {
      * Sets the postMessage postMessageUri for this session to the given {@link Uri}.
      * @param postMessageUri The postMessageUri value to be set.
      */
-    public void initializeWithPostMessageUri(Uri postMessageUri, Uri targetOrigin) {
+    public void initializeWithPostMessageUri(Uri postMessageUri, @Nullable Uri targetOrigin) {
         mPostMessageSourceUri = postMessageUri;
         mPostMessageTargetUri = targetOrigin;
         if (mWebContents != null && !mWebContents.isDestroyed()) {
@@ -203,7 +210,7 @@ public class PostMessageHandler implements OriginVerificationListener {
 
     @Override
     public void onOriginVerified(
-            String packageName, Origin origin, boolean result, Boolean online) {
+            String packageName, Origin origin, boolean result, @Nullable Boolean online) {
         if (!result) return;
         initializeWithPostMessageUri(
                 OriginVerifier.getPostMessageUriFromVerifiedOrigin(packageName, origin),
@@ -220,14 +227,14 @@ public class PostMessageHandler implements OriginVerificationListener {
         mPostMessageTargetUri = postMessageTargetUri;
     }
 
-    public Uri getPostMessageTargetUriForTesting() {
+    public @Nullable Uri getPostMessageTargetUriForTesting() {
         return mPostMessageTargetUri;
     }
 
     /**
      * @return The PostMessage Uri that has been declared for this handler.
      */
-    public Uri getPostMessageUriForTesting() {
+    public @Nullable Uri getPostMessageUriForTesting() {
         return mPostMessageSourceUri;
     }
 }

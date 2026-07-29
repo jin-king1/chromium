@@ -18,6 +18,7 @@
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/scoped_observation.h"
 #include "chrome/browser/apps/app_shim/app_shim_host_bootstrap_mac.h"
 #include "chrome/browser/apps/app_shim/app_shim_host_mac.h"
 #include "chrome/browser/badging/badge_manager.h"
@@ -26,13 +27,15 @@
 #include "chrome/browser/profiles/profile_manager_observer.h"
 #include "chrome/browser/profiles/profile_observer.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_list_observer.h"
+#include "chrome/browser/ui/browser_window/public/browser_collection_observer.h"
 #include "chrome/common/mac/app_shim.mojom.h"
 #include "chrome/services/mac_notifications/public/mojom/mac_notifications.mojom.h"
 #include "components/webapps/common/web_app_id.h"
 
 class Profile;
 class ProfileManager;
+class BrowserWindowInterface;
+class GlobalBrowserCollection;
 
 namespace base {
 class FilePath;
@@ -58,7 +61,7 @@ class AppShimManager
     : public AppShimHostBootstrap::Client,
       public AppShimHost::Client,
       public AppLifetimeMonitor::Observer,
-      public BrowserListObserver,
+      public BrowserCollectionObserver,
       public AvatarMenuObserver,
       public ProfileManagerObserver,
       public ProfileObserver,
@@ -154,12 +157,12 @@ class AppShimManager
   // it. If an AppShimHost had to be created (e.g, because the app process is
   // still launching), create one, which will bind to the app process when it
   // finishes launching.
-  AppShimHost* GetHostForRemoteCocoaBrowser(Browser* browser);
+  AppShimHost* GetHostForRemoteCocoaBrowser(BrowserWindowInterface* browser);
 
   // Returns true if the specified `browser` should be using RemoteCocoa. This
   // is equivalent to `GetHostForRemoteCocoaBrowser` return a non-null value,
   // except that this method does not cause an AppShimHost to be created.
-  bool BrowserUsesRemoteCocoa(Browser* browser);
+  bool BrowserUsesRemoteCocoa(BrowserWindowInterface* browser);
 
   // Return true if any non-bookmark app windows open.
   bool HasNonBookmarkAppWindowsOpen();
@@ -167,7 +170,7 @@ class AppShimManager
   // Called when the launch of the app was cancelled by the user. For example,
   // if the user clicks cancel during a protocol launch.
   void OnAppLaunchCancelled(content::BrowserContext* context,
-                            const std::string& app_id);
+                            const webapps::AppId& app_id);
 
   void UpdateAppBadge(
       Profile* profile,
@@ -251,10 +254,10 @@ class AppShimManager
   void OnProfileMarkedForPermanentDeletion(Profile* profile) override;
   void OnProfileManagerDestroying() override;
 
-  // BrowserListObserver overrides:
-  void OnBrowserAdded(Browser* browser) override;
-  void OnBrowserRemoved(Browser* browser) override;
-  void OnBrowserSetLastActive(Browser* browser) override;
+  // BrowserCollectionObserver overrides:
+  void OnBrowserCreated(BrowserWindowInterface* browser) override;
+  void OnBrowserClosed(BrowserWindowInterface* browser) override;
+  void OnBrowserActivated(BrowserWindowInterface* browser) override;
 
   // ProfileObserver overrides:
   void OnProfileWillBeDestroyed(Profile* profile) override;
@@ -289,7 +292,9 @@ class AppShimManager
   typedef std::set<Browser*> BrowserSet;
 
   // Virtual for tests.
-  virtual bool IsAcceptablyCodeSigned(audit_token_t audit_token) const;
+  virtual void IsAcceptablyCodeSigned(
+      audit_token_t audit_token,
+      base::OnceCallback<void(bool)> callback) const;
 
   // Return the profile for |path|, only if it is already loaded.
   virtual Profile* ProfileForPath(const base::FilePath& path);
@@ -417,6 +422,12 @@ class AppShimManager
       std::unique_ptr<AppShimHostBootstrap> bootstrap,
       ProfileState* profile_state,
       chrome::mojom::AppShimLaunchResult result);
+  // The continuation of OnShimProcessConnectedAndAllLaunchesDone, called after
+  // the possibly asynchronous code signature validation is complete.
+  void OnShimProcessConnectedAndAllLaunchesDoneValidationDone(
+      std::unique_ptr<AppShimHostBootstrap> bootstrap,
+      base::WeakPtr<AppShimHost> host,
+      bool is_acceptably_signed);
 
   // Load the specified profile and extension, and run |callback| with
   // the result. The callback's arguments may be nullptr on failure.
@@ -478,6 +489,10 @@ class AppShimManager
   void OnNotificationAction(
       mac_notifications::mojom::NotificationActionInfoPtr info) override;
 
+  void OnAppsDeactivatedForBrowserClose(
+      Profile* profile,
+      std::vector<std::string> apps_to_deactivate);
+
   std::unique_ptr<Delegate> delegate_;
 
   // Weak, reset during OnProfileManagerDestroying.
@@ -519,6 +534,8 @@ class AppShimManager
 
   base::ScopedMultiSourceObservation<Profile, ProfileObserver>
       profile_observation_{this};
+  base::ScopedObservation<GlobalBrowserCollection, BrowserCollectionObserver>
+      browser_collection_observation_{this};
 
   base::WeakPtrFactory<AppShimManager> weak_factory_;
 };

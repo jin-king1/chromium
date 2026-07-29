@@ -32,19 +32,18 @@ struct COMPONENT_EXPORT(APP_TYPES) App {
   ~App();
 
   bool operator==(const App& other) const;
-  bool operator!=(const App& other) const;
 
   std::unique_ptr<App> Clone() const;
 
   // Adds a new field for `extra`. The type `T` can be any type, e.g. int,
-  // double, string, base::Value::Dict, base::Value::List, base::Value, etc. The
-  // value is saved in base::Value::Dict `extra`. If the type `T` can't be
+  // double, string, base::DictValue, base::ListValue, base::Value, etc. The
+  // value is saved in base::DictValue `extra`. If the type `T` can't be
   // converted to base::Value, an explicit convert function can be added to
   // convert `value` to base::Value.
   template <typename T>
   void SetExtraField(const std::string& field_name, T&& value) {
     if (!extra.has_value()) {
-      extra = base::Value::Dict();
+      extra = base::DictValue();
     }
     extra->Set(field_name, value);
   }
@@ -132,7 +131,15 @@ struct COMPONENT_EXPORT(APP_TYPES) App {
   // This vector stores all the intent filters defined in this app. Each
   // intent filter defines a matching criteria for whether an intent can
   // be handled by this app. One app can have multiple intent filters.
-  IntentFilters intent_filters;
+  // For the most part zero-length `intent_filters` are equal to nullopt
+  // `intent_filters`; however, they carry different semantical meaning when
+  // applying updates: nullopt `intent_filters` in the delta means that the
+  // field remains unchanged after merging, whereas zero-length `intent_filters`
+  // resets it.
+  // Leave this field untouched if the app has nothing to do with intent
+  // handling; otherwise initialize it with a zero-length array if the
+  // intention is to reset it.
+  std::optional<IntentFilters> intent_filters;
 
   // Whether the app can be free resized. If this is true, various resizing
   // operations will be restricted.
@@ -167,7 +174,7 @@ struct COMPONENT_EXPORT(APP_TYPES) App {
   // app. `extra` needs to be modified as a whole, and we can't only modify part
   // of `extra`. AppService doesn't use the fields saved in `extra`. App
   // publishers modify the content saved in `extra`.
-  std::optional<base::Value::Dict> extra;
+  std::optional<base::DictValue> extra;
 
   // When adding new fields to the App type, the `Clone` function, the
   // `operator==` function, and the `AppUpdate` class should also be updated. If

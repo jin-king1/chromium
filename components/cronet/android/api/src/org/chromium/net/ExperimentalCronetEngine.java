@@ -23,12 +23,13 @@ import java.util.concurrent.Executor;
  * experimental features. Experimental features may be deprecated in the future. Use at your own
  * risk.
  *
- * <p>{@hide since this class exposes experimental features that should be hidden.}
- *
  * @deprecated scheduled for deletion, don't use in new code.
+ * @hide
  */
 @Deprecated
 public abstract class ExperimentalCronetEngine extends CronetEngine {
+    private static final String SHOULD_OVERRIDE_WITH_HTTPENGINE = "Cronet_OverrideWithHttpEngine";
+
     /** The value of a connection metric is unknown. */
     public static final int CONNECTION_METRIC_UNKNOWN = CronetEngine.CONNECTION_METRIC_UNKNOWN;
 
@@ -87,6 +88,8 @@ public abstract class ExperimentalCronetEngine extends CronetEngine {
      * A version of {@link CronetEngine.Builder} that exposes experimental features. Instances of
      * this class are not meant for general use, but instead only to access experimental features.
      * Experimental features may be deprecated in the future. Use at your own risk.
+     *
+     * @hide
      */
     public static class Builder extends CronetEngine.Builder {
         /**
@@ -107,7 +110,7 @@ public abstract class ExperimentalCronetEngine extends CronetEngine {
          * implementation.
          *
          * @param builderDelegate delegate that provides the actual implementation.
-         *     <p>{@hide}
+         * @hide
          */
         public Builder(ICronetEngineBuilder builderDelegate) {
             super(builderDelegate);
@@ -261,5 +264,13 @@ public abstract class ExperimentalCronetEngine extends CronetEngine {
     // TODO(pauljensen): Expose once implemented, http://crbug.com/418111
     public URLConnection openConnection(URL url, Proxy proxy) throws IOException {
         return url.openConnection(proxy);
+    }
+
+    /** Determines whether HttpEngine should be used or not. */
+    public static boolean shouldOverrideWithHttpEngine(Context context) {
+        var shouldOverrideWithHttpEngineFlagValue =
+                HttpFlagsForApi.getHttpFlags(context).flags().get(SHOULD_OVERRIDE_WITH_HTTPENGINE);
+        return shouldOverrideWithHttpEngineFlagValue != null
+                && shouldOverrideWithHttpEngineFlagValue.getBoolValue();
     }
 }

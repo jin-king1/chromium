@@ -19,10 +19,15 @@
 #include "components/web_modal/web_contents_modal_dialog_host.h"
 #include "ui/web_dialogs/web_dialog_ui.h"
 
+namespace content {
+class WebContents;
+}
+
 namespace ash {
 
 class LockScreenCaptivePortalDialog;
 class LockScreenNetworkDialog;
+class LockScreenReauthHandler;
 
 class LockScreenStartReauthDialog
     : public BaseLockDialog,
@@ -114,8 +119,8 @@ class LockScreenStartReauthDialog
   void UpdateState(NetworkError::ErrorReason reason) override;
 
   // ChromeWebModalDialogManagerDelegate:
-  web_modal::WebContentsModalDialogHost* GetWebContentsModalDialogHost()
-      override;
+  web_modal::WebContentsModalDialogHost* GetWebContentsModalDialogHost(
+      content::WebContents* web_contents) override;
 
   // web_modal::WebContentsModalDialogHost:
   gfx::Size GetMaximumDialogSize() override;
@@ -142,21 +147,22 @@ class LockScreenStartReauthDialog
 
   bool IsAutoReloadActive();
 
+  LockScreenReauthHandler* GetHandler();
+
   scoped_refptr<NetworkStateInformer> network_state_informer_;
   bool is_network_dialog_visible_ = false;
   bool is_proxy_auth_in_progress_ = false;
   bool should_reload_gaia_ = false;
 
   base::ScopedObservation<NetworkStateInformer, NetworkStateInformerObserver>
-      scoped_observation_{this};
+      network_state_scoped_observation_{this};
 
   std::unique_ptr<LockScreenNetworkDialog> lock_screen_network_dialog_;
   raw_ptr<Profile> profile_ = nullptr;
 
   std::unique_ptr<LockScreenCaptivePortalDialog> captive_portal_dialog_;
 
-  // Once Lacros is shipped, this will no longer be necessary.
-  std::unique_ptr<HttpAuthDialog::ScopedEnabler> enable_ash_httpauth_;
+  std::unique_ptr<HttpAuthDialog::ScopedEnabler> enable_system_httpauth_;
 
   // Callbacks and flags that are used in tests to check that the corresponding
   // dialog is loaded or closed.
@@ -168,7 +174,7 @@ class LockScreenStartReauthDialog
   bool is_network_dialog_loaded_for_testing_ = false;
   bool is_captive_portal_dialog_loaded_for_testing_ = false;
 
-  base::ObserverList<web_modal::ModalDialogHostObserver>::Unchecked
+  base::ObserverList<web_modal::ModalDialogHostObserver>
       modal_dialog_host_observer_list_;
   std::unique_ptr<ModalDialogManagerCleanup> modal_dialog_manager_cleanup_;
 

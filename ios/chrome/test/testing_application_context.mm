@@ -10,15 +10,24 @@
 #import "base/notreached.h"
 #import "base/time/default_clock.h"
 #import "base/time/default_tick_clock.h"
+#import "components/activity_reporter/activity_reporter.h"
+#import "components/application_locale_storage/application_locale_storage.h"
+#import "components/metrics_services_manager/metrics_services_manager.h"
 #import "components/network_time/network_time_tracker.h"
 #import "components/os_crypt/async/browser/test_utils.h"
+#import "components/supervised_user/core/browser/device_parental_controls.h"
+#import "components/supervised_user/core/browser/device_parental_controls_noop_impl.h"
+#import "components/update_client/net/network_chromium.h"
 #import "components/variations/service/variations_service.h"
+#import "ios/chrome/browser/download/model/auto_deletion/auto_deletion_service.h"
+#import "ios/chrome/browser/optimization_guide/model/optimization_guide_global_state.h"
 #import "ios/chrome/browser/policy/model/browser_policy_connector_ios.h"
 #import "ios/chrome/browser/policy/model/configuration_policy_handler_list_factory.h"
 #import "ios/chrome/browser/profile/model/ios_chrome_io_thread.h"
-#import "ios/chrome/browser/promos_manager/model/features.h"
 #import "ios/chrome/browser/promos_manager/model/mock_promos_manager.h"
 #import "ios/chrome/browser/signin/model/account_profile_mapper.h"
+#import "ios/chrome/browser/signin/model/avatar/avatar_provider.h"
+#import "ios/chrome/common/channel_info.h"
 #import "ios/components/security_interstitials/safe_browsing/fake_safe_browsing_service.h"
 #import "ios/public/provider/chrome/browser/additional_features/additional_features_api.h"
 #import "ios/public/provider/chrome/browser/push_notification/push_notification_api.h"
@@ -30,18 +39,19 @@
 #import "services/network/test/test_url_loader_factory.h"
 
 TestingApplicationContext::TestingApplicationContext()
-    : application_locale_("en-US"),
-      application_country_("us"),
+    : application_country_("us"),
       local_state_(nullptr),
       profile_manager_(nullptr),
       was_last_shutdown_clean_(false),
-      test_url_loader_factory_(
-          std::make_unique<network::TestURLLoaderFactory>()),
       test_network_connection_tracker_(
           network::TestNetworkConnectionTracker::CreateInstance()),
-      variations_service_(nullptr) {
+      variations_service_(nullptr),
+      metrics_services_manager_(nullptr),
+      application_locale_storage_(
+          std::make_unique<ApplicationLocaleStorage>()) {
   DCHECK(!GetApplicationContext());
   SetApplicationContext(this);
+  application_locale_storage_->Set("en-US");
 }
 
 TestingApplicationContext::~TestingApplicationContext() {
@@ -68,6 +78,7 @@ void TestingApplicationContext::SetLocalState(PrefService* local_state) {
     // state are also freed.
     network_time_tracker_.reset();
     push_notification_service_.reset();
+    optimization_guide_global_state_.reset();
   }
   local_state_ = local_state;
 }
@@ -94,6 +105,12 @@ void TestingApplicationContext::SetVariationsService(
   variations_service_ = variations_service;
 }
 
+void TestingApplicationContext::SetMetricsServicesManager(
+    metrics_services_manager::MetricsServicesManager* manager) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  metrics_services_manager_ = manager;
+}
+
 void TestingApplicationContext::SetSystemIdentityManager(
     std::unique_ptr<SystemIdentityManager> system_identity_manager) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
@@ -106,6 +123,12 @@ void TestingApplicationContext::SetIOSChromeIOThread(
     IOSChromeIOThread* ios_chrome_io_thread) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   ios_chrome_io_thread_ = ios_chrome_io_thread;
+}
+
+void TestingApplicationContext::SetSharedURLLoaderFactory(
+    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  test_url_loader_factory_ = std::move(url_loader_factory);
 }
 
 void TestingApplicationContext::OnAppEnterForeground() {
@@ -143,7 +166,7 @@ TestingApplicationContext::GetSystemURLRequestContext() {
 scoped_refptr<network::SharedURLLoaderFactory>
 TestingApplicationContext::GetSharedURLLoaderFactory() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  return test_url_loader_factory_->GetSafeWeakWrapper();
+  return test_url_loader_factory_;
 }
 
 network::mojom::NetworkContext*
@@ -152,10 +175,11 @@ TestingApplicationContext::GetSystemNetworkContext() {
   NOTREACHED();
 }
 
-const std::string& TestingApplicationContext::GetApplicationLocale() {
+ApplicationLocaleStorage*
+TestingApplicationContext::GetApplicationLocaleStorage() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(!application_locale_.empty());
-  return application_locale_;
+  CHECK(application_locale_storage_);
+  return application_locale_storage_.get();
 }
 
 const std::string& TestingApplicationContext::GetApplicationCountry() {
@@ -172,7 +196,7 @@ ProfileManagerIOS* TestingApplicationContext::GetProfileManager() {
 metrics_services_manager::MetricsServicesManager*
 TestingApplicationContext::GetMetricsServicesManager() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  return nullptr;
+  return metrics_services_manager_;
 }
 
 metrics::MetricsService* TestingApplicationContext::GetMetricsService() {
@@ -209,16 +233,31 @@ TestingApplicationContext::GetNetExportFileWriter() {
 }
 
 network_time::NetworkTimeTracker*
-TestingApplicationContext::GetNetworkTimeTracker() {
+TestingApplicationContext::GetNetworkTimeTrackerMaybeUninitialized() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (!network_time_tracker_) {
-    DCHECK(local_state_);
-    network_time_tracker_.reset(new network_time::NetworkTimeTracker(
-        base::WrapUnique(new base::DefaultClock),
-        base::WrapUnique(new base::DefaultTickClock), local_state_, nullptr,
-        std::nullopt));
+    network_time_tracker_ = std::make_unique<network_time::NetworkTimeTracker>(
+        std::make_unique<base::DefaultClock>(),
+        std::make_unique<base::DefaultTickClock>(),
+        /*pref_service=*/nullptr,
+        /*url_loader_factory=*/nullptr,
+        /*fetch_behavior=*/std::nullopt);
+    CHECK(!network_time_tracker_->is_initialized());
   }
   return network_time_tracker_.get();
+}
+
+network_time::NetworkTimeTracker*
+TestingApplicationContext::GetNetworkTimeTracker() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  auto* network_time_tracker = GetNetworkTimeTrackerMaybeUninitialized();
+  if (!network_time_tracker->is_initialized()) {
+    DCHECK(local_state_);
+    network_time_tracker->Initialize(/*pref_service=*/local_state_,
+                                     /*url_loader_factory=*/nullptr);
+    CHECK(network_time_tracker->is_initialized());
+  }
+  return network_time_tracker;
 }
 
 IOSChromeIOThread* TestingApplicationContext::GetIOSChromeIOThread() {
@@ -229,6 +268,15 @@ IOSChromeIOThread* TestingApplicationContext::GetIOSChromeIOThread() {
 gcm::GCMDriver* TestingApplicationContext::GetGCMDriver() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   return nullptr;
+}
+
+activity_reporter::ActivityReporter*
+TestingApplicationContext::GetActivityReporter() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (!activity_reporter_) {
+    activity_reporter_ = activity_reporter::CreateActivityReporterDisabled();
+  }
+  return activity_reporter_.get();
 }
 
 component_updater::ComponentUpdateService*
@@ -273,6 +321,14 @@ id<SingleSignOnService> TestingApplicationContext::GetSingleSignOnService() {
   return single_sign_on_service_;
 }
 
+signin::AvatarProvider* TestingApplicationContext::GetIdentityAvatarProvider() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (!resized_avatar_caches_) {
+    resized_avatar_caches_ = std::make_unique<signin::AvatarProvider>();
+  }
+  return resized_avatar_caches_.get();
+}
+
 SystemIdentityManager* TestingApplicationContext::GetSystemIdentityManager() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (!system_identity_manager_) {
@@ -289,7 +345,8 @@ AccountProfileMapper* TestingApplicationContext::GetAccountProfileMapper() {
   }
   if (!default_account_profile_mapper_) {
     default_account_profile_mapper_ = std::make_unique<AccountProfileMapper>(
-        GetSystemIdentityManager(), /*profile_manager=*/nullptr);
+        GetSystemIdentityManager(), /*profile_manager=*/nullptr,
+        /*local_state=*/nullptr);
   }
   return default_account_profile_mapper_.get();
 }
@@ -328,11 +385,29 @@ TestingApplicationContext::GetAdditionalFeaturesController() {
   return additional_features_controller_.get();
 }
 
-#if BUILDFLAG(BUILD_WITH_INTERNAL_OPTIMIZATION_GUIDE)
-optimization_guide::OnDeviceModelServiceController*
-TestingApplicationContext::GetOnDeviceModelServiceController(
-    base::WeakPtr<optimization_guide::OnDeviceModelComponentStateManager>
-        on_device_component_manager) {
-  return nullptr;
+auto_deletion::AutoDeletionService*
+TestingApplicationContext::GetAutoDeletionService() {
+  if (!auto_deletion_service_) {
+    auto_deletion_service_ =
+        std::make_unique<auto_deletion::AutoDeletionService>(GetLocalState());
+  }
+  return auto_deletion_service_.get();
 }
-#endif  // BUILD_WITH_INTERNAL_OPTIMIZATION_GUIDE
+
+optimization_guide::OptimizationGuideGlobalState*
+TestingApplicationContext::GetOptimizationGuideGlobalState() {
+  if (!optimization_guide_global_state_) {
+    optimization_guide_global_state_ =
+        std::make_unique<optimization_guide::OptimizationGuideGlobalState>();
+  }
+  return optimization_guide_global_state_.get();
+}
+
+supervised_user::DeviceParentalControls&
+TestingApplicationContext::GetDeviceParentalControls() {
+  if (!device_parental_controls_) {
+    device_parental_controls_ =
+        std::make_unique<supervised_user::DeviceParentalControlsNoOpImpl>();
+  }
+  return *device_parental_controls_;
+}

@@ -34,6 +34,7 @@
 #include <vector>
 
 #include "third_party/blink/public/platform/web_common.h"
+#include "third_party/blink/public/web/web_autofill_state.h"
 #include "third_party/blink/public/web/web_form_control_element.h"
 #include "third_party/blink/public/web/web_option_element.h"
 
@@ -44,7 +45,9 @@ class HTMLSelectElement;
 // Provides readonly access to some properties of a DOM select element node.
 class BLINK_EXPORT WebSelectElement final : public WebFormControlElement {
  public:
-  WebSelectElement() : WebFormControlElement() {}
+  explicit WebSelectElement(
+      cppgc::SourceLocation loc = BLINK_WEB_NODE_LOCATION_FROM_HERE)
+      : WebFormControlElement(loc) {}
   WebSelectElement(const WebSelectElement& element) = default;
 
   WebSelectElement& operator=(const WebSelectElement& element) {
@@ -54,6 +57,20 @@ class BLINK_EXPORT WebSelectElement final : public WebFormControlElement {
   void Assign(const WebSelectElement& element) {
     WebFormControlElement::Assign(element);
   }
+
+  // Auto-selects `option` in `this`. This is preferred in `WebSelectElement`
+  // over `WebFormControlElement::SetAutofillValue()` because the former
+  // specifies the exact option to select, whereas the latter triggers a
+  // search-by-value that could be inaccurate for select elements having options
+  // with duplicate values.
+  // Also dispatches focus/blur events before and after modifying the option
+  // respectively.
+  void SetAutofillOption(WebOptionElement* option,
+                         WebAutofillState autofill_state);
+
+  // Similar to `SetAutofillOption()` in terms of its advantages over
+  // `WebFormControlElement::SetSuggestedValue()`. Does not dispatch any events.
+  void SetSuggestedOption(WebOptionElement* option);
 
   std::vector<WebElement> GetListItems() const;
 

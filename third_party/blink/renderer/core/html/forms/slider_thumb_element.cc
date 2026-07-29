@@ -44,6 +44,7 @@
 #include "third_party/blink/renderer/core/input/event_handler.h"
 #include "third_party/blink/renderer/core/layout/flex/layout_flexible_box.h"
 #include "third_party/blink/renderer/core/layout/layout_block_flow.h"
+#include "third_party/blink/renderer/core/layout/layout_object_inlines.h"
 #include "third_party/blink/renderer/core/layout/layout_theme.h"
 #include "ui/base/ui_base_features.h"
 
@@ -52,7 +53,6 @@ namespace blink {
 SliderThumbElement::SliderThumbElement(Document& document)
     : HTMLDivElement(document), in_drag_mode_(false) {
   SetHasCustomStyleCallbacks();
-  setAttribute(html_names::kIdAttr, shadow_element_names::kIdSliderThumb);
 }
 
 void SliderThumbElement::SetPositionFromValue() {
@@ -106,22 +106,26 @@ void SliderThumbElement::SetPositionFromPoint(const PhysicalOffset& point) {
   PhysicalOffset point_in_track = track_box->AbsoluteToLocalPoint(point);
   auto writing_direction = thumb_box->StyleRef().GetWritingDirection();
   bool is_flipped = writing_direction.IsFlippedInlines();
+  const auto* input_box = To<LayoutBox>(input_object);
+  const PhysicalOffset thumb_offset =
+      thumb_box->LocalToAncestorPoint(PhysicalOffset(), input_box) -
+      track_box->LocalToAncestorPoint(PhysicalOffset(), input_box);
+  const PhysicalSize thumb_size = thumb_box->StitchedSize();
+  const PhysicalBoxStrut thumb_margins = thumb_box->MarginOutsets();
+  const PhysicalSize track_box_size = track_box->PhysicalContentBoxRect().size;
+
   LayoutUnit track_size;
   LayoutUnit position;
   LayoutUnit current_position;
-  const auto* input_box = To<LayoutBox>(input_object);
-  PhysicalOffset thumb_offset =
-      thumb_box->LocalToAncestorPoint(PhysicalOffset(), input_box) -
-      track_box->LocalToAncestorPoint(PhysicalOffset(), input_box);
   if (!writing_direction.IsHorizontal()) {
-    track_size = track_box->ContentHeight() - thumb_box->Size().height;
-    position = point_in_track.top - thumb_box->Size().height / 2;
-    position -= is_flipped ? thumb_box->MarginBottom() : thumb_box->MarginTop();
+    track_size = track_box_size.height - thumb_size.height;
+    position = point_in_track.top - thumb_size.height / 2;
+    position -= is_flipped ? thumb_margins.bottom : thumb_margins.top;
     current_position = thumb_offset.top;
   } else {
-    track_size = track_box->ContentWidth() - thumb_box->Size().width;
-    position = point_in_track.left - thumb_box->Size().width / 2;
-    position -= is_flipped ? thumb_box->MarginRight() : thumb_box->MarginLeft();
+    track_size = track_box_size.width - thumb_size.width;
+    position = point_in_track.left - thumb_size.width / 2;
+    position -= is_flipped ? thumb_margins.right : thumb_margins.left;
     current_position = thumb_offset.left;
   }
   position = std::min(position, track_size).ClampNegativeToZero();
@@ -165,7 +169,7 @@ void SliderThumbElement::StartDragging() {
   }
 }
 
-void SliderThumbElement::StopDragging() {
+void SliderThumbElement::StopDragging(EventDispatch event_dispatch) {
   if (!in_drag_mode_)
     return;
 
@@ -178,8 +182,9 @@ void SliderThumbElement::StopDragging() {
     GetLayoutObject()->SetNeedsLayoutAndFullPaintInvalidation(
         layout_invalidation_reason::kSliderValueChanged);
   }
-  if (HostInput())
+  if (HostInput() && event_dispatch == kEventDispatchAllowed) {
     HostInput()->DispatchFormControlChangeEvent();
+  }
 }
 
 void SliderThumbElement::DefaultEventHandler(Event& event) {
@@ -406,7 +411,11 @@ bool SliderContainerElement::CanSlide() {
       }
     }
   }
-  bool is_horizontal = GetComputedStyle()->IsHorizontalWritingMode();
+  const ComputedStyle* container_style = GetComputedStyle();
+  if (!container_style) {
+    return false;
+  }
+  bool is_horizontal = container_style->IsHorizontalWritingMode();
   if ((sliding_direction_ == Direction::kVertical && is_horizontal) ||
       (sliding_direction_ == Direction::kHorizontal && !is_horizontal)) {
     return false;
@@ -447,6 +456,7 @@ void SliderContainerElement::UpdateTouchEventHandlerRegistry() {
 }
 
 void SliderContainerElement::DidMoveToNewDocument(Document& old_document) {
+  has_touch_event_handler_ = false;
   UpdateTouchEventHandlerRegistry();
   HTMLElement::DidMoveToNewDocument(old_document);
 }

@@ -19,6 +19,7 @@
 #include "extensions/browser/background_script_executor.h"
 #include "extensions/browser/extension_action.h"
 #include "extensions/browser/extension_action_manager.h"
+#include "extensions/browser/extension_host.h"
 #include "extensions/browser/extension_host_registry.h"
 #include "extensions/common/features/feature_channel.h"
 #include "extensions/test/result_catcher.h"
@@ -120,8 +121,8 @@ IN_PROC_BROWSER_TEST_F(ActionAPIInteractiveUITest, OpenPopupInSpecifiedWindow) {
   ASSERT_TRUE(second_browser);
   ui_test_utils::BrowserActivationWaiter(second_browser).WaitForActivation();
 
-  EXPECT_FALSE(browser()->window()->IsActive());
-  EXPECT_TRUE(second_browser->window()->IsActive());
+  EXPECT_FALSE(browser()->GetWindow()->IsActive());
+  EXPECT_TRUE(second_browser->GetWindow()->IsActive());
 
   int window_id = ExtensionTabUtil::GetWindowId(second_browser);
 
@@ -156,8 +157,8 @@ IN_PROC_BROWSER_TEST_F(ActionAPIInteractiveUITest, OpenPopupInInactiveWindow) {
   // TODO(crbug.com/40057101): We should allow extensions to open a
   // popup in an inactive window. Currently, this fails, so try to open the
   // popup in the active window (but with a specified ID).
-  EXPECT_FALSE(browser()->window()->IsActive());
-  EXPECT_TRUE(second_browser->window()->IsActive());
+  EXPECT_FALSE(browser()->GetWindow()->IsActive());
+  EXPECT_TRUE(second_browser->GetWindow()->IsActive());
 
   int inactive_window_id = ExtensionTabUtil::GetWindowId(browser());
 
@@ -221,7 +222,7 @@ IN_PROC_BROWSER_TEST_F(ActionAPIInteractiveUITest, OpenPopupFailures) {
 
 // Tests that openPopup() will not succeed if a popup is only visible on a tab
 // because of a declarative condition.
-// https://crbug.com/1289846.
+// https://crbug.com/40058555.
 IN_PROC_BROWSER_TEST_F(ActionAPIInteractiveUITest,
                        DontOpenPopupForDeclarativelyShownAction) {
   ASSERT_TRUE(StartEmbeddedTestServer());
@@ -265,8 +266,7 @@ IN_PROC_BROWSER_TEST_F(ActionAPIInteractiveUITest,
   GURL url = embedded_test_server()->GetURL("example.com", "/simple.html");
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
 
-  int tab_id = ExtensionTabUtil::GetTabId(
-      browser()->tab_strip_model()->GetActiveWebContents());
+  int tab_id = ExtensionTabUtil::GetTabId(GetActiveWebContents());
 
   const ExtensionAction* extension_action =
       ExtensionActionManager::Get(profile())->GetExtensionAction(*extension);

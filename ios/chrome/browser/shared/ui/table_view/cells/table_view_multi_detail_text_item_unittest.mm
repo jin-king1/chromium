@@ -4,7 +4,8 @@
 
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_multi_detail_text_item.h"
 
-#import "ios/chrome/browser/shared/ui/table_view/legacy_chrome_table_view_styler.h"
+#import "base/apple/foundation_util.h"
+#import "ios/chrome/browser/shared/ui/table_view/content_configuration/table_view_cell_content_configuration.h"
 #import "testing/gtest/include/gtest/gtest.h"
 #import "testing/gtest_mac.h"
 #import "testing/platform_test.h"
@@ -24,22 +25,21 @@ TEST_F(TableViewMultiDetailTextItemTest, TextLabels) {
   item.trailingDetailText = trailingDetailText;
   item.accessoryType = UITableViewCellAccessoryCheckmark;
 
-  id cell = [[[item cellClass] alloc] init];
-  ASSERT_TRUE([cell isMemberOfClass:[TableViewMultiDetailTextCell class]]);
+  id originalCell = [[[item cellClass] alloc] init];
+  ASSERT_TRUE([originalCell isMemberOfClass:[LegacyTableViewCell class]]);
+  LegacyTableViewCell* cell = originalCell;
 
-  TableViewMultiDetailTextCell* TableViewMultiDetailTextCell = cell;
-  EXPECT_FALSE(TableViewMultiDetailTextCell.textLabel.text);
-  EXPECT_FALSE(TableViewMultiDetailTextCell.leadingDetailTextLabel.text);
-  EXPECT_FALSE(TableViewMultiDetailTextCell.trailingDetailTextLabel.text);
-  EXPECT_EQ(UITableViewCellAccessoryNone,
-            TableViewMultiDetailTextCell.accessoryType);
+  [item configureCell:cell];
 
-  [item configureCell:cell withStyler:[[ChromeTableViewStyler alloc] init]];
-  EXPECT_NSEQ(mainText, TableViewMultiDetailTextCell.textLabel.text);
-  EXPECT_NSEQ(leadingDetailText,
-              TableViewMultiDetailTextCell.leadingDetailTextLabel.text);
-  EXPECT_NSEQ(trailingDetailText,
-              TableViewMultiDetailTextCell.trailingDetailTextLabel.text);
-  EXPECT_EQ(UITableViewCellAccessoryCheckmark,
-            TableViewMultiDetailTextCell.accessoryType);
+  id<UIContentConfiguration> contentConfiguration = cell.contentConfiguration;
+  ASSERT_TRUE([contentConfiguration
+      isMemberOfClass:TableViewCellContentConfiguration.class]);
+
+  TableViewCellContentConfiguration* configuration =
+      base::apple::ObjCCast<TableViewCellContentConfiguration>(
+          contentConfiguration);
+  EXPECT_NSEQ(mainText, configuration.title);
+  EXPECT_NSEQ(leadingDetailText, configuration.subtitle);
+  EXPECT_NSEQ(trailingDetailText, configuration.trailingText);
+  EXPECT_EQ(UITableViewCellAccessoryCheckmark, cell.accessoryType);
 }

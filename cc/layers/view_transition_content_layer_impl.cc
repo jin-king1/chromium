@@ -6,6 +6,7 @@
 
 #include "base/check.h"
 #include "base/memory/ptr_util.h"
+#include "cc/base/math_util.h"
 #include "cc/layers/append_quads_context.h"
 #include "cc/layers/append_quads_data.h"
 #include "cc/layers/layer_impl.h"
@@ -61,8 +62,8 @@ void ViewTransitionContentLayerImpl::NotifyKnownResourceIdsBeforeAppendQuads(
   skip_unseen_resource_quads_ = known_resource_ids.count(resource_id_) == 0;
 }
 
-void ViewTransitionContentLayerImpl::PushPropertiesTo(LayerImpl* layer) {
-  LayerImpl::PushPropertiesTo(layer);
+void ViewTransitionContentLayerImpl::CopyPropertiesTo(LayerImpl* layer) const {
+  LayerImpl::CopyPropertiesTo(layer);
   static_cast<ViewTransitionContentLayerImpl*>(layer)->SetMaxExtentsRect(
       max_extents_rect_in_originating_layer_coordinate_space_);
 }

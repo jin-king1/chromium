@@ -7,7 +7,6 @@
 #include <utility>
 
 #include "base/check.h"
-#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
@@ -20,6 +19,7 @@
 #include "base/no_destructor.h"
 #include "base/supports_user_data.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/time/time.h"
 #include "base/timer/elapsed_timer.h"
 #include "chrome/browser/enterprise/browser_management/management_service_factory.h"
 #include "chrome/browser/enterprise/util/managed_browser_utils.h"
@@ -29,12 +29,12 @@
 #include "chrome/browser/signin/account_reconcilor_factory.h"
 #include "chrome/browser/signin/dice_signed_in_profile_creator.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
-#include "chrome/browser/signin/signin_manager_factory.h"
 #include "chrome/browser/signin/signin_util.h"
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/sync/sync_startup_tracker.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/sync/profile_signin_confirmation_helper.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/webui/signin/history_sync_optin_helper.h"
 #include "chrome/browser/ui/webui/signin/login_ui_service_factory.h"
 #include "chrome/browser/ui/webui/signin/signin_ui_error.h"
 #include "chrome/browser/ui/webui/signin/signin_utils_desktop.h"
@@ -53,6 +53,8 @@
 #include "components/signin/public/identity_manager/accounts_mutator.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/primary_account_mutator.h"
+#include "components/signin/public/identity_manager/tribool.h"
+#include "components/sync/base/features.h"
 #include "components/sync/service/sync_service.h"
 #include "components/sync/service/sync_user_settings.h"
 #include "components/unified_consent/unified_consent_service.h"
@@ -88,36 +90,6 @@ class TurnSyncOnHelperShutdownNotifierFactory
     DependsOn(policy::UserPolicySigninServiceFactory::GetInstance());
   }
   ~TurnSyncOnHelperShutdownNotifierFactory() override = default;
-};
-
-// User input handler for the signin confirmation dialog.
-class SigninDialogDelegate : public ui::ProfileSigninConfirmationDelegate {
- public:
-  explicit SigninDialogDelegate(signin::SigninChoiceCallback callback)
-      : callback_(std::move(callback)) {
-    DCHECK(callback_);
-  }
-  SigninDialogDelegate(const SigninDialogDelegate&) = delete;
-  SigninDialogDelegate& operator=(const SigninDialogDelegate&) = delete;
-  ~SigninDialogDelegate() override = default;
-
-  void OnCancelSignin() override {
-    DCHECK(callback_);
-    std::move(callback_).Run(signin::SIGNIN_CHOICE_CANCEL);
-  }
-
-  void OnContinueSignin() override {
-    DCHECK(callback_);
-    std::move(callback_).Run(signin::SIGNIN_CHOICE_CONTINUE);
-  }
-
-  void OnSigninWithNewProfile() override {
-    DCHECK(callback_);
-    std::move(callback_).Run(signin::SIGNIN_CHOICE_NEW_PROFILE);
-  }
-
- private:
-  signin::SigninChoiceCallback callback_;
 };
 
 struct CurrentTurnSyncOnHelperUserData : public base::SupportsUserData::Data {
@@ -165,14 +137,14 @@ bool TurnSyncOnHelper::Delegate::IsProfileCreationRequiredByPolicy() const {
 // static
 void TurnSyncOnHelper::Delegate::ShowLoginErrorForBrowser(
     const SigninUIError& error,
-    Browser* browser) {
+    BrowserWindowInterface* browser) {
   if (!browser) {
     // TODO(crbug.com/40242414): Make sure we do something or log an error if
     // opening a browser window was not possible.
     return;
   }
-  LoginUIServiceFactory::GetForProfile(browser->profile())
-      ->DisplayLoginResult(browser, error, /*from_profile_picker=*/false);
+  LoginUIServiceFactory::GetForProfile(browser->GetProfile())
+      ->DisplayLoginResult(browser->GetFeatures(), error);
 }
 
 TurnSyncOnHelper::TurnSyncOnHelper(
@@ -183,14 +155,14 @@ TurnSyncOnHelper::TurnSyncOnHelper(
     SigninAbortedMode signin_aborted_mode,
     std::unique_ptr<Delegate> delegate,
     base::OnceClosure callback,
-    bool turn_sync_on_signed_profile)
+    bool user_already_signed_in)
     : delegate_(std::move(delegate)),
       profile_(profile),
       identity_manager_(IdentityManagerFactory::GetForProfile(profile)),
       signin_access_point_(signin_access_point),
       signin_promo_action_(signin_promo_action),
       signin_aborted_mode_(signin_aborted_mode),
-      turn_sync_on_signed_profile_(turn_sync_on_signed_profile),
+      user_already_signed_in_(user_already_signed_in),
       account_info_(
           identity_manager_->FindExtendedAccountInfoByAccountId(account_id)),
       scoped_callback_runner_(std::move(callback)),
@@ -200,18 +172,26 @@ TurnSyncOnHelper::TurnSyncOnHelper(
           TurnSyncOnHelperShutdownNotifierFactory::GetInstance()
               ->Get(profile)
               ->Subscribe(base::BindOnce(&TurnSyncOnHelper::AbortAndDelete,
-                                         base::Unretained(this)))) {
+                                         base::Unretained(this)))),
+      enable_automatic_management_disclaimer_on_primary_account_change_(
+          enterprise_util::DisableAutomaticManagementDisclaimerUntilReset(
+              profile)) {
   DCHECK(delegate_);
   DCHECK(profile_);
   // Should not start syncing if the profile is already authenticated
   DCHECK(!identity_manager_->HasPrimaryAccount(signin::ConsentLevel::kSync));
+
+  // This class should be unreachable if `kReplaceSyncPromosWithSignInPromos` is
+  // enabled.
+  CHECK(!syncer::IsReplaceSyncPromosWithSignInPromosEnabled(),
+        base::NotFatalUntil::M144);
 
   // Cancel any existing helper.
   AttachToProfile();
 
   // Trigger the start of the flow via a posted task. Starting the flow could
   // result in the deletion of this object and the deletion of the host, which
-  // should not be done synchronously. See crbug.com/1367078 for example.
+  // should not be done synchronously. See crbug.com/40867387 for example.
   base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
       FROM_HERE, base::BindOnce(&TurnSyncOnHelper::TurnSyncOnInternal,
                                 weak_pointer_factory_.GetWeakPtr()));
@@ -219,13 +199,13 @@ TurnSyncOnHelper::TurnSyncOnHelper(
 
 TurnSyncOnHelper::TurnSyncOnHelper(
     Profile* profile,
-    Browser* browser,
+    BrowserWindowInterface* browser,
     signin_metrics::AccessPoint signin_access_point,
     signin_metrics::PromoAction signin_promo_action,
     const CoreAccountId& account_id,
     SigninAbortedMode signin_aborted_mode,
     bool is_sync_promo,
-    bool turn_sync_on_signed_profile)
+    bool user_already_signed_in)
     : TurnSyncOnHelper(profile,
                        signin_access_point,
                        signin_promo_action,
@@ -234,9 +214,9 @@ TurnSyncOnHelper::TurnSyncOnHelper(
                        std::make_unique<TurnSyncOnHelperDelegateImpl>(
                            browser,
                            is_sync_promo,
-                           turn_sync_on_signed_profile),
+                           user_already_signed_in),
                        base::OnceClosure(),
-                       turn_sync_on_signed_profile) {
+                       user_already_signed_in) {
   // If this is a promo, the account should not be removed on abort.
   CHECK(!is_sync_promo ||
         signin_aborted_mode == SigninAbortedMode::KEEP_ACCOUNT);
@@ -270,7 +250,8 @@ void TurnSyncOnHelper::TurnSyncOnInternal() {
   // Handles cross account sign in error. If |account_info_| does not match the
   // last authenticated account of the current profile, then Chrome will show a
   // confirmation dialog before starting sync.
-  // TODO(skym): Warn for high risk upgrade scenario (https://crbug.com/572754).
+  // TODO(skym): Warn for high risk upgrade scenario
+  // (https://crbug.com/40450589).
   std::string last_email = profile_->GetPrefs()->GetString(
       prefs::kGoogleServicesLastSyncingUsername);
   delegate_->ShowMergeSyncDataConfirmation(
@@ -281,7 +262,8 @@ void TurnSyncOnHelper::TurnSyncOnInternal() {
 
 bool TurnSyncOnHelper::HasCanOfferSigninError() {
   SigninUIError can_offer_error =
-      CanOfferSignin(profile_, account_info_.gaia, account_info_.email);
+      CanOfferSignin(profile_, account_info_.gaia, account_info_.email,
+                     /*allow_account_from_other_profile=*/false);
   if (can_offer_error.IsOk()) {
     return false;
   }
@@ -328,7 +310,7 @@ void TurnSyncOnHelper::OnEnterpriseAccountConfirmation(
       if (delegate_->IsProfileCreationRequiredByPolicy() &&
           !enterprise_util::UserAcceptedAccountManagement(profile_)) {
         signin_aborted_mode_ = SigninAbortedMode::REMOVE_ACCOUNT;
-      } else if (!turn_sync_on_signed_profile_) {
+      } else if (!user_already_signed_in_) {
         signin_aborted_mode_ = SigninAbortedMode::KEEP_ACCOUNT_ON_WEB_ONLY;
       }
       base::RecordAction(
@@ -360,7 +342,8 @@ void TurnSyncOnHelper::TurnSyncOnWithProfileMode(ProfileMode profile_mode) {
           TurnSyncOnHelperPolicyFetchTracker::CreateInstance(profile_,
                                                              account_info_);
       policy_fetch_tracker_->RegisterForPolicy(base::BindOnce(
-          &TurnSyncOnHelper::OnRegisteredForPolicy, base::Unretained(this)));
+          &TurnSyncOnHelper::OnRegisteredForPolicy, base::Unretained(this)),
+          /*is_registration_for_management_consistency_check=*/false);
       break;
     }
     case ProfileMode::NEW_PROFILE:
@@ -405,7 +388,7 @@ void TurnSyncOnHelper::LoadPolicyWithCachedCredentials() {
 
 void TurnSyncOnHelper::CreateNewSignedInProfile() {
   // Use the same the default search engine in the new profile.
-  search_engines::ChoiceData search_engine_choice_data =
+  std::optional<search_engines::ChoiceData> search_engine_choice_data =
       SearchEngineChoiceDialogService::GetChoiceDataFromProfile(*profile_);
 
   base::OnceCallback<void(Profile*)> profile_created_callback = base::BindOnce(
@@ -416,7 +399,7 @@ void TurnSyncOnHelper::CreateNewSignedInProfile() {
   // Unretained is fine because the profile creator is owned by this.
   dice_signed_in_profile_creator_ =
       std::make_unique<DiceSignedInProfileCreator>(
-          profile_, account_info_.account_id,
+          profile_, account_info_.account_id, std::vector<CoreAccountId>{},
           /*local_profile_name=*/std::u16string(),
           /*icon_index=*/std::nullopt, std::move(profile_created_callback));
 }
@@ -428,7 +411,7 @@ syncer::SyncService* TurnSyncOnHelper::GetSyncService() {
 }
 
 void TurnSyncOnHelper::OnNewSignedInProfileCreated(
-    search_engines::ChoiceData search_engine_choice_data,
+    std::optional<search_engines::ChoiceData> search_engine_choice_data,
     Profile* new_profile) {
   DCHECK(dice_signed_in_profile_creator_);
   dice_signed_in_profile_creator_.reset();
@@ -467,12 +450,6 @@ void TurnSyncOnHelper::OnNewSignedInProfileCreated(
 void TurnSyncOnHelper::SigninAndShowSyncConfirmationUI() {
   auto* primary_account_mutator = identity_manager_->GetPrimaryAccountMutator();
 
-  // Signin.
-  if (auto* signin_manager = SigninManagerFactory::GetForProfile(profile_)) {
-    // `signin_manager` is null in tests.
-    account_change_blocker_ =
-        signin_manager->CreateAccountSelectionInProgressHandle();
-  }
   primary_account_mutator->SetPrimaryAccount(account_info_.account_id,
                                              signin::ConsentLevel::kSignin,
                                              signin_access_point_);
@@ -500,7 +477,6 @@ void TurnSyncOnHelper::SigninAndShowSyncConfirmationUI() {
     // progress.
     // TODO(crbug.com/41369996): Remove this handle.
     sync_blocker_ = sync_service->GetSetupInProgressHandle();
-    sync_service->SetSyncFeatureRequested();
 
     // For managed users and users on enterprise machines that might have cloud
     // policies, it is important to wait until sync is initialized so that the
@@ -509,51 +485,21 @@ void TurnSyncOnHelper::SigninAndShowSyncConfirmationUI() {
     // this is needed to make sure that all cloud policies are loaded before any
     // dialog is shown to check whether sync was disabled by admin. Only wait
     // for cloud policies because local policies are instantly available. See
-    // http://crbug.com/812546
-    bool may_have_cloud_policies =
-        signin::AccountManagedStatusFinder::MayBeEnterpriseUserBasedOnEmail(
-            account_info_.email) ||
-        policy::ManagementServiceFactory::GetForProfile(profile_)
-            ->HasManagementAuthority(
-                policy::EnterpriseManagementAuthority::CLOUD) ||
-        policy::ManagementServiceFactory::GetForProfile(profile_)
-            ->HasManagementAuthority(
-                policy::EnterpriseManagementAuthority::CLOUD_DOMAIN) ||
-        policy::ManagementServiceFactory::GetForPlatform()
-            ->HasManagementAuthority(
-                policy::EnterpriseManagementAuthority::CLOUD) ||
-        policy::ManagementServiceFactory::GetForPlatform()
-            ->HasManagementAuthority(
-                policy::EnterpriseManagementAuthority::CLOUD_DOMAIN);
-
-    if (may_have_cloud_policies &&
-        SyncStartupTracker::GetServiceStartupState(sync_service) ==
-            SyncStartupTracker::ServiceStartupState::kPending) {
-      sync_startup_tracker_ = std::make_unique<SyncStartupTracker>(
-          sync_service,
-          base::BindOnce(&TurnSyncOnHelper::OnSyncStartupStateChanged,
-                         weak_pointer_factory_.GetWeakPtr()));
+    // http://crbug.com/41370767
+    sync_startup_state_observer_ = SyncServiceStartupStateObserver::
+        MaybeCreateSyncServiceStateObserverForAccountWithClouldPolicies(
+            sync_service, profile_, account_info_,
+            // Note that `startup_delay` is not taken into account, as
+            // this call will produce a legacy observer implementation which
+            // does not uses this argument.
+            /*startup_delay=*/base::Seconds(0),
+            base::BindOnce(&TurnSyncOnHelper::ShowSyncConfirmationUI,
+                           weak_pointer_factory_.GetWeakPtr()));
+    if (sync_startup_state_observer_) {
       return;
     }
   }
   ShowSyncConfirmationUI();
-}
-
-void TurnSyncOnHelper::OnSyncStartupStateChanged(
-    SyncStartupTracker::ServiceStartupState state) {
-  switch (state) {
-    case SyncStartupTracker::ServiceStartupState::kPending:
-      NOTREACHED();
-    case SyncStartupTracker::ServiceStartupState::kTimeout:
-      DVLOG(1) << "Waiting for Sync Service to start timed out.";
-      [[fallthrough]];
-    case SyncStartupTracker::ServiceStartupState::kError:
-    case SyncStartupTracker::ServiceStartupState::kComplete:
-      DCHECK(sync_startup_tracker_);
-      sync_startup_tracker_.reset();
-      ShowSyncConfirmationUI();
-      break;
-  }
 }
 
 // static
@@ -596,11 +542,10 @@ void TurnSyncOnHelper::ShowSyncConfirmationUI() {
     signin_aborted_mode_ = SigninAbortedMode::REMOVE_ACCOUNT;
   }
   // Use the email-based heuristic if `account_info_` isn't fully initialized.
-  const bool is_managed_account =
-      account_info_.IsValid()
-          ? account_info_.IsManaged()
-          : signin::AccountManagedStatusFinder::MayBeEnterpriseUserBasedOnEmail(
-                account_info_.email);
+  const bool is_managed_account = signin::TriboolToBoolOr(
+      account_info_.IsManaged(),
+      signin::AccountManagedStatusFinder::MayBeEnterpriseUserBasedOnEmail(
+          account_info_.email));
   delegate_->ShowSyncDisabledConfirmation(
       is_managed_account,
       base::BindOnce(&TurnSyncOnHelper::FinishSyncSetupAndDelete,
@@ -630,8 +575,7 @@ void TurnSyncOnHelper::FinishSyncSetupAndDelete(
                                                  signin::ConsentLevel::kSync,
                                                  signin_access_point_);
       if (auto* sync_service = GetSyncService()) {
-        sync_service->GetUserSettings()->SetInitialSyncFeatureSetupComplete(
-            syncer::SyncFirstSetupCompleteSource::BASIC_FLOW);
+        sync_service->GetUserSettings()->SetInitialSyncFeatureSetupComplete();
       }
       if (consent_service) {
         consent_service->SetUrlKeyedAnonymizedDataCollectionEnabled(true);
@@ -663,9 +607,8 @@ void TurnSyncOnHelper::FinishSyncSetupAndDelete(
 void TurnSyncOnHelper::SwitchToProfile(Profile* new_profile) {
   // The sync setup process shouldn't have been started if the user still had
   // the option to switch profiles, or it should have been properly cleaned up.
-  DCHECK(!account_change_blocker_);
   DCHECK(!sync_blocker_);
-  DCHECK(!sync_startup_tracker_);
+  DCHECK(!sync_startup_state_observer_);
 
   policy::UserPolicySigninServiceFactory::GetForProfile(profile_)
       ->ShutdownCloudPolicyManager();
@@ -712,7 +655,8 @@ void TurnSyncOnHelper::AbortAndDelete() {
   if (!initial_primary_account_.empty() &&
       identity_manager_->HasAccountWithRefreshToken(initial_primary_account_)) {
     identity_manager_->GetPrimaryAccountMutator()->SetPrimaryAccount(
-        initial_primary_account_, signin::ConsentLevel::kSignin);
+        initial_primary_account_, signin::ConsentLevel::kSignin,
+        signin_metrics::AccessPoint::kWebSignin);
   }
 
   switch (signin_aborted_mode_) {

@@ -2,16 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include <stddef.h>
 #include <stdint.h>
 
 #include <memory>
 
+#include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/time/time.h"
 #include "gpu/command_buffer/client/client_test_helper.h"
@@ -70,17 +66,19 @@ class QueryManagerTest : public GpuServiceTest {
     scoped_refptr<gpu::Buffer> buffer =
         command_buffer_service_->CreateTransferBufferHelper(kSharedBufferSize,
                                                             &shared_memory_id_);
-    memset(buffer->memory(), kInitialMemoryValue, kSharedBufferSize);
+    UNSAFE_TODO(
+        memset(buffer->memory(), kInitialMemoryValue, kSharedBufferSize));
     buffer = command_buffer_service_->CreateTransferBufferHelper(
         kSharedBufferSize, &shared_memory2_id_);
-    memset(buffer->memory(), kInitialMemoryValue, kSharedBufferSize);
+    UNSAFE_TODO(
+        memset(buffer->memory(), kInitialMemoryValue, kSharedBufferSize));
     decoder_ = std::make_unique<MockGLES2Decoder>(
         &client_, command_buffer_service_.get(), &outputter_);
     TestHelper::SetupFeatureInfoInitExpectations(
         gl_.get(), extension_expectations);
     EXPECT_CALL(*decoder_.get(), GetGLContext())
       .WillRepeatedly(Return(GetGLContext()));
-    scoped_refptr<FeatureInfo> feature_info(new FeatureInfo());
+    auto feature_info = base::MakeRefCounted<FeatureInfo>();
     feature_info->InitializeForTesting();
     manager_ =
         std::make_unique<GLES2QueryManager>(decoder_.get(), feature_info.get());
@@ -302,8 +300,8 @@ TEST_F(QueryManagerTest, ProcessPendingQueries) {
   QuerySync* sync1 = decoder_->GetSharedMemoryAs<QuerySync*>(
       shared_memory_id_, kSharedMemoryOffset, sizeof(*sync1) * 3);
   ASSERT_TRUE(sync1 != nullptr);
-  QuerySync* sync2 = sync1 + 1;
-  QuerySync* sync3 = sync2 + 1;
+  QuerySync* sync2 = UNSAFE_TODO(sync1 + 1);
+  QuerySync* sync3 = UNSAFE_TODO(sync2 + 1);
 
   // Create Queries.
   scoped_refptr<QueryManager::Query> query1(
@@ -674,7 +672,7 @@ TEST_F(QueryManagerTest, GetErrorQuery) {
   const base::subtle::Atomic32 kSubmitCount = 123;
 
   TestHelper::SetupFeatureInfoInitExpectations(gl_.get(), "");
-  scoped_refptr<FeatureInfo> feature_info(new FeatureInfo());
+  auto feature_info = base::MakeRefCounted<FeatureInfo>();
   feature_info->InitializeForTesting();
   std::unique_ptr<GLES2QueryManager> manager(
       new GLES2QueryManager(decoder_.get(), feature_info.get()));
@@ -715,7 +713,7 @@ TEST_F(QueryManagerTest, OcclusionQuery) {
 
   TestHelper::SetupFeatureInfoInitExpectations(gl_.get(),
                                                "GL_EXT_occlusion_query");
-  scoped_refptr<FeatureInfo> feature_info(new FeatureInfo());
+  auto feature_info = base::MakeRefCounted<FeatureInfo>();
   feature_info->InitializeForTesting();
   std::unique_ptr<GLES2QueryManager> manager(
       new GLES2QueryManager(decoder_.get(), feature_info.get()));

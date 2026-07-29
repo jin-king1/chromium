@@ -15,10 +15,6 @@
 #include "third_party/inspector_protocol/crdtp/protocol_core.h"
 #include "third_party/inspector_protocol/crdtp/serializable.h"
 
-namespace base {
-class Value;
-}
-
 namespace crdtp {
 class Serializable;
 
@@ -30,8 +26,8 @@ namespace traits {
 // to specify the type mapping to the rest of the generated code.
 using String = std::string;
 using Value = base::Value;
-using DictionaryValue = base::Value::Dict;
-using ListValue = base::Value::List;
+using DictionaryValue = base::DictValue;
+using ListValue = base::ListValue;
 
 }  // namespace traits
 

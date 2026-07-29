@@ -12,6 +12,8 @@ import com.google.flatbuffers.FlatBufferBuilder;
 import org.chromium.base.Log;
 import org.chromium.base.Token;
 import org.chromium.base.metrics.RecordHistogram;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tab.TabState;
 import org.chromium.chrome.browser.tab.TabUserAgent;
@@ -20,15 +22,17 @@ import org.chromium.chrome.browser.tab.flatbuffer.TabGroupIdToken;
 import org.chromium.chrome.browser.tab.flatbuffer.TabLaunchTypeAtCreation;
 import org.chromium.chrome.browser.tab.flatbuffer.TabStateFlatBufferV1;
 import org.chromium.chrome.browser.tab.flatbuffer.UserAgentType;
+import org.chromium.url.GURL;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.nio.ByteBuffer;
 
 /** {@link TabStateSerializer} backed by a FlatBuffer */
+@NullMarked
 public class FlatBufferTabStateSerializer implements TabStateSerializer {
     private static final String TAG = "FBTSS";
-    private static final String NULL_OPENER_APP_ID = " ";
+    private static final String NULL_STR = " ";
     private static final long NO_TAB_GROUP_ID = 0L;
 
     private final boolean mIsEncrypted;
@@ -44,7 +48,7 @@ public class FlatBufferTabStateSerializer implements TabStateSerializer {
         TabStateFlatBufferDeserializeResult.NUM_ENTRIES,
     })
     @Retention(RetentionPolicy.SOURCE)
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public @interface TabStateFlatBufferDeserializeResult {
         /** FlatBuffer was successfully deserialized to TabState. */
         int SUCCESS = 0;
@@ -68,8 +72,8 @@ public class FlatBufferTabStateSerializer implements TabStateSerializer {
                 TabStateFlatBufferV1.createWebContentsStateBytesVector(
                         fbb, ByteBuffer.wrap(contentsStateBytes));
         int openerAppId =
-                fbb.createString(
-                        state.openerAppId == null ? NULL_OPENER_APP_ID : state.openerAppId);
+                fbb.createString(state.openerAppId == null ? NULL_STR : state.openerAppId);
+        int url = fbb.createString(state.url == null ? NULL_STR : state.url.getSpec());
         TabStateFlatBufferV1.startTabStateFlatBufferV1(fbb);
         TabStateFlatBufferV1.addParentId(fbb, state.parentId);
         TabStateFlatBufferV1.addRootId(fbb, state.rootId);
@@ -91,13 +95,16 @@ public class FlatBufferTabStateSerializer implements TabStateSerializer {
         TabStateFlatBufferV1.addTabGroupId(
                 fbb, TabGroupIdToken.createTabGroupIdToken(fbb, tokenHigh, tokenLow));
         TabStateFlatBufferV1.addTabHasSensitiveContent(fbb, state.tabHasSensitiveContent);
+        TabStateFlatBufferV1.addIsPinned(fbb, state.isPinned);
+
+        TabStateFlatBufferV1.addUrl(fbb, url);
         int r = TabStateFlatBufferV1.endTabStateFlatBufferV1(fbb);
         fbb.finish(r);
         return fbb.dataBuffer();
     }
 
     @Override
-    public TabState deserialize(ByteBuffer bytes) {
+    public @Nullable TabState deserialize(ByteBuffer bytes) {
         try {
             TabStateFlatBufferV1 tabStateFlatBuffer =
                     TabStateFlatBufferV1.getRootAsTabStateFlatBufferV1(bytes);
@@ -107,7 +114,7 @@ public class FlatBufferTabStateSerializer implements TabStateSerializer {
             state.parentId = tabStateFlatBuffer.parentId();
             state.rootId = tabStateFlatBuffer.rootId();
             state.openerAppId =
-                    NULL_OPENER_APP_ID.equals(tabStateFlatBuffer.openerAppId())
+                    NULL_STR.equals(tabStateFlatBuffer.openerAppId())
                             ? null
                             : tabStateFlatBuffer.openerAppId();
             state.timestampMillis = tabStateFlatBuffer.timestampMillis();
@@ -116,28 +123,38 @@ public class FlatBufferTabStateSerializer implements TabStateSerializer {
 
             Token tabGroupId = null;
             var flatBufferTabGroupId = tabStateFlatBuffer.tabGroupId();
-            if (flatBufferTabGroupId != null) {
+            if (flatBufferTabGroupId != null
+                    && (flatBufferTabGroupId.high() != 0 || flatBufferTabGroupId.low() != 0)) {
                 tabGroupId = new Token(flatBufferTabGroupId.high(), flatBufferTabGroupId.low());
             }
-            state.tabGroupId = (tabGroupId == null || tabGroupId.isZero()) ? null : tabGroupId;
+            state.tabGroupId = tabGroupId;
             state.userAgent = getTabUserAgentTypeFromFlatBuffer(tabStateFlatBuffer.userAgent());
             state.tabLaunchTypeAtCreation =
                     getLaunchTypeFromFlatBuffer(tabStateFlatBuffer.launchTypeAtCreation());
             state.themeColor = tabStateFlatBuffer.themeColor();
             state.tabHasSensitiveContent = tabStateFlatBuffer.tabHasSensitiveContent();
+            state.isPinned = tabStateFlatBuffer.isPinned();
+
+            boolean isUrlNull = NULL_STR.equals(tabStateFlatBuffer.url());
+            state.url = isUrlNull ? null : new GURL(tabStateFlatBuffer.url());
+            if (state.url != null && !state.url.isValid()) state.url = null;
+
             ByteBuffer webContentsStateBuffer =
                     tabStateFlatBuffer.webContentsStateBytesAsByteBuffer() == null
                             ? ByteBuffer.allocateDirect(0)
                             : tabStateFlatBuffer.webContentsStateBytesAsByteBuffer().slice();
             if (mIsEncrypted) {
+                ByteBuffer buffer = ByteBuffer.allocateDirect(webContentsStateBuffer.remaining());
+                buffer.put(webContentsStateBuffer);
                 state.contentsState =
                         new WebContentsState(
-                                ByteBuffer.allocateDirect(webContentsStateBuffer.remaining()));
-                state.contentsState.buffer().put(webContentsStateBuffer);
+                                buffer, WebContentsState.CONTENTS_STATE_CURRENT_VERSION);
             } else {
-                state.contentsState = new WebContentsState(webContentsStateBuffer);
+                state.contentsState =
+                        new WebContentsState(
+                                webContentsStateBuffer,
+                                WebContentsState.CONTENTS_STATE_CURRENT_VERSION);
             }
-            state.contentsState.setVersion(WebContentsState.CONTENTS_STATE_CURRENT_VERSION);
             return state;
         } catch (IndexOutOfBoundsException e) {
             RecordHistogram.recordEnumeratedHistogram(
@@ -160,7 +177,7 @@ public class FlatBufferTabStateSerializer implements TabStateSerializer {
         return null;
     }
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public static @TabLaunchType int getLaunchTypeFromFlatBuffer(int flatBufferLaunchType) {
         switch (flatBufferLaunchType) {
             case TabLaunchTypeAtCreation.FROM_LINK:
@@ -179,6 +196,8 @@ public class FlatBufferTabStateSerializer implements TabStateSerializer {
                 return TabLaunchType.FROM_LONGPRESS_BACKGROUND;
             case TabLaunchTypeAtCreation.FROM_REPARENTING:
                 return TabLaunchType.FROM_REPARENTING;
+            case TabLaunchTypeAtCreation.FROM_REPARENTING_BACKGROUND:
+                return TabLaunchType.FROM_REPARENTING_BACKGROUND;
             case TabLaunchTypeAtCreation.FROM_LAUNCHER_SHORTCUT:
                 return TabLaunchType.FROM_LAUNCHER_SHORTCUT;
             case TabLaunchTypeAtCreation.FROM_SPECULATIVE_BACKGROUND_CREATION:
@@ -217,6 +236,20 @@ public class FlatBufferTabStateSerializer implements TabStateSerializer {
                 return TabLaunchType.FROM_COLLABORATION_BACKGROUND_IN_GROUP;
             case TabLaunchTypeAtCreation.FROM_BOOKMARK_BAR_BACKGROUND:
                 return TabLaunchType.FROM_BOOKMARK_BAR_BACKGROUND;
+            case TabLaunchTypeAtCreation.FROM_HISTORY_NAVIGATION_BACKGROUND:
+                return TabLaunchType.FROM_HISTORY_NAVIGATION_BACKGROUND;
+            case TabLaunchTypeAtCreation.FROM_HISTORY_NAVIGATION_FOREGROUND:
+                return TabLaunchType.FROM_HISTORY_NAVIGATION_FOREGROUND;
+            case TabLaunchTypeAtCreation.FROM_LONGPRESS_FOREGROUND_IN_GROUP:
+                return TabLaunchType.FROM_LONGPRESS_FOREGROUND_IN_GROUP;
+            case TabLaunchTypeAtCreation.FROM_TAB_LIST_INTERFACE:
+                return TabLaunchType.FROM_TAB_LIST_INTERFACE;
+            case TabLaunchTypeAtCreation.FROM_LINK_CREATING_NEW_WINDOW:
+                return TabLaunchType.FROM_LINK_CREATING_NEW_WINDOW;
+            case TabLaunchTypeAtCreation.FROM_TIPS_NOTIFICATIONS:
+                return TabLaunchType.FROM_TIPS_NOTIFICATIONS;
+            case TabLaunchTypeAtCreation.FROM_TAB_LIST_INTERFACE_BACKGROUND:
+                return TabLaunchType.FROM_TAB_LIST_INTERFACE_BACKGROUND;
             case TabLaunchTypeAtCreation.SIZE:
                 return TabLaunchType.SIZE;
             case TabLaunchTypeAtCreation.UNKNOWN:
@@ -230,7 +263,7 @@ public class FlatBufferTabStateSerializer implements TabStateSerializer {
         }
     }
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public static int getLaunchTypeToFlatBuffer(@TabLaunchType int tabLaunchType) {
         switch (tabLaunchType) {
             case TabLaunchType.FROM_LINK:
@@ -287,6 +320,22 @@ public class FlatBufferTabStateSerializer implements TabStateSerializer {
                 return TabLaunchTypeAtCreation.FROM_COLLABORATION_BACKGROUND_IN_GROUP;
             case TabLaunchType.FROM_BOOKMARK_BAR_BACKGROUND:
                 return TabLaunchTypeAtCreation.FROM_BOOKMARK_BAR_BACKGROUND;
+            case TabLaunchType.FROM_REPARENTING_BACKGROUND:
+                return TabLaunchTypeAtCreation.FROM_REPARENTING_BACKGROUND;
+            case TabLaunchType.FROM_HISTORY_NAVIGATION_BACKGROUND:
+                return TabLaunchTypeAtCreation.FROM_HISTORY_NAVIGATION_BACKGROUND;
+            case TabLaunchType.FROM_HISTORY_NAVIGATION_FOREGROUND:
+                return TabLaunchTypeAtCreation.FROM_HISTORY_NAVIGATION_FOREGROUND;
+            case TabLaunchType.FROM_LONGPRESS_FOREGROUND_IN_GROUP:
+                return TabLaunchTypeAtCreation.FROM_LONGPRESS_FOREGROUND_IN_GROUP;
+            case TabLaunchType.FROM_TAB_LIST_INTERFACE:
+                return TabLaunchTypeAtCreation.FROM_TAB_LIST_INTERFACE;
+            case TabLaunchType.FROM_LINK_CREATING_NEW_WINDOW:
+                return TabLaunchTypeAtCreation.FROM_LINK_CREATING_NEW_WINDOW;
+            case TabLaunchType.FROM_TIPS_NOTIFICATIONS:
+                return TabLaunchTypeAtCreation.FROM_TIPS_NOTIFICATIONS;
+            case TabLaunchType.FROM_TAB_LIST_INTERFACE_BACKGROUND:
+                return TabLaunchTypeAtCreation.FROM_TAB_LIST_INTERFACE_BACKGROUND;
             case TabLaunchType.SIZE:
                 return TabLaunchTypeAtCreation.SIZE;
             default:
@@ -296,7 +345,7 @@ public class FlatBufferTabStateSerializer implements TabStateSerializer {
         }
     }
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public static @TabUserAgent int getTabUserAgentTypeFromFlatBuffer(int flatbufferUserAgentType) {
         switch (flatbufferUserAgentType) {
             case UserAgentType.DEFAULT:
@@ -317,7 +366,7 @@ public class FlatBufferTabStateSerializer implements TabStateSerializer {
         }
     }
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public static int getUserAgentTypeToFlatBuffer(@TabUserAgent int userAgent) {
         switch (userAgent) {
             case TabUserAgent.DEFAULT:

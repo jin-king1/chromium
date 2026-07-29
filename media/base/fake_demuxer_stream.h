@@ -5,6 +5,7 @@
 #ifndef MEDIA_BASE_FAKE_DEMUXER_STREAM_H_
 #define MEDIA_BASE_FAKE_DEMUXER_STREAM_H_
 
+#include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/time/time.h"
@@ -136,7 +137,7 @@ class FakeMediaResource : public MediaResource {
   ~FakeMediaResource() override;
 
   // MediaResource implementation.
-  std::vector<DemuxerStream*> GetAllStreams() override;
+  std::vector<raw_ptr<DemuxerStream>> GetAllStreams() override;
 
  private:
   FakeDemuxerStream fake_video_stream_;

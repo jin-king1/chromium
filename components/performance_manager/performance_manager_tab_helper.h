@@ -16,6 +16,7 @@
 #include "components/performance_manager/graph/page_node_impl.h"
 #include "components/performance_manager/public/mojom/coordination_unit.mojom-forward.h"
 #include "content/public/browser/permission_controller.h"
+#include "content/public/browser/permission_result.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_contents_user_data.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
@@ -69,6 +70,11 @@ class PerformanceManagerTabHelper
   void RenderFrameDeleted(content::RenderFrameHost* render_frame_host) override;
   void RenderFrameHostChanged(content::RenderFrameHost* old_host,
                               content::RenderFrameHost* new_host) override;
+  void RenderFrameHostStateChanged(
+      content::RenderFrameHost* render_frame_host,
+      content::RenderFrameHost::LifecycleState old_state,
+      content::RenderFrameHost::LifecycleState new_state) override;
+  void OnVisibilityWillChange(content::Visibility visibility) override;
   void OnVisibilityChanged(content::Visibility visibility) override;
   void OnAudioStateChanged(bool audible) override;
   void OnFrameAudioStateChanged(content::RenderFrameHost* render_frame_host,
@@ -91,10 +97,16 @@ class PerformanceManagerTabHelper
   void InnerWebContentsAttached(
       content::WebContents* inner_web_contents,
       content::RenderFrameHost* render_frame_host) override;
+  void SurfaceEmbedChildWebContentsAttached(
+      content::WebContents* inner_web_contents,
+      content::RenderFrameHost* embedder_render_frame_host) override;
+  void SurfaceEmbedChildWebContentsDetached(
+      content::WebContents* inner_web_contents) override;
   void WebContentsDestroyed() override;
   void DidUpdateFaviconURL(
       content::RenderFrameHost* render_frame_host,
-      const std::vector<blink::mojom::FaviconURLPtr>& candidates) override;
+      const std::vector<blink::mojom::FaviconURLPtr>& candidates,
+      blink::mojom::FaviconUpdateReason reason) override;
   void MediaPictureInPictureChanged(bool is_picture_in_picture) override;
   void OnWebContentsFocused(
       content::RenderWidgetHost* render_widget_host) override;
@@ -108,7 +120,8 @@ class PerformanceManagerTabHelper
 
   // Retrieves the frame node associated with |render_frame_host|. Returns
   // nullptr if none exist for that frame.
-  FrameNodeImpl* GetFrameNode(content::RenderFrameHost* render_frame_host);
+  FrameNodeImpl* GetFrameNode(
+      content::RenderFrameHost* render_frame_host) const;
 
   class Observer : public base::CheckedObserver {
    public:
@@ -143,8 +156,8 @@ class PerformanceManagerTabHelper
 
   // Callback invoked when the current main frame's notification permission
   // status changes.
-  void OnNotificationPermissionStatusChange(
-      blink::mojom::PermissionStatus permission_status);
+  void OnNotificationPermissionResultChange(
+      content::PermissionResult permission_result);
 
   // Unsubscribe from changes to the current main frame's notification
   // permission status, or no-op if there is no subscription.
@@ -162,10 +175,13 @@ class PerformanceManagerTabHelper
   // The UKM source ID for this page.
   ukm::SourceId ukm_source_id_ = ukm::kInvalidSourceId;
 
-  // Favicon and title are set when a page is loaded, we only want to send
-  // signals to the page node about title and favicon update from the previous
-  // title and favicon, thus we want to ignore the very first update since it is
-  // always supposed to happen.
+  // When the feature
+  // `kUseLoadingStateToDetectBackgroundTitleOrFaviconUpdate` is disabled,
+  // PerformanceManagerTabHelper ignores the first title/favicon update after a
+  // navigation to avoid treating initial-load churn as background activity.
+  //
+  // TODO(crbug.com/497577319): Remove these fields when
+  // `kUseLoadingStateToDetectBackgroundTitleOrFaviconUpdate` is removed.
   bool first_time_favicon_set_ = false;
   bool first_time_title_set_ = false;
 
@@ -179,7 +195,10 @@ class PerformanceManagerTabHelper
       permission_controller_subscription_id_;
 
   raw_ptr<DestructionObserver> destruction_observer_ = nullptr;
-  base::ObserverList<Observer, true, false> observers_;
+  base::ObserverList<Observer,
+                     true,
+                     base::ObserverListReentrancyPolicy::kDisallowReentrancy>
+      observers_;
 
   WEB_CONTENTS_USER_DATA_KEY_DECL();
 };

@@ -4,21 +4,27 @@
 
 #include "chrome/browser/ui/tabs/saved_tab_groups/collaboration_messaging_tab_data.h"
 
+#include "base/strings/utf_string_conversions.h"
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/data_sharing/data_sharing_service_factory.h"
 #include "chrome/browser/image_fetcher/image_fetcher_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_key.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "components/collaboration/public/messaging/message.h"
 #include "components/data_sharing/public/data_sharing_service.h"
 #include "components/image_fetcher/core/image_fetcher_service.h"
 #include "components/signin/public/base/avatar_icon_util.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "ui/base/ui_base_features.h"
+#include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 #include "ui/compositor/compositor.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/image/image.h"
+#include "ui/gfx/image/image_skia.h"
 #include "ui/gfx/image/image_util.h"
 #include "ui/gfx/paint_vector_icon.h"
 #include "ui/views/widget/widget.h"
@@ -26,10 +32,128 @@
 using collaboration::messaging::PersistentMessage;
 
 namespace tab_groups {
+namespace {
+struct CollaborationFallbackAvatarParameters {
+  float scale_factor;
+  const raw_ptr<const ui::ColorProvider> color_provider;
+};
 
-CollaborationMessagingTabData::CollaborationMessagingTabData(Profile* profile)
-    : profile_(profile) {}
+const CollaborationFallbackAvatarParameters
+GetCollaborationAvatarFallbackParametersFromWidget(
+    const views::Widget* widget) {
+  CHECK(widget);
+
+  // Get devices scale factor for scaling the bitmaps.
+  const float scale_factor =
+      widget->GetCompositor() ? widget->GetCompositor()->device_scale_factor()
+                              : 1.0f;
+
+  return CollaborationFallbackAvatarParameters(scale_factor,
+                                               widget->GetColorProvider());
+}
+
+ui::ImageModel CreateSizedFallback(float scale_factor,
+                                   const ui::ColorProvider* color_provider,
+                                   int icon_width,
+                                   bool add_border) {
+  const int icon_padding = ChromeLayoutProvider::Get()->GetDistanceMetric(
+      DISTANCE_COLLABORATION_MESSAGING_AVATAR_FALLBACK_ICON_PADDING);
+
+  // Icon bounds represents the entire available area to draw the image.
+  const gfx::Rect icon_bounds = gfx::Rect(icon_width, icon_width);
+
+  gfx::Canvas canvas(icon_bounds.size(), scale_factor, /*is_opaque=*/false);
+  canvas.SaveLayerAlpha(0xff);
+
+  int border_width = 0;
+  cc::PaintFlags background_flags;
+  if (add_border) {
+    border_width = ChromeLayoutProvider::Get()->GetDistanceMetric(
+        DISTANCE_COLLABORATION_MESSAGING_AVATAR_FALLBACK_ICON_BORDER_SIZE);
+
+    // The border will contain a color, but the background will be
+    // transparent.
+    background_flags.setAntiAlias(true);
+    background_flags.setBlendMode(SkBlendMode::kClear);
+
+    // Paint circle border, taking up the entire |icon_width|.
+    cc::PaintFlags border_flags;
+    border_flags.setColor(color_provider->GetColor(ui::kColorSysTonalOutline));
+    canvas.DrawCircle(icon_bounds.CenterPoint(), icon_width / 2.0,
+                      border_flags);
+  } else {
+    // The background will have a color.
+    background_flags.setColor(
+        color_provider->GetColor(ui::kColorSysTonalContainer));
+  }
+
+  // Paint circle background. This will be be the width of the icon
+  // container minus the border width from both sides, if any.
+  const int background_radius = (icon_width / 2.0) - border_width;
+  canvas.DrawCircle(icon_bounds.CenterPoint(), background_radius,
+                    background_flags);
+  canvas.Restore();
+
+  // Paint fallback icon. This will be the width of the icon container
+  // minus the padding from both sides.
+  canvas.Translate({icon_padding, icon_padding});
+  gfx::PaintVectorIcon(&canvas,
+                       features::IsRoundedIconsEnabled()
+                           ? kPersonFilledIcon
+                           : kPersonFilledPaddedSmallOldIcon,
+                       icon_width - (icon_padding * 2),
+                       color_provider->GetColor(ui::kColorSysOnTonalContainer));
+
+  return ui::ImageModel::FromImageSkia(
+      gfx::ImageSkia::CreateFromBitmap(canvas.GetBitmap(), scale_factor));
+}
+
+ui::ImageModel GetImageFromAvatar(bool has_message,
+                                  const gfx::Image& avatar,
+                                  float scale_factor,
+                                  const ui::ColorProvider* color_provider,
+                                  int icon_width,
+                                  bool add_border) {
+  if (!has_message) {
+    return ui::ImageModel();
+  }
+  if (!avatar.IsEmpty()) {
+    return ui::ImageModel::FromImage(
+        gfx::ResizedImage(avatar, gfx::Size(icon_width, icon_width)));
+  }
+  return CreateSizedFallback(scale_factor, color_provider, icon_width,
+                             add_border);
+}
+
+}  // namespace
+
+DEFINE_USER_DATA(CollaborationMessagingTabData);
+
+CollaborationMessagingTabData::CollaborationMessagingTabData(
+    tabs::TabInterface* tab)
+    : profile_(tab->GetBrowserWindowInterface()->GetProfile()),
+      scoped_unowned_user_data_(tab->GetUnownedUserDataHost(), *this) {}
 CollaborationMessagingTabData::~CollaborationMessagingTabData() = default;
+
+// static
+CollaborationMessagingTabData* CollaborationMessagingTabData::From(
+    tabs::TabInterface* tab) {
+  return Get(tab->GetUnownedUserDataHost());
+}
+
+// static
+ui::ImageModel CollaborationMessagingTabData::GetHoverCardImage(
+    const views::Widget* widget,
+    const gfx::Image& avatar,
+    bool has_message) {
+  auto fallback_params =
+      GetCollaborationAvatarFallbackParametersFromWidget(widget);
+  const int icon_width =
+      GetLayoutConstant(LayoutConstant::kTabAlertIndicatorIconWidth);
+  return GetImageFromAvatar(has_message, avatar, fallback_params.scale_factor,
+                            fallback_params.color_provider, icon_width,
+                            /*add_border=*/false);
+}
 
 void CollaborationMessagingTabData::SetMessage(PersistentMessage message) {
   using collaboration::messaging::CollaborationEvent;
@@ -148,94 +272,29 @@ void CollaborationMessagingTabData::CommitMessage(
 
 ui::ImageModel CollaborationMessagingTabData::GetPageActionImage(
     const views::Widget* widget) const {
-  if (!HasMessage()) {
-    return ui::ImageModel();
-  }
+  auto fallback_params =
+      GetCollaborationAvatarFallbackParametersFromWidget(widget);
 
-  const int icon_width = GetLayoutConstant(LOCATION_BAR_TRAILING_ICON_SIZE);
-  if (!avatar_.IsEmpty()) {
-    return ui::ImageModel::FromImage(
-        gfx::ResizedImage(avatar_, gfx::Size(icon_width, icon_width)));
-  }
-
-  return CreateSizedFallback(widget, icon_width, /*add_border=*/true);
+  return GetPageActionImage(fallback_params.scale_factor,
+                            fallback_params.color_provider);
 }
 
-ui::ImageModel CollaborationMessagingTabData::GetHoverCardImage(
-    const views::Widget* widget) const {
-  if (!HasMessage()) {
-    return ui::ImageModel();
-  }
-
-  const int icon_width = GetLayoutConstant(TAB_ALERT_INDICATOR_ICON_WIDTH);
-  if (!avatar_.IsEmpty()) {
-    return ui::ImageModel::FromImage(
-        gfx::ResizedImage(avatar_, gfx::Size(icon_width, icon_width)));
-  }
-
-  return CreateSizedFallback(widget, icon_width, /*add_border=*/false);
+ui::ImageModel CollaborationMessagingTabData::GetPageActionImage(
+    float scale_factor,
+    const ui::ColorProvider* color_provider) const {
+  const int icon_width =
+      GetLayoutConstant(LayoutConstant::kLocationBarTrailingIconSize);
+  return GetImage(scale_factor, color_provider, icon_width,
+                  /*add_border=*/true);
 }
 
-ui::ImageModel CollaborationMessagingTabData::CreateSizedFallback(
-    const views::Widget* widget,
+ui::ImageModel CollaborationMessagingTabData::GetImage(
+    float scale_factor,
+    const ui::ColorProvider* color_provider,
     int icon_width,
     bool add_border) const {
-  CHECK(widget);
-
-  // Get devices scale factor for scaling the bitmaps.
-  float scale_factor = 1.0f;
-  if (widget->GetCompositor()) {
-    scale_factor = widget->GetCompositor()->device_scale_factor();
-  }
-
-  const ui::ColorProvider* color_provider = widget->GetColorProvider();
-  const int icon_padding = ChromeLayoutProvider::Get()->GetDistanceMetric(
-      DISTANCE_COLLABORATION_MESSAGING_AVATAR_FALLBACK_ICON_PADDING);
-
-  // Icon bounds represents the entire available area to draw the image.
-  const gfx::Rect icon_bounds = gfx::Rect(icon_width, icon_width);
-
-  gfx::Canvas canvas(icon_bounds.size(), scale_factor, /*is_opaque=*/false);
-  canvas.SaveLayerAlpha(0xff);
-
-  int border_width = 0;
-  cc::PaintFlags background_flags;
-  if (add_border) {
-    border_width = ChromeLayoutProvider::Get()->GetDistanceMetric(
-        DISTANCE_COLLABORATION_MESSAGING_AVATAR_FALLBACK_ICON_BORDER_SIZE);
-
-    // The border will contain a color, but the background will be
-    // transparent.
-    background_flags.setAntiAlias(true);
-    background_flags.setBlendMode(SkBlendMode::kClear);
-
-    // Paint circle border, taking up the entire |icon_width|.
-    cc::PaintFlags border_flags;
-    border_flags.setColor(color_provider->GetColor(ui::kColorSysTonalOutline));
-    canvas.DrawCircle(icon_bounds.CenterPoint(), icon_width / 2.0,
-                      border_flags);
-  } else {
-    // The background will have a color.
-    background_flags.setColor(
-        color_provider->GetColor(ui::kColorSysTonalContainer));
-  }
-
-  // Paint circle background. This will be be the width of the icon
-  // container minus the border width from both sides, if any.
-  const int background_radius = (icon_width / 2.0) - border_width;
-  canvas.DrawCircle(icon_bounds.CenterPoint(), background_radius,
-                    background_flags);
-  canvas.Restore();
-
-  // Paint fallback icon. This will be the width of the icon container
-  // minus the padding from both sides.
-  canvas.Translate({icon_padding, icon_padding});
-  gfx::PaintVectorIcon(&canvas, kPersonFilledPaddedSmallIcon,
-                       icon_width - (icon_padding * 2),
-                       color_provider->GetColor(ui::kColorSysOnTonalContainer));
-
-  return ui::ImageModel::FromImageSkia(
-      gfx::ImageSkia::CreateFromBitmap(canvas.GetBitmap(), scale_factor));
+  return GetImageFromAvatar(HasMessage(), avatar_, scale_factor, color_provider,
+                            icon_width, add_border);
 }
 
 }  // namespace tab_groups

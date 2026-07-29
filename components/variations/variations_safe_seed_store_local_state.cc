@@ -13,8 +13,14 @@
 namespace variations {
 namespace {
 
-// The name of the seed file that stores the safe seed data.
+// The name of the seed file that stores the safe seed data and other
+// seed-related information in a compressed proto.
 const base::FilePath::CharType kSafeSeedFilename[] =
+    FILE_PATH_LITERAL("VariationsSafeSeedV2");
+
+// Name of the old safe seed file. It stores only the seed data gzip-compressed.
+// TODO(rcanoaparicio): Remove this once the experiment has ended.
+const base::FilePath::CharType kOldSafeSeedFilename[] =
     FILE_PATH_LITERAL("VariationsSafeSeedV1");
 
 }  // namespace
@@ -25,63 +31,40 @@ VariationsSafeSeedStoreLocalState::VariationsSafeSeedStoreLocalState(
     version_info::Channel channel,
     const EntropyProviders* entropy_providers)
     : local_state_(local_state),
-      seed_reader_writer_(std::make_unique<SeedReaderWriter>(
-          local_state,
-          seed_file_dir,
-          kSafeSeedFilename,
-          prefs::kVariationsSafeCompressedSeed,
-          channel,
-          entropy_providers)) {}
+      seed_reader_writer_(
+          std::make_unique<SeedReaderWriter>(local_state,
+                                             seed_file_dir,
+                                             kSafeSeedFilename,
+                                             kOldSafeSeedFilename,
+                                             kSafeSeedFieldsPrefs,
+                                             channel,
+                                             entropy_providers,
+                                             /*histogram_suffix=*/"Safe")) {}
 
 VariationsSafeSeedStoreLocalState::~VariationsSafeSeedStoreLocalState() =
     default;
 
 base::Time VariationsSafeSeedStoreLocalState::GetFetchTime() const {
-  return local_state_->GetTime(prefs::kVariationsSafeSeedFetchTime);
+  return seed_reader_writer_->GetSeedInfo().client_fetch_time;
 }
 
 void VariationsSafeSeedStoreLocalState::SetFetchTime(
     const base::Time& fetch_time) {
-  local_state_->SetTime(prefs::kVariationsSafeSeedFetchTime, fetch_time);
+  seed_reader_writer_->SetFetchTime(fetch_time);
 }
 
 int VariationsSafeSeedStoreLocalState::GetMilestone() const {
-  return local_state_->GetInteger(prefs::kVariationsSafeSeedMilestone);
-}
-
-void VariationsSafeSeedStoreLocalState::SetMilestone(int milestone) {
-  local_state_->SetInteger(prefs::kVariationsSafeSeedMilestone, milestone);
+  return seed_reader_writer_->GetSeedInfo().milestone;
 }
 
 base::Time VariationsSafeSeedStoreLocalState::GetTimeForStudyDateChecks()
     const {
-  return local_state_->GetTime(prefs::kVariationsSafeSeedDate);
+  return seed_reader_writer_->GetSeedInfo().seed_date;
 }
 
-void VariationsSafeSeedStoreLocalState::SetTimeForStudyDateChecks(
-    const base::Time& safe_seed_time) {
-  local_state_->SetTime(prefs::kVariationsSafeSeedDate, safe_seed_time);
-}
-
-StoredSeed VariationsSafeSeedStoreLocalState::GetCompressedSeed() const {
-  return seed_reader_writer_->GetSeedData();
-}
-
-void VariationsSafeSeedStoreLocalState::SetCompressedSeed(
-    const std::string& safe_compressed,
-    const std::string& base64_safe_compressed) {
-  seed_reader_writer_->StoreValidatedSeed(safe_compressed,
-                                          base64_safe_compressed);
-}
-
-std::string VariationsSafeSeedStoreLocalState::GetSignature() const {
-  return local_state_->GetString(prefs::kVariationsSafeSeedSignature);
-}
-
-void VariationsSafeSeedStoreLocalState::SetSignature(
-    const std::string& safe_seed_signature) {
-  local_state_->SetString(prefs::kVariationsSafeSeedSignature,
-                          safe_seed_signature);
+StoreSeedResult VariationsSafeSeedStoreLocalState::SetCompressedSeed(
+    ValidatedSeedInfo seed_info) {
+  return seed_reader_writer_->StoreValidatedSeedInfo(seed_info);
 }
 
 std::string VariationsSafeSeedStoreLocalState::GetLocale() const {
@@ -94,26 +77,12 @@ void VariationsSafeSeedStoreLocalState::SetLocale(const std::string& locale) {
 
 std::string VariationsSafeSeedStoreLocalState::GetPermanentConsistencyCountry()
     const {
-  return local_state_->GetString(
-      prefs::kVariationsSafeSeedPermanentConsistencyCountry);
-}
-
-void VariationsSafeSeedStoreLocalState::SetPermanentConsistencyCountry(
-    const std::string& permanent_consistency_country) {
-  local_state_->SetString(prefs::kVariationsSafeSeedPermanentConsistencyCountry,
-                          permanent_consistency_country);
+  return seed_reader_writer_->GetSeedInfo().permanent_country_code;
 }
 
 std::string VariationsSafeSeedStoreLocalState::GetSessionConsistencyCountry()
     const {
-  return local_state_->GetString(
-      prefs::kVariationsSafeSeedSessionConsistencyCountry);
-}
-
-void VariationsSafeSeedStoreLocalState::SetSessionConsistencyCountry(
-    const std::string& session_consistency_country) {
-  local_state_->SetString(prefs::kVariationsSafeSeedSessionConsistencyCountry,
-                          session_consistency_country);
+  return seed_reader_writer_->GetSeedInfo().session_country_code;
 }
 
 SeedReaderWriter*
@@ -127,15 +96,32 @@ void VariationsSafeSeedStoreLocalState::SetSeedReaderWriterForTesting(
 }
 
 void VariationsSafeSeedStoreLocalState::ClearState() {
-  seed_reader_writer_->ClearSeed();
-  local_state_->ClearPref(prefs::kVariationsSafeSeedDate);
-  local_state_->ClearPref(prefs::kVariationsSafeSeedFetchTime);
+  // Seed and other related information is cleared by the SeedReaderWriter.
+  seed_reader_writer_->ClearSeedInfo();
+  seed_reader_writer_->ClearSessionCountry();
+  seed_reader_writer_->ClearPermanentConsistencyCountryAndVersion();
   local_state_->ClearPref(prefs::kVariationsSafeSeedLocale);
-  local_state_->ClearPref(prefs::kVariationsSafeSeedMilestone);
-  local_state_->ClearPref(
-      prefs::kVariationsSafeSeedPermanentConsistencyCountry);
-  local_state_->ClearPref(prefs::kVariationsSafeSeedSessionConsistencyCountry);
-  local_state_->ClearPref(prefs::kVariationsSafeSeedSignature);
+}
+
+LoadSeedResult VariationsSafeSeedStoreLocalState::ReadSeedData(
+    std::string* seed_data,
+    std::string* base64_seed_signature) {
+  return seed_reader_writer_->ReadSeedDataOnStartup(seed_data,
+                                                    base64_seed_signature);
+}
+
+void VariationsSafeSeedStoreLocalState::ReadSeedData(
+    SeedReaderWriter::ReadSeedDataCallback done_callback) {
+  seed_reader_writer_->ReadSeedData(std::move(done_callback));
+}
+
+void VariationsSafeSeedStoreLocalState::AllowToPurgeSeedDataFromMemory() {
+  seed_reader_writer_->AllowToPurgeSeedDataFromMemory();
+}
+
+void VariationsSafeSeedStoreLocalState::GetStoredSeedInfoForDebugging(
+    base::OnceCallback<void(StoredSeedInfo)> done_callback) {
+  seed_reader_writer_->GetStoredSeedInfoForDebugging(std::move(done_callback));
 }
 
 // static

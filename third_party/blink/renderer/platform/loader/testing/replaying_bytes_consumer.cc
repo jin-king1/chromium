@@ -43,7 +43,7 @@ BytesConsumer::Result ReplayingBytesConsumer::BeginRead(
       Close();
       return Result::kDone;
     case Command::kError: {
-      Error e(String::FromUTF8(base::as_byte_span(command.Body())));
+      Error e(String::FromUtf8(base::as_byte_span(command.Body())));
       commands_.pop_front();
       MakeErrored(std::move(e));
       return Result::kError;
@@ -52,8 +52,8 @@ BytesConsumer::Result ReplayingBytesConsumer::BeginRead(
       commands_.pop_front();
       state_ = InternalState::kWaiting;
       task_runner_->PostTask(
-          FROM_HERE, WTF::BindOnce(&ReplayingBytesConsumer::NotifyAsReadable,
-                                   WrapPersistent(this), notification_token_));
+          FROM_HERE, BindOnce(&ReplayingBytesConsumer::NotifyAsReadable,
+                              WrapPersistent(this), notification_token_));
       return Result::kShouldWait;
   }
   NOTREACHED();

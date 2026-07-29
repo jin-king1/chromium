@@ -32,17 +32,18 @@
 
 #include "third_party/blink/renderer/platform/fonts/font_custom_platform_data.h"
 
+#include "base/containers/heap_array.h"
 #include "base/logging.h"
 #include "build/build_config.h"
 #include "third_party/blink/renderer/platform/fonts/font_cache.h"
 #include "third_party/blink/renderer/platform/fonts/font_platform_data.h"
+#include "third_party/blink/renderer/platform/fonts/font_selection_types.h"
 #include "third_party/blink/renderer/platform/fonts/opentype/font_format_check.h"
 #include "third_party/blink/renderer/platform/fonts/opentype/font_settings.h"
 #include "third_party/blink/renderer/platform/fonts/opentype/variable_axes_names.h"
 #include "third_party/blink/renderer/platform/fonts/palette_interpolation.h"
 #include "third_party/blink/renderer/platform/fonts/web_font_decoder.h"
 #include "third_party/blink/renderer/platform/fonts/web_font_typeface_factory.h"
-#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/shared_buffer.h"
 #include "third_party/blink/renderer/platform/wtf/wtf_size_t.h"
 #include "third_party/skia/include/core/SkTypeface.h"
@@ -58,13 +59,13 @@ constexpr SkFourByteTag kWghtTag = SkSetFourByteTag('w', 'g', 'h', 't');
 std::optional<SkFontParameters::Variation::Axis>
 RetrieveVariationDesignParametersByTag(sk_sp<SkTypeface> base_typeface,
                                        SkFourByteTag tag) {
-  int axes_count = base_typeface->getVariationDesignParameters(nullptr, 0);
+  int axes_count = base_typeface->getVariationDesignParameters({});
   if (axes_count <= 0)
     return std::nullopt;
-  Vector<SkFontParameters::Variation::Axis> axes;
+  blink::Vector<SkFontParameters::Variation::Axis> axes;
   axes.resize(axes_count);
   int axes_read =
-      base_typeface->getVariationDesignParameters(axes.data(), axes_count);
+      base_typeface->getVariationDesignParameters(axes);
   if (axes_read <= 0)
     return std::nullopt;
   for (auto& axis : axes) {
@@ -93,7 +94,7 @@ FontCustomPlatformData::FontCustomPlatformData(PassKey,
 
 FontCustomPlatformData::~FontCustomPlatformData() {
   if (v8::Isolate* isolate = v8::Isolate::TryGetCurrent()) {
-    // Safe cast since WebFontDecoder has max decompressed size of 128MB.
+    // Safe cast since DecodedWebFont has max decompressed size of 128MB.
     external_memory_accounter_.Decrease(isolate, data_size_);
   }
 }
@@ -141,11 +142,14 @@ const FontPlatformData* FontCustomPlatformData::GetFontPlatformData(
       FontSelectionRange wght_range = {
           FontSelectionValue(wght_parameters->min),
           FontSelectionValue(wght_parameters->max)};
-      weight_coordinate = {
-          kWghtTag,
-          SkFloatToScalar(wght_range.clampToRange(selection_request.weight))};
-      synthetic_bold = bold && wght_range.maximum < kBoldThreshold &&
-                       selection_request.weight >= kBoldThreshold;
+      if (wght_range.IsValid()) {
+        weight_coordinate = {
+            kWghtTag,
+            SkFloatToScalar(wght_range.clampToRange(selection_request.weight))};
+        bool has_bold_variations = wght_range.maximum > kNormalWeightValue;
+        synthetic_bold = bold && !has_bold_variations &&
+                         selection_request.weight >= kBoldThreshold;
+      }
     }
 
     SkFontArguments::VariationPosition::Coordinate width_coordinate = {
@@ -157,9 +161,11 @@ const FontPlatformData* FontCustomPlatformData::GetFontPlatformData(
       FontSelectionRange wdth_range = {
           FontSelectionValue(wdth_parameters->min),
           FontSelectionValue(wdth_parameters->max)};
-      width_coordinate = {
-          kWdthTag,
-          SkFloatToScalar(wdth_range.clampToRange(selection_request.width))};
+      if (wdth_range.IsValid()) {
+        width_coordinate = {
+            kWdthTag,
+            SkFloatToScalar(wdth_range.clampToRange(selection_request.width))};
+      }
     }
     // CSS and OpenType have opposite definitions of direction of slant
     // angle. In OpenType positive values turn counter-clockwise, negative
@@ -175,11 +181,15 @@ const FontPlatformData* FontCustomPlatformData::GetFontPlatformData(
       FontSelectionRange slnt_range = {
           FontSelectionValue(slnt_parameters->min),
           FontSelectionValue(slnt_parameters->max)};
-      slant_coordinate = {
-          kSlntTag,
-          SkFloatToScalar(slnt_range.clampToRange(-selection_request.slope))};
-      synthetic_italic = italic && slnt_range.maximum < kItalicSlopeValue &&
-                         selection_request.slope >= kItalicSlopeValue;
+      if (slnt_range.IsValid()) {
+        slant_coordinate = {
+            kSlntTag,
+            SkFloatToScalar(slnt_range.clampToRange(-selection_request.slope))};
+        bool has_right_slanted_variations =
+            slnt_range.minimum < kNormalSlopeValue;
+        synthetic_italic = italic && !has_right_slanted_variations &&
+                           selection_request.slope >= kItalicSlopeValue;
+      }
     }
 
     variation.push_back(weight_coordinate);
@@ -252,18 +262,19 @@ const FontPlatformData* FontCustomPlatformData::GetFontPlatformData(
       palette_index = palette_interpolation.RetrievePaletteIndex(palette);
     }
 
-    std::unique_ptr<SkFontArguments::Palette::Override[]> sk_overrides;
+    base::HeapArray<SkFontArguments::Palette::Override> sk_overrides;
     if (palette_index.has_value()) {
       sk_palette.index = *palette_index;
 
       if (color_overrides.size()) {
-        sk_overrides = std::make_unique<SkFontArguments::Palette::Override[]>(
-            color_overrides.size());
+        sk_overrides =
+            base::HeapArray<SkFontArguments::Palette::Override>::Uninit(
+                color_overrides.size());
         for (wtf_size_t i = 0; i < color_overrides.size(); i++) {
           SkColor sk_color = color_overrides[i].color.toSkColor4f().toSkColor();
           sk_overrides[i] = {color_overrides[i].index, sk_color};
         }
-        sk_palette.overrides = sk_overrides.get();
+        sk_palette.overrides = sk_overrides.data();
         sk_palette.overrideCount = color_overrides.size();
       }
 
@@ -299,7 +310,7 @@ String FontCustomPlatformData::FamilyNameForInspector() const {
     }
   }
   font_family_iterator->unref();
-  return String::FromUTF8(base::as_byte_span(localized_string.fString));
+  return String::FromUtf8(base::as_byte_span(localized_string.fString));
 }
 
 String FontCustomPlatformData::GetPostScriptNameOrFamilyNameForInspector()
@@ -317,13 +328,14 @@ FontCustomPlatformData* FontCustomPlatformData::Create(
     SharedBuffer* buffer,
     String& ots_parse_message) {
   DCHECK(buffer);
-  WebFontDecoder decoder;
-  sk_sp<SkTypeface> typeface = decoder.Decode(buffer);
-  if (!typeface) {
-    ots_parse_message = decoder.GetErrorString();
+  base::expected<DecodedWebFont, String> decode_result =
+      DecodedWebFont::Create(buffer);
+  if (!decode_result.has_value()) {
+    ots_parse_message = std::move(decode_result).error();
     return nullptr;
   }
-  return Create(std::move(typeface), decoder.DecodedSize());
+  return Create(std::move(decode_result->sk_typeface),
+                decode_result->decoded_size);
 }
 
 FontCustomPlatformData* FontCustomPlatformData::Create(

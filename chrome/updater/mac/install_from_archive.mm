@@ -10,6 +10,7 @@
 #include <sys/uio.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <map>
 #include <optional>
 #include <string>
@@ -32,19 +33,15 @@
 #include "base/strings/sys_string_conversions.h"
 #include "base/time/time.h"
 #include "base/version.h"
+#include "chrome/updater/branded_constants.h"
 #include "chrome/updater/constants.h"
+#include "chrome/updater/get_updater_scope.h"
 #include "chrome/updater/updater_branding.h"
-#include "chrome/updater/updater_scope.h"
 #include "chrome/updater/util/mac_util.h"
 #include "chrome/updater/util/util.h"
 
 namespace updater {
 namespace {
-
-constexpr int kPermissionsMask = base::FILE_PERMISSION_USER_MASK |
-                                 base::FILE_PERMISSION_GROUP_MASK |
-                                 base::FILE_PERMISSION_READ_BY_OTHERS |
-                                 base::FILE_PERMISSION_EXECUTE_BY_OTHERS;
 
 bool RunHDIUtil(const std::vector<std::string>& args,
                 std::string* command_output) {
@@ -133,7 +130,7 @@ bool IsInstallScriptExecutable(const base::FilePath& script_path) {
     return false;
   }
 
-  constexpr int kExecutableMask = base::FILE_PERMISSION_EXECUTE_BY_USER;
+  static constexpr int kExecutableMask = base::FILE_PERMISSION_EXECUTE_BY_USER;
   return (permissions & kExecutableMask) == kExecutableMask;
 }
 
@@ -148,7 +145,7 @@ int RunExecutable(const base::FilePath& existence_checker_path,
                   const base::FilePath& unpacked_path) {
   if (!base::PathExists(unpacked_path)) {
     VLOG(1) << "File path (" << unpacked_path << ") does not exist.";
-    return static_cast<int>(InstallErrors::kMountedDmgPathDoesNotExist);
+    return std::to_underlying(InstallErrors::kMountedDmgPathDoesNotExist);
   }
   int run_executables = 0;
   for (const char* executable : {
@@ -167,7 +164,7 @@ int RunExecutable(const base::FilePath& existence_checker_path,
     if (!IsInstallScriptExecutable(executable_file_path)) {
       VLOG(1) << "Executable file path (" << executable_file_path
               << ") is not executable";
-      return static_cast<int>(InstallErrors::kExecutablePathNotExecutable);
+      return std::to_underlying(InstallErrors::kExecutablePathNotExecutable);
     }
 
     base::CommandLine command(executable_file_path);
@@ -175,19 +172,24 @@ int RunExecutable(const base::FilePath& existence_checker_path,
     command.AppendArgPath(existence_checker_path);
     command.AppendArg(pv.GetString());
 
+    // Provide a small PATH to provide a predictable execution environment,
+    // including ksadmin on the PATH. If updating this logic, please keep the
+    // install script test in sync with the behavior here.
+    // LINT.IfChange(InstallerEnvPath)
     std::string env_path = "/bin:/usr/bin";
     std::optional<base::FilePath> ksadmin_path =
         GetKSAdminPath(GetUpdaterScope());
     if (ksadmin_path) {
       env_path = base::StrCat({env_path, ":", ksadmin_path->DirName().value()});
     }
+    // LINT.ThenChange(/chrome/installer/mac/keystone_install_test.sh:InstallerEnvPath)
 
     base::ScopedFD read_fd, write_fd;
     {
       int pipefds[2] = {};
       if (pipe(pipefds) != 0) {
         VPLOG(1) << "pipe";
-        return static_cast<int>(InstallErrors::kExecutablePipeFailed);
+        return std::to_underlying(InstallErrors::kExecutablePipeFailed);
       }
       read_fd.reset(pipefds[0]);
       write_fd.reset(pipefds[1]);
@@ -219,22 +221,22 @@ int RunExecutable(const base::FilePath& existence_checker_path,
     VLOG(1) << "Running " << command.GetCommandLineString();
     const base::Process proc = base::LaunchProcess(command, options);
     if (!proc.IsValid()) {
-      return static_cast<int>(InstallErrors::kExecutableWaitForExitFailed);
+      return std::to_underlying(InstallErrors::kExecutableWaitForExitFailed);
     }
 
     // Close write_fd to generate EOF in the read loop below.
     write_fd.reset();
 
     std::string output;
-    base::Time deadline = base::Time::Now() + timeout;
+    base::LiveTicks deadline = base::LiveTicks::Now() + timeout;
 
-    constexpr size_t kBufferSize = 1024;
+    static constexpr size_t kBufferSize = 1024;
     base::CheckedNumeric<size_t> total_bytes_read = 0;
     ssize_t read_this_pass = 0;
     do {
       struct pollfd fds[1] = {{.fd = read_fd.get(), .events = POLLIN}};
-      int timeout_remaining_ms =
-          static_cast<int>((deadline - base::Time::Now()).InMilliseconds());
+      int timeout_remaining_ms = static_cast<int>(
+          (deadline - base::LiveTicks::Now()).InMilliseconds());
       if (timeout_remaining_ms < 0 || poll(fds, 1, timeout_remaining_ms) != 1) {
         break;
       }
@@ -260,9 +262,10 @@ int RunExecutable(const base::FilePath& existence_checker_path,
 
     VLOG(1) << "Output from " << executable << ": " << output;
 
-    if (!proc.WaitForExitWithTimeout(deadline - base::Time::Now(),
-                                     &exit_code)) {
-      return static_cast<int>(InstallErrors::kExecutableWaitForExitFailed);
+    if (!proc.WaitForExitWithTimeout(
+            std::max(deadline - base::LiveTicks::Now(), base::TimeDelta()),
+            &exit_code)) {
+      return std::to_underlying(InstallErrors::kExecutableWaitForExitFailed);
     }
     if (exit_code != 0) {
       return exit_code;
@@ -271,7 +274,8 @@ int RunExecutable(const base::FilePath& existence_checker_path,
   }
   return run_executables > 0
              ? 0
-             : static_cast<int>(InstallErrors::kExecutableFilePathDoesNotExist);
+             : std::to_underlying(
+                   InstallErrors::kExecutableFilePathDoesNotExist);
 }
 
 void CopyDMGContents(const base::FilePath& dmg_path,
@@ -315,12 +319,12 @@ int InstallFromDMG(const base::FilePath& dmg_file_path,
                    base::OnceCallback<int(const base::FilePath&)> install) {
   std::string mount_point;
   if (!MountDMG(dmg_file_path, &mount_point)) {
-    return static_cast<int>(InstallErrors::kFailMountDmg);
+    return std::to_underlying(InstallErrors::kFailMountDmg);
   }
 
   if (mount_point.empty()) {
     VLOG(1) << "No mount point.";
-    return static_cast<int>(InstallErrors::kNoMountPoint);
+    return std::to_underlying(InstallErrors::kNoMountPoint);
   }
   const base::FilePath mounted_dmg_path = base::FilePath(mount_point);
   const int result = std::move(install).Run(mounted_dmg_path);
@@ -341,30 +345,18 @@ int InstallFromDMG(const base::FilePath& dmg_file_path,
   return result;
 }
 
-// Unzips the zip using the existing unzip utility in Mac. Path to the zip is
-// specified by the `zip_file_path`. The install executable located at
-// "/.install" in the contents of the zip is executed, and then the zip is
-// deleted. Returns an error code if unzipping the archive or executing the
-// executable failed.
-int InstallFromZip(const base::FilePath& zip_file_path,
+// Installs by running the install scripts in the specified directory.
+int InstallFromDir(const base::FilePath& dir,
                    base::OnceCallback<int(const base::FilePath&)> install) {
-  const base::FilePath dest_path = zip_file_path.DirName();
-
-  if (!UnzipWithExe(zip_file_path, dest_path)) {
-    VLOG(1) << "Failed to unzip zip file.";
-    return static_cast<int>(InstallErrors::kFailedToExpandZip);
+  // Update permissions on files in the directory.
+  if (!SetFilePermissionsRecursive(dir)) {
+    return std::to_underlying(InstallErrors::kCouldNotConfirmAppPermissions);
   }
 
-  if (!ConfirmFilePermissions(dest_path, kPermissionsMask)) {
-    return static_cast<int>(InstallErrors::kCouldNotConfirmAppPermissions);
-  }
-
-  const int result = std::move(install).Run(dest_path);
-
-  // Remove the zip file, keep the expanded.
-  base::DeleteFile(zip_file_path);
-
-  return result;
+  return std::move(install).Run(dir.BaseName().value() ==
+                                        base::FilePath::kCurrentDirectory
+                                    ? dir.DirName()
+                                    : dir);
 }
 
 // Installs with a path to the app specified by the `app_file_path`. The install
@@ -376,13 +368,13 @@ int InstallFromApp(const base::FilePath& app_file_path,
   if (!base::PathExists(app_file_path) ||
       app_file_path.FinalExtension() != ".app") {
     VLOG(1) << "Path to the app does not exist!";
-    return static_cast<int>(InstallErrors::kNotSupportedInstallerType);
+    return std::to_underlying(InstallErrors::kNotSupportedInstallerType);
   }
 
   // Need to make sure that the app at the path being installed has the correect
   // permissions.
-  if (!ConfirmFilePermissions(app_file_path, kPermissionsMask)) {
-    return static_cast<int>(InstallErrors::kCouldNotConfirmAppPermissions);
+  if (!SetFilePermissionsRecursive(app_file_path)) {
+    return std::to_underlying(InstallErrors::kCouldNotConfirmAppPermissions);
   }
 
   return std::move(install).Run(app_file_path.DirName());
@@ -403,13 +395,13 @@ int InstallFromArchive(const base::FilePath& file_path,
                          base::OnceCallback<int(const base::FilePath&)>)>
       handlers = {
           {".dmg", &InstallFromDMG},
-          {".zip", &InstallFromZip},
           {".app", &InstallFromApp},
+          {"", &InstallFromDir},
       };
   auto handler = handlers.find(file_path.Extension());
   if (handler == handlers.end()) {
     VLOG(0) << "Install failed: no handler for " << file_path.Extension();
-    return static_cast<int>(InstallErrors::kNotSupportedInstallerType);
+    return std::to_underlying(InstallErrors::kNotSupportedInstallerType);
   }
   return handler->second(
       file_path, base::BindOnce(&RunExecutable, existence_checker_path, ap,

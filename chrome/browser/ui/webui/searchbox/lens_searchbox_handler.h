@@ -5,10 +5,10 @@
 #ifndef CHROME_BROWSER_UI_WEBUI_SEARCHBOX_LENS_SEARCHBOX_HANDLER_H_
 #define CHROME_BROWSER_UI_WEBUI_SEARCHBOX_LENS_SEARCHBOX_HANDLER_H_
 
-#include "chrome/browser/ui/webui/searchbox/searchbox_handler.h"
+#include "base/memory/raw_ptr.h"
+#include "chrome/browser/ui/webui/cr_components/searchbox/searchbox_handler.h"
 #include "components/omnibox/browser/omnibox.mojom.h"
 
-class MetricsReporter;
 class LensSearchboxClient;
 class Profile;
 
@@ -18,22 +18,26 @@ class LensSearchboxHandler : public SearchboxHandler {
  public:
   LensSearchboxHandler(
       mojo::PendingReceiver<searchbox::mojom::PageHandler> pending_page_handler,
+      mojo::PendingRemote<searchbox::mojom::Page> pending_page,
       Profile* profile,
       content::WebContents* web_contents,
-      MetricsReporter* metrics_reporter,
       LensSearchboxClient* lens_searchbox_client);
 
   ~LensSearchboxHandler() override;
 
+  // SearchboxHandler:
+  std::string AutocompleteIconToResourceName(
+      const gfx::VectorIcon& icon) const override;
+
   // searchbox::mojom::PageHandler:
-  void SetPage(
-      mojo::PendingRemote<searchbox::mojom::Page> pending_page) override;
   void OnFocusChanged(bool focused) override;
-  void QueryAutocomplete(const std::u16string& input,
-                         bool prevent_inline_autocomplete) override;
+  void QueryAutocomplete(int32_t query_id,
+                         const std::u16string& input,
+                         bool prevent_inline_autocomplete,
+                         uint32_t cursor_position,
+                         omnibox::SuggestInventory suggest_inventory,
+                         bool is_on_focus) override;
   void DeleteAutocompleteMatch(uint8_t line, const GURL& url) override {}
-  void ToggleSuggestionGroupIdVisibility(int32_t suggestion_group_id) override {
-  }
   void ExecuteAction(uint8_t line,
                      uint8_t action_index,
                      const GURL& url,
@@ -43,13 +47,12 @@ class LensSearchboxHandler : public SearchboxHandler {
                      bool ctrl_key,
                      bool meta_key,
                      bool shift_key) override {}
-  void PopupElementSizeChanged(const gfx::Size& size) override {}
   void OnThumbnailRemoved() override;
 
-  // Invoked by LensOverlayController.
+  // Invoked by LensSearchboxController.
   void SetInputText(const std::string& input_text);
-  // Invoked by LensOverlayController.
-  void SetThumbnail(const std::string& thumbnail_url);
+  // Invoked by LensSearchboxController.
+  void SetThumbnail(const std::string& thumbnail_url, bool is_deletable);
 
   // AutocompleteController::Observer:
   void OnAutocompleteStopTimerTriggered(

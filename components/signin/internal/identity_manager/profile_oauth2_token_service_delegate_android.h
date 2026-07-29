@@ -12,7 +12,6 @@
 
 #include "base/android/jni_weak_ref.h"
 #include "base/android/scoped_java_ref.h"
-#include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "components/signin/internal/identity_manager/account_tracker_service.h"
 #include "components/signin/internal/identity_manager/profile_oauth2_token_service.h"
@@ -49,6 +48,8 @@ class ProfileOAuth2TokenServiceDelegateAndroid
 
   // Seeds the accounts with |accounts| then resumes the reload of
   // accounts once the account seeding is complete.
+  // If |primary_account_id| is not std::nullopt, then it must exist in
+  // |accounts|.
   void SeedAccountsThenReloadAllAccountsWithPrimaryAccount(
       const std::vector<AccountInfo>& accounts,
       const std::optional<CoreAccountId>& primary_account_id) override;
@@ -81,37 +82,32 @@ class ProfileOAuth2TokenServiceDelegateAndroid
   void FireRefreshTokensLoaded() override;
 
  private:
+  friend class OAuth2TokenServiceDelegateAndroidForTest;
+
   // ProfileOAuth2TokenServiceDelegate implementation:
   // Overridden from ProfileOAuth2TokenService to complete signout of all
   // POA2TService aware accounts.
   void RevokeAllCredentialsInternal(
       signin_metrics::SourceForRefreshTokenOperation source) override;
 
-  void LoadCredentialsInternal(const CoreAccountId& primary_account_id,
-                               bool is_syncing) override;
-
-  std::string MapAccountIdToAccountName(const CoreAccountId& account_id) const;
-  CoreAccountId MapAccountNameToAccountId(
-      const std::string& account_name) const;
+  void LoadCredentialsInternal(
+      const CoreAccountId& primary_account_id) override;
 
   enum RefreshTokenLoadStatus {
     RT_LOAD_NOT_START,
     RT_WAIT_FOR_VALIDATION,
-    RT_HAS_BEEN_VALIDATED,
     RT_LOADED
   };
 
-  // Return whether accounts are valid and we have access to all the tokens in
-  // |curr_ids|.
-  bool UpdateAccountList(const std::optional<CoreAccountId>& signed_in_id,
+  void UpdateAccountList(const std::optional<CoreAccountId>& signed_in_id,
                          const std::vector<CoreAccountId>& prev_ids,
                          const std::vector<CoreAccountId>& curr_ids,
                          std::vector<CoreAccountId>* refreshed_ids,
                          std::vector<CoreAccountId>* revoked_ids);
   // As |GetAccounts| but with only validated account IDs.
-  std::vector<CoreAccountId> GetValidAccounts();
+  std::vector<CoreAccountId> GetValidAccounts() const;
   // Set accounts that have been advertised by OnRefreshTokenAvailable.
-  virtual void SetAccounts(const std::vector<CoreAccountId>& accounts);
+  void SetAccounts(const std::vector<CoreAccountId>& accounts);
 
   base::android::ScopedJavaGlobalRef<jobject> java_ref_;
 

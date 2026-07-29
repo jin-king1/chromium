@@ -17,7 +17,9 @@ using ::chromeos::CupsPrinterStatus;
 using ::chromeos::Printer;
 using ::chromeos::PrinterClass;
 
-FakeCupsPrintersManager::FakeCupsPrintersManager() = default;
+FakeCupsPrintersManager::FakeCupsPrintersManager(
+    PrintServersManager* print_servers_manager)
+    : print_servers_manager_(print_servers_manager) {}
 
 FakeCupsPrintersManager::~FakeCupsPrintersManager() = default;
 
@@ -83,7 +85,7 @@ void FakeCupsPrintersManager::FetchPrinterStatus(const std::string& printer_id,
 }
 
 PrintServersManager* FakeCupsPrintersManager::GetPrintServersManager() const {
-  return nullptr;
+  return print_servers_manager_;
 }
 
 void FakeCupsPrintersManager::AddPrinter(const chromeos::Printer& printer,
@@ -113,9 +115,10 @@ void FakeCupsPrintersManager::SetPrinterSetupResult(
 
 void FakeCupsPrintersManager::QueryPrinterForAutoConf(
     const Printer& printer,
-    base::OnceCallback<void(bool)> callback) {
+    base::OnceCallback<void(bool, const chromeos::IppPrinterInfo&)> callback) {
   std::move(callback).Run(
-      !printers_marked_as_not_autoconf_.contains(printer.id()));
+      !printers_marked_as_not_autoconf_.contains(printer.id()),
+      chromeos::IppPrinterInfo{});
 }
 
 void FakeCupsPrintersManager::TriggerLocalPrintersObserver() {

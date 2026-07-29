@@ -6,17 +6,17 @@
 
 #include <memory>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "base/check.h"
 #include "base/feature_list.h"
+#include "base/logging.h"
 #include "base/task/single_thread_task_runner.h"
 #include "build/build_config.h"
 #include "components/viz/common/features.h"
 #include "components/viz/service/display_embedder/skia_output_surface_dependency.h"
 #include "gpu/command_buffer/service/shared_context_state.h"
-#include "ui/display/types/display_snapshot.h"
-#include "ui/gfx/buffer_format_util.h"
 #include "ui/gfx/geometry/rect_conversions.h"
 #include "ui/gfx/geometry/rrect_f.h"
 #include "ui/gfx/overlay_plane_data.h"
@@ -117,11 +117,16 @@ void OutputPresenterGL::ScheduleOverlayPlane(
   // TODO(crbug.com/40239878): Add ScopedOverlayAccess::GetOverlayImage() that
   // works on all platforms.
   gl::OverlayImage overlay_image = access ? access->GetNativePixmap() : nullptr;
-  if (!overlay_plane_candidate.is_root_render_pass && !overlay_image &&
-      !overlay_plane_candidate.is_solid_color) {
+  if (!overlay_image && !overlay_plane_candidate.is_solid_color) {
     // Allow non-root overlays to be skipped if missing for transient causes.
     // E.g. missing overlay_image because video decoder is destroyed during
     // navigation.
+    // TODO(crbug.com/405022140): root_render_pass overlay_image should exist,
+    // but when there is a CopyOutputRequest, root_render_pass can be a
+    // WrappedSkImage without overlay access. Plumb such information and fail
+    // properly.
+    LOG_IF(WARNING, overlay_plane_candidate.is_root_render_pass)
+        << "root_render_pass is missing overlay_image.";
     return;
   }
 #elif BUILDFLAG(IS_ANDROID)
@@ -165,28 +170,37 @@ void OutputPresenterGL::ScheduleOverlayPlane(
           overlay_plane_candidate.clip_rect,
           overlay_plane_candidate.overlay_type));
 #elif BUILDFLAG(IS_APPLE)
-  presenter_->ScheduleCALayer(ui::CARendererLayerParams(
-      overlay_plane_candidate.clip_rect.has_value(),
-      overlay_plane_candidate.clip_rect.value_or(gfx::Rect()),
-      overlay_plane_candidate.rounded_corners,
-      overlay_plane_candidate.sorting_context_id,
-      absl::get<gfx::Transform>(overlay_plane_candidate.transform),
-      access ? access->GetIOSurface() : gfx::ScopedIOSurface(),
-      access ? access->representation()->color_space() : gfx::ColorSpace(),
-      overlay_plane_candidate.uv_rect,
-      gfx::ToEnclosingRect(overlay_plane_candidate.display_rect),
-      overlay_plane_candidate.color.value_or(SkColors::kTransparent),
-      overlay_plane_candidate.edge_aa_mask, overlay_plane_candidate.opacity,
-      overlay_plane_candidate.nearest_neighbor_filter,
-      overlay_plane_candidate.hdr_metadata,
-      overlay_plane_candidate.protected_video_type,
-      overlay_plane_candidate.is_render_pass_draw_quad));
+  gfx::ScopedIOSurface io_surface;
+  gfx::ColorSpace io_surface_color_space;
+  std::vector<gfx::MTLSharedEventFence> backpressure_fences;
+  if (access) {
+    io_surface = access->GetIOSurface();
+    io_surface_color_space = access->representation()->color_space();
+    backpressure_fences = access->GetBackpressureFences();
+  }
+  presenter_->ScheduleCALayer(
+      ui::CARendererLayerParams(
+          overlay_plane_candidate.clip_rect.has_value(),
+          overlay_plane_candidate.clip_rect.value_or(gfx::Rect()),
+          overlay_plane_candidate.rounded_corners,
+          overlay_plane_candidate.sorting_context_id,
+          std::get<gfx::Transform>(overlay_plane_candidate.transform),
+          io_surface, io_surface_color_space, overlay_plane_candidate.uv_rect,
+          gfx::ToEnclosingRect(overlay_plane_candidate.display_rect),
+          overlay_plane_candidate.color.value_or(SkColors::kTransparent),
+          overlay_plane_candidate.edge_aa_mask, overlay_plane_candidate.opacity,
+          overlay_plane_candidate.nearest_neighbor_filter,
+          overlay_plane_candidate.hdr_metadata,
+          overlay_plane_candidate.protected_video_type,
+          overlay_plane_candidate.is_render_pass_draw_quad),
+      std::move(backpressure_fences));
 
 #endif
 }
 
-void OutputPresenterGL::SetVSyncDisplayID(int64_t display_id) {
-  presenter_->SetVSyncDisplayID(display_id);
+void OutputPresenterGL::SetVSyncDisplayID(int64_t display_id,
+                                          bool force_update) {
+  presenter_->SetVSyncDisplayID(display_id, force_update);
 }
 
 #if BUILDFLAG(IS_APPLE)

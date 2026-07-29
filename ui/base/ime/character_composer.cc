@@ -2,19 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "ui/base/ime/character_composer.h"
 
-#include <algorithm>
-#include <iterator>
 #include <optional>
 #include <string>
 
 #include "base/check.h"
+#include "base/containers/span.h"
 #include "base/logging.h"
 #include "base/notreached.h"
 #include "base/strings/string_util.h"
@@ -48,9 +42,7 @@ bool UTF32CharacterToUTF16(uint32_t character, std::u16string* output) {
   if (!CBU_IS_UNICODE_CHAR(character))
     return false;
   if (character) {
-    output->resize(CBU16_LENGTH(character));
-    size_t i = 0;
-    CBU16_APPEND_UNSAFE(&(*output)[0], i, character);
+    base::WriteUnicodeCharacter(character, output);
   }
   return true;
 }
@@ -305,7 +297,7 @@ ComposeChecker::CheckSequenceResult TreeComposeChecker::CheckSequence(
 
   uint16_t tree_index = 0;
   for (const auto& keystroke : sequence) {
-    DCHECK(tree_index < data_->tree_entries);
+    DCHECK(tree_index < data_->tree.size());
 
     // If we are looking up a dead key or the Compose key, skip over the
     // character tables.
@@ -358,8 +350,8 @@ bool TreeComposeChecker::Find(uint16_t index,
     }
   };
   const TableEntry* a =
-      reinterpret_cast<const TableEntry*>(&data_->tree[index]);
-  const TableEntry* z = a + size;
+      reinterpret_cast<const TableEntry*>(&UNSAFE_TODO(data_->tree[index]));
+  const TableEntry* z = UNSAFE_TODO(a + size);
   const TableEntry target = {key, 0};
   const TableEntry* it = std::lower_bound(a, z, target);
   if ((it != z) && (it->key == key)) {

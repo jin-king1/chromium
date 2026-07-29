@@ -17,6 +17,7 @@
 #include <string_view>
 #include <tuple>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "base/check.h"
@@ -25,7 +26,6 @@
 #include "base/numerics/clamped_math.h"
 #include "base/threading/thread_checker.h"
 #include "base/time/time.h"
-#include "base/types/optional_util.h"
 #include "base/values.h"
 #include "net/base/address_family.h"
 #include "net/base/connection_endpoint_metadata.h"
@@ -35,11 +35,11 @@
 #include "net/base/net_errors.h"
 #include "net/base/net_export.h"
 #include "net/base/network_anonymization_key.h"
+#include "net/base/network_handle.h"
 #include "net/dns/public/dns_query_type.h"
 #include "net/dns/public/host_resolver_results.h"
 #include "net/dns/public/host_resolver_source.h"
 #include "net/log/net_log_capture_mode.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 #include "url/scheme_host_port.h"
 
 namespace base {
@@ -57,11 +57,12 @@ class NET_EXPORT HostCache {
     // Hostnames in `host` must not be IP literals. IP literals should be
     // resolved directly to the IP address and not be stored/queried in
     // HostCache.
-    Key(absl::variant<url::SchemeHostPort, std::string> host,
+    Key(std::variant<url::SchemeHostPort, std::string> host,
         DnsQueryType dns_query_type,
         HostResolverFlags host_resolver_flags,
         HostResolverSource host_resolver_source,
-        const NetworkAnonymizationKey& network_anonymization_key);
+        const NetworkAnonymizationKey& network_anonymization_key,
+        handles::NetworkHandle target_network);
     Key();
     Key(const Key& key);
     Key(Key&& key);
@@ -74,27 +75,24 @@ class NET_EXPORT HostCache {
     static auto GetTuple(const Key* key) {
       return std::tie(key->dns_query_type, key->host_resolver_flags, key->host,
                       key->host_resolver_source, key->network_anonymization_key,
-                      key->secure);
+                      key->secure, key->target_network);
     }
 
     bool operator==(const Key& other) const {
       return GetTuple(this) == GetTuple(&other);
     }
 
-    bool operator!=(const Key& other) const {
-      return GetTuple(this) != GetTuple(&other);
-    }
-
     bool operator<(const Key& other) const {
       return GetTuple(this) < GetTuple(&other);
     }
 
-    absl::variant<url::SchemeHostPort, std::string> host;
+    std::variant<url::SchemeHostPort, std::string> host;
     DnsQueryType dns_query_type = DnsQueryType::UNSPECIFIED;
     HostResolverFlags host_resolver_flags = 0;
     HostResolverSource host_resolver_source = HostResolverSource::ANY;
     NetworkAnonymizationKey network_anonymization_key;
     bool secure = false;
+    handles::NetworkHandle target_network = handles::kInvalidNetworkHandle;
   };
 
   struct NET_EXPORT EntryStaleness {
@@ -182,12 +180,11 @@ class NET_EXPORT HostCache {
 
     bool ContentsEqual(const Entry& other) const {
       return std::tie(error_, ip_endpoints_, endpoint_metadatas_, aliases_,
-                      text_records_, hostnames_, https_record_compatibility_,
-                      canonical_names_) ==
-             std::tie(
-                 other.error_, other.ip_endpoints_, other.endpoint_metadatas_,
-                 other.aliases_, other.text_records_, other.hostnames_,
-                 other.https_record_compatibility_, other.canonical_names_);
+                      text_records_, hostnames_, canonical_names_) ==
+             std::tie(other.error_, other.ip_endpoints_,
+                      other.endpoint_metadatas_, other.aliases_,
+                      other.text_records_, other.hostnames_,
+                      other.canonical_names_);
     }
 
     int error() const { return error_; }
@@ -218,13 +215,6 @@ class NET_EXPORT HostCache {
     const std::vector<HostPortPair>& hostnames() const { return hostnames_; }
     void set_hostnames(std::vector<HostPortPair> hostnames) {
       hostnames_ = std::move(hostnames);
-    }
-    const std::vector<bool>& https_record_compatibility() const {
-      return https_record_compatibility_;
-    }
-    void set_https_record_compatibility(
-        std::vector<bool> https_record_compatibility) {
-      https_record_compatibility_ = std::move(https_record_compatibility);
     }
     std::optional<bool> pinning() const { return pinning_; }
     void set_pinning(std::optional<bool> pinning) { pinning_ = pinning; }
@@ -293,12 +283,9 @@ class NET_EXPORT HostCache {
           std::set<std::string> aliases,
           std::vector<std::string>&& text_results,
           std::vector<HostPortPair>&& hostnames,
-          std::vector<bool>&& https_record_compatibility,
           Source source,
           base::TimeTicks expires,
           int network_changes);
-
-    void PrepareForCacheInsertion();
 
     void SetResult(
         std::multimap<HttpsRecordPriority, ConnectionEndpointMetadata>
@@ -311,9 +298,6 @@ class NET_EXPORT HostCache {
     void SetResult(std::vector<HostPortPair> hostnames) {
       hostnames_ = std::move(hostnames);
     }
-    void SetResult(std::vector<bool> https_record_compatibility) {
-      https_record_compatibility_ = std::move(https_record_compatibility);
-    }
 
     int total_hits() const { return total_hits_; }
     int stale_hits() const { return stale_hits_; }
@@ -324,7 +308,7 @@ class NET_EXPORT HostCache {
                       int network_changes,
                       EntryStaleness* out) const;
 
-    base::Value::Dict GetAsValue(bool include_staleness) const;
+    base::DictValue GetAsValue(bool include_staleness) const;
 
     // The resolve results for this entry.
     int error_ = ERR_FAILED;
@@ -334,16 +318,6 @@ class NET_EXPORT HostCache {
     std::set<std::string> aliases_;
     std::vector<std::string> text_records_;
     std::vector<HostPortPair> hostnames_;
-
-    // Bool of whether each HTTPS record received is compatible
-    // (draft-ietf-dnsop-svcb-https-08#section-8), considering alias records to
-    // always be compatible.
-    //
-    // This field may be reused for experimental query types to record
-    // successfully received records of that experimental type.
-    //
-    // For either usage, cleared before inserting in cache.
-    std::vector<bool> https_record_compatibility_;
 
     // Where results were obtained (e.g. DNS lookup, hosts file, etc).
     Source source_ = SOURCE_UNKNOWN;
@@ -462,13 +436,13 @@ class NET_EXPORT HostCache {
   // Fills the provided base::Value with the contents of the cache for
   // serialization. `entry_list` must be non-null list, and will be cleared
   // before adding the cache contents.
-  void GetList(base::Value::List& entry_list,
+  void GetList(base::ListValue& entry_list,
                bool include_staleness,
                SerializationType serialization_type) const;
   // Takes a base::Value list representing cache entries and stores them in the
   // cache, skipping any that already have entries. Returns true on success,
   // false on failure.
-  bool RestoreFromListValue(const base::Value::List& old_cache);
+  bool RestoreFromListValue(const base::ListValue& old_cache);
   // Returns the number of entries that were restored in the last call to
   // RestoreFromListValue().
   size_t last_restore_size() const { return restore_size_; }

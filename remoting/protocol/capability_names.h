@@ -42,6 +42,25 @@ inline constexpr char kClientControlledLayoutCapability[] =
 inline constexpr char kFractionalCoordinatesCapability[] =
     "fractionalCoordinates";
 
+// Host supports automatic setting of UI scale when resizing.
+inline constexpr char kHighDpiCapability[] = "highDpi";
+
+// Host supports resize sufficiently well for it to be enabled by default.
+inline constexpr char kDefaultResizeCapability[] = "defaultResize";
+
+// Host supports sending cursor positions to the client for rendering.
+inline constexpr char kClientRenderedHostCursorCapability[] =
+    "clientRenderedHostCursor";
+
+// Host supports remoting of microphone audio.
+inline constexpr char kMicrophoneRemotingCapability[] = "microphoneRemoting";
+
+// Host supports remoting of terminal control.
+inline constexpr char kTerminalModeCapability[] = "terminalMode_alpha";
+
+// Host supports security key forwarding via a WebRTC data channel.
+inline constexpr char kSecurityKeyV2Capability[] = "securityKeyV2";
+
 }  // namespace remoting::protocol
 
 #endif  // REMOTING_PROTOCOL_CAPABILITY_NAMES_H_

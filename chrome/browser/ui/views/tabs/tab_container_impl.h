@@ -11,6 +11,7 @@
 #include "base/memory/raw_ref.h"
 #include "base/timer/timer.h"
 #include "chrome/browser/ui/views/frame/browser_root_view.h"
+#include "chrome/browser/ui/views/tabs/shared/drop_arrow.h"
 #include "chrome/browser/ui/views/tabs/tab.h"
 #include "chrome/browser/ui/views/tabs/tab_container.h"
 #include "chrome/browser/ui/views/tabs/tab_group_underline.h"
@@ -23,6 +24,7 @@
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/views/animation/bounds_animator.h"
 #include "ui/views/animation/bounds_animator_observer.h"
+#include "ui/views/controls/image_view.h"
 #include "ui/views/mouse_watcher.h"
 #include "ui/views/paint_info.h"
 #include "ui/views/view.h"
@@ -31,7 +33,7 @@
 
 class TabStrip;
 class TabHoverCardController;
-class TabDragContextBase;
+class TabDragPositioningDelegateBase;
 
 // A View that contains a sequence of Tabs for the TabStrip.
 class TabContainerImpl : public TabContainer,
@@ -43,9 +45,8 @@ class TabContainerImpl : public TabContainer,
  public:
   TabContainerImpl(TabContainerController& controller,
                    TabHoverCardController* hover_card_controller,
-                   TabDragContextBase* drag_context,
-                   TabSlotController& tab_slot_controller,
-                   views::View* scroll_contents_view);
+                   TabDragPositioningDelegateBase* drag_position_delegate,
+                   TabSlotController& tab_slot_controller);
   ~TabContainerImpl() override;
 
   // TabContainer:
@@ -64,9 +65,6 @@ class TabContainerImpl : public TabContainer,
   Tab* AddTabToViewModel(Tab* tab, int model_index, TabPinned pinned) override;
   void ReturnTabSlotView(TabSlotView* view) override;
 
-  void ScrollTabToVisible(int model_index) override;
-
-  void ScrollTabContainerByOffset(int offset) override;
   void OnGroupCreated(const tab_groups::TabGroupId& group) override;
   void OnGroupEditorOpened(const tab_groups::TabGroupId& group) override;
   void OnGroupMoved(const tab_groups::TabGroupId& group) override;
@@ -83,6 +81,10 @@ class TabContainerImpl : public TabContainer,
   void NotifyTabstripBubbleOpened() override;
   void NotifyTabstripBubbleClosed() override;
 
+  void OnSplitCreated(const std::vector<int>& indices) override;
+  void OnSplitRemoved(const std::vector<int>& indices) override;
+  void OnSplitContentsChanged(const std::vector<int>& indices) override;
+
   std::optional<int> GetModelIndexOf(
       const TabSlotView* slot_view) const override;
   Tab* GetTabAtModelIndex(int index) const override;
@@ -90,7 +92,7 @@ class TabContainerImpl : public TabContainer,
   std::optional<int> GetModelIndexOfFirstNonClosingTab(Tab* tab) const override;
 
   void UpdateHoverCard(
-      Tab* tab,
+      HoverCardAnchorTarget* anchor_target,
       TabSlotController::HoverCardUpdateType update_type) override;
 
   void HandleLongTap(ui::GestureEvent* event) override;
@@ -125,9 +127,8 @@ class TabContainerImpl : public TabContainer,
   TabGroupViews* GetGroupViews(tab_groups::TabGroupId group_id) const override;
   const std::map<tab_groups::TabGroupId, std::unique_ptr<TabGroupViews>>&
   get_group_views_for_testing() const override;
-
-  int GetActiveTabWidth() const override;
-  int GetInactiveTabWidth() const override;
+  std::map<tab_groups::TabGroupId, TabGroupHeader*> GetGroupHeaders()
+      const override;
 
   gfx::Rect GetIdealBounds(int model_index) const override;
   gfx::Rect GetIdealBounds(tab_groups::TabGroupId group) const override;
@@ -160,53 +161,18 @@ class TabContainerImpl : public TabContainer,
   void OnBoundsAnimatorProgressed(views::BoundsAnimator* animator) override;
   void OnBoundsAnimatorDone(views::BoundsAnimator* animator) override;
 
+  const std::vector<ZOrderableTabContainerElement>& GetZOrderCacheForTesting()
+      const {
+    return z_ordered_children_cache_;
+  }
+
+  // Used to simulate PaintChildren in unittests which is the only time in which
+  // the production containers should check/update the zorder.
+  void UpdateZOrderCacheForTesting();
+
  private:
-  // Used during a drop session of a url. Tracks the position of the drop as
-  // well as a window used to highlight where the drop occurs.
-  class DropArrow : public views::WidgetObserver {
-   public:
-    DropArrow(const BrowserRootView::DropIndex& index,
-              bool point_down,
-              views::Widget* context);
-    DropArrow(const DropArrow&) = delete;
-    DropArrow& operator=(const DropArrow&) = delete;
-    ~DropArrow() override;
-
-    void set_index(const BrowserRootView::DropIndex& index) { index_ = index; }
-    BrowserRootView::DropIndex index() const { return index_; }
-
-    void SetPointDown(bool down);
-    bool point_down() const { return point_down_; }
-
-    void SetWindowBounds(const gfx::Rect& bounds);
-
-    // views::WidgetObserver:
-    void OnWidgetDestroying(views::Widget* widget) override;
-
-   private:
-    // Index of the tab to drop on.
-    BrowserRootView::DropIndex index_;
-
-    // Direction the arrow should point in. If true, the arrow is displayed
-    // above the tab and points down. If false, the arrow is displayed beneath
-    // the tab and points up.
-    bool point_down_ = false;
-
-    // Renders the drop indicator.
-    raw_ptr<views::Widget, DanglingUntriaged> arrow_window_ = nullptr;
-
-    raw_ptr<views::ImageView, DanglingUntriaged> arrow_view_ = nullptr;
-
-    base::ScopedObservation<views::Widget, views::WidgetObserver>
-        scoped_observation_{this};
-  };
-
   class RemoveTabDelegate;
-
   views::ViewModelT<Tab>* GetTabsViewModel();
-
-  // Private getter to retrieve the visible rect of the scroll container.
-  std::optional<gfx::Rect> GetVisibleContentRect();
 
   // Uses `bounds_animator_` to animate `view` to `target`. Use this rather than
   // calling `bounds_animator_.AnimateViewTo()` directly so animations correctly
@@ -216,12 +182,7 @@ class TabContainerImpl : public TabContainer,
       const gfx::Rect& target,
       std::unique_ptr<gfx::AnimationDelegate> delegate = nullptr);
 
-  // Animates and scrolls the tab container from the start_edge to the
-  // target_edge. If the target_edge is beyond the tab strip it will be clamped
-  // bounds of the tabstrip.
-  void AnimateScrollToShowXCoordinate(const int start_edge,
-                                      const int target_edge);
-  // Animates |tab_slot_view| to |target_bounds|
+  // Animates `tab_slot_view` to `target_bounds`
   void AnimateTabSlotViewTo(TabSlotView* tab_slot_view,
                             const gfx::Rect& target_bounds);
 
@@ -240,7 +201,7 @@ class TabContainerImpl : public TabContainer,
   // mode.
   int CalculateAvailableWidthForTabs() const;
 
-  // Invoked from |AddTab| after the newly created tab has been inserted.
+  // Invoked from `AddTab` after the newly created tab has been inserted.
   void StartInsertTabAnimation(int model_index);
 
   void StartRemoveTabAnimation(Tab* tab, int former_model_index);
@@ -262,8 +223,8 @@ class TabContainerImpl : public TabContainer,
   // Call when `tab` is going away to remove the tab from data structures.
   void OnTabRemoved(Tab* tab);
 
-  // Updates |override_available_width_for_tabs_|, if necessary, to account for
-  // the removal of the tab at |model_index|.
+  // Updates `override_available_width_for_tabs_`, if necessary, to account for
+  // the removal of the tab at `model_index`.
   void UpdateClosingModeOnRemovedTab(int model_index, bool was_active);
 
   // Perform an animated resize-relayout of the TabContainer immediately.
@@ -273,7 +234,7 @@ class TabContainerImpl : public TabContainer,
   // are in a drag session this restarts the timer.
   void ResizeLayoutTabsFromTouch();
 
-  // Restarts |resize_layout_timer_|.
+  // Restarts `resize_layout_timer_`.
   void StartResizeLayoutTabsFromTouchTimer();
 
   bool IsDragSessionActive() const;
@@ -284,7 +245,7 @@ class TabContainerImpl : public TabContainer,
   void AddMessageLoopObserver();
   void RemoveMessageLoopObserver();
 
-  // Moves |slot_view| within children() to match |layout_helper_|'s slot
+  // Moves `slot_view` within children() to match `layout_helper_`'s slot
   // ordering.
   void OrderTabSlotView(TabSlotView* slot_view);
 
@@ -302,7 +263,7 @@ class TabContainerImpl : public TabContainer,
   // Returns true if the tab is not partly or fully clipped (due to overflow),
   // and the tab couldn't become partly clipped due to changing the selected tab
   // (for example, if currently the strip has the last tab selected, and
-  // changing that to the first tab would cause |tab| to be pushed over enough
+  // changing that to the first tab would cause `tab` to be pushed over enough
   // to clip).
   bool ShouldTabBeVisible(const Tab* tab) const;
 
@@ -313,15 +274,12 @@ class TabContainerImpl : public TabContainer,
   // -- Link Drag & Drop ------------------------------------------------------
 
   // Returns the bounds to render the drop at, in screen coordinates. Sets
-  // |is_beneath| to indicate whether the arrow is beneath the tab, or above
-  // it.
-  gfx::Rect GetDropBounds(int drop_index,
-                          bool drop_before,
-                          bool drop_in_group,
-                          bool* is_beneath);
+  // `direction` to indicate which way the arrow should point.
+  gfx::Rect GetDropBounds(const BrowserRootView::DropIndex& drop_index,
+                          DropArrow::Direction* direction);
 
-  // Show drop arrow with passed |tab_data_index| and |drop_before|.
-  // If |tab_data_index| is negative, the arrow will disappear.
+  // Show drop arrow with passed `tab_data_index` and `drop_before`.
+  // If `tab_data_index` is negative, the arrow will disappear.
   void SetDropArrow(const std::optional<BrowserRootView::DropIndex>& index);
 
   // Updates the indexes and count for AX data on all tabs. Used by some screen
@@ -330,15 +288,21 @@ class TabContainerImpl : public TabContainer,
 
   bool IsValidModelIndex(int model_index) const;
 
+  void MarkZOrderCacheDirty() { z_order_cache_dirty_ = true; }
+
+  // Recalculates the zorder cache if dirty.
+  // (see implementation of PaintChildren)
+  void UpdateZOrderCacheIfDirty();
+
   std::map<tab_groups::TabGroupId, std::unique_ptr<TabGroupViews>> group_views_;
 
   // There is a one-to-one mapping between each of the
-  // tabs in the TabStripModel and |tabs_view_model_|.
+  // tabs in the TabStripModel and `tabs_view_model_`.
   // Because we animate tab removal there exists a
   // period of time where a tab is displayed but not
   // in the model. When this occurs the tab is removed
-  // from |tabs_view_model_|, but remains in
-  // |layout_helper_| (and remains a View child) until
+  // from `tabs_view_model_`, but remains in
+  // `layout_helper_` (and remains a View child) until
   // the remove animation completes.
   views::ViewModelT<Tab> tabs_view_model_;
 
@@ -348,13 +312,10 @@ class TabContainerImpl : public TabContainer,
       hover_card_controller_;
 
   // May be nullptr in tests.
-  const raw_ptr<TabDragContextBase, DanglingUntriaged> drag_context_;
+  const raw_ptr<TabDragPositioningDelegateBase, DanglingUntriaged>
+      drag_position_delegate_;
 
   const raw_ref<TabSlotController> tab_slot_controller_;
-
-  // The View that is to be scrolled by |tab_scrolling_animation_|. May be
-  // nullptr in tests.
-  const raw_ptr<views::View> scroll_contents_view_;
 
   // This view is animated by `bounds_animator_` to guarantee that this
   // container's bounds change smoothly when tabs are animated into or out of
@@ -363,9 +324,6 @@ class TabContainerImpl : public TabContainer,
 
   // Responsible for animating tabs in response to model changes.
   views::BoundsAnimator bounds_animator_;
-
-  // Responsible for animating the scroll of the tab container.
-  std::unique_ptr<gfx::LinearAnimation> tab_scrolling_animation_;
 
   const std::unique_ptr<TabStripLayoutHelper> layout_helper_;
 
@@ -392,6 +350,9 @@ class TabContainerImpl : public TabContainer,
   bool in_tab_close_ = false;
 
   base::RepeatingCallback<int()> available_width_callback_;
+
+  std::vector<ZOrderableTabContainerElement> z_ordered_children_cache_;
+  bool z_order_cache_dirty_ = true;
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_TABS_TAB_CONTAINER_IMPL_H_

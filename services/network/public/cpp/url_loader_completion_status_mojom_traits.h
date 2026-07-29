@@ -7,12 +7,15 @@
 
 #include <optional>
 
+#include "base/byte_size.h"
 #include "base/component_export.h"
 #include "base/time/time.h"
 #include "mojo/public/cpp/bindings/struct_traits.h"
 #include "net/ssl/ssl_info.h"
 #include "services/network/public/cpp/cors/cors_mojom_traits.h"
 #include "services/network/public/cpp/net_ipc_param_traits.h"
+#include "services/network/public/cpp/network_param_mojom_traits.h"
+#include "services/network/public/cpp/ssl_info_mojom_traits.h"
 #include "services/network/public/cpp/url_loader_completion_status.h"
 #include "services/network/public/mojom/blocked_by_response_reason.mojom-shared.h"
 #include "services/network/public/mojom/cors.mojom-shared.h"
@@ -54,27 +57,22 @@ class COMPONENT_EXPORT(NETWORK_CPP_BASE)
     return status.exists_in_cache;
   }
 
-  static bool exists_in_memory_cache(
-      const network::URLLoaderCompletionStatus& status) {
-    return status.exists_in_memory_cache;
-  }
-
   static const base::TimeTicks& completion_time(
       const network::URLLoaderCompletionStatus& status) {
     return status.completion_time;
   }
 
-  static int64_t encoded_data_length(
+  static base::ByteSize encoded_data_length(
       const network::URLLoaderCompletionStatus& status) {
     return status.encoded_data_length;
   }
 
-  static int64_t encoded_body_length(
+  static base::ByteSize encoded_body_length(
       const network::URLLoaderCompletionStatus& status) {
     return status.encoded_body_length;
   }
 
-  static int64_t decoded_body_length(
+  static base::ByteSize decoded_body_length(
       const network::URLLoaderCompletionStatus& status) {
     return status.decoded_body_length;
   }
@@ -82,12 +80,6 @@ class COMPONENT_EXPORT(NETWORK_CPP_BASE)
   static const std::optional<network::CorsErrorStatus>& cors_error_status(
       const network::URLLoaderCompletionStatus& status) {
     return status.cors_error_status;
-  }
-
-  static network::mojom::PrivateNetworkAccessPreflightResult
-  private_network_access_preflight_result(
-      const network::URLLoaderCompletionStatus& status) {
-    return status.private_network_access_preflight_result;
   }
 
   static network::mojom::TrustTokenOperationStatus trust_token_operation_status(

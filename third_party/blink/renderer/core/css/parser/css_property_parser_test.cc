@@ -227,79 +227,6 @@ TEST(CSSPropertyParserTest, GridTrackLimit16) {
   EXPECT_EQ(ComputeNumberOfTracks(To<CSSValueList>(value)), 9999997);
 }
 
-static int GetGridPositionInteger(const CSSValue& value) {
-  const auto& list = To<CSSValueList>(value);
-  DCHECK_EQ(list.length(), static_cast<size_t>(1));
-  const auto& primitive_value = To<CSSPrimitiveValue>(list.Item(0));
-  DCHECK(primitive_value.IsNumber());
-  return primitive_value.ComputeInteger(
-      CSSToLengthConversionData(/*element=*/nullptr));
-}
-
-TEST(CSSPropertyParserTest, GridPositionLimit1) {
-  const CSSValue* value = CSSParser::ParseSingleValue(
-      CSSPropertyID::kGridColumnStart, "999",
-      StrictCSSParserContext(SecureContextMode::kSecureContext));
-  DCHECK(value);
-  EXPECT_EQ(GetGridPositionInteger(*value), 999);
-}
-
-TEST(CSSPropertyParserTest, GridPositionLimit2) {
-  const CSSValue* value = CSSParser::ParseSingleValue(
-      CSSPropertyID::kGridColumnEnd, "1000000",
-      StrictCSSParserContext(SecureContextMode::kSecureContext));
-  DCHECK(value);
-  EXPECT_EQ(GetGridPositionInteger(*value), 1000000);
-}
-
-TEST(CSSPropertyParserTest, GridPositionLimit3) {
-  const CSSValue* value = CSSParser::ParseSingleValue(
-      CSSPropertyID::kGridRowStart, "1000001",
-      StrictCSSParserContext(SecureContextMode::kSecureContext));
-  DCHECK(value);
-  EXPECT_EQ(GetGridPositionInteger(*value), 1000001);
-}
-
-TEST(CSSPropertyParserTest, GridPositionLimit4) {
-  const CSSValue* value = CSSParser::ParseSingleValue(
-      CSSPropertyID::kGridRowEnd, "5000000000",
-      StrictCSSParserContext(SecureContextMode::kSecureContext));
-  DCHECK(value);
-  EXPECT_EQ(GetGridPositionInteger(*value), 10000000);
-}
-
-TEST(CSSPropertyParserTest, GridPositionLimit5) {
-  const CSSValue* value = CSSParser::ParseSingleValue(
-      CSSPropertyID::kGridColumnStart, "-999",
-      StrictCSSParserContext(SecureContextMode::kSecureContext));
-  DCHECK(value);
-  EXPECT_EQ(GetGridPositionInteger(*value), -999);
-}
-
-TEST(CSSPropertyParserTest, GridPositionLimit6) {
-  const CSSValue* value = CSSParser::ParseSingleValue(
-      CSSPropertyID::kGridColumnEnd, "-1000000",
-      StrictCSSParserContext(SecureContextMode::kSecureContext));
-  DCHECK(value);
-  EXPECT_EQ(GetGridPositionInteger(*value), -1000000);
-}
-
-TEST(CSSPropertyParserTest, GridPositionLimit7) {
-  const CSSValue* value = CSSParser::ParseSingleValue(
-      CSSPropertyID::kGridRowStart, "-1000001",
-      StrictCSSParserContext(SecureContextMode::kSecureContext));
-  DCHECK(value);
-  EXPECT_EQ(GetGridPositionInteger(*value), -1000001);
-}
-
-TEST(CSSPropertyParserTest, GridPositionLimit8) {
-  const CSSValue* value = CSSParser::ParseSingleValue(
-      CSSPropertyID::kGridRowEnd, "-5000000000",
-      StrictCSSParserContext(SecureContextMode::kSecureContext));
-  DCHECK(value);
-  EXPECT_EQ(GetGridPositionInteger(*value), -10000000);
-}
-
 TEST(CSSPropertyParserTest, ColorFunction) {
   const CSSValue* value = CSSParser::ParseSingleValue(
       CSSPropertyID::kBackgroundColor, "rgba(0, 0, 0, 1)",
@@ -344,7 +271,7 @@ TEST(CSSPropertyParserTest, GradientUseCount) {
   Page::InsertOrdinaryPageForTesting(&dummy_page_holder->GetPage());
   WebFeature feature = WebFeature::kCSSGradient;
   EXPECT_FALSE(document.IsUseCounted(feature));
-  document.documentElement()->setInnerHTML(
+  document.documentElement()->SetInnerHTMLWithoutTrustedTypes(
       "<style>* { background-image: linear-gradient(red, blue); }</style>");
   EXPECT_TRUE(document.IsUseCounted(feature));
 }
@@ -361,7 +288,7 @@ TEST(CSSPropertyParserTest, PaintUseCount) {
   Page::InsertOrdinaryPageForTesting(&dummy_page_holder->GetPage());
   WebFeature feature = WebFeature::kCSSPaintFunction;
   EXPECT_FALSE(document.IsUseCounted(feature));
-  document.documentElement()->setInnerHTML(
+  document.documentElement()->SetInnerHTMLWithoutTrustedTypes(
       "<style>span { background-image: paint(geometry); }</style>");
   EXPECT_TRUE(document.IsUseCounted(feature));
 }
@@ -374,7 +301,7 @@ TEST(CSSPropertyParserTest, CrossFadeUseCount) {
   Page::InsertOrdinaryPageForTesting(&dummy_page_holder->GetPage());
   WebFeature feature = WebFeature::kWebkitCrossFade;
   EXPECT_FALSE(document.IsUseCounted(feature));
-  document.documentElement()->setInnerHTML(
+  document.documentElement()->SetInnerHTMLWithoutTrustedTypes(
       "<style>div { background-image: -webkit-cross-fade(url('from.png'), "
       "url('to.png'), 0.2); }</style>");
   EXPECT_TRUE(document.IsUseCounted(feature));
@@ -390,7 +317,7 @@ TEST(CSSPropertyParserTest, TwoValueOverflowOverlayCount) {
   WebFeature feature2 = WebFeature::kTwoValuedOverflow;
   EXPECT_FALSE(document.IsUseCounted(feature));
   EXPECT_FALSE(document.IsUseCounted(feature2));
-  document.documentElement()->setInnerHTML(
+  document.documentElement()->SetInnerHTMLWithoutTrustedTypes(
       "<div style=\"height: 10px; width: 10px; overflow: overlay overlay;\">"
       "<div style=\"height: 50px; width: 50px;\"></div></div>");
   EXPECT_TRUE(document.IsUseCounted(feature));
@@ -407,7 +334,7 @@ TEST(CSSPropertyParserTest, OneValueOverflowOverlayCount) {
   WebFeature feature2 = WebFeature::kTwoValuedOverflow;
   EXPECT_FALSE(document.IsUseCounted(feature));
   EXPECT_FALSE(document.IsUseCounted(feature2));
-  document.documentElement()->setInnerHTML(
+  document.documentElement()->SetInnerHTMLWithoutTrustedTypes(
       "<div style=\"height: 10px; width: 10px; overflow: overlay;\">"
       "<div style=\"height: 50px; width: 50px;\"></div></div>");
   EXPECT_TRUE(document.IsUseCounted(feature));
@@ -424,7 +351,7 @@ TEST(CSSPropertyParserTest, OverflowXOverlayCount) {
   WebFeature feature2 = WebFeature::kTwoValuedOverflow;
   EXPECT_FALSE(document.IsUseCounted(feature));
   EXPECT_FALSE(document.IsUseCounted(feature2));
-  document.documentElement()->setInnerHTML(
+  document.documentElement()->SetInnerHTMLWithoutTrustedTypes(
       "<div style=\"height: 10px; width: 10px; overflow-x: overlay;\">"
       "<div style=\"height: 50px; width: 50px;\"></div></div>");
   EXPECT_TRUE(document.IsUseCounted(feature));
@@ -441,7 +368,7 @@ TEST(CSSPropertyParserTest, OverflowYOverlayCount) {
   WebFeature feature2 = WebFeature::kTwoValuedOverflow;
   EXPECT_FALSE(document.IsUseCounted(feature));
   EXPECT_FALSE(document.IsUseCounted(feature2));
-  document.documentElement()->setInnerHTML(
+  document.documentElement()->SetInnerHTMLWithoutTrustedTypes(
       "<div style=\"height: 10px; width: 10px; overflow-y: overlay;\">"
       "<div style=\"height: 50px; width: 50px;\"></div></div>");
   EXPECT_TRUE(document.IsUseCounted(feature));
@@ -458,7 +385,7 @@ TEST(CSSPropertyParserTest, OverflowFirstValueOverlayCount) {
   WebFeature feature2 = WebFeature::kTwoValuedOverflow;
   EXPECT_FALSE(document.IsUseCounted(feature));
   EXPECT_FALSE(document.IsUseCounted(feature2));
-  document.documentElement()->setInnerHTML(
+  document.documentElement()->SetInnerHTMLWithoutTrustedTypes(
       "<div style=\"height: 10px; width: 10px; overflow: overlay scroll;\">"
       "<div style=\"height: 50px; width: 50px;\"></div></div>");
   EXPECT_TRUE(document.IsUseCounted(feature));
@@ -475,7 +402,7 @@ TEST(CSSPropertyParserTest, OverflowSecondValueOverlayCount) {
   WebFeature feature2 = WebFeature::kTwoValuedOverflow;
   EXPECT_FALSE(document.IsUseCounted(feature));
   EXPECT_FALSE(document.IsUseCounted(feature2));
-  document.documentElement()->setInnerHTML(
+  document.documentElement()->SetInnerHTMLWithoutTrustedTypes(
       "<div style=\"height: 10px; width: 10px; overflow: scroll overlay;\">"
       "<div style=\"height: 50px; width: 50px;\"></div></div>");
   EXPECT_TRUE(document.IsUseCounted(feature));
@@ -593,7 +520,7 @@ TEST_F(CSSPropertyUseCounterTest, CSSPropertyCyUnitlessUseCount) {
 TEST_F(CSSPropertyUseCounterTest, UnitlessPresentationAttributesNotCounted) {
   WebFeature feature = WebFeature::kSVGGeometryPropertyHasNonZeroUnitlessValue;
   EXPECT_FALSE(IsCounted(feature));
-  GetDocument().body()->setInnerHTML(R"HTML(
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <svg>
       <rect x="42" y="42" rx="42" ry="42"/>
       <circle cx="42" cy="42" r="42"/>
@@ -916,10 +843,39 @@ TEST(CSSPropertyParserTest, LightDarkAuthor) {
       CSSPropertyID::kColor, "light-dark(#000000, #ffffff)", context));
   ASSERT_TRUE(CSSParser::ParseSingleValue(CSSPropertyID::kColor,
                                           "light-dark(red, green)", context));
-  // light-dark() is only valid for background-image in UA sheets.
+  // light-dark() for background-image requires CSSLightDarkImage flag.
+  ScopedCSSLightDarkImageForTest scoped_feature(false);
   ASSERT_FALSE(CSSParser::ParseSingleValue(
       CSSPropertyID::kBackgroundImage,
       "light-dark(url(light.png), url(dark.png))", context));
+}
+
+TEST(CSSPropertyParserTest, LightDarkImageAuthor) {
+  ScopedCSSLightDarkImageForTest scoped_feature(true);
+  auto* context = MakeGarbageCollected<CSSParserContext>(
+      kHTMLStandardMode, SecureContextMode::kInsecureContext);
+
+  const struct {
+    const char* value;
+    bool valid;
+  } tests[] = {
+      {"light-dark()", false},
+      {"light-dark(url(light.png))", false},
+      {"light-dark(url(light.png) url(dark.png))", false},
+      {"light-dark(url(light.png),,url(dark.png))", false},
+      {"light-dark(url(light.png), url(dark.png))", true},
+      {"light-dark(url(light.png), none)", true},
+      {"light-dark(none, image-set(url(dark.png) 1x))", true},
+      {"light-dark(  none  ,  none   )", true},
+      {"light-dark(  url(light.png)  ,  url(dark.png)   )", true},
+  };
+
+  for (const auto& test : tests) {
+    EXPECT_EQ(!!CSSParser::ParseSingleValue(CSSPropertyID::kBackgroundImage,
+                                            test.value, context),
+              test.valid)
+        << test.value;
+  }
 }
 
 TEST(CSSPropertyParserTest, UALightDarkBackgroundImage) {
@@ -1112,7 +1068,7 @@ void TestRepeatStyleViaShorthandParsing(const String& testValue,
       MakeGarbageCollected<MutableCSSPropertyValueSet>(kHTMLStandardMode);
   CSSParser::ParseValue(style, propID, testValue, false /* important */);
   ASSERT_NE(style, nullptr);
-  EXPECT_TRUE(style->AsText().Contains(expectedCssText));
+  EXPECT_TRUE(style->AsText().contains(expectedCssText));
 }
 
 void TestRepeatStyleViaShorthandsParsing(const String& testValue,
@@ -1142,7 +1098,7 @@ void TestMaskPositionParsing(const String& testValue,
   CSSParser::ParseValue(style, CSSPropertyID::kMaskPosition, testValue,
                         false /* important */);
   ASSERT_NE(style, nullptr);
-  EXPECT_TRUE(style->AsText().Contains(expectedCssText));
+  EXPECT_TRUE(style->AsText().contains(expectedCssText));
 }
 
 TEST(CSSPropertyParserTest, MaskPositionCenter) {

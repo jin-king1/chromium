@@ -22,8 +22,8 @@ typedef NS_ENUM(NSInteger, GREYDirection);
 // in the webview. If `triggers_context_menu` is false, the converse is true.
 // This action doesn't fail if the context menu isn't displayed; calling code
 // should check for that separately with a matcher.
-+ (id<GREYAction>)longPressElement:(ElementSelector*)selector
-                triggerContextMenu:(BOOL)triggerContextMenu;
++ (id<GREYAction>)longPressElementOnWebView:(ElementSelector*)selector
+                         triggerContextMenu:(BOOL)triggerContextMenu;
 
 // Action to scroll a web element described by the given `selector` to visible
 // on the current web state.
@@ -60,8 +60,8 @@ typedef NS_ENUM(NSInteger, GREYDirection);
 + (id<GREYAction>)tapAtPointAtxOriginStartPercentage:(CGFloat)x
                               yOriginStartPercentage:(CGFloat)y;
 
-// Action to swipe a TableViewCell enough to display the "Delete" button and
-// not too much to have the cell being deleted right away.
+// Action to swipe a TableViewCell enough to display the "Delete" button and not
+// too much to have the cell being deleted right away.
 + (id<GREYAction>)swipeToShowDeleteButton;
 
 // Action to simulate the behaviour of swiping right using the 3-finger gesture
@@ -74,6 +74,14 @@ typedef NS_ENUM(NSInteger, GREYDirection);
 // Use `kGREYDirectionDown` to indicate that the swipe should only be down and
 // not have a horizontal component.
 + (id<GREYAction>)overscrollSwipe:(GREYDirection)direction;
+
+// An action that notifies a `UITextView` that its content is about to change.
+//
+// The purpose of this custom action is to mitigate a shortcoming
+// of EarlGrey's `grey_replaceText`, that does not correctly invoke
+// `textView:shouldChangeTextInRange:replacementText:` before the text is
+// replaced.
++ (id<GREYAction>)notifyChangeTextInRange:(NSString*)text;
 
 @end
 

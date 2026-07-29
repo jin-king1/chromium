@@ -49,18 +49,18 @@ class AnnotationsTabHelper : public web::AnnotationsTextObserver,
 
   // Returns pointer to latest metadata extracted or `nullptr`. See
   // i/w/p/a/annotations_text_observer.h for metadata key/pair values.
-  base::Value::Dict* GetMetadata() { return metadata_.get(); }
+  base::DictValue* GetMetadata() { return metadata_.get(); }
 
   // AnnotationsTextObserver methods:
   void OnTextExtracted(web::WebState* web_state,
                        const std::string& text,
                        int seq_id,
-                       const base::Value::Dict& metadata) override;
+                       const base::DictValue& metadata) override;
   void OnDecorated(web::WebState* web_state,
                    int annotations,
                    int successes,
                    int failures,
-                   const base::Value::List& cancelled) override;
+                   const base::ListValue& cancelled) override;
   void OnClick(web::WebState* web_state,
                const std::string& text,
                CGRect rect,
@@ -71,8 +71,6 @@ class AnnotationsTabHelper : public web::AnnotationsTextObserver,
   void PageLoaded(
       web::WebState* web_state,
       web::PageLoadCompletionStatus load_completion_status) override;
-
-  WEB_STATE_USER_DATA_KEY_DECL();
 
  private:
   friend class WebStateUserData<AnnotationsTabHelper>;
@@ -95,7 +93,7 @@ class AnnotationsTabHelper : public web::AnnotationsTextObserver,
   // from annotations.
   void BuildCacheAndDecorations(
       std::vector<web::TextAnnotation>& annotations_list,
-      base::Value::List& decorations);
+      base::ListValue& decorations);
 
   UIViewController* base_view_controller_ = nil;
 
@@ -105,7 +103,7 @@ class AnnotationsTabHelper : public web::AnnotationsTextObserver,
 
   raw_ptr<web::WebState> web_state_ = nullptr;
 
-  std::unique_ptr<base::Value::Dict> metadata_;
+  std::unique_ptr<base::DictValue> metadata_;
 
   std::map<std::string, NSTextCheckingResult*> match_cache_;
 

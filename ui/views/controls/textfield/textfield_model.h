@@ -16,10 +16,15 @@
 
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
+#include "ui/base/clipboard/clipboard_buffer.h"
 #include "ui/base/ime/composition_text.h"
 #include "ui/gfx/render_text.h"
 #include "ui/gfx/text_constants.h"
 #include "ui/views/views_export.h"
+
+namespace ui {
+class ScopedClipboardWriter;
+}  // namespace ui
 
 namespace views {
 
@@ -196,13 +201,24 @@ class VIEWS_EXPORT TextfieldModel {
   // if text has changed after cutting.
   bool Cut();
 
+  // Copies the provided text to the clipboard and deletes the selected text.
+  // Returns true if the textfield's text has changed after cutting.
+  // `clipboard_writer` is expected to be non-null.
+  bool Cut(std::u16string text,
+           std::unique_ptr<ui::ScopedClipboardWriter> clipboard_writer);
+
   // Copies the currently selected text and puts it to clipboard. Returns true
   // if something was copied to the clipboard.
   bool Copy();
 
-  // Pastes text from the clipboard at current cursor position. Returns true
-  // if any text is pasted.
-  bool Paste();
+  // Copies the provided text to the clipboard. Returns true if any text was
+  // copied to the clipboard. `clipboard_writer` is expected to be non-null.
+  bool Copy(std::u16string text,
+            std::unique_ptr<ui::ScopedClipboardWriter> clipboard_writer);
+
+  // Pastes the given text at the current cursor position. Returns true if any
+  // text is pasted.
+  bool Paste(std::u16string text);
 
   // Transposes the characters to either side of the insertion point and
   // advances the insertion point past both of them. Returns true if text is
@@ -319,6 +335,10 @@ class VIEWS_EXPORT TextfieldModel {
   void SetRenderTextText(std::u16string text);
 
   void ClearComposition();
+
+  // Returns true if copying or cutting to the clipboard is allowed based on the
+  // current state of the textfield.
+  bool CutOrCopyAllowed() const;
 
   // Clears the kill buffer. Used to clear global state between tests.
   static void ClearKillBuffer();

@@ -19,13 +19,15 @@
 #import "components/prefs/pref_service.h"
 #import "components/regional_capabilities/regional_capabilities_service.h"
 #import "components/search_engines/search_engines_pref_names.h"
+#import "components/search_engines/search_engines_switches.h"
 #import "components/search_engines/template_url_service.h"
 #import "components/search_engines/template_url_service_observer.h"
+#import "components/search_engines/template_url_starter_pack_data.h"
 #import "components/signin/public/base/signin_switches.h"
 #import "components/strings/grit/components_strings.h"
 #import "ios/chrome/browser/favicon/model/ios_chrome_favicon_loader_factory.h"
 #import "ios/chrome/browser/regional_capabilities/model/regional_capabilities_service_factory.h"
-#import "ios/chrome/browser/search_engine_choice/ui_bundled/search_engine_choice_ui_util.h"
+#import "ios/chrome/browser/search_engine_choice/ui/search_engine_choice_ui_util.h"
 #import "ios/chrome/browser/search_engines/model/search_engine_observer_bridge.h"
 #import "ios/chrome/browser/search_engines/model/template_url_service_factory.h"
 #import "ios/chrome/browser/settings/ui_bundled/cells/settings_search_engine_item.h"
@@ -88,15 +90,17 @@ const char kUmaSelectDefaultSearchEngine[] =
   // search engines that are created by policy, and possibly one custom search
   // engine if it's selected as default search engine.
   // Note that `TemplateURL` pointers should not be freed. They either come from
-  // `TemplateURLService::GetTemplateURLs()`, or they are owned by
-  // `_choiceScreenTemplateUrls`.
-  std::vector<raw_ptr<TemplateURL>> _firstList;
+  // `TemplateURLService::GetTemplateURLs()`,
+  // `TemplateURLService::GetPrepopulatedAndRecentlyVisitedTemplateURLs()`, or
+  // they are owned by `_choiceScreenTemplateUrls`.
+  std::vector<raw_ptr<TemplateURL, DanglingUntriaged>> _firstList;
   // The second list in the page which contains all remaining custom search
   // engines.
   // Note that `TemplateURL` pointers should not be freed. They either come from
-  // `TemplateURLService::GetTemplateURLs()`, or they are owned by
-  // `_choiceScreenTemplateUrls`.
-  std::vector<raw_ptr<TemplateURL>> _secondList;
+  // `TemplateURLService::GetTemplateURLs()`,
+  // `TemplateURLService::GetPrepopulatedAndRecentlyVisitedTemplateURLs()`, or
+  // they are owned by `_choiceScreenTemplateUrls`.
+  std::vector<raw_ptr<TemplateURL, DanglingUntriaged>> _secondList;
   // FaviconLoader is a keyed service that uses LargeIconService to retrieve
   // favicon images.
   raw_ptr<FaviconLoader> _faviconLoader;
@@ -135,11 +139,20 @@ const char kUmaSelectDefaultSearchEngine[] =
 
   _updatingBackend = updatingBackend;
 
+  if (_updatingBackend) {
+    // When `YES`, the view is going to update the backend. The model should
+    // not be reloaded.
+    return;
+  }
   if (!self.searchEngineChangedInBackground) {
+    // If `-[<SearchEngineObserving> searchEngineChanged]` was not called while
+    // `_updatingBackend` was `YES`, there is no point to reload the search
+    // engines list.
     return;
   }
 
   [self loadSearchEngines];
+  self.searchEngineChangedInBackground = NO;
 
   BOOL hasSecondSection = [self.tableViewModel
       hasSectionForSectionIdentifier:SectionIdentifierSecondList];
@@ -241,7 +254,7 @@ const char kUmaSelectDefaultSearchEngine[] =
   if (_firstList.size() > 0) {
     [model addSectionWithIdentifier:SectionIdentifierFirstList];
 
-    if (_regionalCapabilitiesService->IsInEeaCountry()) {
+    if (_regionalCapabilitiesService->IsInSearchEngineChoiceScreenRegion()) {
       TableViewTextHeaderFooterItem* header =
           [[TableViewTextHeaderFooterItem alloc] initWithType:ItemTypeHeader];
       header.subtitle =
@@ -453,27 +466,41 @@ const char kUmaSelectDefaultSearchEngine[] =
 
 #pragma mark - Private methods
 
-// Loads all TemplateURLs from TemplateURLService and classifies them into
-// `_firstList` and `_secondList`. If a TemplateURL is
-// prepopulated, created by policy or the default search engine, it will get
-// into the first list, otherwise the second list.
+// Loads the separated TemplateURLs from TemplateURLService and populates the
+// `_firstList` and `_secondList`:
+// * `_firstList`: Prepopulated engines, engines created by policy, default
+// search engine
+// * `_secondList`: Other recently visited TemplateURLs
 - (void)loadSearchEngines {
   if (_settingsAreDismissed) {
     return;
   }
 
-  // TODO(b/280753739) Update this method to return the correct list of search
-  // engines directly (for both choice-screen-eligible users and
-  // non-choice-screen-eligible users). This way we don't have to worry about
-  // calling two different methods anymore.
+  if (base::FeatureList::IsEnabled(switches::kSearchSettingsUpdateV2)) {
+    // Retrieve separated URLs from the service.
+    TemplateURLService::PrepopulatedAndRecentlyVisitedTemplateUrls urls =
+        _templateURLService->GetPrepopulatedAndRecentlyVisitedTemplateURLs();
+
+    _firstList = std::move(urls.prepopulated_urls);
+    _secondList = std::move(urls.recently_visited_urls);
+    return;
+  }
+
   std::vector<raw_ptr<TemplateURL, VectorExperimental>> urls =
       _templateURLService->GetTemplateURLs();
   _firstList.clear();
   _firstList.reserve(urls.size());
   _secondList.clear();
   _secondList.reserve(urls.size());
+
   // Classify TemplateURLs.
   for (TemplateURL* url : urls) {
+    // Starter pack is not supported on iOS.
+    if (url->starter_pack_id() !=
+        template_url_starter_pack_data::StarterPackId::kNone) {
+      continue;
+    }
+
     if ([self isPrepopulatedOrDefaultSearchEngine:url]) {
       _firstList.push_back(url);
     } else {
@@ -525,7 +552,7 @@ const char kUmaSelectDefaultSearchEngine[] =
   __weak __typeof(self) weakSelf = self;
   GetSearchEngineFavicon(
       *templateURL, *_regionalCapabilitiesService, _templateURLService,
-      _faviconLoader, ^(FaviconAttributes* attributes) {
+      _faviconLoader, ^(FaviconAttributes* attributes, bool cached) {
         [weakSelf faviconReceivedFor:item faviconAttributes:attributes];
       });
   return item;
@@ -566,7 +593,7 @@ const char kUmaSelectDefaultSearchEngine[] =
     // section. The settings should either contains a selected custom search
     // engine (which cannot be removed as long as it is selected),
     // or prepopulated search engine.
-    CHECK_EQ(path.section, secondSectionIdentifier, base::NotFatalUntil::M135);
+    CHECK_EQ(path.section, secondSectionIdentifier);
     std::erase(_secondList, engineItem.templateURL);
     _templateURLService->Remove(engineItem.templateURL);
   }

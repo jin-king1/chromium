@@ -24,25 +24,47 @@
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/themes/theme_service_factory.h"
 #include "chrome/browser/ui/ui_features.h"
-#include "chrome/browser/ui/views/frame/browser_frame.h"
+#include "chrome/browser/ui/views/frame/browser_frame_view.h"
+#include "chrome/browser/ui/views/frame/browser_frame_view_win.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/frame/browser_widget.h"
 #include "chrome/browser/ui/views/frame/browser_window_property_manager_win.h"
+#include "chrome/browser/ui/views/frame/opaque_browser_frame_view.h"
 #include "chrome/browser/ui/views/frame/system_menu_insertion_delegate_win.h"
 #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
+#include "chrome/browser/ui/views/frame/windows_caption_button.h"
 #include "chrome/browser/ui/views/tabs/tab_strip.h"
 #include "chrome/browser/win/app_icon.h"
 #include "chrome/browser/win/titlebar_config.h"
 #include "chrome/common/chrome_constants.h"
 #include "components/policy/core/common/policy_pref_names.h"
+#include "components/prefs/pref_service.h"
 #include "content/public/browser/browser_thread.h"
 #include "ui/base/mojom/window_show_state.mojom.h"
 #include "ui/base/theme_provider.h"
 #include "ui/base/win/hwnd_metrics.h"
+#include "ui/display/screen.h"
 #include "ui/display/win/screen_win.h"
 #include "ui/gfx/geometry/point.h"
-#include "ui/gfx/icon_util.h"
 #include "ui/gfx/image/image_family.h"
+#include "ui/gfx/win/icon_util.h"
+#include "ui/gfx/win/msg_util.h"
 #include "ui/views/controls/menu/native_menu_win.h"
+#include "ui/views/view_utils.h"
+
+namespace {
+
+int GetTopAreaHeight(const BrowserFrameView* frame) {
+  if (auto* const opaque = views::AsViewClass<OpaqueBrowserFrameView>(frame)) {
+    return opaque->GetTopAreaHeight();
+  } else if (auto* const frame_win =
+                 views::AsViewClass<BrowserFrameViewWin>(frame)) {
+    return frame_win->TopAreaHeight(false);
+  }
+  return 0;
+}
+
+}  // namespace
 
 class VirtualDesktopHelper
     : public base::RefCountedDeleteOnSequence<VirtualDesktopHelper> {
@@ -219,11 +241,11 @@ BrowserDesktopWindowTreeHostWin::BrowserDesktopWindowTreeHostWin(
     views::internal::NativeWidgetDelegate* native_widget_delegate,
     views::DesktopNativeWidgetAura* desktop_native_widget_aura,
     BrowserView* browser_view,
-    BrowserFrame* browser_frame)
+    BrowserWidget* browser_widget)
     : DesktopWindowTreeHostWin(native_widget_delegate,
                                desktop_native_widget_aura),
       browser_view_(browser_view),
-      browser_frame_(browser_frame),
+      browser_widget_(browser_widget),
       virtual_desktop_helper_(nullptr) {
   profile_observation_.Observe(
       &g_browser_process->profile_manager()->GetProfileAttributesStorage());
@@ -240,9 +262,10 @@ BrowserDesktopWindowTreeHostWin::~BrowserDesktopWindowTreeHostWin() = default;
 
 views::NativeMenuWin* BrowserDesktopWindowTreeHostWin::GetSystemMenu() {
   if (!system_menu_.get()) {
+    CHECK(browser_widget_);
     SystemMenuInsertionDelegateWin insertion_delegate;
     system_menu_ = std::make_unique<views::NativeMenuWin>(
-        browser_frame_->GetSystemMenuModel(), GetHWND());
+        browser_widget_->GetSystemMenuModel(), GetHWND());
     system_menu_->Rebuild(&insertion_delegate);
   }
   return system_menu_.get();
@@ -256,12 +279,17 @@ BrowserDesktopWindowTreeHostWin::AsDesktopWindowTreeHost() {
   return this;
 }
 
-int BrowserDesktopWindowTreeHostWin::GetMinimizeButtonOffset() const {
-  return minimize_button_metrics_.GetMinimizeButtonOffsetX();
+bool BrowserDesktopWindowTreeHostWin::UsesNativeSystemMenu() const {
+  return !features::IsMenuSimplificationEnabled();
 }
 
-bool BrowserDesktopWindowTreeHostWin::UsesNativeSystemMenu() const {
-  return true;
+void BrowserDesktopWindowTreeHostWin::ShowCustomSystemMenu(
+    const gfx::Point& screen_point) {
+  gfx::Point dip_point =
+      gfx::ToFlooredPoint(display::win::GetScreenWin()->ScreenToDIPPoint(
+          gfx::PointF(screen_point)));
+  browser_widget_->non_client_view()->ShowContextMenu(
+      dip_point, ui::mojom::MenuSourceType::kMouse);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -297,7 +325,9 @@ void BrowserDesktopWindowTreeHostWin::HandleWindowMinimizedOrRestored(
     bool restored) {
   DesktopWindowTreeHostWin::HandleWindowMinimizedOrRestored(restored);
 
-  browser_view_->UpdateLoadingAnimations(restored);
+  if (browser_view_) {
+    browser_view_->UpdateLoadingAnimations(restored);
+  }
 }
 
 std::string BrowserDesktopWindowTreeHostWin::GetWorkspace() const {
@@ -315,9 +345,9 @@ int BrowserDesktopWindowTreeHostWin::GetInitialShowState() const {
 
 bool BrowserDesktopWindowTreeHostWin::GetClientAreaInsets(
     gfx::Insets* insets,
-    HMONITOR monitor) const {
+    int frame_thickness) const {
   // Always use default insets for opaque frame.
-  if (!ShouldUseNativeFrame()) {
+  if (!browser_view_ || !ShouldUseNativeFrame()) {
     return false;
   }
 
@@ -332,7 +362,6 @@ bool BrowserDesktopWindowTreeHostWin::GetClientAreaInsets(
     // In fullscreen mode there is no frame.
     *insets = gfx::Insets();
   } else {
-    const int frame_thickness = ui::GetFrameThickness(monitor);
     // Reduce the non-client border size; UpdateDWMFrame() will instead extend
     // the border into the window client area. For maximized windows, Windows
     // outdents the window rect from the screen's client rect by
@@ -363,7 +392,8 @@ bool BrowserDesktopWindowTreeHostWin::GetDwmFrameInsetsInPixels(
   // an opaque frame, leading to graphical glitches behind the opaque frame.
   // Instead, we use that function below to tell us whether the frame is
   // currently native or opaque.
-  if (!GetWidget()->client_view() || !browser_view_->GetIsNormalType() ||
+  if (!browser_view_ || !browser_widget_ || !GetWidget()->client_view() ||
+      !browser_view_->GetIsNormalType() ||
       !DesktopWindowTreeHostWin::ShouldUseNativeFrame()) {
     return false;
   }
@@ -374,17 +404,24 @@ bool BrowserDesktopWindowTreeHostWin::GetDwmFrameInsetsInPixels(
     *insets = gfx::Insets();
   } else {
     // The glass should extend to the bottom of the tabstrip.
-    gfx::Rect tabstrip_region_bounds(browser_frame_->GetBoundsForTabStripRegion(
-        browser_view_->tab_strip_region_view()->GetMinimumSize()));
-    tabstrip_region_bounds = display::win::ScreenWin::DIPToClientRect(
-        GetHWND(), tabstrip_region_bounds);
-
-    *insets = gfx::Insets::TLBR(tabstrip_region_bounds.bottom(), 0, 0, 0);
+    auto* const frame = browser_widget_->GetFrameView();
+    const int bottom =
+        GetTopAreaHeight(frame) +
+        browser_view_->GetFrameElementInfo().tabstrip_preferred_height;
+    const int tabstrip_region_bottom =
+        display::win::GetScreenWin()
+            ->DIPToClientPoint(GetHWND(), gfx::Point(0, bottom))
+            .y();
+    *insets = gfx::Insets::TLBR(tabstrip_region_bottom, 0, 0, 0);
   }
   return true;
 }
 
 void BrowserDesktopWindowTreeHostWin::HandleCreate() {
+  if (!browser_view_) {
+    return;
+  }
+
   DesktopWindowTreeHostWin::HandleCreate();
   browser_window_property_manager_ =
       BrowserWindowPropertyManager::CreateBrowserWindowPropertyManager(
@@ -405,28 +442,35 @@ void BrowserDesktopWindowTreeHostWin::HandleDestroying() {
   DesktopWindowTreeHostWin::HandleDestroying();
 }
 
-void BrowserDesktopWindowTreeHostWin::HandleWindowScaleFactorChanged(
-    float window_scale_factor) {
-  DesktopWindowTreeHostWin::HandleWindowScaleFactorChanged(window_scale_factor);
-  minimize_button_metrics_.OnDpiChanged();
-}
-
 bool BrowserDesktopWindowTreeHostWin::PreHandleMSG(UINT message,
                                                    WPARAM w_param,
                                                    LPARAM l_param,
                                                    LRESULT* result) {
   switch (message) {
-    case WM_ACTIVATE:
-      if (LOWORD(w_param) != WA_INACTIVE) {
-        minimize_button_metrics_.OnHWNDActivated();
-      }
-      return false;
     case WM_ENDSESSION:
       chrome::SessionEnding();
       return true;
     case WM_INITMENUPOPUP:
-      GetSystemMenu()->UpdateStates();
+      if (UsesNativeSystemMenu()) {
+        GetSystemMenu()->UpdateStates();
+      }
       return true;
+    case WM_SYSCOMMAND:
+      if ((w_param & 0xFFF0) == SC_KEYMENU && l_param == ' ') {
+        if (!UsesNativeSystemMenu()) {
+          ShowViewsSystemMenuAtDefaultLocation();
+          *result = 0;
+          return true;
+        }
+      }
+      break;
+    case WM_SYSCHAR:
+      if (w_param == VK_SPACE && !UsesNativeSystemMenu()) {
+        ShowViewsSystemMenuAtDefaultLocation();
+        *result = 0;
+        return true;
+      }
+      break;
   }
   return DesktopWindowTreeHostWin::PreHandleMSG(message, w_param, l_param,
                                                 result);
@@ -435,14 +479,15 @@ bool BrowserDesktopWindowTreeHostWin::PreHandleMSG(UINT message,
 void BrowserDesktopWindowTreeHostWin::PostHandleMSG(UINT message,
                                                     WPARAM w_param,
                                                     LPARAM l_param) {
+  if (!GetWidget()) {
+    return;
+  }
+
   switch (message) {
     case WM_SETFOCUS: {
       UpdateWorkspace();
       break;
     }
-    case WM_CREATE:
-      minimize_button_metrics_.Init(GetHWND());
-      break;
     case WM_WINDOWPOSCHANGED: {
       // Windows lies to us about the position of the minimize button before a
       // window is visible. We use this position to place the incognito avatar
@@ -474,6 +519,11 @@ void BrowserDesktopWindowTreeHostWin::PostHandleMSG(UINT message,
 }
 
 views::FrameMode BrowserDesktopWindowTreeHostWin::GetFrameMode() const {
+  if (!browser_view_) {
+    // If there is no browser view the frame should be system drawn.
+    return views::FrameMode::SYSTEM_DRAWN;
+  }
+
   const views::FrameMode system_frame_mode =
       ShouldBrowserCustomDrawTitlebar(browser_view_)
           ? views::FrameMode::SYSTEM_DRAWN_NO_CONTROLS
@@ -496,7 +546,8 @@ views::FrameMode BrowserDesktopWindowTreeHostWin::GetFrameMode() const {
 }
 
 bool BrowserDesktopWindowTreeHostWin::ShouldUseNativeFrame() const {
-  if (!views::DesktopWindowTreeHostWin::ShouldUseNativeFrame()) {
+  if (!browser_view_ ||
+      !views::DesktopWindowTreeHostWin::ShouldUseNativeFrame()) {
     return false;
   }
   // This function can get called when the Browser window is closed i.e. in the
@@ -518,8 +569,18 @@ bool BrowserDesktopWindowTreeHostWin::ShouldUseNativeFrame() const {
 
 bool BrowserDesktopWindowTreeHostWin::ShouldWindowContentsBeTransparent()
     const {
+  CHECK(browser_view_);
   return !ShouldBrowserCustomDrawTitlebar(browser_view_) &&
          views::DesktopWindowTreeHostWin::ShouldWindowContentsBeTransparent();
+}
+
+void BrowserDesktopWindowTreeHostWin::ClientDestroyedWidget() {
+  profile_observation_.Reset();
+  system_menu_.reset();
+  browser_window_property_manager_.reset();
+  browser_widget_ = nullptr;
+  browser_view_ = nullptr;
+  DesktopWindowTreeHostWin::ClientDestroyedWidget();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -529,7 +590,8 @@ void BrowserDesktopWindowTreeHostWin::OnProfileAvatarChanged(
     const base::FilePath& profile_path) {
   // If we're currently badging the window icon (>1 available profile),
   // and this window's profile's avatar changed, update the window icon.
-  if (browser_view_->browser()->profile()->GetPath() == profile_path &&
+  CHECK(browser_view_);
+  if (browser_view_->browser()->GetProfile()->GetPath() == profile_path &&
       g_browser_process->profile_manager()
               ->GetProfileAttributesStorage()
               .GetNumberOfProfiles() > 1) {
@@ -603,8 +665,9 @@ void BrowserDesktopWindowTreeHostWin::SetWindowIcon(bool badged) {
   // icon is valid until replaced with the new icon.
   base::win::ScopedGDIObject<HICON> previous_icon = std::move(icon_handle_);
   if (badged) {
+    CHECK(browser_view_);
     icon_handle_ = IconUtil::CreateHICONFromSkBitmap(
-        GetBadgedIconBitmapForProfile(browser_view_->browser()->profile()));
+        GetBadgedIconBitmapForProfile(browser_view_->browser()->GetProfile()));
   } else {
     icon_handle_.reset(GetAppIcon());
   }
@@ -612,6 +675,14 @@ void BrowserDesktopWindowTreeHostWin::SetWindowIcon(bool badged) {
               reinterpret_cast<LPARAM>(icon_handle_.get()));
   SendMessage(GetHWND(), WM_SETICON, ICON_BIG,
               reinterpret_cast<LPARAM>(icon_handle_.get()));
+}
+
+void BrowserDesktopWindowTreeHostWin::ShowViewsSystemMenuAtDefaultLocation() {
+  gfx::Point point = browser_widget_->non_client_view()
+                         ->frame_view()
+                         ->GetKeyboardContextMenuLocation();
+  browser_widget_->non_client_view()->ShowContextMenu(
+      point, ui::mojom::MenuSourceType::kKeyboard);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -623,8 +694,8 @@ BrowserDesktopWindowTreeHost::CreateBrowserDesktopWindowTreeHost(
     views::internal::NativeWidgetDelegate* native_widget_delegate,
     views::DesktopNativeWidgetAura* desktop_native_widget_aura,
     BrowserView* browser_view,
-    BrowserFrame* browser_frame) {
+    BrowserWidget* browser_widget) {
   return new BrowserDesktopWindowTreeHostWin(native_widget_delegate,
                                              desktop_native_widget_aura,
-                                             browser_view, browser_frame);
+                                             browser_view, browser_widget);
 }

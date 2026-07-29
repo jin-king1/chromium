@@ -7,7 +7,7 @@
 
 #include <optional>
 
-#include "third_party/blink/renderer/core/layout/geometry/physical_offset.h"
+#include "third_party/blink/renderer/platform/geometry/physical_offset.h"
 #include "third_party/blink/renderer/platform/text/writing_direction_mode.h"
 
 namespace blink {
@@ -24,6 +24,21 @@ struct PhysicalScrollRange {
     return (!x_min || offset.left >= *x_min) &&
            (!x_max || offset.left <= *x_max) &&
            (!y_min || offset.top >= *y_min) && (!y_max || offset.top <= *y_max);
+  }
+
+  void Move(const PhysicalOffset& offset) {
+    if (x_min) {
+      *x_min += offset.left;
+    }
+    if (x_max) {
+      *x_max += offset.left;
+    }
+    if (y_min) {
+      *y_min += offset.top;
+    }
+    if (y_max) {
+      *y_max += offset.top;
+    }
   }
 
   bool operator==(const PhysicalScrollRange& other) const {

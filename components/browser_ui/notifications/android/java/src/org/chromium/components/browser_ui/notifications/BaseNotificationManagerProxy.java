@@ -11,6 +11,7 @@ import android.app.NotificationChannelGroup;
 import org.chromium.base.Callback;
 import org.chromium.build.annotations.MockedInTests;
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 
 import java.util.List;
 import java.util.function.Function;
@@ -19,7 +20,7 @@ import java.util.function.Function;
  * Base interface for NofificationManagerProxy that only supports simple functionalities. Remove
  * this once AsyncNofificationManagerProxy is set to default.
  */
-@MockedInTests
+@MockedInTests // Needed due to R8's computeDelayedInterfaceMethodSyntheticBridges. b/147584922
 @NullMarked
 public interface BaseNotificationManagerProxy {
     /**
@@ -34,7 +35,7 @@ public interface BaseNotificationManagerProxy {
      *     href="https://developer.android.com/reference/android/app/NotificationManager#cancel(java.lang.String,%20int)">
      *     https://developer.android.com/reference/android/app/NotificationManager#cancel(java.lang.String,%20int)</a>
      */
-    void cancel(String tag, int id);
+    void cancel(@Nullable String tag, int id);
 
     /**
      * @see <a

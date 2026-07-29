@@ -6,11 +6,11 @@
 
 #import <UIKit/UIKit.h>
 
-#import "ios/chrome/browser/authentication/ui_bundled/signin/interruptible_chrome_coordinator.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
 #import "ios/chrome/browser/signin/model/test_constants.h"
 #import "ios/public/provider/chrome/browser/signin/signin_error_api.h"
+#import "ui/base/device_form_factor.h"
 
 namespace {
 
@@ -42,7 +42,7 @@ BOOL gUsingUnknownCapabilities;
 - (void)viewDidLoad {
   [super viewDidLoad];
 
-  // Obnovious color, this is a test screen.
+  // Obnoxious color, this is a test screen.
   UIView* mainView = self.view;
   mainView.backgroundColor = [UIColor magentaColor];
   mainView.accessibilityIdentifier = kFakeAuthActivityViewIdentifier;
@@ -50,14 +50,28 @@ BOOL gUsingUnknownCapabilities;
   UIButton* addAccountButton =
       [self createButtonWithTitle:@"Add Account"
                            action:@selector(didTapAddAccount:)
-           accessibilitIdentifier:kFakeAuthAddAccountButtonIdentifier];
+          accessibilityIdentifier:kFakeAuthAddAccountButtonIdentifier];
   UIButton* cancelButton =
       [self createButtonWithTitle:@"Cancel"
                            action:@selector(didTapCancel:)
-           accessibilitIdentifier:kFakeAuthCancelButtonIdentifier];
+          accessibilityIdentifier:kFakeAuthCancelButtonIdentifier];
+  NSMutableArray<UIButton*>* subviews =
+      [NSMutableArray arrayWithObjects:addAccountButton, cancelButton, nil];
+  if (!@available(iOS 26, *)) {
+    // Up to iOS 18, the view can disappear without calling the callback. This
+    // occurs when the user turns off and on the screen while iOS asks whether
+    // they accept to use google.com to authenticate. This button simulates this
+    // issue. It can be removed once the minimal version is iOS 26.  See
+    // crbug.com/395959814.
+    UIButton* dismissButton =
+        [self createButtonWithTitle:@"Dismiss without callback"
+                             action:@selector(didTapDismiss:)
+            accessibilityIdentifier:kFakeAuthDismissButtonIdentifier];
+    [subviews addObject:dismissButton];
+  }
   // Container StackView
-  UIStackView* stackView = [[UIStackView alloc]
-      initWithArrangedSubviews:@[ addAccountButton, cancelButton ]];
+  UIStackView* stackView =
+      [[UIStackView alloc] initWithArrangedSubviews:subviews];
   stackView.axis = UILayoutConstraintAxisHorizontal;
   stackView.translatesAutoresizingMaskIntoConstraints = false;
   [self.view addSubview:stackView];
@@ -74,10 +88,10 @@ BOOL gUsingUnknownCapabilities;
 
 - (UIButton*)createButtonWithTitle:(NSString*)title
                             action:(SEL)action
-            accessibilitIdentifier:(NSString*)accessibilityIdentitier {
+           accessibilityIdentifier:(NSString*)accessibilityIdentifier {
   UIButton* button = [UIButton buttonWithType:UIButtonTypeCustom];
   [button setTitle:title forState:UIControlStateNormal];
-  [button setAccessibilityIdentifier:accessibilityIdentitier];
+  [button setAccessibilityIdentifier:accessibilityIdentifier];
   [button addTarget:self
                 action:action
       forControlEvents:UIControlEventTouchUpInside];
@@ -91,6 +105,16 @@ BOOL gUsingUnknownCapabilities;
 
 - (void)didTapCancel:(id)sender {
   [_manager simulateDidTapCancel];
+}
+
+// Dismiss the view without informing the manager.
+// This simulates UIKit bug crbug.com/395959814.
+- (void)didTapDismiss:(id)sender {
+  if (@available(iOS 26, *)) {
+    // The bug simulated by this function is fixed in iOS 26.
+    NOTREACHED();
+  }
+  [self dismissViewControllerAnimated:YES completion:nil];
 }
 
 @end
@@ -143,12 +167,17 @@ BOOL gUsingUnknownCapabilities;
   [self simulateDidTapCancel];
 }
 
+- (void)simulateDisappearingView {
+  [self dismissViewAnimated:NO];
+}
+
 #pragma mark - SystemIdentityInteractionManager
 
 - (void)startAuthActivityWithViewController:(UIViewController*)viewController
                                   userEmail:(NSString*)userEmail
                                  completion:(SigninCompletionBlock)completion {
-  DCHECK(completion);
+  CHECK(completion, base::NotFatalUntil::M140);
+  CHECK(viewController, base::NotFatalUntil::M140);
   _lastStartAuthActivityUserEmail = userEmail;
   if (userEmail.length) {
     [FakeSystemIdentityInteractionManager
@@ -158,8 +187,7 @@ BOOL gUsingUnknownCapabilities;
   _signinCompletion = completion;
   _authActivityViewController =
       [[FakeAuthActivityViewController alloc] initWithManager:self];
-  BOOL isIPad =
-      UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad;
+  BOOL isIPad = ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_TABLET;
   _authActivityViewController.modalPresentationStyle =
       isIPad ? UIModalPresentationFormSheet : UIModalPresentationFullScreen;
 
@@ -204,7 +232,10 @@ BOOL gUsingUnknownCapabilities;
   if (identity) {
     FakeSystemIdentityManager* manager = _manager.get();
     if (manager) {
-      if (gUsingUnknownCapabilities) {
+      if (manager->ContainsIdentity(identity)) {
+        manager->ClearPersistentAuthErrorForAccount(
+            CoreAccountId::FromGaiaId(identity.gaiaId));
+      } else if (gUsingUnknownCapabilities) {
         manager->AddIdentityWithUnknownCapabilities(identity);
       } else {
         manager->AddIdentity(identity);
@@ -216,26 +247,31 @@ BOOL gUsingUnknownCapabilities;
     }
   }
 
-  [_authActivityViewController.presentingViewController
-      dismissViewControllerAnimated:animated
-                         completion:nil];
-  [self runCompletionCallbackWithError:error identity:identity];
-}
-
-- (void)runCompletionCallbackWithError:(NSError*)error
-                              identity:(id<SystemIdentity>)identity {
-  _authActivityViewController = nil;
+  [self dismissViewAnimated:animated];
   if (_signinCompletion) {
     SigninCompletionBlock signinCompletion = nil;
     std::swap(_signinCompletion, signinCompletion);
     signinCompletion(identity, error);
   }
-  _isActivityViewPresented = NO;
 }
 
 - (void)onActivityViewPresented {
   DCHECK(!_isActivityViewPresented);
   _isActivityViewPresented = YES;
+}
+
+- (void)onActivityViewDismissed {
+  _authActivityViewController = nil;
+  _isActivityViewPresented = NO;
+}
+
+- (void)dismissViewAnimated:(BOOL)animated {
+  __weak FakeSystemIdentityInteractionManager* weakSelf = self;
+  [_authActivityViewController.presentingViewController
+      dismissViewControllerAnimated:animated
+                         completion:^{
+                           [weakSelf onActivityViewDismissed];
+                         }];
 }
 
 @end

@@ -4,28 +4,36 @@
 
 package org.chromium.chrome.browser.user_education;
 
+import static org.chromium.build.NullUtil.assertNonNull;
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.app.Activity;
 import android.os.Handler;
+import android.os.SystemClock;
 import android.view.View;
 
-import androidx.annotation.NonNull;
-
+import org.chromium.base.Callback;
 import org.chromium.base.TraceEvent;
-import org.chromium.base.supplier.Supplier;
+import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.supplier.SupplierUtils;
+import org.chromium.build.annotations.Initializer;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
 import org.chromium.chrome.browser.profiles.Profile;
-import org.chromium.chrome.browser.util.ChromeAccessibilityUtil;
 import org.chromium.components.browser_ui.widget.highlight.ViewHighlighter;
 import org.chromium.components.browser_ui.widget.highlight.ViewHighlighter.HighlightParams;
 import org.chromium.components.browser_ui.widget.textbubble.TextBubble;
+import org.chromium.components.feature_engagement.SnoozeAction;
 import org.chromium.components.feature_engagement.Tracker;
 import org.chromium.components.feature_engagement.TriggerDetails;
+import org.chromium.components.user_education.FeaturePromoClosedReason;
 import org.chromium.ui.widget.RectProvider;
 import org.chromium.ui.widget.ViewRectProvider;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Supplier;
 
 /**
  * Class that manages requests to trigger IPH's. Customizes the IPH with text bubbles, view
@@ -40,20 +48,22 @@ import java.util.List;
  * .setCircleHighlight(true) .setOnShowCallback( ()-> doCustomShowLogic()) .setOnDismissCallback(()
  * -> doCustomDismissLogic()) .build());
  */
+@NullMarked
 public class UserEducationHelper {
     private final Activity mActivity;
     private final Handler mHandler;
 
     private Profile mProfile;
-    private List<IphCommand> mPendingIphCommands;
-    private TextBubble mTextBubble;
+    private @Nullable List<IphCommand> mPendingIphCommands;
+    private @Nullable TextBubble mTextBubble;
+    private @Nullable Callback<Boolean> mDismissCallback;
+    private long mShowStartTimeMs;
 
     /**
      * Constructs a {@link UserEducationHelper} that is immediately available to process inbound
      * {@link IphCommand}s.
      */
-    public UserEducationHelper(
-            @NonNull Activity activity, @NonNull Profile profile, Handler handler) {
+    public UserEducationHelper(Activity activity, Profile profile, Handler handler) {
         assert activity != null : "Trying to show an IPH for a null activity.";
         assert profile != null : "Trying to show an IPH with a null profile";
 
@@ -71,18 +81,15 @@ public class UserEducationHelper {
      * a reference to the {@link Profile#getOriginalProfile()}.
      */
     public UserEducationHelper(
-            @NonNull Activity activity,
-            @NonNull Supplier<Profile> profileSupplier,
-            Handler handler) {
-        assert activity != null : "Trying to show an IPH for a null activity.";
-        assert profileSupplier != null : "Trying to show an IPH with a null profile supplier";
-
+            Activity activity, Supplier<@Nullable Profile> profileSupplier, Handler handler) {
         mActivity = activity;
         mHandler = handler;
 
-        SupplierUtils.waitForAll(() -> setProfile(profileSupplier.get()), profileSupplier);
+        SupplierUtils.waitForAll(
+                () -> setProfile(assertNonNull(profileSupplier.get())), profileSupplier);
     }
 
+    @Initializer
     private void setProfile(Profile profile) {
         assert profile != null;
         mProfile = profile.getOriginalProfile();
@@ -154,34 +161,74 @@ public class UserEducationHelper {
         iphCommand.fetchFromResources();
 
         if (iphCommand.showTextBubble) {
-            String contentString = iphCommand.contentString;
-            String accessibilityString = iphCommand.accessibilityText;
+            String contentString = assumeNonNull(iphCommand.contentString);
+            String accessibilityString = assumeNonNull(iphCommand.accessibilityText);
             assert !contentString.isEmpty();
             assert !accessibilityString.isEmpty();
 
+            mShowStartTimeMs = SystemClock.uptimeMillis();
+
             mTextBubble =
-                    new TextBubble(
-                            mActivity,
-                            anchorView,
-                            contentString,
-                            accessibilityString,
-                            !iphCommand.removeArrow,
-                            viewRectProvider != null ? viewRectProvider : rectProvider,
-                            ChromeAccessibilityUtil.get().isAccessibilityEnabled());
+                    new TextBubble.Builder(
+                                    mActivity,
+                                    anchorView,
+                                    viewRectProvider != null
+                                            ? viewRectProvider
+                                            : assumeNonNull(rectProvider),
+                                    contentString,
+                                    accessibilityString)
+                            .setShowArrow(!iphCommand.removeArrow)
+                            .build();
             mTextBubble.setPreferredVerticalOrientation(iphCommand.preferredVerticalOrientation);
+            mTextBubble.setPreferredHorizontalOrientation(
+                    iphCommand.preferredHorizontalOrientation);
+            mTextBubble.setHorizontalOverlapAnchor(iphCommand.horizontalOverlapAnchor);
             mTextBubble.setDismissOnTouchInteraction(iphCommand.dismissOnTouch);
-            mTextBubble.addOnDismissListener(
-                    () ->
-                            mHandler.postDelayed(
-                                    () -> {
-                                        if (featureName != null) tracker.dismissed(featureName);
-                                        iphCommand.onDismissCallback.run();
-                                        if (highlightParams != null) {
-                                            ViewHighlighter.turnOffHighlight(anchorView);
+            mDismissCallback =
+                    (dismissedProgrammatically) -> {
+                        long elapsed = SystemClock.uptimeMillis() - mShowStartTimeMs;
+                        final int closedReason;
+                        if (dismissedProgrammatically) {
+                            closedReason = FeaturePromoClosedReason.ABORT_PROMO;
+                        } else if (iphCommand.autoDismissTimeout > 0
+                                && elapsed >= iphCommand.autoDismissTimeout) {
+                            closedReason = FeaturePromoClosedReason.TIMEOUT;
+                        } else if (mTextBubble != null && mTextBubble.wasDismissedByInsideTouch()) {
+                            closedReason = FeaturePromoClosedReason.DISMISS;
+                        } else {
+                            closedReason = FeaturePromoClosedReason.CANCEL;
+                        }
+
+                        mHandler.postDelayed(
+                                () -> {
+                                    if (featureName != null) {
+                                        RecordHistogram.recordEnumeratedHistogram(
+                                                "UserEducation.MessageAction." + featureName,
+                                                closedReason,
+                                                FeaturePromoClosedReason.MAX_VALUE + 1);
+
+                                        if (iphCommand.enableSnoozeMode) {
+                                            final int snoozeAction =
+                                                    (closedReason
+                                                                    == FeaturePromoClosedReason
+                                                                            .DISMISS)
+                                                            ? SnoozeAction.DISMISSED
+                                                            : SnoozeAction.SNOOZED;
+                                            tracker.dismissedWithSnooze(featureName, snoozeAction);
+                                        } else {
+                                            tracker.dismissed(featureName);
                                         }
-                                        mTextBubble = null;
-                                    },
-                                    ViewHighlighter.IPH_MIN_DELAY_BETWEEN_TWO_HIGHLIGHTS));
+                                    }
+                                    iphCommand.onDismissCallback.run();
+                                    if (highlightParams != null) {
+                                        ViewHighlighter.turnOffHighlight(anchorView);
+                                    }
+                                    mTextBubble = null;
+                                },
+                                ViewHighlighter.IPH_MIN_DELAY_BETWEEN_TWO_HIGHLIGHTS);
+                    };
+            mTextBubble.addOnDismissListener(
+                    () -> handleDismissal(/* dismissedProgrammatically= */ false));
             mTextBubble.setAutoDismissTimeout(iphCommand.autoDismissTimeout);
             if (iphCommand.dismissOnTouchTimeout != TextBubble.NO_TIMEOUT) {
                 TextBubble textBubbleForLambda = mTextBubble;
@@ -198,7 +245,7 @@ public class UserEducationHelper {
         }
 
         if (viewRectProvider != null) {
-            viewRectProvider.setInsetPx(iphCommand.insetRect);
+            viewRectProvider.setInsetPx(assumeNonNull(iphCommand.insetRect));
         }
 
         iphCommand.onShowCallback.run();
@@ -207,11 +254,19 @@ public class UserEducationHelper {
     /** Dismisses the currently showing text bubble, if any. */
     public void dismissTextBubble() {
         if (mTextBubble != null) {
+            handleDismissal(/* dismissedProgrammatically= */ true);
             mTextBubble.dismiss();
         }
     }
 
-    public TextBubble getTextBubbleForTesting() {
+    private void handleDismissal(boolean dismissedProgrammatically) {
+        if (mDismissCallback == null) return;
+        Callback<Boolean> callback = mDismissCallback;
+        mDismissCallback = null;
+        callback.onResult(dismissedProgrammatically);
+    }
+
+    public @Nullable TextBubble getTextBubbleForTesting() {
         return mTextBubble;
     }
 }

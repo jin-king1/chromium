@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "ui/events/ozone/device/udev/device_manager_udev.h"
 
 #include <stddef.h>
@@ -15,6 +10,7 @@
 #include <memory>
 #include <string>
 
+#include "base/compiler_specific.h"
 #include "base/logging.h"
 #include "base/observer_list.h"
 #include "base/strings/stringprintf.h"
@@ -131,32 +127,33 @@ void DeviceManagerUdev::OnFileCanWriteWithoutBlocking(int fd) {
 std::unique_ptr<DeviceEvent> DeviceManagerUdev::ProcessMessage(
     udev_device* device) {
   const char* path_cstr = device::udev_device_get_devnode(device);
-  const char* subsystem =
-      device::udev_device_get_property_value(device, "SUBSYSTEM");
-  if (!path_cstr || !subsystem) {
+  std::string subsystem =
+      device::UdevDeviceGetPropertyValue(device, "SUBSYSTEM");
+  if (!path_cstr || subsystem.empty()) {
     return nullptr;
   }
 
   std::string_view path(path_cstr);
   DeviceEvent::DeviceType device_type;
-  if (!strcmp(subsystem, "input") && path.starts_with("/dev/input/event")) {
+  if (subsystem == "input" && path.starts_with("/dev/input/event")) {
     device_type = DeviceEvent::INPUT;
-  } else if (!strcmp(subsystem, "drm") && path.starts_with("/dev/dri/card")) {
+  } else if (subsystem == "drm" && path.starts_with("/dev/dri/card")) {
     device_type = DeviceEvent::DISPLAY;
   } else {
     return nullptr;
   }
 
-  const char* action = device::udev_device_get_action(device);
+  std::string action = device::UdevDeviceGetAction(device);
   DeviceEvent::ActionType action_type;
-  if (!action || !strcmp(action, "add"))
+  if (action.empty() || action == "add") {
     action_type = DeviceEvent::ADD;
-  else if (!strcmp(action, "remove"))
+  } else if (action == "remove") {
     action_type = DeviceEvent::REMOVE;
-  else if (!strcmp(action, "change"))
+  } else if (action == "change") {
     action_type = DeviceEvent::CHANGE;
-  else
+  } else {
     return nullptr;
+  }
 
   PropertyMap property_map;
   udev_list_entry* property_list =

@@ -4,12 +4,19 @@
 
 #include "chrome/browser/signin/dice_tab_helper.h"
 
+#include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
+#include "base/task/current_thread.h"
+#include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/metrics/user_action_tester.h"
 #include "base/test/task_environment.h"
+#include "base/test/test_future.h"
+#include "chrome/browser/metrics/profile_metrics_service_factory.h"
 #include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "chrome/test/base/testing_profile.h"
+#include "components/metrics/profile_metrics_service.h"
 #include "components/signin/public/base/signin_metrics.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
@@ -22,6 +29,15 @@
 #include "google_apis/gaia/gaia_urls.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features.h"
+
+namespace {
+constexpr char kDiceSyncHeaderTimeoutHistogramNameHistogramName[] =
+    "Signin.SigninManager.SyncHeaderTimeout";
+constexpr char kDiceSyncHeaderArrivalTimeWindowHistogramName[] =
+    "Signin.SigninManager.SyncHeaderArrivalTimeWindowAfterLst";
+constexpr char kDiceUnexpectedSyncHeaderProcessingBeforeLstHistogramName[] =
+    "Signin.SigninManager.UnexpectedSyncHeaderProcessingBeforeLST";
+}  // namespace
 
 class DiceTabHelperTest : public ChromeRenderViewHostTestHarness {
  public:
@@ -44,8 +60,19 @@ class DiceTabHelperTest : public ChromeRenderViewHostTestHarness {
 
   // ChromeRenderViewHostTestHarness::
   TestingProfile::TestingFactories GetTestingFactories() const override {
-    return IdentityTestEnvironmentProfileAdaptor::
-        GetIdentityTestEnvironmentFactories();
+    TestingProfile::TestingFactories testing_factories =
+        IdentityTestEnvironmentProfileAdaptor::
+            GetIdentityTestEnvironmentFactories();
+
+    testing_factories.emplace_back(TestingProfile::TestingFactory{
+        ProfileMetricsServiceFactory::GetInstance(),
+        base::BindRepeating([](content::BrowserContext* context)
+                                -> std::unique_ptr<KeyedService> {
+          return std::make_unique<metrics::ProfileMetricsService>(
+              metrics::ProfileMetricsContext(1));
+        })});
+
+    return testing_factories;
   }
 
   // Does a navigation to Gaia and initializes the tab helper.
@@ -62,6 +89,7 @@ class DiceTabHelperTest : public ChromeRenderViewHostTestHarness {
         signin_metrics::PromoAction::PROMO_ACTION_NO_SIGNIN_PROMO, GURL(),
         /*record_signin_started_metrics=*/true,
         DiceTabHelper::EnableSyncCallback(),
+        DiceTabHelper::EnableHistorySyncOptinCallback(),
         DiceTabHelper::OnSigninHeaderReceived(),
         DiceTabHelper::ShowSigninErrorCallback());
     EXPECT_TRUE(helper->IsChromeSigninPage());
@@ -181,6 +209,7 @@ TEST_F(DiceTabHelperTest, SigninPrimaryAccountMetrics) {
       signin_metrics::PromoAction::PROMO_ACTION_NEW_ACCOUNT_NO_EXISTING_ACCOUNT,
       GURL(), /*record_signin_started_metrics=*/true,
       DiceTabHelper::EnableSyncCallback(),
+      DiceTabHelper::EnableHistorySyncOptinCallback(),
       DiceTabHelper::OnSigninHeaderReceived(),
       DiceTabHelper::ShowSigninErrorCallback());
   EXPECT_EQ(1, ua_tester.GetActionCount("Signin_Signin_FromSettings"));
@@ -192,6 +221,8 @@ TEST_F(DiceTabHelperTest, SigninPrimaryAccountMetrics) {
       "Signin.SigninStartedAccessPoint.NewAccountNoExistingAccount",
       signin_metrics::AccessPoint::kSettings, 1);
   h_tester.ExpectUniqueSample("Signin.SignIn.Started",
+                              signin_metrics::AccessPoint::kSettings, 1);
+  h_tester.ExpectUniqueSample("Signin.SignIn.Started.Profile1",
                               signin_metrics::AccessPoint::kSettings, 1);
 
   // First call to did finish load does logs any Signin_SigninPage_Shown user
@@ -215,6 +246,7 @@ TEST_F(DiceTabHelperTest, SigninPrimaryAccountMetrics) {
       signin_metrics::PromoAction::PROMO_ACTION_WITH_DEFAULT, GURL(),
       /*record_signin_started_metrics=*/true,
       DiceTabHelper::EnableSyncCallback(),
+      DiceTabHelper::EnableHistorySyncOptinCallback(),
       DiceTabHelper::OnSigninHeaderReceived(),
       DiceTabHelper::ShowSigninErrorCallback());
   EXPECT_EQ(2, ua_tester.GetActionCount("Signin_Signin_FromSettings"));
@@ -224,6 +256,8 @@ TEST_F(DiceTabHelperTest, SigninPrimaryAccountMetrics) {
   h_tester.ExpectUniqueSample("Signin.SigninStartedAccessPoint.WithDefault",
                               signin_metrics::AccessPoint::kSettings, 1);
   h_tester.ExpectUniqueSample("Signin.SignIn.Started",
+                              signin_metrics::AccessPoint::kSettings, 2);
+  h_tester.ExpectUniqueSample("Signin.SignIn.Started.Profile1",
                               signin_metrics::AccessPoint::kSettings, 2);
 
   // Check metrics are NOT logged again when `record_signin_started_metrics`is
@@ -237,6 +271,7 @@ TEST_F(DiceTabHelperTest, SigninPrimaryAccountMetrics) {
       signin_metrics::PromoAction::PROMO_ACTION_WITH_DEFAULT, GURL(),
       /*record_signin_started_metrics=*/false,
       DiceTabHelper::EnableSyncCallback(),
+      DiceTabHelper::EnableHistorySyncOptinCallback(),
       DiceTabHelper::OnSigninHeaderReceived(),
       DiceTabHelper::ShowSigninErrorCallback());
   EXPECT_EQ(2, ua_tester.GetActionCount("Signin_Signin_FromSettings"));
@@ -246,6 +281,8 @@ TEST_F(DiceTabHelperTest, SigninPrimaryAccountMetrics) {
   h_tester.ExpectUniqueSample("Signin.SigninStartedAccessPoint.WithDefault",
                               signin_metrics::AccessPoint::kSettings, 1);
   h_tester.ExpectUniqueSample("Signin.SignIn.Started",
+                              signin_metrics::AccessPoint::kSettings, 2);
+  h_tester.ExpectUniqueSample("Signin.SignIn.Started.Profile1",
                               signin_metrics::AccessPoint::kSettings, 2);
 }
 
@@ -268,9 +305,12 @@ TEST_F(DiceTabHelperTest, AddSecondaryAccountMetrics) {
       signin_metrics::PromoAction::PROMO_ACTION_NEW_ACCOUNT_NO_EXISTING_ACCOUNT,
       GURL(), /*record_signin_started_metrics=*/true,
       DiceTabHelper::EnableSyncCallback(),
+      DiceTabHelper::EnableHistorySyncOptinCallback(),
       DiceTabHelper::OnSigninHeaderReceived(),
       DiceTabHelper::ShowSigninErrorCallback());
   h_tester.ExpectUniqueSample("Signin.SignIn.Started",
+                              signin_metrics::AccessPoint::kSettings, 1);
+  h_tester.ExpectUniqueSample("Signin.SignIn.Started.Profile1",
                               signin_metrics::AccessPoint::kSettings, 1);
 
   // First call to did finish load does logs any Signin_SigninPage_Shown user
@@ -284,6 +324,87 @@ TEST_F(DiceTabHelperTest, AddSecondaryAccountMetrics) {
   h_tester.ExpectTotalCount("Signin.SigninStartedAccessPoint", 0);
   h_tester.ExpectTotalCount(
       "Signin.SigninStartedAccessPoint.NewAccountNoExistingAccount", 0);
+}
+
+// Tests the metrics related to the Dice Sync Header, when the header arrives in
+// time after the LST.
+TEST_F(DiceTabHelperTest, SyncHeaderMetricsWhenLstHasArrived) {
+  base::HistogramTester h_tester;
+
+  DiceTabHelper::CreateForWebContents(web_contents());
+  DiceTabHelper* dice_tab_helper =
+      DiceTabHelper::FromWebContents(web_contents());
+  InitializeDiceTabHelper(dice_tab_helper,
+                          signin_metrics::AccessPoint::kSettings,
+                          signin_metrics::Reason::kSigninPrimaryAccount);
+  EXPECT_TRUE(dice_tab_helper->IsSyncSigninInProgress());
+  dice_tab_helper->OnTokenExchangeSuccess(
+      /*retry_interception_bubble_callback=*/base::DoNothing());
+  dice_tab_helper->OnSyncSigninFlowComplete();
+
+  EXPECT_FALSE(dice_tab_helper->IsSyncSigninInProgress());
+  h_tester.ExpectTotalCount(
+      kDiceUnexpectedSyncHeaderProcessingBeforeLstHistogramName, 0);
+  h_tester.ExpectBucketCount(kDiceSyncHeaderTimeoutHistogramNameHistogramName,
+                             false, 1);
+  h_tester.ExpectTotalCount(kDiceSyncHeaderArrivalTimeWindowHistogramName, 1);
+}
+
+// Tests the metrics related to the Dice Sync Header, when the header arrives
+// after a timeout from the LST.
+TEST_F(DiceTabHelperTest, SyncHeaderMetricsOnTimeoutFromLst) {
+  base::HistogramTester h_tester;
+  auto uno_bubble_retry_delay = base::Milliseconds(1);
+  auto scoped_interception_bubble_delay =
+      DiceTabHelper::SetScopedInterceptionBubbleTimerForTesting(
+          uno_bubble_retry_delay);
+
+  DiceTabHelper::CreateForWebContents(web_contents());
+  DiceTabHelper* dice_tab_helper =
+      DiceTabHelper::FromWebContents(web_contents());
+  InitializeDiceTabHelper(dice_tab_helper,
+                          signin_metrics::AccessPoint::kSettings,
+                          signin_metrics::Reason::kSigninPrimaryAccount);
+  EXPECT_TRUE(dice_tab_helper->IsSyncSigninInProgress());
+
+  base::test::TestFuture<void> future;
+  dice_tab_helper->OnTokenExchangeSuccess(
+      /*retry_interception_bubble_callback=*/future.GetCallback());
+  EXPECT_TRUE(future.Wait());
+
+  h_tester.ExpectUniqueSample(kDiceSyncHeaderTimeoutHistogramNameHistogramName,
+                              true, 1);
+  h_tester.ExpectTotalCount(kDiceSyncHeaderArrivalTimeWindowHistogramName, 0);
+
+  // Now complete the sync flow.
+  dice_tab_helper->OnSyncSigninFlowComplete();
+  EXPECT_FALSE(dice_tab_helper->IsSyncSigninInProgress());
+  h_tester.ExpectTotalCount(kDiceSyncHeaderTimeoutHistogramNameHistogramName,
+                            1);
+  h_tester.ExpectTotalCount(kDiceSyncHeaderArrivalTimeWindowHistogramName, 1);
+}
+
+// Histogram test for the unlikely edge case where the Sync Header arrives and
+// is processed before Chrome can properly schedule it to happen after the Lst
+// exchange.
+TEST_F(DiceTabHelperTest,
+       SyncHeaderMetricsWhenProcessingCompletesBeforeLstRequest) {
+  base::HistogramTester h_tester;
+
+  DiceTabHelper::CreateForWebContents(web_contents());
+  DiceTabHelper* dice_tab_helper =
+      DiceTabHelper::FromWebContents(web_contents());
+  InitializeDiceTabHelper(dice_tab_helper,
+                          signin_metrics::AccessPoint::kSettings,
+                          signin_metrics::Reason::kSigninPrimaryAccount);
+  EXPECT_TRUE(dice_tab_helper->IsSyncSigninInProgress());
+  dice_tab_helper->OnSyncSigninFlowComplete();
+
+  EXPECT_FALSE(dice_tab_helper->IsSyncSigninInProgress());
+  h_tester.ExpectUniqueSample(
+      kDiceUnexpectedSyncHeaderProcessingBeforeLstHistogramName, true, 1);
+  h_tester.ExpectBucketCount(kDiceSyncHeaderTimeoutHistogramNameHistogramName,
+                             false, 1);
 }
 
 TEST_F(DiceTabHelperTest, IsSyncSigninInProgress) {

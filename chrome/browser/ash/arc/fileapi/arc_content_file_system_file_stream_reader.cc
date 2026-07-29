@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "chrome/browser/ash/arc/fileapi/arc_content_file_system_file_stream_reader.h"
 
@@ -37,7 +33,7 @@ std::optional<size_t> ReadFile(base::File* file,
                                scoped_refptr<net::IOBuffer> buffer,
                                int buffer_length) {
   return file->ReadAtCurrentPosNoBestEffort(
-      buffer->span().first(base::checked_cast<size_t>(buffer_length)));
+      buffer->first(base::checked_cast<size_t>(buffer_length)));
 }
 
 // Seeks the file, returns 0 on success, or errno on an error.
@@ -87,7 +83,7 @@ int ArcContentFileSystemFileStreamReader::Read(
 }
 
 int64_t ArcContentFileSystemFileStreamReader::GetLength(
-    net::Int64CompletionOnceCallback callback) {
+    GetLengthCallback callback) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
   file_system_operation_runner_util::GetFileSizeOnIOThread(
       arc_url_,
@@ -137,13 +133,15 @@ void ArcContentFileSystemFileStreamReader::OnRead(
 }
 
 void ArcContentFileSystemFileStreamReader::OnGetFileSize(
-    net::Int64CompletionOnceCallback callback,
+    GetLengthCallback callback,
     int64_t size) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
   if (size < 0) {
     CloseInternal(CloseStatus::kStatusError);
+    std::move(callback).Run(base::unexpected(net::ERR_FAILED));
+    return;
   }
-  std::move(callback).Run(size < 0 ? net::ERR_FAILED : size);
+  std::move(callback).Run(size);
 }
 
 void ArcContentFileSystemFileStreamReader::OnOpenFileSession(
@@ -233,7 +231,8 @@ void ArcContentFileSystemFileStreamReader::ConsumeFileContents(
   }
   auto num_bytes_to_read = std::min(
       static_cast<int64_t>(temporary_buffer->size()), num_bytes_to_consume);
-  // TODO(hashimoto): This may block the worker thread forever. crbug.com/673222
+  // TODO(hashimoto): This may block the worker thread forever.
+  // crbug.com/206350834
   task_runner_->PostTaskAndReplyWithResult(
       FROM_HERE,
       base::BindOnce(&ReadFile, file_.get(), temporary_buffer,

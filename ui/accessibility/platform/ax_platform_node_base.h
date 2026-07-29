@@ -5,12 +5,13 @@
 #ifndef UI_ACCESSIBILITY_PLATFORM_AX_PLATFORM_NODE_BASE_H_
 #define UI_ACCESSIBILITY_PLATFORM_AX_PLATFORM_NODE_BASE_H_
 
-#include <map>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "base/component_export.h"
+#include "base/containers/flat_map.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/string_split.h"
@@ -24,7 +25,7 @@
 #include "ui/accessibility/platform/ax_platform_text_boundary.h"
 #include "ui/base/buildflags.h"
 #include "ui/gfx/geometry/rect.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 
 #if BUILDFLAG(USE_ATK)
 #include <atk/atk.h>
@@ -37,7 +38,7 @@ struct AXNodeData;
 // TODO(nektar): Move this struct over to AXNode so that it can be accessed by
 // AXPosition.
 struct COMPONENT_EXPORT(AX_PLATFORM) AXLegacyHypertext {
-  using OffsetToIndex = std::map<int32_t, int32_t>;
+  using OffsetToIndex = base::flat_map<int32_t, int32_t>;
 
   AXLegacyHypertext();
   ~AXLegacyHypertext();
@@ -45,6 +46,8 @@ struct COMPONENT_EXPORT(AX_PLATFORM) AXLegacyHypertext {
   AXLegacyHypertext& operator=(const AXLegacyHypertext& other);
   AXLegacyHypertext(AXLegacyHypertext&& other) noexcept;
   AXLegacyHypertext& operator=(AXLegacyHypertext&& other);
+
+  void Clear();
 
   // A flag that should be set if the hypertext information in this struct is
   // out-of-date and needs to be updated. This flag should always be set upon
@@ -69,7 +72,6 @@ class COMPONENT_EXPORT(AX_PLATFORM) AXPlatformNodeBase : public AXPlatformNode {
  public:
   using AXPosition = AXNodePosition::AXPositionInstance;
 
-  ~AXPlatformNodeBase() override;
   AXPlatformNodeBase(const AXPlatformNodeBase&) = delete;
   AXPlatformNodeBase& operator=(const AXPlatformNodeBase&) = delete;
 
@@ -100,12 +102,20 @@ class COMPONENT_EXPORT(AX_PLATFORM) AXPlatformNodeBase : public AXPlatformNode {
 
   // AXPlatformNode.
   void Destroy() override;
+  bool IsDestroyed() const override;
   gfx::NativeViewAccessible GetNativeViewAccessible() override;
   void NotifyAccessibilityEvent(ax::mojom::Event event_type) override;
+
+  // For testing.
+  AXPlatformNodeDelegate* SetDelegateForTesting(
+      AXPlatformNodeDelegate* delegate);
 
   // Returns the top-level URL for the active document. This should generally
   // correspond to what would be shown in the Omnibox.
   std::string GetRootURL() const override;
+
+  // Returns true if this node from web content.
+  bool IsWebContent() const override;
 
 #if BUILDFLAG(IS_APPLE)
   void AnnounceTextAs(const std::u16string& text,
@@ -148,19 +158,18 @@ class COMPONENT_EXPORT(AX_PLATFORM) AXPlatformNodeBase : public AXPlatformNode {
   bool GetFloatAttribute(ax::mojom::FloatAttribute attribute,
                          float* value) const;
 
-  const std::vector<std::pair<ax::mojom::IntAttribute, int32_t>>&
-  GetIntAttributes() const;
+  const AXIntAttributes& GetIntAttributes() const;
   bool HasIntAttribute(ax::mojom::IntAttribute attribute) const;
   int GetIntAttribute(ax::mojom::IntAttribute attribute) const;
   bool GetIntAttribute(ax::mojom::IntAttribute attribute, int* value) const;
 
-  const std::vector<std::pair<ax::mojom::StringAttribute, std::string>>&
-  GetStringAttributes() const;
+  const AXStringAttributes& GetStringAttributes() const;
   bool HasStringAttribute(ax::mojom::StringAttribute attribute) const;
   const std::string& GetStringAttribute(
       ax::mojom::StringAttribute attribute) const;
   bool GetStringAttribute(ax::mojom::StringAttribute attribute,
                           std::string* value) const;
+  std::optional<std::string> GetAriaValueTextOrValue() const;
   std::u16string GetString16Attribute(
       ax::mojom::StringAttribute attribute) const;
   bool GetString16Attribute(ax::mojom::StringAttribute attribute,
@@ -176,9 +185,7 @@ class COMPONENT_EXPORT(AX_PLATFORM) AXPlatformNodeBase : public AXPlatformNode {
   bool GetInheritedString16Attribute(ax::mojom::StringAttribute attribute,
                                      std::u16string* value) const;
 
-  const std::vector<
-      std::pair<ax::mojom::IntListAttribute, std::vector<int32_t>>>&
-  GetIntListAttributes() const;
+  const AXIntListAttributes& GetIntListAttributes() const;
   bool HasIntListAttribute(ax::mojom::IntListAttribute attribute) const;
   const std::vector<int32_t>& GetIntListAttribute(
       ax::mojom::IntListAttribute attribute) const;
@@ -196,7 +203,6 @@ class COMPONENT_EXPORT(AX_PLATFORM) AXPlatformNodeBase : public AXPlatformNode {
   AXTextAttributes GetTextAttributes() const;
 
   bool HasState(ax::mojom::State state) const;
-  ax::mojom::State GetState() const;
 
   bool HasAction(ax::mojom::Action action) const;
 
@@ -285,6 +291,12 @@ class COMPONENT_EXPORT(AX_PLATFORM) AXPlatformNodeBase : public AXPlatformNode {
   // See `AXNode::HasVisibleCaretOrSelection`.
   bool HasVisibleCaretOrSelection() const;
 
+  // See `AXNode::HasSelectionFocusInSubtree`. Unlike
+  // `HasVisibleCaretOrSelection`, these do not care whether the selection is
+  // rendered, only where it is.
+  bool HasSelectionFocusInSubtree();
+  bool HasSelectionFocusInSubtree(const AXSelection* selection);
+
   // See AXPlatformNodeDelegate::IsChildOfLeaf().
   bool IsChildOfLeaf() const;
 
@@ -369,7 +381,10 @@ class COMPONENT_EXPORT(AX_PLATFORM) AXPlatformNodeBase : public AXPlatformNode {
   static AXPlatformNode* GetFromUniqueId(int32_t unique_id);
 
   // Return the number of instances of AXPlatformNodeBase, for leak testing.
-  static size_t GetInstanceCountForTesting();
+  static size_t GetInstanceCount();
+
+  // Resets the global instance count to zero and returns the previous count.
+  static size_t ResetInstanceCountForTesting();
 
   static void SetOnNotifyEventCallbackForTesting(
       ax::mojom::Event event_type,
@@ -428,11 +443,6 @@ class COMPONENT_EXPORT(AX_PLATFORM) AXPlatformNodeBase : public AXPlatformNode {
       int max_items,
       std::vector<AXPlatformNodeBase*>* out_selected_items = nullptr) const;
 
-  //
-  // Delegate.  This is a weak reference which owns |this|.
-  //
-  raw_ptr<AXPlatformNodeDelegate> delegate_ = nullptr;
-
   // Uses the delegate to calculate this node's PosInSet.
   std::optional<int> GetPosInSet() const;
 
@@ -446,9 +456,10 @@ class COMPONENT_EXPORT(AX_PLATFORM) AXPlatformNodeBase : public AXPlatformNode {
 
  protected:
   AXPlatformNodeBase();
+  ~AXPlatformNodeBase() override;
 
   // AXPlatformNode overrides.
-  void Init(AXPlatformNodeDelegate* delegate) override;
+  void Init(AXPlatformNodeDelegate& delegate) override;
 
   bool IsStructuredAnnotation() const;
 
@@ -562,7 +573,7 @@ class COMPONENT_EXPORT(AX_PLATFORM) AXPlatformNodeBase : public AXPlatformNode {
                                    int* selection_end,
                                    bool caret_only = false);
 
-  int GetCaretOffset();
+  virtual int GetCaretOffset();
 
   // Returns the hyperlink at the given text position, or nullptr if no
   // hyperlink can be found.
@@ -603,9 +614,22 @@ class COMPONENT_EXPORT(AX_PLATFORM) AXPlatformNodeBase : public AXPlatformNode {
   // selectable children that this object could potentially contain.
   int GetMaxSelectableItems() const;
 
+ private:
+  //
+  // Delegate. This is a weak reference which owns |this|. Valid from `Init()`
+  // through `Destroy()`.
+  //
+  raw_ptr<AXPlatformNodeDelegate> delegate_ = nullptr;
+
+ protected:
   mutable AXLegacyHypertext hypertext_;
 
  private:
+  friend AXPlatformNode::Pointer AXPlatformNode::Create(
+      AXPlatformNodeDelegate& delegate);
+
+  FRIEND_TEST_ALL_PREFIXES(AXPlatformNodeTest, HypertextOffsetFromEndpoint);
+
   // Returns true if the index represents a text character.
   bool IsText(const std::u16string& text,
               size_t index,
@@ -616,11 +640,6 @@ class COMPONENT_EXPORT(AX_PLATFORM) AXPlatformNodeBase : public AXPlatformNode {
 
   // Is there an aria-describedby that points to a role="tooltip".
   bool IsDescribedByTooltip() const;
-
-  friend AXPlatformNode::Pointer AXPlatformNode::Create(
-      AXPlatformNodeDelegate* delegate);
-
-  FRIEND_TEST_ALL_PREFIXES(AXPlatformNodeTest, HypertextOffsetFromEndpoint);
 };
 
 }  // namespace ui

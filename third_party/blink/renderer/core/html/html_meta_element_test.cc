@@ -15,6 +15,7 @@
 #include "third_party/blink/renderer/core/frame/settings.h"
 #include "third_party/blink/renderer/core/frame/viewport_data.h"
 #include "third_party/blink/renderer/core/html/html_head_element.h"
+#include "third_party/blink/renderer/core/html/html_iframe_element.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
 #include "third_party/blink/renderer/core/testing/color_scheme_helper.h"
 #include "third_party/blink/renderer/core/testing/mock_policy_container_host.h"
@@ -22,9 +23,11 @@
 #include "third_party/blink/renderer/core/testing/sim/sim_compositor.h"
 #include "third_party/blink/renderer/core/testing/sim/sim_request.h"
 #include "third_party/blink/renderer/core/testing/sim/sim_test.h"
+#include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 #include "third_party/blink/renderer/platform/testing/unit_test_helpers.h"
+#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 
 namespace blink {
 
@@ -66,7 +69,7 @@ class HTMLMetaElementTest : public PageTestBase,
 
  private:
   void LoadTestPageWithViewportFitValue(const String& value) {
-    GetDocument().documentElement()->setInnerHTML(
+    GetDocument().documentElement()->SetInnerHTMLWithoutTrustedTypes(
         "<head>"
         "<meta name='viewport' content='viewport-fit=" +
         value +
@@ -129,7 +132,7 @@ TEST_F(HTMLMetaElementTest, ViewportFit_Cover_IsUseCounted) {
 }
 
 TEST_F(HTMLMetaElementTest, ColorSchemeProcessing_FirstWins) {
-  GetDocument().head()->setInnerHTML(R"HTML(
+  GetDocument().head()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <meta name="color-scheme" content="dark">
     <meta name="color-scheme" content="light">
   )HTML");
@@ -138,7 +141,7 @@ TEST_F(HTMLMetaElementTest, ColorSchemeProcessing_FirstWins) {
 }
 
 TEST_F(HTMLMetaElementTest, ColorSchemeProcessing_Remove) {
-  GetDocument().head()->setInnerHTML(R"HTML(
+  GetDocument().head()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <meta id="first-meta" name="color-scheme" content="dark">
     <meta name="color-scheme" content="light">
   )HTML");
@@ -152,7 +155,7 @@ TEST_F(HTMLMetaElementTest, ColorSchemeProcessing_Remove) {
 }
 
 TEST_F(HTMLMetaElementTest, ColorSchemeProcessing_InsertBefore) {
-  GetDocument().head()->setInnerHTML(R"HTML(
+  GetDocument().head()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <meta name="color-scheme" content="dark">
   )HTML");
 
@@ -166,7 +169,7 @@ TEST_F(HTMLMetaElementTest, ColorSchemeProcessing_InsertBefore) {
 }
 
 TEST_F(HTMLMetaElementTest, ColorSchemeProcessing_AppendChild) {
-  GetDocument().head()->setInnerHTML(R"HTML(
+  GetDocument().head()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <meta name="color-scheme" content="dark">
   )HTML");
 
@@ -178,7 +181,7 @@ TEST_F(HTMLMetaElementTest, ColorSchemeProcessing_AppendChild) {
 }
 
 TEST_F(HTMLMetaElementTest, ColorSchemeProcessing_SetAttribute) {
-  GetDocument().head()->setInnerHTML(R"HTML(
+  GetDocument().head()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <meta id="meta" name="color-scheme" content="dark">
   )HTML");
 
@@ -193,7 +196,7 @@ TEST_F(HTMLMetaElementTest, ColorSchemeProcessing_SetAttribute) {
 }
 
 TEST_F(HTMLMetaElementTest, ColorSchemeProcessing_RemoveContentAttribute) {
-  GetDocument().head()->setInnerHTML(R"HTML(
+  GetDocument().head()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <meta id="meta" name="color-scheme" content="dark">
   )HTML");
 
@@ -208,7 +211,7 @@ TEST_F(HTMLMetaElementTest, ColorSchemeProcessing_RemoveContentAttribute) {
 }
 
 TEST_F(HTMLMetaElementTest, ColorSchemeProcessing_RemoveNameAttribute) {
-  GetDocument().head()->setInnerHTML(R"HTML(
+  GetDocument().head()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <meta id="meta" name="color-scheme" content="dark">
   )HTML");
 
@@ -301,7 +304,7 @@ TEST_F(HTMLMetaElementTest, ColorSchemeForcedDarkeningAndMQ) {
 }
 
 TEST_F(HTMLMetaElementTest, ReferrerPolicyWithoutContent) {
-  GetDocument().head()->setInnerHTML(R"HTML(
+  GetDocument().head()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <meta name="referrer" content="strict-origin">
     <meta name="referrer" >
   )HTML");
@@ -312,7 +315,7 @@ TEST_F(HTMLMetaElementTest, ReferrerPolicyWithoutContent) {
 }
 
 TEST_F(HTMLMetaElementTest, ReferrerPolicyUpdatesPolicyContainer) {
-  GetDocument().head()->setInnerHTML(R"HTML(
+  GetDocument().head()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <meta name="referrer" content="strict-origin">
   )HTML");
   EXPECT_EQ(network::mojom::ReferrerPolicy::kStrictOrigin,
@@ -325,7 +328,7 @@ TEST_F(HTMLMetaElementTest, ReferrerPolicyUpdatesPolicyContainer) {
 TEST_F(HTMLMetaElementTest, WebMonetizationCounter) {
   // <meta> elements that don't have name equal to "monetization" or that lack
   // a content attribute are not counted.
-  GetDocument().head()->setInnerHTML(R"HTML(
+  GetDocument().head()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <meta name="color-scheme" content="dark">
     <meta name="monetization">
   )HTML");
@@ -333,7 +336,7 @@ TEST_F(HTMLMetaElementTest, WebMonetizationCounter) {
       GetDocument().IsUseCounted(WebFeature::kHTMLMetaElementMonetization));
 
   // A <link rel="monetization"> with a content attribute is counted.
-  GetDocument().head()->setInnerHTML(R"HTML(
+  GetDocument().head()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <meta name="monetization" content="$payment.pointer.url">
   )HTML");
   EXPECT_TRUE(
@@ -375,6 +378,111 @@ TEST_F(HTMLMetaElementSimTest, WebMonetizationNotCountedInSubFrame) {
   // <meta name="monetization"> is not counted in subframes.
   EXPECT_FALSE(
       GetDocument().IsUseCounted(WebFeature::kHTMLMetaElementMonetization));
+}
+
+TEST_F(HTMLMetaElementSimTest, ResponsiveEmbeddedSizingAllowedOrigins) {
+  struct TestCase {
+    const char* allowed_origins_attr;
+    bool expected_allowed;
+  } cases[] = {
+      {nullptr, false},
+      {" ", false},
+      {"*", true},
+      // Origin matches parent container origin (https://parent.example).
+      {"https://parent.example", true},
+      // Origin matches child document origin (https://child.example) but NOT
+      // parent container origin, so it must be disallowed.
+      {"https://child.example", false},
+      {"https://other.example", false},
+      {"https:", true},
+      // Per CSP spec, scheme-source "http:" allows both HTTP and HTTPS origins.
+      {"http:", true},
+  };
+
+  for (const auto& test : cases) {
+    SimRequest main_resource("https://parent.example/", "text/html");
+    SimRequest child_frame_resource("https://child.example/subframe.html",
+                                    "text/html");
+
+    LoadURL("https://parent.example/");
+    main_resource.Complete(
+        R"HTML(
+          <body>
+            <iframe src='https://child.example/subframe.html'></iframe>
+          </body>)HTML");
+
+    Compositor().BeginFrame();
+    test::RunPendingTasks();
+
+    String meta_tag;
+    if (test.allowed_origins_attr) {
+      meta_tag = StrCat(
+          {R"(<meta name="responsive-embedded-sizing" allowed-origins=")",
+           test.allowed_origins_attr, R"(">)"});
+    } else {
+      meta_tag = R"(<meta name="responsive-embedded-sizing">)";
+    }
+
+    child_frame_resource.Complete("<head>" + meta_tag + "</head>");
+    Compositor().BeginFrame();
+    test::RunPendingTasks();
+
+    const auto* iframe = To<HTMLIFrameElement>(
+        GetDocument().QuerySelector(AtomicString("iframe")));
+    ASSERT_TRUE(iframe);
+    Document* child_doc = iframe->contentDocument();
+    ASSERT_TRUE(child_doc);
+
+    const auto* meta =
+        To<HTMLMetaElement>(child_doc->QuerySelector(AtomicString("meta")));
+    ASSERT_TRUE(meta);
+    EXPECT_EQ(meta->IsAllowedOrigins(), test.expected_allowed);
+
+    DummyExceptionStateForTesting exception_state;
+    child_doc->RequestResizeResponsiveIframe(&exception_state);
+    EXPECT_EQ(!test.expected_allowed, exception_state.HadException())
+        << "Failed for allowed-origins: "
+        << (test.allowed_origins_attr ? test.allowed_origins_attr
+                                      : "(missing)");
+  }
+}
+
+// Test that "https:" allowed-origins blocks an HTTP container frame.
+TEST_F(HTMLMetaElementSimTest, ResponsiveEmbeddedSizingAllowedOriginsHttp) {
+  SimRequest main_resource("http://parent.example/", "text/html");
+  SimRequest child_frame_resource("http://child.example/subframe.html",
+                                  "text/html");
+
+  LoadURL("http://parent.example/");
+  main_resource.Complete(
+      R"HTML(
+          <body>
+            <iframe src='http://child.example/subframe.html'></iframe>
+          </body>)HTML");
+
+  Compositor().BeginFrame();
+  test::RunPendingTasks();
+
+  child_frame_resource.Complete(
+      R"(<head><meta name="responsive-embedded-sizing" allowed-origins="https:"></head>)");
+  Compositor().BeginFrame();
+  test::RunPendingTasks();
+
+  const auto* iframe = To<HTMLIFrameElement>(
+      GetDocument().QuerySelector(AtomicString("iframe")));
+  ASSERT_TRUE(iframe);
+  Document* child_doc = iframe->contentDocument();
+  ASSERT_TRUE(child_doc);
+
+  const auto* meta =
+      To<HTMLMetaElement>(child_doc->QuerySelector(AtomicString("meta")));
+  ASSERT_TRUE(meta);
+  EXPECT_FALSE(meta->IsAllowedOrigins());
+
+  DummyExceptionStateForTesting exception_state;
+  child_doc->RequestResizeResponsiveIframe(&exception_state);
+  EXPECT_TRUE(exception_state.HadException())
+      << "Failed to block HTTP container frame when allowed-origins is https:";
 }
 
 }  // namespace blink

@@ -8,10 +8,10 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/test/scoped_feature_list.h"
-#include "base/test/task_environment.h"
 #include "base/test/test_future.h"
 #include "build/build_config.h"
 #include "build/buildflag.h"
+#include "gpu/config/gpu_finch_features.h"
 #include "mojo/public/cpp/bindings/associated_remote.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/system/functions.h"
@@ -23,13 +23,11 @@
 #include "services/webnn/public/mojom/webnn_context.mojom.h"
 #include "services/webnn/public/mojom/webnn_context_provider.mojom.h"
 #include "services/webnn/public/mojom/webnn_tensor.mojom.h"
+#include "services/webnn/webnn_context_impl.h"
 #include "services/webnn/webnn_context_provider_impl.h"
+#include "services/webnn/webnn_tensor_impl.h"
+#include "services/webnn/webnn_test_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
-
-#if BUILDFLAG(IS_WIN)
-#include "services/webnn/dml/adapter.h"
-#include "services/webnn/dml/test_base.h"
-#endif  // BUILDFLAG(IS_WIN)
 
 #if BUILDFLAG(IS_MAC)
 #include "base/mac/mac_util.h"
@@ -73,43 +71,7 @@ struct CreateTensorSuccess {
   blink::WebNNTensorToken webnn_tensor_handle;
 };
 
-#if BUILDFLAG(IS_WIN)
-class WebNNTensorImplBackendTest : public dml::TestBase {
- public:
-  WebNNTensorImplBackendTest()
-      : scoped_feature_list_(
-            webnn::mojom::features::kWebMachineLearningNeuralNetwork) {}
-
-  void SetUp() override;
-  void TearDown() override;
-
- protected:
-  base::expected<CreateContextSuccess, webnn::mojom::Error::Code>
-  CreateWebNNContext();
-
-  base::test::ScopedFeatureList scoped_feature_list_;
-  scoped_refptr<dml::Adapter> adapter_;
-  mojo::Remote<mojom::WebNNContextProvider> webnn_provider_remote_;
-};
-
-void WebNNTensorImplBackendTest::SetUp() {
-  SKIP_TEST_IF(!dml::UseGPUInTests());
-
-  dml::Adapter::EnableDebugLayerForTesting();
-  auto adapter_creation_result = dml::Adapter::GetGpuInstanceForTesting();
-  // If the adapter creation result has no value, it's most likely because
-  // platform functions were not properly loaded.
-  SKIP_TEST_IF(!adapter_creation_result.has_value());
-  adapter_ = adapter_creation_result.value();
-  // Graph compilation relies on IDMLDevice1::CompileGraph introduced in
-  // DirectML version 1.2 or DML_FEATURE_LEVEL_2_1, so skip the tests if the
-  // DirectML version doesn't support this feature.
-  SKIP_TEST_IF(!adapter_->IsDMLDeviceCompileGraphSupportedForTesting());
-
-  WebNNContextProviderImpl::CreateForTesting(
-      webnn_provider_remote_.BindNewPipeAndPassReceiver());
-}
-#elif BUILDFLAG(IS_MAC)
+#if BUILDFLAG(IS_MAC)
 class WebNNTensorImplBackendTest : public testing::Test {
  public:
   WebNNTensorImplBackendTest()
@@ -124,7 +86,7 @@ class WebNNTensorImplBackendTest : public testing::Test {
   CreateWebNNContext();
 
   base::test::ScopedFeatureList scoped_feature_list_;
-  base::test::TaskEnvironment task_environment_;
+  WebNNTestEnvironment webnn_test_environment_;
   mojo::Remote<mojom::WebNNContextProvider> webnn_provider_remote_;
 };
 
@@ -134,18 +96,18 @@ void WebNNTensorImplBackendTest::SetUp() {
                  << base::mac::MacOSVersion();
   }
 
-  WebNNContextProviderImpl::CreateForTesting(
+  webnn_test_environment_.BindWebNNContextProvider(
       webnn_provider_remote_.BindNewPipeAndPassReceiver());
 
   GTEST_SKIP() << "WebNNTensor not implemented on macOS";
 }
-#elif BUILDFLAG(WEBNN_USE_TFLITE)
+#elif BUILDFLAG(WEBNN_USE_TFLITE) || BUILDFLAG(WEBNN_USE_LITERT)
 class WebNNTensorImplBackendTest : public testing::Test {
  public:
   WebNNTensorImplBackendTest()
       : scoped_feature_list_(
             webnn::mojom::features::kWebMachineLearningNeuralNetwork) {
-    WebNNContextProviderImpl::CreateForTesting(
+    webnn_test_environment_.BindWebNNContextProvider(
         webnn_provider_remote_.BindNewPipeAndPassReceiver());
   }
 
@@ -156,14 +118,14 @@ class WebNNTensorImplBackendTest : public testing::Test {
   CreateWebNNContext();
 
   base::test::ScopedFeatureList scoped_feature_list_;
-  base::test::TaskEnvironment task_environment_;
+  WebNNTestEnvironment webnn_test_environment_;
   mojo::Remote<mojom::WebNNContextProvider> webnn_provider_remote_;
 };
-#endif  // BUILDFLAG(WEBNN_USE_TFLITE)
+#endif  // BUILDFLAG(WEBNN_USE_TFLITE) || BUILDFLAG(WEBNN_USE_LITERT)
 
 void WebNNTensorImplBackendTest::TearDown() {
-  webnn_provider_remote_.reset();
-  base::RunLoop().RunUntilIdle();
+  // Give WebNNContext a chance to disconnect.
+  webnn_test_environment_.RunUntilIdle();
 }
 
 base::expected<CreateContextSuccess, webnn::mojom::Error::Code>
@@ -171,7 +133,7 @@ WebNNTensorImplBackendTest::CreateWebNNContext() {
   base::test::TestFuture<mojom::CreateContextResultPtr> create_context_future;
   webnn_provider_remote_->CreateWebNNContext(
       mojom::CreateContextOptions::New(
-          mojom::CreateContextOptions::Device::kGpu,
+          mojom::Device::kGpu,
           mojom::CreateContextOptions::PowerPreference::kDefault),
       create_context_future.GetCallback());
   auto create_context_result = create_context_future.Take();
@@ -272,15 +234,17 @@ TEST_F(WebNNTensorImplBackendTest, CreateTensorImplManyTest) {
 }
 
 // Test creating a WebNNTensor larger than tensor byte length limit.
-// The test is failing on android x86 builds: https://crbug.com/390358145.
-#if BUILDFLAG(IS_ANDROID) && defined(ARCH_CPU_X86)
-#define MAYBE_CreateTooLargeTensorTest DISABLED_CreateTooLargeTensorTest
+TEST_F(WebNNTensorImplBackendTest, CreateTooLargeTensorTest) {
+// Use a large shape that the element count is within int32_t, and
+// byte size within size_t but exceed tensor byte length limits.
+#if defined(ARCH_CPU_64_BITS)
+  const std::array<uint32_t, 1> large_shape{
+      std::numeric_limits<uint32_t>::max() / 4 + 1};
 #else
-#define MAYBE_CreateTooLargeTensorTest CreateTooLargeTensorTest
-#endif  // #if BUILDFLAG(IS_ANDROID) && defined(ARCH_CPU_X86)
-TEST_F(WebNNTensorImplBackendTest, MAYBE_CreateTooLargeTensorTest) {
-  const std::array<uint32_t, 3> large_shape{std::numeric_limits<int32_t>::max(),
-                                            2, 2};
+  const std::array<uint32_t, 1> large_shape{
+      static_cast<uint32_t>(std::numeric_limits<int32_t>::max()) / 4 + 1};
+#endif
+  const OperandDataType data_type = OperandDataType::kInt32;
 
   BadMessageTestHelper bad_message_helper;
 
@@ -299,9 +263,9 @@ TEST_F(WebNNTensorImplBackendTest, MAYBE_CreateTooLargeTensorTest) {
   mojom::WebNNContext::CreateTensorCallback create_tensor_callback =
       base::BindOnce([](mojom::CreateTensorResultPtr create_tensor_result) {});
   webnn_context_remote->CreateTensor(
-      mojom::TensorInfo::New(OperandDescriptor::UnsafeCreateForTesting(
-                                 OperandDataType::kUint8, large_shape),
-                             MLTensorUsage{MLTensorUsageFlags::kWrite}),
+      mojom::TensorInfo::New(
+          OperandDescriptor::UnsafeCreateForTesting(data_type, large_shape),
+          MLTensorUsage{MLTensorUsageFlags::kWrite}),
       std::move(create_tensor_callback));
 
   webnn_context_remote.FlushForTesting();
@@ -422,6 +386,52 @@ TEST_F(WebNNTensorImplBackendTest, CreateContextImplManyTest) {
 
   webnn_provider_remote_.FlushForTesting();
   EXPECT_FALSE(bad_message_helper.GetLastBadMessage().has_value());
+}
+
+// Test that ExportTensor() is rejected when SyncPointGraphValidation is
+// disabled.
+TEST_F(WebNNTensorImplBackendTest,
+       ExportTensorAsyncRejectedWhenSyncPointGraphValidationDisabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(
+      features::kSyncPointGraphValidation);
+  ASSERT_FALSE(features::IsSyncPointGraphValidationEnabled());
+
+  BadMessageTestHelper bad_message_helper;
+
+  mojo::Remote<mojom::WebNNContext> webnn_context_remote;
+  base::expected<CreateContextSuccess, webnn::mojom::Error::Code>
+      context_result = CreateWebNNContext();
+  if (!context_result.has_value() &&
+      context_result.error() == mojom::Error::Code::kNotSupportedError) {
+    GTEST_SKIP() << "WebNN not supported on this platform.";
+  } else {
+    webnn_context_remote =
+        std::move(context_result.value().webnn_context_remote);
+  }
+
+  mojo::AssociatedRemote<mojom::WebNNTensor> webnn_tensor_remote;
+  base::expected<CreateTensorSuccess, webnn::mojom::Error::Code> tensor_result =
+      CreateWebNNTensor(
+          webnn_context_remote,
+          mojom::TensorInfo::New(
+              OperandDescriptor::UnsafeCreateForTesting(
+                  OperandDataType::kUint8, std::array<uint32_t, 2>{2, 2}),
+              MLTensorUsage{MLTensorUsageFlags::kWebGpuInterop}));
+  if (tensor_result.has_value()) {
+    webnn_tensor_remote = std::move(tensor_result.value().webnn_tensor_remote);
+  }
+
+  ASSERT_TRUE(webnn_tensor_remote.is_bound());
+
+  // Simulate a compromised renderer calling the async entrypoint directly. With
+  // the feature disabled, the service must report a bad message and drop the
+  // call rather than scheduling the export.
+  webnn_tensor_remote->ExportTensor(/*flow_id=*/0u, /*release_count=*/1u);
+
+  webnn_context_remote.FlushForTesting();
+  EXPECT_EQ(bad_message_helper.GetLastBadMessage(),
+            kBadMessageAsyncExportNotSupported);
 }
 
 }  // namespace

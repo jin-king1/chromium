@@ -7,6 +7,7 @@ package org.chromium.chrome.browser.omnibox.suggestions.base;
 import static androidx.test.espresso.matcher.ViewMatchers.assertThat;
 
 import static org.hamcrest.Matchers.lessThanOrEqualTo;
+import static org.junit.Assert.assertEquals;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -16,18 +17,19 @@ import android.view.View;
 import android.view.View.MeasureSpec;
 import android.view.ViewGroup;
 
-import org.junit.Assert;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
 import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.chrome.browser.omnibox.R;
 import org.chromium.chrome.browser.omnibox.suggestions.base.SuggestionLayout.LayoutParams;
-import org.chromium.chrome.browser.omnibox.test.R;
 
 /** Tests for {@link BaseSuggestionView}. */
 @RunWith(BaseRobolectricTestRunner.class)
@@ -35,11 +37,13 @@ import org.chromium.chrome.browser.omnibox.test.R;
 public class BaseSuggestionViewTest {
     private static final int CONTENT_VIEW_REPORTED_HEIGHT_PX = 10;
     // Used as a (fixed) width of a refine icon.
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     private int mActionIconWidthPx;
     private int mSemicompactSuggestionViewHeight;
     private int mCompactSuggestionViewHeight;
     private int mDecorationIconWidthPx;
     private int mLargeDecorationIconWidthPx;
+    private int mSuggestionEndPaddingNoActionButtonPx;
 
     private BaseSuggestionViewForTest mView;
     private Activity mActivity;
@@ -53,7 +57,7 @@ public class BaseSuggestionViewTest {
     // TODO(https://github.com/robolectric/robolectric/issues/3910) Remove the class below once
     // the above issue is resolved and our robolectric version is rolled forward to the version
     // that supports layout direction changes.
-    static class BaseSuggestionViewForTest extends BaseSuggestionView {
+    static class BaseSuggestionViewForTest extends BaseSuggestionView<View> {
         private int mCurrentDirection = View.LAYOUT_DIRECTION_LTR;
 
         BaseSuggestionViewForTest(View childView) {
@@ -84,8 +88,6 @@ public class BaseSuggestionViewTest {
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
-
         mActivity = Robolectric.buildActivity(Activity.class).setup().get();
         mContentView = new View(mActivity);
         mContentView.setMinimumHeight(CONTENT_VIEW_REPORTED_HEIGHT_PX);
@@ -115,6 +117,12 @@ public class BaseSuggestionViewTest {
                 mActivity
                         .getResources()
                         .getDimensionPixelSize(R.dimen.omnibox_suggestion_icon_area_size_large);
+
+        mSuggestionEndPaddingNoActionButtonPx =
+                mActivity
+                        .getResources()
+                        .getDimensionPixelSize(
+                                R.dimen.omnibox_suggestion_end_padding_no_action_button);
     }
 
     /**
@@ -124,19 +132,18 @@ public class BaseSuggestionViewTest {
      */
     private void executeLayoutTest(int containerWidth, int contentHeight, int layoutDirection) {
         mView.setLayoutDirection(layoutDirection);
-        Assert.assertEquals(
-                "layout direction not supported", layoutDirection, mView.getLayoutDirection());
+        assertEquals("layout direction not supported", layoutDirection, mView.getLayoutDirection());
 
         mView.performLayoutForTest(containerWidth);
     }
 
     /** Confirm that specified view is positioned at specific coordinates. */
     private void verifyViewLayout(View v, int left, int top, int right, int bottom) {
-        Assert.assertEquals("left view edge", left, v.getLeft());
-        Assert.assertEquals("top view edge", top, v.getTop());
-        Assert.assertEquals("right view edge", right, v.getRight());
-        // Assert.assertEquals("bottom view edge", bottom, v.getBottom());
-        Assert.assertEquals("view width", right - left, v.getMeasuredWidth());
+        assertEquals("left view edge", left, v.getLeft());
+        assertEquals("top view edge", top, v.getTop());
+        assertEquals("right view edge", right, v.getRight());
+        // assertEquals("bottom view edge", bottom, v.getBottom());
+        assertEquals("view width", right - left, v.getMeasuredWidth());
         assertThat("view height", v.getMeasuredHeight(), lessThanOrEqualTo(bottom - top));
     }
 
@@ -373,7 +380,8 @@ public class BaseSuggestionViewTest {
         final int paddingEnd = 22;
 
         final int expectedContentLeft = paddingStart + mDecorationIconWidthPx;
-        final int expectedContentRight = giveSuggestionWidth - paddingEnd;
+        final int expectedContentRight =
+                giveSuggestionWidth - paddingEnd - mSuggestionEndPaddingNoActionButtonPx;
 
         mView.setPaddingRelative(paddingStart, 0, paddingEnd, 0);
         executeLayoutTest(giveSuggestionWidth, giveContentHeight, View.LAYOUT_DIRECTION_LTR);
@@ -401,7 +409,7 @@ public class BaseSuggestionViewTest {
         final int paddingStart = 57;
         final int paddingEnd = 31;
 
-        final int expectedContentLeft = paddingEnd;
+        final int expectedContentLeft = paddingEnd + mSuggestionEndPaddingNoActionButtonPx;
         final int expectedContentRight =
                 giveSuggestionWidth - paddingStart - mDecorationIconWidthPx;
 
@@ -565,7 +573,7 @@ public class BaseSuggestionViewTest {
     public void layout_minimumHeightWithNoFooterIsSemicompact() {
         mView.setLayoutDirection(View.LAYOUT_DIRECTION_LTR);
         executeLayoutTest(100, 10, View.LAYOUT_DIRECTION_LTR);
-        Assert.assertEquals(mSemicompactSuggestionViewHeight, mView.getMeasuredHeight());
+        assertEquals(mSemicompactSuggestionViewHeight, mView.getMeasuredHeight());
     }
 
     @Test
@@ -574,7 +582,7 @@ public class BaseSuggestionViewTest {
         mView.addView(content, LayoutParams.forViewType(LayoutParams.SuggestionViewType.FOOTER));
         mView.setLayoutDirection(View.LAYOUT_DIRECTION_LTR);
         executeLayoutTest(100, 10, View.LAYOUT_DIRECTION_LTR);
-        Assert.assertEquals(mCompactSuggestionViewHeight, mView.getMeasuredHeight());
+        assertEquals(mCompactSuggestionViewHeight, mView.getMeasuredHeight());
     }
 
     @Test
@@ -591,9 +599,9 @@ public class BaseSuggestionViewTest {
 
     @Test
     public void layout_dimensions() {
-        Assert.assertEquals(mDecorationIconWidthPx, mView.mDecorationIconWidthPx);
-        Assert.assertEquals(mSemicompactSuggestionViewHeight, mView.mContentHeightPx);
-        Assert.assertEquals(mCompactSuggestionViewHeight, mView.mCompactContentHeightPx);
+        assertEquals(mDecorationIconWidthPx, mView.mDecorationIconWidthPx);
+        assertEquals(mSemicompactSuggestionViewHeight, mView.mContentHeightPx);
+        assertEquals(mCompactSuggestionViewHeight, mView.mCompactContentHeightPx);
     }
 
     @Test
@@ -627,8 +635,8 @@ public class BaseSuggestionViewTest {
         // Calling setUseLargeDecorationIcon should preserve its layout params' width and height.
         // Updating the width and height for a larger intrinsic image size is the responsibility of
         // BaseSuggestionViewBinder#updateSuggestionIcon.
-        Assert.assertEquals(66, mView.decorationIcon.getLayoutParams().width);
-        Assert.assertEquals(
+        assertEquals(66, mView.decorationIcon.getLayoutParams().width);
+        assertEquals(
                 ViewGroup.LayoutParams.WRAP_CONTENT, mView.decorationIcon.getLayoutParams().height);
     }
 }

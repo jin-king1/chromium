@@ -10,91 +10,16 @@
 #include <optional>
 #include <string>
 
+#include "base/check.h"
+#include "base/containers/span.h"
 #include "skia/ext/skcolorspace_primaries.h"
+#include "third_party/skia/include/private/SkHdrMetadata.h"
 #include "ui/gfx/color_space_export.h"
 #include "ui/gfx/geometry/point_f.h"
 
-struct SkColorSpacePrimaries;
-
 namespace gfx {
 
-// Content light level info (CLLI) metadata from CTA 861.3.
-struct COLOR_SPACE_EXPORT HdrMetadataCta861_3 {
-  constexpr HdrMetadataCta861_3() = default;
-  constexpr HdrMetadataCta861_3(unsigned max_content_light_level,
-                                unsigned max_frame_average_light_level)
-      : max_content_light_level(max_content_light_level),
-        max_frame_average_light_level(max_frame_average_light_level) {}
-
-  // Max content light level (CLL), i.e. maximum brightness level present in the
-  // stream), in nits.
-  unsigned max_content_light_level = 0;
-
-  // Max frame-average light level (FALL), i.e. maximum average brightness of
-  // the brightest frame in the stream), in nits.
-  unsigned max_frame_average_light_level = 0;
-
-  std::string ToString() const;
-  bool IsValid() const {
-    return max_content_light_level > 0 || max_frame_average_light_level > 0;
-  }
-  bool operator==(const HdrMetadataCta861_3& rhs) const {
-    return max_content_light_level == rhs.max_content_light_level &&
-           max_frame_average_light_level == rhs.max_frame_average_light_level;
-  }
-  bool operator!=(const HdrMetadataCta861_3& rhs) const {
-    return !(*this == rhs);
-  }
-};
-
-// SMPTE ST 2086 color volume metadata.
-struct COLOR_SPACE_EXPORT HdrMetadataSmpteSt2086 {
-  SkColorSpacePrimaries primaries = SkNamedPrimariesExt::kInvalid;
-  float luminance_max = 0;
-  float luminance_min = 0;
-
-  constexpr HdrMetadataSmpteSt2086() = default;
-  constexpr HdrMetadataSmpteSt2086(const HdrMetadataSmpteSt2086& rhs) = default;
-  constexpr HdrMetadataSmpteSt2086(const SkColorSpacePrimaries& primaries,
-                                   float luminance_max,
-                                   float luminance_min)
-      : primaries(primaries),
-        luminance_max(luminance_max),
-        luminance_min(luminance_min) {}
-  HdrMetadataSmpteSt2086& operator=(const HdrMetadataSmpteSt2086& rhs);
-
-  std::string ToString() const;
-
-  bool IsValid() const {
-    return primaries != SkNamedPrimariesExt::kInvalid || luminance_max != 0.f ||
-           luminance_min != 0.f;
-  }
-
-  bool operator==(const HdrMetadataSmpteSt2086& rhs) const {
-    return (primaries == rhs.primaries && luminance_max == rhs.luminance_max &&
-            luminance_min == rhs.luminance_min);
-  }
-
-  bool operator!=(const HdrMetadataSmpteSt2086& rhs) const {
-    return !(*this == rhs);
-  }
-};
-
-// Nominal diffuse white level (NDWL) metadata.
-struct COLOR_SPACE_EXPORT HdrMetadataNdwl {
-  constexpr HdrMetadataNdwl() = default;
-  constexpr explicit HdrMetadataNdwl(float nits) : nits(nits) {}
-
-  // The number of nits of SDR white. Default to 203 nits from ITU-R BT.2408 and
-  // ISO 22028-5.
-  float nits = 203.f;
-
-  std::string ToString() const;
-
-  bool operator==(const HdrMetadataNdwl& rhs) const { return nits == rhs.nits; }
-
-  bool operator!=(const HdrMetadataNdwl& rhs) const { return !(*this == rhs); }
-};
+class ColorSpace;
 
 // HDR metadata for extended range color spaces.
 struct COLOR_SPACE_EXPORT HdrMetadataExtendedRange {
@@ -118,63 +43,103 @@ struct COLOR_SPACE_EXPORT HdrMetadataExtendedRange {
 
   std::string ToString() const;
 
-  bool operator==(const HdrMetadataExtendedRange& rhs) const {
-    return (current_headroom == rhs.current_headroom &&
-            desired_headroom == rhs.desired_headroom);
-  }
-
-  bool operator!=(const HdrMetadataExtendedRange& rhs) const {
-    return !(*this == rhs);
-  }
+  std::weak_ordering operator<=>(const HdrMetadataExtendedRange&) const;
+  friend bool operator==(const HdrMetadataExtendedRange&,
+                         const HdrMetadataExtendedRange&) = default;
 };
 
+// Return whether or not use of AGTM metadata is enabled by default or not.
 struct COLOR_SPACE_EXPORT HdrMetadataAgtm {
-  HdrMetadataAgtm();
-  explicit HdrMetadataAgtm(sk_sp<SkData> payload);
-  HdrMetadataAgtm(const void* payload, size_t size);
-  HdrMetadataAgtm(const HdrMetadataAgtm& other);
-  HdrMetadataAgtm& operator=(const HdrMetadataAgtm& other);
-  ~HdrMetadataAgtm();
-
-  std::string ToString() const;
-
-  bool operator==(const HdrMetadataAgtm& rhs) const;
-  bool operator!=(const HdrMetadataAgtm& rhs) const { return !(*this == rhs); }
-
-  // The raw encoded AGTM metadata payload.
-  sk_sp<SkData> payload;
+  static bool IsEnabled();
 };
 
 // HDR metadata common for HDR10 and WebM/VP9-based HDR formats.
 struct COLOR_SPACE_EXPORT HDRMetadata {
-  // Mastering display color volume (MDCV) metadata.
-  std::optional<HdrMetadataSmpteSt2086> smpte_st_2086;
-
-  // Content light level information (CLLI) metadata.
-  std::optional<HdrMetadataCta861_3> cta_861_3;
-
-  // The number of nits of SDR white.
-  std::optional<HdrMetadataNdwl> ndwl;
-
-  // Brightness points for extended range color spaces.
-  std::optional<HdrMetadataExtendedRange> extended_range;
-
-  // Agtm metadata.
-  std::optional<HdrMetadataAgtm> agtm;
-
   HDRMetadata();
-  HDRMetadata(const HdrMetadataSmpteSt2086& smpte_st_2086,
-              const HdrMetadataCta861_3& cta_861_3);
-  explicit HDRMetadata(const HdrMetadataSmpteSt2086& smpte_st_2086);
-  explicit HDRMetadata(const HdrMetadataCta861_3& cta_861_3);
+  HDRMetadata(const skhdr::Metadata& sk_hdr_metadata);
+  HDRMetadata(const skhdr::MasteringDisplayColorVolume& smpte_st_2086,
+              const skhdr::ContentLightLevelInformation& cta_861_3);
+  explicit HDRMetadata(const skhdr::MasteringDisplayColorVolume& smpte_st_2086);
+  explicit HDRMetadata(const skhdr::ContentLightLevelInformation& cta_861_3);
   HDRMetadata(const HDRMetadata& rhs);
   HDRMetadata& operator=(const HDRMetadata& rhs);
   ~HDRMetadata();
 
-  bool IsValid() const {
-    return (cta_861_3 && cta_861_3->IsValid()) ||
-           (smpte_st_2086 && smpte_st_2086->IsValid()) || extended_range;
+  // Adaptive global tone mapping (AGTM) metadata.
+  void SetAgtm(const skhdr::AdaptiveGlobalToneMap& agtm) { agtm_ = agtm; }
+  bool HasAgtm() const { return agtm_.has_value(); }
+  const skhdr::AdaptiveGlobalToneMap& GetAgtm() const {
+    CHECK(agtm_.has_value());
+    return agtm_.value();
   }
+
+  // Parse `data` to AGTM metadata. If parsing succeeds, then set the AGTM
+  // metadata to the parsed value. Otherwise leave it unchanged.
+  void SetSerializedAgtm(base::span<const uint8_t> data);
+
+  // Mastering display color volume (MDCV) metadata.
+  void SetMDCV(const skhdr::MasteringDisplayColorVolume& smpte) {
+    mdcv_ = smpte;
+  }
+  bool HasMDCV() const { return mdcv_.has_value(); }
+  const skhdr::MasteringDisplayColorVolume& GetMDCV() const {
+    CHECK(mdcv_.has_value());
+    return mdcv_.value();
+  }
+
+  // Content light level information (CLLI) metadata.
+  void SetCLLI(const skhdr::ContentLightLevelInformation& cta) { clli_ = cta; }
+  bool HasCLLI() const { return clli_.has_value(); }
+  const skhdr::ContentLightLevelInformation& GetCLLI() const {
+    CHECK(clli_.has_value());
+    return clli_.value();
+  }
+
+  // Nominal diffuse white level (NDWL), which is the number of nits of SDR
+  // white.
+  void SetNDWL(float nits) { ndwl_ = nits; }
+  bool HasNDWL() const { return ndwl_.has_value(); }
+  float GetNDWL() const {
+    CHECK(ndwl_.has_value());
+    return ndwl_.value();
+  }
+
+  // Brightness points for extended range color spaces.
+  std::optional<HdrMetadataExtendedRange> extended_range;
+
+  // Reset all metadata to be unspecified.
+  void Reset();
+
+  // For each metadata item of `other` that is specified, replace `this`
+  // metadata item with that of `other`. E.g, if `other` has CLLI and MDCV
+  // metadata, and `this` has MDCV and AGTM metadata, then after this call,
+  // `this` will have its original AGTM, but the CLLI and MDCV from `other`.
+  void MergeMetadataFrom(const HDRMetadata& other);
+
+  // Return true if this structure holds no metadata.
+  bool IsEmpty() const {
+    return !mdcv_.has_value() && !clli_.has_value() && !ndwl_.has_value() &&
+           !extended_range.has_value() && !agtm_.has_value();
+  }
+
+  bool IsValid() const {
+    return (clli_ && (clli_->fMaxCLL > 0 || clli_->fMaxFALL > 0)) ||
+           (mdcv_ &&
+            (mdcv_->fDisplayPrimaries != SkNamedPrimariesExt::kInvalid ||
+             mdcv_->fMaximumDisplayMasteringLuminance != 0.f ||
+             mdcv_->fMinimumDisplayMasteringLuminance != 0.f)) ||
+           extended_range;
+  }
+
+  // Compute the maximum luminance for the specified HDR metadata. This will
+  // - return the CTA 861.3 max content light level metadata, if present
+  // - return the SMPTE ST 2086 luminance max metadata, if present
+  // - otherwise return 1,000 nits
+  static float GetContentMaxLuminance(const HDRMetadata& metadata);
+
+  // Compute the reference luminance for use with Wayland color management.
+  static float GetWaylandReferenceLuminance(const ColorSpace& color_space,
+                                            const HDRMetadata& hdr_metadata);
 
   // Return a copy of `hdr_metadata` with its `smpte_st_2086` fully
   // populated. Any unspecified values are set to default values (in particular,
@@ -183,17 +148,19 @@ struct COLOR_SPACE_EXPORT HDRMetadata {
   // `max_frame_average_light_level` values are not changed (they may stay
   // zero).
   static HDRMetadata PopulateUnspecifiedWithDefaults(
-      const std::optional<gfx::HDRMetadata>& hdr_metadata);
+      const HDRMetadata& hdr_metadata);
 
   std::string ToString() const;
 
-  bool operator==(const HDRMetadata& rhs) const {
-    return cta_861_3 == rhs.cta_861_3 && smpte_st_2086 == rhs.smpte_st_2086 &&
-           ndwl == rhs.ndwl && extended_range == rhs.extended_range &&
-           agtm == rhs.agtm;
-  }
+  // A default weak ordering for use with maps, sets, and caches.
+  bool operator==(const HDRMetadata&) const;
+  std::weak_ordering operator<=>(const HDRMetadata&) const;
 
-  bool operator!=(const HDRMetadata& rhs) const { return !(*this == rhs); }
+ private:
+  std::optional<skhdr::MasteringDisplayColorVolume> mdcv_;
+  std::optional<skhdr::ContentLightLevelInformation> clli_;
+  std::optional<skhdr::AdaptiveGlobalToneMap> agtm_;
+  std::optional<float> ndwl_;
 };
 
 // HDR metadata types as described in

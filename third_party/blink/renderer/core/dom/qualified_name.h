@@ -148,11 +148,12 @@ class CORE_EXPORT QualifiedName {
   QualifiedName(QualifiedName&& other) = default;
   QualifiedName& operator=(QualifiedName&& other) = default;
 
+  // Mostly used for tests.
+  explicit QualifiedName(scoped_refptr<QualifiedNameImpl> impl)
+      : impl_(std::move(impl)) {}
+
   bool operator==(const QualifiedName& other) const {
     return impl_ == other.impl_;
-  }
-  bool operator!=(const QualifiedName& other) const {
-    return !(*this == other);
   }
 
   bool Matches(const QualifiedName& other) const {
@@ -205,9 +206,10 @@ class CORE_EXPORT QualifiedName {
   QualifiedNameImpl* Impl() const { return impl_.get(); }
 
   // Init routine for globals
-  static void InitAndReserveCapacityForSize(unsigned size);
+  static void InitAndReserveCapacityForSize(wtf_size_t size);
 
   static const QualifiedName& Null() { return g_null_name; }
+  bool IsNull() const { return impl_ == g_null_name.impl_; }
 
   // The below methods are only for creating static global QNames that need no
   // ref counting.
@@ -216,8 +218,8 @@ class CORE_EXPORT QualifiedName {
                            StringImpl* name,
                            const AtomicString& name_namespace);
 
- private:
-  friend struct WTF::HashTraits<blink::QualifiedName>;
+ protected:
+  friend struct HashTraits<QualifiedName>;
 
   // This constructor is used only to create global/static QNames that don't
   // require any ref counting.
@@ -229,6 +231,27 @@ class CORE_EXPORT QualifiedName {
   scoped_refptr<QualifiedNameImpl> impl_;
 };
 
+class CORE_EXPORT QualifiedNameWithHash : public QualifiedName {
+ public:
+  QualifiedNameWithHash(const AtomicString& prefix,
+                        const AtomicString& local_name,
+                        const AtomicString& namespace_uri,
+                        bool is_static);
+
+  // Precalculated filter for use with Element::CouldHaveAttribute().
+  // The type is really Element::TinyBloomFilter, but we do not want
+  // to pull in element.h from this header.
+  const uint32_t bloom_filter;
+
+  static void CreateStatic(void* target_address, StringImpl* name);
+  static void CreateStatic(void* target_address,
+                           StringImpl* name,
+                           const AtomicString& name_namespace);
+
+  // Mostly used for tests.
+  QualifiedName ToQualifiedName() const { return QualifiedName{impl_}; }
+};
+
 inline const QualifiedName& AnyQName() {
   return g_any_name;
 }
@@ -236,32 +259,20 @@ inline const QualifiedName& AnyQName() {
 inline bool operator==(const AtomicString& a, const QualifiedName& q) {
   return a == q.LocalName();
 }
-inline bool operator!=(const AtomicString& a, const QualifiedName& q) {
-  return a != q.LocalName();
-}
 inline bool operator==(const QualifiedName& q, const AtomicString& a) {
   return a == q.LocalName();
 }
-inline bool operator!=(const QualifiedName& q, const AtomicString& a) {
-  return a != q.LocalName();
-}
 
 inline unsigned HashComponents(const QualifiedNameComponents& buf) {
-  return StringHasher::HashMemory(base::byte_span_from_ref(buf)) & 0xFFFFFF;
+  return StringHasher::HashMemory32(base::byte_span_from_ref(buf));
 }
 
 CORE_EXPORT std::ostream& operator<<(std::ostream&, const QualifiedName&);
 
-}  // namespace blink
-
-WTF_ALLOW_MOVE_INIT_AND_COMPARE_WITH_MEM_FUNCTIONS(blink::QualifiedName)
-
-namespace WTF {
-
 template <>
-struct HashTraits<blink::QualifiedName::QualifiedNameImpl*>
-    : GenericHashTraits<blink::QualifiedName::QualifiedNameImpl*> {
-  static unsigned GetHash(const blink::QualifiedName::QualifiedNameImpl* name) {
+struct HashTraits<QualifiedName::QualifiedNameImpl*>
+    : GenericHashTraits<QualifiedName::QualifiedNameImpl*> {
+  static unsigned GetHash(const QualifiedName::QualifiedNameImpl* name) {
     if (!name->existing_hash_) {
       name->existing_hash_ = name->ComputeHash();
     }
@@ -271,29 +282,28 @@ struct HashTraits<blink::QualifiedName::QualifiedNameImpl*>
 };
 
 template <>
-struct HashTraits<blink::QualifiedName>
-    : GenericHashTraits<blink::QualifiedName> {
-  using QualifiedNameImpl = blink::QualifiedName::QualifiedNameImpl;
-  static unsigned GetHash(const blink::QualifiedName& name) {
-    return WTF::GetHash(name.Impl());
+struct HashTraits<QualifiedName> : GenericHashTraits<QualifiedName> {
+  using QualifiedNameImpl = QualifiedName::QualifiedNameImpl;
+  static unsigned GetHash(const QualifiedName& name) {
+    return blink::GetHash(name.Impl());
   }
   static constexpr bool kSafeToCompareToEmptyOrDeleted = false;
 
   static constexpr bool kEmptyValueIsZero = false;
-  static const blink::QualifiedName& EmptyValue() {
-    return blink::QualifiedName::Null();
-  }
+  static const QualifiedName& EmptyValue() { return QualifiedName::Null(); }
 
-  static bool IsDeletedValue(const blink::QualifiedName& value) {
+  static bool IsDeletedValue(const QualifiedName& value) {
     return HashTraits<scoped_refptr<QualifiedNameImpl>>::IsDeletedValue(
         value.impl_);
   }
-  static void ConstructDeletedValue(blink::QualifiedName& slot) {
+  static void ConstructDeletedValue(QualifiedName& slot) {
     HashTraits<scoped_refptr<QualifiedNameImpl>>::ConstructDeletedValue(
         slot.impl_);
   }
 };
 
-}  // namespace WTF
+}  // namespace blink
+
+WTF_ALLOW_MOVE_INIT_AND_COMPARE_WITH_MEM_FUNCTIONS(blink::QualifiedName)
 
 #endif  // THIRD_PARTY_BLINK_RENDERER_CORE_DOM_QUALIFIED_NAME_H_

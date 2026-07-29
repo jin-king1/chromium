@@ -13,13 +13,13 @@
 
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
+#include "ash/constants/generative_ai_country_restrictions.h"
 #include "ash/public/cpp/test/in_process_data_decoder.h"
 #include "ash/public/cpp/wallpaper/sea_pen_image.h"
 #include "ash/public/cpp/wallpaper/wallpaper_types.h"
 #include "ash/wallpaper/sea_pen_wallpaper_manager.h"
 #include "ash/wallpaper/test_sea_pen_wallpaper_manager_session_delegate.h"
 #include "ash/wallpaper/wallpaper_file_manager.h"
-#include "ash/webui/common/mojom/sea_pen.mojom-forward.h"
 #include "ash/webui/common/mojom/sea_pen.mojom.h"
 #include "base/containers/flat_map.h"
 #include "base/containers/span.h"
@@ -29,9 +29,11 @@
 #include "base/i18n/time_formatting.h"
 #include "base/json/values_util.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_view_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/icu_test_util.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/scoped_path_override.h"
 #include "base/test/test_future.h"
@@ -40,6 +42,7 @@
 #include "chrome/browser/ash/login/demo_mode/demo_mode_test_helper.h"
 #include "chrome/browser/ash/login/demo_mode/demo_session.h"
 #include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
+#include "chrome/browser/ash/settings/scoped_cros_settings_test_helper.h"
 #include "chrome/browser/ash/system_web_apps/apps/personalization_app/personalization_app_utils.h"
 #include "chrome/browser/ash/system_web_apps/apps/personalization_app/test_sea_pen_observer.h"
 #include "chrome/browser/ash/wallpaper_handlers/mock_sea_pen_fetcher.h"
@@ -49,13 +52,22 @@
 #include "chrome/browser/ui/ash/wallpaper/test_wallpaper_controller.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile_manager.h"
+#include "chromeos/ash/components/demo_mode/utils/demo_session_utils.h"
 #include "components/account_id/account_id.h"
 #include "components/manta/manta_status.h"
 #include "components/manta/proto/manta.pb.h"
+#include "components/metrics/metrics_state_manager.h"
+#include "components/metrics/startup_visibility.h"
+#include "components/metrics/test/test_enabled_state_provider.h"
+#include "components/prefs/pref_service.h"
+#include "components/prefs/testing_pref_service.h"
 #include "components/user_manager/scoped_user_manager.h"
 #include "components/user_manager/user_manager.h"
 #include "components/user_manager/user_names.h"
 #include "components/user_manager/user_type.h"
+#include "components/variations/pref_names.h"
+#include "components/variations/service/test_variations_service.h"
+#include "components/variations/variations_switches.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/test_web_ui.h"
@@ -146,9 +158,10 @@ void AddAndLoginUser(const AccountId& account_id, user_manager::UserType type) {
     case user_manager::UserType::kPublicAccount:
       user = user_manager->AddPublicAccountUser(account_id);
       break;
-    case user_manager::UserType::kKioskApp:
-    case user_manager::UserType::kWebKioskApp:
+    case user_manager::UserType::kKioskChromeApp:
+    case user_manager::UserType::kKioskWebApp:
     case user_manager::UserType::kKioskIWA:
+    case user_manager::UserType::kKioskArcvmApp:
       break;
   }
 
@@ -189,9 +202,28 @@ class PersonalizationAppSeaPenProviderImplTest : public testing::Test {
       : scoped_user_manager_(std::make_unique<ash::FakeChromeUserManager>()),
         profile_manager_(TestingBrowserProcess::GetGlobal()) {
     scoped_feature_list_.InitWithFeatures(
-        {features::kSeaPen, features::kSeaPenDemoMode,
-         features::kFeatureManagementSeaPen},
-        {});
+        {features::kSeaPenDemoMode, features::kFeatureManagementSeaPen}, {});
+
+    variations::TestVariationsService::RegisterPrefs(
+        local_state_pref_.registry());
+
+    constexpr std::string_view allowed_country_code = "us";
+    CHECK(ash::IsGenerativeAiAllowedForCountry(allowed_country_code));
+    local_state_pref_.SetString(variations::prefs::kVariationsCountry,
+                                allowed_country_code);
+
+    metrics_state_manager_ = metrics::MetricsStateManager::Create(
+        &local_state_pref_, &metrics_enabled_state_provider_,
+        /*backup_registry_key=*/std::wstring(),
+        /*user_data_dir=*/base::FilePath(),
+        metrics::StartupVisibility::kUnknown);
+    test_variations_service_ =
+        std::make_unique<variations::TestVariationsService>(
+            &local_state_pref_, metrics_state_manager_.get());
+    test_variations_service_->OverrideStoredPermanentCountry(
+        std::string(allowed_country_code));
+    TestingBrowserProcess::GetGlobal()->SetVariationsService(
+        test_variations_service_.get());
   }
 
   PersonalizationAppSeaPenProviderImplTest(
@@ -199,7 +231,9 @@ class PersonalizationAppSeaPenProviderImplTest : public testing::Test {
   PersonalizationAppSeaPenProviderImplTest& operator=(
       const PersonalizationAppSeaPenProviderImplTest&) = delete;
 
-  ~PersonalizationAppSeaPenProviderImplTest() override = default;
+  ~PersonalizationAppSeaPenProviderImplTest() override {
+    TestingBrowserProcess::GetGlobal()->SetVariationsService(nullptr);
+  }
 
  protected:
   // testing::Test:
@@ -305,6 +339,8 @@ class PersonalizationAppSeaPenProviderImplTest : public testing::Test {
             });
   }
 
+  base::HistogramTester& histogram_tester() { return histogram_tester_; }
+
  private:
   void AddProfile(const std::string& name, user_manager::UserType user_type) {
     switch (user_type) {
@@ -319,9 +355,10 @@ class PersonalizationAppSeaPenProviderImplTest : public testing::Test {
         profile_ = profile_manager_.CreateGuestProfile();
         break;
       case user_manager::UserType::kPublicAccount:
-      case user_manager::UserType::kKioskApp:
-      case user_manager::UserType::kWebKioskApp:
+      case user_manager::UserType::kKioskChromeApp:
+      case user_manager::UserType::kKioskWebApp:
       case user_manager::UserType::kKioskIWA:
+      case user_manager::UserType::kKioskArcvmApp:
         profile_ = profile_manager_.CreateTestingProfile(name);
         break;
     }
@@ -329,6 +366,11 @@ class PersonalizationAppSeaPenProviderImplTest : public testing::Test {
 
   base::test::ScopedFeatureList scoped_feature_list_;
   content::BrowserTaskEnvironment task_environment_;
+  TestingPrefServiceSimple local_state_pref_;
+  metrics::TestEnabledStateProvider metrics_enabled_state_provider_{
+      /*consent=*/false, /*enabled=*/false};
+  std::unique_ptr<metrics::MetricsStateManager> metrics_state_manager_;
+  std::unique_ptr<variations::TestVariationsService> test_variations_service_;
   TestWallpaperController test_wallpaper_controller_;
   SeaPenWallpaperManager sea_pen_wallpaper_manager_;
   content::TestWebUI web_ui_;
@@ -341,6 +383,7 @@ class PersonalizationAppSeaPenProviderImplTest : public testing::Test {
       sea_pen_provider_remote_;
   std::unique_ptr<PersonalizationAppSeaPenProviderImpl> sea_pen_provider_;
   TestSeaPenObserver test_sea_pen_observer_;
+  base::HistogramTester histogram_tester_;
 };
 
 TEST_F(PersonalizationAppSeaPenProviderImplTest, TextSearchReturnsThumbnails) {
@@ -363,6 +406,9 @@ TEST_F(PersonalizationAppSeaPenProviderImplTest, TextSearchReturnsThumbnails) {
                            MatchesSeaPenImage("fake_sea_pen_image_3", 3),
                            MatchesSeaPenImage("fake_sea_pen_image_4", 4)));
   EXPECT_EQ(search_wallpaper_future.Get<1>(), manta::MantaStatusCode::kOk);
+  histogram_tester().ExpectUniqueSample(
+      "Ash.SeaPen.Freeform.Api.Thumbnails.MantaStatusCode",
+      manta::MantaStatusCode::kOk, 1);
 }
 
 TEST_F(PersonalizationAppSeaPenProviderImplTest,
@@ -395,6 +441,28 @@ TEST_F(PersonalizationAppSeaPenProviderImplTest,
                            MatchesSeaPenImage("fake_sea_pen_image_4", 4)));
   EXPECT_THAT(search_wallpaper_future.Get<1>(),
               testing::Eq(manta::MantaStatusCode::kOk));
+  histogram_tester().ExpectUniqueSample(
+      "Ash.SeaPen.Api.Thumbnails.MantaStatusCode", manta::MantaStatusCode::kOk,
+      1);
+}
+
+TEST_F(PersonalizationAppSeaPenProviderImplTest, TextSearchReturnsErrors) {
+  SetUpProfileForTesting(kFakeTestEmail, GetTestAccountId());
+  base::test::TestFuture<
+      std::optional<
+          std::vector<ash::personalization_app::mojom::SeaPenThumbnailPtr>>,
+      manta::MantaStatusCode>
+      search_wallpaper_future;
+  auto query = mojom::SeaPenQuery::NewTextQuery("search_query");
+
+  SetSeaPenFetcherResponse({}, manta::MantaStatusCode::kImageHasPerson, query);
+  sea_pen_provider_remote()->GetSeaPenThumbnails(
+      query->Clone(), search_wallpaper_future.GetCallback());
+  EXPECT_EQ(search_wallpaper_future.Get<1>(),
+            manta::MantaStatusCode::kImageHasPerson);
+  histogram_tester().ExpectUniqueSample(
+      "Ash.SeaPen.Freeform.Api.Thumbnails.MantaStatusCode",
+      manta::MantaStatusCode::kImageHasPerson, 1);
 }
 
 TEST_F(PersonalizationAppSeaPenProviderImplTest, MaxLengthQuery) {
@@ -918,8 +986,6 @@ TEST_F(PersonalizationAppSeaPenProviderImplTest,
        ShouldShowSeaPenIntroductionDialog) {
   SetUpProfileForTesting(kFakeTestEmail, GetTestAccountId());
   test_wallpaper_controller()->ClearCounts();
-  base::test::ScopedFeatureList features;
-  features.InitWithFeatures({features::kSeaPen}, {});
 
   base::test::TestFuture<bool> should_show_dialog_future;
   sea_pen_provider_remote()->ShouldShowSeaPenIntroductionDialog(
@@ -939,8 +1005,6 @@ TEST_F(PersonalizationAppSeaPenProviderImplTest,
        ShouldShowSeaPenFreeformIntroductionDialog) {
   SetUpProfileForTesting(kFakeTestEmail, GetTestAccountId());
   test_wallpaper_controller()->ClearCounts();
-  base::test::ScopedFeatureList features;
-  features.InitWithFeatures({features::kSeaPen}, {});
 
   base::test::TestFuture<bool> should_show_dialog_future;
   sea_pen_provider_remote()->ShouldShowSeaPenFreeformIntroductionDialog(
@@ -1000,9 +1064,9 @@ TEST_F(PersonalizationAppSeaPenProviderImplTest,
       static_cast<int>(ManagedSeaPenSettings::kAllowedWithoutLogging));
 
   // Force device into demo mode.
-  ASSERT_FALSE(::ash::DemoSession::IsDeviceInDemoMode());
+  ASSERT_FALSE(ash::demo_mode::IsDeviceInDemoMode());
   profile()->ScopedCrosSettingsTestHelper()->InstallAttributes()->SetDemoMode();
-  ASSERT_TRUE(::ash::DemoSession::IsDeviceInDemoMode());
+  ASSERT_TRUE(ash::demo_mode::IsDeviceInDemoMode());
 
   // Force demo mode session to start.
   ASSERT_FALSE(::ash::DemoSession::Get());

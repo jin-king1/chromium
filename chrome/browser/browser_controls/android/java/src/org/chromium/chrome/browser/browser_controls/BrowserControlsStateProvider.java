@@ -10,8 +10,10 @@ import androidx.annotation.IntDef;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.cc.input.BrowserControlsState;
 
+import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
 
 /** An interface for retrieving and monitoring browser controls state. */
 @NullMarked
@@ -19,8 +21,9 @@ public interface BrowserControlsStateProvider {
     /**
      * The possible positions of the control container, which contains the browsing mode toolbar.
      */
-    @IntDef({ControlsPosition.TOP, ControlsPosition.BOTTOM, ControlsPosition.NONE})
+    @IntDef({ControlsPosition.TOP, ControlsPosition.BOTTOM})
     @Retention(RetentionPolicy.SOURCE)
+    @Target(ElementType.TYPE_USE)
     @interface ControlsPosition {
         /** Controls are top-anchored. */
         int TOP = 0;
@@ -28,8 +31,7 @@ public interface BrowserControlsStateProvider {
         /** Controls are bottom-anchored. */
         int BOTTOM = 1;
 
-        /** Controls are not present, eg NoTouchActivity. */
-        int NONE = 2;
+        int NUM_ENTRIES = 2;
     }
 
     /** An observer to be notified of browser controls changes */
@@ -68,6 +70,12 @@ public interface BrowserControlsStateProvider {
         default void onBottomControlsHeightChanged(
                 int bottomControlsHeight, int bottomControlsMinHeight) {}
 
+        /** Called when the animation of the height of the bottom controls starts. */
+        default void onBottomControlsHeightAnimationStarted() {}
+
+        /** Called when the animation of the height of the bottom controls ends. */
+        default void onBottomControlsHeightAnimationEnded() {}
+
         /** Called when the height of the top controls are changed. */
         default void onTopControlsHeightChanged(int topControlsHeight, int topControlsMinHeight) {}
 
@@ -75,21 +83,24 @@ public interface BrowserControlsStateProvider {
         default void onAndroidControlsVisibilityChanged(int visibility) {}
 
         /**
-         * Called when the visibility constraints of the controls are changed. Visibility here
-         * refers to if the browser is forcing the controls to be fully shown/hidden, which is not
-         * the same as the visibility of the controls container, which is observed by
-         * onAndroidControlsVisibilityChanged.
+         * Called when information relevant to OffsetTags change. This is usually from a change in
+         * visibility constraints of the controls, which would result in removing or creating new
+         * OffsetTags. Visibility here refers to if the browser is forcing the controls to be fully
+         * shown/hidden, which is not the same as the visibility of the controls container, which is
+         * observed by onAndroidControlsVisibilityChanged.
          *
          * @param oldOffsetTagsInfo the old OffsetTags for moving browser controls in viz.
          * @param offsetTagsInfo the new OffsetTags moving browser controls in viz. A null tag means
          *     the controls will no longer be moved by viz, which happens only when the browser is
          *     forcing the controls to be fully shown/hidden.
          * @param constraints the visibility constraints of the browser controls.
+         * @param shouldUpdateOffsets should the offset be updated with the renderer's offset.
          */
-        default void onControlsConstraintsChanged(
+        default void onOffsetTagsInfoChanged(
                 BrowserControlsOffsetTagsInfo oldOffsetTagsInfo,
                 BrowserControlsOffsetTagsInfo offsetTagsInfo,
-                @BrowserControlsState int constraints) {}
+                @BrowserControlsState int constraints,
+                boolean shouldUpdateOffsets) {}
 
         /** Called when the background color of the controls container changes. */
         default void onBottomControlsBackgroundColorChanged(@ColorInt int color) {}
@@ -107,6 +118,7 @@ public interface BrowserControlsStateProvider {
 
     /**
      * Remove a previously added observer.
+     *
      * @param obs The observer to remove.
      */
     void removeObserver(Observer obs);
@@ -116,6 +128,11 @@ public interface BrowserControlsStateProvider {
      *     height, this function returns the final height after animation completes.
      */
     int getTopControlsHeight();
+
+    /**
+     * @return The height of the toolbar's hairline.
+     */
+    int getTopControlsHairlineHeight();
 
     /**
      * @return The minimum visible height top controls can have in pixels.
@@ -129,9 +146,9 @@ public interface BrowserControlsStateProvider {
 
     /**
      * @return The current top controls min-height. If the min-height is changing with an animation,
-     * this will return a value between the old min-height and the new min-height, which is equal to
-     * the current visible min-height. Otherwise, this will return the same value as
-     * {@link #getTopControlsMinHeight()}.
+     *     this will return a value between the old min-height and the new min-height, which is
+     *     equal to the current visible min-height. Otherwise, this will return the same value as
+     *     {@link #getTopControlsMinHeight()}.
      */
     int getTopControlsMinHeightOffset();
 
@@ -147,9 +164,9 @@ public interface BrowserControlsStateProvider {
 
     /**
      * @return The current bottom controls min-height. If the min-height is changing with an
-     * animation, this will return a value between the old min-height and the new min-height, which
-     * is equal to the current visible min-height. Otherwise, this will return the same value as
-     * {@link #getBottomControlsMinHeight()}.
+     *     animation, this will return a value between the old min-height and the new min-height,
+     *     which is equal to the current visible min-height. Otherwise, this will return the same
+     *     value as {@link #getBottomControlsMinHeight()}.
      */
     int getBottomControlsMinHeightOffset();
 
@@ -159,11 +176,9 @@ public interface BrowserControlsStateProvider {
     boolean shouldAnimateBrowserControlsHeightChanges();
 
     /**
-     * @return Whether or not the browser should update it's property models with new offsets when
-     *     the controls' constraints change. This only needs to be done sometimes when BCIV is
-     *     enabled, to avoid seeing controls jumping/flickering.
+     * @return Whether or not the height of the bottom controls is currently animating.
      */
-    boolean shouldUpdateOffsetsWhenConstraintsChange();
+    boolean hasBottomControlsHeightAnimation();
 
     /**
      * @return The offset of the controls from the bottom of the screen.
@@ -171,10 +186,31 @@ public interface BrowserControlsStateProvider {
     int getBottomControlOffset();
 
     /**
-     * @return The ratio that the browser controls are off screen; this will be a number [0,1]
-     *         where 1 is completely hidden and 0 is completely shown.
+     * @return The ratio that the active browser controls container (based on the current {@link
+     *     #getControlsPosition()}) is off screen; this will be a number [0,1] where 1 is completely
+     *     hidden and 0 is completely shown.
      */
     float getBrowserControlHiddenRatio();
+
+    /**
+     * @return The ratio that the top browser controls are off screen; this will be a number [0,1]
+     *     where 1 is completely hidden and 0 is completely shown.
+     */
+    default float getTopControlHiddenRatio() {
+        if (getTopControlsHeight() == 0) return 1.0f;
+        float ratio = Math.abs((float) getTopControlOffset() / getTopControlsHeight());
+        return Math.max(0.0f, Math.min(1.0f, ratio));
+    }
+
+    /**
+     * @return The ratio that the bottom browser controls are off screen; this will be a number
+     *     [0,1] where 1 is completely hidden and 0 is completely shown.
+     */
+    default float getBottomControlHiddenRatio() {
+        if (getBottomControlsHeight() == 0) return 1.0f;
+        float ratio = Math.abs((float) getBottomControlOffset() / getBottomControlsHeight());
+        return Math.max(0.0f, Math.min(1.0f, ratio));
+    }
 
     /**
      * @return The offset of the content from the top of the screen in px.
@@ -195,4 +231,7 @@ public interface BrowserControlsStateProvider {
      */
     @ControlsPosition
     int getControlsPosition();
+
+    /** Returns whether the visibility is controlled by the browser. */
+    boolean isVisibilityForced();
 }

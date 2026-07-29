@@ -22,12 +22,14 @@ import androidx.test.core.app.ApplicationProvider;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Captor;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -36,7 +38,6 @@ import org.chromium.chrome.browser.ActivityTabProvider;
 import org.chromium.chrome.browser.ActivityTabProvider.ActivityTabTabObserver;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
 import org.chromium.chrome.browser.profiles.Profile;
-import org.chromium.chrome.browser.tab.RequestDesktopUtilsUnitTest.ShadowSysUtils;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.ui.appmenu.AppMenuHandler;
 import org.chromium.chrome.browser.user_education.IphCommand;
@@ -44,9 +45,8 @@ import org.chromium.chrome.browser.user_education.UserEducationHelper;
 import org.chromium.components.browser_ui.site_settings.ContentSettingException;
 import org.chromium.components.browser_ui.site_settings.WebsitePreferenceBridge;
 import org.chromium.components.browser_ui.site_settings.WebsitePreferenceBridgeJni;
-import org.chromium.components.content_settings.ContentSettingValues;
+import org.chromium.components.content_settings.ContentSetting;
 import org.chromium.components.content_settings.ContentSettingsType;
-import org.chromium.components.embedder_support.util.ShadowUrlUtilities;
 import org.chromium.components.feature_engagement.EventConstants;
 import org.chromium.components.feature_engagement.FeatureConstants;
 import org.chromium.components.feature_engagement.Tracker;
@@ -67,15 +67,13 @@ import java.util.List;
 
 /** Unit tests for {@link DesktopSiteSettingsIphController}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(
-        manifest = Config.NONE,
-        shadows = {ShadowUrlUtilities.class, ShadowSysUtils.class})
+@Config(manifest = Config.NONE)
 public class DesktopSiteSettingsIphControllerUnitTest {
 
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock private WebsitePreferenceBridge.Natives mWebsitePreferenceBridgeJniMock;
     @Mock private WebsitePreferenceBridge mWebsitePreferenceBridge;
     @Mock private WindowAndroid mWindowAndroid;
-    @Mock private ActivityTabProvider mActivityTabProvider;
     @Mock private View mToolbarMenuButton;
     @Mock private AppMenuHandler mAppMenuHandler;
     @Mock private UserEducationHelper mUserEducationHelper;
@@ -89,13 +87,13 @@ public class DesktopSiteSettingsIphControllerUnitTest {
 
     @Captor private ArgumentCaptor<IphCommand> mIphCommandCaptor;
 
+    private final ActivityTabProvider mActivityTabProvider = new ActivityTabProvider();
     private DesktopSiteSettingsIphController mController;
     private GURL mTabUrl;
     private Context mContext;
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
         WebsitePreferenceBridgeJni.setInstanceForTesting(mWebsitePreferenceBridgeJniMock);
 
         mContext = ApplicationProvider.getApplicationContext();
@@ -139,7 +137,7 @@ public class DesktopSiteSettingsIphControllerUnitTest {
         verify(mUserEducationHelper).requestShowIph(mIphCommandCaptor.capture());
     }
 
-    // This tests the fix for the crash reported in crbug.com/1416519.
+    // This tests the fix for the crash reported in crbug.com/40893557.
     @Test
     @Config(qualifiers = "sw600dp")
     public void testCreateTabObserver_NullTab() {
@@ -303,7 +301,7 @@ public class DesktopSiteSettingsIphControllerUnitTest {
                 .thenReturn(true);
         when(mWebsitePreferenceBridgeJniMock.getContentSetting(
                         mProfile, ContentSettingsType.REQUEST_DESKTOP_SITE, mTabUrl, mTabUrl))
-                .thenReturn(ContentSettingValues.BLOCK);
+                .thenReturn(ContentSetting.BLOCK);
         mController.showWindowSettingIph(mTab, mProfile);
         verify(mMessageDispatcher, never()).enqueueMessage(any(), any(), anyInt(), anyBoolean());
     }
@@ -323,7 +321,7 @@ public class DesktopSiteSettingsIphControllerUnitTest {
         // Assume that the site has no site-level exceptions.
         when(mWebsitePreferenceBridgeJniMock.getContentSetting(
                         mProfile, ContentSettingsType.REQUEST_DESKTOP_SITE, mTabUrl, mTabUrl))
-                .thenReturn(ContentSettingValues.ALLOW);
+                .thenReturn(ContentSetting.ALLOW);
         // Assume that the site is using a mobile UA, this should mean that the window setting is in
         // use.
         when(mNavigationController.getUseDesktopUserAgent()).thenReturn(false);

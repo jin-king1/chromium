@@ -13,7 +13,6 @@
 #include "chromeos/services/chromebox_for_meetings/public/mojom/meet_browser.mojom.h"
 #include "content/public/browser/render_frame_host.h"
 #include "mojo/public/cpp/bindings/receiver_set.h"
-#include "mojo/public/cpp/bindings/remote.h"
 
 namespace ash::cfm {
 
@@ -21,8 +20,7 @@ namespace ash::cfm {
 // The Render Frame Host Token is used to identify the peripheral's device path
 // given a hashed device id.
 // Note: This control must be initialised in the relevant browser context
-// that the Meet Client is running on e.g. Ash or LaCrOS and pass its
-// RenderFrameHostToken
+// that the Meet Client is running and pass its RenderFrameHostToken
 class MeetBrowserService : public CfmObserver,
                            public chromeos::cfm::ServiceAdaptor::Delegate,
                            public mojom::MeetBrowser {

@@ -10,8 +10,10 @@
 
 #include "base/containers/flat_set.h"
 #include "base/memory/raw_ref.h"
+#include "content/browser/smart_card/smart_card_histograms.h"
 #include "content/common/content_export.h"
 #include "content/public/browser/document_service.h"
+#include "content/public/browser/smart_card_delegate.h"
 #include "mojo/public/cpp/bindings/receiver_set.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "services/device/public/mojom/smart_card.mojom.h"
@@ -27,7 +29,8 @@ class RenderFrameHost;
 class CONTENT_EXPORT SmartCardService
     : public DocumentService<blink::mojom::SmartCardService>,
       public device::mojom::SmartCardContext,
-      public device::mojom::SmartCardConnectionWatcher {
+      public device::mojom::SmartCardConnectionWatcher,
+      public SmartCardDelegate::PermissionObserver {
  public:
   explicit SmartCardService(
       RenderFrameHost& render_frame_host,
@@ -58,6 +61,9 @@ class CONTENT_EXPORT SmartCardService
                ConnectCallback callback) override;
   void NotifyConnectionUsed() override;
 
+  // SmartCardDelegate::PermissionObserver overrides:
+  void OnPermissionRevoked(const url::Origin& origin) override;
+
  private:
   void OnContextCreated(CreateContextCallback callback,
                         ::device::mojom::SmartCardCreateContextResultPtr);
@@ -77,6 +83,8 @@ class CONTENT_EXPORT SmartCardService
   GetNewConnectionWatcher(const std::string& reader);
 
   void OnMojoWatcherPipeClosed();
+  void RemoveConnectionWatcher(mojo::ReceiverId receiver_id,
+                               SmartCardConnectionClosedReason reason);
 
   // Sends SmartCardContext calls to the platform's PC/SC stack.
   // Maps a wrapper context to its corresponding real context.

@@ -33,7 +33,6 @@
 
 using base::android::AttachCurrentThread;
 using base::android::ConvertJavaStringToUTF8;
-using base::android::JavaParamRef;
 using base::android::JavaRef;
 using base::android::ScopedJavaGlobalRef;
 using base::android::ScopedJavaLocalRef;
@@ -71,7 +70,8 @@ net::SocketTag GetDefaultSocketTag() {
 }
 
 // static
-std::string JNI_AwContentsStatics_GetSafeBrowsingPrivacyPolicyUrl(JNIEnv* env) {
+static std::string JNI_AwContentsStatics_GetSafeBrowsingPrivacyPolicyUrl(
+    JNIEnv* env) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   GURL privacy_policy_url(
       security_interstitials::kSafeBrowsingPrivacyPolicyUrl);
@@ -83,9 +83,9 @@ std::string JNI_AwContentsStatics_GetSafeBrowsingPrivacyPolicyUrl(JNIEnv* env) {
 }
 
 // static
-void JNI_AwContentsStatics_ClearClientCertPreferences(
+static void JNI_AwContentsStatics_ClearClientCertPreferences(
     JNIEnv* env,
-    const JavaParamRef<jobject>& callback) {
+    const JavaRef<jobject>& callback) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   content::GetIOThreadTaskRunner({})->PostTaskAndReply(
       FROM_HERE, base::BindOnce(&NotifyClientCertificatesChanged),
@@ -94,22 +94,22 @@ void JNI_AwContentsStatics_ClearClientCertPreferences(
 }
 
 // static
-std::string JNI_AwContentsStatics_GetUnreachableWebDataUrl(JNIEnv* env) {
+static std::string JNI_AwContentsStatics_GetUnreachableWebDataUrl(JNIEnv* env) {
   return content::kUnreachableWebDataURL;
 }
 
 // static
-ScopedJavaLocalRef<jstring> JNI_AwContentsStatics_GetProductVersion(
+static ScopedJavaLocalRef<jstring> JNI_AwContentsStatics_GetProductVersion(
     JNIEnv* env) {
   return base::android::ConvertUTF8ToJavaString(
       env, version_info::GetVersionNumber());
 }
 
 // static
-void JNI_AwContentsStatics_SetSafeBrowsingAllowlist(
+static void JNI_AwContentsStatics_SetSafeBrowsingAllowlist(
     JNIEnv* env,
-    const JavaParamRef<jobjectArray>& jrules,
-    const JavaParamRef<jobject>& callback) {
+    const JavaRef<jobjectArray>& jrules,
+    const JavaRef<jobject>& callback) {
   std::vector<std::string> rules;
   base::android::AppendJavaStringArrayToStringVector(env, jrules, &rules);
   AwSafeBrowsingAllowlistManager* allowlist_manager =
@@ -121,14 +121,13 @@ void JNI_AwContentsStatics_SetSafeBrowsingAllowlist(
 }
 
 // static
-void JNI_AwContentsStatics_SetCheckClearTextPermitted(
-    JNIEnv* env,
-    jboolean permitted) {
+static void JNI_AwContentsStatics_SetCheckClearTextPermitted(JNIEnv* env,
+                                                             bool permitted) {
   AwContentBrowserClient::set_check_cleartext_permitted(permitted);
 }
 
 // static
-void JNI_AwContentsStatics_LogCommandLineForDebugging(JNIEnv* env) {
+static void JNI_AwContentsStatics_LogCommandLineForDebugging(JNIEnv* env) {
   // Note: this should only be called for debugging purposes, since this is
   // *very* spammy.
   const base::CommandLine& command_line =
@@ -141,16 +140,16 @@ void JNI_AwContentsStatics_LogCommandLineForDebugging(JNIEnv* env) {
 }
 
 // static
-void JNI_AwContentsStatics_LogFlagMetrics(
+static void JNI_AwContentsStatics_LogFlagMetrics(
     JNIEnv* env,
-    const JavaParamRef<jobjectArray>& jswitches,
-    const JavaParamRef<jobjectArray>& jfeatures) {
+    const JavaRef<JArray<jstring>>& jswitches,
+    const JavaRef<JArray<jstring>>& jfeatures) {
   std::set<std::string> switches;
-  for (const auto& jswitch : jswitches.ReadElements<jstring>()) {
+  for (const auto& jswitch : jswitches.CreateView(env)) {
     switches.insert(ConvertJavaStringToUTF8(jswitch));
   }
   std::set<std::string> features;
-  for (const auto& jfeature : jfeatures.ReadElements<jstring>()) {
+  for (const auto& jfeature : jfeatures.CreateView(env)) {
     features.insert(ConvertJavaStringToUTF8(jfeature));
   }
 
@@ -160,12 +159,12 @@ void JNI_AwContentsStatics_LogFlagMetrics(
 }
 
 // static
-jboolean JNI_AwContentsStatics_IsMultiProcessEnabled(JNIEnv* env) {
+static bool JNI_AwContentsStatics_IsMultiProcessEnabled(JNIEnv* env) {
   return !content::RenderProcessHost::run_renderer_in_process();
 }
 
 // static
-std::string JNI_AwContentsStatics_GetVariationsHeader(JNIEnv* env) {
+static std::string JNI_AwContentsStatics_GetVariationsHeader(JNIEnv* env) {
   const bool is_signed_in = false;
   auto headers =
       variations::VariationsIdsProvider::GetInstance()->GetClientDataHeaders(
@@ -175,4 +174,16 @@ std::string JNI_AwContentsStatics_GetVariationsHeader(JNIEnv* env) {
   return headers->headers_map.at(variations::mojom::GoogleWebVisibility::ANY);
 }
 
+// static
+static void JNI_AwContentsStatics_ForceVariationIdsForTesting(  // IN-TEST
+    JNIEnv* env,
+    const std::vector<std::string>& variationIds,
+    const std::string& commandLineVariationIds) {
+  variations::VariationsIdsProvider::GetInstance()
+      ->ForceVariationIdsForTesting(  // IN-TEST
+          variationIds, commandLineVariationIds);
+}
+
 }  // namespace android_webview
+
+DEFINE_JNI(AwContentsStatics)

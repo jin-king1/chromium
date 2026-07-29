@@ -13,11 +13,11 @@
 #include "chrome/browser/predictors/prefetch_manager.h"
 #include "chrome/browser/predictors/prefetch_traffic_annotation.h"
 #include "chrome/browser/predictors/resource_prefetch_predictor.h"
-#include "chrome/browser/prefetch/prefetch_headers.h"
 #include "chrome/browser/profiles/profile.h"
 #include "components/embedder_support/user_agent_utils.h"
 #include "components/language/core/browser/language_prefs.h"
 #include "components/language/core/browser/pref_names.h"
+#include "components/prefs/pref_service.h"
 #include "components/variations/net/variations_http_headers.h"
 #include "content/public/browser/global_request_id.h"
 #include "content/public/browser/reduce_accept_language_utils.h"
@@ -31,10 +31,11 @@
 #include "net/url_request/url_request_job.h"
 #include "services/network/public/cpp/is_potentially_trustworthy.h"
 #include "services/network/public/cpp/resource_request.h"
-#include "services/network/public/mojom/attribution.mojom.h"
 #include "services/network/public/mojom/fetch_api.mojom.h"
 #include "services/network/public/mojom/network_context.mojom.h"
+#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/loader/network_utils.h"
+#include "third_party/blink/public/common/navigation/preloading_headers.h"
 #include "third_party/blink/public/common/user_agent/user_agent_metadata.h"
 #include "third_party/blink/public/mojom/loader/resource_load_info.mojom-shared.h"
 #include "url/gurl.h"
@@ -90,16 +91,16 @@ bool IsBannedCrossSiteAuth(const GURL& url,
 // needs to be a mutable ref because its methods aren't marked const. This is
 // similar to PrefetchManager::PrefetchUrl(), but makes more effort to precisely
 // predict the exact headers and other fields that the render process will set.
-void PrefetchResource(
-    network::mojom::NetworkContext* network_context,
-    blink::UserAgentMetadata& ua_metadata,
-    const std::string& user_agent,
-    const std::string& accept_language,
-    ResourceType type,
-    const GURL& page,
-    const url::Origin& page_origin,
-    const GURL& url,
-    network::mojom::RequestDestination destination) {
+void PrefetchResource(network::mojom::NetworkContext* network_context,
+                      blink::UserAgentMetadata& ua_metadata,
+                      const std::string& user_agent,
+                      const std::string& accept_language,
+                      ResourceType type,
+                      const GURL& page,
+                      const url::Origin& page_origin,
+                      const GURL& url,
+                      network::mojom::RequestDestination destination,
+                      base::UnguessableToken network_restrictions_id) {
   const auto site_for_cookies = net::SiteForCookies::FromUrl(page);
   network::ResourceRequest request;
   request.method = "GET";
@@ -115,9 +116,8 @@ void PrefetchResource(
   request.referrer_policy = kExpectedReferrerPolicy;
 
   auto& headers = request.headers;
-  headers.SetHeader("Purpose", "prefetch");
-  headers.SetHeader(prefetch::headers::kSecPurposeHeaderName,
-                    prefetch::headers::kSecPurposePrefetchHeaderValue);
+  headers.SetHeader(blink::kSecPurposeHeaderName,
+                    blink::kSecPurposePrefetchHeaderValue);
 
   // Client hints headers.
   //
@@ -132,12 +132,12 @@ void PrefetchResource(
   // We shouldn't be prefetching if data saver is enabled, so we should never
   // need to set the "save-data" header.
 
-  headers.SetHeader("User-Agent", user_agent);
+  headers.SetHeader(net::HttpRequestHeaders::kUserAgent, user_agent);
 
-  headers.SetHeader("Accept-Language", accept_language);
+  headers.SetHeader(net::HttpRequestHeaders::kAcceptLanguage, accept_language);
 
   headers.SetHeader(
-      "Accept",
+      net::HttpRequestHeaders::kAccept,
       blink::network_utils::GetAcceptHeaderForDestination(destination));
 
   // Add the X-Client-Data header for requests to Google properties.
@@ -153,8 +153,6 @@ void PrefetchResource(
   request.enable_load_timing = true;
   request.do_not_prompt_for_login = false;
   request.is_outermost_main_frame = true;
-  request.attribution_reporting_support =
-      network::mojom::AttributionSupport::kWeb;
   request.shared_dictionary_writer_enabled = true;
 
   // Suppress credentials for cross-origin image loads. See the comment in
@@ -193,7 +191,8 @@ void PrefetchResource(
   network_context->Prefetch(
       content::GlobalRequestID::MakeBrowserInitiated().request_id,
       network::mojom::kURLLoadOptionBlockLocalRequest, request,
-      net::MutableNetworkTrafficAnnotationTag(kPrefetchTrafficAnnotation));
+      net::MutableNetworkTrafficAnnotationTag(kPrefetchTrafficAnnotation),
+      network_restrictions_id);
 }
 
 std::string ComputeAcceptLanguageHeaderValue(const url::Origin& page_origin,
@@ -268,20 +267,12 @@ void PerformNetworkContextPrefetch(Profile* profile,
   // TODO(crbug.com/342445996): Make it const once the blink::UserAgentMetadata
   // methods have been made const.
   blink::UserAgentMetadata ua_metadata =
-      embedder_support::GetUserAgentMetadata(g_browser_process->local_state());
+      embedder_support::GetUserAgentMetadata();
 
-  // When generating the User-Agent header, we need to take into account user
-  // agent reduction enterprise policy. Nothing is ever simple. This code
-  // gratuitously copied from from chrome_content_browser_client.cc. This
-  // doesn't take into account DevTools overrides or desktop emulation.
   const PrefService* prefs = profile->GetPrefs();
-  const embedder_support::UserAgentReductionEnterprisePolicyState
-      user_agent_reduction =
-          embedder_support::GetUserAgentReductionFromPrefs(prefs);
-  const std::string user_agent =
-      embedder_support::GetUserAgent(user_agent_reduction);
+  const std::string user_agent = embedder_support::GetUserAgent();
 
-  for (const auto& [url, destination] : requests) {
+  for (const auto& [url, destination, network_restrictions_id, _] : requests) {
     auto resource_type = GetResourceTypeForPrefetch(destination);
     if (!resource_type) {
       // TODO(crbug.com/342445996): Support more resource types.
@@ -301,8 +292,8 @@ void PerformNetworkContextPrefetch(Profile* profile,
     const std::string accept_language =
         ComputeAcceptLanguageHeaderValue(page_origin, url, profile, prefs);
     PrefetchResource(network_context, ua_metadata, user_agent, accept_language,
-                     resource_type.value(), page, page_origin, url,
-                     destination);
+                     resource_type.value(), page, page_origin, url, destination,
+                     network_restrictions_id);
   }
 }
 

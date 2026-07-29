@@ -2,16 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "services/tracing/perfetto/perfetto_service.h"
 
 #include <utility>
 
 #include "base/functional/bind.h"
+#include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/no_destructor.h"
 #include "base/process/process_handle.h"
@@ -24,6 +20,7 @@
 #include "services/tracing/perfetto/consumer_host.h"
 #include "services/tracing/perfetto/producer_host.h"
 #include "services/tracing/public/cpp/perfetto/custom_event_recorder.h"
+#include "services/tracing/public/cpp/perfetto/perfetto_data_source_names.h"
 #include "services/tracing/public/cpp/perfetto/shared_memory.h"
 #include "third_party/perfetto/include/perfetto/ext/tracing/core/tracing_service.h"
 
@@ -49,14 +46,13 @@ bool ParseProcessId(const std::string& pid_as_string, base::ProcessId* pid) {
 // static
 bool PerfettoService::ParsePidFromProducerName(const std::string& producer_name,
                                                base::ProcessId* pid) {
-  if (!base::StartsWith(producer_name, mojom::kPerfettoProducerNamePrefix,
+  if (!base::StartsWith(producer_name, kPerfettoProducerNamePrefix,
                         base::CompareCase::SENSITIVE)) {
     LOG(DFATAL) << "Unexpected producer name: " << producer_name;
     return false;
   }
 
-  static const size_t kPrefixLength =
-      strlen(mojom::kPerfettoProducerNamePrefix);
+  static const size_t kPrefixLength = strlen(kPerfettoProducerNamePrefix);
   if (!ParseProcessId(producer_name.substr(kPrefixLength), pid)) {
     LOG(DFATAL) << "Unexpected producer name: " << producer_name;
     return false;
@@ -99,6 +95,16 @@ perfetto::TracingService* PerfettoService::GetService() const {
   return service_.get();
 }
 
+bool PerfettoService::GetSessionPrivacyFilteringEnabled(
+    const std::string& session_name) const {
+  for (ConsumerHost::TracingSession* session : tracing_sessions_) {
+    if (session->unique_session_name() == session_name) {
+      return session->privacy_filtering_enabled();
+    }
+  }
+  return false;
+}
+
 void PerfettoService::BindReceiver(
     mojo::PendingReceiver<mojom::PerfettoService> receiver,
     uint32_t pid) {
@@ -119,8 +125,8 @@ void PerfettoService::ConnectToProducerHost(
   uint32_t producer_pid = receivers_.current_context();
   ProducerHost::InitializationResult result = new_producer->Initialize(
       std::move(producer_client), service_.get(),
-      base::StrCat({mojom::kPerfettoProducerNamePrefix,
-                    base::NumberToString(producer_pid)}),
+      base::StrCat(
+          {kPerfettoProducerNamePrefix, base::NumberToString(producer_pid)}),
       std::move(shared_memory), shared_memory_buffer_page_size_bytes);
 
   // There used to be a histogram that recorded failures, but as of 2022
@@ -193,36 +199,6 @@ void PerfettoService::RegisterTracingSession(
 void PerfettoService::UnregisterTracingSession(
     ConsumerHost::TracingSession* tracing_session) {
   tracing_sessions_.erase(tracing_session);
-}
-
-void PerfettoService::RequestTracingSession(
-    mojom::TracingClientPriority priority,
-    base::OnceClosure callback) {
-  // TODO(oysteine): This currently assumes we only have one concurrent tracing
-  // session, which is enforced by all ConsumerHost::BeginTracing calls routing
-  // through RequestTracingSession before creating a new TracingSession.
-  // Not running the callback means we'll drop any connection requests and deny
-  // the creation of the tracing session.
-  for (ConsumerHost::TracingSession* tracing_session : tracing_sessions_) {
-    if (!tracing_session->tracing_enabled()) {
-      continue;
-    }
-
-    if (tracing_session->tracing_priority() > priority) {
-      return;
-    }
-
-    // If the currently active session is the same or lower priority and it's
-    // tracing, then we'll disable it and re-try the request once it's shut
-    // down.
-    tracing_session->RequestDisableTracing(
-        base::BindOnce(&PerfettoService::RequestTracingSession,
-                       base::Unretained(PerfettoService::GetInstance()),
-                       priority, std::move(callback)));
-    return;
-  }
-
-  std::move(callback).Run();
 }
 
 void PerfettoService::OnServiceDisconnect() {

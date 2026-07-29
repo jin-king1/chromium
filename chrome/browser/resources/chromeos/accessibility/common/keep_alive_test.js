@@ -10,7 +10,6 @@ AccessibilityExtensionKeepAliveTest = class extends CommonE2ETestBase {
   /** @override */
   async setUpDeferred() {
     await super.setUpDeferred();
-    await importModule('KeepAlive', '/common/keep_alive.js');
 
     // Mock chrome.runtime.getPlatformInfo()
     chrome = chrome || {};
@@ -25,10 +24,6 @@ AccessibilityExtensionKeepAliveTest = class extends CommonE2ETestBase {
 AX_TEST_F(
     'AccessibilityExtensionKeepAliveTest', 'OnlyOneKeepAliveInstance',
     function() {
-      assertTrue(
-          KeepAlive.instance === undefined,
-          'KeepAlive.instance before init() is undefined');
-
       KeepAlive.init();
       assertTrue(
           KeepAlive.instance !== undefined,

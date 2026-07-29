@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/browser/enterprise/connectors/device_trust/key_management/core/persistence/linux_key_persistence_delegate.h"
 
 #include <fcntl.h>
@@ -148,7 +143,7 @@ bool LinuxKeyPersistenceDelegate::StoreKeyPair(
   }
 
   // Storing key and trust level information.
-  base::Value::Dict keyinfo;
+  base::DictValue keyinfo;
   const std::string encoded_key = base::Base64Encode(wrapped);
   keyinfo.Set(kSigningKeyName, base::Value(encoded_key));
   keyinfo.Set(kSigningKeyTrustLevel, base::Value(trust_level));
@@ -172,8 +167,6 @@ bool LinuxKeyPersistenceDelegate::StoreKeyPair(
 scoped_refptr<SigningKeyPair> LinuxKeyPersistenceDelegate::LoadKeyPair(
     KeyStorageType type,
     LoadPersistedKeyResult* result) {
-  // TODO(b/301644429): Verify if the errors should be finer grained for "not
-  // found" versus other error types.
   std::string file_content;
   if (!base::ReadFileToStringWithMaxSize(GetSigningKeyFilePath(), &file_content,
                                          kMaxBufferSize) ||
@@ -187,7 +180,8 @@ scoped_refptr<SigningKeyPair> LinuxKeyPersistenceDelegate::LoadKeyPair(
   }
 
   // Get dictionary key info.
-  auto keyinfo = base::JSONReader::ReadDict(file_content);
+  auto keyinfo = base::JSONReader::ReadDict(
+      file_content, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   if (!keyinfo) {
     RecordFailure(
         KeyPersistenceOperation::kLoadKeyPair,

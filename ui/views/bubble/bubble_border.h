@@ -164,16 +164,12 @@ class VIEWS_EXPORT BubbleBorder : public Border {
                                   gfx::Canvas* canvas,
                                   const ui::ColorProvider* color_provider);
 
-  // Set the corner radius, enables Material Design.
-  void SetCornerRadius(int radius);
-  int corner_radius() const { return corner_radius_; }
-
-  // Set the customized rounded corners. Takes precedence over `corner_radius_`
-  // when non-empty.
-  void set_rounded_corners(const gfx::RoundedCornersF& rounded_corners) {
-    rounded_corners_ = rounded_corners;
+  void set_rounded_corners(const gfx::RoundedCornersF& radii) {
+    rounded_corners_ = radii;
   }
-  const gfx::RoundedCornersF& rounded_corners() { return rounded_corners_; }
+  const gfx::RoundedCornersF& rounded_corners() const {
+    return rounded_corners_;
+  }
 
   // Get or set the arrow type.
   void set_arrow(Arrow arrow) { arrow_ = arrow; }
@@ -190,10 +186,6 @@ class VIEWS_EXPORT BubbleBorder : public Border {
 
   // Get the shadow type.
   Shadow shadow() const { return shadow_; }
-
-  // Get or set the color for the bubble and arrow body.
-  ui::ColorVariant color() const { return color_; }
-  void SetColor(ui::ColorVariant color);
 
   // Sets a desired pixel distance between the arrow tip and the outside edge of
   // the neighboring border image. For example:        |----offset----|
@@ -309,12 +301,6 @@ class VIEWS_EXPORT BubbleBorder : public Border {
   Arrow arrow_;
   int arrow_offset_ = 0;
 
-  // Corner radius for the bubble border. If supplied the border will use
-  // material design.
-  int corner_radius_ = 0;
-
-  // Customized rounded corners for the bubble border. Takes precedence over
-  // `corner_radius_` when non-empty.
   gfx::RoundedCornersF rounded_corners_;
 
   // Whether a visible arrow should be present.
@@ -325,7 +311,6 @@ class VIEWS_EXPORT BubbleBorder : public Border {
   std::optional<bool> draw_border_stroke_;
   Shadow shadow_;
   std::optional<int> md_shadow_elevation_;
-  ui::ColorVariant color_{ui::kColorDialogBackground};
   bool avoid_shadow_overlap_ = false;
   std::optional<gfx::Insets> insets_;
 };

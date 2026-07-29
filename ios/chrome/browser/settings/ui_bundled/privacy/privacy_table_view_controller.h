@@ -25,6 +25,10 @@ extern NSString* const kPrivacyTableViewId;
 - (void)privacyTableViewControllerWasRemoved:
     (PrivacyTableViewController*)controller;
 
+// Called when the user tapped on the show sync settings links.
+- (void)showSyncSettingsWithViewController:
+    (PrivacyTableViewController*)controller;
+
 @end
 
 @interface PrivacyTableViewController
@@ -43,6 +47,9 @@ extern NSString* const kPrivacyTableViewId;
 
 // Handler used to navigate inside the privacy.
 @property(nonatomic, weak) id<PrivacyNavigationCommands> handler;
+
+// Stop observing any C++ objects.
+- (void)disconnect;
 
 @end
 

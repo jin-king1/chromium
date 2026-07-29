@@ -4,13 +4,18 @@
 
 #include "components/autofill/core/browser/data_model/usage_history_information.h"
 
+#include <stddef.h>
+
 #include <algorithm>
 #include <cmath>
+#include <functional>
+#include <optional>
+#include <tuple>
 
+#include "base/check.h"
 #include "base/check_op.h"
-#include "base/feature_list.h"
+#include "base/containers/extend.h"
 #include "components/autofill/core/common/autofill_clock.h"
-#include "components/autofill/core/common/autofill_features.h"
 
 namespace autofill {
 
@@ -48,15 +53,27 @@ void UsageHistoryInformation::RecordUseDate(base::Time time) {
 }
 
 double UsageHistoryInformation::GetRankingScore(base::Time current_time) const {
+  // Usually `use_count_ >= 1`, but it's not guaranteed because the value may
+  // come directly from the (possibly corrupted) database. To avoid division by
+  // zero, we enforce that `use_count >= 1`.
+  size_t use_count = use_count_ > 0 ? use_count_ : 1;
   return -log(static_cast<double>(GetDaysSinceLastUse(current_time)) + 2) /
-         log(use_count_ + 1);
+         log(static_cast<double>(use_count) + 1);
 }
 
-void UsageHistoryInformation::MergeUseDates(
+void UsageHistoryInformation::MergeUsageHistories(
     const UsageHistoryInformation& other) {
+  // Update the use-count to be the max of the two merge-counts. Alternatively,
+  // we could have summed the two merge-counts. We don't sum because it skews
+  // the ranking score value on merge and double counts usage on profile reuse.
+  // Profile reuse is accounted for on RecordUseOf() on selection of a profile
+  // in the autofill drop-down; we don't need to account for that here. Further,
+  // a similar, fully-typed submission that merges to an existing profile should
+  // not be counted as a reuse of that profile.
+  set_use_count(std::max(use_count(), other.use_count()));
+
   // Take the `usage_history_size()` latest use dates (nullopts go last).
-  use_dates_.insert(use_dates_.end(), other.use_dates_.begin(),
-                    other.use_dates_.end());
+  base::Extend(use_dates_, other.use_dates_);
   std::ranges::sort(use_dates_, std::greater<>());
   use_dates_.resize(usage_history_size());
 }
@@ -71,19 +88,8 @@ bool UsageHistoryInformation::HasGreaterRankingThan(
     base::Time comparison_time) const {
   double score = GetRankingScore(comparison_time);
   double other_score = other.GetRankingScore(comparison_time);
-  return UsageHistoryInformation::CompareRankingScores(score, other_score,
-                                                       other.use_date());
-}
-
-bool UsageHistoryInformation::CompareRankingScores(
-    double score,
-    double other_score,
-    base::Time other_use_date) const {
-  const double kEpsilon = 0.00001;
-  if (std::fabs(score - other_score) > kEpsilon) {
-    return score > other_score;
-  }
-  return use_date() > other_use_date;
+  return std::tuple(score, use_date()) >
+         std::tuple(other_score, other.use_date());
 }
 
 }  // namespace autofill

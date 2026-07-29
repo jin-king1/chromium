@@ -15,7 +15,6 @@
 #include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "components/content_settings/core/common/content_settings.h"
 #include "components/content_settings/core/common/content_settings_constraints.h"
-#include "components/safe_browsing/core/common/features.h"
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -23,6 +22,10 @@
 #include "third_party/blink/public/common/features_generated.h"
 #include "url/gurl.h"
 #include "url/origin.h"
+
+#if BUILDFLAG(IS_MAC)
+#include "base/mac/mac_util.h"
+#endif
 
 namespace {
 constexpr char kHostA[] = "a.test";
@@ -34,11 +37,6 @@ class StorageAccessAPIServiceImplTest : public testing::Test {
   StorageAccessAPIServiceImplTest() = default;
 
   void SetUp() override {
-    // TODO(crbug.com/362466866): Instead of disabling the
-    // `kSafetyHubAbusiveNotificationRevocation` feature, find a stable
-    // fix such that the tests still pass when the feature is enabled.
-    features_.InitWithFeatures(
-        {}, {safe_browsing::kSafetyHubAbusiveNotificationRevocation});
     profile_manager_ = std::make_unique<TestingProfileManager>(
         TestingBrowserProcess::GetGlobal());
     ASSERT_TRUE(profile_manager_->SetUp());
@@ -64,7 +62,39 @@ class StorageAccessAPIServiceImplTest : public testing::Test {
   base::test::ScopedFeatureList features_;
 };
 
+TEST_F(StorageAccessAPIServiceImplTest, ClearsOriginTrialPref) {
+  const GURL primary_url("https://example.test");
+  const GURL secondary_url("https://foo.test");
+
+  HostContentSettingsMap* host_content_settings_map =
+      HostContentSettingsMapFactory::GetForProfile(profile());
+  host_content_settings_map->SetContentSettingDefaultScope(
+      primary_url, secondary_url,
+      ContentSettingsType::STORAGE_ACCESS_HEADER_ORIGIN_TRIAL,
+      ContentSetting::CONTENT_SETTING_ALLOW);
+  ASSERT_EQ(host_content_settings_map->GetContentSetting(
+                primary_url, secondary_url,
+                ContentSettingsType::STORAGE_ACCESS_HEADER_ORIGIN_TRIAL),
+            ContentSetting::CONTENT_SETTING_ALLOW);
+
+  StorageAccessAPIServiceImpl* service =
+      StorageAccessAPIServiceFactory::GetForBrowserContext(profile());
+  ASSERT_NE(nullptr, service);
+
+  EXPECT_EQ(host_content_settings_map->GetContentSetting(
+                primary_url, secondary_url,
+                ContentSettingsType::STORAGE_ACCESS_HEADER_ORIGIN_TRIAL),
+            ContentSetting::CONTENT_SETTING_BLOCK);
+}
+
 TEST_F(StorageAccessAPIServiceImplTest, RenewPermissionGrant) {
+#if BUILDFLAG(IS_MAC)
+  // TODO(crbug.com/434660312): Re-enable on macOS 26 once issues with
+  // unexpected test timeout failures are resolved.
+  if (base::mac::MacOSMajorVersion() == 26) {
+    GTEST_SKIP() << "Disabled on macOS Tahoe.";
+  }
+#endif
   url::Origin origin_a(
       url::Origin::Create(GURL(base::StrCat({"https://", kHostA}))));
   url::Origin origin_b(
@@ -116,6 +146,13 @@ TEST_F(StorageAccessAPIServiceImplTest, RenewPermissionGrant) {
 }
 
 TEST_F(StorageAccessAPIServiceImplTest, PermissionDenial_NotRenewed) {
+#if BUILDFLAG(IS_MAC)
+  // TODO(crbug.com/434660312): Re-enable on macOS 26 once issues with
+  // unexpected test timeout failures are resolved.
+  if (base::mac::MacOSMajorVersion() == 26) {
+    GTEST_SKIP() << "Disabled on macOS Tahoe.";
+  }
+#endif
   url::Origin origin_a(
       url::Origin::Create(GURL(base::StrCat({"https://", kHostA}))));
   url::Origin origin_b(
@@ -156,6 +193,13 @@ TEST_F(StorageAccessAPIServiceImplTest, PermissionDenial_NotRenewed) {
 }
 
 TEST_F(StorageAccessAPIServiceImplTest, RenewPermissionGrant_DailyCache) {
+#if BUILDFLAG(IS_MAC)
+  // TODO(crbug.com/434660312): Re-enable on macOS 26 once issues with
+  // unexpected test timeout failures are resolved.
+  if (base::mac::MacOSMajorVersion() == 26) {
+    GTEST_SKIP() << "Disabled on macOS Tahoe.";
+  }
+#endif
   StorageAccessAPIServiceImpl* service =
       StorageAccessAPIServiceFactory::GetForBrowserContext(profile());
   ASSERT_NE(nullptr, service);

@@ -12,7 +12,6 @@
 #import "base/metrics/histogram_macros.h"
 #import "base/strings/sys_string_conversions.h"
 #import "components/reading_list/core/reading_list_model.h"
-#import "components/reading_list/features/reading_list_switches.h"
 #import "components/reading_list/ios/reading_list_model_bridge_observer.h"
 #import "components/url_formatter/url_formatter.h"
 #import "ios/chrome/browser/favicon/model/favicon_loader.h"
@@ -180,8 +179,8 @@ bool EntrySorter(scoped_refptr<const ReadingListEntry> rhs,
 - (void)fetchFaviconForItem:(id<ReadingListListItem>)item {
   __weak id<ReadingListListItem> weakItem = item;
   __weak ReadingListMediator* weakSelf = self;
-  void (^completionBlock)(FaviconAttributes* attributes) =
-      ^(FaviconAttributes* attributes) {
+  void (^completionBlock)(FaviconAttributes* attributes, bool cached) =
+      ^(FaviconAttributes* attributes, bool cached) {
         id<ReadingListListItem> strongItem = weakItem;
         ReadingListMediator* strongSelf = weakSelf;
         if (!strongSelf || !strongItem) {
@@ -225,6 +224,10 @@ bool EntrySorter(scoped_refptr<const ReadingListEntry> rhs,
 
 - (BOOL)hasReadElements {
   return self.model->size() != self.model->unread_size();
+}
+
+- (size_t)numberOfElements {
+  return self.model->size();
 }
 
 #pragma mark - ReadingListModelBridgeObserver
@@ -306,8 +309,6 @@ bool EntrySorter(scoped_refptr<const ReadingListEntry> rhs,
         [itemsToReconfigure addObject:oldItem];
         oldItem.title = newItem.title;
         oldItem.entryURL = newItem.entryURL;
-        oldItem.distillationState = newItem.distillationState;
-        oldItem.distillationDateText = newItem.distillationDateText;
         oldItem.showCloudSlashIcon = newItem.showCloudSlashIcon;
       }
       if (oldItem.faviconPageURL != newItem.faviconPageURL) {

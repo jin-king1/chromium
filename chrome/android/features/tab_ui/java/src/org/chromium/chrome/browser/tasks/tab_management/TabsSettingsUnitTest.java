@@ -12,6 +12,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -22,9 +23,8 @@ import android.view.View;
 import androidx.fragment.app.FragmentManager;
 import androidx.lifecycle.Lifecycle.State;
 import androidx.preference.Preference;
-import androidx.test.core.app.ActivityScenario;
+import androidx.test.ext.junit.rules.ActivityScenarioRule;
 
-import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -35,14 +35,11 @@ import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.base.test.util.Features.DisableFeatures;
-import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.chrome.browser.auxiliary_search.AuxiliarySearchConfigManager;
 import org.chromium.chrome.browser.auxiliary_search.AuxiliarySearchControllerFactory;
 import org.chromium.chrome.browser.auxiliary_search.AuxiliarySearchHooks;
 import org.chromium.chrome.browser.auxiliary_search.AuxiliarySearchUtils;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.preferences.Pref;
@@ -53,6 +50,7 @@ import org.chromium.chrome.browser.tab_group_sync.TabGroupSyncFeaturesJni;
 import org.chromium.components.browser_ui.settings.ChromeSwitchPreference;
 import org.chromium.components.browser_ui.settings.SettingsCustomTabLauncher;
 import org.chromium.components.browser_ui.settings.TextMessagePreference;
+import org.chromium.components.browser_ui.settings.search.SettingsIndexData;
 import org.chromium.components.prefs.PrefService;
 import org.chromium.components.user_prefs.UserPrefs;
 import org.chromium.components.user_prefs.UserPrefsJni;
@@ -62,15 +60,13 @@ import java.util.concurrent.TimeUnit;
 
 /** Unit tests for {@link TabsSettings}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@EnableFeatures({
-    ChromeFeatureList.TAB_GROUP_SYNC_ANDROID,
-    ChromeFeatureList.TAB_GROUP_SYNC_AUTO_OPEN_KILL_SWITCH
-})
-@DisableFeatures(ChromeFeatureList.ANDROID_TAB_DECLUTTER)
 public class TabsSettingsUnitTest {
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
-    private ActivityScenario<TestActivity> mActivityScenario;
+    @Rule
+    public final ActivityScenarioRule<TestActivity> mActivityScenarioRule =
+            new ActivityScenarioRule<>(TestActivity.class);
+
     private TestActivity mActivity;
 
     @Mock private Profile mProfileMock;
@@ -78,6 +74,7 @@ public class TabsSettingsUnitTest {
     @Mock private PrefService mPrefServiceMock;
     @Mock private TabGroupSyncFeatures.Natives mTabGroupSyncFeaturesJniMock;
     @Mock private SettingsCustomTabLauncher mCustomTabLauncher;
+    @Mock private SettingsIndexData mSearchIndexDataMock;
 
     @Before
     public void setUp() {
@@ -87,13 +84,7 @@ public class TabsSettingsUnitTest {
         doReturn(true).when(mTabGroupSyncFeaturesJniMock).isTabGroupSyncEnabled(mProfileMock);
         doNothing().when(mCustomTabLauncher).openUrlInCct(any(Context.class), anyString());
 
-        mActivityScenario = ActivityScenario.launch(TestActivity.class);
-        mActivityScenario.onActivity(this::onActivity);
-    }
-
-    @After
-    public void tearDown() {
-        mActivityScenario.close();
+        mActivityScenarioRule.getScenario().onActivity(this::onActivity);
     }
 
     private void onActivity(Activity activity) {
@@ -112,7 +103,7 @@ public class TabsSettingsUnitTest {
         tabsSettings.setProfile(mProfileMock);
         tabsSettings.setCustomTabLauncher(mCustomTabLauncher);
         fragmentManager.beginTransaction().replace(android.R.id.content, tabsSettings).commit();
-        mActivityScenario.moveToState(State.STARTED);
+        mActivityScenarioRule.getScenario().moveToState(State.STARTED);
 
         assertEquals(
                 mActivity.getString(R.string.tabs_settings_title),
@@ -165,35 +156,6 @@ public class TabsSettingsUnitTest {
     }
 
     @Test
-    @DisableFeatures(ChromeFeatureList.TAB_GROUP_SYNC_ANDROID)
-    public void testTabGroupSyncSettingsHiddenWhenFeatureOff() {
-        doReturn(false).when(mTabGroupSyncFeaturesJniMock).isTabGroupSyncEnabled(mProfileMock);
-        TabsSettings tabsSettings = launchFragment();
-        ChromeSwitchPreference autoOpenSyncedTabGroupsSwitch =
-                tabsSettings.findPreference(TabsSettings.PREF_AUTO_OPEN_SYNCED_TAB_GROUPS_SWITCH);
-        assertFalse(autoOpenSyncedTabGroupsSwitch.isVisible());
-    }
-
-    @Test
-    @DisableFeatures(ChromeFeatureList.TAB_GROUP_SYNC_AUTO_OPEN_KILL_SWITCH)
-    public void testTabGroupSyncSettingsHiddenWhenKillswitchEnabled() {
-        TabsSettings tabsSettings = launchFragment();
-        ChromeSwitchPreference autoOpenSyncedTabGroupsSwitch =
-                tabsSettings.findPreference(TabsSettings.PREF_AUTO_OPEN_SYNCED_TAB_GROUPS_SWITCH);
-        assertFalse(autoOpenSyncedTabGroupsSwitch.isVisible());
-    }
-
-    @Test
-    @DisableFeatures(ChromeFeatureList.ANDROID_TAB_DECLUTTER)
-    public void testArchiveSettingsHiddenWhenFeatureOff() {
-        TabsSettings tabsSettings = launchFragment();
-        Preference archiveSettinsEntryPoint =
-                tabsSettings.findPreference(TabsSettings.PREF_TAB_ARCHIVE_SETTINGS);
-        assertFalse(archiveSettinsEntryPoint.isVisible());
-    }
-
-    @Test
-    @EnableFeatures(ChromeFeatureList.ANDROID_TAB_DECLUTTER)
     public void testArchiveSettingsTitleAndSummary() {
         TabArchiveSettings archiveSettings =
                 new TabArchiveSettings(ChromeSharedPreferences.getInstance());
@@ -205,8 +167,8 @@ public class TabsSettingsUnitTest {
                 tabsSettings.findPreference(TabsSettings.PREF_TAB_ARCHIVE_SETTINGS);
         assertTrue(archiveSettinsEntryPoint.isVisible());
 
-        assertEquals("Inactive", archiveSettinsEntryPoint.getTitle());
-        assertEquals("After 14 days", archiveSettinsEntryPoint.getSummary());
+        assertEquals("Move to inactive section", archiveSettinsEntryPoint.getTitle());
+        assertEquals("After 14 days inactive", archiveSettinsEntryPoint.getSummary());
     }
 
     @Test
@@ -323,5 +285,69 @@ public class TabsSettingsUnitTest {
         View view = Mockito.mock(View.class);
         tabsSettings.onLearnMoreClicked(view);
         verify(mCustomTabLauncher).openUrlInCct(eq(mActivity), eq(TabsSettings.LEARN_MORE_URL));
+    }
+
+    @Test
+    public void testSearchableIndex_isTabGroupSyncAutoOpenConfigurable_True() {
+        doReturn(true).when(mTabGroupSyncFeaturesJniMock).isTabGroupSyncEnabled(mProfileMock);
+        var indexProvider = TabsSettings.SEARCH_INDEX_DATA_PROVIDER;
+        indexProvider.updateDynamicPreferences(mActivity, mSearchIndexDataMock, mProfileMock);
+        verify(mSearchIndexDataMock, times(0))
+                .removeEntry(
+                        indexProvider.getUniqueId(
+                                TabsSettings.PREF_AUTO_OPEN_SYNCED_TAB_GROUPS_SWITCH));
+    }
+
+    @Test
+    public void testSearchableIndex_isTabGroupSyncAutoOpenConfigurable_False() {
+        doReturn(false).when(mTabGroupSyncFeaturesJniMock).isTabGroupSyncEnabled(mProfileMock);
+        var indexProvider = TabsSettings.SEARCH_INDEX_DATA_PROVIDER;
+        indexProvider.updateDynamicPreferences(mActivity, mSearchIndexDataMock, mProfileMock);
+        verify(mSearchIndexDataMock)
+                .removeEntry(
+                        indexProvider.getUniqueId(
+                                TabsSettings.PREF_AUTO_OPEN_SYNCED_TAB_GROUPS_SWITCH));
+    }
+
+    @Test
+    public void testSearchableIndex_isShareTitlesAndUrlsEnabled_True() {
+        AuxiliarySearchHooks hooksMock = Mockito.mock(AuxiliarySearchHooks.class);
+        when(hooksMock.isEnabled()).thenReturn(true);
+        AuxiliarySearchControllerFactory.getInstance().setHooksForTesting(hooksMock);
+        ChromeSharedPreferences.getInstance()
+                .writeBoolean(ChromePreferenceKeys.AUXILIARY_SEARCH_CONSUMER_SCHEMA_FOUND, true);
+
+        var indexProvider = TabsSettings.SEARCH_INDEX_DATA_PROVIDER;
+        indexProvider.updateDynamicPreferences(mActivity, mSearchIndexDataMock, mProfileMock);
+        verify(mSearchIndexDataMock, times(0))
+                .removeEntry(
+                        indexProvider.getUniqueId(
+                                TabsSettings.PREF_SHARE_TITLES_AND_URLS_WITH_OS_SWITCH));
+        // Learn more is always removed.
+        verify(mSearchIndexDataMock)
+                .removeEntry(
+                        indexProvider.getUniqueId(
+                                TabsSettings.PREF_SHARE_TITLES_AND_URLS_WITH_OS_LEARN_MORE));
+    }
+
+    @Test
+    public void testSearchableIndex_isShareTitlesAndUrlsEnabled_False() {
+        AuxiliarySearchHooks hooksMock = Mockito.mock(AuxiliarySearchHooks.class);
+        when(hooksMock.isEnabled()).thenReturn(true);
+        AuxiliarySearchControllerFactory.getInstance().setHooksForTesting(hooksMock);
+        ChromeSharedPreferences.getInstance()
+                .writeBoolean(ChromePreferenceKeys.AUXILIARY_SEARCH_CONSUMER_SCHEMA_FOUND, false);
+
+        var indexProvider = TabsSettings.SEARCH_INDEX_DATA_PROVIDER;
+        indexProvider.updateDynamicPreferences(mActivity, mSearchIndexDataMock, mProfileMock);
+        verify(mSearchIndexDataMock)
+                .removeEntry(
+                        indexProvider.getUniqueId(
+                                TabsSettings.PREF_SHARE_TITLES_AND_URLS_WITH_OS_SWITCH));
+        // Learn more is always removed.
+        verify(mSearchIndexDataMock)
+                .removeEntry(
+                        indexProvider.getUniqueId(
+                                TabsSettings.PREF_SHARE_TITLES_AND_URLS_WITH_OS_LEARN_MORE));
     }
 }

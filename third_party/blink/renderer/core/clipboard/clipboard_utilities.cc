@@ -30,7 +30,9 @@
 
 #include "third_party/blink/renderer/core/clipboard/clipboard_utilities.h"
 
+#include "base/compiler_specific.h"
 #include "base/strings/escape.h"
+#include "base/strings/string_view_util.h"
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
 #include "third_party/blink/renderer/platform/wtf/text/base64.h"
 #include "third_party/blink/renderer/platform/wtf/text/character_names.h"
@@ -46,7 +48,7 @@ String EscapeForHTML(const String& str) {
   // base::EscapeForHTML can work on 8-bit Latin-1 strings as well as 16-bit
   // strings. This could use MarkupFormatter::AppendAttributeValue instead to
   // avoid unnecessary copying and be more aligned with Blink serialization.
-  return WTF::VisitCharacters(str, [](auto chars) {
+  return VisitCharacters(str, [](auto chars) {
     auto result = base::EscapeForHTML(base::as_string_view(chars));
     return String(result);
   });
@@ -55,22 +57,23 @@ String EscapeForHTML(const String& str) {
 }  // namespace
 
 void ReplaceNBSPWithSpace(String& str) {
-  str.Replace(kNoBreakSpaceCharacter, kSpaceCharacter);
+  str.Replace(uchar::kNoBreakSpace, uchar::kSpace);
 }
 
-String ConvertURIListToURL(const String& uri_list) {
-  Vector<String> items;
+String ConvertURIListToURL(const StringView& uri_list) {
   // Line separator is \r\n per RFC 2483 - however, for compatibility
   // reasons we allow just \n here.
-  uri_list.Split('\n', items);
+  Vector<StringView> items = uri_list.SplitSkippingEmpty('\n');
   // Process the input and return the first valid URL. In case no URLs can
   // be found, return an empty string. This is in line with the HTML5 spec.
-  for (String& line : items) {
+  for (StringView line : items) {
     line = line.StripWhiteSpace();
     if (line.empty())
       continue;
-    if (line[0] == '#')
+    // SAFETY: line tested non-empty above means first element is valid.
+    if (UNSAFE_BUFFERS(line[0]) == '#') {
       continue;
+    }
     KURL url = KURL(line);
     if (url.IsValid())
       return url;

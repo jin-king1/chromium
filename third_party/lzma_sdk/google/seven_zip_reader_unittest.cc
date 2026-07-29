@@ -31,6 +31,10 @@
 //   values with 0.
 //
 //   echo "This is not an exe" > file.exe
+//   mkdir folder.zip
+//   7z a archive_named_folder.7z file.exe folder.zip
+//
+//   echo "This is not an exe" > file.exe
 //   7z a -p encrypted.7z file.exe  # Provided 1234 as the password
 //
 //   echo "This is not an exe" > file.exe
@@ -52,7 +56,7 @@
 #include "testing/gtest/include/gtest/gtest.h"
 
 extern "C" {
-#include "third_party/lzma_sdk/C/7zCrc.h"
+#include "third_party/lzma_sdk/src/C/7zCrc.h"
 }
 
 namespace seven_zip {
@@ -322,6 +326,10 @@ class SevenZipReaderFakeCrcTableTest : public testing::Test {
 
   void SetUp() override {
     seven_zip::EnsureLzmaSdkInitialized();
+
+    // Use software-backed CRC instead of hardware
+    g_Crc_Algo = 1;
+
     for (size_t i = 0; i < 2048; i++) {
       crc_table_[i] = g_CrcTable[i];
     }
@@ -331,7 +339,7 @@ class SevenZipReaderFakeCrcTableTest : public testing::Test {
     // headers. The values here were chosen to keep the CRC internal state as
     // 0xffffffff in CrcUpdateT8. Other processors may choose a different CRC
     // update function, and would need different values here. See the
-    // CrcGenerateTable function in //third_party/lzma_sdk/C/7zCrc.c.
+    // CrcGenerateTable function in //third_party/lzma_sdk/src/C/7zCrc.c.
     for (size_t i = 0; i < 256; i++) {
       g_CrcTable[i] = 0xff000000;
       g_CrcTable[i + 0x100] = 0xff000000;
@@ -357,15 +365,8 @@ class SevenZipReaderFakeCrcTableTest : public testing::Test {
   std::array<uint32_t, 2048> crc_table_;
 };
 
-// TODO(crbug.com/388538957): Make this work on ARM64, which uses a different
-// number of tables and the crc32b instruction.
-#if defined(ARCH_CPU_ARM64)
-#define MAYBE_EmptyCrcWithFakeTable DISABLED_EmptyCrcWithFakeTable
-#else
-#define MAYBE_EmptyCrcWithFakeTable EmptyCrcWithFakeTable
-#endif
 // This is useful functionality for the fuzzer, so we test it here.
-TEST_F(SevenZipReaderFakeCrcTableTest, MAYBE_EmptyCrcWithFakeTable) {
+TEST_F(SevenZipReaderFakeCrcTableTest, EmptyCrcWithFakeTable) {
   base::File file = OpenTestFile(FILE_PATH_LITERAL("fake_crc_table.7z"));
   ASSERT_TRUE(file.IsValid());
 

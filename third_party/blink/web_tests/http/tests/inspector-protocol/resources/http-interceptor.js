@@ -10,12 +10,13 @@
   /**
    * @param {!TestRunner} testRunner Host TestRunner instance.
    * @param {!Proxy} dp DevTools session protocol instance.
-   * @param {!Page} page TestRunner.Page instance.
+   * @param {!Page} page Page instance.
    */
   constructor(testRunner, dp) {
     this.testRunner_ = testRunner;
     this.dp_ = dp;
-    this.disabledRequestedUrlsLogging = false;
+    this.disableRequestedUrlsLogging = false;
+    this.ignoreFavIconRequests = true;
     this.responses_ = new Map();
     this.requestedUrls_ = [];
     this.requestedMethods_ = [];
@@ -37,9 +38,14 @@
           event.params.request.url + (event.params.request.urlFragment || '');
       this.requestedUrls_.push(url);
 
+      if (this.ignoreFavIconRequests && url.endsWith('/favicon.ico')) {
+        this.dp_.Fetch.failRequest({requestId: event.params.requestId});
+        return;
+      }
+
       var response = this.responses_.get(url);
       if (response) {
-        if (!this.disabledRequestedUrlsLogging) {
+        if (!this.disableRequestedUrlsLogging) {
           this.testRunner_.log(`requested url: ${url}`);
         }
       } else {
@@ -68,7 +74,18 @@
    *     otherwise.
    */
   setDisableRequestedUrlsLogging(value) {
-    this.disabledRequestedUrlsLogging = value;
+    this.disableRequestedUrlsLogging = value;
+  }
+
+  /**
+   * Ignores fav icon requests. This fixes tests that are failing due to the
+   * missing fav icon request response.
+   *
+   * @param {boolean} value True if fav icon requests are ignored, false
+   *     otherwise.
+   */
+  setIgnoreFavIconRequests(value) {
+    this.ignoreFavIconRequests = value;
   }
 
   /**

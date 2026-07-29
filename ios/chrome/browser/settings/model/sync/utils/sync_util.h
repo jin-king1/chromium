@@ -12,11 +12,18 @@
 
 @class AccountErrorUIInfo;
 class ProfileIOS;
-@protocol SyncPresenter;
+@protocol SyncPresenterCommands;
 
 namespace web {
 class WebState;
 }
+
+// Indicates what event triggered displaying the sync error infobar. For now the
+// enum itself is not logged and is just used to identify histogram's suffix.
+enum class SyncErrorInfoBarTrigger {
+  kNewTabOpened,
+  kPasswordFormParsed,
+};
 
 // Gets the top-level description message associated with the sync error state
 // of `syncService`. Returns nil if there is no sync error.
@@ -43,6 +50,11 @@ bool ShouldShowSyncSettings(syncer::SyncService::UserActionableError error);
 // Returns true if an infobar was brought up.
 bool DisplaySyncErrors(ProfileIOS* profile,
                        web::WebState* web_state,
-                       id<SyncPresenter> presenter);
+                       id<SyncPresenterCommands> sync_presenter_handler,
+                       SyncErrorInfoBarTrigger trigger);
+
+// Logs sync error infobar dismissal metric for a given `error`.
+void LogSyncErrorInfobarDismissed(
+    syncer::SyncService::UserActionableError error);
 
 #endif  // IOS_CHROME_BROWSER_SETTINGS_MODEL_SYNC_UTILS_SYNC_UTIL_H_

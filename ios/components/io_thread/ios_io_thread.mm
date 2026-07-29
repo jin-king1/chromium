@@ -11,6 +11,7 @@
 
 #import "base/check_op.h"
 #import "base/command_line.h"
+#import "base/containers/flat_set.h"
 #import "base/environment.h"
 #import "base/functional/bind.h"
 #import "base/functional/callback_helpers.h"
@@ -73,7 +74,11 @@ namespace io_thread {
 
 namespace {
 
-const char kSupportedAuthSchemes[] = "basic,digest,ntlm";
+constexpr auto kSupportedAuthSchemes = std::to_array<std::string_view>({
+    net::kBasicAuthScheme,
+    net::kDigestAuthScheme,
+    net::kNtlmAuthScheme,
+});
 
 }  // namespace
 
@@ -181,7 +186,7 @@ IOSIOThread::~IOSIOThread() {
 
 IOSIOThread::Globals* IOSIOThread::globals() {
   DCHECK_CURRENTLY_ON(web::WebThread::IO);
-  return globals_;
+  return globals_.get();
 }
 
 void IOSIOThread::InitOnIO() {
@@ -189,12 +194,6 @@ void IOSIOThread::InitOnIO() {
   // Allow blocking calls while initializing the IO thread.
   base::ScopedAllowBlocking allow_blocking_for_init;
   Init();
-}
-
-void IOSIOThread::SetGlobalsForTesting(Globals* globals) {
-  DCHECK_CURRENTLY_ON(web::WebThread::IO);
-  DCHECK(!globals || !globals_);
-  globals_ = globals;
 }
 
 net::NetLog* IOSIOThread::net_log() {
@@ -226,7 +225,7 @@ void IOSIOThread::Init() {
   DCHECK_CURRENTLY_ON(web::WebThread::IO);
 
   DCHECK(!globals_);
-  globals_ = new Globals;
+  globals_ = std::make_unique<Globals>();
 
   // Add an observer that will emit network change events to the NetLog.
   // Assuming NetworkChangeNotifier dispatches in FIFO order, we should be
@@ -259,20 +258,17 @@ void IOSIOThread::CleanUp() {
 
   system_proxy_config_service_.reset();
 
-  delete globals_;
-  globals_ = nullptr;
+  globals_.reset();
 
   LeakTracker<SystemURLRequestContextGetter>::CheckForLeaks();
 }
 
 void IOSIOThread::CreateDefaultAuthPreferences() {
-  std::vector<std::string> supported_schemes =
-      base::SplitString(kSupportedAuthSchemes, ",", base::TRIM_WHITESPACE,
-                        base::SPLIT_WANT_NONEMPTY);
   globals_->http_auth_preferences =
       std::make_unique<net::HttpAuthPreferences>();
-  globals_->http_auth_preferences->set_allowed_schemes(std::set<std::string>(
-      supported_schemes.begin(), supported_schemes.end()));
+  globals_->http_auth_preferences->SetAllowedSchemes(
+      base::flat_set<std::string>(kSupportedAuthSchemes.begin(),
+                                  kSupportedAuthSchemes.end()));
 }
 
 void IOSIOThread::ClearHostCache() {

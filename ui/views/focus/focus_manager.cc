@@ -19,9 +19,10 @@
 #include "ui/events/event.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
+#include "ui/views/cascading_property.h"
 #include "ui/views/focus/focus_manager_delegate.h"
 #include "ui/views/focus/focus_search.h"
-#include "ui/views/focus/widget_focus_manager.h"
+#include "ui/views/focus/native_view_focus_manager.h"
 #include "ui/views/view.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/view_tracker.h"
@@ -89,8 +90,29 @@ bool FocusManager::OnKeyEvent(const ui::KeyEvent& event) {
         (is_left || is_right)) {
       bool next = is_right;
       View::Views views;
-      focused_view_->parent()->GetViewsInGroup(focused_view_->GetGroup(),
-                                               &views);
+
+      View* group_owner = nullptr;
+      // Search for the owner in the focused view's hierarchy.
+      for (View* potential_owner = focused_view_->parent();
+           potential_owner != nullptr;
+           potential_owner = potential_owner->parent()) {
+        if (potential_owner->GetOwnedGroup() == focused_view_->GetGroup()) {
+          group_owner = potential_owner;
+          break;
+        }
+      }
+      if (!group_owner) {
+        if (View* parent_group_view =
+                GetCascadingRadioGroupView(focused_view_)) {
+          group_owner = parent_group_view;
+        }
+      }
+      // Default to the parent if no other owner is found.
+      if (!group_owner) {
+        group_owner = focused_view_->parent();
+      }
+
+      group_owner->GetViewsInGroup(focused_view_->GetGroup(), &views);
       // Remove any views except current, which are disabled or hidden.
       std::erase_if(views, [this](View* v) {
         return v != focused_view_ &&
@@ -328,15 +350,16 @@ void FocusManager::SetFocusedViewWithReason(View* view,
   focus_change_listeners_.Notify(&FocusChangeListener::OnWillChangeFocus,
                                  focused_view_, view);
 
-  View* old_focused_view = focused_view_;
+  // Actions below like `Blur()` can destroy `focused_view_`.
+  ViewTracker old_focused_view_tracker(focused_view_);
   focused_view_ = view;
   base::AutoReset<int> entrance_count_resetter(
       &setting_focused_view_entrance_count_,
       setting_focused_view_entrance_count_ + 1);
 
-  if (old_focused_view) {
-    old_focused_view->RemoveObserver(this);
-    old_focused_view->Blur();
+  if (old_focused_view_tracker.view()) {
+    old_focused_view_tracker.view()->RemoveObserver(this);
+    old_focused_view_tracker.view()->Blur();
   }
   // Also make |focused_view_| the stored focus view. This way the stored focus
   // view is remembered if focus changes are requested prior to a show or while
@@ -351,7 +374,8 @@ void FocusManager::SetFocusedViewWithReason(View* view,
   }
 
   focus_change_listeners_.Notify(&FocusChangeListener::OnDidChangeFocus,
-                                 old_focused_view, focused_view_);
+                                 old_focused_view_tracker.view(),
+                                 focused_view_);
 }
 
 void FocusManager::SetFocusedView(View* view) {
@@ -365,11 +389,12 @@ void FocusManager::SetFocusedView(View* view) {
 
 void FocusManager::ClearFocus() {
   // SetFocusedView(nullptr) is going to clear out the stored view to. We need
-  // to persist it in this case.
-  views::View* focused_view = GetStoredFocusView();
+  // to persist it in this case (assuming it survives the events sent out in the
+  // interim).
+  auto focused_view = std::make_unique<ViewTracker>(GetStoredFocusView());
   SetFocusedView(nullptr);
   ClearNativeFocus();
-  SetStoredFocusView(focused_view);
+  view_tracker_for_stored_view_ = std::move(focused_view);
 }
 
 void FocusManager::AdvanceFocusIfNecessary() {
@@ -390,30 +415,30 @@ void FocusManager::AdvanceFocusIfNecessary() {
 }
 
 void FocusManager::StoreFocusedView(bool clear_native_focus) {
-  View* focused_view = focused_view_;
   // Don't do anything if no focused view. Storing the view (which is nullptr),
   // in this case, would clobber the view that was previously saved.
   if (!focused_view_) {
     return;
   }
 
-  View* v = focused_view_;
+  // This could go away when sending events below, so guard access.
+  ViewTracker old_view(focused_view_);
 
   if (clear_native_focus) {
     // Temporarily disable notification.  ClearFocus() will set the focus to the
     // main browser window.  This extra focus bounce which happens during
-    // deactivation can confuse registered WidgetFocusListeners, as the focus
-    // is not changing due to a user-initiated event.
+    // deactivation can confuse registered NativeViewFocusListeners, as the
+    // focus is not changing due to a user-initiated event.
     AutoNativeNotificationDisabler local_notification_disabler;
     // ClearFocus() also stores the focused view.
     ClearFocus();
   } else {
     SetFocusedView(nullptr);
-    SetStoredFocusView(focused_view);
+    SetStoredFocusView(old_view.view());
   }
 
-  if (v) {
-    v->SchedulePaint();  // Remove focus border.
+  if (auto* const view = old_view.view()) {
+    view->SchedulePaint();  // Remove focus border.
   }
 }
 
@@ -537,7 +562,6 @@ void FocusManager::ViewRemoved(View* removed) {
   if (removed->Contains(focused_view_)) {
     SetFocusedView(nullptr);
   }
-  removed->PropagateWillClearFocusManager();
 }
 
 void FocusManager::AddFocusChangeListener(FocusChangeListener* listener) {
@@ -557,6 +581,10 @@ bool FocusManager::ProcessArrowKeyTraversal(const ui::KeyEvent& event) {
   const ui::KeyboardCode key = event.key_code();
   if (key != ui::VKEY_UP && key != ui::VKEY_DOWN && key != ui::VKEY_LEFT &&
       key != ui::VKEY_RIGHT) {
+    return false;
+  }
+
+  if (focused_view_ && focused_view_->GetGroup() != -1) {
     return false;
   }
 

@@ -5,28 +5,23 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_WEB_APPS_WEB_APP_INSTALL_DIALOG_DELEGATE_H_
 #define CHROME_BROWSER_UI_VIEWS_WEB_APPS_WEB_APP_INSTALL_DIALOG_DELEGATE_H_
 
+#include <iosfwd>
 #include <memory>
 #include <string>
 
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
-#include "chrome/browser/picture_in_picture/picture_in_picture_occlusion_observer.h"
-#include "chrome/browser/picture_in_picture/scoped_picture_in_picture_occlusion_observation.h"
+#include "chrome/browser/ui/page_action/page_action_controller.h"
+#include "chrome/browser/ui/views/web_apps/web_app_modal_dialog_delegate.h"
 #include "chrome/browser/ui/web_applications/web_app_dialogs.h"
 #include "chrome/browser/web_applications/web_app_install_info.h"
-#include "content/public/browser/web_contents_observer.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/interaction/element_tracker.h"
 #include "ui/base/models/dialog_model.h"
+#include "ui/views/controls/button/button.h"
 #include "ui/views/widget/widget.h"
-#include "ui/views/widget/widget_observer.h"
 
 class PrefService;
-
-namespace content {
-class Page;
-class WebContents;
-}  // namespace content
 
 namespace feature_engagement {
 class Tracker;
@@ -48,6 +43,8 @@ namespace web_app {
 
 enum InstallDialogType { kSimple, kDetailed, kDiy, kMaxValue = kDiy };
 
+std::ostream& operator<<(std::ostream& os, InstallDialogType type);
+
 inline constexpr int kIconSize = 32;
 
 // When pre-populating the name field (using the web app title) we
@@ -66,6 +63,21 @@ inline constexpr int kIconSize = 32;
 // result in a weird filename), it only restricts what we suggest as titles.
 std::u16string NormalizeSuggestedAppTitle(const std::u16string& title);
 
+// Defines the maximum allowed width and height shrinkage (in pixels) from the
+// preferred size of a dialog before it is considered too small/occluded and
+// automatically closed to prevent UI spoofing.
+struct MaxAllowedShrinkage {
+  int max_width_shrinkage;
+  int max_height_shrinkage;
+};
+
+inline constexpr MaxAllowedShrinkage kSimpleMaxShrinkage = {40, 20};
+inline constexpr MaxAllowedShrinkage kDetailedMaxShrinkage = {100, 150};
+inline constexpr MaxAllowedShrinkage kDiyMaxShrinkage = {50, 50};
+inline constexpr MaxAllowedShrinkage kLaunchMaxShrinkage = {50, 50};
+
+MaxAllowedShrinkage GetMaxAllowedShrinkage(InstallDialogType type);
+
 // For some browser windows that are smaller in size, the install dialog's
 // current size is smaller than the preferred size, leading to important
 // security information being occluded. This function performs the comparison
@@ -73,14 +85,13 @@ std::u16string NormalizeSuggestedAppTitle(const std::u16string& title);
 // This serves as a stop-gap fix for crbug.com/384962294.
 // TODO(crbug.com/346974105): Remove once tab modal dialogs can be sized
 // irrespective of the size of the browser window triggering it.
-bool IsWidgetCurrentSizeSmallerThanPreferredSize(views::Widget* widget);
+bool IsWidgetCurrentSizeSmallerThanPreferredSize(views::Widget* widget,
+                                                 MaxAllowedShrinkage shrinkage);
 
-class WebAppInstallDialogDelegate : public ui::DialogModelDelegate,
-                                    public content::WebContentsObserver,
-                                    public PictureInPictureOcclusionObserver,
-                                    public views::WidgetObserver {
+class WebAppInstallDialogDelegate : public WebAppModalDialogDelegate {
  public:
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kDiyAppsDialogOkButtonId);
+  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kDiyAppsDialogInputTextId);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kPwaInstallDialogInstallButton);
   DECLARE_CLASS_CUSTOM_ELEMENT_EVENT_TYPE(kInstalledPWAEventId);
 
@@ -96,13 +107,11 @@ class WebAppInstallDialogDelegate : public ui::DialogModelDelegate,
 
   ~WebAppInstallDialogDelegate() override;
 
-  // Starts observing the install dialog's widget for picture in picture
-  // occlusion or size changes if any.
-  void StartObservingWidgetForChanges(views::Widget* install_dialog_widget);
-
-  void OnAccept();
+  virtual void OnAccept();
   void OnCancel();
   void OnClose();
+
+  virtual bool OnOkButtonClicked();
 
   // This is called when the dialog has been either accepted, cancelled, closed
   // or destroyed without an user-action.
@@ -118,28 +127,22 @@ class WebAppInstallDialogDelegate : public ui::DialogModelDelegate,
     return weak_ptr_factory_.GetWeakPtr();
   }
 
-  // content::WebContentsObserver overrides:
-  void OnVisibilityChanged(content::Visibility visibility) override;
-  void WebContentsDestroyed() override;
-  void PrimaryPageChanged(content::Page& page) override;
-
-  // PictureInPictureOcclusionObserver overrides:
-  void OnOcclusionStateChanged(bool occluded) override;
-
   // views::WidgetObserver overrides:
   void OnWidgetBoundsChanged(views::Widget* widget,
                              const gfx::Rect& new_bounds) override;
-  void OnWidgetDestroyed(views::Widget* widget) override;
+  // WebAppModalDialogDelegate overrides:
+  void CloseDialogAsIgnored() override;
 
-  void CloseDialogAsIgnored();
+  InstallDialogType dialog_type() { return dialog_type_; }
+
+ protected:
+  std::unique_ptr<WebAppInstallInfo> install_info_;
 
  private:
   void MeasureIphOnDialogClose();
   void MeasureAcceptUserActionsForInstallDialog();
   void MeasureCancelUserActionsForInstallDialog();
 
-  raw_ptr<content::WebContents> web_contents_;
-  std::unique_ptr<WebAppInstallInfo> install_info_;
   std::unique_ptr<webapps::MlInstallOperationTracker> install_tracker_;
   AppInstallationAcceptanceCallback callback_;
   PwaInProductHelpState iph_state_;
@@ -148,13 +151,16 @@ class WebAppInstallDialogDelegate : public ui::DialogModelDelegate,
   InstallDialogType dialog_type_;
   std::u16string text_field_contents_;
   bool received_user_response_ = false;
-  ScopedPictureInPictureOcclusionObservation occlusion_observation_{this};
-  base::ScopedObservation<views::Widget, views::WidgetObserver>
-      widget_observation_{this};
+
+  // Ensures the corresponding page action is highlighted, if any.
+  // If the new page actions framework is enabled, then a
+  // `ScopedPageActionActivity` is used.
+  const std::optional<std::variant<views::Button::ScopedAnchorHighlight,
+                                   page_actions::ScopedPageActionActivity>>
+      page_action_highlight_;
 
   base::WeakPtrFactory<WebAppInstallDialogDelegate> weak_ptr_factory_{this};
 };
-
 }  // namespace web_app
 
 #endif  // CHROME_BROWSER_UI_VIEWS_WEB_APPS_WEB_APP_INSTALL_DIALOG_DELEGATE_H_

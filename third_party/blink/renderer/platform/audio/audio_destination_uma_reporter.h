@@ -22,13 +22,14 @@ class PLATFORM_EXPORT AudioDestinationUmaReporter final {
   explicit AudioDestinationUmaReporter(const WebAudioLatencyHint&,
                                        int callback_buffer_size,
                                        float sample_rate);
-  virtual ~AudioDestinationUmaReporter();
+  ~AudioDestinationUmaReporter();
 
   // These methods are not thread-safe and must be called within
   // `AudioDestination::RequestRender()` method for correct instrumentation.
-  void UpdateFifoDelay(base::TimeDelta fifo_delay);
-  void UpdateTotalPlayoutDelay(base::TimeDelta total_playout_delay);
+  void AddFifoDelay(base::TimeDelta fifo_delay);
+  void AddTotalPlayoutDelay(base::TimeDelta total_playout_delay);
   void IncreaseFifoUnderrunCount();
+  void IncreaseUnexpectedFifoUnderrunCount();
   void UpdateMetricNameForDualThreadMode();
   void Report();
   void AddRenderDuration(base::TimeDelta duration) {
@@ -46,6 +47,8 @@ class PLATFORM_EXPORT AudioDestinationUmaReporter final {
   static constexpr std::string_view kFifoDelayHistogramNameBase = "FIFODelay";
   static constexpr std::string_view kFifoUnderrunHistogramNameBase =
       "FIFOUnderrunCount";
+  static constexpr std::string_view kUnexpectedFifoUnderrunHistogramNameBase =
+      "UnexpectedFIFOUnderrunCount";
   static constexpr std::string_view kTotalPlayoutDelayHistogramNameBase =
       "TotalPlayoutDelay";
   static constexpr std::string_view kRenderTimeRatioHistogramNameBase =
@@ -57,7 +60,7 @@ class PLATFORM_EXPORT AudioDestinationUmaReporter final {
 
  private:
   // Calculates the percentage of `delta` relative to the expected callback
-  // interval, scaled by kMetricsReportCycle for reporting.
+  // interval, scaled by `kMetricsReportCycle` for reporting.
   // Returns the percentage (0-100).
   int PercentOfCallbackInterval(base::TimeDelta duration);
 
@@ -67,17 +70,19 @@ class PLATFORM_EXPORT AudioDestinationUmaReporter final {
   enum class SamplingPeriod { kShort, kIntervals };
   int callback_count_ = 0;
   int fifo_underrun_count_ = 0;
+  int unexpected_fifo_underrun_count_ = 0;
   const WebAudioLatencyHint latency_hint_;
   bool use_audio_worklet_ = false;
 
   // The audio delay (ms) computed the number of available frames of the
-  // PushPUllFIFO in AudioDestination. Measured and reported at every audio
-  // callback.
-  base::TimeDelta fifo_delay_;
+  // PushPUllFIFO in AudioDestination. Averaged, reported and reset at every
+  // `kMetricsReportCycle` audio callbacks.
+  base::TimeDelta fifo_delay_sum_;
 
   // The audio delay (ms) covers the whole pipeline from the WebAudio graph to
-  // the speaker. Measured and reported at every audio callback.
-  base::TimeDelta total_playout_delay_;
+  // the speaker. Averaged, reported and reset at every 'kMetricsReportCycle'
+  // audio callbacks.
+  base::TimeDelta total_playout_delay_sum_;
 
   // Histogram names for metrics reported by `AudioDestinationUmaReporter`.
   // These names are constructed during initialization (or updated in
@@ -88,6 +93,8 @@ class PLATFORM_EXPORT AudioDestinationUmaReporter final {
   std::string fifo_delay_histogram_name_with_latency_tag_;
   std::string fifo_underrun_histogram_name_;
   std::string fifo_underrun_histogram_name_with_latency_tag_;
+  std::string unexpected_fifo_underrun_histogram_name_;
+  std::string unexpected_fifo_underrun_histogram_name_with_latency_tag_;
   std::string total_playout_delay_histogram_name_;
   std::string total_playout_delay_histogram_name_with_latency_tag_;
   std::string render_time_ratio_histogram_name_;

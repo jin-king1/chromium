@@ -15,6 +15,7 @@ static_library("renderer") {
     "internal_plugin_renderer_helpers.h",
     "pdf_accessibility_tree.h",
     "pdf_ax_action_target.h",
+    "pdf_view_web_plugin_client.h",
   ]
 
   sources = [
@@ -22,9 +23,12 @@ static_library("renderer") {
     "pdf_accessibility_tree.cc",
     "pdf_accessibility_tree_builder.cc",
     "pdf_accessibility_tree_builder.h",
+    "pdf_accessibility_tree_builder_heuristic.cc",
+    "pdf_accessibility_tree_builder_heuristic.h",
+    "pdf_accessibility_tree_builder_structure.cc",
+    "pdf_accessibility_tree_builder_structure.h",
     "pdf_ax_action_target.cc",
     "pdf_view_web_plugin_client.cc",
-    "pdf_view_web_plugin_client.h",
   ]
 
   deps = [
@@ -40,6 +44,7 @@ static_library("renderer") {
     "//pdf:accessibility",
     "//pdf:buildflags",
     "//pdf:features",
+    "//pdf:pdf_accessibility_constants_helper",
     "//pdf:pdf_view_web_plugin",
     "//printing/buildflags",
     "//services/screen_ai/buildflags",
@@ -56,6 +61,7 @@ static_library("renderer") {
 
   public_deps = [
     "//content/public/renderer",
+    "//pdf:structs",
     "//pdf/mojom",
     "//ui/accessibility",
     "//ui/gfx/geometry",
@@ -64,27 +70,22 @@ static_library("renderer") {
   if (enable_printing) {
     deps += [ "//components/printing/renderer" ]
   }
-
   if (enable_screen_ai_service) {
-    sources += [
-      "pdf_ocr_helper.cc",
-      "pdf_ocr_helper.h",
-    ]
-    deps += [
-      "//components/language/core/common",
-      "//services/screen_ai/public/cpp:metrics",
-      "//services/screen_ai/public/mojom",
-    ]
+    deps += [ "//services/screen_ai/public/mojom" ]
   }
 }
 
 source_set("unit_tests") {
   testonly = true
-  sources = [ "pdf_accessibility_tree_unittest.cc" ]
+  sources = [
+    "pdf_accessibility_tree_builder_structure_unittest.cc",
+    "pdf_accessibility_tree_unittest.cc",
+  ]
 
   deps = [
     ":renderer",
     "//pdf:accessibility",
+    "//pdf:pdf_accessibility_constants_helper",
     "//pdf/mojom",
     "//testing/gtest",
     "//ui/gfx/geometry",
@@ -93,4 +94,8 @@ source_set("unit_tests") {
     # from ":renderer".
     "//v8",
   ]
+
+  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+  # enable the diagnostic by removing this line.
+  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }

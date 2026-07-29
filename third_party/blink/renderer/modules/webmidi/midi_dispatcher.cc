@@ -41,6 +41,8 @@ MIDIDispatcher::MIDIDispatcher(ExecutionContext* execution_context)
           execution_context->GetTaskRunner(blink::TaskType::kMiscPlatformAPI)),
       receiver_.BindNewPipeAndPassRemote(
           execution_context->GetTaskRunner(blink::TaskType::kMiscPlatformAPI)));
+  receiver_.set_disconnect_handler(blink::BindOnce(
+      &MIDIDispatcher::OnConnectionError, WrapWeakPersistent(this)));
 }
 
 MIDIDispatcher::~MIDIDispatcher() = default;
@@ -57,7 +59,7 @@ void MIDIDispatcher::SendMIDIData(uint32_t port,
 
   unacknowledged_bytes_sent_ += data.size();
   Vector<uint8_t> v;
-  v.AppendSpan(data);
+  v.append_range(data);
   midi_session_->SendData(port, std::move(v), timestamp);
 }
 
@@ -148,6 +150,12 @@ void MIDIDispatcher::Trace(Visitor* visitor) const {
   visitor->Trace(midi_session_);
   visitor->Trace(receiver_);
   visitor->Trace(midi_session_provider_);
+}
+
+void MIDIDispatcher::OnConnectionError() {
+  if (client_) {
+    client_->OnSessionStartFailed();
+  }
 }
 
 }  // namespace blink

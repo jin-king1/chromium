@@ -17,7 +17,7 @@ source_set("signout_confirmation") {
   public_deps = [
     ":mojo_bindings",
     "//base",
-    "//chrome/browser/ui/signin:signin",
+    "//chrome/browser/ui/signin",
     "//chrome/common",
     "//content/public/browser",
     "//content/public/common",
@@ -35,7 +35,10 @@ source_set("signout_confirmation_impl") {
     ":signout_confirmation",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/resources/signin/signout_confirmation:resources_grit",
+    "//chrome/browser/ui/browser_window",
     "//chrome/browser/ui/webui",
+    "//chrome/browser/ui/webui:plural_string_handler",
+    "//components/sync_bookmarks",
   ]
 
   if (enable_extensions) {
@@ -43,6 +46,15 @@ source_set("signout_confirmation_impl") {
   }
 
   public_deps = [ "//chrome/browser:browser_public_dependencies" ]
+}
+
+static_library("test_support") {
+  sources = [
+    "test_signout_confirmation_handler_waiter.cc",
+    "test_signout_confirmation_handler_waiter.h",
+  ]
+
+  deps = [ ":signout_confirmation" ]
 }
 
 mojom("mojo_bindings") {

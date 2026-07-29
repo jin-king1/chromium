@@ -8,17 +8,9 @@
 #include "base/no_destructor.h"
 #include "base/observer_list.h"
 #include "base/strings/strcat.h"
-#include "components/optimization_guide/core/hints_processing_util.h"
+#include "base/strings/stringprintf.h"
 #include "components/optimization_guide/core/optimization_guide_switches.h"
 
-namespace {
-
-// TODO(rajendrant): Verify if all debug messages before browser startup are
-// getting saved without being dropped, when some hints fetching and model
-// downloading happens.
-constexpr size_t kMaxRecentLogMessages = 100;
-
-}  // namespace
 
 OptimizationGuideLogger::LogMessageBuilder::LogMessageBuilder(
     optimization_guide_common::mojom::LogSource log_source,
@@ -57,6 +49,13 @@ OptimizationGuideLogger::LogMessageBuilder::operator<<(
 }
 
 OptimizationGuideLogger::LogMessageBuilder&
+OptimizationGuideLogger::LogMessageBuilder::operator<<(
+    std::string_view message) {
+  messages_.emplace_back(message);
+  return *this;
+}
+
+OptimizationGuideLogger::LogMessageBuilder&
 OptimizationGuideLogger::LogMessageBuilder::operator<<(const GURL& url) {
   messages_.push_back(url.possibly_invalid_spec());
   return *this;
@@ -67,30 +66,6 @@ OptimizationGuideLogger::LogMessageBuilder::operator<<(
     optimization_guide::proto::RequestContext request_context) {
   messages_.push_back(
       optimization_guide::proto::RequestContext_Name(request_context));
-  return *this;
-}
-
-OptimizationGuideLogger::LogMessageBuilder&
-OptimizationGuideLogger::LogMessageBuilder::operator<<(
-    optimization_guide::proto::OptimizationType optimization_type) {
-  messages_.push_back(
-      optimization_guide::GetStringNameForOptimizationType(optimization_type));
-  return *this;
-}
-
-OptimizationGuideLogger::LogMessageBuilder&
-OptimizationGuideLogger::LogMessageBuilder::operator<<(
-    optimization_guide::OptimizationTypeDecision optimization_type_decision) {
-  messages_.push_back(
-      base::NumberToString(static_cast<int>(optimization_type_decision)));
-  return *this;
-}
-
-OptimizationGuideLogger::LogMessageBuilder&
-OptimizationGuideLogger::LogMessageBuilder::operator<<(
-    optimization_guide::OptimizationGuideDecision optimization_guide_decision) {
-  messages_.push_back(
-      GetStringForOptimizationGuideDecision(optimization_guide_decision));
   return *this;
 }
 
@@ -130,16 +105,35 @@ OptimizationGuideLogger::OptimizationGuideLogger()
 
 OptimizationGuideLogger::~OptimizationGuideLogger() = default;
 
+void OptimizationGuideLogger::MaybeEmitBufferOverflowWarning(
+    OptimizationGuideLogger::Observer* observer) {
+  if (recent_log_messages_dropped_count_ == 0) {
+    return;
+  }
+  base::Time event_time =
+      recent_log_messages_.empty()
+          ? base::Time::Now()
+          : recent_log_messages_.front().event_time - base::Microseconds(1);
+  observer->OnLogMessageAdded(
+      event_time,
+      optimization_guide_common::mojom::LogSource::SERVICE_AND_SETTINGS,
+      __FILE__, __LINE__,
+      base::StringPrintf(
+          "⚠️ [WARNING]: %zu earlier startup debug log message(s) were dropped "
+          "because the buffer limit (%zu) was exceeded. Consider increasing "
+          "kMaxRecentLogMessages in optimization_guide_logger.cc.",
+          recent_log_messages_dropped_count_, kMaxRecentLogMessages));
+}
+
 void OptimizationGuideLogger::AddObserver(
     OptimizationGuideLogger::Observer* observer) {
   observers_.AddObserver(observer);
   if (command_line_flag_enabled_) {
+    MaybeEmitBufferOverflowWarning(observer);
     for (const auto& message : recent_log_messages_) {
-      for (Observer& obs : observers_) {
-        obs.OnLogMessageAdded(message.event_time, message.log_source,
-                              message.source_file, message.source_line,
-                              message.message);
-      }
+      observer->OnLogMessageAdded(message.event_time, message.log_source,
+                                  message.source_file, message.source_line,
+                                  message.message);
     }
   }
 }
@@ -158,12 +152,17 @@ void OptimizationGuideLogger::OnLogMessageAdded(
   if (command_line_flag_enabled_) {
     recent_log_messages_.emplace_back(event_time, log_source, source_file,
                                       source_line, message);
-    if (recent_log_messages_.size() > kMaxRecentLogMessages)
+    if (recent_log_messages_.size() > kMaxRecentLogMessages) {
       recent_log_messages_.pop_front();
+      if (observers_.empty()) {
+        recent_log_messages_dropped_count_++;
+      }
+    }
   }
-  for (Observer& obs : observers_)
+  for (Observer& obs : observers_) {
     obs.OnLogMessageAdded(event_time, log_source, source_file, source_line,
                           message);
+  }
 }
 
 bool OptimizationGuideLogger::ShouldEnableDebugLogs() const {

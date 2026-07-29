@@ -5,8 +5,14 @@
 #ifndef COMPONENTS_COLLABORATION_INTERNAL_ANDROID_MESSAGING_MESSAGING_BACKEND_SERVICE_BRIDGE_H_
 #define COMPONENTS_COLLABORATION_INTERNAL_ANDROID_MESSAGING_MESSAGING_BACKEND_SERVICE_BRIDGE_H_
 
+#include <optional>
+#include <set>
+#include <string>
+
 #include "base/android/scoped_java_ref.h"
 #include "base/supports_user_data.h"
+#include "base/uuid.h"
+#include "components/collaboration/internal/android/messaging/conversion_utils.h"
 #include "components/collaboration/public/messaging/messaging_backend_service.h"
 
 namespace collaboration::messaging::android {
@@ -38,43 +44,31 @@ class MessagingBackendServiceBridge
   base::android::ScopedJavaLocalRef<jobject> GetJavaObject();
 
   // Methods called from Java via JNI.
-  bool IsInitialized(JNIEnv* env,
-                     const base::android::JavaParamRef<jobject>& j_caller);
+  bool IsInitialized(JNIEnv* env);
   base::android::ScopedJavaLocalRef<jobject> GetMessagesForTab(
       JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& j_caller,
-      jint j_local_tab_id,
-      const base::android::JavaParamRef<jstring>& j_sync_tab_id,
-      jint j_type);
+      int32_t j_local_tab_id,
+      const std::optional<std::string>& sync_tab_id,
+      int32_t j_type);
   base::android::ScopedJavaLocalRef<jobject> GetMessagesForGroup(
       JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& j_caller,
-      const base::android::JavaParamRef<jobject>& j_local_group_id,
-      const base::android::JavaParamRef<jstring>& j_sync_group_id,
-      jint j_type);
-  base::android::ScopedJavaLocalRef<jobject> GetMessages(
-      JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& j_caller,
-      jint j_type);
+      const base::android::JavaRef<jobject>& j_local_group_id,
+      const std::optional<std::string>& sync_group_id,
+      int32_t j_type);
+  base::android::ScopedJavaLocalRef<jobject> GetMessages(JNIEnv* env,
+                                                         int32_t j_type);
   base::android::ScopedJavaLocalRef<jobject> GetActivityLog(
       JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& j_caller,
-      jstring j_collaboration_id);
-  void ClearDirtyTabMessagesForGroup(
-      JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& j_caller,
-      const base::android::JavaParamRef<jstring>& j_collaboration_id);
-  void ClearPersistentMessage(
-      JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& j_caller,
-      const base::android::JavaParamRef<jstring>& j_message_id,
-      jint j_type);
+      const std::string& collaboration_id);
+  void ClearDirtyTabMessagesForGroup(JNIEnv* env,
+                                     const std::string& collaboration_id);
+  void ClearPersistentMessage(JNIEnv* env,
+                              const std::string& message_id,
+                              int32_t j_type);
 
-  void RunInstantaneousMessageSuccessCallback(
-      JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& j_caller,
-      jlong j_callback,
-      jboolean j_result);
+  void RunInstantaneousMessageSuccessCallback(JNIEnv* env,
+                                              int64_t j_callback,
+                                              bool j_result);
 
  private:
   friend class MessagingBackendServiceBridgeTest;
@@ -89,6 +83,8 @@ class MessagingBackendServiceBridge
   void DisplayInstantaneousMessage(
       InstantMessage message,
       InstantMessageDelegate::SuccessCallback success_callback) override;
+  void HideInstantaneousMessage(
+      const std::set<base::Uuid>& message_ids) override;
 
   raw_ptr<MessagingBackendService> service_;
 

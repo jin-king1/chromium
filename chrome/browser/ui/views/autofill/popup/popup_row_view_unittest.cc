@@ -8,11 +8,8 @@
 #include <optional>
 #include <utility>
 
-#include "base/functional/callback.h"
-#include "base/i18n/rtl.h"
 #include "base/memory/raw_ptr.h"
 #include "base/test/metrics/histogram_tester.h"
-#include "base/test/mock_callback.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/ui/autofill/mock_autofill_popup_controller.h"
 #include "chrome/browser/ui/views/autofill/popup/mock_accessibility_selection_delegate.h"
@@ -41,7 +38,6 @@
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/views/accessibility/view_accessibility.h"
-#include "ui/views/controls/label.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_utils.h"
 
@@ -82,15 +78,15 @@ class PopupRowViewTest : public ChromeViewsTestBase {
   void ShowView(int line_number,
                 bool has_control,
                 bool is_acceptable = true,
-                SuggestionType type = SuggestionType::kAddressEntry) {
-    std::vector<Suggestion> suggestions(line_number + 1);
+                SuggestionType type = SuggestionType::kPasswordEntry) {
+    std::vector<Suggestion> suggestions(line_number + 1, Suggestion(type));
     suggestions[line_number].type = type;
     suggestions[line_number].acceptability =
         is_acceptable ? Suggestion::Acceptability::kAcceptable
                       : Suggestion::Acceptability::kUnacceptable;
     suggestions[line_number].main_text = Suggestion::Text(u"Suggestion");
     if (has_control) {
-      suggestions[line_number].children = {Suggestion()};
+      suggestions[line_number].children = {Suggestion(type)};
     }
     ShowView(line_number, std::move(suggestions));
   }
@@ -174,49 +170,21 @@ class PopupRowViewTest : public ChromeViewsTestBase {
 // `PopupRowContentView` are updated correctly when the content cell is
 // selected.
 TEST_F(PopupRowViewTest, BackgroundColorOnContentSelect) {
-  ShowView(/*line_number=*/0, {Suggestion(u"Some entry")});
+  ShowView(/*line_number=*/0,
+           {Suggestion(u"Some entry", SuggestionType::kAutocompleteEntry)});
   ASSERT_EQ(row_view().GetSelectedCell(), std::nullopt);
-  EXPECT_EQ(
-      row_view().GetBackground()->get_color(),
-      row_view().GetColorProvider()->GetColor(ui::kColorDropdownBackground));
+  EXPECT_EQ(row_view().GetBackground()->color(), ui::kColorDropdownBackground);
   EXPECT_FALSE(row_view().GetContentView().GetBackground());
 
   row_view().SetSelectedCell(CellType::kContent);
   // If only the content view is selected, then the background color of the row
   // view remains the same ...
-  EXPECT_EQ(
-      row_view().GetBackground()->get_color(),
-      row_view().GetColorProvider()->GetColor(ui::kColorDropdownBackground));
+  EXPECT_EQ(row_view().GetBackground()->color(), ui::kColorDropdownBackground);
   // ... but the background of the content view is set.
   views::Background* content_background =
       row_view().GetContentView().GetBackground();
   ASSERT_TRUE(content_background);
-  EXPECT_EQ(content_background->get_color(),
-            row_view().GetColorProvider()->GetColor(
-                ui::kColorDropdownBackgroundSelected));
-}
-
-// Tests that the background colors of both the `PopupRowView` and the
-// `PopupRowContentView` are updated correctly when the content cell is
-// selected.
-TEST_F(PopupRowViewTest,
-       BackgroundColorOnContentSelectWithHighlightOnSelectFalse) {
-  Suggestion suggestion(u"Another entry");
-  suggestion.highlight_on_select = false;
-  ShowView(/*line_number=*/0, {suggestion});
-  ASSERT_EQ(row_view().GetSelectedCell(), std::nullopt);
-  EXPECT_EQ(
-      row_view().GetBackground()->get_color(),
-      row_view().GetColorProvider()->GetColor(ui::kColorDropdownBackground));
-  EXPECT_FALSE(row_view().GetContentView().GetBackground());
-
-  // When `highlight_on_select` is false, then selecting a cell does not change
-  // the background color.
-  row_view().SetSelectedCell(CellType::kContent);
-  EXPECT_EQ(
-      row_view().GetBackground()->get_color(),
-      row_view().GetColorProvider()->GetColor(ui::kColorDropdownBackground));
-  EXPECT_FALSE(row_view().GetContentView().GetBackground());
+  EXPECT_EQ(content_background->color(), ui::kColorDropdownBackgroundSelected);
 }
 
 TEST_F(PopupRowViewTest, MouseEnterExitInformsSelectionDelegate) {
@@ -483,6 +451,17 @@ TEST_F(PopupRowViewTest,
   generator().ClickLeftButton();
 }
 
+TEST_F(PopupRowViewTest, DatalistEntriesDoNotIgnoreInitialHoverClick) {
+  ShowView(/*line_number=*/0, /*has_control=*/false,
+           /*is_acceptable=*/true, SuggestionType::kDatalistEntry);
+
+  generator().MoveMouseTo(
+      row_view().GetContentView().GetBoundsInScreen().CenterPoint());
+  Paint();
+  EXPECT_CALL(controller(), AcceptSuggestion);
+  generator().ClickLeftButton();
+}
+
 TEST_F(PopupRowViewTest, NoCrashOnMouseAcceptingWithInvalidatedController) {
   EXPECT_CALL(controller(), ShouldIgnoreMouseObservedOutsideItemBoundsCheck())
       .WillOnce(Return(true));
@@ -507,9 +486,9 @@ TEST_F(PopupRowViewTest, SelectSuggestionOnFocusedContent) {
 }
 
 TEST_F(PopupRowViewTest, ContentViewA11yAttributes) {
-  ShowView(/*line_number=*/0,
-           {Suggestion("dummy_value", "dummy_label", Suggestion::Icon::kNoIcon,
-                       SuggestionType::kAddressEntry)});
+  ShowView(/*line_number=*/0, {Suggestion(u"dummy_value", u"dummy_label",
+                                          Suggestion::Icon::kNoIcon,
+                                          SuggestionType::kAddressEntry)});
 
   views::ViewAccessibility& accessibility =
       row_view().GetContentView().GetViewAccessibility();
@@ -526,7 +505,7 @@ TEST_F(PopupRowViewTest, ContentViewA11yAttributes) {
 
 TEST_F(PopupRowViewTest, AccessibleProperties) {
   ShowView(/*line_number=*/0,
-           {Suggestion("test_value", "test_label", Suggestion::Icon::kNoIcon,
+           {Suggestion(u"test_value", u"test_label", Suggestion::Icon::kNoIcon,
                        SuggestionType::kAddressEntry)});
 
   ui::AXNodeData node_data;

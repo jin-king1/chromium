@@ -47,7 +47,7 @@ FeedApi* GetFeedApi() {
 
 }  // namespace
 
-static jboolean JNI_FeedServiceBridge_IsEnabled(JNIEnv* env) {
+static bool JNI_FeedServiceBridge_IsEnabled(JNIEnv* env) {
   return FeedServiceBridge::IsEnabled();
 }
 
@@ -66,28 +66,14 @@ static int JNI_FeedServiceBridge_GetLoadMoreTriggerScrollDistanceDp(
   return GetFeedConfig().load_more_trigger_scroll_distance_dp;
 }
 
-static jlong JNI_FeedServiceBridge_GetReliabilityLoggingId(JNIEnv* env) {
+static int64_t JNI_FeedServiceBridge_GetReliabilityLoggingId(JNIEnv* env) {
   return FeedServiceBridge::GetReliabilityLoggingId();
 }
 
-static jlong JNI_FeedServiceBridge_AddUnreadContentObserver(
+static void JNI_FeedServiceBridge_ReportOtherUserActionForStream(
     JNIEnv* env,
-    const base::android::JavaParamRef<jobject>& j_observer,
-    jboolean is_web_feed) {
-  FeedApi* api = GetFeedApi();
-  if (!api)
-    return static_cast<jint>(ContentOrder::kUnspecified);
-  JavaUnreadContentObserver* observer = new JavaUnreadContentObserver(
-      base::android::ScopedJavaGlobalRef<jobject>(j_observer));
-  api->AddUnreadContentObserver(is_web_feed ? StreamType(StreamKind::kFollowing)
-                                            : StreamType(StreamKind::kForYou),
-                                observer);
-  return reinterpret_cast<jlong>(observer);
-}
-
-static void JNI_FeedServiceBridge_ReportOtherUserAction(JNIEnv* env,
-                                                        jint stream_kind,
-                                                        jint action) {
+    int32_t stream_kind,
+    int32_t action) {
   FeedApi* api = GetFeedApi();
   if (!api)
     return;
@@ -95,36 +81,16 @@ static void JNI_FeedServiceBridge_ReportOtherUserAction(JNIEnv* env,
                              static_cast<FeedUserActionType>(action));
 }
 
-static jint JNI_FeedServiceBridge_GetContentOrderForWebFeed(JNIEnv* env) {
+static void JNI_FeedServiceBridge_ReportOtherUserAction(JNIEnv* env,
+                                                        int32_t action) {
   FeedApi* api = GetFeedApi();
-  if (!api)
-    return 0;
-  return static_cast<int>(
-      api->GetContentOrder(StreamType(StreamKind::kFollowing)));
-}
-
-static void JNI_FeedServiceBridge_SetContentOrderForWebFeed(
-    JNIEnv* env,
-    jint content_order) {
-  FeedApi* api = GetFeedApi();
-  if (!api)
+  if (!api) {
     return;
-  switch (content_order) {
-    case static_cast<jint>(ContentOrder::kGrouped):
-      api->SetContentOrder(StreamType(StreamKind::kFollowing),
-                           ContentOrder::kGrouped);
-      return;
-    case static_cast<jint>(ContentOrder::kReverseChron):
-      api->SetContentOrder(StreamType(StreamKind::kFollowing),
-                           ContentOrder::kReverseChron);
-      return;
-    case static_cast<jint>(ContentOrder::kUnspecified):
-      break;
   }
-  NOTREACHED() << "Invalid content order: " << content_order;
+  api->ReportOtherUserAction(static_cast<FeedUserActionType>(action));
 }
 
-static jboolean JNI_FeedServiceBridge_IsSignedIn(JNIEnv* env) {
+static bool JNI_FeedServiceBridge_IsSignedIn(JNIEnv* env) {
   return FeedServiceBridge::IsSignedIn();
 }
 
@@ -178,21 +144,6 @@ bool FeedServiceBridge::IsSignedIn() {
   return GetFeedService()->IsSignedIn();
 }
 
-JavaUnreadContentObserver::JavaUnreadContentObserver(
-    base::android::ScopedJavaGlobalRef<jobject> j_observer)
-    : obj_(j_observer) {}
-
-feed::JavaUnreadContentObserver::~JavaUnreadContentObserver() = default;
-
-void JavaUnreadContentObserver::HasUnreadContentChanged(
-    bool has_unread_content) {
-  JNIEnv* env = base::android::AttachCurrentThread();
-  Java_UnreadContentObserver_hasUnreadContentChanged(env, obj_,
-                                                     has_unread_content);
-}
-
-void JavaUnreadContentObserver::Destroy(JNIEnv*) {
-  delete this;
-}
-
 }  // namespace feed
+
+DEFINE_JNI(FeedServiceBridge)

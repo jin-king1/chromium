@@ -18,9 +18,6 @@
 #include "components/signin/public/identity_manager/access_token_fetcher.h"
 #include "components/signin/public/identity_manager/access_token_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
-#include "components/signin/public/identity_manager/scope_set.h"
-#include "google_apis/gaia/gaia_constants.h"
-#include "google_apis/gaia/gaia_urls.h"
 #include "google_apis/gaia/google_service_auth_error.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 
@@ -60,12 +57,8 @@ void CloudPolicyClientRegistrationHelper::IdentityManagerHelper::
 
   callback_ = std::move(callback);
 
-  signin::ScopeSet scopes;
-  scopes.insert(GaiaConstants::kDeviceManagementServiceOAuth);
-  scopes.insert(GaiaConstants::kGoogleUserInfoEmail);
-
   access_token_fetcher_ = identity_manager->CreateAccessTokenFetcherForAccount(
-      account_id, "cloud_policy", scopes,
+      account_id, signin::OAuthConsumerId::kCloudPolicyClientRegistration,
       base::BindOnce(&CloudPolicyClientRegistrationHelper::
                          IdentityManagerHelper::OnAccessTokenFetchComplete,
                      base::Unretained(this)),
@@ -91,8 +84,9 @@ void CloudPolicyClientRegistrationHelper::IdentityManagerHelper::
 
 CloudPolicyClientRegistrationHelper::CloudPolicyClientRegistrationHelper(
     CloudPolicyClient* client,
-    enterprise_management::DeviceRegisterRequest::Type registration_type)
-    : client_(client), registration_type_(registration_type) {
+    enterprise_management::DeviceRegisterRequest::Type registration_type,
+    enterprise_management::DeviceRegisterRequest::Flavor flavor)
+    : client_(client), registration_type_(registration_type), flavor_(flavor) {
   DCHECK(client_);
 }
 
@@ -101,6 +95,8 @@ CloudPolicyClientRegistrationHelper::~CloudPolicyClientRegistrationHelper() {
   // trying to register for policy.
   if (client_)
     client_->RemoveObserver(this);
+  // `client_` may be owned by `callback_`, reset to prevent dangling reference.
+  client_ = nullptr;
 }
 
 void CloudPolicyClientRegistrationHelper::StartRegistration(
@@ -151,8 +147,7 @@ void CloudPolicyClientRegistrationHelper::StartRegistrationWithOidcTokens(
   client_->AddObserver(this);
 
   CloudPolicyClient::RegistrationParameters register_user(
-      enterprise_management::DeviceRegisterRequest::USER,
-      enterprise_management::DeviceRegisterRequest::FLAVOR_USER_REGISTRATION);
+      enterprise_management::DeviceRegisterRequest::USER, flavor_);
   if (!state.empty()) {
     register_user.oidc_state = state;
   }
@@ -168,16 +163,14 @@ void CloudPolicyClientRegistrationHelper::OnTokenFetched(
 
   if (access_token.empty()) {
     DLOG_POLICY(WARNING, POLICY_AUTH)
-        << "Could not fetch access token for "
-        << GaiaConstants::kDeviceManagementServiceOAuth;
+        << "Could not fetch access token for client registration";
     RequestCompleted();
     return;
   }
 
   // Cache the access token to be used after the GetUserInfo call.
   oauth_access_token_ = access_token;
-  DVLOG_POLICY(1, POLICY_AUTH)
-      << "Fetched new scoped OAuth token:" << oauth_access_token_;
+  DVLOG_POLICY(1, POLICY_AUTH) << "Fetched new scoped OAuth token";
   // Now we've gotten our access token - contact GAIA to see if this is a
   // hosted domain.
   user_info_fetcher_ =
@@ -194,8 +187,10 @@ void CloudPolicyClientRegistrationHelper::OnGetUserInfoFailure(
 }
 
 void CloudPolicyClientRegistrationHelper::OnGetUserInfoSuccess(
-    const base::Value::Dict& data) {
+    const base::DictValue& data) {
   user_info_fetcher_.reset();
+  // TODO(crbug.com/425456152): Remove this check once management does not
+  // depend on hosted domain.
   if (!data.Find(kGetHostedDomainKey)) {
     DVLOG_POLICY(1, POLICY_AUTH)
         << "User not from a hosted domain - skipping registration";
@@ -214,9 +209,7 @@ void CloudPolicyClientRegistrationHelper::OnGetUserInfoSuccess(
   // Kick off registration of the CloudPolicyClient with our newly minted
   // oauth_access_token_.
   client_->Register(
-      CloudPolicyClient::RegistrationParameters(
-          registration_type_, enterprise_management::DeviceRegisterRequest::
-                                  FLAVOR_USER_REGISTRATION),
+      CloudPolicyClient::RegistrationParameters(registration_type_, flavor_),
       std::string() /* client_id */, oauth_access_token_);
 }
 

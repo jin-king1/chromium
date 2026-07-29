@@ -5,7 +5,7 @@
 #include "chrome/browser/ash/audio/cras_audio_handler_delegate_impl.h"
 
 #include "ash/webui/settings/public/constants/routes.mojom.h"
-#include "chrome/browser/ui/chrome_pages.h"
+#include "ash/webui/settings/public/constants/routes_util.h"
 #include "chrome/browser/ui/settings_window_manager_chromeos.h"
 #include "chrome/test/base/browser_with_test_window_test.h"
 #include "url/gurl.h"
@@ -22,7 +22,7 @@ class TestSettingsWindowManager : public chrome::SettingsWindowManager {
                                 apps::LaunchCallback callback) override {
     last_url_ = gurl;
     if (callback) {
-      std::move(callback).Run(apps::LaunchResult(apps::State::kSuccess));
+      std::move(callback).Run(apps::LaunchResult::kSuccess);
     }
   }
   const GURL& last_url() { return last_url_; }
@@ -40,12 +40,9 @@ class CrasAudioHandlerDelegateImplTest : public BrowserWithTestWindowTest {
     cras_audio_handler_delegate_impl_ =
         std::make_unique<CrasAudioHandlerDelegateImpl>();
     settings_window_manager_ = std::make_unique<TestSettingsWindowManager>();
-    chrome::SettingsWindowManager::SetInstanceForTesting(
-        settings_window_manager_.get());
   }
 
   void TearDown() override {
-    chrome::SettingsWindowManager::SetInstanceForTesting(nullptr);
     settings_window_manager_.reset();
     cras_audio_handler_delegate_impl_.reset();
     BrowserWithTestWindowTest::TearDown();
@@ -59,9 +56,9 @@ class CrasAudioHandlerDelegateImplTest : public BrowserWithTestWindowTest {
 
 TEST_F(CrasAudioHandlerDelegateImplTest, OpenSettingsAudioPage) {
   cras_audio_handler_delegate_impl_->OpenSettingsAudioPage();
-  EXPECT_EQ(
-      settings_window_manager_->last_url(),
-      chrome::GetOSSettingsUrl(chromeos::settings::mojom::kAudioSubpagePath));
+  EXPECT_EQ(settings_window_manager_->last_url(),
+            chromeos::settings::GetOSSettingsUrl(
+                chromeos::settings::mojom::kAudioSubpagePath));
 }
 
 }  // namespace

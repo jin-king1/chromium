@@ -11,47 +11,66 @@
 #import "base/apple/bundle_locations.h"
 #import "base/command_line.h"
 #import "base/feature_list.h"
-#import "base/files/file_util.h"
 #import "base/ios/ios_util.h"
 #import "base/ios/ns_error_util.h"
 #import "base/metrics/histogram_functions.h"
 #import "base/no_destructor.h"
+#import "base/notreached.h"
 #import "base/strings/stringprintf.h"
 #import "base/strings/sys_string_conversions.h"
+#import "components/application_locale_storage/application_locale_storage.h"
 #import "components/autofill/ios/browser/autofill_java_script_feature.h"
 #import "components/autofill/ios/browser/suggestion_controller_java_script_feature.h"
 #import "components/autofill/ios/common/features.h"
 #import "components/autofill/ios/form_util/form_handlers_java_script_feature.h"
 #import "components/autofill/ios/form_util/programmatic_form_submission_handler_java_script_feature.h"
 #import "components/dom_distiller/core/url_constants.h"
+#import "components/enterprise/connectors/core/features.h"
+#import "components/enterprise/connectors/core/reporting_event_router.h"
 #import "components/google/core/common/google_util.h"
 #import "components/language/ios/browser/language_detection_java_script_feature.h"
-#import "components/password_manager/core/common/password_manager_features.h"
 #import "components/password_manager/ios/password_manager_java_script_feature.h"
+#import "components/prefs/pref_service.h"
+#import "components/safe_browsing/core/common/safe_browsing_prefs.h"
+#import "components/safe_browsing/core/common/utils.h"
 #import "components/strings/grit/components_strings.h"
 #import "components/supervised_user/core/browser/supervised_user_interstitial.h"
 #import "components/translate/ios/browser/translate_java_script_feature.h"
 #import "components/version_info/version_info.h"
+#import "components/webauthn/ios/features.h"
+#import "components/webauthn/ios/passkey_java_script_feature.h"
 #import "ios/chrome/browser/autofill/model/bottom_sheet/autofill_bottom_sheet_java_script_feature.h"
-#import "ios/chrome/browser/browser_container/model/edit_menu_tab_helper.h"
+#import "ios/chrome/browser/browser_content/model/edit_menu_tab_helper.h"
+#import "ios/chrome/browser/cobrowse/model/aim_cobrowse_java_script_feature.h"
+#import "ios/chrome/browser/cobrowse/model/cobrowse_util.h"
 #import "ios/chrome/browser/content_settings/model/host_content_settings_map_factory.h"
+#import "ios/chrome/browser/enterprise/connectors/ios_enterprise_interstitial.h"
+#import "ios/chrome/browser/enterprise/connectors/reporting/ios_reporting_event_router_factory.h"
 #import "ios/chrome/browser/flags/chrome_switches.h"
-#import "ios/chrome/browser/follow/model/follow_java_script_feature.h"
 #import "ios/chrome/browser/https_upgrades/model/https_upgrade_service_factory.h"
+#import "ios/chrome/browser/intelligence/actor/tools/model/action_target_java_script_feature.h"
+#import "ios/chrome/browser/intelligence/actor/tools/model/click_tool_java_script_feature.h"
+#import "ios/chrome/browser/intelligence/actor/tools/model/page_stability_java_script_feature.h"
+#import "ios/chrome/browser/intelligence/actor/tools/model/scroll_tool_java_script_feature.h"
+#import "ios/chrome/browser/intelligence/actor/tools/model/select_tool_java_script_feature.h"
+#import "ios/chrome/browser/intelligence/actor/tools/model/type_tool_java_script_feature.h"
+#import "ios/chrome/browser/intelligence/features/features.h"
+#import "ios/chrome/browser/intelligence/proto_wrappers/page_context_extractor_java_script_feature.h"
 #import "ios/chrome/browser/link_to_text/model/link_to_text_java_script_feature.h"
 #import "ios/chrome/browser/ntp/model/browser_policy_new_tab_page_rewriter.h"
 #import "ios/chrome/browser/ntp/model/new_tab_page_tab_helper.h"
 #import "ios/chrome/browser/permissions/model/features.h"
 #import "ios/chrome/browser/permissions/model/geolocation_api_usage_java_script_feature.h"
 #import "ios/chrome/browser/permissions/model/media_api_usage_java_script_feature.h"
-#import "ios/chrome/browser/prerender/model/prerender_service.h"
-#import "ios/chrome/browser/prerender/model/prerender_service_factory.h"
-#import "ios/chrome/browser/reading_list/model/offline_page_tab_helper.h"
-#import "ios/chrome/browser/reading_list/model/offline_url_utils.h"
+#import "ios/chrome/browser/prerender/model/prerender_tab_helper.h"
+#import "ios/chrome/browser/reader_mode/model/features.h"
+#import "ios/chrome/browser/reader_mode/model/reader_mode_java_script_feature.h"
+#import "ios/chrome/browser/reader_mode/model/reader_mode_scroll_anchor_java_script_feature.h"
 #import "ios/chrome/browser/safe_browsing/model/password_protection_java_script_feature.h"
 #import "ios/chrome/browser/safe_browsing/model/safe_browsing_blocking_page.h"
 #import "ios/chrome/browser/search_engines/model/search_engine_java_script_feature.h"
 #import "ios/chrome/browser/search_engines/model/search_engine_tab_helper_factory.h"
+#import "ios/chrome/browser/send_tab_to_self/model/send_tab_to_self_text_fragment_selector_generator.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
@@ -65,11 +84,14 @@
 #import "ios/chrome/browser/supervised_user/model/supervised_user_interstitial_java_script_feature.h"
 #import "ios/chrome/browser/supervised_user/model/supervised_user_service_factory.h"
 #import "ios/chrome/browser/supervised_user/model/supervised_user_url_filter_tab_helper.h"
+#import "ios/chrome/browser/unified_consent/model/url_keyed_data_collection_consent_helper_factory_ios.h"
+#import "ios/chrome/browser/unified_consent/model/url_keyed_data_collection_consent_helper_ios.h"
 #import "ios/chrome/browser/web/model/browser_about_rewriter.h"
 #import "ios/chrome/browser/web/model/choose_file/choose_file_java_script_feature.h"
+#import "ios/chrome/browser/web/model/choose_file/choose_file_tab_helper.h"
 #import "ios/chrome/browser/web/model/chrome_main_parts.h"
+#import "ios/chrome/browser/web/model/dark_mode_detection/dark_mode_detection_java_script_feature.h"
 #import "ios/chrome/browser/web/model/error_page_util.h"
-#import "ios/chrome/browser/web/model/features.h"
 #import "ios/chrome/browser/web/model/font_size/font_size_java_script_feature.h"
 #import "ios/chrome/browser/web/model/image_fetch/image_fetch_java_script_feature.h"
 #import "ios/chrome/browser/web/model/java_script_console/java_script_console_feature.h"
@@ -78,6 +100,7 @@
 #import "ios/chrome/browser/web/model/web_performance_metrics/web_performance_metrics_java_script_feature.h"
 #import "ios/chrome/browser/web_selection/model/web_selection_java_script_feature.h"
 #import "ios/chrome/common/channel_info.h"
+#import "ios/chrome/common/crash_report/crash_helper.h"
 #import "ios/components/security_interstitials/https_only_mode/feature.h"
 #import "ios/components/security_interstitials/https_only_mode/https_only_mode_blocking_page.h"
 #import "ios/components/security_interstitials/https_only_mode/https_only_mode_container.h"
@@ -92,8 +115,11 @@
 #import "ios/components/security_interstitials/lookalikes/lookalike_url_error.h"
 #import "ios/components/security_interstitials/safe_browsing/safe_browsing_error.h"
 #import "ios/components/security_interstitials/safe_browsing/safe_browsing_unsafe_resource_container.h"
+#import "ios/components/ui_util/dynamic_type_util.h"
 #import "ios/components/webui/web_ui_url_constants.h"
 #import "ios/net/protocol_handler_util.h"
+#import "ios/public/provider/chrome/browser/cobalt/cobalt_api.h"
+#import "ios/public/provider/chrome/browser/fullscreen/fullscreen_api.h"
 #import "ios/public/provider/chrome/browser/url_rewriters/url_rewriters_api.h"
 #import "ios/web/common/features.h"
 #import "ios/web/common/user_agent.h"
@@ -108,14 +134,16 @@
 #import "ui/base/l10n/l10n_util.h"
 #import "ui/base/resource/resource_bundle.h"
 #import "url/gurl.h"
+#import "url/url_constants.h"
 
 namespace {
 // The tag describing the product name with a placeholder for the version.
 const char kProductTagWithPlaceholder[] = "CriOS/%s";
 
-// Returns the safe browsing error page HTML.
+// Returns the consumer or Enterprise safe browsing error page HTML.
 NSString* GetSafeBrowsingErrorPageHTML(web::WebState* web_state,
-                                       int64_t navigation_id) {
+                                       int64_t navigation_id,
+                                       NSInteger error_code) {
   // Fetch the unsafe resource causing this error page from the WebState's
   // container.
   SafeBrowsingUnsafeResourceContainer* container =
@@ -124,8 +152,28 @@ NSString* GetSafeBrowsingErrorPageHTML(web::WebState* web_state,
       container->GetMainFrameUnsafeResource();
 
   // Construct the blocking page and associate it with the WebState.
-  std::unique_ptr<security_interstitials::IOSSecurityInterstitialPage> page =
-      SafeBrowsingBlockingPage::Create(*resource);
+  std::unique_ptr<security_interstitials::IOSSecurityInterstitialPage> page;
+  switch (static_cast<SafeBrowsingErrorCode>(error_code)) {
+    case SafeBrowsingErrorCode::kUnsafeResource: {
+      page = SafeBrowsingBlockingPage::Create(*resource);
+      break;
+    }
+    case SafeBrowsingErrorCode::kEnterpriseBlock:
+      page =
+          enterprise_connectors::IOSEnterpriseInterstitial::CreateBlockingPage(
+              *resource);
+      break;
+
+    case SafeBrowsingErrorCode::kEnterpriseWarn:
+      page =
+          enterprise_connectors::IOSEnterpriseInterstitial::CreateWarningPage(
+              *resource);
+      break;
+
+    default:
+      NOTREACHED() << "Unsupported safe browsing error code " << error_code;
+  }
+
   std::string error_page_content = page->GetHtmlContents();
   security_interstitials::IOSBlockingPageTabHelper::FromWebState(web_state)
       ->AssociateBlockingPage(navigation_id, std::move(page));
@@ -151,7 +199,7 @@ NSString* GetLookalikeUrlErrorPageHtml(web::WebState* web_state,
           lookalike_info->match_type,
           std::make_unique<LookalikeUrlControllerClient>(
               web_state, lookalike_info->safe_url, lookalike_info->request_url,
-              GetApplicationContext()->GetApplicationLocale()));
+              GetApplicationContext()->GetApplicationLocaleStorage()->Get()));
   std::string error_page_content = page->GetHtmlContents();
   security_interstitials::IOSBlockingPageTabHelper::FromWebState(web_state)
       ->AssociateBlockingPage(navigation_id, std::move(page));
@@ -176,7 +224,7 @@ NSString* GetHttpsOnlyModeErrorPageHtml(web::WebState* web_state,
           web_state, container->http_url(), service,
           std::make_unique<HttpsOnlyModeControllerClient>(
               web_state, container->http_url(),
-              GetApplicationContext()->GetApplicationLocale()));
+              GetApplicationContext()->GetApplicationLocaleStorage()->Get()));
 
   std::string error_page_content = page->GetHtmlContents();
   security_interstitials::IOSBlockingPageTabHelper::FromWebState(web_state)
@@ -206,12 +254,13 @@ NSString* GetSupervisedUserErrorPageHTML(web::WebState* web_state,
   ProfileIOS* profile =
       ProfileIOS::FromBrowserState(web_state->GetBrowserState());
   std::string error_page_content =
-      supervised_user::SupervisedUserInterstitial::GetHTMLContents(
-          SupervisedUserServiceFactory::GetForProfile(profile),
-          profile->GetPrefs(), error_info->filtering_behavior_reason(),
+      supervised_user::SupervisedUserInterstitial::GetHTMLContentsWithApprovals(
+          supervised_user::SupervisedUserServiceFactory::GetForProfile(profile),
+          error_info->filtering_result().reason,
           container->IsRemoteApprovalPendingForUrl(url),
           error_info->is_main_frame(),
-          GetApplicationContext()->GetApplicationLocale());
+          GetApplicationContext()->GetApplicationLocaleStorage()->Get(),
+          ui_util::SystemSuggestedFontSizeMultiplier());
 
   security_interstitials::IOSBlockingPageTabHelper::FromWebState(web_state)
       ->AssociateBlockingPage(navigation_id, std::move(page));
@@ -235,16 +284,14 @@ std::string GetDesktopProduct() {
                             version_info::GetMajorVersionNumber().c_str());
 }
 
-// If `url` is an offline URL, returns the associated online URL. If it is not
-// an offline URL then returns `url` as it can be considered as online.
-GURL GetOnlineUrl(const GURL& url) {
-  GURL online_url = url;
-  if (reading_list::IsOfflineEntryURL(url)) {
-    online_url = reading_list::EntryURLForOfflineURL(url);
-  } else if (reading_list::IsOfflineReloadURL(url)) {
-    online_url = reading_list::ReloadURLForOfflineURL(url);
+// Filter javascript: URLs and replace them by about:blank.
+bool WillHandleWebBrowserJavascriptURLs(GURL* url, web::BrowserState*) {
+  if (url->is_valid() && url->SchemeIs(url::kJavaScriptScheme)) {
+    *url = GURL(url::kAboutBlankURL);
+    return true;
   }
-  return online_url;
+
+  return false;
 }
 
 }  // namespace
@@ -280,7 +327,7 @@ void ChromeWebClient::AddAdditionalSchemes(Schemes* schemes) const {
 
 std::string ChromeWebClient::GetApplicationLocale() const {
   DCHECK(GetApplicationContext());
-  return GetApplicationContext()->GetApplicationLocale();
+  return GetApplicationContext()->GetApplicationLocaleStorage()->Get();
 }
 
 bool ChromeWebClient::IsAppSpecificURL(const GURL& url) const {
@@ -310,6 +357,10 @@ std::string ChromeWebClient::GetUserAgent(web::UserAgentType type) const {
   return web::BuildMobileUserAgent(GetMobileProduct());
 }
 
+std::string ChromeWebClient::GetMainThreadName() const {
+  return "CrWebMain";
+}
+
 std::u16string ChromeWebClient::GetLocalizedString(int message_id) const {
   return l10n_util::GetStringUTF16(message_id);
 }
@@ -334,6 +385,7 @@ void ChromeWebClient::GetAdditionalWebUISchemes(
 
 void ChromeWebClient::PostBrowserURLRewriterCreation(
     web::BrowserURLRewriter* rewriter) {
+  rewriter->AddURLRewriter(&WillHandleWebBrowserJavascriptURLs);
   rewriter->AddURLRewriter(&WillHandleWebBrowserNewTabPageURLForPolicy);
   rewriter->AddURLRewriter(&WillHandleWebBrowserAboutURL);
   ios::provider::AddURLRewriters(rewriter);
@@ -343,10 +395,7 @@ std::vector<web::JavaScriptFeature*> ChromeWebClient::GetJavaScriptFeatures(
     web::BrowserState* browser_state) const {
   static base::NoDestructor<PrintJavaScriptFeature> print_feature;
   std::vector<web::JavaScriptFeature*> features;
-  if (base::FeatureList::IsEnabled(
-          password_manager::features::kPasswordReuseDetectionEnabled)) {
-    features.push_back(PasswordProtectionJavaScriptFeature::GetInstance());
-  }
+  features.push_back(PasswordProtectionJavaScriptFeature::GetInstance());
 
   ProfileIOS* profile = ProfileIOS::FromBrowserState(browser_state);
   JavaScriptConsoleFeature* java_script_console_feature =
@@ -357,13 +406,9 @@ std::vector<web::JavaScriptFeature*> ChromeWebClient::GetJavaScriptFeatures(
 
   features.push_back(autofill::AutofillJavaScriptFeature::GetInstance());
   features.push_back(autofill::FormHandlersJavaScriptFeature::GetInstance());
-
-  if (base::FeatureList::IsEnabled(kAutofillIsolatedWorldForJavascriptIos)) {
-    features.push_back(
-        autofill::ProgrammaticFormSubmissionHandlerJavaScriptFeature::
-            GetInstance());
-  }
-
+  features.push_back(
+      autofill::ProgrammaticFormSubmissionHandlerJavaScriptFeature::
+          GetInstance());
   features.push_back(
       autofill::SuggestionControllerJavaScriptFeature::GetInstance());
   features.push_back(AutofillBottomSheetJavaScriptFeature::GetInstance());
@@ -371,7 +416,13 @@ std::vector<web::JavaScriptFeature*> ChromeWebClient::GetJavaScriptFeatures(
   features.push_back(ImageFetchJavaScriptFeature::GetInstance());
   features.push_back(
       password_manager::PasswordManagerJavaScriptFeature::GetInstance());
+
+  if (base::FeatureList::IsEnabled(kIOSPasskeyShim)) {
+    features.push_back(webauthn::PasskeyJavaScriptFeature::GetInstance());
+  }
+
   features.push_back(LinkToTextJavaScriptFeature::GetInstance());
+  features.push_back(SendTabToSelfTextFragmentSelectorGenerator::GetInstance());
   features.push_back(WebSelectionJavaScriptFeature::GetInstance());
 
   SearchEngineJavaScriptFeature::GetInstance()->SetDelegate(
@@ -384,11 +435,30 @@ std::vector<web::JavaScriptFeature*> ChromeWebClient::GetJavaScriptFeatures(
       language::LanguageDetectionJavaScriptFeature::GetInstance());
   features.push_back(translate::TranslateJavaScriptFeature::GetInstance());
   features.push_back(WebPerformanceMetricsJavaScriptFeature::GetInstance());
-  features.push_back(FollowJavaScriptFeature::GetInstance());
   features.push_back(ChooseFileJavaScriptFeature::GetInstance());
+  features.push_back(PageContextExtractorJavaScriptFeature::GetInstance());
+  if (IsIOSDarkModeDetectionEnabled()) {
+    features.push_back(DarkModeDetectionJavaScriptFeature::GetInstance());
+  }
+
+  if (base::FeatureList::IsEnabled(kActorTools)) {
+    features.push_back(actor::ActionTargetJavaScriptFeature::GetInstance());
+    features.push_back(actor::ClickToolJavaScriptFeature::GetInstance());
+    features.push_back(actor::ScrollToolJavaScriptFeature::GetInstance());
+    features.push_back(actor::SelectToolJavaScriptFeature::GetInstance());
+    features.push_back(actor::TypeToolJavaScriptFeature::GetInstance());
+  }
+  if (IsActorEnabled()) {
+    features.push_back(actor::PageStabilityJavaScriptFeature::GetInstance());
+  }
 
   features.push_back(
       SupervisedUserInterstitialJavaScriptFeature::GetInstance());
+
+  if (IsReaderModeAvailable()) {
+    features.push_back(ReaderModeJavaScriptFeature::GetInstance());
+    features.push_back(ReaderModeScrollAnchorJavaScriptFeature::GetInstance());
+  }
 
   if (base::FeatureList::IsEnabled(
           kJavaScriptPermissionBasedAPIMetricsEnabled)) {
@@ -398,6 +468,17 @@ std::vector<web::JavaScriptFeature*> ChromeWebClient::GetJavaScriptFeatures(
     if (MediaAPIUsageJavaScriptFeature::ShouldOverrideAPI()) {
       features.push_back(MediaAPIUsageJavaScriptFeature::GetInstance());
     }
+  }
+  if (web::features::IsCobaltEnabled()) {
+    web::JavaScriptFeature* cobalt_feature =
+        ios::provider::GetCobaltJavascriptFeatureForProfile(profile);
+    if (cobalt_feature) {
+      features.push_back(cobalt_feature);
+    }
+  }
+
+  if (IsAimCobrowseEligible(profile)) {
+    features.push_back(AimCobrowseJavaScriptFeature::GetInstance());
   }
 
   return features;
@@ -412,32 +493,13 @@ void ChromeWebClient::PrepareErrorPage(
     const std::optional<net::SSLInfo>& ssl_info,
     int64_t navigation_id,
     base::OnceCallback<void(NSString*)> callback) {
-  OfflinePageTabHelper* offline_page_tab_helper =
-      OfflinePageTabHelper::FromWebState(web_state);
-  // WebState that are not attached to a tab may not have an
-  // OfflinePageTabHelper.
-  if (offline_page_tab_helper &&
-      (offline_page_tab_helper->CanHandleErrorLoadingURL(url))) {
-    // An offline version of the page will be displayed to replace this error
-    // page. Loading an error page here can cause a race between the
-    // navigation to load the error page and the navigation to display the
-    // offline version of the page. If the latter navigation interrupts the
-    // former and causes it to fail, this can incorrectly appear to be a
-    // navigation back to the previous committed URL. To avoid this race,
-    // return a nil error page here to avoid an error page load. See
-    // crbug.com/980912.
-    std::move(callback).Run(nil);
-    return;
-  }
   DCHECK(error);
   NSError* final_underlying_error =
       base::ios::GetFinalUnderlyingErrorFromError(error);
   if ([final_underlying_error.domain
           isEqualToString:kSafeBrowsingErrorDomain]) {
-    // Only kUnsafeResourceErrorCode is supported.
-    DCHECK_EQ(kUnsafeResourceErrorCode, final_underlying_error.code);
-    std::move(callback).Run(
-        GetSafeBrowsingErrorPageHTML(web_state, navigation_id));
+    std::move(callback).Run(GetSafeBrowsingErrorPageHTML(
+        web_state, navigation_id, final_underlying_error.code));
   } else if ([final_underlying_error.domain
                  isEqualToString:kLookalikeUrlErrorDomain]) {
     // Only kLookalikeUrlErrorCode is supported.
@@ -527,32 +589,20 @@ void ChromeWebClient::CleanupNativeRestoreURLs(web::WebState* web_state) const {
     web::NavigationItem* item = navigationManager->GetItemAtIndex(i);
     NewTabPageTabHelper::UpdateItem(item);
 
-    // The WKWebView URL underneath a forced-offline page is chrome://offline,
-    // which has an embedded entry URL. Apply that entryURL to the virtualURL
-    // here.
-    if (item->GetVirtualURL().host() == kChromeUIOfflineHost) {
-      item->SetVirtualURL(
-          reading_list::EntryURLForOfflineURL(item->GetVirtualURL()));
-    }
   }
 }
 
 void ChromeWebClient::WillDisplayMediaCapturePermissionPrompt(
     web::WebState* web_state) const {
   // When a prendered page displays a prompt, cancel the prerender.
-  PrerenderService* prerender_service = PrerenderServiceFactory::GetForProfile(
-      ProfileIOS::FromBrowserState(web_state->GetBrowserState()));
-  if (prerender_service &&
-      prerender_service->IsWebStatePrerendered(web_state)) {
-    prerender_service->CancelPrerender();
+  if (auto* tab_helper = PrerenderTabHelper::FromWebState(web_state)) {
+    tab_helper->CancelPrerender();
   }
 }
 
 bool ChromeWebClient::IsPointingToSameDocument(const GURL& url1,
                                                const GURL& url2) const {
-  GURL url_to_compare1 = GetOnlineUrl(url1);
-  GURL url_to_compare2 = GetOnlineUrl(url2);
-  return url_to_compare1 == url_to_compare2;
+  return url1 == url2;
 }
 
 bool ChromeWebClient::IsBrowserLockdownModeEnabled() {
@@ -583,4 +633,49 @@ void ChromeWebClient::BuildEditMenu(web::WebState* web_state,
   if (tab_helper) {
     tab_helper->BuildEditMenu(builder);
   }
+}
+
+bool ChromeWebClient::CanRunOpenPanel(web::WebState* source) const
+    API_AVAILABLE(ios(18.4)) {
+  return ChooseFileTabHelper::FromWebState(source) != nullptr;
+}
+
+void ChromeWebClient::RunOpenPanel(
+    web::WebState* source,
+    WKOpenPanelParameters* parameters,
+    WKFrameInfo* frame,
+    base::OnceCallback<void(NSArray<NSURL*>*)> completion) const
+    API_AVAILABLE(ios(18.4)) {
+  ChooseFileTabHelper* tab_helper = ChooseFileTabHelper::FromWebState(source);
+  CHECK(tab_helper);
+  tab_helper->RunOpenPanel(parameters, frame, std::move(completion));
+}
+
+web::JSErrorReportLoggingLevel ChromeWebClient::GetJSErrorReportLoggingLevel(
+    web::BrowserState* browser_state) const {
+  if (!crash_helper::common::UserEnabledUploading()) {
+    return web::JSErrorReportLoggingLevel::NONE;
+  }
+
+  ProfileIOS* profile = ProfileIOS::FromBrowserState(browser_state);
+  UrlKeyedDataCollectionConsentHelperIOS* consent_helper =
+      UrlKeyedDataCollectionConsentHelperFactoryIOS::GetForProfile(profile);
+  if (consent_helper && consent_helper->IsEnabled()) {
+    return web::JSErrorReportLoggingLevel::FULL;
+  }
+
+  return web::JSErrorReportLoggingLevel::REPORT_WITHOUT_URL;
+}
+
+web::CobaltController* ChromeWebClient::GetCobaltController(
+    web::BrowserState* browser_state) const {
+  ProfileIOS* profile = ProfileIOS::FromBrowserState(browser_state);
+  return ios::provider::GetCobaltController(profile);
+}
+
+bool ChromeWebClient::IsSmoothScrollingSupported() const {
+  // For the purpose of ChromeWebClient, FullscreenRefactoring can be
+  // considered the same as FullscreenSmoothScrolling.
+  return IsFullscreenRefactoringEnabled() ||
+         ios::provider::IsFullscreenSmoothScrollingSupported();
 }

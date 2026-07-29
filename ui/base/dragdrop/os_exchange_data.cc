@@ -53,7 +53,8 @@ void OSExchangeData::SetString(std::u16string_view data) {
 }
 
 void OSExchangeData::SetURL(const GURL& url, std::u16string_view title) {
-  provider_->SetURL(url, title);
+  ClipboardUrlInfo url_info(url, std::u16string(title));
+  provider_->SetURLs(base::span_from_ref(url_info));
 }
 
 void OSExchangeData::SetFilename(const base::FilePath& path) {
@@ -74,12 +75,7 @@ std::optional<std::u16string> OSExchangeData::GetString() const {
   return provider_->GetString();
 }
 
-std::optional<OSExchangeData::UrlInfo> OSExchangeData::GetURLAndTitle(
-    FilenameToURLPolicy policy) const {
-  return provider_->GetURLAndTitle(policy);
-}
-
-std::optional<std::vector<GURL>> OSExchangeData::GetURLs(
+std::vector<ui::ClipboardUrlInfo> OSExchangeData::GetURLs(
     FilenameToURLPolicy policy) const {
   return provider_->GetURLs(policy);
 }
@@ -136,7 +132,7 @@ bool OSExchangeData::HasAnyFormat(
 }
 
 void OSExchangeData::SetFileContents(const base::FilePath& filename,
-                                     const std::string& file_contents) {
+                                     base::span<const uint8_t> file_contents) {
   provider_->SetFileContents(filename, file_contents);
 }
 

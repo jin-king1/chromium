@@ -17,10 +17,15 @@
 #include "build/build_config.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profile_observer.h"
-#include "chrome/test/base/scoped_testing_local_state.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/policy/core/common/policy_service.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
+
+#if BUILDFLAG(IS_CHROMEOS)
+#include "chrome/browser/ash/policy/core/user_cloud_policy_manager_ash.h"
+#else
+#include "components/policy/core/common/cloud/user_cloud_policy_manager.h"
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 class ProfileAttributesStorage;
 class ProfileManager;
@@ -40,8 +45,6 @@ class PrefServiceSyncable;
 class TestingProfileManager : public ProfileObserver {
  public:
   explicit TestingProfileManager(TestingBrowserProcess* browser_process);
-  TestingProfileManager(TestingBrowserProcess* browser_process,
-                        ScopedTestingLocalState* local_state);
   TestingProfileManager(const TestingProfileManager&) = delete;
   TestingProfileManager& operator=(const TestingProfileManager&) = delete;
   ~TestingProfileManager() override;
@@ -88,21 +91,29 @@ class TestingProfileManager : public ProfileObserver {
       std::optional<bool> is_new_profile = std::nullopt,
       std::optional<std::unique_ptr<policy::PolicyService>> policy_service =
           std::nullopt,
-      bool is_main_profile = false,
       scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory =
+          nullptr,
+#if BUILDFLAG(IS_CHROMEOS)
+      std::unique_ptr<policy::UserCloudPolicyManagerAsh> user_cloud_policy_manager =
           nullptr);
+#else
+      std::unique_ptr<policy::UserCloudPolicyManager>
+          user_cloud_policy_manager = nullptr);
+#endif  // BUILDFLAG(IS_CHROMEOS)
   // Small helpers for creating testing profiles. Just forward to above.
   TestingProfile* CreateTestingProfile(
       const std::string& name,
-      bool is_main_profile = false,
+      TestingProfile::TestingFactories testing_factories = {},
       scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory =
           nullptr);
-  TestingProfile* CreateTestingProfile(
-      const std::string& name,
-      TestingProfile::TestingFactories testing_factories,
-      bool is_main_profile = false,
-      scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory =
-          nullptr);
+
+  // Creates a testing profile with the given parameters of Builder.
+  // Note that the path set to the `builder` will be ignored, and instead
+  // the path based on the name under the directory managed by this manager
+  // will be used.
+  TestingProfile* CreateTestingProfile(TestingProfile::Builder builder,
+                                       const std::u16string& user_name,
+                                       int avatar_id);
 
   // Creates a new guest TestingProfile whose data lives in the guest profile
   // test environment directory, as specified by the profile manager. If the
@@ -148,7 +159,6 @@ class TestingProfileManager : public ProfileObserver {
   const base::FilePath& profiles_dir();
   ProfileManager* profile_manager();
   ProfileAttributesStorage* profile_attributes_storage();
-  ScopedTestingLocalState* local_state() { return local_state_; }
 
   // ProfileObserver:
   void OnProfileWillBeDestroyed(Profile* profile) override;
@@ -181,12 +191,6 @@ class TestingProfileManager : public ProfileObserver {
 
   // Weak reference to the browser process on which the ProfileManager is set.
   raw_ptr<TestingBrowserProcess> browser_process_;
-
-  // Local state in which all the profiles are registered.
-  raw_ptr<ScopedTestingLocalState> local_state_;
-
-  // Owned local state for when it's not provided in the constructor.
-  std::unique_ptr<ScopedTestingLocalState> owned_local_state_;
 
   // Weak reference to the profile manager.
   raw_ptr<ProfileManager, DanglingUntriaged> profile_manager_;

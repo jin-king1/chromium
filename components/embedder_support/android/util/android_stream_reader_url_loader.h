@@ -85,6 +85,8 @@ class AndroidStreamReaderURLLoader : public network::mojom::URLLoader {
     bool allow_cors_to_same_scheme = false;
   };
 
+  // Delegate that ensures that the provided `value` is set as a Set-Cookie
+  // response to the given `request`.
   using SetCookieHeader = base::RepeatingCallback<void(
       const network::ResourceRequest& request,
       std::string_view value,
@@ -108,12 +110,14 @@ class AndroidStreamReaderURLLoader : public network::mojom::URLLoader {
 
   // network::mojom::URLLoader overrides:
   void FollowRedirect(
-      const std::vector<std::string>& removed_headers,
-      const net::HttpRequestHeaders& modified_headers,
-      const net::HttpRequestHeaders& modified_cors_exempt_headers,
+      network::HttpRequestHeadersUpdateParams headers_update_params,
       const std::optional<GURL>& new_url) override;
   void SetPriority(net::RequestPriority priority,
                    int intra_priority_value) override;
+
+  network::ResourceRequest* ResourceRequestForTesting() {
+    return &resource_request_;
+  }
 
  private:
   bool ParseRange(const net::HttpRequestHeaders& headers);

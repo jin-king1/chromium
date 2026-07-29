@@ -19,10 +19,12 @@
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/system/sys_info.h"
 #include "base/task/bind_post_task.h"
 #include "base/task/thread_pool.h"
 #include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
+#include "net/base/cache_type.h"
 
 namespace {
 
@@ -134,16 +136,9 @@ namespace disk_cache {
 
 const int kDefaultCacheSize = 80 * 1024 * 1024;
 
-BASE_FEATURE(kChangeDiskCacheSizeExperiment,
-             "ChangeDiskCacheSize",
-// See go/change-disk-cache-size-results-2024 for an explanation of why the
-// state of this feature varies by platform.
-#if BUILDFLAG(IS_WIN)
-             base::FEATURE_DISABLED_BY_DEFAULT
-#else
-             base::FEATURE_ENABLED_BY_DEFAULT
-#endif
-);
+BASE_FEATURE(kChangeGeneratedCodeCacheSizeExperiment,
+             "ChangeGeneratedCodeCacheSize",
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 void DeleteCache(const base::FilePath& path, bool remove_folder) {
   if (remove_folder) {
@@ -189,12 +184,20 @@ int PreferredCacheSize(int64_t available, net::CacheType type) {
   // use 100% of the default size.
   int percent_relative_size = 100;
 
+// See go/change-disk-cache-size-results-2024 for an explanation of why the
+// size varies by platform.
+#if !BUILDFLAG(IS_WIN)
+  if (type == net::DISK_CACHE) {
+    percent_relative_size = 400;
+  }
+#endif
+
   if (base::FeatureList::IsEnabled(
-          disk_cache::kChangeDiskCacheSizeExperiment) &&
-      type == net::DISK_CACHE) {
+          disk_cache::kChangeGeneratedCodeCacheSizeExperiment) &&
+      type == net::GENERATED_BYTE_CODE_CACHE) {
     percent_relative_size = base::GetFieldTrialParamByFeatureAsInt(
-        disk_cache::kChangeDiskCacheSizeExperiment, "percent_relative_size",
-        400 /* default value */);
+        disk_cache::kChangeGeneratedCodeCacheSizeExperiment,
+        "percent_relative_size", 400 /* default value */);
   }
 
   // Cap scaling, as a safety check, to avoid overflow.
@@ -246,6 +249,12 @@ int PreferredCacheSize(int64_t available, net::CacheType type) {
 
   DCHECK_LT(size_limit, std::numeric_limits<int32_t>::max());
   return static_cast<int32_t>(std::min(preferred_cache_size, size_limit));
+}
+
+int64_t PreferredCacheSizeForPath(const base::FilePath& path,
+                                  net::CacheType type) {
+  int64_t available = base::SysInfo::AmountOfFreeDiskSpace(path).value_or(-1);
+  return PreferredCacheSize(available, type);
 }
 
 }  // namespace disk_cache

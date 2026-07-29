@@ -4,41 +4,54 @@
 
 package org.chromium.base.test;
 
+import android.os.Handler;
+import android.os.Looper;
+
 import androidx.test.core.app.ApplicationProvider;
 
 import org.jni_zero.JniTestInstancesSnapshot;
 import org.junit.rules.TestRule;
 import org.junit.runner.Description;
 import org.junit.runners.model.Statement;
+import org.robolectric.android.util.concurrent.PausedExecutorService;
+import org.robolectric.shadows.ShadowLog;
 
 import org.chromium.base.ApplicationStatus;
 import org.chromium.base.BundleUtils;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.FeatureList;
-import org.chromium.base.LifetimeAssert;
+import org.chromium.base.Log;
 import org.chromium.base.PathUtils;
 import org.chromium.base.ResettersForTesting;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.library_loader.LibraryLoader;
 import org.chromium.base.library_loader.LibraryProcessType;
+import org.chromium.base.lifetime.LifetimeAssert;
 import org.chromium.base.metrics.UmaRecorderHolder;
+import org.chromium.base.task.AsyncTask;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.test.BaseRobolectricTestRunner.HelperTestRunner;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.build.NativeLibraries;
+import org.chromium.build.annotations.Nullable;
 
 import java.lang.reflect.Method;
+import java.util.List;
 import java.util.Locale;
 import java.util.TimeZone;
+import java.util.concurrent.TimeUnit;
 
 /**
  * The default Rule used by BaseRobolectricTestRunner. Include this directly when using
  * ParameterizedRobolectricTestRunner.
- * Use @Rule(order=-2) to ensure it runs before other rules.
+ *
+ * <p>Use @Rule(order=-2) to ensure it runs before other rules.
  */
 public class BaseRobolectricTestRule implements TestRule {
     private static final Locale ORIG_LOCALE = Locale.getDefault();
     private static final TimeZone ORIG_TIMEZONE = TimeZone.getDefault();
+    private static final String TAG = "BaseRobolectric";
+    static @Nullable PausedExecutorService sPausedExecutor;
 
     // Removes the API Level suffix. E.g. "testSomething[28]" -> "testSomething".
     private static String stripBrackets(String methodName) {
@@ -51,22 +64,25 @@ public class BaseRobolectricTestRule implements TestRule {
 
     @Override
     public Statement apply(Statement base, Description description) {
-        return new Statement() {
-            @Override
-            public void evaluate() throws Throwable {
-                setUp(
-                        description
-                                .getTestClass()
-                                .getMethod(stripBrackets(description.getMethodName())));
-                boolean testFailed = true;
-                try {
-                    base.evaluate();
-                    testFailed = false;
-                } finally {
-                    tearDown(testFailed);
-                }
-            }
-        };
+        Statement wrappedStatement =
+                new Statement() {
+                    @Override
+                    public void evaluate() throws Throwable {
+                        setUp(
+                                description
+                                        .getTestClass()
+                                        .getMethod(stripBrackets(description.getMethodName())));
+                        boolean testFailed = true;
+                        try {
+                            base.evaluate();
+                            testFailed = false;
+                        } finally {
+                            tearDown(testFailed);
+                        }
+                    }
+                };
+        return new BaseTimeLimitedStatement(
+                BaseRobolectricTestRunner.PER_TEST_TIMEOUT_MS, wrappedStatement);
     }
 
     static void setUp(Method method) {
@@ -79,6 +95,7 @@ public class BaseRobolectricTestRule implements TestRule {
         JniTestInstancesSnapshot.clearAllForTesting();
         FeatureList.setDisableNativeForTesting(true);
         CommandLineFlags.ensureInitialized();
+        ShadowLog.stream = System.out;
         UmaRecorderHolder.setUpNativeUmaRecorder(false);
         UmaRecorderHolder.resetForTesting();
         ContextUtils.initApplicationContextForTests(ApplicationProvider.getApplicationContext());
@@ -94,22 +111,40 @@ public class BaseRobolectricTestRule implements TestRule {
         if (NativeLibraries.LIBRARIES.length > 0) {
             LibraryLoader.getInstance().ensureMainDexInitialized();
         }
+
+        sPausedExecutor = new PausedExecutorService();
+        AsyncTask.takeOverAndroidThreadPool();
+        PostTask.setPrenativeThreadPoolExecutorForTesting(sPausedExecutor);
+        Handler mainLooperHandler = new Handler(Looper.getMainLooper());
+        PostTask.setPrenativeThreadPoolDelayedExecutorForTesting(
+                (task, delay) ->
+                        mainLooperHandler.postDelayed(() -> sPausedExecutor.execute(task), delay));
     }
 
     static void tearDown(boolean testFailed) {
+        List<Runnable> pendingBackgroundTasks = sPausedExecutor.shutdownNow();
+        if (!pendingBackgroundTasks.isEmpty()) {
+            Log.w(TAG, "Dropping %d pending background tasks", pendingBackgroundTasks.size());
+        }
+
         try {
+            sPausedExecutor.awaitTermination(1, TimeUnit.SECONDS);
             // https://crbug.com/1392817 for context as to why we do this.
             PostTask.flushJobsAndResetForTesting();
         } catch (InterruptedException e) {
             HelperTestRunner.sTestFailed = true;
             throw new RuntimeException(e);
         } finally {
+            // PostTask.setPrenativeThreadPoolExecutorForTesting(null) is unnecessary as
+            // ResettersForTesting.afterHooksDidExecute() below will reset it.
+            sPausedExecutor = null;
             ApplicationStatus.destroyForJUnitTests();
             PathUtils.resetForTesting();
             ThreadUtils.clearUiThreadForTesting();
             Locale.setDefault(ORIG_LOCALE);
             TimeZone.setDefault(ORIG_TIMEZONE);
             ResettersForTesting.afterHooksDidExecute();
+            ShadowLog.stream = null;
             // Run assertions only when the test has not already failed so as to not mask
             // failures. https://crbug.com/1466313
             if (testFailed) {
@@ -118,5 +153,14 @@ public class BaseRobolectricTestRule implements TestRule {
                 LifetimeAssert.assertAllInstancesDestroyedForTesting();
             }
         }
+    }
+
+    // TODO(agrieve): Remove once unused internally.
+    public static int runAllBackgroundAndUi() {
+        return RobolectricUtil.runAllBackgroundAndUi();
+    }
+
+    public static PausedExecutorService getPausedExecutor() {
+        return sPausedExecutor;
     }
 }

@@ -50,6 +50,7 @@ class CalendarViewPixelTest : public AshTestBase {
   }
 
   void TearDown() override {
+    calendar_view_ = nullptr;
     Shell::Get()->calendar_controller()->RegisterClientForUser(account_id_,
                                                                nullptr);
 
@@ -98,7 +99,7 @@ class CalendarViewPixelTest : public AshTestBase {
  private:
   const AccountId account_id_ = AccountId::FromUserEmail("user1@email.com");
   calendar_test_utils::CalendarClientTestImpl client_;
-  raw_ptr<CalendarView, DanglingUntriaged> calendar_view_ = nullptr;
+  raw_ptr<CalendarView> calendar_view_ = nullptr;
   static base::Time fake_time_;
 };
 
@@ -117,7 +118,7 @@ TEST_F(CalendarViewPixelTest, Basics) {
 
   EXPECT_TRUE(GetPixelDiffer()->CompareUiComponentsOnPrimaryScreen(
       "calendar_view",
-      /*revision_number=*/11, GetCalendarView()));
+      /*revision_number=*/12, GetCalendarView()));
 }
 
 // Tests that the scroll view scrolls up when there are not at least 2 weeks
@@ -138,7 +139,7 @@ TEST_F(CalendarViewPixelTest, Basics_ShowMoreFutureDates) {
 
   EXPECT_TRUE(GetPixelDiffer()->CompareUiComponentsOnPrimaryScreen(
       "calendar_view_more_future_dates",
-      /*revision_number=*/2, GetCalendarView()));
+      /*revision_number=*/3, GetCalendarView()));
 }
 
 TEST_F(CalendarViewPixelTest, EventList) {
@@ -169,7 +170,7 @@ TEST_F(CalendarViewPixelTest, EventList) {
 
   EXPECT_TRUE(GetPixelDiffer()->CompareUiComponentsOnPrimaryScreen(
       "event_list_view",
-      /*revision_number=*/12, GetEventListView()));
+      /*revision_number=*/13, GetEventListView()));
 }
 
 }  // namespace ash

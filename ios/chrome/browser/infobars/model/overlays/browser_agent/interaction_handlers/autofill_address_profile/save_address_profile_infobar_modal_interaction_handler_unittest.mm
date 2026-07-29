@@ -8,6 +8,7 @@
 
 #import "base/strings/sys_string_conversions.h"
 #import "base/uuid.h"
+#import "components/autofill/core/browser/data_model/addresses/autofill_i18n_api.h"
 #import "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
 #import "components/autofill/core/browser/test_utils/autofill_test_utils.h"
 #import "ios/chrome/browser/infobars/model/infobar_ios.h"
@@ -46,14 +47,8 @@ TEST_F(SaveAddressProfileInfobarModalInteractionHandlerTest, MainAction) {
   handler_.PerformMainAction(infobar_.get());
 }
 
-TEST_F(SaveAddressProfileInfobarModalInteractionHandlerTest, EditDeclined) {
-  handler_.CancelModal(infobar_.get(), /*fromEditModal=*/YES);
-  EXPECT_EQ(mock_delegate().user_decision(),
-            autofill::AutofillClient::AddressPromptUserDecision::kEditDeclined);
-}
-
 TEST_F(SaveAddressProfileInfobarModalInteractionHandlerTest, Cancel) {
-  handler_.CancelModal(infobar_.get(), /*fromEditModal=*/NO);
+  handler_.CancelModal(infobar_.get());
   EXPECT_EQ(mock_delegate().user_decision(),
             autofill::AutofillClient::AddressPromptUserDecision::kDeclined);
 }

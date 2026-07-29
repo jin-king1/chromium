@@ -30,12 +30,35 @@
 
 #include "third_party/blink/renderer/core/html/html_template_element.h"
 
+#include <cstddef>
+
+#include "base/memory/stack_allocated.h"
+#include "third_party/blink/renderer/core/dom/container_node.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/document_fragment.h"
+#include "third_party/blink/renderer/core/dom/dom_token_list.h"
+#include "third_party/blink/renderer/core/dom/element.h"
+#include "third_party/blink/renderer/core/dom/mutation_observer.h"
+#include "third_party/blink/renderer/core/dom/node.h"
 #include "third_party/blink/renderer/core/dom/node_cloning_data.h"
+#include "third_party/blink/renderer/core/dom/node_traversal.h"
+#include "third_party/blink/renderer/core/dom/processing_instruction.h"
+#include "third_party/blink/renderer/core/dom/range.h"
+#include "third_party/blink/renderer/core/dom/shadow_root.h"
 #include "third_party/blink/renderer/core/dom/template_content_document_fragment.h"
 #include "third_party/blink/renderer/core/frame/web_feature.h"
+#include "third_party/blink/renderer/core/html/html_collection.h"
+#include "third_party/blink/renderer/core/html/parser/patch.h"
+#include "third_party/blink/renderer/core/html_names.h"
+#include "third_party/blink/renderer/platform/bindings/exception_state.h"
+#include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
+#include "third_party/blink/renderer/platform/weborigin/kurl.h"
+#include "third_party/blink/renderer/platform/wtf/casting.h"
+#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
+#include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
+#include "third_party/blink/renderer/platform/wtf/text/string_impl.h"
+#include "third_party/blink/renderer/platform/wtf/text/string_view.h"
 
 namespace blink {
 
@@ -47,11 +70,12 @@ HTMLTemplateElement::HTMLTemplateElement(Document& document)
 HTMLTemplateElement::~HTMLTemplateElement() = default;
 
 DocumentFragment* HTMLTemplateElement::content() const {
-  CHECK(!declarative_shadow_root_);
-  if (!content_ && GetExecutionContext())
+  CHECK(!override_insertion_target_);
+  if (!content_ && GetExecutionContext()) {
     content_ = MakeGarbageCollected<TemplateContentDocumentFragment>(
         GetDocument().EnsureTemplateDocument(),
         const_cast<HTMLTemplateElement*>(this));
+  }
 
   return content_.Get();
 }
@@ -64,21 +88,37 @@ void HTMLTemplateElement::CloneNonAttributePropertiesFrom(
     return;
   }
   auto& html_template_element = To<HTMLTemplateElement>(source);
-  if (html_template_element.content())
-    content()->CloneChildNodesFrom(*html_template_element.content(), data);
+  if (html_template_element.content()) {
+    content()->CloneChildNodesFrom(*html_template_element.content(), data,
+                                   /*fallback_registry*/ nullptr);
+  }
 }
 
 void HTMLTemplateElement::DidMoveToNewDocument(Document& old_document) {
   HTMLElement::DidMoveToNewDocument(old_document);
-  if (!content_ || !GetExecutionContext())
+  if (!content_ || !GetExecutionContext()) {
     return;
+  }
   GetDocument().EnsureTemplateDocument().AdoptIfNeeded(*content_);
 }
 
 void HTMLTemplateElement::Trace(Visitor* visitor) const {
   visitor->Trace(content_);
-  visitor->Trace(declarative_shadow_root_);
+  visitor->Trace(override_insertion_target_);
+  visitor->Trace(patch_);
   HTMLElement::Trace(visitor);
+}
+
+ContainerNode* HTMLTemplateElement::InsertionTarget() const {
+  return override_insertion_target_ ? override_insertion_target_.Get()
+                                    : content();
+}
+
+void HTMLTemplateElement::FinishParsingChildren() {
+  if (patch_) {
+    patch_->Finalize(this);
+    patch_ = nullptr;
+  }
 }
 
 }  // namespace blink

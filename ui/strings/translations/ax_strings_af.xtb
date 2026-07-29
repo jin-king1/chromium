@@ -37,7 +37,6 @@
 <translation id="2311842470354187719">bladsybreuk</translation>
 <translation id="2335594187091864976">datum- en tydkieser</translation>
 <translation id="2393030564806080191">Heksadesimale kleurwaarde</translation>
-<translation id="2398813069815436052">dialoog oopgemaak.</translation>
 <translation id="245932805758469625">hoeveel sekondes van video oor is</translation>
 <translation id="248395913932153421">Dag</translation>
 <translation id="2508569020611168319">oortjielys</translation>
@@ -67,7 +66,7 @@
 <translation id="3706100364254443312">wissel</translation>
 <translation id="3808586225841795776">term</translation>
 <translation id="3920932319529768807">samevatting</translation>
-<translation id="3924558731517983934">program</translation>
+<translation id="3924558731517983934">app</translation>
 <translation id="3944740393230681990">proloog</translation>
 <translation id="3960700977367013758">rolleesbalk</translation>
 <translation id="4021716437419160885">Rollees af</translation>
@@ -223,6 +222,7 @@
 <translation id="8634971699417195529">Wys maandkieser</translation>
 <translation id="8711688047404765493">uitvoer</translation>
 <translation id="8808573423886751634">hoofstuk</translation>
+<translation id="8826423933757944500">onderskrif</translation>
 <translation id="8851136666856101339">hoof</translation>
 <translation id="8861621546968757188">dialoogopspringerknoppie</translation>
 <translation id="8889402386540077796">Skakering</translation>
@@ -238,7 +238,6 @@
 <translation id="9138385573473225930">waarskuwing</translation>
 <translation id="9155987714137265666"><ph name="WEEK" />, wat begin op <ph name="WEEK_START_DATE" /></translation>
 <translation id="9168329111483466115">voetnoot</translation>
-<translation id="945780513535800434">Gedeeltelik gemerk</translation>
 <translation id="954003015749068518">gaan na prent-in-prent</translation>
 <translation id="966787709310836684">kieslys</translation>
 </translationbundle>

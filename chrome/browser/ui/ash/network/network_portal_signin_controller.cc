@@ -12,15 +12,15 @@
 #include "chrome/browser/chromeos/network/network_portal_signin_window.h"
 #include "chrome/browser/prefs/incognito_mode_prefs.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/browser/ui/browser_dialogs.h"
-#include "chrome/browser/ui/browser_navigator.h"
-#include "chrome/browser/ui/browser_navigator_params.h"
+#include "chrome/browser/ui/dialogs/browser_dialogs.h"
+#include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/scoped_tabbed_browser_displayer.h"
-#include "chrome/common/pref_names.h"
+#include "chrome/browser/ui/webui/ash/floating_workspace/floating_workspace_dialog.h"
+#include "chromeos/ash/components/login/login_state/login_state.h"
 #include "chromeos/ash/components/network/network_event_log.h"
 #include "chromeos/ash/components/network/network_handler.h"
 #include "chromeos/ash/components/network/network_state_handler.h"
-#include "chromeos/ash/components/network/portal_detector/network_portal_detector.h"
 #include "chromeos/ash/components/network/proxy/proxy_config_service_impl.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "chromeos/constants/pref_names.h"
@@ -61,7 +61,8 @@ bool ProxyActive(PrefService& local_state, Profile* profile) {
 
 class SigninWebDialogDelegate : public ui::WebDialogDelegate {
  public:
-  explicit SigninWebDialogDelegate(GURL url) {
+  SigninWebDialogDelegate(GURL url, bool disable_https_upgrades)
+      : disable_https_upgrades_(disable_https_upgrades) {
     set_can_close(true);
     set_can_resize(false);
     set_dialog_content_url(url);
@@ -72,14 +73,21 @@ class SigninWebDialogDelegate : public ui::WebDialogDelegate {
 
     const float kScale = 0.8;
     set_dialog_size(gfx::ScaleToRoundedSize(
-        display::Screen::GetScreen()->GetPrimaryDisplay().size(), kScale));
+        display::Screen::Get()->GetPrimaryDisplay().size(), kScale));
   }
 
   ~SigninWebDialogDelegate() override = default;
 
+  bool ShouldDisableHttpsUpgrades() const override {
+    return disable_https_upgrades_;
+  }
+
   void OnLoadingStateChanged(content::WebContents* source) override {
     NetworkHandler::Get()->network_state_handler()->RequestPortalDetection();
   }
+
+ private:
+  const bool disable_https_upgrades_;
 };
 
 }  // namespace
@@ -130,7 +138,7 @@ void NetworkPortalSigninController::ShowSignin(SigninSource source) {
 
   url = default_network->probe_url();
   if (url.is_empty()) {
-    url = GURL(captive_portal::CaptivePortalDetector::kDefaultURL);
+    url = GURL(captive_portal::CaptivePortalDetector::GetDefaultUrl());
   }
 
   SigninMode mode = GetSigninMode(portal_state);
@@ -147,9 +155,12 @@ void NetworkPortalSigninController::ShowSignin(SigninSource source) {
 
   switch (mode) {
     case SigninMode::kSigninDialog:
-      // OOBE/Login needs to show the portal signin UI in a dialog.
+    case SigninMode::kFloatingWorkspaceDialog: {
+      // OOBE/Login and the Floating Workspace Dialog require the portal signin
+      // UI to be shown in a dialog.
       ShowSigninDialog(url);
       break;
+    }
     case SigninMode::kNormalTab:
       ShowActiveProfileTab(url);
       break;
@@ -216,6 +227,13 @@ NetworkPortalSigninController::GetSigninMode(
     return SigninMode::kIncognitoDisabledByPolicy;
   }
 
+  // In case of being called from the FloatingWorkspaceDialog in session we
+  // want to show the captive portal on top of the dialog, because by
+  // default it will be shown in a tab behind the modal dialog.
+  if (ash::FloatingWorkspaceDialog::IsShown()) {
+    return SigninMode::kFloatingWorkspaceDialog;
+  }
+
   return SigninMode::kSigninDefault;
 }
 
@@ -280,7 +298,15 @@ void NetworkPortalSigninController::ShowSigninDialog(const GURL& url) {
     return;
   }
 
-  auto web_dialog_delegate = std::make_unique<SigninWebDialogDelegate>(url);
+  // Disable ABH/HTTPS-First Mode when logged out because captive portals
+  // require unencrypted HTTP redirects to serve login pages. Forcing HTTPS
+  // would block these redirects with SSL error. See crbug.com/493517524
+  // for details.
+  const bool disable_https_upgrades = ash::LoginState::IsInitialized() &&
+                                      !ash::LoginState::Get()->IsUserLoggedIn();
+
+  auto web_dialog_delegate =
+      std::make_unique<SigninWebDialogDelegate>(url, disable_https_upgrades);
 
   dialog_widget_ = views::Widget::GetWidgetForNativeWindow(
       // ui::WebDialogDelegate is self-deleting, so pass ownership of it (as a
@@ -291,18 +317,18 @@ void NetworkPortalSigninController::ShowSigninDialog(const GURL& url) {
 }
 
 void NetworkPortalSigninController::ShowSigninWindow(const GURL& url) {
-  // Calls NetworkPortalSigninWindow::Show in the appropriate browser (Ash or
-  // Lacros).
-  ash::NewWindowDelegate::GetPrimary()->OpenCaptivePortalSignin(url);
+  // Calls NetworkPortalSigninWindow::Show in the appropriate browser.
+  ash::NewWindowDelegate::GetInstance()->OpenCaptivePortalSignin(url);
 }
 
 void NetworkPortalSigninController::ShowTab(Profile* profile, const GURL& url) {
   chrome::ScopedTabbedBrowserDisplayer displayer(profile);
-  if (!displayer.browser()) {
+  if (!displayer.browser_window_interface()) {
     return;
   }
 
-  NavigateParams params(displayer.browser(), url, ui::PAGE_TRANSITION_LINK);
+  NavigateParams params(displayer.browser_window_interface(), url,
+                        ui::PAGE_TRANSITION_LINK);
   // `captive_portal_window_type = kTab` is used on desktop Chrome to identify
   // captive portal signin tabs. This disables HTTPS-Upgrades for the captive
   // portal navigation.
@@ -313,8 +339,8 @@ void NetworkPortalSigninController::ShowTab(Profile* profile, const GURL& url) {
 }
 
 void NetworkPortalSigninController::ShowActiveProfileTab(const GURL& url) {
-  // Opens a new tab the appropriate browser (Ash or Lacros).
-  ash::NewWindowDelegate::GetPrimary()->OpenUrl(
+  // Opens a new tab the appropriate browser.
+  ash::NewWindowDelegate::GetInstance()->OpenUrl(
       url, NewWindowDelegate::OpenUrlFrom::kUserInteraction,
       NewWindowDelegate::Disposition::kNewForegroundTab);
 }
@@ -338,6 +364,9 @@ std::ostream& operator<<(
     case NetworkPortalSigninController::SigninMode::
         kIncognitoDisabledByParentalControls:
       stream << "Signin Window (Incognito mode disabled by parental controls)";
+      break;
+    case NetworkPortalSigninController::SigninMode::kFloatingWorkspaceDialog:
+      stream << "Floating Workspace Dialog";
       break;
   }
   return stream;

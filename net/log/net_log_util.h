@@ -8,6 +8,7 @@
 #include <memory>
 #include <set>
 
+#include "base/trace_event/trace_event.h"  // IWYU pragma: export
 #include "net/base/net_export.h"
 #include "net/log/net_log.h"
 
@@ -26,14 +27,14 @@ enum class NetConstantsRequestMode {
 // Utility methods for creating NetLog dumps.
 
 // Creates a dictionary containing a legend for net/ constants.
-NET_EXPORT base::Value::Dict GetNetConstants(
+NET_EXPORT base::DictValue GetNetConstants(
     NetConstantsRequestMode request_mode = NetConstantsRequestMode::kDefault);
 
 // Retrieves a dictionary containing information about the current state of
 // |context|.
 //
 // May only be called on |context|'s thread.
-NET_EXPORT base::Value::Dict GetNetInfo(URLRequestContext* context);
+NET_EXPORT base::DictValue GetNetInfo(URLRequestContext* context);
 
 // Takes in a set of contexts and a NetLog::Observer, and passes in
 // NetLog::Entries to the observer for certain NetLogSources with pending
@@ -54,6 +55,10 @@ NET_EXPORT base::Value::Dict GetNetInfo(URLRequestContext* context);
 NET_EXPORT void CreateNetLogEntriesForActiveObjects(
     const std::set<URLRequestContext*>& contexts,
     NetLog::ThreadSafeObserver* observer);
+
+// Creates a trace Flow from a NetLogWithSource.
+NET_EXPORT perfetto::Flow NetLogWithSourceToFlow(
+    const NetLogWithSource& net_log);
 
 }  // namespace net
 

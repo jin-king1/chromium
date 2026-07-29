@@ -14,10 +14,11 @@ import androidx.preference.PreferenceViewHolder;
 import androidx.recyclerview.widget.RecyclerView;
 import androidx.recyclerview.widget.RecyclerView.State;
 
-import org.chromium.base.supplier.Supplier;
 import org.chromium.build.annotations.EnsuresNonNullIf;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+
+import java.util.function.Supplier;
 
 /**
  * Item decoration that adds padding to each item and can draw divider between items. This is a
@@ -36,7 +37,7 @@ public class PaddedItemDecorationWithDivider extends RecyclerView.ItemDecoration
     private boolean mAllowDividerAfterLastItem;
     private Supplier<Integer> mDividerPaddingStartSupplier;
     private Supplier<Integer> mDividerPaddingEndSupplier;
-    private Supplier<Integer> mItemOffsetSupplier;
+    private final Supplier<Integer> mItemOffsetSupplier;
 
     /**
      * Create the item decoration with padding.

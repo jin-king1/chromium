@@ -11,7 +11,7 @@
 
 #include "base/memory/singleton.h"
 #include "base/synchronization/lock.h"
-#include "gpu/gpu_export.h"
+#include "gpu/ipc/common/gpu_ipc_common_export.h"
 #include "gpu/ipc/common/gpu_surface_lookup.h"
 #include "gpu/ipc/common/surface_handle.h"
 #include "ui/gl/android/scoped_java_surface.h"
@@ -22,13 +22,12 @@ namespace gpu {
 // This class is used on Android, and is responsible for tracking native
 // window surfaces exposed to the GPU process. Every surface gets registered to
 // this class, and gets a handle.  The handle can be passed to
-// CommandBufferProxyImpl::Create or to
-// GpuMemoryBufferManager::CreateGpuMemoryBuffer.
+// CommandBufferProxyImpl::Create.
 // On Android, the handle is used in the GPU process to get a reference to the
 // ScopedJavaSurface, using GpuSurfaceLookup (implemented by
 // ChildProcessSurfaceManager).
 // This class is thread safe.
-class GPU_EXPORT GpuSurfaceTracker : public gpu::GpuSurfaceLookup {
+class GPU_IPC_COMMON_EXPORT GpuSurfaceTracker : public gpu::GpuSurfaceLookup {
  public:
   SurfaceRecord AcquireJavaSurface(gpu::SurfaceHandle surface_handle) override;
 
@@ -63,8 +62,8 @@ class GPU_EXPORT GpuSurfaceTracker : public gpu::GpuSurfaceLookup {
   ~GpuSurfaceTracker() override;
 
   mutable base::Lock surface_map_lock_;
-  SurfaceMap surface_map_;
-  int next_surface_handle_;
+  SurfaceMap surface_map_ GUARDED_BY(surface_map_lock_);
+  int next_surface_handle_ GUARDED_BY(surface_map_lock_);
 };
 
 }  // namespace ui

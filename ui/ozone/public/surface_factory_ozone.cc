@@ -5,9 +5,12 @@
 #include "ui/ozone/public/surface_factory_ozone.h"
 
 #include <stdlib.h>
+
 #include <memory>
 
 #include "base/command_line.h"
+#include "base/notimplemented.h"
+#include "components/viz/common/resources/shared_image_format_utils.h"
 #include "gpu/vulkan/buildflags.h"
 #include "ui/gfx/native_pixmap.h"
 #include "ui/gl/gl_implementation.h"
@@ -50,7 +53,6 @@ scoped_refptr<gfx::NativePixmap>
 SurfaceFactoryOzone::CreateNativePixmapForVulkan(
     gfx::AcceleratedWidget widget,
     gfx::Size size,
-    gfx::BufferFormat format,
     gfx::BufferUsage usage,
     VkDevice vk_device,
     VkDeviceMemory* vk_device_memory,
@@ -80,34 +82,24 @@ scoped_refptr<gfx::NativePixmap> SurfaceFactoryOzone::CreateNativePixmap(
     gfx::AcceleratedWidget widget,
     gpu::VulkanDeviceQueue* device_queue,
     gfx::Size size,
-    gfx::BufferFormat format,
+    viz::SharedImageFormat format,
     gfx::BufferUsage usage,
     std::optional<gfx::Size> framebuffer_size) {
   return nullptr;
 }
 
 bool SurfaceFactoryOzone::CanCreateNativePixmapForFormat(
-    gfx::BufferFormat format) {
+    viz::SharedImageFormat format) {
   // It's up to specific implementations of this method to report an inability
   // to create native pixmap handles for a specific format.
   return true;
-}
-
-void SurfaceFactoryOzone::CreateNativePixmapAsync(
-    gfx::AcceleratedWidget widget,
-    gpu::VulkanDeviceQueue* device_queue,
-    gfx::Size size,
-    gfx::BufferFormat format,
-    gfx::BufferUsage usage,
-    NativePixmapCallback callback) {
-  std::move(callback).Run(nullptr);
 }
 
 scoped_refptr<gfx::NativePixmap>
 SurfaceFactoryOzone::CreateNativePixmapFromHandle(
     gfx::AcceleratedWidget widget,
     gfx::Size size,
-    gfx::BufferFormat format,
+    viz::SharedImageFormat format,
     gfx::NativePixmapHandle handle) {
   return nullptr;
 }
@@ -116,7 +108,7 @@ scoped_refptr<gfx::NativePixmap>
 SurfaceFactoryOzone::CreateNativePixmapForProtectedBufferHandle(
     gfx::AcceleratedWidget widget,
     gfx::Size size,
-    gfx::BufferFormat format,
+    viz::SharedImageFormat format,
     gfx::NativePixmapHandle handle) {
   return nullptr;
 }
@@ -134,31 +126,9 @@ void SurfaceFactoryOzone::SetDrmModifiersFilter(
   NOTIMPLEMENTED();
 }
 
-std::vector<gfx::BufferFormat>
-SurfaceFactoryOzone::GetSupportedFormatsForTexturing() const {
-  return std::vector<gfx::BufferFormat>();
-}
-
-std::vector<gfx::BufferFormat>
-SurfaceFactoryOzone::GetSupportedFormatsForGLNativePixmapImport() {
-  std::vector<gfx::BufferFormat> supported_buffer_formats;
-  auto* gl_ozone = GetCurrentGLOzone();
-  if (!gl_ozone) {
-    return supported_buffer_formats;
-  }
-
-  for (int j = 0; j <= static_cast<int>(gfx::BufferFormat::LAST); ++j) {
-    const gfx::BufferFormat buffer_format = static_cast<gfx::BufferFormat>(j);
-    if (gl_ozone->CanImportNativePixmap(buffer_format)) {
-      supported_buffer_formats.push_back(buffer_format);
-    }
-  }
-  return supported_buffer_formats;
-}
-
-std::optional<gfx::BufferFormat>
-SurfaceFactoryOzone::GetPreferredFormatForSolidColor() const {
-  return std::nullopt;
+bool SurfaceFactoryOzone::IsFormatSupportedForTexturing(
+    viz::SharedImageFormat format) const {
+  return false;
 }
 
 }  // namespace ui

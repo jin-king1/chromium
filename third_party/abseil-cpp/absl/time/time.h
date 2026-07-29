@@ -134,11 +134,10 @@ ABSL_ATTRIBUTE_CONST_FUNCTION constexpr Duration FromInt64(int64_t v,
 ABSL_ATTRIBUTE_CONST_FUNCTION constexpr Duration FromInt64(int64_t v,
                                                            std::ratio<3600>);
 template <typename T>
-using EnableIfIntegral = typename std::enable_if<
-    std::is_integral<T>::value || std::is_enum<T>::value, int>::type;
+using EnableIfIntegral =
+    std::enable_if_t<std::is_integral_v<T> || std::is_enum_v<T>, int>;
 template <typename T>
-using EnableIfFloat =
-    typename std::enable_if<std::is_floating_point<T>::value, int>::type;
+using EnableIfFloat = std::enable_if_t<std::is_floating_point_v<T>, int>;
 }  // namespace time_internal
 
 // Duration
@@ -589,9 +588,10 @@ ABSL_ATTRIBUTE_CONST_FUNCTION Duration Seconds(T n) {
     }
     return time_internal::MakePosDoubleDuration(n);
   } else {
-    if (std::isnan(n))
-      return std::signbit(n) ? -InfiniteDuration() : InfiniteDuration();
-    if (n <= (std::numeric_limits<int64_t>::min)()) return -InfiniteDuration();
+    if (std::isnan(n)) return -InfiniteDuration();
+    if (n <= static_cast<T>((std::numeric_limits<int64_t>::min)())) {
+      return -InfiniteDuration();
+    }
     return -time_internal::MakePosDoubleDuration(-n);
   }
 }
@@ -620,12 +620,12 @@ ABSL_ATTRIBUTE_CONST_FUNCTION Duration Hours(T n) {
 //
 //   absl::Duration d = absl::Milliseconds(1500);
 //   int64_t isec = absl::ToInt64Seconds(d);  // isec == 1
-ABSL_ATTRIBUTE_CONST_FUNCTION inline int64_t ToInt64Nanoseconds(Duration d);
-ABSL_ATTRIBUTE_CONST_FUNCTION inline int64_t ToInt64Microseconds(Duration d);
-ABSL_ATTRIBUTE_CONST_FUNCTION inline int64_t ToInt64Milliseconds(Duration d);
-ABSL_ATTRIBUTE_CONST_FUNCTION inline int64_t ToInt64Seconds(Duration d);
-ABSL_ATTRIBUTE_CONST_FUNCTION inline int64_t ToInt64Minutes(Duration d);
-ABSL_ATTRIBUTE_CONST_FUNCTION inline int64_t ToInt64Hours(Duration d);
+ABSL_ATTRIBUTE_CONST_FUNCTION constexpr int64_t ToInt64Nanoseconds(Duration d);
+ABSL_ATTRIBUTE_CONST_FUNCTION constexpr int64_t ToInt64Microseconds(Duration d);
+ABSL_ATTRIBUTE_CONST_FUNCTION constexpr int64_t ToInt64Milliseconds(Duration d);
+ABSL_ATTRIBUTE_CONST_FUNCTION constexpr int64_t ToInt64Seconds(Duration d);
+ABSL_ATTRIBUTE_CONST_FUNCTION constexpr int64_t ToInt64Minutes(Duration d);
+ABSL_ATTRIBUTE_CONST_FUNCTION constexpr int64_t ToInt64Hours(Duration d);
 
 // ToDoubleNanoseconds()
 // ToDoubleMicroseconds()
@@ -730,7 +730,6 @@ bool ParseDuration(absl::string_view dur_string, Duration* d);
 // value. Duration flags must be specified in a format that is valid input for
 // `absl::ParseDuration()`.
 bool AbslParseFlag(absl::string_view text, Duration* dst, std::string* error);
-
 
 // AbslUnparseFlag()
 //
@@ -1064,11 +1063,6 @@ bool AbslParseFlag(absl::string_view text, Time* t, std::string* error);
 // Unparses a Time value into a command-line string representation using
 // the format specified by `absl::ParseTime()`.
 std::string AbslUnparseFlag(Time t);
-
-ABSL_DEPRECATED("Use AbslParseFlag() instead.")
-bool ParseFlag(const std::string& text, Time* t, std::string* error);
-ABSL_DEPRECATED("Use AbslUnparseFlag() instead.")
-std::string UnparseFlag(Time t);
 
 // TimeZone
 //
@@ -1680,14 +1674,16 @@ ABSL_ATTRIBUTE_CONST_FUNCTION constexpr Duration FromInt64(int64_t v,
   return (v <= (std::numeric_limits<int64_t>::max)() / 60 &&
           v >= (std::numeric_limits<int64_t>::min)() / 60)
              ? MakeDuration(v * 60)
-             : v > 0 ? InfiniteDuration() : -InfiniteDuration();
+         : v > 0 ? InfiniteDuration()
+                 : -InfiniteDuration();
 }
 ABSL_ATTRIBUTE_CONST_FUNCTION constexpr Duration FromInt64(int64_t v,
                                                            std::ratio<3600>) {
   return (v <= (std::numeric_limits<int64_t>::max)() / 3600 &&
           v >= (std::numeric_limits<int64_t>::min)() / 3600)
              ? MakeDuration(v * 3600)
-             : v > 0 ? InfiniteDuration() : -InfiniteDuration();
+         : v > 0 ? InfiniteDuration()
+                 : -InfiniteDuration();
 }
 
 // IsValidRep64<T>(0) is true if the expression `int64_t{std::declval<T>()}` is
@@ -1805,13 +1801,12 @@ ABSL_ATTRIBUTE_CONST_FUNCTION constexpr Duration operator-(Duration d) {
                        (std::numeric_limits<int64_t>::min)()
                    ? InfiniteDuration()
                    : time_internal::MakeDuration(-time_internal::GetRepHi(d))
-             : time_internal::IsInfiniteDuration(d)
-                   ? time_internal::OppositeInfinity(d)
-                   : time_internal::MakeDuration(
-                         time_internal::NegateAndSubtractOne(
-                             time_internal::GetRepHi(d)),
-                         time_internal::kTicksPerSecond -
-                             time_internal::GetRepLo(d));
+         : time_internal::IsInfiniteDuration(d)
+             ? time_internal::OppositeInfinity(d)
+             : time_internal::MakeDuration(
+                   time_internal::NegateAndSubtractOne(
+                       time_internal::GetRepHi(d)),
+                   time_internal::kTicksPerSecond - time_internal::GetRepLo(d));
 }
 
 ABSL_ATTRIBUTE_CONST_FUNCTION constexpr Duration InfiniteDuration() {
@@ -1864,50 +1859,55 @@ ABSL_ATTRIBUTE_CONST_FUNCTION constexpr Time FromTimeT(time_t t) {
   return time_internal::FromUnixDuration(Seconds(t));
 }
 
-ABSL_ATTRIBUTE_CONST_FUNCTION inline int64_t ToInt64Nanoseconds(Duration d) {
+ABSL_ATTRIBUTE_CONST_FUNCTION constexpr int64_t ToInt64Nanoseconds(Duration d) {
   if (time_internal::GetRepHi(d) >= 0 &&
       time_internal::GetRepHi(d) >> 33 == 0) {
     return (time_internal::GetRepHi(d) * 1000 * 1000 * 1000) +
            (time_internal::GetRepLo(d) / time_internal::kTicksPerNanosecond);
+  } else {
+    return d / Nanoseconds(1);
   }
-  return d / Nanoseconds(1);
 }
 
-ABSL_ATTRIBUTE_CONST_FUNCTION inline int64_t ToInt64Microseconds(Duration d) {
+ABSL_ATTRIBUTE_CONST_FUNCTION constexpr int64_t ToInt64Microseconds(
+    Duration d) {
   if (time_internal::GetRepHi(d) >= 0 &&
       time_internal::GetRepHi(d) >> 43 == 0) {
     return (time_internal::GetRepHi(d) * 1000 * 1000) +
            (time_internal::GetRepLo(d) /
             (time_internal::kTicksPerNanosecond * 1000));
+  } else {
+    return d / Microseconds(1);
   }
-  return d / Microseconds(1);
 }
 
-ABSL_ATTRIBUTE_CONST_FUNCTION inline int64_t ToInt64Milliseconds(Duration d) {
+ABSL_ATTRIBUTE_CONST_FUNCTION constexpr int64_t ToInt64Milliseconds(
+    Duration d) {
   if (time_internal::GetRepHi(d) >= 0 &&
       time_internal::GetRepHi(d) >> 53 == 0) {
     return (time_internal::GetRepHi(d) * 1000) +
            (time_internal::GetRepLo(d) /
             (time_internal::kTicksPerNanosecond * 1000 * 1000));
+  } else {
+    return d / Milliseconds(1);
   }
-  return d / Milliseconds(1);
 }
 
-ABSL_ATTRIBUTE_CONST_FUNCTION inline int64_t ToInt64Seconds(Duration d) {
+ABSL_ATTRIBUTE_CONST_FUNCTION constexpr int64_t ToInt64Seconds(Duration d) {
   int64_t hi = time_internal::GetRepHi(d);
   if (time_internal::IsInfiniteDuration(d)) return hi;
   if (hi < 0 && time_internal::GetRepLo(d) != 0) ++hi;
   return hi;
 }
 
-ABSL_ATTRIBUTE_CONST_FUNCTION inline int64_t ToInt64Minutes(Duration d) {
+ABSL_ATTRIBUTE_CONST_FUNCTION constexpr int64_t ToInt64Minutes(Duration d) {
   int64_t hi = time_internal::GetRepHi(d);
   if (time_internal::IsInfiniteDuration(d)) return hi;
   if (hi < 0 && time_internal::GetRepLo(d) != 0) ++hi;
   return hi / 60;
 }
 
-ABSL_ATTRIBUTE_CONST_FUNCTION inline int64_t ToInt64Hours(Duration d) {
+ABSL_ATTRIBUTE_CONST_FUNCTION constexpr int64_t ToInt64Hours(Duration d) {
   int64_t hi = time_internal::GetRepHi(d);
   if (time_internal::IsInfiniteDuration(d)) return hi;
   if (hi < 0 && time_internal::GetRepLo(d) != 0) ++hi;

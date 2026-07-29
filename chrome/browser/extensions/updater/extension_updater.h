@@ -9,57 +9,65 @@
 #include <map>
 #include <memory>
 #include <optional>
-#include <queue>
 #include <set>
 #include <string>
 
 #include "base/auto_reset.h"
+#include "base/callback_list.h"
 #include "base/files/file_path.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/observer_list.h"
 #include "base/time/time.h"
 #include "base/unguessable_token.h"
+#include "components/keyed_service/core/keyed_service.h"
 #include "extensions/browser/extension_registry_observer.h"
 #include "extensions/browser/extension_system.h"
+#include "extensions/browser/update_observer.h"
 #include "extensions/browser/updater/extension_downloader.h"
 #include "extensions/browser/updater/extension_downloader_delegate.h"
 #include "extensions/browser/updater/extension_downloader_types.h"
 #include "extensions/browser/updater/extension_update_data.h"
 #include "extensions/browser/updater/update_service.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension_id.h"
 #include "url/gurl.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 class PrefService;
 class Profile;
 class ScopedProfileKeepAlive;
 
+namespace content {
+class BrowserContext;
+}
+
 namespace extensions {
 
+class CorruptedExtensionReinstaller;
 class CrxInstallError;
 class CrxInstaller;
+class DelayedInstallManager;
+class Extension;
 class ExtensionCache;
 class ExtensionPrefs;
 class ExtensionRegistrar;
 class ExtensionRegistry;
-class ExtensionServiceInterface;
-class ExtensionSet;
-struct ExtensionUpdateCheckParams;
 class ExtensionUpdaterTest;
+class ExternalInstallManager;
+class PendingExtensionInfo;
+class PendingExtensionManager;
 
 // A class for doing auto-updates of installed Extensions. Used like this:
 //
-// std::unique_ptr<ExtensionUpdater> updater =
-//    std::make_unique<ExtensionUpdater>(my_extensions_service,
-//                                       extension_prefs,
-//                                       pref_service,
-//                                       profile,
-//                                       update_frequency_secs,
-//                                       downloader_factory);
+// ExtensionUpdater* updater = ExtensionUpdater::Get(profile);
 // updater->Start();
 // ....
 // updater->Stop();
-class ExtensionUpdater : public ExtensionDownloaderDelegate {
+class ExtensionUpdater : public KeyedService,
+                         public ExtensionDownloaderDelegate {
  public:
   using FinishedCallback = base::OnceClosure;
 
@@ -112,20 +120,36 @@ class ExtensionUpdater : public ExtensionDownloaderDelegate {
     ~ScopedSkipScheduledCheckForTest();
   };
 
-  // Holds a pointer to the passed |service|, using it for querying installed
-  // extensions and installing updated ones. The |frequency_seconds| parameter
-  // controls how often update checks are scheduled.
-  ExtensionUpdater(ExtensionServiceInterface* service,
-                   ExtensionPrefs* extension_prefs,
-                   PrefService* prefs,
-                   Profile* profile,
-                   int frequency_seconds,
-                   ExtensionCache* cache,
-                   const ExtensionDownloader::Factory& downloader_factory);
+  class CrxInstallerFactoryForTest {
+   public:
+    // Allows overriding the behavior of CreateUpdateInstaller().
+    virtual scoped_refptr<CrxInstaller> CreateUpdateInstaller(
+        const CRXFileInfo& file,
+        bool file_ownership_passed) = 0;
+
+    virtual ~CrxInstallerFactoryForTest() = default;
+  };
+
+  // Returns the ExtensionUpdater instance created by ExtensionUpdaterFactory.
+  static ExtensionUpdater* Get(content::BrowserContext* browser_context);
+
+  // Visible for testing. Production code should use Get() above.
+  explicit ExtensionUpdater(Profile* profile);
 
   ExtensionUpdater(const ExtensionUpdater&) = delete;
   ExtensionUpdater& operator=(const ExtensionUpdater&) = delete;
   ~ExtensionUpdater() override;
+
+  // Initializes and enables the updater. Does not start it. Use Start() for
+  // that.
+  void InitAndEnable(ExtensionPrefs* extension_prefs,
+                     PrefService* prefs,
+                     base::TimeDelta frequency,
+                     ExtensionCache* cache,
+                     const ExtensionDownloader::Factory& downloader_factory);
+
+  // KeyedService:
+  void Shutdown() override;
 
   // Starts the updater running.  Should be called at most once.
   void Start();
@@ -147,16 +171,28 @@ class ExtensionUpdater : public ExtensionDownloaderDelegate {
   // code should just call CheckSoon().
   bool WillCheckSoon() const;
 
+  // Creates an CrxInstaller to update an extension. Returns null if an update
+  // is not possible. Eg: system shutdown or extension doesn't exist.
+  // Public for testing.
+  scoped_refptr<CrxInstaller> CreateUpdateInstaller(const CRXFileInfo& file,
+                                                    bool file_ownership_passed);
+
+  // Adds/removes update observers.
+  void AddObserver(UpdateObserver* observer);
+  void RemoveObserver(UpdateObserver* observer);
+
+  // Notifies update observers for chrome update available.
+  void NotifyChromeUpdateAvailable();
+
+  // Notifies update observers that an app update is available.
+  void NotifyAppUpdateAvailable(const Extension& extension);
+
   // Overrides the extension cache with |extension_cache| for testing.
   void SetExtensionCacheForTesting(ExtensionCache* extension_cache);
 
   // Overrides the extension downloader with |downloader| for testing.
   void SetExtensionDownloaderForTesting(
       std::unique_ptr<ExtensionDownloader> downloader);
-
-  // After this is called, the next ExtensionUpdater instance to be started will
-  // call CheckNow() instead of CheckSoon() for its initial update.
-  static void UpdateImmediatelyForFirstRun();
 
   // For testing, changes the backoff policy for ExtensionDownloader's manifest
   // queue to get less initial delay and the tests don't time out.
@@ -174,7 +210,20 @@ class ExtensionUpdater : public ExtensionDownloaderDelegate {
   void SetCrxInstallerResultCallbackForTesting(
       ExtensionSystem::InstallUpdateCallback callback);
 
+  bool enabled() const { return enabled_; }
+
+  // Exists because some tests are not able to use the private constructor for
+  // testing.
+  void set_crx_installer_factory_for_test(CrxInstallerFactoryForTest* factory) {
+    crx_installer_factory_for_test_ = factory;
+  }
+
+  void set_browser_terminating_for_test(bool value) {
+    browser_terminating_ = value;
+  }
+
  private:
+  friend class ExtensionUpdaterFactory;
   friend class ExtensionUpdaterTest;
   friend class ExtensionUpdaterFileHandler;
 
@@ -225,27 +274,27 @@ class ExtensionUpdater : public ExtensionDownloaderDelegate {
   // or minus 0 to 20% (to help spread load evenly on servers).
   void ScheduleNextCheck();
 
-  // Add fetch records for extensions that are installed to the downloader,
-  // ignoring |pending_ids| so the extension isn't fetched again.
-  void AddToDownloader(const ExtensionSet* extensions,
-                       const std::set<ExtensionId>& pending_ids,
-                       int request_id,
-                       DownloadFetchPriority fetch_priority,
-                       ExtensionUpdateCheckParams* update_check_params);
-
-  // Adds |extension| to the downloader, providing it with |fetch_priority|,
-  // |request_id| and data extracted from the extension object.
-  // |fetch_priority| parameter notifies the downloader the priority of this
-  // extension update (either foreground or background).
-  bool AddExtensionToDownloader(const Extension& extension,
-                                int request_id,
-                                DownloadFetchPriority fetch_priority);
-
   // Conduct a check as scheduled by ScheduleNextCheck.
   void NextCheck();
 
   // Posted by CheckSoon().
   void DoCheckSoon();
+
+  // Returns an ExtensionDownloaderTask appropriate for updating |extension|.
+  ExtensionDownloaderTask ToDownloaderTask(const Extension& extension,
+                                           int request_id,
+                                           DownloadFetchPriority fetch_priority,
+                                           bool is_corrupt_reinstall);
+
+  // Returns an ExtensionDownloaderTask appropriate for updating |info|.
+  ExtensionDownloaderTask ToDownloaderTask(const ExtensionId& id,
+                                           const PendingExtensionInfo& info,
+                                           int request_id,
+                                           DownloadFetchPriority fetch_priority,
+                                           bool is_corrupt_reinstall);
+
+  // Removes extensions that can't or shouldn't be updated from the `ids`.
+  void EraseUnupdatableIds(std::set<ExtensionId>& ids) const;
 
   // Implementation of ExtensionDownloaderDelegate.
   void OnExtensionDownloadStageChanged(const ExtensionId& id,
@@ -275,7 +324,7 @@ class ExtensionUpdater : public ExtensionDownloaderDelegate {
                                    std::string* version) override;
 
   // Returns an `ExtensionUpdateData` prepopulated with the `pending_version`
-  // and `pending_fingerprint` if there is a pending extension update.
+  // if there is a pending extension update.
   ExtensionUpdateData GetExtensionUpdateData(const ExtensionId& id);
 
   void UpdatePingData(const ExtensionId& id, const PingResult& ping_result);
@@ -307,22 +356,37 @@ class ExtensionUpdater : public ExtensionDownloaderDelegate {
   void OnInstallerDone(const base::UnguessableToken& token,
                        const std::optional<CrxInstallError>& error);
 
-  // This function verifies if |extension_id| can be updated using
-  // UpdateService.
-  bool CanUseUpdateService(const ExtensionId& extension_id) const;
+  // Returns whether UpdateService can update an extension. The extension may be
+  // represented by either an Extension or PendingExtensionInfo) depending on
+  // whether it is installed or pending.
+  bool CanUseUpdateService(const Extension* extension_id,
+                           const PendingExtensionInfo* info) const;
+
+  // Called when the browser is terminating.
+  void OnAppTerminating();
+
+  // Returns the IDs of corrupted extensions scheduled for reinstall.
+  std::set<ExtensionId> GetCorruptedExtensionIds() const;
+
+  // Get the effective update URL for the extension. Normally this URL comes
+  // from the extension manifest, but may be overridden by policies.
+  GURL GetEffectiveUpdateURL(const Extension& extension) const;
+
+  // Whether the updater is enabled (i.e. it's legal to call Start()).
+  bool enabled_ = false;
 
   // Whether Start() has been called but not Stop().
   bool alive_ = false;
 
-  // Pointer back to the service that owns this ExtensionUpdater.
-  raw_ptr<ExtensionServiceInterface> service_ = nullptr;
-
   // A closure passed into the ExtensionUpdater to teach it how to construct
   // new ExtensionDownloader instances.
-  const ExtensionDownloader::Factory downloader_factory_;
+  ExtensionDownloader::Factory downloader_factory_;
 
   // Fetches the crx files for the extensions that have an available update.
   std::unique_ptr<ExtensionDownloader> downloader_;
+
+  base::ObserverList<UpdateObserver, /*check_empty=*/true>::Unchecked
+      update_observers_;
 
   // Update service is responsible for updating Webstore extensions.
   // Note that |UpdateService| is a KeyedService class, which can only be
@@ -334,12 +398,17 @@ class ExtensionUpdater : public ExtensionDownloaderDelegate {
   base::TimeDelta frequency_;
   bool will_check_soon_ = false;
 
-  raw_ptr<ExtensionPrefs, DanglingUntriaged> extension_prefs_ = nullptr;
-  raw_ptr<PrefService, DanglingUntriaged> prefs_ = nullptr;
-  raw_ptr<Profile, DanglingUntriaged> profile_ = nullptr;
+  raw_ptr<ExtensionPrefs> extension_prefs_ = nullptr;
+  raw_ptr<PrefService> prefs_ = nullptr;
+  raw_ptr<Profile> profile_ = nullptr;
 
-  raw_ptr<ExtensionRegistry, DanglingUntriaged> registry_ = nullptr;
-  raw_ptr<ExtensionRegistrar, DanglingUntriaged> registrar_ = nullptr;
+  raw_ptr<ExtensionRegistry> registry_ = nullptr;
+  raw_ptr<ExtensionRegistrar> registrar_ = nullptr;
+  raw_ptr<DelayedInstallManager> delayed_install_manager_ = nullptr;
+  raw_ptr<PendingExtensionManager> pending_extension_manager_ = nullptr;
+  raw_ptr<ExternalInstallManager> external_install_manager_ = nullptr;
+  raw_ptr<CorruptedExtensionReinstaller> corrupted_extension_reinstaller_ =
+      nullptr;
 
   std::map<int, InProgressCheck> requests_in_progress_;
   int next_request_id_ = 0;
@@ -348,10 +417,16 @@ class ExtensionUpdater : public ExtensionDownloaderDelegate {
   // when OnInstallerDone is called.
   std::map<base::UnguessableToken, FetchedCRXFile> running_crx_installs_;
 
-  raw_ptr<ExtensionCache, DanglingUntriaged> extension_cache_ = nullptr;
+  raw_ptr<ExtensionCache> extension_cache_ = nullptr;
 
   base::RepeatingClosure updating_started_callback_;
 
+  // Set when the browser is terminating. Prevents us from updating additional
+  // extensions.
+  bool browser_terminating_ = false;
+  base::CallbackListSubscription on_app_terminating_subscription_;
+
+  raw_ptr<CrxInstallerFactoryForTest> crx_installer_factory_for_test_ = nullptr;
   ExtensionSystem::InstallUpdateCallback installer_result_callback_for_testing_;
 
   base::WeakPtrFactory<ExtensionUpdater> weak_ptr_factory_{this};

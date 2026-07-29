@@ -11,6 +11,8 @@
 #import "components/collaboration/public/collaboration_service.h"
 #import "components/data_sharing/public/group_data.h"
 #import "components/prefs/pref_service.h"
+#import "components/send_tab_to_self/features.h"
+#import "components/send_tab_to_self/send_tab_to_self_sync_service.h"
 #import "ios/chrome/browser/bookmarks/model/bookmark_model_factory.h"
 #import "ios/chrome/browser/collaboration/model/collaboration_service_factory.h"
 #import "ios/chrome/browser/collaboration/model/features.h"
@@ -30,9 +32,11 @@
 #import "ios/chrome/browser/shared/model/web_state_list/tab_group_utils.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/browser/sync/model/send_tab_to_self_sync_service_factory.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/grid_item_identifier.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_context_menu/tab_cell.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_context_menu/tab_item.h"
+#import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_grid_metrics.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_group_item.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_switcher_item.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_utils.h"
@@ -140,6 +144,7 @@ using tab_groups::SharingState;
 
   UIMenuElement* pinAction;
   UIMenuElement* shareAction;
+  UIMenuElement* sendTabToSelfAction;
   UIMenuElement* addToReadingListAction;
   UIAction* bookmarkAction;
   UIMenuElement* selectAction;
@@ -166,6 +171,12 @@ using tab_groups::SharingState;
                                 scenario:SharingScenario::TabGridItem
                                 fromView:cell];
     }];
+
+    if ([self canSendToYourDeviceForItem:item]) {
+      sendTabToSelfAction = [actionFactory actionToSendTabToSelfWithBlock:^{
+        [weakSelf.contextMenuDelegate sendTabToSelfWithIdentifier:tabID];
+      }];
+    }
 
     if (item.URL.SchemeIsHTTPOrHTTPS()) {
       addToReadingListAction =
@@ -223,91 +234,90 @@ using tab_groups::SharingState;
 
   NSMutableArray<UIMenuElement*>* menuElements = [[NSMutableArray alloc] init];
 
-  if (IsTabGroupInGridEnabled()) {
-    std::set<const TabGroup*> groups = GetAllGroupsForProfile(_profile);
-
-    auto actionResult = ^(const TabGroup* group) {
-      [weakSelf handleAddWebState:tabID toGroup:group];
+  std::set<const TabGroup*> groups = GetAllGroupsForProfile(_profile);
+  auto actionResult = ^(const TabGroup* group) {
+    [weakSelf handleAddWebState:tabID toGroup:group];
+  };
+  const TabGroup* currentTabGroup = [self groupForWebState:tabID];
+  UIMenuElement* groupAction;
+  if (currentTabGroup) {
+    ProceduralBlock removeBlock = ^{
+      [weakSelf handleRemoveWebStateFromGroup:tabID];
     };
-
-    const TabGroup* currentTabGroup = [self groupForWebState:tabID];
-    UIMenuElement* groupAction;
-    if (currentTabGroup) {
-      ProceduralBlock removeBlock = ^{
-        [weakSelf handleRemoveWebStateFromGroup:tabID];
-      };
-      groupAction =
-          [actionFactory menuToMoveTabToGroupWithGroups:groups
-                                           currentGroup:currentTabGroup
-                                              moveBlock:actionResult
-                                            removeBlock:removeBlock];
-    } else {
-      groupAction = [actionFactory menuToAddTabToGroupWithGroups:groups
-                                                    numberOfTabs:1
-                                                           block:actionResult];
-    }
-
-    // Hide the `shareAction` for tabs in groups.
-    if (shareAction && !currentTabGroup) {
-      UIMenu* shareMenu = [UIMenu menuWithTitle:@""
-                                          image:nil
-                                     identifier:nil
-                                        options:UIMenuOptionsDisplayInline
-                                       children:@[ shareAction ]];
-      [menuElements addObject:shareMenu];
-    }
-    NSArray<UIMenuElement*>* tabActions =
-        pinAction ? @[ pinAction, groupAction ] : @[ groupAction ];
-    UIMenu* tabMenu = [UIMenu menuWithTitle:@""
-                                      image:nil
-                                 identifier:nil
-                                    options:UIMenuOptionsDisplayInline
-                                   children:tabActions];
-    [menuElements addObject:tabMenu];
-
-    NSMutableArray<UIMenuElement*>* collectionsActions = [NSMutableArray array];
-    if (addToReadingListAction) {
-      [collectionsActions addObject:addToReadingListAction];
-    }
-    if (bookmarkAction) {
-      [collectionsActions addObject:bookmarkAction];
-    }
-    // Hide the `selectAction` for tabs in groups.
-    if (selectAction && !currentTabGroup) {
-      [collectionsActions addObject:selectAction];
-    }
-    if (closeTabAction) {
-      [collectionsActions addObject:closeTabAction];
-    }
-
-    if (collectionsActions.count > 0) {
-      UIMenu* collectionsMenu = [UIMenu menuWithTitle:@""
-                                                image:nil
-                                           identifier:nil
-                                              options:UIMenuOptionsDisplayInline
-                                             children:collectionsActions];
-      [menuElements addObject:collectionsMenu];
-    }
-
+    groupAction = [actionFactory menuToMoveTabToGroupWithGroups:groups
+                                                   currentGroup:currentTabGroup
+                                                      moveBlock:actionResult
+                                                    removeBlock:removeBlock];
   } else {
-    if (pinAction) {
-      [menuElements addObject:pinAction];
-    }
-    if (shareAction) {
-      [menuElements addObject:shareAction];
-    }
-    if (addToReadingListAction) {
-      [menuElements addObject:addToReadingListAction];
-    }
-    if (bookmarkAction) {
-      [menuElements addObject:bookmarkAction];
-    }
-    if (selectAction) {
-      [menuElements addObject:selectAction];
-    }
-    if (closeTabAction) {
-      [menuElements addObject:closeTabAction];
-    }
+    groupAction = [actionFactory menuToAddTabToGroupWithGroups:groups
+                                                  numberOfTabs:1
+                                                         block:actionResult];
+  }
+
+  NSMutableArray<UIMenuElement*>* shareMenuElements = [NSMutableArray array];
+  // Hide the `shareAction` for tabs in groups.
+  if (shareAction && !currentTabGroup) {
+    [shareMenuElements addObject:shareAction];
+  }
+  if (sendTabToSelfAction) {
+    [shareMenuElements addObject:sendTabToSelfAction];
+  }
+  if (shareMenuElements.count > 0) {
+    UIMenu* shareMenu = [UIMenu menuWithTitle:@""
+                                        image:nil
+                                   identifier:nil
+                                      options:UIMenuOptionsDisplayInline
+                                     children:shareMenuElements];
+    [menuElements addObject:shareMenu];
+  }
+  NSArray<UIMenuElement*>* tabActions =
+      pinAction ? @[ pinAction, groupAction ] : @[ groupAction ];
+  UIMenu* tabMenu = [UIMenu menuWithTitle:@""
+                                    image:nil
+                               identifier:nil
+                                  options:UIMenuOptionsDisplayInline
+                                 children:tabActions];
+  [menuElements addObject:tabMenu];
+
+  NSMutableArray<UIMenuElement*>* collectionsActions = [NSMutableArray array];
+  if (addToReadingListAction) {
+    [collectionsActions addObject:addToReadingListAction];
+  }
+  if (bookmarkAction) {
+    [collectionsActions addObject:bookmarkAction];
+  }
+  // Hide the `selectAction` for tabs in groups.
+  if (selectAction && !currentTabGroup) {
+    [collectionsActions addObject:selectAction];
+  }
+  if (closeTabAction) {
+    [collectionsActions addObject:closeTabAction];
+  }
+
+  if (collectionsActions.count > 0) {
+    UIMenu* collectionsMenu = [UIMenu menuWithTitle:@""
+                                              image:nil
+                                         identifier:nil
+                                            options:UIMenuOptionsDisplayInline
+                                           children:collectionsActions];
+    [menuElements addObject:collectionsMenu];
+  }
+
+  if ([self canCloseOtherTabsForTabWithID:tabID]) {
+    UIAction* closeOtherTabsAction =
+        [actionFactory actionToCloseAllOtherTabsWithBlock:^{
+          RecordTabGridCloseOtherTabs(weakSelf.incognito);
+          [weakSelf.contextMenuDelegate
+              closeTabsExceptIdentifier:tabID
+                              incognito:weakSelf.incognito];
+        }];
+
+    UIMenu* closeOtherMenu = [UIMenu menuWithTitle:@""
+                                             image:nil
+                                        identifier:nil
+                                           options:UIMenuOptionsDisplayInline
+                                          children:@[ closeOtherTabsAction ]];
+    [menuElements addObject:closeOtherMenu];
   }
 
   return menuElements;
@@ -332,14 +342,14 @@ using tab_groups::SharingState;
       ShareKitServiceFactory::GetForProfile(_profile);
   tab_groups::TabGroupSyncService* tabGroupSyncService =
       tab_groups::TabGroupSyncServiceFactory::GetForProfile(_profile);
+  collaboration::CollaborationService* collaborationService =
+      collaboration::CollaborationServiceFactory::GetForProfile(_profile);
 
   SharingState sharingState = SharingState::kNotShared;
   BOOL isSharedTabGroupSupported =
       shareKitService && shareKitService->IsSupported();
 
   if (tab_groups::utils::IsTabGroupShared(group, tabGroupSyncService)) {
-    collaboration::CollaborationService* collaborationService =
-        collaboration::CollaborationServiceFactory::GetForProfile(_profile);
     data_sharing::MemberRole userRole = tab_groups::utils::GetUserRoleForGroup(
         group, tabGroupSyncService, collaborationService);
     sharingState = userRole == data_sharing::MemberRole::kOwner
@@ -362,7 +372,7 @@ using tab_groups::SharingState;
                          showRecentActivityForTabGroup:weakGroup];
                    }]];
   } else if (isSharedTabGroupSupported &&
-             IsSharedTabGroupsCreateEnabled(_profile)) {
+             IsSharedTabGroupsCreateEnabled(collaborationService)) {
     [sharedActions addObject:[actionFactory actionToShareTabGroupWithBlock:^{
                      [weakSelf.contextMenuDelegate shareTabGroup:weakGroup];
                    }]];
@@ -397,48 +407,37 @@ using tab_groups::SharingState;
 
   // Destructive actions.
   NSMutableArray<UIAction*>* destructiveActions = [[NSMutableArray alloc] init];
-  if (IsTabGroupSyncEnabled()) {
-    [destructiveActions
-        addObject:[actionFactory actionToCloseTabGroupWithBlock:^{
-          [weakSelf.contextMenuDelegate closeTabGroup:weakGroup
-                                            incognito:incognito];
-        }]];
-    if (!incognito) {
-      switch (sharingState) {
-        case SharingState::kNotShared: {
-          [destructiveActions
-              addObject:[actionFactory actionToDeleteTabGroupWithBlock:^{
-                [weakSelf.contextMenuDelegate deleteTabGroup:weakGroup
-                                                   incognito:incognito
-                                                  sourceView:cell];
-              }]];
-          break;
-        }
-        case SharingState::kShared: {
-          [destructiveActions
-              addObject:[actionFactory actionToLeaveSharedTabGroupWithBlock:^{
-                [weakSelf.contextMenuDelegate leaveSharedTabGroup:weakGroup
-                                                       sourceView:cell];
-              }]];
-          break;
-        }
-        case SharingState::kSharedAndOwned: {
-          [destructiveActions
-              addObject:[actionFactory actionToDeleteSharedTabGroupWithBlock:^{
-                [weakSelf.contextMenuDelegate deleteSharedTabGroup:weakGroup
-                                                        sourceView:cell];
-              }]];
-          break;
-        }
+  [destructiveActions addObject:[actionFactory actionToCloseTabGroupWithBlock:^{
+                        [weakSelf.contextMenuDelegate closeTabGroup:weakGroup
+                                                          incognito:incognito];
+                      }]];
+  if (!incognito) {
+    switch (sharingState) {
+      case SharingState::kNotShared: {
+        [destructiveActions
+            addObject:[actionFactory actionToDeleteTabGroupWithBlock:^{
+              [weakSelf.contextMenuDelegate deleteTabGroup:weakGroup
+                                                sourceView:cell];
+            }]];
+        break;
+      }
+      case SharingState::kShared: {
+        [destructiveActions
+            addObject:[actionFactory actionToLeaveSharedTabGroupWithBlock:^{
+              [weakSelf.contextMenuDelegate leaveSharedTabGroup:weakGroup
+                                                     sourceView:cell];
+            }]];
+        break;
+      }
+      case SharingState::kSharedAndOwned: {
+        [destructiveActions
+            addObject:[actionFactory actionToDeleteSharedTabGroupWithBlock:^{
+              [weakSelf.contextMenuDelegate deleteSharedTabGroup:weakGroup
+                                                      sourceView:cell];
+            }]];
+        break;
       }
     }
-  } else {
-    [destructiveActions
-        addObject:[actionFactory actionToDeleteTabGroupWithBlock:^{
-          [weakSelf.contextMenuDelegate deleteTabGroup:weakGroup
-                                             incognito:incognito
-                                            sourceView:cell];
-        }]];
   }
   [menuElements addObject:[UIMenu menuWithTitle:@""
                                           image:nil
@@ -450,6 +449,23 @@ using tab_groups::SharingState;
 }
 
 #pragma mark - Private
+
+// Returns `YES` if the tab `item` can be sent to another device.
+- (BOOL)canSendToYourDeviceForItem:(TabItem*)item {
+  if (!base::FeatureList::IsEnabled(
+          send_tab_to_self::kSendTabToSelfExtraEntryPoints)) {
+    return NO;
+  }
+  if (self.incognito) {
+    return NO;
+  }
+  if (!item || !item.URL.is_valid()) {
+    return NO;
+  }
+  send_tab_to_self::SendTabToSelfSyncService* service =
+      SendTabToSelfSyncServiceFactory::GetForProfile(_profile);
+  return service && service->GetEntryPointDisplayReason(item.URL).has_value();
+}
 
 // Returns `YES` if the tab `item` is already bookmarked.
 - (BOOL)isTabItemBookmarked:(TabItem*)item {
@@ -494,6 +510,15 @@ using tab_groups::SharingState;
 // Handles the result of the add to group block.
 - (void)handleAddWebState:(web::WebStateID)webStateID
                   toGroup:(const TabGroup*)group {
+  Browser* originBrowser = GetBrowserForTabWithCriteria(
+      BrowserListFactory::GetForProfile(_profile),
+      WebStateSearchCriteria{.identifier = webStateID}, _incognito);
+  if (!originBrowser) {
+    // It is possible that the tab is closed before this callback is called (for
+    // example long pressing on a NTP and backgrounding the app).
+    return;
+  }
+
   if (group == nullptr) {
     [self.contextMenuDelegate createNewTabGroupWithIdentifier:webStateID
                                                     incognito:self.incognito];
@@ -530,6 +555,30 @@ using tab_groups::SharingState;
     }
   }
   return nil;
+}
+
+// Returns `YES` if "Close Other Tabs" should be enabled for the tab with
+// `tabID`. Returns `NO` if the tab is pinned.
+- (BOOL)canCloseOtherTabsForTabWithID:(web::WebStateID)tabID {
+  for (Browser* browser : [self currentBrowsersIncludingInactive]) {
+    WebStateList* webStateList = browser->GetWebStateList();
+    WebStateSearchCriteria criteria{.identifier = tabID};
+    int index = GetWebStateIndex(webStateList, criteria);
+    if (index != WebStateList::kInvalidIndex) {
+      if (webStateList->IsWebStatePinnedAt(index)) {
+        return webStateList->regular_tabs_count() > 0;
+      }
+      const TabGroup* group = webStateList->GetGroupOfWebStateAt(index);
+      if (group) {
+        // If the tab is in a group, the "Close Other Tabs" action is scoped to
+        // the group. It should only be enabled if there are other tabs in the
+        // group.
+        return group->range().count() > 1;
+      }
+      return webStateList->regular_tabs_count() > 1;
+    }
+  }
+  return NO;
 }
 
 // Returns the list of browsers for the current `incognito` state. It only

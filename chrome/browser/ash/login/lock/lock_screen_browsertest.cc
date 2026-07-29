@@ -2,9 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <algorithm>
+
 #include "ash/constants/ash_features.h"
 #include "ash/public/cpp/login_screen_test_api.h"
-#include "base/containers/contains.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/ash/login/lock/screen_locker_tester.h"
 #include "chrome/browser/ash/login/login_manager_test.h"
@@ -14,7 +15,8 @@
 #include "chrome/browser/ash/policy/core/device_policy_cros_browser_test.h"
 #include "chrome/browser/ui/ash/login/user_adding_screen.h"
 #include "chromeos/ash/components/settings/cros_settings_names.h"
-#include "components/user_manager/user_manager.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
 #include "content/public/test/browser_test.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/ime/ash/input_method_manager.h"
@@ -62,7 +64,8 @@ class LockScreenInputsTest : public LockScreenBaseTest {
   }
 };
 
-IN_PROC_BROWSER_TEST_F(LockScreenInputsTest, CheckIMESwitches) {
+// TODO(http://crbug.com/507908230) - Re-enable once the test is fixed.
+IN_PROC_BROWSER_TEST_F(LockScreenInputsTest, DISABLED_CheckIMESwitches) {
   const auto& users = login_manager_.users();
   LoginUserWithDbusClient(users[0].account_id, LoginManagerTest::kPassword);
   scoped_refptr<input_method::InputMethodManager::State> ime_states[2] = {
@@ -77,8 +80,9 @@ IN_PROC_BROWSER_TEST_F(LockScreenInputsTest, CheckIMESwitches) {
 
   UserAddingScreen::Get()->Start();
   AddUserWithDbusClient(users[1].account_id, LoginManagerTest::kPassword);
-  EXPECT_EQ(users[1].account_id,
-            user_manager::UserManager::Get()->GetActiveUser()->GetAccountId());
+  EXPECT_EQ(
+      users[1].account_id,
+      session_manager::SessionManager::Get()->GetActiveSession()->account_id());
   ime_states[1] = input_manager->GetActiveIMEState();
   ASSERT_TRUE(ime_states[1]->EnableInputMethod(user_input_methods_[1]));
   ime_states[1]->ChangeInputMethod(user_input_methods_[1], false);
@@ -100,8 +104,9 @@ IN_PROC_BROWSER_TEST_F(LockScreenInputsTest, CheckIMESwitches) {
   locker_tester.UnlockWithPassword(users[0].account_id,
                                    LoginManagerTest::kPassword);
   locker_tester.WaitForUnlock();
-  EXPECT_EQ(users[0].account_id,
-            user_manager::UserManager::Get()->GetActiveUser()->GetAccountId());
+  EXPECT_EQ(
+      users[0].account_id,
+      session_manager::SessionManager::Get()->GetActiveSession()->account_id());
   EXPECT_EQ(ime_states[0], input_manager->GetActiveIMEState());
   EXPECT_EQ(ime_states[0]->GetCurrentInputMethod().id(),
             user_input_methods_[0]);
@@ -120,8 +125,9 @@ IN_PROC_BROWSER_TEST_F(LockScreenInputsTest, CheckIMESwitches) {
             user_input_methods_[1]);
   locker_tester.UnlockWithPassword(users[1].account_id,
                                    LoginManagerTest::kPassword);
-  EXPECT_EQ(users[1].account_id,
-            user_manager::UserManager::Get()->GetActiveUser()->GetAccountId());
+  EXPECT_EQ(
+      users[1].account_id,
+      session_manager::SessionManager::Get()->GetActiveSession()->account_id());
   EXPECT_EQ(ime_states[1], input_manager->GetActiveIMEState());
   EXPECT_EQ(ime_states[1]->GetCurrentInputMethod().id(),
             user_input_methods_[1]);
@@ -172,10 +178,12 @@ IN_PROC_BROWSER_TEST_F(LockScreenFilterInputTest, Basic) {
   // Not valid method should be filtered out.
   EXPECT_EQ(lock_screen_ime_state->GetNumEnabledInputMethods(), 2u);
 
-  EXPECT_TRUE(base::Contains(lock_screen_ime_state->GetEnabledInputMethodIds(),
-                             valid_lock_screen_method_));
-  EXPECT_FALSE(base::Contains(lock_screen_ime_state->GetEnabledInputMethodIds(),
-                              not_valid_lock_screen_method_));
+  EXPECT_TRUE(
+      std::ranges::contains(lock_screen_ime_state->GetEnabledInputMethodIds(),
+                            valid_lock_screen_method_));
+  EXPECT_FALSE(
+      std::ranges::contains(lock_screen_ime_state->GetEnabledInputMethodIds(),
+                            not_valid_lock_screen_method_));
 
   // Check that input methods are restored in the session.
   locker_tester.UnlockWithPassword(test_account_id,
@@ -184,10 +192,10 @@ IN_PROC_BROWSER_TEST_F(LockScreenFilterInputTest, Basic) {
   EXPECT_EQ(input_manager->GetActiveIMEState(), user_ime_state);
 
   EXPECT_EQ(user_ime_state->GetNumEnabledInputMethods(), 3u);
-  EXPECT_TRUE(base::Contains(user_ime_state->GetEnabledInputMethodIds(),
-                             valid_lock_screen_method_));
-  EXPECT_TRUE(base::Contains(user_ime_state->GetEnabledInputMethodIds(),
-                             not_valid_lock_screen_method_));
+  EXPECT_TRUE(std::ranges::contains(user_ime_state->GetEnabledInputMethodIds(),
+                                    valid_lock_screen_method_));
+  EXPECT_TRUE(std::ranges::contains(user_ime_state->GetEnabledInputMethodIds(),
+                                    not_valid_lock_screen_method_));
 }
 
 // DeviceLoginScreenInputMethods policy should not affect lock screen.
@@ -272,8 +280,9 @@ IN_PROC_BROWSER_TEST_F(LockScreenLocalPasswordTest, UnlockWithCorrectPassword) {
   locker_tester.UnlockWithPassword(test_account_id,
                                    LoginManagerTest::kLocalPassword);
   locker_tester.WaitForUnlock();
-  EXPECT_EQ(test_account_id,
-            user_manager::UserManager::Get()->GetActiveUser()->GetAccountId());
+  EXPECT_EQ(
+      test_account_id,
+      session_manager::SessionManager::Get()->GetActiveSession()->account_id());
 }
 
 IN_PROC_BROWSER_TEST_F(LockScreenLocalPasswordTest, UnlockWithWrongPassword) {
@@ -286,7 +295,6 @@ IN_PROC_BROWSER_TEST_F(LockScreenLocalPasswordTest, UnlockWithWrongPassword) {
   // Unlock with a bad password.
   locker_tester.UnlockWithPassword(test_account_id,
                                    LoginManagerTest::kPassword);
-  base::RunLoop().RunUntilIdle();
   EXPECT_TRUE(locker_tester.IsLocked());
 }
 
@@ -312,8 +320,9 @@ IN_PROC_BROWSER_TEST_F(LockScreenPinOnlyTest, UnlockWithCorrectPin) {
   // Unlock with pin, the same as was used for login.
   LoginScreenTestApi::SubmitPin(test_account_id, test::kAuthPin);
   locker_tester.WaitForUnlock();
-  EXPECT_EQ(test_account_id,
-            user_manager::UserManager::Get()->GetActiveUser()->GetAccountId());
+  EXPECT_EQ(
+      test_account_id,
+      session_manager::SessionManager::Get()->GetActiveSession()->account_id());
 }
 
 IN_PROC_BROWSER_TEST_F(LockScreenPinOnlyTest, UnlockWithWrongPin) {

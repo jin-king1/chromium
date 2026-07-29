@@ -25,51 +25,6 @@ chromium-metrics-reviews@google.com.
 
 <enums>
 
-<enum name="MagicStack.Clank.TabResumption.ClickInfo">
-  <int value="0"
-      label="Clicked on foreign first tile of config foreign (single tile)"/>
-  <int value="1"
-      label="Clicked on foreign first tile of config foreign+foreign (double
-             tiles)"/>
-  <int value="2"
-      label="Clicked on foreign second tile of config foreign+foreign (double
-             tiles)"/>
-  <int value="3"
-      label="Clicked on local first tile of config local (single tile)"/>
-  <int value="4"
-      label="Clicked on local first tile of config local+foreign (double
-             tiles)"/>
-  <int value="5"
-      label="Clicked on foreign second tile of config local+foreign (double
-             tiles)"/>
-  <int value="6"
-      label="Clicked on history tile of config history (single tile)"/>
-  <int value="7" label="Clicked on a foreign tile of config double tiles"/>
-  <int value="8" label="Clicked on a local tile of config double tiles"/>
-  <int value="9" label="Clicked on a history tile of config double tiles"/>
-</enum>
-
-<enum name="MagicStack.Clank.TabResumption.ModuleNotShownReason">
-  <int value="0" label="No suggestions"/>
-  <int value="1" label="Feature flag disabled"/>
-  <int value="2" label="User not sign in"/>
-  <int value="3" label="User disabled sync"/>
-</enum>
-
-<enum name="MagicStack.Clank.TabResumption.ModuleShowConfig">
-  <int value="0" label="Showing config foreign (single tile)"/>
-  <int value="1" label="Showing config foreign+foreign (double tiles)"/>
-  <int value="2" label="Showing config local (single tile)"/>
-  <int value="3" label="Showing config local+foreign (double tiles)"/>
-  <int value="4" label="Showing config foreign+history (double tiles)"/>
-  <int value="5" label="Showing config local+local (double tiles)"/>
-  <int value="6" label="Showing config local+history (double tiles)"/>
-  <int value="7" label="Showing config history (single tile)"/>
-  <int value="8" label="Showing config history+history (double tiles)"/>
-  <int value="9" label="Showing config a single tile without type finalized"/>
-  <int value="10" label="Showing config double tiles without type finalized"/>
-</enum>
-
 <enum name="ModulePosition">
   <int value="0" label="1st module"/>
   <int value="1" label="2nd module"/>
@@ -79,18 +34,32 @@ chromium-metrics-reviews@google.com.
   <int value="5" label="6th module"/>
 </enum>
 
+<!-- LINT.IfChange(ModuleType) -->
+
 <enum name="ModuleType">
-  <int value="0" label="Sinlge tab module"/>
+  <int value="0" label="Single tab module"/>
   <int value="1" label="Price change module"/>
-  <int value="2" label="Tab resumption module"/>
+  <int value="2" label="Deprecated Tab resumption module"/>
   <int value="3" label="Safety hub module"/>
-  <int value="4" label="Educational tip module"/>
+  <int value="4" label="Deprecated Educational tip module"/>
   <int value="5" label="Auxiliary search module"/>
   <int value="6" label="Default Browser Promo Card"/>
   <int value="7" label="Tab Group Promo Card"/>
   <int value="8" label="Tab Group Sync Promo Card"/>
   <int value="9" label="Quick Delete Promo Card"/>
+  <int value="10" label="History Sync Promo Card"/>
+  <int value="11" label="Deprecated Tips Notifications Promo Card"/>
+  <int value="12" label="Enhanced Safe Browsing Promo Card"/>
+  <int value="13" label="Address bar placement Promo Card"/>
+  <int value="14" label="Settings container Promo Card"/>
+  <int value="15" label="Sign In Promo Card"/>
+  <int value="16" label="Save Passwords Promo Card"/>
+  <int value="17" label="Password Checkup Promo Card"/>
+  <int value="18" label="Setup List Celebratory Promo Card"/>
+  <int value="19" label="Ntp Theme Promo Card"/>
 </enum>
+
+<!-- LINT.ThenChange(//chrome/browser/magic_stack/android/java/src/org/chromium/chrome/browser/magic_stack/ModuleDelegate.java:HomeModuleTypes) -->
 
 </enums>
 

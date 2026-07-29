@@ -14,6 +14,7 @@
 #include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "build/build_config.h"
+#include "components/viz/common/display/display_scheduler_draw_result.h"
 #include "components/viz/service/frame_sinks/compositor_frame_sink_impl.h"
 #include "components/viz/service/frame_sinks/frame_sink_manager_impl.h"
 #include "mojo/public/cpp/bindings/receiver.h"
@@ -109,10 +110,9 @@ class FrameSinkBundleImpl::SinkGroup : public BeginFrameObserver {
       uint32_t sink_id,
       const BeginFrameArgs& args,
       const base::flat_map<uint32_t, FrameTimingDetails>& details,
-      bool frame_ack,
       std::vector<ReturnedResource> resources) {
     pending_on_begin_frames_.push_back(mojom::BeginFrameInfo::New(
-        sink_id, args, details, frame_ack, std::move(resources)));
+        sink_id, args, details, std::move(resources)));
     if (!defer_on_begin_frames_) {
       FlushMessages();
     }
@@ -175,7 +175,9 @@ class FrameSinkBundleImpl::SinkGroup : public BeginFrameObserver {
     }
   }
 
-  void DidFinishFrame() { source_->DidFinishFrame(this); }
+  void DidFinishFrame() {
+    source_->DidFinishFrame(this, DisplaySchedulerDrawResult::kUnknown);
+  }
 
  private:
   void UpdateBeginFrameObservation() {
@@ -268,24 +270,10 @@ void FrameSinkBundleImpl::RemoveFrameSink(CompositorFrameSinkSupport* support) {
   RemoveFrameSinkImpl(source, sink_id);
 }
 
-void FrameSinkBundleImpl::InitializeCompositorFrameSinkType(
-    uint32_t sink_id,
-    mojom::CompositorFrameSinkType type) {
-  if (auto* sink = GetFrameSink(sink_id)) {
-    sink->InitializeCompositorFrameSinkType(type);
-  }
-}
-
 void FrameSinkBundleImpl::SetNeedsBeginFrame(uint32_t sink_id,
                                              bool needs_begin_frame) {
   if (auto* sink = GetFrameSink(sink_id)) {
     sink->SetNeedsBeginFrame(needs_begin_frame);
-  }
-}
-
-void FrameSinkBundleImpl::SetWantsBeginFrameAcks(uint32_t sink_id) {
-  if (auto* sink = GetFrameSink(sink_id)) {
-    sink->SetWantsBeginFrameAcks();
   }
 }
 
@@ -373,17 +361,15 @@ void FrameSinkBundleImpl::EnqueueOnBeginFrame(
     uint32_t sink_id,
     const BeginFrameArgs& args,
     const base::flat_map<uint32_t, FrameTimingDetails>& details,
-    bool frame_ack,
     std::vector<ReturnedResource> resources) {
   if (auto* group = GetSinkGroup(sink_id)) {
-    group->EnqueueOnBeginFrame(sink_id, args, details, frame_ack,
-                               std::move(resources));
+    group->EnqueueOnBeginFrame(sink_id, args, details, std::move(resources));
   } else {
     // The sink has no BeginFrameSource at the moment and therefore does not
     // belong to a SinkGroup. Forward directly without batching.
     std::vector<mojom::BeginFrameInfoPtr> begin_frames;
-    begin_frames.push_back(mojom::BeginFrameInfo::New(
-        sink_id, args, details, frame_ack, std::move(resources)));
+    begin_frames.push_back(mojom::BeginFrameInfo::New(sink_id, args, details,
+                                                      std::move(resources)));
     client_->FlushNotifications({}, std::move(begin_frames), {});
   }
 }

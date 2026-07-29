@@ -19,49 +19,47 @@
 #include "base/sequence_checker.h"
 #include "base/types/expected.h"
 #include "base/values.h"
-#include "base/version.h"
 #include "chrome/browser/profiles/keep_alive/scoped_profile_keep_alive.h"
 #include "chrome/browser/web_applications/commands/web_app_command.h"
-#include "chrome/browser/web_applications/isolated_web_apps/commands/isolated_web_app_install_command_helper.h"
-#include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_install_source.h"
-#include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_integrity_block_data.h"
-#include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_response_reader_factory.h"
-#include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_storage_location.h"
+#include "chrome/browser/web_applications/isolated_web_apps/install/isolated_web_app_install_source.h"
 #include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_url_info.h"
 #include "chrome/browser/web_applications/isolated_web_apps/jobs/prepare_install_info_job.h"
 #include "chrome/browser/web_applications/locks/app_lock.h"
+#include "chrome/browser/web_applications/model/integrity_block_data.h"
 #include "chrome/browser/web_applications/web_app_install_info.h"
 #include "components/keep_alive_registry/scoped_keep_alive.h"
 #include "components/web_package/signed_web_bundles/signed_web_bundle_integrity_block.h"
 #include "components/webapps/browser/install_result_code.h"
 #include "components/webapps/browser/installable/installable_logging.h"
 #include "components/webapps/common/web_app_id.h"
-#include "third_party/blink/public/mojom/manifest/manifest.mojom-forward.h"
+#include "components/webapps/isolated_web_apps/reading/response_reader_factory.h"
+#include "components/webapps/isolated_web_apps/types/iwa_version.h"
+#include "components/webapps/isolated_web_apps/types/storage_location.h"
 
 class Profile;
 
-namespace content {
-class WebContents;
-}  // namespace content
-
 namespace web_app {
 
+class FinalizeInstallJob;
+
+// Represents a successful installation of an Isolated Web App.
 struct InstallIsolatedWebAppCommandSuccess {
   InstallIsolatedWebAppCommandSuccess(IsolatedWebAppUrlInfo url_info,
-                                      base::Version installed_version,
+                                      IwaVersion installed_version,
                                       IsolatedWebAppStorageLocation location);
   InstallIsolatedWebAppCommandSuccess(
       const InstallIsolatedWebAppCommandSuccess& other);
   ~InstallIsolatedWebAppCommandSuccess();
 
   IsolatedWebAppUrlInfo url_info;
-  base::Version installed_version;
+  IwaVersion installed_version;
   IsolatedWebAppStorageLocation location;
 };
 
 std::ostream& operator<<(std::ostream& os,
                          const InstallIsolatedWebAppCommandSuccess& success);
 
+// Represents an error during the installation of an Isolated Web App.
 struct InstallIsolatedWebAppCommandError {
   std::string message;
 };
@@ -69,12 +67,10 @@ struct InstallIsolatedWebAppCommandError {
 std::ostream& operator<<(std::ostream& os,
                          const InstallIsolatedWebAppCommandError& error);
 
-// Isolated Web App requires:
-//  * no cross-origin navigation
-//  * content should never be loaded in normal tab
-//
-// |content::IsolatedWebAppThrottle| enforces that. The requirements prevent
-// re-using web contents.
+// Command to install an Isolated Web App from a given `IsolatedWebAppUrlInfo`
+// and `IsolatedWebAppInstallSource`. This command will perform a full
+// installation, including checking for trust and signatures, creating the
+// storage partition, and finalizing the installation.
 class InstallIsolatedWebAppCommand
     : public WebAppCommand<AppLock,
                            base::expected<InstallIsolatedWebAppCommandSuccess,
@@ -100,14 +96,13 @@ class InstallIsolatedWebAppCommand
   InstallIsolatedWebAppCommand(
       const IsolatedWebAppUrlInfo& url_info,
       const IsolatedWebAppInstallSource& install_source,
-      const std::optional<base::Version>& expected_version,
-      std::unique_ptr<content::WebContents> web_contents,
+      const std::optional<IwaVersion>& expected_version,
+      Profile& profile,
       std::unique_ptr<ScopedKeepAlive> optional_keep_alive,
       std::unique_ptr<ScopedProfileKeepAlive> optional_profile_keep_alive,
       base::OnceCallback<
           void(base::expected<InstallIsolatedWebAppCommandSuccess,
-                              InstallIsolatedWebAppCommandError>)> callback,
-      std::unique_ptr<IsolatedWebAppInstallCommandHelper> command_helper);
+                              InstallIsolatedWebAppCommandError>)> callback);
 
   InstallIsolatedWebAppCommand(const InstallIsolatedWebAppCommand&) = delete;
   InstallIsolatedWebAppCommand& operator=(const InstallIsolatedWebAppCommand&) =
@@ -143,17 +138,18 @@ class InstallIsolatedWebAppCommand
     kCantValidateManifest = 5,
     kCantRetrieveIcons = 6,
     kCantInstall = 7,
-    kMaxValue = kCantInstall
+    kAppNotPermitted = 8,
+    kMaxValue = kAppNotPermitted
   };
 
   void ReportFailure(InstallIwaError error,
                      webapps::InstallResultCode web_app_failure_code,
                      std::string_view message);
-  void ReportSuccess(const base::Version& installed_version);
+  void ReportSuccess(const IwaVersion& installed_version);
 
   Profile& profile();
 
-  void CheckNotInstalledAlready(base::OnceClosure next_step_callback);
+  void CheckCanBeInstalled(base::OnceClosure next_step_callback);
 
   void CopyToProfileDirectory(base::OnceClosure next_step_callback);
 
@@ -172,32 +168,35 @@ class InstallIsolatedWebAppCommand
       base::OnceCallback<void(PrepareInstallInfoJob::InstallInfoOrFailure)>
           next_step_callback);
 
-  void FinalizeInstall(PrepareInstallInfoJob::InstallInfoOrFailure result);
+  void ProcessInstallInfoResultAndProceed(
+      base::OnceCallback<void(WebAppInstallInfo)> next_step_callback,
+      PrepareInstallInfoJob::InstallInfoOrFailure result);
 
-  void OnFinalizeInstall(const base::Version& attempted_version,
+  void FinalizeInstall(WebAppInstallInfo install_info);
+  void OnFinalizeInstall(const IwaVersion& attempted_version,
                          const webapps::AppId& unused_app_id,
                          webapps::InstallResultCode install_result_code);
 
   std::unique_ptr<AppLock> lock_;
 
-  const std::unique_ptr<IsolatedWebAppInstallCommandHelper> command_helper_;
 
   const IsolatedWebAppUrlInfo url_info_;
-  const std::optional<base::Version> expected_version_;
+  const std::optional<IwaVersion> expected_version_;
   const webapps::WebappInstallSource install_surface_;
 
-  std::optional<IsolatedWebAppIntegrityBlockData> integrity_block_data_;
+  std::optional<IntegrityBlockData> integrity_block_data_;
 
   std::optional<IwaSourceWithModeAndFileOp> install_source_;
   std::optional<IwaSourceWithMode> destination_source_;
   std::optional<IsolatedWebAppStorageLocation> destination_storage_location_;
 
-  std::unique_ptr<content::WebContents> web_contents_;
+  const raw_ref<Profile> profile_;
 
   const std::unique_ptr<ScopedKeepAlive> optional_keep_alive_;
   const std::unique_ptr<ScopedProfileKeepAlive> optional_profile_keep_alive_;
 
   std::unique_ptr<PrepareInstallInfoJob> prepare_install_info_job_;
+  std::unique_ptr<FinalizeInstallJob> install_job_;
 
   base::WeakPtrFactory<InstallIsolatedWebAppCommand> weak_factory_{this};
 };

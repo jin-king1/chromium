@@ -5,6 +5,7 @@
 #define CHROME_BROWSER_ASH_INPUT_METHOD_NATIVE_INPUT_METHOD_ENGINE_OBSERVER_H_
 
 #include <optional>
+#include <string_view>
 
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
@@ -36,7 +37,7 @@
 namespace ash {
 namespace input_method {
 
-bool CanRouteToNativeMojoEngine(const std::string& engine_id);
+bool CanRouteToNativeMojoEngine(std::string_view engine_id);
 
 class NativeInputMethodEngineObserver : public InputMethodEngineObserver,
                                         public ime::mojom::InputMethodHost {
@@ -122,8 +123,9 @@ class NativeInputMethodEngineObserver : public InputMethodEngineObserver,
       ime::mojom::KoreanSettingsPtr settings) override;
   void DEPRECATED_ReportSuggestionOpportunity(
       ime::AssistiveSuggestionMode mode) override;
-  void ReportHistogramSample(base::Histogram* histogram,
-                             uint16_t value) override;
+  void DEPRECATED_ReportHistogramSample(
+      ime::mojom::BucketedHistogramPtr histogram,
+      uint16_t value) override;
   void UpdateQuickSettings(
       ime::mojom::InputMethodQuickSettingsPtr quick_settings) override;
 
@@ -162,15 +164,12 @@ class NativeInputMethodEngineObserver : public InputMethodEngineObserver,
   void SendSurroundingTextToNativeMojoEngine(
       const SurroundingText& surrounding_text);
 
-  bool ShouldRouteToRuleBasedEngine(const std::string& engine_id) const;
-  bool ShouldRouteToNativeMojoEngine(const std::string& engine_id) const;
+  bool ShouldRouteToRuleBasedEngine(std::string_view engine_id) const;
+  bool ShouldRouteToNativeMojoEngine(std::string_view engine_id) const;
 
   void OnConnectionFactoryBound(bool bound);
 
   void ConnectToImeService(const std::string& engine_id);
-
-  void SetJapanesePrefsFromLegacyConfig(
-      ime::mojom::JapaneseLegacyConfigResponsePtr response);
 
   void HandleOnFocusAsyncForNativeMojoEngine(
       const std::string& engine_id,

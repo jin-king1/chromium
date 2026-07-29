@@ -17,8 +17,7 @@
 class SafeSearchService;
 
 namespace content {
-class BrowserContext;
-class NavigationHandle;
+class NavigationThrottleRegistry;
 }  // namespace content
 
 // SafeSitesNavigationThrottle provides a simple way to block a navigation
@@ -28,8 +27,8 @@ class NavigationHandle;
 class SafeSitesNavigationThrottle
     : public ProceedUntilResponseNavigationThrottle::Client {
  public:
-  SafeSitesNavigationThrottle(content::NavigationHandle* navigation_handle,
-                              content::BrowserContext* context,
+  SafeSitesNavigationThrottle(content::NavigationThrottleRegistry& registry,
+                              SafeSearchService* safe_search_service,
                               std::optional<std::string_view>
                                   safe_sites_error_page_content = std::nullopt);
   SafeSitesNavigationThrottle(const SafeSitesNavigationThrottle&) = delete;
@@ -58,7 +57,7 @@ class SafeSitesNavigationThrottle
   // Creates the result to be returned when navigation is canceled.
   ThrottleCheckResult CreateCancelResult() const;
 
-  raw_ptr<SafeSearchService, DanglingUntriaged> safe_search_service_;
+  const raw_ptr<SafeSearchService, DanglingUntriaged> safe_search_service_;
 
   ProceedUntilResponseNavigationThrottle::DeferredResultCallback
       deferred_result_callback_;

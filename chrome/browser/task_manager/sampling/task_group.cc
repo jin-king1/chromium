@@ -6,8 +6,10 @@
 
 #include <algorithm>
 #include <limits>
+#include <optional>
 #include <vector>
 
+#include "base/byte_size.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/task/sequenced_task_runner.h"
@@ -17,10 +19,6 @@
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "gpu/ipc/common/memory_stats.h"
-
-#if BUILDFLAG(ENABLE_NACL)
-#include "components/nacl/browser/nacl_browser.h"
-#endif
 
 #if BUILDFLAG(IS_WIN)
 #include <windows.h>
@@ -39,9 +37,6 @@ const int kBackgroundRefreshTypesMask =
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_MAC)
     REFRESH_TYPE_FD_COUNT |
 #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_MAC)
-#if BUILDFLAG(ENABLE_NACL)
-    REFRESH_TYPE_NACL |
-#endif  // BUILDFLAG(ENABLE_NACL)
     REFRESH_TYPE_PRIORITY;
 
 #if BUILDFLAG(IS_WIN)
@@ -74,13 +69,6 @@ void GetWindowsHandles(base::ProcessHandle handle,
 }
 #endif  // BUILDFLAG(IS_WIN)
 
-#if BUILDFLAG(ENABLE_NACL)
-int GetNaClDebugStubPortOnProcessThread(int process_id) {
-  return nacl::NaClBrowser::GetInstance()->GetProcessGdbDebugStubPort(
-      process_id);
-}
-#endif  // BUILDFLAG(ENABLE_NACL)
-
 }  // namespace
 
 TaskGroup::TaskGroup(
@@ -94,35 +82,9 @@ TaskGroup::TaskGroup(
       process_id_(proc_id),
       is_running_in_vm_(is_running_in_vm),
       on_background_calculations_done_(on_background_calculations_done),
-      worker_thread_sampler_(nullptr),
       shared_sampler_(shared_sampler),
-#if BUILDFLAG(IS_CHROMEOS)
-      arc_shared_sampler_(nullptr),
-#endif  // BUILDFLAG(IS_CHROMEOS)
       expected_on_bg_done_flags_(kBackgroundRefreshTypesMask),
-      current_on_bg_done_flags_(0),
-      platform_independent_cpu_usage_(std::numeric_limits<double>::quiet_NaN()),
-      swapped_mem_bytes_(-1),
-      memory_footprint_(-1),
-      gpu_memory_(-1),
-      per_process_network_usage_rate_(-1),
-      cumulative_per_process_network_usage_(0),
-#if BUILDFLAG(IS_WIN)
-      gdi_current_handles_(-1),
-      gdi_peak_handles_(-1),
-      user_current_handles_(-1),
-      user_peak_handles_(-1),
-      hard_faults_per_second_(-1),
-#endif  // BUILDFLAG(IS_WIN)
-#if BUILDFLAG(ENABLE_NACL)
-      nacl_debug_stub_port_(nacl::kGdbDebugStubPortUnknown),
-#endif  // BUILDFLAG(ENABLE_NACL)
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_MAC)
-      open_fd_count_(-1),
-#endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_MAC)
-      idle_wakeups_per_second_(-1),
-      gpu_memory_has_duplicates_(false),
-      is_backgrounded_(false) {
+      current_on_bg_done_flags_(0) {
   if (process_id_ != base::kNullProcessId && !is_running_in_vm_) {
     worker_thread_sampler_ = base::MakeRefCounted<TaskGroupSampler>(
         base::Process::Open(process_id_), blocking_pool_runner,
@@ -181,14 +143,15 @@ void TaskGroup::Refresh(const gpu::VideoMemoryUsageStats& gpu_memory_stats,
       TaskManagerObserver::IsResourceRefreshEnabled(REFRESH_TYPE_NETWORK_USAGE,
                                                     refresh_flags);
 
-  per_process_network_usage_rate_ = network_usage_refresh_enabled ? 0 : -1;
-  cumulative_per_process_network_usage_ = 0;
+  per_process_network_usage_rate_.reset();
+  if (network_usage_refresh_enabled) {
+    per_process_network_usage_rate_ = base::ByteSize(0);
+  }
+
   for (Task* task : tasks_) {
     task->Refresh(update_interval, refresh_flags);
     if (network_usage_refresh_enabled) {
-      per_process_network_usage_rate_ += task->GetNetworkUsageRate();
-      cumulative_per_process_network_usage_ +=
-          task->GetCumulativeNetworkUsage();
+      per_process_network_usage_rate_.value() += task->GetNetworkUsageRate();
     }
   }
 
@@ -206,19 +169,10 @@ void TaskGroup::Refresh(const gpu::VideoMemoryUsageStats& gpu_memory_stats,
   }
 #endif  // BUILDFLAG(IS_WIN)
 
-// 4- Refresh the NACL debug stub port (if enabled). This calls out to
-//    NaClBrowser on the browser's IO thread, completing asynchronously.
-#if BUILDFLAG(ENABLE_NACL)
-  if (TaskManagerObserver::IsResourceRefreshEnabled(REFRESH_TYPE_NACL,
-                                                    refresh_flags)) {
-    RefreshNaClDebugStubPort(tasks_[0]->GetChildProcessUniqueID());
-  }
-#endif  // BUILDFLAG(ENABLE_NACL)
-
   int64_t shared_refresh_flags =
       refresh_flags & shared_sampler_->GetSupportedFlags();
 
-  // 5- Refresh resources via SharedSampler if the current platform
+  // 4- Refresh resources via SharedSampler if the current platform
   // implementation supports that. The actual work is done on the worker thread.
   // At the moment this is supported only on OS_WIN.
   if (shared_refresh_flags != 0) {
@@ -228,11 +182,11 @@ void TaskGroup::Refresh(const gpu::VideoMemoryUsageStats& gpu_memory_stats,
 
   // The remaining resource refreshes are time consuming and cannot be done on
   // the UI thread. Do them all on the worker thread using the TaskGroupSampler.
-  // 6-  CPU usage.
-  // 7-  Memory usage.
-  // 8-  Idle Wakeups per second.
-  // 9-  (Linux and ChromeOS only) The number of file descriptors current open.
-  // 10- Process priority (foreground vs. background).
+  // 5-  CPU usage.
+  // 6-  Memory usage.
+  // 7-  Idle Wakeups per second.
+  // 8-  (Linux and ChromeOS only) The number of file descriptors current open.
+  // 9- Process priority (foreground vs. background).
   if (worker_thread_sampler_)
     worker_thread_sampler_->Refresh(refresh_flags);
 }
@@ -267,12 +221,12 @@ void TaskGroup::RefreshGpuMemory(
     const gpu::VideoMemoryUsageStats& gpu_memory_stats) {
   auto itr = gpu_memory_stats.process_map.find(process_id_);
   if (itr == gpu_memory_stats.process_map.end()) {
-    gpu_memory_ = -1;
+    gpu_memory_ = std::nullopt;
     gpu_memory_has_duplicates_ = false;
     return;
   }
 
-  gpu_memory_ = itr->second.video_memory;
+  gpu_memory_ = base::ByteSize(itr->second.video_memory);
   gpu_memory_has_duplicates_ = itr->second.has_duplicates;
 }
 
@@ -282,25 +236,6 @@ void TaskGroup::RefreshWindowsHandles() {
                     &user_current_handles_, &user_peak_handles_);
 #endif  // BUILDFLAG(IS_WIN)
 }
-
-#if BUILDFLAG(ENABLE_NACL)
-void TaskGroup::RefreshNaClDebugStubPort(int child_process_unique_id) {
-  // Note this needs to be in a PostTask to avoid a use-after-free (see
-  // https://crbug.com/1221406).
-  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-      FROM_HERE, base::BindOnce(&TaskGroup::OnRefreshNaClDebugStubPortDone,
-                                weak_ptr_factory_.GetWeakPtr(),
-                                GetNaClDebugStubPortOnProcessThread(
-                                    child_process_unique_id)));
-}
-
-void TaskGroup::OnRefreshNaClDebugStubPortDone(int nacl_debug_stub_port) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-
-  nacl_debug_stub_port_ = nacl_debug_stub_port;
-  OnBackgroundRefreshTypeFinished(REFRESH_TYPE_NACL);
-}
-#endif  // BUILDFLAG(ENABLE_NACL)
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_MAC)
 void TaskGroup::OnOpenFdCountRefreshDone(int open_fd_count) {
@@ -318,10 +253,10 @@ void TaskGroup::OnCpuRefreshDone(double cpu_usage) {
   OnBackgroundRefreshTypeFinished(REFRESH_TYPE_CPU);
 }
 
-void TaskGroup::OnSwappedMemRefreshDone(int64_t swapped_mem_bytes) {
+void TaskGroup::OnSwappedMemRefreshDone(base::ByteSize swapped_mem_bytes) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
-  swapped_mem_bytes_ = swapped_mem_bytes;
+  swapped_mem_ = swapped_mem_bytes;
   OnBackgroundRefreshTypeFinished(REFRESH_TYPE_SWAPPED_MEM);
 }
 
@@ -370,8 +305,9 @@ void TaskGroup::OnSamplerRefreshDone(
 #if BUILDFLAG(IS_CHROMEOS)
 void TaskGroup::OnArcSamplerRefreshDone(
     std::optional<ArcSharedSampler::MemoryFootprintBytes> memory_footprint) {
-  if (memory_footprint)
-    set_footprint_bytes(*memory_footprint);
+  if (memory_footprint.has_value()) {
+    set_footprint(base::ByteSize(memory_footprint.value()));
+  }
 }
 #endif  // BUILDFLAG(IS_CHROMEOS)
 

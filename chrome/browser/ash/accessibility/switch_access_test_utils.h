@@ -40,6 +40,15 @@ class SwitchAccessTestUtils {
   // Name represents the name of the target node.
   void WaitForEventOnAutomationNode(const std::string& eventType,
                                     const std::string& name);
+  // Waits for the back button to initialize its AutomationNode. This can take
+  // longer when running in manifest v3.
+  void WaitForBackButtonInitialized();
+  // Resets the console observer.
+  void ResetConsoleObserver();
+
+  ExtensionConsoleErrorObserver* console_observer() {
+    return console_observer_.get();
+  }
 
  private:
   void WaitForJS(const std::string& js_to_eval);
@@ -47,7 +56,6 @@ class SwitchAccessTestUtils {
 
   raw_ptr<Profile, DanglingUntriaged> profile_;
   std::unique_ptr<ExtensionConsoleErrorObserver> console_observer_;
-  std::optional<ManifestVersion> version_;
 };
 
 }  // namespace ash

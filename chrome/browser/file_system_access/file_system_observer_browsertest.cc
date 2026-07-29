@@ -142,7 +142,7 @@ class FileSystemObserverTest : public InProcessBrowserTest {
   }
 
   void ConfigureCookieSetting(const GURL& url, ContentSetting setting) {
-    CookieSettingsFactory::GetForProfile(browser()->profile())
+    CookieSettingsFactory::GetForProfile(browser()->GetProfile())
         ->SetCookieSetting(url, setting);
   }
 
@@ -259,7 +259,7 @@ IN_PROC_BROWSER_TEST_F(FileSystemObserverTest,
                        ErrorsAfterPermissionsAreRevoked) {
   auto file = CreateFileToBePicked();
 
-  auto* browser_profile = browser()->profile();
+  auto* browser_profile = browser()->GetProfile();
   TestFileSystemAccessPermissionContext permission_context(browser_profile);
   content::SetFileSystemAccessPermissionContext(browser_profile,
                                                 &permission_context);
@@ -301,7 +301,8 @@ IN_PROC_BROWSER_TEST_F(FileSystemObserverTest,
     base::ScopedAllowBlockingForTesting allow_blocking;
 
     ASSERT_TRUE(base::WriteFile(file, "content"));
-    auto records = EvalJs(GetWebContents(), get_results_script).ExtractList();
+    auto records =
+        EvalJs(GetWebContents(), get_results_script).TakeValue().TakeList();
     const std::string expected_change_type =
         SupportsChangeInfo() ? "modified" : "unknown";
 
@@ -316,7 +317,8 @@ IN_PROC_BROWSER_TEST_F(FileSystemObserverTest,
 
   {
     base::ScopedAllowBlockingForTesting allow_blocking;
-    auto records = EvalJs(GetWebContents(), get_results_script).ExtractList();
+    auto records =
+        EvalJs(GetWebContents(), get_results_script).TakeValue().TakeList();
 
     // Expect that we received only one "errored" event.
     ASSERT_THAT(records, testing::SizeIs(1));
@@ -326,7 +328,8 @@ IN_PROC_BROWSER_TEST_F(FileSystemObserverTest,
   {
     base::ScopedAllowBlockingForTesting allow_blocking;
     ASSERT_TRUE(base::WriteFile(file, "content v2"));
-    auto records = EvalJs(GetWebContents(), get_results_script).ExtractList();
+    auto records =
+        EvalJs(GetWebContents(), get_results_script).TakeValue().TakeList();
 
     // Expect that no more events are received after it's errored.
     ASSERT_THAT(records, testing::IsEmpty());
@@ -337,7 +340,7 @@ IN_PROC_BROWSER_TEST_F(FileSystemObserverTest,
                        ErrorsAfterRevokeAllActiveGrants) {
   auto dir = CreateDirectoryToBePicked();
 
-  auto* browser_profile = browser()->profile();
+  auto* browser_profile = browser()->GetProfile();
   TestFileSystemAccessPermissionContext permission_context(browser_profile);
   content::SetFileSystemAccessPermissionContext(browser_profile,
                                                 &permission_context);
@@ -381,7 +384,8 @@ IN_PROC_BROWSER_TEST_F(FileSystemObserverTest,
   {
     base::ScopedAllowBlockingForTesting allow_blocking;
     ASSERT_TRUE(base::WriteFile(file, "content"));
-    auto records = EvalJs(GetWebContents(), get_results_script).ExtractList();
+    auto records =
+        EvalJs(GetWebContents(), get_results_script).TakeValue().TakeList();
     const std::string expected_change_type =
         SupportsChangeInfo() ? "appeared" : "unknown";
 
@@ -395,7 +399,8 @@ IN_PROC_BROWSER_TEST_F(FileSystemObserverTest,
 
   {
     base::ScopedAllowBlockingForTesting allow_blocking;
-    auto records = EvalJs(GetWebContents(), get_results_script).ExtractList();
+    auto records =
+        EvalJs(GetWebContents(), get_results_script).TakeValue().TakeList();
 
     // Expect that we received an "errored" event due to the active grants being
     // revoked.
@@ -406,7 +411,8 @@ IN_PROC_BROWSER_TEST_F(FileSystemObserverTest,
   {
     base::ScopedAllowBlockingForTesting allow_blocking;
     ASSERT_TRUE(base::WriteFile(file, "content v2"));
-    auto records = EvalJs(GetWebContents(), get_results_script).ExtractList();
+    auto records =
+        EvalJs(GetWebContents(), get_results_script).TakeValue().TakeList();
 
     // Expect that no more events are received after it's errored.
     ASSERT_THAT(records, testing::IsEmpty());

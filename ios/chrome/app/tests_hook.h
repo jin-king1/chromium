@@ -5,16 +5,27 @@
 #ifndef IOS_CHROME_APP_TESTS_HOOK_H_
 #define IOS_CHROME_APP_TESTS_HOOK_H_
 
-#include <memory>
+#import <memory>
 #import <optional>
 
+#import "base/containers/span.h"
+
+class AimEligibilityService;
 class PrefService;
 class ProfileIOS;
 class ProfileOAuth2TokenServiceDelegate;
 class ProfileOAuth2TokenService;
 class ShareKitService;
 class SystemIdentityManager;
+class TabGroupService;
 class TrustedVaultClientBackend;
+@class UIImage;
+@class UIWindow;
+@protocol ReauthenticationProtocol;
+
+namespace contextual_search {
+class ContextualSearchService;
+}  // namespace contextual_search
 
 namespace base {
 class TimeDelta;
@@ -23,6 +34,10 @@ class TimeDelta;
 namespace collaboration {
 class CollaborationService;
 }  // namespace collaboration
+
+namespace commerce {
+class ShoppingService;
+}  // namespace commerce
 
 namespace data_sharing {
 class DataSharingService;
@@ -45,15 +60,17 @@ class BulkLeakCheckServiceInterface;
 class RecipientsFetcher;
 }  // namespace password_manager
 
-namespace plus_addresses {
-class PlusAddressService;
-}  // namespace plus_addresses
-
 namespace tab_groups {
 class TabGroupSyncService;
 }  // namespace tab_groups
 
+class Browser;
+
 namespace tests_hook {
+
+// Returns true if Gemini eligibility check should be disabled as tests do
+// not have the required identity internal state to perform the verification.
+bool DisableGeminiEligibilityCheck();
 
 // Returns true if app group access should be disabled as tests don't have the
 // required entitlements.
@@ -100,9 +117,9 @@ std::unique_ptr<ProfileOAuth2TokenService> GetOverriddenTokenService(
     PrefService* user_prefs,
     std::unique_ptr<ProfileOAuth2TokenServiceDelegate> delegate);
 
-// Returns true if the upgrade sign-in promo should be disabled to allow other
-// tests to run unimpeded.
-bool DisableUpgradeSigninPromo();
+// Returns true if the fullscreen sign-in promo should be disabled to allow
+// other tests to run unimpeded.
+bool DisableFullscreenSigninPromo();
 
 // Returns true if the update service should be disabled so that the update
 // infobar won't be shown during testing.
@@ -117,6 +134,13 @@ bool DelayAppLaunchPromos();
 // method -application:didDiscardSceneSessions: may be called with a list
 // of identifiers that contains identifiers of UIScene that are active.
 bool NeverPurgeDiscardedSessionsData();
+
+// Returns true if the UI should be minimal for testing.
+bool ShouldLoadMinimalAppUI();
+
+// Loads a minimal UI for testing in the given window (usually after loading a
+// simple UILabel into the first UIWindow).
+void LoadMinimalAppUI(UIWindow* window);
 
 // Returns a policy provider that should be installed as the platform policy
 // provider when testing. May return nullptr.
@@ -140,6 +164,11 @@ std::unique_ptr<TrustedVaultClientBackend> CreateTrustedVaultClientBackend();
 std::unique_ptr<tab_groups::TabGroupSyncService> CreateTabGroupSyncService(
     ProfileIOS* profile);
 
+// Allows overriding the ShoppingService factory. The real factory will be used
+// if this hook returns null.
+std::unique_ptr<commerce::ShoppingService> CreateShoppingService(
+    ProfileIOS* profile);
+
 // Allows additional test setup for the DataSharingService.
 void DataSharingServiceHooks(
     data_sharing::DataSharingService* data_sharing_service);
@@ -149,17 +178,13 @@ void DataSharingServiceHooks(
 std::unique_ptr<ShareKitService> CreateShareKitService(
     data_sharing::DataSharingService* data_sharing_service,
     collaboration::CollaborationService* collaboration_service,
-    tab_groups::TabGroupSyncService* sync_service);
+    tab_groups::TabGroupSyncService* sync_service,
+    TabGroupService* tab_group_service);
 
 // Returns a bulk leak check service that should be used when testing. The real
 // factory will be used if this hook returns a nullptr.
 std::unique_ptr<password_manager::BulkLeakCheckServiceInterface>
 GetOverriddenBulkLeakCheckService();
-
-// Returns a plus address service that should be used when testing. The real
-// factory will be used if this hook returns a nullptr.
-std::unique_ptr<plus_addresses::PlusAddressService>
-GetOverriddenPlusAddressService();
 
 // Returns a recipients fetcher instance that should be used in EG tests. The
 // real instance will be used if this hook returns a nullptr.
@@ -183,10 +208,6 @@ void SignalAppLaunched();
 // duration as it can make test flaky.
 base::TimeDelta PasswordCheckMinimumDuration();
 
-// Duration for snackbars. If the value is 0, the default value from
-// -[MDCSnackbarMessage duration] should not be updated.
-base::TimeDelta GetOverriddenSnackbarDuration();
-
 // Returns a Drive service instance that should be used in EG tests. The real
 // instance will be used if this hook returns a nullptr.
 std::unique_ptr<drive::DriveService> GetOverriddenDriveService();
@@ -197,13 +218,39 @@ feature_engagement::FeatureActivation FETDemoModeOverride();
 // If the given argv contains `-EGTestWipeProfile`, deletes the
 // contents of the `Library` directory at the start of `main()`. This
 // simulates launching the application with a fresh profile.
-void WipeProfileIfRequested(int argc, char* argv[]);
+void WipeProfileIfRequested(base::span<const char* const> args);
 
 // Delay before which the "Turn on AutoFill" button shown in Password Settings
 // can be re-enabled. If the value is 0, the default value from Password
 // Settings should not be updated.
 base::TimeDelta
 GetOverriddenDelayForRequestingTurningOnCredentialProviderExtension();
+
+// Returns the default value for the snackbar message duration.
+base::TimeDelta GetSnackbarMessageDuration();
+
+// Returns override duration for infobar if exists.
+std::optional<base::TimeDelta> GetOverrideInfobarDuration();
+
+// Returns a UIImage for users of PHPickerViewController to use to skip
+// presenting that picker view controller in tests.
+UIImage* GetPHPickerViewControllerImage();
+
+// Returns a mock AimEligibilityService for testing.
+// The real factory will be used if this hook returns null.
+std::unique_ptr<AimEligibilityService> CreateAimEligibilityService(
+    ProfileIOS* profile);
+
+// Returns a mock ContextualSearchService for testing.
+// The real factory will be used if this hook returns null.
+std::unique_ptr<contextual_search::ContextualSearchService>
+CreateContextualSearchService(ProfileIOS* profile);
+
+// Injects fake tabs into the given browser.
+void InjectFakeTabsInBrowser(Browser* browser);
+
+// Returns a fake reauthentication module to be used in tests.
+id<ReauthenticationProtocol> GetFakeReauthenticationModule();
 
 }  // namespace tests_hook
 

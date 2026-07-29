@@ -11,7 +11,8 @@
 #include "gpu/config/gpu_preferences.h"
 
 namespace {
-const char kTrialName[] = "SkiaBackend";
+const char kSkiaTrialName[] = "SkiaBackend";
+const char kEGLTrialName[] = "EGLDisplayType";
 
 // Synthetic trial group names. Groups added here should be added to finch
 // service side as well.
@@ -22,6 +23,7 @@ const char kGroupGraphiteDawnVulkan[] = "GraphiteDawnVulkan";
 const char kGroupGraphiteDawnMetal[] = "GraphiteDawnMetal";
 const char kGroupGraphiteDawnD3D11[] = "GraphiteDawnD3D11";
 const char kGroupGraphiteDawnD3D12[] = "GraphiteDawnD3D12";
+const char kGroupGraphiteDawnOpenGLES[] = "GraphiteDawnOpenGLES";
 
 }  // namespace
 
@@ -46,8 +48,16 @@ void ChromeBrowserMainExtraPartsGpu::PreCreateThreads() {
 void ChromeBrowserMainExtraPartsGpu::OnGpuInfoUpdate() {
   const auto* backend_name = GetSkiaBackendName();
   if (backend_name) {
-    ChromeMetricsServiceAccessor::RegisterSyntheticFieldTrial(kTrialName,
+    ChromeMetricsServiceAccessor::RegisterSyntheticFieldTrial(kSkiaTrialName,
                                                               backend_name);
+  }
+  auto* manager = content::GpuDataManager::GetInstance();
+  if (manager->IsEssentialGpuInfoAvailable()) {
+    const std::string& display_type = manager->GetGPUInfo().display_type;
+    if (!display_type.empty()) {
+      ChromeMetricsServiceAccessor::RegisterSyntheticFieldTrial(kEGLTrialName,
+                                                                display_type);
+    }
   }
 }
 
@@ -71,6 +81,8 @@ const char* ChromeBrowserMainExtraPartsGpu::GetSkiaBackendName() const {
       return kGroupGraphiteDawnD3D11;
     case gpu::SkiaBackendType::kGraphiteDawnD3D12:
       return kGroupGraphiteDawnD3D12;
+    case gpu::SkiaBackendType::kGraphiteDawnOpenGLES:
+      return kGroupGraphiteDawnOpenGLES;
     case gpu::SkiaBackendType::kUnknown:
       return nullptr;
   }

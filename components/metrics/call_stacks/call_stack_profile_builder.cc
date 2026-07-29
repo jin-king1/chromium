@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "components/metrics/call_stacks/call_stack_profile_builder.h"
 
 #include <algorithm>
@@ -18,10 +13,14 @@
 #include <utility>
 
 #include "base/check.h"
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/files/file_path.h"
 #include "base/logging.h"
 #include "base/metrics/metrics_hashes.h"
 #include "base/no_destructor.h"
+#include "base/profiler/stack_sampling_profiler.h"
+#include "base/strings/string_view_util.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "components/metrics/call_stacks/call_stack_profile_encoding.h"
@@ -51,12 +50,8 @@ GetBrowserProcessReceiverCallbackInstance() {
 // Convert |filename| to its MD5 hash.
 uint64_t HashModuleFilename(const base::FilePath& filename) {
   const base::FilePath::StringType basename = filename.BaseName().value();
-  // Copy the bytes in basename into a string buffer.
-  size_t basename_length_in_bytes =
-      basename.size() * sizeof(base::FilePath::CharType);
-  std::string name_bytes(basename_length_in_bytes, '\0');
-  memcpy(&name_bytes[0], &basename[0], basename_length_in_bytes);
-  return base::HashMetricName(name_bytes);
+  return base::HashMetricName(
+      base::as_string_view(base::as_chars(base::span(basename))));
 }
 
 }  // namespace
@@ -67,6 +62,10 @@ CallStackProfileBuilder::CallStackProfileBuilder(
     base::OnceClosure completed_callback)
     : work_id_recorder_(work_id_recorder) {
   completed_callback_ = std::move(completed_callback);
+  // Reserve capacity for the expected number of samples to avoid repeated
+  // vector reallocations during collection.
+  sample_timestamps_.reserve(
+      base::StackSamplingProfiler::SamplingParams{}.samples_per_profile);
   sampled_profile_.set_process(
       ToExecutionContextProcess(profile_params.process));
   sampled_profile_.set_thread(ToExecutionContextThread(profile_params.thread));
@@ -181,14 +180,14 @@ void CallStackProfileBuilder::OnSampleCompleted(
     // Write CallStackProfile::Location protobuf message.
     uintptr_t instruction_pointer = frame.instruction_pointer;
 #if BUILDFLAG(IS_IOS)
-#if !TARGET_IPHONE_SIMULATOR
+#if !TARGET_OS_SIMULATOR
     // Some iOS devices enable pointer authentication, which uses the
     // higher-order bits of pointers to store a signature. Strip that signature
     // off before computing the module_offset.
     // TODO(crbug.com/40131654): Use the ptrauth_strip() macro once it is
     // available.
     instruction_pointer &= 0xFFFFFFFFF;
-#endif  // !TARGET_IPHONE_SIMULATOR
+#endif  // !TARGET_OS_SIMULATOR
 #endif  // BUILDFLAG(IS_IOS)
 
     ptrdiff_t module_offset =

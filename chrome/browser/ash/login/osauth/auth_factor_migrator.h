@@ -7,11 +7,14 @@
 
 #include <memory>
 #include <optional>
+#include <vector>
 
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/ash/login/osauth/auth_factor_migration.h"
 #include "chromeos/ash/components/login/auth/public/auth_callbacks.h"
+
+class PrefService;
 
 namespace ash {
 class UserDataAuthClient;
@@ -28,7 +31,9 @@ class AuthFactorMigrator {
   AuthFactorMigrator& operator=(const AuthFactorMigrator&) = delete;
 
   // Returns the default list of migrations to be executed.
+  // `local_state` must be non-null and must outlive the returned object.
   static std::vector<std::unique_ptr<AuthFactorMigration>> GetMigrationsList(
+      PrefService* local_state,
       UserDataAuthClient* user_data_auth);
 
   // Runs all auth factor migration operations.

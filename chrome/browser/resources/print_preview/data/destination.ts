@@ -5,8 +5,10 @@
 import '/strings.m.js';
 
 import {assert} from 'chrome://resources/js/assert.js';
+import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
+import {stripDiacritics} from 'chrome://resources/js/search_highlight_utils.js';
 
-import type {Cdd, ColorCapability, ColorOption, CopiesCapability, DpiOption, DuplexType, MediaSizeOption, MediaTypeOption} from './cdd.js';
+import type {Cdd, ColorCapability, ColorOption, CopiesCapability, DpiOption, DuplexType, MediaSizeOption} from './cdd.js';
 /**
  * Enumeration of the origin types for destinations.
  */
@@ -26,11 +28,9 @@ export enum DestinationOrigin {
  * Must match PrinterType in printing/mojom/print.mojom
  */
 export enum PrinterType {
-  PRIVET_PRINTER_DEPRECATED = 0,
-  EXTENSION_PRINTER = 1,
-  PDF_PRINTER = 2,
-  LOCAL_PRINTER = 3,
-  CLOUD_PRINTER_DEPRECATED = 4
+  EXTENSION_PRINTER = 0,
+  PDF_PRINTER = 1,
+  LOCAL_PRINTER = 2,
 }
 
 /**
@@ -107,6 +107,10 @@ const COLOR_TYPES: string[] = ['STANDARD_COLOR', 'CUSTOM_COLOR'];
  */
 const MONOCHROME_TYPES: string[] = ['STANDARD_MONOCHROME', 'CUSTOM_MONOCHROME'];
 
+function matchWithDiacritics(candidate: string, query: RegExp): boolean {
+  const strippedCandidate = stripDiacritics(candidate);
+  return !!strippedCandidate.match(query);
+}
 
 /**
  * Print destination data object.
@@ -247,9 +251,13 @@ export class Destination {
       return 'cr:insert-drive-file';
     }
     if (this.isEnterprisePrinter) {
-      return 'print-preview:business';
+      return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
+          'print-preview:domain' :
+          'print-preview:business-old';
     }
-    return 'print-preview:print';
+    return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
+        'print-preview:print-filled' :
+        'print-preview:print-old';
   }
 
   /**
@@ -265,9 +273,10 @@ export class Destination {
    * @return Whether the query matches this destination.
    */
   matches(query: RegExp): boolean {
-    return !!this.displayName_.match(query) ||
-        !!this.extensionName_.match(query) || !!this.location_.match(query) ||
-        !!this.description_.match(query);
+    return matchWithDiacritics(this.displayName_, query) ||
+        matchWithDiacritics(this.extensionName_, query) ||
+        matchWithDiacritics(this.location_, query) ||
+        matchWithDiacritics(this.description_, query);
   }
 
   /**
@@ -348,7 +357,7 @@ export class Destination {
     const defaultOptions = capability.option.filter(option => {
       return option.is_default;
     });
-    return defaultOptions.length !== 0 ? defaultOptions[0] : null;
+    return defaultOptions.length > 0 ? defaultOptions[0]! : null;
   }
 
   /**
@@ -366,7 +375,7 @@ export class Destination {
         return option.type === typesToLookFor[i];
       });
       if (matchingOptions.length > 0) {
-        return matchingOptions[0];
+        return matchingOptions[0]!;
       }
     }
     return null;
@@ -379,16 +388,6 @@ export class Destination {
   getMediaSize(width: number, height: number): MediaSizeOption|undefined {
     return this.capabilities?.printer.media_size?.option.find(o => {
       return o.width_microns === width && o.height_microns === height;
-    });
-  }
-
-  /**
-   * @return Media type value of the destination with the given vendor id.
-   * Returns undefined if there is no such media type value.
-   */
-  getMediaType(vendorId: string): MediaTypeOption|undefined {
-    return this.capabilities?.printer.media_type?.option.find(o => {
-      return o.vendor_id === vendorId;
     });
   }
 

@@ -47,6 +47,9 @@
 // Supports APIs used to implement the trusted vault for chrome sync.
 #define IOS_WEB_VIEW_SUPPORTS_TRUSTED_VAULT_APIS 1
 
+// Supports -[CWVAutofillDataManager fetchIconForCreditCard:creditCard].
+#define IOS_WEB_VIEW_SUPPORTS_FETCHING_CREDIT_CARD_ICON 1
+
 // Supports -[CWVAutofillDataManager updatePassword:newUsername:newPassword:].
 #define IOS_WEB_VIEW_SUPPORTS_UPDATING_PASSWORDS 1
 
@@ -116,5 +119,35 @@
 
 // Supports early initialization.
 #define IOS_WEB_VIEW_SUPPORTS_EARLY_INITIALIZATION 1
+
+// Supports timestamps in the CWVAutofillDataManager
+#define IOS_WEB_VIEW_CWV_AUTOFILL_DATA_MANAGER_TIMESTAMPS 1
+
+// Supports -[CWVWebView allowsLinkPreview].
+#define IOS_WEB_VIEW_SUPPORTS_ALLOWS_LINK_PREVIEW 1
+
+// Support affiliation of passwords.
+#define IOS_WEB_VIEW_SUPPORTS_AFFILIATED_PASSWORDS 1
+
+// Supports -[CWVDownloadTask originatingHost]
+#define IOS_WEB_VIEW_SUPPORTS_DOWNLOAD_TASK_ORIGINATING_HOST 1
+
+// Supports -[CWVDownloadTask redirectedURL]
+#define IOS_WEB_VIEW_SUPPORTS_DOWNLOAD_TASK_REDIRECTED_URL 1
+
+// Supports VCN.
+#define IOS_WEB_VIEW_SUPPORTS_VCN 1
+
+// Supports fetching virtual cards
+#define IOS_WEBVIEW_SUPPORTS_FETCHING_VIRTUAL_CARDS 1
+
+// Supports -[CWVEarlyInitFlags mainThreadInitialNestingLevel].
+#define IOS_WEB_VIEW_SUPPORTS_MAIN_THREAD_INITIAL_NESTING_LEVEL 1
+
+// When enabled, -[CWVGlobalState setDumpWithoutCrashingHandler:] is made available.
+#define CWV_DUMP_WITHOUT_CRASHING_HANDLER_AVAILABLE 1
+
+// Supports -[CWVPreferences autofillSafeLifecycleEnabled].
+#define IOS_WEB_VIEW_SUPPORTS_AUTOFILL_SAFE_LIFECYCLE 1
 
 #endif  // IOS_WEB_VIEW_PUBLIC_CWV_DEFINES_H_

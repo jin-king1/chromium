@@ -11,6 +11,7 @@
 #include <ostream>
 #include <string>
 
+#include "base/containers/span.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "net/base/address_family.h"
@@ -41,7 +42,7 @@ class NET_EXPORT IPEndPoint {
  public:
   // Function signatures of if_nametoindex() and if_indextoname().
   using NameToIndexFunc = uint32_t (*)(const char*);
-  using IndexToNameFunc = char* (*)(unsigned int, char*);
+  using IndexToNameFunc = char* (*)(unsigned int, base::span<char>);
 
   // Set fake if_nametoindex() and if_indextoname() functions for testing.
   static void SetNameToIndexFuncForTesting(NameToIndexFunc func);
@@ -67,6 +68,11 @@ class NET_EXPORT IPEndPoint {
   // Returns the IPv6 scope identifier if it has been set by FromSockAddr() and
   // the address is link-local.
   std::optional<uint32_t> scope_id() const { return scope_id_; }
+
+  // Returns a copy of this IPEndPoint with `port` updated, preserving the
+  // scope ID. This function will crash if the IPEndPoint is for a Bluetooth
+  // socket.
+  IPEndPoint CopyWithPort(uint16_t port) const;
 
   // Returns AddressFamily of the address. Returns ADDRESS_FAMILY_UNSPECIFIED if
   // this is the IPEndPoint for a Bluetooth socket.
@@ -108,21 +114,30 @@ class NET_EXPORT IPEndPoint {
   std::string ToStringWithoutPort() const;
 
   bool operator<(const IPEndPoint& that) const;
-  bool operator==(const IPEndPoint& that) const;
-  bool operator!=(const IPEndPoint& that) const;
+  friend bool operator==(const IPEndPoint&, const IPEndPoint&) = default;
+
+  template <typename H>
+  friend H AbslHashValue(H h, const IPEndPoint& ep) {
+    auto addr_bytes = ep.address_.bytes();
+    return H::combine(H::combine_contiguous(std::move(h), addr_bytes.data(),
+                                            addr_bytes.size()),
+                      ep.port_, ep.scope_id_);
+  }
 
   base::Value ToValue() const;
+
+  // Returns a scope ID from `value` when `value` is a valid string interface
+  // name that can be converted to an interface index.
+  static std::optional<uint32_t> ScopeIdFromInterfaceName(
+      const base::Value* value);
+
+  // Converts `scope_id` to an interface name as a base::Value.
+  static base::Value ScopeIdToInterfaceNameValue(
+      std::optional<uint32_t> scope_id);
 
  private:
   static NameToIndexFunc name_to_index_func_for_testing_;
   static IndexToNameFunc index_to_name_func_for_testing_;
-
-  // Returns a scope ID from `dict` when `dict` has a valid interface name that
-  // can be converted to an interface index.
-  static std::optional<uint32_t> ScopeIdFromDict(const base::Value::Dict& dict);
-
-  // Converts `scope_id` to an interface name as a base::Value.
-  static base::Value ScopeIdToValue(std::optional<uint32_t> scope_id);
 
   bool IsIPv6LinkLocal() const;
 

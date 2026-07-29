@@ -6,6 +6,7 @@ package org.chromium.chrome.browser.supervised_user;
 
 import org.chromium.base.Callback;
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.extensions.browser.SupervisedExtensionApprovalResult;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.url.GURL;
 
@@ -26,4 +27,11 @@ public interface ParentAuthDelegate {
      */
     void requestLocalAuth(
             WindowAndroid windowAndroid, GURL url, Callback<Boolean> onCompletionCallback);
+
+    /**
+     * @see {@link ExtensionParentApproval#requestExtensionApproval()}
+     */
+    void requestExtensionAuthWithResult(
+            WindowAndroid windowAndroid,
+            Callback<@SupervisedExtensionApprovalResult Integer> onCompletionCallback);
 }

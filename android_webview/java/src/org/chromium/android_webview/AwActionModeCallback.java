@@ -11,22 +11,19 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Rect;
-import android.os.Build;
 import android.text.TextUtils;
 import android.view.ActionMode;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
 
-import androidx.annotation.Nullable;
-
 import org.chromium.android_webview.common.Lifetime;
-import org.chromium.android_webview.selection.SamsungSelectionActionMenuDelegate;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.PackageManagerUtils;
 import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.content_public.browser.ActionModeCallback;
 import org.chromium.content_public.browser.ActionModeCallbackHelper;
+import org.chromium.content_public.browser.SelectionMenuItem;
 import org.chromium.content_public.browser.SelectionPopupController;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.base.WindowAndroid.IntentCallback;
@@ -34,14 +31,12 @@ import org.chromium.ui.base.WindowAndroid.IntentCallback;
 /** A class that handles selection action mode for Android WebView. */
 @Lifetime.WebView
 public class AwActionModeCallback extends ActionModeCallback implements IntentCallback {
-    private final Context mContext;
     private final AwContents mAwContents;
     private final SelectionPopupController mSelectionPopupController;
     private final ActionModeCallbackHelper mHelper;
     private int mAllowedMenuItems;
 
-    public AwActionModeCallback(Context context, AwContents awContents, WebContents webContents) {
-        mContext = context;
+    public AwActionModeCallback(AwContents awContents, WebContents webContents) {
         mAwContents = awContents;
         mSelectionPopupController = SelectionPopupController.fromWebContents(webContents);
         mHelper = mSelectionPopupController.getActionModeCallbackHelper();
@@ -93,26 +88,18 @@ public class AwActionModeCallback extends ActionModeCallback implements IntentCa
             return true;
         }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
-                && SamsungSelectionActionMenuDelegate.handleMenuItemClick(
-                        item, mAwContents.getWebContents(), mAwContents.getContainerView())) {
-            return true;
-        }
         return mHelper.onActionItemClicked(mode, item);
     }
 
     @Override
-    public boolean onDropdownItemClicked(
-            int groupId,
-            int id,
-            @Nullable Intent intent,
-            @Nullable View.OnClickListener clickListener) {
-        if (isProcessTextMenuItem(groupId)) {
-            assert intent != null : "Text processing item must have an intent associated with it";
-            processText(intent);
+    public boolean onDropdownItemClicked(SelectionMenuItem item, boolean closeMenu) {
+        if (isProcessTextMenuItem(item.groupId)) {
+            assert item.intent != null
+                    : "Text processing item must have an intent associated with it";
+            processText(item.intent);
             return true;
         }
-        return mHelper.onDropdownItemClicked(groupId, id, intent, clickListener);
+        return mHelper.onDropdownItemClicked(item, closeMenu);
     }
 
     private boolean isProcessTextMenuItem(final int groupId) {
@@ -139,9 +126,10 @@ public class AwActionModeCallback extends ActionModeCallback implements IntentCa
 
         intent.putExtra(Intent.EXTRA_PROCESS_TEXT, query);
 
-        if (ContextUtils.activityFromContext(mContext) == null) {
+        Context context = mAwContents.getProvidedContext();
+        if (ContextUtils.activityFromContext(context) == null) {
             try {
-                mContext.startActivity(intent);
+                context.startActivity(intent);
             } catch (ActivityNotFoundException ex) {
                 // If no app handles it, do nothing.
             }

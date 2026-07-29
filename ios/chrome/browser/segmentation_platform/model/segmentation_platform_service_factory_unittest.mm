@@ -16,8 +16,10 @@
 #import "components/optimization_guide/core/optimization_guide_features.h"
 #import "components/prefs/pref_change_registrar.h"
 #import "components/prefs/pref_service.h"
+#import "components/segmentation_platform/embedder/home_modules/app_bundle_promo_ephemeral_module.h"
 #import "components/segmentation_platform/embedder/home_modules/constants.h"
 #import "components/segmentation_platform/embedder/home_modules/home_modules_card_registry.h"
+#import "components/segmentation_platform/embedder/home_modules/tips_manager/signal_constants.h"
 #import "components/segmentation_platform/internal/constants.h"
 #import "components/segmentation_platform/internal/database/client_result_prefs.h"
 #import "components/segmentation_platform/internal/segmentation_platform_service_impl.h"
@@ -32,12 +34,122 @@
 #import "ios/chrome/browser/commerce/model/shopping_service_factory.h"
 #import "ios/chrome/browser/segmentation_platform/model/ukm_data_manager_test_utils.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
+#import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/web/public/test/web_task_environment.h"
 #import "testing/gtest/include/gtest/gtest.h"
 #import "testing/platform_test.h"
 
 namespace segmentation_platform {
 namespace {
+
+// Sets signals relevant for the Price Tracking module
+void ConfigureForPriceTrackingModule(scoped_refptr<InputContext> input_context,
+                                     bool enable = true) {
+  // Required signal for Price Tracking module
+  input_context->metadata_args.emplace(
+      segmentation_platform::kIsNewUser,
+      segmentation_platform::processing::ProcessedValue::FromFloat(0.0f));
+
+  input_context->metadata_args.emplace(
+      segmentation_platform::kIsSynced,
+      segmentation_platform::processing::ProcessedValue::FromFloat(
+          enable ? 1.0f : 0.0f));
+
+  // Default value for Send Tab module signal
+  input_context->metadata_args.emplace(
+      segmentation_platform::kSendTabInfobarReceivedInLastSession,
+      segmentation_platform::processing::ProcessedValue::FromFloat(0.0f));
+}
+
+// Sets signals relevant for the Send Tab ephemeral module
+void ConfigureForSendTabModule(scoped_refptr<InputContext> input_context,
+                               bool enable = true) {
+  // Required signal for Send Tab module
+  input_context->metadata_args.emplace(
+      segmentation_platform::kSendTabInfobarReceivedInLastSession,
+      segmentation_platform::processing::ProcessedValue::FromFloat(
+          enable ? 1.0f : 0.0f));
+}
+
+// Sets signals relevant for the Lens ephemeral module
+void ConfigureForLensModule(scoped_refptr<InputContext> input_context,
+                            bool enable = true) {
+  float signal_value = enable ? 1.0f : 0.0f;
+
+  // Required signals for Lens module
+  input_context->metadata_args.emplace(
+      segmentation_platform::kLensNotUsedRecently,
+      segmentation_platform::processing::ProcessedValue::FromFloat(
+          signal_value));
+  input_context->metadata_args.emplace(
+      segmentation_platform::kLensAllowedByEnterprisePolicy,
+      segmentation_platform::processing::ProcessedValue::FromFloat(
+          signal_value));
+
+  input_context->metadata_args.emplace(
+      segmentation_platform::tips_manager::signals::kOpenedShoppingWebsite,
+      segmentation_platform::processing::ProcessedValue::FromFloat(
+          !signal_value));
+  input_context->metadata_args.emplace(
+      segmentation_platform::tips_manager::signals::
+          kOpenedWebsiteInAnotherLanguage,
+      segmentation_platform::processing::ProcessedValue::FromFloat(
+          !signal_value));
+  input_context->metadata_args.emplace(
+      segmentation_platform::tips_manager::signals::kUsedGoogleTranslation,
+      segmentation_platform::processing::ProcessedValue::FromFloat(
+          !signal_value));
+
+  // Default value for Send Tab module signal
+  input_context->metadata_args.emplace(
+      segmentation_platform::kSendTabInfobarReceivedInLastSession,
+      segmentation_platform::processing::ProcessedValue::FromFloat(0.0f));
+}
+
+// Sets signals relevant for the Enhanced Safe Browsing ephemeral module
+void ConfigureForEnhancedSafeBrowsingModule(
+    scoped_refptr<InputContext> input_context,
+    bool enable = true) {
+  float signal_value = enable ? 1.0f : 0.0f;
+
+  // Required signals for Enhanced Safe Browsing module
+  input_context->metadata_args.emplace(
+      segmentation_platform::kLacksEnhancedSafeBrowsing,
+      segmentation_platform::processing::ProcessedValue::FromFloat(
+          signal_value));
+  input_context->metadata_args.emplace(
+      segmentation_platform::kEnhancedSafeBrowsingAllowedByEnterprisePolicy,
+      segmentation_platform::processing::ProcessedValue::FromFloat(
+          signal_value));
+
+  // Default value for Send Tab module signal
+  input_context->metadata_args.emplace(
+      segmentation_platform::kSendTabInfobarReceivedInLastSession,
+      segmentation_platform::processing::ProcessedValue::FromFloat(0.0f));
+}
+
+// Sets signals relevant for the App Bundle ephemeral module.
+void ConfigureForAppBundleModule(scoped_refptr<InputContext> input_context,
+                                 bool enable = true) {
+  float count = enable ? home_modules::kMaxAppBundleAppsInstalled
+                       : home_modules::kMaxAppBundleAppsInstalled + 1;
+  input_context->metadata_args.emplace(
+      kAppBundleAppsInstalledCount,
+      segmentation_platform::processing::ProcessedValue::FromFloat(count));
+}
+
+// Sets signals relevant for the Default Browser ephemeral module.
+void ConfigureForDefaultBrowserModule(scoped_refptr<InputContext> input_context,
+                                      bool enable = true) {
+  float signal_value = enable ? 1.0f : 0.0f;
+  input_context->metadata_args.emplace(
+      segmentation_platform::kIsNewUser,
+      segmentation_platform::processing::ProcessedValue::FromFloat(0.0f));
+  input_context->metadata_args.emplace(
+      segmentation_platform::kIsDefaultBrowserChromeIos,
+      segmentation_platform::processing::ProcessedValue::FromFloat(
+          signal_value));
+}
 
 // Observer that waits for service initialization.
 class WaitServiceInitializedObserver : public ServiceProxy::Observer {
@@ -55,18 +167,16 @@ class WaitServiceInitializedObserver : public ServiceProxy::Observer {
 };
 
 }  // namespace
+
 class SegmentationPlatformServiceFactoryTest : public PlatformTest {
  public:
   SegmentationPlatformServiceFactoryTest()
       : test_utils_(std::make_unique<UkmDataManagerTestUtils>(&ukm_recorder_)) {
-    // TODO(b/293500507): Create a base class for testing default models.
     scoped_feature_list_.InitWithFeaturesAndParameters(
         {{optimization_guide::features::kOptimizationTargetPrediction, {}},
          {features::kSegmentationPlatformFeature, {}},
          {features::kSegmentationPlatformUkmEngine, {}},
-         {features::kContextualPageActionShareModel, {}},
-         {features::kSegmentationPlatformEphemeralCardRanker, {}},
-         {commerce::kPriceTrackingPromo, {}}},
+         {features::kSegmentationPlatformEphemeralCardRanker, {}}},
         {});
     scoped_command_line_.GetProcessCommandLine()->AppendSwitch(
         kSegmentationPlatformRefreshResultsSwitch);
@@ -83,11 +193,10 @@ class SegmentationPlatformServiceFactoryTest : public PlatformTest {
     WaitForServiceInit();
 
     ProfileIOS* otr_profile =
-        profile_data_->profile
-            ->CreateOffTheRecordBrowserStateWithTestingFactories(
-                {TestProfileIOS::TestingFactory{
-                    SegmentationPlatformServiceFactory::GetInstance(),
-                    SegmentationPlatformServiceFactory::GetDefaultFactory()}});
+        profile_data_->profile->CreateOffTheRecordProfileWithTestingFactories(
+            {TestProfileIOS::TestingFactory{
+                SegmentationPlatformServiceFactory::GetInstance(),
+                SegmentationPlatformServiceFactory::GetDefaultFactory()}});
     ASSERT_FALSE(
         SegmentationPlatformServiceFactory::GetForProfile(otr_profile));
   }
@@ -163,7 +272,7 @@ class SegmentationPlatformServiceFactoryTest : public PlatformTest {
               .Then(SegmentationPlatformServiceFactory::GetDefaultFactory()));
       builder.AddTestingFactory(
           commerce::ShoppingServiceFactory::GetInstance(),
-          base::BindRepeating([](web::BrowserState*)
+          base::BindRepeating([](ProfileIOS* profile)
                                   -> std::unique_ptr<KeyedService> {
             std::unique_ptr<bookmarks::BookmarkNode> bookmark =
                 std::make_unique<bookmarks::BookmarkNode>(
@@ -183,12 +292,11 @@ class SegmentationPlatformServiceFactoryTest : public PlatformTest {
     ProfileData(ProfileData&) = delete;
 
     // Setup environment required to create the SegmentationPlatformService.
-    web::BrowserState* SetUpEnvironment(web::BrowserState* context) {
-      ProfileIOS* setup_profile = ProfileIOS::FromBrowserState(context);
+    ProfileIOS* SetUpEnvironment(ProfileIOS* setup_profile) {
       setup_profile->GetPrefs()->SetString(kSegmentationClientResultPrefs,
                                            result_pref);
       test_utils->SetupForProfile(setup_profile);
-      return context;
+      return setup_profile;
     }
 
     const std::string result_pref;
@@ -251,6 +359,7 @@ class SegmentationPlatformServiceFactoryTest : public PlatformTest {
 
   std::unique_ptr<UkmDataManagerTestUtils> test_utils_;
   std::unique_ptr<ProfileData> profile_data_;
+  IOSChromeScopedTestingLocalState scoped_testing_local_state_;
 };
 
 TEST_F(SegmentationPlatformServiceFactoryTest, Test) {
@@ -290,6 +399,7 @@ TEST_F(SegmentationPlatformServiceFactoryTest, TestIosModuleRankerModel) {
   int tab_resumption_freshness_impression_count = -1;
   int parcel_tracking_freshness_impression_count = -1;
   int shop_card_freshness_impression_count = -1;
+  int level_up_freshness_impression_count = -1;
 
   input_context->metadata_args.emplace(
       segmentation_platform::kMostVisitedTilesFreshness,
@@ -315,40 +425,154 @@ TEST_F(SegmentationPlatformServiceFactoryTest, TestIosModuleRankerModel) {
       segmentation_platform::kShopCardFreshness,
       segmentation_platform::processing::ProcessedValue::FromFloat(
           shop_card_freshness_impression_count));
+  input_context->metadata_args.emplace(
+      segmentation_platform::kLevelUpFreshness,
+      segmentation_platform::processing::ProcessedValue::FromFloat(
+          level_up_freshness_impression_count));
 
   ExpectGetClassificationResult(
       segmentation_platform::kIosModuleRankerKey, prediction_options,
       input_context, PredictionStatus::kSucceeded,
       std::vector<std::string>{"MostVisitedTiles", "Shortcuts", "SafetyCheck",
-                               "TabResumption", "ParcelTracking", "ShopCard"});
+                               "TabResumption", "ParcelTracking", "ShopCard",
+                               "LevelUp"});
 }
 
-// Tests that the HomeModulesCardRegistry registers the correct cards and the
-// response from the EphemeralHomeModuleBackend returns the correct card.
-TEST_F(SegmentationPlatformServiceFactoryTest, TestEphemeralHomeModuleBackend) {
+// Tests that the EphemeralHomeModuleBackend returns the PriceTracking module
+// when the corresponding signals are present.
+TEST_F(SegmentationPlatformServiceFactoryTest,
+       TestEphemeralHomeModuleBackendForPriceTracking) {
   home_modules::HomeModulesCardRegistry* registry =
       SegmentationPlatformServiceFactory::GetHomeCardRegistryForProfile(
           profile_data_->profile.get());
   ASSERT_TRUE(registry);
-  EXPECT_EQ(1u, registry->get_all_cards_by_priority().size());
+  EXPECT_EQ(6u, registry->get_all_cards_by_priority().size());
 
   PredictionOptions prediction_options;
   prediction_options.on_demand_execution = true;
 
-  auto inputContext = base::MakeRefCounted<InputContext>();
-  inputContext->metadata_args.emplace(
-      segmentation_platform::kIsNewUser,
-      segmentation_platform::processing::ProcessedValue::FromFloat(0));
-  inputContext->metadata_args.emplace(
-      segmentation_platform::kIsSynced,
-      segmentation_platform::processing::ProcessedValue::FromFloat(1));
+  auto input_context = base::MakeRefCounted<InputContext>();
+
+  ConfigureForPriceTrackingModule(input_context, true);
+
+  // Disable other cards to ensure price tracking is shown
+  ConfigureForLensModule(input_context, false);
+  ConfigureForEnhancedSafeBrowsingModule(input_context, false);
+  ConfigureForSendTabModule(input_context, false);
+  ConfigureForAppBundleModule(input_context, false);
+  ConfigureForDefaultBrowserModule(input_context, false);
 
   std::vector<std::string> result = {
       segmentation_platform::kPriceTrackingNotificationPromo};
   ExpectGetClassificationResult(
-      kEphemeralHomeModuleBackendKey, prediction_options, inputContext,
+      kEphemeralHomeModuleBackendKey, prediction_options, input_context,
       /*expected_status=*/segmentation_platform::PredictionStatus::kSucceeded,
       /*expected_labels=*/result);
+}
+
+// Tests that the EphemeralHomeModuleBackend returns the Lens Search module
+// when the corresponding signals are present.
+TEST_F(SegmentationPlatformServiceFactoryTest,
+       TestEphemeralHomeModuleBackendForLensSearch) {
+  home_modules::HomeModulesCardRegistry* registry =
+      SegmentationPlatformServiceFactory::GetHomeCardRegistryForProfile(
+          profile_data_->profile.get());
+  ASSERT_TRUE(registry);
+  EXPECT_EQ(6u, registry->get_all_cards_by_priority().size());
+
+  PredictionOptions prediction_options;
+  prediction_options.on_demand_execution = true;
+
+  auto input_context = base::MakeRefCounted<InputContext>();
+
+  ConfigureForLensModule(input_context, true);
+
+  // Disable other cards to ensure Lens is shown
+  ConfigureForPriceTrackingModule(input_context, false);
+  ConfigureForEnhancedSafeBrowsingModule(input_context, false);
+  ConfigureForSendTabModule(input_context, false);
+  ConfigureForAppBundleModule(input_context, false);
+  ConfigureForDefaultBrowserModule(input_context, false);
+
+  std::vector<std::string> result = {
+      segmentation_platform::kLensEphemeralModuleSearchVariation};
+  ExpectGetClassificationResult(
+      kEphemeralHomeModuleBackendKey, prediction_options, input_context,
+      /*expected_status=*/segmentation_platform::PredictionStatus::kSucceeded,
+      /*expected_labels=*/result);
+}
+
+// Tests that the EphemeralHomeModuleBackend returns the Enhanced Safe Browsing
+// module when the corresponding signals are present.
+TEST_F(SegmentationPlatformServiceFactoryTest,
+       TestEphemeralHomeModuleBackendForEnhancedSafeBrowsing) {
+  home_modules::HomeModulesCardRegistry* registry =
+      SegmentationPlatformServiceFactory::GetHomeCardRegistryForProfile(
+          profile_data_->profile.get());
+  ASSERT_TRUE(registry);
+  EXPECT_EQ(6u, registry->get_all_cards_by_priority().size());
+
+  PredictionOptions prediction_options;
+  prediction_options.on_demand_execution = true;
+
+  auto input_context = base::MakeRefCounted<InputContext>();
+
+  ConfigureForEnhancedSafeBrowsingModule(input_context, true);
+
+  // Disable other cards to ensure Enhanced Safe Browsing is shown
+  ConfigureForPriceTrackingModule(input_context, false);
+  ConfigureForLensModule(input_context, false);
+  ConfigureForSendTabModule(input_context, false);
+  ConfigureForAppBundleModule(input_context, false);
+  ConfigureForDefaultBrowserModule(input_context, false);
+
+  std::vector<std::string> result = {
+      segmentation_platform::kEnhancedSafeBrowsingEphemeralModule};
+  ExpectGetClassificationResult(
+      kEphemeralHomeModuleBackendKey, prediction_options, input_context,
+      /*expected_status=*/segmentation_platform::PredictionStatus::kSucceeded,
+      /*expected_labels=*/result);
+}
+
+// Tests priority ordering when multiple cards have their signals enabled.
+TEST_F(SegmentationPlatformServiceFactoryTest,
+       TestEphemeralHomeModuleBackendForPriorityOrdering) {
+  home_modules::HomeModulesCardRegistry* registry =
+      SegmentationPlatformServiceFactory::GetHomeCardRegistryForProfile(
+          profile_data_->profile.get());
+  ASSERT_TRUE(registry);
+  EXPECT_EQ(6u, registry->get_all_cards_by_priority().size());
+
+  PredictionOptions prediction_options;
+  prediction_options.on_demand_execution = true;
+
+  auto input_context = base::MakeRefCounted<InputContext>();
+  // Enable signals for all modules
+  ConfigureForPriceTrackingModule(input_context, true);
+  ConfigureForLensModule(input_context, true);
+  ConfigureForEnhancedSafeBrowsingModule(input_context, true);
+  ConfigureForSendTabModule(input_context, true);
+  ConfigureForAppBundleModule(input_context, true);
+  ConfigureForDefaultBrowserModule(input_context, true);
+
+  // The highest priority card should be returned first. In this case, Price
+  // Tracking takes precedence over others.
+  std::vector<std::string> result = {
+      segmentation_platform::kPriceTrackingNotificationPromo};
+  ExpectGetClassificationResult(
+      kEphemeralHomeModuleBackendKey, prediction_options, input_context,
+      /*expected_status=*/segmentation_platform::PredictionStatus::kSucceeded,
+      /*expected_labels=*/result);
+}
+
+// Verify that kIosDefaultBrowserPromoKey fails execution since it should never
+// be executed by the client.
+TEST_F(SegmentationPlatformServiceFactoryTest, TestDefaultBrowserModel) {
+  PredictionOptions prediction_options;
+
+  ExpectGetClassificationResult(
+      kIosDefaultBrowserPromoKey, prediction_options, nullptr,
+      /*expected_status=*/PredictionStatus::kFailed, std::nullopt);
 }
 
 }  // namespace segmentation_platform

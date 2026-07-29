@@ -11,9 +11,10 @@
 #include <string>
 #include <vector>
 
-#include "base/gtest_prod_util.h"
+#include "base/callback_list.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/scoped_observation.h"
 #include "base/sequence_checker.h"
 #include "components/account_manager_core/account.h"
 #include "components/account_manager_core/account_manager_facade.h"
@@ -67,16 +68,19 @@ class ProfileOAuth2TokenServiceDelegateChromeOS
                           const GoogleServiceAuthError& error) override;
 
   // |NetworkConnectionTracker::NetworkConnectionObserver| overrides.
-  void OnConnectionChanged(network::mojom::ConnectionType type) override;
+  void OnConnectionChanged(
+      net::NetworkChangeNotifier::ConnectionType type) override;
 
  private:
   friend class TestProfileOAuth2TokenServiceDelegateChromeOS;
 
   // ProfileOAuth2TokenServiceDelegate implementation:
-  void LoadCredentialsInternal(const CoreAccountId& primary_account_id,
-                               bool is_syncing) override;
-  void UpdateCredentialsInternal(const CoreAccountId& account_id,
-                                 const std::string& refresh_token) override;
+  void LoadCredentialsInternal(
+      const CoreAccountId& primary_account_ids) override;
+  void UpdateCredentialsInternal(
+      const CoreAccountId& account_id,
+      const std::string& refresh_token,
+      const signin::TokenBindingInfo& token_binding_info) override;
   void RevokeCredentialsInternal(const CoreAccountId& account_id) override;
   void RevokeAllCredentialsInternal(
       signin_metrics::SourceForRefreshTokenOperation source) override;
@@ -98,7 +102,8 @@ class ProfileOAuth2TokenServiceDelegateChromeOS
   const raw_ptr<AccountTrackerService, DanglingUntriaged>
       account_tracker_service_;
   const raw_ptr<network::NetworkConnectionTracker> network_connection_tracker_;
-  const raw_ptr<account_manager::AccountManagerFacade> account_manager_facade_;
+  raw_ptr<account_manager::AccountManagerFacade> account_manager_facade_ =
+      nullptr;
 
   // When the delegate receives an account from either `GetAccounts` or
   // `OnAccountUpserted`, this account is first added to pending accounts, until
@@ -113,6 +118,8 @@ class ProfileOAuth2TokenServiceDelegateChromeOS
 
   // Is |this| attached to a regular (non-Signin && non-LockScreen) Profile.
   const bool is_regular_profile_;
+
+  base::CallbackListSubscription account_manager_factory_cb_subscription_;
 
   SEQUENCE_CHECKER(sequence_checker_);
   base::WeakPtrFactory<ProfileOAuth2TokenServiceDelegateChromeOS> weak_factory_;

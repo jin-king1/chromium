@@ -11,18 +11,21 @@
 #include <memory>
 #include <vector>
 
+#include "base/containers/circular_deque.h"
 #include "base/containers/queue.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/shared_memory_mapping.h"
 #include "base/memory/weak_ptr.h"
+#include "base/sequence_checker.h"
 #include "base/threading/thread.h"
 #include "components/chromeos_camera/jpeg_encode_accelerator.h"
-#include "gpu/ipc/common/gpu_memory_buffer_support.h"
 #include "media/base/bitstream_buffer.h"
 #include "media/base/video_frame.h"
 #include "media/gpu/media_gpu_export.h"
 #include "media/gpu/v4l2/v4l2_device.h"
 #include "media/parsers/jpeg_parser.h"
+#include "ui/ozone/public/client_native_pixmap_factory_ozone.h"
 
 namespace {
 
@@ -86,24 +89,20 @@ class MEDIA_GPU_EXPORT V4L2JpegEncodeAccelerator
 
   // Record for input buffers.
   struct I420BufferRecord {
-    I420BufferRecord();
-    ~I420BufferRecord();
-    void* address[kMaxI420Plane];  // mmap() address.
-    size_t length[kMaxI420Plane];  // mmap() length.
+    void* address[kMaxI420Plane] = {};  // mmap() address.
+    size_t length[kMaxI420Plane] = {};  // mmap() length.
 
     // Set true during QBUF and DQBUF. |address| will be accessed by hardware.
-    bool at_device;
+    bool at_device = false;
   };
 
   // Record for output buffers.
   struct JpegBufferRecord {
-    JpegBufferRecord();
-    ~JpegBufferRecord();
-    void* address[kMaxJpegPlane];  // mmap() address.
-    size_t length[kMaxJpegPlane];  // mmap() length.
+    void* address[kMaxJpegPlane] = {};  // mmap() address.
+    size_t length[kMaxJpegPlane] = {};  // mmap() length.
 
     // Set true during QBUF and DQBUF. |address| will be accessed by hardware.
-    bool at_device;
+    bool at_device = false;
   };
 
   // Job record. Jobs are processed in a FIFO order. This is separated from
@@ -171,13 +170,14 @@ class MEDIA_GPU_EXPORT V4L2JpegEncodeAccelerator
     void DestroyTask();
 
     base::queue<std::unique_ptr<JobRecord>> input_job_queue_;
-    base::queue<std::unique_ptr<JobRecord>> running_job_queue_;
+    base::circular_deque<std::unique_ptr<JobRecord>> running_job_queue_;
 
    private:
     // Combined the encoded data from |output_frame| with the JFIF/EXIF data.
     // Add JPEG Marks if needed. Add EXIF section by |exif_shm|.
     size_t FinalizeJpegImage(scoped_refptr<VideoFrame> output_frame,
                              size_t buffer_size,
+                             size_t max_buffer_capacity,
                              base::WritableSharedMemoryMapping exif_mapping);
 
     bool SetInputBufferFormat(gfx::Size coded_size,
@@ -205,7 +205,7 @@ class MEDIA_GPU_EXPORT V4L2JpegEncodeAccelerator
     const size_t kBufferCount = 2;
 
     // Pointer back to the parent.
-    V4L2JpegEncodeAccelerator* parent_;
+    raw_ptr<V4L2JpegEncodeAccelerator> parent_;
 
     // Layout that represents the input data.
     std::optional<VideoFrameLayout> device_input_layout_;
@@ -213,7 +213,8 @@ class MEDIA_GPU_EXPORT V4L2JpegEncodeAccelerator
     // The V4L2Device this class is operating upon.
     scoped_refptr<V4L2Device> device_;
 
-    std::unique_ptr<gpu::GpuMemoryBufferSupport> gpu_memory_buffer_support_;
+    std::unique_ptr<gfx::ClientNativePixmapFactory>
+        client_native_pixmap_factory_;
 
     // Input queue state.
     bool input_streamon_;
@@ -235,9 +236,6 @@ class MEDIA_GPU_EXPORT V4L2JpegEncodeAccelerator
 
     // Pixel format of output buffer.
     uint32_t output_buffer_pixelformat_;
-
-    // sizeimage of output buffer.
-    uint32_t output_buffer_sizeimage_;
   };
 
   void VideoFrameReady(int32_t task_id, size_t encoded_picture_size);
@@ -256,7 +254,7 @@ class MEDIA_GPU_EXPORT V4L2JpegEncodeAccelerator
   scoped_refptr<base::SingleThreadTaskRunner> io_task_runner_;
 
   // The client of this class.
-  chromeos_camera::JpegEncodeAccelerator::Client* client_;
+  raw_ptr<chromeos_camera::JpegEncodeAccelerator::Client> client_;
 
   // Encode task runner.
   scoped_refptr<base::SequencedTaskRunner> encoder_task_runner_;
@@ -284,11 +282,12 @@ class MEDIA_GPU_EXPORT V4L2JpegEncodeAccelerator
   // variables on |encoder_task_runner_| in destructor, because a task can be
   // posted to |encoder_task_runner_| within DestroyTask().
   base::WeakPtr<V4L2JpegEncodeAccelerator> weak_ptr_for_encoder_;
-  base::WeakPtrFactory<V4L2JpegEncodeAccelerator> weak_factory_for_encoder_;
 
   // Point to |this| for use in posting tasks from the encoder thread back to
   // |io_taask_runner_|.
   base::WeakPtr<V4L2JpegEncodeAccelerator> weak_ptr_;
+
+  base::WeakPtrFactory<V4L2JpegEncodeAccelerator> weak_factory_for_encoder_;
   base::WeakPtrFactory<V4L2JpegEncodeAccelerator> weak_factory_;
 };
 

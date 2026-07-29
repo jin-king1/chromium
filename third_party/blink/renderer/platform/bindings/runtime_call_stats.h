@@ -8,6 +8,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_BINDINGS_RUNTIME_CALL_STATS_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_BINDINGS_RUNTIME_CALL_STATS_H_
 
+#include <array>
 #include <optional>
 
 #include "base/check_op.h"
@@ -32,11 +33,6 @@
 namespace base {
 class TickClock;
 }
-
-namespace WTF {
-class String;
-class StringBuilder;
-}  // namespace WTF
 
 namespace blink {
 
@@ -250,9 +246,7 @@ class PLATFORM_EXPORT RuntimeCallStats {
   V(ProcessStyleSheet)    \
   V(UpdateStyle)
 
-#define LAYOUT_COUNTERS(V) \
-  V(UpdateLayout)          \
-  V(UpdateLayerPositionsAfterLayout)
+#define LAYOUT_COUNTERS(V) V(UpdateLayout)
 
 #define CALLBACK_COUNTERS(V)                       \
   BINDINGS_METHOD(V, ElementGetBoundingClientRect) \
@@ -323,10 +317,10 @@ class PLATFORM_EXPORT RuntimeCallStats {
   void SetInUse(bool in_use) { in_use_ = in_use; }
 
   RuntimeCallCounter* GetCounter(CounterId id) {
-    return UNSAFE_TODO(&(counters_[static_cast<uint16_t>(id)]));
+    return &(counters_[static_cast<uint16_t>(id)]);
   }
 
-  WTF::String ToString() const;
+  String ToString() const;
 
   static void SetRuntimeCallStatsForTesting();
   static void ClearRuntimeCallStatsForTesting();
@@ -344,9 +338,8 @@ class PLATFORM_EXPORT RuntimeCallStats {
  private:
   raw_ptr<RuntimeCallTimer> current_timer_ = nullptr;
   bool in_use_ = false;
-  RuntimeCallCounter counters_[static_cast<int>(CounterId::kNumberOfCounters)];
-  static const int number_of_counters_ =
-      static_cast<int>(CounterId::kNumberOfCounters);
+  std::array<RuntimeCallCounter, static_cast<int>(CounterId::kNumberOfCounters)>
+      counters_;
   raw_ptr<const base::TickClock> clock_ = nullptr;
 
 #if BUILDFLAG(RCS_COUNT_EVERYTHING)
@@ -354,7 +347,7 @@ class PLATFORM_EXPORT RuntimeCallStats {
   CounterMap counter_map_;
 
   Vector<RuntimeCallCounter*> CounterMapToSortedArray() const;
-  void AddCounterMapStatsToBuilder(WTF::StringBuilder&) const;
+  void AddCounterMapStatsToBuilder(StringBuilder&) const;
 #endif
 };
 

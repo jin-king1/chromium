@@ -11,6 +11,7 @@
 #include "chrome/test/base/testing_profile.h"
 #include "components/content_settings/core/common/content_settings_pattern.h"
 #include "components/prefs/pref_service.h"
+#include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/peerconnection/webrtc_ip_handling_policy.h"
@@ -26,6 +27,27 @@ class RendererPreferencesUtilTest : public testing::Test {
   TestingProfile profile_;
   raw_ptr<PrefService> pref_service_;
 };
+
+TEST_F(RendererPreferencesUtilTest, WebRTCPostQuantumKeyAgreement) {
+  std::array<std::optional<bool>, 3> webrtc_post_quantum_key_agreement_values =
+      {std::nullopt, true, false};
+  std::array<std::optional<bool>, 3> expected_values = {std::nullopt, true,
+                                                        false};
+
+  for (int i = 0; i < 3; i++) {
+    if (webrtc_post_quantum_key_agreement_values[i]) {
+      profile_.GetTestingPrefService()->SetManagedPref(
+          prefs::kWebRTCPostQuantumKeyAgreement,
+          std::make_unique<base::Value>(
+              *webrtc_post_quantum_key_agreement_values[i]));
+    }
+    blink::RendererPreferences renderer_preferences;
+    renderer_preferences_util::UpdateFromSystemSettings(&renderer_preferences,
+                                                        &profile_);
+    EXPECT_EQ(renderer_preferences.webrtc_post_quantum_key_agreement,
+              expected_values[i]);
+  }
+}
 
 TEST_F(RendererPreferencesUtilTest, WebRTCIPHandlingPolicy) {
   std::array<const char*, 5> webrtc_ip_handling_policy_values = {
@@ -53,27 +75,25 @@ TEST_F(RendererPreferencesUtilTest, WebRTCIPHandlingPolicy) {
 }
 
 TEST_F(RendererPreferencesUtilTest, WebRTCIPHandlingURLValidEntries) {
-  base::Value::Dict valid_entry_1 =
-      base::Value::Dict()
+  base::DictValue valid_entry_1 =
+      base::DictValue()
           .Set("url", "[*.]example.com")
           .Set("handling", blink::kWebRTCIPHandlingDisableNonProxiedUdp);
-  base::Value::Dict no_url = base::Value::Dict().Set(
+  base::DictValue no_url = base::DictValue().Set(
       "handling", blink::kWebRTCIPHandlingDisableNonProxiedUdp);
-  base::Value::Dict invalid_url =
-      base::Value::Dict().Set("url", "*.example.com");
-  base::Value::Dict no_handling =
-      base::Value::Dict().Set("url", "[*.]example.com");
-  base::Value::Dict valid_entry_2 =
-      base::Value::Dict()
+  base::DictValue invalid_url = base::DictValue().Set("url", "*.example.com");
+  base::DictValue no_handling = base::DictValue().Set("url", "[*.]example.com");
+  base::DictValue valid_entry_2 =
+      base::DictValue()
           .Set("url", "*://google.com:*")
           .Set("handling", blink::kWebRTCIPHandlingDefault);
 
-  base::Value::List list = base::Value::List()
-                               .Append(std::move(valid_entry_1))
-                               .Append(std::move(no_url))
-                               .Append(std::move(invalid_url))
-                               .Append(std::move(no_handling))
-                               .Append(std::move(valid_entry_2));
+  base::ListValue list = base::ListValue()
+                             .Append(std::move(valid_entry_1))
+                             .Append(std::move(no_url))
+                             .Append(std::move(invalid_url))
+                             .Append(std::move(no_handling))
+                             .Append(std::move(valid_entry_2));
   pref_service_->SetList(prefs::kWebRTCIPHandlingUrl, std::move(list));
 
   blink::RendererPreferences renderer_preferences;
@@ -82,9 +102,9 @@ TEST_F(RendererPreferencesUtilTest, WebRTCIPHandlingURLValidEntries) {
 
   ASSERT_EQ(renderer_preferences.webrtc_ip_handling_urls.size(), 2u);
 
-  EXPECT_EQ(
-      renderer_preferences.webrtc_ip_handling_urls[0].url_pattern.GetScheme(),
-      ContentSettingsPattern::SCHEME_WILDCARD);
+  EXPECT_EQ(renderer_preferences.webrtc_ip_handling_urls[0]
+                .url_pattern.GetSchemeType(),
+            ContentSettingsPattern::SCHEME_WILDCARD);
   EXPECT_EQ(
       renderer_preferences.webrtc_ip_handling_urls[0].url_pattern.GetHost(),
       "example.com");
@@ -96,9 +116,9 @@ TEST_F(RendererPreferencesUtilTest, WebRTCIPHandlingURLValidEntries) {
   EXPECT_EQ(renderer_preferences.webrtc_ip_handling_urls[0].handling,
             blink::mojom::WebRtcIpHandlingPolicy::kDisableNonProxiedUdp);
 
-  EXPECT_EQ(
-      renderer_preferences.webrtc_ip_handling_urls[1].url_pattern.GetScheme(),
-      ContentSettingsPattern::SCHEME_WILDCARD);
+  EXPECT_EQ(renderer_preferences.webrtc_ip_handling_urls[1]
+                .url_pattern.GetSchemeType(),
+            ContentSettingsPattern::SCHEME_WILDCARD);
   EXPECT_EQ(
       renderer_preferences.webrtc_ip_handling_urls[1].url_pattern.GetHost(),
       "google.com");

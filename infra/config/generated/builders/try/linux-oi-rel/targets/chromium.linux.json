@@ -5,28 +5,40 @@
     ],
     "scripts": [
       {
+        "module_name": "blink_lint",
+        "module_scheme": "single",
+        "name": "blink_lint",
+        "script": "blink_lint_expectations.py"
+      },
+      {
+        "module_name": "check_network_annotations",
+        "module_scheme": "single",
         "name": "check_network_annotations",
         "script": "check_network_annotations.py"
       },
       {
+        "module_name": "check_static_initializers",
+        "module_scheme": "single",
         "name": "check_static_initializers",
         "script": "check_static_initializers.py"
       },
       {
+        "module_name": "checkdeps",
+        "module_scheme": "single",
         "name": "checkdeps",
         "script": "checkdeps.py"
       },
       {
+        "module_name": "checkperms",
+        "module_scheme": "single",
         "name": "checkperms",
         "script": "checkperms.py"
       },
       {
+        "module_name": "metrics_python_tests",
+        "module_scheme": "pyunit",
         "name": "metrics_python_tests",
         "script": "metrics_python_tests.py"
-      },
-      {
-        "name": "webkit_lint",
-        "script": "blink_lint_expectations.py"
       }
     ]
   },
@@ -34,11 +46,13 @@
     "gtest_tests": [
       {
         "args": [
-          "--enable-feature=OriginKeyedProcessesByDefault"
+          "--enable-features=OriginKeyedProcessesByDefault"
         ],
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//chrome/test:browser_tests",
+        "module_scheme": "gtest",
         "name": "browser_tests",
         "swarming": {
           "dimensions": {
@@ -52,11 +66,13 @@
       },
       {
         "args": [
-          "--enable-feature=OriginKeyedProcessesByDefault"
+          "--enable-features=OriginKeyedProcessesByDefault"
         ],
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//content/test:content_browsertests",
+        "module_scheme": "gtest",
         "name": "content_browsertests",
         "swarming": {
           "dimensions": {
@@ -70,11 +86,13 @@
       },
       {
         "args": [
-          "--enable-feature=OriginKeyedProcessesByDefault"
+          "--enable-features=OriginKeyedProcessesByDefault"
         ],
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//content/test:content_unittests",
+        "module_scheme": "gtest",
         "name": "content_unittests",
         "swarming": {
           "dimensions": {
@@ -87,11 +105,13 @@
       },
       {
         "args": [
-          "--enable-feature=OriginKeyedProcessesByDefault"
+          "--enable-features=OriginKeyedProcessesByDefault"
         ],
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//chrome/test:unit_tests",
+        "module_scheme": "gtest",
         "name": "unit_tests",
         "swarming": {
           "dimensions": {
@@ -108,7 +128,7 @@
         "args": [
           "--num-retries=3",
           "--write-run-histories-to=${ISOLATED_OUTDIR}/run_histories.json",
-          "--additional-driver-flag=--enable-feature=OriginKeyedProcessesByDefault"
+          "--additional-driver-flag=--enable-features=OriginKeyedProcessesByDefault"
         ],
         "merge": {
           "args": [
@@ -116,6 +136,8 @@
           ],
           "script": "//third_party/blink/tools/merge_web_test_results.py"
         },
+        "module_name": "//:blink_web_tests",
+        "module_scheme": "webtest",
         "name": "blink_web_tests",
         "resultdb": {
           "enable": true,
@@ -136,7 +158,7 @@
         "args": [
           "--num-retries=3",
           "--write-run-histories-to=${ISOLATED_OUTDIR}/run_histories.json",
-          "--additional-driver-flag=--enable-feature=OriginKeyedProcessesByDefault"
+          "--additional-driver-flag=--enable-features=OriginKeyedProcessesByDefault"
         ],
         "merge": {
           "args": [
@@ -144,6 +166,8 @@
           ],
           "script": "//third_party/blink/tools/merge_web_test_results.py"
         },
+        "module_name": "//:blink_wpt_tests",
+        "module_scheme": "webtest",
         "name": "blink_wpt_tests",
         "resultdb": {
           "enable": true,
@@ -163,7 +187,7 @@
       {
         "args": [
           "--test-launcher-filter-file=../../third_party/blink/web_tests/TestLists/chrome.filter",
-          "--additional-driver-flag=--enable-feature=OriginKeyedProcessesByDefault"
+          "--additional-driver-flag=--enable-features=OriginKeyedProcessesByDefault"
         ],
         "merge": {
           "args": [
@@ -171,6 +195,8 @@
           ],
           "script": "//third_party/blink/tools/merge_web_test_results.py"
         },
+        "module_name": "//:chrome_wpt_tests",
+        "module_scheme": "webtest",
         "name": "chrome_wpt_tests",
         "resultdb": {
           "enable": true,

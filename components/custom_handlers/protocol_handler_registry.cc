@@ -10,9 +10,9 @@
 #include <string_view>
 #include <utility>
 
+#include "base/check_is_test.h"
 #include "base/check_op.h"
 #include "base/command_line.h"
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
 #include "base/memory/ref_counted.h"
 #include "base/notreached.h"
@@ -47,8 +47,7 @@ const ProtocolHandler& LookupHandler(
 GURL TranslateUrl(
     const ProtocolHandlerRegistry::ProtocolHandlerMap& handler_map,
     const GURL& url) {
-  const ProtocolHandler& handler =
-      LookupHandler(handler_map, url.scheme_piece());
+  const ProtocolHandler& handler = LookupHandler(handler_map, url.scheme());
   if (handler.IsEmpty())
     return GURL();
 
@@ -65,9 +64,10 @@ GURL TranslateUrl(
 
 std::unique_ptr<ProtocolHandlerRegistry> ProtocolHandlerRegistry::Create(
     PrefService* prefs,
-    std::unique_ptr<Delegate> delegate) {
-  auto registry =
-      std::make_unique<ProtocolHandlerRegistry>(prefs, std::move(delegate));
+    std::unique_ptr<Delegate> delegate,
+    bool is_off_the_record) {
+  auto registry = std::make_unique<ProtocolHandlerRegistry>(
+      prefs, std::move(delegate), is_off_the_record);
 
   // If installing defaults, they must be installed prior calling
   // InitProtocolSettings.
@@ -80,12 +80,19 @@ std::unique_ptr<ProtocolHandlerRegistry> ProtocolHandlerRegistry::Create(
 
 ProtocolHandlerRegistry::ProtocolHandlerRegistry(
     PrefService* prefs,
-    std::unique_ptr<Delegate> delegate)
+    std::unique_ptr<Delegate> delegate,
+    bool is_off_the_record)
     : prefs_(prefs),
       delegate_(std::move(delegate)),
       enabled_(true),
       is_loading_(false),
-      is_loaded_(false) {}
+      is_loaded_(false),
+      is_off_the_record_(is_off_the_record) {}
+
+bool ProtocolHandlerRegistry::IsHandlerAccessible(
+    const ProtocolHandler& handler) const {
+  return !is_off_the_record_ || handler.is_allowed_in_incognito();
+}
 
 bool ProtocolHandlerRegistry::SilentlyHandleRegisterHandlerRequest(
     const ProtocolHandler& handler) {
@@ -104,9 +111,17 @@ bool ProtocolHandlerRegistry::SilentlyHandleRegisterHandlerRequest(
 void ProtocolHandlerRegistry::OnAcceptRegisterProtocolHandler(
     const ProtocolHandler& handler) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  if (!RegisterProtocolHandler(handler, USER))
+  // A handler explicitly accepted in an incognito session is usable there.
+  // Extension handlers are exempt: their incognito access is governed by the
+  // extension's incognito permission toggle, not by where they're accepted.
+  ProtocolHandler effective_handler = handler;
+  if (is_off_the_record_ && !handler.IsExtensionHandler()) {
+    effective_handler.set_is_allowed_in_incognito(true);
+  }
+  if (!RegisterProtocolHandler(effective_handler, USER)) {
     return;
-  SetDefault(handler);
+  }
+  SetDefault(effective_handler);
   Save();
   NotifyChanged();
 }
@@ -127,10 +142,30 @@ void ProtocolHandlerRegistry::OnIgnoreRegisterProtocolHandler(
   NotifyChanged();
 }
 
+static bool CanReplaceHandler(const ProtocolHandler& handler1,
+                              const ProtocolHandler& handler2) {
+  if (!handler1.IsSameOrigin(handler2)) {
+    return false;
+  }
+
+  // Extension handlers must not override WebAPI or PWAs registrations.
+  if (handler1.IsExtensionHandler()) {
+    return handler2.IsExtensionHandler();
+  }
+
+  return true;
+}
+
 bool ProtocolHandlerRegistry::AttemptReplace(const ProtocolHandler& handler) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  ProtocolHandler old_default = GetHandlerFor(handler.protocol());
-  bool make_new_handler_default = handler.IsSameOrigin(old_default);
+  // Refuse destructive removals if the new handler isn't accessible. Only
+  // OnAcceptRegisterProtocolHandler auto-promotes the OTR flag; the silent
+  // path here must not.
+  if (!IsHandlerAccessible(handler)) {
+    return false;
+  }
+  ProtocolHandler old_default = GetHandlerForInternal(handler.protocol());
+  bool make_new_handler_default = CanReplaceHandler(handler, old_default);
   ProtocolHandlerList to_replace(GetReplacedHandlers(handler));
   if (to_replace.empty())
     return false;
@@ -151,12 +186,11 @@ ProtocolHandlerRegistry::GetReplacedHandlers(
     const ProtocolHandler& handler) const {
   ProtocolHandlerList replaced_handlers;
   const ProtocolHandlerList* handlers = GetHandlerList(handler.protocol());
-  if (!handlers)
-    return replaced_handlers;
-  for (const auto& old_handler : *handlers) {
-    if (handler.IsSameOrigin(old_handler)) {
-      replaced_handlers.push_back(old_handler);
-    }
+  if (handlers) {
+    std::ranges::copy_if(*handlers, std::back_inserter(replaced_handlers),
+                         [&](const ProtocolHandler& old_handler) {
+                           return CanReplaceHandler(handler, old_handler);
+                         });
   }
   return replaced_handlers;
 }
@@ -174,13 +208,15 @@ void ProtocolHandlerRegistry::ClearDefault(const std::string& scheme) {
 
 bool ProtocolHandlerRegistry::IsDefault(const ProtocolHandler& handler) const {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  return GetHandlerFor(handler.protocol()) == handler;
+  return GetHandlerForInternal(handler.protocol()) == handler;
 }
 
 void ProtocolHandlerRegistry::InstallPredefinedHandlers() {
   for (const auto& [scheme, handler] : url::GetPredefinedHandlerSchemes()) {
-    AddPredefinedHandler(
-        ProtocolHandler::CreateProtocolHandler(scheme, GURL(handler)));
+    ProtocolHandler ph =
+        ProtocolHandler::CreateProtocolHandler(scheme, GURL(handler));
+    ph.set_is_allowed_in_incognito(true);
+    AddPredefinedHandler(ph);
   }
 }
 
@@ -224,7 +260,7 @@ void ProtocolHandlerRegistry::InitProtocolSettings() {
 
 int ProtocolHandlerRegistry::GetHandlerIndex(std::string_view scheme) const {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  const ProtocolHandler& candidate = GetHandlerFor(scheme);
+  const ProtocolHandler& candidate = GetHandlerForInternal(scheme);
   if (candidate.IsEmpty())
     return -1;
   const ProtocolHandlerList* handlers = GetHandlerList(scheme);
@@ -256,7 +292,7 @@ ProtocolHandlerRegistry::GetUserDefinedHandlers(base::Time begin,
   ProtocolHandlerRegistry::ProtocolHandlerList result;
   for (const auto& [protocol, handlers_list] : user_protocol_handlers_) {
     for (const ProtocolHandler& handler : handlers_list) {
-      if (base::Contains(predefined_protocol_handlers_, handler))
+      if (std::ranges::contains(predefined_protocol_handlers_, handler))
         continue;
       if (begin <= handler.last_modified() && handler.last_modified() < end)
         result.push_back(handler);
@@ -276,13 +312,29 @@ ProtocolHandlerRegistry::GetUserIgnoredHandlers(base::Time begin,
   return result;
 }
 
+ProtocolHandlerRegistry::ProtocolHandlerList
+ProtocolHandlerRegistry::GetExtensionProtocolHandlers(
+    std::optional<std::string> extension_id) {
+  ProtocolHandlerRegistry::ProtocolHandlerList result;
+  for (const auto& [protocol, handlers_list] : user_protocol_handlers_) {
+    std::ranges::copy_if(
+        handlers_list, std::back_inserter(result),
+        [&](const ProtocolHandler& handler) {
+          return handler.extension_id() &&
+                 (!extension_id || handler.extension_id() == extension_id);
+        });
+  }
+  return result;
+}
+
 void ProtocolHandlerRegistry::ClearUserDefinedHandlers(base::Time begin,
-                                                       base::Time end) {
+                                                       base::Time end,
+                                                       bool save) {
   for (const ProtocolHandler& handler : GetUserDefinedHandlers(begin, end))
-    RemoveHandler(handler);
+    RemoveHandler(handler, save);
 
   for (const ProtocolHandler& handler : GetUserIgnoredHandlers(begin, end))
-    RemoveIgnoredHandler(handler);
+    RemoveIgnoredHandler(handler, save);
 }
 
 ProtocolHandlerRegistry::ProtocolHandlerList
@@ -304,8 +356,9 @@ bool ProtocolHandlerRegistry::CanSchemeBeOverridden(
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   const ProtocolHandlerList* handlers = GetHandlerList(scheme);
   // If we already have a handler for this scheme, we can add more.
-  if (handlers != NULL && !handlers->empty())
+  if (handlers != nullptr && !handlers->empty()) {
     return true;
+  }
   // Don't override a scheme if it already has an external handler.
   return !delegate_->IsExternalHandlerRegistered(
       static_cast<std::string>(scheme));
@@ -318,7 +371,7 @@ bool ProtocolHandlerRegistry::IsRegistered(
   if (!handlers) {
     return false;
   }
-  return base::Contains(*handlers, handler);
+  return std::ranges::contains(*handlers, handler);
 }
 
 bool ProtocolHandlerRegistry::IsRegisteredByUser(
@@ -369,13 +422,16 @@ bool ProtocolHandlerRegistry::HasIgnoredEquivalent(
 }
 
 void ProtocolHandlerRegistry::RemoveIgnoredHandler(
-    const ProtocolHandler& handler) {
+    const ProtocolHandler& handler,
+    bool save) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   bool should_notify = false;
   if (HandlerExists(handler, ignored_protocol_handlers_) &&
       HandlerExists(handler, user_ignored_protocol_handlers_)) {
     EraseHandler(handler, &user_ignored_protocol_handlers_);
-    Save();
+    if (save) {
+      Save();
+    }
     if (!HandlerExists(handler, policy_ignored_protocol_handlers_)) {
       EraseHandler(handler, &ignored_protocol_handlers_);
       should_notify = true;
@@ -385,12 +441,50 @@ void ProtocolHandlerRegistry::RemoveIgnoredHandler(
     NotifyChanged();
 }
 
-bool ProtocolHandlerRegistry::IsHandledProtocol(std::string_view scheme) const {
+bool ProtocolHandlerRegistry::HasDefaultHandler(std::string_view scheme) const {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  return enabled_ && !GetHandlerFor(scheme).IsEmpty();
+  return enabled_ && !GetHandlerForInternal(scheme).IsEmpty();
 }
 
-void ProtocolHandlerRegistry::RemoveHandler(const ProtocolHandler& handler) {
+bool ProtocolHandlerRegistry::IsHandledProtocol(std::string_view scheme) const {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  const ProtocolHandler& handler = GetHandlerFor(scheme);
+  return !handler.IsEmpty() && handler.is_confirmed();
+}
+
+void ProtocolHandlerRegistry::ConfirmProtocolHandler(std::string_view scheme,
+                                                     bool save) {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  ProtocolHandler handler = GetHandlerForInternal(scheme);
+  CHECK(handler.IsValid());
+  if (handler.is_confirmed()) {
+    return;
+  }
+  RemoveHandler(handler);
+  handler.Confirm();
+  RegisterProtocolHandler(handler, USER);
+  SetDefault(handler);
+  if (save) {
+    Save();
+  }
+  NotifyChanged();
+}
+
+bool ProtocolHandlerRegistry::IsProtocolHandlerConfirmed(
+    std::string_view scheme) const {
+  DCHECK(HasDefaultHandler(scheme));
+  return GetHandlerForInternal(scheme).is_confirmed();
+}
+
+bool ProtocolHandlerRegistry::ProtocolHandlerNeedsConfirmation(
+    std::string_view scheme) const {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  const ProtocolHandler& handler = GetHandlerFor(scheme);
+  return !handler.IsEmpty() && !handler.is_confirmed();
+}
+
+void ProtocolHandlerRegistry::RemoveHandler(const ProtocolHandler& handler,
+                                            bool save) {
   if (IsIgnored(handler)) {
     RemoveIgnoredHandler(handler);
     return;
@@ -408,38 +502,53 @@ void ProtocolHandlerRegistry::RemoveHandler(const ProtocolHandler& handler) {
   }
   auto q = default_handlers_.find(handler.protocol());
   if (erase_success && q != default_handlers_.end() && q->second == handler) {
+    default_handlers_.erase(q);
     // Make the new top handler in the list the default.
     if (!handlers.empty()) {
       // NOTE We pass a copy because SetDefault() modifies handlers.
       SetDefault(ProtocolHandler(handlers[0]));
-    } else {
-      default_handlers_.erase(q);
     }
   }
 
-  if (erase_success && !IsHandledProtocol(handler.protocol())) {
+  if (erase_success && !HasDefaultHandler(handler.protocol())) {
     delegate_->DeregisterExternalHandler(handler.protocol());
   }
-  Save();
+  if (save) {
+    Save();
+  }
   if (erase_success)
     NotifyChanged();
 }
 
 void ProtocolHandlerRegistry::RemoveDefaultHandler(std::string_view scheme) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  ProtocolHandler current_default = GetHandlerFor(scheme);
+  ProtocolHandler current_default = GetHandlerForInternal(scheme);
   if (!current_default.IsEmpty())
     RemoveHandler(current_default);
+}
+
+const ProtocolHandler& ProtocolHandlerRegistry::GetHandlerForInternal(
+    std::string_view scheme) const {
+  return LookupHandler(default_handlers_, scheme);
 }
 
 const ProtocolHandler& ProtocolHandlerRegistry::GetHandlerFor(
     std::string_view scheme) const {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  return LookupHandler(default_handlers_, scheme);
+  const ProtocolHandler& handler =
+      enabled_ ? GetHandlerForInternal(scheme)
+               : ProtocolHandler::EmptyProtocolHandler();
+  CHECK(handler.IsEmpty() || handler.is_confirmed() ||
+        handler.IsExtensionHandler());
+  CHECK(handler.IsEmpty() || IsHandlerAccessible(handler))
+      << "OTR registry storage invariant violated: insertion guard let a "
+         "disallowed handler through.";
+  return handler;
 }
 
 GURL ProtocolHandlerRegistry::Translate(const GURL& url) const {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK(IsHandledProtocol(url.scheme()));
   return TranslateUrl(default_handlers_, url);
 }
 
@@ -499,6 +608,12 @@ void ProtocolHandlerRegistry::RemoveObserver(Observer* observer) {
   observers_.RemoveObserver(observer);
 }
 
+void ProtocolHandlerRegistry::SetDelegateForTesting(  // IN-TEST
+    std::unique_ptr<Delegate> delegate) {             // IN-TEST
+  CHECK_IS_TEST();                                    // IN-TEST
+  delegate_ = std::move(delegate);                    // IN-TEST
+}
+
 void ProtocolHandlerRegistry::PromoteHandler(const ProtocolHandler& handler) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   DCHECK(IsRegistered(handler));
@@ -530,9 +645,34 @@ ProtocolHandlerRegistry::GetHandlerList(std::string_view scheme) const {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   auto p = protocol_handlers_.find(scheme);
   if (p == protocol_handlers_.end()) {
-    return NULL;
+    return nullptr;
   }
   return &p->second;
+}
+
+bool ProtocolHandlerRegistry::ShouldPromoteToDefault(
+    const ProtocolHandler& handler) const {
+  ProtocolHandlerMap::const_iterator p =
+      default_handlers_.find(handler.protocol());
+  if (p == default_handlers_.end()) {
+    return true;
+  }
+
+  // Avoid unnecessary promotions.
+  const ProtocolHandler& default_handler = p->second;
+  if (handler == default_handler) {
+    return false;
+  }
+
+  // Extension handlers must not override WebAPI or PWAs registrations.
+  if (handler.IsExtensionHandler()) {
+    return default_handler.IsExtensionHandler();
+  }
+
+  // TODO(crbug.com/40482153): Implement a more sophisticated conflict
+  // resolution mechanism to determine whether a handler can be replaced when
+  // managing registrations from different sources.
+  return true;
 }
 
 void ProtocolHandlerRegistry::SetDefault(const ProtocolHandler& handler) {
@@ -545,10 +685,11 @@ void ProtocolHandlerRegistry::SetDefault(const ProtocolHandler& handler) {
   if (!is_loading_ && p == default_handlers_.end())
     delegate_->RegisterWithOSAsDefaultClient(
         protocol, GetDefaultWebClientCallback(protocol));
-  default_handlers_.erase(protocol);
-  default_handlers_.insert(std::make_pair(protocol, handler));
-
-  PromoteHandler(handler);
+  if (ShouldPromoteToDefault(handler)) {
+    default_handlers_.erase(protocol);
+    default_handlers_.insert(std::make_pair(protocol, handler));
+    PromoteHandler(handler);
+  }
 }
 
 void ProtocolHandlerRegistry::InsertHandler(const ProtocolHandler& handler) {
@@ -565,12 +706,12 @@ void ProtocolHandlerRegistry::InsertHandler(const ProtocolHandler& handler) {
   protocol_handlers_[handler.protocol()] = new_list;
 }
 
-base::Value::List ProtocolHandlerRegistry::EncodeRegisteredHandlers() {
+base::ListValue ProtocolHandlerRegistry::EncodeRegisteredHandlers() {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  base::Value::List encoded_handlers;
+  base::ListValue encoded_handlers;
   for (const auto& [protocol, handlers_list] : user_protocol_handlers_) {
     for (const auto& handler : handlers_list) {
-      base::Value::Dict encoded = handler.Encode();
+      base::DictValue encoded = handler.Encode();
       if (IsDefault(handler)) {
         encoded.Set("default", true);
       }
@@ -580,9 +721,9 @@ base::Value::List ProtocolHandlerRegistry::EncodeRegisteredHandlers() {
   return encoded_handlers;
 }
 
-base::Value::List ProtocolHandlerRegistry::EncodeIgnoredHandlers() {
+base::ListValue ProtocolHandlerRegistry::EncodeIgnoredHandlers() {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  base::Value::List encoded_handlers;
+  base::ListValue encoded_handlers;
   for (const auto& handler : user_ignored_protocol_handlers_) {
     encoded_handlers.Append(handler.Encode());
   }
@@ -605,6 +746,14 @@ bool ProtocolHandlerRegistry::RegisterProtocolHandler(
   if (!handler.IsValid())
     return false;
 
+  // OTR invariant: this registry only stores handlers usable in incognito.
+  // All addition paths funnel through here (including those loaded from prefs
+  // via the OverlayUserPrefStore), so enforcing the invariant once here lets
+  // read methods iterate storage without per-call filtering.
+  if (!IsHandlerAccessible(handler)) {
+    return false;
+  }
+
   ProtocolHandlerMultiMap& map =
       (source == POLICY) ? policy_protocol_handlers_ : user_protocol_handlers_;
   ProtocolHandlerList& list = map[handler.protocol()];
@@ -619,18 +768,18 @@ bool ProtocolHandlerRegistry::RegisterProtocolHandler(
   return true;
 }
 
-std::vector<const base::Value::Dict*>
+std::vector<const base::DictValue*>
 ProtocolHandlerRegistry::GetHandlersFromPref(const char* pref_name) const {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  std::vector<const base::Value::Dict*> result;
+  std::vector<const base::DictValue*> result;
   if (!prefs_ || !prefs_->HasPrefPath(pref_name)) {
     return result;
   }
 
-  const base::Value::List& handlers = prefs_->GetList(pref_name);
+  const base::ListValue& handlers = prefs_->GetList(pref_name);
 
   for (const auto& list_item : handlers) {
-    if (const base::Value::Dict* encoded_handler = list_item.GetIfDict()) {
+    if (const base::DictValue* encoded_handler = list_item.GetIfDict()) {
       if (ProtocolHandler::IsValidDict(*encoded_handler)) {
         result.push_back(encoded_handler);
       }
@@ -643,7 +792,7 @@ ProtocolHandlerRegistry::GetHandlersFromPref(const char* pref_name) const {
 void ProtocolHandlerRegistry::RegisterProtocolHandlersFromPref(
     const char* pref_name,
     const HandlerSource source) {
-  std::vector<const base::Value::Dict*> registered_handlers =
+  std::vector<const base::DictValue*> registered_handlers =
       GetHandlersFromPref(pref_name);
   for (const auto* encoded_handler : registered_handlers) {
     ProtocolHandler handler =
@@ -673,7 +822,7 @@ void ProtocolHandlerRegistry::IgnoreProtocolHandler(
 void ProtocolHandlerRegistry::IgnoreProtocolHandlersFromPref(
     const char* pref_name,
     const HandlerSource source) {
-  std::vector<const base::Value::Dict*> ignored_handlers =
+  std::vector<const base::DictValue*> ignored_handlers =
       GetHandlersFromPref(pref_name);
   for (const auto* encoded_handler : ignored_handlers)
     IgnoreProtocolHandler(
@@ -687,7 +836,7 @@ bool ProtocolHandlerRegistry::HandlerExists(const ProtocolHandler& handler,
 
 bool ProtocolHandlerRegistry::HandlerExists(const ProtocolHandler& handler,
                                             const ProtocolHandlerList& list) {
-  return base::Contains(list, handler);
+  return std::ranges::contains(list, handler);
 }
 
 void ProtocolHandlerRegistry::EraseHandler(const ProtocolHandler& handler,

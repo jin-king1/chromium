@@ -5,6 +5,7 @@
 #include "ui/base/models/image_model.h"
 
 #include <tuple>
+#include <variant>
 
 #include "base/functional/callback.h"
 #include "base/notreached.h"
@@ -12,6 +13,7 @@
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_variant.h"
+#include "ui/gfx/image/image_skia.h"
 #include "ui/gfx/vector_icon_utils.h"
 
 #if !BUILDFLAG(IS_IOS)
@@ -40,16 +42,6 @@ VectorIconModel& VectorIconModel::operator=(const VectorIconModel&) = default;
 VectorIconModel::VectorIconModel(VectorIconModel&&) = default;
 
 VectorIconModel& VectorIconModel::operator=(VectorIconModel&&) = default;
-
-bool VectorIconModel::operator==(const VectorIconModel& other) const {
-  return std::tie(vector_icon_, icon_size_, color_, badge_icon_) ==
-         std::tie(other.vector_icon_, other.icon_size_, other.color_,
-                  other.badge_icon_);
-}
-
-bool VectorIconModel::operator!=(const VectorIconModel& other) const {
-  return !(*this == other);
-}
 
 ImageModel::ImageModel() = default;
 
@@ -100,18 +92,18 @@ bool ImageModel::IsEmpty() const {
 }
 
 bool ImageModel::IsVectorIcon() const {
-  return absl::holds_alternative<VectorIconModel>(icon_) &&
-         !absl::get<VectorIconModel>(icon_).is_empty();
+  return std::holds_alternative<VectorIconModel>(icon_) &&
+         !std::get<VectorIconModel>(icon_).is_empty();
 }
 
 bool ImageModel::IsImage() const {
-  return absl::holds_alternative<gfx::Image>(icon_) &&
-         !absl::get<gfx::Image>(icon_).IsEmpty();
+  return std::holds_alternative<gfx::Image>(icon_) &&
+         !std::get<gfx::Image>(icon_).IsEmpty();
 }
 
 bool ImageModel::IsImageGenerator() const {
-  return absl::holds_alternative<ImageGeneratorAndSize>(icon_) &&
-         !absl::get<ImageGeneratorAndSize>(icon_).size.IsEmpty();
+  return std::holds_alternative<ImageGeneratorAndSize>(icon_) &&
+         !std::get<ImageGeneratorAndSize>(icon_).size.IsEmpty();
 }
 
 gfx::Size ImageModel::Size() const {
@@ -121,31 +113,23 @@ gfx::Size ImageModel::Size() const {
   }
   if (IsImage())
     return GetImage().Size();
-  return IsImageGenerator() ? absl::get<ImageGeneratorAndSize>(icon_).size
+  return IsImageGenerator() ? std::get<ImageGeneratorAndSize>(icon_).size
                             : gfx::Size();
 }
 
 VectorIconModel ImageModel::GetVectorIcon() const {
   DCHECK(IsVectorIcon());
-  return absl::get<VectorIconModel>(icon_);
+  return std::get<VectorIconModel>(icon_);
 }
 
 gfx::Image ImageModel::GetImage() const {
   DCHECK(IsImage());
-  return absl::get<gfx::Image>(icon_);
+  return std::get<gfx::Image>(icon_);
 }
 
 ImageModel::ImageGenerator ImageModel::GetImageGenerator() const {
   DCHECK(IsImageGenerator());
-  return absl::get<ImageGeneratorAndSize>(icon_).generator;
-}
-
-bool ImageModel::operator==(const ImageModel& other) const {
-  return icon_ == other.icon_;
-}
-
-bool ImageModel::operator!=(const ImageModel& other) const {
-  return !(*this == other);
+  return std::get<ImageGeneratorAndSize>(icon_).generator;
 }
 
 gfx::ImageSkia ImageModel::Rasterize(
@@ -181,11 +165,6 @@ ImageModel::ImageGeneratorAndSize& ImageModel::ImageGeneratorAndSize::operator=(
     const ImageGeneratorAndSize&) = default;
 
 ImageModel::ImageGeneratorAndSize::~ImageGeneratorAndSize() = default;
-
-bool ImageModel::ImageGeneratorAndSize::operator==(
-    const ImageGeneratorAndSize& other) const {
-  return std::tie(generator, size) == std::tie(other.generator, other.size);
-}
 
 ImageModel::ImageModel(const VectorIconModel& vector_icon_model)
     : icon_(vector_icon_model) {}

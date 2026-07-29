@@ -33,25 +33,30 @@ namespace blink {
 
 inline unsigned AttributeHash(
     const Vector<Attribute, kAttributePrealloc>& attributes) {
-  return StringHasher::HashMemory(base::as_byte_span(attributes));
+  return StringHasher::HashMemory32(base::as_byte_span(attributes));
 }
 
 inline bool HasSameAttributes(
     const Vector<Attribute, kAttributePrealloc>& attributes,
     ShareableElementData& element_data) {
-  return std::equal(attributes.begin(), attributes.end(),
-                    element_data.attribute_array_,
-                    UNSAFE_TODO(element_data.attribute_array_ +
-                                element_data.Attributes().size()));
+  return std::ranges::equal(attributes, element_data.AttributesSpan());
 }
 
 ShareableElementData*
 ElementDataCache::CachedShareableElementDataWithAttributes(
     const StringImpl* tag_name,
     const Vector<Attribute, kAttributePrealloc>& attributes) {
+  unsigned hash = HashInts(tag_name->GetHash(), AttributeHash(attributes));
+  return CachedElementData(tag_name, attributes, hash);
+}
+
+ShareableElementData* ElementDataCache::CachedElementData(
+    const StringImpl* tag_name,
+    const Vector<Attribute, kAttributePrealloc>& attributes,
+    unsigned hash) {
   DCHECK(!attributes.empty());
 
-  unsigned hash = WTF::HashInts(tag_name->GetHash(), AttributeHash(attributes));
+  hash = EnsureValidHash(hash);
   ShareableElementDataCache::ValueType* it =
       shareable_element_data_cache_.insert(hash, std::pair(nullptr, nullptr))
           .stored_value;

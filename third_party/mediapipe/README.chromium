@@ -1,10 +1,11 @@
 Name: MediaPipe
 Short Name: mediapipe
 URL: https://github.com/google/mediapipe
-Version: ac3ef4ced4560f9e91e3dc4d1acce8a5775e4565
-Revision: 905eade19971467bca916bbb80da6936a994095f
-Date: 2025-02-14
-License: Apache-2.0, X11-Lucent
+Version: v0.10.35
+Revision: f8ef212d5c962c0e853db7e59d217056b187084b
+Update Mechanism: Manual
+Date: 2026-04-30
+License: Apache-2.0, dtoa
 License File: LICENSE
 Security Critical: Yes
 Shipped: yes
@@ -27,8 +28,7 @@ To update this library
 2) Run the `update.sh` script in this directory.
 
 3) Fix the build and get everything compiling and `components_unittests`
-  passing with the gn arg `build_with_mediapipe_lib = true` and optionally with
-  `mediapipe_build_with_gpu_support = true`.
+  passing with the gn arg `build_with_mediapipe_lib = true`.
 
 
 To make a new patch file
@@ -76,6 +76,10 @@ Chromium binary size requirements.
 * type-map-fix-unused-variable-warning.patch - Replaces `MapName` in
 mediapipe/framework/type_map.h header to work around "unused variable" compiler
 warning (treated as error) when building.
+
+* compile-with-clang.patch - Fixes compilation errors related to clang,
+including deleting invalid move assignment operators, matching class/struct
+tags, disabling RTTI usage, and fixing implicit integer-to-float conversions.
 
 Patches which need to be upstreamed differently than they are patched
 =====================================================================
@@ -134,9 +138,3 @@ Here's the set of functions that were added to the generated file:
                                        &(const_cast<AnyLite*>(this)->value_));
     return any_metadata.Is<T>();
   }
-
-* dont-use-dedicated-context-for-some-calculators.patch - temporary patch that
-is only needed when unit-testing with GPU support (not yet official). Will be
-removed after MediaPipe w/ GPU is taught how to use Chromium's GL thread and
-GL context instead of creating its own.
-TODO(https://crbug.com/1492217): remove this patch once it is no longer needed.

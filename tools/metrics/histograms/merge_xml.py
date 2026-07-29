@@ -7,14 +7,15 @@
 
 import argparse
 import os
-import sys
 import xml.dom.minidom
 
-import expand_owners
-import histogram_configuration_model
-import histogram_paths
-import populate_enums
-import xml_utils
+import setup_modules  # pylint: disable=unused-import
+
+import chromium_src.tools.metrics.common.xml_utils as xml_utils
+import chromium_src.tools.metrics.histograms.expand_owners as expand_owners
+import chromium_src.tools.metrics.histograms.histogram_configuration_model as histogram_configuration_model
+import chromium_src.tools.metrics.histograms.histogram_paths as histogram_paths
+import chromium_src.tools.metrics.histograms.populate_enums as populate_enums
 
 
 def GetElementsByTagName(trees, tag, depth=2):
@@ -152,12 +153,6 @@ def MergeTrees(trees, should_expand_owners):
           # Sort the <histogram> and <histogram_suffixes> nodes by name and
           # return the combined nodes.
           CombineHistogramsSorted(doc, trees)))
-  # After using the unsafe version of appendChild, we see a regression when
-  # pretty-printing the merged |doc|. This might because the unsafe appendChild
-  # doesn't build indexes for later lookup. And thus, we need to convert the
-  # merged |doc| to a xml string and convert it back to force it to build
-  # indexes for the merged |doc|.
-  doc = xml.dom.minidom.parseString(doc.toxml().encode('utf-8'))
   # Only perform fancy operations after |doc| becomes stable. This helps improve
   # the runtime performance.
   if should_expand_owners:

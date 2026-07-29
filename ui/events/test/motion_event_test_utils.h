@@ -53,10 +53,16 @@ class MockMotionEvent : public MotionEventGeneric {
     gesture_classification_ = classification;
   }
 
+  bool IsLatestEventTimeResampled() const override;
+
+  void SetIsLatestEventTimeResampled(bool is_latest_event_time_resampled) {
+    is_latest_event_time_resampled_ = is_latest_event_time_resampled;
+  }
+
   ~MockMotionEvent() override;
 
   // MotionEvent overrides;
-  base::TimeTicks GetDownTime() const override;
+  base::TimeTicks GetRawDownTime() const override;
 
   // Utility methods.
   MockMotionEvent& PressPoint(float x, float y);
@@ -77,6 +83,7 @@ class MockMotionEvent : public MotionEventGeneric {
   base::TimeTicks cached_down_time_;
   MotionEvent::Classification gesture_classification_ =
       MotionEvent::Classification::NONE;
+  bool is_latest_event_time_resampled_ = false;
 };
 
 std::string ToString(const MotionEvent& event);

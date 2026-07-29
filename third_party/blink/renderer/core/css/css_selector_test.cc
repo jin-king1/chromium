@@ -13,6 +13,7 @@
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/testing/null_execution_context.h"
+#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 #include "third_party/blink/renderer/platform/testing/task_environment.h"
 
 namespace blink {
@@ -57,7 +58,7 @@ TEST(CSSSelector, Representations) {
       "div::first-line { }"
       ".a.b.c { }"
       "div:not(.a) { }"        // without class a
-      "div:not(:visited) { }"  // without the visited pseudo class
+      "div:not(:visited) { }"  // without the visited pseudo-class
 
       "[attr=\"value\"] { }"   // Exact equality
       "[attr~=\"value\"] { }"  // One of a space-separated list
@@ -247,6 +248,360 @@ TEST(CSSSelector, CopyValidList) {
   EXPECT_TRUE(list->Copy()->IsValid());
 }
 
+TEST(CSSSelector, CopyUnparsedInvalidList) {
+  test::TaskEnvironment task_environment;
+  for (bool feature_enabled : {false, true}) {
+    SCOPED_TRACE(testing::Message() << "feature_enabled: " << feature_enabled);
+    ScopedSerializeInvalidSelectorsInForgivingSelectorListForTest
+        scoped_feature(feature_enabled);
+
+    {
+      const CSSSelectorList* empty = CSSSelectorList::Empty();
+      ASSERT_TRUE(empty);
+      const CSSSelectorList* copy1 = empty->Copy();
+      ASSERT_TRUE(copy1);
+      HeapVector<CSSSelector> vector =
+          CSSSelectorList::Copy(empty->first_selector_);
+      EXPECT_EQ(0, vector.size());
+      const CSSSelectorList* copy2 =
+          CSSSelectorList::AdoptSelectorVector(vector);
+      ASSERT_TRUE(copy2);
+
+      for (const CSSSelectorList* list : {empty, copy1, copy2}) {
+        EXPECT_FALSE(list->IsValid());
+        EXPECT_EQ(0, list->ComputeLength());
+
+        EXPECT_FALSE(list->FirstIncludingUnparsedInvalid());
+      }
+    }
+
+    {
+      const CSSSelectorList* inner =
+          css_test_helpers::ParseSelectorList(":is(.a)")
+              ->First()
+              ->SelectorList();
+      ASSERT_TRUE(inner);
+      const CSSSelectorList* copy1 = inner->Copy();
+      ASSERT_TRUE(copy1);
+      HeapVector<CSSSelector> vector =
+          CSSSelectorList::Copy(inner->first_selector_);
+      EXPECT_EQ(1, vector.size());
+      const CSSSelectorList* copy2 =
+          CSSSelectorList::AdoptSelectorVector(vector);
+      ASSERT_TRUE(copy2);
+
+      for (const CSSSelectorList* list : {inner, copy1, copy2}) {
+        EXPECT_TRUE(list->IsValid());
+        EXPECT_EQ(1, list->ComputeLength());
+
+        const CSSSelector* selector = list->FirstIncludingUnparsedInvalid();
+
+        ASSERT_TRUE(selector);
+        EXPECT_EQ(CSSSelector::kClass, selector->Match());
+        EXPECT_EQ(".a", selector->SelectorText());
+        EXPECT_EQ(selector, &list->SelectorAt(0));
+        EXPECT_EQ(0, list->SelectorIndex(*selector));
+
+        EXPECT_FALSE(CSSSelectorList::NextIncludingUnparsedInvalid(*selector));
+      }
+    }
+
+    {
+      const CSSSelectorList* inner =
+          css_test_helpers::ParseSelectorList(":is(.a, .b, .c)")
+              ->First()
+              ->SelectorList();
+      ASSERT_TRUE(inner);
+      const CSSSelectorList* copy1 = inner->Copy();
+      ASSERT_TRUE(copy1);
+      HeapVector<CSSSelector> vector =
+          CSSSelectorList::Copy(inner->first_selector_);
+      EXPECT_EQ(3, vector.size());
+      const CSSSelectorList* copy2 =
+          CSSSelectorList::AdoptSelectorVector(vector);
+      ASSERT_TRUE(copy2);
+
+      for (const CSSSelectorList* list : {inner, copy1, copy2}) {
+        EXPECT_TRUE(list->IsValid());
+        EXPECT_EQ(3, list->ComputeLength());
+
+        const CSSSelector* selector = list->FirstIncludingUnparsedInvalid();
+
+        ASSERT_TRUE(selector);
+        EXPECT_EQ(CSSSelector::kClass, selector->Match());
+        EXPECT_EQ(".a", selector->SelectorText());
+        EXPECT_EQ(selector, &list->SelectorAt(0));
+        EXPECT_EQ(0, list->SelectorIndex(*selector));
+
+        selector = CSSSelectorList::NextIncludingUnparsedInvalid(*selector);
+
+        ASSERT_TRUE(selector);
+        EXPECT_EQ(CSSSelector::kClass, selector->Match());
+        EXPECT_EQ(".b", selector->SelectorText());
+        EXPECT_EQ(selector, &list->SelectorAt(1));
+        EXPECT_EQ(1, list->SelectorIndex(*selector));
+
+        selector = CSSSelectorList::NextIncludingUnparsedInvalid(*selector);
+
+        ASSERT_TRUE(selector);
+        EXPECT_EQ(CSSSelector::kClass, selector->Match());
+        EXPECT_EQ(".c", selector->SelectorText());
+        EXPECT_EQ(selector, &list->SelectorAt(2));
+        EXPECT_EQ(2, list->SelectorIndex(*selector));
+
+        EXPECT_FALSE(CSSSelectorList::NextIncludingUnparsedInvalid(*selector));
+      }
+    }
+
+    {
+      const CSSSelectorList* inner =
+          css_test_helpers::ParseSelectorList(":is(:unknown)")
+              ->First()
+              ->SelectorList();
+      ASSERT_TRUE(inner);
+      const CSSSelectorList* copy1 = inner->Copy();
+      ASSERT_TRUE(copy1);
+      HeapVector<CSSSelector> vector =
+          CSSSelectorList::Copy(inner->first_selector_);
+      EXPECT_EQ(feature_enabled ? 1 : 0, vector.size());
+      const CSSSelectorList* copy2 =
+          CSSSelectorList::AdoptSelectorVector(vector);
+      ASSERT_TRUE(copy2);
+
+      for (const CSSSelectorList* list : {inner, copy1, copy2}) {
+        EXPECT_FALSE(list->IsValid());
+        EXPECT_EQ(feature_enabled ? 1 : 0, list->ComputeLength());
+
+        const CSSSelector* selector = list->FirstIncludingUnparsedInvalid();
+
+        if (feature_enabled) {
+          ASSERT_TRUE(selector);
+          EXPECT_TRUE(selector->IsUnparsedInvalid());
+          EXPECT_EQ(":unknown", selector->SelectorText());
+          EXPECT_EQ(selector, &list->SelectorAt(0));
+          EXPECT_EQ(0, list->SelectorIndex(*selector));
+
+          EXPECT_FALSE(
+              CSSSelectorList::NextIncludingUnparsedInvalid(*selector));
+        } else {
+          EXPECT_FALSE(selector);
+        }
+      }
+    }
+
+    {
+      const CSSSelectorList* inner = css_test_helpers::ParseSelectorList(
+                                         ":is(:unknown1, :unknown2, :unknown3)")
+                                         ->First()
+                                         ->SelectorList();
+      ASSERT_TRUE(inner);
+      const CSSSelectorList* copy1 = inner->Copy();
+      ASSERT_TRUE(copy1);
+      HeapVector<CSSSelector> vector =
+          CSSSelectorList::Copy(inner->first_selector_);
+      EXPECT_EQ(feature_enabled ? 3 : 0, vector.size());
+      const CSSSelectorList* copy2 =
+          CSSSelectorList::AdoptSelectorVector(vector);
+      ASSERT_TRUE(copy2);
+
+      for (const CSSSelectorList* list : {inner, copy1, copy2}) {
+        EXPECT_FALSE(list->IsValid());
+        EXPECT_EQ(feature_enabled ? 3 : 0, list->ComputeLength());
+
+        const CSSSelector* selector = list->FirstIncludingUnparsedInvalid();
+
+        if (feature_enabled) {
+          ASSERT_TRUE(selector);
+          EXPECT_TRUE(selector->IsUnparsedInvalid());
+          EXPECT_EQ(":unknown1", selector->SelectorText());
+          EXPECT_EQ(selector, &list->SelectorAt(0));
+          EXPECT_EQ(0, list->SelectorIndex(*selector));
+
+          selector = CSSSelectorList::NextIncludingUnparsedInvalid(*selector);
+
+          ASSERT_TRUE(selector);
+          EXPECT_TRUE(selector->IsUnparsedInvalid());
+          EXPECT_EQ(":unknown2", selector->SelectorText());
+          EXPECT_EQ(selector, &list->SelectorAt(1));
+          EXPECT_EQ(1, list->SelectorIndex(*selector));
+
+          selector = CSSSelectorList::NextIncludingUnparsedInvalid(*selector);
+
+          ASSERT_TRUE(selector);
+          EXPECT_TRUE(selector->IsUnparsedInvalid());
+          EXPECT_EQ(":unknown3", selector->SelectorText());
+          EXPECT_EQ(selector, &list->SelectorAt(2));
+          EXPECT_EQ(2, list->SelectorIndex(*selector));
+
+          EXPECT_FALSE(
+              CSSSelectorList::NextIncludingUnparsedInvalid(*selector));
+        } else {
+          EXPECT_FALSE(selector);
+        }
+      }
+    }
+
+    {
+      const CSSSelectorList* inner =
+          css_test_helpers::ParseSelectorList(":is(.a, :unknown1, :unknown2)")
+              ->First()
+              ->SelectorList();
+      ASSERT_TRUE(inner);
+      const CSSSelectorList* copy1 = inner->Copy();
+      ASSERT_TRUE(copy1);
+      HeapVector<CSSSelector> vector =
+          CSSSelectorList::Copy(inner->first_selector_);
+      EXPECT_EQ(feature_enabled ? 3 : 1, vector.size());
+      const CSSSelectorList* copy2 =
+          CSSSelectorList::AdoptSelectorVector(vector);
+      ASSERT_TRUE(copy2);
+
+      for (const CSSSelectorList* list : {inner, copy1, copy2}) {
+        EXPECT_TRUE(list->IsValid());
+        EXPECT_EQ(feature_enabled ? 3 : 1, list->ComputeLength());
+
+        const CSSSelector* selector = list->FirstIncludingUnparsedInvalid();
+
+        ASSERT_TRUE(selector);
+        EXPECT_EQ(CSSSelector::kClass, selector->Match());
+        EXPECT_EQ(".a", selector->SelectorText());
+        EXPECT_EQ(selector, &list->SelectorAt(0));
+        EXPECT_EQ(0, list->SelectorIndex(*selector));
+
+        if (feature_enabled) {
+          selector = CSSSelectorList::NextIncludingUnparsedInvalid(*selector);
+
+          ASSERT_TRUE(selector);
+          EXPECT_TRUE(selector->IsUnparsedInvalid());
+          EXPECT_EQ(":unknown1", selector->SelectorText());
+          EXPECT_EQ(selector, &list->SelectorAt(1));
+          EXPECT_EQ(1, list->SelectorIndex(*selector));
+
+          selector = CSSSelectorList::NextIncludingUnparsedInvalid(*selector);
+
+          ASSERT_TRUE(selector);
+          EXPECT_TRUE(selector->IsUnparsedInvalid());
+          EXPECT_EQ(":unknown2", selector->SelectorText());
+          EXPECT_EQ(selector, &list->SelectorAt(2));
+          EXPECT_EQ(2, list->SelectorIndex(*selector));
+        }
+
+        EXPECT_FALSE(CSSSelectorList::NextIncludingUnparsedInvalid(*selector));
+      }
+    }
+
+    {
+      const CSSSelectorList* inner =
+          css_test_helpers::ParseSelectorList(":is(:unknown1, .a, :unknown2)")
+              ->First()
+              ->SelectorList();
+      ASSERT_TRUE(inner);
+      const CSSSelectorList* copy1 = inner->Copy();
+      ASSERT_TRUE(copy1);
+      HeapVector<CSSSelector> vector =
+          CSSSelectorList::Copy(inner->first_selector_);
+      EXPECT_EQ(feature_enabled ? 3 : 1, vector.size());
+      const CSSSelectorList* copy2 =
+          CSSSelectorList::AdoptSelectorVector(vector);
+      ASSERT_TRUE(copy2);
+
+      for (const CSSSelectorList* list : {inner, copy1, copy2}) {
+        EXPECT_TRUE(list->IsValid());
+        EXPECT_EQ(feature_enabled ? 3 : 1, list->ComputeLength());
+
+        const CSSSelector* selector = list->FirstIncludingUnparsedInvalid();
+
+        if (feature_enabled) {
+          ASSERT_TRUE(selector);
+          EXPECT_TRUE(selector->IsUnparsedInvalid());
+          EXPECT_EQ(":unknown1", selector->SelectorText());
+          EXPECT_EQ(selector, &list->SelectorAt(0));
+          EXPECT_EQ(0, list->SelectorIndex(*selector));
+
+          selector = CSSSelectorList::NextIncludingUnparsedInvalid(*selector);
+
+          ASSERT_TRUE(selector);
+          EXPECT_EQ(CSSSelector::kClass, selector->Match());
+          EXPECT_EQ(".a", selector->SelectorText());
+          EXPECT_EQ(selector, &list->SelectorAt(1));
+          EXPECT_EQ(1, list->SelectorIndex(*selector));
+
+          selector = CSSSelectorList::NextIncludingUnparsedInvalid(*selector);
+
+          ASSERT_TRUE(selector);
+          EXPECT_TRUE(selector->IsUnparsedInvalid());
+          EXPECT_EQ(":unknown2", selector->SelectorText());
+          EXPECT_EQ(selector, &list->SelectorAt(2));
+          EXPECT_EQ(2, list->SelectorIndex(*selector));
+        } else {
+          ASSERT_TRUE(selector);
+          EXPECT_EQ(CSSSelector::kClass, selector->Match());
+          EXPECT_EQ(".a", selector->SelectorText());
+          EXPECT_EQ(selector, &list->SelectorAt(0));
+          EXPECT_EQ(0, list->SelectorIndex(*selector));
+        }
+
+        EXPECT_FALSE(CSSSelectorList::NextIncludingUnparsedInvalid(*selector));
+      }
+    }
+
+    {
+      const CSSSelectorList* inner =
+          css_test_helpers::ParseSelectorList(":is(:unknown1, :unknown2, .a)")
+              ->First()
+              ->SelectorList();
+      ASSERT_TRUE(inner);
+      const CSSSelectorList* copy1 = inner->Copy();
+      ASSERT_TRUE(copy1);
+      HeapVector<CSSSelector> vector =
+          CSSSelectorList::Copy(inner->first_selector_);
+      EXPECT_EQ(feature_enabled ? 3 : 1, vector.size());
+      const CSSSelectorList* copy2 =
+          CSSSelectorList::AdoptSelectorVector(vector);
+      ASSERT_TRUE(copy2);
+
+      for (const CSSSelectorList* list : {inner, copy1, copy2}) {
+        EXPECT_TRUE(list->IsValid());
+        EXPECT_EQ(feature_enabled ? 3 : 1, list->ComputeLength());
+
+        const CSSSelector* selector = list->FirstIncludingUnparsedInvalid();
+
+        if (feature_enabled) {
+          ASSERT_TRUE(selector);
+          EXPECT_TRUE(selector->IsUnparsedInvalid());
+          EXPECT_EQ(":unknown1", selector->SelectorText());
+          EXPECT_EQ(selector, &list->SelectorAt(0));
+          EXPECT_EQ(0, list->SelectorIndex(*selector));
+
+          selector = CSSSelectorList::NextIncludingUnparsedInvalid(*selector);
+
+          ASSERT_TRUE(selector);
+          EXPECT_TRUE(selector->IsUnparsedInvalid());
+          EXPECT_EQ(":unknown2", selector->SelectorText());
+          EXPECT_EQ(selector, &list->SelectorAt(1));
+          EXPECT_EQ(1, list->SelectorIndex(*selector));
+
+          selector = CSSSelectorList::NextIncludingUnparsedInvalid(*selector);
+
+          ASSERT_TRUE(selector);
+          EXPECT_EQ(CSSSelector::kClass, selector->Match());
+          EXPECT_EQ(".a", selector->SelectorText());
+          EXPECT_EQ(selector, &list->SelectorAt(2));
+          EXPECT_EQ(2, list->SelectorIndex(*selector));
+        } else {
+          ASSERT_TRUE(selector);
+          EXPECT_EQ(CSSSelector::kClass, selector->Match());
+          EXPECT_EQ(".a", selector->SelectorText());
+          EXPECT_EQ(selector, &list->SelectorAt(0));
+          EXPECT_EQ(0, list->SelectorIndex(*selector));
+        }
+
+        EXPECT_FALSE(CSSSelectorList::NextIncludingUnparsedInvalid(*selector));
+      }
+    }
+  }
+}
+
 TEST(CSSSelector, FirstInInvalidList) {
   test::TaskEnvironment task_environment;
   CSSSelectorList* list = CSSSelectorList::Empty();
@@ -414,24 +769,38 @@ TEST(CSSSelector, CheckHasArgumentMatchInShadowTreeFlag) {
   css_test_helpers::TestStyleSheet sheet;
   sheet.AddCSSRules(
       ":host:has(.a) {}"
+      ":has(.a):host {}"
       ":host:has(.a):has(.b) {}"
+      ":has(.a):has(.b):host {}"
       ":host:has(.a) .b {}"
+      ":has(.a):host .b {}"
       ":host:has(.a):has(.b) .c {}"
+      ":has(.a):has(.b):host .c {}"
       ":host :has(.a) {}"
       ":host :has(.a) .b {}"
-      ":host:has(.a):host(.b):has(.c):host-context(.d):has(.e) :has(.f) {}");
+      ":host:has(.a):host(.b):has(.c):host-context(.d):has(.e) :has(.f) {}"
+      ":has(.a):host:has(.b):host(.c):has(.d):host-context(.e) :has(.f) {}");
   RuleSet& rule_set = sheet.GetRuleSet();
 
   base::span<const RuleData> rules = rule_set.ShadowHostRules();
-  ASSERT_EQ(2u, rules.size());
+  ASSERT_EQ(4u, rules.size());
   const CSSSelector* selector = &rules[0].Selector();
   EXPECT_EQ(":host:has(.a)", selector->SelectorText());
+  EXPECT_EQ(selector->GetPseudoType(), CSSSelector::kPseudoHost);
   selector = selector->NextSimpleSelector();
   EXPECT_EQ(selector->GetPseudoType(), CSSSelector::kPseudoHas);
   EXPECT_TRUE(selector->HasArgumentMatchInShadowTree());
 
   selector = &rules[1].Selector();
+  EXPECT_EQ(":has(.a):host", selector->SelectorText());
+  EXPECT_EQ(selector->GetPseudoType(), CSSSelector::kPseudoHas);
+  EXPECT_TRUE(selector->HasArgumentMatchInShadowTree());
+  selector = selector->NextSimpleSelector();
+  EXPECT_EQ(selector->GetPseudoType(), CSSSelector::kPseudoHost);
+
+  selector = &rules[2].Selector();
   EXPECT_EQ(":host:has(.a):has(.b)", selector->SelectorText());
+  EXPECT_EQ(selector->GetPseudoType(), CSSSelector::kPseudoHost);
   selector = selector->NextSimpleSelector();
   EXPECT_EQ(selector->GetPseudoType(), CSSSelector::kPseudoHas);
   EXPECT_TRUE(selector->HasArgumentMatchInShadowTree());
@@ -439,26 +808,46 @@ TEST(CSSSelector, CheckHasArgumentMatchInShadowTreeFlag) {
   EXPECT_EQ(selector->GetPseudoType(), CSSSelector::kPseudoHas);
   EXPECT_TRUE(selector->HasArgumentMatchInShadowTree());
 
+  selector = &rules[3].Selector();
+  EXPECT_EQ(":has(.a):has(.b):host", selector->SelectorText());
+  EXPECT_EQ(selector->GetPseudoType(), CSSSelector::kPseudoHas);
+  EXPECT_TRUE(selector->HasArgumentMatchInShadowTree());
+  selector = selector->NextSimpleSelector();
+  EXPECT_EQ(selector->GetPseudoType(), CSSSelector::kPseudoHas);
+  EXPECT_TRUE(selector->HasArgumentMatchInShadowTree());
+  selector = selector->NextSimpleSelector();
+  EXPECT_EQ(selector->GetPseudoType(), CSSSelector::kPseudoHost);
+
   rules = rule_set.ClassRules(AtomicString("b"));
-  ASSERT_EQ(2u, rules.size());
+  ASSERT_EQ(3u, rules.size());
   selector = &rules[0].Selector();
   EXPECT_EQ(":host:has(.a) .b", selector->SelectorText());
   selector = selector->NextSimpleSelector();
+  EXPECT_EQ(selector->GetPseudoType(), CSSSelector::kPseudoHost);
   selector = selector->NextSimpleSelector();
   EXPECT_EQ(selector->GetPseudoType(), CSSSelector::kPseudoHas);
   EXPECT_TRUE(selector->HasArgumentMatchInShadowTree());
 
   selector = &rules[1].Selector();
+  EXPECT_EQ(":has(.a):host .b", selector->SelectorText());
+  selector = selector->NextSimpleSelector();
+  EXPECT_EQ(selector->GetPseudoType(), CSSSelector::kPseudoHas);
+  EXPECT_TRUE(selector->HasArgumentMatchInShadowTree());
+  selector = selector->NextSimpleSelector();
+  EXPECT_EQ(selector->GetPseudoType(), CSSSelector::kPseudoHost);
+
+  selector = &rules[2].Selector();
   EXPECT_EQ(":host :has(.a) .b", selector->SelectorText());
   selector = selector->NextSimpleSelector();
   EXPECT_EQ(selector->GetPseudoType(), CSSSelector::kPseudoHas);
   EXPECT_FALSE(selector->HasArgumentMatchInShadowTree());
 
   rules = rule_set.ClassRules(AtomicString("c"));
-  ASSERT_EQ(1u, rules.size());
+  ASSERT_EQ(2u, rules.size());
   selector = &rules[0].Selector();
   EXPECT_EQ(":host:has(.a):has(.b) .c", selector->SelectorText());
   selector = selector->NextSimpleSelector();
+  EXPECT_EQ(selector->GetPseudoType(), CSSSelector::kPseudoHost);
   selector = selector->NextSimpleSelector();
   EXPECT_EQ(selector->GetPseudoType(), CSSSelector::kPseudoHas);
   EXPECT_TRUE(selector->HasArgumentMatchInShadowTree());
@@ -466,8 +855,19 @@ TEST(CSSSelector, CheckHasArgumentMatchInShadowTreeFlag) {
   EXPECT_EQ(selector->GetPseudoType(), CSSSelector::kPseudoHas);
   EXPECT_TRUE(selector->HasArgumentMatchInShadowTree());
 
+  selector = &rules[1].Selector();
+  EXPECT_EQ(":has(.a):has(.b):host .c", selector->SelectorText());
+  selector = selector->NextSimpleSelector();
+  EXPECT_EQ(selector->GetPseudoType(), CSSSelector::kPseudoHas);
+  EXPECT_TRUE(selector->HasArgumentMatchInShadowTree());
+  selector = selector->NextSimpleSelector();
+  EXPECT_EQ(selector->GetPseudoType(), CSSSelector::kPseudoHas);
+  EXPECT_TRUE(selector->HasArgumentMatchInShadowTree());
+  selector = selector->NextSimpleSelector();
+  EXPECT_EQ(selector->GetPseudoType(), CSSSelector::kPseudoHost);
+
   rules = rule_set.UniversalRules();
-  ASSERT_EQ(2u, rules.size());
+  ASSERT_EQ(3u, rules.size());
   selector = &rules[0].Selector();
   EXPECT_EQ(":host :has(.a)", selector->SelectorText());
   EXPECT_EQ(selector->GetPseudoType(), CSSSelector::kPseudoHas);
@@ -479,6 +879,7 @@ TEST(CSSSelector, CheckHasArgumentMatchInShadowTreeFlag) {
   EXPECT_EQ(selector->GetPseudoType(), CSSSelector::kPseudoHas);
   EXPECT_FALSE(selector->HasArgumentMatchInShadowTree());
   selector = selector->NextSimpleSelector();
+  EXPECT_EQ(selector->GetPseudoType(), CSSSelector::kPseudoHost);
   selector = selector->NextSimpleSelector();
   EXPECT_EQ(selector->GetPseudoType(), CSSSelector::kPseudoHas);
   EXPECT_TRUE(selector->HasArgumentMatchInShadowTree());
@@ -490,6 +891,27 @@ TEST(CSSSelector, CheckHasArgumentMatchInShadowTreeFlag) {
   selector = selector->NextSimpleSelector();
   EXPECT_EQ(selector->GetPseudoType(), CSSSelector::kPseudoHas);
   EXPECT_TRUE(selector->HasArgumentMatchInShadowTree());
+
+  selector = &rules[2].Selector();
+  EXPECT_EQ(":has(.a):host:has(.b):host(.c):has(.d):host-context(.e) :has(.f)",
+            selector->SelectorText());
+  EXPECT_EQ(selector->GetPseudoType(), CSSSelector::kPseudoHas);
+  EXPECT_FALSE(selector->HasArgumentMatchInShadowTree());
+  selector = selector->NextSimpleSelector();
+  EXPECT_EQ(selector->GetPseudoType(), CSSSelector::kPseudoHas);
+  EXPECT_TRUE(selector->HasArgumentMatchInShadowTree());
+  selector = selector->NextSimpleSelector();
+  EXPECT_EQ(selector->GetPseudoType(), CSSSelector::kPseudoHost);
+  selector = selector->NextSimpleSelector();
+  EXPECT_EQ(selector->GetPseudoType(), CSSSelector::kPseudoHas);
+  EXPECT_TRUE(selector->HasArgumentMatchInShadowTree());
+  selector = selector->NextSimpleSelector();
+  EXPECT_EQ(selector->GetPseudoType(), CSSSelector::kPseudoHost);
+  selector = selector->NextSimpleSelector();
+  EXPECT_EQ(selector->GetPseudoType(), CSSSelector::kPseudoHas);
+  EXPECT_TRUE(selector->HasArgumentMatchInShadowTree());
+  selector = selector->NextSimpleSelector();
+  EXPECT_EQ(selector->GetPseudoType(), CSSSelector::kPseudoHostContext);
 }
 
 TEST(CSSSelector, RenestAmpersand) {
@@ -568,5 +990,17 @@ TEST(CSSSelector, RenestScope) {
   // the parent rule changed:
   EXPECT_EQ(list, list->Renest(b));
 }
+
+#if DCHECK_IS_ON()
+
+TEST(CSSSelector, ShowWithParentPseudo) {
+  test::TaskEnvironment task_environment;
+  CSSSelectorList* list = ParseSelectorList("& .x");
+  ASSERT_TRUE(list);
+  ASSERT_TRUE(list->First());
+  list->First()->Show();  // Don't crash.
+}
+
+#endif  // DCHECK_IS_ON()
 
 }  // namespace blink

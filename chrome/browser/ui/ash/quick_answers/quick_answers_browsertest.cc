@@ -4,14 +4,15 @@
 
 #include <string>
 
+#include "ash/constants/ash_pref_names.h"
 #include "ash/shell.h"
 #include "ash/system/notification_center/ash_message_popup_collection.h"
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/run_loop.h"
 #include "base/scoped_observation.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
@@ -19,6 +20,7 @@
 #include "base/timer/timer.h"
 #include "build/build_config.h"
 #include "chrome/browser/ash/accessibility/accessibility_manager.h"
+#include "chrome/browser/ash/accessibility/chromevox_test_utils.h"
 #include "chrome/browser/ash/accessibility/speech_monitor.h"
 #include "chrome/browser/notifications/notification_display_service.h"
 #include "chrome/browser/notifications/notification_display_service_factory.h"
@@ -27,6 +29,7 @@
 #include "chrome/browser/ui/ash/quick_answers/quick_answers_controller_impl.h"
 #include "chrome/browser/ui/ash/quick_answers/quick_answers_ui_controller.h"
 #include "chrome/browser/ui/ash/quick_answers/test/mock_quick_answers_client.h"
+#include "chrome/browser/ui/ash/quick_answers/ui/magic_boost_user_consent_view.h"
 #include "chrome/browser/ui/ash/quick_answers/ui/quick_answers_view.h"
 #include "chrome/browser/ui/ash/quick_answers/ui/rich_answers_view.h"
 #include "chrome/browser/ui/ash/quick_answers/ui/user_consent_view.h"
@@ -52,6 +55,7 @@
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/accessibility/ax_event.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/color/color_id.h"
 #include "ui/events/event_constants.h"
 #include "ui/events/keycodes/keyboard_codes_posix.h"
@@ -418,6 +422,88 @@ class QuickAnswersBrowserTest : public QuickAnswersBrowserTestBase {
 };
 
 IN_PROC_BROWSER_TEST_P(QuickAnswersBrowserTest,
+                       MagicBoostConsentViewOnPendingDisclaimer) {
+  if (!IsMagicBoostEnabled()) {
+    GTEST_SKIP() << "This test only applies when Magic Boost is enabled.";
+  }
+
+  // Enable Magic Boost.
+  chrome_test_utils::GetProfile(this)->GetPrefs()->SetBoolean(
+      ash::prefs::kMagicBoostEnabled, true);
+
+  // Assert that HMR is enabled and consent is pending.
+  ASSERT_TRUE(chrome_test_utils::GetProfile(this)->GetPrefs()->GetBoolean(
+      ash::prefs::kHmrEnabled));
+  ASSERT_EQ(chrome_test_utils::GetProfile(this)->GetPrefs()->GetInteger(
+                ash::prefs::kHMRConsentStatus),
+            static_cast<int>(chromeos::HMRConsentStatus::kPendingDisclaimer));
+
+  // Set up mock client to return a dictionary intent.
+  QuickAnswersState::Get()->set_use_text_annotator_for_testing();
+  auto mock_quick_answers_client = CreateMockQuickAnswersClient();
+  ON_CALL(*mock_quick_answers_client, SendRequestForPreprocessing)
+      .WillByDefault([this](const quick_answers::QuickAnswersRequest& request) {
+        QuickAnswersRequest processed_request = request;
+        processed_request.preprocessed_output.intent_info.intent_type =
+            IntentType::kDictionary;
+        processed_request.preprocessed_output.intent_info.intent_text =
+            request.selected_text;
+        static_cast<QuickAnswersControllerImpl*>(controller())
+            ->OnRequestPreprocessFinished(processed_request);
+      });
+  controller()->SetClient(std::move(mock_quick_answers_client));
+
+  // Trigger Quick Answers.
+  views::NamedWidgetShownWaiter consent_view_widget_waiter(
+      views::test::AnyWidgetTestPasskey(),
+      chromeos::ReadWriteCardsUiController::kWidgetName);
+
+  ShowMenuParams params;
+  params.selected_text = kTestQuery;
+  ShowMenuAndWait(params);
+
+  views::Widget* consent_view_widget =
+      consent_view_widget_waiter.WaitIfNeededAndGet();
+  ASSERT_TRUE(consent_view_widget);
+
+  // Confirm that MagicBoostUserConsentView is shown.
+  auto* consent_view = static_cast<QuickAnswersControllerImpl*>(controller())
+                           ->quick_answers_ui_controller()
+                           ->magic_boost_user_consent_view();
+  EXPECT_TRUE(consent_view);
+  EXPECT_TRUE(consent_view->GetVisible());
+}
+
+IN_PROC_BROWSER_TEST_P(QuickAnswersBrowserTest,
+                       QuickAnswersDisabledWhenHmrIsDisabled) {
+  if (!IsMagicBoostEnabled()) {
+    GTEST_SKIP() << "This test only applies when Magic Boost is enabled.";
+  }
+
+  // Simulate a user who has consented to GenAI features but has disabled the
+  // HMR feature.
+  Profile* profile = chrome_test_utils::GetProfile(this);
+  profile->GetPrefs()->SetBoolean(ash::prefs::kMagicBoostEnabled, true);
+  profile->GetPrefs()->SetInteger(
+      ash::prefs::kHMRConsentStatus,
+      static_cast<int>(chromeos::HMRConsentStatus::kApproved));
+  profile->GetPrefs()->SetBoolean(ash::prefs::kHmrEnabled, false);
+
+  // Trigger the context menu.
+  ShowMenuParams params;
+  params.selected_text = kTestQuery;
+  base::test::TestFuture<void> future;
+  static_cast<QuickAnswersControllerImpl*>(controller())
+      ->SetOnTextAvailableCallbackForTesting(future.GetCallback());
+  ShowMenuAndWait(params);
+  EXPECT_TRUE(future.Wait());
+
+  // Verify that no Quick Answers UI is shown.
+  EXPECT_EQ(controller()->GetQuickAnswersVisibility(),
+            QuickAnswersVisibility::kClosed);
+}
+
+IN_PROC_BROWSER_TEST_P(QuickAnswersBrowserTest,
                        QuickAnswersViewAboveNotification) {
   SetQuickAnswersEnabled(true);
 
@@ -641,11 +727,9 @@ IN_PROC_BROWSER_TEST_P(QuickAnswersBrowserTest, SpokenFeedback) {
       .WillOnce(base::test::InvokeFuture(on_quick_answers_click_future));
   controller()->SetClient(std::move(mock_quick_answers_client));
 
-  ash::test::SpeechMonitor speech_monitor;
-  speech_monitor.Call(
-      []() { ash::AccessibilityManager::Get()->EnableSpokenFeedback(true); });
-  speech_monitor.ExpectSpeech("ChromeVox spoken feedback is ready");
-  speech_monitor.Call([this]() {
+  ash::ChromeVoxTestUtils chromevox_test_utils;
+  chromevox_test_utils.EnableChromeVox();
+  chromevox_test_utils.sm()->Call([this]() {
     ShowMenuParams params;
     params.selected_text = kTestQuery;
     params.x = kCursorXToOverlapWithANotification;
@@ -657,32 +741,33 @@ IN_PROC_BROWSER_TEST_P(QuickAnswersBrowserTest, SpokenFeedback) {
     // spoken feedback.
     ShowMenu(params);
   });
-  speech_monitor.ExpectSpeech("menu opened");
-  speech_monitor.Call([this]() {
+  chromevox_test_utils.sm()->ExpectSpeech("menu opened");
+  chromevox_test_utils.sm()->Call([this]() {
     controller()->GetQuickAnswersDelegate()->OnQuickAnswerReceived(
         CreateQuickAnswerDefinitionResponse());
   });
-  speech_monitor.ExpectSpeech(
+  chromevox_test_utils.sm()->ExpectSpeech(
       "Info related to your selection available. Use Up arrow key to access.");
-  speech_monitor.Call([]() {
+  chromevox_test_utils.sm()->Call([]() {
     ui::test::EventGenerator event_generator(
         ash::Shell::GetPrimaryRootWindow());
     ui::test::EmulateFullKeyPressReleaseSequence(
         &event_generator, ui::KeyboardCode::VKEY_UP, /*control=*/false,
         /*shift=*/false, /*alt=*/false, /*command=*/false);
   });
-  speech_monitor.ExpectSpeech("Info related to your selection");
-  speech_monitor.ExpectSpeech("Dialog");
-  speech_monitor.ExpectSpeech(expected_result_a11y_text);
-  speech_monitor.ExpectSpeech("Press Search plus Space to activate");
-  speech_monitor.Call([]() {
+  chromevox_test_utils.sm()->ExpectSpeech("Info related to your selection");
+  chromevox_test_utils.sm()->ExpectSpeech("Dialog");
+  chromevox_test_utils.sm()->ExpectSpeech(expected_result_a11y_text);
+  chromevox_test_utils.sm()->ExpectSpeech(
+      "Press Search plus Space to activate");
+  chromevox_test_utils.sm()->Call([]() {
     ui::test::EventGenerator event_generator(
         ash::Shell::GetPrimaryRootWindow());
     ui::test::EmulateFullKeyPressReleaseSequence(
         &event_generator, ui::KeyboardCode::VKEY_SPACE, /*control=*/false,
         /*shift=*/false, /*alt=*/false, /*command=*/true);
   });
-  speech_monitor.Replay();
+  chromevox_test_utils.sm()->Replay();
 
   // Wait after `SpeechMonitor::Replay`. `Replay` can create a message loop. If
   // we wait inside reply, it can create a nested `RunLoop`, which is not
@@ -698,11 +783,9 @@ IN_PROC_BROWSER_TEST_P(QuickAnswersBrowserTest, SpokenFeedbackUserConsent) {
     GTEST_SKIP() << "User consent is handled by Magic Boost if it's on.";
   }
 
-  ash::test::SpeechMonitor speech_monitor;
-  speech_monitor.Call(
-      []() { ash::AccessibilityManager::Get()->EnableSpokenFeedback(true); });
-  speech_monitor.ExpectSpeech("ChromeVox spoken feedback is ready");
-  speech_monitor.Call([this]() {
+  ash::ChromeVoxTestUtils chromevox_test_utils;
+  chromevox_test_utils.EnableChromeVox();
+  chromevox_test_utils.sm()->Call([this]() {
     ShowMenuParams params;
     params.selected_text = kTestQuery;
     params.x = kCursorXToOverlapWithANotification;
@@ -714,41 +797,41 @@ IN_PROC_BROWSER_TEST_P(QuickAnswersBrowserTest, SpokenFeedbackUserConsent) {
     // spoken feedback.
     ShowMenu(params);
   });
-  speech_monitor.ExpectSpeech("menu opened");
+  chromevox_test_utils.sm()->ExpectSpeech("menu opened");
   // message id: IDS_QUICK_ANSWERS_USER_NOTICE_VIEW_A11Y_INFO_ALERT_TEXT
-  speech_monitor.ExpectSpeech(
+  chromevox_test_utils.sm()->ExpectSpeech(
       "New feature available, use Up arrow key to learn more.");
-  speech_monitor.Call([]() {
+  chromevox_test_utils.sm()->Call([]() {
     ui::test::EventGenerator event_generator(
         ash::Shell::GetPrimaryRootWindow());
     ui::test::EmulateFullKeyPressReleaseSequence(
         &event_generator, ui::KeyboardCode::VKEY_UP, /*control=*/false,
         /*shift=*/false, /*alt=*/false, /*command=*/false);
   });
-  speech_monitor.ExpectSpeech("No thanks");
-  speech_monitor.ExpectSpeech("Button");
-  speech_monitor.ExpectSpeech("Get info related to your selection");
-  speech_monitor.ExpectSpeech("Dialog");
-  speech_monitor.ExpectSpeech(
+  chromevox_test_utils.sm()->ExpectSpeech("No thanks");
+  chromevox_test_utils.sm()->ExpectSpeech("Button");
+  chromevox_test_utils.sm()->ExpectSpeech("Get info related to your selection");
+  chromevox_test_utils.sm()->ExpectSpeech("Dialog");
+  chromevox_test_utils.sm()->ExpectSpeech(
       "Right-click or press and hold to get definitions, translations, or unit "
       "conversions Use Left or Right arrow keys to manage this feature.");
-  speech_monitor.Call([]() {
+  chromevox_test_utils.sm()->Call([]() {
     ui::test::EventGenerator event_generator(
         ash::Shell::GetPrimaryRootWindow());
     ui::test::EmulateFullKeyPressReleaseSequence(
         &event_generator, ui::KeyboardCode::VKEY_RIGHT, /*control=*/false,
         /*shift=*/false, /*alt=*/false, /*command=*/false);
   });
-  speech_monitor.ExpectSpeech("Try it");
-  speech_monitor.ExpectSpeech("Button");
-  speech_monitor.Call([]() {
+  chromevox_test_utils.sm()->ExpectSpeech("Try it");
+  chromevox_test_utils.sm()->ExpectSpeech("Button");
+  chromevox_test_utils.sm()->Call([]() {
     ui::test::EventGenerator event_generator(
         ash::Shell::GetPrimaryRootWindow());
     ui::test::EmulateFullKeyPressReleaseSequence(
         &event_generator, ui::KeyboardCode::VKEY_SPACE, /*control=*/false,
         /*shift=*/false, /*alt=*/false, /*command=*/true);
   });
-  speech_monitor.Replay();
+  chromevox_test_utils.sm()->Replay();
 
   // Activation (Search + Space) is done as an async operatnion. Wait for the
   // consent status change.
@@ -762,10 +845,10 @@ IN_PROC_BROWSER_TEST_P(QuickAnswersBrowserTest, SpokenFeedbackUserConsent) {
             controller()->GetQuickAnswersVisibility());
 }
 
-INSTANTIATE_TEST_SUITE_P(
-    /* no prefix */,
-    QuickAnswersBrowserTest,
-    ::testing::Bool());
+INSTANTIATE_TEST_SUITE_P(All,
+                         QuickAnswersBrowserTest,
+                         testing::Bool(),
+                         &QuickAnswersBrowserTest::GetTestVariantName);
 
 class RichAnswersBrowserTest : public QuickAnswersBrowserTest {
  protected:
@@ -858,7 +941,9 @@ IN_PROC_BROWSER_TEST_P(RichAnswersBrowserTest,
   // Check that the shown result type icon on the QuickAnswersView
   // correctly corresponds to the definition result type.
   ui::ImageModel expected_image_model = ui::ImageModel::FromVectorIcon(
-      omnibox::kAnswerDictionaryIcon, ui::kColorSysBaseContainerElevated,
+      features::IsRoundedIconsEnabled() ? omnibox::kBookIcon
+                                        : omnibox::kAnswerDictionaryOldIcon,
+      ui::kColorSysBaseContainerElevated,
       /*icon_size=*/kQuickAnswersResultTypeIconSizeDip);
 
   views::Widget* rich_answers_view_widget =
@@ -888,7 +973,9 @@ IN_PROC_BROWSER_TEST_P(RichAnswersBrowserTest,
   // Check that the shown result type icon on the QuickAnswersView
   // correctly corresponds to the translation result type.
   ui::ImageModel expected_image_model = ui::ImageModel::FromVectorIcon(
-      omnibox::kAnswerTranslationIcon, ui::kColorSysBaseContainerElevated,
+      features::IsRoundedIconsEnabled() ? omnibox::kTranslateIcon
+                                        : omnibox::kAnswerTranslationOldIcon,
+      ui::kColorSysBaseContainerElevated,
       /*icon_size=*/kQuickAnswersResultTypeIconSizeDip);
 
   views::Widget* rich_answers_view_widget =
@@ -899,7 +986,9 @@ IN_PROC_BROWSER_TEST_P(RichAnswersBrowserTest,
   RichAnswersView* rich_answers_view = static_cast<RichAnswersView*>(
       rich_answers_view_widget->GetContentsView());
   expected_image_model = ui::ImageModel::FromVectorIcon(
-      omnibox::kAnswerTranslationIcon, ui::kColorSysBaseContainerElevated,
+      features::IsRoundedIconsEnabled() ? omnibox::kTranslateIcon
+                                        : omnibox::kAnswerTranslationOldIcon,
+      ui::kColorSysBaseContainerElevated,
       /*icon_size=*/kRichAnswersResultTypeIconSizeDip);
   EXPECT_TRUE(rich_answers_view->GetIconImageModelForTesting() ==
               expected_image_model);
@@ -918,7 +1007,9 @@ IN_PROC_BROWSER_TEST_P(RichAnswersBrowserTest,
   // Check that the shown result type icon on the QuickAnswersView
   // correctly corresponds to the unit conversion result type.
   ui::ImageModel expected_image_model = ui::ImageModel::FromVectorIcon(
-      omnibox::kAnswerCalculatorIcon, ui::kColorSysBaseContainerElevated,
+      features::IsRoundedIconsEnabled() ? omnibox::kEqualIcon
+                                        : omnibox::kAnswerCalculatorOldIcon,
+      ui::kColorSysBaseContainerElevated,
       /*icon_size=*/kQuickAnswersResultTypeIconSizeDip);
 
   views::Widget* rich_answers_view_widget =
@@ -929,7 +1020,9 @@ IN_PROC_BROWSER_TEST_P(RichAnswersBrowserTest,
   RichAnswersView* rich_answers_view = static_cast<RichAnswersView*>(
       rich_answers_view_widget->GetContentsView());
   expected_image_model = ui::ImageModel::FromVectorIcon(
-      omnibox::kAnswerCalculatorIcon, ui::kColorSysBaseContainerElevated,
+      features::IsRoundedIconsEnabled() ? omnibox::kEqualIcon
+                                        : omnibox::kAnswerCalculatorOldIcon,
+      ui::kColorSysBaseContainerElevated,
       /*icon_size=*/kRichAnswersResultTypeIconSizeDip);
   EXPECT_TRUE(rich_answers_view->GetIconImageModelForTesting() ==
               expected_image_model);
@@ -952,9 +1045,9 @@ IN_PROC_BROWSER_TEST_P(RichAnswersBrowserTest, AccessibleProperties) {
             l10n_util::GetStringUTF8(IDS_RICH_ANSWERS_VIEW_A11Y_NAME_TEXT));
 }
 
-INSTANTIATE_TEST_SUITE_P(
-    /* no prefix */,
-    RichAnswersBrowserTest,
-    ::testing::Bool());
+INSTANTIATE_TEST_SUITE_P(All,
+                         RichAnswersBrowserTest,
+                         testing::Bool(),
+                         &RichAnswersBrowserTest::GetTestVariantName);
 
 }  // namespace quick_answers

@@ -15,17 +15,14 @@
 
 namespace features {
 
+
+#if BUILDFLAG(IS_WIN)
 COMPONENT_EXPORT(MEDIA_WEBRTC)
-BASE_DECLARE_FEATURE(kWebRtcAllowWgcScreenCapturer);
+BASE_DECLARE_FEATURE(kWebRtcWgcRequireBorder);
 
 COMPONENT_EXPORT(MEDIA_WEBRTC)
-BASE_DECLARE_FEATURE(kWebRtcAllowWgcWindowCapturer);
-
-COMPONENT_EXPORT(MEDIA_WEBRTC)
-BASE_DECLARE_FEATURE(kWebRtcAllowWgcScreenZeroHz);
-
-COMPONENT_EXPORT(MEDIA_WEBRTC)
-BASE_DECLARE_FEATURE(kWebRtcAllowWgcWindowZeroHz);
+BASE_DECLARE_FEATURE(kWebRtcAllowWgcUsingTexture);
+#endif
 
 COMPONENT_EXPORT(MEDIA_WEBRTC)
 BASE_DECLARE_FEATURE(kWebRtcAllowInputVolumeAdjustment);
@@ -39,9 +36,6 @@ extern const base::FeatureParam<
     kWebRtcApmDownmixMethodParam;
 
 COMPONENT_EXPORT(MEDIA_WEBRTC)
-BASE_DECLARE_FEATURE(kWebRtcApmTellsIfPlayoutReferenceIsNeeded);
-
-COMPONENT_EXPORT(MEDIA_WEBRTC)
 BASE_DECLARE_FEATURE(kWebRtcAllowH265Send);
 
 COMPONENT_EXPORT(MEDIA_WEBRTC)
@@ -53,10 +47,16 @@ BASE_DECLARE_FEATURE(kWebRtcH265L1T2);
 COMPONENT_EXPORT(MEDIA_WEBRTC)
 BASE_DECLARE_FEATURE(kWebRtcH265L1T3);
 
-#if BUILDFLAG(IS_ANDROID)
 COMPONENT_EXPORT(MEDIA_WEBRTC)
-BASE_DECLARE_FEATURE(kWebRtcApm48kHzSampleRateOnAndroidKillSwitch);
-#endif
+BASE_DECLARE_FEATURE(kWebRtcAV1HWEncode);
+
+COMPONENT_EXPORT(MEDIA_WEBRTC)
+BASE_DECLARE_FEATURE(kWebRtcNeuralResidualEchoEstimationAsyncInit);
+
+// Returns whether the OpenH264 encoder is available in WebRTC based on
+// build flags and OpenH264SoftwareEncoder feature flag status.
+COMPONENT_EXPORT(MEDIA_WEBRTC)
+bool IsOpenH264SoftwareEncoderEnabledForWebRTC();
 
 }  // namespace features
 

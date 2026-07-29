@@ -6,6 +6,7 @@
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_GRAPHICS_PAINT_PAINT_CHUNK_SUBSET_H_
 
 #include "base/check_op.h"
+#include "base/compiler_specific.h"
 #include "base/numerics/safe_conversions.h"
 #include "third_party/blink/renderer/platform/graphics/paint/paint_artifact.h"
 #include "third_party/blink/renderer/platform/heap/member.h"
@@ -53,7 +54,6 @@ class PaintChunkSubset {
       DCHECK_EQ(subset_, other.subset_);
       return subset_index_ == other.subset_index_;
     }
-    bool operator!=(const Iterator& other) const { return !(*this == other); }
     const Iterator& operator++() {
       ++subset_index_;
       return *this;
@@ -79,8 +79,9 @@ class PaintChunkSubset {
 
     DisplayItemRange DisplayItems() const {
       auto& chunk = GetChunk();
-      return subset_->paint_artifact_->GetDisplayItemList().ItemsInRange(
-          chunk.begin_index, chunk.end_index);
+      return UNSAFE_TODO(
+          subset_->paint_artifact_->GetDisplayItemList().ItemsInRange(
+              chunk.begin_index, chunk.end_index));
     }
 
    private:
@@ -125,7 +126,7 @@ class PaintChunkSubset {
 
   void Merge(const PaintChunkSubset& other) {
     DCHECK_EQ(paint_artifact_, other.paint_artifact_);
-    subset_indices_.AppendVector(other.subset_indices_);
+    subset_indices_.append_range(other.subset_indices_);
   }
 
   size_t ApproximateUnsharedMemoryUsage() const {

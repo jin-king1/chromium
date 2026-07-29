@@ -4,9 +4,12 @@
 
 package org.chromium.chrome.browser.toolbar.optional_button;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.content.res.ColorStateList;
 import android.content.res.Resources;
 import android.graphics.Rect;
+import android.transition.Transition;
 import android.view.View;
 import android.view.ViewGroup;
 
@@ -15,10 +18,14 @@ import androidx.annotation.IntDef;
 
 import org.chromium.base.Callback;
 import org.chromium.base.FeatureList;
-import org.chromium.base.supplier.Supplier;
-import org.chromium.chrome.browser.toolbar.ButtonData;
-import org.chromium.chrome.browser.toolbar.ButtonDataImpl;
+import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.theme.ThemeUtils;
+import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarButtonVariant;
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarFeatures;
+import org.chromium.chrome.browser.toolbar.optional_button.OptionalButtonProperties.OnBeforeWidthTransitionCallback;
+import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 import org.chromium.chrome.browser.user_education.IphCommandBuilder;
 import org.chromium.chrome.browser.user_education.UserEducationHelper;
 import org.chromium.components.browser_ui.widget.highlight.PulseDrawable.Bounds;
@@ -33,18 +40,23 @@ import org.chromium.ui.widget.ViewRectProvider;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
 
 /**
  * The coordinator for a button that may appear on the toolbar whose icon and click handler can be
  * updated with animations.
  */
+@NullMarked
 public class OptionalButtonCoordinator {
     private final OptionalButtonMediator mMediator;
     private final OptionalButtonView mView;
-    private final UserEducationHelper mUserEducationHelper;
-    private final Supplier<Tracker> mFeatureEngagementTrackerSupplier;
-    private Callback<Integer> mTransitionFinishedCallback;
-    private IphCommandBuilder mIphCommandBuilder;
+    private final Supplier<UserEducationHelper> mUserEducationHelper;
+    private final MonotonicObservableSupplier<Tracker> mFeatureEngagementTrackerSupplier;
+    private @Nullable Callback<Integer> mTransitionFinishedCallback;
+    private @Nullable IphCommandBuilder mIphCommandBuilder;
+    private boolean mAlwaysShowActionChip;
+    private boolean mActionChipTriggeredByTracker;
+    private @BrandedColorScheme int mBrandedColorScheme = BrandedColorScheme.APP_DEFAULT;
 
     @IntDef({
         TransitionType.SWAPPING,
@@ -75,10 +87,10 @@ public class OptionalButtonCoordinator {
      */
     public OptionalButtonCoordinator(
             View view,
-            UserEducationHelper userEducationHelper,
+            Supplier<UserEducationHelper> userEducationHelper,
             ViewGroup transitionRoot,
             BooleanSupplier isAnimationAllowedPredicate,
-            Supplier<Tracker> featureEngagementTrackerSupplier) {
+            MonotonicObservableSupplier<Tracker> featureEngagementTrackerSupplier) {
         mUserEducationHelper = userEducationHelper;
         PropertyModel model =
                 new PropertyModel.Builder(OptionalButtonProperties.ALL_KEYS)
@@ -89,6 +101,9 @@ public class OptionalButtonCoordinator {
                         .with(
                                 OptionalButtonProperties.IS_ANIMATION_ALLOWED_PREDICATE,
                                 isAnimationAllowedPredicate)
+                        .with(
+                                OptionalButtonProperties.BRANDED_COLOR_SCHEME,
+                                BrandedColorScheme.APP_DEFAULT)
                         .build();
 
         assert view instanceof OptionalButtonView;
@@ -99,32 +114,119 @@ public class OptionalButtonCoordinator {
 
         mMediator = new OptionalButtonMediator(model);
         mFeatureEngagementTrackerSupplier = featureEngagementTrackerSupplier;
+        updateIconTint();
+    }
+
+    /**
+     * Suppresses the collapsed background of the optional button. This is useful for cases where
+     * the optional button is placed on a background that is not the toolbar.
+     */
+    public void setSuppressCollapsedBackground(boolean suppressCollapsedBackground) {
+        mView.setSuppressCollapsedBackground(suppressCollapsedBackground);
     }
 
     public void setPaddingStart(int paddingStart) {
         mMediator.setPaddingStart(paddingStart);
     }
 
+    /**
+     * Set the capability of optional button changing its own visibility. If set to {@code false},
+     * optional button leaves the visibility control to some other entity. {@code true} by default.
+     *
+     * @param canChange Whether optional button can change its own visibility.
+     */
+    public void setCanChangeVisibility(boolean canChange) {
+        mMediator.setCanChangeVisibility(canChange);
+    }
+
+    /**
+     * Sets the collapsed state width of the button, overriding the default value.
+     *
+     * @param width The new collapsed state width.
+     */
+    public void setCollapsedStateWidth(int width) {
+        mMediator.setCollapsedStateWidth(width);
+    }
+
+    /**
+     * Sets the transition delegate that will be used to run transitions.
+     *
+     * @param delegate The transition delegate.
+     */
+    public void setTransitionDelegate(@Nullable Callback<Transition> delegate) {
+        mView.setTransitionDelegate(delegate);
+    }
+
+    /** Sets a runnable that's invoked before the optional button is hidden. */
     public void setOnBeforeHideTransitionCallback(Runnable onBeforeHideTransitionCallback) {
         mMediator.setOnBeforeHideTransitionCallback(onBeforeHideTransitionCallback);
     }
 
+    /** Sets a runnable that's invoked before the optional button is shown. */
+    public void setOnBeforeShowTransitionCallback(Runnable onBeforeShowTransitionCallback) {
+        mMediator.setOnBeforeShowTransitionCallback(onBeforeShowTransitionCallback);
+    }
+
+    /** Sets a runnable that's invoked right before the delayed transition begins. */
+    public void setOnBeforeDelayedTransitionCallback(Runnable onBeforeDelayedTransitionCallback) {
+        mMediator.setOnBeforeDelayedTransitionCallback(onBeforeDelayedTransitionCallback);
+    }
+
     /**
      * Sets a callback that's invoked when any transition starts.
+     *
      * @param transitionStartedCallback A callback with an integer argument, this argument a value
-     *         from {@link TransitionType}.
+     *     from {@link TransitionType}.
      */
     public void setTransitionStartedCallback(Callback<Integer> transitionStartedCallback) {
         mMediator.setTransitionStartedCallback(transitionStartedCallback);
     }
 
     /**
+     * Sets the branded color scheme of the toolbar.
+     *
+     * @param brandedColorScheme The current {@link BrandedColorScheme}.
+     */
+    public void setBrandedColorScheme(@BrandedColorScheme int brandedColorScheme) {
+        mBrandedColorScheme = brandedColorScheme;
+        mMediator.setBrandedColorScheme(brandedColorScheme);
+        updateIconTint();
+    }
+
+    private void updateIconTint() {
+        ColorStateList tint =
+                ThemeUtils.getThemedToolbarIconTint(mView.getContext(), mBrandedColorScheme);
+        mMediator.setIconForegroundColor(tint);
+    }
+
+    /**
+     * Set a callback that allows the control of the animation to be performed together with the
+     * chip.
+     *
+     * @param callback {@link OnBeforeWidthTransitionCallback} with a transition type and the
+     *     animation delta to be used by other UI elements.
+     */
+    public void setOnBeforeWidthTransitionCallback(OnBeforeWidthTransitionCallback callback) {
+        mMediator.setOnBeforeWidthTransitionCallback(callback);
+    }
+
+    /**
      * Sets a callback that's invoked when any transition is finished.
+     *
      * @param transitionFinishedCallback A callback with an integer argument, this argument a value
-     *         from {@link TransitionType}.
+     *     from {@link TransitionType}.
      */
     public void setTransitionFinishedCallback(Callback<Integer> transitionFinishedCallback) {
         mTransitionFinishedCallback = transitionFinishedCallback;
+    }
+
+    /**
+     * Set the flag that always enables chip animiation of contextual page action.
+     *
+     * @param show Whether the animation should be always enabled.
+     */
+    public void setAlwaysShowActionChip(boolean show) {
+        mAlwaysShowActionChip = show;
     }
 
     /**
@@ -132,7 +234,7 @@ public class OptionalButtonCoordinator {
      * (according to the BooleanSupplier set with setIsAnimationAllowedPredicate) then this update
      * will be animated. Otherwise it'll instantly switch to the new icon.
      */
-    public void updateButton(ButtonData buttonData) {
+    public void updateButton(@Nullable ButtonData buttonData, boolean isIncognito) {
         if (buttonData != null
                 && buttonData.getButtonSpec() != null
                 && buttonData.getButtonSpec().getIphCommandBuilder() != null) {
@@ -149,19 +251,31 @@ public class OptionalButtonCoordinator {
 
         // Dynamic buttons include an action chip resource ID by default regardless of variant.
         if (hasActionChipResourceId) {
+            assumeNonNull(buttonData);
             // We should only show the action chip if the action chip variant is enabled.
             boolean isActionChipVariant =
                     FeatureList.isInitialized()
                             && AdaptiveToolbarFeatures.shouldShowActionChip(
                                     buttonData.getButtonSpec().getButtonVariant());
-            // And if feature engagement allows it.
-            Tracker featureEngagementTracker = mFeatureEngagementTrackerSupplier.get();
-            boolean shouldShowActionChip =
-                    isActionChipVariant
-                            && featureEngagementTracker != null
-                            && featureEngagementTracker.isInitialized()
-                            && featureEngagementTracker.shouldTriggerHelpUi(
-                                    FeatureConstants.CONTEXTUAL_PAGE_ACTIONS_ACTION_CHIP);
+            // TODO(crbug.com/485624827): Add a property to ButtonSpec to always show action chip.
+            boolean isGlic =
+                    buttonData.getButtonSpec().getButtonVariant()
+                            == AdaptiveToolbarButtonVariant.GLIC;
+            boolean triggeredByTracker = false;
+            boolean shouldShowActionChip = false;
+
+            if (mAlwaysShowActionChip || isGlic) {
+                shouldShowActionChip = true;
+            } else if (isActionChipVariant) {
+                Tracker tracker = mFeatureEngagementTrackerSupplier.get();
+                triggeredByTracker =
+                        tracker != null
+                                && tracker.isInitialized()
+                                && tracker.shouldTriggerHelpUi(
+                                        FeatureConstants.CONTEXTUAL_PAGE_ACTIONS_ACTION_CHIP);
+                shouldShowActionChip = triggeredByTracker;
+            }
+            mActionChipTriggeredByTracker = triggeredByTracker;
 
             if (!shouldShowActionChip) {
                 ((ButtonDataImpl) buttonData).updateActionChipResourceId(Resources.ID_NULL);
@@ -170,6 +284,7 @@ public class OptionalButtonCoordinator {
 
         // Reset background alpha, in case the IPH onDismiss callback doesn't fire.
         mMediator.setBackgroundAlpha(255);
+        mMediator.setIsIncognitoBranded(isIncognito);
         mMediator.updateButton(buttonData);
     }
 
@@ -193,18 +308,11 @@ public class OptionalButtonCoordinator {
     }
 
     /**
-     * Updates the foreground color on the icons and label to match the current theme/website color.
-     */
-    public void setIconForegroundColor(ColorStateList colorStateList) {
-        mMediator.setIconForegroundColor(colorStateList);
-    }
-
-    /**
      * Updates the color filter of the background to match the current address bar background color.
      * This color is only used when showing a contextual action button (when {@link
-     * #updateButton(ButtonData)} is called with a {@link
-     * org.chromium.chrome.browser.toolbar.ButtonData.ButtonSpec} where {@code isDynamicAction()} is
-     * true).
+     * #updateButton(ButtonData, boolean)} is called with a {@link
+     * org.chromium.chrome.browser.toolbar.optional_button.ButtonData.ButtonSpec} where {@code
+     * isDynamicAction()} is true).
      */
     public void setBackgroundColorFilter(@ColorInt int backgroundColor) {
         mMediator.setBackgroundColorFilter(backgroundColor);
@@ -223,6 +331,14 @@ public class OptionalButtonCoordinator {
     }
 
     /**
+     * Returns the width of the container view. Called by ToolbarPhone for layout out other views.
+     * Intended to be called when the view is transitioning and not visibly at its final width.
+     */
+    public int getViewWidthDuringTransition() {
+        return mView.getLayoutParams().width;
+    }
+
+    /**
      * Gets the container for the button, meant to be used by ToolbarPhone for drawing this view
      * into a texture.
      */
@@ -231,7 +347,7 @@ public class OptionalButtonCoordinator {
     }
 
     /** Gets the underlying ButtonView. */
-    public View getButtonViewForTesting() {
+    public View getButtonView() {
         return mView.getButtonView();
     }
 
@@ -240,21 +356,25 @@ public class OptionalButtonCoordinator {
             mTransitionFinishedCallback.onResult(transitionType);
         }
 
-        if (transitionType == TransitionType.EXPANDING_ACTION_CHIP
-                && mFeatureEngagementTrackerSupplier.hasValue()) {
-            // Record an event in feature engagement to limit the amount of times we show the action
-            // chip.
-            Tracker featureEngagementTracker = mFeatureEngagementTrackerSupplier.get();
-            featureEngagementTracker.addOnInitializedCallback(
-                    isReady -> {
-                        if (!isReady) return;
-                        featureEngagementTracker.dismissed(
-                                FeatureConstants.CONTEXTUAL_PAGE_ACTIONS_ACTION_CHIP);
-                    });
+        if (transitionType == TransitionType.EXPANDING_ACTION_CHIP) {
+            if (mActionChipTriggeredByTracker) {
+                Tracker featureEngagementTracker = mFeatureEngagementTrackerSupplier.get();
+                if (featureEngagementTracker != null) {
+                    // Record an event in feature engagement to limit the
+                    // amount of times we show the action chip.
+                    featureEngagementTracker.addOnInitializedCallback(
+                            isReady -> {
+                                if (!isReady) return;
+                                featureEngagementTracker.dismissed(
+                                        FeatureConstants.CONTEXTUAL_PAGE_ACTIONS_ACTION_CHIP);
+                            });
+                }
+                mActionChipTriggeredByTracker = false;
+            }
         }
 
         if (mIphCommandBuilder != null) {
-            mUserEducationHelper.requestShowIph(mIphCommandBuilder.build());
+            mUserEducationHelper.get().requestShowIph(mIphCommandBuilder.build());
             mIphCommandBuilder = null;
         }
     }

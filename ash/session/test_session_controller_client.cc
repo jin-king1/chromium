@@ -119,6 +119,9 @@ AccountId TestSessionControllerClient::AddUserSession(
   // user email must be same as cannonicalized display email.
   CHECK_EQ(account_id.GetUserEmail(), gaia::CanonicalizeEmail(display_email));
 
+  // There must not exist the user session for the user passed here.
+  CHECK(!controller_->GetUserSessionByAccountId(account_id)) << account_id;
+
   // Set is_ephemeral in user_info to true if the user type is guest or public
   // account.
   bool is_ephemeral =
@@ -279,8 +282,6 @@ void TestSessionControllerClient::ShowMultiProfileLogin() {
   multi_profile_login_widget_->Show();
 }
 
-void TestSessionControllerClient::EmitAshInitialized() {}
-
 PrefService* TestSessionControllerClient::GetSigninScreenPrefService() {
   return prefs_provider_->GetSigninPrefs();
 }
@@ -336,13 +337,6 @@ void TestSessionControllerClient::MaybeNotifyFirstSessionReady() {
     first_session_ready_fired_ = true;
     controller_->NotifyFirstSessionReady();
   }
-}
-
-void TestSessionControllerClient::NotifyUserPrefServiceInitialized(
-    const AccountId& account_id) {
-  CHECK(controller_->IsActiveUserSessionStarted());
-  controller_->OnProfilePrefServiceInitialized(
-      account_id, prefs_provider_->GetUserPrefs(account_id));
 }
 
 }  // namespace ash

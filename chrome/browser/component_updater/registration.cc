@@ -4,7 +4,6 @@
 
 #include "chrome/browser/component_updater/registration.h"
 
-#include "afp_blocked_domain_list_component_installer.h"
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
@@ -13,58 +12,47 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/path_service.h"
 #include "base/task/thread_pool.h"
-#include "build/branding_buildflags.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/buildflags.h"
+#include "chrome/browser/component_updater/ai_embeddings_component_installer.h"
 #include "chrome/browser/component_updater/app_provisioning_component_installer.h"
+#include "chrome/browser/component_updater/captcha_provider_component_installer.h"
 #include "chrome/browser/component_updater/chrome_origin_trials_component_installer.h"
 #include "chrome/browser/component_updater/commerce_heuristics_component_installer.h"
-#include "chrome/browser/component_updater/cookie_readiness_list_component_installer.h"
 #include "chrome/browser/component_updater/crl_set_component_installer.h"
 #include "chrome/browser/component_updater/crowd_deny_component_installer.h"
-#include "chrome/browser/component_updater/desktop_sharing_hub_component_remover.h"
 #include "chrome/browser/component_updater/first_party_sets_component_installer.h"
 #include "chrome/browser/component_updater/hyphenation_component_installer.h"
-#include "chrome/browser/component_updater/masked_domain_list_component_installer.h"
+#include "chrome/browser/component_updater/indigo_component_installer.h"
 #include "chrome/browser/component_updater/mei_preload_component_installer.h"
-#include "chrome/browser/component_updater/open_cookie_database_component_installer.h"
 #include "chrome/browser/component_updater/pki_metadata_component_installer.h"
-#include "chrome/browser/component_updater/pnacl_component_installer.h"
+#include "chrome/browser/component_updater/platform_runtime_component_installer.h"
 #include "chrome/browser/component_updater/privacy_sandbox_attestations_component_installer.h"
-#include "chrome/browser/component_updater/probabilistic_reveal_token_component_installer.h"
+#include "chrome/browser/component_updater/private_verification_tokens_installer.h"
 #include "chrome/browser/component_updater/ssl_error_assistant_component_installer.h"
 #include "chrome/browser/component_updater/subresource_filter_component_installer.h"
-#include "chrome/browser/component_updater/tpcd_metadata_component_installer.h"
 #include "chrome/browser/component_updater/trust_token_key_commitments_component_installer.h"
 #include "chrome/browser/history_embeddings/history_embeddings_utils.h"
 #include "chrome/common/buildflags.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_paths.h"
+#include "chrome/common/pref_names.h"
+#include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/component_updater/component_updater_service.h"
-#include "components/component_updater/installer_policies/autofill_states_component_installer.h"
+#include "components/component_updater/installer_policies/actor_safety_lists_component_installer.h"
 #include "components/component_updater/installer_policies/history_search_strings_component_installer.h"
 #include "components/component_updater/installer_policies/on_device_head_suggest_component_installer.h"
 #include "components/component_updater/installer_policies/optimization_hints_component_installer.h"
-#include "components/component_updater/installer_policies/plus_address_blocklist_component_installer.h"
 #include "components/component_updater/installer_policies/safety_tips_component_installer.h"
-#include "components/nacl/common/buildflags.h"
+#include "components/on_device_translation/buildflags/buildflags.h"
+#include "components/optimization_guide/core/model_execution/model_execution_prefs.h"
+#include "components/optimization_guide/core/model_execution/model_execution_util.h"
+#include "components/prefs/pref_service.h"
 #include "components/safe_browsing/core/common/features.h"
-#include "components/services/on_device_translation/buildflags/buildflags.h"
 #include "device/vr/buildflags/buildflags.h"
-#include "ppapi/buildflags/buildflags.h"
 #include "third_party/widevine/cdm/buildflags.h"
 #include "ui/accessibility/accessibility_features.h"
-
-#if BUILDFLAG(IS_WIN)
-#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
-#include "chrome/browser/component_updater/third_party_module_list_component_installer_win.h"
-#endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING)
-#endif  // BUILDFLAG(IS_WIN)
-
-#if BUILDFLAG(IS_MAC)
-#include "chrome/browser/component_updater/recovery_component_installer.h"
-#endif  // BUILDFLAG(IS_MAC)
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
 #include "chrome/browser/component_updater/recovery_improved_component_installer.h"
@@ -77,6 +65,7 @@
 #endif  // BUILDFLAG(IS_ANDROID)
 
 #if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/component_updater/dictation_connector_component_installer.h"
 #include "chrome/browser/component_updater/iwa_key_distribution_component_installer.h"
 #include "chrome/browser/component_updater/zxcvbn_data_component_installer.h"
 #include "chrome/browser/resource_coordinator/tab_manager.h"
@@ -84,12 +73,10 @@
 #endif  // !BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(IS_CHROMEOS)
+#include "base/system/sys_info.h"
+#include "chrome/browser/apps/app_service/chrome_app_deprecation/chrome_app_deprecation.h"
 #include "chrome/browser/component_updater/smart_dim_component_installer.h"
 #endif  // BUILDFLAG(IS_CHROMEOS)
-
-#if BUILDFLAG(ENABLE_MEDIA_FOUNDATION_WIDEVINE_CDM)
-#include "chrome/browser/component_updater/media_foundation_widevine_cdm_component_installer.h"
-#endif
 
 #if BUILDFLAG(ENABLE_ON_DEVICE_TRANSLATION)
 #include "chrome/browser/component_updater/translate_kit_component_installer.h"
@@ -101,18 +88,14 @@
 #endif  // BUILDFLAG(ENABLE_WIDEVINE_CDM_COMPONENT)
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
-    BUILDFLAG(IS_CHROMEOS)
+    BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
 #include "components/component_updater/installer_policies/amount_extraction_heuristic_regexes_component_installer.h"
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) ||
-        // BUILDFLAG(IS_CHROMEOS)
+        // BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
 
 #if defined(USE_AURA)
 #include "ui/aura/env.h"
 #endif
-
-#if BUILDFLAG(IS_CHROMEOS)
-#include "chrome/browser/component_updater/lacros_component_remover.h"
-#endif  // BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 #include "chrome/browser/component_updater/wasm_tts_engine_component_installer.h"
@@ -124,75 +107,61 @@
 
 namespace component_updater {
 
+namespace {
+
+// Runs in the thread pool, may block.
+void DeleteOldComponents(const base::FilePath& user_data_dir) {
+  for (const base::FilePath::StringType& dir : {
+           FILE_PATH_LITERAL("DesktopSharingHub"),    // Remove in M146+
+           FILE_PATH_LITERAL("CookieReadinessList"),  // Remove in M146+
+           FILE_PATH_LITERAL("OpenCookieDatabase"),   // Remove in M146+
+           FILE_PATH_LITERAL("TpcdMetadata"),         // Remove in M147+
+           FILE_PATH_LITERAL(
+               "ProbabilisticRevealTokenRegistry"),  // Remove in M148+
+           FILE_PATH_LITERAL("AutofillStates"),      // Remove in M153+
+           FILE_PATH_LITERAL(
+               "Fingerprinting Protection Filter"),    // Remove in M156+
+           FILE_PATH_LITERAL("PlusAddressBlocklist"),  // Remove in M158+
+#if BUILDFLAG(IS_CHROMEOS)
+           // TODO(crbug.com/380780352): Remove these after the stepping stone.
+           FILE_PATH_LITERAL("lacros-dogfood-canary"),
+           FILE_PATH_LITERAL("lacros-dogfood-dev"),
+           FILE_PATH_LITERAL("lacros-dogfood-beta"),
+           FILE_PATH_LITERAL("lacros-dogfood-stable"),
+#endif  // BUILDFLAG(IS_CHROMEOS)
+       }) {
+    base::DeletePathRecursively(user_data_dir.Append(dir));
+  }
+}
+
+}  // namespace
+
 void RegisterComponentsForUpdate() {
   auto* const cus = g_browser_process->component_updater();
 
-#if BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
   RegisterRecoveryImprovedComponent(cus, g_browser_process->local_state());
-#endif  // BUILDFLAG(IS_WIN)
-
-#if BUILDFLAG(IS_MAC)
-  RegisterRecoveryImprovedComponent(cus, g_browser_process->local_state());
-  RegisterRecoveryComponent(cus, g_browser_process->local_state());
-#endif  // BUILDFLAG(IS_MAC)
-
-#if BUILDFLAG(ENABLE_MEDIA_FOUNDATION_WIDEVINE_CDM)
-  RegisterMediaFoundationWidevineCdmComponent(cus);
-#endif
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
 
 #if BUILDFLAG(ENABLE_WIDEVINE_CDM_COMPONENT)
   RegisterWidevineCdmComponent(cus);
 #endif  // BUILDFLAG(ENABLE_WIDEVINE_CDM_COMPONENT)
-
-#if BUILDFLAG(ENABLE_NACL) && !BUILDFLAG(IS_ANDROID)
-#if BUILDFLAG(IS_CHROMEOS)
-  // PNaCl on Chrome OS is on rootfs and there is no need to download it. But
-  // Chrome4ChromeOS on Linux doesn't contain PNaCl so enable component
-  // installer when running on Linux. See crbug.com/422121 for more details.
-  if (!base::SysInfo::IsRunningOnChromeOS()) {
-#endif  // BUILDFLAG(IS_CHROMEOS)
-    RegisterPnaclComponent(cus);
-#if BUILDFLAG(IS_CHROMEOS)
-  }
-#endif  // BUILDFLAG(IS_CHROMEOS)
-#endif  // BUILDFLAG(ENABLE_NACL) && !BUILDFLAG(IS_ANDROID)
 
   RegisterSubresourceFilterComponent(cus);
   RegisterOnDeviceHeadSuggestComponent(
       cus, g_browser_process->GetApplicationLocale());
   RegisterOptimizationHintsComponent(cus);
   RegisterTrustTokenKeyCommitmentsComponentIfTrustTokensEnabled(cus);
+  RegisterPrivateVerificationTokensComponentIfEnabled(cus);
   RegisterFirstPartySetsComponent(cus);
-  RegisterMaskedDomainListComponent(cus);
   RegisterPrivacySandboxAttestationsComponent(cus);
-  RegisterAntiFingerprintingBlockedDomainListComponent(cus);
+  RegisterActorSafetyListsComponent(cus, base::OnceClosure());
   if (history_embeddings::IsHistoryEmbeddingsFeatureEnabled()) {
     RegisterHistorySearchStringsComponent(cus);
   }
-
-  base::FilePath path;
-  if (base::PathService::Get(chrome::DIR_USER_DATA, &path)) {
-    // Clean up any remaining desktop sharing hub state.
-    component_updater::DeleteDesktopSharingHub(path);
-
-    if (!history_embeddings::IsHistoryEmbeddingsFeatureEnabled()) {
-      DeleteHistorySearchStringsComponent(path);
-    }
-
-#if BUILDFLAG(IS_CHROMEOS)
-    // Lacros is sunsetted. While rootfs Lacros was already taken care of,
-    // stateful Lacros needs to be cleaned up just like a regular component.
-    // TODO(crbug.com/380780352): Remove this after the stepping stone.
-    component_updater::DeleteStatefulLacros(path);
-#endif  // BUILDFLAG(IS_CHROMEOS)
-
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
-    // NaCl and PNaCl are no longer supported on Windows and Mac, clean up
-    // remaining component.
-    DeletePnaclComponent(path);
-#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
-  }
   RegisterSSLErrorAssistantComponent(cus);
+
+  RegisterIndigoComponent(cus);
 
 #if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
   RegisterFileTypePoliciesComponent(cus);
@@ -208,10 +177,6 @@ void RegisterComponentsForUpdate() {
   RegisterOriginTrialsComponent(cus);
   RegisterMediaEngagementPreloadComponent(cus, base::OnceClosure());
 
-#if BUILDFLAG(IS_WIN) && BUILDFLAG(GOOGLE_CHROME_BRANDING)
-  RegisterThirdPartyModuleListComponent(cus);
-#endif  // BUILDFLAG(IS_WIN) && BUILDFLAG(GOOGLE_CHROME_BRANDING)
-
   MaybeRegisterPKIMetadataComponent(cus);
 
   RegisterSafetyTipsComponent(cus);
@@ -220,13 +185,15 @@ void RegisterComponentsForUpdate() {
 #if BUILDFLAG(IS_CHROMEOS)
   RegisterSmartDimComponent(cus);
   RegisterAppProvisioningComponent(cus);
-#endif  // !BUILDFLAG(IS_CHROMEOS)
+  apps::chrome_app_deprecation::RegisterAllowlistComponentUpdater(cus);
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(USE_MINIKIN_HYPHENATION) && !BUILDFLAG(IS_ANDROID)
   RegisterHyphenationComponent(cus);
 #endif
 
 #if !BUILDFLAG(IS_ANDROID)
+  RegisterDictationConnectorComponent(cus);
   RegisterIwaKeyDistributionComponent(cus);
   RegisterZxcvbnDataComponent(cus);
 #endif  // !BUILDFLAG(IS_ANDROID)
@@ -235,44 +202,50 @@ void RegisterComponentsForUpdate() {
   RegisterRealTimeUrlChecksAllowlistComponent(cus);
 #endif  // BUIDLFLAG(IS_ANDROID)
 
-  RegisterAutofillStatesComponent(cus, g_browser_process->local_state());
-
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_CHROMEOS)
   ManageScreenAIComponentRegistration(cus, g_browser_process->local_state());
 #endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_CHROMEOS)
 
   RegisterCommerceHeuristicsComponent(cus);
 
-  RegisterTpcdMetadataComponent(cus);
-
-  RegisterPlusAddressBlocklistComponent(cus);
-
 #if BUILDFLAG(ENABLE_ON_DEVICE_TRANSLATION)
   // TODO(crbug.com/364795294): Support other platforms.
   RegisterTranslateKitComponent(cus, g_browser_process->local_state(),
                                 /*force_install=*/false,
-                                /*registered_callback=*/base::OnceClosure());
+                                /*registered_callback=*/base::OnceClosure(),
+                                /*on_ready_callback=*/base::DoNothing());
   RegisterTranslateKitLanguagePackComponentsForUpdate(
+      cus, g_browser_process->local_state());
+  RegisterTranslateKitLanguagePackComponentsForAutoDownload(
       cus, g_browser_process->local_state());
 #endif  // BUILDFLAG(ENABLE_ON_DEVICE_TRANSLATION)
 
-  RegisterOpenCookieDatabaseComponent(cus);
-
-  RegisterCookieReadinessListComponent(cus);
-
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
-    BUILDFLAG(IS_CHROMEOS)
+    BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
   RegisterAmountExtractionHeuristicRegexesComponent(cus);
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) ||
-        // BUILDFLAG(IS_CHROMEOS)
+        // BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
-  if (features::IsWasmTtsComponentUpdaterEnabled()) {
-    RegisterWasmTtsEngineComponent(cus);
-  }
+  RegisterWasmTtsEngineComponent(cus, g_browser_process->local_state());
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
-  RegisterProbabilisticRevealTokenComponent(cus);
+  RegisterCaptchaProviderComponent(cus);
+
+  MaybeRegisterPlatformRuntimeComponent(cus);
+
+  base::FilePath path;
+  if (base::PathService::Get(chrome::DIR_USER_DATA, &path)) {
+    ManageAIEmbeddingsComponentRegistration(cus,
+                                            g_browser_process->local_state());
+
+    if (!history_embeddings::IsHistoryEmbeddingsFeatureEnabled()) {
+      DeleteHistorySearchStringsComponent(path);
+    }
+    base::ThreadPool::PostTask(
+        FROM_HERE, {base::TaskPriority::BEST_EFFORT, base::MayBlock()},
+        base::BindOnce(&DeleteOldComponents, path));
+  }
 }
 
 }  // namespace component_updater

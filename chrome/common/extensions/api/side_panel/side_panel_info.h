@@ -15,6 +15,8 @@ namespace extensions {
 
 // Structured contents of the "side_panel" key.
 struct SidePanelInfo : public Extension::ManifestData {
+  static const char* kManifestDataKey;
+
   SidePanelInfo();
   ~SidePanelInfo() override;
 
@@ -39,7 +41,7 @@ class SidePanelManifestHandler : public ManifestHandler {
 
   bool Parse(Extension* extension, std::u16string* error) override;
 
-  bool Validate(const Extension* extension,
+  bool Validate(const Extension& extension,
                 std::string* error,
                 std::vector<InstallWarning>* warnings) const override;
 

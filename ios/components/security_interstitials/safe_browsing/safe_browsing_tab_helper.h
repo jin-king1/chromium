@@ -62,6 +62,12 @@ class SafeBrowsingTabHelper
   // Tells delegate to show enhanced safe browsing promo.
   void ShowEnhancedSafeBrowsingInfobar();
 
+  // Reports a security interstitial shown event to the enterprise reporting
+  // service.
+  static void ReportSecurityInterstitialShown(
+      web::WebState* web_state,
+      const security_interstitials::UnsafeResource& resource);
+
  private:
   friend class web::WebStateUserData<SafeBrowsingTabHelper>;
 
@@ -126,18 +132,22 @@ class SafeBrowsingTabHelper
     // a server redirect of the previous main frame query.
     void UpdateForMainFrameServerRedirect();
 
+    SafeBrowsingClient* client() const { return client_; }
+
    private:
     // Represents a single Safe Browsing query URL, along with the corresponding
     // decision once it's received, the callback to invoke once the decision
     // is known, and tracks if the async or sync check for the respective query
     // is complete.
     struct MainFrameUrlQuery {
-      explicit MainFrameUrlQuery(const GURL& url);
+      explicit MainFrameUrlQuery(const GURL& url,
+                                 const std::string& http_method);
       MainFrameUrlQuery(MainFrameUrlQuery&& query);
       MainFrameUrlQuery& operator=(MainFrameUrlQuery&& other);
       ~MainFrameUrlQuery();
 
       GURL url;
+      std::string http_method;
       std::optional<web::WebStatePolicyDecider::PolicyDecision> decision;
       web::WebStatePolicyDecider::PolicyDecisionCallback response_callback;
       bool sync_check_complete = false;
@@ -260,8 +270,8 @@ class SafeBrowsingTabHelper
     // `to_be_committed_redirect_chain_`.
     void UpdateToBeCommittedRedirectChain();
 
-    // The URL check query manager.
-    raw_ptr<SafeBrowsingQueryManager> query_manager_;
+    // The associated web state.
+    raw_ptr<web::WebState> web_state_;
     // The safe browsing client.
     raw_ptr<SafeBrowsingClient> client_ = nullptr;
     // The pending query for the main frame navigation, if any.
@@ -339,8 +349,6 @@ class SafeBrowsingTabHelper
   QueryObserver query_observer_;
   NavigationObserver navigation_observer_;
   __weak id<SafeBrowsingTabHelperDelegate> delegate_ = nil;
-
-  WEB_STATE_USER_DATA_KEY_DECL();
 };
 
 #endif  // IOS_COMPONENTS_SECURITY_INTERSTITIALS_SAFE_BROWSING_SAFE_BROWSING_TAB_HELPER_H_

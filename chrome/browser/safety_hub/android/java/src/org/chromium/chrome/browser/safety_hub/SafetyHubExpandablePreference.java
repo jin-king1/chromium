@@ -6,7 +6,9 @@ package org.chromium.chrome.browser.safety_hub;
 
 import android.content.Context;
 import android.graphics.drawable.Drawable;
+import android.text.SpannableString;
 import android.text.TextUtils;
+import android.text.method.LinkMovementMethod;
 import android.util.AttributeSet;
 import android.view.View;
 import android.view.View.AccessibilityDelegate;
@@ -15,21 +17,24 @@ import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 
-import androidx.annotation.Nullable;
 import androidx.preference.PreferenceViewHolder;
 
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.components.browser_ui.settings.ChromeBasePreference;
+import org.chromium.components.browser_ui.settings.ExpandablePreferenceAccessibilityDelegate;
 import org.chromium.components.browser_ui.settings.SettingsUtils;
 import org.chromium.ui.widget.ButtonCompat;
 import org.chromium.ui.widget.CheckableImageView;
 
+@NullMarked
 public class SafetyHubExpandablePreference extends ChromeBasePreference {
-    private String mPrimaryButtonText;
-    private String mSecondaryButtonText;
-    private View.OnClickListener mPrimaryButtonClickListener;
-    private View.OnClickListener mSecondaryButtonClickListener;
+    private @Nullable String mPrimaryButtonText;
+    private @Nullable String mSecondaryButtonText;
+    private View.@Nullable OnClickListener mPrimaryButtonClickListener;
+    private View.@Nullable OnClickListener mSecondaryButtonClickListener;
     private boolean mExpanded = true;
-    private Drawable mDrawable;
+    private @Nullable Drawable mDrawable;
     private boolean mHasProgressBar;
 
     public SafetyHubExpandablePreference(Context context, AttributeSet attrs) {
@@ -92,9 +97,30 @@ public class SafetyHubExpandablePreference extends ChromeBasePreference {
 
         TextView summary = (TextView) holder.findViewById(android.R.id.summary);
         assert summary != null;
-        summary.setVisibility(getSummary() != null && isExpanded() ? View.VISIBLE : View.GONE);
+        CharSequence summaryStr = getSummary();
+        summary.setVisibility(summaryStr != null && isExpanded() ? View.VISIBLE : View.GONE);
 
-        updatePreferenceContentDescription(holder.itemView);
+        if (summaryStr instanceof SpannableString) {
+            summary.setMovementMethod(LinkMovementMethod.getInstance());
+        }
+
+        View container = holder.itemView;
+        int bottomPadding =
+                getContext()
+                        .getResources()
+                        .getDimensionPixelSize(
+                                R.dimen.safety_hub_expandable_preference_vertical_padding);
+        // remove any additional bottom padding in expanded view
+        if (isExpanded()) {
+            bottomPadding = 0;
+        }
+        container.setPadding(
+                container.getPaddingStart(),
+                container.getPaddingTop(),
+                container.getPaddingEnd(),
+                bottomPadding);
+
+        updatePreferenceAccessibility(container, title);
     }
 
     @Override
@@ -126,32 +152,29 @@ public class SafetyHubExpandablePreference extends ChromeBasePreference {
         }
     }
 
-    void setPrimaryButtonClickListener(@Nullable View.OnClickListener clickListener) {
+    void setPrimaryButtonClickListener(View.@Nullable OnClickListener clickListener) {
         if (mPrimaryButtonClickListener != clickListener) {
             mPrimaryButtonClickListener = clickListener;
             this.notifyChanged();
         }
     }
 
-    void setSecondaryButtonClickListener(@Nullable View.OnClickListener clickListener) {
+    void setSecondaryButtonClickListener(View.@Nullable OnClickListener clickListener) {
         if (mSecondaryButtonClickListener != clickListener) {
             mSecondaryButtonClickListener = clickListener;
             this.notifyChanged();
         }
     }
 
-    @Nullable
-    String getPrimaryButtonText() {
+    @Nullable String getPrimaryButtonText() {
         return mPrimaryButtonText;
     }
 
-    @Nullable
-    String getSecondaryButtonText() {
+    @Nullable String getSecondaryButtonText() {
         return mSecondaryButtonText;
     }
 
-    @Nullable
-    View.OnClickListener getPrimaryButtonClickListener() {
+    View.@Nullable OnClickListener getPrimaryButtonClickListener() {
         return mPrimaryButtonClickListener;
     }
 
@@ -161,23 +184,8 @@ public class SafetyHubExpandablePreference extends ChromeBasePreference {
         setIconSpaceReserved(hasProgressBar);
     }
 
-    private void updatePreferenceContentDescription(View view) {
-        // For accessibility, read out the whole title and whether the group is collapsed/expanded.
-        String collapseOrExpandedText =
-                getContext()
-                        .getString(
-                                mExpanded
-                                        ? R.string.accessibility_expanded_group
-                                        : R.string.accessibility_collapsed_group);
-
-        String description =
-                getContext()
-                        .getString(
-                                R.string.concat_two_strings_with_periods,
-                                getTitle(),
-                                collapseOrExpandedText);
-
-        view.setContentDescription(description);
+    private void updatePreferenceAccessibility(View view, @Nullable View titleView) {
+        ExpandablePreferenceAccessibilityDelegate.apply(this, view, titleView, this::isExpanded);
     }
 
     private AccessibilityDelegate createButtonAccessibilityDelegate(View labelView) {

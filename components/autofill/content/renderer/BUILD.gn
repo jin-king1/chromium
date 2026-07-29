@@ -19,6 +19,8 @@ static_library("renderer") {
     "html_based_username_detector.cc",
     "html_based_username_detector.h",
     "html_based_username_detector_vocabulary.h",
+    "javascript_autofill_tracker.cc",
+    "javascript_autofill_tracker.h",
     "page_form_analyser_logger.cc",
     "page_form_analyser_logger.h",
     "page_passwords_analyser.cc",
@@ -46,8 +48,10 @@ static_library("renderer") {
     "//base:i18n",
     "//components/autofill/content/common/mojom",
     "//components/autofill/core/common:autofill_regex",
-    "//components/password_manager/core/common:common",
+    "//components/password_manager/core/common",
     "//components/safe_browsing:buildflags",
+    "//components/signin/public/base:signin_buildflags",
+    "//components/signin/public/base:signin_switches",
     "//components/strings",
     "//content/public/common",
     "//content/public/renderer",
@@ -74,6 +78,7 @@ static_library("test_support") {
     "focus_test_utils.cc",
     "focus_test_utils.h",
     "form_tracker_test_api.h",
+    "javascript_autofill_tracker_test_api.h",
     "test_password_autofill_agent.cc",
     "test_password_autofill_agent.h",
     "test_utils.cc",
@@ -126,6 +131,7 @@ source_set("browser_tests") {
     "form_cache_browsertest.cc",
     "form_tracker_browsertest.cc",
     "html_based_username_detector_browsertest.cc",
+    "javascript_autofill_tracker_browsertest.cc",
     "password_form_conversion_utils_browsertest.cc",
   ]
 
@@ -137,9 +143,13 @@ source_set("browser_tests") {
     "//components/autofill/core/common",
     "//components/autofill/core/common:test_support",
     "//content/public/renderer",
-    "//google_apis:google_apis",
+    "//google_apis",
     "//testing/gmock",
     "//testing/gtest",
     "//third_party/blink/public:blink",
   ]
+
+  if (is_ios) {
+    deps += [ "//components/test:dom_label_test_bundle_data" ]
+  }
 }

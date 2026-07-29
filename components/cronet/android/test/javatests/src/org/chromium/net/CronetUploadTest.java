@@ -16,7 +16,7 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import org.chromium.base.test.util.DoNotBatch;
-import org.chromium.net.CronetTestRule.CronetImplementation;
+import org.chromium.net.CronetTestFramework.CronetImplementation;
 import org.chromium.net.CronetTestRule.IgnoreFor;
 import org.chromium.net.impl.CronetUploadDataStream;
 import org.chromium.net.impl.CronetUrlRequest;
@@ -172,6 +172,10 @@ public class CronetUploadTest {
     @Test
     @SmallTest
     public void testReadCompleteTriggerRewind() throws Exception {
+        testReadCompleteTriggerRewindImpl();
+    }
+
+    private void testReadCompleteTriggerRewindImpl() throws Exception {
         // Reset and init before read completes.
         assertThat(mHandler.init()).isTrue();
         mHandler.read();
@@ -206,7 +210,7 @@ public class CronetUploadTest {
     @Test
     @SmallTest
     public void testReadCompleteTriggerRewindOnlyOneRewind() throws Exception {
-        testReadCompleteTriggerRewind();
+        testReadCompleteTriggerRewindImpl();
         // Reset and Init again, no rewind should happen.
         mHandler.reset();
         assertThat(mHandler.init()).isTrue();

@@ -20,6 +20,7 @@
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
 #include "third_party/blink/renderer/platform/heap/persistent.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/testing/blink_fuzzer_test_support.h"
 #include "third_party/blink/renderer/platform/testing/task_environment.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
@@ -28,21 +29,21 @@
 
 namespace blink {
 
-String MediaKeysRequirementToString(
+V8MediaKeysRequirement::Enum MediaKeysRequirementToIdlEnum(
     mc_fuzzer::MediaConfigProto_KeySystemConfig_MediaKeysRequirement
         proto_requirement) {
   switch (proto_requirement) {
     case mc_fuzzer::
         MediaConfigProto_KeySystemConfig_MediaKeysRequirement_REQUIRED:
-      return "required";
+      return V8MediaKeysRequirement::Enum::kRequired;
     case mc_fuzzer::
         MediaConfigProto_KeySystemConfig_MediaKeysRequirement_NOT_REQUIRED:
-      return "optional";
+      return V8MediaKeysRequirement::Enum::kOptional;
     case mc_fuzzer::
         MediaConfigProto_KeySystemConfig_MediaKeysRequirement_NOT_ALLOWED:
-      return "not-allowed";
+      return V8MediaKeysRequirement::Enum::kNotAllowed;
   }
-  return "";
+  NOTREACHED();
 }
 
 Vector<String> MediaSessionTypeToVector(
@@ -65,9 +66,8 @@ Vector<String> MediaSessionTypeToVector(
   return result;
 }
 
-template <class T>
-T* MakeConfiguration(const mc_fuzzer::MediaConfigProto& proto) {
-  Persistent<T> config = T::Create();
+void AddMediaConfiguration(const mc_fuzzer::MediaConfigProto& proto,
+                           MediaConfiguration* config) {
   if (proto.has_video()) {
     config->setVideo(VideoConfiguration::Create());
     config->video()->setContentType(proto.video().content_type().c_str());
@@ -87,36 +87,36 @@ T* MakeConfiguration(const mc_fuzzer::MediaConfigProto& proto) {
     config->audio()->setBitrate(proto.audio().bitrate());
     config->audio()->setSamplerate(proto.audio().samplerate());
   }
-
-  switch (proto.type()) {
-    case mc_fuzzer::MediaConfigProto_MediaType_DECODING_FILE:
-      config->setType("file");
-      break;
-    case mc_fuzzer::MediaConfigProto_MediaType_DECODING_MEDIA_SOURCE:
-      config->setType("media-source");
-      break;
-    case mc_fuzzer::MediaConfigProto_MediaType_DECODING_WEBRTC:
-    case mc_fuzzer::MediaConfigProto_MediaType_ENCODING_WEBRTC:
-      config->setType("webrtc");
-      break;
-  }
-  return config;
 }
 
 void AddDecodingSpecificConfiguration(const mc_fuzzer::MediaConfigProto& proto,
                                       MediaDecodingConfiguration* config) {
+  switch (proto.type()) {
+    case mc_fuzzer::MediaConfigProto_MediaType_DECODING_FILE:
+      config->setType(V8MediaDecodingType::Enum::kFile);
+      break;
+    case mc_fuzzer::MediaConfigProto_MediaType_DECODING_MEDIA_SOURCE:
+      config->setType(V8MediaDecodingType::Enum::kMediaSource);
+      break;
+    case mc_fuzzer::MediaConfigProto_MediaType_DECODING_WEBRTC:
+      config->setType(V8MediaDecodingType::Enum::kWebrtc);
+      break;
+    case mc_fuzzer::MediaConfigProto_MediaType_ENCODING_WEBRTC:
+      NOTREACHED();
+  }
+
   if (proto.has_key_system_config()) {
     config->setKeySystemConfiguration(
         MediaCapabilitiesKeySystemConfiguration::Create());
     config->keySystemConfiguration()->setKeySystem(
-        String::FromUTF8(proto.key_system_config().key_system().c_str()));
+        String::FromUtf8(proto.key_system_config().key_system()));
     config->keySystemConfiguration()->setInitDataType(
-        String::FromUTF8(proto.key_system_config().init_data_type().c_str()));
+        String::FromUtf8(proto.key_system_config().init_data_type()));
     config->keySystemConfiguration()->setDistinctiveIdentifier(
-        MediaKeysRequirementToString(
+        MediaKeysRequirementToIdlEnum(
             proto.key_system_config().distinctive_identifier()));
     config->keySystemConfiguration()->setPersistentState(
-        MediaKeysRequirementToString(
+        MediaKeysRequirementToIdlEnum(
             proto.key_system_config().persistent_state()));
     config->keySystemConfiguration()->setSessionTypes(
         MediaSessionTypeToVector(proto.key_system_config().session_types()));
@@ -124,21 +124,48 @@ void AddDecodingSpecificConfiguration(const mc_fuzzer::MediaConfigProto& proto,
     if (proto.key_system_config().has_key_system_audio_config()) {
       config->keySystemConfiguration()->setAudio(
           KeySystemTrackConfiguration::Create());
-      config->keySystemConfiguration()->audio()->setRobustness(
-          String::FromUTF8(proto.key_system_config()
-                               .key_system_audio_config()
-                               .robustness()
-                               .c_str()));
+      config->keySystemConfiguration()->audio()->setRobustness(String::FromUtf8(
+          proto.key_system_config().key_system_audio_config().robustness()));
+      if (RuntimeEnabledFeatures::
+              KeySystemTrackConfigurationEncryptionSchemeEnabled() &&
+          proto.key_system_config()
+              .key_system_audio_config()
+              .has_encryption_scheme()) {
+        config->keySystemConfiguration()->audio()->setEncryptionScheme(
+            String::FromUtf8(proto.key_system_config()
+                                 .key_system_audio_config()
+                                 .encryption_scheme()));
+      }
     }
     if (proto.key_system_config().has_key_system_video_config()) {
       config->keySystemConfiguration()->setVideo(
           KeySystemTrackConfiguration::Create());
-      config->keySystemConfiguration()->video()->setRobustness(
-          String::FromUTF8(proto.key_system_config()
-                               .key_system_video_config()
-                               .robustness()
-                               .c_str()));
+      config->keySystemConfiguration()->video()->setRobustness(String::FromUtf8(
+          proto.key_system_config().key_system_video_config().robustness()));
+      if (RuntimeEnabledFeatures::
+              KeySystemTrackConfigurationEncryptionSchemeEnabled() &&
+          proto.key_system_config()
+              .key_system_video_config()
+              .has_encryption_scheme()) {
+        config->keySystemConfiguration()->video()->setEncryptionScheme(
+            String::FromUtf8(proto.key_system_config()
+                                 .key_system_video_config()
+                                 .encryption_scheme()));
+      }
     }
+  }
+}
+
+void AddEncodingSpecificConfiguration(const mc_fuzzer::MediaConfigProto& proto,
+                                      MediaEncodingConfiguration* config) {
+  switch (proto.type()) {
+    case mc_fuzzer::MediaConfigProto_MediaType_ENCODING_WEBRTC:
+      config->setType(V8MediaEncodingType::Enum::kWebrtc);
+      break;
+    case mc_fuzzer::MediaConfigProto_MediaType_DECODING_FILE:
+    case mc_fuzzer::MediaConfigProto_MediaType_DECODING_MEDIA_SOURCE:
+    case mc_fuzzer::MediaConfigProto_MediaType_DECODING_WEBRTC:
+      NOTREACHED();
   }
 }
 
@@ -159,13 +186,16 @@ DEFINE_TEXT_PROTO_FUZZER(const mc_fuzzer::MediaConfigProto& proto) {
     case mc_fuzzer::MediaConfigProto_MediaType_DECODING_FILE:
     case mc_fuzzer::MediaConfigProto_MediaType_DECODING_MEDIA_SOURCE:
     case mc_fuzzer::MediaConfigProto_MediaType_DECODING_WEBRTC: {
-      auto* config = MakeConfiguration<MediaDecodingConfiguration>(proto);
+      auto* config = MediaDecodingConfiguration::Create();
+      AddMediaConfiguration(proto, config);
       AddDecodingSpecificConfiguration(proto, config);
       media_capabilities->decodingInfo(script_state, config,
                                        IGNORE_EXCEPTION_FOR_TESTING);
     } break;
     case mc_fuzzer::MediaConfigProto_MediaType_ENCODING_WEBRTC: {
-      auto* config = MakeConfiguration<MediaEncodingConfiguration>(proto);
+      auto* config = MediaEncodingConfiguration::Create();
+      AddMediaConfiguration(proto, config);
+      AddEncodingSpecificConfiguration(proto, config);
       media_capabilities->encodingInfo(script_state, config,
                                        IGNORE_EXCEPTION_FOR_TESTING);
     } break;

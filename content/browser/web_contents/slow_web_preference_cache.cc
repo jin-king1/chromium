@@ -22,7 +22,7 @@
 #elif BUILDFLAG(IS_ANDROID)
 #include "ui/base/device_form_factor.h"
 #include "ui/events/devices/input_device_observer_android.h"
-#elif BUILDFLAG(IS_IOS) && BUILDFLAG(USE_BLINK)
+#elif BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_IOS_TVOS) && BUILDFLAG(USE_BLINK)
 #include "ui/events/devices/input_device_observer_ios.h"
 #endif
 
@@ -61,7 +61,7 @@ SlowWebPreferenceCache::SlowWebPreferenceCache() {
   ui::DeviceDataManager::GetInstance()->AddObserver(this);
 #elif BUILDFLAG(IS_ANDROID)
   ui::InputDeviceObserverAndroid::GetInstance()->AddObserver(this);
-#elif BUILDFLAG(IS_IOS) && BUILDFLAG(USE_BLINK)
+#elif BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_IOS_TVOS) && BUILDFLAG(USE_BLINK)
   ui::InputDeviceObserverIOS::GetInstance()->AddObserver(this);
 #endif
 }
@@ -73,7 +73,7 @@ SlowWebPreferenceCache::~SlowWebPreferenceCache() {
   ui::DeviceDataManager::GetInstance()->RemoveObserver(this);
 #elif BUILDFLAG(IS_ANDROID)
   ui::InputDeviceObserverAndroid::GetInstance()->RemoveObserver(this);
-#elif BUILDFLAG(IS_IOS) && BUILDFLAG(USE_BLINK)
+#elif BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_IOS_TVOS) && BUILDFLAG(USE_BLINK)
   ui::InputDeviceObserverIOS::GetInstance()->RemoveObserver(this);
 #endif
 }
@@ -125,7 +125,7 @@ void SlowWebPreferenceCache::OnInputDeviceConfigurationChanged(uint8_t) {
   }
 }
 
-void SlowWebPreferenceCache::OnGpuSwitched(gl::GpuPreference) {
+void SlowWebPreferenceCache::OnGpuSwitched() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (Update()) {
     observers_.Notify(
@@ -178,10 +178,10 @@ bool SlowWebPreferenceCache::Update() {
 
   std::tie(available_pointer_types_, available_hover_types_) =
       GetAvailablePointerAndHoverTypes();
-  primary_pointer_type_ = static_cast<blink::mojom::PointerType>(
-      ui::GetPrimaryPointerType(available_pointer_types_));
-  primary_hover_type_ = static_cast<blink::mojom::HoverType>(
-      ui::GetPrimaryHoverType(available_hover_types_));
+  primary_pointer_type_ =
+      static_cast<blink::mojom::PointerType>(ui::GetPrimaryPointerType());
+  primary_hover_type_ =
+      static_cast<blink::mojom::HoverType>(ui::GetPrimaryHoverType());
 
   pointer_events_max_touch_points_ = ui::MaxTouchPoints();
 

@@ -3,11 +3,25 @@
 // found in the LICENSE file.
 
 // <if expr="enable_pdf_ink2">
+type Typeface = chrome.pdfViewerPrivate.Typeface;
+
+export enum AnnotationMode {
+  OFF = 'off',
+  DRAW = 'draw',
+  TEXT = 'text',
+}
+
 // The different types of annotation brushes.
 export enum AnnotationBrushType {
   ERASER = 'eraser',
   HIGHLIGHTER = 'highlighter',
   PEN = 'pen',
+}
+
+export enum TextAnnotationSource {
+  USER = 'user',
+  UNDO = 'undo',
+  REDO = 'redo',
 }
 
 export interface Color {
@@ -23,7 +37,79 @@ export interface AnnotationBrush {
   color?: Color;
   size?: number;
 }
-// </if>
+
+export interface TextAnnotation {
+  id: number;
+  // Stored because the backend requires it to be re-sent with every update.
+  // Not used by frontend code.
+  mojoTextInfo: ArrayBuffer;
+  pageIndex: number;
+  // Zoom level at TextAnnotation creation time. Stored for use by the backend
+  // on every update. Not used by frontend code.
+  pdfZoom: number;
+  text: string;
+  textAttributes: TextAttributes;
+  // Location of the text box relative to the top left corner of the page
+  // specified by pageIndex. This rect is in screen coordinates in the UI,
+  // and is in page coordinates when this annotation is sent or received in
+  // a message to/from the plugin.
+  textBoxRect: TextBoxRect;
+  // Orientation of the text in the box relative to the PDF page, in number of
+  // clockwise rotations from 0 to 3.
+  textOrientation: number;
+  // Orientation of the viewport when the annotation was committed, in number of
+  // clockwise rotations from 0 to 3.
+  viewportOrientation: number;
+}
+
+export interface TextAnnotationMessageData extends TextAnnotation {
+  isEdited: boolean;
+  // Serialized SkTypeface font data that the backend needs. Only contains
+  // fonts that the backend has never seen before.
+  newTypefaces: Typeface[];
+  source: TextAnnotationSource;
+}
+
+// LINT.IfChange(TextAlignment)
+export enum TextAlignment {
+  LEFT = 'left',
+  CENTER = 'center',
+  RIGHT = 'right',
+}
+// LINT.ThenChange(//pdf/pdf_ink_text.h:TextAlignment)
+
+export enum TextStyle {
+  BOLD = 'bold',
+  ITALIC = 'italic',
+}
+
+// LINT.IfChange(TextTypeface)
+export enum TextTypeface {
+  SANS_SERIF = 'sans-serif',
+  SERIF = 'serif',
+  MONOSPACE = 'monospace',
+}
+// LINT.ThenChange(//pdf/pdf_ink_text.h:TextTypeface)
+
+export type TextStyles = {
+  [key in TextStyle]: boolean
+};
+
+export interface TextAttributes {
+  typeface: TextTypeface;
+  size: number;
+  color: Color;
+  alignment: TextAlignment;
+  styles: TextStyles;
+}
+
+export interface TextBoxRect {
+  height: number;
+  locationX: number;
+  locationY: number;
+  width: number;
+}
+// </if> enable_pdf_ink2
 
 export interface Attachment {
   name: string;
@@ -80,20 +166,13 @@ export interface NamedDestinationMessageData {
   namedDestinationView?: string;
 }
 
-/**
- * Enumeration of save message request types. Must match `SaveRequestType` in
- * pdf/pdf_view_web_plugin.h.
- */
-export enum SaveRequestType {
-  ANNOTATION,
-  ORIGINAL,
-  EDITED,
-  SEARCHIFIED,  // Saves the PDF with extracted text.
-}
-
 export interface Point {
   x: number;
   y: number;
+}
+
+export interface ScrollData extends Point {
+  forceSmoothScroll: boolean;
 }
 
 export interface Rect {
@@ -107,3 +186,23 @@ export type ExtendedKeyEvent = KeyboardEvent&{
   fromScriptingAPI?: boolean,
   fromPlugin?: boolean,
 };
+
+// <if expr="enable_pdf_save_to_drive">
+export enum SaveToDriveState {
+  UNINITIALIZED = 'uninitialized',
+  UPLOADING = 'uploading',
+  SUCCESS = 'success',
+  CONNECTION_ERROR = 'connection-error',
+  STORAGE_FULL_ERROR = 'storage-full-error',
+  SESSION_TIMEOUT_ERROR = 'session-timeout-error',
+  UNKNOWN_ERROR = 'unknown-error',
+}
+
+export enum SaveToDriveBubbleRequestType {
+  CANCEL_UPLOAD = 'cancel-upload',
+  MANAGE_STORAGE = 'manage-storage',
+  OPEN_IN_DRIVE = 'open-in-drive',
+  RETRY = 'retry',
+  DIALOG_CLOSED = 'dialog-closed',
+}
+// </if>

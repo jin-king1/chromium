@@ -9,12 +9,11 @@
 #include "ash/constants/ash_features.h"
 #include "base/types/expected.h"
 #include "chrome/browser/ash/login/signin_partition_manager.h"
+#include "chrome/browser/ash/login/signin_partition_manager_factory.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/browser_process_platform_part.h"
 #include "chrome/browser/ui/ash/login/login_display_host_webui.h"
 #include "chrome/browser/ui/ash/login/signin_ui.h"
-#include "chrome/common/chrome_features.h"
-#include "chrome/grit/generated_resources.h"
 #include "chrome/installer/util/google_update_settings.h"
 #include "chromeos/ash/components/login/auth/challenge_response/cert_utils.h"
 #include "chromeos/ash/components/login/auth/public/auth_types.h"
@@ -73,16 +72,12 @@ OnlineSigninArtifacts::OnlineSigninArtifacts(OnlineSigninArtifacts&& original)
       challenge_response_key(std::move(original.challenge_response_key)),
       cookies(original.cookies) {}
 
-bool ExtractSamlPasswordAttributesEnabled() {
-  return base::FeatureList::IsEnabled(::features::kInSessionPasswordChange);
-}
-
 base::OnceClosure GetStartSigninSession(::content::WebUI* web_ui,
                                         LoadGaiaWithPartition callback) {
   // Start a new session with SigninPartitionManager, generating a unique
   // StoragePartition.
   login::SigninPartitionManager* signin_partition_manager =
-      login::SigninPartitionManager::Factory::GetForBrowserContext(
+      login::SigninPartitionManagerFactory::GetForBrowserContext(
           Profile::FromWebUI(web_ui));
 
   auto partition_call =
@@ -199,9 +194,7 @@ std::unique_ptr<UserContext> BuildUserContextForGaiaSignIn(
                                 : UserContext::AUTH_FLOW_GAIA_WITHOUT_SAML);
   if (using_saml) {
     user_context->SetIsUsingSamlPrincipalsApi(using_saml_api);
-    if (ExtractSamlPasswordAttributesEnabled()) {
-      user_context->SetSamlPasswordAttributes(password_attributes);
-    }
+    user_context->SetSamlPasswordAttributes(password_attributes);
   }
 
   if (sync_trusted_vault_keys.has_value()) {
@@ -230,10 +223,6 @@ AccountId GetAccountId(const std::string& authenticated_email,
 }
 
 bool IsFamilyLinkAllowed() {
-  if (!features::IsFamilyLinkOnSchoolDeviceEnabled()) {
-    return false;
-  }
-
   CrosSettings* cros_settings = CrosSettings::Get();
   bool family_link_allowed = false;
   cros_settings->GetBoolean(kAccountsPrefFamilyLinkAccountsAllowed,
@@ -288,7 +277,7 @@ void GaiaCookieRetriever::RetrieveCookies(
       net::CookieOptions::MakeAllInclusive();
   cookie_manager->GetCookieList(
       GaiaUrls::GetInstance()->gaia_url(), cookie_options,
-      net::CookiePartitionKeyCollection::Todo(),
+      net::CookiePartitionKeyCollection(),
       base::BindOnce(&GaiaCookieRetriever::OnGetCookieListResponse,
                      weak_factory_.GetWeakPtr()));
 }

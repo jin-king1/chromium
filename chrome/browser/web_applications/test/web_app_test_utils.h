@@ -15,6 +15,7 @@
 #include "chrome/browser/web_applications/web_app_constants.h"
 #include "chrome/browser/web_applications/web_app_install_params.h"
 #include "chrome/browser/web_applications/web_app_management_type.h"
+#include "components/sync/protocol/web_app_specifics.pb.h"
 #include "components/web_package/signed_web_bundles/signed_web_bundle_signature_stack_entry.h"
 #include "components/webapps/common/web_app_id.h"
 #include "url/gurl.h"
@@ -22,6 +23,14 @@
 class Browser;
 class PrefService;
 class Profile;
+
+namespace gfx {
+class Image;
+}  // namespace gfx
+
+namespace base {
+class FilePath;
+}  // namespace base
 
 namespace content {
 class StoragePartition;
@@ -41,19 +50,46 @@ namespace test {
 // web_app_install_test_util.h.
 std::unique_ptr<WebApp> CreateWebApp(
     const GURL& start_url = GURL("https://example.com/path"),
-    WebAppManagement::Type source_type = WebAppManagement::kSync);
+    WebAppManagement::Type source_type = WebAppManagement::kSync,
+    const GURL& scope = GURL());
+
+// Same as above, but for creating a web app out of a sync_proto. Follow the
+// same warning as `CreateWebApp()` and don't use this directly for
+// installation. Instead, use the utilities in web_app_install_test_util.h. Only
+// sets the fields that need to be specified in the sync_proto to be valid,
+// which is `start_url`, `manifest_id` and `scope` if set. All other fields need
+// to be explicitly set by calling `Set<Field>()` on a web app.
+// By default, the `kSync` source is already set on this web app.
+// Will check fail if the sync proto does not have the start_url and
+// relative_manifest_id unset.
+std::unique_ptr<WebApp> CreateWebAppFromSyncProto(
+    sync_pb::WebAppSpecifics& sync_proto);
 
 // Do not use this for installation! Instead, use the utilities in
 // web_app_install_test_util.h.
 struct CreateRandomWebAppParams {
+  CreateRandomWebAppParams();
+  CreateRandomWebAppParams(const CreateRandomWebAppParams& other);
+  CreateRandomWebAppParams& operator=(const CreateRandomWebAppParams& other);
+  ~CreateRandomWebAppParams();
+
   GURL base_url{"https://example.com/path"};
-  uint32_t seed = 0;
+  int seed = 0;
   bool non_zero = false;
   bool allow_system_source = true;
+  // External management types and migration fields are often managed by
+  // systems that synchronize or process installed apps at startup. If a test is
+  // writing apps and then starting the system, these managers will touch &
+  // modify apps. Setting this to 'true' will prevent generated apps from
+  // including these fields, thus avoiding side effects during test startup.
+  bool exclude_fields_with_side_effects = false;
+  // When randomly generating an app, if it is randomly a sub-app, then this
+  // manifest id is used for the parent id. Set this to an empty url to not
+  // generate sub-apps.
+  std::optional<webapps::ManifestId> parent_manifest_id{GURL("https://www.appparent.com/")};
 };
-std::unique_ptr<WebApp> CreateRandomWebApp(CreateRandomWebAppParams params);
-
-void MaybeEnsureShortcutAppsTreatedAsDiy(WebApp& app);
+std::unique_ptr<WebApp> CreateRandomWebApp(
+    const CreateRandomWebAppParams& params);
 
 void TestAcceptDialogCallback(
     base::WeakPtr<WebAppScreenshotFetcher>,
@@ -95,6 +131,13 @@ void SynchronizeOsIntegration(
 
 // Creates a few well-formed integrity block signatures.
 std::vector<web_package::SignedWebBundleSignatureInfo> CreateSignatures();
+
+// Loads a gfx::Image from a png file on the disk. Will CHECK-fail if the png
+// data reading fails. If `read_from_test_dir` is true (which is the case for
+// most use-cases), the file_path should be an absolute path, otherwise
+// `base::FilePath::Append()` with DCHECK-fail.
+gfx::Image LoadTestImageFromDisk(const base::FilePath& file_path,
+                                 bool read_from_test_dir = true);
 
 }  // namespace test
 }  // namespace web_app

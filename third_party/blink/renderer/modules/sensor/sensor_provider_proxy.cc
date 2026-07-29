@@ -21,8 +21,8 @@ void SensorProviderProxy::InitializeIfNeeded() {
       sensor_provider_.BindNewPipeAndPassReceiver(
           GetSupplementable()->GetTaskRunner(TaskType::kSensor)));
   sensor_provider_.set_disconnect_handler(
-      WTF::BindOnce(&SensorProviderProxy::OnSensorProviderConnectionError,
-                    WrapWeakPersistent(this)));
+      BindOnce(&SensorProviderProxy::OnSensorProviderConnectionError,
+               WrapWeakPersistent(this)));
 }
 
 // static
@@ -86,9 +86,10 @@ void SensorProviderProxy::RemoveSensorProxy(SensorProxy* proxy) {
 
 void SensorProviderProxy::GetSensor(
     device::mojom::blink::SensorType type,
+    bool user_gesture,
     mojom::blink::WebSensorProviderProxy::GetSensorCallback callback) {
   InitializeIfNeeded();
-  sensor_provider_->GetSensor(type, std::move(callback));
+  sensor_provider_->GetSensor(type, user_gesture, std::move(callback));
 }
 
 }  // namespace blink

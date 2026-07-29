@@ -17,6 +17,7 @@
 #include "chrome/browser/history/history_service_factory.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
+#include "chrome/browser/page_content_annotations/page_embeddings_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_attributes_entry.h"
 #include "chrome/browser/profiles/profile_attributes_storage.h"
@@ -27,6 +28,10 @@
 #include "components/leveldb_proto/public/proto_database_provider.h"
 #include "components/omnibox/browser/zero_suggest_cache_service.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
+#include "components/page_content_annotations/content/page_category_classifier_bridge_impl.h"
+#include "components/page_content_annotations/content/page_embeddings_service.h"
+#include "components/page_content_annotations/core/on_device_category_classifier.h"
+#include "components/page_content_annotations/core/page_category_classifier_bridge.h"
 #include "components/page_content_annotations/core/page_content_annotations_features.h"
 #include "components/page_content_annotations/core/page_content_annotations_service.h"
 #include "components/search_engines/template_url_service.h"
@@ -35,14 +40,14 @@
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/storage_partition.h"
 
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #endif
 
 namespace {
 
 bool IsEphemeralProfile(Profile* profile) {
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
   if (ash::ProfileHelper::IsEphemeralUserProfile(profile))
     return true;
 #endif
@@ -103,6 +108,8 @@ PageContentAnnotationsServiceFactory::PageContentAnnotationsServiceFactory()
   DependsOn(HistoryServiceFactory::GetInstance());
   DependsOn(TemplateURLServiceFactory::GetInstance());
   DependsOn(ZeroSuggestCacheServiceFactory::GetInstance());
+  DependsOn(
+      page_content_annotations::PageEmbeddingsServiceFactory::GetInstance());
 }
 
 PageContentAnnotationsServiceFactory::~PageContentAnnotationsServiceFactory() =
@@ -132,18 +139,40 @@ PageContentAnnotationsServiceFactory::BuildServiceInstanceForBrowserContext(
       TemplateURLServiceFactory::GetForProfile(profile);
   ZeroSuggestCacheService* zero_suggest_cache_service =
       ZeroSuggestCacheServiceFactory::GetForProfile(profile);
+
   if (optimization_guide_keyed_service && history_service) {
     std::string country_code =
         GetCurrentCountryCode(g_browser_process->variations_service());
-    return std::make_unique<
+
+    page_content_annotations::PageEmbeddingsService* page_embeddings_service =
+        page_content_annotations::PageEmbeddingsServiceFactory::GetForProfile(
+            profile);
+    passage_embeddings::EmbedderMetadataProvider* embedder_metadata_provider =
+        page_embeddings_service
+            ? page_embeddings_service->GetEmbedderMetadataProvider()
+            : nullptr;
+
+    auto service = std::make_unique<
         page_content_annotations::PageContentAnnotationsService>(
         g_browser_process->GetApplicationLocale(), country_code,
         optimization_guide_keyed_service, history_service, template_url_service,
         zero_suggest_cache_service, proto_db_provider, profile_path,
         optimization_guide_keyed_service->GetOptimizationGuideLogger(),
-        optimization_guide_keyed_service,
+        optimization_guide_keyed_service, embedder_metadata_provider,
         base::ThreadPool::CreateSequencedTaskRunner(
             {base::MayBlock(), base::TaskPriority::BEST_EFFORT}));
+
+    page_content_annotations::OnDeviceCategoryClassifier* category_classifier =
+        service->on_device_category_classifier();
+    if (category_classifier && page_embeddings_service) {
+      service->SetPageCategoryClassifierBridge(
+          std::make_unique<
+              page_content_annotations::PageCategoryClassifierBridgeImpl>(
+              *page_embeddings_service, *category_classifier,
+              optimization_guide_keyed_service->GetOptimizationGuideLogger()));
+    }
+
+    return service;
   }
   return nullptr;
 }

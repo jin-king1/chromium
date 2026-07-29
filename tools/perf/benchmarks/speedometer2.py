@@ -19,8 +19,8 @@ from telemetry.web_perf import timeline_based_measurement
 
 from page_sets import speedometer2_pages
 
-_PERF_TEST_DIR = os.path.join(path_util.GetChromiumSrcDir(), 'third_party',
-                              'blink', 'perf_tests')
+_SPEEDOMETER_DIR = os.path.join(path_util.GetChromiumSrcDir(), 'third_party',
+                                'speedometer')
 
 
 class _Speedometer2(press._PressBenchmark):  # pylint: disable=protected-access
@@ -30,6 +30,10 @@ class _Speedometer2(press._PressBenchmark):  # pylint: disable=protected-access
   out suites, and only run suites whose names are matched by the regular
   expression provided.
   """
+
+  # Speedometer 2 is outdated, set SCHEDULED = False by default to
+  # not accidentally run it.
+  SCHEDULED = False
 
   enable_smoke_test_mode = False
   enable_systrace = False
@@ -131,7 +135,8 @@ class Speedometer20(_Speedometer2):
   """Speedometer2.0 benchmark.
   Explicitly named version."""
 
-  _SOURCE_DIR = os.path.join(_PERF_TEST_DIR, 'speedometer20')
+  SCHEDULED = False
+  _SOURCE_DIR = os.path.join(_SPEEDOMETER_DIR, 'v2.0')
 
   @classmethod
   def GetStoryClass(cls):
@@ -139,7 +144,7 @@ class Speedometer20(_Speedometer2):
 
   @classmethod
   def Name(cls):
-    return 'UNSCHEDULED_speedometer2.0'
+    return 'speedometer2.0'
 
 
 @benchmark.Info(emails=['cbruni@chromium.org', 'vahl@chromium.org'],
@@ -149,7 +154,8 @@ class Speedometer21(_Speedometer2):
   """Speedometer2.1 benchmark.
   Explicitly named version."""
 
-  _SOURCE_DIR = os.path.join(_PERF_TEST_DIR, 'speedometer21')
+  SCHEDULED = False
+  _SOURCE_DIR = os.path.join(_SPEEDOMETER_DIR, 'v2.1')
 
   @classmethod
   def GetStoryClass(cls):
@@ -157,7 +163,7 @@ class Speedometer21(_Speedometer2):
 
   @classmethod
   def Name(cls):
-    return 'UNSCHEDULED_speedometer2.1'
+    return 'speedometer2.1'
 
 
 @benchmark.Info(emails=['cbruni@chromium.org', 'vahl@chromium.org'],
@@ -165,6 +171,9 @@ class Speedometer21(_Speedometer2):
                 documentation_url='https://browserbench.org/Speedometer2.1')
 class Speedometer2(Speedometer21):
   """The latest version of the Speedometer2 benchmark."""
+
+  SCHEDULED = False
+
   @classmethod
   def GetStoryClass(cls):
     return speedometer2_pages.Speedometer2Story
@@ -183,29 +192,14 @@ class V8Speedometer2Future(Speedometer2):
   Shows the performance of upcoming V8 VM features.
   """
 
+  SCHEDULED = False
+
   @classmethod
   def Name(cls):
     return 'speedometer2-future'
 
   def SetExtraBrowserOptions(self, options):
     options.AppendExtraBrowserArgs('--enable-features=V8VmFuture')
-
-
-@benchmark.Info(emails=['omerkatz@chromium.org'],
-                component='Blink>JavaScript>GarbageCollection',
-                documentation_url='https://browserbench.org/Speedometer2.1')
-class Speedometer2MinorMS(Speedometer2):
-  """The latest Speedometer2 benchmark without the MinorMS flag.
-
-  Shows the performance of Scavenger young generation GC in V8.
-  """
-
-  @classmethod
-  def Name(cls):
-    return 'speedometer2-minorms'
-
-  def SetExtraBrowserOptions(self, options):
-    options.AppendExtraBrowserArgs('--js-flags=--minor-ms')
 
 
 @benchmark.Info(emails=['rasikan@google.com', 'wnwen@google.com'],
@@ -216,6 +210,7 @@ class Speedometer2Predictable(Speedometer2):
 
   This should (hopefully) help reduce variance in the score.
   """
+  SCHEDULED = False
 
   @classmethod
   def Name(cls):

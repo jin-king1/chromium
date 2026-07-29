@@ -159,7 +159,7 @@ void BodyStreamBuffer::Init() {
       Abort();
     } else {
       stream_buffer_abort_handle_ = signal_->AddAlgorithm(
-          WTF::BindOnce(&BodyStreamBuffer::Abort, WrapWeakPersistent(this)));
+          BindOnce(&BodyStreamBuffer::Abort, WrapWeakPersistent(this)));
     }
   }
   OnStateChange();
@@ -191,6 +191,12 @@ scoped_refptr<BlobDataHandle> BodyStreamBuffer::DrainAsBlobDataHandle(
   if (made_from_readable_stream_)
     return nullptr;
 
+  // TODO(crbug.com/423955471): Find out why `consumer_` can be null here and
+  // stop it from happening.
+  if (!consumer_) {
+    return nullptr;
+  }
+
   scoped_refptr<BlobDataHandle> blob_data_handle =
       consumer_->DrainAsBlobDataHandle(policy);
   if (blob_data_handle) {
@@ -209,6 +215,12 @@ scoped_refptr<EncodedFormData> BodyStreamBuffer::DrainAsFormData(
 
   if (made_from_readable_stream_)
     return nullptr;
+
+  // TODO(crbug.com/423955471): Find out why `consumer_` can be null here and
+  // stop it from happening.
+  if (!consumer_) {
+    return nullptr;
+  }
 
   scoped_refptr<EncodedFormData> form_data = consumer_->DrainAsFormData();
   if (form_data) {
@@ -250,8 +262,8 @@ void BodyStreamBuffer::StartLoading(FetchDataLoader* loader,
       client->Abort();
       return;
     }
-    loader_client_abort_handle_ = signal_->AddAlgorithm(WTF::BindOnce(
-        &FetchDataLoader::Client::Abort, WrapWeakPersistent(client)));
+    loader_client_abort_handle_ = signal_->AddAlgorithm(
+        BindOnce(&FetchDataLoader::Client::Abort, WrapWeakPersistent(client)));
   }
   loader_ = loader;
   auto* handle = ReleaseHandle(exception_state);
@@ -377,13 +389,13 @@ void BodyStreamBuffer::OnStateChange() {
     case BytesConsumer::PublicState::kReadableOrWaiting:
       break;
     case BytesConsumer::PublicState::kClosed:
-      Close(PassThroughException(script_state_->GetIsolate()));
+      Close(ASSERT_NO_EXCEPTION);
       return;
     case BytesConsumer::PublicState::kErrored:
       GetError();
       return;
   }
-  ProcessData(PassThroughException(script_state_->GetIsolate()));
+  ProcessData(ASSERT_NO_EXCEPTION);
 }
 
 void BodyStreamBuffer::ContextDestroyed() {
@@ -421,7 +433,6 @@ void BodyStreamBuffer::CloseAndLockAndDisturb(ExceptionState& exception_state) {
     // the internal buffer.
     Close(exception_state);
   }
-
   stream_->LockAndDisturb(script_state_);
 }
 

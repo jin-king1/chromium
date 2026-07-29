@@ -12,13 +12,12 @@ build_webui("build") {
 
   static_files = [ "profile_picker.html" ]
 
-  non_web_component_files = [
+  ts_files = [
     "drag_drop_reorder_tile_list_delegate.ts",
     "ensure_lazy_loaded.ts",
     "lazy_load.ts",
     "manage_profiles_browser_proxy.ts",
     "navigation_mixin.ts",
-    "profile_picker_flags.ts",
     "profile_card.html.ts",
     "profile_card.ts",
     "profile_card_menu.html.ts",
@@ -28,11 +27,14 @@ build_webui("build") {
     "profile_picker.ts",
     "profile_picker_app.html.ts",
     "profile_picker_app.ts",
+    "profile_picker_flags.ts",
     "profile_picker_main_view.html.ts",
     "profile_picker_main_view.ts",
     "profile_picker_util.ts",
     "profile_switch.html.ts",
     "profile_switch.ts",
+    "signin_error_dialog.html.ts",
+    "signin_error_dialog.ts",
   ]
 
   icons_html_files = [ "icons.html" ]
@@ -45,9 +47,8 @@ build_webui("build") {
     "profile_picker_main_view.css",
     "profile_picker_shared.css",
     "profile_switch.css",
+    "signin_error_dialog.css",
   ]
-
-  html_to_wrapper_template = "detect"
 
   ts_composite = true
   ts_definitions = [

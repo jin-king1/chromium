@@ -16,6 +16,8 @@
 
 namespace ash {
 
+using chromeos::AppType;
+
 namespace {
 
 using chromeos::WindowStateType;
@@ -32,8 +34,10 @@ using SplitViewControllerClamshellTest = AshTestBase;
 // window is snapped. Regression test for http://b/333600706.
 TEST_F(SplitViewControllerClamshellTest, EndSplitView) {
   // Snap `w1` to start partial overview.
-  std::unique_ptr<aura::Window> w1(CreateAppWindow());
-  std::unique_ptr<aura::Window> w2(CreateAppWindow());
+  std::unique_ptr<aura::Window> w1 =
+      CreateWindowWithAppType(AppType::SYSTEM_APP);
+  std::unique_ptr<aura::Window> w2 =
+      CreateWindowWithAppType(AppType::SYSTEM_APP);
   split_view_controller()->SnapWindow(
       w1.get(), SnapPosition::kPrimary,
       WindowSnapActionSource::kDragWindowToEdgeToSnap);
@@ -53,7 +57,7 @@ TEST_F(SplitViewControllerClamshellTest, EndSplitView) {
   auto* event_generator = GetEventGenerator();
   event_generator->set_current_screen_location(drag_point);
   const gfx::Rect work_area =
-      display::Screen::GetScreen()->GetPrimaryDisplay().work_area();
+      display::Screen::Get()->GetPrimaryDisplay().work_area();
   event_generator->DragMouseTo(work_area.right_center());
   EXPECT_EQ(WindowStateType::kSecondarySnapped,
             WindowState::Get(w2.get())->GetStateType());
@@ -65,8 +69,10 @@ TEST_F(SplitViewControllerClamshellTest, EndSplitView) {
 // Test that tablet <-> clamshell transition works correctly.
 TEST_F(SplitViewControllerClamshellTest, ClamshellTabletTransition) {
   // 1. Test 1 snapped window.
-  std::unique_ptr<aura::Window> w1(CreateAppWindow());
-  std::unique_ptr<aura::Window> w2(CreateAppWindow());
+  std::unique_ptr<aura::Window> w1 =
+      CreateWindowWithAppType(AppType::SYSTEM_APP);
+  std::unique_ptr<aura::Window> w2 =
+      CreateWindowWithAppType(AppType::SYSTEM_APP);
   split_view_controller()->SnapWindow(
       w1.get(), SnapPosition::kPrimary,
       WindowSnapActionSource::kDragWindowToEdgeToSnap);
@@ -118,8 +124,10 @@ TEST_F(SplitViewControllerClamshellTest, ClamshellTabletTransition) {
 
 // Tests that using the keyboard shortcut never starts split view.
 TEST_F(SplitViewControllerClamshellTest, Shortcut) {
-  std::unique_ptr<aura::Window> w1(CreateAppWindow());
-  std::unique_ptr<aura::Window> w2(CreateAppWindow());
+  std::unique_ptr<aura::Window> w1 =
+      CreateWindowWithAppType(AppType::SYSTEM_APP);
+  std::unique_ptr<aura::Window> w2 =
+      CreateWindowWithAppType(AppType::SYSTEM_APP);
   wm::ActivateWindow(w1.get());
   PressAndReleaseKey(ui::VKEY_OEM_4, ui::EF_ALT_DOWN);
   EXPECT_EQ(WindowStateType::kPrimarySnapped,

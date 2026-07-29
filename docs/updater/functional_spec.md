@@ -95,7 +95,7 @@ preferred language on the current system. Every string shown in the UI is
 translated.
 
 ### Bundle Installer
-TODO(crbug.com/40664480): Implement bundle installers.
+TODO(crbug.com/40149046): Implement bundle installers.
 
 The bundle installer allows installation of more than one application. The
 bundle installer is typically used in software distribution scenarios.
@@ -249,6 +249,23 @@ The final manifest looks as follows:
 </response>
 ```
 
+Note: for testing purposes only, an offline installer can be created without
+using `tag.exe` or `signtool.exe` as follows, by using the
+`--disable_tag_and_sign` parameter. However, this offline installer cannot be
+tagged, and will need to be given explicit parameters when run.
+
+```
+python3 chrome/updater/win/signing/sign.py                                     ^
+  --in_file out/ChromeBrandedDebug/UpdaterSetup.exe                            ^
+  --out_file out/ChromeBrandedDebug/UpdaterSigning/ChromeBetaOfflineSetup.exe  ^
+  --appid {8237E44A-0054-442C-B6B6-EA0509993955}                               ^
+  --installer_path out/ChromeBrandedDebug/UpdaterSigning/chrome_installer.exe  ^
+  --manifest_path out/ChromeBrandedDebug/UpdaterSigning/OfflineManifest.gup    ^
+  --lzma_7z "C:/Program Files/7-Zip/7z.exe"                                    ^
+  --disable_tag_and_sign                                                       ^
+  --manifest_dict_replacements "{'${INSTALLER_VERSION}':'110.0.5478.0', '${ARCH_REQUIREMENT}':'x86'}"
+```
+
 ### MSI Wrapper
 TODO(crbug.com/40841203) - Implement and document.
 
@@ -295,6 +312,10 @@ process is determined by command-line arguments:
         * The value of `installerdata` needs to be URL encoded.
         * The data will be decoded and written to a file same as in
           [installdataindex](#installdataindex).
+    *   --installsource=...
+        * A user defined `installsource` string for use with offline installs.
+          This is passed up in the `installsource` field in install type event
+          pings.
     *   --offlinedir={GUID}
         *   Performs offline install, which means no update check or file
             download is performed against the server during installation.
@@ -361,6 +382,18 @@ process is determined by command-line arguments:
         *   If --browser-version is specified, --recover can be omitted.
     *  --sessionid=...
         *   Specifies the sesionid associated with this recovery attempt.
+*   --force-install
+    * This switch does the following:
+      * Force-installs the metainstaller that is run with this switch and makes
+        it the active `updater`.
+      * Installs the application(s) that are implicitly specified in the tagged
+        metainstaller, or explicitly specified using the `--install` or
+        `--handoff` parameters.
+*   `RUNFORCEINSTALL` (for MSI installers)
+    * Allows running an MSI metainstaller with the `--force-install` option.
+    * In addition, if the MSI is tagged, this also installs the application(s)
+      that are implicitly specified in the tag.
+    * For example, `msiexec /i GoogleChrome.msi RUNFORCEINSTALL=1`.
 *   --test
     *   Exit immediately with no error.
 *   --healthcheck
@@ -509,6 +542,10 @@ the server indicating an installation failure.
 The user interface is localized in the same languages as the Chromium project.
 
 No UI will be shown if the `--silent` switch is specified on the command line.
+On Windows, if a silent installation requires UAC elevation and `--silent`
+does not have the `allow-uac` value parameter (i.e. `--silent=allow-uac`),
+the installation will abort immediately and fail silently to prevent showing
+any interactive UI prompts.
 
 The launch command provided by the application installer via the
 [installer result API](#installer-result-api)
@@ -869,6 +906,50 @@ the following parameters:
           installerdata=%7B%22distribution%22%3A%7B%22msi%22%3Atrue%7D%7D
 ```
 
+### PKG installers (macOS)
+
+Similar to MSI installers on Windows, macOS flat packages (.pkg) can be tagged
+to convey dynamic install parameters. Currently, .pkg tags only support the
+`brand` parameter.
+
+Chrome PKGs are built using the signing pipeline
+(`chrome/installer/mac/sign_chrome.py`). The signing script itself does not
+insert a tag.
+
+A PKG installer can be tagged using the `tag` tool (built from
+`chrome/updater/tools/tag_main.cc`) as follows:
+
+```
+out/Default/tag
+    "--set-tag=brand=GGLL"
+    product.pkg
+```
+
+The .pkg format is a XAR archive and uses XAR signing. XAR signatures cover each
+individual file in the archive in both its compressed and uncompressed form.
+Bytes inside the archive that are not referenced as part of any compressed file
+remain outside of the signature. Apple notarization refers to the code-signed
+applications inside the archive, so it is similarly indifferent to "stray bytes"
+on the archive.
+
+Apple relies on this property for "stapling" notarization "tickets" to a signed
+.pkg without breaking the signature; the notarization ticket is appended to the
+end of the file. Apple's notarization tools only recognize a stapled
+notarization if it is at the end of the file, so we insert the Omaha tag just
+before the stapled notarization record.
+
+When a tagged Chrome PKG is run, the `postinstall` script invokes
+`ksadmin --register` including the `--tagged-pkg-path <file>` flag, providing
+the path to the `.pkg` being installed (which macOS Installer provides both as
+a parameter and an environment variable to `postinstall` scripts). `ksadmin`
+attempts to extract the tag and uses its brand code to set up a brand file
+(as specified by `--write-brand-file ifneeded` and `--brand-file-path <path>`),
+for persistent recording of the brand across updates. (It does not overwrite an
+existing brand, so an overinstall remains credited to the original brand.) If
+`ksadmin` cannot find an Omaha tag, cannot parse the tag, or cannot find a brand
+in the tag, it uses the brand code provided in the `--brand-value` parameter,
+if present. If no brand is provided by either method, no brand is written.
+
 ### Enterprise Enrollment
 The machine updater may be enrolled with a particular enterprise. Enrollment is
 coordinated with a device management server by means of an enrollment token and
@@ -967,6 +1048,12 @@ Note the device must have a valid DM token for the downloaded CBCM policies to
 be effective.
 
 ### Enterprise Policies
+Some updater behavior can be controlled by enterprise policies. Policies are
+only respected on devices that are "domain-joined", enrolled in Chrome
+Enterprise Core, or (on macOS) managed by MDM. A device is "domain-joined" if
+it is on Windows and enrolled in an Active Directory domain or Azure Active
+Directory domain, or it is on macOS and joined to a domain via MCX.
+
 Enterprise policies can prevent the installation of applications:
 
 * A per-application setting may specify whether an application is installable.
@@ -986,6 +1073,9 @@ Enterprise policies can control the updates of applications:
   be disabled by policy.
 * If the update check period is set to zero, the updater is qualified without
   an update check.
+* Major/Minor version rollout policy values are sent to the update server to
+  indicate a preference for taking updates early or late in any gradual rollout
+  process.
 
 Refer to chrome/updater/protos/omaha\_settings.proto for more details.
 
@@ -1264,6 +1354,13 @@ For example, if `app_id_` is `{8A69D345-D564-463C-AFF1-A69D9E530F96}`, the
 ### Update Formats
 The updater accepts updates packaged as CRX₃ files. All files are signed with a
 publisher key. The corresponding public key is hardcoded into the updater.
+
+CRX₃ files can carry an arbitrary number of signatures. The updater can be
+configured at compile-time to require an additional signature using a pinned
+public key, via the `crx_pkhash` field in `chrome/updater/branding.gni`. This
+field is the base64-encoded SHA256 hash of the public key material (as it
+appears in the CRX). Google-branded updaters use this to pin an additional
+public key.
 
 ### Differential Updates
 TODO(crbug.com/40227383): Implement and document differential update support.
@@ -1559,6 +1656,21 @@ When the updater attempts to download a file, it sends an event with
 Multiple events associated with an update session are bundled together into a
 single request.
 
+#### Additional usage statistics
+
+The updater records information about the health and behavior of the application
+and transmits it to a remote logging endpoint over HTTPS. This information is
+used to monitor application health and inform engineering direction. The
+information transmitted is defined by `omaha_usage_stats_event.proto`. Upon the
+first logging transmission, the server will respond with a logging cookie which
+identifies the device in future transmissions. This cookie is persisted in the
+updater's prefs and periodically rotated by the server.
+
+In the case of the Google-branded updater, the transmission of additional usage
+statistics is only permitted if Google Chrome is the only application managed by
+the updater (with the exception of the enterprise companion app and the updater
+itself) and it permits the collection of usage statistics.
+
 ### Downloading
 There could be multiple URLs for a given application payload. The URLs are tried
 in the order they are returned in the update response.
@@ -1605,6 +1717,21 @@ On Windows, when the updater uninstalls itself, and there are no other versions
 of the updater in existence for the scope, the updater saves a copy of the final
 log file to `Windows\SystemTemp\updater.log` for system installs, and
 `%TMP%\updater.log` for user installs.
+
+### State Persistence
+The updater's internal state is persisted in `prefs.json`. There are two types
+of `prefs.json` files:
+
+1. **Global prefs**: Located in `{UPDATER_DATA_DIR}`. This file is shared among
+   all instances of the updater and contains global state such as the active
+   updater version.
+2. **Local prefs**: Located in the versioned installation directory (e.g.,
+   `{UPDATER_DATA_DIR}\{VERSION}`). This file contains state specific to a
+   particular version of the updater, such as its qualification status.
+
+For system-scoped installations, `prefs.json` files are made readable to all
+users on the system to facilitate the collection of diagnostics data by Chrome's
+support tool.
 
 ## Network
 

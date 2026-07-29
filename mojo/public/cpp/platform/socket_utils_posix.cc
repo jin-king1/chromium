@@ -2,32 +2,24 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "mojo/public/cpp/platform/socket_utils_posix.h"
 
 #include <stddef.h>
 #include <sys/socket.h>
+#include <sys/uio.h>
 #include <unistd.h>
 
+#include "base/compiler_specific.h"
 #include "base/files/file_util.h"
 #include "base/logging.h"
 #include "base/notreached.h"
 #include "base/posix/eintr_wrapper.h"
 #include "build/build_config.h"
 
-#if !BUILDFLAG(IS_NACL)
-#include <sys/uio.h>
-#endif
-
 namespace mojo {
 
 namespace {
 
-#if !BUILDFLAG(IS_NACL)
 bool IsRecoverableError() {
   return errno == ECONNABORTED || errno == EMFILE || errno == ENFILE ||
          errno == ENOMEM || errno == ENOBUFS;
@@ -60,15 +52,15 @@ bool GetPeerEuid(base::PlatformFile fd, uid_t* peer_euid) {
 
 bool IsPeerAuthorized(base::PlatformFile fd) {
   uid_t peer_euid;
-  if (!GetPeerEuid(fd, &peer_euid))
+  if (!GetPeerEuid(fd, &peer_euid)) {
     return false;
+  }
   if (peer_euid != geteuid()) {
     DLOG(ERROR) << "Client euid is not authorized";
     return false;
   }
   return true;
 }
-#endif  // !BUILDFLAG(IS_NACL)
 
 }  // namespace
 
@@ -76,15 +68,6 @@ ssize_t SocketWrite(base::PlatformFile socket,
                     const void* bytes,
                     size_t num_bytes) {
   return send(socket, bytes, num_bytes, MSG_NOSIGNAL);
-}
-
-ssize_t SocketWritev(base::PlatformFile socket,
-                     struct iovec* iov,
-                     size_t num_iov) {
-  struct msghdr msg = {};
-  msg.msg_iov = iov;
-  msg.msg_iovlen = num_iov;
-  return HANDLE_EINTR(sendmsg(socket, &msg, MSG_NOSIGNAL));
 }
 
 ssize_t SendmsgWithHandles(base::PlatformFile socket,
@@ -108,7 +91,8 @@ ssize_t SendmsgWithHandles(base::PlatformFile socket,
   cmsg->cmsg_len = CMSG_LEN(descriptors.size() * sizeof(int));
   for (size_t i = 0; i < descriptors.size(); ++i) {
     DCHECK_GE(descriptors[i].get(), 0);
-    reinterpret_cast<int*>(CMSG_DATA(cmsg))[i] = descriptors[i].get();
+    UNSAFE_TODO(reinterpret_cast<int*>(CMSG_DATA(cmsg))[i]) =
+        descriptors[i].get();
   }
   return HANDLE_EINTR(sendmsg(socket, &msg, MSG_NOSIGNAL));
 }
@@ -127,24 +111,26 @@ ssize_t SocketRecvmsg(base::PlatformFile socket,
   msg.msg_controllen = sizeof(cmsg_buf);
   ssize_t result =
       HANDLE_EINTR(recvmsg(socket, &msg, block ? 0 : MSG_DONTWAIT));
-  if (result < 0)
+  if (result < 0) {
     return result;
+  }
 
-  if (msg.msg_controllen == 0)
+  if (msg.msg_controllen == 0) {
     return result;
+  }
 
   DCHECK(!(msg.msg_flags & MSG_CTRUNC));
 
   descriptors->clear();
   for (cmsghdr* cmsg = CMSG_FIRSTHDR(&msg); cmsg;
-       cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+       cmsg = UNSAFE_TODO(CMSG_NXTHDR(&msg, cmsg))) {
     if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS) {
       size_t payload_length = cmsg->cmsg_len - CMSG_LEN(0);
       DCHECK_EQ(payload_length % sizeof(int), 0u);
       size_t num_fds = payload_length / sizeof(int);
-      const int* fds = reinterpret_cast<int*>(CMSG_DATA(cmsg));
+      const int* fds = reinterpret_cast<int*>(UNSAFE_TODO(CMSG_DATA(cmsg)));
       for (size_t i = 0; i < num_fds; ++i) {
-        base::ScopedFD fd(fds[i]);
+        base::ScopedFD fd(UNSAFE_TODO(fds[i]));
         DCHECK(fd.is_valid());
         descriptors->emplace_back(std::move(fd));
       }
@@ -159,14 +145,13 @@ bool AcceptSocketConnection(base::PlatformFile server_fd,
                             bool check_peer_user) {
   DCHECK_GE(server_fd, 0);
   connection_fd->reset();
-#if BUILDFLAG(IS_NACL)
-  NOTREACHED();
-#else
   base::ScopedFD accepted_handle(HANDLE_EINTR(accept(server_fd, nullptr, 0)));
-  if (!accepted_handle.is_valid())
+  if (!accepted_handle.is_valid()) {
     return IsRecoverableError();
-  if (check_peer_user && !IsPeerAuthorized(accepted_handle.get()))
+  }
+  if (check_peer_user && !IsPeerAuthorized(accepted_handle.get())) {
     return true;
+  }
   if (!base::SetNonBlocking(accepted_handle.get())) {
     PLOG(ERROR) << "base::SetNonBlocking() failed " << accepted_handle.get();
     return true;
@@ -174,7 +159,6 @@ bool AcceptSocketConnection(base::PlatformFile server_fd,
 
   *connection_fd = std::move(accepted_handle);
   return true;
-#endif  // BUILDFLAG(IS_NACL)
 }
 
 }  // namespace mojo

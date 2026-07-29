@@ -17,7 +17,6 @@ import {FocusRowMixin} from 'chrome://resources/ash/common/cr_elements/focus_row
 import {I18nMixin} from 'chrome://resources/ash/common/cr_elements/i18n_mixin.js';
 import {assert, assertNotReached} from 'chrome://resources/js/assert.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
-import {mojoString16ToString} from 'chrome://resources/js/mojo_type_util.js';
 import {OpenWindowProxyImpl} from 'chrome://resources/js/open_window_proxy.js';
 import {sanitizeInnerHtml} from 'chrome://resources/js/parse_html_subset.js';
 import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
@@ -194,12 +193,12 @@ export class OsSearchResultRowElement extends OsSearchResultRowElementBase {
     };
   }
 
-  selected: boolean;
-  override ariaLabel: string;
-  searchQuery: string;
-  searchResult: SearchResult;
-  listLength: number;
-  private resultText_: string;
+  declare selected: boolean;
+  declare ariaLabel: string;
+  declare searchQuery: string;
+  declare searchResult: SearchResult;
+  declare listLength: number;
+  declare private resultText_: string;
 
   private makeA11yAnnouncementIfSelectedAndUnfocused_(): void {
     if (!this.selected || this.lastFocused) {
@@ -216,7 +215,7 @@ export class OsSearchResultRowElement extends OsSearchResultRowElementBase {
   private computeResultText_(): string {
     // The C++ layer stores the text result as an array of 16 bit char codes,
     // so it must be converted to a JS String.
-    return mojoString16ToString(this.searchResult.text);
+    return this.searchResult.text;
   }
 
   /**
@@ -571,12 +570,6 @@ export class OsSearchResultRowElement extends OsSearchResultRowElementBase {
       chrome.metricsPrivate.recordSparseValue(
           'ChromeOS.Settings.SearchResultPersonalizationSelected',
           this.searchResult.searchConceptId);
-      // Record entry point metric to Personalization Hub through Settings
-      // search.
-      chrome.metricsPrivate.recordEnumerationValue(
-          'Ash.Personalization.EntryPoint',
-          loadTimeData.getInteger('settingsSearchEntryPoint'),
-          loadTimeData.getInteger('entryPointEnumSize'));
       return;
     }
 
@@ -672,14 +665,14 @@ export class OsSearchResultRowElement extends OsSearchResultRowElementBase {
     switch (settingsSearchResult.icon) {
       case SearchResultIcon.kA11y:
         return 'os-settings:accessibility';
+      case SearchResultIcon.kAlwaysShowScrollbars:
+        return 'os-settings:scroll-vertical';
       case SearchResultIcon.kAndroid:
         return 'os-settings:android';
       case SearchResultIcon.kAppsParentalControls:
         return 'os-settings:apps-parental-controls';
       case SearchResultIcon.kAppsGrid:
         return 'os-settings:apps';
-      case SearchResultIcon.kAssistant:
-        return 'os-settings:assistant';
       case SearchResultIcon.kAudio:
         return 'os-settings:device-audio';
       case SearchResultIcon.kAuthKey:
@@ -704,6 +697,8 @@ export class OsSearchResultRowElement extends OsSearchResultRowElementBase {
         return 'os-settings:clock';
       case SearchResultIcon.kContrast:
         return 'os-settings:contrast';
+      case SearchResultIcon.kCreateImage:
+        return 'ash-internal:lobster';
       case SearchResultIcon.kCursorClick:
         return 'os-settings:cursor-click';
       case SearchResultIcon.kDetailedBuild:
@@ -776,7 +771,7 @@ export class OsSearchResultRowElement extends OsSearchResultRowElementBase {
       case SearchResultIcon.kNotifications:
         return 'os-settings:apps-notifications';
       case SearchResultIcon.kOneDrive:
-        return 'settings20:onedrive';
+        return 'os-settings:onedrive';
       case SearchResultIcon.kOnScreenKeyboard:
         return 'os-settings:on-screen-keyboard';
       case SearchResultIcon.kPaintbrush:
@@ -807,6 +802,8 @@ export class OsSearchResultRowElement extends OsSearchResultRowElementBase {
         return 'os-settings:restore';
       case SearchResultIcon.kScanner:
         return 'os-settings:device-scan';
+      case SearchResultIcon.kScannerActions:
+        return 'os-settings:scanner';
       case SearchResultIcon.kSearch:
         return 'os-settings:explore';
       case SearchResultIcon.kSelectToSpeak:

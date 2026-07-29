@@ -6,6 +6,8 @@
 
 #include <memory>
 
+#include "base/byte_size.h"
+#include "base/strings/stringprintf.h"
 #include "base/system/sys_info.h"
 #include "chrome/browser/ash/borealis/testing/apps.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
@@ -51,10 +53,11 @@ TEST_F(BorealisSurveyHandlerTest, GetSurveyDataReturnsCorrectData) {
       {"appName", "Some Game"},
       {"board", ""},
       {"specs",
-       base::StringPrintf("%ldGB; %s",
-                          (long)(base::SysInfo::AmountOfPhysicalMemory() /
-                                 (1000 * 1000 * 1000)),
-                          base::SysInfo::CPUModelName().c_str())},
+       base::StringPrintf(
+           "%ldGB; %s",
+           (long)(base::SysInfo::AmountOfTotalPhysicalMemory().InBytes() /
+                  (1000 * 1000 * 1000)),
+           base::SysInfo::CPUModelName().c_str())},
       {"monitorsInternal", "0"},
       {"monitorsExternal", "2"},
       {"proton", "None"},

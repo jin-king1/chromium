@@ -18,7 +18,6 @@
 #include "base/trace_event/trace_event.h"
 #include "base/types/expected.h"
 #include "chrome/browser/ui/webui/ash/emoji/emoji_ui.h"
-#include "chrome/browser/ui/webui/ash/emoji/seal_utils.h"
 #include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/components/emoji/emoji_search.h"
 #include "chromeos/ash/components/emoji/gif_tenor_api_fetcher.h"
@@ -151,8 +150,6 @@ class InsertObserver : public ui::InputMethodObserver {
     focus_change_count_++;
     // At least 2 focus changes - 1 for loss of focus in emoji picker, second
     // for focusing in the new text field.
-    // And in lacros, we may expect third change to correct text input type (
-    // from initial value to actual correct value).
     // You would expect this to fail if the emoji picker window does not have
     // focus in the text field, but waiting for at least 2 focus changes is
     // still correct behavior.
@@ -278,16 +275,12 @@ EmojiPageHandler::EmojiPageHandler(
       initial_category_(initial_category),
       initial_query_(initial_query),
       profile_(Profile::FromWebUI(web_ui)) {
-  // There are two conditions to control the GIF support:
-  //   1. Feature flag is turned on.
-  //   2. For managed users, the policy is turned on.
-  gif_support_enabled_ =
-      base::FeatureList::IsEnabled(features::kImeSystemEmojiPickerGIFSupport) &&
-      (profile_->GetPrefs()->IsManagedPreference(
-           prefs::kEmojiPickerGifSupportEnabled)
-           ? profile_->GetPrefs()->GetBoolean(
-                 prefs::kEmojiPickerGifSupportEnabled)
-           : true);
+  // For managed users, the GIF support is controlled by enterprise policy.
+  gif_support_enabled_ = profile_->GetPrefs()->IsManagedPreference(
+                             prefs::kEmojiPickerGifSupportEnabled)
+                             ? profile_->GetPrefs()->GetBoolean(
+                                   prefs::kEmojiPickerGifSupportEnabled)
+                             : true;
 
   url_loader_factory_ = profile_->GetDefaultStoragePartition()
                             ->GetURLLoaderFactoryForBrowserProcess();
@@ -321,10 +314,6 @@ void EmojiPageHandler::GetFeatureList(GetFeatureListCallback callback) {
   if (base::FeatureList::IsEnabled(features::kImeSystemEmojiPickerMojoSearch)) {
     enabled_features.push_back(
         emoji_picker::mojom::Feature::EMOJI_PICKER_MOJO_SEARCH);
-  }
-  if (SealUtils::ShouldEnable()) {
-    enabled_features.push_back(
-        emoji_picker::mojom::Feature::EMOJI_PICKER_SEAL_SUPPORT);
   }
 
   if (base::FeatureList::IsEnabled(
@@ -495,9 +484,9 @@ void EmojiPageHandler::GetInitialQuery(GetInitialQueryCallback callback) {
 void EmojiPageHandler::UpdateHistoryInPrefs(
     emoji_picker::mojom::Category category,
     std::vector<emoji_picker::mojom::HistoryItemPtr> history) {
-  base::Value::List history_value;
+  base::ListValue history_value;
   for (const auto& item : history) {
-    history_value.Append(base::Value::Dict()
+    history_value.Append(base::DictValue()
                              .Set(kPrefsHistoryTextFieldName, item->emoji)
                              .Set(kPrefsHistoryTimestampFieldName,
                                   base::TimeToValue(item->timestamp)));
@@ -508,7 +497,7 @@ void EmojiPageHandler::UpdateHistoryInPrefs(
 
 void EmojiPageHandler::UpdatePreferredVariantsInPrefs(
     std::vector<emoji_picker::mojom::EmojiVariantPtr> preferred_variants) {
-  base::Value::Dict value;
+  base::DictValue value;
   for (const auto& variant : preferred_variants) {
     value.Set(variant->base, variant->variant);
   }
@@ -524,7 +513,7 @@ void EmojiPageHandler::GetHistoryFromPrefs(
     std::move(callback).Run({});
     return;
   }
-  const base::Value::List* history =
+  const base::ListValue* history =
       profile_->GetPrefs()
           ->GetDict(prefs::kEmojiPickerHistory)
           .FindList(ConvertCategoryToPrefString(category));
@@ -534,7 +523,7 @@ void EmojiPageHandler::GetHistoryFromPrefs(
   }
   std::vector<emoji_picker::mojom::HistoryItemPtr> results;
   for (const auto& it : *history) {
-    const base::Value::Dict* value_dict = it.GetIfDict();
+    const base::DictValue* value_dict = it.GetIfDict();
     if (value_dict == nullptr) {
       continue;
     }

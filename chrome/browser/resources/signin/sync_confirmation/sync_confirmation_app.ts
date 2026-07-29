@@ -62,18 +62,19 @@ export class SyncConfirmationAppElement extends SyncConfirmationAppElementBase {
     };
   }
 
-  protected accountImageSrc_: string =
+  protected accessor accountImageSrc_: string =
       loadTimeData.getString('accountPictureUrl');
-  protected anyButtonClicked_: boolean = false;
-  protected isModalDialog_: boolean = loadTimeData.getBoolean('isModalDialog');
-  private showEnterpriseBadge_: boolean = false;
-  protected syncBenefitsList_: SyncBenefit[] =
+  protected accessor anyButtonClicked_: boolean = false;
+  protected accessor isModalDialog_: boolean =
+      loadTimeData.getBoolean('isModalDialog');
+  private accessor showEnterpriseBadge_: boolean = false;
+  protected accessor syncBenefitsList_: SyncBenefit[] =
       JSON.parse(loadTimeData.getString('syncBenefitsList'));
   private syncConfirmationBrowserProxy_: SyncConfirmationBrowserProxy =
       SyncConfirmationBrowserProxyImpl.getInstance();
-  protected useClickableSyncInfoDesc_: boolean =
+  protected accessor useClickableSyncInfoDesc_: boolean =
       loadTimeData.getBoolean('useClickableSyncInfoDesc');
-  private screenMode_: ScreenMode = ScreenMode.PENDING;
+  private accessor screenMode_: ScreenMode = ScreenMode.PENDING;
 
   override connectedCallback() {
     super.connectedCallback();
@@ -85,7 +86,7 @@ export class SyncConfirmationAppElement extends SyncConfirmationAppElementBase {
     this.syncConfirmationBrowserProxy_.requestAccountInfo();
   }
 
-  protected onConfirm_(e: Event) {
+  protected onConfirmClick_(e: Event) {
     this.anyButtonClicked_ = true;
     this.syncConfirmationBrowserProxy_.confirm(
         this.getConsentDescription_(),
@@ -93,12 +94,12 @@ export class SyncConfirmationAppElement extends SyncConfirmationAppElementBase {
         this.screenMode_);
   }
 
-  protected onUndo_() {
+  protected onUndoClick_() {
     this.anyButtonClicked_ = true;
     this.syncConfirmationBrowserProxy_.undo(this.screenMode_);
   }
 
-  protected onGoToSettings_(e: Event) {
+  protected onGoToSettingsClick_(e: Event) {
     this.anyButtonClicked_ = true;
     this.syncConfirmationBrowserProxy_.goToSettings(
         this.getConsentDescription_(),
@@ -115,7 +116,7 @@ export class SyncConfirmationAppElement extends SyncConfirmationAppElementBase {
     for (const element of path) {
       if (element.nodeType !== Node.DOCUMENT_FRAGMENT_NODE &&
           element.hasAttribute('consent-confirmation')) {
-        return element.textContent!.trim();
+        return element.textContent.trim();
       }
     }
     assertNotReached('No consent confirmation element found.');
@@ -132,7 +133,7 @@ export class SyncConfirmationAppElement extends SyncConfirmationAppElementBase {
             .map(
                 element => element.hasAttribute('localized-string') ?
                     element.getAttribute('localized-string')! :
-                    element.textContent!.trim());
+                    element.textContent.trim());
 
     assert(consentDescription.length);
     return consentDescription;
@@ -179,7 +180,7 @@ export class SyncConfirmationAppElement extends SyncConfirmationAppElementBase {
   /**
    * Called when the link to the device's sync settings is clicked.
    */
-  protected onDisclaimerClicked_(event: CustomEvent<{event: Event}>) {
+  protected onDisclaimerLinkClicked_(event: CustomEvent<{event: Event}>) {
     // Prevent the default link click behavior.
     event.detail.event.preventDefault();
 

@@ -32,9 +32,9 @@
 
 #include <stddef.h>
 
-#include "base/containers/contains.h"
+#include <algorithm>
+
 #include "base/i18n/time_formatting.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/stringprintf.h"
 #include "build/build_config.h"
@@ -44,13 +44,12 @@
 #include "third_party/blink/renderer/platform/mhtml/mhtml_parser.h"
 #include "third_party/blink/renderer/platform/mhtml/serialized_resource.h"
 #include "third_party/blink/renderer/platform/network/mime/mime_type_registry.h"
-#include "third_party/blink/renderer/platform/text/date_components.h"
 #include "third_party/blink/renderer/platform/weborigin/scheme_registry.h"
 #include "third_party/blink/renderer/platform/wtf/assertions.h"
-#include "third_party/blink/renderer/platform/wtf/date_math.h"
 #include "third_party/blink/renderer/platform/wtf/shared_buffer.h"
 #include "third_party/blink/renderer/platform/wtf/text/ascii_ctype.h"
 #include "third_party/blink/renderer/platform/wtf/text/base64.h"
+#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 
@@ -94,17 +93,17 @@ void QuotedPrintableEncode(base::span<const char> input,
   out.clear();
   out.reserve(base::checked_cast<wtf_size_t>(input.size()));
   if (is_header)
-    out.AppendSpan(base::span_from_cstring(kRFC2047EncodingPrefix));
+    out.append_range(base::span_from_cstring(kRFC2047EncodingPrefix));
   size_t current_line_length = 0;
   for (size_t i = 0; i < input.size(); ++i) {
-    bool is_last_character = (i == input.size() - 1);
-    char current_character = input[i];
+    const bool is_last_character = (i == input.size() - 1);
+    const char current_character = input[i];
     bool requires_encoding = false;
     // All non-printable ASCII characters and = require encoding.
-    if ((current_character < ' ' || current_character > '~' ||
-         current_character == '=') &&
-        current_character != '\t')
+    if ((!IsAsciiPrintable(current_character) || current_character == '=') &&
+        current_character != '\t') {
       requires_encoding = true;
+    }
 
     // Decide if space and tab characters need to be encoded.
     if (!requires_encoding &&
@@ -124,7 +123,7 @@ void QuotedPrintableEncode(base::span<const char> input,
     if (!is_last_character) {
       size_t length_of_line_ending = LengthOfLineEndingAtIndex(input, i);
       if (length_of_line_ending) {
-        out.AppendSpan(base::span_from_cstring("\r\n"));
+        out.append_range(base::span_from_cstring("\r\n"));
         current_line_length = 0;
         i += (length_of_line_ending -
               1);  // -1 because we'll ++ in the for() above.
@@ -148,23 +147,23 @@ void QuotedPrintableEncode(base::span<const char> input,
     if (current_line_length + length_of_encoded_character >
         max_line_length_for_encoded_content) {
       if (is_header) {
-        out.AppendSpan(base::span_from_cstring(kRFC2047EncodingSuffix));
-        out.AppendSpan(base::span_from_cstring("\r\n"));
+        out.append_range(base::span_from_cstring(kRFC2047EncodingSuffix));
+        out.append_range(base::span_from_cstring("\r\n"));
         out.push_back(' ');
       } else {
         out.push_back('=');
-        out.AppendSpan(base::span_from_cstring("\r\n"));
+        out.append_range(base::span_from_cstring("\r\n"));
       }
       current_line_length = 0;
       if (is_header)
-        out.AppendSpan(base::span_from_cstring(kRFC2047EncodingPrefix));
+        out.append_range(base::span_from_cstring(kRFC2047EncodingPrefix));
     }
 
     // Finally, insert the actual character(s).
     if (requires_encoding) {
       out.push_back('=');
-      out.push_back(UpperNibbleToASCIIHexDigit(current_character));
-      out.push_back(LowerNibbleToASCIIHexDigit(current_character));
+      out.push_back(UpperNibbleToAsciiHexDigit(current_character));
+      out.push_back(LowerNibbleToAsciiHexDigit(current_character));
       current_line_length += 3;
     } else {
       out.push_back(current_character);
@@ -172,14 +171,14 @@ void QuotedPrintableEncode(base::span<const char> input,
     }
   }
   if (is_header)
-    out.AppendSpan(base::span_from_cstring(kRFC2047EncodingSuffix));
+    out.append_range(base::span_from_cstring(kRFC2047EncodingSuffix));
 }
 
 String ConvertToPrintableCharacters(const String& text) {
   // If the text contains all printable ASCII characters, no need for encoding.
   bool found_non_printable_char = false;
   for (wtf_size_t i = 0; i < text.length(); ++i) {
-    if (!IsASCIIPrintable(text[i])) {
+    if (!IsAsciiPrintable(text[i])) {
       found_non_printable_char = true;
       break;
     }
@@ -203,23 +202,8 @@ String ConvertToPrintableCharacters(const String& text) {
 MHTMLArchive::MHTMLArchive() : load_result_(MHTMLLoadResult::kInvalidArchive) {}
 
 // static
-void MHTMLArchive::ReportLoadResult(MHTMLLoadResult result) {
-  UMA_HISTOGRAM_ENUMERATION("PageSerialization.MhtmlLoading.LoadResult",
-                            result);
-}
-
-// static
 MHTMLArchive* MHTMLArchive::Create(const KURL& url,
                                    scoped_refptr<const SharedBuffer> data) {
-  MHTMLArchive* archive = CreateArchive(url, data);
-  ReportLoadResult(archive->LoadResult());
-  return archive;
-}
-
-// static
-MHTMLArchive* MHTMLArchive::CreateArchive(
-    const KURL& url,
-    scoped_refptr<const SharedBuffer> data) {
   MHTMLArchive* archive = MakeGarbageCollected<MHTMLArchive>();
   archive->archive_url_ = url;
 
@@ -286,10 +270,11 @@ bool MHTMLArchive::CanLoadArchive(const KURL& url) {
   // MHTML pages can only be loaded from local URLs, http/https URLs, and
   // content URLs(Android specific).  The latter is now allowed due to full
   // sandboxing enforcement on MHTML pages.
-  if (base::Contains(url::GetLocalSchemes(), url.Protocol().Ascii()))
+  if (std::ranges::contains(url::GetLocalSchemes(), url.Protocol().Ascii()))
     return true;
-  if (url.ProtocolIsInHTTPFamily())
+  if (url.ProtocolIsInHttpFamily()) {
     return true;
+  }
 #if BUILDFLAG(IS_ANDROID)
   if (url.ProtocolIs("content"))
     return true;
@@ -302,7 +287,7 @@ void MHTMLArchive::GenerateMHTMLHeader(const String& boundary,
                                        const String& title,
                                        const String& mime_type,
                                        base::Time date,
-                                       Vector<char>& output_buffer) {
+                                       Vector<uint8_t>& output_buffer) {
   DCHECK(!boundary.empty());
   DCHECK(!mime_type.empty());
 
@@ -330,19 +315,19 @@ void MHTMLArchive::GenerateMHTMLHeader(const String& boundary,
   string_builder.Append(boundary);
   string_builder.Append("\"\r\n\r\n");
 
-  // We use utf8() below instead of ascii() as ascii() replaces CRLFs with ??
+  // We use Utf8() below instead of Ascii() as Ascii() replaces CRLFs with ??
   // (we still only have put ASCII characters in it).
-  DCHECK(string_builder.ToString().ContainsOnlyASCIIOrEmpty());
+  DCHECK(string_builder.ToString().ContainsOnlyAsciiOrEmpty());
   std::string utf8_string = string_builder.ToString().Utf8();
 
-  output_buffer.AppendSpan(base::span(utf8_string));
+  output_buffer.append_range(utf8_string);
 }
 
 void MHTMLArchive::GenerateMHTMLPart(const String& boundary,
                                      const String& content_id,
                                      EncodingPolicy encoding_policy,
                                      const SerializedResource& resource,
-                                     Vector<char>& output_buffer) {
+                                     Vector<uint8_t>& output_buffer) {
   DCHECK(!boundary.empty());
   DCHECK(content_id.empty() || content_id[0] == '<');
 
@@ -385,11 +370,11 @@ void MHTMLArchive::GenerateMHTMLPart(const String& boundary,
   string_builder.Append("\r\n");
 
   std::string utf8_string = string_builder.ToString().Utf8();
-  output_buffer.AppendSpan(base::span(utf8_string));
+  output_buffer.append_range(utf8_string);
 
   if (content_encoding == kBinary) {
     for (const auto& span : *resource.data) {
-      output_buffer.AppendSpan(span);
+      output_buffer.append_range(span);
     }
   } else {
     // FIXME: ideally we would encode the content as a stream without having to
@@ -400,7 +385,7 @@ void MHTMLArchive::GenerateMHTMLPart(const String& boundary,
     Vector<char> encoded_data;
     if (content_encoding == kQuotedPrintable) {
       QuotedPrintableEncode(data, false /* is_header */, encoded_data);
-      output_buffer.AppendVector(encoded_data);
+      output_buffer.append_range(encoded_data);
     } else {
       DCHECK_EQ(content_encoding, kBase64);
       // We are not specifying insertLFs = true below as it would cut the lines
@@ -409,21 +394,21 @@ void MHTMLArchive::GenerateMHTMLPart(const String& boundary,
 
       auto encoded_data_span = base::span(encoded_data);
       do {
-        auto [encoded_data_line, rest] = encoded_data_span.split_at(
+        auto encoded_data_line = encoded_data_span.take_first(
             std::min(encoded_data_span.size(), kMaximumLineLength));
-        output_buffer.AppendSpan(encoded_data_line);
-        output_buffer.AppendSpan(base::span_from_cstring("\r\n"));
-        encoded_data_span = rest;
+        output_buffer.append_range(encoded_data_line);
+        output_buffer.append_range(base::span_from_cstring("\r\n"));
       } while (!encoded_data_span.empty());
     }
   }
 }
 
-void MHTMLArchive::GenerateMHTMLFooterForTesting(const String& boundary,
-                                                 Vector<char>& output_buffer) {
+void MHTMLArchive::GenerateMHTMLFooterForTesting(
+    const String& boundary,
+    Vector<uint8_t>& output_buffer) {
   DCHECK(!boundary.empty());
-  std::string utf8_string = String("\r\n--" + boundary + "--\r\n").Utf8();
-  output_buffer.AppendSpan(base::span(utf8_string));
+  std::string utf8_string = StrCat({"\r\n--", boundary, "--\r\n"}).Utf8();
+  output_buffer.append_range(utf8_string);
 }
 
 void MHTMLArchive::SetMainResource(ArchiveResource* main_resource) {

@@ -19,12 +19,14 @@
 #include "components/ukm/test_ukm_recorder.h"
 #include "content/browser/btm/btm_service_impl.h"
 #include "content/browser/btm/btm_utils.h"
-#include "content/public/browser/btm_redirect_info.h"
+#include "content/browser/renderer_host/cookie_access_observers.h"
+#include "content/public/browser/btm_redirect.h"
 #include "content/public/browser/btm_service.h"
 #include "content/public/browser/cookie_access_details.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/test/browser_test_utils.h"
+#include "services/network/public/mojom/cookie_access_observer.mojom.h"
 #include "url/gurl.h"
 
 namespace testing {
@@ -34,21 +36,6 @@ class MatchResultListener;
 namespace content {
 
 constexpr char kStorageAccessScript[] = R"(
-    async function accessDatabase() {
-      var my_db = openDatabase('my_db', '1.0', 'description', 1024);
-      var num_rows;
-      await new Promise((resolve, reject) => {
-        my_db.transaction((tx) => {
-          tx.executeSql('CREATE TABLE IF NOT EXISTS tbl (id unique, data)');
-          tx.executeSql('INSERT INTO tbl (id, data) VALUES (1, "foo")');
-          tx.executeSql('SELECT * FROM tbl', [], (tx, results) => {
-            num_rows = results.rows.length;
-          });
-        }, reject, resolve);
-      });
-      if(num_rows <= 0) {throw new Error('Failed to access!')}
-    }
-
     function accessLocalStorage() {
       localStorage.setItem('foo', 'bar');
       return localStorage.getItem('foo');
@@ -113,15 +100,46 @@ base::expected<WebContents*, std::string> OpenInNewTab(
 // Helper function for performing client side cookie access via JS.
 void AccessCookieViaJSIn(WebContents* web_contents, RenderFrameHost* frame);
 
+// Redirect `frame` in `web_contents` to `target_url` via an HTML `<meta>` tag.
+// If `expected_commit_url` is non-null, asserts a final commit URL of
+// `expected_commit_url`; otherwise, asserts a final commit URL of `target_url`.
 [[nodiscard]] testing::AssertionResult ClientSideRedirectViaMetaTag(
     WebContents* web_contents,
     RenderFrameHost* frame,
-    const GURL& target_url);
+    const GURL& target_url,
+    const std::optional<const GURL>& expected_commit_url = std::nullopt);
 
+// Redirect `frame` in `web_contents` to `target_url` via a JavaScript call to
+// `window.location.replace()`. If `expected_commit_url` is non-null, asserts a
+// final commit URL of `expected_commit_url`; otherwise, asserts a final commit
+// URL of `target_url`.
 [[nodiscard]] testing::AssertionResult ClientSideRedirectViaJS(
     WebContents* web_contents,
     RenderFrameHost* frame,
-    const GURL& target_url);
+    const GURL& target_url,
+    const std::optional<const GURL>& expected_commit_url = std::nullopt);
+
+enum class BtmClientRedirectMethod : int {
+  kMetaTag = 0,
+  kJsWindowLocationReplace = 1,
+  kRedirectLikeNavigation = 2,
+};
+
+const auto kAllBtmClientRedirectMethods =
+    testing::Values(BtmClientRedirectMethod::kMetaTag,
+                    BtmClientRedirectMethod::kJsWindowLocationReplace,
+                    BtmClientRedirectMethod::kRedirectLikeNavigation);
+
+std::string StringifyBtmClientRedirectMethod(BtmClientRedirectMethod method);
+
+// Redirect `web_contents` to `redirect_url` using the client redirect method
+// `redirect_method`. Expects the final commit URL to be `expected_commit_url`
+// if non-null, or else `redirect_url`.
+[[nodiscard]] testing::AssertionResult PerformClientRedirect(
+    BtmClientRedirectMethod redirect_method,
+    WebContents* web_contents,
+    const GURL& redirect_url,
+    const std::optional<const GURL>& expected_commit_url = std::nullopt);
 
 // Helper function to navigate to /set-cookie on `host` and wait for
 // OnCookiesAccessed() to be called.
@@ -136,16 +154,16 @@ bool NavigateToSetCookie(WebContents* web_contents,
 void CreateImageAndWaitForCookieAccess(WebContents* web_contents,
                                        const GURL& image_url);
 
-// Helper function to block until all DIPS storage requests are complete.
-inline void WaitOnStorage(BtmServiceImpl* dips_service) {
-  dips_service->storage()->FlushPostedTasksForTesting();
+// Helper function to block until all BTM storage requests are complete.
+inline void WaitOnStorage(BtmServiceImpl* btm_service) {
+  btm_service->storage()->FlushPostedTasksForTesting();
 }
 
-// Helper function to query the `url` state from DIPS storage.
-std::optional<StateValue> GetBtmState(BtmServiceImpl* dips_service,
+// Helper function to query the `url` state from BTM storage.
+std::optional<StateValue> GetBtmState(BtmServiceImpl* btm_service,
                                       const GURL& url);
 
-inline BtmServiceImpl* GetDipsService(WebContents* web_contents) {
+inline BtmServiceImpl* GetBtmService(WebContents* web_contents) {
   return BtmServiceImpl::Get(web_contents->GetBrowserContext());
 }
 
@@ -246,7 +264,7 @@ class ScopedInitFeature {
   base::test::ScopedFeatureList feature_list_;
 };
 
-// Enables/disables the DIPS Feature.
+// Enables/disables the BTM Feature.
 class ScopedInitBtmFeature {
  public:
   explicit ScopedInitBtmFeature(bool enable,
@@ -287,9 +305,6 @@ void SimulateUserActivation(WebContents* web_contents);
 // activation.
 void SimulateMouseClickAndWait(WebContents*);
 
-// Make a UrlAndSourceId with a randomly-generated UKM source id.
-UrlAndSourceId MakeUrlAndId(std::string_view url);
-
 // A ContentBrowserClient that supports third-party cookie blocking. Note that
 // this can only be used directly by unit tests; browser tests must use
 // ContentBrowserTestTpcBlockingBrowserClient instead.
@@ -306,30 +321,32 @@ class TpcBlockingBrowserClient : public ContentBrowserClient,
 
   void SetBlockThirdPartyCookiesByDefault(bool block) { block_3pcs_ = block; }
 
-  bool IsFullCookieAccessAllowed(BrowserContext* browser_context,
-                                 WebContents* web_contents,
-                                 const GURL& url,
-                                 const blink::StorageKey& storage_key) override;
+  bool IsFullCookieAccessAllowed(
+      BrowserContext* browser_context,
+      WebContents* web_contents,
+      const GURL& url,
+      const blink::StorageKey& storage_key,
+      net::CookieSettingOverrides overrides) override;
 
-  void GrantCookieAccessDueToHeuristic(BrowserContext* browser_context,
-                                       const net::SchemefulSite& top_frame_site,
-                                       const net::SchemefulSite& accessing_site,
-                                       base::TimeDelta ttl,
-                                       bool ignore_schemes) override;
+  bool AreThirdPartyCookiesGenerallyAllowed(BrowserContext* browser_context,
+                                            WebContents* web_contents) override;
 
-  bool ShouldDipsDeleteInteractionRecords(uint64_t remove_mask) override;
+  bool ShouldBtmDeleteInteractionRecords(uint64_t remove_mask) override;
 
   void AllowThirdPartyCookiesOnSite(const GURL& url);
   void GrantCookieAccessTo3pSite(const GURL& url);
 
   void BlockThirdPartyCookiesOnSite(const GURL& url);
-  void BlockThirdPartyCookies(const GURL& url, const GURL& first_party_url);
+  void SetThirdPartyCookieAccess(const GURL& url,
+                                 const GURL& first_party_url,
+                                 ContentSetting setting);
 
   // Overrides for content_settings::CookieSettingsBase
 
   bool ShouldIgnoreSameSiteRestrictions(
       const GURL& url,
-      const net::SiteForCookies& site_for_cookies) const override;
+      const net::SiteForCookies& site_for_cookies,
+      const url::Origin& top_level_origin) const override;
 
   ContentSetting GetContentSetting(
       const GURL& primary_url,
@@ -344,14 +361,40 @@ class TpcBlockingBrowserClient : public ContentBrowserClient,
       base::optional_ref<const url::Origin> top_frame_origin,
       net::CookieSettingOverrides overrides) const override;
 
-  bool MitigationsEnabledFor3pcd() const override;
-
-  bool IsThirdPartyCookiesAllowedScheme(
-      const std::string& scheme) const override;
+  bool IsThirdPartyCookiesAllowedScheme(std::string_view scheme) const override;
 
  private:
   bool block_3pcs_ = false;
   content_settings::HostIndexedContentSettings tpc_content_settings_;
+};
+
+// Class used to pause cookie access notifications. The class works by unbinding
+// existing CookieAccessObserver receivers and storing new ones without binding
+// them.
+class PausedCookieAccessObservers : public CookieAccessObservers {
+ public:
+  explicit PausedCookieAccessObservers(NotifyCookiesAccessedCallback callback,
+                                       PendingObserversWithContext observers);
+  ~PausedCookieAccessObservers() override;
+
+  // CookieAccessObservers
+  void Add(mojo::PendingReceiver<network::mojom::CookieAccessObserver> receiver,
+           CookieAccessDetails::Source source) override;
+  PendingObserversWithContext TakeReceiversWithContext() override;
+
+ private:
+  // Holds existing and new receivers.
+  PendingObserversWithContext pending_receivers_;
+};
+
+// Class used to pause all cookie access notifications in a WebContents.
+class CookieAccessInterceptor : public WebContentsObserver {
+ public:
+  explicit CookieAccessInterceptor(WebContents& web_contents);
+  ~CookieAccessInterceptor() override;
+
+  // WebContentsObserver
+  void DidStartNavigation(NavigationHandle* navigation_handle) override;
 };
 
 }  // namespace content

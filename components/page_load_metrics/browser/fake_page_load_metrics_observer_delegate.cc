@@ -18,6 +18,9 @@ FakePageLoadMetricsObserverDelegate::FakePageLoadMetricsObserverDelegate()
       page_end_user_initiated_info_(UserInitiatedInfo::NotUserInitiated()),
       visibility_tracker_(base::DefaultTickClock::GetInstance(),
                           /*is_shown=*/true),
+      soft_navigation_contentful_paint_candidate_(
+          false,
+          blink::LargestContentfulPaintType::kNone),
       navigation_id_(g_next_navigation_id_++),
       navigation_start_(base::TimeTicks::Now()) {}
 FakePageLoadMetricsObserverDelegate::~FakePageLoadMetricsObserverDelegate() =
@@ -69,6 +72,11 @@ FakePageLoadMetricsObserverDelegate::GetBackForwardCacheRestore(
   return back_forward_cache_restores_[index];
 }
 
+size_t FakePageLoadMetricsObserverDelegate::GetNumBackForwardCacheRestores()
+    const {
+  return back_forward_cache_restores_.size();
+}
+
 bool FakePageLoadMetricsObserverDelegate::StartedInForeground() const {
   return started_in_foreground_;
 }
@@ -76,6 +84,10 @@ bool FakePageLoadMetricsObserverDelegate::StartedInForeground() const {
 PageVisibility FakePageLoadMetricsObserverDelegate::GetVisibilityAtActivation()
     const {
   return visibility_at_activation_;
+}
+
+bool FakePageLoadMetricsObserverDelegate::IsReloadAfterDiscard() const {
+  return is_discarded_page_reload_;
 }
 
 bool FakePageLoadMetricsObserverDelegate::
@@ -145,25 +157,25 @@ const NormalizedCLSData& FakePageLoadMetricsObserverDelegate::
   return normalized_cls_data_;
 }
 
-const ResponsivenessMetricsNormalization&
-FakePageLoadMetricsObserverDelegate::GetResponsivenessMetricsNormalization()
+const InteractionToNextPaintCalculator&
+FakePageLoadMetricsObserverDelegate::GetInteractionToNextPaintCalculator()
     const {
-  return responsiveness_metrics_normalization_;
+  return interaction_to_next_paint_calculator_;
 }
 
-const ResponsivenessMetricsNormalization& FakePageLoadMetricsObserverDelegate::
-    GetSoftNavigationIntervalResponsivenessMetricsNormalization() const {
-  return responsiveness_metrics_normalization_;
-}
-
-const mojom::InputTiming&
-FakePageLoadMetricsObserverDelegate::GetPageInputTiming() const {
-  return page_input_timing_;
+const InteractionToNextPaintCalculator& FakePageLoadMetricsObserverDelegate::
+    GetSoftNavigationIntervalInteractionToNextPaintCalculator() const {
+  return interaction_to_next_paint_calculator_;
 }
 
 const std::optional<blink::SubresourceLoadMetrics>&
 FakePageLoadMetricsObserverDelegate::GetSubresourceLoadMetrics() const {
   return subresource_load_metrics_;
+}
+
+const mojom::FontLoadingMetricsPtr&
+FakePageLoadMetricsObserverDelegate::GetFontLoadingMetrics() const {
+  return font_loading_metrics_;
 }
 
 const PageRenderData&
@@ -191,6 +203,12 @@ const LargestContentfulPaintHandler& FakePageLoadMetricsObserverDelegate::
   return experimental_largest_contentful_paint_handler_;
 }
 
+const ContentfulPaintTimingInfo&
+FakePageLoadMetricsObserverDelegate::GetSoftNavigationLargestContentfulPaint()
+    const {
+  return soft_navigation_contentful_paint_candidate_.MergeTextAndImageTiming();
+}
+
 ukm::SourceId FakePageLoadMetricsObserverDelegate::GetPageUkmSourceId() const {
   return ukm::kInvalidSourceId;
 }
@@ -200,14 +218,13 @@ FakePageLoadMetricsObserverDelegate::GetSoftNavigationMetrics() const {
   return *mojom::SoftNavigationMetrics::New();
 }
 
-ukm::SourceId
-FakePageLoadMetricsObserverDelegate::GetUkmSourceIdForSoftNavigation() const {
-  return ukm::kInvalidSourceId;
+uint64_t FakePageLoadMetricsObserverDelegate::GetSoftNavigationCount() const {
+  return 0;
 }
 
 ukm::SourceId
-FakePageLoadMetricsObserverDelegate::GetPreviousUkmSourceIdForSoftNavigation()
-    const {
+FakePageLoadMetricsObserverDelegate::GetUkmSourceIdForSameDocumentNavigation(
+    base::UnguessableToken same_document_metrics_token) const {
   return ukm::kInvalidSourceId;
 }
 

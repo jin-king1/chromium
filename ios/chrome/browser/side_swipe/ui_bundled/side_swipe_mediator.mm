@@ -10,9 +10,11 @@
 #import "base/ios/block_types.h"
 #import "base/memory/raw_ptr.h"
 #import "base/scoped_observation.h"
+#import "base/timer/timer.h"
 #import "components/feature_engagement/public/event_constants.h"
 #import "components/feature_engagement/public/tracker.h"
 #import "ios/chrome/browser/fullscreen/ui_bundled/scoped_fullscreen_disabler.h"
+#import "ios/chrome/browser/reader_mode/model/reader_mode_tab_helper.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list_observer_bridge.h"
 #import "ios/chrome/browser/shared/public/commands/help_commands.h"
@@ -21,10 +23,16 @@
 #import "ios/chrome/browser/side_swipe/ui_bundled/side_swipe_mediator+Testing.h"
 #import "ios/chrome/browser/side_swipe/ui_bundled/side_swipe_util.h"
 #import "ios/chrome/browser/snapshots/model/snapshot_tab_helper.h"
-#import "ios/chrome/browser/web/model/page_placeholder_tab_helper.h"
 #import "ios/chrome/browser/web/model/web_navigation_util.h"
 #import "ios/web/public/navigation/navigation_item.h"
 #import "ios/web/public/web_state_observer_bridge.h"
+
+namespace {
+
+// The timeout used for updating snapshots following a side-swipe gesture.
+constexpr base::TimeDelta kUpdateSnapshotTimeout = base::Milliseconds(100);
+
+}  // namespace
 
 @interface SideSwipeMediator () <CRWWebStateObserver,
                                  UIGestureRecognizerDelegate,
@@ -41,6 +49,10 @@
 
   // The webStateList owned by the current browser.
   raw_ptr<WebStateList> _webStateList;
+
+  // Timer to ensure that snapshot updates that take longer than a maximum
+  // delay will release their callback even if the update is incomplete.
+  base::OneShotTimer _snapshotTimer;
 }
 
 // The current active WebState.
@@ -82,6 +94,10 @@
   return _webStateList ? _webStateList->GetActiveWebState() : nullptr;
 }
 
+- (void)updateEdgeSwipePrecedenceForActiveWebState {
+  return [self updateNavigationEdgeSwipeForWebState:self.activeWebState];
+}
+
 - (void)updateNavigationEdgeSwipeForWebState:(web::WebState*)webState {
   if (!webState) {
     return;
@@ -115,6 +131,16 @@
       webState->GetNavigationManager()->GetForwardItems();
   if (forwardItems.size() > 0 && UseNativeSwipe(forwardItems[0])) {
     [self.consumer setTrailingEdgeNavigationEnabled:YES];
+  }
+
+  // The Reader Mode web state does not have a navigation stack, so instead
+  // use the custom Chromium native swipe to support back/forwards navigations.
+  ReaderModeTabHelper* readerModeTabHelper =
+      ReaderModeTabHelper::FromWebState(webState);
+  if (readerModeTabHelper &&
+      readerModeTabHelper->GetReaderModeWebState() != nullptr) {
+    [self.consumer setTrailingEdgeNavigationEnabled:YES];
+    [self.consumer setLeadingEdgeNavigationEnabled:YES];
   }
 }
 
@@ -184,38 +210,51 @@
   if (!self.activeWebState || newTabIndex == WebStateList::kInvalidIndex) {
     return;
   }
-  // Disable overlay preview mode for last selected tab.
-  PagePlaceholderTabHelper::FromWebState(self.activeWebState)
-      ->CancelPlaceholderForNextNavigation();
-
-  web::WebState* webState = _webStateList->GetWebStateAt(newTabIndex);
-  // Enable overlay preview mode for selected tab.
-  PagePlaceholderTabHelper::FromWebState(webState)
-      ->AddPlaceholderForNextNavigation();
 
   _webStateList->ActivateWebStateAt(newTabIndex);
 }
 
-- (void)cancelTabSwitchWithSwipeAndRevertToInitialTabIndex:
-    (int)initialTabIndex {
-  web::WebState* webState = _webStateList->GetWebStateAt(initialTabIndex);
-  PagePlaceholderTabHelper::FromWebState(webState)
-      ->CancelPlaceholderForNextNavigation();
-  _webStateList->ActivateWebStateAt(initialTabIndex);
-}
-
 - (void)didCompleteTabSwitchWithSwipe {
-  PagePlaceholderTabHelper::FromWebState(self.activeWebState)
-      ->CancelPlaceholderForNextNavigation();
 }
 
 - (int)activeTabIndex {
   return _webStateList->active_index();
 }
 
-- (void)updateActiveTabSnapshot {
-  SnapshotTabHelper::FromWebState(self.activeWebState)
-      ->UpdateSnapshotWithCallback(nil);
+- (void)updateActiveTabSnapshot:(ProceduralBlock)callback {
+  if (!self.activeWebState) {
+    [self runSnapshotCallback:callback];
+    return;
+  }
+  SnapshotTabHelper* snapshotTabHelper =
+      SnapshotTabHelper::FromWebState(self.activeWebState);
+  if (!snapshotTabHelper) {
+    [self runSnapshotCallback:callback];
+    return;
+  }
+  __weak __typeof(self) weakSelf = self;
+  _snapshotTimer.Start(FROM_HERE, kUpdateSnapshotTimeout, base::BindOnce(^{
+                         [weakSelf runSnapshotCallback:callback];
+                       }));
+  snapshotTabHelper->UpdateSnapshotWithCallback(^(UIImage* image) {
+    [weakSelf onSnapshotUpdated:callback];
+  });
+}
+
+- (void)runSnapshotCallback:(ProceduralBlock)callback {
+  if (callback) {
+    callback();
+  }
+}
+
+- (void)onSnapshotUpdated:(ProceduralBlock)callback {
+  if (!_snapshotTimer.IsRunning()) {
+    // If the timer is not running, then the callback was already called.
+    return;
+  }
+  // Otherwise, timer should be stopped and callback should be called.
+  _snapshotTimer.Stop();
+  [self runSnapshotCallback:callback];
 }
 
 - (int)tabCount {

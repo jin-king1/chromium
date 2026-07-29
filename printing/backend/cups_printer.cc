@@ -18,12 +18,15 @@
 #include "printing/backend/cups_connection.h"
 #include "printing/backend/cups_ipp_constants.h"
 #include "printing/backend/cups_ipp_helper.h"
-#include "printing/backend/cups_weak_functions.h"
 #include "printing/backend/print_backend.h"
 #include "printing/backend/print_backend_consts.h"
 #include "printing/backend/print_backend_utils.h"
 #include "printing/print_job_constants.h"
 #include "url/gurl.h"
+
+#if BUILDFLAG(IS_LINUX)
+#include "printing/backend/cups_weak_functions.h"
+#endif
 
 namespace printing {
 
@@ -48,7 +51,7 @@ class CupsPrinterImpl : public CupsPrinter {
     // point
     if (printer_uri) {
       printer_uri_ = printer_uri;
-      resource_path_ = std::string(GURL(printer_uri_).path_piece());
+      resource_path_ = std::string(GURL(printer_uri_).path());
     }
   }
 
@@ -107,13 +110,15 @@ class CupsPrinterImpl : public CupsPrinter {
 
 #if BUILDFLAG(IS_CHROMEOS)
     // OAuth token passed to CUPS as IPP attribute, see b/200086039.
-    if (name && strcmp(name, kSettingChromeOSAccessOAuthToken) == 0)
+    if (name &&
+        UNSAFE_TODO(strcmp(name, kSettingChromeOSAccessOAuthToken)) == 0) {
       return true;
+    }
 
     // Special case for the IPP 'client-info' collection because
     // cupsCheckDestSupported will not report it as supported even when it is.
     // See http://b/238761330.
-    if (name && strcmp(name, kIppClientInfo) == 0) {
+    if (name && UNSAFE_TODO(strcmp(name, kIppClientInfo)) == 0) {
       return true;
     }
 #endif

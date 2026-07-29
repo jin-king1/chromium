@@ -2,16 +2,19 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#import "chrome/browser/ui/views/apps/chrome_native_app_window_views_mac.h"
+#include "chrome/browser/ui/views/apps/chrome_native_app_window_views_mac.h"
 
 #import <Cocoa/Cocoa.h>
+
+#include <memory>
 
 #include "base/memory/raw_ptr.h"
 #include "chrome/browser/apps/app_shim/app_shim_manager_mac.h"
 #include "chrome/browser/profiles/profile.h"
 #import "chrome/browser/ui/views/apps/app_window_native_widget_mac.h"
-#import "chrome/browser/ui/views/apps/native_app_window_frame_view_mac.h"
 #import "ui/gfx/mac/coordinate_conversion.h"
+#include "ui/views/window/frame_view.h"
+#include "ui/views/window/native_frame_view_mac.h"
 
 // This observer is used to get NSWindow notifications. We need to monitor
 // zoom and full screen events to store the correct bounds to Restore() to.
@@ -130,14 +133,14 @@ void ChromeNativeAppWindowViewsMac::OnBeforeWidgetInit(
                                                  widget);
 }
 
-std::unique_ptr<views::NonClientFrameView>
+std::unique_ptr<views::FrameView>
 ChromeNativeAppWindowViewsMac::CreateStandardDesktopAppFrame() {
-  return std::make_unique<NativeAppWindowFrameViewMac>(widget(), this);
+  return CreateFrameViewImpl();
 }
 
-std::unique_ptr<views::NonClientFrameView>
+std::unique_ptr<views::FrameView>
 ChromeNativeAppWindowViewsMac::CreateNonStandardAppFrame() {
-  return std::make_unique<NativeAppWindowFrameViewMac>(widget(), this);
+  return CreateFrameViewImpl();
 }
 
 bool ChromeNativeAppWindowViewsMac::IsMaximized() const {
@@ -193,4 +196,9 @@ void ChromeNativeAppWindowViewsMac::FlashFrame(bool flash) {
 void ChromeNativeAppWindowViewsMac::OnWidgetCreated(views::Widget* widget) {
   nswindow_observer_ =
       [[ResizeNotificationObserver alloc] initForNativeAppWindow:this];
+}
+
+std::unique_ptr<views::FrameView>
+ChromeNativeAppWindowViewsMac::CreateFrameViewImpl() {
+  return std::make_unique<views::NativeFrameViewMac>(widget());
 }

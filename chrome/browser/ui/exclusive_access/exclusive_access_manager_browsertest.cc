@@ -6,6 +6,7 @@
 
 #include "base/test/task_environment.h"
 #include "base/test/test_mock_time_task_runner.h"
+#include "build/build_config.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_context.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_test.h"
 #include "chrome/browser/ui/ui_features.h"
@@ -15,6 +16,11 @@
 #include "ui/base/ozone_buildflags.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 #include "url/gurl.h"
+#include "url/origin.h"
+
+#if BUILDFLAG(IS_OZONE)
+#include "ui/ozone/public/ozone_platform.h"
+#endif
 
 using ExclusiveAccessManagerTest = ExclusiveAccessTest;
 
@@ -52,17 +58,17 @@ IN_PROC_BROWSER_TEST_F(ExclusiveAccessManagerTest,
   ExpectMockControllerReceivedEscape(2);
 }
 
-// TODO: crbug.com/352244303 - For some reason the test fails on
-// linux_wayland_rel when kKeyboardAndPointerLockPrompt is disabled. Re-enable
-// the test when the feature is enabled by default.
-#if BUILDFLAG(IS_OZONE_WAYLAND)
-#define MAYBE_HandleKeyEvent_KeyboardLocked \
-  DISABLED_HandleKeyEvent_KeyboardLocked
-#else
-#define MAYBE_HandleKeyEvent_KeyboardLocked HandleKeyEvent_KeyboardLocked
-#endif
+// Ensure HandleKeyEvent_KeyboardLocked.
 IN_PROC_BROWSER_TEST_F(ExclusiveAccessManagerTest,
-                       MAYBE_HandleKeyEvent_KeyboardLocked) {
+                       HandleKeyEvent_KeyboardLocked) {
+#if BUILDFLAG(IS_OZONE)
+  // TODO: crbug.com/352244303 - For some reason the test fails on
+  // linux_wayland_rel when kKeyboardAndPointerLockPrompt is disabled. Re-enable
+  // the test when the feature is enabled by default.
+  if (::ui::OzonePlatform::RunningOnWaylandForTest()) {
+    GTEST_SKIP() << "Wayland has lock limitations";
+  }
+#endif
   // Esc key pressed while keyboard is locked without Esc key should be handled.
   EnterActiveTabFullscreen();
   RequestKeyboardLock(/*esc_key_locked=*/false);
@@ -181,4 +187,36 @@ IN_PROC_BROWSER_TEST_F(ExclusiveAccessManagerPressAndHoldEscTest,
     task_runner->FastForwardBy(base::Seconds(0.5));
     EXPECT_TRUE(IsExclusiveAccessBubbleDisplayed());
   }
+}
+
+IN_PROC_BROWSER_TEST_F(ExclusiveAccessManagerTest,
+                       GetOriginForFullscreenBubble) {
+  const GURL kTestUrl("https://example.com");
+  const url::Origin kTestOrigin = url::Origin::Create(kTestUrl);
+
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), kTestUrl));
+  EXPECT_FALSE(GetExclusiveAccessManager()
+                   ->context()
+                   ->IsExclusiveAccessBubbleDisplayed());
+
+  // Enter fullscreen
+  EnterActiveTabFullscreen();
+  EXPECT_EQ(kTestOrigin,
+            GetExclusiveAccessManager()->GetExclusiveAccessBubbleOrigin());
+}
+
+IN_PROC_BROWSER_TEST_F(ExclusiveAccessManagerTest,
+                       GetOriginForPointerLockBubble) {
+  const GURL kTestUrl("https://example.com");
+  const url::Origin kTestOrigin = url::Origin::Create(kTestUrl);
+
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), kTestUrl));
+  EXPECT_FALSE(GetExclusiveAccessManager()
+                   ->context()
+                   ->IsExclusiveAccessBubbleDisplayed());
+
+  RequestToLockPointer(/*user_gesture=*/true,
+                       /*last_unlocked_by_target=*/false);
+  EXPECT_EQ(kTestOrigin,
+            GetExclusiveAccessManager()->GetExclusiveAccessBubbleOrigin());
 }

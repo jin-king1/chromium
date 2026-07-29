@@ -13,6 +13,7 @@
 #include "third_party/blink/public/common/input/web_mouse_event.h"
 #include "third_party/blink/public/mojom/input/focus_type.mojom-blink.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_gc_controller.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_mouse_event_init.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_pointer_event_init.h"
 #include "third_party/blink/renderer/core/css/css_property_value_set.h"
 #include "third_party/blink/renderer/core/css/document_style_environment_variables.h"
@@ -34,6 +35,7 @@
 #include "third_party/blink/renderer/core/input/event_handler.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
 #include "third_party/blink/renderer/core/loader/empty_clients.h"
+#include "third_party/blink/renderer/core/pointer_type_names.h"
 #include "third_party/blink/renderer/core/testing/page_test_base.h"
 #include "third_party/blink/renderer/modules/media_controls/elements/media_control_cast_button_element.h"
 #include "third_party/blink/renderer/modules/media_controls/elements/media_control_current_time_display_element.h"
@@ -56,6 +58,7 @@
 #include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 #include "third_party/blink/renderer/platform/testing/unit_test_helpers.h"
 #include "third_party/blink/renderer/platform/web_test_support.h"
+#include "third_party/blink/renderer/platform/wtf/text/string_to_number.h"
 #include "ui/display/mojom/screen_orientation.mojom-blink.h"
 #include "ui/display/screen_info.h"
 
@@ -128,8 +131,8 @@ bool IsElementVisible(Element& element) {
     return false;
 
   if (inline_style->HasProperty(CSSPropertyID::kOpacity) &&
-      inline_style->GetPropertyValue(CSSPropertyID::kOpacity).ToDouble() ==
-          0.0) {
+      StringToDouble(inline_style->GetPropertyValue(CSSPropertyID::kOpacity))
+              .value_or(0) == 0.0) {
     return false;
   }
 
@@ -157,17 +160,13 @@ enum DownloadActionMetrics {
 
 class MediaControlsImplTest
     : public PageTestBase,
-      private ScopedMediaCastOverlayButtonForTest,
       private ScopedMediaControlsOverlayPlayButtonForTest {
  public:
   explicit MediaControlsImplTest(
       base::test::TaskEnvironment::TimeSource time_source)
       : PageTestBase(time_source),
-        ScopedMediaCastOverlayButtonForTest(true),
         ScopedMediaControlsOverlayPlayButtonForTest(true) {}
-  MediaControlsImplTest()
-      : ScopedMediaCastOverlayButtonForTest(true),
-        ScopedMediaControlsOverlayPlayButtonForTest(true) {}
+  MediaControlsImplTest() : ScopedMediaControlsOverlayPlayButtonForTest(true) {}
 
  protected:
   void SetUp() override {
@@ -178,7 +177,7 @@ class MediaControlsImplTest
     SetupPageWithClients(MakeGarbageCollected<FakeChromeClient>(),
                          MakeGarbageCollected<StubLocalFrameClientForImpl>());
 
-    GetDocument().write("<video controls>");
+    GetDocument().write("<video controls></video>");
     auto& video = To<HTMLVideoElement>(
         *GetDocument().QuerySelector(AtomicString("video")));
     media_controls_ = static_cast<MediaControlsImpl*>(video.GetMediaControls());
@@ -220,6 +219,13 @@ class MediaControlsImplTest
   void SimulateOnSeeked() { media_controls_->OnSeeked(); }
   void SimulateOnWaiting() { media_controls_->OnWaiting(); }
   void SimulateOnPlaying() { media_controls_->OnPlaying(); }
+
+  void SetIsTouchInteraction(bool val) {
+    media_controls_->is_touch_interaction_ = val;
+  }
+  bool IsTouchInteraction() const {
+    return media_controls_->is_touch_interaction_;
+  }
 
   void SimulateMediaControlPlaying() {
     MediaControls().MediaElement().SetReadyState(
@@ -319,6 +325,29 @@ class MediaControlsImplTest
         HTMLMediaElement::kHaveEnoughData);
   }
 
+  // Set the focus .
+  void FocusElement(
+      Element* element,
+      mojom::blink::FocusType focus_type = blink::mojom::FocusType::kMouse) {
+    // GetDocument().SetLastFocusType(focus_type);
+    FocusParams params(SelectionBehaviorOnFocus::kNone, focus_type, nullptr);
+    GetDocument().SetFocusedElement(element, params);
+    // element->SetFocused(true, focus_type);
+    //  Doesn't matter what, but we want some event to trigger the show / hide
+    //  logic in the controls.
+    // MediaControls().DispatchEvent(*Event::Create(event_type_names::kPointerout));
+  }
+
+  // Clear the focus from `element`, as if some other element was focused.
+  void UnfocusElement(
+      Element* element,
+      mojom::blink::FocusType focus_type = blink::mojom::FocusType::kMouse) {
+    GetDocument().SetLastFocusType(focus_type);
+    element->SetFocused(false, focus_type);
+    MediaControls().DispatchEvent(
+        *Event::Create(event_type_names::kPointerout));
+  }
+
   void MouseDownAt(gfx::PointF pos);
   void MouseMoveTo(gfx::PointF pos);
   void MouseUpAt(gfx::PointF pos);
@@ -354,7 +383,30 @@ class MediaControlsImplTest
 
   PointerEvent* CreatePointerEvent(const AtomicString& name) {
     PointerEventInit* init = PointerEventInit::Create();
+    init->setPointerType(pointer_type_names::kMouse);
     return PointerEvent::Create(name, init);
+  }
+
+  PointerEvent* CreateTouchPointerEvent(const AtomicString& name) {
+    PointerEventInit* init = PointerEventInit::Create();
+    init->setPointerType(pointer_type_names::kTouch);
+    return PointerEvent::Create(name, init);
+  }
+
+  MouseEvent* CreateMouseEvent(const AtomicString& name) {
+    MouseEventInit* init = MouseEventInit::Create();
+    return MouseEvent::Create(name, init, base::TimeTicks::Now(),
+                              MouseEvent::kRealOrIndistinguishable,
+                              ui::mojom::blink::MenuSourceType::kNone);
+  }
+
+  void SimulateGestureTap(Element* element) {
+    element->DispatchEvent(
+        *CreateTouchPointerEvent(event_type_names::kGesturetap));
+  }
+
+  void SimulateClick(Element* element) {
+    element->DispatchEvent(*CreatePointerEvent(event_type_names::kClick));
   }
 
  private:
@@ -504,20 +556,6 @@ TEST_F(MediaControlsImplTest, CastOverlayDefault) {
   ASSERT_TRUE(IsElementVisible(*cast_overlay_button));
 }
 
-TEST_F(MediaControlsImplTest, CastOverlayDisabled) {
-  MediaControls().MediaElement().SetBooleanAttribute(html_names::kControlsAttr,
-                                                     false);
-
-  ScopedMediaCastOverlayButtonForTest media_cast_overlay_button(false);
-
-  Element* cast_overlay_button = GetElementByShadowPseudoId(
-      MediaControls(), "-internal-media-controls-overlay-cast-button");
-  ASSERT_NE(nullptr, cast_overlay_button);
-
-  SimulateRemotePlaybackAvailable();
-  ASSERT_FALSE(IsElementVisible(*cast_overlay_button));
-}
-
 TEST_F(MediaControlsImplTest, CastOverlayDisableRemotePlaybackAttr) {
   MediaControls().MediaElement().SetBooleanAttribute(html_names::kControlsAttr,
                                                      false);
@@ -558,27 +596,6 @@ TEST_F(MediaControlsImplTest, CastOverlayMediaControlsDisabled) {
 
   GetDocument().GetSettings()->SetMediaControlsEnabled(true);
   EXPECT_TRUE(IsElementVisible(*cast_overlay_button));
-}
-
-TEST_F(MediaControlsImplTest, CastOverlayDisabledMediaControlsDisabled) {
-  MediaControls().MediaElement().SetBooleanAttribute(html_names::kControlsAttr,
-                                                     false);
-
-  ScopedMediaCastOverlayButtonForTest media_cast_overlay_button(false);
-
-  Element* cast_overlay_button = GetElementByShadowPseudoId(
-      MediaControls(), "-internal-media-controls-overlay-cast-button");
-  ASSERT_NE(nullptr, cast_overlay_button);
-
-  EXPECT_FALSE(IsElementVisible(*cast_overlay_button));
-  SimulateRemotePlaybackAvailable();
-  EXPECT_FALSE(IsElementVisible(*cast_overlay_button));
-
-  GetDocument().GetSettings()->SetMediaControlsEnabled(false);
-  EXPECT_FALSE(IsElementVisible(*cast_overlay_button));
-
-  GetDocument().GetSettings()->SetMediaControlsEnabled(true);
-  EXPECT_FALSE(IsElementVisible(*cast_overlay_button));
 }
 
 TEST_F(MediaControlsImplTest, CastOverlayDisabledAutoplayMuted) {
@@ -670,6 +687,24 @@ TEST_F(MediaControlsImplTest, DownloadButtonNotDisplayedEmptyUrl) {
   test::RunPendingTasks();
   SimulateLoadedMetadata();
   EXPECT_FALSE(IsOverflowElementVisible(*download_button));
+}
+
+TEST_F(MediaControlsImplTest, DownloadButtonNotDisplayedForContentUrl) {
+  EnsureSizing();
+
+  MediaControlDownloadButtonElement* download_button = DownloadButtonElement();
+  ASSERT_NE(nullptr, download_button);
+
+  // Download button should not be displayed for content URLs.
+  MediaControls().MediaElement().SetSrc(
+      AtomicString("content://media/external/video/media/1"));
+  test::RunPendingTasks();
+  SimulateLoadedMetadata();
+#if BUILDFLAG(IS_ANDROID)
+  EXPECT_FALSE(IsOverflowElementVisible(*download_button));
+#else
+  EXPECT_TRUE(IsOverflowElementVisible(*download_button));
+#endif
 }
 
 TEST_F(MediaControlsImplTest, DownloadButtonNotDisplayedInfiniteDuration) {
@@ -1020,8 +1055,8 @@ TEST_F(MediaControlsImplTestWithMockScheduler,
 
   // Mouse move while focused
   MediaControls().DispatchEvent(*Event::Create(event_type_names::kFocusin));
-  MediaControls().MediaElement().SetFocused(true,
-                                            mojom::blink::FocusType::kNone);
+
+  FocusElement(&MediaControls().MediaElement());
   MediaControls().DispatchEvent(
       *CreatePointerEvent(event_type_names::kPointermove));
 
@@ -1048,10 +1083,66 @@ TEST_F(MediaControlsImplTestWithMockScheduler,
 
   // Mouse move out while focused, controls should hide
   MediaControls().DispatchEvent(*Event::Create(event_type_names::kFocusin));
-  MediaControls().MediaElement().SetFocused(true,
-                                            mojom::blink::FocusType::kNone);
+  FocusElement(&MediaControls().MediaElement());
   MediaControls().DispatchEvent(*Event::Create(event_type_names::kPointerout));
   EXPECT_FALSE(IsElementVisible(*panel));
+}
+
+TEST_F(MediaControlsImplTestWithMockScheduler,
+       ControlsDoNotHideOnKeyboardFocus) {
+  EnsureSizing();
+
+  Element* panel = MediaControls().PanelElement();
+  auto* player = &MediaControls().MediaElement();
+  player->SetSrc(AtomicString("http://example.com"));
+  player->Play();
+
+  // Controls start out visible
+  EXPECT_TRUE(IsElementVisible(*panel));
+  EXPECT_TRUE(IsElementVisible(*player));
+  FastForwardBy(base::Seconds(1));
+
+  // Focus via keyboard.
+  EXPECT_TRUE(player->IsFocusable());
+  FocusElement(player, mojom::blink::FocusType::kNone);
+  EXPECT_TRUE(player->IsFocused());
+
+  // Controls should remain visible.
+  FastForwardBy(base::Seconds(5));
+  EXPECT_TRUE(IsElementVisible(*panel));
+
+  // Unfocus the element.  Controls should hide, even if the unfocus was via
+  // keyboard.  They will re-show when the user refocuses the video player.
+  // This behavior was tested above.
+  EXPECT_TRUE(player->IsFocused());
+  UnfocusElement(player, mojom::blink::FocusType::kNone);
+
+  EXPECT_FALSE(player->IsFocused());
+  FastForwardBy(base::Seconds(5));
+  EXPECT_FALSE(IsElementVisible(*panel));
+}
+
+TEST_F(MediaControlsImplTestWithMockScheduler,
+       ControlsDoNotHideIfPlaybackSpeedWanted) {
+  EnsureSizing();
+
+  Element* panel = MediaControls().PanelElement();
+  auto* player = &MediaControls().MediaElement();
+  player->SetSrc(AtomicString("http://example.com"));
+  player->Play();
+
+  // Controls start out visible
+  EXPECT_TRUE(IsElementVisible(*panel));
+  FastForwardBy(base::Seconds(1));
+
+  // Pretend that the user has the playback speed button pressed, and then
+  // unfocuses the panel.
+  MediaControls().TogglePlaybackSpeedList();
+  UnfocusElement(player);
+
+  // Controls should remain visible.
+  FastForwardBy(base::Seconds(5));
+  EXPECT_TRUE(IsElementVisible(*panel));
 }
 
 TEST_F(MediaControlsImplTestWithMockScheduler, CursorHidesWhenControlsHide) {
@@ -1124,7 +1215,7 @@ TEST_F(MediaControlsImplTest,
   WeakPersistent<HTMLMediaElement> weak_persistent_video = element;
   {
     Persistent<HTMLMediaElement> persistent_video = element;
-    page_holder->GetDocument().body()->setInnerHTML("");
+    page_holder->GetDocument().body()->SetInnerHTMLWithoutTrustedTypes("");
 
     // When removed from the document, the event listeners should have been
     // dropped.
@@ -1664,6 +1755,74 @@ TEST_F(MediaControlsImplTest, OverlayPlayButtonHidesWhenTooShort) {
   // Set the size to be large enough.
   SetElementHeight(min_height);
   EXPECT_TRUE(overlay_play_button->DoesFit());
+}
+
+TEST_F(MediaControlsImplTest, TouchInteractionResetsOnMouseEvents) {
+  // --- Positive Tests: Mouse/Pointer events should reset touch interaction ---
+  for (const AtomicString& event_name :
+       {event_type_names::kPointermove, event_type_names::kPointerover,
+        event_type_names::kPointerdown, event_type_names::kClick}) {
+    SetIsTouchInteraction(true);
+    MediaControls().DispatchEvent(*CreatePointerEvent(event_name));
+    EXPECT_FALSE(IsTouchInteraction())
+        << "Touch interaction should be reset by pointer event: " << event_name;
+  }
+
+  for (const AtomicString& event_name :
+       {event_type_names::kMousedown, event_type_names::kMousemove}) {
+    SetIsTouchInteraction(true);
+    MediaControls().DispatchEvent(*CreateMouseEvent(event_name));
+    EXPECT_FALSE(IsTouchInteraction())
+        << "Touch interaction should be reset by mouse event: " << event_name;
+  }
+
+  // --- Negative Tests: Touch pointer events should NOT reset touch interaction
+  // ---
+  for (const AtomicString& event_name :
+       {event_type_names::kPointermove, event_type_names::kPointerover,
+        event_type_names::kPointerdown}) {
+    Event* native_touch = CreateTouchPointerEvent(event_name);
+    EXPECT_TRUE(MediaControls().IsTouchEvent(native_touch))
+        << "IsTouchEvent should be true for native touch: " << event_name;
+
+    SetIsTouchInteraction(true);
+    MediaControls().DispatchEvent(*native_touch);
+    EXPECT_TRUE(IsTouchInteraction())
+        << "Touch interaction should NOT be reset by touch-type event: "
+        << event_name;
+  }
+}
+
+TEST_F(MediaControlsImplTest,
+       OverlayPlayButtonTogglesPlayPauseOnGestureTapAndClick) {
+  EnsureSizing();
+
+  auto* overlay_play_button = OverlayPlayButtonElement();
+  ASSERT_NE(nullptr, overlay_play_button);
+
+  MediaControls().MediaElement().SetSrc(
+      AtomicString("https://example.com/foo.mp4"));
+  test::RunPendingTasks();
+  SimulateLoadedMetadata();
+
+  // Initially paused.
+  EXPECT_TRUE(MediaControls().MediaElement().paused());
+
+  // Tap to play.
+  SimulateGestureTap(overlay_play_button);
+  EXPECT_FALSE(MediaControls().MediaElement().paused());
+
+  // Tap to pause.
+  SimulateGestureTap(overlay_play_button);
+  EXPECT_TRUE(MediaControls().MediaElement().paused());
+
+  // Click to play.
+  SimulateClick(overlay_play_button);
+  EXPECT_FALSE(MediaControls().MediaElement().paused());
+
+  // Click to pause.
+  SimulateClick(overlay_play_button);
+  EXPECT_TRUE(MediaControls().MediaElement().paused());
 }
 
 }  // namespace blink

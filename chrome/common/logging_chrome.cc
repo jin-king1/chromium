@@ -5,23 +5,6 @@
 #include <string_view>
 
 #include "build/build_config.h"
-// Need to include this before most other files because it defines
-// IPC_MESSAGE_LOG_ENABLED. We need to use it to define
-// IPC_MESSAGE_MACROS_LOG_ENABLED so render_messages.h will generate the
-// ViewMsgLog et al. functions.
-#include "ipc/ipc_buildflags.h"
-
-// On Windows, the about:ipc dialog shows IPCs; on POSIX, we hook up a
-// logger in this file.  (We implement about:ipc on Mac but implement
-// the loggers here anyway).  We need to do this real early to be sure
-// IPC_MESSAGE_MACROS_LOG_ENABLED doesn't get undefined.
-#if BUILDFLAG(IS_POSIX) && BUILDFLAG(IPC_MESSAGE_LOG_ENABLED)
-#define IPC_MESSAGE_MACROS_LOG_ENABLED
-#include "content/public/common/content_ipc_logging.h"
-#define IPC_LOG_TABLE_ADD_ENTRY(msg_id, logger) \
-  content::RegisterIPCLogger(msg_id, logger)
-#include "chrome/common/all_messages.h"
-#endif
 
 #if BUILDFLAG(IS_WIN)
 #include <windows.h>
@@ -40,6 +23,7 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
+#include "base/logging.h"
 #include "base/metrics/statistics_recorder.h"
 #include "base/path_service.h"
 #include "base/strings/string_number_conversions.h"
@@ -52,12 +36,11 @@
 #include "chrome/common/env_vars.h"
 #include "chrome/common/logging_chrome.h"
 #include "content/public/common/content_switches.h"
-#include "ipc/ipc_logging.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "ash/constants/ash_switches.h"
-#include "base/i18n/time_formatting.h"
-#include "third_party/icu/source/i18n/unicode/timezone.h"
+#include "base/strings/stringprintf.h"
+#include "base/time/time.h"
 #endif
 
 #if BUILDFLAG(IS_WIN)
@@ -67,7 +50,7 @@
 #include "base/process/process_info.h"
 #include "base/syslog_logging.h"
 #include "base/win/scoped_handle.h"
-#include "base/win/win_util.h"
+#include "base/win/windows_handle_util.h"
 #include "chrome/common/win/eventlog_messages.h"
 #include "chrome/install_static/install_details.h"
 #include "sandbox/policy/switches.h"
@@ -188,12 +171,17 @@ LoggingDestination LoggingDestFromCommandLine(
   if (!enable_logging)
     return LOG_NONE;
   if (command_line.HasSwitch(switches::kEnableLogging)) {
-    // Let --enable-logging=stderr force only stderr, particularly useful for
-    // non-debug builds where otherwise you can't get logs to stderr at all.
     std::string logging_destination =
         command_line.GetSwitchValueASCII(switches::kEnableLogging);
+    // Let --enable-logging=stderr force only stderr, particularly useful for
+    // non-debug builds which otherwise default to LOG_TO_FILE.
     if (logging_destination == "stderr") {
-      return LOG_TO_SYSTEM_DEBUG_LOG | LOG_TO_STDERR;
+      return LOG_TO_STDERR;
+    }
+    // Use --enable-logging=system to write to the system debug log, such as
+    // Console.app / log(1) on Mac.
+    if (logging_destination == "system") {
+      return LOG_TO_SYSTEM_DEBUG_LOG;
     }
 #if BUILDFLAG(IS_WIN)
     if (logging_destination == "handle" &&
@@ -348,12 +336,12 @@ void RemoveSymlinkAndLog(const base::FilePath& link_path,
 }
 
 base::FilePath GetSessionLogDir(const base::CommandLine& command_line) {
-  std::string log_dir;
   std::unique_ptr<base::Environment> env(base::Environment::Create());
-  if (!env->GetVar(env_vars::kSessionLogDir, &log_dir)) {
+  std::optional<std::string> log_dir = env->GetVar(env_vars::kSessionLogDir);
+  if (!log_dir.has_value()) {
     NOTREACHED();
   }
-  return base::FilePath(log_dir);
+  return base::FilePath(log_dir.value());
 }
 
 base::FilePath GetSessionLogFile(const base::CommandLine& command_line) {
@@ -562,12 +550,12 @@ base::FilePath GetLogFileName(const base::CommandLine& command_line) {
   auto filename = command_line.GetSwitchValueNative(switches::kLogFile);
   // Try the environment.
   if (filename.empty()) {
-    std::string env_filename;
-    base::Environment::Create()->GetVar(env_vars::kLogFileName, &env_filename);
+    std::optional<std::string> env_filename =
+        base::Environment::Create()->GetVar(env_vars::kLogFileName);
 #if BUILDFLAG(IS_WIN)
-    filename = base::UTF8ToWide(env_filename);
+    filename = base::UTF8ToWide(env_filename.value_or(""));
 #else
-    filename = env_filename;
+    filename = env_filename.value_or("");
 #endif  // BUILDFLAG(IS_WIN)
   }
 
@@ -614,9 +602,11 @@ bool DialogsAreSuppressed() {
 #if BUILDFLAG(IS_CHROMEOS)
 base::FilePath GenerateTimestampedName(const base::FilePath& base_path,
                                        base::Time timestamp) {
-  return base_path.InsertBeforeExtensionASCII(
-      base::UnlocalizedTimeFormatWithPattern(timestamp, "_yyMMdd-HHmmss",
-                                             icu::TimeZone::getGMT()));
+  base::Time::Exploded exploded;
+  timestamp.UTCExplode(&exploded);
+  return base_path.InsertBeforeExtensionASCII(base::StringPrintf(
+      "_%02d%02d%02d-%02d%02d%02d", exploded.year % 100, exploded.month,
+      exploded.day_of_month, exploded.hour, exploded.minute, exploded.second));
 }
 #endif  // BUILDFLAG(IS_CHROMEOS)
 

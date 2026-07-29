@@ -2,10 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import '/strings.m.js';
 import 'chrome://resources/cr_elements/cr_shared_vars.css.js';
 import 'chrome://resources/cr_elements/cr_icon/cr_icon.js';
 import 'chrome://resources/cr_elements/icons.html.js';
-import '/strings.m.js';
 
 import {I18nMixinLit} from 'chrome://resources/cr_elements/i18n_mixin_lit.js';
 import {assert} from 'chrome://resources/js/assert.js';
@@ -35,28 +35,27 @@ export class ManagedUserProfileNoticeDisclosureElement extends
   static override get properties() {
     return {
       showEnterpriseBadge: {type: Boolean},
-      isOidcDialog_: {type: Boolean},
       pictureUrl: {type: String},
+      title: {type: String},
+      subtitle: {type: String},
       disclosureTitle_: {type: String},
+      webuiRoundedIconsEnabled_: {type: Boolean},
     };
   }
 
-  showEnterpriseBadge: boolean = false;
-  pictureUrl: string = '';
+  accessor showEnterpriseBadge: boolean = false;
+  accessor pictureUrl: string = '';
+  override accessor title: string = '';
+  accessor subtitle: string = '';
 
-  protected isOidcDialog_: boolean = loadTimeData.getBoolean('isOidcDialog');
-  protected disclosureTitle_: string = '';
+  protected accessor disclosureTitle_: string = '';
+  protected accessor webuiRoundedIconsEnabled_: boolean =
+      loadTimeData.getBoolean('webuiRoundedIconsEnabled');
 
   override firstUpdated() {
     const titleElement = this.shadowRoot.querySelector<HTMLElement>('.title');
     assert(titleElement);
     titleElement.focus();
-  }
-
-  protected computeDisclosureTitle_() {
-    return this.i18n(
-        this.isOidcDialog_ ? 'profileOidcDisclosureTitle' :
-                             'profileDisclosureTitle');
   }
 }
 

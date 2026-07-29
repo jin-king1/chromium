@@ -10,6 +10,8 @@
 #include "content/browser/preloading/prerender/prerender_metrics.h"
 #include "content/public/browser/document_user_data.h"
 #include "content/public/browser/preloading.h"
+#include "net/http/http_request_headers.h"
+#include "services/network/public/cpp/headers_matcher.h"
 #include "third_party/blink/public/mojom/speculation_rules/speculation_rules.mojom-forward.h"
 
 namespace content {
@@ -29,13 +31,16 @@ class DevToolsPreloadStorage : public DocumentUserData<DevToolsPreloadStorage> {
                             const std::string& request_id);
 
   void UpdatePrerenderStatus(
+      blink::mojom::SpeculationAction action,
       const GURL& prerender_url,
+      bool form_submission,
       std::optional<blink::mojom::SpeculationTargetHint>,
       const base::UnguessableToken& preload_pipeline_id,
       PreloadingTriggeringOutcome outcome,
       std::optional<PrerenderFinalStatus> status,
       const std::optional<std::string>& disallowed_mojo_interface,
-      const std::vector<PrerenderMismatchedHeaders>* mismatched_headers);
+      const std::vector<network::MismatchedHttpRequestHeader>*
+          mismatched_headers);
 
   void SpeculationCandidatesUpdated(
       const std::vector<blink::mojom::SpeculationCandidatePtr>& candidates);
@@ -50,8 +55,13 @@ class DevToolsPreloadStorage : public DocumentUserData<DevToolsPreloadStorage> {
   using PrefetchDataMap = std::map<PrefetchKey, PrefetchData>;
   const PrefetchDataMap& prefetch_data_map() { return prefetch_data_map_; }
 
-  using PrerenderKey =
-      std::pair<GURL, std::optional<blink::mojom::SpeculationTargetHint>>;
+  struct PrerenderKey {
+    GURL prerender_url;
+    bool form_submission;
+    std::optional<blink::mojom::SpeculationTargetHint> target_hint;
+
+    auto operator<=>(const PrerenderKey&) const = default;
+  };
   struct PrerenderData {
     PrerenderData();
     PrerenderData(const PrerenderData& other);
@@ -61,10 +71,13 @@ class DevToolsPreloadStorage : public DocumentUserData<DevToolsPreloadStorage> {
     PreloadingTriggeringOutcome outcome;
     std::optional<PrerenderFinalStatus> status;
     std::optional<std::string> disallowed_mojo_interface;
-    std::vector<PrerenderMismatchedHeaders> mismatched_headers;
+    std::vector<network::MismatchedHttpRequestHeader> mismatched_headers;
   };
   using PrerenderDataMap = std::map<PrerenderKey, PrerenderData>;
   const PrerenderDataMap& prerender_data_map() { return prerender_data_map_; }
+  const PrerenderDataMap& prerender_until_script_data_map() {
+    return prerender_until_script_data_map_;
+  }
 
  private:
   explicit DevToolsPreloadStorage(RenderFrameHost* rfh);
@@ -74,6 +87,7 @@ class DevToolsPreloadStorage : public DocumentUserData<DevToolsPreloadStorage> {
 
   PrefetchDataMap prefetch_data_map_;
   PrerenderDataMap prerender_data_map_;
+  PrerenderDataMap prerender_until_script_data_map_;
 };
 
 }  // namespace content

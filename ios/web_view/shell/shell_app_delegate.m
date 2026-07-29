@@ -8,6 +8,32 @@
 
 #import "ios/web_view/shell/shell_view_controller.h"
 
+@interface ShellSceneDelegate : UIResponder <UIWindowSceneDelegate>
+@property(strong, nonatomic) UIWindow* window;
+@end
+
+@implementation ShellSceneDelegate
+
+- (void)scene:(UIScene*)scene
+    willConnectToSession:(UISceneSession*)session
+                 options:(UISceneConnectionOptions*)connectionOptions {
+  if (![scene isKindOfClass:[UIWindowScene class]]) {
+    return;
+  }
+  UIWindowScene* windowScene = (UIWindowScene*)scene;
+  self.window = [[UIWindow alloc] initWithWindowScene:windowScene];
+  self.window.frame = [[UIScreen mainScreen] bounds];
+  self.window.backgroundColor = [UIColor whiteColor];
+  self.window.tintColor = [UIColor darkGrayColor];
+
+  ShellViewController* controller = [[ShellViewController alloc] init];
+  controller.restorationIdentifier = @"rootViewController";
+  self.window.rootViewController = controller;
+  [self.window makeKeyAndVisible];
+}
+
+@end
+
 @implementation ShellAppDelegate
 
 @synthesize window = _window;
@@ -16,26 +42,11 @@
     willFinishLaunchingWithOptions:(NSDictionary*)launchOptions {
   [[CWVGlobalState sharedInstance] earlyInit];
   [[CWVGlobalState sharedInstance] start];
-
-  // Note that initialization of the window and the root view controller must be
-  // done here, not in -application:didFinishLaunchingWithOptions: when state
-  // restoration is supported.
-
-  self.window = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
-  self.window.backgroundColor = [UIColor whiteColor];
-  self.window.tintColor = [UIColor darkGrayColor];
-
-  ShellViewController* controller = [[ShellViewController alloc] init];
-  // Gives a restoration identifier so that state restoration works.
-  controller.restorationIdentifier = @"rootViewController";
-  self.window.rootViewController = controller;
-
   return YES;
 }
 
 - (BOOL)application:(UIApplication*)application
     didFinishLaunchingWithOptions:(NSDictionary*)launchOptions {
-  [self.window makeKeyAndVisible];
   return YES;
 }
 
@@ -57,12 +68,35 @@
 
 - (BOOL)application:(UIApplication*)application
     shouldSaveSecureApplicationState:(NSCoder*)coder {
-  return NO;
+  return YES;
 }
 
 - (BOOL)application:(UIApplication*)application
     shouldRestoreSecureApplicationState:(NSCoder*)coder {
-  return NO;
+  return YES;
+}
+
+- (void)application:(UIApplication*)application
+    didDecodeRestorableStateWithCoder:(NSCoder*)coder {
+}
+
+- (void)application:(UIApplication*)application
+    willEncodeRestorableStateWithCoder:(NSCoder*)coder {
+}
+
+- (UIViewController*)application:(UIApplication*)application
+    viewControllerWithRestorationIdentifierPath:
+        (NSArray<NSString*>*)identifierComponents
+                                          coder:(NSCoder*)coder {
+  const NSUInteger identifiersCount = identifierComponents.count;
+  if (identifiersCount > 0) {
+    NSString* identifier = identifierComponents[identifiersCount - 1];
+    UIViewController* rootViewController = self.window.rootViewController;
+    if ([identifier isEqualToString:rootViewController.restorationIdentifier]) {
+      return rootViewController;
+    }
+  }
+  return nil;
 }
 
 @end

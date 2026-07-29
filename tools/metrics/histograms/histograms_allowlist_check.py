@@ -4,7 +4,10 @@
 
 import enum
 import os
-import print_histogram_names
+
+import setup_modules  # pylint: disable=unused-import
+
+import chromium_src.tools.metrics.histograms.histogram_utils as histogram_utils
 
 
 class WellKnownAllowlistPath(enum.Enum):
@@ -19,8 +22,11 @@ class WellKnownAllowlistPath(enum.Enum):
   constants or duplicated code among users of this check.
   """
 
-  ANDROID_WEBVIEW = os.path.join('android_webview', 'java', 'res', 'raw',
-                                 'histograms_allowlist.txt')
+  # LINT.IfChange(AndroidWebViewHistogramsAllowlistPath)
+  ANDROID_WEBVIEW = os.path.join('android_webview', 'browser', 'metrics',
+                                 'aw_histograms_allowlist.cc')
+
+  # LINT.ThenChange(//android_webview/browser/metrics/aw_histograms_allowlist.cc:AndroidWebViewHistogramsAllowlistPath)
 
   def relative_path(self):
     """Returns the path of the allowlist file relative to src/."""
@@ -31,8 +37,19 @@ class WellKnownAllowlistPath(enum.Enum):
 
 
 def get_histograms_allowlist_content(allowlist_path):
+  histogramNames = []
   with open(allowlist_path) as file:
-    return [line.rstrip() for line in file]
+    shouldParse = False
+    for line in file:
+      if line.strip() == '// histograms_allowlist_check START_PARSING':
+        shouldParse = True
+        continue
+      if line.strip() == '// histograms_allowlist_check END_PARSING':
+        break
+      if shouldParse:
+        # Remove white space, quotes and commas from the entries.
+        histogramNames.append(line.strip().replace('"', '').replace(',', ''))
+  return histogramNames
 
 
 def check_histograms_allowlist(output_api, allowlist_path, histograms_files):
@@ -46,7 +63,7 @@ def check_histograms_allowlist(output_api, allowlist_path, histograms_files):
       histograms in.
   """
 
-  all_histograms = print_histogram_names.get_names(histograms_files)
+  all_histograms = histogram_utils.get_names(histograms_files)
 
   histograms_allowlist = get_histograms_allowlist_content(allowlist_path)
 

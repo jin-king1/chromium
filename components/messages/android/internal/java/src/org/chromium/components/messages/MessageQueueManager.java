@@ -4,11 +4,12 @@
 
 package org.chromium.components.messages;
 
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import androidx.annotation.VisibleForTesting;
 
-import org.chromium.base.Log;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.components.messages.MessageScopeChange.ChangeType;
 import org.chromium.ui.util.TokenHolder;
 
@@ -23,9 +24,8 @@ import java.util.Objects;
  * A class managing the queue of messages. Its primary role is to decide when to show/hide current
  * message and which message to show next.
  */
+@NullMarked
 class MessageQueueManager implements ScopeChangeController.Delegate {
-    static final String TAG = "MessageQueueManager";
-
     // TokenHolder tracking whether the queue should be suspended.
     private final TokenHolder mSuppressionTokenHolder =
             new TokenHolder(this::onSuspendedStateChange);
@@ -82,16 +82,9 @@ class MessageQueueManager implements ScopeChangeController.Delegate {
 
         List<MessageState> messageQueue = mMessageQueues.get(scopeKey);
         if (messageQueue == null) {
-            mMessageQueues.put(scopeKey, messageQueue = new ArrayList<>());
+            messageQueue = new ArrayList<>();
+            mMessageQueues.put(scopeKey, messageQueue);
             mScopeChangeController.firstMessageEnqueued(scopeKey);
-        }
-
-        if (mAreExtraHistogramsEnabled) {
-            MessagesMetrics.recordMessageEnqueuedScopeActive(
-                    message.getMessageIdentifier(), mScopeChangeController.isActive(scopeKey));
-
-            MessagesMetrics.recordMessageEnqueuedQueueSuspended(
-                    message.getMessageIdentifier(), isQueueSuspended());
         }
 
         MessageState messageState = new MessageState(scopeKey, messageKey, message, highPriority);
@@ -107,12 +100,7 @@ class MessageQueueManager implements ScopeChangeController.Delegate {
         if (primaryCandidate == messageState) {
             MessagesMetrics.recordMessageEnqueuedVisible(message.getMessageIdentifier());
         } else if (mAreExtraHistogramsEnabled) {
-            @MessageIdentifier int visibleMessageId = MessageIdentifier.INVALID_MESSAGE;
-            if (primaryCandidate != null) {
-                visibleMessageId = primaryCandidate.handler.getMessageIdentifier();
-            }
-            MessagesMetrics.recordMessageEnqueuedHidden(
-                    message.getMessageIdentifier(), visibleMessageId);
+            MessagesMetrics.recordMessageEnqueuedHidden(message.getMessageIdentifier());
         }
     }
 
@@ -135,19 +123,14 @@ class MessageQueueManager implements ScopeChangeController.Delegate {
      * state from the queue.
      */
     private void dismissMessageInternal(
-            @NonNull MessageState messageState, @DismissReason int dismissReason) {
+            MessageState messageState, @DismissReason int dismissReason) {
         MessageStateHandler message = messageState.handler;
         ScopeKey scopeKey = messageState.scopeKey;
 
         // Remove the scope from the map if the messageQueue is empty.
         List<MessageState> messageQueue = mMessageQueues.get(scopeKey);
+        assumeNonNull(messageQueue);
         messageQueue.remove(messageState);
-        Log.w(
-                TAG,
-                "Removed message with ID %s and key %s from queue because of reason %s.",
-                message.getMessageIdentifier(),
-                messageState.messageKey,
-                dismissReason);
         if (messageQueue.isEmpty()) {
             mMessageQueues.remove(scopeKey);
             mScopeChangeController.lastMessageDismissed(scopeKey);
@@ -284,7 +267,7 @@ class MessageQueueManager implements ScopeChangeController.Delegate {
     //   (a is not lower priority than b);
     // * If a is not highPriority and b is high priority, return true (a is lower priority than b);
     @VisibleForTesting
-    boolean isLowerPriority(@Nullable MessageState a, @NonNull MessageState b) {
+    boolean isLowerPriority(@Nullable MessageState a, MessageState b) {
         if (a == null) return true;
         if (a.highPriority != b.highPriority) return b.highPriority;
         return a.id > b.id;

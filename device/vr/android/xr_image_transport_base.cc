@@ -4,7 +4,6 @@
 
 #include "device/vr/android/xr_image_transport_base.h"
 
-#include "base/android/android_hardware_buffer_compat.h"
 #include "base/android/scoped_hardware_buffer_handle.h"
 #include "base/feature_list.h"
 #include "base/task/single_thread_task_runner.h"
@@ -82,14 +81,15 @@ void XrImageTransportBase::OnMailboxBridgeReady(XrInitStatusCallback callback) {
 
 bool XrImageTransportBase::ResizeSharedBuffer(WebXrPresentationState* webxr,
                                               const gfx::Size& size,
-                                              WebXrSharedBuffer* buffer) {
+                                              WebXrSharedBuffer* buffer,
+                                              GrSurfaceOrigin surface_origin) {
   CHECK(IsOnGlThread());
 
-  if (buffer->size == size) {
+  if (buffer->shared_image && buffer->shared_image->size() == size) {
     return false;
   }
 
-  TRACE_EVENT0("gpu", __func__);
+  TRACE_EVENT0("gpu", "ResizeSharedBuffer");
   // Unbind previous image (if any).
   if (buffer->shared_image) {
     DVLOG(2) << ": DestroySharedImage, mailbox="
@@ -105,7 +105,8 @@ bool XrImageTransportBase::ResizeSharedBuffer(WebXrPresentationState* webxr,
   // Remove reference to previous image (if any).
   buffer->local_eglimage.reset();
 
-  static constexpr gfx::BufferFormat format = gfx::BufferFormat::RGBA_8888;
+  static constexpr viz::SharedImageFormat format =
+      viz::SinglePlaneFormat::kRGBA_8888;
   static constexpr gfx::BufferUsage usage = gfx::BufferUsage::SCANOUT;
 
   // The SharedImages created here will eventually be transferred to other
@@ -128,19 +129,17 @@ bool XrImageTransportBase::ResizeSharedBuffer(WebXrPresentationState* webxr,
   // Create a GMB Handle from AHardwareBuffer handle.
   gfx::GpuMemoryBufferHandle gmb_handle;
   gmb_handle.type = gfx::ANDROID_HARDWARE_BUFFER;
-  // GpuMemoryBufferId is not used in this case and hence hardcoding it to 1
-  // here.
-  gmb_handle.id = gfx::GpuMemoryBufferId(1);
   gmb_handle.android_hardware_buffer = buffer->scoped_ahb_handle.Clone();
 
   buffer->shared_image = mailbox_bridge_->CreateSharedImage(
-      std::move(gmb_handle), format, size, gfx::ColorSpace(),
+      std::move(gmb_handle), format, size, gfx::ColorSpace(), surface_origin,
       shared_image_usage, buffer->sync_token);
   CHECK(buffer->shared_image);
 
   DVLOG(2) << ": CreateSharedImage, mailbox="
            << buffer->shared_image->mailbox().ToDebugString()
-           << ", SyncToken=" << buffer->sync_token.ToDebugString();
+           << ", SyncToken=" << buffer->sync_token.ToDebugString()
+           << ", size=" << size.ToString();
 
   // Create an EGLImage for the buffer.
   auto egl_image =
@@ -162,10 +161,6 @@ bool XrImageTransportBase::ResizeSharedBuffer(WebXrPresentationState* webxr,
   glEGLImageTargetTexture2DOES(buffer->local_texture.target, egl_image.get());
   buffer->local_eglimage = std::move(egl_image);
 
-  // Save size to avoid resize next time.
-  DVLOG(1) << __func__ << ": resized to " << size.width() << "x"
-           << size.height();
-  buffer->size = size;
   return true;
 }
 
@@ -191,11 +186,14 @@ WebXrSharedBuffer* XrImageTransportBase::TransferFrame(
 
   WebXrSharedBuffer* shared_buffer =
       webxr->GetAnimatingFrame()->shared_buffer.get();
-  ResizeSharedBuffer(webxr, frame_size, shared_buffer);
+  GrSurfaceOrigin surface_origin = IsWebGPUSession()
+                                       ? kTopLeft_GrSurfaceOrigin
+                                       : kBottomLeft_GrSurfaceOrigin;
+  ResizeSharedBuffer(webxr, frame_size, shared_buffer, surface_origin);
   // Sanity check that the lazily created/resized buffer looks valid.
   DCHECK(shared_buffer->shared_image);
   DCHECK(shared_buffer->local_eglimage.is_valid());
-  DCHECK_EQ(shared_buffer->size, frame_size);
+  DCHECK_EQ(shared_buffer->shared_image->size(), frame_size);
 
   // We don't need to create a sync token here. ResizeSharedBuffer has created
   // one on reallocation, including initial buffer creation, and we can use
@@ -213,10 +211,22 @@ WebXrSharedBuffer* XrImageTransportBase::TransferFrame(
 
 void XrImageTransportBase::CreateGpuFenceForSyncToken(
     const gpu::SyncToken& sync_token,
+    const std::vector<gpu::SyncToken>& camera_sync_tokens,
     base::OnceCallback<void(std::unique_ptr<gfx::GpuFence>)> callback) {
   CHECK(IsOnGlThread());
   DVLOG(2) << __func__;
-  mailbox_bridge_->CreateGpuFence(sync_token, std::move(callback));
+  mailbox_bridge_->WaitSyncToken(sync_token);
+  for (auto& camera_sync_token : camera_sync_tokens) {
+    mailbox_bridge_->WaitSyncToken(camera_sync_token);
+  }
+  mailbox_bridge_->CreateGpuFence(std::move(callback));
+}
+
+gpu::SyncToken XrImageTransportBase::GenSyncToken() {
+  CHECK(IsOnGlThread());
+  gpu::SyncToken sync_token;
+  mailbox_bridge_->GenSyncToken(&sync_token);
+  return sync_token;
 }
 
 void XrImageTransportBase::WaitSyncToken(const gpu::SyncToken& sync_token) {
@@ -230,6 +240,10 @@ void XrImageTransportBase::ServerWaitForGpuFence(
   std::unique_ptr<gl::GLFence> local_fence =
       gl::GLFence::CreateFromGpuFence(*gpu_fence);
   local_fence->ServerWait();
+}
+
+viz::ContextProvider* XrImageTransportBase::GetContextProvider() {
+  return mailbox_bridge_->GetContextProvider();
 }
 
 LocalTexture XrImageTransportBase::GetRenderingTexture(

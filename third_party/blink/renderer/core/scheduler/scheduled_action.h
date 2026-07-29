@@ -33,6 +33,7 @@
 
 #include <optional>
 
+#include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/platform/bindings/name_client.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
@@ -49,8 +50,9 @@ class ScriptStateProtectingContext;
 class ScriptValue;
 class V8Function;
 
-class ScheduledAction final : public GarbageCollected<ScheduledAction>,
-                              public NameClient {
+class CORE_EXPORT ScheduledAction final
+    : public GarbageCollected<ScheduledAction>,
+      public NameClient {
  public:
   ScheduledAction(ScriptState*,
                   ExecutionContext& target,
@@ -71,7 +73,9 @@ class ScheduledAction final : public GarbageCollected<ScheduledAction>,
 
   void Trace(Visitor*) const;
 
-  const char* NameInHeapSnapshot() const override { return "ScheduledAction"; }
+  const char* GetHumanReadableName() const override {
+    return "ScheduledAction";
+  }
 
   CallbackFunctionBase* CallbackFunction();
   ScriptState* GetScriptState();
@@ -81,7 +85,7 @@ class ScheduledAction final : public GarbageCollected<ScheduledAction>,
   Member<V8Function> function_;
   HeapVector<ScriptValue> arguments_;
   String code_;
-  Member<scheduler::TaskAttributionInfo> code_parent_task_;
+  Member<scheduler::TaskAttributionInfo> task_state_;
 };
 
 }  // namespace blink

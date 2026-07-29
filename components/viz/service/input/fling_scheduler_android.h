@@ -5,6 +5,7 @@
 #ifndef COMPONENTS_VIZ_SERVICE_INPUT_FLING_SCHEDULER_ANDROID_H_
 #define COMPONENTS_VIZ_SERVICE_INPUT_FLING_SCHEDULER_ANDROID_H_
 
+#include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "components/input/fling_controller.h"
 #include "components/input/fling_scheduler_base.h"
@@ -21,16 +22,10 @@ namespace viz {
 
 class VIZ_SERVICE_EXPORT FlingSchedulerAndroid
     : public input::FlingSchedulerBase,
-      public BeginFrameObserverBase {
+      public BeginFrameObserverBase,
+      public BeginFrameSource::InputClient {
  public:
-  class Delegate {
-   public:
-    virtual BeginFrameSource* GetBeginFrameSourceForFrameSink(
-        const FrameSinkId& id) = 0;
-  };
-
   FlingSchedulerAndroid(input::RenderInputRouter* rir,
-                        Delegate* delegate,
                         const FrameSinkId& frame_sink_id);
 
   FlingSchedulerAndroid(const FlingSchedulerAndroid&) = delete;
@@ -43,34 +38,41 @@ class VIZ_SERVICE_EXPORT FlingSchedulerAndroid
       base::WeakPtr<input::FlingController> fling_controller) override;
   void DidStopFlingingOnBrowser(
       base::WeakPtr<input::FlingController> fling_controller) override;
-  bool NeedsBeginFrameForFlingProgress() override;
+  bool ProgressFlingOnFlingStart() override;
   bool ShouldUseMobileFlingCurve() override;
   gfx::Vector2dF GetPixelsPerInch(
       const gfx::PointF& position_in_screen) override;
 
   // FlingSchedulerBase
   void ProgressFlingOnBeginFrameIfneeded(base::TimeTicks current_time) override;
+  void SetBeginFrameSource(BeginFrameSource* begin_frame_source) override;
 
  protected:
   BeginFrameSource* GetBeginFrameSource();
 
   raw_ref<input::RenderInputRouter> rir_;
   base::WeakPtr<input::FlingController> fling_controller_;
-  raw_ptr<BeginFrameSource> observed_begin_frame_source_ = nullptr;
+  bool observing_begin_frame_source_ = false;
+  raw_ptr<BeginFrameSource> begin_frame_source_ = nullptr;
 
  private:
   FRIEND_TEST_ALL_PREFIXES(FlingSchedulerTest, ScheduleNextFlingProgress);
   FRIEND_TEST_ALL_PREFIXES(FlingSchedulerTest, FlingCancelled);
+  FRIEND_TEST_ALL_PREFIXES(FlingSchedulerTest,
+                           ResetStateOnBeginFrameSourceChange);
 
   void StartObservingBeginFrames();
   void StopObservingBeginFrames();
 
+  bool FlingProgress(const BeginFrameArgs& args);
+
   // BeginFrameObserverBase implementation.
   bool OnBeginFrameDerivedImpl(const BeginFrameArgs& args) override;
   void OnBeginFrameSourcePausedChanged(bool paused) override {}
-  bool IsRoot() const override;
 
-  raw_ref<Delegate> delegate_;
+  // BeginFrameSource::InputClient implementation.
+  void OnBeginFrameForInput(const BeginFrameArgs& args) override;
+
   const FrameSinkId frame_sink_id_;
 };
 

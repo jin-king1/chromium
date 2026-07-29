@@ -10,6 +10,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/feature_list.h"
 #include "base/functional/callback.h"
 #include "base/location.h"
 #include "base/memory/raw_ptr.h"
@@ -18,13 +19,21 @@
 #include "base/strings/strcat.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/test_future.h"
+#include "chrome/browser/performance_manager/policies/discard_eligibility_policy.h"
 #include "chrome/browser/performance_manager/policies/freezing_opt_out_checker.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/resource_coordinator/tab_lifecycle_observer.h"
+#include "chrome/browser/resource_coordinator/lifecycle_unit.h"
+#include "chrome/browser/resource_coordinator/lifecycle_unit_observer.h"
 #include "chrome/browser/resource_coordinator/tab_lifecycle_unit_external.h"
+#include "chrome/browser/resource_coordinator/tab_lifecycle_unit_source.h"
+#include "chrome/browser/resource_coordinator/utils.h"
 #include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_commands.h"
+#include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "chrome/test/base/ui_test_utils.h"
 #include "components/performance_manager/public/freezing/freezing.h"
 #include "components/performance_manager/public/graph/graph.h"
 #include "components/performance_manager/public/graph/page_node.h"
@@ -40,6 +49,7 @@
 #include "content/public/test/test_navigation_observer.h"
 #include "content/public/test/test_utils.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
@@ -48,7 +58,7 @@ namespace performance_manager::policies {
 
 namespace {
 
-using DiscardReason = PageDiscardingHelper::DiscardReason;
+using DiscardReason = DiscardEligibilityPolicy::DiscardReason;
 
 class FaviconWatcher final : public content::WebContentsObserver {
  public:
@@ -65,7 +75,8 @@ class FaviconWatcher final : public content::WebContentsObserver {
   // WebContentsObserver
   void DidUpdateFaviconURL(
       content::RenderFrameHost* render_frame_host,
-      const std::vector<blink::mojom::FaviconURLPtr>& candidates) final {
+      const std::vector<blink::mojom::FaviconURLPtr>& candidates,
+      blink::mojom::FaviconUpdateReason reason) final {
     run_loop_.Quit();
   }
 
@@ -103,33 +114,82 @@ class PageNodeIdleWaiter : public PageNodeObserver,
 // Waits for resource coordinator to register a LifecycleUnitState::FROZEN state
 // change.
 class TabLifecycleUnitFreezeWaiter
-    : public resource_coordinator::TabLifecycleObserver {
+    : public resource_coordinator::LifecycleUnitObserver {
  public:
   TabLifecycleUnitFreezeWaiter() {
-    resource_coordinator::TabLifecycleUnitExternal::AddTabLifecycleObserver(
+    resource_coordinator::GetTabLifecycleUnitSource()->AddLifecycleObserver(
         this);
   }
   ~TabLifecycleUnitFreezeWaiter() override {
-    resource_coordinator::TabLifecycleUnitExternal::RemoveTabLifecycleObserver(
+    resource_coordinator::GetTabLifecycleUnitSource()->RemoveLifecycleObserver(
         this);
   }
 
   void Wait() { run_loop_.Run(); }
 
  private:
-  // resource_coordinator::TabLifecycleObserver:
-  void OnTabLifecycleStateChange(
-      content::WebContents* contents,
-      ::mojom::LifecycleUnitState previous_state,
-      ::mojom::LifecycleUnitState new_state,
-      std::optional<LifecycleUnitDiscardReason> discard_reason) override {
-    if (new_state == ::mojom::LifecycleUnitState::FROZEN) {
+  // resource_coordinator::LifecycleUnitObserver:
+  void OnLifecycleUnitStateChanged(
+      resource_coordinator::LifecycleUnit* lifecycle_unit,
+      ::mojom::LifecycleUnitState last_state) override {
+    if (lifecycle_unit->GetState() == ::mojom::LifecycleUnitState::FROZEN) {
       run_loop_.Quit();
     }
   }
 
   base::RunLoop run_loop_;
 };
+
+// Ensures that `browser` has `num_tabs` tabs.
+void EnsureTabsInBrowser(BrowserWindowInterface* browser, int num_tabs) {
+  TabStripModel* const tab_strip_model = browser->GetTabStripModel();
+  EXPECT_EQ(1, tab_strip_model->count());
+
+  for (int i = 0; i < num_tabs; ++i) {
+    ui_test_utils::NavigateToURLWithDisposition(
+        browser, GURL("data:text/html;charset=utf-8,hello"),
+        i == 0 ? WindowOpenDisposition::CURRENT_TAB
+               : WindowOpenDisposition::NEW_BACKGROUND_TAB,
+        ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
+  }
+
+  EXPECT_EQ(num_tabs, tab_strip_model->count());
+}
+
+BrowserWindowInterface* CreateBrowserWithTabsImpl(int num_tabs,
+                                                  bool incognito) {
+  BrowserWindowInterface* const current_browser =
+      GetLastActiveBrowserWindowInterfaceWithAnyProfile();
+  ui_test_utils::BrowserCreatedObserver browser_created_observer;
+  if (incognito) {
+    chrome::NewIncognitoWindow(current_browser->GetProfile());
+  } else {
+    chrome::NewWindow(current_browser);
+  }
+  ui_test_utils::WaitForBrowserSetLastActive(browser_created_observer.Wait());
+  BrowserWindowInterface* const new_browser =
+      GetLastActiveBrowserWindowInterfaceWithAnyProfile();
+  EXPECT_NE(new_browser, current_browser);
+
+  EnsureTabsInBrowser(new_browser, num_tabs);
+  return new_browser;
+}
+
+// Creates a browser with `num_tabs` tabs.
+BrowserWindowInterface* CreateBrowserWithTabs(int num_tabs) {
+  return CreateBrowserWithTabsImpl(num_tabs, /*incognito=*/false);
+}
+
+// Creates an incognito browser with `num_tabs` tabs.
+BrowserWindowInterface* CreateIncognitoBrowserWithTabs(int num_tabs) {
+  return CreateBrowserWithTabsImpl(num_tabs, /*incognito=*/true);
+}
+
+bool IsTabDiscarded(content::WebContents* web_contents) {
+  return resource_coordinator::TabLifecycleUnitExternal::FromWebContents(
+             web_contents)
+             ->GetTabState() == ::mojom::LifecycleUnitState::DISCARDED;
+}
 
 class PageDiscardingHelperBrowserTest
     : public InProcessBrowserTest,
@@ -227,10 +287,9 @@ class PageDiscardingHelperBrowserTest
     auto* helper = PageDiscardingHelper::GetFromGraph(graph);
     ASSERT_TRUE(helper);
 
-    std::optional<base::TimeTicks> first_discarded_at =
-        helper->ImmediatelyDiscardMultiplePages({page_node.get()},
-                                                discard_reason);
-    EXPECT_EQ(first_discarded_at.has_value(), expected_result);
+    const bool discard_success = helper->ImmediatelyDiscardMultiplePages(
+        {page_node.get()}, discard_reason);
+    EXPECT_EQ(discard_success, expected_result);
     EXPECT_EQ(
         browser()->tab_strip_model()->GetWebContentsAt(index)->WasDiscarded(),
         expected_result);
@@ -243,11 +302,12 @@ class PageDiscardingHelperBrowserTest
     base::WeakPtr<PageNode> page_node = GetPageNodeAtIndex(index);
 
     ASSERT_TRUE(page_node);
-    auto* helper = PageDiscardingHelper::GetFromGraph(page_node->GetGraph());
-    ASSERT_TRUE(helper);
+    auto* eligibility_policy =
+        DiscardEligibilityPolicy::GetFromGraph(page_node->GetGraph());
+    ASSERT_TRUE(eligibility_policy);
     EXPECT_EQ(
-        helper->IsPageOptedOutOfDiscarding(page_node->GetBrowserContextID(),
-                                           page_node->GetMainFrameUrl()),
+        eligibility_policy->IsPageOptedOutOfDiscarding(
+            page_node->GetBrowserContextID(), page_node->GetMainFrameUrl()),
         expect_opted_out);
     EXPECT_EQ(
         freezing_opt_out_checker.IsPageOptedOutOfFreezing(
@@ -255,15 +315,21 @@ class PageDiscardingHelperBrowserTest
         expect_opted_out);
   }
 
+  content::WebContents* GetWebContentsAt(int index) {
+    return browser()->tab_strip_model()->GetWebContentsAt(index);
+  }
+
  private:
   base::test::ScopedFeatureList scoped_feature_list_;
 };
 
-IN_PROC_BROWSER_TEST_P(PageDiscardingHelperBrowserTest, DiscardSpecificPage) {
+// TODO(crbug.com/438908221): Crashes/flaky on Linux dbg bots.
+IN_PROC_BROWSER_TEST_P(PageDiscardingHelperBrowserTest,
+                       DISABLED_DiscardSpecificPage) {
   // Test urgent and proactive discards in a loop to avoid the overhead of
   // starting a new browser every time.
   // TODO(crbug.com/40899366): Add tests for all the other heuristics in
-  // PageDiscardingHelper::CanDiscard().
+  // DiscardEligibilityPolicy::CanDiscard().
   for (auto discard_reason :
        {DiscardReason::EXTERNAL, DiscardReason::URGENT,
         DiscardReason::PROACTIVE, DiscardReason::SUGGESTED,
@@ -340,8 +406,8 @@ IN_PROC_BROWSER_TEST_P(PageDiscardingHelperBrowserTest, DiscardSpecificPage) {
 }
 
 IN_PROC_BROWSER_TEST_P(PageDiscardingHelperBrowserTest, NoDiscardPatterns) {
-  const std::string default_browser_context_id =
-      browser()->profile()->UniqueId();
+  const auto& default_browser_context_id =
+      browser()->GetProfile()->UniqueToken();
   const std::string base_url_pattern =
       embedded_test_server()->base_url().spec();
 
@@ -353,17 +419,18 @@ IN_PROC_BROWSER_TEST_P(PageDiscardingHelperBrowserTest, NoDiscardPatterns) {
         DiscardReason::FROZEN_WITH_GROWING_MEMORY}) {
     // Also test that FreezingOptOutChecker is hooked up to
     // PageDiscardingHelper correctly.
-    base::test::TestFuture<std::string_view> policy_changed_future;
+    base::test::TestFuture<const base::UnguessableToken&> policy_changed_future;
     auto policy_changed_callback = policy_changed_future.GetRepeatingCallback();
 
-    auto* helper =
-        PageDiscardingHelper::GetFromGraph(PerformanceManager::GetGraph());
-    ASSERT_TRUE(helper);
+    auto* eligibility_policy =
+        DiscardEligibilityPolicy::GetFromGraph(PerformanceManager::GetGraph());
+    ASSERT_TRUE(eligibility_policy);
     std::unique_ptr<FreezingOptOutChecker> freezing_opt_out_checker =
-        std::make_unique<FreezingOptOutChecker>(helper->GetWeakPtr());
+        std::make_unique<FreezingOptOutChecker>(
+            eligibility_policy->GetWeakPtr());
 
-    helper->SetNoDiscardPatternsForProfile(default_browser_context_id,
-                                           {base_url_pattern});
+    eligibility_policy->SetNoDiscardPatternsForProfile(
+        default_browser_context_id, {base_url_pattern});
 
     // The callback wasn't set during SetNoDiscardPatternsForProfile(),
     // which should safely do nothing. Future calls should notify the
@@ -391,7 +458,8 @@ IN_PROC_BROWSER_TEST_P(PageDiscardingHelperBrowserTest, NoDiscardPatterns) {
     }
 
     // Empty pattern list.
-    helper->SetNoDiscardPatternsForProfile(default_browser_context_id, {});
+    eligibility_policy->SetNoDiscardPatternsForProfile(
+        default_browser_context_id, {});
 
     EXPECT_EQ(policy_changed_future.Take(), default_browser_context_id);
 
@@ -403,7 +471,8 @@ IN_PROC_BROWSER_TEST_P(PageDiscardingHelperBrowserTest, NoDiscardPatterns) {
     ExpectImmediateDiscard(index2, discard_reason, true);
 
     // Delete pattern list.
-    helper->ClearNoDiscardPatternsForProfile(default_browser_context_id);
+    eligibility_policy->ClearNoDiscardPatternsForProfile(
+        default_browser_context_id);
 
     EXPECT_EQ(policy_changed_future.Take(), default_browser_context_id);
 
@@ -425,10 +494,63 @@ IN_PROC_BROWSER_TEST_P(PageDiscardingHelperBrowserTest, NoDiscardPatterns) {
   }
 }
 
+// Integration test verifying that discarding is disallowed for a tab which was
+// just discarded but still has a main frame.
+IN_PROC_BROWSER_TEST_P(PageDiscardingHelperBrowserTest,
+                       DiscardedTabCannotBeDiscarded) {
+  Graph* graph = PerformanceManager::GetGraph();
+  auto* helper = PageDiscardingHelper::GetFromGraph(graph);
+  auto* eligibility_policy = DiscardEligibilityPolicy::GetFromGraph(graph);
+  ASSERT_TRUE(helper);
+
+  OpenNewBackgroundPage();
+  EXPECT_EQ(browser()->tab_strip_model()->count(), 2);
+  base::WeakPtr<PageNode> page_to_discard = GetPageNodeAtIndex(1);
+
+  // Keep-alive the process hosting the background page's main frame, to prevent
+  // fast shutdown. This ensures that when the WebContentsDiscard feature is
+  // enabled, we test the code path in which a tab is discarded but still has a
+  // main frame (that situation cannot occur with the feature disabled).
+  page_to_discard->GetWebContents()
+      ->GetPrimaryMainFrame()
+      ->GetProcess()
+      ->IncrementPendingReuseRefCount();
+
+  // Discard a background page.
+  ASSERT_TRUE(page_to_discard);
+  EXPECT_EQ(CanDiscardResult::kEligible,
+            eligibility_policy->CanDiscard(page_to_discard.get(),
+                                           DiscardReason::URGENT,
+                                           /*ignore_recent_visibility=*/true));
+  ASSERT_TRUE(helper->ImmediatelyDiscardMultiplePages({page_to_discard.get()},
+                                                      DiscardReason::URGENT));
+  ASSERT_EQ(GetParam(),
+            base::FeatureList::IsEnabled(::features::kWebContentsDiscard));
+  if (GetParam()) {
+    EXPECT_TRUE(page_to_discard->GetWebContents()->GetPrimaryMainFrame());
+  }
+
+  // The discarded page should no longer be eligible for discarding.
+  base::WeakPtr<PageNode> discarded_page = GetPageNodeAtIndex(1);
+  ASSERT_TRUE(discarded_page);
+  EXPECT_EQ(CanDiscardResult::kDisallowed,
+            eligibility_policy->CanDiscard(discarded_page.get(),
+                                           DiscardReason::URGENT,
+                                           /*ignore_recent_visibility=*/true));
+}
+
 // Regression test for crbug.com/386801193. Ensure discarded tabs remain
 // eligible for successive discard operations following a reactivation / reload.
+// TODO(crbug.com/436300896): Re-enable on MSAN/ASAN.
+#if defined(MEMORY_SANITIZER) || defined(ADDRESS_SANITIZER)
+#define MAYBE_DiscardedTabEligibleForSuccessiveDiscards \
+  DISABLED_DiscardedTabEligibleForSuccessiveDiscards
+#else
+#define MAYBE_DiscardedTabEligibleForSuccessiveDiscards \
+  DiscardedTabEligibleForSuccessiveDiscards
+#endif
 IN_PROC_BROWSER_TEST_P(PageDiscardingHelperBrowserTest,
-                       DiscardedTabEligibleForSuccessiveDiscards) {
+                       MAYBE_DiscardedTabEligibleForSuccessiveDiscards) {
   // Add a new background tab.
   OpenNewBackgroundPage();
   EXPECT_EQ(browser()->tab_strip_model()->count(), 2);
@@ -442,15 +564,19 @@ IN_PROC_BROWSER_TEST_P(PageDiscardingHelperBrowserTest,
     base::WeakPtr<PageNode> discard_target_page_node = GetPageNodeAtIndex(1);
     ASSERT_TRUE(discard_target_page_node);
     Graph* graph = PerformanceManager::GetGraph();
+    auto* eligibility_policy = DiscardEligibilityPolicy::GetFromGraph(graph);
+    ASSERT_TRUE(eligibility_policy);
+    EXPECT_EQ(CanDiscardResult::kEligible,
+              eligibility_policy->CanDiscard(
+                  discard_target_page_node.get(), DiscardReason::URGENT,
+                  /*ignore_recent_visibility=*/true));
     auto* helper = PageDiscardingHelper::GetFromGraph(graph);
     ASSERT_TRUE(helper);
-    EXPECT_EQ(CanDiscardResult::kEligible,
-              helper->CanDiscard(discard_target_page_node.get(),
-                                 DiscardReason::URGENT, base::TimeDelta()));
-    std::optional<base::TimeTicks> first_discarded_at =
-        helper->DiscardAPage(DiscardReason::URGENT, base::TimeDelta());
+    PageDiscardingHelper::DiscardResult result =
+        helper->DiscardAPage(DiscardReason::URGENT,
+                             /*ignore_recent_visibility=*/true);
 
-    EXPECT_TRUE(first_discarded_at.has_value());
+    EXPECT_TRUE(result.first_discard_time.has_value());
   };
   attempt_discard();
 
@@ -508,15 +634,19 @@ IN_PROC_BROWSER_TEST_P(PageDiscardingHelperBrowserTest,
     base::WeakPtr<PageNode> discard_target_page_node = GetPageNodeAtIndex(1);
     ASSERT_TRUE(discard_target_page_node);
     Graph* graph = PerformanceManager::GetGraph();
+    auto* eligibility_policy = DiscardEligibilityPolicy::GetFromGraph(graph);
+    ASSERT_TRUE(eligibility_policy);
+    EXPECT_EQ(CanDiscardResult::kEligible,
+              eligibility_policy->CanDiscard(
+                  discard_target_page_node.get(), DiscardReason::URGENT,
+                  /*ignore_recent_visibility=*/true));
     auto* helper = PageDiscardingHelper::GetFromGraph(graph);
     ASSERT_TRUE(helper);
-    EXPECT_EQ(CanDiscardResult::kEligible,
-              helper->CanDiscard(discard_target_page_node.get(),
-                                 DiscardReason::URGENT, base::TimeDelta()));
-    std::optional<base::TimeTicks> first_discarded_at =
-        helper->DiscardAPage(DiscardReason::URGENT, base::TimeDelta());
+    PageDiscardingHelper::DiscardResult result =
+        helper->DiscardAPage(DiscardReason::URGENT,
+                             /*ignore_recent_visibility=*/true);
 
-    EXPECT_TRUE(first_discarded_at.has_value());
+    EXPECT_TRUE(result.first_discard_time.has_value());
   };
   attempt_discard();
 
@@ -531,6 +661,105 @@ IN_PROC_BROWSER_TEST_P(PageDiscardingHelperBrowserTest,
           tab2->GetContents());
   EXPECT_EQ(::mojom::LifecycleUnitState::DISCARDED,
             lifecycle_unit->GetTabState());
+}
+
+IN_PROC_BROWSER_TEST_P(PageDiscardingHelperBrowserTest,
+                       DiscardTabsWithMinimizedWindow) {
+  // Minimize browser.
+  EnsureTabsInBrowser(browser(), 2);
+  browser()->GetWindow()->Minimize();
+
+  // Request to discard pages a few times.
+  auto* helper =
+      PageDiscardingHelper::GetFromGraph(PerformanceManager::GetGraph());
+  ASSERT_TRUE(helper);
+  for (int i = 0; i < 3; ++i) {
+    helper->DiscardAPage(DiscardReason::URGENT,
+                         /*ignore_recent_visibility=*/true);
+  }
+
+  // The active tab is the minimized window isn't discarded.
+  EXPECT_FALSE(IsTabDiscarded(GetWebContentsAt(0)));
+
+  // This non-active tab is discarded.
+  EXPECT_TRUE(IsTabDiscarded(GetWebContentsAt(1)));
+}
+
+IN_PROC_BROWSER_TEST_P(PageDiscardingHelperBrowserTest,
+                       DiscardTabsWithOccludedWindow) {
+  // This browser will be occluded.
+  EnsureTabsInBrowser(browser(), 2);
+  browser()->GetWindow()->SetBounds(gfx::Rect(10, 10, 10, 10));
+  // Create another browser which occludes the previous browser.
+  BrowserWindowInterface* const other_browser = CreateBrowserWithTabs(1);
+  EXPECT_NE(other_browser, browser());
+  other_browser->GetWindow()->SetBounds(gfx::Rect(0, 0, 100, 100));
+
+  // Request to discard pages a few times.
+  auto* helper =
+      PageDiscardingHelper::GetFromGraph(PerformanceManager::GetGraph());
+  ASSERT_TRUE(helper);
+  for (int i = 0; i < 3; ++i) {
+    helper->DiscardAPage(DiscardReason::URGENT,
+                         /*ignore_recent_visibility=*/true);
+  }
+
+  // The active tab is the occluded window isn't discarded.
+  EXPECT_FALSE(IsTabDiscarded(GetWebContentsAt(0)));
+
+  // This non-active tab is discarded.
+  EXPECT_TRUE(IsTabDiscarded(GetWebContentsAt(1)));
+}
+
+IN_PROC_BROWSER_TEST_P(PageDiscardingHelperBrowserTest,
+                       DiscardTabsWithAllowedBrowserContextIds) {
+  EnsureTabsInBrowser(browser(), 2);
+
+  BrowserWindowInterface* incognito_browser = CreateIncognitoBrowserWithTabs(2);
+
+  auto* helper =
+      PageDiscardingHelper::GetFromGraph(PerformanceManager::GetGraph());
+  ASSERT_TRUE(helper);
+
+  // Call DiscardAPage three times, even though we only expect the first to
+  // actually find a valid tab to discard.
+  for (int i = 0; i < 3; i++) {
+    absl::flat_hash_set<base::UnguessableToken> allowed_tokens;
+    allowed_tokens.insert(incognito_browser->GetProfile()->UniqueToken());
+    helper->DiscardAPage(DiscardReason::URGENT,
+                         /*ignore_recent_visibility=*/true,
+                         std::move(allowed_tokens));
+  }
+
+  // The active tabs should not be discarded, as DiscardReason::URGENT doesn't
+  // discard these.
+  EXPECT_FALSE(IsTabDiscarded(GetWebContentsAt(0)));
+  EXPECT_FALSE(IsTabDiscarded(
+      incognito_browser->GetTabStripModel()->GetWebContentsAt(0)));
+
+  // The non-active regular tab should not be discarded because its context
+  // wasn't in the allowed token set.
+  EXPECT_FALSE(IsTabDiscarded(GetWebContentsAt(1)));
+
+  // The non-active incognito tab should be discarded.
+  EXPECT_TRUE(IsTabDiscarded(
+      incognito_browser->GetTabStripModel()->GetWebContentsAt(1)));
+
+  // If we call DiscardAPage again but do not limit the browser contexts, then
+  // the non-active regular tab should get discarded now (but not the
+  // active-tabs still).
+  for (int i = 0; i < 3; i++) {
+    helper->DiscardAPage(DiscardReason::URGENT,
+                         /*ignore_recent_visibility=*/true,
+                         /*allowed_browser_context_ids=*/std::nullopt);
+  }
+  EXPECT_FALSE(IsTabDiscarded(GetWebContentsAt(0)));
+  EXPECT_FALSE(IsTabDiscarded(
+      incognito_browser->GetTabStripModel()->GetWebContentsAt(0)));
+
+  EXPECT_TRUE(IsTabDiscarded(GetWebContentsAt(1)));
+  EXPECT_TRUE(IsTabDiscarded(
+      incognito_browser->GetTabStripModel()->GetWebContentsAt(1)));
 }
 
 INSTANTIATE_TEST_SUITE_P(

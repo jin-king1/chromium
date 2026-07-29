@@ -29,6 +29,7 @@
 
 #include "base/gtest_prod_util.h"
 #include "base/memory/stack_allocated.h"
+#include "third_party/blink/public/mojom/input/input_handler.mojom-blink-forward.h"
 #include "third_party/blink/renderer/core/accessibility/axid.h"
 #include "third_party/blink/renderer/core/accessibility/blink_ax_event_intent.h"
 #include "third_party/blink/renderer/core/core_export.h"
@@ -56,9 +57,7 @@ class HTMLCanvasElement;
 class HTMLOptionElement;
 class HTMLFrameOwnerElement;
 class HTMLSelectElement;
-class LayoutBlockFlow;
 struct PhysicalRect;
-class WebPluginContainer;
 
 class CORE_EXPORT AXObjectCache : public GarbageCollected<AXObjectCache> {
  public:
@@ -66,6 +65,7 @@ class CORE_EXPORT AXObjectCache : public GarbageCollected<AXObjectCache> {
       HashCountedSet<BlinkAXEventIntent, BlinkAXEventIntentHashTraits>;
 
   static AXObjectCache* Create(Document&, const ui::AXMode&);
+  static AXObjectCache* CreateSnapshotter(Document&, const ui::AXMode&);
 
   AXObjectCache(const AXObjectCache&) = delete;
   AXObjectCache& operator=(const AXObjectCache&) = delete;
@@ -74,8 +74,10 @@ class CORE_EXPORT AXObjectCache : public GarbageCollected<AXObjectCache> {
 
   virtual void Dispose() = 0;
 
-  virtual const ui::AXMode& GetAXMode() = 0;
+  virtual const ui::AXMode& GetAXMode() const = 0;
   virtual void SetAXMode(const ui::AXMode&) = 0;
+  // Contact accessibility owners before using.
+  virtual bool IsScreenReaderActive() const = 0;
 
   // A Freeze() occurs during a serialization run.
   virtual void Freeze() = 0;
@@ -97,7 +99,7 @@ class CORE_EXPORT AXObjectCache : public GarbageCollected<AXObjectCache> {
   virtual void ListboxSelectedChildrenChanged(HTMLSelectElement*) = 0;
   virtual void ListboxActiveIndexChanged(HTMLSelectElement*) = 0;
   virtual void SetMenuListOptionsBounds(HTMLSelectElement*,
-                                        const WTF::Vector<gfx::Rect>&) = 0;
+                                        const Vector<gfx::Rect>&) = 0;
   virtual void ImageLoaded(const LayoutObject*) = 0;
 
   // Removes AXObject backed by passed-in object, if there is one.
@@ -137,7 +139,7 @@ class CORE_EXPORT AXObjectCache : public GarbageCollected<AXObjectCache> {
   virtual void HandleInitialFocus() = 0;
   virtual void HandleEditableTextContentChanged(Node*) = 0;
   virtual void HandleDeletionOrInsertionInTextField(
-      const SelectionInDOMTree& changed_selection,
+      const SelectionInDomTree& changed_selection,
       bool is_deletion) = 0;
   virtual void HandleTextMarkerDataAdded(Node* start, Node* end) = 0;
   virtual void HandleTextFormControlChanged(Node*) = 0;
@@ -154,10 +156,17 @@ class CORE_EXPORT AXObjectCache : public GarbageCollected<AXObjectCache> {
   virtual void HandleEventListenerRemoved(Node& node,
                                           const AtomicString& event_type) = 0;
   virtual void HandleReferenceTargetChanged(Element&) = 0;
+  virtual void HandleSetComposition(Node*,
+                                    mojom::blink::ImeState ime_state) = 0;
+  virtual void HandleCommitText(Node*, int committed_text_length) = 0;
 
   // Handle any notifications which arrived while layout was dirty.
   // If |force|, then process regardless of any active batching or pauses.
-  virtual void CommitAXUpdates(Document&, bool force) = 0;
+  // Returns true if any updates were applied.
+  virtual bool CommitAXUpdates(Document&, bool force) = 0;
+
+  // Serializes updates applied by CommitAXUpdates().
+  virtual void SerializeAXUpdatesIfNeeded(Document&) = 0;
 
   // Handles a notification from the `ariaNotify` API.
   virtual void HandleAriaNotification(const Node*,
@@ -181,10 +190,23 @@ class CORE_EXPORT AXObjectCache : public GarbageCollected<AXObjectCache> {
   // Called when the scroll offset changes.
   virtual void HandleScrollPositionChanged(LayoutObject*) = 0;
 
+  // Called when a scroll marker tab selection changes, affecting which
+  // content is visible/accessible in a CSS scroll-marker-group tabs mode.
+  virtual void HandleScrollMarkerTabSelectionChanged(Element& scroller) = 0;
+
   virtual void HandleScrolledToAnchor(const Node* anchor_node) = 0;
 
   // Called when a layout object's bounding box may have changed.
   virtual void InvalidateBoundingBox(const LayoutObject*) = 0;
+
+#if BUILDFLAG(IS_ANDROID)
+  // Used to compute paint order / hit test order for Android XR platform,
+  // which helps to figure out which elements occlude other elements.
+  virtual void ComputeXrHitTestOrder(
+      HashMap<DOMNodeId, int>& dom_node_hit_test_order_map) = 0;
+  virtual void ApplyXrHitTestOrder(
+      const HashMap<DOMNodeId, int>& order_map) = 0;
+#endif
 
   virtual const AtomicString& ComputedRoleForNode(Node*) = 0;
   virtual String ComputedNameForNode(Node*) = 0;
@@ -200,7 +222,8 @@ class CORE_EXPORT AXObjectCache : public GarbageCollected<AXObjectCache> {
   virtual AXID GenerateAXID() const = 0;
 
   typedef AXObjectCache* (*AXObjectCacheCreateFunction)(Document&,
-                                                        const ui::AXMode&);
+                                                        const ui::AXMode&,
+                                                        bool for_snapshot_only);
   static void Init(AXObjectCacheCreateFunction);
 
   // Static helper functions.
@@ -209,12 +232,12 @@ class CORE_EXPORT AXObjectCache : public GarbageCollected<AXObjectCache> {
   // Returns true if there are any pending updates that need processing.
   virtual bool IsDirty() = 0;
 
-  // Serialize entire tree, returning true if successful.
-  virtual bool SerializeEntireTree(
-      size_t max_node_count,
+  // Serialize entire tree, then Dispose().
+  virtual void SerializeEntireTreeAndDispose(
+      size_t max_nodes,
       base::TimeDelta timeout,
       ui::AXTreeUpdate*,
-      std::set<ui::AXSerializationErrorFlag>* out_error = nullptr) = 0;
+      std::set<ui::AXSerializationErrorFlag>* out_error) = 0;
 
   // Recompute the entire tree and reserialize it.
   // This method is useful when something that potentially affects most of the
@@ -232,6 +255,7 @@ class CORE_EXPORT AXObjectCache : public GarbageCollected<AXObjectCache> {
   virtual void ResetSerializer() = 0;
 
   virtual void MarkElementDirty(const Node*) = 0;
+  virtual void MarkSubtreeDirty(Node*) = 0;
 
   // Returns a vector of the images found in |updates|.
   virtual void GetImagesToAnnotate(ui::AXTreeUpdate& updates,
@@ -268,7 +292,7 @@ class CORE_EXPORT AXObjectCache : public GarbageCollected<AXObjectCache> {
   virtual bool IsSerializationInFlight() const = 0;
 
   // Clears the cached fragment data associated with `block_flow` if it exists.
-  virtual void ClearBlockFlowCachedData(const LayoutBlockFlow* block_flow) = 0;
+  virtual void ClearBlockFlowCachedData(const LayoutObject* object) = 0;
 
   // Gets the node on which this cache considers to have accessibility focus.
   virtual Node* GetAccessibilityFocus() const = 0;

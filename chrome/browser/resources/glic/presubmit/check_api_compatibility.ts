@@ -3,9 +3,13 @@
 // found in the LICENSE file.
 
 // See ../PRESUBMIT.py.
-import type * as old from '@tmp/old_glic_api.js';
-
-import type * as current from '../glic_api/glic_api.js';
+import type * as current from '@tmp/new_glic_api.js';
+// This is the glic_api.ts from before the CL, with some edits.
+// Extensible enums are replaced with their new versions, so that
+// the checks in this file do allow modifying those enums.
+import type * as oldEdited from '@tmp/old_edited_glic_api.js';
+// This is the glic_api.ts from before the CL, with no edits.
+import type * as oldOriginal from '@tmp/old_glic_api.js';
 
 // Warning! The checks in this file are not a complete guarantee of API
 // compatibility.
@@ -21,60 +25,47 @@ type DeepRequired<T> = {
   [K in keyof T]: DeepRequired<T[K]>
 }&Required<T>;
 
-// Get the set of TypesConsumedByClient in both old and current. This
-// allows us to ignore types removed from TypesConsumedByClient.
-type OldTypesConsumedByClient = {
-  [K in keyof old.TypesConsumedByClient &
-   keyof current.TypesConsumedByClient]: old.TypesConsumedByClient[K]
+// Get the set of TheBackwardsCompatibleTypes in both old and current. This
+// allows us to ignore types removed from TheBackwardsCompatibleTypes.
+type OldTypes = {
+  [K in keyof oldEdited.TheBackwardsCompatibleTypes &
+   keyof current.TheBackwardsCompatibleTypes]: oldEdited
+                                                 .TheBackwardsCompatibleTypes[K]
 };
-
-type CurrentTypesConsumedByClient = {
-  [K in keyof old.TypesConsumedByClient &
-   keyof current.TypesConsumedByClient]: current.TypesConsumedByClient[K]
-};
-
-type CurrentTypesConsumedByHost = {
-  [K in keyof old.TypesConsumedByHost &
-   keyof current.TypesConsumedByHost]: current.TypesConsumedByHost[K]
+type CurrentTypes = {
+  [K in keyof oldEdited.TheBackwardsCompatibleTypes &
+   keyof current.TheBackwardsCompatibleTypes]: current
+                                                 .TheBackwardsCompatibleTypes[K]
 };
 
 /*
 These are the kinds of changes we might see, and how they're categorized.
 
-* OK in host and client types:
+* OK:
   * Adding an optional field. {x:number} --> {x:number; y?: string}
   * Adding an optional parameter. foo():void -> foo(x?:number)
 
-* ERROR in host and client types.
+* ERROR:
   * Removing any field.       {x?:number} --> {}
   * Adding a required field.  {} --> {x:number}
   * Adding a required parameter. foo():void -> foo(x:number)
   * Widening a field type.    {x:number} --> {x:number|string}
      (Changing a host type in this way is likely not compatible for old versions
       of Chrome.)
-
-In summary, host and client types have the same compatibility requirements.
-TODO(harringtond): We should just merge these two concepts.
 */
 
 // Note: We're just using assignment to verify these types are compatible.
 
-export const oldTypesAreCompatibleWithCurrent: CurrentTypesConsumedByHost&
-    CurrentTypesConsumedByClient =
-        null as any as old.TypesConsumedByHost & old.TypesConsumedByClient;
-export const currentTypesAreCompatibleWithOld: OldTypesConsumedByClient&
-    CurrentTypesConsumedByHost = null as any as current.TypesConsumedByHost &
-    current.TypesConsumedByClient;
+export const oldTypesAreCompatibleWithCurrent: CurrentTypes =
+    null as any as oldEdited.TheBackwardsCompatibleTypes;
+export const currentTypesAreCompatibleWithOld: OldTypes =
+    null as any as current.TheBackwardsCompatibleTypes;
 
 // Make all fields required, then check that all fields are compatible. This
 // ensures we don't remove optional fields.
-export const canNotRemoveAnythingFromClientTypes:
-    DeepRequired<OldTypesConsumedByClient> =
-        null as any as DeepRequired<current.TypesConsumedByClient>;
+export const canNotRemoveAnything: DeepRequired<OldTypes> =
+    null as any as DeepRequired<current.TheBackwardsCompatibleTypes>;
 
-export const canNotRemoveAnythingFromHostTypes:
-    DeepRequired<CurrentTypesConsumedByHost> =
-        null as any as DeepRequired<old.TypesConsumedByHost>;
 
 // Ensure ClosedEnums are not modified, and ExtensibleEnums are only extended.
 // TODO: This only checks enum keys. Not sure how to check values.
@@ -86,13 +77,15 @@ type EnumIsEquivalent<O, N> = Exclude<keyof N, keyof O> extends never ?
     ['Error: enum changed', O];
 
 type ClosedEnumsDoNotChange = AllValues<{
-  [K in keyof current.ClosedEnums & keyof old.ClosedEnums]:
-      EnumIsEquivalent<old.ClosedEnums[K], current.ClosedEnums[K]>;
+  [K in keyof current.ClosedEnums & keyof oldOriginal.ClosedEnums]:
+      EnumIsEquivalent<oldOriginal.ClosedEnums[K], current.ClosedEnums[K]>;
 }>;
 assertNever<ClosedEnumsDoNotChange>();
 
 type CheckExtensibleEnums = AllValues<{
-  [K in keyof current.ExtensibleEnums & keyof old.ExtensibleEnums]:
-      EnumOnlyExtended<old.ExtensibleEnums[K], current.ExtensibleEnums[K]>;
+  [K in keyof current.TheExtensibleEnums &
+   keyof oldOriginal.TheExtensibleEnums]:
+      EnumOnlyExtended<
+          oldOriginal.TheExtensibleEnums[K], current.TheExtensibleEnums[K]>;
 }>;
 assertNever<CheckExtensibleEnums>();

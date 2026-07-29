@@ -13,6 +13,7 @@
 
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/scoped_observation.h"
@@ -34,9 +35,20 @@
 #include "ui/base/user_activity/user_activity_observer.h"
 #include "url/gurl.h"
 
+class ApplicationLocaleStorage;
+class PrefService;
+
 namespace base {
 class ElapsedTimer;
 }  // namespace base
+
+namespace network {
+class SharedURLLoaderFactory;
+}  // namespace network
+
+namespace policy {
+class BrowserPolicyConnectorAsh;
+}  // namespace policy
 
 namespace ash {
 class CrosSettings;
@@ -47,10 +59,6 @@ enum class SigninError;
 
 namespace login {
 class NetworkStateHelper;
-}
-
-namespace quick_unlock {
-class PinSaltStorage;
 }
 
 // ExistingUserController is used to handle login when someone has already
@@ -67,7 +75,14 @@ class ExistingUserController : public HttpAuthDialog::Observer,
   static ExistingUserController* current_controller();
 
   // All UI initialization is deferred till Init() call.
-  ExistingUserController();
+  // `local_state`, `application_locale_storage` and
+  // `browser_policy_connector_ash` must be non-null and must outlive `this`.
+  // `shared_url_loader_factory` must be non-null.
+  ExistingUserController(
+      PrefService* local_state,
+      const ApplicationLocaleStorage* application_locale_storage,
+      scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
+      policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash);
 
   ExistingUserController(const ExistingUserController&) = delete;
   ExistingUserController& operator=(const ExistingUserController&) = delete;
@@ -151,6 +166,14 @@ class ExistingUserController : public HttpAuthDialog::Observer,
   // timer.
   void ConfigureAutoLogin();
 
+  void FinalizeAuthAndStartSession(const UserContext& user_context,
+                                   bool has_auth_cookies);
+  void FinalizeAuthAndStartSession(const UserContext& user_context);
+
+  bool MaybeShowPasswordSelectionScreen(const UserContext& user_context);
+
+  bool MaybeShowRemoveLocalAuthFactorsScreen(const UserContext& user_context);
+
   DemoLoginController* GetDemoLoginControllerForTest();
 
  private:
@@ -200,6 +223,10 @@ class ExistingUserController : public HttpAuthDialog::Observer,
   // not localized.
   void ShowError(SigninError error, const std::string& details);
 
+  // Shows an error message because the OOBE is not marked as completed.
+  // This occurs if StartupUtils::IsOobeCompleted() returns false unexpectedly.
+  void ShowOobeNotCompletedError();
+
   // Shows privacy notification in case of auto lunch managed guest session.
   void ShowAutoLaunchManagedGuestSessionNotification();
 
@@ -242,9 +269,8 @@ class ExistingUserController : public HttpAuthDialog::Observer,
   // Callback invoked when the keyboard layouts available for a public session
   // have been retrieved. Selects the first layout from the list and continues
   // login.
-  void SetPublicSessionKeyboardLayoutAndLogin(
-      const UserContext& user_context,
-      base::Value::List keyboard_layouts);
+  void SetPublicSessionKeyboardLayoutAndLogin(const UserContext& user_context,
+                                              base::ListValue keyboard_layouts);
 
   // Starts the actual login process for a public session. Invoked when all
   // preconditions have been verified.
@@ -285,6 +311,13 @@ class ExistingUserController : public HttpAuthDialog::Observer,
   // affect any future attempts.
   void ClearRecordedNames();
 
+  const raw_ref<PrefService> local_state_;
+  const raw_ref<const ApplicationLocaleStorage> application_locale_storage_;
+  const scoped_refptr<network::SharedURLLoaderFactory>
+      shared_url_loader_factory_;
+  const raw_ref<policy::BrowserPolicyConnectorAsh>
+      browser_policy_connector_ash_;
+
   // Public session auto-login timer.
   std::unique_ptr<base::OneShotTimer> auto_login_timer_;
 
@@ -320,14 +353,19 @@ class ExistingUserController : public HttpAuthDialog::Observer,
   // URL to append to start Guest mode with.
   GURL guest_mode_url_;
 
-  // Once Lacros is shipped, this will no longer be necessary.
-  std::unique_ptr<HttpAuthDialog::ScopedEnabler> enable_ash_httpauth_;
+  std::unique_ptr<HttpAuthDialog::ScopedEnabler> enable_system_httpauth_;
 
   // The displayed email for the next login attempt set by `SetDisplayEmail`.
   std::string display_email_;
 
   // Whether login attempt is running.
   bool is_login_in_progress_ = false;
+
+  // Whether the user has empty password.
+  std::optional<bool> user_has_empty_password_;
+
+  // Whether the user uses challenge-response keys (e.g. a smartcard).
+  std::optional<bool> user_has_challenge_response_keys_;
 
   // Whether user signin is completed.
   bool is_signin_completed_ = false;
@@ -340,6 +378,9 @@ class ExistingUserController : public HttpAuthDialog::Observer,
   // Initialized with `kExternal` as more restricted mode.
   LoginPerformer::AuthorizationMode auth_mode_ =
       LoginPerformer::AuthorizationMode::kExternal;
+
+  // Whether the user has auth cookies.
+  std::optional<bool> has_auth_cookies_;
 
   // Timer when the signin screen was first displayed. Used to measure the time
   // from showing the screen until a successful login is performed.
@@ -362,9 +403,6 @@ class ExistingUserController : public HttpAuthDialog::Observer,
   // Used to wait for local account policy during session login, if policy is
   // not yet available when the login is attempted.
   std::unique_ptr<DeviceLocalAccountPolicyWaiter> policy_waiter_;
-
-  // The source of PIN salts. Used to retrieve PIN during TransformPinKey.
-  std::unique_ptr<quick_unlock::PinSaltStorage> pin_salt_storage_;
 
   // Manage auto login for demo mode.
   std::unique_ptr<ash::DemoLoginController> demo_login_controller_;

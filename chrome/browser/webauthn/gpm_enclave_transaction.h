@@ -92,6 +92,9 @@ class GPMEnclaveTransaction {
     // Invoked after a successful MakeCredential request.
     virtual void OnPasskeyCreated(
         const sync_pb::WebauthnCredentialSpecifics& passkey) = 0;
+
+    // Returns the UV method to be used for the transaction.
+    virtual EnclaveUserVerificationMethod GetUvMethod() = 0;
   };
 
   // `delegate`, `model` and `enclave_manager` must be non-null and outlive the
@@ -103,11 +106,11 @@ class GPMEnclaveTransaction {
       webauthn::PasskeyModel* model,
       device::FidoRequestType request_type,
       std::string rp_id,
-      EnclaveUserVerificationMethod uv_method,
       EnclaveManager* enclave_manager,
       std::optional<std::string> pin,
       std::optional<std::vector<uint8_t>> selected_credential_id,
-      EnclaveRequestCallback enclave_request_callback);
+      EnclaveRequestCallback enclave_request_callback,
+      std::optional<std::vector<std::vector<uint8_t>>> cmtg_device_keys);
 
   ~GPMEnclaveTransaction();
 
@@ -127,16 +130,21 @@ class GPMEnclaveTransaction {
 
   void HandlePINValidationResult(device::enclave::PINValidationResult result);
   void OnPasskeyCreated(sync_pb::WebauthnCredentialSpecifics passkey);
+  void OnPasskeyEncryptedBlobUpdated(const std::string& credential_id,
+                                     const std::string& encrypted_data);
 
   raw_ptr<Delegate> delegate_;
   raw_ptr<webauthn::PasskeyModel> passkey_model_;
   device::FidoRequestType request_type_;
   std::string rp_id_;
-  EnclaveUserVerificationMethod uv_method_;
   raw_ptr<EnclaveManager> enclave_manager_;
   std::optional<std::string> pin_;
+  std::optional<std::vector<std::vector<uint8_t>>> cmtg_device_keys_;
   std::optional<std::vector<uint8_t>> selected_credential_id_;
   EnclaveRequestCallback enclave_request_callback_;
+
+  // Taken when attempting to create a deferred UV key. Released on destruction.
+  std::unique_ptr<EnclaveManager::UvKeyCreationLock> uv_key_lock_;
 
   // The pending request to fetch an OAuth token for the enclave request.
   std::unique_ptr<signin::PrimaryAccountAccessTokenFetcher>

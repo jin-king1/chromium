@@ -62,8 +62,7 @@ void BluetoothRemoteGATTCharacteristic::RemoteCharacteristicValueChanged(
   }
 }
 
-const WTF::AtomicString& BluetoothRemoteGATTCharacteristic::InterfaceName()
-    const {
+const AtomicString& BluetoothRemoteGATTCharacteristic::InterfaceName() const {
   return event_target_names::kBluetoothRemoteGATTCharacteristic;
 }
 
@@ -89,9 +88,6 @@ void BluetoothRemoteGATTCharacteristic::ReadValueCallback(
     ScriptPromiseResolver<NotShared<DOMDataView>>* resolver,
     mojom::blink::WebBluetoothResult result,
     base::span<const uint8_t> value) {
-  if (!resolver->GetExecutionContext() ||
-      resolver->GetExecutionContext()->IsContextDestroyed())
-    return;
 
   // If the device is disconnected, reject.
   if (!GetGatt()->RemoveFromActiveAlgorithms(resolver)) {
@@ -146,8 +142,8 @@ BluetoothRemoteGATTCharacteristic::readValue(ScriptState* script_state,
   mojom::blink::WebBluetoothService* service = GetBluetooth()->Service();
   service->RemoteCharacteristicReadValue(
       characteristic_->instance_id,
-      WTF::BindOnce(&BluetoothRemoteGATTCharacteristic::ReadValueCallback,
-                    WrapPersistent(this), WrapPersistent(resolver)));
+      blink::BindOnce(&BluetoothRemoteGATTCharacteristic::ReadValueCallback,
+                      WrapPersistent(this), WrapPersistent(resolver)));
 
   return promise;
 }
@@ -222,9 +218,9 @@ BluetoothRemoteGATTCharacteristic::WriteCharacteristicValue(
   mojom::blink::WebBluetoothService* service = GetBluetooth()->Service();
   service->RemoteCharacteristicWriteValue(
       characteristic_->instance_id, value, write_type,
-      WTF::BindOnce(&BluetoothRemoteGATTCharacteristic::WriteValueCallback,
-                    WrapPersistent(this), WrapPersistent(resolver),
-                    WrapPersistent(new_value.Get())));
+      BindOnce(&BluetoothRemoteGATTCharacteristic::WriteValueCallback,
+               WrapPersistent(this), WrapPersistent(resolver),
+               WrapPersistent(new_value.Get())));
 
   return promise;
 }
@@ -346,9 +342,9 @@ BluetoothRemoteGATTCharacteristic::startNotifications(
   num_in_flight_notification_registrations_++;
   service->RemoteCharacteristicStartNotifications(
       characteristic_->instance_id, std::move(client),
-      WTF::BindOnce(&BluetoothRemoteGATTCharacteristic::NotificationsCallback,
-                    WrapPersistent(this), WrapPersistent(resolver),
-                    /*starting=*/true));
+      BindOnce(&BluetoothRemoteGATTCharacteristic::NotificationsCallback,
+               WrapPersistent(this), WrapPersistent(resolver),
+               /*starting=*/true));
 
   return promise;
 }
@@ -382,10 +378,9 @@ BluetoothRemoteGATTCharacteristic::stopNotifications(
   mojom::blink::WebBluetoothService* service = GetBluetooth()->Service();
   service->RemoteCharacteristicStopNotifications(
       characteristic_->instance_id,
-      WTF::BindOnce(&BluetoothRemoteGATTCharacteristic::NotificationsCallback,
-                    WrapPersistent(this), WrapPersistent(resolver),
-                    /*starting=*/false,
-                    mojom::blink::WebBluetoothResult::SUCCESS));
+      BindOnce(&BluetoothRemoteGATTCharacteristic::NotificationsCallback,
+               WrapPersistent(this), WrapPersistent(resolver),
+               /*starting=*/false, mojom::blink::WebBluetoothResult::SUCCESS));
   return promise;
 }
 
@@ -425,10 +420,9 @@ BluetoothRemoteGATTCharacteristic::getDescriptor(
   auto quantity = mojom::blink::WebBluetoothGATTQueryQuantity::SINGLE;
   service->RemoteCharacteristicGetDescriptors(
       characteristic_->instance_id, quantity, descriptor,
-      WTF::BindOnce(&BluetoothRemoteGATTCharacteristic::GetDescriptorsCallback,
-                    WrapPersistent(this), descriptor,
-                    characteristic_->instance_id, quantity,
-                    WrapPersistent(resolver)));
+      BindOnce(&BluetoothRemoteGATTCharacteristic::GetDescriptorsCallback,
+               WrapPersistent(this), descriptor, characteristic_->instance_id,
+               quantity, WrapPersistent(resolver)));
   return resolver->Promise();
 }
 
@@ -483,10 +477,10 @@ BluetoothRemoteGATTCharacteristic::GetDescriptorsImpl(
   auto quantity = mojom::blink::WebBluetoothGATTQueryQuantity::MULTIPLE;
   service->RemoteCharacteristicGetDescriptors(
       characteristic_->instance_id, quantity, descriptors_uuid,
-      WTF::BindOnce(&BluetoothRemoteGATTCharacteristic::GetDescriptorsCallback,
-                    WrapPersistent(this), descriptors_uuid,
-                    characteristic_->instance_id, quantity,
-                    WrapPersistent(resolver)));
+      BindOnce(&BluetoothRemoteGATTCharacteristic::GetDescriptorsCallback,
+               WrapPersistent(this), descriptors_uuid,
+               characteristic_->instance_id, quantity,
+               WrapPersistent(resolver)));
   return resolver->Promise();
 }
 
@@ -535,8 +529,8 @@ void BluetoothRemoteGATTCharacteristic::GetDescriptorsCallback(
     if (result == mojom::blink::WebBluetoothResult::DESCRIPTOR_NOT_FOUND) {
       resolver->Reject(BluetoothError::CreateDOMException(
           BluetoothErrorCode::kDescriptorNotFound,
-          "No Descriptors matching UUID " + requested_descriptor_uuid +
-              " found in Characteristic with UUID " + uuid() + "."));
+          StrCat({"No Descriptors matching UUID ", requested_descriptor_uuid,
+                  " found in Characteristic with UUID ", uuid(), "."})));
     } else {
       resolver->Reject(BluetoothError::CreateDOMException(result));
     }
@@ -545,9 +539,9 @@ void BluetoothRemoteGATTCharacteristic::GetDescriptorsCallback(
 
 String
 BluetoothRemoteGATTCharacteristic::CreateInvalidCharacteristicErrorMessage() {
-  return "Characteristic with UUID " + uuid() +
-         " is no longer valid. Remember to retrieve the characteristic again "
-         "after reconnecting.";
+  return StrCat({"Characteristic with UUID ", uuid(),
+                 " is no longer valid. Remember to retrieve the characteristic "
+                 "again after reconnecting."});
 }
 
 void BluetoothRemoteGATTCharacteristic::Trace(Visitor* visitor) const {

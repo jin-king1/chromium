@@ -4,23 +4,28 @@
 
 #include "content/browser/file_system_access/file_system_chooser.h"
 
+#include <memory>
 #include <utility>
 #include <vector>
 
 #include "base/check.h"
 #include "base/files/file_path.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/i18n/file_util_icu.h"
 #include "base/i18n/rtl.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
 #include "content/browser/file_system_access/file_system_access_error.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/content_browser_client.h"
+#include "content/public/browser/visibility.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_client.h"
 #include "net/base/mime_util.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/gfx/text_elider.h"
 #include "ui/shell_dialogs/select_file_policy.h"
 #include "ui/shell_dialogs/selected_file_info.h"
@@ -250,10 +255,21 @@ base::FilePath FileSystemChooser::Options::ResolveSuggestedNameExtension(
 
   auto suggested_extension = suggested_name.Extension();
 
-  if (suggested_extension.size() > kMaxExtensionLength) {
+  bool stripped_long_extension = false;
+  while (suggested_extension.size() > kMaxExtensionLength) {
     // Sanitize extensions longer than 16 characters.
     file_types.include_all_files = true;
-    return suggested_name.RemoveExtension();
+    suggested_name = suggested_name.RemoveExtension();
+    suggested_extension = suggested_name.Extension();
+    stripped_long_extension = true;
+  }
+
+  if (stripped_long_extension) {
+    // Removing long extensions can expose a shell-integrated extension.
+    if (FileSystemChooser::IsShellIntegratedExtension(suggested_extension)) {
+      return suggested_name.ReplaceExtension(FILE_PATH_LITERAL("download"));
+    }
+    return suggested_name;
   }
 
   if (file_types.extensions.empty() || suggested_extension.empty()) {
@@ -279,16 +295,54 @@ base::FilePath FileSystemChooser::Options::ResolveSuggestedNameExtension(
   return suggested_name;
 }
 
+FileSystemChooser::ScopedObjects::ScopedObjects() = default;
+FileSystemChooser::ScopedObjects::~ScopedObjects() = default;
+FileSystemChooser::ScopedObjects::ScopedObjects(ScopedObjects&&) = default;
+FileSystemChooser::ScopedObjects& FileSystemChooser::ScopedObjects::operator=(
+    ScopedObjects&&) = default;
+
+FileSystemChooser::ScopedObjects::ScopedObjects(
+    base::ScopedClosureRunner&& fullscreen_block,
+    base::ScopedClosureRunner&& pip_tucker)
+    : fullscreen_block(std::move(fullscreen_block)),
+      pip_tucker(std::move(pip_tucker)) {}
+
+namespace {
+// Called when no file is selected due to being aborted.
+void AbortedCallback(FileSystemChooser::ResultCallback callback) {
+  VLOG(1) << "AbortedCallback";
+  std::move(callback).Run(
+      file_system_access_error::FromStatus(
+          blink::mojom::FileSystemAccessStatus::kOperationAborted),
+      {});
+}
+}  // namespace
+
 // static
 void FileSystemChooser::CreateAndShow(
-    WebContents* web_contents,
+    RenderFrameHost* render_frame_host,
     const Options& options,
     ResultCallback callback,
-    base::ScopedClosureRunner fullscreen_block) {
+    FileSystemChooser::ScopedObjects scoped_objects) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  TRACE_EVENT0("FileSystem", "FileSystemChooser::CreateAndShow");
+  WebContents* web_contents =
+      WebContents::FromRenderFrameHost(render_frame_host);
+  VLOG(1) << "Requested chooser with visibility: "
+          << static_cast<int>(web_contents->GetVisibility());
+  std::unique_ptr<WebContentsBasedCanceller> canceller =
+      WebContentsBasedCanceller::Create(
+          render_frame_host,
+          WebContentsBasedCanceller::CancelCondition::kVisibility);
+  if (!canceller) {
+    VLOG(1) << "Not showing chooser";
+    AbortedCallback(std::move(callback));
+    return;
+  }
   // `listener` deletes itself.
-  auto* listener = new FileSystemChooser(options.type(), std::move(callback),
-                                         std::move(fullscreen_block));
+  auto* listener =
+      new FileSystemChooser(options.type(), std::move(callback),
+                            std::move(scoped_objects), std::move(canceller));
   listener->dialog_ = ui::SelectFileDialog::Create(
       listener,
       GetContentClient()->browser()->CreateSelectFilePolicy(web_contents));
@@ -300,6 +354,7 @@ void FileSystemChooser::CreateAndShow(
     return;
   }
 
+  VLOG(1) << "Showing chooser";
 #if BUILDFLAG(IS_ANDROID)
   listener->dialog_->SetAcceptTypes(options.mime_types());
   listener->dialog_->SetOpenWritable(true);
@@ -333,12 +388,14 @@ bool FileSystemChooser::IsShellIntegratedExtension(
   // https://crbug.com/1227995, respectively). '.local' files are used by
   // Windows to determine which DLLs to load for an application. '.url' files
   // can be used to read arbirtary files (see https://crbug.com/1307930).
+  // LINT.IfChange(ShellIntegratedExtensions)
   if ((extension_lower == FILE_PATH_LITERAL("lnk")) ||
       (extension_lower == FILE_PATH_LITERAL("local")) ||
       (extension_lower == FILE_PATH_LITERAL("scf")) ||
       (extension_lower == FILE_PATH_LITERAL("url"))) {
     return true;
   }
+  // LINT.ThenChange(//net/base/filename_util_internal.cc:ShellIntegratedExtensions)
 
   // Setting a file's extension to a CLSID may conceal its actual file type on
   // some Windows versions (see https://nvd.nist.gov/vuln/detail/CVE-2004-0420).
@@ -351,13 +408,20 @@ bool FileSystemChooser::IsShellIntegratedExtension(
   return false;
 }
 
-FileSystemChooser::FileSystemChooser(ui::SelectFileDialog::Type type,
-                                     ResultCallback callback,
-                                     base::ScopedClosureRunner fullscreen_block)
+FileSystemChooser::FileSystemChooser(
+    ui::SelectFileDialog::Type type,
+    ResultCallback callback,
+    FileSystemChooser::ScopedObjects scoped_objects,
+    std::unique_ptr<WebContentsBasedCanceller> canceller)
     : type_(type),
       callback_(std::move(callback)),
-      fullscreen_block_(std::move(fullscreen_block)) {
+      scoped_objects_(std::move(scoped_objects)),
+      canceller_(std::move(canceller)) {
   CHECK(IsValidFileDialogType(type_));
+  // `this` owns `canceller_` which owns the callback, so `Unretained` is OK
+  // here.
+  canceller_->SetCancelCallback(base::BindOnce(
+      &FileSystemChooser::FileSelectionCanceled, base::Unretained(this)));
 }
 
 FileSystemChooser::~FileSystemChooser() {
@@ -389,10 +453,8 @@ void FileSystemChooser::MultiFilesSelected(
 
 void FileSystemChooser::FileSelectionCanceled() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  std::move(callback_).Run(
-      file_system_access_error::FromStatus(
-          blink::mojom::FileSystemAccessStatus::kOperationAborted),
-      {});
+  VLOG(1) << "Cancelling chooser";
+  AbortedCallback(std::move(callback_));
   delete this;
 }
 

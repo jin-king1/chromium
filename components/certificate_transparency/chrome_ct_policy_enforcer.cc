@@ -14,7 +14,6 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/metrics/field_trial.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/time/default_clock.h"
@@ -28,6 +27,7 @@
 #include "net/cert/x509_certificate.h"
 #include "net/log/net_log_capture_mode.h"
 #include "net/log/net_log_event_type.h"
+#include "net/log/net_log_values.h"
 #include "net/log/net_log_with_source.h"
 #include "third_party/boringssl/src/include/openssl/bytestring.h"
 
@@ -40,12 +40,16 @@ namespace {
 // Type of a leaf index extension in an SCT from a Static CT API log.
 const uint8_t kExtensionTypeLeafIndex = 0;
 
-base::Value::Dict NetLogCertComplianceCheckResultParams(
+base::DictValue NetLogCertComplianceCheckResultParams(
     net::X509Certificate* cert,
     bool build_timely,
+    base::Time log_list_timestamp,
     CTPolicyCompliance compliance) {
-  base::Value::Dict dict;
+  base::DictValue dict;
   dict.Set("build_timely", build_timely);
+  dict.Set("log_list_timestamp",
+           net::NetLogNumberValue(
+               log_list_timestamp.InMillisecondsSinceUnixEpoch()));
   dict.Set("ct_compliance_status", CTPolicyComplianceToString(compliance));
   return dict;
 }
@@ -113,11 +117,11 @@ ChromeCTPolicyEnforcer::ChromeCTPolicyEnforcer(
     base::Time log_list_date,
     std::vector<std::pair<std::string, base::Time>> disqualified_logs,
     std::map<std::string, LogInfo> log_info,
-    bool enable_static_ct_api_enforcement)
+    bool enforce_one_rfc6962_ct_policy)
     : disqualified_logs_(std::move(disqualified_logs)),
       log_info_(std::move(log_info)),
       log_list_date_(log_list_date),
-      enable_static_ct_api_enforcement_(enable_static_ct_api_enforcement) {}
+      enforce_one_rfc6962_ct_policy_(enforce_one_rfc6962_ct_policy) {}
 
 ChromeCTPolicyEnforcer::~ChromeCTPolicyEnforcer() = default;
 
@@ -141,7 +145,7 @@ CTPolicyCompliance ChromeCTPolicyEnforcer::CheckCompliance(
 
   net_log.AddEvent(net::NetLogEventType::CERT_CT_COMPLIANCE_CHECKED, [&] {
     return NetLogCertComplianceCheckResultParams(cert, build_timely,
-                                                 compliance);
+                                                 log_list_date_, compliance);
   });
 
   return compliance;
@@ -233,8 +237,7 @@ CTPolicyCompliance ChromeCTPolicyEnforcer::CheckCTPolicyCompliance(
     }
 
     auto log_type = GetLogType(sct->log_id);
-    if (enable_static_ct_api_enforcement_ &&
-        log_type == network::mojom::CTLogInfo::LogType::kStaticCTAPI &&
+    if (log_type == network::mojom::CTLogInfo::LogType::kStaticCTAPI &&
         !HasValidLeafIndex(sct)) {
       continue;
     }
@@ -261,7 +264,7 @@ CTPolicyCompliance ChromeCTPolicyEnforcer::CheckCTPolicyCompliance(
       }
     }
 
-    if (enable_static_ct_api_enforcement_) {
+    if (enforce_one_rfc6962_ct_policy_) {
       // TODO(crbug.com/370724580): Disallow kUnspecified once all logs in the
       // hardcoded and component updater protos have proper log types.
       has_rfc6962_log |=
@@ -280,7 +283,7 @@ CTPolicyCompliance ChromeCTPolicyEnforcer::CheckCTPolicyCompliance(
   // the issuance date is irrelevant, as any policy changes can be
   // accommodated.
   if (has_valid_nonembedded_sct && has_diverse_log_operators &&
-      (!enable_static_ct_api_enforcement_ || has_rfc6962_log)) {
+      (!enforce_one_rfc6962_ct_policy_ || has_rfc6962_log)) {
     return CTPolicyCompliance::CT_POLICY_COMPLIES_VIA_SCTS;
   }
   // Note: If has_valid_nonembedded_sct was true, but Option 2 isn't met,
@@ -309,7 +312,7 @@ CTPolicyCompliance ChromeCTPolicyEnforcer::CheckCTPolicyCompliance(
   }
 
   // ... AND at least one of the SCTs must come from an RFC6962 log.
-  if (enable_static_ct_api_enforcement_ && !has_rfc6962_log) {
+  if (enforce_one_rfc6962_ct_policy_ && !has_rfc6962_log) {
     return CTPolicyCompliance::CT_POLICY_NOT_DIVERSE_SCTS;
   }
 

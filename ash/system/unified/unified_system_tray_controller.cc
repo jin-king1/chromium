@@ -67,7 +67,6 @@
 #include "ash/system/unified/user_chooser_detailed_view_controller.h"
 #include "ash/wm/lock_state_controller.h"
 #include "base/memory/scoped_refptr.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/metrics/user_metrics.h"
 #include "components/global_media_controls/public/constants.h"
 #include "media/base/media_switches.h"
@@ -174,7 +173,7 @@ void UnifiedSystemTrayController::HandleLockAction() {
 void UnifiedSystemTrayController::HandleSettingsAction() {
   base::RecordAction(base::UserMetricsAction("Tray_Settings"));
   Shell::Get()->system_tray_model()->client()->ShowSettings(
-      display::Screen::GetScreen()
+      display::Screen::Get()
           ->GetDisplayNearestView(
               quick_settings_view_->GetWidget()->GetNativeView())
           .id());
@@ -409,11 +408,9 @@ void UnifiedSystemTrayController::InitFeatureTiles() {
   create_tile(VIEW_ID_FEATURE_TILE_HOTSPOT,
               std::make_unique<HotspotFeaturePodController>(this),
               feature_pod_controllers_, tiles);
-  if (features::IsFocusModeEnabled()) {
-    create_tile(VIEW_ID_FEATURE_TILE_FOCUS_MODE,
-                std::make_unique<FocusModeFeaturePodController>(this),
-                feature_pod_controllers_, tiles);
-  }
+  create_tile(VIEW_ID_FEATURE_TILE_FOCUS_MODE,
+              std::make_unique<FocusModeFeaturePodController>(this),
+              feature_pod_controllers_, tiles);
   create_tile(VIEW_ID_FEATURE_TILE_NEARBY_SHARE,
               std::make_unique<NearbyShareFeaturePodController>(this),
               feature_pod_controllers_, tiles);
@@ -440,7 +437,7 @@ void UnifiedSystemTrayController::InitFeatureTiles() {
   quick_settings_metrics_util::RecordQsFeaturePodCount(
       quick_settings_view_->feature_tiles_container()
           ->GetVisibleFeatureTileCount(),
-      display::Screen::GetScreen()->InTabletMode());
+      display::Screen::Get()->InTabletMode());
 }
 
 void UnifiedSystemTrayController::ShowDetailedView(
@@ -494,6 +491,13 @@ void UnifiedSystemTrayController::ShutDownDetailedViewController() {
   if (detailed_view_controller_) {
     detailed_view_controller_->ShutDown();
   }
+}
+
+void UnifiedSystemTrayController::PrepareBubbleDestroy() {
+  ShutDownDetailedViewController();
+  quick_settings_view_ = nullptr;
+  unified_volume_view_ = nullptr;
+  unified_brightness_view_ = nullptr;
 }
 
 }  // namespace ash

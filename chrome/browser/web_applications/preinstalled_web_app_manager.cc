@@ -4,20 +4,20 @@
 
 #include "chrome/browser/web_applications/preinstalled_web_app_manager.h"
 
+#include <algorithm>
 #include <iterator>
 #include <map>
 #include <memory>
 #include <set>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "base/auto_reset.h"
-#include "base/containers/contains.h"
 #include "base/feature_list.h"
 #include "base/files/file_enumerator.h"
 #include "base/files/file_path.h"
-#include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/functional/concurrent_closures.h"
@@ -33,9 +33,6 @@
 #include "base/task/thread_pool.h"
 #include "base/threading/scoped_blocking_call.h"
 #include "build/build_config.h"
-#include "chrome/browser/web_applications/callback_utils.h"
-#include "chrome/browser/web_applications/web_app_management_type.h"
-#include "chrome/browser/web_applications/web_app_provider.h"
 // TODO(crbug.com/40251079): Remove or at least isolate circular dependencies on
 // app service by moving this code to //c/b/web_applications/adjustments, or
 // flip entire dependency so web_applications depends on app_service.
@@ -43,17 +40,21 @@
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"  // nogncheck
 #include "chrome/browser/apps/user_type_filter.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/web_applications/extension_status_utils.h"
+#include "chrome/browser/web_applications/callback_utils.h"
+#include "chrome/browser/web_applications/extensions_manager.h"
 #include "chrome/browser/web_applications/externally_managed_app_manager.h"
 #include "chrome/browser/web_applications/file_utils_wrapper.h"
 #include "chrome/browser/web_applications/preinstalled_app_install_features.h"
 #include "chrome/browser/web_applications/preinstalled_web_app_config_utils.h"
 #include "chrome/browser/web_applications/preinstalled_web_app_utils.h"
+#include "chrome/browser/web_applications/preinstalled_web_apps/extension_ids_to_replace.h"
 #include "chrome/browser/web_applications/preinstalled_web_apps/preinstalled_web_apps.h"
 #include "chrome/browser/web_applications/user_uninstalled_preinstalled_web_app_prefs.h"
 #include "chrome/browser/web_applications/web_app.h"
 #include "chrome/browser/web_applications/web_app_helpers.h"
 #include "chrome/browser/web_applications/web_app_install_utils.h"
+#include "chrome/browser/web_applications/web_app_management_type.h"
+#include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/web_applications/web_app_registrar.h"
 #include "chrome/browser/web_applications/web_app_ui_manager.h"
 #include "chrome/browser/web_applications/web_app_utils.h"
@@ -68,7 +69,6 @@
 #include "components/webapps/browser/install_result_code.h"
 #include "components/webapps/common/constants.h"
 #include "content/public/browser/browser_thread.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 #include "ui/events/devices/device_data_manager.h"
 #include "ui/events/devices/input_device_event_observer.h"
 #include "ui/events/devices/touchscreen_device.h"
@@ -77,6 +77,7 @@
 #if BUILDFLAG(IS_CHROMEOS)
 // TODO(http://b/333583704): Revert CL which added this include after migration.
 #include "ash/constants/ash_switches.h"
+#include "ash/constants/web_app_id_constants.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chromeos/ash/components/report/utils/time_utils.h"
 #include "chromeos/ash/experiences/arc/arc_util.h"
@@ -90,8 +91,13 @@ bool g_skip_startup_for_testing_ = false;
 bool g_bypass_awaiting_dependencies_for_testing_ = false;
 bool g_bypass_offline_manifest_requirement_for_testing_ = false;
 bool g_override_previous_user_uninstall_for_testing_ = false;
-const base::Value::List* g_configs_for_testing = nullptr;
+const base::ListValue* g_configs_for_testing = nullptr;
 FileUtilsWrapper* g_file_utils_for_testing = nullptr;
+
+std::vector<ExternalInstallOptions>& GetParsedConfigsForTesting() {
+  static base::NoDestructor<std::vector<ExternalInstallOptions>> instance;
+  return *instance;
+}
 
 const char kHistogramMigrationDisabledReason[] =
     "WebApp.Preinstalled.DisabledReason";
@@ -186,10 +192,10 @@ ParsedConfigs ParseConfigsBlocking(LoadedConfigs loaded_configs) {
         ParseConfig(*file_utils, loaded_config.file.DirName(),
                     loaded_config.file, loaded_config.contents);
     if (ExternalInstallOptions* options =
-            absl::get_if<ExternalInstallOptions>(&parse_result)) {
+            std::get_if<ExternalInstallOptions>(&parse_result)) {
       result.options_list.push_back(std::move(*options));
     } else {
-      result.errors.push_back(std::move(absl::get<std::string>(parse_result)));
+      result.errors.push_back(std::move(std::get<std::string>(parse_result)));
       VLOG(1) << result.errors.back();
     }
   }
@@ -208,7 +214,7 @@ struct SynchronizeDecision {
     // Leaves the web app preinstall state alone.
     // Prefer kIgnore over kUninstall in most cases of disabling a config as
     // uninstalling can have permanent consequences for users when bugs are hit.
-    // See crbug.com/1393284 and crbug.com/1363004 for past incidents.
+    // See crbug.com/40880824 and crbug.com/1363004 for past incidents.
     kIgnore,
   } type;
   // TODO(crbug.com/40253925): Rename DisabledReason to
@@ -221,6 +227,7 @@ SynchronizeDecision GetSynchronizeDecision(
     const ExternalInstallOptions& options,
     Profile* profile,
     WebAppRegistrar* registrar,
+    ExtensionsManager& extensions_manager,
     bool preinstalled_apps_enabled_in_prefs,
     bool is_new_user,
     const std::string& user_type,
@@ -248,7 +255,7 @@ SynchronizeDecision GetSynchronizeDecision(
 
   // Remove if not applicable to current user type.
   DCHECK_GT(options.user_type_allowlist.size(), 0u);
-  if (!base::Contains(options.user_type_allowlist, user_type)) {
+  if (!std::ranges::contains(options.user_type_allowlist, user_type)) {
     return {.type = SynchronizeDecision::kUninstall,
             .reason = DisabledReason::kUninstallUserTypeNotAllowed,
             .log = base::StrCat({options.install_url.spec(),
@@ -268,7 +275,7 @@ SynchronizeDecision GetSynchronizeDecision(
   // Remove if any apps to replace are blocked or force installed by admin
   // policy.
   for (const webapps::AppId& app_id : options.uninstall_and_replace) {
-    if (extensions::IsExtensionBlockedByPolicy(profile, app_id)) {
+    if (extensions_manager.IsExtensionBlockedByPolicy(app_id)) {
       return {.type = SynchronizeDecision::kUninstall,
               .reason = DisabledReason::kUninstallReplacingAppBlockedByPolicy,
               .log = base::StrCat({options.install_url.spec(),
@@ -276,7 +283,7 @@ SynchronizeDecision GetSynchronizeDecision(
                                    "replacement Extension."})};
     }
     std::u16string reason;
-    if (extensions::IsExtensionForceInstalled(profile, app_id, &reason)) {
+    if (extensions_manager.IsExtensionForceInstalled(app_id, &reason)) {
       return {
           .type = SynchronizeDecision::kUninstall,
           .reason = DisabledReason::kUninstallReplacingAppForceInstalled,
@@ -291,13 +298,13 @@ SynchronizeDecision GetSynchronizeDecision(
   // Remove if it's a default app and the apps to replace are not installed and
   // default extension apps are not performing new installation.
   if (options.gate_on_feature && !options.uninstall_and_replace.empty() &&
-      !extensions::DidPreinstalledAppsPerformNewInstallation(profile)) {
+      !extensions_manager.DidPreinstalledAppsPerformNewInstallation()) {
     for (const webapps::AppId& app_id : options.uninstall_and_replace) {
       // First time migration and the app to replace is uninstalled as it passed
       // the last code block. Save the information that the app was
       // uninstalled by user.
       if (!WasMigrationRun(profile, *options.gate_on_feature)) {
-        if (extensions::IsPreinstalledAppId(app_id)) {
+        if (extensions_manager.IsPreinstalledExtensionAppId(app_id)) {
           MarkPreinstalledAppAsUninstalled(profile, app_id);
           return {.type = SynchronizeDecision::kUninstall,
                   .reason = DisabledReason::
@@ -345,7 +352,7 @@ SynchronizeDecision GetSynchronizeDecision(
   // Ensure install if any apps to replace are installed as installation
   // includes uninstall_and_replace-ing the specified apps.
   for (const webapps::AppId& app_id : options.uninstall_and_replace) {
-    if (extensions::IsExtensionInstalled(profile, app_id)) {
+    if (extensions_manager.IsExtensionInstalled(app_id)) {
       return {
           .type = SynchronizeDecision::kInstall,
           .reason = DisabledReason::kInstallReplacingAppStillInstalled,
@@ -415,13 +422,26 @@ SynchronizeDecision GetSynchronizeDecision(
 
   // Ignore if any apps to replace were previously uninstalled.
   for (const webapps::AppId& app_id : options.uninstall_and_replace) {
-    if (extensions::IsExternalExtensionUninstalled(profile, app_id)) {
+    if (extensions_manager.IsExternalExtensionUninstalled(app_id)) {
       return {.type = SynchronizeDecision::kIgnore,
               .reason = DisabledReason::kIgnoreReplacingAppUninstalledByUser,
               .log = base::StrCat(
                   {options.install_url.spec(),
                    " ignore because apps to replace were uninstalled."})};
     }
+  }
+
+  if (options.only_uninstall_and_replace_when_compatible().has_value() &&
+      UserUninstalledPreinstalledWebAppPrefs(profile->GetPrefs())
+          .DoesAppIdExist(
+              *options.only_uninstall_and_replace_when_compatible())) {
+    // TODO(https://crbug.com/454418950): Migrate the user uninstalled state to
+    // the new app somehow, either here or elsewhere in the code.
+    return {.type = SynchronizeDecision::kIgnore,
+            .reason = DisabledReason::kIgnoreReplacingAppUninstalledByUser,
+            .log = base::StrCat(
+                {options.install_url.spec(),
+                 " ignore because app to replace was uninstalled."})};
   }
 
   // Only install if device has a built-in touch screen with stylus support.
@@ -487,7 +507,91 @@ bool ShouldForceReinstall(const ExternalInstallOptions& options,
   return false;
 }
 
+#if BUILDFLAG(IS_CHROMEOS)
+// Modifies ExternalInstallOptions to be force_reinstall = true if they are
+// already installed but their uninstall_and_replace apps are also installed,
+// this is to re-trigger the migration logic that happens at the end of
+// installation. May not do anything depending on feature flags and platform.
+void MaybeForceInstallForRemigration(
+    std::vector<ExternalInstallOptions>* options_list,
+    Profile* profile,
+    const WebAppRegistrar& registrar,
+    ExtensionsManager& extensions_manager) {
+  bool always_migrate = base::FeatureList::IsEnabled(
+      features::kPreinstalledWebAppAlwaysMigrateForTesting);
+
+  // Record Calculator remigration metrics.
+  bool calculator_web_app_installed = registrar.AppMatches(
+      ash::kCalculatorAppId, WebAppFilter::InstalledByDefaultManagement());
+  bool calculator_chrome_app_installed =
+      extensions_manager.IsExtensionInstalled(kCalculatorExtensionId);
+  base::UmaHistogramBoolean(
+      "WebApp.Preinstalled.CalculatorForceMigration.WebAppInstalled",
+      calculator_web_app_installed);
+  base::UmaHistogramBoolean(
+      "WebApp.Preinstalled.CalculatorForceMigration."
+      "ChromeAppAndWebAppInstalled",
+      calculator_chrome_app_installed && calculator_web_app_installed);
+  base::UmaHistogramBoolean(
+      "WebApp.Preinstalled.CalculatorForceMigration.ChromeAppNoWebAppInstalled",
+      calculator_chrome_app_installed && !calculator_web_app_installed);
+
+  bool any_migration_needed = false;
+  bool calculator_migration_needed = false;
+  for (ExternalInstallOptions& options : *options_list) {
+    // Ignore preinstalled apps that aren't currently installed.
+    if (!registrar.LookUpAppByInstallSourceInstallUrl(
+            WebAppManagement::Type::kDefault, options.install_url)) {
+      continue;
+    }
+
+    // Force migration if corresponding Chrome app is installed, according to
+    // feature flags.
+    for (const std::string& app_id : options.uninstall_and_replace) {
+      bool migration_needed = false;
+      if (extensions_manager.IsExtensionInstalled(app_id)) {
+        if (app_id == kCalculatorExtensionId) {
+          calculator_migration_needed = true;
+          migration_needed = true;
+        }
+
+        if (always_migrate) {
+          migration_needed = true;
+        }
+      }
+
+      if (migration_needed) {
+        any_migration_needed = true;
+        options.force_reinstall = true;
+        break;
+      }
+    }
+  }
+
+  base::UmaHistogramBoolean("WebApp.Preinstalled.ChromeAppMigrationNeeded",
+                            any_migration_needed);
+  base::UmaHistogramBoolean(
+      "WebApp.Preinstalled.CalculatorForceMigration.MigrationTriggered",
+      calculator_migration_needed);
+}
+#endif  // BUILDFLAG(IS_CHROMEOS)
+
 }  // namespace
+
+PreinstalledAppForUpdating::PreinstalledAppForUpdating(
+    webapps::ManifestId manifest_id,
+    GURL install_url)
+    : manifest_id(std::move(manifest_id)),
+      install_url(std::move(install_url)) {}
+PreinstalledAppForUpdating::~PreinstalledAppForUpdating() = default;
+PreinstalledAppForUpdating::PreinstalledAppForUpdating(
+    const PreinstalledAppForUpdating& other) = default;
+PreinstalledAppForUpdating& PreinstalledAppForUpdating::operator=(
+    const PreinstalledAppForUpdating& other) = default;
+PreinstalledAppForUpdating::PreinstalledAppForUpdating(
+    PreinstalledAppForUpdating&& other) = default;
+PreinstalledAppForUpdating& PreinstalledAppForUpdating::operator=(
+    PreinstalledAppForUpdating&& other) = default;
 
 class PreinstalledWebAppManager::DeviceDataInitializedEvent
     : public ui::InputDeviceEventObserver {
@@ -574,6 +678,9 @@ void PreinstalledWebAppManager::RegisterProfilePrefs(
   registry->RegisterListPref(webapps::kWebAppsMigratedPreinstalledApps);
   registry->RegisterListPref(prefs::kWebAppsDidMigrateDefaultChromeApps);
   registry->RegisterListPref(prefs::kWebAppsUninstalledDefaultChromeApps);
+  // NOTE: If you add new prefs here that should be cleared during database
+  // corruption recovery, make sure to update
+  // `RemoveWebAppJob::RemoveForCorruptDatabase`.
 }
 
 // static
@@ -600,10 +707,18 @@ PreinstalledWebAppManager::OverridePreviousUserUninstallConfigForTesting() {
 }
 
 // static
-base::AutoReset<const base::Value::List*>
+base::AutoReset<const base::ListValue*>
 PreinstalledWebAppManager::SetConfigsForTesting(
-    const base::Value::List* configs) {
+    const base::ListValue* configs) {
   return {&g_configs_for_testing, configs, nullptr};
+}
+
+// static
+base::AutoReset<std::vector<ExternalInstallOptions>>
+PreinstalledWebAppManager::SetParsedConfigsForTesting(
+    std::vector<ExternalInstallOptions> configs) {
+  return base::AutoReset<std::vector<ExternalInstallOptions>>(
+      &GetParsedConfigsForTesting(), std::move(configs));
 }
 
 // static
@@ -670,6 +785,11 @@ void PreinstalledWebAppManager::LoadAndSynchronizeForTesting(
   LoadAndSynchronize(std::move(callback));
 }
 
+void PreinstalledWebAppManager::SetPreinstalledAppForUpdatingForTesting(
+    PreinstalledAppForUpdating preinstalled_app_for_updating) {
+  preinstalled_app_for_updating_ = preinstalled_app_for_updating;
+}
+
 void PreinstalledWebAppManager::LoadAndSynchronize(
     SynchronizeCallback callback) {
   base::OnceClosure load_and_synchronize = base::BindOnce(
@@ -686,7 +806,8 @@ void PreinstalledWebAppManager::LoadAndSynchronize(
   device_data_initialized_event_->Post(concurrent.CreateClosure());
   // Make sure ExtensionSystem is ready to know if default apps new installation
   // will be performed.
-  extensions::OnExtensionSystemReady(profile_, concurrent.CreateClosure());
+  provider_->extensions_manager().OnExtensionSystemReady(
+      concurrent.CreateClosure());
   std::move(concurrent).Done(std::move(load_and_synchronize));
 }
 
@@ -696,6 +817,11 @@ void PreinstalledWebAppManager::Load(ConsumeInstallOptions callback) {
 
   if (!preinstalling_enabled) {
     std::move(callback).Run({});
+    return;
+  }
+
+  if (!GetParsedConfigsForTesting().empty()) {
+    std::move(callback).Run(GetParsedConfigsForTesting());
     return;
   }
 
@@ -792,6 +918,15 @@ void PreinstalledWebAppManager::PostProcessConfigs(
     parsed_configs.options_list.push_back(std::move(options));
   }
 
+  // Allow tests to bypass kDisableDefaultApps with an allow list.
+  if (GetPreinstallUrlAllowListForTesting().has_value()) {
+    std::erase_if(
+        parsed_configs.options_list, [](const ExternalInstallOptions& options) {
+          return !GetPreinstallUrlAllowListForTesting().value().contains(
+              options.install_url);
+        });
+  }
+
   // Set common install options.
   for (ExternalInstallOptions& options : parsed_configs.options_list) {
     DCHECK_EQ(options.install_source, ExternalInstallSource::kExternalDefault);
@@ -828,8 +963,10 @@ void PreinstalledWebAppManager::PostProcessConfigs(
 
   // TODO(crbug.com/40747215): Move this constant into some shared constants.h
   // file.
+  // This is named "apps" for historical reasons.
   bool preinstalled_apps_enabled_in_prefs =
-      profile_->GetPrefs()->GetString(prefs::kPreinstalledApps) == "install";
+      profile_->GetPrefs()->GetString(prefs::kPreinstalledExtensions) ==
+      "install";
   bool is_new_user = IsNewUser();
   std::string user_type = apps::DetermineUserType(profile_);
   size_t disabled_count = 0;
@@ -838,8 +975,8 @@ void PreinstalledWebAppManager::PostProcessConfigs(
       parsed_configs.options_list, [&](const ExternalInstallOptions& options) {
         SynchronizeDecision install_decision = GetSynchronizeDecision(
             options, profile_, &provider_->registrar_unsafe(),
-            preinstalled_apps_enabled_in_prefs, is_new_user, user_type,
-            corrupt_user_uninstall_prefs_count);
+            provider_->extensions_manager(), preinstalled_apps_enabled_in_prefs,
+            is_new_user, user_type, corrupt_user_uninstall_prefs_count);
         base::UmaHistogramEnumeration(kHistogramMigrationDisabledReason,
                                       install_decision.reason);
 
@@ -889,6 +1026,12 @@ void PreinstalledWebAppManager::PostProcessConfigs(
       options.force_reinstall = true;
     }
   }
+
+#if BUILDFLAG(IS_CHROMEOS)
+  MaybeForceInstallForRemigration(&parsed_configs.options_list, profile_.get(),
+                                  provider_->registrar_unsafe(),
+                                  provider_->extensions_manager());
+#endif
 
   base::UmaHistogramCounts100(kHistogramEnabledCount,
                               parsed_configs.options_list.size());
@@ -982,7 +1125,7 @@ void PreinstalledWebAppManager::OnExternalWebAppsSynchronized(
 
       // Track whether the app to replace is still present. This is
       // possibly due to getting reinstalled by the user or by Chrome app
-      // sync. See https://crbug.com/1266234 for context.
+      // sync. See https://crbug.com/40204047 for context.
       if (proxy &&
           result.code == webapps::InstallResultCode::kSuccessAlreadyInstalled) {
         bool is_installed = false;
@@ -997,7 +1140,8 @@ void PreinstalledWebAppManager::OnExternalWebAppsSynchronized(
 
         ++app_to_replace_still_installed_count;
 
-        if (extensions::IsExtensionDefaultInstalled(profile_, replace_id)) {
+        if (provider_->extensions_manager().IsExtensionDefaultInstalled(
+                replace_id)) {
           ++app_to_replace_still_default_installed_count;
         }
 

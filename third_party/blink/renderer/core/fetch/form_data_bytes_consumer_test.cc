@@ -56,8 +56,8 @@ class DataPipeGetterImpl : public network::mojom::blink::DataPipeGetter {
  public:
   explicit DataPipeGetterImpl(
       mojo::PendingReceiver<network::mojom::blink::DataPipeGetter> receiver) {
-    receivers_.set_disconnect_handler(WTF::BindRepeating(
-        &DataPipeGetterImpl::OnMojoDisconnect, WTF::Unretained(this)));
+    receivers_.set_disconnect_handler(
+        BindRepeating(&DataPipeGetterImpl::OnMojoDisconnect, Unretained(this)));
     receivers_.Add(this, std::move(receiver));
   }
   DataPipeGetterImpl(const DataPipeGetterImpl&) = delete;
@@ -140,9 +140,7 @@ scoped_refptr<EncodedFormData> ComplexFormData() {
   scoped_refptr<BlobDataHandle> blob_data_handle =
       BlobDataHandle::Create(std::move(blob_data), size);
   data->AppendBlob(blob_data_handle);
-  Vector<char> boundary;
-  boundary.push_back('\0');
-  data->SetBoundary(boundary);
+  data->SetBoundary(g_empty_string);
   return data;
 }
 
@@ -237,7 +235,7 @@ class FormDataBytesConsumerTest : public PageTestBase {
     CHECK(
         base::CreateTemporaryFileInDir(scoped_temp_dir_.GetPath(), &file_path));
     CHECK(base::WriteFile(file_path, content.Utf8()));
-    String file_name = String::FromUTF8(file_path.AsUTF8Unsafe());
+    String file_name = String::FromUtf8(file_path.AsUTF8Unsafe());
     data->AppendFile(file_name, std::nullopt);
   }
 
@@ -299,7 +297,7 @@ TEST_F(FormDataBytesConsumerTest, TwoPhaseReadFromArrayBuffer) {
                      MakeGarbageCollected<FormDataBytesConsumer>(buffer)))
                     ->Run();
   Vector<char> expected;
-  expected.AppendSpan(base::span(kData));
+  expected.append_range(kData);
 
   EXPECT_EQ(Result::kDone, result.first);
   EXPECT_EQ(expected, result.second);
@@ -315,7 +313,7 @@ TEST_F(FormDataBytesConsumerTest, TwoPhaseReadFromArrayBufferView) {
                          DOMUint8Array::Create(buffer, kOffset, kSize))))
                     ->Run();
   Vector<char> expected;
-  expected.AppendSpan(base::span(kData).subspan(kOffset, kSize));
+  expected.append_range(base::span(kData).subspan(kOffset, kSize));
 
   EXPECT_EQ(Result::kDone, result.first);
   EXPECT_EQ(expected, result.second);
@@ -401,7 +399,7 @@ TEST_F(FormDataBytesConsumerTest, DrainAsBlobDataHandleFromArrayBuffer) {
 }
 
 TEST_F(FormDataBytesConsumerTest, DrainAsBlobDataHandleFromSimpleFormData) {
-  auto* data = MakeGarbageCollected<FormData>(UTF8Encoding());
+  auto* data = MakeGarbageCollected<FormData>(Utf8Encoding());
   data->append("name1", "value1");
   data->append("name2", "value2");
   scoped_refptr<EncodedFormData> input_form_data =
@@ -465,7 +463,7 @@ TEST_F(FormDataBytesConsumerTest, DrainAsFormDataFromArrayBuffer) {
 }
 
 TEST_F(FormDataBytesConsumerTest, DrainAsFormDataFromSimpleFormData) {
-  auto* data = MakeGarbageCollected<FormData>(UTF8Encoding());
+  auto* data = MakeGarbageCollected<FormData>(Utf8Encoding());
   data->append("name1", "value1");
   data->append("name2", "value2");
   scoped_refptr<EncodedFormData> input_form_data =
@@ -651,15 +649,13 @@ scoped_refptr<BlobDataHandle> CreateBlobHandle(const String& content) {
 
 scoped_refptr<EncodedFormData> CreateDataWithBoundary() {
   scoped_refptr<EncodedFormData> data = EncodedFormData::Create();
-  Vector<char> boundary;
-  boundary.push_back('\0');
-  data->SetBoundary(boundary);
+  data->SetBoundary(g_empty_string);
   return data;
 }
 
 void AppendData(scoped_refptr<EncodedFormData> data, const String& content) {
   FormDataElement element;
-  element.data_.AppendSpan(content.RawByteSpan());
+  element.data_.append_range(content.RawByteSpan());
   data->MutableElements().push_back(element);
 }
 

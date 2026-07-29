@@ -12,7 +12,6 @@
 #include "base/functional/callback.h"
 #include "build/build_config.h"
 #include "gpu/command_buffer/common/context_creation_attribs.h"
-#include "gpu/command_buffer/common/mailbox.h"
 #include "gpu/command_buffer/service/gles2_cmd_decoder.h"
 #include "gpu/command_buffer/service/shader_translator.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -50,17 +49,11 @@ class MockGLES2Decoder : public GLES2Decoder {
                gpu::ContextResult(const scoped_refptr<gl::GLSurface>& surface,
                                   const scoped_refptr<gl::GLContext>& context,
                                   bool offscreen,
-                                  const DisallowedFeatures& disallowed_features,
-                                  const ContextCreationAttribs& attrib_helper));
+                                  ContextType context_type,
+                                  bool lose_context_when_out_of_memory));
   MOCK_METHOD1(Destroy, void(bool have_context));
   MOCK_METHOD1(SetSurface, void(const scoped_refptr<gl::GLSurface>& surface));
   MOCK_METHOD0(ReleaseSurface, void());
-  MOCK_METHOD5(SetDefaultFramebufferSharedImage,
-               void(const Mailbox& mailbox,
-                    int samples,
-                    bool preserve,
-                    bool needs_depth,
-                    bool needs_stencil));
   MOCK_METHOD1(ResizeOffscreenFramebuffer, bool(const gfx::Size& size));
   MOCK_METHOD0(MakeCurrent, bool());
   MOCK_METHOD1(GetServiceIdForTesting, uint32_t(uint32_t client_id));
@@ -75,6 +68,7 @@ class MockGLES2Decoder : public GLES2Decoder {
   MOCK_METHOD0(GetCapabilities, Capabilities());
   MOCK_METHOD0(GetGLCapabilities, GLCapabilities());
   MOCK_CONST_METHOD0(HasPendingQueries, bool());
+  MOCK_CONST_METHOD0(initialized, bool());
   MOCK_METHOD1(ProcessPendingQueries, void(bool));
   MOCK_CONST_METHOD0(HasMoreIdleWork, bool());
   MOCK_METHOD0(PerformIdleWork, void());
@@ -87,6 +81,7 @@ class MockGLES2Decoder : public GLES2Decoder {
   MOCK_CONST_METHOD1(
       RestoreActiveTextureUnitBinding, void(unsigned int target));
   MOCK_METHOD0(RestoreAllExternalTextureBindingsIfNeeded, void());
+  MOCK_METHOD0(PauseTransformFeedback, void());
   MOCK_METHOD1(RestoreBufferBinding, void(unsigned int target));
   MOCK_CONST_METHOD0(RestoreBufferBindings, void());
   MOCK_CONST_METHOD0(RestoreFramebufferBindings, void());
@@ -154,6 +149,8 @@ class MockGLES2Decoder : public GLES2Decoder {
                     int height,
                     int depth));
   MOCK_METHOD0(GetErrorState, ErrorState *());
+  MOCK_CONST_METHOD2(BindFramebuffer,
+                     void(unsigned target, uint32_t service_id));
 
   MOCK_METHOD0(GetLogger, Logger*());
 

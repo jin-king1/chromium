@@ -13,11 +13,11 @@
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_provider.h"
 #include "ui/compositor/layer.h"
-#include "ui/compositor/scoped_animation_duration_scale_mode.h"
 #include "ui/events/event_processor.h"
 #include "ui/events/event_utils.h"
 #include "ui/events/test/event_generator.h"
@@ -25,8 +25,11 @@
 #include "ui/gfx/color_palette.h"
 #include "ui/gfx/color_utils.h"
 #include "ui/gfx/image/image_unittest_util.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/message_center/message_center.h"
 #include "ui/message_center/public/cpp/message_center_constants.h"
+#include "ui/message_center/public/cpp/notification.h"
+#include "ui/message_center/public/cpp/notification_types.h"
 #include "ui/message_center/views/notification_control_buttons_view.h"
 #include "ui/message_center/views/notification_header_view.h"
 #include "ui/message_center/views/notification_view.h"
@@ -36,8 +39,10 @@
 #include "ui/views/controls/button/image_button.h"
 #include "ui/views/controls/button/label_button.h"
 #include "ui/views/controls/button/radio_button.h"
+#include "ui/views/controls/progress_bar.h"
 #include "ui/views/controls/textfield/textfield.h"
 #include "ui/views/layout/box_layout.h"
+#include "ui/views/layout/layout_types.h"
 #include "ui/views/test/button_test_api.h"
 #include "ui/views/test/views_test_base.h"
 #include "ui/views/test/widget_test.h"
@@ -682,8 +687,8 @@ TEST_F(NotificationViewBaseTest, TestInlineReplyActivateWithKeyPress) {
 TEST_F(NotificationViewBaseTest, MAYBE_SlideOut) {
   SetHasMessageCenterView(/*has_message_center_view=*/false);
 
-  ui::ScopedAnimationDurationScaleMode zero_duration_scope(
-      ui::ScopedAnimationDurationScaleMode::ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode zero_duration_scope(
+      gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION);
 
   EXPECT_FALSE(IsRemovedAfterIdle(kDefaultNotificationId));
 
@@ -712,8 +717,8 @@ TEST_F(NotificationViewBaseTest, MAYBE_SlideOutNested) {
   SetHasMessageCenterView(/*has_message_center_view=*/false);
 
   notification_view()->SetIsNested();
-  ui::ScopedAnimationDurationScaleMode zero_duration_scope(
-      ui::ScopedAnimationDurationScaleMode::ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode zero_duration_scope(
+      gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION);
 
   BeginScroll();
   ScrollBy(-10);
@@ -737,8 +742,8 @@ TEST_F(NotificationViewBaseTest, MAYBE_SlideOutNested) {
 #define MAYBE_DisableSlideForcibly DisableSlideForcibly
 #endif
 TEST_F(NotificationViewBaseTest, MAYBE_DisableSlideForcibly) {
-  ui::ScopedAnimationDurationScaleMode zero_duration_scope(
-      ui::ScopedAnimationDurationScaleMode::ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode zero_duration_scope(
+      gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION);
 
   notification_view()->DisableSlideForcibly(true);
 
@@ -765,8 +770,8 @@ TEST_F(NotificationViewBaseTest, MAYBE_DisableSlideForcibly) {
 
 TEST_F(NotificationViewBaseTest, SlideOutPinned) {
   notification_view()->SetIsNested();
-  ui::ScopedAnimationDurationScaleMode zero_duration_scope(
-      ui::ScopedAnimationDurationScaleMode::ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode zero_duration_scope(
+      gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION);
 
   std::unique_ptr<Notification> notification = CreateSimpleNotification();
   notification->set_pinned(true);
@@ -806,8 +811,8 @@ TEST_F(NotificationViewBaseTest, Pinned) {
 }
 
 TEST_F(NotificationViewBaseTest, FixedViewMode) {
-  ui::ScopedAnimationDurationScaleMode zero_duration_scope(
-      ui::ScopedAnimationDurationScaleMode::ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode zero_duration_scope(
+      gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION);
 
   std::unique_ptr<Notification> notification = CreateSimpleNotification();
   notification_view()->SetSettingMode(true);
@@ -1160,6 +1165,17 @@ TEST_F(NotificationViewBaseTest, ShowProgress) {
                   ->GetVisible());
 }
 
+TEST_F(NotificationViewBaseTest, ProgressBarDoesNotOverpaint) {
+  std::unique_ptr<Notification> notification = CreateSimpleNotification();
+  notification->set_type(NOTIFICATION_TYPE_PROGRESS);
+  UpdateNotificationViews(*notification);
+  EXPECT_EQ(notification_view()
+                ->progress_bar_view_for_testing()
+                ->CalculatePreferredSize(views::SizeBounds())
+                .height(),
+            4);
+}
+
 TEST_F(NotificationViewBaseTest, ShowTimestamp) {
   std::unique_ptr<Notification> notification = CreateSimpleNotification();
   notification->set_timestamp(base::Time::Now());
@@ -1190,8 +1206,8 @@ TEST_F(NotificationViewBaseTest, ShowTimestamp) {
 TEST_F(NotificationViewBaseTest, MAYBE_SlideOutWithMessageCenterView) {
   SetHasMessageCenterView(/*has_message_center_view=*/true);
 
-  ui::ScopedAnimationDurationScaleMode zero_duration_scope(
-      ui::ScopedAnimationDurationScaleMode::ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode zero_duration_scope(
+      gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION);
 
   EXPECT_FALSE(IsPopupRemovedAfterIdle(kDefaultNotificationId));
 
@@ -1218,8 +1234,8 @@ TEST_F(NotificationViewBaseTest, MAYBE_SlideOutWithMessageCenterView) {
 #define MAYBE_SlideOutByTrackpad SlideOutByTrackpad
 #endif
 TEST_F(NotificationViewBaseTest, MAYBE_SlideOutByTrackpad) {
-  ui::ScopedAnimationDurationScaleMode zero_duration_scope(
-      ui::ScopedAnimationDurationScaleMode::ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode zero_duration_scope(
+      gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION);
 
   ui::test::EventGenerator generator(
       GetRootWindow(notification_view()->GetWidget()));

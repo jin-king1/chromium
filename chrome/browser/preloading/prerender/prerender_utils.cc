@@ -10,11 +10,11 @@ namespace prerender_utils {
 // document go/update-prerender-new-trigger-metrics to make sure that metrics
 // include the newly added trigger type.
 // LINT.IfChange
+const char kPrewarmDefaultSearchEngineMetricSuffix[] =
+    "PrewarmDefaultSearchEngine";
+// TODO(crbug.com/394213503): Move this to `preloading_utils`.
 const char kDefaultSearchEngineMetricSuffix[] = "DefaultSearchEngine";
 const char kDirectUrlInputMetricSuffix[] = "DirectURLInput";
-const char kBookmarkBarMetricSuffix[] = "BookmarkBar";
-const char kNewTabPageMetricSuffix[] = "NewTabPage";
-const char kLinkPreviewMetricsSuffix[] = "LinkPreview";
 // LINT.ThenChange()
 
 }  // namespace prerender_utils

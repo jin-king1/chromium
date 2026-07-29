@@ -24,8 +24,6 @@
 #include "components/search_engines/template_url_service.h"
 #include "components/search_engines/template_url_service_observer.h"
 #include "content/public/browser/preloading.h"
-#include "mojo/public/cpp/bindings/pending_remote.h"
-#include "services/network/public/mojom/network_context.mojom.h"
 #include "url/gurl.h"
 
 struct AutocompleteMatch;
@@ -35,6 +33,7 @@ class Profile;
 class AutocompleteResult;
 
 namespace content {
+class PreloadingData;
 class WebContents;
 }
 
@@ -50,7 +49,7 @@ struct ResourceRequest;
 // use or introduce a corresponding enum to content::PreloadingEligibility or
 // ChromePreloadingEligibility.
 //
-// LINT.IfChange
+// LINT.IfChange(SearchPrefetchEligibilityReason)
 enum class SearchPrefetchEligibilityReason {
   // The prefetch was started.
   kPrefetchStarted = 0,
@@ -73,9 +72,13 @@ enum class SearchPrefetchEligibilityReason {
   kThrottled = 8,
   // The prefetch was suppressed because the network is too slow.
   kSlowNetwork = 9,
-  kMaxValue = kSlowNetwork,
+  // The prefetch was suppressed because Data Saver is enabled.
+  kDataSaverEnabled = 10,
+  // The prefetch was suppressed because Battery Saver is enabled.
+  kBatterySaverEnabled = 11,
+  kMaxValue = kBatterySaverEnabled,
 };
-// LINT.ThenChange(/tools/metrics/histograms/enums.xml:SearchPrefetchEligibilityReason)
+// LINT.ThenChange(//tools/metrics/histograms/metadata/omnibox/enums.xml:SearchPrefetchEligibilityReason)
 
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
@@ -87,7 +90,7 @@ enum class SearchPrefetchEligibilityReason {
 // or if you are not a Googler, please file an FYI bug on https://crbug.new with
 // component Internals>Preload.
 //
-// LINT.IfChange
+// LINT.IfChange(SearchPrefetchServingReason)
 enum class SearchPrefetchServingReason {
   // The prefetch was started.
   kServed = 0,
@@ -104,7 +107,7 @@ enum class SearchPrefetchServingReason {
   // kRequestWasCancelled = 6,  // No longer used.
   // The request failed due to some network/service error.
   kRequestFailed = 7,
-  // The request wasn't served unexpectantly.
+  // The request wasn't served.
   kNotServedOtherReason = 8,
   // The navigation was a POST request, reload or link navigation.
   kPostReloadFormOrLink = 9,
@@ -113,7 +116,7 @@ enum class SearchPrefetchServingReason {
   kRequestInFlightNotReady = 11,
   kMaxValue = kRequestInFlightNotReady,
 };
-// LINT.ThenChange()
+// LINT.ThenChange(//tools/metrics/histograms/metadata/omnibox/enums.xml:SearchPrefetchServingReason)
 
 class SearchPrefetchService : public KeyedService,
                               public TemplateURLServiceObserver {
@@ -220,11 +223,13 @@ class SearchPrefetchService : public KeyedService,
   friend class PrerenderOmniboxSearchSuggestionBrowserTest;
   friend class SearchPrefetchServiceEnabledBrowserTest;
 
+
   // Returns whether the prefetch started or not.
   bool MaybePrefetchURL(const GURL& url,
                         bool navigation_prefetch,
                         content::WebContents* web_contents,
-                        content::PreloadingPredictor predictor);
+                        content::PreloadingPredictor predictor,
+                        bool should_ignore_saver_modes);
 
   // Adds |this| as an observer of |template_url_service| if not added already.
   void ObserveTemplateURLService(TemplateURLService* template_url_service);
@@ -266,9 +271,6 @@ class SearchPrefetchService : public KeyedService,
                                        TemplateURLService* template_url_service,
                                        const GURL& canonical_search_url);
 
-  // Preloads the compression dictionaries in the network service.
-  void MaybePreloadDictionary(const AutocompleteResult& result);
-  void DeletePreloadedDictionaries();
 
   // Prefetches that are started are stored using search terms as a key. Only
   // one prefetch should be started for a given search term until the old
@@ -279,7 +281,7 @@ class SearchPrefetchService : public KeyedService,
   std::map<GURL, std::unique_ptr<base::OneShotTimer>> prefetch_expiry_timers_;
 
   // The time of the last prefetch network/server error.
-  base::TimeTicks last_error_time_ticks_;
+  base::TimeTicks last_error_time_ticks_ = base::TimeTicks::Min();
 
   // The current state of the DSE.
   std::optional<TemplateURLData> template_url_service_data_;
@@ -294,11 +296,18 @@ class SearchPrefetchService : public KeyedService,
   // serving time of the response.
   std::map<GURL, std::pair<GURL, base::Time>> prefetch_cache_;
 
-  mojo::PendingRemote<network::mojom::PreloadedSharedDictionaryInfoHandle>
-      preloaded_shared_dictionaries_handle_;
-  base::OneShotTimer preloaded_shared_dictionaries_expiry_timer_;
 
   base::WeakPtrFactory<SearchPrefetchService> weak_factory_{this};
 };
+
+GURL GetPrefetchUrlFromMatch(
+    const TemplateURLRef::SearchTermsArgs& search_terms_args_from_match,
+    TemplateURLService& template_url_service,
+    bool is_navigation_likely);
+GURL GetPrerenderUrlFromMatch(
+    const TemplateURLRef::SearchTermsArgs& search_terms_args_from_match,
+    TemplateURLService& template_url_service);
+
+void SetIsNavigationInDomainCallback(content::PreloadingData* preloading_data);
 
 #endif  // CHROME_BROWSER_PRELOADING_PREFETCH_SEARCH_PREFETCH_SEARCH_PREFETCH_SERVICE_H_

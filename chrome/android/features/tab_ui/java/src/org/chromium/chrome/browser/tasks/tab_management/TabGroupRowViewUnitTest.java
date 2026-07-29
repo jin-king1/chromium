@@ -4,6 +4,9 @@
 
 package org.chromium.chrome.browser.tasks.tab_management;
 
+import static android.view.View.GONE;
+import static android.view.View.VISIBLE;
+
 import static androidx.test.espresso.Espresso.onView;
 import static androidx.test.espresso.action.ViewActions.click;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
@@ -33,9 +36,9 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
+import android.widget.Space;
 import android.widget.TextView;
 
-import androidx.core.util.Pair;
 import androidx.test.ext.junit.rules.ActivityScenarioRule;
 
 import org.junit.Before;
@@ -48,8 +51,10 @@ import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.Callback;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.util.DisabledTest;
 import org.chromium.chrome.browser.data_sharing.ui.shared_image_tiles.SharedImageTilesView;
 import org.chromium.chrome.browser.tasks.tab_management.TabGroupFaviconCluster.ClusterData;
+import org.chromium.chrome.browser.tasks.tab_management.TabGroupRowView.TabGroupRowViewTitleData;
 import org.chromium.chrome.browser.tasks.tab_management.TabGroupTimeAgo.TimestampEvent;
 import org.chromium.ui.base.TestActivity;
 import org.chromium.ui.listmenu.ListMenuButton;
@@ -85,6 +90,7 @@ public class TabGroupRowViewUnitTest {
     private ViewGroup mTabGroupFaviconCluster;
     private TextView mTitleTextView;
     private TextView mSubtitleTextView;
+    private Space mTextSpace;
     private FrameLayout mImageTilesContainer;
     private ListMenuButton mListMenuButton;
     private PropertyModel mPropertyModel;
@@ -109,6 +115,7 @@ public class TabGroupRowViewUnitTest {
         mTabGroupFaviconCluster = mTabGroupRowView.findViewById(R.id.tab_group_favicon_cluster);
         mTitleTextView = mTabGroupRowView.findViewById(R.id.tab_group_title);
         mSubtitleTextView = mTabGroupRowView.findViewById(R.id.tab_group_subtitle);
+        mTextSpace = mTabGroupRowView.findViewById(R.id.tab_group_text_space);
         mImageTilesContainer = mTabGroupRowView.findViewById(R.id.image_tiles_container);
         mListMenuButton = mTabGroupRowView.findViewById(R.id.tab_group_menu);
 
@@ -144,20 +151,45 @@ public class TabGroupRowViewUnitTest {
 
     @Test
     public void testSetTitleData() {
-        remakeWithProperty(TITLE_DATA, new Pair<>("Title", 3));
+        remakeWithProperty(
+                TITLE_DATA,
+                new TabGroupRowViewTitleData(
+                        "Title", 3, R.plurals.tab_group_bottom_sheet_row_accessibility_text));
         assertEquals("Title", mTitleTextView.getText());
 
-        remakeWithProperty(TITLE_DATA, new Pair<>(" ", 3));
+        remakeWithProperty(
+                TITLE_DATA,
+                new TabGroupRowViewTitleData(
+                        " ", 3, R.plurals.tab_group_bottom_sheet_row_accessibility_text));
         assertEquals(" ", mTitleTextView.getText());
 
-        remakeWithProperty(TITLE_DATA, new Pair<>("", 3));
+        remakeWithProperty(
+                TITLE_DATA,
+                new TabGroupRowViewTitleData(
+                        "", 3, R.plurals.tab_group_bottom_sheet_row_accessibility_text));
         assertEquals("3 tabs", mTitleTextView.getText());
 
-        remakeWithProperty(TITLE_DATA, new Pair<>(null, 3));
+        remakeWithProperty(
+                TITLE_DATA,
+                new TabGroupRowViewTitleData(
+                        null, 3, R.plurals.tab_group_bottom_sheet_row_accessibility_text));
         assertEquals("3 tabs", mTitleTextView.getText());
 
-        remakeWithProperty(TITLE_DATA, new Pair<>("", 1));
+        remakeWithProperty(
+                TITLE_DATA,
+                new TabGroupRowViewTitleData(
+                        "", 1, R.plurals.tab_group_bottom_sheet_row_accessibility_text));
         assertEquals("1 tab", mTitleTextView.getText());
+    }
+
+    @Test
+    public void testSubtitleGoneWhenNull() {
+        remakeWithProperty(
+                TITLE_DATA,
+                new TabGroupRowViewTitleData(
+                        "", 1, R.plurals.tab_group_bottom_sheet_row_accessibility_text));
+        assertEquals(GONE, mTextSpace.getVisibility());
+        assertEquals(GONE, mSubtitleTextView.getVisibility());
     }
 
     @Test
@@ -168,6 +200,8 @@ public class TabGroupRowViewUnitTest {
         TabGroupTimeAgo timeAgo = new TabGroupTimeAgo(creationMillis, TimestampEvent.CREATED);
         remakeWithProperty(TabGroupRowProperties.TIMESTAMP_EVENT, timeAgo);
 
+        assertEquals(VISIBLE, mTextSpace.getVisibility());
+        assertEquals(VISIBLE, mSubtitleTextView.getVisibility());
         assertEquals(timeAgoText, mSubtitleTextView.getText());
     }
 
@@ -179,6 +213,8 @@ public class TabGroupRowViewUnitTest {
         TabGroupTimeAgo timeAgo = new TabGroupTimeAgo(creationMillis, TimestampEvent.UPDATED);
         remakeWithProperty(TabGroupRowProperties.TIMESTAMP_EVENT, timeAgo);
 
+        assertEquals(VISIBLE, mTextSpace.getVisibility());
+        assertEquals(VISIBLE, mSubtitleTextView.getVisibility());
         assertEquals(timeAgoText, mSubtitleTextView.getText());
     }
 
@@ -274,8 +310,11 @@ public class TabGroupRowViewUnitTest {
 
     @Test
     public void testContentDescriptions() {
-        remakeWithProperty(TITLE_DATA, new Pair<>("Title", 3));
-        assertEquals("Open Title", mTitleTextView.getContentDescription());
+        remakeWithProperty(
+                TITLE_DATA,
+                new TabGroupRowViewTitleData(
+                        "Title", 3, R.plurals.tab_group_row_accessibility_text));
+        assertEquals("Open Title with 3 tabs", mTitleTextView.getContentDescription());
         assertEquals("Title tab group options", mListMenuButton.getContentDescription());
     }
 
@@ -284,10 +323,11 @@ public class TabGroupRowViewUnitTest {
         remakeWithModel(new PropertyModel.Builder(ALL_KEYS).with(DISPLAY_AS_SHARED, true).build());
         assertEquals(View.VISIBLE, mImageTilesContainer.getVisibility());
         remakeWithModel(new PropertyModel.Builder(ALL_KEYS).with(DISPLAY_AS_SHARED, false).build());
-        assertEquals(View.GONE, mImageTilesContainer.getVisibility());
+        assertEquals(GONE, mImageTilesContainer.getVisibility());
     }
 
     @Test
+    @DisabledTest // This needs to be re-worked for Q.
     public void testImageTileContainerCallback() {
         remakeWithProperty(SHARED_IMAGE_TILES_VIEW, mSharedImageTilesView);
         assertEquals(1, mImageTilesContainer.getChildCount());
@@ -298,7 +338,7 @@ public class TabGroupRowViewUnitTest {
     @Test
     public void testDisableMenu() {
         remakeWithModel(new PropertyModel.Builder(ALL_KEYS).with(OPEN_RUNNABLE, null).build());
-        assertEquals(View.GONE, mListMenuButton.getVisibility());
+        assertEquals(GONE, mListMenuButton.getVisibility());
     }
 
     @Test

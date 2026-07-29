@@ -8,6 +8,7 @@
 #include "ash/shell.h"
 #include "ash/webui/print_management/url_constants.h"
 #include "ash/webui/settings/public/constants/routes.mojom-forward.h"
+#include "ash/webui/settings/public/constants/routes_util.h"
 #include "base/time/time.h"
 #include "chrome/browser/ash/printing/history/print_job_database.h"
 #include "chrome/browser/ash/printing/history/print_job_history_service.h"
@@ -15,9 +16,9 @@
 #include "chrome/browser/ash/printing/history/print_job_info.pb.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_commands.h"
-#include "chrome/browser/ui/browser_list.h"
-#include "chrome/browser/ui/chrome_pages.h"
-#include "chrome/browser/ui/settings_window_manager_chromeos.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/test/base/ash/interactive/interactive_ash_test.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "ui/base/accelerators/accelerator.h"
@@ -104,8 +105,8 @@ class PrintManagementInteractiveUiTest : public InteractiveAshTest {
   auto ClosePrinterSettings() {
     return Do([]() {
       // Printer settings is opened last so it'll be the last active browser.
-      ASSERT_FALSE(BrowserList::GetInstance()->empty());
-      chrome::CloseWindow(BrowserList::GetInstance()->GetLastActive());
+      ASSERT_FALSE(GlobalBrowserCollection::GetInstance()->IsEmpty());
+      chrome::CloseWindow(GetLastActiveBrowserWindowInterfaceWithAnyProfile());
     });
   }
 
@@ -113,8 +114,9 @@ class PrintManagementInteractiveUiTest : public InteractiveAshTest {
     return Do([]() {
       // The test always starts from an empty state so the Print Management app
       // will always be the first browser.
-      ASSERT_FALSE(BrowserList::GetInstance()->empty());
-      chrome::Reload(BrowserList::GetInstance()->get(0),
+      ASSERT_FALSE(GlobalBrowserCollection::GetInstance()->IsEmpty());
+      chrome::Reload(GetLastActiveBrowserWindowInterfaceWithAnyProfile()
+                         ->GetBrowserForMigrationOnly(),
                      WindowOpenDisposition::CURRENT_TAB);
     });
   }
@@ -145,7 +147,7 @@ IN_PROC_BROWSER_TEST_F(PrintManagementInteractiveUiTest,
       WaitForShow(kFirstPrinterSettingsWebContentsId),
       WaitForWebContentsReady(
           kFirstPrinterSettingsWebContentsId,
-          chrome::GetOSSettingsUrl(
+          chromeos::settings::GetOSSettingsUrl(
               chromeos::settings::mojom::kPrintingDetailsSubpagePath)),
       ClosePrinterSettings(), WaitForHide(kFirstPrinterSettingsWebContentsId),
       ReloadPrintManagement(),
@@ -162,7 +164,7 @@ IN_PROC_BROWSER_TEST_F(PrintManagementInteractiveUiTest,
       WaitForShow(kSecondPrintManagementWebContentsId),
       WaitForWebContentsReady(
           kSecondPrintManagementWebContentsId,
-          chrome::GetOSSettingsUrl(
+          chromeos::settings::GetOSSettingsUrl(
               chromeos::settings::mojom::kPrintingDetailsSubpagePath)));
 }
 

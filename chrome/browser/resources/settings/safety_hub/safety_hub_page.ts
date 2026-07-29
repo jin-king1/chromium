@@ -9,8 +9,15 @@
  */
 
 import 'chrome://resources/cr_elements/cr_shared_vars.css.js';
+// <if expr="not is_chromeos">
+import '../relaunch_confirmation_dialog.js';
+// </if>
+import '../settings_page/settings_subpage.js';
 import './safety_hub_card.js';
 import './safety_hub_module.js';
+import './extensions_module.js';
+import './notification_permissions_module.js';
+import './unused_site_permissions_module.js';
 
 import {PrefsMixin} from '/shared/settings/prefs/prefs_mixin.js';
 import {I18nMixin} from 'chrome://resources/cr_elements/i18n_mixin.js';
@@ -24,6 +31,8 @@ import {MetricsBrowserProxyImpl, SafetyHubModuleType, SafetyHubSurfaces} from '.
 import {RelaunchMixin, RestartType} from '../relaunch_mixin.js';
 import {routes} from '../route.js';
 import {RouteObserverMixin, Router} from '../router.js';
+import type {Route} from '../router.js';
+import {SettingsViewMixin} from '../settings_page/settings_view_mixin.js';
 
 import type {CardInfo, NotificationPermission, SafetyHubBrowserProxy, UnusedSitePermissions} from './safety_hub_browser_proxy.js';
 import {CardState, SafetyHubBrowserProxyImpl, SafetyHubEvent} from './safety_hub_browser_proxy.js';
@@ -38,8 +47,8 @@ export interface SettingsSafetyHubPageElement {
   };
 }
 
-const SettingsSafetyHubPageElementBase = RouteObserverMixin(
-    RelaunchMixin(PrefsMixin(WebUiListenerMixin(I18nMixin(PolymerElement)))));
+const SettingsSafetyHubPageElementBase = RouteObserverMixin(SettingsViewMixin(
+    RelaunchMixin(PrefsMixin(WebUiListenerMixin(I18nMixin(PolymerElement))))));
 
 export class SettingsSafetyHubPageElement extends
     SettingsSafetyHubPageElementBase {
@@ -121,20 +130,20 @@ export class SettingsSafetyHubPageElement extends
     ];
   }
 
-  private passwordCardData_: CardInfo;
-  private versionCardData_: CardInfo;
-  private safeBrowsingCardData_: CardInfo;
-  private showNotificationPermissions_: boolean;
-  private hasDataForNotificationPermissions_: boolean;
-  private showUnusedSitePermissions_: boolean;
-  private hasDataForUnusedPermissions_: boolean;
-  private showNoRecommendationsState_: boolean;
-  private showExtensions_: boolean;
-  private hasDataForExtensions_: boolean;
+  declare private passwordCardData_: CardInfo;
+  declare private versionCardData_: CardInfo;
+  declare private safeBrowsingCardData_: CardInfo;
+  declare private showNotificationPermissions_: boolean;
+  declare private hasDataForNotificationPermissions_: boolean;
+  declare private showUnusedSitePermissions_: boolean;
+  declare private hasDataForUnusedPermissions_: boolean;
+  declare private showNoRecommendationsState_: boolean;
+  declare private showExtensions_: boolean;
+  declare private hasDataForExtensions_: boolean;
   private shouldRecordMetric_: boolean = false;
-  private userEducationItemList_: SiteInfo[];
-  private versionCardRole_: string;
-  private versionCardAriaDescription_: string;
+  declare private userEducationItemList_: SiteInfo[];
+  declare private versionCardRole_: string;
+  declare private versionCardAriaDescription_: string;
   private browserProxy_: SafetyHubBrowserProxy =
       SafetyHubBrowserProxyImpl.getInstance();
   private metricsBrowserProxy_: MetricsBrowserProxy =
@@ -148,7 +157,9 @@ export class SettingsSafetyHubPageElement extends
     super.connectedCallback();
   }
 
-  override currentRouteChanged() {
+  override currentRouteChanged(newRoute: Route, oldRoute?: Route) {
+    super.currentRouteChanged(newRoute, oldRoute);
+
     if (Router.getInstance().getCurrentRoute() !== routes.SAFETY_HUB) {
       return;
     }
@@ -175,7 +186,7 @@ export class SettingsSafetyHubPageElement extends
   }
 
   private initializeCards_() {
-    // TODO(crbug.com/40267370): Add a listener for the Password card.
+    // TODO(crbug.com/40267370): Add listeners for Password and Version cards.
     this.browserProxy_.getPasswordCardData().then((data: CardInfo) => {
       this.passwordCardData_ = data;
     });
@@ -184,10 +195,6 @@ export class SettingsSafetyHubPageElement extends
       this.safeBrowsingCardData_ = data;
     });
 
-    this.addWebUiListener(
-        SafetyHubEvent.CHROME_VERSION_MAYBE_CHANGED, (data: CardInfo) => {
-          this.versionCardData_ = data;
-        });
     this.browserProxy_.getVersionCardData().then((data: CardInfo) => {
       this.versionCardData_ = data;
     });
@@ -225,12 +232,12 @@ export class SettingsSafetyHubPageElement extends
       {
         origin: this.i18n('safetyHubUserEduDataHeader'),
         detail: this.i18nAdvanced('safetyHubUserEduDataSubheader'),
-        icon: 'settings20:chrome-filled',
+        icon: 'settings20:chrome-product',
       },
       {
         origin: this.i18n('safetyHubUserEduIncognitoHeader'),
         detail: this.i18nAdvanced('safetyHubUserEduIncognitoSubheader'),
-        icon: 'settings20:incognito-unfilled',
+        icon: 'settings20:incognito',
       },
       {
         origin: this.i18n('safetyHubUserEduSafeBrowsingHeader'),
@@ -430,6 +437,11 @@ export class SettingsSafetyHubPageElement extends
     }
 
     this.metricsBrowserProxy_.recordSafetyHubDashboardAnyWarning(hasAnyWarning);
+  }
+
+  // SettingsViewMixin implementation.
+  override focusBackButton() {
+    this.shadowRoot!.querySelector('settings-subpage')!.focusBackButton();
   }
 }
 

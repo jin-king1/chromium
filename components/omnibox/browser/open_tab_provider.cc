@@ -9,6 +9,7 @@
 #include "base/i18n/case_conversion.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
+#include "components/omnibox/browser/suggestion_group_util.h"
 #if BUILDFLAG(IS_ANDROID)
 #include "components/browser_ui/util/android/url_constants.h"
 #endif
@@ -34,32 +35,42 @@
 namespace {
 
 constexpr bool is_android = !!BUILDFLAG(IS_ANDROID);
-constexpr int kOpenTabDefaultScore = 1500;
+
+#if BUILDFLAG(IS_ANDROID)
+constexpr char kChromeUINewTabHost[] = "newtab";
+// Returns true if the given `tab` is a chrome newtab page.
+bool IsNewTabPage(const TabMatcher::TabWrapper& tab) {
+  if (tab.url.scheme() != content::kChromeUIScheme &&
+      tab.url.scheme() != content::kChromeNativeScheme) {
+    return false;
+  }
+  return tab.url.host() == kChromeUINewTabHost;
+}
+#endif
 
 int Score(const AutocompleteInput& input,
           const query_parser::QueryNodeVector& input_query_nodes,
-          const TabMatcher::TabWrapper tab) {
-// For Hub Search, remove both ZPS and search suggestions that involve open
-// chrome prefixed tabs.
+          const TabMatcher::TabWrapper& tab) {
 #if BUILDFLAG(IS_ANDROID)
+  // For Hub Search, remove both ZPS and search suggestions that involve open
+  // chrome new tab pages. This is done by returning a score of 0 for all such
+  // tabs.
   if (input.current_page_classification() ==
           ::metrics::OmniboxEventProto::ANDROID_HUB &&
-      (tab.url.SchemeIs(browser_ui::kChromeUINativeScheme) ||
-       tab.url.SchemeIs(content::kChromeUIScheme))) {
+      IsNewTabPage(tab)) {
     return 0;
   }
 #endif
 
   if ((input.IsZeroSuggest() || input.text().empty()) && is_android) {
-    return kOpenTabDefaultScore +
+    return omnibox::kOpenTabMatchZeroSuggestRelevance +
            tab.last_shown_time.InSecondsFSinceUnixEpoch();
   }
   // TODO(crbug.com/40211187): The bookmark provider also uses on `query_parser`
-  // and
-  //  `ScoringFunctor` to compute its scores. However, it uses normalized match
-  //  titles. (see `Normalize()` in
-  //  components/bookmarks/browser/titled_url_index.cc) IDK its purpose, but we
-  //  should either verify it's unnecessary here, or do likewise here.
+  //  and `ScoringFunctor` to compute its scores. However, it uses normalized
+  //  match titles (see `Normalize()` in
+  //  components/bookmarks/browser/titled_url_index.cc). IDK its purpose, but we
+  //  should either verify it's unnecessary there, or do likewise here.
 
   // Extract query words from the title.
   const std::u16string lower_title = base::i18n::ToLower(tab.title);
@@ -107,8 +118,7 @@ int Score(const AutocompleteInput& input,
 }
 
 bool ShouldRunProvider(AutocompleteProviderClient* client,
-                       const AutocompleteInput& input,
-                       const AutocompleteInput& adjusted_input) {
+                       const AutocompleteInput& input) {
   bool zps_or_empty = input.IsZeroSuggest() || input.text().empty();
   if (is_android) {
     return !zps_or_empty || !client->IsIncognitoProfile();
@@ -134,7 +144,7 @@ void OpenTabProvider::Start(const AutocompleteInput& input,
   const auto [adjusted_input, template_url] =
       AdjustInputForStarterPackKeyword(input, client_->GetTemplateURLService());
 
-  if (!ShouldRunProvider(client_, input, adjusted_input)) {
+  if (!ShouldRunProvider(client_, input)) {
     return;
   }
 
@@ -164,7 +174,7 @@ void OpenTabProvider::Start(const AutocompleteInput& input,
   // If there were no open tab results found, and we're in keyword mode,
   // generate a NULL_RESULT_MESSAGE suggestion to keep the user in keyword mode
   // and display a no results message.
-  if (adjusted_input.InKeywordMode() && matches_.empty() && template_url) {
+  if (adjusted_input.in_keyword_mode() && matches_.empty() && template_url) {
     matches_.push_back(
         CreateNullResultMessageMatch(adjusted_input, template_url));
   }
@@ -193,6 +203,7 @@ AutocompleteMatch OpenTabProvider::CreateOpenTabMatch(
   if (template_url) {
     match.keyword = template_url->keyword();
     match.transition = ui::PAGE_TRANSITION_KEYWORD;
+    match.fill_into_edit.insert(0, match.keyword + u" ");
   }
 
   // For display in the suggestion UI, elide all optional parts. The user has
@@ -217,7 +228,7 @@ AutocompleteMatch OpenTabProvider::CreateOpenTabMatch(
       description_terms, match.description.size(), ACMatchClassification::MATCH,
       ACMatchClassification::NONE);
 
-  if (input.InKeywordMode()) {
+  if (input.in_keyword_mode()) {
     match.from_keyword = true;
   }
 

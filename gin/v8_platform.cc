@@ -8,6 +8,7 @@
 
 #include "base/bit_cast.h"
 #include "base/check_op.h"
+#include "base/debug/dump_without_crashing.h"
 #include "base/debug/stack_trace.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
@@ -19,16 +20,20 @@
 #include "base/task/thread_pool.h"
 #include "base/task/thread_pool/thread_pool_instance.h"
 #include "base/threading/scoped_blocking_call.h"
-#include "base/threading/scoped_blocking_call_internal.h"
+#include "base/threading/scoped_thread_priority.h"
 #include "base/trace_event/trace_event.h"
 #include "base/tracing_buildflags.h"
 #include "build/build_config.h"
 #include "gin/converter.h"
 #include "gin/per_isolate_data.h"
 #include "gin/thread_isolation.h"
+#include "gin/v8_platform_page_allocator.h"
 #include "gin/v8_platform_thread_isolated_allocator.h"
 #include "partition_alloc/buildflags.h"
-#include "v8_platform_page_allocator.h"
+
+#if PA_BUILDFLAG(USE_PARTITION_ALLOC) && PA_BUILDFLAG(HAS_64_BIT_POINTERS)
+#include "partition_alloc/partition_address_space.h"
+#endif
 
 namespace gin {
 
@@ -127,6 +132,23 @@ class JobHandleImpl : public v8::JobHandle {
   base::JobHandle handle_;
 };
 
+class ScopedBoostablePriorityImpl : public v8::ScopedBoostablePriority {
+ public:
+  ScopedBoostablePriorityImpl() = default;
+  ~ScopedBoostablePriorityImpl() override = default;
+
+  bool BoostPriority() override {
+    return scoped_boostable_priority_.BoostPriority(
+        std::min(base::PlatformThread::GetCurrentThreadType(),
+                 base::ThreadType::kAudioProcessing));
+  }
+
+  void Reset() override { scoped_boostable_priority_.Reset(); }
+
+ private:
+  base::ScopedBoostablePriority scoped_boostable_priority_;
+};
+
 class ScopedBlockingCallImpl : public v8::ScopedBlockingCall {
  public:
   explicit ScopedBlockingCallImpl(v8::BlockingType blocking_type)
@@ -211,6 +233,14 @@ void V8Platform::OnCriticalMemoryPressure() {
   partition_alloc::ReleaseReservation();
 #endif
 }
+
+size_t V8Platform::GetZeroSegmentSize() {
+#if PA_BUILDFLAG(HAS_64_BIT_POINTERS)
+  return partition_alloc::internal::PartitionAddressSpace::GetZeroSegmentSize();
+#else
+  return 0;
+#endif
+}
 #endif  // PA_BUILDFLAG(USE_PARTITION_ALLOC)
 
 std::shared_ptr<v8::TaskRunner> V8Platform::GetForegroundTaskRunner(
@@ -242,13 +272,7 @@ int V8Platform::NumberOfWorkerThreads() {
   // V8Platform assumes the number of workers used by the scheduler for user
   // blocking tasks is an upper bound.
   const size_t num_foreground_workers =
-      base::ThreadPoolInstance::Get()
-          ->GetMaxConcurrentNonBlockedTasksWithTraitsDeprecated(
-              {base::TaskPriority::USER_BLOCKING});
-  DCHECK_GE(num_foreground_workers,
-            base::ThreadPoolInstance::Get()
-                ->GetMaxConcurrentNonBlockedTasksWithTraitsDeprecated(
-                    {base::TaskPriority::USER_VISIBLE}));
+      base::ThreadPoolInstance::Get()->GetMaxConcurrentForegroundTasks();
   return std::max(1, static_cast<int>(num_foreground_workers));
 }
 
@@ -298,6 +322,11 @@ std::unique_ptr<v8::JobHandle> V8Platform::CreateJobImpl(
   return std::make_unique<JobHandleImpl>(std::move(handle));
 }
 
+std::unique_ptr<v8::ScopedBoostablePriority>
+V8Platform::CreateBoostablePriorityScope() {
+  return std::make_unique<ScopedBoostablePriorityImpl>();
+}
+
 std::unique_ptr<v8::ScopedBlockingCall> V8Platform::CreateBlockingScope(
     v8::BlockingType blocking_type) {
   return std::make_unique<ScopedBlockingCallImpl>(blocking_type);
@@ -330,6 +359,10 @@ v8::TracingController* V8Platform::GetTracingController() {
 
 v8::Platform::StackTracePrinter V8Platform::GetStackTracePrinter() {
   return PrintStackTrace;
+}
+
+void V8Platform::DumpWithoutCrashing() {
+  base::debug::DumpWithoutCrashing();
 }
 
 }  // namespace gin

@@ -4,6 +4,8 @@
 
 package org.chromium.chrome.browser.notifications.scheduler;
 
+import static org.chromium.build.NullUtil.assertNonNull;
+
 import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -11,12 +13,16 @@ import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.drawable.Icon;
 
+import androidx.annotation.VisibleForTesting;
+
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.base.IntentUtils;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.init.BrowserParts;
 import org.chromium.chrome.browser.init.ChromeBrowserInitializer;
@@ -36,6 +42,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 
 /** Used by notification scheduler to display the notification in Android UI. */
+@NullMarked
 public class DisplayAgent {
     private static final String TAG = "DisplayAgent";
     private static final String DISPLAY_AGENT_TAG = "NotificationSchedulerDisplayAgent";
@@ -52,8 +59,8 @@ public class DisplayAgent {
             "org.chromium.chrome.browser.notifications.scheduler.EXTRA_SCHEDULER_CLIENT_TYPE ";
 
     /** Contains icon info on the notification. */
-    private static class IconBundle {
-        public final Bitmap bitmap;
+    static class IconBundle {
+        public final @Nullable Bitmap bitmap;
         public final int resourceId;
 
         public IconBundle() {
@@ -73,7 +80,7 @@ public class DisplayAgent {
     }
 
     /** Contains button info on the notification. */
-    private static class Button {
+    static class Button {
         public final String text;
         public final @ActionButtonType int type;
         public final String id;
@@ -88,11 +95,12 @@ public class DisplayAgent {
     /**
      * Contains all data needed to build Android notification in the UI, specified by the client.
      */
-    private static class NotificationData {
+    @VisibleForTesting
+    static class NotificationData {
         public final String title;
         public final String message;
-        public HashMap<Integer /*@IconType*/, IconBundle> icons = new HashMap<>();
-        public ArrayList<Button> buttons = new ArrayList<>();
+        public final HashMap<Integer /*@IconType*/, IconBundle> icons = new HashMap<>();
+        public final ArrayList<Button> buttons = new ArrayList<>();
 
         private NotificationData(String title, String message) {
             this.title = title;
@@ -101,7 +109,8 @@ public class DisplayAgent {
     }
 
     @CalledByNative
-    private static void addButton(
+    @VisibleForTesting
+    static void addButton(
             NotificationData notificationData,
             @JniType("std::u16string") String text,
             @ActionButtonType int type,
@@ -124,7 +133,8 @@ public class DisplayAgent {
     }
 
     @CalledByNative
-    private static NotificationData buildNotificationData(
+    @VisibleForTesting
+    static NotificationData buildNotificationData(
             @JniType("std::u16string") String title, @JniType("std::u16string") String message) {
         return new NotificationData(title, message);
     }
@@ -133,8 +143,9 @@ public class DisplayAgent {
      * Contains data used used by the notification scheduling system internally to build the
      * notification.
      */
-    private static class SystemData {
-        public @SchedulerClientType int type;
+    @VisibleForTesting
+    static class SystemData {
+        public final @SchedulerClientType int type;
         public final String guid;
 
         public SystemData(@SchedulerClientType int type, String guid) {
@@ -144,7 +155,8 @@ public class DisplayAgent {
     }
 
     @CalledByNative
-    private static SystemData buildSystemData(
+    @VisibleForTesting
+    static SystemData buildSystemData(
             @SchedulerClientType int type, @JniType("std::string") String guid) {
         return new SystemData(type, guid);
     }
@@ -174,7 +186,7 @@ public class DisplayAgent {
                         intent,
                         EXTRA_INTENT_TYPE,
                         NotificationIntentInterceptor.IntentType.UNKNOWN);
-        String guid = IntentUtils.safeGetStringExtra(intent, EXTRA_GUID);
+        String guid = assertNonNull(IntentUtils.safeGetStringExtra(intent, EXTRA_GUID));
         @SchedulerClientType
         int clientType =
                 IntentUtils.safeGetIntExtra(
@@ -233,10 +245,21 @@ public class DisplayAgent {
         }
     }
 
-    private static AndroidNotificationData toAndroidNotificationData() {
-        @ChannelId String channel = ChannelId.BROWSER;
+    private static AndroidNotificationData toAndroidNotificationData(
+            @SchedulerClientType int type) {
         @SystemNotificationType int systemNotificationType = SystemNotificationType.UNKNOWN;
-        return new AndroidNotificationData(channel, systemNotificationType);
+        return new AndroidNotificationData(getNotificationChannel(type), systemNotificationType);
+    }
+
+    private static @ChannelId String getNotificationChannel(@SchedulerClientType int type) {
+        switch (type) {
+            case SchedulerClientType.TIPS:
+                return ChannelId.TIPS_V2;
+            case SchedulerClientType.CHROME_FINDS:
+                return ChannelId.CHROME_FINDS;
+            default:
+                return ChannelId.BROWSER;
+        }
     }
 
     private static Intent buildIntent(
@@ -251,8 +274,9 @@ public class DisplayAgent {
     }
 
     @CalledByNative
-    private static void showNotification(NotificationData notificationData, SystemData systemData) {
-        AndroidNotificationData platformData = toAndroidNotificationData();
+    @VisibleForTesting
+    static void showNotification(NotificationData notificationData, SystemData systemData) {
+        AndroidNotificationData platformData = toAndroidNotificationData(systemData.type);
         // TODO(xingliu): Plumb platform specific data from native.
         // mode and provide correct notification id. Support buttons.
         Context context = ContextUtils.getApplicationContext();
@@ -265,27 +289,28 @@ public class DisplayAgent {
                                 DISPLAY_AGENT_TAG,
                                 systemData.guid.hashCode()));
         builder.setContentTitle(notificationData.title);
+        // Set the summary (preview) content text for the notification in collapsed form.
         builder.setContentText(notificationData.message);
+        // Override the content text for the notification in expanded form with wrap text style.
+        builder.setBigTextStyle(notificationData.message);
 
-        boolean hasSmallIcon = notificationData.icons.containsKey(IconType.SMALL_ICON);
-
-        if (hasSmallIcon && notificationData.icons.get(IconType.SMALL_ICON).bitmap != null) {
+        @Nullable IconBundle smallIconBundle = notificationData.icons.get(IconType.SMALL_ICON);
+        if (smallIconBundle != null && smallIconBundle.bitmap != null) {
             // Use bitmap as small icon.
-            Icon smallIcon =
-                    Icon.createWithBitmap(notificationData.icons.get(IconType.SMALL_ICON).bitmap);
+            Icon smallIcon = Icon.createWithBitmap(smallIconBundle.bitmap);
             builder.setSmallIcon(smallIcon);
         } else {
             // Use resource Id as small icon, if invalid, use default Chrome icon instead.
             int resourceId = R.drawable.ic_chrome;
-            if (hasSmallIcon && notificationData.icons.get(IconType.SMALL_ICON).resourceId != 0) {
-                resourceId = notificationData.icons.get(IconType.SMALL_ICON).resourceId;
+            if (smallIconBundle != null && smallIconBundle.resourceId != 0) {
+                resourceId = smallIconBundle.resourceId;
             }
             builder.setSmallIcon(resourceId);
         }
 
-        if (notificationData.icons.containsKey(IconType.LARGE_ICON)
-                && notificationData.icons.get(IconType.LARGE_ICON).bitmap != null) {
-            builder.setLargeIcon(notificationData.icons.get(IconType.LARGE_ICON).bitmap);
+        @Nullable IconBundle largeIconBundle = notificationData.icons.get(IconType.LARGE_ICON);
+        if (largeIconBundle != null && largeIconBundle.bitmap != null) {
+            builder.setLargeIcon(largeIconBundle.bitmap);
         }
 
         // Default content click behavior.
@@ -299,7 +324,8 @@ public class DisplayAgent {
                         context,
                         getRequestCode(
                                 NotificationIntentInterceptor.IntentType.CONTENT_INTENT,
-                                systemData.guid),
+                                systemData.guid,
+                                /* index= */ 0),
                         contentIntent,
                         PendingIntent.FLAG_UPDATE_CURRENT));
 
@@ -314,7 +340,8 @@ public class DisplayAgent {
                         context,
                         getRequestCode(
                                 NotificationIntentInterceptor.IntentType.DELETE_INTENT,
-                                systemData.guid),
+                                systemData.guid,
+                                /* index= */ 0),
                         dismissIntent,
                         PendingIntent.FLAG_UPDATE_CURRENT));
 
@@ -329,7 +356,7 @@ public class DisplayAgent {
             actionIntent.putExtra(EXTRA_ACTION_BUTTON_TYPE, button.type);
             actionIntent.putExtra(EXTRA_ACTION_BUTTON_ID, button.id);
 
-            // TODO(xingliu): Support button icon. See https://crbug.com/983354
+            // TODO(xingliu): Support button icon. See https://crbug.com/40635786
             builder.addAction(
                     /* icon= */ 0,
                     button.text,
@@ -337,7 +364,8 @@ public class DisplayAgent {
                             context,
                             getRequestCode(
                                     NotificationIntentInterceptor.IntentType.ACTION_INTENT,
-                                    systemData.guid),
+                                    systemData.guid,
+                                    /* index= */ i),
                             actionIntent,
                             PendingIntent.FLAG_UPDATE_CURRENT),
                     NotificationUmaTracker.ActionType.UNKNOWN);
@@ -351,13 +379,21 @@ public class DisplayAgent {
     }
 
     /**
-     * Returns the request code for a specific intent. Android will not distinguish intents based on
-     * extra data. Different intent must have different request code.
+     * Returns a unique request code for a specific intent. In order to guarantee different Request
+     * Codes for buttons of the same IntentType (eg. helpful and unhelpful buttons), a unique index
+     * is used to generate a unique hash for each button.
+     *
+     * @param intentType The type of the intent.
+     * @param guid The unique ID of the notification.
+     * @param index An index used to differentiate intents of buttons sharing the same IntentType.
+     * @return A unique request code for the intent. Android will not distinguish intents based on
+     *     extra data. Different intents must have different request codes.
      */
     private static int getRequestCode(
-            @NotificationIntentInterceptor.IntentType int intentType, String guid) {
+            @NotificationIntentInterceptor.IntentType int intentType, String guid, int index) {
         int hash = guid.hashCode();
-        hash += 31 * hash + intentType;
+        hash = 31 * hash + intentType;
+        hash = 31 * hash + index;
         return hash;
     }
 
@@ -368,8 +404,8 @@ public class DisplayAgent {
         void onUserAction(
                 @SchedulerClientType int clientType,
                 @UserActionType int actionType,
-                @JniType("std::string") String guid,
+                @JniType("std::string") @Nullable String guid,
                 @ActionButtonType int type,
-                @JniType("std::string") String buttonId);
+                @JniType("std::string") @Nullable String buttonId);
     }
 }

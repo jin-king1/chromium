@@ -7,16 +7,9 @@
 namespace blink {
 
 SpeechRecognitionPhrase* SpeechRecognitionPhrase::Create(
-    ScriptState* script_state,
-    const WTF::String& phrase,
+    const String& phrase,
     float boost,
     ExceptionState& exception_state) {
-  if (phrase.empty()) {
-    exception_state.ThrowDOMException(
-        DOMExceptionCode::kSyntaxError,
-        "Speech recognition phrase cannot be empty.");
-    return nullptr;
-  }
   if (boost < 0 || boost > 10) {
     exception_state.ThrowDOMException(DOMExceptionCode::kSyntaxError,
                                       "Speech recognition phrase boost value "
@@ -26,7 +19,7 @@ SpeechRecognitionPhrase* SpeechRecognitionPhrase::Create(
   return MakeGarbageCollected<SpeechRecognitionPhrase>(phrase, boost);
 }
 
-SpeechRecognitionPhrase::SpeechRecognitionPhrase(const WTF::String& phrase,
+SpeechRecognitionPhrase::SpeechRecognitionPhrase(const String& phrase,
                                                  float boost)
     : phrase_(phrase), boost_(boost) {}
 

@@ -25,11 +25,9 @@ class Point;
 class Range;
 }  // namespace gfx
 
-#if BUILDFLAG(IS_MAC)
 namespace views {
 class Widget;
 }
-#endif
 
 class FindBar {
  public:
@@ -40,8 +38,9 @@ class FindBar {
   virtual void SetFindBarController(FindBarController* find_bar_controller) = 0;
 
   // Shows the find bar. Any previous search string will again be visible.
-  // If |animate| is true, we try to slide the find bar in.
-  virtual void Show(bool animate) = 0;
+  // If `animate` is true, we try to slide the find bar in.
+  // If `focus` is true, the find bar takes focus and accepts keyboard input.
+  virtual void Show(bool animate, bool focus) = 0;
 
   // Hide the find bar.  If |animate| is true, we try to slide the find bar
   // away.
@@ -93,6 +92,10 @@ class FindBar {
   // Called when the web contents associated with the find bar changes.
   virtual void UpdateFindBarForChangedWebContents() = 0;
 
+  // Called to check if find bar text can be populated from selected text or
+  // not.
+  virtual bool CanPopulateFromSelectedText() = 0;
+
   // Returns a pointer to the testing interface to the FindBar, or NULL
   // if there is none.
   virtual const FindBarTesting* GetFindBarTesting() const = 0;
@@ -100,11 +103,12 @@ class FindBar {
   // Return |true| if find bar has focus.
   virtual bool HasFocus() const = 0;
 
-#if BUILDFLAG(IS_MAC)
+  // Closes any overlapping bubbles, such as the translate bubble.
+  virtual void CloseOverlappingBubbles() = 0;
+
   // Get the host widget. Used by immersive fullscreen to detect the find bar
   // widget and reparent as necessary.
   virtual views::Widget* GetHostWidget() = 0;
-#endif
 };
 
 class FindBarTesting {

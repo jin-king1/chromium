@@ -15,6 +15,8 @@
 #include "cc/paint/paint_flags.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "third_party/skia/include/core/SkPath.h"
+#include "third_party/skia/include/core/SkPathBuilder.h"
+#include "third_party/skia/include/core/SkRRect.h"
 #include "ui/base/cursor/cursor.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/color/color_id.h"
@@ -71,10 +73,6 @@ class TableHeader::HighlightPathGenerator
 
   // HighlightPathGenerator:
   SkPath GetHighlightPath(const View* view) override {
-    if constexpr (!PlatformStyle::kTableViewSupportsKeyboardNavigationByCell) {
-      return SkPath();
-    }
-
     const TableHeader* const header = static_cast<const TableHeader*>(view);
     // If there's no focus indicator fall back on the default highlight path
     // (highlights entire view instead of active cell).
@@ -82,10 +80,48 @@ class TableHeader::HighlightPathGenerator
       return SkPath();
     }
 
-    // Draw a focus indicator around the active cell.
-    gfx::Rect bounds = header->GetActiveHeaderCellBounds();
+    const bool supports_cell_navigation =
+        PlatformStyle::kTableViewSupportsKeyboardNavigationByCell;
+
+    // Draw a focus indicator around the active cell, or if cell navigation is
+    // not supported, around the whole header.
+    gfx::Rect bounds = supports_cell_navigation
+                           ? header->GetActiveHeaderCellBounds()
+                           : header->GetLocalBounds();
     bounds.set_x(header->GetMirroredXForRect(bounds));
-    return SkPath().addRect(gfx::RectToSkRect(bounds));
+
+    // Fill the path with an explicitly calculated default radius.
+    const float default_radius = header->GetDefaultFocusRingRadius();
+    std::array<SkVector, 4> focus_ring_radii;
+    focus_ring_radii.fill({default_radius, default_radius});
+
+    // Use the preferred upper corner radius, based on the active column.
+    if (const auto& columns = header->table_->visible_columns();
+        columns.size() != 0) {
+      const auto& active_column = header->table_->GetActiveVisibleColumnIndex();
+      if (active_column.has_value()) {
+        const float radius = header->GetFocusRingUpperRadius();
+
+        const bool is_first_column = active_column.value() == 0;
+        const bool is_last_column = active_column == columns.size() - 1;
+
+        const float upper_left = is_first_column || !supports_cell_navigation
+                                     ? radius
+                                     : default_radius;
+        const float upper_right = is_last_column || !supports_cell_navigation
+                                      ? radius
+                                      : default_radius;
+        const float lower_right = default_radius;
+        const float lower_left = default_radius;
+
+        focus_ring_radii = {SkVector{upper_left,  upper_left},
+                            SkVector{upper_right, upper_right},
+                            SkVector{lower_right, lower_right},
+                            SkVector{lower_left,  lower_left}};
+      }
+    }
+    return SkPath::RRect(SkRRect::MakeRectRadii(gfx::RectToSkRect(bounds),
+                                                focus_ring_radii.data()));
   }
 };
 
@@ -96,19 +132,37 @@ TableHeader::TableHeader(base::WeakPtr<TableView> table)
       font_list_(gfx::FontList().DeriveWithWeight(GetFontWeight())) {
   HighlightPathGenerator::Install(
       this, std::make_unique<TableHeader::HighlightPathGenerator>());
-  FocusRing::Install(this);
-  views::FocusRing::Get(this)->SetHasFocusPredicate(
-      base::BindRepeating([](const View* view) {
-        const auto* v = views::AsViewClass<TableHeader>(view);
-        CHECK(v);
-        return v->GetHeaderRowHasFocus();
-      }));
+  InstallFocusRing();
 }
 
 TableHeader::~TableHeader() = default;
 
+void TableHeader::InstallFocusRing() {
+  // Remove and reinstall a new focus ring, if one is already present.
+  if (views::FocusRing::Get(this)) {
+    views::FocusRing::Remove(this);
+  }
+
+  FocusRing::Install(this);
+  FocusRing* focus_ring = views::FocusRing::Get(this);
+  if (table_->table_style().inset_focus_ring) {
+    focus_ring->SetOutsetFocusRingDisabled(true);
+    focus_ring->SetHaloInset(0);
+  }
+  focus_ring->SetHasFocusPredicate(base::BindRepeating([](const View* view) {
+    const auto* v = views::AsViewClass<TableHeader>(view);
+    CHECK(v);
+    return v->GetHeaderRowHasFocus();
+  }));
+}
+
 void TableHeader::UpdateFocusState() {
-  views::FocusRing::Get(this)->SchedulePaint();
+  views::FocusRing* focus_ring = views::FocusRing::Get(this);
+  focus_ring->Refresh();
+
+  // Schedule a paint to ensure the focus ring is repainted if the output of the
+  // highlight path generator changes.
+  focus_ring->SchedulePaint();
 }
 
 int TableHeader::GetCellVerticalPadding() const {
@@ -148,6 +202,11 @@ ui::ColorId TableHeader::GetBackgroundColorId() const {
 
 gfx::Font::Weight TableHeader::GetFontWeight() const {
   return table_->header_style().font_weight.value_or(gfx::Font::Weight::NORMAL);
+}
+
+float TableHeader::GetFocusRingUpperRadius() const {
+  return table_->header_style().focus_ring_upper_corner_radius.value_or(
+      GetDefaultFocusRingRadius());
 }
 
 // Amount of space reserved for the sort indicator and padding.
@@ -235,7 +294,7 @@ void TableHeader::OnPaint(gfx::Canvas* canvas) {
       indicator_x += (sort_indicator_width - kSortIndicatorSize) / 2;
       indicator_x = GetMirroredXInView(indicator_x);
       int indicator_y = height() / 2 - kSortIndicatorSize / 2;
-      SkPath indicator_path;
+      SkPathBuilder indicator_path;
       if (table_->sort_descriptors()[0].ascending) {
         indicator_path.moveTo(SkIntToScalar(indicator_x),
                               SkIntToScalar(indicator_y + kSortIndicatorSize));
@@ -256,7 +315,7 @@ void TableHeader::OnPaint(gfx::Canvas* canvas) {
             SkIntToScalar(indicator_y + kSortIndicatorSize));
       }
       indicator_path.close();
-      canvas->DrawPath(indicator_path, flags);
+      canvas->DrawPath(indicator_path.detach(), flags);
     }
   }
 }
@@ -388,6 +447,14 @@ gfx::Rect TableHeader::GetActiveHeaderCellBounds() const {
 
 bool TableHeader::HasFocusIndicator() const {
   return table_->GetActiveVisibleColumnIndex().has_value();
+}
+
+float TableHeader::GetDefaultFocusRingRadius() const {
+  float thickness = FocusRing::kDefaultHaloThickness / 2.f;
+  if (const FocusRing* focus_ring = views::FocusRing::Get(this); focus_ring) {
+    thickness = focus_ring->GetHaloThickness() / 2.f;
+  }
+  return FocusRing::kDefaultCornerRadiusDp + thickness;
 }
 
 bool TableHeader::StartResize(const ui::LocatedEvent& event) {

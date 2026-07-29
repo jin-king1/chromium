@@ -26,6 +26,7 @@
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/system/sys_info.h"
 #include "base/task/single_thread_task_executor.h"
 #include "base/task/single_thread_task_runner.h"
@@ -281,7 +282,7 @@ void InitGoogleTestChar(int* argc, char** argv) {
 
 #if BUILDFLAG(IS_WIN)
 
-// Safety: as is normal in command lines, argc and argv must correspond
+// PRECONDITIONS: As is normal in command lines, argc and argv must correspond
 // to one another. Otherwise there will be out-of-bounds accesses.
 UNSAFE_BUFFER_USAGE void InitGoogleTestWChar(int* argc, wchar_t** argv) {
   testing::InitGoogleTest(argc, argv);

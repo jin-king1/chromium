@@ -7,7 +7,9 @@
 
 #include <msctf.h>
 #include <wrl/client.h>
+
 #include <deque>
+#include <optional>
 #include <string>
 
 #include "base/component_export.h"
@@ -378,6 +380,10 @@ class COMPONENT_EXPORT(UI_BASE_IME_WIN) TSFTextStore
   // called duriing current edit session.
   bool on_start_composition_called_ = false;
 
+  // `on_update_composition_called_` indicates that OnUpdateComposition() is
+  // called during ITextStoreACPSink::OnLockGranted().
+  bool on_update_composition_called_ = false;
+
   // |previous_composition_string_| indicicates composition string in last
   // edit session during same composition. |previous_composition_start_|
   // indicates composition start in last session during same composition. If
@@ -458,6 +464,9 @@ class COMPONENT_EXPORT(UI_BASE_IME_WIN) TSFTextStore
   // Checks for re-entrancy while writing to text input client.
   bool is_tic_write_in_progress_ = false;
 
+  // Checks for re-entrancy while canceling composition.
+  bool is_cancel_composition_in_progress_ = false;
+
   // The type of current lock.
   //   0: No lock.
   //   TS_LF_READ: read-only lock.
@@ -474,6 +483,9 @@ class COMPONENT_EXPORT(UI_BASE_IME_WIN) TSFTextStore
   Microsoft::WRL::ComPtr<ITfContext> context_;
   Microsoft::WRL::ComPtr<ITfInputProcessorProfileMgr>
       input_processor_profile_mgr_;
+
+  // Test override for `IsInputIME()`.
+  std::optional<bool> is_input_ime_for_testing_;
 
   // Current list of requested supported attribute values.
   // Currently the supported attributes are URL and InputScope.

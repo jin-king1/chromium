@@ -15,6 +15,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/scoped_observation.h"
 #include "base/time/time.h"
+#include "base/timer/timer.h"
 #include "chromeos/ui/base/app_types.h"
 #include "ui/aura/window_observer.h"
 #include "ui/base/user_activity/user_activity_detector.h"
@@ -85,9 +86,10 @@ class ASH_EXPORT DemoSessionMetricsRecorder
     kSumo = 40,
     kAdobeSpark = 41,
     kMinecraft = 42,
+    kGemini = 43,
     // Add future entries above this comment, in sync with enums.xml.
     // Update kMaxValue to the last value.
-    kMaxValue = kMinecraft,
+    kMaxValue = kGemini,
   };
 
   enum class ExitSessionFrom {
@@ -107,7 +109,7 @@ class ASH_EXPORT DemoSessionMetricsRecorder
     kSuccess = 0,               // Demo account request success.
     kResponseParsingError = 1,  // Malformat Http response.
     kInvalidCreds = 2,          // Missing required credential for login.
-    kEmptyReponse = 3,          // Empty Http response.
+    kEmptyResponse = 3,         // Empty Http response.
     kNetworkError = 4,          // Network error.
     kRequestFailed = 5,         // Server side error or out of quota.
     kCloudPolicyNotConnected =
@@ -115,7 +117,11 @@ class ASH_EXPORT DemoSessionMetricsRecorder
             // policy not connected.
     kEmptyDMToken = 7,   // The DM Token on the device is empty.
     kEmptyClientID = 8,  // The Client ID on the device is empty.
-    kMaxValue = kEmptyClientID,
+    kQuotaExhaustedRetriable =
+        9,  // Server quota exhausted, might be max QPS reached.
+    kQuotaExhaustedNotRetriable =
+        10,  // Server quota exhausted, device might be blocked.
+    kMaxValue = kQuotaExhaustedNotRetriable,
   };
 
   // Types of the current demo session.
@@ -160,6 +166,9 @@ class ASH_EXPORT DemoSessionMetricsRecorder
 
   // Get the type of the current demo session.
   static SessionType GetCurrentSessionTypeForTesting();
+
+  // Records cloud policy connections timeout.
+  static void RecordCloudPolicyConnectionTimeout();
 
   // The recorder will create a normal timer by default. Tests should provide a
   // mock timer to control sampling periods.

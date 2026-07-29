@@ -5,6 +5,9 @@
 #ifndef CHROME_BROWSER_UI_ANDROID_AUTOFILL_AUTOFILL_SAVE_CARD_DELEGATE_ANDROID_H_
 #define CHROME_BROWSER_UI_ANDROID_AUTOFILL_AUTOFILL_SAVE_CARD_DELEGATE_ANDROID_H_
 
+#include <variant>
+
+#include "base/memory/raw_ptr.h"
 #include "components/autofill/core/browser/payments/autofill_save_card_delegate.h"
 #include "components/autofill/core/browser/payments/payments_autofill_client.h"
 
@@ -21,9 +24,10 @@ namespace autofill {
 class AutofillSaveCardDelegateAndroid : public AutofillSaveCardDelegate {
  public:
   AutofillSaveCardDelegateAndroid(
-      absl::variant<
+      std::variant<
           payments::PaymentsAutofillClient::LocalSaveCardPromptCallback,
-          payments::PaymentsAutofillClient::UploadSaveCardPromptCallback>
+          payments::PaymentsAutofillClient::UploadSaveCardPromptCallback,
+          payments::PaymentsAutofillClient::CardSaveAndFillDialogCallback>
           callback,
       payments::PaymentsAutofillClient::SaveCreditCardOptions options,
       content::WebContents* web_contents);

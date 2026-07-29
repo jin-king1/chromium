@@ -14,7 +14,6 @@ import '../../components/common_styles/oobe_common_styles.css.js';
 import '../../components/common_styles/oobe_dialog_host_styles.css.js';
 import '../../components/dialogs/oobe_adaptive_dialog.js';
 
-import type {String16} from '//resources/mojo/mojo/public/mojom/base/string16.mojom-webui.js';
 import type {PolymerElementProperties} from '//resources/polymer/v3_0/polymer/interfaces.js';
 import {PolymerElement} from '//resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
@@ -84,10 +83,10 @@ class DrivePinningScreen extends DrivePinningScreenElementBase {
     };
   }
 
-  private freeSpace_: string;
-  private requiredSpace_: string;
-  private enableDrivePinning_: boolean;
-  private shouldShowReturn_: boolean;
+  declare private freeSpace_: string;
+  declare private requiredSpace_: string;
+  declare private enableDrivePinning_: boolean;
+  declare private shouldShowReturn_: boolean;
   private callbackRouter: DrivePinningPageCallbackRouter;
   private handler: DrivePinningPageHandlerRemote;
 
@@ -143,9 +142,9 @@ class DrivePinningScreen extends DrivePinningScreenElementBase {
   /**
    * Set the required space and free space information.
    */
-  setRequiredSpaceInfo(requiredSpace: String16, freeSpace: String16): void {
-    this.requiredSpace_ = String.fromCharCode(...requiredSpace.data);
-    this.freeSpace_ = String.fromCharCode(...freeSpace.data);
+  setRequiredSpaceInfo(requiredSpace: string, freeSpace: string): void {
+    this.requiredSpace_ = requiredSpace;
+    this.freeSpace_ = freeSpace;
   }
 
   private onNextButtonClicked_(): void {

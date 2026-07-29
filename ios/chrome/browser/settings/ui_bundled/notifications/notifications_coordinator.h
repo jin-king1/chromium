@@ -7,7 +7,7 @@
 
 #import <Foundation/Foundation.h>
 
-#import "ios/chrome/browser/push_notification/ui_bundled/notifications_alert_presenter.h"
+#import "ios/chrome/browser/push_notification/coordinator/notifications_alert_presenter.h"
 #import "ios/chrome/browser/shared/coordinator/chrome_coordinator/chrome_coordinator.h"
 
 @class NotificationsCoordinator;
@@ -37,6 +37,9 @@
 
 // Show Price Trackinhg Notifications settings.
 - (void)showTrackingPrice;
+
+// Visually highlights the table view row for the given `clientID`.
+- (void)highlightClient:(PushNotificationClientId)clientID;
 
 @end
 

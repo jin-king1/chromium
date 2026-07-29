@@ -171,6 +171,12 @@ HANDLE PASCAL RAROpenArchiveEx(struct RAROpenArchiveDataEx *r)
     if (Data != NULL)
       delete Data;
   }
+  catch (std::length_error&)
+  {
+    r->OpenResult=ERAR_NO_MEMORY;
+    if (Data != NULL)
+      delete Data;
+  }
   return NULL; // To make compilers happy.
 }
 
@@ -331,7 +337,7 @@ int PASCAL RARReadHeaderEx(HANDLE hArcData,struct RARHeaderDataEx *D)
   {
     return Data->Cmd.DllError!=0 ? Data->Cmd.DllError : RarErrorToDll(ErrCode);
   }
-  return ERAR_SUCCESS;
+  return Data->Cmd.DllError!=0 ? Data->Cmd.DllError : RarErrorToDll(ErrHandler.GetErrorCode());
 }
 
 
@@ -424,11 +430,15 @@ int PASCAL ProcessFile(HANDLE hArcData,int Operation,char *DestPath,char *DestNa
   {
     return ERAR_NO_MEMORY;
   }
+  catch (std::length_error&)
+  {
+    return ERAR_NO_MEMORY;
+  }
   catch (RAR_EXIT ErrCode)
   {
     return Data->Cmd.DllError!=0 ? Data->Cmd.DllError : RarErrorToDll(ErrCode);
   }
-  return Data->Cmd.DllError;
+  return Data->Cmd.DllError!=0 ? Data->Cmd.DllError : RarErrorToDll(ErrHandler.GetErrorCode());
 }
 
 

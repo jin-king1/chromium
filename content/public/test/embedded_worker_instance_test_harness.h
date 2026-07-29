@@ -10,7 +10,6 @@
 #include "browser_task_environment.h"
 #include "content/public/browser/browser_context.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
-#include "mojo/public/cpp/bindings/pending_remote.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/mojom/hid/hid.mojom.h"
@@ -73,11 +72,9 @@ class EmbeddedWorkerInstanceTestHarness : public testing::Test {
 
   void StopAndResetWorker();
 
-#if !BUILDFLAG(IS_ANDROID)
   void BindHidServiceToWorker(
       const GURL& origin,
       mojo::PendingReceiver<blink::mojom::HidService> receiver);
-#endif
 
   void BindUsbServiceToWorker(
       const GURL& origin,

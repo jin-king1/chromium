@@ -33,8 +33,7 @@ NSArray<GridItemIdentifier*>* CreateItems(WebStateList* web_state_list) {
     DCHECK(!web_state_list->IsWebStatePinnedAt(i));
     const TabGroup* tab_group = web_state_list->GetGroupOfWebStateAt(i);
     if (tab_group) {
-      [items addObject:[GridItemIdentifier groupIdentifier:tab_group
-                                          withWebStateList:web_state_list]];
+      [items addObject:[GridItemIdentifier groupIdentifier:tab_group]];
 
       // Skip the webStates that belong to `group_item`.
       incrementer = tab_group->range().count();
@@ -51,10 +50,6 @@ NSArray<GridItemIdentifier*>* CreateItems(WebStateList* web_state_list) {
 int WebStateIndexFromGridDropItemIndex(WebStateList* web_state_list,
                                        NSUInteger drop_item_index,
                                        int previous_web_state_index) {
-  if (!IsPinnedTabsEnabled() && !IsTabGroupInGridEnabled()) {
-    return drop_item_index;
-  }
-
   if (drop_item_index == NSNotFound) {
     return WebStateList::kInvalidIndex;
   }
@@ -66,8 +61,7 @@ int WebStateIndexFromGridDropItemIndex(WebStateList* web_state_list,
   // groups before it.
   for (NSUInteger i = 0;
        i < drop_item_index && web_state_index < web_state_list->count(); ++i) {
-    CHECK(web_state_list->ContainsIndex(web_state_index),
-          base::NotFatalUntil::M128);
+    CHECK(web_state_list->ContainsIndex(web_state_index));
     const TabGroup* tabGroup =
         web_state_list->GetGroupOfWebStateAt(web_state_index);
     if (tabGroup) {

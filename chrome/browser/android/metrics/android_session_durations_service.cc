@@ -5,6 +5,7 @@
 #include "chrome/browser/android/metrics/android_session_durations_service.h"
 
 #include "base/metrics/histogram_functions.h"
+#include "base/notimplemented.h"
 #include "base/time/time.h"
 #include "chrome/browser/android/metrics/android_session_durations_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
@@ -90,20 +91,19 @@ AndroidSessionDurationsService::~AndroidSessionDurationsService() = default;
 void AndroidSessionDurationsService::InitializeForRegularProfile(
     PrefService* pref_service,
     syncer::SyncService* sync_service,
-    signin::IdentityManager* identity_manager) {
+    signin::IdentityManager* identity_manager,
+    metrics::ProfileMetricsService* profile_metrics_service) {
   DCHECK(!incognito_session_metrics_recorder_);
   DCHECK(!sync_session_metrics_recorder_);
-  CHECK(!password_session_duration_metrics_recorder_,
-        base::NotFatalUntil::M130);
+  CHECK(!password_session_duration_metrics_recorder_);
   DCHECK(!msbb_session_metrics_recorder_);
 
   sync_session_metrics_recorder_ =
       std::make_unique<syncer::SyncSessionDurationsMetricsRecorder>(
-          sync_service, identity_manager);
+          sync_service, identity_manager, profile_metrics_service);
 
   password_session_duration_metrics_recorder_ = std::make_unique<
-      password_manager::PasswordSessionDurationsMetricsRecorder>(pref_service,
-                                                                 sync_service);
+      password_manager::PasswordSessionDurationsMetricsRecorder>(sync_service);
 
   msbb_session_metrics_recorder_ =
       std::make_unique<unified_consent::MsbbSessionDurationsMetricsRecorder>(
@@ -120,8 +120,7 @@ void AndroidSessionDurationsService::InitializeForRegularProfile(
 void AndroidSessionDurationsService::InitializeForIncognitoProfile() {
   DCHECK(!incognito_session_metrics_recorder_);
   DCHECK(!sync_session_metrics_recorder_);
-  CHECK(!password_session_duration_metrics_recorder_,
-        base::NotFatalUntil::M130);
+  CHECK(!password_session_duration_metrics_recorder_);
   DCHECK(!msbb_session_metrics_recorder_);
 
   incognito_session_metrics_recorder_ =
@@ -215,7 +214,7 @@ void AndroidSessionDurationsService::RestoreIncognitoSession(
 // Returns a java object consisting of data required to restore the service.
 // This function only covers Incognito profiles.
 // static
-base::android::ScopedJavaLocalRef<jobject>
+static base::android::ScopedJavaLocalRef<jobject>
 JNI_AndroidSessionDurationsServiceState_GetAndroidSessionDurationsServiceState(
     JNIEnv* env,
     Profile* profile) {
@@ -236,10 +235,11 @@ JNI_AndroidSessionDurationsServiceState_GetAndroidSessionDurationsServiceState(
 // Restores the service from an archived android object.
 // This function only covers Incognito profiles.
 // static
-void JNI_AndroidSessionDurationsServiceState_RestoreAndroidSessionDurationsServiceState(
+static void
+JNI_AndroidSessionDurationsServiceState_RestoreAndroidSessionDurationsServiceState(
     JNIEnv* env,
     Profile* profile,
-    const base::android::JavaParamRef<jobject>& j_duration_service) {
+    const base::android::JavaRef<jobject>& j_duration_service) {
   CHECK(profile->IsIncognitoProfile());
 
   AndroidSessionDurationsService* duration_service =
@@ -255,3 +255,5 @@ void JNI_AndroidSessionDurationsServiceState_RestoreAndroidSessionDurationsServi
   duration_service->RestoreIncognitoSession(session_start_time,
                                             last_reported_duration);
 }
+
+DEFINE_JNI(AndroidSessionDurationsServiceState)

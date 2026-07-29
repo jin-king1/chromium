@@ -8,9 +8,10 @@ import android.graphics.Matrix;
 import android.util.Size;
 
 import org.chromium.base.Callback;
-import org.chromium.base.supplier.Supplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+
+import java.util.function.Supplier;
 
 /** Handles scaling of the top level frame for the paint preview player. */
 @NullMarked
@@ -28,7 +29,7 @@ public class PlayerFrameScaleController {
     /** Interface for calling shared methods on the mediator. */
     private final PlayerFrameMediatorDelegate mMediatorDelegate;
 
-    private @Nullable Supplier<Boolean> mIsAccessibilityEnabled;
+    private final @Nullable Supplier<Boolean> mIsAccessibilityEnabled;
     private final @Nullable Callback<Boolean> mOnScaleListener;
     private boolean mAcceptUserInput;
 

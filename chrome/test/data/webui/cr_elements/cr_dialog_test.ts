@@ -332,9 +332,9 @@ suite('cr-dialog', function() {
   // within a <cr-dialog show-on-attach> which itself resides in a conditional
   // Lit template. Regression test for crbug/341327469.
   test('FocusesCrLitElementsWithAutofocus', async function() {
-    class TestElement extends CrLitElement {
+    class TestDummyElement extends CrLitElement {
       static get is() {
-        return 'test-element';
+        return 'test-dummy';
       }
 
       override render() {
@@ -360,16 +360,16 @@ suite('cr-dialog', function() {
         };
       }
 
-      showDialog: boolean = false;
-      autofocusCrInput: boolean = false;
-      autofocusCrTextarea: boolean = false;
+      accessor showDialog: boolean = false;
+      accessor autofocusCrInput: boolean = false;
+      accessor autofocusCrTextarea: boolean = false;
     }
 
-    customElements.define(TestElement.is, TestElement);
+    customElements.define(TestDummyElement.is, TestDummyElement);
 
     async function assertAutofocus(useTextarea: boolean) {
       document.body.innerHTML = window.trustedTypes!.emptyHTML;
-      const element = document.createElement('test-element') as TestElement;
+      const element = document.createElement('test-dummy') as TestDummyElement;
       useTextarea ? element.autofocusCrTextarea = true :
                     element.autofocusCrInput = true;
       const whenOpen = eventToPromise('cr-dialog-open', document.body);
@@ -389,94 +389,24 @@ suite('cr-dialog', function() {
     await assertAutofocus(/*useTextarea=*/ true);
   });
 
-  // Ensuring that intersectionObserver does not fire any callbacks before the
-  // dialog has been opened.
-  test('body scrollable border not added before modal shown', async function() {
+  test('supports custom top-border on body', () => {
     document.body.innerHTML = getTrustedHTML`
       <cr-dialog>
         <div slot="title">title</div>
-        <div slot="body">body</div>
       </cr-dialog>`;
+    const dialog = document.querySelector('cr-dialog')!;
+    dialog.showModal();
 
-    const dialog = document.body.querySelector('cr-dialog')!;
-    assertFalse(dialog.open);
-    const bodyContainer = dialog.shadowRoot.querySelector('.body-container');
-    assertTrue(!!bodyContainer);
-    const topShadow =
-        dialog.shadowRoot.querySelector('#cr-container-shadow-top');
-    assertTrue(!!topShadow);
-    const bottomShadow =
-        dialog.shadowRoot.querySelector('#cr-container-shadow-bottom');
-    assertTrue(!!bottomShadow);
+    const scrollableTop =
+        dialog.shadowRoot.querySelector('.cr-scrollable-top')!;
+    assertFalse(isVisible(scrollableTop), 'border not visible by default');
 
-    await microtasksFinished();
-    assertFalse(topShadow.classList.contains('has-shadow'));
-    assertFalse(bottomShadow.classList.contains('has-shadow'));
-  });
-
-  test('dialog body scrollable border when appropriate', function(done) {
-    document.body.innerHTML = getTrustedHTML`
-      <cr-dialog>
-        <div slot="title">title</div>
-        <div slot="body">
-          <div style="height: 100px">tall content</div>
-        </div>
-      </cr-dialog>`;
-
-    const dialog = document.body.querySelector('cr-dialog')!;
-    const bodyContainer =
-        dialog.shadowRoot.querySelector<HTMLElement>('.body-container');
-    assertTrue(!!bodyContainer);
-    const topShadow = dialog.shadowRoot.querySelector<HTMLElement>(
-        '#cr-container-shadow-top');
-    assertTrue(!!topShadow);
-    const bottomShadow = dialog.shadowRoot.querySelector<HTMLElement>(
-        '#cr-container-shadow-bottom');
-    assertTrue(!!bottomShadow);
-
-    dialog.showModal();  // Attach the dialog for the first time here.
-
-    let observerCount = 0;
-
-    function hasTransparentBorder(element: HTMLElement): boolean {
-      const style = element.computedStyleMap().get('border-bottom-color') as
-          CSSStyleValue;
-      return style.toString() === 'rgba(0, 0, 0, 0)';
-    }
-
-    // Needs to setup the observer before attaching, since InteractionObserver
-    // calls callback before MutationObserver does.
-    const observer = new MutationObserver(function(changes) {
-      // Only care about class mutations.
-      if (changes[0]!.attributeName !== 'class') {
-        return;
-      }
-
-      observerCount++;
-      switch (observerCount) {
-        case 1:  // Triggered when scrolled to bottom.
-          assertTrue(hasTransparentBorder(bottomShadow));
-          assertFalse(hasTransparentBorder(topShadow));
-          bodyContainer.scrollTop = 0;
-          break;
-        case 2:  // Triggered when scrolled back to top.
-          assertFalse(hasTransparentBorder(bottomShadow));
-          assertTrue(hasTransparentBorder(topShadow));
-          bodyContainer.scrollTop = 2;
-          break;
-        case 3:  // Triggered when finally scrolling to middle.
-          assertFalse(hasTransparentBorder(bottomShadow));
-          assertFalse(hasTransparentBorder(topShadow));
-          observer.disconnect();
-          done();
-          break;
-      }
-    });
-    observer.observe(bodyContainer, {attributes: true});
-
-    // Height is normally set via CSS, but mixin doesn't work with innerHTML.
-    bodyContainer.style.height = '60px';  // Element has "min-height: 60px".
-    bodyContainer.scrollTop = 100;
+    const borderTopValue = '1px solid rgb(0, 255, 0)';
+    dialog.style.setProperty('--cr-dialog-body-border-top', borderTopValue);
+    assertTrue(isVisible(scrollableTop), 'border is now visible');
+    const style = getComputedStyle(scrollableTop);
+    assertEquals('solid', style.borderTopStyle);
+    assertEquals('rgb(0, 255, 0)', style.borderTopColor);
   });
 
   test(
@@ -503,29 +433,22 @@ suite('cr-dialog', function() {
         assertFalse(dialog.hasAttribute('open'));
       });
 
-  test('dialog cannot be cancelled when `no-cancel` is set', function() {
+  test('`no-cancel` sets the correct closedby attribute', async () => {
     document.body.innerHTML = getTrustedHTML`
       <cr-dialog no-cancel>
         <div slot="title">title</div>
       </cr-dialog>`;
+    await microtasksFinished();
 
-    const dialog = document.body.querySelector('cr-dialog')!;
-    assertTrue(dialog.noCancel);
-    dialog.showModal();
+    const crDialog = document.body.querySelector('cr-dialog')!;
+    assertTrue(crDialog.noCancel);
+    const nativeDialog = crDialog.getNative();
+    assertEquals('none', nativeDialog.getAttribute('closedby'));
 
-    assertNull(dialog.shadowRoot.querySelector('#close'));
-
-    // Hitting escape fires a 'cancel' event. Cancelling that event prevents the
-    // dialog from closing.
-    let e = new CustomEvent('cancel', {cancelable: true});
-    dialog.getNative().dispatchEvent(e);
-    assertTrue(e.defaultPrevented);
-
-    dialog.noCancel = false;
-
-    e = new CustomEvent('cancel', {cancelable: true});
-    dialog.getNative().dispatchEvent(e);
-    assertFalse(e.defaultPrevented);
+    crDialog.noCancel = false;
+    await microtasksFinished();
+    assertFalse(crDialog.noCancel);
+    assertFalse(nativeDialog.hasAttribute('closedby'));
   });
 
   test('dialog close button shown when showCloseButton is true', function() {
@@ -692,5 +615,23 @@ suite('cr-dialog', function() {
 
     window.dispatchEvent(new CustomEvent('popstate'));
     assertTrue(dialog.open);
+  });
+
+  test('popstate listener removed on disconnect', function() {
+    document.body.innerHTML = getTrustedHTML`
+      <cr-dialog>
+        <div slot="title">title</div>
+      </cr-dialog>`;
+    const dialog = document.body.querySelector('cr-dialog')!;
+    dialog.showModal();
+
+    let cancelFired = false;
+    dialog.addEventListener('cancel', () => {
+      cancelFired = true;
+    });
+
+    dialog.remove();
+    window.dispatchEvent(new CustomEvent('popstate'));
+    assertFalse(cancelFired);
   });
 });

@@ -22,11 +22,13 @@
 #include "third_party/blink/renderer/platform/transforms/transform_operations.h"
 
 #include <algorithm>
+#include <array>
 
-#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "third_party/blink/renderer/platform/geometry/blend.h"
 #include "third_party/blink/renderer/platform/transforms/interpolated_transform_operation.h"
 #include "third_party/blink/renderer/platform/transforms/matrix_3d_transform_operation.h"
+#include "third_party/blink/renderer/platform/transforms/matrix_transform_operation.h"
 #include "third_party/blink/renderer/platform/transforms/rotate_transform_operation.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "ui/gfx/geometry/box_f.h"
@@ -72,6 +74,20 @@ TransformOperations ApplyFunctionToMatchingPrefix(
   }
   return result;
 }
+
+bool IsSingularMatrixOp(const TransformOperation& op) {
+  if (op.GetType() == InterpolatedTransformOperation::OperationType::kMatrix) {
+    return !To<MatrixTransformOperation>(op).Matrix().IsInvertible();
+  }
+
+  if (op.GetType() ==
+      InterpolatedTransformOperation::OperationType::kMatrix3D) {
+    return !To<Matrix3DTransformOperation>(op).Matrix().IsInvertible();
+  }
+
+  return false;
+}
+
 }  // namespace
 
 bool TransformOperations::operator==(const TransformOperations& o) const {
@@ -173,7 +189,7 @@ TransformOperations TransformOperations::Blend(
 
   bool success = true;
   TransformOperations result = ApplyFunctionToMatchingPrefix(
-      WTF::BindRepeating(
+      BindRepeating(
           [](double progress, TransformOperation* from,
              TransformOperation* to) {
             // Where the lists matched but one was longer, the shorter list is
@@ -209,7 +225,7 @@ TransformOperations TransformOperations::Accumulate(
 
   // Accumulate matching pairs of transform functions.
   TransformOperations result = ApplyFunctionToMatchingPrefix(
-      WTF::BindRepeating([](TransformOperation* from, TransformOperation* to) {
+      BindRepeating([](TransformOperation* from, TransformOperation* to) {
         if (to && from)
           return from->Accumulate(*to);
         // Where the lists matched but one was longer, the shorter list is
@@ -243,10 +259,71 @@ TransformOperations TransformOperations::Accumulate(
   return success ? result : to;
 }
 
+TransformOperations TransformOperations::AccumulateN(
+    const TransformOperations& to,
+    int n) const {
+  DCHECK_GE(n, 0);
+
+  if (n == 0) {
+    return *this;
+  }
+  if (!to.size() && !size()) {
+    return *this;
+  }
+
+  bool success = true;
+  wtf_size_t matching_prefix_length = MatchingPrefixLength(to);
+  wtf_size_t max_path_length =
+      std::max(Operations().size(), to.Operations().size());
+
+  // Same logic as in Accumulate, but applying the delta |n| times.
+  TransformOperations result = ApplyFunctionToMatchingPrefix(
+      BindRepeating(
+          [](int n, TransformOperation* from,
+             TransformOperation* to) -> TransformOperation* {
+            if (to && from) {
+              return from->AccumulateN(*to, n);
+            }
+            if (to) {
+              // If |from| is missing, accumulate over the identity |n| times.
+              TransformOperation* identity = to->Blend(nullptr, 1.0, true);
+              if (identity) {
+                return identity->AccumulateN(*to, n);
+              }
+              return nullptr;
+            }
+            return from;
+          },
+          n),
+      *this, to, matching_prefix_length, &success);
+
+  if (success && matching_prefix_length < max_path_length) {
+    gfx::Transform from_transform;
+    gfx::Transform to_transform;
+    ApplyRemaining(gfx::SizeF(), matching_prefix_length, from_transform);
+    to.ApplyRemaining(gfx::SizeF(), matching_prefix_length, to_transform);
+
+    TransformOperation* from_matrix =
+        MakeGarbageCollected<Matrix3DTransformOperation>(from_transform);
+    TransformOperation* to_matrix =
+        MakeGarbageCollected<Matrix3DTransformOperation>(to_transform);
+    TransformOperation* matrix_op = from_matrix->AccumulateN(*to_matrix, n);
+
+    if (matrix_op) {
+      result.Operations().push_back(matrix_op);
+    } else {
+      success = false;
+    }
+  }
+
+  // On failure, behavior is to replace.
+  return success ? result : to;
+}
+
 static void FindCandidatesInPlane(double px,
                                   double py,
                                   double nz,
-                                  double* candidates,
+                                  base::span<double> candidates,
                                   int* num_candidates) {
   // The angle that this point is rotated with respect to the plane nz
   double phi = atan2(px, py);
@@ -255,10 +332,10 @@ static void FindCandidatesInPlane(double px,
   candidates[0] = phi;  // The element at 0deg (maximum x)
 
   for (int i = 1; i < *num_candidates; ++i)
-    UNSAFE_TODO(candidates[i] = candidates[i - 1] + M_PI_2);  // every 90 deg
+    candidates[i] = candidates[i - 1] + M_PI_2;  // every 90 deg
   if (nz < 0.f) {
     for (int i = 0; i < *num_candidates; ++i)
-      UNSAFE_TODO(candidates[i] *= -1);
+      candidates[i] *= -1;
   }
 }
 
@@ -272,9 +349,6 @@ static void BoundingBoxForArc(const gfx::Point3F& point,
                               double min_progress,
                               double max_progress,
                               gfx::BoxF& box) {
-  double candidates[6];
-  int num_candidates = 0;
-
   gfx::Vector3dF axis = from_transform.Axis();
   double from_degrees = from_transform.Angle();
   double to_degrees = to_transform.Angle();
@@ -301,6 +375,8 @@ static void BoundingBoxForArc(const gfx::Point3F& point,
 
   box.ExpandTo(to_matrix.MapPoint(point));
 
+  std::array<double, 6> candidates;
+  int num_candidates = 0;
   switch (from_transform.GetType()) {
     case TransformOperation::kRotateX:
       FindCandidatesInPlane(point.y(), point.z(), from_transform.X(),
@@ -360,7 +436,7 @@ static void BoundingBoxForArc(const gfx::Point3F& point,
   // Once we have the candidates, we now filter them down to ones that
   // actually live on the arc, rather than the entire circle.
   for (int i = 0; i < num_candidates; ++i) {
-    double radians = UNSAFE_BUFFERS(candidates[i]);
+    double radians = candidates[i];
 
     while (radians < min_radians)
       radians += 2.0 * M_PI;
@@ -373,6 +449,44 @@ static void BoundingBoxForArc(const gfx::Point3F& point,
     rotation.RotateAbout(axis, Rad2deg(radians));
     box.ExpandTo(rotation.MapPoint(point));
   }
+}
+
+bool TransformOperations::CanSmoothlyBlendWith(
+    const TransformOperations& other) const {
+  // When blending transform lists, we start with pairwise blending while the
+  // type of operation matches between the two lists. Matrices need to be
+  // checked if singular single matrix decomposition is not possible when the
+  // matrix is singular.
+  if (ContainsSingularMatrixTransform() ||
+      other.ContainsSingularMatrixTransform()) {
+    return false;
+  }
+
+  // Remaining transforms in list after the matching prefix are combined into
+  // a matrix transform. The trailing matrix transforms cannot be smoothly
+  // blended if singular since matrix decomposition is not possible.
+  wtf_size_t matching_prefix_length = MatchingPrefixLength(other);
+  if (IsMergedTransformSingular(matching_prefix_length) ||
+      other.IsMergedTransformSingular(matching_prefix_length)) {
+    return false;
+  }
+  return true;
+}
+
+bool TransformOperations::ContainsSingularMatrixTransform() const {
+  for (const auto& operation : operations_) {
+    if (IsSingularMatrixOp(*operation)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool TransformOperations::IsMergedTransformSingular(
+    wtf_size_t starting_offset) const {
+  gfx::Transform transform;
+  ApplyRemaining(gfx::SizeF(), starting_offset, transform);
+  return !transform.IsInvertible();
 }
 
 bool TransformOperations::BlendedBoundsForBox(const gfx::BoxF& box,
@@ -524,7 +638,7 @@ TransformOperations TransformOperations::Add(
     const TransformOperations& addend) const {
   TransformOperations result;
   result.operations_ = Operations();
-  result.operations_.AppendVector(addend.Operations());
+  result.operations_.append_range(addend.Operations());
   return result;
 }
 

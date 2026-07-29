@@ -4,7 +4,6 @@
 
 #include "media/gpu/android/video_accelerator_util.h"
 
-#include "base/android/build_info.h"
 #include "base/android/jni_string.h"
 #include "base/no_destructor.h"
 #include "media/base/media_switches.h"
@@ -32,6 +31,11 @@ bool isEncoderSupportedProfile(media::VideoCodecProfile profile) {
 
 namespace media {
 
+MediaCodecDecoderInfo::MediaCodecDecoderInfo() = default;
+MediaCodecDecoderInfo::MediaCodecDecoderInfo(
+    const MediaCodecDecoderInfo& other) = default;
+MediaCodecDecoderInfo::~MediaCodecDecoderInfo() = default;
+
 const std::vector<MediaCodecEncoderInfo>& GetEncoderInfoCache() {
   static const base::NoDestructor<std::vector<MediaCodecEncoderInfo>> infos([] {
     // Sadly the NDK doesn't provide a mechanism for accessing the equivalent of
@@ -47,7 +51,7 @@ const std::vector<MediaCodecEncoderInfo>& GetEncoderInfoCache() {
       return cpp_infos;
     }
 
-    for (auto java_profile : java_profiles.ReadElements<jobject>()) {
+    for (auto java_profile : java_profiles.CreateView(env)) {
       MediaCodecEncoderInfo info;
       info.profile.profile = static_cast<VideoCodecProfile>(
           Java_SupportedProfileAdapter_getProfile(env, java_profile));
@@ -118,7 +122,7 @@ const std::vector<MediaCodecDecoderInfo>& GetDecoderInfoCache() {
       return cpp_infos;
     }
 
-    for (auto java_profile : java_profiles.ReadElements<jobject>()) {
+    for (auto java_profile : java_profiles.CreateView(env)) {
       MediaCodecDecoderInfo info;
       info.profile = static_cast<VideoCodecProfile>(
           Java_SupportedProfileAdapter_getProfile(env, java_profile));
@@ -131,6 +135,19 @@ const std::vector<MediaCodecDecoderInfo>& GetDecoderInfoCache() {
           Java_SupportedProfileAdapter_getMaxHeight(env, java_profile));
       info.is_software_codec =
           Java_SupportedProfileAdapter_isSoftwareCodec(env, java_profile);
+
+      bool supports_low_latency =
+          Java_SupportedProfileAdapter_supportsLowLatency(env, java_profile);
+      bool requires_low_latency =
+          Java_SupportedProfileAdapter_requiresLowLatency(env, java_profile);
+      // If the decoder requires low latency, it must support low latency.
+      DCHECK(!requires_low_latency || supports_low_latency);
+      info.low_latency_capability =
+          requires_low_latency
+              ? LowLatencyCapability::kRequired
+              : (supports_low_latency ? LowLatencyCapability::kAny
+                                      : LowLatencyCapability::kNone);
+
       bool supports_secure_playback =
           Java_SupportedProfileAdapter_supportsSecurePlayback(env,
                                                               java_profile);
@@ -163,3 +180,5 @@ const std::vector<MediaCodecDecoderInfo>& GetDecoderInfoCache() {
 }
 
 }  // namespace media
+
+DEFINE_JNI(VideoAcceleratorUtil)

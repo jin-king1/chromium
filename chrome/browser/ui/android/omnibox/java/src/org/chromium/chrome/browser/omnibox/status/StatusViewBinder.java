@@ -5,13 +5,17 @@
 package org.chromium.chrome.browser.omnibox.status;
 
 import android.view.View;
+import android.view.ViewGroup.MarginLayoutParams;
 
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.chrome.browser.omnibox.R;
 import org.chromium.chrome.browser.omnibox.status.StatusProperties.StatusIconResource;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.PropertyModelChangeProcessor.ViewBinder;
 
 /** StatusViewBinder observes StatusModel changes and triggers StatusView updates. */
+@NullMarked
 class StatusViewBinder implements ViewBinder<PropertyModel, StatusView, PropertyKey> {
     StatusViewBinder() {}
 
@@ -25,30 +29,21 @@ class StatusViewBinder implements ViewBinder<PropertyModel, StatusView, Property
             view.setIncognitoBadgeVisibility(model.get(StatusProperties.INCOGNITO_BADGE_VISIBLE));
         } else if (StatusProperties.SEPARATOR_COLOR.equals(propertyKey)) {
             view.setSeparatorColor(model.get(StatusProperties.SEPARATOR_COLOR));
-        } else if (StatusProperties.SHOW_STATUS_ICON.equals(propertyKey)) {
-            applyStatusIconAndTooltipProperties(model, view);
         } else if (StatusProperties.SHOW_STATUS_VIEW.equals(propertyKey)) {
             int visibility =
                     model.get(StatusProperties.SHOW_STATUS_VIEW) ? View.VISIBLE : View.GONE;
             view.setVisibility(visibility);
-        } else if (StatusProperties.STATUS_VIEW_TOOLTIP_TEXT.equals(propertyKey)) {
-            applyStatusIconAndTooltipProperties(model, view);
-        } else if (StatusProperties.STATUS_VIEW_HOVER_HIGHLIGHT.equals(propertyKey)) {
-            applyStatusIconAndTooltipProperties(model, view);
-        } else if (StatusProperties.SHOW_STATUS_ICON_BACKGROUND.equals(propertyKey)) {
-            view.setStatusIconBackgroundVisibility(
-                    model.get(StatusProperties.SHOW_STATUS_ICON_BACKGROUND));
-        } else if (StatusProperties.STATUS_CLICK_LISTENER.equals(propertyKey)) {
-            view.setStatusClickListener(model.get(StatusProperties.STATUS_CLICK_LISTENER));
-        } else if (StatusProperties.STATUS_ACCESSIBILITY_TOAST_RES.equals(propertyKey)) {
-            view.setStatusAccessibilityToast(
-                    model.get(StatusProperties.STATUS_ACCESSIBILITY_TOAST_RES));
         } else if (StatusProperties.STATUS_ACCESSIBILITY_DOUBLE_TAP_DESCRIPTION_RES.equals(
                 propertyKey)) {
             view.setStatusAccessibilityDoubleTapDescription(
                     model.get(StatusProperties.STATUS_ACCESSIBILITY_DOUBLE_TAP_DESCRIPTION_RES));
-        } else if (StatusProperties.STATUS_ICON_ALPHA.equals(propertyKey)) {
-            view.setStatusIconAlpha(model.get(StatusProperties.STATUS_ICON_ALPHA));
+        } else if (StatusProperties.STATUS_ACCESSIBILITY_TOAST_RES.equals(propertyKey)) {
+            view.setStatusAccessibilityToast(
+                    model.get(StatusProperties.STATUS_ACCESSIBILITY_TOAST_RES));
+        } else if (StatusProperties.STATUS_CLICK_LISTENER.equals(propertyKey)) {
+            view.setStatusClickListener(model.get(StatusProperties.STATUS_CLICK_LISTENER));
+        } else if (StatusProperties.STATUS_ICON_CORNER_RADIUS.equals(propertyKey)) {
+            view.setCornerRadiusRes(model.get(StatusProperties.STATUS_ICON_CORNER_RADIUS));
         } else if (StatusProperties.STATUS_ICON_DESCRIPTION_RES.equals(propertyKey)) {
             view.setStatusIconDescription(model.get(StatusProperties.STATUS_ICON_DESCRIPTION_RES));
         } else if (StatusProperties.STATUS_ICON_RESOURCE.equals(propertyKey)) {
@@ -58,11 +53,31 @@ class StatusViewBinder implements ViewBinder<PropertyModel, StatusView, Property
                 return;
             }
             view.setStatusIconResources(
-                    res.getDrawable(view.getContext(), view.getResources()),
+                    res.getDrawable(view.getContext()),
                     res.getTransitionType(),
                     res.getAnimationFinishedCallback());
+        } else if (StatusProperties.STATUS_VIEW_BACKGROUND.equals(propertyKey)) {
+            applyStatusIconAndTooltipProperties(model, view);
+        } else if (StatusProperties.STATUS_VIEW_TOOLTIP_TEXT.equals(propertyKey)) {
+            applyStatusIconAndTooltipProperties(model, view);
         } else if (StatusProperties.TRANSLATION_X.equals(propertyKey)) {
             view.setTranslationX(model.get(StatusProperties.TRANSLATION_X));
+        } else if (StatusProperties.USE_SMALL_WIDGET.equals(propertyKey)) {
+            var params = view.getLayoutParams();
+            boolean useSmallWidget = model.get(StatusProperties.USE_SMALL_WIDGET);
+            params.height =
+                    useSmallWidget
+                            ? MarginLayoutParams.MATCH_PARENT
+                            : view.getResources()
+                                    .getDimensionPixelSize(R.dimen.location_bar_height);
+            view.setLayoutParams(params);
+        } else if (StatusProperties.USE_WIDE_STATUS_ICON.equals(propertyKey)) {
+            view.setMinimumWidth(
+                    view.getResources()
+                            .getDimensionPixelSize(
+                                    model.get(StatusProperties.USE_WIDE_STATUS_ICON)
+                                            ? R.dimen.status_view_width_wide
+                                            : R.dimen.status_view_width_narrow));
         } else if (StatusProperties.VERBOSE_STATUS_TEXT_COLOR.equals(propertyKey)) {
             view.setVerboseStatusTextColor(model.get(StatusProperties.VERBOSE_STATUS_TEXT_COLOR));
         } else if (StatusProperties.VERBOSE_STATUS_TEXT_STRING_RES.equals(propertyKey)) {
@@ -74,14 +89,14 @@ class StatusViewBinder implements ViewBinder<PropertyModel, StatusView, Property
             applyStatusIconAndTooltipProperties(model, view);
         } else if (StatusProperties.VERBOSE_STATUS_TEXT_WIDTH.equals(propertyKey)) {
             view.setVerboseStatusTextWidth(model.get(StatusProperties.VERBOSE_STATUS_TEXT_WIDTH));
+
         } else {
             assert false : "Unhandled property update";
         }
     }
 
     static void applyStatusIconAndTooltipProperties(PropertyModel model, StatusView statusView) {
-        statusView.setStatusIconShown(model.get(StatusProperties.SHOW_STATUS_ICON));
         statusView.setTooltipText(model.get(StatusProperties.STATUS_VIEW_TOOLTIP_TEXT));
-        statusView.setHoverHighlight(model.get(StatusProperties.STATUS_VIEW_HOVER_HIGHLIGHT));
+        statusView.maybeSetBackground(model.get(StatusProperties.STATUS_VIEW_BACKGROUND));
     }
 }

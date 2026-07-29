@@ -10,16 +10,16 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <variant>
 
 #include "base/files/file_path.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "chrome/browser/ash/policy/core/device_local_account_policy_broker.h"
 #include "chromeos/ash/components/settings/cros_settings.h"
-#include "components/invalidation/invalidation_listener.h"
 #include "components/policy/core/common/schema_registry.h"
 
 static_assert(BUILDFLAG(IS_CHROMEOS), "For ChromeOS only");
@@ -43,7 +43,6 @@ class SharedURLLoaderFactory;
 
 namespace policy {
 
-class AffiliatedInvalidationServiceProvider;
 class DeviceLocalAccountExternalDataService;
 class DeviceManagementService;
 
@@ -65,18 +64,18 @@ class DeviceLocalAccountPolicyService {
     virtual void OnDeviceLocalAccountsChanged() = 0;
   };
 
+  // `url_loader_factory` must be non-null.
   DeviceLocalAccountPolicyService(
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
       ash::SessionManagerClient* session_manager_client,
       ash::DeviceSettingsService* device_settings_service,
       ash::CrosSettings* cros_settings,
-      std::variant<AffiliatedInvalidationServiceProvider*,
-                   invalidation::InvalidationListener*>
-          invalidation_service_provider_or_listener,
+      invalidation::InvalidationListener* invalidation_listener,
       scoped_refptr<base::SequencedTaskRunner> store_background_task_runner,
+      scoped_refptr<base::SequencedTaskRunner> store_first_load_task_runner,
       scoped_refptr<base::SequencedTaskRunner> extension_cache_task_runner,
       scoped_refptr<base::SequencedTaskRunner>
-          external_data_service_backend_task_runner,
-      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory);
+          external_data_service_backend_task_runner);
 
   DeviceLocalAccountPolicyService(const DeviceLocalAccountPolicyService&) =
       delete;
@@ -145,14 +144,14 @@ class DeviceLocalAccountPolicyService {
   // Notifies the |observers_| that the policy for |user_id| has changed.
   void NotifyPolicyUpdated(const std::string& user_id);
 
+  const scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
+
   base::ObserverList<Observer, true>::Unchecked observers_;
 
   raw_ptr<ash::SessionManagerClient> session_manager_client_;
   raw_ptr<ash::DeviceSettingsService> device_settings_service_;
   raw_ptr<ash::CrosSettings> cros_settings_;
-  std::variant<raw_ptr<AffiliatedInvalidationServiceProvider>,
-               raw_ptr<invalidation::InvalidationListener>>
-      invalidation_service_provider_or_listener_;
+  raw_ptr<invalidation::InvalidationListener> invalidation_listener_;
 
   raw_ptr<DeviceManagementService> device_management_service_;
 
@@ -178,12 +177,11 @@ class DeviceLocalAccountPolicyService {
   std::set<std::string> busy_extension_cache_directories_;
 
   const scoped_refptr<base::SequencedTaskRunner> store_background_task_runner_;
+  const scoped_refptr<base::SequencedTaskRunner> store_first_load_task_runner_;
   const scoped_refptr<base::SequencedTaskRunner> extension_cache_task_runner_;
   const scoped_refptr<base::SequencedTaskRunner> resource_cache_task_runner_;
 
   std::unique_ptr<DeviceLocalAccountExternalDataService> external_data_service_;
-
-  scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
 
   const base::CallbackListSubscription local_accounts_subscription_;
 

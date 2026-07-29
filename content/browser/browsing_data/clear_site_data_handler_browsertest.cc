@@ -14,6 +14,7 @@
 #include "base/functional/callback.h"
 #include "base/run_loop.h"
 #include "base/strings/escape.h"
+#include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/synchronization/lock.h"
@@ -24,7 +25,6 @@
 #include "build/build_config.h"
 #include "content/browser/browsing_data/browsing_data_browsertest_utils.h"
 #include "content/browser/browsing_data/browsing_data_filter_builder_impl.h"
-#include "content/browser/browsing_data/shared_storage_clear_site_data_tester.h"
 #include "content/browser/browsing_data/storage_bucket_clear_site_data_tester.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_task_traits.h"
@@ -139,7 +139,7 @@ class TestBrowsingDataRemoverDelegate : public MockBrowsingDataRemoverDelegate {
       filter_builder.AddRegisterableDomain(origin.host());
       filter_builder.SetStoragePartitionConfig(storage_partition_config);
       filter_builder.SetCookiePartitionKeyCollection(
-          net::CookiePartitionKeyCollection::FromOptional(
+          net::CookiePartitionKeyCollection(
               net::CookiePartitionKey::FromStorageKeyComponents(
                   top_level_site, ancestor_chain_bit, /*nonce=*/std::nullopt)));
 
@@ -155,6 +155,8 @@ class TestBrowsingDataRemoverDelegate : public MockBrowsingDataRemoverDelegate {
           (cache ? BrowsingDataRemover::DATA_TYPE_CACHE : 0);
       data_type_mask &=
           ~BrowsingDataRemover::DATA_TYPE_PRIVACY_SANDBOX_INTERNAL;
+      data_type_mask &=
+          ~BrowsingDataRemover::DATA_TYPE_INTEREST_GROUPS_USER_CLEAR;
 
       BrowsingDataFilterBuilderImpl filter_builder(
           BrowsingDataFilterBuilder::Mode::kDelete);
@@ -260,8 +262,8 @@ class ClearSiteDataHandlerBrowserTest : public ContentBrowserTest {
     }
     std::unique_ptr<net::CanonicalCookie> cookie(
         net::CanonicalCookie::CreateForTesting(
-            url, cookie_line, base::Time::Now(), /*server_time=*/std::nullopt,
-            cookie_partition_key));
+            url, cookie_line, base::Time::Now(), net::CookieSourceType::kOther,
+            /*server_time=*/std::nullopt, cookie_partition_key));
 
     base::RunLoop run_loop;
     cookie_manager->SetCanonicalCookie(
@@ -1142,61 +1144,5 @@ IN_PROC_BROWSER_TEST_P(ClearSiteDataHandlerStorageBucketsBrowserTest,
   delegate()->VerifyAndClearExpectations();
 }
 
-class ClearSiteDataHandlerSharedStorageBrowserTest
-    : public ClearSiteDataHandlerBrowserTest {
- public:
-  ClearSiteDataHandlerSharedStorageBrowserTest() {
-    feature_list_.InitAndEnableFeature(network::features::kSharedStorageAPI);
-  }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-};
-
-// Integration test for the deletion of shared storage.
-IN_PROC_BROWSER_TEST_F(ClearSiteDataHandlerSharedStorageBrowserTest,
-                       SharedStorageIntegrationTest) {
-  SharedStorageClearSiteDataTester tester(storage_partition());
-
-  GURL url1 = https_server()->GetURL("origin1.com", "/");
-  const url::Origin kOrigin1 = url::Origin::Create(url1);
-  tester.AddConsecutiveSharedStorageEntries(kOrigin1, u"key", u"value", 10);
-
-  GURL url2 = https_server()->GetURL("origin2.com", "/");
-  const url::Origin kOrigin2 = url::Origin::Create(url2);
-  tester.AddConsecutiveSharedStorageEntries(kOrigin2, u"key", u"value", 5);
-
-  // There are 15 entries for two origins.
-  EXPECT_THAT(tester.GetSharedStorageOrigins(),
-              testing::UnorderedElementsAre(kOrigin1, kOrigin2));
-
-  // Note that u"key" concatenated with a single digit has 4 char16_t's and
-  // hence 8 bytes. Similarly, u"value" concatenated with one digit has
-  // 6 char16_t's and hence 12 bytes. A pair of these together thus has
-  // 20 bytes.
-  const int kNumBytesPerEntry = 20;
-  EXPECT_EQ(10 * kNumBytesPerEntry,
-            tester.GetSharedStorageNumBytesForOrigin(kOrigin1));
-  EXPECT_EQ(5 * kNumBytesPerEntry,
-            tester.GetSharedStorageNumBytesForOrigin(kOrigin2));
-  EXPECT_EQ(15 * kNumBytesPerEntry, tester.GetSharedStorageTotalBytes());
-
-  // Let Clear-Site-Data delete the shared storage of "origin1.com".
-  delegate()->ExpectClearSiteDataCall(storage_partition_config(), kOrigin1,
-                                      net::SchemefulSite(kOrigin1),
-                                      /*cookies=*/false,
-                                      /*storage=*/true, /*cache=*/false);
-  AddQuery(&url1, "header", "\"storage\"");
-  EXPECT_TRUE(NavigateToURL(shell(), url1));
-  delegate()->VerifyAndClearExpectations();
-
-  // There are now only 5 entries for one origin.
-  EXPECT_THAT(tester.GetSharedStorageOrigins(),
-              testing::UnorderedElementsAre(kOrigin2));
-  EXPECT_EQ(0, tester.GetSharedStorageNumBytesForOrigin(kOrigin1));
-  EXPECT_EQ(5 * kNumBytesPerEntry,
-            tester.GetSharedStorageNumBytesForOrigin(kOrigin2));
-  EXPECT_EQ(5 * kNumBytesPerEntry, tester.GetSharedStorageTotalBytes());
-}
 
 }  // namespace content

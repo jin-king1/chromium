@@ -8,6 +8,7 @@
 #import <string_view>
 
 #import "base/strings/sys_string_conversions.h"
+#import "base/test/task_environment.h"
 #import "components/search_engines/search_engines_test_environment.h"
 #import "components/search_engines/template_url.h"
 #import "components/search_engines/template_url_data.h"
@@ -51,6 +52,7 @@ class ExtensionSearchEngineDataUpdaterTest : public PlatformTest {
   }
 
  private:
+  base::test::TaskEnvironment task_environment_;
   search_engines::SearchEnginesTestEnvironment search_engines_test_environment_;
   std::unique_ptr<ExtensionSearchEngineDataUpdater> observer_;
   NSString* search_by_image_key_;
@@ -89,14 +91,11 @@ TEST_F(ExtensionSearchEngineDataUpdaterTest, AddUnsupportedSearchEngine) {
 TEST_F(ExtensionSearchEngineDataUpdaterTest, AddGoogleSearchEngine) {
   ASSERT_FALSE(StoredSupportsSearchByImage());
 
-  TemplateURLData google_template_url_data(
-      u" shortname ", u" keyword ", "https://google.com", std::string_view(),
-      std::string_view(), std::string_view(), std::string_view(),
-      std::string_view(), std::string_view(), std::string_view(),
-      std::string_view(), std::string_view(), std::string_view(),
-      std::string_view(), std::string_view(), {}, std::string_view(),
-      std::string_view(), std::u16string_view(), base::Value::List(), false,
-      false, 0, base::span<TemplateURLData::RegulatoryExtension>());
+  TemplateURLData google_template_url_data;
+  google_template_url_data.SetShortName(u" shortname ");
+  google_template_url_data.SetKeyword(u" keyword ");
+  google_template_url_data.SetURL("https://google.com");
+  google_template_url_data.safe_for_autoreplace = true;
   TemplateURL google_template_url(google_template_url_data);
 
   template_url_service()->SetUserSelectedDefaultSearchProvider(

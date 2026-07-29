@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "services/network/prefetch_matches.h"
 
 #include <algorithm>
@@ -19,12 +14,10 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
-#include <unordered_map>
 #include <utility>
 
 #include "base/check.h"
 #include "base/compiler_specific.h"
-#include "base/containers/contains.h"
 #include "base/containers/fixed_flat_map.h"
 #include "base/containers/fixed_flat_set.h"
 #include "base/containers/span.h"
@@ -32,6 +25,7 @@
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/stack_allocated.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/strings/string_util.h"
 #include "build/buildflag.h"
 #include "net/base/load_flags.h"
 #include "net/base/load_flags_to_string.h"
@@ -39,9 +33,11 @@
 #include "net/filter/source_stream_type.h"
 #include "net/http/http_request_headers.h"
 #include "services/network/public/cpp/data_element.h"
+#include "services/network/public/cpp/request_header_to_enum.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/resource_request_body.h"
 #include "services/network/stringify_enum.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 
 namespace network {
 
@@ -56,74 +52,70 @@ namespace {
 
 // clang-format off
 
-#define DO_FIELD_FOR_ALL_FIELDS(...)                           \
-  DO_FIELD(method) __VA_ARGS__                                 \
-  DO_FIELD(url) __VA_ARGS__                                    \
-  DO_FIELD(site_for_cookies) __VA_ARGS__                       \
-  DO_FIELD(update_first_party_url_on_redirect) __VA_ARGS__     \
-  DO_FIELD(request_initiator) __VA_ARGS__                      \
-  DO_FIELD(isolated_world_origin) __VA_ARGS__                  \
-  DO_FIELD(navigation_redirect_chain) __VA_ARGS__              \
-  DO_FIELD(referrer) __VA_ARGS__                               \
-  DO_FIELD(referrer_policy) __VA_ARGS__                        \
-  DO_FIELD(headers) __VA_ARGS__                                \
-  DO_FIELD(cors_exempt_headers) __VA_ARGS__                    \
-  DO_FIELD(load_flags) __VA_ARGS__                             \
-  DO_FIELD(resource_type) __VA_ARGS__                          \
-  DO_FIELD(priority) __VA_ARGS__                               \
-  DO_FIELD(priority_incremental) __VA_ARGS__                   \
-  DO_FIELD(cors_preflight_policy) __VA_ARGS__                  \
-  DO_FIELD(originated_from_service_worker) __VA_ARGS__         \
-  DO_FIELD(skip_service_worker) __VA_ARGS__                    \
-  DO_FIELD(mode) __VA_ARGS__                                   \
-  DO_FIELD(required_ip_address_space) __VA_ARGS__              \
-  DO_FIELD(credentials_mode) __VA_ARGS__                       \
-  DO_FIELD(redirect_mode) __VA_ARGS__                          \
-  DO_FIELD(fetch_integrity) __VA_ARGS__                        \
-  DO_FIELD(expected_signatures) __VA_ARGS__                    \
-  DO_FIELD(destination) __VA_ARGS__                            \
-  DO_FIELD(original_destination) __VA_ARGS__                   \
-  DO_FIELD(request_body) __VA_ARGS__                           \
-  DO_FIELD(keepalive) __VA_ARGS__                              \
-  DO_FIELD(browsing_topics) __VA_ARGS__                        \
-  DO_FIELD(ad_auction_headers) __VA_ARGS__                     \
-  DO_FIELD(shared_storage_writable_eligible) __VA_ARGS__       \
-  DO_FIELD(has_user_gesture) __VA_ARGS__                       \
-  DO_FIELD(enable_load_timing) __VA_ARGS__                     \
-  DO_FIELD(enable_upload_progress) __VA_ARGS__                 \
-  DO_FIELD(do_not_prompt_for_login) __VA_ARGS__                \
-  DO_FIELD(is_outermost_main_frame) __VA_ARGS__                \
-  DO_FIELD(transition_type) __VA_ARGS__                        \
-  DO_FIELD(previews_state) __VA_ARGS__                         \
-  DO_FIELD(upgrade_if_insecure) __VA_ARGS__                    \
-  DO_FIELD(is_revalidating) __VA_ARGS__                        \
-  DO_FIELD(throttling_profile_id) __VA_ARGS__                  \
-  DO_FIELD(custom_proxy_pre_cache_headers) __VA_ARGS__         \
-  DO_FIELD(custom_proxy_post_cache_headers) __VA_ARGS__        \
-  DO_FIELD(fetch_window_id) __VA_ARGS__                        \
-  DO_FIELD(devtools_request_id) __VA_ARGS__                    \
-  DO_FIELD(devtools_stack_id) __VA_ARGS__                      \
-  DO_FIELD(is_fetch_like_api) __VA_ARGS__                      \
-  DO_FIELD(is_fetch_later_api) __VA_ARGS__                     \
-  DO_FIELD(is_favicon) __VA_ARGS__                             \
-  DO_FIELD(recursive_prefetch_token) __VA_ARGS__               \
-  DO_FIELD(trusted_params) __VA_ARGS__                         \
-  DO_FIELD(trust_token_params) __VA_ARGS__                     \
-  DO_FIELD(web_bundle_token_params) __VA_ARGS__                \
-  DO_FIELD(devtools_accepted_stream_types) __VA_ARGS__         \
-  DO_FIELD(net_log_create_info) __VA_ARGS__                    \
-  DO_FIELD(net_log_reference_info) __VA_ARGS__                 \
-  DO_FIELD(target_ip_address_space) __VA_ARGS__                \
-  DO_FIELD(storage_access_api_status) __VA_ARGS__              \
-  DO_FIELD(attribution_reporting_support) __VA_ARGS__          \
-  DO_FIELD(attribution_reporting_eligibility) __VA_ARGS__      \
-  DO_FIELD(shared_dictionary_writer_enabled) __VA_ARGS__       \
-  DO_FIELD(attribution_reporting_src_token) __VA_ARGS__        \
-  DO_FIELD(is_ad_tagged) __VA_ARGS__                           \
-  DO_FIELD(prefetch_token) __VA_ARGS__                         \
-  DO_FIELD(socket_tag) __VA_ARGS__                             \
-  DO_FIELD(keepalive_token) __VA_ARGS__                        \
-  DO_FIELD(allows_device_bound_sessions)
+#define DO_FIELD_FOR_ALL_FIELDS(...)                               \
+  DO_FIELD(method) __VA_ARGS__                                     \
+  DO_FIELD(url) __VA_ARGS__                                        \
+  DO_FIELD(site_for_cookies) __VA_ARGS__                           \
+  DO_FIELD(update_first_party_url_on_redirect) __VA_ARGS__         \
+  DO_FIELD(request_initiator) __VA_ARGS__                          \
+  DO_FIELD(isolated_world_origin) __VA_ARGS__                      \
+  DO_FIELD(navigation_redirect_chain) __VA_ARGS__                  \
+  DO_FIELD(referrer) __VA_ARGS__                                   \
+  DO_FIELD(referrer_policy) __VA_ARGS__                            \
+  DO_FIELD(headers) __VA_ARGS__                                    \
+  DO_FIELD(cors_exempt_headers) __VA_ARGS__                        \
+  DO_FIELD(load_flags) __VA_ARGS__                                 \
+  DO_FIELD(resource_type) __VA_ARGS__                              \
+  DO_FIELD(priority) __VA_ARGS__                                   \
+  DO_FIELD(priority_incremental) __VA_ARGS__                       \
+  DO_FIELD(cors_preflight_policy) __VA_ARGS__                      \
+  DO_FIELD(originated_from_service_worker) __VA_ARGS__             \
+  DO_FIELD(skip_service_worker) __VA_ARGS__                        \
+  DO_FIELD(mode) __VA_ARGS__                                       \
+  DO_FIELD(required_ip_address_space) __VA_ARGS__                  \
+  DO_FIELD(credentials_mode) __VA_ARGS__                           \
+  DO_FIELD(redirect_mode) __VA_ARGS__                              \
+  DO_FIELD(fetch_integrity) __VA_ARGS__                            \
+  DO_FIELD(expected_public_keys) __VA_ARGS__                       \
+  DO_FIELD(destination) __VA_ARGS__                                \
+  DO_FIELD(original_destination) __VA_ARGS__                       \
+  DO_FIELD(request_body) __VA_ARGS__                               \
+  DO_FIELD(keepalive) __VA_ARGS__                                  \
+  DO_FIELD(browsing_topics) __VA_ARGS__                            \
+  DO_FIELD(has_user_gesture) __VA_ARGS__                           \
+  DO_FIELD(enable_load_timing) __VA_ARGS__                         \
+  DO_FIELD(enable_upload_progress) __VA_ARGS__                     \
+  DO_FIELD(do_not_prompt_for_login) __VA_ARGS__                    \
+  DO_FIELD(is_outermost_main_frame) __VA_ARGS__                    \
+  DO_FIELD(transition_type) __VA_ARGS__                            \
+  DO_FIELD(is_reload_navigation) __VA_ARGS__                       \
+  DO_FIELD(previews_state) __VA_ARGS__                             \
+  DO_FIELD(upgrade_if_insecure) __VA_ARGS__                        \
+  DO_FIELD(is_revalidating) __VA_ARGS__                            \
+  DO_FIELD(throttling_profile_id) __VA_ARGS__                      \
+  DO_FIELD(fetch_window_id) __VA_ARGS__                            \
+  DO_FIELD(devtools_request_id) __VA_ARGS__                        \
+  DO_FIELD(devtools_stack_id) __VA_ARGS__                          \
+  DO_FIELD(is_fetch_like_api) __VA_ARGS__                          \
+  DO_FIELD(is_fetch_later_api) __VA_ARGS__                         \
+  DO_FIELD(is_favicon) __VA_ARGS__                                 \
+  DO_FIELD(recursive_prefetch_token) __VA_ARGS__                   \
+  DO_FIELD(trusted_params) __VA_ARGS__                             \
+  DO_FIELD(trust_token_params) __VA_ARGS__                         \
+  DO_FIELD(web_bundle_token_params) __VA_ARGS__                    \
+  DO_FIELD(devtools_accepted_stream_types) __VA_ARGS__             \
+  DO_FIELD(net_log_create_info) __VA_ARGS__                        \
+  DO_FIELD(net_log_reference_info) __VA_ARGS__                     \
+  DO_FIELD(storage_access_api_status) __VA_ARGS__                  \
+  DO_FIELD(shared_dictionary_writer_enabled) __VA_ARGS__           \
+  DO_FIELD(is_ad_tagged) __VA_ARGS__                               \
+  DO_FIELD(client_side_content_decoding_enabled) __VA_ARGS__       \
+  DO_FIELD(prefetch_token) __VA_ARGS__                             \
+  DO_FIELD(socket_tag) __VA_ARGS__                                 \
+  DO_FIELD(keepalive_token) __VA_ARGS__                            \
+  DO_FIELD(allows_device_bound_sessions) __VA_ARGS__   \
+  DO_FIELD(permissions_policy) __VA_ARGS__   \
+  DO_FIELD(fetch_retry_options)
 
 // clang-format on
 
@@ -185,8 +177,8 @@ enum class FieldsForUma {
   kRequestBody = 26,
   kKeepalive = 27,
   kBrowsingTopics = 28,
-  kAdAuctionHeaders = 29,
-  kSharedStorageWritableEligible = 30,
+  // DEPRECATED: kAdAuctionHeaders = 29,
+  // DEPRECATED: kSharedStorageWritableEligible = 30,
   kHasUserGesture = 31,
   kEnableLoadTiming = 32,
   kEnableUploadProgress = 33,
@@ -197,8 +189,8 @@ enum class FieldsForUma {
   kUpgradeIfInsecure = 38,
   kIsRevalidating = 39,
   kThrottlingProfileId = 40,
-  kCustomProxyPreCacheHeaders = 41,
-  kCustomProxyPostCacheHeaders = 42,
+  // DEPRECATED: kCustomProxyPreCacheHeaders = 41,
+  // DEPRECATED: kCustomProxyPostCacheHeaders = 42,
   kFetchWindowId = 43,
   kDevtoolsRequestId = 44,
   kDevtoolsStackId = 45,
@@ -212,16 +204,19 @@ enum class FieldsForUma {
   kDevtoolsAcceptedStreamTypes = 53,
   kNetLogCreateInfo = 54,
   kNetLogReferenceInfo = 55,
-  kTargetIpAddressSpace = 56,
+  // DEPRECATED: kTargetIpAddressSpace = 56,
   kStorageAccessApiStatus = 57,
-  kAttributionReportingSupport = 58,
-  kAttributionReportingEligibility = 59,
+  // DEPRECATED: kAttributionReportingSupport = 58,
+  // DEPRECATED: kAttributionReportingEligibility = 59,
   kSharedDictionaryWriterEnabled = 60,
-  kAttributionReportingSrcToken = 61,
+  // DEPRECATED: kAttributionReportingSrcToken = 61,
   kIsAdTagged = 62,
   kKeepaliveToken = 63,
-  kExpectedSignatures = 64,
-  kMaxValue = kExpectedSignatures,
+  kExpectedPublicKeys = 64,
+  kPermissionsPolicy = 65,
+  kClientSideContentDecodingEnabled = 66,
+  kIsReloadNavigation = 68,
+  kMaxValue = kIsReloadNavigation,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/network/enums.xml:PrefetchMatchesResourceRequestField)
 
@@ -252,29 +247,23 @@ constexpr auto kUmaEnumMap = base::MakeFixedFlatMap<Fields, FieldsForUma>({
     {Fields::kcredentials_mode, FieldsForUma::kCredentialsMode},
     {Fields::kredirect_mode, FieldsForUma::kRedirectMode},
     {Fields::kfetch_integrity, FieldsForUma::kFetchIntegrity},
-    {Fields::kexpected_signatures, FieldsForUma::kExpectedSignatures},
+    {Fields::kexpected_public_keys, FieldsForUma::kExpectedPublicKeys},
     {Fields::kdestination, FieldsForUma::kDestination},
     {Fields::koriginal_destination, FieldsForUma::kOriginalDestination},
     {Fields::krequest_body, FieldsForUma::kRequestBody},
     {Fields::kkeepalive, FieldsForUma::kKeepalive},
     {Fields::kbrowsing_topics, FieldsForUma::kBrowsingTopics},
-    {Fields::kad_auction_headers, FieldsForUma::kAdAuctionHeaders},
-    {Fields::kshared_storage_writable_eligible,
-     FieldsForUma::kSharedStorageWritableEligible},
     {Fields::khas_user_gesture, FieldsForUma::kHasUserGesture},
     {Fields::kenable_load_timing, FieldsForUma::kEnableLoadTiming},
     {Fields::kenable_upload_progress, FieldsForUma::kEnableUploadProgress},
     {Fields::kdo_not_prompt_for_login, FieldsForUma::kDoNotPromptForLogin},
     {Fields::kis_outermost_main_frame, FieldsForUma::kIsOutermostMainFrame},
     {Fields::ktransition_type, FieldsForUma::kTransitionType},
+    {Fields::kis_reload_navigation, FieldsForUma::kIsReloadNavigation},
     {Fields::kpreviews_state, FieldsForUma::kPreviewsState},
     {Fields::kupgrade_if_insecure, FieldsForUma::kUpgradeIfInsecure},
     {Fields::kis_revalidating, FieldsForUma::kIsRevalidating},
     {Fields::kthrottling_profile_id, FieldsForUma::kThrottlingProfileId},
-    {Fields::kcustom_proxy_pre_cache_headers,
-     FieldsForUma::kCustomProxyPreCacheHeaders},
-    {Fields::kcustom_proxy_post_cache_headers,
-     FieldsForUma::kCustomProxyPostCacheHeaders},
     {Fields::kfetch_window_id, FieldsForUma::kFetchWindowId},
     {Fields::kdevtools_request_id, FieldsForUma::kDevtoolsRequestId},
     {Fields::kdevtools_stack_id, FieldsForUma::kDevtoolsStackId},
@@ -288,18 +277,14 @@ constexpr auto kUmaEnumMap = base::MakeFixedFlatMap<Fields, FieldsForUma>({
      FieldsForUma::kDevtoolsAcceptedStreamTypes},
     {Fields::knet_log_create_info, FieldsForUma::kNetLogCreateInfo},
     {Fields::knet_log_reference_info, FieldsForUma::kNetLogReferenceInfo},
-    {Fields::ktarget_ip_address_space, FieldsForUma::kTargetIpAddressSpace},
     {Fields::kstorage_access_api_status, FieldsForUma::kStorageAccessApiStatus},
-    {Fields::kattribution_reporting_support,
-     FieldsForUma::kAttributionReportingSupport},
-    {Fields::kattribution_reporting_eligibility,
-     FieldsForUma::kAttributionReportingEligibility},
     {Fields::kshared_dictionary_writer_enabled,
      FieldsForUma::kSharedDictionaryWriterEnabled},
-    {Fields::kattribution_reporting_src_token,
-     FieldsForUma::kAttributionReportingSrcToken},
     {Fields::kis_ad_tagged, FieldsForUma::kIsAdTagged},
+    {Fields::kclient_side_content_decoding_enabled,
+     FieldsForUma::kClientSideContentDecodingEnabled},
     {Fields::kkeepalive_token, FieldsForUma::kKeepaliveToken},
+    {Fields::kpermissions_policy, FieldsForUma::kPermissionsPolicy},
 });
 
 // Fields that should be completely ignored for the purposes of matching should
@@ -346,7 +331,7 @@ constexpr std::array kIgnoredFields = {
 // These headers are completely ignored for the purposes of matching when they
 // appear in the `headers` field.
 constexpr auto kIgnoredHeaders = base::MakeFixedFlatSet<std::string_view>({
-    "purpose",
+    // Corresponds to `blink::kSecPurposeHeaderName` but in lower case.
     "sec-purpose",
 });
 using IgnoredHeadersType = decltype(kIgnoredHeaders);
@@ -354,7 +339,7 @@ using IgnoredHeadersType = decltype(kIgnoredHeaders);
 bool MatchHeadersWithExceptions(const net::HttpRequestHeaders& prefetch_headers,
                                 const net::HttpRequestHeaders& real_headers,
                                 const IgnoredHeadersType& ignored_headers) {
-  std::unordered_map<std::string, std::string_view> lowered_prefetch_headers;
+  absl::flat_hash_map<std::string, std::string_view> lowered_prefetch_headers;
   const net::HttpRequestHeaders::HeaderVector& prefetch_headers_vector =
       prefetch_headers.GetHeaderVector();
   lowered_prefetch_headers.reserve(prefetch_headers_vector.size());
@@ -371,22 +356,37 @@ bool MatchHeadersWithExceptions(const net::HttpRequestHeaders& prefetch_headers,
   }
   const net::HttpRequestHeaders::HeaderVector& real_headers_vector =
       real_headers.GetHeaderVector();
-  size_t real_header_count = 0;
   for (const auto& keyvalue : real_headers_vector) {
     std::string lowered_key = base::ToLowerASCII(keyvalue.key);
     if (ignored_headers.contains(lowered_key)) {
       continue;
     }
-    ++real_header_count;
     auto it = lowered_prefetch_headers.find(lowered_key);
     if (it == lowered_prefetch_headers.end()) {
+      LogLowerCaseRequestHeaderToUma(
+          "Network.PrefetchMatches.FirstHeaderMissingFromPrefetch",
+          lowered_key);
       return false;
     }
     if (it->second != keyvalue.value) {
+      LogLowerCaseRequestHeaderToUma(
+          "Network.PrefetchMatches.FirstHeaderValueMismatch", lowered_key);
       return false;
     }
+    lowered_prefetch_headers.erase(it);
   }
-  return real_header_count == lowered_prefetch_headers.size();
+  if (lowered_prefetch_headers.empty()) {
+    return true;
+  }
+
+  // Any value in `lowered_prefetch_headers` that hasn't been erased was missing
+  // from the real headers. Prefetches never have a lot of headers, so just
+  // record all of them.
+  for (const auto& [name, _] : lowered_prefetch_headers) {
+    LogLowerCaseRequestHeaderToUma(
+        "Network.PrefetchMatches.HeaderOnlyInPrefetch", name);
+  }
+  return false;
 }
 
 // MatchByType() can be overloaded to provide special behavior for specific
@@ -508,7 +508,7 @@ struct FieldMatcher {
 };
 
 template <Fields f>
-constexpr bool kFieldIsIgnored = base::Contains(kIgnoredFields, f);
+constexpr bool kFieldIsIgnored = std::ranges::contains(kIgnoredFields, f);
 
 // This is the implementation of FieldMatcher that completely ignores the
 // contents of the field. Fields which should use this implementation should be
@@ -555,7 +555,7 @@ void LogMismatchToUma(Fields field) {
   UMA_HISTOGRAM_ENUMERATION("Network.PrefetchMatches.FirstMismatch", uma_field);
 }
 
-void PrintSpanifiedObject(std::ostream& os, base::span<uint8_t> object) {
+void PrintSpanifiedObject(std::ostream& os, base::span<const uint8_t> object) {
   os << object.size() << "-byte-object<";
   size_t counter = 0;
   for (uint8_t byte : object) {
@@ -577,18 +577,11 @@ void PrintSpanifiedObject(std::ostream& os, base::span<uint8_t> object) {
 
 template <typename T>
 void PrintAsBinary(std::ostream& os, const T& value) {
-  constexpr size_t kSize = sizeof(T);
-  // Print the bytes. This is inspired by GTest's handling of unprintable
-  // values.
-  std::array<uint8_t, kSize> bytes;
-  // memcpy is approved by the C++ standard for type-punning to bytes.
-  // Using spans here is challenging, because `T` may not be trivially copyable,
-  // which means the only way to create a byte span to copy from is to
-  // `reinterpret_cast` and use `UNSAFE_BUFFERS` anyway, at which point the
-  // direct `memcpy()` is clearer. Note that in this case `memcpy()` has
-  // unspecified behavior, but it is not UB.
-  memcpy(bytes.data(), &value, kSize);
-  PrintSpanifiedObject(os, bytes);
+  // Safety: `value` has size sizeof(T); aliasing via byte types is OK and
+  // shouldn't require any extra alignment.
+  PrintSpanifiedObject(
+      os, UNSAFE_BUFFERS(
+              base::span(reinterpret_cast<const uint8_t*>(&value), sizeof(T))));
 }
 
 // CustomPrinter() is a customization point for types that need custom handling

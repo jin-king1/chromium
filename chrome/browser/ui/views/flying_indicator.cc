@@ -10,8 +10,10 @@
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "ui/accessibility/ax_enums.mojom-shared.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/color/color_provider.h"
 #include "ui/gfx/geometry/cubic_bezier.h"
+#include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/gfx/paint_vector_icon.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/bubble/bubble_frame_view.h"
@@ -51,7 +53,8 @@ FlyingIndicator::FlyingIndicator(const gfx::VectorIcon& icon,
 
   std::unique_ptr<views::BubbleDialogDelegateView> bubble_view =
       std::make_unique<views::BubbleDialogDelegateView>(
-          target, views::BubbleBorder::Arrow::FLOAT,
+          views::BubbleDialogDelegateView::CreatePassKey(), target,
+          views::BubbleBorder::Arrow::FLOAT,
           views::BubbleBorder::Shadow::STANDARD_SHADOW);
 
   const auto* color_provider = target_->GetColorProvider();
@@ -75,7 +78,8 @@ FlyingIndicator::FlyingIndicator(const gfx::VectorIcon& icon,
   auto* const link_image =
       bubble_view->AddChildView(std::make_unique<views::ImageView>());
   link_image->SetImage(ui::ImageModel::FromVectorIcon(
-      kWebIcon, kColorFlyingIndicatorForeground, kIconSize));
+      features::IsRoundedIconsEnabled() ? kWebIcon : kWebOldIcon,
+      kColorFlyingIndicatorForeground, kIconSize));
   link_image->SetPreferredSize(gfx::Size(kBubbleSize, kBubbleSize));
 
   // Use the default fill layout because there's only one child view.
@@ -91,7 +95,7 @@ FlyingIndicator::FlyingIndicator(const gfx::VectorIcon& icon,
   views::BubbleFrameView* const frame_view =
       bubble_view_ptr->GetBubbleFrameView();
   frame_view->set_hit_test_transparent(true);
-  frame_view->SetCornerRadius(kBubbleCornerRadius);
+  frame_view->SetRoundedCorners(gfx::RoundedCornersF(kBubbleCornerRadius));
   widget_->SetZOrderLevel(ui::ZOrderLevel::kFloatingUIElement);
 
   // Set up the initial position and opacity, store the desired size, and start

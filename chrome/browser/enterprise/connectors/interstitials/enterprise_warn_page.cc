@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "components/enterprise/connectors/core/enterprise_interstitial_util.h"
 #include "components/grit/components_resources.h"
@@ -68,7 +69,7 @@ GURL EnterpriseWarnPage::request_url() const {
 }
 
 void EnterpriseWarnPage::PopulateInterstitialStrings(
-    base::Value::Dict& load_time_data) {
+    base::DictValue& load_time_data) {
   PopulateStrings(load_time_data);
 }
 
@@ -128,9 +129,8 @@ int EnterpriseWarnPage::GetHTMLTemplateId() {
 }
 
 std::string EnterpriseWarnPage::GetCustomMessageForTesting() {
-  base::Value::Dict load_time_data;
+  base::DictValue load_time_data;
   PopulateInterstitialStrings(load_time_data);
   std::string custom_message = *load_time_data.FindString("primaryParagraph");
   return custom_message;
 }
-

@@ -11,16 +11,16 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/weak_ptr.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/thread_pool.h"
 #include "chrome/browser/net/server_certificate_database_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/certificate_dialogs.h"
-#include "chrome/browser/ui/chrome_select_file_policy.h"
+#include "chrome/browser/ui/select_file_policy/chrome_select_file_policy.h"
 #include "chrome/browser/ui/webui/certificate_manager/certificate_manager_handler.h"
 #include "chrome/browser/ui/webui/certificate_manager/certificate_manager_utils.h"
 #include "chrome/browser/ui/webui/certificate_viewer/certificate_viewer_webui.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/common/net/x509_certificate_model.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/grit/generated_resources.h"
@@ -46,14 +46,14 @@ void PopulateUserCertsAsync(
     bool can_delete,
     std::vector<net::ServerCertificateDatabase::CertInformation>
         server_cert_infos) {
-  std::vector<certificate_manager_v2::mojom::SummaryCertInfoPtr> cert_infos;
+  std::vector<certificate_manager::mojom::SummaryCertInfoPtr> cert_infos;
   for (auto const& cert_info : server_cert_infos) {
     if (cert_info.cert_metadata.trust().trust_type() != trust) {
       continue;
     }
     x509_certificate_model::X509CertificateModel model(
-        net::x509_util::CreateCryptoBuffer(cert_info.der_cert), "");
-    cert_infos.push_back(certificate_manager_v2::mojom::SummaryCertInfo::New(
+        net::x509_util::CreateCryptoBuffer(cert_info.der_cert));
+    cert_infos.push_back(certificate_manager::mojom::SummaryCertInfo::New(
         cert_info.sha256hash_hex, model.GetTitle(), can_delete));
   }
   std::move(callback).Run(std::move(cert_infos));
@@ -118,25 +118,18 @@ void ViewCertificateAsync(
     }
     if (hash == crypto::SHA256Hash(cert_info.der_cert)) {
       // Found the cert, open cert viewer dialog if able and return.
-      if (base::FeatureList::IsEnabled(
-              ::features::kEnableCertManagementUIV2EditCerts)) {
-        if (IsCACertificateManagementAllowed(*profile->GetPrefs())) {
-          ShowCertificateDialog(
-              std::move(web_contents),
-              net::x509_util::CreateCryptoBuffer(cert_info.der_cert),
-              cert_info.cert_metadata,
-              base::BindRepeating(&UpdateCertificateAsync, profile,
-                                  user_cert_source));
-        } else {
-          ShowCertificateDialog(
-              std::move(web_contents),
-              net::x509_util::CreateCryptoBuffer(cert_info.der_cert),
-              cert_info.cert_metadata, base::NullCallback());
-        }
+      if (IsCACertificateManagementAllowed(*profile->GetPrefs())) {
+        ShowCertificateDialog(
+            std::move(web_contents),
+            net::x509_util::CreateCryptoBuffer(cert_info.der_cert),
+            cert_info.cert_metadata,
+            base::BindRepeating(&UpdateCertificateAsync, profile,
+                                user_cert_source));
       } else {
         ShowCertificateDialog(
             std::move(web_contents),
-            net::x509_util::CreateCryptoBuffer(cert_info.der_cert));
+            net::x509_util::CreateCryptoBuffer(cert_info.der_cert),
+            cert_info.cert_metadata, base::NullCallback());
       }
       return;
     }
@@ -176,7 +169,7 @@ UserCertSource::UserCertSource(
     chrome_browser_server_certificate_database::CertificateTrust::
         CertificateTrustType trust,
     raw_ptr<Profile> profile,
-    mojo::Remote<certificate_manager_v2::mojom::CertificateManagerPage>*
+    mojo::Remote<certificate_manager::mojom::CertificateManagerPage>*
         remote_client)
     : export_file_name_(std::move(export_file_name)),
       trust_(trust),
@@ -194,10 +187,8 @@ void UserCertSource::GetCertificateInfos(
   net::ServerCertificateDatabaseService* server_cert_service =
       net::ServerCertificateDatabaseServiceFactory::GetForBrowserContext(
           profile_);
-  if (!base::FeatureList::IsEnabled(
-          ::features::kEnableCertManagementUIV2Write) ||
-      !server_cert_service) {
-    std::vector<certificate_manager_v2::mojom::SummaryCertInfoPtr> cert_infos;
+  if (!server_cert_service) {
+    std::vector<certificate_manager::mojom::SummaryCertInfoPtr> cert_infos;
     std::move(callback).Run(std::move(cert_infos));
     return;
   }
@@ -241,9 +232,8 @@ void UserCertSource::DeleteCertificate(
   // UI. If the pref is not set, the UI to delete certificates will not be
   // shown.
   if (!IsCACertificateManagementAllowed(*prefs)) {
-    std::move(callback).Run(
-        certificate_manager_v2::mojom::ActionResult::NewError(
-            "Deleting certificates is not allowed"));
+    std::move(callback).Run(certificate_manager::mojom::ActionResult::NewError(
+        "Deleting certificates is not allowed"));
     return;
   }
   (*remote_client_)
@@ -285,11 +275,11 @@ void UserCertSource::DeleteCertificateResultAsync(
     (*remote_client_)->TriggerMetadataUpdate();
 
     std::move(callback).Run(
-        certificate_manager_v2::mojom::ActionResult::NewSuccess(
-            certificate_manager_v2::mojom::SuccessResult::kSuccess));
+        certificate_manager::mojom::ActionResult::NewSuccess(
+            certificate_manager::mojom::SuccessResult::kSuccess));
     return;
   }
-  std::move(callback).Run(certificate_manager_v2::mojom::ActionResult::NewError(
+  std::move(callback).Run(certificate_manager::mojom::ActionResult::NewError(
       "Error deleting certificate"));
 }
 
@@ -306,9 +296,8 @@ void UserCertSource::ImportCertificate(
   // UI. If the pref is not set, the UI to delete certificates will not be
   // shown.
   if (!IsCACertificateManagementAllowed(*prefs)) {
-    std::move(callback).Run(
-        certificate_manager_v2::mojom::ActionResult::NewError(
-            "Importing certificates is not allowed"));
+    std::move(callback).Run(certificate_manager::mojom::ActionResult::NewError(
+        "Importing certificates is not allowed"));
     return;
   }
 
@@ -353,7 +342,7 @@ void UserCertSource::FileSelectionCanceled() {
 void UserCertSource::FileRead(std::optional<std::vector<uint8_t>> file_bytes) {
   if (!file_bytes) {
     std::move(import_callback_)
-        .Run(certificate_manager_v2::mojom::ActionResult::NewError(
+        .Run(certificate_manager::mojom::ActionResult::NewError(
             l10n_util::GetStringUTF8(
                 IDS_SETTINGS_CERTIFICATE_MANAGER_V2_READ_FILE_ERROR)));
     return;
@@ -365,13 +354,13 @@ void UserCertSource::FileRead(std::optional<std::vector<uint8_t>> file_bytes) {
   if (certs_to_import.size() != 1) {
     if (certs_to_import.size() == 0) {
       std::move(import_callback_)
-          .Run(certificate_manager_v2::mojom::ActionResult::NewError(
+          .Run(certificate_manager::mojom::ActionResult::NewError(
               l10n_util::GetStringUTF8(
                   IDS_SETTINGS_CERTIFICATE_MANAGER_V2_IMPORT_INVALID_FILE)));
       return;
     }
     std::move(import_callback_)
-        .Run(certificate_manager_v2::mojom::ActionResult::NewError(
+        .Run(certificate_manager::mojom::ActionResult::NewError(
             l10n_util::GetStringUTF8(
                 IDS_SETTINGS_CERTIFICATE_MANAGER_V2_MULTIPLE_CERT_ERROR)));
     return;
@@ -405,12 +394,12 @@ void UserCertSource::ImportCertificateResult(bool success) {
     (*remote_client_)->TriggerMetadataUpdate();
 
     std::move(import_callback_)
-        .Run(certificate_manager_v2::mojom::ActionResult::NewSuccess(
-            certificate_manager_v2::mojom::SuccessResult::kSuccess));
+        .Run(certificate_manager::mojom::ActionResult::NewSuccess(
+            certificate_manager::mojom::SuccessResult::kSuccess));
     return;
   }
   std::move(import_callback_)
-      .Run(certificate_manager_v2::mojom::ActionResult::NewError(
+      .Run(certificate_manager::mojom::ActionResult::NewError(
           l10n_util::GetStringUTF8(
               IDS_SETTINGS_CERTIFICATE_MANAGER_V2_IMPORT_ERROR_TITLE)));
 }
@@ -418,9 +407,9 @@ void UserCertSource::ImportCertificateResult(bool success) {
 void UserCertSource::TriggerReload() {
   (*remote_client_)
       ->TriggerReload(
-          {certificate_manager_v2::mojom::CertificateSource::kUserTrustedCerts,
-           certificate_manager_v2::mojom::CertificateSource::
+          {certificate_manager::mojom::CertificateSource::kUserTrustedCerts,
+           certificate_manager::mojom::CertificateSource::
                kUserIntermediateCerts,
-           certificate_manager_v2::mojom::CertificateSource::
+           certificate_manager::mojom::CertificateSource::
                kUserDistrustedCerts});
 }

@@ -14,6 +14,7 @@
 #include "base/android/jni_array.h"
 #include "base/android/jni_string.h"
 #include "base/check_op.h"
+#include "base/file_descriptor_posix.h"
 #include "base/files/file.h"
 #include "base/logging.h"
 #include "base/strings/string_number_conversions.h"
@@ -23,12 +24,12 @@
 #include "printing/print_job_constants.h"
 #include "printing/units.h"
 #include "third_party/icu/source/i18n/unicode/ulocdata.h"
+#include "ui/android/view_android.h"
 #include "ui/android/window_android.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "printing/printing_jni_headers/PrintingContext_jni.h"
 
-using base::android::JavaParamRef;
 using base::android::JavaRef;
 using base::android::ScopedJavaLocalRef;
 
@@ -66,15 +67,15 @@ void GetPageRanges(JNIEnv* env,
 // static
 std::unique_ptr<PrintingContext> PrintingContext::CreateImpl(
     Delegate* delegate,
-    ProcessBehavior process_behavior) {
-  DCHECK_EQ(process_behavior, ProcessBehavior::kOopDisabled);
+    OutOfProcessBehavior out_of_process_behavior) {
+  DCHECK_EQ(out_of_process_behavior, OutOfProcessBehavior::kDisabled);
   return std::make_unique<PrintingContextAndroid>(delegate);
 }
 
-// static
-void PrintingContextAndroid::PdfWritingDone(int page_count) {
+void PrintingContextAndroid::PdfWritingDone(int page_count,
+                                            ui::WindowAndroid* window) {
   JNIEnv* env = base::android::AttachCurrentThread();
-  Java_PrintingContext_pdfWritingDone(env, page_count);
+  Java_PrintingContext_pdfWritingDone(env, page_count, window->GetJavaObject());
 }
 
 // static
@@ -89,7 +90,7 @@ void PrintingContextAndroid::SetPendingPrint(
 }
 
 PrintingContextAndroid::PrintingContextAndroid(Delegate* delegate)
-    : PrintingContext(delegate, ProcessBehavior::kOopDisabled) {
+    : PrintingContext(delegate, OutOfProcessBehavior::kDisabled) {
   // The constructor is run in the IO thread.
 }
 
@@ -102,11 +103,16 @@ void PrintingContextAndroid::AskUserForSettings(
     PrintSettingsCallback callback) {
   // This method is always run in the UI thread.
   callback_ = std::move(callback);
+  print_selection_only_ = has_selection;
 
   JNIEnv* env = base::android::AttachCurrentThread();
   if (j_printing_context_.is_null()) {
-    j_printing_context_.Reset(
-        Java_PrintingContext_create(env, reinterpret_cast<intptr_t>(this)));
+    ui::WindowAndroid* window =
+        static_cast<ui::ViewAndroid*>(delegate_->GetParentView())
+            ->GetWindowAndroid();
+    CHECK(window);
+    j_printing_context_.Reset(Java_PrintingContext_create(
+        env, reinterpret_cast<intptr_t>(this), window->GetJavaObject()));
   }
 
   if (is_scripted) {
@@ -117,10 +123,8 @@ void PrintingContextAndroid::AskUserForSettings(
   }
 }
 
-void PrintingContextAndroid::AskUserForSettingsReply(
-    JNIEnv* env,
-    const JavaParamRef<jobject>& obj,
-    jboolean success) {
+void PrintingContextAndroid::AskUserForSettingsReply(JNIEnv* env,
+                                                     bool success) {
   DCHECK(callback_);
   if (!success) {
     // TODO(cimamoglu): Differentiate between `kFailed` And `kCancel`.
@@ -128,13 +132,20 @@ void PrintingContextAndroid::AskUserForSettingsReply(
     return;
   }
 
+  // Take a duplicated file descriptor from Java to pass ownership to C++.
+  // This prevents Use-After-Close as C++ holds its own reference.
+  int raw_fd = Java_PrintingContext_takeDuplicatedFileDescriptor(
+      env, j_printing_context_);
+  if (raw_fd < 0) {
+    std::move(callback_).Run(mojom::ResultCode::kFailed);
+    return;
+  }
+  scoped_fd_.reset(raw_fd);
   // We use device name variable to store the file descriptor.  This is hacky
   // but necessary. Since device name is not necessary for the upstream
   // printing code for Android, this is harmless.
   // TODO(thestig): See if the call to set_device_name() can be removed.
-  fd_ = Java_PrintingContext_getFileDescriptor(env, j_printing_context_);
-  DCHECK(is_file_descriptor_valid());
-  settings_->set_device_name(base::NumberToString16(fd_));
+  settings_->set_device_name(base::NumberToString16(raw_fd));
 
   ScopedJavaLocalRef<jintArray> intArr =
       Java_PrintingContext_getPages(env, j_printing_context_);
@@ -151,12 +162,12 @@ void PrintingContextAndroid::AskUserForSettingsReply(
   height = ConvertUnit(height, kMilsPerInch, dpi);
   SetSizes(settings_.get(), dpi, width, height);
 
+  settings_->set_selection_only(print_selection_only_);
+
   std::move(callback_).Run(mojom::ResultCode::kSuccess);
 }
 
-void PrintingContextAndroid::ShowSystemDialogDone(
-    JNIEnv* env,
-    const JavaParamRef<jobject>& obj) {
+void PrintingContextAndroid::ShowSystemDialogDone(JNIEnv* env) {
   DCHECK(callback_);
   // Settings are not updated, callback is called only to unblock javascript.
   std::move(callback_).Run(mojom::ResultCode::kCanceled);
@@ -223,10 +234,15 @@ mojom::ResultCode PrintingContextAndroid::PrintDocument(
   if (abort_printing_)
     return mojom::ResultCode::kCanceled;
   DCHECK(in_print_job_);
-  DCHECK(is_file_descriptor_valid());
 
-  return metafile.SaveToFileDescriptor(fd_) ? mojom::ResultCode::kSuccess
-                                            : mojom::ResultCode::kFailed;
+  if (!scoped_fd_.is_valid()) {
+    LOG(ERROR) << "Invalid file descriptor for printing.";
+    return mojom::ResultCode::kFailed;
+  }
+
+  return metafile.SaveToFileDescriptor(scoped_fd_.get())
+             ? mojom::ResultCode::kSuccess
+             : mojom::ResultCode::kFailed;
 }
 
 mojom::ResultCode PrintingContextAndroid::DocumentDone() {
@@ -244,7 +260,7 @@ void PrintingContextAndroid::Cancel() {
 }
 
 void PrintingContextAndroid::ReleaseContext() {
-  // Intentional No-op.
+  scoped_fd_.reset();
 }
 
 printing::NativeDrawingContext PrintingContextAndroid::context() const {
@@ -253,3 +269,5 @@ printing::NativeDrawingContext PrintingContextAndroid::context() const {
 }
 
 }  // namespace printing
+
+DEFINE_JNI(PrintingContext)

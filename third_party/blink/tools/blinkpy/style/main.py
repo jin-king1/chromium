@@ -22,7 +22,6 @@
 
 import codecs
 import logging
-import os
 import sys
 
 from blinkpy.common.host import Host
@@ -149,20 +148,20 @@ class CheckBlinkStyle(object):
             checkout_root=chromium_src_dir,
             paths=paths)
 
-        if os.getcwd().startswith('/google/cog/cloud'):
-            file_reader.process_paths(paths)
-        else:
+        if git := host.git():
             if paths and not options.diff_files:
                 file_reader.process_paths(paths)
             else:
                 changed_files = paths if options.diff_files else None
-                patch = host.git().create_patch(
-                    options.git_commit, changed_files=changed_files)
+                patch = git.create_patch(options.git_commit,
+                                         changed_files=changed_files)
                 # create_patch intentionally returns binary data, but we have to
                 # decode it because patch_checker.check assumes str data.
                 patch = patch.decode()
                 patch_checker = PatchReader(file_reader)
                 patch_checker.check(patch)
+        else:
+            file_reader.process_paths(paths)
 
         error_count = style_processor.error_count
         file_count = file_reader.file_count

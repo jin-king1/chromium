@@ -11,10 +11,12 @@ import androidx.test.filters.SmallTest;
 
 import org.junit.Assert;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.test.BaseJUnit4ClassRunner;
 import org.chromium.base.test.util.Batch;
@@ -33,9 +35,10 @@ import java.net.URISyntaxException;
 public class GURLJavaTest {
     @Mock GURL.Natives mGURLMocks;
 
+    @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
+
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
 
         NativeLibraryTestUtils.loadNativeLibraryNoBrowserProcess();
         GURLJavaTestHelper.nativeInitializeICU();
@@ -287,6 +290,21 @@ public class GURLJavaTest {
         Assert.assertFalse(url1.domainIs("images.google.com"));
     }
 
+    // Test that equalsIgnoringRef is hooked up correctly.
+    @SmallTest
+    @Test
+    public void testEqualsIgnoringRef() {
+        GURL url1 = new GURL("https://www.google.com#ref1");
+        GURL url2 = new GURL("https://www.google.com#ref2");
+        GURL url3 = new GURL("https://www.google.com");
+        GURL url4 = new GURL("https://www.notgoogle.com");
+
+        Assert.assertTrue(url1.equalsIgnoringRef(url2));
+        Assert.assertTrue(url1.equalsIgnoringRef(url3));
+        Assert.assertTrue(url2.equalsIgnoringRef(url3));
+        Assert.assertFalse(url1.equalsIgnoringRef(url4));
+    }
+
     // Test that replaceComponents is hooked up correctly.
     @SmallTest
     @Test
@@ -356,14 +374,11 @@ public class GURLJavaTest {
                 new GURL("http://example.test/"));
 
         // When an assertion does fail, make sure that the failure message is human readable.
+        GURL expected = new GURL("https://example.test/");
+        GURL actual = new GURL("https://different.test/");
         Throwable exception =
                 Assert.assertThrows(
-                        AssertionError.class,
-                        () -> {
-                            Assert.assertEquals(
-                                    new GURL("https://example.test/"),
-                                    new GURL("https://different.test/"));
-                        });
+                        AssertionError.class, () -> Assert.assertEquals(expected, actual));
         if (BuildConfig.ENABLE_ASSERTS) {
             String expectedMessage =
                     "expected:<GURL(https://example.test/)> but"

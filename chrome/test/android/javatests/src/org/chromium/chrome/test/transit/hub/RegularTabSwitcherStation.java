@@ -5,26 +5,45 @@
 package org.chromium.chrome.test.transit.hub;
 
 import static androidx.test.espresso.matcher.ViewMatchers.isSelected;
+import static androidx.test.espresso.matcher.ViewMatchers.withId;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
 
-import static org.chromium.base.test.transit.ViewSpec.viewSpec;
+import static org.chromium.base.test.transit.ViewElement.unscopedOption;
+import static org.chromium.chrome.test.util.ChromeTabUtils.getTabCountOnUiThread;
 
-import org.chromium.base.test.transit.Elements;
+import android.view.View;
+
+import androidx.recyclerview.widget.RecyclerView;
+
+import org.hamcrest.Matcher;
+
 import org.chromium.base.test.transit.ViewElementMatchesCondition;
-import org.chromium.base.test.transit.ViewSpec;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.hub.PaneId;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
-import org.chromium.chrome.test.R;
 import org.chromium.chrome.test.transit.ntp.RegularNewTabPageStation;
 
 /** Regular tab switcher pane station. */
 public class RegularTabSwitcherStation extends TabSwitcherStation {
-    public static final ViewSpec EMPTY_STATE_TEXT =
-            viewSpec(withText(R.string.tabswitcher_no_tabs_empty_state));
+    public static final Matcher<View> EMPTY_STATE_TEXT =
+            withText(R.string.tabswitcher_no_tabs_empty_state);
 
     public RegularTabSwitcherStation(boolean regularTabsExist, boolean incognitoTabsExist) {
         super(/* isIncognito= */ false, regularTabsExist, incognitoTabsExist);
+
+        assert regularTabsButtonElement != null;
+        declareEnterCondition(
+                new ViewElementMatchesCondition(regularTabsButtonElement, isSelected()));
+        if (mRegularTabsExist) {
+            recyclerViewElement =
+                    declareView(
+                            paneHostElement.descendant(
+                                    RecyclerView.class, withId(R.id.tab_list_recycler_view)),
+                            unscopedOption());
+        } else {
+            declareView(EMPTY_STATE_TEXT);
+            recyclerViewElement = null;
+        }
     }
 
     /**
@@ -33,7 +52,8 @@ public class RegularTabSwitcherStation extends TabSwitcherStation {
      */
     public static RegularTabSwitcherStation from(TabModelSelector selector) {
         return new RegularTabSwitcherStation(
-                selector.getModel(false).getCount() > 0, selector.getModel(true).getCount() > 0);
+                getTabCountOnUiThread(selector.getModel(false)) > 0,
+                getTabCountOnUiThread(selector.getModel(true)) > 0);
     }
 
     @Override
@@ -42,28 +62,22 @@ public class RegularTabSwitcherStation extends TabSwitcherStation {
     }
 
     @Override
-    public void declareElements(Elements.Builder elements) {
-        super.declareElements(elements);
-        if (ChromeFeatureList.sTabGroupPaneAndroid.isEnabled() || mIncognitoTabsExist) {
-            assert mRegularTabsButton != null;
-            elements.declareEnterCondition(
-                    new ViewElementMatchesCondition(mRegularTabsButton, isSelected()));
-        }
-        if (!mRegularTabsExist) {
-            elements.declareView(EMPTY_STATE_TEXT);
-        }
+    @SuppressWarnings("unchecked") // Covariant return: raw parent → parameterized subclass.
+    public TabSwitcherAppMenuFacility<RegularTabSwitcherStation> openAppMenu() {
+        return super.openAppMenu();
     }
 
     /** Open a new tab using the New Tab action button. */
     public RegularNewTabPageStation openNewTab() {
         recheckActiveConditions();
 
-        RegularNewTabPageStation page =
-                RegularNewTabPageStation.newBuilder()
-                        .withIsOpeningTabs(1)
-                        .withIsSelectingTabs(1)
-                        .build();
+        return newTabButtonElement
+                .clickTo()
+                .arriveAt(RegularNewTabPageStation.newBuilder().initOpeningNewTab().build());
+    }
 
-        return travelToSync(page, getNewTabButtonViewSpec()::click);
+    public ArchiveMessageCardFacility expectArchiveMessageCard() {
+        return noopTo().enterFacility(
+                        new ArchiveMessageCardFacility(/* tabSwitcherStation= */ this));
     }
 }

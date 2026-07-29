@@ -16,9 +16,9 @@
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
-#include "base/functional/callback_forward.h"
 #include "base/functional/callback_helpers.h"
 #include "base/functional/concurrent_closures.h"
+#include "base/logging.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
@@ -47,6 +47,7 @@
 #include "chrome/browser/web_applications/os_integration/web_app_uninstallation_via_os_settings_registration.h"
 #include "chrome/browser/web_applications/proto/web_app_os_integration_state.pb.h"
 #include "chrome/browser/web_applications/web_app_constants.h"
+#include "chrome/browser/web_applications/web_app_icon_manager.h"
 #include "chrome/browser/web_applications/web_app_install_info.h"
 #include "chrome/browser/web_applications/web_app_profile_deletion_manager.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
@@ -54,7 +55,6 @@
 #include "chrome/browser/web_applications/web_app_registry_update.h"
 #include "chrome/browser/web_applications/web_app_sync_bridge.h"
 #include "chrome/browser/web_applications/web_app_ui_manager.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/common/pref_names.h"
 #include "components/keep_alive_registry/keep_alive_registry.h"
 #include "components/keep_alive_registry/keep_alive_types.h"
@@ -96,12 +96,16 @@ std::string CurrentAppShortcutsArch() {
   return base::SysInfo::OperatingSystemArchitecture();
 }
 #else
-// Non-mac platforms do not update shortcuts.
-const int kCurrentAppShortcutsVersion = 0;
 std::string CurrentAppShortcutsArch() {
   return "";
 }
-#endif
+#if BUILDFLAG(IS_WIN)
+const int kCurrentAppShortcutsVersion = 1;
+#else
+// Non-mac/win platforms do not update shortcuts.
+const int kCurrentAppShortcutsVersion = 0;
+#endif  // BUILDFLAG(IS_WIN)
+#endif  // BUILDFLAG(IS_MAC)
 
 // Delay in seconds before running UpdateShortcutsForAllApps.
 const int kUpdateShortcutsForAllAppsDelay = 10;
@@ -144,6 +148,9 @@ void OsIntegrationManager::RegisterProfilePrefs(
                                 kCurrentAppShortcutsVersion);
   registry->RegisterStringPref(prefs::kAppShortcutsArch,
                                CurrentAppShortcutsArch());
+  // NOTE: If you add new prefs here that should be cleared during database
+  // corruption recovery, make sure to update
+  // `RemoveWebAppJob::RemoveForCorruptDatabase`.
 }
 
 // static
@@ -237,6 +244,13 @@ void OsIntegrationManager::Synchronize(
 
   CHECK(set_provider_called_);
 
+  // Do not allow apps that are suggested for migration to have OS integration.
+  if (provider_->registrar_unsafe().AppMatches(
+          app_id, WebAppFilter::IsAppSuggestedForMigration())) {
+    std::move(callback).Run();
+    return;
+  }
+
   if (sub_managers_.empty()) {
     std::move(callback).Run();
     return;
@@ -251,8 +265,13 @@ void OsIntegrationManager::Synchronize(
   }
 
   std::unique_ptr<ScopedProfileKeepAlive> profile_keep_alive =
-      std::make_unique<ScopedProfileKeepAlive>(
-          profile_, ProfileKeepAliveOrigin::kWebAppUpdate);
+      ScopedProfileKeepAlive::TryAcquire(profile_,
+                                         ProfileKeepAliveOrigin::kWebAppUpdate);
+  if (!profile_keep_alive) {
+    // Profile is scheduled for destruction, abort.
+    std::move(callback).Run();
+    return;
+  }
   std::unique_ptr<ScopedKeepAlive> browser_keep_alive =
       std::make_unique<ScopedKeepAlive>(KeepAliveOrigin::WEB_APP_INSTALL,
                                         KeepAliveRestartOption::DISABLED);
@@ -268,9 +287,10 @@ void OsIntegrationManager::Synchronize(
   auto end_keep_alive_then_run_callback = std::move(callback);
 #endif
 
-  std::unique_ptr<proto::WebAppOsIntegrationState> desired_states =
-      std::make_unique<proto::WebAppOsIntegrationState>();
-  proto::WebAppOsIntegrationState* desired_states_ptr = desired_states.get();
+  std::unique_ptr<proto::os_state::WebAppOsIntegration> desired_states =
+      std::make_unique<proto::os_state::WebAppOsIntegration>();
+  proto::os_state::WebAppOsIntegration* desired_states_ptr =
+      desired_states.get();
 
   // Note: Sometimes the execute step is a no-op based on feature flags or if os
   // integration is disabled for testing. This logic is in the
@@ -329,11 +349,12 @@ void OsIntegrationManager::GetShortcutInfoForAppFromRegistrar(
       GetDesiredIconSizesForShortcut());
 
   if (!icon_sizes_in_px.empty()) {
-    provider_->icon_manager().ReadIcons(
-        app_id, IconPurpose::ANY, icon_sizes_in_px,
-        base::BindOnce(&OsIntegrationManager::OnIconsRead,
-                       weak_ptr_factory_.GetWeakPtr(), app_id,
-                       std::move(callback)));
+    provider_->icon_manager().ReadTrustedIconsWithFallbackToManifestIcons(
+        app_id, icon_sizes_in_px, IconPurpose::ANY,
+        web_app::WebAppIconManager::BitmapsFromIconMetadataExtractor(
+            base::BindOnce(&OsIntegrationManager::OnIconsRead,
+                           weak_ptr_factory_.GetWeakPtr(), app_id,
+                           std::move(callback))));
     return;
   }
 
@@ -346,11 +367,6 @@ void OsIntegrationManager::GetShortcutInfoForAppFromRegistrar(
       base::BindOnce(&OsIntegrationManager::OnIconsRead,
                      weak_ptr_factory_.GetWeakPtr(), app_id,
                      std::move(callback)));
-}
-
-bool OsIntegrationManager::IsFileHandlingAPIAvailable(
-    const webapps::AppId& app_id) {
-  return true;
 }
 
 const apps::FileHandlers* OsIntegrationManager::GetEnabledFileHandlers(
@@ -369,7 +385,8 @@ std::optional<GURL> OsIntegrationManager::TranslateProtocolUrl(
 }
 
 std::vector<custom_handlers::ProtocolHandler>
-OsIntegrationManager::GetAppProtocolHandlers(const webapps::AppId& app_id) {
+OsIntegrationManager::GetAppProtocolHandlers(
+    const webapps::AppId& app_id) const {
   if (!protocol_handler_manager_)
     return std::vector<custom_handlers::ProtocolHandler>();
 
@@ -427,7 +444,7 @@ void OsIntegrationManager::SetForceUnregisterCalledForTesting(
 void OsIntegrationManager::StartSubManagerExecutionIfRequired(
     const webapps::AppId& app_id,
     std::optional<SynchronizeOsOptions> options,
-    std::unique_ptr<proto::WebAppOsIntegrationState> desired_states,
+    std::unique_ptr<proto::os_state::WebAppOsIntegration> desired_states,
     base::OnceClosure on_all_execution_done) {
   // The "execute" step is skipped in the following cases:
   // 1. The app is no longer in the registrar. The whole synchronize process is
@@ -440,7 +457,8 @@ void OsIntegrationManager::StartSubManagerExecutionIfRequired(
     return;
   }
 
-  proto::WebAppOsIntegrationState* desired_states_ptr = desired_states.get();
+  proto::os_state::WebAppOsIntegration* desired_states_ptr =
+      desired_states.get();
   auto write_state_to_db = base::BindOnce(
       &OsIntegrationManager::WriteStateToDB, weak_ptr_factory_.GetWeakPtr(),
       app_id, std::move(desired_states), std::move(on_all_execution_done));
@@ -459,8 +477,8 @@ void OsIntegrationManager::StartSubManagerExecutionIfRequired(
 void OsIntegrationManager::ExecuteNextSubmanager(
     const webapps::AppId& app_id,
     std::optional<SynchronizeOsOptions> options,
-    proto::WebAppOsIntegrationState* desired_state,
-    const proto::WebAppOsIntegrationState current_state,
+    proto::os_state::WebAppOsIntegration* desired_state,
+    const proto::os_state::WebAppOsIntegration current_state,
     size_t index,
     base::OnceClosure on_all_execution_done_db_write) {
   CHECK(index < sub_managers_.size());
@@ -479,7 +497,7 @@ void OsIntegrationManager::ExecuteNextSubmanager(
 
 void OsIntegrationManager::WriteStateToDB(
     const webapps::AppId& app_id,
-    std::unique_ptr<proto::WebAppOsIntegrationState> desired_states,
+    std::unique_ptr<proto::os_state::WebAppOsIntegration> desired_states,
     base::OnceClosure callback) {
   // Exit early if the app is already uninstalled. We still need to write the
   // desired_states to the web_app DB during the uninstallation process since
@@ -593,10 +611,9 @@ void OsIntegrationManager::SetCurrentAppShortcutsVersion() {
   }
 }
 
-void OsIntegrationManager::OnIconsRead(
-    const webapps::AppId& app_id,
-    GetShortcutInfoCallback callback,
-    std::map<SquareSizePx, SkBitmap> icon_bitmaps) {
+void OsIntegrationManager::OnIconsRead(const webapps::AppId& app_id,
+                                       GetShortcutInfoCallback callback,
+                                       OrderedSizeToBitmap icon_bitmaps) {
   const WebApp* app = provider_->registrar_unsafe().GetAppById(app_id);
   if (!app) {
     std::move(callback).Run(nullptr);

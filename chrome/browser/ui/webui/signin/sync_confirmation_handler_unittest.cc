@@ -22,6 +22,7 @@
 #include "base/values.h"
 #include "chrome/browser/consent_auditor/consent_auditor_factory.h"
 #include "chrome/browser/consent_auditor/consent_auditor_test_utils.h"
+#include "chrome/browser/enterprise/util/managed_browser_utils.h"
 #include "chrome/browser/profiles/profile_avatar_icon_util.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
@@ -55,7 +56,7 @@ class TestingSyncConfirmationHandler : public SyncConfirmationHandler {
       Browser* browser,
       content::WebUI* web_ui,
       std::unordered_map<std::string, int> string_to_grd_id_map)
-      : SyncConfirmationHandler(browser->profile(),
+      : SyncConfirmationHandler(browser->GetProfile(),
                                 string_to_grd_id_map,
                                 browser) {
     set_web_ui(web_ui);
@@ -102,7 +103,7 @@ class SyncConfirmationHandlerTest : public BrowserWithTestWindowTest,
 
   void SetUp() override {
     BrowserWithTestWindowTest::SetUp();
-    chrome::NewTab(browser());
+    chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
     web_ui()->set_web_contents(
         browser()->tab_strip_model()->GetActiveWebContents());
 
@@ -116,6 +117,7 @@ class SyncConfirmationHandlerTest : public BrowserWithTestWindowTest,
         std::make_unique<IdentityTestEnvironmentProfileAdaptor>(profile());
     account_info_ = identity_test_env()->MakePrimaryAccountAvailable(
         "foo@example.com", signin::ConsentLevel::kSync);
+    enterprise_util::SetUserAcceptedAccountManagement(profile(), true);
     login_ui_service_observation_.Observe(
         LoginUIServiceFactory::GetForProfile(profile()));
   }
@@ -187,21 +189,21 @@ class SyncConfirmationHandlerTest : public BrowserWithTestWindowTest,
         identity_manager->GetPrimaryAccountInfo(signin::ConsentLevel::kSync));
     EXPECT_FALSE(primary_account.IsEmpty());
 
-    std::string gaia_picture_url = primary_account.picture_url;
     std::string expected_picture_url =
-        signin::GetAvatarImageURLWithOptions(GURL(gaia_picture_url),
-                                             kExpectedProfileImageSize,
-                                             false /* no_silhouette */)
+        signin::GetAvatarImageURLWithOptions(
+            GURL(primary_account.GetAvatarUrl().value_or("")),
+            kExpectedProfileImageSize, false /* no_silhouette */)
             .spec();
     std::string passed_picture_url;
-    const base::Value::Dict& dict = call_data.arg2()->GetDict();
+    const base::DictValue& dict = call_data.arg2()->GetDict();
     const std::string* src = dict.FindString("src");
     EXPECT_NE(src, nullptr);
     EXPECT_EQ(expected_picture_url, *src);
     const std::optional<bool> show_enterprise_badge =
         dict.FindBool("showEnterpriseBadge");
     EXPECT_TRUE(show_enterprise_badge.has_value());
-    EXPECT_EQ(primary_account.IsManaged(), show_enterprise_badge.value());
+    EXPECT_EQ(primary_account.IsManaged() == signin::Tribool::kTrue,
+              show_enterprise_badge.value());
   }
 
   SyncConfirmationScreenMode GetScreenMode(
@@ -250,7 +252,7 @@ TEST_F(SyncConfirmationHandlerTest, TestAvatarChangeWhenPrimaryAccountReady) {
       "full_name", "given_name", "locale",
       "http://picture.example.com/picture.jpg");
 
-  base::Value::List args;
+  base::ListValue args;
   args.Append(kDefaultDialogHeight);
   handler()->HandleInitializedWithSize(args);
 
@@ -271,12 +273,12 @@ TEST_F(SyncConfirmationHandlerTest, TestAvatarChangeWhenPrimaryAccountReady) {
 
 TEST_F(SyncConfirmationHandlerTest, TestScreenModeChangedWhenCapabilityReady) {
   // Both account info and capability are required to trigger SetAccountInfo.
-  AccountCapabilitiesTestMutator mutator(&account_info_.capabilities);
+  AccountCapabilitiesTestMutator mutator(&account_info_);
   mutator.set_can_show_history_sync_opt_ins_without_minor_mode_restrictions(
       false);
   identity_test_env()->UpdateAccountInfoForAccount(account_info_);
 
-  base::Value::List args;
+  base::ListValue args;
   args.Append(kDefaultDialogHeight);
   handler()->HandleInitializedWithSize(args);
 
@@ -295,12 +297,12 @@ TEST_F(SyncConfirmationHandlerTest, TestScreenModeChangedWhenCapabilityReady) {
 
 TEST_F(SyncConfirmationHandlerTest, TestScreenModeChangeImmuneToAltering) {
   // Both account info and capability are required to trigger SetAccountInfo.
-  AccountCapabilitiesTestMutator mutator(&account_info_.capabilities);
+  AccountCapabilitiesTestMutator mutator(&account_info_);
   mutator.set_can_show_history_sync_opt_ins_without_minor_mode_restrictions(
       false);
   identity_test_env()->UpdateAccountInfoForAccount(account_info_);
 
-  base::Value::List args;
+  base::ListValue args;
   args.Append(kDefaultDialogHeight);
   handler()->HandleInitializedWithSize(args);
 
@@ -327,7 +329,7 @@ TEST_F(SyncConfirmationHandlerTest, TestScreenModeChangeImmuneToAltering) {
 
 TEST_F(SyncConfirmationHandlerTest,
        TestAvatarChangeWhenPrimaryAccountReadyLater) {
-  base::Value::List args;
+  base::ListValue args;
   args.Append(kDefaultDialogHeight);
   handler()->HandleInitializedWithSize(args);
 
@@ -354,7 +356,7 @@ TEST_F(SyncConfirmationHandlerTest,
 
 TEST_F(SyncConfirmationHandlerTest,
        TestSetAccountInfoIgnoredIfSecondaryAccountUpdated) {
-  base::Value::List args;
+  base::ListValue args;
   args.Append(kDefaultDialogHeight);
   handler()->HandleInitializedWithSize(args);
 
@@ -397,7 +399,7 @@ TEST_F(SyncConfirmationHandlerTest,
       "google.com", "full_name", "given_name", "locale",
       "http://picture.example.com/picture.jpg");
 
-  base::Value::List args;
+  base::ListValue args;
   args.Append(kDefaultDialogHeight);
   handler()->HandleInitializedWithSize(args);
 
@@ -416,7 +418,7 @@ TEST_F(SyncConfirmationHandlerTest,
 }
 
 TEST_F(SyncConfirmationHandlerTest, TestHandleUndo) {
-  base::Value::List args;
+  base::ListValue args;
   args.Append(static_cast<int>(SyncConfirmationScreenMode::kRestricted));
 
   handler()->HandleUndo(args);
@@ -433,7 +435,7 @@ TEST_F(SyncConfirmationHandlerTest, TestHandleUndo) {
 
 TEST_F(SyncConfirmationHandlerTest, TestHandleConfirm) {
   // The consent description consists of strings 1, 2, and 4.
-  base::Value::List consent_description;
+  base::ListValue consent_description;
   consent_description.Append(SyncConfirmationHandlerTest::kConsentText1);
   consent_description.Append(SyncConfirmationHandlerTest::kConsentText2);
   consent_description.Append(SyncConfirmationHandlerTest::kConsentText4);
@@ -442,7 +444,7 @@ TEST_F(SyncConfirmationHandlerTest, TestHandleConfirm) {
   base::Value consent_confirmation(SyncConfirmationHandlerTest::kConsentText5);
 
   // These are passed as parameters to HandleConfirm().
-  base::Value::List args;
+  base::ListValue args;
   args.Append(std::move(consent_description));
   args.Append(std::move(consent_confirmation));
   args.Append(static_cast<int>(SyncConfirmationScreenMode::kRestricted));
@@ -467,12 +469,12 @@ TEST_F(SyncConfirmationHandlerTest, TestHandleConfirm) {
   EXPECT_EQ(expected_confirmation_ids,
             consent_auditor()->recorded_confirmation_ids());
 
-  EXPECT_EQ(account_info_.account_id, consent_auditor()->account_id());
+  EXPECT_EQ(account_info_.gaia, consent_auditor()->gaia_id());
 }
 
 TEST_F(SyncConfirmationHandlerTest, TestHandleConfirmWithAdvancedSyncSettings) {
   // The consent description consists of strings 2, 3, and 5.
-  base::Value::List consent_description;
+  base::ListValue consent_description;
   consent_description.Append(SyncConfirmationHandlerTest::kConsentText2);
   consent_description.Append(SyncConfirmationHandlerTest::kConsentText3);
   consent_description.Append(SyncConfirmationHandlerTest::kConsentText5);
@@ -481,7 +483,7 @@ TEST_F(SyncConfirmationHandlerTest, TestHandleConfirmWithAdvancedSyncSettings) {
   base::Value consent_confirmation(SyncConfirmationHandlerTest::kConsentText2);
 
   // These are passed as parameters to HandleGoToSettings().
-  base::Value::List args;
+  base::ListValue args;
   args.Append(std::move(consent_description));
   args.Append(std::move(consent_confirmation));
   args.Append(static_cast<int>(SyncConfirmationScreenMode::kRestricted));
@@ -505,7 +507,7 @@ TEST_F(SyncConfirmationHandlerTest, TestHandleConfirmWithAdvancedSyncSettings) {
   EXPECT_EQ(expected_confirmation_ids,
             consent_auditor()->recorded_confirmation_ids());
 
-  EXPECT_EQ(account_info_.account_id, consent_auditor()->account_id());
+  EXPECT_EQ(account_info_.gaia, consent_auditor()->gaia_id());
 }
 
 TEST_F(SyncConfirmationHandlerTest, UserVisibleLatencyIsRecordedImmediately) {
@@ -513,12 +515,12 @@ TEST_F(SyncConfirmationHandlerTest, UserVisibleLatencyIsRecordedImmediately) {
     GTEST_SKIP() << "Latency tracking is only implemented in minor mode.";
   }
 
-  AccountCapabilitiesTestMutator mutator(&account_info_.capabilities);
+  AccountCapabilitiesTestMutator mutator(&account_info_);
   mutator.set_can_show_history_sync_opt_ins_without_minor_mode_restrictions(
       false);
   identity_test_env()->UpdateAccountInfoForAccount(account_info_);
 
-  base::Value::List args;
+  base::ListValue args;
   args.Append(kDefaultDialogHeight);
   handler()->HandleInitializedWithSize(args);
 
@@ -540,7 +542,7 @@ TEST_F(SyncConfirmationHandlerTest, UserVisibleLatencyIsRecordedLater) {
     GTEST_SKIP() << "Latency tracking is only implemented in minor mode.";
   }
 
-  base::Value::List args;
+  base::ListValue args;
   args.Append(kDefaultDialogHeight);
   handler()->HandleInitializedWithSize(args);
 
@@ -556,7 +558,7 @@ TEST_F(SyncConfirmationHandlerTest, UserVisibleLatencyIsRecordedLater) {
                   "Signin.AccountCapabilities.FetchLatency"),
               ::testing::IsEmpty());
 
-  AccountCapabilitiesTestMutator mutator(&account_info_.capabilities);
+  AccountCapabilitiesTestMutator mutator(&account_info_);
   mutator.set_can_show_history_sync_opt_ins_without_minor_mode_restrictions(
       false);
   identity_test_env()->UpdateAccountInfoForAccount(account_info_);
@@ -576,7 +578,7 @@ TEST_F(SyncConfirmationHandlerTest, UserVisibleLatencyIsNotRecordedTwice) {
     GTEST_SKIP() << "Latency tracking is only implemented in minor mode.";
   }
 
-  base::Value::List args;
+  base::ListValue args;
   args.Append(kDefaultDialogHeight);
   handler()->HandleInitializedWithSize(args);
 
@@ -586,7 +588,7 @@ TEST_F(SyncConfirmationHandlerTest, UserVisibleLatencyIsNotRecordedTwice) {
                   "Signin.AccountCapabilities.UserVisibleLatency"),
               ::testing::IsEmpty());
 
-  AccountCapabilitiesTestMutator mutator(&account_info_.capabilities);
+  AccountCapabilitiesTestMutator mutator(&account_info_);
   mutator.set_can_show_history_sync_opt_ins_without_minor_mode_restrictions(
       false);
   identity_test_env()->UpdateAccountInfoForAccount(account_info_);
@@ -614,7 +616,7 @@ TEST_F(SyncConfirmationHandlerTest, UserVisibleLatencyIsRecordedPastDeadline) {
     GTEST_SKIP() << "Latency tracking is only implemented in minor mode.";
   }
 
-  base::Value::List args;
+  base::ListValue args;
   args.Append(kDefaultDialogHeight);
   handler()->HandleInitializedWithSize(args);
 

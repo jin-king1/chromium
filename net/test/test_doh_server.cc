@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "net/test/test_doh_server.h"
 
 #include <string.h>
@@ -53,7 +48,8 @@ std::unique_ptr<test_server::HttpResponse> MakeHttpErrorResponse(
 }
 
 std::unique_ptr<test_server::HttpResponse> MakeHttpResponseFromDns(
-    const DnsResponse& dns_response) {
+    const DnsResponse& dns_response,
+    const std::map<std::string, std::string>& custom_headers) {
   if (!dns_response.IsValid()) {
     return MakeHttpErrorResponse(HTTP_INTERNAL_SERVER_ERROR,
                                  "error making DNS response");
@@ -61,6 +57,9 @@ std::unique_ptr<test_server::HttpResponse> MakeHttpResponseFromDns(
 
   auto response = std::make_unique<test_server::BasicHttpResponse>();
   response->set_code(HTTP_OK);
+  for (const auto& [name, value] : custom_headers) {
+    response->AddCustomHeader(name, value);
+  }
   response->set_content(std::string(dns_response.io_buffer()->data(),
                                     dns_response.io_buffer_size()));
   response->set_content_type("application/dns-message");
@@ -95,6 +94,12 @@ void TestDohServer::AddAddressRecord(std::string_view name,
 void TestDohServer::AddRecord(const DnsResourceRecord& record) {
   base::AutoLock lock(lock_);
   records_.emplace(std::pair(record.name, record.type), record);
+}
+
+void TestDohServer::AddCustomResponseHeader(std::string_view name,
+                                            std::string_view value) {
+  base::AutoLock lock(lock_);
+  custom_headers_.emplace(name, value);
 }
 
 bool TestDohServer::Start() {
@@ -154,7 +159,7 @@ int TestDohServer::QueriesServedForSubdomains(std::string_view domain) {
 std::unique_ptr<test_server::HttpResponse> TestDohServer::HandleRequest(
     const test_server::HttpRequest& request) {
   GURL request_url = request.GetURL();
-  if (request_url.path_piece() != kPath) {
+  if (request_url.path() != kPath) {
     return nullptr;
   }
 
@@ -189,7 +194,7 @@ std::unique_ptr<test_server::HttpResponse> TestDohServer::HandleRequest(
 
   // Parse the DNS query.
   auto query_buf = base::MakeRefCounted<IOBufferWithSize>(query.size());
-  memcpy(query_buf->data(), query.data(), query.size());
+  query_buf->span().copy_from(base::as_byte_span(query));
   DnsQuery dns_query(std::move(query_buf));
   if (!dns_query.Parse(query.size())) {
     return MakeHttpErrorResponse(HTTP_BAD_REQUEST, "invalid DNS query");
@@ -202,7 +207,7 @@ std::unique_ptr<test_server::HttpResponse> TestDohServer::HandleRequest(
                          /*answers=*/{}, /*authority_records=*/{},
                          /*additional_records=*/{}, dns_query,
                          dns_protocol::kRcodeFORMERR);
-    return MakeHttpResponseFromDns(response);
+    return MakeHttpResponseFromDns(response, custom_headers_);
   }
   query_qnames_.push_back(*name);
 
@@ -225,7 +230,7 @@ std::unique_ptr<test_server::HttpResponse> TestDohServer::HandleRequest(
   DnsResponse response(dns_query.id(), /*is_authoritative=*/true,
                        /*answers=*/answers, /*authority_records=*/{},
                        /*additional_records=*/{}, dns_query);
-  return MakeHttpResponseFromDns(response);
+  return MakeHttpResponseFromDns(response, custom_headers_);
 }
 
 }  // namespace net

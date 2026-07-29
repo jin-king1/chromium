@@ -6,11 +6,13 @@ package org.chromium.chrome.browser.quick_delete;
 
 import android.content.Context;
 
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.quick_delete.QuickDeleteDelegate.DomainVisitsData;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel;
 
 /** The class responsible for specifying the various quick delete MVC properties. */
+@NullMarked
 class QuickDeleteProperties {
     public static final PropertyModel.WritableIntPropertyKey TIME_PERIOD =
             new PropertyModel.WritableIntPropertyKey();
@@ -24,9 +26,11 @@ class QuickDeleteProperties {
             new PropertyModel.WritableBooleanPropertyKey();
     public static final PropertyModel.WritableBooleanPropertyKey IS_DOMAIN_VISITED_DATA_PENDING =
             new PropertyModel.WritableBooleanPropertyKey();
+    public static final PropertyModel.WritableBooleanPropertyKey IS_HISTORY_DELETION_ALLOWED =
+            new PropertyModel.WritableBooleanPropertyKey();
 
     public static final PropertyModel.ReadableObjectPropertyKey<Context> CONTEXT =
-            new PropertyModel.ReadableObjectPropertyKey();
+            new PropertyModel.ReadableObjectPropertyKey<>();
     public static final PropertyModel.ReadableBooleanPropertyKey HAS_MULTI_WINDOWS =
             new PropertyModel.ReadableBooleanPropertyKey();
 
@@ -37,6 +41,7 @@ class QuickDeleteProperties {
         IS_SIGNED_IN,
         IS_SYNCING_HISTORY,
         IS_DOMAIN_VISITED_DATA_PENDING,
+        IS_HISTORY_DELETION_ALLOWED,
         CONTEXT,
         HAS_MULTI_WINDOWS
     };

@@ -17,16 +17,20 @@ class TickClock;
 
 namespace apps {
 
-// Navigation throttle that will be used on ChromeOS to implement the parts of
-// navigation capturing reimplementation that is not handled by the
-// `NavigationCapturingProcess`.
+// Navigation throttle used on ChromeOS to implement link capturing for cases
+// not handled by `NavigationCapturingProcess` (which handles V2 capturing for
+// new frames/dispositions).
+//
+// Specifically, this throttle handles:
+// 1. ARC apps (Android apps on ChromeOS classic).
+// 2. Projector System Web App (and potentially other System Web Apps).
+// 3. ChromeOS Web App Experiments (e.g. Microsoft 365 experiment app).
 class ChromeOsReimplNavigationCapturingThrottle
     : public content::NavigationThrottle {
  public:
   using ThrottleCheckResult = content::NavigationThrottle::ThrottleCheckResult;
 
-  static std::unique_ptr<content::NavigationThrottle> MaybeCreate(
-      content::NavigationHandle* handle);
+  static bool MaybeCreateAndAdd(content::NavigationThrottleRegistry& registry);
 
   // Set clock used for timing to enable manipulation during tests.
   static base::AutoReset<const base::TickClock*> SetClockForTesting(
@@ -45,7 +49,7 @@ class ChromeOsReimplNavigationCapturingThrottle
 
  private:
   ChromeOsReimplNavigationCapturingThrottle(
-      content::NavigationHandle* navigation_handle,
+      content::NavigationThrottleRegistry& registry,
       Profile* profile);
 
   ThrottleCheckResult HandleRequest();
@@ -53,7 +57,7 @@ class ChromeOsReimplNavigationCapturingThrottle
   // Identify whether web contents need to be deleted post navigation capturing.
   bool IsEmptyDanglingWebContentsAfterLinkCapture();
 
-  base::Value::Dict debug_data_;
+  base::DictValue debug_data_;
 
   raw_ref<Profile> profile_;
   base::WeakPtrFactory<ChromeOsReimplNavigationCapturingThrottle>

@@ -26,11 +26,12 @@
 #include "third_party/blink/renderer/modules/gamepad/gamepad.h"
 
 #include <algorithm>
+#include <cstdint>
 
 #include "base/trace_event/trace_event.h"
 #include "third_party/blink/renderer/core/timing/performance.h"
 #include "third_party/blink/renderer/modules/gamepad/gamepad_comparisons.h"
-#include "third_party/blink/renderer/platform/wtf/text/string_view.h"
+#include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 
 namespace blink {
 
@@ -59,10 +60,18 @@ Gamepad::~Gamepad() = default;
 void Gamepad::UpdateFromDeviceState(const device::Gamepad& device_gamepad,
                                     bool cross_origin_isolated_capability) {
   bool newly_connected;
+  StringBuilder id_u16string_builder;
+  for (uint16_t c : device_gamepad.id) {
+    if (c == 0) {
+      break;
+    }
+    id_u16string_builder.Append(c);
+  }
+
   GamepadComparisons::HasGamepadConnectionChanged(
-      connected(),                            // Old connected.
-      device_gamepad.connected,               // New connected.
-      id() != StringView(device_gamepad.id),  // ID changed.
+      connected(),                              // Old connected.
+      device_gamepad.connected,                 // New connected.
+      id() != id_u16string_builder.ToString(),  // ID changed.
       &newly_connected, nullptr);
 
   SetConnected(device_gamepad.connected);
@@ -84,7 +93,7 @@ void Gamepad::UpdateFromDeviceState(const device::Gamepad& device_gamepad,
   // These fields are not expected to change and will only be written when the
   // gamepad is newly connected.
   if (newly_connected) {
-    SetId(device_gamepad.id);
+    SetId(id_u16string_builder.ReleaseString());
     SetMapping(device_gamepad.mapping);
   }
 }
@@ -92,13 +101,13 @@ void Gamepad::UpdateFromDeviceState(const device::Gamepad& device_gamepad,
 void Gamepad::SetMapping(device::GamepadMapping mapping) {
   switch (mapping) {
     case device::GamepadMapping::kNone:
-      mapping_ = "";
+      mapping_ = V8GamepadMappingType(V8GamepadMappingType::Enum::k);
       return;
     case device::GamepadMapping::kStandard:
-      mapping_ = "standard";
+      mapping_ = V8GamepadMappingType(V8GamepadMappingType::Enum::kStandard);
       return;
     case device::GamepadMapping::kXrStandard:
-      mapping_ = "xr-standard";
+      mapping_ = V8GamepadMappingType(V8GamepadMappingType::Enum::kXRStandard);
       return;
   }
   NOTREACHED();
@@ -151,10 +160,12 @@ void Gamepad::SetTouchEvents(base::span<const device::GamepadTouch> data) {
     return;
   }
 
-  if (touch_events_.size() != data.size()) {
+  const wtf_size_t touch_events_size =
+      base::checked_cast<wtf_size_t>(data.size());
+  if (touch_events_.size() != touch_events_size) {
     touch_events_.clear();
-    touch_events_.resize(base::checked_cast<wtf_size_t>(data.size()));
-    for (size_t i = 0; i < data.size(); ++i) {
+    touch_events_.resize(touch_events_size);
+    for (wtf_size_t i = 0; i < touch_events_size; ++i) {
       touch_events_[i] = MakeGarbageCollected<GamepadTouch>();
     }
   }
@@ -162,7 +173,7 @@ void Gamepad::SetTouchEvents(base::span<const device::GamepadTouch> data) {
   if (client_) {
     client_->SetTouchEvents(*this, touch_events_, data);
   } else {
-    for (size_t i = 0; i < data.size(); ++i) {
+    for (wtf_size_t i = 0; i < touch_events_size; ++i) {
       touch_events_[i]->UpdateValuesFrom(data[i], data[i].touch_id);
     }
   }
@@ -180,13 +191,14 @@ void Gamepad::SetButtons(base::span<const device::GamepadButton> data) {
   if (skip_update)
     return;
 
-  if (buttons_.size() != data.size()) {
-    buttons_.resize(base::checked_cast<wtf_size_t>(data.size()));
-    for (size_t i = 0; i < data.size(); ++i) {
+  const wtf_size_t buttons_size = base::checked_cast<wtf_size_t>(data.size());
+  if (buttons_.size() != buttons_size) {
+    buttons_.resize(buttons_size);
+    for (wtf_size_t i = 0; i < buttons_size; ++i) {
       buttons_[i] = MakeGarbageCollected<GamepadButton>();
     }
   }
-  for (size_t i = 0; i < data.size(); ++i) {
+  for (wtf_size_t i = 0; i < buttons_size; ++i) {
     buttons_[i]->UpdateValuesFrom(data[i]);
   }
   is_button_data_dirty_ = true;

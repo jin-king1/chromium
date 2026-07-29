@@ -4,24 +4,35 @@
 
 package org.chromium.base.test.transit;
 
+import static androidx.test.espresso.assertion.ViewAssertions.matches;
+
 import android.view.View;
 
 import org.hamcrest.Matcher;
 
+import org.chromium.build.annotations.NullMarked;
+
 /** A {@link Condition} that checks if a {@link ViewElement} matches a {@link Matcher<View>}. */
+@NullMarked
 public class ViewElementMatchesCondition extends InstrumentationThreadCondition {
 
-    private ViewElement mViewElement;
-    private Matcher<View> mViewMatcher;
+    private final ViewElement<? extends View> mViewElement;
+    private final Matcher<View> mViewMatcher;
 
-    public ViewElementMatchesCondition(ViewElement viewElement, Matcher<View> viewMatcher) {
+    public ViewElementMatchesCondition(
+            ViewElement<? extends View> viewElement, Matcher<View> viewMatcher) {
         mViewElement = dependOnSupplier(viewElement, "ViewElement");
         mViewMatcher = viewMatcher;
     }
 
     @Override
     protected ConditionStatus checkWithSuppliers() throws Exception {
-        return whether(mViewMatcher.matches(mViewElement.get()));
+        try {
+            mViewElement.check(matches(mViewMatcher));
+            return fulfilled();
+        } catch (AssertionError e) {
+            return notFulfilled(e.getMessage());
+        }
     }
 
     @Override

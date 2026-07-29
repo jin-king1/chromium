@@ -11,8 +11,6 @@
 #include <memory>
 
 #include "base/command_line.h"
-#include "chrome/browser/extensions/extension_service.h"
-#include "chrome/browser/extensions/scoped_test_mv2_enabler.h"
 #include "chrome/browser/extensions/test_extension_environment.h"
 #include "chrome/browser/extensions/test_extension_system.h"
 #include "chrome/common/extensions/extension_test_util.h"
@@ -25,13 +23,21 @@
 #include "extensions/browser/api/declarative/rules_registry_service.h"
 #include "extensions/browser/api/declarative/test_rules_registry.h"
 #include "extensions/browser/extension_prefs.h"
+#include "extensions/browser/extension_registrar.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/rules_registry_ids.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/features/feature_channel.h"
 #include "extensions/common/manifest_constants.h"
 #include "extensions/common/permissions/permissions_data.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+#if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/extensions/scoped_test_mv2_enabler.h"
+#endif
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 using extension_test_util::LoadManifestUnchecked;
 
@@ -55,7 +61,7 @@ class RulesRegistryWithCacheTest : public testing::Test {
   void SetUp() override {
     // Note that env_.MakeExtension below also forces the creation of
     // ExtensionService.
-    base::Value::Dict manifest_extra;
+    base::DictValue manifest_extra;
     std::string key;
     CHECK(Extension::ProducePEM("test extension 1", &key));
     manifest_extra.Set(manifest_keys::kPublicKey, key);
@@ -253,7 +259,7 @@ TEST_F(RulesRegistryWithCacheTest, DeclarativeRulesStored) {
 
   // 2. Test writing behavior.
   {
-    base::Value::List value;
+    base::ListValue value;
     value.Append(base::Value(true));
     cache_delegate->UpdateRules(extension1_->id(), std::move(value));
   }
@@ -266,7 +272,7 @@ TEST_F(RulesRegistryWithCacheTest, DeclarativeRulesStored) {
   int write_count = store->write_count();
 
   {
-    base::Value::List value;
+    base::ListValue value;
     cache_delegate->UpdateRules(extension1_->id(), std::move(value));
     EXPECT_FALSE(cache_delegate->GetDeclarativeRulesStored(extension1_->id()));
   }
@@ -276,7 +282,7 @@ TEST_F(RulesRegistryWithCacheTest, DeclarativeRulesStored) {
   write_count = store->write_count();
 
   {
-    base::Value::List value;
+    base::ListValue value;
     cache_delegate->UpdateRules(extension1_->id(), std::move(value));
     EXPECT_FALSE(cache_delegate->GetDeclarativeRulesStored(extension1_->id()));
   }
@@ -301,7 +307,7 @@ TEST_F(RulesRegistryWithCacheTest, DeclarativeRulesStored) {
 TEST_F(RulesRegistryWithCacheTest, EphemeralCacheIsEphemeral) {
   auto cache_delegate = std::make_unique<RulesCacheDelegate>(
       RulesCacheDelegate::Type::kEphemeral);
-  base::Value::List value;
+  base::ListValue value;
   value.Append(base::Value(true));
   cache_delegate->UpdateRules(extension1_->id(), std::move(value));
   content::RunAllTasksUntilIdle();
@@ -344,6 +350,9 @@ TEST_F(RulesRegistryWithCacheTest, RulesStoredFlagMultipleRegistries) {
   EXPECT_TRUE(cache_delegate2->GetDeclarativeRulesStored(extension1_->id()));
 }
 
+#if !BUILDFLAG(IS_ANDROID)
+// This test relies on declarativeWebRequest, which is deprecated and will not
+// be supported on desktop Android.
 TEST_F(RulesRegistryWithCacheTest, RulesPreservedAcrossRestart) {
   // This test makes sure that rules are restored from the rule store
   // on registry (in particular, browser) restart.
@@ -356,8 +365,6 @@ TEST_F(RulesRegistryWithCacheTest, RulesPreservedAcrossRestart) {
   // extensions.
   ScopedTestMV2Enabler mv2_enabler;
 
-  ExtensionService* extension_service = env_.GetExtensionService();
-
   // 1. Add an extension, before rules registry gets created.
   std::string error;
   scoped_refptr<Extension> extension(LoadManifestUnchecked(
@@ -365,8 +372,8 @@ TEST_F(RulesRegistryWithCacheTest, RulesPreservedAcrossRestart) {
       mojom::ManifestLocation::kUnpacked, Extension::NO_FLAGS,
       extension1_->id(), &error));
   ASSERT_TRUE(error.empty());
-  extension_service->AddExtension(extension.get());
-  EXPECT_TRUE(extensions::ExtensionRegistry::Get(env_.profile())
+  env_.GetExtensionRegistrar()->AddExtension(extension.get());
+  EXPECT_TRUE(ExtensionRegistry::Get(env_.profile())
                   ->enabled_extensions()
                   .Contains(extension->id()));
   EXPECT_TRUE(extension->permissions_data()->HasAPIPermission(
@@ -395,6 +402,7 @@ TEST_F(RulesRegistryWithCacheTest, RulesPreservedAcrossRestart) {
   content::RunAllTasksUntilIdle();
   EXPECT_EQ(1, GetNumberOfRules(extension1_->id(), registry.get()));
 }
+#endif  // !BUILDFLAG(IS_ANDROID)
 
 TEST_F(RulesRegistryWithCacheTest, ConcurrentStoringOfRules) {
   // When an extension updates its rules, the new set of rules is stored to disk

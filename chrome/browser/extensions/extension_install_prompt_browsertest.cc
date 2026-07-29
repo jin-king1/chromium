@@ -5,22 +5,26 @@
 #include "chrome/browser/extensions/extension_install_prompt.h"
 
 #include "base/run_loop.h"
+#include "chrome/browser/extensions/extension_browsertest.h"
 #include "chrome/browser/extensions/extension_install_prompt_show_params.h"
 #include "chrome/browser/extensions/extension_install_prompt_test_helper.h"
-#include "chrome/browser/extensions/extension_platform_browsertest.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/test_utils.h"
 #include "extensions/browser/extension_dialog_auto_confirm.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_builder.h"
+#include "ui/gfx/native_ui_types.h"
 
-#if !BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(ENABLE_EXTENSIONS)
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
-#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #endif
 
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
+
+using extensions::InstallPromptData;
 using extensions::ScopedTestDialogAutoConfirm;
 
 namespace {
@@ -31,8 +35,7 @@ scoped_refptr<const extensions::Extension> BuildTestExtension() {
 
 }  // namespace
 
-using ExtensionInstallPromptBrowserTest =
-    extensions::ExtensionPlatformBrowserTest;
+using ExtensionInstallPromptBrowserTest = extensions::ExtensionBrowserTest;
 
 // Test that ExtensionInstallPrompt aborts the install if the web contents which
 // were passed to the ExtensionInstallPrompt constructor get destroyed.
@@ -47,7 +50,9 @@ IN_PROC_BROWSER_TEST_F(ExtensionInstallPromptBrowserTest,
 
   ScopedTestDialogAutoConfirm auto_confirm(ScopedTestDialogAutoConfirm::ACCEPT);
 
-  ExtensionInstallPrompt prompt(web_contents);
+  ExtensionInstallPrompt prompt(
+      web_contents,
+      std::make_unique<InstallPromptData>(InstallPromptData::INSTALL_PROMPT));
   CloseTabForWebContents(web_contents);
   content::RunAllPendingInMessageLoop();
 
@@ -61,7 +66,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionInstallPromptBrowserTest,
   EXPECT_EQ(ExtensionInstallPrompt::Result::ABORTED, helper.result());
 }
 
-#if !BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(ENABLE_EXTENSIONS)
 // Test that ExtensionInstallPrompt aborts the install if the gfx::NativeWindow
 // which is passed to the ExtensionInstallPrompt constructor is destroyed.
 // TODO(crbug.com/397754565): Port to desktop Android when the install UI is
@@ -70,15 +75,16 @@ IN_PROC_BROWSER_TEST_F(ExtensionInstallPromptBrowserTest,
                        TrackParentWindowDestruction) {
   // Create a second browser to prevent the app from exiting when the browser is
   // closed.
-  CreateBrowser(browser()->profile());
+  CreateBrowser(profile());
 
   scoped_refptr<const extensions::Extension> extension(BuildTestExtension());
 
   ScopedTestDialogAutoConfirm auto_confirm(ScopedTestDialogAutoConfirm::ACCEPT);
 
-  ExtensionInstallPrompt prompt(browser()->profile(),
-                                browser()->window()->GetNativeWindow());
-  browser()->window()->Close();
+  ExtensionInstallPrompt prompt(
+      profile(), browser()->GetWindow()->GetNativeWindow(),
+      std::make_unique<InstallPromptData>(InstallPromptData::INSTALL_PROMPT));
+  browser()->GetWindow()->Close();
   content::RunAllPendingInMessageLoop();
 
   base::RunLoop run_loop;
@@ -90,7 +96,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionInstallPromptBrowserTest,
   run_loop.Run();
   EXPECT_EQ(ExtensionInstallPrompt::Result::ABORTED, helper.result());
 }
-#endif  // !BUILDFLAG(IS_ANDROID)
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
 
 // Test that ExtensionInstallPrompt shows the dialog normally if no parent
 // web contents or parent gfx::NativeWindow is passed to the
@@ -100,7 +106,9 @@ IN_PROC_BROWSER_TEST_F(ExtensionInstallPromptBrowserTest, NoParent) {
 
   ScopedTestDialogAutoConfirm auto_confirm(ScopedTestDialogAutoConfirm::ACCEPT);
 
-  ExtensionInstallPrompt prompt(profile(), nullptr);
+  ExtensionInstallPrompt prompt(
+      profile(), gfx::NativeWindow(),
+      std::make_unique<InstallPromptData>(InstallPromptData::INSTALL_PROMPT));
   base::RunLoop run_loop;
   ExtensionInstallPromptTestHelper helper(run_loop.QuitClosure());
   prompt.ShowDialog(

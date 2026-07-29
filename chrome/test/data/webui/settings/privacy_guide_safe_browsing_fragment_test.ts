@@ -3,12 +3,11 @@
 // found in the LICENSE file.
 
 // clang-format off
-import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {flush} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 import type {PrivacyGuideSafeBrowsingFragmentElement, SettingsCollapseRadioButtonElement, SettingsRadioGroupElement} from 'chrome://settings/lazy_load.js';
 import {SafeBrowsingSetting} from 'chrome://settings/lazy_load.js';
 import type {SettingsPrefsElement} from 'chrome://settings/settings.js';
-import {CrSettingsPrefs, MetricsBrowserProxyImpl, PrivacyGuideSettingsStates, resetRouterForTesting} from 'chrome://settings/settings.js';
+import {CrSettingsPrefs, loadTimeData, MetricsBrowserProxyImpl, PrivacyGuideSettingsStates, resetRouterForTesting} from 'chrome://settings/settings.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {eventToPromise, isChildVisible} from 'chrome://webui-test/test_util.js';
 import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
@@ -91,7 +90,8 @@ suite('SafeBrowsingFragment', function() {
         fragment.shadowRoot!.querySelector<SettingsCollapseRadioButtonElement>(
             '#safeBrowsingRadioEnhanced');
     assertTrue(!!enhancedProtection);
-    const epSubLabel = loadTimeData.getString('safeBrowsingEnhancedDesc');
+    const epSubLabel =
+        loadTimeData.getString('safeBrowsingEnhancedDescUpdated');
     assertEquals(epSubLabel, enhancedProtection.subLabel);
 
     const group = fragment.shadowRoot!.querySelector<HTMLElement>(
@@ -99,7 +99,7 @@ suite('SafeBrowsingFragment', function() {
     assertTrue(!!group);
     fragment.shadowRoot!
         .querySelector<HTMLElement>('#safeBrowsingRadioEnhanced')!.click();
-    await eventToPromise('selected-changed', group);
+    await eventToPromise('change', group);
     // The updated description item container should be visible.
     assertTrue(isChildVisible(fragment, '#updatedDescItemContainer'));
   });

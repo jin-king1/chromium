@@ -6,9 +6,11 @@
 #define BASE_TASK_THREAD_POOL_TEST_UTILS_H_
 
 #include <atomic>
+#include <variant>
 
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/ref_counted.h"
 #include "base/task/common/checked_lock.h"
 #include "base/task/post_job.h"
 #include "base/task/task_features.h"
@@ -22,7 +24,6 @@
 #include "base/task/thread_pool/worker_thread_observer.h"
 #include "build/build_config.h"
 #include "testing/gmock/include/gmock/gmock.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 
 namespace base {
 namespace internal {
@@ -42,8 +43,8 @@ class MockWorkerThreadObserver : public WorkerThreadObserver {
   void WaitCallsOnMainExit();
 
   // WorkerThreadObserver:
-  MOCK_METHOD0(OnWorkerThreadMainEntry, void());
-  // This doesn't use MOCK_METHOD0 because some tests need to wait for all calls
+  MOCK_METHOD(void, OnWorkerThreadMainEntry, (), (override));
+  // This doesn't use MOCK_METHOD because some tests need to wait for all calls
   // to happen, which isn't possible with gmock.
   void OnWorkerThreadMainExit() override;
 
@@ -111,7 +112,7 @@ class MockJobTask : public base::RefCountedThreadSafe<MockJobTask> {
 
   ~MockJobTask();
 
-  absl::variant<OnceClosure, RepeatingCallback<void(JobDelegate*)>> task_;
+  std::variant<OnceClosure, RepeatingCallback<void(JobDelegate*)>> task_;
   std::atomic_size_t remaining_num_tasks_to_run_;
 };
 
@@ -135,11 +136,13 @@ scoped_refptr<TaskRunner> CreatePooledTaskRunnerWithExecutionMode(
 
 scoped_refptr<TaskRunner> CreatePooledTaskRunner(
     const TaskTraits& traits,
-    MockPooledTaskRunnerDelegate* mock_pooled_task_runner_delegate);
+    MockPooledTaskRunnerDelegate* mock_pooled_task_runner_delegate,
+    bool inherit_task_importance_by_default = false);
 
 scoped_refptr<SequencedTaskRunner> CreatePooledSequencedTaskRunner(
     const TaskTraits& traits,
-    MockPooledTaskRunnerDelegate* mock_pooled_task_runner_delegate);
+    MockPooledTaskRunnerDelegate* mock_pooled_task_runner_delegate,
+    bool inherit_task_importance_by_default = false);
 
 RegisteredTaskSource QueueAndRunTaskSource(
     TaskTracker* task_tracker,

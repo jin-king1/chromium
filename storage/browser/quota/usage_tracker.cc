@@ -28,17 +28,16 @@ struct UsageTracker::AccumulateInfo {
 UsageTracker::UsageTracker(
     QuotaManagerImpl* quota_manager_impl,
     const base::flat_map<mojom::QuotaClient*, QuotaClientType>& client_types,
-    blink::mojom::StorageType type,
     scoped_refptr<SpecialStoragePolicy> special_storage_policy)
-    : quota_manager_impl_(quota_manager_impl), type_(type) {
-  DCHECK(quota_manager_impl_);
+    : quota_manager_impl_(quota_manager_impl) {
+  CHECK(quota_manager_impl_, base::NotFatalUntil::M148);
 
   for (const auto& client_and_type : client_types) {
     mojom::QuotaClient* client = client_and_type.first;
     QuotaClientType client_type = client_and_type.second;
-    auto [it, inserted] = client_tracker_map_.insert(std::make_pair(
-        client_type, std::make_unique<ClientUsageTracker>(
-                         this, client, type, special_storage_policy)));
+    auto [it, inserted] = client_tracker_map_.insert(
+        std::make_pair(client_type, std::make_unique<ClientUsageTracker>(
+                                        this, client, special_storage_policy)));
     CHECK(inserted);
   }
 }
@@ -53,9 +52,8 @@ void UsageTracker::GetGlobalUsage(UsageCallback callback) {
   if (global_usage_callbacks_.size() > 1)
     return;
 
-  quota_manager_impl_->GetBucketsForType(
-      type_, base::BindOnce(&UsageTracker::DidGetBucketsForType,
-                            weak_factory_.GetWeakPtr()));
+  quota_manager_impl_->GetAllBuckets(base::BindOnce(
+      &UsageTracker::DidGetAllBuckets, weak_factory_.GetWeakPtr()));
 }
 
 void UsageTracker::GetStorageKeyUsageWithBreakdown(
@@ -69,16 +67,15 @@ void UsageTracker::GetStorageKeyUsageWithBreakdown(
     return;
 
   quota_manager_impl_->GetBucketsForStorageKey(
-      storage_key, type_,
-      base::BindOnce(&UsageTracker::DidGetBucketsForStorageKey,
-                     weak_factory_.GetWeakPtr(), storage_key));
+      storage_key, base::BindOnce(&UsageTracker::DidGetBucketsForStorageKey,
+                                  weak_factory_.GetWeakPtr(), storage_key));
 }
 
 void UsageTracker::GetBucketUsageWithBreakdown(
     const BucketLocator& bucket,
     UsageWithBreakdownCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(bucket.id);
+  CHECK(bucket.id, base::NotFatalUntil::M148);
   std::vector<UsageWithBreakdownCallback>& bucket_callbacks =
       bucket_usage_callbacks_[bucket];
   bucket_callbacks.emplace_back(std::move(callback));
@@ -116,7 +113,6 @@ void UsageTracker::UpdateBucketUsageCache(QuotaClientType client_type,
 void UsageTracker::DeleteBucketCache(QuotaClientType client_type,
                                      const BucketLocator& bucket) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK_EQ(bucket.type, type_);
 
   GetClient(client_type).DeleteBucketCache(bucket);
 }
@@ -178,8 +174,7 @@ void UsageTracker::SetUsageCacheEnabled(QuotaClientType client_type,
   GetClient(client_type).SetUsageCacheEnabled(storage_key, enabled);
 }
 
-void UsageTracker::DidGetBucketsForType(
-    QuotaErrorOr<std::set<BucketInfo>> result) {
+void UsageTracker::DidGetAllBuckets(QuotaErrorOr<std::set<BucketInfo>> result) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   auto info = std::make_unique<AccumulateInfo>();
   if (!result.has_value()) {
@@ -265,8 +260,8 @@ void UsageTracker::AccumulateClientGlobalUsage(
     int64_t total_usage,
     int64_t unlimited_usage) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK_GE(unlimited_usage, 0);
-  DCHECK_GE(total_usage, unlimited_usage);
+  CHECK_GE(unlimited_usage, 0, base::NotFatalUntil::M148);
+  CHECK_GE(total_usage, unlimited_usage, base::NotFatalUntil::M148);
 
   info->usage += total_usage;
   info->unlimited_usage += unlimited_usage;
@@ -281,17 +276,14 @@ void UsageTracker::AccumulateClientUsageWithBreakdown(
     int64_t total_usage,
     int64_t unlimited_usage) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK_GE(unlimited_usage, 0);
-  DCHECK_GE(total_usage, unlimited_usage);
+  CHECK_GE(unlimited_usage, 0, base::NotFatalUntil::M148);
+  CHECK_GE(total_usage, unlimited_usage, base::NotFatalUntil::M148);
 
   info->usage += total_usage;
 
   switch (client) {
     case QuotaClientType::kFileSystem:
       info->usage_breakdown->fileSystem += total_usage;
-      break;
-    case QuotaClientType::kDatabase:
-      info->usage_breakdown->webSql += total_usage;
       break;
     case QuotaClientType::kIndexedDatabase:
       info->usage_breakdown->indexedDatabase += total_usage;
@@ -313,8 +305,8 @@ void UsageTracker::AccumulateClientUsageWithBreakdown(
 void UsageTracker::FinallySendGlobalUsage(
     std::unique_ptr<AccumulateInfo> info) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK_GE(info->unlimited_usage, -1);
-  DCHECK_GE(info->usage, info->unlimited_usage);
+  CHECK_GE(info->unlimited_usage, -1, base::NotFatalUntil::M148);
+  CHECK_GE(info->usage, info->unlimited_usage, base::NotFatalUntil::M148);
 
   // Moving callbacks out of the original vector early handles the case where a
   // callback makes a new quota call.
@@ -334,8 +326,9 @@ void UsageTracker::FinallySendStorageKeyUsageWithBreakdown(
 
   std::vector<UsageWithBreakdownCallback> pending_callbacks;
   pending_callbacks.swap(it->second);
-  DCHECK(pending_callbacks.size() > 0) << "storage_key_usage_callbacks_ should "
-                                          "only have non-empty callback lists";
+  CHECK(pending_callbacks.size() > 0, base::NotFatalUntil::M148)
+      << "storage_key_usage_callbacks_ should "
+         "only have non-empty callback lists";
   storage_key_usage_callbacks_.erase(it);
 
   for (auto& callback : pending_callbacks)
@@ -352,7 +345,7 @@ void UsageTracker::FinallySendBucketUsageWithBreakdown(
 
   std::vector<UsageWithBreakdownCallback> pending_callbacks;
   pending_callbacks.swap(it->second);
-  DCHECK(pending_callbacks.size() > 0)
+  CHECK(pending_callbacks.size() > 0, base::NotFatalUntil::M148)
       << "bucket_usage_callbacks_ should only have non-empty callback lists";
   bucket_usage_callbacks_.erase(it);
 

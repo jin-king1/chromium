@@ -4,29 +4,42 @@
 
 #include "components/autofill/core/browser/data_model/addresses/autofill_structured_address_utils.h"
 
+#include <stddef.h>
+
 #include <algorithm>
+#include <initializer_list>
+#include <iterator>
+#include <map>
+#include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "base/check.h"
+#include "base/check_deref.h"
+#include "base/containers/flat_map.h"
+#include "base/containers/span.h"
 #include "base/debug/alias.h"
 #include "base/debug/dump_without_crashing.h"
-#include "base/feature_list.h"
-#include "base/i18n/case_conversion.h"
-#include "base/i18n/char_iterator.h"
-#include "base/metrics/histogram_functions.h"
 #include "base/no_destructor.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
-#include "base/strings/utf_string_conversion_utils.h"
 #include "base/strings/utf_string_conversions.h"
-#include "components/autofill/core/browser/data_model/addresses/autofill_profile_comparator.h"
+#include "base/synchronization/lock.h"
+#include "build/build_config.h"
+#include "components/autofill/core/browser/autofill_type.h"
+#include "components/autofill/core/browser/data_model/addresses/autofill_normalization_utils.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_structured_address_constants.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_structured_address_regex_provider.h"
-#include "components/autofill/core/common/autofill_features.h"
+#include "components/autofill/core/browser/data_quality/autofill_data_util.h"
+#include "components/autofill/core/browser/field_types.h"
+#include "components/autofill/core/browser/geo/country_names.h"
 #include "components/autofill/core/common/autofill_regexes.h"
+#include "third_party/icu/source/i18n/unicode/regex.h"
+#include "third_party/re2/src/re2/re2.h"
 
 namespace autofill {
 
@@ -42,16 +55,6 @@ SortedTokenComparisonResult& SortedTokenComparisonResult::operator=(
     SortedTokenComparisonResult&& other) = default;
 
 SortedTokenComparisonResult::~SortedTokenComparisonResult() = default;
-
-bool SortedTokenComparisonResult::IsSingleTokenSubset() const {
-  return status == SortedTokenComparisonStatus::kSubset &&
-         additional_tokens.size() == 1;
-}
-
-bool SortedTokenComparisonResult::IsSingleTokenSuperset() const {
-  return status == SortedTokenComparisonStatus::kSuperset &&
-         additional_tokens.size() == 1;
-}
 
 bool SortedTokenComparisonResult::OneIsSubset() const {
   return status == SortedTokenComparisonStatus::kSubset ||
@@ -163,7 +166,7 @@ ParseValueByRegularExpression(const std::string& value, const RE2* regex) {
 
   // Note, the capturing group for the full match is not counted by
   // |NumberOfCapturingGroups|.
-  for (size_t i = 0; i < number_of_capturing_groups; i++) {
+  for (size_t i = 0; i < number_of_capturing_groups; ++i) {
     match_results[i] = &results[i];
     match_results_ptr[i] = &match_results[i];
   }
@@ -326,34 +329,47 @@ std::string CaptureTypeWithPatternOptional(
       type, base::StrCat(base::span(pattern_span_initializer_list)));
 }
 
-std::u16string NormalizeAndRewrite(const AddressCountryCode& country_code,
-                                   const std::u16string& text,
-                                   bool keep_white_space) {
-  return AddressRewriter::RewriteForCountryCode(
-      country_code->empty() ? AddressCountryCode("US") : country_code,
-      NormalizeValue(text, keep_white_space, country_code));
+std::string ParseCountryCode(const AutofillType& type,
+                             std::u16string_view value,
+                             std::string_view app_locale) {
+  if (value.empty()) {
+    return std::string();
+  }
+
+  // First, try to interpret the value as a 2-letter country code.
+  // This handles autocomplete="country-code".
+  if (type.is_country_code()) {
+    std::string potential_code =
+        base::IsStringASCII(value)
+            ? base::ToUpperASCII(base::UTF16ToASCII(value))
+            : std::string();
+
+    if (data_util::IsValidCountryCode(potential_code)) {
+      return potential_code;
+    }
+  }
+
+  // If it's not a valid code (or wasn't supposed to be a code),
+  // try to interpret it as a full country name. This handles cases where
+  // a site incorrectly uses a full name (e.g., "Germany") in a code field
+  // (the fallback) or just provides a name (e.g., autocomplete="country").
+  // If there was no valid country name, returns an empty string.
+  if (CountryNames* country_names = CountryNames::GetInstance()) {
+    return country_names->GetCountryCodeForLocalizedCountryName(value,
+                                                                app_locale);
+  }
+  return std::string();
 }
 
-std::u16string NormalizeValue(std::u16string_view value,
-                              bool keep_white_space,
-                              const AddressCountryCode& country_code) {
-  return AutofillProfileComparator::NormalizeForComparison(
-      value,
-      keep_white_space ? AutofillProfileComparator::RETAIN_WHITESPACE
-                       : AutofillProfileComparator::DISCARD_WHITESPACE,
-      country_code);
-}
-
-bool AreStringTokenEquivalent(const std::u16string& one,
-                              const std::u16string& other) {
+bool AreStringTokenEquivalent(std::u16string_view one,
+                              std::u16string_view other) {
   return AreSortedTokensEqual(TokenizeValue(one), TokenizeValue(other));
 }
 
-bool AreStringTokenCompatible(const std::u16string& first,
-                              const std::u16string& second) {
+bool AreStringTokenCompatible(std::u16string_view first,
+                              std::u16string_view second) {
   SortedTokenComparisonResult result =
-      CompareSortedTokens(TokenizeValue(NormalizeValue(first)),
-                          TokenizeValue(NormalizeValue(second)));
+      CompareSortedTokens(TokenizeValue(first), TokenizeValue(second));
   return result.status == SortedTokenComparisonStatus::kMatch ||
          result.status == SortedTokenComparisonStatus::kSubset;
 }
@@ -370,18 +386,18 @@ SortedTokenComparisonResult CompareSortedTokens(
   DCHECK(std::is_sorted(first.begin(), first.end(), cmp_normalized) &&
          std::is_sorted(second.begin(), second.end(), cmp_normalized));
 
-  bool is_supserset = std::includes(first.begin(), first.end(), second.begin(),
-                                    second.end(), cmp_normalized);
-  bool is_subset = std::includes(second.begin(), second.end(), first.begin(),
-                                 first.end(), cmp_normalized);
+  const bool is_superset = std::includes(
+      first.begin(), first.end(), second.begin(), second.end(), cmp_normalized);
+  const bool is_subset = std::includes(
+      second.begin(), second.end(), first.begin(), first.end(), cmp_normalized);
 
   // If first is both a superset and a subset it is the same.
-  if (is_supserset && is_subset) {
+  if (is_superset && is_subset) {
     return SortedTokenComparisonResult(SortedTokenComparisonStatus::kMatch);
   }
 
   // If it is neither, both are distinct.
-  if (!is_supserset && !is_subset) {
+  if (!is_superset && !is_subset) {
     return SortedTokenComparisonResult(SortedTokenComparisonStatus::kDistinct);
   }
 
@@ -393,7 +409,7 @@ SortedTokenComparisonResult CompareSortedTokens(
       first.begin(), first.end(), second.begin(), second.end(),
       std::back_inserter(additional_tokens), cmp_normalized);
 
-  if (is_supserset) {
+  if (is_superset) {
     return SortedTokenComparisonResult(SortedTokenComparisonStatus::kSuperset,
                                        additional_tokens);
   }
@@ -402,8 +418,8 @@ SortedTokenComparisonResult CompareSortedTokens(
                                      additional_tokens);
 }
 
-SortedTokenComparisonResult CompareSortedTokens(const std::u16string& first,
-                                                const std::u16string& second) {
+SortedTokenComparisonResult CompareSortedTokens(std::u16string_view first,
+                                                std::u16string_view second) {
   return CompareSortedTokens(TokenizeValue(first), TokenizeValue(second));
 }
 
@@ -413,7 +429,7 @@ bool AreSortedTokensEqual(const std::vector<AddressToken>& first,
          SortedTokenComparisonStatus::kMatch;
 }
 
-std::vector<AddressToken> TokenizeValue(const std::u16string value) {
+std::vector<AddressToken> TokenizeValue(std::u16string_view value) {
   std::vector<AddressToken> tokens;
   int index = 0;
 
@@ -426,16 +442,19 @@ std::vector<AddressToken> TokenizeValue(const std::u16string value) {
     std::optional<std::vector<std::u16string>> parts =
         SplitByRegex(value, **regex, value.size());
     if (!parts.has_value()) {
-      return {AddressToken{.value = value,
-                           .normalized_value = NormalizeValue(value),
-                           .position = 0}};
+      return {AddressToken{
+          .value = std::u16string(value),
+          .normalized_value = normalization::NormalizeForComparison(value),
+          .position = 0}};
     }
     tokens.reserve(value.size());
     for (const std::u16string& part : parts.value()) {
-      for (size_t j = 0; j < part.size(); j++) {
-        tokens.emplace_back(AddressToken{.value = part.substr(j, 1),
-                                         .normalized_value = part.substr(j, 1),
-                                         .position = index++});
+      for (size_t j = 0; j < part.size(); ++j) {
+        tokens.emplace_back(AddressToken{
+            .value = part.substr(j, 1),
+            .normalized_value =
+                normalization::NormalizeForComparison(part.substr(j, 1)),
+            .position = index++});
       }
     }
   } else {
@@ -443,10 +462,10 @@ std::vector<AddressToken> TokenizeValue(const std::u16string value) {
     for (const auto& token :
          base::SplitString(value, u", \n", base::TRIM_WHITESPACE,
                            base::SPLIT_WANT_NONEMPTY)) {
-      tokens.emplace_back(
-          AddressToken{.value = token,
-                       .normalized_value = NormalizeValue(token),
-                       .position = index++});
+      tokens.emplace_back(AddressToken{
+          .value = token,
+          .normalized_value = normalization::NormalizeForComparison(token),
+          .position = index++});
     }
   }
   // Sort the tokens lexicographically by their normalized value.

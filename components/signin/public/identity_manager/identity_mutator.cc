@@ -16,7 +16,9 @@
 #include "base/android/jni_array.h"
 #include "base/android/jni_string.h"
 #include "components/signin/public/android/jni_headers/IdentityMutator_jni.h"
+#include "components/signin/public/base/signin_switches.h"
 #include "components/signin/public/identity_manager/account_info.h"
+#include "google_apis/gaia/core_account_id.h"
 #endif
 
 namespace signin {
@@ -25,51 +27,60 @@ namespace signin {
 JniIdentityMutator::JniIdentityMutator(IdentityMutator* identity_mutator)
     : identity_mutator_(identity_mutator) {}
 
-jint JniIdentityMutator::SetPrimaryAccount(
+int32_t JniIdentityMutator::SetPrimaryAccount(
     JNIEnv* env,
-    const base::android::JavaParamRef<jobject>& primary_account_id,
-    jint j_consent_level,
-    jint j_access_point,
-    const base::android::JavaParamRef<jobject>& j_prefs_committed_callback) {
-  PrimaryAccountMutator* primary_account_mutator =
-      identity_mutator_->GetPrimaryAccountMutator();
-  DCHECK(primary_account_mutator);
-
-  PrimaryAccountMutator::PrimaryAccountError error =
-      primary_account_mutator->SetPrimaryAccount(
-          ConvertFromJavaCoreAccountId(env, primary_account_id),
-          static_cast<ConsentLevel>(j_consent_level),
-          static_cast<signin_metrics::AccessPoint>(j_access_point),
-          base::BindOnce(base::android::RunRunnableAndroid,
-                         base::android::ScopedJavaGlobalRef<jobject>(
-                             j_prefs_committed_callback)));
-  return static_cast<jint>(error);
+    const CoreAccountId& primary_account_id,
+    int32_t j_access_point,
+    base::OnceClosure&& prefs_committed_callback) {
+  return std::to_underlying(SetPrimaryAccountImpl(
+      primary_account_id, signin::ConsentLevel::kSignin,
+      static_cast<signin_metrics::AccessPoint>(j_access_point),
+      std::move(prefs_committed_callback)));
 }
 
-bool JniIdentityMutator::ClearPrimaryAccount(JNIEnv* env, jint source_metric) {
-  PrimaryAccountMutator* primary_account_mutator =
-      identity_mutator_->GetPrimaryAccountMutator();
-  DCHECK(primary_account_mutator);
-  return primary_account_mutator->ClearPrimaryAccount(
-      static_cast<signin_metrics::ProfileSignout>(source_metric));
+int32_t JniIdentityMutator::SetPrimaryAccountWithSyncConsentForTesting(
+    JNIEnv* env,
+    const CoreAccountId& primary_account_id,
+    int32_t j_access_point,
+    base::OnceClosure&& prefs_committed_callback) {
+  return std::to_underlying(SetPrimaryAccountImpl(
+      primary_account_id, signin::ConsentLevel::kSync,
+      static_cast<signin_metrics::AccessPoint>(j_access_point),
+      std::move(prefs_committed_callback)));
 }
 
-void JniIdentityMutator::RevokeSyncConsent(JNIEnv* env, jint source_metric) {
+PrimaryAccountMutator::PrimaryAccountError
+JniIdentityMutator::SetPrimaryAccountImpl(
+    const CoreAccountId& primary_account_id,
+    signin::ConsentLevel consent_level,
+    signin_metrics::AccessPoint access_point,
+    base::OnceClosure&& prefs_committed_callback) {
   PrimaryAccountMutator* primary_account_mutator =
       identity_mutator_->GetPrimaryAccountMutator();
   DCHECK(primary_account_mutator);
-  return primary_account_mutator->RevokeSyncConsent(
+  return primary_account_mutator->SetPrimaryAccount(
+      primary_account_id, consent_level, access_point,
+      std::move(prefs_committed_callback));
+}
+
+bool JniIdentityMutator::RemovePrimaryAccountButKeepTokens(
+    JNIEnv* env,
+    int32_t source_metric) {
+  PrimaryAccountMutator* primary_account_mutator =
+      identity_mutator_->GetPrimaryAccountMutator();
+  DCHECK(primary_account_mutator);
+  return primary_account_mutator->RemovePrimaryAccountButKeepTokens(
       static_cast<signin_metrics::ProfileSignout>(source_metric));
 }
 
 void JniIdentityMutator::SeedAccountsThenReloadAllAccountsWithPrimaryAccount(
     JNIEnv* env,
-    const base::android::JavaParamRef<jobjectArray>& j_account_infos,
-    const base::android::JavaParamRef<jobject>& j_primary_account_id) {
+    const base::android::JavaRef<jobjectArray>& j_account_infos,
+    const base::android::JavaRef<jobject>& j_primary_account_id) {
   std::vector<AccountInfo> accounts;
   for (size_t i = 0;
        i < base::android::SafeGetArrayLength(env, j_account_infos); i++) {
-    base::android::ScopedJavaLocalRef<jobject> account_info_java(
+    auto account_info_java = jni_zero::AdoptRef(
         env, env->GetObjectArrayElement(j_account_infos.obj(), i));
     accounts.push_back(ConvertFromJavaAccountInfo(env, account_info_java));
   }
@@ -144,3 +155,7 @@ DeviceAccountsSynchronizer* IdentityMutator::GetDeviceAccountsSynchronizer() {
   return device_accounts_synchronizer_.get();
 }
 }  // namespace signin
+
+#if BUILDFLAG(IS_ANDROID)
+DEFINE_JNI(IdentityMutator)
+#endif

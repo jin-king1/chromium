@@ -9,8 +9,8 @@
 
 #include "base/functional/callback.h"
 #include "build/build_config.h"
-#include "content/common/buildflags.h"
 #include "content/common/content_export.h"
+#include "content/public/common/buildflags.h"
 #include "third_party/blink/public/common/page/drag_operation.h"
 #include "third_party/blink/public/mojom/choosers/popup_menu.mojom.h"
 #include "third_party/blink/public/mojom/drag/drag.mojom-forward.h"
@@ -32,10 +32,6 @@ namespace ui {
 class OverscrollRefreshHandler;
 }
 #endif
-
-namespace url {
-class Origin;
-}
 
 namespace content {
 class RenderFrameHost;
@@ -83,14 +79,13 @@ class CONTENT_EXPORT RenderViewHostDelegateView {
   //   different).  See the function header comment for:
   //   `blink::DragController::StartDrag()`.
   virtual void StartDragging(
+      RenderFrameHost& source_rfh,
       const DropData& drop_data,
-      const url::Origin& source_origin,
       blink::DragOperationsMask allowed_ops,
       const gfx::ImageSkia& image,
       const gfx::Vector2d& cursor_offset,
       const gfx::Rect& drag_obj_rect,
-      const blink::mojom::DragEventSourceInfo& event_info,
-      RenderWidgetHostImpl* source_rwh) {}
+      const blink::mojom::DragEventSourceInfo& event_info) {}
 
   // The page wants to update the mouse cursor during a drag & drop operation.
   // `operation` describes the current operation (none, move, copy, link.).

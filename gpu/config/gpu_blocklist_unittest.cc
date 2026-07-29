@@ -50,8 +50,8 @@ class GpuBlocklistTest : public testing::Test {
     }}};
     std::unique_ptr<GpuBlocklist> blocklist =
         GpuBlocklist::Create(kTestEntries);
-    std::set<int> type =
-        blocklist->MakeDecision(GpuBlocklist::kOsMacosx, "10.12.3", gpu_info());
+    std::set<int> type = blocklist->MakeDecision(GpuBlocklist::kOsMacosx,
+                                                 "10.12.3", gpu_info(), {});
     EXPECT_EQ(1u, type.size());
     EXPECT_EQ(1u, type.count(feature_type));
   }
@@ -101,6 +101,9 @@ GPU_BLOCKLIST_FEATURE_TEST(AcceleratedWebGPU,
 GPU_BLOCKLIST_FEATURE_TEST(SkiaGraphite, GPU_FEATURE_TYPE_SKIA_GRAPHITE)
 
 GPU_BLOCKLIST_FEATURE_TEST(WebNN, GPU_FEATURE_TYPE_WEBNN)
+
+GPU_BLOCKLIST_FEATURE_TEST(CompositorGpuThread,
+                           GPU_FEATURE_TYPE_DIRECT_RENDERING_DISPLAY_COMPOSITOR)
 
 // Test for invariant "Assume the newly last added entry has the largest ID".
 // See GpuControlList::GpuControlList.

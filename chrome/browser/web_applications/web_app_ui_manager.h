@@ -8,25 +8,27 @@
 #include <memory>
 #include <vector>
 
-#include "base/auto_reset.h"
 #include "base/functional/callback_forward.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/observer_list_types.h"
-#include "chrome/browser/apps/app_service/app_launch_params.h"
 #include "chrome/browser/web_applications/commands/web_app_command.h"
 #include "chrome/browser/web_applications/os_integration/os_integration_manager.h"
 #include "chrome/browser/web_applications/os_integration/web_app_shortcut.h"
-#include "chrome/browser/web_applications/web_app_callback_app_identity.h"
+#include "chrome/browser/web_applications/web_app_install_info.h"
+#include "components/services/app_service/public/cpp/app_launch_params.h"
 #include "components/services/app_service/public/cpp/app_launch_util.h"
 #include "components/webapps/browser/install_result_code.h"
 #include "components/webapps/browser/uninstall_result_code.h"
 #include "components/webapps/common/web_app_id.h"
-#include "ui/gfx/native_widget_types.h"
+#include "third_party/blink/public/mojom/manifest/manifest.mojom-forward.h"
+#include "ui/gfx/native_ui_types.h"
 
 class Browser;
 class BrowserWindow;
+class BrowserWindowInterface;
 class Profile;
+class SkBitmap;
 
 namespace base {
 class FilePath;
@@ -35,13 +37,19 @@ class FilePath;
 namespace content {
 class WebContents;
 class NavigationHandle;
+class Page;
 }  // namespace content
 
+namespace webapps {
+class MlInstallOperationTracker;
+enum class WebappUninstallSource;
+}
 namespace web_app {
-
+class FakeWebAppUiManager;
 class WithAppResources;
 // WebAppUiManagerImpl can be used only in UI code.
 class WebAppUiManagerImpl;
+struct WebAppInstallInfo;
 
 enum class AppRelaunchState {
   kAppClosingForRelaunch,
@@ -56,13 +64,6 @@ using WebAppLaunchAcceptanceCallback =
     base::OnceCallback<void(bool allowed, bool remember_user_choice)>;
 using FirstRunServiceCompletedCallback = base::OnceCallback<void(bool success)>;
 
-// Overrides the app identity update dialog's behavior for testing, allowing the
-// test to auto-accept or auto-skip the dialog.
-base::AutoReset<std::optional<AppIdentityUpdate>>
-SetIdentityUpdateDialogActionForTesting(
-    std::optional<AppIdentityUpdate> auto_accept_action);
-
-std::optional<AppIdentityUpdate> GetIdentityUpdateDialogActionForTesting();
 
 class WebAppUiManagerObserver : public base::CheckedObserver {
  public:
@@ -78,11 +79,11 @@ class WebAppUiManagerObserver : public base::CheckedObserver {
 };
 
 using LaunchWebAppCallback =
-    base::OnceCallback<void(base::WeakPtr<Browser> browser,
+    base::OnceCallback<void(base::WeakPtr<BrowserWindowInterface> browser,
                             base::WeakPtr<content::WebContents> web_contents,
                             apps::LaunchContainer container)>;
 using LaunchWebAppDebugValueCallback =
-    base::OnceCallback<void(base::WeakPtr<Browser> browser,
+    base::OnceCallback<void(base::WeakPtr<BrowserWindowInterface> browser,
                             base::WeakPtr<content::WebContents> web_contents,
                             apps::LaunchContainer container,
                             base::Value debug_value)>;
@@ -100,8 +101,20 @@ enum class LaunchWebAppWindowSetting {
 // A chrome/browser/ representation of the chrome/browser/ui/ UI manager to
 // perform Web App UI operations or listen to Web App UI events, including
 // events from WebAppTabHelpers.
+//
+// All methods / operations on this class are ideally impotent, where all
+// information for the operation is passed as arguments, and the operation
+// doesn't do any state changes to the WebApp system. When the operation is
+// done, the results are returned directly or returned by calling a callback
+// argument. This ensures that state changing complexity all lives in the WebApp
+// system internals, and also allows unit tests to test those operations easy
+// while this subsystem is faked using the FakeWebAppUiManager, accessible in
+// unit tests via the FakeWebAppProvider or `AsFakeWebAppUiManagerForTesting()`
+// below.
 class WebAppUiManager {
  public:
+  using ShowIntentPickerBubbleCallback = base::OnceCallback<void(bool)>;
+
   struct RoolNotificationBehavior {
     bool is_rool_enabled = false;
     bool is_prevent_close_enabled = false;
@@ -116,10 +129,16 @@ class WebAppUiManager {
       const webapps::AppId& app_id,
       const base::CommandLine& command_line,
       const base::FilePath& current_directory,
-      const std::optional<GURL>& url_handler_launch_url,
       const std::optional<GURL>& protocol_handler_launch_url,
       const std::optional<GURL>& file_launch_url,
       const std::vector<base::FilePath>& launch_files);
+
+  // Triggers the install not supported dialog when a user attempts to install
+  // a web app from off-the-record profiles. Used for the Web Install API.
+  static void TriggerInstallNotSupportedDialog(
+      content::WebContents* web_contents,
+      Profile* profile,
+      base::OnceClosure callback);
 
   WebAppUiManager();
   virtual ~WebAppUiManager();
@@ -145,10 +164,17 @@ class WebAppUiManager {
   void NotifyReadyToCommitNavigation(
       const webapps::AppId& app_id,
       content::NavigationHandle* navigation_handle);
+  virtual void NotifyDidFinishNavigation(
+      content::NavigationHandle* navigation_handle) {}
 
   virtual bool CanAddAppToQuickLaunchBar() const = 0;
   virtual void AddAppToQuickLaunchBar(const webapps::AppId& app_id) = 0;
   virtual bool IsAppInQuickLaunchBar(const webapps::AppId& app_id) const = 0;
+
+  virtual bool IsAppMigrationSuggested(
+      BrowserWindowInterface* window) const = 0;
+  virtual bool IsAppMigrationDialogShowing(
+      BrowserWindowInterface* window) const = 0;
 
   virtual bool CanReparentAppTabToWindow(
       const webapps::AppId& app_id,
@@ -175,16 +201,20 @@ class WebAppUiManager {
       const webapps::AppId& app_id,
       WebAppLaunchAcceptanceCallback launch_callback) = 0;
 
-  virtual void ShowWebAppIdentityUpdateDialog(
-      const std::string& app_id,
-      bool title_change,
-      bool icon_change,
-      const std::u16string& old_title,
-      const std::u16string& new_title,
-      const SkBitmap& old_icon,
-      const SkBitmap& new_icon,
-      content::WebContents* web_contents,
-      AppIdentityDialogCallback callback) = 0;
+  // Shows the pre-launch dialog for a protocol web app launch. The user can
+  // allow or block the launch.
+  virtual void ShowWebAppProtocolLaunchDialog(
+      const GURL& protocol_url,
+      const webapps::AppId& app_id,
+      WebAppLaunchAcceptanceCallback launch_callback) = 0;
+
+
+  // Shows the dialog for installing sub-apps.
+  virtual void ShowSubAppsInstallDialog(
+      content::WebContents* initiating_web_contents,
+      const std::vector<std::unique_ptr<WebAppInstallInfo>>& sub_apps,
+      const webapps::AppId& parent_app_id,
+      base::OnceCallback<void(bool)> callback) = 0;
 
   // Show the settings UI for the given app.
   virtual void ShowWebAppSettings(const webapps::AppId& app_id) = 0;
@@ -195,21 +225,12 @@ class WebAppUiManager {
   // windows if configured by the launch handlers, etc. See
   // `web_app::LaunchWebApp` and `WebAppLaunchProcess` for more info.
   // If the app_id is invalid, an empty browser window is opened.
-  // Note: this function should typically be run after the completion of the
-  // `WebAppUiManager::WaitForFirstRunService` function.
   // Any lock that locks apps will extend the `WithAppResources` mixin.
   virtual void LaunchWebApp(apps::AppLaunchParams params,
                             LaunchWebAppWindowSetting launch_setting,
                             Profile& profile,
                             LaunchWebAppDebugValueCallback callback,
                             WithAppResources& app_resources) = 0;
-
-  // This function calls the callback as soon as first run service is completed.
-  // Note: The callback will be called synchronously on platforms that do not
-  // have a first-run service.
-  virtual void WaitForFirstRunService(
-      Profile& profile,
-      FirstRunServiceCompletedCallback callback) = 0;
 
 #if BUILDFLAG(IS_CHROMEOS)
   // Migrates launcher state, such as parent folder id, position in App Launcher
@@ -253,6 +274,42 @@ class WebAppUiManager {
                                     webapps::WebappInstallSource source,
                                     InstallCallback callback) = 0;
 
+  // Triggers the web app install dialog for a background install of the
+  // contents at `install_url`, with the optional `manifest_id`. The dialog will
+  // be anchored to `initiating_web_contents`. This assumes the app is not
+  // already installed. Used for the Web Install API.
+  virtual void TriggerInstallDialogForBackgroundInstall(
+      content::WebContents* initiating_web_contents,
+      std::unique_ptr<webapps::MlInstallOperationTracker> tracker,
+      const GURL& install_url,
+      const std::optional<GURL>& manifest_id,
+      const GURL& last_committed_url,
+      InstallCallback callback) = 0;
+
+  // Triggers the web app install dialog for a background install using a
+  // pre-parsed manifest. The dialog will be anchored to
+  // `initiating_web_contents`. Used for the Web Install API manifest_url flow.
+  virtual void TriggerInstallDialogForManifestInstall(
+      content::WebContents* initiating_web_contents,
+      base::WeakPtr<content::Page> initiating_page,
+      std::unique_ptr<webapps::MlInstallOperationTracker> tracker,
+      blink::mojom::ManifestPtr manifest,
+      const GURL& manifest_url,
+      const GURL& requesting_page_url,
+      InstallCallback callback) = 0;
+
+  using WebInstallAppLaunchAcceptanceCallback =
+      base::OnceCallback<void(bool accepted)>;
+  // Triggers the web app launch dialog anchored to `initiating_web_contents`
+  // to launch the app given by `app_id`. Used for the Web Install API.
+  virtual void TriggerLaunchDialogForBackgroundInstall(
+      content::WebContents* initiating_web_contents,
+      const webapps::AppId& app_id,
+      Profile* profile,
+      const std::string& app_name,
+      const SkBitmap& icon,
+      WebInstallAppLaunchAcceptanceCallback callback) = 0;
+
   // The uninstall dialog will be modal to |parent_window|, or a non-modal if
   // |parent_window| is nullptr. Use this API if a Browser window needs to be
   // passed in along with an UninstallCompleteCallback.
@@ -279,6 +336,20 @@ class WebAppUiManager {
       UninstallCompleteCallback callback,
       UninstallScheduledCallback scheduled_callback) = 0;
 
+  // TODO(crbug.com/428031098): Remove this method after this bug is complete,
+  // and instead have code uninstall directly with the web applications system
+  // or the extensions system via the extensions manager.
+  virtual void UninstallAppSilentlyForMigration(
+      const webapps::AppId& app_id) = 0;
+
+  virtual void ShowProfileErrorDialogForCorruptDB() = 0;
+
+  // This assumes the app is already installed. The callback is called with
+  // true when the user chooses to open the app, otherwise, false is called.
+  virtual void ShowIntentPicker(const GURL& url,
+                                content::WebContents* web_contents,
+                                ShowIntentPickerBubbleCallback callback) = 0;
+
   // Launches the Isolated Web App installer for a bundle with the given path.
   // If an installer with the given path already exists, brings it to front and
   // focuses it instead.
@@ -291,12 +362,25 @@ class WebAppUiManager {
       content::WebContents* web_contents,
       const std::string& launch_name) = 0;
 
+  // Creates the WebAppBlockedUpdateInfoBar in a Web App window.
+  virtual void MaybeCreateWebAppBlockedMigrationInfoBar(
+      content::WebContents* web_contents,
+      base::OnceClosure on_dismiss_callback) = 0;
+
+  // Removes the WebAppBlockedUpdateInfoBar from a Web App window if it exists.
+  virtual void MaybeRemoveWebAppBlockedMigrationInfoBar(
+      content::WebContents* web_contents) = 0;
+
   // Creates the IPH bubble for apps that are launched via link capturing being
   // enabled.
   virtual void MaybeShowIPHPromoForAppsLaunchedViaLinkCapturing(
       Browser* browser,
       Profile* profile,
       const std::string& app_id) = 0;
+
+  // Safe upcasting to the 'fake' version. This is overridden in
+  // FakeWebAppUiManager
+  virtual FakeWebAppUiManager* AsFakeWebAppUiManagerForTesting();
 
  private:
   base::ObserverList<WebAppUiManagerObserver, /*check_empty=*/true> observers_;

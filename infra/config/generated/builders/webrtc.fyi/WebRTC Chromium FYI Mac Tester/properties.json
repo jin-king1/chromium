@@ -10,7 +10,6 @@
               "project": "chromium"
             },
             "builder_spec": {
-              "build_gs_bucket": "chromium-webrtc",
               "builder_group": "chromium.webrtc.fyi",
               "execution_mode": "COMPILE_AND_TEST",
               "legacy_chromium_config": {
@@ -20,6 +19,7 @@
                 ],
                 "build_config": "Release",
                 "config": "chromium",
+                "target_arch": "arm",
                 "target_bits": 64,
                 "target_platform": "mac"
               },
@@ -38,7 +38,6 @@
               "project": "chromium"
             },
             "builder_spec": {
-              "build_gs_bucket": "chromium-webrtc",
               "builder_group": "chromium.webrtc.fyi",
               "execution_mode": "TEST",
               "legacy_chromium_config": {
@@ -48,6 +47,7 @@
                 ],
                 "build_config": "Release",
                 "config": "chromium",
+                "target_arch": "arm",
                 "target_bits": 64,
                 "target_platform": "mac"
               },
@@ -70,21 +70,17 @@
           "project": "chromium"
         }
       ],
-      "targets_spec_directory": "src/infra/config/generated/builders/webrtc.fyi/WebRTC Chromium FYI Mac Tester/targets"
+      "targets_spec_directory": "infra/config/generated/builders/webrtc.fyi/WebRTC Chromium FYI Mac Tester/targets"
     }
-  },
-  "$build/reclient": {
-    "instance": "rbe-chromium-trusted",
-    "metrics_project": "chromium-reclient-metrics",
-    "scandeps_server": true
   },
   "$build/siso": {
     "configs": [
       "builder"
     ],
-    "enable_cloud_profiler": true,
+    "enable_cloud_monitoring": true,
     "enable_cloud_trace": true,
     "experiments": [],
+    "profile_mode": "cloud",
     "project": "rbe-chromium-trusted",
     "remote_jobs": 250
   },

@@ -87,7 +87,7 @@ size_t TimeToSampleFrame(double time,
   //
   // The oversampling factor MUST be a power of two so as not to introduce
   // additional round-off in computing the oversample frame number.
-  const double oversample_factor = 1024;
+  constexpr double oversample_factor = 1024;
   double frame =
       round(time * sample_rate * oversample_factor) / oversample_factor;
 
@@ -133,6 +133,19 @@ float MaxAudioBufferSampleRate() {
   // <video> tags support sample rates up 768 kHz so audio context
   // should too.
   return 768000;
+}
+
+bool IsValidRenderQuantumSize(uint32_t render_quantum_size, float sample_rate) {
+  return render_quantum_size >= MinRenderQuantumSize() &&
+         render_quantum_size <= MaxRenderQuantumSize(sample_rate);
+}
+
+uint32_t MinRenderQuantumSize() {
+  return 1;
+}
+
+uint32_t MaxRenderQuantumSize(float sample_rate) {
+  return static_cast<uint32_t>(6 * sample_rate);
 }
 
 const std::string GetSinkIdForTracing(
@@ -192,7 +205,7 @@ const std::string GetDeviceEnumerationForTracing(
     const Vector<WebMediaDeviceInfo>& device_infos) {
   std::ostringstream s;
 
-  for (auto device_info : device_infos) {
+  for (const auto& device_info : device_infos) {
     s << "{ label: " << device_info.label
       << ", device_id: " << device_info.device_id
       << ", group_id: " << device_info.group_id << " }";

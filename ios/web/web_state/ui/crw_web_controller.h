@@ -10,9 +10,11 @@
 #import "base/values.h"
 #import "ios/web/web_state/ui/crw_touch_tracking_recognizer.h"
 #import "ios/web/web_state/ui/crw_web_view_navigation_proxy.h"
+#import "ios/web/web_state/web_view_pass_key.h"
 
 namespace web {
 
+enum class BackForwardNavigationType;
 enum class NavigationInitiationType;
 enum Permission : NSUInteger;
 enum PermissionState : NSUInteger;
@@ -79,6 +81,9 @@ class WebStateImpl;
 // A Boolean value indicating whether horizontal swipe gestures will trigger
 // back-forward list navigations.
 @property(nonatomic) BOOL allowsBackForwardNavigationGestures;
+
+// Whether or not long pressing a link in the web view renders a link preview.
+@property(nonatomic) BOOL allowsLinkPreview;
 
 // Whether the WebController should attempt to keep the render process alive.
 @property(nonatomic, assign, getter=shouldKeepRenderProcessAlive)
@@ -170,13 +175,16 @@ class WebStateImpl;
 // result in an iframe navigation.
 - (void)goToBackForwardListItem:(WKBackForwardListItem*)item
                  navigationItem:(web::NavigationItem*)item
-       navigationInitiationType:(web::NavigationInitiationType)type
+      backForwardNavigationType:(web::BackForwardNavigationType)navigationType
+       navigationInitiationType:(web::NavigationInitiationType)initiationType
                  hasUserGesture:(BOOL)hasUserGesture;
 
-// Takes snapshot of web view with `rect`. `rect` should be in self.view's
-// coordinate system.  `completion` is always called, but `snapshot` may be nil.
-// Prior to iOS 11, `completion` is called with a nil
-// snapshot. `completion` may be called more than once.
+// Takes snapshot of web view with `rect`. `rect` is converted to the
+// self.view's coordinate system. If the height of the content in WKWebView is
+// smaller than `rect`, `rect` will be adjusted because the snapshot outside the
+// content will be black (see crbug.com/399702753). `completion` is always
+// called, but `snapshot` may be nil. Prior to iOS 11, `completion` is called
+// with a nil snapshot. `completion` may be called more than once.
 - (void)takeSnapshotWithRect:(CGRect)rect
                   completion:(void (^)(UIImage* snapshot))completion;
 
@@ -189,8 +197,20 @@ class WebStateImpl;
 // Picture).
 - (void)closeMediaPresentations;
 
+// Updates the SSL status of the current navigation item.
+- (void)updateSSLStatusForCurrentNavigationItem;
+
 // Creates a web view if it's not yet created. Returns the web view.
 - (WKWebView*)ensureWebViewCreated;
+
+// Returns the WKWebView instance if it exists (guarded by a passkey).
+// Access to this function is restricted. See web_view_pass_key.h for more
+// context.
+- (WKWebView*)webViewWithPassKey:(web::WebViewPassKey)passKey;
+
+// Refresh the UIDelegate implemented method cache in Webkit by re-setting the
+// UIDelegate to itself.
+- (void)refreshUIDelegateMethodCache;
 
 // Removes the webView from the view hierarchy. The `shutdown` parameter
 // indicates if this method was called in a shutdown context.
@@ -261,10 +281,10 @@ class WebStateImpl;
 - (void)handleNavigationWillChangeState;
 
 // Handles a navigation did push state message for the current webpage.
-- (void)handleNavigationDidPushStateMessage:(base::Value::Dict*)dict;
+- (void)handleNavigationDidPushStateMessage:(base::DictValue*)dict;
 
 // Handles a navigation did replace state message for the current webpage.
-- (void)handleNavigationDidReplaceStateMessage:(base::Value::Dict*)dict;
+- (void)handleNavigationDidReplaceStateMessage:(base::DictValue*)dict;
 
 // Retrieves the existing web frames in `contentWorld`.
 - (void)retrieveExistingFramesInContentWorld:(WKContentWorld*)contentWorld;

@@ -458,7 +458,7 @@ String RuleInvalidationData::ToString() const {
     if (a.flags != b.flags) {
       return a.flags < b.flags;
     }
-    return WTF::CodeUnitCompareLessThan(a.name, b.name);
+    return CodeUnitCompareLessThan(a.name, b.name);
   });
 
   for (const Entry& entry : entries) {
@@ -486,7 +486,6 @@ void RuleInvalidationData::ExtractInvalidationSets(
     InvalidationSet* invalidation_set,
     DescendantInvalidationSet*& descendants,
     SiblingInvalidationSet*& siblings) {
-  CHECK(invalidation_set->IsAlive());
   if (auto* descendant =
           DynamicTo<DescendantInvalidationSet>(invalidation_set)) {
     descendants = descendant;

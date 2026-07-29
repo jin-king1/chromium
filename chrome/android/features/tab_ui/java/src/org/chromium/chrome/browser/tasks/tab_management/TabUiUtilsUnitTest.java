@@ -4,14 +4,18 @@
 
 package org.chromium.chrome.browser.tasks.tab_management;
 
+import static org.junit.Assert.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import static org.chromium.chrome.browser.tabmodel.TabGroupTitleUtils.UNSET_TAB_GROUP_TITLE;
 import static org.chromium.components.data_sharing.SharedGroupTestHelper.COLLABORATION_ID1;
 import static org.chromium.components.data_sharing.SharedGroupTestHelper.EMAIL1;
 import static org.chromium.components.data_sharing.SharedGroupTestHelper.EMAIL2;
@@ -46,13 +50,14 @@ import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab_group_sync.TabGroupSyncServiceFactory;
+import org.chromium.chrome.browser.tab_ui.ActionConfirmationManager;
+import org.chromium.chrome.browser.tab_ui.ActionConfirmationManager.MaybeBlockingResult;
+import org.chromium.chrome.browser.tabmodel.TabClosingSource;
 import org.chromium.chrome.browser.tabmodel.TabClosureParams;
-import org.chromium.chrome.browser.tabmodel.TabGroupModelFilter;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelActionListener;
 import org.chromium.chrome.browser.tabmodel.TabModelActionListener.DialogType;
 import org.chromium.chrome.browser.tabmodel.TabRemover;
-import org.chromium.chrome.browser.tasks.tab_management.ActionConfirmationManager.MaybeBlockingResult;
 import org.chromium.components.browser_ui.widget.ActionConfirmationResult;
 import org.chromium.components.collaboration.CollaborationService;
 import org.chromium.components.data_sharing.DataSharingService;
@@ -60,13 +65,14 @@ import org.chromium.components.data_sharing.GroupData;
 import org.chromium.components.data_sharing.GroupMember;
 import org.chromium.components.data_sharing.SharedGroupTestHelper;
 import org.chromium.components.data_sharing.member_role.MemberRole;
-import org.chromium.components.signin.base.CoreAccountInfo;
-import org.chromium.components.signin.base.GaiaId;
+import org.chromium.components.signin.base.AccountInfo;
 import org.chromium.components.signin.identitymanager.IdentityManager;
 import org.chromium.components.tab_group_sync.LocalTabGroupId;
 import org.chromium.components.tab_group_sync.SavedTabGroup;
 import org.chromium.components.tab_group_sync.SyncedGroupTestHelper;
 import org.chromium.components.tab_group_sync.TabGroupSyncService;
+import org.chromium.components.tab_groups.TabGroupColorId;
+import org.chromium.google_apis.gaia.GaiaId;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 
 import java.util.List;
@@ -76,14 +82,12 @@ import java.util.List;
 @EnableFeatures(ChromeFeatureList.DATA_SHARING)
 public class TabUiUtilsUnitTest {
     private static final int TAB_ID = 123;
-    private static final int ROOT_ID = TAB_ID;
     private static final String GROUP_TITLE = "My Group";
     private static final Token TAB_GROUP_ID = new Token(1L, 2L);
 
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Mock private TabModel mTabModel;
-    @Mock private TabGroupModelFilter mFilter;
     @Mock private TabRemover mTabRemover;
     @Mock private ActionConfirmationManager mActionConfirmationManager;
     @Mock private ModalDialogManager mModalDialogManager;
@@ -101,22 +105,20 @@ public class TabUiUtilsUnitTest {
     @Captor private ArgumentCaptor<TabModelActionListener> mTabModelActionListenerCaptor;
     @Captor private ArgumentCaptor<Callback<Boolean>> mOutcomeCaptor;
 
-    private List<Tab> mTabsToClose;
     private SyncedGroupTestHelper mSyncedGroupTestHelper;
 
     @Before
     public void setUp() {
-        mTabsToClose = List.of(mTab);
+        List<Tab> tabsToClose = List.of(mTab);
         mSyncedGroupTestHelper = new SyncedGroupTestHelper(mTabGroupSyncService);
 
         when(mTabModel.getTabRemover()).thenReturn(mTabRemover);
-        when(mFilter.getTabModel()).thenReturn(mTabModel);
-        when(mFilter.isIncognitoBranded()).thenReturn(false);
+        when(mTabModel.isIncognitoBranded()).thenReturn(false);
         when(mTabModel.getTabById(TAB_ID)).thenReturn(mTab);
-        when(mTab.getRootId()).thenReturn(ROOT_ID);
-        when(mFilter.getRelatedTabListForRootId(ROOT_ID)).thenReturn(mTabsToClose);
-        when(mFilter.getRelatedTabCountForRootId(ROOT_ID)).thenReturn(mTabsToClose.size());
-        when(mFilter.getTabGroupTitle(ROOT_ID)).thenReturn(GROUP_TITLE);
+        when(mTabModel.getTabsInGroup(TAB_GROUP_ID)).thenReturn(tabsToClose);
+        when(mTabModel.getTabCountForGroup(TAB_GROUP_ID)).thenReturn(tabsToClose.size());
+        when(mTabModel.getTabGroupTitle(TAB_GROUP_ID)).thenReturn(GROUP_TITLE);
+        when(mTabModel.tabGroupExists(TAB_GROUP_ID)).thenReturn(true);
         when(mTabModel.getTabById(TAB_ID)).thenReturn(mTab);
         when(mTab.isClosing()).thenReturn(false);
         when(mTab.getId()).thenReturn(TAB_ID);
@@ -132,22 +134,65 @@ public class TabUiUtilsUnitTest {
     @Test
     public void testCloseTabGroup_NoTab() {
         TabUiUtils.closeTabGroup(
-                mFilter, Tab.INVALID_TAB_ID, /* hideTabGroups= */ false, mDidCloseTabsCallback);
+                mTabModel,
+                Tab.INVALID_TAB_ID,
+                TabClosingSource.UNKNOWN,
+                /* allowUndo= */ true,
+                /* hideTabGroups= */ false,
+                mDidCloseTabsCallback);
         verify(mDidCloseTabsCallback).onResult(false);
+    }
+
+    @Test
+    public void testCloseTabGroup_AllowUndo() {
+        testCloseTabGroupForAllowUndoParam(/* shouldAllowUndo= */ true);
+    }
+
+    @Test
+    public void testCloseTabGroup_DisallowUndo() {
+        testCloseTabGroupForAllowUndoParam(/* shouldAllowUndo= */ false);
+    }
+
+    private void testCloseTabGroupForAllowUndoParam(boolean shouldAllowUndo) {
+        // Act
+        TabUiUtils.closeTabGroup(
+                mTabModel,
+                TAB_ID,
+                TabClosingSource.UNKNOWN,
+                shouldAllowUndo,
+                /* hideTabGroups= */ false,
+                /* didCloseCallback= */ null);
+
+        // Assert
+        ArgumentCaptor<TabClosureParams> tabClosureParamsCaptor =
+                ArgumentCaptor.forClass(TabClosureParams.class);
+        verify(mTabRemover)
+                .closeTabs(
+                        tabClosureParamsCaptor.capture(),
+                        /* allowDialog= */ anyBoolean(),
+                        /* listener= */ nullable(TabModelActionListener.class));
+        assertEquals(shouldAllowUndo, tabClosureParamsCaptor.getValue().allowUndo);
     }
 
     @Test
     public void testCloseTabGroup_NoHide() {
         boolean hideTabGroups = false;
 
-        TabUiUtils.closeTabGroup(mFilter, TAB_ID, hideTabGroups, mDidCloseTabsCallback);
+        TabUiUtils.closeTabGroup(
+                mTabModel,
+                TAB_ID,
+                TabClosingSource.TABLET_TAB_STRIP,
+                /* allowUndo= */ true,
+                hideTabGroups,
+                mDidCloseTabsCallback);
 
         verify(mTabRemover)
                 .closeTabs(
                         eq(
-                                TabClosureParams.forCloseTabGroup(mFilter, ROOT_ID)
+                                TabClosureParams.forCloseTabGroup(mTabModel, TAB_GROUP_ID)
                                         .hideTabGroups(hideTabGroups)
                                         .allowUndo(true)
+                                        .tabClosingSource(TabClosingSource.TABLET_TAB_STRIP)
                                         .build()),
                         eq(true),
                         mTabModelActionListenerCaptor.capture());
@@ -184,14 +229,21 @@ public class TabUiUtilsUnitTest {
     public void testCloseTabGroup_Hide() {
         boolean hideTabGroups = true;
 
-        TabUiUtils.closeTabGroup(mFilter, TAB_ID, hideTabGroups, mDidCloseTabsCallback);
+        TabUiUtils.closeTabGroup(
+                mTabModel,
+                TAB_ID,
+                TabClosingSource.TABLET_TAB_STRIP,
+                /* allowUndo= */ true,
+                hideTabGroups,
+                mDidCloseTabsCallback);
 
         verify(mTabRemover)
                 .closeTabs(
                         eq(
-                                TabClosureParams.forCloseTabGroup(mFilter, ROOT_ID)
+                                TabClosureParams.forCloseTabGroup(mTabModel, TAB_GROUP_ID)
                                         .hideTabGroups(hideTabGroups)
                                         .allowUndo(true)
+                                        .tabClosingSource(TabClosingSource.TABLET_TAB_STRIP)
                                         .build()),
                         eq(true),
                         mTabModelActionListenerCaptor.capture());
@@ -213,7 +265,7 @@ public class TabUiUtilsUnitTest {
 
         TabUiUtils.exitSharedTabGroupWithDialog(
                 ApplicationProvider.getApplicationContext(),
-                mFilter,
+                mTabModel,
                 mActionConfirmationManager,
                 mModalDialogManager,
                 TAB_ID);
@@ -241,7 +293,7 @@ public class TabUiUtilsUnitTest {
 
         TabUiUtils.exitSharedTabGroupWithDialog(
                 ApplicationProvider.getApplicationContext(),
-                mFilter,
+                mTabModel,
                 mActionConfirmationManager,
                 mModalDialogManager,
                 TAB_ID);
@@ -264,7 +316,7 @@ public class TabUiUtilsUnitTest {
 
         TabUiUtils.exitSharedTabGroupWithDialog(
                 ApplicationProvider.getApplicationContext(),
-                mFilter,
+                mTabModel,
                 mActionConfirmationManager,
                 mModalDialogManager,
                 TAB_ID);
@@ -285,7 +337,7 @@ public class TabUiUtilsUnitTest {
 
         TabUiUtils.exitSharedTabGroupWithDialog(
                 ApplicationProvider.getApplicationContext(),
-                mFilter,
+                mTabModel,
                 mActionConfirmationManager,
                 mModalDialogManager,
                 TAB_ID);
@@ -304,7 +356,7 @@ public class TabUiUtilsUnitTest {
 
         TabUiUtils.exitSharedTabGroupWithDialog(
                 ApplicationProvider.getApplicationContext(),
-                mFilter,
+                mTabModel,
                 mActionConfirmationManager,
                 mModalDialogManager,
                 TAB_ID);
@@ -324,7 +376,7 @@ public class TabUiUtilsUnitTest {
 
         TabUiUtils.exitSharedTabGroupWithDialog(
                 ApplicationProvider.getApplicationContext(),
-                mFilter,
+                mTabModel,
                 mActionConfirmationManager,
                 mModalDialogManager,
                 TAB_ID);
@@ -348,7 +400,7 @@ public class TabUiUtilsUnitTest {
 
         TabUiUtils.exitSharedTabGroupWithDialog(
                 ApplicationProvider.getApplicationContext(),
-                mFilter,
+                mTabModel,
                 mActionConfirmationManager,
                 mModalDialogManager,
                 TAB_ID);
@@ -370,15 +422,15 @@ public class TabUiUtilsUnitTest {
                 .processLeaveGroupAttempt(any(), any());
         mockIdentity(EMAIL2, GAIA_ID2);
         SavedTabGroup group = createSyncGroup(COLLABORATION_ID1);
-        group.title = null;
-        when(mFilter.getTabGroupTitle(ROOT_ID)).thenReturn(null);
+        group.title = UNSET_TAB_GROUP_TITLE;
+        when(mTabModel.getTabGroupTitle(TAB_GROUP_ID)).thenReturn(UNSET_TAB_GROUP_TITLE);
         createSharedGroup(GROUP_MEMBER1, GROUP_MEMBER2);
         when(mCollaborationService.getCurrentUserRoleForGroup(COLLABORATION_ID1))
                 .thenReturn(MemberRole.MEMBER);
 
         TabUiUtils.exitSharedTabGroupWithDialog(
                 ApplicationProvider.getApplicationContext(),
-                mFilter,
+                mTabModel,
                 mActionConfirmationManager,
                 mModalDialogManager,
                 TAB_ID);
@@ -401,7 +453,7 @@ public class TabUiUtilsUnitTest {
 
         TabUiUtils.exitSharedTabGroupWithDialog(
                 ApplicationProvider.getApplicationContext(),
-                mFilter,
+                mTabModel,
                 mActionConfirmationManager,
                 mModalDialogManager,
                 TAB_ID);
@@ -422,7 +474,7 @@ public class TabUiUtilsUnitTest {
 
         TabUiUtils.exitSharedTabGroupWithDialog(
                 ApplicationProvider.getApplicationContext(),
-                mFilter,
+                mTabModel,
                 mActionConfirmationManager,
                 mModalDialogManager,
                 TAB_ID);
@@ -439,11 +491,11 @@ public class TabUiUtilsUnitTest {
                 .when(mActionConfirmationManager)
                 .processLeaveGroupAttempt(any(), any());
         createSyncGroup(COLLABORATION_ID1);
-        when(mIdentityManager.getPrimaryAccountInfo(anyInt())).thenReturn(null);
+        when(mIdentityManager.getPrimaryAccountInfo()).thenReturn(null);
 
         TabUiUtils.exitSharedTabGroupWithDialog(
                 ApplicationProvider.getApplicationContext(),
-                mFilter,
+                mTabModel,
                 mActionConfirmationManager,
                 mModalDialogManager,
                 TAB_ID);
@@ -477,8 +529,10 @@ public class TabUiUtilsUnitTest {
     public void testUpdateViewContentSensitivityForTabList() {
         final String histogram = "SensitiveContent.TabSwitching.BottomTabStripGroupUI.Sensitivity";
 
+        List<Tab> tabList = List.of(mTab);
+        when(mTabModel.iterator()).thenAnswer(invocation -> tabList.iterator());
         when(mTabModel.getCount()).thenAnswer(invocation -> 1);
-        when(mTabModel.getTabAt(0)).thenAnswer(invocation -> mTab);
+        when(mTabModel.getTabAtChecked(0)).thenAnswer(invocation -> mTab);
 
         HistogramWatcher histogramWatcherForTrueBucket =
                 HistogramWatcher.newSingleRecordWatcher(histogram, /* value= */ true);
@@ -497,6 +551,41 @@ public class TabUiUtilsUnitTest {
         histogramWatcherForFalseBucket.assertExpected();
     }
 
+    @Test
+    public void testUpdateTabGroupColor() {
+        when(mTabModel.tabGroupExists(TAB_GROUP_ID)).thenReturn(true);
+        when(mTabModel.getTabGroupColor(TAB_GROUP_ID)).thenReturn(TabGroupColorId.BLUE);
+        TabUiUtils.updateTabGroupColor(mTabModel, TAB_GROUP_ID, TabGroupColorId.RED);
+        verify(mTabModel).setTabGroupColor(TAB_GROUP_ID, TabGroupColorId.RED);
+
+        TabUiUtils.updateTabGroupColor(mTabModel, TAB_GROUP_ID, TabGroupColorId.BLUE);
+        verify(mTabModel, never()).setTabGroupColor(TAB_GROUP_ID, TabGroupColorId.BLUE);
+
+        when(mTabModel.tabGroupExists(TAB_GROUP_ID)).thenReturn(false);
+        TabUiUtils.updateTabGroupColor(mTabModel, TAB_GROUP_ID, TabGroupColorId.YELLOW);
+        verify(mTabModel, never()).setTabGroupColor(TAB_GROUP_ID, TabGroupColorId.YELLOW);
+    }
+
+    @Test
+    public void testUpdateTabGroupTitle() {
+        when(mTabModel.tabGroupExists(TAB_GROUP_ID)).thenReturn(true);
+        when(mTabModel.getTabGroupTitle(TAB_GROUP_ID)).thenReturn("B");
+        TabUiUtils.updateTabGroupTitle(mTabModel, TAB_GROUP_ID, "A");
+        verify(mTabModel).setTabGroupTitle(TAB_GROUP_ID, "A");
+
+        TabUiUtils.updateTabGroupTitle(mTabModel, TAB_GROUP_ID, "B");
+        verify(mTabModel, never()).setTabGroupTitle(TAB_GROUP_ID, "B");
+
+        when(mTabModel.tabGroupExists(TAB_GROUP_ID)).thenReturn(false);
+        TabUiUtils.updateTabGroupTitle(mTabModel, TAB_GROUP_ID, "C");
+        verify(mTabModel, never()).setTabGroupTitle(TAB_GROUP_ID, "C");
+
+        when(mTabModel.tabGroupExists(TAB_GROUP_ID)).thenReturn(true);
+        when(mTabModel.getTabGroupTitle(TAB_GROUP_ID)).thenReturn("A");
+        TabUiUtils.updateTabGroupTitle(mTabModel, TAB_GROUP_ID, UNSET_TAB_GROUP_TITLE);
+        verify(mTabModel).setTabGroupTitle(TAB_GROUP_ID, UNSET_TAB_GROUP_TITLE);
+    }
+
     private SavedTabGroup createSyncGroup(String collaborationId) {
         SavedTabGroup syncGroup = mSyncedGroupTestHelper.newTabGroup(SYNC_GROUP_ID1, TAB_GROUP_ID);
         syncGroup.title = GROUP_TITLE;
@@ -511,7 +600,7 @@ public class TabUiUtilsUnitTest {
     }
 
     private void mockIdentity(String email, GaiaId gaiaId) {
-        CoreAccountInfo coreAccountInfo = CoreAccountInfo.createFromEmailAndGaiaId(email, gaiaId);
-        when(mIdentityManager.getPrimaryAccountInfo(anyInt())).thenReturn(coreAccountInfo);
+        AccountInfo accountInfo = new AccountInfo.Builder(email, gaiaId).build();
+        when(mIdentityManager.getPrimaryAccountInfo()).thenReturn(accountInfo);
     }
 }

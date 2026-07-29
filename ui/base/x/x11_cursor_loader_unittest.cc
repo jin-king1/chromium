@@ -19,7 +19,7 @@ std::vector<XCursorLoader::Image> ParseFile(base::span<const uint32_t> data,
   std::vector<uint8_t> vec(data.size() * 4u);
   for (size_t i = 0; i < data.size(); ++i) {
     auto bytes = base::span(vec).subspan(i * 4u).first<4u>();
-    bytes.copy_from(base::numerics::U32ToLittleEndian(data[i]));
+    bytes.copy_from(base::U32ToLittleEndian(data[i]));
   }
   return ParseCursorFile(
       base::MakeRefCounted<base::RefCountedBytes>(std::move(vec)),
@@ -260,6 +260,33 @@ TEST(XCursorLoaderTest, Animated) {
   ASSERT_EQ(images.size(), 2ul);
   EXPECT_EQ(images[0].frame_delay.InMilliseconds(), 500);
   EXPECT_EQ(images[1].frame_delay.InMilliseconds(), 500);
+}
+
+TEST(XCursorLoaderTest, ThemeNameValidation) {
+  const char* const kInvalidThemes[] = {
+      "",
+      ".",
+      "..",
+      "/foo",
+      "/tmp/evil",
+      "../foo",
+      "foo/..",
+      "../../../../tmp/poc-cursor-evil",
+      "foo/bar",
+  };
+  for (const char* theme : kInvalidThemes) {
+    EXPECT_FALSE(IsValidCursorThemeNameForTesting(theme));
+  }
+
+  const char* const kValidThemes[] = {
+      "default",
+      "Adwaita",
+      "DMZ-White",
+      "my_theme-123",
+  };
+  for (const char* theme : kValidThemes) {
+    EXPECT_TRUE(IsValidCursorThemeNameForTesting(theme));
+  }
 }
 
 }  // namespace ui

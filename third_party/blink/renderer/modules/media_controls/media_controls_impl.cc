@@ -26,13 +26,17 @@
 
 #include "third_party/blink/renderer/modules/media_controls/media_controls_impl.h"
 
+#include <array>
+
 #include "base/auto_reset.h"
 #include "media/base/media_switches.h"
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/public/platform/task_type.h"
 #include "third_party/blink/public/platform/user_metrics_action.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_mutation_observer_init.h"
+#include "third_party/blink/renderer/core/css/css_property_names.h"
 #include "third_party/blink/renderer/core/css/css_property_value_set.h"
+#include "third_party/blink/renderer/core/css_value_keywords.h"
 #include "third_party/blink/renderer/core/dom/element_traversal.h"
 #include "third_party/blink/renderer/core/dom/events/event_dispatch_forbidden_scope.h"
 #include "third_party/blink/renderer/core/dom/mutation_observer.h"
@@ -58,8 +62,10 @@
 #include "third_party/blink/renderer/core/html/track/text_track_container.h"
 #include "third_party/blink/renderer/core/html/track/text_track_list.h"
 #include "third_party/blink/renderer/core/html/track/video_track_list.h"
+#include "third_party/blink/renderer/core/keywords.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
 #include "third_party/blink/renderer/core/page/spatial_navigation.h"
+#include "third_party/blink/renderer/core/pointer_type_names.h"
 #include "third_party/blink/renderer/core/resize_observer/resize_observer.h"
 #include "third_party/blink/renderer/core/resize_observer/resize_observer_entry.h"
 #include "third_party/blink/renderer/modules/media_controls/elements/media_control_animated_arrow_container_element.h"
@@ -105,6 +111,7 @@
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/text/platform_locale.h"
 #include "third_party/blink/renderer/platform/web_test_support.h"
+#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 #include "ui/gfx/geometry/size.h"
 
 namespace blink {
@@ -117,7 +124,7 @@ constexpr int kMinWidthForOverlayPlayButton = 72;
 
 constexpr int kMinScrubbingMessageWidth = 300;
 
-const char* const kStateCSSClasses[8] = {
+const std::array<const char*, 8> kStateCSSClasses = {
     "state-no-source",                 // kNoSource
     "state-no-metadata",               // kNotLoaded
     "state-loading-metadata-paused",   // kLoadingMetadataPaused
@@ -223,7 +230,6 @@ bool ShouldShowCastButton(HTMLMediaElement& media_element) {
 
 bool ShouldShowCastOverlayButton(HTMLMediaElement& media_element) {
   return !media_element.ShouldShowControls() &&
-         RuntimeEnabledFeatures::MediaCastOverlayButtonEnabled() &&
          ShouldShowCastButton(media_element);
 }
 
@@ -239,6 +245,19 @@ constexpr base::TimeDelta kTimeWithoutMouseMovementBeforeHidingMediaControls =
 
 base::TimeDelta GetTimeWithoutMouseMovementBeforeHidingMediaControls() {
   return kTimeWithoutMouseMovementBeforeHidingMediaControls;
+}
+
+bool IsMouseInteractionEvent(const Event& event) {
+  const AtomicString& type = event.type();
+  return type == event_type_names::kMouseover ||
+         type == event_type_names::kMousemove ||
+         type == event_type_names::kMousedown ||
+         type == event_type_names::kMouseup ||
+         type == event_type_names::kClick ||
+         type == event_type_names::kPointerover ||
+         type == event_type_names::kPointermove ||
+         type == event_type_names::kPointerdown ||
+         type == event_type_names::kPointerup;
 }
 
 }  // namespace
@@ -360,6 +379,10 @@ class MediaControlsImpl::MediaElementMutationCallback
 };
 
 bool MediaControlsImpl::IsTouchEvent(Event* event) {
+  if (auto* pointer_event = DynamicTo<PointerEvent>(event)) {
+    return pointer_event->pointerType() == pointer_type_names::kTouch ||
+           pointer_event->pointerType() == pointer_type_names::kPen;
+  }
   auto* mouse_event = DynamicTo<MouseEvent>(event);
   return IsA<TouchEvent>(event) || IsA<GestureEvent>(event) ||
          (mouse_event && mouse_event->FromTouch());
@@ -701,9 +724,9 @@ void MediaControlsImpl::InitializeControls() {
 
 void MediaControlsImpl::PopulatePanel() {
   // Clear the panels.
-  panel_->setInnerHTML("");
+  panel_->SetInnerHTMLWithoutTrustedTypes("");
   if (media_button_panel_)
-    media_button_panel_->setInnerHTML("");
+    media_button_panel_->SetInnerHTMLWithoutTrustedTypes("");
 
   Element* button_panel = panel_;
   if (ShouldShowVideoControls()) {
@@ -804,9 +827,9 @@ void MediaControlsImpl::UpdateCSSClassFromState() {
 
   for (int i = 0; i < 8; i++) {
     if (i == state)
-      toAdd.push_back(UNSAFE_TODO(kStateCSSClasses[i]));
+      toAdd.push_back(kStateCSSClasses[i]);
     else
-      toRemove.push_back(UNSAFE_TODO(kStateCSSClasses[i]));
+      toRemove.push_back(kStateCSSClasses[i]);
   }
 
   if (MediaElement().ShouldShowControls() && ShouldShowVideoControls() &&
@@ -1033,6 +1056,7 @@ void MediaControlsImpl::MaybeShow() {
   panel_->SetIsWanted(true);
   panel_->SetIsDisplayed(true);
 
+  UpdateContainerDisplay();
   UpdateCurrentTimeDisplay();
 
   if (overlay_play_button_ && !is_paused_for_scrubbing_)
@@ -1083,6 +1107,32 @@ void MediaControlsImpl::Hide() {
   // when the media element is connected.
   if (MediaElement().isConnected())
     UpdateActingAsAudioControls();
+
+  UpdateContainerDisplay();
+}
+
+void MediaControlsImpl::UpdateContainerDisplay() {
+  if (!RuntimeEnabledFeatures::HideVideoControlsWhenUnneededEnabled()) {
+    return;
+  }
+
+  // When native controls are not shown and no overlay needs the container, hide
+  // it entirely to avoid creating layers that interfere with hit-test ordering.
+  bool should_hide =
+      !MediaElement().ShouldShowControls() && !overlay_cast_button_->IsWanted();
+  bool is_hidden = InlineStyle() &&
+                   InlineStyle()->GetPropertyValue(CSSPropertyID::kDisplay) ==
+                       keywords::kNone;
+
+  if (should_hide == is_hidden) {
+    return;
+  }
+
+  if (should_hide) {
+    SetInlineStyleProperty(CSSPropertyID::kDisplay, CSSValueID::kNone);
+  } else {
+    RemoveInlineStyleProperty(CSSPropertyID::kDisplay);
+  }
 }
 
 bool MediaControlsImpl::IsVisible() const {
@@ -1092,6 +1142,16 @@ bool MediaControlsImpl::IsVisible() const {
 void MediaControlsImpl::MaybeShowOverlayPlayButton() {
   if (overlay_play_button_)
     overlay_play_button_->SetIsDisplayed(true);
+}
+
+void MediaControlsImpl::MaybeShowOverlayCastButton() {
+  if (RuntimeEnabledFeatures::HideVideoControlsWhenUnneededEnabled()) {
+    // Ensure the container is visible before TryShowOverlay(), which needs
+    // layout to determine if the button is covered by another element.
+    RemoveInlineStyleProperty(CSSPropertyID::kDisplay);
+  }
+
+  overlay_cast_button_->TryShowOverlay();
 }
 
 void MediaControlsImpl::MakeOpaque() {
@@ -1134,41 +1194,63 @@ bool MediaControlsImpl::ShouldHideMediaControls(unsigned behavior_flags) const {
 
   // Keep the controls visible as long as the timer is running.
   const bool ignore_wait_for_timer = behavior_flags & kIgnoreWaitForTimer;
-  if (!ignore_wait_for_timer && keep_showing_until_timer_fires_)
+  if (!ignore_wait_for_timer && keep_showing_until_timer_fires_) {
     return false;
+  }
 
   // Don't hide if the mouse is over the controls.
   // Touch focus shouldn't affect controls visibility.
   const bool ignore_controls_hover = behavior_flags & kIgnoreControlsHover;
   if (!ignore_controls_hover && AreVideoControlsHovered() &&
-      !is_touch_interaction_)
+      !is_touch_interaction_) {
     return false;
+  }
 
   // Don't hide if the mouse is over the video area.
   const bool ignore_video_hover = behavior_flags & kIgnoreVideoHover;
-  if (!ignore_video_hover && is_mouse_over_controls_)
+  if (!ignore_video_hover && is_mouse_over_controls_) {
     return false;
+  }
 
   // Don't hide if focus is on the HTMLMediaElement or within the
   // controls/shadow tree. (Perform the checks separately to avoid going
   // through all the potential ancestor hosts for the focused element.)
   const bool ignore_focus = behavior_flags & kIgnoreFocus;
-  if (!ignore_focus && (MediaElement().IsFocused() ||
-                        contains(GetDocument().FocusedElement()))) {
+  const bool has_focus =
+      MediaElement().IsFocused() || contains(GetDocument().FocusedElement());
+  if (!ignore_focus && has_focus) {
+    return false;
+  }
+
+  // If anything on the panel has the focus, and that focus would trigger the
+  // focus ring [1], then also keep the controls visible.  Otherwise, the
+  // controls will fade out when the timer expires since we ignore focus.
+  // Getting focus back with the keyboard is tricky since there's no equivalent
+  // of hovering / mouse-overing.
+  //
+  // [1] from SelectorChecker::MatchesFocusVisiblePseudoClass()
+  const bool last_focus_from_mouse =
+      GetDocument().LastFocusType() == mojom::blink::FocusType::kMouse;
+  const bool had_keyboard_event = GetDocument().HadKeyboardEvent();
+  const bool focus_from_keyboard = !last_focus_from_mouse || had_keyboard_event;
+  if (has_focus && focus_from_keyboard) {
     return false;
   }
 
   // Don't hide the media controls when a panel is showing.
   if (text_track_list_->IsWanted() || playback_speed_list_->IsWanted() ||
-      overflow_list_->IsWanted())
+      overflow_list_->IsWanted()) {
     return false;
+  }
 
   // Don't hide if we have accessiblity focus.
-  if (panel_->KeepDisplayedForAccessibility())
+  if (panel_->KeepDisplayedForAccessibility()) {
     return false;
+  }
 
-  if (MediaElement().seeking())
+  if (MediaElement().seeking()) {
     return false;
+  }
 
   return true;
 }
@@ -1287,6 +1369,7 @@ void MediaControlsImpl::RefreshCastButtonVisibilityWithoutUpdate() {
   if (!ShouldShowCastButton(MediaElement())) {
     cast_button_->SetIsWanted(false);
     overlay_cast_button_->SetIsWanted(false);
+    UpdateContainerDisplay();
     return;
   }
 
@@ -1307,19 +1390,22 @@ void MediaControlsImpl::RefreshCastButtonVisibilityWithoutUpdate() {
     // non-cast changes (e.g., resize) occur.  If the panel button
     // is shown, however, compute...() will take control of the
     // overlay cast button if it needs to hide it from the panel.
-      overlay_cast_button_->TryShowOverlay();
+    MaybeShowOverlayCastButton();
   } else {
     overlay_cast_button_->SetIsWanted(false);
   }
+  UpdateContainerDisplay();
 }
 
 void MediaControlsImpl::ShowOverlayCastButtonIfNeeded() {
   if (!ShouldShowCastOverlayButton(MediaElement())) {
     overlay_cast_button_->SetIsWanted(false);
+    UpdateContainerDisplay();
     return;
   }
 
-  overlay_cast_button_->TryShowOverlay();
+  MaybeShowOverlayCastButton();
+  UpdateContainerDisplay();
   ResetHideMediaControlsTimer();
 }
 
@@ -1497,12 +1583,13 @@ void MediaControlsImpl::UpdateOverflowMenuItemCSSClass() const {
     DOMTokenList& class_list = item->classList();
 
     // We don't care if the hidden element still have animated-* CSS class
-    if (inline_style &&
-        inline_style->GetPropertyValue(CSSPropertyID::kDisplay) == "none")
+    if (inline_style && inline_style->GetPropertyValue(
+                            CSSPropertyID::kDisplay) == keywords::kNone) {
       continue;
+    }
 
     AtomicString css_class =
-        AtomicString("animated-") + AtomicString::Number(id++);
+        AtomicString(StrCat({"animated-", AtomicString::Number(id++)}));
     if (!class_list.contains(css_class))
       class_list.setValue(css_class);
   }
@@ -1594,8 +1681,12 @@ void MediaControlsImpl::DefaultEventHandler(Event& event) {
   if (is_touch_event)
     HandleTouchEvent(&event);
 
-  if (event.type() == event_type_names::kMouseover && !is_touch_event)
+  // Reset the touch interaction state if we receive any native mouse/pointer
+  // events indicating the user has switched from touch to mouse/pointer
+  // interaction.
+  if (IsMouseInteractionEvent(event) && !is_touch_event) {
     is_touch_interaction_ = false;
+  }
 
   if ((event.type() == event_type_names::kPointerover ||
        event.type() == event_type_names::kPointermove ||

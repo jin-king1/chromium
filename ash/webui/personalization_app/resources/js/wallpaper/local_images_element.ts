@@ -16,7 +16,7 @@ import 'chrome://resources/polymer/v3_0/iron-list/iron-list.js';
 import '../../common/icons.html.js';
 
 import type {WallpaperGridItemSelectedEvent} from 'chrome://resources/ash/common/personalization/wallpaper_grid_item_element.js';
-import {isImageDataUrl, isNonEmptyFilePath} from 'chrome://resources/ash/common/sea_pen/sea_pen_utils.js';
+import {isImageDataUrl, isNonEmptyFilePath, isUrl} from 'chrome://resources/ash/common/sea_pen/sea_pen_utils.js';
 import {assert} from 'chrome://resources/js/assert.js';
 import type {FilePath} from 'chrome://resources/mojo/mojo/public/mojom/base/file_path.mojom-webui.js';
 import type {Url} from 'chrome://resources/mojo/url/mojom/url.mojom-webui.js';
@@ -73,13 +73,13 @@ export class LocalImagesElement extends WithPersonalizationStore {
   }
 
   private wallpaperProvider_: WallpaperProviderInterface;
-  private images_: Array<FilePath|DefaultImageSymbol>|null;
-  private imageData_: Record<FilePath['path']|DefaultImageSymbol, Url>;
-  private imageDataLoading_:
+  declare private images_: Array<FilePath|DefaultImageSymbol>|null;
+  declare private imageData_: Record<FilePath['path']|DefaultImageSymbol, Url>;
+  declare private imageDataLoading_:
       Record<FilePath['path']|DefaultImageSymbol, boolean>;
-  private currentSelected_: CurrentWallpaper|null;
-  private pendingSelected_: DisplayableImage|null;
-  private imagesToDisplay_: Array<FilePath|DefaultImageSymbol>;
+  declare private currentSelected_: CurrentWallpaper|null;
+  declare private pendingSelected_: DisplayableImage|null;
+  declare private imagesToDisplay_: Array<FilePath|DefaultImageSymbol>;
 
   constructor() {
     super();
@@ -113,7 +113,8 @@ export class LocalImagesElement extends WithPersonalizationStore {
     this.imagesToDisplay_ = (images || []).filter(image => {
       const key = getPathOrSymbol(image);
       if (this.imageDataLoading_[key] === false) {
-        return isImageDataUrl(this.imageData_[key]);
+        const data = this.imageData_[key];
+        return isUrl(data) && isImageDataUrl(data);
       }
       return true;
     });
@@ -134,8 +135,9 @@ export class LocalImagesElement extends WithPersonalizationStore {
     for (let i = this.imagesToDisplay_.length - 1; i >= 0; i--) {
       const image = this.imagesToDisplay_[i];
       const key = getPathOrSymbol(image);
-      const failed =
-          imageDataLoading[key] === false && !isImageDataUrl(imageData[key]);
+      const doneLoading = imageDataLoading[key] === false;
+      const failed = doneLoading &&
+          (!isUrl(imageData[key]) || !isImageDataUrl(imageData[key]));
       if (failed) {
         this.splice('imagesToDisplay_', i, 1);
       }
@@ -200,8 +202,8 @@ export class LocalImagesElement extends WithPersonalizationStore {
     }
     const data = imageData[getPathOrSymbol(image)];
     // Return a "fail" url that will not load.
-    if (!isImageDataUrl(data)) {
-      return {url: ''};
+    if (!isUrl(data) || !isImageDataUrl(data)) {
+      return '';
     }
     return data;
   }

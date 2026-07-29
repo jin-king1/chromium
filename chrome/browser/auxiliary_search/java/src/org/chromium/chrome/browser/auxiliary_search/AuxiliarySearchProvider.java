@@ -9,14 +9,14 @@ import android.os.PersistableBundle;
 import android.text.TextUtils;
 
 import androidx.annotation.IntDef;
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
 import androidx.core.util.AtomicFile;
 
 import org.chromium.base.Callback;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.auxiliary_search.AuxiliarySearchController.AuxiliarySearchHostType;
 import org.chromium.chrome.browser.auxiliary_search.AuxiliarySearchGroupProto.AuxiliarySearchEntry;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabList;
@@ -36,13 +36,14 @@ import java.io.IOException;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 /** This class provides information for the auxiliary search. */
+@NullMarked
 public class AuxiliarySearchProvider {
-
     /** The version of tab donation's metadata. */
     @IntDef({MetaDataVersion.V1, MetaDataVersion.MULTI_TYPE_V2, MetaDataVersion.NUM_ENTRIES})
     @Retention(RetentionPolicy.SOURCE)
@@ -52,10 +53,10 @@ public class AuxiliarySearchProvider {
         int NUM_ENTRIES = 2;
     }
 
-    /* Only donate the recent 7 days accessed tabs.*/
-    @VisibleForTesting static final String TAB_AGE_HOURS_PARAM = "tabs_max_hours";
     @VisibleForTesting static final String TASK_CREATED_TIME = "TaskCreatedTime";
-    @VisibleForTesting static final int DEFAULT_TAB_AGE_HOURS = 168;
+
+    /** The donated tab's max age in MS. Only donate the recent 7 days accessed tabs. */
+    @VisibleForTesting static final long DEFAULT_TAB_AGE_HOURS = 168;
 
     @VisibleForTesting
     static final int DEFAULT_WINDOW_END_TIME_MS = 60 * 1000; // 1 min in milliseconds.
@@ -75,24 +76,32 @@ public class AuxiliarySearchProvider {
 
     private final Context mContext;
     private final Profile mProfile;
-    private final AuxiliarySearchBridge mAuxiliarySearchBridge;
     private final @Nullable TabModelSelector mTabModelSelector;
-    private Long mTabMaxAgeMillis;
+
+    @Nullable private AuxiliarySearchBridge mAuxiliarySearchBridge;
 
     public AuxiliarySearchProvider(
-            @NonNull Context context,
-            @NonNull Profile profile,
-            @Nullable TabModelSelector tabModelSelector) {
+            Context context,
+            Profile profile,
+            @Nullable TabModelSelector tabModelSelector,
+            @AuxiliarySearchHostType int hostType) {
         mContext = context;
         mProfile = profile;
-        mAuxiliarySearchBridge = new AuxiliarySearchBridge(mProfile);
+        if (hostType != AuxiliarySearchHostType.BACKGROUND_TASK) {
+            mAuxiliarySearchBridge = new AuxiliarySearchBridge(mProfile);
+        }
         mTabModelSelector = tabModelSelector;
-        mTabMaxAgeMillis = getTabsMaxAgeMs();
     }
 
     /** Returns a list of non sensitive Tabs. */
-    public void getTabsSearchableDataProtoAsync(@NonNull Callback<List<Tab>> callback) {
-        long minAccessTime = System.currentTimeMillis() - mTabMaxAgeMillis;
+    public void getTabsSearchableDataProtoAsync(Callback<@Nullable List<Tab>> callback) {
+        if (mAuxiliarySearchBridge == null) {
+            callback.onResult(null);
+            return;
+        }
+
+        long minAccessTime =
+                System.currentTimeMillis() - TimeUnit.HOURS.toMillis(DEFAULT_TAB_AGE_HOURS);
         List<Tab> listTab = getTabsByMinimalAccessTime(minAccessTime);
 
         // We will get up to 100 tabs as default. This is controlled by feature
@@ -102,15 +111,29 @@ public class AuxiliarySearchProvider {
 
     /** Returns a list of non sensitive data from supported data types. */
     public void getHistorySearchableDataProtoAsync(
-            Callback<List<AuxiliarySearchDataEntry>> callback) {
+            Callback<@Nullable List<AuxiliarySearchDataEntry>> callback) {
+        if (mAuxiliarySearchBridge == null) {
+            callback.onResult(null);
+            return;
+        }
         // We will get up to 100 tabs as default. This is controlled by feature
         // AuxiliarySearchDonation.
         mAuxiliarySearchBridge.getNonSensitiveHistoryData(callback);
     }
 
+    public void getCustomTabsAsync(
+            GURL url, long beginTime, Callback<@Nullable List<AuxiliarySearchDataEntry>> callback) {
+        if (mAuxiliarySearchBridge == null) {
+            callback.onResult(null);
+            return;
+        }
+
+        mAuxiliarySearchBridge.getCustomTabs(url, beginTime, callback);
+    }
+
     @VisibleForTesting
     static @Nullable AuxiliarySearchEntry createAuxiliarySearchEntry(
-            int id, @NonNull String title, @NonNull String url, long timestamp) {
+            int id, String title, String url, long timestamp) {
         if (TextUtils.isEmpty(title) || url == null) return null;
 
         var tabBuilder = AuxiliarySearchEntry.newBuilder().setTitle(title).setUrl(url).setId(id);
@@ -131,11 +154,7 @@ public class AuxiliarySearchProvider {
      * @param <T> The type of the entry data for donation.
      */
     <T> void saveTabMetadataToFile(
-            @NonNull File metadataFile,
-            int version,
-            @NonNull List<T> entries,
-            int startIndex,
-            int entryCountToSave) {
+            File metadataFile, int version, List<T> entries, int startIndex, int entryCountToSave) {
         synchronized (SAVE_LIST_LOCK) {
             AtomicFile file = new AtomicFile(metadataFile);
             FileOutputStream output = null;
@@ -163,6 +182,8 @@ public class AuxiliarySearchProvider {
                         } else {
                             if (type == AuxiliarySearchEntryType.CUSTOM_TAB) {
                                 stream.writeUTF(dataEntry.appId);
+                            } else if (type == AuxiliarySearchEntryType.TOP_SITE) {
+                                stream.writeInt(dataEntry.score);
                             }
                             stream.writeInt(dataEntry.visitId);
                         }
@@ -186,8 +207,10 @@ public class AuxiliarySearchProvider {
      * @param stream The stream pointing to the tab donation metadata file to be parsed.
      * @param <T> The type of the entry data for donation.
      */
-    @Nullable
-    static <T> List<T> readSavedMetadataFile(@Nullable DataInputStream stream) throws IOException {
+    // Casts to generic type T are unchecked due to type erasure.
+    @SuppressWarnings("unchecked")
+    static <T> @Nullable List<T> readSavedMetadataFile(@Nullable DataInputStream stream)
+            throws IOException {
         if (stream == null) return null;
 
         final int version = stream.readInt();
@@ -210,11 +233,14 @@ public class AuxiliarySearchProvider {
                 int id = Tab.INVALID_TAB_ID;
                 String appId = null;
                 int visitId = Tab.INVALID_TAB_ID;
+                int score = -1;
                 if (type == AuxiliarySearchEntryType.TAB) {
                     id = stream.readInt();
                 } else {
                     if (type == AuxiliarySearchEntryType.CUSTOM_TAB) {
                         appId = stream.readUTF();
+                    } else if (type == AuxiliarySearchEntryType.TOP_SITE) {
+                        score = stream.readInt();
                     }
                     visitId = stream.readInt();
                 }
@@ -224,7 +250,14 @@ public class AuxiliarySearchProvider {
                 entry =
                         (T)
                                 new AuxiliarySearchDataEntry(
-                                        type, new GURL(url), title, timeStamp, id, appId, visitId);
+                                        type,
+                                        new GURL(url),
+                                        title,
+                                        timeStamp,
+                                        id,
+                                        appId,
+                                        visitId,
+                                        score);
             }
             if (entry != null) {
                 entryList.add(entry);
@@ -240,50 +273,34 @@ public class AuxiliarySearchProvider {
      * @return List of {@link Tab} which is accessed after 'minAccessTime'.
      */
     @VisibleForTesting
-    @NonNull
     List<Tab> getTabsByMinimalAccessTime(long minAccessTime) {
+        if (mTabModelSelector == null) return Collections.emptyList();
+
         TabList allTabs = mTabModelSelector.getModel(false).getComprehensiveModel();
         List<Tab> recentAccessedTabs = new ArrayList<>();
 
-        for (int i = 0; i < allTabs.getCount(); i++) {
-            Tab tab = allTabs.getTabAt(i);
+        for (Tab tab : allTabs) {
             if (tab.getTimestampMillis() >= minAccessTime) {
-                recentAccessedTabs.add(allTabs.getTabAt(i));
+                recentAccessedTabs.add(tab);
             }
         }
 
         return recentAccessedTabs;
     }
 
-    /** Returns the donated tab's max age in MS. */
-    @VisibleForTesting
-    long getTabsMaxAgeMs() {
-        int configuredTabMaxAgeHrs =
-                ChromeFeatureList.getFieldTrialParamByFeatureAsInt(
-                        ChromeFeatureList.ANDROID_APP_INTEGRATION, TAB_AGE_HOURS_PARAM, 0);
-        if (configuredTabMaxAgeHrs == 0) configuredTabMaxAgeHrs = DEFAULT_TAB_AGE_HOURS;
-        return TimeUnit.HOURS.toMillis(configuredTabMaxAgeHrs);
-    }
-
     /**
      * Schedule a {@link AuxiliarySearchBackgroundTask} for donating more favicons.
      *
-     * @param windowStartTimeMs The delay to schedule a background task.
      * @param startTimeMs The start time when the task is created but not scheduled.
      */
     @VisibleForTesting
-    TaskInfo scheduleBackgroundTask(long windowStartTimeMs, long startTimeMs) {
-        assert ChromeFeatureList.sAndroidAppIntegrationWithFavicon.isEnabled();
-
+    TaskInfo scheduleBackgroundTask(long startTimeMs) {
         PersistableBundle bundle = new PersistableBundle();
         bundle.putLong(TASK_CREATED_TIME, startTimeMs);
 
         BackgroundTaskScheduler scheduler = BackgroundTaskSchedulerFactory.getScheduler();
         TaskInfo.TimingInfo oneOffTimingInfo =
-                TaskInfo.OneOffInfo.create()
-                        .setWindowStartTimeMs(windowStartTimeMs)
-                        .setWindowEndTimeMs(DEFAULT_WINDOW_END_TIME_MS)
-                        .build();
+                TaskInfo.OneOffInfo.create().setWindowEndTimeMs(DEFAULT_WINDOW_END_TIME_MS).build();
 
         TaskInfo.Builder builder =
                 TaskInfo.createTask(TaskIds.AUXILIARY_SEARCH_DONATE_JOB_ID, oneOffTimingInfo);
@@ -295,5 +312,9 @@ public class AuxiliarySearchProvider {
         TaskInfo taskInfo = builder.build();
         scheduler.schedule(mContext, taskInfo);
         return taskInfo;
+    }
+
+    public boolean isAuxiliarySearchBridgeNullForTesting() {
+        return mAuxiliarySearchBridge == null;
     }
 }

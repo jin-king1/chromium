@@ -4,12 +4,23 @@
 
 #include "components/autofill/core/browser/metrics/payments/credit_card_save_metrics.h"
 
+#include <string>
+#include <string_view>
+
+#include "base/check.h"
+#include "base/check_op.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/metrics/user_metrics.h"
+#include "base/metrics/user_metrics_action.h"
 #include "base/strings/strcat.h"
+#include "base/time/time.h"
+#include "components/autofill/core/browser/metrics/autofill_metrics.h"
 #include "components/autofill/core/browser/payments/payments_autofill_client.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
+#include "services/metrics/public/cpp/ukm_recorder.h"
+#include "services/metrics/public/cpp/ukm_source_id.h"
+#include "url/gurl.h"
 
 namespace autofill::autofill_metrics {
 
@@ -39,7 +50,7 @@ void LogCardUploadDecisionsUkm(ukm::UkmRecorder* ukm_recorder,
 void LogCardUploadEnabledMetric(
     CardUploadEnabled metric_value,
     AutofillMetrics::PaymentsSigninState sync_state) {
-  const std::string parent_metric = std::string("Autofill.CardUploadEnabled");
+  const std::string parent_metric = std::string("Autofill.CardUploadEnabled2");
   base::UmaHistogramEnumeration(parent_metric, metric_value);
 
   const std::string child_metric =
@@ -47,8 +58,11 @@ void LogCardUploadEnabledMetric(
   base::UmaHistogramEnumeration(child_metric, metric_value);
 }
 
-void LogCreditCardSaveNotOfferedDueToMaxStrikesMetric(
+void LogCreditCardSaveNotOfferedDueToStrikeDatabaseMetric(
     AutofillMetrics::SaveTypeMetric metric) {
+  // Unfortunate outdated naming: As of April 2026, this histogram implies card
+  // save was not offered due to the strike database decision, not *necessarily*
+  // because of max strikes.
   UMA_HISTOGRAM_ENUMERATION(
       "Autofill.StrikeDatabase.CreditCardSaveNotOfferedDueToMaxStrikes",
       metric);
@@ -59,12 +73,16 @@ void LogCreditCardUploadLegalMessageLinkClicked() {
       "Autofill_CreditCardUpload_LegalMessageLinkClicked"));
 }
 
-void LogSaveCardCardholderNamePrefilled(bool prefilled) {
-  UMA_HISTOGRAM_BOOLEAN("Autofill.SaveCardCardholderNamePrefilled", prefilled);
-}
-
 void LogSaveCardCardholderNameWasEdited(bool edited) {
   UMA_HISTOGRAM_BOOLEAN("Autofill.SaveCardCardholderNameWasEdited", edited);
+}
+
+void LogSaveCreditCardPromptOfferMetric(SaveCardPromptOffer metric,
+                                        bool is_upload_save) {
+  std::string_view destination = is_upload_save ? ".Server" : ".Local";
+  base::UmaHistogramEnumeration(
+      base::StrCat({"Autofill.SaveCreditCardPromptOffer", destination}),
+      metric);
 }
 
 void LogSaveCardPromptOfferMetric(
@@ -111,14 +129,22 @@ void LogSaveCardPromptOfferMetric(
   }
 }
 
+void LogSaveCreditCardPromptResultMetric(SaveCardPromptResult metric,
+                                         bool is_upload_save) {
+  std::string_view destination = is_upload_save ? ".Server" : ".Local";
+  base::UmaHistogramEnumeration(
+      base::StrCat({"Autofill.SaveCreditCardPromptResult", destination}),
+      metric);
+}
+
 void LogSaveCardPromptResultMetric(
-    SaveCardPromptResult metric,
+    LegacySaveCardPromptResult metric,
     bool is_uploading,
     bool is_reshow,
     payments::PaymentsAutofillClient::SaveCreditCardOptions options,
     AutofillMetrics::PaymentsSigninState sync_state,
     bool has_saved_cards) {
-  DCHECK_LE(metric, SaveCardPromptResult::kMaxValue);
+  DCHECK_LE(metric, LegacySaveCardPromptResult::kMaxValue);
   std::string base_histogram_name = "Autofill.SaveCreditCardPromptResult";
   std::string destination = is_uploading ? ".Upload" : ".Local";
   std::string show = is_reshow ? ".Reshows" : ".FirstShow";
@@ -177,10 +203,10 @@ void LogSaveCvcPromptOfferMetric(SaveCardPromptOffer metric,
       base::StrCat({base_histogram_name, destination, show}), metric);
 }
 
-void LogSaveCvcPromptResultMetric(SaveCardPromptResult metric,
+void LogSaveCvcPromptResultMetric(LegacySaveCardPromptResult metric,
                                   bool is_uploading,
                                   bool is_reshow) {
-  DCHECK_LE(metric, SaveCardPromptResult::kMaxValue);
+  DCHECK_LE(metric, LegacySaveCardPromptResult::kMaxValue);
   std::string_view base_histogram_name = "Autofill.SaveCvcPromptResult";
   std::string_view destination = is_uploading ? ".Upload" : ".Local";
   std::string_view show = is_reshow ? ".Reshows" : ".FirstShow";
@@ -225,17 +251,18 @@ void LogCreditCardUploadConfirmationViewShownMetric(bool is_shown,
       base::StrCat({base_histogram_name, is_card_uploaded_name}), is_shown);
 }
 
-void LogCreditCardUploadLoadingViewResultMetric(SaveCardPromptResult metric) {
-  CHECK_LE(metric, SaveCardPromptResult::kMaxValue);
+void LogCreditCardUploadLoadingViewResultMetric(
+    LegacySaveCardPromptResult metric) {
+  CHECK_LE(metric, LegacySaveCardPromptResult::kMaxValue);
 
   base::UmaHistogramEnumeration("Autofill.CreditCardUpload.LoadingResult",
                                 metric);
 }
 
 void LogCreditCardUploadConfirmationViewResultMetric(
-    SaveCardPromptResult metric,
+    LegacySaveCardPromptResult metric,
     bool is_card_uploaded) {
-  CHECK_LE(metric, SaveCardPromptResult::kMaxValue);
+  CHECK_LE(metric, LegacySaveCardPromptResult::kMaxValue);
 
   std::string_view base_histogram_name =
       "Autofill.CreditCardUpload.ConfirmationResult.";

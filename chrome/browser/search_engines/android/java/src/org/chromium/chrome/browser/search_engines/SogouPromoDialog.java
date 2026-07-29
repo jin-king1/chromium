@@ -6,6 +6,7 @@ package org.chromium.chrome.browser.search_engines;
 
 import android.app.Activity;
 import android.content.DialogInterface;
+import android.graphics.Typeface;
 import android.os.Bundle;
 import android.text.SpannableString;
 import android.text.method.LinkMovementMethod;
@@ -15,14 +16,15 @@ import android.view.View;
 import android.widget.TextView;
 
 import androidx.annotation.IntDef;
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 
 import org.chromium.base.Callback;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.search_engines.settings.SearchEngineSettings;
 import org.chromium.chrome.browser.settings.SettingsNavigationFactory;
+import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeUtils;
 import org.chromium.components.browser_ui.widget.PromoDialog;
 import org.chromium.ui.text.ChromeClickableSpan;
 import org.chromium.ui.text.SpanApplier;
@@ -32,6 +34,7 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 
 /** A promotion dialog showing that the default search provider will be set to Sogou. */
+@NullMarked
 public class SogouPromoDialog extends PromoDialog {
     @IntDef({
         UserChoice.USE_SOGOU,
@@ -48,7 +51,7 @@ public class SogouPromoDialog extends PromoDialog {
     }
 
     /** Run when the dialog is dismissed. */
-    private final Callback<Boolean> mOnDismissedCallback;
+    private final @Nullable Callback<Boolean> mOnDismissedCallback;
 
     /** Called when the search engine to use is selected. */
     private final Callback<Boolean> mOnSelectEngineCallback;
@@ -60,9 +63,9 @@ public class SogouPromoDialog extends PromoDialog {
     /** Creates an instance of the dialog. */
     public SogouPromoDialog(
             Activity activity,
-            @NonNull Callback<Boolean> onSelectEngine,
+            Callback<Boolean> onSelectEngine,
             @Nullable Callback<Boolean> onDismissed) {
-        super(activity);
+        super(activity, EdgeToEdgeUtils.isEdgeToEdgeEverywhereEnabled());
         mSpan =
                 new ChromeClickableSpan(
                         activity,
@@ -90,7 +93,7 @@ public class SogouPromoDialog extends PromoDialog {
     }
 
     @Override
-    protected void onCreate(Bundle savedInstanceState) {
+    protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
         // Do not allow this dialog to be reconstructed because it requires native side loaded.
@@ -99,8 +102,8 @@ public class SogouPromoDialog extends PromoDialog {
             return;
         }
 
-        StyleSpan boldSpan = new StyleSpan(android.graphics.Typeface.BOLD);
-        TextView textView = (TextView) findViewById(R.id.subheader);
+        StyleSpan boldSpan = new StyleSpan(Typeface.BOLD);
+        TextView textView = findViewById(R.id.subheader);
         SpannableString description =
                 SpanApplier.applySpans(
                         getContext().getString(R.string.sogou_explanation),

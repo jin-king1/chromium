@@ -16,27 +16,27 @@ import android.os.Handler;
 
 import org.junit.Assert;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.Mockito;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
-import org.robolectric.annotation.LooperMode;
 
-import org.chromium.base.Callback;
 import org.chromium.base.CallbackUtils;
 import org.chromium.base.UserDataHost;
-import org.chromium.base.supplier.ObservableSupplierImpl;
+import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.OneshotSupplierImpl;
+import org.chromium.base.supplier.SettableNonNullObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.RobolectricUtil;
 import org.chromium.base.test.util.CallbackHelper;
-import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.ActivityTabProvider;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsUtils;
 import org.chromium.chrome.browser.browser_controls.BrowserStateBrowserControlsVisibilityDelegate;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.fullscreen.BrowserControlsManager;
 import org.chromium.chrome.browser.layouts.LayoutStateProvider;
 import org.chromium.chrome.browser.layouts.LayoutStateProvider.LayoutStateObserver;
@@ -57,10 +57,10 @@ import java.util.concurrent.TimeoutException;
 /** Unit tests for {@link ChromeMessageQueueMediator}. */
 @RunWith(BaseRobolectricTestRunner.class)
 @Config(manifest = Config.NONE)
-@LooperMode(LooperMode.Mode.LEGACY)
 public class ChromeMessageQueueMediatorTest {
     private static final int EXPECTED_TOKEN = 42;
 
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock private BrowserControlsManager mBrowserControlsManager;
 
     @Mock private MessageContainerCoordinator mMessageContainerCoordinator;
@@ -71,8 +71,6 @@ public class ChromeMessageQueueMediatorTest {
 
     @Mock private ModalDialogManager mModalDialogManager;
 
-    @Mock private ActivityTabProvider mActivityTabProvider;
-
     @Mock private Tab mTab;
 
     @Mock private ActivityLifecycleDispatcher mActivityLifecycleDispatcher;
@@ -82,18 +80,18 @@ public class ChromeMessageQueueMediatorTest {
     @Mock private Handler mQueueHandler;
 
     private ChromeMessageQueueMediator mMediator;
+    private final ActivityTabProvider mActivityTabProvider = new ActivityTabProvider();
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
         when(mMessageDispatcher.suspend()).thenReturn(EXPECTED_TOKEN);
     }
 
     private void initMediator() {
         OneshotSupplierImpl<LayoutStateProvider> layoutStateProviderOneShotSupplier =
                 new OneshotSupplierImpl<>();
-        ObservableSupplierImpl<ModalDialogManager> modalDialogManagerSupplier =
-                new ObservableSupplierImpl<>();
+        SettableNonNullObservableSupplier<ModalDialogManager> modalDialogManagerSupplier =
+                ObservableSuppliers.createNonNull(mModalDialogManager);
         mMediator =
                 new ChromeMessageQueueMediator(
                         mBrowserControlsManager,
@@ -107,6 +105,7 @@ public class ChromeMessageQueueMediatorTest {
         layoutStateProviderOneShotSupplier.set(mLayoutStateProvider);
         modalDialogManagerSupplier.set(mModalDialogManager);
         mMediator.setQueueHandlerForTesting(mQueueHandler);
+        RobolectricUtil.runAllBackgroundAndUi();
     }
 
     /** Test the queue can be suspended and resumed correctly when toggling layout state change. */
@@ -116,7 +115,7 @@ public class ChromeMessageQueueMediatorTest {
                 ArgumentCaptor.forClass(LayoutStateObserver.class);
         doNothing().when(mLayoutStateProvider).addObserver(observer.capture());
         initMediator();
-        observer.getValue().onStartedShowing(LayoutType.TAB_SWITCHER);
+        observer.getValue().onStartedShowing(LayoutType.HUB);
         verify(mMessageDispatcher).suspend();
         observer.getValue().onFinishedShowing(LayoutType.BROWSING);
         verify(mMessageDispatcher).resume(EXPECTED_TOKEN);
@@ -150,13 +149,12 @@ public class ChromeMessageQueueMediatorTest {
 
     /** Test the runnable by #onStartShow is reset correctly. */
     @Test
-    @EnableFeatures({ChromeFeatureList.SUPPRESS_TOOLBAR_CAPTURES})
     public void testResetOnStartShowRunnable() {
         when(mBrowserControlsManager.getBrowserControlHiddenRatio()).thenReturn(0.5f);
         OneshotSupplierImpl<LayoutStateProvider> layoutStateProviderOneShotSupplier =
                 new OneshotSupplierImpl<>();
-        ObservableSupplierImpl<ModalDialogManager> modalDialogManagerSupplier =
-                new ObservableSupplierImpl<>();
+        SettableNonNullObservableSupplier<ModalDialogManager> modalDialogManagerSupplier =
+                ObservableSuppliers.createNonNull(mModalDialogManager);
         final ArgumentCaptor<ChromeMessageQueueMediator.BrowserControlsObserver>
                 observerArgumentCaptor =
                         ArgumentCaptor.forClass(
@@ -165,7 +163,7 @@ public class ChromeMessageQueueMediatorTest {
         when(mBrowserControlsManager.getBrowserVisibilityDelegate())
                 .thenReturn(
                         new BrowserStateBrowserControlsVisibilityDelegate(
-                                new ObservableSupplierImpl<>(false)));
+                                ObservableSuppliers.createNonNull(false)));
         mMediator =
                 new ChromeMessageQueueMediator(
                         mBrowserControlsManager,
@@ -194,15 +192,14 @@ public class ChromeMessageQueueMediatorTest {
 
     /** Test whether #IsReadyForShowing returns correct value. */
     @Test
-    @EnableFeatures({ChromeFeatureList.SUPPRESS_TOOLBAR_CAPTURES})
     public void testIsReadyForShowing() {
         final ArgumentCaptor<ChromeMessageQueueMediator.BrowserControlsObserver>
                 observerArgumentCaptor =
                         ArgumentCaptor.forClass(
                                 ChromeMessageQueueMediator.BrowserControlsObserver.class);
         doNothing().when(mBrowserControlsManager).addObserver(observerArgumentCaptor.capture());
-        var visibilitySupplier = new ObservableSupplierImpl<Boolean>();
-        visibilitySupplier.set(false);
+        SettableNonNullObservableSupplier<Boolean> visibilitySupplier =
+                ObservableSuppliers.createNonNull(false);
         var visibilityDelegate =
                 new BrowserStateBrowserControlsVisibilityDelegate(visibilitySupplier);
         when(mBrowserControlsManager.getBrowserVisibilityDelegate()).thenReturn(visibilityDelegate);
@@ -211,7 +208,7 @@ public class ChromeMessageQueueMediatorTest {
         visibilitySupplier.set(true);
         when(mBrowserControlsManager.getBrowserControlHiddenRatio()).thenReturn(0f);
 
-        when(mActivityTabProvider.get()).thenReturn(mTab);
+        mActivityTabProvider.setForTesting(mTab);
         when(mTab.isDestroyed()).thenReturn(false);
         // Mock TabBrowserControlsConstraintsHelper to avoid NPE.
         when(mTab.getUserDataHost()).thenReturn(new UserDataHost());
@@ -223,15 +220,43 @@ public class ChromeMessageQueueMediatorTest {
         Assert.assertFalse(mMediator.isReadyForShowing());
     }
 
+    @Test
+    public void testIsReadyForShowing_ZeroTopControlsHeight() {
+        final ArgumentCaptor<ChromeMessageQueueMediator.BrowserControlsObserver>
+                observerArgumentCaptor =
+                        ArgumentCaptor.forClass(
+                                ChromeMessageQueueMediator.BrowserControlsObserver.class);
+        doNothing().when(mBrowserControlsManager).addObserver(observerArgumentCaptor.capture());
+        SettableNonNullObservableSupplier<Boolean> visibilitySupplier =
+                ObservableSuppliers.createNonNull(false);
+        var visibilityDelegate =
+                new BrowserStateBrowserControlsVisibilityDelegate(visibilitySupplier);
+        when(mBrowserControlsManager.getBrowserVisibilityDelegate()).thenReturn(visibilityDelegate);
+        initMediator();
+        Assert.assertFalse(mMediator.isReadyForShowing());
+        visibilitySupplier.set(true);
+        when(mBrowserControlsManager.getBrowserControlHiddenRatio()).thenReturn(0f);
+        when(mBrowserControlsManager.getTopControlsHeight()).thenReturn(0);
+        when(mBrowserControlsManager.getTopControlHiddenRatio()).thenReturn(1.0f);
+
+        mActivityTabProvider.setForTesting(mTab);
+        when(mTab.isDestroyed()).thenReturn(false);
+        when(mTab.getUserDataHost()).thenReturn(new UserDataHost());
+
+        mMediator.onRequestShowing(CallbackUtils.emptyRunnable());
+        Assert.assertTrue(mMediator.isReadyForShowing());
+
+        mMediator.onFinishHiding();
+        Assert.assertFalse(mMediator.isReadyForShowing());
+    }
+
     /**
      * Test multiple show requests can be made when tab browser controls state changes while browser
-     * controls is not fully visible.
-     * 1. Initially, tab constraints state is hidden but browser controls is not fully visible yet.
-     * 2. A message is allowed to be displayed.
-     * 3. Tab constraints is assumed to change from the hidden state while the first message is on
-     * the screen.
-     * 4. If a second message is enqueued but browser controls is still not ready, it will trigger
-     * #onRequestShowing again.
+     * controls is not fully visible. 1. Initially, tab constraints state is hidden but browser
+     * controls is not fully visible yet. 2. A message is allowed to be displayed. 3. Tab
+     * constraints is assumed to change from the hidden state while the first message is on the
+     * screen. 4. If a second message is enqueued but browser controls is still not ready, it will
+     * trigger #onRequestShowing again.
      */
     @Test
     public void testRequestMultipleTimesWhenTabConstraintsChanges() throws TimeoutException {
@@ -240,8 +265,8 @@ public class ChromeMessageQueueMediatorTest {
                         ArgumentCaptor.forClass(
                                 ChromeMessageQueueMediator.BrowserControlsObserver.class);
         doNothing().when(mBrowserControlsManager).addObserver(observerArgumentCaptor.capture());
-        var visibilitySupplier = new ObservableSupplierImpl<Boolean>();
-        visibilitySupplier.set(false);
+        SettableNonNullObservableSupplier<Boolean> visibilitySupplier =
+                ObservableSuppliers.createNonNull(false);
 
         // Simulate the browser controls to not be fully visible.
         when(mBrowserControlsManager.getBrowserControlHiddenRatio()).thenReturn(0.5f);
@@ -278,8 +303,8 @@ public class ChromeMessageQueueMediatorTest {
     public void testThrowNothingWhenModalDialogManagerIsNull() {
         OneshotSupplierImpl<LayoutStateProvider> layoutStateProviderOneShotSupplier =
                 new OneshotSupplierImpl<>();
-        ObservableSupplierImpl<ModalDialogManager> modalDialogManagerSupplier =
-                new ObservableSupplierImpl<>();
+        SettableNonNullObservableSupplier<ModalDialogManager> modalDialogManagerSupplier =
+                ObservableSuppliers.createNonNull(mModalDialogManager);
         mMediator =
                 new ChromeMessageQueueMediator(
                         mBrowserControlsManager,
@@ -293,7 +318,6 @@ public class ChromeMessageQueueMediatorTest {
         layoutStateProviderOneShotSupplier.set(mLayoutStateProvider);
         // To offer a null value, we have to offer a value other than null first.
         modalDialogManagerSupplier.set(mModalDialogManager);
-        modalDialogManagerSupplier.set(null);
     }
 
     /** Test NPE is not thrown after destroy. */
@@ -301,8 +325,8 @@ public class ChromeMessageQueueMediatorTest {
     public void testThrowNothingAfterDestroy() {
         OneshotSupplierImpl<LayoutStateProvider> layoutStateProviderOneShotSupplier =
                 new OneshotSupplierImpl<>();
-        ObservableSupplierImpl<ModalDialogManager> modalDialogManagerSupplier =
-                new ObservableSupplierImpl<>();
+        SettableNonNullObservableSupplier<ModalDialogManager> modalDialogManagerSupplier =
+                ObservableSuppliers.createNonNull(mModalDialogManager);
         mMediator =
                 new ChromeMessageQueueMediator(
                         mBrowserControlsManager,
@@ -361,13 +385,12 @@ public class ChromeMessageQueueMediatorTest {
     /** Test the queue can be suspended and resumed correctly when tab is un/available. */
     @Test
     public void testNoValidTab() {
-        ArgumentCaptor<Callback<Tab>> captor = ArgumentCaptor.forClass(Callback.class);
+        mActivityTabProvider.setForTesting(mTab);
         initMediator();
-        verify(mActivityTabProvider).addObserver(captor.capture());
-        captor.getValue().onResult(null);
+        mActivityTabProvider.setForTesting(null);
         verify(mMessageDispatcher).suspend();
 
-        captor.getValue().onResult(mTab);
+        mActivityTabProvider.setForTesting(mTab);
         verify(mMessageDispatcher).resume(EXPECTED_TOKEN);
     }
 
@@ -375,7 +398,7 @@ public class ChromeMessageQueueMediatorTest {
     @Test
     public void testTabDestroyed() {
         initMediator();
-        when(mActivityTabProvider.get()).thenReturn(mTab);
+        mActivityTabProvider.setForTesting(mTab);
         when(mTab.isDestroyed()).thenReturn(true);
 
         // Expect no error.

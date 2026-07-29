@@ -143,7 +143,6 @@ enum ScrollInertialPhase {
 
 enum ScrollbarOrientation { kHorizontalScrollbar, kVerticalScrollbar };
 
-enum ScrollOrientation { kHorizontalScroll, kVerticalScroll };
 
 typedef unsigned ScrollbarControlState;
 
@@ -170,19 +169,19 @@ enum ScrollbarPart {
 // The result of an attempt to scroll. If didScroll is true, then
 // unusedScrollDelta gives the amount of the scroll delta that was not consumed
 // by scrolling.
-struct ScrollResult {
+struct ScrollConsumption {
   STACK_ALLOCATED();
 
  public:
-  explicit ScrollResult()
+  explicit ScrollConsumption()
       : did_scroll_x(false),
         did_scroll_y(false),
         unused_scroll_delta_x(0),
         unused_scroll_delta_y(0) {}
-  ScrollResult(bool did_scroll_x,
-               bool did_scroll_y,
-               float unused_scroll_delta_x,
-               float unused_scroll_delta_y)
+  ScrollConsumption(bool did_scroll_x,
+                    bool did_scroll_y,
+                    float unused_scroll_delta_x,
+                    float unused_scroll_delta_y)
       : did_scroll_x(did_scroll_x),
         did_scroll_y(did_scroll_y),
         unused_scroll_delta_x(unused_scroll_delta_x),
@@ -217,9 +216,7 @@ inline ScrollOffset ToScrollDelta(ScrollDirectionPhysical dir, float delta) {
 // physical pixels.
 inline gfx::Vector2d SnapScrollOffsetToPhysicalPixels(
     const gfx::Vector2dF& offset) {
-  // TODO(crbug.com/352722599): Investigate whether this should be rounded
-  // instead of floored.
-  return gfx::ToFlooredVector2d(offset);
+  return gfx::ToRoundedVector2d(offset);
 }
 
 }  // namespace blink

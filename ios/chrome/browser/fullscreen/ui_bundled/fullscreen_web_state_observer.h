@@ -6,21 +6,23 @@
 #define IOS_CHROME_BROWSER_FULLSCREEN_UI_BUNDLED_FULLSCREEN_WEB_STATE_OBSERVER_H_
 
 #import "base/memory/raw_ptr.h"
+#import "ios/chrome/browser/web/model/web_view_proxy/web_view_proxy_tab_helper.h"
 #include "ios/web/public/web_state_observer.h"
 #include "url/gurl.h"
 
 class FullscreenController;
-class FullscreenMediator;
+class LegacyFullscreenMediator;
 class FullscreenModel;
 @class FullscreenWebViewProxyObserver;
 
 // A WebStateObserver that updates a FullscreenModel for navigation events.
-class FullscreenWebStateObserver : public web::WebStateObserver {
+class FullscreenWebStateObserver : public web::WebStateObserver,
+                                   public WebViewProxyTabHelper::Observer {
  public:
   // Constructor for an observer that updates `controller` and `model`.
   FullscreenWebStateObserver(FullscreenController* controller,
                              FullscreenModel* model,
-                             FullscreenMediator* mediator);
+                             LegacyFullscreenMediator* mediator);
   ~FullscreenWebStateObserver() override;
 
   // Tells the observer to start observing `web_state`.
@@ -34,6 +36,11 @@ class FullscreenWebStateObserver : public web::WebStateObserver {
   void DidStartLoading(web::WebState* web_state) override;
   void WebStateDestroyed(web::WebState* web_state) override;
 
+  // WebViewProxyTabHelper::Observer:
+  void WebViewProxyChanged(WebViewProxyTabHelper* tab_helper) override;
+  void WebViewProxyTabHelperDestroyed(
+      WebViewProxyTabHelper* tab_helper) override;
+
   // The WebState being observed.
   raw_ptr<web::WebState> web_state_ = nullptr;
   // The FullscreenController passed on construction.
@@ -41,7 +48,7 @@ class FullscreenWebStateObserver : public web::WebStateObserver {
   // The model passed on construction.
   raw_ptr<FullscreenModel> model_ = nullptr;
   // The mediator passed on construction.
-  raw_ptr<FullscreenMediator> mediator_ = nullptr;
+  raw_ptr<LegacyFullscreenMediator> mediator_ = nullptr;
   // Observer for `web_state_`'s scroll view proxy.
   __strong FullscreenWebViewProxyObserver* web_view_proxy_observer_;
   // The URL received in the NavigationContext of the last finished navigation.

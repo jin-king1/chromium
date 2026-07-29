@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "chrome/test/chromedriver/chrome/heap_snapshot_taker.h"
 
@@ -42,7 +38,7 @@ class DummyDevToolsClient : public StubDevToolsClient {
   bool IsDisabled() { return disabled_; }
 
   Status SendAddHeapSnapshotChunkEvent() {
-    base::Value::Dict event_params;
+    base::DictValue event_params;
     event_params.Set("uid", uid_);
     for (size_t i = 0; i < std::size(chunks); ++i) {
       event_params.Set("chunk", chunks[i]);
@@ -56,7 +52,7 @@ class DummyDevToolsClient : public StubDevToolsClient {
 
   // Overridden from DevToolsClient:
   Status SendCommand(const std::string& method,
-                     const base::Value::Dict& params) override {
+                     const base::DictValue& params) override {
     if (!disabled_)
       disabled_ = method == "Debugger.disable";
     if (method == method_ && !error_after_events_)
@@ -121,4 +117,3 @@ TEST(HeapSnapshotTaker, ErrorBeforeWhenReceivingSnapshot) {
   ASSERT_FALSE(snapshot.get());
   ASSERT_TRUE(client.IsDisabled());
 }
-

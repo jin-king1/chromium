@@ -5,14 +5,17 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/common/extensions/manifest_tests/chrome_manifest_test.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/error_utils.h"
 #include "extensions/common/manifest_constants.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
-using extensions::ErrorUtils;
-using extensions::Extension;
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
-namespace errors = extensions::manifest_errors;
+namespace extensions {
+namespace {
+
+namespace errors = manifest_errors;
 
 TEST_F(ChromeManifestTest, AppWebUrls) {
   const Testcase testcases[] = {
@@ -38,7 +41,7 @@ TEST_F(ChromeManifestTest, AppWebUrls) {
                ErrorUtils::FormatErrorMessage(
                    errors::kInvalidWebURL, base::NumberToString(1),
                    errors::kCannotClaimAllHostsInExtent))};
-  RunTestcases(testcases, EXPECT_TYPE_ERROR);
+  RunTestcases(testcases, ExpectType::kError);
 
   LoadAndExpectSuccess("web_urls_has_port.json");
 
@@ -48,3 +51,6 @@ TEST_F(ChromeManifestTest, AppWebUrls) {
   EXPECT_EQ("*://www.google.com/*",
             extension->web_extent().patterns().begin()->GetAsString());
 }
+
+}  // namespace
+}  // namespace extensions

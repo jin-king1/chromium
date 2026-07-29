@@ -5,29 +5,26 @@
 package org.chromium.android_webview.safe_browsing;
 
 import androidx.annotation.IntDef;
-import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.NativeMethods;
 
+import org.chromium.android_webview.DualTraceEvent;
 import org.chromium.android_webview.ManifestMetadataUtil;
 import org.chromium.android_webview.common.AwSwitches;
 import org.chromium.android_webview.common.PlatformServiceBridge;
 import org.chromium.base.Callback;
 import org.chromium.base.CommandLine;
+import org.chromium.base.ThreadUtils;
 import org.chromium.base.metrics.RecordHistogram;
-import org.chromium.base.metrics.ScopedSysTraceEvent;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 
 /** Helper class for getting the configuration settings related to safebrowsing in WebView. */
 @JNINamespace("android_webview")
+@NullMarked
 public class AwSafeBrowsingConfigHelper {
-    // This does not track the user opt-in. This value tracks whether or not the user opt-in
-    // callback has returned. Until the callback has returned, the user opt-in state is unknown.
-    private static volatile boolean sUserOptInCallbackReturned;
-    // Indicates whether or not we have already invoked getSafeBrowsingUserOptIn().
-    private static volatile boolean sHasCalledGetSafeBrowsingUserOptIn;
-    // Tracks user opt-in state.
-    private static volatile boolean sSafeBrowsingUserOptIn;
     // Tracks developer opt-in state, as expressed via the manifest tag. Note that developers can
     // also invoke WebSettings.setSafeBrowsingEnabled() which overrides the manifest tag, however
     // that state is tracked in AwSettings.
@@ -60,8 +57,8 @@ public class AwSafeBrowsingConfigHelper {
 
     // Should only be called once during startup. Calling this multiple times will skew UMA metrics.
     public static void maybeEnableSafeBrowsingFromManifest() {
-        try (ScopedSysTraceEvent e =
-                ScopedSysTraceEvent.scoped(
+        try (DualTraceEvent e =
+                DualTraceEvent.scoped(
                         "AwSafeBrowsingConfigHelper.maybeEnableSafeBrowsingFromManifest")) {
             Boolean appOptIn = getOptInPreferenceTraced();
             if (appOptIn == null) {
@@ -76,42 +73,38 @@ public class AwSafeBrowsingConfigHelper {
             // the existence of the CLI switch.
             setSafeBrowsingEnabledByManifest(
                     appOptIn == null ? !isDisabledByCommandLine() : appOptIn);
-
-            Callback<Boolean> cb =
-                    verifyAppsValue ->
-                            setSafeBrowsingUserOptIn(Boolean.TRUE.equals(verifyAppsValue));
-            PlatformServiceBridge.getInstance().querySafeBrowsingUserConsent(cb);
         }
     }
 
+    public static void maybeEnableSafeBrowsingFromGms() {
+        Callback<@Nullable Boolean> cb =
+                verifyAppsValue -> {
+                    if (verifyAppsValue != null) {
+                        ThreadUtils.postOnUiThread(
+                                () -> {
+                                    AwSafeBrowsingConfigHelperJni.get()
+                                            .setSafeBrowsingUserOptIn(verifyAppsValue);
+                                });
+                    }
+                };
+        PlatformServiceBridge.getInstance().querySafeBrowsingUserConsent(cb);
+    }
+
+    @Nullable
     private static Boolean getOptInPreferenceTraced() {
-        try (ScopedSysTraceEvent e =
-                ScopedSysTraceEvent.scoped("AwSafeBrowsingConfigHelper.getAppOptInPreference")) {
+        try (DualTraceEvent e =
+                DualTraceEvent.scoped("AwSafeBrowsingConfigHelper.getAppOptInPreference")) {
             return ManifestMetadataUtil.getSafeBrowsingAppOptInPreference();
         }
     }
 
     private static boolean isDisabledByCommandLine() {
-        try (ScopedSysTraceEvent e =
-                ScopedSysTraceEvent.scoped("AwSafeBrowsingConfigHelper.isDisabledByCommandLine")) {
+        try (DualTraceEvent e =
+                DualTraceEvent.scoped("AwSafeBrowsingConfigHelper.isDisabledByCommandLine")) {
             CommandLine cli = CommandLine.getInstance();
             // Disable flag has higher precedence than the default
             return cli.hasSwitch(AwSwitches.WEBVIEW_DISABLE_SAFEBROWSING_SUPPORT);
         }
-    }
-
-    // Can be called from any thread. This returns true or false, depending on user opt-in
-    // preference. This returns false if we don't know yet what the user's preference is.
-    @CalledByNative
-    private static boolean getSafeBrowsingUserOptIn() {
-        if (!sHasCalledGetSafeBrowsingUserOptIn) {
-            sHasCalledGetSafeBrowsingUserOptIn = true;
-            RecordHistogram.recordBooleanHistogram(
-                    "SafeBrowsing.WebView.UserOptInKnown.FirstLoad", sUserOptInCallbackReturned);
-        }
-        RecordHistogram.recordBooleanHistogram(
-                "SafeBrowsing.WebView.UserOptInKnown.EveryLoad", sUserOptInCallbackReturned);
-        return sSafeBrowsingUserOptIn;
     }
 
     // This feature checks if GMS is present, enabled, accessible to WebView and has minimum
@@ -121,10 +114,26 @@ public class AwSafeBrowsingConfigHelper {
         return PlatformServiceBridge.getInstance().canUseGms();
     }
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
-    public static void setSafeBrowsingUserOptIn(boolean optin) {
-        sUserOptInCallbackReturned = true;
-        sSafeBrowsingUserOptIn = optin;
+    public static void setSafeBrowsingUserOptInForTesting(boolean optIn) {
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    AwSafeBrowsingConfigHelperJni.get().setSafeBrowsingUserOptIn(optIn);
+                });
+    }
+
+    public static boolean getSafeBrowsingUserOptInForTesting() {
+        return ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    return AwSafeBrowsingConfigHelperJni.get()
+                            .getSafeBrowsingUserOptInForTesting(); // IN-TEST
+                });
+    }
+
+    @NativeMethods
+    interface Natives {
+        void setSafeBrowsingUserOptIn(boolean optin);
+
+        boolean getSafeBrowsingUserOptInForTesting(); // IN-TEST
     }
 
     // Not meant to be instantiated.

@@ -59,7 +59,8 @@ constexpr char kSearchResultsPanelEntryPointHistogramRootWord[] =
     "SearchResultsPanelEntryPoint";
 constexpr char kSearchResultsPanelShown[] = "SearchResultsPanelShown";
 constexpr char kSearchResultClickedRootWord[] = "SearchResultClicked";
-constexpr char kMultimodalSearchRequest[] = "MultimodalSearchRequest";
+constexpr char kImageSearchResultRootWord[] = "ImageSearchResult";
+constexpr char kTextDetectionResultRootWord[] = "TextDetectionResult";
 
 void RecordCaptureModeRecordingDurationInternal(
     const std::string& histogram_name,
@@ -95,8 +96,9 @@ std::string BuildHistogramNameInternal(const char* root_word,
   }
   histogram_name.append(root_word);
   if (append_ui_mode_suffix) {
-    histogram_name.append(Shell::Get()->IsInTabletMode() ? ".TabletMode"
-                                                         : ".ClamshellMode");
+    histogram_name.append(display::Screen::Get()->InTabletMode()
+                              ? ".TabletMode"
+                              : ".ClamshellMode");
   }
   return histogram_name;
 }
@@ -375,11 +377,21 @@ void RecordSearchResultClicked() {
                             true);
 }
 
-void RecordMultimodalSearchRequest() {
-  base::UmaHistogramBoolean(BuildHistogramName(kMultimodalSearchRequest,
-                                               /*behavior=*/nullptr,
-                                               /*append_ui_mode_suffix=*/true),
-                            true);
+void RecordCaptureModeImageSearchResult(CaptureModeImageSearchResult result) {
+  base::UmaHistogramEnumeration(
+      BuildHistogramName(kImageSearchResultRootWord,
+                         /*behavior=*/nullptr,
+                         /*append_ui_mode_suffix=*/true),
+      result);
+}
+
+void RecordCaptureModeTextDetectionResult(
+    CaptureModeTextDetectionResult result) {
+  base::UmaHistogramEnumeration(
+      BuildHistogramName(kTextDetectionResultRootWord,
+                         /*behavior=*/nullptr,
+                         /*append_ui_mode_suffix=*/true),
+      result);
 }
 
 std::string BuildHistogramName(const char* const root_word,

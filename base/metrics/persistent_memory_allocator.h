@@ -15,6 +15,7 @@
 #include "base/atomicops.h"
 #include "base/base_export.h"
 #include "base/check.h"
+#include "base/check_op.h"
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/files/file_path.h"
@@ -401,6 +402,7 @@ class BASE_EXPORT PersistentMemoryAllocator {
   size_t size() const { return mem_size_; }
   size_t page_size() const { return mem_page_; }
   size_t used() const;
+  span<const uint8_t> bytes() const;
 
   // Returns the object referenced by a `ref`. For safety reasons, the `type_id`
   // code and size-of(`T`) are compared to ensure the reference is valid
@@ -902,8 +904,6 @@ class BASE_EXPORT ReadOnlySharedPersistentMemoryAllocator
   base::ReadOnlySharedMemoryMapping shared_memory_;
 };
 
-// NACL doesn't support any kind of file access in build.
-#if !BUILDFLAG(IS_NACL)
 // This allocator takes a memory-mapped file object and performs allocation
 // from it. The allocator takes ownership of the file object.
 class BASE_EXPORT FilePersistentMemoryAllocator
@@ -945,7 +945,6 @@ class BASE_EXPORT FilePersistentMemoryAllocator
  private:
   std::unique_ptr<MemoryMappedFile> mapped_file_;
 };
-#endif  // !BUILDFLAG(IS_NACL)
 
 // An allocation that is defined but not executed until required at a later
 // time. This allows for potential users of an allocation to be decoupled

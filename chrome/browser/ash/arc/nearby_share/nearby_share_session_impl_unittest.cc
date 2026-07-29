@@ -11,11 +11,12 @@
 #include "base/containers/flat_map.h"
 #include "base/functional/bind.h"
 #include "base/memory/ptr_util.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/ash/app_list/arc/arc_app_test.h"
 #include "chrome/browser/ash/arc/fileapi/arc_file_system_mounter.h"
-#include "chrome/browser/nearby_sharing/nearby_sharing_service_factory.h"
+#include "chrome/browser/ash/browser_delegate/browser_controller_impl.h"
 #include "chrome/browser/ui/ash/shelf/chrome_shelf_controller.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chromeos/ash/experiences/arc/arc_features.h"
@@ -41,6 +42,8 @@ class NearbyShareSessionImplTest : public testing::Test {
   // Create a NearbyShareSessionImpl for sharing |share_info|. The share will
   // not commence until an ARC window is visible.
   NearbyShareSessionImpl* MakeSession(mojom::ShareIntentInfoPtr share_info) {
+    browser_controller_.emplace();
+    wm_helper_ = std::make_unique<exo::WMHelper>();
     shelf_model_ = std::make_unique<ash::ShelfModel>();
     shelf_controller_ =
         std::make_unique<ChromeShelfController>(&profile_, shelf_model_.get());
@@ -55,12 +58,12 @@ class NearbyShareSessionImplTest : public testing::Test {
   }
 
   void ShowArcWindow() {
-    window_ =
-        base::WrapUnique(aura::test::CreateTestWindowWithId(kTaskId, nullptr));
+    window_ = aura::test::CreateTestWindow(
+        {.bounds = {100, 100}, .window_id = kTaskId});
     exo::SetShellApplicationId(
         window_.get(), "org.chromium.arc." + base::NumberToString(kTaskId));
     window_->SetProperty(chromeos::kAppTypeKey, chromeos::AppType::ARC_APP);
-    session_->OnWindowVisibilityChanged(window_.get(), /*visible=*/true);
+    session_->OnExoWindowCreated(window_.get());
   }
 
   Profile* profile() { return &profile_; }
@@ -69,6 +72,8 @@ class NearbyShareSessionImplTest : public testing::Test {
   content::BrowserTaskEnvironment task_environment_;
   TestingProfile profile_;
 
+  std::optional<ash::BrowserControllerImpl> browser_controller_;
+  std::unique_ptr<exo::WMHelper> wm_helper_;
   std::unique_ptr<ash::ShelfModel> shelf_model_;
   std::unique_ptr<ChromeShelfController> shelf_controller_;
   mojo::PendingRemote<mojom::NearbyShareSessionHost> host_remote_;

@@ -8,6 +8,7 @@
 #include "third_party/blink/renderer/core/html/html_table_cell_element.h"
 #include "third_party/blink/renderer/core/html/table_constants.h"
 #include "third_party/blink/renderer/core/layout/constraint_space.h"
+#include "third_party/blink/renderer/core/layout/layout_object_inlines.h"
 #include "third_party/blink/renderer/core/layout/layout_view.h"
 #include "third_party/blink/renderer/core/layout/oof_positioned_node.h"
 #include "third_party/blink/renderer/core/layout/physical_box_fragment.h"
@@ -29,24 +30,22 @@ LayoutTableCell* LayoutTableCell::CreateAnonymousWithParent(
       parent.GetDocument().GetStyleResolver().CreateAnonymousStyleWithDisplay(
           parent.StyleRef(), EDisplay::kTableCell);
   auto* new_cell = MakeGarbageCollected<LayoutTableCell>(nullptr);
-  new_cell->SetDocumentForAnonymous(&parent.GetDocument());
+  new_cell->SetDocumentForAnonymous(parent.GetDocument());
   new_cell->SetStyle(new_style);
   return new_cell;
 }
 
 void LayoutTableCell::InvalidateLayoutResultCacheAfterMeasure() const {
   NOT_DESTROYED();
-  if (LayoutBox* row = ParentBox()) {
-    DCHECK(row->IsTableRow());
+  if (LayoutTableRow* row = Row()) {
     row->SetShouldSkipLayoutCache(true);
-    if (LayoutBox* section = row->ParentBox()) {
-      DCHECK(section->IsTableSection());
+    if (LayoutTableSection* section = row->Section()) {
       section->SetShouldSkipLayoutCache(true);
     }
   }
 }
 
-LayoutUnit LayoutTableCell::BorderTop() const {
+PhysicalBoxStrut LayoutTableCell::BorderOutsets() const {
   NOT_DESTROYED();
   // TODO(1061423) Should return cell border, not fragment border.
   // To compute cell border, cell needs to know its starting row
@@ -54,36 +53,9 @@ LayoutUnit LayoutTableCell::BorderTop() const {
   // PhysicalFragmentCount() > 0 check should not be necessary,
   // but it is because of TextAutosizer/ScrollAnchoring.
   if (Table()->HasCollapsedBorders() && PhysicalFragmentCount() > 0) {
-    return GetPhysicalFragment(0)->Borders().top;
+    return GetPhysicalFragment(0)->Borders();
   }
-  return LayoutBlockFlow::BorderTop();
-}
-
-LayoutUnit LayoutTableCell::BorderBottom() const {
-  NOT_DESTROYED();
-  // TODO(1061423) Should return cell border, not fragment border.
-  if (Table()->HasCollapsedBorders() && PhysicalFragmentCount() > 0) {
-    return GetPhysicalFragment(0)->Borders().bottom;
-  }
-  return LayoutBlockFlow::BorderBottom();
-}
-
-LayoutUnit LayoutTableCell::BorderLeft() const {
-  NOT_DESTROYED();
-  // TODO(1061423) Should return cell border, not fragment border.
-  if (Table()->HasCollapsedBorders() && PhysicalFragmentCount() > 0) {
-    return GetPhysicalFragment(0)->Borders().left;
-  }
-  return LayoutBlockFlow::BorderLeft();
-}
-
-LayoutUnit LayoutTableCell::BorderRight() const {
-  NOT_DESTROYED();
-  // TODO(1061423) Should return cell border, not fragment border.
-  if (Table()->HasCollapsedBorders() && PhysicalFragmentCount() > 0) {
-    return GetPhysicalFragment(0)->Borders().right;
-  }
-  return LayoutBlockFlow::BorderRight();
+  return LayoutBlockFlow::BorderOutsets();
 }
 
 LayoutTableCell* LayoutTableCell::NextCell() const {
@@ -116,8 +88,10 @@ LayoutTable* LayoutTableCell::Table() const {
   return nullptr;
 }
 
-void LayoutTableCell::StyleDidChange(StyleDifference diff,
-                                     const ComputedStyle* old_style) {
+void LayoutTableCell::StyleDidChange(
+    StyleDifference diff,
+    const ComputedStyle* old_style,
+    const StyleChangeContext& style_change_context) {
   NOT_DESTROYED();
   if (LayoutTable* table = Table()) {
     if ((old_style && !old_style->BorderVisuallyEqual(StyleRef())) ||
@@ -126,7 +100,7 @@ void LayoutTableCell::StyleDidChange(StyleDifference diff,
       table->GridBordersChanged();
     }
   }
-  LayoutBlockFlow::StyleDidChange(diff, old_style);
+  LayoutBlockFlow::StyleDidChange(diff, old_style, style_change_context);
 }
 
 void LayoutTableCell::WillBeRemovedFromTree() {

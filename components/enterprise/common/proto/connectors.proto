@@ -4,9 +4,9 @@
 
 syntax = "proto2";
 
-option optimize_for = LITE_RUNTIME;
-
 package enterprise_connectors;
+
+option optimize_for = LITE_RUNTIME;
 
 // For ClientDownloadRequest.
 import "components/safe_browsing/core/common/proto/csd.proto";
@@ -24,6 +24,8 @@ enum AnalysisConnector {
   BULK_DATA_ENTRY = 3;
   PRINT = 4;
   FILE_TRANSFER = 5;
+  DATA_COPIED = 6;
+  NETWORK_REQUEST = 7;
 }
 
 message ContentMetaData {
@@ -86,11 +88,29 @@ message ContentMetaData {
       CLIPBOARD = 2;
       OTHER_PROFILE = 3;
       SAME_PROFILE = 4;
+      GEMINI_IN_CHROME = 5;
     }
     // Holds Chrome context of copied data.
     optional CopiedTextSourceType context = 2;
   }
   optional CopiedTextSource copied_text_source = 13;
+
+  repeated safe_browsing.ReferrerChainEntry referrer_chain = 14;
+
+  // The email of the currently active user in the content area. Only populated
+  // for Workspace sites.
+  optional string content_area_account_email = 15;
+
+  // The email of the active user in the content area of the copy source. Only
+  // populated for paste events when the copy source is Workspace sites.
+  optional string source_content_area_account_email = 17;
+
+  // The parent URL chain of the frame from which the action was triggered,
+  // ordered from current frame URL to tab URL, inclusive.
+  repeated string frame_url_chain = 16;
+
+  // File size in bytes. Only populated for file scanning events.
+  optional uint64 file_size = 18;
 }
 
 message ClientMetadata {
@@ -102,7 +122,7 @@ message ClientMetadata {
 
     // This is omitted on scans triggered at the profile level.
     optional string machine_user = 4;
-  };
+  }
   optional Browser browser = 1;
 
   // Describes the device uploading a scan request. This is omitted on scans
@@ -115,7 +135,7 @@ message ClientMetadata {
     optional string name = 5;
     optional string device_fqdn = 6;
     optional string network_name = 7;
-  };
+  }
   optional Device device = 2;
 
   // Describes the profile uploading a scan request.
@@ -127,25 +147,24 @@ message ClientMetadata {
     optional string client_id = 5;
 
     reserved 6;
-  };
+  }
   optional Profile profile = 3;
 
   // True if the request comes from a Managed Guest Session on ChromeOS. False
   // in all other cases.
   optional bool is_chrome_os_managed_guest_session = 4;
-};
+}
 
 // Analysis request sent from chrome to backend.
 // The proto here is the source of truth; the copy in the LCAC Github repo
-// should always be in sync with it (https://github.com/chromium/content_analysis_sdk/blob/main/proto/content_analysis/sdk/analysis.proto)
+// should always be in sync with it
+// (https://github.com/chromium/content_analysis_sdk/blob/main/proto/content_analysis/sdk/analysis.proto)
 message ContentAnalysisRequest {
   // The TokenID for Enterprise-enrolled devices.  This identifies a specific
   // chrome instance.
   optional string device_token = 1;
 
-  // Firebase Cloud Messaging token used to notify this client of the verdict.
-  // This identifies a specific chrome instance.
-  optional string fcm_notification_token = 2;
+  reserved 2;
 
   // Token used to correlate requests and responses. This is different than the
   // FCM token in that it is unique for each request.
@@ -205,22 +224,27 @@ message ContentAnalysisRequest {
     // Only possible for the `FILE_DOWNLOADED` analysis connector.
     NORMAL_DOWNLOAD = 6;
     SAVE_AS_DOWNLOAD = 7;
+    CLIPBOARD_COPY = 8;
   }
   optional Reason reason = 19;
 
   // Indicates whether request is blocking until verdict given.
   optional bool blocking = 20;
 
-  // Indicates whether the request requires a metadata verdict (applicable to
-  // resumable metadata request only).
-  //
-  // The field is set to true when Chrome sends the metadata of files larger
-  // than 50MB or encrypted, because it expects a block or allow verdict from
-  // WebProtect right away, and cannot upload full content.
-  optional bool require_metadata_verdict = 21;
+  reserved 21;
 
   // Local IP addresses of the device.
   repeated string local_ips = 22;
+
+  // Indicates whether the request is for content that is encrypted.
+  optional bool is_content_encrypted = 23;
+
+  // If true, the content hash is given during the finalize call rather than
+  // the initial upload, only for larger files.
+  optional bool content_hash_in_final_call = 24;
+
+  // If true, the request originates from mobile browser.
+  optional bool is_mobile = 25;
 
   // Reserved to make sure there is no overlap with DeepScanningClientRequest.
   reserved 3, 4, 6 to 8;
@@ -264,6 +288,8 @@ message ContentAnalysisResponse {
         REPORT_ONLY = 1;
         WARN = 2;
         BLOCK = 3;
+        FORCE_SAVE_TO_CLOUD = 4;
+        KEEP_IN_MANAGED_CHROME = 5;
       }
       optional Action action = 1;
       optional string rule_name = 2;
@@ -302,7 +328,16 @@ message ContentAnalysisResponse {
       // displayed instead of the default one. This is set by admins in Rule
       // definition UI. This is set by admins in Rule definition UI.
       optional CustomRuleMessage custom_rule_message = 6;
+
+      enum ForceSaveToCloudDestination {
+        UNSPECIFIED = 0;
+        CORP_G_DRIVE = 1;
+        CORP_ONEDRIVE = 2;
+      }
+
+      optional ForceSaveToCloudDestination force_save_to_cloud_destination = 7;
     }
+
     repeated TriggeredRule triggered_rules = 3;
 
     reserved 4, 5, 6;
@@ -343,7 +378,7 @@ message ContentAnalysisAcknowledgement {
     // The response from the agent was too late and Google Chrome took the
     // default action.
     TOO_LATE = 3;
-  };
+  }
   optional Status status = 2;
 
   // The final action that chrome took with this request.  This may be different
@@ -356,6 +391,7 @@ message ContentAnalysisAcknowledgement {
     REPORT_ONLY = 2;
     WARN = 3;
     BLOCK = 4;
-  };
+    KEEP_IN_MANAGED_CHROME = 5;
+  }
   optional FinalAction final_action = 3;
 }

@@ -5,7 +5,7 @@
 #import "ios/chrome/browser/optimization_guide/model/optimization_guide_validation_tab_helper.h"
 
 #import "base/metrics/histogram_functions.h"
-#import "components/optimization_guide/core/hints_processing_util.h"
+#import "components/optimization_guide/core/hints/hints_processing_util.h"
 #import "components/optimization_guide/core/optimization_guide_features.h"
 #import "components/optimization_guide/core/optimization_guide_util.h"
 #import "components/optimization_guide/proto/hints.pb.h"
@@ -94,7 +94,7 @@ void OptimizationGuideValidationTabHelper::
 
   auto expected_metadata =
       optimization_guide::features::ShouldMetadataValidationFetchHostKeyed()
-          ? url.host()
+          ? url.GetHost()
           : url.spec();
 
   auto string_metadata =
@@ -103,5 +103,3 @@ void OptimizationGuideValidationTabHelper::
       "OptimizationGuide.MetadataFetchValidation.Result",
       string_metadata && string_metadata->value() == expected_metadata);
 }
-
-WEB_STATE_USER_DATA_KEY_IMPL(OptimizationGuideValidationTabHelper)

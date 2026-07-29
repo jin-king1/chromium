@@ -5,14 +5,15 @@
 #import "ios/web/content/js_messaging/ios_web_message_host_factory.h"
 
 #import <string>
+#import <variant>
 
-#import "base/functional/overloaded.h"
 #import "base/json/json_reader.h"
 #import "base/strings/utf_string_conversions.h"
 #import "components/js_injection/browser/js_communication_host.h"
 #import "components/js_injection/browser/web_message.h"
 #import "components/js_injection/browser/web_message_host.h"
-#import "third_party/abseil-cpp/absl/types/variant.h"
+#import "third_party/abseil-cpp/absl/functional/overload.h"
+#import "url/origin.h"
 
 namespace web {
 namespace {
@@ -34,8 +35,8 @@ class IOSWebMessageHost : public js_injection::WebMessageHost {
   void OnPostMessage(
       std::unique_ptr<js_injection::WebMessage> web_message) override {
     std::optional<std::u16string> received_message;
-    absl::visit(
-        base::Overloaded{
+    std::visit(
+        absl::Overload{
             [&received_message](const std::u16string& str) {
               received_message = str;
             },
@@ -50,7 +51,8 @@ class IOSWebMessageHost : public js_injection::WebMessageHost {
 
     // TODO(crbug.com/40260088): Move this parsing to the renderer process.
     std::optional<base::Value> message_value =
-        base::JSONReader::Read(base::UTF16ToUTF8(*received_message));
+        base::JSONReader::Read(base::UTF16ToUTF8(*received_message),
+                               base::JSON_PARSE_CHROMIUM_EXTENSIONS);
     if (!message_value) {
       return;
     }
@@ -59,7 +61,8 @@ class IOSWebMessageHost : public js_injection::WebMessageHost {
     bool is_user_interacting = false;
     ScriptMessage script_message(
         std::make_unique<base::Value>(std::move(*message_value)),
-        is_user_interacting, is_main_frame_, GURL(origin_string_));
+        is_user_interacting, is_main_frame_, GURL(origin_string_),
+        url::Origin::Create(GURL(origin_string_)));
     message_callback_.Run(script_message);
   }
 

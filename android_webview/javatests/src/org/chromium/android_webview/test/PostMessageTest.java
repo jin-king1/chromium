@@ -39,7 +39,7 @@ import org.chromium.content_public.browser.MessagePort;
 import org.chromium.content_public.browser.test.util.TestCallbackHelperContainer.OnPageFinishedHelper;
 import org.chromium.net.test.util.TestWebServer;
 
-import java.io.UnsupportedEncodingException;
+import java.nio.charset.StandardCharsets;
 import java.util.Random;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -60,12 +60,12 @@ public class PostMessageTest extends AwParameterizedTest {
 
     // Inject to the page to verify received messages.
     private static class MessageObject {
-        private LinkedBlockingQueue<Data> mQueue = new LinkedBlockingQueue<>();
+        private final LinkedBlockingQueue<MessageObject.Data> mQueue = new LinkedBlockingQueue<>();
 
         public static class Data {
-            public String mMessage;
-            public String mOrigin;
-            public int[] mPorts;
+            public final String mMessage;
+            public final String mOrigin;
+            public final int[] mPorts;
 
             public Data(String message, String origin, int[] ports) {
                 mMessage = message;
@@ -76,21 +76,22 @@ public class PostMessageTest extends AwParameterizedTest {
 
         @JavascriptInterface
         public void setMessageParams(String message, String origin, int[] ports) {
-            mQueue.add(new Data(message, origin, ports));
+            mQueue.add(new MessageObject.Data(message, origin, ports));
         }
 
-        public Data waitForMessage() throws Exception {
+        public MessageObject.Data waitForMessage() throws Exception {
             return AwActivityTestRule.waitForNextQueueElement(mQueue);
         }
     }
 
     private static class ChannelContainer {
         private MessagePort[] mChannel;
-        private LinkedBlockingQueue<Data> mQueue = new LinkedBlockingQueue<>();
+        private final LinkedBlockingQueue<ChannelContainer.Data> mQueue =
+                new LinkedBlockingQueue<>();
 
         public static class Data {
-            public MessagePayload mMessagePayload;
-            public Looper mLastLooper;
+            public final MessagePayload mMessagePayload;
+            public final Looper mLastLooper;
 
             public Data(MessagePayload messagePayload, Looper looper) {
                 mMessagePayload = messagePayload;
@@ -116,14 +117,14 @@ public class PostMessageTest extends AwParameterizedTest {
 
         public void notifyCalled(MessagePayload messagePayload) {
             try {
-                mQueue.add(new Data(messagePayload, Looper.myLooper()));
+                mQueue.add(new ChannelContainer.Data(messagePayload, Looper.myLooper()));
             } catch (IllegalStateException e) {
                 // We expect this add operation will always succeed since the default capacity of
                 // the queue is Integer.MAX_VALUE.
             }
         }
 
-        public Data waitForMessageCallback() throws Exception {
+        public ChannelContainer.Data waitForMessageCallback() throws Exception {
             return AwActivityTestRule.waitForNextQueueElement(mQueue);
         }
 
@@ -295,14 +296,10 @@ public class PostMessageTest extends AwParameterizedTest {
         InstrumentationRegistry.getInstrumentation()
                 .runOnMainSync(
                         () -> {
-                            try {
-                                mAwContents.postMessageToMainFrame(
-                                        new MessagePayload(testString.getBytes("UTF-8")),
-                                        mWebServer.getBaseUrl(),
-                                        null);
-                            } catch (UnsupportedEncodingException e) {
-                                throw new RuntimeException(e);
-                            }
+                            mAwContents.postMessageToMainFrame(
+                                    new MessagePayload(testString.getBytes(StandardCharsets.UTF_8)),
+                                    mWebServer.getBaseUrl(),
+                                    null);
                         });
         expectTitle(testString);
     }
@@ -321,11 +318,9 @@ public class PostMessageTest extends AwParameterizedTest {
                                     new MessagePayload("1"),
                                     mWebServer.getBaseUrl(),
                                     new MessagePort[] {channel[1]});
-                            try {
-                                channel[0].postMessage(
-                                        new MessagePayload(testString.getBytes("UTF-8")), null);
-                            } catch (UnsupportedEncodingException e) {
-                            }
+                            channel[0].postMessage(
+                                    new MessagePayload(testString.getBytes(StandardCharsets.UTF_8)),
+                                    null);
                             channel[0].close();
                         });
         expectTitle(testString);
@@ -790,7 +785,7 @@ public class PostMessageTest extends AwParameterizedTest {
     @SmallTest
     @Feature({"AndroidWebView", "Android-PostMessage"})
     public void testMessageChannelSendAndReceiveArrayBuffer() throws Throwable {
-        final byte[] bytes = HELLO.getBytes("UTF-8");
+        final byte[] bytes = HELLO.getBytes(StandardCharsets.UTF_8);
         verifyEchoArrayBuffer(ECHO_ARRAY_BUFFER_PAGE, bytes);
     }
 
@@ -808,7 +803,7 @@ public class PostMessageTest extends AwParameterizedTest {
     @SmallTest
     @Feature({"AndroidWebView", "Android-PostMessage"})
     public void testMessageChannelSendAndReceiveNonTransferableArrayBuffer() throws Throwable {
-        final byte[] bytes = HELLO.getBytes("UTF-8");
+        final byte[] bytes = HELLO.getBytes(StandardCharsets.UTF_8);
         verifyEchoArrayBuffer(ECHO_NON_TRANFERABLE_ARRAY_BUFFER_PAGE, bytes);
     }
 

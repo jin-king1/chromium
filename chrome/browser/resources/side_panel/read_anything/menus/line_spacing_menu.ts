@@ -3,89 +3,96 @@
 // found in the LICENSE file.
 
 import './simple_action_menu.js';
-import '../toolbar_styles_shared.css.js';
 
-import {WebUiListenerMixin} from '//resources/cr_elements/web_ui_listener_mixin.js';
+import {WebUiListenerMixinLit} from '//resources/cr_elements/web_ui_listener_mixin_lit.js';
 import {loadTimeData} from '//resources/js/load_time_data.js';
-import {PolymerElement} from '//resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 
-import {ToolbarEvent} from '../common.js';
-import {ReadAnythingSettingsChange} from '../metrics_browser_proxy.js';
-import {ReadAnythingLogger} from '../read_anything_logger.js';
+import {ToolbarEvent} from '../content/read_anything_types.js';
+import type {SettingsPrefs, ShowAtConfigPrefs} from '../content/read_anything_types.js';
+import {DEFAULT_SETTINGS} from '../content/read_anything_types.js';
+import {ReadAnythingSettingsChange} from '../shared/metrics_browser_proxy.js';
+import {ReadAnythingLogger} from '../shared/read_anything_logger.js';
 
-import {getTemplate} from './line_spacing_menu.html.js';
+import {getHtml} from './line_spacing_menu.html.js';
 import {getIndexOfSetting} from './menu_util.js';
-import type {MenuStateItem} from './menu_util.js';
-import type {SimpleActionMenu} from './simple_action_menu.js';
+import type {MenuStateItem, ToolbarMenu} from './menu_util.js';
+import type {SimpleActionMenuElement} from './simple_action_menu.js';
 
-export interface LineSpacingMenu {
+export interface LineSpacingMenuElement {
   $: {
-    menu: SimpleActionMenu,
+    menu: SimpleActionMenuElement,
   };
 }
 
-const LineSpacingMenuBase = WebUiListenerMixin(PolymerElement);
+const LineSpacingMenuElementBase = WebUiListenerMixinLit(CrLitElement);
 
 // Stores and propagates the data for the line spacing menu.
-export class LineSpacingMenu extends LineSpacingMenuBase {
-  private options_: Array<MenuStateItem<number>> = [
+export class LineSpacingMenuElement extends LineSpacingMenuElementBase
+    implements ToolbarMenu {
+  static get is() {
+    return 'line-spacing-menu';
+  }
+
+  override render() {
+    return getHtml.bind(this)();
+  }
+
+  static override get properties() {
+    return {
+      settingsPrefs: {type: Object},
+      nonModal: {type: Boolean},
+      options_: {type: Array},
+    };
+  }
+
+  accessor settingsPrefs: SettingsPrefs = DEFAULT_SETTINGS;
+  accessor nonModal: boolean = false;
+
+  protected accessor options_: Array<MenuStateItem<number>> = [
     {
       title: loadTimeData.getString('lineSpacingStandardTitle'),
-      icon: 'read-anything:line-spacing-standard',
+      icon: 'read-anything:line-spacing-standard-custom',
       data: chrome.readingMode.standardLineSpacing,
     },
     {
       title: loadTimeData.getString('lineSpacingLooseTitle'),
-      icon: 'read-anything:line-spacing-loose',
+      icon: 'read-anything:line-spacing-loose-custom',
       data: chrome.readingMode.looseLineSpacing,
     },
     {
       title: loadTimeData.getString('lineSpacingVeryLooseTitle'),
-      icon: 'read-anything:line-spacing-very-loose',
+      icon: 'read-anything:line-spacing-very-loose-custom',
       data: chrome.readingMode.veryLooseLineSpacing,
     },
   ];
 
   private logger_: ReadAnythingLogger = ReadAnythingLogger.getInstance();
 
-  static get is() {
-    return 'line-spacing-menu';
+  open(anchor: HTMLElement, showAtConfig?: ShowAtConfigPrefs) {
+    this.$.menu.open(anchor, showAtConfig);
   }
 
-  static get template() {
-    return getTemplate();
+  close() {
+    this.$.menu.close();
   }
 
-  static get properties() {
-    return {
-      options_: Array,
-      settingsPrefs: Object,
-      toolbarEventEnum_: {
-        type: Object,
-        value: ToolbarEvent,
-      },
-    };
+  protected restoredLineSpacingIndex_(): number {
+    return getIndexOfSetting(this.options_, this.settingsPrefs['lineSpacing']);
   }
 
-  open(anchor: HTMLElement) {
-    this.$.menu.open(anchor);
-  }
-
-  private restoredLineSpacingIndex_(): number {
-    return getIndexOfSetting(this.options_, chrome.readingMode.lineSpacing);
-  }
-
-  private onLineSpacingChange_(event: CustomEvent<{data: number}>) {
+  protected onLineSpacingChange_(event: CustomEvent<{data: number}>) {
     chrome.readingMode.onLineSpacingChange(event.detail.data);
     this.logger_.logTextSettingsChange(
         ReadAnythingSettingsChange.LINE_HEIGHT_CHANGE);
+    this.fire(ToolbarEvent.CLOSE_ALL_MENUS);
   }
 }
 
 declare global {
   interface HTMLElementTagNameMap {
-    'line-spacing-menu': LineSpacingMenu;
+    'line-spacing-menu': LineSpacingMenuElement;
   }
 }
 
-customElements.define(LineSpacingMenu.is, LineSpacingMenu);
+customElements.define(LineSpacingMenuElement.is, LineSpacingMenuElement);

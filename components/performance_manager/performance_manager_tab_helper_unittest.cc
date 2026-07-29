@@ -8,7 +8,6 @@
 #include <set>
 #include <utility>
 
-#include "base/containers/contains.h"
 #include "base/test/scoped_feature_list.h"
 #include "components/performance_manager/graph/frame_node_impl.h"
 #include "components/performance_manager/graph/graph_impl.h"
@@ -23,11 +22,14 @@
 #include "components/performance_manager/test_support/graph/mock_page_node_observer.h"
 #include "components/performance_manager/test_support/performance_manager_test_harness.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/browser/permission_descriptor_util.h"
+#include "content/public/browser/permission_result.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/common/content_features.h"
 #include "content/public/common/process_type.h"
 #include "content/public/test/mock_permission_controller.h"
 #include "content/public/test/navigation_simulator.h"
+#include "content/public/test/permissions_test_utils.h"
 #include "content/public/test/render_frame_host_test_support.h"
 #include "content/public/test/web_contents_tester.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -134,7 +136,7 @@ void PerformanceManagerTabHelperTest::CheckGraphTopology(
   EXPECT_GE(num_hosts, associated_process_nodes.size());
 
   for (const ProcessNode* process_node : associated_process_nodes) {
-    EXPECT_TRUE(base::Contains(process_nodes, process_node));
+    EXPECT_TRUE(process_nodes.contains(process_node));
   }
 
   EXPECT_EQ(4u, GraphOperations::GetFrameNodes(page).size());
@@ -268,61 +270,77 @@ TEST_P(PerformanceManagerTabHelperTest, NotificationPermission) {
   {
     content::RenderFrameHost* rfh_arg = nullptr;
     content::RenderFrameHost* rfh_arg_2 = nullptr;
+    blink::mojom::PermissionDescriptorPtr descriptor;
+
+    EXPECT_CALL(*permission_controller, GetPermissionStatusForCurrentDocument)
+        .WillOnce([&](const blink::mojom::PermissionDescriptorPtr&
+                          permission_descriptor,
+                      content::RenderFrameHost* render_frame_host) {
+          descriptor = permission_descriptor->Clone();
+          rfh_arg = render_frame_host;
+          return blink::mojom::PermissionStatus::ASK;
+        });
     EXPECT_CALL(*permission_controller,
-                GetPermissionStatusForCurrentDocument(
-                    blink::PermissionType::NOTIFICATIONS, testing::_))
-        .WillOnce(testing::DoAll(
-            testing::SaveArg<1>(&rfh_arg),
-            testing::Return(blink::mojom::PermissionStatus::ASK)));
-    EXPECT_CALL(*permission_controller,
-                SubscribeToPermissionStatusChange(
-                    blink::PermissionType::NOTIFICATIONS, testing::_,
-                    testing::_, testing::_, testing::_, testing::_))
+                SubscribeToPermissionResultChange(
+                    PermissionDescriptorToPermissionTypeMatcher(
+                        blink::PermissionType::NOTIFICATIONS),
+                    testing::_, testing::_, testing::_, testing::_, testing::_))
         .WillOnce(testing::DoAll(testing::SaveArg<2>(&rfh_arg_2),
                                  testing::Return(kFirstSubscriptionId)));
+
     content::NavigationSimulator::NavigateAndCommitFromBrowser(
         web_contents(), GURL(kParentUrl));
     testing::Mock::VerifyAndClear(permission_controller);
+    EXPECT_EQ(blink::PermissionDescriptorToPermissionType(descriptor),
+              blink::PermissionType::NOTIFICATIONS);
     EXPECT_EQ(rfh_arg, web_contents()->GetPrimaryMainFrame());
-    EXPECT_EQ(rfh_arg_2, web_contents()->GetPrimaryMainFrame());
     ExpectNotificationPermissionStatus(blink::mojom::PermissionStatus::ASK);
   }
 
-  base::RepeatingCallback<void(content::PermissionStatus)> callback_arg;
+  base::RepeatingCallback<void(content::PermissionResult)> callback_arg;
 
   // Navigate to an origin with `PermissionStatus::GRANTED`.
   {
     content::RenderFrameHost* rfh_arg = nullptr;
     content::RenderProcessHost* rph_arg = nullptr;
+    blink::mojom::PermissionDescriptorPtr descriptor;
+
+    EXPECT_CALL(*permission_controller, GetPermissionStatusForCurrentDocument)
+        .WillOnce([&](const blink::mojom::PermissionDescriptorPtr&
+                          permission_descriptor,
+                      content::RenderFrameHost* render_frame_host) {
+          descriptor = permission_descriptor->Clone();
+          rfh_arg = render_frame_host;
+          return blink::mojom::PermissionStatus::GRANTED;
+        });
     EXPECT_CALL(*permission_controller,
-                GetPermissionStatusForCurrentDocument(
-                    blink::PermissionType::NOTIFICATIONS, testing::_))
-        .WillOnce(testing::DoAll(
-            testing::SaveArg<1>(&rfh_arg),
-            testing::Return(blink::mojom::PermissionStatus::GRANTED)));
+                UnsubscribeFromPermissionResultChange(kFirstSubscriptionId));
     EXPECT_CALL(*permission_controller,
-                UnsubscribeFromPermissionStatusChange(kFirstSubscriptionId));
-    EXPECT_CALL(*permission_controller,
-                SubscribeToPermissionStatusChange(
-                    blink::PermissionType::NOTIFICATIONS, testing::_,
-                    testing::_, testing::_, testing::_, testing::_))
+                SubscribeToPermissionResultChange(
+                    PermissionDescriptorToPermissionTypeMatcher(
+                        blink::PermissionType::NOTIFICATIONS),
+                    testing::_, testing::_, testing::_, testing::_, testing::_))
         .WillOnce(testing::DoAll(testing::SaveArg<1>(&rph_arg),
                                  testing::SaveArg<5>(&callback_arg),
                                  testing::Return(kSecondSubscriptionId)));
+
     content::NavigationSimulator::NavigateAndCommitFromBrowser(
         web_contents(), GURL(kCousinFreddyUrl));
     testing::Mock::VerifyAndClear(permission_controller);
+    EXPECT_EQ(blink::PermissionDescriptorToPermissionType(descriptor),
+              blink::PermissionType::NOTIFICATIONS);
     EXPECT_EQ(rfh_arg, web_contents()->GetPrimaryMainFrame());
     ExpectNotificationPermissionStatus(blink::mojom::PermissionStatus::GRANTED);
   }
 
   // Simulate a change of permission status independent from navigation.
-  callback_arg.Run(blink::mojom::PermissionStatus::DENIED);
+  callback_arg.Run(
+      content::PermissionResult(blink::mojom::PermissionStatus::DENIED));
   ExpectNotificationPermissionStatus(blink::mojom::PermissionStatus::DENIED);
 
   // The last subscription is removed when the tab helper is deleted.
   EXPECT_CALL(*permission_controller,
-              UnsubscribeFromPermissionStatusChange(kSecondSubscriptionId));
+              UnsubscribeFromPermissionResultChange(kSecondSubscriptionId));
 }
 #endif  // BUILDFLAG(IS_ANDROID)
 
@@ -352,6 +370,12 @@ TEST_P(PerformanceManagerTabHelperTest, GetFrameNode) {
 
 TEST_P(PerformanceManagerTabHelperTest,
        NotificationsFromInactiveFrameTreeAreIgnored) {
+  // When this feature is enabled, PerformanceManagerTabHelper does not ignore
+  // the first favicon/title update.
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      features::kUseLoadingStateToDetectBackgroundTitleOrFaviconUpdate);
+
   SetContents(CreateTestWebContents());
 
   content::NavigationSimulator::NavigateAndCommitFromBrowser(web_contents(),
@@ -374,21 +398,20 @@ TEST_P(PerformanceManagerTabHelperTest,
       PerformanceManagerTabHelper::FromWebContents(web_contents());
   ASSERT_TRUE(tab_helper);
 
-  // The first favicon change is always ignored, call DidUpdateFaviconURL twice
-  // to ensure that the test doesn't pass simply because of that.
-  tab_helper->DidUpdateFaviconURL(first_nav_main_rfh, {});
-  tab_helper->DidUpdateFaviconURL(first_nav_main_rfh, {});
+  tab_helper->DidUpdateFaviconURL(
+      first_nav_main_rfh, {},
+      blink::mojom::FaviconUpdateReason::kLinkElementChange);
 
   // The observer shouldn't have been called at this point.
   testing::Mock::VerifyAndClear(&observer);
   // Set the expectation for the next check.
-  EXPECT_CALL(observer, OnFaviconUpdated(::testing::_));
+  EXPECT_CALL(observer, OnFaviconUpdated(::testing::_, ::testing::_));
 
   // Sanity check to ensure that notification sent to the active main frame are
-  // forwarded. DidUpdateFaviconURL needs to be called twice as the first
-  // favicon change is always ignored.
-  tab_helper->DidUpdateFaviconURL(web_contents()->GetPrimaryMainFrame(), {});
-  tab_helper->DidUpdateFaviconURL(web_contents()->GetPrimaryMainFrame(), {});
+  // forwarded.
+  tab_helper->DidUpdateFaviconURL(
+      web_contents()->GetPrimaryMainFrame(), {},
+      blink::mojom::FaviconUpdateReason::kLinkElementChange);
 
   testing::Mock::VerifyAndClear(&observer);
   graph->RemovePageNodeObserver(&observer);

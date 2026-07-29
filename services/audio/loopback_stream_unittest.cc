@@ -11,6 +11,7 @@
 
 #include "base/containers/unique_ptr_adapters.h"
 #include "base/functional/bind.h"
+#include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/test/task_environment.h"
@@ -24,7 +25,7 @@
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "services/audio/loopback_coordinator.h"
-#include "services/audio/loopback_group_member.h"
+#include "services/audio/loopback_source.h"
 #include "services/audio/test/fake_consumer.h"
 #include "services/audio/test/fake_loopback_group_member.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -137,7 +138,7 @@ class LoopbackStreamTest : public testing::Test {
     stream_ = nullptr;
 
     for (const auto& source : sources_) {
-      coordinator_.UnregisterMember(group_id_, source.get());
+      coordinator_.RemoveMember(source.get());
     }
     sources_.clear();
 
@@ -156,7 +157,7 @@ class LoopbackStreamTest : public testing::Test {
             media::AudioParameters::AUDIO_PCM_LOW_LATENCY,
             media::ChannelLayoutConfig::Guess(channels), sample_rate,
             (sample_rate * kBufferDuration).InSeconds())));
-    coordinator_.RegisterMember(group_id_, sources_.back().get());
+    coordinator_.AddMember(group_id_, sources_.back().get());
     return sources_.back().get();
   }
 
@@ -164,7 +165,7 @@ class LoopbackStreamTest : public testing::Test {
     const auto it =
         std::ranges::find_if(sources_, base::MatchesUniquePtr(source));
     if (it != sources_.end()) {
-      coordinator_.UnregisterMember(group_id_, source);
+      coordinator_.RemoveMember(source);
       sources_.erase(it);
     }
   }

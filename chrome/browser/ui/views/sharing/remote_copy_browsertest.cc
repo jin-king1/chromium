@@ -72,9 +72,9 @@ class RemoteCopyBrowserTest : public InProcessBrowserTest {
   void SetUpOnMainThread() override {
     ui::TestClipboard::CreateForCurrentThread();
     notification_tester_ = std::make_unique<NotificationDisplayServiceTester>(
-        browser()->profile());
+        browser()->GetProfile());
     sharing_service_ =
-        SharingServiceFactory::GetForBrowserContext(browser()->profile());
+        SharingServiceFactory::GetForBrowserContext(browser()->GetProfile());
     auto* remote_copy_handler = static_cast<RemoteCopyMessageHandler*>(
         sharing_service_->GetSharingHandlerForTesting(
             components_sharing_message::SharingMessage::kRemoteCopyMessage));
@@ -127,22 +127,21 @@ class RemoteCopyBrowserTest : public InProcessBrowserTest {
   }
 
   std::vector<std::u16string> GetAvailableClipboardTypes() {
-    std::vector<std::u16string> types;
-    ui::Clipboard::GetForCurrentThread()->ReadAvailableTypes(
-        ui::ClipboardBuffer::kCopyPaste, /* data_dst = */ nullptr, &types);
-    return types;
+    return ui::clipboard_test_util::ReadAvailableTypes(
+        ui::Clipboard::GetForCurrentThread(), ui::ClipboardBuffer::kCopyPaste,
+        /* data_dst = */ nullptr);
   }
 
   std::string ReadClipboardText() {
-    std::u16string text;
-    ui::Clipboard::GetForCurrentThread()->ReadText(
-        ui::ClipboardBuffer::kCopyPaste, /* data_dst = */ nullptr, &text);
-    return base::UTF16ToUTF8(text);
+    return base::UTF16ToUTF8(ui::clipboard_test_util::ReadText(
+        ui::Clipboard::GetForCurrentThread(), ui::ClipboardBuffer::kCopyPaste,
+        /* data_dst = */ nullptr));
   }
 
   SkBitmap ReadClipboardImage() {
-    std::vector<uint8_t> png_data =
-        ui::clipboard_test_util::ReadPng(ui::Clipboard::GetForCurrentThread());
+    std::vector<uint8_t> png_data = ui::clipboard_test_util::ReadPng(
+        ui::Clipboard::GetForCurrentThread(), ui::ClipboardBuffer::kCopyPaste,
+        /*data_dst=*/nullptr);
     SkBitmap bitmap = gfx::PNGCodec::Decode(png_data);
     CHECK(!bitmap.isNull());
     return bitmap;
@@ -173,9 +172,9 @@ IN_PROC_BROWSER_TEST_F(RemoteCopyBrowserTest, Text) {
   std::vector<std::u16string> types = GetAvailableClipboardTypes();
   size_t expected_size = 1u;
   ASSERT_EQ(expected_size, types.size());
-  ASSERT_EQ(ui::kMimeTypeText, base::UTF16ToASCII(types[0]));
+  ASSERT_EQ(ui::kMimeTypePlainText, base::UTF16ToASCII(types[0]));
   if (expected_size == 2u) {
-    ASSERT_EQ(ui::kMimeTypeTextUtf8, base::UTF16ToASCII(types[1]));
+    ASSERT_EQ(ui::kMimeTypeUtf8PlainText, base::UTF16ToASCII(types[1]));
   }
   ASSERT_EQ(kText, ReadClipboardText());
   message_center::Notification notification = GetNotification();
@@ -196,7 +195,7 @@ IN_PROC_BROWSER_TEST_F(RemoteCopyBrowserTest, ImageUrl) {
   // The image is in the clipboard and a notification is shown.
   std::vector<std::u16string> types = GetAvailableClipboardTypes();
   ASSERT_EQ(1u, types.size());
-  ASSERT_EQ(ui::kMimeTypePNG, base::UTF16ToASCII(types[0]));
+  ASSERT_EQ(ui::kMimeTypePng, base::UTF16ToASCII(types[0]));
   SkBitmap bitmap = ReadClipboardImage();
   ASSERT_FALSE(bitmap.drawsNothing());
   ASSERT_EQ(2560, bitmap.width());
@@ -220,9 +219,9 @@ IN_PROC_BROWSER_TEST_F(RemoteCopyBrowserTest, TextThenImageUrl) {
   std::vector<std::u16string> types = GetAvailableClipboardTypes();
   size_t expected_size = 1u;
   ASSERT_EQ(expected_size, types.size());
-  ASSERT_EQ(ui::kMimeTypeText, base::UTF16ToASCII(types[0]));
+  ASSERT_EQ(ui::kMimeTypePlainText, base::UTF16ToASCII(types[0]));
   if (expected_size == 2u) {
-    ASSERT_EQ(ui::kMimeTypeTextUtf8, base::UTF16ToASCII(types[1]));
+    ASSERT_EQ(ui::kMimeTypeUtf8PlainText, base::UTF16ToASCII(types[1]));
   }
   ASSERT_EQ(kText, ReadClipboardText());
 
@@ -232,6 +231,6 @@ IN_PROC_BROWSER_TEST_F(RemoteCopyBrowserTest, TextThenImageUrl) {
   // The image is in the clipboard and the text has been cleared.
   types = GetAvailableClipboardTypes();
   ASSERT_EQ(1u, types.size());
-  ASSERT_EQ(ui::kMimeTypePNG, base::UTF16ToASCII(types[0]));
+  ASSERT_EQ(ui::kMimeTypePng, base::UTF16ToASCII(types[0]));
   ASSERT_EQ(std::string(), ReadClipboardText());
 }

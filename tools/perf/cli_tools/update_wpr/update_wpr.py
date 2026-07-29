@@ -18,7 +18,7 @@ import shutil
 import subprocess
 import tempfile
 import time
-import sys
+import shlex
 import webbrowser
 
 from chrome_telemetry_build import chromium_config
@@ -33,10 +33,8 @@ from telemetry import record_wpr
 from telemetry.wpr import archive_info
 from telemetry.internal.browser import browser_finder
 from telemetry.internal.browser import browser_options
-from telemetry.internal.util import binary_manager as telemetry_binary_manager
 
-import py_utils
-from py_utils import binary_manager, cloud_storage
+from py_utils import cloud_storage
 
 
 SRC_ROOT = os.path.abspath(
@@ -52,9 +50,6 @@ DEFAULT_REVIEWERS = ['johnchen@chromium.org']
 MISSING_RESOURCE_RE = re.compile(
     r'\[network\]: Failed to load resource: the server responded with a status '
     r'of 404 \(\) ([^\s]+)')
-TELEMETRY_BIN_DEPS_CONFIG = os.path.join(
-    path_util.GetTelemetryDir(), 'telemetry', 'binary_dependencies.json')
-PY_EXECUTABLE = [sys.executable]
 
 
 def _GetBranchName():
@@ -93,7 +88,7 @@ def _EnsureEditor():
 
 
 def _OpenEditor(filepath):
-  subprocess.check_call([os.environ['EDITOR'], filepath])
+  subprocess.check_call(shlex.split(os.environ['EDITOR']) + [filepath])
 
 
 def _PrepareEnv():
@@ -221,7 +216,6 @@ class WprUpdater(object):
     self.output_dir = tempfile.mkdtemp()
     self.bug_id = args.bug_id
     self.reviewers = args.reviewers or DEFAULT_REVIEWERS
-    self.wpr_go_bin = None
 
     self._LoadArchiveInfo()
 
@@ -377,8 +371,13 @@ class WprUpdater(object):
     Returns:
       Path to the filtered log.
     """
-    with open(log_filename) as src, tempfile.NamedTemporaryFile(
-        suffix='diff', dir=self.output_dir, delete=False) as dest:
+    with open(log_filename,
+              encoding='utf-8') as src, tempfile.NamedTemporaryFile(
+                  encoding='utf-8',
+                  mode='w+',
+                  suffix='diff',
+                  dir=self.output_dir,
+                  delete=False) as dest:
       for line in src:
         # Remove timestamps.
         line = re.sub(
@@ -393,7 +392,7 @@ class WprUpdater(object):
         # Remove random durations in ms.
         line = re.sub(r'\d+ ms', r'<duration>', line)
         dest.write(line)
-        return dest.name
+      return dest.name
 
   def _GetTargetFromConfiguration(self, configuration):
     """Returns the target that should be used for a Pinpoint job."""
@@ -428,29 +427,6 @@ class WprUpdater(object):
         configuration=configuration, url=resp['jobUrl'])
     return resp['jobUrl']
 
-  def _AddMissingURLsToArchive(self, replay_out_file):
-    existing_wprs = self._GetWprArchivePathsAndUsageForStory()
-    if len(existing_wprs) == 0:
-      return
-
-    if len(existing_wprs) == 1:
-      archive = existing_wprs[0][0]
-    else:
-      cli_helpers.Comment("WPR Archives for this story:")
-      print(str(self._GetWprArchivesForStory()))
-      archive = cli_helpers.Ask(
-          'Which archive should I add URLs to?',
-          [e[0] for e in existing_wprs])
-
-    missing_urls = _ExtractMissingURLsFromLog(replay_out_file)
-    if not missing_urls:
-      return
-
-    if not self.wpr_go_bin:
-      self.wpr_go_bin = (
-        binary_manager.BinaryManager([TELEMETRY_BIN_DEPS_CONFIG]).FetchPath(
-        'wpr_go', py_utils.GetHostArchName(), py_utils.GetHostOsName()))
-    subprocess.check_call([self.wpr_go_bin, 'add', archive] + missing_urls)
 
   def LiveRun(self):
     cli_helpers.Step('LIVE RUN: %s' % self.story)
@@ -622,9 +598,7 @@ class WprUpdater(object):
     while action != 'continue':
       if action == 'record':
         self.RecordWpr()
-      if action == 'add-missing':
-        self._AddMissingURLsToArchive(replay_out_file)
-      if action in ['record', 'add-missing', 'just-replay']:
+      if action in ['record', 'just-replay']:
         replay_out_file = self.ReplayWpr()
         cli_helpers.Comment(
             'Check that the console:error:all metrics above have low values '
@@ -639,11 +613,10 @@ class WprUpdater(object):
       if action == 'stop':
         return
       action = cli_helpers.Ask(
-          'Should I record and replay again, just replay, add all missing URLs '
-          'into archive and try replay again, continue with uploading CL, stop '
+          'Should I record and replay again, just replay, continue with uploading CL, stop '
           'and exit, or would you prefer to see diff between live/replay '
           'console logs?',
-          ['record', 'just-replay', 'add-missing', 'continue', 'stop', 'diff'],
+          ['record', 'just-replay', 'continue', 'stop', 'diff'],
           default='continue')
 
     # Upload WPR and create a WIP CL for the new story.
@@ -713,7 +686,6 @@ class CrossbenchWprUpdater(object):
     self.binary = args.binary
     self.bug_id = args.bug_id
     self.reviewers = args.reviewers or DEFAULT_REVIEWERS
-    self.wpr_go_bin = None
     self.cb_wprgo_file = args.cb_wprgo_file
 
     self._SetupOutput(args)
@@ -736,7 +708,6 @@ class CrossbenchWprUpdater(object):
     options = browser_options.BrowserFinderOptions()
     options.chrome_root = pathlib.Path(SRC_ROOT)
     parser = options.CreateParser()
-    telemetry_binary_manager.InitDependencyManager(None)
     parser.parse_args([self._CHROME_BROWSER % browser_arg])
     # Finding the browser package and installing the required dependencies.
     possible_browser = browser_finder.FindBrowser(options)
@@ -752,6 +723,7 @@ class CrossbenchWprUpdater(object):
         'branch. If you need to create a new branch or have uncommitted '
         'changes, please stop the script and create a fresh branch. Do '
         'you want to continue?',
+        answers={'yes': True, 'no': False},
         default='no'):
       return
     cb_wprgo = self.RecordWpr()
@@ -760,6 +732,7 @@ class CrossbenchWprUpdater(object):
         f'The {cb_wprgo} file has been generated and replayed. Please '
         f'see the Crossbench log file in {self.output_dir}. Are you sure '
         'to upload the new archive file to the cloud?',
+        answers={'yes': True, 'no': False},
         default='no'):
       return
     if not self.UploadWpr(cb_wprgo):
@@ -826,7 +799,7 @@ class CrossbenchWprUpdater(object):
   def _GenerateCommandList(self, args=None, cb_output_dir=None):
     args = args or []
     cb_output_dir = cb_output_dir or self.output_dir
-    command = PY_EXECUTABLE + [
+    command = [
         f'{self._CB_TOOL}',
         self.bss,
         '--repeat=1',

@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/webui/metrics_reporter/metrics_reporter.h"
 
+#include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
 
 MetricsReporter::MetricsReporter() = default;
@@ -11,7 +12,11 @@ MetricsReporter::MetricsReporter() = default;
 MetricsReporter::~MetricsReporter() = default;
 
 void MetricsReporter::Mark(const std::string& name) {
-  marks_[name] = base::TimeTicks::Now();
+  Mark(name, base::TimeTicks::Now());
+}
+
+void MetricsReporter::Mark(const std::string& name, base::TimeTicks time) {
+  marks_[name] = time;
 }
 
 void MetricsReporter::Measure(const std::string& start_mark,
@@ -26,12 +31,23 @@ void MetricsReporter::Measure(const std::string& start_mark,
                          std::move(callback));
 }
 
+void MetricsReporter::Measure(const std::string& start_mark,
+                              base::TimeTicks end_time,
+                              MeasureCallback callback) {
+  MeasureInternal(start_mark, end_time, std::move(callback));
+}
+
 void MetricsReporter::MeasureInternal(const std::string& start_mark,
                                       std::optional<std::string> end_mark,
                                       MeasureCallback callback) {
   const base::TimeTicks end_time =
       end_mark ? marks_[*end_mark] : base::TimeTicks::Now();
+  MeasureInternal(start_mark, end_time, std::move(callback));
+}
 
+void MetricsReporter::MeasureInternal(const std::string& start_mark,
+                                      base::TimeTicks end_time,
+                                      MeasureCallback callback) {
   if (marks_.contains(start_mark)) {
     std::move(callback).Run(end_time - marks_[start_mark]);
     return;

@@ -5,10 +5,13 @@
 #include <string>
 #include <vector>
 
+#include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_feature_list.h"
 #include "chrome/test/base/chrome_test_utils.h"
 #include "chrome/test/payments/payment_request_platform_browsertest_base.h"
+#include "components/payments/core/features.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 
@@ -32,41 +35,113 @@ class PaymentRequestCanMakePaymentQueryTest
   }
 };
 
-// A user has installed a payment app that responds "false" to the
-// "canmakepayment" event. PaymentRequest.canMakePayment() should  return true,
-// but PaymentRequest.hasEnrolledInstrument() should return false.
-IN_PROC_BROWSER_TEST_F(PaymentRequestCanMakePaymentQueryTest,
-                       AppRespondsFalseToCanMakePaymentEvent) {
-  std::string method;
-  InstallPaymentApp("a.com", "/can_make_payment_false_responder.js", &method);
+// Tests for canMakePayment() and hasEnrolledInstrument() with different
+// values of the CanMakePaymentEnabled pref.
+class PaymentRequestCanMakePaymentQueryWithPref
+    : public PaymentRequestCanMakePaymentQueryTest,
+      public ::testing::WithParamInterface<bool> {
+ public:
+  ~PaymentRequestCanMakePaymentQueryWithPref() override = default;
 
-  NavigateTo("b.com", "/payment_request_can_make_payment_query_test.html");
+  void SetUpOnMainThread() override {
+    PaymentRequestCanMakePaymentQueryTest::SetUpOnMainThread();
+    test_controller()->SetCanMakePaymentEnabledPref(
+        CanMakePaymentEnabledPref());
+  }
 
-  ExpectCanMakePayment(true, method);
-  ExpectHasEnrolledInstrument(false, method);
-}
+  bool CanMakePaymentEnabledPref() const { return GetParam(); }
+};
 
 // A user has installed a payment app that responds "true" to the
-// "canmakepayment" event. Both PaymentRequest.canMakePayment() and
-// PaymentRequest.hasEnrolledInstrument() should return true."
-IN_PROC_BROWSER_TEST_F(PaymentRequestCanMakePaymentQueryTest,
+// "canmakepayment" event.
+IN_PROC_BROWSER_TEST_P(PaymentRequestCanMakePaymentQueryWithPref,
                        AppRespondsTrueToCanMakePaymentEvent) {
   base::HistogramTester histogram_tester;
+
   std::string method;
   InstallPaymentApp("a.com", "/can_make_payment_true_responder.js", &method);
 
   NavigateTo("b.com", "/payment_request_can_make_payment_query_test.html");
 
-  ExpectCanMakePayment(true, method);
+  // Whether the pref is enabled or disabled, canMakePayment should be true,
+  // as there is a payment app.
+  ExpectCanMakePayment(/*expected=*/true, method);
   histogram_tester.ExpectUniqueSample(
-      "PaymentRequest.CanMakePayment.CallAllowedByPref", /*sample=*/1,
+      "PaymentRequest.CanMakePayment.CallAllowedByPref",
+      /*sample=*/CanMakePaymentEnabledPref(),
       /*expected_bucket_count=*/1);
 
-  ExpectHasEnrolledInstrument(true, method);
+  // hasEnrolledInstrument is only true if the pref is enabled, as otherwise we
+  // lie and return false.
+  ExpectHasEnrolledInstrument(CanMakePaymentEnabledPref(), method);
   histogram_tester.ExpectUniqueSample(
-      "PaymentRequest.HasEnrolledInstrument.CallAllowedByPref", /*sample=*/1,
+      "PaymentRequest.HasEnrolledInstrument.CallAllowedByPref",
+      /*sample=*/CanMakePaymentEnabledPref(),
       /*expected_bucket_count=*/1);
 }
+
+// A user has installed a payment app that responds "false" to the
+// "canmakepayment" event.
+IN_PROC_BROWSER_TEST_P(PaymentRequestCanMakePaymentQueryWithPref,
+                       AppRespondsFalseToCanMakePaymentEvent) {
+  base::HistogramTester histogram_tester;
+
+  std::string method;
+  InstallPaymentApp("a.com", "/can_make_payment_false_responder.js", &method);
+
+  NavigateTo("b.com", "/payment_request_can_make_payment_query_test.html");
+
+  // Whether the pref is enabled or disabled, canMakePayment should be true,
+  // as there is a payment app.
+  ExpectCanMakePayment(/*expected=*/true, method);
+  histogram_tester.ExpectUniqueSample(
+      "PaymentRequest.CanMakePayment.CallAllowedByPref",
+      /*sample=*/CanMakePaymentEnabledPref(),
+      /*expected_bucket_count=*/1);
+
+  // Whether the pref is enabled or disabled, hasEnrolledInstrument is always
+  // false for this app (because the app responds false to the query).
+  ExpectHasEnrolledInstrument(false, method);
+  histogram_tester.ExpectUniqueSample(
+      "PaymentRequest.HasEnrolledInstrument.CallAllowedByPref",
+      /*sample=*/CanMakePaymentEnabledPref(),
+      /*expected_bucket_count=*/1);
+}
+
+// A website requests a payment method that is not supported by any installed
+// payment handler.
+IN_PROC_BROWSER_TEST_P(PaymentRequestCanMakePaymentQueryWithPref,
+                       UnsupportedUrlBasedMethod) {
+  base::HistogramTester histogram_tester;
+
+  // Use a non-existent payment app.
+  std::string method = "https://non-existent-payment-handler.com/pay.js";
+
+  NavigateTo("b.com", "/payment_request_can_make_payment_query_test.html");
+
+  // canMakePayment should be true if the pref is disabled, as we lie to the
+  // website to reduce data leakage.
+  ExpectCanMakePayment(!CanMakePaymentEnabledPref(), method);
+  histogram_tester.ExpectUniqueSample(
+      "PaymentRequest.CanMakePayment.CallAllowedByPref",
+      /*sample=*/CanMakePaymentEnabledPref(),
+      /*expected_bucket_count=*/1);
+
+  // hasEnrolledInstrument is always false since the app doesn't exist.
+  ExpectHasEnrolledInstrument(false, method);
+  histogram_tester.ExpectUniqueSample(
+      "PaymentRequest.HasEnrolledInstrument.CallAllowedByPref",
+      /*sample=*/CanMakePaymentEnabledPref(),
+      /*expected_bucket_count=*/1);
+}
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         PaymentRequestCanMakePaymentQueryWithPref,
+                         testing::Bool(),
+                         [](const testing::TestParamInfo<bool>& info) {
+                           return base::StringPrintf(
+                               "PrefIs%s", info.param ? "Enabled" : "Disabled");
+                         });
 
 // A user has installed a payment app that responds "true" to the
 // "canmakepayment" event and the user is in incognito mode. In this case,
@@ -113,42 +188,6 @@ IN_PROC_BROWSER_TEST_F(PaymentRequestCanMakePaymentQueryTest,
   ExpectHasEnrolledInstrument(false, method);
 }
 
-// Test the case where canMakePayment would return true, but the user has
-// disabled the API in settings.
-IN_PROC_BROWSER_TEST_F(PaymentRequestCanMakePaymentQueryTest,
-                       CanMakePayment_SupportedButDisabled) {
-  base::HistogramTester histogram_tester;
-  test_controller()->SetCanMakePaymentEnabledPref(false);
-
-  std::string method;
-  InstallPaymentApp("a.com", "/can_make_payment_true_responder.js", &method);
-
-  NavigateTo("b.com", "/payment_request_can_make_payment_query_test.html");
-
-  ExpectCanMakePayment(false, method);
-  histogram_tester.ExpectUniqueSample(
-      "PaymentRequest.CanMakePayment.CallAllowedByPref", /*sample=*/0,
-      /*expected_bucket_count=*/1);
-}
-
-// Test the case where hasEnrolledInstrument would return true, but the user has
-// disabled the API in settings.
-IN_PROC_BROWSER_TEST_F(PaymentRequestCanMakePaymentQueryTest,
-                       HasEnrolledInstrument_SupportedButDisabled) {
-  base::HistogramTester histogram_tester;
-  test_controller()->SetCanMakePaymentEnabledPref(false);
-
-  std::string method;
-  InstallPaymentApp("a.com", "/can_make_payment_true_responder.js", &method);
-
-  NavigateTo("b.com", "/payment_request_can_make_payment_query_test.html");
-
-  ExpectHasEnrolledInstrument(false, method);
-  histogram_tester.ExpectUniqueSample(
-      "PaymentRequest.HasEnrolledInstrument.CallAllowedByPref", /*sample=*/0,
-      /*expected_bucket_count=*/1);
-}
-
 // Pages without a valid SSL certificate always get "false" from
 // canMakePayment() and hasEnrolledInstrument() and NotSupported error from
 // show().
@@ -159,27 +198,28 @@ IN_PROC_BROWSER_TEST_F(PaymentRequestCanMakePaymentQueryTest, InvalidSSL) {
   NavigateTo("b.com", "/payment_request_can_make_payment_query_test.html");
   test_controller()->SetValidSsl(false);
 
-  content::EvalJsResult can_make_payment_result =
-      content::EvalJs(GetActiveWebContents(),
-                      content::JsReplace("checkCanMakePayment($1)", method));
   // canMakePayment() will either reject or resolve with "false", depending on
   // timing of when the browser completes the SSL check and when the website
   // calls canMakePayment().
   // TODO(crbug.com/40858197): More consistent canMakePayment() behavior.
-  EXPECT_TRUE("a JavaScript error: \"false\"\n" ==
-                  can_make_payment_result.error ||
-              false == can_make_payment_result.ExtractBool());
+  EXPECT_THAT(
+      content::EvalJs(GetActiveWebContents(),
+                      content::JsReplace("checkCanMakePayment($1)", method)),
+      testing::AnyOf(
+          content::EvalJsResult::ErrorIs("a JavaScript error: \"false\"\n"),
+          content::EvalJsResult::IsOkAndHolds(testing::Eq(false))));
 
-  content::EvalJsResult has_enrolled_instrument_result = content::EvalJs(
-      GetActiveWebContents(),
-      content::JsReplace("checkHasEnrolledInstrument($1)", method));
   // hasEnrolledInstrument() will either reject or resolve with "false",
   // depending on timing of when the browser completes the SSL check and when
   // the website calls hasEnrolledInstrument().
   // TODO(crbug.com/40858197): More consistent hasEnrolledInstrument() behavior.
-  EXPECT_TRUE("a JavaScript error: \"false\"\n" ==
-                  has_enrolled_instrument_result.error ||
-              false == has_enrolled_instrument_result.ExtractBool());
+  EXPECT_THAT(
+      content::EvalJs(
+          GetActiveWebContents(),
+          content::JsReplace("checkHasEnrolledInstrument($1)", method)),
+      testing::AnyOf(
+          content::EvalJsResult::ErrorIs("a JavaScript error: \"false\"\n"),
+          content::EvalJsResult::IsOkAndHolds(testing::Eq(false))));
 
   EXPECT_EQ("NotSupportedError: Invalid SSL certificate",
             content::EvalJs(GetActiveWebContents(),

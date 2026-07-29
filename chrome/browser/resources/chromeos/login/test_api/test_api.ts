@@ -5,6 +5,7 @@
 import {CrRadioGroupElement} from '//resources/ash/common/cr_elements/cr_radio_group/cr_radio_group.js';
 import {CrToggleElement} from '//resources/ash/common/cr_elements/cr_toggle/cr_toggle.js';
 import {loadTimeData} from '//resources/ash/common/load_time_data.m.js';
+import {loginSyslog} from '//resources/ash/common/logging/webui_syslog_emitter.js';
 import {assert} from '//resources/js/assert.js';
 import {sendWithPromise} from '//resources/js/cr.js';
 import {afterNextRender} from '//resources/polymer/v3_0/polymer/polymer_bundled.min.js';
@@ -359,53 +360,6 @@ class GeminiIntroScreenTester extends ScreenElementApi {
   }
   override shouldSkip(): boolean {
     return loadTimeData.getBoolean('testapi_shouldSkipGeminiIntro');
-  }
-}
-
-class AssistantScreenTester extends ScreenElementApi {
-  private mainElement: PolymerElementApi;
-  private valueProp: PolymerElementApi;
-  private valuePropSkipButtonText: PolymerElementApi;
-  private relatedInfo: PolymerElementApi;
-
-  constructor() {
-    super('assistant-optin-flow');
-    this.mainElement = new PolymerElementApi(this, '#card');
-    this.valueProp = new PolymerElementApi(this.mainElement, '#valueProp');
-    this.valuePropSkipButtonText =
-        new PolymerElementApi(this.valueProp, '#skip-button-text');
-    this.relatedInfo = new PolymerElementApi(this.mainElement, '#relatedInfo');
-  }
-
-  override shouldSkip(): boolean {
-    return loadTimeData.getBoolean('testapi_shouldSkipAssistant');
-  }
-
-  /**
-   * Returns if the assistant screen is ready for test interaction.
-   */
-  isReadyForTesting(): boolean {
-    return (
-        this.isVisible() &&
-        (this.valueProp.isVisible() || this.relatedInfo.isVisible()));
-  }
-
-  getSkipButtonName(): string {
-    if (this.valueProp.isVisible()) {
-      const valuePropSkipButton = this.valuePropSkipButtonText.element();
-      if (!valuePropSkipButton || !valuePropSkipButton.textContent) {
-        return '';
-      }
-      return valuePropSkipButton.textContent;
-    }
-    return loadTimeData.getString('assistantOptinNoThanksButton');
-  }
-
-  /**
-   * Returns whether we currently show existing user flow.
-   */
-  isPreviousUserFlowShown(): boolean {
-    return this.relatedInfo.isVisible();
   }
 }
 
@@ -1156,10 +1110,6 @@ class GaiaInfoScreenTester extends ScreenElementApi {
     this.manualCredentialsButton = new PolymerElementApi(this, '#manualButton');
   }
 
-  override shouldSkip(): boolean {
-    return loadTimeData.getBoolean('testapi_shouldSkipGaiaInfoScreen');
-  }
-
   isCrossDeviceFeatureSuiteAllowed(): boolean {
     return loadTimeData.getBoolean('testapi_isCrossDeviceFeatureSuiteAllowed');
   }
@@ -1213,7 +1163,7 @@ class ChoobeScreenTester extends ScreenElementApi {
   }
 
   requestShouldSkip(): void {
-    sendWithPromise('OobeTestApi.getShouldSkipChoobe')
+    sendWithPromise<boolean>('OobeTestApi.getShouldSkipChoobe')
         .then(shouldBeSkipped => this.setShouldBeSkipped(shouldBeSkipped));
   }
 
@@ -1310,7 +1260,7 @@ class ChoobeDrivePinningScreenTester extends ScreenElementApi {
   isFileSyncEnabled(): boolean {
     const drivePinningToggle = this.drivePinningToggle.element();
     assert(drivePinningToggle instanceof CrToggleElement);
-    return !!drivePinningToggle.checked;
+    return drivePinningToggle.checked;
   }
 
   getSpaceInformationString(): string {
@@ -1333,7 +1283,7 @@ class ChoobeTouchpadScrollScreenTester extends ScreenElementApi {
   }
 
   requestShouldSkip(): void {
-    sendWithPromise('OobeTestApi.getShouldSkipTouchpadScroll')
+    sendWithPromise<boolean>('OobeTestApi.getShouldSkipTouchpadScroll')
         .then(shouldBeSkipped => this.setShouldBeSkipped(shouldBeSkipped));
   }
 
@@ -1431,13 +1381,35 @@ class PersonalizedRecommendAppsScreenTester extends ScreenElementApi {
 }
 
 class SplitModifierKeyboardInfoScreenTester extends ScreenElementApi {
+  private shouldSkipReceived: boolean;
+  private shouldBeSkipped: boolean;
+
   constructor() {
     super('split-modifier-keyboard-info');
+    this.shouldSkipReceived = false;
+    this.shouldBeSkipped = false;
+  }
+
+  requestShouldSkip(): void {
+    sendWithPromise<boolean>('OobeTestApi.getShouldSkipSplitModifierScreen')
+        .then(shouldBeSkipped => this.setShouldBeSkipped(shouldBeSkipped));
+  }
+
+  setShouldBeSkipped(shouldBeSkipped: boolean): void {
+    this.shouldSkipReceived = true;
+    this.shouldBeSkipped = shouldBeSkipped;
+  }
+
+  isShouldSkipReceived(): boolean {
+    return this.shouldSkipReceived;
   }
 
   override shouldSkip(): boolean {
+    // TODO(bohdanty): Add assert check in a follow-up CL to prevent CQ from
+    // breaking.
     return loadTimeData.getBoolean(
-        'testapi_shouldSkipSplitModifierKeyboardInfo');
+               'testapi_shouldSkipSplitModifierKeyboardInfo') ||
+        this.shouldBeSkipped;
   }
 
   isReadyForTesting(): boolean {
@@ -1468,6 +1440,7 @@ export class OobeApiProvider {
   private requestMetricsClientID: () => void;
   private isMetricsClientIdAvailable: () => boolean;
   private getMetricsClientID: () => string;
+  private emitLoginSyslog: (message: string) => void;
 
   constructor() {
     this.screens = {
@@ -1483,7 +1456,6 @@ export class OobeApiProvider {
       FingerprintScreen: new FingerprintScreenTester(),
       AiIntroScreen: new AiIntroScreenTester(),
       GeminiIntroScreen: new GeminiIntroScreenTester(),
-      AssistantScreen: new AssistantScreenTester(),
       MarketingOptInScreen: new MarketingOptInScreenTester(),
       ConfirmSamlPasswordScreen: new ConfirmSamlPasswordScreenTester(),
       PinSetupScreen: new PinSetupScreenTester(),
@@ -1681,7 +1653,7 @@ export class OobeApiProvider {
     };
 
     this.requestMetricsClientID = function(): void {
-      sendWithPromise('OobeTestApi.getMetricsClientID')
+      sendWithPromise<string>('OobeTestApi.getMetricsClientID')
           .then(clientID => this.onMetricsClientIdReceived(clientID));
     };
 
@@ -1699,6 +1671,10 @@ export class OobeApiProvider {
       this.metricsClientID = '';
 
       return id;
+    };
+
+    this.emitLoginSyslog = function(message: string): void {
+      loginSyslog(message);
     };
   }
 

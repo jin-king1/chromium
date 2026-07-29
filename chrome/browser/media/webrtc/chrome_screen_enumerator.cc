@@ -51,7 +51,7 @@ blink::mojom::StreamDevicesSetPtr EnumerateScreens(
           ? std::move(root_windows_for_testing_.Get())
           : ash::Shell::GetAllRootWindows();
 
-  display::Screen* screen = display::Screen::GetScreen();
+  display::Screen* screen = display::Screen::Get();
   blink::mojom::StreamDevicesSetPtr stream_devices_set =
       blink::mojom::StreamDevicesSet::New();
   for (aura::Window* window : root_windows) {
@@ -90,7 +90,9 @@ blink::mojom::StreamDevicesSetPtr EnumerateScreens(
   std::unique_ptr<webrtc::DesktopCapturer> capturer =
       (g_desktop_capturer_for_testing.IsCreated())
           ? std::move(g_desktop_capturer_for_testing.Get())
-          : content::desktop_capture::CreateScreenCapturer();
+          : content::desktop_capture::CreateScreenCapturer(
+                content::desktop_capture::CreateDesktopCaptureOptions(),
+                /*for_snapshot=*/true);
   if (!capturer) {
     return stream_devices_set;
   }

@@ -29,10 +29,9 @@ class CORE_EXPORT FontSizeStyle {
             specified_line_height_ == o.specified_line_height_ &&
             effective_zoom_ == o.effective_zoom_);
   }
-  bool operator!=(const FontSizeStyle& o) const { return !(*this == o); }
 
   const Font* GetFont() const { return font_; }
-  const Length& SpecifiedLineHeight() const { return specified_line_height_; }
+  const Length& LineHeight() const { return specified_line_height_; }
   float SpecifiedFontSize() const {
     return font_->GetFontDescription().SpecifiedSize();
   }

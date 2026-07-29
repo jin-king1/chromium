@@ -8,7 +8,6 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -28,17 +27,16 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
-import org.robolectric.annotation.LooperMode;
-import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.base.Callback;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.RobolectricUtil;
 import org.chromium.base.test.util.Feature;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
-import org.chromium.components.signin.base.CoreAccountInfo;
 import org.chromium.components.signin.identitymanager.IdentityManager;
+import org.chromium.components.signin.test.util.TestAccounts;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -48,13 +46,11 @@ import java.util.Map;
 /** Test for {@link FeedFeedbackCollector}. */
 @RunWith(BaseRobolectricTestRunner.class)
 @Config(manifest = Config.NONE)
-@LooperMode(LooperMode.Mode.LEGACY)
 public class FeedFeedbackCollectorTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
     // Enable the Features class, so we can override command line switches in the test.
     @Mock private Activity mActivity;
     @Mock private Profile mProfile;
-    @Mock private CoreAccountInfo mAccountInfo;
 
     // Test constants.
     private static final String CATEGORY_TAG = "category_tag";
@@ -113,22 +109,20 @@ public class FeedFeedbackCollectorTest {
     @Before
     public void setUp() {
         ThreadUtils.setUiThread(Looper.getMainLooper());
-        when(mAccountInfo.getEmail()).thenReturn(null);
         IdentityServicesProvider.setInstanceForTests(mock(IdentityServicesProvider.class));
         when(IdentityServicesProvider.get().getIdentityManager(any()))
                 .thenReturn(mock(IdentityManager.class));
-        when(IdentityServicesProvider.get()
-                        .getIdentityManager(any())
-                        .getPrimaryAccountInfo(anyInt()))
-                .thenReturn(mAccountInfo);
+        when(IdentityServicesProvider.get().getIdentityManager(any()).getPrimaryAccountInfo())
+                .thenReturn(TestAccounts.ACCOUNT1);
     }
 
     @Test
     @Feature({"Feed"})
+    @SuppressWarnings("DirectInvocationOnMock")
     public void testFeedSynchronousData() {
         @SuppressWarnings("unchecked")
         Callback<FeedbackCollector> callback = mock(Callback.class);
-        Map<String, String> feedContext = new HashMap<String, String>();
+        Map<String, String> feedContext = new HashMap<>();
         feedContext.put(CARD_URL, THE_URL);
         feedContext.put(CARD_PUBLISHER, THE_PUBLISHER);
         feedContext.put(CARD_PUBLISHING_DATE, THE_PUBLISHING_DATE);
@@ -145,7 +139,7 @@ public class FeedFeedbackCollectorTest {
                         feedContext,
                         (result) -> callback.onResult(result));
 
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
         verify(callback, times(1)).onResult(collector);
 
         ThreadUtils.runOnUiThreadBlocking(

@@ -35,12 +35,10 @@ import type {DomRepeat} from 'chrome://resources/polymer/v3_0/polymer/polymer_bu
 import {mixinBehaviors, PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
 import {assertExists, castExists} from '../assert_extras.js';
-import {androidAppsVisible, isInputDeviceSettingsSplitEnabled} from '../common/load_time_booleans.js';
+import {androidAppsVisible} from '../common/load_time_booleans.js';
 import type {RouteObserverMixinInterface} from '../common/route_observer_mixin.js';
 import {RouteObserverMixin} from '../common/route_observer_mixin.js';
 import type {Constructor} from '../common/types.js';
-import type {DevicePageBrowserProxy} from '../device_page/device_page_browser_proxy.js';
-import {DevicePageBrowserProxyImpl} from '../device_page/device_page_browser_proxy.js';
 import {FakeInputDeviceSettingsProvider} from '../device_page/fake_input_device_settings_provider.js';
 import {getInputDeviceSettingsProvider} from '../device_page/input_device_mojo_interface_provider.js';
 import type {InputDeviceSettingsProviderInterface, Keyboard, Mouse, PointingStick, Touchpad} from '../device_page/input_device_settings_types.js';
@@ -217,29 +215,26 @@ export class OsSettingsMenuElement extends OsSettingsMenuElementBase {
     };
   }
 
-  isDrawerMenu: boolean;
-  pageAvailability: OsPageAvailability;
-  private menuItems_: MenuItemData[];
-  private isRtl_: boolean;
-  private selectedItemPath_: string;
+  declare isDrawerMenu: boolean;
+  declare pageAvailability: OsPageAvailability;
+  declare private menuItems_: MenuItemData[];
+  declare private isRtl_: boolean;
+  declare private selectedItemPath_: string;
 
   // Accounts section members.
-  private accountsMenuItemDescription_: string;
+  declare private accountsMenuItemDescription_: string;
 
   // Bluetooth section members.
-  private bluetoothMenuItemDescription_: string;
+  declare private bluetoothMenuItemDescription_: string;
   private bluetoothPropertiesObserverReceiver_:
       BluetoothPropertiesObserverReceiver|undefined;
 
   // Device section members.
-  private deviceMenuItemDescription_: string;
-  private hasKeyboard_: boolean|undefined;
-  private hasMouse_: boolean|undefined;
-  private hasPointingStick_: boolean|undefined;
-  private hasTouchpad_: boolean|undefined;
-  private isInputDeviceSettingsSplitEnabled_: boolean =
-      isInputDeviceSettingsSplitEnabled();
-  private devicePageBrowserProxy_: DevicePageBrowserProxy;
+  declare private deviceMenuItemDescription_: string;
+  declare private hasKeyboard_: boolean|undefined;
+  declare private hasMouse_: boolean|undefined;
+  declare private hasPointingStick_: boolean|undefined;
+  declare private hasTouchpad_: boolean|undefined;
   private inputDeviceSettingsProvider_: InputDeviceSettingsProviderInterface;
   private keyboardSettingsObserverReceiver_: KeyboardSettingsObserverReceiver|
       undefined;
@@ -252,21 +247,17 @@ export class OsSettingsMenuElement extends OsSettingsMenuElementBase {
 
   // Internet section members.
   private networkConfig_: CrosNetworkConfigInterface;
-  private internetMenuItemDescription_: string;
+  declare private internetMenuItemDescription_: string;
   private isDeviceCellularCapable_: boolean;
 
   // Multidevice section members.
   private multideviceBrowserProxy_: MultiDeviceBrowserProxy;
-  private multideviceMenuItemDescription_: string;
+  declare private multideviceMenuItemDescription_: string;
 
   constructor() {
     super();
 
-    if (this.isInputDeviceSettingsSplitEnabled_) {
-      this.inputDeviceSettingsProvider_ = getInputDeviceSettingsProvider();
-    } else {
-      this.devicePageBrowserProxy_ = DevicePageBrowserProxyImpl.getInstance();
-    }
+    this.inputDeviceSettingsProvider_ = getInputDeviceSettingsProvider();
     this.multideviceBrowserProxy_ = MultiDeviceBrowserProxyImpl.getInstance();
   }
 
@@ -285,24 +276,10 @@ export class OsSettingsMenuElement extends OsSettingsMenuElementBase {
     this.observeBluetoothProperties_();
 
     // Device menu item.
-    if (this.isInputDeviceSettingsSplitEnabled_) {
-      this.observeKeyboardSettings_();
-      this.observeMouseSettings_();
-      this.observePointingStickSettings_();
-      this.observeTouchpadSettings_();
-    } else {
-      // Before input device settings split, keyboard was always assumed to
-      // exist.
-      this.hasKeyboard_ = true;
-      this.addWebUiListener(
-          'has-mouse-changed', this.set.bind(this, 'hasMouse_'));
-      this.addWebUiListener(
-          'has-pointing-stick-changed',
-          this.set.bind(this, 'hasPointingStick_'));
-      this.addWebUiListener(
-          'has-touchpad-changed', this.set.bind(this, 'hasTouchpad_'));
-      this.devicePageBrowserProxy_.initializePointers();
-    }
+    this.observeKeyboardSettings_();
+    this.observeMouseSettings_();
+    this.observePointingStickSettings_();
+    this.observeTouchpadSettings_();
 
     // Internet menu item.
     this.networkConfig_ =
@@ -461,7 +438,7 @@ export class OsSettingsMenuElement extends OsSettingsMenuElementBase {
       },
     ];
 
-    return menuItems.filter(({section}) => !!this.pageAvailability[section]);
+    return menuItems.filter(({section}) => this.pageAvailability[section]);
   }
 
   /**

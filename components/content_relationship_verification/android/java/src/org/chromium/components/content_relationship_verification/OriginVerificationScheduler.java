@@ -27,7 +27,7 @@ public class OriginVerificationScheduler {
     private static final String HTTP_SCHEME = "http";
     private static final String HTTPS_SCHEME = "https";
 
-    private OriginVerifier mOriginVerifier;
+    private final OriginVerifier mOriginVerifier;
 
     /** Origins that we have yet to call OriginVerifier#start or whose validatin is not yet finished. */
     private Set<Origin> mPendingOrigins = Collections.synchronizedSet(new HashSet<>());
@@ -65,7 +65,7 @@ public class OriginVerificationScheduler {
 
         if (mPendingOrigins.contains(origin)) {
             mOriginVerifier.start(
-                    (packageName, unused, verified, online) -> {
+                    (packageName, _, verified, online) -> {
                         mPendingOrigins.remove(origin);
 
                         callback.onResult(verified);

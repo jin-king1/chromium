@@ -25,7 +25,7 @@ class LenientMockPageNodeObserver : public PageNodeObserver {
               (override));
   MOCK_METHOD(void,
               OnEmbedderFrameNodeChanged,
-              (const PageNode*, const FrameNode*, EmbeddingType),
+              (const PageNode*, const FrameNode*),
               (override));
   MOCK_METHOD(void, OnTypeChanged, (const PageNode*, PageType), (override));
   MOCK_METHOD(void, OnIsFocusedChanged, (const PageNode*), (override));
@@ -61,7 +61,10 @@ class LenientMockPageNodeObserver : public PageNodeObserver {
   MOCK_METHOD(void, OnMainFrameUrlChanged, (const PageNode*), (override));
   MOCK_METHOD(void, OnMainFrameDocumentChanged, (const PageNode*), (override));
   MOCK_METHOD(void, OnTitleUpdated, (const PageNode*), (override));
-  MOCK_METHOD(void, OnFaviconUpdated, (const PageNode*), (override));
+  MOCK_METHOD(void,
+              OnFaviconUpdated,
+              (const PageNode*, blink::mojom::FaviconUpdateReason),
+              (override));
   MOCK_METHOD(void, OnHadFormInteractionChanged, (const PageNode*), (override));
   MOCK_METHOD(void, OnHadUserEditsChanged, (const PageNode*), (override));
   MOCK_METHOD(void,

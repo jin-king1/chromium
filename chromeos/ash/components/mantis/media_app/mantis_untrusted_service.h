@@ -10,7 +10,6 @@
 #include "base/functional/callback_forward.h"
 #include "base/sequence_checker.h"
 #include "chromeos/ash/components/mantis/mojom/mantis_processor.mojom.h"
-#include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
@@ -58,6 +57,9 @@ class COMPONENT_EXPORT(CHROMEOS_ASH_COMPONENTS_MANTIS_MEDIA_APP)
                      const std::vector<uint8_t>& mask,
                      uint32_t seed,
                      OutpaintImageCallback callback) override;
+
+  void InferSegmentationMode(std::vector<mantis::mojom::TouchPointPtr> gesture,
+                             InferSegmentationModeCallback callback) override;
 
  private:
   mojo::Receiver<media_app_ui::mojom::MantisUntrustedService> receiver_;

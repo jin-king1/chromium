@@ -17,6 +17,7 @@
 #include "base/trace_event/memory_dump_request_args.h"
 #include "base/trace_event/process_memory_dump.h"
 #include "build/build_config.h"
+#include "gpu/vulkan/skia_vk_memory_allocator_impl.h"
 #include "gpu/vulkan/vma_wrapper.h"
 #include "gpu/vulkan/vulkan_instance.h"
 #include "ui/gfx/extension_set.h"
@@ -61,7 +62,7 @@ class COMPONENT_EXPORT(VULKAN) VulkanDeviceQueue
       uint32_t heap_memory_limit,
       const bool is_thread_safe = false);
 
-  bool InitializeFromANGLE();
+  bool InitializeFromANGLE(const bool is_thread_safe);
 
   bool InitializeForWebView(VkPhysicalDevice vk_physical_device,
                             VkDevice vk_device,
@@ -128,6 +129,10 @@ class COMPONENT_EXPORT(VULKAN) VulkanDeviceQueue
 
   VulkanFenceHelper* GetFenceHelper() const { return cleanup_helper_.get(); }
 
+  sk_sp<gpu::SkiaVulkanMemoryAllocator> GetSkiaVkMemoryAllocator() const {
+    return skia_vk_memory_allocator_;
+  }
+
   const VkPhysicalDeviceFeatures2& enabled_device_features_2() const {
     if (enabled_device_features_2_from_angle_)
       return *enabled_device_features_2_from_angle_;
@@ -151,7 +156,8 @@ class COMPONENT_EXPORT(VULKAN) VulkanDeviceQueue
                   VkDevice vk_device,
                   VkQueue vk_queue,
                   uint32_t vk_queue_index,
-                  gfx::ExtensionSet enabled_extensions);
+                  gfx::ExtensionSet enabled_extensions,
+                  const bool is_thread_safe);
 
   gfx::ExtensionSet enabled_extensions_;
   VkPhysicalDevice vk_physical_device_ = VK_NULL_HANDLE;
@@ -172,6 +178,7 @@ class COMPONENT_EXPORT(VULKAN) VulkanDeviceQueue
   raw_ptr<const VkPhysicalDeviceFeatures2>
       enabled_device_features_2_from_angle_ = nullptr;
   raw_ptr<void> angle_display_ = nullptr;
+  sk_sp<gpu::SkiaVulkanMemoryAllocator> skia_vk_memory_allocator_ = nullptr;
 
   bool allow_protected_memory_ = false;
 

@@ -8,7 +8,6 @@
 #include <memory>
 
 #include "base/functional/function_ref.h"
-#include "base/memory/scoped_refptr.h"
 #include "services/network/public/mojom/referrer_policy.mojom-blink-forward.h"
 #include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/public/mojom/frame/back_forward_cache_controller.mojom-blink-forward.h"
@@ -23,6 +22,7 @@
 #include "third_party/blink/renderer/core/workers/parent_execution_context_task_runners.h"
 #include "third_party/blink/renderer/core/workers/threaded_messaging_proxy_base.h"
 #include "third_party/blink/renderer/core/workers/worker_backing_thread_startup_data.h"
+#include "third_party/blink/renderer/platform/bindings/cross_thread_source_location.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 
 namespace blink {
@@ -32,6 +32,8 @@ class DedicatedWorkerObjectProxy;
 class FetchClientSettingsObjectSnapshot;
 class WorkerOptions;
 struct WorkerMainScriptLoadParameters;
+struct JavaScriptFrameworkDetectionResult;
+struct WebPolicyContainer;
 
 // A proxy class to talk to the DedicatedWorkerGlobalScope on a worker thread
 // via the DedicatedWorkerMessagingProxy from the main thread. See class
@@ -62,13 +64,12 @@ class CORE_EXPORT DedicatedWorkerMessagingProxy
       const KURL& script_url,
       const FetchClientSettingsObjectSnapshot& outside_settings_object,
       const v8_inspector::V8StackTraceId&,
-      const String& source_code,
-      RejectCoepUnsafeNone reject_coep_unsafe_none,
       const blink::DedicatedWorkerToken& token,
       mojo::PendingRemote<mojom::blink::DedicatedWorkerHost>
           dedicated_worker_host,
       mojo::PendingRemote<mojom::blink::BackForwardCacheControllerHost>
-          back_forward_cache_controller_host);
+          back_forward_cache_controller_host,
+      std::unique_ptr<WebPolicyContainer> policy_container);
   void PostMessageToWorkerGlobalScope(BlinkTransferableMessage);
   void PostCustomEventToWorkerGlobalScope(
       TaskType task_type,
@@ -86,10 +87,11 @@ class CORE_EXPORT DedicatedWorkerMessagingProxy
 
   // These methods come from worker context thread via
   // DedicatedWorkerObjectProxy and are called on the parent context thread.
-  void DidEvaluateScript(bool success);
+  void DidEvaluateScript(bool success,
+                         const JavaScriptFrameworkDetectionResult& result);
   void PostMessageToWorkerObject(BlinkTransferableMessage);
   void DispatchErrorEvent(const String& error_message,
-                          std::unique_ptr<SourceLocation>,
+                          const CrossThreadSourceLocation& cross_location,
                           int exception_id);
 
   // Freezes the WorkerThread. `is_in_back_forward_cache` is true only when the
@@ -152,6 +154,9 @@ class CORE_EXPORT DedicatedWorkerMessagingProxy
 
   // Pauses virtual time in parent context until the worker is initialized.
   WebScopedVirtualTimePauser virtual_time_pauser_;
+
+  // Tracks the freeze state when the worker thread is not yet created.
+  std::optional<bool> pending_freeze_is_in_back_forward_cache_;
 };
 
 }  // namespace blink

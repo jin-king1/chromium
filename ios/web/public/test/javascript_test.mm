@@ -17,8 +17,9 @@ JavascriptTest::JavascriptTest() : web_view_([[WKWebView alloc] init]) {
 }
 JavascriptTest::~JavascriptTest() {}
 
-bool JavascriptTest::LoadHtml(NSString* html) {
-  return web::test::LoadHtml(web_view_, html, nil);
+bool JavascriptTest::LoadHtml(NSString* html, std::optional<GURL> base_url) {
+  return web::test::LoadHtml(web_view_, html,
+                             base_url ? net::NSURLWithGURL(*base_url) : nil);
 }
 
 bool JavascriptTest::LoadUrl(const GURL& url) {
@@ -34,14 +35,6 @@ bool JavascriptTest::LoadUrl(const GURL& url) {
 
 void JavascriptTest::AddGCrWebScript() {
   AddUserScript(@"gcrweb");
-}
-
-void JavascriptTest::AddCommonScript() {
-  AddUserScript(@"common");
-}
-
-void JavascriptTest::AddMessageScript() {
-  AddUserScript(@"message");
 }
 
 void JavascriptTest::AddUserScript(NSString* script_name) {

@@ -12,11 +12,11 @@
 
 #include "base/component_export.h"
 #include "base/containers/span.h"
-#include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
 #include "base/values.h"
+#include "crypto/signature_verifier.h"
 #include "google_apis/gaia/gaia_id.h"
 #include "google_apis/gaia/oauth2_api_call_flow.h"
 #include "net/cookies/canonical_cookie.h"
@@ -25,9 +25,6 @@
 
 class GoogleServiceAuthError;
 class OAuth2MintTokenFlowTest;
-
-COMPONENT_EXPORT(GOOGLE_APIS)
-extern const char kOAuth2MintTokenApiCallResultHistogram[];
 
 // Values carrying the result of processing a successful API call.
 // These values are persisted to logs. Entries should not be renumbered and
@@ -66,7 +63,8 @@ struct COMPONENT_EXPORT(GOOGLE_APIS) RemoteConsentResolutionData {
   GURL url;
   net::CookieList cookies;
 
-  bool operator==(const RemoteConsentResolutionData& rhs) const;
+  friend bool operator==(const RemoteConsentResolutionData&,
+                         const RemoteConsentResolutionData&) = default;
 };
 
 // This class implements the OAuth2 flow to Google to mint an OAuth2 access
@@ -111,7 +109,8 @@ class COMPONENT_EXPORT(GOOGLE_APIS) OAuth2MintTokenFlow
         std::string_view version,
         std::string_view channel,
         std::string_view device_id = {},
-        std::string_view bound_oauth_token = {});
+        std::string_view bound_oauth_token = {},
+        bool use_mtls_endpoints = false);
 
     Parameters(Parameters&& other) noexcept;
     Parameters& operator=(Parameters&& other) noexcept;
@@ -135,6 +134,8 @@ class COMPONENT_EXPORT(GOOGLE_APIS) OAuth2MintTokenFlow
     GaiaId selected_user_id;
     std::string consent_result;
     std::string bound_oauth_token;
+    bool use_mtls_endpoints = false;
+    bool check_bound_token_upgrade_eligibility = false;
 
    private:
     // Only an explicit copy with `Clone()` is allowed.
@@ -156,6 +157,9 @@ class COMPONENT_EXPORT(GOOGLE_APIS) OAuth2MintTokenFlow
     std::set<std::string> granted_scopes;
     base::TimeDelta time_to_live;
     bool is_token_encrypted = false;
+    std::string bound_token_upgrade_challenge;
+    std::vector<crypto::SignatureVerifier::SignatureAlgorithm>
+        bound_token_upgrade_supported_algorithms;
   };
 
   class COMPONENT_EXPORT(GOOGLE_APIS) Delegate {
@@ -181,16 +185,17 @@ class COMPONENT_EXPORT(GOOGLE_APIS) OAuth2MintTokenFlow
  protected:
   // Implementation of template methods in OAuth2ApiCallFlow.
   GURL CreateApiCallUrl() override;
+  network::mojom::CredentialsMode GetCredentialsMode() const override;
   net::HttpRequestHeaders CreateApiCallHeaders() override;
   std::string CreateApiCallBody() override;
   std::string CreateAuthorizationHeaderValue(
       const std::string& access_token) override;
 
   void ProcessApiCallSuccess(const network::mojom::URLResponseHead* head,
-                             std::unique_ptr<std::string> body) override;
+                             std::optional<std::string> body) override;
   void ProcessApiCallFailure(int net_error,
                              const network::mojom::URLResponseHead* head,
-                             std::unique_ptr<std::string> body) override;
+                             std::optional<std::string> body) override;
   net::PartialNetworkTrafficAnnotationTag GetNetworkTrafficAnnotationTag()
       override;
 
@@ -203,11 +208,11 @@ class COMPONENT_EXPORT(GOOGLE_APIS) OAuth2MintTokenFlow
   void ReportFailure(const GoogleServiceAuthError& error);
 
   static bool ParseRemoteConsentResponse(
-      const base::Value::Dict& dict,
+      const base::DictValue& dict,
       RemoteConsentResolutionData* resolution_data);
 
   static std::optional<MintTokenResult> ParseMintTokenResponse(
-      const base::Value::Dict& dict);
+      const base::DictValue& dict);
 
   raw_ptr<Delegate> delegate_;
   Parameters parameters_;

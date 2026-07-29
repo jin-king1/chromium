@@ -51,33 +51,33 @@ constexpr bool IsHTTPWhitespace(UChar chr) {
 }
 
 bool IsValidSuffixCodePoint(UChar chr) {
-  return IsASCIIAlphanumeric(chr) || chr == '+' || chr == '.';
+  return IsAsciiAlphanumeric(chr) || chr == '+' || chr == '.';
 }
 
 bool IsValidIdCodePoint(UChar chr) {
-  return IsASCIIAlphanumeric(chr) || chr == '_' || chr == '-';
+  return IsAsciiAlphanumeric(chr) || chr == '_' || chr == '-';
 }
 
 bool VerifyIsValidExtension(const String& extension,
                             ExceptionState& exception_state) {
-  if (!extension.StartsWith(".")) {
-    exception_state.ThrowTypeError("Extension '" + extension +
-                                   "' must start with '.'.");
+  if (!extension.starts_with('.')) {
+    exception_state.ThrowTypeError(
+        StrCat({"Extension '", extension, "' must start with '.'."}));
     return false;
   }
   if (!extension.IsAllSpecialCharacters<IsValidSuffixCodePoint>()) {
-    exception_state.ThrowTypeError("Extension '" + extension +
-                                   "' contains invalid characters.");
+    exception_state.ThrowTypeError(
+        StrCat({"Extension '", extension, "' contains invalid characters."}));
     return false;
   }
-  if (extension.EndsWith(".")) {
-    exception_state.ThrowTypeError("Extension '" + extension +
-                                   "' must not end with '.'.");
+  if (extension.ends_with('.')) {
+    exception_state.ThrowTypeError(
+        StrCat({"Extension '", extension, "' must not end with '.'."}));
     return false;
   }
   if (extension.length() > 16) {
-    exception_state.ThrowTypeError("Extension '" + extension +
-                                   "' cannot be longer than 16 characters.");
+    exception_state.ThrowTypeError(StrCat(
+        {"Extension '", extension, "' cannot be longer than 16 characters."}));
     return false;
   }
 
@@ -86,13 +86,13 @@ bool VerifyIsValidExtension(const String& extension,
 
 String VerifyIsValidId(const String& id, ExceptionState& exception_state) {
   if (!id.IsAllSpecialCharacters<IsValidIdCodePoint>()) {
-    exception_state.ThrowTypeError("ID '" + id +
-                                   "' contains invalid characters.");
+    exception_state.ThrowTypeError(
+        StrCat({"ID '", id, "' contains invalid characters."}));
     return String();
   }
   if (id.length() > 32) {
-    exception_state.ThrowTypeError("ID '" + id +
-                                   "' cannot be longer than 32 characters.");
+    exception_state.ThrowTypeError(
+        StrCat({"ID '", id, "' cannot be longer than 32 characters."}));
     return String();
   }
 
@@ -105,7 +105,7 @@ bool AddExtension(const String& extension,
   if (!VerifyIsValidExtension(extension, exception_state))
     return false;
 
-  extensions.push_back(extension.Substring(1));
+  extensions.push_back(extension.substr(1));
   return true;
 }
 
@@ -123,21 +123,20 @@ Vector<mojom::blink::ChooseFileSystemEntryAcceptsOptionPtr> ConvertAccepts(
     for (const auto& a : t->accept()) {
       String type = a.first.StripWhiteSpace(IsHTTPWhitespace);
       if (type.empty()) {
-        exception_state.ThrowTypeError("Invalid type: " + a.first);
+        exception_state.ThrowTypeError(StrCat({"Invalid type: ", a.first}));
         return {};
       }
-      Vector<String> parsed_type;
-      type.Split('/', true, parsed_type);
+      Vector<StringView> parsed_type = StringView(type).Split('/');
       if (parsed_type.size() != 2) {
-        exception_state.ThrowTypeError("Invalid type: " + a.first);
+        exception_state.ThrowTypeError(StrCat({"Invalid type: ", a.first}));
         return {};
       }
       if (!IsValidHTTPToken(parsed_type[0])) {
-        exception_state.ThrowTypeError("Invalid type: " + a.first);
+        exception_state.ThrowTypeError(StrCat({"Invalid type: ", a.first}));
         return {};
       }
       if (!IsValidHTTPToken(parsed_type[1])) {
-        exception_state.ThrowTypeError("Invalid type: " + a.first);
+        exception_state.ThrowTypeError(StrCat({"Invalid type: ", a.first}));
         return {};
       }
 
@@ -255,10 +254,11 @@ void ShowFilePickerImpl(ScriptPromiseResolverBase* resolver,
       options->type_specific_options->is_open_file_picker_options() &&
       options->type_specific_options->get_open_file_picker_options()
           ->can_select_multiple_files;
-  bool intercepted = false;
+  bool suppressed = false;
+  bool canceled = false;
   probe::FileChooserOpened(window.GetFrame(), /*element=*/nullptr, multiple,
-                           &intercepted);
-  if (intercepted) {
+                           &suppressed, &canceled);
+  if (suppressed || canceled) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kAbortError,
         "Intercepted by Page.setInterceptFileChooserDialog().");
@@ -268,7 +268,7 @@ void ShowFilePickerImpl(ScriptPromiseResolverBase* resolver,
   FileSystemAccessManager::From(resolver->GetExecutionContext())
       ->ChooseEntries(
           std::move(options),
-          WTF::BindOnce(
+          BindOnce(
               [](ScriptPromiseResolverBase* resolver, ShowFilePickerType type,
                  LocalFrame* local_frame,
                  mojom::blink::FileSystemAccessErrorPtr file_operation_result,
@@ -458,10 +458,17 @@ GlobalFileSystemAccess::showDirectoryPicker(
   if (exception_state.HadException())
     return EmptyPromise();
 
-  bool request_writable =
-      options->mode() == V8FileSystemPermissionMode::Enum::kReadwrite;
+  mojom::blink::FileSystemAccessPermissionMode mode;
+  switch (options->mode().AsEnum()) {
+    case V8FileSystemPermissionMode::Enum::kRead:
+      mode = mojom::blink::FileSystemAccessPermissionMode::kRead;
+      break;
+    case V8FileSystemPermissionMode::Enum::kReadwrite:
+      mode = mojom::blink::FileSystemAccessPermissionMode::kReadWrite;
+      break;
+  }
   auto directory_picker_options =
-      mojom::blink::DirectoryPickerOptions::New(request_writable);
+      mojom::blink::DirectoryPickerOptions::New(mode);
   auto* resolver =
       MakeGarbageCollected<ScriptPromiseResolver<FileSystemDirectoryHandle>>(
           script_state, exception_state.GetContext());

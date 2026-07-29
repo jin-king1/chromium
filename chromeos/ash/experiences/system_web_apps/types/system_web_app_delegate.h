@@ -5,19 +5,20 @@
 #ifndef CHROMEOS_ASH_EXPERIENCES_SYSTEM_WEB_APPS_TYPES_SYSTEM_WEB_APP_DELEGATE_H_
 #define CHROMEOS_ASH_EXPERIENCES_SYSTEM_WEB_APPS_TYPES_SYSTEM_WEB_APP_DELEGATE_H_
 
+#include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
-#include "ash/webui/system_apps/public/system_web_app_type.h"
 #include "base/files/file_path.h"
 #include "base/memory/raw_ptr.h"
+#include "chromeos/ash/components/system_web_apps/system_web_app_type.h"
 #include "chromeos/ash/experiences/system_web_apps/types/system_web_app_background_task_info.h"
 #include "ui/menus/simple_menu_model.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
-class Browser;
 class Profile;
 
 namespace apps {
@@ -34,6 +35,8 @@ class WebAppProvider;
 }  // namespace web_app
 
 namespace ash {
+
+class BrowserDelegate;
 
 using OriginTrialsMap = std::map<url::Origin, std::vector<std::string>>;
 
@@ -76,6 +79,11 @@ class SystemWebAppDelegate {
   // Returns a WebAppInstallInfo struct to complete installation.
   virtual std::unique_ptr<web_app::WebAppInstallInfo> GetWebAppInfo() const = 0;
 
+  // Decides whether the `SystemWebAppManager` should override its default app
+  // update policy and trigger a force reinstall on system start. If false is
+  // returned, the default app update policy is applied.
+  virtual bool ShouldForceReinstall() const;
+
   // Returns a vector of AppIDs. Each app_id (a string id) may correspond to any
   // ChromeOS app: ChromeApp, WebApp, Arc++ etc. The apps specified will have
   // their data migrated to this System App.
@@ -92,7 +100,8 @@ class SystemWebAppDelegate {
   //
   // This is implemented in
   // chrome/browser/ui/ash/system_web_apps/system_web_app_delegate_ui_impl.cc.
-  virtual Browser* GetWindowForLaunch(Profile* profile, const GURL& url) const;
+  virtual BrowserDelegate* GetWindowForLaunch(Profile* profile,
+                                              const GURL& url) const;
 
   // If true, adds a "New Window" option to App's shelf context menu.
   // NOTE: Combining this with a GetWindowForLaunch function that allows window
@@ -170,7 +179,7 @@ class SystemWebAppDelegate {
   virtual std::optional<SystemWebAppBackgroundTaskInfo> GetTimerInfo() const;
 
   // Default window bounds of the application.
-  virtual gfx::Rect GetDefaultBounds(Browser* browser) const;
+  virtual gfx::Rect GetDefaultBounds(BrowserDelegate* browser) const;
 
   // If false, the application will not be installed.
   virtual bool IsAppEnabled() const;
@@ -202,7 +211,7 @@ class SystemWebAppDelegate {
   //
   // This is implemented in
   // chrome/browser/ui/ash/system_web_apps/system_web_app_delegate_ui_impl.cc.
-  virtual Browser* LaunchAndNavigateSystemWebApp(
+  virtual BrowserDelegate* LaunchAndNavigateSystemWebApp(
       Profile* profile,
       web_app::WebAppProvider* provider,
       const GURL& url,
@@ -218,9 +227,6 @@ class SystemWebAppDelegate {
   //   2. Manifest color (if defined).
   //   3. Default color.
   virtual bool UseSystemThemeColor() const;
-
-  // Returns whether theme changes should be animated.
-  virtual bool ShouldAnimateThemeChanges() const;
 
   // TODO(crbug.com/1308961): Migrate to use PWA pinned home tab when ready.
   // Returns whether the specified tab should be pinned.

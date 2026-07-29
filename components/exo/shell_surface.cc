@@ -6,7 +6,7 @@
 
 #include <optional>
 
-#include "ash/frame/non_client_frame_view_ash.h"
+#include "ash/frame/frame_view_ash.h"
 #include "ash/public/cpp/shell_window_ids.h"
 #include "ash/shell.h"
 #include "ash/wm/desks/desks_util.h"
@@ -58,7 +58,7 @@ gfx::Rect GetClientBoundsInScreen(views::Widget* widget) {
   gfx::Rect window_bounds = widget->GetWindowBoundsInScreen();
   // Account for popup windows not having a non-client view.
   if (widget->non_client_view()) {
-    return static_cast<ash::NonClientFrameViewAsh*>(
+    return static_cast<ash::FrameViewAsh*>(
                widget->non_client_view()->frame_view())
         ->GetClientBoundsForWindowBounds(window_bounds);
   }
@@ -478,7 +478,7 @@ void ShellSurface::MaybeActivateSurface() {
            !pending_configs_.empty());
     host_window()->layer()->SetShowSurface(
         host_window()->GetSurfaceId(), host_window()->bounds().size(),
-        SK_ColorWHITE, cc::DeadlinePolicy::UseDefaultDeadline(),
+        SkColors::kWhite, cc::DeadlinePolicy::UseDefaultDeadline(),
         false /* stretch_content_to_fill_bounds */);
     host_window()->layer()->SetOldestAcceptableFallback(viz::SurfaceId{});
   }
@@ -846,7 +846,7 @@ gfx::Rect ShellSurface::ComputeAdjustedBounds(const gfx::Rect& bounds) const {
 
   // The size should never be bigger than work area, even if the min size is
   // bigger than that.
-  auto work_area = display::Screen::GetScreen()
+  auto work_area = display::Screen::Get()
                        ->GetDisplayNearestWindow(widget_->GetNativeWindow())
                        .work_area();
   size.SetToMin(work_area.size());
@@ -923,12 +923,12 @@ void ShellSurface::ShowWidget(bool activate) {
   occlusion_observer_->MaybeConfigure(root_surface()->window());
 }
 
-std::unique_ptr<views::NonClientFrameView>
-ShellSurface::CreateNonClientFrameView(views::Widget* widget) {
+std::unique_ptr<views::FrameView> ShellSurface::CreateFrameView(
+    views::Widget* widget) {
   ash::WindowState* window_state =
       ash::WindowState::Get(widget->GetNativeWindow());
   window_state->SetDelegate(std::make_unique<CustomWindowStateDelegate>(this));
-  return CreateNonClientFrameViewInternal(widget);
+  return CreateFrameViewInternal(widget);
 }
 
 void ShellSurface::SetRootSurface(Surface* root_surface) {
@@ -1063,7 +1063,7 @@ void ShellSurface::Configure(bool ends_drag) {
                      GetCurrentLocalSurfaceId().parent_sequence_number()) {
     host_window()->layer()->SetShowSurface(
         host_window()->GetSurfaceId(), GetClientBoundsInScreen(widget_).size(),
-        SK_ColorWHITE, cc::DeadlinePolicy::UseDefaultDeadline(),
+        SkColors::kWhite, cc::DeadlinePolicy::UseDefaultDeadline(),
         /*stretch_content_to_fill_bounds=*/true);
     host_window()->layer()->SetOldestAcceptableFallback(GetSurfaceId());
   }
@@ -1157,7 +1157,7 @@ gfx::Rect ShellSurface::GetInitialBoundsForState(
 }
 
 display::Display ShellSurface::GetDisplayForInitialBounds() const {
-  auto* screen = display::Screen::GetScreen();
+  auto* screen = display::Screen::Get();
   display::Display display = screen->GetDisplayForNewWindows();
   // Use `pending_display_id_` as this is called before first commit.
   if (!screen->GetDisplayWithDisplayId(pending_display_id_, &display) &&
@@ -1192,7 +1192,7 @@ void ShellSurface::UpdateLayerSurfaceRange(
           viz::SurfaceId(frame_sink_id_, {layer_lsi.parent_sequence_number(),
                                           current_lsi.child_sequence_number(),
                                           current_lsi.embed_token()}),
-          SK_ColorWHITE, cc::DeadlinePolicy::UseDefaultDeadline(),
+          SkColors::kWhite, cc::DeadlinePolicy::UseDefaultDeadline(),
           true /* stretch_content_to_fill_bounds */);
     }
     layer->SetOldestAcceptableFallback(
@@ -1207,7 +1207,8 @@ void ShellSurface::UpdateLayerSurfaceRange(
       // `current_lsi` has caught up to `layer`. Allow the shell_surface to
       // modify the surface layer bounds, clear the oldest fallback and disable
       // stretch.
-      layer->SetShowSurface(surface_id, layer->bounds().size(), SK_ColorWHITE,
+      layer->SetShowSurface(surface_id, layer->bounds().size(),
+                            SkColors::kWhite,
                             cc::DeadlinePolicy::UseDefaultDeadline(),
                             false /* stretch_content_to_fill_bounds */);
       layer->SetOldestAcceptableFallback(viz::SurfaceId{});

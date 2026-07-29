@@ -4,6 +4,8 @@
 
 package org.chromium.chrome.browser.metrics;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.content.ComponentCallbacks;
 import android.content.Context;
 import android.content.res.Configuration;
@@ -11,14 +13,14 @@ import android.view.InputDevice;
 
 import androidx.annotation.VisibleForTesting;
 
-import org.jni_zero.CalledByNative;
 import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
-import org.chromium.base.ApplicationStatus;
 import org.chromium.base.Log;
 import org.chromium.base.metrics.RecordHistogram;
-import org.chromium.chrome.browser.DefaultBrowserInfo;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.DefaultBrowserInfoUmaRecorder;
 import org.chromium.chrome.browser.flags.ActivityType;
 import org.chromium.chrome.browser.privacy.settings.PrivacyPreferencesManagerImpl;
 import org.chromium.chrome.browser.tab.Tab;
@@ -26,7 +28,7 @@ import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorTabObserver;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeUtils;
-import org.chromium.components.embedder_support.util.UrlUtilitiesJni;
+import org.chromium.components.embedder_support.util.UrlUtilities;
 import org.chromium.components.variations.SyntheticTrialAnnotationMode;
 import org.chromium.content_public.browser.BrowserStartupController;
 import org.chromium.content_public.browser.DeviceUtils;
@@ -37,9 +39,10 @@ import org.chromium.url.GURL;
 
 /**
  * Mainly sets up session stats for chrome. A session is defined as the duration when the
- * application is in the foreground.  Also used to communicate information between Chrome
- * and the framework's MetricService.
+ * application is in the foreground. Also used to communicate information between Chrome and the
+ * framework's MetricService.
  */
+@NullMarked
 public class UmaSessionStats {
     private static final String TAG = "UmaSessionStats";
 
@@ -47,11 +50,11 @@ public class UmaSessionStats {
 
     // TabModelSelector is needed to get the count of open tabs. We want to log the number of open
     // tabs on every page load.
-    private TabModelSelector mTabModelSelector;
-    private TabModelSelectorTabObserver mTabModelSelectorTabObserver;
+    private @Nullable TabModelSelector mTabModelSelector;
+    private @Nullable TabModelSelectorTabObserver mTabModelSelectorTabObserver;
 
     private final Context mContext;
-    private ComponentCallbacks mComponentCallbacks;
+    private @Nullable ComponentCallbacks mComponentCallbacks;
 
     private boolean mKeyboardConnected;
 
@@ -81,7 +84,7 @@ public class UmaSessionStats {
         if (connectedDevices.contains(InputDevice.SOURCE_MOUSE)) {
             UmaSessionStatsJni.get().recordPageLoadedWithMouse();
         }
-        if (EdgeToEdgeUtils.isEnabled() && EdgeToEdgeUtils.isPageOptedIntoEdgeToEdge(tab)) {
+        if (EdgeToEdgeUtils.isPageOptedIntoEdgeToEdge(tab)) {
             UmaSessionStatsJni.get().recordPageLoadedWithToEdge();
         }
 
@@ -109,8 +112,8 @@ public class UmaSessionStats {
      */
     public void startNewSession(
             @ActivityType int activityType,
-            TabModelSelector tabModelSelector,
-            AndroidPermissionDelegate permissionDelegate) {
+            @Nullable TabModelSelector tabModelSelector,
+            @Nullable AndroidPermissionDelegate permissionDelegate) {
         ensureNativeInitialized();
         mTabbedSessionContainedGoogleSearch = false;
         mCurrentActivityType = activityType;
@@ -145,17 +148,17 @@ public class UmaSessionStats {
                         public void onDidFinishNavigationInPrimaryMainFrame(
                                 Tab tab, NavigationHandle navigation) {
                             if (!navigation.hasCommitted()) return;
-                            if (UrlUtilitiesJni.get().isGoogleSearchUrl(tab.getUrl().getSpec())) {
+                            if (UrlUtilities.isGoogleSearchUrl(tab.getUrl().getSpec())) {
                                 mTabbedSessionContainedGoogleSearch = true;
                             }
                         }
                     };
         }
 
-        UmaSessionStatsJni.get().umaResumeSession(sNativeUmaSessionStats, UmaSessionStats.this);
+        UmaSessionStatsJni.get().umaResumeSession(sNativeUmaSessionStats);
         updatePreferences();
         updateMetricsServiceState();
-        DefaultBrowserInfo.logDefaultBrowserStats();
+        DefaultBrowserInfoUmaRecorder.logDefaultBrowserStats();
     }
 
     private static void ensureNativeInitialized() {
@@ -166,10 +169,11 @@ public class UmaSessionStats {
         }
     }
 
-    /** Logs the current session. */
-    public void logAndEndSession() {
+    /** Unregisters observers, and if this is the last active session, logs the current session. */
+    public void endSessionAndMaybeLog() {
         if (mTabModelSelector != null) {
             mContext.unregisterComponentCallbacks(mComponentCallbacks);
+            assumeNonNull(mTabModelSelectorTabObserver);
             mTabModelSelectorTabObserver.destroy();
             mTabModelSelector = null;
         }
@@ -179,21 +183,21 @@ public class UmaSessionStats {
                     mTabbedSessionContainedGoogleSearch);
         }
 
-        UmaSessionStatsJni.get().umaEndSession(sNativeUmaSessionStats, UmaSessionStats.this);
+        UmaSessionStatsJni.get().umaEndSession(sNativeUmaSessionStats);
     }
 
     /**
-     * Updates the metrics services based on a change of consent. This can happen during first-run
-     * flow, and when the user changes their preferences.
+     * Updates the metrics services based on user choice. This can happen during first-run flow, and
+     * when the user changes their preferences.
      */
-    public static void changeMetricsReportingConsent(
-            boolean consent, @ChangeMetricsReportingStateCalledFrom int calledFrom) {
+    public static void changeMetricsReportingState(
+            boolean enabled, @ChangeMetricsReportingStateCalledFrom int calledFrom) {
         PrivacyPreferencesManagerImpl privacyManager = PrivacyPreferencesManagerImpl.getInstance();
         // Update the metrics reporting preference.
-        privacyManager.setUsageAndCrashReporting(consent);
+        privacyManager.setUsageAndCrashReporting(enabled);
 
         // Perform native changes needed to reflect the new consent value.
-        UmaSessionStatsJni.get().changeMetricsReportingConsent(consent, calledFrom);
+        UmaSessionStatsJni.get().changeMetricsReportingState(enabled, calledFrom);
 
         updateMetricsServiceState();
     }
@@ -284,18 +288,12 @@ public class UmaSessionStats {
         return BrowserStartupController.getInstance().isFullBrowserStarted();
     }
 
-    /** Returns whether there is a visible activity. */
-    @CalledByNative
-    private static boolean hasVisibleActivity() {
-        return ApplicationStatus.hasVisibleActivities();
-    }
-
     @VisibleForTesting
     @NativeMethods
     public interface Natives {
         long init();
 
-        void changeMetricsReportingConsent(boolean consent, int calledFrom);
+        void changeMetricsReportingState(boolean enabled, int calledFrom);
 
         void initMetricsAndCrashReportingForTesting();
 
@@ -305,9 +303,9 @@ public class UmaSessionStats {
 
         void updateMetricsServiceState(boolean mayUpload);
 
-        void umaResumeSession(long nativeUmaSessionStats, UmaSessionStats caller);
+        void umaResumeSession(long nativeUmaSessionStats);
 
-        void umaEndSession(long nativeUmaSessionStats, UmaSessionStats caller);
+        void umaEndSession(long nativeUmaSessionStats);
 
         void registerExternalExperiment(int[] experimentIds, boolean overrideExistingIds);
 

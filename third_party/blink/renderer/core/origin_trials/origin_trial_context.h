@@ -237,10 +237,6 @@ class CORE_EXPORT OriginTrialContext final
       Document&,
       ScriptState*);
 
-  // Installs a settings feature for the relevant Document instance. Returns
-  // whether the given OriginTrialFeature describes a setting feature.
-  bool InstallSettingFeature(Document&, mojom::blink::OriginTrialFeature);
-
   // Caches raw origin trial token along with the parse result to
   // `trial_results_`.
   void CacheToken(const String& raw_token,
@@ -262,8 +258,7 @@ class CORE_EXPORT OriginTrialContext final
   HashSet<mojom::blink::OriginTrialFeature> enabled_features_;
   HashSet<mojom::blink::OriginTrialFeature> installed_features_;
   HashSet<mojom::blink::OriginTrialFeature> navigation_activated_features_;
-  WTF::HashMap<mojom::blink::OriginTrialFeature, base::Time>
-      feature_expiry_times_;
+  HashMap<mojom::blink::OriginTrialFeature, base::Time> feature_expiry_times_;
   std::unique_ptr<TrialTokenValidator> trial_token_validator_;
   Member<ExecutionContext> context_;
   // Stores raw origin trial token along with the parse result.

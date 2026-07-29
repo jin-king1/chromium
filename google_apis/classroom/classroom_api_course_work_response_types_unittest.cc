@@ -22,7 +22,8 @@ constexpr int64_t kNanosInHour = kNanosInMinute * 60;
 }  // namespace
 
 TEST(ClassroomApiCourseWorkResponseTypesTest, ConvertsEmptyResponse) {
-  auto raw_course_work = JSONReader::Read("{}");
+  auto raw_course_work =
+      JSONReader::Read("{}", base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(raw_course_work);
 
   auto course_work = CourseWork::CreateFrom(raw_course_work.value());
@@ -32,7 +33,8 @@ TEST(ClassroomApiCourseWorkResponseTypesTest, ConvertsEmptyResponse) {
 }
 
 TEST(ClassroomApiCourseWorkResponseTypesTest, ConvertsCourseWork) {
-  const auto raw_course_work = JSONReader::Read(R"(
+  const auto raw_course_work =
+      JSONReader::Read(R"(
       {
         "courseWork": [
           {
@@ -80,7 +82,8 @@ TEST(ClassroomApiCourseWorkResponseTypesTest, ConvertsCourseWork) {
             "updateTime": "2023-04-04T00:10:55.000Z"
           }
         ]
-      })");
+      })",
+                       base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(raw_course_work);
 
   const auto course_work = CourseWork::CreateFrom(raw_course_work.value());
@@ -167,11 +170,13 @@ TEST(ClassroomApiCourseWorkResponseTypesTest, ConvertsCourseWork) {
 }
 
 TEST(ClassroomApiCourseWorkResponseTypesTest, ConvertsNextPageToken) {
-  const auto raw_course_work = JSONReader::Read(R"(
+  const auto raw_course_work =
+      JSONReader::Read(R"(
       {
         "courseWork": [],
         "nextPageToken": "qwerty"
-      })");
+      })",
+                       base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(raw_course_work);
 
   const auto course_work = CourseWork::CreateFrom(raw_course_work.value());
@@ -181,7 +186,8 @@ TEST(ClassroomApiCourseWorkResponseTypesTest, ConvertsNextPageToken) {
 
 TEST(ClassroomApiCourseWorkResponseTypesTest,
      ConvertsCourseWorkItemDueDateTime) {
-  const auto raw_course_work = JSONReader::Read(R"(
+  const auto raw_course_work =
+      JSONReader::Read(R"(
       {
         "courseWork": [
           {
@@ -204,7 +210,8 @@ TEST(ClassroomApiCourseWorkResponseTypesTest,
             "dueTime": {"hours": 15}
           }
         ]
-      })");
+      })",
+                       base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(raw_course_work);
 
   const auto course_work = CourseWork::CreateFrom(raw_course_work.value());
@@ -238,11 +245,13 @@ TEST(ClassroomApiCourseWorkResponseTypesTest,
 
 TEST(ClassroomApiCourseWorkResponseTypesTest,
      DoesNotCrashOnUnexpectedResponse) {
-  const auto raw_course_work = JSONReader::Read(R"(
+  const auto raw_course_work =
+      JSONReader::Read(R"(
       {
         "courseWork": [{"id": []}],
         "nextPageToken": true
-      })");
+      })",
+                       base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(raw_course_work);
 
   const auto course_work = CourseWork::CreateFrom(raw_course_work.value());
@@ -250,7 +259,8 @@ TEST(ClassroomApiCourseWorkResponseTypesTest,
 }
 
 TEST(ClassroomApiCourseWorkResponseTypesTest, ConvertsCourseWorkItemMaterials) {
-  const auto raw_course_work = JSONReader::Read(R"(
+  const auto raw_course_work =
+      JSONReader::Read(R"(
       {
         "courseWork": [
           {
@@ -299,7 +309,8 @@ TEST(ClassroomApiCourseWorkResponseTypesTest, ConvertsCourseWorkItemMaterials) {
             ]
           }
         ]
-      })");
+      })",
+                       base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(raw_course_work);
 
   const auto course_work = CourseWork::CreateFrom(raw_course_work.value());
@@ -331,6 +342,77 @@ TEST(ClassroomApiCourseWorkResponseTypesTest, ConvertsCourseWorkItemMaterials) {
   EXPECT_EQ(course_work->items().at(3)->materials().size(), 1u);
   EXPECT_EQ(course_work->items().at(3)->materials().at(0)->type(),
             Material::Type::kUnknown);
+}
+
+TEST(ClassroomApiCourseWorkResponseTypesTest,
+     ConvertsCourseWorkItemMaterialWithoutTitle) {
+  // The Classroom api is sometimes returning malformed responses with empty
+  // material items. In these cases, we shouldn't abort the entire json
+  // conversion - instead we should just give the material an empty title.
+  const auto raw_course_work =
+      JSONReader::Read(R"(
+      {
+        "courseWork": [
+          {
+            "id": "materials-1",
+            "materials": [
+              {
+                "link": {
+                  "title": "link-title"
+                }
+              }
+            ]
+          },
+          {
+            "id": "materials-2",
+            "materials": [
+              {
+                "form": {
+                  "title": "form-title"
+                }
+              },
+              {
+                "link": {}
+              }
+            ]
+          },
+          {
+            "id": "materials-3",
+            "materials": [
+              {
+                "form": {}
+              }
+            ]
+          }
+        ]
+      })",
+                       base::JSON_PARSE_CHROMIUM_EXTENSIONS);
+  ASSERT_TRUE(raw_course_work);
+
+  const auto course_work = CourseWork::CreateFrom(raw_course_work.value());
+  ASSERT_TRUE(course_work);
+  EXPECT_EQ(course_work->items().size(), 3u);
+
+  EXPECT_EQ(course_work->items().at(0)->id(), "materials-1");
+  EXPECT_EQ(course_work->items().at(0)->materials().size(), 1u);
+  EXPECT_EQ(course_work->items().at(0)->materials().at(0)->title(),
+            "link-title");
+  EXPECT_EQ(course_work->items().at(0)->materials().at(0)->type(),
+            Material::Type::kLink);
+  EXPECT_EQ(course_work->items().at(1)->id(), "materials-2");
+  EXPECT_EQ(course_work->items().at(1)->materials().size(), 2u);
+  EXPECT_EQ(course_work->items().at(1)->materials().at(0)->title(),
+            "form-title");
+  EXPECT_EQ(course_work->items().at(1)->materials().at(0)->type(),
+            Material::Type::kForm);
+  EXPECT_EQ(course_work->items().at(1)->materials().at(1)->title(), "");
+  EXPECT_EQ(course_work->items().at(1)->materials().at(1)->type(),
+            Material::Type::kLink);
+  EXPECT_EQ(course_work->items().at(2)->id(), "materials-3");
+  EXPECT_EQ(course_work->items().at(2)->materials().size(), 1u);
+  EXPECT_EQ(course_work->items().at(2)->materials().at(0)->title(), "");
+  EXPECT_EQ(course_work->items().at(2)->materials().at(0)->type(),
+            Material::Type::kForm);
 }
 
 }  // namespace google_apis::classroom

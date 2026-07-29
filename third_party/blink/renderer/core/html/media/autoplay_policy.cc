@@ -25,6 +25,7 @@
 #include "third_party/blink/renderer/core/intersection_observer/intersection_observer_entry.h"
 #include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 #include "third_party/blink/renderer/platform/network/network_state_notifier.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/assertions.h"
@@ -71,9 +72,6 @@ AutoplayPolicy::Type AutoplayPolicy::GetAutoplayPolicyForDocument(
   if (document.IsInWebAppScope())
     return Type::kNoUserGestureRequired;
 
-  if (DocumentHasUserExceptionFlag(document))
-    return Type::kNoUserGestureRequired;
-
   if (document.GetSettings()->GetPresentationReceiver())
     return Type::kNoUserGestureRequired;
 
@@ -87,6 +85,10 @@ bool AutoplayPolicy::IsDocumentAllowedToPlay(const Document& document) {
 
   if (DocumentIsCapturingUserMedia(document))
     return true;
+
+  if (DocumentHasUserExceptionFlag(document)) {
+    return true;
+  }
 
   if (!document.GetFrame())
     return false;
@@ -202,8 +204,8 @@ void AutoplayPolicy::StartAutoplayMutedWhenVisible() {
 
   autoplay_intersection_observer_ = IntersectionObserver::Create(
       element_->GetDocument(),
-      WTF::BindRepeating(&AutoplayPolicy::OnIntersectionChangedForAutoplay,
-                         WrapWeakPersistent(this)),
+      BindRepeating(&AutoplayPolicy::OnIntersectionChangedForAutoplay,
+                    WrapWeakPersistent(this)),
       LocalFrameUkmAggregator::kMediaIntersectionObserver,
       IntersectionObserver::Params{
           .thresholds = {IntersectionObserver::kMinimumThreshold}});
@@ -286,10 +288,19 @@ bool AutoplayPolicy::HasTransientUserActivation() const {
 }
 
 std::optional<DOMExceptionCode> AutoplayPolicy::RequestPlay() {
-  if (RuntimeEnabledFeatures::
-          MediaPlaybackWhileNotVisiblePermissionPolicyEnabled() &&
-      !CanPlayWhileHidden() && IsFrameHidden()) {
-    return DOMExceptionCode::kNotAllowedError;
+  if (!element_->CanPlayWhileHidden()) {
+    // The "media-playback-while-not-visible" permission policy default value
+    // was overridden, which means that either this frame or an ancestor frame
+    // changed the permission policy's default value. This should only happen if
+    // the MediaPlaybackWhileNotVisiblePermissionPolicyEnabled runtime flag is
+    // enabled.
+    UseCounter::Count(
+        element_->GetExecutionContext(),
+        WebFeature::kMediaPlaybackWhileNotVisiblePermissionPolicy);
+    // Block autoplay only if the media element's visibility state is known.
+    if (element_->IsFrameHidden()) {
+      return DOMExceptionCode::kNotAllowedError;
+    }
   }
 
   if (!HasTransientUserActivation()) {
@@ -345,20 +356,6 @@ bool AutoplayPolicy::IsGestureNeededForPlayback() const {
   return !IsEligibleForAutoplayMuted();
 }
 
-bool AutoplayPolicy::CanPlayWhileHidden() const {
-  return element_->GetExecutionContext() &&
-         element_->GetExecutionContext()->IsFeatureEnabled(
-             network::mojom::PermissionsPolicyFeature::
-                 kMediaPlaybackWhileNotVisible);
-}
-
-bool AutoplayPolicy::IsFrameHidden() const {
-  Frame* frame = element_->GetDocument().GetFrame();
-  return frame && (frame->View()->GetFrameVisibility().value_or(
-                       mojom::blink::FrameVisibility::kRenderedInViewport) ==
-                   mojom::blink::FrameVisibility::kNotRendered);
-}
-
 String AutoplayPolicy::GetPlayErrorMessage() const {
   return IsUsingDocumentUserActivationRequiredPolicy()
              ? kErrorAutoplayFuncUnified
@@ -387,17 +384,23 @@ void AutoplayPolicy::OnIntersectionChangedForAutoplay(
       if (!self)
         return;
 
+      // Keep playing if the frames are still being consumed (e.g. by canvas).
+      WebMediaPlayer* player = self->element_->GetWebMediaPlayer();
+      if (player && player->IsVideoBeingCaptured()) {
+        return;
+      }
+
       if (self->element_->can_autoplay_ && self->element_->Autoplay()) {
         self->element_->PauseInternal(
-            HTMLMediaElement::PlayPromiseError::kPaused_AutoplayAutoPause);
+            WebMediaPlayer::PauseReason::kAutoplayAutoPause);
         self->element_->can_autoplay_ = true;
       }
     };
 
     element_->GetDocument()
         .GetTaskRunner(TaskType::kInternalMedia)
-        ->PostTask(FROM_HERE, WTF::BindOnce(pause_and_preserve_autoplay,
-                                            WrapWeakPersistent(this)));
+        ->PostTask(FROM_HERE, BindOnce(pause_and_preserve_autoplay,
+                                       WrapWeakPersistent(this)));
     return;
   }
 
@@ -417,8 +420,7 @@ void AutoplayPolicy::OnIntersectionChangedForAutoplay(
 
   element_->GetDocument()
       .GetTaskRunner(TaskType::kInternalMedia)
-      ->PostTask(FROM_HERE,
-                 WTF::BindOnce(maybe_autoplay, WrapWeakPersistent(this)));
+      ->PostTask(FROM_HERE, BindOnce(maybe_autoplay, WrapWeakPersistent(this)));
 }
 
 bool AutoplayPolicy::IsUsingDocumentUserActivationRequiredPolicy() const {

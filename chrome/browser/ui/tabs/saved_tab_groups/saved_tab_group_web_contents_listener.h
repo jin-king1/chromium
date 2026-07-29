@@ -9,6 +9,7 @@
 #include <string>
 
 #include "base/callback_list.h"
+#include "base/memory/raw_ptr.h"
 #include "base/types/pass_key.h"
 #include "components/saved_tab_groups/public/saved_tab_group.h"
 #include "components/saved_tab_groups/public/types.h"
@@ -45,7 +46,7 @@ class TabGroupSyncService;
 // State that encompasses the information the tab needs in order to fake
 // its visual state. Queries the favicon service for the given URL, and
 // udpates the tabstripmodel observers when it's updated. Used by the
-// TabRendererData to override the favicon and title.
+// tabs::TabData to override the favicon and title.
 class DeferredTabState {
  public:
   DeferredTabState(tabs::TabInterface* local_tab,

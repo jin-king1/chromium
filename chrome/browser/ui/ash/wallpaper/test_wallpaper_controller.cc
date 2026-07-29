@@ -15,6 +15,7 @@
 #include "ash/public/cpp/wallpaper/wallpaper_types.h"
 #include "ash/webui/common/mojom/sea_pen.mojom.h"
 #include "base/containers/adapters.h"
+#include "base/notimplemented.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "components/account_id/account_id.h"
@@ -23,7 +24,12 @@
 #include "ui/gfx/image/image.h"
 #include "ui/gfx/image/image_skia.h"
 
-TestWallpaperController::TestWallpaperController() : id_cache_(0) {
+namespace {
+inline constexpr uint64_t kTestTimeOfDayUnitId = 17;
+}  // namespace
+
+TestWallpaperController::TestWallpaperController()
+    : id_cache_(DailyGooglePhotosIdCache::NO_AUTO_EVICT) {
   ClearCounts();
 }
 
@@ -59,14 +65,6 @@ void TestWallpaperController::SetClient(
 void TestWallpaperController::SetDriveFsDelegate(
     std::unique_ptr<ash::WallpaperDriveFsDelegate> drivefs_delegate) {
   NOTIMPLEMENTED_LOG_ONCE();
-}
-
-void TestWallpaperController::Init(
-    const base::FilePath& user_data,
-    const base::FilePath& wallpapers,
-    const base::FilePath& custom_wallpapers,
-    const base::FilePath& device_policy_wallpaper) {
-  NOTIMPLEMENTED();
 }
 
 bool TestWallpaperController::CanSetUserWallpaper(
@@ -154,9 +152,10 @@ bool TestWallpaperController::GetDailyGooglePhotosWallpaperIdCache(
 
 void TestWallpaperController::SetTimeOfDayWallpaper(
     const AccountId& account_id,
-    SetWallpaperCallback callback) {
+    SetTimeOfDayWallpaperCallback callback) {
   ++set_default_time_of_day_wallpaper_count_;
-  std::move(callback).Run(/*success=*/true);
+  std::move(callback).Run(kTestTimeOfDayUnitId,
+                          /*success=*/true);
 }
 
 void TestWallpaperController::SetDefaultWallpaper(

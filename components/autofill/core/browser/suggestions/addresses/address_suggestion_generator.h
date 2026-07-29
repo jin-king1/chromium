@@ -5,20 +5,22 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_SUGGESTIONS_ADDRESSES_ADDRESS_SUGGESTION_GENERATOR_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_SUGGESTIONS_ADDRESSES_ADDRESS_SUGGESTION_GENERATOR_H_
 
-#include <optional>
 #include <string>
 #include <vector>
 
 #include "base/check_deref.h"
-#include "base/containers/flat_map.h"
-#include "base/memory/raw_ptr.h"
-#include "components/autofill/core/browser/data_manager/personal_data_manager.h"
+#include "base/containers/span.h"
+#include "base/functional/bind_internal.h"
+#include "base/functional/callback_forward.h"
+#include "components/autofill/core/browser/autofill_field.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
+#include "components/autofill/core/browser/data_quality/addresses/profile_token_quality.h"
 #include "components/autofill/core/browser/field_types.h"
-#include "components/autofill/core/browser/metrics/log_event.h"
 #include "components/autofill/core/browser/suggestions/suggestion.h"
+#include "components/autofill/core/browser/suggestions/suggestion_generator.h"
 #include "components/autofill/core/browser/suggestions/suggestion_type.h"
 #include "components/autofill/core/common/aliases.h"
+#include "components/autofill/core/common/form_data.h"
 
 namespace autofill {
 
@@ -26,34 +28,17 @@ class AddressDataManager;
 class AutofillClient;
 class FormFieldData;
 
-struct ProfilesToSuggestOptions {
-  const bool exclude_disused_addresses = true;
-  const bool require_non_empty_value_on_trigger_field = true;
-  const bool prefix_match_suggestions = true;
-  const bool remove_profiles_with_equal_value_on_trigger_field = false;
-  const bool deduplicate_suggestions = true;
-};
-
 // Generates `SuggestionType::kAddressEntryOnTyping` suggestions based on prefix
 // matching on unclassified fields. The suggestions returned will contain
 // profile data whose prefix matches what the user has typed. As for now, only
 // use the top profile to generate suggestions.
 // `field_contents` is the string contained in the triggering field.
+// TODO(crbug.com/409962888): Remove once the new suggestion generation logic is
+// launched.
 std::vector<Suggestion> GetSuggestionsOnTypingForProfile(
-    const AddressDataManager& adress_data_manager,
-    const std::u16string& field_contents);
-
-// Generates suggestions for a form containing the given `field_types`. It
-// considers all available profiles, deduplicates them based on the types and
-// returns one suggestion per remaining profile.
-// `field_types` are the relevant types for the current suggestions.
-std::vector<Suggestion> GetSuggestionsForProfiles(
-    const AutofillClient& client,
-    const FieldTypeSet& field_types,
-    const FormFieldData& trigger_field,
-    FieldType trigger_field_type,
-    SuggestionType suggestion_type,
-    std::optional<std::string> plus_address_email_override);
+    AutofillClient& client,
+    const FormData& form,
+    const FormFieldData& trigger_field);
 
 // Generates a footer suggestion "Manage addresses..." menu item which will
 // redirect to Chrome address settings page.
@@ -62,11 +47,9 @@ Suggestion CreateManageAddressesSuggestion();
 // Exposes `GetProfilesToSuggest` in tests.
 std::vector<AutofillProfile> GetProfilesToSuggestForTest(
     const AddressDataManager& address_data,
+    const FormFieldData& trigger_field,
     FieldType trigger_field_type,
-    const std::u16string& field_contents,
-    bool field_is_autofilled,
-    const FieldTypeSet& field_types,
-    SuggestionType suggestion_type = SuggestionType::kAddressEntry);
+    const FieldTypeSet& field_types);
 
 // Exposes `CreateSuggestionsFromProfiles` in tests.
 std::vector<Suggestion> CreateSuggestionsFromProfilesForTest(
@@ -74,11 +57,46 @@ std::vector<Suggestion> CreateSuggestionsFromProfilesForTest(
     const FieldTypeSet& field_types,
     SuggestionType suggestion_type,
     FieldType trigger_field_type,
-    uint64_t trigger_field_max_length,
-    bool is_off_the_record = false,
+    const FormFieldData& trigger_field,
     const std::string& app_locale = "en-US",
-    std::optional<std::string> plus_address_email_override = std::nullopt,
     const std::string& gaia_email = "");
+
+// Returns true if a suggestion for an `AutofillProfile` with record type equal
+// to `record_type` exists in the `suggestions`, false otherwise.
+bool ContainsProfileSuggestionWithRecordType(
+    base::span<const Suggestion> suggestions,
+    const AddressDataManager& address_data_manager,
+    AutofillProfile::RecordType record_type);
+
+// `SuggestionGenerator` implementation for addresses. Obtaining the address
+// suggestions should be done only through this class.
+class AddressSuggestionGenerator : public SuggestionGenerator {
+ public:
+  explicit AddressSuggestionGenerator(
+      AutofillSuggestionTriggerSource trigger_source);
+  ~AddressSuggestionGenerator() override;
+
+  void GenerateSuggestions(
+      const FormData& form,
+      const FormFieldData& trigger_field,
+      const FormStructure* form_structure,
+      const AutofillField* trigger_autofill_field,
+      AutofillClient& client,
+      base::OnceCallback<void(ReturnedSuggestions)> callback) override;
+
+  // Like SuggestionGenerator override, but takes a base::FunctionRef instead of
+  // a base::OnceCallback. Calls that callback exactly once.
+  void GenerateSuggestions(
+      const FormData& form,
+      const FormFieldData& trigger_field,
+      const FormStructure* form_structure,
+      const AutofillField* trigger_autofill_field,
+      AutofillClient& client,
+      base::FunctionRef<void(ReturnedSuggestions)> callback);
+
+ private:
+  AutofillSuggestionTriggerSource trigger_source_;
+};
 
 }  // namespace autofill
 

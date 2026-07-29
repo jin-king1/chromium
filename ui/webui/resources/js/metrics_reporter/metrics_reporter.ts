@@ -18,7 +18,9 @@ function timeToMojo(mark: bigint): TimeDelta {
 }
 
 /*
- * MetricsReporter: A Time Measuring Utility.
+ * MetricsReporter: A Time Measuring Utility used to measure latency between
+ * the browser and WebUI. If you only need to measure metrics within WebUI,
+ * consider using `chrome.histograms`.
  *
  * Usages:
  *   - Use getInstance() to acquire the singleton of MetricsReporter.
@@ -69,7 +71,7 @@ function timeToMojo(mark: bigint): TimeDelta {
  */
 
 export interface MetricsReporter {
-  mark(name: string): void;
+  mark(name: string, time?: bigint): void;
   measure(startMark: string, endMark?: string): Promise<bigint>;
   hasMark(name: string): Promise<boolean>;
   hasLocalMark(name: string): boolean;
@@ -84,13 +86,12 @@ export class MetricsReporterImpl implements MetricsReporter {
   constructor() {
     const callbackRouter = this.browserProxy_.getCallbackRouter();
     callbackRouter.onGetMark.addListener(
-        (name: string) => ({
+        name => ({
           markedTime:
               this.marks_.has(name) ? timeToMojo(this.marks_.get(name)!) : null,
         }));
 
-    callbackRouter.onClearMark.addListener(
-        (name: string) => this.marks_.delete(name));
+    callbackRouter.onClearMark.addListener(name => this.marks_.delete(name));
   }
 
   static getInstance(): MetricsReporter {
@@ -101,8 +102,8 @@ export class MetricsReporterImpl implements MetricsReporter {
     instance = newInstance;
   }
 
-  mark(name: string) {
-    this.marks_.set(name, this.browserProxy_.now());
+  mark(name: string, time?: bigint) {
+    this.marks_.set(name, time ?? this.browserProxy_.now());
   }
 
   async measure(startMark: string, endMark?: string): Promise<bigint> {

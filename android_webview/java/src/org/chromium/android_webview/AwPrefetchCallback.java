@@ -6,12 +6,15 @@ package org.chromium.android_webview;
 import android.os.Bundle;
 
 import androidx.annotation.IntDef;
-import androidx.annotation.Nullable;
+
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 
 /** Callback for WebView app initiated prefetching. */
+@NullMarked
 public interface AwPrefetchCallback {
 
     @IntDef({
@@ -19,18 +22,18 @@ public interface AwPrefetchCallback {
         StatusCode.PREFETCH_RESPONSE_COMPLETED,
         StatusCode.PREFETCH_RESPONSE_SERVER_ERROR,
         StatusCode.PREFETCH_RESPONSE_GENERIC_ERROR,
-        StatusCode.PREFETCH_START_FAILED_DUPLICATE,
+        StatusCode.DUPLICATE_REQUEST,
     })
     @Retention(RetentionPolicy.SOURCE)
-    public @interface StatusCode {
+    @interface StatusCode {
         int PREFETCH_START_FAILED = 0;
         int PREFETCH_RESPONSE_COMPLETED = 1;
         int PREFETCH_RESPONSE_SERVER_ERROR = 2;
         int PREFETCH_RESPONSE_GENERIC_ERROR = 3;
-        int PREFETCH_START_FAILED_DUPLICATE = 4;
+        int DUPLICATE_REQUEST = 4;
     }
 
-    public static final String EXTRA_HTTP_RESPONSE_CODE = "HttpResponseCode";
+    String EXTRA_HTTP_RESPONSE_CODE = "HttpResponseCode";
 
     void onStatusUpdated(@StatusCode int statusCode, @Nullable Bundle extras);
 

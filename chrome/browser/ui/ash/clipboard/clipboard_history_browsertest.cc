@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "ash/clipboard/clipboard_history.h"
 
 #include <iterator>
@@ -14,6 +9,7 @@
 #include <memory>
 #include <string_view>
 #include <tuple>
+#include <variant>
 
 #include "ash/clipboard/clipboard_history_controller_impl.h"
 #include "ash/clipboard/clipboard_history_item.h"
@@ -25,11 +21,13 @@
 #include "ash/shell.h"
 #include "ash/test/ash_test_util.h"
 #include "ash/test/view_drawn_waiter.h"
+#include "base/compiler_specific.h"
 #include "base/containers/adapters.h"
 #include "base/memory/raw_ptr.h"
 #include "base/scoped_observation.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/repeating_test_future.h"
 #include "base/test/scoped_feature_list.h"
@@ -37,12 +35,8 @@
 #include "chrome/browser/ash/login/login_manager_test.h"
 #include "chrome/browser/ash/login/test/login_manager_mixin.h"
 #include "chrome/browser/ash/login/test/session_manager_state_waiter.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
-#include "chrome/browser/history/history_service_factory.h"
-#include "chrome/browser/history/history_test_utils.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/renderer_context_menu/render_view_context_menu_test_util.h"
-#include "chrome/browser/ui/ash/clipboard/clipboard_history_test_util.h"
 #include "chrome/browser/ui/ash/login/user_adding_screen.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/grit/generated_resources.h"
@@ -50,12 +44,13 @@
 #include "chrome/test/base/ui_test_utils.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/dbus/session_manager/session_manager_client.h"
+#include "chromeos/ash/experiences/clipboard/clipboard_history_test_util.h"
+#include "chromeos/ui/clipboard_history/clipboard_history_types.h"
 #include "components/user_manager/user_manager.h"
 #include "content/public/browser/context_menu_params.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 #include "ui/base/clipboard/clipboard_buffer.h"
 #include "ui/base/clipboard/clipboard_data.h"
 #include "ui/base/clipboard/clipboard_monitor.h"
@@ -187,7 +182,7 @@ bool VerifyClipboardTextData(const std::initializer_list<std::string>& texts) {
       return false;
     }
     ++items_iter;
-    ++texts_iter;
+    UNSAFE_TODO(++texts_iter);
   }
 
   return true;
@@ -334,13 +329,16 @@ class ClipboardHistoryBrowserTest : public ash::LoginManagerTest {
         item_view->GetViewByID(MenuViewID::kDeleteButtonViewID);
     ASSERT_FALSE(delete_button->GetVisible());
 
+    // MoveMouseTo() may dispatch events right away, so the ViewBoundsWaiter
+    // should be created before the mouse move so ensure it observes the event.
+    ui_test_utils::ViewBoundsWaiter delete_button_waiter(delete_button);
+
     // Hover the mouse on `item_view` to show the delete button.
     GetEventGenerator()->MoveMouseTo(
         item_view->GetBoundsInScreen().CenterPoint(), /*count=*/5);
 
     // Wait until `delete_button` has meaningful bounds. Note that the bounds
     // are set by the layout manager asynchronously.
-    ui_test_utils::ViewBoundsWaiter delete_button_waiter(delete_button);
     delete_button_waiter.WaitForNonEmptyBounds();
 
     EXPECT_TRUE(delete_button->GetVisible());
@@ -813,12 +811,11 @@ class ClipboardHistoryPasteTypeBrowserTest
 
  private:
   // Returns all valid data formats for the last paste.
-  base::Value::List GetLastPaste() {
-    auto result =
-        content::EvalJs(web_contents_.get(),
-                        "(function() { return window.getLastPaste(); })();");
-    EXPECT_TRUE(result.error.empty());
-    return result.ExtractList();
+  base::ListValue GetLastPaste() {
+    return content::EvalJs(web_contents_.get(),
+                           "(function() { return window.getLastPaste(); })();")
+        .TakeValue()
+        .TakeList();
   }
 
   raw_ptr<content::WebContents, DanglingUntriaged> web_contents_ = nullptr;
@@ -1171,7 +1168,7 @@ class ClipboardHistoryTextfieldBrowserTest
 
     // Create a widget containing a single, focusable textfield.
     widget_ =
-        CreateTestWidget(views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET);
+        CreateTestWidget(views::Widget::InitParams::CLIENT_OWNS_WIDGET);
     textfield_ = widget_->SetContentsView(std::make_unique<views::Textfield>());
     textfield_->GetViewAccessibility().SetName(u"Textfield");
     textfield_->SetFocusBehavior(views::View::FocusBehavior::ALWAYS);
@@ -1199,7 +1196,7 @@ class ClipboardHistoryTextfieldBrowserTest
 };
 
 // Verifies that the clipboard history menu responses to the gesture tap
-// correctly (https://crbug.com/1142088).
+// correctly (https://crbug.com/40727504).
 IN_PROC_BROWSER_TEST_F(ClipboardHistoryTextfieldBrowserTest,
                        VerifyResponseToGestures) {
   base::HistogramTester histogram_tester;
@@ -1461,7 +1458,7 @@ class FakeDataTransferPolicyController
   void PasteIfAllowed(
       base::optional_ref<const ui::DataTransferEndpoint> data_src,
       base::optional_ref<const ui::DataTransferEndpoint> data_dst,
-      absl::variant<size_t, std::vector<base::FilePath>> pasted_content,
+      std::variant<size_t, std::vector<base::FilePath>> pasted_content,
       content::RenderFrameHost* rfh,
       base::OnceCallback<void(bool)> callback) override {}
 
@@ -1652,8 +1649,8 @@ IN_PROC_BROWSER_TEST_F(ClipboardHistoryRefreshAshBrowserTest,
 
   // Get the textfield center in the the web contents coordinates.
   auto result = content::EvalJs(web_contents, "getTextfieldCenterOnPage();");
-  ASSERT_TRUE(result.error.empty());
-  auto center_as_list = result.ExtractList();
+  ASSERT_TRUE(result.is_ok());
+  const auto& center_as_list = result.ExtractList();
   ASSERT_EQ(center_as_list.size(), 2u);
 
   // Calculate the textfield center in the screen coordinates. Then right click
@@ -1666,7 +1663,7 @@ IN_PROC_BROWSER_TEST_F(ClipboardHistoryRefreshAshBrowserTest,
   GetEventGenerator()->ClickRightButton();
 
   // Expect the menu item that hosts the clipboard history submenu exists.
-  const views::MenuItemView* const submenu_item = ash::WaitForMenuItemWithLabel(
+  views::MenuItemView* const submenu_item = ash::WaitForMenuItemWithLabel(
       l10n_util::GetStringUTF16(IDS_CONTEXT_MENU_PASTE_FROM_CLIPBOARD));
   ASSERT_TRUE(submenu_item);
 
@@ -1681,9 +1678,7 @@ IN_PROC_BROWSER_TEST_F(ClipboardHistoryRefreshAshBrowserTest,
   // `submenu_view` shows.
   submenu_histogram_tester.ExpectUniqueSample(
       "Ash.ClipboardHistory.ContextMenu.ShowMenu",
-      crosapi::mojom::ClipboardHistoryControllerShowSource::
-          kRenderViewContextSubmenu,
-      1);
+      chromeos::clipboard_history::ShowSource::kRenderViewContextSubmenu, 1);
 
   // Expect that the menu option to launch the clipboard history menu exists.
   const views::View* const menu_item = ash::WaitForMenuItemWithLabel(
@@ -1701,9 +1696,7 @@ IN_PROC_BROWSER_TEST_F(ClipboardHistoryRefreshAshBrowserTest,
   // The source of the standalone clipboard history menu should be recorded.
   histogram_tester.ExpectUniqueSample(
       "Ash.ClipboardHistory.ContextMenu.ShowMenu",
-      crosapi::mojom::ClipboardHistoryControllerShowSource::
-          kRenderViewContextMenu,
-      1);
+      chromeos::clipboard_history::ShowSource::kRenderViewContextMenu, 1);
 }
 
 // Verifies the clipboard history menu response to mouse and arrow key inputs.
@@ -1720,7 +1713,7 @@ IN_PROC_BROWSER_TEST_F(ClipboardHistoryRefreshAshBrowserTest,
   ASSERT_EQ(3u, GetContextMenu()->GetMenuItemsCount());
   histogram_tester.ExpectUniqueSample(
       "Ash.ClipboardHistory.ContextMenu.ShowMenu",
-      crosapi::mojom::ClipboardHistoryControllerShowSource::kAccelerator, 1);
+      chromeos::clipboard_history::ShowSource::kAccelerator, 1);
 
   // The history menu's first item should be selected as default after the menu
   // shows. Its delete button should not show, so the contents should not be
@@ -1833,7 +1826,7 @@ IN_PROC_BROWSER_TEST_F(ClipboardHistoryRefreshAshBrowserTest,
 }
 
 // Verifies that the delete button should show after its host item view is under
-// gesture press for enough long time (https://crbug.com/1147584).
+// gesture press for enough long time (https://crbug.com/40156682).
 IN_PROC_BROWSER_TEST_F(ClipboardHistoryRefreshAshBrowserTest,
                        DeleteButtonShowAfterLongPress) {
   SetClipboardText("A");
@@ -1860,157 +1853,4 @@ IN_PROC_BROWSER_TEST_F(ClipboardHistoryRefreshAshBrowserTest,
   GetEventGenerator()->ReleaseTouch();
   EXPECT_TRUE(second_item_delete_button->GetVisible());
   EXPECT_FALSE(second_item_contents_view->clip_path().isEmpty());
-}
-
-// Base class for tests exercising the `ClipboardHistoryUrlTitleFetcher`'s
-// end-to-end functionality, parameterized by whether the clipboard history URL
-// titles feature is enabled.
-class ClipboardHistoryUrlTitleFetcherBrowserTest
-    : public ClipboardHistoryBrowserTest,
-      public testing::WithParamInterface</*enable_url_titles=*/bool> {
- public:
-  ClipboardHistoryUrlTitleFetcherBrowserTest() {
-    scoped_feature_list_.InitWithFeatureStates(
-        {{ash::features::kClipboardHistoryUrlTitles,
-          IsClipboardHistoryUrlTitlesEnabled()}});
-  }
-
- protected:
-  GURL GetTestUrl(std::string_view base_name) {
-    return ui_test_utils::GetTestUrl(
-        base::FilePath(base::FilePath::kCurrentDirectory),
-        base::FilePath(base_name));
-  }
-
-  std::vector<GURL> GetHistoryContents() {
-    ui_test_utils::HistoryEnumerator enumerator(GetProfile());
-    return enumerator.urls();
-  }
-
-  bool IsClipboardHistoryUrlTitlesEnabled() const { return GetParam(); }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
-INSTANTIATE_TEST_SUITE_P(All,
-                         ClipboardHistoryUrlTitleFetcherBrowserTest,
-                         /*enable_url_titles=*/testing::Bool());
-
-// Verifies that if the clipboard history URL titles feature is enabled and the
-// user copies a URL they have visited before, then the clipboard history item
-// will show that page's title.
-IN_PROC_BROWSER_TEST_P(ClipboardHistoryUrlTitleFetcherBrowserTest, UrlTitles) {
-  const auto unvisited_url = GetTestUrl("title1.html");
-  const auto visited_url = GetTestUrl("title2.html");
-  ui::test::EventGenerator event_generator(ash::Shell::GetPrimaryRootWindow());
-
-  // Populate the primary user's browsing history with a URL.
-  ui_test_utils::WaitForHistoryToLoad(HistoryServiceFactory::GetForProfile(
-      GetProfile(), ServiceAccessType::EXPLICIT_ACCESS));
-  EXPECT_TRUE(GetHistoryContents().empty());
-
-  ASSERT_TRUE(
-      ui_test_utils::NavigateToURL(CreateBrowser(GetProfile()), visited_url));
-  WaitForHistoryBackendToRun(GetProfile());
-
-  std::vector<GURL> urls(GetHistoryContents());
-  ASSERT_EQ(urls.size(), 1u);
-  EXPECT_EQ(visited_url.spec(), urls[0].spec());
-
-  // Verify that copying the unvisited URL produces a clipboard history item
-  // with no URL title.
-  SetClipboardText(unvisited_url.spec());
-  ASSERT_EQ(GetClipboardItems().size(), 1u);
-  EXPECT_FALSE(GetClipboardItems().front().secondary_display_text());
-
-  // Show the clipboard history menu and verify that the unvisited URL's item
-  // has no title label.
-  event_generator.PressAndReleaseKeyAndModifierKeys(ui::VKEY_V,
-                                                    ui::EF_COMMAND_DOWN);
-  EXPECT_FALSE(GetMenuItemViewForClipboardHistoryItemAtIndex(0u)->GetViewByID(
-      ash::clipboard_history_util::kSecondaryDisplayTextLabelID));
-  event_generator.PressAndReleaseKey(ui::VKEY_ESCAPE);
-
-  // Verify that copying the visited URL produces a clipboard history item with
-  // a URL title iff the clipboard history URL titles feature is enabled.
-  SetClipboardText(visited_url.spec());
-  ASSERT_EQ(GetClipboardItems().size(), 2u);
-  EXPECT_EQ(!!GetClipboardItems().front().secondary_display_text(),
-            IsClipboardHistoryUrlTitlesEnabled());
-
-  // Show the clipboard history menu and verify that the visited URL's item has
-  // a title label iff the clipboard history URL titles feature is enabled.
-  event_generator.PressAndReleaseKeyAndModifierKeys(ui::VKEY_V,
-                                                    ui::EF_COMMAND_DOWN);
-  EXPECT_EQ(!!GetMenuItemViewForClipboardHistoryItemAtIndex(0u)->GetViewByID(
-                ash::clipboard_history_util::kSecondaryDisplayTextLabelID),
-            IsClipboardHistoryUrlTitlesEnabled());
-  event_generator.PressAndReleaseKey(ui::VKEY_ESCAPE);
-}
-
-// Base class used to test features that only exist when the Ctrl+V longpress
-// feature is enabled.
-class ClipboardHistoryLongpressEnabledBrowserTest
-    : public ClipboardHistoryTextfieldBrowserTest {
- public:
-  ClipboardHistoryLongpressEnabledBrowserTest() {
-    scoped_feature_list_.InitAndEnableFeature(
-        ash::features::kClipboardHistoryLongpress);
-  }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
-// Verifies that clicking the clipboard history menu's footer does nothing and
-// that tab and arrow key traversal pass over the footer.
-IN_PROC_BROWSER_TEST_F(ClipboardHistoryLongpressEnabledBrowserTest,
-                       FooterNotInteractive) {
-  // Write some things to the clipboard.
-  SetClipboardText("A");
-  SetClipboardText("B");
-
-  // Show the clipboard history menu via the Ctrl+V long-press shortcut so that
-  // the menu's educational footer shows.
-  EXPECT_TRUE(GetClipboardHistoryController()->ShowMenu(
-      gfx::Rect(), ui::mojom::MenuSourceType::kNone,
-      crosapi::mojom::ClipboardHistoryControllerShowSource::
-          kControlVLongpress));
-  EXPECT_TRUE(GetClipboardHistoryController()->IsMenuShowing());
-
-  // Verify that the menu has two clipboard history items and a third item (the
-  // menu footer). A fourth item (the menu header) will also be present.
-  const auto* menu = GetClipboardHistoryController()->context_menu_for_test();
-  EXPECT_EQ(menu->GetMenuItemsCount(), 2u);
-  ASSERT_EQ(menu->GetModelForTest()->GetItemCount(), 4u);
-
-  // Verify that clicking on the footer does nothing.
-  EXPECT_TRUE(textfield_->GetText().empty());
-  const auto* footer = menu->GetMenuItemViewAtForTest(
-      /*index=*/3u);
-  GetEventGenerator()->MoveMouseTo(footer->GetBoundsInScreen().CenterPoint());
-  GetEventGenerator()->ClickLeftButton();
-  EXPECT_TRUE(textfield_->GetText().empty());
-
-  // Verify that traversing over the menu with arrow keys skips the footer.
-  const auto* item1 =
-      GetMenuItemViewForClipboardHistoryItemAtIndex(/*index=*/0u);
-  const auto* item2 =
-      GetMenuItemViewForClipboardHistoryItemAtIndex(/*index=*/1u);
-  PressAndRelease(ui::VKEY_DOWN);
-  EXPECT_TRUE(item1->IsSelected());
-  PressAndRelease(ui::VKEY_DOWN);
-  EXPECT_TRUE(item2->IsSelected());
-  PressAndRelease(ui::VKEY_DOWN);
-  EXPECT_TRUE(item1->IsSelected());
-
-  // Verify that traversing over the menu with the Tab key (two presses at a
-  // time for each item's main button and delete button) skips the footer.
-  PressAndRelease(ui::VKEY_TAB);
-  PressAndRelease(ui::VKEY_TAB);
-  EXPECT_TRUE(item2->IsSelected());
-  PressAndRelease(ui::VKEY_TAB);
-  PressAndRelease(ui::VKEY_TAB);
-  EXPECT_TRUE(item1->IsSelected());
 }

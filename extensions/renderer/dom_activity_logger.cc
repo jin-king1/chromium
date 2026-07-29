@@ -7,15 +7,18 @@
 #include <memory>
 #include <utility>
 
+#include "base/containers/span.h"
 #include "content/public/renderer/render_frame.h"
 #include "content/public/renderer/v8_value_converter.h"
 #include "extensions/common/dom_action_types.h"
 #include "extensions/common/extension_id.h"
 #include "extensions/renderer/activity_log_converter_strategy.h"
+#include "extensions/renderer/dispatcher.h"
 #include "extensions/renderer/extension_frame_helper.h"
+#include "extensions/renderer/extensions_renderer_client.h"
+#include "extensions/renderer/policy_activity_log_filter.h"
 #include "extensions/renderer/script_context.h"
 #include "extensions/renderer/script_context_set.h"
-#include "ipc/ipc_sync_channel.h"
 #include "third_party/blink/public/platform/web_string.h"
 #include "third_party/blink/public/platform/web_url.h"
 #include "v8/include/v8-isolate.h"
@@ -32,7 +35,7 @@ namespace {
 void AppendV8Value(v8::Isolate* isolate,
                    const std::string& api_name,
                    const v8::Local<v8::Value>& v8_value,
-                   base::Value::List& list) {
+                   base::ListValue& list) {
   std::unique_ptr<content::V8ValueConverter> converter =
       content::V8ValueConverter::Create();
   ActivityLogConverterStrategy strategy;
@@ -48,19 +51,19 @@ void AppendV8Value(v8::Isolate* isolate,
 }  // namespace
 
 DOMActivityLogger::DOMActivityLogger(const ExtensionId& extension_id)
-    : extension_id_(extension_id) {}
+    : extension_id_(extension_id) {
+  CHECK(!extension_id_.empty());
+}
 
 DOMActivityLogger::~DOMActivityLogger() = default;
 
-void DOMActivityLogger::AttachToWorld(int32_t world_id,
-                                      const ExtensionId& extension_id) {
-  // If there is no logger registered for world_id, construct a new logger
-  // and register it with world_id.
-  if (!blink::HasDOMActivityLogger(world_id,
-                                   WebString::FromUTF8(extension_id))) {
-    DOMActivityLogger* logger = new DOMActivityLogger(extension_id);
-    blink::SetDOMActivityLogger(world_id, WebString::FromUTF8(extension_id),
-                                logger);
+void DOMActivityLogger::AttachToWorldIfEnabled(
+    int32_t world_id,
+    const ExtensionId& extension_id) {
+  ExtensionsRendererClient* client = ExtensionsRendererClient::Get();
+  if (client->IsActivityLoggingEnabled() ||
+      client->IsPolicyActivityLoggingEnabled()) {
+    AttachToWorld(world_id, extension_id);
   }
 }
 
@@ -73,9 +76,9 @@ void DOMActivityLogger::LogGetter(v8::Isolate* isolate,
   if (!renderer_host) {
     return;
   }
-  renderer_host->AddDOMActionToActivityLog(
-      extension_id_, api_name.Utf8(), base::Value::List(), url, title.Utf16(),
-      DomActionType::GETTER);
+
+  LogInternal(renderer_host, DomActionType::GETTER, api_name.Utf8(),
+              base::ListValue(), url, title.Utf16());
 }
 
 void DOMActivityLogger::LogSetter(v8::Isolate* isolate,
@@ -88,12 +91,13 @@ void DOMActivityLogger::LogSetter(v8::Isolate* isolate,
   if (!renderer_host) {
     return;
   }
-  base::Value::List args;
+
+  base::ListValue args;
   std::string api_name_utf8 = api_name.Utf8();
   AppendV8Value(isolate, api_name_utf8, new_value, args);
-  renderer_host->AddDOMActionToActivityLog(extension_id_, api_name_utf8,
-                                           std::move(args), url, title.Utf16(),
-                                           DomActionType::SETTER);
+
+  LogInternal(renderer_host, DomActionType::SETTER, api_name_utf8,
+              std::move(args), url, title.Utf16());
 }
 
 void DOMActivityLogger::LogMethod(v8::Isolate* isolate,
@@ -106,14 +110,15 @@ void DOMActivityLogger::LogMethod(v8::Isolate* isolate,
   if (!renderer_host) {
     return;
   }
-  base::Value::List args;
+
+  base::ListValue args;
   std::string api_name_utf8 = api_name.Utf8();
   for (const auto& arg : argv) {
     AppendV8Value(isolate, api_name_utf8, arg, args);
   }
-  renderer_host->AddDOMActionToActivityLog(extension_id_, api_name_utf8,
-                                           std::move(args), url, title.Utf16(),
-                                           DomActionType::METHOD);
+
+  LogInternal(renderer_host, DomActionType::METHOD, api_name_utf8,
+              std::move(args), url, title.Utf16());
 }
 
 void DOMActivityLogger::LogEvent(blink::WebLocalFrame& frame,
@@ -121,16 +126,56 @@ void DOMActivityLogger::LogEvent(blink::WebLocalFrame& frame,
                                  base::span<const WebString> argv,
                                  const WebURL& url,
                                  const WebString& title) {
-  base::Value::List args;
-  std::string event_name_utf8 = event_name.Utf8();
+  auto* renderer_host =
+      ExtensionFrameHelper::Get(content::RenderFrame::FromWebFrame(&frame))
+          ->GetRendererHost();
+  if (!renderer_host) {
+    return;
+  }
+
+  base::ListValue args;
   for (const auto& arg : argv) {
     args.Append(arg.Utf8());
   }
-  ExtensionFrameHelper::Get(content::RenderFrame::FromWebFrame(&frame))
-      ->GetRendererHost()
-      ->AddDOMActionToActivityLog(extension_id_, event_name_utf8,
-                                  std::move(args), url, title.Utf16(),
-                                  DomActionType::METHOD);
+
+  LogInternal(renderer_host, DomActionType::METHOD, event_name.Utf8(),
+              std::move(args), url, title.Utf16());
+}
+
+void DOMActivityLogger::AttachToWorld(int32_t world_id,
+                                      const ExtensionId& extension_id) {
+  // If there is no logger registered for world_id, construct a new logger
+  // and register it with world_id.
+  if (!blink::HasDOMActivityLogger(world_id,
+                                   WebString::FromUtf8(extension_id))) {
+    DOMActivityLogger* logger = new DOMActivityLogger(extension_id);
+    blink::SetDOMActivityLogger(world_id, WebString::FromUtf8(extension_id),
+                                logger);
+  }
+}
+
+void DOMActivityLogger::LogInternal(mojom::RendererHost* renderer_host,
+                                    DomActionType::Type type,
+                                    const std::string& api_name,
+                                    base::ListValue args,
+                                    const GURL& url,
+                                    const std::u16string& title) {
+  CHECK(renderer_host);
+
+  ExtensionsRendererClient* client = ExtensionsRendererClient::Get();
+  bool should_log = client->IsActivityLoggingEnabled();
+
+  if (!should_log && client->IsPolicyActivityLoggingEnabled()) {
+    PolicyActivityLogFilter* filter = client->GetPolicyActivityLogFilter();
+    should_log = filter && filter->IsHighRiskEvent(extension_id_, type,
+                                                   api_name, args, url);
+  }
+
+  if (should_log) {
+    renderer_host->AddDOMActionToActivityLog(extension_id_, api_name,
+                                             std::move(args), url, title,
+                                             static_cast<int32_t>(type));
+  }
 }
 
 mojom::RendererHost* DOMActivityLogger::GetRendererHost(

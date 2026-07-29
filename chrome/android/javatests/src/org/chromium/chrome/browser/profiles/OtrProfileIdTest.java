@@ -4,20 +4,27 @@
 
 package org.chromium.chrome.browser.profiles;
 
+import static com.google.common.truth.Truth.assertThat;
+
+import static org.junit.Assert.assertSame;
+
 import androidx.test.filters.MediumTest;
 import androidx.test.filters.SmallTest;
 
 import org.junit.Assert;
 import org.junit.Before;
-import org.junit.ClassRule;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.ReusedCtaTransitTestRule;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 
 /**
  * This test class checks if OtrProfileId works correctly for regular profile, primary
@@ -26,17 +33,20 @@ import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
  */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
+@Batch(Batch.PER_CLASS)
 public class OtrProfileIdTest {
     private static final String TEST_OTR_PROFILE_ID_ONE = "Test::SerializationOne";
     private static final String TEST_OTR_PROFILE_ID_TWO = "Test::SerializationTwo";
 
-    @ClassRule
-    public static final ChromeTabbedActivityTestRule sActivityTestRule =
-            new ChromeTabbedActivityTestRule();
+    @Rule
+    public ReusedCtaTransitTestRule<WebPageStation> mActivityTestRule =
+            ChromeTransitTestRules.blankPageStartReusedActivityRule();
+
+    private WebPageStation mPage;
 
     @Before
     public void setUp() {
-        sActivityTestRule.startMainActivityOnBlankPage();
+        mPage = mActivityTestRule.start();
     }
 
     @Test
@@ -46,8 +56,10 @@ public class OtrProfileIdTest {
                 () -> {
                     Profile profile = ProfileManager.getLastUsedRegularProfile();
 
+                    assertSame(profile, mPage.loadedTabElement.value().getProfile());
+
                     // OtrProfileId should be null for regular profile.
-                    assert profile.getOtrProfileId() == null;
+                    assertThat(profile.getOtrProfileId()).isNull();
                 });
     }
 
@@ -62,8 +74,8 @@ public class OtrProfileIdTest {
 
                     // OtrProfileId should not be null for primary OTR profile and it should be the
                     // id of primary OTR profile.
-                    assert profile.getOtrProfileId() != null;
-                    assert profile.getOtrProfileId().isPrimaryOtrId();
+                    assertThat(profile.getOtrProfileId()).isNotNull();
+                    assertThat(profile.getOtrProfileId().isPrimaryOtrId()).isTrue();
                 });
     }
 
@@ -80,8 +92,8 @@ public class OtrProfileIdTest {
 
                     // OtrProfileId should not be null for non-primary OTR profile and it should not
                     // be the id of primary OTR profile.
-                    assert profile.getOtrProfileId() != null;
-                    assert !profile.getOtrProfileId().isPrimaryOtrId();
+                    assertThat(profile.getOtrProfileId()).isNotNull();
+                    assertThat(profile.getOtrProfileId().isPrimaryOtrId()).isFalse();
                 });
     }
 
@@ -100,7 +112,7 @@ public class OtrProfileIdTest {
                     // Check whether deserialized version from serialized version equals with the
                     // original OtrProfileId.
                     OtrProfileId deserializedId = OtrProfileId.deserialize(serializedId);
-                    assert deserializedId.equals(profile.getOtrProfileId());
+                    assertThat(deserializedId).isEqualTo(profile.getOtrProfileId());
                 });
     }
 
@@ -157,7 +169,7 @@ public class OtrProfileIdTest {
                     OtrProfileId deserializedIdTwo = OtrProfileId.deserialize(serializedIdTwo);
                     // Check whether deserialized version of TEST_OTR_PROFILE_ID_ONE and
                     // TEST_OTR_PROFILE_ID_TWO are not equal.
-                    assert !deserializedIdOne.equals(deserializedIdTwo);
+                    assertThat(deserializedIdOne).isNotEqualTo(deserializedIdTwo);
                 });
     }
 
@@ -168,10 +180,10 @@ public class OtrProfileIdTest {
                 () -> {
                     // Deserialize the profile ids from serialized version.
                     OtrProfileId deserializedNullValue = OtrProfileId.deserialize(null);
-                    assert deserializedNullValue == null;
+                    assertThat(deserializedNullValue).isNull();
 
                     OtrProfileId deserializedEmptyValue = OtrProfileId.deserialize("");
-                    assert deserializedEmptyValue == null;
+                    assertThat(deserializedEmptyValue).isNull();
                 });
     }
 
@@ -182,7 +194,7 @@ public class OtrProfileIdTest {
                 () -> {
                     OtrProfileId otrProfileIdJava = OtrProfileId.getPrimaryOtrProfileId();
                     OtrProfileId otrProfileIdNative = OtrProfileIdJni.get().getPrimaryId();
-                    assert otrProfileIdJava.equals(otrProfileIdNative);
+                    assertThat(otrProfileIdJava).isEqualTo(otrProfileIdNative);
 
                     Profile profileJava =
                             ProfileManager.getLastUsedRegularProfile()
@@ -192,11 +204,11 @@ public class OtrProfileIdTest {
                             ProfileManager.getLastUsedRegularProfile()
                                     .getOffTheRecordProfile(
                                             otrProfileIdNative, /* createIfNeeded= */ true);
-                    assert profileJava.equals(profileNative);
+                    assertThat(profileJava).isEqualTo(profileNative);
 
                     ProfileKey profileKeyJava = profileJava.getProfileKey();
                     ProfileKey profileKeyNative = profileNative.getProfileKey();
-                    assert profileKeyJava.equals(profileKeyNative);
+                    assertThat(profileKeyJava).isEqualTo(profileKeyNative);
                 });
     }
 }

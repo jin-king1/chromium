@@ -25,8 +25,6 @@
 #include "net/socket/udp_socket.h"
 #include "net/socket/udp_socket_global_limits.h"
 
-#include "services/network/broker_helper_win.h"
-
 namespace net {
 class IOBuffer;
 class IPEndPoint;
@@ -78,6 +76,12 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) BrokeredUdpClientSocket
   net::handles::NetworkHandle GetBoundNetwork() const override;
   void ApplySocketTag(const net::SocketTag& tag) override;
   void EnableRecvOptimization() override;
+  base::expected<net::DatagramsMetadata, net::Error> ReadMultiple(
+      net::IOBuffer* buf,
+      size_t buf_len,
+      size_t maximum_packet_size,
+      base::OnceCallback<void(base::expected<net::DatagramsMetadata,
+                                             net::Error>)> callback) override;
   int SetMulticastInterface(uint32_t interface_index) override;
   void SetIOSNetworkServiceType(int ios_network_service_type) override;
   net::DscpAndEcn GetLastTos() const override;
@@ -122,10 +126,6 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) BrokeredUdpClientSocket
   bool get_use_non_blocking_io_for_testing() {
     return socket_->get_use_non_blocking_io_for_testing();
   }
-  void SetBrokerHelperDelegateForTesting(
-      std::unique_ptr<BrokerHelperWin::Delegate> delegate) {
-    broker_helper_.SetDelegateForTesting(std::move(delegate));
-  }
 #endif
 
  private:
@@ -143,6 +143,7 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) BrokeredUdpClientSocket
   int DidCompleteCreate(bool should_broker,
                         const net::IPEndPoint& address,
                         net::CompletionOnceCallback callback,
+                        base::TimeTicks start_time,
                         network::TransferableSocket socket,
                         int result);
 
@@ -164,8 +165,6 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) BrokeredUdpClientSocket
   // The ClientSocketFactory that created this socket. Used to send IPCs to the
   // remote SocketBroker.
   const raw_ptr<BrokeredClientSocketFactory> client_socket_factory_;
-
-  BrokerHelperWin broker_helper_;
 
   SEQUENCE_CHECKER(sequence_checker_);
 

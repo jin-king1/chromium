@@ -24,6 +24,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_FONTS_SIMPLE_FONT_DATA_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_FONTS_SIMPLE_FONT_DATA_H_
 
+#include <array>
 #include <memory>
 #include <mutex>
 #include <utility>
@@ -39,18 +40,16 @@
 #include "third_party/blink/renderer/platform/fonts/font_platform_data.h"
 #include "third_party/blink/renderer/platform/fonts/font_vertical_position_type.h"
 #include "third_party/blink/renderer/platform/fonts/glyph.h"
+#include "third_party/blink/renderer/platform/fonts/glyph_metrics_map.h"
 #include "third_party/blink/renderer/platform/fonts/shaping/han_kerning.h"
 #include "third_party/blink/renderer/platform/fonts/typesetting_features.h"
 #include "third_party/blink/renderer/platform/heap/member.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
+#include "third_party/blink/renderer/platform/text/text_direction.h"
 #include "third_party/blink/renderer/platform/wtf/casting.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_hash.h"
 #include "third_party/skia/include/core/SkFont.h"
 #include "ui/gfx/geometry/rect_f.h"
-
-#if BUILDFLAG(IS_APPLE)
-#include "third_party/blink/renderer/platform/fonts/glyph_metrics_map.h"
-#endif
 
 namespace blink {
 
@@ -112,6 +111,15 @@ class PLATFORM_EXPORT SimpleFontData final : public FontData {
   const std::optional<float>& IdeographicAdvanceWidth() const;
   const std::optional<float>& IdeographicAdvanceHeight() const;
 
+  // The inter-script spacing by the CSS `text-autospace` property.
+  // https://drafts.csswg.org/css-text-4/#inter-script-spacing
+  float TextAutoSpaceInlineSize() const;
+
+  // The approximated advance of “0” (ZERO, U+0030) character in the inline
+  // axis. This is currently used to support the `ch` unit.
+  // https://drafts.csswg.org/css-values-4/#ch
+  inline float ZeroInlineSize() const;
+
   // |sTypoAscender| and |sTypoDescender| in |OS/2| table, normalized to 1em.
   // This metrics can simulate ideographics em-box when the font doesn't have
   // better ways to compute it.
@@ -137,6 +145,7 @@ class PLATFORM_EXPORT SimpleFontData final : public FontData {
                                              bool is_horizontal) const;
 
   gfx::RectF BoundsForGlyph(Glyph) const;
+  gfx::RectF PreciseBoundsForGlyph(Glyph) const;
   void BoundsForGlyphs(const Vector<Glyph, 256>&, Vector<SkRect, 256>*) const;
   gfx::RectF PlatformBoundsForGlyph(Glyph) const;
   float WidthForGlyph(Glyph) const;
@@ -152,6 +161,7 @@ class PLATFORM_EXPORT SimpleFontData final : public FontData {
   const SimpleFontData* FontDataForCharacter(UChar32) const override;
 
   Glyph GlyphForCharacter(UChar32) const;
+  Glyph GlyphForMathCharacter(UChar32, TextDirection) const;
 
   bool IsCustomFont() const override { return custom_font_data_; }
   bool IsLoading() const override {
@@ -214,7 +224,7 @@ class PLATFORM_EXPORT SimpleFontData final : public FontData {
     bool is_horizontal;
     HanKerning::FontData data;
   };
-  mutable HanKerningCacheEntry han_kerning_cache_[2];
+  mutable std::array<HanKerningCacheEntry, 2> han_kerning_cache_;
 
   mutable FontHeight normalized_typo_ascent_descent_;
 
@@ -225,6 +235,8 @@ class PLATFORM_EXPORT SimpleFontData final : public FontData {
 #if BUILDFLAG(IS_APPLE)
   mutable std::unique_ptr<GlyphMetricsMap<gfx::RectF>> glyph_to_bounds_map_;
 #endif
+  mutable std::unique_ptr<GlyphMetricsMap<gfx::RectF>>
+      glyph_to_precise_bounds_map_;
 
   NO_UNIQUE_ADDRESS V8ExternalMemoryAccounterBase external_memory_accounter_;
 };

@@ -4,11 +4,10 @@
 
 package org.chromium.net.test;
 
-import android.util.Log;
-
 import androidx.annotation.GuardedBy;
 import androidx.annotation.VisibleForTesting;
 
+import org.chromium.base.Log;
 import org.chromium.net.CronetException;
 import org.chromium.net.ExperimentalUrlRequest;
 import org.chromium.net.InlineExecutionProhibitedException;
@@ -65,8 +64,7 @@ final class FakeUrlRequest extends ExperimentalUrlRequest {
     private final FakeCronetEngine mFakeCronetEngine;
 
     // Source of thread safety for this class.
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
-    final Object mLock = new Object();
+    @VisibleForTesting final Object mLock = new Object();
 
     // True if direct execution is allowed for this request.
     private final boolean mAllowDirectExecutor;
@@ -317,7 +315,8 @@ final class FakeUrlRequest extends ExperimentalUrlRequest {
                         mCurrentFakeResponse.getWasCached(),
                         mCurrentFakeResponse.getNegotiatedProtocol(),
                         mCurrentFakeResponse.getProxyServer(),
-                        mCurrentFakeResponse.getResponseBody().length);
+                        mCurrentFakeResponse.getResponseBody().length,
+                        /* isProxied= */ false);
         mResponse = ByteBuffer.wrap(mCurrentFakeResponse.getResponseBody());
         // Check for a redirect.
         if (responseCode >= 300 && responseCode < 400 && responseCode != 304) {
@@ -699,7 +698,7 @@ final class FakeUrlRequest extends ExperimentalUrlRequest {
      * {@link ByteArrayOutputStream} and transfers it to the {@code mRequestBody} when the response
      * has been fully acquired.
      */
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     final class FakeDataSink extends JavaUploadDataSinkBase {
         private final ByteArrayOutputStream mBodyStream = new ByteArrayOutputStream();
         private final WritableByteChannel mBodyChannel = Channels.newChannel(mBodyStream);

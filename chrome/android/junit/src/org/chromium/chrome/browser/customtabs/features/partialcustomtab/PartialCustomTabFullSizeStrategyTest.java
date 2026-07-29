@@ -23,7 +23,6 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.robolectric.annotation.Config;
-import org.robolectric.annotation.LooperMode;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider;
@@ -32,7 +31,6 @@ import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
 /** Tests for {@link PartialCustomTabFullSizeStrategy}. */
 @RunWith(BaseRobolectricTestRunner.class)
 @Config(manifest = Config.NONE)
-@LooperMode(LooperMode.Mode.PAUSED)
 public class PartialCustomTabFullSizeStrategyTest {
     private boolean mFullscreen;
 
@@ -118,6 +116,7 @@ public class PartialCustomTabFullSizeStrategyTest {
     }
 
     @Test
+    @SuppressWarnings("DirectInvocationOnMock")
     public void create_fullSizeStrategyInPortrait_HeightNotSet_WidthSet() {
         when(mPCCTTestRule.mIntentData.getInitialActivityWidth()).thenReturn(300);
         mPCCTTestRule.configPortraitMode();

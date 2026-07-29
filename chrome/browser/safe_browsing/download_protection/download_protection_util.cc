@@ -4,21 +4,27 @@
 
 #include "chrome/browser/safe_browsing/download_protection/download_protection_util.h"
 
-#include "base/hash/sha1.h"
+#include "base/feature_list.h"
+#include "base/functional/callback_helpers.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/rand_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "chrome/browser/download/download_item_warning_data.h"
+#include "chrome/browser/enterprise/connectors/referrer_cache_utils.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/safe_browsing/download_protection/download_item_metadata.h"
 #include "chrome/browser/safe_browsing/safe_browsing_navigation_observer_manager_factory.h"
 #include "components/download/public/common/download_danger_type.h"
+#include "components/enterprise/connectors/core/reporting_utils.h"
 #include "components/safe_browsing/buildflags.h"
 #include "components/safe_browsing/content/common/file_type_policies.h"
+#include "components/safe_browsing/core/browser/referrer_chain_provider.h"
+#include "components/safe_browsing/core/common/proto/csd.pb.h"
 #include "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #include "components/sessions/content/session_tab_helper.h"
 #include "content/public/browser/download_item_utils.h"
-#include "net/cert/x509_util.h"
+#include "components/safe_browsing/core/common/utils.h"
 #include "url/gurl.h"
 
 #if BUILDFLAG(SAFE_BROWSING_DOWNLOAD_PROTECTION)
@@ -29,26 +35,18 @@
 #include "chrome/browser/safe_browsing/download_protection/deep_scanning_request.h"
 #endif
 
+#if BUILDFLAG(IS_ANDROID)
+#include "components/enterprise/connectors/core/features.h"
+#endif
+
 namespace safe_browsing {
 
 namespace {
 
-// Escapes a certificate attribute so that it can be used in a allowlist
-// entry.  Currently, we only escape slashes, since they are used as a
-// separator between attributes.
-std::string EscapeCertAttribute(const std::string& attribute) {
-  std::string escaped;
-  for (size_t i = 0; i < attribute.size(); ++i) {
-    if (attribute[i] == '%') {
-      escaped.append("%25");
-    } else if (attribute[i] == '/') {
-      escaped.append("%2F");
-    } else {
-      escaped.push_back(attribute[i]);
-    }
-  }
-  return escaped;
-}
+#if BUILDFLAG(IS_ANDROID)
+// File suffix for APKs.
+const base::FilePath::CharType kApkSuffix[] = FILE_PATH_LITERAL(".apk");
+#endif
 
 int ArchiveEntryWeight(const ClientDownloadRequest::ArchivedBinary& entry) {
   return FileTypePolicies::GetInstance()
@@ -123,15 +121,16 @@ void AddEventUrlToReferrerChain(const download::DownloadItem& item,
                                 content::RenderFrameHost* render_frame_host,
                                 ReferrerChain* out_referrer_chain) {
   ReferrerChainEntry* event_url_entry = out_referrer_chain->Add();
-  event_url_entry->set_url(item.GetURL().spec());
+  event_url_entry->set_url(safe_browsing::ShortURLForReporting(item.GetURL()));
   event_url_entry->set_type(ReferrerChainEntry::EVENT_URL);
-  event_url_entry->set_referrer_url(
-      render_frame_host->GetLastCommittedURL().spec());
+  event_url_entry->set_referrer_url(safe_browsing::ShortURLForReporting(
+      render_frame_host->GetLastCommittedURL()));
   event_url_entry->set_is_retargeting(false);
   event_url_entry->set_navigation_time_msec(
       base::Time::Now().InMillisecondsSinceUnixEpoch());
   for (const GURL& url : item.GetUrlChain()) {
-    event_url_entry->add_server_redirect_chain()->set_url(url.spec());
+    event_url_entry->add_server_redirect_chain()->set_url(
+        safe_browsing::ShortURLForReporting(url));
   }
 }
 
@@ -152,6 +151,8 @@ bool IsDownloadReportGatedByExtendedReporting(
         DANGEROUS_DOWNLOAD_AUTO_DELETED:
     case safe_browsing::ClientSafeBrowsingReportRequest::
         DANGEROUS_DOWNLOAD_PROFILE_CLOSED:
+    case safe_browsing::ClientSafeBrowsingReportRequest::
+        DANGEROUS_DOWNLOAD_WARNING_ANDROID:
       return true;
     default:
       NOTREACHED();
@@ -161,58 +162,8 @@ bool IsDownloadReportGatedByExtendedReporting(
 
 }  // namespace
 
-void GetCertificateAllowlistStrings(
-    const net::X509Certificate& certificate,
-    const net::X509Certificate& issuer,
-    std::vector<std::string>* allowlist_strings) {
-  // The allowlist paths are in the format:
-  // cert/<ascii issuer fingerprint>[/CN=common_name][/O=org][/OU=unit]
-  //
-  // Any of CN, O, or OU may be omitted from the allowlist entry, in which
-  // case they match anything.  However, the attributes that do appear will
-  // always be in the order shown above.  At least one attribute will always
-  // be present.
-
-  const net::CertPrincipal& subject = certificate.subject();
-  std::vector<std::string> ou_tokens;
-  for (size_t i = 0; i < subject.organization_unit_names.size(); ++i) {
-    ou_tokens.push_back(
-        "/OU=" + EscapeCertAttribute(subject.organization_unit_names[i]));
-  }
-
-  std::vector<std::string> o_tokens;
-  for (size_t i = 0; i < subject.organization_names.size(); ++i) {
-    o_tokens.push_back("/O=" +
-                       EscapeCertAttribute(subject.organization_names[i]));
-  }
-
-  std::string cn_token;
-  if (!subject.common_name.empty()) {
-    cn_token = "/CN=" + EscapeCertAttribute(subject.common_name);
-  }
-
-  std::set<std::string> paths_to_check;
-  if (!cn_token.empty()) {
-    paths_to_check.insert(cn_token);
-  }
-  for (size_t i = 0; i < o_tokens.size(); ++i) {
-    paths_to_check.insert(cn_token + o_tokens[i]);
-    paths_to_check.insert(o_tokens[i]);
-    for (size_t j = 0; j < ou_tokens.size(); ++j) {
-      paths_to_check.insert(cn_token + o_tokens[i] + ou_tokens[j]);
-      paths_to_check.insert(o_tokens[i] + ou_tokens[j]);
-    }
-  }
-  for (size_t i = 0; i < ou_tokens.size(); ++i) {
-    paths_to_check.insert(cn_token + ou_tokens[i]);
-    paths_to_check.insert(ou_tokens[i]);
-  }
-
-  std::string issuer_fp = base::HexEncode(
-      base::SHA1Hash(net::x509_util::CryptoBufferAsSpan(issuer.cert_buffer())));
-  for (auto it = paths_to_check.begin(); it != paths_to_check.end(); ++it) {
-    allowlist_strings->push_back("cert/" + issuer_fp + *it);
-  }
+ClientDownloadRequestModification NoModificationToRequestProto() {
+  return base::DoNothing();
 }
 
 GURL GetFileSystemAccessDownloadUrl(const GURL& frame_url) {
@@ -302,6 +253,15 @@ void LogDeepScanEvent(download::DownloadItem* item, DeepScanEvent event) {
   }
 }
 
+void LogDeepScanEvent(const DeepScanningMetadata& metadata,
+                      DeepScanEvent event) {
+  base::UmaHistogramEnumeration("SBClientDownload.DeepScanEvent3", event);
+  if (metadata.IsTopLevelEncryptedArchive()) {
+    base::UmaHistogramEnumeration(
+        "SBClientDownload.PasswordProtectedDeepScanEvent3", event);
+  }
+}
+
 void LogLocalDecryptionEvent(DeepScanEvent event) {
   base::UmaHistogramEnumeration("SBClientDownload.LocalDecryptionEvent", event);
 }
@@ -382,12 +342,13 @@ std::unique_ptr<ReferrerChainData> IdentifyReferrerChain(
   std::unique_ptr<ReferrerChain> referrer_chain =
       std::make_unique<ReferrerChain>();
 
-  SessionID tab_id = sessions::SessionTabHelper::IdForTab(item.web_contents);
+  SessionID tab_id =
+      sessions::SessionTabHelper::IdForTab(item.web_contents.get());
 
   GURL tab_url = item.web_contents->GetVisibleURL();
 
   SafeBrowsingNavigationObserverManager::AttributionResult result =
-      GetNavigationObserverManager(item.web_contents)
+      GetNavigationObserverManager(item.web_contents.get())
           ->IdentifyReferrerChainByHostingPage(
               item.frame_url, tab_url, item.outermost_main_frame_id, tab_id,
               item.has_user_gesture, user_gesture_limit, referrer_chain.get());
@@ -407,13 +368,43 @@ std::unique_ptr<ReferrerChainData> IdentifyReferrerChain(
                                  CountOfRecentNavigationsToAppend(
                                      profile, profile->GetPrefs(), result)
                            : 0u;
-  GetNavigationObserverManager(item.web_contents)
+  GetNavigationObserverManager(item.web_contents.get())
       ->AppendRecentNavigations(recent_navigations_to_collect,
                                 referrer_chain.get());
 
   return std::make_unique<ReferrerChainData>(result, std::move(referrer_chain),
                                              referrer_chain_length,
                                              recent_navigations_to_collect);
+}
+
+ReferrerChain GetOrIdentifyReferrerChainForEnterprise(
+    download::DownloadItem& item) {
+  ReferrerChain referrer_chain =
+      enterprise_connectors::GetCachedReferrerChain(item);
+  if (!referrer_chain.empty()) {
+    return referrer_chain;
+  }
+
+  std::unique_ptr<safe_browsing::ReferrerChainData> new_referrer_chain_data =
+      safe_browsing::IdentifyReferrerChain(
+          item, enterprise_connectors::kReferrerUserGestureLimit);
+
+  // If the chain can't be obtained from `safe_browsing::IdentifyReferrerChain`
+  // or if the returned data only contains the download URL, fall back to
+  // enterprise-specific logic to cache a value.
+  if (!new_referrer_chain_data ||
+      !new_referrer_chain_data->GetReferrerChain() ||
+      new_referrer_chain_data->GetReferrerChain()->size() <= 1) {
+    referrer_chain = enterprise_connectors::GetOrCreateReferrerChain(item);
+  } else {
+    referrer_chain = *new_referrer_chain_data->GetReferrerChain();
+  }
+
+  if (!referrer_chain.empty()) {
+    enterprise_connectors::SetReferrerChain(referrer_chain, item);
+  }
+
+  return referrer_chain;
 }
 
 #if BUILDFLAG(SAFE_BROWSING_DOWNLOAD_PROTECTION)
@@ -469,13 +460,38 @@ bool ShouldSendDangerousDownloadReport(
 }
 #endif
 
+bool IsDeepScanningEnabled() {
+#if BUILDFLAG(IS_ANDROID)
+  // On Android, only Enterprise scan may be enabled. Consumer deep scan is not
+  // (yet) supported.
+  return base::FeatureList::IsEnabled(
+      enterprise_connectors::kEnableDownloadEnterpriseScanOnClank);
+#else
+  return true;
+#endif
+}
+
 std::optional<enterprise_connectors::AnalysisSettings>
 ShouldUploadBinaryForDeepScanning(download::DownloadItem* item) {
+  if (!IsDeepScanningEnabled()) {
+    return std::nullopt;
+  }
+  // Create temporary metadata wrapper on the stack.
+  DownloadItemMetadata metadata(item);
+  return DeepScanningRequest::ShouldUploadBinary(metadata);
+}
+
+bool IsFiletypeSupportedForFullDownloadProtection(
+    const base::FilePath& file_name) {
+  // On Android, do not use FileTypePolicies, which are currently only
+  // applicable to desktop platforms. Instead, hardcode the APK filetype check
+  // for Android here.
+  // TODO(chlily): Refactor/fix FileTypePolicies and then remove this
+  // platform-specific hardcoded behavior.
 #if BUILDFLAG(IS_ANDROID)
-  // Deep scanning is not supported on Android.
-  return std::nullopt;
+  return file_name.MatchesExtension(kApkSuffix);
 #else
-  return DeepScanningRequest::ShouldUploadBinary(item);
+  return FileTypePolicies::GetInstance()->IsCheckedBinaryFile(file_name);
 #endif
 }
 

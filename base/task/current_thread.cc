@@ -14,7 +14,7 @@
 #include "base/message_loop/message_pump_type.h"
 #include "base/task/sequence_manager/sequence_manager_impl.h"
 #include "base/threading/thread_local.h"
-#include "base/trace_event/base_tracing.h"
+#include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
 
 namespace base {
@@ -55,12 +55,6 @@ void CurrentThread::RemoveDestructionObserver(
   current_->RemoveDestructionObserver(destruction_observer);
 }
 
-void CurrentThread::SetTaskRunner(
-    scoped_refptr<SingleThreadTaskRunner> task_runner) {
-  DCHECK(current_->IsBoundToCurrentThread());
-  current_->SetTaskRunner(std::move(task_runner));
-}
-
 bool CurrentThread::IsBoundToCurrentThread() const {
   return current_ == GetCurrentSequenceManagerImpl();
 }
@@ -80,6 +74,11 @@ void CurrentThread::EnableMessagePumpTimeKeeperMetrics(
 IOWatcher* CurrentThread::GetIOWatcher() {
   DCHECK(current_->IsBoundToCurrentThread());
   return current_->GetMessagePump()->GetIOWatcher();
+}
+
+bool CurrentThread::IsAsyncIOSupported() const {
+  DCHECK(current_->IsBoundToCurrentThread());
+  return current_->GetMessagePump()->IsAsyncIOSupported();
 }
 
 void CurrentThread::AddTaskObserver(TaskObserver* task_observer) {
@@ -108,21 +107,19 @@ CurrentThread::ScopedAllowApplicationTasksInNativeNestedLoop::
     : sequence_manager_(GetCurrentSequenceManagerImpl()),
       previous_state_(
           sequence_manager_->IsTaskExecutionAllowedInNativeNestedLoop()) {
-  TRACE_EVENT_BEGIN0("base", "ScopedNestableTaskAllower");
+  TRACE_EVENT_BEGIN("base", "ScopedNestableTaskAllower");
   sequence_manager_->SetTaskExecutionAllowedInNativeNestedLoop(true);
 }
 
 CurrentThread::ScopedAllowApplicationTasksInNativeNestedLoop::
     ~ScopedAllowApplicationTasksInNativeNestedLoop() {
   sequence_manager_->SetTaskExecutionAllowedInNativeNestedLoop(previous_state_);
-  TRACE_EVENT_END0("base", "ScopedNestableTaskAllower");
+  TRACE_EVENT_END("base");
 }
 
 bool CurrentThread::ApplicationTasksAllowedInNativeNestedLoop() const {
   return current_->IsTaskExecutionAllowedInNativeNestedLoop();
 }
-
-#if !BUILDFLAG(IS_NACL)
 
 //------------------------------------------------------------------------------
 // CurrentUIThread
@@ -183,18 +180,22 @@ void CurrentUIThread::Abort() {
 #endif  // BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(IS_WIN)
-void CurrentUIThread::AddMessagePumpObserver(
-    MessagePumpForUI::Observer* observer) {
-  GetMessagePumpForUI()->AddObserver(observer);
+void CurrentUIThread::RegisterNativeEventObserver(
+    MessagePumpForUI::NativeEventObserver* observer) {
+  GetMessagePumpForUI()->RegisterNativeEventObserver(observer);
 }
 
-void CurrentUIThread::RemoveMessagePumpObserver(
-    MessagePumpForUI::Observer* observer) {
-  GetMessagePumpForUI()->RemoveObserver(observer);
+void CurrentUIThread::UnregisterNativeEventObserver(
+    MessagePumpForUI::NativeEventObserver* observer) {
+  GetMessagePumpForUI()->UnregisterNativeEventObserver(observer);
+}
+
+MessagePumpForUI::NativeEventObserver*
+CurrentUIThread::ResetNativeEventObserverForTesting(
+    MessagePumpForUI::NativeEventObserver* observer) {
+  return GetMessagePumpForUI()->ResetNativeEventObserverForTesting(observer);
 }
 #endif  // BUILDFLAG(IS_WIN)
-
-#endif  // !BUILDFLAG(IS_NACL)
 
 //------------------------------------------------------------------------------
 // CurrentIOThread
@@ -216,8 +217,6 @@ bool CurrentIOThread::IsSet() {
 MessagePumpForIO* CurrentIOThread::GetMessagePumpForIO() const {
   return static_cast<MessagePumpForIO*>(current_->GetMessagePump());
 }
-
-#if !BUILDFLAG(IS_NACL)
 
 #if BUILDFLAG(IS_WIN)
 bool CurrentIOThread::RegisterIOHandler(HANDLE file,
@@ -245,7 +244,8 @@ bool CurrentIOThread::WatchFileDescriptor(
 }
 #endif  // BUILDFLAG(IS_WIN)
 
-#if BUILDFLAG(IS_MAC) || (BUILDFLAG(IS_IOS) && !BUILDFLAG(CRONET_BUILD))
+#if BUILDFLAG(IS_MAC) || \
+    (BUILDFLAG(IS_IOS) && !BUILDFLAG(CRONET_BUILD) && !BUILDFLAG(IS_IOS_TVOS))
 bool CurrentIOThread::WatchMachReceivePort(
     mach_port_t port,
     MessagePumpForIO::MachPortWatchController* controller,
@@ -255,8 +255,6 @@ bool CurrentIOThread::WatchMachReceivePort(
                                                      delegate);
 }
 #endif
-
-#endif  // !BUILDFLAG(IS_NACL)
 
 #if BUILDFLAG(IS_FUCHSIA)
 // Additional watch API for native platform resources.

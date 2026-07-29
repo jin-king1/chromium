@@ -9,10 +9,10 @@
 #include "base/values.h"
 #include "chrome/browser/ash/settings/scoped_testing_cros_settings.h"
 #include "chrome/browser/ash/settings/stub_cros_settings_provider.h"
+#include "chromeos/ash/components/policy/device_local_account/device_local_account_type.h"
 #include "chromeos/ash/components/settings/cros_settings.h"
 #include "chromeos/ash/components/settings/cros_settings_names.h"
 #include "chromeos/ash/components/settings/cros_settings_provider.h"
-#include "components/policy/core/common/device_local_account_type.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -25,8 +25,8 @@ constexpr char kKioskAppId[] = "kiosk_app_id";
 
 base::Value BuildDeviceLocalAccountsWithOneKioskAppWithEphemeralMode(
     DeviceLocalAccount::EphemeralMode ephemeral_mode) {
-  return base::Value(base::Value::List().Append(
-      base::Value::Dict()
+  return base::Value(base::ListValue().Append(
+      base::DictValue()
           .Set(ash::kAccountsPrefDeviceLocalAccountsKeyId, kAccountId)
           .Set(ash::kAccountsPrefDeviceLocalAccountsKeyType,
                static_cast<int>(DeviceLocalAccountType::kKioskApp))
@@ -88,8 +88,8 @@ TEST_F(DeviceLocalAccountTest,
 
 TEST_F(DeviceLocalAccountTest,
        GetDeviceLocalAccountsWithMissingEphemeralModeShouldDefaultToUnset) {
-  SetDeviceLocalAccountsPolicy(base::Value(base::Value::List().Append(
-      base::Value::Dict()
+  SetDeviceLocalAccountsPolicy(base::Value(base::ListValue().Append(
+      base::DictValue()
           .Set(ash::kAccountsPrefDeviceLocalAccountsKeyId, kAccountId)
           .Set(ash::kAccountsPrefDeviceLocalAccountsKeyType,
                static_cast<int>(DeviceLocalAccountType::kKioskApp))
@@ -106,8 +106,8 @@ TEST_F(DeviceLocalAccountTest,
 
 TEST_F(DeviceLocalAccountTest,
        GetDeviceLocalAccountsEphemeralModeShouldBeIgnoredForPublicSession) {
-  SetDeviceLocalAccountsPolicy(base::Value(base::Value::List().Append(
-      base::Value::Dict()
+  SetDeviceLocalAccountsPolicy(base::Value(base::ListValue().Append(
+      base::DictValue()
           .Set(ash::kAccountsPrefDeviceLocalAccountsKeyId, kAccountId)
           .Set(ash::kAccountsPrefDeviceLocalAccountsKeyType,
                static_cast<int>(DeviceLocalAccountType::kPublicSession))

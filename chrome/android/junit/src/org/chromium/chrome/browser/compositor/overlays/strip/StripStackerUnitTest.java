@@ -6,6 +6,7 @@ package org.chromium.chrome.browser.compositor.overlays.strip;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import org.junit.Before;
@@ -19,6 +20,7 @@ import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.DisabledTest;
+import org.chromium.chrome.browser.compositor.layouts.components.CompositorButton;
 import org.chromium.ui.base.LocalizationUtils;
 
 /** Tests for {@link StripStacker}. */
@@ -35,7 +37,7 @@ public class StripStackerUnitTest {
     private static final float STRIP_WIDTH = 200;
     private static final float BUTTON_WIDTH = 10;
 
-    private StripStacker mTarget = new TestStacker();
+    private final StripStacker mTarget = new TestStacker();
 
     @Mock private StripLayoutTab mTab1;
     @Mock private StripLayoutTab mTab2;
@@ -43,6 +45,8 @@ public class StripStackerUnitTest {
     @Mock private StripLayoutTab mTab4;
     @Mock private StripLayoutTab mTab5;
     private StripLayoutTab[] mInput;
+
+    @Mock private CompositorButton mNewTabButton;
 
     @Before
     public void setup() {
@@ -57,49 +61,65 @@ public class StripStackerUnitTest {
     }
 
     @Test
-    @DisabledTest(message = "https://crbug.com/1385702")
-    public void testComputeNewTabButtonOffset() {
+    @DisabledTest(message = "https://crbug.com/40879363")
+    public void testComputeNewTabButtonIdealX() {
         float result =
-                mTarget.computeNewTabButtonOffset(
+                mTarget.computeNewTabButtonIdealX(
                         mInput,
                         TAB_OVERLAP,
                         STRIP_LEFT_MARGIN,
                         STRIP_RIGHT_MARGIN,
                         STRIP_WIDTH,
-                        BUTTON_WIDTH);
+                        BUTTON_WIDTH,
+                        /* tabStripFull= */ false);
         assertThat("New Tab button offset does not match", result, is(35f));
     }
 
     @Test
-    public void testComputeNewTabButtonOffsetRtl() {
+    public void testComputeNewTabButtonIdealXRtl() {
         LocalizationUtils.setRtlForTesting(true);
-        float expected_res = 3f;
+        float expectedRes = 3f;
         // Update drawX for RTL = ((mInput.length -1 ) * TAB_WIDTH) + BUTTON_WIDTH +
-        // expected_res = 4*25 + 10 + 3
+        // expectedRes = 4*25 + 10 + 3
         float drawX = 113f;
         for (StripLayoutTab tab : mInput) {
             when(tab.getDrawX()).thenReturn(drawX);
             drawX -= TAB_WIDTH;
         }
         float result =
-                mTarget.computeNewTabButtonOffset(
+                mTarget.computeNewTabButtonIdealX(
                         mInput,
                         TAB_OVERLAP,
                         STRIP_LEFT_MARGIN,
                         STRIP_RIGHT_MARGIN,
                         STRIP_WIDTH,
-                        BUTTON_WIDTH);
-        assertThat("New Tab button offset does not match", result, is(expected_res));
+                        BUTTON_WIDTH,
+                        /* tabStripFull= */ true);
+        assertThat("New Tab button offset does not match", result, is(expectedRes));
+    }
+
+    @Test
+    public void testPushDrawPropertiesToButtons() {
+        float offsetX = 20;
+        when(mNewTabButton.getOffsetX()).thenReturn(offsetX);
+        mTarget.pushDrawPropertiesToButtons(
+                mNewTabButton,
+                mInput,
+                STRIP_LEFT_MARGIN,
+                STRIP_RIGHT_MARGIN,
+                STRIP_WIDTH,
+                BUTTON_WIDTH,
+                /* tabStripFull= */ false);
+
+        // drawX = idealX(121) + offsetX(20) = 141
+        verify(mNewTabButton).setVisible(true);
+        verify(mNewTabButton).setDrawX(141);
     }
 
     static class TestStacker extends StripStacker {
 
         @Override
         public void pushDrawPropertiesToViews(
-                StripLayoutView[] indexOrderedViews,
-                float xOffset,
-                float visibleWidth,
-                boolean mMultiStepTabCloseAnimRunning,
-                float mCachedTabWidth) {}
+                StripLayoutView[] indexOrderedViews, float leftBound, float rightBound) {}
     }
 }

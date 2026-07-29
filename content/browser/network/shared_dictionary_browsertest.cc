@@ -7,7 +7,7 @@
 
 #include "base/base_paths.h"
 #include "base/files/file_util.h"
-#include "base/memory/memory_pressure_listener.h"
+#include "base/memory/memory_pressure_listener_registry.h"
 #include "base/metrics/statistics_recorder.h"
 #include "base/path_service.h"
 #include "base/strings/strcat.h"
@@ -126,6 +126,47 @@ constexpr uint8_t kZstdCompressedData[] = {
 const std::string kZstdCompressedDataString =
     std::string(reinterpret_cast<const char*>(kZstdCompressedData),
                 sizeof(kZstdCompressedData));
+
+// kLargeZstdCompressedData is generated the same way as kZstdCompressedData
+// but with a larger input (348 bytes) that compresses well with the dictionary,
+// so the encoded size (117 bytes) is smaller than the decoded size (348 bytes).
+// This is important for testing cached responses, since the cache truncation
+// check compares Content-Length (encoded size) against the cached body size
+// (decoded size).
+//
+// $ echo "This is a test dictionary." > /tmp/dict
+// $ python3 -c "import sys; sys.stdout.write(
+//     'This is a test dictionary. ' * 10 +
+//     'This is additional test data that also references the test '
+//     'dictionary content.')" > /tmp/large_data
+// $ echo -en '\x5e\x2a\x4d\x18\x20\x00\x00\x00' > /tmp/out.dcz
+// $ openssl dgst -sha256 -binary /tmp/dict >> /tmp/out.dcz
+// $ zstd -D /tmp/dict -f -o /tmp/tmp.zstd /tmp/large_data
+// $ cat /tmp/tmp.zstd >> /tmp/out.dcz
+// $ xxd -i /tmp/out.dcz
+constexpr uint8_t kLargeZstdCompressedData[] = {
+    0x5e, 0x2a, 0x4d, 0x18, 0x20, 0x00, 0x00, 0x00, 0x53, 0x96, 0x9b, 0xcf,
+    0x5e, 0x96, 0x0e, 0x0e, 0xdb, 0xf0, 0xa4, 0xbd, 0xde, 0x6b, 0x0b, 0x3e,
+    0x93, 0x81, 0xe1, 0x56, 0xde, 0x7f, 0x5b, 0x91, 0xce, 0x83, 0x91, 0x62,
+    0x42, 0x70, 0xf4, 0x16, 0x28, 0xb5, 0x2f, 0xfd, 0x64, 0x5c, 0x00, 0xfd,
+    0x01, 0x00, 0xf4, 0x02, 0x20, 0x64, 0x64, 0x69, 0x74, 0x69, 0x6f, 0x6e,
+    0x61, 0x6c, 0x61, 0x74, 0x61, 0x20, 0x74, 0x68, 0x61, 0x74, 0x20, 0x61,
+    0x6c, 0x73, 0x6f, 0x20, 0x72, 0x65, 0x66, 0x65, 0x72, 0x65, 0x6e, 0x63,
+    0x65, 0x73, 0x20, 0x74, 0x68, 0x65, 0x20, 0x63, 0x6f, 0x6e, 0x74, 0x65,
+    0x6e, 0x74, 0x2e, 0x04, 0x00, 0x60, 0x2d, 0x72, 0x35, 0x2b, 0xbb, 0x3c,
+    0xa0, 0xce, 0xed, 0x19, 0x04, 0x0c, 0x4b, 0x9e, 0x2f};
+const std::string kLargeZstdCompressedDataString =
+    std::string(reinterpret_cast<const char*>(kLargeZstdCompressedData),
+                sizeof(kLargeZstdCompressedData));
+
+constexpr std::string_view kLargeCompressedDataOriginalString =
+    "This is a test dictionary. This is a test dictionary. "
+    "This is a test dictionary. This is a test dictionary. "
+    "This is a test dictionary. This is a test dictionary. "
+    "This is a test dictionary. This is a test dictionary. "
+    "This is a test dictionary. This is a test dictionary. "
+    "This is additional test data that also references the test "
+    "dictionary content.";
 
 constexpr std::string_view kUncompressedDataResultString =
     "This is uncompressed.";
@@ -365,11 +406,7 @@ bool HasSharedDictionaryAcceptEncoding(
   if (it == headers.end()) {
     return false;
   }
-  if (base::FeatureList::IsEnabled(network::features::kSharedZstd)) {
     return it->second == "dcb, dcz" || base::EndsWith(it->second, ", dcb, dcz");
-  } else {
-    return it->second == "dcb" || base::EndsWith(it->second, ", dcb");
-  }
 }
 
 // A dummy ContentBrowserClient for testing HTTP Auth.
@@ -694,34 +731,35 @@ class SharedDictionaryBrowserTestBase : public ContentBrowserTest {
     auto response = std::make_unique<net::test_server::BasicHttpResponse>();
     response->set_code(net::HTTP_OK);
 
-    if (request.GetURL().query() == "html") {
+    if (request.GetURL().GetQuery() == "html") {
       response->set_content_type("text/html");
     } else {
       response->set_content_type("application/javascript");
     }
 
-    if (request.GetURL().query() != "no_acao" &&
+    if (request.GetURL().GetQuery() != "no_acao" &&
         request.headers.find("origin") != request.headers.end()) {
       response->AddCustomHeader("Access-Control-Allow-Credentials", "true");
       response->AddCustomHeader("Access-Control-Allow-Origin",
                                 request.headers.at("origin"));
     }
+    // Add cache headers when ?cacheable is in the query string.
+    const std::string query = request.GetURL().GetQuery();
+    if (query.find("cacheable") != std::string::npos) {
+      response->AddCustomHeader("Cache-Control", "max-age=60");
+    }
+
     std::optional<std::string> dict_hash =
         GetAvailableDictionary(request.headers);
     if (dict_hash) {
       if (*dict_hash == kExpectedDictionaryHashBase64) {
         if (HasSharedDictionaryAcceptEncoding(request.headers)) {
-          if (base::FeatureList::IsEnabled(network::features::kSharedZstd)) {
-            response->AddCustomHeader(
-                "content-encoding",
-                net::shared_dictionary::kSharedZstdContentEncodingName);
-            response->set_content(kZstdCompressedDataString);
-          } else {
-            response->AddCustomHeader(
-                "content-encoding",
-                net::shared_dictionary::kSharedBrotliContentEncodingName);
-            response->set_content(kBrotliCompressedDataString);
-          }
+          bool use_large = query.find("large") != std::string::npos;
+          response->AddCustomHeader(
+              "content-encoding",
+              net::shared_dictionary::kSharedZstdContentEncodingName);
+          response->set_content(use_large ? kLargeZstdCompressedDataString
+                                          : kZstdCompressedDataString);
         } else {
           response->set_content(kErrorNoSharedDictionaryAcceptEncodingString);
         }
@@ -742,14 +780,7 @@ class SharedDictionaryBrowserTest
     : public SharedDictionaryBrowserTestBase,
       public ::testing::WithParamInterface<BrowserType> {
  public:
-  SharedDictionaryBrowserTest() {
-    scoped_feature_list_.InitWithFeatures(
-        /*enabled_features=*/
-        {network::features::kCompressionDictionaryTransportBackend,
-         network::features::kCompressionDictionaryTransport,
-         network::features::kSharedZstd},
-        /*disabled_features=*/{});
-  }
+  SharedDictionaryBrowserTest() {}
   SharedDictionaryBrowserTest(const SharedDictionaryBrowserTest&) = delete;
   SharedDictionaryBrowserTest& operator=(const SharedDictionaryBrowserTest&) =
       delete;
@@ -874,7 +905,7 @@ class SharedDictionaryBrowserTest
     RunWriteDictionaryTestImpl(
         GetTargetShell(), fetch_type, page_url, dictionary_url,
         GetBrowserType() == BrowserType::kNormal
-            ? "Net.SharedDictionaryManagerOnDisk.DictionarySizeKB"
+            ? "Net.SharedDictionaryManagerOnDisk.DictionarySize"
             : "Net.SharedDictionaryWriterInMemory.DictionarySize",
         expect_success);
   }
@@ -890,21 +921,15 @@ class SharedDictionaryBrowserTest
   }
 
   bool HasPreloadedSharedDictionaryInfo() {
-    bool result = false;
-    base::RunLoop run_loop;
+    base::test::TestFuture<bool> future;
     GetTargetNetworkContext()->HasPreloadedSharedDictionaryInfoForTesting(
-        base::BindLambdaForTesting([&](bool value) {
-          result = value;
-          run_loop.Quit();
-        }));
-    run_loop.Run();
-    return result;
+        future.GetCallback());
+    return future.Get();
   }
 
   void SendMemoryPressureToNetworkService() {
-    content::GetNetworkService()->OnMemoryPressure(
-        base::MemoryPressureListener::MemoryPressureLevel::
-            MEMORY_PRESSURE_LEVEL_CRITICAL);
+    base::MemoryPressureListenerRegistry::NotifyMemoryPressure(
+        base::MEMORY_PRESSURE_LEVEL_CRITICAL);
     // To make sure that OnMemoryPressure has been received by the network
     // service, send a GetNetworkList IPC and wait for the result.
     base::RunLoop run_loop;
@@ -929,7 +954,7 @@ class SharedDictionaryBrowserTest
     }
     auto response = std::make_unique<net::test_server::BasicHttpResponse>();
     response->set_code(net::HTTP_MOVED_PERMANENTLY);
-    const std::string location = request.GetURL().query();
+    const std::string location = request.GetURL().GetQuery();
     response->AddCustomHeader("Location", location);
     if (request.headers.find("origin") != request.headers.end()) {
       response->AddCustomHeader("Access-Control-Allow-Credentials", "true");
@@ -960,11 +985,11 @@ class SharedDictionaryBrowserTest
                                 request.headers.at("origin"));
     }
 
-    if (request.GetURL().query() == "cache") {
+    if (request.GetURL().GetQuery() == "cache") {
       response->AddCustomHeader("Clear-Site-Data", "\"cache\"");
-    } else if (request.GetURL().query() == "cookies") {
+    } else if (request.GetURL().GetQuery() == "cookies") {
       response->AddCustomHeader("Clear-Site-Data", "\"cookies\"");
-    } else if (request.GetURL().query() == "storage") {
+    } else if (request.GetURL().GetQuery() == "storage") {
       response->AddCustomHeader("Clear-Site-Data", "\"storage\"");
     }
     response->set_content("");
@@ -981,7 +1006,7 @@ class SharedDictionaryBrowserTest
       return nullptr;
     }
     auto response = std::make_unique<net::test_server::BasicHttpResponse>();
-    if (base::Contains(request.headers, "Authorization")) {
+    if (request.headers.contains("Authorization")) {
       response->set_code(net::HTTP_OK);
       std::optional<std::string> dict_hash =
           GetAvailableDictionary(request.headers);
@@ -1009,7 +1034,6 @@ class SharedDictionaryBrowserTest
 
   raw_ptr<Shell> off_the_record_shell_ = nullptr;
   std::unique_ptr<net::EmbeddedTestServer> cross_origin_server_;
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 INSTANTIATE_TEST_SUITE_P(All,
@@ -1094,15 +1118,12 @@ IN_PROC_BROWSER_TEST_P(SharedDictionaryBrowserTest,
                          GetURL("/shared_dictionary/test.dict"));
 }
 
-#if !BUILDFLAG(IS_ANDROID)
-// Shared workers are not supported on Android.
 IN_PROC_BROWSER_TEST_P(SharedDictionaryBrowserTest,
                        FetchDictionaryFromSharedWorker) {
   RunWriteDictionaryTest(FetchType::kFetchApiFromSharedWorker,
                          GetURL("/shared_dictionary/blank.html"),
                          GetURL("/shared_dictionary/test.dict"));
 }
-#endif  // !BUILDFLAG(IS_ANDROID)
 
 IN_PROC_BROWSER_TEST_P(SharedDictionaryBrowserTest,
                        FetchDictionaryFromServiceWorker) {
@@ -1131,6 +1152,13 @@ IN_PROC_BROWSER_TEST_P(SharedDictionaryBrowserTest,
   RunWriteDictionaryTest(FetchType::kFetchApi,
                          GetURL("/shared_dictionary/blank.html"),
                          GetCrossOriginURL("/shared_dictionary/test.dict"));
+}
+
+IN_PROC_BROWSER_TEST_P(SharedDictionaryBrowserTest,
+                       FetchCompressedDictionarySecureContext) {
+  RunWriteDictionaryTest(FetchType::kFetchApi,
+                         GetURL("/shared_dictionary/blank.html"),
+                         GetURL("/shared_dictionary/test.dict.gz"));
 }
 
 IN_PROC_BROWSER_TEST_P(SharedDictionaryBrowserTest,
@@ -1522,7 +1550,7 @@ IN_PROC_BROWSER_TEST_P(SharedDictionaryBrowserTest, MatchDestEmptyString) {
   // Wait for the dictionary to be registered.
   EXPECT_TRUE(WaitForHistogram(
       GetBrowserType() == BrowserType::kNormal
-          ? "Net.SharedDictionaryManagerOnDisk.DictionarySizeKB"
+          ? "Net.SharedDictionaryManagerOnDisk.DictionarySize"
           : "Net.SharedDictionaryWriterInMemory.DictionarySize"));
 
   // Check that Chrome uses the dictionary while fetching the resource using
@@ -1551,7 +1579,7 @@ IN_PROC_BROWSER_TEST_P(SharedDictionaryBrowserTest, MatchDestScript) {
   // Wait for the dictionary to be registered.
   EXPECT_TRUE(WaitForHistogram(
       GetBrowserType() == BrowserType::kNormal
-          ? "Net.SharedDictionaryManagerOnDisk.DictionarySizeKB"
+          ? "Net.SharedDictionaryManagerOnDisk.DictionarySize"
           : "Net.SharedDictionaryWriterInMemory.DictionarySize"));
 
   // Check that Chrome uses the dictionary while fetching a script.
@@ -1912,6 +1940,82 @@ IN_PROC_BROWSER_TEST_P(SharedDictionaryBrowserTest,
                 .ExtractString());
 }
 
+// Tests that encodedBodySize and transferSize are correct for
+// dictionary-compressed resources served from the disk cache.
+// See https://issues.chromium.org/issues/457323840.
+IN_PROC_BROWSER_TEST_P(SharedDictionaryBrowserTest,
+                       EncodedBodySizePreservedFromCache) {
+  RunWriteDictionaryTest(FetchType::kLinkRelCompressionDictionary,
+                         GetURL("/shared_dictionary/blank.html"),
+                         GetURL("/shared_dictionary/test.dict"));
+
+  const std::string expected_network_sizes = base::StringPrintf(
+      "%zu, %zu, true", kLargeZstdCompressedDataString.size(),
+      kLargeCompressedDataOriginalString.size());
+
+  const std::string expected_cached_sizes =
+      base::StringPrintf("%zu, %zu, 0", kLargeZstdCompressedDataString.size(),
+                         kLargeCompressedDataOriginalString.size());
+
+  // First fetch: from network with dictionary compression.
+  // transferSize should be > 0 (network fetch).
+  EXPECT_EQ(
+      expected_network_sizes,
+      EvalJs(GetTargetShell()->web_contents()->GetPrimaryMainFrame(),
+             JsReplace(R"(
+          (async () => {
+            const targetUrl = $1;
+            const promise = new Promise((resolve) => {
+              const observer = new PerformanceObserver((list) => {
+                list.getEntries().forEach((entry) => {
+                  if (entry.name == targetUrl) {
+                    resolve(entry);
+                  }
+                });
+              });
+              observer.observe({ type: 'resource', buffered: true });
+            });
+            await (await fetch(targetUrl)).text();
+            return promise;
+          })().then(entry =>
+            entry.encodedBodySize + ', ' + entry.decodedBodySize +
+            ', ' + (entry.transferSize > 0)
+          );
+        )",
+                       GetURL("/shared_dictionary/path/test?cacheable&large")))
+          .ExtractString());
+
+  // Second fetch: should come from disk cache. The encodedBodySize should
+  // still reflect the original dictionary-compressed size, not the
+  // decompressed size stored in cache. transferSize should be 0 (cache hit).
+  EXPECT_EQ(
+      expected_cached_sizes,
+      EvalJs(GetTargetShell()->web_contents()->GetPrimaryMainFrame(),
+             JsReplace(R"(
+          (async () => {
+            const targetUrl = $1;
+            performance.clearResourceTimings();
+            const promise = new Promise((resolve) => {
+              const observer = new PerformanceObserver((list) => {
+                list.getEntries().forEach((entry) => {
+                  if (entry.name == targetUrl) {
+                    resolve(entry);
+                  }
+                });
+              });
+              observer.observe({ type: 'resource', buffered: true });
+            });
+            await (await fetch(targetUrl)).text();
+            return promise;
+          })().then(entry =>
+            entry.encodedBodySize + ', ' + entry.decodedBodySize +
+            ', ' + entry.transferSize
+          );
+        )",
+                       GetURL("/shared_dictionary/path/test?cacheable&large")))
+          .ExtractString());
+}
+
 IN_PROC_BROWSER_TEST_P(SharedDictionaryBrowserTest,
                        PreloadSharedDictionaryInfo) {
   mojo::PendingRemote<network::mojom::PreloadedSharedDictionaryInfoHandle>
@@ -1932,6 +2036,7 @@ IN_PROC_BROWSER_TEST_P(SharedDictionaryBrowserTest,
   GetTargetNetworkContext()->PreloadSharedDictionaryInfoForDocument(
       {GetURL("/")},
       preloaded_shared_dictionaries_handle.InitWithNewPipeAndPassReceiver());
+  FlushNetworkServiceInstanceForTesting();
   EXPECT_FALSE(HasPreloadedSharedDictionaryInfo());
 }
 
@@ -1944,7 +2049,9 @@ IN_PROC_BROWSER_TEST_P(SharedDictionaryBrowserTest,
       preloaded_shared_dictionaries_handle.InitWithNewPipeAndPassReceiver());
   EXPECT_TRUE(HasPreloadedSharedDictionaryInfo());
   SendMemoryPressureToNetworkService();
-  EXPECT_FALSE(HasPreloadedSharedDictionaryInfo());
+  FlushNetworkServiceInstanceForTesting();
+  EXPECT_TRUE(WaitUntilHasPreloadSharedDictionaryInfo(GetTargetNetworkContext(),
+                                                      false));
 }
 
 }  // namespace

@@ -29,7 +29,6 @@
 #include <optional>
 
 #include "build/build_config.h"
-#include "third_party/blink/renderer/core/clipboard/clipboard_mime_types.h"
 #include "third_party/blink/renderer/core/clipboard/clipboard_utilities.h"
 #include "third_party/blink/renderer/core/clipboard/data_object.h"
 #include "third_party/blink/renderer/core/clipboard/data_transfer_access_policy.h"
@@ -44,6 +43,7 @@
 #include "third_party/blink/renderer/core/frame/visual_viewport.h"
 #include "third_party/blink/renderer/core/html/forms/text_control_element.h"
 #include "third_party/blink/renderer/core/html/html_image_element.h"
+#include "third_party/blink/renderer/core/keywords.h"
 #include "third_party/blink/renderer/core/layout/layout_image.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
 #include "third_party/blink/renderer/core/loader/resource/image_resource_content.h"
@@ -57,11 +57,18 @@
 #include "third_party/blink/renderer/platform/graphics/paint/paint_record_builder.h"
 #include "third_party/blink/renderer/platform/graphics/static_bitmap_image.h"
 #include "third_party/blink/renderer/platform/graphics/unaccelerated_static_bitmap_image.h"
+#include "third_party/blink/renderer/platform/loader/fetch/resource_response.h"
+#include "third_party/blink/renderer/platform/network/http_names.h"
 #include "third_party/blink/renderer/platform/network/mime/mime_type_registry.h"
-#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+#include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 #include "third_party/skia/include/core/SkSurface.h"
+#include "ui/base/clipboard/clipboard_constants.h"
 #include "ui/base/dragdrop/mojom/drag_drop_types.mojom-blink.h"
 #include "ui/gfx/geometry/rect_conversions.h"
+
+#if BUILDFLAG(IS_WIN)
+#include "third_party/blink/renderer/platform/wtf/text/line_ending.h"
+#endif
 
 namespace blink {
 
@@ -95,7 +102,7 @@ class DraggedNodeImageBuilder {
 #if DCHECK_IS_ON()
     DCHECK_EQ(dom_tree_version_, node_->GetDocument().DomTreeVersion());
 #endif
-    // Construct layout object for |node_| with pseudo class "-webkit-drag"
+    // Construct layout object for |node_| with pseudo-class "-webkit-drag"
     local_frame_->View()->UpdateAllLifecyclePhasesExceptPaint(
         DocumentUpdateReason::kDragImage);
     LayoutObject* const dragged_layout_object = node_->GetLayoutObject();
@@ -113,14 +120,12 @@ class DraggedNodeImageBuilder {
 
     // Maximum reasonable dimension for a drag image which won't crash during
     // memory allocation and DnD operation.
-    if (RuntimeEnabledFeatures::DnDScaleHeightAndWidthToMaxDimensionEnabled()) {
-      const int kMaxDimension = 64 * 128;
-      if (absolute_bounding_box.width() > kMaxDimension) {
-        absolute_bounding_box.set_width(kMaxDimension);
-      }
-      if (absolute_bounding_box.height() > kMaxDimension) {
-        absolute_bounding_box.set_height(kMaxDimension);
-      }
+    const int kMaxDimension = 64 * 128;
+    if (absolute_bounding_box.width() > kMaxDimension) {
+      absolute_bounding_box.set_width(kMaxDimension);
+    }
+    if (absolute_bounding_box.height() > kMaxDimension) {
+      absolute_bounding_box.set_height(kMaxDimension);
     }
 
     gfx::RectF bounding_box =
@@ -169,9 +174,10 @@ std::optional<DragOperationsMask> ConvertEffectAllowedToDragOperationsMask(
     const AtomicString& op) {
   // Values specified in
   // https://html.spec.whatwg.org/multipage/dnd.html#dom-datatransfer-effectallowed
-  if (op == "uninitialized")
+  if (op == keywords::kUninitialized) {
     return kDragOperationEvery;
-  if (op == "none")
+  }
+  if (op == keywords::kNone)
     return kDragOperationNone;
   if (op == "copy")
     return kDragOperationCopy;
@@ -194,6 +200,37 @@ std::optional<DragOperationsMask> ConvertEffectAllowedToDragOperationsMask(
   if (op == "all")
     return kDragOperationEvery;
   return std::nullopt;
+}
+
+AtomicString ConvertEffectAllowedToDropEffect(
+    const AtomicString& effect_allowed) {
+  auto mask = ConvertEffectAllowedToDragOperationsMask(effect_allowed);
+  if (!mask.has_value()) {
+    return keywords::kNone;
+  }
+  // The spec [1] doesn't define a specific order drop effects should be
+  // prioritized in, and leaves it up to user agents to adapt to their
+  // platform's convention.
+  // [1] https://html.spec.whatwg.org/multipage/dnd.html#the-dragevent-interface
+  // For example, if `effectAllowed` is "all", the entry in the spec table
+  // mentions that `dropEffect` should be:
+  // > "copy", or, if appropriate, either "link" or "move"
+  // In desktop platforms, the usual expectation is that when you drag something
+  // within the file system it will be moved (if it's on the same disk).
+  // This ordering matches `DragController::DefaultOperationForDrag`.
+  if (mask == kDragOperationEvery) {
+    return AtomicString("copy");
+  }
+  if (mask.value() & kDragOperationMove) {
+    return AtomicString("move");
+  }
+  if ((mask.value() & kDragOperationCopy)) {
+    return AtomicString("copy");
+  }
+  if (mask.value() & kDragOperationLink) {
+    return AtomicString("link");
+  }
+  return keywords::kNone;
 }
 
 AtomicString ConvertDragOperationsMaskToEffectAllowed(DragOperationsMask op) {
@@ -220,14 +257,20 @@ AtomicString ConvertDragOperationsMaskToEffectAllowed(DragOperationsMask op) {
 // specified in the HTML spec. See
 // https://html.spec.whatwg.org/multipage/dnd.html#the-datatransfer-interface
 String NormalizeType(const String& type, bool* convert_to_url = nullptr) {
-  String clean_type = type.StripWhiteSpace().LowerASCII();
-  if (clean_type == kMimeTypeText ||
-      clean_type.StartsWith(kMimeTypeTextPlainEtc))
-    return kMimeTypeTextPlain;
-  if (clean_type == kMimeTypeURL) {
-    if (convert_to_url)
+  constexpr char kTypeText[] = "text";
+  constexpr char kTypeUrl[] = "url";
+  constexpr char kMimeTypePlainTextEtc[] = "text/plain;";
+
+  String clean_type = type.StripWhiteSpace().ToAsciiLower();
+  if (clean_type == kTypeText ||
+      clean_type.starts_with(kMimeTypePlainTextEtc)) {
+    return ui::kMimeTypePlainText;
+  }
+  if (clean_type == kTypeUrl) {
+    if (convert_to_url) {
       *convert_to_url = true;
-    return kMimeTypeTextURIList;
+    }
+    return ui::kMimeTypeUriList;
   }
   return clean_type;
 }
@@ -252,13 +295,17 @@ DataTransfer* DataTransfer::Create(DataTransferType type,
 
 DataTransfer::~DataTransfer() = default;
 
+void DataTransfer::resetDropEffect() {
+  drop_effect_ = AtomicString();
+}
+
 void DataTransfer::setDropEffect(const AtomicString& effect) {
   if (!IsForDragAndDrop())
     return;
 
   // The attribute must ignore any attempts to set it to a value other than
   // none, copy, link, and move.
-  if (effect != "none" && effect != "copy" && effect != "link" &&
+  if (effect != keywords::kNone && effect != "copy" && effect != "link" &&
       effect != "move")
     return;
 
@@ -282,8 +329,10 @@ void DataTransfer::setEffectAllowed(const AtomicString& effect) {
     return;
   }
 
-  if (CanWriteData())
+  if (CanWriteData()) {
     effect_allowed_ = effect;
+    data_object_->SetSourceEffectAllowed(effect);
+  }
 }
 
 void DataTransfer::clearData(const String& type) {
@@ -490,7 +539,7 @@ static void WriteImageToDataObject(DataObject* data_object,
     return;
 
   data_object->AddFileSharedBuffer(
-      image_buffer, cached_image->IsAccessAllowed(), image_url,
+      image_buffer, cached_image->IsCorsSameOrigin(), image_url,
       image->FilenameExtension(),
       cached_image->GetResponse().HttpHeaderFields().Get(
           http_names::kContentDisposition));
@@ -510,8 +559,8 @@ void DataTransfer::DeclareAndWriteDragImage(Element* element,
   WriteImageToDataObject(data_object_.Get(), element, image_url);
 
   // Put img tag on the clipboard referencing the image
-  data_object_->SetData(kMimeTypeTextHTML,
-                        CreateMarkup(element, kIncludeNode, kResolveAllURLs));
+  data_object_->SetData(ui::kMimeTypeHtml,
+                        CreateMarkup(element, kIncludeNode, ResolveUrls::kAll));
 }
 
 void DataTransfer::WriteURL(Node* node, const KURL& url, const String& title) {
@@ -522,11 +571,11 @@ void DataTransfer::WriteURL(Node* node, const KURL& url, const String& title) {
   data_object_->SetURLAndTitle(url, title);
 
   // The URL can also be used as plain text.
-  data_object_->SetData(kMimeTypeTextPlain, url.GetString());
+  data_object_->SetData(ui::kMimeTypePlainText, url.GetString());
 
   // The URL can also be used as an HTML fragment.
   data_object_->SetHTMLAndBaseURL(
-      CreateMarkup(node, kIncludeNode, kResolveAllURLs), url);
+      CreateMarkup(node, kIncludeNode, ResolveUrls::kAll), url);
 }
 
 void DataTransfer::WriteSelection(const FrameSelection& selection) {
@@ -534,17 +583,17 @@ void DataTransfer::WriteSelection(const FrameSelection& selection) {
     return;
 
   if (!EnclosingTextControl(
-          selection.ComputeVisibleSelectionInDOMTree().Start())) {
-    data_object_->SetHTMLAndBaseURL(selection.SelectedHTMLForClipboard(),
+          selection.ComputeVisibleSelectionInDomTree().Start())) {
+    data_object_->SetHTMLAndBaseURL(selection.SelectedHtmlForClipboard(),
                                     selection.GetFrame()->GetDocument()->Url());
   }
 
   String str = selection.SelectedTextForClipboard();
 #if BUILDFLAG(IS_WIN)
-  ReplaceNewlinesWithWindowsStyleNewlines(str);
+  str = NormalizeLineEndingsToCrLf(str);
 #endif
   ReplaceNBSPWithSpace(str);
-  data_object_->SetData(kMimeTypeTextPlain, str);
+  data_object_->SetData(ui::kMimeTypePlainText, str);
 }
 
 void DataTransfer::SetAccessPolicy(DataTransferAccessPolicy policy) {
@@ -587,13 +636,25 @@ ui::mojom::blink::DragOperation DataTransfer::DestinationOperation() const {
   return static_cast<ui::mojom::blink::DragOperation>(*op);
 }
 
+void DataTransfer::SetSourceEffectAllowed(const AtomicString& effect) {
+  if (!ConvertEffectAllowedToDragOperationsMask(effect)) {
+    return;
+  }
+  effect_allowed_ = effect;
+  data_object_->SetSourceEffectAllowed(effect);
+}
+
 void DataTransfer::SetSourceOperation(DragOperationsMask op) {
   effect_allowed_ = ConvertDragOperationsMaskToEffectAllowed(op);
 }
 
+void DataTransfer::SetDestinationOperationFromEffectAllowed() {
+  setDropEffect(ConvertEffectAllowedToDropEffect(effect_allowed_));
+}
+
 void DataTransfer::SetDestinationOperation(ui::mojom::blink::DragOperation op) {
-  drop_effect_ = ConvertDragOperationsMaskToEffectAllowed(
-      static_cast<DragOperationsMask>(op));
+  setDropEffect(ConvertDragOperationsMaskToEffectAllowed(
+      static_cast<DragOperationsMask>(op)));
 }
 
 DataTransferItemList* DataTransfer::items() {
@@ -612,7 +673,9 @@ DataTransfer::DataTransfer(DataTransferType type,
                            DataTransferAccessPolicy policy,
                            DataObject* data_object)
     : policy_(policy),
-      effect_allowed_("uninitialized"),
+      // A new drag data store starts with effectAllowed "uninitialized".
+      // https://html.spec.whatwg.org/multipage/dnd.html#the-drag-data-store
+      effect_allowed_(keywords::kUninitialized),
       transfer_type_(type),
       data_object_(data_object),
       data_store_item_list_changed_(true),
@@ -630,28 +693,6 @@ void DataTransfer::setDragImage(ImageResourceContent* image,
   drag_image_ = image;
   drag_loc_ = loc;
   drag_image_element_ = node;
-}
-
-bool DataTransfer::HasFileOfType(const String& type) const {
-  if (!CanReadTypes())
-    return false;
-
-  for (uint32_t i = 0; i < data_object_->length(); ++i) {
-    if (data_object_->Item(i)->Kind() == DataObjectItem::kFileKind) {
-      Blob* blob = data_object_->Item(i)->GetAsFile();
-      if (blob && blob->IsFile() &&
-          DeprecatedEqualIgnoringCase(blob->type(), type))
-        return true;
-    }
-  }
-  return false;
-}
-
-bool DataTransfer::HasStringOfType(const String& type) const {
-  if (!CanReadTypes())
-    return false;
-
-  return data_object_->Types().Contains(type);
 }
 
 void DataTransfer::Trace(Visitor* visitor) const {

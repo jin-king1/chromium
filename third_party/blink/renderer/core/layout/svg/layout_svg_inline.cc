@@ -92,8 +92,7 @@ void LayoutSVGInline::ObjectBoundingBoxForCursor(InlineCursor& cursor,
 
 gfx::RectF LayoutSVGInline::ObjectBoundingBox() const {
   NOT_DESTROYED();
-  if (!RuntimeEnabledFeatures::SvgTspanBboxCacheEnabled() ||
-      needs_update_bounding_box_) {
+  if (needs_update_bounding_box_) {
     needs_update_bounding_box_ = false;
     bounding_box_ = gfx::RectF();
     if (IsInLayoutNGInlineFormattingContext()) {
@@ -179,8 +178,10 @@ void LayoutSVGInline::WillBeDestroyed() {
   LayoutInline::WillBeDestroyed();
 }
 
-void LayoutSVGInline::StyleDidChange(StyleDifference diff,
-                                     const ComputedStyle* old_style) {
+void LayoutSVGInline::StyleDidChange(
+    StyleDifference diff,
+    const ComputedStyle* old_style,
+    const StyleChangeContext& style_change_context) {
   NOT_DESTROYED();
   if (diff.HasDifference()) {
     if (auto* svg_text = LayoutSVGText::LocateLayoutSVGTextAncestor(this)) {
@@ -188,7 +189,7 @@ void LayoutSVGInline::StyleDidChange(StyleDifference diff,
         diff.SetNeedsFullLayout();
     }
   }
-  LayoutInline::StyleDidChange(diff, old_style);
+  LayoutInline::StyleDidChange(diff, old_style, style_change_context);
 
   if (diff.NeedsFullLayout()) {
     // The boundaries affect mask clip and clip path mask/clip.

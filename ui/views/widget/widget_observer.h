@@ -53,11 +53,20 @@ class VIEWS_EXPORT WidgetObserver : public base::CheckedObserver {
   // constructors.
   virtual void OnWidgetDestroyed(Widget* widget) {}
 
-  // Called before RunShellDrag() is called and after it returns.
-  virtual void OnWidgetDragWillStart(Widget* widget) {}
-  virtual void OnWidgetDragComplete(Widget* widget) {}
+  // Invoked just before the drag-and-drop session starts
+  virtual void OnWidgetDragDropWillStart(Widget* widget) {}
 
+  // Invoked when the drag-and-drop session finishes, whether it was
+  // successfully completed or cancelled.
+  virtual void OnWidgetDragDropCompleted(Widget* widget) {}
+
+  // Called when Widget::IsVisible() changed.
   virtual void OnWidgetVisibilityChanged(Widget* widget, bool visible) {}
+
+  // Called when Widget::IsVisibleOnScreen() changed. Only supported on macOS.
+  // TODO(crbug.com/410938804): supports other platforms.
+  virtual void OnWidgetVisibilityOnScreenChanged(Widget* widget, bool visible) {
+  }
 
   virtual void OnWidgetActivationChanged(Widget* widget, bool active) {}
 
@@ -69,6 +78,18 @@ class VIEWS_EXPORT WidgetObserver : public base::CheckedObserver {
 
   virtual void OnWidgetBoundsChanged(Widget* widget,
                                      const gfx::Rect& new_bounds) {}
+
+  // Invoked when the user started resizing the window.
+  virtual void OnWidgetUserResizeStarted(Widget* widget) {}
+
+  // Invoked when the user stopped resizing the window.
+  virtual void OnWidgetUserResizeEnded(Widget* widget) {}
+
+  // Invoked when the user started dragging the window.
+  virtual void OnWidgetUserDragStarted(Widget* widget) {}
+
+  // Invoked when the user stopped dragging the window.
+  virtual void OnWidgetUserDragEnded(Widget* widget) {}
 
   virtual void OnWidgetThemeChanged(Widget* widget) {}
 

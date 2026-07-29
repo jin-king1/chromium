@@ -33,44 +33,40 @@ suite('TranslatePage', function() {
     CrSettingsPrefs.deferInitialization = true;
   });
 
-  setup(function() {
+  setup(async function() {
     const settingsPrefs = document.createElement('settings-prefs');
     const settingsPrivate = new FakeSettingsPrivate(getFakeLanguagePrefs());
     settingsPrefs.initialize(settingsPrivate);
     document.body.appendChild(settingsPrefs);
-    return CrSettingsPrefs.initialized.then(function() {
-      // Set up test browser proxy.
-      browserProxy = new TestLanguagesBrowserProxy();
-      LanguagesBrowserProxyImpl.setInstance(browserProxy);
 
-      // Set up fake languageSettingsPrivate API.
-      const languageSettingsPrivate =
-          browserProxy.getLanguageSettingsPrivate() as unknown as
-          FakeLanguageSettingsPrivate;
-      languageSettingsPrivate.setSettingsPrefs(settingsPrefs);
+    await CrSettingsPrefs.initialized;
+    // Set up test browser proxy.
+    browserProxy = new TestLanguagesBrowserProxy();
+    LanguagesBrowserProxyImpl.setInstance(browserProxy);
 
-      const settingsLanguages = document.createElement('settings-languages');
-      settingsLanguages.prefs = settingsPrefs.prefs;
-      fakeDataBind(settingsPrefs, settingsLanguages, 'prefs');
-      document.body.appendChild(settingsLanguages);
+    // Set up fake languageSettingsPrivate API.
+    const languageSettingsPrivate = browserProxy.getLanguageSettingsPrivate() as
+        unknown as FakeLanguageSettingsPrivate;
+    languageSettingsPrivate.setSettingsPrefs(settingsPrefs);
 
-      translatePage = document.createElement('settings-translate-page');
+    const settingsLanguages = document.createElement('settings-languages');
+    settingsLanguages.prefs = settingsPrefs.prefs!;
+    fakeDataBind(settingsPrefs, settingsLanguages, 'prefs');
+    document.body.appendChild(settingsLanguages);
+    languageHelper = settingsLanguages;
 
-      translatePage.prefs = settingsPrefs.prefs;
-      fakeDataBind(settingsPrefs, translatePage, 'prefs');
+    translatePage = document.createElement('settings-translate-page');
 
-      translatePage.languageHelper = settingsLanguages.languageHelper;
-      fakeDataBind(settingsLanguages, translatePage, 'language-helper');
+    translatePage.prefs = settingsPrefs.prefs!;
+    fakeDataBind(settingsPrefs, translatePage, 'prefs');
 
-      translatePage.languages = settingsLanguages.languages;
-      fakeDataBind(settingsLanguages, translatePage, 'languages');
+    translatePage.languages = settingsLanguages.languages;
+    fakeDataBind(settingsLanguages, translatePage, 'languages');
 
-      document.body.appendChild(translatePage);
-      flush();
+    document.body.appendChild(translatePage);
+    flush();
 
-      languageHelper = translatePage.languageHelper;
-      return languageHelper.whenReady();
-    });
+    return settingsLanguages.whenReady();
   });
 
   teardown(function() {
@@ -94,7 +90,7 @@ suite('TranslatePage', function() {
       assertEquals(translatePage.getPref(translateTarget).value, 'sw');
     });
 
-    test('test never translate display', function() {
+    test('never translate display', function() {
       // Disable a language not in fake_language_settings_private. The language
       // should not be shown in the never translate list.
       languageHelper.disableTranslateLanguage('eo');
@@ -129,7 +125,7 @@ suite('TranslatePage', function() {
           translatePage.getPref(neverTranslatePref).value);
     });
 
-    test('test always translate display', function() {
+    test('always translate display', function() {
       // Add a language not in fake_language_settings_private. The language
       // should not be shown in the always translate list.
       languageHelper.setLanguageAlwaysTranslateState('eo', true);
@@ -148,7 +144,9 @@ suite('TranslatePage', function() {
       // But one should be on the always translate list
       assertDeepEquals(
           ['eo'],
-          Object.keys(translatePage.getPref(alwaysTranslatePref).value));
+          Object.keys(translatePage
+                          .getPref<Record<string, unknown>>(alwaysTranslatePref)
+                          .value));
 
       // Add a language that is in fake_language_settings_private. The
       // language should be shown in the always translate list.
@@ -163,7 +161,9 @@ suite('TranslatePage', function() {
       // But two should be on the always translate list
       assertDeepEquals(
           ['eo', 'nb'],
-          Object.keys(translatePage.getPref(alwaysTranslatePref).value));
+          Object.keys(translatePage
+                          .getPref<Record<string, unknown>>(alwaysTranslatePref)
+                          .value));
     });
 
     test('never translate remove icon enabled state', function() {
@@ -203,7 +203,7 @@ suite('TranslatePage', function() {
       assertTrue(deleteIcons[0]!.disabled);
     });
 
-    test('test translate.enable toggle', function() {
+    test('translate.enable toggle', function() {
       const settingsToggle =
           translatePage.shadowRoot!.querySelector<HTMLElement>(
               '#offerTranslateOtherLanguages');
@@ -211,12 +211,14 @@ suite('TranslatePage', function() {
 
       // Clicking on the toggle switches it to false.
       settingsToggle.click();
-      let newToggleValue = translatePage.getPref('translate.enabled').value;
+      let newToggleValue =
+          translatePage.getPref<boolean>('translate.enabled').value;
       assertFalse(newToggleValue);
 
       // Clicking on the toggle switches it to true again.
       settingsToggle.click();
-      newToggleValue = translatePage.getPref('translate.enabled').value;
+      newToggleValue =
+          translatePage.getPref<boolean>('translate.enabled').value;
       assertTrue(newToggleValue);
     });
   });
@@ -247,7 +249,7 @@ suite('TranslatePage', function() {
       }
     }
 
-    setup(function() {
+    setup(async function() {
       const addLanguagesButton =
           translatePage.shadowRoot!.querySelector<HTMLElement>(
               '#addAlwaysTranslate');
@@ -258,21 +260,22 @@ suite('TranslatePage', function() {
       // The page stamps the dialog, registers listeners, and populates the
       // iron-list asynchronously at microtask timing, so wait for a new
       // task.
-      return whenDialogOpen.then(() => {
-        dialog = translatePage.shadowRoot!.querySelector(
-            'settings-add-languages-dialog')!;
-        assertTrue(!!dialog);
-        assertEquals(dialog.id, 'alwaysTranslateDialog');
+      await whenDialogOpen;
 
-        // Observe the removal of the dialog via MutationObserver since the
-        // HTMLDialogElement 'close' event fires at an unpredictable time.
-        dialogClosedResolver = new PromiseResolver();
-        dialogClosedObserver = new MutationObserver(onMutation);
-        dialogClosedObserver.observe(
-            translatePage.shadowRoot!, {childList: true});
+      dialog = translatePage.shadowRoot!.querySelector(
+          'settings-add-languages-dialog')!;
+      assertTrue(!!dialog);
+      assertEquals(dialog.id, 'alwaysTranslateDialog');
 
-        flush();
-      });
+      // Observe the removal of the dialog via MutationObserver since the
+      // HTMLDialogElement 'close' event fires at an unpredictable time.
+      dialogClosedResolver = new PromiseResolver();
+      dialogClosedObserver = new MutationObserver(onMutation);
+      dialogClosedObserver.observe(
+          translatePage.shadowRoot!.querySelector('settings-section')!,
+          {childList: true});
+
+      flush();
     });
 
     teardown(function() {
@@ -285,7 +288,9 @@ suite('TranslatePage', function() {
       dialog.$.dialog.close();
       assertDeepEquals(
           ['en', 'no'],
-          Object.keys(translatePage.getPref(alwaysTranslatePref).value));
+          Object.keys(translatePage
+                          .getPref<Record<string, unknown>>(alwaysTranslatePref)
+                          .value));
 
       return dialogClosedResolver.promise;
     });
@@ -317,7 +322,7 @@ suite('TranslatePage', function() {
       }
     }
 
-    setup(function() {
+    setup(async function() {
       const addLanguagesButton =
           translatePage.shadowRoot!.querySelector<HTMLElement>(
               '#addNeverTranslate');
@@ -328,21 +333,22 @@ suite('TranslatePage', function() {
       // The page stamps the dialog, registers listeners, and populates the
       // iron-list asynchronously at microtask timing, so wait for a new
       // task.
-      return whenDialogOpen.then(() => {
-        dialog = translatePage.shadowRoot!.querySelector(
-            'settings-add-languages-dialog')!;
-        assertTrue(!!dialog);
-        assertEquals(dialog.id, 'neverTranslateDialog');
+      await whenDialogOpen;
 
-        // Observe the removal of the dialog via MutationObserver since the
-        // HTMLDialogElement 'close' event fires at an unpredictable time.
-        dialogClosedResolver = new PromiseResolver();
-        dialogClosedObserver = new MutationObserver(onMutation);
-        dialogClosedObserver.observe(
-            translatePage.shadowRoot!, {childList: true});
+      dialog = translatePage.shadowRoot!.querySelector(
+          'settings-add-languages-dialog')!;
+      assertTrue(!!dialog);
+      assertEquals(dialog.id, 'neverTranslateDialog');
 
-        flush();
-      });
+      // Observe the removal of the dialog via MutationObserver since the
+      // HTMLDialogElement 'close' event fires at an unpredictable time.
+      dialogClosedResolver = new PromiseResolver();
+      dialogClosedObserver = new MutationObserver(onMutation);
+      dialogClosedObserver.observe(
+          translatePage.shadowRoot!.querySelector('settings-section')!,
+          {childList: true});
+
+      flush();
     });
 
     teardown(function() {

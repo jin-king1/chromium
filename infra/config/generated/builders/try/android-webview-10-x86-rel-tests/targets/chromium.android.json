@@ -8,16 +8,19 @@
           "--gs-results-bucket=chromium-result-details",
           "--recover-devices"
         ],
+        "description": "Run with android_29_google_apis_x86",
         "merge": {
           "args": [
             "--bucket",
             "chromium-result-details",
             "--test-name",
-            "webview_trichrome_cts_tests full_mode"
+            "webview_cts_tests full_mode"
           ],
           "script": "//build/android/pylib/results/presentation/test_results_presentation.py"
         },
-        "name": "webview_trichrome_cts_tests full_mode",
+        "module_name": "//android_webview/test:webview_cts_tests",
+        "module_scheme": "junit",
+        "name": "webview_cts_tests full_mode",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -27,7 +30,7 @@
             {
               "cipd_package": "chromium/android_webview/tools/cts_archive",
               "location": "android_webview/tools/cts_archive/cipd",
-              "revision": "8BpUBTnmt5bH3GiqPKpmTWTP-Ie2X1TuUgf4F0IsgVgC"
+              "revision": "oW6-jyOPGwPJeLlaldYwrxZoYqzXpjO1OZUdyF3Qq7sC"
             }
           ],
           "dimensions": {
@@ -52,8 +55,8 @@
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
           "shards": 2
         },
-        "test": "webview_trichrome_cts_tests",
-        "test_id_prefix": "ninja://android_webview/test:webview_trichrome_cts_tests/",
+        "test": "webview_cts_tests",
+        "test_id_prefix": "ninja://android_webview/test:webview_cts_tests/",
         "variant_id": "full_mode"
       },
       {
@@ -66,16 +69,19 @@
           "--gs-results-bucket=chromium-result-details",
           "--recover-devices"
         ],
+        "description": "Run with android_29_google_apis_x86",
         "merge": {
           "args": [
             "--bucket",
             "chromium-result-details",
             "--test-name",
-            "webview_trichrome_cts_tests instant_mode"
+            "webview_cts_tests instant_mode"
           ],
           "script": "//build/android/pylib/results/presentation/test_results_presentation.py"
         },
-        "name": "webview_trichrome_cts_tests instant_mode",
+        "module_name": "//android_webview/test:webview_cts_tests",
+        "module_scheme": "junit",
+        "name": "webview_cts_tests instant_mode",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -85,7 +91,7 @@
             {
               "cipd_package": "chromium/android_webview/tools/cts_archive",
               "location": "android_webview/tools/cts_archive/cipd",
-              "revision": "8BpUBTnmt5bH3GiqPKpmTWTP-Ie2X1TuUgf4F0IsgVgC"
+              "revision": "oW6-jyOPGwPJeLlaldYwrxZoYqzXpjO1OZUdyF3Qq7sC"
             }
           ],
           "dimensions": {
@@ -109,8 +115,8 @@
           },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
-        "test": "webview_trichrome_cts_tests",
-        "test_id_prefix": "ninja://android_webview/test:webview_trichrome_cts_tests/",
+        "test": "webview_cts_tests",
+        "test_id_prefix": "ninja://android_webview/test:webview_cts_tests/",
         "variant_id": "instant_mode"
       }
     ]

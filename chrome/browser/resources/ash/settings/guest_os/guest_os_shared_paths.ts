@@ -16,6 +16,7 @@ import type {DomRepeatEvent} from 'chrome://resources/polymer/v3_0/polymer/polym
 import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
 import {castExists} from '../assert_extras.js';
+import type {PrefsState} from '../common/types.js';
 
 import type {GuestOsBrowserProxy, GuestOsType} from './guest_os_browser_proxy.js';
 import {getVMNameForGuestOsType, GuestOsBrowserProxyImpl} from './guest_os_browser_proxy.js';
@@ -49,7 +50,7 @@ export class SettingsGuestOsSharedPathsElement extends
   static get properties() {
     return {
       /**
-       * The type of Guest OS to share with. Should be 'crostini', 'pluginVm' or
+       * The type of Guest OS to share with. Should be 'crostini' or
        * 'bruschetta'.
        */
       guestOsType: String,
@@ -83,11 +84,11 @@ export class SettingsGuestOsSharedPathsElement extends
     ];
   }
 
-  prefs: {[key: string]: any};
-  guestOsType: GuestOsType;
+  declare prefs: PrefsState;
+  declare guestOsType: GuestOsType;
   private browserProxy_: GuestOsBrowserProxy;
-  private sharedPaths_: PathObject[];
-  private sharedPathWhichFailedRemoval_: string|null;
+  declare private sharedPaths_: PathObject[];
+  declare private sharedPathWhichFailedRemoval_: string|null;
 
   constructor() {
     super();

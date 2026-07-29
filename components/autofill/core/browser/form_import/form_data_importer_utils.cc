@@ -4,13 +4,25 @@
 
 #include "components/autofill/core/browser/form_import/form_data_importer_utils.h"
 
-#include "base/containers/contains.h"
-#include "base/strings/utf_string_conversions.h"
+#include <algorithm>
+#include <iterator>
+#include <optional>
+#include <string>
+#include <utility>
+
+#include "base/check.h"
+#include "base/time/time.h"
+#include "components/autofill/core/browser/country_type.h"
 #include "components/autofill/core/browser/data_manager/addresses/address_data_manager.h"
-#include "components/autofill/core/browser/data_quality/addresses/profile_requirement_utils.h"
-#include "components/autofill/core/browser/geo/autofill_country.h"
-#include "components/autofill/core/common/autofill_features.h"
-#include "components/autofill/core/common/autofill_internals/log_message.h"
+#include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
+#include "components/autofill/core/browser/data_quality/addresses/address_import_requirement_utils.h"
+#include "components/autofill/core/browser/form_import/addresses/autofill_profile_import_process.h"
+#include "components/autofill/core/browser/form_structure.h"
+#include "components/autofill/core/common/autofill_constants.h"
+#include "components/autofill/core/common/signatures.h"
+#include "components/history/core/browser/history_types.h"
+#include "components/history/core/browser/url_row.h"
+#include "url/origin.h"
 
 namespace autofill {
 
@@ -22,10 +34,10 @@ bool IsOriginPartOfDeletionInfo(const std::optional<url::Origin>& origin,
     return false;
   }
   return deletion_info.IsAllHistory() ||
-         base::Contains(deletion_info.deleted_rows(), *origin,
-                        [](const history::URLRow& url_row) {
-                          return url::Origin::Create(url_row.url());
-                        });
+         std::ranges::contains(deletion_info.deleted_rows(), *origin,
+                               [](const history::URLRow& url_row) {
+                                 return url::Origin::Create(url_row.url());
+                               });
 }
 
 }  // anonymous namespace
@@ -108,10 +120,24 @@ void MultiStepImportMerger::MergeImportMetadata(
   // unrecognized autocomplete attribute, so does the combined profile.
   target.did_import_from_unrecognized_autocomplete_field |=
       source.did_import_from_unrecognized_autocomplete_field;
-  // The country of the merged profile is only considered complemented if both
-  // of them were complemented. Otherwise one of them was observed and
-  // complementing the country has not made a difference.
-  target.did_complement_country &= source.did_complement_country;
+  // Set `country_source` to `ProfileCountrySource::kCountryMerged` if the
+  // origin of the profile's country cannot be determined.
+  switch (target.country_source) {
+    case ProfileCountrySource::kExplicitlyObserved:
+    case ProfileCountrySource::kDefaultCountryCodeForNewAddress:
+    case ProfileCountrySource::kPhoneNumberRegionCode:
+      if (target.country_source != source.country_source) {
+        target.country_source = ProfileCountrySource::kCountryMerged;
+      }
+      break;
+    case ProfileCountrySource::kNoCountry:
+      // Target profile does not have any country, unconditionally take country
+      // of source profile.
+      target.country_source = source.country_source;
+      break;
+    case ProfileCountrySource::kCountryMerged:
+      break;
+  }
 }
 
 void MultiStepImportMerger::OnBrowsingHistoryCleared(
@@ -126,7 +152,7 @@ void MultiStepImportMerger::OnAddressDataChanged(
     AddressDataManager& address_data_manager) {
   auto it = multistep_candidates_.begin();
   while (it != multistep_candidates_.end()) {
-    // `it` might get erased, so `it++` at the end of the loop doesn't suffice.
+    // `it` might get erased, so `++it` at the end of the loop doesn't suffice.
     auto next = std::next(it);
     // Incomplete profiles are not imported yet, so they cannot have changed.
     if (it->is_imported) {
@@ -163,8 +189,8 @@ void FormAssociator::TrackFormAssociations(const url::Origin& origin,
   container.Push(form_signature, origin);
 }
 
-std::optional<FormStructure::FormAssociations>
-FormAssociator::GetFormAssociations(FormSignature form_signature) const {
+FormStructure::FormAssociations FormAssociator::GetFormAssociations(
+    FormSignature form_signature) const {
   FormStructure::FormAssociations associations;
   if (!recent_address_forms_.empty()) {
     associations.last_address_form_submitted = *recent_address_forms_.begin();
@@ -175,7 +201,7 @@ FormAssociator::GetFormAssociations(FormSignature form_signature) const {
   }
   if (associations.last_address_form_submitted != form_signature &&
       associations.last_credit_card_form_submitted != form_signature) {
-    return std::nullopt;
+    return {};
   }
   if (recent_address_forms_.size() > 1) {
     associations.second_last_address_form_submitted =

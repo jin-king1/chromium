@@ -4,9 +4,7 @@
 
 #include "content/browser/preloading/prefetch/prefetch_match_resolver.h"
 
-#include <vector>
-
-#include "content/browser/preloading/prefetch/prefetch_container.h"
+#include "base/memory/scoped_refptr.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
@@ -14,20 +12,38 @@
 namespace content {
 namespace {
 
+class MockPrefetchRequest {
+ public:
+  MockPrefetchRequest()
+      : preload_pipeline_info_(
+            base::WrapRefCounted(static_cast<PreloadPipelineInfoImpl*>(
+                PreloadPipelineInfo::Create(
+                    /*planned_max_preloading_type=*/PreloadingType::kPrerender)
+                    .get()))) {}
+  ~MockPrefetchRequest() = default;
+
+  const PreloadPipelineInfoImpl& preload_pipeline_info() {
+    return *preload_pipeline_info_;
+  }
+
+ private:
+  scoped_refptr<PreloadPipelineInfoImpl> preload_pipeline_info_;
+};
+
 // Mock `PrefetchContainer` to test `CollectMatchCandidatesGeneric()`.
 class MockContainer {
  public:
   struct Args {
     blink::DocumentToken document_token;
     GURL url;
-    PrefetchContainer::ServableState servable_state;
+    PrefetchMatchResolverAction match_resolver_action;
     std::optional<net::HttpNoVarySearchData> no_vary_search_hint;
     std::optional<net::HttpNoVarySearchData> no_vary_search_data;
   };
 
   explicit MockContainer(MockContainer::Args args)
-      : key_(PrefetchContainer::Key(args.document_token, args.url)),
-        servable_state_(args.servable_state),
+      : key_(PrefetchKey(args.document_token, args.url)),
+        match_resolver_action_(std::move(args.match_resolver_action)),
         no_vary_search_hint_(args.no_vary_search_hint),
         no_vary_search_data_(args.no_vary_search_data),
         prefetch_status_(PrefetchStatus::kPrefetchSuccessful) {}
@@ -35,9 +51,8 @@ class MockContainer {
 
   const GURL& GetURL() const { return key_.url(); }
 
-  PrefetchContainer::ServableState GetServableState(
-      base::TimeDelta cacheable_duration) const {
-    return servable_state_;
+  const PrefetchMatchResolverAction& GetMatchResolverAction() const {
+    return match_resolver_action_;
   }
 
   bool HasPrefetchStatus() const { return prefetch_status_.has_value(); }
@@ -57,24 +72,35 @@ class MockContainer {
     const std::optional<net::HttpNoVarySearchData>& no_vary_search_hint =
         GetNoVarySearchHint();
     // It's not trivial to implement `PrefetchContainer::GetNonRedirectHead()`.
-    // Use `servable_state_` instead.
-    bool simulate_get_non_redirect_head_is_null =
-        (servable_state_ != PrefetchContainer::ServableState::kServable);
+    // Here, we use `match_resolver_action_` instead.
+    bool simulate_get_non_redirect_head_is_null;
+    switch (match_resolver_action_.prefetch_container_load_state()) {
+      case PrefetchContainer::LoadState::kNotStarted:
+      case PrefetchContainer::LoadState::kEligible:
+      case PrefetchContainer::LoadState::kStarted:
+      case PrefetchContainer::LoadState::kFailedIneligible:
+      case PrefetchContainer::LoadState::kFailedDeterminedHead:
+        simulate_get_non_redirect_head_is_null = true;
+        break;
+      case PrefetchContainer::LoadState::kDeterminedHead:
+      case PrefetchContainer::LoadState::kCompleted:
+      case PrefetchContainer::LoadState::kFailed:
+        simulate_get_non_redirect_head_is_null = false;
+        break;
+      // We don't use below cases in the tests.
+      case PrefetchContainer::LoadState::kFailedHeldback:
+        NOTREACHED();
+    }
     return simulate_get_non_redirect_head_is_null && no_vary_search_hint &&
            no_vary_search_hint->AreEquivalent(url, GetURL());
   }
 
   // We don't test on this property.
-  bool HasPrefetchBeenConsideredToServe() const { return false; }
-
-  // We don't test on this property.
   bool IsDecoy() const { return false; }
 
-  void SetServingPageMetrics(base::WeakPtr<PrefetchServingPageMetricsContainer>
-                                 serving_page_metrics_container) {}
-  void UpdateServingPageMetrics() {}
 
-  const PrefetchContainer::Key& key() const { return key_; }
+  const PrefetchKey& key() const { return key_; }
+  MockPrefetchRequest request() const { return MockPrefetchRequest(); }
   const std::optional<net::HttpNoVarySearchData>& GetNoVarySearchHint() const {
     return no_vary_search_hint_;
   }
@@ -83,8 +109,8 @@ class MockContainer {
   }
 
  private:
-  PrefetchContainer::Key key_;
-  PrefetchContainer::ServableState servable_state_;
+  PrefetchKey key_;
+  PrefetchMatchResolverAction match_resolver_action_;
   std::optional<net::HttpNoVarySearchData> no_vary_search_hint_;
   std::optional<net::HttpNoVarySearchData> no_vary_search_data_;
   std::optional<PrefetchStatus> prefetch_status_;
@@ -104,26 +130,26 @@ class CollectMatchCandidatesTestHelper {
     owned_prefetches_[container->key()] = std::move(container);
   }
 
-  std::vector<PrefetchContainer::Key> KeysOfCollectMatchCandidatesGeneric(
-      const PrefetchContainer::Key& navigated_key,
+  std::vector<PrefetchKey> KeysOfCollectMatchCandidatesGeneric(
+      const PrefetchKey& navigated_key,
       bool is_nav_prerender) {
-    std::vector<PrefetchContainer::Key> candidate_keys;
+    std::vector<PrefetchKey> candidate_keys;
     // We must bind the following value instead of using `std::get()` in `for`
     // due to a lifetime issue before C++23:
     // https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2022/p2718r0.html
-    auto [candidates, _] = CollectMatchCandidatesGeneric(
-        owned_prefetches_, navigated_key, is_nav_prerender,
-        /*serving_page_metrics_container=*/nullptr);
-    for (const auto* container : candidates) {
+    PrefetchCandidateCollectHelper<MockContainer> helper;
+    CollectMatchCandidatesGeneric(helper, owned_prefetches_, navigated_key,
+                                  is_nav_prerender);
+    for (const auto* container : helper.GetMatchedCandidates()) {
       candidate_keys.push_back(container->key());
     }
     return candidate_keys;
   }
 
   void Assert(const base::Location& location,
-              const PrefetchContainer::Key& navigated_key,
+              const PrefetchKey& navigated_key,
               bool is_nav_prerender,
-              const std::vector<PrefetchContainer::Key>& candidate_keys) {
+              const std::vector<PrefetchKey>& candidate_keys) {
     SCOPED_TRACE(::testing::Message()
                  << "from \033[31m" << location.ToString() << "\033[39m");
 
@@ -133,13 +159,10 @@ class CollectMatchCandidatesTestHelper {
   }
 
  private:
-  std::map<PrefetchContainer::Key, std::unique_ptr<MockContainer>>
-      owned_prefetches_;
+  std::map<PrefetchKey, std::unique_ptr<MockContainer>> owned_prefetches_;
 };
 
 TEST(CollectMatchCandidates, DistinguishesDocumentToken) {
-  using Key = PrefetchContainer::Key;
-
   CollectMatchCandidatesTestHelper helper;
   blink::DocumentToken document_token1;
   blink::DocumentToken document_token2;
@@ -147,142 +170,167 @@ TEST(CollectMatchCandidates, DistinguishesDocumentToken) {
   helper.Add({
       .document_token = document_token1,
       .url = GURL("https://a.example.com/"),
-      .servable_state = PrefetchContainer::ServableState::kServable,
+      .match_resolver_action = PrefetchMatchResolverAction(
+          PrefetchMatchResolverAction::ActionKind::kMaybeServe,
+          PrefetchContainer::LoadState::kCompleted, /*is_expired=*/false),
   });
   helper.Add({
       .document_token = document_token2,
       .url = GURL("https://a.example.com/"),
-      .servable_state = PrefetchContainer::ServableState::kServable,
+      .match_resolver_action = PrefetchMatchResolverAction(
+          PrefetchMatchResolverAction::ActionKind::kMaybeServe,
+          PrefetchContainer::LoadState::kCompleted, /*is_expired=*/false),
   });
 
-  helper.Assert(FROM_HERE, Key(document_token1, GURL("https://a.example.com/")),
+  helper.Assert(FROM_HERE,
+                PrefetchKey(document_token1, GURL("https://a.example.com/")),
                 /*is_nav_prerender=*/false,
-                {Key(document_token1, GURL("https://a.example.com/"))});
+                {PrefetchKey(document_token1, GURL("https://a.example.com/"))});
 
-  helper.Assert(FROM_HERE, Key(std::nullopt, GURL("https://a.example.com/")),
+  helper.Assert(FROM_HERE,
+                PrefetchKey(std::nullopt, GURL("https://a.example.com/")),
                 /*is_nav_prerender=*/false, {});
 }
 
 TEST(CollectMatchCandidates, DistingushesUrl) {
-  using Key = PrefetchContainer::Key;
-
   CollectMatchCandidatesTestHelper helper;
   blink::DocumentToken document_token;
 
   helper.Add({
       .document_token = document_token,
       .url = GURL("https://a.example.com/"),
-      .servable_state = PrefetchContainer::ServableState::kServable,
+      .match_resolver_action = PrefetchMatchResolverAction(
+          PrefetchMatchResolverAction::ActionKind::kMaybeServe,
+          PrefetchContainer::LoadState::kCompleted, /*is_expired=*/false),
   });
   helper.Add({
       .document_token = document_token,
       .url = GURL("https://b.example.com/"),
-      .servable_state = PrefetchContainer::ServableState::kServable,
+      .match_resolver_action = PrefetchMatchResolverAction(
+          PrefetchMatchResolverAction::ActionKind::kMaybeServe,
+          PrefetchContainer::LoadState::kCompleted, /*is_expired=*/false),
   });
 
-  helper.Assert(FROM_HERE, Key(document_token, GURL("https://a.example.com/")),
+  helper.Assert(FROM_HERE,
+                PrefetchKey(document_token, GURL("https://a.example.com/")),
                 /*is_nav_prerender=*/false,
-                {Key(document_token, GURL("https://a.example.com/"))});
+                {PrefetchKey(document_token, GURL("https://a.example.com/"))});
 
-  helper.Assert(FROM_HERE, Key(document_token, GURL("https://c.example.com/")),
+  helper.Assert(FROM_HERE,
+                PrefetchKey(document_token, GURL("https://c.example.com/")),
                 /*is_nav_prerender=*/false, {});
 }
 
 TEST(CollectMatchCandidates, RejectsNotServable) {
-  using Key = PrefetchContainer::Key;
-
   CollectMatchCandidatesTestHelper helper;
   blink::DocumentToken document_token;
 
   helper.Add({
       .document_token = document_token,
       .url = GURL("https://servable.example.com/"),
-      .servable_state = PrefetchContainer::ServableState::kServable,
+      .match_resolver_action = PrefetchMatchResolverAction(
+          PrefetchMatchResolverAction::ActionKind::kMaybeServe,
+          PrefetchContainer::LoadState::kCompleted, /*is_expired=*/false),
   });
   helper.Add({
       .document_token = document_token,
       .url = GURL("https://not-servable.example.com/"),
-      .servable_state = PrefetchContainer::ServableState::kNotServable,
+      .match_resolver_action = PrefetchMatchResolverAction(
+          PrefetchMatchResolverAction::ActionKind::kDrop,
+          PrefetchContainer::LoadState::kFailed, /*is_expired=*/std::nullopt),
   });
   helper.Add({
       .document_token = document_token,
       .url = GURL("https://should-block-until-head-received.example.com/"),
-      .servable_state =
-          PrefetchContainer::ServableState::kShouldBlockUntilHeadReceived,
+      .match_resolver_action = PrefetchMatchResolverAction(
+          PrefetchMatchResolverAction::ActionKind::kWait,
+          PrefetchContainer::LoadState::kStarted, /*is_expired=*/std::nullopt),
   });
-
-  helper.Assert(FROM_HERE,
-                Key(document_token, GURL("https://servable.example.com/")),
-                /*is_nav_prerender=*/false,
-                {Key(document_token, GURL("https://servable.example.com/"))});
-
-  helper.Assert(FROM_HERE,
-                Key(document_token, GURL("https://not-servable.example.com/")),
-                /*is_nav_prerender=*/false, {});
 
   helper.Assert(
       FROM_HERE,
-      Key(document_token,
+      PrefetchKey(document_token, GURL("https://servable.example.com/")),
+      /*is_nav_prerender=*/false,
+      {PrefetchKey(document_token, GURL("https://servable.example.com/"))});
+
+  helper.Assert(
+      FROM_HERE,
+      PrefetchKey(document_token, GURL("https://not-servable.example.com/")),
+      /*is_nav_prerender=*/false, {});
+
+  helper.Assert(
+      FROM_HERE,
+      PrefetchKey(
+          document_token,
           GURL("https://should-block-until-head-received.example.com/")),
       /*is_nav_prerender=*/false,
-      {Key(document_token,
-           GURL("https://should-block-until-head-received.example.com/"))});
+      {PrefetchKey(
+          document_token,
+          GURL("https://should-block-until-head-received.example.com/"))});
 }
 
 TEST(CollectMatchCandidates,
      IncludesShouldBlockUntilEligibilityGotIfIsLikelyAheadOfPrerender) {
-  using Key = PrefetchContainer::Key;
-
   CollectMatchCandidatesTestHelper helper;
   blink::DocumentToken document_token;
 
   helper.Add({
       .document_token = document_token,
       .url = GURL("https://prerender.example.com/"),
-      .servable_state =
-          PrefetchContainer::ServableState::kShouldBlockUntilEligibilityGot,
+      .match_resolver_action = PrefetchMatchResolverAction(
+          PrefetchMatchResolverAction::ActionKind::kWait,
+          PrefetchContainer::LoadState::kNotStarted,
+          /*is_expired=*/std::nullopt),
   });
   helper.Add({
       .document_token = document_token,
       .url = GURL("https://not-prerender.example.com/"),
-      .servable_state =
-          PrefetchContainer::ServableState::kShouldBlockUntilEligibilityGot,
+      .match_resolver_action = PrefetchMatchResolverAction(
+          PrefetchMatchResolverAction::ActionKind::kWait,
+          PrefetchContainer::LoadState::kNotStarted,
+          /*is_expired=*/std::nullopt),
   });
 
-  helper.Assert(FROM_HERE,
-                Key(document_token, GURL("https://prerender.example.com/")),
-                /*is_nav_prerender=*/true,
-                {Key(document_token, GURL("https://prerender.example.com/"))});
+  helper.Assert(
+      FROM_HERE,
+      PrefetchKey(document_token, GURL("https://prerender.example.com/")),
+      /*is_nav_prerender=*/true,
+      {PrefetchKey(document_token, GURL("https://prerender.example.com/"))});
 
-  helper.Assert(FROM_HERE,
-                Key(document_token, GURL("https://not-prerender.example.com/")),
-                /*is_nav_prerender=*/false, {});
+  helper.Assert(
+      FROM_HERE,
+      PrefetchKey(document_token, GURL("https://not-prerender.example.com/")),
+      /*is_nav_prerender=*/false, {});
 }
 
 TEST(CollectMatchCandidates, ChecksNoVarySearchHintAndHeader) {
-  using Key = PrefetchContainer::Key;
-
   CollectMatchCandidatesTestHelper helper;
   blink::DocumentToken document_token;
 
   helper.Add({
       .document_token = document_token,
       .url = GURL("https://a.example.com/"),
-      .servable_state = PrefetchContainer::ServableState::kServable,
+      .match_resolver_action = PrefetchMatchResolverAction(
+          PrefetchMatchResolverAction::ActionKind::kMaybeServe,
+          PrefetchContainer::LoadState::kCompleted, /*is_expired=*/false),
       .no_vary_search_hint = std::nullopt,
       .no_vary_search_data = std::nullopt,
   });
   helper.Add({
       .document_token = document_token,
       .url = GURL("https://a.example.com/?distinguish=true"),
-      .servable_state = PrefetchContainer::ServableState::kServable,
+      .match_resolver_action = PrefetchMatchResolverAction(
+          PrefetchMatchResolverAction::ActionKind::kMaybeServe,
+          PrefetchContainer::LoadState::kCompleted, /*is_expired=*/false),
       .no_vary_search_hint = std::nullopt,
       .no_vary_search_data = std::nullopt,
   });
   helper.Add({
       .document_token = document_token,
       .url = GURL("https://a.example.com/?ignore=onlyHeader"),
-      .servable_state = PrefetchContainer::ServableState::kServable,
+      .match_resolver_action = PrefetchMatchResolverAction(
+          PrefetchMatchResolverAction::ActionKind::kMaybeServe,
+          PrefetchContainer::LoadState::kCompleted, /*is_expired=*/false),
       .no_vary_search_hint = std::nullopt,
       .no_vary_search_data =
           net::HttpNoVarySearchData::CreateFromNoVaryParams({"ignore"}, true),
@@ -290,8 +338,9 @@ TEST(CollectMatchCandidates, ChecksNoVarySearchHintAndHeader) {
   helper.Add({
       .document_token = document_token,
       .url = GURL("https://a.example.com/?ignore=onlyHint"),
-      .servable_state =
-          PrefetchContainer::ServableState::kShouldBlockUntilHeadReceived,
+      .match_resolver_action = PrefetchMatchResolverAction(
+          PrefetchMatchResolverAction::ActionKind::kWait,
+          PrefetchContainer::LoadState::kStarted, /*is_expired=*/std::nullopt),
       .no_vary_search_hint =
           net::HttpNoVarySearchData::CreateFromNoVaryParams({"ignore"}, true),
       .no_vary_search_data = std::nullopt,
@@ -299,8 +348,9 @@ TEST(CollectMatchCandidates, ChecksNoVarySearchHintAndHeader) {
   helper.Add({
       .document_token = document_token,
       .url = GURL("https://a.example.com/?ignore=bothHintAndHeader"),
-      .servable_state =
-          PrefetchContainer::ServableState::kShouldBlockUntilHeadReceived,
+      .match_resolver_action = PrefetchMatchResolverAction(
+          PrefetchMatchResolverAction::ActionKind::kWait,
+          PrefetchContainer::LoadState::kStarted, /*is_expired=*/std::nullopt),
       .no_vary_search_hint =
           net::HttpNoVarySearchData::CreateFromNoVaryParams({"ignore"}, true),
       .no_vary_search_data =
@@ -309,21 +359,25 @@ TEST(CollectMatchCandidates, ChecksNoVarySearchHintAndHeader) {
   helper.Add({
       .document_token = document_token,
       .url = GURL("https://a.example.com/?distinguish=hintButContradictHeader"),
-      .servable_state = PrefetchContainer::ServableState::kServable,
+      .match_resolver_action = PrefetchMatchResolverAction(
+          PrefetchMatchResolverAction::ActionKind::kMaybeServe,
+          PrefetchContainer::LoadState::kCompleted, /*is_expired=*/false),
       .no_vary_search_hint = net::HttpNoVarySearchData::CreateFromNoVaryParams(
           {"distinguish"}, true),
       .no_vary_search_data = std::nullopt,
   });
 
   helper.Assert(
-      FROM_HERE, Key(document_token, GURL("https://a.example.com/")),
+      FROM_HERE, PrefetchKey(document_token, GURL("https://a.example.com/")),
       /*is_nav_prerender=*/false,
       {
-          Key(document_token, GURL("https://a.example.com/")),
-          Key(document_token, GURL("https://a.example.com/?ignore=onlyHeader")),
-          Key(document_token, GURL("https://a.example.com/?ignore=onlyHint")),
-          Key(document_token,
-              GURL("https://a.example.com/?ignore=bothHintAndHeader")),
+          PrefetchKey(document_token, GURL("https://a.example.com/")),
+          PrefetchKey(document_token,
+                      GURL("https://a.example.com/?ignore=onlyHeader")),
+          PrefetchKey(document_token,
+                      GURL("https://a.example.com/?ignore=onlyHint")),
+          PrefetchKey(document_token,
+                      GURL("https://a.example.com/?ignore=bothHintAndHeader")),
       });
 }
 

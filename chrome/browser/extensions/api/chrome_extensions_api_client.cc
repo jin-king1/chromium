@@ -13,39 +13,29 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/strings/string_util.h"
+#include "base/task/single_thread_task_runner.h"
 #include "build/build_config.h"
 #include "build/chromeos_buildflags.h"
 #include "chrome/browser/extensions/api/automation_internal/chrome_automation_internal_api_delegate.h"
-#include "chrome/browser/extensions/api/chrome_device_permissions_prompt.h"
 #include "chrome/browser/extensions/api/declarative_content/chrome_content_rules_registry.h"
 #include "chrome/browser/extensions/api/declarative_content/default_content_predicate_evaluators.h"
-#include "chrome/browser/extensions/api/feedback_private/chrome_feedback_private_delegate.h"
-#include "chrome/browser/extensions/api/file_system/chrome_file_system_delegate.h"
-#include "chrome/browser/extensions/api/file_system/consent_provider_impl.h"
 #include "chrome/browser/extensions/api/management/chrome_management_api_delegate.h"
 #include "chrome/browser/extensions/api/messaging/chrome_messaging_delegate.h"
+#include "chrome/browser/extensions/api/messaging/chrome_native_message_port_dispatcher.h"
 #include "chrome/browser/extensions/api/metrics_private/chrome_metrics_private_delegate.h"
 #include "chrome/browser/extensions/api/storage/managed_value_store_cache.h"
 #include "chrome/browser/extensions/api/storage/sync_value_store_cache.h"
+#include "chrome/browser/extensions/api/webstore_private/chrome_webstore_private_api_delegate.h"
 #include "chrome/browser/extensions/extension_action_dispatcher.h"
 #include "chrome/browser/extensions/extension_action_runner.h"
 #include "chrome/browser/extensions/extension_tab_util.h"
 #include "chrome/browser/extensions/system_display/display_info_provider.h"
 #include "chrome/browser/favicon/favicon_utils.h"
-#include "chrome/browser/guest_view/app_view/chrome_app_view_guest_delegate.h"
-#include "chrome/browser/guest_view/chrome_guest_view_manager_delegate.h"
-#include "chrome/browser/guest_view/extension_options/chrome_extension_options_guest_delegate.h"
-#include "chrome/browser/guest_view/mime_handler_view/chrome_mime_handler_view_guest_delegate.h"
-#include "chrome/browser/guest_view/web_view/chrome_web_view_guest_delegate.h"
-#include "chrome/browser/guest_view/web_view/chrome_web_view_permission_helper_delegate.h"
-#include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/search/instant_service.h"
-#include "chrome/browser/search/instant_service_factory.h"
 #include "chrome/browser/supervised_user/supervised_user_extensions_delegate_impl.h"
 #include "chrome/browser/supervised_user/supervised_user_service_factory.h"
-#include "chrome/browser/ui/browser_finder.h"
-#include "chrome/browser/ui/browser_navigator.h"
-#include "chrome/browser/ui/browser_navigator_params.h"
+#include "chrome/browser/tab_list/tab_list_interface.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/webui/devtools/devtools_ui.h"
 #include "chrome/common/buildflags.h"
 #include "chrome/common/url_constants.h"
@@ -56,16 +46,17 @@
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/render_frame_host.h"
-#include "content/public/browser/web_contents.h"
+#include "content/public/common/referrer.h"
+#include "extensions/browser/api/messaging/messaging_delegate.h"
+#include "extensions/browser/api/messaging/native_message_host.h"
+#include "extensions/browser/api/messaging/native_message_port.h"
 #include "extensions/browser/api/system_display/display_info_provider.h"
-#include "extensions/browser/api/virtual_keyboard_private/virtual_keyboard_delegate.h"
 #include "extensions/browser/api/web_request/web_request_info.h"
 #include "extensions/browser/extension_action.h"
 #include "extensions/browser/extension_action_manager.h"
 #include "extensions/browser/extension_registry.h"
-#include "extensions/browser/guest_view/web_view/web_view_guest.h"
-#include "extensions/browser/guest_view/web_view/web_view_permission_helper.h"
 #include "extensions/browser/supervised_user_extensions_delegate.h"
+#include "extensions/buildflags/buildflags.h"
 #include "google_apis/gaia/gaia_urls.h"
 #include "pdf/buildflags.h"
 #include "printing/buildflags/buildflags.h"
@@ -74,25 +65,54 @@
 #include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 
+#if BUILDFLAG(ENABLE_GUEST_VIEW)
+
 #if BUILDFLAG(IS_CHROMEOS)
-#include "chrome/browser/extensions/api/file_handlers/non_native_file_system_delegate_chromeos.h"
-#include "chrome/browser/extensions/api/file_system/chrome_file_system_delegate_ash.h"
-#include "chrome/browser/extensions/api/media_perception_private/media_perception_api_delegate_chromeos.h"
-#include "chrome/browser/extensions/api/virtual_keyboard_private/chrome_virtual_keyboard_delegate.h"
-#include "chromeos/ash/components/settings/cros_settings.h"
+#include "chrome/browser/guest_view/app_view/chrome_app_view_guest_delegate.h"
+#include "extensions/browser/api/virtual_keyboard_private/virtual_keyboard_delegate.h"
+#endif
+
+#if BUILDFLAG(ENABLE_EXTENSIONS)
+#include "chrome/browser/guest_view/mime_handler_view/chrome_mime_handler_view_guest_delegate.h"
+#endif
+
+#include "chrome/browser/guest_view/chrome_guest_view_manager_delegate.h"
+#include "chrome/browser/guest_view/extension_options/chrome_extension_options_guest_delegate.h"
+#include "chrome/browser/guest_view/web_view/chrome_web_view_guest_delegate.h"
+#include "chrome/browser/guest_view/web_view/chrome_web_view_permission_helper_delegate.h"
+#include "extensions/browser/guest_view/web_view/web_view_guest.h"
+#include "extensions/browser/guest_view/web_view/web_view_permission_helper.h"
+
+#endif  // BUILDFLAG(ENABLE_GUEST_VIEW)
+
+#if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/extensions/api/feedback_private/chrome_feedback_private_delegate.h"
+#include "chrome/browser/extensions/api/file_system/chrome_file_system_delegate.h"
+#include "chrome/browser/search/instant_service.h"
+#include "chrome/browser/search/instant_service_factory.h"
 #endif
 
 #if BUILDFLAG(IS_CHROMEOS)
+#include "chrome/browser/extensions/api/file_handlers/non_native_file_system_delegate_chromeos.h"
+#include "chrome/browser/extensions/api/file_system/chrome_file_system_delegate_ash.h"
+#include "chrome/browser/extensions/api/file_system/consent_provider_impl.h"
+#include "chrome/browser/extensions/api/media_perception_private/media_perception_api_delegate_chromeos.h"
+#include "chrome/browser/extensions/api/virtual_keyboard_private/chrome_virtual_keyboard_delegate.h"
 #include "chrome/browser/extensions/clipboard_extension_helper_chromeos.h"
+#include "chromeos/ash/components/settings/cros_settings.h"
 #endif
 
 #if BUILDFLAG(ENABLE_PRINTING)
 #include "chrome/browser/printing/printing_init.h"
 #endif
 
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
+
 namespace extensions {
 
-ChromeExtensionsAPIClient::ChromeExtensionsAPIClient() = default;
+ChromeExtensionsAPIClient::ChromeExtensionsAPIClient()
+    : webstore_private_api_delegate_(
+          std::make_unique<ChromeWebstorePrivateAPIDelegate>()) {}
 
 ChromeExtensionsAPIClient::~ChromeExtensionsAPIClient() = default;
 
@@ -124,10 +144,9 @@ bool ChromeExtensionsAPIClient::ShouldHideResponseHeader(
     const std::string& header_name) const {
   // Gaia may send a OAUth2 authorization code in the Dice response header,
   // which could allow an extension to generate a refresh token for the account.
-  return (
-      (url.host_piece() == GaiaUrls::GetInstance()->gaia_url().host_piece()) &&
-      (base::CompareCaseInsensitiveASCII(header_name,
-                                         signin::kDiceResponseHeader) == 0));
+  return url.host() == GaiaUrls::GetInstance()->gaia_url().host() &&
+         base::CompareCaseInsensitiveASCII(header_name,
+                                           signin::kDiceResponseHeader) == 0;
 }
 
 bool ChromeExtensionsAPIClient::ShouldHideBrowserNetworkRequest(
@@ -139,8 +158,14 @@ bool ChromeExtensionsAPIClient::ShouldHideBrowserNetworkRequest(
   // But we do still need to protect some sensitive sub-frame navigation
   // requests.
   // Exclude main frame navigation requests.
+  // TODO(crbug.com/379869738: Remove GetUnsafeValue once there is a better way
+  // to identify prefetch requests from the browser.  Changing this to the
+  // correct code of `is_null()` breaks functionality as the magic value 0 is
+  // actually used for prefetches, even though it's usually used by the browser
+  // process.  When uses are correctly ported to content::ChildProcessId we
+  // should be able to fix this.  See also WebRequestPermissions::HideRequest.
   bool is_browser_request =
-      request.render_process_id == -1 &&
+      request.global_id.child_id.GetUnsafeValue() == -1 &&
       request.web_request_type != WebRequestResourceType::MAIN_FRAME;
 
   // Hide requests made by the Devtools frontend.
@@ -149,25 +174,29 @@ bool ChromeExtensionsAPIClient::ShouldHideBrowserNetworkRequest(
 
   // Hide requests made by the browser on behalf of the NTP.
   is_sensitive_request |=
-      (is_browser_request &&
-       request.initiator ==
-           url::Origin::Create(GURL(chrome::kChromeUINewTabURL)));
+      is_browser_request &&
+      request.initiator ==
+          url::Origin::Create(chrome::ChromeUINewTabURLAsGURL());
 
   // Hide requests made by the browser on behalf of the 1P WebUI NTP.
   is_sensitive_request |=
-      (is_browser_request &&
-       request.initiator ==
-           url::Origin::Create(GURL(chrome::kChromeUINewTabPageURL)));
+      is_browser_request &&
+      request.initiator ==
+          url::Origin::Create(chrome::ChromeUINewTabPageURLAsGURL());
 
+  // Android does not support instant.
+#if !BUILDFLAG(IS_ANDROID)
   // Hide requests made by the NTP Instant renderer.
   auto* instant_service =
       context
           ? InstantServiceFactory::GetForProfile(static_cast<Profile*>(context))
           : nullptr;
   if (instant_service) {
-    is_sensitive_request |=
-        instant_service->IsInstantProcess(request.render_process_id);
+    // TODO(crbug.com/379869738): Remove GetUnsafeValue.
+    is_sensitive_request |= instant_service->IsInstantProcess(
+        request.global_id.child_id.GetUnsafeValue());
   }
+#endif  // !BUILDFLAG(IS_ANDROID)
 
   return is_sensitive_request;
 }
@@ -193,26 +222,29 @@ void ChromeExtensionsAPIClient::NotifyWebRequestWithheld(
   }
   content::WebContents* web_contents =
       content::WebContents::FromRenderFrameHost(render_frame_host);
-  if (!web_contents)
+  if (!web_contents) {
     return;
+  }
   extensions::ExtensionActionRunner* runner =
       extensions::ExtensionActionRunner::GetForWebContents(web_contents);
-  if (!runner)
+  if (!runner) {
     return;
+  }
 
   const extensions::Extension* extension =
       extensions::ExtensionRegistry::Get(web_contents->GetBrowserContext())
           ->enabled_extensions()
           .GetByID(extension_id);
-  if (!extension)
+  if (!extension) {
     return;
+  }
 
   // If the extension doesn't request access to the tab, return. The user
   // invoking the extension on a site grants access to the tab's origin if
   // and only if the extension requested it; without requesting the tab,
   // clicking on the extension won't grant access to the resource.
-  // https://crbug.com/891586.
-  // TODO(https://157736): We can remove this if extensions require host
+  // https://crbug.com/41418607.
+  // TODO(crbug.com/40076508): We can remove this if extensions require host
   // permissions to the initiator, since then we'll never get into this type
   // of circumstance (the request would be blocked, rather than withheld).
   if (!extension->permissions_data()
@@ -245,12 +277,13 @@ void ChromeExtensionsAPIClient::UpdateActionCount(
   // The badge text should be cleared if |action| contains explicitly set badge
   // text for the |tab_id| when the preference is then toggled on. In this case,
   // the matched action count should take precedence over the badge text.
-  if (clear_badge_text)
+  if (clear_badge_text) {
     action->ClearBadgeText(tab_id);
+  }
 
   content::WebContents* tab_contents = nullptr;
-  if (ExtensionTabUtil::GetTabById(
-          tab_id, context, true /* include_incognito */, &tab_contents) &&
+  if (ExtensionTabUtil::GetTabById(tab_id, context, /*include_incognito=*/true,
+                                   &tab_contents) &&
       tab_contents) {
     ExtensionActionDispatcher::Get(context)->NotifyChange(action, tab_contents,
                                                           context);
@@ -268,7 +301,7 @@ void ChromeExtensionsAPIClient::ClearActionCount(
 
   std::vector<content::WebContents*> contents_to_notify =
       ExtensionTabUtil::GetAllActiveWebContentsForContext(
-          context, true /* include_incognito */);
+          context, /*include_incognito=*/true);
 
   for (auto* active_contents : contents_to_notify) {
     ExtensionActionDispatcher::Get(context)->NotifyChange(
@@ -276,29 +309,50 @@ void ChromeExtensionsAPIClient::ClearActionCount(
   }
 }
 
-void ChromeExtensionsAPIClient::OpenFileUrl(
+void ChromeExtensionsAPIClient::OpenFileUrlForTesting(
     const GURL& file_url,
     content::BrowserContext* browser_context) {
   CHECK(file_url.is_valid());
   CHECK(file_url.SchemeIsFile());
+
+  // Find the first browser window that matches this profile.
   Profile* profile = Profile::FromBrowserContext(browser_context);
-  NavigateParams navigate_params(profile, file_url,
-                                 ui::PAGE_TRANSITION_FROM_API);
-  navigate_params.disposition = WindowOpenDisposition::CURRENT_TAB;
-  navigate_params.browser =
-      chrome::FindTabbedBrowser(profile, /*match_original_profiles=*/false);
-  Navigate(&navigate_params);
+  BrowserWindowInterface* browser = nullptr;
+  for (BrowserWindowInterface* bwi : GetAllBrowserWindowInterfaces()) {
+    if (bwi->GetProfile() == profile) {
+      browser = bwi;
+      break;
+    }
+  }
+  CHECK(browser) << "Unable to find browser with matching profile.";
+
+  // Find the active tab.
+  tabs::TabInterface* active_tab =
+      TabListInterface::From(browser)->GetActiveTab();
+  content::WebContents* web_contents =
+      active_tab ? active_tab->GetContents() : nullptr;
+  CHECK(web_contents) << "Unable to find active tab web contents.";
+
+  // Open the file URL in the current tab.
+  content::OpenURLParams params(
+      file_url, content::Referrer(), WindowOpenDisposition::CURRENT_TAB,
+      ui::PAGE_TRANSITION_FROM_API, /*is_renderer_initiated=*/false);
+  web_contents->OpenURL(params, /*navigation_handle_callback=*/{});
 }
 
-AppViewGuestDelegate* ChromeExtensionsAPIClient::CreateAppViewGuestDelegate()
-    const {
-  return new ChromeAppViewGuestDelegate();
-}
+#if BUILDFLAG(ENABLE_GUEST_VIEW)
 
-ExtensionOptionsGuestDelegate*
+#if BUILDFLAG(IS_CHROMEOS)
+std::unique_ptr<AppViewGuestDelegate>
+ChromeExtensionsAPIClient::CreateAppViewGuestDelegate() const {
+  return std::make_unique<ChromeAppViewGuestDelegate>();
+}
+#endif
+
+std::unique_ptr<ExtensionOptionsGuestDelegate>
 ChromeExtensionsAPIClient::CreateExtensionOptionsGuestDelegate(
     ExtensionOptionsGuest* guest) const {
-  return new ChromeExtensionOptionsGuestDelegate(guest);
+  return std::make_unique<ChromeExtensionOptionsGuestDelegate>(guest);
 }
 
 std::unique_ptr<guest_view::GuestViewManagerDelegate>
@@ -306,22 +360,27 @@ ChromeExtensionsAPIClient::CreateGuestViewManagerDelegate() const {
   return std::make_unique<ChromeGuestViewManagerDelegate>();
 }
 
+#if BUILDFLAG(ENABLE_EXTENSIONS)
 std::unique_ptr<MimeHandlerViewGuestDelegate>
 ChromeExtensionsAPIClient::CreateMimeHandlerViewGuestDelegate(
     MimeHandlerViewGuest* guest) const {
   return std::make_unique<ChromeMimeHandlerViewGuestDelegate>();
 }
+#endif
 
-WebViewGuestDelegate* ChromeExtensionsAPIClient::CreateWebViewGuestDelegate(
+std::unique_ptr<WebViewGuestDelegate>
+ChromeExtensionsAPIClient::CreateWebViewGuestDelegate(
     WebViewGuest* web_view_guest) const {
-  return new ChromeWebViewGuestDelegate(web_view_guest);
+  return std::make_unique<ChromeWebViewGuestDelegate>(web_view_guest);
 }
 
-WebViewPermissionHelperDelegate*
+std::unique_ptr<WebViewPermissionHelperDelegate>
 ChromeExtensionsAPIClient::CreateWebViewPermissionHelperDelegate(
     WebViewPermissionHelper* web_view_permission_helper) const {
-  return new ChromeWebViewPermissionHelperDelegate(web_view_permission_helper);
+  return std::make_unique<ChromeWebViewPermissionHelperDelegate>(
+      web_view_permission_helper);
 }
+#endif  // BUILDFLAG(ENABLE_GUEST_VIEW)
 
 #if BUILDFLAG(IS_CHROMEOS)
 std::unique_ptr<ConsentProvider>
@@ -345,20 +404,14 @@ ChromeExtensionsAPIClient::CreateContentRulesRegistry(
                      base::Unretained(browser_context)));
 }
 
-std::unique_ptr<DevicePermissionsPrompt>
-ChromeExtensionsAPIClient::CreateDevicePermissionsPrompt(
-    content::WebContents* web_contents) const {
-  return std::make_unique<ChromeDevicePermissionsPrompt>(web_contents);
-}
-
 #if BUILDFLAG(IS_CHROMEOS)
 bool ChromeExtensionsAPIClient::ShouldAllowDetachingUsb(int vid,
                                                         int pid) const {
-  const base::Value::List* policy_list;
+  const base::ListValue* policy_list;
   if (ash::CrosSettings::Get()->GetList(ash::kUsbDetachableAllowlist,
                                         &policy_list)) {
     for (const auto& entry : *policy_list) {
-      const base::Value::Dict* entry_dict = entry.GetIfDict();
+      const base::DictValue* entry_dict = entry.GetIfDict();
       if (entry_dict &&
           entry_dict->FindInt(ash::kUsbDetachableAllowlistKeyVid) == vid &&
           entry_dict->FindInt(ash::kUsbDetachableAllowlistKeyPid) == pid) {
@@ -369,17 +422,13 @@ bool ChromeExtensionsAPIClient::ShouldAllowDetachingUsb(int vid,
 
   return false;
 }
-#endif  // BUILDFLAG(IS_CHROMEOS)
 
 std::unique_ptr<VirtualKeyboardDelegate>
 ChromeExtensionsAPIClient::CreateVirtualKeyboardDelegate(
     content::BrowserContext* browser_context) const {
-#if BUILDFLAG(IS_CHROMEOS)
   return std::make_unique<ChromeVirtualKeyboardDelegate>(browser_context);
-#else
-  return nullptr;
-#endif
 }
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 ManagementAPIDelegate* ChromeExtensionsAPIClient::CreateManagementAPIDelegate()
     const {
@@ -399,27 +448,31 @@ ChromeExtensionsAPIClient::CreateDisplayInfoProvider() const {
 }
 
 MetricsPrivateDelegate* ChromeExtensionsAPIClient::GetMetricsPrivateDelegate() {
-  if (!metrics_private_delegate_)
+  if (!metrics_private_delegate_) {
     metrics_private_delegate_ =
         std::make_unique<ChromeMetricsPrivateDelegate>();
+  }
   return metrics_private_delegate_.get();
 }
 
-FileSystemDelegate* ChromeExtensionsAPIClient::GetFileSystemDelegate() {
-#if BUILDFLAG(IS_CHROMEOS)
-  using ChromeFileSystemDelegate_Use = ChromeFileSystemDelegateAsh;
-#else
-  using ChromeFileSystemDelegate_Use = ChromeFileSystemDelegate;
-#endif
-  if (!file_system_delegate_)
-    file_system_delegate_ = std::make_unique<ChromeFileSystemDelegate_Use>();
-  return file_system_delegate_.get();
+MessagingDelegate* ChromeExtensionsAPIClient::GetMessagingDelegate() {
+  if (!messaging_delegate_) {
+    messaging_delegate_ = std::make_unique<ChromeMessagingDelegate>();
+  }
+  return messaging_delegate_.get();
 }
 
-MessagingDelegate* ChromeExtensionsAPIClient::GetMessagingDelegate() {
-  if (!messaging_delegate_)
-    messaging_delegate_ = std::make_unique<ChromeMessagingDelegate>();
-  return messaging_delegate_.get();
+// The APIs that require these methods are not supported on Android.
+#if !BUILDFLAG(IS_ANDROID)
+FileSystemDelegate* ChromeExtensionsAPIClient::GetFileSystemDelegate() {
+  if (!file_system_delegate_) {
+#if BUILDFLAG(IS_CHROMEOS)
+    file_system_delegate_ = std::make_unique<ChromeFileSystemDelegateAsh>();
+#else
+    file_system_delegate_ = std::make_unique<ChromeFileSystemDelegate>();
+#endif
+  }
+  return file_system_delegate_.get();
 }
 
 FeedbackPrivateDelegate*
@@ -430,6 +483,16 @@ ChromeExtensionsAPIClient::GetFeedbackPrivateDelegate() {
   }
   return feedback_private_delegate_.get();
 }
+
+AutomationInternalApiDelegate*
+ChromeExtensionsAPIClient::GetAutomationInternalApiDelegate() {
+  if (!extensions_automation_api_delegate_) {
+    extensions_automation_api_delegate_ =
+        std::make_unique<ChromeAutomationInternalApiDelegate>();
+  }
+  return extensions_automation_api_delegate_.get();
+}
+#endif  // !BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(IS_CHROMEOS)
 MediaPerceptionAPIDelegate*
@@ -456,31 +519,37 @@ void ChromeExtensionsAPIClient::SaveImageDataToClipboard(
     AdditionalDataItemList additional_items,
     base::OnceClosure success_callback,
     base::OnceCallback<void(const std::string&)> error_callback) {
-  if (!clipboard_extension_helper_)
+  if (!clipboard_extension_helper_) {
     clipboard_extension_helper_ = std::make_unique<ClipboardExtensionHelper>();
+  }
   clipboard_extension_helper_->DecodeAndSaveImageData(
       std::move(image_data), type, std::move(additional_items),
       std::move(success_callback), std::move(error_callback));
 }
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
-AutomationInternalApiDelegate*
-ChromeExtensionsAPIClient::GetAutomationInternalApiDelegate() {
-  if (!extensions_automation_api_delegate_) {
-    extensions_automation_api_delegate_ =
-        std::make_unique<ChromeAutomationInternalApiDelegate>();
-  }
-  return extensions_automation_api_delegate_.get();
-}
-
 std::vector<KeyedServiceBaseFactory*>
 ChromeExtensionsAPIClient::GetFactoryDependencies() {
-  // clang-format off
-  return {
-      InstantServiceFactory::GetInstance(),
-      SupervisedUserServiceFactory::GetInstance(),
-  };
-  // clang-format on
+  std::vector<KeyedServiceBaseFactory*> dependencies;
+#if !BUILDFLAG(IS_ANDROID)
+  dependencies.push_back(InstantServiceFactory::GetInstance());
+#endif
+  dependencies.push_back(supervised_user::SupervisedUserServiceFactory::GetInstance());
+  return dependencies;
+}
+
+WebstorePrivateAPIDelegate*
+ChromeExtensionsAPIClient::GetWebstorePrivateAPIDelegate() {
+  return webstore_private_api_delegate_.get();
+}
+
+std::unique_ptr<NativeMessagePortDispatcher>
+ChromeExtensionsAPIClient::CreateNativeMessagePortDispatcher(
+    std::unique_ptr<NativeMessageHost> host,
+    base::WeakPtr<NativeMessagePort> port,
+    scoped_refptr<base::SingleThreadTaskRunner> message_service_task_runner) {
+  return std::make_unique<ChromeNativeMessagePortDispatcher>(
+      std::move(host), std::move(port), std::move(message_service_task_runner));
 }
 
 }  // namespace extensions

@@ -17,6 +17,7 @@
 #include "chrome/browser/web_applications/install_bounce_metric.h"
 #include "chrome/browser/web_applications/jobs/install_from_info_job.h"
 #include "chrome/browser/web_applications/jobs/install_placeholder_job.h"
+#include "chrome/browser/web_applications/jobs/manifest_to_web_app_install_info_job.h"
 #include "chrome/browser/web_applications/jobs/uninstall/remove_install_source_job.h"
 #include "chrome/browser/web_applications/locks/all_apps_lock.h"
 #include "chrome/browser/web_applications/locks/shared_web_contents_lock.h"
@@ -29,9 +30,8 @@
 #include "components/webapps/browser/installable/installable_logging.h"
 #include "components/webapps/browser/installable/installable_metrics.h"
 #include "components/webapps/browser/uninstall_result_code.h"
-#include "url/gurl.h"
 
-class Browser;
+class BrowserWindowInterface;
 class Profile;
 
 namespace content {
@@ -45,14 +45,21 @@ enum class WebAppUrlLoaderResult;
 
 namespace web_app {
 
+class CustomIconFetcher;
+class FinalizeInstallJob;
 class InstallPlaceholderJob;
 class WebAppDataRetriever;
 class WebAppUninstallAndReplaceJob;
 
 struct WebAppInstallInfo;
 
-// Invariant: This command assumes that a new placeholder app for this
-// install_url cannot be installed between the scheduling and running of this
+// Command to install a web app from an external source, such as a policy or
+// default app. This command handles loading the install URL, fetching the
+// manifest, and creating the web app. It can also install a placeholder if the
+// full installation fails, and can replace existing placeholders.
+//
+// Invariant: This command assumes that a new placeholder app for the given
+// `install_url` cannot be installed between the scheduling and running of this
 // command.
 class ExternalAppResolutionCommand
     : public WebAppCommand<SharedWebContentsLock,
@@ -98,13 +105,27 @@ class ExternalAppResolutionCommand
   void OnDidPerformInstallableCheck(blink::mojom::ManifestPtr opt_manifest,
                                     bool valid_manifest_for_web_app,
                                     webapps::InstallableStatusCode error_code);
-  void OnPreparedForIconRetrieving(IconUrlSizeSet icon_urls,
-                                   bool skip_page_favicons,
-                                   webapps::WebAppUrlLoaderResult result);
+
+  // Installation flow followed by path where the `WebAppInstallInfo` is
+  // generated from the `opt_manifest`.
+  void RetrieveWebAppInfoFromManifest(blink::mojom::ManifestPtr opt_manifest);
+  void OnWebAppInstallInfoParsedFromManifest(
+      std::unique_ptr<WebAppInstallInfo> install_info);
+
+  // Installation flow followed by path where the `WebAppInstallInfo` is
+  // generated from the web page metadata,
+  void OnPreparedForIconRetrievingForFallbackInfo(
+      IconUrlSizeSet icon_urls,
+      webapps::WebAppUrlLoaderResult result);
   void OnIconsRetrievedUpgradeLockDescription(
       IconsDownloadedResult result,
       IconsMap icons_map,
       DownloadedIconsHttpResults icons_http_results);
+
+  void UpdateInfoWithParamsAndUpgradeLock(bool icon_download_failed);
+  void OnCustomIconDecodedPopulateBitmaps(std::optional<SkBitmap> bitmap);
+  void ContinueUpdateInfoWithParamsAndUpgradeLock(bool icon_download_failed);
+
   void OnLockUpgradedFinalizeInstall(bool icon_download_failed);
   void OnInstallFinalized(const webapps::AppId& app_id,
                           webapps::InstallResultCode code);
@@ -114,7 +135,7 @@ class ExternalAppResolutionCommand
   void OnPlaceholderUninstalledMaybeRelaunch(
       webapps::UninstallResultCode result);
 
-  void OnLaunch(base::WeakPtr<Browser> browser,
+  void OnLaunch(base::WeakPtr<BrowserWindowInterface> browser,
                 base::WeakPtr<content::WebContents> web_contents,
                 apps::LaunchContainer container,
                 base::Value debug_value);
@@ -164,6 +185,7 @@ class ExternalAppResolutionCommand
   std::unique_ptr<webapps::WebAppUrlLoader> url_loader_;
   std::unique_ptr<WebAppDataRetriever> data_retriever_;
   std::unique_ptr<WebAppInstallInfo> web_app_info_;
+  std::unique_ptr<ManifestToWebAppInstallInfoJob> manifest_to_install_info_job_;
 
   ExternalInstallOptions install_options_;
 
@@ -176,8 +198,8 @@ class ExternalAppResolutionCommand
   std::optional<InstallPlaceholderJob> install_placeholder_job_;
   std::optional<InstallFromInfoJob> install_from_info_job_;
   std::optional<RemoveInstallSourceJob> remove_placeholder_job_;
-
-  InstallErrorLogEntry install_error_log_entry_;
+  std::optional<FinalizeInstallJob> install_job_;
+  std::unique_ptr<CustomIconFetcher> custom_icon_fetcher_;
 
   base::OnceClosure on_lock_upgraded_callback_for_testing_;
 

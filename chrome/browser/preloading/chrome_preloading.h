@@ -111,15 +111,10 @@ inline constexpr content::PreloadingPredictor kOmniboxTouchDownPredictor(
     111,
     "OmniboxTouchDownPredirector");
 
-// When the Link-Preview loads a page with prerendering infrastractures.
-// TODO(b:291867362): This is not used by the current implementation, but might
-// be reused in the future.
-inline constexpr content::PreloadingPredictor kLinkPreview(112, "LinkPreview");
-
 // When a mousehover or mousedown event happens on a bookmark bar linking to an
 // HTTPS origin, we may attempt to preload the link. This predictor, instead of
 // using kPointerDownOnBookmarkBar or kMouseHoverOnBookmarkBar, is for solving
-// the problem in https://crbug.com/1516514.
+// the problem in https://crbug.com/41489499.
 inline constexpr content::PreloadingPredictor
     kMouseHoverOrMouseDownOnBookmarkBar(113,
                                         "MouseHoverOrMouseDownOnBookmarkBar");
@@ -142,8 +137,13 @@ inline constexpr content::PreloadingPredictor kChromeCustomTabs(
 inline constexpr content::PreloadingPredictor
     kMouseHoverOrMouseDownOnNewTabPage(116,
                                        "MouseHoverOrMouseDownOnNewTabPage");
+
+// When the default search engine needs to prerender a prewarm page.
+inline constexpr content::PreloadingPredictor kPrewarmDefaultSearchEngine(
+    117,
+    "PrewarmDefaultSearchEngine");
 }  // namespace chrome_preloading_predictor
-// LINT.ThenChange()
+// LINT.ThenChange(//tools/metrics/histograms/metadata/preloading/histograms.xml:PreloadingPredictor)
 
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
@@ -197,7 +197,13 @@ enum class ChromePreloadingEligibility {
           content::PreloadingEligibility::kPreloadingEligibilityContentEnd) +
       6,
 
-  kMaxValue = kPreloadingErrorBackOff,
+  // Search urls are not eligible for certain types of preloading triggers.
+  KDisallowSearchUrl =
+      static_cast<int>(
+          content::PreloadingEligibility::kPreloadingEligibilityContentEnd) +
+      7,
+
+  kMaxValue = KDisallowSearchUrl,
 };
 // LINT.ThenChange()
 
@@ -216,13 +222,15 @@ std::u16string ExtractSearchTermsFromURL(
     content::BrowserContext* browser_context,
     const GURL& url);
 
-// Returns true if a canonical URL representation of a |preloading_url| can be
-// generated. |canonical_url| is set to the canonical URL representation when
-// this method returns |true|.
+// Returns true if a canonical URL representation of a `preloading_url` can be
+// generated. `canonical_url` is set to the canonical URL representation when
+// this method returns `true`. The search query is returned in `search_terms` if
+// the passing `search_terms` is not nullptr.
 bool HasCanonicalPreloadingOmniboxSearchURL(
     const GURL& preloading_url,
     content::BrowserContext* browser_context,
-    GURL* canonical_url);
+    GURL* canonical_url,
+    std::u16string* search_terms = nullptr);
 
 // Returns true when |navigation_url| is considered as navigating to the same
 // omnibox search results page as |canonical_preloading_search_url|.

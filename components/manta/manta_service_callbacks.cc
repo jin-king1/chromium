@@ -10,6 +10,7 @@
 
 #include "base/containers/fixed_flat_map.h"
 #include "base/functional/callback.h"
+#include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/time/time.h"
 #include "components/endpoint_fetcher/endpoint_fetcher.h"
@@ -62,7 +63,7 @@ std::optional<MantaStatusCode> MapServerStatusCodeToMantaStatusCode(
 }
 
 void LogTimeCost(const MantaMetricType request_type,
-                 const base::TimeDelta& time_cost) {
+                 base::TimeDelta time_cost) {
   switch (request_type) {
     case MantaMetricType::kOrca:
       base::UmaHistogramTimes("Ash.MantaService.OrcaProvider.TimeCost",
@@ -138,11 +139,12 @@ void LogMantaStatusCode(const MantaMetricType request_type,
 }
 }  // namespace
 
-void OnEndpointFetcherComplete(MantaProtoResponseCallback callback,
-                               const base::Time& start_time,
-                               const MantaMetricType request_type,
-                               std::unique_ptr<EndpointFetcher> fetcher,
-                               std::unique_ptr<EndpointResponse> responses) {
+void OnEndpointFetcherComplete(
+    MantaProtoResponseCallback callback,
+    base::Time start_time,
+    const MantaMetricType request_type,
+    std::unique_ptr<endpoint_fetcher::EndpointFetcher> fetcher,
+    std::unique_ptr<endpoint_fetcher::EndpointResponse> responses) {
   // Tries to parse the response as a Response proto and return to the
   // `callback` together with a OK status, or capture the errors and return a
   // proper error status.
@@ -165,7 +167,8 @@ void OnEndpointFetcherComplete(MantaProtoResponseCallback callback,
     MantaStatusCode manta_status_code = MantaStatusCode::kBackendFailure;
 
     if (responses->error_type.has_value() &&
-        responses->error_type.value() == FetchErrorType::kNetError) {
+        responses->error_type.value() ==
+            endpoint_fetcher::FetchErrorType::kNetError) {
       manta_status_code = MantaStatusCode::kNoInternetConnection;
     }
 

@@ -9,10 +9,10 @@
 #import "base/i18n/message_formatter.h"
 #import "base/strings/sys_string_conversions.h"
 #import "ios/chrome/browser/bring_android_tabs/ui_bundled/constants.h"
-#import "ios/chrome/browser/bring_android_tabs/ui_bundled/tab_list_from_android_table_view_item.h"
 #import "ios/chrome/browser/bring_android_tabs/ui_bundled/tab_list_from_android_view_controller_delegate.h"
 #import "ios/chrome/browser/net/model/crurl.h"
 #import "ios/chrome/browser/shared/ui/list_model/list_model.h"
+#import "ios/chrome/browser/shared/ui/table_view/cells/table_view_url_item.h"
 #import "ios/chrome/browser/shared/ui/table_view/table_view_favicon_data_source.h"
 #import "ios/chrome/browser/shared/ui/table_view/table_view_utils.h"
 #import "ios/chrome/browser/synced_sessions/model/distant_tab.h"
@@ -46,7 +46,6 @@ typedef NS_ENUM(NSInteger, SectionIdentifier) {
   self.tableView.allowsMultipleSelection = YES;
   [self.tableView
       setSeparatorInset:UIEdgeInsetsMake(0, kTableViewSeparatorInset, 0, 0)];
-  self.tableView.estimatedRowHeight = kTabListFromAndroidCellHeight;
   self.navigationItem.leftBarButtonItem = [self navigationCancelButton];
   self.navigationItem.rightBarButtonItem = [self navigationOpenTabsButton];
   self.tableView.accessibilityIdentifier = kBringAndroidTabsPromptTabListAXId;
@@ -75,10 +74,10 @@ typedef NS_ENUM(NSInteger, SectionIdentifier) {
 - (UITableViewCell*)tableView:(UITableView*)tableView
         cellForRowAtIndexPath:(NSIndexPath*)indexPath {
   CHECK_EQ(tableView, self.tableView);
+  [self loadFaviconForIndexPath:indexPath];
   UITableViewCell* cell = [super tableView:tableView
                      cellForRowAtIndexPath:indexPath];
   cell.selectionStyle = UITableViewCellSelectionStyleNone;
-  [self loadFaviconForCell:cell indexPath:indexPath];
   return cell;
 }
 
@@ -99,11 +98,11 @@ typedef NS_ENUM(NSInteger, SectionIdentifier) {
 
 #pragma mark - TabListFromAndroidConsumer
 
-- (void)setTabListItems:(NSArray<TabListFromAndroidTableViewItem*>*)items {
+- (void)setTabListItems:(NSArray<TableViewURLItem*>*)items {
   [self loadModel];
 
   [self.tableViewModel addSectionWithIdentifier:TabListSectionIdentifier];
-  for (TabListFromAndroidTableViewItem* item : items) {
+  for (TableViewURLItem* item : items) {
     item.accessoryType = UITableViewCellAccessoryCheckmark;
     [self.tableViewModel addItem:item
          toSectionWithIdentifier:TabListSectionIdentifier];
@@ -124,26 +123,51 @@ typedef NS_ENUM(NSInteger, SectionIdentifier) {
 
 #pragma mark - Helpers
 
-// Retrieves favicon from FaviconLoader and sets FaviconView in given `cell`.
-- (void)loadFaviconForCell:(UITableViewCell*)cell
-                 indexPath:(NSIndexPath*)indexPath {
+// Called when a favicon is fetched.
+- (void)didFetchFaviconAttributes:(FaviconAttributes*)attributes
+                           cached:(bool)cached
+                             item:(TableViewURLItem*)item
+                        indexPath:(NSIndexPath*)indexPath {
+  item.faviconAttributes = attributes;
+  if (!cached && attributes.faviconImage) {
+    if (![self.tableViewModel hasItemAtIndexPath:indexPath] ||
+        [self.tableViewModel itemAtIndexPath:indexPath] != item) {
+      return;
+    }
+    LegacyTableViewCell* cell =
+        base::apple::ObjCCastStrict<LegacyTableViewCell>(
+            [self.tableView cellForRowAtIndexPath:indexPath]);
+    if (!cell) {
+      return;
+    }
+    // Even if Apple documentation hints toward reconfiguring the
+    // row instead of just updating the cell, it creates a visible
+    // jank. Use the item configuration method instead. See
+    // crbug.com/479692041 for more info.
+    [item configureCell:cell];
+  }
+}
+
+// Retrieves favicon from FaviconLoader and sets FaviconView.
+- (void)loadFaviconForIndexPath:(NSIndexPath*)indexPath {
   TableViewItem* item = [self.tableViewModel itemAtIndexPath:indexPath];
   CHECK(item);
-  CHECK(cell);
-  TabListFromAndroidTableViewItem* tabListItem =
-      base::apple::ObjCCastStrict<TabListFromAndroidTableViewItem>(item);
-  TabListFromAndroidTableViewCell* tabListCell =
-      base::apple::ObjCCastStrict<TabListFromAndroidTableViewCell>(cell);
 
-  NSString* itemIdentifier = tabListItem.uniqueIdentifier;
+  TableViewURLItem* URLItem =
+      base::apple::ObjCCastStrict<TableViewURLItem>(item);
+
+  if (URLItem.faviconAttributes) {
+    return;
+  }
+
+  __weak __typeof(self) weakSelf = self;
   [_faviconDataSource
-      faviconForPageURL:tabListItem.URL
-             completion:^(FaviconAttributes* attributes) {
-               // Only set favicon if the cell hasn't been reused.
-               if ([tabListCell.cellUniqueIdentifier
-                       isEqualToString:itemIdentifier]) {
-                 [tabListCell.faviconView configureWithAttributes:attributes];
-               }
+      faviconForPageURL:URLItem.URL
+             completion:^(FaviconAttributes* attributes, bool cached) {
+               [weakSelf didFetchFaviconAttributes:attributes
+                                            cached:cached
+                                              item:URLItem
+                                         indexPath:indexPath];
              }];
 }
 

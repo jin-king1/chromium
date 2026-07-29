@@ -9,28 +9,25 @@ import android.graphics.drawable.Drawable;
 import android.view.View;
 import android.widget.ImageView;
 
-import androidx.annotation.NonNull;
 import androidx.preference.PreferenceViewHolder;
 
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.settings.FaviconLoader;
 import org.chromium.components.browser_ui.settings.ChromeBasePreference;
 import org.chromium.components.browser_ui.settings.FaviconViewUtils;
-import org.chromium.components.content_settings.ContentSettingsType;
 import org.chromium.components.favicon.LargeIconBridge;
 import org.chromium.ui.widget.ButtonCompat;
 import org.chromium.url.GURL;
 
-import java.util.stream.IntStream;
-
+@NullMarked
 class SafetyHubPermissionsPreference extends ChromeBasePreference implements View.OnClickListener {
-    private final @NonNull PermissionsData mPermissionsData;
-    private final @NonNull LargeIconBridge mLargeIconBridge;
+    private final PermissionsData mPermissionsData;
+    private final LargeIconBridge mLargeIconBridge;
     private boolean mFaviconFetched;
 
     SafetyHubPermissionsPreference(
-            Context context,
-            @NonNull PermissionsData permissionsData,
-            @NonNull LargeIconBridge largeIconBridge) {
+            Context context, PermissionsData permissionsData, LargeIconBridge largeIconBridge) {
         super(context);
 
         mPermissionsData = permissionsData;
@@ -49,6 +46,12 @@ class SafetyHubPermissionsPreference extends ChromeBasePreference implements Vie
 
         ButtonCompat button = (ButtonCompat) holder.findViewById(R.id.button);
         button.setText(R.string.undo);
+        button.setContentDescription(
+                getContext()
+                        .getString(
+                                R.string
+                                        .safety_hub_revoked_permission_review_entry_undo_content_description,
+                                mPermissionsData.getOrigin()));
         button.setOnClickListener(this);
 
         ImageView icon = (ImageView) holder.findViewById(android.R.id.icon);
@@ -71,24 +74,34 @@ class SafetyHubPermissionsPreference extends ChromeBasePreference implements Vie
         }
     }
 
-    @NonNull
     PermissionsData getPermissionsData() {
         return mPermissionsData;
     }
 
-    private void onFaviconAvailable(Drawable drawable) {
+    private void onFaviconAvailable(@Nullable Drawable drawable) {
         if (drawable != null) {
             setIcon(drawable);
         }
     }
 
     private String createSummary() {
-        if (IntStream.of(mPermissionsData.getPermissions())
-                .anyMatch(x -> x == ContentSettingsType.NOTIFICATIONS)) {
-            return getContext()
-                    .getString(R.string.safety_hub_abusive_notification_permissions_sublabel);
+        // TODO(crbug.com/406473591): Consider adding separate string for mixed (unused +
+        // notifications revocation) cases.
+        switch (mPermissionsData.getRevocationType()) {
+            case PermissionsRevocationType.ABUSIVE_NOTIFICATION_PERMISSIONS:
+            case PermissionsRevocationType.UNUSED_PERMISSIONS_AND_ABUSIVE_NOTIFICATIONS:
+                return getContext()
+                        .getString(R.string.safety_hub_abusive_notification_permissions_sublabel);
+            case PermissionsRevocationType.SUSPICIOUS_NOTIFICATION_PERMISSIONS:
+            case PermissionsRevocationType.UNUSED_PERMISSIONS_AND_SUSPICIOUS_NOTIFICATIONS:
+                return getContext()
+                        .getString(
+                                R.string.safety_hub_suspicious_notification_permissions_sublabel);
         }
+        return createUnusedOrDisruptivePermissionsSummary();
+    }
 
+    private String createUnusedOrDisruptivePermissionsSummary() {
         String[] permissionNames =
                 UnusedSitePermissionsBridge.contentSettingsTypeToString(
                         mPermissionsData.getPermissions());

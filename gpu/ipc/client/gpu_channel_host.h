@@ -10,63 +10,124 @@
 
 #include <atomic>
 #include <memory>
+#include <variant>
 #include <vector>
 
 #include "base/atomic_sequence_num.h"
 #include "base/functional/callback.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
 #include "base/observer_list.h"
 #include "base/rand_util.h"
 #include "base/synchronization/lock.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/types/pass_key.h"
 #include "gpu/config/gpu_feature_info.h"
 #include "gpu/config/gpu_info.h"
-#include "gpu/gpu_export.h"
 #include "gpu/ipc/client/gpu_channel_observer.h"
-#include "gpu/ipc/client/image_decode_accelerator_proxy.h"
+#include "gpu/ipc/client/gpu_ipc_client_export.h"
 #include "gpu/ipc/client/shared_image_interface_proxy.h"
 #include "gpu/ipc/common/gpu_channel.mojom.h"
 #include "ipc/ipc_listener.h"
 #include "mojo/public/cpp/base/shared_memory_version.h"
 #include "mojo/public/cpp/bindings/shared_associated_remote.h"
-#include "ui/gfx/gpu_memory_buffer.h"
+#include "mojo/public/cpp/bindings/shared_remote.h"
+#include "mojo/public/cpp/system/message_pipe.h"
+#include "ui/gfx/gpu_memory_buffer_handle.h"
 
 namespace IPC {
-class ChannelMojo;
+class Channel;
+}
+
+namespace viz {
+class Gpu;
 }
 
 namespace gpu {
-class ClientSharedImageInterface;
+class SharedImageInterface;
 struct SyncToken;
 class GpuChannelHost;
-class GpuMemoryBufferManager;
 
 using GpuChannelEstablishedCallback =
     base::OnceCallback<void(scoped_refptr<GpuChannelHost>)>;
 
-class GPU_EXPORT GpuChannelEstablishFactory {
+class GPU_IPC_CLIENT_EXPORT GpuChannelEstablishFactory {
  public:
   virtual ~GpuChannelEstablishFactory() = default;
 
   virtual void EstablishGpuChannel(GpuChannelEstablishedCallback callback) = 0;
   virtual scoped_refptr<GpuChannelHost> EstablishGpuChannelSync() = 0;
-  virtual GpuMemoryBufferManager* GetGpuMemoryBufferManager() = 0;
 };
 
 // Encapsulates an IPC channel between the client and one GPU process.
 // On the GPU process side there's a corresponding GpuChannel.
 // Every method can be called on any thread with a message loop, except for the
 // IO thread.
-class GPU_EXPORT GpuChannelHost
+class GPU_IPC_CLIENT_EXPORT GpuChannelHost
     : public base::RefCountedThreadSafe<GpuChannelHost> {
  public:
-  GpuChannelHost(
+  // Factory for the standard GPU channel path (info provided upfront). This
+  // will never return nullptr.
+  static scoped_refptr<GpuChannelHost> Create(
       int channel_id,
       const gpu::GPUInfo& gpu_info,
       const gpu::GpuFeatureInfo& gpu_feature_info,
       const gpu::SharedImageCapabilities& shared_image_capabilities,
       mojo::ScopedMessagePipeHandle handle,
       scoped_refptr<base::SingleThreadTaskRunner> io_task_runner = nullptr);
+
+  // A builder for GpuChannelHost used during asynchronous initialization.
+  // The underlying Mojo remote / IPC channel communicates on the IO thread,
+  // while this builder is used on the main thread. This prevents access to the
+  // channel handle or a partially initialized GpuChannelHost until SetInfo() is
+  // called, guaranteeing that consumers cannot access the channel in an
+  // incomplete state.
+  class GPU_IPC_CLIENT_EXPORT Builder final {
+   public:
+    static Builder CreateAndGetGPUInfo(
+        base::PassKey<viz::Gpu> pass_key,
+        int channel_id,
+        mojo::ScopedMessagePipeHandle handle,
+        scoped_refptr<base::SingleThreadTaskRunner> io_task_runner,
+        base::OnceCallback<void(const gpu::GPUInfo&,
+                                const gpu::GpuFeatureInfo&,
+                                const gpu::SharedImageCapabilities&)> callback);
+
+    ~Builder();
+    Builder(const Builder&) = delete;
+    Builder& operator=(const Builder&) = delete;
+    Builder(Builder&&);
+    Builder& operator=(Builder&&);
+
+    // Sets the info and returns the completed GpuChannelHost.
+    scoped_refptr<GpuChannelHost> SetInfo(
+        const gpu::GPUInfo& gpu_info,
+        const gpu::GpuFeatureInfo& gpu_feature_info,
+        const gpu::SharedImageCapabilities& shared_image_capabilities);
+
+    bool GetGPUInfoSync(
+        gpu::GPUInfo* gpu_info,
+        gpu::GpuFeatureInfo* gpu_feature_info,
+        gpu::SharedImageCapabilities* shared_image_capabilities);
+
+    // Checks if the channel is lost.
+    bool IsLost() const;
+
+   private:
+    friend class GpuChannelHost;
+
+    Builder(int channel_id,
+            mojo::ScopedMessagePipeHandle handle,
+            scoped_refptr<base::SingleThreadTaskRunner> io_task_runner);
+
+    void GetGPUInfo(
+        base::OnceCallback<void(const gpu::GPUInfo&,
+                                const gpu::GpuFeatureInfo&,
+                                const gpu::SharedImageCapabilities&)> callback);
+
+    scoped_refptr<GpuChannelHost> host_;
+  };
+
   GpuChannelHost(const GpuChannelHost&) = delete;
   GpuChannelHost& operator=(const GpuChannelHost&) = delete;
 
@@ -141,28 +202,20 @@ class GPU_EXPORT GpuChannelHost
                              gfx::BufferUsage buffer_usage,
                              gfx::GpuMemoryBufferHandle* handle);
 
-  void GetGpuMemoryBufferHandleInfo(const Mailbox& mailbox,
-                                    gfx::GpuMemoryBufferHandle* handle,
-                                    viz::SharedImageFormat* format,
-                                    gfx::Size* size,
-                                    gfx::BufferUsage* buffer_usage);
-
 #if BUILDFLAG(IS_WIN)
   void CopyToGpuMemoryBufferAsync(
       const Mailbox& mailbox,
       std::vector<SyncToken> sync_token_dependencies,
       uint64_t release_count,
       base::OnceCallback<void(bool)> callback);
-  void CopyNativeGmbToSharedMemorySync(
-      gfx::GpuMemoryBufferHandle buffer_handle,
-      base::UnsafeSharedMemoryRegion memory_region,
-      bool* status);
+#endif  // BUILDFLAG(IS_WIN)
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_ANDROID)
   void CopyNativeGmbToSharedMemoryAsync(
       gfx::GpuMemoryBufferHandle buffer_handle,
       base::UnsafeSharedMemoryRegion memory_region,
       base::OnceCallback<void(bool)> callback);
-  bool IsConnected();
-#endif
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_ANDROID)
 
   // Crashes the GPU process. This functionality is added here because
   // of instability when creating a new tab just to navigate to
@@ -174,28 +227,32 @@ class GPU_EXPORT GpuChannelHost
   // running tests and is otherwise ignored.
   void TerminateGpuProcessForTesting();
 
-  // Virtual for testing.
-  virtual scoped_refptr<ClientSharedImageInterface>
-  CreateClientSharedImageInterface();
+  scoped_refptr<SharedImageInterface> CreateClientSharedImageInterface();
 
-  ImageDecodeAcceleratorProxy* image_decode_accelerator_proxy() {
-    return &image_decode_accelerator_proxy_;
-  }
-
-  // Calls ConnectionTracker::AddObserver() directly.
-  void AddObserver(GpuChannelLostObserver* obs);
+  // Calls ConnectionTracker::AddObserverIfNotAlreadyLost directly.
+  [[nodiscard]] bool AddObserverIfNotAlreadyLost(GpuChannelLostObserver* obs);
 
   // Calls ConnectionTracker::RemoveObserver() directly.
   void RemoveObserver(GpuChannelLostObserver* obs);
 
  protected:
   friend class base::RefCountedThreadSafe<GpuChannelHost>;
+
+  GpuChannelHost(
+      int channel_id,
+      mojo::ScopedMessagePipeHandle handle,
+      scoped_refptr<base::SingleThreadTaskRunner> io_task_runner = nullptr);
+
   virtual ~GpuChannelHost();
 
   // Clears its SharedAssociatedRemote.
   void ResetChannelRemoteForTesting();
 
  private:
+  void SetInfo(const gpu::GPUInfo& gpu_info,
+               const gpu::GpuFeatureInfo& gpu_feature_info,
+               const gpu::SharedImageCapabilities& shared_image_capabilities);
+
   // Establishes shared memory communication with the GPU process. This memory
   // is used to keep track of flushed items and avoid unnecessary IPCs.
   void EstablishSharedMemoryForFlushVerification()
@@ -213,8 +270,10 @@ class GPU_EXPORT GpuChannelHost
 
     void OnDisconnectedFromGpuProcess();
 
-    // With |channel_obs_lock_|, it can becalled on any thread.
-    void AddObserver(GpuChannelLostObserver* obs);
+    // Adds observer if gpu channel is not already lost and returns true,
+    // otherwise returns false.
+    // With |channel_obs_lock_|, it can be called on any thread.
+    [[nodiscard]] bool AddObserverIfNotAlreadyLost(GpuChannelLostObserver* obs);
 
     // With |channel_obs_lock_|, it can be called on any thread.
     // Cannot be called during NotifyGpuChannelLost(). This creates a deadlock.
@@ -232,14 +291,14 @@ class GPU_EXPORT GpuChannelHost
     // The GpuChannelLost Monitor for LayerTreeFrameSink.
     base::Lock channel_obs_lock_;
     // Note that ObserverList is sequence checked so we can't use that here.
-    std::vector<GpuChannelLostObserver*> GUARDED_BY(channel_obs_lock_)
+    std::vector<raw_ptr<GpuChannelLostObserver>> GUARDED_BY(channel_obs_lock_)
         observer_list_;
   };
 
   // A filter used internally to route incoming messages from the IO thread
   // to the correct message loop. It also maintains some shared state between
   // all the contexts.
-  class GPU_EXPORT Listener : public IPC::Listener {
+  class GPU_IPC_CLIENT_EXPORT Listener : public IPC::Listener {
    public:
     Listener();
     ~Listener() override;
@@ -254,12 +313,11 @@ class GPU_EXPORT GpuChannelHost
 
     // IPC::Listener implementation
     // (called on the IO thread):
-    bool OnMessageReceived(const IPC::Message& msg) override;
     void OnChannelError() override;
 
    private:
     mutable base::Lock lock_;
-    std::unique_ptr<IPC::ChannelMojo> channel_ GUARDED_BY(lock_);
+    std::unique_ptr<IPC::Channel> channel_ GUARDED_BY(lock_);
   };
 
   struct OrderingBarrierInfo {
@@ -295,8 +353,8 @@ class GPU_EXPORT GpuChannelHost
   const scoped_refptr<base::SingleThreadTaskRunner> io_thread_;
 
   const int channel_id_;
-  const gpu::GPUInfo gpu_info_;
-  const gpu::GpuFeatureInfo gpu_feature_info_;
+  gpu::GPUInfo gpu_info_;
+  gpu::GpuFeatureInfo gpu_feature_info_;
 
   // Lifetime/threading notes: Listener only operates on the IO thread, and
   // outlives |this|. It is therefore safe to PostTask calls to the IO thread
@@ -308,19 +366,17 @@ class GPU_EXPORT GpuChannelHost
   // soon as disconnection is detected.
   const scoped_refptr<ConnectionTracker> connection_tracker_;
 
-  mojo::SharedAssociatedRemote<mojom::GpuChannel> gpu_channel_;
-  SharedImageInterfaceProxy shared_image_interface_;
+  using SharedRemote = mojo::SharedRemote<mojom::GpuChannel>;
+  using SharedAssociatedRemote =
+      mojo::SharedAssociatedRemote<mojom::GpuChannel>;
+  std::variant<SharedRemote, SharedAssociatedRemote> gpu_channel_;
+
+  std::unique_ptr<SharedImageInterfaceProxy> shared_image_interface_;
 
   mutable base::Lock shared_memory_version_lock_;
   // Used to synchronize flushed request ids with the GPU process.
   std::optional<mojo::SharedMemoryVersionClient> shared_memory_version_client_
       GUARDED_BY(shared_memory_version_lock_);
-
-  // A client-side helper to send image decode requests to the GPU process.
-  ImageDecodeAcceleratorProxy image_decode_accelerator_proxy_;
-
-  // Used to reduce frequency of metrics logging.
-  base::MetricsSubSampler metrics_sub_sampler_;
 
   // Image IDs are allocated in sequence.
   base::AtomicSequenceNumber next_image_id_;
@@ -345,7 +401,7 @@ class GPU_EXPORT GpuChannelHost
   // Reset in the delayed task.
   std::optional<uint32_t> delayed_flush_deferred_message_id_
       GUARDED_BY(deferred_message_lock_);
-  static constexpr base::TimeDelta kDelayForEnsuringFlush = base::Seconds(2);
+  static constexpr base::TimeDelta kDelayForEnsuringFlush = base::Seconds(1);
 
   const bool sync_point_graph_validation_enabled_;
 };

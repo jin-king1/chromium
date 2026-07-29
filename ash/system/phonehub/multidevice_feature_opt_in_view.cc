@@ -54,7 +54,6 @@ PermissionsOnboardingSetUpMode GetPermissionSetupMode(
           phonehub::MultideviceFeatureAccessManager::AccessStatus::
               kAvailableButNotGranted;
   bool can_request_camera_roll_access =
-      features::IsPhoneHubCameraRollEnabled() &&
       multidevice_feature_access_manager->IsAccessRequestAllowed(
           Feature::kPhoneHubCameraRoll) &&
       multidevice_feature_access_manager->GetCameraRollAccessStatus() ==
@@ -174,7 +173,7 @@ void MultideviceFeatureOptInView::ClosePhoneHubBubble() {
     return;
   }
   int64_t current_display_id =
-      display::Screen::GetScreen()
+      display::Screen::Get()
           ->GetDisplayNearestWindow(widget->GetNativeWindow())
           .id();
   Shell::GetRootWindowControllerWithDisplayId(current_display_id)

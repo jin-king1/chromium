@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "components/page_load_metrics/browser/observers/back_forward_cache_page_load_metrics_observer.h"
+
 #include <memory>
 
 #include "base/test/metrics/histogram_tester.h"
@@ -9,8 +11,8 @@
 #include "build/build_config.h"
 #include "chrome/browser/page_load_metrics/integration_tests/metric_integration_test.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/page_load_metrics/browser/features.h"
 #include "components/page_load_metrics/browser/metrics_web_contents_observer.h"
-#include "components/page_load_metrics/browser/observers/back_forward_cache_page_load_metrics_observer.h"
 #include "components/page_load_metrics/browser/observers/core/uma_page_load_metrics_observer.h"
 #include "components/page_load_metrics/browser/page_load_metrics_test_waiter.h"
 #include "components/page_load_metrics/browser/page_load_metrics_util.h"
@@ -36,7 +38,9 @@ class BackForwardCachePageLoadMetricsObserverBrowserTest
   void SetUpCommandLine(base::CommandLine* command_line) override {
     feature_list_.InitWithFeaturesAndParameters(
         content::GetDefaultEnabledBackForwardCacheFeaturesForTesting(
-            {{internal::kBackForwardCacheEmitZeroSamplesForKeyMetrics, {{}}}}),
+            {{page_load_metrics::features::
+                  kBackForwardCacheEmitZeroSamplesForKeyMetrics,
+              {{}}}}),
         content::GetDefaultDisabledBackForwardCacheFeaturesForTesting());
 
     MetricIntegrationTest::SetUpCommandLine(command_line);
@@ -65,10 +69,12 @@ class BackForwardCachePageLoadMetricsObserverBrowserTest
 
       auto* source = ukm_recorder().GetSourceForSourceId(entry->source_id);
       DCHECK(source);
-      if (source->url() != url)
+      if (source->url() != url) {
         continue;
-      if (!ukm_recorder().EntryHasMetric(entry, metric_name))
+      }
+      if (!ukm_recorder().EntryHasMetric(entry, metric_name)) {
         continue;
+      }
       ukm_recorder().ExpectEntryMetric(entry, metric_name, expected_value);
     }
   }
@@ -86,10 +92,12 @@ class BackForwardCachePageLoadMetricsObserverBrowserTest
 
       auto* source = ukm_recorder().GetSourceForSourceId(entry->source_id);
       DCHECK(source);
-      if (source->url() != url)
+      if (source->url() != url) {
         continue;
-      if (!ukm_recorder().EntryHasMetric(entry, metric_name))
+      }
+      if (!ukm_recorder().EntryHasMetric(entry, metric_name)) {
         continue;
+      }
       count++;
     }
     EXPECT_EQ(count, expected_count);
@@ -101,8 +109,9 @@ class BackForwardCachePageLoadMetricsObserverBrowserTest
     for (const ukm::mojom::UkmEntry* entry :
          ukm_recorder().GetEntriesByName(UkmEntry::kEntryName)) {
       auto* source = ukm_recorder().GetSourceForSourceId(entry->source_id);
-      if (source->url() != url)
+      if (source->url() != url) {
         continue;
+      }
       if (ukm_recorder().EntryHasMetric(
               entry,
               UkmEntry::kPageEndReasonAfterBackForwardCacheRestoreName)) {
@@ -121,16 +130,8 @@ class BackForwardCachePageLoadMetricsObserverBrowserTest
 
 }  // namespace
 
-// TODO(crbug.com/334416161): Re-enble this test.
-#if BUILDFLAG(IS_WIN)
-#define MAYBE_FirstPaintAfterBackForwardCacheRestore \
-  DISABLED_FirstPaintAfterBackForwardCacheRestore
-#else
-#define MAYBE_FirstPaintAfterBackForwardCacheRestore \
-  FirstPaintAfterBackForwardCacheRestore
-#endif
 IN_PROC_BROWSER_TEST_F(BackForwardCachePageLoadMetricsObserverBrowserTest,
-                       MAYBE_FirstPaintAfterBackForwardCacheRestore) {
+                       FirstPaintAfterBackForwardCacheRestore) {
   Start();
   GURL url_a(embedded_test_server()->GetURL("a.com", "/title1.html"));
   GURL url_b(embedded_test_server()->GetURL("b.com", "/title1.html"));
@@ -146,8 +147,9 @@ IN_PROC_BROWSER_TEST_F(BackForwardCachePageLoadMetricsObserverBrowserTest,
 
   // Go back to A.
   {
-    auto waiter = CreatePageLoadMetricsTestWaiter();
-    waiter->AddPageExpectation(
+    page_load_metrics::PageLoadMetricsTestWaiter waiter(web_contents());
+    waiter.AddPageBackForwardCacheRestoreExpectation(
+        /*back_forward_timings_index=*/0,
         page_load_metrics::PageLoadMetricsTestWaiter::TimingField::
             kFirstPaintAfterBackForwardCacheRestore);
     web_contents()->GetController().GoBack();
@@ -156,7 +158,7 @@ IN_PROC_BROWSER_TEST_F(BackForwardCachePageLoadMetricsObserverBrowserTest,
     EXPECT_NE(rfh_a->GetLifecycleState(),
               content::RenderFrameHost::LifecycleState::kInBackForwardCache);
 
-    waiter->Wait();
+    waiter.Wait();
     histogram_tester().ExpectTotalCount(
         internal::kHistogramFirstPaintAfterBackForwardCacheRestore, 1);
     ExpectMetricCountForUrl(
@@ -178,8 +180,9 @@ IN_PROC_BROWSER_TEST_F(BackForwardCachePageLoadMetricsObserverBrowserTest,
 
   // Go back to A again.
   {
-    auto waiter = CreatePageLoadMetricsTestWaiter();
-    waiter->AddPageExpectation(
+    page_load_metrics::PageLoadMetricsTestWaiter waiter(web_contents());
+    waiter.AddPageBackForwardCacheRestoreExpectation(
+        /*back_forward_timings_index=*/1,
         page_load_metrics::PageLoadMetricsTestWaiter::TimingField::
             kFirstPaintAfterBackForwardCacheRestore);
     web_contents()->GetController().GoBack();
@@ -188,7 +191,7 @@ IN_PROC_BROWSER_TEST_F(BackForwardCachePageLoadMetricsObserverBrowserTest,
     EXPECT_NE(rfh_a->GetLifecycleState(),
               content::RenderFrameHost::LifecycleState::kInBackForwardCache);
 
-    waiter->Wait();
+    waiter.Wait();
     histogram_tester().ExpectTotalCount(
         internal::kHistogramFirstPaintAfterBackForwardCacheRestore, 2);
     ExpectMetricCountForUrl(
@@ -219,8 +222,9 @@ IN_PROC_BROWSER_TEST_F(BackForwardCachePageLoadMetricsObserverBrowserTest,
 
   // Go back to A.
   {
-    auto waiter = CreatePageLoadMetricsTestWaiter();
-    waiter->AddPageExpectation(
+    page_load_metrics::PageLoadMetricsTestWaiter waiter(web_contents());
+    waiter.AddPageBackForwardCacheRestoreExpectation(
+        /*back_forward_timings_index=*/0,
         page_load_metrics::PageLoadMetricsTestWaiter::TimingField::
             kFirstPaintAfterBackForwardCacheRestore);
 
@@ -236,7 +240,7 @@ IN_PROC_BROWSER_TEST_F(BackForwardCachePageLoadMetricsObserverBrowserTest,
 
     web_contents()->WasShown();
 
-    waiter->Wait();
+    waiter.Wait();
 
     // As the tab goes to the background before the first paint, the UMA and the
     // UKM are not recorded.
@@ -253,17 +257,8 @@ IN_PROC_BROWSER_TEST_F(BackForwardCachePageLoadMetricsObserverBrowserTest,
   }
 }
 
-// TODO(https://crbug.com/40799125): Test is flaky on Windows and Mac.
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
-#define MAYBE_FirstInputDelayAfterBackForwardCacheRestoreBackground \
-  DISABLED_FirstInputDelayAfterBackForwardCacheRestoreBackground
-#else
-#define MAYBE_FirstInputDelayAfterBackForwardCacheRestoreBackground \
-  FirstInputDelayAfterBackForwardCacheRestoreBackground
-#endif
-IN_PROC_BROWSER_TEST_F(
-    BackForwardCachePageLoadMetricsObserverBrowserTest,
-    MAYBE_FirstInputDelayAfterBackForwardCacheRestoreBackground) {
+IN_PROC_BROWSER_TEST_F(BackForwardCachePageLoadMetricsObserverBrowserTest,
+                       FirstInputDelayAfterBackForwardCacheRestoreBackground) {
   Start();
   GURL url_a(embedded_test_server()->GetURL("a.com", "/title1.html"));
   GURL url_b(embedded_test_server()->GetURL("b.com", "/title1.html"));
@@ -282,21 +277,27 @@ IN_PROC_BROWSER_TEST_F(
 
   // Go back to A.
   {
-    auto waiter = CreatePageLoadMetricsTestWaiter();
-    waiter->AddPageExpectation(
+    page_load_metrics::PageLoadMetricsTestWaiter waiter(web_contents());
+    waiter.AddPageBackForwardCacheRestoreExpectation(
+        /*back_forward_timings_index=*/0,
         page_load_metrics::PageLoadMetricsTestWaiter::TimingField::
-            kFirstInputDelayAfterBackForwardCacheRestore);
+            kFirstPaintAfterBackForwardCacheRestore);
 
     web_contents()->GetController().GoBack();
     EXPECT_TRUE(WaitForLoadStop(web_contents()));
     EXPECT_TRUE(rfh_a->IsInPrimaryMainFrame());
     EXPECT_NE(rfh_a->GetLifecycleState(),
               content::RenderFrameHost::LifecycleState::kInBackForwardCache);
+    waiter.Wait();
+    waiter.AddPageBackForwardCacheRestoreExpectation(
+        /*back_forward_timings_index=*/0,
+        page_load_metrics::PageLoadMetricsTestWaiter::TimingField::
+            kFirstInputDelayAfterBackForwardCacheRestore);
 
     content::SimulateMouseClick(web_contents(), 0,
                                 blink::WebPointerProperties::Button::kLeft);
 
-    waiter->Wait();
+    waiter.Wait();
 
     histogram_tester().ExpectTotalCount(
         internal::kHistogramFirstInputDelayAfterBackForwardCacheRestore, 1);
@@ -425,17 +426,6 @@ return score;
   EXPECT_EQ(rfh_a->GetLifecycleState(),
             content::RenderFrameHost::LifecycleState::kInBackForwardCache);
 
-  auto samples = histogram_tester().GetAllSamples(
-      internal::
-          kHistogramCumulativeShiftScoreMainFrameAfterBackForwardCacheRestore);
-  EXPECT_EQ(1ul, samples.size());
-  EXPECT_EQ(base::Bucket(page_load_metrics::LayoutShiftUmaValue(next_score), 1),
-            samples[0]);
-
-  histogram_tester().ExpectTotalCount(
-      internal::
-          kHistogramCumulativeShiftScoreMainFrameAfterBackForwardCacheRestore,
-      1);
   histogram_tester().ExpectTotalCount(
       internal::kHistogramCumulativeShiftScoreAfterBackForwardCacheRestore, 1);
 
@@ -447,8 +437,6 @@ return score;
   // kBackForwardCacheEmitZeroSamplesForKeyMetrics.
   // As back-foward cache is used twice (once for A and once for B), the current
   // total count is 2.
-  histogram_tester().ExpectBucketCount(
-      "PageLoad.LayoutInstability.CumulativeShiftScore.MainFrame", 0, 2);
   histogram_tester().ExpectBucketCount(
       "PageLoad.LayoutInstability.CumulativeShiftScore", 0, 2);
 
@@ -465,18 +453,12 @@ return score;
             content::RenderFrameHost::LifecycleState::kInBackForwardCache);
 
   histogram_tester().ExpectTotalCount(
-      internal::
-          kHistogramCumulativeShiftScoreMainFrameAfterBackForwardCacheRestore,
-      2);
-  histogram_tester().ExpectTotalCount(
       internal::kHistogramCumulativeShiftScoreAfterBackForwardCacheRestore, 2);
 
   ExpectMetricCountForUrl(
       url_a, "CumulativeShiftScoreAfterBackForwardCacheRestore", 2);
 
   // As back-foward cache is used fourth in total.
-  histogram_tester().ExpectBucketCount(
-      "PageLoad.LayoutInstability.CumulativeShiftScore.MainFrame", 0, 4);
   histogram_tester().ExpectBucketCount(
       "PageLoad.LayoutInstability.CumulativeShiftScore", 0, 4);
 }
@@ -500,8 +482,9 @@ IN_PROC_BROWSER_TEST_F(
 
   // Go back to A.
   {
-    auto waiter = CreatePageLoadMetricsTestWaiter();
-    waiter->AddPageExpectation(
+    page_load_metrics::PageLoadMetricsTestWaiter waiter(web_contents());
+    waiter.AddPageBackForwardCacheRestoreExpectation(
+        /*back_forward_timings_index=*/0,
         page_load_metrics::PageLoadMetricsTestWaiter::TimingField::
             kRequestAnimationFrameAfterBackForwardCacheRestore);
     web_contents()->GetController().GoBack();
@@ -510,7 +493,7 @@ IN_PROC_BROWSER_TEST_F(
     EXPECT_NE(rfh_a->GetLifecycleState(),
               content::RenderFrameHost::LifecycleState::kInBackForwardCache);
 
-    waiter->Wait();
+    waiter.Wait();
     histogram_tester().ExpectTotalCount(
         internal::
             kHistogramFirstRequestAnimationFrameAfterBackForwardCacheRestore,
@@ -638,11 +621,6 @@ return score;
       "PageLoad.LayoutInstability.MaxCumulativeShiftScore."
       "AfterBackForwardCacheRestore.SessionWindow.Gap1000ms.Max5000ms2",
       2);
-  histogram_tester().ExpectTotalCount(
-      "PageLoad.LayoutInstability.MaxCumulativeShiftScore."
-      "AfterBackForwardCacheRestore.SessionWindow.Gap1000ms.Max5000ms2."
-      "Incognito",
-      0);
 }
 
 // Verifies that the app resumes HistoryNavigation logging for a page if the
@@ -713,15 +691,15 @@ IN_PROC_BROWSER_TEST_F(
 // TODO(crbug.com/40937315): Test is flaky on MSAN.
 // TODO(https://crbug.com/40799125): Test is flaky on Windows and Mac.
 #if defined(MEMORY_SANITIZER) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
-#define MAYBE_ResponsivenessMetricsNormalizationWithSendingAllLatencies \
-  DISABLED_ResponsivenessMetricsNormalizationWithSendingAllLatencies
+#define MAYBE_InteractionToNextPaintCalculatorWithSendingAllLatencies \
+  DISABLED_InteractionToNextPaintCalculatorWithSendingAllLatencies
 #else
-#define MAYBE_ResponsivenessMetricsNormalizationWithSendingAllLatencies \
-  ResponsivenessMetricsNormalizationWithSendingAllLatencies
+#define MAYBE_InteractionToNextPaintCalculatorWithSendingAllLatencies \
+  InteractionToNextPaintCalculatorWithSendingAllLatencies
 #endif
 IN_PROC_BROWSER_TEST_F(
     BackForwardCachePageLoadMetricsObserverBrowserTest,
-    MAYBE_ResponsivenessMetricsNormalizationWithSendingAllLatencies) {
+    MAYBE_InteractionToNextPaintCalculatorWithSendingAllLatencies) {
   Start();
   GURL url_a(embedded_test_server()->GetURL("a.com", "/title1.html"));
   GURL url_b(embedded_test_server()->GetURL("b.com", "/title1.html"));
@@ -787,4 +765,47 @@ IN_PROC_BROWSER_TEST_F(
   for (auto& uma : uma_list) {
     histogram_tester().ExpectTotalCount(uma, 1);
   }
+}
+
+// TODO(https://crbug.com/517725655): Add more tests verifying
+// more complex BFCache navigation combining other preloading technologies
+// scenarios. Verifies PreloadServingMetrics recording when restoring from
+// BackForwardCache. See
+// http://crrev.com/c/8129579/comment/3a33f615_9c5e9eea/ for more details.
+//
+// Scenario:
+//
+// 1. Navigate to Page A.
+// 2. Navigate to Page B (Page A enters BFCache).
+// 3. Go back to Page A (restore from BFCache).
+// 4. Navigate to about:blank to flush Page A's BFCache restore session.
+IN_PROC_BROWSER_TEST_F(BackForwardCachePageLoadMetricsObserverBrowserTest,
+                       PreloadServingMetricsBFCacheRestore) {
+  Start();
+  GURL url_a(embedded_test_server()->GetURL("a.test", "/title1.html"));
+  GURL url_b(embedded_test_server()->GetURL("b.test", "/title1.html"));
+
+  // 1. Navigate to Page A.
+  EXPECT_TRUE(ui_test_utils::NavigateToURL(browser(), url_a));
+  content::RenderFrameHostWrapper rfh_a(top_frame_host());
+
+  // 2. Navigate to Page B (Page A enters BFCache).
+  EXPECT_TRUE(ui_test_utils::NavigateToURL(browser(), url_b));
+  EXPECT_EQ(rfh_a->GetLifecycleState(),
+            content::RenderFrameHost::LifecycleState::kInBackForwardCache);
+
+  // Initial navigation to Page A flushes as kNoPreload (0).
+  histogram_tester().ExpectBucketCount("PreloadServingMetrics.Other.All",
+                                       0 /* kNoPreload */, 1);
+
+  // 3. Go back to Page A (restore from BFCache).
+  web_contents()->GetController().GoBack();
+  EXPECT_TRUE(content::WaitForLoadStop(web_contents()));
+
+  // 4. Navigate to about:blank to flush Page A's BFCache restore session.
+  EXPECT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL("about:blank")));
+
+  // The BFCache restore session for Page A flushes as kBFCache (3).
+  histogram_tester().ExpectBucketCount("PreloadServingMetrics.Other.All",
+                                       3 /* kBFCache */, 1);
 }

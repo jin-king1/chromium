@@ -8,9 +8,21 @@
 #import "ios/chrome/browser/shared/ui/table_view/chrome_table_view_controller.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_groups/recent_activity_consumer.h"
 
+@protocol RecentActivityMutator;
+@protocol SceneCommands;
+@protocol TableViewFaviconDataSource;
+
 // A view controller that contains recent activity logs in a shared tab group.
 @interface RecentActivityViewController
     : ChromeTableViewController <RecentActivityConsumer>
+
+// Handler for scene commands.
+@property(nonatomic, weak) id<SceneCommands> sceneHandler;
+
+@property(nonatomic, weak) id<RecentActivityMutator> mutator;
+
+// Data source for favicons.
+@property(nonatomic, weak) id<TableViewFaviconDataSource> faviconDataSource;
 
 - (instancetype)init NS_DESIGNATED_INITIALIZER;
 - (instancetype)initWithStyle:(UITableViewStyle)style NS_UNAVAILABLE;

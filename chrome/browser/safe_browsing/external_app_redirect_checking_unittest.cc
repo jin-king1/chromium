@@ -20,7 +20,6 @@
 namespace safe_browsing {
 
 using ::testing::_;
-using ::testing::Invoke;
 
 namespace {
 
@@ -64,13 +63,13 @@ class ExternalAppRedirectCheckingTest : public ::testing::Test {
   TestingProfile& profile() { return profile_; }
   void SetSitesAllowlisted(bool allowlisted) {
     ON_CALL(*mock_database_, CheckUrlForHighConfidenceAllowlist(_, _))
-        .WillByDefault(Invoke(
+        .WillByDefault(
             [allowlisted](
                 const GURL& url,
                 SafeBrowsingDatabaseManager::
                     CheckUrlForHighConfidenceAllowlistCallback callback) {
               std::move(callback).Run(allowlisted, std::nullopt);
-            }));
+            });
   }
 
  private:
@@ -103,7 +102,7 @@ TEST_F(ExternalAppRedirectCheckingTest,
 
 TEST_F(ExternalAppRedirectCheckingTest,
        ShouldReportExternalAppRedirect_RecentAppVisit) {
-  base::Value::Dict initial_timestamps;
+  base::DictValue initial_timestamps;
   initial_timestamps.Set("test_app", base::TimeToValue(base::Time::Now()));
   profile().GetPrefs()->SetDict(prefs::kExternalAppRedirectTimestamps,
                                 std::move(initial_timestamps));
@@ -152,7 +151,7 @@ TEST(ExternalAppRedirectChecking, LogExternalAppRedirectTimestamp) {
   RegisterProfilePrefs(pref_service.registry());
 
   ASSERT_EQ(pref_service.GetDict(prefs::kExternalAppRedirectTimestamps),
-            base::Value::Dict());
+            base::DictValue());
 
   LogExternalAppRedirectTimestamp(pref_service, "test.app");
 
@@ -175,7 +174,7 @@ TEST(ExternalAppRedirectChecking, CleanupExternalAppRedirectTimestamps) {
   TestingPrefServiceSimple pref_service;
   RegisterProfilePrefs(pref_service.registry());
 
-  base::Value::Dict initial_timestamps;
+  base::DictValue initial_timestamps;
   initial_timestamps.Set("test_app", base::TimeToValue(base::Time::Now()));
   initial_timestamps.Set(
       "expired_app", base::TimeToValue(base::Time::Now() - base::Days(100)));

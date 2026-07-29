@@ -56,11 +56,11 @@ class COMPOSITOR_EXPORT CompositorObserver {
   // Called when a child of the compositor is resizing.
   virtual void OnCompositingChildResizing(Compositor* compositor) {}
 
-#if BUILDFLAG(IS_LINUX) && BUILDFLAG(IS_OZONE_X11)
+#if BUILDFLAG(IS_LINUX) && BUILDFLAG(SUPPORTS_OZONE_X11)
   // Called when a swap with new size is completed.
   virtual void OnCompositingCompleteSwapWithNewSize(ui::Compositor* compositor,
                                                     const gfx::Size& size) {}
-#endif  // BUILDFLAG(IS_LINUX) && BUILDFLAG(IS_OZONE_X11)
+#endif  // BUILDFLAG(IS_LINUX) && BUILDFLAG(SUPPORTS_OZONE_X11)
 
   // Called at the top of the compositor's destructor, to give observers a
   // chance to remove themselves.
@@ -68,6 +68,7 @@ class COMPOSITOR_EXPORT CompositorObserver {
 
   // Called when the presentation feedback was received from the viz.
   virtual void OnDidPresentCompositorFrame(
+      Compositor* compositor,
       uint32_t frame_token,
       const gfx::PresentationFeedback& feedback) {}
 

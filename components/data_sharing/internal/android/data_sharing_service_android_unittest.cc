@@ -6,8 +6,8 @@
 
 #include "base/android/jni_android.h"
 #include "base/files/scoped_temp_dir.h"
-#include "base/functional/callback_forward.h"
 #include "base/run_loop.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/test/task_environment.h"
 #include "components/data_sharing/internal/data_sharing_service_impl.h"
 #include "components/data_sharing/public/data_sharing_service.h"
@@ -71,7 +71,8 @@ class TestJavaObserver {
 };
 
 // Implements TestServiceObserver.onObserverNotify static method.
-void JNI_TestServiceObserver_OnObserverNotify(JNIEnv* env, jlong observer_ptr) {
+static void JNI_TestServiceObserver_OnObserverNotify(JNIEnv* env,
+                                                     int64_t observer_ptr) {
   reinterpret_cast<TestJavaObserver*>(observer_ptr)->OnObserverNotify();
 }
 
@@ -282,3 +283,5 @@ TEST_F(DataSharingServiceAndroidTest, GroupChangeObservation) {
 }
 
 }  // namespace data_sharing
+
+DEFINE_JNI(TestServiceObserver)

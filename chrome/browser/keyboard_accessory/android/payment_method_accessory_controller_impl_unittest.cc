@@ -4,9 +4,12 @@
 
 #include "chrome/browser/keyboard_accessory/android/payment_method_accessory_controller_impl.h"
 
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/mock_callback.h"
+#include "base/test/scoped_feature_list.h"
 #include "chrome/browser/keyboard_accessory/android/accessory_controller.h"
+#include "chrome/browser/keyboard_accessory/android/accessory_sheet_data.h"
 #include "chrome/browser/keyboard_accessory/test_utils/android/mock_manual_filling_controller.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "chrome/test/base/testing_profile.h"
@@ -18,7 +21,12 @@
 #include "components/autofill/content/common/mojom/autofill_agent.mojom.h"
 #include "components/autofill/core/browser/data_manager/payments/test_payments_data_manager.h"
 #include "components/autofill/core/browser/data_manager/test_personal_data_manager.h"
+#include "components/autofill/core/browser/data_manager/valuables/test_valuables_data_manager.h"
+#include "components/autofill/core/browser/data_manager/valuables/valuables_data_manager_test_api.h"
+#include "components/autofill/core/browser/data_model/payments/bnpl_issuer.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
+#include "components/autofill/core/browser/data_model/valuables/loyalty_card.h"
+#include "components/autofill/core/browser/foundations/autofill_manager.h"
 #include "components/autofill/core/browser/foundations/browser_autofill_manager.h"
 #include "components/autofill/core/browser/foundations/browser_autofill_manager_test_api.h"
 #include "components/autofill/core/browser/foundations/test_autofill_client.h"
@@ -27,19 +35,26 @@
 #include "components/autofill/core/browser/payments/constants.h"
 #include "components/autofill/core/browser/payments/iban_access_manager.h"
 #include "components/autofill/core/browser/payments/payments_autofill_client.h"
+#include "components/autofill/core/browser/test_utils/autofill_form_test_utils.h"
 #include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/valuables_data_test_utils.h"
+#include "components/autofill/core/common/aliases.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_payments_features.h"
+#include "components/autofill/core/common/autofill_test_utils.h"
 #include "components/autofill/core/common/credit_card_network_identifiers.h"
 #include "components/autofill/core/common/form_data.h"
+#include "components/autofill/core/common/mojom/autofill_types.mojom.h"
 #include "components/autofill/core/common/unique_ids.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/sync/test/test_sync_service.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "url/gurl.h"
 
 using testing::_;
+using testing::InSequence;
 using testing::SaveArg;
 using IsFillingSourceAvailable = AccessoryController::IsFillingSourceAvailable;
 
@@ -48,8 +63,7 @@ namespace {
 
 AccessorySheetData::Builder PaymentMethodAccessorySheetDataBuilder() {
   return AccessorySheetData::Builder(AccessoryTabType::CREDIT_CARDS,
-                                     /*user_info_title=*/std::u16string(),
-                                     /*plus_address_title=*/std::u16string())
+                                     /*user_info_title=*/std::u16string())
       .AppendFooterCommand(
           l10n_util::GetStringUTF16(
               IDS_MANUAL_FILLING_CREDIT_CARD_SHEET_ALL_ADDRESSES_LINK),
@@ -93,10 +107,10 @@ class PaymentMethodAccessoryControllerTestBase
 
     test_api(autofill_manager())
         .set_credit_card_access_manager(
-            std::make_unique<TestAccessManager>(&autofill_manager(), nullptr));
+            std::make_unique<TestAccessManager>(&autofill_manager()));
     PaymentMethodAccessoryControllerImpl::CreateForWebContentsForTesting(
         web_contents(), mock_mf_controller_.AsWeakPtr(), &paydm(),
-        &autofill_manager(), &autofill_driver());
+        &valuables_data_manager(), &autofill_manager(), &autofill_driver());
     controller()->RegisterFillingSourceObserver(filling_source_observer_.Get());
     paydm().SetPrefService(profile()->GetPrefs());
     paydm().SetSyncServiceForTest(&sync_service_);
@@ -112,7 +126,7 @@ class PaymentMethodAccessoryControllerTestBase
 
   const GURL& url() const { return url_; }
 
-  PaymentMethodAccessoryController* controller() {
+  PaymentMethodAccessoryControllerImpl* controller() {
     return PaymentMethodAccessoryControllerImpl::FromWebContents(web_contents());
   }
 
@@ -137,11 +151,17 @@ class PaymentMethodAccessoryControllerTestBase
 
   TestPaymentsDataManager& paydm() { return paydm_; }
 
+  TestValuablesDataManager& valuables_data_manager() {
+    return valuables_data_manager_;
+  }
+
   base::MockCallback<AccessoryController::FillingSourceObserver>
       filling_source_observer_;
+
  private:
   syncer::TestSyncService sync_service_;
   TestPaymentsDataManager paydm_;
+  TestValuablesDataManager valuables_data_manager_;
   testing::NiceMock<MockManualFillingController> mock_mf_controller_;
   GURL url_;
   TestAutofillClientInjector<TestContentAutofillClient>
@@ -172,13 +192,15 @@ TEST_F(PaymentMethodAccessoryControllerTest, RefreshSuggestions) {
       controller()->GetSheetData(),
       PaymentMethodAccessorySheetDataBuilder()
           .AddUserInfo(kVisaCard)
-          .AppendField(AccessorySuggestionType::kCreditCardNumber,
-                       card.ObfuscatedNumberWithVisibleLastFourDigits(),
-                       /*text_to_fill=*/std::u16string(),
-                       card.ObfuscatedNumberWithVisibleLastFourDigits(),
-                       card.guid(),
-                       /*is_obfuscated=*/false,
-                       /*selectable=*/true)
+          .AppendField(
+              AccessorySuggestionType::kCreditCardNumber,
+              card.ObfuscatedNumberWithVisibleLastFourDigits(),
+              /*text_to_fill=*/std::u16string(),
+              /*a11y_description=*/
+              card.ObfuscatedNumberWithVisibleLastFourDigits() + u" Visa",
+              card.guid(),
+              /*is_obfuscated=*/false,
+              /*selectable=*/true)
           .AppendSimpleField(
               AccessorySuggestionType::kCreditCardExpirationMonth,
               card.Expiration2DigitMonthAsString())
@@ -216,13 +238,15 @@ TEST_F(PaymentMethodAccessoryControllerTest_Insecure,
           .SetWarning(l10n_util::GetStringUTF16(
               IDS_AUTOFILL_WARNING_INSECURE_CONNECTION))
           .AddUserInfo(kVisaCard)
-          .AppendField(AccessorySuggestionType::kCreditCardNumber,
-                       card.ObfuscatedNumberWithVisibleLastFourDigits(),
-                       /*text_to_fill=*/std::u16string(),
-                       card.ObfuscatedNumberWithVisibleLastFourDigits(),
-                       card.guid(),
-                       /*is_obfuscated=*/false,
-                       /*selectable=*/false)
+          .AppendField(
+              AccessorySuggestionType::kCreditCardNumber,
+              card.ObfuscatedNumberWithVisibleLastFourDigits(),
+              /*text_to_fill=*/std::u16string(),
+              /*a11y_description=*/
+              card.ObfuscatedNumberWithVisibleLastFourDigits() + u" Visa",
+              card.guid(),
+              /*is_obfuscated=*/false,
+              /*selectable=*/false)
           .AppendField(AccessorySuggestionType::kCreditCardExpirationMonth,
                        card.Expiration2DigitMonthAsString(),
                        card.Expiration2DigitMonthAsString(),
@@ -326,7 +350,7 @@ TEST_F(PaymentMethodAccessoryControllerTest,
   // cache.
   unmasked_card.set_record_type(CreditCard::RecordType::kVirtualCard);
   std::u16string cvc = u"123";
-  autofill_manager().GetCreditCardAccessManager().CacheUnmaskedCardInfo(
+  autofill_manager().GetCreditCardAccessManager()->CacheUnmaskedCardInfo(
       unmasked_card, cvc);
 
   EXPECT_CALL(filling_source_observer_,
@@ -347,7 +371,7 @@ TEST_F(PaymentMethodAccessoryControllerTest,
               /*suggestion_type=*/AccessorySuggestionType::kCreditCardNumber,
               /*display_text=*/card_number_for_display,
               /*text_to_fill=*/card_number_for_fill,
-              /*a11y_description=*/card_number_for_fill,
+              /*a11y_description=*/card_number_for_fill + u" Visa",
               /*id=*/std::string(),
               /*is_obfuscated=*/false,
               /*selectable=*/true)
@@ -364,7 +388,9 @@ TEST_F(PaymentMethodAccessoryControllerTest,
               AccessorySuggestionType::kCreditCardNumber,
               unmasked_card.ObfuscatedNumberWithVisibleLastFourDigits(),
               /*text_to_fill=*/std::u16string(),
-              unmasked_card.ObfuscatedNumberWithVisibleLastFourDigits(),
+              /*a11y_description=*/
+              unmasked_card.ObfuscatedNumberWithVisibleLastFourDigits() +
+                  u" Visa",
               unmasked_card.guid(),
               /*is_obfuscated=*/false,
               /*selectable=*/true)
@@ -404,7 +430,8 @@ TEST_F(
           .AddUserInfo(kMasterCard)
           .AppendField(AccessorySuggestionType::kCreditCardNumber,
                        virtual_card_label, /*text_to_fill*/ std::u16string(),
-                       virtual_card_label, masked_card.guid() + "_vcn",
+                       /*a11y_description=*/virtual_card_label + u" Mastercard",
+                       masked_card.guid() + "_vcn",
                        /*is_obfuscated=*/false,
                        /*selectable=*/true)
           .AppendSimpleField(
@@ -420,7 +447,9 @@ TEST_F(
           .AppendField(AccessorySuggestionType::kCreditCardNumber,
                        masked_card.ObfuscatedNumberWithVisibleLastFourDigits(),
                        /*text_to_fill*/ std::u16string(),
-                       masked_card.ObfuscatedNumberWithVisibleLastFourDigits(),
+                       /*a11y_description=*/
+                       masked_card.ObfuscatedNumberWithVisibleLastFourDigits() +
+                           u" Mastercard",
                        masked_card.guid(),
                        /*is_obfuscated=*/false,
                        /*selectable=*/true)
@@ -448,7 +477,7 @@ TEST_F(PaymentMethodAccessoryControllerTest,
   // Update the record type and add it to the unmasked cards cache.
   unmasked_card.set_record_type(CreditCard::RecordType::kFullServerCard);
   std::u16string cvc = u"123";
-  autofill_manager().GetCreditCardAccessManager().CacheUnmaskedCardInfo(
+  autofill_manager().GetCreditCardAccessManager()->CacheUnmaskedCardInfo(
       unmasked_card, cvc);
 
   EXPECT_CALL(filling_source_observer_,
@@ -468,7 +497,7 @@ TEST_F(PaymentMethodAccessoryControllerTest,
               /*suggestion_type=*/AccessorySuggestionType::kCreditCardNumber,
               /*display_text=*/card_number_for_display,
               /*text_to_fill=*/card_number_for_fill,
-              /*a11y_description=*/card_number_for_fill,
+              /*a11y_description=*/card_number_for_fill + u" Visa",
               /*id=*/std::string(),
               /*is_obfuscated=*/false,
               /*selectable=*/true)
@@ -528,8 +557,7 @@ TEST_F(PaymentMethodAccessoryControllerTest,
   paydm().AddAutofillOfferData(promo_code_origin_mismatch);
   paydm().AddAutofillOfferData(promo_code_expired);
   AccessorySheetData result(autofill::AccessoryTabType::CREDIT_CARDS,
-                            /*user_info_title=*/std::u16string(),
-                            /*plus_address_title=*/std::u16string());
+                            /*user_info_title=*/std::u16string());
 
   EXPECT_CALL(filling_source_observer_,
               Run(controller(), IsFillingSourceAvailable(true)));
@@ -541,13 +569,15 @@ TEST_F(PaymentMethodAccessoryControllerTest,
       controller()->GetSheetData(),
       PaymentMethodAccessorySheetDataBuilder()
           .AddUserInfo(kVisaCard)
-          .AppendField(AccessorySuggestionType::kCreditCardNumber,
-                       card.ObfuscatedNumberWithVisibleLastFourDigits(),
-                       /*text_to_fill=*/std::u16string(),
-                       card.ObfuscatedNumberWithVisibleLastFourDigits(),
-                       card.guid(),
-                       /*is_obfuscated=*/false,
-                       /*selectable=*/true)
+          .AppendField(
+              AccessorySuggestionType::kCreditCardNumber,
+              card.ObfuscatedNumberWithVisibleLastFourDigits(),
+              /*text_to_fill=*/std::u16string(),
+              /*a11y_description=*/
+              card.ObfuscatedNumberWithVisibleLastFourDigits() + u" Visa",
+              card.guid(),
+              /*is_obfuscated=*/false,
+              /*selectable=*/true)
           .AppendSimpleField(
               AccessorySuggestionType::kCreditCardExpirationMonth,
               card.Expiration2DigitMonthAsString())
@@ -572,7 +602,7 @@ TEST_F(PaymentMethodAccessoryControllerTest,
 
   Iban iban;
   iban.set_value(std::u16string(test::kIbanValue16));
-  paydm().AddAsLocalIban(iban);
+  std::string guid = paydm().AddAsLocalIban(iban);
 
   EXPECT_CALL(filling_source_observer_,
               Run(controller(), IsFillingSourceAvailable(true)));
@@ -584,13 +614,15 @@ TEST_F(PaymentMethodAccessoryControllerTest,
       controller()->GetSheetData(),
       PaymentMethodAccessorySheetDataBuilder()
           .AddUserInfo(kVisaCard)
-          .AppendField(AccessorySuggestionType::kCreditCardNumber,
-                       card.ObfuscatedNumberWithVisibleLastFourDigits(),
-                       /*text_to_fill=*/std::u16string(),
-                       card.ObfuscatedNumberWithVisibleLastFourDigits(),
-                       card.guid(),
-                       /*is_obfuscated=*/false,
-                       /*selectable=*/true)
+          .AppendField(
+              AccessorySuggestionType::kCreditCardNumber,
+              card.ObfuscatedNumberWithVisibleLastFourDigits(),
+              /*text_to_fill=*/std::u16string(),
+              /*a11y_description=*/
+              card.ObfuscatedNumberWithVisibleLastFourDigits() + u" Visa",
+              card.guid(),
+              /*is_obfuscated=*/false,
+              /*selectable=*/true)
           .AppendSimpleField(
               AccessorySuggestionType::kCreditCardExpirationMonth,
               card.Expiration2DigitMonthAsString())
@@ -601,7 +633,7 @@ TEST_F(PaymentMethodAccessoryControllerTest,
           .AppendSimpleField(AccessorySuggestionType::kCreditCardCvc,
                              std::u16string())
           .AddIbanInfo(iban.GetIdentifierStringForAutofillDisplay(),
-                       iban.value(), /*id=*/"")
+                       iban.value(), /*id=*/guid)
           .Build());
 }
 
@@ -619,6 +651,7 @@ TEST_F(PaymentMethodAccessoryControllerTest, FetchLocalIban) {
           .SetSuggestionType(AccessorySuggestionType::kIban)
           .SetDisplayText(iban.GetIdentifierStringForAutofillDisplay())
           .SetTextToFill(iban.value())
+          .SetId(guid)
           .SetSelectable(true)
           .Build();
 
@@ -626,6 +659,13 @@ TEST_F(PaymentMethodAccessoryControllerTest, FetchLocalIban) {
   ASSERT_TRUE(rfh);
   FieldGlobalId field_id{.frame_token = LocalFrameToken(*rfh->GetFrameToken()),
                          .renderer_id = FieldRendererId(123)};
+
+  EXPECT_CALL(iban_access_manager(), FetchValue(_, _))
+      .WillOnce([&iban](const Suggestion::Payload& payload,
+                        IbanAccessManager::OnIbanFetchedCallback callback) {
+        std::move(callback).Run(iban.value());
+        return IsAsync(false);
+      });
 
   EXPECT_CALL(autofill_driver(),
               ApplyFieldAction(mojom::FieldActionType::kReplaceAll,
@@ -660,6 +700,179 @@ TEST_F(PaymentMethodAccessoryControllerTest, FetchServerIban) {
   EXPECT_CALL(iban_access_manager(), FetchValue);
 
   controller()->OnFillingTriggered(field_id, field);
+}
+
+TEST_F(PaymentMethodAccessoryControllerTest,
+       RefreshSuggestionsWithLoyaltyCards) {
+  LoyaltyCard loyalty_card = test::CreateLoyaltyCard();
+  test_api(valuables_data_manager()).AddLoyaltyCard(loyalty_card);
+
+  EXPECT_CALL(filling_source_observer_,
+              Run(controller(), IsFillingSourceAvailable(true)));
+  ASSERT_TRUE(controller());
+  controller()->RefreshSuggestions();
+
+  EXPECT_EQ(
+      controller()->GetSheetData(),
+      AccessorySheetData::Builder(
+          AccessoryTabType::CREDIT_CARDS,
+          /*user_info_title=*/
+          l10n_util::GetStringUTF16(
+              IDS_MANUAL_FILLING_CREDIT_CARD_SHEET_EMPTY_MESSAGE))
+          .AddLoyaltyCardInfo(
+              loyalty_card.merchant_name(), loyalty_card.program_logo(),
+              base::UTF8ToUTF16(loyalty_card.loyalty_card_number()))
+          .AppendFooterCommand(
+              l10n_util::GetStringUTF16(
+                  IDS_MANUAL_FILLING_CREDIT_CARD_SHEET_ALL_ADDRESSES_LINK),
+              AccessoryAction::MANAGE_CREDIT_CARDS)
+          .AppendFooterCommand(
+              l10n_util::GetStringUTF16(
+                  IDS_MANUAL_FILLING_CREDIT_CARD_SHEET_ALL_LOYALTY_CARDS_LINK),
+              AccessoryAction::MANAGE_LOYALTY_CARDS)
+          .Build());
+}
+
+TEST_F(PaymentMethodAccessoryControllerTest, LoyaltyCardDataIsChangedBySync) {
+  {
+    InSequence seq;
+    // First, there're no loyalty cards, so the filling source is not available.
+    EXPECT_CALL(filling_source_observer_,
+                Run(controller(), IsFillingSourceAvailable(false)));
+    // The filling source should become available after a loyalty card is added.
+    EXPECT_CALL(filling_source_observer_,
+                Run(controller(), IsFillingSourceAvailable(true)));
+  }
+
+  ASSERT_TRUE(controller());
+  controller()->RefreshSuggestions();
+  EXPECT_EQ(
+      controller()->GetSheetData(),
+      AccessorySheetData::Builder(
+          AccessoryTabType::CREDIT_CARDS,
+          /*user_info_title=*/
+          l10n_util::GetStringUTF16(
+              IDS_MANUAL_FILLING_CREDIT_CARD_SHEET_EMPTY_MESSAGE))
+          .AppendFooterCommand(
+              l10n_util::GetStringUTF16(
+                  IDS_MANUAL_FILLING_CREDIT_CARD_SHEET_ALL_ADDRESSES_LINK),
+              AccessoryAction::MANAGE_CREDIT_CARDS)
+          .Build());
+
+  LoyaltyCard loyalty_card = test::CreateLoyaltyCard();
+  test_api(valuables_data_manager()).AddLoyaltyCard(loyalty_card);
+  test_api(valuables_data_manager()).NotifyObservers();
+
+  EXPECT_EQ(
+      controller()->GetSheetData(),
+      AccessorySheetData::Builder(
+          AccessoryTabType::CREDIT_CARDS,
+          /*user_info_title=*/
+          l10n_util::GetStringUTF16(
+              IDS_MANUAL_FILLING_CREDIT_CARD_SHEET_EMPTY_MESSAGE))
+          .AddLoyaltyCardInfo(
+              loyalty_card.merchant_name(), loyalty_card.program_logo(),
+              base::UTF8ToUTF16(loyalty_card.loyalty_card_number()))
+          .AppendFooterCommand(
+              l10n_util::GetStringUTF16(
+                  IDS_MANUAL_FILLING_CREDIT_CARD_SHEET_ALL_ADDRESSES_LINK),
+              AccessoryAction::MANAGE_CREDIT_CARDS)
+          .AppendFooterCommand(
+              l10n_util::GetStringUTF16(
+                  IDS_MANUAL_FILLING_CREDIT_CARD_SHEET_ALL_LOYALTY_CARDS_LINK),
+              AccessoryAction::MANAGE_LOYALTY_CARDS)
+          .Build());
+}
+
+TEST_F(PaymentMethodAccessoryControllerTest, FillLoyaltyCardNumber) {
+  content::RenderFrameHost* rfh = web_contents()->GetFocusedFrame();
+  ASSERT_TRUE(rfh);
+  FieldGlobalId field_id{.frame_token = LocalFrameToken(*rfh->GetFrameToken()),
+                         .renderer_id = FieldRendererId(123)};
+
+  LoyaltyCard loyalty_card = test::CreateLoyaltyCard();
+  LoyaltyCardInfo loyalty_card_info(
+      loyalty_card.merchant_name(), loyalty_card.program_logo(),
+      base::UTF8ToUTF16(loyalty_card.loyalty_card_number()));
+  EXPECT_CALL(autofill_driver(),
+              ApplyFieldAction(mojom::FieldActionType::kReplaceAll,
+                               mojom::ActionPersistence::kFill, field_id,
+                               loyalty_card_info.value().text_to_fill()));
+
+  controller()->OnFillingTriggered(field_id, loyalty_card_info.value());
+}
+
+class PaymentMethodAccessoryControllerTestForBnpl
+    : public PaymentMethodAccessoryControllerTestBase {
+ public:
+  PaymentMethodAccessoryControllerTestForBnpl()
+      : PaymentMethodAccessoryControllerTestBase(GURL("https://example.com")) {}
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_{
+      features::kAutofillTouchToFillShowManualFillForVcnFix};
+};
+
+TEST_F(PaymentMethodAccessoryControllerTestForBnpl,
+       RefreshSuggestionsWithCachedBnplCard) {
+  test::AutofillUnitTestEnvironment autofill_test_environment;
+  CreditCard bnpl_card = test::GetVirtualCard();
+  bnpl_card.set_issuer_id(kBnplAffirmIssuerId);
+  bnpl_card.SetNickname(BnplIssuerIdToDisplayName(
+      ConvertToBnplIssuerIdEnum(bnpl_card.issuer_id())));
+  bnpl_card.set_is_bnpl_card(true);
+  bnpl_card.set_guid("bnpl-card-guid");
+  bnpl_card.set_virtual_card_enrollment_state(
+      CreditCard::VirtualCardEnrollmentState::kUnspecified);
+
+  FormData form = test::GetFormData({
+      .fields = {{.role = CREDIT_CARD_NUMBER}},
+      .url = "https://example.com/",
+  });
+  autofill_manager().OnAskForValuesToFillTest(
+      form, form.fields().front().global_id());
+  autofill_manager().FillOrPreviewForm(
+      mojom::ActionPersistence::kFill, form.global_id(),
+      form.fields().front().global_id(), FillingPayload(&bnpl_card),
+      AutofillTriggerSource::kKeyboardAccessoryOrBottomSheet,
+      /*blocked_fields=*/{});
+
+  std::u16string cvc = u"123";
+  autofill_manager().GetCreditCardAccessManager()->CacheUnmaskedCardInfo(
+      bnpl_card, cvc);
+  paydm().AddCreditCard(bnpl_card);
+
+  EXPECT_CALL(filling_source_observer_,
+              Run(controller(), IsFillingSourceAvailable(true)));
+  ASSERT_TRUE(controller());
+  controller()->RefreshSuggestions();
+
+  std::u16string card_number_for_display = bnpl_card.FullDigitsForDisplay();
+  std::u16string card_number_for_fill =
+      bnpl_card.GetRawInfo(CREDIT_CARD_NUMBER);
+  std::u16string unmasked_a11y = card_number_for_fill + u" " + u"Affirm";
+
+  EXPECT_EQ(
+      controller()->GetSheetData(),
+      PaymentMethodAccessorySheetDataBuilder()
+          .AddUserInfo(bnpl_card.issuer_id())
+          .AppendField(
+              /*suggestion_type=*/AccessorySuggestionType::kCreditCardNumber,
+              /*display_text=*/card_number_for_display,
+              /*text_to_fill=*/card_number_for_fill,
+              /*a11y_description=*/unmasked_a11y,
+              /*id=*/std::string(),
+              /*is_obfuscated=*/false,
+              /*selectable=*/true)
+          .AppendSimpleField(
+              AccessorySuggestionType::kCreditCardExpirationMonth,
+              bnpl_card.Expiration2DigitMonthAsString())
+          .AppendSimpleField(AccessorySuggestionType::kCreditCardExpirationYear,
+                             bnpl_card.Expiration4DigitYearAsString())
+          .AppendSimpleField(AccessorySuggestionType::kCreditCardNameFull,
+                             bnpl_card.GetRawInfo(CREDIT_CARD_NAME_FULL))
+          .AppendSimpleField(AccessorySuggestionType::kCreditCardCvc, cvc)
+          .Build());
 }
 
 }  // namespace autofill

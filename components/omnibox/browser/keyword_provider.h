@@ -19,6 +19,7 @@
 
 #include "base/compiler_specific.h"
 #include "base/memory/raw_ptr.h"
+#include "components/omnibox/browser/autocomplete_enums.h"
 #include "components/omnibox/browser/autocomplete_input.h"
 #include "components/omnibox/browser/autocomplete_provider.h"
 #include "components/omnibox/browser/keyword_extensions_delegate.h"
@@ -59,9 +60,9 @@ class KeywordProvider : public AutocompleteProvider {
   KeywordProvider(const KeywordProvider&) = delete;
   KeywordProvider& operator=(const KeywordProvider&) = delete;
 
-  // If `text` corresponds to an enabled, substituting keyword, returns that
-  // keyword; returns the empty string otherwise.
-  std::u16string GetKeywordForText(
+  // If `text` corresponds to an eligible (e.g. enabled, substituting, etc)
+  // `TemplateURL`, returns that `TemplateURL`; returns nullptr otherwise.
+  const TemplateURL* GetTemplateUrlForText(
       const std::u16string& text,
       TemplateURLService* template_url_service) const;
 
@@ -73,22 +74,24 @@ class KeywordProvider : public AutocompleteProvider {
   // AutocompleteProvider:
   void DeleteMatch(const AutocompleteMatch& match) override;
   void Start(const AutocompleteInput& input, bool minimal_changes) override;
-  void Stop(bool clear_cached_results, bool due_to_user_inactivity) override;
-
-  bool done() const { return done_; }
+  void Stop(AutocompleteStopReason stop_reason) override;
 
  private:
   friend class KeywordExtensionsDelegateImpl;
 
   ~KeywordProvider() override;
 
-  // Determines the relevance for some input, given its type, whether the user
-  // typed the complete keyword and whether the user is in
-  // "prefer keyword matches" mode. If |allow_exact_keyword_match| is false,
-  // the relevance for keywords that support replacements is degraded.
+  // Determines the relevance for some input given its:
+  // - type
+  // - whether the user typed the complete keyword
+  // - whether the user is in keyword mode
+  // - whether the keyword supports replacement
+  // If `allow_exact_keyword_match` is false, the relevance for keywords that
+  // support replacements is degraded.
   static int CalculateRelevance(metrics::OmniboxInputType type,
                                 bool complete,
-                                bool prefer_keyword,
+                                bool support_replacement,
+                                bool in_keyword_mode,
                                 bool allow_exact_keyword_match);
 
   // Creates a fully marked-up AutocompleteMatch from the user's input.
@@ -102,10 +105,11 @@ class KeywordProvider : public AutocompleteProvider {
       int relevance,
       bool deletable);
 
-  // Fills in the "destination_url" and "contents" fields of |match| with the
+  // Fills in the `destination_url` and `contents` fields of `match` with the
   // provided user input and keyword data.
-  void FillInURLAndContents(const std::u16string& remaining_input,
-                            const TemplateURL* element,
+  void FillInUrlAndContents(const AutocompleteInput& input,
+                            const std::u16string& remaining_input,
+                            const TemplateURL* turl,
                             AutocompleteMatch* match) const;
 
   TemplateURLService* GetTemplateURLService() const;

@@ -28,13 +28,7 @@ namespace policy {
 
 class SharedDictionaryPolicyTest : public PolicyTest {
  public:
-  SharedDictionaryPolicyTest() {
-    scoped_feature_list_.InitWithFeatures(
-        /*enabled_features=*/
-        {network::features::kCompressionDictionaryTransportBackend,
-         network::features::kCompressionDictionaryTransport},
-        /*disabled_features=*/{});
-  }
+  SharedDictionaryPolicyTest() {}
   ~SharedDictionaryPolicyTest() override = default;
 
   void SetUp() override {
@@ -57,7 +51,7 @@ class SharedDictionaryPolicyTest : public PolicyTest {
     // refresh. So we are using an incognito mode browser for testing the
     // policy.
     Browser* incognito_browser =
-        OpenURLOffTheRecord(browser()->profile(), GURL("about:blank"));
+        OpenURLOffTheRecord(browser()->GetProfile(), GURL("about:blank"));
     ASSERT_TRUE(ui_test_utils::NavigateToURL(
         incognito_browser,
         embedded_test_server()->GetURL("/shared_dictionary/blank.html")));
@@ -89,8 +83,6 @@ class SharedDictionaryPolicyTest : public PolicyTest {
         ->GetSharedDictionaryUsageInfo(result.GetCallback());
     return result.Get();
   }
-
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 IN_PROC_BROWSER_TEST_F(SharedDictionaryPolicyTest,

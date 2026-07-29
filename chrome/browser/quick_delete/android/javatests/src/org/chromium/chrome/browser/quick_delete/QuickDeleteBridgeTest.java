@@ -18,7 +18,7 @@ import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
-import org.chromium.base.test.util.Restriction;
+import org.chromium.base.test.util.DisableIf;
 import org.chromium.chrome.browser.browsing_data.BrowsingDataBridge;
 import org.chromium.chrome.browser.browsing_data.BrowsingDataType;
 import org.chromium.chrome.browser.browsing_data.TimePeriod;
@@ -26,7 +26,12 @@ import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
+import org.chromium.chrome.test.transit.page.WebPageStation;
+import org.chromium.content_public.common.ContentSwitches;
+import org.chromium.net.test.EmbeddedTestServer;
+import org.chromium.ui.base.DeviceFormFactor;
 
 import java.util.List;
 import java.util.concurrent.ExecutionException;
@@ -34,19 +39,24 @@ import java.util.concurrent.TimeoutException;
 
 /** Tests for {@link QuickDeleteBridge}. */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
+@CommandLineFlags.Add({
+    ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE,
+    ContentSwitches.HOST_RESOLVER_RULES + "=MAP * 127.0.0.1",
+    "ignore-certificate-errors"
+})
 @Batch(Batch.PER_CLASS)
 public class QuickDeleteBridgeTest {
-    private static final List<String> URLS =
-            List.of(
-                    "https://www.google.com/",
-                    "https://www.example.com/",
-                    "https://www.google.com/");
-
-    private QuickDeleteBridge mQuickDeleteBridge;
+    private static final List<String> HOSTNAMES =
+            List.of("www.google.com", "www.example.com", "www.google.com");
+    private static final String TEST_PAGE = "/chrome/test/data/android/test.html";
 
     @Rule
-    public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
+    public FreshCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.freshChromeTabbedActivityRule();
+
+    private WebPageStation mPage;
+    private QuickDeleteBridge mQuickDeleteBridge;
+    private DomainVisitsCallback mDomainVisitsCallback;
 
     private static class DomainVisitsCallback implements QuickDeleteBridge.DomainVisitsCallback {
         private final CallbackHelper mCallbackHelper = new CallbackHelper();
@@ -64,12 +74,13 @@ public class QuickDeleteBridgeTest {
 
     @Before
     public void setUp() throws ExecutionException {
-        mActivityTestRule.startMainActivityOnBlankPage();
+        mPage = mActivityTestRule.startOnBlankPage();
+        mDomainVisitsCallback = new DomainVisitsCallback();
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     Profile profile =
                             mActivityTestRule.getActivity().getCurrentTabModel().getProfile();
-                    mQuickDeleteBridge = new QuickDeleteBridge(profile);
+                    mQuickDeleteBridge = new QuickDeleteBridge(profile, mDomainVisitsCallback);
                 });
     }
 
@@ -91,40 +102,35 @@ public class QuickDeleteBridgeTest {
     }
 
     private void visitUrls() {
-        URLS.forEach(url -> mActivityTestRule.loadUrl(url));
+        EmbeddedTestServer server = mActivityTestRule.getEmbeddedTestServerRule().getServer();
+        HOSTNAMES.forEach(
+                host -> mActivityTestRule.loadUrl(server.getURLWithHostName(host, TEST_PAGE)));
     }
 
     @Test
     @MediumTest
-    public void testLastVisitedDomainAndUniqueDomains_WhenNoVisits() throws TimeoutException {
-        DomainVisitsCallback callback = new DomainVisitsCallback();
+    public void testRestartCounterForTimePeriod_WhenNoVisits() throws TimeoutException {
         ThreadUtils.runOnUiThreadBlocking(
-                () ->
-                        mQuickDeleteBridge.getLastVisitedDomainAndUniqueDomainCount(
-                                TimePeriod.LAST_15_MINUTES, callback));
+                () -> mQuickDeleteBridge.restartCounterForTimePeriod(TimePeriod.LAST_15_MINUTES));
 
-        callback.mCallbackHelper.waitForCallback(0);
+        mDomainVisitsCallback.mCallbackHelper.waitForCallback(0);
 
-        assertEquals("", callback.mLastVisitedDomain);
-        assertEquals(0, callback.mDomainCount);
+        assertEquals("", mDomainVisitsCallback.mLastVisitedDomain);
+        assertEquals(0, mDomainVisitsCallback.mDomainCount);
     }
 
     @Test
     @MediumTest
-    @Restriction(Restriction.RESTRICTION_TYPE_INTERNET)
-    public void testLastVisitedDomainAndUniqueDomains_WhenVisitsExistInRange()
-            throws TimeoutException {
+    @DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM) // crbug.com/511288938
+    public void testRestartCounterForTimePeriod_WhenVisitsExistInRange() throws TimeoutException {
         visitUrls();
 
-        DomainVisitsCallback callback = new DomainVisitsCallback();
         ThreadUtils.runOnUiThreadBlocking(
-                () ->
-                        mQuickDeleteBridge.getLastVisitedDomainAndUniqueDomainCount(
-                                TimePeriod.LAST_15_MINUTES, callback));
+                () -> mQuickDeleteBridge.restartCounterForTimePeriod(TimePeriod.LAST_15_MINUTES));
 
-        callback.mCallbackHelper.waitForCallback(0);
+        mDomainVisitsCallback.mCallbackHelper.waitForCallback(0);
 
-        assertEquals("google.com", callback.mLastVisitedDomain);
-        assertEquals(2, callback.mDomainCount);
+        assertEquals("google.com", mDomainVisitsCallback.mLastVisitedDomain);
+        assertEquals(1, mDomainVisitsCallback.mDomainCount);
     }
 }

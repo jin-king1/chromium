@@ -11,9 +11,14 @@
 // Element Colors
 // **************
 
+extern NSString* const kAimInputItemTopBackgroundColor;
+extern NSString* const kAimComposeboxButtonBackgroundColor;
+extern NSString* const kAppBarColor;
+extern NSString* const kAppBarIncognitoColor;
 extern NSString* const kBackgroundColor;
 extern NSString* const kCloseButtonColor;
 extern NSString* const kDisabledTintColor;
+extern NSString* const kDestinationHighlightColor;
 // Background color used in the rounded squares behind favicons.
 extern NSString* const kFaviconBackgroundColor;
 // Primary grouped background color.
@@ -31,15 +36,16 @@ extern NSString* const kMDCSecondaryInkColor;
 extern NSString* const kPlaceholderImageTintColor;
 // Primary background color.
 extern NSString* const kPrimaryBackgroundColor;
+extern NSString* const kInvertedPrimaryBackgroundColor;
 extern NSString* const kScrimBackgroundColor;
 extern NSString* const kDarkerScrimBackgroundColor;
 // Secondary background color.
 extern NSString* const kSecondaryBackgroundColor;
 extern NSString* const kSeparatorColor;
+extern NSString* const kBWGSeparatorColor;
 extern NSString* const kSolidButtonTextColor;
 extern NSString* const kTableViewRowHighlightColor;
 extern NSString* const kTertiaryBackgroundColor;
-extern NSString* const kUpdatedTertiaryBackgroundColor;
 extern NSString* const kTextPrimaryColor;
 // Primary text color when the background color is inverted.
 extern NSString* const kInvertedTextPrimaryColor;
@@ -57,18 +63,25 @@ extern NSString* const kTextfieldPlaceholderColor;
 extern NSString* const kToolbarButtonColor;
 // Color used for a shadow/separator next to a toolbar.
 extern NSString* const kToolbarShadowColor;
+
+// Colors of the omnibox.
+// Background color used in the mini fake omnibox of NTP customization.
+extern NSString* const kMiniFakeOmniboxBackgroundColor;
 // Background color for omnibox keyboard buttons.
 extern NSString* const kOmniboxKeyboardButtonColor;
-// Color for separator between omnibox suggestions.
-extern NSString* const kOmniboxSuggestionRowSeparatorColor;
-// Color for separator between omnibox popout suggestions.
-extern NSString* const kOmniboxPopoutSuggestionRowSeparatorColor;
-// Background colorfor the tab group favicon views.
-extern NSString* const kTabGroupFaviconBackgroundColor;
 // Color for the omnibox popout overlay.
 extern NSString* const kOmniboxPopoutOverlayColor;
+// Color for separator between omnibox popout suggestions.
+extern NSString* const kOmniboxPopoutSuggestionRowSeparatorColor;
+extern NSString* const kOmniboxSuggestionAnswerIconColor;
+extern NSString* const kOmniboxSuggestionIconColor;
+// Color for separator between omnibox suggestions.
+extern NSString* const kOmniboxSuggestionRowSeparatorColor;
+
+// Background colorfor the tab group favicon views.
+extern NSString* const kTabGroupFaviconBackgroundColor;
+
 // Color of the Tab Strip.
-extern NSString* const kTabStripBackgroundColor;
 extern NSString* const kTabStripV3BackgroundColor;
 // Color of the symbol of the Tab Strip new tab button.
 extern NSString* const kTabStripNewTabButtonColor;
@@ -84,6 +97,7 @@ extern NSString* const kWhiteBlackAlpha50Color;
 // Lens overlay consent dialog description text color.
 extern NSString* const kLensOverlayConsentDialogDescriptionColor;
 extern NSString* const kLensOverlayConsentDialogAnimationPlayerButtonColor;
+
 // ***************
 // Standard Colors
 // ***************
@@ -107,9 +121,11 @@ extern NSString* const kBlue400Color;
 extern NSString* const kBlue500Color;
 extern NSString* const kBlue600Color;
 extern NSString* const kBlue700Color;
+extern NSString* const kBlue900Color;
 // Static blue palette (same color for light and dark modes).
 extern NSString* const kStaticBlueColor;
 extern NSString* const kStaticBlue400Color;
+extern NSString* const kStaticBlue600Color;
 
 // Standard green color.
 extern NSString* const kGreenColor;
@@ -172,8 +188,11 @@ extern NSString* const kGrey700Color;
 extern NSString* const kGrey800Color;
 extern NSString* const kGrey900Color;
 // Static Grey palette (same color for light and dark modes).
+extern NSString* const kStaticGrey50Color;
 extern NSString* const kStaticGrey300Color;
+extern NSString* const kStaticGrey400Color;
 extern NSString* const kStaticGrey600Color;
+extern NSString* const kStaticGrey700Color;
 extern NSString* const kStaticGrey900Color;
 
 // **********************

@@ -93,8 +93,9 @@ class SavableResourcesTest : public ContentBrowserTest {
   }
 };
 
-// Flaky on Linux MSan. See crbug.com/1423060.
-#if (BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)) && defined(MEMORY_SANITIZER)
+// Flaky on Linux and Windows Asan/MSan. See crbug.com/40897271.
+#if (BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)) && \
+    (defined(MEMORY_SANITIZER) || defined(ADDRESS_SANITIZER))
 #define MAYBE_GetSavableResourceLinksWithPageHasValidStyleLink \
   DISABLED_GetSavableResourceLinksWithPageHasValidStyleLink
 #else
@@ -117,8 +118,9 @@ IN_PROC_BROWSER_TEST_F(SavableResourcesTest,
 
 // Test function GetAllSavableResourceLinksForCurrentPage with a web page
 // which has valid savable resource links.
-// Flaky on Linux MSan. See crbug.com/1423060.
-#if BUILDFLAG(IS_LINUX) && defined(MEMORY_SANITIZER)
+// Flaky on Linux and Windows ASan/MSan. See crbug.com/40897271.
+#if (BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)) && \
+    (defined(MEMORY_SANITIZER) || defined(ADDRESS_SANITIZER))
 #define MAYBE_GetSavableResourceLinksWithPageHasValidLinks \
   DISABLED_GetSavableResourceLinksWithPageHasValidLinks
 #else

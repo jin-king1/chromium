@@ -4,24 +4,38 @@
 
 package org.chromium.chrome.browser.native_page;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+import static org.chromium.chrome.browser.url_constants.UrlOverrideUtils.isBookmarksPageOverrideEnabled;
+import static org.chromium.chrome.browser.url_constants.UrlOverrideUtils.isHistoryPageOverrideEnabled;
+import static org.chromium.chrome.browser.url_constants.UrlOverrideUtils.isIncognitoBookmarksPageOverrideEnabled;
+import static org.chromium.chrome.browser.url_constants.UrlOverrideUtils.isIncognitoNtpOverrideEnabled;
+import static org.chromium.chrome.browser.url_constants.UrlOverrideUtils.isNtpOverrideEnabled;
+
 import android.app.Activity;
 import android.content.Context;
 import android.graphics.Rect;
+import android.view.View;
 
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
+import androidx.fragment.app.FragmentActivity;
 
-import org.chromium.base.jank_tracker.JankTracker;
-import org.chromium.base.supplier.DestroyableObservableSupplier;
-import org.chromium.base.supplier.ObservableSupplier;
+import org.chromium.base.lifetime.Destroyable;
+import org.chromium.base.metrics.RecordUserAction;
+import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.base.supplier.NonNullObservableSupplier;
 import org.chromium.base.supplier.OneshotSupplier;
-import org.chromium.base.supplier.Supplier;
+import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
+import org.chromium.chrome.browser.RecentlyClosedEntriesManager;
 import org.chromium.chrome.browser.app.download.home.DownloadPage;
+import org.chromium.chrome.browser.back_press.BackPressManager;
 import org.chromium.chrome.browser.bookmarks.BookmarkPage;
-import org.chromium.chrome.browser.browser_controls.BrowserControlsMarginSupplier;
+import org.chromium.chrome.browser.bricks.BricksPage;
+import org.chromium.chrome.browser.browser_controls.BrowserControlsMarginAdapter;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.fullscreen.BrowserControlsManager;
 import org.chromium.chrome.browser.history.HistoryManagerUtils;
 import org.chromium.chrome.browser.history.HistoryPage;
@@ -31,91 +45,118 @@ import org.chromium.chrome.browser.management.ManagementPage;
 import org.chromium.chrome.browser.metrics.StartupMetricsTracker;
 import org.chromium.chrome.browser.ntp.IncognitoNewTabPage;
 import org.chromium.chrome.browser.ntp.NewTabPage;
-import org.chromium.chrome.browser.ntp.NewTabPageUma;
+import org.chromium.chrome.browser.ntp.NewTabPageCreationTracker;
 import org.chromium.chrome.browser.ntp.RecentTabsManager;
 import org.chromium.chrome.browser.ntp.RecentTabsPage;
+import org.chromium.chrome.browser.pdf.PdfFragmentViewTrackerImpl;
 import org.chromium.chrome.browser.pdf.PdfInfo;
 import org.chromium.chrome.browser.pdf.PdfPage;
+import org.chromium.chrome.browser.printing.PrintHelper;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.settings.SettingsPage;
+import org.chromium.chrome.browser.settings.SettingsPageFragmentDelegateImpl;
 import org.chromium.chrome.browser.share.ShareDelegate;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabLaunchType;
-import org.chromium.chrome.browser.tab_ui.TabContentManager;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tasks.HomeSurfaceTracker;
 import org.chromium.chrome.browser.toolbar.top.Toolbar;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
+import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeControllerFactory;
+import org.chromium.chrome.browser.ui.edge_to_edge.TopInsetProvider;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.native_page.NativePage;
 import org.chromium.chrome.browser.ui.native_page.NativePage.NativePageType;
 import org.chromium.chrome.browser.ui.native_page.NativePageHost;
+import org.chromium.chrome.browser.ui.side_ui.SideUiStateProvider;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
+import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.content_public.browser.LoadUrlParams;
+import org.chromium.ui.base.ActivityResultTracker;
 import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.base.WindowAndroid;
+import org.chromium.ui.edge_to_edge.EdgeToEdgePadAdjuster;
+import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.util.ColorUtils;
+import org.chromium.url.GURL;
+
+import java.util.function.Supplier;
 
 /**
  * Creates NativePage objects to show chrome-native:// URLs using the native Android view system.
  */
+@NullMarked
 public class NativePageFactory {
     private final Activity mActivity;
     private final BottomSheetController mBottomSheetController;
     private final BrowserControlsManager mBrowserControlsManager;
-    private final Supplier<Tab> mCurrentTabSupplier;
+    private final Supplier<@Nullable Tab> mCurrentTabSupplier;
+    private final Supplier<ModalDialogManager> mModalDialogManagerSupplier;
     private final Supplier<SnackbarManager> mSnackbarManagerSupplier;
     private final ActivityLifecycleDispatcher mLifecycleDispatcher;
     private final TabModelSelector mTabModelSelector;
-    private final Supplier<ShareDelegate> mShareDelegateSupplier;
+    private final Supplier<@Nullable ShareDelegate> mShareDelegateSupplier;
     private final WindowAndroid mWindowAndroid;
-    private final JankTracker mJankTracker;
     private final Supplier<Toolbar> mToolbarSupplier;
-    private final HomeSurfaceTracker mHomeSurfaceTracker;
-    private final ObservableSupplier<TabContentManager> mTabContentManagerSupplier;
-    private final ObservableSupplier<Integer> mTabStripHeightSupplier;
+    private final @Nullable HomeSurfaceTracker mHomeSurfaceTracker;
+    private final ActivityResultTracker mActivityResultTracker;
+    private final NonNullObservableSupplier<Integer> mTabStripHeightSupplier;
     private final OneshotSupplier<ModuleRegistry> mModuleRegistrySupplier;
-    private final ObservableSupplier<EdgeToEdgeController> mEdgeToEdgeControllerSupplier;
+    private final MonotonicObservableSupplier<EdgeToEdgeController> mEdgeToEdgeControllerSupplier;
+    private final TopInsetProvider mTopInsetProvider;
+    private final OneshotSupplier<SideUiStateProvider> mSideUiStateProviderSupplier;
     private final StartupMetricsTracker mStartupMetricsTracker;
-    private NewTabPageUma mNewTabPageUma;
+    private @Nullable NewTabPageCreationTracker mNewTabPageCreationTracker;
 
-    private NativePageBuilder mNativePageBuilder;
-    private static NativePage sTestPage;
+    private @Nullable NativePageBuilder mNativePageBuilder;
+    private static @Nullable NativePage sTestPage;
+    private final BackPressManager mBackPressManager;
+    private final RecentlyClosedEntriesManager mRecentlyClosedEntriesManager;
+    private @Nullable PdfFragmentViewTrackerImpl mPdfFragmentViewTracker;
 
     public NativePageFactory(
-            @NonNull Activity activity,
-            @NonNull BottomSheetController sheetController,
-            @NonNull BrowserControlsManager browserControlsManager,
-            @NonNull Supplier<Tab> currentTabSupplier,
-            @NonNull Supplier<SnackbarManager> snackbarManagerSupplier,
-            @NonNull ActivityLifecycleDispatcher lifecycleDispatcher,
-            @NonNull TabModelSelector tabModelSelector,
-            @NonNull Supplier<ShareDelegate> shareDelegateSupplier,
-            @NonNull WindowAndroid windowAndroid,
-            @NonNull JankTracker jankTracker,
-            @NonNull Supplier<Toolbar> toolbarSupplier,
+            Activity activity,
+            BottomSheetController sheetController,
+            BrowserControlsManager browserControlsManager,
+            Supplier<@Nullable Tab> currentTabSupplier,
+            Supplier<ModalDialogManager> modalDialogManagerSupplier,
+            Supplier<SnackbarManager> snackbarManagerSupplier,
+            ActivityLifecycleDispatcher lifecycleDispatcher,
+            TabModelSelector tabModelSelector,
+            Supplier<@Nullable ShareDelegate> shareDelegateSupplier,
+            WindowAndroid windowAndroid,
+            Supplier<Toolbar> toolbarSupplier,
             @Nullable HomeSurfaceTracker homeSurfaceTracker,
-            @Nullable ObservableSupplier<TabContentManager> tabContentManagerSupplier,
-            @NonNull ObservableSupplier<Integer> tabStripHeightSupplier,
-            @NonNull OneshotSupplier<ModuleRegistry> moduleRegistrySupplier,
-            @NonNull ObservableSupplier<EdgeToEdgeController> edgeToEdgeControllerSupplier,
-            @NonNull StartupMetricsTracker startupMetricsTracker) {
+            ActivityResultTracker activityResultTracker,
+            NonNullObservableSupplier<Integer> tabStripHeightSupplier,
+            OneshotSupplier<ModuleRegistry> moduleRegistrySupplier,
+            MonotonicObservableSupplier<EdgeToEdgeController> edgeToEdgeControllerSupplier,
+            TopInsetProvider topInsetProvider,
+            OneshotSupplier<SideUiStateProvider> sideUiStateProviderSupplier,
+            StartupMetricsTracker startupMetricsTracker,
+            BackPressManager backPressManager,
+            RecentlyClosedEntriesManager recentlyClosedEntriesManager) {
         mActivity = activity;
         mBottomSheetController = sheetController;
         mBrowserControlsManager = browserControlsManager;
         mCurrentTabSupplier = currentTabSupplier;
+        mModalDialogManagerSupplier = modalDialogManagerSupplier;
         mSnackbarManagerSupplier = snackbarManagerSupplier;
         mLifecycleDispatcher = lifecycleDispatcher;
         mTabModelSelector = tabModelSelector;
         mShareDelegateSupplier = shareDelegateSupplier;
         mWindowAndroid = windowAndroid;
-        mJankTracker = jankTracker;
         mToolbarSupplier = toolbarSupplier;
         mHomeSurfaceTracker = homeSurfaceTracker;
-        mTabContentManagerSupplier = tabContentManagerSupplier;
+        mActivityResultTracker = activityResultTracker;
         mTabStripHeightSupplier = tabStripHeightSupplier;
         mModuleRegistrySupplier = moduleRegistrySupplier;
         mEdgeToEdgeControllerSupplier = edgeToEdgeControllerSupplier;
+        mTopInsetProvider = topInsetProvider;
+        mSideUiStateProviderSupplier = sideUiStateProviderSupplier;
         mStartupMetricsTracker = startupMetricsTracker;
+        mBackPressManager = backPressManager;
+        mRecentlyClosedEntriesManager = recentlyClosedEntriesManager;
     }
 
     private NativePageBuilder getBuilder() {
@@ -123,98 +164,119 @@ public class NativePageFactory {
             mNativePageBuilder =
                     new NativePageBuilder(
                             mActivity,
-                            this::getNewTabPageUma,
+                            this::getNewTabPageCreationTracker,
                             mBottomSheetController,
                             mBrowserControlsManager,
                             mCurrentTabSupplier,
+                            mModalDialogManagerSupplier,
                             mSnackbarManagerSupplier,
                             mLifecycleDispatcher,
                             mTabModelSelector,
                             mShareDelegateSupplier,
                             mWindowAndroid,
-                            mJankTracker,
                             mToolbarSupplier,
                             mHomeSurfaceTracker,
-                            mTabContentManagerSupplier,
+                            mActivityResultTracker,
                             mTabStripHeightSupplier,
                             mModuleRegistrySupplier,
                             mEdgeToEdgeControllerSupplier,
-                            mStartupMetricsTracker);
+                            mTopInsetProvider,
+                            mSideUiStateProviderSupplier,
+                            mStartupMetricsTracker,
+                            mBackPressManager,
+                            mRecentlyClosedEntriesManager);
         }
         return mNativePageBuilder;
     }
 
-    private NewTabPageUma getNewTabPageUma() {
-        if (mNewTabPageUma == null) {
-            mNewTabPageUma = new NewTabPageUma(mTabModelSelector);
-            mNewTabPageUma.monitorNtpCreation();
+    private NewTabPageCreationTracker getNewTabPageCreationTracker() {
+        if (mNewTabPageCreationTracker == null) {
+            mNewTabPageCreationTracker = new NewTabPageCreationTracker(mTabModelSelector);
+            mNewTabPageCreationTracker.monitorNtpCreation();
         }
-        return mNewTabPageUma;
+        return mNewTabPageCreationTracker;
     }
 
     @VisibleForTesting
     static class NativePageBuilder {
         private final Activity mActivity;
         private final BottomSheetController mBottomSheetController;
-        private final Supplier<NewTabPageUma> mUma;
+        private final Supplier<NewTabPageCreationTracker> mNewTabPageCreationTracker;
         private final BrowserControlsManager mBrowserControlsManager;
-        private final Supplier<Tab> mCurrentTabSupplier;
+        private final Supplier<@Nullable Tab> mCurrentTabSupplier;
+        private final Supplier<ModalDialogManager> mModalDialogManagerSupplier;
         private final Supplier<SnackbarManager> mSnackbarManagerSupplier;
         private final ActivityLifecycleDispatcher mLifecycleDispatcher;
         private final TabModelSelector mTabModelSelector;
-        private final Supplier<ShareDelegate> mShareDelegateSupplier;
+        private final Supplier<@Nullable ShareDelegate> mShareDelegateSupplier;
         private final WindowAndroid mWindowAndroid;
-        private final JankTracker mJankTracker;
         private final Supplier<Toolbar> mToolbarSupplier;
-        private final HomeSurfaceTracker mHomeSurfaceTracker;
-        private final ObservableSupplier<TabContentManager> mTabContentManagerSupplier;
-        private final ObservableSupplier<Integer> mTabStripHeightSupplier;
+        private final @Nullable HomeSurfaceTracker mHomeSurfaceTracker;
+        private final ActivityResultTracker mActivityResultTracker;
+        private final NonNullObservableSupplier<Integer> mTabStripHeightSupplier;
         private final OneshotSupplier<ModuleRegistry> mModuleRegistrySupplier;
-        private final ObservableSupplier<EdgeToEdgeController> mEdgeToEdgeControllerSupplier;
+        private final MonotonicObservableSupplier<EdgeToEdgeController>
+                mEdgeToEdgeControllerSupplier;
+        private final TopInsetProvider mTopInsetProvider;
+        private final OneshotSupplier<SideUiStateProvider> mSideUiStateProviderSupplier;
         private final StartupMetricsTracker mStartupMetricsTracker;
+        private final BackPressManager mBackPressManager;
+        private final RecentlyClosedEntriesManager mRecentlyClosedEntriesManager;
 
         public NativePageBuilder(
                 Activity activity,
-                Supplier<NewTabPageUma> uma,
+                Supplier<NewTabPageCreationTracker> newTabPageCreationTracker,
                 BottomSheetController sheetController,
                 BrowserControlsManager browserControlsManager,
-                Supplier<Tab> currentTabSupplier,
+                Supplier<@Nullable Tab> currentTabSupplier,
+                Supplier<ModalDialogManager> modalDialogManagerSupplier,
                 Supplier<SnackbarManager> snackbarManagerSupplier,
                 ActivityLifecycleDispatcher lifecycleDispatcher,
                 TabModelSelector tabModelSelector,
-                Supplier<ShareDelegate> shareDelegateSupplier,
+                Supplier<@Nullable ShareDelegate> shareDelegateSupplier,
                 WindowAndroid windowAndroid,
-                JankTracker jankTracker,
                 Supplier<Toolbar> toolbarSupplier,
-                HomeSurfaceTracker homeSurfaceTracker,
-                ObservableSupplier<TabContentManager> tabContentManagerSupplier,
-                ObservableSupplier<Integer> tabStripHeightSupplier,
+                @Nullable HomeSurfaceTracker homeSurfaceTracker,
+                ActivityResultTracker activityResultTracker,
+                NonNullObservableSupplier<Integer> tabStripHeightSupplier,
                 OneshotSupplier<ModuleRegistry> moduleRegistrySupplier,
-                ObservableSupplier<EdgeToEdgeController> edgeToEdgeControllerSupplier,
-                StartupMetricsTracker startupMetricsTracker) {
+                MonotonicObservableSupplier<EdgeToEdgeController> edgeToEdgeControllerSupplier,
+                TopInsetProvider topInsetProvider,
+                OneshotSupplier<SideUiStateProvider> sideUiStateProviderSupplier,
+                StartupMetricsTracker startupMetricsTracker,
+                BackPressManager backPressManager,
+                RecentlyClosedEntriesManager recentlyClosedEntriesManager) {
             mActivity = activity;
-            mUma = uma;
+            mNewTabPageCreationTracker = newTabPageCreationTracker;
             mBottomSheetController = sheetController;
             mBrowserControlsManager = browserControlsManager;
             mCurrentTabSupplier = currentTabSupplier;
+            mModalDialogManagerSupplier = modalDialogManagerSupplier;
             mSnackbarManagerSupplier = snackbarManagerSupplier;
             mLifecycleDispatcher = lifecycleDispatcher;
             mTabModelSelector = tabModelSelector;
             mShareDelegateSupplier = shareDelegateSupplier;
             mWindowAndroid = windowAndroid;
-            mJankTracker = jankTracker;
             mToolbarSupplier = toolbarSupplier;
             mHomeSurfaceTracker = homeSurfaceTracker;
-            mTabContentManagerSupplier = tabContentManagerSupplier;
+            mActivityResultTracker = activityResultTracker;
             mTabStripHeightSupplier = tabStripHeightSupplier;
             mModuleRegistrySupplier = moduleRegistrySupplier;
             mEdgeToEdgeControllerSupplier = edgeToEdgeControllerSupplier;
+            mTopInsetProvider = topInsetProvider;
+            mSideUiStateProviderSupplier = sideUiStateProviderSupplier;
             mStartupMetricsTracker = startupMetricsTracker;
+            mBackPressManager = backPressManager;
+            mRecentlyClosedEntriesManager = recentlyClosedEntriesManager;
         }
 
         protected NativePage buildNewTabPage(Tab tab, String url) {
             NativePageHost nativePageHost =
-                    new TabShim(tab, mBrowserControlsManager, mTabModelSelector);
+                    new TabShim(
+                            tab,
+                            mBrowserControlsManager,
+                            mTabModelSelector,
+                            mEdgeToEdgeControllerSupplier);
             if (tab.isIncognito()) {
                 return new IncognitoNewTabPage(
                         mActivity, nativePageHost, tab.getProfile(), mEdgeToEdgeControllerSupplier);
@@ -224,11 +286,12 @@ public class NativePageFactory {
                     mActivity,
                     mBrowserControlsManager,
                     mCurrentTabSupplier,
+                    mModalDialogManagerSupplier.get(),
                     mSnackbarManagerSupplier.get(),
                     mLifecycleDispatcher,
                     mTabModelSelector,
                     DeviceFormFactor.isWindowOnTablet(mWindowAndroid),
-                    mUma.get(),
+                    mNewTabPageCreationTracker.get(),
                     ColorUtils.inNightMode(mActivity),
                     nativePageHost,
                     tab,
@@ -236,22 +299,33 @@ public class NativePageFactory {
                     mBottomSheetController,
                     mShareDelegateSupplier,
                     mWindowAndroid,
-                    mJankTracker,
                     mToolbarSupplier,
                     mHomeSurfaceTracker,
-                    mTabContentManagerSupplier,
+                    mActivityResultTracker,
                     mTabStripHeightSupplier,
                     mModuleRegistrySupplier,
                     mEdgeToEdgeControllerSupplier,
-                    mStartupMetricsTracker);
+                    mTopInsetProvider,
+                    mSideUiStateProviderSupplier,
+                    mStartupMetricsTracker,
+                    mBackPressManager);
         }
 
         protected NativePage buildBookmarksPage(Tab tab) {
             return new BookmarkPage(
+                    mWindowAndroid,
+                    mActivity,
                     mSnackbarManagerSupplier.get(),
+                    () -> mBottomSheetController,
+                    mActivityResultTracker,
                     tab.getProfile(),
-                    new TabShim(tab, mBrowserControlsManager, mTabModelSelector),
-                    mActivity.getComponentName());
+                    new TabShim(
+                            tab,
+                            mBrowserControlsManager,
+                            mTabModelSelector,
+                            mEdgeToEdgeControllerSupplier),
+                    mActivity.getComponentName(),
+                    mBackPressManager);
         }
 
         protected NativePage buildDownloadsPage(Tab tab) {
@@ -261,46 +335,127 @@ public class NativePageFactory {
                     mSnackbarManagerSupplier.get(),
                     mWindowAndroid.getModalDialogManager(),
                     profile.getOtrProfileId(),
-                    new TabShim(tab, mBrowserControlsManager, mTabModelSelector));
+                    new TabShim(
+                            tab,
+                            mBrowserControlsManager,
+                            mTabModelSelector,
+                            mEdgeToEdgeControllerSupplier),
+                    mBackPressManager);
         }
 
         protected NativePage buildHistoryPage(Tab tab, String url) {
             return new HistoryPage(
-                    mActivity,
-                    new TabShim(tab, mBrowserControlsManager, mTabModelSelector),
-                    mSnackbarManagerSupplier.get(),
                     tab.getProfile(),
+                    mWindowAndroid,
+                    mActivity,
+                    new TabShim(
+                            tab,
+                            mBrowserControlsManager,
+                            mTabModelSelector,
+                            mEdgeToEdgeControllerSupplier),
+                    mSnackbarManagerSupplier.get(),
                     mBottomSheetController,
+                    mModalDialogManagerSupplier,
+                    mActivityResultTracker,
                     mCurrentTabSupplier,
-                    url);
+                    url,
+                    mBackPressManager);
         }
 
-        protected NativePage buildRecentTabsPage(Tab tab) {
+        protected NativePage buildRecentTabsPage(Tab tab, String url) {
             RecentTabsManager recentTabsManager =
                     new RecentTabsManager(
                             tab,
-                            mTabModelSelector,
-                            tab.getProfile(),
+                            mWindowAndroid,
                             mActivity,
+                            tab.getProfile(),
+                            mActivityResultTracker,
+                            mBottomSheetController,
+                            mModalDialogManagerSupplier,
+                            mSnackbarManagerSupplier.get(),
                             () ->
                                     HistoryManagerUtils.showHistoryManager(
-                                            mActivity, tab, tab.getProfile()));
+                                            mActivity, tab, tab.getProfile()),
+                            mRecentlyClosedEntriesManager);
+
+            NativePageHost host =
+                    new TabShim(
+                            tab,
+                            mBrowserControlsManager,
+                            mTabModelSelector,
+                            mEdgeToEdgeControllerSupplier);
+            NativePageNavigationDelegate navigationDelegate =
+                    new NativePageNavigationDelegateImpl(
+                            mActivity, tab.getProfile(), host, mTabModelSelector, tab);
+
             return new RecentTabsPage(
                     mActivity,
                     recentTabsManager,
+                    navigationDelegate,
                     mBrowserControlsManager,
                     mTabStripHeightSupplier,
-                    mEdgeToEdgeControllerSupplier);
+                    mEdgeToEdgeControllerSupplier,
+                    url);
         }
 
         protected NativePage buildManagementPage(Tab tab) {
             return new ManagementPage(
-                    new TabShim(tab, mBrowserControlsManager, mTabModelSelector), tab.getProfile());
+                    new TabShim(
+                            tab,
+                            mBrowserControlsManager,
+                            mTabModelSelector,
+                            mEdgeToEdgeControllerSupplier),
+                    tab.getProfile());
         }
 
-        protected NativePage buildPdfPage(Tab tab, String url, PdfInfo pdfInfo) {
+        protected NativePage buildPdfPage(
+                Tab tab,
+                String url,
+                PdfInfo pdfInfo,
+                PdfFragmentViewTrackerImpl pdfFragmentViewTracker) {
             return NativePageFactory.buildPdfPage(
-                    url, tab, pdfInfo, mBrowserControlsManager, mTabModelSelector, mActivity);
+                    url,
+                    tab,
+                    pdfInfo,
+                    mBrowserControlsManager,
+                    mTabModelSelector,
+                    mActivity,
+                    pdfFragmentViewTracker);
+        }
+
+        protected NativePage buildBricksPage(Tab tab, String url) {
+            return new BricksPage(
+                    new TabShim(
+                            tab,
+                            mBrowserControlsManager,
+                            mTabModelSelector,
+                            mEdgeToEdgeControllerSupplier));
+        }
+
+        protected NativePage buildSettingsPage(Tab tab) {
+            assert ChromeFeatureList.isEnabled(ChromeFeatureList.SETTINGS_IN_TAB);
+            // The fragment delegate acts both as a delegate and as a back press handler.
+            var fragmentDelegate =
+                    new SettingsPageFragmentDelegateImpl(
+                            mActivity,
+                            tab.getProfile(),
+                            mWindowAndroid,
+                            mActivityResultTracker,
+                            mSnackbarManagerSupplier.get(),
+                            mBottomSheetController,
+                            mModalDialogManagerSupplier.get(),
+                            tab.getId());
+            return new SettingsPage(
+                    mActivity,
+                    tab.getProfile(),
+                    new TabShim(
+                            tab,
+                            mBrowserControlsManager,
+                            mTabModelSelector,
+                            mEdgeToEdgeControllerSupplier),
+                    /* fragmentDelegate= */ fragmentDelegate,
+                    /* backPressHandler= */ fragmentDelegate,
+                    mBackPressManager);
         }
     }
 
@@ -315,17 +470,30 @@ public class NativePageFactory {
      * @param pdfInfo Information of the pdf, or null if there is no associated pdf download.
      * @return A NativePage showing the specified url or null.
      */
-    public NativePage createNativePage(
-            String url, NativePage candidatePage, Tab tab, PdfInfo pdfInfo) {
+    public @Nullable NativePage createNativePage(
+            String url, @Nullable NativePage candidatePage, Tab tab, @Nullable PdfInfo pdfInfo) {
         return createNativePageForURL(url, candidatePage, tab, tab.isIncognito(), pdfInfo);
     }
 
     @VisibleForTesting
-    NativePage createNativePageForURL(
-            String url, NativePage candidatePage, Tab tab, boolean isIncognito, PdfInfo pdfInfo) {
-        NativePage page;
+    @Nullable NativePage createNativePageForURL(
+            @Nullable String url,
+            @Nullable NativePage candidatePage,
+            Tab tab,
+            boolean isIncognito,
+            @Nullable PdfInfo pdfInfo) {
+        if (url == null) return null;
 
-        switch (NativePage.nativePageType(url, candidatePage, isIncognito, pdfInfo != null)) {
+        GURL gurl = new GURL(url);
+        if (isChromePageUrlOverridden(gurl, isIncognito)) {
+            RecordUserAction.record("ChromeSchemePage.OverrideTriggered");
+            return null;
+        }
+
+        NativePage page;
+        boolean isPdf = pdfInfo != null;
+        boolean preferReuse = isPdf && assumeNonNull(pdfInfo).preferReuse;
+        switch (NativePage.nativePageType(gurl, candidatePage, isIncognito, preferReuse, isPdf)) {
             case NativePageType.NONE:
                 return null;
             case NativePageType.CANDIDATE:
@@ -344,13 +512,25 @@ public class NativePageFactory {
                 page = getBuilder().buildHistoryPage(tab, url);
                 break;
             case NativePageType.RECENT_TABS:
-                page = getBuilder().buildRecentTabsPage(tab);
+                page = getBuilder().buildRecentTabsPage(tab, url);
                 break;
             case NativePageType.MANAGEMENT:
                 page = getBuilder().buildManagementPage(tab);
                 break;
             case NativePageType.PDF:
-                page = getBuilder().buildPdfPage(tab, url, pdfInfo);
+                assumeNonNull(pdfInfo);
+                if (mPdfFragmentViewTracker == null) {
+                    mPdfFragmentViewTracker =
+                            new PdfFragmentViewTrackerImpl(
+                                    mTabModelSelector, (FragmentActivity) mActivity);
+                }
+                page = getBuilder().buildPdfPage(tab, url, pdfInfo, mPdfFragmentViewTracker);
+                break;
+            case NativePageType.BRICKS:
+                page = getBuilder().buildBricksPage(tab, url);
+                break;
+            case NativePageType.SETTINGS:
+                page = getBuilder().buildSettingsPage(tab);
                 break;
             default:
                 assert false;
@@ -358,6 +538,32 @@ public class NativePageFactory {
         }
         if (page != null) page.updateForUrl(url);
         return page;
+    }
+
+    /**
+     * Returns whether the given url is for a chrome:// scheme page that is being overridden.
+     *
+     * <p>chrome-native:// scheme pages are not affected by this.
+     *
+     * @param url The url to be checked.
+     * @param isIncognito Whether the page is to be displayed in incognito mode.
+     */
+    private static boolean isChromePageUrlOverridden(GURL url, boolean isIncognito) {
+        if (!UrlConstants.CHROME_SCHEME.equals(url.getScheme())) {
+            return false;
+        }
+
+        String host = url.getHost();
+        return switch (host) {
+            case UrlConstants.NTP_HOST ->
+                    isIncognito ? isIncognitoNtpOverrideEnabled() : isNtpOverrideEnabled();
+            case UrlConstants.BOOKMARKS_HOST ->
+                    isIncognito
+                            ? isIncognitoBookmarksPageOverrideEnabled()
+                            : isBookmarksPageOverrideEnabled();
+            case UrlConstants.HISTORY_HOST -> !isIncognito && isHistoryPageOverrideEnabled();
+            default -> false;
+        };
     }
 
     void setNativePageBuilderForTesting(NativePageBuilder builder) {
@@ -378,11 +584,11 @@ public class NativePageFactory {
      * @param activity The current activity which owns the tab.
      * @return A NativePage showing the specified url or null.
      */
-    public static NativePage createNativePageForCustomTab(
+    public static @Nullable NativePage createNativePageForCustomTab(
             String url,
-            NativePage candidatePage,
+            @Nullable NativePage candidatePage,
             Tab tab,
-            PdfInfo pdfInfo,
+            @Nullable PdfInfo pdfInfo,
             BrowserControlsManager browserControlsManager,
             TabModelSelector tabModelSelector,
             Activity activity) {
@@ -391,12 +597,18 @@ public class NativePageFactory {
             return null;
         }
         NativePage page;
-        if (candidatePage != null && candidatePage.getUrl().equals(url)) {
+        if (candidatePage != null && url.equals(candidatePage.getUrl())) {
             page = candidatePage;
         } else {
             page =
                     buildPdfPage(
-                            url, tab, pdfInfo, browserControlsManager, tabModelSelector, activity);
+                            url,
+                            tab,
+                            assumeNonNull(pdfInfo),
+                            browserControlsManager,
+                            tabModelSelector,
+                            activity,
+                            new PdfFragmentViewTrackerImpl(null, null));
         }
         page.updateForUrl(url);
         return page;
@@ -408,18 +620,19 @@ public class NativePageFactory {
             PdfInfo pdfInfo,
             BrowserControlsManager browserControlsManager,
             TabModelSelector tabModelSelector,
-            Activity activity) {
-        if (sTestPage instanceof PdfPage) {
+            Activity activity,
+            PdfFragmentViewTrackerImpl pdfFragmentViewTracker) {
+        if (sTestPage != null) {
             return sTestPage;
         }
         return new PdfPage(
-                new TabShim(tab, browserControlsManager, tabModelSelector),
-                tab.getProfile(),
+                new TabShim(tab, browserControlsManager, tabModelSelector, null),
+                tab,
                 activity,
                 url,
                 pdfInfo,
                 activity.getString(R.string.pdf_transient_tab_title),
-                tab.getId());
+                pdfFragmentViewTracker);
     }
 
     /** Simple implementation of NativePageHost backed by a {@link Tab} */
@@ -427,14 +640,19 @@ public class NativePageFactory {
         private final Tab mTab;
         private final BrowserControlsStateProvider mBrowserControlsStateProvider;
         private final TabModelSelector mTabModelSelector;
+        private final @Nullable MonotonicObservableSupplier<EdgeToEdgeController>
+                mEdgeToEdgeControllerSupplier;
 
         public TabShim(
                 Tab tab,
                 BrowserControlsStateProvider browserControlsStateProvider,
-                TabModelSelector tabModelSelector) {
+                TabModelSelector tabModelSelector,
+                @Nullable MonotonicObservableSupplier<EdgeToEdgeController>
+                        edgeToEdgeControllerSupplier) {
             mTab = tab;
             mBrowserControlsStateProvider = browserControlsStateProvider;
             mTabModelSelector = tabModelSelector;
+            mEdgeToEdgeControllerSupplier = edgeToEdgeControllerSupplier;
         }
 
         @Override
@@ -473,17 +691,32 @@ public class NativePageFactory {
         }
 
         @Override
-        public DestroyableObservableSupplier<Rect> createDefaultMarginSupplier() {
-            return new BrowserControlsMarginSupplier(mBrowserControlsStateProvider);
+        public Destroyable createDefaultMarginAdapter(
+                SettableMonotonicObservableSupplier<Rect> supplierImpl) {
+            return BrowserControlsMarginAdapter.create(mBrowserControlsStateProvider, supplierImpl);
+        }
+
+        @Override
+        public EdgeToEdgePadAdjuster createEdgeToEdgePadAdjuster(View view) {
+            return EdgeToEdgeControllerFactory.createForViewAndObserveSupplier(
+                    view, mEdgeToEdgeControllerSupplier);
+        }
+
+        @Override
+        public void print() {
+            PrintHelper.printTab(mTab);
         }
     }
 
     /** Destroy and unhook objects at destruction. */
     public void destroy() {
-        if (mNewTabPageUma != null) mNewTabPageUma.destroy();
+        if (mNewTabPageCreationTracker != null) mNewTabPageCreationTracker.destroy();
+        if (mPdfFragmentViewTracker != null) {
+            mPdfFragmentViewTracker.destroy();
+        }
     }
 
-    public static void setPdfPageForTesting(PdfPage pdfPage) {
+    public static void setPdfPageForTesting(NativePage pdfPage) {
         sTestPage = pdfPage;
     }
 }

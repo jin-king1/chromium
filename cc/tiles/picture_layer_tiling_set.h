@@ -7,7 +7,6 @@
 
 #include <stddef.h>
 
-#include <deque>
 #include <memory>
 #include <set>
 #include <vector>
@@ -32,9 +31,7 @@ class CC_EXPORT PictureLayerTilingSet {
   enum TilingRangeType {
     HIGHER_THAN_HIGH_RES,
     HIGH_RES,
-    BETWEEN_HIGH_AND_LOW_RES,
-    LOW_RES,
-    LOWER_THAN_LOW_RES
+    LOWER_THAN_HIGH_RES,
   };
   struct TilingRange {
     TilingRange(size_t start, size_t end) : start(start), end(end) {}
@@ -58,12 +55,6 @@ class CC_EXPORT PictureLayerTilingSet {
 
   const PictureLayerTilingClient* client() const { return client_; }
 
-  void CleanUpTilings(
-      float min_acceptable_high_res_scale_key,
-      float max_acceptable_high_res_scale_key,
-      const std::vector<raw_ptr<PictureLayerTiling, VectorExperimental>>&
-          needed_tilings,
-      PictureLayerTilingSet* twin_set);
   void RemoveNonIdealTilings();
 
   // This function is called on the active tree during activation.
@@ -151,7 +142,7 @@ class CC_EXPORT PictureLayerTilingSet {
   using CoverageIterator = TilingSetCoverageIterator<PictureLayerTiling>;
   CoverageIterator Cover(const gfx::Rect& coverage_rect,
                          float coverage_scale,
-                         float ideal_contents_scale);
+                         float ideal_contents_scale) const;
 
   void AsValueInto(base::trace_event::TracedValue* array) const;
   size_t GPUMemoryUsageInBytes() const;
@@ -227,8 +218,8 @@ class CC_EXPORT PictureLayerTilingSet {
   raw_ptr<PictureLayerTilingClient> client_;
   const float max_preraster_distance_;
   // State saved for computing velocities based on finite differences.
-  // .front() of the deque refers to the most recent FrameVisibleRect.
-  std::deque<FrameVisibleRect> visible_rect_history_;
+  // .back() of the vector refers to the most recent FrameVisibleRect.
+  std::vector<FrameVisibleRect> visible_rect_history_;
   StateSinceLastTilePriorityUpdate state_since_last_tile_priority_update_;
 
   scoped_refptr<RasterSource> raster_source_;

@@ -17,6 +17,7 @@
 #include "base/files/file_path.h"
 #include "base/functional/callback_forward.h"
 #include "build/build_config.h"
+#include "ui/base/clipboard/clipboard_url_info.h"
 #include "ui/base/dragdrop/os_exchange_data_provider.h"
 
 class GURL;
@@ -120,9 +121,9 @@ class COMPONENT_EXPORT(UI_BASE) OSExchangeData {
   // GetString() returns the plain text representation of the pasteboard
   // contents.
   std::optional<std::u16string> GetString() const;
-  using UrlInfo = OSExchangeDataProvider::UrlInfo;
-  std::optional<UrlInfo> GetURLAndTitle(FilenameToURLPolicy policy) const;
-  std::optional<std::vector<GURL>> GetURLs(FilenameToURLPolicy policy) const;
+  // Gets the URL and title from the drag data.
+  // Returns an empty vector if no valid URL/title data is present.
+  std::vector<ui::ClipboardUrlInfo> GetURLs(FilenameToURLPolicy policy) const;
   // Return information about the contained files, if any.
   std::optional<std::vector<FileInfo>> GetFilenames() const;
   std::optional<base::Pickle> GetPickledData(
@@ -144,7 +145,7 @@ class COMPONENT_EXPORT(UI_BASE) OSExchangeData {
   // Adds the bytes of a file (CFSTR_FILECONTENTS and CFSTR_FILEDESCRIPTOR on
   // Windows).
   void SetFileContents(const base::FilePath& filename,
-                       const std::string& file_contents);
+                       base::span<const uint8_t> file_contents);
   using FileContentsInfo = OSExchangeDataProvider::FileContentsInfo;
   std::optional<FileContentsInfo> GetFileContents() const;
 

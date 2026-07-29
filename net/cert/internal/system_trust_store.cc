@@ -26,7 +26,6 @@
 #include "third_party/boringssl/src/pki/trust_store_in_memory.h"
 
 #if BUILDFLAG(USE_NSS_CERTS)
-#include "net/cert/internal/system_trust_store_nss.h"
 #include "net/cert/internal/trust_store_nss.h"
 #elif BUILDFLAG(IS_MAC)
 #include <Security/Security.h>
@@ -35,7 +34,6 @@
 #include "net/cert/internal/trust_store_mac.h"
 #include "net/cert/x509_util_apple.h"
 #elif BUILDFLAG(IS_FUCHSIA)
-#include "base/lazy_instance.h"
 #include "third_party/boringssl/src/include/openssl/pool.h"
 #elif BUILDFLAG(IS_WIN)
 #include "net/cert/internal/trust_store_win.h"
@@ -151,6 +149,10 @@ class SystemTrustStoreChromeWithUnOwnedSystemStore : public SystemTrustStore {
     return trust_store_chrome_->Contains(trust_anchor);
   }
 
+  bool IsKnownMtcAnchor(const bssl::MTCAnchor* anchor) const override {
+    return trust_store_chrome_->ContainsMTCAnchor(anchor);
+  }
+
   bool IsLocallyTrustedRoot(
       const bssl::ParsedCertificate* trust_anchor) override {
     return non_crs_trust_store_collection_.GetTrust(trust_anchor)
@@ -161,9 +163,43 @@ class SystemTrustStoreChromeWithUnOwnedSystemStore : public SystemTrustStore {
     return trust_store_chrome_->version();
   }
 
+  std::optional<base::Time> mtc_metadata_update_time() const override {
+    return trust_store_chrome_->mtc_metadata_update_time();
+  }
+
   base::span<const ChromeRootCertConstraints> GetChromeRootConstraints(
-      const bssl::ParsedCertificate* cert) const override {
-    return trust_store_chrome_->GetConstraintsForCert(cert);
+      const bssl::CertPathBuilderResultPath* path) const override {
+    return trust_store_chrome_->GetConstraintsForCert(path);
+  }
+
+  const TrustStoreChrome::MtcAnchorExtraData* GetMTCAnchorData(
+      base::span<const uint8_t> log_id) const override {
+    return trust_store_chrome_->GetMTCAnchorData(log_id);
+  }
+
+  std::optional<bssl::VerifyCertificateChainDelegate::MTCCosigner>
+  GetMtcMirrorKey(base::span<const uint8_t> cosigner_id) const override {
+    // TODO(crbug.com/452983502): Hook this up to TrustStoreChrome.
+    return std::nullopt;
+  }
+
+  bool IsMtcCosignerPolicySatisfied(
+      const bssl::ParsedCertificate& target_cert,
+      base::Time current_time,
+      const bssl::MTCAnchor* mtc_anchor,
+      base::span<const std::vector<uint8_t>> valid_additional_cosigners)
+      const override {
+    // TODO(crbug.com/452983502): Hook this up to TrustStoreChrome.
+    return false;
+  }
+
+  std::optional<int32_t> GetCrsRootIdForCert(
+      const bssl::CertPathBuilderResultPath* path) const override {
+    return trust_store_chrome_->GetCrsRootIdForCert(path);
+  }
+
+  bssl::TrustStore* eutl_trust_store() override {
+    return trust_store_chrome_->eutl_trust_store();
   }
 
   net::PlatformTrustStore* GetPlatformTrustStore() override {
@@ -215,15 +251,6 @@ std::unique_ptr<SystemTrustStore> CreateSslSystemTrustStoreChromeRoot(
   return std::make_unique<SystemTrustStoreChrome>(
       std::move(chrome_root), std::make_unique<TrustStoreNSS>(
                                   TrustStoreNSS::UseTrustFromAllUserSlots()));
-}
-
-std::unique_ptr<SystemTrustStore>
-CreateSslSystemTrustStoreChromeRootWithUserSlotRestriction(
-    std::unique_ptr<TrustStoreChrome> chrome_root,
-    crypto::ScopedPK11Slot user_slot_restriction) {
-  return std::make_unique<SystemTrustStoreChrome>(
-      std::move(chrome_root),
-      std::make_unique<TrustStoreNSS>(std::move(user_slot_restriction)));
 }
 
 #elif BUILDFLAG(IS_MAC)
@@ -294,8 +321,10 @@ class FuchsiaSystemCerts {
   bssl::TrustStoreInMemory system_trust_store_;
 };
 
-base::LazyInstance<FuchsiaSystemCerts>::Leaky g_root_certs_fuchsia =
-    LAZY_INSTANCE_INITIALIZER;
+FuchsiaSystemCerts& GetFuchsiaRootCerts() {
+  static base::NoDestructor<FuchsiaSystemCerts> certs;
+  return *certs;
+}
 
 }  // namespace
 
@@ -304,12 +333,15 @@ class SystemTrustStoreFuchsia : public SystemTrustStore {
   SystemTrustStoreFuchsia() = default;
 
   bssl::TrustStore* GetTrustStore() override {
-    return g_root_certs_fuchsia.Get().system_trust_store();
+    return GetFuchsiaRootCerts().system_trust_store();
   }
 
   bool IsKnownRoot(const bssl::ParsedCertificate* trust_anchor) const override {
-    return g_root_certs_fuchsia.Get().system_trust_store()->Contains(
-        trust_anchor);
+    return GetFuchsiaRootCerts().system_trust_store()->Contains(trust_anchor);
+  }
+
+  bool IsKnownMtcAnchor(const bssl::MTCAnchor* anchor) const override {
+    return false;
   }
 };
 
@@ -374,6 +406,12 @@ void InitializeTrustStoreAndroid() {
   // ObserveCertDBChanges on the singleton TrustStoreAndroid.
   GetGlobalTrustStoreAndroidForCRS()->ObserveCertDBChanges();
 
+  static bool initialized = false;
+  if (initialized) {
+    return;
+  }
+
+  initialized = true;
   base::ThreadPool::PostTask(
       FROM_HERE,
       {base::MayBlock(), base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN},

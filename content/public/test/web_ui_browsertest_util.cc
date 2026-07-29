@@ -8,11 +8,14 @@
 #include <string>
 #include <string_view>
 
+#include "base/check.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/hash/hash.h"
+#include "base/logging.h"
 #include "base/memory/ref_counted_memory.h"
+#include "base/notreached.h"
 #include "base/path_service.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
@@ -151,7 +154,7 @@ TestWebUIController::TestWebUIController(WebUI* web_ui,
   }
 
   WebUIDataSource* data_source = WebUIDataSource::CreateAndAdd(
-      web_ui->GetWebContents()->GetBrowserContext(), base_url.host());
+      web_ui->GetWebContents()->GetBrowserContext(), base_url.GetHost());
   data_source->SetRequestFilter(
       base::BindRepeating([](const std::string& path) { return true; }),
       base::BindRepeating(&GetResource));
@@ -225,12 +228,6 @@ void AddUntrustedDataSource(
           break;
         case network::mojom::CrossOriginOpenerPolicyValue::
             kSameOriginAllowPopups:
-        case network::mojom::CrossOriginOpenerPolicyValue::kRestrictProperties:
-          NOTREACHED() << "COOP:restrict-properties is not supported in WebUI";
-        case network::mojom::CrossOriginOpenerPolicyValue::
-            kRestrictPropertiesPlusCoep:
-          NOTREACHED()
-              << "COOP:restrict-properties-plus-coep is not supported in WebUI";
         case network::mojom::CrossOriginOpenerPolicyValue::kNoopenerAllowPopups:
           NOTREACHED()
               << "COOP:noopener-allow-popups is not supported in WebUI";
@@ -278,7 +275,7 @@ WebUI::TypeID TestWebUIControllerFactory::GetWebUIType(
     return WebUI::kNoWebUI;
   }
 
-  return reinterpret_cast<WebUI::TypeID>(base::FastHash(url.host()));
+  return reinterpret_cast<WebUI::TypeID>(base::FastHash(url.GetHost()));
 }
 
 bool TestWebUIControllerFactory::UseWebUIForURL(BrowserContext* browser_context,

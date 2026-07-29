@@ -5,8 +5,8 @@
 #import "ios/chrome/browser/text_selection/model/text_classifier_util.h"
 
 #import "base/command_line.h"
-#import "components/optimization_guide/core/optimization_guide_decider.h"
-#import "components/optimization_guide/core/optimization_guide_decision.h"
+#import "components/optimization_guide/core/hints/optimization_guide_decider.h"
+#import "components/optimization_guide/core/hints/optimization_guide_decision.h"
 #import "ios/chrome/browser/optimization_guide/model/optimization_guide_service.h"
 #import "ios/chrome/browser/optimization_guide/model/optimization_guide_service_factory.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
@@ -23,8 +23,9 @@ bool IsEntitySelectionAllowedForURL(web::WebState* web_state) {
     return false;
   }
 
-  if (url.host() == base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
-                        kForceAllowDomainForEntitySelection)) {
+  if (url.GetHost() ==
+      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
+          kForceAllowDomainForEntitySelection)) {
     return true;
   }
 

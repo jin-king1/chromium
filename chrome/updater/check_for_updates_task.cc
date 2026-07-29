@@ -4,6 +4,7 @@
 
 #include "chrome/updater/check_for_updates_task.h"
 
+#include <string>
 #include <utility>
 
 #include "base/functional/bind.h"
@@ -17,12 +18,10 @@
 #include "chrome/updater/configurator.h"
 #include "chrome/updater/constants.h"
 #include "chrome/updater/persisted_data.h"
-#include "chrome/updater/policy/manager.h"
 #include "chrome/updater/policy/service.h"
-#include "chrome/updater/update_service_impl.h"
+#include "chrome/updater/update_service.h"
 #include "chrome/updater/updater_scope.h"
 #include "chrome/updater/util/util.h"
-#include "components/prefs/pref_service.h"
 #include "components/update_client/update_client.h"
 
 namespace updater {
@@ -32,7 +31,10 @@ bool ShouldSkipCheck(scoped_refptr<Configurator> config,
                      const std::string& task_name) {
   // To spread out synchronized load, sometimes use a higher delay.
   const base::TimeDelta check_delay =
-      config->NextCheckDelay() * (base::RandDouble() < 0.1 ? 1.2 : 1);
+      config->NextCheckDelay() *
+      (base::RandDouble() < kProbabilityOfIncreasedDelay
+           ? kUpdateCheckMaxDelayFactor
+           : kUpdateCheckMinDelayFactor);
 
   // Skip if periodic updates are disabled altogether, for instance, by an admin
   // setting `AutoUpdateCheckPeriodMinutes` to zero.
@@ -53,7 +55,7 @@ bool ShouldSkipCheck(scoped_refptr<Configurator> config,
   }
 
   // Skip if the updater is in the update suppression period.
-  return config->GetPolicyService()->AreUpdatesSuppressedNow();
+  return config->GetPolicyService()->AreUpdatesSuppressed(base::Time::Now());
 }
 
 }  // namespace

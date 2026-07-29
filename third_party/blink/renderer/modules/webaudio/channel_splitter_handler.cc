@@ -8,6 +8,7 @@
 #include "third_party/blink/renderer/modules/webaudio/audio_node_output.h"
 #include "third_party/blink/renderer/modules/webaudio/base_audio_context.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
+#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 
 namespace blink {
 
@@ -70,14 +71,15 @@ void ChannelSplitterHandler::Process(uint32_t frames_to_process) {
 void ChannelSplitterHandler::SetChannelCount(unsigned channel_count,
                                              ExceptionState& exception_state) {
   DCHECK(IsMainThread());
-  DeferredTaskHandler::GraphAutoLocker locker(Context());
+  DeferredTaskHandler::GraphAutoLocker locker(
+      Context()->GetDeferredTaskHandler());
 
   // channelCount cannot be changed from the number of outputs.
   if (channel_count != NumberOfOutputs()) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kInvalidStateError,
-        "ChannelSplitter: channelCount cannot be changed from " +
-            String::Number(NumberOfOutputs()));
+        StrCat({"ChannelSplitter: channelCount cannot be changed from ",
+                String::Number(NumberOfOutputs())}));
   }
 }
 
@@ -85,7 +87,8 @@ void ChannelSplitterHandler::SetChannelCountMode(
     V8ChannelCountMode::Enum mode,
     ExceptionState& exception_state) {
   DCHECK(IsMainThread());
-  DeferredTaskHandler::GraphAutoLocker locker(Context());
+  DeferredTaskHandler::GraphAutoLocker locker(
+      Context()->GetDeferredTaskHandler());
 
   // channcelCountMode must be 'explicit'.
   if (mode != V8ChannelCountMode::Enum::kExplicit) {
@@ -99,7 +102,8 @@ void ChannelSplitterHandler::SetChannelInterpretation(
     V8ChannelInterpretation::Enum mode,
     ExceptionState& exception_state) {
   DCHECK(IsMainThread());
-  DeferredTaskHandler::GraphAutoLocker locker(Context());
+  DeferredTaskHandler::GraphAutoLocker locker(
+      Context()->GetDeferredTaskHandler());
 
   // channelInterpretation must be "discrete"
   if (mode != V8ChannelInterpretation::Enum::kDiscrete) {

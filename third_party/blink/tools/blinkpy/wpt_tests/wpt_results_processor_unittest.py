@@ -178,14 +178,15 @@ class WPTResultsProcessorTest(LoggingTestCase):
         self.assertEqual(self.processor.num_initial_failures, 0)
         report_mock = self.processor.sink.report_individual_test_result
         report_mock.assert_called_once_with(
-            test_name_prefix='',
             result=mock.ANY,
             artifact_output_dir=self.fs.join('/mock-checkout', 'out',
                                              'Default'),
             expectations=None,
             test_file_location=self.path_finder.path_from_web_tests(
                 'external', 'wpt', 'reftest.html'),
-            html_summary=None)
+            html_summary=None,
+            additional_tags=mock.ANY,
+            properties=None)
 
         result = report_mock.call_args.kwargs['result']
         self.assertEqual(result.name, 'external/wpt/reftest.html')
@@ -194,6 +195,11 @@ class WPTResultsProcessorTest(LoggingTestCase):
         self.assertFalse(result.unexpected)
         self.assertAlmostEqual(result.took, 2)
         self.assertEqual(result.artifacts, {})
+
+        tags = report_mock.call_args.kwargs['additional_tags']
+        self.assertIn(('web_tests_base_timeout', '10'), tags)
+        self.assertIn(('web_tests_used_expectation_file', 'TestExpectations'),
+                      tags)
 
     def test_report_unexpected_fail(self):
         self.fs.write_text_file(
@@ -215,14 +221,15 @@ class WPTResultsProcessorTest(LoggingTestCase):
         self.assertEqual(self.processor.num_initial_failures, 1)
         report_mock = self.processor.sink.report_individual_test_result
         report_mock.assert_called_once_with(
-            test_name_prefix='',
             result=mock.ANY,
             artifact_output_dir=self.fs.join('/mock-checkout', 'out',
                                              'Default'),
             expectations=None,
             test_file_location=self.path_finder.path_from_web_tests(
                 'wpt_internal', 'reftest.html'),
-            html_summary=mock.ANY)
+            html_summary=mock.ANY,
+            additional_tags=mock.ANY,
+            properties=None)
 
         result = report_mock.call_args.kwargs['result']
         self.assertEqual(result.name, 'wpt_internal/reftest.html')
@@ -272,14 +279,15 @@ class WPTResultsProcessorTest(LoggingTestCase):
         self.assertEqual(self.processor.num_initial_failures, 1)
         report_mock = self.processor.sink.report_individual_test_result
         report_mock.assert_has_calls([
-            mock.call(test_name_prefix='',
-                      result=mock.ANY,
+            mock.call(result=mock.ANY,
                       artifact_output_dir=self.fs.join('/mock-checkout', 'out',
                                                        'Default'),
                       expectations=None,
                       test_file_location=self.path_finder.path_from_web_tests(
                           'external', 'wpt', 'variant.html'),
-                      html_summary=mock.ANY),
+                      html_summary=mock.ANY,
+                      additional_tags=mock.ANY,
+                      properties=None),
         ] * 2)
 
         fail, ok = [
@@ -568,6 +576,51 @@ class WPTResultsProcessorTest(LoggingTestCase):
         self.assertEqual(result.actual, 'SKIP')
         self.assertEqual(result.expected, {'SKIP'})
         self.assertFalse(result.unexpected)
+
+    def test_report_bcd_features(self):
+        trace_events = [{
+            'cat': 'blink.bindings',
+            'name': 'AbortSignal.aborted.get',
+        }, {
+            'cat': 'blink.bindings',
+            'name': 'AbortSignal.aborted.set',
+        }, {
+            'cat': 'blink.bindings',
+            'name': 'AbortSignal.onabort.set',
+        }, {
+            'cat': 'cc',
+            'name': 'unrelated',
+        }, {
+            'cat': 'blink.bindings',
+            'name': 'AbortController.constructor',
+        }, {
+            'cat': 'blink.bindings',
+            'name': 'IDBKeyRange.only',
+        }]
+        self._event(action='test_start', test='/test.html')
+        self._event(action='test_end',
+                    test='/test.html',
+                    status='OK',
+                    extra={'trace': trace_events})
+
+        properties = self.processor.sink.report_individual_test_result.call_args.kwargs[
+            'properties']
+        self.assertEqual(
+            {
+                'bcd_counters': [{
+                    'f': 'AbortController.AbortController',
+                    'c': 1
+                }, {
+                    'f': 'AbortSignal.abort_event',
+                    'c': 1
+                }, {
+                    'f': 'AbortSignal.aborted',
+                    'c': 2
+                }, {
+                    'f': 'IDBKeyRange.only',
+                    'c': 1
+                }],
+            }, properties)
 
     def test_extract_text(self):
         self.fs.write_text_file(
@@ -1084,6 +1137,21 @@ class WPTResultsProcessorTest(LoggingTestCase):
                   live_nodes: Expected 4, got 5
                 """))
 
+    def test_extract_trace(self):
+        trace_events = [{'cat': 'blink', 'name': 'Document::Document'}]
+        self._event(action='test_start', test='/test.html')
+        self._event(action='test_end',
+                    test='/test.html',
+                    status='CRASH',
+                    expected='OK',
+                    extra={'trace': trace_events})
+
+        artifact_path = self.fs.join('/mock-checkout', 'out', 'Default',
+                                     'layout-test-results', 'external', 'wpt',
+                                     'test-trace.json')
+        self.assertEqual(trace_events,
+                         json.loads(self.fs.read_text_file(artifact_path)))
+
     def test_extract_command(self):
         self._event(action='test_start', test='/test.html')
         self._event(
@@ -1131,9 +1199,7 @@ class WPTResultsProcessorTest(LoggingTestCase):
 
     def test_unknown_event(self):
         self._event(action='unknown', time=1000)
-        (message, ) = self.logMessages()
-        self.assertRegex(message,
-                         "WARNING: 'unknown' event received, but not handled")
+        self.assertEqual(0, len(self.logMessages()))
 
     def test_unknown_test(self):
         with self.assertRaises(EventProcessingError):
@@ -1358,6 +1424,18 @@ class WPTResultsProcessorTest(LoggingTestCase):
         self.assertEqual(report['run_info'], self.wpt_report['run_info'])
         self.assertEqual(report['results'], self.wpt_report['results'])
 
+    def test_upload_wpt_screenshots(self):
+        path = self.fs.join('/mock-checkout', 'out', 'Default',
+                            'layout-test-results', 'wpt_screenshots.txt')
+        self.fs.write_text_file(path, 'data:image/png;base64,iVBORw\n')
+        self.processor.upload_wpt_screenshots(path)
+        self.processor.sink.report_invocation_level_artifacts.assert_called_once_with(
+            {
+                'wpt_screenshots.txt': {
+                    'filePath': path,
+                },
+            })
+
     def test_report_expected_skipped_test(self):
         self.fs.write_text_file(
             self.path_finder.path_from_web_tests('TestExpectations'),
@@ -1372,14 +1450,15 @@ class WPTResultsProcessorTest(LoggingTestCase):
                     status='SKIP')
         report_mock = self.processor.sink.report_individual_test_result
         report_mock.assert_called_once_with(
-            test_name_prefix='',
             result=mock.ANY,
             artifact_output_dir=self.fs.join('/mock-checkout', 'out',
                                              'Default'),
             expectations=None,
             test_file_location=self.path_finder.path_from_web_tests(
                 'external', 'wpt', 'reftest.html'),
-            html_summary=mock.ANY)
+            html_summary=mock.ANY,
+            additional_tags=mock.ANY,
+            properties=None)
         result = report_mock.call_args.kwargs['result']
         self.assertEqual(result.name, 'external/wpt/reftest.html')
         self.assertEqual(result.actual, 'SKIP')

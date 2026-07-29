@@ -7,9 +7,10 @@
 
 #include <memory>
 #include <optional>
+#include <string>
+#include <vector>
 
 #include "base/cancelable_callback.h"
-#include "base/feature_list.h"
 #include "base/functional/callback_forward.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
@@ -24,6 +25,7 @@
 #include "components/signin/public/base/signin_metrics.h"
 #include "components/signin/public/base/signin_prefs.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
+#include "components/signin/public/identity_manager/tribool.h"
 #include "google_apis/gaia/core_account_id.h"
 #include "third_party/skia/include/core/SkColor.h"
 
@@ -38,6 +40,11 @@ class WebContents;
 namespace policy {
 class UserCloudSigninRestrictionPolicyFetcher;
 }
+
+namespace metrics {
+class ProfileMetricsService;
+}  // namespace metrics
+
 namespace user_prefs {
 class PrefRegistrySyncable;
 }
@@ -48,27 +55,6 @@ class DiceInterceptedSessionStartupHelper;
 class Profile;
 class ProfileAttributesEntry;
 class ProfileAttributesStorage;
-
-// This enum gets the result of `MaybeShouldShowChromeSigninBubble()`, which
-// could be `ShouldShow` or `ShouldNotShow`. When the result is `ShouldNotShow`
-// the reason is also added to differentiate the cases of not showing the
-// bubble. These values are persisted to logs. Entries should not be renumbered
-// and numeric values should never be reused.
-enum class ShouldShowChromeSigninBubbleWithReason {
-  // The bubble should be shown.
-  kShouldShow = 0,
-
-  // The bubble should not be shown: multiple reasons listed below with order of
-  // priority.
-  // Deprecated: kShouldNotShowMaxShownCountReached = 1,
-  kShouldNotShowAlreadySignedIn = 2,
-  // Deprecated: kShouldNotShowSecondaryAccount = 3,
-  kShouldNotShowUnknownAccessPoint = 4,
-  kShouldNotShowNotFromWebSignin = 5,
-  kShouldNotShowUserChoice = 6,
-
-  kMaxValue = kShouldNotShowUserChoice,
-};
 
 // Supervision state of the user who is shown the sign-in intercept bubble.
 // These values are logged to UMA. Entries should not be renumbered and
@@ -106,7 +92,8 @@ class DiceWebSigninInterceptor : public KeyedService,
  public:
   DiceWebSigninInterceptor(
       Profile* profile,
-      std::unique_ptr<WebSigninInterceptor::Delegate> delegate);
+      std::unique_ptr<WebSigninInterceptor::Delegate> delegate,
+      metrics::ProfileMetricsService* profile_metrics_service);
   ~DiceWebSigninInterceptor() override;
 
   DiceWebSigninInterceptor(const DiceWebSigninInterceptor&) = delete;
@@ -123,12 +110,21 @@ class DiceWebSigninInterceptor : public KeyedService,
   // this is not a reauth).
   // `is_sync_signin` is true if the user is signing in with the intent of
   // enabling sync for that account.
+  // `primary_is_connected` is relevant during a multi-account sign-in event.
+  // It indicates whether the account is connected to the primary account
+  // (`kTrue` if connected, `kFalse` if not connected—including when the profile
+  // is not signed in, and `kUnknown` otherwise).
   // Virtual for testing.
   virtual void MaybeInterceptWebSignin(content::WebContents* web_contents,
                                        CoreAccountId account_id,
                                        signin_metrics::AccessPoint access_point,
                                        bool is_new_account,
-                                       bool is_sync_signin);
+                                       bool is_sync_signin,
+                                       signin::Tribool primary_is_connected);
+
+  void OnDiceSigninSessionComplete(
+      const CoreAccountId& initiator_account_id,
+      std::vector<CoreAccountId> secondary_accounts);
 
   // Called after the new profile was created during a signin interception.
   // The token has been moved to the new profile, but the account is not yet in
@@ -150,19 +146,34 @@ class DiceWebSigninInterceptor : public KeyedService,
   // happens, the signin interception is highly likely (but not guaranteed).
   // `gaia_id` is optional as some usages may not have the information yet. It
   // is currently only mandatory for the checks of the Chrome Signin bubble.
+  // `primary_is_connected` is relevant during a multi-account sign-in event.
+  // It indicates whether the account is connected to the primary account
+  // (`kTrue` if connected, `kFalse` if not connected—including when the profile
+  // is not signed in, and `kUnknown` otherwise).
   std::optional<SigninInterceptionHeuristicOutcome> GetHeuristicOutcome(
       bool is_new_account,
       bool is_sync_signin,
       const std::string& email,
       const GaiaId& gaia_id = GaiaId(),
-      bool update_state = false,
-      const ProfileAttributesEntry** entry = nullptr) const;
+      const ProfileAttributesEntry** entry = nullptr,
+      signin::Tribool primary_is_connected = signin::Tribool::kUnknown) const;
 
   // Returns true if the interception is in progress (running the heuristic or
   // showing on screen).
   bool is_interception_in_progress() const {
     return state_->is_interception_in_progress_;
   }
+
+  bool has_interception_bubble_handle_for_testing() const {
+    return state_->interception_bubble_handle_.get();
+  }
+
+  bool has_dice_signed_in_profile_creator_for_testing() const {
+    return state_->dice_signed_in_profile_creator_.get() != nullptr;
+  }
+
+  std::vector<CoreAccountId>
+  dice_signed_in_profile_creator_accounts_for_testing() const;
 
   content::WebContents* web_contents() const {
     return state_->web_contents_.get();
@@ -192,6 +203,7 @@ class DiceWebSigninInterceptor : public KeyedService,
 
  private:
   friend class DiceWebSigninInterceptorWithChromeSigninHelpersBrowserTest;
+  friend class DiceWebSigninInterceptorLatePolicyCallbackUAFTest;
 
   FRIEND_TEST_ALL_PREFIXES(DiceWebSigninInterceptorTest,
                            ShouldShowProfileSwitchBubble);
@@ -221,7 +233,11 @@ class DiceWebSigninInterceptor : public KeyedService,
   FRIEND_TEST_ALL_PREFIXES(
       DiceWebSigninInterceptorTest,
       ForcedEnterpriseInterceptionTestNoForcedInterception);
+  FRIEND_TEST_ALL_PREFIXES(DiceWebSigninInterceptorTest,
+                           ShouldShowEnterpriseDialog_AlwaysAsk);
   FRIEND_TEST_ALL_PREFIXES(DiceWebSigninInterceptorTest, StateResetTest);
+  FRIEND_TEST_ALL_PREFIXES(DiceWebSigninInterceptorTest,
+                           MultiUserInterceptionPrimaryNotConnectedSameName);
   FRIEND_TEST_ALL_PREFIXES(ManagedProfileRequiredNavigationThrottleTest,
                            CancelsWithInterstitialWhenForcedInterception);
 
@@ -234,14 +250,14 @@ class DiceWebSigninInterceptor : public KeyedService,
 
     ~ProfilePresets();
 
-    ProfilePresets(ProfilePresets&&) = default;
-    ProfilePresets& operator=(ProfilePresets&&) = default;
+    ProfilePresets(ProfilePresets&&);
+    ProfilePresets& operator=(ProfilePresets&&);
 
     ProfilePresets(const ProfilePresets&) = delete;
     ProfilePresets& operator=(ProfilePresets&) = delete;
 
     SkColor profile_color = SK_ColorTRANSPARENT;
-    search_engines::ChoiceData search_engine_choice_data;
+    std::optional<search_engines::ChoiceData> search_engine_choice_data;
   };
 
   // Cancels any current signin interception and resets the interceptor to its
@@ -261,7 +277,8 @@ class DiceWebSigninInterceptor : public KeyedService,
       const AccountInfo& intercepted_account_info) const;
   bool ShouldShowMultiUserBubble(
       const AccountInfo& intercepted_account_info) const;
-  bool ShouldShowChromeSigninBubble(const GaiaId& gaia_id);
+  bool ShouldShowChromeSigninBubble(const GaiaId& gaia_id,
+                                    const std::string& email) const;
 
   // Helper function to call `delegate_->ShowSigninInterceptionBubble()`.
   void ShowSigninInterceptionBubble(
@@ -313,6 +330,10 @@ class DiceWebSigninInterceptor : public KeyedService,
       std::optional<ProfilePresets> profile_presets,
       Profile* new_profile);
 
+  void ProceedWithProfileCreation(const AccountInfo& account_info,
+                                  SkColor profile_color);
+  void ProceedWithProfileSwitch(const base::FilePath& profile_path);
+
   // Called after the user choses whether the session should continue in a new
   // work profile or not. If the user choses not to continue in a work profile,
   // the account is signed out.
@@ -357,18 +378,20 @@ class DiceWebSigninInterceptor : public KeyedService,
   // timeout.
   void EnsureAccountLevelSigninRestrictionFetchInProgress(
       const AccountInfo& account_info,
-      base::OnceCallback<void(const policy::ProfileSeparationPolicies&)>
-          callback);
+      base::OnceCallback<void(policy::ProfileSeparationPolicies)> callback);
 
   // Called when the the value of the cloud user level value of the
   // ManagedAccountsSigninRestriction is received.
   void OnAccountLevelManagedAccountsSigninRestrictionReceived(
       const AccountInfo& account_info,
-      const policy::ProfileSeparationPolicies& profile_separation_policies);
+      policy::ProfileSeparationPolicies profile_separation_policies);
 
   // Records the heuristic outcome and latency metrics.
   void RecordSigninInterceptionHeuristicOutcome(
       SigninInterceptionHeuristicOutcome outcome) const;
+
+  // Shows HaTS survey to eligible users.
+  void LaunchHatsSurvey(const std::string& trigger);
 
   // Returns true if we have all the extended account information which might
   // factor in to the intercept heuristic. If we don't have 'Full' information,
@@ -397,10 +420,7 @@ class DiceWebSigninInterceptor : public KeyedService,
     bool intercepted_account_management_accepted_ = false;
     std::optional<WebSigninInterceptor::SigninInterceptionType>
         interception_type_;
-    signin_metrics::AccessPoint access_point_ =
-        signin_metrics::AccessPoint::kUnknown;
-    std::optional<ShouldShowChromeSigninBubbleWithReason>
-        should_show_chrome_signin_bubble_;
+    std::optional<signin_metrics::AccessPoint> access_point_;
 
     // Timeout for waiting for full information to be available (see
     // `ProcessInterceptionOrWait()`).
@@ -413,7 +433,6 @@ class DiceWebSigninInterceptor : public KeyedService,
         interception_bubble_handle_;
 
     // Used for metrics.
-    base::TimeTicks interception_start_time_;
     bool was_interception_ui_displayed_ = false;
 
     // Used to fetch the cloud user level policy value of the profile separation
@@ -425,11 +444,23 @@ class DiceWebSigninInterceptor : public KeyedService,
     // no value is set, then we have not yet received the policy value.
     std::optional<policy::ProfileSeparationPolicies>
         intercepted_account_profile_separation_policies_;
+
+    base::ScopedClosureRunner disable_management_disclaimer_until_reset_;
+
+    std::vector<CoreAccountId> secondary_accounts_;
+    bool dice_signin_session_complete_ = false;
+    bool waiting_for_dice_signin_session_completion_ = false;
+    base::OnceClosure deferred_action_callback_;
+    // Stores `primary_is_connected` from the initial token exchange during a
+    // multi-account sign-in so downstream heuristics can evaluate it after
+    // asynchronous fetches complete.
+    signin::Tribool primary_is_connected_ = signin::Tribool::kUnknown;
   };
 
   const raw_ptr<Profile> profile_;
   const raw_ptr<signin::IdentityManager> identity_manager_;
   std::unique_ptr<WebSigninInterceptor::Delegate> delegate_;
+  const raw_ref<metrics::ProfileMetricsService> profile_metrics_service_;
   base::ScopedObservation<signin::IdentityManager,
                           signin::IdentityManager::Observer>
       account_info_update_observation_{this};

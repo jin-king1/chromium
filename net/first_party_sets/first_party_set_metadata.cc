@@ -4,7 +4,6 @@
 
 #include "net/first_party_sets/first_party_set_metadata.h"
 
-#include <tuple>
 #include <utility>
 
 #include "base/types/optional_util.h"
@@ -26,9 +25,6 @@ FirstPartySetMetadata& FirstPartySetMetadata::operator=(
 FirstPartySetMetadata::~FirstPartySetMetadata() = default;
 
 bool FirstPartySetMetadata::operator==(
-    const FirstPartySetMetadata& other) const = default;
-
-bool FirstPartySetMetadata::operator!=(
     const FirstPartySetMetadata& other) const = default;
 
 std::ostream& operator<<(std::ostream& os,

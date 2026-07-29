@@ -16,14 +16,17 @@
 #import "components/infobars/core/infobar_delegate.h"
 #import "components/infobars/core/infobar_manager.h"
 #import "ios/chrome/browser/infobars/model/infobar_utils.h"
+#import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/public/commands/settings_commands.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
+#import "ios/chrome/browser/signin/model/avatar/avatar_provider.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service_factory.h"
+#import "ios/chrome/browser/signin/model/signin_util.h"
 #import "ios/chrome/browser/signin/model/system_identity.h"
 #import "ios/chrome/grit/ios_branded_strings.h"
 #import "ios/chrome/grit/ios_strings.h"
@@ -55,18 +58,16 @@ SigninNotificationInfoBarDelegate::SigninNotificationInfoBarDelegate(
   AuthenticationService* auth_service =
       AuthenticationServiceFactory::GetForProfile(profile);
   DCHECK(auth_service);
-  id<SystemIdentity> identity =
-      auth_service->GetPrimaryIdentity(signin::ConsentLevel::kSignin);
+  id<SystemIdentity> identity = auth_service->GetPrimaryIdentity();
 
-  ChromeAccountManagerService* accountManagerService =
-      ChromeAccountManagerServiceFactory::GetForProfile(profile);
-  UIImage* image = accountManagerService->GetIdentityAvatarWithIdentity(
-      identity, IdentityAvatarSize::Regular);
+  UIImage* image =
+      GetApplicationContext()->GetIdentityAvatarProvider()->GetIdentityAvatar(
+          identity, IdentityAvatarSize::Regular);
   icon_ = gfx::Image(CircularImageFromImage(image, image.size.width));
 
   title_ = base::SysNSStringToUTF16(l10n_util::GetNSStringF(
       IDS_IOS_SIGNIN_ACCOUNT_NOTIFICATION_TITLE_WITH_USERNAME,
-      base::SysNSStringToUTF16(identity.userGivenName)));
+      base::SysNSStringToUTF16(UserGivenNameFullNameOrEmail(identity))));
   message_ = base::SysNSStringToUTF16(identity.userEmail);
   button_text_ =
       base::SysNSStringToUTF16(l10n_util::GetNSString(IDS_IOS_SETTINGS_TITLE));

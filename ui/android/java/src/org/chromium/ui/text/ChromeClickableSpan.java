@@ -5,15 +5,15 @@
 package org.chromium.ui.text;
 
 import android.content.Context;
-import android.content.res.Resources;
 import android.text.TextPaint;
 import android.text.style.ClickableSpan;
 import android.view.View;
 
-import androidx.annotation.ColorRes;
+import androidx.annotation.ColorInt;
 
 import org.chromium.base.Callback;
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.ui.R;
 import org.chromium.ui.util.AttrUtils;
 
@@ -22,29 +22,40 @@ import org.chromium.ui.util.AttrUtils;
 public class ChromeClickableSpan extends ClickableSpan {
     private final int mColor;
     private final Callback<View> mOnClick;
+    private final @Nullable String mContentDescription;
+    private boolean mFocused;
 
     /**
      * @param context The {@link Context} used for accessing colors.
      * @param onClickCallback The callback notified when the span is clicked.
      */
     public ChromeClickableSpan(Context context, Callback<View> onClickCallback) {
-        mColor =
-                AttrUtils.resolveColor(
-                        context.getTheme(),
-                        R.attr.globalClickableSpanColor,
-                        R.color.default_text_color_link_baseline);
-        mOnClick = onClickCallback;
+        this(context, onClickCallback, null);
     }
 
     /**
-     * @param context The {@link Resources} used for accessing colors.
-     * @param colorResId The {@link ColorRes} of this clickable span.
+     * @param context The {@link Context} used for accessing colors.
      * @param onClickCallback The callback notified when the span is clicked.
+     * @param contentDescription The content description for this clickable span.
      */
     public ChromeClickableSpan(
-            Context context, @ColorRes int colorResId, Callback<View> onClickCallback) {
-        mColor = context.getColor(colorResId);
+            Context context, Callback<View> onClickCallback, @Nullable String contentDescription) {
+        int defaultColor = context.getColor(R.color.default_text_color_link_baseline);
+        mColor =
+                AttrUtils.resolveColor(
+                        context.getTheme(), R.attr.globalClickableSpanColor, defaultColor);
         mOnClick = onClickCallback;
+        mContentDescription = contentDescription;
+    }
+
+    /**
+     * @param color The {@link ColorInt} of this clickable span.
+     * @param onClickCallback The callback notified when the span is clicked.
+     */
+    public ChromeClickableSpan(@ColorInt int color, Callback<View> onClickCallback) {
+        mColor = color;
+        mOnClick = onClickCallback;
+        mContentDescription = null;
     }
 
     @Override
@@ -52,10 +63,39 @@ public class ChromeClickableSpan extends ClickableSpan {
         mOnClick.onResult(view);
     }
 
+    /**
+     * Returns the content description for this clickable span, or null if a custom content
+     * description has not been set.
+     */
+    public @Nullable String getContentDescription() {
+        return mContentDescription;
+    }
+
     // Enable underline on the link text.
     @Override
     public void updateDrawState(TextPaint textPaint) {
         super.updateDrawState(textPaint);
         textPaint.setColor(mColor);
+        // When the span is focused, it means that it contains a background highlight. Remove the
+        // text underline in this case.
+        textPaint.setUnderlineText(!mFocused);
+    }
+
+    /**
+     * Sets whether the span is focused.
+     *
+     * @param focused Whether the span is focused.
+     */
+    public void setFocused(boolean focused) {
+        mFocused = focused;
+    }
+
+    /**
+     * Determines whether the span is focused.
+     *
+     * @return {@code true} if the span is focused, {@code false} otherwise.
+     */
+    public boolean isFocused() {
+        return mFocused;
     }
 }

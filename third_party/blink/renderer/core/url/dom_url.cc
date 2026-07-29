@@ -29,16 +29,18 @@
 #include "base/auto_reset.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/fileapi/public_url_manager.h"
+#include "third_party/blink/renderer/core/url/dom_origin.h"
 #include "third_party/blink/renderer/core/url/url_search_params.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/loader/fetch/memory_cache.h"
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
+#include "third_party/blink/renderer/platform/weborigin/security_origin.h"
 
 namespace blink {
 
 // static
 DOMURL* DOMURL::Create(const String& url, ExceptionState& exception_state) {
-  return MakeGarbageCollected<DOMURL>(PassKey(), url, NullURL(),
+  return MakeGarbageCollected<DOMURL>(PassKey(), url, NullUrl(),
                                       exception_state);
 }
 
@@ -69,6 +71,11 @@ DOMURL::DOMURL(PassKey, const KURL& url): url_(url) {
 
 DOMURL::~DOMURL() = default;
 
+DOMOrigin* DOMURL::GetDOMOrigin(LocalDOMWindow*) const {
+  // No access check is required, as URLs are not accessible cross-origin.
+  return DOMOrigin::Create(SecurityOrigin::Create(Url()));
+}
+
 void DOMURL::Trace(Visitor* visitor) const {
   visitor->Trace(search_params_);
   ScriptWrappable::Trace(visitor);
@@ -98,7 +105,7 @@ DOMURL* DOMURL::parse(const String& str, const String& base) {
 
 // static
 bool DOMURL::canParse(const String& url) {
-  return KURL(NullURL(), url).IsValid();
+  return KURL(NullUrl(), url).IsValid();
 }
 
 // static
@@ -119,10 +126,11 @@ void DOMURL::setHref(const String& value, ExceptionState& exception_state) {
 
 void DOMURL::setSearch(const String& value) {
   DOMURLUtils::setSearch(value);
-  if (!value.empty() && value[0] == '?')
-    UpdateSearchParams(value.Substring(1));
-  else
+  if (value.starts_with('?')) {
+    UpdateSearchParams(value.substr(1));
+  } else {
     UpdateSearchParams(value);
+  }
 }
 
 String DOMURL::CreatePublicURL(ExecutionContext* execution_context,

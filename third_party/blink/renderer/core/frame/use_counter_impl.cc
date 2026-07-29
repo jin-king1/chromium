@@ -25,7 +25,9 @@
 
 #include "third_party/blink/renderer/core/frame/use_counter_impl.h"
 
+#include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/strings/strcat.h"
 #include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom-blink.h"
 #include "third_party/blink/public/common/scheme_registry.h"
 #include "third_party/blink/public/mojom/use_counter/use_counter_feature.mojom-blink.h"
@@ -40,7 +42,9 @@
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_client.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
+#include "third_party/blink/renderer/core/frame/webdx_feature_tracing.h"
 #include "third_party/blink/renderer/core/inspector/console_message.h"
+#include "third_party/blink/renderer/core/xml/xslt_processor.h"
 #include "third_party/blink/renderer/platform/instrumentation/tracing/trace_event.h"
 #include "third_party/blink/renderer/platform/weborigin/scheme_registry.h"
 
@@ -141,12 +145,18 @@ void UseCounterImpl::Trace(Visitor* visitor) const {
 
 void UseCounterImpl::DidCommitLoad(const LocalFrame* frame) {
   const KURL url = frame->GetDocument()->Url();
-  if (CommonSchemeRegistry::IsExtensionScheme(url.Protocol().Ascii())) {
+  const std::string protocol = url.Protocol().Ascii();
+  if (CommonSchemeRegistry::IsExtensionScheme(protocol)) {
     context_ = kExtensionContext;
   } else if (url.ProtocolIs("file")) {
     context_ = kFileContext;
-  } else if (url.ProtocolIsInHTTPFamily()) {
+  } else if (url.ProtocolIsInHttpFamily() ||
+             CommonSchemeRegistry::IsIsolatedAppScheme(protocol)) {
+    // Isolated Apps use the same frames as regular web pages, thus IWA feature
+    // usage is recorded in the same way as feature usage for normal frames.
     context_ = kDefaultContext;
+  } else if (url.IsAboutBlankUrl() || url.IsAboutSrcdocUrl()) {
+    context_ = kAboutBlankOrSrcdoc;
   } else {
     // UseCounter is disabled for all other URL schemes.
     context_ = kDisabledContext;
@@ -169,6 +179,8 @@ void UseCounterImpl::DidCommitLoad(const LocalFrame* frame) {
   if (context_ == kExtensionContext || context_ == kFileContext) {
     CountFeature(WebFeature::kPageVisits);
   }
+
+  ReportTotalTakenTime(frame, /*did_commit_load=*/true);
 }
 
 bool UseCounterImpl::IsCounted(CSSPropertyID unresolved_property,
@@ -187,6 +199,21 @@ bool UseCounterImpl::IsCounted(const UseCounterFeature& feature) const {
     return false;
 
   return feature_tracker_.Test(feature);
+}
+
+void UseCounterImpl::InheritXsltUseCountersFrom(const UseCounterImpl& other) {
+  DCHECK(XSLTProcessor::IsXSLTEnabled(nullptr));
+  static constexpr WebFeature kFeaturesToInherit[] = {
+      WebFeature::kXmlCAPAlert,
+      WebFeature::kXmlCAPAlertWithXSLT,
+  };
+  for (WebFeature feature : kFeaturesToInherit) {
+    UseCounterFeature ucf(mojom::blink::UseCounterFeatureType::kWebFeature,
+                          static_cast<uint32_t>(feature));
+    if (other.IsCounted(ucf)) {
+      feature_tracker_.TestAndSet(ucf);
+    }
+  }
 }
 
 void UseCounterImpl::AddObserver(Observer* observer) {
@@ -210,6 +237,8 @@ void UseCounterImpl::Count(const UseCounterFeature& feature,
     if (ReportMeasurement(feature, source_frame))
       TraceMeasurement(feature);
   }
+
+  MaybeEmitWebDXFeatureTraceEvent(feature, source_frame);
 }
 
 void UseCounterImpl::Count(CSSPropertyID property,
@@ -278,6 +307,10 @@ void UseCounterImpl::CountFeature(WebFeature feature) const {
     case kFileContext:
       UMA_HISTOGRAM_ENUMERATION("Blink.UseCounter.File.Features", feature);
       return;
+    case kAboutBlankOrSrcdoc:
+      UMA_HISTOGRAM_ENUMERATION("Blink.UseCounter.AboutBlankOrSrcdoc.Features",
+                                feature);
+      return;
     case kDisabledContext:
       NOTREACHED();
   }
@@ -291,16 +324,22 @@ bool UseCounterImpl::ReportMeasurement(const UseCounterFeature& feature,
 
   if (!frame || !frame->Client())
     return false;
+
+  base::ElapsedTimer timer;
+
   auto* client = frame->Client();
 
   if (feature.type() == mojom::blink::UseCounterFeatureType::kWebFeature)
     NotifyFeatureCounted(static_cast<WebFeature>(feature.value()));
 
-  // Report to browser about observed event only when URL is HTTP/HTTPS,
-  // as other URL schemes are filtered out in
+  // Report to browser about observed event only when URL is HTTP/HTTPS or
+  // isolated-app://, as other URL schemes are filtered out in
   // |MetricsWebContentsObserver::DoesTimingUpdateHaveError| anyway.
   if (context_ == kDefaultContext) {
     client->DidObserveNewFeatureUsage(feature);
+    if (base::TimeTicks::IsHighResolution()) {
+      total_taken_time_for_reporting_ += timer.Elapsed();
+    }
     return true;
   }
 
@@ -311,6 +350,30 @@ bool UseCounterImpl::ReportMeasurement(const UseCounterFeature& feature,
   }
 
   return false;
+}
+
+void UseCounterImpl::ReportTotalTakenTime(const LocalFrame* frame,
+                                          bool did_commit_load) {
+  if (!frame->IsOutermostMainFrame()) {
+    return;
+  }
+  const auto* document = frame->GetDocument();
+  if (document->IsInitialEmptyDocument() ||
+      !document->Url().ProtocolIsInHttpFamily()) {
+    return;
+  }
+
+  String suffix;
+  if (did_commit_load) {
+    suffix = ".DidCommitLoad";
+  } else if (document->HasFinishedParsing()) {
+    suffix = ".FinishedParsing";
+  }
+
+  base::UmaHistogramMicrosecondsTimes(
+      base::StrCat(
+          {"Blink.UseCounter.TotalTakenTimeForReporting2", suffix.Ascii()}),
+      total_taken_time_for_reporting_);
 }
 
 // Note that HTTPArchive tooling looks specifically for this event - see

@@ -11,6 +11,7 @@
 #include "base/compiler_specific.h"
 #include "base/feature_list.h"
 #include "extensions/common/extension_features.h"
+#include "third_party/blink/public/common/features_generated.h"
 
 namespace extensions {
 
@@ -20,16 +21,21 @@ namespace {
 // kill switches for extension features. Note any such feature flags must
 // generally be removed once the API has been stable for a few releases.
 const base::Feature* kFeatureFlags[] = {
-    &extensions_features::kApiActionOpenPopup,
     &extensions_features::kApiContentSettingsClipboard,
     &extensions_features::kApiEnterpriseKioskInput,
-    &extensions_features::kApiPermissionsHostAccessRequests,
-    &extensions_features::kApiUserScriptsExecute,
-    &extensions_features::kApiUserScriptsMultipleWorlds,
+    &extensions_features::kApiGlicAccessFromGoogleWebpage,
+    &extensions_features::kApiMimeHandler,
+    &extensions_features::kApiGlicPrivate,
+    &extensions_features::kApiContextualTasksPrivate,
     &extensions_features::kApiOdfsConfigPrivate,
+    &extensions_features::kApiProxyOverrideRulesPrivate,
     &extensions_features::kExperimentalOmniboxLabs,
     &extensions_features::kExtensionIconVariants,
-    &extensions_features::kTelemetryExtensionPendingApprovalApi,
+    &extensions_features::
+        kApiEnterpriseReportingPrivateOnDataMaskingRulesTriggered,
+#if BUILDFLAG(IS_CHROMEOS)
+    &blink::features::kSmartCard,
+#endif
 };
 
 constinit base::span<const base::Feature*> g_feature_flags_test_override;

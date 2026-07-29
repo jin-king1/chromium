@@ -27,8 +27,8 @@
 #include "base/files/file_path.h"
 #include "base/files/memory_mapped_file.h"
 #include "base/lazy_instance.h"
+#include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/notreached.h"
 #include "base/path_service.h"
 #include "base/rand_util.h"
@@ -78,8 +78,8 @@ bool GenerateEntropy(unsigned char* buffer, size_t amount) {
 void GetMappedFileData(base::MemoryMappedFile* mapped_file,
                        v8::StartupData* data) {
   if (mapped_file) {
-    data->data = reinterpret_cast<const char*>(mapped_file->data());
-    data->raw_size = static_cast<int>(mapped_file->length());
+    data->data = reinterpret_cast<const char*>(mapped_file->bytes().data());
+    data->raw_size = static_cast<int>(mapped_file->bytes().size());
   } else {
     data->data = nullptr;
     data->raw_size = 0;
@@ -168,7 +168,8 @@ base::File OpenV8File(const char* file_name,
   const int kMaxOpenAttempts = 5;
   const int kOpenRetryDelayMillis = 250;
 
-  int flags = base::File::FLAG_OPEN | base::File::FLAG_READ;
+  int flags = base::File::FLAG_OPEN | base::File::FLAG_READ |
+              base::File::FLAG_WIN_SHARE_DELETE;
   base::File file;
   for (int attempt = 0; attempt < kMaxOpenAttempts; attempt++) {
     file.Initialize(path, flags);
@@ -196,7 +197,7 @@ void SetV8FlagsFormatted(const char* format, ...) {
   char buffer[128];
   va_list args;
   va_start(args, format);
-  int length = base::VSpanPrintf(buffer, format, args);
+  int length = UNSAFE_TODO(base::VSpanPrintf(buffer, format, args));
   if (length <= 0 || sizeof(buffer) <= static_cast<unsigned>(length)) {
     PLOG(ERROR) << "Invalid formatted V8 flag: " << format;
     return;
@@ -220,6 +221,7 @@ void SetV8FlagsIfOverridden(const base::Feature& feature,
 }
 
 constexpr std::string_view kV8FlagFeaturePrefix = "V8Flag_";
+constexpr std::string_view kV8FlagParam = "V8FlagParam";
 
 }  // namespace
 
@@ -227,7 +229,7 @@ class V8FeatureVisitor : public base::FeatureVisitor {
  public:
   void Visit(const std::string& feature_name,
              base::FeatureList::OverrideState override_state,
-             const std::map<std::string, std::string>& params,
+             const base::FieldTrialParams& params,
              const std::string& trial_name,
              const std::string& group_name) override {
     std::string_view feature_name_view(feature_name);
@@ -249,8 +251,15 @@ class V8FeatureVisitor : public base::FeatureVisitor {
         break;
 
       case base::FeatureList::OverrideState::OVERRIDE_ENABLE_FEATURE:
-        SetV8FlagsFormatted("--%s", flag_name.c_str());
-        for (const auto& [param_name, param_value] : params) {
+        auto it = params.begin();
+        if (it != params.end() && it->first == kV8FlagParam) {
+          SetV8FlagsFormatted("--%s=%s", flag_name.c_str(), it->second.c_str());
+          ++it;
+        } else {
+          SetV8FlagsFormatted("--%s", flag_name.c_str());
+        }
+        for (; it != params.end(); ++it) {
+          const auto& [param_name, param_value] = *it;
           SetV8FlagsFormatted("--%s=%s", param_name.c_str(),
                               param_value.c_str());
         }
@@ -316,6 +325,16 @@ void SetFeatureFlags() {
   // will be converted, on V8 initialization, to V8 flags:
   //
   //   --foo --bar --bar_param=20 --no-baz
+  //
+  // If an argument is needed for the main flag, a "V8FlagParam" param can be be
+  // used as the first parameter. Additional parameters can still be passed. For
+  // example, running Chromium with:
+  //
+  //   --enable-features=V8Flag_foo:V8FlagParam/bar/baz_param/20
+  //
+  // will be converted to these V8 flags:
+  //
+  //   --foo=bar --baz_param=20
   V8FeatureVisitor feature_visitor;
   base::FeatureList::VisitFeaturesAndParams(feature_visitor,
                                             kV8FlagFeaturePrefix);
@@ -343,12 +362,6 @@ void SetFeatureFlags() {
   SetV8FlagsIfOverridden(features::kV8OffThreadFinalization,
                          "--finalize-streaming-on-background",
                          "--no-finalize-streaming-on-background");
-  if (base::FeatureList::IsEnabled(features::kV8DelayMemoryReducer)) {
-    SetV8FlagsFormatted(
-        "--gc-memory-reducer-start-delay-ms=%i",
-        static_cast<int>(
-            features::kV8MemoryReducerStartDelay.Get().InMilliseconds()));
-  }
   SetV8FlagsIfOverridden(features::kV8ConcurrentMarkingHighPriorityThreads,
                          "--concurrent-marking-high-priority-threads",
                          "--no-concurrent-marking-high-priority-threads");
@@ -371,12 +384,6 @@ void SetFeatureFlags() {
       features::kV8ExperimentalRegexpEngine,
       "--enable-experimental-regexp-engine-on-excessive-backtracks",
       "--no-enable-experimental-regexp-engine-on-excessive-backtracks");
-  SetV8FlagsIfOverridden(features::kV8ExternalMemoryAccountedInGlobalLimit,
-                         "--external-memory-accounted-in-global-limit",
-                         "--no-external-memory-accounted-in-global-limit");
-  SetV8FlagsIfOverridden(features::kV8GCSpeedUsesCounters,
-                         "--gc-speed-uses-counters",
-                         "--no-gc-speed-uses-counters");
   SetV8FlagsIfOverridden(features::kV8TurboFastApiCalls,
                          "--turbo-fast-api-calls", "--no-turbo-fast-api-calls");
   SetV8FlagsIfOverridden(features::kV8MegaDomIC, "--mega-dom-ic",
@@ -385,17 +392,31 @@ void SetFeatureFlags() {
   SetV8FlagsIfOverridden(features::kV8ConcurrentMaglevHighPriorityThreads,
                          "--concurrent-maglev-high-priority-threads",
                          "--no-concurrent-maglev-high-priority-threads");
+  if (base::FeatureList::IsEnabled(features::kV8MaxValidPolymorphicMapCount)) {
+    SetV8FlagsFormatted("--max-valid-polymorphic-map-count=10");
+  }
   if (base::FeatureList::IsEnabled(features::kV8MemoryReducer)) {
     SetV8FlagsFormatted("--memory-reducer-gc-count=%i",
                         features::kV8MemoryReducerGCCount.Get());
   }
-  SetV8FlagsIfOverridden(features::kV8IncrementalMarkingStartUserVisible,
-                         "--incremental-marking-start-user-visible",
-                         "--no-incremental-marking-start-user-visible");
+  if (base::FeatureList::IsEnabled(features::kV8PreconfigureOldGen)) {
+    SetV8FlagsFormatted("--preconfigured-old-space-size=%i",
+                        features::kV8PreconfigureOldGenSize.Get());
+  }
+  if (base::FeatureList::IsEnabled(features::kV8MemoryReducerDelay)) {
+    SetV8FlagsFormatted("--memory-reducer-delay-ms=%i",
+                        features::kV8MemoryReducerDelayInSeconds.Get() * 1000);
+  }
+  if (base::FeatureList::IsEnabled(features::kV8HighEndAndroid)) {
+    SetV8FlagsFormatted("--high-end-android-physical-memory-threshold=%i",
+                        features::kV8HighEndAndroidMemoryThreshold.Get());
+  }
   SetV8FlagsIfOverridden(features::kV8IdleGcOnContextDisposal,
                          "--idle-gc-on-context-disposal",
                          "--no-idle-gc-on-context-disposal");
-  SetV8FlagsIfOverridden(features::kV8MinorMS, "--minor-ms", "--no-minor-ms");
+  SetV8FlagsIfOverridden(features::kV8MemoryPoolReleaseOnMallocFailures,
+                         "--memory-pool-release-on-malloc-failures",
+                         "--no-memory-pool-release-on-malloc-failures");
   if (base::FeatureList::IsEnabled(features::kV8ScavengerHigherCapacity)) {
     SetV8FlagsFormatted("--scavenger-max-new-space-capacity-mb=%i",
                         features::kV8ScavengerMaxCapacity.Get());
@@ -436,9 +457,6 @@ void SetFeatureFlags() {
       features::kV8SingleThreadedGCInBackgroundNoIncrementalMarking,
       "--no-incremental-marking-for-gc-in-background",
       "--incremental-marking-for-gc-in-background");
-  SetV8FlagsIfOverridden(features::kV8DecommitPooledPages,
-                         "--decommit-pooled-pages",
-                         "--no-decommit-pooled-pages");
 
   if (base::FeatureList::IsEnabled(features::kV8ConcurrentSparkplug)) {
     if (int max_threads = features::kV8ConcurrentSparkplugMaxThreads.Get()) {
@@ -461,34 +479,13 @@ void SetFeatureFlags() {
     }
   }
 
-  if (base::FeatureList::IsEnabled(features::kV8EfficiencyModeTiering)) {
-    int delay = features::kV8EfficiencyModeTieringDelayTurbofan.Get();
-    if (delay == 0) {
-      SetV8FlagsFormatted(
-          "--efficiency-mode-for-tiering-heuristics "
-          "--efficiency-mode-disable-turbofan");
-    } else {
-      SetV8FlagsFormatted(
-          "--efficiency-mode-for-tiering-heuristics "
-          "--noefficiency-mode-disable-turbofan "
-          "--efficiency-mode-delay-turbofan=%i",
-          delay);
-    }
-  } else {
-    SetV8FlagsFormatted("--no-efficiency-mode-for-tiering-heuristics");
-  }
-
   // Make sure aliases of kV8SlowHistograms only enable the feature to
   // avoid contradicting settings between multiple finch experiments.
   bool any_slow_histograms_alias =
       base::FeatureList::IsEnabled(
           features::kV8SlowHistogramsCodeMemoryWriteProtection) ||
-      base::FeatureList::IsEnabled(
-          features::kV8SlowHistogramsIntelJCCErratumMitigation) ||
       base::FeatureList::IsEnabled(features::kV8SlowHistogramsSparkplug) ||
-      base::FeatureList::IsEnabled(
-          features::kV8SlowHistogramsSparkplugAndroid) ||
-      base::FeatureList::IsEnabled(features::kV8SlowHistogramsNoTurbofan);
+      base::FeatureList::IsEnabled(features::kV8SlowHistogramsSparkplugAndroid);
   if (any_slow_histograms_alias) {
     SetV8Flags("--slow-histograms");
   } else {
@@ -500,53 +497,23 @@ void SetFeatureFlags() {
                          "--ignition-elide-redundant-tdz-checks",
                          "--no-ignition-elide-redundant-tdz-checks");
 
-  SetV8FlagsIfOverridden(features::kV8IntelJCCErratumMitigation,
-                         "--intel-jcc-erratum-mitigation",
-                         "--no-intel-jcc-erratum-mitigation");
-
-  SetV8FlagsIfOverridden(features::kV8UseLibmTrigFunctions,
-                         "--use-libm-trig-functions",
-                         "--no-use-libm-trig-functions");
-
   SetV8FlagsIfOverridden(features::kV8UseOriginalMessageForStackTrace,
                          "--use-original-message-for-stack-trace",
                          "--no-use-original-message-for-stack-trace");
 
   // JavaScript language features.
-  SetV8FlagsIfOverridden(features::kJavaScriptIteratorHelpers,
-                         "--harmony-iterator-helpers",
-                         "--no-harmony-iterator-helpers");
-  SetV8FlagsIfOverridden(features::kJavaScriptPromiseWithResolvers,
-                         "--js-promise-withresolvers",
-                         "--no-js-promise-withresolvers");
   SetV8FlagsIfOverridden(features::kJavaScriptRegExpModifiers,
                          "--js-regexp-modifiers", "--no-js-regexp-modifiers");
   SetV8FlagsIfOverridden(features::kJavaScriptImportAttributes,
                          "--harmony-import-attributes",
                          "--no-harmony-import-attributes");
-  SetV8FlagsIfOverridden(features::kJavaScriptSetMethods,
-                         "--harmony-set-methods", "--no-harmony-set-methods");
   SetV8FlagsIfOverridden(features::kJavaScriptRegExpDuplicateNamedGroups,
                          "--js-regexp-duplicate-named-groups",
                          "--no-js-duplicate-named-groups");
   SetV8FlagsIfOverridden(features::kJavaScriptPromiseTry, "--js-promise-try",
                          "--no-js-promise-try");
 
-  // WebAssembly features.
-
-  SetV8FlagsIfOverridden(features::kWebAssemblyDeopt, "--wasm-deopt",
-                         "--no-wasm-deopt");
-  SetV8FlagsIfOverridden(features::kWebAssemblyInliningCallIndirect,
-                         "--wasm-inlining-call-indirect",
-                         "--no-wasm-inlining-call-indirect");
-  SetV8FlagsIfOverridden(features::kWebAssemblyMultipleMemories,
-                         "--experimental-wasm-multi-memory",
-                         "--no-experimental-wasm-multi-memory");
-  SetV8FlagsIfOverridden(features::kWebAssemblyTurboshaft, "--turboshaft-wasm",
-                         "--no-turboshaft-wasm");
-  SetV8FlagsIfOverridden(features::kWebAssemblyTurboshaftInstructionSelection,
-                         "--turboshaft-wasm-instruction-selection-staged",
-                         "--no-turboshaft-wasm-instruction-selection-staged");
+  // WebAssembly features (currently none).
 }
 
 }  // namespace
@@ -598,26 +565,14 @@ void V8Initializer::Initialize(IsolateHolder::ScriptMode mode,
   // do it is that there are no Isolates available yet, which are required
   // for recording histograms in V8.
 
-  // Record the mode of the sandbox.
-  // These values are persisted to logs. Entries should not be renumbered and
-  // numeric values should never be reused. This should match enum
-  // V8SandboxMode in tools/metrics/histograms/enums.xml.
-  enum class V8SandboxMode {
-    kSecure = 0,
-    kInsecure = 1,
-    kMaxValue = kInsecure,
-  };
-  base::UmaHistogramEnumeration("V8.SandboxMode",
-                                v8::V8::IsSandboxConfiguredSecurely()
-                                    ? V8SandboxMode::kSecure
-                                    : V8SandboxMode::kInsecure);
+  base::UmaHistogramEnumeration("V8.SandboxMode", v8::V8::GetSandboxMode());
 
   // Record the size of the address space reservation backing the sandbox.
   // The size will always be one of a handful of values, so use a sparse
   // histogram to capture it.
-  size_t size = v8::V8::GetSandboxReservationSizeInBytes();
+  const size_t size = v8::V8::GetSandboxReservationSizeInBytes();
   DCHECK_GT(size, 0U);
-  size_t sizeInGB = size >> 30;
+  const size_t sizeInGB = size >> 30;
   DCHECK_EQ(sizeInGB << 30, size);
   base::UmaHistogramSparse("V8.SandboxReservationSizeGB", sizeInGB);
 

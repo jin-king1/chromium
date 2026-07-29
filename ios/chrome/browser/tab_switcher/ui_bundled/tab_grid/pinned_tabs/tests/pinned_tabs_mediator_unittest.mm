@@ -6,10 +6,16 @@
 
 #import <UIKit/UIKit.h>
 
+#import "base/barrier_closure.h"
+#import "base/functional/callback.h"
+#import "base/functional/callback_helpers.h"
 #import "base/memory/raw_ptr.h"
+#import "base/run_loop.h"
+#import "base/strings/string_number_conversions.h"
 #import "base/test/ios/wait_util.h"
 #import "base/test/metrics/histogram_tester.h"
 #import "base/test/scoped_feature_list.h"
+#import "base/test/test_timeouts.h"
 #import "ios/chrome/browser/drag_and_drop/model/drag_item_util.h"
 #import "ios/chrome/browser/shared/model/browser/browser_list.h"
 #import "ios/chrome/browser/shared/model/browser/browser_list_factory.h"
@@ -17,13 +23,18 @@
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/shared/model/web_state_list/test/web_state_list_builder_from_description.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
+#import "ios/chrome/browser/shared/model/web_state_list/web_state_list_delegate.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_opener.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/browser/snapshots/model/snapshot_browser_agent.h"
+#import "ios/chrome/browser/snapshots/model/snapshot_source_tab_helper.h"
+#import "ios/chrome/browser/snapshots/model/snapshot_tab_helper.h"
 #import "ios/chrome/browser/tab_insertion/model/tab_insertion_browser_agent.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_collection_drag_drop_metrics.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/test/fake_drag_session.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/test/fake_drop_session.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/test/fake_pinned_tab_collection_consumer.h"
+#import "ios/chrome/browser/tab_switcher/ui_bundled/web_state_tab_switcher_item.h"
 #import "ios/chrome/browser/url_loading/model/fake_url_loading_delegate.h"
 #import "ios/chrome/browser/url_loading/model/scene_url_loading_service.h"
 #import "ios/chrome/browser/url_loading/model/test_scene_url_loading_service.h"
@@ -43,6 +54,9 @@ GURL GURLWithIndex(int index) {
   return GURL("http://test/url" + base::NumberToString(index));
 }
 
+// The identifier where snapshots are saved.
+const char kIdentifier[] = "Identifier";
+
 // Returns a FakeDropSession for the given `web_state`.
 FakeDropSession* FakeDropSessionWithWebState(web::WebState* web_state) {
   UIDragItem* drag_item = CreateTabDragItem(web_state);
@@ -50,6 +64,20 @@ FakeDropSession* FakeDropSessionWithWebState(web::WebState* web_state) {
       [[FakeDropSession alloc] initWithItems:@[ drag_item ]];
   return drop_session;
 }
+
+// A test WebStateListDelegate that install a SnapshotTabHelper when a
+// WebState is inserted.
+class TestWebStateListDelegate : public WebStateListDelegate {
+ public:
+  void WillAddWebState(web::WebState* web_state) override {
+    CHECK(web_state->IsRealized());
+    SnapshotTabHelper::CreateForWebState(web_state);
+    SnapshotSourceTabHelper::CreateForWebState(web_state);
+  }
+
+  void WillActivateWebState(web::WebState* web_state) override {}
+  void WillRemoveWebState(web::WebState* web_state) override {}
+};
 
 }  // namespace
 
@@ -59,13 +87,21 @@ class PinnedTabsMediatorTest : public PlatformTest {
     TestProfileIOS::Builder builder;
     profile_ = std::move(builder).Build();
 
-    regular_browser_ = std::make_unique<TestBrowser>(profile_.get());
-    incognito_browser_ =
-        std::make_unique<TestBrowser>(profile_->GetOffTheRecordProfile());
+    regular_browser_ = std::make_unique<TestBrowser>(
+        profile_.get(), std::make_unique<TestWebStateListDelegate>());
+    incognito_browser_ = std::make_unique<TestBrowser>(
+        profile_->GetOffTheRecordProfile(),
+        std::make_unique<TestWebStateListDelegate>());
 
     browser_list_ = BrowserListFactory::GetForProfile(profile_.get());
     browser_list_->AddBrowser(regular_browser_.get());
     browser_list_->AddBrowser(incognito_browser_.get());
+
+    const auto kAllBrowsers = BrowserList::BrowserType::kAll;
+    for (Browser* browser : browser_list_->BrowsersOfType(kAllBrowsers)) {
+      SnapshotBrowserAgent::CreateForBrowser(browser);
+      SnapshotBrowserAgent::FromBrowser(browser)->SetSessionID(kIdentifier);
+    }
 
     scene_loader_ = std::make_unique<TestSceneUrlLoadingService>();
     scene_loader_->current_browser_ = regular_browser_.get();
@@ -90,12 +126,11 @@ class PinnedTabsMediatorTest : public PlatformTest {
   ~PinnedTabsMediatorTest() override {
     // Cleanup to avoid debugger crash in non empty observer lists.
     WebStateList* web_state_list = regular_browser_->GetWebStateList();
-    CloseAllWebStates(*web_state_list,
-                      WebStateList::ClosingFlags::CLOSE_NO_FLAGS);
+    CloseAllWebStates(*web_state_list, WebStateList::ClosingReason::kDefault);
     WebStateList* incognito_web_state_list =
         incognito_browser_->GetWebStateList();
     CloseAllWebStates(*incognito_web_state_list,
-                      WebStateList::ClosingFlags::CLOSE_NO_FLAGS);
+                      WebStateList::ClosingReason::kDefault);
   }
 
   // Creates a FakeWebState with a navigation history containing exactly only
@@ -123,20 +158,19 @@ class PinnedTabsMediatorTest : public PlatformTest {
   }
 
  protected:
-  std::unique_ptr<TestBrowser> regular_browser_;
-  std::unique_ptr<Browser> incognito_browser_;
-  FakePinnedTabCollectionConsumer* consumer_;
-  PinnedTabsMediator* mediator_;
-  base::HistogramTester histogram_tester_;
-
- private:
   web::WebTaskEnvironment task_environment_;
   base::test::ScopedFeatureList feature_list_;
-  raw_ptr<BrowserList> browser_list_;
   std::unique_ptr<TestProfileIOS> profile_;
+  raw_ptr<BrowserList> browser_list_;
+  std::unique_ptr<TestBrowser> regular_browser_;
+  std::unique_ptr<Browser> incognito_browser_;
   std::unique_ptr<TestSceneUrlLoadingService> scene_loader_;
   raw_ptr<UrlLoadingBrowserAgent> loader_;
   FakeURLLoadingDelegate* url_loading_delegate_;
+
+  FakePinnedTabCollectionConsumer* consumer_;
+  PinnedTabsMediator* mediator_;
+  base::HistogramTester histogram_tester_;
 };
 
 // Tests that the consumer is notified when a web state is pinned.
@@ -248,7 +282,7 @@ TEST_F(PinnedTabsMediatorTest, DropPinnedTabs) {
   }
 
   WebStateList* web_state_list = regular_browser_->GetWebStateList();
-  CloseAllWebStates(*web_state_list, WebStateList::CLOSE_NO_FLAGS);
+  CloseAllWebStates(*web_state_list, WebStateList::ClosingReason::kDefault);
   WebStateListBuilderFromDescription builder(web_state_list);
   ASSERT_TRUE(builder.BuildWebStateListFromDescription(
       "a* b c | d e f", regular_browser_->GetProfile()));
@@ -287,7 +321,7 @@ TEST_F(PinnedTabsMediatorTest, DropRegularTabs) {
   }
 
   WebStateList* web_state_list = regular_browser_->GetWebStateList();
-  CloseAllWebStates(*web_state_list, WebStateList::CLOSE_NO_FLAGS);
+  CloseAllWebStates(*web_state_list, WebStateList::ClosingReason::kDefault);
   WebStateListBuilderFromDescription builder(web_state_list);
   ASSERT_TRUE(builder.BuildWebStateListFromDescription(
       "a* b c | d e f", regular_browser_->GetProfile()));
@@ -326,7 +360,7 @@ TEST_F(PinnedTabsMediatorTest, DropTabGroupTabs) {
   }
 
   WebStateList* web_state_list = regular_browser_->GetWebStateList();
-  CloseAllWebStates(*web_state_list, WebStateList::CLOSE_NO_FLAGS);
+  CloseAllWebStates(*web_state_list, WebStateList::ClosingReason::kDefault);
   WebStateListBuilderFromDescription builder(web_state_list);
   ASSERT_TRUE(builder.BuildWebStateListFromDescription(
       "a* b c | d [ 0 e f ]", regular_browser_->GetProfile()));
@@ -376,7 +410,7 @@ TEST_F(PinnedTabsMediatorTest, DropExternalURL) {
   }
 
   WebStateList* web_state_list = regular_browser_->GetWebStateList();
-  CloseAllWebStates(*web_state_list, WebStateList::CLOSE_NO_FLAGS);
+  CloseAllWebStates(*web_state_list, WebStateList::ClosingReason::kDefault);
   WebStateListBuilderFromDescription builder(web_state_list);
   ASSERT_TRUE(builder.BuildWebStateListFromDescription(
       "a* b c | d", regular_browser_->GetProfile()));
@@ -398,4 +432,27 @@ TEST_F(PinnedTabsMediatorTest, DropExternalURL) {
   EXPECT_EQ(GURL("https://dragged_url.com"),
             web_state->GetNavigationManager()->GetPendingItem()->GetURL());
   ExpectThatDragItemOriginMetricLogged(DragItemOrigin::kOther);
+}
+
+// Tests that `fetchTabSnapshotAndFavicon:completion:` is calling `completion`
+// twice.
+TEST_F(PinnedTabsMediatorTest, FetchTabSnapshotAndFavicon) {
+  // The Pinned Tabs feature is not available on iPad.
+  if (!IsPinnedTabsEnabled()) {
+    return;
+  }
+
+  auto fake_web_state = std::make_unique<web::FakeWebState>();
+  web::FakeWebState* web_state = fake_web_state.get();
+  WebStateTabSwitcherItem* item =
+      [[WebStateTabSwitcherItem alloc] initWithWebState:web_state];
+
+  // Expects the completion to be called twice.
+  base::RunLoop run_loop;
+  auto barrier = base::CallbackToBlock(
+      base::IgnoreArgs<TabSwitcherItem*, TabSnapshotAndFavicon*>(
+          base::BarrierClosure(2, run_loop.QuitClosure())));
+
+  [mediator_ fetchTabSnapshotAndFavicon:item completion:barrier];
+  run_loop.Run();
 }

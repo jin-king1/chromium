@@ -14,6 +14,7 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <utility>
 
 #include "base/check_op.h"
 #include "base/containers/heap_array.h"
@@ -26,7 +27,6 @@
 #include "base/numerics/safe_conversions.h"
 #include "base/posix/eintr_wrapper.h"
 #include "base/sequence_checker.h"
-#include "base/strings/string_util.h"
 #include "components/services/font/public/cpp/font_loader.h"
 #include "pdf/pdfium/pdfium_engine.h"
 #include "pdf/pdfium/pdfium_font_helpers.h"
@@ -70,7 +70,7 @@ bool GetFontTable(int fd,
       return false;
     }
     // Font data is stored in net (big-endian) order.
-    uint16_t num_tables = base::numerics::U16FromBigEndian(bytes);
+    uint16_t num_tables = base::U16FromBigEndian(bytes);
 
     // Read the table directory.
     static const size_t kTableEntrySize = 16u;
@@ -86,12 +86,11 @@ bool GetFontTable(int fd,
     for (uint16_t i = 0u; i < num_tables; ++i) {
       auto entry = table_entries.subspan(i * kTableEntrySize, kTableEntrySize);
       // The `table_tag` is encoded in the same endian as the tag in the table.
-      auto tag = base::numerics::U32FromNativeEndian(entry.first<4u>());
+      auto tag = base::U32FromNativeEndian(entry.first<4u>());
       if (tag == table_tag) {
         // Font data is stored in net (big-endian) order.
-        data_offset = base::numerics::U32FromBigEndian(entry.subspan<8u, 4u>());
-        data_length =
-            base::numerics::U32FromBigEndian(entry.subspan<12u, 4u>());
+        data_offset = base::U32FromBigEndian(entry.subspan<8u, 4u>());
+        data_length = base::U32FromBigEndian(entry.subspan<12u, 4u>());
         break;
       }
     }
@@ -200,21 +199,6 @@ BlinkFontMapper& GetBlinkFontMapper() {
   return *mapper;
 }
 
-// This list is for CPWL_FontMap::GetDefaultFontByCharset().
-// We pretend to have these font natively and let the browser (or underlying
-// fontconfig) pick the proper font on the system.
-void EnumFonts(FPDF_SYSFONTINFO* sysfontinfo, void* mapper) {
-  FPDF_AddInstalledFont(mapper, "Arial", FXFONT_DEFAULT_CHARSET);
-
-  size_t count = FPDF_GetDefaultTTFMapCount();
-  for (size_t i = 0; i < count; ++i) {
-    const FPDF_CharsetFontMap* font_map = FPDF_GetDefaultTTFMapEntry(i);
-    if (font_map) {
-      FPDF_AddInstalledFont(mapper, font_map->fontname, font_map->charset);
-    }
-  }
-}
-
 void* MapFont(FPDF_SYSFONTINFO*,
               int weight,
               int italic,
@@ -230,7 +214,7 @@ void* MapFont(FPDF_SYSFONTINFO*,
   }
 
   std::optional<blink::WebFontDescription> desc =
-      PdfFontToBlinkFontMapping(weight, italic, charset, pitch_family, face);
+      PdfFontToBlinkFontMapping(weight, italic, pitch_family, face);
   if (!desc.has_value()) {
     return nullptr;
   }
@@ -254,7 +238,7 @@ void DeleteFont(FPDF_SYSFONTINFO*, void* font_id) {
 
 FPDF_SYSFONTINFO g_font_info = {.version = 1,
                                 .Release = nullptr,
-                                .EnumFonts = EnumFonts,
+                                .EnumFonts = nullptr,
                                 .MapFont = MapFont,
                                 .GetFont = nullptr,
                                 .GetFontData = GetFontData,
@@ -265,6 +249,11 @@ FPDF_SYSFONTINFO g_font_info = {.version = 1,
 }  // namespace
 
 void InitializeLinuxFontMapper() {
+  // Version 2 uses per-request font matching (MapFont called directly) instead
+  // of upfront enumeration (EnumFonts). This eliminates the expensive
+  // ListFamilies() IPC.
+  g_font_info.version = 2;
+
   FPDF_SetSystemFontInfo(&g_font_info);
 }
 

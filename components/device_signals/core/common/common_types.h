@@ -11,6 +11,7 @@
 
 #include "base/files/file_path.h"
 #include "base/values.h"
+#include "components/certificate_matching/certificate_principal_pattern.h"
 
 namespace device_signals {
 
@@ -22,6 +23,11 @@ enum class SettingValue {
   UNKNOWN,
   DISABLED,
   ENABLED,
+};
+
+enum class Agents {
+  kCrowdStrikeFalcon = 0,
+  kMaxValue = 0,
 };
 
 struct ExecutableMetadata {
@@ -102,11 +108,26 @@ struct CrowdStrikeSignals {
   std::string customer_id{};
   std::string agent_id{};
 
+  // Returns true if all properties are empty.
+  bool IsEmpty() const;
+
   // Returns a Value with the non-empty values. Returns std::nullopt if neither
   // values are set.
   std::optional<base::Value> ToValue() const;
 
   bool operator==(const CrowdStrikeSignals& other) const;
+};
+
+struct GetCertificateOptions {
+  GetCertificateOptions();
+  GetCertificateOptions(const GetCertificateOptions&);
+  GetCertificateOptions& operator=(const GetCertificateOptions&);
+  bool operator==(const GetCertificateOptions&) const;
+  ~GetCertificateOptions();
+  certificate_matching::CertificatePrincipalPattern issuer_pattern;
+  certificate_matching::CertificatePrincipalPattern subject_pattern;
+  // A challenge value from the server to prevent replay attacks.
+  std::string challenge;
 };
 
 }  // namespace device_signals

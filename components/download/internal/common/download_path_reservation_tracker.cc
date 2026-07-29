@@ -10,7 +10,6 @@
 #include <map>
 #include <string>
 
-#include "base/containers/contains.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
@@ -23,7 +22,6 @@
 #include "base/strings/stringprintf.h"
 #include "base/task/lazy_thread_pool_task_runner.h"
 #include "base/task/sequenced_task_runner.h"
-#include "base/third_party/icu/icu_utf.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "components/download/public/common/download_features.h"
@@ -61,7 +59,7 @@ const size_t kZoneIdentifierLength = sizeof(":Zone.Identifier") - 1;
 // Map of download path reservations. Each reserved path is associated with a
 // ReservationKey=DownloadItem*. This object is destroyed in |Revoke()| when
 // there are no more reservations.
-ReservationMap* g_reservation_map = NULL;
+ReservationMap* g_reservation_map = nullptr;
 
 base::LazyThreadPoolSequencedTaskRunner g_sequenced_task_runner =
     LAZY_THREAD_POOL_SEQUENCED_TASK_RUNNER_INITIALIZER(
@@ -105,8 +103,9 @@ bool IsPathReservedInternal(const base::FilePath& path, ReservationKey item) {
        iter != g_reservation_map->end(); ++iter) {
     if ((!item || iter->first != item) &&
         base::FilePath::CompareEqualIgnoreCase(iter->second.value(),
-                                               path.value()))
+                                               path.value())) {
       return true;
+    }
   }
   return false;
 }
@@ -207,11 +206,17 @@ struct CreateReservationInfo {
   base::FilePath suggested_path;
   base::FilePath default_download_path;
   base::FilePath temporary_path;
+  base::FilePath containment_directory;
   base::FilePath fallback_directory;  // directory to use when target path
                                       // cannot be used.
-  bool create_target_directory;
+  bool create_target_directory = false;
   base::Time start_time;
   DownloadPathReservationTracker::FilenameConflictAction conflict_action;
+  bool is_transient = false;
+  bool is_forced_path = false;
+  // Whether the download path was selected by user (e.g., "Save As" or
+  // resumption).
+  bool is_user_selected_path = false;
 };
 
 // Check if |target_path| is writable.
@@ -255,8 +260,34 @@ PathValidationResult ResolveReservationConflicts(
 PathValidationResult ValidatePathAndResolveConflicts(
     const CreateReservationInfo& info,
     base::FilePath* target_path) {
+  // Enforce that the suggested path does not escape the default download
+  // directory via symlink/junction traversal on desktop platforms.
+  bool path_escaped = false;
+#if !BUILDFLAG(IS_ANDROID)
+  base::FilePath containment_dir = info.containment_directory.empty()
+                                       ? info.default_download_path
+                                       : info.containment_directory;
+  if (!info.is_transient && !info.is_forced_path &&
+      !info.is_user_selected_path && !containment_dir.empty() &&
+      base::PathExists(containment_dir)) {
+    base::FilePath absolute_containment_dir =
+        base::MakeAbsoluteFilePath(containment_dir);
+    base::FilePath absolute_target_dir =
+        base::MakeAbsoluteFilePath(target_path->DirName());
+    if (!absolute_containment_dir.empty() && !absolute_target_dir.empty()) {
+      if (absolute_target_dir != absolute_containment_dir &&
+          !absolute_containment_dir.IsParent(absolute_target_dir)) {
+        DVLOG(1) << "Path escapes containment directory via symlink/junction \""
+                 << target_path->value() << "\"";
+        *target_path = containment_dir.Append(target_path->BaseName());
+        path_escaped = true;
+      }
+    }
+  }
+#endif
+
   // Check writability of the suggested path. If we can't write to it, use
-  // the |default_download_path| if it is not empty or |fallback_directory|.
+  // |default_download_path| if it is not empty or |fallback_directory|.
   // We'll prompt them in this case. No further amendments are made to the
   // filename since the user is going to be prompted.
   if (!IsPathWritable(info, *target_path)) {
@@ -267,6 +298,10 @@ PathValidationResult ValidatePathAndResolveConflicts(
     } else {
       *target_path = info.fallback_directory.Append(target_path->BaseName());
     }
+    return PathValidationResult::PATH_NOT_WRITABLE;
+  }
+
+  if (path_escaped) {
     return PathValidationResult::PATH_NOT_WRITABLE;
   }
 
@@ -290,8 +325,10 @@ PathValidationResult ValidatePathAndResolveConflicts(
   // onto another file that differs only by case is not enough of a legitimate
   // edge case to justify determining the case sensitivity of the underlying
   // filesystem.
-  if (*target_path == info.source_path)
+  if (base::FilePath::CompareEqualIgnoreCase(target_path->value(),
+                                             info.source_path.value())) {
     return PathValidationResult::SAME_AS_SOURCE;
+  }
 
   if (!IsPathInUse(*target_path))
     return PathValidationResult::SUCCESS;
@@ -315,8 +352,9 @@ PathValidationResult CreateReservation(const CreateReservationInfo& info,
                                        base::FilePath* reserved_path) {
   // Create a reservation map if one doesn't exist. It will be automatically
   // deleted when all the reservations are revoked.
-  if (g_reservation_map == NULL)
+  if (g_reservation_map == nullptr) {
     g_reservation_map = new ReservationMap;
+  }
 
   // Erase the reservation if it already exists. This can happen during
   // automatic resumption where a new target determination request may be issued
@@ -334,7 +372,11 @@ PathValidationResult CreateReservation(const CreateReservationInfo& info,
   if (DownloadCollectionBridge::ShouldPublishDownload(target_path)) {
     PathValidationResult result = PathValidationResult::SUCCESS;
     // Disallow downloading a file onto itself. Assume that downloading a file
-    if (target_path == info.source_path) {
+    // onto another file that differs only by case is not enough of a legitimate
+    // edge case to justify determining the case sensitivity of the underlying
+    // filesystem.
+    if (base::FilePath::CompareEqualIgnoreCase(target_path.value(),
+                                               info.source_path.value())) {
       result = PathValidationResult::SAME_AS_SOURCE;
     } else if (IsPathInUse(target_path)) {
       // If the download is written to a content URI, put file name in the
@@ -371,7 +413,7 @@ PathValidationResult CreateReservation(const CreateReservationInfo& info,
 // Called on a background thread to update the path of the reservation
 // associated with |key| to |new_path|.
 void UpdateReservation(ReservationKey key, const base::FilePath& new_path) {
-  DCHECK(g_reservation_map != NULL);
+  DCHECK(g_reservation_map != nullptr);
   auto iter = g_reservation_map->find(key);
   if (iter != g_reservation_map->end()) {
     bool use_download_collection = false;
@@ -395,13 +437,13 @@ void UpdateReservation(ReservationKey key, const base::FilePath& new_path) {
 // Called on the FILE thread to remove the path reservation associated with
 // |key|.
 void RevokeReservation(ReservationKey key) {
-  DCHECK(g_reservation_map != NULL);
-  DCHECK(base::Contains(*g_reservation_map, key));
+  DCHECK(g_reservation_map != nullptr);
+  DCHECK(g_reservation_map->contains(key));
   g_reservation_map->erase(key);
   if (g_reservation_map->size() == 0) {
     // No more reservations. Delete map.
     delete g_reservation_map;
-    g_reservation_map = NULL;
+    g_reservation_map = nullptr;
   }
 }
 
@@ -496,7 +538,8 @@ void DownloadPathReservationTracker::GetReservedPath(
     const base::FilePath& fallback_directory,
     bool create_directory,
     FilenameConflictAction conflict_action,
-    ReservedPathCallback callback) {
+    ReservedPathCallback callback,
+    const base::FilePath& containment_directory) {
   // Attach an observer to the download item so that we know when the target
   // path changes and/or the download is no longer active.
   new DownloadItemObserver(download_item);
@@ -511,10 +554,17 @@ void DownloadPathReservationTracker::GetReservedPath(
                                 target_path,
                                 default_path,
                                 download_item->GetTemporaryFilePath(),
+                                containment_directory,
                                 fallback_directory,
                                 create_directory,
                                 download_item->GetStartTime(),
-                                conflict_action};
+                                conflict_action,
+                                download_item->IsTransient(),
+                                !download_item->GetForcedFilePath().empty(),
+                                (download_item->GetTargetDisposition() ==
+                                 DownloadItem::TARGET_DISPOSITION_PROMPT) ||
+                                    (download_item->GetLastReason() !=
+                                     download::DOWNLOAD_INTERRUPT_REASON_NONE)};
 
   GetTaskRunner()->PostTaskAndReplyWithResult(
       FROM_HERE, base::BindOnce(&CreateReservation, info, reserved_path),

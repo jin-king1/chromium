@@ -6,25 +6,51 @@
 
 #import <AuthenticationServices/AuthenticationServices.h>
 
+#import "base/metrics/histogram_functions.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/public/provider/chrome/browser/password_auto_fill/password_auto_fill_api.h"
 
-void OpenIOSCredentialProviderSettings() {
-  if (!IOSPasskeysM2Enabled()) {
-    ios::provider::PasswordsInOtherAppsOpensSettings();
-    return;
-  }
+namespace {
 
+// Name of the histogram that logs the outcome of the prompt that allows the
+// user to set the app as a credential provider.
+constexpr char kTurnOnPromptOutcomeHistogramPrefix[] =
+    "IOS.CredentialProviderExtension.TurnOnPromptOutcome.";
+
+// Returns the string representation of `source`.
+// LINT.IfChange(TurnOnCredentialProviderExtensionPromptSourceToString)
+std::string TurnOnCredentialProviderExtensionPromptSourceToString(
+    TurnOnCredentialProviderExtensionPromptSource source) {
+  switch (source) {
+    case TurnOnCredentialProviderExtensionPromptSource::kPasswordSettings:
+      return "PasswordSettings";
+    case TurnOnCredentialProviderExtensionPromptSource::
+        kCredentialProviderExtensionPromo:
+      return "Promo";
+    case TurnOnCredentialProviderExtensionPromptSource::kCredentialImport:
+      return "CredentialImport";
+  }
+}
+// LINT.ThenChange(/tools/metrics/histograms/metadata/ios/histograms.xml:IOSTurnOnCredentialProviderExtensionPromptSource)
+
+}  // namespace
+
+void OpenIOSCredentialProviderSettings() {
   // If available, use the API that allows to directly open the iOS credential
   // provider settings.
-  if (@available(iOS 17.0, *)) {
-    [ASSettingsHelper openCredentialProviderAppSettingsWithCompletionHandler:^(
-                          NSError* error) {
-      if (error) {
-        ios::provider::PasswordsInOtherAppsOpensSettings();
-      }
-    }];
-  } else {
-    ios::provider::PasswordsInOtherAppsOpensSettings();
-  }
+  [ASSettingsHelper
+      openCredentialProviderAppSettingsWithCompletionHandler:^(NSError* error) {
+        if (error) {
+          ios::provider::PasswordsInOtherAppsOpensSettings();
+        }
+      }];
+}
+
+void RecordTurnOnCredentialProviderExtensionPromptOutcome(
+    TurnOnCredentialProviderExtensionPromptSource source,
+    bool app_was_enabled_for_autofill) {
+  base::UmaHistogramBoolean(
+      kTurnOnPromptOutcomeHistogramPrefix +
+          TurnOnCredentialProviderExtensionPromptSourceToString(source),
+      app_was_enabled_for_autofill);
 }

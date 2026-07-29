@@ -83,7 +83,7 @@ IN_PROC_BROWSER_TEST_F(SafeSearchPolicyTest, LegacySafeSearch) {
 
     // Google safe search can be triggered by the ForceGoogleSafeSearch policy
     // or the legacy safe search mode.
-    PrefService* prefs = browser()->profile()->GetPrefs();
+    PrefService* prefs = browser()->GetProfile()->GetPrefs();
     EXPECT_EQ(google_safe_search != 0 || legacy_safe_search_in_effect,
               prefs->IsManagedPreference(
                   policy::policy_prefs::kForceGoogleSafeSearch));
@@ -118,8 +118,9 @@ IN_PROC_BROWSER_TEST_F(SafeSearchPolicyTest, ForceGoogleSafeSearch) {
   std::set<GURL> google_urls_requested;
   content::URLLoaderInterceptor interceptor(base::BindLambdaForTesting(
       [&](content::URLLoaderInterceptor::RequestParams* params) -> bool {
-        if (params->url_request.url.host() != "google.com")
+        if (params->url_request.url.GetHost() != "google.com") {
           return false;
+        }
         base::AutoLock auto_lock(lock);
         google_urls_requested.insert(params->url_request.url);
         std::string relative_path("chrome/test/data/simple.html");
@@ -145,7 +146,7 @@ IN_PROC_BROWSER_TEST_F(SafeSearchPolicyTest, ForceGoogleSafeSearch) {
         std::nullopt,   // ForceYouTubeSafetyMode
         std::nullopt);  // ForceYouTubeRestrict
     // Verify that the safe search pref behaves the way we expect.
-    PrefService* prefs = browser()->profile()->GetPrefs();
+    PrefService* prefs = browser()->GetProfile()->GetPrefs();
     EXPECT_EQ(safe_search != 0,
               prefs->IsManagedPreference(
                   policy::policy_prefs::kForceGoogleSafeSearch));

@@ -10,11 +10,9 @@
 #include <string_view>
 
 #include "base/check.h"
-#include "base/containers/contains.h"
 #include "base/feature_list.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/weak_ptr.h"
-#include "base/metrics/histogram_functions.h"
 #include "base/observer_list_types.h"
 #include "base/sequence_checker.h"
 #include "base/values.h"
@@ -31,21 +29,9 @@
 #include "components/reporting/proto/synced/metric_data.pb.h"
 #include "components/services/app_service/public/cpp/app_launch_util.h"
 #include "components/services/app_service/public/cpp/app_types.h"
-#include "components/services/app_service/public/cpp/features.h"
 #include "components/services/app_service/public/protos/app_types.pb.h"
 
 namespace reporting {
-namespace {
-
-// Derives disk space consumption for the specified list, assuming the size of
-// each individual entity in the list is the same.
-size_t GetDiskConsumptionForList(const base::Value::List& list) {
-  if (list.empty()) {
-    return 0;
-  }
-  return list.size() * sizeof(list.front());
-}
-}  // namespace
 
 // static
 std::unique_ptr<AppEventsObserver> AppEventsObserver::CreateForProfile(
@@ -87,9 +73,6 @@ void AppEventsObserver::AppInstallTracker::Add(std::string_view app_id) {
   ScopedListPrefUpdate apps_installed_pref(profile_->GetPrefs(),
                                            ::ash::reporting::kAppsInstalled);
   apps_installed_pref->Append(app_id);
-  base::UmaHistogramCounts1M(
-      kDiskConsumptionMetricsName,
-      GetDiskConsumptionForList(apps_installed_pref.Get()));
 }
 
 void AppEventsObserver::AppInstallTracker::Remove(std::string_view app_id) {
@@ -102,17 +85,15 @@ void AppEventsObserver::AppInstallTracker::Remove(std::string_view app_id) {
   ScopedListPrefUpdate apps_installed_pref(profile_->GetPrefs(),
                                            ::ash::reporting::kAppsInstalled);
   apps_installed_pref->EraseValue(base::Value(app_id));
-  base::UmaHistogramCounts1M(
-      kDiskConsumptionMetricsName,
-      GetDiskConsumptionForList(apps_installed_pref.Get()));
 }
 
 bool AppEventsObserver::AppInstallTracker::Contains(
     std::string_view app_id) const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   CHECK(profile_);
-  return base::Contains(
-      profile_->GetPrefs()->GetList(::ash::reporting::kAppsInstalled), app_id);
+  return profile_->GetPrefs()
+      ->GetList(::ash::reporting::kAppsInstalled)
+      .contains(app_id);
 }
 
 AppEventsObserver::AppEventsObserver(

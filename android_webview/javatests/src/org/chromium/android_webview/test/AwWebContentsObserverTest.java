@@ -4,7 +4,6 @@
 
 package org.chromium.android_webview.test;
 
-import androidx.test.InstrumentationRegistry;
 import androidx.test.filters.SmallTest;
 
 import org.junit.Assert;
@@ -16,15 +15,22 @@ import org.junit.runners.Parameterized;
 import org.junit.runners.Parameterized.UseParametersRunnerFactory;
 
 import org.chromium.android_webview.AwContentsStatics;
+import org.chromium.android_webview.AwNavigation;
+import org.chromium.android_webview.AwPage;
 import org.chromium.android_webview.AwWebContentsObserver;
+import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.Feature;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.content_public.browser.GlobalRenderFrameHostId;
 import org.chromium.content_public.browser.LifecycleState;
 import org.chromium.content_public.browser.NavigationHandle;
 import org.chromium.content_public.browser.Page;
+import org.chromium.content_public.browser.test.mock.MockPage;
 import org.chromium.content_public.browser.test.util.TestCallbackHelperContainer;
 import org.chromium.ui.base.PageTransition;
 import org.chromium.url.GURL;
+
+import java.util.HashMap;
 
 /** Tests for the AwWebContentsObserver class. */
 @RunWith(Parameterized.class)
@@ -33,6 +39,7 @@ public class AwWebContentsObserverTest extends AwParameterizedTest {
     @Rule public AwActivityTestRule mActivityTestRule;
 
     private TestAwContentsClient mContentsClient;
+    private TestAwNavigationListener mNavigationListener;
     private AwTestContainerView mTestContainerView;
     private AwWebContentsObserver mWebContentsObserver;
 
@@ -46,22 +53,17 @@ public class AwWebContentsObserverTest extends AwParameterizedTest {
     }
 
     @Before
-    public void setUp() {
+    public void setUp() throws Exception {
         mContentsClient = new TestAwContentsClient();
+        mNavigationListener = new TestAwNavigationListener(new CallbackHelper());
         mTestContainerView = mActivityTestRule.createAwTestContainerViewOnMainSync(mContentsClient);
+        mTestContainerView.getAwContents().getNavigationClient().addListener(mNavigationListener);
+        mWebContentsObserver =
+                mTestContainerView.getAwContents().getWebContentsObserverForTesting();
         mUnreachableWebDataUrl = new GURL(AwContentsStatics.getUnreachableWebDataUrl());
         mExampleURL = new GURL("http://www.example.com/");
         mExampleURLWithFragment = new GURL("http://www.example.com/#anchor");
         mSyncURL = new GURL("http://example.org/");
-        // AwWebContentsObserver constructor must be run on the UI thread.
-        InstrumentationRegistry.getInstrumentation()
-                .runOnMainSync(
-                        () ->
-                                mWebContentsObserver =
-                                        new AwWebContentsObserver(
-                                                mTestContainerView.getWebContents(),
-                                                mTestContainerView.getAwContents(),
-                                                mContentsClient));
     }
 
     @Test
@@ -73,8 +75,9 @@ public class AwWebContentsObserverTest extends AwParameterizedTest {
                 mContentsClient.getOnPageFinishedHelper();
 
         int callCount = onPageFinishedHelper.getCallCount();
+        Page page = new MockPage();
         mWebContentsObserver.didFinishLoadInPrimaryMainFrame(
-                Page.createForTesting(), frameId, mExampleURL, true, LifecycleState.ACTIVE);
+                page, frameId, mExampleURL, true, LifecycleState.ACTIVE);
         mWebContentsObserver.didStopLoading(mExampleURL, true);
         onPageFinishedHelper.waitForCallback(callCount);
         Assert.assertEquals(
@@ -85,16 +88,16 @@ public class AwWebContentsObserverTest extends AwParameterizedTest {
                 "onPageFinished should be called for main frame navigations.",
                 mExampleURL.getSpec(),
                 onPageFinishedHelper.getUrl());
+        // Check that onPageLoadEventFired() is called with the correct page.
+        AwPage awPageWithLoadEventFired = mNavigationListener.getLastPageWithLoadEventFired();
+        Assert.assertNotNull(awPageWithLoadEventFired);
+        Assert.assertEquals(page, awPageWithLoadEventFired.getInternalPageForTesting());
 
         callCount = onPageFinishedHelper.getCallCount();
         mWebContentsObserver.didFinishLoadInPrimaryMainFrame(
-                Page.createForTesting(),
-                frameId,
-                mUnreachableWebDataUrl,
-                false,
-                LifecycleState.ACTIVE);
+                new MockPage(), frameId, mUnreachableWebDataUrl, false, LifecycleState.ACTIVE);
         mWebContentsObserver.didFinishLoadInPrimaryMainFrame(
-                Page.createForTesting(), frameId, mSyncURL, true, LifecycleState.ACTIVE);
+                new MockPage(), frameId, mSyncURL, true, LifecycleState.ACTIVE);
         mWebContentsObserver.didStopLoading(mSyncURL, true);
         onPageFinishedHelper.waitForCallback(callCount);
         Assert.assertEquals(
@@ -144,7 +147,7 @@ public class AwWebContentsObserverTest extends AwParameterizedTest {
                 !isRendererInitiated,
                 PageTransition.TYPED);
         mWebContentsObserver.didFinishLoadInPrimaryMainFrame(
-                Page.createForTesting(), frameId, mSyncURL, true, LifecycleState.ACTIVE);
+                new MockPage(), frameId, mSyncURL, true, LifecycleState.ACTIVE);
         mWebContentsObserver.didStopLoading(mSyncURL, true);
         onPageFinishedHelper.waitForCallback(callCount);
         onPageFinishedHelper.waitForCallback(callCount);
@@ -246,6 +249,32 @@ public class AwWebContentsObserverTest extends AwParameterizedTest {
                         /* isReload= */ false);
         mWebContentsObserver.didStartNavigationInPrimaryMainFrame(navigation);
 
+        // Check that onNavigationStarted() is called correctly.
+        AwNavigation awNavigationStart = mNavigationListener.getLastStartedNavigation();
+        Assert.assertNotNull(awNavigationStart);
+        Assert.assertEquals(
+                "onNavigationStarted should have the intended URL",
+                gurl.getSpec(),
+                awNavigationStart.getUrl());
+        Assert.assertEquals(
+                "onNavigationStarted should have the intended isSameDocument",
+                isSameDocument,
+                awNavigationStart.isSameDocument());
+        Assert.assertEquals(
+                "onNavigationStarted should have the intended wasInitiatedByPage",
+                isRendererInitiated,
+                awNavigationStart.wasInitiatedByPage());
+        Assert.assertFalse(
+                "onNavigationStarted should have the intended isReload",
+                awNavigationStart.isReload());
+        Assert.assertFalse(
+                "onNavigationStarted should have a false didCommit", awNavigationStart.didCommit());
+        Assert.assertFalse(
+                "onNavigationStarted should have a false didCommitErrorPage",
+                awNavigationStart.didCommitErrorPage());
+        Assert.assertNull("onNavigationStarted should have null page", awNavigationStart.getPage());
+
+        @Nullable Page page = new MockPage();
         navigation.didFinish(
                 gurl,
                 isErrorPage,
@@ -255,12 +284,52 @@ public class AwWebContentsObserverTest extends AwParameterizedTest {
                 /* isValidSearchFormUrl= */ false,
                 transition,
                 /* errorCode= */ 0,
+                /* errorDescription= */ "",
                 /* httpStatuscode= */ 200,
                 /* isExternalProtocol= */ false,
                 /* isPdf= */ false,
                 /* mimeType= */ "",
-                /* isSaveableNavigation= */ false,
-                Page.createForTesting());
+                page,
+                /* isSameOrigin= */ true,
+                new HashMap<>(),
+                /* ignoredDuplicateNavigationCount= */ 0);
         mWebContentsObserver.didFinishNavigationInPrimaryMainFrame(navigation);
+
+        // Check that onNavigationCompleted() is called correctly.
+        AwNavigation awNavigationComplete = mNavigationListener.getLastCompletedNavigation();
+        Assert.assertNotNull(awNavigationComplete);
+        Assert.assertEquals(
+                "The AwNavigation passed at start & complete should be the same",
+                awNavigationStart,
+                awNavigationComplete);
+        Assert.assertEquals(
+                "onNavigationCompleted should have the same URL.",
+                gurl.getSpec(),
+                awNavigationComplete.getUrl());
+        Assert.assertEquals(
+                "onNavigationCompleted should have the intended isSameDocument",
+                isSameDocument,
+                awNavigationComplete.isSameDocument());
+        Assert.assertEquals(
+                "onNavigationCompleted should have the intended wasInitiatedByPage",
+                isRendererInitiated,
+                awNavigationComplete.wasInitiatedByPage());
+        Assert.assertFalse(
+                "onNavigationCompleted should have the intended isReload",
+                awNavigationComplete.isReload());
+        Assert.assertTrue(
+                "onNavigationCompleted should have the intended didCommit",
+                awNavigationComplete.didCommit());
+        Assert.assertEquals(
+                "onNavigationCompleted should have the intended error page status",
+                isErrorPage,
+                awNavigationComplete.didCommitErrorPage());
+        Assert.assertEquals(
+                "The page passed in didFinish should equal the one in AwNavigation",
+                page,
+                awNavigationComplete.getPage().getInternalPageForTesting());
+
+        // onNavigationRedirected should not be called.
+        Assert.assertNull(mNavigationListener.getLastRedirectedNavigation());
     }
 }

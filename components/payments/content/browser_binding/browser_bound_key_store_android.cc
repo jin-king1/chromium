@@ -4,14 +4,24 @@
 
 #include "components/payments/content/browser_binding/browser_bound_key_store_android.h"
 
+#include "base/android/scoped_java_ref.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/numerics/safe_conversions.h"
-#include "components/payments/content/android/browser_binding_jni/BrowserBoundKeyStore_jni.h"
+#include "base/strings/strcat.h"
+#include "base/timer/elapsed_timer.h"
 #include "components/payments/content/browser_binding/browser_bound_key_android.h"
-#include "device/fido/public_key_credential_params.h"
+#include "device/fido/public/public_key_credential_params.h"
 #include "third_party/jni_zero/jni_zero.h"
+
+// Must come after all headers that specialize ToJniType()/FromJniType()
+#include "components/payments/content/android/spc/browser_binding_jni/BrowserBoundKeyStore_jni.h"
 
 namespace payments {
 namespace {
+
+constexpr char kDeviceSupportsHardwareKeysLatencyHistogramName[] =
+    "PaymentRequest.SecurePaymentConfirmation."
+    "BrowserBoundKeyStore.DeviceSupportsHardwareKeysLatency";
 
 jni_zero::ScopedJavaLocalRef<jobject>
 ConvertToListOfPublicKeyCredentialParameters(
@@ -32,17 +42,9 @@ ConvertToListOfPublicKeyCredentialParameters(
 
 }  // namespace
 
-std::unique_ptr<BrowserBoundKeyStore> GetBrowserBoundKeyStoreInstance() {
-  JNIEnv* env = jni_zero::AttachCurrentThread();
-  return std::make_unique<BrowserBoundKeyStoreAndroid>(
-      Java_BrowserBoundKeyStore_getInstance(env));
-}
-
 BrowserBoundKeyStoreAndroid::BrowserBoundKeyStoreAndroid(
     jni_zero::ScopedJavaLocalRef<jobject> impl)
     : impl_(impl) {}
-
-BrowserBoundKeyStoreAndroid::~BrowserBoundKeyStoreAndroid() = default;
 
 std::unique_ptr<BrowserBoundKey>
 BrowserBoundKeyStoreAndroid::GetOrCreateBrowserBoundKeyForCredentialId(
@@ -50,11 +52,45 @@ BrowserBoundKeyStoreAndroid::GetOrCreateBrowserBoundKeyForCredentialId(
     const std::vector<device::PublicKeyCredentialParams::CredentialInfo>&
         allowed_credentials) {
   JNIEnv* env = jni_zero::AttachCurrentThread();
-  return std::make_unique<BrowserBoundKeyAndroid>(
-      Java_BrowserBoundKeyStore_getOrCreateBrowserBoundKeyForCredentialId(
-          env, impl_, credential_id,
-          ConvertToListOfPublicKeyCredentialParameters(env,
-                                                       allowed_credentials)));
+  return Java_BrowserBoundKeyStore_getOrCreateBrowserBoundKeyForCredentialId(
+      env, impl_, credential_id,
+      ConvertToListOfPublicKeyCredentialParameters(env, allowed_credentials));
+}
+
+void BrowserBoundKeyStoreAndroid::DeleteBrowserBoundKey(
+    std::vector<uint8_t> bbk_id) {
+  JNIEnv* env = jni_zero::AttachCurrentThread();
+  Java_BrowserBoundKeyStore_deleteBrowserBoundKey(env, impl_, bbk_id);
+}
+
+bool BrowserBoundKeyStoreAndroid::GetDeviceSupportsHardwareKeys() {
+  if (!device_supports_hardware_keys_.has_value()) {
+    base::ElapsedTimer timer;
+
+    JNIEnv* env = jni_zero::AttachCurrentThread();
+    device_supports_hardware_keys_ =
+        Java_BrowserBoundKeyStore_getDeviceSupportsHardwareKeys(env);
+
+    base::UmaHistogramTimes(
+        base::StrCat({kDeviceSupportsHardwareKeysLatencyHistogramName,
+                      device_supports_hardware_keys_.value()
+                          ? ".Supported"
+                          : ".NotSupported"}),
+        timer.Elapsed());
+  }
+
+  return device_supports_hardware_keys_.value();
+}
+
+BrowserBoundKeyStoreAndroid::~BrowserBoundKeyStoreAndroid() = default;
+
+scoped_refptr<BrowserBoundKeyStore> GetBrowserBoundKeyStoreInstance(
+    BrowserBoundKeyStore::Config config) {
+  JNIEnv* env = jni_zero::AttachCurrentThread();
+  return base::MakeRefCounted<BrowserBoundKeyStoreAndroid>(
+      Java_BrowserBoundKeyStore_getInstance(env));
 }
 
 }  // namespace payments
+
+DEFINE_JNI(BrowserBoundKeyStore)

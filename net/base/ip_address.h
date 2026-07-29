@@ -26,9 +26,15 @@ namespace net {
 
 // Helper class to represent the sequence of bytes in an IP address.
 // A vector<uint8_t> would be simpler but incurs heap allocation, so
-// IPAddressBytes uses a fixed size array.
+// IPAddressBytes uses a fixed size std::array.
 class NET_EXPORT IPAddressBytes {
  public:
+  // Public solely for iterator types.
+  using IPAddressStorage = std::array<uint8_t, 16>;
+
+  using iterator = IPAddressStorage::iterator;
+  using const_iterator = IPAddressStorage::const_iterator;
+
   constexpr IPAddressBytes() : bytes_{}, size_(0) {}
   constexpr explicit IPAddressBytes(base::span<const uint8_t> data) {
     Assign(data);
@@ -60,13 +66,21 @@ class NET_EXPORT IPAddressBytes {
   constexpr const uint8_t* data() const { return bytes_.data(); }
   constexpr uint8_t* data() { return bytes_.data(); }
 
-  // Returns a pointer to the first element.
-  constexpr const uint8_t* begin() const { return data(); }
-  constexpr uint8_t* begin() { return data(); }
+  // Returns an iterator to the first element.
+  constexpr const_iterator begin() const { return bytes_.begin(); }
+  constexpr iterator begin() { return bytes_.begin(); }
 
-  // Returns a pointer past the last element.
-  constexpr const uint8_t* end() const { return UNSAFE_TODO(data() + size_); }
-  constexpr uint8_t* end() { return UNSAFE_TODO(data() + size_); }
+  // Returns an iterator past the last element.
+  constexpr const_iterator end() const { return bytes_.begin() + size_; }
+  constexpr iterator end() { return bytes_.begin() + size_; }
+
+  // Returns the address as a span.
+  constexpr base::span<const uint8_t> span() const {
+    return base::span(bytes_).first(size_);
+  }
+  constexpr base::span<uint8_t> span() {
+    return base::span(bytes_).first(size_);
+  }
 
   // Returns a reference to the last element.
   constexpr uint8_t& back() {
@@ -98,14 +112,13 @@ class NET_EXPORT IPAddressBytes {
   }
 
   bool operator<(const IPAddressBytes& other) const;
-  bool operator!=(const IPAddressBytes& other) const;
   bool operator==(const IPAddressBytes& other) const;
 
   size_t EstimateMemoryUsage() const;
 
  private:
-  // Underlying sequence of bytes
-  std::array<uint8_t, 16> bytes_;
+  // Underlying sequence of bytes.
+  IPAddressStorage bytes_;
 
   // Number of elements in |bytes_|. Should be either kIPv4AddressSize
   // or kIPv6AddressSize or 0.
@@ -126,25 +139,27 @@ constexpr bool ParseIPLiteralToBytes(std::string_view ip_literal,
     host_with_brackets.push_back('[');
     host_with_brackets.append(ip_literal);
     host_with_brackets.push_back(']');
-    url::Component host_comp(0, static_cast<int>(host_with_brackets.size()));
 
     // Try parsing the hostname as an IPv6 literal.
     bytes->Resize(16);  // 128 bits.
-    return url::IPv6AddressToNumber(host_with_brackets.data(), host_comp,
-                                    bytes->data());
+    return url::IPv6AddressToNumber(host_with_brackets, bytes->span());
   }
 
   // Otherwise the string is an IPv4 address.
   bytes->Resize(4);  // 32 bits.
-  url::Component host_comp(0, static_cast<int>(ip_literal.size()));
   int num_components;
-  url::CanonHostInfo::Family family = url::IPv4AddressToNumber(
-      ip_literal.data(), host_comp, bytes->data(), &num_components);
+  url::CanonHostInfo::Family family =
+      url::IPv4AddressToNumber(ip_literal, bytes->span(), &num_components);
   return family == url::CanonHostInfo::IPV4;
 }
 
 }  // namespace internal
 
+// Represent an IP address. Has built-in support for IPv4 and IPv6 addresses,
+// though may also be used for Bluetooth addresses.
+//
+// See ip_address_util.h for helpers to convert an IPAddress to an in_addr or
+// in6_addr.
 class NET_EXPORT IPAddress {
  public:
   enum : size_t { kIPv4AddressSize = 4, kIPv6AddressSize = 16 };
@@ -219,6 +234,9 @@ class NET_EXPORT IPAddress {
   // local networks. Works with both IPv4 and IPv6 addresses.
   // IPv4-mapped-to-IPv6 addresses are considered publicly routable.
   bool IsPubliclyRoutable() const;
+
+  // Returns true if |ip_address_| represents a multicast address.
+  bool IsMulticast() const;
 
   // Returns true if the IP is "zero" (e.g. the 0.0.0.0 IPv4 address).
   bool IsZero() const;
@@ -317,9 +335,6 @@ using IPAddressList = std::vector<IPAddress>;
 NET_EXPORT std::string IPAddressToStringWithPort(const IPAddress& address,
                                                  uint16_t port);
 
-// Returns the address as a sequence of bytes in network-byte-order.
-NET_EXPORT std::string IPAddressToPackedString(const IPAddress& address);
-
 // Converts an IPv4 address to an IPv4-mapped IPv6 address.
 // For example 192.168.0.1 would be converted to ::ffff:192.168.0.1.
 NET_EXPORT IPAddress ConvertIPv4ToIPv4MappedIPv6(const IPAddress& address);
@@ -356,6 +371,13 @@ NET_EXPORT bool IPAddressMatchesPrefix(const IPAddress& ip_address,
 NET_EXPORT bool ParseCIDRBlock(std::string_view cidr_literal,
                                IPAddress* ip_address,
                                size_t* prefix_length_in_bits);
+
+// Same as above, but parses IPv6 addresses as URL-safe IP literals (surrounded
+// by brackets). Will return std::nullopt on failure. Value of
+// |prefix_length_in_bits| on failure is undefined.
+NET_EXPORT std::optional<IPAddress> ParseCIDRBlockNonStandardURLFormat(
+    std::string_view cidr_literal,
+    size_t* prefix_length_in_bits);
 
 // Parses a URL-safe IP literal (see RFC 3986, Sec 3.2.2) to its numeric value.
 // Returns true on success, and fills |ip_address| with the numeric value.

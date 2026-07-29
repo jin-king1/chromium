@@ -17,11 +17,13 @@
 #include "chrome/browser/profiles/profile_attributes_entry.h"
 #include "chrome/browser/profiles/profile_attributes_storage.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/browser/search_engine_choice/search_engine_choice_service_factory.h"
+#include "chrome/browser/regional_capabilities/regional_capabilities_service_factory.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/ui/profiles/profile_colors_util.h"
 #include "components/country_codes/country_codes.h"
-#include "components/search_engines/search_engine_choice/search_engine_choice_service.h"
+#include "components/regional_capabilities/access/country_access_reason.h"
+#include "components/regional_capabilities/regional_capabilities_country_id.h"
+#include "components/regional_capabilities/regional_capabilities_service.h"
 #include "components/search_engines/template_url_service.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/variations/service/variations_service.h"
@@ -29,28 +31,33 @@
 #include "google_apis/gaia/gaia_id.h"
 #include "skia/ext/skia_utils_base.h"
 
-namespace {
+using regional_capabilities::CountryIdHolder;
 
-std::string CountryIdToDebugString(std::optional<int> country_id) {
+// static
+std::string ProfileInternalsHandler::CountryIdToDebugString(
+    std::optional<CountryIdHolder> country_id) {
   if (!country_id.has_value()) {
     return "not available";
   }
-  if (country_id.value() == country_codes::kCountryIDUnknown) {
+  if (country_id.value() == CountryIdHolder(country_codes::CountryId())) {
     return "unknown";
   }
 
-  return country_codes::CountryIDToCountryString(country_id.value());
+  return std::string(
+      country_id
+          ->GetRestricted(regional_capabilities::CountryAccessKey(
+              regional_capabilities::CountryAccessReason::
+                  kProfileInternalsDisplayInDebugUi))
+          .CountryCode());
 }
 
-}  // namespace
-
 // static
-base::Value::Dict ProfileInternalsHandler::CreateProfileEntry(
+base::DictValue ProfileInternalsHandler::CreateProfileEntry(
     const ProfileAttributesEntry* entry) {
   ProfileManager* profile_manager = g_browser_process->profile_manager();
   Profile* loaded_profile = profile_manager->GetProfileByPath(entry->GetPath());
 
-  base::Value::Dict profile_entry;
+  base::DictValue profile_entry;
   profile_entry.Set("profilePath", base::FilePathToValue(entry->GetPath()));
   profile_entry.Set("localProfileName", entry->GetLocalProfileName());
   std::string signin_state;
@@ -72,7 +79,13 @@ base::Value::Dict ProfileInternalsHandler::CreateProfileEntry(
   profile_entry.Set("gaiaName", entry->GetGAIAName());
   profile_entry.Set("gaiaId", entry->GetGAIAId().ToString());
   profile_entry.Set("userName", entry->GetUserName());
-  profile_entry.Set("hostedDomain", entry->GetHostedDomain());
+  std::string hosted_domain = "UNKNOWN";
+  if (std::optional<std::string> domain = entry->GetHostedDomain()) {
+    hosted_domain = domain->empty() ? "NO_HOSTED_DOMAIN" : *domain;
+  }
+  profile_entry.Set("hostedDomain", hosted_domain);
+  profile_entry.Set("isManaged",
+                    signin::TriboolToString(entry->GetIsManaged()));
   profile_entry.Set("isSupervised", entry->IsSupervised());
   profile_entry.Set("isOmitted", entry->IsOmitted());
   profile_entry.Set("isEphemeral", entry->IsEphemeral());
@@ -87,40 +100,35 @@ base::Value::Dict ProfileInternalsHandler::CreateProfileEntry(
       "foregroundColor",
       skia::SkColorToHexString(GetProfileForegroundTextColor(highlight_color)));
 
-  base::Value::List keep_alives;
+  base::ListValue keep_alives;
   std::map<ProfileKeepAliveOrigin, int> keep_alives_map =
       profile_manager->GetKeepAlivesByPath(entry->GetPath());
   for (const auto& pair : keep_alives_map) {
     if (pair.second != 0) {
       std::stringstream ss;
       ss << pair.first;
-      base::Value::Dict keep_alive_pair;
+      base::DictValue keep_alive_pair;
       keep_alive_pair.Set("origin", ss.str());
       keep_alive_pair.Set("count", pair.second);
       keep_alives.Append(std::move(keep_alive_pair));
     }
   }
   profile_entry.Set("keepAlives", std::move(keep_alives));
-
-  base::Value::List signedAccounts;
-  for (const GaiaId& gaiaId : entry->GetGaiaIds()) {
-    signedAccounts.Append(gaiaId.ToString());
-  }
-  profile_entry.Set("signedAccounts", std::move(signedAccounts));
   profile_entry.Set("isLoaded", loaded_profile != nullptr);
   profile_entry.Set(
       "hasOffTheRecord",
       loaded_profile &&
           loaded_profile->GetAllOffTheRecordProfiles().size() > 0);
 
-  std::optional<int> profile_country;
-  std::optional<int> initial_keywords_db_country;
-  std::optional<int> updated_keywords_db_country;
+  std::optional<CountryIdHolder> profile_country;
+  std::optional<CountryIdHolder> initial_keywords_db_country;
+  std::optional<CountryIdHolder> updated_keywords_db_country;
+
   if (loaded_profile) {
     profile_country =
-        search_engines::SearchEngineChoiceServiceFactory::GetForProfile(
-            loaded_profile)
-            ->GetCountryId();
+        regional_capabilities::RegionalCapabilitiesServiceFactory::
+            GetForProfile(loaded_profile)
+                ->GetCountryId();
 
     auto* template_url_service =
         TemplateURLServiceFactory::GetForProfile(loaded_profile);
@@ -139,7 +147,8 @@ base::Value::Dict ProfileInternalsHandler::CreateProfileEntry(
       g_browser_process->variations_service()
           ? g_browser_process->variations_service()->GetLatestCountry()
           : "not available");
-  profile_entry.Set("localeCountry", country_codes::GetCurrentCountryCode());
+  profile_entry.Set("localeCountry",
+                    country_codes::GetCurrentCountryID().CountryCode());
 
   return profile_entry;
 }
@@ -156,7 +165,7 @@ void ProfileInternalsHandler::RegisterMessages() {
 }
 
 void ProfileInternalsHandler::HandleGetProfilesList(
-    const base::Value::List& args) {
+    const base::ListValue& args) {
   AllowJavascript();
   CHECK_EQ(0u, args.size());
   PushProfilesList();
@@ -167,8 +176,8 @@ void ProfileInternalsHandler::PushProfilesList() {
   FireWebUIListener("profiles-list-changed", GetProfilesList());
 }
 
-base::Value::List ProfileInternalsHandler::GetProfilesList() {
-  base::Value::List profiles_list;
+base::ListValue ProfileInternalsHandler::GetProfilesList() {
+  base::ListValue profiles_list;
   std::vector<ProfileAttributesEntry*> entries =
       g_browser_process->profile_manager()
           ->GetProfileAttributesStorage()

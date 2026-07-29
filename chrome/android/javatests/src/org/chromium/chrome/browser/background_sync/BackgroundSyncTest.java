@@ -18,12 +18,15 @@ import org.junit.runner.RunWith;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Feature;
 import org.chromium.chrome.browser.background_sync.BackgroundSyncBackgroundTaskScheduler.BackgroundSyncTask;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.util.browser.TabTitleObserver;
 import org.chromium.chrome.test.util.browser.signin.AccountManagerTestRule;
 import org.chromium.components.externalauth.ExternalAuthUtils;
@@ -40,10 +43,11 @@ import java.util.concurrent.TimeoutException;
 /** Instrumentation test for Background Sync. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
+@DoNotBatch(reason = "Shared state in BackgroundSyncManager/Scheduler")
 public final class BackgroundSyncTest {
     @Rule
-    public final ChromeTabbedActivityTestRule mActivityTestRule =
-            new ChromeTabbedActivityTestRule();
+    public final FreshCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.freshChromeTabbedActivityRule();
 
     // loadNativeLibraryNoBrowserProcess will access AccountManagerFacade, so we need
     // to mock AccountManagerFacade
@@ -60,13 +64,14 @@ public final class BackgroundSyncTest {
     private CountDownLatch mCancelLatch;
 
     private BackgroundSyncBackgroundTaskScheduler.Observer mSchedulerObserver;
+    private WebPageStation mPage;
 
     @Before
     public void setUp() {
         addSchedulerObserver();
 
         // This is necessary because our test devices don't have Google Play Services up to date,
-        // and BackgroundSync requires that. Remove this once https://crbug.com/514449 has been
+        // and BackgroundSync requires that. Remove this once https://crbug.com/40428648 has been
         // fixed.
         // Note that this should be done before the startMainActivityOnBlankPage(), because Chrome
         // will otherwise run this check on startup and disable BackgroundSync code.
@@ -75,7 +80,7 @@ public final class BackgroundSyncTest {
             disableGooglePlayServicesVersionCheck();
         }
 
-        mActivityTestRule.startMainActivityOnBlankPage();
+        mPage = mActivityTestRule.startOnBlankPage();
 
         // BackgroundSync only works with HTTPS.
         mTestServer =
@@ -140,7 +145,7 @@ public final class BackgroundSyncTest {
 
     @SuppressWarnings("MissingFail")
     private void assertTitleBecomes(String expectedTitle) {
-        Tab tab = mActivityTestRule.getActivity().getActivityTab();
+        Tab tab = mActivityTestRule.getActivityTab();
         TabTitleObserver titleObserver = new TabTitleObserver(tab, expectedTitle);
         try {
             titleObserver.waitForTitleUpdate(TITLE_UPDATE_TIMEOUT_SECONDS);

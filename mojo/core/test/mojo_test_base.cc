@@ -2,13 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "mojo/core/test/mojo_test_base.h"
 
+#include "base/compiler_specific.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/ref_counted.h"
 #include "base/run_loop.h"
@@ -110,8 +106,9 @@ std::string MojoTestBase::ReadMessageWithHandles(
 
     CHECK_EQ(MOJO_RESULT_OK, result);
     CHECK_EQ(expected_num_handles, handles.size());
-    for (size_t i = 0; i < handles.size(); ++i)
-      out_handles[i] = handles[i].release().value();
+    for (size_t i = 0; i < handles.size(); ++i) {
+      UNSAFE_TODO(out_handles[i]) = handles[i].release().value();
+    }
 
     return std::string(bytes.begin(), bytes.end());
   }
@@ -137,10 +134,11 @@ std::string MojoTestBase::ReadMessageWithOptionalHandle(MojoHandle mp,
     CHECK(handles.size() == 0 || handles.size() == 1);
     CHECK(handle);
 
-    if (handles.size() == 1)
+    if (handles.size() == 1) {
       *handle = handles[0].release().value();
-    else
+    } else {
       *handle = MOJO_HANDLE_INVALID;
+    }
 
     return std::string(bytes.begin(), bytes.end());
   }
@@ -169,7 +167,7 @@ void MojoTestBase::ReadMessage(MojoHandle mp, char* data, size_t num_bytes) {
     CHECK_EQ(MOJO_RESULT_OK, result);
     CHECK_EQ(0u, handles.size());
     CHECK_EQ(num_bytes, bytes.size());
-    memcpy(data, bytes.data(), bytes.size());
+    UNSAFE_TODO(memcpy(data, bytes.data(), bytes.size()));
   }
 }
 
@@ -201,8 +199,9 @@ MojoHandle MojoTestBase::DuplicateBuffer(MojoHandle h, bool read_only) {
   MojoDuplicateBufferHandleOptions options = {
       sizeof(MojoDuplicateBufferHandleOptions),
       MOJO_DUPLICATE_BUFFER_HANDLE_FLAG_NONE};
-  if (read_only)
+  if (read_only) {
     options.flags |= MOJO_DUPLICATE_BUFFER_HANDLE_FLAG_READ_ONLY;
+  }
   EXPECT_EQ(MOJO_RESULT_OK,
             MojoDuplicateBufferHandle(h, &options, &new_handle));
   return new_handle;
@@ -215,7 +214,7 @@ void MojoTestBase::WriteToBuffer(MojoHandle h,
   char* data;
   EXPECT_EQ(MOJO_RESULT_OK, MojoMapBuffer(h, offset, s.size(), nullptr,
                                           reinterpret_cast<void**>(&data)));
-  memcpy(data, s.data(), s.size());
+  UNSAFE_TODO(memcpy(data, s.data(), s.size()));
   EXPECT_EQ(MOJO_RESULT_OK, MojoUnmapBuffer(static_cast<void*>(data)));
 }
 

@@ -9,7 +9,7 @@
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service_factory.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
-#import "ios/chrome/browser/signin/model/trusted_vault_client_backend_factory.h"
+#import "ios/chrome/browser/signin/model/trusted_vault/trusted_vault_client_backend_factory.h"
 #import "ios/chrome/browser/trusted_vault/model/ios_trusted_vault_client.h"
 #import "services/network/public/cpp/shared_url_loader_factory.h"
 
@@ -38,8 +38,7 @@ IOSTrustedVaultServiceFactory::~IOSTrustedVaultServiceFactory() = default;
 
 std::unique_ptr<KeyedService>
 IOSTrustedVaultServiceFactory::BuildServiceInstanceFor(
-    web::BrowserState* context) const {
-  ProfileIOS* profile = ProfileIOS::FromBrowserState(context);
+    ProfileIOS* profile) const {
   CHECK(!profile->IsOffTheRecord());
 
   return std::make_unique<trusted_vault::TrustedVaultService>(

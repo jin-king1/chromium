@@ -6,12 +6,11 @@
 #define CHROME_BROWSER_SSL_HTTPS_UPGRADES_INTERCEPTOR_H_
 
 #include <memory>
-
-#include "base/memory/weak_ptr.h"
-#include "base/sequence_checker.h"
-// #include "chrome/browser/ssl/https_first_mode_settings_tracker.h"
 #include <optional>
 
+#include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
+#include "base/sequence_checker.h"
 #include "chrome/browser/ssl/https_only_mode_tab_helper.h"
 #include "components/security_interstitials/core/https_only_mode_metrics.h"
 #include "content/public/browser/url_loader_request_interceptor.h"
@@ -53,7 +52,6 @@ class HttpsUpgradesInterceptor : public content::URLLoaderRequestInterceptor,
       content::NavigationUIData* navigation_ui_data_);
 
   HttpsUpgradesInterceptor(content::FrameTreeNodeId frame_tree_node_id,
-                           bool http_interstitial_enabled,
                            content::NavigationUIData* navigation_ui_data_);
   ~HttpsUpgradesInterceptor() override;
 
@@ -70,16 +68,8 @@ class HttpsUpgradesInterceptor : public content::URLLoaderRequestInterceptor,
       const network::ResourceRequest& request,
       network::mojom::URLResponseHeadPtr* response_head,
       mojo::ScopedDataPipeConsumerHandle* response_body,
-      mojo::PendingRemote<network::mojom::URLLoader>* loader,
       mojo::PendingReceiver<network::mojom::URLLoaderClient>* client_receiver,
       blink::ThrottlingURLLoader* url_loader) override;
-
-  // Continuation of MaybeCreateLoader() after querying the network service for
-  // the HSTS status for the hostname in the request.
-  void MaybeCreateLoaderOnHstsQueryCompleted(
-      const network::ResourceRequest& tentative_resource_request,
-      content::URLLoaderRequestInterceptor::LoaderCallback callback,
-      bool is_hsts_active_for_host);
 
   // Sets the ports used by the EmbeddedTestServer (which uses random ports)
   // to determine the correct port to upgrade/fallback to in tests.
@@ -89,11 +79,19 @@ class HttpsUpgradesInterceptor : public content::URLLoaderRequestInterceptor,
   static int GetHttpPortForTesting();
 
  private:
+  // Continuation of MaybeCreateLoader() after querying the network service for
+  // the HSTS status for the hostname in the request.
+  void MaybeCreateLoaderOnHstsQueryCompleted(
+      GURL url,
+      bool is_outermost_main_frame,
+      std::string method,
+      int transition_type,
+      content::URLLoaderRequestInterceptor::LoaderCallback callback,
+      bool is_hsts_active_for_host);
+
   // network::mojom::URLLoader:
   void FollowRedirect(
-      const std::vector<std::string>& removed_headers,
-      const net::HttpRequestHeaders& modified_headers,
-      const net::HttpRequestHeaders& modified_cors_exempt_headers,
+      network::HttpRequestHeadersUpdateParams headers_update_params,
       const std::optional<GURL>& new_url) override {}
   void SetPriority(net::RequestPriority priority,
                    int intra_priority_value) override {}
@@ -117,11 +115,6 @@ class HttpsUpgradesInterceptor : public content::URLLoaderRequestInterceptor,
 
   // Used to access the WebContents for the navigation.
   content::FrameTreeNodeId frame_tree_node_id_;
-
-  // Controls whether we are upgrading and falling back with an interstitial
-  // before proceeding with the HTTP navigation. This reflects the general
-  // UI setting. Only used to set the values of interstitial_state_.
-  bool http_interstitial_enabled_by_pref_ = false;
 
   // Parameters about whether the throttle should trigger the interstitial
   // warning before navigating to the HTTP fallback URL. Can be null if the

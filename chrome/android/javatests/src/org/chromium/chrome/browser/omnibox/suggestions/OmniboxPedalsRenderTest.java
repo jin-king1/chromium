@@ -19,6 +19,7 @@ import org.chromium.base.test.params.ParameterAnnotations;
 import org.chromium.base.test.params.ParameterSet;
 import org.chromium.base.test.params.ParameterizedRunner;
 import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.Feature;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.night_mode.ChromeNightModeTestUtils;
@@ -26,16 +27,19 @@ import org.chromium.chrome.browser.omnibox.suggestions.action.OmniboxPedal;
 import org.chromium.chrome.browser.omnibox.suggestions.base.BaseSuggestionView;
 import org.chromium.chrome.browser.tabmodel.IncognitoTabHostUtils;
 import org.chromium.chrome.test.ChromeJUnit4RunnerDelegate;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.util.ChromeRenderTestRule;
 import org.chromium.chrome.test.util.OmniboxTestUtils;
 import org.chromium.chrome.test.util.OmniboxTestUtils.SuggestionInfo;
 import org.chromium.components.omnibox.AutocompleteMatch;
 import org.chromium.components.omnibox.AutocompleteMatchBuilder;
 import org.chromium.components.omnibox.AutocompleteResult;
-import org.chromium.components.omnibox.OmniboxFeatures;
+import org.chromium.components.omnibox.OmniboxCapabilities;
 import org.chromium.components.omnibox.OmniboxSuggestionType;
 import org.chromium.components.omnibox.action.OmniboxPedalId;
+import org.chromium.ui.base.DeviceFormFactor;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -46,8 +50,14 @@ import java.util.List;
 @ParameterAnnotations.UseRunnerDelegate(ChromeJUnit4RunnerDelegate.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 public class OmniboxPedalsRenderTest {
+    // 1: Initial version.
+    // 2: Updated refine button assets with vector drawables.
+    // 3: Default to bottom-anchored focused omnibox
+    // 4: Removed bottom toolbar functionality
+    private static final int RENDER_TEST_REVISION = 4;
+
     @ParameterAnnotations.ClassParameter
-    private static List<ParameterSet> sClassParams =
+    private static final List<ParameterSet> sClassParams =
             List.of(
                     new ParameterSet().value(false).name("LiteMode_RegularTab"),
                     new ParameterSet().value(true).name("NightMode_RegularTab"));
@@ -56,15 +66,18 @@ public class OmniboxPedalsRenderTest {
     public ChromeRenderTestRule mRenderTestRule =
             ChromeRenderTestRule.Builder.withPublicCorpus()
                     .setBugComponent(ChromeRenderTestRule.Component.UI_BROWSER_OMNIBOX)
+                    .setRevision(RENDER_TEST_REVISION)
                     .build();
 
     @Rule
-    public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
+    public FreshCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.freshChromeTabbedActivityRule();
 
+    private WebPageStation mStartingPage;
     private OmniboxTestUtils mOmniboxUtils;
 
     public OmniboxPedalsRenderTest(boolean nightMode) {
-        OmniboxFeatures.setShouldRetainOmniboxOnFocusForTesting(false);
+        OmniboxCapabilities.setHasDesktopExperienceForTesting(false);
         ChromeNightModeTestUtils.setUpNightModeForChromeActivity(nightMode);
         mRenderTestRule.setNightModeEnabled(nightMode);
         mRenderTestRule.setVariantPrefix("RegularTab");
@@ -77,11 +90,8 @@ public class OmniboxPedalsRenderTest {
 
     @Before
     public void setUp() throws InterruptedException {
-        mActivityTestRule.startMainActivityOnBlankPage();
-        mActivityTestRule.waitForActivityNativeInitializationComplete();
-        mActivityTestRule.waitForDeferredStartup();
-        mActivityTestRule.loadUrl("about:blank");
-        mOmniboxUtils = new OmniboxTestUtils(mActivityTestRule.getActivity());
+        mStartingPage = mActivityTestRule.startOnBlankPage();
+        mOmniboxUtils = new OmniboxTestUtils(mStartingPage.getActivity());
         mOmniboxUtils.requestFocus();
     }
 
@@ -99,26 +109,28 @@ public class OmniboxPedalsRenderTest {
     }
 
     /**
-     * Create a dummy pedal suggestion.
+     * Create a fake pedal suggestion.
      *
-     * @param name The dummy suggestion name.
+     * @param name The fake suggestion name.
      * @param id The Omnibox pedal type to be created.
-     * @return a dummy pedal suggestion.
+     * @return a fake pedal suggestion.
      */
-    private AutocompleteMatch createDummyPedalSuggestion(String name, @OmniboxPedalId int id) {
+    private AutocompleteMatch createFakePedalSuggestion(String name, @OmniboxPedalId int id) {
         return AutocompleteMatchBuilder.searchWithType(OmniboxSuggestionType.SEARCH_SUGGEST)
                 .setDisplayText(name)
                 .setActions(List.of(new OmniboxPedal(0, "hint", "accessibility", id)))
+                .setDescription(null)
                 .build();
     }
 
     @Test
     @MediumTest
     @Feature("RenderTest")
+    @DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/479724464
     public void testRunChromeSafetyCheckPedal() throws IOException, InterruptedException {
         List<AutocompleteMatch> suggestionsList = new ArrayList<>();
         suggestionsList.add(
-                createDummyPedalSuggestion("pedal", OmniboxPedalId.RUN_CHROME_SAFETY_CHECK));
+                createFakePedalSuggestion("pedal", OmniboxPedalId.RUN_CHROME_SAFETY_CHECK));
         mOmniboxUtils.setSuggestions(AutocompleteResult.fromCache(suggestionsList, null));
         mOmniboxUtils.checkSuggestionsShown();
 
@@ -129,10 +141,11 @@ public class OmniboxPedalsRenderTest {
     @Test
     @MediumTest
     @Feature("RenderTest")
+    @DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/479724464
     public void testPlayChromeDinoGamePedal() throws IOException, InterruptedException {
         List<AutocompleteMatch> suggestionsList = new ArrayList<>();
         suggestionsList.add(
-                createDummyPedalSuggestion("pedal", OmniboxPedalId.PLAY_CHROME_DINO_GAME));
+                createFakePedalSuggestion("pedal", OmniboxPedalId.PLAY_CHROME_DINO_GAME));
         mOmniboxUtils.setSuggestions(AutocompleteResult.fromCache(suggestionsList, null));
         mOmniboxUtils.checkSuggestionsShown();
 

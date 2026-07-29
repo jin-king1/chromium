@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/browser/ash/fileapi/diversion_file_manager.h"
 
 #include <fcntl.h>
@@ -17,6 +12,7 @@
 #include <optional>
 #include <utility>
 
+#include "base/compiler_specific.h"
 #include "base/containers/circular_deque.h"
 #include "base/functional/callback.h"
 #include "base/memory/weak_ptr.h"
@@ -134,7 +130,7 @@ class DiversionFileManager::Entry
   Tmpfile tmpfile_;
   uint64_t num_workers_constructed_ = 0;
   uint64_t num_workers_destroyed_ = 0;
-  std::optional<StoppedReason> stopped_reason_ = std::nullopt;
+  std::optional<StoppedReason> stopped_reason_;
   bool is_running_an_op_ = false;
   base::circular_deque<Op> pending_ops_;
   Callback implicit_callback_;
@@ -332,7 +328,7 @@ class DiversionFileManager::Worker : public storage::FileStreamReader,
   int Read(net::IOBuffer* buf,
            int buf_len,
            net::CompletionOnceCallback callback) override;
-  int64_t GetLength(net::Int64CompletionOnceCallback callback) override;
+  int64_t GetLength(GetLengthCallback callback) override;
 
   // storage::FileStreamWriter overrides.
   int Write(net::IOBuffer* buf,
@@ -380,16 +376,18 @@ int DiversionFileManager::Worker::Read(net::IOBuffer* buf,
   return net::ERR_IO_PENDING;
 }
 
-int64_t DiversionFileManager::Worker::GetLength(
-    net::Int64CompletionOnceCallback callback) {
+int64_t DiversionFileManager::Worker::GetLength(GetLengthCallback callback) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
   CHECK_EQ(role_, Role::kReader);
 
-  static constexpr auto reply = [](net::Int64CompletionOnceCallback callback,
+  static constexpr auto reply = [](GetLengthCallback callback,
                                    const Tmpfile& tmpfile, int ignored) {
-    std::move(callback).Run((tmpfile.net_error < 0)
-                                ? static_cast<int64_t>(tmpfile.net_error)
-                                : tmpfile.file_size);
+    if (tmpfile.net_error < 0) {
+      std::move(callback).Run(
+          base::unexpected(static_cast<net::Error>(tmpfile.net_error)));
+    } else {
+      std::move(callback).Run(tmpfile.file_size);
+    }
   };
 
   entry_->Enqueue(
@@ -428,9 +426,17 @@ void DiversionFileManager::Worker::ReadOrWrite(
     net::IOBuffer* buf,
     int buf_len,
     net::CompletionOnceCallback callback) {
+  // The transform lambda is queued on Entry::pending_ops_ and later posted to
+  // a BEST_EFFORT threadpool. It can outlive both this Worker (Cancel() is a
+  // no-op and ~Worker does not dequeue) and the caller's IOBuffer reference
+  // (e.g. FileWriterDelegate frees its io_buffer_ synchronously when
+  // Worker::Cancel returns net::OK). Per net/base/io_buffer.h's cancellation
+  // contract, retain a scoped_refptr so the buffer survives until the
+  // pread/pwrite completes.
   static constexpr auto transform =
-      [](Role role, char* data_ptr, int data_len, int64_t offset,
-         Tmpfile tmpfile) -> std::pair<Tmpfile, int> {
+      [](Role role, scoped_refptr<net::IOBuffer> buf, int data_len,
+         int64_t offset, Tmpfile tmpfile) -> std::pair<Tmpfile, int> {
+    char* data_ptr = buf->data();
     if (tmpfile.net_error != net::OK) {
       return std::make_pair(std::move(tmpfile), 0);
     } else if (!tmpfile.scoped_fd.is_valid()) {
@@ -461,7 +467,7 @@ void DiversionFileManager::Worker::ReadOrWrite(
                               0);
       }
 
-      data_ptr += n;
+      UNSAFE_TODO(data_ptr += n);
       data_len -= static_cast<int>(n);
       offset = base::ClampAdd(offset, static_cast<int64_t>(n));
     }
@@ -472,7 +478,8 @@ void DiversionFileManager::Worker::ReadOrWrite(
   };
 
   entry_->Enqueue(
-      {base::BindOnce(transform, role_, buf->data(), buf_len, offset_),
+      {base::BindOnce(transform, role_, base::WrapRefCounted(buf), buf_len,
+                      offset_),
        base::BindOnce(&DiversionFileManager::Worker::OnReadOrWrite,
                       weak_ptr_factory_.GetWeakPtr(), std::move(callback))});
 }

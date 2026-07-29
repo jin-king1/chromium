@@ -20,8 +20,6 @@ import static org.chromium.chrome.browser.customtabs.features.branding.BrandingC
 import static org.chromium.chrome.browser.customtabs.features.branding.BrandingController.MAX_BLANK_TOOLBAR_TIMEOUT_MS;
 
 import android.content.Context;
-import android.os.Handler;
-import android.os.Looper;
 import android.os.SystemClock;
 
 import androidx.appcompat.view.ContextThemeWrapper;
@@ -39,9 +37,6 @@ import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.robolectric.Shadows;
 import org.robolectric.annotation.Config;
-import org.robolectric.annotation.LooperMode;
-import org.robolectric.annotation.LooperMode.Mode;
-import org.robolectric.shadows.ShadowLooper;
 import org.robolectric.shadows.ShadowSystemClock;
 import org.robolectric.shadows.ShadowToast;
 
@@ -49,23 +44,19 @@ import org.chromium.base.Callback;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.FakeTimeTestRule;
 import org.chromium.base.TimeUtils;
-import org.chromium.base.metrics.RecordHistogram;
-import org.chromium.base.task.TaskTraits;
-import org.chromium.base.task.test.ShadowPostTask;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.RobolectricUtil;
 import org.chromium.chrome.browser.customtabs.features.branding.proto.AccountMismatchData.CloseType;
 import org.chromium.ui.widget.Toast;
 import org.chromium.ui.widget.ToastManager;
 
-import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 
 /** Unit test for {@link BrandingController} and {@link SharedPreferencesBrandingTimeStorage}. */
 @RunWith(BaseRobolectricTestRunner.class)
 @Config(
         manifest = Config.NONE,
-        shadows = {ShadowSystemClock.class, ShadowPostTask.class, ShadowToast.class})
-@LooperMode(Mode.PAUSED)
+        shadows = {ShadowSystemClock.class, ShadowToast.class})
 public class BrandingControllerUnitTest {
     @Rule public MockitoRule mTestRule = MockitoJUnit.rule();
     @Rule public FakeTimeTestRule mFakeTimeTestRule = new FakeTimeTestRule();
@@ -74,22 +65,9 @@ public class BrandingControllerUnitTest {
     @Mock MismatchNotificationChecker mMismatchNotificationChecker;
     @Captor ArgumentCaptor<Callback<MismatchNotificationData>> mCloseCallbackCaptor;
     private BrandingController mBrandingController;
-    private ShadowPostTask.TestImpl mShadowPostTaskImpl;
 
     @Before
     public void setup() {
-        mShadowPostTaskImpl =
-                new ShadowPostTask.TestImpl() {
-                    final Handler mHandler = new Handler(Looper.getMainLooper());
-
-                    @Override
-                    public void postDelayedTask(
-                            @TaskTraits int taskTraits, Runnable task, long delay) {
-                        mHandler.postDelayed(task, delay);
-                    }
-                };
-        ShadowPostTask.setTestImpl(mShadowPostTaskImpl);
-
         SystemClock.setCurrentTimeMillis(TimeUtils.currentTimeMillis());
     }
 
@@ -114,9 +92,6 @@ public class BrandingControllerUnitTest {
                 .assertShownEmptyLocationBar(true)
                 .assertShownBrandingLocationBar(false)
                 .assertShownRegularLocationBar(true);
-
-        ShadowLooper.idleMainLooper();
-        assertTotalNumberOfPackageRecorded(1); // 1 new package
     }
 
     @Test
@@ -239,7 +214,7 @@ public class BrandingControllerUnitTest {
 
     @Test
     public void testDestroy() {
-        // Inspired by https://crbug.com/1362437. Make sure callback are canceled once the branding
+        // Inspired by https://crbug.com/40864262. Make sure callback are canceled once the branding
         // controller is destroyed.
         new BrandingCheckTester()
                 .newBrandingController()
@@ -285,7 +260,7 @@ public class BrandingControllerUnitTest {
         storage.put("stubPackageA", 1L);
         storage.put("stubPackageB", 1L);
         storage.put("stubPackageC", 1L);
-        ShadowLooper.idleMainLooper();
+        RobolectricUtil.runAllBackgroundAndUi();
         assertEquals("3 Stub package name should be in the storage.", 3, storage.getSize());
 
         new BrandingCheckTester()
@@ -293,8 +268,6 @@ public class BrandingControllerUnitTest {
                 .onToolbarInitialized()
                 .idleMainLooper() // Finish Branding checker.
                 .assertShownToastBranding(true);
-        ShadowLooper.idleMainLooper();
-        assertTotalNumberOfPackageRecorded(4); // 3 old package + 1 new package
     }
 
     class BrandingCheckTester {
@@ -306,7 +279,7 @@ public class BrandingControllerUnitTest {
                             "appName",
                             context.getPackageName(),
                             R.string.twa_running_in_chrome_template,
-                            () -> mMismatchNotificationChecker,
+                            (appId) -> mMismatchNotificationChecker,
                             null);
 
             // Always initialize a new mock, as some tests were testing multiple branding runs.
@@ -323,7 +296,7 @@ public class BrandingControllerUnitTest {
                             /* appId= */ null,
                             context.getPackageName(),
                             R.string.auth_tab_secured_by_chrome_template,
-                            () -> null,
+                            (appId) -> null,
                             null);
 
             // Always initialize a new mock, as some tests were testing multiple branding runs.
@@ -376,7 +349,7 @@ public class BrandingControllerUnitTest {
         }
 
         public BrandingCheckTester idleMainLooper() {
-            Shadows.shadowOf(Looper.getMainLooper()).idle();
+            RobolectricUtil.runAllBackgroundAndUi();
             return this;
         }
 
@@ -416,13 +389,5 @@ public class BrandingControllerUnitTest {
             mBrandingController.destroy();
             return this;
         }
-    }
-
-    private void assertTotalNumberOfPackageRecorded(int sample) {
-        String histogram = "CustomTabs.Branding.NumberOfClients";
-        assertEquals(
-                String.format(Locale.US, "<%s> not recorded for count <%d>", histogram, sample),
-                1,
-                RecordHistogram.getHistogramValueCountForTesting(histogram, sample));
     }
 }

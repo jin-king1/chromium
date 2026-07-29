@@ -11,7 +11,9 @@
 #import "ios/chrome/browser/side_swipe/ui_bundled/side_swipe_consumer.h"
 
 @protocol CardSwipeViewDelegate;
+class FullscreenBrowserAgent;
 class FullscreenController;
+@protocol FullscreenCommands;
 @class LayoutGuideCenter;
 @protocol SideSwipeInteracting;
 @protocol SideSwipeMutator;
@@ -20,7 +22,7 @@ class FullscreenController;
 @protocol SideSwipeToolbarInteracting;
 @protocol SideSwipeToolbarSnapshotProviding;
 @protocol SideSwipeUIControllerDelegate;
-@protocol TabStripHighlighting;
+class SnapshotBrowserAgent;
 class WebStateList;
 
 // Controls how an edge gesture is processed, either as tab change or a page
@@ -54,9 +56,6 @@ class WebStateList;
 @property(nonatomic, weak) id<SideSwipeToolbarInteracting>
     toolbarInteractionHandler;
 
-// Delegate for tab strip highlighting.
-@property(nonatomic, weak) id<TabStripHighlighting> tabStripDelegate;
-
 // Snapshot provider for top and bottom toolbars.
 @property(nonatomic, weak) id<SideSwipeToolbarSnapshotProviding>
     toolbarSnapshotProvider;
@@ -64,12 +63,19 @@ class WebStateList;
 // The card swipe delegate.
 @property(nonatomic, weak) id<CardSwipeViewDelegate> cardSwipeViewDelegate;
 
+// Handler for the fullscreen commands.
+@property(nonatomic, weak) id<FullscreenCommands> fullscreenHandler;
+
+/// Fullscreen controller used for collapsing the view above the keyboard. Used
+/// for the legacy fullscreen implementation.
 @property(nonatomic, assign) FullscreenController* fullscreenController;
 
 // Initializer.
-- (instancetype)initWithFullscreenController:
-                    (FullscreenController*)fullscreenController
-                                webStateList:(WebStateList*)webStateList;
+- (instancetype)
+    initWithFullscreenController:(FullscreenController*)fullscreenController
+          fullscreenBrowserAgent:(FullscreenBrowserAgent*)fullscreenBrowserAgent
+                    webStateList:(WebStateList*)webStateList
+            snapshotBrowserAgent:(SnapshotBrowserAgent*)snapshotBrowserAgent;
 
 // Disconnects the view controller.
 - (void)disconnect;

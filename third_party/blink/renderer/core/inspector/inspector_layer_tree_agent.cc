@@ -54,6 +54,7 @@
 #include "third_party/blink/renderer/platform/graphics/picture_snapshot.h"
 #include "third_party/blink/renderer/platform/wtf/text/base64.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
+#include "third_party/blink/renderer/platform/wtf/text/string_to_number.h"
 #include "third_party/inspector_protocol/crdtp/json.h"
 #include "third_party/skia/include/core/SkPicture.h"
 #include "third_party/skia/include/core/SkRefCnt.h"
@@ -222,7 +223,7 @@ static std::unique_ptr<protocol::LayerTree::Layer> BuildObjectForLayer(
 
   if (!transform.IsIdentity()) {
     auto transform_array = std::make_unique<protocol::Array<double>>(16);
-    transform.GetColMajor(transform_array->data());
+    transform.GetColMajor(base::span(*transform_array).first<16>());
     layer_object->setTransform(std::move(transform_array));
     // FIXME: rename these to setTransformOrigin*
     // TODO(pdr): Now that BlinkGenPropertyTrees has launched, we can remove
@@ -332,12 +333,12 @@ static const cc::Layer* FindLayerById(const cc::Layer* root, int layer_id) {
 protocol::Response InspectorLayerTreeAgent::LayerById(
     const String& layer_id,
     const cc::Layer*& result) {
-  bool ok;
-  int id = layer_id.ToInt(&ok);
-  if (!ok)
+  auto id = StringToIntLoose(layer_id);
+  if (!id) {
     return protocol::Response::ServerError("Invalid layer id");
+  }
 
-  result = FindLayerById(RootLayer(), id);
+  result = FindLayerById(RootLayer(), *id);
   if (!result)
     return protocol::Response::ServerError("No layer matching given id found");
   return protocol::Response::Success();
@@ -471,7 +472,7 @@ protocol::Response InspectorLayerTreeAgent::replaySnapshot(
                                    scale.value_or(1.0));
   if (png_data.empty())
     return protocol::Response::ServerError("Image encoding failed");
-  *data_url = "data:image/png;base64," + Base64Encode(png_data);
+  *data_url = StrCat({"data:image/png;base64,", Base64Encode(png_data)});
   return protocol::Response::Success();
 }
 
@@ -518,14 +519,10 @@ protocol::Response InspectorLayerTreeAgent::snapshotCommandLog(
   const String& json = snapshot->SnapshotCommandLog()->ToJSONString();
   std::vector<uint8_t> cbor;
   if (json.Is8Bit()) {
-    crdtp::json::ConvertJSONToCBOR(
-        crdtp::span<uint8_t>(json.Characters8(), json.length()), &cbor);
+    crdtp::json::ConvertJSONToCBOR(crdtp::span<uint8_t>(json.Span8()), &cbor);
   } else {
-    crdtp::json::ConvertJSONToCBOR(
-        crdtp::span<uint16_t>(
-            reinterpret_cast<const uint16_t*>(json.Characters16()),
-            json.length()),
-        &cbor);
+    crdtp::json::ConvertJSONToCBOR(crdtp::span<uint16_t>(json.SpanUint16()),
+                                   &cbor);
   }
   auto log_value = protocol::Value::parseBinary(cbor.data(), cbor.size());
   *command_log = protocol::ValueConversions<

@@ -13,9 +13,8 @@ import java.util.concurrent.Executor;
  * experimental features. Experimental features may be deprecated in the future. Use at your own
  * risk.
  *
- * {@hide for consistency with other experimental classes}
- *
  * @deprecated scheduled for deletion, don't use in new code.
+ * @hide
  */
 @Deprecated
 public abstract class ExperimentalUrlRequest extends UrlRequest {
@@ -26,8 +25,6 @@ public abstract class ExperimentalUrlRequest extends UrlRequest {
      * implementation and hence perform identically. Instances of this class are not meant for
      * general use, but instead only to access experimental features. Experimental features may be
      * deprecated in the future. Use at your own risk.
-     *
-     * {@hide for consistency with other experimental classes}
      *
      * @deprecated scheduled for deletion, don't use in new code.
      */

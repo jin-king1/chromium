@@ -10,6 +10,7 @@ import org.jni_zero.NativeMethods;
 
 import org.chromium.base.Callback;
 import org.chromium.base.ThreadUtils;
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.url.GURL;
 
 /**
@@ -17,9 +18,9 @@ import org.chromium.url.GURL;
  * calls are delegated to the native C++ class.
  */
 @JNINamespace("data_sharing")
+@NullMarked
 public class DataSharingNetworkLoaderImpl implements DataSharingNetworkLoader {
     private long mNativePtr;
-
 
     @CalledByNative
     private static DataSharingNetworkLoaderImpl create(long nativePtr) {
@@ -38,26 +39,16 @@ public class DataSharingNetworkLoaderImpl implements DataSharingNetworkLoader {
     @Override
     public void loadUrl(
             GURL url,
-            String[] scopes,
             byte[] postData,
             @DataSharingRequestType int requestType,
             Callback<DataSharingNetworkResult> callback) {
         ThreadUtils.postOnUiThread(
                 () -> {
-                    loadUrlOnUiThread(url, scopes, postData, requestType, callback);
+                    if (mNativePtr != 0) {
+                        DataSharingNetworkLoaderImplJni.get()
+                                .loadUrl(mNativePtr, url, postData, requestType, callback);
+                    }
                 });
-    }
-
-    private void loadUrlOnUiThread(
-            GURL url,
-            String[] scopes,
-            byte[] postData,
-            @DataSharingRequestType int dataSharingRequestType,
-            Callback<DataSharingNetworkResult> callback) {
-        if (mNativePtr != 0) {
-            DataSharingNetworkLoaderImplJni.get()
-                    .loadUrl(mNativePtr, url, scopes, postData, dataSharingRequestType, callback);
-        }
     }
 
     @NativeMethods
@@ -65,7 +56,6 @@ public class DataSharingNetworkLoaderImpl implements DataSharingNetworkLoader {
         void loadUrl(
                 long nativeDataSharingNetworkLoaderAndroid,
                 GURL url,
-                String[] scopes,
                 byte[] postData,
                 int dataSharingRequestType,
                 Callback<DataSharingNetworkResult> callback);

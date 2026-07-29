@@ -14,13 +14,16 @@ import android.view.ViewGroup;
 import android.widget.ImageButton;
 
 import androidx.annotation.IntDef;
-import androidx.annotation.NonNull;
 import androidx.browser.customtabs.CustomTabsIntent;
+
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 
 /** Container for all parameters related to creating a customizable button. */
+@NullMarked
 public interface CustomButtonParams {
 
     /** Enum used to describe different types of buttons. */
@@ -31,7 +34,7 @@ public interface CustomButtonParams {
         ButtonType.EXTERNAL
     })
     @Retention(RetentionPolicy.SOURCE)
-    public @interface ButtonType {
+    @interface ButtonType {
         int OTHER = 0;
 
         /** Share button, created by Chrome. */
@@ -45,7 +48,7 @@ public interface CustomButtonParams {
     }
 
     /** Replaces the current icon and description with new ones. */
-    void update(@NonNull Bitmap icon, @NonNull String description);
+    void update(Bitmap icon, String description);
 
     /**
      * @return Whether this button should be shown on the toolbar.
@@ -77,7 +80,7 @@ public interface CustomButtonParams {
     /**
      * @return The {@link PendingIntent} that will be sent when user clicks the customized button.
      */
-    PendingIntent getPendingIntent();
+    @Nullable PendingIntent getPendingIntent();
 
     /**
      * @return The {@link ButtonType} of the customized button.
@@ -97,7 +100,7 @@ public interface CustomButtonParams {
     ImageButton buildBottomBarButton(
             Context context,
             ViewGroup parent,
-            OnClickListener listener,
+            @Nullable OnClickListener listener,
             ColorStateList buttonIconTint);
 
     /**

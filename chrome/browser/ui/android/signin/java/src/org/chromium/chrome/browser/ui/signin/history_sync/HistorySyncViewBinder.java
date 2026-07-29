@@ -4,14 +4,14 @@
 
 package org.chromium.chrome.browser.ui.signin.history_sync;
 
-import androidx.annotation.StringRes;
-
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.ui.signin.MinorModeHelper;
 import org.chromium.chrome.browser.ui.signin.MinorModeHelper.ScreenMode;
 import org.chromium.components.signin.metrics.SyncButtonsType;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel;
 
+@NullMarked
 class HistorySyncViewBinder {
 
     private static boolean sMinorModeButtonShownMetricRecorded;
@@ -20,17 +20,16 @@ class HistorySyncViewBinder {
         if (key == HistorySyncProperties.PROFILE_DATA) {
             view.getAccountImageView()
                     .setImageDrawable(model.get(HistorySyncProperties.PROFILE_DATA).getImage());
-        } else if (key == HistorySyncProperties.TITLE_STRING_ID) {
-            @StringRes int textId = model.get(HistorySyncProperties.TITLE_STRING_ID);
-            view.getTitle().setText(textId);
-        } else if (key == HistorySyncProperties.SUBTITLE_STRING_ID) {
-            @StringRes int textId = model.get(HistorySyncProperties.SUBTITLE_STRING_ID);
-            view.getSubtitle().setText(textId);
+        } else if (key == HistorySyncProperties.TITLE_STRING) {
+            view.getTitle().setText(model.get(HistorySyncProperties.TITLE_STRING));
+        } else if (key == HistorySyncProperties.SUBTITLE_STRING) {
+            view.getSubtitle().setText(model.get(HistorySyncProperties.SUBTITLE_STRING));
         } else if (key == HistorySyncProperties.FOOTER_STRING) {
             view.getDetailsDescription().setText(model.get(HistorySyncProperties.FOOTER_STRING));
         } else if (key == HistorySyncProperties.MINOR_MODE_RESTRICTION_STATUS
                 || key == HistorySyncProperties.USE_LANDSCAPE_LAYOUT
                 || key == HistorySyncProperties.ON_ACCEPT_CLICKED
+                || key == HistorySyncProperties.DECLINE_STRING
                 || key == HistorySyncProperties.ON_DECLINE_CLICKED) {
             view.maybeCreateButtons(
                     model.get(HistorySyncProperties.USE_LANDSCAPE_LAYOUT),
@@ -64,6 +63,7 @@ class HistorySyncViewBinder {
                     .setOnClickListener(model.get(HistorySyncProperties.ON_ACCEPT_CLICKED));
             view.getDeclineButton()
                     .setOnClickListener(model.get(HistorySyncProperties.ON_DECLINE_CLICKED));
+            view.getDeclineButton().setText(model.get(HistorySyncProperties.DECLINE_STRING));
 
         } else {
             throw new IllegalArgumentException("Unknown property key: " + key);

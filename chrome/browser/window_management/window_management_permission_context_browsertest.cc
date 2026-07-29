@@ -3,7 +3,6 @@
 // found in the LICENSE file.
 
 #include "build/build_config.h"
-#include "build/chromeos_buildflags.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -11,7 +10,6 @@
 #include "components/permissions/permission_request_manager.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
-#include "content/public/common/content_switches.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "net/dns/mock_host_resolver.h"
@@ -19,10 +17,10 @@
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "ui/display/screen_base.h"
 
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
 #include "ash/shell.h"
 #include "ui/display/test/display_manager_test_api.h"  // nogncheck
-#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+#endif                                                 // BUILDFLAG(IS_CHROMEOS)
 
 namespace {
 
@@ -98,14 +96,14 @@ class WindowManagementPermissionContextTest : public InProcessBrowserTest {
 class MultiscreenWindowManagementPermissionContextTest
     : public WindowManagementPermissionContextTest {
  public:
-#if !BUILDFLAG(IS_CHROMEOS_ASH)
+#if !BUILDFLAG(IS_CHROMEOS)
   ~MultiscreenWindowManagementPermissionContextTest() override {
     display::Screen::SetScreenInstance(nullptr);
   }
 #endif
 
   void SetScreenInstance() override {
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
     // Use the default, see SetUpOnMainThread.
     WindowManagementPermissionContextTest::SetScreenInstance();
 #else
@@ -114,17 +112,17 @@ class MultiscreenWindowManagementPermissionContextTest
                                       display::DisplayList::Type::PRIMARY);
     screen_.display_list().AddDisplay({2, gfx::Rect(901, 100, 802, 803)},
                                       display::DisplayList::Type::NOT_PRIMARY);
-    ASSERT_EQ(2, display::Screen::GetScreen()->GetNumDisplays());
-#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+    ASSERT_EQ(2, display::Screen::Get()->GetNumDisplays());
+#endif  // BUILDFLAG(IS_CHROMEOS)
   }
 
   void SetUpOnMainThread() override {
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
     // This has to happen later than SetScreenInstance as the ash shell
     // does not exist yet.
     display::test::DisplayManagerTestApi(ash::Shell::Get()->display_manager())
         .UpdateDisplay("100+100-801x802,901+100-802x803");
-    ASSERT_EQ(2, display::Screen::GetScreen()->GetNumDisplays());
+    ASSERT_EQ(2, display::Screen::Get()->GetNumDisplays());
 #endif
     WindowManagementPermissionContextTest::SetUpOnMainThread();
   }
@@ -190,7 +188,7 @@ IN_PROC_BROWSER_TEST_F(WindowManagementPermissionContextTest,
   ExecuteScriptAsync(tab, "getScreenDetails()");
   WaitForUserActivationExpiry();
   ASSERT_TRUE(permission_request_manager->IsRequestInProgress());
-  permission_request_manager->Dismiss();
+  permission_request_manager->Dismiss(/*prompt_options=*/std::monostate());
   EXPECT_EQ("prompt", EvalJs(tab, kCheckPermissionScript,
                              content::EXECUTE_SCRIPT_NO_USER_GESTURE));
   EXPECT_FALSE(tab->GetPrimaryMainFrame()->HasTransientUserActivation());
@@ -199,7 +197,7 @@ IN_PROC_BROWSER_TEST_F(WindowManagementPermissionContextTest,
   ExecuteScriptAsync(tab, "getScreenDetails()");
   WaitForUserActivationExpiry();
   ASSERT_TRUE(permission_request_manager->IsRequestInProgress());
-  permission_request_manager->Deny();
+  permission_request_manager->Deny(/*prompt_options=*/std::monostate());
   EXPECT_EQ("denied", EvalJs(tab, kCheckPermissionScript,
                              content::EXECUTE_SCRIPT_NO_USER_GESTURE));
   EXPECT_FALSE(tab->GetPrimaryMainFrame()->HasTransientUserActivation());
@@ -218,7 +216,7 @@ IN_PROC_BROWSER_TEST_F(WindowManagementPermissionContextTest, Accept) {
   ExecuteScriptAsync(tab, "getScreenDetails()");
   WaitForUserActivationExpiry();
   ASSERT_TRUE(permission_request_manager->IsRequestInProgress());
-  permission_request_manager->Accept();
+  permission_request_manager->Accept(/*prompt_options=*/std::monostate());
   EXPECT_EQ("granted", EvalJs(tab, kCheckPermissionScript,
                               content::EXECUTE_SCRIPT_NO_USER_GESTURE));
   EXPECT_TRUE(tab->GetPrimaryMainFrame()->HasTransientUserActivation());
@@ -242,7 +240,7 @@ IN_PROC_BROWSER_TEST_F(WindowManagementPermissionContextTest,
   ExecuteScriptAsync(child, "getScreenDetails()");
   WaitForUserActivationExpiry();
   ASSERT_TRUE(permission_request_manager->IsRequestInProgress());
-  permission_request_manager->Accept();
+  permission_request_manager->Accept(/*prompt_options=*/std::monostate());
   EXPECT_EQ("granted", EvalJs(child, kCheckPermissionScript,
                               content::EXECUTE_SCRIPT_NO_USER_GESTURE));
   EXPECT_TRUE(tab->GetPrimaryMainFrame()->HasTransientUserActivation());
@@ -307,7 +305,7 @@ IN_PROC_BROWSER_TEST_F(WindowManagementPermissionContextTest,
   WaitForUserActivationExpiry();
 
   ASSERT_TRUE(permission_request_manager->IsRequestInProgress());
-  permission_request_manager->Accept();
+  permission_request_manager->Accept(/*prompt_options=*/std::monostate());
   EXPECT_EQ("granted", EvalJs(child, kCheckPermissionScript,
                               content::EXECUTE_SCRIPT_NO_USER_GESTURE));
   EXPECT_TRUE(tab->GetPrimaryMainFrame()->HasTransientUserActivation());

@@ -4,17 +4,16 @@
 
 package org.chromium.chrome.browser.password_manager;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.app.Activity;
+import android.app.Dialog;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.res.Resources;
 import android.graphics.Bitmap;
 import android.graphics.drawable.Drawable;
-import android.text.SpannableString;
-import android.text.Spanned;
 import android.text.TextUtils;
-import android.text.method.LinkMovementMethod;
-import android.text.style.ClickableSpan;
 import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -33,6 +32,8 @@ import org.jni_zero.CalledByNative;
 import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.components.browser_ui.util.AvatarGenerator;
 import org.chromium.components.url_formatter.UrlFormatter;
@@ -40,11 +41,11 @@ import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.widget.Toast;
 
 /**
- *  A dialog offers the user the ability to choose credentials for authentication. User is
- *  presented with username along with avatar and full name in case they are available.
- *  Native counterpart should be notified about credentials user have chosen and also if user
- *  haven't chosen anything.
+ * A dialog offers the user the ability to choose credentials for authentication. User is presented
+ * with username along with avatar and full name in case they are available. Native counterpart
+ * should be notified about credentials user have chosen and also if user haven't chosen anything.
  */
+@NullMarked
 public class AccountChooserDialog
         implements DialogInterface.OnClickListener, DialogInterface.OnDismissListener {
     private final Context mContext;
@@ -53,17 +54,15 @@ public class AccountChooserDialog
     /** Title of the dialog, contains Smart Lock branding for the Smart Lock users. */
     private final String mTitle;
 
-    private final int mTitleLinkStart;
-    private final int mTitleLinkEnd;
     private final String mOrigin;
     private final String mSigninButtonText;
-    private ArrayAdapter<Credential> mAdapter;
+    private @Nullable ArrayAdapter<Credential> mAdapter;
 
     /** Holds the reference to the credentials which were chosen by the user. */
-    private Credential mCredential;
+    private @Nullable Credential mCredential;
 
     private long mNativeAccountChooserDialog;
-    private AlertDialog mDialog;
+    private @Nullable AlertDialog mDialog;
 
     /**
      * True, if credentials were selected via "Sign In" button instead of clicking on the credential
@@ -76,16 +75,12 @@ public class AccountChooserDialog
             long nativeAccountChooserDialog,
             Credential[] credentials,
             String title,
-            int titleLinkStart,
-            int titleLinkEnd,
             String origin,
             String signinButtonText) {
         mNativeAccountChooserDialog = nativeAccountChooserDialog;
         mContext = context;
         mCredentials = credentials.clone();
         mTitle = title;
-        mTitleLinkStart = titleLinkStart;
-        mTitleLinkEnd = titleLinkEnd;
         mOrigin = origin;
         mSigninButtonText = signinButtonText;
         mSigninButtonClicked = false;
@@ -101,13 +96,11 @@ public class AccountChooserDialog
      * @param origin Address of the web page, where dialog was triggered.
      */
     @CalledByNative
-    private static AccountChooserDialog createAndShowAccountChooser(
+    private static @Nullable AccountChooserDialog createAndShowAccountChooser(
             WindowAndroid windowAndroid,
             long nativeAccountChooserDialog,
             Credential[] credentials,
             @JniType("std::u16string") String title,
-            int titleLinkStart,
-            int titleLinkEnd,
             @JniType("std::string") String origin,
             @JniType("std::u16string") String signinButtonText) {
         Activity activity = windowAndroid.getActivity().get();
@@ -118,8 +111,6 @@ public class AccountChooserDialog
                         nativeAccountChooserDialog,
                         credentials,
                         title,
-                        titleLinkStart,
-                        titleLinkEnd,
                         origin,
                         signinButtonText);
         chooser.show();
@@ -128,9 +119,9 @@ public class AccountChooserDialog
 
     private ArrayAdapter<Credential> generateAccountsArrayAdapter(
             Context context, Credential[] credentials) {
-        return new ArrayAdapter<Credential>(context, /* resource= */ 0, credentials) {
+        return new ArrayAdapter<>(context, /* resource= */ 0, credentials) {
             @Override
-            public View getView(int position, View convertView, ViewGroup parent) {
+            public View getView(int position, @Nullable View convertView, ViewGroup parent) {
                 if (convertView == null) {
                     LayoutInflater inflater = LayoutInflater.from(getContext());
                     convertView =
@@ -139,12 +130,17 @@ public class AccountChooserDialog
                 convertView.setSelected(false);
                 convertView.setOnClickListener(
                         view -> {
-                            mCredential = mCredentials[position];
-                            if (mDialog != null) mDialog.dismiss();
+                            AccountChooserDialog.this.mCredential =
+                                    AccountChooserDialog.this.mCredentials[position];
+                            Dialog dialogInstance = AccountChooserDialog.this.mDialog;
+                            if (dialogInstance != null) {
+                                dialogInstance.dismiss();
+                            }
                         });
                 convertView.setTag(position);
 
                 Credential credential = getItem(position);
+                assumeNonNull(credential); // ArrayAdapter.getItem() can return @Nullable.
 
                 ImageView avatarView = convertView.findViewById(R.id.profile_image);
                 Drawable avatar = credential.getAvatar();
@@ -201,29 +197,7 @@ public class AccountChooserDialog
         TextView origin = titleView.findViewById(R.id.origin);
         origin.setText(mOrigin);
         TextView titleMessageText = titleView.findViewById(R.id.title);
-        if (mTitleLinkStart != 0 && mTitleLinkEnd != 0) {
-            SpannableString spanableTitle = new SpannableString(mTitle);
-            spanableTitle.setSpan(
-                    new ClickableSpan() {
-                        @Override
-                        public void onClick(View view) {
-                            if (mNativeAccountChooserDialog != 0) {
-                                AccountChooserDialogJni.get()
-                                        .onLinkClicked(
-                                                mNativeAccountChooserDialog,
-                                                AccountChooserDialog.this);
-                            }
-                            mDialog.dismiss();
-                        }
-                    },
-                    mTitleLinkStart,
-                    mTitleLinkEnd,
-                    Spanned.SPAN_INCLUSIVE_INCLUSIVE);
-            titleMessageText.setText(spanableTitle, TextView.BufferType.SPANNABLE);
-            titleMessageText.setMovementMethod(LinkMovementMethod.getInstance());
-        } else {
-            titleMessageText.setText(mTitle);
-        }
+        titleMessageText.setText(mTitle);
         mAdapter = generateAccountsArrayAdapter(mContext, mCredentials);
         final AlertDialog.Builder builder =
                 new AlertDialog.Builder(mContext, R.style.ThemeOverlay_BrowserUI_AlertDialog)
@@ -312,6 +286,7 @@ public class AccountChooserDialog
                 AvatarGenerator.makeRoundAvatar(
                         mContext.getResources(), avatarBitmap, avatarBitmap.getHeight());
         mCredentials[index].setAvatar(avatar);
+        assumeNonNull(mDialog);
         ListView view = mDialog.getListView();
         if (index >= view.getFirstVisiblePosition() && index <= view.getLastVisiblePosition()) {
             // Profile image is in the visible range.
@@ -344,12 +319,10 @@ public class AccountChooserDialog
             AccountChooserDialogJni.get()
                     .onCredentialClicked(
                             mNativeAccountChooserDialog,
-                            AccountChooserDialog.this,
                             mCredential.getIndex(),
                             mSigninButtonClicked);
         } else {
-            AccountChooserDialogJni.get()
-                    .cancelDialog(mNativeAccountChooserDialog, AccountChooserDialog.this);
+            AccountChooserDialogJni.get().cancelDialog(mNativeAccountChooserDialog);
         }
     }
 
@@ -357,12 +330,9 @@ public class AccountChooserDialog
     interface Natives {
         void onCredentialClicked(
                 long nativeAccountChooserDialogAndroid,
-                AccountChooserDialog caller,
                 int credentialId,
                 boolean signinButtonClicked);
 
-        void cancelDialog(long nativeAccountChooserDialogAndroid, AccountChooserDialog caller);
-
-        void onLinkClicked(long nativeAccountChooserDialogAndroid, AccountChooserDialog caller);
+        void cancelDialog(long nativeAccountChooserDialogAndroid);
     }
 }

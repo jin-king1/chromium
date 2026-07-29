@@ -38,7 +38,7 @@ public class LegalMessageLine {
          * @param end The ending exclusive index of the link position in the text.
          * @param url The URL of the link.
          */
-        @CalledByNative("Link")
+        @CalledByNative
         public Link(int start, int end, String url) {
             this.start = start;
             this.end = end;
@@ -48,7 +48,7 @@ public class LegalMessageLine {
         @Override
         public boolean equals(Object o) {
             if (this == o) return true;
-            if (o == null || getClass() != o.getClass()) return false;
+            if (!(o instanceof Link)) return false;
 
             Link link = (Link) o;
             return start == link.start && end == link.end && url.equals(link.url);
@@ -112,7 +112,7 @@ public class LegalMessageLine {
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
-        if (o == null || getClass() != o.getClass()) return false;
+        if (!(o instanceof LegalMessageLine)) return false;
 
         LegalMessageLine that = (LegalMessageLine) o;
         return text.equals(that.text) && links.equals(that.links);

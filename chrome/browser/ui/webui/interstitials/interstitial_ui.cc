@@ -5,9 +5,10 @@
 #include "chrome/browser/ui/webui/interstitials/interstitial_ui.h"
 
 #include <memory>
+#include <optional>
 #include <utility>
 
-#include "base/atomic_sequence_num.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/ref_counted_memory.h"
 #include "base/strings/string_number_conversions.h"
@@ -51,6 +52,7 @@
 #include "components/security_interstitials/core/unsafe_resource_locator.h"
 #include "components/supervised_user/core/browser/supervised_user_error_page.h"  // nogncheck
 #include "components/supervised_user/core/browser/supervised_user_interstitial.h"
+#include "components/supervised_user/core/browser/supervised_user_service.h"
 #include "components/supervised_user/core/browser/supervised_user_utils.h"
 #include "content/public/browser/global_routing_id.h"
 #include "content/public/browser/render_frame_host.h"
@@ -59,7 +61,6 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_data_source.h"
-#include "crypto/rsa_private_key.h"
 #include "net/base/net_errors.h"
 #include "net/base/url_util.h"
 #include "net/cert/x509_certificate.h"
@@ -92,23 +93,11 @@ InterstitialUIConfig::InterstitialUIConfig()
 
 namespace {
 
-// NSS requires that serial numbers be unique even for the same issuer;
-// as all fake certificates will contain the same issuer name, it's
-// necessary to ensure the serial number is unique, as otherwise
-// NSS will fail to parse.
-base::AtomicSequenceNumber g_serial_number;
-
 scoped_refptr<net::X509Certificate> CreateFakeCert() {
-  std::unique_ptr<crypto::RSAPrivateKey> unused_key;
-  std::string cert_der;
-  if (!net::x509_util::CreateKeyAndSelfSignedCert(
-          "CN=Error", static_cast<uint32_t>(g_serial_number.GetNext()),
-          base::Time::Now() - base::Minutes(5),
-          base::Time::Now() + base::Minutes(5), &unused_key, &cert_der)) {
-    return nullptr;
-  }
+  std::vector<uint8_t> cert_der =
+      net::x509_util::CreateUnusableCert("CN=Error");
 
-  return net::X509Certificate::CreateFromBytes(base::as_byte_span(cert_der));
+  return net::X509Certificate::CreateFromBytes(cert_der);
 }
 
 // Implementation of chrome://interstitials demonstration pages. This code is
@@ -133,13 +122,18 @@ class InterstitialHTMLSource : public content::URLDataSource {
       content::URLDataSource::GotDataCallback callback) override;
 
  private:
-  std::string GetSupervisedUserInterstitialHTML(const std::string& path);
+  std::string GetSupervisedUserAskParentInterstitialHTML(
+      const std::string& path);
+#if BUILDFLAG(IS_ANDROID)
+  std::string GetSupervisedUserSiteBlockedInterstitialHTML(
+      const std::string& path);
+#endif  // BUILDFLAG(IS_ANDROID)
 };
 
 std::unique_ptr<SSLBlockingPage> CreateSslBlockingPage(
     content::WebContents* web_contents) {
   // Random parameters for SSL blocking page.
-  int cert_error = net::ERR_CERT_CONTAINS_ERRORS;
+  net::Error cert_error = net::ERR_CERT_CONTAINS_ERRORS;
   GURL request_url("https://example.com");
   bool overridable = false;
   bool strict_enforcement = false;
@@ -191,7 +185,7 @@ std::unique_ptr<SSLBlockingPage> CreateSslBlockingPage(
 
 std::unique_ptr<MITMSoftwareBlockingPage> CreateMITMSoftwareBlockingPage(
     content::WebContents* web_contents) {
-  const int cert_error = net::ERR_CERT_AUTHORITY_INVALID;
+  const net::Error cert_error = net::ERR_CERT_AUTHORITY_INVALID;
   const GURL request_url("https://example.com");
   const std::string mitm_software_name = "Misconfigured Antivirus";
   bool is_enterprise_managed = false;
@@ -213,7 +207,7 @@ std::unique_ptr<MITMSoftwareBlockingPage> CreateMITMSoftwareBlockingPage(
 
 std::unique_ptr<BlockedInterceptionBlockingPage>
 CreateBlockedInterceptionBlockingPage(content::WebContents* web_contents) {
-  const int cert_error = net::ERR_CERT_AUTHORITY_INVALID;
+  const net::Error cert_error = net::ERR_CERT_AUTHORITY_INVALID;
   const GURL request_url("https://example.com");
 
   net::SSLInfo ssl_info;
@@ -226,7 +220,7 @@ CreateBlockedInterceptionBlockingPage(content::WebContents* web_contents) {
 std::unique_ptr<BadClockBlockingPage> CreateBadClockBlockingPage(
     content::WebContents* web_contents) {
   // Set up a fake clock error.
-  int cert_error = net::ERR_CERT_DATE_INVALID;
+  net::Error cert_error = net::ERR_CERT_DATE_INVALID;
   GURL request_url("https://example.com");
   std::string url_param;
   if (net::GetValueForKeyInQuery(web_contents->GetVisibleURL(), "url",
@@ -288,24 +282,14 @@ CreateHttpsOnlyModePage(content::WebContents* web_contents) {
   GURL request_url("http://example.com");
   std::string type_param;
   security_interstitials::https_only_mode::HttpInterstitialState state;
-  if (net::GetValueForKeyInQuery(web_contents->GetVisibleURL(), "type",
-                                 &type_param)) {
-    if (type_param == "advanced_protection") {
-      state.enabled_by_advanced_protection = true;
-    } else if (type_param == "site_engagement") {
-      state.enabled_by_engagement_heuristic = true;
-    } else if (type_param == "typically_secure") {
-      state.enabled_by_typically_secure_browsing = true;
-    } else if (type_param == "incognito") {
-      state.enabled_by_incognito = true;
-    }
-  }
-  return std::make_unique<security_interstitials::HttpsOnlyModeBlockingPage>(
-      web_contents, request_url,
-      std::make_unique<HttpsOnlyModeControllerClient>(web_contents,
-                                                      request_url),
-      state,
-      /*use_new_interstitial=*/IsNewHttpsFirstModeInterstitialEnabled());
+  net::GetValueForKeyInQuery(web_contents->GetVisibleURL(), "type",
+                             &type_param);
+  ChromeSecurityBlockingPageFactory blocking_page_factory;
+  return blocking_page_factory.CreateHttpsOnlyModeBlockingPage(
+      web_contents, request_url, state,
+      type_param.empty() ? std::nullopt
+                         : std::make_optional<std::string>(type_param),
+      /*metrics_callback=*/base::DoNothing());
 }
 
 #if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
@@ -344,7 +328,7 @@ CreateSafeBrowsingBlockingPage(content::WebContents* web_contents) {
   resource.url = request_url;
   resource.threat_type = threat_type;
   resource.rfh_locator = UnsafeResourceLocator::CreateForRenderFrameToken(
-      primary_main_frame_id.child_id,
+      primary_main_frame_id.child_id.value(),
       primary_main_frame->GetFrameToken().value());
   resource.threat_source =
       g_browser_process->safe_browsing_service()
@@ -404,7 +388,7 @@ std::unique_ptr<EnterpriseWarnPage> CreateEnterpriseWarnPage(
   resource.threat_type =
       safe_browsing::SBThreatType::SB_THREAT_TYPE_MANAGED_POLICY_WARN;
   resource.rfh_locator = UnsafeResourceLocator::CreateForRenderFrameToken(
-      primary_main_frame_id.child_id,
+      primary_main_frame_id.child_id.value(),
       primary_main_frame->GetFrameToken().value());
   resource.threat_source =
       g_browser_process->safe_browsing_service()
@@ -428,13 +412,13 @@ CreateSupervisedUserVerificationPageForYouTube(
   const GURL kRequestUrl("https://supervised-user-verification.example.net");
   return std::make_unique<SupervisedUserVerificationPageForYouTube>(
       web_contents, "first.last@gmail.com", kRequestUrl,
-      /*child_account_service*/ nullptr, ukm::kInvalidSourceId,
+      /*child_account_service*/ nullptr,
       std::make_unique<SupervisedUserVerificationControllerClient>(
           web_contents,
           Profile::FromBrowserContext(web_contents->GetBrowserContext())
               ->GetPrefs(),
           g_browser_process->GetApplicationLocale(),
-          GURL(chrome::kChromeUINewTabURL), kRequestUrl),
+          chrome::ChromeUINewTabURLAsGURL(), kRequestUrl),
       is_main_frame);
 }
 
@@ -451,8 +435,8 @@ CreateSupervisedUserVerificationPageForBlockedSites(
           Profile::FromBrowserContext(web_contents->GetBrowserContext())
               ->GetPrefs(),
           g_browser_process->GetApplicationLocale(),
-          GURL(chrome::kChromeUINewTabURL), kRequestUrl),
-      supervised_user::FilteringBehaviorReason::DEFAULT, is_main_frame);
+          chrome::ChromeUINewTabURLAsGURL(), kRequestUrl),
+      is_main_frame);
 }
 #endif
 
@@ -493,7 +477,7 @@ CreateSafeBrowsingQuietBlockingPage(content::WebContents* web_contents) {
   resource.url = request_url;
   resource.threat_type = threat_type;
   resource.rfh_locator = UnsafeResourceLocator::CreateForRenderFrameToken(
-      primary_main_frame_id.child_id,
+      primary_main_frame_id.child_id.value(),
       primary_main_frame->GetFrameToken().value());
   resource.threat_source =
       g_browser_process->safe_browsing_service()
@@ -616,7 +600,7 @@ void InterstitialHTMLSource::StartDataRequest(
   // query (everything after the ? character).
   GURL url =
       GURL(chrome::kChromeUIInterstitialURL).GetWithEmptyPath().Resolve(path);
-  std::string path_without_query = url.path();
+  std::string path_without_query = url.GetPath();
   if (path_without_query == "/ssl") {
     interstitial_delegate = CreateSslBlockingPage(web_contents);
   } else if (path_without_query == "/mitm-software-ssl") {
@@ -673,8 +657,12 @@ void InterstitialHTMLSource::StartDataRequest(
   } else if (path_without_query == "/supervised-user-ask-parent") {
 #else
   if (path_without_query == "/supervised-user-ask-parent") {
-#endif
-    html = GetSupervisedUserInterstitialHTML(path);
+#endif  // BUILDFLAG(SAFE_BROWSING_AVAILABLE)
+    html = GetSupervisedUserAskParentInterstitialHTML(path);
+#if BUILDFLAG(IS_ANDROID)
+  } else if (path_without_query == "/supervised-user-site-blocked") {
+    html = GetSupervisedUserSiteBlockedInterstitialHTML(path);
+#endif  // BUILDFLAG(IS_ANDROID)
   } else if (interstitial_delegate.get()) {
     html = interstitial_delegate.get()->GetHTMLContents();
   } else {
@@ -686,7 +674,7 @@ void InterstitialHTMLSource::StartDataRequest(
   std::move(callback).Run(html_bytes.get());
 }
 
-std::string InterstitialHTMLSource::GetSupervisedUserInterstitialHTML(
+std::string InterstitialHTMLSource::GetSupervisedUserAskParentInterstitialHTML(
     const std::string& path) {
   GURL url("https://localhost/" + path);
 
@@ -697,10 +685,10 @@ std::string InterstitialHTMLSource::GetSupervisedUserInterstitialHTML(
     allow_access_requests = allow_access_requests_string == "1";
   }
 
-  std::string custodian = "Alice";
-  net::GetValueForKeyInQuery(url, "custodian", &custodian);
-  std::string second_custodian = "Bob";
-  net::GetValueForKeyInQuery(url, "second_custodian", &second_custodian);
+  std::string custodian_name = "Alice";
+  net::GetValueForKeyInQuery(url, "custodian", &custodian_name);
+  std::string second_custodian_name = "Bob";
+  net::GetValueForKeyInQuery(url, "second_custodian", &second_custodian_name);
   std::string custodian_email = "alice.bloggs@gmail.com";
   net::GetValueForKeyInQuery(url, "custodian_email", &custodian_email);
   std::string second_custodian_email = "bob.bloggs@gmail.com";
@@ -724,10 +712,24 @@ std::string InterstitialHTMLSource::GetSupervisedUserInterstitialHTML(
     }
   }
 
-  return supervised_user::BuildErrorPageHtml(
-      allow_access_requests, profile_image_url, profile_image_url2, custodian,
-      custodian_email, second_custodian, second_custodian_email, reason,
+  supervised_user::Custodian first_custodian(custodian_name, custodian_email,
+                                             profile_image_url);
+  supervised_user::Custodian second_custodian(
+      second_custodian_name, second_custodian_email, profile_image_url2);
+
+  return supervised_user::BuildErrorPageHtmlWithApprovals(
+      allow_access_requests, first_custodian, second_custodian, reason,
       g_browser_process->GetApplicationLocale(),
       /*already_sent_remote_request=*/false,
-      /*is_main_frame=*/true);
+      /*is_main_frame=*/true, /*ios_font_size_multiplier=*/std::nullopt);
 }
+
+#if BUILDFLAG(IS_ANDROID)
+std::string
+InterstitialHTMLSource::GetSupervisedUserSiteBlockedInterstitialHTML(
+    const std::string& path) {
+  return supervised_user::BuildErrorPageHtmlWithoutApprovals(
+      GURL("https://localhost/" + path),
+      g_browser_process->GetApplicationLocale());
+}
+#endif  // BUILDFLAG(IS_ANDROID)

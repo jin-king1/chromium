@@ -145,10 +145,13 @@ inline constexpr base::TimeDelta kCaptureUIOpacityChangeDuration =
 // Search result panel dimensions.
 inline constexpr int kPanelPaddingSize = 16;
 inline constexpr int kSearchResultsPanelWebViewWidth = 360;
+inline constexpr int kSearchResultsPanelTotalHeight = 492;
 inline constexpr int kSearchResultsPanelTotalWidth =
     capture_mode::kSearchResultsPanelWebViewWidth +
     2 * capture_mode::kPanelPaddingSize;
-constexpr int kSearchResultsPanelHeight = 492;
+inline constexpr int kSearchResultsPanelWebViewHeight =
+    kSearchResultsPanelTotalHeight - 2 * kPanelPaddingSize -
+    /*button_size=*/24 - /*padding_size=*/12;
 
 // The distance between the search result panel and the work area.
 constexpr int kPanelWorkAreaSpacing = 10;
@@ -173,6 +176,9 @@ inline constexpr float kRegionGlowAnimationMaxBlurDp = 32.0f;
 // The minimum and maximum glow outset from the edge of the capture region.
 inline constexpr int kRegionGlowMinOutsetDp = 0;
 inline constexpr int kRegionGlowMaxOutsetDp = 6;
+
+// The view ID for the search results panel loading animation.
+inline constexpr int kLoadingAnimationViewId = 1;
 
 }  // namespace ash::capture_mode
 

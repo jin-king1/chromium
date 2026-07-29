@@ -14,16 +14,14 @@
 #include "base/containers/to_vector.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
 #include "base/system/sys_info.h"
 #include "base/time/time.h"
-#include "chrome/browser/performance_manager/policies/page_discarding_helper.h"
+#include "chrome/browser/performance_manager/policies/discard_eligibility_policy.h"
 #include "components/performance_manager/public/features.h"
 #include "components/performance_manager/public/graph/graph.h"
 #include "components/performance_manager/public/graph/page_node.h"
 #include "components/performance_manager/public/resource_attribution/page_context.h"
 #include "content/public/browser/browser_thread.h"
-#include "content/public/browser/resource_context.h"
 
 namespace performance_manager::user_tuning {
 
@@ -69,7 +67,7 @@ CpuHealthTracker::HealthLevel CpuHealthTracker::GetCurrentHealthLevel() {
 
 int CpuHealthTracker::GetTotalCpuPercentUsage(ActionableTabsResult tabs) {
   int total_cpu = 0;
-  for (resource_attribution::PageContext context : tabs) {
+  for (const resource_attribution::PageContext& context : tabs) {
     auto iter = tab_page_measurements_.find(context);
     if (iter != tab_page_measurements_.end()) {
       total_cpu += iter->second.value();
@@ -191,9 +189,9 @@ bool CpuHealthTracker::CanDiscardPage(
     return false;
   }
 
-  policies::PageDiscardingHelper* const discard_helper =
-      policies::PageDiscardingHelper::GetFromGraph(GetOwningGraph());
-  CHECK(discard_helper);
+  policies::DiscardEligibilityPolicy* const eligibility_policy =
+      policies::DiscardEligibilityPolicy::GetFromGraph(GetOwningGraph());
+  CHECK(eligibility_policy);
 
   // While in demo mode, we don't need to use the measurement_window when
   // determining tab actionability so we can immediately trigger the
@@ -208,7 +206,7 @@ bool CpuHealthTracker::CanDiscardPage(
           base::TimeDelta::Max()) < measurement_window;
 
   return !did_audio_status_change &&
-         discard_helper->CanDiscard(
+         eligibility_policy->CanDiscardWithCustomRecentVisibilityWindow(
              page_node, ::mojom::LifecycleUnitDiscardReason::SUGGESTED,
              measurement_window) == policies::CanDiscardResult::kEligible;
 }

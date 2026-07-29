@@ -4,19 +4,22 @@
 
 #include "android_webview/browser/gfx/overlay_processor_webview.h"
 
+#include <android/hardware_buffer.h>
+
 #include <cstdlib>
+#include <variant>
 
 #include "android_webview/browser/gfx/gpu_service_webview.h"
 #include "android_webview/browser/gfx/viz_compositor_thread_runner_webview.h"
-#include "base/android/android_hardware_buffer_compat.h"
-#include "base/android/build_info.h"
+#include "base/android/android_info.h"
+#include "base/android/device_info.h"
 #include "base/android/scoped_hardware_buffer_fence_sync.h"
 #include "base/feature_list.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
-#include "base/not_fatal_until.h"
 #include "base/task/bind_post_task.h"
+#include "base/task/common/task_annotator.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/threading/thread_checker.h"
 #include "base/threading/thread_restrictions.h"
@@ -88,8 +91,7 @@ class OverlayProcessorWebView::Manager
       }
 
       AHardwareBuffer_Desc desc;
-      base::AndroidHardwareBufferCompat::GetInstance().Describe(
-          GetAHardwareBuffer(), &desc);
+      AHardwareBuffer_describe(GetAHardwareBuffer(), &desc);
       gfx::RectF scaled_rect = gfx::ScaleRect(uv_rect, desc.width, desc.height);
       crop_rect_ = gfx::ToEnclosedRect(scaled_rect);
     }
@@ -512,7 +514,7 @@ class OverlayProcessorWebView::Manager
   OverlaySurface& GetOverlaySurfaceLocked(uint64_t id) {
     lock_.AssertAcquired();
     auto surface = overlay_surfaces_.find(id);
-    CHECK(surface != overlay_surfaces_.end(), base::NotFatalUntil::M130);
+    CHECK(surface != overlay_surfaces_.end());
     return surface->second;
   }
 
@@ -543,7 +545,7 @@ class OverlayProcessorWebView::Manager
       gfx::SurfaceControl::Transaction& transaction,
       gfx::SurfaceControl::Surface& surface,
       const viz::OverlayCandidate& candidate) {
-    DCHECK_EQ(absl::get<gfx::OverlayTransform>(candidate.transform),
+    DCHECK_EQ(std::get<gfx::OverlayTransform>(candidate.transform),
               gfx::OVERLAY_TRANSFORM_NONE);
     gfx::Rect dst = gfx::ToEnclosingRect(candidate.unclipped_display_rect);
 
@@ -592,11 +594,13 @@ class OverlayProcessorWebView::Manager
                                          -ceil(crop_rect.y() * scale_y)));
       transaction.SetScale(surface, scale_x, scale_y);
       transaction.SetCrop(surface, crop_rect);
-      transaction.SetColorSpace(surface, resource->color_space(), std::nullopt);
+      transaction.SetColorSpace(surface, resource->color_space(),
+                                gfx::HDRMetadata());
       transaction.SetBuffer(surface, buffer, resource->TakeBeginReadFence());
 
       if (gfx::SurfaceControl::SupportsSetFrameRate()) {
-        transaction.SetFrameRate(surface, resource->frame_rate());
+        transaction.SetFrameRate(surface,
+                                 {.frame_rate = resource->frame_rate()});
       }
     } else {
       // Android T has a bug where setting empty buffer to ASurfaceControl will
@@ -604,8 +608,8 @@ class OverlayProcessorWebView::Manager
       // OnComplete callback. To workaround it we create 1x1 buffer instead of
       // setting empty one.
       const bool need_empty_buffer_workaround =
-          base::android::BuildInfo::GetInstance()->sdk_int() >=
-          base::android::SDK_VERSION_T;
+          base::android::android_info::sdk_int() >=
+          base::android::android_info::SDK_VERSION_T;
       if (need_empty_buffer_workaround) {
         // We never delete this buffer.
         static AHardwareBuffer* fake_buffer = nullptr;
@@ -619,8 +623,7 @@ class OverlayProcessorWebView::Manager
           hwb_desc.layers = 1;
 
           // Allocate an AHardwareBuffer.
-          base::AndroidHardwareBufferCompat::GetInstance().Allocate(
-              &hwb_desc, &fake_buffer);
+          AHardwareBuffer_allocate(&hwb_desc, &fake_buffer);
           if (!fake_buffer) {
             LOG(ERROR) << "Failed to allocate AHardwareBuffer";
           }
@@ -742,8 +745,7 @@ OverlayProcessorWebView::TakeSurfaceTransactionOnRT() {
 }
 
 void OverlayProcessorWebView::CheckOverlaySupportImpl(
-    const viz::OverlayProcessorInterface::OutputSurfaceOverlayPlane*
-        primary_plane,
+    const std::optional<viz::OverlayCandidate>& primary_plane,
     viz::OverlayCandidateList* candidates) {
   // If HWUI doesn't want us to overlay, we shouldn't.
   if (!overlays_enabled_by_hwui_)
@@ -770,6 +772,21 @@ void OverlayProcessorWebView::CheckOverlaySupportImpl(
   // Check candidates if they can be used with surface control.
   OverlayProcessorSurfaceControl::CheckOverlaySupportImpl(primary_plane,
                                                           candidates);
+
+  if (!blocked_frame_sink_ids_.empty()) {
+    // If `blocked_frame_sink_ids_` is not empty, that means ScheduleOverlays
+    // were called and we stored resource_provider already.
+    CHECK(resource_provider_);
+    for (auto& candidate : *candidates) {
+      // Prevent blocked framesinks to go to the overlays.
+      if (candidate.overlay_handled &&
+          blocked_frame_sink_ids_.contains(
+              resource_provider_->GetSurfaceId(candidate.resource_id)
+                  .frame_sink_id())) {
+        candidate.overlay_handled = false;
+      }
+    }
+  }
 }
 
 void OverlayProcessorWebView::TakeOverlayCandidates(
@@ -780,7 +797,7 @@ void OverlayProcessorWebView::TakeOverlayCandidates(
 
 void OverlayProcessorWebView::ScheduleOverlays(
     viz::DisplayResourceProvider* resource_provider) {
-  DCHECK(!resource_provider_ || resource_provider_ == resource_provider_);
+  DCHECK(!resource_provider_ || resource_provider_ == resource_provider);
   resource_provider_ = resource_provider;
 
   DCHECK(gpu_thread_sequence_ || overlay_candidates_.empty());
@@ -834,8 +851,13 @@ void OverlayProcessorWebView::ScheduleOverlays(
     }
   }
 
+  const bool is_tv = base::android::device_info::is_tv();
   for (auto it = overlays_.begin(); it != overlays_.end();) {
     if (!seen.contains(it->first)) {
+      if (is_tv) {
+        blocked_frame_sink_ids_.insert(it->first);
+      }
+
       render_thread_sequence_->ScheduleGpuTask(
           base::BindOnce(&Manager::RemoveOverlay,
                          base::Unretained(manager_.get()), it->second.id),
@@ -878,7 +900,7 @@ void OverlayProcessorWebView::UpdateOverlayResource(
     const gfx::RectF& uv_rect) {
   DCHECK(resource_provider_);
   auto overlay = overlays_.find(frame_sink_id);
-  CHECK(overlay != overlays_.end(), base::NotFatalUntil::M130);
+  CHECK(overlay != overlays_.end());
 
   DCHECK(resource_provider_->IsOverlayCandidate(new_resource_id));
 
@@ -909,7 +931,7 @@ void OverlayProcessorWebView::ReturnResource(viz::ResourceId resource_id,
   // OverlayManager return resources. When we delete last lock resource will be
   // return to the client.
   auto it = locked_resources_.find(resource_id);
-  CHECK(it != locked_resources_.end(), base::NotFatalUntil::M130);
+  CHECK(it != locked_resources_.end());
   locked_resources_.erase(it);
 
   DCHECK(resource_lock_count_.contains(surface_id.frame_sink_id()));
@@ -938,7 +960,7 @@ bool OverlayProcessorWebView::ProcessForFrameSinkId(
     const viz::FrameSinkId& frame_sink_id,
     const viz::ResolvedFrameData* frame_data) {
   auto it = overlays_.find(frame_sink_id);
-  CHECK(it != overlays_.end(), base::NotFatalUntil::M130);
+  CHECK(it != overlays_.end());
   auto& overlay = it->second;
 
   const auto& passes = frame_data->GetResolvedPasses();
@@ -960,8 +982,7 @@ bool OverlayProcessorWebView::ProcessForFrameSinkId(
     const auto& frame = surface->GetActiveFrame();
     auto* quad = frame.render_pass_list.back()->quad_list.front();
 
-    if (gfx::SurfaceControl::SupportsSetFrameRate() &&
-        base::FeatureList::IsEnabled(features::kWebViewFrameRateHints)) {
+    if (gfx::SurfaceControl::SupportsSetFrameRate()) {
       float frame_rate = 0.f;
       const viz::FrameIntervalInputs& frame_interval_inputs =
           frame.metadata.frame_interval_inputs;
@@ -979,7 +1000,8 @@ bool OverlayProcessorWebView::ProcessForFrameSinkId(
       }
       if (frame_interval &&
           frame_interval_inputs.has_only_content_frame_interval_updates) {
-        frame_rate = frame_interval->ToHz();
+        float interval_s = frame_interval->InSecondsF();
+        frame_rate = interval_s == 0 ? 0 : (1 / interval_s);
       }
       constexpr float kEpsilon = 0.005;
       if (std::abs(frame_rate - frame_rate_) > kEpsilon) {
@@ -992,12 +1014,11 @@ bool OverlayProcessorWebView::ProcessForFrameSinkId(
     // invalidate and normal draw would remove this overlay candidate.
     if (quad->material == viz::TextureDrawQuad::kMaterial) {
       auto* texture_quad = viz::TextureDrawQuad::MaterialCast(quad);
-      DCHECK(texture_quad->is_stream_video);
-
-      auto uv_rect = gfx::BoundingRect(texture_quad->uv_top_left,
-                                       texture_quad->uv_bottom_right);
+      DCHECK(texture_quad->is_video_frame);
 
       auto new_resource_id = pass.draw_quads().front().remapped_resource_id;
+      auto uv_rect = texture_quad->GetNormalizedTexCoords(
+          resource_provider_->GetResourceBackedSize(new_resource_id));
       if (resource_provider_->IsOverlayCandidate(new_resource_id)) {
         UpdateOverlayResource(frame_sink_id, new_resource_id, uv_rect);
         buffer_updated = true;
@@ -1027,6 +1048,15 @@ viz::SurfaceId OverlayProcessorWebView::GetOverlaySurfaceId(
 bool OverlayProcessorWebView::IsFrameSinkOverlayed(
     viz::FrameSinkId frame_sink_id) {
   return overlays_.contains(frame_sink_id);
+}
+
+bool OverlayProcessorWebView::ShouldCreatePrimaryPlane() const {
+  return false;
+}
+
+void OverlayProcessorWebView::OnFrameSinkDestroyed(
+    viz::FrameSinkId frame_sink_id) {
+  blocked_frame_sink_ids_.erase(frame_sink_id);
 }
 
 OverlayProcessorWebView::ScopedSurfaceControlAvailable::

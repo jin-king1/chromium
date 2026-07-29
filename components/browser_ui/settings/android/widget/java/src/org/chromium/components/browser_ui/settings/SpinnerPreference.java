@@ -5,6 +5,7 @@
 package org.chromium.components.browser_ui.settings;
 
 import static org.chromium.build.NullUtil.assumeNonNull;
+import static org.chromium.components.browser_ui.widget.containment.ContainmentUiUtils.parseContainmentAttributes;
 
 import android.content.Context;
 import android.content.res.TypedArray;
@@ -20,14 +21,18 @@ import androidx.preference.PreferenceViewHolder;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.components.browser_ui.widget.containment.ContainmentItem;
+import org.chromium.components.browser_ui.widget.containment.ContainmentUiUtils;
 
 /** A preference that takes value from a specified list of objects, presented as a dropdown. */
 @NullMarked
-public class SpinnerPreference extends Preference {
+public class SpinnerPreference extends Preference
+        implements Preference.OnPreferenceClickListener, ContainmentItem {
     private @Nullable Spinner mSpinner;
     private @Nullable ArrayAdapter<Object> mAdapter;
     private int mSelectedIndex;
     private final boolean mSingleLine;
+    private final int mBackgroundStyle;
 
     /** Constructor for inflating from XML. */
     public SpinnerPreference(Context context, AttributeSet attrs) {
@@ -35,11 +40,17 @@ public class SpinnerPreference extends Preference {
         TypedArray a = context.obtainStyledAttributes(attrs, R.styleable.SpinnerPreference);
         mSingleLine = a.getBoolean(R.styleable.SpinnerPreference_singleLine, false);
         a.recycle();
+
+        ContainmentUiUtils.ContainmentAttributes containmentAttributes =
+                parseContainmentAttributes(context, attrs);
+        mBackgroundStyle = containmentAttributes.backgroundStyle;
+
         if (mSingleLine) {
             setLayoutResource(R.layout.preference_spinner_single_line);
         } else {
             setLayoutResource(R.layout.preference_spinner);
         }
+        setOnPreferenceClickListener(this);
     }
 
     /**
@@ -93,8 +104,16 @@ public class SpinnerPreference extends Preference {
     public void onBindViewHolder(PreferenceViewHolder holder) {
         super.onBindViewHolder(holder);
 
-        ((TextView) assumeNonNull(holder.findViewById(R.id.title))).setText(getTitle());
-        mSpinner = (Spinner) assumeNonNull(holder.findViewById(R.id.spinner));
+        ((TextView) holder.findViewById(R.id.title)).setText(getTitle());
+        mSpinner = (Spinner) holder.findViewById(R.id.spinner);
+        assert mSpinner != null;
+        // Set the inner spinner to non-focusable/clickable, this allows the screen reader to
+        // include the content description of all the Preference's inner elements in a single
+        // announcement. The click action of the inner spinner will instead be handled by
+        // onPreferenceClick().
+        mSpinner.setFocusable(false);
+        mSpinner.setClickable(false);
+        mSpinner.setLongClickable(false);
         mSpinner.setOnItemSelectedListener(
                 new AdapterView.OnItemSelectedListener() {
                     @Override
@@ -121,5 +140,18 @@ public class SpinnerPreference extends Preference {
             mSpinner.setAdapter(mAdapter);
         }
         mSpinner.setSelection(mSelectedIndex);
+    }
+
+    @Override
+    public boolean onPreferenceClick(Preference preference) {
+        if (mSpinner != null) {
+            mSpinner.performClick();
+        }
+        return true;
+    }
+
+    @Override
+    public int getCustomBackgroundStyle() {
+        return mBackgroundStyle;
     }
 }

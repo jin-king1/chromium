@@ -5,18 +5,20 @@
 #include "base/win/win_util.h"
 
 #include <windows.h>
+#include <winternl.h>
 
-#include <aclapi.h>
 #include <combaseapi.h>
 #include <objidl.h>
 #include <regstr.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <sysinfoapi.h>
 #include <winhttp.h>
 #include <wrl/client.h>
 #include <wtsapi32.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <cstdlib>
 #include <memory>
 #include <optional>
@@ -29,30 +31,38 @@
 #include "base/compiler_specific.h"
 #include "base/containers/flat_map.h"
 #include "base/containers/flat_set.h"
+#include "base/containers/span.h"
+#include "base/containers/to_vector.h"
+#include "base/cpu.h"
 #include "base/debug/alias.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
+#include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
 #include "base/functional/function_ref.h"
 #include "base/logging.h"
 #include "base/memory/free_deleter.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/path_service.h"
 #include "base/process/kill.h"
 #include "base/process/launch.h"
 #include "base/process/process.h"
 #include "base/process/process_iterator.h"
 #include "base/scoped_native_library.h"
+#include "base/strings/cstring_view.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
-#include "base/strings/stringprintf.h"
 #include "base/strings/sys_string_conversions.h"
+#include "base/strings/to_string.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/system/sys_info.h"
 #include "base/time/time.h"
+#include "base/types/expected_macros.h"
 #include "base/uuid.h"
-#include "base/win/atl.h"
+#include "base/version.h"
+#include "base/win/access_token.h"
 #include "base/win/elevation_util.h"
 #include "base/win/registry.h"
 #include "base/win/scoped_bstr.h"
@@ -60,8 +70,12 @@
 #include "base/win/scoped_localalloc.h"
 #include "base/win/scoped_process_information.h"
 #include "base/win/scoped_variant.h"
+#include "base/win/security_descriptor.h"
+#include "base/win/sid.h"
 #include "base/win/startup_information.h"
+#include "build/build_config.h"
 #include "chrome/enterprise_companion/installer_paths.h"
+#include "chrome/updater/branded_constants.h"
 #include "chrome/updater/constants.h"
 #include "chrome/updater/registration_data.h"
 #include "chrome/updater/updater_branding.h"
@@ -73,29 +87,30 @@
 #include "chrome/updater/win/user_info.h"
 #include "chrome/updater/win/win_constants.h"
 #include "chrome/windows_services/service_program/scoped_client_impersonation.h"
+#include "components/crash/core/common/crash_key.h"
 #include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
+#include "third_party/abseil-cpp/absl/strings/str_format.h"
+
+// Linked from ntdll.lib.
+extern "C" LONG WINAPI RtlGetVersion(OSVERSIONINFOEX*);
 
 namespace updater {
 
 namespace {
 
-HResultOr<bool> IsUserRunningSplitToken() {
-  HANDLE token = NULL;
-  if (!::OpenProcessToken(::GetCurrentProcess(), TOKEN_QUERY, &token)) {
-    return base::unexpected(HRESULTFromLastError());
-  }
-  base::win::ScopedHandle token_holder(token);
-  TOKEN_ELEVATION_TYPE elevation_type = TokenElevationTypeDefault;
-  DWORD size_returned = 0;
-  if (!::GetTokenInformation(token_holder.Get(), TokenElevationType,
-                             &elevation_type, sizeof(elevation_type),
-                             &size_returned)) {
-    return base::unexpected(HRESULTFromLastError());
-  }
-  bool is_split_token = elevation_type == TokenElevationTypeFull ||
-                        elevation_type == TokenElevationTypeLimited;
-  CHECK(is_split_token || elevation_type == TokenElevationTypeDefault);
-  return base::ok(is_split_token);
+// Undocumented interface used to get the COM client handle.
+MIDL_INTERFACE("68C6A1B9-DE39-42C3-8D28-BF40A5126541")
+ICallingProcessInfo : public IUnknown {
+ public:
+  virtual IFACEMETHODIMP OpenCallerProcessHandle(DWORD desired_access,
+                                                 HANDLE * handle) = 0;
+};
+
+// Returns `true` if the current process token is a split UAC token.
+bool IsUserRunningSplitToken() {
+  std::optional<base::win::AccessToken> token =
+      base::win::AccessToken::FromCurrentProcess();
+  return token && token->IsSplitToken();
 }
 
 HRESULT GetSidIntegrityLevel(PSID sid, MANDATORY_LEVEL* level) {
@@ -106,10 +121,10 @@ HRESULT GetSidIntegrityLevel(PSID sid, MANDATORY_LEVEL* level) {
   if (!authority) {
     return E_FAIL;
   }
-  constexpr SID_IDENTIFIER_AUTHORITY kMandatoryLabelAuth =
+  static constexpr SID_IDENTIFIER_AUTHORITY kMandatoryLabelAuth =
       SECURITY_MANDATORY_LABEL_AUTHORITY;
-  if (std::memcmp(authority, &kMandatoryLabelAuth,
-                  sizeof(SID_IDENTIFIER_AUTHORITY))) {
+  if (base::byte_span_from_ref(*authority) !=
+      base::byte_span_from_ref(kMandatoryLabelAuth)) {
     return E_FAIL;
   }
   PUCHAR count = ::GetSidSubAuthorityCount(sid);
@@ -135,20 +150,20 @@ HRESULT GetProcessIntegrityLevel(DWORD process_id, MANDATORY_LEVEL* level) {
   }
   base::win::ScopedHandle process_holder(process);
   HANDLE token = NULL;
-  if (!::OpenProcessToken(process_holder.Get(),
+  if (!::OpenProcessToken(process_holder.get(),
                           TOKEN_QUERY | TOKEN_QUERY_SOURCE, &token)) {
     return HRESULTFromLastError();
   }
   base::win::ScopedHandle token_holder(token);
   DWORD label_size = 0;
-  if (::GetTokenInformation(token_holder.Get(), TokenIntegrityLevel, nullptr, 0,
+  if (::GetTokenInformation(token_holder.get(), TokenIntegrityLevel, nullptr, 0,
                             &label_size) ||
       ::GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
     return E_FAIL;
   }
   std::unique_ptr<TOKEN_MANDATORY_LABEL, base::FreeDeleter> label(
       static_cast<TOKEN_MANDATORY_LABEL*>(std::malloc(label_size)));
-  if (!::GetTokenInformation(token_holder.Get(), TokenIntegrityLevel,
+  if (!::GetTokenInformation(token_holder.get(), TokenIntegrityLevel,
                              label.get(), label_size, &label_size)) {
     return HRESULTFromLastError();
   }
@@ -181,13 +196,26 @@ bool IsExplorerRunningAtMediumOrLower() {
 // Returns NULL on failure. Call ::GetLastError() to get extended error
 // information on failure.
 HWND CreateForegroundParentWindowForUAC() {
-  CWindow foreground_parent;
-  if (foreground_parent.Create(L"STATIC", NULL, NULL, NULL,
-                               WS_POPUP | WS_VISIBLE, WS_EX_TOOLWINDOW)) {
-    foreground_parent.CenterWindow(NULL);
-    ::SetForegroundWindow(foreground_parent);
+  HWND hwnd = ::CreateWindowEx(WS_EX_TOOLWINDOW, L"STATIC", nullptr,
+                               WS_POPUP | WS_VISIBLE, 0, 0, 0, 0, nullptr,
+                               nullptr, nullptr, nullptr);
+  if (hwnd) {
+    // Center the window on the primary monitor's work area.
+    RECT work_area = {};
+    RECT window_rect = {};
+    if (::SystemParametersInfo(SPI_GETWORKAREA, 0, &work_area, 0) &&
+        ::GetWindowRect(hwnd, &window_rect)) {
+      const int window_width = window_rect.right - window_rect.left;
+      const int window_height = window_rect.bottom - window_rect.top;
+      const int cx = work_area.left +
+                     (work_area.right - work_area.left - window_width) / 2;
+      const int cy = work_area.top +
+                     (work_area.bottom - work_area.top - window_height) / 2;
+      ::SetWindowPos(hwnd, nullptr, cx, cy, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+    }
+    ::SetForegroundWindow(hwnd);
   }
-  return foreground_parent.Detach();
+  return hwnd;
 }
 
 // Compares the OS, service pack, and build numbers using `::VerifyVersionInfo`,
@@ -238,11 +266,67 @@ std::optional<std::vector<std::wstring>> CommandLineToArgv(
       std::vector<std::wstring>(argv.get(), argv.get() + num_args));
 }
 
+[[nodiscard]] bool IsServicePresentNonAdmin(const std::wstring& service_name) {
+  ScopedScHandle scm(
+      ::OpenSCManager(nullptr, nullptr, SC_MANAGER_CONNECT | GENERIC_READ));
+  if (!scm.is_valid()) {
+    return false;
+  }
+
+  ScopedScHandle service(
+      ::OpenService(scm.get(), service_name.c_str(), SERVICE_QUERY_CONFIG));
+  return service.is_valid() || (::GetLastError() == ERROR_ACCESS_DENIED);
+}
+
+[[nodiscard]] bool IsServicePresentAdmin(const std::wstring& service_name) {
+  ScopedScHandle scm(::OpenSCManager(
+      nullptr, nullptr, SC_MANAGER_CONNECT | SC_MANAGER_CREATE_SERVICE));
+  if (!scm.is_valid()) {
+    return false;
+  }
+
+  ScopedScHandle service(
+      ::OpenService(scm.get(), service_name.c_str(),
+                    SERVICE_QUERY_CONFIG | SERVICE_CHANGE_CONFIG));
+  if (!service.is_valid()) {
+    return ::GetLastError() == ERROR_ACCESS_DENIED;
+  }
+
+  // Detects the specific case where a service shows as present, but is marked
+  // for deletion.
+  return ::ChangeServiceConfig(service.get(), SERVICE_NO_CHANGE,
+                               SERVICE_NO_CHANGE, SERVICE_NO_CHANGE, nullptr,
+                               nullptr, nullptr, nullptr, nullptr, nullptr,
+                               nullptr) ||
+         (::GetLastError() != ERROR_SERVICE_MARKED_FOR_DELETE);
+}
+
+// Replaces '\' with '_' in `app_id`. Useful for preventing subkey injection
+// when using AppIds as registry keys. It is not expected that any valid AppId
+// contains '\', and this is enforced during installation and registration.
+// TODO(crbug.com/522930760): It would be preferable to not permit invalid
+// AppIds in such contexts instead.
+std::wstring SanitizeAppId(const std::wstring& app_id) {
+  std::wstring sanitized_app_id;
+  base::ReplaceChars(app_id, L"\\", L"_", &sanitized_app_id);
+  return sanitized_app_id;
+}
+
 }  // namespace
 
 NamedObjectAttributes::NamedObjectAttributes(const std::wstring& name,
-                                             const CSecurityDesc& sd)
-    : name(name), sa(CSecurityAttributes(sd)) {}
+                                             const std::wstring& sddl)
+    : name(name) {
+  if (!sddl.empty()) {
+    sd_ = base::win::SecurityDescriptor::FromSddl(sddl);
+    if (sd_) {
+      absolute_sd_ = sd_->ToAbsolute();
+      sa.nLength = sizeof(sa);
+      sa.lpSecurityDescriptor = &absolute_sd_;
+      sa.bInheritHandle = FALSE;
+    }
+  }
+}
 NamedObjectAttributes::~NamedObjectAttributes() = default;
 
 HRESULT HRESULTFromLastError() {
@@ -260,7 +344,7 @@ NamedObjectAttributes GetNamedObjectAttributes(const wchar_t* base_name,
       GetProcessUser(nullptr, nullptr, &user_sid);
       return {
           base::StrCat({kGlobalPrefix, base_name, user_sid}),
-          GetCurrentUserDefaultSecurityDescriptor().value_or(CSecurityDesc())};
+          GetCurrentUserDefaultSecurityDescriptor().value_or(std::wstring())};
     }
     case UpdaterScope::kSystem:
       // Grant access to administrators and system.
@@ -269,55 +353,77 @@ NamedObjectAttributes GetNamedObjectAttributes(const wchar_t* base_name,
   }
 }
 
-std::optional<CSecurityDesc> GetCurrentUserDefaultSecurityDescriptor() {
-  CAccessToken token;
-  if (!token.GetProcessToken(TOKEN_QUERY)) {
+std::optional<std::wstring> GetCurrentUserDefaultSecurityDescriptor() {
+  std::optional<base::win::AccessToken> token =
+      base::win::AccessToken::FromCurrentProcess();
+  if (!token) {
     return std::nullopt;
   }
 
-  CSecurityDesc security_desc;
-  CSid sid_owner;
-  if (!token.GetOwner(&sid_owner)) {
+  base::win::SecurityDescriptor sd;
+  sd.set_owner(token->Owner());
+  sd.set_group(token->PrimaryGroup());
+  if (!sd.SetDaclEntry(token->User(), base::win::SecurityAccessMode::kGrant,
+                       GENERIC_ALL, 0)) {
     return std::nullopt;
   }
-
-  security_desc.SetOwner(sid_owner);
-  CSid sid_group;
-  if (!token.GetPrimaryGroup(&sid_group)) {
-    return std::nullopt;
-  }
-
-  security_desc.SetGroup(sid_group);
-
-  CDacl dacl;
-  if (!token.GetDefaultDacl(&dacl)) {
-    return std::nullopt;
-  }
-
-  CSid sid_user;
-  if (!token.GetUser(&sid_user)) {
-    return std::nullopt;
-  }
-  if (!dacl.AddAllowedAce(sid_user, GENERIC_ALL)) {
-    return std::nullopt;
-  }
-
-  security_desc.SetDacl(dacl);
-
-  return security_desc;
+  return sd.ToSddl(OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION |
+                   DACL_SECURITY_INFORMATION);
 }
 
-CSecurityDesc GetAdminDaclSecurityDescriptor(ACCESS_MASK accessmask) {
-  CSecurityDesc sd;
-  CDacl dacl;
-  dacl.AddAllowedAce(Sids::System(), accessmask);
-  dacl.AddAllowedAce(Sids::Admins(), accessmask);
+std::wstring GetAdminDaclSecurityDescriptor(ACCESS_MASK accessmask) {
+  base::win::SecurityDescriptor sd;
+  sd.set_owner(base::win::Sid(base::win::WellKnownSid::kBuiltinAdministrators));
+  sd.set_group(base::win::Sid(base::win::WellKnownSid::kBuiltinAdministrators));
+  sd.SetDaclEntry(base::win::WellKnownSid::kLocalSystem,
+                  base::win::SecurityAccessMode::kGrant, accessmask, 0);
+  sd.SetDaclEntry(base::win::WellKnownSid::kBuiltinAdministrators,
+                  base::win::SecurityAccessMode::kGrant, accessmask, 0);
+  return sd
+      .ToSddl(OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION |
+              DACL_SECURITY_INFORMATION)
+      .value_or(std::wstring());
+}
 
-  sd.SetOwner(Sids::Admins());
-  sd.SetGroup(Sids::Admins());
-  sd.SetDacl(dacl);
-  sd.MakeAbsolute();
-  return sd;
+std::optional<std::wstring> AddCurrentUserAllowedAce(
+    const std::wstring& sddl,
+    ACCESS_MASK required_permissions,
+    UINT8 required_ace_flags) {
+  auto token = base::win::AccessToken::FromEffective();
+  if (!token) {
+    VPLOG(2) << "Failed to get effective token";
+    return {};
+  }
+
+  // Parse existing SDDL into a security descriptor. For empty input, use a
+  // minimal SDDL with an empty DACL.
+  std::wstring input_sddl = sddl.empty() ? L"D:" : sddl;
+  auto sd = base::win::SecurityDescriptor::FromSddl(input_sddl);
+  if (!sd) {
+    return {};
+  }
+
+  // Add the ACE for the current user. SetDaclEntry uses SetEntriesInAcl which
+  // merges permissions for an existing SID, ensuring idempotency and canonical
+  // ACE ordering.
+  if (!sd->SetDaclEntry(*token, base::win::SecurityAccessMode::kGrant,
+                        required_permissions, required_ace_flags)) {
+    VPLOG(2) << "Failed to add ACE";
+    return {};
+  }
+
+  SECURITY_INFORMATION info_flags = DACL_SECURITY_INFORMATION;
+  if (sd->owner()) {
+    info_flags |= OWNER_SECURITY_INFORMATION;
+  }
+  if (sd->group()) {
+    info_flags |= GROUP_SECURITY_INFORMATION;
+  }
+  if (sd->sacl()) {
+    info_flags |= SACL_SECURITY_INFORMATION;
+  }
+
+  return sd->ToSddl(info_flags);
 }
 
 std::wstring GetAppClientsKey(const std::string& app_id) {
@@ -325,7 +431,7 @@ std::wstring GetAppClientsKey(const std::string& app_id) {
 }
 
 std::wstring GetAppClientsKey(const std::wstring& app_id) {
-  return base::StrCat({CLIENTS_KEY, app_id});
+  return base::StrCat({CLIENTS_KEY, SanitizeAppId(app_id)});
 }
 
 std::wstring GetAppClientStateKey(const std::string& app_id) {
@@ -333,7 +439,7 @@ std::wstring GetAppClientStateKey(const std::string& app_id) {
 }
 
 std::wstring GetAppClientStateKey(const std::wstring& app_id) {
-  return base::StrCat({CLIENT_STATE_KEY, app_id});
+  return base::StrCat({CLIENT_STATE_KEY, SanitizeAppId(app_id)});
 }
 
 std::wstring GetAppClientStateMediumKey(const std::string& app_id) {
@@ -341,7 +447,7 @@ std::wstring GetAppClientStateMediumKey(const std::string& app_id) {
 }
 
 std::wstring GetAppClientStateMediumKey(const std::wstring& app_id) {
-  return base::StrCat({CLIENT_STATE_MEDIUM_KEY, app_id});
+  return base::StrCat({CLIENT_STATE_MEDIUM_KEY, SanitizeAppId(app_id)});
 }
 
 std::wstring GetAppCohortKey(const std::string& app_id) {
@@ -407,45 +513,6 @@ bool SetEulaAccepted(UpdaterScope scope, bool eula_accepted) {
                        .WriteValue(L"eulaaccepted", 0ul) == ERROR_SUCCESS;
 }
 
-HResultOr<bool> IsTokenAdmin(HANDLE token) {
-  SID_IDENTIFIER_AUTHORITY nt_authority = SECURITY_NT_AUTHORITY;
-  PSID administrators_group = nullptr;
-  if (!::AllocateAndInitializeSid(&nt_authority, 2, SECURITY_BUILTIN_DOMAIN_RID,
-                                  DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0,
-                                  &administrators_group)) {
-    return base::unexpected(HRESULTFromLastError());
-  }
-  absl::Cleanup free_sid = [&] { ::FreeSid(administrators_group); };
-  BOOL is_member = false;
-  if (!::CheckTokenMembership(token, administrators_group, &is_member)) {
-    return base::unexpected(HRESULTFromLastError());
-  }
-  return base::ok(is_member);
-}
-
-HResultOr<bool> IsUserAdmin() {
-  return IsTokenAdmin(NULL);
-}
-
-HResultOr<bool> IsUserNonElevatedAdmin() {
-  HANDLE token = NULL;
-  if (!::OpenProcessToken(::GetCurrentProcess(), TOKEN_READ, &token)) {
-    return base::unexpected(HRESULTFromLastError());
-  }
-  bool is_user_non_elevated_admin = false;
-  base::win::ScopedHandle token_holder(token);
-  TOKEN_ELEVATION_TYPE elevation_type = TokenElevationTypeDefault;
-  DWORD size_returned = 0;
-  if (::GetTokenInformation(token_holder.Get(), TokenElevationType,
-                            &elevation_type, sizeof(elevation_type),
-                            &size_returned)) {
-    if (elevation_type == TokenElevationTypeLimited) {
-      is_user_non_elevated_admin = true;
-    }
-  }
-  return base::ok(is_user_non_elevated_admin);
-}
-
 HResultOr<bool> IsCOMCallerAdmin() {
   ScopedClientImpersonation impersonate_client;
   if (!impersonate_client.is_valid()) {
@@ -456,67 +523,124 @@ HResultOr<bool> IsCOMCallerAdmin() {
     return base::ok(::IsUserAnAdmin());
   }
 
-  HResultOr<ScopedKernelHANDLE> token = []() -> decltype(token) {
-    ScopedKernelHANDLE token;
-    if (!::OpenThreadToken(::GetCurrentThread(), TOKEN_QUERY, TRUE,
-                           ScopedKernelHANDLE::Receiver(token).get())) {
-      HRESULT hr = HRESULTFromLastError();
-      LOG(ERROR) << "::OpenThreadToken failed: " << std::hex << hr;
-      return base::unexpected(hr);
-    }
-    return token;
-  }();
-
-  if (!token.has_value()) {
-    return base::unexpected(token.error());
+  std::optional<base::win::AccessToken> token =
+      base::win::AccessToken::FromCurrentThread(
+          /*open_as_self=*/true, TOKEN_QUERY);
+  if (!token) {
+    HRESULT hr = HRESULTFromLastError();
+    PLOG(ERROR) << "AccessToken::FromCurrentThread failed";
+    return base::unexpected(hr);
   }
 
-  return IsTokenAdmin(token.value().get()).transform_error([](HRESULT error) {
-    CHECK(FAILED(error));
-    LOG(ERROR) << "IsTokenAdmin failed: " << std::hex << error;
-    return error;
-  });
+  return base::ok(
+      token->IsMember(base::win::WellKnownSid::kBuiltinAdministrators));
 }
 
 bool IsUACOn() {
   // The presence of a split token definitively indicates that UAC is on. But
   // the absence of the token does not necessarily indicate that UAC is off.
-  HResultOr<bool> is_split_token = IsUserRunningSplitToken();
-  return (is_split_token.has_value() && is_split_token.value()) ||
-         IsExplorerRunningAtMediumOrLower();
+  return IsUserRunningSplitToken() || IsExplorerRunningAtMediumOrLower();
 }
 
 bool IsElevatedWithUACOn() {
-  HResultOr<bool> is_user_admin = IsUserAdmin();
-  return (!is_user_admin.has_value() || is_user_admin.value()) && IsUACOn();
+  return ::IsUserAnAdmin() && IsUACOn();
 }
 
 std::string GetUACState() {
   std::string s;
 
-  HResultOr<bool> is_user_admin = IsUserAdmin();
-  if (is_user_admin.has_value()) {
-    base::StringAppendF(&s, "IsUserAdmin: %d, ", is_user_admin.value());
+  absl::StrAppendFormat(&s, "IsUserAdmin: %d, ", ::IsUserAnAdmin());
+
+  std::optional<base::win::AccessToken> token =
+      base::win::AccessToken::FromCurrentProcess();
+  if (token) {
+    bool is_non_elevated_admin = token->IsSplitToken() && !token->IsElevated();
+    absl::StrAppendFormat(&s, "IsUserNonElevatedAdmin: %d, ",
+                          is_non_elevated_admin);
   }
 
-  HResultOr<bool> is_user_non_elevated_admin = IsUserNonElevatedAdmin();
-  if (is_user_non_elevated_admin.has_value()) {
-    base::StringAppendF(&s, "IsUserNonElevatedAdmin: %d, ",
-                        is_user_non_elevated_admin.value());
-  }
+  absl::StrAppendFormat(&s, "IsUACOn: %d, IsElevatedWithUACOn: %d, ", IsUACOn(),
+                        IsElevatedWithUACOn());
 
-  base::StringAppendF(&s, "IsUACOn: %d, IsElevatedWithUACOn: %d, ", IsUACOn(),
-                      IsElevatedWithUACOn());
-
-  base::StringAppendF(&s, "LUA: %d", base::win::UserAccountControlIsEnabled());
+  absl::StrAppendFormat(&s, "LUA: %d",
+                        base::win::UserAccountControlIsEnabled());
   return s;
 }
 
-std::wstring GetServiceName(bool is_internal_service) {
+std::string MemoryStatus() {
+  MEMORYSTATUSEX memory_status = {};
+  memory_status.dwLength = sizeof(memory_status);
+  return ::GlobalMemoryStatusEx(&memory_status)
+             ? absl::StrFormat("available: %dM, total: %dM, phys: %dG",
+                               memory_status.ullAvailPageFile / (1 << 20),
+                               memory_status.ullTotalPageFile / (1 << 20),
+                               1 + memory_status.ullTotalPhys / (1 << 30))
+             : std::string("n/a");
+}
+
+void EnsureEnoughMemory() {
+  VLOG(1) << MemoryStatus();
+
+  MEMORYSTATUSEX memory_status = {};
+  memory_status.dwLength = sizeof(memory_status);
+  if (!::GlobalMemoryStatusEx(&memory_status)) {
+    VPLOG(1) << "Can't memory stat";
+    return;
+  }
+  constexpr SIZE_T kMinMemoryNeeded = 10'000'000;  // 10MB.
+  if (memory_status.ullAvailPageFile >= kMinMemoryNeeded) {
+    return;
+  }
+  if (void* alloc = [] -> void* {
+        constexpr int kMaxTries = 25;
+        constexpr int kDelayMs = 50;
+        for (int tries = 0; tries < kMaxTries; ++tries) {
+          void* ret = ::VirtualAlloc(NULL, kMinMemoryNeeded,
+                                     MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+          if (ret || [] {
+                switch (::GetLastError()) {
+                  case ERROR_COMMITMENT_MINIMUM:
+                  case ERROR_COMMITMENT_LIMIT:
+                  case ERROR_NOT_ENOUGH_MEMORY:
+                  case ERROR_PAGEFILE_QUOTA:
+                    return false;  // Retry on page file related errors.
+                  default:
+                    return true;  // Don't retry.
+                }
+              }()) {
+            return ret;
+          }
+          ::Sleep(kDelayMs);
+        }
+        return nullptr;
+      }();
+      alloc) {
+    ::VirtualFree(alloc, 0, MEM_RELEASE);
+  } else {
+    VPLOG(1) << "Allocation failed: " << kMinMemoryNeeded / 1024 << "K";
+  }
+
+  VLOG(1) << MemoryStatus();
+}
+
+void RecordCpuFeaturesForCrash() {
+#if defined(ARCH_CPU_X86_FAMILY)
+  base::CPU cpu;
+  static crash_reporter::CrashKeyString<6> crash_key_aesni("aesni");
+  crash_key_aesni.Set(base::ToString(cpu.has_aesni()));
+  static crash_reporter::CrashKeyString<6> crash_key_avx512f("avx512f");
+  crash_key_avx512f.Set(base::ToString(cpu.has_avx512_f()));
+  static crash_reporter::CrashKeyString<6> crash_key_in_vm("invm");
+  crash_key_in_vm.Set(base::ToString(cpu.is_running_in_vm()));
+#endif
+}
+
+std::wstring GetServiceName(bool is_internal_service,
+                            const base::Version& version) {
   std::wstring service_name = base::StrCat(
       {base::UTF8ToWide(PRODUCT_FULLNAME_STRING), L" ",
        is_internal_service ? kWindowsInternalServiceName : kWindowsServiceName,
-       L" ", kUpdaterVersionUtf16});
+       L" ", base::UTF8ToWide(version.GetString())});
   std::erase_if(service_name, base::IsAsciiWhitespace<wchar_t>);
   return service_name;
 }
@@ -556,7 +680,7 @@ HResultOr<DWORD> ShellExecuteAndWait(const base::FilePath& file_path,
 
   if (!::ShellExecuteEx(&shell_execute_info)) {
     const HRESULT hr = HRESULTFromLastError();
-    VLOG(1) << __func__ << ": ::ShellExecuteEx failed: " << std::hex << hr;
+    VPLOG(1) << __func__ << ": ::ShellExecuteEx failed";
     return base::unexpected(hr);
   }
 
@@ -571,8 +695,7 @@ HResultOr<DWORD> ShellExecuteAndWait(const base::FilePath& file_path,
 
   // Allow the spawned process to show windows in the foreground.
   if (!::AllowSetForegroundWindow(pid)) {
-    VLOG(1) << __func__
-            << ": ::AllowSetForegroundWindow failed: " << ::GetLastError();
+    VPLOG(1) << __func__ << ": ::AllowSetForegroundWindow failed";
   }
 
   int ret_val = 0;
@@ -603,24 +726,16 @@ HRESULT RunDeElevatedCmdLine(const std::wstring& cmd_line) {
     return E_INVALIDARG;
   }
 
+  const base::FilePath program(argv->at(0));
   return base::win::RunDeElevatedNoWait(
       argv->at(0),
       base::JoinString(
-          [&]() -> std::vector<std::wstring> {
-            if (argv->size() <= 1) {
-              return {};
-            }
-
-            std::vector<std::wstring> parameters;
-            std::ranges::for_each(
-                argv->begin() + 1, argv->end(),
-                [&](const std::wstring& parameter) {
-                  parameters.push_back(
-                      base::CommandLine::QuoteForCommandLineToArgvW(parameter));
-                });
-            return parameters;
-          }(),
-          L" "));
+          argv->size() <= 1
+              ? std::vector<std::wstring>{}
+              : base::ToVector(base::span(*argv).subspan(1u),
+                               &base::CommandLine::QuoteForCommandLineToArgvW),
+          L" "),
+      program.DirName().value());
 }
 
 std::optional<base::FilePath> GetGoogleUpdateExePath(UpdaterScope scope) {
@@ -698,24 +813,22 @@ std::wstring BuildExeCommandLine(
 
 bool IsServiceRunning(const std::wstring& service_name) {
   ScopedScHandle scm(::OpenSCManager(nullptr, nullptr, SC_MANAGER_CONNECT));
-  if (!scm.IsValid()) {
-    LOG(ERROR) << "::OpenSCManager failed. service_name: " << service_name
-               << ", error: " << std::hex << HRESULTFromLastError();
+  if (!scm.is_valid()) {
+    PLOG(ERROR) << "::OpenSCManager failed. service_name: " << service_name;
     return false;
   }
 
   ScopedScHandle service(
-      ::OpenService(scm.Get(), service_name.c_str(), SERVICE_QUERY_STATUS));
-  if (!service.IsValid()) {
-    LOG(ERROR) << "::OpenService failed. service_name: " << service_name
-               << ", error: " << std::hex << HRESULTFromLastError();
+      ::OpenService(scm.get(), service_name.c_str(), SERVICE_QUERY_STATUS));
+  if (!service.is_valid()) {
+    PLOG(ERROR) << "::OpenService failed. service_name: " << service_name;
     return false;
   }
 
   SERVICE_STATUS status = {0};
-  if (!::QueryServiceStatus(service.Get(), &status)) {
-    LOG(ERROR) << "::QueryServiceStatus failed. service_name: " << service_name
-               << ", error: " << std::hex << HRESULTFromLastError();
+  if (!::QueryServiceStatus(service.get(), &status)) {
+    PLOG(ERROR) << "::QueryServiceStatus failed. service_name: "
+                << service_name;
     return false;
   }
 
@@ -733,17 +846,9 @@ std::optional<OSVERSIONINFOEX> GetOSVersion() {
   // `::RtlGetVersion` is being used here instead of `::GetVersionEx`, because
   // the latter function can return the incorrect version if it is shimmed using
   // an app compat shim.
-  using RtlGetVersion = LONG(WINAPI*)(OSVERSIONINFOEX*);
-  static const RtlGetVersion rtl_get_version = reinterpret_cast<RtlGetVersion>(
-      ::GetProcAddress(::GetModuleHandle(L"ntdll.dll"), "RtlGetVersion"));
-  if (!rtl_get_version) {
-    return std::nullopt;
-  }
+  OSVERSIONINFOEX os_out = {.dwOSVersionInfoSize = sizeof(OSVERSIONINFOEX)};
 
-  OSVERSIONINFOEX os_out = {};
-  os_out.dwOSVersionInfoSize = sizeof(OSVERSIONINFOEX);
-
-  rtl_get_version(&os_out);
+  ::RtlGetVersion(&os_out);
   if (!os_out.dwMajorVersion) {
     return std::nullopt;
   }
@@ -754,9 +859,10 @@ std::optional<OSVERSIONINFOEX> GetOSVersion() {
 bool CompareOSVersions(const OSVERSIONINFOEX& os_version, BYTE oper) {
   CHECK(oper);
 
-  constexpr DWORD kOSTypeMask = VER_MAJORVERSION | VER_MINORVERSION |
-                                VER_SERVICEPACKMAJOR | VER_SERVICEPACKMINOR;
-  constexpr DWORD kBuildTypeMask = VER_BUILDNUMBER;
+  static constexpr DWORD kOSTypeMask = VER_MAJORVERSION | VER_MINORVERSION |
+                                       VER_SERVICEPACKMAJOR |
+                                       VER_SERVICEPACKMINOR;
+  static constexpr DWORD kBuildTypeMask = VER_BUILDNUMBER;
 
   // If the OS and the service pack match, return the build number comparison.
   return CompareOSVersionsInternal(os_version, kOSTypeMask, VER_EQUAL)
@@ -777,9 +883,7 @@ bool EnableSecureDllLoading() {
 bool EnableProcessHeapMetadataProtection() {
   if (!::HeapSetInformation(NULL, HeapEnableTerminationOnCorruption, nullptr,
                             0)) {
-    LOG(ERROR) << __func__
-               << ": Failed to enable heap metadata protection: " << std::hex
-               << HRESULTFromLastError();
+    PLOG(ERROR) << __func__ << ": Failed to enable heap metadata protection";
     return false;
   }
 
@@ -787,14 +891,20 @@ bool EnableProcessHeapMetadataProtection() {
 }
 
 std::optional<base::ScopedTempDir> CreateSecureTempDir() {
-  // This function uses `base::CreateNewTempDirectory` and then a
-  // `base::ScopedTempDir` as owner, instead of just
-  // `base::ScopedTempDir::CreateUniqueTempDir`, because the former allows
-  // setting a more recognizable prefix of `COMPANY_SHORTNAME_STRING` on the
-  // temp directory.
+  // This function uses `base::CreateTemporaryDirInDir` under a secure parent
+  // (or standard temp if unelevated) and then a `base::ScopedTempDir` as owner,
+  // instead of just `base::ScopedTempDir::CreateUniqueTempDir`, because the
+  // former allows setting a more recognizable prefix of
+  // `COMPANY_SHORTNAME_STRING` on the temp directory.
+  std::optional<base::FilePath> parent_dir = GetUpdaterTempDir();
+  if (!parent_dir) {
+    return std::nullopt;
+  }
+
   base::FilePath temp_dir;
-  if (!base::CreateNewTempDirectory(FILE_PATH_LITERAL(COMPANY_SHORTNAME_STRING),
-                                    &temp_dir)) {
+  if (!base::CreateTemporaryDirInDir(
+          *parent_dir, FILE_PATH_LITERAL(COMPANY_SHORTNAME_STRING),
+          &temp_dir)) {
     return std::nullopt;
   }
 
@@ -810,9 +920,8 @@ base::ScopedClosureRunner SignalShutdownEvent(UpdaterScope scope) {
 
   base::win::ScopedHandle shutdown_event_handle(
       ::CreateEvent(&attr.sa, true, false, attr.name.c_str()));
-  if (!shutdown_event_handle.IsValid()) {
-    VLOG(1) << __func__ << "Could not create the shutdown event: " << std::hex
-            << HRESULTFromLastError();
+  if (!shutdown_event_handle.is_valid()) {
+    VPLOG(1) << __func__ << "Could not create the shutdown event";
     return {};
   }
 
@@ -828,7 +937,7 @@ bool IsShutdownEventSignaled(UpdaterScope scope) {
 
   base::win::ScopedHandle event_handle(
       ::OpenEvent(EVENT_ALL_ACCESS, false, attr.name.c_str()));
-  if (!event_handle.IsValid()) {
+  if (!event_handle.is_valid()) {
     return false;
   }
 
@@ -937,19 +1046,6 @@ std::optional<base::CommandLine> CommandLineForLegacyFormat(
   return command_line;
 }
 
-std::optional<base::FilePath> GetInstallDirectory(UpdaterScope scope) {
-  base::FilePath app_data_dir;
-  if (!base::PathService::Get(IsSystemInstall(scope)
-                                  ? base::DIR_PROGRAM_FILESX86
-                                  : base::DIR_LOCAL_APP_DATA,
-                              &app_data_dir)) {
-    LOG(ERROR) << "Can't retrieve app data directory.";
-    return std::nullopt;
-  }
-  return app_data_dir.AppendUTF8(COMPANY_SHORTNAME_STRING)
-      .AppendUTF8(PRODUCT_FULLNAME_STRING);
-}
-
 base::FilePath GetExecutableRelativePath() {
   return base::FilePath::FromUTF8Unsafe(kExecutableName);
 }
@@ -968,7 +1064,7 @@ void ForEachRegistryRunValueWithPrefix(
                                            KEY_WOW64_32KEY);
        it.Valid(); ++it) {
     const std::wstring run_name = it.Name();
-    if (base::StartsWith(run_name, prefix)) {
+    if (run_name.starts_with(prefix)) {
       callback(run_name);
     }
   }
@@ -996,7 +1092,7 @@ void ForEachServiceWithPrefix(
                                          KEY_WOW64_32KEY);
        it.Valid(); ++it) {
     const std::wstring service_name = it.Name();
-    if (base::StartsWith(service_name, service_name_prefix)) {
+    if (service_name.starts_with(service_name_prefix)) {
       if (display_name_prefix.empty()) {
         callback(service_name);
         continue;
@@ -1017,7 +1113,7 @@ void ForEachServiceWithPrefix(
       }
 
       const bool display_name_starts_with_prefix =
-          base::StartsWith(display_name, display_name_prefix);
+          display_name.starts_with(display_name_prefix);
       VLOG(1) << __func__ << ": " << service_name
               << " matches: " << service_name_prefix << ": " << display_name
               << ": " << display_name_starts_with_prefix << ": "
@@ -1032,16 +1128,16 @@ void ForEachServiceWithPrefix(
 [[nodiscard]] bool DeleteService(const std::wstring& service_name) {
   ScopedScHandle scm(::OpenSCManager(
       nullptr, nullptr, SC_MANAGER_CONNECT | SC_MANAGER_CREATE_SERVICE));
-  if (!scm.IsValid()) {
+  if (!scm.is_valid()) {
     return false;
   }
 
   ScopedScHandle service(
-      ::OpenService(scm.Get(), service_name.c_str(), DELETE));
-  bool is_service_deleted = !service.IsValid();
+      ::OpenService(scm.get(), service_name.c_str(), DELETE));
+  bool is_service_deleted = !service.is_valid();
   if (!is_service_deleted) {
     is_service_deleted =
-        ::DeleteService(service.Get())
+        ::DeleteService(service.get())
             ? true
             : ::GetLastError() == ERROR_SERVICE_MARKED_FOR_DELETE;
   }
@@ -1126,7 +1222,7 @@ std::wstring GetTextForSystemError(int error) {
       FORMAT_MESSAGE_IGNORE_INSERTS | FORMAT_MESSAGE_MAX_WIDTH_MASK;
 
   if (error >= WINHTTP_ERROR_BASE && error <= WINHTTP_ERROR_LAST) {
-    source = ::GetModuleHandle(_T("winhttp.dll"));
+    source = ::GetModuleHandle(L"winhttp.dll");
     if (source) {
       format_options |= FORMAT_MESSAGE_FROM_HMODULE;
     }
@@ -1138,7 +1234,7 @@ std::wstring GetTextForSystemError(int error) {
   base::win::ScopedLocalAllocTyped<wchar_t> free_buffer(
       system_allocated_buffer);
   return chars_written > 0 ? system_allocated_buffer
-                           : base::UTF8ToWide(base::StringPrintf("%#x", error));
+                           : base::UTF8ToWide(absl::StrFormat("%#x", error));
 }
 
 bool MigrateLegacyUpdaters(
@@ -1151,8 +1247,13 @@ bool MigrateLegacyUpdaters(
          it.Valid(); ++it) {
       const std::wstring app_id = it.Name();
 
-      // Skip importing legacy updater.
+      // Skip importing the legacy updater.
       if (base::EqualsCaseInsensitiveASCII(app_id, kLegacyGoogleUpdateAppID)) {
+        continue;
+      }
+
+      // Skip importing this updater.
+      if (base::EqualsCaseInsensitiveASCII(app_id, kUpdaterAppId)) {
         continue;
       }
 
@@ -1169,10 +1270,10 @@ bool MigrateLegacyUpdaters(
         continue;
       }
 
-      registration.version = base::Version(base::SysWideToUTF8(pv));
-      if (!registration.version.IsValid()) {
+      if (!base::Version(base::SysWideToUTF8(pv)).IsValid()) {
         continue;
       }
+      registration.version = base::SysWideToUTF8(pv);
 
       base::win::RegKey client_state_key;
       if (client_state_key.Open(root, GetAppClientStateKey(app_id).c_str(),
@@ -1226,9 +1327,8 @@ bool MigrateLegacyUpdaters(
                 ERROR_SUCCESS) {
               registration.cohort_hint = base::SysWideToUTF8(cohort_hint);
             }
-            VLOG(2) << "Cohort values: " << registration.cohort << ", "
-                    << registration.cohort_name << ", "
-                    << registration.cohort_hint;
+            VLOG(2) << "Cohort values: " << cohort << ", " << cohort_name
+                    << ", " << cohort_hint;
           }
         }
       }
@@ -1239,8 +1339,6 @@ bool MigrateLegacyUpdaters(
 
   return true;
 }
-
-namespace {
 
 struct ScopedWtsConnectStateCloseTraits {
   static WTS_CONNECTSTATE_CLASS* InvalidValue() { return nullptr; }
@@ -1309,73 +1407,25 @@ std::optional<DWORD> GetActiveSessionId() {
   return {};
 }
 
-std::vector<DWORD> FindProcesses(const std::wstring& process_name) {
-  base::NamedProcessIterator iter(process_name, nullptr);
-  std::vector<DWORD> pids;
-  while (const base::ProcessEntry* process_entry = iter.NextProcessEntry()) {
-    pids.push_back(process_entry->pid());
-  }
-  return pids;
-}
-
-// Returns processes running under `session_id`.
-std::vector<DWORD> FindProcessesInSession(const std::wstring& process_name,
-                                          std::optional<DWORD> session_id) {
+// Returns the PID of `explorer.exe` in the active session. Unlike
+// `base::win::GetExplorerPid()`, this works from session 0 (e.g. system
+// services).
+std::optional<base::ProcessId> GetExplorerPidInActiveSession() {
+  std::optional<DWORD> session_id = GetActiveSessionId();
   if (!session_id) {
     return {};
   }
-  std::vector<DWORD> pids;
-  for (const auto pid : FindProcesses(process_name)) {
+
+  base::NamedProcessIterator iter(L"EXPLORER.EXE", nullptr);
+  while (const base::ProcessEntry* process_entry = iter.NextProcessEntry()) {
     DWORD process_session = 0;
-    if (::ProcessIdToSessionId(pid, &process_session) &&
-        (process_session == *session_id)) {
-      pids.push_back(pid);
+    if (::ProcessIdToSessionId(process_entry->pid(), &process_session) &&
+        process_session == *session_id) {
+      return process_entry->pid();
     }
   }
-  return pids;
-}
 
-// Returns the first instance found of explorer.exe.
-std::optional<DWORD> GetExplorerPid() {
-  std::vector<DWORD> pids =
-      FindProcessesInSession(L"EXPLORER.EXE", GetActiveSessionId());
-  if (pids.empty()) {
-    return {};
-  }
-  return pids[0];
-}
-
-// Returns an impersonation token for the user running process_id.
-HResultOr<ScopedKernelHANDLE> GetImpersonationToken(
-    std::optional<DWORD> process_id) {
-  if (!process_id) {
-    return base::unexpected(E_UNEXPECTED);
-  }
-  base::win::ScopedHandle process(::OpenProcess(
-      PROCESS_DUP_HANDLE | PROCESS_QUERY_INFORMATION, TRUE, *process_id));
-  if (!process.IsValid()) {
-    return base::unexpected(HRESULTFromLastError());
-  }
-  ScopedKernelHANDLE process_token;
-  if (!::OpenProcessToken(process.Get(), TOKEN_DUPLICATE | TOKEN_QUERY,
-                          ScopedKernelHANDLE::Receiver(process_token).get())) {
-    return base::unexpected(HRESULTFromLastError());
-  }
-  ScopedKernelHANDLE user_token;
-  if (!::DuplicateTokenEx(process_token.get(),
-                          TOKEN_IMPERSONATE | TOKEN_QUERY |
-                              TOKEN_ASSIGN_PRIMARY | TOKEN_DUPLICATE,
-                          NULL, SecurityImpersonation, TokenPrimary,
-                          ScopedKernelHANDLE::Receiver(user_token).get())) {
-    return base::unexpected(HRESULTFromLastError());
-  }
-  return user_token;
-}
-
-}  // namespace
-
-HResultOr<ScopedKernelHANDLE> GetLoggedOnUserToken() {
-  return GetImpersonationToken(GetExplorerPid());
+  return {};
 }
 
 bool IsAuditMode() {
@@ -1439,7 +1489,7 @@ bool IsOemInstalling() {
 
 std::wstring StringFromGuid(const GUID& guid) {
   // {xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}
-  constexpr int kGuidStringCharacters =
+  static constexpr int kGuidStringCharacters =
       1 + 8 + 1 + 4 + 1 + 4 + 1 + 4 + 1 + 12 + 1 + 1;
   wchar_t guid_string[kGuidStringCharacters] = {};
   CHECK_NE(::StringFromGUID2(guid, guid_string, kGuidStringCharacters), 0);
@@ -1456,17 +1506,6 @@ bool StoreRunTimeEnrollmentToken(const std::string& enrollment_token) {
          ERROR_SUCCESS;
 }
 
-std::optional<base::FilePath> GetUniqueTempFilePath(base::FilePath file) {
-  base::FilePath temp_dir;
-  if (file.empty() || !base::GetTempDir(&temp_dir)) {
-    return {};
-  }
-  return temp_dir.Append(base::StrCat(
-      {file.RemoveExtension().BaseName().value(),
-       base::UTF8ToWide(base::Uuid::GenerateRandomV4().AsLowercaseString()),
-       file.Extension()}));
-}
-
 std::optional<base::FilePath> GetBundledEnterpriseCompanionExecutablePath(
     UpdaterScope scope) {
   std::optional<base::FilePath> install_dir =
@@ -1481,6 +1520,142 @@ std::optional<base::FilePath> GetBundledEnterpriseCompanionExecutablePath(
                         .RemoveExtension()
                         .AsUTF8Unsafe(),
                     kExecutableSuffix, ".exe"}));
+}
+
+[[nodiscard]] bool IsServicePresent(const std::wstring& service_name) {
+  return ::IsUserAnAdmin() ? IsServicePresentAdmin(service_name)
+                           : IsServicePresentNonAdmin(service_name);
+}
+
+[[nodiscard]] bool IsServiceEnabled(const std::wstring& service_name) {
+  ScopedScHandle scm(
+      ::OpenSCManager(nullptr, nullptr, SC_MANAGER_CONNECT | GENERIC_READ));
+  if (!scm.is_valid()) {
+    return false;
+  }
+
+  ScopedScHandle service(
+      ::OpenService(scm.get(), service_name.c_str(), SERVICE_QUERY_CONFIG));
+  if (!service.is_valid()) {
+    return false;
+  }
+
+  static constexpr uint32_t kMaxQueryConfigBufferBytes = 8 * 1024;
+  auto buffer = std::make_unique<uint8_t[]>(kMaxQueryConfigBufferBytes);
+  DWORD bytes_needed_ignored = 0;
+  QUERY_SERVICE_CONFIG* service_config =
+      reinterpret_cast<QUERY_SERVICE_CONFIG*>(buffer.get());
+  return ::QueryServiceConfig(service.get(), service_config,
+                              kMaxQueryConfigBufferBytes,
+                              &bytes_needed_ignored) &&
+         (service_config->dwStartType != SERVICE_DISABLED);
+}
+
+HResultOr<std::wstring> GetCommandLineForPid(DWORD process_id) {
+  CHECK(process_id);
+
+  base::win::ScopedHandle process_handle(::OpenProcess(
+      PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, process_id));
+  if (!process_handle.is_valid()) {
+    return base::unexpected(HRESULTFromLastError());
+  }
+
+  // Get the PEB address.
+  // https://learn.microsoft.com/en-us/windows/win32/api/winternl/ns-winternl-peb
+  PROCESS_BASIC_INFORMATION info = {};
+  if (!NT_SUCCESS(::NtQueryInformationProcess(process_handle.get(),
+                                              ProcessBasicInformation, &info,
+                                              sizeof(info), nullptr))) {
+    return base::unexpected(E_FAIL);
+  }
+  BYTE* peb = reinterpret_cast<BYTE*>(info.PebBaseAddress);
+  if (!peb) {
+    return base::unexpected(E_FAIL);
+  }
+  SIZE_T bytes_read = 0;
+  DWORD_PTR dw = 0;
+
+  // Get the address of the process parameters.
+  // SAFETY: the `ProcessParameters` offset into the PEB is always valid.
+  if (!::ReadProcessMemory(
+          process_handle.get(),
+          UNSAFE_BUFFERS(peb + offsetof(PEB, ProcessParameters)), &dw,
+          sizeof(dw), &bytes_read)) {
+    return base::unexpected(HRESULTFromLastError());
+  }
+
+  // Read all the parameters.
+  RTL_USER_PROCESS_PARAMETERS params = {};
+  if (!::ReadProcessMemory(process_handle.get(), reinterpret_cast<PVOID>(dw),
+                           &params, sizeof(params), &bytes_read)) {
+    return base::unexpected(HRESULTFromLastError());
+  }
+
+  // Read the command line parameter.
+  const int max_cmd_line_len =
+      std::min(static_cast<int>(params.CommandLine.MaximumLength), 4096);
+  std::wstring cmd_line(max_cmd_line_len, L'\0');
+  if (!::ReadProcessMemory(process_handle.get(), params.CommandLine.Buffer,
+                           cmd_line.data(), max_cmd_line_len, &bytes_read)) {
+    return base::unexpected(HRESULTFromLastError());
+  }
+  cmd_line.resize(bytes_read / sizeof(wchar_t));
+  if (cmd_line.back() == L'\0') {
+    cmd_line.pop_back();
+  }
+  return cmd_line;
+}
+
+void LogComCaller(base::cstring_view caller_func) {
+  Microsoft::WRL::ComPtr<ICallingProcessInfo> calling_proc_info;
+  HRESULT hr = ::CoGetCallContext(IID_PPV_ARGS(&calling_proc_info));
+  if (FAILED(hr)) {
+    VLOG(2) << caller_func
+            << ": Unable to get ICallingProcessInfo interface: " << std::hex
+            << hr;
+    return;
+  }
+
+  ScopedKernelHANDLE handle;
+  hr = calling_proc_info->OpenCallerProcessHandle(
+      PROCESS_QUERY_LIMITED_INFORMATION,
+      ScopedKernelHANDLE::Receiver(handle).get());
+  if (FAILED(hr)) {
+    VLOG(2) << caller_func
+            << ": ICallingProcessInfo::OpenCallerProcessHandle failed: "
+            << std::hex << hr;
+    return;
+  }
+
+  const base::Process process(handle.release());
+  if (!process.IsValid()) {
+    VLOG(2) << caller_func
+            << ": ICallingProcessInfo::OpenCallerProcessHandle returned an "
+               "invalid handle";
+    return;
+  }
+
+  VLOG(2) << caller_func
+          << ": COM client for this COM server has PID: " << process.Pid()
+          << ", and has command line: "
+          << GetCommandLineForPid(process.Pid()).value_or(std::wstring());
+}
+
+std::optional<base::win::AccessToken> GetLoggedOnUserToken() {
+  std::optional<base::ProcessId> pid = GetExplorerPidInActiveSession();
+  if (!pid) {
+    return std::nullopt;
+  }
+
+  base::Process process =
+      base::Process::OpenWithAccess(*pid, PROCESS_QUERY_INFORMATION);
+  if (!process.IsValid()) {
+    return std::nullopt;
+  }
+
+  return base::win::AccessToken::FromProcess(
+      process.Handle(), /*impersonation=*/false,
+      TOKEN_IMPERSONATE | TOKEN_ASSIGN_PRIMARY | TOKEN_DUPLICATE);
 }
 
 }  // namespace updater

@@ -5,9 +5,9 @@
 #include "components/shared_highlighting/core/common/disabled_sites.h"
 
 #include <string_view>
-#include <unordered_set>
 
 #include "base/containers/fixed_flat_map.h"
+#include "base/containers/fixed_flat_set.h"
 #include "base/feature_list.h"
 #include "base/strings/string_util.h"
 #include "components/shared_highlighting/core/common/shared_highlighting_features.h"
@@ -19,7 +19,7 @@ namespace {
 
 bool IsAmpGenerationEnabled() {
 #if BUILDFLAG(IS_IOS)
-  return base::FeatureList::IsEnabled(kSharedHighlightingAmp);
+  return false;
 #else
   return true;
 #endif
@@ -45,7 +45,7 @@ bool ShouldOfferLinkToText(const GURL& url) {
            {"web.whatsapp.com", ".*"},
            {"youtube.com", ".*"}});
 
-  std::string domain = url.host();
+  std::string domain = url.GetHost();
   if (domain.compare(0, 4, "www.") == 0) {
     domain = domain.substr(4);
   } else if (domain.compare(0, 2, "m.") == 0) {
@@ -60,7 +60,7 @@ bool ShouldOfferLinkToText(const GURL& url) {
 
   auto block_list_it = kBlocklist.find(domain);
   if (block_list_it != kBlocklist.end()) {
-    if (re2::RE2::FullMatch(url.path(), block_list_it->second.data())) {
+    if (re2::RE2::FullMatch(url.GetPath(), block_list_it->second.data())) {
       return false;
     }
   }
@@ -68,13 +68,13 @@ bool ShouldOfferLinkToText(const GURL& url) {
 }
 
 bool SupportsLinkGenerationInIframe(GURL main_frame_url) {
-  const std::unordered_set<std::string> good_hosts = {
-      "www.google.com", "m.google.com", "mobile.google.com",
-      "www.bing.com",   "m.bing.com",   "mobile.bing.com"};
+  static constexpr auto kGoodHosts = base::MakeFixedFlatSet<std::string_view>(
+      {"www.google.com", "m.google.com", "mobile.google.com", "www.bing.com",
+       "m.bing.com", "mobile.bing.com"});
 
   return main_frame_url.SchemeIs(url::kHttpsScheme) &&
-         good_hosts.find(main_frame_url.host()) != good_hosts.end() &&
-         base::StartsWith(main_frame_url.path(), "/amp/");
+         kGoodHosts.contains(main_frame_url.GetHost()) &&
+         base::StartsWith(main_frame_url.GetPath(), "/amp/");
 }
 
 }  // namespace shared_highlighting

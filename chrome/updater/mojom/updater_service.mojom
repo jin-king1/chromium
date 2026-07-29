@@ -5,11 +5,12 @@
 module updater.mojom;
 
 import "mojo/public/mojom/base/file_path.mojom";
+import "mojo/public/mojom/base/time.mojom";
 import "chrome/enterprise_companion/mojom/policy_fetch_reason.mojom";
 
 // Struct containing the information required to register an application with
 // the updater. Passed from client to server during RegisterApp and Install.
-// Next version: 4
+// Next version: 5
 [Stable] struct RegistrationRequest {
   // Application ID of the app.
   string app_id;
@@ -58,10 +59,32 @@ import "chrome/enterprise_companion/mojom/policy_fetch_reason.mojom";
 
   // `lang` of the app.
   [MinVersion=3] string? lang;
+
+  // Date-last-active. The value is the number of America/Los_Angeles calendar
+  // days since Jan 1, 2007.
+  [MinVersion=4] int32? dla;
+
+  // Date-last-rollcall. The value is the number of America/Los_Angeles calendar
+  // days since Jan 1, 2007.
+  [MinVersion=4] int32? dlrc;
+
+  // Date of install. The value is the number of America/Los_Angeles calendar
+  // days since Jan 1, 2007.
+  [MinVersion=4] int32? install_date;
+
+  // Opaque cohort string meaningful to the server.
+  [MinVersion=4] string? cohort;
+
+  // Human-readable interpretation of the cohort.
+  [MinVersion=4] string? cohort_name;
+
+  // Server may use to move the app to a new cohort.
+  [MinVersion=4] string? cohort_hint;
 };
 
 // Struct containing details on the state of an update. It is passed
 // periodically from the server to the client via the StateChangeObserver.
+// Next version: 2
 [Stable] struct UpdateState {
   // Possible states for updating an app. Add new values at the end of
   // the definition, and do not mutate the existing values.
@@ -99,6 +122,12 @@ import "chrome/enterprise_companion/mojom/policy_fetch_reason.mojom";
     // The engine encountered an error updating this product. The update has
     // halted and the state will not change.
     kUpdateError,
+
+    // The engine is decompressing an update.
+    [MinVersion=1] kDecompressing,
+
+    // The engine is applying a patch to a file.
+    [MinVersion=1] kPatching,
   };
 
   string app_id;
@@ -141,9 +170,24 @@ import "chrome/enterprise_companion/mojom/policy_fetch_reason.mojom";
   [MinVersion=2] string? cohort;
 };
 
+// A snapshot of the the updater's persisted state.
+[Stable] struct UpdaterState {
+  // The active version of the updater which is responding to this request.
+  string active_version;
+
+  // Any inactive versions of the updater present in this installation.
+  array<string> inactive_versions;
+
+  // The time at which the updater last performed an update check.
+  mojo_base.mojom.Time last_checked;
+
+  // The time at which the updater last attempted its periodic tasks.
+  mojo_base.mojom.Time last_started;
+};
+
 // The UpdateService is the cross-platform core of the updater.
 // All functions and callbacks must be called on the same sequence.
-// Next version: 5
+// Next version: 7
 [Stable] interface UpdateService {
   // Defines the behavior of the update stack for over-installs.
   // Typically, same versions updates are not allowed, in which case, the update
@@ -162,8 +206,9 @@ import "chrome/enterprise_companion/mojom/policy_fetch_reason.mojom";
     kAllowed,
   };
 
-  // Update the `UpdateService::Result` `enum` in `update_service.h` when adding
-  // new values.
+  // Values posted by the completion `callback` as a result of the
+  // non-blocking invocation of the service functions. These values are not
+  // present in the telemetry pings.
   // Next version: 2
   [Stable, Extensible]
   enum Result {
@@ -374,6 +419,12 @@ import "chrome/enterprise_companion/mojom/policy_fetch_reason.mojom";
     // The language for the update check, if any.
     [MinVersion=3] string? language) =>
     (pending_receiver<StateChangeObserver> observer);
+
+  // Gets the current state of the updater.
+  [MinVersion=5] GetUpdaterState@11() => (UpdaterState updater_state);
+
+  // Gets the current policies for the updater and apps in a JSON string.
+  [MinVersion=6] GetPoliciesJson@12() => (string policies_json);
 };
 
 // Callback interface for repeated state change notifications produced by

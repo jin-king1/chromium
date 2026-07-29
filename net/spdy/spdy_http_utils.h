@@ -7,7 +7,7 @@
 
 #include <optional>
 
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/types/expected.h"
 #include "net/base/net_export.h"
 #include "net/base/request_priority.h"
@@ -78,11 +78,6 @@ NET_EXPORT void CreateSpdyHeadersFromHttpRequestForWebSocket(
     const GURL& url,
     const HttpRequestHeaders& request_headers,
     quiche::HttpHeaderBlock* headers);
-
-// Create HttpRequestHeaders from quiche::HttpHeaderBlock.
-NET_EXPORT void ConvertHeaderBlockToHttpRequestHeaders(
-    const quiche::HttpHeaderBlock& spdy_headers,
-    HttpRequestHeaders* http_headers);
 
 NET_EXPORT spdy::SpdyPriority ConvertRequestPriorityToSpdyPriority(
     RequestPriority priority);

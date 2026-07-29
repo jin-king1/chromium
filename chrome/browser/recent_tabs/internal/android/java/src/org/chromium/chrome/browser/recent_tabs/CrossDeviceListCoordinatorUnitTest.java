@@ -24,13 +24,12 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
-import org.chromium.base.supplier.ObservableSupplierImpl;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.base.test.util.Features.EnableFeatures;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
-import org.chromium.components.browser_ui.edge_to_edge.EdgeToEdgePadAdjuster;
 import org.chromium.ui.base.TestActivity;
+import org.chromium.ui.edge_to_edge.EdgeToEdgePadAdjuster;
 
 /** Tests for {@link CrossDeviceListCoordinator}. */
 @RunWith(BaseRobolectricTestRunner.class)
@@ -43,8 +42,8 @@ public class CrossDeviceListCoordinatorUnitTest {
 
     private Activity mActivity;
     private CrossDeviceListCoordinator mCoordinator;
-    private final ObservableSupplierImpl<EdgeToEdgeController> mEdgeToEdgeSupplier =
-            new ObservableSupplierImpl<>();
+    private final SettableMonotonicObservableSupplier<EdgeToEdgeController> mEdgeToEdgeSupplier =
+            ObservableSuppliers.createMonotonic();
     @Mock private EdgeToEdgeController mEdgeToEdgeController;
     @Captor private ArgumentCaptor<EdgeToEdgePadAdjuster> mPadAdjusterCaptor;
 
@@ -72,10 +71,6 @@ public class CrossDeviceListCoordinatorUnitTest {
     }
 
     @Test
-    @EnableFeatures({
-        ChromeFeatureList.EDGE_TO_EDGE_BOTTOM_CHIN,
-        ChromeFeatureList.DRAW_KEY_NATIVE_EDGE_TO_EDGE
-    })
     public void testPadAdjuster() {
         assertTrue(mEdgeToEdgeSupplier.hasObservers());
 

@@ -13,6 +13,7 @@
 #include "base/memory/ref_counted_memory.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/sequence_checker.h"
 #include "base/time/time.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/base/x/x11_cursor.h"
@@ -87,6 +88,9 @@ class COMPONENT_EXPORT(UI_BASE_X) XCursorLoader {
 
   base::WeakPtrFactory<XCursorLoader> weak_factory_{this};
 };
+
+COMPONENT_EXPORT(UI_BASE_X)
+bool IsValidCursorThemeNameForTesting(const std::string& theme);
 
 COMPONENT_EXPORT(UI_BASE_X)
 std::vector<XCursorLoader::Image> ParseCursorFile(

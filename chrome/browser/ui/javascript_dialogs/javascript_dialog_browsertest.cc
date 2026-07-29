@@ -10,11 +10,17 @@
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/scoped_command_line.h"
+#include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
+#include "chrome/browser/ui/tabs/split_tab_metrics.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/tabs/tab/tab_icon.h"
+#include "chrome/browser/ui/views/tabs/tab_strip.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/embedder_support/switches.h"
@@ -45,6 +51,8 @@ class JavaScriptDialogTest : public InProcessBrowserTest {
     host_resolver()->AddRule("*", "127.0.0.1");
     ASSERT_TRUE(embedded_test_server()->Start());
   }
+
+  TabStripModel* tab_strip_model() { return browser()->tab_strip_model(); }
 
  private:
   friend class JavaScriptDialogDismissalCauseTester;
@@ -378,7 +386,7 @@ IN_PROC_BROWSER_TEST_F(JavaScriptDialogTest,
 IN_PROC_BROWSER_TEST_F(JavaScriptDialogTest, DismissalCausePromptTabHidden) {
   JavaScriptDialogDismissalCauseTester tester(this);
   tester.PopupDialog(content::JAVASCRIPT_DIALOG_TYPE_PROMPT);
-  chrome::NewTab(browser());
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
   EXPECT_EQ(DismissalCause::kTabHidden, tester.GetLastDismissalCause());
 }
 
@@ -386,7 +394,8 @@ IN_PROC_BROWSER_TEST_F(JavaScriptDialogTest,
                        DismissalCausePromptBrowserSwitched) {
   JavaScriptDialogDismissalCauseTester tester(this);
   tester.PopupDialog(content::JAVASCRIPT_DIALOG_TYPE_PROMPT);
-  ui_test_utils::OpenNewEmptyWindowAndWaitUntilActivated(browser()->profile());
+  ui_test_utils::OpenNewEmptyWindowAndWaitUntilActivated(
+      browser()->GetProfile());
   EXPECT_EQ(DismissalCause::kBrowserSwitched, tester.GetLastDismissalCause());
 }
 
@@ -409,7 +418,7 @@ IN_PROC_BROWSER_TEST_F(JavaScriptDialogTest,
 IN_PROC_BROWSER_TEST_F(JavaScriptDialogTest, NoDismissalAlertTabHidden) {
   JavaScriptDialogDismissalCauseTester tester(this);
   tester.PopupDialog(content::JAVASCRIPT_DIALOG_TYPE_ALERT);
-  chrome::NewTab(browser());
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
   EXPECT_EQ(std::nullopt, tester.GetLastDismissalCause());
 }
 
@@ -446,7 +455,8 @@ INSTANTIATE_TEST_SUITE_P(
 
 // Tests that the title for a dialog generated from a page with a non-HTTP URL
 // that was spawned by an HTTP URL has that HTTP URL used for the title.
-IN_PROC_BROWSER_TEST_P(JavaScriptDialogOriginTest, TitleForNonHTTPOrigin) {
+IN_PROC_BROWSER_TEST_P(JavaScriptDialogOriginTest,
+                       TitleForNonHTTPOriginInSubframe) {
   GURL url = embedded_test_server()->GetURL("a.com", "/title1.html");
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
   content::WebContents* tab =
@@ -477,6 +487,103 @@ IN_PROC_BROWSER_TEST_P(JavaScriptDialogOriginTest, TitleForNonHTTPOrigin) {
   EXPECT_EQ(base::UTF8ToUTF16(base::StringPrintf(
                 "a.com:%d says", embedded_test_server()->port())),
             dialog_manager->GetTitle(tab, subframe->GetLastCommittedOrigin()));
+}
+
+IN_PROC_BROWSER_TEST_P(JavaScriptDialogOriginTest,
+                       TitleForNonHTTPOriginInMainFrame) {
+  GURL url = embedded_test_server()->GetURL("a.com", "/title1.html");
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
+  content::WebContents* tab =
+      browser()->tab_strip_model()->GetActiveWebContents();
+
+  // Create a popup / new tab.
+  content::TestNavigationObserver opened_tab_observer(nullptr);
+  opened_tab_observer.StartWatchingNewWebContents();
+  GURL test_url(GetParam());
+  std::string script = content::JsReplace(R"(
+      let a = document.createElement("a");
+      a.href = $1;
+      a.target = "_blank";
+      a.id = "link";
+      a.textContent = "Open a new tab";
+      document.body.appendChild(a);)",
+                                          test_url);
+  ASSERT_TRUE(content::ExecJs(tab, script));
+  content::SimulateMouseClickOrTapElementWithId(tab, "link");
+  opened_tab_observer.Wait();
+  ASSERT_EQ(2, browser()->tab_strip_model()->count());
+
+  content::WebContents* opened_tab =
+      browser()->tab_strip_model()->GetActiveWebContents();
+
+  // Wait until newly opened tab is fully loaded.
+  ASSERT_TRUE(WaitForLoadStop(opened_tab));
+
+  // Verify the title that would be used for a dialog spawned by the new tab.
+  javascript_dialogs::AppModalDialogManager* dialog_manager =
+      javascript_dialogs::AppModalDialogManager::GetInstance();
+  EXPECT_EQ(base::UTF8ToUTF16(
+                test_url.SchemeIs("data")
+                    ? "This page says"
+                    : base::StringPrintf("a.com:%d says",
+                                         embedded_test_server()->port())),
+            dialog_manager->GetTitle(
+                opened_tab,
+                opened_tab->GetPrimaryMainFrame()->GetLastCommittedOrigin()));
+}
+
+#if BUILDFLAG(IS_MAC)
+// Flaky: https://crbug.com/468829956
+#define MAYBE_HandlesSwappingTabWithDialogIntoSplitView \
+  DISABLED_HandlesSwappingTabWithDialogIntoSplitView
+#else
+#define MAYBE_HandlesSwappingTabWithDialogIntoSplitView \
+  HandlesSwappingTabWithDialogIntoSplitView
+#endif
+IN_PROC_BROWSER_TEST_F(JavaScriptDialogTest,
+                       MAYBE_HandlesSwappingTabWithDialogIntoSplitView) {
+  // Create three tabs with the first two in a split view.
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
+  tab_strip_model()->ActivateTabAt(0);
+  chrome::NewSplitTab(browser(), split_tabs::SplitTabLayout::kSideBySide,
+                      split_tabs::SplitTabCreatedSource::kToolbarButton);
+
+  // Open a alert dialog from the third tab.
+  tab_strip_model()->ActivateTabAt(2);
+  content::WebContents* web_contents =
+      tab_strip_model()->GetActiveWebContents();
+  javascript_dialogs::TabModalDialogManager* js_helper =
+      javascript_dialogs::TabModalDialogManager::FromWebContents(web_contents);
+  JavaScriptCallbackHelper callback_helper;
+  bool did_suppress = false;
+  js_helper->RunJavaScriptDialog(
+      web_contents, web_contents->GetPrimaryMainFrame(),
+      content::JAVASCRIPT_DIALOG_TYPE_ALERT, std::u16string(), std::u16string(),
+      callback_helper.GetCallback(), &did_suppress);
+  ASSERT_TRUE(js_helper->IsShowingDialogForTesting());
+
+  // Switch to the split view which should hide the dialog and show tab
+  // attention indicator.
+  tab_strip_model()->ActivateTabAt(0);
+  ASSERT_TRUE(browser()
+                  ->GetBrowserView()
+                  .horizontal_tab_strip_for_testing()
+                  ->tab_at(2)
+                  ->GetTabIconForTesting()
+                  ->GetShowingAttentionIndicator());
+
+  // Swapping the third tab with the inactive tab in the split should cause that
+  // tab to join the split view as an inactive tab. The dialog will still be
+  // showing.
+  tab_strip_model()->UpdateTabInSplit(tab_strip_model()->GetTabAtIndex(1), 2,
+                                      TabStripModel::SplitUpdateType::kSwap);
+  ASSERT_TRUE(js_helper->IsShowingDialogForTesting());
+  ASSERT_EQ(0, tab_strip_model()->active_index());
+
+  // Triggering the tab with the dialog will activate that tab.
+  tab_strip_model()->ActivateTabAt(1);
+  ASSERT_TRUE(js_helper->IsShowingDialogForTesting());
+  ASSERT_EQ(1, tab_strip_model()->active_index());
 }
 
 class JavaScriptDialogForPrerenderTest : public JavaScriptDialogTest {

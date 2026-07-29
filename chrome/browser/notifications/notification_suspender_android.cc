@@ -20,7 +20,7 @@
 #include "chrome/android/chrome_jni_headers/NotificationSuspender_jni.h"
 
 using base::android::AppendJavaStringArrayToStringVector;
-using base::android::JavaParamRef;
+using base::android::JavaRef;
 using base::android::ScopedJavaLocalRef;
 using content::BrowserContext;
 using content::NotificationResourceData;
@@ -30,10 +30,10 @@ using jni_zero::AttachCurrentThread;
 namespace {
 
 SkBitmap ExtractImage(JNIEnv* env,
-                      const JavaParamRef<jobjectArray>& j_resources,
+                      const JavaRef<jobjectArray>& j_resources,
                       int index) {
-  ScopedJavaLocalRef<jobject> j_image(
-      env, env->GetObjectArrayElement(j_resources, index));
+  auto j_image = jni_zero::AdoptRef(
+      env, env->GetObjectArrayElement(j_resources.obj(), index));
   return j_image.is_null()
              ? SkBitmap()
              : CreateSkBitmapFromJavaBitmap(gfx::JavaBitmap(j_image));
@@ -41,10 +41,10 @@ SkBitmap ExtractImage(JNIEnv* env,
 
 std::vector<blink::NotificationResources> ParseResources(
     JNIEnv* env,
-    const JavaParamRef<jobjectArray>& j_resources) {
+    const JavaRef<jobjectArray>& j_resources) {
   // Resources is an array of bitmaps with the following order:
   // [icon, badge, image, icon, badge, image, ...]
-  int resource_count = env->GetArrayLength(j_resources);
+  int resource_count = env->GetArrayLength(j_resources.obj());
   DCHECK(resource_count % 3 == 0);
 
   std::vector<blink::NotificationResources> resources;
@@ -75,9 +75,9 @@ PlatformNotificationContext* GetContext(Profile* profile, const GURL& origin) {
 static void JNI_NotificationSuspender_StoreNotificationResources(
     JNIEnv* env,
     Profile* profile,
-    const JavaParamRef<jobjectArray>& j_notification_ids,
-    const JavaParamRef<jobjectArray>& j_origins,
-    const JavaParamRef<jobjectArray>& j_resources) {
+    const JavaRef<jobjectArray>& j_notification_ids,
+    const JavaRef<jobjectArray>& j_origins,
+    const JavaRef<jobjectArray>& j_resources) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   DCHECK(profile);
 
@@ -114,14 +114,14 @@ static void JNI_NotificationSuspender_StoreNotificationResources(
 static void JNI_NotificationSuspender_ReDisplayNotifications(
     JNIEnv* env,
     Profile* profile,
-    std::vector<std::string>& origin_strings) {
+    const std::vector<std::string>& origin_strings) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   DCHECK(profile);
 
   // Group origins by context.
   std::map<PlatformNotificationContext*, std::vector<GURL>> origins_by_context;
-  for (std::string& origin_string : origin_strings) {
-    GURL origin(std::move(origin_string));
+  for (const std::string& origin_string : origin_strings) {
+    GURL origin(origin_string);
     if (!origin.is_valid() || !origin.SchemeIsHTTPOrHTTPS())
       continue;
     origins_by_context[GetContext(profile, origin)].emplace_back(
@@ -134,3 +134,5 @@ static void JNI_NotificationSuspender_ReDisplayNotifications(
                                         base::DoNothing());
   }
 }
+
+DEFINE_JNI(NotificationSuspender)

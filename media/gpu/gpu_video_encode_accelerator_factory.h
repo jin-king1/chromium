@@ -9,6 +9,7 @@
 
 #include "gpu/config/gpu_info.h"
 #include "gpu/ipc/service/command_buffer_stub.h"
+#include "media/base/media_log.h"
 #include "media/gpu/media_gpu_export.h"
 #include "media/video/video_encode_accelerator.h"
 
@@ -32,7 +33,7 @@ class MEDIA_GPU_EXPORT GpuVideoEncodeAcceleratorFactory {
   // VideoEncodeAccelerator::Initialize() returns false.
   using GetCommandBufferHelperCB =
       base::RepeatingCallback<scoped_refptr<CommandBufferHelper>()>;
-  static std::unique_ptr<VideoEncodeAccelerator> CreateVEA(
+  static EncoderStatus::Or<std::unique_ptr<VideoEncodeAccelerator>> CreateVEA(
       const VideoEncodeAccelerator::Config& config,
       VideoEncodeAccelerator::Client* client,
       const gpu::GpuPreferences& gpu_perferences,

@@ -27,9 +27,11 @@
   return self;
 }
 
-// If accessibilityActivate isn't overriden, VoiceOver isn't able to close the
+#pragma mark - UIAccessibilityAction
+
+// If accessibilityActivate isn't overridden, VoiceOver isn't able to close the
 // menu.
-// See crbbug.com/936850.
+// See crbug.com/936850.
 - (BOOL)accessibilityActivate {
   return [super accessibilityActivate];
 }

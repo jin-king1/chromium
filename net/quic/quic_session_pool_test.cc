@@ -2,17 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "net/base/privacy_mode.h"
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40284755): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "net/quic/quic_session_pool.h"
 
 #include <sys/types.h>
 
+#include <array>
 #include <memory>
+#include <optional>
 #include <ostream>
 #include <set>
 #include <string>
@@ -21,15 +17,22 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/logging.h"
+#include "base/memory/memory_pressure_listener.h"
+#include "base/memory/memory_pressure_listener_registry.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/bind.h"
+#include "base/test/metrics/histogram_tester.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/test/simple_test_clock.h"
 #include "base/test/simple_test_tick_clock.h"
+#include "base/test/test_future.h"
 #include "base/test/test_mock_time_task_runner.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
@@ -41,12 +44,15 @@
 #include "net/base/net_error_details.h"
 #include "net/base/net_errors.h"
 #include "net/base/network_anonymization_key.h"
+#include "net/base/privacy_mode.h"
 #include "net/base/proxy_chain.h"
 #include "net/base/proxy_server.h"
+#include "net/base/reconnect_notifier.h"
 #include "net/base/schemeful_site.h"
 #include "net/base/session_usage.h"
 #include "net/base/test_proxy_delegate.h"
 #include "net/cert/mock_cert_verifier.h"
+#include "net/cert/x509_util.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/dns/public/dns_query_type.h"
 #include "net/dns/public/host_resolver_source.h"
@@ -57,6 +63,8 @@
 #include "net/http/http_util.h"
 #include "net/http/transport_security_state.h"
 #include "net/http/transport_security_state_test_util.h"
+#include "net/log/test_net_log.h"
+#include "net/log/test_net_log_util.h"
 #include "net/quic/address_utils.h"
 #include "net/quic/crypto/proof_verifier_chromium.h"
 #include "net/quic/mock_crypto_client_stream_factory.h"
@@ -85,6 +93,7 @@
 #include "net/spdy/spdy_session_test_util.h"
 #include "net/spdy/spdy_test_util_common.h"
 #include "net/ssl/test_ssl_config_service.h"
+#include "net/ssl/test_static_ech_mode_getter.h"
 #include "net/test/cert_test_util.h"
 #include "net/test/gtest_util.h"
 #include "net/test/test_data_directory.h"
@@ -96,6 +105,9 @@
 #include "net/third_party/quiche/src/quiche/quic/core/crypto/quic_crypto_client_config.h"
 #include "net/third_party/quiche/src/quiche/quic/core/crypto/quic_decrypter.h"
 #include "net/third_party/quiche/src/quiche/quic/core/crypto/quic_encrypter.h"
+#include "net/third_party/quiche/src/quiche/quic/core/crypto/transport_parameters.h"
+#include "net/third_party/quiche/src/quiche/quic/core/http/http_constants.h"
+#include "net/third_party/quiche/src/quiche/quic/core/http/http_encoder.h"
 #include "net/third_party/quiche/src/quiche/quic/core/quic_constants.h"
 #include "net/third_party/quiche/src/quiche/quic/core/quic_utils.h"
 #include "net/third_party/quiche/src/quiche/quic/platform/api/quic_test.h"
@@ -111,9 +123,14 @@
 #include "net/url_request/static_http_user_agent_settings.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/boringssl/src/include/openssl/ssl.h"
 #include "url/gurl.h"
 #include "url/scheme_host_port.h"
 #include "url/url_constants.h"
+
+#if BUILDFLAG(IS_ANDROID)
+#include "base/android/pre_freeze_background_memory_trimmer.h"
+#endif
 
 using std::string;
 
@@ -129,6 +146,8 @@ class QuicHttpStreamPeer {
 
 namespace {
 
+using ::testing::ElementsAre;
+
 // Run QuicSessionPoolTest instances with all values of version.
 struct TestParams {
   quic::ParsedQuicVersion version;
@@ -137,6 +156,21 @@ struct TestParams {
 // Used by ::testing::PrintToStringParamName().
 std::string PrintToString(const TestParams& p) {
   return ParsedQuicVersionToString(p.version);
+}
+
+QuicSessionPool::QuicCryptoClientConfigKey CreateTestQuicCryptoClientConfigKey(
+    const NetworkAnonymizationKey& network_anonymization_key) {
+  // Note: Most of the values in this QuicSessionKey aren't actually used when
+  // constructing the QuicCryptoClientConfigKey, but still attempt to use a
+  // QuicSessionKey with realistic values.
+  return QuicSessionPool::QuicCryptoClientConfigKey(QuicSessionKey(
+      QuicSessionPoolTestBase::kDefaultServerHostName,
+      QuicSessionPoolTestBase::kDefaultServerPort,
+      PrivacyMode::PRIVACY_MODE_DISABLED, ProxyChain::Direct(),
+      SessionUsage::kDestination, SocketTag(), network_anonymization_key,
+      SecureDnsPolicy::kAllow, /*require_dns_https_alpn=*/false,
+      /*disable_cert_verification_network_fetches=*/false,
+      handles::kInvalidNetworkHandle));
 }
 
 std::vector<TestParams> GetTestParams() {
@@ -165,14 +199,18 @@ class SessionAttemptHelper : public QuicSessionAttempt::Delegate {
         destination.host(), destination.port(),
         PrivacyMode::PRIVACY_MODE_DISABLED, ProxyChain::Direct(),
         SessionUsage::kDestination, SocketTag(), NetworkAnonymizationKey(),
-        SecureDnsPolicy::kAllow, /*require_dns_https_alpn=*/false);
+        SecureDnsPolicy::kAllow, /*require_dns_https_alpn=*/false,
+        /*disable_cert_verification_network_fetches=*/false,
+        handles::kInvalidNetworkHandle);
     quic_session_alias_key_ = QuicSessionAliasKey(destination, session_key);
     attempt_ = pool_->CreateSessionAttempt(
         this, quic_session_alias_key_.session_key(), quic_endpoint,
         /*cert_verify_flags=*/0,
         /*dns_resolution_start_time=*/base::TimeTicks(),
-        /*dns_resolution_end_time=*/base::TimeTicks(), /*use_dns_aliases=*/true,
-        /*dns_aliases=*/{}, MultiplexedSessionCreationInitiator::kUnknown);
+        /*dns_resolution_end_time=*/base::TimeTicks(),
+        /*dns_resolution_details=*/std::nullopt, /*use_dns_aliases=*/true,
+        /*dns_aliases=*/{}, MultiplexedSessionCreationInitiator::kUnknown,
+        /*connection_management_config=*/std::nullopt);
   }
 
   SessionAttemptHelper(const SessionAttemptHelper&) = delete;
@@ -226,8 +264,11 @@ class TestConnectionMigrationSocketFactory : public MockClientSocketFactory {
 
   std::unique_ptr<DatagramClientSocket> CreateDatagramClientSocket(
       DatagramSocket::BindType bind_type,
+      handles::NetworkHandle target_network,
       NetLog* net_log,
       const NetLogSource& source) override {
+    // This is used only for testing in scenarios that do not involve multiple
+    // networks. With that in mind, it's safe to ignore `target_network`.
     SocketDataProvider* data_provider = mock_data().GetNext();
     auto socket = std::make_unique<MockUDPClientSocket>(data_provider, net_log);
     socket->set_source_host(IPAddress(192, 0, 2, next_source_host_num_++));
@@ -253,8 +294,11 @@ class TestPortMigrationSocketFactory : public MockClientSocketFactory {
 
   std::unique_ptr<DatagramClientSocket> CreateDatagramClientSocket(
       DatagramSocket::BindType bind_type,
+      handles::NetworkHandle target_network,
       NetLog* net_log,
       const NetLogSource& source) override {
+    // This is used only for testing in scenarios that do not involve multiple
+    // networks. With that in mind, it's safe to ignore `target_network`.
     SocketDataProvider* data_provider = mock_data().GetNext();
     auto socket = std::make_unique<MockUDPClientSocket>(data_provider, net_log);
     socket->set_source_port(next_source_port_num_++);
@@ -315,8 +359,7 @@ class QuicSessionPoolTest : public QuicSessionPoolTestBase,
  protected:
   QuicSessionPoolTest()
       : QuicSessionPoolTestBase(GetParam().version),
-        runner_(base::MakeRefCounted<TestTaskRunner>(context_.mock_clock())) {
-  }
+        runner_(base::MakeRefCounted<TestTaskRunner>(context_.mock_clock())) {}
 
   void RunTestLoopUntilIdle();
 
@@ -332,6 +375,7 @@ class QuicSessionPoolTest : public QuicSessionPoolTestBase,
   // NetworkAnonymizationKeys, but the same server. If false, stores data for
   // two different servers, using the same NetworkAnonymizationKey.
   void VerifyInitialization(bool vary_network_anonymization_key);
+  void TestYielding(bool use_read_multiple, bool yield_by_duration);
 
   // Helper methods for tests of connection migration on write error.
   void TestMigrationOnWriteErrorNonMigratableStream(IoMode write_error_mode,
@@ -360,9 +404,6 @@ class QuicSessionPoolTest : public QuicSessionPoolTestBase,
       IoMode write_error_mode,
       bool disconnect_before_connect);
   void TestNoAlternateNetworkBeforeHandshake(quic::QuicErrorCode error);
-  void
-  TestThatBlackHoleIsDisabledOnNoNewNetworkThenResumedAfterConnectingToANetwork(
-      bool is_blackhole_disabled_after_disconnecting);
   void TestNewConnectionOnAlternateNetworkBeforeHandshake(
       quic::QuicErrorCode error);
   void TestOnNetworkMadeDefaultNonMigratableStream(bool migrate_idle_sessions);
@@ -500,7 +541,7 @@ void QuicSessionPoolTest::VerifyServerMigration(const quic::QuicConfig& config,
                                          CompletionOnceCallback()));
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_FALSE(HasActiveJob(kDefaultDestination, PRIVACY_MODE_DISABLED));
 
@@ -547,17 +588,16 @@ void QuicSessionPoolTest::VerifyInitialization(
   quic_params_->max_server_configs_stored_in_properties = 1;
   quic_params_->idle_connection_timeout = base::Seconds(500);
   Initialize();
-  factory_->set_has_quic_ever_worked_on_current_network(true);
+  pool_->set_has_quic_ever_worked_on_current_network(true);
   ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
   crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
   crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
   crypto_client_stream_factory_.set_handshake_mode(
       MockCryptoClientStream::ZERO_RTT);
-  const quic::QuicConfig* config =
-      QuicSessionPoolPeer::GetConfig(factory_.get());
+  const quic::QuicConfig* config = QuicSessionPoolPeer::GetConfig(pool_.get());
   EXPECT_EQ(500, config->IdleNetworkTimeout().ToSeconds());
 
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), runner_.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), runner_.get());
 
   const AlternativeService alternative_service1(
       NextProto::kProtoQUIC, kDefaultServerHostName, kDefaultServerPort);
@@ -694,12 +734,13 @@ void QuicSessionPoolTest::VerifyInitialization(
   EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
   EXPECT_THAT(callback_.WaitForResult(), IsOk());
 
+  QuicSessionPool::QuicCryptoClientConfigKey key1 =
+      CreateTestQuicCryptoClientConfigKey(network_anonymization_key1);
   EXPECT_FALSE(QuicSessionPoolPeer::CryptoConfigCacheIsEmpty(
-      factory_.get(), quic_server_id1, network_anonymization_key1));
+      pool_.get(), quic_server_id1, key1));
 
   std::unique_ptr<QuicCryptoClientConfigHandle> crypto_config_handle1 =
-      QuicSessionPoolPeer::GetCryptoConfig(factory_.get(),
-                                           network_anonymization_key1);
+      QuicSessionPoolPeer::GetCryptoConfig(pool_.get(), key1);
   quic::QuicCryptoClientConfig::CachedState* cached =
       crypto_config_handle1->GetConfig()->LookupOrCreate(quic_server_id1);
   EXPECT_FALSE(cached->server_config().empty());
@@ -735,11 +776,12 @@ void QuicSessionPoolTest::VerifyInitialization(
   EXPECT_EQ(ERR_IO_PENDING, builder2.CallRequest());
   EXPECT_THAT(callback_.WaitForResult(), IsOk());
 
+  QuicSessionPool::QuicCryptoClientConfigKey key2 =
+      CreateTestQuicCryptoClientConfigKey(network_anonymization_key2);
   EXPECT_FALSE(QuicSessionPoolPeer::CryptoConfigCacheIsEmpty(
-      factory_.get(), quic_server_id2, network_anonymization_key2));
+      pool_.get(), quic_server_id2, key2));
   std::unique_ptr<QuicCryptoClientConfigHandle> crypto_config_handle2 =
-      QuicSessionPoolPeer::GetCryptoConfig(factory_.get(),
-                                           network_anonymization_key2);
+      QuicSessionPoolPeer::GetCryptoConfig(pool_.get(), key2);
   quic::QuicCryptoClientConfig::CachedState* cached2 =
       crypto_config_handle2->GetConfig()->LookupOrCreate(quic_server_id2);
   EXPECT_FALSE(cached2->server_config().empty());
@@ -837,7 +879,7 @@ TEST_P(QuicSessionPoolTest, SyncCreateZeroRtt) {
   base::test::ScopedFeatureList scoped_feature_list;
   scoped_feature_list.InitAndDisableFeature(net::features::kAsyncQuicSession);
   Initialize();
-  factory_->set_has_quic_ever_worked_on_current_network(true);
+  pool_->set_has_quic_ever_worked_on_current_network(true);
   ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
   crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
 
@@ -863,7 +905,7 @@ TEST_P(QuicSessionPoolTest, SyncCreateZeroRtt) {
 
 TEST_P(QuicSessionPoolTest, AsyncCreateZeroRtt) {
   Initialize();
-  factory_->set_has_quic_ever_worked_on_current_network(true);
+  pool_->set_has_quic_ever_worked_on_current_network(true);
   ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
   crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
 
@@ -894,7 +936,7 @@ TEST_P(QuicSessionPoolTest, AsyncCreateZeroRtt) {
 TEST_P(QuicSessionPoolTest, AsyncZeroRtt) {
   Initialize();
 
-  factory_->set_has_quic_ever_worked_on_current_network(true);
+  pool_->set_has_quic_ever_worked_on_current_network(true);
   ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
   crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
 
@@ -945,7 +987,9 @@ TEST_P(QuicSessionPoolTest, DefaultInitialRtt) {
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
   EXPECT_TRUE(session->require_confirmation());
   EXPECT_EQ(100000u, session->connection()->GetStats().srtt_us);
-  ASSERT_FALSE(session->config()->HasInitialRoundTripTimeUsToSend());
+  ASSERT_FALSE(crypto_client_stream_factory_.last_stream()
+                   ->negotiated_config()
+                   ->HasInitialRoundTripTimeUsToSend());
 }
 
 TEST_P(QuicSessionPoolTest, FactoryDestroyedWhenJobPending) {
@@ -964,7 +1008,7 @@ TEST_P(QuicSessionPoolTest, FactoryDestroyedWhenJobPending) {
   EXPECT_TRUE(HasActiveJob(kDefaultDestination, PRIVACY_MODE_DISABLED));
   // Tearing down a QuicSessionPool with a pending Job should not cause any
   // crash. crbug.com/768343.
-  factory_.reset();
+  pool_.reset();
 }
 
 TEST_P(QuicSessionPoolTest, RequireConfirmation) {
@@ -976,7 +1020,7 @@ TEST_P(QuicSessionPoolTest, RequireConfirmation) {
   host_resolver_->rules()->AddIPLiteralRule(kDefaultServerHostName,
                                             "192.168.0.1", "");
   Initialize();
-  factory_->set_has_quic_ever_worked_on_current_network(false);
+  pool_->set_has_quic_ever_worked_on_current_network(false);
   ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
   crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
 
@@ -1010,7 +1054,7 @@ TEST_P(QuicSessionPoolTest, RequireConfirmationAsyncQuicSession) {
   host_resolver_->rules()->AddIPLiteralRule(kDefaultServerHostName,
                                             "192.168.0.1", "");
   Initialize();
-  factory_->set_has_quic_ever_worked_on_current_network(false);
+  pool_->set_has_quic_ever_worked_on_current_network(false);
   ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
   crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
 
@@ -1045,7 +1089,7 @@ TEST_P(QuicSessionPoolTest, DontRequireConfirmationFromSameIP) {
   host_resolver_->rules()->AddIPLiteralRule(kDefaultServerHostName,
                                             "192.168.0.1", "");
   Initialize();
-  factory_->set_has_quic_ever_worked_on_current_network(false);
+  pool_->set_has_quic_ever_worked_on_current_network(false);
   http_server_properties_->SetLastLocalAddressWhenQuicWorked(
       IPAddress(192, 0, 2, 33));
 
@@ -1098,8 +1142,12 @@ TEST_P(QuicSessionPoolTest, CachedInitialRtt) {
 
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
   EXPECT_EQ(10000u, session->connection()->GetStats().srtt_us);
-  ASSERT_TRUE(session->config()->HasInitialRoundTripTimeUsToSend());
-  EXPECT_EQ(10000u, session->config()->GetInitialRoundTripTimeUsToSend());
+  ASSERT_TRUE(crypto_client_stream_factory_.last_stream()
+                  ->negotiated_config()
+                  ->HasInitialRoundTripTimeUsToSend());
+  EXPECT_EQ(10000u, crypto_client_stream_factory_.last_stream()
+                        ->negotiated_config()
+                        ->GetInitialRoundTripTimeUsToSend());
 }
 
 // Test that QUIC sessions use the cached RTT from HttpServerProperties for the
@@ -1157,12 +1205,18 @@ TEST_P(QuicSessionPoolTest, CachedInitialRttWithNetworkAnonymizationKey) {
         kDefaultDestination, PRIVACY_MODE_DISABLED, network_anonymization_key);
     if (network_anonymization_key == kNetworkAnonymizationKey1) {
       EXPECT_EQ(10000, session->connection()->GetStats().srtt_us);
-      ASSERT_TRUE(session->config()->HasInitialRoundTripTimeUsToSend());
-      EXPECT_EQ(10000u, session->config()->GetInitialRoundTripTimeUsToSend());
+      ASSERT_TRUE(crypto_client_stream_factory_.last_stream()
+                      ->negotiated_config()
+                      ->HasInitialRoundTripTimeUsToSend());
+      EXPECT_EQ(10000u, crypto_client_stream_factory_.last_stream()
+                            ->negotiated_config()
+                            ->GetInitialRoundTripTimeUsToSend());
     } else {
       EXPECT_EQ(quic::kInitialRttMs * 1000,
                 session->connection()->GetStats().srtt_us);
-      EXPECT_FALSE(session->config()->HasInitialRoundTripTimeUsToSend());
+      ASSERT_FALSE(crypto_client_stream_factory_.last_stream()
+                       ->negotiated_config()
+                       ->HasInitialRoundTripTimeUsToSend());
     }
   }
 }
@@ -1190,8 +1244,12 @@ TEST_P(QuicSessionPoolTest, 2gInitialRtt) {
 
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
   EXPECT_EQ(1000000u, session->connection()->GetStats().srtt_us);
-  ASSERT_TRUE(session->config()->HasInitialRoundTripTimeUsToSend());
-  EXPECT_EQ(1200000u, session->config()->GetInitialRoundTripTimeUsToSend());
+  ASSERT_TRUE(crypto_client_stream_factory_.last_stream()
+                  ->negotiated_config()
+                  ->HasInitialRoundTripTimeUsToSend());
+  EXPECT_EQ(1200000u, crypto_client_stream_factory_.last_stream()
+                          ->negotiated_config()
+                          ->GetInitialRoundTripTimeUsToSend());
 }
 
 TEST_P(QuicSessionPoolTest, 3gInitialRtt) {
@@ -1217,8 +1275,12 @@ TEST_P(QuicSessionPoolTest, 3gInitialRtt) {
 
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
   EXPECT_EQ(400000u, session->connection()->GetStats().srtt_us);
-  ASSERT_TRUE(session->config()->HasInitialRoundTripTimeUsToSend());
-  EXPECT_EQ(400000u, session->config()->GetInitialRoundTripTimeUsToSend());
+  ASSERT_TRUE(crypto_client_stream_factory_.last_stream()
+                  ->negotiated_config()
+                  ->HasInitialRoundTripTimeUsToSend());
+  EXPECT_EQ(400000u, crypto_client_stream_factory_.last_stream()
+                         ->negotiated_config()
+                         ->GetInitialRoundTripTimeUsToSend());
 }
 
 TEST_P(QuicSessionPoolTest, GoAway) {
@@ -1257,9 +1319,12 @@ TEST_P(QuicSessionPoolTest, ServerNetworkStatsWithNetworkAnonymizationKey) {
   const auto kNetworkAnonymizationKey2 =
       NetworkAnonymizationKey::CreateSameSite(kSite2);
 
-  const NetworkAnonymizationKey kNetworkAnonymizationKeys[] = {
-      kNetworkAnonymizationKey1, kNetworkAnonymizationKey2,
-      NetworkAnonymizationKey()};
+  const auto kNetworkAnonymizationKeys =
+      std::to_array<NetworkAnonymizationKey>({
+          kNetworkAnonymizationKey1,
+          kNetworkAnonymizationKey2,
+          NetworkAnonymizationKey(),
+      });
 
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeature(
@@ -1363,6 +1428,289 @@ TEST_P(QuicSessionPoolTest, ServerNetworkStatsWithNetworkAnonymizationKey) {
       }
     }
   }
+}
+
+// QUIC sessions tunneled through a proxy chain do not share ServerNetworkStats
+// with direct sessions to the same destination, since the observed RTT depends
+// on the path.
+TEST_P(QuicSessionPoolTest, ServerNetworkStatsProxyChain) {
+  Initialize();
+
+  GURL proxy(kProxy1Url);
+  auto proxy_origin = url::SchemeHostPort(proxy);
+  auto proxy_chain = ProxyChain::ForIpProtection({
+      ProxyServer::FromSchemeHostAndPort(ProxyServer::SCHEME_QUIC,
+                                         proxy_origin.host(), 443),
+  });
+  ASSERT_TRUE(proxy_chain.IsValid());
+
+  ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
+  client_maker_.set_use_priority_header(false);
+
+  QuicTestPacketMaker endpoint_maker(
+      version_,
+      quic::QuicUtils::CreateRandomConnectionId(context_.random_generator()),
+      context_.clock(), kDefaultServerHostName, quic::Perspective::IS_CLIENT,
+      /*client_priority_uses_incremental=*/true,
+      /*use_priority_header=*/true);
+
+  const uint64_t stream_id = GetNthClientInitiatedBidirectionalStreamId(0);
+  MockQuicData socket_data(version_);
+  socket_data.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket(1));
+  socket_data.AddWrite(
+      SYNCHRONOUS, ConstructConnectUdpRequestPacket(
+                       2, stream_id, proxy.GetHost(),
+                       "/.well-known/masque/udp/www.example.org/443/", false));
+  socket_data.AddRead(ASYNC, ConstructServerSettingsPacket(3));
+  socket_data.AddRead(ASYNC, ConstructOkResponsePacket(4, stream_id, true));
+  socket_data.AddReadPauseForever();
+  socket_data.AddWrite(ASYNC,
+                       client_maker_.Packet(3).AddAckFrame(3, 4, 3).Build());
+  socket_data.AddWrite(ASYNC, ConstructClientH3DatagramPacket(
+                                  4, stream_id, kConnectUdpContextId,
+                                  endpoint_maker.MakeInitialSettingsPacket(1)));
+  socket_data.AddSocketDataToFactory(socket_factory_.get());
+
+  RequestBuilder builder(this);
+  builder.proxy_chain = proxy_chain;
+  builder.http_user_agent_settings = &http_user_agent_settings_;
+  EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
+  ASSERT_THAT(callback_.WaitForResult(), IsOk());
+  std::unique_ptr<HttpStream> stream = CreateStream(&builder.request);
+  EXPECT_TRUE(stream.get());
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return socket_data.AllWriteDataConsumed(); }));
+
+  QuicChromiumClientSession* session =
+      GetActiveSession(kDefaultDestination, PRIVACY_MODE_DISABLED,
+                       NetworkAnonymizationKey(), proxy_chain);
+  session->OnHttp3GoAway(0);
+  EXPECT_FALSE(HasActiveSession(kDefaultDestination, PRIVACY_MODE_DISABLED,
+                                NetworkAnonymizationKey(), proxy_chain));
+
+  // Stats from the tunneled session must not be recorded under the key that a
+  // direct connection to the same destination would use.
+  EXPECT_FALSE(http_server_properties_->GetServerNetworkStats(
+      url::SchemeHostPort(GURL(kDefaultUrl)), NetworkAnonymizationKey()));
+
+  // Now record stats for a direct connection and verify that the tunneled path
+  // does not consume them when computing the waiting-job delay.
+  ServerNetworkStats direct_stats;
+  direct_stats.srtt = base::Milliseconds(10);
+  http_server_properties_->SetServerNetworkStats(
+      url::SchemeHostPort(GURL(kDefaultUrl)), NetworkAnonymizationKey(),
+      direct_stats);
+  base::TimeDelta direct_delay =
+      pool_->GetTimeDelayForWaitingJob(QuicSessionKey(
+          kDefaultServerHostName, kDefaultServerPort, PRIVACY_MODE_DISABLED,
+          ProxyChain::Direct(), SessionUsage::kDestination, SocketTag(),
+          NetworkAnonymizationKey(), SecureDnsPolicy::kAllow,
+          /*require_dns_https_alpn=*/false,
+          /*disable_cert_verification_network_fetches=*/false,
+          handles::kInvalidNetworkHandle));
+  base::TimeDelta proxied_delay =
+      pool_->GetTimeDelayForWaitingJob(QuicSessionKey(
+          kDefaultServerHostName, kDefaultServerPort, PRIVACY_MODE_DISABLED,
+          proxy_chain, SessionUsage::kDestination, SocketTag(),
+          NetworkAnonymizationKey(), SecureDnsPolicy::kAllow,
+          /*require_dns_https_alpn=*/false,
+          /*disable_cert_verification_network_fetches=*/false,
+          handles::kInvalidNetworkHandle));
+  EXPECT_NE(direct_delay, proxied_delay);
+
+  socket_data.ExpectAllReadDataConsumed();
+  socket_data.ExpectAllWriteDataConsumed();
+}
+
+TEST_P(QuicSessionPoolTest, MemoryPressureGlobalExclusion) {
+  base::MemoryPressureListenerRegistry memory_pressure_listener_registry;
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      {features::kPartitionConnectionsByNetworkIsolationKey,
+       features::kIgnoreQuicCryptoConfigMemoryPressure},
+      {});
+  Initialize();
+  base::SimpleTestClock test_clock;
+  test_clock.SetNow(base::Time::UnixEpoch() + base::Days(365 * 50));
+  QuicSessionPoolPeer::SetClockForTesting(pool_.get(), &test_clock);
+
+  quic::QuicServerId doh_server_id("doh.example.com", 443);
+  quic::QuicServerId general_server_id("www.example.com", 443);
+
+  // 1. Create a config with DoH partition.
+  NetworkAnonymizationKey doh_nak =
+      NetworkAnonymizationKey::CreateEmptyWithPartition(
+          NetworkIsolationPartition::kDnsOverHttps);
+  QuicSessionPool::QuicCryptoClientConfigKey doh_key =
+      CreateTestQuicCryptoClientConfigKey(doh_nak);
+  std::unique_ptr<QuicCryptoClientConfigHandle> doh_handle =
+      QuicSessionPoolPeer::GetCryptoConfig(pool_.get(), doh_key);
+
+  // 2. Create a config with General partition.
+  NetworkAnonymizationKey general_nak =
+      NetworkAnonymizationKey::CreateEmptyWithPartition(
+          NetworkIsolationPartition::kGeneral);
+  QuicSessionPool::QuicCryptoClientConfigKey general_key =
+      CreateTestQuicCryptoClientConfigKey(general_nak);
+  std::unique_ptr<QuicCryptoClientConfigHandle> general_handle =
+      QuicSessionPoolPeer::GetCryptoConfig(pool_.get(), general_key);
+
+  // Populate session cache.
+  bssl::UniquePtr<SSL_SESSION> doh_session(
+      SSL_SESSION_new(doh_handle->GetConfig()->ssl_ctx()));
+  ASSERT_TRUE(doh_session);
+  SSL_SESSION_set_time(doh_session.get(), test_clock.Now().ToTimeT());
+
+  bssl::UniquePtr<SSL_SESSION> general_session(
+      SSL_SESSION_new(general_handle->GetConfig()->ssl_ctx()));
+  ASSERT_TRUE(general_session);
+  SSL_SESSION_set_time(general_session.get(), test_clock.Now().ToTimeT());
+
+  quic::TransportParameters params;
+  doh_handle->GetConfig()->session_cache()->Insert(
+      doh_server_id, std::move(doh_session), params, nullptr);
+  general_handle->GetConfig()->session_cache()->Insert(
+      general_server_id, std::move(general_session), params, nullptr);
+
+  EXPECT_FALSE(QuicSessionPoolPeer::CryptoConfigSessionCacheIsEmpty(pool_.get(),
+                                                                    doh_key));
+  EXPECT_FALSE(QuicSessionPoolPeer::CryptoConfigSessionCacheIsEmpty(
+      pool_.get(), general_key));
+
+  // 3. Trigger memory pressure.
+  base::test::TestFuture<void> memory_pressure_future;
+  base::MemoryPressureListener::SimulatePressureNotificationAsync(
+      base::MemoryPressureLevel::MEMORY_PRESSURE_LEVEL_CRITICAL,
+      memory_pressure_future.GetCallback());
+  ASSERT_TRUE(memory_pressure_future.Wait());
+
+  // 4. Verify that neither DoH nor General was cleared.
+  EXPECT_FALSE(QuicSessionPoolPeer::CryptoConfigSessionCacheIsEmpty(pool_.get(),
+                                                                    doh_key));
+  EXPECT_FALSE(QuicSessionPoolPeer::CryptoConfigSessionCacheIsEmpty(
+      pool_.get(), general_key));
+
+  // 5. Fast forward time so they expire.
+  test_clock.Advance(base::Hours(3));
+
+  // 6. Trigger memory pressure again.
+  base::test::TestFuture<void> memory_pressure_future2;
+  base::MemoryPressureListener::SimulatePressureNotificationAsync(
+      base::MemoryPressureLevel::MEMORY_PRESSURE_LEVEL_CRITICAL,
+      memory_pressure_future2.GetCallback());
+  ASSERT_TRUE(memory_pressure_future2.Wait());
+
+  // 7. Verify that both DoH and General are now cleared.
+  EXPECT_TRUE(QuicSessionPoolPeer::CryptoConfigSessionCacheIsEmpty(pool_.get(),
+                                                                   doh_key));
+  EXPECT_TRUE(QuicSessionPoolPeer::CryptoConfigSessionCacheIsEmpty(
+      pool_.get(), general_key));
+}
+
+TEST_P(QuicSessionPoolTest, MemoryPressureDohExclusion) {
+  base::MemoryPressureListenerRegistry memory_pressure_listener_registry;
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      {features::kPartitionConnectionsByNetworkIsolationKey,
+       features::kIgnoreQuicCryptoConfigMemoryPressureForDoh},
+      {features::kIgnoreQuicCryptoConfigMemoryPressure});
+  Initialize();
+
+  quic::QuicServerId doh_server_id("doh.example.com", 443);
+  quic::QuicServerId general_server_id("www.example.com", 443);
+
+  // 1. Create a config with DoH partition.
+  NetworkAnonymizationKey doh_nak =
+      NetworkAnonymizationKey::CreateEmptyWithPartition(
+          NetworkIsolationPartition::kDnsOverHttps);
+  QuicSessionPool::QuicCryptoClientConfigKey doh_key =
+      CreateTestQuicCryptoClientConfigKey(doh_nak);
+  std::unique_ptr<QuicCryptoClientConfigHandle> doh_handle =
+      QuicSessionPoolPeer::GetCryptoConfig(pool_.get(), doh_key);
+
+  // 2. Create a config with General partition.
+  NetworkAnonymizationKey general_nak =
+      NetworkAnonymizationKey::CreateEmptyWithPartition(
+          NetworkIsolationPartition::kGeneral);
+  QuicSessionPool::QuicCryptoClientConfigKey general_key =
+      CreateTestQuicCryptoClientConfigKey(general_nak);
+  std::unique_ptr<QuicCryptoClientConfigHandle> general_handle =
+      QuicSessionPoolPeer::GetCryptoConfig(pool_.get(), general_key);
+
+  // Populate session cache.
+  bssl::UniquePtr<SSL_SESSION> doh_session(
+      SSL_SESSION_new(doh_handle->GetConfig()->ssl_ctx()));
+  ASSERT_TRUE(doh_session);
+
+  bssl::UniquePtr<SSL_SESSION> general_session(
+      SSL_SESSION_new(general_handle->GetConfig()->ssl_ctx()));
+  ASSERT_TRUE(general_session);
+
+  quic::TransportParameters params;
+  doh_handle->GetConfig()->session_cache()->Insert(
+      doh_server_id, std::move(doh_session), params, nullptr);
+  general_handle->GetConfig()->session_cache()->Insert(
+      general_server_id, std::move(general_session), params, nullptr);
+
+  EXPECT_FALSE(QuicSessionPoolPeer::CryptoConfigSessionCacheIsEmpty(pool_.get(),
+                                                                    doh_key));
+  EXPECT_FALSE(QuicSessionPoolPeer::CryptoConfigSessionCacheIsEmpty(
+      pool_.get(), general_key));
+
+  // 3. Trigger memory pressure.
+  base::test::TestFuture<void> memory_pressure_future;
+  base::MemoryPressureListener::SimulatePressureNotificationAsync(
+      base::MemoryPressureLevel::MEMORY_PRESSURE_LEVEL_CRITICAL,
+      memory_pressure_future.GetCallback());
+  ASSERT_TRUE(memory_pressure_future.Wait());
+
+  // 4. Verify that DoH was NOT cleared and General WAS cleared.
+  EXPECT_FALSE(QuicSessionPoolPeer::CryptoConfigSessionCacheIsEmpty(pool_.get(),
+                                                                    doh_key));
+  EXPECT_TRUE(QuicSessionPoolPeer::CryptoConfigSessionCacheIsEmpty(
+      pool_.get(), general_key));
+}
+
+TEST_P(QuicSessionPoolTest, MemoryPressureWithFeatureDisabled) {
+  base::MemoryPressureListenerRegistry memory_pressure_listener_registry;
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      {features::kPartitionConnectionsByNetworkIsolationKey},
+      {features::kIgnoreQuicCryptoConfigMemoryPressureForDoh,
+       features::kIgnoreQuicCryptoConfigMemoryPressure});
+  Initialize();
+
+  quic::QuicServerId server_id("doh.example.com", 443);
+
+  NetworkAnonymizationKey doh_nak =
+      NetworkAnonymizationKey::CreateEmptyWithPartition(
+          NetworkIsolationPartition::kDnsOverHttps);
+  QuicSessionPool::QuicCryptoClientConfigKey doh_key =
+      CreateTestQuicCryptoClientConfigKey(doh_nak);
+  std::unique_ptr<QuicCryptoClientConfigHandle> doh_handle =
+      QuicSessionPoolPeer::GetCryptoConfig(pool_.get(), doh_key);
+
+  bssl::UniquePtr<SSL_SESSION> doh_session(
+      SSL_SESSION_new(doh_handle->GetConfig()->ssl_ctx()));
+  ASSERT_TRUE(doh_session);
+
+  quic::TransportParameters params;
+  doh_handle->GetConfig()->session_cache()->Insert(
+      server_id, std::move(doh_session), params, nullptr);
+  EXPECT_FALSE(QuicSessionPoolPeer::CryptoConfigSessionCacheIsEmpty(pool_.get(),
+                                                                    doh_key));
+
+  base::test::TestFuture<void> memory_pressure_future;
+  base::MemoryPressureListener::SimulatePressureNotificationAsync(
+      base::MemoryPressureLevel::MEMORY_PRESSURE_LEVEL_CRITICAL,
+      memory_pressure_future.GetCallback());
+  ASSERT_TRUE(memory_pressure_future.Wait());
+
+  // Now it should be cleared.
+  EXPECT_TRUE(QuicSessionPoolPeer::CryptoConfigSessionCacheIsEmpty(pool_.get(),
+                                                                   doh_key));
 }
 
 TEST_P(QuicSessionPoolTest, PooledWithDifferentIpSession) {
@@ -1574,10 +1922,8 @@ TEST_P(QuicSessionPoolTest,
   // Receive NOIP connection option.
   quic::QuicTagVector initial_received_options;
   initial_received_options.push_back(quic::kNOIP);
-  EXPECT_TRUE(
-      GetActiveSession(kDefaultDestination)
-          ->config()
-          ->SetInitialReceivedConnectionOptions(initial_received_options));
+  GetActiveSession(kDefaultDestination)->received_connection_options() =
+      initial_received_options;
 
   // `server2` can pool with the existing session and DNS gets skipped.
   TestCompletionCallback callback;
@@ -1822,7 +2168,7 @@ TEST_P(QuicSessionPoolTest, NoPoolingAfterGoAway) {
   std::unique_ptr<HttpStream> stream2 = CreateStream(&builder2.request);
   EXPECT_TRUE(stream2.get());
 
-  factory_->OnSessionGoingAway(GetActiveSession(kDefaultDestination));
+  pool_->OnSessionGoingAway(GetActiveSession(kDefaultDestination));
   base::RunLoop().RunUntilIdle();
   EXPECT_FALSE(HasActiveSession(kDefaultDestination));
   EXPECT_FALSE(HasActiveSession(server2));
@@ -1895,11 +2241,12 @@ TEST_P(QuicSessionPoolTest, HttpsPoolingWithMatchingPins) {
   transport_security_state_.EnableStaticPinsForTesting();
   ScopedTransportSecurityStateSource scoped_security_state_source;
 
-  HashValue primary_pin(HASH_VALUE_SHA256);
-  EXPECT_TRUE(primary_pin.FromString(
-      "sha256/Nn8jk5By4Vkq6BeOVZ7R7AC6XUUBZsWmUbJR1f1Y5FY="));
+  std::optional<HashValue> primary_pin = HashValue::FromString(
+      "sha256/Nn8jk5By4Vkq6BeOVZ7R7AC6XUUBZsWmUbJR1f1Y5FY=");
+  ASSERT_TRUE(primary_pin.has_value());
   ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
-  verify_details.cert_verify_result.public_key_hashes.push_back(primary_pin);
+  verify_details.cert_verify_result.public_key_hashes.push_back(
+      primary_pin->sha256hashvalue());
   crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
 
   host_resolver_->set_synchronous_mode(true);
@@ -1954,11 +2301,12 @@ TEST_P(QuicSessionPoolTest, NoHttpsPoolingWithDifferentPins) {
       test::GetTestHashValue(bad_pin));
   crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details1);
 
-  HashValue primary_pin(HASH_VALUE_SHA256);
-  EXPECT_TRUE(primary_pin.FromString(
-      "sha256/Nn8jk5By4Vkq6BeOVZ7R7AC6XUUBZsWmUbJR1f1Y5FY="));
+  std::optional<HashValue> primary_pin = HashValue::FromString(
+      "sha256/Nn8jk5By4Vkq6BeOVZ7R7AC6XUUBZsWmUbJR1f1Y5FY=");
+  EXPECT_TRUE(primary_pin.has_value());
   ProofVerifyDetailsChromium verify_details2 = DefaultProofVerifyDetails();
-  verify_details2.cert_verify_result.public_key_hashes.push_back(primary_pin);
+  verify_details2.cert_verify_result.public_key_hashes.push_back(
+      primary_pin->sha256hashvalue());
   crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details2);
 
   host_resolver_->set_synchronous_mode(true);
@@ -2013,8 +2361,8 @@ TEST_P(QuicSessionPoolTest, Goaway) {
   // Mark the session as going away.  Ensure that while it is still alive
   // that it is no longer active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  factory_->OnSessionGoingAway(session);
-  EXPECT_EQ(true, QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  pool_->OnSessionGoingAway(session);
+  EXPECT_EQ(true, QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_FALSE(HasActiveSession(kDefaultDestination));
 
   // Create a new request for the same destination and verify that a
@@ -2027,7 +2375,7 @@ TEST_P(QuicSessionPoolTest, Goaway) {
 
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_NE(session, GetActiveSession(kDefaultDestination));
-  EXPECT_EQ(true, QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_EQ(true, QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
 
   stream2.reset();
   stream.reset();
@@ -2267,8 +2615,8 @@ TEST_P(QuicSessionPoolTest, CloseAllSessions) {
                                          CompletionOnceCallback()));
 
   // Close the session and verify that stream saw the error.
-  factory_->CloseAllSessions(ERR_INTERNET_DISCONNECTED,
-                             quic::QUIC_PEER_GOING_AWAY);
+  pool_->CloseAllSessions(ERR_INTERNET_DISCONNECTED,
+                          quic::QUIC_PEER_GOING_AWAY);
   EXPECT_EQ(ERR_INTERNET_DISCONNECTED,
             stream->ReadResponseHeaders(callback_.callback()));
 
@@ -2541,7 +2889,7 @@ TEST_P(QuicSessionPoolTest, CloseSessionDuringCreation) {
   MockQuicData socket_data(version_);
   socket_data.AddReadPauseForever();
   int packet_num = 1;
-  if (VersionUsesHttp3(version_.transport_version)) {
+  if (VersionIsIetfQuic(version_.transport_version)) {
     socket_data.AddWrite(SYNCHRONOUS,
                          ConstructInitialSettingsPacket(packet_num++));
   }
@@ -2566,7 +2914,10 @@ TEST_P(QuicSessionPoolTest, CloseSessionDuringCreation) {
   EXPECT_THAT(callback_.WaitForResult(), IsOk());
   quic::QuicServerId server_id(kDefaultServerHostName, kDefaultServerPort);
   EXPECT_TRUE(QuicSessionPoolPeer::HasActiveSession(
-      &factory, server_id, PRIVACY_MODE_DISABLED, NetworkAnonymizationKey()));
+      &factory, server_id, PRIVACY_MODE_DISABLED, NetworkAnonymizationKey(),
+      ProxyChain::Direct(), SessionUsage::kDestination,
+      /*require_dns_https_alpn=*/false,
+      /*disable_cert_verification_network_fetches=*/false));
   QuicChromiumClientSession* session = QuicSessionPoolPeer::GetActiveSession(
       &factory, server_id, PRIVACY_MODE_DISABLED, NetworkAnonymizationKey());
   EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(&factory, session));
@@ -2575,7 +2926,10 @@ TEST_P(QuicSessionPoolTest, CloseSessionDuringCreation) {
 
   // Session should now be closed.
   EXPECT_FALSE(QuicSessionPoolPeer::HasActiveSession(
-      &factory, server_id, PRIVACY_MODE_DISABLED, NetworkAnonymizationKey()));
+      &factory, server_id, PRIVACY_MODE_DISABLED, NetworkAnonymizationKey(),
+      ProxyChain::Direct(), SessionUsage::kDestination,
+      /*require_dns_https_alpn=*/false,
+      /*disable_cert_verification_network_fetches=*/false));
 }
 
 TEST_P(QuicSessionPoolTest, CloseSessionsOnIPAddressChanged) {
@@ -2620,7 +2974,7 @@ TEST_P(QuicSessionPoolTest, CloseSessionsOnIPAddressChanged) {
   // Check an active session exists for the destination.
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
 
   EXPECT_TRUE(http_server_properties_->HasLastLocalAddressWhenQuicWorked());
   // Change the IP address and verify that stream saw the error and the active
@@ -2628,7 +2982,7 @@ TEST_P(QuicSessionPoolTest, CloseSessionsOnIPAddressChanged) {
   NotifyIPAddressChanged();
   EXPECT_EQ(ERR_NETWORK_CHANGED,
             stream->ReadResponseHeaders(callback_.callback()));
-  EXPECT_FALSE(factory_->has_quic_ever_worked_on_current_network());
+  EXPECT_FALSE(pool_->has_quic_ever_worked_on_current_network());
   EXPECT_FALSE(http_server_properties_->HasLastLocalAddressWhenQuicWorked());
   // Check no active session exists for the destination.
   EXPECT_FALSE(HasActiveSession(kDefaultDestination));
@@ -2644,7 +2998,7 @@ TEST_P(QuicSessionPoolTest, CloseSessionsOnIPAddressChanged) {
   // is no longer live.
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   QuicChromiumClientSession* session2 = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session2));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session2));
 
   stream.reset();  // Will reset stream 3.
   socket_data.ExpectAllReadDataConsumed();
@@ -2652,6 +3006,150 @@ TEST_P(QuicSessionPoolTest, CloseSessionsOnIPAddressChanged) {
   socket_data2.ExpectAllReadDataConsumed();
   socket_data2.ExpectAllWriteDataConsumed();
 }
+
+#if BUILDFLAG(IS_ANDROID)
+class ScopedSupportsModernTrim {
+ public:
+  explicit ScopedSupportsModernTrim(bool supports)
+      : original_supports_(base::android::PreFreezeBackgroundMemoryTrimmer::
+                               SupportsModernTrim()) {
+    base::android::PreFreezeBackgroundMemoryTrimmer::
+        SetSupportsModernTrimForTesting(supports);
+  }
+  ~ScopedSupportsModernTrim() {
+    base::android::PreFreezeBackgroundMemoryTrimmer::
+        SetSupportsModernTrimForTesting(original_supports_);
+  }
+
+ private:
+  const bool original_supports_;
+};
+
+TEST_P(QuicSessionPoolTest, CloseSessionsOnPreFreeze) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      features::kCloseQuicSessionsOnPreFreeze);
+  ScopedSupportsModernTrim scoped_supports(true);
+
+  Initialize();
+  base::HistogramTester histograms;
+
+  ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
+
+  MockQuicData socket_data(version_);
+  socket_data.AddReadPauseForever();
+  int packet_num = 1;
+  socket_data.AddWrite(SYNCHRONOUS,
+                       ConstructInitialSettingsPacket(packet_num++));
+  socket_data.AddWrite(
+      SYNCHRONOUS,
+      client_maker_.Packet(packet_num)
+          .AddConnectionCloseFrame(quic::QUIC_PEER_GOING_AWAY, "net error")
+          .Build());
+  socket_data.AddSocketDataToFactory(socket_factory_.get());
+
+  RequestBuilder builder(this);
+  EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
+  histograms.ExpectUniqueSample("Net.QuicSession.RequestBlockedByPreFreeze",
+                                false, 1);
+  EXPECT_THAT(callback_.WaitForResult(), IsOk());
+  std::unique_ptr<HttpStream> stream = CreateStream(&builder.request);
+  HttpRequestInfo request_info;
+  request_info.traffic_annotation =
+      MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS);
+  stream->RegisterRequest(&request_info);
+  EXPECT_EQ(OK, stream->InitializeStream(false, DEFAULT_PRIORITY, net_log_,
+                                         CompletionOnceCallback()));
+
+  // Check an active session exists for the destination.
+  EXPECT_TRUE(HasActiveSession(kDefaultDestination));
+  QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
+
+  // Trigger pre-freeze.
+  base::android::PreFreezeBackgroundMemoryTrimmer::OnPreFreezeForTesting();
+
+  // Wait for the session to be closed.
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return !HasActiveSession(kDefaultDestination) &&
+           !QuicSessionPoolPeer::IsLiveSession(pool_.get(), session);
+  }));
+
+  base::android::PreFreezeBackgroundMemoryTrimmer::SetForcePreFrozenForTesting(
+      true);
+
+  // Verify that new requests are blocked immediately.
+  RequestBuilder builder2(this);
+  EXPECT_EQ(ERR_ABORTED, builder2.CallRequest());
+  histograms.ExpectBucketCount("Net.QuicSession.RequestBlockedByPreFreeze",
+                               true, 1);
+  histograms.ExpectTotalCount("Net.QuicSession.RequestBlockedByPreFreeze", 2);
+
+  base::android::PreFreezeBackgroundMemoryTrimmer::SetForcePreFrozenForTesting(
+      false);
+
+  socket_data.ExpectAllReadDataConsumed();
+  socket_data.ExpectAllWriteDataConsumed();
+}
+
+TEST_P(QuicSessionPoolTest, CloseSessionsOnPreFreezeDisabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(
+      features::kCloseQuicSessionsOnPreFreeze);
+  ScopedSupportsModernTrim scoped_supports(true);
+
+  Initialize();
+  ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
+
+  MockQuicData socket_data(version_);
+  socket_data.AddReadPauseForever();
+  int packet_num = 1;
+  socket_data.AddWrite(SYNCHRONOUS,
+                       ConstructInitialSettingsPacket(packet_num++));
+  // Expect ConnectionClose on shutdown
+  socket_data.AddWrite(
+      SYNCHRONOUS,
+      client_maker_.Packet(packet_num)
+          .AddConnectionCloseFrame(quic::QUIC_CONNECTION_CANCELLED, "net error")
+          .Build());
+  socket_data.AddSocketDataToFactory(socket_factory_.get());
+
+  RequestBuilder builder(this);
+  EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
+  EXPECT_THAT(callback_.WaitForResult(), IsOk());
+  std::unique_ptr<HttpStream> stream = CreateStream(&builder.request);
+  HttpRequestInfo request_info;
+  request_info.traffic_annotation =
+      MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS);
+  stream->RegisterRequest(&request_info);
+  EXPECT_EQ(OK, stream->InitializeStream(false, DEFAULT_PRIORITY, net_log_,
+                                         CompletionOnceCallback()));
+
+  // Check an active session exists for the destination.
+  EXPECT_TRUE(HasActiveSession(kDefaultDestination));
+  QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
+
+  // Trigger pre-freeze.
+  base::android::PreFreezeBackgroundMemoryTrimmer::OnPreFreezeForTesting();
+
+  // Check that the session is NOT closed.
+  EXPECT_TRUE(HasActiveSession(kDefaultDestination));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
+
+  // Verify that new requests are NOT blocked and reuse the session.
+  RequestBuilder builder2(this);
+  EXPECT_EQ(OK, builder2.CallRequest());
+
+  // Destroy pool first to close session cleanly (writing ConnectionClose)
+  pool_.reset();
+
+  socket_data.ExpectAllReadDataConsumed();
+  socket_data.ExpectAllWriteDataConsumed();
+}
+#endif
 
 // Test that if goaway_session_on_ip_change is set, old sessions will be marked
 // as going away on IP address change instead of being closed. New requests will
@@ -2706,7 +3204,7 @@ TEST_P(QuicSessionPoolTest, GoAwaySessionsOnIPAddressChanged) {
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
 
   // Send GET request on stream.
@@ -2720,7 +3218,7 @@ TEST_P(QuicSessionPoolTest, GoAwaySessionsOnIPAddressChanged) {
 
   // The connection should still be alive, but marked as going away.
   EXPECT_FALSE(HasActiveSession(kDefaultDestination));
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
 
   // Resume the data, response should be read from the original connection.
@@ -2738,9 +3236,9 @@ TEST_P(QuicSessionPoolTest, GoAwaySessionsOnIPAddressChanged) {
 
   // Check an active session exists for the destination.
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   QuicChromiumClientSession* session2 = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session2));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session2));
 
   stream.reset();
   stream2.reset();
@@ -2790,7 +3288,7 @@ TEST_P(QuicSessionPoolTest, OnIPAddressChangedWithConnectionMigration) {
 
   // Change the IP address and verify that the connection is unaffected.
   NotifyIPAddressChanged();
-  EXPECT_TRUE(factory_->has_quic_ever_worked_on_current_network());
+  EXPECT_TRUE(pool_->has_quic_ever_worked_on_current_network());
   EXPECT_TRUE(http_server_properties_->HasLastLocalAddressWhenQuicWorked());
 
   // Attempting a new request to the same origin uses the same connection.
@@ -2824,7 +3322,7 @@ void QuicSessionPoolTest::TestMigrationOnNetworkMadeDefault(IoMode write_mode) {
 
   // Using a testing task runner so that we can control time.
   auto task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), task_runner.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), task_runner.get());
 
   scoped_mock_network_change_notifier_->mock_network_change_notifier()
       ->QueueNetworkMadeDefault(kDefaultNetworkForTests);
@@ -2898,7 +3396,7 @@ void QuicSessionPoolTest::TestMigrationOnNetworkMadeDefault(IoMode write_mode) {
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   MaybeMakeNewConnectionIdAvailableToSession(cid_on_new_path, session);
 
@@ -2925,7 +3423,7 @@ void QuicSessionPoolTest::TestMigrationOnNetworkMadeDefault(IoMode write_mode) {
   task_runner->RunUntilIdle();
 
   // The connection should still be alive, and not marked as going away.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
   EXPECT_EQ(ERR_IO_PENDING, stream->ReadResponseHeaders(callback_.callback()));
@@ -2935,7 +3433,7 @@ void QuicSessionPoolTest::TestMigrationOnNetworkMadeDefault(IoMode write_mode) {
   // will be posted to complete migration.
   quic_data2.Resume();
 
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
 
@@ -2947,7 +3445,7 @@ void QuicSessionPoolTest::TestMigrationOnNetworkMadeDefault(IoMode write_mode) {
   EXPECT_EQ(200, response.headers->response_code());
 
   // Verify that the session is still alive.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
 
   stream.reset();
@@ -2976,7 +3474,7 @@ TEST_P(QuicSessionPoolTest, MigratedToBlockedSocketAfterProbing) {
 
   // Using a testing task runner so that we can control time.
   auto task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), task_runner.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), task_runner.get());
 
   scoped_mock_network_change_notifier_->mock_network_change_notifier()
       ->QueueNetworkMadeDefault(kDefaultNetworkForTests);
@@ -3061,7 +3559,7 @@ TEST_P(QuicSessionPoolTest, MigratedToBlockedSocketAfterProbing) {
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   MaybeMakeNewConnectionIdAvailableToSession(cid_on_new_path, session);
 
@@ -3098,7 +3596,7 @@ TEST_P(QuicSessionPoolTest, MigratedToBlockedSocketAfterProbing) {
   quic_data2.Resume();
 
   // The connection should still be alive, and not marked as going away.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
   EXPECT_EQ(ERR_IO_PENDING, stream->ReadResponseHeaders(callback_.callback()));
@@ -3114,7 +3612,7 @@ TEST_P(QuicSessionPoolTest, MigratedToBlockedSocketAfterProbing) {
   base::RunLoop().RunUntilIdle();
 
   // Verify that the session is still alive.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
 
   stream.reset();
@@ -3138,7 +3636,7 @@ TEST_P(QuicSessionPoolTest, MigrationTimeoutWithNoNewNetwork) {
 
   // Using a testing task runner so that we can control time.
   auto task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), task_runner.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), task_runner.get());
 
   MockQuicData socket_data(version_);
   socket_data.AddReadPauseForever();
@@ -3162,7 +3660,7 @@ TEST_P(QuicSessionPoolTest, MigrationTimeoutWithNoNewNetwork) {
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
 
   // Trigger connection migration. Since there are no networks
@@ -3171,7 +3669,7 @@ TEST_P(QuicSessionPoolTest, MigrationTimeoutWithNoNewNetwork) {
       ->NotifyNetworkDisconnected(kDefaultNetworkForTests);
 
   // The migration will not fail until the migration alarm timeout.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
   EXPECT_EQ(ERR_IO_PENDING, stream->ReadResponseHeaders(callback_.callback()));
@@ -3182,7 +3680,7 @@ TEST_P(QuicSessionPoolTest, MigrationTimeoutWithNoNewNetwork) {
 
   // The connection should now be closed. A request for response
   // headers should fail.
-  EXPECT_FALSE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_FALSE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_FALSE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(ERR_INTERNET_DISCONNECTED, callback_.WaitForResult());
 
@@ -3301,7 +3799,7 @@ void QuicSessionPoolTest::TestOnNetworkMadeDefaultNonMigratableStream(
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   MaybeMakeNewConnectionIdAvailableToSession(cid_on_new_path, session);
 
@@ -3311,14 +3809,14 @@ void QuicSessionPoolTest::TestOnNetworkMadeDefaultNonMigratableStream(
   scoped_mock_network_change_notifier_->mock_network_change_notifier()
       ->NotifyNetworkMadeDefault(kNewNetworkForTests);
 
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
 
   // Resume data to read a connectivity probing response, which will cause
   // non-migtable streams to be closed.
   quic_data1.Resume();
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_EQ(migrate_idle_sessions, HasActiveSession(kDefaultDestination));
   EXPECT_EQ(0u, session->GetNumActiveStreams());
 
@@ -3370,13 +3868,10 @@ TEST_P(QuicSessionPoolTest, OnNetworkMadeDefaultConnectionMigrationDisabled) {
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
 
-  // Set session config to have connection migration disabled.
-  quic::test::QuicConfigPeer::SetReceivedDisableConnectionMigration(
-      session->config());
-  EXPECT_TRUE(session->config()->DisableConnectionMigration());
+  QuicChromiumClientSessionPeer::DisableConnectionMigration(session);
 
   // Trigger connection migration. Since there is a non-migratable stream,
   // this should cause session to continue but be marked as going away.
@@ -3384,7 +3879,7 @@ TEST_P(QuicSessionPoolTest, OnNetworkMadeDefaultConnectionMigrationDisabled) {
       ->NotifyNetworkMadeDefault(kNewNetworkForTests);
 
   base::RunLoop().RunUntilIdle();
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_FALSE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
 
@@ -3495,7 +3990,7 @@ void QuicSessionPoolTest::TestOnNetworkDisconnectedNonMigratableStream(
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   MaybeMakeNewConnectionIdAvailableToSession(cid_on_new_path, session);
 
@@ -3508,7 +4003,7 @@ void QuicSessionPoolTest::TestOnNetworkDisconnectedNonMigratableStream(
       ->NotifyNetworkDisconnected(kDefaultNetworkForTests);
 
   EXPECT_EQ(migrate_idle_sessions,
-            QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+            QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_EQ(migrate_idle_sessions, HasActiveSession(kDefaultDestination));
 
   if (migrate_idle_sessions) {
@@ -3552,19 +4047,16 @@ TEST_P(QuicSessionPoolTest, OnNetworkDisconnectedConnectionMigrationDisabled) {
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
 
-  // Set session config to have connection migration disabled.
-  quic::test::QuicConfigPeer::SetReceivedDisableConnectionMigration(
-      session->config());
-  EXPECT_TRUE(session->config()->DisableConnectionMigration());
+  QuicChromiumClientSessionPeer::DisableConnectionMigration(session);
 
   // Trigger connection migration.
   scoped_mock_network_change_notifier_->mock_network_change_notifier()
       ->NotifyNetworkDisconnected(kDefaultNetworkForTests);
 
-  EXPECT_FALSE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_FALSE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_FALSE(HasActiveSession(kDefaultDestination));
 
   socket_data.ExpectAllReadDataConsumed();
@@ -3643,7 +4135,7 @@ void QuicSessionPoolTest::TestOnNetworkMadeDefaultNoOpenStreams(
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_FALSE(session->HasActiveRequestStreams());
   MaybeMakeNewConnectionIdAvailableToSession(cid_on_new_path, session);
@@ -3759,7 +4251,7 @@ void QuicSessionPoolTest::TestMigrationOnNetworkDisconnected(
   client_maker_.set_save_packet_frames(true);
 
   // Use the test task runner.
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), runner_.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), runner_.get());
 
   int packet_number = 1;
   MockQuicData socket_data(version_);
@@ -3795,7 +4287,7 @@ void QuicSessionPoolTest::TestMigrationOnNetworkDisconnected(
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   quic::QuicConnectionId cid_on_new_path =
       quic::test::TestConnectionId(12345678);
@@ -3845,13 +4337,13 @@ void QuicSessionPoolTest::TestMigrationOnNetworkDisconnected(
       ->NotifyNetworkDisconnected(kDefaultNetworkForTests);
   base::RunLoop().RunUntilIdle();
   // The connection should still be alive, not marked as going away.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
   EXPECT_EQ(ERR_IO_PENDING, stream->ReadResponseHeaders(callback_.callback()));
 
   // Ensure that the session is still alive.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
 
@@ -3864,7 +4356,7 @@ void QuicSessionPoolTest::TestMigrationOnNetworkDisconnected(
   EXPECT_EQ(200, response.headers->response_code());
 
   // Check that the session is still alive.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
 
   // There should be posted tasks not executed, which is to migrate back to
@@ -3906,7 +4398,7 @@ TEST_P(QuicSessionPoolTest,
   EXPECT_TRUE(proxy_chain.IsValid());
 
   // Use the test task runner.
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), runner_.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), runner_.get());
 
   // Use a separate packet maker for the connection to the endpoint.
   QuicTestPacketMaker to_endpoint_maker(
@@ -3935,7 +4427,7 @@ TEST_P(QuicSessionPoolTest,
   socket_data
       .AddWrite("connect-udp",
                 ConstructConnectUdpRequestPacket(
-                    to_proxy_packet_num++, stream_id, proxy.host(),
+                    to_proxy_packet_num++, stream_id, proxy.GetHost(),
                     "/.well-known/masque/udp/www.example.org/443/", false))
       .Sync();
   socket_data.AddRead("server-settings",
@@ -3993,14 +4485,15 @@ TEST_P(QuicSessionPoolTest,
       GetActiveSession(kDefaultDestination, PRIVACY_MODE_DISABLED,
                        NetworkAnonymizationKey(), proxy_chain);
   EXPECT_TRUE(
-      QuicSessionPoolPeer::IsLiveSession(factory_.get(), destination_session));
+      QuicSessionPoolPeer::IsLiveSession(pool_.get(), destination_session));
 
   // Ensure that the session to the proxy is alive and active.
   QuicChromiumClientSession* proxy_session = GetActiveSession(
       proxy_origin, PRIVACY_MODE_DISABLED, NetworkAnonymizationKey(),
-      ProxyChain::ForIpProtection({}), SessionUsage::kProxy);
-  EXPECT_TRUE(
-      QuicSessionPoolPeer::IsLiveSession(factory_.get(), proxy_session));
+      ProxyChain::ForIpProtection({}), SessionUsage::kProxy,
+      /*require_dns_https_alpn=*/false,
+      /*disable_cert_verification_network_fetches=*/true);
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), proxy_session));
   quic::QuicConnectionId cid_on_new_path =
       quic::test::TestConnectionId(12345678);
   MaybeMakeNewConnectionIdAvailableToSession(cid_on_new_path, proxy_session);
@@ -4050,12 +4543,11 @@ TEST_P(QuicSessionPoolTest,
 
   // Both sessions should still be alive, not marked as going away.
   EXPECT_TRUE(
-      QuicSessionPoolPeer::IsLiveSession(factory_.get(), destination_session));
+      QuicSessionPoolPeer::IsLiveSession(pool_.get(), destination_session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination, PRIVACY_MODE_DISABLED,
                                NetworkAnonymizationKey(), proxy_chain));
   EXPECT_EQ(1u, destination_session->GetNumActiveStreams());
-  EXPECT_TRUE(
-      QuicSessionPoolPeer::IsLiveSession(factory_.get(), proxy_session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), proxy_session));
   EXPECT_EQ(1u, proxy_session->GetNumActiveStreams());
 
   // Begin reading the response, which only appears on the new connection,
@@ -4064,12 +4556,11 @@ TEST_P(QuicSessionPoolTest,
 
   // Ensure that the session to the destination is still alive.
   EXPECT_TRUE(
-      QuicSessionPoolPeer::IsLiveSession(factory_.get(), destination_session));
+      QuicSessionPoolPeer::IsLiveSession(pool_.get(), destination_session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination, PRIVACY_MODE_DISABLED,
                                NetworkAnonymizationKey(), proxy_chain));
   EXPECT_EQ(1u, destination_session->GetNumActiveStreams());
-  EXPECT_TRUE(
-      QuicSessionPoolPeer::IsLiveSession(factory_.get(), proxy_session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), proxy_session));
   EXPECT_EQ(1u, proxy_session->GetNumActiveStreams());
 
   // Run the message loop so that data queued in the new socket is read by the
@@ -4083,9 +4574,8 @@ TEST_P(QuicSessionPoolTest,
 
   // Check that the sessions are still alive.
   EXPECT_TRUE(
-      QuicSessionPoolPeer::IsLiveSession(factory_.get(), destination_session));
-  EXPECT_TRUE(
-      QuicSessionPoolPeer::IsLiveSession(factory_.get(), proxy_session));
+      QuicSessionPoolPeer::IsLiveSession(pool_.get(), destination_session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), proxy_session));
 
   // There should be posted tasks not executed, which is to migrate back to
   // default network.
@@ -4118,7 +4608,7 @@ TEST_P(QuicSessionPoolTest, MigrateOnPathDegradingWithProxiedSession) {
 
   // Using a testing task runner so that we can control time.
   auto task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), task_runner.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), task_runner.get());
 
   GURL proxy(kProxy1Url);
   auto proxy_origin = url::SchemeHostPort(proxy);
@@ -4155,7 +4645,7 @@ TEST_P(QuicSessionPoolTest, MigrateOnPathDegradingWithProxiedSession) {
   socket_data
       .AddWrite("connect-udp",
                 ConstructConnectUdpRequestPacket(
-                    to_proxy_packet_num++, stream_id, proxy.host(),
+                    to_proxy_packet_num++, stream_id, proxy.GetHost(),
                     "/.well-known/masque/udp/www.example.org/443/", false))
       .Sync();
   socket_data.AddRead("server-settings",
@@ -4213,14 +4703,15 @@ TEST_P(QuicSessionPoolTest, MigrateOnPathDegradingWithProxiedSession) {
       GetActiveSession(kDefaultDestination, PRIVACY_MODE_DISABLED,
                        NetworkAnonymizationKey(), proxy_chain);
   EXPECT_TRUE(
-      QuicSessionPoolPeer::IsLiveSession(factory_.get(), destination_session));
+      QuicSessionPoolPeer::IsLiveSession(pool_.get(), destination_session));
 
   // Ensure that the session to the proxy is alive and active.
   QuicChromiumClientSession* proxy_session = GetActiveSession(
       proxy_origin, PRIVACY_MODE_DISABLED, NetworkAnonymizationKey(),
-      ProxyChain::ForIpProtection({}), SessionUsage::kProxy);
-  EXPECT_TRUE(
-      QuicSessionPoolPeer::IsLiveSession(factory_.get(), proxy_session));
+      ProxyChain::ForIpProtection({}), SessionUsage::kProxy,
+      /*require_dns_https_alpn=*/false,
+      /*disable_cert_verification_network_fetches=*/true);
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), proxy_session));
   quic::QuicConnectionId cid_on_new_path =
       quic::test::TestConnectionId(12345678);
   MaybeMakeNewConnectionIdAvailableToSession(cid_on_new_path, proxy_session);
@@ -4274,22 +4765,21 @@ TEST_P(QuicSessionPoolTest, MigrateOnPathDegradingWithProxiedSession) {
   socket_factory_->AddSocketDataProvider(&socket_data1);
 
   // Trigger connection migration.
-  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
   // Cause the connection to report path degrading to both sessions.
   // The destination session will start to probe the alternate network.
   destination_session->connection()->OnPathDegradingDetected();
   proxy_session->connection()->OnPathDegradingDetected();
   base::RunLoop().RunUntilIdle();
-  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
 
   // Both sessions should still be alive, not marked as going away.
   EXPECT_TRUE(
-      QuicSessionPoolPeer::IsLiveSession(factory_.get(), destination_session));
+      QuicSessionPoolPeer::IsLiveSession(pool_.get(), destination_session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination, PRIVACY_MODE_DISABLED,
                                NetworkAnonymizationKey(), proxy_chain));
   EXPECT_EQ(1u, destination_session->GetNumActiveStreams());
-  EXPECT_TRUE(
-      QuicSessionPoolPeer::IsLiveSession(factory_.get(), proxy_session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), proxy_session));
   EXPECT_EQ(1u, proxy_session->GetNumActiveStreams());
 
   // Begin reading the response, which only appears on the new connection,
@@ -4298,12 +4788,11 @@ TEST_P(QuicSessionPoolTest, MigrateOnPathDegradingWithProxiedSession) {
 
   // Ensure that the session to the destination is still alive.
   EXPECT_TRUE(
-      QuicSessionPoolPeer::IsLiveSession(factory_.get(), destination_session));
+      QuicSessionPoolPeer::IsLiveSession(pool_.get(), destination_session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination, PRIVACY_MODE_DISABLED,
                                NetworkAnonymizationKey(), proxy_chain));
   EXPECT_EQ(1u, destination_session->GetNumActiveStreams());
-  EXPECT_TRUE(
-      QuicSessionPoolPeer::IsLiveSession(factory_.get(), proxy_session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), proxy_session));
   EXPECT_EQ(1u, proxy_session->GetNumActiveStreams());
 
   // There should be a task that will complete the migration to the new network.
@@ -4321,9 +4810,8 @@ TEST_P(QuicSessionPoolTest, MigrateOnPathDegradingWithProxiedSession) {
 
   // Check that the sessions are still alive.
   EXPECT_TRUE(
-      QuicSessionPoolPeer::IsLiveSession(factory_.get(), destination_session));
-  EXPECT_TRUE(
-      QuicSessionPoolPeer::IsLiveSession(factory_.get(), proxy_session));
+      QuicSessionPoolPeer::IsLiveSession(pool_.get(), destination_session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), proxy_session));
 
   // Migration back to the default network has begun, so there are no more
   // posted tasks.
@@ -4346,7 +4834,7 @@ TEST_P(QuicSessionPoolTest, NewNetworkConnectedAfterNoNetwork) {
   client_maker_.set_save_packet_frames(true);
 
   // Use the test task runner.
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), runner_.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), runner_.get());
 
   MockQuicData socket_data(version_);
   socket_data.AddReadPauseForever();
@@ -4378,7 +4866,7 @@ TEST_P(QuicSessionPoolTest, NewNetworkConnectedAfterNoNetwork) {
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   quic::QuicConnectionId cid_on_new_path =
       quic::test::TestConnectionId(12345678);
@@ -4396,7 +4884,7 @@ TEST_P(QuicSessionPoolTest, NewNetworkConnectedAfterNoNetwork) {
       ->NotifyNetworkDisconnected(kDefaultNetworkForTests);
 
   // The connection should still be alive, not marked as going away.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
   EXPECT_EQ(ERR_IO_PENDING, stream->ReadResponseHeaders(callback_.callback()));
@@ -4437,7 +4925,7 @@ TEST_P(QuicSessionPoolTest, NewNetworkConnectedAfterNoNetwork) {
       ->NotifyNetworkConnected(kNewNetworkForTests);
 
   // Ensure that the session is still alive.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
 
@@ -4450,7 +4938,7 @@ TEST_P(QuicSessionPoolTest, NewNetworkConnectedAfterNoNetwork) {
   EXPECT_EQ(200, response.headers->response_code());
 
   // Check that the session is still alive.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
 
   // There should posted tasks not executed, which is to migrate back to default
@@ -4484,7 +4972,7 @@ TEST_P(QuicSessionPoolTest, MigrateToProbingSocket) {
 
   // Using a testing task runner so that we can control time.
   auto task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), task_runner.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), task_runner.get());
 
   scoped_mock_network_change_notifier_->mock_network_change_notifier()
       ->QueueNetworkMadeDefault(kDefaultNetworkForTests);
@@ -4569,7 +5057,7 @@ TEST_P(QuicSessionPoolTest, MigrateToProbingSocket) {
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   MaybeMakeNewConnectionIdAvailableToSession(cid_on_new_path, session);
 
@@ -4579,15 +5067,15 @@ TEST_P(QuicSessionPoolTest, MigrateToProbingSocket) {
   EXPECT_EQ(OK, stream->SendRequest(request_headers, &response,
                                     callback_.callback()));
 
-  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
   // Cause the connection to report path degrading to the session.
   // Session will start to probe the alternate network.
   session->connection()->OnPathDegradingDetected();
   base::RunLoop().RunUntilIdle();
-  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
 
   // The connection should still be alive, and not marked as going away.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
   EXPECT_EQ(ERR_IO_PENDING, stream->ReadResponseHeaders(callback_.callback()));
@@ -4596,14 +5084,14 @@ TEST_P(QuicSessionPoolTest, MigrateToProbingSocket) {
   // socket.
   quic_data2.Resume();
 
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
 
   // There should be a task that will complete the migration to the new network.
   task_runner->RunUntilIdle();
 
-  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
 
   // Response headers are received over the new network.
   EXPECT_THAT(callback_.WaitForResult(), IsOk());
@@ -4614,12 +5102,12 @@ TEST_P(QuicSessionPoolTest, MigrateToProbingSocket) {
   scoped_mock_network_change_notifier_->mock_network_change_notifier()
       ->NotifyNetworkMadeDefault(kNewNetworkForTests);
 
-  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
 
   task_runner->FastForwardBy(base::Seconds(kMinRetryTimeForDefaultNetworkSecs));
 
   // Verify that the session is still alive.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
 
   stream.reset();
@@ -4643,6 +5131,226 @@ TEST_P(QuicSessionPoolTest, MigrateEarlyOnPathDegradingSync) {
   TestMigrationOnPathDegrading(/*async_write_before_migration*/ false);
 }
 
+TEST_P(QuicSessionPoolTest, NoMigrationWhenTargetingNetwork) {
+  InitializeConnectionMigrationV2Test(
+      {kDefaultNetworkForTests, kNewNetworkForTests});
+  ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
+  client_maker_.set_save_packet_frames(true);
+
+  // Using a testing task runner so that we can control time.
+  auto task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), task_runner.get());
+
+  scoped_mock_network_change_notifier_->mock_network_change_notifier()
+      ->QueueNetworkMadeDefault(kDefaultNetworkForTests);
+
+  int packet_number = 1;
+  MockQuicData quic_data1(version_);
+  quic_data1.AddReadPauseForever();
+  quic_data1.AddWrite(SYNCHRONOUS,
+                      ConstructInitialSettingsPacket(packet_number++));
+  quic_data1.AddWrite(SYNCHRONOUS,
+                      ConstructGetRequestPacket(
+                          packet_number++,
+                          GetNthClientInitiatedBidirectionalStreamId(0), true));
+  quic_data1.AddWrite(
+      SYNCHRONOUS,
+      client_maker_.Packet(packet_number++)
+          .AddStreamFrame(GetQpackDecoderStreamId(), /*fin=*/false,
+                          StreamCancellationQpackDecoderInstruction(0))
+          .AddStopSendingFrame(GetNthClientInitiatedBidirectionalStreamId(0),
+                               quic::QUIC_STREAM_CANCELLED)
+          .AddRstStreamFrame(GetNthClientInitiatedBidirectionalStreamId(0),
+                             quic::QUIC_STREAM_CANCELLED)
+          .Build());
+  quic_data1.AddSocketDataToFactory(socket_factory_.get());
+
+  // Create request and QuicHttpStream, targeting kDefaultNetworkForTests.
+  RequestBuilder builder(this);
+  builder.target_network = kDefaultNetworkForTests;
+  EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
+  EXPECT_THAT(callback_.WaitForResult(), IsOk());
+  std::unique_ptr<HttpStream> stream = CreateStream(&builder.request);
+  EXPECT_TRUE(stream.get());
+
+  // Cause QUIC stream to be created.
+  HttpRequestInfo request_info;
+  request_info.method = "GET";
+  request_info.url = GURL(kDefaultUrl);
+  request_info.traffic_annotation =
+      MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS);
+  stream->RegisterRequest(&request_info);
+  EXPECT_EQ(OK, stream->InitializeStream(true, DEFAULT_PRIORITY, net_log_,
+                                         CompletionOnceCallback()));
+
+  // Ensure that session is alive and active.
+  QuicChromiumClientSession* session = GetActiveSession(
+      kDefaultDestination, PRIVACY_MODE_DISABLED, NetworkAnonymizationKey(),
+      ProxyChain::Direct(), SessionUsage::kDestination,
+      /*require_dns_https_alpn=*/false,
+      /*disable_cert_verification_network_fetches=*/false,
+      kDefaultNetworkForTests);
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
+  EXPECT_TRUE(HasActiveSession(
+      kDefaultDestination, PRIVACY_MODE_DISABLED, NetworkAnonymizationKey(),
+      ProxyChain::Direct(), SessionUsage::kDestination,
+      /*require_dns_https_alpn=*/false,
+      /*disable_cert_verification_network_fetches=*/false,
+      kDefaultNetworkForTests));
+  EXPECT_EQ(1u, session->GetNumActiveStreams());
+
+  // Send GET request on stream.
+  HttpResponseInfo response;
+  HttpRequestHeaders request_headers;
+  EXPECT_EQ(OK, stream->SendRequest(request_headers, &response,
+                                    callback_.callback()));
+
+  base::HistogramTester histogram_tester;
+
+  // Cause the connection to report path degrading to the session.
+  // Session should NOT start to probe the alternate network because it is
+  // targeting a network.
+  session->connection()->OnPathDegradingDetected();
+  base::RunLoop().RunUntilIdle();
+
+  // The connection should still be alive.
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
+  EXPECT_TRUE(HasActiveSession(
+      kDefaultDestination, PRIVACY_MODE_DISABLED, NetworkAnonymizationKey(),
+      ProxyChain::Direct(), SessionUsage::kDestination,
+      /*require_dns_https_alpn=*/false,
+      /*disable_cert_verification_network_fetches=*/false,
+      kDefaultNetworkForTests));
+
+  // Verify that migration was NOT triggered and it logged the failure reason.
+  histogram_tester.ExpectUniqueSample(
+      "Net.QuicSession.ConnectionMigration.OnPathDegrading",
+      MIGRATION_STATUS_PATH_DEGRADING_NOT_ENABLED, 1);
+
+  stream.reset();
+  quic_data1.ExpectAllReadDataConsumed();
+  quic_data1.ExpectAllWriteDataConsumed();
+}
+
+TEST_P(QuicSessionPoolTest,
+       NoMigrationOnNetworkMadeDefaultWhenTargetingNetwork) {
+  InitializeConnectionMigrationV2Test(
+      {kDefaultNetworkForTests, kNewNetworkForTests});
+  ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
+  client_maker_.set_save_packet_frames(true);
+
+  // Using a testing task runner so that we can control time.
+  auto task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), task_runner.get());
+
+  scoped_mock_network_change_notifier_->mock_network_change_notifier()
+      ->QueueNetworkMadeDefault(kDefaultNetworkForTests);
+
+  int packet_number = 1;
+  MockQuicData quic_data1(version_);
+  quic_data1.AddReadPauseForever();
+  quic_data1.AddWrite(SYNCHRONOUS,
+                      ConstructInitialSettingsPacket(packet_number++));
+  quic_data1.AddWrite(SYNCHRONOUS,
+                      ConstructGetRequestPacket(
+                          packet_number++,
+                          GetNthClientInitiatedBidirectionalStreamId(0), true));
+  quic_data1.AddWrite(
+      SYNCHRONOUS,
+      client_maker_.Packet(packet_number++)
+          .AddStreamFrame(GetQpackDecoderStreamId(), /*fin=*/false,
+                          StreamCancellationQpackDecoderInstruction(0))
+          .AddStopSendingFrame(GetNthClientInitiatedBidirectionalStreamId(0),
+                               quic::QUIC_STREAM_CANCELLED)
+          .AddRstStreamFrame(GetNthClientInitiatedBidirectionalStreamId(0),
+                             quic::QUIC_STREAM_CANCELLED)
+          .Build());
+  quic_data1.AddSocketDataToFactory(socket_factory_.get());
+
+  // Create request and QuicHttpStream, targeting kDefaultNetworkForTests.
+  RequestBuilder builder(this);
+  builder.target_network = kDefaultNetworkForTests;
+  EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
+  EXPECT_THAT(callback_.WaitForResult(), IsOk());
+  std::unique_ptr<HttpStream> stream = CreateStream(&builder.request);
+  EXPECT_TRUE(stream.get());
+
+  // Cause QUIC stream to be created.
+  HttpRequestInfo request_info;
+  request_info.method = "GET";
+  request_info.url = GURL(kDefaultUrl);
+  request_info.traffic_annotation =
+      MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS);
+  stream->RegisterRequest(&request_info);
+  EXPECT_EQ(OK, stream->InitializeStream(true, DEFAULT_PRIORITY, net_log_,
+                                         CompletionOnceCallback()));
+
+  // Ensure that session is alive and active on kDefaultNetworkForTests.
+  QuicChromiumClientSession* session = GetActiveSession(
+      kDefaultDestination, PRIVACY_MODE_DISABLED, NetworkAnonymizationKey(),
+      ProxyChain::Direct(), SessionUsage::kDestination,
+      /*require_dns_https_alpn=*/false,
+      /*disable_cert_verification_network_fetches=*/false,
+      kDefaultNetworkForTests);
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
+  EXPECT_TRUE(HasActiveSession(
+      kDefaultDestination, PRIVACY_MODE_DISABLED, NetworkAnonymizationKey(),
+      ProxyChain::Direct(), SessionUsage::kDestination,
+      /*require_dns_https_alpn=*/false,
+      /*disable_cert_verification_network_fetches=*/false,
+      kDefaultNetworkForTests));
+  EXPECT_EQ(1u, session->GetNumActiveStreams());
+
+  // Send GET request on stream.
+  HttpResponseInfo response;
+  HttpRequestHeaders request_headers;
+  EXPECT_EQ(OK, stream->SendRequest(request_headers, &response,
+                                    callback_.callback()));
+
+  RecordingNetLogObserver net_log_observer(net_log_.net_log(),
+                                           NetLogCaptureMode::kDefault);
+  base::HistogramTester histogram_tester;
+
+  // Deliver a signal that kNewNetworkForTests is connected and made default.
+  // Session should NOT migrate because it is targeting kDefaultNetworkForTests.
+  scoped_mock_network_change_notifier_->mock_network_change_notifier()
+      ->SetConnectedNetworksList(
+          {kDefaultNetworkForTests, kNewNetworkForTests});
+  scoped_mock_network_change_notifier_->mock_network_change_notifier()
+      ->NotifyNetworkConnected(kNewNetworkForTests);
+  scoped_mock_network_change_notifier_->mock_network_change_notifier()
+      ->NotifyNetworkMadeDefault(kNewNetworkForTests);
+
+  // A task might be posted to migrate. Run it.
+  task_runner->RunUntilIdle();
+
+  auto entries = net_log_observer.GetEntriesWithType(
+      NetLogEventType::QUIC_SESSION_NETWORK_MADE_DEFAULT);
+  ASSERT_EQ(1u, entries.size());
+  EXPECT_EQ(static_cast<int>(kNewNetworkForTests),
+            GetIntegerValueFromParams(entries[0], "new_default_network"));
+
+  // The connection should still be alive on kDefaultNetworkForTests.
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
+  EXPECT_TRUE(HasActiveSession(
+      kDefaultDestination, PRIVACY_MODE_DISABLED, NetworkAnonymizationKey(),
+      ProxyChain::Direct(), SessionUsage::kDestination,
+      /*require_dns_https_alpn=*/false,
+      /*disable_cert_verification_network_fetches=*/false,
+      kDefaultNetworkForTests));
+
+  // Verify that no migration was triggered.
+  histogram_tester.ExpectTotalCount("Net.QuicSession.ConnectionMigration", 0);
+  histogram_tester.ExpectTotalCount(
+      "Net.QuicSession.ConnectionMigration.OnNetworkMadeDefault", 0);
+
+  stream.reset();
+  quic_data1.ExpectAllReadDataConsumed();
+  quic_data1.ExpectAllWriteDataConsumed();
+}
+
 void QuicSessionPoolTest::TestMigrationOnPathDegrading(
     bool async_write_before) {
   InitializeConnectionMigrationV2Test(
@@ -4654,7 +5362,7 @@ void QuicSessionPoolTest::TestMigrationOnPathDegrading(
 
   // Using a testing task runner so that we can control time.
   auto task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), task_runner.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), task_runner.get());
 
   scoped_mock_network_change_notifier_->mock_network_change_notifier()
       ->QueueNetworkMadeDefault(kDefaultNetworkForTests);
@@ -4735,7 +5443,7 @@ void QuicSessionPoolTest::TestMigrationOnPathDegrading(
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   MaybeMakeNewConnectionIdAvailableToSession(cid_on_new_path, session);
 
@@ -4749,15 +5457,15 @@ void QuicSessionPoolTest::TestMigrationOnPathDegrading(
     session->connection()->SendPing();
   }
 
-  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
   // Cause the connection to report path degrading to the session.
   // Session will start to probe the alternate network.
   session->connection()->OnPathDegradingDetected();
   base::RunLoop().RunUntilIdle();
-  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
 
   // The connection should still be alive, and not marked as going away.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
   EXPECT_EQ(ERR_IO_PENDING, stream->ReadResponseHeaders(callback_.callback()));
@@ -4766,32 +5474,32 @@ void QuicSessionPoolTest::TestMigrationOnPathDegrading(
   // socket.
   quic_data2.Resume();
 
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
 
   // There should be a task that will complete the migration to the new network.
   task_runner->RunUntilIdle();
 
-  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
 
   // Response headers are received over the new network.
   EXPECT_THAT(callback_.WaitForResult(), IsOk());
   EXPECT_EQ(200, response.headers->response_code());
 
-  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
 
   // Deliver a signal that the alternate network now becomes default to session,
   // this will cancel mgirate back to default network timer.
   scoped_mock_network_change_notifier_->mock_network_change_notifier()
       ->NotifyNetworkMadeDefault(kNewNetworkForTests);
 
-  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
 
   task_runner->FastForwardBy(base::Seconds(kMinRetryTimeForDefaultNetworkSecs));
 
   // Verify that the session is still alive.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
 
   stream.reset();
@@ -4810,7 +5518,7 @@ TEST_P(QuicSessionPoolTest, MigrateSessionEarlyProbingWriterError) {
 
   // Using a testing task runner so that we can control time.
   auto task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), task_runner.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), task_runner.get());
 
   scoped_mock_network_change_notifier_->mock_network_change_notifier()
       ->QueueNetworkMadeDefault(kDefaultNetworkForTests);
@@ -4873,7 +5581,7 @@ TEST_P(QuicSessionPoolTest, MigrateSessionEarlyProbingWriterError) {
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   MaybeMakeNewConnectionIdAvailableToSession(cid_on_new_path, session);
 
@@ -4883,17 +5591,17 @@ TEST_P(QuicSessionPoolTest, MigrateSessionEarlyProbingWriterError) {
   EXPECT_EQ(OK, stream->SendRequest(request_headers, &response,
                                     callback_.callback()));
 
-  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
   // Cause the connection to report path degrading to the session.
   // Session will start to probe the alternate network.
   // However, the probing writer will fail. This should result in a failed probe
   // but no connection close.
   session->connection()->OnPathDegradingDetected();
   base::RunLoop().RunUntilIdle();
-  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
 
   // The connection should still be alive, and not marked as going away.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
   EXPECT_EQ(ERR_IO_PENDING, stream->ReadResponseHeaders(callback_.callback()));
@@ -4908,14 +5616,14 @@ TEST_P(QuicSessionPoolTest, MigrateSessionEarlyProbingWriterError) {
   // Verify that path validation is cancelled.
   EXPECT_FALSE(session->connection()->HasPendingPathValidation());
 
-  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
   quic_data1.Resume();
   // Response headers are received on the original network..
   EXPECT_THAT(callback_.WaitForResult(), IsOk());
   EXPECT_EQ(200, response.headers->response_code());
 
   // Verify that the session is still alive.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
 
   stream.reset();
@@ -4935,7 +5643,7 @@ TEST_P(QuicSessionPoolTest,
 
   // Using a testing task runner so that we can control time.
   auto task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), task_runner.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), task_runner.get());
 
   scoped_mock_network_change_notifier_->mock_network_change_notifier()
       ->QueueNetworkMadeDefault(kDefaultNetworkForTests);
@@ -5005,7 +5713,7 @@ TEST_P(QuicSessionPoolTest,
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   MaybeMakeNewConnectionIdAvailableToSession(cid_on_path2, session);
   base::RunLoop().RunUntilIdle();
@@ -5015,17 +5723,17 @@ TEST_P(QuicSessionPoolTest,
   EXPECT_EQ(OK, stream->SendRequest(request_headers, &response,
                                     callback_.callback()));
 
-  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
   // Cause the connection to report path degrading to the session.
   // Session will start to probe the alternate network.
   // However, the probing writer will fail. This should result in a failed probe
   // but no connection close.
   session->connection()->OnPathDegradingDetected();
   base::RunLoop().RunUntilIdle();
-  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
 
   // The connection should still be alive, and not marked as going away.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
   EXPECT_EQ(ERR_IO_PENDING, stream->ReadResponseHeaders(callback_.callback()));
@@ -5049,7 +5757,7 @@ TEST_P(QuicSessionPoolTest,
   // No pending path validation as there is no connection ID available.
   EXPECT_FALSE(session->connection()->HasPendingPathValidation());
 
-  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
   quic_data1.Resume();
   // Response headers are received on the original network..
   EXPECT_THAT(callback_.WaitForResult(), IsOk());
@@ -5057,7 +5765,7 @@ TEST_P(QuicSessionPoolTest,
 
   base::RunLoop().RunUntilIdle();
   // Verify that the session is still alive.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   base::RunLoop().RunUntilIdle();
   stream.reset();
@@ -5078,7 +5786,7 @@ TEST_P(QuicSessionPoolTest, MultiPortSessionWithMigration) {
 
   // Using a testing task runner so that we can control time.
   auto task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), task_runner.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), task_runner.get());
 
   MockQuicData quic_data1(version_);
   quic_data1.AddReadPauseForever();
@@ -5154,7 +5862,7 @@ TEST_P(QuicSessionPoolTest, MultiPortSessionWithMigration) {
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   // Manually initialize the connection's self address. In real life, the
   // initialization will be done during crypto handshake.
@@ -5185,7 +5893,7 @@ TEST_P(QuicSessionPoolTest, MultiPortSessionWithMigration) {
   // socket. This makes the multi-port path ready to migrate.
   quic_data2.Resume();
 
-  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
 
   // Cause the connection to report path degrading to the session.
   // Session will start migrate to multi-port path immediately.
@@ -5193,7 +5901,7 @@ TEST_P(QuicSessionPoolTest, MultiPortSessionWithMigration) {
   base::RunLoop().RunUntilIdle();
   // The connection should still be degrading because no new packets are
   // received from the new path.
-  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
 
   // The response is received on the new path.
   quic_data2.Resume();
@@ -5202,7 +5910,7 @@ TEST_P(QuicSessionPoolTest, MultiPortSessionWithMigration) {
   task_runner->RunUntilIdle();
   base::RunLoop().RunUntilIdle();
 
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
 
@@ -5210,7 +5918,7 @@ TEST_P(QuicSessionPoolTest, MultiPortSessionWithMigration) {
   quic_data2.Resume();
   task_runner->RunUntilIdle();
   base::RunLoop().RunUntilIdle();
-  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
 
   stream.reset();
   task_runner->RunUntilIdle();
@@ -5302,6 +6010,69 @@ TEST_P(QuicSessionPoolTest, SuccessfullyMigratedToServerPreferredAddress) {
   quic_data1.ExpectAllWriteDataConsumed();
   quic_data2.ExpectAllReadDataConsumed();
   quic_data2.ExpectAllWriteDataConsumed();
+}
+
+TEST_P(QuicSessionPoolTest,
+       ServerPreferredAddressIgnoredWhenNotPubliclyRoutable) {
+  // Original peer is public.
+  host_resolver_->rules()->AddIPLiteralRule(kDefaultServerHostName, "9.9.9.9",
+                                            "");
+
+  // Preferred address is private.
+  IPEndPoint server_preferred_address = IPEndPoint(IPAddress(10, 0, 0, 1), 123);
+  FLAGS_quic_enable_chaos_protection = false;
+  quic_params_->allow_server_migration = true;
+  socket_factory_ = std::make_unique<TestPortMigrationSocketFactory>();
+  Initialize();
+
+  ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
+  quic::QuicConfig config;
+  config.SetIPv4AlternateServerAddressToSend(
+      ToQuicSocketAddress(server_preferred_address));
+  quic::test::QuicConfigPeer::SetPreferredAddressConnectionIdAndToken(
+      &config, kNewCID, quic::QuicUtils::GenerateStatelessResetToken(kNewCID));
+  crypto_client_stream_factory_.SetConfig(config);
+  crypto_client_stream_factory_.set_handshake_mode(
+      MockCryptoClientStream::COLD_START_WITH_CHLO_SENT);
+
+  int packet_number = 1;
+  MockQuicData quic_data1(version_);
+  quic_data1.AddReadPauseForever();
+  quic_data1.AddWrite(ASYNC,
+                      client_maker_.MakeDummyCHLOPacket(packet_number++));
+  client_maker_.SetEncryptionLevel(quic::ENCRYPTION_FORWARD_SECURE);
+  quic_data1.AddWrite(SYNCHRONOUS,
+                      ConstructInitialSettingsPacket(packet_number++));
+  quic_data1.AddSocketDataToFactory(socket_factory_.get());
+
+  // Create request.
+  RequestBuilder builder(this);
+  EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
+  EXPECT_FALSE(HasActiveSession(kDefaultDestination));
+  EXPECT_TRUE(HasActiveJob(kDefaultDestination, PRIVACY_MODE_DISABLED));
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return crypto_client_stream_factory_.last_stream() != nullptr;
+  }));
+
+  crypto_client_stream_factory_.last_stream()
+      ->NotifySessionOneRttKeyAvailable();
+  EXPECT_THAT(callback_.WaitForResult(), IsOk());
+  ASSERT_TRUE(HasActiveSession(kDefaultDestination));
+  EXPECT_FALSE(HasActiveJob(kDefaultDestination, PRIVACY_MODE_DISABLED));
+  QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
+
+  const quic::QuicSocketAddress original_peer_address = session->peer_address();
+
+  // Since the preferred address is private, it should be ignored.
+  // Path validation should not be pending.
+  EXPECT_FALSE(session->connection()->HasPendingPathValidation());
+  EXPECT_FALSE(
+      session->connection()->GetStats().server_preferred_address_validated);
+  EXPECT_EQ(session->peer_address(), original_peer_address);
+
+  quic_data1.ExpectAllReadDataConsumed();
+  quic_data1.ExpectAllWriteDataConsumed();
 }
 
 TEST_P(QuicSessionPoolTest, FailedToValidateServerPreferredAddress) {
@@ -5461,7 +6232,7 @@ TEST_P(QuicSessionPoolTest, ServerMigrationDisabled) {
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
 
   IPEndPoint actual_address;
@@ -5536,7 +6307,7 @@ TEST_P(QuicSessionPoolTest, PortMigrationDisabledOnPathDegrading) {
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
 
   // Send GET request on stream.
@@ -5553,7 +6324,7 @@ TEST_P(QuicSessionPoolTest, PortMigrationDisabledOnPathDegrading) {
   EXPECT_TRUE(chrome_stream);
   chrome_stream->DisableConnectionMigrationToCellularNetwork();
 
-  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
 
   // Manually initialize the connection's self address. In real life, the
   // initialization will be done during crypto handshake.
@@ -5562,10 +6333,7 @@ TEST_P(QuicSessionPoolTest, PortMigrationDisabledOnPathDegrading) {
   quic::test::QuicConnectionPeer::SetSelfAddress(session->connection(),
                                                  ToQuicSocketAddress(ip));
 
-  // Set session config to have active migration disabled.
-  quic::test::QuicConfigPeer::SetReceivedDisableConnectionMigration(
-      session->config());
-  EXPECT_TRUE(session->config()->DisableConnectionMigration());
+  QuicChromiumClientSessionPeer::DisableConnectionMigration(session);
 
   // Cause the connection to report path degrading to the session.
   // Session will start to probe a different port.
@@ -5573,8 +6341,8 @@ TEST_P(QuicSessionPoolTest, PortMigrationDisabledOnPathDegrading) {
   base::RunLoop().RunUntilIdle();
 
   // The session should stay alive as if nothing happened.
-  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
 
@@ -5593,7 +6361,7 @@ TEST_P(QuicSessionPoolTest,
 
   // Using a testing task runner so that we can control time.
   auto task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), task_runner.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), task_runner.get());
 
   int packet_number = 1;
   MockQuicData quic_data1(version_);
@@ -5650,7 +6418,7 @@ TEST_P(QuicSessionPoolTest,
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   MaybeMakeNewConnectionIdAvailableToSession(cid_on_new_path, session);
 
@@ -5667,17 +6435,17 @@ TEST_P(QuicSessionPoolTest,
   quic::test::QuicConnectionPeer::SetSelfAddress(session->connection(),
                                                  ToQuicSocketAddress(ip));
 
-  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
 
   // Cause the connection to report path degrading to the session.
   // Session will start to probe a different port.
   session->connection()->OnPathDegradingDetected();
   base::RunLoop().RunUntilIdle();
 
-  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
 
   // The connection should still be alive, and not marked as going away.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
   EXPECT_EQ(ERR_IO_PENDING, stream->ReadResponseHeaders(callback_.callback()));
@@ -5685,10 +6453,10 @@ TEST_P(QuicSessionPoolTest,
   // Resume quic data and a STATELESS_RESET is read from the probing path.
   quic_data2.Resume();
 
-  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
 
   // Verify that the session is still active, and the request stream is active.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
 
@@ -5874,7 +6642,7 @@ TEST_P(QuicSessionPoolTest,
   crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
 
   auto task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), task_runner.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), task_runner.get());
 
   int packet_num = 1;
   MockQuicData quic_data(version_);
@@ -5890,7 +6658,7 @@ TEST_P(QuicSessionPoolTest,
   EXPECT_THAT(callback_.WaitForResult(), IsOk());
 
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
 
   crypto_client_stream_factory_.last_stream()->setHandshakeConfirmedForce(
@@ -5929,7 +6697,7 @@ TEST_P(
   crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
 
   auto task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), task_runner.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), task_runner.get());
 
   int packet_num = 1;
   MockQuicData quic_data(version_);
@@ -5954,7 +6722,7 @@ TEST_P(
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_FALSE(session->HasActiveRequestStreams());
 
@@ -5991,7 +6759,7 @@ TEST_P(
   crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
 
   auto task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), task_runner.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), task_runner.get());
 
   int packet_num = 1;
   MockQuicData quic_data(version_);
@@ -6028,7 +6796,7 @@ TEST_P(
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
 
   // Send GET request on stream.
@@ -6068,7 +6836,7 @@ TEST_P(QuicSessionPoolTest,
   crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
 
   auto task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), task_runner.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), task_runner.get());
 
   int packet_num = 1;
   MockQuicData quic_data(version_);
@@ -6105,7 +6873,7 @@ TEST_P(QuicSessionPoolTest,
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
 
   // Send GET request on stream.
@@ -6147,7 +6915,7 @@ TEST_P(QuicSessionPoolTest,
   crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
 
   auto task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), task_runner.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), task_runner.get());
 
   int packet_num = 1;
   MockQuicData quic_data(version_);
@@ -6179,7 +6947,7 @@ TEST_P(QuicSessionPoolTest,
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
 
   // Send GET request on stream.
@@ -6248,7 +7016,7 @@ TEST_P(QuicSessionPoolTest,
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
 
   // Send GET request on stream.
@@ -6257,10 +7025,10 @@ TEST_P(QuicSessionPoolTest,
   EXPECT_EQ(OK, stream->SendRequest(request_headers, &response,
                                     callback_.callback()));
 
-  std::unique_ptr<DatagramClientSocket> socket(
-      factory_->CreateSocket(net_log_.net_log(), net_log_.source()));
+  std::unique_ptr<DatagramClientSocket> socket(pool_->CreateSocket(
+      handles::kInvalidNetworkHandle, net_log_.net_log(), net_log_.source()));
   DatagramClientSocket* socket_ptr = socket.get();
-  factory_->ConnectAndConfigureSocket(
+  pool_->ConnectAndConfigureSocket(
       base::BindLambdaForTesting([&session, &socket](int rv) {
         session->CloseSessionOnErrorLater(
             0, quic::QUIC_TOO_MANY_RTOS,
@@ -6279,152 +7047,6 @@ TEST_P(QuicSessionPoolTest,
   base::RunLoop().RunUntilIdle();
 }
 
-void QuicSessionPoolTest::
-    TestThatBlackHoleIsDisabledOnNoNewNetworkThenResumedAfterConnectingToANetwork(
-        bool is_blackhole_disabled_after_disconnecting) {
-  scoped_mock_network_change_notifier_ =
-      std::make_unique<ScopedMockNetworkChangeNotifier>();
-  MockNetworkChangeNotifier* mock_ncn =
-      scoped_mock_network_change_notifier_->mock_network_change_notifier();
-  mock_ncn->ForceNetworkHandlesSupported();
-  mock_ncn->SetConnectedNetworksList({kDefaultNetworkForTests});
-  // Enable migration on network change.
-  quic_params_->migrate_sessions_on_network_change_v2 = true;
-  socket_factory_ = std::make_unique<TestPortMigrationSocketFactory>();
-  Initialize();
-  ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
-  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
-  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
-
-  // Using a testing task runner so that we can control time.
-  auto task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), task_runner.get());
-
-  int packet_num = 1;
-  MockQuicData quic_data(version_);
-  quic_data.AddReadPauseForever();
-  quic_data.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket(packet_num++));
-  quic_data.AddWrite(
-      SYNCHRONOUS,
-      ConstructGetRequestPacket(
-          packet_num++, GetNthClientInitiatedBidirectionalStreamId(0), true));
-  quic_data.AddReadPauseForever();
-  MockQuicData quic_data2(version_);
-  quic::QuicConnectionId cid_on_new_path =
-      quic::test::TestConnectionId(12345678);
-  client_maker_.set_connection_id(cid_on_new_path);
-  quic_data2.AddWrite(
-      SYNCHRONOUS, client_maker_.Packet(packet_num++).AddPingFrame().Build());
-  quic_data2.AddWrite(SYNCHRONOUS,
-                      client_maker_.Packet(packet_num++)
-                          .AddRetireConnectionIdFrame(/*sequence_number=*/0u)
-                          .Build());
-
-  quic_data2.AddRead(
-      ASYNC, ConstructOkResponsePacket(
-                 1, GetNthClientInitiatedBidirectionalStreamId(0), false));
-  quic_data2.AddReadPauseForever();
-  quic_data2.AddWrite(
-      SYNCHRONOUS,
-      client_maker_.Packet(packet_num++)
-          .AddStreamFrame(GetQpackDecoderStreamId(), /*fin=*/false,
-                          StreamCancellationQpackDecoderInstruction(0))
-          .AddStopSendingFrame(GetNthClientInitiatedBidirectionalStreamId(0),
-                               quic::QUIC_STREAM_CANCELLED)
-          .AddRstStreamFrame(GetNthClientInitiatedBidirectionalStreamId(0),
-                             quic::QUIC_STREAM_CANCELLED)
-          .Build());
-
-  quic_data.AddSocketDataToFactory(socket_factory_.get());
-  quic_data2.AddSocketDataToFactory(socket_factory_.get());
-
-  // Create request and QuicHttpStream.
-  RequestBuilder builder(this);
-  EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
-  EXPECT_THAT(callback_.WaitForResult(), IsOk());
-  std::unique_ptr<HttpStream> stream = CreateStream(&builder.request);
-  EXPECT_TRUE(stream.get());
-
-  // Cause QUIC stream to be created.
-  HttpRequestInfo request_info;
-  request_info.method = "GET";
-  request_info.url = GURL(kDefaultUrl);
-  request_info.traffic_annotation =
-      MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS);
-  stream->RegisterRequest(&request_info);
-  EXPECT_EQ(OK, stream->InitializeStream(true, DEFAULT_PRIORITY, net_log_,
-                                         CompletionOnceCallback()));
-
-  // Ensure that session is alive and active.
-  QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
-  EXPECT_TRUE(HasActiveSession(kDefaultDestination));
-  MaybeMakeNewConnectionIdAvailableToSession(cid_on_new_path, session);
-  // Send GET request on stream.
-  HttpResponseInfo response;
-  HttpRequestHeaders request_headers;
-  EXPECT_EQ(OK, stream->SendRequest(request_headers, &response,
-                                    callback_.callback()));
-  handles::NetworkHandle old_network = session->GetCurrentNetwork();
-  // Forcefully disconnect the current network. This should stop the blackhole
-  // detector since there is no other available network.
-  mock_ncn->NotifyNetworkDisconnected(kDefaultNetworkForTests);
-
-  if (is_blackhole_disabled_after_disconnecting) {
-    EXPECT_FALSE(
-        session->connection()->blackhole_detector().IsDetectionInProgress());
-  } else {
-    EXPECT_TRUE(
-        session->connection()->blackhole_detector().IsDetectionInProgress());
-  }
-
-  // This will fire migrateImmediately which will connect to a new socket on the
-  // new network.
-  mock_ncn->NotifyNetworkConnected(kNewNetworkForTests);
-
-  // Execute the tasks that are added to the task runner from
-  // NotifyNetworkConnected.
-  task_runner->RunUntilIdle();
-  base::RunLoop().RunUntilIdle();
-
-  // Verify that we are on the new network.
-  EXPECT_TRUE(old_network != session->GetCurrentNetwork());
-  EXPECT_TRUE(session->GetCurrentNetwork() == kNewNetworkForTests);
-
-  // Verify that blackhole detector is still active.
-  EXPECT_TRUE(
-      session->connection()->blackhole_detector().IsDetectionInProgress());
-
-  // Verify that we also received the response on the new path.
-  EXPECT_EQ(OK, stream->ReadResponseHeaders(callback_.callback()));
-  EXPECT_EQ(200, response.headers->response_code());
-}
-// When the feature is disabled, the blackhole detector should stay enabled
-// when there is no available network. resumed once a new network has been
-// connected to.
-TEST_P(
-    QuicSessionPoolTest,
-    VerifyThatBlackHoleIsDisabledOnNoAvailableNetworkThenResumedAfterConnectingToNewNetwork_FeatureDisabled) {
-  TestThatBlackHoleIsDisabledOnNoNewNetworkThenResumedAfterConnectingToANetwork(
-      false);
-}
-
-// When the feature is enabled, the blackhole detector should be disabled
-// when there is no available network. resumed once a new network has been
-// connected to.
-TEST_P(
-    QuicSessionPoolTest,
-    VerifyThatBlackHoleIsDisabledOnNoAvailableNetworkThenResumedAfterConnectingToNewNetwork_FeatureEnabled) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitWithFeatures(
-      // enabled_features
-      {features::kDisableBlackholeOnNoNewNetwork},
-      // disabled_features
-      {});
-  TestThatBlackHoleIsDisabledOnNoNewNetworkThenResumedAfterConnectingToANetwork(
-      true);
-}
-
 void QuicSessionPoolTest::TestSimplePortMigrationOnPathDegrading() {
   ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
   crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
@@ -6432,7 +7054,7 @@ void QuicSessionPoolTest::TestSimplePortMigrationOnPathDegrading() {
 
   // Using a testing task runner so that we can control time.
   auto task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), task_runner.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), task_runner.get());
 
   int packet_number = 1;
   MockQuicData quic_data1(version_);
@@ -6507,7 +7129,7 @@ void QuicSessionPoolTest::TestSimplePortMigrationOnPathDegrading() {
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   MaybeMakeNewConnectionIdAvailableToSession(cid_on_new_path, session);
 
@@ -6525,7 +7147,7 @@ void QuicSessionPoolTest::TestSimplePortMigrationOnPathDegrading() {
   EXPECT_TRUE(chrome_stream);
   chrome_stream->DisableConnectionMigrationToCellularNetwork();
 
-  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
 
   // Manually initialize the connection's self address. In real life, the
   // initialization will be done during crypto handshake.
@@ -6539,7 +7161,7 @@ void QuicSessionPoolTest::TestSimplePortMigrationOnPathDegrading() {
   session->connection()->OnPathDegradingDetected();
   base::RunLoop().RunUntilIdle();
 
-  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
 
   // There should be one pending task as the probe posted a DoNothingAs
   // callback.
@@ -6547,7 +7169,7 @@ void QuicSessionPoolTest::TestSimplePortMigrationOnPathDegrading() {
   task_runner->ClearPendingTasks();
 
   // The connection should still be alive, and not marked as going away.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
   EXPECT_EQ(ERR_IO_PENDING, stream->ReadResponseHeaders(callback_.callback()));
@@ -6556,12 +7178,12 @@ void QuicSessionPoolTest::TestSimplePortMigrationOnPathDegrading() {
   // socket.
   quic_data2.Resume();
 
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
   // Successful port migration causes the path no longer degrading on the same
   // network.
-  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
 
   // There should be pending tasks, the nearest one will complete
   // migration to the new port.
@@ -6574,7 +7196,7 @@ void QuicSessionPoolTest::TestSimplePortMigrationOnPathDegrading() {
   EXPECT_THAT(callback_.WaitForResult(), IsOk());
   EXPECT_EQ(200, response.headers->response_code());
 
-  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
 
   // Now there may be one pending task to send connectivity probe that has been
   // cancelled due to successful migration.
@@ -6582,7 +7204,7 @@ void QuicSessionPoolTest::TestSimplePortMigrationOnPathDegrading() {
 
   // Verify that the session is still alive, and the request stream is still
   // alive.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   chrome_stream = static_cast<QuicChromiumClientStream*>(
       quic::test::QuicSessionPeer::GetStream(
@@ -6606,7 +7228,7 @@ TEST_P(QuicSessionPoolTest, MultiplePortMigrationsExceedsMaxLimit_iQUICStyle) {
 
   // Using a testing task runner so that we can control time.
   auto task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), task_runner.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), task_runner.get());
 
   int packet_number = 1;
   MockQuicData quic_data1(version_);
@@ -6638,7 +7260,7 @@ TEST_P(QuicSessionPoolTest, MultiplePortMigrationsExceedsMaxLimit_iQUICStyle) {
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
 
   // Send GET request on stream.
@@ -6725,20 +7347,20 @@ TEST_P(QuicSessionPoolTest, MultiplePortMigrationsExceedsMaxLimit_iQUICStyle) {
     quic_data2.AddReadPauseForever();
     quic_data2.AddSocketDataToFactory(socket_factory_.get());
 
-    EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+    EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
 
     // Cause the connection to report path degrading to the session.
     // Session will start to probe a different port.
     session->connection()->OnPathDegradingDetected();
     base::RunLoop().RunUntilIdle();
 
-    EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+    EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
 
     // The retry mechanism is internal to path validator.
     EXPECT_EQ(1u, task_runner->GetPendingTaskCount());
 
     // The connection should still be alive, and not marked as going away.
-    EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+    EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
     EXPECT_TRUE(HasActiveSession(kDefaultDestination));
     EXPECT_EQ(1u, session->GetNumActiveStreams());
 
@@ -6747,7 +7369,7 @@ TEST_P(QuicSessionPoolTest, MultiplePortMigrationsExceedsMaxLimit_iQUICStyle) {
     quic_data2.Resume();
     base::RunLoop().RunUntilIdle();
 
-    EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+    EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
     EXPECT_TRUE(HasActiveSession(kDefaultDestination));
     EXPECT_EQ(1u, session->GetNumActiveStreams());
 
@@ -6771,7 +7393,7 @@ TEST_P(QuicSessionPoolTest, MultiplePortMigrationsExceedsMaxLimit_iQUICStyle) {
   }
 
   // Verify that the session is still alive.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
 
   stream.reset();
@@ -6802,7 +7424,7 @@ TEST_P(QuicSessionPoolTest,
 
   // Using a testing task runner so that we can control time.
   auto task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), task_runner.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), task_runner.get());
 
   int packet_number = 1;
   MockQuicData quic_data1(version_);
@@ -6872,7 +7494,7 @@ TEST_P(QuicSessionPoolTest,
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   MaybeMakeNewConnectionIdAvailableToSession(cid_on_new_path, session);
 
@@ -6890,7 +7512,7 @@ TEST_P(QuicSessionPoolTest,
   EXPECT_TRUE(chrome_stream);
   chrome_stream->DisableConnectionMigrationToCellularNetwork();
 
-  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
 
   // Manually initialize the connection's self address. In real life, the
   // initialization will be done during crypto handshake.
@@ -6913,7 +7535,7 @@ TEST_P(QuicSessionPoolTest,
   EXPECT_EQ(200, response.headers->response_code());
   EXPECT_EQ(0u, session->GetNumActiveStreams());
 
-  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
 
   // There should be one pending task as the probe posted a DoNothingAs
   // callback.
@@ -6921,18 +7543,18 @@ TEST_P(QuicSessionPoolTest,
   task_runner->ClearPendingTasks();
 
   // The connection should still be alive, and not marked as going away.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
 
   // Resume quic data and a connectivity probe response will be read on the new
   // socket.
   quic_data2.Resume();
 
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   // Successful port migration causes the path no longer degrading on the same
   // network.
-  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
 
   // There should be pending tasks, the nearest one will complete
   // migration to the new port.
@@ -6946,7 +7568,7 @@ TEST_P(QuicSessionPoolTest,
   task_runner->FastForwardUntilNoTasksRemain();
 
   // Verify that the session is still alive.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
 
   quic_data1.ExpectAllReadDataConsumed();
@@ -6966,7 +7588,7 @@ TEST_P(QuicSessionPoolTest, DoNotMigrateToBadSocketOnPathDegrading) {
 
   // Using a testing task runner so that we can control time.
   auto task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), task_runner.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), task_runner.get());
 
   scoped_mock_network_change_notifier_->mock_network_change_notifier()
       ->QueueNetworkMadeDefault(kDefaultNetworkForTests);
@@ -7023,7 +7645,7 @@ TEST_P(QuicSessionPoolTest, DoNotMigrateToBadSocketOnPathDegrading) {
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
 
   // Send GET request on stream.
@@ -7032,15 +7654,15 @@ TEST_P(QuicSessionPoolTest, DoNotMigrateToBadSocketOnPathDegrading) {
   EXPECT_EQ(OK, stream->SendRequest(request_headers, &response,
                                     callback_.callback()));
 
-  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
   // Cause the connection to report path degrading to the session.
   // Session will start to probe the alternate network.
   session->connection()->OnPathDegradingDetected();
   base::RunLoop().RunUntilIdle();
-  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
 
   // The connection should still be alive, and not marked as going away.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
   EXPECT_EQ(ERR_IO_PENDING, stream->ReadResponseHeaders(callback_.callback()));
@@ -7054,7 +7676,7 @@ TEST_P(QuicSessionPoolTest, DoNotMigrateToBadSocketOnPathDegrading) {
   EXPECT_EQ(1u, task_runner->GetPendingTaskCount());
 
   // Verify that the session is still alive.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
 
   stream.reset();
@@ -7091,7 +7713,7 @@ void QuicSessionPoolTest::TestMigrateSessionWithDrainingStream(
 
   // Using a testing task runner so that we can control time.
   auto task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), task_runner.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), task_runner.get());
 
   scoped_mock_network_change_notifier_->mock_network_change_notifier()
       ->QueueNetworkMadeDefault(kDefaultNetworkForTests);
@@ -7167,7 +7789,7 @@ void QuicSessionPoolTest::TestMigrateSessionWithDrainingStream(
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   MaybeMakeNewConnectionIdAvailableToSession(cid_on_new_path, session);
 
@@ -7182,22 +7804,22 @@ void QuicSessionPoolTest::TestMigrateSessionWithDrainingStream(
   base::RunLoop().RunUntilIdle();
   EXPECT_EQ(0u, session->GetNumActiveStreams());
 
-  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
   // Cause the connection to report path degrading to the session.
   // Session should still start to probe the alternate network.
   session->connection()->OnPathDegradingDetected();
   base::RunLoop().RunUntilIdle();
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
-  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
 
   // The connection should still be alive, and not marked as going away.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
 
   // Resume quic data and a connectivity probe response will be read on the new
   // socket.
   quic_data2.Resume();
 
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(0u, session->GetNumActiveStreams());
   EXPECT_TRUE(session->HasActiveRequestStreams());
@@ -7213,7 +7835,7 @@ void QuicSessionPoolTest::TestMigrateSessionWithDrainingStream(
   task_runner->FastForwardBy(base::Seconds(kMinRetryTimeForDefaultNetworkSecs));
 
   // Verify that the session is still alive.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(OK, stream->ReadResponseHeaders(callback_.callback()));
 
@@ -7236,7 +7858,7 @@ TEST_P(QuicSessionPoolTest, MigrateOnNewNetworkConnectAfterPathDegrading) {
 
   // Using a testing task runner so that we can control time.
   auto task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), task_runner.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), task_runner.get());
 
   scoped_mock_network_change_notifier_->mock_network_change_notifier()
       ->QueueNetworkMadeDefault(kDefaultNetworkForTests);
@@ -7314,7 +7936,7 @@ TEST_P(QuicSessionPoolTest, MigrateOnNewNetworkConnectAfterPathDegrading) {
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   MaybeMakeNewConnectionIdAvailableToSession(cid_on_new_path, session);
 
@@ -7324,18 +7946,18 @@ TEST_P(QuicSessionPoolTest, MigrateOnNewNetworkConnectAfterPathDegrading) {
   EXPECT_EQ(OK, stream->SendRequest(request_headers, &response,
                                     callback_.callback()));
 
-  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
 
   // Cause the connection to report path degrading to the session.
   // Due to lack of alternate network, session will not mgirate connection.
   EXPECT_EQ(0u, task_runner->GetPendingTaskCount());
-  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
   session->connection()->OnPathDegradingDetected();
   base::RunLoop().RunUntilIdle();
-  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
   EXPECT_EQ(0u, task_runner->GetPendingTaskCount());
 
-  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
 
   // Deliver a signal that a alternate network is connected now, this should
   // cause the connection to start early migration on path degrading.
@@ -7346,7 +7968,7 @@ TEST_P(QuicSessionPoolTest, MigrateOnNewNetworkConnectAfterPathDegrading) {
       ->NotifyNetworkConnected(kNewNetworkForTests);
 
   // The connection should still be alive, and not marked as going away.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
   EXPECT_EQ(ERR_IO_PENDING, stream->ReadResponseHeaders(callback_.callback()));
@@ -7355,7 +7977,7 @@ TEST_P(QuicSessionPoolTest, MigrateOnNewNetworkConnectAfterPathDegrading) {
   // socket.
   quic_data2.Resume();
 
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
 
@@ -7364,7 +7986,7 @@ TEST_P(QuicSessionPoolTest, MigrateOnNewNetworkConnectAfterPathDegrading) {
 
   // Although the session successfully migrates, it is still considered
   // degrading sessions.
-  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
 
   // Response headers are received over the new network.
   EXPECT_THAT(callback_.WaitForResult(), IsOk());
@@ -7379,7 +8001,7 @@ TEST_P(QuicSessionPoolTest, MigrateOnNewNetworkConnectAfterPathDegrading) {
   task_runner->FastForwardBy(base::Seconds(kMinRetryTimeForDefaultNetworkSecs));
 
   // Verify that the session is still alive.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
 
   stream.reset();
@@ -7474,8 +8096,8 @@ TEST_P(QuicSessionPoolTest,
       ->NotifyNetworkDisconnected(kDefaultNetworkForTests);
 
   // Ensure that both sessions are paused but alive.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session1));
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session2));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session1));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session2));
 
   // Add new sockets to use post migration. Those are bad sockets and will cause
   // migration to fail.
@@ -7495,8 +8117,8 @@ TEST_P(QuicSessionPoolTest,
   scoped_mock_network_change_notifier_->mock_network_change_notifier()
       ->NotifyNetworkConnected(kNewNetworkForTests);
 
-  EXPECT_FALSE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session1));
-  EXPECT_FALSE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session2));
+  EXPECT_FALSE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session1));
+  EXPECT_FALSE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session2));
 
   socket_data1.ExpectAllReadDataConsumed();
   socket_data1.ExpectAllWriteDataConsumed();
@@ -7564,7 +8186,7 @@ TEST_P(QuicSessionPoolTest, MigrateOnPathDegradingWithNoNewNetwork) {
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
 
   // Send GET request on stream.
@@ -7576,21 +8198,21 @@ TEST_P(QuicSessionPoolTest, MigrateOnPathDegradingWithNoNewNetwork) {
   // Trigger connection migration on path degrading. Since there are no networks
   // to migrate to, the session will remain on the original network, not marked
   // as going away.
-  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
   session->connection()->OnPathDegradingDetected();
   base::RunLoop().RunUntilIdle();
   EXPECT_TRUE(session->connection()->IsPathDegrading());
-  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
 
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
   EXPECT_EQ(ERR_IO_PENDING, stream->ReadResponseHeaders(callback_.callback()));
 
   // Resume so that rest of the data will flow in the original socket.
   quic_data.Resume();
 
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
 
@@ -7706,7 +8328,7 @@ void QuicSessionPoolTest::TestMigrateSessionEarlyNonMigratableStream(
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   MaybeMakeNewConnectionIdAvailableToSession(cid_on_new_path, session);
 
@@ -7777,13 +8399,10 @@ TEST_P(QuicSessionPoolTest, MigrateSessionEarlyConnectionMigrationDisabled) {
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
 
-  // Set session config to have connection migration disabled.
-  quic::test::QuicConfigPeer::SetReceivedDisableConnectionMigration(
-      session->config());
-  EXPECT_TRUE(session->config()->DisableConnectionMigration());
+  QuicChromiumClientSessionPeer::DisableConnectionMigration(session);
 
   // Trigger connection migration. Since there is a non-migratable stream,
   // this should cause session to be continue without migrating.
@@ -7793,7 +8412,7 @@ TEST_P(QuicSessionPoolTest, MigrateSessionEarlyConnectionMigrationDisabled) {
   // packet reader.
   base::RunLoop().RunUntilIdle();
 
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
 
@@ -7819,7 +8438,7 @@ TEST_P(QuicSessionPoolTest, MigrateSessionOnAsyncWriteError) {
   // Using a testing task runner so that we can control time.
   // base::RunLoop() controls mocked socket writes and reads.
   auto task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), task_runner.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), task_runner.get());
 
   MockQuicData socket_data(version_);
   socket_data.AddReadPauseForever();
@@ -7915,7 +8534,7 @@ TEST_P(QuicSessionPoolTest, MigrateSessionOnAsyncWriteError) {
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(2u, session->GetNumActiveStreams());
   MaybeMakeNewConnectionIdAvailableToSession(cid_on_new_path, session);
@@ -7946,7 +8565,7 @@ TEST_P(QuicSessionPoolTest, MigrateSessionOnAsyncWriteError) {
   base::RunLoop().RunUntilIdle();
 
   // Verify the session is still alive and not marked as going away.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(2u, session->GetNumActiveStreams());
   // There should be one task posted to migrate back to the default network in
@@ -7987,7 +8606,7 @@ TEST_P(QuicSessionPoolTest, MigrateBackToDefaultPostMigrationOnWriteError) {
 
   // Using a testing task runner so that we can control time.
   auto task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), task_runner.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), task_runner.get());
 
   MockQuicData socket_data(version_);
   socket_data.AddReadPauseForever();
@@ -8052,7 +8671,7 @@ TEST_P(QuicSessionPoolTest, MigrateBackToDefaultPostMigrationOnWriteError) {
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
   MaybeMakeNewConnectionIdAvailableToSession(cid1, session);
@@ -8076,7 +8695,7 @@ TEST_P(QuicSessionPoolTest, MigrateBackToDefaultPostMigrationOnWriteError) {
   base::RunLoop().RunUntilIdle();
 
   // Verify the session is still alive and not marked as going away.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
   // There should be one task posted to migrate back to the default network in
@@ -8131,7 +8750,7 @@ TEST_P(QuicSessionPoolTest, MigrateBackToDefaultPostMigrationOnWriteError) {
   task_runner->FastForwardBy(expected_delay);
 
   // Verify the session is still alive and not marked as going away.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
 
@@ -8140,7 +8759,7 @@ TEST_P(QuicSessionPoolTest, MigrateBackToDefaultPostMigrationOnWriteError) {
   task_runner->FastForwardUntilNoTasksRemain();
 
   // Verify the session is still alive and not marked as going away.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
 
@@ -8164,7 +8783,7 @@ TEST_P(QuicSessionPoolTest,
 
   // Using a testing task runner.
   auto task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), task_runner.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), task_runner.get());
 
   // Use cold start mode to send crypto message for handshake.
   crypto_client_stream_factory_.set_handshake_mode(
@@ -8185,16 +8804,16 @@ TEST_P(QuicSessionPoolTest,
   EXPECT_FALSE(HasActiveSession(kDefaultDestination));
   EXPECT_TRUE(HasActiveJob(kDefaultDestination, PRIVACY_MODE_DISABLED));
   QuicChromiumClientSession* session = GetPendingSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_EQ(0u, task_runner->GetPendingTaskCount());
 
   // Cause the connection to report path degrading to the session.
   // Session will ignore the signal as handshake is not completed.
-  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
   session->connection()->OnPathDegradingDetected();
   base::RunLoop().RunUntilIdle();
   EXPECT_EQ(0u, task_runner->GetPendingTaskCount());
-  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
 
   EXPECT_FALSE(HasActiveSession(kDefaultDestination));
   EXPECT_TRUE(HasActiveJob(kDefaultDestination, PRIVACY_MODE_DISABLED));
@@ -8224,7 +8843,7 @@ void QuicSessionPoolTest::TestNoAlternateNetworkBeforeHandshake(
 
   // Using a testing task runner.
   auto task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), task_runner.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), task_runner.get());
 
   // Use cold start mode to send crypto message for handshake.
   crypto_client_stream_factory_.set_handshake_mode(
@@ -8245,15 +8864,15 @@ void QuicSessionPoolTest::TestNoAlternateNetworkBeforeHandshake(
   EXPECT_FALSE(HasActiveSession(kDefaultDestination));
   EXPECT_TRUE(HasActiveJob(kDefaultDestination, PRIVACY_MODE_DISABLED));
   QuicChromiumClientSession* session = GetPendingSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_EQ(0u, task_runner->GetPendingTaskCount());
 
-  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(0u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
   // Cause the connection to report path degrading to the session.
   // Session will ignore the signal as handshake is not completed.
   session->connection()->OnPathDegradingDetected();
   base::RunLoop().RunUntilIdle();
-  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(factory_.get()));
+  EXPECT_EQ(1u, QuicSessionPoolPeer::GetNumDegradingSessions(pool_.get()));
   EXPECT_EQ(0u, task_runner->GetPendingTaskCount());
   EXPECT_FALSE(HasActiveSession(kDefaultDestination));
   EXPECT_TRUE(HasActiveJob(kDefaultDestination, PRIVACY_MODE_DISABLED));
@@ -8318,7 +8937,7 @@ void QuicSessionPoolTest::TestNewConnectionOnAlternateNetworkBeforeHandshake(
 
   // Using a testing task runner.
   auto task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), task_runner.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), task_runner.get());
 
   // Use cold start mode to send crypto message for handshake.
   crypto_client_stream_factory_.set_handshake_mode(
@@ -8385,7 +9004,7 @@ void QuicSessionPoolTest::TestNewConnectionOnAlternateNetworkBeforeHandshake(
   EXPECT_FALSE(HasActiveSession(kDefaultDestination));
   EXPECT_TRUE(HasActiveJob(kDefaultDestination, PRIVACY_MODE_DISABLED));
   QuicChromiumClientSession* session = GetPendingSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_EQ(0u, task_runner->GetPendingTaskCount());
   EXPECT_FALSE(failed_on_default_network_);
 
@@ -8583,7 +9202,7 @@ TEST_P(QuicSessionPoolTest,
   EXPECT_TRUE(HasActiveJob(kDefaultDestination, PRIVACY_MODE_DISABLED));
   base::RunLoop().RunUntilIdle();
   QuicChromiumClientSession* session = GetPendingSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
 
   // Confirm the handshake on the alternate network.
   crypto_client_stream_factory_.last_stream()
@@ -8660,7 +9279,7 @@ void QuicSessionPoolTest::TestMigrationOnWriteError(IoMode write_error_mode) {
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   quic::QuicConnectionId cid_on_new_path =
       quic::test::TestConnectionId(12345678);
@@ -8714,7 +9333,7 @@ void QuicSessionPoolTest::TestMigrationOnWriteError(IoMode write_error_mode) {
   base::RunLoop().RunUntilIdle();
 
   // Verify that session is alive and not marked as going away.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
 
@@ -8746,7 +9365,7 @@ void QuicSessionPoolTest::TestMigrationOnWriteErrorNoNewNetwork(
   crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
 
   // Use the test task runner, to force the migration alarm timeout later.
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), runner_.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), runner_.get());
 
   MockQuicData socket_data(version_);
   socket_data.AddReadPauseForever();
@@ -8773,7 +9392,7 @@ void QuicSessionPoolTest::TestMigrationOnWriteErrorNoNewNetwork(
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
 
   // Send GET request on stream. This causes a write error, which triggers
@@ -8794,13 +9413,13 @@ void QuicSessionPoolTest::TestMigrationOnWriteErrorNoNewNetwork(
   }
 
   // Migration has not yet failed. The session should be alive and active.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
   EXPECT_TRUE(session->connection()->writer()->IsWriteBlocked());
 
   // The migration will not fail until the migration alarm timeout.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
   EXPECT_EQ(ERR_IO_PENDING, stream->ReadResponseHeaders(callback_.callback()));
@@ -8810,7 +9429,7 @@ void QuicSessionPoolTest::TestMigrationOnWriteErrorNoNewNetwork(
 
   // The connection should be closed. A request for response headers
   // should fail.
-  EXPECT_FALSE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_FALSE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_FALSE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(ERR_NETWORK_CHANGED, callback_.WaitForResult());
   EXPECT_EQ(ERR_NETWORK_CHANGED,
@@ -8946,7 +9565,7 @@ void QuicSessionPoolTest::TestMigrationOnWriteErrorWithMultipleRequests(
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(2u, session->GetNumActiveStreams());
   MaybeMakeNewConnectionIdAvailableToSession(cid_on_new_path, session);
@@ -8963,7 +9582,7 @@ void QuicSessionPoolTest::TestMigrationOnWriteErrorWithMultipleRequests(
   base::RunLoop().RunUntilIdle();
 
   // Verify session is still alive and not marked as going away.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(2u, session->GetNumActiveStreams());
 
@@ -9097,7 +9716,7 @@ void QuicSessionPoolTest::TestMigrationOnWriteErrorMixedStreams(
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(2u, session->GetNumActiveStreams());
   MaybeMakeNewConnectionIdAvailableToSession(cid_on_new_path, session);
@@ -9115,7 +9734,7 @@ void QuicSessionPoolTest::TestMigrationOnWriteErrorMixedStreams(
 
   // Verify that the session is still alive and not marked as going away.
   // Non-migratable stream should be closed due to migration.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
 
@@ -9255,7 +9874,7 @@ void QuicSessionPoolTest::TestMigrationOnWriteErrorMixedStreams2(
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(2u, session->GetNumActiveStreams());
   MaybeMakeNewConnectionIdAvailableToSession(cid_on_new_path, session);
@@ -9272,7 +9891,7 @@ void QuicSessionPoolTest::TestMigrationOnWriteErrorMixedStreams2(
   // still alive and not marked as going away, non-migratable stream will be
   // closed.
   base::RunLoop().RunUntilIdle();
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
 
@@ -9379,7 +9998,7 @@ void QuicSessionPoolTest::TestMigrationOnWriteErrorNonMigratableStream(
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   MaybeMakeNewConnectionIdAvailableToSession(cid_on_new_path, session);
 
@@ -9397,7 +10016,7 @@ void QuicSessionPoolTest::TestMigrationOnWriteErrorNonMigratableStream(
   // if migrate idle session is enabled, it migrates to the alternate network
   // successfully; otherwise the connection is closed.
   EXPECT_EQ(migrate_idle_sessions,
-            QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+            QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_EQ(migrate_idle_sessions, HasActiveSession(kDefaultDestination));
 
   if (migrate_idle_sessions) {
@@ -9462,13 +10081,10 @@ void QuicSessionPoolTest::TestMigrationOnWriteErrorMigrationDisabled(
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
 
-  // Set session config to have connection migration disabled.
-  quic::test::QuicConfigPeer::SetReceivedDisableConnectionMigration(
-      session->config());
-  EXPECT_TRUE(session->config()->DisableConnectionMigration());
+  QuicChromiumClientSessionPeer::DisableConnectionMigration(session);
 
   // Send GET request on stream. This should cause a write error, which triggers
   // a connection migration attempt.
@@ -9479,7 +10095,7 @@ void QuicSessionPoolTest::TestMigrationOnWriteErrorMigrationDisabled(
   // Run message loop to execute migration attempt.
   base::RunLoop().RunUntilIdle();
   // Migration fails, and session is closed and deleted.
-  EXPECT_FALSE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_FALSE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_FALSE(HasActiveSession(kDefaultDestination));
   socket_data.ExpectAllReadDataConsumed();
   socket_data.ExpectAllWriteDataConsumed();
@@ -9563,7 +10179,7 @@ void QuicSessionPoolTest::TestMigrationOnMultipleWriteErrors(
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   MaybeMakeNewConnectionIdAvailableToSession(cid_on_new_path, session);
 
@@ -9578,7 +10194,7 @@ void QuicSessionPoolTest::TestMigrationOnMultipleWriteErrors(
   base::RunLoop().RunUntilIdle();
   // Connection is closed as there is no connection ID available yet for the
   // second migration.
-  EXPECT_FALSE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_FALSE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   stream.reset();
   socket_data1.ExpectAllReadDataConsumed();
   socket_data1.ExpectAllWriteDataConsumed();
@@ -9688,7 +10304,7 @@ void QuicSessionPoolTest::
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   quic::QuicConnectionId cid_on_new_path =
       quic::test::TestConnectionId(12345678);
@@ -9751,7 +10367,7 @@ void QuicSessionPoolTest::
   base::RunLoop().RunUntilIdle();
   // Verify the session is still alive and not marked as going away post
   // migration.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
   // Verify that response headers on the migrated socket were delivered to the
@@ -9840,7 +10456,7 @@ void QuicSessionPoolTest::TestMigrationOnWriteErrorWithNotificationQueuedLater(
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   quic::QuicConnectionId cid_on_new_path =
       quic::test::TestConnectionId(12345678);
@@ -9904,7 +10520,7 @@ void QuicSessionPoolTest::TestMigrationOnWriteErrorWithNotificationQueuedLater(
   }
 
   // Verify session is still alive and not marked as going away.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
 
@@ -9970,7 +10586,7 @@ void QuicSessionPoolTest::TestMigrationOnWriteErrorPauseBeforeConnected(
   client_maker_.set_save_packet_frames(true);
 
   // Use the test task runner.
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), runner_.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), runner_.get());
 
   MockQuicData socket_data(version_);
   socket_data.AddReadPauseForever();
@@ -9999,7 +10615,7 @@ void QuicSessionPoolTest::TestMigrationOnWriteErrorPauseBeforeConnected(
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   quic::QuicConnectionId cid_on_new_path =
       quic::test::TestConnectionId(12345678);
@@ -10012,7 +10628,7 @@ void QuicSessionPoolTest::TestMigrationOnWriteErrorPauseBeforeConnected(
                                     callback_.callback()));
 
   // The connection should still be alive, not marked as going away.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
   EXPECT_EQ(ERR_IO_PENDING, stream->ReadResponseHeaders(callback_.callback()));
@@ -10061,7 +10677,7 @@ void QuicSessionPoolTest::TestMigrationOnWriteErrorPauseBeforeConnected(
       ->NotifyNetworkConnected(kNewNetworkForTests);
 
   // Ensure that the session is still alive.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
 
@@ -10073,7 +10689,7 @@ void QuicSessionPoolTest::TestMigrationOnWriteErrorPauseBeforeConnected(
   EXPECT_EQ(200, response.headers->response_code());
 
   // Check that the session is still alive.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
 
   // There should be no posted tasks not executed, no way to migrate back to
@@ -10115,7 +10731,7 @@ TEST_P(QuicSessionPoolTest, IgnoreWriteErrorFromOldWriterAfterMigration) {
   // Using a testing task runner so that we can verify whether the migrate on
   // write error task is posted.
   auto task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), task_runner.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), task_runner.get());
 
   MockQuicData socket_data(version_);
   int packet_num = 1;
@@ -10148,7 +10764,7 @@ TEST_P(QuicSessionPoolTest, IgnoreWriteErrorFromOldWriterAfterMigration) {
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   quic::QuicConnectionId cid_on_new_path =
       quic::test::TestConnectionId(12345678);
@@ -10199,7 +10815,7 @@ TEST_P(QuicSessionPoolTest, IgnoreWriteErrorFromOldWriterAfterMigration) {
   task_runner->RunUntilIdle();
   EXPECT_EQ(1u, task_runner->GetPendingTaskCount());
 
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
 
@@ -10232,7 +10848,7 @@ TEST_P(QuicSessionPoolTest, IgnoreReadErrorFromOldReaderAfterMigration) {
 
   // Using a testing task runner.
   auto task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), task_runner.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), task_runner.get());
 
   MockQuicData socket_data(version_);
   int packet_num = 1;
@@ -10261,7 +10877,7 @@ TEST_P(QuicSessionPoolTest, IgnoreReadErrorFromOldReaderAfterMigration) {
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   quic::QuicConnectionId cid_on_new_path =
       quic::test::TestConnectionId(12345678);
@@ -10314,7 +10930,7 @@ TEST_P(QuicSessionPoolTest, IgnoreReadErrorFromOldReaderAfterMigration) {
   task_runner->RunUntilIdle();
   EXPECT_EQ(1u, task_runner->GetPendingTaskCount());
 
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
 
@@ -10334,7 +10950,7 @@ TEST_P(QuicSessionPoolTest, IgnoreReadErrorFromOldReaderAfterMigration) {
   // packet reader. Verify that the session is not affected.
   socket_data.Resume();
   EXPECT_EQ(1u, task_runner->GetPendingTaskCount());
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
 
@@ -10358,7 +10974,7 @@ TEST_P(QuicSessionPoolTest, IgnoreReadErrorOnOldReaderDuringMigration) {
 
   // Using a testing task runner.
   auto task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), task_runner.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), task_runner.get());
 
   MockQuicData socket_data(version_);
   int packet_num = 1;
@@ -10387,7 +11003,7 @@ TEST_P(QuicSessionPoolTest, IgnoreReadErrorOnOldReaderDuringMigration) {
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   quic::QuicConnectionId cid_on_new_path =
       quic::test::TestConnectionId(12345678);
@@ -10441,7 +11057,7 @@ TEST_P(QuicSessionPoolTest, IgnoreReadErrorOnOldReaderDuringMigration) {
   // packet reader. Verify that the session is not affected.
   socket_data.Resume();
   EXPECT_EQ(2u, task_runner->GetPendingTaskCount());
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
 
@@ -10449,7 +11065,7 @@ TEST_P(QuicSessionPoolTest, IgnoreReadErrorOnOldReaderDuringMigration) {
   task_runner->RunUntilIdle();
   EXPECT_EQ(1u, task_runner->GetPendingTaskCount());
 
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
 
@@ -10484,10 +11100,10 @@ TEST_P(QuicSessionPoolTest, DefaultRetransmittableOnWireTimeoutForMigration) {
 
   // Using a testing task runner.
   auto task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), task_runner.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), task_runner.get());
   QuicSessionPoolPeer::SetAlarmFactory(
-      factory_.get(), std::make_unique<QuicChromiumAlarmFactory>(
-                          task_runner.get(), context_.clock()));
+      pool_.get(), std::make_unique<QuicChromiumAlarmFactory>(
+                       task_runner.get(), context_.clock()));
 
   quic::QuicConnectionId cid_on_new_path =
       quic::test::TestConnectionId(12345678);
@@ -10595,7 +11211,7 @@ TEST_P(QuicSessionPoolTest, DefaultRetransmittableOnWireTimeoutForMigration) {
 
   // Complete migration.
   task_runner->RunUntilIdle();
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
 
@@ -10623,7 +11239,7 @@ TEST_P(QuicSessionPoolTest, DefaultRetransmittableOnWireTimeoutForMigration) {
   // Resume the old socket data, a read error will be delivered to the old
   // packet reader. Verify that the session is not affected.
   socket_data.Resume();
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
 
@@ -10649,10 +11265,10 @@ TEST_P(QuicSessionPoolTest, CustomRetransmittableOnWireTimeoutForMigration) {
 
   // Using a testing task runner.
   auto task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), task_runner.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), task_runner.get());
   QuicSessionPoolPeer::SetAlarmFactory(
-      factory_.get(), std::make_unique<QuicChromiumAlarmFactory>(
-                          task_runner.get(), context_.clock()));
+      pool_.get(), std::make_unique<QuicChromiumAlarmFactory>(
+                       task_runner.get(), context_.clock()));
 
   quic::QuicConnectionId cid_on_new_path =
       quic::test::TestConnectionId(12345678);
@@ -10759,7 +11375,7 @@ TEST_P(QuicSessionPoolTest, CustomRetransmittableOnWireTimeoutForMigration) {
 
   // Complete migration.
   task_runner->RunUntilIdle();
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
 
@@ -10787,7 +11403,7 @@ TEST_P(QuicSessionPoolTest, CustomRetransmittableOnWireTimeoutForMigration) {
   // Resume the old socket data, a read error will be delivered to the old
   // packet reader. Verify that the session is not affected.
   socket_data.Resume();
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
 
@@ -10811,10 +11427,10 @@ TEST_P(QuicSessionPoolTest, CustomRetransmittableOnWireTimeout) {
 
   // Using a testing task runner.
   auto task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), task_runner.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), task_runner.get());
   QuicSessionPoolPeer::SetAlarmFactory(
-      factory_.get(), std::make_unique<QuicChromiumAlarmFactory>(
-                          task_runner.get(), context_.clock()));
+      pool_.get(), std::make_unique<QuicChromiumAlarmFactory>(
+                       task_runner.get(), context_.clock()));
 
   MockQuicData socket_data1(version_);
   int packet_num = 1;
@@ -10884,7 +11500,7 @@ TEST_P(QuicSessionPoolTest, CustomRetransmittableOnWireTimeout) {
 
   // Complete migration.
   task_runner->RunUntilIdle();
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
 
@@ -10911,7 +11527,7 @@ TEST_P(QuicSessionPoolTest, CustomRetransmittableOnWireTimeout) {
 
   // Resume the old socket data, a read error will be delivered to the old
   // packet reader. Verify that the session is not affected.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
 
@@ -10940,10 +11556,10 @@ TEST_P(QuicSessionPoolTest, NoRetransmittableOnWireTimeout) {
 
   // Using a testing task runner.
   auto task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), task_runner.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), task_runner.get());
   QuicSessionPoolPeer::SetAlarmFactory(
-      factory_.get(), std::make_unique<QuicChromiumAlarmFactory>(
-                          task_runner.get(), context_.clock()));
+      pool_.get(), std::make_unique<QuicChromiumAlarmFactory>(
+                       task_runner.get(), context_.clock()));
 
   MockQuicData socket_data1(version_);
   int packet_num = 1;
@@ -11009,7 +11625,7 @@ TEST_P(QuicSessionPoolTest, NoRetransmittableOnWireTimeout) {
 
   // Complete migration.
   task_runner->RunUntilIdle();
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
 
@@ -11038,7 +11654,7 @@ TEST_P(QuicSessionPoolTest, NoRetransmittableOnWireTimeout) {
 
   // Resume the old socket data, a read error will be delivered to the old
   // packet reader. Verify that the session is not affected.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
 
@@ -11062,10 +11678,10 @@ TEST_P(QuicSessionPoolTest,
 
   // Using a testing task runner.
   auto task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), task_runner.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), task_runner.get());
   QuicSessionPoolPeer::SetAlarmFactory(
-      factory_.get(), std::make_unique<QuicChromiumAlarmFactory>(
-                          task_runner.get(), context_.clock()));
+      pool_.get(), std::make_unique<QuicChromiumAlarmFactory>(
+                       task_runner.get(), context_.clock()));
 
   MockQuicData socket_data1(version_);
   int packet_num = 1;
@@ -11135,7 +11751,7 @@ TEST_P(QuicSessionPoolTest,
 
   // Complete migration.
   task_runner->RunUntilIdle();
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
 
@@ -11162,7 +11778,7 @@ TEST_P(QuicSessionPoolTest,
 
   // Resume the old socket data, a read error will be delivered to the old
   // packet reader. Verify that the session is not affected.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
 
@@ -11193,10 +11809,10 @@ TEST_P(QuicSessionPoolTest,
 
   // Using a testing task runner.
   auto task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), task_runner.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), task_runner.get());
   QuicSessionPoolPeer::SetAlarmFactory(
-      factory_.get(), std::make_unique<QuicChromiumAlarmFactory>(
-                          task_runner.get(), context_.clock()));
+      pool_.get(), std::make_unique<QuicChromiumAlarmFactory>(
+                       task_runner.get(), context_.clock()));
 
   MockQuicData socket_data1(version_);
   int packet_num = 1;
@@ -11262,7 +11878,7 @@ TEST_P(QuicSessionPoolTest,
 
   // Complete migration.
   task_runner->RunUntilIdle();
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
 
@@ -11291,7 +11907,7 @@ TEST_P(QuicSessionPoolTest,
 
   // Resume the old socket data, a read error will be delivered to the old
   // packet reader. Verify that the session is not affected.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
 
@@ -11314,7 +11930,7 @@ TEST_P(QuicSessionPoolTest,
 
   // Using a testing task runner.
   auto task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), task_runner.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), task_runner.get());
 
   MockQuicData socket_data(version_);
   int packet_num = 1;
@@ -11343,7 +11959,7 @@ TEST_P(QuicSessionPoolTest,
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   quic::QuicConnectionId cid_on_new_path =
       quic::test::TestConnectionId(12345678);
@@ -11379,7 +11995,7 @@ TEST_P(QuicSessionPoolTest,
   // There will be one pending task to complete migration on write error.
   // Verify session is not closed with read error.
   EXPECT_EQ(1u, task_runner->GetPendingTaskCount());
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
 
@@ -11388,7 +12004,7 @@ TEST_P(QuicSessionPoolTest,
   // There will be one more task posted attempting to migrate back to the
   // default network.
   EXPECT_EQ(1u, task_runner->GetPendingTaskCount());
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
 
@@ -11489,7 +12105,7 @@ void QuicSessionPoolTest::TestMigrationOnWriteErrorWithMultipleNotifications(
 
   // Ensure that session is alive and active.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   quic::QuicConnectionId cid_on_new_path =
       quic::test::TestConnectionId(12345678);
@@ -11507,7 +12123,7 @@ void QuicSessionPoolTest::TestMigrationOnWriteErrorWithMultipleNotifications(
 
   // In this particular code path, the network will not yet be marked
   // as going away and the session will still be alive.
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
   EXPECT_EQ(ERR_IO_PENDING, stream->ReadResponseHeaders(callback_.callback()));
@@ -11566,7 +12182,7 @@ void QuicSessionPoolTest::TestMigrationOnWriteErrorWithMultipleNotifications(
     scoped_mock_network_change_notifier_->mock_network_change_notifier()
         ->NotifyNetworkDisconnected(kDefaultNetworkForTests);
   }
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_EQ(1u, session->GetNumActiveStreams());
 
@@ -11611,8 +12227,8 @@ TEST_P(QuicSessionPoolTest, DefaultIdleMigrationPeriod) {
 
   // Using a testing task runner and a test tick tock.
   auto task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), task_runner.get());
-  QuicSessionPoolPeer::SetTickClock(factory_.get(),
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), task_runner.get());
+  QuicSessionPoolPeer::SetTickClock(pool_.get(),
                                     task_runner->GetMockTickClock());
 
   quic::QuicConnectionId cid1 = quic::test::TestConnectionId(1234567);
@@ -11832,8 +12448,8 @@ TEST_P(QuicSessionPoolTest, CustomIdleMigrationPeriod) {
 
   // Using a testing task runner and a test tick tock.
   auto task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), task_runner.get());
-  QuicSessionPoolPeer::SetTickClock(factory_.get(),
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), task_runner.get());
+  QuicSessionPoolPeer::SetTickClock(pool_.get(),
                                     task_runner->GetMockTickClock());
 
   quic::QuicConnectionId cid1 = quic::test::TestConnectionId(1234567);
@@ -12038,8 +12654,8 @@ TEST_P(QuicSessionPoolTest, OnCertDBChanged) {
   CertDatabase::GetInstance()->NotifyObserversTrustStoreChanged();
   base::RunLoop().RunUntilIdle();
 
-  EXPECT_TRUE(factory_->has_quic_ever_worked_on_current_network());
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(pool_->has_quic_ever_worked_on_current_network());
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_FALSE(HasActiveSession(kDefaultDestination));
 
   // Now attempting to request a stream to the same origin should create
@@ -12054,8 +12670,8 @@ TEST_P(QuicSessionPoolTest, OnCertDBChanged) {
   QuicChromiumClientSession* session2 = GetActiveSession(kDefaultDestination);
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_NE(session, session2);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session2));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session2));
 
   stream2.reset();
   stream.reset();
@@ -12096,8 +12712,8 @@ TEST_P(QuicSessionPoolTest, OnCertVerifierChanged) {
   cert_verifier_->SimulateOnCertVerifierChanged();
   base::RunLoop().RunUntilIdle();
 
-  EXPECT_TRUE(factory_->has_quic_ever_worked_on_current_network());
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(pool_->has_quic_ever_worked_on_current_network());
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_FALSE(HasActiveSession(kDefaultDestination));
 
   // Now attempting to request a stream to the same origin should create
@@ -12112,8 +12728,8 @@ TEST_P(QuicSessionPoolTest, OnCertVerifierChanged) {
   QuicChromiumClientSession* session2 = GetActiveSession(kDefaultDestination);
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
   EXPECT_NE(session, session2);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session2));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session2));
 
   stream2.reset();
   stream.reset();
@@ -12141,8 +12757,8 @@ TEST_P(QuicSessionPoolTest, SharedCryptoConfig) {
     // Need to hold onto this through the test, to keep the
     // QuicCryptoClientConfig alive.
     std::unique_ptr<QuicCryptoClientConfigHandle> crypto_config_handle =
-        QuicSessionPoolPeer::GetCryptoConfig(factory_.get(),
-                                             NetworkAnonymizationKey());
+        QuicSessionPoolPeer::GetCryptoConfig(
+            pool_.get(), QuicSessionPool::QuicCryptoClientConfigKey());
     quic::QuicServerId server_id1(scheme_host_port1.host(),
                                   scheme_host_port1.port());
     quic::QuicCryptoClientConfig::CachedState* cached1 =
@@ -12181,8 +12797,8 @@ TEST_P(QuicSessionPoolTest, CryptoConfigWhenProofIsInvalid) {
     // Need to hold onto this through the test, to keep the
     // QuicCryptoClientConfig alive.
     std::unique_ptr<QuicCryptoClientConfigHandle> crypto_config_handle =
-        QuicSessionPoolPeer::GetCryptoConfig(factory_.get(),
-                                             NetworkAnonymizationKey());
+        QuicSessionPoolPeer::GetCryptoConfig(
+            pool_.get(), QuicSessionPool::QuicCryptoClientConfigKey());
     quic::QuicServerId server_id1(scheme_host_port1.host(),
                                   scheme_host_port1.port());
     quic::QuicCryptoClientConfig::CachedState* cached1 =
@@ -12208,11 +12824,11 @@ TEST_P(QuicSessionPoolTest, CryptoConfigWhenProofIsInvalid) {
 
 TEST_P(QuicSessionPoolTest, EnableNotLoadFromDiskCache) {
   Initialize();
-  factory_->set_has_quic_ever_worked_on_current_network(true);
+  pool_->set_has_quic_ever_worked_on_current_network(true);
   ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
   crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
 
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), runner_.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), runner_.get());
 
   MockQuicData socket_data(version_);
   socket_data.AddReadPauseForever();
@@ -12247,7 +12863,7 @@ TEST_P(QuicSessionPoolTest, ReducePingTimeoutOnConnectionTimeOutOpenStreams) {
   crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
   crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
 
-  QuicSessionPoolPeer::SetTaskRunner(factory_.get(), runner_.get());
+  QuicSessionPoolPeer::SetTaskRunner(pool_.get(), runner_.get());
 
   MockQuicData socket_data(version_);
   socket_data.AddReadPauseForever();
@@ -12273,7 +12889,7 @@ TEST_P(QuicSessionPoolTest, ReducePingTimeoutOnConnectionTimeOutOpenStreams) {
   // Quic should use default PING timeout when no previous connection times out
   // with open stream.
   EXPECT_EQ(quic::QuicTime::Delta::FromSeconds(quic::kPingTimeoutSecs),
-            QuicSessionPoolPeer::GetPingTimeout(factory_.get()));
+            QuicSessionPoolPeer::GetPingTimeout(pool_.get()));
   RequestBuilder builder(this);
   EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
   EXPECT_THAT(callback_.WaitForResult(), IsOk());
@@ -12302,7 +12918,7 @@ TEST_P(QuicSessionPoolTest, ReducePingTimeoutOnConnectionTimeOutOpenStreams) {
   // The first connection times out with open stream, QUIC should reduce initial
   // PING time for subsequent connections.
   EXPECT_EQ(quic::QuicTime::Delta::FromSeconds(10),
-            QuicSessionPoolPeer::GetPingTimeout(factory_.get()));
+            QuicSessionPoolPeer::GetPingTimeout(pool_.get()));
 
   // Test two-in-a-row timeouts with open streams.
   DVLOG(1) << "Create 2nd session and timeout with open stream";
@@ -12362,22 +12978,27 @@ TEST_P(QuicSessionPoolTest, CryptoConfigCache) {
   const SchemefulSite kSite1(GURL("https://foo.test/"));
   const auto kNetworkAnonymizationKey1 =
       NetworkAnonymizationKey::CreateSameSite(kSite1);
+  const QuicSessionPool::QuicCryptoClientConfigKey kKey1 =
+      CreateTestQuicCryptoClientConfigKey(kNetworkAnonymizationKey1);
 
   const SchemefulSite kSite2(GURL("https://bar.test/"));
   const auto kNetworkAnonymizationKey2 =
       NetworkAnonymizationKey::CreateSameSite(kSite2);
+  const QuicSessionPool::QuicCryptoClientConfigKey kKey2 =
+      CreateTestQuicCryptoClientConfigKey(kNetworkAnonymizationKey2);
 
   const SchemefulSite kSite3(GURL("https://baz.test/"));
   const auto kNetworkAnonymizationKey3 =
       NetworkAnonymizationKey::CreateSameSite(kSite3);
+  const QuicSessionPool::QuicCryptoClientConfigKey kKey3 =
+      CreateTestQuicCryptoClientConfigKey(kNetworkAnonymizationKey3);
 
   Initialize();
 
   // Create a QuicCryptoClientConfigHandle for kNetworkAnonymizationKey1, and
   // set the user agent.
   std::unique_ptr<QuicCryptoClientConfigHandle> crypto_config_handle1 =
-      QuicSessionPoolPeer::GetCryptoConfig(factory_.get(),
-                                           kNetworkAnonymizationKey1);
+      QuicSessionPoolPeer::GetCryptoConfig(pool_.get(), kKey1);
   crypto_config_handle1->GetConfig()->set_user_agent_id(kUserAgentId);
   EXPECT_EQ(kUserAgentId, crypto_config_handle1->GetConfig()->user_agent_id());
 
@@ -12385,8 +13006,7 @@ TEST_P(QuicSessionPoolTest, CryptoConfigCache) {
   // NetworkAnonymizationKey while the first one is still alive should return
   // the same config, with the user agent that was just set.
   std::unique_ptr<QuicCryptoClientConfigHandle> crypto_config_handle2 =
-      QuicSessionPoolPeer::GetCryptoConfig(factory_.get(),
-                                           kNetworkAnonymizationKey2);
+      QuicSessionPoolPeer::GetCryptoConfig(pool_.get(), kKey2);
   EXPECT_EQ(kUserAgentId, crypto_config_handle2->GetConfig()->user_agent_id());
 
   // Destroying both handles and creating a new one with yet another
@@ -12395,8 +13015,7 @@ TEST_P(QuicSessionPoolTest, CryptoConfigCache) {
   crypto_config_handle2.reset();
 
   std::unique_ptr<QuicCryptoClientConfigHandle> crypto_config_handle3 =
-      QuicSessionPoolPeer::GetCryptoConfig(factory_.get(),
-                                           kNetworkAnonymizationKey3);
+      QuicSessionPoolPeer::GetCryptoConfig(pool_.get(), kKey3);
   EXPECT_EQ(kUserAgentId, crypto_config_handle3->GetConfig()->user_agent_id());
 }
 
@@ -12414,22 +13033,27 @@ TEST_P(QuicSessionPoolTest, CryptoConfigCacheWithNetworkAnonymizationKey) {
   const SchemefulSite kSite1(GURL("https://foo.test/"));
   const auto kNetworkAnonymizationKey1 =
       NetworkAnonymizationKey::CreateSameSite(kSite1);
+  const QuicSessionPool::QuicCryptoClientConfigKey kKey1 =
+      CreateTestQuicCryptoClientConfigKey(kNetworkAnonymizationKey1);
 
   const SchemefulSite kSite2(GURL("https://bar.test/"));
   const auto kNetworkAnonymizationKey2 =
       NetworkAnonymizationKey::CreateSameSite(kSite2);
+  const QuicSessionPool::QuicCryptoClientConfigKey kKey2 =
+      CreateTestQuicCryptoClientConfigKey(kNetworkAnonymizationKey2);
 
   const SchemefulSite kSite3(GURL("https://baz.test/"));
   const auto kNetworkAnonymizationKey3 =
       NetworkAnonymizationKey::CreateSameSite(kSite3);
+  const QuicSessionPool::QuicCryptoClientConfigKey kKey3 =
+      CreateTestQuicCryptoClientConfigKey(kNetworkAnonymizationKey3);
 
   Initialize();
 
   // Create a QuicCryptoClientConfigHandle for kNetworkAnonymizationKey1, and
   // set the user agent.
   std::unique_ptr<QuicCryptoClientConfigHandle> crypto_config_handle1 =
-      QuicSessionPoolPeer::GetCryptoConfig(factory_.get(),
-                                           kNetworkAnonymizationKey1);
+      QuicSessionPoolPeer::GetCryptoConfig(pool_.get(), kKey1);
   crypto_config_handle1->GetConfig()->set_user_agent_id(kUserAgentId1);
   EXPECT_EQ(kUserAgentId1, crypto_config_handle1->GetConfig()->user_agent_id());
 
@@ -12437,8 +13061,7 @@ TEST_P(QuicSessionPoolTest, CryptoConfigCacheWithNetworkAnonymizationKey) {
   // NetworkAnonymizationKey while the first one is still alive should return a
   // different config.
   std::unique_ptr<QuicCryptoClientConfigHandle> crypto_config_handle2 =
-      QuicSessionPoolPeer::GetCryptoConfig(factory_.get(),
-                                           kNetworkAnonymizationKey2);
+      QuicSessionPoolPeer::GetCryptoConfig(pool_.get(), kKey2);
   EXPECT_EQ("", crypto_config_handle2->GetConfig()->user_agent_id());
   crypto_config_handle2->GetConfig()->set_user_agent_id(kUserAgentId2);
   EXPECT_EQ(kUserAgentId1, crypto_config_handle1->GetConfig()->user_agent_id());
@@ -12447,11 +13070,9 @@ TEST_P(QuicSessionPoolTest, CryptoConfigCacheWithNetworkAnonymizationKey) {
   // Creating handles with the same NAKs while the old handles are still alive
   // should result in getting the same CryptoConfigs.
   std::unique_ptr<QuicCryptoClientConfigHandle> crypto_config_handle1_2 =
-      QuicSessionPoolPeer::GetCryptoConfig(factory_.get(),
-                                           kNetworkAnonymizationKey1);
+      QuicSessionPoolPeer::GetCryptoConfig(pool_.get(), kKey1);
   std::unique_ptr<QuicCryptoClientConfigHandle> crypto_config_handle2_2 =
-      QuicSessionPoolPeer::GetCryptoConfig(factory_.get(),
-                                           kNetworkAnonymizationKey2);
+      QuicSessionPoolPeer::GetCryptoConfig(pool_.get(), kKey2);
   EXPECT_EQ(kUserAgentId1,
             crypto_config_handle1_2->GetConfig()->user_agent_id());
   EXPECT_EQ(kUserAgentId2,
@@ -12465,8 +13086,7 @@ TEST_P(QuicSessionPoolTest, CryptoConfigCacheWithNetworkAnonymizationKey) {
   crypto_config_handle2_2.reset();
 
   std::unique_ptr<QuicCryptoClientConfigHandle> crypto_config_handle3 =
-      QuicSessionPoolPeer::GetCryptoConfig(factory_.get(),
-                                           kNetworkAnonymizationKey3);
+      QuicSessionPoolPeer::GetCryptoConfig(pool_.get(), kKey3);
   EXPECT_EQ("", crypto_config_handle3->GetConfig()->user_agent_id());
   crypto_config_handle3->GetConfig()->set_user_agent_id(kUserAgentId3);
   EXPECT_EQ(kUserAgentId3, crypto_config_handle3->GetConfig()->user_agent_id());
@@ -12474,12 +13094,12 @@ TEST_P(QuicSessionPoolTest, CryptoConfigCacheWithNetworkAnonymizationKey) {
 
   // The old CryptoConfigs should be recovered when creating handles with the
   // same NAKs as before.
-  crypto_config_handle2 = QuicSessionPoolPeer::GetCryptoConfig(
-      factory_.get(), kNetworkAnonymizationKey2);
-  crypto_config_handle1 = QuicSessionPoolPeer::GetCryptoConfig(
-      factory_.get(), kNetworkAnonymizationKey1);
-  crypto_config_handle3 = QuicSessionPoolPeer::GetCryptoConfig(
-      factory_.get(), kNetworkAnonymizationKey3);
+  crypto_config_handle2 =
+      QuicSessionPoolPeer::GetCryptoConfig(pool_.get(), kKey2);
+  crypto_config_handle1 =
+      QuicSessionPoolPeer::GetCryptoConfig(pool_.get(), kKey1);
+  crypto_config_handle3 =
+      QuicSessionPoolPeer::GetCryptoConfig(pool_.get(), kKey3);
   EXPECT_EQ(kUserAgentId1, crypto_config_handle1->GetConfig()->user_agent_id());
   EXPECT_EQ(kUserAgentId2, crypto_config_handle2->GetConfig()->user_agent_id());
   EXPECT_EQ(kUserAgentId3, crypto_config_handle3->GetConfig()->user_agent_id());
@@ -12508,8 +13128,9 @@ TEST_P(QuicSessionPoolTest, CryptoConfigCacheMRUWithNetworkAnonymizationKey) {
         NetworkAnonymizationKey::CreateSameSite(site));
 
     std::unique_ptr<QuicCryptoClientConfigHandle> crypto_config_handle =
-        QuicSessionPoolPeer::GetCryptoConfig(factory_.get(),
-                                             network_anonymization_keys[i]);
+        QuicSessionPoolPeer::GetCryptoConfig(
+            pool_.get(),
+            CreateTestQuicCryptoClientConfigKey(network_anonymization_keys[i]));
     crypto_config_handle->GetConfig()->set_user_agent_id(
         base::NumberToString(i));
     crypto_config_handles.emplace_back(std::move(crypto_config_handle));
@@ -12523,8 +13144,9 @@ TEST_P(QuicSessionPoolTest, CryptoConfigCacheMRUWithNetworkAnonymizationKey) {
 
     // A new handle for the same NAK returns the same crypto config.
     std::unique_ptr<QuicCryptoClientConfigHandle> crypto_config_handle =
-        QuicSessionPoolPeer::GetCryptoConfig(factory_.get(),
-                                             network_anonymization_keys[i]);
+        QuicSessionPoolPeer::GetCryptoConfig(
+            pool_.get(),
+            CreateTestQuicCryptoClientConfigKey(network_anonymization_keys[i]));
     EXPECT_EQ(base::NumberToString(i),
               crypto_config_handle->GetConfig()->user_agent_id());
   }
@@ -12541,8 +13163,9 @@ TEST_P(QuicSessionPoolTest, CryptoConfigCacheMRUWithNetworkAnonymizationKey) {
     // A new handle for the same NAK will return a new config, if the config was
     // evicted. Otherwise, it will return the same one.
     std::unique_ptr<QuicCryptoClientConfigHandle> crypto_config_handle =
-        QuicSessionPoolPeer::GetCryptoConfig(factory_.get(),
-                                             network_anonymization_keys[i]);
+        QuicSessionPoolPeer::GetCryptoConfig(
+            pool_.get(),
+            CreateTestQuicCryptoClientConfigKey(network_anonymization_keys[i]));
     if (kNumSessionsToMake - i > kNumSessionsToMake) {
       EXPECT_EQ("", crypto_config_handle->GetConfig()->user_agent_id());
     } else {
@@ -12578,11 +13201,10 @@ TEST_P(QuicSessionPoolTest,
   quic_params_->max_server_configs_stored_in_properties = 1;
   quic_params_->idle_connection_timeout = base::Seconds(500);
   Initialize();
-  factory_->set_has_quic_ever_worked_on_current_network(true);
+  pool_->set_has_quic_ever_worked_on_current_network(true);
   crypto_client_stream_factory_.set_handshake_mode(
       MockCryptoClientStream::ZERO_RTT);
-  const quic::QuicConfig* config =
-      QuicSessionPoolPeer::GetConfig(factory_.get());
+  const quic::QuicConfig* config = QuicSessionPoolPeer::GetConfig(pool_.get());
   EXPECT_EQ(500, config->IdleNetworkTimeout().ToSeconds());
   ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
 
@@ -12590,7 +13212,7 @@ TEST_P(QuicSessionPoolTest,
     SCOPED_TRACE(i);
     crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
 
-    QuicSessionPoolPeer::SetTaskRunner(factory_.get(), runner_.get());
+    QuicSessionPoolPeer::SetTaskRunner(pool_.get(), runner_.get());
 
     const AlternativeService alternative_service1(
         NextProto::kProtoQUIC, kDefaultServerHostName, kDefaultServerPort);
@@ -12667,34 +13289,46 @@ TEST_P(QuicSessionPoolTest,
     // don't count towards the limit.
     for (int j = 0; j < kNumSessionsToMake; ++j) {
       SCOPED_TRACE(j);
-      EXPECT_EQ(
-          i - (kMaxRecentCryptoConfigs + 1) < j && j <= i,
-          !QuicSessionPoolPeer::CryptoConfigCacheIsEmpty(
-              factory_.get(), kQuicServerId, network_anonymization_keys[j]));
+      EXPECT_EQ(i - (kMaxRecentCryptoConfigs + 1) < j && j <= i,
+                !QuicSessionPoolPeer::CryptoConfigCacheIsEmpty(
+                    pool_.get(), kQuicServerId,
+                    CreateTestQuicCryptoClientConfigKey(
+                        network_anonymization_keys[j])));
     }
 
     // Close the sessions, which should cause its CryptoConfigCache to be moved
     // to the MRU cache, potentially evicting the oldest entry..
-    factory_->CloseAllSessions(ERR_FAILED, quic::QUIC_PEER_GOING_AWAY);
+    pool_->CloseAllSessions(ERR_FAILED, quic::QUIC_PEER_GOING_AWAY);
 
     // There should now be at most kMaxRecentCryptoConfigs live
     // CryptoConfigCaches
     for (int j = 0; j < kNumSessionsToMake; ++j) {
       SCOPED_TRACE(j);
-      EXPECT_EQ(
-          i - kMaxRecentCryptoConfigs < j && j <= i,
-          !QuicSessionPoolPeer::CryptoConfigCacheIsEmpty(
-              factory_.get(), kQuicServerId, network_anonymization_keys[j]));
+      EXPECT_EQ(i - kMaxRecentCryptoConfigs < j && j <= i,
+                !QuicSessionPoolPeer::CryptoConfigCacheIsEmpty(
+                    pool_.get(), kQuicServerId,
+                    CreateTestQuicCryptoClientConfigKey(
+                        network_anonymization_keys[j])));
     }
   }
 }
 
-TEST_P(QuicSessionPoolTest, YieldAfterPackets) {
+void QuicSessionPoolTest::TestYielding(bool use_read_multiple,
+                                       bool yield_by_duration) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatureState(features::kQuicUseReadMultiple,
+                                    use_read_multiple);
   Initialize();
-  factory_->set_has_quic_ever_worked_on_current_network(true);
+  pool_->set_has_quic_ever_worked_on_current_network(true);
   ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
   crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
-  QuicSessionPoolPeer::SetYieldAfterPackets(factory_.get(), 0);
+
+  if (yield_by_duration) {
+    QuicSessionPoolPeer::SetYieldAfterDuration(
+        pool_.get(), quic::QuicTime::Delta::FromMilliseconds(-1));
+  } else {
+    QuicSessionPoolPeer::SetYieldAfterPackets(pool_.get(), 0);
+  }
 
   MockQuicData socket_data(version_);
   socket_data.AddRead(SYNCHRONOUS, ConstructServerConnectionClosePacket(1));
@@ -12708,22 +13342,17 @@ TEST_P(QuicSessionPoolTest, YieldAfterPackets) {
   host_resolver_->rules()->AddIPLiteralRule(kDefaultServerHostName,
                                             "192.168.0.1", "");
 
-  // Set up the TaskObserver to verify QuicChromiumPacketReader::StartReading
-  // posts a task.
-  // TODO(rtenneti): Change SpdySessionTestTaskObserver to NetTestTaskObserver??
+  // Set up the TaskObserver to verify yielding.
+  std::string expected_method =
+      use_read_multiple ? "ProcessPendingPackets" : "StartReading";
   SpdySessionTestTaskObserver observer("quic_chromium_packet_reader.cc",
-                                       "StartReading");
+                                       expected_method);
 
   RequestBuilder builder(this);
   EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
   EXPECT_THAT(callback_.WaitForResult(), IsOk());
-  // Call run_loop so that QuicChromiumPacketReader::OnReadComplete() gets
-  // called.
   base::RunLoop().RunUntilIdle();
 
-  // Verify task that the observer's executed_count is 1, which indicates
-  // QuicChromiumPacketReader::StartReading() has posted only one task and
-  // yielded the read.
   EXPECT_EQ(1u, observer.executed_count());
 
   std::unique_ptr<HttpStream> stream = CreateStream(&builder.request);
@@ -12732,48 +13361,20 @@ TEST_P(QuicSessionPoolTest, YieldAfterPackets) {
   socket_data.ExpectAllWriteDataConsumed();
 }
 
+TEST_P(QuicSessionPoolTest, YieldAfterPackets) {
+  TestYielding(/*use_read_multiple=*/false, /*yield_by_duration=*/false);
+}
+
+TEST_P(QuicSessionPoolTest, YieldAfterPacketsWithReadMultiple) {
+  TestYielding(/*use_read_multiple=*/true, /*yield_by_duration=*/false);
+}
+
 TEST_P(QuicSessionPoolTest, YieldAfterDuration) {
-  Initialize();
-  factory_->set_has_quic_ever_worked_on_current_network(true);
-  ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
-  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
-  QuicSessionPoolPeer::SetYieldAfterDuration(
-      factory_.get(), quic::QuicTime::Delta::FromMilliseconds(-1));
+  TestYielding(/*use_read_multiple=*/false, /*yield_by_duration=*/true);
+}
 
-  MockQuicData socket_data(version_);
-  socket_data.AddRead(SYNCHRONOUS, ConstructServerConnectionClosePacket(1));
-  client_maker_.SetEncryptionLevel(quic::ENCRYPTION_ZERO_RTT);
-  socket_data.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket());
-  socket_data.AddSocketDataToFactory(socket_factory_.get());
-
-  crypto_client_stream_factory_.set_handshake_mode(
-      MockCryptoClientStream::ZERO_RTT);
-  host_resolver_->set_synchronous_mode(true);
-  host_resolver_->rules()->AddIPLiteralRule(kDefaultServerHostName,
-                                            "192.168.0.1", "");
-
-  // Set up the TaskObserver to verify QuicChromiumPacketReader::StartReading
-  // posts a task.
-  // TODO(rtenneti): Change SpdySessionTestTaskObserver to NetTestTaskObserver??
-  SpdySessionTestTaskObserver observer("quic_chromium_packet_reader.cc",
-                                       "StartReading");
-
-  RequestBuilder builder(this);
-  EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
-  EXPECT_THAT(callback_.WaitForResult(), IsOk());
-  // Call run_loop so that QuicChromiumPacketReader::OnReadComplete() gets
-  // called.
-  base::RunLoop().RunUntilIdle();
-
-  // Verify task that the observer's executed_count is 1, which indicates
-  // QuicChromiumPacketReader::StartReading() has posted only one task and
-  // yielded the read.
-  EXPECT_EQ(1u, observer.executed_count());
-
-  std::unique_ptr<HttpStream> stream = CreateStream(&builder.request);
-  EXPECT_FALSE(stream.get());  // Session is already closed.
-  socket_data.ExpectAllReadDataConsumed();
-  socket_data.ExpectAllWriteDataConsumed();
+TEST_P(QuicSessionPoolTest, YieldAfterDurationWithReadMultiple) {
+  TestYielding(/*use_read_multiple=*/true, /*yield_by_duration=*/true);
 }
 
 // Pool to existing session with matching quic::QuicServerId
@@ -13018,7 +13619,7 @@ TEST_P(QuicSessionPoolWithDestinationTest, SharedCertificate) {
   socket_data.ExpectAllWriteDataConsumed();
 }
 
-// QuicSessionRequest is not pooled if PrivacyMode differs.
+// `QuicSessionRequest` is not pooled if the `privacy_mode` field differs.
 TEST_P(QuicSessionPoolWithDestinationTest, DifferentPrivacyMode) {
   Initialize();
 
@@ -13076,9 +13677,9 @@ TEST_P(QuicSessionPoolWithDestinationTest, DifferentPrivacyMode) {
   std::unique_ptr<HttpStream> stream2 = CreateStream(&builder2.request);
   EXPECT_TRUE(stream2.get());
 
-  // |request2| does not pool to the first session, because PrivacyMode does not
-  // match.  Instead, another session is opened to the same destination, but
-  // with a different quic::QuicServerId.
+  // The second request does not pool to the first session because
+  // `privacy_mode` does not match. Instead, another session is opened to the
+  // same destination but with a different `quic::QuicServerId`.
   QuicChromiumClientSession::Handle* session1 =
       QuicHttpStreamPeer::GetSessionHandle(stream1.get());
   QuicChromiumClientSession::Handle* session2 =
@@ -13096,7 +13697,7 @@ TEST_P(QuicSessionPoolWithDestinationTest, DifferentPrivacyMode) {
   socket_data2.ExpectAllWriteDataConsumed();
 }
 
-// QuicSessionRequest is not pooled if the secure_dns_policy field differs.
+// `QuicSessionRequest` is not pooled if the `secure_dns_policy` field differs.
 TEST_P(QuicSessionPoolWithDestinationTest, DifferentSecureDnsPolicy) {
   Initialize();
 
@@ -13154,8 +13755,8 @@ TEST_P(QuicSessionPoolWithDestinationTest, DifferentSecureDnsPolicy) {
   std::unique_ptr<HttpStream> stream2 = CreateStream(&builder2.request);
   EXPECT_TRUE(stream2.get());
 
-  // |request2| does not pool to the first session, because |secure_dns_policy|
-  // does not match.
+  // The second request does not pool to the first session, because
+  // `secure_dns_policy` does not match.
   QuicChromiumClientSession::Handle* session1 =
       QuicHttpStreamPeer::GetSessionHandle(stream1.get());
   QuicChromiumClientSession::Handle* session2 =
@@ -13167,7 +13768,90 @@ TEST_P(QuicSessionPoolWithDestinationTest, DifferentSecureDnsPolicy) {
   socket_data2.ExpectAllWriteDataConsumed();
 }
 
-// QuicSessionRequest is not pooled if the ProxyChain field differs.
+// `QuicSessionRequest` is not pooled if the `cert_verifier_flags` field has a
+// different value for the `CertVerifier::VERIFY_DISABLE_NETWORK_FETCHES` bit.
+TEST_P(QuicSessionPoolWithDestinationTest,
+       DifferentDisableCertVerificationNetworkFetches) {
+  Initialize();
+
+  GURL url1("https://www.example.org/");
+  GURL url2("https://mail.example.org/");
+  origin1_ = url::SchemeHostPort(url1);
+  origin2_ = url::SchemeHostPort(url2);
+
+  url::SchemeHostPort destination = GetDestination();
+
+  scoped_refptr<X509Certificate> cert(
+      ImportCertFromFile(GetTestCertsDirectory(), "wildcard.pem"));
+  ASSERT_TRUE(cert->VerifyNameMatch(origin1_.host()));
+  ASSERT_TRUE(cert->VerifyNameMatch(origin2_.host()));
+  ASSERT_FALSE(cert->VerifyNameMatch(kDifferentHostname));
+
+  ProofVerifyDetailsChromium verify_details1;
+  verify_details1.cert_verify_result.verified_cert = cert;
+  verify_details1.cert_verify_result.is_issued_by_known_root = true;
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details1);
+
+  ProofVerifyDetailsChromium verify_details2;
+  verify_details2.cert_verify_result.verified_cert = cert;
+  verify_details2.cert_verify_result.is_issued_by_known_root = true;
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details2);
+
+  MockQuicData socket_data1(version_);
+  socket_data1.AddReadPauseForever();
+  socket_data1.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket());
+  socket_data1.AddSocketDataToFactory(socket_factory_.get());
+  client_maker_.Reset();
+  MockQuicData socket_data2(version_);
+  socket_data2.AddReadPauseForever();
+  socket_data2.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket());
+  socket_data2.AddSocketDataToFactory(socket_factory_.get());
+
+  RequestBuilder builder1(this);
+  builder1.destination = destination;
+  builder1.cert_verify_flags = 0;
+  builder1.url = url1;
+  EXPECT_EQ(ERR_IO_PENDING, builder1.CallRequest());
+  EXPECT_EQ(OK, callback_.WaitForResult());
+  std::unique_ptr<HttpStream> stream1 = CreateStream(&builder1.request);
+  EXPECT_TRUE(stream1.get());
+  EXPECT_TRUE(HasActiveSession(
+      origin1_, PRIVACY_MODE_DISABLED, NetworkAnonymizationKey(),
+      ProxyChain::Direct(), SessionUsage::kDestination,
+      /*require_dns_https_alpn=*/false,
+      /*disable_cert_verification_network_fetches=*/false));
+
+  TestCompletionCallback callback2;
+  RequestBuilder builder2(this);
+  builder2.destination = destination;
+  builder2.cert_verify_flags |= CertVerifier::VERIFY_DISABLE_NETWORK_FETCHES;
+  builder2.url = url2;
+  builder2.callback = callback2.callback();
+  EXPECT_EQ(ERR_IO_PENDING, builder2.CallRequest());
+  EXPECT_EQ(OK, callback2.WaitForResult());
+  std::unique_ptr<HttpStream> stream2 = CreateStream(&builder2.request);
+  EXPECT_TRUE(stream2.get());
+  EXPECT_TRUE(HasActiveSession(
+      origin2_, PRIVACY_MODE_DISABLED, NetworkAnonymizationKey(),
+      ProxyChain::Direct(), SessionUsage::kDestination,
+      /*require_dns_https_alpn=*/false,
+      /*disable_cert_verification_network_fetches=*/true));
+
+  // The second request does not pool to the first session because
+  // `disable_cert_verification_network_fetches` in the QuicSessionKey does not
+  // match.
+  QuicChromiumClientSession::Handle* session1 =
+      QuicHttpStreamPeer::GetSessionHandle(stream1.get());
+  QuicChromiumClientSession::Handle* session2 =
+      QuicHttpStreamPeer::GetSessionHandle(stream2.get());
+  EXPECT_FALSE(session1->SharesSameSession(*session2));
+  socket_data1.ExpectAllReadDataConsumed();
+  socket_data1.ExpectAllWriteDataConsumed();
+  socket_data2.ExpectAllReadDataConsumed();
+  socket_data2.ExpectAllWriteDataConsumed();
+}
+
+// `QuicSessionRequest` is not pooled if the `proxy_chain` field differs.
 TEST_P(QuicSessionPoolWithDestinationTest, DifferentProxyChain) {
   Initialize();
 
@@ -13213,7 +13897,7 @@ TEST_P(QuicSessionPoolWithDestinationTest, DifferentProxyChain) {
   socket_data1.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket(1));
   socket_data1.AddWrite(
       SYNCHRONOUS, ConstructConnectUdpRequestPacket(
-                       2, stream_id, proxy1.host(),
+                       2, stream_id, proxy1.GetHost(),
                        "/.well-known/masque/udp/www.example.org/443/", false));
   socket_data1.AddRead(ASYNC, ConstructServerSettingsPacket(3));
   socket_data1.AddRead(ASYNC, ConstructOkResponsePacket(4, stream_id, true));
@@ -13239,7 +13923,7 @@ TEST_P(QuicSessionPoolWithDestinationTest, DifferentProxyChain) {
   socket_data2.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket(1));
   socket_data2.AddWrite(
       SYNCHRONOUS, ConstructConnectUdpRequestPacket(
-                       2, stream_id, proxy2.host(),
+                       2, stream_id, proxy2.GetHost(),
                        "/.well-known/masque/udp/mail.example.org/443/", false));
   socket_data2.AddRead(ASYNC, ConstructServerSettingsPacket(3));
   socket_data2.AddRead(ASYNC, ConstructOkResponsePacket(4, stream_id, true));
@@ -13293,8 +13977,8 @@ TEST_P(QuicSessionPoolWithDestinationTest, DifferentProxyChain) {
   std::unique_ptr<HttpStream> stream2 = CreateStream(&builder2.request);
   EXPECT_TRUE(stream2.get());
 
-  // `request2` does not pool to the first session, because `proxy_chain` does
-  // not match.
+  // The second request does not pool to the first session because `proxy_chain`
+  // does not match.
   QuicChromiumClientSession::Handle* session1 =
       QuicHttpStreamPeer::GetSessionHandle(stream1.get());
   QuicChromiumClientSession::Handle* session2 =
@@ -13310,7 +13994,7 @@ TEST_P(QuicSessionPoolWithDestinationTest, DifferentProxyChain) {
   socket_data2.ExpectAllWriteDataConsumed();
 }
 
-// QuicSessionRequest is not pooled if the SessionUsage field differs.
+// `QuicSessionRequest` is not pooled if the `session_usage` field differs.
 TEST_P(QuicSessionPoolWithDestinationTest, DifferentSessionUsage) {
   Initialize();
 
@@ -13363,13 +14047,17 @@ TEST_P(QuicSessionPoolWithDestinationTest, DifferentSessionUsage) {
   builder2.session_usage = SessionUsage::kProxy;
   builder2.url = url2;
   builder2.callback = callback2.callback();
+  // Connections to proxies are expected to have a `cert_verifier_flags` value
+  // corresponding to cert verification network fetches being disabled, so set
+  // that here.
+  builder2.cert_verify_flags |= CertVerifier::VERIFY_DISABLE_NETWORK_FETCHES;
   EXPECT_EQ(ERR_IO_PENDING, builder2.CallRequest());
   EXPECT_EQ(OK, callback2.WaitForResult());
   std::unique_ptr<HttpStream> stream2 = CreateStream(&builder2.request);
   EXPECT_TRUE(stream2.get());
 
-  // `request2` does not pool to the first session, because `session_usage`
-  // does not match.
+  // The second request does not pool to the first session because
+  // `session_usage` does not match.
   QuicChromiumClientSession::Handle* session1 =
       QuicHttpStreamPeer::GetSessionHandle(stream1.get());
   QuicChromiumClientSession::Handle* session2 =
@@ -13442,9 +14130,9 @@ TEST_P(QuicSessionPoolWithDestinationTest, DisjointCertificate) {
   std::unique_ptr<HttpStream> stream2 = CreateStream(&builder2.request);
   EXPECT_TRUE(stream2.get());
 
-  // |request2| does not pool to the first session, because the certificate does
-  // not match.  Instead, another session is opened to the same destination, but
-  // with a different quic::QuicServerId.
+  // The second request does not pool to the first session because the
+  // certificate does not match. Instead, another session is opened to the same
+  // destination but with a different `quic::QuicServerId`.
   QuicChromiumClientSession::Handle* session1 =
       QuicHttpStreamPeer::GetSessionHandle(stream1.get());
   QuicChromiumClientSession::Handle* session2 =
@@ -13470,8 +14158,8 @@ TEST_P(QuicSessionPoolTest, ClearCachedStatesInCryptoConfig) {
   // Need to hold onto this through the test, to keep the QuicCryptoClientConfig
   // alive.
   std::unique_ptr<QuicCryptoClientConfigHandle> crypto_config_handle =
-      QuicSessionPoolPeer::GetCryptoConfig(factory_.get(),
-                                           NetworkAnonymizationKey());
+      QuicSessionPoolPeer::GetCryptoConfig(
+          pool_.get(), QuicSessionPool::QuicCryptoClientConfigKey());
 
   struct TestCase {
     TestCase(const std::string& host,
@@ -13497,14 +14185,14 @@ TEST_P(QuicSessionPoolTest, ClearCachedStatesInCryptoConfig) {
 
   // Clear cached states for the origin https://www.example.com:4433.
   GURL origin("https://www.example.com:4433");
-  factory_->ClearCachedStatesInCryptoConfig(base::BindRepeating(
+  pool_->ClearCachedStatesInCryptoConfig(base::BindRepeating(
       static_cast<bool (*)(const GURL&, const GURL&)>(::operator==), origin));
   EXPECT_FALSE(test_cases[0].state->certs().empty());
   EXPECT_FALSE(test_cases[1].state->certs().empty());
   EXPECT_TRUE(test_cases[2].state->certs().empty());
 
   // Clear all cached states.
-  factory_->ClearCachedStatesInCryptoConfig(
+  pool_->ClearCachedStatesInCryptoConfig(
       base::RepeatingCallback<bool(const GURL&)>());
   EXPECT_TRUE(test_cases[0].state->certs().empty());
   EXPECT_TRUE(test_cases[1].state->certs().empty());
@@ -13523,8 +14211,7 @@ TEST_P(QuicSessionPoolTest, ConfigConnectionOptions) {
 
   Initialize();
 
-  const quic::QuicConfig* config =
-      QuicSessionPoolPeer::GetConfig(factory_.get());
+  const quic::QuicConfig* config = QuicSessionPoolPeer::GetConfig(pool_.get());
   EXPECT_EQ(quic_params_->connection_options, config->SendConnectionOptions());
   EXPECT_TRUE(config->HasClientRequestedIndependentOption(
       quic::kTBBR, quic::Perspective::IS_CLIENT));
@@ -13629,8 +14316,7 @@ TEST_P(QuicSessionPoolTest, ConfigMaxTimeBeforeCryptoHandshake) {
   quic_params_->max_idle_time_before_crypto_handshake = base::Seconds(13);
   Initialize();
 
-  const quic::QuicConfig* config =
-      QuicSessionPoolPeer::GetConfig(factory_.get());
+  const quic::QuicConfig* config = QuicSessionPoolPeer::GetConfig(pool_.get());
   EXPECT_EQ(quic::QuicTime::Delta::FromSeconds(11),
             config->max_time_before_crypto_handshake());
   EXPECT_EQ(quic::QuicTime::Delta::FromSeconds(13),
@@ -13790,7 +14476,7 @@ TEST_P(QuicSessionPoolTest, ResultAfterHostResolutionCallbackAsyncAsync) {
   host_resolver_->set_ondemand_mode(true);
   crypto_client_stream_factory_.set_handshake_mode(
       MockCryptoClientStream::ZERO_RTT);
-  factory_->set_has_quic_ever_worked_on_current_network(false);
+  pool_->set_has_quic_ever_worked_on_current_network(false);
 
   MockQuicData socket_data(version_);
   socket_data.AddReadPause();
@@ -13870,7 +14556,7 @@ TEST_P(QuicSessionPoolTest, ResultAfterHostResolutionCallbackSyncAsync) {
   host_resolver_->set_synchronous_mode(true);
   crypto_client_stream_factory_.set_handshake_mode(
       MockCryptoClientStream::ZERO_RTT);
-  factory_->set_has_quic_ever_worked_on_current_network(false);
+  pool_->set_has_quic_ever_worked_on_current_network(false);
 
   MockQuicData socket_data(version_);
   socket_data.AddReadPause();
@@ -14039,7 +14725,7 @@ TEST_P(QuicSessionPoolTest, ReadErrorClosesConnection) {
 
   // Ensure that the session is alive and active before we read the error.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
 
   // Resume the socket data to get the read error delivered.
@@ -14068,7 +14754,7 @@ TEST_P(QuicSessionPoolTest, MessageTooBigReadErrorDoesNotCloseConnection) {
 
   // Ensure that the session is alive and active before we read the error.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
 
   // Resume the socket data to get the read error delivered.
@@ -14097,7 +14783,7 @@ TEST_P(QuicSessionPoolTest, ZeroLengthReadDoesNotCloseConnection) {
 
   // Ensure that the session is alive and active before we read the error.
   QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(factory_.get(), session));
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
   EXPECT_TRUE(HasActiveSession(kDefaultDestination));
 
   // Resume the socket data to get the zero-length read delivered.
@@ -14183,6 +14869,7 @@ TEST_P(QuicSessionPoolTest, DoNotUseDnsAliases) {
   // not be performed.
   RequestBuilder builder(this);
   builder.session_usage = SessionUsage::kProxy;
+  builder.cert_verify_flags |= CertVerifier::VERIFY_DISABLE_NETWORK_FETCHES;
   EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
   EXPECT_THAT(callback_.WaitForResult(), IsOk());
   std::unique_ptr<HttpStream> stream = CreateStream(&builder.request);
@@ -14228,7 +14915,7 @@ TEST_P(QuicSessionPoolTest, RequireDnsHttpsAlpnMatch) {
   endpoints[0].ip_endpoints = {IPEndPoint(IPAddress::IPv4Localhost(), 0)};
   endpoints[0].metadata.supported_protocol_alpns = {
       quic::AlpnForVersion(version_)};
-  // Add a final non-protocol endpoint at the end.
+  // Add a final authority endpoint (no protocols specified) at the end.
   endpoints[1].ip_endpoints = {IPEndPoint(IPAddress::IPv4Localhost(), 0)};
   TestRequireDnsHttpsAlpn(std::move(endpoints), /*expect_success=*/true);
 }
@@ -14237,7 +14924,7 @@ TEST_P(QuicSessionPoolTest, RequireDnsHttpsAlpnUnknownAlpn) {
   std::vector<HostResolverEndpointResult> endpoints(2);
   endpoints[0].ip_endpoints = {IPEndPoint(IPAddress::IPv4Localhost(), 0)};
   endpoints[0].metadata.supported_protocol_alpns = {"unknown"};
-  // Add a final non-protocol endpoint at the end.
+  // Add a final authority endpoint (no protocols specified) at the end.
   endpoints[1].ip_endpoints = {IPEndPoint(IPAddress::IPv4Localhost(), 0)};
   TestRequireDnsHttpsAlpn(std::move(endpoints), /*expect_success=*/false);
 }
@@ -14247,7 +14934,7 @@ TEST_P(QuicSessionPoolTest, RequireDnsHttpsAlpnUnknownAndSupportedAlpn) {
   endpoints[0].ip_endpoints = {IPEndPoint(IPAddress::IPv4Localhost(), 0)};
   endpoints[0].metadata.supported_protocol_alpns = {
       "unknown", quic::AlpnForVersion(version_)};
-  // Add a final non-protocol endpoint at the end.
+  // Add a final authority endpoint (no protocols specified) at the end.
   endpoints[1].ip_endpoints = {IPEndPoint(IPAddress::IPv4Localhost(), 0)};
   TestRequireDnsHttpsAlpn(std::move(endpoints), /*expect_success=*/true);
 }
@@ -14259,7 +14946,7 @@ TEST_P(QuicSessionPoolTest, RequireDnsHttpsNotAlpnName) {
   endpoints[0].ip_endpoints = {IPEndPoint(IPAddress::IPv4Localhost(), 0)};
   endpoints[0].metadata.supported_protocol_alpns = {
       quic::ParsedQuicVersionToString(version_)};
-  // Add a final non-protocol endpoint at the end.
+  // Add a final authority endpoint (no protocols specified) at the end.
   endpoints[1].ip_endpoints = {IPEndPoint(IPAddress::IPv4Localhost(), 0)};
   TestRequireDnsHttpsAlpn(std::move(endpoints), /*expect_success=*/false);
 }
@@ -14461,23 +15148,30 @@ TEST_P(QuicSessionPoolDnsAliasPoolingTest, IPPooling) {
   socket_data.AddSocketDataToFactory(socket_factory_.get());
 
   SessionUsage session_usage;
+  bool expected_disable_cert_verification_network_fetches;
   if (use_dns_aliases_) {
     session_usage = SessionUsage::kDestination;
+    expected_disable_cert_verification_network_fetches = false;
   } else {
     session_usage = SessionUsage::kProxy;
+    expected_disable_cert_verification_network_fetches = true;
   }
   RequestBuilder builder1(this);
   builder1.destination = kOrigin1;
   builder1.session_usage = session_usage;
   builder1.url = kUrl1;
+  if (session_usage == SessionUsage::kProxy) {
+    builder1.cert_verify_flags |= CertVerifier::VERIFY_DISABLE_NETWORK_FETCHES;
+  }
   EXPECT_EQ(ERR_IO_PENDING, builder1.CallRequest());
   EXPECT_THAT(callback_.WaitForResult(), IsOk());
 
   std::unique_ptr<HttpStream> stream1 = CreateStream(&builder1.request);
   EXPECT_TRUE(stream1.get());
-  EXPECT_TRUE(HasActiveSession(kOrigin1, PRIVACY_MODE_DISABLED,
-                               NetworkAnonymizationKey(), ProxyChain::Direct(),
-                               session_usage));
+  EXPECT_TRUE(HasActiveSession(
+      kOrigin1, PRIVACY_MODE_DISABLED, NetworkAnonymizationKey(),
+      ProxyChain::Direct(), session_usage, /*require_dns_https_alpn=*/false,
+      expected_disable_cert_verification_network_fetches));
 
   TestCompletionCallback callback2;
   RequestBuilder builder2(this);
@@ -14485,14 +15179,18 @@ TEST_P(QuicSessionPoolDnsAliasPoolingTest, IPPooling) {
   builder2.session_usage = session_usage;
   builder2.url = kUrl2;
   builder2.callback = callback2.callback();
+  if (session_usage == SessionUsage::kProxy) {
+    builder2.cert_verify_flags |= CertVerifier::VERIFY_DISABLE_NETWORK_FETCHES;
+  }
   EXPECT_EQ(ERR_IO_PENDING, builder2.CallRequest());
   EXPECT_THAT(callback2.WaitForResult(), IsOk());
 
   std::unique_ptr<HttpStream> stream2 = CreateStream(&builder2.request);
   EXPECT_TRUE(stream2.get());
-  EXPECT_TRUE(HasActiveSession(kOrigin2, PRIVACY_MODE_DISABLED,
-                               NetworkAnonymizationKey(), ProxyChain::Direct(),
-                               session_usage));
+  EXPECT_TRUE(HasActiveSession(
+      kOrigin2, PRIVACY_MODE_DISABLED, NetworkAnonymizationKey(),
+      ProxyChain::Direct(), session_usage, /*require_dns_https_alpn=*/false,
+      expected_disable_cert_verification_network_fetches));
 
   QuicChromiumClientSession::Handle* session1 =
       QuicHttpStreamPeer::GetSessionHandle(stream1.get());
@@ -14648,6 +15346,78 @@ TEST_P(QuicSessionPoolTest, EchDisabled) {
   EXPECT_FALSE(config.ech_grease_enabled);
 }
 
+// Test that, when EchMode is kDisabled for the host, neither ECH nor ECH GREASE
+// are configured.
+TEST_P(QuicSessionPoolTest, EchModeDisabledForHost) {
+  quic_params_->supported_versions = {version_};
+  HostResolverEndpointResult endpoint;
+  endpoint.ip_endpoints = {IPEndPoint(IPAddress::IPv4Localhost(), 0)};
+  endpoint.metadata.supported_protocol_alpns = {quic::AlpnForVersion(version_)};
+  endpoint.metadata.ech_config_list = {1, 2, 3, 4};
+
+  host_resolver_ = std::make_unique<MockHostResolver>();
+  host_resolver_->rules()->AddRule(
+      kDefaultServerHostName,
+      MockHostResolverBase::RuleResolver::RuleResult({endpoint}));
+
+  ssl_config_service_.SetEchModeGetter(
+      std::make_unique<TestStaticEchModeGetter>(EchMode::kDisabled,
+                                                kDefaultServerHostName));
+
+  Initialize();
+  ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
+
+  MockQuicData socket_data(version_);
+  socket_data.AddReadPauseForever();
+  socket_data.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket());
+  socket_data.AddSocketDataToFactory(socket_factory_.get());
+
+  RequestBuilder builder(this);
+  builder.quic_version = quic::ParsedQuicVersion::Unsupported();
+  builder.require_dns_https_alpn = true;
+  EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
+  ASSERT_THAT(callback_.WaitForResult(), IsOk());
+
+  QuicChromiumClientSession* session = GetActiveSession(
+      kDefaultDestination, PRIVACY_MODE_DISABLED, NetworkAnonymizationKey(),
+      ProxyChain::Direct(), SessionUsage::kDestination,
+      /*require_dns_https_alpn=*/true);
+  ASSERT_TRUE(session);
+  quic::QuicSSLConfig config = session->GetSSLConfig();
+  EXPECT_TRUE(config.ech_config_list.empty());
+  EXPECT_FALSE(config.ech_grease_enabled);
+}
+
+// Test that EchMode::kStrict prevents connections to endpoints without ECH
+// configs.
+TEST_P(QuicSessionPoolTest, EchModeStrictNoFallback) {
+  ssl_config_service_.SetEchModeGetter(
+      std::make_unique<TestStaticEchModeGetter>(EchMode::kStrict,
+                                                kDefaultServerHostName));
+
+  // The A/AAAA is compatible with QUIC, but is ineligible in EchMode::kStrict.
+  std::vector<HostResolverEndpointResult> endpoints(1);
+  endpoints[0].ip_endpoints = {IPEndPoint(IPAddress::IPv4Localhost(), 0)};
+
+  host_resolver_ = std::make_unique<MockHostResolver>();
+  host_resolver_->rules()->AddRule(
+      kDefaultServerHostName,
+      MockHostResolverBase::RuleResolver::RuleResult(std::move(endpoints)));
+
+  Initialize();
+  ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
+
+  MockQuicData socket_data(version_);
+  socket_data.AddReadPauseForever();
+  socket_data.AddSocketDataToFactory(socket_factory_.get());
+
+  RequestBuilder builder(this);
+  EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
+  EXPECT_THAT(callback_.WaitForResult(), IsError(ERR_STRICT_ECH_REQUIRED));
+}
+
 // Test that, when the server supports ECH, the connection should use
 // SVCB-reliant behavior.
 TEST_P(QuicSessionPoolTest, EchSvcbReliant) {
@@ -14715,6 +15485,418 @@ TEST_P(QuicSessionPoolTest, EchDisabledSvcbOptional) {
   EXPECT_THAT(callback_.WaitForResult(), IsOk());
 }
 
+// Test that, when EchMode is kDisabled for the host, SVCB-reliant behavior
+// doesn't trigger.
+TEST_P(QuicSessionPoolTest, EchModeDisabledForHostSvcbOptional) {
+  // The HTTPS-RR route only advertises HTTP/2 and is therefore incompatible
+  // with QUIC. The fallback A/AAAA is compatible, but is ineligible in
+  // ECH-capable clients.
+  std::vector<HostResolverEndpointResult> endpoints(2);
+  endpoints[0].ip_endpoints = {IPEndPoint(IPAddress::IPv4Localhost(), 0)};
+  endpoints[0].metadata.supported_protocol_alpns = {"h2"};
+  endpoints[0].metadata.ech_config_list = {1, 2, 3, 4};
+  endpoints[1].ip_endpoints = {IPEndPoint(IPAddress::IPv4Localhost(), 0)};
+
+  host_resolver_ = std::make_unique<MockHostResolver>();
+  host_resolver_->rules()->AddRule(
+      kDefaultServerHostName,
+      MockHostResolverBase::RuleResolver::RuleResult(std::move(endpoints)));
+
+  // This client explicitly disables ECH via EchMode for the host, so the
+  // connection should succeed using the fallback endpoint.
+  ssl_config_service_.SetEchModeGetter(
+      std::make_unique<TestStaticEchModeGetter>(EchMode::kDisabled,
+                                                kDefaultServerHostName));
+
+  Initialize();
+  ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
+
+  MockQuicData socket_data(version_);
+  socket_data.AddReadPauseForever();
+  socket_data.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket());
+  socket_data.AddSocketDataToFactory(socket_factory_.get());
+
+  RequestBuilder builder(this);
+  EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
+  ASSERT_THAT(callback_.WaitForResult(), IsOk());
+
+  QuicChromiumClientSession* session = GetActiveSession(
+      kDefaultDestination, PRIVACY_MODE_DISABLED, NetworkAnonymizationKey(),
+      ProxyChain::Direct(), SessionUsage::kDestination,
+      /*require_dns_https_alpn=*/false);
+  ASSERT_TRUE(session);
+  quic::QuicSSLConfig config = session->GetSSLConfig();
+  EXPECT_TRUE(config.ech_config_list.empty());
+  EXPECT_FALSE(config.ech_grease_enabled);
+}
+
+// Test that Trust Anchor IDs are not advertised if the feature is enabled but
+// none are configured.
+TEST_P(QuicSessionPoolTest, TrustAnchorIDsNotConfigured) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(features::kTLSTrustAnchorIDs);
+
+  SSLContextConfig ssl_config;
+  ssl_config_service_.UpdateSSLConfigAndNotify(ssl_config);
+
+  HostResolverEndpointResult endpoint;
+  endpoint.ip_endpoints = {IPEndPoint(IPAddress::IPv4Localhost(), 0)};
+  endpoint.metadata.trust_anchor_ids = {
+      {0x01, 0x02, 0x03}, {0x02, 0x02}, {0x04, 05}};
+
+  host_resolver_ = std::make_unique<MockHostResolver>();
+  host_resolver_->rules()->AddRule(
+      kDefaultServerHostName,
+      MockHostResolverBase::RuleResolver::RuleResult({endpoint}));
+
+  Initialize();
+  ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
+
+  MockQuicData socket_data(version_);
+  socket_data.AddReadPauseForever();
+  socket_data.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket());
+  socket_data.AddSocketDataToFactory(socket_factory_.get());
+
+  RecordingNetLogObserver net_log_observer(net_log_.net_log(),
+                                           NetLogCaptureMode::kDefault);
+  RequestBuilder builder(this);
+  EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
+  ASSERT_THAT(callback_.WaitForResult(), IsOk());
+
+  QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
+  ASSERT_TRUE(session);
+  quic::QuicSSLConfig config = session->GetSSLConfig();
+  EXPECT_EQ(config.trust_anchor_ids, std::nullopt);
+  auto entries =
+      net_log_observer.GetEntriesWithType(NetLogEventType::QUIC_SESSION);
+  ASSERT_EQ(1u, entries.size());
+  EXPECT_EQ("1.2.3, 2.2, 4.5",
+            GetStringValueFromParams(entries[0], "trust_anchor_ids_from_dns"));
+  EXPECT_FALSE(entries[0].params.contains("selected_trust_anchor_ids"));
+}
+
+// Test that Trust Anchor IDs are provided via GetSSLConfig() when enabled.
+TEST_P(QuicSessionPoolTest, TrustAnchorIDs) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(features::kTLSTrustAnchorIDs);
+
+  SSLContextConfig ssl_config;
+  ssl_config.trust_anchor_ids = {{0x01, 0x02, 0x03}, {0x01, 0x01}};
+  ssl_config_service_.UpdateSSLConfigAndNotify(ssl_config);
+
+  HostResolverEndpointResult endpoint;
+  endpoint.ip_endpoints = {IPEndPoint(IPAddress::IPv4Localhost(), 0)};
+  endpoint.metadata.trust_anchor_ids = {
+      {0x01, 0x02, 0x03}, {0x02, 0x02}, {0x04, 05}};
+
+  host_resolver_ = std::make_unique<MockHostResolver>();
+  host_resolver_->rules()->AddRule(
+      kDefaultServerHostName,
+      MockHostResolverBase::RuleResolver::RuleResult({endpoint}));
+
+  Initialize();
+  ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
+
+  MockQuicData socket_data(version_);
+  socket_data.AddReadPauseForever();
+  socket_data.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket());
+  socket_data.AddSocketDataToFactory(socket_factory_.get());
+
+  RecordingNetLogObserver net_log_observer(net_log_.net_log(),
+                                           NetLogCaptureMode::kDefault);
+  RequestBuilder builder(this);
+  EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
+  ASSERT_THAT(callback_.WaitForResult(), IsOk());
+
+  QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
+  ASSERT_TRUE(session);
+  quic::QuicSSLConfig config = session->GetSSLConfig();
+  EXPECT_THAT(
+      x509_util::ParseTlsTrustAnchorIDs(
+          base::as_byte_span(config.trust_anchor_ids.value())),
+      testing::UnorderedElementsAre(std::vector<uint8_t>{0x01, 0x02, 0x03},
+                                    std::vector<uint8_t>{0x01, 0x01}));
+  auto entries =
+      net_log_observer.GetEntriesWithType(NetLogEventType::QUIC_SESSION);
+  ASSERT_EQ(1u, entries.size());
+  EXPECT_EQ("1.2.3, 2.2, 4.5",
+            GetStringValueFromParams(entries[0], "trust_anchor_ids_from_dns"));
+  EXPECT_THAT(
+      base::SplitString(
+          GetStringValueFromParams(entries[0], "selected_trust_anchor_ids"),
+          ", ", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY),
+      testing::UnorderedElementsAre("1.2.3", "1.1"));
+}
+
+// Test that Server Handshake Padding is not requested via GetSSLConfig() when
+// not enabled.
+TEST_P(QuicSessionPoolTest, ServerHandshakePaddingNotRequested) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(features::kAddTLSServerHandshakePadding);
+
+  Initialize();
+  ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
+
+  MockQuicData socket_data(version_);
+  socket_data.AddReadPauseForever();
+  socket_data.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket());
+  socket_data.AddSocketDataToFactory(socket_factory_.get());
+
+  RecordingNetLogObserver net_log_observer(net_log_.net_log(),
+                                           NetLogCaptureMode::kDefault);
+  RequestBuilder builder(this);
+  EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
+  ASSERT_THAT(callback_.WaitForResult(), IsOk());
+
+  QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
+  ASSERT_TRUE(session);
+  quic::QuicSSLConfig config = session->GetSSLConfig();
+  EXPECT_FALSE(config.server_padding_to_request.has_value());
+  auto entries =
+      net_log_observer.GetEntriesWithType(NetLogEventType::QUIC_SESSION);
+  ASSERT_EQ(1u, entries.size());
+  EXPECT_FALSE(
+      GetOptionalIntegerValueFromParams(entries[0], "requested_server_padding")
+          .has_value());
+}
+
+// Test that Server Handshake Padding is requested via GetSSLConfig() when
+// enabled.
+TEST_P(QuicSessionPoolTest, ServerHandshakePaddingRequested) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      features::kAddTLSServerHandshakePadding,
+      {{"AddTLSServerHandshakePaddingBytes", "128"}});
+
+  Initialize();
+  ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
+
+  MockQuicData socket_data(version_);
+  socket_data.AddReadPauseForever();
+  socket_data.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket());
+  socket_data.AddSocketDataToFactory(socket_factory_.get());
+
+  RecordingNetLogObserver net_log_observer(net_log_.net_log(),
+                                           NetLogCaptureMode::kDefault);
+  RequestBuilder builder(this);
+  EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
+  ASSERT_THAT(callback_.WaitForResult(), IsOk());
+
+  QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
+  ASSERT_TRUE(session);
+  quic::QuicSSLConfig config = session->GetSSLConfig();
+  EXPECT_EQ(config.server_padding_to_request, 128);
+  auto entries =
+      net_log_observer.GetEntriesWithType(NetLogEventType::QUIC_SESSION);
+  ASSERT_EQ(1u, entries.size());
+  EXPECT_EQ(128,
+            GetIntegerValueFromParams(entries[0], "requested_server_padding"));
+}
+
+TEST_P(QuicSessionPoolTest, ServerHandshakePaddingZeroPadding) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      features::kAddTLSServerHandshakePadding,
+      {{"AddTLSServerHandshakePaddingBytes", "0"}});
+
+  Initialize();
+  ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
+
+  MockQuicData socket_data(version_);
+  socket_data.AddReadPauseForever();
+  socket_data.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket());
+  socket_data.AddSocketDataToFactory(socket_factory_.get());
+
+  RecordingNetLogObserver net_log_observer(net_log_.net_log(),
+                                           NetLogCaptureMode::kDefault);
+  RequestBuilder builder(this);
+  EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
+  ASSERT_THAT(callback_.WaitForResult(), IsOk());
+
+  QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
+  ASSERT_TRUE(session);
+  quic::QuicSSLConfig config = session->GetSSLConfig();
+  EXPECT_EQ(config.server_padding_to_request, 0);
+  auto entries =
+      net_log_observer.GetEntriesWithType(NetLogEventType::QUIC_SESSION);
+  ASSERT_EQ(1u, entries.size());
+  EXPECT_EQ(0,
+            GetIntegerValueFromParams(entries[0], "requested_server_padding"));
+}
+
+// Test that MTC Trust Anchor IDs are provided via GetSSLConfig() when enabled.
+TEST_P(QuicSessionPoolTest, MtcTrustAnchorIDs) {
+  base::test::ScopedFeatureList feature_list;
+#if BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
+  feature_list.InitWithFeatures(
+      {features::kTLSTrustAnchorIDs, features::kVerifyMTCs}, {});
+#else
+  feature_list.InitAndEnableFeature(features::kTLSTrustAnchorIDs);
+#endif
+
+  SSLContextConfig ssl_config;
+  ssl_config.mtc_trust_anchor_ids = {{0x01, 0x02, 0x03}, {0x01, 0x01}};
+  ssl_config_service_.UpdateSSLConfigAndNotify(ssl_config);
+
+  HostResolverEndpointResult endpoint;
+  endpoint.ip_endpoints = {IPEndPoint(IPAddress::IPv4Localhost(), 0)};
+  endpoint.metadata.trust_anchor_ids = {
+      {0x01, 0x02, 0x03}, {0x02, 0x02}, {0x04, 05}};
+
+  host_resolver_ = std::make_unique<MockHostResolver>();
+  host_resolver_->rules()->AddRule(
+      kDefaultServerHostName,
+      MockHostResolverBase::RuleResolver::RuleResult({endpoint}));
+
+  Initialize();
+  ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
+
+  MockQuicData socket_data(version_);
+  socket_data.AddReadPauseForever();
+  socket_data.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket());
+  socket_data.AddSocketDataToFactory(socket_factory_.get());
+
+  RecordingNetLogObserver net_log_observer(net_log_.net_log(),
+                                           NetLogCaptureMode::kDefault);
+  RequestBuilder builder(this);
+  EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
+  ASSERT_THAT(callback_.WaitForResult(), IsOk());
+
+  QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
+  ASSERT_TRUE(session);
+  quic::QuicSSLConfig config = session->GetSSLConfig();
+#if BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
+  EXPECT_THAT(
+      x509_util::ParseTlsTrustAnchorIDs(
+          base::as_byte_span(config.trust_anchor_ids.value())),
+      testing::UnorderedElementsAre(std::vector<uint8_t>{0x01, 0x02, 0x03},
+                                    std::vector<uint8_t>{0x01, 0x01}));
+#else
+  EXPECT_FALSE(config.trust_anchor_ids.has_value());
+#endif
+  auto entries =
+      net_log_observer.GetEntriesWithType(NetLogEventType::QUIC_SESSION);
+  ASSERT_EQ(1u, entries.size());
+  EXPECT_EQ("1.2.3, 2.2, 4.5",
+            GetStringValueFromParams(entries[0], "trust_anchor_ids_from_dns"));
+#if BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
+  EXPECT_THAT(
+      base::SplitString(
+          GetStringValueFromParams(entries[0], "selected_trust_anchor_ids"),
+          ", ", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY),
+      testing::UnorderedElementsAre("1.2.3", "1.1"));
+#else
+  EXPECT_FALSE(entries[0].params.contains("selected_trust_anchor_ids"));
+#endif
+}
+
+// Test that when Trust Anchor IDs are not advertised by the server, but are
+// enabled on the client, we still unconditionally send them (bypassing DNS).
+TEST_P(QuicSessionPoolTest, TrustAnchorIDsNotAdvertisedInDns) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(features::kTLSTrustAnchorIDs);
+
+  SSLContextConfig ssl_config;
+  ssl_config.trust_anchor_ids = {{0x01, 0x02, 0x03}, {0x01, 0x01}};
+  ssl_config_service_.UpdateSSLConfigAndNotify(ssl_config);
+
+  HostResolverEndpointResult endpoint;
+  endpoint.ip_endpoints = {IPEndPoint(IPAddress::IPv4Localhost(), 0)};
+  endpoint.metadata.trust_anchor_ids = {};
+
+  host_resolver_ = std::make_unique<MockHostResolver>();
+  host_resolver_->rules()->AddRule(
+      kDefaultServerHostName,
+      MockHostResolverBase::RuleResolver::RuleResult({endpoint}));
+
+  Initialize();
+  ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
+
+  MockQuicData socket_data(version_);
+  socket_data.AddReadPauseForever();
+  socket_data.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket());
+  socket_data.AddSocketDataToFactory(socket_factory_.get());
+
+  RecordingNetLogObserver net_log_observer(net_log_.net_log(),
+                                           NetLogCaptureMode::kDefault);
+  RequestBuilder builder(this);
+  EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
+  ASSERT_THAT(callback_.WaitForResult(), IsOk());
+
+  QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
+  ASSERT_TRUE(session);
+  quic::QuicSSLConfig config = session->GetSSLConfig();
+  EXPECT_THAT(
+      x509_util::ParseTlsTrustAnchorIDs(
+          base::as_byte_span(config.trust_anchor_ids.value())),
+      testing::UnorderedElementsAre(std::vector<uint8_t>{0x01, 0x02, 0x03},
+                                    std::vector<uint8_t>{0x01, 0x01}));
+  auto entries =
+      net_log_observer.GetEntriesWithType(NetLogEventType::QUIC_SESSION);
+  ASSERT_EQ(1u, entries.size());
+  EXPECT_FALSE(entries[0].params.contains("trust_anchor_ids_from_dns"));
+  EXPECT_THAT(
+      base::SplitString(
+          GetStringValueFromParams(entries[0], "selected_trust_anchor_ids"),
+          ", ", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY),
+      testing::UnorderedElementsAre("1.2.3", "1.1"));
+}
+
+// Test that Trust Anchor IDs are not configured via GetSSLConfig() when the
+// feature is disabled.
+TEST_P(QuicSessionPoolTest, TrustAnchorIDsDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(features::kTLSTrustAnchorIDs);
+
+  SSLContextConfig ssl_config;
+  ssl_config.trust_anchor_ids = {{0x01, 0x02, 0x03}, {0x01, 0x01}};
+  ssl_config_service_.UpdateSSLConfigAndNotify(ssl_config);
+
+  HostResolverEndpointResult endpoint;
+  endpoint.ip_endpoints = {IPEndPoint(IPAddress::IPv4Localhost(), 0)};
+  endpoint.metadata.trust_anchor_ids = {
+      {0x01, 0x02, 0x03}, {0x02, 0x02}, {0x04, 05}};
+
+  host_resolver_ = std::make_unique<MockHostResolver>();
+  host_resolver_->rules()->AddRule(
+      kDefaultServerHostName,
+      MockHostResolverBase::RuleResolver::RuleResult({endpoint}));
+
+  Initialize();
+  ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
+
+  MockQuicData socket_data(version_);
+  socket_data.AddReadPauseForever();
+  socket_data.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket());
+  socket_data.AddSocketDataToFactory(socket_factory_.get());
+
+  RecordingNetLogObserver net_log_observer(net_log_.net_log(),
+                                           NetLogCaptureMode::kDefault);
+  RequestBuilder builder(this);
+  EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
+  ASSERT_THAT(callback_.WaitForResult(), IsOk());
+
+  QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
+  ASSERT_TRUE(session);
+  quic::QuicSSLConfig config = session->GetSSLConfig();
+  EXPECT_FALSE(config.trust_anchor_ids);
+  auto entries =
+      net_log_observer.GetEntriesWithType(NetLogEventType::QUIC_SESSION);
+  ASSERT_EQ(1u, entries.size());
+  EXPECT_EQ("1.2.3, 2.2, 4.5",
+            GetStringValueFromParams(entries[0], "trust_anchor_ids_from_dns"));
+  EXPECT_FALSE(entries[0].params.contains("selected_trust_anchor_ids"));
+}
+
 TEST_P(QuicSessionPoolTest, CreateSessionAttempt) {
   Initialize();
   ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
@@ -14725,7 +15907,7 @@ TEST_P(QuicSessionPoolTest, CreateSessionAttempt) {
   socket_data.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket());
   socket_data.AddSocketDataToFactory(socket_factory_.get());
 
-  SessionAttemptHelper session_attempt(factory_.get(), version_);
+  SessionAttemptHelper session_attempt(pool_.get(), version_);
 
   NetErrorDetails details;
   session_attempt.attempt()->PopulateNetErrorDetails(&details);
@@ -14739,6 +15921,536 @@ TEST_P(QuicSessionPoolTest, CreateSessionAttempt) {
   session_attempt.attempt()->PopulateNetErrorDetails(&details);
   // Check HttpConnectionInfo is updated, we don't care about the actual value.
   EXPECT_NE(details.connection_info, HttpConnectionInfo::kUNKNOWN);
+
+  socket_data.ExpectAllReadDataConsumed();
+  socket_data.ExpectAllWriteDataConsumed();
+}
+
+TEST_P(QuicSessionPoolTest, NotifyConnectionChangeOnSessionClose) {
+  Initialize();
+  ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
+
+  MockQuicData socket_data(version_);
+  socket_data.AddReadPauseForever();
+  socket_data.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket());
+  socket_data.AddSocketDataToFactory(socket_factory_.get());
+
+  url::SchemeHostPort server2(url::kHttpsScheme, kServer2HostName,
+                              kDefaultServerPort);
+
+  crypto_client_stream_factory_.set_handshake_mode(
+      MockCryptoClientStream::CONFIRM_HANDSHAKE);
+  host_resolver_->set_synchronous_mode(true);
+  host_resolver_->rules()->AddIPLiteralRule(kDefaultServerHostName,
+                                            "192.168.0.1", "");
+  host_resolver_->rules()->AddIPLiteralRule(server2.host(), "192.168.0.1", "");
+
+  connection_change_observer_ =
+      std::make_unique<TestConnectionChangeObserver>();
+
+  RequestBuilder builder(this);
+  // Build request with the ConnectionChangeObserver.
+  auto connection_management_config = ConnectionManagementConfig();
+  connection_management_config.connection_change_observer =
+      connection_change_observer_->GetWeakPtr();
+  builder.connection_management_config =
+      std::move(connection_management_config);
+  EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
+  EXPECT_THAT(callback_.WaitForResult(), IsOk());
+
+  QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
+
+  // Close the connection
+  session->connection()->CloseConnection(
+      quic::QUIC_NETWORK_IDLE_TIMEOUT, "test",
+      quic::ConnectionCloseBehavior::SILENT_CLOSE);
+  // Need to spin the loop now to ensure that
+  // QuicSessionPool::OnSessionClosed() runs.
+  base::RunLoop run_loop;
+  run_loop.RunUntilIdle();
+
+  ASSERT_EQ(1, connection_change_observer_->session_closed());
+}
+
+TEST_P(QuicSessionPoolTest, NotifyConnectionChangeOnConnectionFailure) {
+  Initialize();
+  ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
+
+  MockQuicData socket_data(version_);
+  socket_data.AddReadPauseForever();
+  // Trigger PACKET_WRITE_ERROR when sending packets in crypto connect.
+  socket_data.AddWrite(SYNCHRONOUS, ERR_ADDRESS_UNREACHABLE);
+  socket_data.AddSocketDataToFactory(socket_factory_.get());
+
+  url::SchemeHostPort server2(url::kHttpsScheme, kServer2HostName,
+                              kDefaultServerPort);
+
+  crypto_client_stream_factory_.set_handshake_mode(
+      MockCryptoClientStream::CONFIRM_HANDSHAKE);
+
+  connection_change_observer_ =
+      std::make_unique<TestConnectionChangeObserver>();
+
+  RequestBuilder builder(this);
+  builder.destination = server2;
+  // Build request with the ConnectionChangeObserver.
+  auto connection_management_config = ConnectionManagementConfig();
+  connection_management_config.connection_change_observer =
+      connection_change_observer_->GetWeakPtr();
+  builder.connection_management_config =
+      std::move(connection_management_config);
+
+  EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
+  EXPECT_EQ(ERR_QUIC_HANDSHAKE_FAILED, callback_.WaitForResult());
+
+  ASSERT_EQ(1, connection_change_observer_->connection_failed());
+}
+
+TEST_P(QuicSessionPoolTest, NotifyConnectionChangeOnNetworkChangeEvent) {
+  scoped_mock_network_change_notifier_ =
+      std::make_unique<ScopedMockNetworkChangeNotifier>();
+  MockNetworkChangeNotifier* mock_ncn =
+      scoped_mock_network_change_notifier_->mock_network_change_notifier();
+  mock_ncn->ForceNetworkHandlesSupported();
+  mock_ncn->SetConnectedNetworksList({kDefaultNetworkForTests});
+  socket_factory_ = std::make_unique<TestPortMigrationSocketFactory>();
+  Initialize();
+
+  ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
+
+  MockQuicData socket_data(version_);
+  socket_data.AddReadPauseForever();
+  socket_data.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket());
+  socket_data.AddSocketDataToFactory(socket_factory_.get());
+
+  url::SchemeHostPort server2(url::kHttpsScheme, kServer2HostName,
+                              kDefaultServerPort);
+
+  crypto_client_stream_factory_.set_handshake_mode(
+      MockCryptoClientStream::CONFIRM_HANDSHAKE);
+  host_resolver_->set_synchronous_mode(true);
+  host_resolver_->rules()->AddIPLiteralRule(kDefaultServerHostName,
+                                            "192.168.0.1", "");
+  host_resolver_->rules()->AddIPLiteralRule(server2.host(), "192.168.0.1", "");
+
+  connection_change_observer_ =
+      std::make_unique<TestConnectionChangeObserver>();
+
+  RequestBuilder builder(this);
+  // Build request with the ConnectionChangeObserver.
+  auto connection_management_config = ConnectionManagementConfig();
+  connection_management_config.connection_change_observer =
+      connection_change_observer_->GetWeakPtr();
+  builder.connection_management_config =
+      std::move(connection_management_config);
+  EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
+  EXPECT_THAT(callback_.WaitForResult(), IsOk());
+
+  scoped_mock_network_change_notifier_->mock_network_change_notifier()
+      ->NotifyNetworkConnected(kDefaultNetworkForTests);
+
+  ASSERT_EQ(1, connection_change_observer_->network_event());
+  ASSERT_TRUE(connection_change_observer_->last_network_event().has_value());
+  ASSERT_EQ(NetworkChangeEvent::kConnected,
+            connection_change_observer_->last_network_event().value());
+}
+
+TEST_P(QuicSessionPoolTest, SendPingOnExistingSession) {
+  socket_factory_ = std::make_unique<TestPortMigrationSocketFactory>();
+  Initialize();
+
+  int packet_num = 1;
+  MockQuicData socket_data(version_);
+  socket_data.AddReadPauseForever();
+  socket_data.AddWrite(SYNCHRONOUS,
+                       ConstructInitialSettingsPacket(packet_num++));
+  socket_data.AddWrite(
+      SYNCHRONOUS, client_maker_.Packet(packet_num++).AddPingFrame().Build());
+  socket_data.AddSocketDataToFactory(socket_factory_.get());
+
+  // Initiate a request to create a session.
+  RequestBuilder builder(this);
+  EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
+  EXPECT_THAT(callback_.WaitForResult(), IsOk());
+
+  // Ensure that we have an active session.
+  EXPECT_TRUE(HasActiveSession(kDefaultDestination));
+  QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
+  EXPECT_TRUE(QuicSessionPoolPeer::IsLiveSession(pool_.get(), session));
+
+  // Build a session with `ConnectionKeepAliveConfig`.
+  RequestBuilder builder2(this);
+  auto connection_management_config = ConnectionManagementConfig();
+  auto keep_alive_config = ConnectionKeepAliveConfig();
+  keep_alive_config.enable_connection_keep_alive = true;
+  keep_alive_config.ping_interval_in_seconds = 10;
+  keep_alive_config.idle_timeout_in_seconds = 30;
+  connection_management_config.keep_alive_config = std::move(keep_alive_config);
+
+  builder2.connection_management_config =
+      std::move(connection_management_config);
+
+  // We should get OK since we already have an session
+  EXPECT_EQ(OK, builder2.CallRequest());
+
+  // We should expect the write data including a ping to the peer is consumed
+  // since `enable_connection_keep_alive` is enabled, and we already have an
+  // existing session.
+  socket_data.ExpectAllWriteDataConsumed();
+}
+
+TEST_P(QuicSessionPoolTest, DebuggingSniDefaultHost) {
+  quic_params_->enable_debugging_sni_in_transport_param = true;
+
+  Initialize();
+  ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
+
+  MockQuicData socket_data(version_);
+  socket_data.AddReadPauseForever();
+  socket_data.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket());
+  socket_data.AddSocketDataToFactory(socket_factory_.get());
+
+  RequestBuilder builder(this);
+  builder.destination = kDefaultDestination;
+  EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
+  EXPECT_THAT(callback_.WaitForResult(), IsOk());
+  std::unique_ptr<HttpStream> stream = CreateStream(&builder.request);
+  EXPECT_TRUE(stream);
+
+  const quic::QuicConfig* config =
+      crypto_client_stream_factory_.last_stream()->negotiated_config();
+  ASSERT_TRUE(config);
+  quic::TransportParameters params;
+  EXPECT_TRUE(config->FillTransportParameters(&params));
+  EXPECT_THAT(params.debugging_sni, std::nullopt);
+}
+
+TEST_P(QuicSessionPoolTest, DebuggingSniGoogleHost) {
+  const url::SchemeHostPort kGoogleDestination(
+      url::kHttpsScheme, "www.google.com", kDefaultServerPort);
+
+  quic_params_->enable_debugging_sni_in_transport_param = true;
+  Initialize();
+
+  ProofVerifyDetailsChromium verify_details = GoogleProofVerifyDetails();
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
+
+  MockQuicData socket_data(version_);
+  socket_data.AddReadPauseForever();
+  socket_data.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket());
+  socket_data.AddSocketDataToFactory(socket_factory_.get());
+
+  RequestBuilder builder(this);
+  builder.destination = kGoogleDestination;
+  builder.url = GURL("https://www.google.com");
+  EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
+  EXPECT_THAT(callback_.WaitForResult(), IsOk());
+  std::unique_ptr<HttpStream> stream = CreateStream(&builder.request);
+  EXPECT_TRUE(stream);
+
+  const quic::QuicConfig* config =
+      crypto_client_stream_factory_.last_stream()->negotiated_config();
+  ASSERT_TRUE(config);
+  quic::TransportParameters params;
+  EXPECT_TRUE(config->FillTransportParameters(&params));
+  EXPECT_THAT(params.debugging_sni,
+              testing::Optional(kGoogleDestination.host()));
+}
+
+TEST_P(QuicSessionPoolTest, ConfigureSupportedGroupsAndKeyShares) {
+  SSLContextConfig ssl_config;
+  ssl_config.supported_named_groups = {
+      {.group_id = SSL_GROUP_MLKEM1024, .send_key_share = false},
+      {.group_id = SSL_GROUP_X25519_MLKEM768, .send_key_share = true},
+      {.group_id = SSL_GROUP_X25519, .send_key_share = true},
+  };
+  ssl_config_service_.UpdateSSLConfigAndNotify(ssl_config);
+
+  Initialize();
+  std::unique_ptr<QuicCryptoClientConfigHandle> crypto_config_handle =
+      QuicSessionPoolPeer::GetCryptoConfig(
+          pool_.get(), QuicSessionPool::QuicCryptoClientConfigKey());
+
+  EXPECT_THAT(crypto_config_handle->GetConfig()->preferred_groups(),
+              ElementsAre(SSL_GROUP_MLKEM1024, SSL_GROUP_X25519_MLKEM768,
+                          SSL_GROUP_X25519));
+  EXPECT_THAT(crypto_config_handle->GetConfig()->client_key_shares(),
+              ElementsAre(SSL_GROUP_X25519_MLKEM768, SSL_GROUP_X25519));
+}
+
+TEST_P(QuicSessionPoolTest, ConfigureSupportedGroupsWithoutKeyShares) {
+  SSLContextConfig ssl_config;
+  ssl_config.supported_named_groups = {
+      {.group_id = SSL_GROUP_MLKEM1024, .send_key_share = false},
+      {.group_id = SSL_GROUP_X25519_MLKEM768, .send_key_share = false},
+      {.group_id = SSL_GROUP_X25519, .send_key_share = false},
+  };
+  ssl_config_service_.UpdateSSLConfigAndNotify(ssl_config);
+
+  Initialize();
+  std::unique_ptr<QuicCryptoClientConfigHandle> crypto_config_handle =
+      QuicSessionPoolPeer::GetCryptoConfig(
+          pool_.get(), QuicSessionPool::QuicCryptoClientConfigKey());
+
+  EXPECT_THAT(crypto_config_handle->GetConfig()->preferred_groups(),
+              ElementsAre(SSL_GROUP_MLKEM1024, SSL_GROUP_X25519_MLKEM768,
+                          SSL_GROUP_X25519));
+  EXPECT_TRUE(crypto_config_handle->GetConfig()->client_key_shares().empty());
+}
+
+TEST_P(QuicSessionPoolTest, ConfigureSSLCompliancePolicy) {
+  SSLContextConfig ssl_config;
+  ssl_config.tls13_cipher_prefer_aes_256 = true;
+  ssl_config_service_.UpdateSSLConfigAndNotify(ssl_config);
+
+  Initialize();
+  std::unique_ptr<QuicCryptoClientConfigHandle> crypto_config_handle =
+      QuicSessionPoolPeer::GetCryptoConfig(
+          pool_.get(), QuicSessionPool::QuicCryptoClientConfigKey());
+
+  EXPECT_EQ(crypto_config_handle->GetConfig()->ssl_compliance_policy(),
+            ssl_compliance_policy_cnsa_202407);
+}
+
+// Test for https://crbug.com/454787716.
+TEST_P(QuicSessionPoolTest,
+       SuccessfullyMigratedToServerPreferredAddressBeforeHandshakeConfirmed) {
+  // Enable register connection close payload feature.
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      net::features::kQuicRegisterConnectionClosePayload);
+
+  FLAGS_quic_enable_chaos_protection = false;
+  quic_params_->allow_server_migration = true;
+  socket_factory_ = std::make_unique<TestPortMigrationSocketFactory>();
+  Initialize();
+
+  ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
+  crypto_client_stream_factory_.set_handshake_mode(
+      MockCryptoClientStream::COLD_START_WITH_CHLO_SENT);
+
+  int packet_number = 1;
+  MockQuicData quic_data1(version_);
+  quic_data1.AddReadPauseForever();
+  quic_data1.AddWrite(ASYNC,
+                      client_maker_.MakeDummyCHLOPacket(packet_number++));
+  quic_data1.AddSocketDataToFactory(socket_factory_.get());
+
+  // Set up the second socket data provider that is used to validate server
+  // preferred address.
+  MockQuicData quic_data2(version_);
+  client_maker_.SetEncryptionLevel(quic::ENCRYPTION_FORWARD_SECURE);
+  client_maker_.set_connection_id(kNewCID);
+  quic_data2.AddWrite(SYNCHRONOUS, client_maker_.Packet(packet_number++)
+                                       .AddPathChallengeFrame()
+                                       .AddPaddingFrame()
+                                       .Build());
+  quic_data2.AddReadPause();
+  quic_data2.AddRead(
+      ASYNC,
+      server_maker_.Packet(1).AddPathResponseFrame().AddPaddingFrame().Build());
+  quic_data2.AddReadPauseForever();
+  quic_data2.AddSocketDataToFactory(socket_factory_.get());
+
+  // Create request and wait session creation.
+  RequestBuilder builder(this);
+  EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
+  TestCompletionCallback quic_session_callback;
+  EXPECT_TRUE(builder.request.WaitForQuicSessionCreation(
+      quic_session_callback.callback()));
+  EXPECT_EQ(ERR_IO_PENDING, quic_session_callback.WaitForResult());
+
+  // NotifySessionOneRttKeyAvailable() makes handshake confirmed.
+  // So manually set encryption level.
+  QuicChromiumClientSession* session = GetPendingSession(kDefaultDestination);
+  session->connection()->InstallDecrypter(
+      quic::ENCRYPTION_FORWARD_SECURE,
+      std::make_unique<quic::test::StrictTaggingDecrypter>(
+          quic::ENCRYPTION_FORWARD_SECURE));
+  session->connection()->SetEncrypter(quic::ENCRYPTION_INITIAL, nullptr);
+  session->OnNewEncryptionKeyAvailable(
+      quic::ENCRYPTION_FORWARD_SECURE,
+      std::make_unique<quic::test::TaggingEncrypter>(
+          quic::ENCRYPTION_FORWARD_SECURE));
+
+  // Configure server preferred address for migration.
+  quic::QuicConfig config;
+  IPEndPoint server_preferred_address = IPEndPoint(IPAddress(1, 2, 3, 4), 123);
+  config.SetIPv4AlternateServerAddressToSend(
+      ToQuicSocketAddress(server_preferred_address));
+  quic::test::QuicConfigPeer::SetPreferredAddressConnectionIdAndToken(
+      &config, kNewCID, quic::QuicUtils::GenerateStatelessResetToken(kNewCID));
+  config.SetStatelessResetTokenToSend(
+      quic::QuicUtils::GenerateStatelessResetToken(
+          quic::test::TestConnectionId()));
+  config.SetOriginalConnectionIdToSend(session->connection()->connection_id());
+  config.SetInitialSourceConnectionIdToSend(
+      session->connection()->connection_id());
+
+  quic::TransportParameters params;
+  ASSERT_TRUE(config.FillTransportParameters(&params));
+  std::string error_details;
+  quic::QuicErrorCode error = session->config()->ProcessTransportParameters(
+      params, /*is_resumption=*/false, &error_details);
+  ASSERT_EQ(quic::QUIC_NO_ERROR, error);
+  session->config()->SetClientConnectionOptions(
+      quic::QuicTagVector{quic::kSPA2});
+
+  session->OnConfigNegotiated();
+  base::RunLoop().RunUntilIdle();
+
+  // Handshake is not confirmed yet.
+  EXPECT_FALSE(session->connection()->IsHandshakeConfirmed());
+
+  const quic::QuicSocketAddress peer_address = session->peer_address();
+  EXPECT_TRUE(session->connection()->HasPendingPathValidation());
+  EXPECT_FALSE(
+      session->connection()->GetStats().server_preferred_address_validated);
+
+  // Trigger migration.
+  quic_data2.Resume();
+
+  EXPECT_FALSE(session->connection()->HasPendingPathValidation());
+  EXPECT_TRUE(
+      session->connection()->GetStats().server_preferred_address_validated);
+  EXPECT_NE(session->peer_address(), peer_address);
+  EXPECT_EQ(session->peer_address(),
+            ToQuicSocketAddress(server_preferred_address));
+
+  quic_data1.ExpectAllReadDataConsumed();
+  quic_data1.ExpectAllWriteDataConsumed();
+  quic_data2.ExpectAllReadDataConsumed();
+  quic_data2.ExpectAllWriteDataConsumed();
+}
+
+// Tests for CanUseExistingSessionForWebSocket().
+// Verifies that the method returns false when no QUIC session exists.
+TEST_P(QuicSessionPoolTest, CanUseExistingSessionForWebSocket_NoSessionExists) {
+  Initialize();
+
+  // No QUIC session has been created, so there's nothing to reuse.
+  EXPECT_FALSE(HasActiveSession(kDefaultDestination));
+
+  QuicSessionKey session_key(
+      kDefaultServerHostName, kDefaultServerPort, PRIVACY_MODE_DISABLED,
+      ProxyChain::Direct(), SessionUsage::kDestination, SocketTag(),
+      NetworkAnonymizationKey(), SecureDnsPolicy::kAllow,
+      /*require_dns_https_alpn=*/false,
+      /*disable_cert_verification_network_fetches=*/false,
+      handles::kInvalidNetworkHandle);
+  EXPECT_FALSE(pool_->CanUseExistingSessionForWebSocket(session_key,
+                                                        kDefaultDestination));
+}
+
+// Verifies that the method returns false when a session exists but the server
+// has not advertised SETTINGS_ENABLE_CONNECT_PROTOCOL (Extended CONNECT).
+TEST_P(QuicSessionPoolTest,
+       CanUseExistingSessionForWebSocket_NoExtendedConnect) {
+  Initialize();
+  ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
+
+  // Set up a normal QUIC session (server does NOT send
+  // SETTINGS_ENABLE_CONNECT_PROTOCOL).
+  MockQuicData socket_data(version_);
+  socket_data.AddReadPauseForever();
+  socket_data.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket());
+  socket_data.AddSocketDataToFactory(socket_factory_.get());
+
+  RequestBuilder builder(this);
+  EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
+  EXPECT_THAT(callback_.WaitForResult(), IsOk());
+  std::unique_ptr<HttpStream> stream = CreateStream(&builder.request);
+  EXPECT_TRUE(stream.get());
+  EXPECT_TRUE(HasActiveSession(kDefaultDestination));
+
+  // The session exists but does NOT have Extended CONNECT support.
+  QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
+  EXPECT_FALSE(session->allow_extended_connect());
+
+  QuicSessionKey session_key(
+      kDefaultServerHostName, kDefaultServerPort, PRIVACY_MODE_DISABLED,
+      ProxyChain::Direct(), SessionUsage::kDestination, SocketTag(),
+      NetworkAnonymizationKey(), SecureDnsPolicy::kAllow,
+      /*require_dns_https_alpn=*/false,
+      /*disable_cert_verification_network_fetches=*/false,
+      handles::kInvalidNetworkHandle);
+  EXPECT_TRUE(pool_->CanUseExistingSession(session_key, kDefaultDestination));
+  EXPECT_FALSE(pool_->CanUseExistingSessionForWebSocket(session_key,
+                                                        kDefaultDestination));
+
+  socket_data.ExpectAllReadDataConsumed();
+  socket_data.ExpectAllWriteDataConsumed();
+}
+
+// Verifies that the method returns true when a session exists and the server
+// has advertised SETTINGS_ENABLE_CONNECT_PROTOCOL=1 (Extended CONNECT),
+// enabling WebSocket-over-HTTP/3.
+TEST_P(QuicSessionPoolTest,
+       CanUseExistingSessionForWebSocket_WithExtendedConnect) {
+  Initialize();
+  ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
+
+  MockQuicData socket_data(version_);
+  socket_data.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket());
+  // Pause reads so the session establishes fully before processing server data.
+  socket_data.AddReadPause();
+
+  // Construct a server SETTINGS frame containing
+  // SETTINGS_ENABLE_CONNECT_PROTOCOL=1. This simulates a server that supports
+  // Extended CONNECT (required for WebSocket-over-HTTP/3).
+  quic::SettingsFrame settings;
+  settings.values[quic::SETTINGS_ENABLE_CONNECT_PROTOCOL] = 1;
+  std::string settings_data =
+      quic::HttpEncoder::SerializeSettingsFrame(settings);
+  quic::QuicStreamId server_control_stream_id =
+      GetNthServerInitiatedUnidirectionalStreamId(0);
+  // The control stream type byte (0x00) precedes the SETTINGS frame.
+  std::string control_stream_data = std::string(1, 0x00) + settings_data;
+  socket_data.AddRead(
+      ASYNC, server_maker_.Packet(1)
+                 .AddStreamFrame(server_control_stream_id, /*fin=*/false,
+                                 control_stream_data)
+                 .Build());
+
+  // No need to model the client ACK -- adding it causes a
+  // `SequencedSocketData` ordering conflict. We only need the session to
+  // process the SETTINGS frame.
+  socket_data.AddReadPauseForever();
+  socket_data.AddSocketDataToFactory(socket_factory_.get());
+
+  RequestBuilder builder(this);
+  EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
+  EXPECT_THAT(callback_.WaitForResult(), IsOk());
+  std::unique_ptr<HttpStream> stream = CreateStream(&builder.request);
+  EXPECT_TRUE(stream.get());
+  EXPECT_TRUE(HasActiveSession(kDefaultDestination));
+
+  // Before receiving server SETTINGS, Extended CONNECT is not yet available.
+  QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
+  EXPECT_FALSE(session->allow_extended_connect());
+
+  // Resume the socket to deliver the server SETTINGS frame.
+  socket_data.Resume();
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return session->allow_extended_connect(); }));
+
+  QuicSessionKey session_key(
+      kDefaultServerHostName, kDefaultServerPort, PRIVACY_MODE_DISABLED,
+      ProxyChain::Direct(), SessionUsage::kDestination, SocketTag(),
+      NetworkAnonymizationKey(), SecureDnsPolicy::kAllow,
+      /*require_dns_https_alpn=*/false,
+      /*disable_cert_verification_network_fetches=*/false,
+      handles::kInvalidNetworkHandle);
+  EXPECT_TRUE(pool_->CanUseExistingSession(session_key, kDefaultDestination));
+  EXPECT_TRUE(pool_->CanUseExistingSessionForWebSocket(session_key,
+                                                       kDefaultDestination));
 
   socket_data.ExpectAllReadDataConsumed();
   socket_data.ExpectAllWriteDataConsumed();

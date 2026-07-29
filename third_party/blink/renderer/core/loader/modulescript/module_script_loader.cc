@@ -14,6 +14,8 @@
 #include "third_party/blink/renderer/core/script/js_module_script.h"
 #include "third_party/blink/renderer/core/script/modulator.h"
 #include "third_party/blink/renderer/core/script/value_wrapper_synthetic_module_script.h"
+#include "third_party/blink/renderer/core/script/wasm_module_script.h"
+#include "third_party/blink/renderer/platform/bindings/script_forbidden_scope.h"
 #include "third_party/blink/renderer/platform/loader/fetch/fetch_client_settings_object_snapshot.h"
 #include "third_party/blink/renderer/platform/loader/fetch/fetch_initiator_type_names.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource.h"
@@ -56,7 +58,8 @@ const char* ModuleScriptLoader::StateToString(ModuleScriptLoader::State state) {
 }
 #endif
 
-void ModuleScriptLoader::AdvanceState(ModuleScriptLoader::State new_state) {
+void ModuleScriptLoader::AdvanceState(ModuleScriptLoader::State new_state,
+                                      ModuleImportPhase load_type) {
   switch (state_) {
     case State::kInitial:
       DCHECK_EQ(new_state, State::kFetching);
@@ -77,7 +80,7 @@ void ModuleScriptLoader::AdvanceState(ModuleScriptLoader::State new_state) {
 
   if (state_ == State::kFinished) {
     registry_->ReleaseFinishedLoader(this);
-    client_->NotifyNewSingleModuleFinished(module_script_);
+    client_->NotifyNewSingleModuleFinished(module_script_, load_type);
   }
 }
 
@@ -121,9 +124,15 @@ void SetFetchDestinationFromModuleType(
       resource_request.SetRequestDestination(
           network::mojom::RequestDestination::kJson);
       break;
-    case ModuleType::kJavaScript:
+    case ModuleType::kJavaScriptOrWasm:
       resource_request.SetRequestContext(module_request.ContextType());
       resource_request.SetRequestDestination(module_request.Destination());
+      break;
+    case ModuleType::kTEXT:
+      resource_request.SetRequestContext(
+          mojom::blink::RequestContextType::TEXT);
+      resource_request.SetRequestDestination(
+          network::mojom::RequestDestination::kText);
       break;
     case ModuleType::kInvalid:
       // ModuleTreeLinker checks that the module type is valid
@@ -178,9 +187,6 @@ void ModuleScriptLoader::FetchInternal(
   // <spec label="SMSR">... its parser metadata to options's parser metadata,
   // ...</spec>
   options.parser_disposition = options_.ParserState();
-
-  // TODO(crbug.com/1064920): Remove this once PlzDedicatedWorker ships.
-  options.reject_coep_unsafe_none = options_.GetRejectCoepUnsafeNone();
 
   if (level == ModuleGraphLevel::kDependentModuleFetch) {
     options.initiator_info.is_imported_module = true;
@@ -276,7 +282,8 @@ void ModuleScriptLoader::FetchInternal(
   module_fetcher_ =
       modulator_->CreateModuleScriptFetcher(custom_fetch_type, PassKey());
   module_fetcher_->Fetch(fetch_params, module_request.GetExpectedModuleType(),
-                         fetch_client_settings_object_fetcher, level, this);
+                         fetch_client_settings_object_fetcher, level, this,
+                         module_request.GetModuleImportPhase());
 }
 
 // <specdef href="https://html.spec.whatwg.org/C/#fetch-a-single-module-script">
@@ -310,10 +317,7 @@ void ModuleScriptLoader::NotifyFetchFinishedSuccess(
     return;
   }
 
-  // <spec step="13.2">Let source text be the result of UTF-8 decoding
-  // bodyBytes.</spec>
-  //
-  // <spec step="13.6">If referrerPolicy is not the empty string, set
+  // <spec step="13.5">If referrerPolicy is not the empty string, set
   // options's referrer policy to referrerPolicy.</spec>
   //
   // Note that the "empty string" referrer policy corresponds to `kDefault`,
@@ -325,29 +329,93 @@ void ModuleScriptLoader::NotifyFetchFinishedSuccess(
   }
 
   switch (params.GetModuleType()) {
-    case ModuleType::kJSON:
+    // The MIME type verification happens at
+    // ModuleScriptFetcher::WasModuleLoadSuccessful.
+    case ResolvedModuleType::kJSON:
+      // <spec step="13.7.4"> If mimeType is a JSON MIME type and moduleType is
+      // "json", then set moduleScript to the result of creating a JSON module
+      // script given sourceText and settingsObject</spec>
       module_script_ = ValueWrapperSyntheticModuleScript::
           CreateJSONWrapperSyntheticModuleScript(params, modulator_);
       break;
-    case ModuleType::kCSS:
+    case ResolvedModuleType::kTEXT:
       module_script_ = ValueWrapperSyntheticModuleScript::
-          CreateCSSWrapperSyntheticModuleScript(params, modulator_);
+          CreateTextWrapperSyntheticModuleScript(params, modulator_);
       break;
-    case ModuleType::kJavaScript:
-      // <spec step="13.7">If mimeType is a JavaScript MIME type and
-      // moduleType is "javascript", then set moduleScript to the result of
-      // creating a JavaScript module script given sourceText, settingsObject,
-      // response's URL, options, and importMap.</spec>
+    case ResolvedModuleType::kCSS:
+      // <spec step="13.7.3"> If mimeType is "text/css" and moduleType is "css",
+      // then set moduleScript to the result of creating a CSS module script
+      // given sourceText and settingsObject.</spec>
+      {
+        // Retrieve the pre-created CSS module from the module map entry and
+        // update the contents with the fetch result. The empty CSSStyleSheet
+        // was created at fetch start time in FetchSingleModuleScript.
+        ModuleScript* pre_created = modulator_->GetFetchedModuleScript(
+            params.SourceURL(), ModuleType::kCSS);
+        CHECK(pre_created);
+        module_script_ =
+            ValueWrapperSyntheticModuleScript::UpdateCSSModuleScript(
+                static_cast<ValueWrapperSyntheticModuleScript*>(pre_created),
+                params.GetSourceText().ToString(), modulator_);
+      }
+      break;
+    case ResolvedModuleType::kJavaScript:
+      // <spec step="13.7.2">If mimeType is a JavaScript MIME type and
+      // moduleType is "javascript-or-wasm", then set moduleScript to the result
+      // of creating a JavaScript module script given sourceText,
+      // settingsObject, response's URL, and options/</spec>
       //
-      // The MIME type verification happens at
-      // ModuleScriptFetcher::WasModuleLoadSuccessful.
       module_script_ = JSModuleScript::Create(params, modulator_, options_);
       break;
-    case ModuleType::kInvalid:
-      NOTREACHED();
+    case ResolvedModuleType::kWasm: {
+      // <spec step="13.6">If mimeType's essence is "application/wasm" and
+      // moduleType is "javascript-or-wasm", then set moduleScript to the result
+      // of creating a WebAssembly module script given bodyBytes,
+      // settingsObject, response's URL, and options/</spec>
+      ScriptStreamer* streamer = params.GetScriptStreamer();
+      if (streamer) {
+        // The wasm streaming compilation is not finished yet. Call
+        // `WasmModuleCompilation::Finish()` which will finish the compilation
+        // asynchronously and call `result_callback` when finished.
+        v8::WasmModuleCompilation* wasm_module_compilation =
+            streamer->GetWasmModuleCompilation();
+        CHECK(wasm_module_compilation);
+        ScriptState* script_state = modulator_->GetScriptState();
+        ScriptState::Scope scope(script_state);
+        auto result_callback =
+            [script_loader = WrapPersistent(this),
+             source_url = params.SourceURL(), base_url = params.BaseURL()](
+                std::variant<v8::Local<v8::WasmModuleObject>,
+                             v8::Local<v8::Value>> module_or_error) {
+              script_loader->NotifyWasmStreamingFinished(module_or_error,
+                                                         source_url, base_url);
+            };
+        // TODO(https://crbug.com/42204365): Implement code caching support.
+        wasm_module_compilation->Finish(
+            modulator_->GetScriptState()->GetIsolate(), nullptr,
+            std::move(result_callback));
+        return;
+      }
+      module_script_ = WasmModuleScript::Create(params, modulator_, options_);
+      break;
+    }
   }
+  AdvanceState(State::kFinished, params.GetModuleImportPhase());
+}
 
-  AdvanceState(State::kFinished);
+void ModuleScriptLoader::NotifyWasmStreamingFinished(
+    const std::variant<v8::Local<v8::WasmModuleObject>, v8::Local<v8::Value>>&
+        wasm_module_or_error,
+    const KURL& source_url,
+    const KURL& base_url) {
+  // [nospec] Abort the steps if the browsing context is discarded.
+  if (!modulator_->HasValidContext()) {
+    AdvanceState(State::kFinished);
+    return;
+  }
+  module_script_ = WasmModuleScript::CreateFromStreamingResult(
+      modulator_, options_, wasm_module_or_error, source_url, base_url);
+  AdvanceState(State::kFinished, ModuleImportPhase::kSource);
 }
 
 void ModuleScriptLoader::Trace(Visitor* visitor) const {

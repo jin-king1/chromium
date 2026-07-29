@@ -6,10 +6,12 @@
 
 #include <optional>
 
-#include "ash/constants/ash_features.h"
+#include "ash/constants/ash_pref_names.h"
 #include "ash/constants/ash_switches.h"
 #include "ash/constants/notifier_catalogs.h"
 #include "ash/public/cpp/notification_utils.h"
+#include "base/check_deref.h"
+#include "base/check_is_test.h"
 #include "base/check_op.h"
 #include "base/command_line.h"
 #include "base/feature_list.h"
@@ -17,6 +19,7 @@
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/escape.h"
+#include "base/strings/stringprintf.h"
 #include "base/task/thread_pool.h"
 #include "base/time/time.h"
 #include "chrome/app/vector_icons/vector_icons.h"
@@ -24,16 +27,14 @@
 #include "chrome/browser/ash/hats/hats_dialog.h"
 #include "chrome/browser/ash/hats/hats_finch_helper.h"
 #include "chrome/browser/ash/login/startup_utils.h"
-#include "chrome/browser/ash/policy/core/browser_policy_connector_ash.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
-#include "chrome/browser/browser_process.h"
-#include "chrome/browser/browser_process_platform_part.h"
-#include "chrome/browser/notifications/notification_display_service.h"
-#include "chrome/browser/notifications/notification_display_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/common/pref_names.h"
+#include "chrome/browser/themes/theme_service.h"
+#include "chrome/browser/themes/theme_service_factory.h"
 #include "chrome/grit/generated_resources.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
+#include "chromeos/ash/components/install_attributes/install_attributes.h"
 #include "chromeos/ash/components/network/network_handler.h"
 #include "chromeos/ash/components/network/network_state.h"
 #include "chromeos/ash/components/network/network_state_handler.h"
@@ -41,10 +42,12 @@
 #include "components/language/core/browser/pref_names.h"
 #include "components/language/core/common/locale_util.h"
 #include "components/prefs/pref_service.h"
+#include "components/user_manager/user.h"
 #include "components/version_info/version_info.h"
 #include "content/public/browser/browser_thread.h"
 #include "google_apis/gaia/gaia_auth_util.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/message_center/message_center.h"
 #include "ui/message_center/public/cpp/notification.h"
 #include "ui/message_center/public/cpp/notification_types.h"
 #include "ui/strings/grit/ui_strings.h"
@@ -100,7 +103,7 @@ bool DidShowNonPrioritizedHatsToProfileRecently(
     const Profile* profile,
     const base::TimeDelta& threshold_time) {
   int64_t serialized_timestamp =
-      profile->GetPrefs()->GetInt64(prefs::kHatsLastInteractionTimestamp);
+      profile->GetPrefs()->GetInt64(ash::prefs::kHatsLastInteractionTimestamp);
 
   base::Time previous_interaction_timestamp =
       base::Time::FromInternalValue(serialized_timestamp);
@@ -119,7 +122,7 @@ bool DidShowPrioritizedHatsToProfileRecently(
     std::optional<raw_ref<const HatsConfig>> hats_config,
     const base::TimeDelta& prioritized_threshold_time) {
   base::Time prev_prioritized_interaction = profile->GetPrefs()->GetTime(
-      prefs::kHatsPrioritizedLastInteractionTimestamp);
+      ash::prefs::kHatsPrioritizedLastInteractionTimestamp);
   if (prev_prioritized_interaction + prioritized_threshold_time >
       base::Time::Now()) {
     return true;
@@ -163,6 +166,13 @@ bool IsTestingEnabled(const HatsConfig& hats_config) {
   }
 
   return false;
+}
+
+std::string MakeHatsMessageCenterNotificationId(
+    const user_manager::User& user) {
+  return base::StringPrintf("hats-notification#%s#%s",
+                            user.username_hash().c_str(),
+                            HatsNotificationController::kNotificationId);
 }
 
 }  // namespace
@@ -219,9 +229,6 @@ HatsNotificationController::~HatsNotificationController() {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
   base::UmaHistogramEnumeration("Browser.ChromeOS.HatsStatus", state_);
-
-  if (NetworkHandler::IsInitialized())
-    NetworkHandler::Get()->network_state_handler()->RemoveObserver(this);
 }
 
 void HatsNotificationController::Initialize(bool is_new_device) {
@@ -241,7 +248,8 @@ void HatsNotificationController::Initialize(bool is_new_device) {
     // is available.
     NetworkStateHandler* handler =
         NetworkHandler::Get()->network_state_handler();
-    handler->AddObserver(this);
+    CHECK(!network_state_observation_.IsObserving());
+    network_state_observation_.Observe(handler);
     // Create an immediate update for the current default network.
     const NetworkState* default_network = handler->DefaultNetwork();
     NetworkState::PortalState portal_state =
@@ -274,9 +282,8 @@ bool HatsNotificationController::ShouldShowSurveyToProfile(
   if (profile->IsChild())
     return false;
 
-  const bool is_enterprise_enrolled = g_browser_process->platform_part()
-                                          ->browser_policy_connector_ash()
-                                          ->IsDeviceEnterpriseManaged();
+  const bool is_enterprise_enrolled =
+      ash::InstallAttributes::Get()->IsEnterpriseManaged();
 
   HatsFinchHelper hats_finch_helper(profile, hats_config);
 
@@ -332,6 +339,13 @@ bool HatsNotificationController::ShouldShowSurveyToProfile(
   return true;
 }
 
+// static
+std::string HatsNotificationController::
+    GetMessageCenterNotificationIdForTesting(  // IN-TEST
+        const user_manager::User& user) {
+  return MakeHatsMessageCenterNotificationId(user);
+}
+
 void HatsNotificationController::Click(
     const std::optional<int>& button_index,
     const std::optional<std::u16string>& reply) {
@@ -356,10 +370,10 @@ void HatsNotificationController::Click(
   state_ = HatsState::kNotificationClicked;
 
   // Remove the notification.
-  NetworkHandler::Get()->network_state_handler()->RemoveObserver(this);
-  notification_.reset(nullptr);
-  NotificationDisplayServiceFactory::GetForProfile(profile_)->Close(
-      NotificationHandler::Type::TRANSIENT, kNotificationId);
+  network_state_observation_.Reset();
+  message_center::MessageCenter::Get()->RemoveNotification(notification_id_,
+                                                           false /* by_user */);
+  notification_id_.clear();
 }
 
 void HatsNotificationController::ShowDialog(const std::string& site_context) {
@@ -379,8 +393,10 @@ void HatsNotificationController::Close(bool by_user) {
 
   if (by_user) {
     UpdateLastInteractionTime();
-    NetworkHandler::Get()->network_state_handler()->RemoveObserver(this);
-    notification_.reset(nullptr);
+    network_state_observation_.Reset();
+    message_center::MessageCenter::Get()->RemoveNotification(notification_id_,
+                                                             by_user);
+    notification_id_.clear();
     state_ = HatsState::kNotificationDismissed;
   }
 }
@@ -395,38 +411,46 @@ void HatsNotificationController::PortalStateChanged(
           << (default_network ? default_network->path() : "")
           << ", portal_state=" << portal_state;
   if (portal_state == NetworkState::PortalState::kOnline) {
-    // Create and display the notification for the user.
-    if (!notification_) {
-      notification_ = CreateSystemNotificationPtr(
-          message_center::NOTIFICATION_TYPE_SIMPLE, kNotificationId, title_,
+    // Create and display the notification for the user if it doesn't exist.
+    if (notification_id_.empty()) {
+      notification_id_ = MakeHatsMessageCenterNotificationId(CHECK_DEREF(
+          BrowserContextHelper::Get()->GetUserByBrowserContext(profile_)));
+      message_center::NotifierId notifier_id(
+          message_center::NotifierType::SYSTEM_COMPONENT, kNotifierHats,
+          NotificationCatalogName::kHats);
+      // Set the profile_id for the NotifierId.
+      // This string should match what InactiveUserNotificationBlocker
+      // expects.
+      notifier_id.profile_id = profile_->GetProfileUserName();
+
+      auto notification = ash::CreateSystemNotificationPtr(
+          message_center::NOTIFICATION_TYPE_SIMPLE, notification_id_, title_,
           body_,
           l10n_util::GetStringUTF16(IDS_MESSAGE_CENTER_NOTIFIER_HATS_NAME),
-          GURL(kNotificationOriginUrl),
-          message_center::NotifierId(
-              message_center::NotifierType::SYSTEM_COMPONENT, kNotifierHats,
-              NotificationCatalogName::kHats),
+          GURL(kNotificationOriginUrl), notifier_id,
           message_center::RichNotificationData(), this, kNotificationGoogleIcon,
           message_center::SystemNotificationWarningLevel::NORMAL);
+      message_center::MessageCenter::Get()->AddNotification(
+          std::move(notification));
     }
 
-    NotificationDisplayServiceFactory::GetForProfile(profile_)->Display(
-        NotificationHandler::Type::TRANSIENT, *notification_,
-        /*metadata=*/nullptr);
-
     state_ = HatsState::kNotificationDisplayed;
-  } else if (notification_) {
+  } else if (!notification_id_.empty()) {
     // Hide the notification if device loses its connection to the internet.
-    NotificationDisplayServiceFactory::GetForProfile(profile_)->Close(
-        NotificationHandler::Type::TRANSIENT, kNotificationId);
+    message_center::MessageCenter::Get()->RemoveNotification(notification_id_,
+                                                             /*by_user=*/false);
+    notification_id_.clear();
   }
 }
 
 void HatsNotificationController::OnShuttingDown() {
-  NetworkHandler::Get()->network_state_handler()->RemoveObserver(this);
+  network_state_observation_.Reset();
 }
 
 void HatsNotificationController::OnProfileWillBeDestroyed(Profile* profile) {
   CHECK_EQ(profile_, profile);
+
+  network_state_observation_.Reset();
   profile_ = nullptr;
   profile_observation_.Reset();
 }
@@ -480,14 +504,14 @@ void HatsNotificationController::UpdateLastInteractionTime() {
 
   PrefService* pref_service = profile_->GetPrefs();
   if (!hats_config_->prioritized) {
-    pref_service->SetInt64(prefs::kHatsLastInteractionTimestamp,
+    pref_service->SetInt64(ash::prefs::kHatsLastInteractionTimestamp,
                            base::Time::Now().since_origin().InMicroseconds());
   } else {
     pref_service->SetTime(
         hats_config_->survey_last_interaction_timestamp_pref_name,
         base::Time::Now());
-    pref_service->SetTime(prefs::kHatsPrioritizedLastInteractionTimestamp,
-                           base::Time::Now());
+    pref_service->SetTime(ash::prefs::kHatsPrioritizedLastInteractionTimestamp,
+                          base::Time::Now());
   }
 }
 

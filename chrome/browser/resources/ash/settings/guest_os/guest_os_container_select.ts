@@ -18,7 +18,8 @@ import {getTemplate} from './guest_os_container_select.html.js';
 
 export function equalContainerId(first: GuestId, second: GuestId): boolean {
   return first.vm_name === second.vm_name &&
-      first.container_name === second.container_name;
+      first.container_name === second.container_name &&
+      first.vm_type === second.vm_type;
 }
 
 export function containerLabel(
@@ -62,9 +63,9 @@ export class ContainerSelectElement extends PolymerElement {
     };
   }
 
-  selectedContainerId: GuestId;
-  defaultVmName: string|null;
-  containers: ContainerInfo[];
+  declare selectedContainerId: GuestId;
+  declare defaultVmName: string|null;
+  declare containers: ContainerInfo[];
 
   private onSelectContainer_(e: Event): void {
     const index = cast(e.target, HTMLSelectElement).selectedIndex;

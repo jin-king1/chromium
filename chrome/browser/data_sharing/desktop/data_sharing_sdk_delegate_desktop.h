@@ -7,6 +7,7 @@
 
 #include "base/callback_list.h"
 #include "base/functional/callback.h"
+#include "base/memory/raw_ptr.h"
 #include "base/scoped_observation.h"
 #include "chrome/browser/ui/webui/data_sharing/data_sharing_ui.h"
 #include "components/data_sharing/public/data_sharing_sdk_delegate.h"
@@ -21,6 +22,8 @@ class DataSharingSDKDelegateDesktop : public DataSharingSDKDelegate,
  public:
   using LoadFinishedCallback = base::OnceCallback<void(content::WebContents*)>;
   using ReadGroupsCallback = base::OnceCallback<void(
+      const base::expected<data_sharing_pb::ReadGroupsResult, absl::Status>&)>;
+  using ReadGroupWithTokenCallback = base::OnceCallback<void(
       const base::expected<data_sharing_pb::ReadGroupsResult, absl::Status>&)>;
 
   explicit DataSharingSDKDelegateDesktop(content::BrowserContext* context);
@@ -45,6 +48,10 @@ class DataSharingSDKDelegateDesktop : public DataSharingSDKDelegate,
 
   void ReadGroups(const data_sharing_pb::ReadGroupsParams& params,
                   ReadGroupsCallback callback) override;
+
+  void ReadGroupWithToken(
+      const data_sharing_pb::ReadGroupWithTokenParams& params,
+      ReadGroupWithTokenCallback callback) override;
 
   void AddMember(
       const data_sharing_pb::AddMemberParams& params,
@@ -73,6 +80,17 @@ class DataSharingSDKDelegateDesktop : public DataSharingSDKDelegate,
   // DataSharingUI::Delegate:
   void ApiInitComplete() override;
   void ShowErrorDialog(int status_code) override;
+  void OnShareLinkRequested(
+      const std::string& group_id,
+      const std::string& access_token,
+      base::OnceCallback<void(const std::optional<GURL>&)> callback) override;
+  void OnGroupAction(
+      data_sharing::mojom::GroupAction action,
+      data_sharing::mojom::GroupActionProgress progress) override;
+
+  content::WebContents* web_contents_for_testing() {
+    return web_contents_.get();
+  }
 
   void AddAccessToken(
       const data_sharing_pb::AddAccessTokenParams& params,
@@ -87,6 +105,10 @@ class DataSharingSDKDelegateDesktop : public DataSharingSDKDelegate,
 
   void OnReadGroups(ReadGroupsCallback callback,
                     data_sharing::mojom::ReadGroupsResultPtr mojom_result);
+
+  void OnReadGroupWithToken(
+      ReadGroupWithTokenCallback callback,
+      data_sharing::mojom::ReadGroupWithTokenResultPtr mojom_result);
 
   void OnLeaveGroup(base::OnceCallback<void(const absl::Status&)> callback,
                     int status_code);

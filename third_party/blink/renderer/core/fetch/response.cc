@@ -195,10 +195,7 @@ Response* Response::Create(ScriptState* script_state,
     }
   } else if (FormData* form = V8FormData::ToWrappable(isolate, body)) {
     scoped_refptr<EncodedFormData> form_data = form->EncodeMultiPartFormData();
-    // Here we handle formData->boundary() as a C-style string. See
-    // FormDataEncoder::generateUniqueBoundaryString.
-    content_type = AtomicString("multipart/form-data; boundary=") +
-                   form_data->Boundary().data();
+    content_type = form_data->FormatContentTypeWithBoundary();
     body_buffer = BodyStreamBuffer::Create(
         script_state,
         MakeGarbageCollected<FormDataBytesConsumer>(execution_context,
@@ -357,7 +354,7 @@ Response* Response::redirect(ScriptState* script_state,
                              ExceptionState& exception_state) {
   KURL parsed_url = ExecutionContext::From(script_state)->CompleteURL(url);
   if (!parsed_url.IsValid()) {
-    exception_state.ThrowTypeError("Failed to parse URL from " + url);
+    exception_state.ThrowTypeError(StrCat({"Failed to parse URL from ", url}));
     return nullptr;
   }
 
@@ -422,15 +419,14 @@ FetchResponseData* Response::CreateUnfilteredFetchResponseDataWithoutBody(
   response->SetResponseSource(fetch_api_response.response_source);
   response->SetURLList(fetch_api_response.url_list);
   response->SetStatus(fetch_api_response.status_code);
-  response->SetStatusMessage(WTF::AtomicString(fetch_api_response.status_text));
-  response->SetRequestMethod(
-      WTF::AtomicString(fetch_api_response.request_method));
+  response->SetStatusMessage(AtomicString(fetch_api_response.status_text));
+  response->SetRequestMethod(AtomicString(fetch_api_response.request_method));
   response->SetResponseTime(fetch_api_response.response_time);
   response->SetCacheStorageCacheName(
       fetch_api_response.cache_storage_cache_name);
   response->SetConnectionInfo(fetch_api_response.connection_info);
   response->SetAlpnNegotiatedProtocol(
-      WTF::AtomicString(fetch_api_response.alpn_negotiated_protocol));
+      AtomicString(fetch_api_response.alpn_negotiated_protocol));
   response->SetWasFetchedViaSpdy(fetch_api_response.was_fetched_via_spdy);
   response->SetHasRangeRequested(fetch_api_response.has_range_requested);
   response->SetRequestIncludeCredentials(
@@ -454,7 +450,7 @@ FetchResponseData* Response::CreateUnfilteredFetchResponseDataWithoutBody(
 FetchResponseData* Response::FilterResponseData(
     network::mojom::FetchResponseType response_type,
     FetchResponseData* response,
-    WTF::Vector<WTF::String>& headers) {
+    Vector<String>& headers) {
   return FilterResponseDataInternal(response_type, response, headers);
 }
 

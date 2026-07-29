@@ -7,8 +7,7 @@
 
 #include "base/feature_list.h"
 
-namespace web {
-namespace features {
+namespace web::features {
 
 // Used to crash the browser if unexpected URL change is detected.
 // https://crbug.com/841105.
@@ -33,21 +32,8 @@ BASE_DECLARE_FEATURE(kEnablePersistentDownloads);
 // WKWebView is set as NSURLRequestAttributionUser on iOS 15.
 BASE_DECLARE_FEATURE(kSetRequestAttribution);
 
-// Feature flag that enable Shared Highlighting color change in iOS.
-BASE_DECLARE_FEATURE(kIOSSharedHighlightingColorChange);
-
 // Feature flag to enable Measurements detection.
 BASE_DECLARE_FEATURE(kEnableMeasurements);
-
-// Feature param under kOneTapForMaps to select consent behavior.
-extern const char kOneTapForMapsConsentModeParamTitle[];
-extern const char kOneTapForMapsConsentModeDefaultParam[];
-extern const char kOneTapForMapsConsentModeForcedParam[];
-extern const char kOneTapForMapsConsentModeDisabledParam[];
-extern const char kOneTapForMapsConsentModeIPHParam[];
-extern const char kOneTapForMapsConsentModeIPHForcedParam[];
-// Feature flag to enable One tap experience for Maps.
-BASE_DECLARE_FEATURE(kOneTapForMaps);
 
 // When enabled, CRWWebViewScrollViewProxy's `scrollEnabled` state is not
 // restored if the new instance already has the same `scrollEnabled` state as
@@ -69,6 +55,18 @@ BASE_DECLARE_FEATURE(kEnableWebInspector);
 // viewport adjustment experiment is selected via command line switches.
 BASE_DECLARE_FEATURE(kSmoothScrollingDefault);
 
+// When enabled, the SmoothScrollingDefault experiment uses the regular
+// UIScrollViewDelegate instead of KVO and broadcasting.
+BASE_DECLARE_FEATURE(kSmoothScrollingUseDelegate);
+
+// Returns true if the broadcaster should be used for the smooth scrolling
+// experiment.
+bool ShouldUseBroadcasterForSmoothScrolling();
+
+// Feature flag to enable a scroll threshold before entering or exiting
+// fullscreen.
+BASE_DECLARE_FEATURE(kFullscreenScrollThreshold);
+
 // Feature flag that force the use of the synthesized native WKWebView
 // session instead of the (maybe inexistent) saved native session. The
 // purpose of this flag it to allow to testing this code path.
@@ -78,20 +76,11 @@ BASE_DECLARE_FEATURE(kForceSynthesizedRestoreSession);
 // intended to be used as a kill switch.
 BASE_DECLARE_FEATURE(kDetectDestroyedNavigationContexts);
 
-// Feature flag to enable improve tracking number detection.
-BASE_DECLARE_FEATURE(kEnableNewParcelTrackingNumberDetection);
-
-// When true, an option to enable Web Inspector should be present in Settings.
-bool IsWebInspectorSupportEnabled();
-
 // Feature flag to disable the raccoon.
 BASE_DECLARE_FEATURE(kDisableRaccoon);
 
 // Feature flag adds bugfix numbers to the iOS User-Agent header for Chrome
 BASE_DECLARE_FEATURE(kUserAgentBugFixVersion);
-
-// Enables logging JavaScript errors.
-BASE_DECLARE_FEATURE(kLogJavaScriptErrors);
 
 // Feature flag to let WebKit handle MarketplaceKit links. This is intended to
 // be used as a kill switch.
@@ -100,7 +89,65 @@ BASE_DECLARE_FEATURE(kWebKitHandlesMarketplaceKitLinks);
 // Feature flag to restore the WKWebView edit menu customization.
 BASE_DECLARE_FEATURE(kRestoreWKWebViewEditMenuHandler);
 
-}  // namespace features
-}  // namespace web
+// Enables logging CrWeb Javascript errors.
+BASE_DECLARE_FEATURE(kLogCrWebJavaScriptErrors);
+
+// When enabled, JavaScript errors will crash the application.
+BASE_DECLARE_FEATURE(kAssertOnJavaScriptErrors);
+
+// A flag parameter to set the number of pixels to use as the threshold.
+inline constexpr char kFullscreenScrollThresholdAmount[] =
+    "fullscreen_scroll_threshold_amount";
+
+// Returns true if SmoothScrollingDefault is disabled and
+// FullscreenScrollThreshold is enabled.
+bool IsFullscreenScrollThresholdEnabled();
+
+// When true, an option to enable Web Inspector should be present in Settings.
+bool IsWebInspectorSupportEnabled();
+
+// TODO(crbug.com/449156290): Clean up the kill switch for updating SSL status
+// on navigation item creation.
+// When enabled, trigger an update of the SSL status on navigation item
+// lazy creation. This is intended to be used as a kill switch.
+BASE_DECLARE_FEATURE(kUpdateSSLStatusOnNavigationItemLazyCreation);
+
+// Feature flag to enable BEContextMenuConfiguration.
+// This is used as a kill switch and should not be removed.
+BASE_DECLARE_FEATURE(kEnableBEContextMenuConfiguration);
+
+// Feature flag to enable a fix for a crash in
+// DownloadTaskImpl::GenerateFileName.
+BASE_DECLARE_FEATURE(kIOSDownloadSanitizeFilename);
+
+// TODO(crbug.com/487947859): Clean up the kill switch once confirmed this is
+// not causing regressions.
+// When enabled, NetErrorFromError searches the entire NSError chain for the
+// first translatable error code. This ensures accurate error mapping on iOS
+// 26.4+, where specific network failures are often nested within generic
+// container errors. When disabled, it only attempts to translate the final
+// underlying error in the chain, which was the pre-existing behavior.
+BASE_DECLARE_FEATURE(kNetErrorFromErrorChainKillSwitch);
+
+// Feature flag to enable Cobalt on iOS.
+BASE_DECLARE_FEATURE(kIOSCobalt);
+// Feature flag to enable the developer mode of Cobalt on iOS.
+BASE_DECLARE_FEATURE(kIOSCobaltDeveloperMode);
+
+// Returns whether Cobalt is enabled on iOS.
+bool IsCobaltEnabled();
+// Returns whether the developer mode of Cobalt is enabled on iOS.
+bool IsCobaltDeveloperModeEnabled();
+
+// Feature flag to enable the workaround for SecTrust evaluation inconsistency.
+// TODO(crbug.com/485184282): Remove this flag once it's confirmed that the
+// workaround is working as intended.
+BASE_DECLARE_FEATURE(kCertVerificationWorkaroundKillSwitch);
+
+// Feature flag to enable logging the time it takes to convert a WKScriptMessage
+// object into a web::ScriptMessage object.
+BASE_DECLARE_FEATURE(kIOSScriptMessageConversionDurationLogging);
+
+}  // namespace web::features
 
 #endif  // IOS_WEB_COMMON_FEATURES_H_

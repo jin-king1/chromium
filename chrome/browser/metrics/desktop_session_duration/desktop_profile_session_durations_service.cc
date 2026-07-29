@@ -15,11 +15,14 @@ DesktopProfileSessionDurationsService::DesktopProfileSessionDurationsService(
     PrefService* pref_service,
     syncer::SyncService* sync_service,
     signin::IdentityManager* identity_manager,
+    ProfileMetricsService* profile_metrics_service,
     DesktopSessionDurationTracker* tracker)
     : sync_metrics_recorder_(
           std::make_unique<syncer::SyncSessionDurationsMetricsRecorder>(
               sync_service,
-              identity_manager)),
+              identity_manager,
+              profile_metrics_service)),
+
       msbb_metrics_recorder_(
           std::make_unique<
               unified_consent::MsbbSessionDurationsMetricsRecorder>(
@@ -27,7 +30,6 @@ DesktopProfileSessionDurationsService::DesktopProfileSessionDurationsService(
       password_metrics_recorder_(
           std::make_unique<
               password_manager::PasswordSessionDurationsMetricsRecorder>(
-              pref_service,
               sync_service)) {
   session_duration_observation_.Observe(tracker);
   if (tracker->in_session()) {

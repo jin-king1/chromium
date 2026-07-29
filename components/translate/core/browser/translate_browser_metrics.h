@@ -35,9 +35,10 @@ enum class TargetLanguageOrigin {
   kChangedByUser,
   kUninitialized,
   kAutoTranslate,
+  kForcedTranslateLanguage,
   // Insert new items here. Keep in sync with TranslateTargetLanguageOrigin in
   // enums.xml when adding values.
-  kMaxValue = kAutoTranslate
+  kMaxValue = kForcedTranslateLanguage
 };
 
 enum class MenuTranslationUnavailableReason {
@@ -63,12 +64,12 @@ void ReportMenuTranslationUnavailableReason(
 void ReportLanguageDetectionContentLength(size_t length);
 
 // Called when a request is sent to the translate server to report the source
-// language of the translated page. Buckets are labelled with LocaleCodeISO639
+// language of the translated page. Buckets are labelled with LocaleCodeBCP47
 // values.
 void ReportTranslateSourceLanguage(std::string_view language);
 
 // Called when a request is sent to the translate server to report the target
-// language for the translated page. Buckets are labelled with LocaleCodeISO639
+// language for the translated page. Buckets are labelled with LocaleCodeBCP47
 // values.
 void ReportTranslateTargetLanguage(std::string_view language);
 

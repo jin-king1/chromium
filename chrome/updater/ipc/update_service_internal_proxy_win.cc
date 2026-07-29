@@ -14,14 +14,16 @@
 #include <utility>
 
 #include "base/check.h"
+#include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/logging.h"
-#include "base/memory/scoped_refptr.h"
+#include "base/memory/ref_counted.h"
 #include "base/sequence_checker.h"
 #include "base/task/bind_post_task.h"
 #include "chrome/updater/app/server/win/updater_internal_idl.h"
 #include "chrome/updater/ipc/proxy_impl_base_win.h"
 #include "chrome/updater/ipc/update_service_internal_proxy.h"
+#include "chrome/updater/service_proxy_factory.h"
 #include "chrome/updater/updater_scope.h"
 #include "chrome/updater/util/win_util.h"
 #include "chrome/updater/win/setup/setup_util.h"
@@ -140,24 +142,24 @@ class UpdateServiceInternalProxyImplImpl
   }
 };
 
-UpdateServiceInternalProxyImpl::UpdateServiceInternalProxyImpl(
+UpdateServiceInternalProxyWinImpl::UpdateServiceInternalProxyWinImpl(
     UpdaterScope scope)
     : impl_(base::MakeRefCounted<UpdateServiceInternalProxyImplImpl>(scope)) {}
 
-UpdateServiceInternalProxyImpl::~UpdateServiceInternalProxyImpl() {
+UpdateServiceInternalProxyWinImpl::~UpdateServiceInternalProxyWinImpl() {
   VLOG(1) << __func__;
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   UpdateServiceInternalProxyImplImpl::Destroy(std::move(impl_));
 }
 
-void UpdateServiceInternalProxyImpl::Run(
+void UpdateServiceInternalProxyWinImpl::Run(
     base::OnceCallback<void(std::optional<RpcError>)> callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   VLOG(1) << __func__;
   impl_->Run(base::BindPostTaskToCurrentDefault(std::move(callback)));
 }
 
-void UpdateServiceInternalProxyImpl::Hello(
+void UpdateServiceInternalProxyWinImpl::Hello(
     base::OnceCallback<void(std::optional<RpcError>)> callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   VLOG(1) << __func__;
@@ -167,7 +169,7 @@ void UpdateServiceInternalProxyImpl::Hello(
 scoped_refptr<UpdateServiceInternal> CreateUpdateServiceInternalProxy(
     UpdaterScope updater_scope) {
   return base::MakeRefCounted<UpdateServiceInternalProxy>(
-      base::MakeRefCounted<UpdateServiceInternalProxyImpl>(updater_scope));
+      base::MakeRefCounted<UpdateServiceInternalProxyWinImpl>(updater_scope));
 }
 
 }  // namespace updater

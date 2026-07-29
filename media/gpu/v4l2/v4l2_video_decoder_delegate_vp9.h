@@ -35,7 +35,6 @@ class V4L2VideoDecoderDelegateVP9 : public VP9Decoder::VP9Accelerator {
                       const Vp9LoopFilterParams& lf_params,
                       const Vp9ReferenceFrameVector& reference_frames) override;
   bool OutputPicture(scoped_refptr<VP9Picture> pic) override;
-  bool NeedsCompressedHeaderParsed() const override;
 
  private:
   raw_ptr<V4L2DecodeSurfaceHandler> const surface_handler_;

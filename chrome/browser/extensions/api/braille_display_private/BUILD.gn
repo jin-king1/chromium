@@ -39,13 +39,11 @@ source_set("braille_display_private") {
   deps = [
     "//build:chromeos_buildflags",
     "//chrome/browser/profiles:profile",
+    "//device/bluetooth/public/cpp",
   ]
 
   if (is_chromeos) {
-    deps += [
-      "//chrome/browser/ash/accessibility",
-      "//chrome/browser/ash/login/lock",
-    ]
+    deps += [ "//chrome/browser/ash/accessibility" ]
   }
 
   if (use_brlapi) {

@@ -11,11 +11,13 @@
 #include "base/format_macros.h"
 #include "base/functional/callback.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/trace_event/trace_event.h"
 #include "components/cbor/reader.h"
 #include "content/browser/web_package/signed_exchange_consts.h"
 #include "content/browser/web_package/signed_exchange_utils.h"
+#include "crypto/hash.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/http_util.h"
 #include "url/origin.h"
@@ -109,7 +111,7 @@ bool IsCacheableBySharedCache(const SignedExchangeEnvelope::HeaderMap& headers,
           base::StringPrintf(
               "Exchange's response must be cacheable by a shared cache, but "
               "has cache-control: %s",
-              found->second.c_str()));
+              found->second));
       return false;
     }
   }
@@ -119,7 +121,7 @@ bool IsCacheableBySharedCache(const SignedExchangeEnvelope::HeaderMap& headers,
         base::StringPrintf(
             "Failed to parse cache-control header of the exchange. "
             "cache-control: %s",
-            found->second.c_str()));
+            found->second));
     return false;
   }
   return true;
@@ -177,8 +179,7 @@ bool ParseResponseMap(const cbor::Value& value,
     if (!net::HttpUtil::IsValidHeaderName(name_str)) {
       signed_exchange_utils::ReportErrorAndTraceEvent(
           devtools_proxy,
-          base::StringPrintf("Invalid header name. header_name: %s",
-                             std::string(name_str).c_str()));
+          base::StringPrintf("Invalid header name. header_name: %s", name_str));
       return false;
     }
 
@@ -192,7 +193,7 @@ bool ParseResponseMap(const cbor::Value& value,
           devtools_proxy,
           base::StringPrintf(
               "Response header name should be lower-cased. header_name: %s",
-              std::string(name_str).c_str()));
+              name_str));
       return false;
     }
 
@@ -203,7 +204,7 @@ bool ParseResponseMap(const cbor::Value& value,
           devtools_proxy,
           base::StringPrintf(
               "Exchange contains stateful response header. header_name: %s",
-              std::string(name_str).c_str()));
+              name_str));
       return false;
     }
 
@@ -217,7 +218,7 @@ bool ParseResponseMap(const cbor::Value& value,
       signed_exchange_utils::ReportErrorAndTraceEvent(
           devtools_proxy,
           base::StringPrintf("Duplicate header value. header_name: %s",
-                             std::string(name_str).c_str()));
+                             name_str));
       return false;
     }
   }
@@ -272,7 +273,7 @@ bool ParseResponseMap(const cbor::Value& value,
         base::StringPrintf(
             "Exchange's inner response must not be a signed-exchange. "
             "conetent-type: %s",
-            content_type_iter->second.c_str()));
+            content_type_iter->second));
     return false;
   }
 
@@ -391,12 +392,7 @@ void SignedExchangeEnvelope::set_cbor_header(base::span<const uint8_t> data) {
 }
 
 net::SHA256HashValue SignedExchangeEnvelope::ComputeHeaderIntegrity() const {
-  net::SHA256HashValue hash;
-  crypto::SHA256HashString(
-      std::string_view(reinterpret_cast<const char*>(cbor_header().data()),
-                       cbor_header().size()),
-      &hash, sizeof(net::SHA256HashValue));
-  return hash;
+  return crypto::hash::Sha256(cbor_header());
 }
 
 }  // namespace content

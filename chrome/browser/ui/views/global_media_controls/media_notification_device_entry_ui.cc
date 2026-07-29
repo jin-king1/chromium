@@ -4,8 +4,6 @@
 
 #include "chrome/browser/ui/views/global_media_controls/media_notification_device_entry_ui.h"
 
-#include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/ui/views/global_media_controls/media_item_ui_helper.h"
@@ -14,11 +12,13 @@
 #include "components/vector_icons/vector_icons.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/models/image_model.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/gfx/paint_vector_icon.h"
 #include "ui/views/animation/ink_drop.h"
 #include "ui/views/background.h"
 #include "ui/views/border.h"
-#include "ui/views/controls/styled_label.h"
+#include "ui/views/controls/label.h"
+#include "ui/views/property_effects.h"
 
 namespace {
 
@@ -26,7 +26,7 @@ constexpr int kDeviceIconSize = 20;
 constexpr auto kDeviceIconBorder = gfx::Insets(6);
 
 void ChangeEntryColor(views::ImageView* image_view,
-                      views::StyledLabel* title_view,
+                      views::Label* title_view,
                       views::Label* subtitle_view,
                       const gfx::VectorIcon* icon,
                       SkColor foreground_color,
@@ -36,15 +36,12 @@ void ChangeEntryColor(views::ImageView* image_view,
                                                         kDeviceIconSize));
   }
 
-  title_view->SetDisplayedOnBackgroundColor(background_color);
+  title_view->SetBackgroundColor(background_color);
   if (!title_view->GetText().empty()) {
-    views::StyledLabel::RangeStyleInfo style_info;
-    style_info.text_style = views::style::STYLE_PRIMARY;
-    style_info.override_color = foreground_color;
-    title_view->ClearStyleRanges();
-    title_view->AddStyleRange(gfx::Range(0, title_view->GetText().length()),
-                              style_info);
-    title_view->SizeToFit(0);
+    title_view->SetTextStyleRange(
+        views::style::STYLE_PRIMARY,
+        gfx::Range(0, title_view->GetText().length()));
+    title_view->SetEnabledColor(foreground_color);
   }
 
   if (subtitle_view) {
@@ -80,7 +77,9 @@ std::unique_ptr<views::View> CreateIconView(
 }
 
 std::unique_ptr<views::ImageView> GetAudioDeviceIcon() {
-  return CreateIconView(vector_icons::kHeadsetIcon);
+  return CreateIconView(features::IsRoundedIconsEnabled()
+                            ? vector_icons::kHeadphonesIcon
+                            : vector_icons::kHeadsetOldIcon);
 }
 
 }  // namespace
@@ -99,7 +98,11 @@ AudioDeviceEntryView::AudioDeviceEntryView(PressedCallback callback,
                                            SkColor background_color,
                                            const std::string& raw_device_id,
                                            const std::string& device_name)
-    : DeviceEntryUI(raw_device_id, device_name, vector_icons::kHeadsetIcon),
+    : DeviceEntryUI(raw_device_id,
+                    device_name,
+                    features::IsRoundedIconsEnabled()
+                        ? vector_icons::kHeadphonesIcon
+                        : vector_icons::kHeadsetOldIcon),
       HoverButton(std::move(callback),
                   GetAudioDeviceIcon(),
                   base::UTF8ToUTF16(device_name)) {
@@ -126,7 +129,7 @@ void AudioDeviceEntryView::SetHighlighted(bool highlighted) {
     SetHasInkDropActionOnClick(true);
     SetBackground(nullptr);
   }
-  OnPropertyChanged(&is_highlighted_, views::kPropertyEffectsPaint);
+  OnPropertyChanged(&is_highlighted_, views::PropertyEffects::kPaint);
 }
 
 bool AudioDeviceEntryView::GetHighlighted() const {
@@ -144,55 +147,6 @@ void AudioDeviceEntryView::OnColorsChanged(SkColor foreground_color,
 
 DeviceEntryUIType AudioDeviceEntryView::GetType() const {
   return DeviceEntryUIType::kAudio;
-}
-
-///////////////////////////////////////////////////////////////////////////////
-// CastDeviceEntryView:
-
-CastDeviceEntryView::CastDeviceEntryView(
-    base::RepeatingClosure callback,
-    SkColor foreground_color,
-    SkColor background_color,
-    const global_media_controls::mojom::DevicePtr& device)
-    : DeviceEntryUI(device->id, device->name, GetVectorIcon(device->icon)),
-      HoverButton(std::move(callback),
-                  CreateIconView(device->icon),
-                  base::UTF8ToUTF16(device->name),
-                  base::UTF8ToUTF16(device->status_text)),
-      device_(device->Clone()) {
-  ChangeCastEntryColor(foreground_color, background_color);
-
-  SetFocusBehavior(views::View::FocusBehavior::ALWAYS);
-  views::InkDrop::Get(this)->SetMode(views::InkDropHost::InkDropMode::ON);
-  SetHasInkDropActionOnClick(true);
-}
-
-CastDeviceEntryView::~CastDeviceEntryView() = default;
-
-void CastDeviceEntryView::OnColorsChanged(SkColor foreground_color,
-                                          SkColor background_color) {
-  ChangeCastEntryColor(foreground_color, background_color);
-}
-
-DeviceEntryUIType CastDeviceEntryView::GetType() const {
-  return DeviceEntryUIType::kCast;
-}
-
-void CastDeviceEntryView::ChangeCastEntryColor(SkColor foreground_color,
-                                               SkColor background_color) {
-  if (device_->icon == global_media_controls::mojom::IconType::kThrobber) {
-    // Do not pass in `icon_view()` here as we want to keep the throbber view
-    // with its color unchanged.
-    ChangeEntryColor(nullptr, title(), subtitle(), nullptr, foreground_color,
-                     background_color);
-  } else {
-    ChangeEntryColor(static_cast<views::ImageView*>(icon_view()), title(),
-                     subtitle(), &icon(), foreground_color, background_color);
-  }
-}
-
-std::string CastDeviceEntryView::GetStatusTextForTest() const {
-  return device_->status_text;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -221,9 +175,6 @@ DeviceEntryUIType CastDeviceEntryViewAsh::GetType() const {
 
 BEGIN_METADATA(AudioDeviceEntryView)
 ADD_PROPERTY_METADATA(bool, Highlighted)
-END_METADATA
-
-BEGIN_METADATA(CastDeviceEntryView)
 END_METADATA
 
 BEGIN_METADATA(CastDeviceEntryViewAsh)

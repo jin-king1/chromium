@@ -8,6 +8,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "base/functional/callback_forward.h"
 #include "base/memory/ref_counted.h"
@@ -59,25 +60,24 @@ class CrxCache : public base::RefCountedThreadSafe<CrxCache> {
       base::OnceCallback<void(base::expected<base::FilePath, UnpackerError>)>
           callback) const;
 
-  // Similar to GetByHash, but looks up an item by fingerprint. O(N) lookup.
-  void GetByFp(
-      const std::string& fp,
-      base::OnceCallback<void(base::expected<base::FilePath, UnpackerError>)>
-          callback) const;
-
   // Adds `file` to the cache. Any entries with the same `app_id` are first
-  // evicted. The file is moved into the cache, and the new path to the
-  // file is returned. Hashes should be in ASCII. O(N) time.
+  // evicted. The `file` is moved into the cache, `file`'s parent directory (now
+  // expected to be empty) is deleted, and the new path to the file is returned.
+  // Hashes should be in ASCII. O(N) time.
   void Put(
       const base::FilePath& file,
       const std::string& app_id,
       const std::string& hash,
-      const std::string& fp,
       base::OnceCallback<void(base::expected<base::FilePath, UnpackerError>)>
           callback);
 
   // Removes all entries associated with a particular app ID. O(N) time.
-  void RemoveAll(const std::string& app_id);
+  void RemoveAll(const std::string& app_id, base::OnceClosure callback);
+
+  // Removes all entries that are not associated with any of the listed
+  // app IDs. O(N+M) time.
+  void RemoveIfNot(const std::vector<std::string>& app_ids,
+                   base::OnceClosure callback);
 
  private:
   friend class base::RefCountedThreadSafe<CrxCache>;

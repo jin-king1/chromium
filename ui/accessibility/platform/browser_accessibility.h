@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "base/component_export.h"
+#include "base/memory/advanced_memory_safety_checks.h"
 #include "base/memory/raw_ptr.h"
 #include "build/build_config.h"
 #include "ui/accessibility/ax_enums.mojom-forward.h"
@@ -42,6 +43,9 @@ class BrowserAccessibilityManager;
 // Web.
 class COMPONENT_EXPORT(AX_PLATFORM) BrowserAccessibility
     : public AXPlatformNodeDelegate {
+  // TODO(b/498205735): Remove once hardening protections are no longer needed.
+  ADVANCED_MEMORY_SAFETY_CHECKS();
+
  public:
   // Creates a platform specific BrowserAccessibility. Ownership passes to the
   // caller.
@@ -234,7 +238,6 @@ class COMPONENT_EXPORT(AX_PLATFORM) BrowserAccessibility
       bool operator==(const Iterator& rhs) const {
         return parent_ == rhs.parent_ && index_ == rhs.index_;
       }
-      bool operator!=(const Iterator& rhs) const { return !operator==(rhs); }
       const BrowserAccessibility* operator*();
 
      private:
@@ -448,6 +451,13 @@ class COMPONENT_EXPORT(AX_PLATFORM) BrowserAccessibility
   // collapsed.
   BrowserAccessibility* GetCollapsedMenuListSelectAncestor() const;
 
+  // Some platforms require extra nodes to be created in order to support aria
+  // notify.
+  // These extra nodes will be created by the AXTree but only the
+  // BrowserAccessibility/platform trees will be aware of them.
+  BrowserAccessibility* GetExtraAnnouncementNode(
+      ax::mojom::AriaNotificationPriority priority_property) const;
+
   // Returns true if:
   // 1. This node is a list, AND
   // 2. This node has a list ancestor or a list descendant.
@@ -478,7 +488,7 @@ class COMPONENT_EXPORT(AX_PLATFORM) BrowserAccessibility
 
   std::string SubtreeToStringHelper(size_t level) override;
 
-  void NotifyAccessibilityApiUsage() const override;
+  BrowserAccessibility* ToBrowserAccessibility() override;
 
   // The UIA tree formatter needs access to GetUniqueId() to identify the
   // starting point for tree dumps.
@@ -527,6 +537,11 @@ class COMPONENT_EXPORT(AX_PLATFORM) BrowserAccessibility
 
   // Determines whether this object is valid.
   bool IsValid() const;
+
+  // On Windows IA2 and older versions of linux, we must
+  // use extra announcement nodes to provide a fallback for aria notify.
+  bool HasExtraAnnouncementNodes() const;
+  size_t PlatformChildCountWithoutAnnouncementNodes() const;
 
   // Given a set of map of spelling text attributes and a start offset, merge
   // them into the given map of existing text attributes. Merges the given

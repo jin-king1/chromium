@@ -4,16 +4,25 @@
 
 package org.chromium.ui;
 
+import static org.chromium.build.NullUtil.assertNonNull;
+
 import org.jni_zero.CalledByNative;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.ui.base.BackGestureEventSwipeEdge;
 
+import java.util.HashMap;
+import java.util.Map;
+
 /** Simple interface allowing customized response to an overscrolling pull input. */
 @NullMarked
 public interface OverscrollRefreshHandler {
+    // Use a map to store refs to Java objects. This is necessary to avoid a ScopedJavaGlobalRef in
+    // C++ of which there are only 51200 app wide. Effectively private.
+    static final Map<Long, OverscrollRefreshHandler> sRefs = new HashMap<>();
+
     // LINT.IfChange
-    public static final int DEFAULT_NAVIGATION_EDGE_WIDTH = 24;
+    int DEFAULT_NAVIGATION_EDGE_WIDTH = 24;
 
     // LINT.ThenChange(//ui/android/overscroll_refresh.h:kDefaultNavigationEdgeWidth)
 
@@ -27,7 +36,7 @@ public interface OverscrollRefreshHandler {
      * @return Whether the handler will consume the overscroll sequence.
      */
     @CalledByNative
-    public boolean start(@OverscrollAction int type, @BackGestureEventSwipeEdge int initiatingEdge);
+    boolean start(@OverscrollAction int type, @BackGestureEventSwipeEdge int initiatingEdge);
 
     /**
      * Signals a pull update.
@@ -37,23 +46,42 @@ public interface OverscrollRefreshHandler {
      * @param yDelta The change in vertical pull distance.
      */
     @CalledByNative
-    public void pull(float xDelta, float yDelta);
+    void pull(float xDelta, float yDelta);
 
     /**
      * Signals the release of the pull.
-     * @param allowRefresh Whether the release signal should be allowed to trigger a refresh.
+     *
+     * @param status The activation status of the release gesture.
      */
     @CalledByNative
-    public void release(boolean allowRefresh);
+    void release(@OverscrollActivationStatus int status);
 
     /** Reset the active pull state. */
     @CalledByNative
-    public void reset();
+    void reset();
 
     /**
      * Toggle whether the effect is active.
-     * @param enabled Whether to enable the effect.
-     *                If disabled, the effect should deactive itself apropriately.
+     *
+     * @param enabled Whether to enable the effect. If disabled, the effect should deactivate itself
+     *     appropriately.
      */
-    public void setEnabled(boolean enabled);
+    void setEnabled(boolean enabled);
+
+    @CalledByNative
+    private static void setRef(long nativePtr, OverscrollRefreshHandler handler) {
+        var oldValue = sRefs.put(nativePtr, handler);
+        assert oldValue == null;
+    }
+
+    @CalledByNative
+    private static OverscrollRefreshHandler getRef(long nativePtr) {
+        return assertNonNull(sRefs.get(nativePtr));
+    }
+
+    @CalledByNative
+    private static void removeRef(long nativePtr) {
+        var oldValue = sRefs.remove(nativePtr);
+        assert oldValue != null;
+    }
 }

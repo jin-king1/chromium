@@ -13,7 +13,6 @@
 #include "base/functional/bind.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/scoped_refptr.h"
-#include "base/not_fatal_until.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/test_file_util.h"
@@ -32,11 +31,14 @@
 #include "testing/gtest/include/gtest/gtest.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
+#include "chrome/browser/ash/policy/core/user_cloud_policy_manager_ash.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_types.h"
 #include "components/account_id/account_id.h"
 #include "components/user_manager/fake_user_manager.h"
-#endif
+#else
+#include "components/policy/core/common/cloud/cloud_policy_manager.h"
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 constexpr char kGuestProfileName[] = "$guest";
 #if !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_ANDROID)
@@ -58,17 +60,6 @@ std::unique_ptr<Profile> BuildTestingProfile(
 TestingProfileManager::TestingProfileManager(TestingBrowserProcess* process)
     : called_set_up_(false),
       browser_process_(process),
-      owned_local_state_(std::make_unique<ScopedTestingLocalState>(process)),
-      profile_manager_(nullptr) {
-  local_state_ = owned_local_state_.get();
-}
-
-TestingProfileManager::TestingProfileManager(
-    TestingBrowserProcess* process,
-    ScopedTestingLocalState* local_state)
-    : called_set_up_(false),
-      browser_process_(process),
-      local_state_(local_state),
       profile_manager_(nullptr) {}
 
 TestingProfileManager::~TestingProfileManager() {
@@ -76,7 +67,6 @@ TestingProfileManager::~TestingProfileManager() {
 
   // Drop unowned references before destroying the object that owns them.
   profile_manager_ = nullptr;
-  local_state_ = nullptr;
 
   // Destroying this class also destroys the LocalState, so make sure the
   // associated ProfileManager is also destroyed.
@@ -99,16 +89,17 @@ TestingProfile* TestingProfileManager::CreateTestingProfile(
     bool is_supervised_profile,
     std::optional<bool> is_new_profile,
     std::optional<std::unique_ptr<policy::PolicyService>> policy_service,
-    bool is_main_profile,
-    scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory) {
+    scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
+#if BUILDFLAG(IS_CHROMEOS)
+    std::unique_ptr<policy::UserCloudPolicyManagerAsh>
+        user_cloud_policy_manager) {
+#else
+    std::unique_ptr<policy::UserCloudPolicyManager> user_cloud_policy_manager) {
+#endif  // !BUILDFLAG(IS_CHROMEOS)
   DCHECK(called_set_up_);
-
-  base::FilePath profile_path = GetProfilePath(profile_name);
 
   // Create the profile and register it.
   TestingProfile::Builder builder;
-  builder.SetDelegate(profile_manager_.get());
-  builder.SetPath(profile_path);
   builder.SetPrefService(std::move(prefs));
   if (is_supervised_profile)
     builder.SetIsSupervisedProfile();
@@ -116,10 +107,41 @@ TestingProfile* TestingProfileManager::CreateTestingProfile(
   builder.SetIsNewProfile(is_new_profile.value_or(false));
   if (policy_service)
     builder.SetPolicyService(std::move(*policy_service));
-
+  if (user_cloud_policy_manager) {
+#if BUILDFLAG(IS_CHROMEOS)
+    builder.SetUserCloudPolicyManagerAsh(std::move(user_cloud_policy_manager));
+#else
+    builder.SetUserCloudPolicyManager(std::move(user_cloud_policy_manager));
+#endif  // BUILDFLAG(IS_CHROMEOS)
+  }
   builder.AddTestingFactories(std::move(testing_factories));
-
   builder.SetSharedURLLoaderFactory(shared_url_loader_factory);
+
+  return CreateTestingProfile(std::move(builder), user_name, avatar_id);
+}
+
+TestingProfile* TestingProfileManager::CreateTestingProfile(
+    const std::string& name,
+    TestingProfile::TestingFactories testing_factories,
+    scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory) {
+  DCHECK(called_set_up_);
+  return CreateTestingProfile(
+      name, std::unique_ptr<sync_preferences::PrefServiceSyncable>(),
+      base::UTF8ToUTF16(name), /*avatar_id=*/0, std::move(testing_factories),
+      /*is_supervised_profile=*/false, /*is_new_profile=*/std::nullopt,
+      /*policy_service=*/std::nullopt, shared_url_loader_factory);
+}
+
+TestingProfile* TestingProfileManager::CreateTestingProfile(
+    TestingProfile::Builder builder,
+    const std::u16string& user_name,
+    int avatar_id) {
+  std::string profile_name = builder.profile_name();
+  base::FilePath profile_path = GetProfilePath(profile_name);
+  bool is_supervised_profile = builder.is_supervised_profile();
+
+  builder.SetDelegate(profile_manager_.get());
+  builder.SetPath(profile_path);
 
   auto* profile_ptr =
       static_cast<TestingProfile*>(profile_manager_->CreateAndInitializeProfile(
@@ -146,29 +168,6 @@ TestingProfile* TestingProfileManager::CreateTestingProfile(
   }
 #endif
   return profile_ptr;
-}
-
-TestingProfile* TestingProfileManager::CreateTestingProfile(
-    const std::string& name,
-    bool is_main_profile,
-    scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory) {
-  DCHECK(called_set_up_);
-  return CreateTestingProfile(name, /*testing_factories=*/{}, is_main_profile,
-                              shared_url_loader_factory);
-}
-
-TestingProfile* TestingProfileManager::CreateTestingProfile(
-    const std::string& name,
-    TestingProfile::TestingFactories testing_factories,
-    bool is_main_profile,
-    scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory) {
-  DCHECK(called_set_up_);
-  return CreateTestingProfile(
-      name, std::unique_ptr<sync_preferences::PrefServiceSyncable>(),
-      base::UTF8ToUTF16(name), /*avatar_id=*/0, std::move(testing_factories),
-      /*is_supervised_profile=*/false, /*is_new_profile=*/std::nullopt,
-      /*policy_service=*/std::nullopt, is_main_profile,
-      shared_url_loader_factory);
 }
 
 TestingProfile* TestingProfileManager::CreateGuestProfile(
@@ -269,7 +268,7 @@ void TestingProfileManager::DeleteGuestProfile() {
   DCHECK(called_set_up_);
 
   auto it = testing_profiles_.find(kGuestProfileName);
-  CHECK(it != testing_profiles_.end(), base::NotFatalUntil::M130);
+  CHECK(it != testing_profiles_.end());
 
   profile_manager_->profiles_info_.erase(ProfileManager::GetGuestProfilePath());
 }
@@ -279,7 +278,7 @@ void TestingProfileManager::DeleteSystemProfile() {
   DCHECK(called_set_up_);
 
   auto it = testing_profiles_.find(kSystemProfileName);
-  CHECK(it != testing_profiles_.end(), base::NotFatalUntil::M130);
+  CHECK(it != testing_profiles_.end());
 
   profile_manager_->profiles_info_.erase(
       ProfileManager::GetSystemProfilePath());

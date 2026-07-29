@@ -10,6 +10,7 @@ import android.content.res.Resources;
 import android.util.AttributeSet;
 import android.view.LayoutInflater;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.ViewStub;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
@@ -27,8 +28,9 @@ import androidx.recyclerview.widget.RecyclerView.AdapterDataObserver;
 import androidx.recyclerview.widget.RecyclerView.ItemAnimator;
 import androidx.recyclerview.widget.RecyclerView.OnScrollListener;
 
-import org.chromium.base.supplier.ObservableSupplier;
-import org.chromium.base.supplier.ObservableSupplierImpl;
+import org.chromium.base.supplier.NonNullObservableSupplier;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableNonNullObservableSupplier;
 import org.chromium.build.annotations.Initializer;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -39,14 +41,18 @@ import org.chromium.components.browser_ui.widget.displaystyle.DisplayStyleObserv
 import org.chromium.components.browser_ui.widget.displaystyle.HorizontalDisplayStyle;
 import org.chromium.components.browser_ui.widget.displaystyle.UiConfig;
 import org.chromium.components.browser_ui.widget.displaystyle.UiConfig.DisplayStyle;
+import org.chromium.components.browser_ui.widget.displaystyle.ViewResizerUtil;
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandler;
 import org.chromium.components.browser_ui.widget.selectable_list.SelectionDelegate.SelectionObserver;
-import org.chromium.ui.display.DisplayUtil;
+import org.chromium.ui.base.ViewUtils;
+import org.chromium.ui.edge_to_edge.EdgeToEdgePadAdjuster;
+import org.chromium.ui.util.CommonOnLayoutChangeListeners;
 import org.chromium.ui.widget.LoadingView;
 
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Function;
 
 /**
  * Contains UI elements common to selectable list views: a loading view, empty view, selection
@@ -63,7 +69,7 @@ import java.util.Set;
 @NullMarked
 public class SelectableListLayout<E> extends FrameLayout
         implements DisplayStyleObserver, SelectionObserver<E>, BackPressHandler {
-    private static final int WIDE_DISPLAY_MIN_PADDING_DP = 16;
+    private static final int WIDE_WINDOW_MIN_PADDING_DP = 16;
 
     private RecyclerView.Adapter mAdapter;
     private ViewStub mToolbarStub;
@@ -75,6 +81,7 @@ public class SelectableListLayout<E> extends FrameLayout
     private RecyclerView mRecyclerView;
     private @Nullable ItemAnimator mItemAnimator;
     SelectableListToolbar<E> mToolbar;
+    private @Nullable EdgeToEdgePadAdjuster mEdgeToEdgePadAdjuster;
 
     private FadingShadowView mToolbarShadow;
 
@@ -83,8 +90,9 @@ public class SelectableListLayout<E> extends FrameLayout
 
     private @Nullable UiConfig mUiConfig;
 
-    private final ObservableSupplierImpl<Boolean> mBackPressStateSupplier =
-            new ObservableSupplierImpl<>();
+    private final SettableNonNullObservableSupplier<Boolean> mBackPressStateSupplier =
+            ObservableSuppliers.createNonNull(false);
+
     private final Set<Integer> mIgnoredTypesForEmptyState = new HashSet<>();
 
     private final AdapterDataObserver mAdapterObserver =
@@ -122,6 +130,16 @@ public class SelectableListLayout<E> extends FrameLayout
     }
 
     @Override
+    protected void onWindowVisibilityChanged(int visibility) {
+        super.onWindowVisibilityChanged(visibility);
+        if (visibility == VISIBLE
+                && mToolbar != null
+                && (mToolbar.isSearching() || mToolbar.isUsingInlineSearchBox())) {
+            mToolbar.requestSearchFocus(/* showKeyboard= */ true);
+        }
+    }
+
+    @Override
     protected void onFinishInflate() {
         super.onFinishInflate();
 
@@ -145,15 +163,32 @@ public class SelectableListLayout<E> extends FrameLayout
         if (mUiConfig != null) mUiConfig.updateDisplayStyle();
     }
 
+    @Override
+    protected void onSizeChanged(int w, int h, int oldw, int oldh) {
+        super.onSizeChanged(w, h, oldw, oldh);
+        if (mUiConfig != null) mUiConfig.updateDisplayStyle();
+    }
+
     /**
      * Creates a RecyclerView for the given adapter.
      *
      * @param adapter The adapter that provides a binding from an app-specific data set to views
-     *                that are displayed within the RecyclerView.
+     *     that are displayed within the RecyclerView.
      * @return The RecyclerView itself.
      */
     public RecyclerView initializeRecyclerView(RecyclerView.Adapter adapter) {
         return initializeRecyclerView(adapter, null);
+    }
+
+    public RecyclerView initializeRecyclerView(
+            RecyclerView.Adapter adapter,
+            @Nullable RecyclerView recyclerView,
+            @Nullable Function<View, EdgeToEdgePadAdjuster> edgeToEdgePadAdjusterGenerator) {
+        RecyclerView view = initializeRecyclerView(adapter, recyclerView);
+        if (edgeToEdgePadAdjusterGenerator != null) {
+            mEdgeToEdgePadAdjuster = edgeToEdgePadAdjusterGenerator.apply(view);
+        }
+        return view;
     }
 
     /**
@@ -305,6 +340,8 @@ public class SelectableListLayout<E> extends FrameLayout
         mToolbarShadow.init(
                 getContext().getColor(R.color.toolbar_shadow_color), FadingShadow.POSITION_TOP);
 
+        mToolbar.hasSearchTextSupplier()
+                .addSyncObserverAndPostIfNonNull((hasText) -> onBackPressStateChanged());
         delegate.addObserver(this);
         setToolbarShadowVisibility();
 
@@ -399,6 +436,11 @@ public class SelectableListLayout<E> extends FrameLayout
         mIgnoredTypesForEmptyState.add(type);
     }
 
+    /** Hides the loading UI. */
+    public void hideLoadingUi() {
+        mLoadingView.hideLoadingUi();
+    }
+
     /** Called when the view that owns the SelectableListLayout is destroyed. */
     public void onDestroyed() {
         mAdapter.unregisterAdapterDataObserver(mAdapterObserver);
@@ -406,6 +448,9 @@ public class SelectableListLayout<E> extends FrameLayout
         mToolbar.destroy();
         mLoadingView.destroy();
         mRecyclerView.setAdapter(null);
+        if (mEdgeToEdgePadAdjuster != null) {
+            mEdgeToEdgePadAdjuster.destroy();
+        }
     }
 
     /**
@@ -464,28 +509,19 @@ public class SelectableListLayout<E> extends FrameLayout
 
     /**
      * @param displayStyle The current display style..
+     * @param view The {@link View} whose measured width will be used if layout depends on the
+     *     container width.
      * @param resources The {@link Resources} used to retrieve configuration and display metrics.
      * @return The lateral padding to use for the current display style.
      */
     public static int getPaddingForDisplayStyle(
             DisplayStyle displayStyle, View view, Resources resources) {
-        int padding = 0;
-        if (displayStyle.horizontal == HorizontalDisplayStyle.WIDE) {
-            float dpToPx = resources.getDisplayMetrics().density;
-            int screenWidthDp = 0;
-            if (DisplayUtil.isUiScaled() && view != null) {
-                screenWidthDp = (int) (view.getMeasuredWidth() / dpToPx);
-            } else {
-                screenWidthDp = resources.getConfiguration().screenWidthDp;
-            }
+        if (displayStyle.horizontal != HorizontalDisplayStyle.WIDE) return 0;
 
-            padding =
-                    (int)
-                            (((screenWidthDp - UiConfig.WIDE_DISPLAY_STYLE_MIN_WIDTH_DP) / 2.f)
-                                    * dpToPx);
-            padding = (int) Math.max(WIDE_DISPLAY_MIN_PADDING_DP * dpToPx, padding);
-        }
-        return padding;
+        int wideWindowMinPaddingPx =
+                ViewUtils.dpToPx(resources.getDisplayMetrics(), WIDE_WINDOW_MIN_PADDING_DP);
+        return ViewResizerUtil.computePaddingForWideDisplay(
+                resources, view, wideWindowMinPaddingPx);
     }
 
     private void setToolbarShadowVisibility() {
@@ -540,8 +576,9 @@ public class SelectableListLayout<E> extends FrameLayout
 
     /**
      * Called when the user presses the back key. Note that this method is not called automatically.
-     * The embedding UI must call this method
-     * when a backpress is detected for the event to be handled.
+     * The embedding UI must call this method when a backpress is detected for the event to be
+     * handled.
+     *
      * @return Whether this event is handled.
      */
     public boolean onBackPressed() {
@@ -551,9 +588,16 @@ public class SelectableListLayout<E> extends FrameLayout
             return true;
         }
 
-        if (mToolbar.isSearching()) {
-            mToolbar.hideSearchView();
-            return true;
+        if (mToolbar.isUsingInlineSearchBox()) {
+            if (mToolbar.hasSearchText()) {
+                mToolbar.clearSearch();
+                return true;
+            }
+        } else {
+            if (mToolbar.isSearching()) {
+                mToolbar.hideSearchView();
+                return true;
+            }
         }
 
         return false;
@@ -567,7 +611,7 @@ public class SelectableListLayout<E> extends FrameLayout
     }
 
     @Override
-    public ObservableSupplier<Boolean> getHandleBackPressChangedSupplier() {
+    public NonNullObservableSupplier<Boolean> getHandleBackPressChangedSupplier() {
         return mBackPressStateSupplier;
     }
 
@@ -576,7 +620,66 @@ public class SelectableListLayout<E> extends FrameLayout
             mBackPressStateSupplier.set(false);
             return;
         }
+
+        boolean canHandleSearch = false;
+        if (mToolbar.isUsingInlineSearchBox()) {
+            canHandleSearch = mToolbar.hasSearchText();
+        } else if (mToolbar.isSearching()) {
+            canHandleSearch = true;
+        }
         mBackPressStateSupplier.set(
-                mToolbar.getSelectionDelegate().isSelectionEnabled() || mToolbar.isSearching());
+                mToolbar.getSelectionDelegate().isSelectionEnabled() || canHandleSearch);
+    }
+
+    public RecyclerView getRecyclerViewForTesting() {
+        return mRecyclerView;
+    }
+
+    /**
+     * Adds an inline search box to the layout, adjusting the margins of the list content and shadow
+     * to accommodate its height.
+     */
+    public void addInlineSearchBox(View searchBoxContainer) {
+        int toolbarHeight =
+                getResources().getDimensionPixelSize(R.dimen.selectable_list_toolbar_height);
+        FrameLayout.LayoutParams searchBoxParams =
+                new FrameLayout.LayoutParams(
+                        (ViewGroup.MarginLayoutParams) searchBoxContainer.getLayoutParams());
+        searchBoxParams.topMargin = toolbarHeight;
+        addView(searchBoxContainer, searchBoxParams);
+
+        searchBoxContainer.addOnLayoutChangeListener(
+                CommonOnLayoutChangeListeners.createHeightChangedListener(
+                        (v, left, top, right, bottom) -> {
+                            int height = bottom - top;
+                            FrameLayout.LayoutParams containerParams =
+                                    (FrameLayout.LayoutParams) searchBoxContainer.getLayoutParams();
+                            int totalHeight = height + containerParams.bottomMargin;
+                            View listContent = findViewById(R.id.list_content);
+                            FrameLayout.LayoutParams listParams =
+                                    (FrameLayout.LayoutParams) listContent.getLayoutParams();
+                            listParams.topMargin = toolbarHeight + totalHeight;
+                            listContent.setLayoutParams(listParams);
+
+                            if (mToolbarShadow != null) {
+                                FrameLayout.LayoutParams shadowParams =
+                                        (FrameLayout.LayoutParams) mToolbarShadow.getLayoutParams();
+                                shadowParams.topMargin = toolbarHeight + totalHeight;
+                                mToolbarShadow.setLayoutParams(shadowParams);
+                            }
+                        }));
+    }
+
+    /**
+     * Announce the given text for accessibility using the live region.
+     *
+     * @param text The text to announce.
+     */
+    public void announceAccessibilityText(CharSequence text) {
+        setAccessibilityLiveRegion(ACCESSIBILITY_LIVE_REGION_POLITE);
+        setContentDescription(text);
+        sendAccessibilityEvent(
+                android.view.accessibility.AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUSED);
+        setAccessibilityLiveRegion(ACCESSIBILITY_LIVE_REGION_NONE);
     }
 }

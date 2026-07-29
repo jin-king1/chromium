@@ -7,7 +7,10 @@
 #include <memory>
 
 #include "base/memory/ptr_util.h"
+#include "base/metrics/user_metrics.h"
+#include "base/metrics/user_metrics_action.h"
 #include "base/no_destructor.h"
+#include "base/notimplemented.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
@@ -28,9 +31,12 @@
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/clipboard_types.h"
 #include "content/public/browser/context_menu_params.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/web_contents.h"
 #include "extensions/browser/process_manager.h"
+#include "services/service_manager/public/cpp/interface_provider.h"
+#include "third_party/blink/public/mojom/annotation/annotation.mojom.h"
 #include "ui/base/clipboard/scoped_clipboard_writer.h"
 #include "ui/base/data_transfer_policy/data_transfer_endpoint.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -115,22 +121,36 @@ void LinkToTextMenuObserver::InitMenu(
   } else {
     url_ = params.page_url;
   }
+  annotation_type_ = params.annotation_type;
 
-  // It is possible that there is a new text selection on top of a highlight, in
-  // which case, both open_from_new_selection_ and opened_from_highlight are
-  // true. Consequently, a context menu for new text selection is created.
+  // It is possible that there is a new text selection on top of an annotation,
+  // in which case, both `open_from_new_selection_` and
+  // `annotation_type_.has_value()` are true. Consequently, a context menu for
+  // new text selection is created.
   if (open_from_new_selection_) {
     proxy_->AddMenuItem(
         IDC_CONTENT_CONTEXT_COPYLINKTOTEXT,
         l10n_util::GetStringUTF16(IDS_CONTENT_CONTEXT_COPYLINKTOTEXT));
     RequestLinkGeneration();
-  } else if (params.opened_from_highlight) {
-    proxy_->AddMenuItem(
-        IDC_CONTENT_CONTEXT_RESHARELINKTOTEXT,
-        l10n_util::GetStringUTF16(IDS_CONTENT_CONTEXT_RESHARELINKTOTEXT));
-    proxy_->AddMenuItem(
-        IDC_CONTENT_CONTEXT_REMOVELINKTOTEXT,
-        l10n_util::GetStringUTF16(IDS_CONTENT_CONTEXT_REMOVELINKTOTEXT));
+  } else if (annotation_type_.has_value()) {
+    switch (annotation_type_.value()) {
+      case blink::mojom::AnnotationType::kSharedHighlight:
+        proxy_->AddMenuItem(
+            IDC_CONTENT_CONTEXT_RESHARELINKTOTEXT,
+            l10n_util::GetStringUTF16(IDS_CONTENT_CONTEXT_RESHARELINKTOTEXT));
+        proxy_->AddMenuItem(
+            IDC_CONTENT_CONTEXT_REMOVELINKTOTEXT,
+            l10n_util::GetStringUTF16(IDS_CONTENT_CONTEXT_REMOVELINKTOTEXT));
+        break;
+      case blink::mojom::AnnotationType::kGlic:
+        proxy_->AddMenuItem(
+            IDC_CONTENT_CONTEXT_REMOVELINKTOTEXT,
+            l10n_util::GetStringUTF16(IDS_CONTENT_CONTEXT_REMOVELINKTOTEXT));
+        break;
+      case blink::mojom::AnnotationType::kTextFinder:
+      case blink::mojom::AnnotationType::kScrollOnly:
+        NOTIMPLEMENTED();
+    }
   }
 }
 
@@ -274,6 +294,8 @@ void LinkToTextMenuObserver::ExecuteCopyLinkToText() {
           kCopiedFromNewGeneration);
 
   if (toast_features::IsEnabled(toast_features::kLinkToHighlightCopiedToast) &&
+      enterprise_data_protection::IsClipboardCopyAllowedByPolicyForUI(
+          proxy_->GetWebContents()) &&
       toast_controller_) {
     toast_controller_->MaybeShowToast(
         ToastParams(ToastId::kLinkToHighlightCopied));
@@ -286,16 +308,19 @@ void LinkToTextMenuObserver::ExecuteCopyLinkToText() {
 }
 
 void LinkToTextMenuObserver::Timeout() {
+  if (is_generation_complete_) {
+    return;
+  }
+
   auto* rfh = content::RenderFrameHost::FromID(render_frame_host_id_);
   // The renderer may remove the frame. Or it may have crashed leaving the
   // remote disconnected with the Timeout task still queued.
-  if (rfh && rfh->IsRenderFrameLive()) {
-    CHECK(remote_.is_connected());
-    if (is_generation_complete_)
-      return;
+  if (rfh && rfh->IsRenderFrameLive() && remote_.is_bound() &&
+      remote_.is_connected()) {
     remote_->Cancel();
-    remote_.reset();
   }
+  remote_.reset();
+
   CompleteWithError(LinkGenerationError::kTimeout);
 }
 
@@ -372,9 +397,29 @@ void LinkToTextMenuObserver::OnGetExistingSelectorsComplete(
 }
 
 void LinkToTextMenuObserver::RemoveHighlights() {
-  // Remove highlights from all frames in the primary page.
-  proxy_->GetWebContents()->GetPrimaryMainFrame()->ForEachRenderFrameHost(
-      &RemoveHighlightsInFrame);
+  CHECK(annotation_type_.has_value());
+  switch (annotation_type_.value()) {
+    case blink::mojom::AnnotationType::kSharedHighlight:
+      proxy_->GetWebContents()->GetPrimaryMainFrame()->ForEachRenderFrameHost(
+          &RemoveHighlightsInFrame);
+      return;
+    case blink::mojom::AnnotationType::kGlic: {
+      mojo::Remote<blink::mojom::AnnotationAgentContainer>
+          annotation_agent_container;
+      proxy_->GetWebContents()
+          ->GetPrimaryMainFrame()
+          ->GetRemoteInterfaces()
+          ->GetInterface(
+              annotation_agent_container.BindNewPipeAndPassReceiver());
+      annotation_agent_container->RemoveAgentsOfType(
+          blink::mojom::AnnotationType::kGlic);
+      base::RecordAction(base::UserMetricsAction("GlicRemoveHighlight"));
+      return;
+    }
+    case blink::mojom::AnnotationType::kTextFinder:
+    case blink::mojom::AnnotationType::kScrollOnly:
+      NOTIMPLEMENTED();
+  }
 }
 
 mojo::Remote<blink::mojom::TextFragmentReceiver>&
@@ -392,46 +437,5 @@ void LinkToTextMenuObserver::CopyTextToClipboard(const std::string& text) {
   auto* rfh = content::RenderFrameHost::FromID(render_frame_host_id_);
   CHECK(rfh);
 
-  ui::DataTransferEndpoint dte(
-      rfh->GetMainFrame()->GetLastCommittedURL(),
-      {.off_the_record = rfh->GetBrowserContext()->IsOffTheRecord()});
-  content::ClipboardEndpoint clipboard_endpoint(
-      dte,
-      base::BindRepeating(
-          [](content::GlobalRenderFrameHostId rfh_id)
-              -> content::BrowserContext* {
-            auto* rfh = content::RenderFrameHost::FromID(rfh_id);
-            if (!rfh) {
-              return nullptr;
-            }
-            return rfh->GetBrowserContext();
-          },
-          rfh->GetGlobalId()),
-      *rfh);
-
-  content::ClipboardPasteData data;
-  data.text = base::UTF8ToUTF16(text);
-  size_t size = data.text.size() * sizeof(std::u16string::value_type);
-
-  enterprise_data_protection::IsClipboardCopyAllowedByPolicy(
-      std::move(clipboard_endpoint),
-      {
-          .size = size,
-          .format_type = ui::ClipboardFormatType::PlainTextType(),
-      },
-      std::move(data),
-      base::BindOnce(
-          [](std::unique_ptr<ui::DataTransferEndpoint> dte,
-             const ui::ClipboardFormatType& data_type,
-             const content::ClipboardPasteData& data,
-             std::optional<std::u16string> replacement_data) {
-            ui::ScopedClipboardWriter scw(ui::ClipboardBuffer::kCopyPaste,
-                                          std::move(dte));
-            if (replacement_data) {
-              scw.WriteText(std::move(*replacement_data));
-            } else {
-              scw.WriteText(data.text);
-            }
-          },
-          std::make_unique<ui::DataTransferEndpoint>(std::move(dte))));
+  enterprise_data_protection::CopyTextToClipboard(rfh, base::UTF8ToUTF16(text));
 }

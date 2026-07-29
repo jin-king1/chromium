@@ -89,7 +89,7 @@ export class SettingsAudioAndCaptionsPageElement extends
         },
       },
 
-      isAccessibilityFlashNotificationFeatureEnabled: {
+      isAccessibilityFlashNotificationFeatureEnabled_: {
         readOnly: true,
         type: Boolean,
         value() {
@@ -134,26 +134,26 @@ export class SettingsAudioAndCaptionsPageElement extends
           ];
         },
       },
-
-      /**
-       * Used by DeepLinkingMixin to focus this page's deep links.
-       */
-      supportedSettingIds: {
-        type: Object,
-        value: () => new Set<Setting>([
-          Setting.kFlashNotifications,
-          Setting.kLiveCaption,
-          Setting.kMonoAudio,
-          Setting.kStartupSound,
-        ]),
-      },
     };
   }
 
-  languages: LanguagesModel;
-  languageHelper: LanguageHelper;
+  declare languages: LanguagesModel;
+  declare languageHelper: LanguageHelper;
+
+  // DeepLinkingMixin override
+  override supportedSettingIds = new Set<Setting>([
+    Setting.kFlashNotifications,
+    Setting.kLiveCaption,
+    Setting.kMonoAudio,
+    Setting.kStartupSound,
+  ]);
+
   private audioAndCaptionsBrowserProxy_: AudioAndCaptionsPageBrowserProxy;
-  private isKioskModeActive_: boolean;
+  declare private readonly isAccessibilityFlashNotificationFeatureEnabled_:
+      boolean;
+  declare private isKioskModeActive_: boolean;
+  declare private readonly notificationColorOptions_:
+      Array<{value: number, name: string}>;
 
   constructor() {
     super();

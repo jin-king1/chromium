@@ -8,6 +8,7 @@
 #include <string>
 #include <utility>
 
+#include "base/time/time.h"
 #include "build/build_config.h"
 
 namespace remoting {
@@ -95,6 +96,23 @@ void DesktopEnvironmentOptions::set_enable_remote_webauthn(bool enabled) {
   enable_remote_webauthn_ = enabled;
 }
 
+bool DesktopEnvironmentOptions::enable_security_key() const {
+  return enable_security_key_;
+}
+
+void DesktopEnvironmentOptions::set_enable_security_key(bool enabled) {
+  enable_security_key_ = enabled;
+}
+
+base::TimeDelta DesktopEnvironmentOptions::maximum_session_duration() const {
+  return maximum_session_duration_;
+}
+
+void DesktopEnvironmentOptions::set_maximum_session_duration(
+    base::TimeDelta duration) {
+  maximum_session_duration_ = duration;
+}
+
 bool DesktopEnvironmentOptions::capture_video_on_dedicated_thread() const {
   // TODO(joedow): Determine whether we can migrate additional platforms to
   // using the DesktopCaptureWrapper instead of the DesktopCaptureProxy. Then
@@ -109,6 +127,15 @@ bool DesktopEnvironmentOptions::capture_video_on_dedicated_thread() const {
 void DesktopEnvironmentOptions::set_capture_video_on_dedicated_thread(
     bool use_dedicated_thread) {
   capture_video_on_dedicated_thread_ = use_dedicated_thread;
+}
+
+AudioPlaybackMode DesktopEnvironmentOptions::audio_playback_mode() const {
+  return audio_playback_mode_;
+}
+
+void DesktopEnvironmentOptions::set_audio_playback_mode(
+    AudioPlaybackMode mode) {
+  audio_playback_mode_ = mode;
 }
 
 void DesktopEnvironmentOptions::ApplySessionOptions(

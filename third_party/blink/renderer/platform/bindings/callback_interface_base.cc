@@ -12,17 +12,15 @@
 namespace blink {
 
 CallbackInterfaceBase::CallbackInterfaceBase(
-    v8::Local<v8::Object> callback_object,
-    SingleOperationOrNot single_op_or_not) {
+    v8::Local<v8::Object> callback_object) {
   DCHECK(!callback_object.IsEmpty());
 
-  v8::Isolate* isolate = callback_object->GetIsolate();
+  v8::Isolate* isolate = v8::Isolate::GetCurrent();
   callback_object_.Reset(isolate, callback_object);
 
   incumbent_script_state_ =
       ScriptState::From(isolate, isolate->GetIncumbentContext());
-  is_callback_object_callable_ =
-      (single_op_or_not == kSingleOperation) && callback_object->IsCallable();
+  is_callback_object_callable_ = callback_object->IsCallable();
 
   // Set |callback_relevant_script_state_| iff the creation context and the
   // incumbent context are the same origin-domain. Otherwise, leave it as

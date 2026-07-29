@@ -7,6 +7,7 @@ package org.chromium.components.browser_ui.site_settings;
 import static org.chromium.build.NullUtil.assertNonNull;
 import static org.chromium.build.NullUtil.assumeNonNull;
 import static org.chromium.components.browser_ui.settings.SearchUtils.handleSearchNavigation;
+import static org.chromium.components.browser_ui.styles.SemanticColorUtils.getDefaultTextColorLink;
 
 import android.content.Context;
 import android.content.DialogInterface;
@@ -31,9 +32,11 @@ import androidx.preference.PreferenceManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import org.chromium.base.metrics.RecordUserAction;
-import org.chromium.base.supplier.ObservableSupplier;
-import org.chromium.base.supplier.ObservableSupplierImpl;
+import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.build.annotations.Initializer;
+import org.chromium.build.annotations.MonotonicNonNull;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.build.annotations.UsedByReflection;
@@ -43,6 +46,7 @@ import org.chromium.components.browser_ui.settings.ChromeBasePreference;
 import org.chromium.components.browser_ui.settings.CustomDividerFragment;
 import org.chromium.components.browser_ui.settings.EmbeddableSettingsPage;
 import org.chromium.components.browser_ui.settings.SearchUtils;
+import org.chromium.components.browser_ui.settings.SearchViewProvider;
 import org.chromium.components.browser_ui.settings.SettingsUtils;
 import org.chromium.components.browser_ui.util.TraceEventVectorDrawableCompat;
 import org.chromium.components.embedder_support.util.UrlUtilities;
@@ -72,12 +76,12 @@ public class AllSiteSettings extends BaseSiteSettingsFragment
         implements EmbeddableSettingsPage,
                 PreferenceManager.OnPreferenceTreeClickListener,
                 View.OnClickListener,
+                SearchViewProvider,
                 CustomDividerFragment {
     // The key to use to pass which category this preference should display,
     // should only be All Sites or Storage.
     public static final String EXTRA_CATEGORY = "category";
     public static final String EXTRA_TITLE = "title";
-    public static final String EXTRA_SEARCH = "search";
 
     /**
      * If present, the list of websites will be filtered by domain using {@link
@@ -86,8 +90,6 @@ public class AllSiteSettings extends BaseSiteSettingsFragment
     public static final String EXTRA_SELECTED_DOMAINS = "selected_domains";
 
     public static final String PREF_CLEAR_BROWSING_DATA = "clear_browsing_data_link";
-    // Prefix for Related Website Sets search filter (mobile-desktop feature parity)
-    public static final String RWS_SEARCH_PREFIX = "related:";
 
     // The clear button displayed in the Storage view.
     private @Nullable Button mClearButton;
@@ -108,7 +110,9 @@ public class AllSiteSettings extends BaseSiteSettingsFragment
 
     private @Nullable Set<String> mSelectedDomains;
 
-    private final ObservableSupplierImpl<String> mPageTitle = new ObservableSupplierImpl<>();
+    private final SettableMonotonicObservableSupplier<String> mPageTitle =
+            ObservableSuppliers.createMonotonic();
+    private @MonotonicNonNull SearchViewProvider.Observer mSearchViewObserver;
 
     private class ResultsPopulator implements WebsitePermissionsFetcher.WebsitePermissionsCallback {
         @Override
@@ -125,6 +129,7 @@ public class AllSiteSettings extends BaseSiteSettingsFragment
             if (mEmptyView == null) return;
 
             mEmptyView.setVisibility(hasEntries ? View.GONE : View.VISIBLE);
+            updateContainment();
         }
     }
 
@@ -239,7 +244,7 @@ public class AllSiteSettings extends BaseSiteSettingsFragment
         getInfoForOrigins();
     }
 
-    /** OnClickListener for the zoom button **/
+    /** OnClickListener for the zoom button */
     @Initializer
     public void handleZoomClearAll(View v) {
         Resources resources = getContext().getResources();
@@ -347,6 +352,9 @@ public class AllSiteSettings extends BaseSiteSettingsFragment
 
     @Override
     public void onCreatePreferences(@Nullable Bundle savedInstanceState, @Nullable String rootKey) {
+        String title = getArguments().getString(EXTRA_TITLE);
+        if (title != null) mPageTitle.set(title);
+
         // Handled in onActivityCreated. Moving the addPreferencesFromResource call up to here
         // causes animation jank (crbug.com/985734).
     }
@@ -355,18 +363,10 @@ public class AllSiteSettings extends BaseSiteSettingsFragment
     public void onActivityCreated(@Nullable Bundle savedInstanceState) {
         addPreferencesFromXml();
 
-        String title = getArguments().getString(EXTRA_TITLE);
-        if (title != null) mPageTitle.set(title);
-
         mSelectedDomains =
                 getArguments().containsKey(EXTRA_SELECTED_DOMAINS)
                         ? new HashSet<>(getArguments().getStringArrayList(EXTRA_SELECTED_DOMAINS))
                         : null;
-
-        mSearch =
-                getArguments().containsKey(EXTRA_SEARCH)
-                        ? RWS_SEARCH_PREFIX + getArguments().getString(EXTRA_SEARCH)
-                        : mSearch;
 
         setHasOptionsMenu(true);
 
@@ -374,8 +374,13 @@ public class AllSiteSettings extends BaseSiteSettingsFragment
     }
 
     @Override
-    public ObservableSupplier<String> getPageTitle() {
+    public MonotonicObservableSupplier<String> getPageTitle() {
         return mPageTitle;
+    }
+
+    @Override
+    public void setSearchViewObserver(SearchViewProvider.Observer observer) {
+        mSearchViewObserver = observer;
     }
 
     @Override
@@ -388,6 +393,7 @@ public class AllSiteSettings extends BaseSiteSettingsFragment
                 mSearchItem,
                 mSearch,
                 getActivity(),
+                assumeNonNull(mSearchViewObserver),
                 (query) -> {
                     boolean queryHasChanged =
                             mSearch == null
@@ -403,12 +409,10 @@ public class AllSiteSettings extends BaseSiteSettingsFragment
                             Menu.NONE,
                             R.id.menu_id_site_settings_help,
                             Menu.NONE,
-                            R.string.menu_help);
+                            getSiteSettingsDelegate().getHelpMenuStringRes());
             help.setIcon(
                     TraceEventVectorDrawableCompat.create(
-                            getResources(),
-                            R.drawable.ic_help_and_feedback,
-                            getContext().getTheme()));
+                            getResources(), R.drawable.ic_help_24dp, getContext().getTheme()));
         }
     }
 
@@ -447,10 +451,9 @@ public class AllSiteSettings extends BaseSiteSettingsFragment
     }
 
     @Override
-    public void onResume() {
-        super.onResume();
-
-        if (mSearch == null && mSearchItem != null) {
+    public void onStart() {
+        super.onStart();
+        if (mSearch != null && mSearchItem != null) {
             SearchUtils.clearSearch(mSearchItem, getActivity());
             mSearch = null;
         }
@@ -469,6 +472,13 @@ public class AllSiteSettings extends BaseSiteSettingsFragment
     private void addPreferencesFromXml() {
         if (mCategory.getType() == SiteSettingsCategory.Type.ALL_SITES) {
             SettingsUtils.addPreferencesFromResource(this, R.xml.all_site_preferences_v2);
+            // TODO(crbug.com/439911511): Remove the divider directly form the layout.
+            if (getSiteSettingsDelegate().isSettingsContainmentEnabled()) {
+                Preference divider = findPreference("clear_browsing_divider");
+                if (divider != null) {
+                    getPreferenceScreen().removePreference(divider);
+                }
+            }
             ChromeBasePreference clearBrowsingDataLink = findPreference(PREF_CLEAR_BROWSING_DATA);
             assertNonNull(clearBrowsingDataLink);
             if (!getSiteSettingsDelegate().canLaunchClearBrowsingDataDialog()) {
@@ -479,14 +489,16 @@ public class AllSiteSettings extends BaseSiteSettingsFragment
                     new SpannableString(
                             getResources().getString(R.string.clear_browsing_data_link));
             spannableString.setSpan(
-                    new ForegroundColorSpan(
-                            getContext().getColor(R.color.default_text_color_link_baseline)),
+                    new ForegroundColorSpan(getDefaultTextColorLink(getContext())),
                     0,
                     spannableString.length(),
                     Spanned.SPAN_INCLUSIVE_EXCLUSIVE);
             clearBrowsingDataLink.setSummary(spannableString);
             clearBrowsingDataLink.setOnPreferenceClickListener(
                     pref -> {
+                        if (mSearchItem != null) {
+                            SearchUtils.clearSearch(mSearchItem, getActivity());
+                        }
                         getSiteSettingsDelegate().launchClearBrowsingDataDialog(getActivity());
                         return true;
                     });
@@ -502,13 +514,14 @@ public class AllSiteSettings extends BaseSiteSettingsFragment
             List<WebsiteRowPreference> preferences = new ArrayList<>();
             // Find entries matching the current search.
             for (WebsiteEntry entry : entries) {
-                if (filterSearchResult(entry)) {
+                if (mSearch == null || mSearch.isEmpty() || entry.matches(mSearch)) {
                     WebsiteRowPreference preference =
                             new WebsiteRowPreference(
                                     getStyledContext(),
                                     getSiteSettingsDelegate(),
                                     entry,
-                                    getActivity().getLayoutInflater());
+                                    getActivity().getLayoutInflater(),
+                                    /* isClickable= */ true);
                     preference.setOnDeleteCallback(
                             () -> {
                                 getInfoForOrigins();
@@ -542,21 +555,6 @@ public class AllSiteSettings extends BaseSiteSettingsFragment
         }
     }
 
-    private boolean filterSearchResult(WebsiteEntry entry) {
-        if (getSiteSettingsDelegate().shouldShowPrivacySandboxRwsUi()
-                && mSearch != null
-                && mSearch.startsWith(RWS_SEARCH_PREFIX)) {
-            return entry.isPartOfRws()
-                    && assumeNonNull(entry.getRwsOwner())
-                            .contains(
-                                    mSearch.replace(
-                                            RWS_SEARCH_PREFIX,
-                                            "")); // no need to check empty and null
-        } else {
-            return mSearch == null || mSearch.isEmpty() || entry.matches(mSearch);
-        }
-    }
-
     private Context getStyledContext() {
         return getPreferenceManager().getContext();
     }
@@ -572,5 +570,16 @@ public class AllSiteSettings extends BaseSiteSettingsFragment
                 it.remove();
             }
         }
+    }
+
+    @Override
+    public @AnimationType int getAnimationType() {
+        return AnimationType.PROPERTY;
+    }
+
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+        if (mSearchViewObserver != null) mSearchViewObserver.onUpdated(false);
     }
 }

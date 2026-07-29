@@ -14,29 +14,27 @@
 #include "base/task/cancelable_task_tracker.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/protobuf_matchers.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
 #include "base/uuid.h"
-#include "components/favicon/core/test/mock_favicon_service.h"
 #include "components/gcm_driver/crypto/gcm_encryption_provider.h"
 #include "components/gcm_driver/instance_id/instance_id_driver.h"
+#include "components/send_tab_to_self/fake_send_tab_to_self_model.h"
 #include "components/send_tab_to_self/features.h"
+#include "components/send_tab_to_self/page_context.h"
 #include "components/send_tab_to_self/send_tab_to_self_entry.h"
-#include "components/send_tab_to_self/test_send_tab_to_self_model.h"
 #include "components/sharing_message/features.h"
 #include "components/sharing_message/mock_sharing_device_source.h"
 #include "components/sharing_message/mock_sharing_message_sender.h"
 #include "components/sharing_message/proto/sharing_message.pb.h"
+#include "components/sharing_message/sharing_channel_sender.h"
 #include "components/sharing_message/sharing_constants.h"
 #include "components/sharing_message/sharing_device_registration.h"
 #include "components/sharing_message/sharing_device_registration_result.h"
 #include "components/sharing_message/sharing_fcm_handler.h"
-#include "components/sharing_message/sharing_fcm_sender.h"
 #include "components/sharing_message/sharing_handler_registry.h"
 #include "components/sharing_message/sharing_message_handler.h"
 #include "components/sharing_message/sharing_sync_preference.h"
-#include "components/sharing_message/vapid_key_manager.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/sync/protocol/unencrypted_sharing_message.pb.h"
 #include "components/sync/test/test_sync_service.h"
@@ -45,7 +43,6 @@
 #include "components/sync_device_info/local_device_info_provider.h"
 #include "components/sync_device_info/local_device_info_util.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
-#include "crypto/ec_private_key.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -54,7 +51,6 @@
 namespace {
 
 const char kDeviceName[] = "other_name";
-const char kAuthorizedEntity[] = "authorized_entity";
 constexpr base::TimeDelta kTimeout = base::Seconds(15);
 
 SharingTargetDeviceInfo CreateFakeSharingTargetDeviceInfo(
@@ -101,8 +97,8 @@ class MockSharingFCMHandler : public SharingFCMHandler {
  public:
   MockSharingFCMHandler()
       : SharingFCMHandler(/*gcm_driver=*/nullptr,
-                          /*sharing_fcm_sender=*/nullptr,
-                          /*sync_preference=*/nullptr,
+                          /*device_info_tracker=*/nullptr,
+                          /*sharing_channel_sender=*/nullptr,
                           /*handler_registry=*/nullptr) {}
   ~MockSharingFCMHandler() override = default;
 
@@ -115,17 +111,13 @@ class FakeSharingDeviceRegistration : public SharingDeviceRegistration {
   FakeSharingDeviceRegistration(
       PrefService* pref_service,
       SharingSyncPreference* prefs,
-      VapidKeyManager* vapid_key_manager,
       instance_id::InstanceIDDriver* instance_id_driver,
-      syncer::SyncService* sync_service)
-      : vapid_key_manager_(vapid_key_manager) {}
+      syncer::SyncService* sync_service) {}
   ~FakeSharingDeviceRegistration() override = default;
 
   void RegisterDevice(
       SharingDeviceRegistration::RegistrationCallback callback) override {
     registration_attempts_++;
-    // Simulate SharingDeviceRegistration calling GetOrCreateKey.
-    vapid_key_manager_->GetOrCreateKey();
     std::move(callback).Run(result_);
   }
 
@@ -134,8 +126,6 @@ class FakeSharingDeviceRegistration : public SharingDeviceRegistration {
     unregistration_attempts_++;
     std::move(callback).Run(result_);
   }
-
-  bool IsClickToCallSupported() const override { return false; }
 
   bool IsSharedClipboardSupported() const override { return false; }
 
@@ -147,9 +137,14 @@ class FakeSharingDeviceRegistration : public SharingDeviceRegistration {
     return false;
   }
 
+  bool IsOneTimeTokenBackendNotificationSupported() const override {
+    return false;
+  }
+
+  bool IsGlicExperimentalTriggeringSupported() const override { return false; }
+
   void SetEnabledFeaturesForTesting(
-      std::set<sync_pb::SharingSpecificFields_EnabledFeatures> enabled_features)
-      override {}
+      std::set<syncer::DeviceInfo::SharingFeature> enabled_features) override {}
 
   void SetResult(SharingDeviceRegistrationResult result) { result_ = result; }
 
@@ -157,7 +152,6 @@ class FakeSharingDeviceRegistration : public SharingDeviceRegistration {
   int unregistration_attempts() { return unregistration_attempts_; }
 
  private:
-  raw_ptr<VapidKeyManager> vapid_key_manager_;
   SharingDeviceRegistrationResult result_ =
       SharingDeviceRegistrationResult::kSuccess;
   int registration_attempts_ = 0;
@@ -169,10 +163,9 @@ class SharingServiceTest : public testing::Test {
   SharingServiceTest() {
     sync_prefs_ =
         new SharingSyncPreference(&prefs_, &fake_device_info_sync_service);
-    vapid_key_manager_ = new VapidKeyManager(sync_prefs_, &test_sync_service_);
     sharing_device_registration_ = new FakeSharingDeviceRegistration(
-        /* pref_service= */ nullptr, sync_prefs_, vapid_key_manager_,
-        &mock_instance_id_driver_, &test_sync_service_);
+        /* pref_service= */ nullptr, sync_prefs_, &mock_instance_id_driver_,
+        &test_sync_service_);
     handler_registry_ = new testing::NiceMock<MockSharingHandlerRegistry>();
     fcm_handler_ = new testing::NiceMock<MockSharingFCMHandler>();
     device_source_ = new testing::NiceMock<MockSharingDeviceSource>();
@@ -185,7 +178,15 @@ class SharingServiceTest : public testing::Test {
   ~SharingServiceTest() override {
     // Make sure we're creating a SharingService so it can take ownership of the
     // local objects.
-    GetSharingService();
+    SharingService* sharing_service = GetSharingService();
+
+    // Avoid dangling pointers by resetting `raw_ptr`s before destroying/freeing
+    // objects that they point to.
+    sharing_device_registration_ = nullptr;
+
+    // Go through the proper shutdown sequence to avoid hitting a `DCHECK` in
+    // the destructor of the `SharingService`.
+    static_cast<KeyedService*>(sharing_service)->Shutdown();
   }
 
   void OnMessageSent(
@@ -213,13 +214,12 @@ class SharingServiceTest : public testing::Test {
     if (!sharing_service_) {
       sharing_service_ = std::make_unique<SharingService>(
           base::WrapUnique(sync_prefs_.get()),
-          base::WrapUnique(vapid_key_manager_.get()),
           base::WrapUnique(sharing_device_registration_.get()),
           base::WrapUnique(sharing_message_sender_.get()),
           base::WrapUnique(device_source_.get()),
           base::WrapUnique(handler_registry_.get()),
           base::WrapUnique(fcm_handler_.get()), &test_sync_service_,
-          &favicon_service_, &send_tab_to_self_model_,
+          &send_tab_to_self_model_,
           base::SingleThreadTaskRunner::GetCurrentDefault());
     }
     task_environment_.RunUntilIdle();
@@ -229,11 +229,9 @@ class SharingServiceTest : public testing::Test {
   base::test::TaskEnvironment task_environment_{
       base::test::SingleThreadTaskEnvironment::MainThreadType::UI,
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
-  base::test::ScopedFeatureList scoped_features_;
   syncer::FakeDeviceInfoSyncService fake_device_info_sync_service;
   syncer::TestSyncService test_sync_service_;
-  testing::NiceMock<favicon::MockFaviconService> favicon_service_;
-  send_tab_to_self::TestSendTabToSelfModel send_tab_to_self_model_;
+  send_tab_to_self::FakeSendTabToSelfModel send_tab_to_self_model_;
   sync_preferences::TestingPrefServiceSyncable prefs_;
 
  private:
@@ -247,7 +245,6 @@ class SharingServiceTest : public testing::Test {
   raw_ptr<testing::NiceMock<MockSharingDeviceSource>> device_source_;
 
   raw_ptr<SharingSyncPreference> sync_prefs_;
-  raw_ptr<VapidKeyManager> vapid_key_manager_;
   raw_ptr<FakeSharingDeviceRegistration> sharing_device_registration_;
   raw_ptr<testing::NiceMock<MockSharingMessageSender>> sharing_message_sender_;
   bool device_candidates_initialized_ = false;
@@ -269,20 +266,19 @@ bool ProtoEquals(const google::protobuf::MessageLite& expected,
 
 TEST_F(SharingServiceTest, GetDeviceCandidates_Empty) {
   EXPECT_CALL(*device_source_, GetDeviceCandidates(::testing::_))
-      .WillOnce(
-          [](sync_pb::SharingSpecificFields::EnabledFeatures required_feature)
-              -> std::vector<SharingTargetDeviceInfo> { return {}; });
+      .WillOnce([](syncer::DeviceInfo::SharingFeature required_feature)
+                    -> std::vector<SharingTargetDeviceInfo> { return {}; });
 
   std::vector<SharingTargetDeviceInfo> candidates =
       GetSharingService()->GetDeviceCandidates(
-          sync_pb::SharingSpecificFields::CLICK_TO_CALL_V2);
+          syncer::DeviceInfo::SharingFeature::kSharedClipboardV2);
   EXPECT_TRUE(candidates.empty());
 }
 
 TEST_F(SharingServiceTest, GetDeviceCandidates_Tracked) {
   EXPECT_CALL(*device_source_, GetDeviceCandidates(::testing::_))
       .WillOnce(
-          [](sync_pb::SharingSpecificFields::EnabledFeatures required_feature) {
+          [](syncer::DeviceInfo::SharingFeature required_feature) {
             std::vector<SharingTargetDeviceInfo> device_candidates;
             device_candidates.push_back(CreateFakeSharingTargetDeviceInfo(
                 base::Uuid::GenerateRandomV4().AsLowercaseString(),
@@ -292,7 +288,7 @@ TEST_F(SharingServiceTest, GetDeviceCandidates_Tracked) {
 
   std::vector<SharingTargetDeviceInfo> candidates =
       GetSharingService()->GetDeviceCandidates(
-          sync_pb::SharingSpecificFields::CLICK_TO_CALL_V2);
+          syncer::DeviceInfo::SharingFeature::kSharedClipboardV2);
 
   ASSERT_EQ(1u, candidates.size());
 }
@@ -306,7 +302,6 @@ TEST_F(SharingServiceTest, SendMessageToDeviceSuccess) {
   auto run_callback = [&](const SharingTargetDeviceInfo& device_info,
                           base::TimeDelta response_timeout,
                           components_sharing_message::SharingMessage message,
-                          SharingMessageSender::DelegateType delegate_type,
                           SharingMessageSender::ResponseCallback callback) {
     std::unique_ptr<components_sharing_message::ResponseMessage>
         response_message =
@@ -318,9 +313,8 @@ TEST_F(SharingServiceTest, SendMessageToDeviceSuccess) {
   };
 
   ON_CALL(*sharing_message_sender_,
-          SendMessageToDevice(testing::_, testing::_, testing::_, testing::_,
-                              testing::_))
-      .WillByDefault(testing::Invoke(run_callback));
+          SendMessageToDevice(testing::_, testing::_, testing::_, testing::_))
+      .WillByDefault(run_callback);
 
   GetSharingService()->SendMessageToDevice(
       device_info, kTimeout, components_sharing_message::SharingMessage(),
@@ -333,15 +327,11 @@ TEST_F(SharingServiceTest, SendMessageToDeviceSuccess) {
 }
 
 TEST_F(SharingServiceTest, SendTabEntryAddedLocally) {
-  scoped_features_.InitAndEnableFeatureWithParameters(
-      send_tab_to_self::kSendTabToSelfIOSPushNotifications,
-      {{send_tab_to_self::kSendTabIOSPushNotificationsURLImageParam, "true"}});
 
   const std::string title = "title";
   const std::string device_name = "device name";
   const std::string host = "www.example.com";
   const std::string destination_url = "https://www.example.com/";
-  const std::string icon_url = "https://www.example.com/favicon.ico";
   const std::string guid = base::Uuid::GenerateRandomV4().AsLowercaseString();
 
   EXPECT_CALL(*device_source_, GetDeviceByGuid(guid))
@@ -353,17 +343,6 @@ TEST_F(SharingServiceTest, SendTabEntryAddedLocally) {
                                        /*pulse_interval=*/base::TimeDelta(),
                                        syncer::DeviceInfo::FormFactor::kUnknown,
                                        /*last_updated_timestamp=*/base::Time());
-      });
-
-  ON_CALL(favicon_service_, GetLargestRawFaviconForPageURL)
-      .WillByDefault([icon_url](auto, auto, auto,
-                                favicon_base::FaviconRawBitmapCallback callback,
-                                auto) {
-        favicon_base::FaviconRawBitmapResult result;
-        result.icon_url = GURL(icon_url);
-        std::move(callback).Run(result);
-        base::CancelableTaskTracker::TaskId kTaskId = 1;
-        return kTaskId;
       });
 
   // Create the expected proto.
@@ -382,48 +361,20 @@ TEST_F(SharingServiceTest, SendTabEntryAddedLocally) {
   push_notification_entry->set_placeholder_body(l10n_util::GetStringUTF8(
       IDS_SEND_TAB_PUSH_NOTIFICATION_PLACEHOLDER_BODY));
   push_notification_entry->set_entry_unique_guid(guid);
-  auto* icon = push_notification_entry->add_icon();
-  icon->set_url(icon_url);
 
   EXPECT_CALL(*sharing_message_sender_,
-              SendUnencryptedMessageToDevice(testing::_,
-                                             base::test::EqualsProto(message),
-                                             testing::_, testing::_));
-
-  send_tab_to_self::SendTabToSelfEntry entry =
-      send_tab_to_self::SendTabToSelfEntry(guid, GURL(destination_url), title,
-                                           base::Time(), device_name, guid);
-  GetSharingService()->EntryAddedLocally(&entry);
-}
-
-TEST_F(SharingServiceTest, SendTabEntryAddedLocally_FeatureDisabled) {
-  scoped_features_.InitAndDisableFeature(
-      send_tab_to_self::kSendTabToSelfIOSPushNotifications);
-
-  std::string guid = base::Uuid::GenerateRandomV4().AsLowercaseString();
-  EXPECT_CALL(*device_source_, GetDeviceByGuid(guid)).Times(0);
-
-  ON_CALL(favicon_service_, GetLargestRawFaviconForPageURL)
-      .WillByDefault([](auto, auto, auto,
-                        favicon_base::FaviconRawBitmapCallback callback, auto) {
-        std::move(callback).Run(favicon_base::FaviconRawBitmapResult());
-        base::CancelableTaskTracker::TaskId kTaskId = 1;
-        return kTaskId;
-      });
-
-  EXPECT_CALL(*sharing_message_sender_, SendUnencryptedMessageToDevice)
-      .Times(0);
+              SendIosPushMessageToDevice(
+                  testing::_, base::test::EqualsProto(message), testing::_));
 
   send_tab_to_self::SendTabToSelfEntry entry =
       send_tab_to_self::SendTabToSelfEntry(
-          "guid", GURL("https://www.example.com"), "title", base::Time(),
-          "device name", guid);
-  GetSharingService()->EntryAddedLocally(&entry);
+          guid, GURL(destination_url), title, base::Time(), device_name, guid,
+          send_tab_to_self::PageContext(),
+          send_tab_to_self::NavigationHistory());
+  GetSharingService()->OnEntryAddedLocally(&entry);
 }
 
 TEST_F(SharingServiceTest, SendTabEntryAddedLocally_NonIOSDevice) {
-  scoped_features_.InitAndEnableFeature(
-      send_tab_to_self::kSendTabToSelfIOSPushNotifications);
 
   std::string guid = base::Uuid::GenerateRandomV4().AsLowercaseString();
 
@@ -437,14 +388,14 @@ TEST_F(SharingServiceTest, SendTabEntryAddedLocally_NonIOSDevice) {
                                        /*last_updated_timestamp=*/base::Time());
       });
 
-  EXPECT_CALL(*sharing_message_sender_, SendUnencryptedMessageToDevice)
-      .Times(0);
+  EXPECT_CALL(*sharing_message_sender_, SendIosPushMessageToDevice).Times(0);
 
   send_tab_to_self::SendTabToSelfEntry entry =
       send_tab_to_self::SendTabToSelfEntry(
           "guid", GURL("https://www.example.com"), "title", base::Time(),
-          "device name", guid);
-  GetSharingService()->EntryAddedLocally(&entry);
+          "device name", guid, send_tab_to_self::PageContext(),
+          send_tab_to_self::NavigationHistory());
+  GetSharingService()->OnEntryAddedLocally(&entry);
 }
 
 TEST_F(SharingServiceTest, DeviceRegistration) {
@@ -468,18 +419,6 @@ TEST_F(SharingServiceTest, DeviceRegistration) {
   EXPECT_CALL(*fcm_handler_, StartListening()).Times(0);
   test_sync_service_.FireStateChanged();
   EXPECT_EQ(1, sharing_device_registration_->registration_attempts());
-  EXPECT_EQ(SharingService::State::ACTIVE,
-            GetSharingService()->GetStateForTesting());
-
-  auto vapid_key = crypto::ECPrivateKey::Create();
-  ASSERT_TRUE(vapid_key);
-  std::vector<uint8_t> vapid_key_info;
-  ASSERT_TRUE(vapid_key->ExportPrivateKey(&vapid_key_info));
-
-  // Registration will be attempeted as VAPID key has changed.
-  EXPECT_CALL(*fcm_handler_, StartListening()).Times(0);
-  sync_prefs_->SetVapidKey(vapid_key_info);
-  EXPECT_EQ(2, sharing_device_registration_->registration_attempts());
   EXPECT_EQ(SharingService::State::ACTIVE,
             GetSharingService()->GetStateForTesting());
 }
@@ -581,7 +520,7 @@ TEST_F(SharingServiceTest, DeviceRegisterAndUnregister) {
   EXPECT_EQ(SharingService::State::ACTIVE,
             GetSharingService()->GetStateForTesting());
 
-  // Change sync to configuring, which will be ignored.
+  // Change sync transport state to configuring, which will be ignored.
   test_sync_service_.SetMaxTransportState(
       syncer::SyncService::TransportState::CONFIGURING);
   test_sync_service_.FireStateChanged();
@@ -590,7 +529,7 @@ TEST_F(SharingServiceTest, DeviceRegisterAndUnregister) {
   EXPECT_EQ(SharingService::State::ACTIVE,
             GetSharingService()->GetStateForTesting());
 
-  // Disable sync and un-registration should happen.
+  // Sign out and un-registration should happen.
   test_sync_service_.SetSignedOut();
   EXPECT_CALL(*fcm_handler_, StopListening()).Times(1);
   test_sync_service_.FireStateChanged();
@@ -607,10 +546,10 @@ TEST_F(SharingServiceTest, DeviceRegisterAndUnregister) {
   EXPECT_EQ(SharingService::State::DISABLED,
             GetSharingService()->GetStateForTesting());
 
-  // Should be able to register once again when sync is back on.
+  // Should be able to register once again when signed in.
   test_sync_service_.SetMaxTransportState(
       syncer::SyncService::TransportState::ACTIVE);
-  test_sync_service_.SetSignedIn(signin::ConsentLevel::kSync);
+  test_sync_service_.SetSignedIn(signin::ConsentLevel::kSignin);
   EXPECT_CALL(*fcm_handler_, StartListening()).Times(1);
   test_sync_service_.FireStateChanged();
   EXPECT_EQ(2, sharing_device_registration_->registration_attempts());
@@ -638,8 +577,8 @@ TEST_F(SharingServiceTest, StartListeningToFCMAtConstructor) {
 
   // Create new SharingService instance with FCM already registered at
   // constructor.
-  sync_prefs_->SetFCMRegistration(SharingSyncPreference::FCMRegistration(
-      kAuthorizedEntity, base::Time::Now()));
+  sync_prefs_->SetFCMRegistration(
+      SharingSyncPreference::FCMRegistration(base::Time::Now()));
   EXPECT_CALL(*fcm_handler_, StartListening()).Times(1);
   GetSharingService();
 }

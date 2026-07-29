@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/342213636): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "content/web_test/renderer/event_sender.h"
 
 #include <stddef.h>
@@ -15,10 +10,14 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include "base/check_op.h"
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
+#include "base/containers/auto_spanification_helper.h"
+#include "base/containers/span.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
@@ -34,11 +33,10 @@
 #include "content/web_test/renderer/test_runner.h"
 #include "content/web_test/renderer/web_frame_test_proxy.h"
 #include "content/web_test/renderer/web_test_spell_checker.h"
-#include "gin/handle.h"
 #include "gin/object_template_builder.h"
+#include "gin/public/wrappable_pointer_tags.h"
 #include "gin/wrappable.h"
 #include "net/base/filename_util.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 #include "third_party/blink/public/common/context_menu_data/context_menu_data.h"
 #include "third_party/blink/public/common/input/web_coalesced_input_event.h"
 #include "third_party/blink/public/common/input/web_gesture_event.h"
@@ -61,6 +59,9 @@
 #include "ui/events/keycodes/dom/keycode_converter.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/gfx/geometry/point_conversions.h"
+#include "v8/include/cppgc/allocation.h"
+#include "v8/include/cppgc/prefinalizer.h"
+#include "v8/include/v8-cppgc.h"
 #include "v8/include/v8.h"
 
 #if BUILDFLAG(IS_WIN)
@@ -279,68 +280,68 @@ void InitMouseEvent(WebMouseEvent::Button b,
 
 int GetKeyModifier(const std::string& modifier_name) {
   const char* characters = modifier_name.c_str();
-  if (!strcmp(characters, "ctrlKey")
+  if (!UNSAFE_TODO(strcmp(characters, "ctrlKey"))
 #ifndef __APPLE__
-      || !strcmp(characters, "addSelectionKey")
+      || !UNSAFE_TODO(strcmp(characters, "addSelectionKey"))
 #endif
   ) {
     return WebInputEvent::kControlKey;
-  } else if (!strcmp(characters, "shiftKey") ||
-             !strcmp(characters, "rangeSelectionKey")) {
+  } else if (!UNSAFE_TODO(strcmp(characters, "shiftKey")) ||
+             !UNSAFE_TODO(strcmp(characters, "rangeSelectionKey"))) {
     return WebInputEvent::kShiftKey;
-  } else if (!strcmp(characters, "altKey")) {
+  } else if (!UNSAFE_TODO(strcmp(characters, "altKey"))) {
     return WebInputEvent::kAltKey;
 #ifdef __APPLE__
-  } else if (!strcmp(characters, "metaKey") ||
-             !strcmp(characters, "addSelectionKey")) {
+  } else if (!UNSAFE_TODO(strcmp(characters, "metaKey")) ||
+             !UNSAFE_TODO(strcmp(characters, "addSelectionKey"))) {
     return WebInputEvent::kMetaKey;
 #else
-  } else if (!strcmp(characters, "metaKey")) {
+  } else if (!UNSAFE_TODO(strcmp(characters, "metaKey"))) {
     return WebInputEvent::kMetaKey;
 #endif
-  } else if (!strcmp(characters, "autoRepeat")) {
+  } else if (!UNSAFE_TODO(strcmp(characters, "autoRepeat"))) {
     return WebInputEvent::kIsAutoRepeat;
-  } else if (!strcmp(characters, "copyKey")) {
+  } else if (!UNSAFE_TODO(strcmp(characters, "copyKey"))) {
 #ifdef __APPLE__
     return WebInputEvent::kAltKey;
 #else
     return WebInputEvent::kControlKey;
 #endif
-  } else if (!strcmp(characters, "accessKey")) {
+  } else if (!UNSAFE_TODO(strcmp(characters, "accessKey"))) {
 #ifdef __APPLE__
     return WebInputEvent::kAltKey | WebInputEvent::kControlKey;
 #else
     return WebInputEvent::kAltKey;
 #endif
-  } else if (!strcmp(characters, "leftButton")) {
+  } else if (!UNSAFE_TODO(strcmp(characters, "leftButton"))) {
     return WebInputEvent::kLeftButtonDown;
-  } else if (!strcmp(characters, "middleButton")) {
+  } else if (!UNSAFE_TODO(strcmp(characters, "middleButton"))) {
     return WebInputEvent::kMiddleButtonDown;
-  } else if (!strcmp(characters, "rightButton")) {
+  } else if (!UNSAFE_TODO(strcmp(characters, "rightButton"))) {
     return WebInputEvent::kRightButtonDown;
-  } else if (!strcmp(characters, "backButton")) {
+  } else if (!UNSAFE_TODO(strcmp(characters, "backButton"))) {
     return WebInputEvent::kBackButtonDown;
-  } else if (!strcmp(characters, "forwardButton")) {
+  } else if (!UNSAFE_TODO(strcmp(characters, "forwardButton"))) {
     return WebInputEvent::kForwardButtonDown;
-  } else if (!strcmp(characters, "capsLockOn")) {
+  } else if (!UNSAFE_TODO(strcmp(characters, "capsLockOn"))) {
     return WebInputEvent::kCapsLockOn;
-  } else if (!strcmp(characters, "numLockOn")) {
+  } else if (!UNSAFE_TODO(strcmp(characters, "numLockOn"))) {
     return WebInputEvent::kNumLockOn;
-  } else if (!strcmp(characters, "locationLeft")) {
+  } else if (!UNSAFE_TODO(strcmp(characters, "locationLeft"))) {
     return WebInputEvent::kIsLeft;
-  } else if (!strcmp(characters, "locationRight")) {
+  } else if (!UNSAFE_TODO(strcmp(characters, "locationRight"))) {
     return WebInputEvent::kIsRight;
-  } else if (!strcmp(characters, "locationNumpad")) {
+  } else if (!UNSAFE_TODO(strcmp(characters, "locationNumpad"))) {
     return WebInputEvent::kIsKeyPad;
-  } else if (!strcmp(characters, "isComposing")) {
+  } else if (!UNSAFE_TODO(strcmp(characters, "isComposing"))) {
     return WebInputEvent::kIsComposing;
-  } else if (!strcmp(characters, "altGraphKey")) {
+  } else if (!UNSAFE_TODO(strcmp(characters, "altGraphKey"))) {
     return WebInputEvent::kAltGrKey;
-  } else if (!strcmp(characters, "fnKey")) {
+  } else if (!UNSAFE_TODO(strcmp(characters, "fnKey"))) {
     return WebInputEvent::kFnKey;
-  } else if (!strcmp(characters, "symbolKey")) {
+  } else if (!UNSAFE_TODO(strcmp(characters, "symbolKey"))) {
     return WebInputEvent::kSymbolKey;
-  } else if (!strcmp(characters, "scrollLockOn")) {
+  } else if (!UNSAFE_TODO(strcmp(characters, "scrollLockOn"))) {
     return WebInputEvent::kScrollLockOn;
   }
 
@@ -471,17 +472,19 @@ std::vector<std::string> MakeMenuItemStringsFor(ContextMenuData* context_menu) {
   PopulateCustomItems(context_menu->custom_items, "", &strings);
 
   if (context_menu->is_editable) {
-    for (const char** item = kEditableMenuStrings; *item; ++item) {
-      strings.push_back(*item);
+    for (base::span<const char*> item = kEditableMenuStrings; item[0];
+         base::PreIncrementSpan(item)) {
+      strings.push_back(item[0]);
     }
     std::vector<WebString> suggestions;
     WebTestSpellChecker::FillSuggestionList(
-        WebString::FromUTF16(context_menu->misspelled_word), &suggestions);
+        WebString::FromUtf16(context_menu->misspelled_word), &suggestions);
     for (const WebString& suggestion : suggestions)
       strings.push_back(suggestion.Utf8());
   } else {
-    for (const char** item = kNonEditableMenuStrings; *item; ++item) {
-      strings.push_back(*item);
+    for (base::span<const char*> item = kNonEditableMenuStrings; item[0];
+         base::PreIncrementSpan(item)) {
+      strings.push_back(item[0]);
     }
   }
 
@@ -546,15 +549,26 @@ const char* kSourceDeviceStringTouchscreen = "touchscreen";
 
 }  // namespace
 
-class EventSenderBindings : public gin::Wrappable<EventSenderBindings> {
+class EventSenderBindings final : public gin::Wrappable<EventSenderBindings> {
+  CPPGC_USING_PRE_FINALIZER(EventSenderBindings, Dispose);
+
  public:
-  static gin::WrapperInfo kWrapperInfo;
+  static constexpr gin::WrapperInfo kWrapperInfo = {{gin::kEmbedderNativeGin},
+                                                    gin::kEventSenderBindings};
+
+  const gin::WrapperInfo* wrapper_info() const override {
+    return &kWrapperInfo;
+  }
 
   EventSenderBindings(const EventSenderBindings&) = delete;
   EventSenderBindings& operator=(const EventSenderBindings&) = delete;
 
+  explicit EventSenderBindings(base::WeakPtr<EventSender> sender,
+                               WebFrameTestProxy* frame);
   static void Install(base::WeakPtr<EventSender> sender,
                       WebFrameTestProxy* frame);
+
+  void Dispose() { frame_observer_.Dispose(); }
 
  private:
   // Watches for the RenderFrame that the EventSenderBindings is attached to
@@ -571,10 +585,6 @@ class EventSenderBindings : public gin::Wrappable<EventSenderBindings> {
    private:
     const raw_ptr<EventSenderBindings> bindings_;
   };
-
-  explicit EventSenderBindings(base::WeakPtr<EventSender> sender,
-                               WebFrameTestProxy* frame);
-  ~EventSenderBindings() override;
 
   // gin::Wrappable:
   gin::ObjectTemplateBuilder GetObjectTemplateBuilder(
@@ -673,15 +683,11 @@ class EventSenderBindings : public gin::Wrappable<EventSenderBindings> {
   const raw_ptr<blink::WebLocalFrame> frame_;
 };
 
-gin::WrapperInfo EventSenderBindings::kWrapperInfo = {gin::kEmbedderNativeGin};
-
 EventSenderBindings::EventSenderBindings(base::WeakPtr<EventSender> sender,
                                          WebFrameTestProxy* frame)
     : frame_observer_(this, frame),
       sender_(sender),
       frame_(frame->GetWebFrame()) {}
-
-EventSenderBindings::~EventSenderBindings() = default;
 
 // static
 void EventSenderBindings::Install(base::WeakPtr<EventSender> sender,
@@ -696,12 +702,14 @@ void EventSenderBindings::Install(base::WeakPtr<EventSender> sender,
 
   v8::Context::Scope context_scope(context);
 
-  gin::Handle<EventSenderBindings> bindings =
-      gin::CreateHandle(isolate, new EventSenderBindings(sender, frame));
-  if (bindings.IsEmpty())
+  auto* bindings = cppgc::MakeGarbageCollected<EventSenderBindings>(
+      isolate->GetCppHeap()->GetAllocationHandle(), sender, frame);
+  v8::Local<v8::Object> wrapper;
+  if (!bindings->GetWrapper(isolate).ToLocal(&wrapper)) {
     return;
+  }
   v8::Local<v8::Object> global = context->Global();
-  global->Set(context, gin::StringToV8(isolate, "eventSender"), bindings.ToV8())
+  global->Set(context, gin::StringToV8(isolate, "eventSender"), wrapper)
       .Check();
 }
 
@@ -1877,7 +1885,7 @@ void EventSender::DumpFilenameBeingDragged(blink::WebLocalFrame* frame) {
   std::vector<WebDragData::Item> items = current_drag_data_->Items();
   for (const auto& item : items) {
     if (const auto* binary_data_item =
-            absl::get_if<WebDragData::BinaryDataItem>(&item)) {
+            std::get_if<WebDragData::BinaryDataItem>(&item)) {
       WebURL url = binary_data_item->source_url;
       WebString filename_extension = binary_data_item->filename_extension;
       WebString content_disposition = binary_data_item->content_disposition;
@@ -1957,7 +1965,7 @@ void EventSender::BeginDragWithItems(
   for (const WebDragData::Item& item : items) {
     current_drag_data_->AddItem(item);
     if (const auto* filename_item =
-            absl::get_if<WebDragData::FilenameItem>(&item)) {
+            std::get_if<WebDragData::FilenameItem>(&item)) {
       file_paths.push_back(blink::WebStringToFilePath(filename_item->filename));
     }
   }
@@ -2007,8 +2015,8 @@ void EventSender::BeginDragWithStringData(blink::WebLocalFrame* frame,
                                           const std::string& mime_type) {
   std::vector<WebDragData::Item> items;
   WebDragData::StringItem item = {
-      .type = WebString::FromUTF8(mime_type),
-      .data = WebString::FromUTF8(data),
+      .type = WebString::FromUtf8(mime_type),
+      .data = WebString::FromUtf8(data),
   };
   items.emplace_back(item);
 

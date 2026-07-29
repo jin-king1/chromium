@@ -9,6 +9,7 @@
 #import "base/check.h"
 #import "base/memory/raw_ptr.h"
 #import "components/signin/public/base/signin_metrics.h"
+#import "components/signin/public/base/signin_switches.h"
 #import "components/signin/public/identity_manager/objc/identity_manager_observer_bridge.h"
 #import "components/strings/grit/components_strings.h"
 #import "components/sync/base/user_selectable_type.h"
@@ -16,10 +17,12 @@
 #import "components/sync/service/sync_user_settings.h"
 #import "ios/chrome/browser/authentication/ui_bundled/enterprise/enterprise_utils.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/consistency_promo_signin/consistency_default_account/consistency_default_account_consumer.h"
+#import "ios/chrome/browser/authentication/ui_bundled/signin/signin_context_style.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_utils.h"
+#import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/browser/signin/model/avatar/avatar_provider.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service.h"
-#import "ios/chrome/browser/signin/model/chrome_account_manager_service_observer_bridge.h"
 #import "ios/chrome/browser/signin/model/system_identity.h"
 #import "ios/chrome/grit/ios_branded_strings.h"
 #import "ios/chrome/grit/ios_strings.h"
@@ -60,6 +63,8 @@ NSString* GetPromoLabelString(
                  : l10n_util::GetNSString(
                        IDS_IOS_SIGNIN_SHEET_LABEL_FOR_WEB_SIGNIN);
     case signin_metrics::AccessPoint::kNtpSignedOutIcon:
+    case signin_metrics::AccessPoint::kOverflowMenu:
+    case signin_metrics::AccessPoint::kLevelUp:
       // This could check `sync_types_disabled_by_policy` only for the types
       // mentioned in the regular string, but don't bother.
       return sync_transport_disabled_by_policy ||
@@ -87,34 +92,33 @@ NSString* GetPromoLabelString(
     case signin_metrics::AccessPoint::kNotificationsOptInScreenContentToggle:
       return l10n_util::GetNSString(
           IDS_IOS_NOTIFICATIONS_OPT_IN_SIGN_IN_MESSAGE_CONTENT);
+    case signin_metrics::AccessPoint::kSaveToDriveIos:
+      return l10n_util::GetNSString(IDS_IOS_SIGNIN_PROMO_SAVE_TO_DRIVE);
+    case signin_metrics::AccessPoint::kSaveToPhotosIos:
+      return l10n_util::GetNSString(IDS_IOS_SIGNIN_PROMO_SAVE_TO_PHOTOS);
+    case signin_metrics::AccessPoint::kDriveFilePickerIos:
+      return l10n_util::GetNSString(IDS_IOS_SIGNIN_PROMO_CHOOSE_FROM_DRIVE);
+    case signin_metrics::AccessPoint::kIosPageActionMenu:
+    case signin_metrics::AccessPoint::kIosAppBar:
+    case signin_metrics::AccessPoint::kIosGeminiButtonToolbar:
+      return l10n_util::GetNSString(IDS_IOS_SIGNIN_PROMO_GEMINI);
     case signin_metrics::AccessPoint::kSettings:
-      // No text.
-      return nil;
+    case signin_metrics::AccessPoint::kSettingsYourSavedInfo:
     case signin_metrics::AccessPoint::kStartPage:
-    case signin_metrics::AccessPoint::kNtpLink:
     case signin_metrics::AccessPoint::kMenu:
-    case signin_metrics::AccessPoint::kSupervisedUser:
     case signin_metrics::AccessPoint::kExtensionInstallBubble:
     case signin_metrics::AccessPoint::kExtensions:
     case signin_metrics::AccessPoint::kBookmarkBubble:
     case signin_metrics::AccessPoint::kBookmarkManager:
     case signin_metrics::AccessPoint::kAvatarBubbleSignIn:
     case signin_metrics::AccessPoint::kUserManager:
-    case signin_metrics::AccessPoint::kDevicesPage:
-    case signin_metrics::AccessPoint::kSigninPromo:
-    case signin_metrics::AccessPoint::kUnknown:
+    case signin_metrics::AccessPoint::kFullscreenSigninPromo:
     case signin_metrics::AccessPoint::kPasswordBubble:
     case signin_metrics::AccessPoint::kAutofillDropdown:
     case signin_metrics::AccessPoint::kResigninInfobar:
-    case signin_metrics::AccessPoint::kTabSwitcher:
     case signin_metrics::AccessPoint::kMachineLogon:
-    case signin_metrics::AccessPoint::kGoogleServicesSettings:
-    case signin_metrics::AccessPoint::kSyncErrorCard:
     case signin_metrics::AccessPoint::kForcedSignin:
-    case signin_metrics::AccessPoint::kAccountRenamed:
     case signin_metrics::AccessPoint::kSafetyCheck:
-    case signin_metrics::AccessPoint::kKaleidoscope:
-    case signin_metrics::AccessPoint::kEnterpriseSignoutCoordinator:
     case signin_metrics::AccessPoint::kSigninInterceptFirstRunExperience:
     case signin_metrics::AccessPoint::kSettingsSyncOffRow:
     case signin_metrics::AccessPoint::kPostDeviceRestoreSigninPromo:
@@ -125,30 +129,51 @@ NSString* GetPromoLabelString(
     case signin_metrics::AccessPoint::kReadingList:
     case signin_metrics::AccessPoint::kReauthInfoBar:
     case signin_metrics::AccessPoint::kAccountConsistencyService:
-    case signin_metrics::AccessPoint::kSearchCompanion:
-    case signin_metrics::AccessPoint::kPasswordMigrationWarningAndroid:
-    case signin_metrics::AccessPoint::kSaveToDriveIos:
-    case signin_metrics::AccessPoint::kSaveToPhotosIos:
     case signin_metrics::AccessPoint::kChromeSigninInterceptBubble:
     case signin_metrics::AccessPoint::kRestorePrimaryAccountOnProfileLoad:
-    case signin_metrics::AccessPoint::kTabOrganization:
     case signin_metrics::AccessPoint::kTipsNotification:
     case signin_metrics::AccessPoint::kSigninChoiceRemembered:
     case signin_metrics::AccessPoint::kProfileMenuSignoutConfirmationPrompt:
     case signin_metrics::AccessPoint::kSettingsSignoutConfirmationPrompt:
-    case signin_metrics::AccessPoint::kNtpIdentityDisc:
     case signin_metrics::AccessPoint::kOidcRedirectionInterception:
     case signin_metrics::AccessPoint::kWebauthnModalDialog:
     case signin_metrics::AccessPoint::kAvatarBubbleSignInWithSyncPromo:
     case signin_metrics::AccessPoint::kProductSpecifications:
-    case signin_metrics::AccessPoint::kAccountMenu:
-    case signin_metrics::AccessPoint::kAccountMenuFailedSwitch:
+    case signin_metrics::AccessPoint::kAccountMenuSwitchAccount:
+    case signin_metrics::AccessPoint::kAccountMenuSwitchAccountFailed:
     case signin_metrics::AccessPoint::kAddressBubble:
     case signin_metrics::AccessPoint::kCctAccountMismatchNotification:
-    case signin_metrics::AccessPoint::kDriveFilePickerIos:
-    case signin_metrics::AccessPoint::kCollaborationTabGroup:
+    case signin_metrics::AccessPoint::kCollaborationShareTabGroup:
     case signin_metrics::AccessPoint::kGlicLaunchButton:
     case signin_metrics::AccessPoint::kHistoryPage:
+    case signin_metrics::AccessPoint::kCollaborationJoinTabGroup:
+    case signin_metrics::AccessPoint::kHistorySyncOptinExpansionPillOnStartup:
+    case signin_metrics::AccessPoint::kWidget:
+    case signin_metrics::AccessPoint::kCollaborationLeaveOrDeleteTabGroup:
+    case signin_metrics::AccessPoint::kHistorySyncEducationalTip:
+    case signin_metrics::AccessPoint::kManagedProfileAutoSigninIos:
+    case signin_metrics::AccessPoint::kNonModalSigninPasswordPromo:
+    case signin_metrics::AccessPoint::kNonModalSigninBookmarkPromo:
+    case signin_metrics::AccessPoint::kUserManagerWithPrefilledEmail:
+    case signin_metrics::AccessPoint::kEnterpriseManagementDisclaimerAtStartup:
+    case signin_metrics::AccessPoint::
+        kEnterpriseManagementDisclaimerAfterBrowserFocus:
+    case signin_metrics::AccessPoint::
+        kEnterpriseManagementDisclaimerAfterSignin:
+    case signin_metrics::AccessPoint::kNtpFeaturePromo:
+    case signin_metrics::AccessPoint::kEnterpriseDialogAfterSigninInterception:
+    case signin_metrics::AccessPoint::kCredentialExchangeImport:
+    case signin_metrics::AccessPoint::kSetSyncConsentFromSyncInternals:
+    case signin_metrics::AccessPoint::kIosChromeWebView:
+    case signin_metrics::AccessPoint::kAshUserSessionManager:
+    case signin_metrics::AccessPoint::kAshChromeSessionManager:
+    case signin_metrics::AccessPoint::kAvatarPillExpandPromo:
+    case signin_metrics::AccessPoint::kSearchAIModeBubble:
+    case signin_metrics::AccessPoint::kSettingsAutofillAndPasswords:
+    case signin_metrics::AccessPoint::kIndigo:
+    case signin_metrics::AccessPoint::kDeepLinkDefault:
+    case signin_metrics::AccessPoint::kAgeMismatchSignout:
+    case signin_metrics::AccessPoint::kSignoutUndoSnackbar:
       // Nothing prevents instantiating ConsistencyDefaultAccountViewController
       // with an arbitrary entry point, API-wise. In doubt, no label is a good,
       // generic default that fits all entry points.
@@ -158,13 +183,9 @@ NSString* GetPromoLabelString(
 
 }  // namespace
 
-@interface ConsistencyDefaultAccountMediator () <
-    ChromeAccountManagerServiceObserver,
-    IdentityManagerObserverBridgeDelegate> {
+@interface ConsistencyDefaultAccountMediator () <IdentityManagerObserving> {
   std::unique_ptr<signin::IdentityManagerObserverBridge>
       _identityManagerObserver;
-  std::unique_ptr<ChromeAccountManagerServiceObserverBridge>
-      _accountManagerServiceObserver;
   signin_metrics::AccessPoint _accessPoint;
   raw_ptr<syncer::SyncService> _syncService;
 }
@@ -176,12 +197,15 @@ NSString* GetPromoLabelString(
 @implementation ConsistencyDefaultAccountMediator {
   raw_ptr<signin::IdentityManager> _identityManager;
   raw_ptr<ChromeAccountManagerService> _accountManagerService;
+  // Used to customize content on screen.
+  SigninContextStyle _contextStyle;
 }
 
 - (instancetype)
     initWithIdentityManager:(signin::IdentityManager*)identityManager
       accountManagerService:(ChromeAccountManagerService*)accountManagerService
                 syncService:(syncer::SyncService*)syncService
+               contextStyle:(SigninContextStyle)contextStyle
                 accessPoint:(signin_metrics::AccessPoint)accessPoint {
   if ((self = [super init])) {
     CHECK(identityManager);
@@ -191,14 +215,12 @@ NSString* GetPromoLabelString(
     _identityManager = identityManager;
     _accountManagerService = accountManagerService;
     _syncService = syncService;
+    _contextStyle = contextStyle;
     _accessPoint = accessPoint;
 
     _identityManagerObserver =
         std::make_unique<signin::IdentityManagerObserverBridge>(
             _identityManager, self);
-    _accountManagerServiceObserver =
-        std::make_unique<ChromeAccountManagerServiceObserverBridge>(
-            self, _accountManagerService);
   }
   return self;
 }
@@ -209,12 +231,13 @@ NSString* GetPromoLabelString(
   DCHECK(!_syncService);
 }
 
+#pragma mark - Public
+
 - (void)disconnect {
   _identityManager = nullptr;
   _accountManagerService = nullptr;
   _syncService = nullptr;
   _identityManagerObserver.reset();
-  _accountManagerServiceObserver.reset();
 }
 
 #pragma mark - Properties
@@ -232,11 +255,24 @@ NSString* GetPromoLabelString(
       disabledTypes.Put(type);
     }
   }
+
   NSString* labelText = GetPromoLabelString(
       _accessPoint,
       _syncService->HasDisableReason(
           syncer::SyncService::DISABLE_REASON_ENTERPRISE_POLICY),
       disabledTypes);
+  switch (_contextStyle) {
+    case SigninContextStyle::kCollaborationJoinTabGroup:
+      NOTREACHED() << "kCollaborationShareTabGroup style should be presented "
+                      "in a full screen signin screen.";
+    case SigninContextStyle::kCollaborationShareTabGroup:
+      labelText = l10n_util::GetNSString(
+          IDS_IOS_SIGNIN_GROUP_COLLABORATION_HALF_SHEET_SUBTITLE);
+      break;
+    case SigninContextStyle::kDeeplinkSignin:
+    case SigninContextStyle::kDefault:
+      break;
+  }
   [_consumer setLabelText:labelText];
 
   NSString* skipButtonText =
@@ -245,9 +281,10 @@ NSString* GetPromoLabelString(
           : l10n_util::GetNSString(IDS_CANCEL);
   [_consumer setSkipButtonText:skipButtonText];
 
-  [self selectSelectedIdentity];
+  [self selectDefaultIdentity];
 }
 
+// Sets `self.selectedIdentity` and update the UI.
 - (void)setSelectedIdentity:(id<SystemIdentity>)identity {
   if ([_selectedIdentity isEqual:identity]) {
     return;
@@ -258,9 +295,11 @@ NSString* GetPromoLabelString(
 
 #pragma mark - Private
 
-// Updates the default identity, or hide the default identity if there isn't
-// one present on the device.
-- (void)selectSelectedIdentity {
+// Selects the default identity to be either:
+// * the device default identity if any,
+// * otherwise nil.
+// Also updates the UI accordingly.
+- (void)selectDefaultIdentity {
   if (!_identityManager || !_accountManagerService) {
     return;
   }
@@ -279,18 +318,16 @@ NSString* GetPromoLabelString(
   }
 
   id<SystemIdentity> selectedIdentity = self.selectedIdentity;
-  UIImage* avatar = _accountManagerService->GetIdentityAvatarWithIdentity(
-      selectedIdentity, IdentityAvatarSize::TableViewIcon);
+  UIImage* avatar =
+      GetApplicationContext()->GetIdentityAvatarProvider()->GetIdentityAvatar(
+          selectedIdentity, IdentityAvatarSize::TableViewIcon);
+  CHECK(self.selectedIdentity, base::NotFatalUntil::M147);
   BOOL isManaged = [self isIdentityKnownToBeManaged:selectedIdentity];
   [self.consumer showDefaultAccountWithFullName:selectedIdentity.userFullName
                                       givenName:selectedIdentity.userGivenName
                                           email:selectedIdentity.userEmail
                                          avatar:avatar
                                         managed:isManaged];
-}
-
-- (void)handleIdentityListChanged {
-  [self selectSelectedIdentity];
 }
 
 - (void)handleIdentityUpdated:(id<SystemIdentity>)identity {
@@ -306,6 +343,7 @@ NSString* GetPromoLabelString(
 // called asynchronously when the management status if retrieved and the
 // identity is managed.
 - (BOOL)isIdentityKnownToBeManaged:(id<SystemIdentity>)identity {
+  CHECK(identity, base::NotFatalUntil::M147);
   if (std::optional<BOOL> managed = IsIdentityManaged(identity);
       managed.has_value()) {
     return managed.value();
@@ -319,45 +357,19 @@ NSString* GetPromoLabelString(
                                 }));
   return NO;
 }
-#pragma mark - ChromeAccountManagerServiceObserver
-
-- (void)identityListChanged {
-  if (IsUseAccountListFromIdentityManagerEnabled()) {
-    // Listening to `onAccountsOnDeviceChanged` instead.
-    return;
-  }
-  [self handleIdentityListChanged];
-}
-
-- (void)identityUpdated:(id<SystemIdentity>)identity {
-  if (IsUseAccountListFromIdentityManagerEnabled()) {
-    // Listening to `onExtendedAccountInfoUpdated` instead.
-    return;
-  }
-  [self handleIdentityUpdated:identity];
-}
-
-- (void)onChromeAccountManagerServiceShutdown:
-    (ChromeAccountManagerService*)accountManagerService {
-  // TODO(crbug.com/40284086): Remove `[self disconnect]`.
-  [self disconnect];
-}
 
 #pragma mark -  IdentityManagerObserver
 
-- (void)onAccountsOnDeviceChanged {
-  if (!IsUseAccountListFromIdentityManagerEnabled()) {
-    // Listening to `identityListChanged` instead.
-    return;
+- (void)accountsOnDeviceDidChange {
+  if (_accountManagerService &&
+      !_accountManagerService->IsValidIdentity(self.selectedIdentity.gaiaId)) {
+    // The currently selected identity is not valid anymore. Let’s select the
+    // default identity instead.
+    [self selectDefaultIdentity];
   }
-  [self handleIdentityListChanged];
 }
 
-- (void)onExtendedAccountInfoUpdated:(const AccountInfo&)info {
-  if (!IsUseAccountListFromIdentityManagerEnabled()) {
-    // Listening to `identityUpdated` instead.
-    return;
-  }
+- (void)extendedAccountInfoDidUpdate:(const AccountInfo&)info {
   id<SystemIdentity> identity =
       _accountManagerService->GetIdentityOnDeviceWithGaiaID(info.gaia);
   [self handleIdentityUpdated:identity];

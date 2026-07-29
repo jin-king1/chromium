@@ -10,26 +10,28 @@
 #include <vector>
 
 #include "base/command_line.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/values.h"
+#include "chrome/browser/ash/certificate_provider/security_token_pin_dialog_host.h"
 #include "chrome/browser/ash/login/login_client_cert_usage_observer.h"
 #include "chrome/browser/ash/login/screens/error_screen.h"
 #include "chrome/browser/ash/login/screens/network_error.h"
 #include "chrome/browser/ash/login/signin/authentication_flow_auto_reload_manager.h"
 #include "chrome/browser/ash/login/wizard_context.h"
-#include "chrome/browser/certificate_provider/security_token_pin_dialog_host.h"
 #include "chrome/browser/ui/webui/ash/login/base_screen_handler.h"
 #include "chrome/browser/ui/webui/ash/login/network_state_informer.h"
 #include "chrome/browser/ui/webui/ash/login/online_login_utils.h"
 #include "chromeos/ash/components/http_auth_dialog/http_auth_dialog.h"
+#include "chromeos/ash/components/login/auth/auth_factor_editor.h"
 #include "chromeos/components/security_token_pin/constants.h"
 #include "components/user_manager/user_type.h"
-#include "mojo/public/cpp/bindings/receiver.h"
 #include "net/base/net_errors.h"
 #include "net/cookies/canonical_cookie.h"
 #include "net/cookies/cookie_access_result.h"
 
 class AccountId;
+class PrefService;
 
 namespace base {
 class ElapsedTimer;
@@ -37,7 +39,12 @@ class ElapsedTimer;
 
 namespace network {
 class NSSTempCertsCacheChromeOS;
+class SharedURLLoaderFactory;
 }  // namespace network
+
+namespace policy {
+class BrowserPolicyConnectorAsh;
+}  // namespace policy
 
 namespace ash {
 
@@ -135,7 +142,12 @@ class GaiaScreenHandler final
     FRAME_STATE_BLOCKED
   };
 
+  // `local_state` and `browser_policy_connector_ash` must be non-null and must
+  // outlvie `this`. `shared_url_loader_factory` must be non-null.
   GaiaScreenHandler(
+      PrefService* local_state,
+      policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash,
+      scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
       const scoped_refptr<NetworkStateInformer>& network_state_informer,
       ErrorScreen* error_screen);
 
@@ -187,16 +199,6 @@ class GaiaScreenHandler final
   void SetNextSamlChallengeKeyHandlerForTesting(
       std::unique_ptr<SamlChallengeKeyHandler> handler_for_test);
 
-  // To avoid spurious error messages on flaky networks, the offline message is
-  // only shown if the network is offline for a threshold number of seconds.
-  // This method provides an ability to reduce the threshold to zero, allowing
-  // the offline message to show instantaneously in tests. The threshold can
-  // also be set to a high value to disable the offline message on slow
-  // configurations like MSAN, where it otherwise triggers on every run.
-  void set_offline_timeout_for_testing(base::TimeDelta offline_timeout) {
-    offline_timeout_ = offline_timeout;
-  }
-
   // TODO(https://issuetracker.google.com/292489063): Remove these methods to
   // query the frame state, and instead, allow registering callbacks or futures
   // to learn of the relevant state transitions e.g. with an Observer class.
@@ -246,12 +248,12 @@ class GaiaScreenHandler final
       const std::string& gaia_id,
       const std::string& email,
       const std::string& password,
-      const base::Value::List& scraped_saml_passwords_value,
+      const base::ListValue& scraped_saml_passwords_value,
       bool using_saml,
-      const base::Value::List& services_list,
+      const base::ListValue& services_list,
       bool services_provided,
-      const base::Value::Dict& password_attributes,
-      const base::Value::Dict& sync_trusted_vault_keys);
+      const base::DictValue& password_attributes,
+      const base::DictValue& sync_trusted_vault_keys);
 
   // Intermediate step when cookies are received. The cookies are added into
   // their final location within `OnlineSigninArtifacts` and then passed to
@@ -275,10 +277,11 @@ class GaiaScreenHandler final
   void HandleUsingSAMLAPI(bool is_third_party_idp);
   void HandleRecordSAMLProvider(const std::string& x509certificate);
   void HandleSamlChallengeMachineKey(const std::string& callback_id,
-                                     const std::string& url,
+                                     const std::string& source_url,
+                                     const std::string& destination_url,
                                      const std::string& challenge);
   void HandleSamlChallengeMachineKeyResult(base::Value callback_id,
-                                           base::Value::Dict result);
+                                           base::DictValue result);
 
   void HandleGaiaUIReady();
 
@@ -293,7 +296,7 @@ class GaiaScreenHandler final
   // Called to deliver the result of the security token PIN request. Called with
   // an empty string when the request is canceled.
   void HandleSecurityTokenPinEntered(const std::string& user_input);
-  void HandleOnFatalError(int error_code, const base::Value::Dict& params);
+  void HandleOnFatalError(int error_code, const base::DictValue& params);
 
   // Called when the user is removed.
   void HandleUserRemoved(const std::string& email);
@@ -375,6 +378,11 @@ class GaiaScreenHandler final
   // Assigns new SamlChallengeKeyHandler object or an object for testing to
   // `saml_challenge_key_handler_`.
   void CreateSamlChallengeKeyHandler();
+
+  const raw_ref<policy::BrowserPolicyConnectorAsh>
+      browser_policy_connector_ash_;
+  const scoped_refptr<network::SharedURLLoaderFactory>
+      shared_url_loader_factory_;
 
   // Current state of Gaia frame.
   FrameState frame_state_ = FRAME_STATE_UNKNOWN;
@@ -477,8 +485,7 @@ class GaiaScreenHandler final
   base::CancelableOnceCallback<void()> update_state_callback_;
   base::CancelableOnceCallback<void()> connecting_callback_;
 
-  // Once Lacros is shipped, this will no longer be necessary.
-  std::unique_ptr<HttpAuthDialog::ScopedEnabler> enable_ash_httpauth_;
+  std::unique_ptr<HttpAuthDialog::ScopedEnabler> enable_system_httpauth_;
 
   // Whether we're currently ignoring network state updates because a proxy auth
   // UI pending (or we're waiting for a grace period after the proxy auth UI is
@@ -499,13 +506,9 @@ class GaiaScreenHandler final
   // dialog.
   bool proxy_auth_dialog_need_reload_ = false;
 
-  bool is_offline_timeout_for_test_set_ = false;
-
-  // Timeout to delay first notification about offline state for a
-  // current network.
-  base::TimeDelta offline_timeout_ = base::Seconds(1);
-
   std::unique_ptr<ErrorScreensHistogramHelper> histogram_helper_;
+
+  std::unique_ptr<AuthFactorEditor> auth_factor_editor_;
 
   bool is_gaia_password_required_ = false;
 

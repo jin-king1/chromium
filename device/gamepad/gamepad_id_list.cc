@@ -6,9 +6,11 @@
 
 #include <algorithm>
 #include <iterator>
+#include <string>
 
 #include "base/containers/fixed_flat_map.h"
 #include "base/containers/fixed_flat_set.h"
+#include "base/strings/stringprintf.h"
 
 namespace device {
 
@@ -61,6 +63,7 @@ constexpr auto kGamepadInfo = base::MakeFixedFlatMap<
     {{0x044f, 0xb323}, kXInputTypeNone},
     {{0x044f, 0xb326}, kXInputTypeXbox},
     {{0x044f, 0xb653}, kXInputTypeNone},
+    {{0x044f, 0xb679}, kXInputTypeNone},
     {{0x044f, 0xb677}, kXInputTypeNone},
     {{0x044f, 0xd003}, kXInputTypeNone},
     {{0x044f, 0xd008}, kXInputTypeNone},
@@ -613,8 +616,10 @@ constexpr auto kGamepadInfo = base::MakeFixedFlatMap<
     {{0x2dc8, 0x2830}, kXInputTypeNone},
     {{0x2dc8, 0x3000}, kXInputTypeNone},
     {{0x2dc8, 0x3001}, kXInputTypeNone},
+    {{0x2dc8, 0x301b}, kXInputTypeNone},
     {{0x2dc8, 0x3106}, kXInputTypeXbox360},
     {{0x2dc8, 0x3820}, kXInputTypeNone},
+    {{0x2dc8, 0x6012}, kXInputTypeNone},
     {{0x2dc8, 0x9001}, kXInputTypeNone},
     {{0x2dfa, 0x0001}, kXInputTypeNone},
     {{0x2e95, 0x7725}, kXInputTypeNone},
@@ -644,6 +649,14 @@ constexpr auto kGamepadInfo = base::MakeFixedFlatMap<
 GamepadIdList& GamepadIdList::Get() {
   return g_singleton.Get();
 }
+
+#if BUILDFLAG(IS_WIN)
+// static
+std::string GamepadIdList::GetProductIdentifier(uint16_t vendor_id,
+                                                uint16_t product_id) {
+  return base::StringPrintf("%04x:%04x", vendor_id, product_id);
+}
+#endif  // BUILDFLAG(IS_WIN)
 
 XInputType GamepadIdList::GetXInputType(uint16_t vendor_id,
                                         uint16_t product_id) const {
@@ -718,6 +731,12 @@ bool GamepadIdList::HasTriggerRumbleSupport(GamepadId gamepad_id) const {
       });
 
   return kTriggerRumbleGamepadIds.contains(gamepad_id);
+}
+
+// static
+bool GamepadIdList::IsPlayStation5Gamepad(GamepadId gamepad_id) {
+  return gamepad_id == GamepadId::kSonyProduct0ce6 ||
+         gamepad_id == GamepadId::kSonyProduct0df2;
 }
 
 std::vector<std::tuple<uint16_t, uint16_t, XInputType>>

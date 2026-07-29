@@ -21,12 +21,6 @@ suite('cr-textarea-focus-test', function() {
     flush();
   });
 
-  test('propertyBindings', function() {
-    assertFalse(textarea.autofocus);
-    crTextarea.setAttribute('autofocus', 'autofocus');
-    assertTrue(textarea.autofocus);
-  });
-
   test('valueSetCorrectly', function() {
     crTextarea.value = 'hello';
     assertEquals(crTextarea.value, textarea.value);
@@ -42,7 +36,7 @@ suite('cr-textarea-focus-test', function() {
     assertTrue(label.hidden);
     crTextarea.label = 'foobar';
     assertFalse(label.hidden);
-    assertEquals('foobar', label.textContent!.trim());
+    assertEquals('foobar', label.textContent.trim());
     assertEquals('foobar', textarea.getAttribute('aria-label'));
   });
 

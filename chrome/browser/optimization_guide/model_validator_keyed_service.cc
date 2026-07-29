@@ -15,23 +15,20 @@
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
+#include "components/optimization_guide/core/inference/model_validator.h"
 #include "components/optimization_guide/core/model_execution/feature_keys.h"
+#include "components/optimization_guide/core/model_execution/on_device_features.h"
 #include "components/optimization_guide/core/model_execution/on_device_model_component.h"
 #include "components/optimization_guide/core/model_execution/on_device_model_execution_proto_descriptors.h"
+#include "components/optimization_guide/core/model_execution/remote_model_executor.h"
 #include "components/optimization_guide/core/optimization_guide_constants.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
-#include "components/optimization_guide/core/optimization_guide_model_executor.h"
 #include "components/optimization_guide/core/optimization_guide_switches.h"
 #include "components/optimization_guide/core/optimization_guide_util.h"
-#include "components/optimization_guide/machine_learning_tflite_buildflags.h"
 #include "components/optimization_guide/proto/features/compose.pb.h"
 #include "components/optimization_guide/proto/model_execution.pb.h"
 #include "components/optimization_guide/proto/model_validation.pb.h"
 #include "components/optimization_guide/proto/string_value.pb.h"
-
-#if BUILDFLAG(BUILD_WITH_TFLITE_LIB)
-#include "components/optimization_guide/core/model_validator.h"
-#endif  // BUILD_WITH_TFLITE_LIB
 
 namespace {
 
@@ -73,7 +70,6 @@ ModelValidatorKeyedService::ModelValidatorKeyedService(Profile* profile)
   if (!opt_guide_service) {
     return;
   }
-#if BUILDFLAG(BUILD_WITH_TFLITE_LIB)
   if (switches::ShouldValidateModel()) {
     // Create the validator object which will get destroyed when the model
     // load is complete.
@@ -82,7 +78,6 @@ ModelValidatorKeyedService::ModelValidatorKeyedService(Profile* profile)
         base::ThreadPool::CreateSequencedTaskRunner(
             {base::MayBlock(), base::TaskPriority::BEST_EFFORT}));
   }
-#endif  // BUILD_WITH_TFLITE_LIB
   if (switches::ShouldValidateModelExecution()) {
     auto* identity_manager = IdentityManagerFactory::GetForProfile(profile_);
     if (!identity_manager) {
@@ -149,7 +144,7 @@ void ModelValidatorKeyedService::StartModelExecutionValidation() {
   request.set_value(model_execution_input);
   opt_guide_service->ExecuteModel(
       ModelBasedCapabilityKey::kTest, request,
-      /*execution_timeout=*/std::nullopt,
+      /*options=*/{},
       base::BindOnce(&ModelValidatorKeyedService::OnModelExecuteResponse,
                      weak_ptr_factory_.GetWeakPtr()));
 }
@@ -183,7 +178,7 @@ void ModelValidatorKeyedService::PerformOnDeviceModelExecutionValidation(
   auto request = input->requests(0);
   auto request_copy =
       std::make_unique<optimization_guide::proto::ExecuteRequest>(request);
-  auto capability_key = ToModelBasedCapabilityKey(request.feature());
+  auto capability_key = *ToOnDeviceFeature(request.feature());
 
   auto eligibility =
       opt_guide_service->GetOnDeviceModelEligibility(capability_key);
@@ -195,10 +190,7 @@ void ModelValidatorKeyedService::PerformOnDeviceModelExecutionValidation(
 
   using optimization_guide::SessionConfigParams;
   on_device_validation_session_ = opt_guide_service->StartSession(
-      capability_key,
-      SessionConfigParams{
-          .execution_mode = SessionConfigParams::ExecutionMode::kOnDeviceOnly,
-      });
+      capability_key, SessionConfigParams{}, nullptr);
   auto metadata = GetProtoFromAny(request.request_metadata());
   on_device_validation_session_->AddContext(*metadata);
   base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
@@ -229,22 +221,20 @@ void ModelValidatorKeyedService::OnDeviceModelExecuteResponse(
     // Ignore partial responses.
     return;
   }
-  // Complete responses with empty log entry indicate errors.
-  if (!result.log_entry || !result.provided_by_on_device) {
-    LOCAL_HISTOGRAM_BOOLEAN(kModelValidationErrorHistogramString, true);
+  if (!result.response.has_value()) {
+    LOCAL_HISTOGRAM_BOOLEAN(
+        "OptimizationGuide.ModelValidation.OnDevice.DidError", true);
   }
   proto::ModelValidationOutput output;
   optimization_guide::proto::ModelCall* model_call = output.add_model_calls();
   model_call->mutable_request()->CopyFrom(*request);
-  optimization_guide::proto::ModelExecutionInfo* model_execution_info =
-      model_call->mutable_model_execution_info();
+  if (result.execution_info) {
+    *model_call->mutable_model_execution_info() =
+        std::move(*result.execution_info);
+  }
   if (result.response.has_value()) {
     model_call->mutable_response()->CopyFrom(result.response.value().response);
-  } else {
-    model_execution_info->set_model_execution_error_enum(
-        static_cast<uint32_t>(result.response.error().error()));
   }
-  // TODO(crbug.com/372535824): store on-device execution log.
 
   auto out_file = switches::GetOnDeviceValidationWriteToFile();
   if (!out_file) {

@@ -7,7 +7,10 @@
 
 #include <list>
 #include <map>
+#include <vector>
 
+#include "base/callback_list.h"
+#include "base/memory/raw_ptr.h"
 #include "chrome/browser/ui/views/location_bar/icon_label_bubble_view.h"
 #include "ui/actions/action_id.h"
 #include "ui/views/layout/box_layout_view.h"
@@ -16,14 +19,19 @@ namespace page_actions {
 
 class PageActionController;
 class PageActionView;
+class PageActionPropertiesProviderInterface;
 struct PageActionViewParams;
 
 // PageActionContainerView is the parent view of all PageActionViews.
 class PageActionContainerView : public views::View {
   METADATA_HEADER(PageActionContainerView, views::View)
  public:
-  PageActionContainerView(const std::vector<actions::ActionItem*>& action_items,
-                          const PageActionViewParams& params);
+  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kPageActionContainerViewElementId);
+
+  PageActionContainerView(
+      const std::vector<actions::ActionItem*>& action_items,
+      const PageActionPropertiesProviderInterface& properties_provider,
+      const PageActionViewParams& params);
   PageActionContainerView(const PageActionContainerView&) = delete;
   PageActionContainerView& operator=(const PageActionContainerView&) = delete;
   ~PageActionContainerView() override;
@@ -36,15 +44,27 @@ class PageActionContainerView : public views::View {
   PageActionView* GetPageActionView(actions::ActionId page_action_id);
 
  private:
-  // Invoked when the chip state changes. When `suggestion_chip_visible` is
-  // true, the page action associated with `action_id` is placed in the front
-  // before all other page actions. Otherwise, the page action is placed in it's
-  // initial insertion position.
-  void OnPageActionSuggestionChipStateChanged(actions::ActionId action_id,
-                                              bool suggestion_chip_visible);
+  // Invoked when the chip or anchored message state changes. We show the
+  // anchored message (if any), then suggestion chips then all other page action
+  // icons. Within its category, the page action is placed in its initial
+  // insertion position.
+  void OnPageActionStateChanged(PageActionView* view);
+
+  // Ensure the chip (if any) is at index 0 and all other actions are in
+  // the correct relative order (after the chip).
+  void NormalizePageActionViewOrder();
 
   std::map<actions::ActionId, raw_ptr<PageActionView>> page_action_views_;
-  std::map<actions::ActionId, int> page_action_view_initial_indices_;
+  std::map<actions::ActionId, size_t> page_action_view_initial_indices_;
+
+  // Callbacks used to handle page action view chip state changes. Used to
+  // ensure that the container reorders the page actions accordingly.
+  std::vector<base::CallbackListSubscription> chip_state_changed_callbacks_;
+
+  // Callbacks used to handle page action view anchored message state changes.
+  // Used to ensure that the container reorders the page actions accordingly.
+  std::vector<base::CallbackListSubscription>
+      anchored_message_state_changed_callbacks_;
 };
 
 }  // namespace page_actions

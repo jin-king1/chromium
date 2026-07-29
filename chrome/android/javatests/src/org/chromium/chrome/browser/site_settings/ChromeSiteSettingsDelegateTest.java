@@ -9,13 +9,14 @@ import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertEquals;
 
 import android.graphics.drawable.Drawable;
+import android.os.Build;
 
+import androidx.annotation.IntDef;
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.filters.SmallTest;
 import androidx.test.platform.app.InstrumentationRegistry;
 
 import org.junit.Before;
-import org.junit.ClassRule;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -26,6 +27,7 @@ import org.chromium.base.task.TaskTraits;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.chrome.browser.browsing_data.BrowsingDataBridge;
 import org.chromium.chrome.browser.browsing_data.BrowsingDataType;
@@ -34,8 +36,8 @@ import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
-import org.chromium.chrome.test.batch.BlankCTATabInitialStateRule;
+import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.components.browsing_data.content.BrowsingDataInfo;
 import org.chromium.components.browsing_data.content.BrowsingDataModel;
 import org.chromium.content_public.browser.test.util.JavaScriptUtils;
@@ -45,6 +47,8 @@ import org.chromium.net.test.ServerCertificate;
 import org.chromium.url.GURL;
 import org.chromium.url.Origin;
 
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 import java.util.Map;
 import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
@@ -56,36 +60,36 @@ import java.util.stream.Collectors;
     ContentSwitches.HOST_RESOLVER_RULES + "=MAP * 127.0.0.1",
     "ignore-certificate-errors"
 })
-@Batch(SiteSettingsTest.SITE_SETTINGS_BATCH_NAME)
+@Batch(Batch.PER_CLASS)
 public class ChromeSiteSettingsDelegateTest {
 
     public static final String BROWSING_DATA_HOST = "browsing-data.com";
 
-    @ClassRule
-    public static ChromeTabbedActivityTestRule sActivityTestRule =
-            new ChromeTabbedActivityTestRule();
-
     @Rule
-    public BlankCTATabInitialStateRule mBlankCTATabInitialStateRule =
-            new BlankCTATabInitialStateRule(sActivityTestRule, false);
+    public AutoResetCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.fastAutoResetCtaActivityRule();
 
     ChromeSiteSettingsDelegate mSiteSettingsDelegate;
 
     @Before
     public void setUp() throws Exception {
+        mActivityTestRule.startOnBlankPage();
         clearBrowsingData(BrowsingDataType.SITE_DATA, TimePeriod.LAST_HOUR);
     }
 
     // Tests that a fallback favicon is generated when a real one isn't found locally.
-    // This is a regression test for crbug.com/1077716.
+    // This is a regression test for crbug.com/40688837.
     @Test
     @SmallTest
+    @DisableIf.Build(
+            sdk_is_greater_than = Build.VERSION_CODES.TIRAMISU,
+            message = "crbug.com/396752397")
     public void testFallbackFaviconLoads() throws TimeoutException {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     mSiteSettingsDelegate =
                             new ChromeSiteSettingsDelegate(
-                                    sActivityTestRule.getActivity(),
+                                    mActivityTestRule.getActivity(),
                                     ProfileManager.getLastUsedRegularProfile());
                 });
 
@@ -124,18 +128,18 @@ public class ChromeSiteSettingsDelegateTest {
         assertEquals(2, result.size());
 
         // Ensure that the entry matches the set cookie.
-        var https_origin = Origin.create(new GURL("https://browsing-data.com"));
-        var http_origin = Origin.create(new GURL("http://browsing-data.com"));
+        var httpsOrigin = Origin.create(new GURL("https://browsing-data.com"));
+        var httpOrigin = Origin.create(new GURL("http://browsing-data.com"));
 
         var entries = result.entrySet().stream().collect(Collectors.toList());
-        assertEquals(https_origin, entries.get(0).getKey());
+        assertEquals(httpsOrigin, entries.get(0).getKey());
 
         BrowsingDataInfo info = entries.get(0).getValue();
-        assertEquals(https_origin, info.getOrigin());
+        assertEquals(httpsOrigin, info.getOrigin());
         assertEquals(1, info.getCookieCount());
         assertEquals(0, info.getStorageSize());
 
-        assertEquals(http_origin, entries.get(1).getKey());
+        assertEquals(httpOrigin, entries.get(1).getKey());
     }
 
     // Tests that removeBrowsingData removes data correctly for a given host.
@@ -166,7 +170,7 @@ public class ChromeSiteSettingsDelegateTest {
         assertEquals(0, result.size());
     }
 
-    private static void setCookie(Scheme scheme, String hostname, String data)
+    private void setCookie(@Scheme int scheme, String hostname, String data)
             throws TimeoutException {
         EmbeddedTestServer server =
                 scheme == Scheme.HTTPS
@@ -179,7 +183,7 @@ public class ChromeSiteSettingsDelegateTest {
         String url =
                 server.getURLWithHostName(
                         hostname, "/content/test/data/browsing_data/site_data.html");
-        Tab tab = sActivityTestRule.loadUrlInNewTab(url, /* incognito= */ false);
+        Tab tab = mActivityTestRule.loadUrlInNewTab(url, /* incognito= */ false);
 
         JavaScriptUtils.executeJavaScriptAndWaitForResult(
                 tab.getWebContents(), "setCookie(" + data + ")");
@@ -187,9 +191,11 @@ public class ChromeSiteSettingsDelegateTest {
         server.stopAndDestroyServer();
     }
 
-    private enum Scheme {
-        HTTP,
-        HTTPS
+    @IntDef({Scheme.HTTP, Scheme.HTTPS})
+    @Retention(RetentionPolicy.SOURCE)
+    private @interface Scheme {
+        int HTTP = 0;
+        int HTTPS = 1;
     }
 
     private void clearBrowsingData(int dataType, int timePeriod) throws TimeoutException {
@@ -213,7 +219,7 @@ public class ChromeSiteSettingsDelegateTest {
                 () -> {
                     mSiteSettingsDelegate =
                             new ChromeSiteSettingsDelegate(
-                                    sActivityTestRule.getActivity(),
+                                    mActivityTestRule.getActivity(),
                                     ProfileManager.getLastUsedRegularProfile());
                     mSiteSettingsDelegate.getBrowsingDataModel(
                             model -> {

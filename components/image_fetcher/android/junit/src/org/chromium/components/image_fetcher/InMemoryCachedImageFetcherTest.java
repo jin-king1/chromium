@@ -14,8 +14,6 @@ import static org.mockito.Mockito.verify;
 
 import android.graphics.Bitmap;
 
-import jp.tomorrowkey.android.gifplayer.BaseGifImage;
-
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
@@ -27,8 +25,9 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.Mockito;
-import org.mockito.MockitoAnnotations;
 import org.mockito.invocation.InvocationOnMock;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
 
 import org.chromium.base.Callback;
@@ -52,23 +51,21 @@ public class InMemoryCachedImageFetcherTest {
 
     private final Bitmap mBitmap =
             Bitmap.createBitmap(WIDTH_PX, HEIGHT_PX, Bitmap.Config.ARGB_8888);
-
     // The image fetcher under test.
     private InMemoryCachedImageFetcher mInMemoryCachedImageFetcher;
     private BitmapCache mBitmapCache;
     private DiscardableReferencePool mReferencePool;
 
+    @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock private ImageFetcherBridge mBridge;
     @Mock private CachedImageFetcher mMockImageFetcher;
     @Mock private Callback<Bitmap> mCallback;
-    @Mock private Runtime mRuntime;
     @Captor private ArgumentCaptor<Integer> mWidthCaptor;
     @Captor private ArgumentCaptor<Integer> mHeightCaptor;
     @Captor private ArgumentCaptor<Callback<Bitmap>> mCallbackCaptor;
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
         doReturn(mBridge).when(mMockImageFetcher).getImageFetcherBridge();
 
         mReferencePool = new DiscardableReferencePool();
@@ -82,7 +79,7 @@ public class InMemoryCachedImageFetcherTest {
         mInMemoryCachedImageFetcher.destroy();
     }
 
-    private void answerFetch(Bitmap bitmap, boolean deleteBitmapCacheOnFetch) {
+    private void answerFetch(Bitmap imageToReturn, boolean deleteBitmapCacheOnFetch) {
         mInMemoryCachedImageFetcher =
                 new InMemoryCachedImageFetcher(mMockImageFetcher, mBitmapCache);
         doAnswer(
@@ -91,8 +88,7 @@ public class InMemoryCachedImageFetcherTest {
                                 mInMemoryCachedImageFetcher.destroy();
                                 mReferencePool.drain();
                             }
-
-                            mCallbackCaptor.getValue().onResult(bitmap);
+                            mCallbackCaptor.getValue().onResult(imageToReturn);
                             return null;
                         })
                 .when(mMockImageFetcher)
@@ -120,11 +116,15 @@ public class InMemoryCachedImageFetcherTest {
         ImageFetcher.Params params =
                 ImageFetcher.Params.create(URL, UMA_CLIENT_NAME, WIDTH_PX, HEIGHT_PX);
         mInMemoryCachedImageFetcher.fetchImage(params, mCallback);
-        verify(mCallback).onResult(mBitmap);
+
+        ArgumentCaptor<Bitmap> resultCaptor = ArgumentCaptor.forClass(Bitmap.class);
+        verify(mCallback).onResult(resultCaptor.capture());
+        Assert.assertEquals(mBitmap, resultCaptor.getValue());
 
         reset(mCallback);
         mInMemoryCachedImageFetcher.fetchImage(params, mCallback);
-        verify(mCallback).onResult(mBitmap);
+        verify(mCallback).onResult(resultCaptor.capture());
+        Assert.assertEquals(mBitmap, resultCaptor.getValue());
 
         verify(mMockImageFetcher).fetchImage(eq(params), any());
 
@@ -150,7 +150,7 @@ public class InMemoryCachedImageFetcherTest {
     @Test
     public void testFetchGif() {
         ImageFetcher.Params params = ImageFetcher.Params.create(URL, UMA_CLIENT_NAME);
-        mInMemoryCachedImageFetcher.fetchGif(params, (BaseGifImage gif) -> {});
+        mInMemoryCachedImageFetcher.fetchGif(params, (ImageDataFetchResult gifFetchResult) -> {});
         verify(mMockImageFetcher).fetchGif(eq(params), any());
     }
 
@@ -190,49 +190,46 @@ public class InMemoryCachedImageFetcherTest {
 
     @Test
     public void testDetermineCacheSize_clientRequestedSmallerThanAvailable() {
-        long totalMemory = 200L;
-        long allocatedMemory = 100L;
+        long maxMemory = 200L;
+        long totalMemory = 100L;
+        long freeMemory = 0L;
         int clientRequest = 10;
-        doReturn(totalMemory).when(mRuntime).maxMemory();
-        doReturn(allocatedMemory).when(mRuntime).totalMemory();
-        doReturn(0L).when(mRuntime).freeMemory();
 
         // We calculate the in-memory cache size as a percentage of available memory.
         Assert.assertEquals(
                 "Cache size should be bounded by the space requested by the client.",
                 clientRequest,
-                InMemoryCachedImageFetcher.determineCacheSize(mRuntime, clientRequest));
+                InMemoryCachedImageFetcher.determineCacheSize(
+                        totalMemory, freeMemory, maxMemory, clientRequest));
     }
 
     @Test
     public void testDetermineCacheSize_clientRequestedLargerThanAvailable() {
-        long totalMemory = 200L;
-        long allocatedMemory = 120L;
+        long maxMemory = 200L;
+        long totalMemory = 120L;
+        long freeMemory = 0L;
         int clientRequest = 100;
-        doReturn(totalMemory).when(mRuntime).maxMemory();
-        doReturn(allocatedMemory).when(mRuntime).totalMemory();
-        doReturn(0L).when(mRuntime).freeMemory();
 
         // We calculate the in-memory cache size as a percentage of available memory.
         Assert.assertEquals(
                 "Client requests should be bounded by 1/8th of the available memory.",
                 10,
-                InMemoryCachedImageFetcher.determineCacheSize(mRuntime, clientRequest));
+                InMemoryCachedImageFetcher.determineCacheSize(
+                        totalMemory, freeMemory, maxMemory, clientRequest));
     }
 
     @Test
     public void testDetermineCacheSize_freeMemoryLowerBound() {
-        long totalMemory = 200L;
-        long allocatedMemory = 199L;
+        long maxMemory = 200L;
+        long totalMemory = 199L;
+        long freeMemory = 0L;
         int clientRequest = 10;
-        doReturn(totalMemory).when(mRuntime).maxMemory();
-        doReturn(allocatedMemory).when(mRuntime).totalMemory();
-        doReturn(0L).when(mRuntime).freeMemory();
 
         // We calculate the in-memory cache size as a percentage of available memory.
         Assert.assertEquals(
                 "The minimum cache size is 1.",
                 1,
-                InMemoryCachedImageFetcher.determineCacheSize(mRuntime, clientRequest));
+                InMemoryCachedImageFetcher.determineCacheSize(
+                        totalMemory, freeMemory, maxMemory, clientRequest));
     }
 }

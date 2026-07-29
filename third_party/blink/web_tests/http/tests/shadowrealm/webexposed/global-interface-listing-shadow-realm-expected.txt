@@ -163,6 +163,11 @@ CONSOLE MESSAGE:     attribute @@toStringTag
 CONSOLE MESSAGE:     getter promise
 CONSOLE MESSAGE:     getter reason
 CONSOLE MESSAGE:     method constructor
+CONSOLE MESSAGE: interface QuotaExceededError : DOMException
+CONSOLE MESSAGE:     attribute @@toStringTag
+CONSOLE MESSAGE:     getter quota
+CONSOLE MESSAGE:     getter requested
+CONSOLE MESSAGE:     method constructor
 CONSOLE MESSAGE: interface ReadableByteStreamController
 CONSOLE MESSAGE:     attribute @@toStringTag
 CONSOLE MESSAGE:     getter byobRequest
@@ -312,6 +317,7 @@ CONSOLE MESSAGE:     getter search
 CONSOLE MESSAGE:     getter username
 CONSOLE MESSAGE:     method constructor
 CONSOLE MESSAGE:     method exec
+CONSOLE MESSAGE:     method generate
 CONSOLE MESSAGE:     method test
 CONSOLE MESSAGE: interface URLSearchParams
 CONSOLE MESSAGE:     attribute @@toStringTag
@@ -353,6 +359,17 @@ CONSOLE MESSAGE:     method constructor
 CONSOLE MESSAGE:     method releaseLock
 CONSOLE MESSAGE:     method write
 CONSOLE MESSAGE: [NAMESPACES]
+CONSOLE MESSAGE: namespace Temporal
+CONSOLE MESSAGE:     attribute @@toStringTag
+CONSOLE MESSAGE:     attribute Now
+CONSOLE MESSAGE:     method Duration
+CONSOLE MESSAGE:     method Instant
+CONSOLE MESSAGE:     method PlainDate
+CONSOLE MESSAGE:     method PlainDateTime
+CONSOLE MESSAGE:     method PlainMonthDay
+CONSOLE MESSAGE:     method PlainTime
+CONSOLE MESSAGE:     method PlainYearMonth
+CONSOLE MESSAGE:     method ZonedDateTime
 CONSOLE MESSAGE: namespace console
 CONSOLE MESSAGE:     attribute @@toStringTag
 CONSOLE MESSAGE:     method assert

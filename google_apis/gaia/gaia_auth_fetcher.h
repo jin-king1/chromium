@@ -6,13 +6,13 @@
 #define GOOGLE_APIS_GAIA_GAIA_AUTH_FETCHER_H_
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "base/component_export.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
-#include "base/memory/ref_counted.h"
 #include "base/memory/scoped_refptr.h"
 #include "build/build_config.h"
 #include "google_apis/gaia/gaia_auth_consumer.h"
@@ -20,6 +20,7 @@
 #include "google_apis/gaia/google_service_auth_error.h"
 #include "google_apis/gaia/oauth_multilogin_result.h"
 #include "net/base/net_errors.h"
+#include "net/http/http_request_headers.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "services/network/public/mojom/fetch_api.mojom.h"
 #include "url/gurl.h"
@@ -44,6 +45,22 @@ enum class MultiloginMode {
   MULTILOGIN_PRESERVE_COOKIE_ACCOUNTS_ORDER
 };
 
+struct MultiloginCookieBindingParams {
+  // Mode determining the cookie binding mode for a multilogin request. This
+  // does not have any effect if none of the tokens used in the request are
+  // bound.
+  //
+  // This parameter is only going to be used during a gradual feature rollout.
+  // TODO(crbug.com/452551212): remove this parameter after the full launch.
+  enum class Mode { kDisabled, kEnabledUnenforced, kEnabledEnforced };
+
+  Mode mode = Mode::kDisabled;
+  Mode youtube_mode = Mode::kDisabled;
+  // Indicates whether the bound session credentials from the server response
+  // should be parsed according to the standard format.
+  bool standard_device_bound_session_credentials = false;
+};
+
 // Specifies the "source" parameter for Gaia calls.
 class COMPONENT_EXPORT(GOOGLE_APIS) GaiaSource {
  public:
@@ -52,12 +69,15 @@ class COMPONENT_EXPORT(GOOGLE_APIS) GaiaSource {
     kChromeOS,
     kAccountReconcilorDice,
     kAccountReconcilorMirror,
-    kPrimaryAccountManager
+    kPrimaryAccountManager,
+    kChromeGlic,  // chrome/browser/glic
+    kAccountReconcilorDiceCookieUpgrade,
   };
 
   // Implicit conversion is necessary to avoid boilerplate code.
   GaiaSource(Type type);
   GaiaSource(Type source, const std::string& suffix);
+  Type type() const { return type_; }
   void SetGaiaSourceSuffix(const std::string& suffix);
   std::string ToString();
 
@@ -75,6 +95,16 @@ class SharedURLLoaderFactory;
 
 class COMPONENT_EXPORT(GOOGLE_APIS) GaiaAuthFetcher {
  public:
+  // Contains user agent headers that might be shared in requests to Google
+  // Accounts APIs.
+  //
+  // These strings must be "header-ready", i.e. already serialized according to
+  // Structured Headers rules if applicable.
+  struct UserAgentHeadersParam {
+    std::string full_version_list;
+    std::string platform;
+  };
+
   // This will later be hidden behind an auth service which caches tokens.
   GaiaAuthFetcher(
       GaiaAuthConsumer* consumer,
@@ -102,8 +132,9 @@ class COMPONENT_EXPORT(GOOGLE_APIS) GaiaAuthFetcher {
   // called on the consumer on the original thread.
   void StartAuthCodeForOAuth2TokenExchange(
       const std::string& auth_code,
-      const std::string& user_agent_full_version_list = std::string(),
-      const std::string& binding_registration_token = std::string());
+      const std::string& binding_registration_token = std::string(),
+      const UserAgentHeadersParam& user_agent_headers = {},
+      bool mtls_token_binding = false);
 
   // Start a request to exchange the authorization code for an OAuthLogin-scoped
   // oauth2 token.
@@ -118,8 +149,9 @@ class COMPONENT_EXPORT(GOOGLE_APIS) GaiaAuthFetcher {
   void StartAuthCodeForOAuth2TokenExchangeWithDeviceId(
       const std::string& auth_code,
       const std::string& device_id,
-      const std::string& user_agent_full_version_list = std::string(),
-      const std::string& binding_registration_token = std::string());
+      const std::string& binding_registration_token = std::string(),
+      const UserAgentHeadersParam& user_agent_headers = {},
+      bool mtls_token_binding = false);
 
   // Starts a request to get the cookie for list of accounts.
   void StartOAuthMultilogin(
@@ -127,7 +159,8 @@ class COMPONENT_EXPORT(GOOGLE_APIS) GaiaAuthFetcher {
       const std::vector<gaia::MultiloginAccountAuthCredentials>& accounts,
       const std::string& external_cc_result,
       OAuthMultiloginResult::CookieDecryptor cookie_decryptor =
-          base::NullCallback());
+          base::NullCallback(),
+      gaia::MultiloginCookieBindingParams cookie_binding_params = {});
 
   // Starts a request to list the accounts in the GAIA cookie.
   void StartListAccounts();
@@ -165,8 +198,8 @@ class COMPONENT_EXPORT(GOOGLE_APIS) GaiaAuthFetcher {
  protected:
   // Creates and starts |url_loader_|, used to make all Gaia request.  |body| is
   // used as the body of the POST request sent to GAIA. |body_content_type| is
-  // the body content type to set, but only used if |body| is set.  Any strings
-  // listed in |headers| are added as extra HTTP headers in the request.
+  // the body content type to set, but only used if |body| is set.
+  // |request_headers| are added as extra HTTP headers in the request.
   //
   // |credentials_mode| are passed to directly to
   // network::SimpleURLLoader::Create() when creating the SimpleURLLoader.
@@ -176,7 +209,7 @@ class COMPONENT_EXPORT(GOOGLE_APIS) GaiaAuthFetcher {
   virtual void CreateAndStartGaiaFetcher(
       const std::string& body,
       const std::string& body_content_type,
-      const std::string& headers,
+      const net::HttpRequestHeaders& request_headers,
       const GURL& gaia_gurl,
       network::mojom::CredentialsMode credentials_mode,
       const net::NetworkTrafficAnnotationTag& traffic_annotation);
@@ -206,7 +239,7 @@ class COMPONENT_EXPORT(GOOGLE_APIS) GaiaAuthFetcher {
   bool IsListAccountsUrl(const GURL& url);
 
  private:
-  void OnURLLoadComplete(std::unique_ptr<std::string> response_body);
+  void OnURLLoadComplete(std::optional<std::string> response_body);
 
   void OnOAuth2TokenPairFetched(const std::string& data,
                                 net::Error net_error,
@@ -253,11 +286,12 @@ class COMPONENT_EXPORT(GOOGLE_APIS) GaiaAuthFetcher {
   static GoogleServiceAuthError GenerateAuthError(const std::string& data,
                                                   net::Error net_error);
 
+  const GURL& GetOAuth2TokenUrl(bool mtls_token_binding) const;
+
   // These fields are common to GaiaAuthFetcher, same every request.
   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
   const raw_ptr<GaiaAuthConsumer> consumer_;
   std::string source_;
-  const GURL oauth2_token_gurl_;
   const GURL oauth2_revoke_gurl_;
   const GURL oauth_multilogin_gurl_;
   const GURL list_accounts_gurl_;
@@ -272,6 +306,7 @@ class COMPONENT_EXPORT(GOOGLE_APIS) GaiaAuthFetcher {
 
   // Only populated in Multilogin requests.
   OAuthMultiloginResult::CookieDecryptor oauth_multilogin_cookie_decryptor_;
+  bool standard_device_bound_session_credentials_ = false;
 
   bool fetch_pending_ = false;
 

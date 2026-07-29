@@ -11,7 +11,7 @@
 
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "content/renderer/render_frame_impl.h"
 #include "media/base/media_permission.h"
@@ -81,7 +81,7 @@ class MediaPermissionDispatcher : public media::MediaPermission {
 
   // Callback for |permission_service_| calls.
   void OnPermissionStatus(uint32_t request_id,
-                          blink::mojom::PermissionStatus status);
+                          blink::mojom::PermissionStatusWithDetailsPtr status);
 
   // Callback for |permission_service_| connection errors.
   void OnPermissionServiceConnectionError();

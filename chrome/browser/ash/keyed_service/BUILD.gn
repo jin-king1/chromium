@@ -2,8 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/chromeos/ui_mode.gni")
-
 assert(is_chromeos)
 
 static_library("keyed_service") {
@@ -20,17 +18,18 @@ static_library("keyed_service") {
     "//chrome/browser/apps/app_service",
     "//chrome/browser/ash/accessibility/live_caption",
     "//chrome/browser/ash/account_manager",
-    "//chrome/browser/ash/android_sms",
     "//chrome/browser/ash/app_list",
     "//chrome/browser/ash/app_list/arc",
     "//chrome/browser/ash/app_list/search/local_image_search",
     "//chrome/browser/ash/app_mode",
+    "//chrome/browser/ash/app_mode/arcvm_app",
     "//chrome/browser/ash/app_restore",
     "//chrome/browser/ash/apps",
-    "//chrome/browser/ash/arc/session",
+    "//chrome/browser/ash/arc/session:service_launcher",
     "//chrome/browser/ash/bluetooth",
     "//chrome/browser/ash/boca",
     "//chrome/browser/ash/boca/on_task",
+    "//chrome/browser/ash/boca/receiver",
     "//chrome/browser/ash/borealis",
     "//chrome/browser/ash/bruschetta",
     "//chrome/browser/ash/calendar",
@@ -38,11 +37,8 @@ static_library("keyed_service") {
     "//chrome/browser/ash/child_accounts",
     "//chrome/browser/ash/child_accounts/on_device_controls",
     "//chrome/browser/ash/concierge_helper",
-    "//chrome/browser/ash/crosapi",
     "//chrome/browser/ash/crostini",
-    "//chrome/browser/ash/crostini/ansible",
     "//chrome/browser/ash/crostini/throttle",
-    "//chrome/browser/ash/data_migration",
     "//chrome/browser/ash/early_prefs",
     "//chrome/browser/ash/eche_app",
     "//chrome/browser/ash/extensions",
@@ -71,6 +67,7 @@ static_library("keyed_service") {
     "//chrome/browser/ash/net",
     "//chrome/browser/ash/ownership",
     "//chrome/browser/ash/phonehub",
+    "//chrome/browser/ash/platform_keys:keystore_service",
     "//chrome/browser/ash/platform_keys/key_permissions",
     "//chrome/browser/ash/plugin_vm",
     "//chrome/browser/ash/policy/core",
@@ -78,7 +75,6 @@ static_library("keyed_service") {
     "//chrome/browser/ash/printing/history",
     "//chrome/browser/ash/printing/print_management",
     "//chrome/browser/ash/remote_apps",
-    "//chrome/browser/ash/scalable_iph",
     "//chrome/browser/ash/scanning",
     "//chrome/browser/ash/secure_channel",
     "//chrome/browser/ash/smb_client",
@@ -86,6 +82,7 @@ static_library("keyed_service") {
     "//chrome/browser/ash/system_web_apps",
     "//chrome/browser/ash/system_web_apps/apps/personalization_app",
     "//chrome/browser/ash/tether",
+    "//chrome/browser/ui/ash/account_manager",
     "//chrome/browser/ui/ash/birch",
     "//chrome/browser/ui/ash/desks",
     "//chrome/browser/ui/ash/glanceables",
@@ -93,6 +90,12 @@ static_library("keyed_service") {
     "//chrome/browser/ui/ash/holding_space",
     "//chrome/browser/ui/webui/ash/settings/services/hats",
     "//chrome/browser/ui/webui/ash/settings/services/settings_manager",
+    "//chromeos/ash/components/policy/policy_blocklist_service",
     "//printing/buildflags",
+
+    # Currently ArcApps is a KeyedService.
+    # TODO(crbug.com/442761233): Resolve the dependency.
+    "//chrome/browser/apps/app_service/publishers",
+    "//chrome/browser/speech",
   ]
 }

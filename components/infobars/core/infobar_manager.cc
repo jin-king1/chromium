@@ -44,12 +44,14 @@ void InfoBarManager::Observer::OnInfoBarRemoved(InfoBar* infobar,
 void InfoBarManager::Observer::OnInfoBarReplaced(InfoBar* old_infobar,
                                                  InfoBar* new_infobar) {}
 
-void InfoBarManager::Observer::OnManagerShuttingDown(InfoBarManager* manager) {}
+void InfoBarManager::Observer::OnManagerWillBeDestroyed(
+    InfoBarManager* manager) {}
 
 // InfoBarManager --------------------------------------------------------------
 
-InfoBar* InfoBarManager::AddInfoBar(std::unique_ptr<InfoBar> new_infobar,
-                                    bool replace_existing) {
+InfoBar* InfoBarManager::AddInfoBarInternal(
+    std::unique_ptr<InfoBar> new_infobar,
+    bool replace_existing) {
   DCHECK(new_infobar);
 
   for (infobars::InfoBar* infobar : infobars_) {
@@ -85,8 +87,9 @@ void InfoBarManager::RemoveAllInfoBars(bool animate) {
   }
 }
 
-InfoBar* InfoBarManager::ReplaceInfoBar(InfoBar* old_infobar,
-                                        std::unique_ptr<InfoBar> new_infobar) {
+InfoBar* InfoBarManager::ReplaceInfoBarInternal(
+    InfoBar* old_infobar,
+    std::unique_ptr<InfoBar> new_infobar) {
   DCHECK(old_infobar);
   DCHECK(new_infobar);
 
@@ -124,14 +127,12 @@ void InfoBarManager::RemoveObserver(Observer* obs) {
 
 InfoBarManager::InfoBarManager() : infobars_enabled_(!DisableInfoBars()) {}
 
-InfoBarManager::~InfoBarManager() = default;
-
-void InfoBarManager::ShutDown() {
+InfoBarManager::~InfoBarManager() {
   // Destroy all remaining InfoBars.  It's important to not animate here so that
   // we guarantee that we'll delete all delegates before we do anything else.
   RemoveAllInfoBars(false);
   for (Observer& observer : observer_list_) {
-    observer.OnManagerShuttingDown(this);
+    observer.OnManagerWillBeDestroyed(this);
   }
 }
 
@@ -152,9 +153,6 @@ void InfoBarManager::RemoveInfoBarInternal(InfoBar* infobar, bool animate) {
   DCHECK(infobar);
 
   auto i = std::ranges::find(infobars_, infobar);
-  // TODO(crbug.com/): Temporarily a CHECK instead of a DCHECK CHECK() in order
-  // to help diagnose suspected memory smashing caused by invalid call of this
-  // method happening in production code on iOS.
   CHECK(i != infobars_.end());
 
   // Remove the infobar before notifying, so that if any observers call back to
@@ -168,6 +166,12 @@ void InfoBarManager::RemoveInfoBarInternal(InfoBar* infobar, bool animate) {
   }
 
   infobar->CloseSoon();
+}
+
+bool InfoBarManager::ShouldHideInFullscreen() const {
+  return std::all_of(infobars_.begin(), infobars_.end(), [](InfoBar* infobar) {
+    return infobar->delegate()->ShouldHideInFullscreen();
+  });
 }
 
 bool InfoBarManager::ShouldShowInfoBar(const InfoBar* infobar) const {

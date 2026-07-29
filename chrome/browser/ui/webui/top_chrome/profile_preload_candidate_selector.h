@@ -31,13 +31,21 @@ class ProfilePreloadCandidateSelector : public PreloadCandidateSelector {
 
   // PreloadCandidateSelector:
   void Init(const std::vector<GURL>& preloadable_urls) override;
-  std::optional<GURL> GetURLToPreload(
-      const PreloadContext& context) const override;
+  std::optional<GURL> GetURLToPreload(PreloadContext context) const override;
+
+  void set_no_preload_if_most_engaged_url_is_background_for_testing(
+      bool value) {
+    no_preload_if_most_engaged_url_is_background_ = value;
+  }
 
  private:
   // The WebUI tracker should always outlive this class.
   raw_ptr<PerProfileWebUITracker> webui_tracker_;
   std::vector<GURL> preloadable_urls_;
+
+  // If true, the selector will not select a URL if the most engaged URL is
+  // already present in the background.
+  bool no_preload_if_most_engaged_url_is_background_;
 };
 
 }  // namespace webui

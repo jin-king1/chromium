@@ -10,13 +10,13 @@ import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
+import android.accounts.Account;
 import android.app.Activity;
 import android.graphics.Bitmap;
 import android.os.Bundle;
@@ -35,18 +35,20 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
-import org.robolectric.annotation.LooperMode;
-import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.base.Callback;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.RobolectricUtil;
 import org.chromium.base.test.util.Feature;
+import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
-import org.chromium.components.signin.base.CoreAccountInfo;
+import org.chromium.components.signin.AccountUtils;
 import org.chromium.components.signin.identitymanager.IdentityManager;
+import org.chromium.components.signin.test.util.TestAccounts;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -56,18 +58,16 @@ import java.util.Map;
 /** Test for {@link ChromeFeedbackCollector}. */
 @RunWith(BaseRobolectricTestRunner.class)
 @Config(manifest = Config.NONE)
-@LooperMode(LooperMode.Mode.LEGACY)
 public class ChromeFeedbackCollectorUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock private Activity mActivity;
     @Mock private Profile mProfile;
-    @Mock private CoreAccountInfo mAccountInfo;
+    @Mock private FeedbackPolicyManager mFeedbackPolicyManager;
 
     // Test constants.
     private static final String CATEGORY_TAG = "category_tag";
     private static final String DESCRIPTION = "description";
     private static final String FEEDBACK_CONTEXT = "feedback_context";
-    private static final String ACCOUNT_IN_USE = "foo@gmail.com";
     private static final String KEY_1 = "key1";
     private static final String KEY_2 = "key2";
     private static final String KEY_3 = "key3";
@@ -201,8 +201,8 @@ public class ChromeFeedbackCollectorUnitTest {
     private static class MockAsyncFeedbackSource implements AsyncFeedbackSource {
         private Runnable mCallback;
         private boolean mDone;
-        private Map<String, String> mFeedback;
-        private Pair<String, String> mLogs;
+        private final Map<String, String> mFeedback;
+        private final Pair<String, String> mLogs;
 
         MockAsyncFeedbackSource(Map<String, String> feedback, Pair<String, String> logs) {
             mFeedback = feedback;
@@ -278,18 +278,19 @@ public class ChromeFeedbackCollectorUnitTest {
 
     @Before
     public void setUp() {
-        when(mAccountInfo.getEmail()).thenReturn(ACCOUNT_IN_USE);
+        FeedbackPolicyManager.setInstanceForTesting(mFeedbackPolicyManager);
+        when(mFeedbackPolicyManager.isUserFeedbackAllowed()).thenReturn(true);
+
         IdentityServicesProvider.setInstanceForTests(mock(IdentityServicesProvider.class));
         when(IdentityServicesProvider.get().getIdentityManager(any()))
                 .thenReturn(mock(IdentityManager.class));
-        when(IdentityServicesProvider.get()
-                        .getIdentityManager(any())
-                        .getPrimaryAccountInfo(anyInt()))
-                .thenReturn(mAccountInfo);
+        when(IdentityServicesProvider.get().getIdentityManager(any()).getPrimaryAccountInfo())
+                .thenReturn(TestAccounts.ACCOUNT1);
     }
 
     @Test
     @Feature({"Feedback"})
+    @SuppressWarnings("DirectInvocationOnMock")
     public void testRecordLatencyHistogram() {
         @SuppressWarnings("unchecked")
         Callback<FeedbackCollector> callback = mock(Callback.class);
@@ -305,7 +306,7 @@ public class ChromeFeedbackCollectorUnitTest {
                         null,
                         (result) -> callback.onResult(result));
 
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
         verify(callback, times(1)).onResult(any());
 
         assertEquals(
@@ -316,6 +317,7 @@ public class ChromeFeedbackCollectorUnitTest {
 
     @Test
     @Feature({"Feedback"})
+    @SuppressWarnings("DirectInvocationOnMock")
     public void testNoMetaData() {
         @SuppressWarnings("unchecked")
         Callback<FeedbackCollector> callback = mock(Callback.class);
@@ -331,7 +333,7 @@ public class ChromeFeedbackCollectorUnitTest {
                         null,
                         (result) -> callback.onResult(result));
 
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
         verify(callback, times(1)).onResult(any());
 
         ThreadUtils.runOnUiThreadBlocking(
@@ -346,6 +348,7 @@ public class ChromeFeedbackCollectorUnitTest {
 
     @Test
     @Feature({"Feedback"})
+    @SuppressWarnings("DirectInvocationOnMock")
     public void testBasicSynchronousData() {
         @SuppressWarnings("unchecked")
         Callback<FeedbackCollector> callback = mock(Callback.class);
@@ -367,7 +370,7 @@ public class ChromeFeedbackCollectorUnitTest {
                     }
                 };
 
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
         verify(callback, times(1)).onResult(collector);
 
         ThreadUtils.runOnUiThreadBlocking(
@@ -381,12 +384,17 @@ public class ChromeFeedbackCollectorUnitTest {
                     assertEquals(CATEGORY_TAG, collector.getCategoryTag());
                     assertEquals(DESCRIPTION, collector.getDescription());
                     assertNull(collector.getScreenshot());
-                    assertEquals(ACCOUNT_IN_USE, collector.getAccountInUse());
+                    assertEquals(
+                            TestAccounts.ACCOUNT1.getEmail(), collector.getAccountEmailInUse());
+                    Account expectedAccount =
+                            AccountUtils.createAccountFromEmail(TestAccounts.ACCOUNT1.getEmail());
+                    assertEquals(expectedAccount, collector.getAccountInUse());
                 });
     }
 
     @Test
     @Feature({"Feedback"})
+    @SuppressWarnings("DirectInvocationOnMock")
     public void testNullIdentityService() {
         IdentityServicesProvider.setInstanceForTests(mock(IdentityServicesProvider.class));
         when(IdentityServicesProvider.get().getIdentityManager(any())).thenReturn(null);
@@ -411,17 +419,19 @@ public class ChromeFeedbackCollectorUnitTest {
                     }
                 };
 
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
         verify(callback, times(1)).onResult(collector);
 
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    assertEquals(null, collector.getAccountInUse());
+                    assertNull(collector.getAccountEmailInUse());
+                    assertNull(collector.getAccountInUse());
                 });
     }
 
     @Test
     @Feature({"Feedback"})
+    @SuppressWarnings("DirectInvocationOnMock")
     public void testBasicSynchronousDataWithFeedbackContext() {
         @SuppressWarnings("unchecked")
         Callback<FeedbackCollector> callback = mock(Callback.class);
@@ -448,7 +458,7 @@ public class ChromeFeedbackCollectorUnitTest {
                     }
                 };
 
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
         verify(callback, times(1)).onResult(collector);
 
         ThreadUtils.runOnUiThreadBlocking(
@@ -472,6 +482,7 @@ public class ChromeFeedbackCollectorUnitTest {
 
     @Test
     @Feature({"Feedback"})
+    @SuppressWarnings("DirectInvocationOnMock")
     public void testBasicAsynchronousData() {
         @SuppressWarnings("unchecked")
         Callback<FeedbackCollector> callback = mock(Callback.class);
@@ -496,7 +507,7 @@ public class ChromeFeedbackCollectorUnitTest {
                 };
 
         sources.forEach(source -> ((MockAsyncFeedbackSource) source).triggerDone());
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
         verify(callback, times(1)).onResult(collector);
 
         ThreadUtils.runOnUiThreadBlocking(
@@ -510,6 +521,7 @@ public class ChromeFeedbackCollectorUnitTest {
 
     @Test
     @Feature({"Feedback"})
+    @SuppressWarnings("DirectInvocationOnMock")
     public void testBasicMixedData() {
         @SuppressWarnings("unchecked")
         Callback<FeedbackCollector> callback = mock(Callback.class);
@@ -540,7 +552,7 @@ public class ChromeFeedbackCollectorUnitTest {
                 };
 
         sources.forEach(source -> ((MockAsyncFeedbackSource) source).triggerDone());
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
         verify(callback, times(1)).onResult(collector);
 
         ThreadUtils.runOnUiThreadBlocking(
@@ -557,6 +569,7 @@ public class ChromeFeedbackCollectorUnitTest {
 
     @Test
     @Feature({"Feedback"})
+    @SuppressWarnings("DirectInvocationOnMock")
     public void testAsynchronousDataTimeout() {
         @SuppressWarnings("unchecked")
         Callback<FeedbackCollector> callback = mock(Callback.class);
@@ -582,7 +595,7 @@ public class ChromeFeedbackCollectorUnitTest {
 
         // Do not trigger done.  The collector should respond back anyway and still try to build the
         // logs and feedback report.
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
         verify(callback, times(1)).onResult(collector);
 
         ThreadUtils.runOnUiThreadBlocking(
@@ -596,6 +609,7 @@ public class ChromeFeedbackCollectorUnitTest {
 
     @Test
     @Feature({"Feedback"})
+    @SuppressWarnings("DirectInvocationOnMock")
     public void testScreenshot() {
         @SuppressWarnings("unchecked")
         Callback<FeedbackCollector> callback = mock(Callback.class);
@@ -617,7 +631,7 @@ public class ChromeFeedbackCollectorUnitTest {
         Bitmap bitmap = createBitmap();
         mockScreenshotSource.triggerDone(bitmap);
 
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
         verify(callback, times(1)).onResult(collector);
 
         ThreadUtils.runOnUiThreadBlocking(
@@ -632,6 +646,7 @@ public class ChromeFeedbackCollectorUnitTest {
 
     @Test
     @Feature({"Feedback"})
+    @SuppressWarnings("DirectInvocationOnMock")
     public void testScreenshotBypassesTimeout() {
         @SuppressWarnings("unchecked")
         Callback<FeedbackCollector> callback = mock(Callback.class);
@@ -650,7 +665,7 @@ public class ChromeFeedbackCollectorUnitTest {
                         mockScreenshotSource,
                         (result) -> callback.onResult(result));
 
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
         // We should not get a callback until the screenshot task finishes, even if that extends
         // beyond our internal timeouts.
         verify(callback, times(0)).onResult(collector);
@@ -658,7 +673,7 @@ public class ChromeFeedbackCollectorUnitTest {
         Bitmap bitmap = createBitmap();
         mockScreenshotSource.triggerDone(bitmap);
 
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
         verify(callback, times(1)).onResult(collector);
 
         ThreadUtils.runOnUiThreadBlocking(
@@ -673,6 +688,7 @@ public class ChromeFeedbackCollectorUnitTest {
 
     @Test
     @Feature({"Feedback"})
+    @SuppressWarnings("DirectInvocationOnMock")
     public void testNullScreenshotOverrideStillTriggersCallback() {
         @SuppressWarnings("unchecked")
         Callback<FeedbackCollector> callback = mock(Callback.class);
@@ -690,7 +706,7 @@ public class ChromeFeedbackCollectorUnitTest {
                         new MockScreenshotSource(),
                         (result) -> callback.onResult(result));
 
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
 
         // We should not get a callback until the screenshot task finishes, even if that extends
         // beyond our internal timeouts.
@@ -699,7 +715,7 @@ public class ChromeFeedbackCollectorUnitTest {
         ThreadUtils.runOnUiThreadBlocking(() -> assertNull(collector.getScreenshot()));
         ThreadUtils.runOnUiThreadBlocking(() -> collector.setScreenshot(null));
 
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
         verify(callback, times(1)).onResult(collector);
 
         ThreadUtils.runOnUiThreadBlocking(() -> assertNull(collector.getScreenshot()));
@@ -707,6 +723,7 @@ public class ChromeFeedbackCollectorUnitTest {
 
     @Test
     @Feature({"Feedback"})
+    @SuppressWarnings("DirectInvocationOnMock")
     public void testScreenshotOverrideStillTriggersCallback() {
         @SuppressWarnings("unchecked")
         Callback<FeedbackCollector> callback = mock(Callback.class);
@@ -725,7 +742,7 @@ public class ChromeFeedbackCollectorUnitTest {
                         mockScreenshotSource,
                         (result) -> callback.onResult(result));
 
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
 
         // We should not get a callback until the screenshot task finishes, even if that extends
         // beyond our internal timeouts.
@@ -736,7 +753,7 @@ public class ChromeFeedbackCollectorUnitTest {
         ThreadUtils.runOnUiThreadBlocking(() -> collector.setScreenshot(bitmap));
 
         mockScreenshotSource.triggerDone(null);
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
         verify(callback, times(1)).onResult(collector);
 
         ThreadUtils.runOnUiThreadBlocking(() -> assertEquals(bitmap, collector.getScreenshot()));
@@ -744,6 +761,7 @@ public class ChromeFeedbackCollectorUnitTest {
 
     @Test
     @Feature({"Feedback"})
+    @SuppressWarnings("DirectInvocationOnMock")
     public void testScreenshotOverrideWithNoOriginalScreenshot() {
         @SuppressWarnings("unchecked")
         Callback<FeedbackCollector> callback = mock(Callback.class);
@@ -764,7 +782,7 @@ public class ChromeFeedbackCollectorUnitTest {
         Bitmap bitmap = createBitmap();
         ThreadUtils.runOnUiThreadBlocking(() -> collector.setScreenshot(bitmap));
 
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
 
         verify(callback, times(1)).onResult(collector);
         ThreadUtils.runOnUiThreadBlocking(() -> assertEquals(bitmap, collector.getScreenshot()));
@@ -772,6 +790,7 @@ public class ChromeFeedbackCollectorUnitTest {
 
     @Test
     @Feature({"Feedback"})
+    @SuppressWarnings("DirectInvocationOnMock")
     public void testScreenshotOverrideAfterCallback() {
         @SuppressWarnings("unchecked")
         Callback<FeedbackCollector> callback = mock(Callback.class);
@@ -792,7 +811,7 @@ public class ChromeFeedbackCollectorUnitTest {
 
         {
             mockScreenshotSource.triggerDone(null);
-            ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+            RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
 
             verify(callback, times(1)).onResult(collector);
         }
@@ -806,7 +825,7 @@ public class ChromeFeedbackCollectorUnitTest {
                     assertEquals(bitmap, collector.getScreenshot());
                 });
 
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
         ThreadUtils.runOnUiThreadBlocking(() -> assertEquals(bitmap, collector.getScreenshot()));
 
         // If we have already gotten a callback, we should not get another one.
@@ -815,6 +834,7 @@ public class ChromeFeedbackCollectorUnitTest {
 
     @Test
     @Feature({"Feedback"})
+    @SuppressWarnings("DirectInvocationOnMock")
     public void testOldScreenshotDoesNotOverrideNewOne() {
         @SuppressWarnings("unchecked")
         Callback<FeedbackCollector> callback = mock(Callback.class);
@@ -834,7 +854,7 @@ public class ChromeFeedbackCollectorUnitTest {
                         mockScreenshotSource,
                         (result) -> callback.onResult(result));
 
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
 
         // We should not get a callback until the screenshot task finishes, even if that extends
         // beyond our internal timeouts.
@@ -846,9 +866,52 @@ public class ChromeFeedbackCollectorUnitTest {
 
         Bitmap bitmap2 = createBitmap();
         mockScreenshotSource.triggerDone(bitmap2);
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
         verify(callback, times(1)).onResult(collector);
 
         ThreadUtils.runOnUiThreadBlocking(() -> assertEquals(bitmap, collector.getScreenshot()));
+    }
+
+    @Test
+    @Feature({"Feedback"})
+    @DisableFeatures(ChromeFeatureList.DARKEN_WEBSITES_CHECKBOX_IN_THEMES_SETTING)
+    public void testFeedbackAllowed() {
+        when(mFeedbackPolicyManager.isUserFeedbackAllowed()).thenReturn(true);
+
+        ChromeFeedbackCollector collector = mock(ChromeFeedbackCollector.class);
+        when(collector.buildSynchronousFeedbackSources(any(), any())).thenCallRealMethod();
+        when(collector.buildAsynchronousFeedbackSources(any())).thenCallRealMethod();
+
+        ChromeFeedbackCollector.InitParams initParams =
+                new ChromeFeedbackCollector.InitParams(mProfile, "http://example.com", null);
+
+        List<FeedbackSource> syncSources =
+                collector.buildSynchronousFeedbackSources(mActivity, initParams);
+        assertFalse(syncSources.isEmpty());
+
+        List<AsyncFeedbackSource> asyncSources =
+                collector.buildAsynchronousFeedbackSources(initParams);
+        assertFalse(asyncSources.isEmpty());
+    }
+
+    @Test
+    @Feature({"Feedback"})
+    public void testFeedbackDisallowed() {
+        when(mFeedbackPolicyManager.isUserFeedbackAllowed()).thenReturn(false);
+
+        ChromeFeedbackCollector collector = mock(ChromeFeedbackCollector.class);
+        when(collector.buildSynchronousFeedbackSources(any(), any())).thenCallRealMethod();
+        when(collector.buildAsynchronousFeedbackSources(any())).thenCallRealMethod();
+
+        ChromeFeedbackCollector.InitParams initParams =
+                new ChromeFeedbackCollector.InitParams(mProfile, null, null);
+
+        List<FeedbackSource> syncSources =
+                collector.buildSynchronousFeedbackSources(mActivity, initParams);
+        assertTrue(syncSources.isEmpty());
+
+        List<AsyncFeedbackSource> asyncSources =
+                collector.buildAsynchronousFeedbackSources(initParams);
+        assertTrue(asyncSources.isEmpty());
     }
 }

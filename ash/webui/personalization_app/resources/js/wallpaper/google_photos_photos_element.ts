@@ -14,7 +14,6 @@ import 'chrome://resources/polymer/v3_0/iron-scroll-threshold/iron-scroll-thresh
 import type {WallpaperGridItemSelectedEvent} from 'chrome://resources/ash/common/personalization/wallpaper_grid_item_element.js';
 import {isNonEmptyArray} from 'chrome://resources/ash/common/sea_pen/sea_pen_utils.js';
 import {assert} from 'chrome://resources/js/assert.js';
-import {mojoString16ToString} from 'chrome://resources/js/mojo_type_util.js';
 import type {IronListElement} from 'chrome://resources/polymer/v3_0/iron-list/iron-list.js';
 import type {IronScrollThresholdElement} from 'chrome://resources/polymer/v3_0/iron-scroll-threshold/iron-scroll-threshold.js';
 import {afterNextRender} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
@@ -44,8 +43,8 @@ function getPlaceholders(): GooglePhotosPhotosRow[] {
     return {
       id: PLACEHOLDER_ID,
       name: '',
-      date: {data: []},
-      url: {url: ''},
+      date: '',
+      url: '',
       dedupKey: null,
       location: null,
     };
@@ -155,43 +154,43 @@ export class GooglePhotosPhotosElement extends WithPersonalizationStore {
   }
 
   /** Whether or not this element is currently hidden. */
-  override hidden: boolean;
+  declare hidden: boolean;
 
   /** The currently selected wallpaper. */
-  private currentSelected_: CurrentWallpaper|null;
+  declare private currentSelected_: CurrentWallpaper|null;
 
   /** The index of the currently focused photo. */
-  private focusedPhotoIndex_: number;
+  declare private focusedPhotoIndex_: number;
 
   /** The pending selected wallpaper. */
-  private pendingSelected_: DisplayableImage|null;
+  declare private pendingSelected_: DisplayableImage|null;
 
   /** The list of photos. */
-  private photos_: GooglePhotosPhoto[]|null|undefined;
+  declare private photos_: GooglePhotosPhoto[]|null|undefined;
 
   /**
    * The list of |photos_| split into the appropriate number of |photosPerRow_|
    * so as to be rendered in a grid.
    */
-  private photosByRow_: GooglePhotosPhotosRow[];
+  declare private photosByRow_: GooglePhotosPhotosRow[];
 
   /**
    * The list of |photos_| split into the appropriate number of |photosPerRow_|
    * and grouped into sections so as to be rendered in a grid.
    */
-  private photosBySection_: GooglePhotosPhotosSection[]|null|undefined;
+  declare private photosBySection_: GooglePhotosPhotosSection[]|null|undefined;
 
   /** Whether the list of photos is currently loading. */
-  private photosLoading_: boolean;
+  declare private photosLoading_: boolean;
 
   /** The number of photos to render per row in a grid. */
-  private photosPerRow_: number;
+  declare private photosPerRow_: number;
 
   /** The resume token needed to fetch the next page of photos. */
-  private photosResumeToken_: string|null;
+  declare private photosResumeToken_: string|null;
 
   /** The current personalization error state. */
-  private error_: PersonalizationStateError|null;
+  declare private error_: PersonalizationStateError|null;
 
   /** The singleton wallpaper provider interface. */
   private wallpaperProvider_: WallpaperProviderInterface =
@@ -475,7 +474,7 @@ export class GooglePhotosPhotosElement extends WithPersonalizationStore {
     const sections: GooglePhotosPhotosSection[] = [];
 
     photos.forEach((photo, i) => {
-      const date = mojoString16ToString(photo.date);
+      const date = photo.date;
 
       // Find/create the appropriate |section| in which to insert |photo|.
       let section = sections[sections.length - 1];
@@ -545,6 +544,22 @@ export class GooglePhotosPhotosElement extends WithPersonalizationStore {
                                            photo.name;
     }
     return undefined;
+  }
+
+  private getPhotoDescriptionId_(photo: GooglePhotosPhotoWithIndex|null): string
+      |undefined {
+    if (!photo) {
+      return undefined;
+    }
+    const id = photo.id === PLACEHOLDER_ID ? `${photo.index}` : photo.id;
+    return `photo-${id}-description`;
+  }
+
+  private getPhotoDate_(photo: GooglePhotosPhoto|null): string|undefined {
+    if (!photo || photo.id === PLACEHOLDER_ID) {
+      return undefined;
+    }
+    return photo.date;
   }
 
   /** Returns the aria posinset index for the photo at index |i|. */

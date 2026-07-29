@@ -7,18 +7,17 @@
 #include "ash/shell.h"
 #include "ash/test/pixel/ash_pixel_diff_util.h"
 #include "ash/webui/personalization_app/personalization_app_url_constants.h"
-#include "ash/webui/system_apps/public/system_web_app_type.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
 #include "base/scoped_observation.h"
 #include "base/test/bind.h"
-#include "chrome/browser/apps/app_service/app_launch_params.h"
 #include "chrome/browser/ash/system_web_apps/test_support/system_web_app_integration_test.h"
-#include "chrome/browser/ui/browser_list.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "chromeos/ash/components/system_web_apps/system_web_app_type.h"
 #include "chromeos/ui/base/window_properties.h"
+#include "components/services/app_service/public/cpp/app_launch_params.h"
 #include "components/viz/common/frame_timing_details.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/isolated_world_ids.h"
@@ -31,7 +30,7 @@
 #include "ui/base/class_property.h"
 #include "ui/compositor/compositor.h"
 #include "ui/compositor/compositor_observer.h"
-#include "ui/compositor/scoped_animation_duration_scale_mode.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/views/widget/widget.h"
 
 namespace ash::personalization_app {
@@ -149,8 +148,8 @@ class PersonalizationAppIntegrationBrowserTest
   }
 
  private:
-  ui::ScopedAnimationDurationScaleMode animation_duration_scale_mode_{
-      ui::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION};
+  gfx::ScopedAnimationDurationScaleMode animation_duration_scale_mode_{
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION};
 };
 
 // Test that the Personalization App installs correctly.

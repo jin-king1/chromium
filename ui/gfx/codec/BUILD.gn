@@ -21,7 +21,6 @@ component("codec") {
 
   deps = [
     "//skia",
-    "//third_party/zlib",
     "//ui/gfx:gfx_skia",
     "//ui/gfx/geometry",
   ]
@@ -50,7 +49,6 @@ fuzzer_test("gfx_jpeg_decoder_fuzzer") {
     "//skia",
   ]
   seed_corpuses = [ "//third_party/blink/web_tests/images/resources/jpegfuzz" ]
-  libfuzzer_options = [ "rss_limit_mb=8192" ]
 }
 
 fuzzer_test("gfx_png_decoder_fuzzer") {
@@ -60,5 +58,4 @@ fuzzer_test("gfx_png_decoder_fuzzer") {
     "//skia",
   ]
   seed_corpuses = [ "//third_party/blink/web_tests/images/resources/pngfuzz" ]
-  libfuzzer_options = [ "rss_limit_mb=8192" ]
 }

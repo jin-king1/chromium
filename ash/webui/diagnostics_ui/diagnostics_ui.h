@@ -5,6 +5,8 @@
 #ifndef ASH_WEBUI_DIAGNOSTICS_UI_DIAGNOSTICS_UI_H_
 #define ASH_WEBUI_DIAGNOSTICS_UI_DIAGNOSTICS_UI_H_
 
+#include <memory>
+
 #include "ash/webui/common/backend/plural_string_handler.h"
 #include "ash/webui/common/chrome_os_webui_config.h"
 #include "ash/webui/diagnostics_ui/backend/input/input_data_provider.h"
@@ -20,15 +22,10 @@
 #include "content/public/common/url_constants.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "ui/web_dialogs/web_dialog_ui.h"
-#include "ui/webui/resources/cr_components/color_change_listener/color_change_listener.mojom.h"
 
 namespace base {
 class FilePath;
 }  // namespace base
-
-namespace ui {
-class ColorChangeHandler;
-}  // namespace ui
 
 namespace ash {
 
@@ -38,6 +35,7 @@ class DiagnosticsDialogUI;
 namespace diagnostics {
 class DiagnosticsManager;
 class InputDataProvider;
+class SystemRoutineControllerDelegate;
 }  // namespace diagnostics
 
 // The WebDialogUIConfig for chrome://diagnostics.
@@ -59,7 +57,8 @@ class DiagnosticsDialogUI : public ui::MojoWebDialogUI {
       const diagnostics::SessionLogHandler::SelectFilePolicyCreator&
           select_file_policy_creator,
       HoldingSpaceClient* holding_space_client,
-      const base::FilePath& log_directory_path);
+      const base::FilePath& log_directory_path,
+      std::unique_ptr<diagnostics::SystemRoutineControllerDelegate> delegate);
   ~DiagnosticsDialogUI() override;
 
   DiagnosticsDialogUI(const DiagnosticsDialogUI&) = delete;
@@ -83,10 +82,6 @@ class DiagnosticsDialogUI : public ui::MojoWebDialogUI {
   void BindInterface(
       mojo::PendingReceiver<diagnostics::mojom::InputDataProvider> receiver);
 
-  void BindInterface(
-      mojo::PendingReceiver<color_change_listener::mojom::PageHandler>
-          receiver);
-
  private:
   WEB_UI_CONTROLLER_TYPE_DECL();
 
@@ -98,9 +93,6 @@ class DiagnosticsDialogUI : public ui::MojoWebDialogUI {
   std::unique_ptr<diagnostics::metrics::DiagnosticsMetrics>
       diagnostics_metrics_;
   std::unique_ptr<diagnostics::InputDataProvider> input_data_provider_;
-  // The color change handler notifies the WebUI when the color provider
-  // changes.
-  std::unique_ptr<ui::ColorChangeHandler> color_provider_handler_;
 };
 
 }  // namespace ash

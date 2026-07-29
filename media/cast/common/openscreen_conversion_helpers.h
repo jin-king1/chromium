@@ -18,6 +18,7 @@
 #include "third_party/openscreen/src/cast/streaming/rtp_time.h"
 #include "third_party/openscreen/src/cast/streaming/sender_message.h"
 #include "third_party/openscreen/src/platform/api/time.h"
+#include "third_party/openscreen/src/platform/base/ip_address.h"
 #include "ui/gfx/geometry/size.h"
 
 // Conversion methods for common Open Screen media cast types. Note that many
@@ -48,19 +49,10 @@ media::VideoCodec ToVideoCodec(openscreen::cast::VideoCodec codec);
 
 openscreen::IPAddress ToOpenscreenIPAddress(const net::IPAddress& address);
 
-// TODO(crbug.com/40266598): should be replaced with Open Screen's
-// internal conversion methods.
-constexpr int kAesKeyLength = 16;
-std::array<uint8_t, kAesKeyLength> AesKeyToArray(std::string aes_key);
-
-openscreen::cast::SessionConfig ToOpenscreenSessionConfig(
-    const FrameSenderConfig& config,
-    bool is_pli_enabled);
 openscreen::cast::AudioCaptureConfig ToOpenscreenAudioConfig(
     const FrameSenderConfig& config);
 openscreen::cast::VideoCaptureConfig ToOpenscreenVideoConfig(
     const FrameSenderConfig& config);
-
 media::mojom::RemotingSinkAudioCapability ToRemotingAudioCapability(
     openscreen::cast::AudioCapability capability);
 media::mojom::RemotingSinkVideoCapability ToRemotingVideoCapability(

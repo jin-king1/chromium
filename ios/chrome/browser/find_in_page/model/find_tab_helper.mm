@@ -4,24 +4,22 @@
 
 #import "ios/chrome/browser/find_in_page/model/find_tab_helper.h"
 
+#import "base/check.h"
 #import "ios/chrome/browser/find_in_page/model/find_in_page_controller.h"
 #import "ios/chrome/browser/find_in_page/model/find_in_page_model.h"
+#import "ios/chrome/browser/fullscreen/ui_bundled/fullscreen_controller.h"
+#import "ios/chrome/browser/shared/public/commands/fullscreen_commands.h"
 #import "ios/web/public/navigation/navigation_context.h"
 
 FindTabHelper::FindTabHelper(web::WebState* web_state) {
   DCHECK(web_state);
+  CHECK(web_state->IsRealized());
   observation_.Observe(web_state);
-
-  if (web_state->IsRealized()) {
-    CreateFindInPageController(web_state);
-  }
+  controller_ = [[FindInPageController alloc] initWithWebState:web_state];
 }
 
 FindTabHelper::~FindTabHelper() {
-  // If there is a controller then it needs to be detached from `web_state`
-  // before the call to `-dealloc`.
-  [controller_ detachFromWebState];
-  controller_ = nil;
+  CHECK(!controller_);
 }
 
 void FindTabHelper::DismissFindNavigator() {
@@ -30,9 +28,26 @@ void FindTabHelper::DismissFindNavigator() {
   [controller_ disableFindInPage];
 }
 
-void FindTabHelper::CreateFindInPageController(web::WebState* web_state) {
-  DCHECK(!controller_);
-  controller_ = [[FindInPageController alloc] initWithWebState:web_state];
+void FindTabHelper::SetFullscreenController(
+    FullscreenController* fullscreen_controller) {
+  if (!fullscreen_controller) {
+    // If the tab helper is being disconnected from the browser then stop the
+    // find session.
+    StopFinding();
+  }
+  DCHECK(controller_);
+  controller_.fullscreenController = fullscreen_controller;
+}
+
+void FindTabHelper::SetFullscreenHandler(
+    id<FullscreenCommands> fullscreen_handler) {
+  if (!fullscreen_handler) {
+    // If the tab helper is being disconnected from the browser then stop the
+    // find session.
+    StopFinding();
+  }
+  CHECK(controller_);
+  controller_.fullscreenHandler = fullscreen_handler;
 }
 
 void FindTabHelper::SetResponseDelegate(
@@ -61,6 +76,9 @@ void FindTabHelper::ContinueFinding(FindDirection direction) {
 }
 
 void FindTabHelper::StopFinding() {
+  if (!IsFindUIActive()) {
+    return;
+  }
   SetFindUIActive(false);
   [controller_ disableFindInPage];
 }
@@ -89,10 +107,6 @@ void FindTabHelper::RestoreSearchTerm() {
   [controller_ restoreSearchTerm];
 }
 
-void FindTabHelper::WebStateRealized(web::WebState* web_state) {
-  CreateFindInPageController(web_state);
-}
-
 void FindTabHelper::WebStateDestroyed(web::WebState* web_state) {
   observation_.Reset();
 
@@ -107,9 +121,5 @@ void FindTabHelper::DidFinishNavigation(
     return;
   }
 
-  if (IsFindUIActive()) {
-    StopFinding();
-  }
+  StopFinding();
 }
-
-WEB_STATE_USER_DATA_KEY_IMPL(FindTabHelper)

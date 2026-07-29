@@ -17,7 +17,10 @@
 #include "build/build_config.h"
 #include "chrome/browser/net/dns_over_https_config_source.h"
 #include "components/prefs/pref_change_registrar.h"
-#include "services/network/public/mojom/host_resolver.mojom-forward.h"
+#include "net/base/ip_address.h"
+#include "net/base/ip_endpoint.h"
+#include "net/dns/public/dns_over_https_config.h"
+#include "net/dns/public/dns_protocol.h"
 
 class PrefRegistrySimple;
 class PrefService;
@@ -26,6 +29,48 @@ class SecureDnsConfig;
 // Retriever for Chrome configuration for the built-in DNS stub resolver.
 class StubResolverConfigReader {
  public:
+  // Detailed descriptions of the secure DNS mode. These values are logged to
+  // UMA. Entries should not be renumbered and numeric values should never be
+  // reused.
+  //
+  // LINT.IfChange(SecureDnsModeDetailsForHistogram)
+  enum class SecureDnsModeDetailsForHistogram {
+    // The mode is controlled by the user and is set to 'off'.
+    kOffByUser = 0,
+    // The mode is controlled via enterprise policy and is set to 'off'.
+    kOffByEnterprisePolicy = 1,
+    // Chrome detected a managed environment and forced the mode to 'off'.
+    kOffByDetectedManagedEnvironment = 2,
+    // Chrome detected parental controls and forced the mode to 'off'.
+    kOffByDetectedParentalControls = 3,
+    // The mode is controlled by the user and is set to 'automatic' (the
+    // default mode).
+    kAutomaticByUser = 4,
+    // The mode is controlled via enterprise policy and is set to 'automatic'.
+    kAutomaticByEnterprisePolicy = 5,
+    // The mode is controlled by the user and is set to 'secure'.
+    kSecureByUser = 6,
+    // The mode is controlled via enterprise policy and is set to 'secure'.
+    kSecureByEnterprisePolicy = 7,
+    // The mode is controlled by the user and is set to 'automatic with
+    // fallback to well-known DoH provider'.
+    kAutomaticWithDohFallbackByUser = 8,
+
+    // Deprecated since this hasn't been implemented yet: The mode is controlled
+    // via enterprise policy and is set to 'automatic with fallback to
+    // well-known DoH provider'.
+    // kAutomaticWithDohFallbackByEnterprisePolicy = 9,
+
+    // (Obsolete) The mode was set to 'automatic with fallback to well-known DoH
+    // provider' because kAutomatic mode was in use and the UI setting for the
+    // DoH fallback upgrade functionality wasn't enabled. Used for the DoH
+    // fallback upgrade experiment.
+    // kAutomaticWithDohFallbackForExperiment = 10,
+
+    kMaxValue = kAutomaticWithDohFallbackByUser,
+  };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/net/enums.xml:SecureDnsModeDetails)
+
   static constexpr base::TimeDelta kParentalControlsCheckDelay =
       base::Seconds(2);
 
@@ -70,10 +115,10 @@ class StubResolverConfigReader {
   virtual bool ShouldDisableDohForParentalControls();
 
 #if BUILDFLAG(IS_ANDROID)
-  // Updates the android owned state and network service if the device/prfile is
+  // Updates the android owned state and network service if the device/profile is
   // owned.
-  void OnAndroidOwnedStateCheckComplete(bool has_profile_owner,
-                                        bool has_device_owner);
+  void OnAndroidOwnedStateCheckComplete(bool has_device_owner,
+                                        bool has_profile_owner);
 #endif
 
   void OverrideParentalControlsForTesting(bool parental_controls_override) {
@@ -85,6 +130,19 @@ class StubResolverConfigReader {
   // the override and resets to the default behaviour.
   void SetOverrideDnsOverHttpsConfigSource(
       std::unique_ptr<DnsOverHttpsConfigSource> doh_source);
+
+#if BUILDFLAG(IS_WIN)
+  // Set flag for testing Zero Trust DNS scenario
+  static void SetZTDNSEnabledForTesting(bool is_ztdns_enabled_for_testing) {
+    is_ztdns_enabled_for_testing_ = is_ztdns_enabled_for_testing;
+  }
+
+  static bool IsZTDNSEnabledForTesting() {
+    return is_ztdns_enabled_for_testing_;
+  }
+#endif
+
+  static std::vector<net::IPEndPoint> GetFallbackDohNameservers();
 
  private:
   void OnParentalControlsDelayTimer();
@@ -101,6 +159,8 @@ class StubResolverConfigReader {
   // returns the override config source; otherwise it returns the default
   // implementation.
   const DnsOverHttpsConfigSource* GetDnsOverHttpsConfigSource() const;
+
+  bool GetHappyEyeballsV3Enabled() const;
 
   const raw_ptr<PrefService> local_state_;
 
@@ -128,8 +188,14 @@ class StubResolverConfigReader {
 #if BUILDFLAG(IS_ANDROID)
   // Whether or not an Android device or profile is owned.
   // A nullopt indicates this value has not been determined yet.
-  std::optional<bool> android_has_owner_ = std::nullopt;
+  std::optional<bool> android_has_owner_;
 #endif
+
+#if BUILDFLAG(IS_WIN)
+  // Flag used for testing Zero Trust DNS scenario.
+  static bool is_ztdns_enabled_for_testing_;
+#endif
+
   base::WeakPtrFactory<StubResolverConfigReader> weak_factory_{this};
 };
 

@@ -34,7 +34,7 @@
 #include "components/history_clusters/core/ranking_cluster_finalizer.h"
 #include "components/history_clusters/core/similar_visit_deduper_cluster_finalizer.h"
 #include "components/history_clusters/core/single_visit_cluster_finalizer.h"
-#include "components/optimization_guide/core/optimization_guide_decider.h"
+#include "components/optimization_guide/core/hints/optimization_guide_decider.h"
 #include "components/site_engagement/core/site_engagement_score_provider.h"
 #include "components/url_formatter/url_formatter.h"
 
@@ -168,7 +168,7 @@ void OnDeviceClusteringBackend::ProcessVisits(
     // The engagement score is only required for computing clusters for UI and
     // triggerability.
     if (requires_ui_and_triggerability) {
-      const std::string& visit_host = cluster_visit.normalized_url.host();
+      const std::string& visit_host = cluster_visit.normalized_url.GetHost();
       if (engagement_score_provider_) {
         auto it = engagement_score_cache_.Peek(visit_host);
         if (it != engagement_score_cache_.end()) {

@@ -31,9 +31,29 @@ enum class AnnotationType {
   //
   // This is deprecated and should not be used.
   kDeprecatedTextEmbedding,
+
+  // The input will be annotated for category classification.
+  kCategoryClassifier,
 };
 
 std::string AnnotationTypeToString(AnnotationType type);
+
+enum class CategoryType {
+  kEducation = 0,
+  kShopping = 1,
+
+  // Add new types above this line.
+  kMaxValue = kShopping,
+};
+
+struct Category {
+  // The classified category.
+  CategoryType category_type;
+
+  // A score from 0 to 1, inclusive. The higher the more likely a piece of text
+  // is to be classified as the category type.
+  float score;
+};
 
 }  // namespace page_content_annotations
 

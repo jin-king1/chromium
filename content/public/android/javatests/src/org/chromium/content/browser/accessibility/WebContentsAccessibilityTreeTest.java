@@ -6,14 +6,15 @@ package org.chromium.content.browser.accessibility;
 
 import static org.chromium.content.browser.accessibility.AccessibilityContentShellActivityTestRule.NODE_ERROR;
 import static org.chromium.content.browser.accessibility.AccessibilityContentShellActivityTestRule.RESULTS_NULL;
-import static org.chromium.content.browser.accessibility.AccessibilityContentShellTestUtils.sClassNameMatcher;
 
 import android.annotation.SuppressLint;
+import android.os.Build;
+import android.os.Build.VERSION_CODES_FULL;
 
-import androidx.core.view.accessibility.AccessibilityNodeInfoCompat;
 import androidx.test.filters.SmallTest;
 
 import org.junit.Assert;
+import org.junit.Assume;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -22,14 +23,16 @@ import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
-import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
+import org.chromium.base.test.util.MinAndroidSdkLevel;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.base.test.util.TestAnimations;
+import org.chromium.content.common.ContentInternalFeatures;
 import org.chromium.content_public.browser.ContentFeatureList;
 import org.chromium.content_public.browser.test.ContentJUnit4ClassRunner;
+import org.chromium.ui.accessibility.AccessibilityFeatures;
 import org.chromium.ui.test.util.DeviceRestriction;
 
 /** Tests for WebContentsAccessibilityImpl integration with accessibility services. */
@@ -37,14 +40,26 @@ import org.chromium.ui.test.util.DeviceRestriction;
 @SuppressLint("VisibleForTests")
 @Batch(Batch.PER_CLASS)
 @Restriction(DeviceRestriction.RESTRICTION_TYPE_NON_AUTO)
-@DisableFeatures(ContentFeatureList.ACCESSIBILITY_UNIFIED_SNAPSHOTS)
+@DisableFeatures({ContentFeatureList.ACCESSIBILITY_UNIFIED_SNAPSHOTS})
+@EnableFeatures({
+    ContentFeatureList.ACCESSIBILITY_DEPRECATE_TYPE_ANNOUNCE,
+    ContentFeatureList.ACCESSIBILITY_EXTENDED_SELECTION,
+    ContentFeatureList.ACCESSIBILITY_SET_SELECTABLE_ON_ALL_NODES_WITH_TEXT
+})
 @TestAnimations.EnableAnimations
 public class WebContentsAccessibilityTreeTest {
     // File path that holds all the relevant tests.
     private static final String BASE_ACCNAME_FILE_PATH = "content/test/data/accessibility/accname/";
     private static final String BASE_ARIA_FILE_PATH = "content/test/data/accessibility/aria/";
+    private static final String BASE_APG_PATTERN_FILE_PATH =
+            "content/test/data/accessibility/aria/apg-patterns/";
+    private static final String BASE_APG_PATTERN_THIRDPARTY_INPUT_PATH =
+            "third_party/aria-practices/src/content/patterns/";
+    private static final String BASE_APG_PATTERN_THIRDPARTY_EXPECTATION_PATH =
+            "content/test/data/accessibility/aria/apg-patterns-thirdparty/";
     private static final String BASE_CSS_FILE_PATH = "content/test/data/accessibility/css/";
     private static final String BASE_HTML_FILE_PATH = "content/test/data/accessibility/html/";
+    private static final String BASE_MATHML_FILE_PATH = "content/test/data/accessibility/mathml/";
     private static final String DEFAULT_FILE_SUFFIX = "-expected-android-external.txt";
     private static final String ASSIST_DATA_FILE_SUFFIX = "-expected-android-assist-data.txt";
 
@@ -67,27 +82,37 @@ public class WebContentsAccessibilityTreeTest {
      * @param expectationFilePath directory that holds the test files
      */
     private void performTest(String inputFile, String expectationFile, String expectationFilePath) {
+        performTest(inputFile, expectationFilePath, expectationFile, expectationFilePath);
+    }
+
+    private void performTest(
+            String inputFile,
+            String inputFilePath,
+            String expectationFile,
+            String expectationFilePath) {
         // Build page from given file and enable testing framework.
-        mActivityTestRule.setupTestFromFile(expectationFilePath + inputFile);
+        mActivityTestRule.setupTestFromFile(inputFilePath + inputFile);
 
         // Create extra strings to print to logs along with potential error(s) for rebase tool.
         String accessibilityNodeInfoErrorPrefix =
                 String.format(
                         "\n\nTesting: %s%s\nExpected output: %s%s",
-                        expectationFilePath,
+                        inputFilePath,
                         inputFile,
                         expectationFilePath,
                         expectationFile + DEFAULT_FILE_SUFFIX);
         // String assistDataErrorPrefix =
         //         String.format(
         //                 "\n\nTesting: %s%s\nExpected output: %s%s",
-        //                 expectationFilePath,
+        //                 inputFilePath,
         //                 inputFile,
         //                 expectationFilePath,
         //                 expectationFile + ASSIST_DATA_FILE_SUFFIX);
 
-        // Generate full AccessibilityNodeInfo and AssistData trees
-        String accessibilityNodeInfoTree = generateAccessibilityNodeInfoTree();
+        // Generate full AccessibilityNodeInfo and AssistData trees.
+        String accessibilityNodeInfoTree =
+                mActivityTestRule.generateAccessibilityNodeInfoTree(
+                        sIncludeScreenSizeDependentAttributes);
         String assistDataTree = generateViewStructureTree();
         Assert.assertNotNull(RESULTS_NULL, accessibilityNodeInfoTree);
         Assert.assertNotNull(RESULTS_NULL, assistDataTree);
@@ -157,9 +182,34 @@ public class WebContentsAccessibilityTreeTest {
         performTest(inputFile, expectationFile, BASE_ARIA_FILE_PATH);
     }
 
+    private String removeHtmlSuffix(String input) {
+        // ".html" has length 5.
+        return input.substring(0, input.length() - 5);
+    }
+
+    private void performApgPatternTest(String input) {
+        performApgPatternTest(input, removeHtmlSuffix(input));
+    }
+
+    private void performApgPatternTest(String inputFile, String expectationFile) {
+        performTest(inputFile, expectationFile, BASE_APG_PATTERN_FILE_PATH);
+    }
+
+    private void performApgPatternThirdPartyTest(String input) {
+        String filename = input.substring(input.lastIndexOf('/') + 1);
+        performApgPatternThirdPartyTest(input, removeHtmlSuffix(filename));
+    }
+
+    private void performApgPatternThirdPartyTest(String inputFile, String expectationFile) {
+        performTest(
+                inputFile,
+                BASE_APG_PATTERN_THIRDPARTY_INPUT_PATH,
+                expectationFile,
+                BASE_APG_PATTERN_THIRDPARTY_EXPECTATION_PATH);
+    }
+
     private void performCssTest(String input) {
-        // Remove the '.html' from the input file, and append the standard suffix.
-        performCssTest(input, input.substring(0, input.length() - 5));
+        performCssTest(input, removeHtmlSuffix(input));
     }
 
     private void performCssTest(String inputFile, String expectationFile) {
@@ -167,38 +217,16 @@ public class WebContentsAccessibilityTreeTest {
     }
 
     private void performHtmlTest(String input) {
-        // Remove the '.html' from the input file, and append the standard suffix.
-        performHtmlTest(input, input.substring(0, input.length() - 5));
+        performHtmlTest(input, removeHtmlSuffix(input));
     }
 
     private void performHtmlTest(String inputFile, String expectationFile) {
         performTest(inputFile, expectationFile, BASE_HTML_FILE_PATH);
     }
 
-    /**
-     * Generate the full AccessibilityNodeInfo tree as a String of text.
-     *
-     * @return String The AccessibilityNodeInfo tree in text form
-     */
-    private String generateAccessibilityNodeInfoTree() {
-        StringBuilder builder = new StringBuilder();
-
-        // Find the root node and generate its string.
-        int rootNodevvId =
-                mActivityTestRule.waitForNodeMatching(sClassNameMatcher, "android.webkit.WebView");
-        AccessibilityNodeInfoCompat nodeInfo = createAccessibilityNodeInfo(rootNodevvId);
-        builder.append(
-                AccessibilityNodeInfoUtils.toString(
-                        nodeInfo, sIncludeScreenSizeDependentAttributes));
-
-        // Recursively generate strings for all descendants.
-        for (int i = 0; i < nodeInfo.getChildCount(); ++i) {
-            int childId = mActivityTestRule.getChildId(nodeInfo, i);
-            AccessibilityNodeInfoCompat childNodeInfo = createAccessibilityNodeInfo(childId);
-            recursivelyFormatTree(childNodeInfo, builder, "++");
-        }
-
-        return builder.toString();
+    private void performMathmlTest(String input) {
+        String expectationFile = removeHtmlSuffix(input);
+        performTest(input, expectationFile, BASE_MATHML_FILE_PATH);
     }
 
     private String generateViewStructureTree() {
@@ -211,33 +239,6 @@ public class WebContentsAccessibilityTreeTest {
                 mActivityTestRule.mWcax::hasFinishedLatestAccessibilitySnapshotForTesting,
                 "Failed to get AssistData.");
         return testViewStructure.toString();
-    }
-
-    /**
-     * Recursively add AccessibilityNodeInfo descendants to the given builder.
-     *
-     * @param node Given object to print all descendants for
-     * @param builder builder to add generated Strings to
-     * @param indent prefix to indent each generation, e.g. "++"
-     */
-    private void recursivelyFormatTree(
-            AccessibilityNodeInfoCompat node, StringBuilder builder, String indent) {
-        builder.append("\n")
-                .append(indent)
-                .append(
-                        AccessibilityNodeInfoUtils.toString(
-                                node, sIncludeScreenSizeDependentAttributes));
-        for (int j = 0; j < node.getChildCount(); ++j) {
-            int childId = mActivityTestRule.getChildId(node, j);
-            AccessibilityNodeInfoCompat childNodeInfo = createAccessibilityNodeInfo(childId);
-            recursivelyFormatTree(childNodeInfo, builder, indent + "++");
-        }
-    }
-
-    // Helper method to create an AccessibilityNodeInfo object.
-    private AccessibilityNodeInfoCompat createAccessibilityNodeInfo(int virtualViewId) {
-        return ThreadUtils.runOnUiThreadBlocking(
-                () -> mActivityTestRule.mNodeProvider.createAccessibilityNodeInfo(virtualViewId));
     }
 
     // ------------------ ACCNAME TESTS ------------------ //
@@ -266,18 +267,18 @@ public class WebContentsAccessibilityTreeTest {
         performAccnameTest("name-div-content-only.html");
     }
 
+    @Test
+    @SmallTest
+    public void test_nameImgEmptyAltTitle() {
+        performAccnameTest("name-img-empty-alt-title.html");
+    }
+
     // ------------------ ARIA TESTS ------------------ //
 
     @Test
     @SmallTest
     public void test_annotationRoles() {
         performAriaTest("annotation-roles.html");
-    }
-
-    @Test
-    @SmallTest
-    public void test_ariaAlertdialog() {
-        performAriaTest("aria-alertdialog.html");
     }
 
     @Test
@@ -450,6 +451,13 @@ public class WebContentsAccessibilityTreeTest {
 
     @Test
     @SmallTest
+    @DisabledTest(message = "Mac-only test for fieldset description fallback")
+    public void test_ariaFieldsetDescribedby() {
+        performAriaTest("aria-fieldset-describedby.html");
+    }
+
+    @Test
+    @SmallTest
     public void test_ariaDescription() {
         performAriaTest("aria-description.html");
     }
@@ -589,7 +597,11 @@ public class WebContentsAccessibilityTreeTest {
 
     @Test
     @SmallTest
+    @MinAndroidSdkLevel(Build.VERSION_CODES.BAKLAVA)
     public void test_ariaIllegalVal() {
+        Assume.assumeTrue(
+                "Requires Android 16 QPR2 (36.1) or higher",
+                Build.VERSION.SDK_INT_FULL >= VERSION_CODES_FULL.BAKLAVA_1);
         performAriaTest("aria-illegal-val.html");
     }
 
@@ -627,6 +639,12 @@ public class WebContentsAccessibilityTreeTest {
     @SmallTest
     public void test_ariaLabelWithTabIndex() {
         performAriaTest("aria-label-with-tabindex.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaLabelWithVisualContent() {
+        performAriaTest("aria-label-with-visual-content.html");
     }
 
     @Test
@@ -673,13 +691,22 @@ public class WebContentsAccessibilityTreeTest {
 
     @Test
     @SmallTest
+    public void test_ariaListLabeled() {
+        performAriaTest("aria-list-labeled.html");
+    }
+
+    @Test
+    @SmallTest
     public void test_ariaListitem() {
         performAriaTest("aria-listitem.html");
     }
 
     @Test
     @SmallTest
-    @DisableFeatures(ContentFeatureList.ACCESSIBILITY_DEPRECATE_TYPE_ANNOUNCE)
+    @DisableFeatures({
+        ContentFeatureList.ACCESSIBILITY_DEPRECATE_TYPE_ANNOUNCE,
+        ContentFeatureList.ACCESSIBILITY_IMPROVE_LIVE_REGION_ANNOUNCE
+    })
     public void test_ariaLive() {
         performAriaTest("aria-live.html");
     }
@@ -693,7 +720,10 @@ public class WebContentsAccessibilityTreeTest {
 
     @Test
     @SmallTest
-    @DisableFeatures(ContentFeatureList.ACCESSIBILITY_DEPRECATE_TYPE_ANNOUNCE)
+    @DisableFeatures({
+        ContentFeatureList.ACCESSIBILITY_DEPRECATE_TYPE_ANNOUNCE,
+        ContentFeatureList.ACCESSIBILITY_IMPROVE_LIVE_REGION_ANNOUNCE
+    })
     public void test_ariaLiveWithContent() {
         performAriaTest("aria-live-with-content.html");
     }
@@ -743,6 +773,12 @@ public class WebContentsAccessibilityTreeTest {
 
     @Test
     @SmallTest
+    public void test_ariaFocusableMenu() {
+        performAriaTest("aria-focusable-menu.html");
+    }
+
+    @Test
+    @SmallTest
     public void test_ariaMenuitemcheckbox() {
         performAriaTest("aria-menuitemcheckbox.html");
     }
@@ -779,6 +815,13 @@ public class WebContentsAccessibilityTreeTest {
 
     @Test
     @SmallTest
+    @DisabledTest(message = "https://crbug.com/517959931")
+    public void test_ariaModal() {
+        performAriaTest("aria-modal.html");
+    }
+
+    @Test
+    @SmallTest
     public void test_ariaMultiline() {
         performAriaTest("aria-multiline.html");
     }
@@ -787,6 +830,12 @@ public class WebContentsAccessibilityTreeTest {
     @SmallTest
     public void test_ariaMultiselectable() {
         performAriaTest("aria-multiselectable.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaMultiselectableWithAriaLabelledBy() {
+        performAriaTest("aria-multiselectable-aria-labelledby.html");
     }
 
     @Test
@@ -815,7 +864,6 @@ public class WebContentsAccessibilityTreeTest {
 
     @Test
     @SmallTest
-    @DisableIf.Build(supported_abis_includes = "x86_64", message = "https://crbug.com/349962563")
     public void test_ariaOption() {
         performAriaTest("aria-option.html");
     }
@@ -854,6 +902,12 @@ public class WebContentsAccessibilityTreeTest {
     @SmallTest
     public void test_ariaParagraph() {
         performAriaTest("aria-paragraph.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaPosinset() {
+        performAriaTest("aria-posinset.html");
     }
 
     @Test
@@ -984,13 +1038,21 @@ public class WebContentsAccessibilityTreeTest {
 
     @Test
     @SmallTest
+    @MinAndroidSdkLevel(Build.VERSION_CODES.BAKLAVA)
     public void test_ariaSortAriaGrid() {
+        Assume.assumeTrue(
+                "Requires Android 16 QPR2 (36.1) or higher",
+                Build.VERSION.SDK_INT_FULL >= VERSION_CODES_FULL.BAKLAVA_1);
         performAriaTest("aria-sort-aria-grid.html");
     }
 
     @Test
     @SmallTest
+    @MinAndroidSdkLevel(Build.VERSION_CODES.BAKLAVA)
     public void test_ariaSortHtmlTable() {
+        Assume.assumeTrue(
+                "Requires Android 16 QPR2 (36.1) or higher",
+                Build.VERSION.SDK_INT_FULL >= VERSION_CODES_FULL.BAKLAVA_1);
         performAriaTest("aria-sort-html-table.html");
     }
 
@@ -1062,7 +1124,11 @@ public class WebContentsAccessibilityTreeTest {
 
     @Test
     @SmallTest
+    @MinAndroidSdkLevel(Build.VERSION_CODES.BAKLAVA)
     public void test_ariaTabpanel() {
+        Assume.assumeTrue(
+                "Requires Android 16 QPR2 (36.1) or higher",
+                Build.VERSION.SDK_INT_FULL >= VERSION_CODES_FULL.BAKLAVA_1);
         performAriaTest("aria-tabpanel.html");
     }
 
@@ -1170,12 +1236,6 @@ public class WebContentsAccessibilityTreeTest {
 
     @Test
     @SmallTest
-    public void test_ariaVirtualcontent() {
-        performAriaTest("aria-virtualcontent.html");
-    }
-
-    @Test
-    @SmallTest
     public void test_dpubRoles() {
         performAriaTest("dpub-roles.html");
     }
@@ -1264,6 +1324,92 @@ public class WebContentsAccessibilityTreeTest {
         performAriaTest("toggle-button-expand-collapse.html");
     }
 
+    // ------------------ ARIA PATTERNS TESTS ------------------ //
+
+    @Test
+    @SmallTest
+    public void test_ariaAccordion() {
+        performApgPatternTest("aria-accordion.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaAlertdialog() {
+        performApgPatternTest("aria-alertdialog.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaBreadcrumb() {
+        performApgPatternTest("aria-breadcrumb.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaCarouselButtons() {
+        performApgPatternTest("aria-carousel-buttons.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaCarouselTabs() {
+        performApgPatternTest("aria-carousel-tabs.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaListboxGrouped() {
+        performApgPatternTest("aria-listbox-grouped.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaQuantitySpinbutton() {
+        performApgPatternTest("aria-quantity-spinbutton.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaSliderColorViewer() {
+        performApgPatternTest("aria-slider-color-viewer.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaSliderMultithumb() {
+        performApgPatternTest("aria-slider-multithumb.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaSliderRating() {
+        performApgPatternTest("aria-slider-rating.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaSliderVertical() {
+        performApgPatternTest("aria-slider-vertical.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaTreeviewFileDirectoryComputedProperties() {
+        performApgPatternTest("aria-treeview-file-directory-computed-properties.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaTreeviewFileDirectoryDeclaredProperties() {
+        performApgPatternTest("aria-treeview-file-directory-declared-properties.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartyMeter() {
+        performApgPatternThirdPartyTest("meter/examples/meter.html");
+    }
+
     // ------------------ CSS TESTS ------------------ //
 
     @Test
@@ -1298,6 +1444,7 @@ public class WebContentsAccessibilityTreeTest {
 
     @Test
     @SmallTest
+    @DisabledTest(message = "https://crbug.com/434253831")
     public void test_fontSize() {
         performCssTest("font-size.html");
     }
@@ -1344,6 +1491,12 @@ public class WebContentsAccessibilityTreeTest {
     @SmallTest
     public void test_aNameCalc() {
         performHtmlTest("a-name-calc.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_aEmptyPlaceholder() {
+        performHtmlTest("a-empty-placeholder.html");
     }
 
     @Test
@@ -1438,6 +1591,12 @@ public class WebContentsAccessibilityTreeTest {
 
     @Test
     @SmallTest
+    public void test_audio() {
+        performHtmlTest("audio.html");
+    }
+
+    @Test
+    @SmallTest
     public void test_b() {
         performHtmlTest("b.html");
     }
@@ -1492,12 +1651,28 @@ public class WebContentsAccessibilityTreeTest {
 
     @Test
     @SmallTest
+    @CommandLineFlags.Add({"enable-blink-features=CanvasDrawElement"})
+    public void test_canvasComplexFallback() {
+        performHtmlTest("canvas-complex-fallback.html");
+    }
+
+    @Test
+    @SmallTest
+    @CommandLineFlags.Add({"enable-blink-features=CanvasDrawElement"})
+    public void test_canvasInteractiveFallback() {
+        performHtmlTest("canvas-interactive-fallback.html");
+    }
+
+    @Test
+    @SmallTest
+    @CommandLineFlags.Add({"enable-blink-features=CanvasDrawElement"})
     public void test_canvasFallback() {
         performHtmlTest("canvas-fallback.html");
     }
 
     @Test
     @SmallTest
+    @CommandLineFlags.Add({"enable-blink-features=CanvasDrawElement"})
     public void test_canvas() {
         performHtmlTest("canvas.html");
     }
@@ -1520,6 +1695,13 @@ public class WebContentsAccessibilityTreeTest {
     @CommandLineFlags.Add({"enable-experimental-web-platform-features"})
     public void test_carouselWithTabs() {
         performCssTest("carousel-with-tabs.html");
+    }
+
+    @Test
+    @SmallTest
+    @CommandLineFlags.Add({"enable-experimental-web-platform-features"})
+    public void test_carouselWithLinks() {
+        performCssTest("carousel-with-links.html");
     }
 
     @Test
@@ -1590,8 +1772,25 @@ public class WebContentsAccessibilityTreeTest {
 
     @Test
     @SmallTest
-    public void test_contenteditableDescendants() {
+    @CommandLineFlags.Add({"enable-experimental-web-platform-features"})
+    public void test_commandforPopoverMenus() {
+        performHtmlTest("commandfor-api-popover-menus.html");
+    }
+
+    @Test
+    @SmallTest
+    @DisableFeatures(ContentInternalFeatures.ACCESSIBILITY_EXPOSE_NON_ATOMIC_TEXT_FIELD_CHILDREN)
+    public void test_contenteditableDescendants_ExposeNonAtomicTextFieldChildrenFeatureDisabled() {
         performHtmlTest("contenteditable-descendants.html");
+    }
+
+    @Test
+    @SmallTest
+    @EnableFeatures(ContentInternalFeatures.ACCESSIBILITY_EXPOSE_NON_ATOMIC_TEXT_FIELD_CHILDREN)
+    public void test_contenteditableDescendants_ExposeNonAtomicTextFieldChildrenFeatureEnabled() {
+        performHtmlTest(
+                "contenteditable-descendants.html",
+                "contenteditable-descendants-expose-non-atomic-text-field-children-feature");
     }
 
     @Test
@@ -1602,8 +1801,35 @@ public class WebContentsAccessibilityTreeTest {
 
     @Test
     @SmallTest
-    public void test_contenteditableWithNoDescendants() {
+    @DisableFeatures(ContentInternalFeatures.ACCESSIBILITY_EXPOSE_NON_ATOMIC_TEXT_FIELD_CHILDREN)
+    public void
+            test_contenteditableWithNoDescendants_ExposeNonAtomicTextFieldChildrenFeatureDisabled() {
         performHtmlTest("contenteditable-with-no-descendants.html");
+    }
+
+    @Test
+    @SmallTest
+    @EnableFeatures(ContentInternalFeatures.ACCESSIBILITY_EXPOSE_NON_ATOMIC_TEXT_FIELD_CHILDREN)
+    public void
+            test_contenteditableWithNoDescendants_ExposeNonAtomicTextFieldChildrenFeatureEnabled() {
+        performHtmlTest("contenteditable-with-no-descendants.html");
+    }
+
+    @Test
+    @SmallTest
+    @EnableFeatures(ContentInternalFeatures.ACCESSIBILITY_EXPOSE_NON_ATOMIC_TEXT_FIELD_CHILDREN)
+    public void test_contenteditableMultiNode() {
+        performHtmlTest("contenteditable-multi-node.html");
+    }
+
+    @Test
+    @SmallTest
+    @EnableFeatures({
+        ContentInternalFeatures.ACCESSIBILITY_EXPOSE_NON_ATOMIC_TEXT_FIELD_CHILDREN,
+        ContentFeatureList.ACCESSIBILITY_EXTENDED_SELECTION
+    })
+    public void test_selectionInContenteditable() {
+        performHtmlTest("selection-in-contenteditable.html");
     }
 
     @Test
@@ -1789,6 +2015,18 @@ public class WebContentsAccessibilityTreeTest {
 
     @Test
     @SmallTest
+    public void test_headingWithHeadingOffset() {
+        performHtmlTest("heading-with-headingoffset.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_headingWithHeadingOffsetDialog() {
+        performHtmlTest("heading-with-headingoffset-dialog.html");
+    }
+
+    @Test
+    @SmallTest
     public void test_headingWithTabindex() {
         performHtmlTest("heading-with-tabIndex.html");
     }
@@ -1809,6 +2047,12 @@ public class WebContentsAccessibilityTreeTest {
     @SmallTest
     public void test_html() {
         performHtmlTest("html.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_htmlVsAriaAttributes() {
+        performHtmlTest("html-vs-aria-attributes.html");
     }
 
     @Test
@@ -1886,6 +2130,12 @@ public class WebContentsAccessibilityTreeTest {
     @SmallTest
     public void test_iframe() {
         performHtmlTest("iframe.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ignoredSelection() {
+        performHtmlTest("ignored-selection.html");
     }
 
     @Test
@@ -2028,6 +2278,12 @@ public class WebContentsAccessibilityTreeTest {
 
     @Test
     @SmallTest
+    public void test_inputRadioSiblingWithSpan() {
+        performHtmlTest("input-radio-sibling-with-span.html");
+    }
+
+    @Test
+    @SmallTest
     public void test_inputRadio() {
         performHtmlTest("input-radio.html");
     }
@@ -2036,6 +2292,12 @@ public class WebContentsAccessibilityTreeTest {
     @SmallTest
     public void test_inputRange() {
         performHtmlTest("input-range.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_progressBar() {
+        performHtmlTest("progress-bar.html");
     }
 
     @Test
@@ -2251,8 +2513,27 @@ public class WebContentsAccessibilityTreeTest {
 
     @Test
     @SmallTest
+    @EnableFeatures(AccessibilityFeatures.ACCESSIBILITY_ANDROID_MATH)
+    @MinAndroidSdkLevel(Build.VERSION_CODES.CINNAMON_BUN)
+    public void test_mathIntent() {
+        performMathmlTest("intent.html");
+    }
+
+    @Test
+    @SmallTest
     public void test_menu() {
         performHtmlTest("menu.html");
+    }
+
+    @Test
+    @SmallTest
+    @MinAndroidSdkLevel(Build.VERSION_CODES.BAKLAVA)
+    @CommandLineFlags.Add({"enable-blink-features=MenuElements"})
+    public void test_menulistInvokerHaspopup() {
+        Assume.assumeTrue(
+                "Requires Android 16 QPR2 (36.1) or higher",
+                Build.VERSION.SDK_INT_FULL >= VERSION_CODES_FULL.BAKLAVA_1);
+        performHtmlTest("menulist-invoker-haspopup.html");
     }
 
     @Test
@@ -2263,15 +2544,26 @@ public class WebContentsAccessibilityTreeTest {
 
     @Test
     @SmallTest
+    public void test_multi_selectable() {
+        performHtmlTest("multi-selectable.html");
+    }
+
+    @Test
+    @SmallTest
     public void test_navigation() {
         performHtmlTest("navigation.html");
     }
 
     @Test
     @SmallTest
-    @DisableIf.Build(supported_abis_includes = "x86_64", message = "https://crbug.com/349962563")
     public void test_nestedlist() {
         performHtmlTest("nestedlist.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_nonTextSelection() {
+        performHtmlTest("non-text-selection.html");
     }
 
     @Test
@@ -2360,6 +2652,36 @@ public class WebContentsAccessibilityTreeTest {
 
     @Test
     @SmallTest
+    public void testNameFromRelatedFieldset() {
+        performHtmlTest("name-from-related-fieldset.html");
+    }
+
+    @Test
+    @SmallTest
+    public void testNameFromRelatedLabelable() {
+        performHtmlTest("name-from-related-labelable.html");
+    }
+
+    @Test
+    @SmallTest
+    public void testNameFromRelatedSvg() {
+        performHtmlTest("name-from-related-svg.html");
+    }
+
+    @Test
+    @SmallTest
+    public void testNameFromRelatedTitle() {
+        performHtmlTest("name-from-related-title.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_nameFromPopovertargetAndInterestfor() {
+        performHtmlTest("name-from-popovertarget-and-interestfor.html");
+    }
+
+    @Test
+    @SmallTest
     public void test_pre() {
         performHtmlTest("pre.html");
     }
@@ -2402,6 +2724,7 @@ public class WebContentsAccessibilityTreeTest {
 
     @Test
     @SmallTest
+    @DisabledTest(message = "https://crbug.com/434253831")
     public void test_scrollableOverflow() {
         performHtmlTest("scrollable-overflow.html");
     }
@@ -2452,6 +2775,18 @@ public class WebContentsAccessibilityTreeTest {
     @SmallTest
     public void test_selectionContainer() {
         performHtmlTest("selection-container.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_selectionOverEditableWithFocus() {
+        performHtmlTest("selection-over-editable-with-focus.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_selectionOverEditableWithoutFocus() {
+        performHtmlTest("selection-over-editable-without-focus.html");
     }
 
     @Test
@@ -2589,6 +2924,12 @@ public class WebContentsAccessibilityTreeTest {
 
     @Test
     @SmallTest
+    public void test_tabindexWithLinkChildren() {
+        performHtmlTest("tabindex-with-link-children.html");
+    }
+
+    @Test
+    @SmallTest
     public void test_tableFocusableSections() {
         performHtmlTest("table-focusable-sections.html");
     }
@@ -2655,7 +2996,6 @@ public class WebContentsAccessibilityTreeTest {
 
     @Test
     @SmallTest
-    @DisableIf.Build(supported_abis_includes = "x86", message = "https://crbug.com/1224422")
     public void test_textColorsAndStyles() {
         performHtmlTest("text-colors-and-styles.html");
     }

@@ -5,6 +5,7 @@
 #import "ios/web/annotations/annotations_text_manager_impl.h"
 
 #import "base/strings/string_util.h"
+#import "base/task/sequenced_task_runner.h"
 #import "ios/web/annotations/annotations_java_script_feature.h"
 #import "ios/web/common/features.h"
 #import "ios/web/common/url_scheme_util.h"
@@ -14,8 +15,6 @@
 #import "ios/web/public/web_state.h"
 
 namespace web {
-
-static const int kMaxAnnotationsTextLength = 65535;
 
 AnnotationsTextManagerImpl::AnnotationsTextManagerImpl(WebState* web_state)
     : web_state_(web_state), seq_id_(1), is_viewport_extraction_(true) {
@@ -59,10 +58,6 @@ void AnnotationsTextManagerImpl::RemoveDecorationsWithType(
   seq_id_++;
   AnnotationsJavaScriptFeature::GetInstance()->RemoveDecorationsWithType(
       web_state_, type);
-}
-
-void AnnotationsTextManagerImpl::RemoveHighlight() {
-  AnnotationsJavaScriptFeature::GetInstance()->RemoveHighlight(web_state_);
 }
 
 void AnnotationsTextManagerImpl::StartExtractingText() {
@@ -109,7 +104,7 @@ void AnnotationsTextManagerImpl::OnTextExtracted(
     WebState* web_state,
     const std::string& text,
     int seq_id,
-    const base::Value::Dict& metadata) {
+    const base::DictValue& metadata) {
   if (!web_state_ || (!is_viewport_extraction_ && seq_id != seq_id_)) {
     return;
   }
@@ -119,12 +114,11 @@ void AnnotationsTextManagerImpl::OnTextExtracted(
   }
 }
 
-void AnnotationsTextManagerImpl::OnDecorated(
-    WebState* web_state,
-    int annotations,
-    int successes,
-    int failures,
-    const base::Value::List& cancelled) {
+void AnnotationsTextManagerImpl::OnDecorated(WebState* web_state,
+                                             int annotations,
+                                             int successes,
+                                             int failures,
+                                             const base::ListValue& cancelled) {
   if (!web_state_) {
     return;
   }
@@ -147,7 +141,5 @@ void AnnotationsTextManagerImpl::OnClick(WebState* web_state,
     observer.OnClick(web_state, text, rect, data);
   }
 }
-
-WEB_STATE_USER_DATA_KEY_IMPL(AnnotationsTextManager)
 
 }  // namespace web

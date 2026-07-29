@@ -6,6 +6,7 @@
 #define BASE_MEMORY_POST_DELAYED_MEMORY_REDUCTION_TASK_H_
 
 #include "base/task/sequenced_task_runner.h"
+#include "base/time/time.h"
 
 namespace base {
 
@@ -35,6 +36,15 @@ void BASE_EXPORT PostDelayedMemoryReductionTask(
     const Location& from_here,
     OnceCallback<void(MemoryReductionTaskContext)> task,
     base::TimeDelta delay);
+
+#if BUILDFLAG(IS_ANDROID)
+// Posts a task that will only run when the app is about to be frozen (on
+// Android). On other platforms, this is a no-op.
+void BASE_EXPORT
+PostOnFreezeTask(scoped_refptr<SequencedTaskRunner> task_runner,
+                 const Location& from_here,
+                 OnceClosure task);
+#endif
 
 // Replacement for |OneShotTimer|, that allows the tasks to be run by
 // |OnPreFreeze| (see |PreFreezeBackgroundMemoryTrimmer| above).

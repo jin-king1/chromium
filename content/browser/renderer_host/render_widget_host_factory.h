@@ -6,15 +6,16 @@
 #define CONTENT_BROWSER_RENDERER_HOST_RENDER_WIDGET_HOST_FACTORY_H_
 
 #include <stdint.h>
+
 #include <memory>
 
 #include "base/memory/safe_ref.h"
 #include "components/viz/common/surfaces/frame_sink_id.h"
 #include "content/common/content_export.h"
-#include "mojo/public/cpp/bindings/pending_remote.h"
 
 namespace content {
 class FrameTree;
+struct GlobalRenderFrameHostId;
 class RenderWidgetHostDelegate;
 class RenderWidgetHostImpl;
 class SiteInstanceGroup;
@@ -45,7 +46,8 @@ class CONTENT_EXPORT RenderWidgetHostFactory {
       RenderWidgetHostDelegate* delegate,
       base::SafeRef<SiteInstanceGroup> site_instance_group,
       int32_t routing_id,
-      bool hidden);
+      bool hidden,
+      GlobalRenderFrameHostId popup_creator_frame_id);
 
  protected:
   RenderWidgetHostFactory() = default;
@@ -70,8 +72,8 @@ class CONTENT_EXPORT RenderWidgetHostFactory {
       RenderWidgetHostDelegate* delegate,
       base::SafeRef<SiteInstanceGroup> site_instance_group,
       int32_t routing_id,
-      bool hidden);
-
+      bool hidden,
+      GlobalRenderFrameHostId popup_creator_frame_id);
   // Registers your factory to be called when new RenderWidgetHostImpls are
   // created. We have only one global factory, so there must be no factory
   // registered before the call. This class does NOT take ownership of the

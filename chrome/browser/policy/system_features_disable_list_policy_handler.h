@@ -12,7 +12,6 @@
 #include "components/prefs/pref_service.h"
 
 class PrefValueMap;
-class PrefRegistrySimple;
 
 namespace policy {
 
@@ -45,7 +44,10 @@ enum class SystemFeature : int {
   kGoogleChat = 22,           // The Google Chat app on ChromeOS.
   kYoutube = 23,              // The Youtube app on ChromeOS.
   kGoogleMaps = 24,           // The Google Maps app on ChromeOS.
-  kMaxValue = kGoogleMaps
+  kCalculator = 25,           // The Calculator app on ChromeOS.
+  kTextEditor = 26,           // The Text Editor app on ChromeOS.
+  kVids = 27,                 // The Vids app on ChromeOS.
+  kMaxValue = kVids,
 };
 
 // A disabling mode that decides the user experience when a system feature is
@@ -80,6 +82,9 @@ extern const char kGoogleCalendarFeature[];
 extern const char kGoogleChatFeature[];
 extern const char kYoutubeFeature[];
 extern const char kGoogleMapsFeature[];
+extern const char kCalculatorFeature[];
+extern const char kTextEditorFeature[];
+extern const char kVidsFeature[];
 
 extern const char kBlockedDisableMode[];
 extern const char kHiddenDisableMode[];
@@ -92,14 +97,13 @@ class SystemFeaturesDisableListPolicyHandler
   SystemFeaturesDisableListPolicyHandler();
   ~SystemFeaturesDisableListPolicyHandler() override;
 
-  static void RegisterPrefs(PrefRegistrySimple* registry);
   static SystemFeature GetSystemFeatureFromAppId(const std::string& app_id);
   static bool IsSystemFeatureDisabled(SystemFeature feature,
                                       PrefService* const pref_service);
 
  protected:
   // ListPolicyHandler:
-  void ApplyList(base::Value::List filtered_list, PrefValueMap* prefs) override;
+  void ApplyList(base::ListValue filtered_list, PrefValueMap* prefs) override;
 
  private:
   SystemFeature ConvertToEnum(const std::string& system_feature);

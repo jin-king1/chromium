@@ -71,13 +71,26 @@ class WebDocumentSubresourceFilterImpl final
 
   // blink::WebDocumentSubresourceFilter:
   LoadPolicy GetLoadPolicy(const blink::WebURL& resourceUrl,
-                           network::mojom::RequestDestination) override;
+                           network::mojom::RequestDestination,
+                           ScopedRule* out_rule) override;
   LoadPolicy GetLoadPolicyForWebSocketConnect(
       const blink::WebURL& url) override;
   LoadPolicy GetLoadPolicyForWebTransportConnect(
       const blink::WebURL& url) override;
   void ReportDisallowedLoad() override;
   bool ShouldLogToConsole() override;
+  void GetDomainSelectors(
+      std::vector<std::string_view>& out_selectors) override;
+  bool MaybeHasStyleRule(uint32_t hash) override;
+  void GetSelectorsByClass(
+      std::string_view class_name,
+      uint32_t hash,
+      std::vector<std::string_view>& out_selectors) override;
+  void GetSelectorsById(std::string_view id_name,
+                        uint32_t hash,
+                        std::vector<std::string_view>& out_selectors) override;
+  bool IsDryRun() override;
+  uint64_t GetRulesetId() const override;
 
   const mojom::ActivationState& activation_state() const {
     return filter_.activation_state();
@@ -90,7 +103,8 @@ class WebDocumentSubresourceFilterImpl final
  private:
   LoadPolicy getLoadPolicyImpl(
       const blink::WebURL& url,
-      url_pattern_index::proto::ElementType element_type);
+      url_pattern_index::proto::ElementType element_type,
+      ScopedRule* out_rule = nullptr);
 
   mojom::ActivationState activation_state_;
   DocumentSubresourceFilter filter_;
@@ -101,4 +115,4 @@ class WebDocumentSubresourceFilterImpl final
 
 }  // namespace subresource_filter
 
-#endif  // COMPONENTS_SUBRESOURCE_FILTER_CONTENT_SHARED_RENDERER_WEB_DOCUMENT_SUBRESOURCE_FILTER_IMPL_H_
+#endif  // COMPONENTS_SUBRESOURCE_FILTER_CONTENT_RENDERER_WEB_DOCUMENT_SUBRESOURCE_FILTER_IMPL_H_

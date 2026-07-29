@@ -6,10 +6,11 @@
 #define UI_OZONE_PUBLIC_OVERLAY_SURFACE_CANDIDATE_H_
 
 #include <optional>
+#include <variant>
 #include <vector>
 
 #include "base/component_export.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
+#include "components/viz/common/resources/shared_image_format.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/gfx/buffer_types.h"
 #include "ui/gfx/color_space.h"
@@ -47,10 +48,10 @@ class COMPONENT_EXPORT(OZONE_BASE) OverlaySurfaceCandidate {
   // Transformation to apply to layer during composition.
   // Note: A |gfx::OverlayTransform| transforms the buffer within its bounds and
   // does not affect |display_rect|.
-  absl::variant<gfx::OverlayTransform, gfx::Transform> transform =
+  std::variant<gfx::OverlayTransform, gfx::Transform> transform =
       gfx::OVERLAY_TRANSFORM_NONE;
   // Format of the buffer to composite.
-  gfx::BufferFormat format = gfx::BufferFormat::BGRA_8888;
+  viz::SharedImageFormat format = viz::SinglePlaneFormat::kBGRA_8888;
   // Color space of the buffer
   gfx::ColorSpace color_space = gfx::ColorSpace::CreateSRGB();
   // Stacking order of the overlay plane relative to the main surface,
@@ -75,11 +76,6 @@ class COMPONENT_EXPORT(OZONE_BASE) OverlaySurfaceCandidate {
   // Optionally contains a pointer to the NativePixmap corresponding to this
   // candidate.
   scoped_refptr<gfx::NativePixmap> native_pixmap;
-  // A unique ID corresponding to |native_pixmap|. The ID is not reused even if
-  // |native_pixmap| is destroyed. Zero if |native_pixmap| is null.
-  // TODO(samans): This will not be necessary once Ozone/DRM not longer uses a
-  // cache for overlay testing. https://crbug.com/1034559
-  uint32_t native_pixmap_unique_id = 0;
   // To be modified by the implementer if this candidate can go into
   // an overlay.
   bool overlay_handled = false;

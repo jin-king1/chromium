@@ -4,18 +4,19 @@
 
 #include "components/autofill/core/browser/payments/payments_requests/get_bnpl_payment_instrument_for_fetching_vcn_request.h"
 
+#include "base/json/json_writer.h"
+#include "base/strings/escape.h"
+#include "base/strings/stringprintf.h"
 #include "base/test/mock_callback.h"
 #include "base/test/values_test_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
-namespace {
-using base::MockCallback;
-using base::test::IsJson;
-using Dict = base::Value::Dict;
-using testing::Field;
-}  // namespace
-
 namespace autofill::payments {
+namespace {
+
+using ::base::MockCallback;
+using ::testing::Field;
+using Dict = ::base::DictValue;
 
 class GetBnplPaymentInstrumentForFetchingVcnRequestTest : public testing::Test {
  public:
@@ -56,12 +57,14 @@ class GetBnplPaymentInstrumentForFetchingVcnRequestTest : public testing::Test {
 
 TEST_F(GetBnplPaymentInstrumentForFetchingVcnRequestTest, GetRequestUrlPath) {
   EXPECT_EQ(request_->GetRequestUrlPath(),
-            "payments/apis-secure/chromepaymentsservice/getpaymentinstrument");
+            "payments/apis-secure/chromepaymentsservice/"
+            "getpaymentinstrument?s7e_suffix=chromewallet");
 }
 
 TEST_F(GetBnplPaymentInstrumentForFetchingVcnRequestTest,
        GetRequestContentType) {
-  EXPECT_EQ(request_->GetRequestContentType(), "application/json");
+  EXPECT_EQ(request_->GetRequestContentType(),
+            "application/x-www-form-urlencoded");
 }
 
 TEST_F(GetBnplPaymentInstrumentForFetchingVcnRequestTest, GetRequestContent) {
@@ -70,7 +73,7 @@ TEST_F(GetBnplPaymentInstrumentForFetchingVcnRequestTest, GetRequestContent) {
           .Set("context",
                Dict()
                    .Set("billable_service",
-                        payments::kUnmaskPaymentMethodBillableServiceNumber)
+                        kUnmaskPaymentMethodBillableServiceNumber)
                    .Set("customer_context",
                         PaymentsRequest::BuildCustomerContextDictionary(
                             request_details_.billing_customer_number)))
@@ -87,7 +90,11 @@ TEST_F(GetBnplPaymentInstrumentForFetchingVcnRequestTest, GetRequestContent) {
                                    request_details_.redirect_url.spec())
                               .Set("issuer_id", request_details_.issuer_id)));
 
-  EXPECT_THAT(request_->GetRequestContent(), IsJson(request_dict));
+  EXPECT_EQ(request_->GetRequestContent(),
+            base::StringPrintf(
+                "requestContentType=application/json; charset=utf-8&request=%s",
+                base::EscapeUrlEncodedData(
+                    base::WriteJson(request_dict).value(), /*use_plus=*/true)));
 }
 
 TEST_F(GetBnplPaymentInstrumentForFetchingVcnRequestTest,
@@ -173,4 +180,5 @@ TEST_F(GetBnplPaymentInstrumentForFetchingVcnRequestTest, RespondToDelegate) {
       PaymentsAutofillClient::PaymentsRpcResult::kSuccess);
 }
 
+}  // namespace
 }  // namespace autofill::payments

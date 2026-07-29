@@ -56,9 +56,10 @@ if (is_android) {
     visibility = [
       ":*",
       "//chrome/android:*",
+      "//chrome/android/junit:*",
       "//chrome/browser/feed/android:*",
       "//chrome/browser/ui/android/hats:*",
-      "//chrome/browser/ui/android/hats/*:*",
+      "//chrome/browser/ui/android/hats/*",
       "//chrome/browser/ui/android/omnibox:*",
       "//chrome/browser/ui/android/signin:*",
       "//chrome/browser/xsurface_provider:*",
@@ -69,6 +70,10 @@ if (is_android) {
       "//components/minidump_uploader:minidump_uploader_java",
       "//third_party/androidx:androidx_annotation_annotation_java",
     ]
+  }
+
+  android_library("privacy_settings_java") {
+    sources = [ "settings/java/src/org/chromium/chrome/browser/privacy/settings/PrivacySettingsNavigation.java" ]
   }
 
   android_resources("java_resources") {
@@ -91,6 +96,7 @@ if (is_android) {
       ":*",
       "//chrome/android:jni_headers",
       "//chrome/browser",
+      "//chrome/browser/android",
     ]
     sources = [ "java/src/org/chromium/chrome/browser/privacy/secure_dns/SecureDnsBridge.java" ]
   }
@@ -114,6 +120,7 @@ if (is_win || is_linux || is_android || is_chromeos) {
     visibility = [
       ":traffic_annotation_proto",
       ":traffic_annotation_proto_gen",
+      ":traffic_annotation_proto_input_group",
     ]
     sources = [ "$root_gen_dir" +
                 "/chrome/browser/privacy/proto/chrome_settings.proto" ]
@@ -133,6 +140,7 @@ if (is_win || is_linux || is_android || is_chromeos) {
     visibility = [
       ":traffic_annotation_proto",
       ":traffic_annotation_proto_gen",
+      ":traffic_annotation_proto_input_group",
     ]
     sources = [
       "//components/policy/proto/chrome_device_policy.proto",
@@ -145,7 +153,7 @@ if (is_win || is_linux || is_android || is_chromeos) {
 
   proto_library("traffic_annotation_proto") {
     sources = [ "traffic_annotation.proto" ]
-    proto_deps = [
+    deps = [
       ":chrome_settings",
       ":device_policy_and_policy_common_definitions",
     ]
@@ -158,5 +166,47 @@ if (is_win || is_linux || is_android || is_chromeos) {
     ]
     generate_cc = false
     generate_library = false
+  }
+}
+
+source_set("privacy") {
+  public = [
+    "privacy_metrics_service.h",
+    "privacy_metrics_service_factory.h",
+  ]
+  sources = [
+    "privacy_metrics_service.cc",
+    "privacy_metrics_service_factory.cc",
+  ]
+  public_deps = [
+    "//base",
+    "//components/keyed_service/core",
+  ]
+  deps = [
+    "//chrome/browser/content_settings:content_settings_factory",
+    "//chrome/browser/preloading:prefs",
+    "//chrome/browser/profiles:profile",
+    "//chrome/common:constants",
+    "//components/content_settings/core/browser",
+    "//components/prefs",
+    "//components/spellcheck/browser",
+  ]
+}
+
+if (is_android) {
+  source_set("secure_dns_bridge") {
+    sources = [ "secure_dns_bridge.cc" ]
+    deps = [
+      "//base",
+      "//chrome/browser:browser_process",
+      "//chrome/browser/net",
+      "//chrome/browser/preferences:java_pref_names_srcjar",
+      "//chrome/browser/privacy:jni_headers",
+      "//components/country_codes",
+      "//components/prefs",
+      "//content/public/browser",
+      "//net",
+    ]
+    public_deps = [ "//chrome/browser:browser_public_dependencies" ]
   }
 }

@@ -4,6 +4,7 @@
 
 #include "ash/app_list/views/search_box_view.h"
 
+#include <algorithm>
 #include <map>
 #include <memory>
 #include <string>
@@ -12,10 +13,14 @@
 #include <vector>
 
 #include "ash/app_list/app_list_controller_impl.h"
+#include "ash/app_list/app_list_model_provider.h"
 #include "ash/app_list/app_list_presenter_impl.h"
+#include "ash/app_list/app_list_public_test_util.h"
 #include "ash/app_list/app_list_test_view_delegate.h"
 #include "ash/app_list/model/search/test_search_result.h"
 #include "ash/app_list/test/app_list_test_helper.h"
+#include "ash/app_list/test_app_list_client.h"
+#include "ash/app_list/views/app_list_bubble_view.h"
 #include "ash/app_list/views/app_list_main_view.h"
 #include "ash/app_list/views/app_list_search_view.h"
 #include "ash/app_list/views/app_list_view.h"
@@ -31,6 +36,7 @@
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
 #include "ash/constants/ash_switches.h"
+#include "ash/constants/web_app_id_constants.h"
 #include "ash/public/cpp/app_list/app_list_features.h"
 #include "ash/public/cpp/app_list/vector_icons/vector_icons.h"
 #include "ash/scanner/scanner_enterprise_policy.h"
@@ -46,18 +52,21 @@
 #include "ash/style/ash_color_provider.h"
 #include "ash/test/ash_test_base.h"
 #include "ash/wm/tablet_mode/tablet_mode_controller_test_api.h"
-#include "base/containers/contains.h"
+#include "ash/wm/window_state.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/metrics/user_action_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
-#include "chromeos/ash/services/assistant/public/cpp/features.h"
-#include "chromeos/ash/services/assistant/test_support/scoped_assistant_browser_delegate.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "components/account_id/account_id.h"
+#include "components/services/app_service/public/cpp/app.h"
+#include "components/services/app_service/public/cpp/app_registry_cache.h"
+#include "components/services/app_service/public/cpp/app_registry_cache_wrapper.h"
+#include "components/services/app_service/public/cpp/app_types.h"
 #include "components/vector_icons/vector_icons.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/abseil-cpp/absl/strings/ascii.h"
@@ -68,18 +77,21 @@
 #include "ui/color/color_provider_manager.h"
 #include "ui/compositor/layer.h"
 #include "ui/compositor/layer_animator.h"
-#include "ui/compositor/scoped_animation_duration_scale_mode.h"
 #include "ui/events/base_event_utils.h"
 #include "ui/events/event_constants.h"
 #include "ui/events/keycodes/keyboard_codes_posix.h"
 #include "ui/gfx/image/image_skia.h"
 #include "ui/gfx/image/image_unittest_util.h"
 #include "ui/gfx/paint_vector_icon.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/controls/button/image_button.h"
 #include "ui/views/controls/image_view.h"
 #include "ui/views/controls/textfield/textfield.h"
+#include "ui/views/test/views_test_utils.h"
 #include "ui/views/test/widget_test.h"
+#include "ui/views/view.h"
+#include "ui/wm/core/window_util.h"
 
 namespace {
 // kBestMatch is the second result container for productivity launcher search.
@@ -110,7 +122,7 @@ bool IsValidSearchBoxAccessibilityHint(const std::u16string& hint) {
               IDS_APP_LIST_SEARCH_BOX_PLACEHOLDER_IMAGES))};
   // Check if the current accessibility text is one of the possible
   // options.
-  return base::Contains(possible_a11y_text, hint);
+  return std::ranges::contains(possible_a11y_text, hint);
 }
 
 }  // namespace
@@ -119,6 +131,20 @@ namespace ash {
 namespace {
 
 using test::AppListTestViewDelegate;
+
+void AddGeminiApp() {
+  std::unique_ptr<apps::App> app = std::make_unique<apps::App>(
+      apps::AppType::kSystemWeb, std::string(kGeminiAppId));
+  app->name = "Gemini";
+  std::vector<apps::AppPtr> apps;
+  apps.push_back(std::move(app));
+  apps::AppRegistryCache* cache =
+      apps::AppRegistryCacheWrapper::Get().GetAppRegistryCache(
+          Shell::Get()->session_controller()->GetActiveAccountId());
+  ASSERT_TRUE(cache);
+  cache->OnAppsForTesting(std::move(apps), apps::AppType::kSystemWeb,
+                          /*should_notify_initialized=*/false);
+}
 
 SearchModel* GetSearchModel() {
   return AppListModelProvider::Get()->search_model();
@@ -152,8 +178,7 @@ class SearchBoxViewTest : public views::test::WidgetTest,
   SearchBoxViewTest()
       : views::test::WidgetTest(std::make_unique<base::test::TaskEnvironment>(
             base::test::TaskEnvironment::MainThreadType::UI,
-            base::test::TaskEnvironment::TimeSource::MOCK_TIME)) {
-  }
+            base::test::TaskEnvironment::TimeSource::MOCK_TIME)) {}
 
   SearchBoxViewTest(const SearchBoxViewTest&) = delete;
   SearchBoxViewTest& operator=(const SearchBoxViewTest&) = delete;
@@ -170,7 +195,7 @@ class SearchBoxViewTest : public views::test::WidgetTest,
     ui::ColorProviderManager::Get().AppendColorProviderInitializer(
         base::BindRepeating(AddAshColorMixer));
 
-    widget_ = CreateTopLevelPlatformWidget();
+    widget_ = base::WrapUnique(CreateTopLevelPlatformWidget());
     widget_->SetBounds(gfx::Rect(0, 0, 300, 200));
 
     std::unique_ptr<SearchBoxView> view;
@@ -188,17 +213,16 @@ class SearchBoxViewTest : public views::test::WidgetTest,
 
   void TearDown() override {
     ui::ColorProviderManager::ResetForTesting();
-    if (app_list_view_) {
-      app_list_view_->GetWidget()->Close();
-    }
-    widget_->CloseNow();
+    counter_view_ = nullptr;
+    search_view_ = nullptr;
+    view_ = nullptr;
+    widget_.release()->CloseNow();
     views::test::WidgetTest::TearDown();
   }
 
  protected:
-  views::Widget* widget() { return widget_; }
+  views::Widget* widget() { return widget_.get(); }
   SearchBoxView* view() { return view_; }
-  AppListView* app_list_view() { return app_list_view_; }
   AppListTestViewDelegate* view_delegate() { return &view_delegate_; }
 
   void SetSearchEngineIsGoogle(bool is_google) {
@@ -282,19 +306,16 @@ class SearchBoxViewTest : public views::test::WidgetTest,
                     bool initiated_by_user) override {
     search_view_->UpdateForNewSearch(!trimmed_query.empty());
   }
-  void AssistantButtonPressed() override {}
   void CloseButtonPressed() override {}
   void ActiveChanged(SearchBoxViewBase* sender) override {}
   void OnSearchBoxKeyEvent(ui::KeyEvent* event) override {}
   bool CanSelectSearchResults() override { return true; }
 
   AshColorProvider ash_color_provider_;
-  raw_ptr<AppListSearchView, DanglingUntriaged> search_view_ = nullptr;
+  raw_ptr<AppListSearchView> search_view_ = nullptr;
   AppListTestViewDelegate view_delegate_;
-  raw_ptr<views::Widget, DanglingUntriaged> widget_ = nullptr;
-  raw_ptr<AppListView> app_list_view_ = nullptr;
-  raw_ptr<SearchBoxView, DanglingUntriaged> view_ =
-      nullptr;  // Owned by views hierarchy.
+  std::unique_ptr<views::Widget> widget_ = nullptr;
+  raw_ptr<SearchBoxView> view_ = nullptr;  // Owned by views hierarchy.
   raw_ptr<KeyPressCounterView> counter_view_ =
       nullptr;  // Owned by views hierarchy.
   int last_result_id_ = 0;
@@ -770,47 +791,11 @@ TEST_F(SearchBoxViewTest, SearchResultBaseViewAccessibleProperties) {
   EXPECT_EQ(ax::mojom::DefaultActionVerb::kClick, data.GetDefaultActionVerb());
 }
 
-class SearchBoxViewAssistantButtonTest : public SearchBoxViewTest {
- public:
-  SearchBoxViewAssistantButtonTest() = default;
-  SearchBoxViewAssistantButtonTest(const SearchBoxViewAssistantButtonTest&) =
-      delete;
-  SearchBoxViewAssistantButtonTest& operator=(
-      const SearchBoxViewAssistantButtonTest&) = delete;
-  ~SearchBoxViewAssistantButtonTest() override = default;
-
-  // Overridden from testing::Test
-  void SetUp() override {
-    SearchBoxViewTest::SetUp();
-    GetSearchModel()->search_box()->SetShowAssistantButton(true);
-  }
-};
-
-// Tests that the assistant button is visible by default.
-TEST_F(SearchBoxViewAssistantButtonTest, AssistantButtonVisibleByDefault) {
-  EXPECT_TRUE(view()->edge_button_container()->GetVisible());
-  EXPECT_TRUE(view()->assistant_button()->GetVisible());
-}
-
-// Tests that the assistant button is invisible after typing in the search box,
-// and comes back when search box is empty.
-TEST_F(SearchBoxViewAssistantButtonTest,
-       AssistantButtonChangeVisibilityWithTyping) {
-  KeyPress(ui::VKEY_A);
-  EXPECT_FALSE(view()->edge_button_container()->GetVisible());
-
-  KeyPress(ui::VKEY_BACK);
-  EXPECT_TRUE(view()->edge_button_container()->GetVisible());
-  EXPECT_TRUE(view()->assistant_button()->GetVisible());
-}
-
 class SearchBoxViewFilterButtonTest : public SearchBoxViewTest {
  public:
   SearchBoxViewFilterButtonTest() {
     scoped_feature_list_.InitWithFeatures(
-        {features::kLauncherSearchControl,
-         features::kFeatureManagementLocalImageSearch},
-        {});
+        {features::kFeatureManagementLocalImageSearch}, {});
   }
   SearchBoxViewFilterButtonTest(const SearchBoxViewFilterButtonTest&) = delete;
   SearchBoxViewFilterButtonTest& operator=(
@@ -957,8 +942,7 @@ TEST_F(SearchBoxViewAutocompleteTest, SearchBoxAcceptsAutocompleteForClick) {
   // Forward |mouse_event| to HandleMouseEvent() directly because we cannot
   // test MouseEvents properly due to not having ash dependencies. Static cast
   // to TextfieldController because HandleGestureEvent() is a private method
-  // in SearchBoxView. TODO(crbug.com/41410759): Derive SearchBoxViewTest from
-  // AshTestBase in order to test events using EventGenerator instead.
+  // in SearchBoxView.
   static_cast<views::TextfieldController*>(view())->HandleMouseEvent(
       view()->search_box(), mouse_event);
   // Search box autocomplete suggestion is accepted, and triggers another query.
@@ -977,9 +961,7 @@ TEST_F(SearchBoxViewAutocompleteTest, SearchBoxAcceptsAutocompleteForTap) {
   // Forward |gesture_event| to HandleGestureEvent() directly because we
   // cannot test GestureEvents properly due to not having ash dependencies.
   // Static cast to TextfieldController because HandleGestureEvent() is
-  // private in SearchBoxView. TODO(crbug.com/41410759): Derive
-  // SearchBoxViewTest from AshTestBase in order to test events using
-  // EventGenerator instead.
+  // private in SearchBoxView.
   static_cast<views::TextfieldController*>(view())->HandleGestureEvent(
       view()->search_box(), gesture_event);
   // Search box autocomplete suggestion is accepted, and trigger updated query.
@@ -1202,24 +1184,25 @@ class SearchBoxViewAnimationTest : public AshTestBase {
     AshTestBase::SetUp();
     ash::TabletModeControllerTestApi().EnterTabletMode();
     non_zero_duration_mode_ =
-        std::make_unique<ui::ScopedAnimationDurationScaleMode>(
-            ui::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
-    GetSearchModel()->search_box()->SetShowAssistantButton(true);
+        std::make_unique<gfx::ScopedAnimationDurationScaleMode>(
+            gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
   }
 
-  std::unique_ptr<ui::ScopedAnimationDurationScaleMode> non_zero_duration_mode_;
+  std::unique_ptr<gfx::ScopedAnimationDurationScaleMode>
+      non_zero_duration_mode_;
 };
 
 // Test that the search box image buttons fade in and out correctly when the
 // search box is activated and deactivated.
 TEST_F(SearchBoxViewAnimationTest, SearchBoxImageButtonAnimations) {
+  AddGeminiApp();
+
   auto* search_box = GetAppListTestHelper()->GetSearchBoxView();
 
-  // Initially the assistant button should be shown, and the close button
+  // Initially the Gemini button should be shown, and the close button
   // hidden.
   EXPECT_FALSE(search_box->filter_and_close_button_container()->GetVisible());
   EXPECT_TRUE(search_box->edge_button_container()->GetVisible());
-  EXPECT_TRUE(search_box->assistant_button()->GetVisible());
 
   // Set search box to active state.
   search_box->SetSearchBoxActive(true, ui::EventType::kMousePressed);
@@ -1233,15 +1216,6 @@ TEST_F(SearchBoxViewAnimationTest, SearchBoxImageButtonAnimations) {
       ui::LayerAnimationElement::AnimatableProperty::OPACITY));
   EXPECT_EQ(close_animator->GetTargetOpacity(), 1.0f);
 
-  // Assistant button should be fading out.
-  EXPECT_TRUE(search_box->edge_button_container()->GetVisible());
-  EXPECT_TRUE(search_box->assistant_button()->GetVisible());
-  auto* assistant_animator =
-      search_box->edge_button_container()->layer()->GetAnimator();
-  EXPECT_TRUE(assistant_animator->IsAnimatingProperty(
-      ui::LayerAnimationElement::AnimatableProperty::OPACITY));
-  EXPECT_EQ(assistant_animator->GetTargetOpacity(), 0.0f);
-
   // Set search box to inactive state, hiding the close button.
   search_box->SetSearchBoxActive(false, ui::EventType::kMousePressed);
 
@@ -1250,14 +1224,6 @@ TEST_F(SearchBoxViewAnimationTest, SearchBoxImageButtonAnimations) {
   EXPECT_TRUE(close_animator->IsAnimatingProperty(
       ui::LayerAnimationElement::AnimatableProperty::OPACITY));
   EXPECT_EQ(close_animator->GetTargetOpacity(), 0.0f);
-
-  // Assistant button should be fading in.
-  EXPECT_TRUE(search_box->edge_button_container()->GetVisible());
-  EXPECT_TRUE(search_box->assistant_button()->GetVisible());
-  ASSERT_TRUE(assistant_animator);
-  EXPECT_TRUE(assistant_animator->IsAnimatingProperty(
-      ui::LayerAnimationElement::AnimatableProperty::OPACITY));
-  EXPECT_EQ(assistant_animator->GetTargetOpacity(), 1.0f);
 }
 
 // Test that activating and deactivating the search box causes the search icon
@@ -1330,15 +1296,9 @@ TEST_F(SearchBoxViewAutocompleteTest, AccessibleValue) {
             data2.GetString16Attribute(ax::mojom::StringAttribute::kValue));
 }
 
-class AssistantNewEntryPointTestBase
-    : public AshTestBase,
-      public testing::WithParamInterface<bool> {
+class GeminiButtonTest : public AshTestBase,
+                         public testing::WithParamInterface<bool> {
  public:
-  explicit AssistantNewEntryPointTestBase(bool enable_new_entry_point) {
-    scoped_feature_list_.InitWithFeatureState(
-        ash::assistant::features::kEnableNewEntryPoint, enable_new_entry_point);
-  }
-
   void SetUp() override {
     AshTestBase::SetUp();
 
@@ -1355,7 +1315,7 @@ class AssistantNewEntryPointTestBase
     AshTestBase::TearDown();
   }
 
-  ~AssistantNewEntryPointTestBase() override = default;
+  ~GeminiButtonTest() override = default;
 
   static std::string GenerateParamName(
       const testing::TestParamInfo<bool>& info) {
@@ -1364,92 +1324,49 @@ class AssistantNewEntryPointTestBase
 
  protected:
   bool IsTabletMode() const { return GetParam(); }
-
-  assistant::ScopedAssistantBrowserDelegate scoped_assistant_browser_delegate_;
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
-class AssistantNewEntryPointTest : public AssistantNewEntryPointTestBase {
- public:
-  AssistantNewEntryPointTest()
-      : AssistantNewEntryPointTestBase(/*enable_new_entry_point=*/true) {}
-  ~AssistantNewEntryPointTest() override = default;
 };
 
 INSTANTIATE_TEST_SUITE_P(All,
-                         AssistantNewEntryPointTest,
+                         GeminiButtonTest,
                          testing::Bool(),
-                         &AssistantNewEntryPointTestBase::GenerateParamName);
+                         &GeminiButtonTest::GenerateParamName);
 
-TEST_P(AssistantNewEntryPointTest, NewEntryPointButtonVisibility) {
+TEST_P(GeminiButtonTest, Visibility) {
+  AddGeminiApp();
   GetAppListTestHelper()->ShowAppList();
 
-  views::ImageButton* new_entry_point_button =
-      GetAppListTestHelper()
-          ->GetSearchBoxView()
-          ->assistant_new_entry_point_button();
-  ASSERT_TRUE(new_entry_point_button);
-  EXPECT_TRUE(new_entry_point_button->GetVisible());
-
-  views::ImageButton* assistant_button =
-      GetAppListTestHelper()->GetSearchBoxView()->assistant_button();
-  ASSERT_TRUE(assistant_button);
-  EXPECT_FALSE(assistant_button->GetVisible());
+  views::ImageButton* gemini_button =
+      GetAppListTestHelper()->GetSearchBoxView()->gemini_button();
+  ASSERT_TRUE(gemini_button);
+  EXPECT_TRUE(gemini_button->GetVisible());
 }
 
-TEST_P(AssistantNewEntryPointTest, NewEntryPointButtonOpensNewEntryPoint) {
-  base::test::TestFuture<void> open_new_entry_point_future;
-  scoped_assistant_browser_delegate_.SetOpenNewEntryPointClosure(
-      open_new_entry_point_future.GetCallback());
+TEST_P(GeminiButtonTest, Activation) {
+  TestAppListClient* test_app_list_client = GetTestAppListClient();
+  ASSERT_EQ(0, test_app_list_client->activate_item_count());
 
-  base::UserActionTester user_action_tester;
+  AddGeminiApp();
 
   GetAppListTestHelper()->ShowAppList();
-  views::ImageButton* new_entry_point_button =
-      GetAppListTestHelper()
-          ->GetSearchBoxView()
-          ->assistant_new_entry_point_button();
-  ASSERT_TRUE(new_entry_point_button);
-  ASSERT_TRUE(new_entry_point_button->GetVisible());
+  views::test::RunScheduledLayout(
+      IsTabletMode() ? static_cast<views::View*>(GetAppListView())
+                     : static_cast<views::View*>(GetAppListBubbleView()));
+
+  views::ImageButton* gemini_button =
+      GetAppListTestHelper()->GetSearchBoxView()->gemini_button();
+  ASSERT_TRUE(gemini_button);
+  ASSERT_TRUE(gemini_button->GetVisible());
 
   ui::test::EventGenerator* generator = GetEventGenerator();
   if (IsTabletMode()) {
-    generator->GestureTapAt(
-        new_entry_point_button->GetBoundsInScreen().CenterPoint());
+    generator->GestureTapAt(gemini_button->GetBoundsInScreen().CenterPoint());
   } else {
-    generator->MoveMouseTo(
-        new_entry_point_button->GetBoundsInScreen().CenterPoint());
+    generator->MoveMouseTo(gemini_button->GetBoundsInScreen().CenterPoint());
     generator->ClickLeftButton();
   }
 
-  EXPECT_TRUE(open_new_entry_point_future.Wait())
-      << "Expect OpenNewEntryPoint to be called";
-  EXPECT_EQ(
-      1, user_action_tester.GetActionCount("Assistant.NewEntryPoint.Launcher"));
-}
-
-class AssistantNewEntryPointDisabledTest
-    : public AssistantNewEntryPointTestBase {
- public:
-  AssistantNewEntryPointDisabledTest()
-      : AssistantNewEntryPointTestBase(/*enable_new_entry_point=*/false) {}
-  ~AssistantNewEntryPointDisabledTest() override = default;
-};
-
-INSTANTIATE_TEST_SUITE_P(All,
-                         AssistantNewEntryPointDisabledTest,
-                         testing::Bool(),
-                         &AssistantNewEntryPointTestBase::GenerateParamName);
-
-TEST_P(AssistantNewEntryPointDisabledTest, NewEntryPointButtonHidden) {
-  GetAppListTestHelper()->ShowAppList();
-  views::ImageButton* new_entry_point_button =
-      GetAppListTestHelper()
-          ->GetSearchBoxView()
-          ->assistant_new_entry_point_button();
-  EXPECT_FALSE(new_entry_point_button);
+  EXPECT_EQ(1, test_app_list_client->activate_item_count());
+  EXPECT_EQ(kGeminiAppId, test_app_list_client->activate_item_last_id());
 }
 
 class SunfishLauncherButtonTest : public AshTestBase,
@@ -1583,6 +1500,36 @@ TEST_P(SunfishLauncherButtonTest, TabletModeAppList) {
   ASSERT_TRUE(sunfish_button);
   GestureTapOn(sunfish_button);
   EXPECT_TRUE(presenter->GetTargetVisibility());
+}
+
+TEST_P(SunfishLauncherButtonTest, TabletModeSwitchesToLastWindow) {
+  if (!IsSunfishEnabled()) {
+    // TODO(b/356877313): Consider unparametizing these tests.
+    GTEST_SKIP() << "skip if not enabled";
+  }
+  ash::TabletModeControllerTestApi().EnterTabletMode();
+  // Activate some windows.
+  std::unique_ptr<aura::Window> w1 = CreateWindowWithAppType();
+  std::unique_ptr<aura::Window> w2 = CreateWindowWithAppType();
+  std::unique_ptr<aura::Window> w3 = CreateWindowWithAppType();
+  wm::ActivateWindow(w3.get());
+  wm::ActivateWindow(w2.get());
+  wm::ActivateWindow(w1.get());
+  // Add a number of apps.
+  AppListTestHelper* helper = GetAppListTestHelper();
+  helper->AddAppItems(5);
+  helper->ShowAppList();
+  AppListPresenterImpl* presenter =
+      Shell::Get()->app_list_controller()->fullscreen_presenter();
+  ASSERT_TRUE(presenter);
+  EXPECT_TRUE(presenter->GetTargetVisibility());
+
+  // Press the launcher button. Test the last window is now active.
+  views::ImageButton* sunfish_button =
+      helper->GetSearchBoxView()->sunfish_button();
+  ASSERT_TRUE(sunfish_button);
+  GestureTapOn(sunfish_button);
+  EXPECT_TRUE(WindowState::Get(w1.get())->IsActive());
 }
 
 }  // namespace

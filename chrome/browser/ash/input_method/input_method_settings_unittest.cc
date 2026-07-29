@@ -10,7 +10,6 @@
 #include "base/strings/strcat.h"
 #include "base/test/gtest_util.h"
 #include "base/test/scoped_feature_list.h"
-#include "chrome/common/pref_names.h"
 #include "chromeos/ash/services/ime/public/mojom/input_method.mojom-shared.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/testing_pref_service.h"
@@ -28,20 +27,21 @@ constexpr char kKoreanEngineId[] = "ko-t-i0-und";
 constexpr char kPinyinEngineId[] = "zh-t-i0-pinyin";
 constexpr char kZhuyinEngineId[] = "zh-hant-t-i0-und";
 constexpr char kJapaneseEngineId[] = "nacl_mozc_jp";
+constexpr char kJapaneseUsEngineId[] = "nacl_mozc_us";
 
 constexpr char kVietnameseVniEngineId[] = "vkd_vi_vni";
 constexpr char kVietnameseTelexEngineId[] = "vkd_vi_telex";
 
 void RegisterTestingPrefs(TestingPrefServiceSimple& prefs,
-                          const base::Value::Dict& dict) {
+                          const base::DictValue& dict) {
   prefs.registry()->RegisterDictionaryPref(
-      ::prefs::kLanguageInputMethodSpecificSettings);
-  prefs.Set(::prefs::kLanguageInputMethodSpecificSettings,
+      ash::prefs::kLanguageInputMethodSpecificSettings);
+  prefs.Set(ash::prefs::kLanguageInputMethodSpecificSettings,
             base::Value(dict.Clone()));
 }
 
 TEST(CreateSettingsFromPrefsTest, CreateLatinSettingsDefault) {
-  base::Value::Dict dict;
+  base::DictValue dict;
   TestingPrefServiceSimple prefs;
   RegisterTestingPrefs(prefs, dict);
 
@@ -56,7 +56,7 @@ TEST(CreateSettingsFromPrefsTest, CreateLatinSettingsDefault) {
 TEST(CreateSettingsFromPrefsTest, CreateLatinSettingsWithMultiwordEnabled) {
   base::test::ScopedFeatureList features;
   TestingPrefServiceSimple prefs;
-  base::Value::Dict dict;
+  base::DictValue dict;
   dict.SetByDottedPath(base::StrCat({kUsEnglishEngineId,
                                      ".physicalKeyboardAutoCorrectionLevel"}),
                        1);
@@ -77,7 +77,7 @@ TEST(CreateSettingsFromPrefsTest, CreateLatinSettingsWithMultiwordEnabled) {
 TEST(CreateSettingsFromPrefsTest, CreateLatinSettingsWithMultiwordDisabled) {
   base::test::ScopedFeatureList features;
   TestingPrefServiceSimple prefs;
-  base::Value::Dict dict;
+  base::DictValue dict;
   dict.SetByDottedPath(base::StrCat({kUsEnglishEngineId,
                                      ".physicalKeyboardAutoCorrectionLevel"}),
                        1);
@@ -99,7 +99,7 @@ TEST(CreateSettingsFromPrefsTest,
      PredictiveWritingEnabledWhenMultiWordAllowedAndEnabled) {
   base::test::ScopedFeatureList features;
   TestingPrefServiceSimple prefs;
-  base::Value::Dict dict;
+  base::DictValue dict;
   RegisterTestingPrefs(prefs, dict);
 
   const auto settings = CreateSettingsFromPrefs(prefs, kUsEnglishEngineId);
@@ -114,7 +114,7 @@ TEST(CreateSettingsFromPrefsTest,
   base::test::ScopedFeatureList features;
   features.InitWithFeatures({}, {features::kAssistMultiWord});
   TestingPrefServiceSimple prefs;
-  base::Value::Dict dict;
+  base::DictValue dict;
   RegisterTestingPrefs(prefs, dict);
 
   const auto settings = CreateSettingsFromPrefs(prefs, kUsEnglishEngineId);
@@ -125,7 +125,7 @@ TEST(CreateSettingsFromPrefsTest,
 }
 
 TEST(CreateSettingsFromPrefsTest, CreateKoreanSettingsDefault) {
-  base::Value::Dict dict;
+  base::DictValue dict;
   TestingPrefServiceSimple prefs;
   RegisterTestingPrefs(prefs, dict);
 
@@ -138,7 +138,7 @@ TEST(CreateSettingsFromPrefsTest, CreateKoreanSettingsDefault) {
 }
 
 TEST(CreateSettingsFromPrefsTest, CreateKoreanSettings) {
-  base::Value::Dict dict;
+  base::DictValue dict;
   dict.SetByDottedPath(base::StrCat({kKoreanEngineId, ".koreanKeyboardLayout"}),
                        "3 Set (390) / 세벌식 (390)");
   dict.SetByDottedPath(
@@ -155,7 +155,7 @@ TEST(CreateSettingsFromPrefsTest, CreateKoreanSettings) {
 }
 
 TEST(CreateSettingsFromPrefsTest, CreatePinyinSettingsDefault) {
-  base::Value::Dict dict;
+  base::DictValue dict;
   TestingPrefServiceSimple prefs;
   RegisterTestingPrefs(prefs, dict);
 
@@ -186,7 +186,7 @@ TEST(CreateSettingsFromPrefsTest, CreatePinyinSettingsDefault) {
 }
 
 TEST(CreateSettingsFromPrefsTest, CreatePinyinSettings) {
-  base::Value::Dict dict;
+  base::DictValue dict;
   dict.SetByDottedPath(base::StrCat({kPinyinEngineId, ".en:eng"}), true);
   dict.SetByDottedPath(base::StrCat({kPinyinEngineId, ".k:g"}), true);
   dict.SetByDottedPath(base::StrCat({kPinyinEngineId, ".in:ing"}), true);
@@ -232,7 +232,7 @@ TEST(CreateSettingsFromPrefsTest, CreatePinyinSettings) {
 }
 
 TEST(CreateSettingsFromPrefsTest, CreateZhuyinSettingsDefault) {
-  base::Value::Dict dict;
+  base::DictValue dict;
   TestingPrefServiceSimple prefs;
   RegisterTestingPrefs(prefs, dict);
 
@@ -247,7 +247,7 @@ TEST(CreateSettingsFromPrefsTest, CreateZhuyinSettingsDefault) {
 }
 
 TEST(CreateSettingsFromPrefsTest, CreateVietnameseVniSettings) {
-  base::Value::Dict dict;
+  base::DictValue dict;
   TestingPrefServiceSimple prefs;
   RegisterTestingPrefs(prefs, dict);
 
@@ -259,7 +259,7 @@ TEST(CreateSettingsFromPrefsTest, CreateVietnameseVniSettings) {
 }
 
 TEST(CreateSettingsFromPrefsTest, CreateVietnameseTelexSettings) {
-  base::Value::Dict dict;
+  base::DictValue dict;
   TestingPrefServiceSimple prefs;
   RegisterTestingPrefs(prefs, dict);
 
@@ -272,7 +272,7 @@ TEST(CreateSettingsFromPrefsTest, CreateVietnameseTelexSettings) {
 }
 
 TEST(CreateSettingsFromPrefsTest, CreateZhuyinSettings) {
-  base::Value::Dict dict;
+  base::DictValue dict;
   dict.SetByDottedPath(base::StrCat({kZhuyinEngineId, ".zhuyinKeyboardLayout"}),
                        "IBM");
   dict.SetByDottedPath(base::StrCat({kZhuyinEngineId, ".zhuyinSelectKeys"}),
@@ -291,10 +291,11 @@ TEST(CreateSettingsFromPrefsTest, CreateZhuyinSettings) {
   EXPECT_EQ(zhuyin_settings.page_size, 8u);
 }
 
-TEST(CreateSettingsFromPrefsTest, CreateJapaneseSettings) {
-  using ::ash::ime::mojom::JapaneseSettings;
+class JapaneseTesting : public testing::TestWithParam<std::string> {};
 
-  base::Value::Dict jp_prefs;
+TEST_P(JapaneseTesting, CreateJapaneseSettingsFromPrefsTest) {
+  using ::ash::ime::mojom::JapaneseSettings;
+  base::DictValue jp_prefs;
   jp_prefs.Set("AutomaticallySendStatisticsToGoogle", false);
   jp_prefs.Set("AutomaticallySwitchToHalfwidth", false);
   jp_prefs.Set("JapaneseDisableSuggestions", true);
@@ -309,18 +310,29 @@ TEST(CreateSettingsFromPrefsTest, CreateJapaneseSettings) {
   jp_prefs.Set("UseSystemDictionary", false);
   jp_prefs.Set("numberOfSuggestions", 5);
 
-  base::Value::Dict full_prefs;
+  base::DictValue full_prefs;
+
+  // TODO(crbug.com/203464079): Use distinct CrOS prefs for nacl_mozc_jp
+  // ("Japanese [for JIS keyboard]") and nacl_mozc_us ("Japanese for US
+  // keyboard") input methods. Due to singleton constraints in the legacy
+  // implementation, unlike all other input methods whose settings were distinct
+  // from one another, these two input methods shared the same settings. Upon
+  // migration to CrOS prefs, the unintended sharing was intentionally retained
+  // until the issue is separately addressed outside the scope of the said
+  // migration. Thus a single Japanese prefs entry with key "nacl_mozc_jp" is
+  // currently used for both "nacl_mozc_jp" and "nacl_mozc_us" input methods.
   full_prefs.Set(kJapaneseEngineId, std::move(jp_prefs));
+
   TestingPrefServiceSimple prefs;
   RegisterTestingPrefs(prefs, full_prefs);
 
   const mojom::InputMethodSettingsPtr settings =
-      CreateSettingsFromPrefs(prefs, kJapaneseEngineId);
+      CreateSettingsFromPrefs(prefs, GetParam());
 
   ASSERT_TRUE(settings->is_japanese_settings());
   mojom::JapaneseSettingsPtr expected = mojom::JapaneseSettings::New();
-  expected->automatically_send_statistics_to_google = false;
-  expected->automatically_switch_to_halfwidth = true;
+  expected->unused2 = false;
+  expected->automatically_switch_to_halfwidth = false;
   expected->disable_personalized_suggestions = true;
   expected->input_mode = JapaneseSettings::InputMode::kKana;
   expected->keymap_style = JapaneseSettings::KeymapStyle::kChromeos;
@@ -338,6 +350,11 @@ TEST(CreateSettingsFromPrefsTest, CreateJapaneseSettings) {
   EXPECT_EQ(settings->get_japanese_settings(), expected);
 }
 
+INSTANTIATE_TEST_SUITE_P(CreateJapaneseSettingsFromPrefsTestSuite,
+                         JapaneseTesting,
+                         testing::Values(kJapaneseEngineId,
+                                         kJapaneseUsEngineId));
+
 TEST(CreateSettingsFromPrefsTest, AutocorrectIsSupportedForLatin) {
   ASSERT_TRUE(IsAutocorrectSupported("xkb:ca:multix:fra"));
   ASSERT_TRUE(IsAutocorrectSupported("xkb:de::ger"));
@@ -354,74 +371,6 @@ TEST(CreateSettingsFromPrefsTest, AutocorrectIsNotSupportedForNonLatin) {
   ASSERT_FALSE(IsAutocorrectSupported("zh-hant-t-i0-pinyin"));
   ASSERT_FALSE(IsAutocorrectSupported("zh-hant-t-i0-und"));
   ASSERT_FALSE(IsAutocorrectSupported("zh-t-i0-pinyin"));
-}
-
-TEST(InputMethodSettingsTest, GetLanguageSpecificInputMethodSettings) {
-  base::Value::Dict dict;
-  dict.SetByDottedPath(base::StrCat({kZhuyinEngineId, ".field1"}), "DEFAULT1");
-  dict.SetByDottedPath(base::StrCat({kZhuyinEngineId, ".field2"}), "DEFAULT2");
-  dict.SetByDottedPath(base::StrCat({kZhuyinEngineId, ".field3"}), "DEFAULT3");
-  TestingPrefServiceSimple prefs;
-  RegisterTestingPrefs(prefs, dict);
-
-  base::Value::Dict new_prefs;
-  new_prefs.Set("field2", "CHANGED");
-  EXPECT_EQ(
-      *GetLanguageInputMethodSpecificSetting(prefs, kZhuyinEngineId, "field1"),
-      "DEFAULT1");
-  EXPECT_EQ(
-      *GetLanguageInputMethodSpecificSetting(prefs, kZhuyinEngineId, "field2"),
-      "DEFAULT2");
-  EXPECT_EQ(
-      *GetLanguageInputMethodSpecificSetting(prefs, kZhuyinEngineId, "field3"),
-      "DEFAULT3");
-}
-
-TEST(InputMethodSettingsTest,
-     SetLanguageInputMethodSpecificSettingExistingEngine) {
-  base::Value::Dict dict;
-  dict.SetByDottedPath(base::StrCat({kZhuyinEngineId, ".field1"}), "DEFAULT");
-  dict.SetByDottedPath(base::StrCat({kZhuyinEngineId, ".field2"}), "DEFAULT");
-  dict.SetByDottedPath(base::StrCat({kZhuyinEngineId, ".field3"}), "DEFAULT");
-  TestingPrefServiceSimple prefs;
-  RegisterTestingPrefs(prefs, dict);
-
-  base::Value::Dict new_prefs;
-  new_prefs.Set("field2", "CHANGED");
-  SetLanguageInputMethodSpecificSetting(prefs, kZhuyinEngineId, new_prefs);
-
-  const base::Value* prefs_val =
-      prefs.GetUserPref(::prefs::kLanguageInputMethodSpecificSettings);
-
-  base::Value::Dict expected;
-  expected.SetByDottedPath(base::StrCat({kZhuyinEngineId, ".field1"}),
-                           "DEFAULT");
-  expected.SetByDottedPath(base::StrCat({kZhuyinEngineId, ".field2"}),
-                           "CHANGED");
-  expected.SetByDottedPath(base::StrCat({kZhuyinEngineId, ".field3"}),
-                           "DEFAULT");
-
-  EXPECT_EQ(*prefs_val->GetIfDict(), expected);
-}
-
-TEST(InputMethodSettingsTest, SetLanguageInputMethodSpecificSettingNewEngine) {
-  base::Value::Dict dict;
-  dict.SetByDottedPath("existing-engine.field1", "DEFAULT");
-  TestingPrefServiceSimple prefs;
-  RegisterTestingPrefs(prefs, dict);
-
-  base::Value::Dict new_prefs;
-  new_prefs.Set("field1", "NEW");
-  SetLanguageInputMethodSpecificSetting(prefs, "brand-new-engine", new_prefs);
-
-  const base::Value* prefs_val =
-      prefs.GetUserPref(::prefs::kLanguageInputMethodSpecificSettings);
-
-  base::Value::Dict expected;
-  expected.SetByDottedPath("existing-engine.field1", "DEFAULT");
-  expected.SetByDottedPath("brand-new-engine.field1", "NEW");
-
-  EXPECT_EQ(*prefs_val->GetIfDict(), expected);
 }
 
 }  // namespace

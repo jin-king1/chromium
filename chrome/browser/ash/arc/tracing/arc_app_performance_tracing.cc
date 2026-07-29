@@ -7,8 +7,8 @@
 #include "ash/constants/ash_features.h"
 #include "ash/display/cros_display_config.h"
 #include "ash/shell.h"
+#include "base/check_is_test.h"
 #include "base/functional/bind.h"
-#include "base/memory/singleton.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/no_destructor.h"
 #include "base/strings/string_util.h"
@@ -63,11 +63,12 @@ class ArcAppPerformanceTracingFactory
   static constexpr const char* kName = "ArcAppPerformanceTracingFactory";
 
   static ArcAppPerformanceTracingFactory* GetInstance() {
-    return base::Singleton<ArcAppPerformanceTracingFactory>::get();
+    static base::NoDestructor<ArcAppPerformanceTracingFactory> instance;
+    return instance.get();
   }
 
  private:
-  friend base::DefaultSingletonTraits<ArcAppPerformanceTracingFactory>;
+  friend base::NoDestructor<ArcAppPerformanceTracingFactory>;
   ArcAppPerformanceTracingFactory() {
     DependsOn(ArcAppListPrefsFactory::GetInstance());
     // TODO(crbug.com/40227318): This should probably depend on SyncService.
@@ -120,6 +121,8 @@ class AppToCategoryMapper {
   }
 
  private:
+  friend base::NoDestructor<AppToCategoryMapper>;
+
   ~AppToCategoryMapper() = default;
 
   std::map<std::string, std::string> app_id_to_category_;
@@ -148,7 +151,7 @@ ArcAppPerformanceTracing::ArcAppPerformanceTracing(
     exo::WMHelper::GetInstance()->AddActivationObserver(this);
   }
   ArcAppListPrefs::Get(context_)->AddObserver(this);
-  display::Screen::GetScreen()->AddObserver(this);
+  display::Screen::Get()->AddObserver(this);
 }
 
 // Releasing resources in DTOR is not safe, see |Shutdown|.
@@ -188,7 +191,7 @@ void ArcAppPerformanceTracing::MaybeCancelTracing() {
 }
 
 void ArcAppPerformanceTracing::Shutdown() {
-  display::Screen::GetScreen()->RemoveObserver(this);
+  display::Screen::Get()->RemoveObserver(this);
 
   MaybeCancelTracing();
 
@@ -209,7 +212,7 @@ void ArcAppPerformanceTracing::OnCustomTraceDone(
   // switch from commitDeviation to presentDeviation (and fps to perceivedFps)
   // once the it's fixed to not output 0 FPS on display-less Chromebox devices.
   custom_trace_result_.emplace(
-      base::Value::Dict()
+      base::DictValue()
           .Set("success", success)
           .Set("fps", success ? result->fps : 0)
           .Set("perceivedFps", success ? result->perceived_fps : 0)
@@ -221,7 +224,7 @@ void ArcAppPerformanceTracing::OnCustomTraceDone(
 }
 
 bool ExpectingPresentEvents() {
-  auto* screen = display::Screen::GetScreen();
+  auto* screen = display::Screen::Get();
 
   return screen->GetNumDisplays() > 1 || screen->GetPrimaryDisplay().detected();
 }
@@ -251,7 +254,7 @@ bool ArcAppPerformanceTracing::StartCustomTracing() {
   return true;
 }
 
-base::Value::Dict ArcAppPerformanceTracing::StopCustomTracing() {
+base::DictValue ArcAppPerformanceTracing::StopCustomTracing() {
   custom_trace_result_.reset();
   if (session_ && session_->tracing_active()) {
     session_->Finish();
@@ -543,9 +546,8 @@ void ArcAppPerformanceTracing::MaybeStartTracing() {
   const syncer::SyncUserSettings* sync_user_settings =
       sync_service->GetUserSettings();
 
-  const bool apps_sync_enabled = sync_service->IsSyncFeatureEnabled() &&
-                                 sync_user_settings->GetSelectedOsTypes().Has(
-                                     syncer::UserSelectableOsType::kOsApps);
+  const bool apps_sync_enabled = sync_user_settings->GetSelectedOsTypes().Has(
+      syncer::UserSelectableOsType::kOsApps);
 
   if (!apps_sync_enabled) {
     VLOG(1) << "Cannot trace: App Sync is not enabled.";

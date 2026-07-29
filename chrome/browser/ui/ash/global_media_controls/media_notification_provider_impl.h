@@ -10,15 +10,14 @@
 #include "ash/ash_export.h"
 #include "ash/system/media/media_notification_provider.h"
 #include "base/observer_list.h"
-#include "chrome/browser/ash/crosapi/media_ui_ash.h"
 #include "chrome/browser/ui/ash/global_media_controls/media_item_ui_device_selector_delegate_ash.h"
-#include "chrome/browser/ui/global_media_controls/supplemental_device_picker_producer.h"
 #include "components/global_media_controls/public/constants.h"
 #include "components/global_media_controls/public/media_dialog_delegate.h"
 #include "components/global_media_controls/public/media_item_manager_observer.h"
 #include "components/global_media_controls/public/media_item_ui_observer.h"
 #include "components/global_media_controls/public/media_item_ui_observer_set.h"
-#include "components/media_message_center/media_notification_view_impl.h"
+#include "components/global_media_controls/public/supplemental_device_picker_producer.h"
+#include "components/media_message_center/notification_theme.h"
 
 class CastMediaNotificationProducerKeyedService;
 class Profile;
@@ -44,8 +43,7 @@ class ASH_EXPORT MediaNotificationProviderImpl
     : public MediaNotificationProvider,
       public global_media_controls::MediaDialogDelegate,
       public global_media_controls::MediaItemManagerObserver,
-      public global_media_controls::MediaItemUIObserver,
-      public crosapi::MediaUIAsh::Observer {
+      public global_media_controls::MediaItemUIObserver {
  public:
   explicit MediaNotificationProviderImpl(
       media_session::MediaSessionService* service);
@@ -62,8 +60,6 @@ class ASH_EXPORT MediaNotificationProviderImpl
       global_media_controls::GlobalMediaControlsEntryPoint entry_point,
       const std::string& show_devices_for_item_id) override;
   void OnBubbleClosing() override;
-  void SetColorTheme(
-      const media_message_center::NotificationTheme& color_theme) override;
   global_media_controls::MediaItemManager* GetMediaItemManager() override;
   void OnPrimaryUserSessionStarted() override;
   void AddMediaItemManagerToCastService(
@@ -79,6 +75,9 @@ class ASH_EXPORT MediaNotificationProviderImpl
   std::unique_ptr<global_media_controls::MediaItemUIFooter> BuildFooterView(
       const std::string& id,
       base::WeakPtr<media_message_center::MediaNotificationItem> item) override;
+  void UpdateMediaItemSourceOrigin(
+      const std::string& id,
+      const std::optional<url::Origin>& origin) override;
 
   // global_media_controls::MediaDialogDelegate:
   global_media_controls::MediaItemUI* ShowMediaItem(
@@ -98,10 +97,6 @@ class ASH_EXPORT MediaNotificationProviderImpl
 
   // global_media_controls::MediaItemUIObserver:
   void OnMediaItemUISizeChanged() override;
-
-  // crosapi::MediaUIAsh::Observer:
-  void OnDeviceServiceRegistered(
-      global_media_controls::mojom::DeviceService* device_service) override;
 
   global_media_controls::MediaSessionItemProducer*
   media_session_item_producer_for_testing() {
@@ -123,7 +118,12 @@ class ASH_EXPORT MediaNotificationProviderImpl
   global_media_controls::mojom::DeviceService* GetDeviceService(
       base::WeakPtr<media_message_center::MediaNotificationItem> item) const;
 
-  base::ObserverList<MediaNotificationProviderObserver> observers_;
+  // TODO(crbug.com/484371187): Investigate if reentrancy can be removed.
+  base::ObserverList<
+      MediaNotificationProviderObserver,
+      /*check_empty=*/false,
+      base::ObserverListReentrancyPolicy::kAllowReentrancyUntriaged>
+      observers_;
 
   base::WeakPtr<global_media_controls::MediaItemUIListView>
       media_item_ui_list_view_;
@@ -134,12 +134,10 @@ class ASH_EXPORT MediaNotificationProviderImpl
 
   std::unique_ptr<global_media_controls::MediaSessionItemProducer>
       media_session_item_producer_;
-  std::unique_ptr<SupplementalDevicePickerProducer>
+  std::unique_ptr<global_media_controls::SupplementalDevicePickerProducer>
       supplemental_device_picker_producer_;
 
-  std::optional<media_message_center::NotificationTheme> color_theme_;
-
-  std::optional<media_message_center::MediaColorTheme> media_color_theme_;
+  media_message_center::MediaColorTheme media_color_theme_;
 
   global_media_controls::MediaItemUIObserverSet item_ui_observer_set_{this};
 

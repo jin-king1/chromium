@@ -4,6 +4,8 @@
 
 #import "ios/chrome/browser/location_bar/ui_bundled/location_bar_steady_view_mediator.h"
 
+#import "base/functional/callback_helpers.h"
+#import "base/test/test_future.h"
 #import "components/omnibox/browser/test_location_bar_model.h"
 #import "ios/chrome/browser/location_bar/ui_bundled/test/fake_location_bar_steady_view_consumer.h"
 #import "ios/chrome/browser/overlays/model/public/overlay_presenter.h"
@@ -17,7 +19,9 @@
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_opener.h"
 #import "ios/chrome/grit/ios_strings.h"
+#import "ios/web/public/test/fakes/fake_web_client.h"
 #import "ios/web/public/test/fakes/fake_web_state.h"
+#import "ios/web/public/test/scoped_testing_web_client.h"
 #import "ios/web/public/test/web_task_environment.h"
 #import "testing/gtest_mac.h"
 #import "testing/platform_test.h"
@@ -27,7 +31,8 @@
 class LocationBarSteadyViewMediatorTest : public PlatformTest {
  protected:
   LocationBarSteadyViewMediatorTest()
-      : mediator_([[LocationBarSteadyViewMediator alloc]
+      : web_client_(std::make_unique<web::FakeWebClient>()),
+        mediator_([[LocationBarSteadyViewMediator alloc]
             initWithLocationBarModel:&model_]),
         consumer_([[FakeLocationBarSteadyViewConsumer alloc] init]) {
     // Set up the TestBrowser.
@@ -35,23 +40,28 @@ class LocationBarSteadyViewMediatorTest : public PlatformTest {
     profile_ = std::move(profile_builder).Build();
     browser_ = std::make_unique<TestBrowser>(profile_.get());
     // Set up the OverlayPresenter.
-    OverlayPresenter* overlay_presenter = OverlayPresenter::FromBrowser(
+    overlay_presenter_ = OverlayPresenter::FromBrowser(
         browser_.get(), OverlayModality::kWebContentArea);
-    overlay_presenter->SetPresentationContext(&presentation_context_);
+    overlay_presenter_->SetPresentationContext(&presentation_context_);
     // Set up the mediator.
     mediator_.webStateList = browser_->GetWebStateList();
-    mediator_.webContentAreaOverlayPresenter = overlay_presenter;
+    mediator_.webContentAreaOverlayPresenter = overlay_presenter_;
     mediator_.consumer = consumer_;
   }
-  ~LocationBarSteadyViewMediatorTest() override { [mediator_ disconnect]; }
+  ~LocationBarSteadyViewMediatorTest() override {
+    [mediator_ disconnect];
+    overlay_presenter_->SetPresentationContext(nullptr);
+  }
 
-  FakeOverlayPresentationContext presentation_context_;
   web::WebTaskEnvironment task_environment_;
+  web::ScopedTestingWebClient web_client_;
   std::unique_ptr<TestProfileIOS> profile_;
   std::unique_ptr<Browser> browser_;
+  raw_ptr<OverlayPresenter> overlay_presenter_ = nullptr;
   TestLocationBarModel model_;
   LocationBarSteadyViewMediator* mediator_;
   FakeLocationBarSteadyViewConsumer* consumer_;
+  FakeOverlayPresentationContext presentation_context_;
 };
 
 // Tests that the share button is disabled while overlays are presented
@@ -66,19 +76,33 @@ TEST_F(LocationBarSteadyViewMediatorTest, DisableShareForOverlays) {
       WebStateList::InsertionParams::Automatic().Activate());
   ASSERT_TRUE(consumer_.locationShareable);
 
+  // Use TestFuture to wait for the asynchronous overlay presentation signals
+  // to avoid flakiness. We set the callback once and reuse the future.
+  base::test::TestFuture<BOOL> shareable_future;
+  auto* future_ptr = &shareable_future;
+  consumer_.onUpdateLocationShareable = ^(BOOL shareable) {
+    future_ptr->SetValue(shareable);
+  };
+
+  // Scoped cleanup to clear the callback and prevent dangling pointers.
+  base::ScopedClosureRunner cleanup(base::BindOnce(^{
+    consumer_.onUpdateLocationShareable = nil;
+  }));
+
   // Present a JavaScript alert over the WebState and verify that the page is no
   // longer shareable.
   OverlayRequestQueue* queue = OverlayRequestQueue::FromWebState(
       web_state, OverlayModality::kWebContentArea);
   queue->AddRequest(
       OverlayRequest::CreateWithConfig<JavaScriptAlertDialogRequest>(
-          web_state, kUrl,
-          /*is_main_frame=*/true, @"message"));
-  EXPECT_FALSE(consumer_.locationShareable);
+          web_state, kUrl, url::Origin::Create(kUrl), @"message"));
+
+  EXPECT_FALSE(shareable_future.Take());
 
   // Cancel the request and verify that the location is shareable again.
   queue->CancelAllRequests();
-  EXPECT_TRUE(consumer_.locationShareable);
+
+  EXPECT_TRUE(shareable_future.Take());
 }
 
 // Tests that the share button is enabled when the URL represents a downloaded
@@ -159,7 +183,8 @@ TEST_F(LocationBarSteadyViewMediatorTest,
   // Disable dismissal callbacks in the presentation context so that the active
   // WebState can be reset to null before the dismisal callbacks are executed.
   presentation_context_.SetDismissalCallbacksEnabled(false);
-  CloseAllWebStates(*browser_->GetWebStateList(), WebStateList::CLOSE_NO_FLAGS);
+  CloseAllWebStates(*browser_->GetWebStateList(),
+                    WebStateList::ClosingReason::kDefault);
   EXPECT_FALSE(browser_->GetWebStateList()->GetActiveWebState());
 
   // Execute the dismissal callback and verify that the location text has been

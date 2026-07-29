@@ -5,6 +5,7 @@
 module viz.mojom;
 
 import "gpu/ipc/common/surface_handle.mojom";
+import "mojo/public/mojom/base/shared_memory.mojom";
 import "mojo/public/mojom/base/time.mojom";
 import "mojo/public/mojom/base/unguessable_token.mojom";
 import "services/viz/privileged/mojom/compositing/display_private.mojom";
@@ -44,8 +45,16 @@ struct RootCompositorFrameSinkParams {
   [EnableIf=is_android]
   bool create_input_receiver = false;
 
-  [EnableIf=is_android]
+  // Whether to enable the heuristic for detecting video conferencing in the
+  // frame interval decider.
+  bool enable_video_conference_matcher = false;
+
+  [EnableIf=is_android|is_mac]
   float refresh_rate;
+
+  // Whether Viz should wait for all sinks to finish processing (true, used
+  // by headless/XR clients) or ack as soon as a frame is displayed (false).
+  bool wait_for_all_frame_sinks = true;
 
   pending_associated_receiver<CompositorFrameSink> compositor_frame_sink;
   pending_remote<CompositorFrameSinkClient> compositor_frame_sink_client;
@@ -88,7 +97,7 @@ interface FrameSinkManager {
   // sequences or dangling temporary references assigned to it. If there is a
   // CompositorFrameSink for |frame_sink_id| then it will be destroyed and the
   // message pipe to the client will be closed.
-  InvalidateFrameSinkId(FrameSinkId frame_sink_id);
+  InvalidateFrameSinkId(FrameSinkId frame_sink_id) => ();
 
   // |debug_label| is used when printing out the surface hierarchy so we know
   // which clients are contributing which surfaces.
@@ -104,6 +113,15 @@ interface FrameSinkManager {
   // will be driven by a BeginFrameSource controlled by the client via the
   // ExternalBeginFrameController.
   CreateRootCompositorFrameSink(RootCompositorFrameSinkParams params);
+
+
+  // Create a DisplayLinkMac instance for the privileged client
+  // (e.g. CoreAnimation CADisplayLink). The client can call a method to signal
+  // a VSync event to Viz. |external_begin_frames_controller_client| needs to be
+  // set, so the VSync can be driven by ExternalBeginFrameSourceMojoMac via
+  // ExternalBeginFrameController.
+  [EnableIf=is_mac]
+  CreateCompositorDisplayLink(CompositorDisplayLinkParams params);
 
   // Used by unprivileged clients to create a new FrameSinkBundle in the
   // service. Each bundle can be used to communicate aggregate notifications and
@@ -154,7 +172,8 @@ interface FrameSinkManager {
   AddVideoDetectorObserver(pending_remote<VideoDetectorObserver> observer);
 
   // Creates a FrameSinkVideoCapturer instance.
-  CreateVideoCapturer(pending_receiver<FrameSinkVideoCapturer> receiver);
+  CreateVideoCapturer(pending_receiver<FrameSinkVideoCapturer> receiver,
+                      uint32 capture_version_source);
 
   // Marks the given SurfaceIds for destruction. The client must supply a sorted
   // `surface_ids`.
@@ -183,9 +202,15 @@ interface FrameSinkManager {
   //
   // `capture_exact_surface_id`, when set to true, makes sure the snapshot will
   // only be taken by the surface with the exact `surface_id`.
+  //
+  // `timeout` when non-zero will ensure the CopyOutputResultSender is called
+  // by, even with an empty snapshot. Note that there may be an arbitrary delay
+  // in receiving the mojo message and this is not accounted for. The timeout
+  // starts when this message is received.
   RequestCopyOfOutput(SurfaceId surface_id,
                       CopyOutputRequest request,
-                      bool capture_exact_surface_id);
+                      bool capture_exact_surface_id,
+                      mojo_base.mojom.TimeDelta timeout);
 
   // Caches the back buffer for the |root_frame_sink_id|. The back buffer is
   // keyed using |cache_id| and evicted when EvictBackBuffer with the same id is
@@ -219,17 +244,11 @@ interface FrameSinkManager {
   EnableFrameSinkManagerTestApi(
       pending_receiver<FrameSinkManagerTestApi> receiver);
 
-  // Setup the connection between the Browser (at WebContentsImpl level) and
-  // the VizCompositor thread (at InputManager level) in both directions to
-  // allow transferring information from Viz to the Browser and vice versa,
-  // when the VizCompositor thread is handling input using RenderInputRouters
-  // with InputVizard.
-  SetupRenderInputRouterDelegateConnection(
-    mojo_base.mojom.UnguessableToken grouping_id,
-    pending_remote<input.mojom.RenderInputRouterDelegateClient>
-      rir_delegate_client_remote,
-    pending_receiver<input.mojom.RenderInputRouterDelegate>
-      rir_delegate_receiver);
+  // Sets up the RendererInputRouterDelegateRegistry interface for managing
+  // RenderInputRouterDelegate connections between RenderWidgetHosts (on
+  // CrBrowserMain thread) and the InputManager (on VizCompositor thread).
+  SetupRendererInputRouterDelegateRegistry(
+    pending_receiver<RendererInputRouterDelegateRegistry> receiver);
 
   // Notifies list of RenderInputRouters of their block state changes for input
   // event handling on the VizCompositorThread.
@@ -281,4 +300,42 @@ interface FrameSinkManagerClient {
   OnScreenshotCaptured(
       blink.mojom.SameDocNavigationScreenshotDestinationToken destination_token,
       CopyOutputResult copy_output_result);
+
+  // Called by Viz when the connection is established and the shared memory for
+  // touch state is available.
+  OnVizTouchStateAvailable(mojo_base.mojom.ReadOnlySharedMemoryRegion region);
+
+  // Called by Viz when a view transition requests to allow the browser to
+  // shutdown the old renderer process.
+  OnViewTransitionResourcesCaptured(
+      blink.mojom.ViewTransitionToken transition_token);
+};
+
+// Implemented by the GPU process (VizCompositorThread) and called from the
+// browser process (CrBrowserMain thread). This allows the
+// RenderInputRouterDelegate[Client] interface to use the same mojo pipe to
+// send/receive information for input handling between the CrBrowserMain and the
+// VizCompositorThread.
+interface RendererInputRouterDelegateRegistry {
+  // Setup the connection between the Browser (at RenderWidgetHost level) and
+  // the VizCompositor thread (at InputManager level) in both directions to
+  // allow transferring information from Viz to the Browser and vice versa,
+  // when the VizCompositor thread is handling input using RenderInputRouters
+  // with InputVizard. This connection is per FrameSinkId.
+  SetupRenderInputRouterDelegateConnection(
+      FrameSinkId id,
+      pending_associated_remote<input.mojom.RenderInputRouterDelegateClient>
+          rir_delegate_client_remote,
+      pending_associated_receiver<input.mojom.RenderInputRouterDelegate>
+          rir_delegate_receiver);
+};
+
+// Initialization parameters for CreateCompositorDisplayLink.
+  [EnableIf=is_mac]
+struct CompositorDisplayLinkParams {
+  pending_receiver<ExternalBeginFrameController>?
+      external_begin_frame_controller;
+
+  pending_remote<ExternalBeginFrameControllerClient>?
+      external_begin_frame_controller_client;
 };

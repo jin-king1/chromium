@@ -2,20 +2,17 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chromeos/ash/components/dbus/shill/shill_third_party_vpn_driver_client.h"
 
 #include <stddef.h>
 #include <stdint.h>
 
 #include <map>
-#include <set>
+#include <string_view>
 
-#include "base/containers/contains.h"
+#include "base/compiler_specific.h"
+#include "base/containers/fixed_flat_set.h"
+#include "base/containers/to_vector.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
@@ -32,16 +29,16 @@ namespace ash {
 
 namespace {
 
-const char* kSetParametersKeyList[] = {
-    shill::kAddressParameterThirdPartyVpn,
-    shill::kBroadcastAddressParameterThirdPartyVpn,
-    shill::kExclusionListParameterThirdPartyVpn,
-    shill::kInclusionListParameterThirdPartyVpn,
-    shill::kSubnetPrefixParameterThirdPartyVpn,
-    shill::kMtuParameterThirdPartyVpn,
-    shill::kDomainSearchParameterThirdPartyVpn,
-    shill::kDnsServersParameterThirdPartyVpn,
-    shill::kReconnectParameterThirdPartyVpn};
+constexpr auto kValidKeys = base::MakeFixedFlatSet<std::string_view>(
+    {shill::kAddressParameterThirdPartyVpn,
+     shill::kBroadcastAddressParameterThirdPartyVpn,
+     shill::kExclusionListParameterThirdPartyVpn,
+     shill::kInclusionListParameterThirdPartyVpn,
+     shill::kSubnetPrefixParameterThirdPartyVpn,
+     shill::kMtuParameterThirdPartyVpn,
+     shill::kDomainSearchParameterThirdPartyVpn,
+     shill::kDnsServersParameterThirdPartyVpn,
+     shill::kReconnectParameterThirdPartyVpn});
 
 ShillThirdPartyVpnDriverClient* g_instance = nullptr;
 
@@ -67,7 +64,7 @@ class ShillThirdPartyVpnDriverClientImpl
       const std::string& object_path_value) override;
 
   void SetParameters(const std::string& object_path_value,
-                     const base::Value::Dict& parameters,
+                     const base::DictValue& parameters,
                      StringCallback callback,
                      ErrorCallback error_callback) override;
 
@@ -132,7 +129,6 @@ class ShillThirdPartyVpnDriverClientImpl
 
   raw_ptr<dbus::Bus> bus_;
   HelperMap helpers_;
-  std::set<std::string> valid_keys_;
 };
 
 ShillThirdPartyVpnDriverClientImpl::HelperInfo::HelperInfo(
@@ -142,9 +138,6 @@ ShillThirdPartyVpnDriverClientImpl::HelperInfo::HelperInfo(
 ShillThirdPartyVpnDriverClientImpl::ShillThirdPartyVpnDriverClientImpl(
     dbus::Bus* bus)
     : bus_(bus) {
-  for (uint32_t i = 0; i < std::size(kSetParametersKeyList); ++i) {
-    valid_keys_.insert(kSetParametersKeyList[i]);
-  }
 }
 
 ShillThirdPartyVpnDriverClientImpl::~ShillThirdPartyVpnDriverClientImpl() {
@@ -215,7 +208,7 @@ void ShillThirdPartyVpnDriverClientImpl::DeleteHelper(
 
 void ShillThirdPartyVpnDriverClientImpl::SetParameters(
     const std::string& object_path_value,
-    const base::Value::Dict& parameters,
+    const base::DictValue& parameters,
     StringCallback callback,
     ErrorCallback error_callback) {
   dbus::MethodCall method_call(shill::kFlimflamThirdPartyVpnInterface,
@@ -224,7 +217,7 @@ void ShillThirdPartyVpnDriverClientImpl::SetParameters(
   dbus::MessageWriter array_writer(nullptr);
   writer.OpenArray("{ss}", &array_writer);
   for (auto it : parameters) {
-    if (!base::Contains(valid_keys_, it.first)) {
+    if (!kValidKeys.contains(it.first)) {
       LOG(WARNING) << "Unknown key " << it.first;
       continue;
     }
@@ -282,11 +275,10 @@ void ShillThirdPartyVpnDriverClientImpl::OnPacketReceived(
     return;
 
   dbus::MessageReader reader(signal);
-  const uint8_t* data = nullptr;
-  size_t length = 0;
-  if (reader.PopArrayOfBytes(&data, &length)) {
+  base::span<const uint8_t> data;
+  if (reader.PopArrayOfBytes(&data)) {
     helper_info->observer()->OnPacketReceived(
-        std::vector<char>(data, data + length));
+        base::ToVector(data, [](uint8_t byte) -> char { return byte; }));
   }
 }
 

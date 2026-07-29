@@ -3,8 +3,7 @@
   "AAAAA2 See generate_buildbot_json.py to make changes": {},
   "ChromeOS FYI Release Skylab (jacuzzi)": {
     "additional_compile_targets": [
-      "chromiumos_preflight",
-      "nacl_helper"
+      "chromiumos_preflight"
     ],
     "skylab_tests": [
       {
@@ -21,11 +20,15 @@
         "autotest_name": "chromium_Graphics",
         "cros_board": "jacuzzi",
         "extra_browser_args": "--log-level=0 --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle",
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "context_lost_passthrough_tests JACUZZI_RELEASE_LKGM",
         "resultdb": {
           "enable": true,
-          "has_native_resultdb_integration": true
+          "has_native_resultdb_integration": true,
+          "result_format": "native"
         },
+        "shard_level_retries_on_ctp": 1,
         "test": "telemetry_gpu_integration_test",
         "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/",
         "timeout_sec": 10800,
@@ -51,6 +54,8 @@
         "autotest_name": "chromium_Graphics",
         "cros_board": "jacuzzi",
         "extra_browser_args": "--log-level=0 --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle",
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "expected_color_pixel_passthrough_test JACUZZI_RELEASE_LKGM",
         "precommit_args": [
           "--gerrit-issue=${patch_issue}",
@@ -59,8 +64,10 @@
         ],
         "resultdb": {
           "enable": true,
-          "has_native_resultdb_integration": true
+          "has_native_resultdb_integration": true,
+          "result_format": "native"
         },
+        "shard_level_retries_on_ctp": 1,
         "test": "telemetry_gpu_integration_test",
         "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/",
         "timeout_sec": 10800,
@@ -81,11 +88,15 @@
         "autotest_name": "chromium_Graphics",
         "cros_board": "jacuzzi",
         "extra_browser_args": "--log-level=0 --js-flags=--expose-gc",
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "gpu_process_launch_tests JACUZZI_RELEASE_LKGM",
         "resultdb": {
           "enable": true,
-          "has_native_resultdb_integration": true
+          "has_native_resultdb_integration": true,
+          "result_format": "native"
         },
+        "shard_level_retries_on_ctp": 1,
         "test": "telemetry_gpu_integration_test",
         "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/",
         "timeout_sec": 10800,
@@ -106,11 +117,15 @@
         "autotest_name": "chromium_Graphics",
         "cros_board": "jacuzzi",
         "extra_browser_args": "--log-level=0 --js-flags=--expose-gc",
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "hardware_accelerated_feature_tests JACUZZI_RELEASE_LKGM",
         "resultdb": {
           "enable": true,
-          "has_native_resultdb_integration": true
+          "has_native_resultdb_integration": true,
+          "result_format": "native"
         },
+        "shard_level_retries_on_ctp": 1,
         "test": "telemetry_gpu_integration_test",
         "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/",
         "timeout_sec": 10800,
@@ -135,11 +150,15 @@
         "autotest_name": "chromium_Graphics",
         "cros_board": "jacuzzi",
         "extra_browser_args": "--log-level=0 --js-flags=--expose-gc --force_high_performance_gpu",
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "info_collection_tests JACUZZI_RELEASE_LKGM",
         "resultdb": {
           "enable": true,
-          "has_native_resultdb_integration": true
+          "has_native_resultdb_integration": true,
+          "result_format": "native"
         },
+        "shard_level_retries_on_ctp": 1,
         "test": "telemetry_gpu_integration_test",
         "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/",
         "timeout_sec": 10800,
@@ -165,6 +184,8 @@
         "autotest_name": "chromium_Graphics",
         "cros_board": "jacuzzi",
         "extra_browser_args": "--log-level=0 --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle",
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "pixel_skia_gold_passthrough_test JACUZZI_RELEASE_LKGM",
         "precommit_args": [
           "--gerrit-issue=${patch_issue}",
@@ -173,8 +194,10 @@
         ],
         "resultdb": {
           "enable": true,
-          "has_native_resultdb_integration": true
+          "has_native_resultdb_integration": true,
+          "result_format": "native"
         },
+        "shard_level_retries_on_ctp": 1,
         "test": "telemetry_gpu_integration_test",
         "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/",
         "timeout_sec": 10800,
@@ -196,11 +219,15 @@
         "autotest_name": "chromium_Graphics",
         "cros_board": "jacuzzi",
         "extra_browser_args": "--log-level=0 --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle",
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "screenshot_sync_passthrough_tests JACUZZI_RELEASE_LKGM",
         "resultdb": {
           "enable": true,
-          "has_native_resultdb_integration": true
+          "has_native_resultdb_integration": true,
+          "result_format": "native"
         },
+        "shard_level_retries_on_ctp": 1,
         "test": "telemetry_gpu_integration_test",
         "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/",
         "timeout_sec": 10800,
@@ -221,11 +248,15 @@
         "autotest_name": "chromium_Graphics",
         "cros_board": "jacuzzi",
         "extra_browser_args": "--log-level=0 --js-flags=--expose-gc",
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "trace_test JACUZZI_RELEASE_LKGM",
         "resultdb": {
           "enable": true,
-          "has_native_resultdb_integration": true
+          "has_native_resultdb_integration": true,
+          "result_format": "native"
         },
+        "shard_level_retries_on_ctp": 1,
         "test": "telemetry_gpu_integration_test",
         "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/",
         "timeout_sec": 10800,
@@ -246,11 +277,15 @@
         "autotest_name": "chromium_Graphics",
         "cros_board": "jacuzzi",
         "extra_browser_args": "--log-level=0 --js-flags=--expose-gc",
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "webcodecs_tests JACUZZI_RELEASE_LKGM",
         "resultdb": {
           "enable": true,
-          "has_native_resultdb_integration": true
+          "has_native_resultdb_integration": true,
+          "result_format": "native"
         },
+        "shard_level_retries_on_ctp": 1,
         "test": "telemetry_gpu_integration_test",
         "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/",
         "timeout_sec": 10800,
@@ -273,11 +308,15 @@
         "autotest_name": "chromium_Graphics",
         "cros_board": "jacuzzi",
         "extra_browser_args": "--log-level=0 --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gles --force_high_performance_gpu",
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "webgl2_conformance_gles_passthrough_tests JACUZZI_RELEASE_LKGM",
         "resultdb": {
           "enable": true,
-          "has_native_resultdb_integration": true
+          "has_native_resultdb_integration": true,
+          "result_format": "native"
         },
+        "shard_level_retries_on_ctp": 1,
         "shards": 20,
         "test": "telemetry_gpu_integration_test",
         "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/",
@@ -300,11 +339,15 @@
         "autotest_name": "chromium_Graphics",
         "cros_board": "jacuzzi",
         "extra_browser_args": "--log-level=0 --js-flags=--expose-gc --use-angle=gles --use-cmd-decoder=passthrough --use-gl=angle --force_high_performance_gpu",
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "webgl_conformance_gles_passthrough_tests JACUZZI_RELEASE_LKGM",
         "resultdb": {
           "enable": true,
-          "has_native_resultdb_integration": true
+          "has_native_resultdb_integration": true,
+          "result_format": "native"
         },
+        "shard_level_retries_on_ctp": 1,
         "shards": 6,
         "test": "telemetry_gpu_integration_test",
         "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/",
@@ -316,8 +359,7 @@
   },
   "gpu-fyi-chromeos-brya-chrome": {
     "additional_compile_targets": [
-      "chromiumos_preflight",
-      "nacl_helper"
+      "chromiumos_preflight"
     ],
     "skylab_tests": [
       {
@@ -335,7 +377,13 @@
         "cros_board": "brya",
         "dut_pool": "chrome-gpu",
         "extra_browser_args": "--log-level=0 --js-flags=--expose-gc",
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "noop_sleep_tests GPU_BRYA_RELEASE_LKGM",
+        "resultdb": {
+          "result_format": "native"
+        },
+        "shard_level_retries_on_ctp": 1,
         "test": "telemetry_gpu_integration_test",
         "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/",
         "timeout_sec": 10800,
@@ -346,8 +394,7 @@
   },
   "gpu-fyi-chromeos-corsola-chrome": {
     "additional_compile_targets": [
-      "chromiumos_preflight",
-      "nacl_helper"
+      "chromiumos_preflight"
     ],
     "skylab_tests": [
       {
@@ -365,7 +412,13 @@
         "cros_board": "corsola",
         "dut_pool": "chrome-gpu",
         "extra_browser_args": "--log-level=0 --js-flags=--expose-gc",
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "noop_sleep_tests GPU_CORSOLA_RELEASE_LKGM",
+        "resultdb": {
+          "result_format": "native"
+        },
+        "shard_level_retries_on_ctp": 1,
         "test": "telemetry_gpu_integration_test",
         "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/",
         "timeout_sec": 10800,
@@ -376,8 +429,7 @@
   },
   "gpu-fyi-chromeos-skyrim-chrome": {
     "additional_compile_targets": [
-      "chromiumos_preflight",
-      "nacl_helper"
+      "chromiumos_preflight"
     ],
     "skylab_tests": [
       {
@@ -395,7 +447,13 @@
         "cros_board": "skyrim",
         "dut_pool": "chrome-gpu",
         "extra_browser_args": "--log-level=0 --js-flags=--expose-gc",
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "noop_sleep_tests GPU_SKYRIM_RELEASE_LKGM",
+        "resultdb": {
+          "result_format": "native"
+        },
+        "shard_level_retries_on_ctp": 1,
         "test": "telemetry_gpu_integration_test",
         "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/",
         "timeout_sec": 10800,

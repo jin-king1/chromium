@@ -31,9 +31,10 @@
 
 #include "base/gtest_prod_util.h"
 #include "base/memory/weak_ptr.h"
+#include "base/types/pass_key.h"
 #include "third_party/blink/public/mojom/css/preferred_color_scheme.mojom-blink-forward.h"
 #include "third_party/blink/renderer/core/core_export.h"
-#include "third_party/blink/renderer/core/layout/geometry/physical_size.h"
+#include "third_party/blink/renderer/platform/geometry/physical_size.h"
 #include "third_party/blink/renderer/platform/graphics/image.h"
 #include "third_party/blink/renderer/platform/graphics/paint/paint_record.h"
 #include "third_party/blink/renderer/platform/heap/member.h"
@@ -43,11 +44,14 @@
 #include "third_party/blink/renderer/platform/wtf/casting.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/geometry/size_f.h"
+#include "ui/gfx/geometry/vector2d_f.h"
 
 namespace blink {
 
 class Document;
+class SVGImageAnimationsToReset;
 class Element;
+class ExternalSVGResourceImageContent;
 class IsolatedSVGDocumentHost;
 class LayoutSVGRoot;
 class LocalFrame;
@@ -99,14 +103,19 @@ class CORE_EXPORT SVGImage final : public Image {
   gfx::Size SizeWithConfig(SizeConfig) const override;
 
   void CheckLoaded() const;
-  bool CurrentFrameHasSingleSecurityOrigin() const override;
+  bool HasSingleSecurityOrigin() const override;
 
   void StartAnimation() override;
   void ResetAnimation() override;
   void RestoreAnimation();
 
+  void SetDidEncounterXSL() { did_encounter_xsl_ = true; }
+  bool GetDidEncounterXSL() { return did_encounter_xsl_; }
+
   // Does the SVG image/document contain any animations?
   bool MaybeAnimated() override;
+
+  bool HasSVGForeignObject() const;
 
   // Advances an animated image. This will trigger an animation update for CSS
   // and advance the SMIL timeline by one frame.
@@ -119,7 +128,9 @@ class CORE_EXPORT SVGImage final : public Image {
   // Service CSS and SMIL animations.
   void ServiceAnimations(base::TimeTicks monotonic_animation_start_time);
 
-  void UpdateUseCounters(const Document&) const;
+  // Update use counters for the given document after an image finishes loading
+  // in that document.
+  void UpdateUseCountersAfterLoad(const Document&) const;
 
   void MaybeRecordSvgImageProcessingTime(const Document&);
 
@@ -128,14 +139,24 @@ class CORE_EXPORT SVGImage final : public Image {
   void SetPreferredColorScheme(
       mojom::blink::PreferredColorScheme preferred_color_scheme);
 
-  // Introspective service hatch for mask-image. Don't abuse for anything else.
-  Element* GetResourceElement(const AtomicString& id) const;
+  // Specialized interface for mask-image (via ExternalSVGResourceImageContent).
+  Element* GetResourceElement(base::PassKey<ExternalSVGResourceImageContent>,
+                              const AtomicString& id) const;
+  void UpdateLifecycleForUse(base::PassKey<ExternalSVGResourceImageContent>);
 
  protected:
   // Whether or not size is available yet.
   bool IsSizeAvailable() override;
 
  private:
+  enum class AnimationState : uint8_t {
+    kUnknown,
+    kUnknownRewindPending,
+    kNotAnimated,
+    kAnimated,
+    kAnimatedRewindPending,
+  };
+
   // Accesses |document_host_|.
   friend class SVGImageChromeClient;
   // Forwards calls to the various *ForContainer methods and other parts of
@@ -169,8 +190,7 @@ class CORE_EXPORT SVGImage final : public Image {
   // to prune because these functions are not implemented yet.
   void DestroyDecodedData() override {}
 
-  // FIXME: Implement this to be less conservative.
-  bool CurrentFrameKnownToBeOpaque() override { return false; }
+  bool IsOpaque() override { return false; }
 
   class DrawInfo {
     STACK_ALLOCATED();
@@ -220,6 +240,7 @@ class CORE_EXPORT SVGImage final : public Image {
   // optional additional cull rect.
   std::optional<PaintRecord> PaintRecordForCurrentFrame(
       const DrawInfo&,
+      const gfx::Vector2dF& container_scale,
       const gfx::Rect* cull_rect);
 
   void DrawInternal(const DrawInfo&,
@@ -247,6 +268,9 @@ class CORE_EXPORT SVGImage final : public Image {
   void NotifyAsyncLoadCompleted();
 
   LocalFrame* GetFrame() const;
+  bool DetectAnimatedContent() const;
+  bool HasPendingTimelineRewind() const;
+  void UpdateCachedAnimationState();
   SVGSVGElement* RootElement() const;
   LayoutSVGRoot* LayoutRoot() const;
 
@@ -255,12 +279,16 @@ class CORE_EXPORT SVGImage final : public Image {
   Persistent<SVGImageChromeClient> chrome_client_;
   Persistent<IsolatedSVGDocumentHost> document_host_;
   Persistent<AgentGroupScheduler> agent_group_scheduler_;
+  Persistent<SVGImageAnimationsToReset> css_animations_to_reset_;
 
   PhysicalSize intrinsic_size_;
   bool has_pending_timeline_rewind_;
+  mutable AnimationState animation_state_ = AnimationState::kUnknown;
 
   int data_change_count_ = 0;
   base::TimeDelta data_change_elapsed_time_;
+
+  bool did_encounter_xsl_ = false;
 
   base::WeakPtrFactory<SVGImage> weak_ptr_factory_{this};
   FRIEND_TEST_ALL_PREFIXES(ElementFragmentAnchorTest,
@@ -270,6 +298,17 @@ class CORE_EXPORT SVGImage final : public Image {
   FRIEND_TEST_ALL_PREFIXES(SVGImageTest, SetSizeOnVisualViewport);
   FRIEND_TEST_ALL_PREFIXES(SVGImageTest, IsSizeAvailable);
   FRIEND_TEST_ALL_PREFIXES(SVGImageTest, DisablesSMILEvents);
+  FRIEND_TEST_ALL_PREFIXES(SVGImageTest,
+                           ResetAnimationRewindsRunningFiniteCssAnimation);
+  FRIEND_TEST_ALL_PREFIXES(SVGImageTest,
+                           FinishedFiniteCssAnimationStillMaybeAnimated);
+  FRIEND_TEST_ALL_PREFIXES(SVGImageTest,
+                           ResetAnimationPreservesPausedFiniteCssAnimation);
+  FRIEND_TEST_ALL_PREFIXES(
+      SVGImageTest,
+      ResetAnimationRestoresPlaybackForFinishedFiniteCssAnimation);
+  FRIEND_TEST_ALL_PREFIXES(SVGImageSimTest,
+                           CachedFiniteCssAnimationResetWhileDetached);
 };
 
 template <>

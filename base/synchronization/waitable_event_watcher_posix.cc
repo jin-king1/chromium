@@ -102,7 +102,7 @@ void AsyncCallbackHelper(Flag* flag,
                          WaitableEvent* event) {
   // Runs on the sequence that called StartWatching().
   if (!flag->value()) {
-    // This is to let the WaitableEventWatcher know that the event has occured.
+    // This is to let the WaitableEventWatcher know that the event has occurred.
     flag->Set();
     std::move(callback).Run(event);
   }
@@ -219,7 +219,7 @@ void WaitableEventWatcher::StopWatching() {
     // list. We've removed it, thus we can delete it and the task (which cannot
     // have been enqueued with the MessageLoop because the waiter was never
     // signaled)
-    delete waiter_;
+    waiter_.ClearAndDelete();
     cancel_flag_ = nullptr;
     return;
   }

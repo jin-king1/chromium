@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include <optional>
+#include <string>
 
 #include "base/memory/raw_ptr.h"
 #include "base/scoped_observation.h"
@@ -27,23 +28,25 @@ class AppMenuIconController : public GlobalErrorObserver,
                               public UpgradeObserver {
  public:
   enum class IconType {
-    NONE,
-    UPGRADE_NOTIFICATION,
-    GLOBAL_ERROR,
-    DEFAULT_BROWSER_PROMPT,
+    kNone,
+    kUpgradeNotification,
+    kGlobalError,
   };
   enum class Severity {
-    NONE,
-    LOW,
-    MEDIUM,
-    HIGH,
+    kNone,
+    kLow,
+    kMedium,
+    kHigh,
   };
 
   // The app menu icon's type and severity.
   struct TypeAndSeverity {
     IconType type;
+    // When `type` is `IconType::kGlobalError`, this reflects the severity of
+    // the highest-severity global error.
     Severity severity;
     bool use_primary_colors = false;
+    bool operator==(const TypeAndSeverity& other) const = default;
   };
 
   // Delegate interface for receiving icon update notifications.
@@ -77,6 +80,17 @@ class AppMenuIconController : public GlobalErrorObserver,
 
   // Returns the icon type and severity based on the current state.
   TypeAndSeverity GetTypeAndSeverity() const;
+
+  // Returns the label text for the app menu button based on the |type| and
+  // |severity|.
+  static std::u16string GetIconLabel(IconType type, Severity severity);
+
+  // Returns the accessible name for the app menu button based on the |type|.
+  static std::u16string GetIconAccessibleName(IconType type);
+
+  // Returns the tooltip for the app menu button based on the |type| and
+  // |severity|.
+  static std::u16string GetIconTooltip(IconType type, Severity severity);
 
  private:
   // GlobalErrorObserver:

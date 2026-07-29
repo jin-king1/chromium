@@ -2,17 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "remoting/host/security_key/security_key_socket.h"
 
 #include <memory>
 #include <utility>
 
+#include "base/containers/extend.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
+#include "base/strings/string_view_util.h"
 #include "base/timer/timer.h"
 #include "net/base/io_buffer.h"
 #include "net/base/net_errors.h"
@@ -54,8 +52,8 @@ bool SecurityKeySocket::GetAndClearRequestData(std::string* data_out) {
     return false;
   }
   // The request size is not part of the data; don't send it.
-  data_out->assign(request_data_.begin() + kRequestSizeBytes,
-                   request_data_.end());
+  *data_out = base::as_string_view(
+      base::span(request_data_).subspan(kRequestSizeBytes));
   request_data_.clear();
   return true;
 }
@@ -164,8 +162,7 @@ void SecurityKeySocket::OnDataRead(int result) {
   // that we could read too many bytes from the buffer (e.g. all of request #1
   // and some of request #2).  We should consider using the request header to
   // determine the request length and only read that amount from buffer.
-  request_data_.insert(request_data_.end(), read_buffer_->data(),
-                       read_buffer_->data() + result);
+  base::Extend(request_data_, read_buffer_->first(result));
   if (IsRequestComplete()) {
     waiting_for_request_ = false;
     std::move(request_received_callback_).Run();
@@ -207,9 +204,8 @@ bool SecurityKeySocket::IsRequestTooLarge() const {
 size_t SecurityKeySocket::GetRequestLength() const {
   DCHECK(request_data_.size() >= kRequestSizeBytes);
 
-  return ((request_data_[0] & 255) << 24) + ((request_data_[1] & 255) << 16) +
-         ((request_data_[2] & 255) << 8) + (request_data_[3] & 255) +
-         kRequestSizeBytes;
+  return (request_data_[0] << 24) + (request_data_[1] << 16) +
+         (request_data_[2] << 8) + request_data_[3] + kRequestSizeBytes;
 }
 
 std::string SecurityKeySocket::GetResponseLengthAsBytes(

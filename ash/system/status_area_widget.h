@@ -5,11 +5,16 @@
 #ifndef ASH_SYSTEM_STATUS_AREA_WIDGET_H_
 #define ASH_SYSTEM_STATUS_AREA_WIDGET_H_
 
+#include <cstdint>
+
 #include "ash/ash_export.h"
 #include "ash/login_status.h"
 #include "ash/public/cpp/session/session_observer.h"
 #include "ash/public/cpp/shelf_types.h"
 #include "ash/shelf/shelf_component.h"
+#include "ash/shell_observer.h"
+#include "base/containers/flat_set.h"
+#include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "ui/message_center/message_center.h"
@@ -46,10 +51,10 @@ class StatusAreaWidgetDelegate;
 class StopRecordingButtonTray;
 class TrayBackgroundView;
 class TrayBubbleView;
+struct TrayIconConfiguration;
 class UnifiedSystemTray;
 class VideoConferenceTray;
 class VirtualKeyboardTray;
-class WmModeButtonTray;
 
 // Widget showing the system tray, notification tray, and other tray views in
 // the bottom-right of the screen. Exists separately from ShelfView/ShelfWidget
@@ -57,6 +62,7 @@ class WmModeButtonTray;
 // on secondary monitors at the login screen).
 class ASH_EXPORT StatusAreaWidget : public SessionObserver,
                                     public ShelfComponent,
+                                    public ShellObserver,
                                     public views::ViewObserver,
                                     public views::Widget {
  public:
@@ -100,6 +106,9 @@ class ASH_EXPORT StatusAreaWidget : public SessionObserver,
   gfx::Rect GetTargetBounds() const override;
   void UpdateLayout(bool animate) override;
   void UpdateTargetBoundsForGesture(int shelf_position) override;
+
+  // ShellObserver:
+  void OnPinnedStateChanged(aura::Window* pinned_window) override;
 
   // Called by shelf layout manager when a locale change has been detected.
   void HandleLocaleChange();
@@ -146,7 +155,6 @@ class ASH_EXPORT StatusAreaWidget : public SessionObserver,
 
   MouseKeysTray* mouse_keys_tray() { return mouse_keys_tray_; }
   SelectToSpeakTray* select_to_speak_tray() { return select_to_speak_tray_; }
-  WmModeButtonTray* wm_mode_button_tray() { return wm_mode_button_tray_; }
 
   Shelf* shelf() { return shelf_; }
 
@@ -182,6 +190,23 @@ class ASH_EXPORT StatusAreaWidget : public SessionObserver,
 
   void InitializeAccessibleProperties();
 
+  // Adds a new status tray icon using the provided configuration. The
+  // `callback` will be invoked when the icon is clicked by the user.
+  // Returns true if the icon was successfully added, or false if an icon with
+  // the sameID already exists.
+  bool AddTrayIcon(const TrayIconConfiguration& configuration,
+                   base::RepeatingClosure callback);
+
+  // Updates the visual properties (image, tooltip) of an existing tray icon
+  // identified by the ID in `configuration`.
+  // Returns whether the icon was found and updated.
+  bool UpdateTrayIcon(const TrayIconConfiguration& configuration);
+
+  // Removes the tray icon identified by the ID in |configuration| from the
+  // status area.
+  // Returns whether the icon was found and removed.
+  bool RemoveTrayIcon(const TrayIconConfiguration& configuration);
+
   // TODO(jamescook): Introduce a test API instead of these methods.
   LogoutButtonTray* logout_button_tray_for_testing() {
     return logout_button_tray_;
@@ -200,6 +225,10 @@ class ASH_EXPORT StatusAreaWidget : public SessionObserver,
   }
 
   TrayBubbleView* open_shelf_pod_bubble() { return open_shelf_pod_bubble_; }
+
+  base::flat_set<uint64_t> custom_tray_buttons_ids_for_test() {
+    return custom_tray_buttons_ids_;
+  }
 
  private:
   friend class TrayBackgroundViewTest;
@@ -236,7 +265,8 @@ class ASH_EXPORT StatusAreaWidget : public SessionObserver,
   // views::ViewObserver:
   void OnViewIsDeleting(views::View* observed_view) override;
   void OnViewVisibilityChanged(views::View* observed_view,
-                               views::View* starting_view) override;
+                               views::View* starting_view,
+                               bool visible) override;
 
   // views::Widget:
   void OnMouseEvent(ui::MouseEvent* event) override;
@@ -313,7 +343,7 @@ class ASH_EXPORT StatusAreaWidget : public SessionObserver,
       nullptr;
   raw_ptr<SelectToSpeakTray, DanglingUntriaged> select_to_speak_tray_ = nullptr;
   raw_ptr<HoldingSpaceTray, DanglingUntriaged> holding_space_tray_ = nullptr;
-  raw_ptr<WmModeButtonTray, DanglingUntriaged> wm_mode_button_tray_ = nullptr;
+  base::flat_set<uint64_t> custom_tray_buttons_ids_;
 
   // Vector of the tray buttons above. The ordering is used to determine which
   // tray buttons are hidden when they overflow the available width.

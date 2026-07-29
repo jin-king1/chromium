@@ -18,8 +18,6 @@ from blinkpy.web_tests.port.base import VirtualTestSuite
 from blinkpy.wpt_tests.wpt_adapter import WPTAdapter
 
 
-@mock.patch('blinkpy.wpt_tests.wpt_adapter.WPTAdapter.using_upstream_wpt',
-            False)
 class WPTAdapterTest(unittest.TestCase):
     def setUp(self):
         self.host = MockHost()
@@ -140,7 +138,7 @@ class WPTAdapterTest(unittest.TestCase):
 
     def test_basic_passthrough(self):
         mock_datetime = self._mocks.enter_context(
-            mock.patch('blinkpy.wpt_tests.wpt_adapter.datetime'))
+            mock.patch('blinkpy.wpt_tests.logging.datetime'))
         mock_datetime.now.side_effect = lambda: datetime(
             2023, 1, 1, 12, 0, mock_datetime.now.call_count)
 
@@ -174,8 +172,6 @@ class WPTAdapterTest(unittest.TestCase):
             self.assertIsNot(options.run_by_dir, 0)
             self.assertEqual(options.include, ['dir/reftest.html'])
             self.assertNotIn('--run-web-tests', options.binary_args)
-            self.assertIn('--enable-blink-test-features', options.binary_args)
-            self.assertTrue(options.enable_experimental)
             ignore_cert_flags = [
                 flag for flag in options.binary_args
                 if flag.startswith('--ignore-certificate-errors-spki-list=')
@@ -209,9 +205,9 @@ class WPTAdapterTest(unittest.TestCase):
         ]
         adapter = WPTAdapter.from_args(self.host, args, 'test-linux-trusty')
         with adapter.test_env() as options:
-            self.assertEqual(options.debugger, 'rr')
-            self.assertEqual(options.debugger_args, 'record --disable-avx-512')
             self.assertEqual(options.processes, 1)
+            self.assertIn('--no-sandbox', options.binary_args)
+            self.assertIn('--disable-hang-monitor', options.binary_args)
 
     def test_scratch_directory_cleanup(self):
         """Only test results should be left behind, even with an exception."""
@@ -317,7 +313,8 @@ class WPTAdapterTest(unittest.TestCase):
             self.host, ['--no-manifest-update', '--enable-sanitizer'],
             'test-linux-trusty')
         with adapter.test_env() as options:
-            self.assertAlmostEqual(options.timeout_multiplier, 5)
+            self.assertEqual(options.timeout_multiplier, 5)
+            self.assertTrue(options.sanitizer_enabled)
             run_info = self._read_run_info(options)
             self.assertTrue(run_info['sanitizer_enabled'])
 

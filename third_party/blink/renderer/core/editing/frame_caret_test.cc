@@ -53,7 +53,7 @@ TEST_F(FrameCaretTest, MAYBE_BlinkAfterTyping) {
   LayoutTheme::GetTheme().SetCaretBlinkInterval(base::Seconds(kInterval));
   GetDocument().GetPage()->GetFocusController().SetActive(true);
   GetDocument().GetPage()->GetFocusController().SetFocused(true);
-  GetDocument().body()->setInnerHTML("<textarea>");
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes("<textarea>");
   auto* editor = To<Element>(GetDocument().body()->firstChild());
   editor->Focus();
   UpdateAllLifecyclePhasesForTest();
@@ -85,16 +85,15 @@ TEST_F(FrameCaretTest, ShouldNotBlinkWhenSelectionLooseFocus) {
   FrameCaret& caret = Selection().FrameCaretForTesting();
   GetDocument().GetPage()->GetFocusController().SetActive(true);
   GetDocument().GetPage()->GetFocusController().SetFocused(true);
-  GetDocument().body()->setInnerHTML(
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(
       "<div id='outer' tabindex='-1'>"
       "<div id='input' contenteditable>foo</div>"
       "</div>");
-  Element* input = GetDocument().QuerySelector(AtomicString("#input"));
+  Element* input = QuerySelector("#input");
   input->Focus();
-  Element* outer = GetDocument().QuerySelector(AtomicString("#outer"));
-  outer->Focus();
+  QuerySelector("#outer")->Focus();
   UpdateAllLifecyclePhasesForTest();
-  const SelectionInDOMTree& selection = Selection().GetSelectionInDOMTree();
+  const SelectionInDomTree& selection = Selection().GetSelectionInDomTree();
   EXPECT_EQ(selection.Anchor(),
             Position::FirstPositionInNode(*(input->firstChild())));
   EXPECT_FALSE(ShouldShowCaret(caret));

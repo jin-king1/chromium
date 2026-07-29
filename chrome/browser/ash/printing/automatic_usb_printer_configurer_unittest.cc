@@ -12,7 +12,9 @@
 
 #include "ash/constants/ash_features.h"
 #include "base/containers/flat_set.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
+#include "base/notimplemented.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/ash/printing/fake_cups_printers_manager.h"
 #include "chrome/browser/ash/printing/printers_map.h"
@@ -116,11 +118,12 @@ class FakePpdProvider : public chromeos::PpdProvider {
     for (auto kv : ppds_) {
       if (kv.second == reference.effective_make_and_model) {
         std::move(cb).Run(chromeos::PpdProvider::CallbackResultCode::SUCCESS,
-                          "ppd content");
+                          "ppd content", "");
         return;
       }
     }
-    std::move(cb).Run(chromeos::PpdProvider::CallbackResultCode::NOT_FOUND, "");
+    std::move(cb).Run(chromeos::PpdProvider::CallbackResultCode::NOT_FOUND, "",
+                      "");
   }
 
   // These methods are not used by AutomaticUsbPrinterConfigurer.

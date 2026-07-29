@@ -13,6 +13,7 @@ from pylib import constants
 from pylib.base import base_test_result
 from pylib.base import test_exception
 from pylib.base import test_instance
+from pylib.base import test_run
 from pylib.constants import host_paths
 from pylib.instrumentation import instrumentation_parser
 from pylib.instrumentation import test_result
@@ -751,6 +752,7 @@ class InstrumentationTestInstance(test_instance.TestInstance):
     self._data_deps_delegate = data_deps_delegate
     self._store_data_dependencies_in_temp = args.store_data_dependencies_in_temp
     self._runtime_deps_path = args.runtime_deps_path
+    self._device_data_filters = getattr(args, 'device_data_filters', [])
 
     if not self._runtime_deps_path:
       logging.warning('No data dependencies will be pushed.')
@@ -1004,6 +1006,10 @@ class InstrumentationTestInstance(test_instance.TestInstance):
     return self._system_packages_to_remove
 
   @property
+  def target_package(self):
+    return self._test_apk.GetAllInstrumentations()[0]['android:targetPackage']
+
+  @property
   def test_apk(self):
     return self._test_apk
 
@@ -1089,8 +1095,12 @@ class InstrumentationTestInstance(test_instance.TestInstance):
 
   #override
   def SetUp(self):
-    self._data_deps.extend(
-        self._data_deps_delegate(self._runtime_deps_path))
+    if self.wait_for_java_debugger and not self._test_apk.GetIsDebuggable():
+      raise Exception('Passed --wait-for-java-debugger flag but did not set '
+                      'debuggable_apks = true in GN args')
+    deps = self._data_deps_delegate(
+        self._runtime_deps_path, device_data_filters=self._device_data_filters)
+    self._data_deps.extend(deps)
     if self._proguard_mapping_path:
       self._deobfuscator = deobfuscator.DeobfuscatorPool(
           self._proguard_mapping_path)
@@ -1100,6 +1110,13 @@ class InstrumentationTestInstance(test_instance.TestInstance):
 
   def GetRunDisabledFlag(self):
     return self._run_disabled
+
+  def GetLogcatPackageNames(self):
+    ret = {self.target_package, self._test_package}
+    if self._apk_under_test:
+      ret.add(self._apk_under_test.GetPackageName())
+    ret.update(x.GetPackageName() for x in self._additional_apks)
+    return ','.join(sorted(ret))
 
   def MaybeDeobfuscateLines(self, lines):
     if not self._deobfuscator:
@@ -1115,6 +1132,12 @@ class InstrumentationTestInstance(test_instance.TestInstance):
       for t in inflated_tests:
         logging.debug('  %s', GetUniqueTestName(t))
       logging.warning('Unmatched Filters: %s', self._test_filters)
+    filtered_tests_with_excluded = FilterTests(inflated_tests,
+                                               self._test_filters,
+                                               self._annotations, [])
+    num_disabled = len(filtered_tests_with_excluded) - len(filtered_tests)
+    if num_disabled:
+      test_run.ShowDisabledTestsHint(count=num_disabled)
     return filtered_tests
 
   def IsApkForceQueryable(self, apk):
@@ -1134,7 +1157,7 @@ class InstrumentationTestInstance(test_instance.TestInstance):
         # Preserve historic default.
         if (not self._uses_base_instrumentation
             and not any(a in _VALID_ANNOTATIONS for a in annotations)):
-          annotations['MediumTest'] = None
+          annotations['MediumTest'] = {}
 
         inflated_tests.append({
             'class': clazz['class'],

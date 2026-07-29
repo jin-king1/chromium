@@ -4,7 +4,12 @@
 
 #include "components/autofill/core/browser/foundations/autofill_driver.h"
 
+#include <utility>
+
 #include "base/check.h"
+#include "base/check_op.h"
+#include "base/dcheck_is_on.h"
+#include "base/types/pass_key.h"
 
 namespace autofill {
 
@@ -50,9 +55,9 @@ void AutofillDriver::SetLifecycleState(
   DCHECK(
       IsValidTransition(previous_lifecycle_state_, lifecycle_state_, new_state))
       << "Invalid AutofillDriver::LifecycleState change "
-      << base::to_underlying(previous_lifecycle_state_) << " -> "
-      << base::to_underlying(lifecycle_state_) << " -> "
-      << base::to_underlying(new_state);
+      << std::to_underlying(previous_lifecycle_state_) << " -> "
+      << std::to_underlying(lifecycle_state_) << " -> "
+      << std::to_underlying(new_state);
   previous_lifecycle_state_ = lifecycle_state_;
 #endif
 

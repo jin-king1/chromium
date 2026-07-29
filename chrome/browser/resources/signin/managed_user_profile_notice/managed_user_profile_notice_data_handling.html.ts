@@ -15,14 +15,14 @@ export function getHtml(this: ManagedUserProfileNoticeDataHandlingElement) {
     <h1 class="title" tabindex="-1">${this.title}</h1>
   </div>
   <cr-radio-group .selected="${this.selectedDataHandling}"
-      @selected-changed="${this.onSelectedRadioOptionChanged_}">
+      @selected-changed="${this.onSelectedChanged_}">
     <cr-radio-button name="${BrowsingDataHandling.SEPARATE}"
-        label="$i18n{separateBrowsingDataChoiceTitle}">
-      <p>$i18n{separateBrowsingDataChoiceDetails}</p>
+        label="${this.separateDataChoiceTitle}">
+      <p>${this.separateDataChoiceDetails}</p>
     </cr-radio-button>
     <cr-radio-button name="${BrowsingDataHandling.MERGE}"
-        label="$i18n{mergeBrowsingDataChoiceTitle}">
-      <p>$i18n{mergeBrowsingDataChoiceDetails}</p>
+        label="${this.mergeDataChoiceTitle}">
+      <p>${this.mergeDataChoiceDetails}</p>
   </cr-radio-button>
 </main>
 <!--_html_template_end_-->`;

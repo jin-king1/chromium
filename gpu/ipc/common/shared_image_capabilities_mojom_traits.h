@@ -7,14 +7,15 @@
 
 #include "build/build_config.h"
 #include "gpu/command_buffer/common/shared_image_capabilities.h"
-#include "gpu/gpu_export.h"
+#include "gpu/ipc/common/gpu_ipc_common_export.h"
 #include "gpu/ipc/common/shared_image_capabilities.mojom.h"
 
 namespace mojo {
 
 template <>
-struct GPU_EXPORT StructTraits<gpu::mojom::SharedImageCapabilitiesDataView,
-                               gpu::SharedImageCapabilities> {
+struct GPU_IPC_COMMON_EXPORT StructTraits<
+    gpu::mojom::SharedImageCapabilitiesDataView,
+    gpu::SharedImageCapabilities> {
   static bool Read(gpu::mojom::SharedImageCapabilitiesDataView data,
                    gpu::SharedImageCapabilities* out);
 
@@ -40,18 +41,18 @@ struct GPU_EXPORT StructTraits<gpu::mojom::SharedImageCapabilitiesDataView,
     return input.supports_r16_shared_images;
   }
 
-  static bool supports_native_nv12_mappable_shared_images(
+  static bool supports_ycbcr_nv12_sampling(
       const gpu::SharedImageCapabilities& input) {
-    return input.supports_native_nv12_mappable_shared_images;
+    return input.supports_ycbcr_nv12_sampling;
+  }
+
+  static bool supports_ycbcr_p010_sampling(
+      const gpu::SharedImageCapabilities& input) {
+    return input.supports_ycbcr_p010_sampling;
   }
 
   static bool is_r16f_supported(const gpu::SharedImageCapabilities& input) {
     return input.is_r16f_supported;
-  }
-
-  static bool disable_r8_shared_images(
-      const gpu::SharedImageCapabilities& input) {
-    return input.disable_r8_shared_images;
   }
 
   static bool disable_webgpu_shared_images(
@@ -59,14 +60,21 @@ struct GPU_EXPORT StructTraits<gpu::mojom::SharedImageCapabilitiesDataView,
     return input.disable_webgpu_shared_images;
   }
 
+  static bool disable_one_component_textures(
+      const gpu::SharedImageCapabilities& input) {
+    return input.disable_one_component_textures;
+  }
+
   static bool shared_image_d3d(const gpu::SharedImageCapabilities& input) {
     return input.shared_image_d3d;
   }
 
+#if BUILDFLAG(IS_WIN)
   static bool shared_image_swap_chain(
       const gpu::SharedImageCapabilities& input) {
     return input.shared_image_swap_chain;
   }
+#endif
 
 #if BUILDFLAG(IS_MAC)
   static uint32_t texture_target_for_io_surfaces(

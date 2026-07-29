@@ -221,7 +221,8 @@ class TestWebFrameWidgetHost : public mojom::blink::WidgetHost,
       mojo::PendingRemote<mojom::blink::RenderInputRouterClient> remote);
   void GetWidgetInputHandler(
       mojo::PendingReceiver<mojom::blink::WidgetInputHandler> request,
-      mojo::PendingRemote<mojom::blink::WidgetInputHandlerHost> host);
+      mojo::PendingRemote<mojom::blink::WidgetInputHandlerHost> host,
+      bool from_viz);
 
  private:
   size_t cursor_set_count_ = 0;
@@ -281,7 +282,8 @@ class TestWebFrameWidget : public WebFrameWidgetImpl {
   }
 
   void RequestDecode(const cc::DrawImage&,
-                     base::OnceCallback<void(bool)>) override;
+                     base::OnceCallback<void(bool)>,
+                     bool speculative) override;
 
   using WebFrameWidgetImpl::GetOriginalScreenInfo;
 
@@ -557,11 +559,11 @@ class TestWebFrameClient : public WebLocalFrameClient {
       const WebURLRequest&,
       const WebWindowFeatures&,
       const WebString& name,
+      const gfx::Rect& requested_screen_rect,
       WebNavigationPolicy,
       network::mojom::blink::WebSandboxFlags,
       const SessionStorageNamespaceId&,
       bool& consumed_user_gesture,
-      const std::optional<Impression>&,
       const std::optional<WebPictureInPictureWindowOptions>&,
       const WebURL& base_url) override;
 
@@ -576,6 +578,14 @@ class TestWebFrameClient : public WebLocalFrameClient {
   }
   network::mojom::WebSandboxFlags sandbox_flags() const {
     return sandbox_flags_;
+  }
+
+  // Subclasses that override CreateChildFrame() to gave the child frame a
+  // custom TestWebFrameClient subclass lose the propagation of sandbox flags
+  // that is performed in TestWebFrameClient::CreateChildFrame(). This allows
+  // such cases to set the flags manually.
+  void set_sandbox_flags(network::mojom::WebSandboxFlags flags) {
+    sandbox_flags_ = flags;
   }
 
   void DestroyChildViews();
@@ -610,7 +620,7 @@ class TestWebFrameClient : public WebLocalFrameClient {
   // Callback to run when |FrameDetached| is called.
   base::OnceClosure frame_detached_callback_ = base::DoNothing();
 
-  WTF::Vector<std::unique_ptr<WebViewHelper>> child_web_views_;
+  Vector<std::unique_ptr<WebViewHelper>> child_web_views_;
   base::WeakPtrFactory<TestWebFrameClient> weak_factory_{this};
 };
 
@@ -625,7 +635,7 @@ class TestWidgetInputHandlerHost : public mojom::blink::WidgetInputHandlerHost {
   void ImeCancelComposition() override;
   void ImeCompositionRangeChanged(
       const gfx::Range& range,
-      const std::optional<WTF::Vector<gfx::Rect>>& character_bounds) override;
+      const std::optional<Vector<gfx::Rect>>& character_bounds) override;
   void SetMouseCapture(bool capture) override;
   void SetAutoscrollSelectionActiveInMainFrame(
       bool autoscroll_selection) override;

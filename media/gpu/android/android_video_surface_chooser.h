@@ -8,7 +8,6 @@
 #include <optional>
 
 #include "base/functional/bind.h"
-#include "base/memory/weak_ptr.h"
 #include "media/base/android/android_overlay.h"
 #include "media/base/video_transformation.h"
 #include "media/gpu/media_gpu_export.h"
@@ -69,7 +68,7 @@ class MEDIA_GPU_EXPORT AndroidVideoSurfaceChooser {
   // Notify the client that the most recently provided overlay should be
   // discarded.  The overlay is still valid, but we recommend against
   // using it soon, in favor of a TextureOwner.
-  using UseTextureOwnerCB = base::RepeatingCallback<void(void)>;
+  using UseTextureOwnerCB = base::RepeatingClosure;
 
   AndroidVideoSurfaceChooser() {}
 

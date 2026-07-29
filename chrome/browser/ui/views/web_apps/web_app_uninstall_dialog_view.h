@@ -5,14 +5,12 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_WEB_APPS_WEB_APP_UNINSTALL_DIALOG_VIEW_H_
 #define CHROME_BROWSER_UI_VIEWS_WEB_APPS_WEB_APP_UNINSTALL_DIALOG_VIEW_H_
 
-#include <map>
-#include <memory>
-
 #include "base/functional/callback.h"
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
+#include "chrome/browser/web_applications/web_app_icon_manager.h"
 #include "chrome/browser/web_applications/web_app_install_info.h"
 #include "chrome/browser/web_applications/web_app_install_manager.h"
 #include "chrome/browser/web_applications/web_app_install_manager_observer.h"
@@ -20,11 +18,11 @@
 #include "chrome/browser/web_applications/web_app_uninstall_dialog_user_options.h"
 #include "components/webapps/common/web_app_id.h"
 #include "third_party/skia/include/core/SkBitmap.h"
+#include "ui/base/interaction/element_identifier.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/gfx/image/image_skia.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/views/window/dialog_delegate.h"
-#include "url/gurl.h"
 
 class Profile;
 
@@ -35,6 +33,12 @@ enum class WebappUninstallSource;
 
 namespace views {
 class Checkbox;
+class Label;
+class ScrollView;
+}  // namespace views
+
+namespace web_app {
+struct SubAppUninstallMetadata;
 }
 
 // The dialog's view, owned by the views framework.
@@ -44,12 +48,25 @@ class WebAppUninstallDialogDelegateView
   METADATA_HEADER(WebAppUninstallDialogDelegateView, views::DialogDelegateView)
 
  public:
+  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kUninstallCheckboxId);
+
+  // IDs that identify a view within the app uninstall dialog view.
+  // Used to validate views in browsertests.
+  enum class DialogViewID : int {
+    VIEW_ID_NONE = 0,
+    SUB_APP_LABEL,
+    SUB_APP_ICON,
+    SUB_APP_DESCRIPTION,
+    SUB_APP_SCROLL_VIEW,
+  };
+
   // Constructor for view component of dialog.
   WebAppUninstallDialogDelegateView(
       Profile* profile,
       webapps::AppId app_id,
       webapps::WebappUninstallSource uninstall_source,
-      std::map<web_app::SquareSizePx, SkBitmap> icon_bitmaps,
+      web_app::IconMetadataFromDisk icon_metadata,
+      std::vector<web_app::SubAppUninstallMetadata> sub_apps,
       web_app::UninstallDialogCallback uninstall_choice_callback);
   WebAppUninstallDialogDelegateView(const WebAppUninstallDialogDelegateView&) =
       delete;
@@ -74,6 +91,8 @@ class WebAppUninstallDialogDelegateView
   void OnWebAppInstallManagerDestroyed() override;
 
   raw_ptr<views::Checkbox> checkbox_ = nullptr;
+  raw_ptr<views::Label> sub_apps_description_ = nullptr;
+  raw_ptr<views::ScrollView> sub_apps_scroll_view_ = nullptr;
   gfx::ImageSkia image_;
 
   // The web app we are showing the dialog for.
@@ -88,6 +107,8 @@ class WebAppUninstallDialogDelegateView
       install_manager_observation_{this};
 
   webapps::WebappUninstallSource uninstall_source_;
+  base::WeakPtrFactory<WebAppUninstallDialogDelegateView> weak_ptr_factory_{
+      this};
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_WEB_APPS_WEB_APP_UNINSTALL_DIALOG_VIEW_H_

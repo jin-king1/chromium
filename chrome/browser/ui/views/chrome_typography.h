@@ -6,7 +6,6 @@
 #define CHROME_BROWSER_UI_VIEWS_CHROME_TYPOGRAPHY_H_
 
 #include "ui/base/resource/resource_bundle.h"
-#include "ui/gfx/font.h"
 #include "ui/views/style/typography.h"
 #include "ui/views/style/typography_provider.h"
 
@@ -22,11 +21,8 @@ enum ChromeTextContext {
   CHROME_TEXT_CONTEXT_START = views::style::VIEWS_TEXT_CONTEXT_END,
 #endif
 
-  // Headline text. Usually 20pt. Never multi-line.
-  CONTEXT_HEADLINE = CHROME_TEXT_CONTEXT_START,
-
   // Smaller version of CONTEXT_DIALOG_BODY_TEXT. Usually 12pt.
-  CONTEXT_DIALOG_BODY_TEXT_SMALL,
+  CONTEXT_DIALOG_BODY_TEXT_SMALL = CHROME_TEXT_CONTEXT_START,
 
   // Text of the page title in the tab hover card.
   CONTEXT_TAB_HOVER_CARD_TITLE,
@@ -61,14 +57,11 @@ enum ChromeTextContext {
   // Text for suggestion row chips; e.g. the history embeddings chip.
   CONTEXT_OMNIBOX_POPUP_ROW_CHIP,
 
+  // Text for toolbelt buttons.
+  CONTEXT_OMNIBOX_TOOLBELT_BUTTON,
+
   // ToolbarButton label
   CONTEXT_TOOLBAR_BUTTON,
-
-  // Most text in the download shelf.  Usually 13pt.
-  CONTEXT_DOWNLOAD_SHELF,
-
-  // Status labels in the download shelf.  Usually 10pt.
-  CONTEXT_DOWNLOAD_SHELF_STATUS,
 
   // Title label in the IPH bubble. Usually 18pt.
   CONTEXT_IPH_BUBBLE_TITLE,

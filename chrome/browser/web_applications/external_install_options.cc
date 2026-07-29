@@ -9,8 +9,8 @@
 #include <tuple>
 #include <vector>
 
-#include "base/not_fatal_until.h"
 #include "base/strings/string_util.h"
+#include "base/strings/to_string.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "chrome/browser/web_applications/mojom/user_display_mode.mojom.h"
@@ -27,7 +27,7 @@ ExternalInstallOptions::ExternalInstallOptions(
     : install_url(install_url),
       user_display_mode(user_display_mode),
       install_source(install_source) {
-  CHECK(install_url.is_valid(), base::NotFatalUntil::M130);
+  CHECK(install_url.is_valid());
 }
 
 ExternalInstallOptions::~ExternalInstallOptions() = default;
@@ -88,7 +88,10 @@ bool ExternalInstallOptions::operator==(
         options.disable_if_touchscreen_with_stylus_not_supported,
         options.handles_file_open_intents,
         options.expected_app_id,
-        options.install_without_os_integration
+        options.install_without_os_integration,
+        options.only_uninstall_and_replace_when_compatible_,
+        options.override_icon_url,
+        options.override_icon_hash
         // clang-format on
     );
   };
@@ -96,10 +99,10 @@ bool ExternalInstallOptions::operator==(
 }
 
 base::Value ExternalInstallOptions::AsDebugValue() const {
-  base::Value::Dict root;
+  base::DictValue root;
 
   auto ConvertStringList = [](const std::vector<std::string>& list) {
-    base::Value::List list_json;
+    base::ListValue list_json;
     for (const std::string& item : list)
       list_json.Append(item);
     return list_json;
@@ -128,6 +131,11 @@ base::Value ExternalInstallOptions::AsDebugValue() const {
   root.Set("expected_app_id", ConvertOptional(expected_app_id));
   root.Set("handles_file_open_intents", handles_file_open_intents);
   root.Set("fallback_app_name", ConvertOptional(fallback_app_name));
+  root.Set("override_name", ConvertOptional(override_name));
+  root.Set("override_icon_url", override_icon_url
+                                    ? base::Value(override_icon_url->spec())
+                                    : base::Value());
+  root.Set("override_icon_sha256_hash", ConvertOptional(override_icon_hash));
   root.Set("force_reinstall", force_reinstall);
   root.Set("force_reinstall_for_milestone",
            ConvertOptional(force_reinstall_for_milestone));
@@ -169,6 +177,8 @@ base::Value ExternalInstallOptions::AsDebugValue() const {
   root.Set("placeholder_resolution_behavior",
            base::Value(static_cast<int>(placeholder_resolution_behavior)));
   root.Set("install_without_os_integration", install_without_os_integration);
+  root.Set("only_uninstall_and_replace_when_compatible",
+           only_uninstall_and_replace_when_compatible_.value_or(""));
 
   return base::Value(std::move(root));
 }
@@ -221,6 +231,12 @@ WebAppInstallParams ConvertExternalInstallOptionsToParams(
   }
 
   return params;
+}
+
+void ExternalInstallOptions::SetOnlyUninstallAndReplaceWhenCompatible(
+    const webapps::AppId& overriding_app_id,
+    SetOnlyUninstallAndReplaceWhenCompatiblePassKey) {
+  only_uninstall_and_replace_when_compatible_ = overriding_app_id;
 }
 
 }  // namespace web_app

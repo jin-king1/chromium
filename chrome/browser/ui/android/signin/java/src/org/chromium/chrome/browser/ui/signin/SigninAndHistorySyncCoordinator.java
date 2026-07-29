@@ -4,72 +4,162 @@
 
 package org.chromium.chrome.browser.ui.signin;
 
-import android.view.View;
+import static org.chromium.build.NullUtil.assumeNonNull;
+
+import android.accounts.AccountManager;
+import android.app.Activity;
+import android.content.Context;
+import android.content.Intent;
 
 import androidx.annotation.IntDef;
-import androidx.annotation.NonNull;
 
+import org.chromium.base.IntentUtils;
+import org.chromium.base.metrics.RecordHistogram;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.chrome.browser.signin.services.SigninManager;
+import org.chromium.chrome.browser.signin.services.SigninMetricsUtils;
+import org.chromium.chrome.browser.signin.services.SigninMetricsUtils.State;
 import org.chromium.chrome.browser.ui.signin.history_sync.HistorySyncConfig;
 import org.chromium.chrome.browser.ui.signin.history_sync.HistorySyncHelper;
+import org.chromium.components.browser_ui.settings.ManagedPreferencesUtils;
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandler.BackPressResult;
-import org.chromium.components.signin.identitymanager.ConsentLevel;
+import org.chromium.components.signin.SigninFeatureMap;
+import org.chromium.components.signin.SigninFeatures;
+import org.chromium.components.signin.base.AccountInfo;
 import org.chromium.components.signin.identitymanager.IdentityManager;
+import org.chromium.components.signin.metrics.SigninAccessPoint;
+import org.chromium.components.user_prefs.UserPrefs;
+import org.chromium.ui.widget.Toast;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.util.Objects;
 
 /**
  * Interface for coordinators responsible of showing the correct sub-component of the sign-in and
  * history opt-in flow.
  */
-public interface SigninAndHistorySyncCoordinator {
+@NullMarked
+public abstract class SigninAndHistorySyncCoordinator {
 
-    /** Indicates the sign-in flow completion status. */
-    @IntDef({
-        Result.COMPLETED,
-        Result.INTERRUPTED,
-    })
+    /** Flow for the sign-in routine. */
+    @IntDef({SigninFlow.DEFAULT_SIGNIN, SigninFlow.SWITCH_ACCOUNT})
     @Retention(RetentionPolicy.SOURCE)
-    @interface Result {
-        /** Indicates the sign-in flow completed successfully. */
-        int COMPLETED = 0;
+    public @interface SigninFlow {
+        /** Regular sign-in flow, i.e. the user is signed out and wants to sign in. */
+        int DEFAULT_SIGNIN = 0;
 
         /**
-         * Indicates the sign-in flow was not completed due to error. The conditions depend on the
-         * configuration of the sign-in flow: e.g. if history opt-in is shown, declining history
-         * opt-in will set the INTERRUPTED state, and same for the sign-in step.
+         * Sign-in flow for switching accounts, i.e. the user is already signed in but wants to sign
+         * in to a different account.
          */
-        int INTERRUPTED = 1;
+        int SWITCH_ACCOUNT = 1;
+    }
+
+    /** Indicates the sign-in flow completion status. */
+    public static class Result {
+        /**
+         * Whether the sign-in operation occurred during this specific execution of the flow. Should
+         * be False if the user was already signed in before the flow started. Note, if the user
+         * explicitly accepts the sign-in CTA and the history sync consent is required, then
+         * declining history sync invalidates the entire sign-in.
+         */
+        public final boolean hasSignedIn;
+
+        /**
+         * The user successfully completed the history sync enablement step during the flow. Note,
+         * it possible for an already signed-in user to not be shown the sign-in CTA and only the
+         * history sync consent dialog.
+         */
+        public final boolean hasOptedInHistorySync;
+
+        public Result(boolean hasSignedIn, boolean hasOptedInHistorySync) {
+            this.hasSignedIn = hasSignedIn;
+            this.hasOptedInHistorySync = hasOptedInHistorySync;
+        }
+
+        /** Default non-completion state, user canceled the sign-in flow, or an error occurred. */
+        public static Result aborted() {
+            return new Result(false, false);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(hasSignedIn, hasOptedInHistorySync);
+        }
+
+        @Override
+        public boolean equals(@Nullable Object obj) {
+            if (obj instanceof Result result) {
+                return hasSignedIn == result.hasSignedIn
+                        && hasOptedInHistorySync == result.hasOptedInHistorySync;
+            }
+            return false;
+        }
+
+        @Override
+        public String toString() {
+            return "Result{ hasSignedIn: "
+                    + hasSignedIn
+                    + ", hasOptedInHistorySync: "
+                    + hasOptedInHistorySync
+                    + '}';
+        }
     }
 
     /** Cleans up the coordinator after it is finished being used. */
-    void destroy();
-
-    /**
-     * Called when an Google Play Services "add account" flow started at the activity level has
-     * finished without being completed.
-     */
-    void onAddAccountCanceled();
-
-    /**
-     * Called when an account is added via Google Play Services "add account" flow started at the
-     * activity level.
-     */
-    void onAccountAdded(@NonNull String accountEmail);
-
-    /** Provides the root view of the sign-in and history opt-in flow. */
-    @NonNull
-    View getView();
+    public abstract void destroy();
 
     /** Called when the configuration of the embedder activity changes. */
-    void onConfigurationChange();
+    public abstract void onConfigurationChange();
 
     /** Called when a backpress occurs in the embedder activity. */
     @BackPressResult
-    int handleBackPress();
+    public abstract int handleBackPress();
+
+    /**
+     * Called when an Google Play Services "add account" flow started at the activity level has
+     * finished with a result.
+     */
+    public final void onAddAccountResult(int resultCode, @Nullable Intent data) {
+        final String accountEmail =
+                data == null
+                        ? null
+                        : IntentUtils.safeGetStringExtra(data, AccountManager.KEY_ACCOUNT_NAME);
+
+        if (resultCode != Activity.RESULT_OK || accountEmail == null) {
+            // Record NULL_ACCOUNT_NAME if the add account activity successfully returns but
+            // contains a null account name.
+            if (resultCode == Activity.RESULT_OK && accountEmail == null) {
+                SigninMetricsUtils.logAddAccountStateHistogram(State.NULL_ACCOUNT_NAME);
+            } else {
+                SigninMetricsUtils.logAddAccountStateHistogram(State.CANCELLED);
+            }
+            onAddAccountCanceled();
+            return;
+        }
+
+        SigninMetricsUtils.logAddAccountStateHistogram(State.SUCCEEDED);
+        onAccountAdded(accountEmail);
+    }
+
+    /**
+     * Called by {@link onAddAccountResult} when an Google Play Services "add account" flow started
+     * at the activity level has finished without being completed.
+     */
+    protected abstract void onAddAccountCanceled();
+
+    /**
+     * Called by {@link onAddAccountResult} when an Google Play Services "add account" flow started
+     * at the activity level has finished after being completed.
+     *
+     * @param accountEmail the email of the added account.
+     */
+    protected abstract void onAccountAdded(String accountEmail);
 
     /**
      * Whether the sign-in ui will show in the sign-in flow if the latter is launched.
@@ -77,10 +167,34 @@ public interface SigninAndHistorySyncCoordinator {
      * <p>The sign-in UI can be skipped if the user is already signed-in, for instance.
      *
      * @param profile The current profile.
+     * @param signinFlow The sign-in flow.
+     * @param selectedEmail The email of the account that should be signed in.
      */
-    public static boolean willShowSigninUi(Profile profile) {
+    public static boolean willShowSigninUi(
+            Profile profile, @SigninFlow int signinFlow, @Nullable String selectedEmail) {
         SigninManager signinManager = IdentityServicesProvider.get().getSigninManager(profile);
-        return signinManager.isSigninAllowed();
+        assumeNonNull(signinManager);
+
+        if (signinFlow == SigninFlow.SWITCH_ACCOUNT) {
+            assert selectedEmail != null
+                    : "The SWITCH_ACCOUNT flow should not be triggered without a selected email.";
+            if (!signinManager.isSwitchAccountAllowed()) {
+                return false;
+            }
+
+            IdentityManager identityManager =
+                    IdentityServicesProvider.get().getIdentityManager(profile);
+            AccountInfo primaryAccount = assumeNonNull(identityManager).getPrimaryAccountInfo();
+            AccountInfo targetAccount =
+                    identityManager.findExtendedAccountInfoByEmailAddress(selectedEmail);
+
+            // Should not show the Signin UI if the account being switched to is already signed in.
+            return primaryAccount == null
+                    || targetAccount == null
+                    || !primaryAccount.getId().equals(targetAccount.getId());
+        } else {
+            return signinManager.isSigninAllowed();
+        }
     }
 
     /**
@@ -92,12 +206,20 @@ public interface SigninAndHistorySyncCoordinator {
      * @param profile The current profile.
      * @param historyOptInMode Whether the history opt-in should be always, optionally or never
      *     shown.
+     * @param signinFlow The sign-in flow.
+     * @param selectedEmail The email of the account that should be signed in.
      */
     public static boolean willShowHistorySyncUi(
-            Profile profile, @HistorySyncConfig.OptInMode int historyOptInMode) {
+            Profile profile,
+            @HistorySyncConfig.OptInMode int historyOptInMode,
+            @SigninFlow int signinFlow,
+            @Nullable String selectedEmail) {
         IdentityManager identityManager =
                 IdentityServicesProvider.get().getIdentityManager(profile);
-        if (!willShowSigninUi(profile) && !identityManager.hasPrimaryAccount(ConsentLevel.SIGNIN)) {
+        assumeNonNull(identityManager);
+
+        if (!willShowSigninUi(profile, signinFlow, selectedEmail)
+                && !identityManager.hasPrimaryAccount()) {
             // Signin is suppressed because of something other than the user being signed in. Since
             // the user cannot sign in, we should not show history sync either.
             return false;
@@ -105,18 +227,57 @@ public interface SigninAndHistorySyncCoordinator {
         return shouldShowHistorySync(profile, historyOptInMode);
     }
 
-    static boolean shouldShowHistorySync(
+    public static boolean shouldShowHistorySync(
             Profile profile, @HistorySyncConfig.OptInMode int historyOptInMode) {
         HistorySyncHelper historySyncHelper = HistorySyncHelper.getForProfile(profile);
+        boolean forceHistoryOptInScreen =
+                SigninFeatureMap.isEnabled(SigninFeatures.FORCE_HISTORY_OPT_IN_SCREEN);
         return switch (historyOptInMode) {
             case HistorySyncConfig.OptInMode.NONE -> false;
-            case HistorySyncConfig.OptInMode.OPTIONAL -> !historySyncHelper
-                            .shouldSuppressHistorySync()
-                    && !historySyncHelper.isDeclinedOften();
-            case HistorySyncConfig.OptInMode.REQUIRED -> !historySyncHelper
-                    .shouldSuppressHistorySync();
-            default -> throw new IllegalArgumentException(
-                    "Unexpected value for historyOptInMode :" + historyOptInMode);
+            case HistorySyncConfig.OptInMode.OPTIONAL ->
+                    historySyncHelper.shouldDisplayHistorySync()
+                            && (forceHistoryOptInScreen || !historySyncHelper.isDeclinedOften());
+            case HistorySyncConfig.OptInMode.REQUIRED ->
+                    historySyncHelper.shouldDisplayHistorySync();
+            default ->
+                    throw new IllegalArgumentException(
+                            "Unexpected value for historyOptInMode :" + historyOptInMode);
         };
+    }
+
+    /**
+     * Checks whether the sign-in and history sync flow can be started (at least the sign-in UI or
+     * the history sync UI will be shown if the flow starts) according to the given configuration
+     * and other parameters. It shows an error toast if the flow can't start.
+     *
+     * @return true if the flow can start, false otherwise.
+     */
+    public static boolean canStartSigninAndHistorySyncOrShowError(
+            Context context,
+            Profile profile,
+            @HistorySyncConfig.OptInMode int historyOptInMode,
+            @SigninAccessPoint int accessPoint,
+            @Nullable String selectedEmail,
+            @SigninFlow int signinFlow) {
+        if (willShowSigninUi(profile, signinFlow, selectedEmail)
+                || willShowHistorySyncUi(profile, historyOptInMode, signinFlow, selectedEmail)) {
+            return true;
+        }
+        // TODO(crbug.com/354912290): Update the UI related to sign-in errors.
+        if (UserPrefs.get(profile).isManagedPreference(Pref.SIGNIN_ALLOWED)) {
+            RecordHistogram.recordEnumeratedHistogram(
+                    "Signin.SigninDisabledNotificationShown",
+                    accessPoint,
+                    SigninAccessPoint.MAX_VALUE);
+            ManagedPreferencesUtils.showManagedByAdministratorToast(context);
+        } else {
+            Toast.makeText(
+                            context,
+                            context.getString(
+                                    R.string.signin_account_picker_bottom_sheet_error_title),
+                            Toast.LENGTH_LONG)
+                    .show();
+        }
+        return false;
     }
 }

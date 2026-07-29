@@ -45,7 +45,6 @@
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 #include "url/gurl.h"
 
 namespace ash::quick_start {
@@ -58,7 +57,6 @@ using ::testing::Eq;
 using ::testing::ExplainMatchResult;
 using ::testing::Field;
 using ::testing::Gt;
-using ::testing::Invoke;
 using ::testing::IsFalse;
 using ::testing::IsTrue;
 using ::testing::Optional;
@@ -344,11 +342,12 @@ class SecondDeviceAuthBrokerTest : public ::testing::Test {
             return;
           }
 
-          std::optional<base::Value::Dict> request_body =
+          std::optional<base::DictValue> request_body =
               base::JSONReader::ReadDict(request.request_body->elements()
                                              ->at(0)
                                              .As<network::DataElementBytes>()
-                                             .AsStringPiece());
+                                             .AsStringPiece(),
+                                         base::JSON_PARSE_CHROMIUM_EXTENSIONS);
           if (!request_body) {
             SimulateBadRequest(kGetChallengeDataUrl);
             return;
@@ -377,14 +376,14 @@ class SecondDeviceAuthBrokerTest : public ::testing::Test {
             /*force_new_key=*/_, /*key_crypto_type=*/_,
             /*key_name=*/attestation::kDeviceSetupKey,
             /*profile_specific_data=*/_, /*callback=*/_))
-        .WillOnce(WithArg<7>(Invoke(
+        .WillOnce(WithArg<7>(
             [](attestation::AttestationFlow::CertificateCallback callback)
                 -> void {
               std::move(callback).Run(
                   /*status=*/ash::attestation::AttestationStatus::
                       ATTESTATION_SERVER_BAD_REQUEST_FAILURE,
                   /*pem_certificate_chain=*/std::string());
-            })));
+            }));
   }
 
   // Set an `EXPECT`ation that expects a remote attestation request, and
@@ -399,14 +398,14 @@ class SecondDeviceAuthBrokerTest : public ::testing::Test {
             /*force_new_key=*/_, /*key_crypto_type=*/_,
             /*key_name=*/attestation::kDeviceSetupKey,
             /*profile_specific_data=*/_, /*callback=*/_))
-        .WillOnce(WithArg<7>(Invoke(
+        .WillOnce(WithArg<7>(
             [](attestation::AttestationFlow::CertificateCallback callback)
                 -> void {
               std::move(callback).Run(
                   /*status=*/ash::attestation::AttestationStatus::
                       ATTESTATION_UNSPECIFIED_FAILURE,
                   /*pem_certificate_chain=*/std::string());
-            })));
+            }));
   }
 
   // Set an `EXPECT`ation that expects a remote attestation request, and
@@ -425,14 +424,14 @@ class SecondDeviceAuthBrokerTest : public ::testing::Test {
                      ::attestation::DeviceSetupCertificateRequestMetadata>(
                 ProtoBufContentBindingEq(fido_credential_id()))),
             /*callback*/ _))
-        .WillOnce(WithArg<7>(Invoke(
+        .WillOnce(WithArg<7>(
             [this](attestation::AttestationFlow::CertificateCallback callback)
                 -> void {
               std::move(callback).Run(
                   /*status=*/ash::attestation::AttestationStatus::
                       ATTESTATION_SUCCESS,
                   /*pem_certificate_chain=*/*GetCertificate());
-            })));
+            }));
   }
 
   // Same as above, except that it expects a particular attestation key type.
@@ -451,14 +450,14 @@ class SecondDeviceAuthBrokerTest : public ::testing::Test {
                      ::attestation::DeviceSetupCertificateRequestMetadata>(
                 ProtoBufContentBindingEq(fido_credential_id()))),
             /*callback*/ _))
-        .WillOnce(WithArg<7>(Invoke(
+        .WillOnce(WithArg<7>(
             [this](attestation::AttestationFlow::CertificateCallback callback)
                 -> void {
               std::move(callback).Run(
                   /*status=*/ash::attestation::AttestationStatus::
                       ATTESTATION_SUCCESS,
                   /*pem_certificate_chain=*/*GetCertificate());
-            })));
+            }));
   }
 
   void MakeAttestationUnavailable() {
@@ -1011,24 +1010,25 @@ TEST_F(SecondDeviceAuthBrokerTest,
           return;
         }
 
-        std::optional<base::Value::Dict> request_body =
+        std::optional<base::DictValue> request_body =
             base::JSONReader::ReadDict(request.request_body->elements()
                                            ->at(0)
                                            .As<network::DataElementBytes>()
-                                           .AsStringPiece());
+                                           .AsStringPiece(),
+                                       base::JSON_PARSE_CHROMIUM_EXTENSIONS);
         if (!request_body) {
           SimulateBadRequest(kStartSessionUrl);
           return;
         }
 
-        const base::Value::Dict* target_device_info =
+        const base::DictValue* target_device_info =
             request_body->FindDict(kTargetDeviceInfoKey);
         if (!target_device_info) {
           SimulateBadRequest(kStartSessionUrl);
           return;
         }
 
-        const base::Value::Dict* chromeos_device_info =
+        const base::DictValue* chromeos_device_info =
             target_device_info->FindDict(kChromeOsDeviceInfoKey);
         if (!chromeos_device_info) {
           SimulateBadRequest(kStartSessionUrl);

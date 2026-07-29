@@ -10,7 +10,11 @@
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
+#include "base/types/expected.h"
+#include "base/version.h"
 #include "build/build_config.h"
+#include "components/country_codes/country_codes.h"
+#include "components/regional_capabilities/regional_capabilities_metrics.h"  // IWYU pragma: export
 #include "components/search_engines/choice_made_location.h"
 #include "components/search_engines/search_engine_type.h"
 #include "components/search_engines/template_url.h"
@@ -19,23 +23,55 @@ class PrefService;
 class SearchTermsData;
 struct TemplateURLData;
 
+namespace base {
+class Time;
+}  // namespace base
+
+namespace regional_capabilities {
+class RegionalCapabilitiesService;
+}  // namespace regional_capabilities
+
+namespace metrics {
+class ProfileMetricsService;
+}  // namespace metrics
+
 namespace search_engines {
 
 inline constexpr char
     kSearchEngineChoiceScreenProfileInitConditionsHistogram[] =
         "Search.ChoiceScreenProfileInitConditions";
+inline constexpr char kPumaSearchChoiceScreenProfileInitConditionsHistogram[] =
+    "PUMA.RegionalCapabilities.Search.ChoiceScreenProfileInitConditions";
 inline constexpr char kSearchEngineChoiceScreenNavigationConditionsHistogram[] =
     "Search.ChoiceScreenNavigationConditions";
+inline constexpr char kPumaSearchChoiceScreenNavigationConditionsHistogram[] =
+    "PUMA.RegionalCapabilities.Search.ChoiceScreenNavigationConditions";
+inline constexpr char kChoiceScreenProfileInitConditionsPostRestoreHistogram[] =
+    "Search.ChoiceScreenProfileInitConditions.PostRestore";
+inline constexpr char kChoiceScreenNavigationConditionsPostRestoreHistogram[] =
+    "Search.ChoiceScreenNavigationConditions.PostRestore";
 inline constexpr char kSearchEngineChoiceScreenEventsHistogram[] =
     "Search.ChoiceScreenEvents";
+inline constexpr char kPumaSearchChoiceScreenEventsHistogram[] =
+    "PUMA.RegionalCapabilities.Search.ChoiceScreenEvents";
+inline constexpr char kChoiceScreenEventsPostRestoreHistogram[] =
+    "Search.ChoiceScreenEvents.PostRestore";
 inline constexpr char
     kSearchEngineChoiceScreenDefaultSearchEngineTypeHistogram[] =
         "Search.ChoiceScreenDefaultSearchEngineType";
 inline constexpr char
+    kPumaSearchEngineChoiceScreenDefaultSearchEngineTypeHistogram[] =
+        "PUMA.RegionalCapabilities.Search.ChoiceScreenDefaultSearchEngineType";
+inline constexpr char
     kSearchEngineChoiceScreenDefaultSearchEngineType2Histogram[] =
         "Search.ChoiceScreenDefaultSearchEngineType2";
+inline constexpr char
+    kPumaSearchEngineChoiceScreenDefaultSearchEngineType2Histogram[] =
+        "PUMA.RegionalCapabilities.Search.ChoiceScreenDefaultSearchEngineType2";
 inline constexpr char kSearchEngineChoiceScreenSelectedEngineIndexHistogram[] =
     "Search.ChoiceScreenSelectedEngineIndex";
+inline constexpr char kPumaSearchChoiceScreenSelectedEngineIndexHistogram[] =
+    "PUMA.RegionalCapabilities.Search.ChoiceScreenSelectedEngineIndex";
 inline constexpr char
     kSearchEngineChoiceScreenShowedEngineAtHistogramPattern[] =
         "Search.ChoiceScreenShowedEngineAt.Index%d";
@@ -50,55 +86,8 @@ inline constexpr char kSearchEngineChoiceRepromptWildcardHistogram[] =
     "Search.ChoiceReprompt.Wildcard";
 inline constexpr char kSearchEngineChoiceRepromptSpecificCountryHistogram[] =
     "Search.ChoiceReprompt.SpecificCountry";
-
-// These values are persisted to logs. Entries should not be renumbered and
-// numeric values should never be reused.
-// LINT.IfChange(SearchEngineChoiceScreenConditions)
-enum class SearchEngineChoiceScreenConditions {
-  // The user has a custom search engine set.
-  kHasCustomSearchEngine = 0,
-  // The user has a search provider list override.
-  kSearchProviderOverride = 1,
-  // The user is not in the regional scope.
-  kNotInRegionalScope = 2,
-  // A policy sets the default search engine or disables search altogether.
-  kControlledByPolicy = 3,
-  // The profile is out of scope.
-  kProfileOutOfScope = 4,
-  // An extension controls the default search engine.
-  kExtensionControlled = 5,
-  // The user is eligible to see the screen at the next opportunity.
-  kEligible = 6,
-  // The choice has already been completed.
-  kAlreadyCompleted = 7,
-  // The browser type is unsupported.
-  kUnsupportedBrowserType = 8,
-  // The feature can't run, it is disabled by local or remote configuration.
-  kFeatureSuppressed = 9,
-  // Some other dialog is showing and interfering with the choice one.
-  kSuppressedByOtherDialog = 10,
-  // The browser window can't fit the dialog's smallest variant.
-  kBrowserWindowTooSmall = 11,
-  // The user has a distribution custom search engine set as default.
-  kHasDistributionCustomSearchEngine = 12,
-  // The user has an unknown (which we assume is because it has been removed)
-  // prepopulated search engine set as default.
-  kHasRemovedPrepopulatedSearchEngine = 13,
-  // The user does not have Google as the default search engine.
-  kHasNonGoogleSearchEngine = 14,
-  // The user is eligible, the app could have presented a dialog but the
-  // application was started via an external intent and the dialog skipped.
-  kAppStartedByExternalIntent = 15,
-  // The browser attempting to show the choice screen in a dialog is already
-  // showing a choice screen.
-  kAlreadyBeingShown = 16,
-  // The user made the choice in the guest session and opted to save it across
-  // guest sessions.
-  kUsingPersistedGuestSessionChoice = 17,
-
-  kMaxValue = kUsingPersistedGuestSessionChoice,
-};
-// LINT.ThenChange(/tools/metrics/histograms/metadata/search/enums.xml:SearchEngineChoiceScreenConditions)
+inline constexpr char kSearchEngineChoiceCompletedOnMonthHistogram[] =
+    "Search.ChoiceCompletedOnMonth.OnProfileLoad2";
 
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
@@ -139,14 +128,19 @@ enum class SearchEngineChoiceScreenEvents {
 // metrics.
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
-enum class WipeSearchEngineChoiceReason {
+enum class SearchEngineChoiceWipeReason {
   kProfileWipe = 0,
-  kMissingChoiceVersion = 1,
-  kInvalidChoiceVersion = 2,
-  kReprompt = 3,
+  kMissingMetadataVersion = 1,
+  kInvalidMetadataVersion = 2,
+  kFinchBasedReprompt = 3,
   kCommandLineFlag = 4,
+  // kDeviceRestored = 5, // Deprecated
+  kInvalidMetadata = 6,
+  kMissingDefaultSearchEngine = 7,
+  kChoiceRemadeAfterImport = 8,
+  kProgramChanged = 9,
 
-  kMaxValue = kCommandLineFlag,
+  kMaxValue = kProgramChanged,
 };
 
 // Exposed for testing.
@@ -179,14 +173,16 @@ struct ChoiceScreenDisplayState {
  public:
   ChoiceScreenDisplayState(
       std::vector<SearchEngineType> search_engines,
-      int country_id,
+      country_codes::CountryId country_id,
+      bool is_current_default_search_presented,
+      bool includes_non_regional_set_engine,
       std::optional<int> selected_engine_index = std::nullopt);
   ChoiceScreenDisplayState(const ChoiceScreenDisplayState& other);
   ~ChoiceScreenDisplayState();
 
-  base::Value::Dict ToDict() const;
+  base::DictValue ToDict() const;
   static std::optional<ChoiceScreenDisplayState> FromDict(
-      const base::Value::Dict& dict);
+      const base::DictValue& dict);
 
   // `SearchEngineType`s of the search engines displayed on the choice screen,
   // listed in an order matching their display order.
@@ -203,7 +199,16 @@ struct ChoiceScreenDisplayState {
   // The country used when generating the list. It should be the country
   // used to determine the set of search engines to show for the current
   // profile.
-  const int country_id;
+  const country_codes::CountryId country_id;
+
+  // Whether the choice screen indicated which search provider was set as
+  // default at the time it was shown.
+  const bool is_current_default_search_presented;
+
+  // Whether the choice screen included another engine that is not normally part
+  // of the standard set for this region. This is expected to be used to include
+  // the current default.
+  const bool includes_non_regional_set_engine;
 };
 
 // Contains basic information about the search engine choice screen, notably
@@ -212,7 +217,8 @@ struct ChoiceScreenDisplayState {
 class ChoiceScreenData {
  public:
   ChoiceScreenData(TemplateURL::OwnedTemplateURLVector owned_template_urls,
-                   int country_id,
+                   const TemplateURL* current_default_to_highlight,
+                   country_codes::CountryId country_id,
                    const SearchTermsData& search_terms_data);
 
   ChoiceScreenData(const ChoiceScreenData&) = delete;
@@ -228,34 +234,28 @@ class ChoiceScreenData {
     return display_state_;
   }
 
+  // When non-nullptr, designates the search engine to highlight on the choice
+  // screen. Null values might indicate that the highlight feature is disabled
+  // or that there is nothing to highlight because of an issue identifying the
+  // right entry.
+  const TemplateURL* current_default_to_highlight() const {
+    return current_default_to_highlight_;
+  }
+
  private:
   const TemplateURL::OwnedTemplateURLVector search_engines_;
 
   const ChoiceScreenDisplayState display_state_;
+
+  const raw_ptr<const TemplateURL> current_default_to_highlight_;
 };
-
-// Returns whether the provided `country_id` is eligible for the EEA default
-// search engine choice prompt.
-// See `//components/country_codes` for the Country ID format.
-// TODO(b:328040066): Move to `//components/regional_capabilities`.
-bool IsEeaChoiceCountry(int country_id);
-
-// Records the specified choice screen condition at profile initialization.
-void RecordChoiceScreenProfileInitCondition(
-    SearchEngineChoiceScreenConditions event);
-
-// Records the specified choice screen condition for relevant navigations.
-void RecordChoiceScreenNavigationCondition(
-    SearchEngineChoiceScreenConditions condition);
-
-// Records the specified choice screen event.
-void RecordChoiceScreenEvent(SearchEngineChoiceScreenEvents event);
 
 // Records the type of the default search engine that was chosen by the user
 // in the search engine choice screen or in the settings page.
 void RecordChoiceScreenDefaultSearchProviderType(
     SearchEngineType engine_type,
-    ChoiceMadeLocation choice_location);
+    ChoiceMadeLocation choice_location,
+    metrics::ProfileMetricsService& profile_metrics_service);
 
 // Records the index of the search engine that was chosen by the user as it was
 // displayed on the choice screen.
@@ -268,7 +268,8 @@ void RecordChoiceScreenSelectedIndex(int selected_engine_index);
 // Don't call this directly. Instead, go through
 // `SearchEngineChoiceService::MaybeRecordChoiceScreenDisplayState()`.
 void RecordChoiceScreenPositions(
-    const std::vector<SearchEngineType>& displayed_search_engines);
+    const std::vector<SearchEngineType>& displayed_search_engines,
+    metrics::ProfileMetricsService& profile_metrics_service);
 
 // Records whether `RecordChoiceScreenPositions()` had to be skipped due to
 // a mismatch between the Variations/UMA country and the profile/choice
@@ -283,28 +284,49 @@ void RecordUnexpectedSearchProvider(const TemplateURLData& data);
 // Clears the search engine choice prefs, such as the timestamp and the Chrome
 // version, to ensure the choice screen is shown again.
 void WipeSearchEngineChoicePrefs(PrefService& profile_prefs,
-                                 WipeSearchEngineChoiceReason reason);
+                                 SearchEngineChoiceWipeReason reason);
 
-#if !BUILDFLAG(IS_ANDROID)
-// Returns the engine marketing snippet string resource id or -1 if the snippet
-// was not found.
-// The function definition is generated in `generated_marketing_snippets.cc`.
-// `engine_keyword` is the search engine keyword.
-int GetMarketingSnippetResourceId(const std::u16string& engine_keyword);
+struct ChoiceCompletionMetadata {
+  enum class ParseError {
+    kAbsent,
+    kMissingVersion,
+    kInvalidVersion,
+    kMissingTimestamp,
+    kNullTimestamp,
+    kInvalidProgram,
+  };
 
-// Returns the marketing snippet string or the fallback string if the search
-// engine didn't provide its own.
-std::u16string GetMarketingSnippetString(
-    const TemplateURLData& template_url_data);
+  base::Time timestamp;
+  base::Version version;
+  int serialized_program;
+};
 
-// Returns the resource ID for the icon associated with `engine_keyword`, or -1
-// if not found. All search engines prepopulated in EEA countries are guaranteed
-// to have an icon.
-// The function definition is generated by `generate_search_engine_icons.py`in
-// `generated_search_engine_resource_ids.cc`.
-int GetIconResourceId(const std::u16string& engine_keyword);
+base::expected<ChoiceCompletionMetadata, ChoiceCompletionMetadata::ParseError>
+GetChoiceCompletionMetadata(const PrefService& prefs);
 
-#endif
+// Creates a `ChoiceCompletionMetadata` with the specified program and current
+// timestamp and version.
+ChoiceCompletionMetadata CreateChoiceCompletionMetadataWithProgram(
+    int serialized_program);
+
+// Creates a `ChoiceCompletionMetadata` for the current state by getting the
+// active program from `regional_capabilities_service`.
+ChoiceCompletionMetadata CreateChoiceCompletionMetadataForCurrentState(
+    regional_capabilities::RegionalCapabilitiesService&
+        regional_capabilities_service);
+
+// Persists the choice completion metadata to prefs.
+void SetChoiceCompletionMetadata(PrefService& prefs,
+                                 ChoiceCompletionMetadata metadata);
+
+// Returns the timestamp of search engine choice screen. No value if no choice
+// has been made.
+std::optional<base::Time> GetChoiceScreenCompletionTimestamp(
+    PrefService& prefs);
+
+void ClearSearchEngineChoiceInvalidation(PrefService& prefs);
+
+bool IsSearchEngineChoiceInvalid(const PrefService& prefs);
 
 }  // namespace search_engines
 

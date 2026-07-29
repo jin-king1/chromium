@@ -12,6 +12,7 @@
 #include "content/public/browser/navigation_throttle.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/test/mock_navigation_handle.h"
+#include "content/public/test/mock_navigation_throttle_registry.h"
 #include "content/public/test/navigation_simulator.h"
 #include "content/public/test/test_renderer_host.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -39,28 +40,25 @@ class WellKnownChangePasswordNavigationThrottleTest
     ChromeRenderViewHostTestHarness::SetUp();
     content::RenderFrameHostTester::For(main_rfh())
         ->InitializeRenderFrameIfNeeded();
-    subframe_ = content::RenderFrameHostTester::For(main_rfh())
-                    ->AppendChild("subframe");
   }
 
-  content::RenderFrameHost* subframe() const { return subframe_; }
-
-  std::unique_ptr<WellKnownChangePasswordNavigationThrottle>
-  CreateNavigationThrottle(NavigationThrottleOptions opts) {
+  bool CreateNavigationThrottle(NavigationThrottleOptions opts) {
     content::MockNavigationHandle handle(
         opts.url, opts.rfh ? opts.rfh.get() : main_rfh());
     handle.set_page_transition(opts.page_transition);
     if (opts.initiator_origin) {
       handle.set_initiator_origin(*opts.initiator_origin);
     }
-    return WellKnownChangePasswordNavigationThrottle::MaybeCreateThrottleFor(
-        &handle);
+    content::MockNavigationThrottleRegistry registry(
+        &handle,
+        content::MockNavigationThrottleRegistry::RegistrationMode::kHold);
+    WellKnownChangePasswordNavigationThrottle::MaybeCreateAndAdd(registry);
+    return !registry.throttles().empty();
   }
 
  private:
-  variations::ScopedVariationsIdsProvider scoped_variations_ids_provider_{
+  variations::test::ScopedVariationsIdsProvider scoped_variations_ids_provider_{
       variations::VariationsIdsProvider::Mode::kUseSignedInState};
-  raw_ptr<content::RenderFrameHost, DanglingUntriaged> subframe_ = nullptr;
 };
 
 TEST_F(WellKnownChangePasswordNavigationThrottleTest,
@@ -125,13 +123,15 @@ TEST_F(WellKnownChangePasswordNavigationThrottleTest,
 // navigation initiated by a subframe.
 TEST_F(WellKnownChangePasswordNavigationThrottleTest,
        NeverCreateNavigationThrottle_Subframe) {
+  content::RenderFrameHost* subframe =
+      content::RenderFrameHostTester::For(main_rfh())->AppendChild("subframe");
   // change-password url without trailing slash
   GURL url("https://google.com/.well-known/change-password");
-  EXPECT_FALSE(CreateNavigationThrottle({url, subframe()}));
+  EXPECT_FALSE(CreateNavigationThrottle({url, subframe}));
 
   // change-password url with trailing slash
   url = GURL("https://google.com/.well-known/change-password/");
-  EXPECT_FALSE(CreateNavigationThrottle({url, subframe()}));
+  EXPECT_FALSE(CreateNavigationThrottle({url, subframe}));
 }
 
 class WellKnownChangePasswordNavigationThrottleFencedFramesTest

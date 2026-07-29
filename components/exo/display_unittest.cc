@@ -3,9 +3,11 @@
 // found in the LICENSE file.
 
 #include "components/exo/display.h"
+
 #include "ash/public/cpp/shell_window_ids.h"
 #include "ash/wm/desks/desks_util.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "chromeos/ui/base/window_pin_type.h"
 #include "chromeos/ui/base/window_properties.h"
 #include "components/exo/buffer.h"
@@ -79,8 +81,13 @@ class DisplayTest : public test::ExoTestBase {
     WMHelper::GetInstance()->RegisterAppPropertyResolver(std::move(resolver));
   }
 
+  void TearDown() override {
+    resolver_ = nullptr;
+    test::ExoTestBase::TearDown();
+  }
+
  private:
-  raw_ptr<TestPropertyResolver, DanglingUntriaged> resolver_;
+  raw_ptr<TestPropertyResolver> resolver_;
 };
 
 TEST_F(DisplayTest, CreateSurface) {
@@ -120,12 +127,12 @@ TEST_F(DisplayTest, DISABLED_CreateLinuxDMABufBuffer) {
       ui::OzonePlatform::GetInstance()
           ->GetSurfaceFactoryOzone()
           ->CreateNativePixmap(gfx::kNullAcceleratedWidget, VK_NULL_HANDLE,
-                               buffer_size, gfx::BufferFormat::RGBA_8888,
+                               buffer_size, viz::SinglePlaneFormat::kRGBA_8888,
                                gfx::BufferUsage::GPU_READ);
   gfx::NativePixmapHandle native_pixmap_handle = pixmap->ExportHandle();
-  std::unique_ptr<Buffer> buffer1 =
-      display.CreateLinuxDMABufBuffer(buffer_size, gfx::BufferFormat::RGBA_8888,
-                                      std::move(native_pixmap_handle), false);
+  std::unique_ptr<Buffer> buffer1 = display.CreateLinuxDMABufBuffer(
+      buffer_size, viz::SinglePlaneFormat::kRGBA_8888,
+      std::move(native_pixmap_handle), false);
   EXPECT_TRUE(buffer1);
 
   // Create a handle without a file descriptor.
@@ -133,9 +140,9 @@ TEST_F(DisplayTest, DISABLED_CreateLinuxDMABufBuffer) {
   native_pixmap_handle.planes[0].fd.reset();
 
   // Creating a prime buffer using an invalid fd should fail.
-  std::unique_ptr<Buffer> buffer2 =
-      display.CreateLinuxDMABufBuffer(buffer_size, gfx::BufferFormat::RGBA_8888,
-                                      std::move(native_pixmap_handle), false);
+  std::unique_ptr<Buffer> buffer2 = display.CreateLinuxDMABufBuffer(
+      buffer_size, viz::SinglePlaneFormat::kRGBA_8888,
+      std::move(native_pixmap_handle), false);
   EXPECT_FALSE(buffer2);
 }
 
@@ -301,6 +308,9 @@ class TestDataDeviceDelegate : public DataDeviceDelegate {
   // Overriden from DataDeviceDelegate:
   void OnDataDeviceDestroying(DataDevice* data_device) override {}
   DataOffer* OnDataOffer() override { return nullptr; }
+  base::WeakPtr<DataDeviceDelegate> GetWeakPtr() override {
+    return weak_ptr_factory_.GetWeakPtr();
+  }
   void OnEnter(Surface* surface,
                const gfx::PointF& location,
                const DataOffer& data_offer) override {}
@@ -312,6 +322,9 @@ class TestDataDeviceDelegate : public DataDeviceDelegate {
   bool CanAcceptDataEventsForSurface(Surface* surface) const override {
     return false;
   }
+
+ private:
+  base::WeakPtrFactory<TestDataDeviceDelegate> weak_ptr_factory_{this};
 };
 
 TEST_F(DisplayTest, CreateDataDevice) {

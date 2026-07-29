@@ -7,7 +7,9 @@
 
 #import <Foundation/Foundation.h>
 
-#include <vector>
+#import <vector>
+
+#import "ios/chrome/browser/app_switcher/model/app_switcher_params_request_status.h"
 
 // Input format for the `TabOpening` protocol.
 enum class ApplicationModeForTabOpening {
@@ -44,25 +46,21 @@ enum TabOpeningPostOpeningAction {
   OPEN_LATEST_TAB,
   START_LENS_FROM_INTENTS,
   OPEN_CLEAR_BROWSING_DATA_DIALOG,
-  TAB_OPENING_POST_OPENING_ACTION_COUNT,
   ADD_BOOKMARKS,
   ADD_READING_LIST_ITEMS,
   EXTERNAL_ACTION_SHOW_BROWSER_SETTINGS,
+  START_LENS_FROM_SHARE_EXTENSION,
+  CREDENTIAL_EXCHANGE_IMPORT,
+  TRIGGER_GEMINI_PROMO,
+  SHOW_GOOGLE_ONE_SCREEN,
+  START_GEMINI_AI_SUMMARIZATION,
 };
 
-// Represents the status of a request to change the application mode.
-enum class ApplicationModeRequestStatus {
-  // TODO(crbug.com/374935368): Move to a separate file.
-  kUnavailable,
-  kRequested,
-  kAvailable,
-};
-
-// Type of the block invoked when an application mode request completes. It is
-// invoked asynchronously with the status of the operation as
-// `application_mode`.
-using AppModeRequestBlock =
+// Type of the block invoked when an App Switcher parameters request completes.
+using AppSwitcherParamsRequestBlock =
     void (^)(ApplicationModeForTabOpening application_mode);
+
+using AppModeRequestBlock = AppSwitcherParamsRequestBlock;
 
 class GURL;
 
@@ -99,12 +97,16 @@ class GURL;
 @property(nonatomic, readwrite, copy) NSString* textQuery;
 // Data for UIImage for image query that should be executed on startup.
 @property(nonatomic, readwrite, strong) NSData* imageSearchData;
+// Token received from the OS during the app launch for the credential exchange
+// import, needed to be passed back to the OS to receive the credential data.
+@property(nonatomic, readwrite, copy) NSUUID* credentialExchangeImportUUID;
 // Boolean to track if the app is open in an user unexpected mode.
 // When a certain enterprise policy has been set, it's possible that one browser
 // mode is disabled. When the user intends to open an unavailable mode of
 // Chrome, the browser won't proceed in that disabled mode, and it will signal
 // to the user that a different mode is opened.
-@property(nonatomic, readwrite, getter=isUnexpectedMode) BOOL unexpectedMode;
+@property(nonatomic, readwrite, assign, getter=isUnexpectedMode)
+    BOOL unexpectedMode;
 // Boolean to track whether the app was opened via a custom scheme from another
 // first-party app.
 @property(nonatomic, readwrite, assign) BOOL openedViaFirstPartyScheme;
@@ -112,6 +114,10 @@ class GURL;
 @property(nonatomic, readwrite, assign) BOOL openedViaWidgetScheme;
 // Boolean to track whether the app was opened via URL.
 @property(nonatomic, readwrite, assign) BOOL openedWithURL;
+// Boolean to track whether the app was opened via share extension.
+@property(nonatomic, readwrite, assign) BOOL openedViaShareExtensionScheme;
+// Boolean to track whether the app was opened via Siri shortcut.
+@property(nonatomic, readwrite, assign) BOOL openedViaSiriShortcut;
 
 - (instancetype)init NS_UNAVAILABLE;
 
@@ -132,9 +138,9 @@ class GURL;
              applicationMode:(ApplicationModeForTabOpening)mode
         forceApplicationMode:(BOOL)forceApplicationMode;
 
-// Initiate the request for application mode if needed and invoke `block` when
-// the it becomes `kAvailable`.
-- (void)requestApplicationModeWithBlock:(AppModeRequestBlock)block;
+// Initiates the request to fetch all App Switcher parameters (e.g. application
+// mode, AI summarization) if needed and invokes `block` when complete.
+- (void)fetchAppSwitcherParamsWithBlock:(AppSwitcherParamsRequestBlock)block;
 
 // Sets the application mode. The application mode will be forced if
 // `forceApplicationMode` is YES.

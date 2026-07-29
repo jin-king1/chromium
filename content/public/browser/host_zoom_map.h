@@ -5,12 +5,10 @@
 #ifndef CONTENT_PUBLIC_BROWSER_HOST_ZOOM_MAP_H_
 #define CONTENT_PUBLIC_BROWSER_HOST_ZOOM_MAP_H_
 
-#include <map>
 #include <memory>
 #include <string>
 #include <vector>
 
-#include "base/callback_list.h"
 #include "base/functional/callback.h"
 #include "base/time/time.h"
 #include "content/common/content_export.h"
@@ -18,6 +16,7 @@
 #include "url/gurl.h"
 
 namespace base {
+class CallbackListSubscription;
 class Clock;
 }
 
@@ -209,24 +208,6 @@ class HostZoomMap {
       const std::string& scheme,
       const std::string& host) = 0;
 #endif
-
-  // Accessors for preview
-  //
-  // Zoom levels for preview are isolated from normal ones, stored to memory
-  // only in a session and not persisted to prefs.
-  //
-  // See also `PreviewZoomController`.
-  //
-  // In long-term, we are planning to persist zoom levels for preview as same as
-  // normal ones. An option is adding HostZoomMapImpl::is_for_preview_ and
-  // another instance of HostZoomMapImpl to StoragePartition via
-  // HostZoomLevelContext. In short-term, we tihs is not appropriate and we
-  // tentatively use HostZoomMapImpl.
-  //
-  // TODO(b:315313138): Revisit here and redesign it.
-  virtual double GetZoomLevelForPreviewAndHost(const std::string& host) = 0;
-  virtual void SetZoomLevelForPreviewAndHost(const std::string& host,
-                                             double level) = 0;
 
   // Allows lookup and setting of ZoomLevel for the content currently displayed
   // in the indicated FrameTreeNode. `ftn_id` must refer to a RenderFrameHost

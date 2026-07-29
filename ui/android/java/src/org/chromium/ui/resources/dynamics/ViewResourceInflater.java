@@ -52,7 +52,7 @@ public class ViewResourceInflater {
     private @Nullable Context mContext;
 
     /** The ViewGroup container used to inflate the View. */
-    private ViewGroup mContainer;
+    private @Nullable ViewGroup mContainer;
 
     /** The DynamicResourceLoader used to manage resources generated dynamically. */
     private @Nullable DynamicResourceLoader mResourceLoader;
@@ -89,8 +89,8 @@ public class ViewResourceInflater {
             int layoutId,
             int viewId,
             Context context,
-            ViewGroup container,
-            DynamicResourceLoader resourceLoader) {
+            @Nullable ViewGroup container,
+            @Nullable DynamicResourceLoader resourceLoader) {
         mLayoutId = layoutId;
         mViewId = viewId;
         mContext = context;
@@ -277,6 +277,7 @@ public class ViewResourceInflater {
     private void attachView() {
         if (!mIsAttached) {
             assert mView.getParent() == null;
+            assumeNonNull(mContainer);
             mContainer.addView(mView);
             mIsAttached = true;
 
@@ -299,6 +300,7 @@ public class ViewResourceInflater {
             }
 
             assert mView.getParent() != null;
+            assumeNonNull(mContainer);
             mContainer.removeView(mView);
             mIsAttached = false;
         }

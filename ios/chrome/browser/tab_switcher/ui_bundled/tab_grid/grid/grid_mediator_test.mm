@@ -4,12 +4,18 @@
 
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/grid_mediator_test.h"
 
-#import "base/containers/contains.h"
+#import <algorithm>
+
 #import "base/test/ios/wait_util.h"
+#import "components/saved_tab_groups/test_support/fake_tab_group_sync_service.h"
 #import "components/saved_tab_groups/test_support/mock_tab_group_sync_service.h"
 #import "components/unified_consent/pref_names.h"
 #import "ios/chrome/browser/history/model/history_service_factory.h"
 #import "ios/chrome/browser/main/model/browser_web_state_list_delegate.h"
+#import "ios/chrome/browser/saved_tab_groups/model/ios_tab_group_sync_delegate.h"
+#import "ios/chrome/browser/saved_tab_groups/model/tab_group_local_update_observer.h"
+#import "ios/chrome/browser/saved_tab_groups/model/tab_group_service.h"
+#import "ios/chrome/browser/saved_tab_groups/model/tab_group_service_factory.h"
 #import "ios/chrome/browser/saved_tab_groups/model/tab_group_sync_service_factory.h"
 #import "ios/chrome/browser/sessions/model/fake_tab_restore_service.h"
 #import "ios/chrome/browser/sessions/model/ios_chrome_tab_restore_service_factory.h"
@@ -32,10 +38,10 @@
 #import "ios/chrome/browser/sync/model/mock_sync_service_utils.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
 #import "ios/chrome/browser/tab_insertion/model/tab_insertion_browser_agent.h"
-#import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/base_grid_mediator.h"
+#import "ios/chrome/browser/tab_switcher/tab_grid/base_grid/coordinator/base_grid_mediator.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/toolbars/test/fake_tab_grid_toolbars_mediator.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/test/fake_tab_collection_consumer.h"
-#import "ios/chrome/browser/tabs/model/closing_web_state_observer_browser_agent.h"
+#import "ios/chrome/browser/tips_manager/model/tips_manager_ios_factory.h"
 #import "ios/chrome/browser/url_loading/model/fake_url_loading_delegate.h"
 #import "ios/chrome/browser/url_loading/model/scene_url_loading_service.h"
 #import "ios/chrome/browser/url_loading/model/test_scene_url_loading_service.h"
@@ -66,10 +72,27 @@ constexpr web::ContentWorld kContentWorlds[] = {
     web::ContentWorld::kIsolatedWorld,
 };
 
-// Returns a `MockTabGroupSyncService`.
-std::unique_ptr<KeyedService> CreateMockTabGroupSyncService(
-    web::BrowserState* context) {
-  return std::make_unique<tab_groups::MockTabGroupSyncService>();
+// Returns a `FakeTabGroupSyncService`.
+std::unique_ptr<KeyedService> CreateFakeTabGroupSyncService(
+    ProfileIOS* profile) {
+  std::unique_ptr<tab_groups::TabGroupSyncService> tab_group_sync_service =
+      std::make_unique<tab_groups::FakeTabGroupSyncService>();
+
+  BrowserList* browser_list = BrowserListFactory::GetForProfile(profile);
+  std::unique_ptr<tab_groups::TabGroupLocalUpdateObserver>
+      local_update_observer =
+          std::make_unique<tab_groups::TabGroupLocalUpdateObserver>(
+              browser_list, tab_group_sync_service.get(),
+              SessionRestorationServiceFactory::GetForProfile(profile));
+
+  std::unique_ptr<tab_groups::IOSTabGroupSyncDelegate> delegate =
+      std::make_unique<tab_groups::IOSTabGroupSyncDelegate>(
+          browser_list, tab_group_sync_service.get(),
+          std::move(local_update_observer));
+
+  tab_group_sync_service->SetTabGroupSyncDelegate(std::move(delegate));
+
+  return std::move(tab_group_sync_service);
 }
 }  // namespace
 
@@ -97,8 +120,13 @@ void GridMediatorTestClass::SetUp() {
                             TestSessionRestorationService::GetTestingFactory());
   builder.AddTestingFactory(
       tab_groups::TabGroupSyncServiceFactory::GetInstance(),
-      base::BindRepeating(&CreateMockTabGroupSyncService));
+      base::BindOnce(&CreateFakeTabGroupSyncService));
+  builder.AddTestingFactory(TipsManagerIOSFactory::GetInstance(),
+                            TipsManagerIOSFactory::GetDefaultFactory());
   profile_ = std::move(builder).Build();
+  tab_group_sync_service_ = static_cast<tab_groups::FakeTabGroupSyncService*>(
+      tab_groups::TabGroupSyncServiceFactory::GetForProfile(profile_.get()));
+  tab_group_service_ = TabGroupServiceFactory::GetForProfile(profile_.get());
   // Price Drops are only available to signed in MSBB users.
   profile_->GetPrefs()->SetBoolean(
       unified_consent::prefs::kUrlKeyedAnonymizedDataCollectionEnabled, true);
@@ -108,9 +136,8 @@ void GridMediatorTestClass::SetUp() {
           GetApplicationContext()->GetSystemIdentityManager());
   system_identity_manager->AddIdentity(identity);
   auth_service_ = AuthenticationServiceFactory::GetForProfile(profile_.get());
-  auth_service_->SignIn(identity, signin_metrics::AccessPoint::kUnknown);
-  scene_state_ = OCMClassMock([SceneState class]);
-  OCMStub([scene_state_ sceneSessionID]).andReturn(@(kIdentifier));
+  auth_service_->SignIn(identity, signin_metrics::AccessPoint::kStartPage);
+  scene_state_ = [[SceneState alloc] init];
   browser_ = std::make_unique<TestBrowser>(
       profile_.get(), scene_state_,
       std::make_unique<BrowserWebStateListDelegate>(profile_.get()));
@@ -122,7 +149,6 @@ void GridMediatorTestClass::SetUp() {
   url_loading_delegate_ = [[FakeURLLoadingDelegate alloc] init];
 
   WebUsageEnablerBrowserAgent::CreateForBrowser(browser_.get());
-  ClosingWebStateObserverBrowserAgent::CreateForBrowser(browser_.get());
   SnapshotBrowserAgent::CreateForBrowser(browser_.get());
   SnapshotBrowserAgent::FromBrowser(browser_.get())->SetSessionID(kIdentifier);
 
@@ -148,7 +174,7 @@ void GridMediatorTestClass::SetUp() {
     auto web_state = CreateFakeWebStateWithURL(GURL(urls[i]));
     web::WebStateID identifier = web_state.get()->GetUniqueIdentifier();
     // Tab IDs should be unique.
-    ASSERT_FALSE(base::Contains(identifiers, identifier));
+    ASSERT_FALSE(std::ranges::contains(identifiers, identifier));
     identifiers.push_back(identifier);
     browser_->GetWebStateList()->InsertWebState(
         std::move(web_state), WebStateList::InsertionParams::AtIndex(i));

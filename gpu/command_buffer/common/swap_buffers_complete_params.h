@@ -8,20 +8,21 @@
 #include <optional>
 #include <vector>
 
+#include "gpu/command_buffer/common/gpu_command_buffer_common_export.h"
 #include "gpu/command_buffer/common/mailbox.h"
-#include "gpu/gpu_export.h"
 #include "ui/gfx/ca_layer_params.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/swap_result.h"
 
 namespace gpu {
 
-struct GPU_EXPORT SwapBuffersCompleteParams {
+struct GPU_COMMAND_BUFFER_COMMON_EXPORT SwapBuffersCompleteParams {
   SwapBuffersCompleteParams();
   SwapBuffersCompleteParams(SwapBuffersCompleteParams&& other);
-  SwapBuffersCompleteParams(const SwapBuffersCompleteParams& other);
+  SwapBuffersCompleteParams(const SwapBuffersCompleteParams& other) = delete;
   SwapBuffersCompleteParams& operator=(SwapBuffersCompleteParams&& other);
-  SwapBuffersCompleteParams& operator=(const SwapBuffersCompleteParams& other);
+  SwapBuffersCompleteParams& operator=(const SwapBuffersCompleteParams& other) =
+      delete;
   ~SwapBuffersCompleteParams();
 
   gfx::SwapResponse swap_response;

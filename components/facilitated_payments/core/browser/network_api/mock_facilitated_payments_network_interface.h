@@ -13,21 +13,28 @@
 
 namespace payments::facilitated {
 
-class FacilitatedPaymentsNetworkInterface;
-
 class MockFacilitatedPaymentsNetworkInterface
     : public FacilitatedPaymentsNetworkInterface {
  public:
-  MockFacilitatedPaymentsNetworkInterface();
+  MockFacilitatedPaymentsNetworkInterface(
+      signin::IdentityManager& identity_manager,
+      autofill::AccountInfoGetter& account_info_getter);
   ~MockFacilitatedPaymentsNetworkInterface() override;
 
   MOCK_METHOD(
-      void,
+      RequestId,
       InitiatePayment,
       (std::unique_ptr<FacilitatedPaymentsInitiatePaymentRequestDetails>,
        InitiatePaymentResponseCallback,
        const std::string&),
       (override));
+  MOCK_METHOD(RequestId,
+              GetDetailsForCreatePaymentInstrument,
+              (int64_t,
+               const std::vector<uint8_t>&,
+               GetDetailsForCreatePaymentInstrumentResponseCallback,
+               const std::string&),
+              (override));
 };
 
 }  // namespace payments::facilitated

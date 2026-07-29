@@ -21,11 +21,6 @@ namespace blink {
 
 namespace {
 
-// Note: LayoutFlowThread, used for multicol, can't provide offset mapping.
-bool CanUseOffsetMapping(const LayoutObject& object) {
-  return object.IsLayoutBlockFlow() && !object.IsLayoutFlowThread();
-}
-
 Position CreatePositionForOffsetMapping(const Node& node, unsigned dom_offset) {
   if (auto* text_node = DynamicTo<Text>(node)) {
     // 'text-transform' may make the rendered text length longer than the
@@ -68,11 +63,7 @@ std::pair<const Node&, unsigned> ToNodeOffsetPair(const Position& position) {
 }  // namespace
 
 LayoutBlockFlow* NGInlineFormattingContextOf(const Position& position) {
-  LayoutBlockFlow* block_flow =
-      OffsetMapping::GetInlineFormattingContextOf(position);
-  if (!block_flow || !block_flow->IsLayoutNGObject())
-    return nullptr;
-  return block_flow;
+  return OffsetMapping::GetInlineFormattingContextOf(position);
 }
 
 // static
@@ -174,7 +165,9 @@ unsigned OffsetMappingUnit::ConvertDOMOffsetToTextContent(
   if (text_content_start_ == text_content_end_)
     return text_content_start_;
   // Handle has identity mapping.
-  return offset - dom_start_ + text_content_start_;
+  unsigned text_content_offset = offset - dom_start_ + text_content_start_;
+  return text_content_offset < text_content_end_ ? text_content_offset
+                                                 : text_content_end_;
 }
 
 unsigned OffsetMappingUnit::ConvertTextContentToFirstDOMOffset(
@@ -216,10 +209,11 @@ bool OffsetMapping::AcceptsPosition(const Position& position) {
   }
   if (!position.IsBeforeAnchor() && !position.IsAfterAnchor())
     return false;
-  const LayoutObject* layout_object = position.AnchorNode()->GetLayoutObject();
-  if (!layout_object || !layout_object->IsInline())
-    return false;
-  return layout_object->IsText() || layout_object->IsAtomicInlineLevel();
+  if (const LayoutObject* layout_object =
+          position.AnchorNode()->GetLayoutObject()) {
+    return layout_object->IsText() || layout_object->IsAtomicInline();
+  }
+  return false;
 }
 
 // static
@@ -253,10 +247,9 @@ LayoutBlockFlow* OffsetMapping::GetInlineFormattingContextOf(
     const LayoutObject& object) {
   for (LayoutObject* runner = object.Parent(); runner;
        runner = runner->Parent()) {
-    if (!CanUseOffsetMapping(*runner)) {
-      continue;
+    if (auto* block_flow = DynamicTo<LayoutBlockFlow>(runner)) {
+      return block_flow;
     }
-    return To<LayoutBlockFlow>(runner);
   }
   return nullptr;
 }
@@ -382,8 +375,8 @@ OffsetMapping::GetMappingUnitsForLayoutObject(
                      return unit.GetLayoutObject() != layout_object;
                    });
   DCHECK_LT(begin, end);
-  // TODO(crbug.com/351564777): Resolve a buffer safety issue.
-  return UNSAFE_TODO(base::span(begin, end));
+  // SAFETY: Both of `begin` and `end` are valid iterators for `units_`.
+  return UNSAFE_BUFFERS(base::span(base::unchecked, begin, end));
 }
 
 base::span<const OffsetMappingUnit>
@@ -404,8 +397,9 @@ OffsetMapping::GetMappingUnitsForTextContentOffsetRange(unsigned start,
   // Find the next of the last unit where unit.text_content_start < end
   auto result_end = std::ranges::upper_bound(
       units_, end, std::less_equal<>{}, &OffsetMappingUnit::TextContentStart);
-  // TODO(crbug.com/351564777): Resolve a buffer safety issue.
-  return UNSAFE_TODO(base::span(result_begin, result_end));
+  // SAFETY: Both of `result_begin` and `result_end` are valid iterators for
+  // `units_`.
+  return UNSAFE_BUFFERS(base::span(base::unchecked, result_begin, result_end));
 }
 
 std::optional<unsigned> OffsetMapping::GetTextContentOffset(
@@ -427,16 +421,15 @@ Position OffsetMapping::StartOfNextNonCollapsedContent(
   const auto node_and_offset = ToNodeOffsetPair(position);
   const Node& node = node_and_offset.first;
   const unsigned offset = node_and_offset.second;
-  // TODO(crbug.com/351564777): Resolve a buffer safety issue.
-  while (unit != UNSAFE_TODO(units_.data() + units_.size()) &&
-         unit->AssociatedNode() == node) {
-    if (unit->DOMEnd() > offset &&
-        unit->GetType() != OffsetMappingUnitType::kCollapsed) {
-      const unsigned result = std::max(offset, unit->DOMStart());
+  for (const auto& u : base::span(units_).subspan(
+           base::checked_cast<size_t>(std::distance(units_.data(), unit)))) {
+    if (u.AssociatedNode() != node) {
+      break;
+    }
+    if (u.DOMEnd() > offset && !u.IsCollapsed()) {
+      const unsigned result = std::max(offset, u.DOMStart());
       return CreatePositionForOffsetMapping(node, result);
     }
-    // TODO(crbug.com/351564777): Resolve a buffer safety issue.
-    UNSAFE_TODO(++unit);
   }
   return Position();
 }
@@ -451,17 +444,16 @@ Position OffsetMapping::EndOfLastNonCollapsedContent(
   const auto node_and_offset = ToNodeOffsetPair(position);
   const Node& node = node_and_offset.first;
   const unsigned offset = node_and_offset.second;
-  while (unit->AssociatedNode() == node) {
-    if (unit->DOMStart() < offset &&
-        unit->GetType() != OffsetMappingUnitType::kCollapsed) {
-      const unsigned result = std::min(offset, unit->DOMEnd());
-      return CreatePositionForOffsetMapping(node, result);
-    }
-    if (unit == units_.data()) {
+  auto unit_span = base::span(units_).subspan(
+      0u, base::checked_cast<size_t>(std::distance(units_.data(), unit) + 1));
+  for (const auto& u : base::Reversed(unit_span)) {
+    if (u.AssociatedNode() != node) {
       break;
     }
-    // TODO(crbug.com/351564777): Resolve a buffer safety issue.
-    UNSAFE_TODO(--unit);
+    if (u.DOMStart() < offset && !u.IsCollapsed()) {
+      const unsigned result = std::min(offset, u.DOMEnd());
+      return CreatePositionForOffsetMapping(node, result);
+    }
   }
   return Position();
 }
@@ -471,8 +463,7 @@ bool OffsetMapping::IsBeforeNonCollapsedContent(
   DCHECK(OffsetMapping::AcceptsPosition(position));
   const OffsetMappingUnit* unit = GetMappingUnitForPosition(position);
   const unsigned offset = ToNodeOffsetPair(position).second;
-  return unit && offset < unit->DOMEnd() &&
-         unit->GetType() != OffsetMappingUnitType::kCollapsed;
+  return unit && offset < unit->DOMEnd() && !unit->IsCollapsed();
 }
 
 bool OffsetMapping::IsAfterNonCollapsedContent(const Position& position) const {
@@ -486,8 +477,7 @@ bool OffsetMapping::IsAfterNonCollapsedContent(const Position& position) const {
   // |offset|, we need to find the former. Hence, search with |offset - 1|.
   const OffsetMappingUnit* unit = GetMappingUnitForPosition(
       CreatePositionForOffsetMapping(node, offset - 1));
-  return unit && offset > unit->DOMStart() &&
-         unit->GetType() != OffsetMappingUnitType::kCollapsed;
+  return unit && offset > unit->DOMStart() && !unit->IsCollapsed();
 }
 
 std::optional<UChar> OffsetMapping::GetCharacterBefore(

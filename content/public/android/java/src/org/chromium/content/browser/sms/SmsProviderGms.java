@@ -42,11 +42,11 @@ public class SmsProviderGms {
     private @Nullable SmsUserConsentReceiver mUserConsentReceiver;
     private @Nullable SmsVerificationReceiver mVerificationReceiver;
 
-    private Wrappers.WebOTPServiceContext mContext;
+    private final Wrappers.WebOTPServiceContext mContext;
     private @Nullable WindowAndroid mWindow;
     private Wrappers.@Nullable SmsRetrieverClientWrapper mClient;
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public SmsProviderGms(
             long smsProviderGmsAndroid,
             @GmsBackend int backend,
@@ -108,7 +108,7 @@ public class SmsProviderGms {
     }
 
     @CalledByNative
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public void listen(WindowAndroid window, boolean isLocalRequest) {
         mWindow = window;
 

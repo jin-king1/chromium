@@ -7,10 +7,16 @@ package org.chromium.components.browser_ui.contacts_picker;
 import static org.chromium.build.NullUtil.assertNonNull;
 import static org.chromium.build.NullUtil.assumeNonNull;
 
+import android.content.ContentResolver;
 import android.content.Context;
+import android.content.Intent;
 import android.content.res.Resources;
+import android.database.Cursor;
 import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.net.Uri;
 import android.os.Handler;
+import android.provider.ContactsContract;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.widget.Button;
@@ -19,8 +25,12 @@ import android.widget.ImageView;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
+import org.chromium.base.AconfigFlaggedApiDelegate;
+import org.chromium.base.Log;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.task.AsyncTask;
+import org.chromium.base.task.PostTask;
+import org.chromium.base.task.TaskTraits;
 import org.chromium.build.annotations.Initializer;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -32,17 +42,27 @@ import org.chromium.components.browser_ui.widget.selectable_list.SelectableListL
 import org.chromium.components.browser_ui.widget.selectable_list.SelectableListToolbar;
 import org.chromium.components.browser_ui.widget.selectable_list.SelectionDelegate;
 import org.chromium.content.browser.contacts.ContactsPickerProperties;
+import org.chromium.content_public.browser.ContactsFetcher;
 import org.chromium.content_public.browser.ContactsPicker;
 import org.chromium.content_public.browser.ContactsPickerListener;
+import org.chromium.payments.mojom.PaymentAddress;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.widget.OptimizedFrameLayout;
 
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.FutureTask;
 
 /**
  * A class for keeping track of common data associated with showing contact details in the contacts
@@ -56,6 +76,8 @@ public class PickerCategoryView extends OptimizedFrameLayout
                 SelectableListToolbar.SearchDelegate,
                 TopView.SelectAllToggleCallback,
                 CompressContactIconsWorkerTask.CompressContactIconsCallback {
+    private static final String TAG = "PickerCategoryView";
+
     // These values are written to logs.  New enum values can be added, but existing
     // enums must never be renumbered or deleted and reused.
     private static final int ACTION_CANCEL = 0;
@@ -71,49 +93,49 @@ public class PickerCategoryView extends OptimizedFrameLayout
     private ContactsPickerDialog mDialog;
 
     // The view containing the RecyclerView and the toolbar, etc.
-    private SelectableListLayout<ContactDetails> mSelectableListLayout;
+    private final SelectableListLayout<ContactDetails> mSelectableListLayout;
 
     // The window for the main Activity.
-    private WindowAndroid mWindowAndroid;
+    private final WindowAndroid mWindowAndroid;
 
     // The callback to notify the listener of decisions reached in the picker.
     private ContactsPickerListener mListener;
 
     // The toolbar located at the top of the dialog.
-    private ContactsPickerToolbar mToolbar;
+    private final ContactsPickerToolbar mToolbar;
 
     // The RecyclerView showing the images.
-    private RecyclerView mRecyclerView;
+    private final RecyclerView mRecyclerView;
 
     // The view at the top (showing the explanation and Select All checkbox).
     private @Nullable TopView mTopView;
 
     // The {@link PickerAdapter} for the RecyclerView.
-    private PickerAdapter mPickerAdapter;
+    private final PickerAdapter mPickerAdapter;
 
     // The layout manager for the RecyclerView.
-    private LinearLayoutManager mLayoutManager;
+    private final LinearLayoutManager mLayoutManager;
 
     // A helper class to draw the icon for each contact.
-    private RoundedIconGenerator mIconGenerator;
+    private final RoundedIconGenerator mIconGenerator;
 
     // The {@link SelectionDelegate} keeping track of which contacts are selected.
-    private SelectionDelegate<ContactDetails> mSelectionDelegate;
+    private final SelectionDelegate<ContactDetails> mSelectionDelegate;
 
     // A cache for contact images, lazily created.
-    private ContactsBitmapCache mBitmapCache;
+    private final ContactsBitmapCache mBitmapCache;
 
     // The search icon.
-    private ImageView mSearchButton;
+    private final ImageView mSearchButton;
 
     // Keeps track of the set of last selected contacts in the UI.
     @Nullable Set<ContactDetails> mPreviousSelection;
 
     // The Done text button that confirms the selection choice.
-    private Button mDoneButton;
+    private final Button mDoneButton;
 
     // Whether the picker is in multi-selection mode.
-    private boolean mMultiSelectionAllowed;
+    private final boolean mMultiSelectionAllowed;
 
     // Whether the site is requesting names.
     private final boolean mSiteWantsNames;
@@ -144,6 +166,7 @@ public class PickerCategoryView extends OptimizedFrameLayout
      * @param formattedOrigin The origin receiving the contact details, formatted for display in the
      *     UI.
      * @param delegate A delegate listening for events from the toolbar.
+     * @param contactsFetcher An instance of {@link ContactsFetcher} to query data.
      */
     @SuppressWarnings("unchecked") // mSelectableListLayout
     public PickerCategoryView(
@@ -156,7 +179,8 @@ public class PickerCategoryView extends OptimizedFrameLayout
             boolean shouldIncludeAddresses,
             boolean shouldIncludeIcons,
             String formattedOrigin,
-            ContactsPickerToolbar.ContactsToolbarDelegate delegate) {
+            ContactsPickerToolbar.ContactsToolbarDelegate delegate,
+            @Nullable ContactsFetcher contactsFetcher) {
         super(assertNonNull(windowAndroid.getContext().get()), null);
 
         mWindowAndroid = windowAndroid;
@@ -168,7 +192,7 @@ public class PickerCategoryView extends OptimizedFrameLayout
         mSiteWantsAddresses = shouldIncludeAddresses;
         mSiteWantsIcons = shouldIncludeIcons;
 
-        mSelectionDelegate = new SelectionDelegate<ContactDetails>();
+        mSelectionDelegate = new SelectionDelegate<>();
         if (!multiSelectionAllowed) mSelectionDelegate.setSingleSelectionMode();
         mSelectionDelegate.addObserver(this);
 
@@ -189,12 +213,18 @@ public class PickerCategoryView extends OptimizedFrameLayout
         mSelectableListLayout.initializeEmptyView(R.string.contacts_picker_no_contacts_found);
 
         mPickerAdapter = adapter;
-        mPickerAdapter.init(this, context, formattedOrigin);
+        mPickerAdapter.init(this, context, formattedOrigin, contactsFetcher);
         mRecyclerView = mSelectableListLayout.initializeRecyclerView(mPickerAdapter);
         int titleId =
                 multiSelectionAllowed
                         ? R.string.contacts_picker_select_contacts
                         : R.string.contacts_picker_select_contact;
+        if (ContactsPickerFeatureMap.shouldShowSystemContactsPicker()) {
+            titleId =
+                    multiSelectionAllowed
+                            ? R.string.contacts_picker_share_contacts
+                            : R.string.contacts_picker_share_contact;
+        }
         mToolbar =
                 (ContactsPickerToolbar)
                         mSelectableListLayout.initializeToolbar(
@@ -217,9 +247,12 @@ public class PickerCategoryView extends OptimizedFrameLayout
                 });
         mSelectableListLayout.configureWideDisplayStyle();
 
-        mSearchButton = (ImageView) mToolbar.findViewById(R.id.search);
+        mSearchButton = mToolbar.findViewById(R.id.search);
         mSearchButton.setOnClickListener(this);
-        mDoneButton = (Button) mToolbar.findViewById(R.id.done);
+        if (ContactsPickerFeatureMap.shouldShowSystemContactsPicker()) {
+            mSearchButton.setVisibility(GONE);
+        }
+        mDoneButton = mToolbar.findViewById(R.id.done);
         mDoneButton.setOnClickListener(this);
 
         mLayoutManager = new LinearLayoutManager(context);
@@ -246,8 +279,16 @@ public class PickerCategoryView extends OptimizedFrameLayout
                                 ContactsPickerListener.ContactsPickerAction.CANCEL,
                                 null,
                                 ACTION_CANCEL));
+        mDialog.setOnDismissListener(
+                dialog1 -> {
+                    ContactsPicker.onContactsPickerDismissed();
+                    mPickerAdapter.destroy();
+                });
 
         mPickerAdapter.notifyDataSetChanged();
+        if (ContactsPickerFeatureMap.shouldShowSystemContactsPicker()) {
+            launchSystemPicker();
+        }
     }
 
     public boolean siteWantsNames() {
@@ -275,7 +316,7 @@ public class PickerCategoryView extends OptimizedFrameLayout
 
         // Showing the search clears current selection. Save it, so we can restore it after the
         // search has completed.
-        mPreviousSelection = new HashSet<ContactDetails>(mSelectionDelegate.getSelectedItems());
+        mPreviousSelection = new HashSet<>(mSelectionDelegate.getSelectedItems());
         mSearchButton.setVisibility(GONE);
         mPickerAdapter.setSearchMode(true);
         mToolbar.showSearchView(true);
@@ -343,8 +384,10 @@ public class PickerCategoryView extends OptimizedFrameLayout
     public void onSelectAllToggled(boolean allSelected) {
         if (allSelected) {
             mPreviousSelection = mSelectionDelegate.getSelectedItems();
-            mSelectionDelegate.setSelectedItems(
-                    new HashSet<ContactDetails>(mPickerAdapter.getAllContacts()));
+            List<ContactDetails> allContacts = mPickerAdapter.getAllContacts();
+            if (allContacts != null) {
+                mSelectionDelegate.setSelectedItems(new HashSet<>(allContacts));
+            }
             mListener.onContactsPickerUserAction(
                     ContactsPickerListener.ContactsPickerAction.SELECT_ALL,
                     /* contacts= */ null,
@@ -352,7 +395,7 @@ public class PickerCategoryView extends OptimizedFrameLayout
                     /* propertiesSiteRequested= */ 0,
                     /* propertiesUserRejected= */ 0);
         } else {
-            mSelectionDelegate.setSelectedItems(new HashSet<ContactDetails>());
+            mSelectionDelegate.setSelectedItems(new HashSet<>());
             mPreviousSelection = null;
             mListener.onContactsPickerUserAction(
                     ContactsPickerListener.ContactsPickerAction.UNDO_SELECT_ALL,
@@ -374,6 +417,299 @@ public class PickerCategoryView extends OptimizedFrameLayout
             onStartSearch();
         } else {
             executeAction(ContactsPickerListener.ContactsPickerAction.CANCEL, null, ACTION_CANCEL);
+        }
+    }
+
+    private void launchSystemPicker() {
+        AconfigFlaggedApiDelegate delegate = AconfigFlaggedApiDelegate.getInstance();
+        if (delegate == null) {
+            executeAction(ContactsPickerListener.ContactsPickerAction.CANCEL, null, ACTION_CANCEL);
+            return;
+        }
+
+        String action = delegate.getSystemContactsPickerAction();
+        String extraUseSystemContactsPicker =
+                delegate.getSystemContactsPickerExtraUseSystemContactsPicker();
+        String extraFields = delegate.getSystemContactsPickerExtraRequestedDataFields();
+        if (action == null || extraUseSystemContactsPicker == null || extraFields == null) {
+            executeAction(ContactsPickerListener.ContactsPickerAction.CANCEL, null, ACTION_CANCEL);
+            return;
+        }
+
+        Intent intent = new Intent(action);
+        intent.putExtra(extraUseSystemContactsPicker, true);
+        ArrayList<String> requestedFields = new ArrayList<>();
+        if (mSiteWantsNames) {
+            requestedFields.add(ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE);
+        }
+        if (mSiteWantsEmails) {
+            requestedFields.add(ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE);
+        }
+        if (mSiteWantsTel) {
+            requestedFields.add(ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE);
+        }
+        if (mSiteWantsAddresses) {
+            requestedFields.add(
+                    ContactsContract.CommonDataKinds.StructuredPostal.CONTENT_ITEM_TYPE);
+        }
+        if (mSiteWantsIcons) {
+            requestedFields.add(ContactsContract.CommonDataKinds.Photo.CONTENT_ITEM_TYPE);
+        }
+        intent.putStringArrayListExtra(extraFields, requestedFields);
+
+        intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, mMultiSelectionAllowed);
+
+        mWindowAndroid.showCancelableIntent(
+                intent,
+                (resultCode, data) -> {
+                    if (resultCode != android.app.Activity.RESULT_OK || data == null) {
+                        executeAction(
+                                ContactsPickerListener.ContactsPickerAction.CANCEL,
+                                null,
+                                ACTION_CANCEL);
+                        return;
+                    }
+
+                    Uri sessionUri = data.getData();
+                    String expectedAuthority = delegate.getSystemContactsPickerAuthority();
+                    boolean isCorrectAuthority =
+                            sessionUri != null
+                                    && expectedAuthority != null
+                                    && expectedAuthority.equals(sessionUri.getHost());
+                    if (sessionUri == null
+                            || !ContentResolver.SCHEME_CONTENT.equals(sessionUri.getScheme())
+                            || !isCorrectAuthority) {
+                        executeAction(
+                                ContactsPickerListener.ContactsPickerAction.CANCEL,
+                                null,
+                                ACTION_CANCEL);
+                        return;
+                    }
+
+                    SystemContactsWorkerTask workerTask =
+                            new SystemContactsWorkerTask(
+                                    getContext().getContentResolver(), sessionUri);
+                    WeakReference<PickerCategoryView> viewRef = new WeakReference<>(this);
+                    FutureTask<SystemContactsWorkerTask.Result> futureTask =
+                            new FutureTask<SystemContactsWorkerTask.Result>(workerTask) {
+                                @Override
+                                protected void done() {
+                                    try {
+                                        SystemContactsWorkerTask.Result result = get();
+                                        PostTask.postTask(
+                                                TaskTraits.UI_DEFAULT,
+                                                () -> {
+                                                    PickerCategoryView view = viewRef.get();
+                                                    if (view == null) return;
+                                                    for (Map.Entry<String, Bitmap> entry :
+                                                            result.bitmaps.entrySet()) {
+                                                        view.getIconCache()
+                                                                .putBitmap(
+                                                                        entry.getKey(),
+                                                                        entry.getValue());
+                                                    }
+                                                    view.onSystemContactsRetrieved(result.contacts);
+                                                });
+                                    } catch (CancellationException e) {
+                                        // Ignore
+                                    } catch (ExecutionException e) {
+                                        throw new RuntimeException(e);
+                                    } catch (InterruptedException e) {
+                                        // Ignore
+                                    }
+                                }
+                            };
+                    PostTask.postTask(TaskTraits.USER_VISIBLE_MAY_BLOCK, futureTask);
+                },
+                null);
+    }
+
+    private void onSystemContactsRetrieved(List<ContactDetails> contacts) {
+        if (contacts.isEmpty()) {
+            executeAction(ContactsPickerListener.ContactsPickerAction.CANCEL, null, ACTION_CANCEL);
+            return;
+        }
+
+        android.app.Activity activity = mWindowAndroid.getActivity().get();
+        if (activity == null || activity.isFinishing() || activity.isDestroyed()) {
+            executeAction(ContactsPickerListener.ContactsPickerAction.CANCEL, null, ACTION_CANCEL);
+            return;
+        }
+
+        mPickerAdapter.updateContacts(contacts);
+        updateSelectionState();
+
+        try {
+            mDialog.show();
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to show ContactsPickerDialog", e);
+            executeAction(ContactsPickerListener.ContactsPickerAction.CANCEL, null, ACTION_CANCEL);
+        }
+    }
+
+    private static class ContactDetailsBuilder {
+        public final String id;
+        public String displayName = "";
+        public final List<String> emails = new ArrayList<>();
+        public final List<String> phoneNumbers = new ArrayList<>();
+        public final List<PaymentAddress> addresses = new ArrayList<>();
+        public byte @Nullable [] photoBytes;
+
+        public ContactDetailsBuilder(String id, String displayName) {
+            this.id = id;
+            if (displayName != null) this.displayName = displayName;
+        }
+
+        public ContactDetails build() {
+            return new ContactDetails(id, displayName, emails, phoneNumbers, addresses);
+        }
+    }
+
+    static class SystemContactsWorkerTask implements Callable<SystemContactsWorkerTask.Result> {
+        public static class Result {
+            public final List<ContactDetails> contacts;
+            public final Map<String, Bitmap> bitmaps;
+
+            public Result(List<ContactDetails> contacts, Map<String, Bitmap> bitmaps) {
+                this.contacts = contacts;
+                this.bitmaps = bitmaps;
+            }
+        }
+
+        private final ContentResolver mContentResolver;
+        private final Uri mSessionUri;
+
+        public SystemContactsWorkerTask(ContentResolver contentResolver, Uri sessionUri) {
+            mContentResolver = contentResolver;
+            mSessionUri = sessionUri;
+        }
+
+        @Override
+        public Result call() throws Exception {
+            Map<String, ContactDetailsBuilder> builders = new LinkedHashMap<>();
+            try (Cursor cursor = mContentResolver.query(mSessionUri, null, null, null, null)) {
+                if (cursor == null) {
+                    return new Result(Collections.emptyList(), Collections.emptyMap());
+                }
+
+                int idColumn = cursor.getColumnIndexOrThrow(ContactsContract.Data.CONTACT_ID);
+                int mimetypeColumn = cursor.getColumnIndexOrThrow(ContactsContract.Data.MIMETYPE);
+                int displayNameColumn =
+                        cursor.getColumnIndexOrThrow(ContactsContract.Data.DISPLAY_NAME_PRIMARY);
+                int data1Column = cursor.getColumnIndexOrThrow(ContactsContract.Data.DATA1);
+
+                while (cursor.moveToNext()) {
+                    if (Thread.currentThread().isInterrupted()) {
+                        throw new InterruptedException();
+                    }
+                    String id = cursor.getString(idColumn);
+                    String mimetype = cursor.getString(mimetypeColumn);
+                    String displayName = cursor.getString(displayNameColumn);
+
+                    if (id == null || mimetype == null) {
+                        continue;
+                    }
+
+                    ContactDetailsBuilder builder = builders.get(id);
+                    if (builder == null) {
+                        builder = new ContactDetailsBuilder(id, displayName);
+                        builders.put(id, builder);
+                    }
+
+                    if (mimetype.equals(ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE)) {
+                        String email = cursor.getString(data1Column);
+                        if (email != null) builder.emails.add(email);
+                    } else if (mimetype.equals(
+                            ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE)) {
+                        String phone = cursor.getString(data1Column);
+                        if (phone != null) builder.phoneNumbers.add(phone);
+                    } else if (mimetype.equals(
+                            ContactsContract.CommonDataKinds.StructuredPostal.CONTENT_ITEM_TYPE)) {
+                        int cityIdx =
+                                cursor.getColumnIndex(
+                                        ContactsContract.CommonDataKinds.StructuredPostal.CITY);
+                        int countryIdx =
+                                cursor.getColumnIndex(
+                                        ContactsContract.CommonDataKinds.StructuredPostal.COUNTRY);
+                        int formattedIdx =
+                                cursor.getColumnIndex(
+                                        ContactsContract.CommonDataKinds.StructuredPostal
+                                                .FORMATTED_ADDRESS);
+                        int postcodeIdx =
+                                cursor.getColumnIndex(
+                                        ContactsContract.CommonDataKinds.StructuredPostal.POSTCODE);
+                        int regionIdx =
+                                cursor.getColumnIndex(
+                                        ContactsContract.CommonDataKinds.StructuredPostal.REGION);
+
+                        String city = cityIdx != -1 ? cursor.getString(cityIdx) : "";
+                        String country = countryIdx != -1 ? cursor.getString(countryIdx) : "";
+                        String formattedAddress =
+                                formattedIdx != -1 ? cursor.getString(formattedIdx) : "";
+                        String postcode = postcodeIdx != -1 ? cursor.getString(postcodeIdx) : "";
+                        String region = regionIdx != -1 ? cursor.getString(regionIdx) : "";
+
+                        builder.addresses.add(
+                                createAddress(city, country, formattedAddress, postcode, region));
+                    } else if (mimetype.equals(
+                            ContactsContract.CommonDataKinds.Photo.CONTENT_ITEM_TYPE)) {
+                        int photoIdx =
+                                cursor.getColumnIndex(ContactsContract.CommonDataKinds.Photo.PHOTO);
+                        byte[] photo = photoIdx != -1 ? cursor.getBlob(photoIdx) : null;
+                        // Cap the photo size at 1 MB to prevent OutOfMemoryErrors from malicious
+                        // or excessively large blobs.
+                        if (photo != null && photo.length <= 1024 * 1024) {
+                            builder.photoBytes = photo;
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Error querying system picker results", e);
+                return new Result(Collections.emptyList(), Collections.emptyMap());
+            }
+
+            List<ContactDetails> contacts = new ArrayList<>();
+            Map<String, Bitmap> bitmaps = new LinkedHashMap<>();
+            for (ContactDetailsBuilder builder : builders.values()) {
+                contacts.add(builder.build());
+                Bitmap bitmap = null;
+                if (builder.photoBytes != null && builder.photoBytes.length > 0) {
+                    try {
+                        bitmap =
+                                BitmapFactory.decodeByteArray(
+                                        builder.photoBytes, 0, builder.photoBytes.length);
+                    } catch (OutOfMemoryError e) {
+                        Log.e(TAG, "OutOfMemoryError while decoding contact photo");
+                    }
+                }
+                bitmaps.put(builder.id, bitmap);
+            }
+            return new Result(contacts, bitmaps);
+        }
+
+        private PaymentAddress createAddress(
+                String city,
+                String country,
+                String formattedAddress,
+                String postcode,
+                String region) {
+            PaymentAddress address = new PaymentAddress();
+
+            address.city = Objects.requireNonNullElse(city, "");
+            address.country = Objects.requireNonNullElse(country, "");
+            address.addressLine =
+                    Objects.requireNonNullElse(new String[] {formattedAddress}, new String[] {});
+            address.postalCode = Objects.requireNonNullElse(postcode, "");
+            address.region = Objects.requireNonNullElse(region, "");
+
+            // The other fields are required.
+            address.dependentLocality = "";
+            address.sortingCode = "";
+            address.organization = "";
+            address.recipient = "";
+            address.phone = "";
+
+            return address;
         }
     }
 
@@ -410,14 +746,17 @@ public class PickerCategoryView extends OptimizedFrameLayout
 
     /** Formats the selected contacts before notifying the listeners. */
     private void prepareContactsSelected() {
-        List<ContactDetails> selectedContacts = mSelectionDelegate.getSelectedItemsAsList();
+        List<ContactDetails> selectedContacts;
+        if (ContactsPickerFeatureMap.shouldShowSystemContactsPicker()) {
+            selectedContacts = new ArrayList<>(mPickerAdapter.getAllContacts());
+        } else {
+            selectedContacts = mSelectionDelegate.getSelectedItemsAsList();
+        }
         Collections.sort(selectedContacts);
 
         if (mSiteWantsIcons && PickerAdapter.includesIcons()) {
             // Fetch missing icons and compress them first.
-            Context context = assumeNonNull(mWindowAndroid.getContext().get());
-            new CompressContactIconsWorkerTask(
-                            context.getContentResolver(), mBitmapCache, selectedContacts, this)
+            new CompressContactIconsWorkerTask(mBitmapCache, selectedContacts, this)
                     .executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
             return;
         }
@@ -445,7 +784,7 @@ public class PickerCategoryView extends OptimizedFrameLayout
 
         if (!isEnabled) {
             // The user doesn't want to share this property, so return an empty array.
-            return new ArrayList<T>();
+            return new ArrayList<>();
         }
 
         // Share whatever was selected.
@@ -499,7 +838,8 @@ public class PickerCategoryView extends OptimizedFrameLayout
             @Nullable List<ContactsPickerListener.Contact> contacts,
             int umaId) {
         int selectCount = contacts != null ? contacts.size() : 0;
-        int contactCount = assumeNonNull(mPickerAdapter.getAllContacts()).size();
+        List<ContactDetails> allContacts = mPickerAdapter.getAllContacts();
+        int contactCount = allContacts != null ? allContacts.size() : 0;
         int percentageShared = contactCount > 0 ? (100 * selectCount) / contactCount : 0;
 
         int propertiesSiteRequested = ContactsPickerProperties.PROPERTIES_NONE;
@@ -547,7 +887,6 @@ public class PickerCategoryView extends OptimizedFrameLayout
                 propertiesSiteRequested,
                 propertiesUserRejected);
         mDialog.dismiss();
-        ContactsPicker.onContactsPickerDismissed();
         recordFinalUmaStats(
                 umaId,
                 contactCount,

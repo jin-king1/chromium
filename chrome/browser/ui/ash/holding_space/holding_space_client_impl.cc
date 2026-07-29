@@ -21,10 +21,10 @@
 #include "chrome/browser/ash/file_manager/open_util.h"
 #include "chrome/browser/ash/file_manager/path_util.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/ash/clipboard/clipboard_util.h"
 #include "chrome/browser/ui/ash/holding_space/holding_space_keyed_service.h"
 #include "chrome/browser/ui/ash/holding_space/holding_space_keyed_service_factory.h"
 #include "chrome/browser/ui/ash/holding_space/holding_space_util.h"
+#include "chromeos/ash/experiences/clipboard/clipboard_util.h"
 #include "components/drive/drive_pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "net/base/mime_util.h"
@@ -123,30 +123,30 @@ void HoldingSpaceClientImpl::CopyImageToClipboard(const HoldingSpaceItem& item,
   holding_space_metrics::RecordItemAction(
       {&item}, holding_space_metrics::ItemAction::kCopy);
 
-  std::string ext = item.file().file_path.Extension();
   std::string mime_type;
-  if (ext.empty() ||
-      !net::GetWellKnownMimeTypeFromExtension(ext.substr(1), &mime_type) ||
+  if (!net::GetWellKnownMimeTypeFromFile(item.file().file_path, &mime_type) ||
       !net::MatchesMimeType(kMimeTypeImage, mime_type)) {
     std::move(callback).Run(/*success=*/false);
     return;
   }
 
   // Reading and decoding of the image file needs to be done on an I/O thread.
-  base::ThreadPool::PostTaskAndReply(
-      FROM_HERE,
-      {base::MayBlock(), base::TaskPriority::BEST_EFFORT,
-       base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN},
-      base::BindOnce(&clipboard_util::ReadFileAndCopyToClipboardLocal,
-                     item.file().file_path),
-      base::BindOnce(
-          [](SuccessCallback callback) {
-            // We don't currently receive a signal regarding whether image
-            // decoding was successful or not. For the time being, assume
-            // success when the task runs until proven otherwise.
-            std::move(callback).Run(/*success=*/true);
-          },
-          std::move(callback)));
+  clipboard_util::ReadFileAndCopyToClipboard(
+      item.file().file_path,
+      base::BindOnce([](clipboard_util::ReadFileAndCopyToClipboardResult result)
+                         -> bool {
+        using Result = clipboard_util::ReadFileAndCopyToClipboardResult;
+        switch (result) {
+          case Result::kSuccess:
+            return true;
+          case Result::kFailedToReadFile:
+            LOG(ERROR) << "Failed to read the screenshot file";
+            return false;
+          case Result::kFailedToDecodeImage:
+            LOG(ERROR) << "Failed to decode the screenshot image";
+            return false;
+        }
+      }).Then(std::move(callback)));
 }
 
 base::FilePath HoldingSpaceClientImpl::CrackFileSystemUrl(
@@ -263,23 +263,6 @@ void HoldingSpaceClientImpl::OpenItems(
             weak_factory_.GetWeakPtr(), barrier_closure, complete_success_ptr,
             item->file().file_path, item->type()));
   }
-}
-
-void HoldingSpaceClientImpl::OpenMyFiles(SuccessCallback callback) {
-  auto file_path = file_manager::util::GetMyFilesFolderForProfile(profile_);
-  if (file_path.empty()) {
-    std::move(callback).Run(/*success=*/false);
-    return;
-  }
-  file_manager::util::OpenItem(
-      profile_, file_path, platform_util::OPEN_FOLDER,
-      base::BindOnce(
-          [](SuccessCallback callback,
-             platform_util::OpenOperationResult result) {
-            const bool success = result == platform_util::OPEN_SUCCEEDED;
-            std::move(callback).Run(success);
-          },
-          std::move(callback)));
 }
 
 void HoldingSpaceClientImpl::PinFiles(

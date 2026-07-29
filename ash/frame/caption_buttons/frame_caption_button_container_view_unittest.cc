@@ -5,7 +5,7 @@
 #include "chromeos/ui/frame/caption_buttons/frame_caption_button_container_view.h"
 
 #include "ash/constants/ash_switches.h"
-#include "ash/frame/non_client_frame_view_ash.h"
+#include "ash/frame/frame_view_ash.h"
 #include "ash/test/ash_test_base.h"
 #include "ash/wm/float/float_controller.h"
 #include "ash/wm/tablet_mode/tablet_mode_controller_test_api.h"
@@ -20,11 +20,13 @@
 #include "chromeos/ui/vector_icons/vector_icons.h"
 #include "ui/aura/client/aura_constants.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/events/test/event_generator.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/strings/grit/ui_strings.h"
 #include "ui/views/test/test_views.h"
 #include "ui/views/test/views_test_utils.h"
+#include "ui/views/vector_icons.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_delegate.h"
 #include "ui/views/window/caption_button_layout_constants.h"
@@ -32,6 +34,8 @@
 #include "ui/views/window/vector_icons/vector_icons.h"
 
 namespace ash {
+
+using chromeos::AppType;
 
 using ::chromeos::FrameCaptionButtonContainerView;
 
@@ -62,7 +66,8 @@ class FrameCaptionButtonContainerViewTest : public AshTestBase {
     views::Widget::InitParams params(
         views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET,
         views::Widget::InitParams::TYPE_WINDOW_FRAMELESS);
-    auto delegate = std::make_unique<views::WidgetDelegateView>();
+    auto delegate = std::make_unique<views::WidgetDelegateView>(
+        views::WidgetDelegateView::CreatePassKey());
     delegate->SetCanMaximize(maximize_allowed == MAXIMIZE_ALLOWED);
     delegate->SetCanMinimize(minimize_allowed == MINIMIZE_ALLOWED);
     delegate->SetCanResize(true);
@@ -81,7 +86,9 @@ class FrameCaptionButtonContainerViewTest : public AshTestBase {
         views::CaptionButtonLayoutSize::kNonBrowserCaption));
     for (int icon = 0; icon < views::CAPTION_BUTTON_ICON_COUNT; ++icon) {
       container->SetButtonImage(static_cast<views::CaptionButtonIcon>(icon),
-                                views::kWindowControlCloseIcon);
+                                ::features::IsRoundedIconsEnabled()
+                                    ? views::kCloseIcon
+                                    : views::kWindowControlCloseOldIcon);
     }
     container->SizeToPreferredSize();
   }
@@ -112,7 +119,6 @@ class FrameCaptionButtonContainerViewTest : public AshTestBase {
     generator->MoveMouseTo(
         testApi->size_button()->GetBoundsInScreen().CenterPoint());
     generator->ClickLeftButton();
-    base::RunLoop().RunUntilIdle();
   }
 };
 
@@ -401,11 +407,11 @@ TEST_F(FrameCaptionButtonContainerViewTest, TabletSizeButtonVisibility) {
 
   // Create a window in tablet mode. It should be maximized and the size button
   // should be hidden.
-  auto window = CreateAppWindow();
+  auto window = CreateWindowWithAppType(AppType::SYSTEM_APP);
   auto* window_state = WindowState::Get(window.get());
   ASSERT_TRUE(window_state->IsMaximized());
 
-  auto* frame = NonClientFrameViewAsh::Get(window.get());
+  auto* frame = FrameViewAsh::Get(window.get());
   DCHECK(frame);
   FrameCaptionButtonContainerView* container =
       frame->GetHeaderView()->caption_button_container();
@@ -427,7 +433,7 @@ TEST_F(FrameCaptionButtonContainerViewTest, FloatButtonVisibility) {
   auto* widget1 = CreateTestWidget(MAXIMIZE_ALLOWED, MINIMIZE_ALLOWED,
                                    CLOSE_BUTTON_VISIBLE);
   widget1->GetNativeWindow()->SetProperty(chromeos::kAppTypeKey,
-                                          chromeos::AppType::ARC_APP);
+                                          AppType::ARC_APP);
   FrameCaptionButtonContainerView container1(widget1);
   InitContainer(&container1);
   views::test::RunScheduledLayout(&container1);
@@ -444,7 +450,7 @@ TEST_F(FrameCaptionButtonContainerViewTest, FloatButtonVisibility) {
   auto* widget2 = CreateTestWidget(MAXIMIZE_DISALLOWED, MINIMIZE_ALLOWED,
                                    CLOSE_BUTTON_VISIBLE);
   widget2->GetNativeWindow()->SetProperty(chromeos::kAppTypeKey,
-                                          chromeos::AppType::ARC_APP);
+                                          AppType::ARC_APP);
   FrameCaptionButtonContainerView container2(widget2);
   InitContainer(&container2);
   views::test::RunScheduledLayout(&container2);
@@ -461,7 +467,7 @@ TEST_F(FrameCaptionButtonContainerViewTest, TestFloatButtonBehavior) {
   auto* widget = CreateTestWidget(MAXIMIZE_DISALLOWED, MINIMIZE_ALLOWED,
                                   CLOSE_BUTTON_VISIBLE);
   auto* window = widget->GetNativeWindow();
-  window->SetProperty(chromeos::kAppTypeKey, chromeos::AppType::BROWSER);
+  window->SetProperty(chromeos::kAppTypeKey, AppType::BROWSER);
   widget->Show();
 
   FrameCaptionButtonContainerView container(widget);

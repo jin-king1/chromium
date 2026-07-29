@@ -7,7 +7,6 @@
 
 #include <stddef.h>
 
-#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -16,7 +15,7 @@
 
 #include "base/files/file_path.h"
 #include "base/functional/callback_forward.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool/thread_pool_instance.h"
 #include "build/build_config.h"
@@ -32,7 +31,6 @@
 #include "third_party/blink/public/platform/url_loader_throttle_provider.h"
 #include "third_party/blink/public/platform/web_content_settings_client.h"
 #include "third_party/blink/public/platform/websocket_handshake_throttle_provider.h"
-#include "third_party/blink/public/web/web_link_preview_triggerer.h"
 #include "third_party/blink/public/web/web_navigation_policy.h"
 #include "third_party/blink/public/web/web_navigation_type.h"
 #include "ui/base/page_transition_types.h"
@@ -46,7 +44,6 @@ class GURL;
 class SkBitmap;
 
 namespace base {
-class FilePath;
 class SingleThreadTaskRunner;
 }
 
@@ -83,6 +80,10 @@ class RendererFactory;
 
 namespace mojo {
 class BinderMap;
+}
+
+namespace net {
+class SiteForCookies;
 }
 
 namespace url {
@@ -152,14 +153,6 @@ class CONTENT_EXPORT ContentRendererClient {
   virtual bool OverrideCreatePlugin(RenderFrame* render_frame,
                                     const blink::WebPluginParams& params,
                                     blink::WebPlugin** plugin);
-
-  // Creates a replacement plugin that is shown when the plugin at |file_path|
-  // couldn't be loaded. This allows the embedder to show a custom placeholder.
-  // This may return nullptr. However, if it does return a WebPlugin, it must
-  // never fail to initialize.
-  virtual blink::WebPlugin* CreatePluginReplacement(
-      RenderFrame* render_frame,
-      const base::FilePath& plugin_path);
 
   // Returns the information to display when a navigation error occurs.
   // |error_html| should be set to null if this is a custom error page that will
@@ -294,16 +287,6 @@ class CONTENT_EXPORT ContentRendererClient {
   virtual std::unique_ptr<blink::WebPrescientNetworking>
   CreatePrescientNetworking(RenderFrame* render_frame);
 
-  // Returns true if the given Pepper plugin is external (requiring special
-  // startup steps).
-  virtual bool IsExternalPepperPlugin(const std::string& module_name);
-
-  // Returns true if the given Pepper plugin should process content from
-  // different origins in different PPAPI processes. This is generally a
-  // worthwhile precaution when the plugin provides an active scripting
-  // language.
-  virtual bool IsOriginIsolatedPepperPlugin(const base::FilePath& plugin_path);
-
   // Allows embedder to register the key system(s) it supports.
   virtual std::unique_ptr<media::KeySystemSupportRegistration>
   GetSupportedKeySystems(RenderFrame* render_frame,
@@ -320,6 +303,20 @@ class CONTENT_EXPORT ContentRendererClient {
 
   // Return true if the bitstream format |codec| is supported by the audio sink.
   virtual bool IsSupportedBitstreamAudioCodec(media::AudioCodec codec);
+
+  // For content embedders, this provides a way to control media time
+  // synchronization.
+  //
+  // This is particularly useful for headless clients (e.g., for automated
+  // testing or server-side rendering) which need video playback to follow a
+  // "virtual clock" for deterministic output, rather than the system's
+  // real-time clock.
+  //
+  // By default, video is synced to the audio track's real-time clock. Returning
+  // `true` from this method decouples the video from this real-time constraint,
+  // allowing it to follow virtual time. When suppressed, audio will be neither
+  // decoded nor rendered.
+  virtual bool ShouldSuppressAudioTracks();
 
   // Returns custom allocator if exists, else nullptr
   // Allocator will live as long as ContentRendererClient.
@@ -341,9 +338,6 @@ class CONTENT_EXPORT ContentRendererClient {
   virtual std::unique_ptr<media::SpeechRecognitionClient>
   CreateSpeechRecognitionClient(RenderFrame* render_frame);
 #endif
-
-  // Returns true if the page at |url| can use Pepper CameraDevice APIs.
-  virtual bool IsPluginAllowedToUseCameraDeviceAPI(const GURL& url);
 
   // Notifies that a document element has been inserted in the frame's document.
   // This may be called multiple times for the same document. This method may
@@ -398,7 +392,8 @@ class CONTENT_EXPORT ContentRendererClient {
   virtual void DidStartServiceWorkerContextOnWorkerThread(
       int64_t service_worker_version_id,
       const GURL& service_worker_scope,
-      const GURL& script_url) {}
+      const GURL& script_url,
+      const blink::ServiceWorkerToken& service_worker_token) {}
 
   // Notifies that a service worker context will be destroyed. This function
   // is called from the worker thread.
@@ -406,7 +401,8 @@ class CONTENT_EXPORT ContentRendererClient {
       v8::Local<v8::Context> context,
       int64_t service_worker_version_id,
       const GURL& service_worker_scope,
-      const GURL& script_url) {}
+      const GURL& script_url,
+      const blink::ServiceWorkerToken& service_worker_token) {}
 
   // Whether this renderer should enforce preferences related to the WebRTC
   // routing logic, i.e. allowing multiple routes and non-proxied UDP.
@@ -439,8 +435,12 @@ class CONTENT_EXPORT ContentRendererClient {
   virtual blink::WebFrame* FindFrame(blink::WebLocalFrame* relative_to_frame,
                                      const std::string& name);
 
-  // Returns true only if it's safe to redirect `from_url` to `to_url`.
-  virtual bool IsSafeRedirectTarget(const GURL& from_url, const GURL& to_url);
+  // Returns true only if it's safe to redirect `from_url` to `to_url`. May also
+  // check `request_initiator` depending on `to_url`.
+  virtual bool IsSafeRedirectTarget(
+      const GURL& from_url,
+      const GURL& to_url,
+      const std::optional<url::Origin>& request_initiator);
 
   // The user agent string is given from the browser process. This is called at
   // most once.
@@ -475,12 +475,6 @@ class CONTENT_EXPORT ContentRendererClient {
   CreateCastStreamingResourceProvider();
 #endif
 
-  // Creates a WebLinkPreviewTriggerer if an embedder wants to observe events
-  // and trigger preview. It is allowed to return nullptr.
-  //
-  // See blink::WebLinkPreviewTriggerer for more details.
-  virtual std::unique_ptr<blink::WebLinkPreviewTriggerer>
-  CreateLinkPreviewTriggerer();
 };
 
 }  // namespace content

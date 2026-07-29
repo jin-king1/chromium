@@ -16,6 +16,7 @@ file uses "coded linker name" to identify formats and variants:
 """
 
 import argparse
+import bisect
 import code
 import collections
 import gzip
@@ -26,6 +27,7 @@ import re
 import readline
 import sys
 
+import archive_util
 import demangle
 import models
 
@@ -44,6 +46,15 @@ _STRIP_NAME_PREFIX = {
     models.FLAG_HOT: 4,
 }
 
+# Sections that we want to create individual symbols from.
+_USEFUL_SECTIONS = frozenset(models.BSS_SECTIONS + (
+    models.SECTION_DATA,
+    models.SECTION_DATA_REL_RO,
+    models.SECTION_DATA_REL_RO_LOCAL,
+    models.SECTION_RODATA,
+    models.SECTION_TDATA,
+    models.SECTION_TEXT,
+))
 
 def _OpenMaybeGzAsText(path):
   """Calls `gzip.open()` if |path| ends in ".gz", otherwise calls `open()`."""
@@ -191,6 +202,7 @@ class MapFileParserGold:
       if not line:
         break
       section_name = None
+      prev_section_name = None
       try:
         # Parse section name and size.
         parts = self._ParsePossiblyWrappedParts(line, 3)
@@ -198,11 +210,25 @@ class MapFileParserGold:
           break
         section_name, section_address_str, section_size_str = parts
         section_address = int(section_address_str[2:], 16)
+
+        # .debug sections have address=0, and always come at the end.
+        if syms and section_address == 0:
+          logging.info('Stopped parsing at %s', section_name)
+          break
+
         section_size = int(section_size_str[2:], 16)
-        self._section_ranges[section_name] = (section_address, section_size)
-        if (section_name in models.BSS_SECTIONS
-            or section_name in (models.SECTION_RODATA, models.SECTION_TEXT)
-            or section_name.startswith(models.SECTION_DATA)):
+
+        # E.g. Merge user-defined sections. e.g.: malloc_hook, protected_memory.
+        if not section_name.startswith('.'):
+          logging.info('Merged %s into %s', section_name, prev_section_name)
+          section_name = prev_section_name
+          archive_util.ExtendSectionRangeAdjacent(section_ranges, section_name,
+                                                  section_address, section_size)
+        else:
+          prev_section_name = section_name
+          self._section_ranges[section_name] = (section_address, section_size)
+
+        if section_name in _USEFUL_SECTIONS:
           logging.info('Parsing %s', section_name)
           if section_name in models.BSS_SECTIONS:
             # Common symbols have no address.
@@ -333,6 +359,88 @@ class MapFileParserGold:
         raise
 
 
+def _SymbolNameScore(name):
+  """Assigns a score to a symbol name to prefer better names."""
+  if not name:
+    return 0
+  # Local label (e.g., '.Lanon...')
+  if name.startswith('.L'):
+    return 1
+  # Compiler temp (e.g., '$x.3') or section/dot symbol (e.g., '.text')
+  if name.startswith('.') or name.startswith('$'):
+    return 2
+  # Mangled C++ or Rust symbol (e.g., '_ZN4absl...', '_RNv...')
+  if name.startswith(('_Z', '_R')):
+    return 4
+  # Demangled C++ or Rust symbol (e.g., 'absl::strings_internal::kFiveToNth')
+  return 3
+
+
+def _ProcessLevel3Buffer(buffer):
+  """Processes a buffer of Level 3 symbols at the same address.
+
+  Given buffer = (line, address (same), size, level=3, span, tok), selects the
+  symbol with the best name (highest score) and assigns it the total span of
+  all symbols in the buffer.
+
+  Example input buffer:
+    [
+      (line1, 0x8ddbdc, 0, 3, 0, 'absl::strings_internal::kFiveToNth'),
+      (line2, 0x8ddbdc, 0, 3, 56, '.Lanon.d62e5daa0d7e5ad74addcc3f8be9d01e.43')
+    ]
+  Example output:
+    (line1, 0x8ddbdc, 0, 3, 56, 'absl::strings_internal::kFiveToNth')
+  """
+  if len(buffer) == 1:
+    return buffer[0]
+
+  best_entry = buffer[0]
+  best_score = _SymbolNameScore(best_entry[5])
+  for entry in buffer[1:]:
+    score = _SymbolNameScore(entry[5])
+    if score >= best_score:
+      best_score = score
+      best_entry = entry
+
+  total_span = buffer[-1][4]
+  return (best_entry[0], best_entry[1], best_entry[2], 3, total_span,
+          best_entry[5])
+
+
+def _GroupLevel3(tokenizer):
+  """Groups Level 3 symbols at the same address.
+
+  This generator wraps the tokenizer and yields only one representative
+  symbol for each address, choosing the best name and summing the spans.
+
+  Example:
+    If tokenizer yields:
+      - Level 2: ...
+      - Level 3: 0x8ddbdc, span 0, 'kFiveToNth'
+      - Level 3: 0x8ddbdc, span 56, '.Lanon...43'
+      - Level 3: 0x8ddc14, ...
+    This generator will yield:
+      - Level 2: ...
+      - Level 3: 0x8ddbdc, span 56, 'kFiveToNth'
+      - Level 3: 0x8ddc14, ...
+  """
+  buffer = []
+  for entry in tokenizer:
+    level = entry[3]
+    if level == 3:
+      if buffer and buffer[0][1] != entry[1]:
+        yield _ProcessLevel3Buffer(buffer)
+        buffer = []
+      buffer.append(entry)
+    else:
+      if buffer:
+        yield _ProcessLevel3Buffer(buffer)
+        buffer = []
+      yield entry
+  if buffer:
+    yield _ProcessLevel3Buffer(buffer)
+
+
 class MapFileParserLld:
   """Parses a linker map file from LLD."""
   # Map file writer for LLD linker (for ELF):
@@ -447,11 +555,14 @@ class MapFileParserLld:
     #     600      600       14     4         ...:(.text.OUTLINED_FUNCTION_0)
     #     600      600        0     1                 $x.3
     #     600      600       14     1                 OUTLINED_FUNCTION_0
+    #    3f00     3f00      700     4 malloc_hook
+    #    3f00     3f00      700     1         ...:o:(malloc_hook.foo)
+    #    3f00     3f00      700     1                 foo (.llvm.1234)
     #  123800   123800    20000   256 .rodata
-    #  123800   123800       4      4         ...:o:(.rodata._ZN3fooE.llvm.1234)
-    #  123800   123800       4      1                 foo (.llvm.1234)
-    #  123804   123804       4      4         ...:o:(.rodata.bar.llvm.1234)
-    #  123804   123804       4      1                 bar.llvm.1234
+    #  123800   123800        4     4         ...:o:(.rodata._ZN3fooE.llvm.1234)
+    #  123800   123800        4     1                 foo (.llvm.1234)
+    #  123804   123804        4     4         ...:o:(.rodata.bar.llvm.1234)
+    #  123804   123804        4     1                 bar.llvm.1234
     # Older format:
     # Address          Size             Align Out     In      Symbol
     # 00000000002002a8 000000000000001c     1 .interp
@@ -491,43 +602,48 @@ class MapFileParserLld:
     # instead of being in Symbol.
     thin_map = {}
 
-    tokenizer = self.Tokenize(lines)
+    tokenizer = _GroupLevel3(self.Tokenize(lines))
 
-    in_partitions = False
     in_jump_table = False
     jump_tables_count = 0
     jump_entries_count = 0
+    prev_section_end = 0
+    prev_section_name = None
 
     for (line, address, size, level, span, tok) in tokenizer:
       # Level 1 data match the "Out" column. They specify sections or
       # PROVIDE_HIDDEN lines.
       if level == 1:
-        # Ignore sections that belong to feature library partitions. Seeing a
-        # partition name is an indicator that we've entered a list of feature
-        # partitions. After these, a single .part.end section will follow to
-        # reserve memory at runtime. Seeing the .part.end section also marks the
-        # end of partition sections in the map file.
-        if tok.endswith('_partition'):
-          in_partitions = True
-        elif tok == '.part.end':
-          # Note that we want to retain .part.end section, so it's fine to
-          # restart processing on this section, rather than the next one.
-          in_partitions = False
+        # .debug sections have address=0, and always come at the end.
+        # Once we've hit a partition, we've finished the main library.
+        # Ideally we'd also break down symbols in partitions, but we're likely
+        # to stop using them soon anyways.
+        if (syms and address == 0 or tok.endswith('_partition')
+            or tok.startswith('PROVIDE_HIDDEN')):
+          logging.info('Stopped parsing at %s', tok)
+          break
 
-        if in_partitions:
-          # For now, completely ignore feature partitions.
-          cur_section = None
-          cur_section_is_useful = False
+        cur_section = tok
+        assert address >= prev_section_end, (
+            f'Section {cur_section} has start address within previous section: '
+            f'{address}\n{self._section_ranges}')
+
+        # E.g. Merge user-defined sections. e.g.: malloc_hook, protected_memory.
+        if not cur_section.startswith('.'):
+          logging.info('Merged %s into %s', cur_section, prev_section_name)
+          cur_section = prev_section_name
+          archive_util.ExtendSectionRangeAdjacent(self._section_ranges,
+                                                  cur_section, address, size)
         else:
-          if not tok.startswith('PROVIDE_HIDDEN'):
-            self._section_ranges[tok] = (address, size)
-          cur_section = tok
-          # E.g., Want to convert "(.text._name)" -> "_name" later.
-          mangled_start_idx = len(cur_section) + 2
-          cur_section_is_useful = (
-              cur_section in models.BSS_SECTIONS
-              or cur_section in (models.SECTION_RODATA, models.SECTION_TEXT)
-              or cur_section.startswith(models.SECTION_DATA))
+          prev_section_name = cur_section
+          self._section_ranges[cur_section] = (address, size)
+
+        if cur_section not in models.BSS_SECTIONS:
+          prev_section_end = address + size
+
+        # E.g., Want to convert "(.text._name)" -> "_name" later.
+        mangled_start_idx = len(cur_section) + 2
+        cur_section_is_useful = cur_section in _USEFUL_SECTIONS
 
       elif cur_section_is_useful:
         # Level 2 data match the "In" column. They specify object paths and
@@ -559,13 +675,13 @@ class MapFileParserLld:
                 mangled_name = '** lld merge strings'
               else:
                 # e.g. <internal>:(.text.thunk)
-                mangled_name = '** ' + mangled_name
+                mangled_name = '** ' + paren_value.strip('()')
 
               is_partial = False
               cur_obj = None
             elif (cur_obj == 'lto.tmp' or 'thinlto-cache' in cur_obj
                   or '.lto.' in cur_obj):
-              thin_map[address] = os.path.basename(cur_obj)
+              thin_map[address] = (size, os.path.basename(cur_obj))
               cur_obj = None
 
           # Create a symbol here since there may be no ensuing Level 3 lines.
@@ -763,19 +879,38 @@ def ParseFile(path):
     return ParseLines(f)
 
 
-def DeduceObjectPathsFromThinMap(raw_symbols, extras):
-  """Uses Thin-LTO object paths to find object_paths of symbols. """
-  thin_map = extras.get('thin_map', None)  # |address| -> |thin_obj|
+def _FindThinObj(address, thin_map, thin_map_keys):
+  """Finds the ThinLTO object file containing the given address.
+
+  Args:
+    address: The address to look up.
+    thin_map: A dict of |address| -> |(size, thin_obj)|.
+    thin_map_keys: A sorted list of keys in |thin_map|.
+  """
+  idx = bisect.bisect_right(thin_map_keys, address) - 1
+  if idx >= 0:
+    start_address = thin_map_keys[idx]
+    size, thin_obj = thin_map[start_address]
+    if address < start_address + size:
+      return thin_obj
+  return None
+
+
+def ProcessThinLtoPaths(raw_symbols, extras):
+  """Corrects paths and creates aliases for symbols with ThinLTO paths."""
+  thin_map = extras.get('thin_map', None)  # |address| -> |(size, thin_obj)|
   if not thin_map:  # None or empty.
     logging.info('No thin-object-path found: Skipping object path deduction.')
-    return
+    return raw_symbols
+
+  thin_map_keys = sorted(thin_map.keys())
 
   # Build map of |thin_obj| -> |object_paths|.
   thin_obj_to_object_paths = collections.defaultdict(set)
   logging.info('Building map of thin-object-path -> object path.')
   for symbol in raw_symbols:
     if symbol.object_path:
-      thin_obj = thin_map.get(symbol.address, None)
+      thin_obj = _FindThinObj(symbol.address, thin_map, thin_map_keys)
       if thin_obj:
         thin_obj_to_object_paths[thin_obj].add(symbol.object_path)
 
@@ -786,20 +921,42 @@ def DeduceObjectPathsFromThinMap(raw_symbols, extras):
   logging.info('Assigning object paths to using ThinLTO paths.')
   ref_tmp_popu = [0] * 3
   ref_tmp_pss = [0] * 3
+  num_aliases = 0
+  pss_aliases = 0
+  num_omitted_aliases = 0
+  pss_omitted_aliases = 0
+  ret = []
   for symbol in raw_symbols:
+    ret.append(symbol)
     if not symbol.object_path:
-      thin_obj = thin_map.get(symbol.address)
+      thin_obj = _FindThinObj(symbol.address, thin_map, thin_map_keys)
       # Ignore non-native symbols.
       if thin_obj:
         count = 0
         object_paths = thin_obj_to_object_paths.get(thin_obj)
         if object_paths is not None:
           count = min(len(object_paths), 2)  # 2+ maps to 2.
-          # We could create path aliases when count > 1, but it wouldn't
-          # necessarily be correct. That occurs when *another* symbol from the
-          # same .o file contains a path alias, but not necessarily this symbol.
           if count == 1:
             symbol.object_path = next(iter(object_paths))
+          elif count > 1:
+            # Impose size limit to prevent trivial symbols proliferation.
+            # In 2026-07 this trimmed symbols from 2,726,424 to 1,975,845.
+            cur_num_aliases = len(object_paths)
+            if symbol.size / cur_num_aliases > 20:
+              num_aliases += cur_num_aliases - 1
+              pss_aliases += symbol.pss
+              sorted_paths = sorted(object_paths)
+              symbol.object_path = sorted_paths[0]
+              for path in sorted_paths[1:]:
+                new_sym = models.Symbol(symbol.section_name,
+                                        symbol.size,
+                                        address=symbol.address,
+                                        full_name=symbol.full_name,
+                                        object_path=path)
+                ret.append(new_sym)
+            else:
+              num_omitted_aliases += 1
+              pss_omitted_aliases += symbol.pss
         ref_tmp_popu[count] += 1
         ref_tmp_pss[count] += symbol.pss
 
@@ -814,6 +971,11 @@ def DeduceObjectPathsFromThinMap(raw_symbols, extras):
                ref_tmp_popu[1], ref_tmp_pss[1])
   logging.info('  Ambiguous (2+ object paths): %d symbols with total PSS = %d',
                ref_tmp_popu[2], ref_tmp_pss[2])
+  logging.info('  Created %d aliases covering %d bytes', num_aliases,
+               pss_aliases)
+  logging.info('  Skipped aliases for %d small symbols, covering %d bytes',
+               num_omitted_aliases, pss_omitted_aliases)
+  return ret
 
 
 def main():

@@ -36,7 +36,7 @@ SkBlendMode const kBlendModes[] = {
     SkBlendMode::kHue,       SkBlendMode::kSaturation,
     SkBlendMode::kColor,     SkBlendMode::kLuminosity};
 
-auto kCSSTestColors = std::to_array<SkColor>({
+constexpr auto kCSSTestColors = std::to_array<SkColor>({
     0xffff0000,  // red
     0xff00ff00,  // lime
     0xff0000ff,  // blue
@@ -253,9 +253,6 @@ std::vector<RasterTestConfig> const kTestCases = {
 #endif  // BUILDFLAG(ENABLE_VULKAN_BACKEND_TESTS)
 #if BUILDFLAG(ENABLE_SKIA_GRAPHITE_TESTS)
     {viz::RendererType::kSkiaGraphiteDawn, TestRasterType::kGpu},
-#if BUILDFLAG(IS_IOS)
-    {viz::RendererType::kSkiaGraphiteMetal, TestRasterType::kGpu},
-#endif  // BUILDFLAG(IS_IOS)
 #endif  // BUILDFLAG(ENABLE_SKIA_GRAPHITE_TESTS)
 };
 

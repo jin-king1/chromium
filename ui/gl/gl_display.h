@@ -11,11 +11,13 @@
 #include <memory>
 #include <vector>
 
+#include "build/build_config.h"
 #include "ui/gl/gl_export.h"
-#include "ui/gl/gpu_switching_manager.h"
+#include "ui/gl/gpu_switching_observer.h"
 
 #if BUILDFLAG(IS_APPLE)
 #if __OBJC__
+@protocol MTLDevice;
 @protocol MTLSharedEvent;
 #endif  // __OBJC__
 #endif
@@ -45,12 +47,13 @@ class EGLDisplayPlatform {
 };
 
 // If adding a new type, also add it to EGLDisplayType in
-// tools/metrics/histograms/enums.xml. Don't remove or reorder entries.
+// tools/metrics/histograms/metadata/gpu/enums.xml. Don't remove or reorder
+// entries.
 enum DisplayType {
   DEFAULT = 0,
   SWIFT_SHADER = 1,
   ANGLE_WARP = 2,
-  ANGLE_D3D9 = 3,
+  ANGLE_D3D9 [[deprecated]] = 3,
   ANGLE_D3D11 = 4,
   ANGLE_OPENGL = 5,
   ANGLE_OPENGLES = 6,
@@ -66,7 +69,8 @@ enum DisplayType {
   ANGLE_OPENGLES_EGL = 16,
   ANGLE_METAL = 17,
   ANGLE_METAL_NULL = 18,
-  DISPLAY_TYPE_MAX = 19,
+  ANGLE_D3D11_WARP = 19,
+  DISPLAY_TYPE_MAX = 20,
 };
 
 enum DisplayPlatform {
@@ -143,7 +147,9 @@ class GL_EXPORT GLDisplayEGL : public GLDisplay {
                               uint64_t* signal_value_out);
   void WaitForMetalSharedEvent(id<MTLSharedEvent> shared_event,
                                uint64_t signal_value);
+  id<MTLDevice> GetMetalDevice() const;
 #endif  // __OBJC__
+  size_t GetMetalDeviceAllocatedMemory() const;
 
   // Call periodically to clean up resources.
   void CleanupTempEGLSyncObjects();
@@ -162,7 +168,7 @@ class GL_EXPORT GLDisplayEGL : public GLDisplay {
    public:
     explicit EGLGpuSwitchingObserver(EGLDisplay display);
     ~EGLGpuSwitchingObserver() override = default;
-    void OnGpuSwitched(GpuPreference active_gpu_heuristic) override;
+    void OnGpuSwitched() override;
 
    private:
     EGLDisplay display_ = EGL_NO_DISPLAY;

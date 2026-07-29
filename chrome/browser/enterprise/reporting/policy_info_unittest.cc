@@ -4,7 +4,6 @@
 
 #include "components/enterprise/browser/reporting/policy_info.h"
 
-#include "base/files/file_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
@@ -44,8 +43,6 @@ constexpr char kExtensionId2[] = "abcdefghijklmnoabcdefghijklmnoac";
 using ::testing::_;
 using ::testing::Eq;
 
-// TODO(crbug.com/40700771): Get rid of chrome/browser dependencies and then
-// move this file to components/enterprise/browser.
 class PolicyInfoTest : public ::testing::Test {
  public:
   void SetUp() override {
@@ -100,7 +97,7 @@ class PolicyInfoTest : public ::testing::Test {
 TEST_F(PolicyInfoTest, ChromePolicy) {
   policy_map()->Set(kPolicyName1, policy::POLICY_LEVEL_MANDATORY,
                     policy::POLICY_SCOPE_USER, policy::POLICY_SOURCE_CLOUD,
-                    base::Value(base::Value::List()), nullptr);
+                    base::Value(base::ListValue()), nullptr);
   policy_map()->Set(kPolicyName2, policy::POLICY_LEVEL_RECOMMENDED,
                     policy::POLICY_SCOPE_MACHINE, policy::POLICY_SOURCE_MERGED,
                     base::Value(true), nullptr);
@@ -178,6 +175,8 @@ TEST_F(PolicyInfoTest, ConflictPolicy) {
 }
 
 #if !BUILDFLAG(IS_ANDROID)
+// Verify that extension policies are correctly processed and included in
+// enterprise reporting.
 TEST_F(PolicyInfoTest, ExtensionPolicy) {
   EXPECT_CALL(*policy_service(), GetPolicies(_)).Times(3);
   extensions::ExtensionRegistry* extension_registry =
@@ -194,6 +193,7 @@ TEST_F(PolicyInfoTest, ExtensionPolicy) {
           .SetManifestPath("storage.managed_schema", "schema.json")
           .Build());
 
+  // Set a policy for the first extension only.
   extension_policy_map()->Set(kPolicyName1, policy::POLICY_LEVEL_MANDATORY,
                               policy::POLICY_SCOPE_MACHINE,
                               policy::POLICY_SOURCE_PLATFORM, base::Value(3),
@@ -206,18 +206,23 @@ TEST_F(PolicyInfoTest, ExtensionPolicy) {
           .EnablePrettyPrint(false)
           .ToValueDict(),
       &profile_info);
+
+  // Verify that only the first extension appears in the report.
   // The second extension is not in the report because it has no policy.
   EXPECT_EQ(1, profile_info.extension_policies_size());
   EXPECT_EQ(kExtensionId1, profile_info.extension_policies(0).extension_id());
   EXPECT_EQ(1, profile_info.extension_policies(0).policies_size());
 
+  // Verify the policy details are correctly reported.
   auto policy1 = profile_info.extension_policies(0).policies(0);
   EXPECT_EQ(kPolicyName1, policy1.name());
   EXPECT_EQ("3", policy1.value());
   EXPECT_EQ(em::Policy_PolicyLevel_LEVEL_MANDATORY, policy1.level());
   EXPECT_EQ(em::Policy_PolicyScope_SCOPE_MACHINE, policy1.scope());
   EXPECT_EQ(em::Policy_PolicySource_SOURCE_PLATFORM, policy1.source());
-  EXPECT_NE(std::string(), policy1.error());
+
+  // Extension policies should show standard error message for unknown policies.
+  EXPECT_EQ("Unknown policy.", policy1.error());
 }
 #endif  // !BUILDFLAG(IS_ANDROID)
 

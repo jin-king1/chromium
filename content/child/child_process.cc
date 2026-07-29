@@ -13,13 +13,19 @@
 #include "base/synchronization/waitable_event.h"
 #include "base/task/thread_pool/thread_pool_instance.h"
 #include "base/threading/hang_watcher.h"
+#include "base/threading/platform_thread_metrics.h"
 #include "base/threading/thread.h"
+#include "base/threading/thread_id_name_manager.h"
 #include "build/build_config.h"
 #include "build/config/compiler/compiler_buildflags.h"
 #include "content/child/child_thread_impl.h"
-#include "content/common/process_visibility_tracker.h"
+#include "content/common/process_priority_tracker.h"
+#include "content/public/common/content_features.h"
 #include "mojo/public/cpp/bindings/interface_endpoint_client.h"
+#include "net/base/features.h"
+#include "net/base/scheduler/sequence_manager_configurator.h"
 #include "sandbox/policy/sandbox_type.h"
+#include "services/network/public/cpp/features.h"
 #include "services/tracing/public/cpp/trace_startup.h"
 #include "third_party/blink/public/common/features.h"
 
@@ -52,6 +58,10 @@ class ChildIOThread : public base::Thread {
   void Run(base::RunLoop* run_loop) override {
     mojo::InterfaceEndpointClient::SetThreadNameSuffixForMetrics(
         "ChildIOThread");
+#if BUILDFLAG(IS_ANDROID)
+    base::PlatformThreadPriorityMonitor::Get().RegisterCurrentThread(
+        "IOThread");
+#endif  // BUILDFLAG(IS_ANDROID)
     base::ScopedClosureRunner unregister_thread_closure;
     if (base::HangWatcher::IsIOThreadHangWatchingEnabled()) {
       unregister_thread_closure = base::HangWatcher::RegisterThread(
@@ -65,9 +75,11 @@ class ChildIOThread : public base::Thread {
 
 ChildProcess::ChildProcess(base::ThreadType io_thread_type,
                            std::unique_ptr<base::ThreadPoolInstance::InitParams>
-                               thread_pool_init_params)
+                               thread_pool_init_params,
+                           bool is_renderer)
     : resetter_(&child_process, this, nullptr),
-      io_thread_(std::make_unique<ChildIOThread>()) {
+      io_thread_(std::make_unique<ChildIOThread>()),
+      is_renderer_(is_renderer) {
   // Start ThreadPoolInstance if not already done. A ThreadPoolInstance
   // should already exist, and may already be running when ChildProcess is
   // instantiated in the browser process or in a test process.
@@ -104,10 +116,8 @@ ChildProcess::ChildProcess(base::ThreadType io_thread_type,
     initialized_thread_pool_ = true;
   }
 
-  tracing::InitTracingPostFeatureList(/*enable_consumer=*/false);
-
   // Ensure the visibility tracker is created on the main thread.
-  ProcessVisibilityTracker::GetInstance();
+  ProcessPriorityTracker::GetInstance();
 
 #if BUILDFLAG(IS_ANDROID)
   SetupCpuTimeMetrics();
@@ -120,8 +130,25 @@ ChildProcess::ChildProcess(base::ThreadType io_thread_type,
 #if BUILDFLAG(IS_ANDROID)
   // TODO(reveman): Remove this in favor of setting it explicitly for each type
   // of process.
-  thread_options.thread_type = base::ThreadType::kDisplayCritical;
+  thread_options.thread_type = base::ThreadType::kPresentation;
 #endif
+
+  if (base::FeatureList::IsEnabled(features::kIOThreadInteractiveThreadType)) {
+    thread_options.thread_type = base::ThreadType::kAudioProcessing;
+  }
+
+  // If the NetworkServiceTaskScheduler feature is enabled and this is the main
+  // thread for the Network Service Utility process, configure the
+  // SequenceManager with specific settings for network service task scheduler.
+  // This ensures the network thread's task scheduling is handled by the
+  // experimental scheduler infrastructure.
+  if (base::FeatureList::IsEnabled(net::features::kNetTaskScheduler) &&
+      base::ThreadIdNameManager::GetInstance()->GetName(
+          base::PlatformThread::CurrentId()) ==
+          std::string_view("network.CrUtilityMain")) {
+    net::ConfigureSequenceManager(thread_options);
+  }
+
   CHECK(io_thread_->StartWithOptions(std::move(thread_options)));
   io_thread_runner_ = io_thread_->task_runner();
 }
@@ -161,7 +188,7 @@ ChildProcess::~ChildProcess() {
     base::ThreadPoolInstance::Get()->Shutdown();
   }
 
-#if BUILDFLAG(CLANG_PROFILING_INSIDE_SANDBOX) && BUILDFLAG(CLANG_PGO)
+#if BUILDFLAG(CLANG_PROFILING_INSIDE_SANDBOX) && BUILDFLAG(CLANG_PGO_PROFILING)
   // Flush the profiling data to disk. Doing this manually (vs relying on this
   // being done automatically when the process exits) will ensure that this data
   // doesn't get lost if the process is fast killed.
@@ -189,7 +216,7 @@ void ChildProcess::SetIOThreadType(base::ThreadType thread_type) {
   if (SandboxedProcessThreadTypeHandler* sandboxed_process_thread_type_handler =
           SandboxedProcessThreadTypeHandler::Get()) {
     sandboxed_process_thread_type_handler->HandleThreadTypeChange(
-        io_thread_->GetThreadId(), base::ThreadType::kDisplayCritical);
+        io_thread_->GetThreadId(), base::ThreadType::kPresentation);
   }
 }
 #endif

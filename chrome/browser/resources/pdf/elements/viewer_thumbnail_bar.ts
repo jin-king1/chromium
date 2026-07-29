@@ -18,13 +18,11 @@ import {getCss} from './viewer_thumbnail_bar.css.js';
 import {getHtml} from './viewer_thumbnail_bar.html.js';
 
 // <if expr="enable_pdf_ink2">
-export interface Ink2ThumbnailData {
+export interface ThumbnailData {
   type: string;
   pageNumber: number;
-  isInk: boolean;
   imageData: ArrayBuffer;
   width: number;
-  height: number;
 }
 // </if>
 
@@ -56,10 +54,10 @@ export class ViewerThumbnailBarElement extends CrLitElement {
     };
   }
 
-  activePage: number = 0;
-  clockwiseRotations: number = 0;
-  docLength: number = 0;
-  protected isPluginActive_: boolean = false;
+  accessor activePage: number = 0;
+  accessor clockwiseRotations: number = 0;
+  accessor docLength: number = 0;
+  protected accessor isPluginActive_: boolean = false;
   private intersectionObserver_: IntersectionObserver|null = null;
   private pluginController_: PluginController = PluginController.getInstance();
   private tracker_: EventTracker = new EventTracker();
@@ -83,8 +81,8 @@ export class ViewerThumbnailBarElement extends CrLitElement {
     // <if expr="enable_pdf_ink2">
     this.tracker_.add(
         this.pluginController_.getEventTarget(),
-        PluginControllerEventType.UPDATE_INK_THUMBNAIL,
-        this.handleUpdateInkThumbnail_.bind(this));
+        PluginControllerEventType.UPDATE_THUMBNAIL,
+        this.handleUpdateThumbnail_.bind(this));
     // </if>
   }
 
@@ -237,21 +235,18 @@ export class ViewerThumbnailBarElement extends CrLitElement {
         e.preventDefault();
         this.clickThumbnailForPage(this.activePage - 1);
         break;
+      default:
+        break;
     }
   }
 
   // <if expr="enable_pdf_ink2">
-  private handleUpdateInkThumbnail_(e: CustomEvent<Ink2ThumbnailData>) {
+  private handleUpdateThumbnail_(e: CustomEvent<ThumbnailData>) {
     const data = e.detail;
     const thumbnail = this.getThumbnailForPage(data.pageNumber);
     if (thumbnail && thumbnail.isPainted()) {
       const array = new Uint8ClampedArray(data.imageData);
-      const imageData = new ImageData(array, data.width);
-      if (data.isInk) {
-        thumbnail.ink2Image = imageData;
-      } else {
-        thumbnail.image = imageData;
-      }
+      thumbnail.image = new ImageData(array, data.width);
     }
   }
   // </if>

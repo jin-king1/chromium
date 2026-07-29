@@ -13,6 +13,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
+#include "base/trace_event/trace_event.h"
 #include "cc/mojo_embedder/async_layer_tree_frame_sink.h"
 #include "cc/trees/layer_tree_frame_sink.h"
 #include "chromeos/ui/base/window_properties.h"
@@ -57,11 +58,6 @@
 #include "ui/gfx/presentation_feedback.h"
 
 namespace exo {
-
-BASE_FEATURE(kExoDisableBeginFrameAcks,
-             "ExoDisableBeginFrameAcks",
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
 namespace {
 
 class CustomWindowTargeter : public aura::WindowTargeter {
@@ -136,6 +132,9 @@ SurfaceTreeHost::~SurfaceTreeHost() {
   context_provider_->RemoveObserver(this);
 
   SetRootSurface(nullptr);
+  // We can delete frame_timing_history_ give that we don't
+  // care about metrics at this point.
+  layer_tree_frame_sink_holder_->DeleteFrameTimingHistory();
   LayerTreeFrameSinkHolder::DeleteWhenLastResourceHasBeenReclaimed(
       std::move(layer_tree_frame_sink_holder_));
   CleanUpCallbacks();
@@ -144,7 +143,7 @@ SurfaceTreeHost::~SurfaceTreeHost() {
     auto* context_factory = aura::Env::GetInstance()->context_factory();
     auto* host_frame_sink_manager = context_factory->GetHostFrameSinkManager();
     host_frame_sink_manager->InvalidateFrameSinkId(frame_sink_id_,
-                                                   host_window());
+                                                   host_window(), {});
   }
 }
 
@@ -213,17 +212,6 @@ void SurfaceTreeHost::DidReceiveCompositorFrameAck() {
   frame_callbacks_.pop();
 }
 
-void SurfaceTreeHost::DidPresentCompositorFrame(
-    uint32_t presentation_token,
-    const gfx::PresentationFeedback& feedback) {
-  auto it = active_presentation_callbacks_.find(presentation_token);
-  if (it == active_presentation_callbacks_.end())
-    return;
-  for (auto callback : it->second)
-    callback.Run(feedback);
-  active_presentation_callbacks_.erase(it);
-}
-
 void SurfaceTreeHost::SetScaleFactor(float scale_factor) {
   pending_scale_factor_ = scale_factor;
 }
@@ -238,17 +226,22 @@ void SurfaceTreeHost::SubmitCompositorFrameForTesting(
   // Make sure that every submission has an entry pushed into
   // `frame_callbacks_`, which will be pop when ack is received.
   frame_callbacks_.emplace();
-  active_presentation_callbacks_[frame.metadata.frame_token] =
-      PresentationCallbacks();
-  layer_tree_frame_sink_holder_->SubmitCompositorFrame(std::move(frame));
+  layer_tree_frame_sink_holder_->SubmitCompositorFrame(std::move(frame),
+                                                       PresentationCallbacks());
 }
 
 void SurfaceTreeHost::SetLayerTreeFrameSinkHolderFactoryForTesting(
     LayerTreeFrameSinkHolderFactory frame_sink_holder_factory) {
-  DCHECK(frame_callbacks_.empty() && active_presentation_callbacks_.empty());
+  DCHECK(frame_callbacks_.empty());
 
   frame_sink_holder_factory_ = std::move(frame_sink_holder_factory);
   layer_tree_frame_sink_holder_ = frame_sink_holder_factory_.Run();
+}
+
+base::flat_map<uint32_t, SurfaceTreeHost::PresentationCallbacks>&
+SurfaceTreeHost::GetActivePresentationCallbacksForTesting() {
+  return layer_tree_frame_sink_holder_
+      ->GetActivePresentationCallbacksForTesting();  // IN-TEST
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -274,7 +267,6 @@ void SurfaceTreeHost::OnNewOutputAdded() {
 }
 
 SecurityDelegate* SurfaceTreeHost::GetSecurityDelegate() {
-  DCHECK(security_delegate_);
   return security_delegate_;
 }
 
@@ -320,8 +312,7 @@ void SurfaceTreeHost::OnFrameSinkLost() {
 // SurfaceTreeHost, protected:
 
 void SurfaceTreeHost::UpdateDisplayOnTree() {
-  auto display =
-      display::Screen::GetScreen()->GetDisplayNearestWindow(host_window());
+  auto display = display::Screen::Get()->GetDisplayNearestWindow(host_window());
   if (output_display_id_ != display.id()) {
     if (root_surface_) {
       if (root_surface_->UpdateDisplay(output_display_id_, display.id())) {
@@ -365,12 +356,6 @@ void SurfaceTreeHost::SubmitCompositorFrame() {
 
   frame_callbacks_.push(std::move(current_frame_callbacks));
 
-  const uint32_t frame_token = frame.metadata.frame_token;
-
-  DCHECK_EQ(active_presentation_callbacks_.count(frame_token), 0u);
-  active_presentation_callbacks_[frame_token] =
-      std::move(presentation_callbacks);
-
   root_surface_->AppendSurfaceHierarchyContentsToFrame(
       gfx::PointF(root_surface_origin_pixel_), /*to_parent_dp=*/gfx::PointF(),
       layer_tree_frame_sink_holder_->NeedsFullDamageForNextFrame(),
@@ -408,12 +393,13 @@ void SurfaceTreeHost::SubmitCompositorFrame() {
     }
     frame.metadata.content_color_usage =
         std::max(frame.metadata.content_color_usage,
-                 resource.color_space.GetContentColorUsage());
+                 resource.GetColorSpace().GetContentColorUsage());
   }
 
   frame.metadata.may_contain_video = root_surface_->ContainsVideo();
 
-  layer_tree_frame_sink_holder_->SubmitCompositorFrame(std::move(frame));
+  layer_tree_frame_sink_holder_->SubmitCompositorFrame(
+      std::move(frame), std::move(presentation_callbacks));
 }
 
 void SurfaceTreeHost::SubmitEmptyCompositorFrame() {
@@ -440,9 +426,8 @@ void SurfaceTreeHost::SubmitEmptyCompositorFrame() {
   // Make sure that every submission has an entry pushed into
   // `frame_callbacks_`, which will be pop when ack is received.
   frame_callbacks_.emplace();
-  active_presentation_callbacks_[frame.metadata.frame_token] =
-      PresentationCallbacks();
   layer_tree_frame_sink_holder_->SubmitCompositorFrame(std::move(frame),
+                                                       PresentationCallbacks(),
                                                        /*submit_now=*/true);
 }
 
@@ -554,15 +539,8 @@ SurfaceTreeHost::CreateLayerTreeFrameSink() {
   cc::mojo_embedder::AsyncLayerTreeFrameSink::InitParams params;
   params.pipes.compositor_frame_sink_remote = std::move(sink_remote);
   params.pipes.client_receiver = std::move(client_receiver);
+  params.auto_needs_begin_frame = true;
 
-  // Disable merge of frame acks with begin frame so that clients of exo can
-  // get frame callbacks and resources reclaimed as soon as possible.
-  if (base::FeatureList::IsEnabled(kExoDisableBeginFrameAcks)) {
-    params.wants_begin_frame_acks = false;
-  }
-
-  params.auto_needs_begin_frame =
-      base::FeatureList::IsEnabled(kExoReactiveFrameSubmission);
   auto frame_sink =
       std::make_unique<cc::mojo_embedder::AsyncLayerTreeFrameSink>(
           nullptr /* context_provider */, nullptr /* worker_context_provider */,
@@ -602,7 +580,7 @@ void SurfaceTreeHost::MaybeActivateSurface() {
   host_window_->UpdateLocalSurfaceIdFromEmbeddedClient(
       GetCurrentLocalSurfaceId());
   commit_target_layer->SetShowSurface(
-      GetSurfaceId(), commit_target_layer->bounds().size(), SK_ColorWHITE,
+      GetSurfaceId(), commit_target_layer->bounds().size(), SkColors::kWhite,
       cc::DeadlinePolicy::UseDefaultDeadline(),
       false /* stretch_content_to_fill_bounds */);
 }
@@ -643,7 +621,6 @@ viz::CompositorFrame SurfaceTreeHost::PrepareToSubmitCompositorFrame() {
   viz::CompositorFrame frame;
   frame.metadata.begin_frame_ack =
       viz::BeginFrameAck::CreateManualAckWithDamage();
-  frame.metadata.frame_token = GenerateNextFrameToken();
   frame.render_pass_list.push_back(viz::CompositorRenderPass::Create());
   const std::unique_ptr<viz::CompositorRenderPass>& render_pass =
       frame.render_pass_list.back();
@@ -666,7 +643,8 @@ viz::CompositorFrame SurfaceTreeHost::PrepareToSubmitCompositorFrame() {
   gfx::Size output_surface_size_in_pixels =
       root_surface_->surface_hierarchy_content_bounds().size();
   if (!client_submits_surfaces_in_pixel_coordinates_) {
-    // TODO(crbug.com/40150290): Should this be ceil? Why do we choose floor?
+    // This scaling logic is part of a legacy scheme that has since been updated.
+    // See crbug.com/40150290 for historical context on using floor here.
     output_surface_size_in_pixels = gfx::ScaleToFlooredSize(
         output_surface_size_in_pixels, device_scale_factor);
   }
@@ -749,13 +727,9 @@ void SurfaceTreeHost::CleanUpCallbacks() {
     frame_callbacks_.pop();
   }
 
-  for (auto entry : active_presentation_callbacks_) {
-    while (!entry.second.empty()) {
-      entry.second.front().Run(gfx::PresentationFeedback());
-      entry.second.pop_front();
-    }
+  if (layer_tree_frame_sink_holder_) {
+    layer_tree_frame_sink_holder_->ClearPendingCallbacks();
   }
-  active_presentation_callbacks_.clear();
 }
 
 std::unique_ptr<LayerTreeFrameSinkHolder>

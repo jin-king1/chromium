@@ -2,21 +2,19 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "ui/linux/linux_ui.h"
 
 #include <cstdio>
 #include <utility>
 
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/no_destructor.h"
 #include "build/build_config.h"
 #include "ui/linux/cursor_theme_manager_observer.h"
 #include "ui/linux/linux_ui_getter.h"
+#include "ui/linux/primary_paste_pref_observer.h"
 
 namespace ui {
 
@@ -74,6 +72,15 @@ void LinuxUi::RemoveCursorThemeObserver(CursorThemeManagerObserver* observer) {
   cursor_theme_observer_list_.RemoveObserver(observer);
 }
 
+void LinuxUi::AddPrimaryPastePrefObserver(PrimaryPastePrefObserver* observer) {
+  primary_paste_observer_list_.AddObserver(observer);
+}
+
+void LinuxUi::RemovePrimaryPastePrefObserver(
+    PrimaryPastePrefObserver* observer) {
+  primary_paste_observer_list_.RemoveObserver(observer);
+}
+
 LinuxUi::FontSettings LinuxUi::GetDefaultFontDescription() {
   if (!default_font_settings_.has_value()) {
     InitializeFontSettings();
@@ -92,11 +99,13 @@ LinuxUi::CmdLineArgs LinuxUi::CopyCmdLine(
 
   CmdLineArgs cmd_line;
   cmd_line.args = std::vector<char>(args_chars);
-  char* dst = cmd_line.args.data();
+  base::span<char> dst = cmd_line.args;
   for (const auto& arg : argv) {
-    cmd_line.argv.push_back(dst);
-    snprintf(dst, &cmd_line.args.back() + 1 - dst, "%s", arg.c_str());
-    dst += arg.size() + 1;
+    cmd_line.argv.push_back(dst.data());
+    base::span<const char> src_span(arg);
+    dst.copy_prefix_from(src_span);
+    dst[src_span.size()] = '\0';
+    dst.take_first(src_span.size() + 1);
   }
   cmd_line.argc = cmd_line.argv.size();
 

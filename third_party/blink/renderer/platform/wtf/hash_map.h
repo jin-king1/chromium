@@ -18,17 +18,13 @@
  *
  */
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_WTF_HASH_MAP_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_WTF_HASH_MAP_H_
 
 #include <initializer_list>
 #include <iterator>
 
+#include "base/compiler_specific.h"
 #include "base/numerics/safe_conversions.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/partition_allocator.h"
@@ -39,7 +35,7 @@
 #include "third_party/blink/renderer/platform/wtf/type_traits.h"
 #include "third_party/blink/renderer/platform/wtf/wtf_size_t.h"
 
-namespace WTF {
+namespace blink {
 
 template <typename KeyTraits, typename MappedTraits>
 struct HashMapValueTraits;
@@ -57,19 +53,23 @@ struct KeyValuePairExtractor {
   static typename T::KeyType& ExtractKey(T& p) {
     return p.key;
   }
-  // Assumes out points to a buffer of size at least sizeof(T::KeyType).
+  // PRECONDITIONS: out points to a buffer of size at least sizeof(T::KeyType).
   template <typename T>
-  static void ExtractKeyToMemory(const T& p, void* out) {
-    AtomicReadMemcpy<sizeof(typename T::KeyType), alignof(typename T::KeyType)>(
-        out, &p.key);
+  UNSAFE_BUFFER_USAGE static void ExtractKeyToMemory(const T& p, void* out) {
+    // SAFETY: required from caller, enforced by UNSAFE_BUFFER_USAGE.
+    UNSAFE_BUFFERS(AtomicReadMemcpy<sizeof(typename T::KeyType),
+                                    alignof(typename T::KeyType)>(out, &p.key));
   }
   template <typename T>
   static void ClearValue(T& p) {
     using ValueType = typename T::ValueType;
-    if (IsTraceable<ValueType>::value) {
-      AtomicMemzero<sizeof(ValueType), alignof(ValueType)>(&p.value);
+    if (IsTraceableV<ValueType>) {
+      // SAFETY: size of `p.value` determined by compiler.
+      UNSAFE_BUFFERS(
+          AtomicMemzero<sizeof(ValueType), alignof(ValueType)>(&p.value));
     } else {
-      memset(static_cast<void*>(&p.value), 0, sizeof(p.value));
+      // SAFETY: size of `p.value` determined by compiler.
+      UNSAFE_BUFFERS(memset(static_cast<void*>(&p.value), 0, sizeof(p.value)));
     }
   }
 };
@@ -80,8 +80,8 @@ struct KeyValuePairExtractor {
 // the restriction with a custom key hash traits. See hash_traits.h for how to
 // define hash traits.
 // Commonly used key types define their key hash traits separately from the
-// class itself, so e.g if you want a `WTF::HashMap<WTF::String, ...>` you must
-// include `string_hash.h`.
+// class itself, so e.g if you want a `blink::HashMap<blink::String, ...>` you
+// must include `string_hash.h`.
 template <typename KeyArg,
           typename MappedArg,
           typename KeyTraitsArg = HashTraits<KeyArg>,
@@ -148,7 +148,7 @@ class HashMap {
 
   wtf_size_t size() const;
   wtf_size_t Capacity() const;
-  void ReserveCapacityForSize(unsigned size) {
+  void ReserveCapacityForSize(wtf_size_t size) {
     impl_.ReserveCapacityForSize(size);
   }
 
@@ -199,14 +199,14 @@ class HashMap {
   // Erases all elements for which pred(element) returns true.
   //
   // The predicate should have a signature compatible with:
-  //   bool pred(const WTF::KeyValuePair<KeyType, MappedType>&);
+  //   bool pred(const blink::KeyValuePair<KeyType, MappedType>&);
   template <typename Pred>
   void erase_if(Pred pred);
 
   void clear();
   template <typename Collection>
   void RemoveAll(const Collection& to_be_removed) {
-    WTF::RemoveAll(*this, to_be_removed);
+    blink::RemoveAll(*this, to_be_removed);
   }
 
   MappedType Take(KeyPeekInType);  // efficient combination of get with remove
@@ -584,13 +584,10 @@ bool operator==(const HashMap<T, U, V, W, X>& a,
 }
 
 template <typename T, typename U, typename V, typename W, typename X>
-inline bool operator!=(const HashMap<T, U, V, W, X>& a,
-                       const HashMap<T, U, V, W, X>& b) {
-  return !(a == b);
+inline void swap(HashMap<T, U, V, W, X>& a, HashMap<T, U, V, W, X>& b) {
+  a.swap(b);
 }
 
-}  // namespace WTF
-
-using WTF::HashMap;
+}  // namespace blink
 
 #endif  // THIRD_PARTY_BLINK_RENDERER_PLATFORM_WTF_HASH_MAP_H_

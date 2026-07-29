@@ -149,7 +149,7 @@ BatteryInfo::BatteryInfo(BatteryInfo&&) = default;
 
 BatteryInfo& BatteryInfo::operator=(BatteryInfo&&) = default;
 
-bool BatteryInfo::operator==(const BatteryInfo& other) {
+bool BatteryInfo::operator==(const BatteryInfo& other) const {
   return type == other.type && percentage == other.percentage &&
          charge_state == other.charge_state;
 }
@@ -644,9 +644,9 @@ void BluetoothDevice::DidConnectGatt(std::optional<ConnectErrorCode> error) {
 }
 
 void BluetoothDevice::DidDisconnectGatt() {
-  // Pending calls to connect GATT are not expected, if they were then
-  // DidConnectGatt should have been called.
-  DCHECK(create_gatt_connection_callbacks_.empty());
+  if (!create_gatt_connection_callbacks_.empty()) {
+    DidConnectGatt(ConnectErrorCode::ERROR_FAILED);
+  }
 
   target_service_.reset();
 

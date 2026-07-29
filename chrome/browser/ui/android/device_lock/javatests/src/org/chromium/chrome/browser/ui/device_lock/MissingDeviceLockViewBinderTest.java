@@ -28,9 +28,7 @@ import org.junit.runner.RunWith;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.BaseActivityTestRule;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.Features;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.components.signin.SigninFeatures;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
 import org.chromium.ui.test.util.BlankUiTestActivity;
@@ -40,17 +38,14 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /** Tests for {@link MissingDeviceLockViewBinder}. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @Batch(Batch.UNIT_TESTS)
-@Features.EnableFeatures(SigninFeatures.UNO_FOR_AUTO)
 public class MissingDeviceLockViewBinderTest {
     @ClassRule
     public static BaseActivityTestRule<BlankUiTestActivity> sActivityTestRule =
             new BaseActivityTestRule<>(BlankUiTestActivity.class);
 
-    private static Activity sActivity;
-
-    private AtomicBoolean mCreateDeviceLockButtonClicked = new AtomicBoolean();
-    private AtomicBoolean mContinueClicked = new AtomicBoolean();
-    private AtomicBoolean mCheckboxToggled = new AtomicBoolean();
+    private final AtomicBoolean mCreateDeviceLockButtonClicked = new AtomicBoolean();
+    private final AtomicBoolean mContinueClicked = new AtomicBoolean();
+    private final AtomicBoolean mCheckboxToggled = new AtomicBoolean();
 
     private MissingDeviceLockView mView;
     private PropertyModel mViewModel;
@@ -58,18 +53,19 @@ public class MissingDeviceLockViewBinderTest {
 
     @BeforeClass
     public static void setupSuite() {
-        sActivity = sActivityTestRule.launchActivity(null);
+        sActivityTestRule.launchActivity(null);
     }
 
     @Before
     public void setUp() {
-        ViewGroup view = new LinearLayout(sActivity);
+        Activity activity = sActivityTestRule.getActivity();
+        ViewGroup view = new LinearLayout(activity);
 
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    sActivity.setContentView(view);
+                    activity.setContentView(view);
 
-                    mView = MissingDeviceLockView.create(sActivity.getLayoutInflater());
+                    mView = MissingDeviceLockView.create(activity.getLayoutInflater());
                     view.addView(mView);
 
                     mViewModel =

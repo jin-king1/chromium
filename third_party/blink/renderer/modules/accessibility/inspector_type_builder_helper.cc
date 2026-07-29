@@ -8,6 +8,8 @@
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/inspector/identifiers_factory.h"
 #include "third_party/blink/renderer/core/inspector/protocol/accessibility.h"
+#include "third_party/blink/renderer/modules/accessibility/ax_enums.h"
+#include "third_party/blink/renderer/modules/accessibility/ax_object-inl.h"
 #include "third_party/blink/renderer/modules/accessibility/ax_object.h"
 #include "third_party/blink/renderer/modules/accessibility/ax_object_cache_impl.h"
 
@@ -25,49 +27,6 @@ namespace {
 std::unique_ptr<AXProperty> CreateProperty(const String& name,
                                            std::unique_ptr<AXValue> value) {
   return AXProperty::create().setName(name).setValue(std::move(value)).build();
-}
-
-String IgnoredReasonName(AXIgnoredReason reason) {
-  switch (reason) {
-    case kAXActiveFullscreenElement:
-      return "activeFullscreenElement";
-    case kAXActiveModalDialog:
-      return "activeModalDialog";
-    case kAXAriaModalDialog:
-      return "activeAriaModalDialog";
-    case kAXAriaHiddenElement:
-      return "ariaHiddenElement";
-    case kAXAriaHiddenSubtree:
-      return "ariaHiddenSubtree";
-    case kAXEmptyAlt:
-      return "emptyAlt";
-    case kAXEmptyText:
-      return "emptyText";
-    case kAXInertElement:
-      return "inertElement";
-    case kAXInertSubtree:
-      return "inertSubtree";
-    case kAXInertStyle:
-      // TODO(crbug.com/370065759): Should either use "inertStyle" when devtools
-      // can handle that, or just drop kAXInertStyle and use kAXInertElement to
-      // indicate that the computed value of interactivity is 'inert'.
-      return "inertElement";
-    case kAXLabelContainer:
-      return "labelContainer";
-    case kAXLabelFor:
-      return "labelFor";
-    case kAXNotRendered:
-      return "notRendered";
-    case kAXNotVisible:
-      return "notVisible";
-    case kAXPresentational:
-      return "presentationalRole";
-    case kAXProbablyPresentational:
-      return "probablyPresentational";
-    case kAXUninteresting:
-      return "uninteresting";
-  }
-  NOTREACHED();
 }
 
 std::unique_ptr<AXValue> CreateValue(
@@ -331,11 +290,8 @@ void FillLiveRegionProperties(AXObject& ax_object,
     return;
   }
 
-  const String& live =
-      node_data
-          .GetStringAttribute(
-              ax::mojom::blink::StringAttribute::kContainerLiveStatus)
-          .c_str();
+  const String live(node_data.GetStringAttribute(
+      ax::mojom::blink::StringAttribute::kContainerLiveStatus));
   properties.emplace_back(CreateProperty(
       AXPropertyNameEnum::Live, CreateValue(live, AXValueTypeEnum::Token)));
 
@@ -344,11 +300,8 @@ void FillLiveRegionProperties(AXObject& ax_object,
   properties.emplace_back(
       CreateProperty(AXPropertyNameEnum::Atomic, CreateBooleanValue(atomic)));
 
-  const String& relevant =
-      node_data
-          .GetStringAttribute(
-              ax::mojom::blink::StringAttribute::kContainerLiveRelevant)
-          .c_str();
+  const String relevant(node_data.GetStringAttribute(
+      ax::mojom::blink::StringAttribute::kContainerLiveRelevant));
   properties.emplace_back(
       CreateProperty(AXPropertyNameEnum::Relevant,
                      CreateValue(relevant, AXValueTypeEnum::TokenList)));
@@ -393,14 +346,12 @@ void FillGlobalStates(AXObject& ax_object,
     default:
       // TODO(aboxhall): expose invalid: <nothing> and source: aria-invalid as
       // invalid value
-      properties.emplace_back(CreateProperty(
-          AXPropertyNameEnum::Invalid,
-          CreateValue(
-              node_data
-                  .GetStringAttribute(ax::mojom::blink::StringAttribute::
-                                          kAriaInvalidValueDeprecated)
-                  .c_str(),
-              AXValueTypeEnum::String)));
+      properties.emplace_back(
+          CreateProperty(AXPropertyNameEnum::Invalid,
+                         CreateValue(String(node_data.GetStringAttribute(
+                                         ax::mojom::blink::StringAttribute::
+                                             kAriaInvalidValueDeprecated)),
+                                     AXValueTypeEnum::String)));
       break;
   }
 
@@ -466,10 +417,8 @@ void FillWidgetProperties(AXObject& ax_object,
                           const ui::AXNodeData& node_data,
                           protocol::Array<AXProperty>& properties) {
   ax::mojom::blink::Role role = node_data.role;
-  const String& autocomplete =
-      node_data
-          .GetStringAttribute(ax::mojom::blink::StringAttribute::kAutoComplete)
-          .c_str();
+  const String autocomplete(node_data.GetStringAttribute(
+      ax::mojom::blink::StringAttribute::kAutoComplete));
   if (!autocomplete.empty()) {
     properties.emplace_back(
         CreateProperty(AXPropertyNameEnum::Autocomplete,
@@ -533,12 +482,10 @@ void FillWidgetProperties(AXObject& ax_object,
         AXPropertyNameEnum::Valuemax,
         CreateValue(node_data.GetFloatAttribute(
             ax::mojom::blink::FloatAttribute::kMaxValueForRange))));
-    properties.emplace_back(CreateProperty(
-        AXPropertyNameEnum::Valuetext,
-        CreateValue(
-            node_data
-                .GetStringAttribute(ax::mojom::blink::StringAttribute::kValue)
-                .c_str())));
+    properties.emplace_back(
+        CreateProperty(AXPropertyNameEnum::Valuetext,
+                       CreateValue(String(node_data.GetStringAttribute(
+                           ax::mojom::blink::StringAttribute::kValue)))));
   }
 }
 
@@ -603,10 +550,9 @@ void AccessibilityChildrenFromAttribute(const AXObject& ax_object,
   if (!ax_object.GetElement()) {
     return;
   }
-  HeapVector<Member<Element>>* elements =
-      ax_object.GetElement()->GetAttrAssociatedElements(
-          attribute,
-          /*resolve_reference_target=*/true);
+  GCedHeapVector<Member<Element>>* elements =
+      ax_object.GetElement()->GetAttrAssociatedElementsResolvingReferenceTarget(
+          attribute);
   if (!elements) {
     return;
   }
@@ -703,29 +649,27 @@ void FillSparseAttributes(AXObject& ax_object,
   if (node_data.HasStringAttribute(ax::mojom::blink::StringAttribute::kUrl)) {
     const auto url =
         node_data.GetStringAttribute(ax::mojom::blink::StringAttribute::kUrl);
-    properties.emplace_back(CreateProperty(
-        AXPropertyNameEnum::Url,
-        CreateValue(WTF::String(url.c_str()), AXValueTypeEnum::String)));
+    properties.emplace_back(
+        CreateProperty(AXPropertyNameEnum::Url,
+                       CreateValue(String(url), AXValueTypeEnum::String)));
   }
 
   if (node_data.HasStringAttribute(
           ax::mojom::blink::StringAttribute::kKeyShortcuts)) {
     const auto key_shortcuts = node_data.GetStringAttribute(
         ax::mojom::blink::StringAttribute::kKeyShortcuts);
-    properties.emplace_back(
-        CreateProperty(AXPropertyNameEnum::Keyshortcuts,
-                       CreateValue(WTF::String(key_shortcuts.c_str()),
-                                   AXValueTypeEnum::String)));
+    properties.emplace_back(CreateProperty(
+        AXPropertyNameEnum::Keyshortcuts,
+        CreateValue(String(key_shortcuts), AXValueTypeEnum::String)));
   }
 
   if (node_data.HasStringAttribute(
           ax::mojom::blink::StringAttribute::kRoleDescription)) {
     const auto role_description = node_data.GetStringAttribute(
         ax::mojom::blink::StringAttribute::kRoleDescription);
-    properties.emplace_back(
-        CreateProperty(AXPropertyNameEnum::Roledescription,
-                       CreateValue(WTF::String(role_description.c_str()),
-                                   AXValueTypeEnum::String)));
+    properties.emplace_back(CreateProperty(
+        AXPropertyNameEnum::Roledescription,
+        CreateValue(String(role_description), AXValueTypeEnum::String)));
   }
 
   if (node_data.HasIntListAttribute(
@@ -798,7 +742,7 @@ void FillSparseAttributes(AXObject& ax_object,
 void FillCoreProperties(AXObject& ax_object, AXNode* node_object) {
   ax::mojom::blink::NameFrom name_from;
   AXObject::AXObjectVector name_objects;
-  ax_object.GetName(name_from, &name_objects);
+  ax_object.GetName(name_from, &name_objects, /*name_sources=*/nullptr);
 
   ax::mojom::blink::DescriptionFrom description_from;
   AXObject::AXObjectVector description_objects;
@@ -893,8 +837,10 @@ std::unique_ptr<AXNode> BuildProtocolAXNodeForIgnoredAXObject(
 
   if (force_name_and_role) {
     // Compute accessible name and sources and attach to protocol node:
+    ax::mojom::blink::NameFrom name_from;
     AXObject::NameSources name_sources;
-    String computed_name = ax_object.GetName(&name_sources);
+    String computed_name =
+        ax_object.GetName(name_from, /*name_objects=*/nullptr, &name_sources);
     std::unique_ptr<AXValue> name =
         CreateValue(computed_name, AXValueTypeEnum::ComputedString);
     ignored_node_object->setName(std::move(name));
@@ -925,7 +871,7 @@ std::unique_ptr<AXNode> BuildProtocolAXNodeForUnignoredAXObject(
           .build();
   auto properties = std::make_unique<protocol::Array<AXProperty>>();
   ui::AXNodeData node_data;
-  ax_object.Serialize(&node_data, ui::kAXModeComplete);
+  ax_object.Serialize(&node_data, ui::kAXModeInspector);
   node_object->setRole(CreateRoleNameValue(node_data.role));
   node_object->setChromeRole(CreateInternalRoleValue(node_data.role));
   FillLiveRegionProperties(ax_object, node_data, *(properties.get()));
@@ -935,31 +881,29 @@ std::unique_ptr<AXNode> BuildProtocolAXNodeForUnignoredAXObject(
   FillRelationships(ax_object, *(properties.get()));
   FillSparseAttributes(ax_object, node_data, *(properties.get()));
 
+  ax::mojom::blink::NameFrom name_from;
   AXObject::NameSources name_sources;
-  String computed_name = ax_object.GetName(&name_sources);
+  String computed_name =
+      ax_object.GetName(name_from, /*name_objects=*/nullptr, &name_sources);
+  std::unique_ptr<AXValue> name =
+      CreateValue(computed_name, AXValueTypeEnum::ComputedString);
   if (!name_sources.empty()) {
-    std::unique_ptr<AXValue> name =
-        CreateValue(computed_name, AXValueTypeEnum::ComputedString);
-    if (!name_sources.empty()) {
-      auto name_source_properties =
-          std::make_unique<protocol::Array<AXValueSource>>();
-      for (NameSource& name_source : name_sources) {
-        name_source_properties->emplace_back(CreateValueSource(name_source));
-        if (name_source.text.IsNull() || name_source.superseded) {
-          continue;
-        }
-        if (!name_source.related_objects.empty()) {
-          properties->emplace_back(CreateRelatedNodeListProperty(
-              AXPropertyNameEnum::Labelledby, name_source.related_objects));
-        }
+    auto name_source_properties =
+        std::make_unique<protocol::Array<AXValueSource>>();
+    for (NameSource& name_source : name_sources) {
+      name_source_properties->emplace_back(CreateValueSource(name_source));
+      if (name_source.text.IsNull() || name_source.superseded) {
+        continue;
       }
-      name->setSources(std::move(name_source_properties));
+      if (!name_source.related_objects.empty()) {
+        properties->emplace_back(CreateRelatedNodeListProperty(
+            AXPropertyNameEnum::Labelledby, name_source.related_objects));
+      }
     }
-    node_object->setProperties(std::move(properties));
-    node_object->setName(std::move(name));
-  } else {
-    node_object->setProperties(std::move(properties));
+    name->setSources(std::move(name_source_properties));
   }
+  node_object->setProperties(std::move(properties));
+  node_object->setName(std::move(name));
 
   FillCoreProperties(ax_object, node_object.get());
   return node_object;

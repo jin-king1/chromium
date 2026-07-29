@@ -4,9 +4,13 @@
 
 #include "components/sync/model/processor_entity_tracker.h"
 
+#include <algorithm>
 #include <utility>
 
+#include "base/metrics/histogram_functions.h"
+#include "base/strings/strcat.h"
 #include "base/trace_event/memory_usage_estimator.h"
+#include "components/sync/base/data_type.h"
 #include "components/sync/model/processor_entity.h"
 #include "components/sync/protocol/data_type_state_helper.h"
 #include "components/sync/protocol/entity_metadata.pb.h"
@@ -25,6 +29,10 @@ ProcessorEntityTracker::ProcessorEntityTracker(
   for (auto& [storage_key, metadata] : metadata_map) {
     std::unique_ptr<ProcessorEntity> entity =
         ProcessorEntity::CreateFromMetadata(storage_key, std::move(*metadata));
+    if (!entity) {
+      // The persisted metadata was invalid. This should be very rare.
+      continue;
+    }
     const ClientTagHash client_tag_hash =
         ClientTagHash::FromHashed(entity->metadata().client_tag_hash());
 
@@ -43,9 +51,6 @@ bool ProcessorEntityTracker::AllStorageKeysPopulated() const {
     if (entity->storage_key().empty()) {
       return false;
     }
-  }
-  if (entities_.size() != storage_key_to_tag_hash_.size()) {
-    return false;
   }
   return true;
 }
@@ -66,19 +71,18 @@ size_t ProcessorEntityTracker::CountNonTombstoneEntries() const {
   return count;
 }
 
-ProcessorEntity* ProcessorEntityTracker::AddUnsyncedLocal(
+ProcessorEntity* ProcessorEntityTracker::AddLocalCreation(
     const std::string& storage_key,
     std::unique_ptr<EntityData> data,
     sync_pb::EntitySpecifics trimmed_specifics,
     std::optional<sync_pb::UniquePosition> unique_position) {
   DCHECK(data);
   DCHECK(!data->client_tag_hash.value().empty());
-  DCHECK(!GetEntityForTagHash(data->client_tag_hash));
+  DCHECK(!GetEntityForClientTagHash(data->client_tag_hash));
   DCHECK(!data->is_deleted());
   DCHECK(!storage_key.empty());
 
-  ProcessorEntity* entity =
-      AddInternal(storage_key, *data, kUncommittedVersion);
+  ProcessorEntity* entity = AddInternal(storage_key, *data);
   entity->RecordLocalUpdate(std::move(data), std::move(trimmed_specifics),
                             std::move(unique_position));
   return entity;
@@ -91,14 +95,13 @@ ProcessorEntity* ProcessorEntityTracker::AddRemote(
     std::optional<sync_pb::UniquePosition> unique_position) {
   const EntityData& data = update_data.entity;
   DCHECK(!data.client_tag_hash.value().empty());
-  DCHECK(!GetEntityForTagHash(data.client_tag_hash));
+  DCHECK(!GetEntityForClientTagHash(data.client_tag_hash));
   DCHECK(!data.is_deleted());
   DCHECK(storage_key_to_tag_hash_.find(storage_key) ==
          storage_key_to_tag_hash_.end());
-  DCHECK(update_data.response_version != kUncommittedVersion);
+  CHECK_NE(update_data.response_version, kUncommittedVersion);
 
-  ProcessorEntity* entity =
-      AddInternal(storage_key, data, update_data.response_version);
+  ProcessorEntity* entity = AddInternal(storage_key, data);
   entity->RecordAcceptedRemoteUpdate(update_data, std::move(trimmed_specifics),
                                      std::move(unique_position));
   return entity;
@@ -109,7 +112,7 @@ void ProcessorEntityTracker::RemoveEntityForClientTagHash(
   DCHECK(
       IsInitialSyncAtLeastPartiallyDone(data_type_state_.initial_sync_state()));
   DCHECK(!client_tag_hash.value().empty());
-  const ProcessorEntity* entity = GetEntityForTagHash(client_tag_hash);
+  const ProcessorEntity* entity = GetEntityForClientTagHash(client_tag_hash);
   if (entity == nullptr || entity->storage_key().empty()) {
     entities_.erase(client_tag_hash);
   } else {
@@ -140,8 +143,8 @@ std::vector<std::string> ProcessorEntityTracker::RemoveInactiveCollaborations(
   CHECK(
       IsInitialSyncAtLeastPartiallyDone(data_type_state_.initial_sync_state()));
   std::vector<std::string> removed_storage_keys;
-  std::erase_if(entities_, [&removed_storage_keys,
-                            &active_collaborations](const auto& item) {
+  absl::erase_if(entities_, [&removed_storage_keys,
+                             &active_collaborations](const auto& item) {
     const std::unique_ptr<ProcessorEntity>& entity = item.second;
     if (!active_collaborations.contains(
             entity->metadata().collaboration().collaboration_id())) {
@@ -180,16 +183,16 @@ size_t ProcessorEntityTracker::EstimateMemoryUsage() const {
   return memory_usage;
 }
 
-ProcessorEntity* ProcessorEntityTracker::GetEntityForTagHash(
-    const ClientTagHash& tag_hash) {
+ProcessorEntity* ProcessorEntityTracker::GetEntityForClientTagHash(
+    const ClientTagHash& client_tag_hash) {
   return const_cast<ProcessorEntity*>(
-      static_cast<const ProcessorEntityTracker*>(this)->GetEntityForTagHash(
-          tag_hash));
+      static_cast<const ProcessorEntityTracker*>(this)
+          ->GetEntityForClientTagHash(client_tag_hash));
 }
 
-const ProcessorEntity* ProcessorEntityTracker::GetEntityForTagHash(
-    const ClientTagHash& tag_hash) const {
-  auto it = entities_.find(tag_hash);
+const ProcessorEntity* ProcessorEntityTracker::GetEntityForClientTagHash(
+    const ClientTagHash& client_tag_hash) const {
+  auto it = entities_.find(client_tag_hash);
   return it != entities_.end() ? it->second.get() : nullptr;
 }
 
@@ -206,7 +209,7 @@ const ProcessorEntity* ProcessorEntityTracker::GetEntityForStorageKey(
   if (iter == storage_key_to_tag_hash_.end()) {
     return nullptr;
   }
-  return GetEntityForTagHash(iter->second);
+  return GetEntityForClientTagHash(iter->second);
 }
 
 std::vector<const ProcessorEntity*>
@@ -217,6 +220,15 @@ ProcessorEntityTracker::GetAllEntitiesIncludingTombstones() const {
     entities.push_back(entity.get());
   }
   return entities;
+}
+
+std::vector<std::string> ProcessorEntityTracker::GetAllStorageKeys() const {
+  std::vector<std::string> storage_keys;
+  storage_keys.reserve(storage_key_to_tag_hash_.size());
+  for (const auto& [storage_key, client_tag_hash] : storage_key_to_tag_hash_) {
+    storage_keys.push_back(storage_key);
+  }
+  return storage_keys;
 }
 
 std::vector<ProcessorEntity*>
@@ -242,18 +254,22 @@ bool ProcessorEntityTracker::HasLocalChanges() const {
   return false;
 }
 
+size_t ProcessorEntityTracker::GetUnsyncedDataCount() const {
+  return std::ranges::count_if(
+      entities_, [](const auto& pair) { return pair.second->IsUnsynced(); });
+}
+
 size_t ProcessorEntityTracker::size() const {
   return entities_.size();
 }
 
 std::vector<const ProcessorEntity*>
 ProcessorEntityTracker::IncrementSequenceNumberForAllExcept(
-    const std::unordered_set<std::string>& already_updated_storage_keys) {
+    const absl::flat_hash_set<std::string>& already_updated_storage_keys) {
   std::vector<const ProcessorEntity*> affected_entities;
   for (const auto& [client_tag_hash, entity] : entities_) {
     if (entity->storage_key().empty() ||
-        (already_updated_storage_keys.find(entity->storage_key()) !=
-         already_updated_storage_keys.end())) {
+        already_updated_storage_keys.contains(entity->storage_key())) {
       // Entities with empty storage key were already processed. ProcessUpdate()
       // incremented their sequence numbers and cached commit data. Their
       // metadata will be persisted in UpdateStorageKey().
@@ -268,7 +284,7 @@ ProcessorEntityTracker::IncrementSequenceNumberForAllExcept(
 void ProcessorEntityTracker::UpdateOrOverrideStorageKey(
     const ClientTagHash& client_tag_hash,
     const std::string& storage_key) {
-  ProcessorEntity* entity = GetEntityForTagHash(client_tag_hash);
+  ProcessorEntity* entity = GetEntityForClientTagHash(client_tag_hash);
   DCHECK(entity);
   // If the entity already had a storage key, clear it.
   const std::string previous_storage_key = entity->storage_key();
@@ -287,10 +303,9 @@ void ProcessorEntityTracker::UpdateOrOverrideStorageKey(
 
 ProcessorEntity* ProcessorEntityTracker::AddInternal(
     const std::string& storage_key,
-    const EntityData& data,
-    int64_t server_version) {
+    const EntityData& data) {
   DCHECK(!data.client_tag_hash.value().empty());
-  DCHECK(!GetEntityForTagHash(data.client_tag_hash));
+  DCHECK(!GetEntityForClientTagHash(data.client_tag_hash));
   DCHECK(storage_key.empty() || storage_key_to_tag_hash_.find(storage_key) ==
                                     storage_key_to_tag_hash_.end());
 

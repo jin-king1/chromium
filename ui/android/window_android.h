@@ -12,14 +12,15 @@
 
 #include "base/android/jni_weak_ref.h"
 #include "base/android/scoped_java_ref.h"
-#include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/observer_list.h"
 #include "base/time/time.h"
 #include "third_party/blink/public/common/page/content_to_visible_time_reporter.h"
 #include "ui/android/progress_bar_config.h"
 #include "ui/android/ui_android_export.h"
+#include "ui/android/ui_android_jni_headers/WindowAndroid_shared_jni.h"
 #include "ui/android/view_android.h"
+#include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/gfx/geometry/vector2d_f.h"
 #include "ui/gfx/overlay_transform.h"
 
@@ -55,11 +56,28 @@ class UI_ANDROID_EXPORT WindowAndroid : public ViewAndroid {
     raw_ptr<WindowAndroid> window_;
   };
 
+  struct FrameRateVelocityPoint {
+    float frame_per_second;
+    float dp_per_second;
+  };
+
+  struct AdaptiveRefreshRateInfo {
+    bool supports_adaptive_refresh_rate = false;
+    // Fields below are valid only if `supports_adaptive_refresh_rate` is true.
+    float suggested_frame_rate_high = 0.f;
+    std::vector<FrameRateVelocityPoint> velocity_mapping;
+
+    AdaptiveRefreshRateInfo();
+    AdaptiveRefreshRateInfo(const AdaptiveRefreshRateInfo& other);
+    ~AdaptiveRefreshRateInfo();
+    AdaptiveRefreshRateInfo& operator=(const AdaptiveRefreshRateInfo& other);
+  };
+
   static WindowAndroid* FromJavaWindowAndroid(
-      const base::android::JavaParamRef<jobject>& jwindow_android);
+      const base::android::JavaRef<jobject>& jwindow_android);
 
   WindowAndroid(JNIEnv* env,
-                jobject obj,
+                const base::android::JavaRef<JWindowAndroid>& obj,
                 int display_id,
                 float scroll_factor,
                 bool window_is_wide_color_gamut);
@@ -69,9 +87,9 @@ class UI_ANDROID_EXPORT WindowAndroid : public ViewAndroid {
 
   ~WindowAndroid() override;
 
-  void Destroy(JNIEnv* env, const base::android::JavaParamRef<jobject>& obj);
+  void Destroy(JNIEnv* env);
 
-  base::android::ScopedJavaLocalRef<jobject> GetJavaObject();
+  base::android::ScopedJavaLocalRef<JWindowAndroid> GetJavaObject();
 
   void AttachCompositor(WindowAndroidCompositor* compositor);
   void DetachCompositor();
@@ -83,31 +101,35 @@ class UI_ANDROID_EXPORT WindowAndroid : public ViewAndroid {
   float GetRefreshRate();
   gfx::OverlayTransform GetOverlayTransform();
   std::vector<float> GetSupportedRefreshRates();
+  AdaptiveRefreshRateInfo adaptive_refresh_rate_info() const {
+    return adaptive_refresh_rate_info_;
+  }
   void SetPreferredRefreshRate(float refresh_rate);
 
   void SetNeedsAnimate();
   void Animate(base::TimeTicks begin_frame_time);
   void OnVisibilityChanged(JNIEnv* env,
-                           const base::android::JavaParamRef<jobject>& obj,
                            bool visible);
-  void OnActivityStopped(JNIEnv* env,
-                         const base::android::JavaParamRef<jobject>& obj);
-  void OnActivityStarted(JNIEnv* env,
-                         const base::android::JavaParamRef<jobject>& obj);
-  void SetVSyncPaused(JNIEnv* env,
-                      const base::android::JavaParamRef<jobject>& obj,
-                      bool paused);
+  void OnActivityStopped(JNIEnv* env);
+  void OnActivityStarted(JNIEnv* env);
   void OnUpdateRefreshRate(JNIEnv* env,
-                           const base::android::JavaParamRef<jobject>& obj,
                            float refresh_rate);
+  void OnUpdateDisplayId(JNIEnv* env, int display_id);
   void OnSupportedRefreshRatesUpdated(
       JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& obj,
-      const base::android::JavaParamRef<jfloatArray>& supported_refresh_rates);
-  void OnOverlayTransformUpdated(
+      const base::android::JavaRef<jfloatArray>& supported_refresh_rates);
+  void OnAdaptiveRefreshRateInfoChanged(
       JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& obj);
-  void SendUnfoldLatencyBeginTimestamp(JNIEnv* env, jlong begin_time);
+      bool supports_adaptive_refresh_rate,
+      float suggested_frame_rate_high,
+      const std::vector<float> frame_per_second,
+      const std::vector<float> dp_per_second);
+  void OnOverlayTransformUpdated(JNIEnv* env);
+  void SendUnfoldLatencyBeginTimestamp(JNIEnv* env, int64_t begin_time);
+
+  void OnWindowPointerLockRelease(JNIEnv* env);
+
+  void OnWindowPositionChanged(JNIEnv* env);
 
   void ShowToast(const std::string text);
 
@@ -127,6 +149,15 @@ class UI_ANDROID_EXPORT WindowAndroid : public ViewAndroid {
   void SetModalDialogManagerForTesting(
       base::android::ScopedJavaLocalRef<jobject> java_modal_dialog_manager);
 
+  // Dispatches KeyEvent to the corresponding Java Activity.
+  // `key_event_types` is the bit flags of ui_controls::AcceleratorState.
+  bool SendKeyEventsForTesting(KeyboardCode key,
+                               int key_event_types,
+                               bool shift,
+                               bool control,
+                               bool alt,
+                               bool command);
+
   float mouse_wheel_scroll_factor() const { return mouse_wheel_scroll_factor_; }
 
   static std::unique_ptr<ScopedWindowAndroidForTesting> CreateForTesting();
@@ -138,6 +169,18 @@ class UI_ANDROID_EXPORT WindowAndroid : public ViewAndroid {
   display::Display GetDisplayWithWindowColorSpace();
 
   void SetWideColorEnabled(bool enabled);
+
+  bool RequestPointerLock(ViewAndroid& view_android);
+
+  bool HasPointerLock(ViewAndroid& view_android);
+
+  void ReleasePointerLock(ViewAndroid& view_android);
+
+  bool SetHasKeyboardCapture(bool keyboard_capture);
+
+  // Returns bounds of this window in global dp coordinates (takes display
+  // topology into account).
+  std::optional<gfx::Rect> GetBoundsInScreenCoordinates();
 
   class TestHooks {
    public:
@@ -170,8 +213,8 @@ class UI_ANDROID_EXPORT WindowAndroid : public ViewAndroid {
   // The ID of the display that this window belongs to.
   int display_id() const { return display_id_; }
 
-  base::android::ScopedJavaGlobalRef<jobject> java_window_;
-  const int display_id_;
+  base::android::ScopedJavaGlobalRef<JWindowAndroid> java_window_;
+  int display_id_;
   const bool window_is_wide_color_gamut_;
   raw_ptr<WindowAndroidCompositor> compositor_;
 
@@ -181,13 +224,31 @@ class UI_ANDROID_EXPORT WindowAndroid : public ViewAndroid {
   blink::ContentToVisibleTimeReporter content_to_visible_time_recorder_;
 
   float mouse_wheel_scroll_factor_;
-  bool vsync_paused_ = false;
 
   raw_ptr<TestHooks> test_hooks_ = nullptr;
 
   int selection_handles_active_count_ = 0;
+
+  raw_ptr<ViewAndroid> pointer_locking_view_ = nullptr;
+
+  AdaptiveRefreshRateInfo adaptive_refresh_rate_info_;
 };
 
 }  // namespace ui
+
+namespace jni_zero {
+template <>
+inline ui::WindowAndroid* FromJniType<ui::WindowAndroid*>(
+    JNIEnv* env,
+    const JavaRef<jobject>& j_obj) {
+  return ui::WindowAndroid::FromJavaWindowAndroid(j_obj);
+}
+
+template <>
+inline ScopedJavaLocalRef<jobject> ToJniType(JNIEnv* env,
+                                             ui::WindowAndroid* obj) {
+  return obj->GetJavaObject();
+}
+}  // namespace jni_zero
 
 #endif  // UI_ANDROID_WINDOW_ANDROID_H_

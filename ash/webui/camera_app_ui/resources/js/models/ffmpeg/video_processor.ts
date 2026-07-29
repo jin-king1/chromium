@@ -7,9 +7,9 @@ import {AsyncJobQueue} from '../../async_job_queue.js';
 import * as comlink from '../../lib/comlink.js';
 import runFfmpeg from '../../lib/ffmpeg.js';
 import {WaitableEvent} from '../../waitable_event.js';
-import {AsyncWriter} from '../async_writer.js';
+import type {AsyncWriter} from '../async_writer.js';
 
-import {VideoProcessorArgs} from './video_processor_args.js';
+import type {VideoProcessorArgs} from './video_processor_args.js';
 
 /**
  * A file stream in Emscripten.
@@ -29,8 +29,8 @@ interface FileOps {
       stream: FileStream, buffer: Int8Array, offset: number, length: number,
       position: number): number;
   write(
-      stream: FileStream, buffer: Int8Array, offset: number, length: number,
-      position?: number): number;
+      stream: FileStream, buffer: Int8Array<ArrayBuffer>, offset: number,
+      length: number, position?: number): number;
   llseek(stream: FileStream, offset: number, whence: number): number;
 }
 
@@ -228,8 +228,8 @@ class OutputDevice {
    * @return The numbers of bytes written.
    */
   write(
-      stream: FileStream, buffer: Int8Array, offset: number, length: number,
-      position?: number): number {
+      stream: FileStream, buffer: Int8Array<ArrayBuffer>, offset: number,
+      length: number, position?: number): number {
     assert(!this.closed.isSignaled());
     const blob = new Blob([buffer.subarray(offset, offset + length)]);
     assert(
@@ -335,19 +335,14 @@ class FfmpegVideoProcessor {
         // is in chrome-untrusted://.
         // TODO(pihsun): Separate util into multiple files so we can include
         // expandPath here.
-        // TODO(b/213408699): Separate files included in different scope
-        // (chrome://, chrome-untrusted://, worker) into different folder /
-        // tsconfig.json, so this can be caught at compile time.
         return '../../../js/lib/ffmpeg.wasm';
       },
       // This is from emscripten.
-      // eslint-disable-next-line @typescript-eslint/naming-convention
+
       noFSInit: true,  // It would be setup in preRun().
       preRun: [() => {
         // The FS property are injected by emscripten at runtime.
-        /* eslint-disable-next-line
-             @typescript-eslint/naming-convention,
-             @typescript-eslint/consistent-type-assertions */
+
         const fs = (config as unknown as {FS: Fs}).FS;
         assert(fs !== null);
         // 80 is just a random major number that won't collide with other

@@ -12,8 +12,6 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
-#include "chrome/browser/ui/browser_list.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/toolbar/pinned_toolbar/pinned_toolbar_actions_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/download/bubble/download_bubble_contents_view.h"
@@ -27,6 +25,7 @@
 #include "chrome/browser/web_applications/test/os_integration_test_override_impl.h"
 #include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
 #include "chrome/common/webui_url_constants.h"
+#include "chrome/test/base/chrome_test_utils.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/safe_browsing/core/common/safe_browsing_prefs.h"
@@ -44,13 +43,10 @@ class DownloadToolbarUIControllerBrowserTest : public DownloadTestBase {
   DownloadToolbarUIControllerBrowserTest() = default;
 
   DownloadToolbarUIController* controller(Browser* browser) {
-    return browser->GetFeatures().download_toolbar_ui_controller();
+    return DownloadToolbarUIController::From(browser);
   }
 
-  void SetUp() override {
-    feature_list_.InitWithFeatures({features::kPinnableDownloadsButton}, {});
-    DownloadTestBase::SetUp();
-  }
+  void SetUp() override { DownloadTestBase::SetUp(); }
 
   void SetUpOnMainThread() override {
     // OS integration is needed to be able to launch web applications. This
@@ -69,10 +65,13 @@ class DownloadToolbarUIControllerBrowserTest : public DownloadTestBase {
     DownloadTestBase::TearDownOnMainThread();
   }
 
-  PinnedToolbarActionsContainer* toolbar_container(Browser* browser) {
-    return BrowserView::GetBrowserViewForBrowser(browser)
-        ->toolbar_button_provider()
-        ->GetPinnedToolbarActionsContainer();
+  views::View* toolbar_container(Browser* browser) {
+    CHECK(!features::IsWebUIPinnedToolbarActionsEnabled())
+        << "Test needs modification to support WebUIPinnedToolbarActions";
+    return static_cast<PinnedToolbarActionsContainer*>(
+        BrowserView::GetBrowserViewForBrowser(browser)
+            ->toolbar_button_provider()
+            ->GetPinnedToolbarActions());
   }
 
   ToolbarButton* toolbar_button(Browser* browser) {
@@ -95,7 +94,6 @@ class DownloadToolbarUIControllerBrowserTest : public DownloadTestBase {
         ui::EventTimeForNow(), ui::EF_LEFT_MOUSE_BUTTON, 0));
   }
 
-  base::test::ScopedFeatureList feature_list_;
   // OS integration is needed to be able to launch web applications. This
   // override ensures OS integration doesn't leave any traces.
   std::unique_ptr<web_app::OsIntegrationTestOverrideImpl::BlockingRegistration>
@@ -103,9 +101,6 @@ class DownloadToolbarUIControllerBrowserTest : public DownloadTestBase {
   WebAppFrameToolbarTestHelper web_app_frame_toolbar_helper_;
 };
 
-// DownloadToolbarUIController and downloads toolbar button do not exist for
-// ChromeOS. See https://crbug.com/1323505.
-#if !BUILDFLAG(IS_CHROMEOS)
 IN_PROC_BROWSER_TEST_F(DownloadToolbarUIControllerBrowserTest, ShowHide) {
   EXPECT_EQ(toolbar_button(browser()), nullptr);
   controller(browser())->Show();
@@ -121,7 +116,7 @@ IN_PROC_BROWSER_TEST_F(DownloadToolbarUIControllerBrowserTest,
                        HideDoesNotRemoveButtonIfPinned) {
   EXPECT_EQ(toolbar_button(browser()), nullptr);
   PinnedToolbarActionsModel* const actions_model =
-      PinnedToolbarActionsModel::Get(browser()->profile());
+      PinnedToolbarActionsModel::Get(browser()->GetProfile());
   actions_model->UpdatePinnedState(kActionShowDownloads, true);
   views::test::WaitForAnimatingLayoutManager(toolbar_container(browser()));
   EXPECT_NE(toolbar_button(browser()), nullptr);
@@ -138,7 +133,7 @@ IN_PROC_BROWSER_TEST_F(DownloadToolbarUIControllerBrowserTest,
   // Pin downloads to the toolbar.
   EXPECT_EQ(toolbar_button(browser()), nullptr);
   PinnedToolbarActionsModel* const actions_model =
-      PinnedToolbarActionsModel::Get(browser()->profile());
+      PinnedToolbarActionsModel::Get(browser()->GetProfile());
   actions_model->UpdatePinnedState(kActionShowDownloads, true);
   views::test::WaitForAnimatingLayoutManager(toolbar_container(browser()));
   EXPECT_NE(toolbar_button(browser()), nullptr);
@@ -157,7 +152,7 @@ IN_PROC_BROWSER_TEST_F(DownloadToolbarUIControllerBrowserTest,
   EXPECT_EQ(toolbar_button(browser()), nullptr);
   // Download a file and verify the download button appears after the download.
   ui_test_utils::DownloadURL(
-      browser(), ui_test_utils::GetTestUrl(
+      browser(), chrome_test_utils::GetTestUrl(
                      base::FilePath().AppendASCII("downloads"),
                      base::FilePath().AppendASCII("a_zip_file.zip")));
   views::test::WaitForAnimatingLayoutManager(toolbar_container(browser()));
@@ -173,15 +168,15 @@ IN_PROC_BROWSER_TEST_F(DownloadToolbarUIControllerBrowserTest,
   EXPECT_EQ(toolbar_button(browser()), nullptr);
   // Download a file and verify the download button appears after the download.
   ui_test_utils::DownloadURL(
-      browser(), ui_test_utils::GetTestUrl(
+      browser(), chrome_test_utils::GetTestUrl(
                      base::FilePath().AppendASCII("downloads"),
                      base::FilePath().AppendASCII("a_zip_file.zip")));
   views::test::WaitForAnimatingLayoutManager(toolbar_container(browser()));
   EXPECT_NE(toolbar_button(browser()), nullptr);
   EXPECT_TRUE(toolbar_button(browser())->GetVisible());
   // Create another browser and set it as active so the button becomes dormant.
-  Browser* extra_browser = CreateBrowser(browser()->profile());
-  BrowserList::SetLastActive(extra_browser);
+  Browser* extra_browser = CreateBrowser(browser()->GetProfile());
+  ui_test_utils::DeprecatedFakeActivateBrowser(extra_browser);
   views::test::WaitForAnimatingLayoutManager(toolbar_container(browser()));
   EXPECT_NE(toolbar_button(extra_browser), nullptr);
   EXPECT_TRUE(toolbar_button(extra_browser)->GetVisible());
@@ -191,7 +186,7 @@ IN_PROC_BROWSER_TEST_F(DownloadToolbarUIControllerBrowserTest,
                        ButtonPressWithNoRecentDownloads) {
   // Pin the downloads button so it is available to press.
   PinnedToolbarActionsModel* const actions_model =
-      PinnedToolbarActionsModel::Get(browser()->profile());
+      PinnedToolbarActionsModel::Get(browser()->GetProfile());
   actions_model->UpdatePinnedState(kActionShowDownloads, true);
   views::test::WaitForAnimatingLayoutManager(toolbar_container(browser()));
   EXPECT_NE(toolbar_button(browser()), nullptr);
@@ -209,7 +204,7 @@ IN_PROC_BROWSER_TEST_F(DownloadToolbarUIControllerBrowserTest,
 IN_PROC_BROWSER_TEST_F(DownloadToolbarUIControllerBrowserTest,
                        ButtonPressWithRecentDownloads) {
   ui_test_utils::DownloadURL(
-      browser(), ui_test_utils::GetTestUrl(
+      browser(), chrome_test_utils::GetTestUrl(
                      base::FilePath().AppendASCII("downloads"),
                      base::FilePath().AppendASCII("a_zip_file.zip")));
   views::test::WaitForAnimatingLayoutManager(toolbar_container(browser()));
@@ -230,13 +225,13 @@ IN_PROC_BROWSER_TEST_F(DownloadToolbarUIControllerBrowserTest,
   web_app_info->scope = GURL();
 
   webapps::AppId app_id = web_app::test::InstallWebApp(
-      browser()->profile(), std::move(web_app_info),
+      browser()->GetProfile(), std::move(web_app_info),
       /*overwrite_existing_manifest_fields=*/false,
       webapps::WebappInstallSource::OMNIBOX_INSTALL_ICON);
   Browser* app_browser =
-      web_app::LaunchWebAppBrowserAndWait(browser()->profile(), app_id);
+      web_app::LaunchWebAppBrowserAndWait(browser()->GetProfile(), app_id);
   ui_test_utils::DownloadURL(
-      app_browser, ui_test_utils::GetTestUrl(
+      app_browser, chrome_test_utils::GetTestUrl(
                        base::FilePath().AppendASCII("downloads"),
                        base::FilePath().AppendASCII("a_zip_file.zip")));
   views::test::WaitForAnimatingLayoutManager(toolbar_container(app_browser));
@@ -247,23 +242,22 @@ IN_PROC_BROWSER_TEST_F(DownloadToolbarUIControllerBrowserTest,
 
   // Reopen web app and verify download button appears.
   Browser* app_browser2 =
-      web_app::LaunchWebAppBrowserAndWait(browser()->profile(), app_id);
+      web_app::LaunchWebAppBrowserAndWait(browser()->GetProfile(), app_id);
   views::test::WaitForAnimatingLayoutManager(toolbar_container(app_browser2));
   EXPECT_NE(toolbar_button(app_browser2), nullptr);
   EXPECT_TRUE(toolbar_button(app_browser2)->GetVisible());
 
   // Click the button and verify the bubble opens.
   ClickButton(toolbar_button(app_browser2));
-  EXPECT_EQ(controller(app_browser2)
-                ->bubble_contents_for_testing()
-                ->VisiblePage(),
-            DownloadBubbleContentsView::Page::kPrimary);
+  EXPECT_EQ(
+      controller(app_browser2)->bubble_contents_for_testing()->VisiblePage(),
+      DownloadBubbleContentsView::Page::kPrimary);
 }
 
 IN_PROC_BROWSER_TEST_F(DownloadToolbarUIControllerBrowserTest,
                        DialogAutoCloses) {
   ui_test_utils::DownloadURL(
-      browser(), ui_test_utils::GetTestUrl(
+      browser(), chrome_test_utils::GetTestUrl(
                      base::FilePath().AppendASCII("downloads"),
                      base::FilePath().AppendASCII("a_zip_file.zip")));
   views::test::WaitForAnimatingLayoutManager(toolbar_container(browser()));
@@ -283,7 +277,7 @@ IN_PROC_BROWSER_TEST_F(DownloadToolbarUIControllerBrowserTest,
 IN_PROC_BROWSER_TEST_F(DownloadToolbarUIControllerBrowserTest,
                        OpenPrimaryDialog) {
   ui_test_utils::DownloadURL(
-      browser(), ui_test_utils::GetTestUrl(
+      browser(), chrome_test_utils::GetTestUrl(
                      base::FilePath().AppendASCII("downloads"),
                      base::FilePath().AppendASCII("a_zip_file.zip")));
   views::test::WaitForAnimatingLayoutManager(toolbar_container(browser()));
@@ -297,8 +291,8 @@ IN_PROC_BROWSER_TEST_F(DownloadToolbarUIControllerBrowserTest,
                        OpenSecurityDialog) {
   // Disable SafeBrowsing and make a download dangerous so that showing the
   // security view is valid.
-  browser()->profile()->GetPrefs()->SetBoolean(prefs::kSafeBrowsingEnabled,
-                                               false);
+  browser()->GetProfile()->GetPrefs()->SetBoolean(prefs::kSafeBrowsingEnabled,
+                                                  false);
   embedded_test_server()->ServeFilesFromDirectory(GetTestDataDirectory());
   ASSERT_TRUE(embedded_test_server()->Start());
   GURL download_url =
@@ -359,8 +353,8 @@ IN_PROC_BROWSER_TEST_F(DownloadToolbarUIControllerBrowserTest,
   EXPECT_TRUE(toolbar_button(browser())->GetVisible());
   EXPECT_FALSE(controller(browser())->IsProgressRingInDormantStateForTesting());
   // Create another browser and set it as active so the button becomes dormant.
-  Browser* extra_browser = CreateBrowser(browser()->profile());
-  BrowserList::SetLastActive(extra_browser);
+  Browser* extra_browser = CreateBrowser(browser()->GetProfile());
+  ui_test_utils::DeprecatedFakeActivateBrowser(extra_browser);
   views::test::WaitForAnimatingLayoutManager(toolbar_container(extra_browser));
 
   EXPECT_TRUE(controller(browser())->IsProgressRingInDormantStateForTesting());
@@ -381,8 +375,9 @@ IN_PROC_BROWSER_TEST_F(DownloadToolbarUIControllerBrowserTest,
   download_item->Cancel(true);
 }
 
+// https://crbug.com/402616838: Test is flaky, disabled for investigation.
 IN_PROC_BROWSER_TEST_F(DownloadToolbarUIControllerBrowserTest,
-                       ImageBadgeShowsForMultipleDownloads) {
+                       DISABLED_ImageBadgeShowsForMultipleDownloads) {
   controller(browser())->Show();
   views::test::WaitForAnimatingLayoutManager(toolbar_container(browser()));
   EXPECT_NE(toolbar_button(browser()), nullptr);
@@ -422,4 +417,19 @@ IN_PROC_BROWSER_TEST_F(DownloadToolbarUIControllerBrowserTest,
     item->Cancel(true);
   }
 }
-#endif
+
+// Asserts that when a browser is closed with an open download bubble the
+// browser does not crash.
+IN_PROC_BROWSER_TEST_F(DownloadToolbarUIControllerBrowserTest,
+                       ClosingBrowserWithOpenBubbleDoesNotCrash) {
+  ui_test_utils::DownloadURL(
+      browser(), chrome_test_utils::GetTestUrl(
+                     base::FilePath().AppendASCII("downloads"),
+                     base::FilePath().AppendASCII("a_zip_file.zip")));
+  views::test::WaitForAnimatingLayoutManager(toolbar_container(browser()));
+  controller(browser())->ShowDetails();
+  controller(browser())->OpenPrimaryDialog();
+  EXPECT_EQ(controller(browser())->bubble_contents_for_testing()->VisiblePage(),
+            DownloadBubbleContentsView::Page::kPrimary);
+  CloseBrowserSynchronously(browser());
+}

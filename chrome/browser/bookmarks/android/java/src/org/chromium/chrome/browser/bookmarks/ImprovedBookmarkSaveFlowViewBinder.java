@@ -4,10 +4,12 @@
 
 package org.chromium.chrome.browser.bookmarks;
 
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel;
 
 /** ViewBinder for the improved bookmarks save flow. */
+@NullMarked
 class ImprovedBookmarkSaveFlowViewBinder {
     static void bind(
             PropertyModel model,
@@ -23,6 +25,10 @@ class ImprovedBookmarkSaveFlowViewBinder {
             improvedSaveFlow.setTitle(model.get(ImprovedBookmarkSaveFlowProperties.TITLE));
         } else if (propertyKey == ImprovedBookmarkSaveFlowProperties.SUBTITLE) {
             improvedSaveFlow.setSubtitle(model.get(ImprovedBookmarkSaveFlowProperties.SUBTITLE));
+        } else if (propertyKey
+                == ImprovedBookmarkSaveFlowProperties.ADJUST_SUBTITLE_LAYOUT_DIRECTION) {
+            improvedSaveFlow.setAdjustSubtitleLayoutDirection(
+                    model.get(ImprovedBookmarkSaveFlowProperties.ADJUST_SUBTITLE_LAYOUT_DIRECTION));
         } else if (propertyKey == ImprovedBookmarkSaveFlowProperties.PRICE_TRACKING_VISIBLE) {
             improvedSaveFlow.setPriceTrackingUiVisible(
                     model.get(ImprovedBookmarkSaveFlowProperties.PRICE_TRACKING_VISIBLE));

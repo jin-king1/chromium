@@ -5,20 +5,23 @@
 package org.chromium.chrome.browser.facilitated_payments;
 
 import android.content.Context;
+import android.content.pm.ResolveInfo;
 
-import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
 import org.jni_zero.JniType;
 
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsComponent.Delegate;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.components.autofill.payments.BankAccount;
 import org.chromium.components.autofill.payments.Ewallet;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetControllerProvider;
+import org.chromium.components.facilitated_payments.core.metrics.FacilitatedPaymentsType;
 import org.chromium.ui.base.WindowAndroid;
 
 import java.util.Arrays;
@@ -29,6 +32,7 @@ import java.util.List;
  * sheet.
  */
 @JNINamespace("payments::facilitated")
+@NullMarked
 public class FacilitatedPaymentsPaymentMethodsViewBridge {
     private final FacilitatedPaymentsPaymentMethodsComponent mComponent;
 
@@ -88,18 +92,23 @@ public class FacilitatedPaymentsPaymentMethodsViewBridge {
      * @param bankAccounts User's bank accounts which passed from facilitated payments client.
      */
     @CalledByNative
-    public void requestShowContent(@JniType("std::vector") Object[] bankAccounts) {
-        mComponent.showSheetForPix((List<BankAccount>) (List<?>) Arrays.asList(bankAccounts));
+    public void requestShowContent(@JniType("std::vector") List<BankAccount> bankAccounts) {
+        mComponent.showSheetForPix(bankAccounts);
     }
 
     /**
-     * Requests to show an eWallet FOP selector in a bottom sheet.
+     * Requests to show a payment link FOP selector in a bottom sheet.
      *
      * @param ewallets User's eWallet accounts which passed from facilitated payments client.
+     * @param apps User's installed apps which passed from facilitated payments client.
      */
     @CalledByNative
-    public void requestShowContentForEwallet(@JniType("std::vector") Object[] eWallets) {
-        mComponent.showSheetForEwallet((List<Ewallet>) (List<?>) Arrays.asList(eWallets));
+    @SuppressWarnings("unchecked") // `apps` is Object[] from jobjectArray; cast is unavoidable.
+    public void requestShowContentForPaymentLink(
+            @JniType("std::vector") List<Ewallet> eWallets, Object[] apps) {
+        List<ResolveInfo> appList =
+                (apps == null) ? List.of() : (List<ResolveInfo>) (List<?>) Arrays.asList(apps);
+        mComponent.showSheetForPaymentLink(eWallets, appList);
     }
 
     /**
@@ -128,5 +137,26 @@ public class FacilitatedPaymentsPaymentMethodsViewBridge {
     @CalledByNative
     public void dismiss() {
         mComponent.dismiss();
+    }
+
+    /** Requests to show the Pix account linking prompt in a bottom sheet. */
+    @CalledByNative
+    public void showPixAccountLinkingPrompt(int strikeCount) {
+        mComponent.showPixAccountLinkingPrompt(strikeCount);
+    }
+
+    /** Requests to show the Pix account linking success screen in a bottom sheet. */
+    @CalledByNative
+    public void showPixAccountLinkingSuccessScreen() {
+        mComponent.showPixAccountLinkingSuccessScreen();
+    }
+
+    /** Requests to show the account linking prompt in a bottom sheet. */
+    @CalledByNative
+    public void showAccountLinkingPrompt(
+            @FacilitatedPaymentsType int fopType,
+            @JniType("std::u16string") String fopDisplayName,
+            int strikeCount) {
+        mComponent.showAccountLinkingPrompt(fopType, fopDisplayName, strikeCount);
     }
 }

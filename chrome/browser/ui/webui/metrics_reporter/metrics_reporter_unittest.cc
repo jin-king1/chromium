@@ -5,11 +5,18 @@
 #include "chrome/browser/ui/webui/metrics_reporter/metrics_reporter.h"
 
 #include <optional>
+#include <string>
+#include <utility>
 
-#include "base/gtest_prod_util.h"
+#include "base/check.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
+#include "base/run_loop.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
-#include "chrome/test/base/browser_with_test_window_test.h"
+#include "content/public/test/browser_task_environment.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/receiver.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
 using ::testing::_;
@@ -31,6 +38,9 @@ class MockPageMetrics : public metrics_reporter::mojom::PageMetrics {
               (const std::string&, OnGetMarkCallback),
               (override));
   MOCK_METHOD(void, OnClearMark, (const std::string&), (override));
+
+  // Flush any pending mojo messages for testing.
+  void FlushForTesting() { receiver_.FlushForTesting(); }
 };
 
 class TestMetricsReporter : public MetricsReporter {
@@ -38,12 +48,17 @@ class TestMetricsReporter : public MetricsReporter {
   using MetricsReporter::OnGetMark;
   using MetricsReporter::OnPageRemoteCreated;
 };
-class WebUIMetricsReporterTest : public BrowserWithTestWindowTest {
+class WebUIMetricsReporterTest : public testing::Test {
  public:
   WebUIMetricsReporterTest()
-      : BrowserWithTestWindowTest(
+      : task_environment_(
             base::test::SingleThreadTaskEnvironment::TimeSource::MOCK_TIME) {
     metrics_reporter_.OnPageRemoteCreated(page_metrics_.BindAndGetRemote());
+  }
+
+  void TearDown() override {
+    page_metrics_.FlushForTesting();
+    testing::Test::TearDown();
   }
 
   MetricsReporter::OnGetMarkCallback TestGetMarkCallback(
@@ -62,7 +77,7 @@ class WebUIMetricsReporterTest : public BrowserWithTestWindowTest {
   MetricsReporter::HasMarkCallback TestHasMarkCallback(bool expected_has_mark) {
     return base::BindOnce(
         [](bool expected_has_mark, bool has_mark) {
-          EXPECT_EQ(expected_has_mark, expected_has_mark);
+          EXPECT_EQ(expected_has_mark, has_mark);
         },
         expected_has_mark);
   }
@@ -79,6 +94,7 @@ class WebUIMetricsReporterTest : public BrowserWithTestWindowTest {
  protected:
   const char* kHistogram = "TestHistogram";
 
+  content::BrowserTaskEnvironment task_environment_;
   testing::StrictMock<MockPageMetrics> page_metrics_;
   TestMetricsReporter metrics_reporter_;
 };
@@ -90,7 +106,7 @@ TEST_F(WebUIMetricsReporterTest, OnGetMark) {
 
   const base::TimeTicks mark1 = base::TimeTicks::Now();
   metrics_reporter_.Mark("mark1");
-  task_environment()->FastForwardBy(base::Seconds(1));
+  task_environment_.FastForwardBy(base::Seconds(1));
   const base::TimeTicks mark2 = base::TimeTicks::Now();
   metrics_reporter_.Mark("mark2");
 
@@ -104,7 +120,7 @@ TEST_F(WebUIMetricsReporterTest, OverridesMarks) {
   metrics_reporter_.Mark("mark-override");
   const base::TimeTicks old_mark = base::TimeTicks::Now();
   // Overrides an existing mark.
-  task_environment()->FastForwardBy(base::Seconds(1));
+  task_environment_.FastForwardBy(base::Seconds(1));
   const base::TimeTicks new_mark = base::TimeTicks::Now();
   metrics_reporter_.Mark("mark-override");
   metrics_reporter_.OnGetMark("mark-override", TestGetMarkCallback(new_mark));
@@ -162,7 +178,7 @@ TEST_F(WebUIMetricsReporterTest, MarkAndMeasureLocally) {
   EXPECT_CALL(page_metrics_, OnClearMark(_)).Times(0);
 
   metrics_reporter_.Mark("start_mark");
-  task_environment()->FastForwardBy(base::Seconds(1));
+  task_environment_.FastForwardBy(base::Seconds(1));
   metrics_reporter_.Measure("start_mark",
                             TestMeasureCallback(base::Seconds(1)));
 }
@@ -173,7 +189,7 @@ TEST_F(WebUIMetricsReporterTest, MeasureWithEndMark) {
   EXPECT_CALL(page_metrics_, OnClearMark(_)).Times(0);
 
   metrics_reporter_.Mark("start_mark");
-  task_environment()->FastForwardBy(base::Seconds(1));
+  task_environment_.FastForwardBy(base::Seconds(1));
   metrics_reporter_.Mark("end_mark");
   metrics_reporter_.Measure("start_mark", "end_mark",
                             TestMeasureCallback(base::Seconds(1)));
@@ -188,7 +204,54 @@ TEST_F(WebUIMetricsReporterTest, MeasureRetrieveRemote) {
         std::move(callback).Run(remote_mark.since_origin());
       });
   EXPECT_CALL(page_metrics_, OnClearMark(_)).Times(0);
-  task_environment()->FastForwardBy(base::Seconds(1));
+  task_environment_.FastForwardBy(base::Seconds(1));
   metrics_reporter_.Measure("remote_mark",
                             TestMeasureCallback(base::Seconds(1)));
+}
+
+// Measure() should drop the callback if the start mark is missing locally and
+// remotely. This fulfills the intention of verifying that missing marks do not
+// record metrics.
+TEST_F(WebUIMetricsReporterTest, MeasureDropsCallbackWhenStartMarkMissing) {
+  EXPECT_CALL(page_metrics_, OnGetMark("missing_start_mark", _))
+      .WillOnce([](const std::string& mark,
+                   MetricsReporter::OnGetMarkCallback callback) {
+        std::move(callback).Run(std::nullopt);
+      });
+
+  base::RunLoop run_loop;
+  auto fail_callback = base::BindOnce(
+      [](base::ScopedClosureRunner, base::TimeDelta) {
+        ADD_FAILURE()
+            << "Callback should not be called for missing start mark.";
+      },
+      base::ScopedClosureRunner(run_loop.QuitClosure()));
+
+  metrics_reporter_.Measure("missing_start_mark", std::move(fail_callback));
+
+  run_loop.Run();
+}
+
+// Measure() with an explicit end time should drop the callback if the start
+// mark is missing locally and remotely.
+TEST_F(WebUIMetricsReporterTest,
+       MeasureWithEndTimeDropsCallbackWhenStartMarkMissing) {
+  EXPECT_CALL(page_metrics_, OnGetMark("missing_start_mark", _))
+      .WillOnce([](const std::string& mark,
+                   MetricsReporter::OnGetMarkCallback callback) {
+        std::move(callback).Run(std::nullopt);
+      });
+
+  base::RunLoop run_loop;
+  auto fail_callback = base::BindOnce(
+      [](base::ScopedClosureRunner, base::TimeDelta) {
+        ADD_FAILURE()
+            << "Callback should not be called for missing start mark.";
+      },
+      base::ScopedClosureRunner(run_loop.QuitClosure()));
+
+  metrics_reporter_.Measure("missing_start_mark", base::TimeTicks::Now(),
+                            std::move(fail_callback));
+
+  run_loop.Run();
 }

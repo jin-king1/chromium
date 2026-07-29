@@ -11,10 +11,11 @@
 #include "third_party/blink/renderer/modules/xr/xr_object_space.h"
 #include "third_party/blink/renderer/modules/xr/xr_reference_space.h"
 #include "third_party/blink/renderer/modules/xr/xr_session.h"
+#include "third_party/blink/renderer/modules/xr/xr_utils.h"
 
 namespace blink {
 
-XRPlane::XRPlane(uint64_t id,
+XRPlane::XRPlane(device::PlaneId id,
                  XRSession* session,
                  const device::mojom::blink::XRPlaneData& plane_data,
                  double timestamp)
@@ -25,25 +26,28 @@ XRPlane::XRPlane(uint64_t id,
               mojo::ConvertTo<HeapVector<Member<DOMPointReadOnly>>>(
                   plane_data.polygon),
               plane_data.mojo_from_plane,
+              SemanticLabelToString(plane_data.semantic_label),
               timestamp) {}
 
-XRPlane::XRPlane(uint64_t id,
+XRPlane::XRPlane(device::PlaneId id,
                  XRSession* session,
                  const std::optional<Orientation>& orientation,
                  HeapVector<Member<DOMPointReadOnly>> polygon,
                  const std::optional<device::Pose>& mojo_from_plane,
+                 const String& semantic_label,
                  double timestamp)
     : id_(id),
       polygon_(MakeGarbageCollected<FrozenArray<DOMPointReadOnly>>(
           std::move(polygon))),
       orientation_(orientation),
       mojo_from_plane_(mojo_from_plane),
+      semantic_label_(semantic_label),
       session_(session),
       last_changed_time_(timestamp) {
   DVLOG(3) << __func__;
 }
 
-uint64_t XRPlane::id() const {
+device::PlaneId XRPlane::id() const {
   return id_;
 }
 
@@ -81,6 +85,10 @@ std::optional<V8XRPlaneOrientation> XRPlane::orientation() const {
   return std::nullopt;
 }
 
+String XRPlane::semanticLabel() const {
+  return semantic_label_;
+}
+
 double XRPlane::lastChangedTime() const {
   return last_changed_time_;
 }
@@ -99,6 +107,8 @@ void XRPlane::Update(const device::mojom::blink::XRPlaneData& plane_data,
       plane_data.orientation);
 
   mojo_from_plane_ = plane_data.mojo_from_plane;
+
+  semantic_label_ = SemanticLabelToString(plane_data.semantic_label);
 
   polygon_ = MakeGarbageCollected<FrozenArray<DOMPointReadOnly>>(
       mojo::ConvertTo<HeapVector<Member<DOMPointReadOnly>>>(

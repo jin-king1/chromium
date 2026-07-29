@@ -2,10 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
+#include "base/compiler_specific.h"
 
 #define INITGUID  // required for GUID_PROP_INPUTSCOPE
 #include "ui/base/ime/win/tsf_text_store.h"
@@ -16,15 +13,19 @@
 #include <wrl/client.h>
 
 #include <algorithm>
+#include <string_view>
 
 #include "base/logging.h"
+#include "base/notimplemented.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/trace_event/trace_event.h"
 #include "base/win/scoped_variant.h"
 #include "components/stylus_handwriting/win/features.h"
 #include "ui/base/ime/text_input_client.h"
 #include "ui/base/ime/text_input_flags.h"
 #include "ui/base/ime/win/tsf_input_scope.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/display/win/screen_win.h"
 #include "ui/events/event_dispatcher.h"
 #include "ui/gfx/geometry/rect.h"
@@ -178,7 +179,7 @@ HRESULT TSFTextStore::GetACPFromPoint(TsViewCookie view_cookie,
       index_flags |= IndexFromPointFlags::kNearestToContainedPoint;
     }
     const gfx::Point screen_point_in_dips =
-        gfx::ToFlooredPoint(display::win::ScreenWin::ScreenToDIPPoint(
+        gfx::ToFlooredPoint(display::win::GetScreenWin()->ScreenToDIPPoint(
             gfx::PointF(gfx::Point(*point))));
     const std::optional<size_t> index =
         text_input_client_->GetProximateCharacterIndexFromPoint(
@@ -187,6 +188,8 @@ HRESULT TSFTextStore::GetACPFromPoint(TsViewCookie view_cookie,
       return TS_E_INVALIDPOINT;
     }
     *acp = index.value();
+    TRACE_EVENT2("ime", "TSFTextStore::GetACPFromPoint", "POINT",
+                 gfx::Point(*point).ToString(), "ACP", acp);
     return S_OK;
   }
 
@@ -248,8 +251,8 @@ HRESULT TSFTextStore::GetScreenExt(TsViewCookie view_cookie, RECT* rect) {
                                                             &tmp_rect);
   if (result_rect) {
     // This conversion is required for high dpi monitors.
-    *rect = display::win::ScreenWin::DIPToScreenRect(window_handle_,
-                                                     result_rect.value())
+    *rect = display::win::GetScreenWin()
+                ->DIPToScreenRect(window_handle_, result_rect.value())
                 .ToRECT();
   } else {
     // Default if the layout bounds are not present in text input client.
@@ -335,10 +338,10 @@ HRESULT TSFTextStore::GetText(LONG acp_start,
   acp_end = std::min(acp_end, acp_start + static_cast<LONG>(text_buffer_size));
   *text_buffer_copied = acp_end - acp_start;
 
-  const std::u16string& result =
-      string_buffer_document_.substr(acp_start, *text_buffer_copied);
+  std::u16string_view result = std::u16string_view(string_buffer_document_)
+                                   .substr(acp_start, *text_buffer_copied);
   for (size_t i = 0; i < result.size(); ++i) {
-    text_buffer[i] = result[i];
+    UNSAFE_TODO(text_buffer[i]) = result[i];
   }
 
   if (*text_buffer_copied > 0 && run_info_buffer_size) {
@@ -454,8 +457,8 @@ HRESULT TSFTextStore::GetTextExt(TsViewCookie view_cookie,
   TRACE_EVENT1("ime", "TSFTextStore::GetTextExt", "DIP rect",
                result_rect->ToString());
 
-  *rect = display::win::ScreenWin::DIPToScreenRect(window_handle_,
-                                                   result_rect.value())
+  *rect = display::win::GetScreenWin()
+              ->DIPToScreenRect(window_handle_, result_rect.value())
               .ToRECT();
   *clipped = FALSE;
   TRACE_EVENT1("ime", "TSFTextStore::GetTextExt", "screen rect",
@@ -544,7 +547,7 @@ HRESULT TSFTextStore::InsertTextAtSelection(DWORD flags,
   DCHECK_LE(start_pos, end_pos);
   string_buffer_document_ =
       string_buffer_document_.substr(0, start_pos) +
-      std::u16string(text_buffer, text_buffer + text_buffer_size) +
+      std::u16string(text_buffer, UNSAFE_TODO(text_buffer + text_buffer_size)) +
       string_buffer_document_.substr(end_pos);
 
   // reconstruct string that needs to be inserted.
@@ -650,10 +653,29 @@ HRESULT TSFTextStore::RequestLock(DWORD lock_flags, HRESULT* result) {
   current_lock_type_ = (lock_flags & TS_LF_READWRITE);
 
   edit_flag_ = false;
+  if (features::IsHandleIMESpanChangesOnUpdateCompositionEnabled()) {
+    on_update_composition_called_ = false;
+  }
+  // Whether autocorrect should be suppressed for the focused element, i.e. the
+  // feature is enabled and the element carries the autocorrect="off" attribute.
+  const bool should_block_autocorrect =
+      features::IsTSFHonorAutocorrectOffEnabled() &&
+      (text_input_client_->GetTextInputFlags() &
+       TEXT_INPUT_FLAG_AUTOCORRECT_OFF) != 0;
+  const bool had_composition_at_lock_start = has_composition_range_;
+  // Save the buffer state before the lock for autocorrect detection.
+  const std::u16string pre_lock_buffer =
+      should_block_autocorrect ? string_buffer_document_ : std::u16string();
+  // The user's selection before the lock. Used to distinguish a touch-keyboard
+  // autocorrect (which replaces a word the user did not select) from an
+  // explicit selection replacement (where the replaced range matches what the
+  // user selected).
+  const gfx::Range pre_lock_selection(selection_.start(), selection_.end());
+
   // if there is not already some composition text, they we are about to start
-  // composition. we need to set last_composition_start to the selection start.
-  // Otherwise we are updating an existing composition, we should use the cached
-  // composition_start_ for reference.
+  // composition. we need to set `last_composition_start` to the selection
+  // start. Otherwise we are updating an existing composition, we should use
+  // the cached `composition_start_` for reference.
   const size_t last_composition_start = text_input_client_->HasCompositionText()
                                             ? composition_start_
                                             : selection_.start();
@@ -665,6 +687,13 @@ HRESULT TSFTextStore::RequestLock(DWORD lock_flags, HRESULT* result) {
   current_lock_type_ = 0;
 
   // Handles the pending lock requests.
+  // Note: The `pre_lock_buffer` snapshot (taken before the main lock is
+  // granted) intentionally spans queued locks as well. Queued locks occur
+  // when TSF requests a lock while one is already held (concurrent lock
+  // requests), which does not happen in the touch keyboard autocorrect
+  // flow, that uses separate RequestLock calls. If queued locks causing
+  // false positives becomes an issue in practice, consider re-snapshotting
+  // per queued lock.
   while (!lock_queue_.empty()) {
     current_lock_type_ = lock_queue_.front();
     lock_queue_.pop_front();
@@ -674,7 +703,7 @@ HRESULT TSFTextStore::RequestLock(DWORD lock_flags, HRESULT* result) {
 
   // if nothing has changed from input service, then only need to
   // compare our cache with latest textinputstate.
-  if (!edit_flag_) {
+  if (!edit_flag_ || is_cancel_composition_in_progress_) {
     ResetCacheAfterEditSession();
     CalculateTextandSelectionDiffAndNotifyIfNeeded();
     return S_OK;
@@ -682,6 +711,46 @@ HRESULT TSFTextStore::RequestLock(DWORD lock_flags, HRESULT* result) {
 
   if (!text_input_client_)
     return E_UNEXPECTED;
+
+  // When the editable element has the autocorrect="off" attribute (a
+  // web-standard hint on <input> and <textarea> elements asking the user agent
+  // not to autocorrect), revert autocorrect performed by the Windows touch
+  // keyboard.
+  //
+  // The touch keyboard autocorrects by replacing an already-committed word via
+  // a TSF SetText call at the word boundary (e.g. when the user presses space).
+  // This replaces a range of committed text that the user never selected, which
+  // distinguishes it from edits that must be preserved:
+  //   * An insertion at a collapsed caret replaces an empty range, so
+  //     `replace_text_range_` is collapsed.
+  //   * A replacement of text the user explicitly selected covers exactly the
+  //     user's selection.
+  // So only revert when a non-empty range of committed text was replaced and
+  // that range is not the user's selection. IME input is excluded because
+  // autocorrect is specific to the touch keyboard; an active composition or an
+  // active input processor profile identifies IME edits.
+  if (should_block_autocorrect && new_text_inserted_ &&
+      !had_composition_at_lock_start && !has_composition_range_ &&
+      !IsInputIME() &&
+      replace_text_range_.start() < replace_text_range_.end()) {
+    const bool user_selected_replaced_range =
+        !pre_lock_selection.is_empty() &&
+        pre_lock_selection.start() == replace_text_range_.start() &&
+        pre_lock_selection.end() == replace_text_range_.end();
+
+    if (!user_selected_replaced_range) {
+      // Restore the buffer to its pre-lock state (bringing back the user's
+      // original word) and skip the commit.
+      string_buffer_document_ = pre_lock_buffer;
+      string_pending_insertion_.clear();
+      selection_.set_start(pre_lock_selection.start());
+      selection_.set_end(pre_lock_selection.end());
+      edit_flag_ = false;
+      ResetCacheAfterEditSession();
+      CalculateTextandSelectionDiffAndNotifyIfNeeded();
+      return S_OK;
+    }
+  }
 
   // If string_pending_insertion_ is empty, then there are four cases:
   // 1. there is no composition We only need to do comparison between our
@@ -781,7 +850,9 @@ HRESULT TSFTextStore::RequestLock(DWORD lock_flags, HRESULT* result) {
         previous_composition_string_ != composition_string ||
         !previous_composition_selection_range_.EqualsIgnoringDirection(
             selection_) ||
-        previous_text_spans_ != text_spans_)) ||
+        ((!features::IsHandleIMESpanChangesOnUpdateCompositionEnabled() ||
+          on_update_composition_called_) &&
+         previous_text_spans_ != text_spans_))) ||
       ((wparam_keydown_fired_ != 0) &&
        text_input_client_->HasCompositionText() &&
        composition_string.empty())) {
@@ -820,8 +891,9 @@ HRESULT TSFTextStore::RequestSupportedAttrs(
     return E_FAIL;
 
   supported_attrs_.clear();
-  for (size_t i = 0; i < attribute_buffer_size; ++i) {
-    const auto& attribute = attribute_buffer[i];
+  auto attributes =
+      UNSAFE_TODO(base::span(attribute_buffer, attribute_buffer_size));
+  for (const auto& attribute : attributes) {
     if (IsEqualGUID(GUID_PROP_INPUTSCOPE, attribute) ||
         IsEqualGUID(GUID_PROP_URL, attribute) ||
         IsEqualGUID(TSATTRID_Text_VerticalWriting, attribute)) {
@@ -848,24 +920,26 @@ HRESULT TSFTextStore::RetrieveRequestedAttrs(ULONG attribute_buffer_size,
   *attribute_buffer_copied = std::min(
       attribute_buffer_size, static_cast<ULONG>(supported_attrs_.size()));
 
+  auto attributes =
+      UNSAFE_TODO(base::span(attribute_buffer, *attribute_buffer_copied));
   for (size_t i = 0; i < *attribute_buffer_copied; ++i) {
-    attribute_buffer[i].idAttr = supported_attrs_[i];
+    attributes[i].idAttr = supported_attrs_[i];
     // In TSF, this parameter value is zero.
     // https://docs.microsoft.com/en-us/windows/win32/api/textstor/ns-textstor-ts_attrval
-    attribute_buffer[i].dwOverlapId = 0;
+    attributes[i].dwOverlapId = 0;
     // If the caller is asking for the input scope, then create one based on
     // the input client and return the COM object for it.
     if (IsEqualGUID(GUID_PROP_INPUTSCOPE, supported_attrs_[i])) {
-      attribute_buffer[i].varValue.vt = VT_UNKNOWN;
-      attribute_buffer[i].varValue.punkVal = tsf_inputscope::CreateInputScope(
+      attributes[i].varValue.vt = VT_UNKNOWN;
+      attributes[i].varValue.punkVal = tsf_inputscope::CreateInputScope(
           text_input_client_->GetTextInputType(),
           text_input_client_->GetTextInputMode(),
           text_input_client_->ShouldDoLearning());
-      attribute_buffer[i].varValue.punkVal->AddRef();
+      attributes[i].varValue.punkVal->AddRef();
     } else if (IsEqualGUID(GUID_PROP_URL, supported_attrs_[i])) {
       const ui::TextInputClient::EditingContext editing_context =
           text_input_client_->GetTextEditingContext();
-      attribute_buffer[i].varValue.vt = VT_BSTR;
+      attributes[i].varValue.vt = VT_BSTR;
       std::wstring wide_url;
       // If the caller is asking for the URL, get the URL from the
       // the text input client (if there is one).
@@ -873,12 +947,12 @@ HRESULT TSFTextStore::RetrieveRequestedAttrs(ULONG attribute_buffer_size,
         const std::string& url_string = editing_context.page_url.spec();
         wide_url = base::UTF8ToWide(url_string);
       }
-      attribute_buffer[i].varValue.bstrVal =
+      attributes[i].varValue.bstrVal =
           SysAllocStringLen(wide_url.c_str(), wide_url.length());
     } else if (IsEqualGUID(TSATTRID_Text_VerticalWriting,
                            supported_attrs_[i])) {
-      attribute_buffer[i].varValue.vt = VT_BOOL;
-      attribute_buffer[i].varValue.boolVal =
+      attributes[i].varValue.vt = VT_BOOL;
+      attributes[i].varValue.boolVal =
           !!(text_input_client_->GetTextInputFlags() &
              ui::TEXT_INPUT_FLAG_VERTICAL);
     }
@@ -957,6 +1031,9 @@ HRESULT TSFTextStore::OnStartComposition(ITfCompositionView* composition_view,
 
 HRESULT TSFTextStore::OnUpdateComposition(ITfCompositionView* composition_view,
                                           ITfRange* range) {
+  if (features::IsHandleIMESpanChangesOnUpdateCompositionEnabled()) {
+    on_update_composition_called_ = true;
+  }
   return S_OK;
 }
 
@@ -1420,10 +1497,12 @@ bool TSFTextStore::CancelComposition() {
     return false;
 
   TRACE_EVENT0("ime", "TSFTextStore::CancelComposition");
-
+  is_cancel_composition_in_progress_ = true;
   ResetCompositionState();
 
-  return TerminateComposition();
+  bool result = TerminateComposition();
+  is_cancel_composition_in_progress_ = false;
+  return result;
 }
 
 bool TSFTextStore::ConfirmComposition() {
@@ -1566,6 +1645,8 @@ void TSFTextStore::CommitTextAndEndCompositionIfAny(size_t old_size,
     text_input_client_->InsertText(
         new_committed_string,
         ui::TextInputClient::InsertTextCursorBehavior::kMoveCursorAfterText);
+    TRACE_EVENT1("ime", "TSFTextStore::CommitTextAndEndCompositionIfAny",
+                 "data", new_committed_string);
   } else {
     text_input_client_->ClearCompositionText();
   }
@@ -1682,6 +1763,9 @@ void TSFTextStore::ResetCacheAfterEditSession() {
 }
 
 bool TSFTextStore::IsInputIME() const {
+  if (is_input_ime_for_testing_.has_value()) {
+    return *is_input_ime_for_testing_;
+  }
   TF_INPUTPROCESSORPROFILE profile;
   if (SUCCEEDED(input_processor_profile_mgr_->GetActiveProfile(
           GUID_TFCAT_TIP_KEYBOARD, &profile))) {
@@ -1704,9 +1788,8 @@ bool TSFTextStore::MaybeSendOnUrlChanged() {
   if (!is_empty_text_store_ || (text_store_acp_sink_ == nullptr)) {
     return false;
   }
-  TS_ATTRID attrs[1];
-  attrs[0] = GUID_PROP_URL;
-  text_store_acp_sink_->OnAttrsChange(NULL, NULL, 1, attrs);
+  TS_ATTRID attr = GUID_PROP_URL;
+  text_store_acp_sink_->OnAttrsChange(NULL, NULL, 1, &attr);
   return true;
 }
 

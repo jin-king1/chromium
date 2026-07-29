@@ -2,8 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {TestRunner} from 'test_runner';
+import * as TextUtils from 'devtools/core/text_utils/text_utils.js';
 import {NetworkTestRunner} from 'network_test_runner';
+import {TestRunner} from 'test_runner';
 
 (async function() {
   await TestRunner.addResult(`Tests that XHR redirects preserve request body.`);
@@ -16,7 +17,7 @@ import {NetworkTestRunner} from 'network_test_runner';
   NetworkTestRunner.makeSimpleXHRWithPayload('POST', 'resources/redirect.cgi?status=301&ttl=1', true, 'LOST', step2);
 
   function step2() {
-    NetworkTestRunner.networkRequests()[offset].requestContent().then(step3);
+    NetworkTestRunner.networkRequests()[offset].requestContentData().then(TextUtils.ContentData.ContentData.asDeferredContent).then(step3);
   }
 
   function step3() {
@@ -26,8 +27,7 @@ import {NetworkTestRunner} from 'network_test_runner';
 
 
   function step4() {
-    NetworkTestRunner.networkRequests()[offset + 2].requestContent().then(
-        step5);
+    NetworkTestRunner.networkRequests()[offset + 2].requestContentData().then(TextUtils.ContentData.ContentData.asDeferredContent).then(step5);
   }
   async function step5() {
     var requests = NetworkTestRunner.networkRequests();

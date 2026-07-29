@@ -11,9 +11,8 @@ import {setBluetoothConfigForTesting} from 'chrome://resources/ash/common/blueto
 import {AudioOutputCapability, DeviceConnectionState, DeviceType} from 'chrome://resources/mojo/chromeos/ash/services/bluetooth_config/public/mojom/cros_bluetooth_config.mojom-webui.js';
 import type {BluetoothDeviceProperties} from 'chrome://resources/mojo/chromeos/ash/services/bluetooth_config/public/mojom/cros_bluetooth_config.mojom-webui.js';
 import {flush} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {waitAfterNextRender} from 'chrome://webui-test/polymer_test_util.js';
-
-import {assertEquals, assertFalse, assertTrue} from '../chai_assert.js';
 
 import {createDefaultBluetoothDevice, FakeBluetoothConfig} from './fake_bluetooth_config.js';
 import {FakeBluetoothDiscoveryDelegate} from './fake_bluetooth_discovery_delegate.js';
@@ -67,7 +66,7 @@ suite('CrComponentsBluetoothPairingDeviceSelectionPageTest', function() {
     // learnMoreLink uses ! flag because the compilar currently fails when
     // running test locally.
     assertEquals(
-        learnMoreLink!.localizedString.toString(),
+        learnMoreLink.localizedString.toString(),
         deviceSelectionPage.i18nAdvanced('bluetoothPairingLearnMoreLabel')
             .toString());
 
@@ -88,7 +87,7 @@ suite('CrComponentsBluetoothPairingDeviceSelectionPageTest', function() {
 
     assertEquals(
         deviceSelectionPage.i18n('bluetoothNoAvailableDevices'),
-        getDeviceListTitle()!.textContent!.trim());
+        getDeviceListTitle()!.textContent.trim());
 
     const deviceId = '12//345&6789';
     const device = createDefaultBluetoothDevice(
@@ -107,10 +106,10 @@ suite('CrComponentsBluetoothPairingDeviceSelectionPageTest', function() {
 
     const deviceList = getDeviceList();
     assertTrue(!!deviceList);
-    assertEquals(deviceList!.items!.length, 1);
+    assertEquals(deviceList.items!.length, 1);
     assertEquals(
         deviceSelectionPage.i18n('bluetoothAvailableDevices'),
-        getDeviceListTitle()!.textContent!.trim());
+        getDeviceListTitle()!.textContent.trim());
 
     let nodeList = getDeviceListItems();
     assertTrue(!!nodeList.length);
@@ -144,7 +143,7 @@ suite('CrComponentsBluetoothPairingDeviceSelectionPageTest', function() {
     assertFalse(!!getDeviceList());
     assertEquals(
         deviceSelectionPage.i18n('bluetoothAvailableDevices'),
-        getDeviceListTitle()!.textContent!.trim());
+        getDeviceListTitle()!.textContent.trim());
 
     // since device is turned off device pairing fails and devicePendingPairing
     // becomes null.
@@ -154,7 +153,7 @@ suite('CrComponentsBluetoothPairingDeviceSelectionPageTest', function() {
     assertFalse(!!getDeviceList());
     assertEquals(
         deviceSelectionPage.i18n('bluetoothNoAvailableDevices'),
-        getDeviceListTitle()!.textContent!.trim());
+        getDeviceListTitle()!.textContent.trim());
 
     // Disable Bluetooth.
     deviceSelectionPage.isBluetoothEnabled = false;
@@ -166,7 +165,7 @@ suite('CrComponentsBluetoothPairingDeviceSelectionPageTest', function() {
     assertFalse(!!getDeviceList());
     assertEquals(
         deviceSelectionPage.i18n('bluetoothDisabled'),
-        getDeviceListTitle()!.textContent!.trim());
+        getDeviceListTitle()!.textContent.trim());
   });
 
   test('Last selected item is focused', async function() {
@@ -203,7 +202,7 @@ suite('CrComponentsBluetoothPairingDeviceSelectionPageTest', function() {
     assertTrue(!!deviceList);
     // deviceList uses ! flag because the compilar currently fails when
     // running test locally.
-    assertEquals(deviceList!.items!.length, 2);
+    assertEquals(deviceList.items!.length, 2);
 
     // Simulate a device being selected for pairing, then returning back to the
     // selection page.

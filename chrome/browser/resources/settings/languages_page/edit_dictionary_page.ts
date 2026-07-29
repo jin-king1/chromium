@@ -13,6 +13,7 @@ import 'chrome://resources/cr_elements/cr_input/cr_input.js';
 import 'chrome://resources/cr_elements/icons.html.js';
 import 'chrome://resources/polymer/v3_0/iron-list/iron-list.js';
 import '/shared/settings/prefs/prefs.js';
+import '../settings_page/settings_subpage.js';
 import '../settings_shared.css.js';
 import '../settings_vars.css.js';
 
@@ -24,6 +25,7 @@ import {GlobalScrollTargetMixin} from '../global_scroll_target_mixin.js';
 import {loadTimeData} from '../i18n_setup.js';
 import {routes} from '../route.js';
 import type {Route} from '../router.js';
+import {SettingsViewMixin} from '../settings_page/settings_view_mixin.js';
 
 import {getTemplate} from './edit_dictionary_page.html.js';
 import {LanguagesBrowserProxyImpl} from './languages_browser_proxy.js';
@@ -41,8 +43,7 @@ export interface SettingsEditDictionaryPageElement {
 }
 
 const SettingsEditDictionaryPageElementBase =
-    GlobalScrollTargetMixin(PolymerElement) as unknown as
-    {new (): PolymerElement};
+    SettingsViewMixin(GlobalScrollTargetMixin(PolymerElement));
 
 export class SettingsEditDictionaryPageElement extends
     SettingsEditDictionaryPageElementBase {
@@ -56,6 +57,8 @@ export class SettingsEditDictionaryPageElement extends
 
   static get properties() {
     return {
+      prefs: Object,
+
       newWordValue_: {
         type: String,
         value: '',
@@ -83,10 +86,11 @@ export class SettingsEditDictionaryPageElement extends
     };
   }
 
-  private newWordValue_: string;
-  subpageRoute: Route;
-  private words_: string[];
-  private hasWords_: boolean;
+  declare prefs: Record<string, unknown>;
+  declare private newWordValue_: string;
+  declare subpageRoute: Route;
+  declare private words_: string[];
+  declare private hasWords_: boolean;
   private languageSettingsPrivate_:
       (typeof chrome.languageSettingsPrivate)|null = null;
 
@@ -182,7 +186,7 @@ export class SettingsEditDictionaryPageElement extends
 
     // This is a workaround to ensure the dom-if is set to true before items
     // are rendered so that focus works correctly in Polymer 2; see
-    // https://crbug.com/912523.
+    // https://crbug.com/41430384.
     if (wasEmpty && added.length > 0) {
       this.hasWords_ = true;
     }
@@ -220,6 +224,11 @@ export class SettingsEditDictionaryPageElement extends
    */
   private onRemoveWordClick_(e: {model: {item: string}}) {
     this.languageSettingsPrivate_!.removeSpellcheckWord(e.model.item);
+  }
+
+  // SettingsViewMixin implementation.
+  override focusBackButton() {
+    this.shadowRoot!.querySelector('settings-subpage')!.focusBackButton();
   }
 }
 

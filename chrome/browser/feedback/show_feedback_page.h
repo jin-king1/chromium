@@ -10,24 +10,35 @@
 #include "base/values.h"
 #include "chrome/browser/feedback/public/feedback_source.h"
 
-class Browser;
+class BrowserWindowInterface;
 class GURL;
 class Profile;
 
 namespace chrome {
 
-// ShowFeedbackPage() uses |browser| to determine the URL of the current tab.
-// |browser| should be NULL if there are no currently open browser windows.
-void ShowFeedbackPage(const Browser* browser,
+// Returns whether the feedback page can be shown for the given `profile`.
+bool CanShowFeedback(const Profile* profile);
+
+// ShowFeedbackPage() uses `bwi` to determine the URL of the current tab.
+// `bwi` should be NULL if there are no currently open browser windows.
+//
+// This is a no-op if `CanShowFeedback` is false for the profile corresponding
+// to `bwi`. Callers should check `CanShowFeedback` before calling this
+// function.
+void ShowFeedbackPage(BrowserWindowInterface* bwi,
                       feedback::FeedbackSource source,
                       const std::string& description_template,
                       const std::string& description_placeholder_text,
                       const std::string& category_tag,
                       const std::string& extra_diagnostics,
-                      base::Value::Dict autofill_metadata = base::Value::Dict(),
-                      base::Value::Dict ai_metadata = base::Value::Dict());
+                      base::DictValue autofill_metadata = base::DictValue(),
+                      base::DictValue ai_metadata = base::DictValue());
 
 // Displays the Feedback ui.
+//
+// This is a no-op if `CanShowFeedback` is false for the profile corresponding
+// to `profile`. Callers should check `CanShowFeedback` before calling this
+// function.
 void ShowFeedbackPage(const GURL& page_url,
                       Profile* profile,
                       feedback::FeedbackSource source,
@@ -35,8 +46,8 @@ void ShowFeedbackPage(const GURL& page_url,
                       const std::string& description_placeholder_text,
                       const std::string& category_tag,
                       const std::string& extra_diagnostics,
-                      base::Value::Dict autofill_metadata = base::Value::Dict(),
-                      base::Value::Dict ai_metadata = base::Value::Dict());
+                      base::DictValue autofill_metadata = base::DictValue(),
+                      base::DictValue ai_metadata = base::DictValue());
 
 }  // namespace chrome
 

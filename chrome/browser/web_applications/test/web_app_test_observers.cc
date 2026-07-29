@@ -4,7 +4,13 @@
 
 #include "chrome/browser/web_applications/test/web_app_test_observers.h"
 
+#include <sstream>
+
+#include "base/check.h"
+#include "base/dcheck_is_on.h"
+#include "base/logging.h"
 #include "base/run_loop.h"
+#include "base/strings/to_string.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/test/bind.h"
 #include "chrome/browser/profiles/profile.h"
@@ -25,6 +31,22 @@ bool IsAnyIdEmpty(const std::set<webapps::AppId>& app_ids) {
 }
 #endif
 
+template <typename Container>
+std::string ContainerToString(const Container& container) {
+  std::ostringstream ss;
+  ss << "[";
+  bool first_item = true;
+  for (const auto& item : container) {
+    if (!first_item) {
+      ss << ", ";
+    }
+    ss << base::ToString(item);
+    first_item = false;
+  }
+  ss << "]";
+  return ss.str();
+}
+
 }  // namespace
 
 WebAppInstallManagerObserverAdapter::WebAppInstallManagerObserverAdapter(
@@ -35,7 +57,7 @@ WebAppInstallManagerObserverAdapter::WebAppInstallManagerObserverAdapter(
 WebAppInstallManagerObserverAdapter::WebAppInstallManagerObserverAdapter(
     Profile* profile)
     : WebAppInstallManagerObserverAdapter(
-          &WebAppProvider::GetForTest(profile)->install_manager()) {}
+          &WebAppProvider::GetForWebApps(profile)->install_manager()) {}
 
 WebAppInstallManagerObserverAdapter::~WebAppInstallManagerObserverAdapter() =
     default;
@@ -68,6 +90,11 @@ void WebAppInstallManagerObserverAdapter::SetWebAppManifestUpdateDelegate(
 void WebAppInstallManagerObserverAdapter::SetWebAppSourceRemovedDelegate(
     WebAppSourceRemovedDelegate delegate) {
   app_source_removed_delegate_ = std::move(delegate);
+}
+
+void WebAppInstallManagerObserverAdapter::SetWebAppMigratedDelegate(
+    WebAppMigratedDelegate delegate) {
+  app_migrated_delegate_ = std::move(delegate);
 }
 
 void WebAppInstallManagerObserverAdapter::OnWebAppInstalled(
@@ -112,6 +139,14 @@ void WebAppInstallManagerObserverAdapter::OnWebAppSourceRemoved(
   }
 }
 
+void WebAppInstallManagerObserverAdapter::OnWebAppMigrated(
+    const webapps::AppId& source_app_id,
+    const webapps::AppId& target_app_id) {
+  if (app_migrated_delegate_) {
+    app_migrated_delegate_.Run(source_app_id, target_app_id);
+  }
+}
+
 void WebAppInstallManagerObserverAdapter::SignalRunLoopAndStoreAppId(
     const webapps::AppId& app_id) {
   if (!is_listening_)
@@ -143,9 +178,19 @@ void WebAppTestRegistryObserverAdapter::SetWebAppWillBeUpdatedFromSyncDelegate(
   app_will_be_updated_from_sync_delegate_ = std::move(delegate);
 }
 
+void WebAppTestRegistryObserverAdapter::SetWebAppEffectiveScopeChangedDelegate(
+    WebAppEffectiveScopeChangedDelegate delegate) {
+  app_effective_scope_changed_delegate_ = std::move(delegate);
+}
+
 void WebAppTestRegistryObserverAdapter::SetWebAppLastBadgingTimeChangedDelegate(
     WebAppLastBadgingTimeChangedDelegate delegate) {
   app_last_badging_time_changed_delegate_ = std::move(delegate);
+}
+
+void WebAppTestRegistryObserverAdapter::SetWebAppPendingUpdateChangedDelegate(
+    WebAppPendingUpdateChangedDelegate delegate) {
+  app_pending_update_changed_delegate_ = std::move(delegate);
 }
 
 void WebAppTestRegistryObserverAdapter::
@@ -154,8 +199,16 @@ void WebAppTestRegistryObserverAdapter::
   app_protocol_settings_changed_delegate_ = std::move(delegate);
 }
 
+void WebAppTestRegistryObserverAdapter::OnWebAppEffectiveScopeChanged(
+    const webapps::AppId& app_id,
+    const WebAppScope& new_scope) {
+  if (app_effective_scope_changed_delegate_) {
+    app_effective_scope_changed_delegate_.Run(app_id, new_scope);
+  }
+}
+
 void WebAppTestRegistryObserverAdapter::OnWebAppsWillBeUpdatedFromSync(
-    const std::vector<const WebApp*>& new_apps_state) {
+    base::span<const WebApp* const> new_apps_state) {
   if (app_will_be_updated_from_sync_delegate_)
     app_will_be_updated_from_sync_delegate_.Run(new_apps_state);
 }
@@ -167,7 +220,16 @@ void WebAppTestRegistryObserverAdapter::OnWebAppLastBadgingTimeChanged(
     app_last_badging_time_changed_delegate_.Run(app_id, time);
 }
 
-void WebAppTestRegistryObserverAdapter::OnWebAppProtocolSettingsChanged() {
+void WebAppTestRegistryObserverAdapter::OnWebAppPendingUpdateChanged(
+    const webapps::AppId& app_id,
+    bool has_pending_update) {
+  if (app_pending_update_changed_delegate_) {
+    app_pending_update_changed_delegate_.Run(app_id, has_pending_update);
+  }
+}
+
+void WebAppTestRegistryObserverAdapter::OnWebAppProtocolSettingsChanged(
+    const webapps::AppId& app_id) {
   if (app_protocol_settings_changed_delegate_)
     app_protocol_settings_changed_delegate_.Run();
 }
@@ -207,6 +269,10 @@ void WebAppTestInstallObserver::BeginListening(
 
 webapps::AppId WebAppTestInstallObserver::Wait() {
   wait_loop_.Run();
+  if (last_app_id_.empty()) {
+    LOG(ERROR) << "Could not find any of "
+               << ContainerToString(optional_app_ids_);
+  }
   return last_app_id_;
 }
 
@@ -237,6 +303,10 @@ void WebAppTestInstallWithOsHooksObserver::BeginListening(
 
 webapps::AppId WebAppTestInstallWithOsHooksObserver::Wait() {
   wait_loop_.Run();
+  if (last_app_id_.empty()) {
+    LOG(ERROR) << "Could not find any of "
+               << ContainerToString(optional_app_ids_);
+  }
   return last_app_id_;
 }
 
@@ -267,6 +337,10 @@ void WebAppTestManifestUpdatedObserver::BeginListening(
 
 webapps::AppId WebAppTestManifestUpdatedObserver::Wait() {
   wait_loop_.Run();
+  if (last_app_id_.empty()) {
+    LOG(ERROR) << "Could not find any of "
+               << ContainerToString(optional_app_ids_);
+  }
   return last_app_id_;
 }
 
@@ -296,6 +370,10 @@ void WebAppTestUninstallObserver::BeginListening(
 
 webapps::AppId WebAppTestUninstallObserver::Wait() {
   wait_loop_.Run();
+  if (last_app_id_.empty()) {
+    LOG(ERROR) << "Could not find any of "
+               << ContainerToString(optional_app_ids_);
+  }
   return last_app_id_;
 }
 

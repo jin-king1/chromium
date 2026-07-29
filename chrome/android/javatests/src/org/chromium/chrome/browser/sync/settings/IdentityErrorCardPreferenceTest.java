@@ -4,56 +4,60 @@
 
 package org.chromium.chrome.browser.sync.settings;
 
-import static androidx.test.espresso.Espresso.onView;
-import static androidx.test.espresso.assertion.ViewAssertions.doesNotExist;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
-
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.when;
 
 import android.view.View;
 
 import androidx.test.filters.LargeTest;
 
+import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.RuleChain;
 import org.junit.runner.RunWith;
-import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Feature;
+import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
+import org.chromium.chrome.R;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
-import org.chromium.chrome.browser.password_manager.PasswordManagerUtilBridge;
-import org.chromium.chrome.browser.password_manager.PasswordManagerUtilBridgeJni;
 import org.chromium.chrome.browser.settings.SettingsActivityTestRule;
 import org.chromium.chrome.browser.sync.FakeSyncServiceImpl;
 import org.chromium.chrome.browser.sync.SyncServiceFactory;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
-import org.chromium.chrome.test.R;
+import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.util.ChromeRenderTestRule;
 import org.chromium.chrome.test.util.browser.signin.SigninTestRule;
-import org.chromium.components.signin.base.GoogleServiceAuthError;
+import org.chromium.google_apis.gaia.GoogleServiceAuthError;
+import org.chromium.google_apis.gaia.GoogleServiceAuthErrorState;
 import org.chromium.ui.test.util.ViewUtils;
 
 /** Test suite for IdentityErrorCardPreference */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
+@DisableFeatures(ChromeFeatureList.SETTINGS_MULTI_COLUMN)
+@Batch(Batch.PER_CLASS)
 public class IdentityErrorCardPreferenceTest {
     public final SettingsActivityTestRule<ManageSyncSettings> mSettingsActivityTestRule =
             new SettingsActivityTestRule<>(ManageSyncSettings.class);
 
-    public final ChromeTabbedActivityTestRule mActivityTestRule =
-            new ChromeTabbedActivityTestRule();
+    public final AutoResetCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.fastAutoResetCtaActivityRule();
 
     // SettingsActivity has to be finished before the outer CTA can be finished or trying to finish
     // CTA won't work.
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
+
     @Rule
     public final RuleChain mRuleChain =
             RuleChain.outerRule(mActivityTestRule).around(mSettingsActivityTestRule);
@@ -61,7 +65,7 @@ public class IdentityErrorCardPreferenceTest {
     @Rule public final SigninTestRule mSigninTestRule = new SigninTestRule();
 
     private static final String RENDER_TEST_DESCRIPTION = "Identity error card.";
-    private static final int RENDER_TEST_REVISION = 1;
+    private static final int RENDER_TEST_REVISION = 3;
 
     @Rule
     public final ChromeRenderTestRule mRenderTestRule =
@@ -71,16 +75,12 @@ public class IdentityErrorCardPreferenceTest {
                     .setBugComponent(ChromeRenderTestRule.Component.SERVICES_SYNC)
                     .build();
 
-    @Mock private PasswordManagerUtilBridge.Natives mPasswordManagerUtilBridgeJniMock;
-
     private FakeSyncServiceImpl mFakeSyncServiceImpl;
+    private WebPageStation mPage;
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
-        PasswordManagerUtilBridgeJni.setInstanceForTesting(mPasswordManagerUtilBridgeJniMock);
-
-        mActivityTestRule.startMainActivityOnBlankPage();
+        mPage = mActivityTestRule.startOnBlankPage();
 
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
@@ -89,11 +89,17 @@ public class IdentityErrorCardPreferenceTest {
                 });
     }
 
+    @After
+    public void tearDown() {
+        mSigninTestRule.forceSignOut();
+    }
+
     @Test
     @LargeTest
     @Feature("RenderTest")
     public void testIdentityErrorCardForAuthError() throws Exception {
-        mFakeSyncServiceImpl.setAuthError(GoogleServiceAuthError.State.INVALID_GAIA_CREDENTIALS);
+        mFakeSyncServiceImpl.setAuthError(
+                new GoogleServiceAuthError(GoogleServiceAuthErrorState.INVALID_GAIA_CREDENTIALS));
         mSigninTestRule.addTestAccountThenSignin();
 
         try (HistogramWatcher watchIdentityErrorCardShownHistogram =
@@ -228,8 +234,7 @@ public class IdentityErrorCardPreferenceTest {
     @LargeTest
     @Feature("RenderTest")
     public void testIdentityErrorCardForUpmBackendOutdated() throws Exception {
-        when(mPasswordManagerUtilBridgeJniMock.isGmsCoreUpdateRequired(any(), any()))
-                .thenReturn(true);
+        mFakeSyncServiceImpl.setRequiresUpmBackendUpgrade(true);
 
         mSigninTestRule.addTestAccountThenSignin();
 
@@ -245,12 +250,19 @@ public class IdentityErrorCardPreferenceTest {
 
     @Test
     @LargeTest
-    public void testIdentityErrorCardNotShownForUnrecoverableErrors() throws Exception {
-        mFakeSyncServiceImpl.setAuthError(GoogleServiceAuthError.State.CONNECTION_FAILED);
+    @Feature("RenderTest")
+    public void testIdentityErrorCardForBookmarksLimitExceeded() throws Exception {
+        mFakeSyncServiceImpl.setBookmarksLimitExceeded(true);
         mSigninTestRule.addTestAccountThenSignin();
 
-        mSettingsActivityTestRule.startSettingsActivity();
-        onView(withId(R.id.signin_settings_card)).check(doesNotExist());
+        try (HistogramWatcher watchIdentityErrorCardShownHistogram =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Sync.IdentityErrorCard.BookmarkLimitReached",
+                        SyncSettingsUtils.ErrorUiAction.SHOWN)) {
+            mSettingsActivityTestRule.startSettingsActivity();
+        }
+        mRenderTestRule.render(
+                getIdentityErrorCardView(), "identity_error_card_bookmark_limit_reached");
     }
 
     private View getIdentityErrorCardView() {

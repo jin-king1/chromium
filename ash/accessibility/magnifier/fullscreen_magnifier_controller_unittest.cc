@@ -564,7 +564,7 @@ TEST_F(FullscreenMagnifierControllerTest, EnableMagnifierInUnifiedDesktop) {
 
   GetFullscreenMagnifierController()->SetEnabled(true);
 
-  display::Screen* screen = display::Screen::GetScreen();
+  display::Screen* screen = display::Screen::Get();
 
   UpdateDisplay("500x400, 500x400");
   EXPECT_EQ("0,0 1000x400", screen->GetPrimaryDisplay().bounds().ToString());
@@ -589,7 +589,7 @@ TEST_F(FullscreenMagnifierControllerTest, EnableMagnifierInUnifiedDesktop) {
 // Make sure that mouse can move across display in magnified mode.
 TEST_F(FullscreenMagnifierControllerTest, MoveMouseToSecondDisplay) {
   UpdateDisplay("0+0-500x400, 400+0-500x400");
-  EXPECT_EQ(2ul, display::Screen::GetScreen()->GetAllDisplays().size());
+  EXPECT_EQ(2ul, display::Screen::Get()->GetAllDisplays().size());
 
   aura::Window::Windows root_windows = Shell::GetAllRootWindows();
 
@@ -613,7 +613,7 @@ TEST_F(FullscreenMagnifierControllerTest, MoveMouseToSecondDisplay) {
 
 TEST_F(FullscreenMagnifierControllerTest, MoveToSecondDisplayWithTouch) {
   UpdateDisplay("0+0-500x400, 500+0-500x400");
-  EXPECT_EQ(2ul, display::Screen::GetScreen()->GetAllDisplays().size());
+  EXPECT_EQ(2ul, display::Screen::Get()->GetAllDisplays().size());
 
   ui::test::EventGenerator* event_generator = GetEventGenerator();
   aura::Window::Windows root_windows = Shell::GetAllRootWindows();
@@ -955,7 +955,8 @@ TEST_F(FullscreenMagnifierControllerTest, DragWindow) {
 
   // Create a window and start dragging by grabbing its caption.
   const gfx::Rect initial_window_bounds(200, 200, 400, 400);
-  auto window = CreateTestWindow(initial_window_bounds);
+  auto window = CreateWindowWithAppType(chromeos::AppType::NON_APP,
+                                        initial_window_bounds);
   ui::test::EventGenerator* event_generator = GetEventGenerator();
   event_generator->set_current_screen_location(gfx::Point(205, 205));
   event_generator->PressLeftButton();
@@ -982,7 +983,7 @@ TEST_F(FullscreenMagnifierControllerTest, DragWindowAcrossDisplays) {
 
   // Create a window and start dragging by grabbing its caption.
   std::unique_ptr<aura::Window> window =
-      CreateTestWindow(gfx::Rect(100, 100, 300, 300));
+      CreateWindowWithAppType(chromeos::AppType::NON_APP, {100, 100, 300, 300});
   ui::test::EventGenerator* event_generator = GetEventGenerator();
   event_generator->set_current_screen_location(gfx::Point(105, 105));
   event_generator->PressLeftButton();

@@ -4,23 +4,27 @@
 
 #include "chrome/browser/ui/webui/data_sharing/data_sharing_ui.h"
 
+#include "base/strings/strcat.h"
 #include "chrome/browser/metrics/chrome_metrics_service_accessor.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/webui/data_sharing/data_sharing_page_handler.h"
 #include "chrome/browser/ui/webui/favicon_source.h"
 #include "chrome/browser/ui/webui/theme_source.h"
+#include "chrome/common/channel_info.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/data_sharing_resources.h"
 #include "chrome/grit/data_sharing_resources_map.h"
 #include "chrome/grit/generated_resources.h"
+#include "components/data_sharing/public/client_version_info.h"
 #include "components/data_sharing/public/features.h"
 #include "components/favicon_base/favicon_url_parser.h"
+#include "components/strings/grit/components_strings.h"
+#include "components/version_info/version_info.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_data_source.h"
 #include "ui/base/webui/web_ui_util.h"
-#include "ui/webui/color_change_listener/color_change_handler.h"
 #include "ui/webui/webui_allowlist.h"
 #include "ui/webui/webui_util.h"
 
@@ -32,8 +36,8 @@ DataSharingUIConfig::~DataSharingUIConfig() = default;
 
 bool DataSharingUIConfig::IsWebUIEnabled(
     content::BrowserContext* browser_context) {
-  return base::FeatureList::IsEnabled(
-      data_sharing::features::kDataSharingFeature);
+  return data_sharing::features::IsDataSharingFunctionalityEnabled() &&
+         !browser_context->IsOffTheRecord();
 }
 
 bool DataSharingUIConfig::ShouldAutoResizeHost() {
@@ -142,6 +146,9 @@ DataSharingUI::DataSharingUI(content::WebUI* web_ui)
       {"deleteGroup", IDS_DATA_SHARING_DELETE_GROUP},
       {"deleteFlowHeader", IDS_DATA_SHARING_OWNER_DELETE_DIALOG_TITLE},
       {"delete", IDS_DATA_SHARING_OWNER_DELETE_DIALOG_CONFIRM},
+      {"previewA11yName", IDS_DATA_SHARING_PREVIEW_A11Y_NAME},
+      {"sharingDisabledDescription",
+       IDS_COLLABORATION_ENTREPRISE_SHARING_OFF_HEADER},
 
       // dynamic messages:
       {"shareGroupShareAs", IDS_DATA_SHARING_SHARE_GROUP_SHARE_AS},
@@ -197,6 +204,10 @@ DataSharingUI::DataSharingUI(content::WebUI* web_ui)
       data_sharing::features::kLearnAboutBlockedAccountsURL.Get());
   source->AddString("activityLogsUrl",
                     data_sharing::features::kActivityLogsURL.Get());
+  source->AddString(
+      "currentClientVersion",
+      base::StrCat({version_info::GetVersionNumber(), "-",
+                    version_info::GetChannelString(chrome::GetChannel())}));
 
   Profile* profile = Profile::FromWebUI(web_ui);
   content::URLDataSource::Add(profile,
@@ -223,17 +234,32 @@ void DataSharingUI::ApiInitComplete() {
   }
 }
 
+bool DataSharingUI::IsApiInitialized() {
+  return page_handler_ && page_handler_->IsApiInitialized();
+}
+
+void DataSharingUI::OnShareLinkRequested(
+    const std::string& group_id,
+    const std::string& access_token,
+    base::OnceCallback<void(const std::optional<GURL>&)> callback) {
+  if (delegate_) {
+    delegate_->OnShareLinkRequested(group_id, access_token,
+                                    std::move(callback));
+  }
+}
+
+void DataSharingUI::OnGroupAction(
+    data_sharing::mojom::GroupAction action,
+    data_sharing::mojom::GroupActionProgress progress) {
+  if (delegate_) {
+    delegate_->OnGroupAction(action, progress);
+  }
+}
+
 void DataSharingUI::ShowErrorDialog(int status_code) {
   if (delegate_) {
     delegate_->ShowErrorDialog(status_code);
   }
-}
-
-void DataSharingUI::BindInterface(
-    mojo::PendingReceiver<color_change_listener::mojom::PageHandler>
-        pending_receiver) {
-  color_provider_handler_ = std::make_unique<ui::ColorChangeHandler>(
-      web_ui()->GetWebContents(), std::move(pending_receiver));
 }
 
 void DataSharingUI::CreatePageHandler(

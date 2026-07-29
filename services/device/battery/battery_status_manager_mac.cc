@@ -13,6 +13,10 @@
 
 #include "base/apple/foundation_util.h"
 #include "base/apple/scoped_cftyperef.h"
+#include "base/functional/bind.h"
+#include "base/task/task_traits.h"
+#include "base/task/thread_pool.h"
+#include "base/threading/scoped_blocking_call.h"
 #include "base/time/time.h"
 
 namespace device {
@@ -109,6 +113,10 @@ void FetchBatteryStatus(CFDictionaryRef description,
 std::vector<mojom::BatteryStatus> GetInternalBatteriesStates() {
   std::vector<mojom::BatteryStatus> internal_sources;
 
+  // IOPSCopyPowerSourcesInfo is known to block.
+  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+                                                base::BlockingType::MAY_BLOCK);
+
   base::apple::ScopedCFTypeRef<CFTypeRef> info(IOPSCopyPowerSourcesInfo());
   base::apple::ScopedCFTypeRef<CFArrayRef> power_sources_list(
       IOPSCopyPowerSourcesList(info.get()));
@@ -140,9 +148,8 @@ std::vector<mojom::BatteryStatus> GetInternalBatteriesStates() {
   return internal_sources;
 }
 
-void OnBatteryStatusChanged(const BatteryCallback& callback) {
-  std::vector<mojom::BatteryStatus> batteries(GetInternalBatteriesStates());
-
+void HandleNewBatteryStatus(const BatteryCallback& callback,
+                            std::vector<mojom::BatteryStatus> batteries) {
   if (batteries.empty()) {
     callback.Run(mojom::BatteryStatus());
     return;
@@ -153,6 +160,13 @@ void OnBatteryStatusChanged(const BatteryCallback& callback) {
   // fail a DCHECK.
   DCHECK_EQ(1U, batteries.size());
   callback.Run(batteries.front());
+}
+
+void OnBatteryStatusChangedAsync(const BatteryCallback& callback) {
+  base::ThreadPool::PostTaskAndReplyWithResult(
+      FROM_HERE, {base::MayBlock()},
+      base::BindOnce(&GetInternalBatteriesStates),
+      base::BindOnce(&HandleNewBatteryStatus, callback));
 }
 
 class BatteryStatusObserver {
@@ -195,7 +209,7 @@ class BatteryStatusObserver {
 
  private:
   static void CallOnBatteryStatusChanged(void* callback) {
-    OnBatteryStatusChanged(*static_cast<BatteryCallback*>(callback));
+    OnBatteryStatusChangedAsync(*static_cast<BatteryCallback*>(callback));
   }
 
   BatteryCallback callback_;

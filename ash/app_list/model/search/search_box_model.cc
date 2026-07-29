@@ -9,8 +9,10 @@
 
 #include "ash/app_list/model/search/search_box_model_observer.h"
 #include "ash/public/cpp/app_list/app_list_client.h"
-#include "base/metrics/histogram_macros.h"
+#include "base/check_is_test.h"
 #include "base/metrics/user_metrics.h"
+#include "ui/base/models/image_model.h"
+#include "ui/gfx/image/image.h"
 
 namespace ash {
 
@@ -18,44 +20,17 @@ SearchBoxModel::SearchBoxModel() = default;
 
 SearchBoxModel::~SearchBoxModel() = default;
 
-void SearchBoxModel::SetShowAssistantButton(bool show) {
-  if (show_assistant_button_ == show) {
-    return;
+void SearchBoxModel::SetGeminiButtonVisibility(
+    std::optional<SearchBoxIconButton> search_box_icon_button) {
+  gemini_search_box_icon_button_ = search_box_icon_button;
+
+  if (gemini_search_box_icon_button_) {
+    CHECK(!gemini_search_box_icon_button_.value().display_name.empty());
+    CHECK(!gemini_search_box_icon_button_.value().icon.IsEmpty());
   }
-
-  show_assistant_button_ = show;
-
-  CHECK(!show_assistant_button_ || !show_assistant_new_entry_point_button_)
-      << "Only one of AssistantButton or AssistantNewEntryPointButton can be "
-         "shown";
-
-  for (auto& observer : observers_) {
-    observer.ShowAssistantChanged();
-  }
-}
-
-void SearchBoxModel::SetShowAssistantNewEntryPointButton(
-    bool show,
-    const std::string& name) {
-  if (show_assistant_new_entry_point_button_ == show) {
-    CHECK_EQ(assistant_new_entry_point_name_, name)
-        << "Currently changing only name is not supported";
-
-    return;
-  }
-
-  show_assistant_new_entry_point_button_ = show;
-  assistant_new_entry_point_name_ = name;
-
-  CHECK_EQ(!name.empty(), show)
-      << "Name must be set if assistant new entry button is shown.";
-
-  CHECK(!show_assistant_button_ || !show_assistant_new_entry_point_button_)
-      << "Only one of AssistantButton or AssistantNewEntryPointButton can be "
-         "shown";
 
   for (SearchBoxModelObserver& observer : observers_) {
-    observer.ShowAssistantNewEntryPointChanged();
+    observer.ShowGeminiButtonChanged();
   }
 }
 

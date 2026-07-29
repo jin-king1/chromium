@@ -188,8 +188,7 @@ void VideoToolboxVideoDecoder::Initialize(const VideoDecoderConfig& config,
     case VideoCodec::kVP9:
       accelerator_ = std::make_unique<VP9Decoder>(
           std::make_unique<VideoToolboxVP9Accelerator>(
-              media_log_->Clone(), config.hdr_metadata(),
-              std::move(accelerator_decode_cb),
+              media_log_->Clone(), std::move(accelerator_decode_cb),
               std::move(accelerator_output_cb)),
           config.profile(), config.color_space_info());
       break;
@@ -197,8 +196,7 @@ void VideoToolboxVideoDecoder::Initialize(const VideoDecoderConfig& config,
     case VideoCodec::kAV1:
       accelerator_ = std::make_unique<AV1Decoder>(
           std::make_unique<VideoToolboxAV1Accelerator>(
-              media_log_->Clone(), config.hdr_metadata(),
-              std::move(accelerator_decode_cb),
+              media_log_->Clone(), std::move(accelerator_decode_cb),
               std::move(accelerator_output_cb)),
           config.profile(), config.color_space_info());
       break;
@@ -231,7 +229,7 @@ void VideoToolboxVideoDecoder::Initialize(const VideoDecoderConfig& config,
 
 void VideoToolboxVideoDecoder::Decode(scoped_refptr<DecoderBuffer> buffer,
                                       DecodeCB decode_cb) {
-  DVLOG(3) << __func__ << " pts=" << buffer->timestamp().InMilliseconds();
+  DVLOG(3) << __func__ << " buffer=" << buffer->AsHumanReadableString();
 
   if (has_error_) {
     task_runner_->PostTask(
@@ -256,7 +254,7 @@ void VideoToolboxVideoDecoder::Decode(scoped_refptr<DecoderBuffer> buffer,
   }
 
   decode_cbs_.push(std::move(decode_cb));
-  accelerator_->SetStream(-1, *buffer);
+  accelerator_->SetStream(-1, buffer);
   while (true) {
     // `active_decode_` is used in OnAcceleratorDecode() callbacks to look up
     // decode metadata.
@@ -358,14 +356,23 @@ void VideoToolboxVideoDecoder::OnAcceleratorDecode(
     // to them.
     metadata->color_space = config_.color_space_info().ToGfxColorSpace();
   }
-
-  metadata->hdr_metadata = accelerator_->GetHDRMetadata();
-  if (!metadata->hdr_metadata) {
-    // Note: The VP9 accelerator contains this same logic so that the format
-    // description can include HDR metadata (there is no in-band HDR metadata
-    // in VP9). The other accelerators use only in-band HDR metadata.
-    metadata->hdr_metadata = config_.hdr_metadata();
+  if (!metadata->color_space.IsValid()) {
+    // VideoToolbox video frames are always multiplanar, so use BT.709 color
+    // space as default.
+    // TODO(crbug.com/491815851): Verify that this is a good/correct default for
+    // macOS empirically (possibly with Digital Color Meter app).
+    metadata->color_space = gfx::ColorSpace(
+        gfx::ColorSpace::PrimaryID::BT709,
+        gfx::ColorSpace::TransferID::BT709_APPLE,
+        gfx::ColorSpace::MatrixID::BT709, gfx::ColorSpace::RangeID::LIMITED);
   }
+
+  // Merge the dynamic metadata (from `picture`) on top of the static metadata
+  // (from `config_`) to determine the final metadata that will be attached to
+  // the VideoFrame when it is created.
+  metadata->hdr_metadata = config_.hdr_metadata();
+  metadata->hdr_metadata.MergeMetadataFrom(
+      metadata->picture->dynamic_hdr_metadata());
 
   metadata->session_metadata = session_metadata;
 

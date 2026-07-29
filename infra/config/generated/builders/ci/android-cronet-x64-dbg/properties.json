@@ -13,11 +13,10 @@
               "project": "chromium"
             },
             "builder_spec": {
-              "build_gs_bucket": "chromium-android-archive",
               "builder_group": "chromium.android",
               "execution_mode": "COMPILE_AND_TEST",
               "legacy_android_config": {
-                "config": "x64_builder"
+                "config": "base_config"
               },
               "legacy_chromium_config": {
                 "apply_configs": [
@@ -25,7 +24,8 @@
                   "mb"
                 ],
                 "build_config": "Debug",
-                "config": "x64_builder",
+                "config": "main_builder",
+                "target_arch": "intel",
                 "target_bits": 64,
                 "target_platform": "android"
               },
@@ -44,11 +44,10 @@
               "project": "chromium"
             },
             "builder_spec": {
-              "build_gs_bucket": "chromium-android-archive",
               "builder_group": "chromium.android",
               "execution_mode": "TEST",
               "legacy_android_config": {
-                "config": "x64_builder"
+                "config": "base_config"
               },
               "legacy_chromium_config": {
                 "apply_configs": [
@@ -56,7 +55,8 @@
                   "mb"
                 ],
                 "build_config": "Debug",
-                "config": "x64_builder",
+                "config": "main_builder",
+                "target_arch": "intel",
                 "target_bits": 64,
                 "target_platform": "android"
               },
@@ -80,11 +80,10 @@
               "project": "chromium"
             },
             "builder_spec": {
-              "build_gs_bucket": "chromium-android-archive",
               "builder_group": "chromium.android",
               "execution_mode": "TEST",
               "legacy_android_config": {
-                "config": "x64_builder"
+                "config": "base_config"
               },
               "legacy_chromium_config": {
                 "apply_configs": [
@@ -92,7 +91,8 @@
                   "mb"
                 ],
                 "build_config": "Debug",
-                "config": "x64_builder",
+                "config": "main_builder",
+                "target_arch": "intel",
                 "target_bits": 64,
                 "target_platform": "android"
               },
@@ -116,11 +116,10 @@
               "project": "chromium"
             },
             "builder_spec": {
-              "build_gs_bucket": "chromium-android-archive",
               "builder_group": "chromium.android",
               "execution_mode": "TEST",
               "legacy_android_config": {
-                "config": "x64_builder"
+                "config": "base_config"
               },
               "legacy_chromium_config": {
                 "apply_configs": [
@@ -128,7 +127,8 @@
                   "mb"
                 ],
                 "build_config": "Debug",
-                "config": "x64_builder",
+                "config": "main_builder",
+                "target_arch": "intel",
                 "target_bits": 64,
                 "target_platform": "android"
               },
@@ -152,11 +152,10 @@
               "project": "chromium"
             },
             "builder_spec": {
-              "build_gs_bucket": "chromium-android-archive",
               "builder_group": "chromium.android",
               "execution_mode": "TEST",
               "legacy_android_config": {
-                "config": "x64_builder"
+                "config": "base_config"
               },
               "legacy_chromium_config": {
                 "apply_configs": [
@@ -164,7 +163,43 @@
                   "mb"
                 ],
                 "build_config": "Debug",
-                "config": "x64_builder",
+                "config": "main_builder",
+                "target_arch": "intel",
+                "target_bits": 64,
+                "target_platform": "android"
+              },
+              "legacy_gclient_config": {
+                "apply_configs": [
+                  "android"
+                ],
+                "config": "chromium"
+              },
+              "parent": {
+                "bucket": "ci",
+                "builder": "android-cronet-x64-dbg",
+                "project": "chromium"
+              }
+            }
+          },
+          {
+            "builder_id": {
+              "bucket": "ci",
+              "builder": "android-cronet-x64-dbg-16-tests",
+              "project": "chromium"
+            },
+            "builder_spec": {
+              "builder_group": "chromium.android",
+              "execution_mode": "TEST",
+              "legacy_android_config": {
+                "config": "base_config"
+              },
+              "legacy_chromium_config": {
+                "apply_configs": [
+                  "cronet_builder",
+                  "mb"
+                ],
+                "build_config": "Debug",
+                "config": "main_builder",
                 "target_bits": 64,
                 "target_platform": "android"
               },
@@ -210,6 +245,11 @@
           "bucket": "ci",
           "builder": "android-cronet-x64-dbg-15-tests",
           "project": "chromium"
+        },
+        {
+          "bucket": "ci",
+          "builder": "android-cronet-x64-dbg-16-tests",
+          "project": "chromium"
         }
       ],
       "mirroring_builder_group_and_names": [
@@ -232,20 +272,27 @@
         {
           "builder": "android-cronet-x64-dbg-15-tests",
           "group": "tryserver.chromium.android"
+        },
+        {
+          "builder": "android-cronet-x64-dbg-16-tests",
+          "group": "tryserver.chromium.android"
         }
       ],
-      "targets_spec_directory": "src/infra/config/generated/builders/ci/android-cronet-x64-dbg/targets"
+      "retry_failed_shards": true,
+      "retry_invalid_shards": true,
+      "targets_spec_directory": "infra/config/generated/builders/ci/android-cronet-x64-dbg/targets"
     }
   },
   "$build/siso": {
     "configs": [
-      "builder"
+      "builder",
+      "remote-link"
     ],
     "enable_cloud_monitoring": true,
-    "enable_cloud_profiler": true,
     "enable_cloud_trace": true,
     "experiments": [],
-    "metrics_project": "chromium-reclient-metrics",
+    "output_local_strategy": "greedy",
+    "profile_mode": "cloud",
     "project": "rbe-chromium-trusted",
     "remote_jobs": 500
   },
@@ -257,5 +304,11 @@
     ]
   },
   "builder_group": "chromium.android",
-  "recipe": "chromium"
+  "gardener_rotations": [
+    "cronet"
+  ],
+  "recipe": "chromium",
+  "sheriff_rotations": [
+    "cronet"
+  ]
 }

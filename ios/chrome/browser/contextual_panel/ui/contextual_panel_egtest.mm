@@ -4,6 +4,9 @@
 
 #import "base/strings/stringprintf.h"
 #import "components/feature_engagement/public/feature_constants.h"
+#import "components/omnibox/browser/omnibox_pref_names.h"
+#import "ios/chrome/browser/intelligence/features/features.h"
+#import "ios/chrome/browser/location_bar/badge/ui/location_bar_badge_constants.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/test/earl_grey/chrome_actions.h"
@@ -18,6 +21,7 @@
 #import "net/test/embedded_test_server/request_handler_util.h"
 
 namespace {
+
 // The page height of test pages. This must be big enough to triger fullscreen.
 const int kPageHeightEM = 200;
 
@@ -30,6 +34,13 @@ std::unique_ptr<net::test_server::HttpResponse> GetLongResponseForFullscreen(
       "<p style='height:%dem'>test1</p><p>test2</p>", kPageHeightEM));
   return result;
 }
+
+// Returns the Contextual Panel's entrypoint view GREY matcher.
+id<GREYMatcher> ContextualPanelEntrypointImageViewMatcher() {
+  return grey_allOf(grey_accessibilityID(kLocationBarBadgeImageViewIdentifier),
+                    grey_interactable(), nil);
+}
+
 }  // namespace
 
 @interface ContextualPanelTestCase : ChromeTestCase
@@ -39,7 +50,8 @@ std::unique_ptr<net::test_server::HttpResponse> GetLongResponseForFullscreen(
 
 - (void)setUp {
   [super setUp];
-  [ChromeEarlGrey resetDataForLocalStatePref:prefs::kBottomOmnibox];
+  [ChromeEarlGrey
+      resetDataForLocalStatePref:omnibox::kIsOmniboxInBottomPosition];
 
   self.testServer->RegisterRequestHandler(base::BindRepeating(
       &net::test_server::HandlePrefixedRequest, "/long-fullscreen",
@@ -51,7 +63,8 @@ std::unique_ptr<net::test_server::HttpResponse> GetLongResponseForFullscreen(
 
 - (void)tearDownHelper {
   [super tearDownHelper];
-  [ChromeEarlGrey resetDataForLocalStatePref:prefs::kBottomOmnibox];
+  [ChromeEarlGrey
+      resetDataForLocalStatePref:omnibox::kIsOmniboxInBottomPosition];
 }
 
 - (AppLaunchConfiguration)appConfigurationForTestCase {
@@ -59,33 +72,37 @@ std::unique_ptr<net::test_server::HttpResponse> GetLongResponseForFullscreen(
 
   config.relaunch_policy = ForceRelaunchByCleanShutdown;
 
-  if ([self isRunningTest:@selector(testOpenContextualPanelFromNormalIPH)]) {
-    config.features_enabled_and_params.push_back(
-        {kContextualPanel, {{{"entrypoint-rich-iph", "false"}}}});
-  } else {
-    config.features_enabled_and_params.push_back({kContextualPanel, {}});
-  }
+  config.features_enabled.push_back(kContextualPanelForceShowEntrypoint);
+  config.features_enabled.push_back(kPageActionMenu);
 
-  config.features_enabled_and_params.push_back(
-      {kContextualPanelForceShowEntrypoint, {}});
-
-  if ([self isRunningTest:@selector(testOpenContextualPanelFromNormalIPH)] ||
-      [self isRunningTest:@selector(testOpenContextualPanelFromRichIPH)] ||
+  if ([self isRunningTest:@selector(testOpenContextualPanelFromIPH)] ||
       [self isRunningTest:@selector(testOrientationChangeDismissesIPH)]) {
     config.iph_feature_enabled =
         feature_engagement::kIPHiOSContextualPanelSampleModelFeature.name;
   }
 
+  // TODO(crbug.com/467331873): Re-enable this when the test is updated for
+  // PSF.
+  config.features_disabled.push_back(kProactiveSuggestionsFramework);
   return config;
 }
 
+// TODO(crbug.com/523259471): Fix this flaky test.
 // Tests that the contextual panel opens correctly.
 - (void)testOpenContextualPanel {
+#if TARGET_IPHONE_SIMULATOR
+  if (@available(iOS 18, *)) {
+    EARL_GREY_TEST_DISABLED(@"Flaky on iOS 18 simulator, crbug.com/523259471");
+  }
+#endif
+
   [ChromeEarlGrey loadURL:self.testServer->GetURL("/defaultresponse")];
 
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:
+                      ContextualPanelEntrypointImageViewMatcher()];
+
   [[EarlGrey
-      selectElementWithMatcher:grey_accessibilityID(
-                                   @"ContextualPanelEntrypointImageViewAXID")]
+      selectElementWithMatcher:ContextualPanelEntrypointImageViewMatcher()]
       performAction:grey_tap()];
 
   // Check that the contextual panel opened up.
@@ -99,32 +116,15 @@ std::unique_ptr<net::test_server::HttpResponse> GetLongResponseForFullscreen(
       performAction:grey_tap()];
 }
 
-// Tests that the contextual panel opens correctly when tapping the rich IPH.
-- (void)testOpenContextualPanelFromRichIPH {
-  [ChromeEarlGrey loadURL:self.testServer->GetURL("/defaultresponse")];
+// TODO(crbug.com/523259471): Fix this flaky test.
+// Tests that the contextual panel opens correctly from an IPH.
+- (void)testOpenContextualPanelFromIPH {
+#if TARGET_IPHONE_SIMULATOR
+  if (@available(iOS 18, *)) {
+    EARL_GREY_TEST_DISABLED(@"Flaky on iOS 18 simulator, crbug.com/523259471");
+  }
+#endif
 
-  // Check that the IPH has appeared.
-  [ChromeEarlGrey
-      waitForUIElementToAppearWithMatcher:grey_accessibilityID(
-                                              @"BubbleViewLabelIdentifier")];
-
-  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(
-                                          @"BubbleViewLabelIdentifier")]
-      performAction:grey_tap()];
-
-  // Check that the contextual panel opened up.
-  [[EarlGrey
-      selectElementWithMatcher:grey_accessibilityID(@"PanelContentViewAXID")]
-      assertWithMatcher:grey_sufficientlyVisible()];
-
-  // Close panel
-  [[EarlGrey
-      selectElementWithMatcher:grey_accessibilityID(@"PanelCloseButtonAXID")]
-      performAction:grey_tap()];
-}
-
-// Tests that the contextual panel opens correctly when tapping the normal IPH.
-- (void)testOpenContextualPanelFromNormalIPH {
   [ChromeEarlGrey loadURL:self.testServer->GetURL("/defaultresponse")];
 
   // Check that the IPH has appeared.
@@ -147,9 +147,16 @@ std::unique_ptr<net::test_server::HttpResponse> GetLongResponseForFullscreen(
       performAction:grey_tap()];
 }
 
+// TODO(crbug.com/523259471): Fix this flaky test.
 // Test that the Contextual Panel can still be closed after rotating to
 // landscape.
 - (void)testContextualPanelLandscape {
+#if TARGET_IPHONE_SIMULATOR
+  if (@available(iOS 18, *)) {
+    EARL_GREY_TEST_DISABLED(@"Flaky on iOS 18 simulator, crbug.com/523259471");
+  }
+#endif
+
   // This test is not relevant on iPads as iPads aren't compact height in
   // landscape.
   if ([ChromeEarlGrey isIPadIdiom]) {
@@ -158,9 +165,11 @@ std::unique_ptr<net::test_server::HttpResponse> GetLongResponseForFullscreen(
 
   [ChromeEarlGrey loadURL:self.testServer->GetURL("/defaultresponse")];
 
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:
+                      ContextualPanelEntrypointImageViewMatcher()];
+
   [[EarlGrey
-      selectElementWithMatcher:grey_accessibilityID(
-                                   @"ContextualPanelEntrypointImageViewAXID")]
+      selectElementWithMatcher:ContextualPanelEntrypointImageViewMatcher()]
       performAction:grey_tap()];
 
   // Check that the contextual panel opened up.
@@ -170,8 +179,8 @@ std::unique_ptr<net::test_server::HttpResponse> GetLongResponseForFullscreen(
 
   // Switch to landscape.
   GREYAssert(
-      [EarlGrey rotateDeviceToOrientation:UIDeviceOrientationLandscapeLeft
-                                    error:nil],
+      [EarlGrey rotateInterfaceToOrientation:UIInterfaceOrientationLandscapeLeft
+                                       error:nil],
       @"Could not rotate device to Landscape Left");
 
   // Make sure that panel can still be closed.
@@ -180,13 +189,22 @@ std::unique_ptr<net::test_server::HttpResponse> GetLongResponseForFullscreen(
       performAction:grey_tap()];
 }
 
+// TODO(crbug.com/523259471): Fix this flaky test.
 // Tests that closing the last tab with the panel open doesn't crash.
 - (void)testCloseLastTabWithPanelOpen {
+#if TARGET_IPHONE_SIMULATOR
+  if (@available(iOS 18, *)) {
+    EARL_GREY_TEST_DISABLED(@"Flaky on iOS 18 simulator, crbug.com/523259471");
+  }
+#endif
+
   [ChromeEarlGrey loadURL:self.testServer->GetURL("/defaultresponse")];
 
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:
+                      ContextualPanelEntrypointImageViewMatcher()];
+
   [[EarlGrey
-      selectElementWithMatcher:grey_accessibilityID(
-                                   @"ContextualPanelEntrypointImageViewAXID")]
+      selectElementWithMatcher:ContextualPanelEntrypointImageViewMatcher()]
       performAction:grey_tap()];
 
   // Check that the contextual panel opened up.
@@ -198,28 +216,51 @@ std::unique_ptr<net::test_server::HttpResponse> GetLongResponseForFullscreen(
   [ChromeEarlGrey closeTabAtIndex:0];
 }
 
+// TODO(crbug.com/523259471): Fix this flaky test.
 // Tests that closing the last tab before the large entrypoint callback is run
 // doesn't crash.
 - (void)testCloseLastTabBeforeLargeEntrypointAppears {
+#if TARGET_IPHONE_SIMULATOR
+  if (@available(iOS 18, *)) {
+    EARL_GREY_TEST_DISABLED(@"Flaky on iOS 18 simulator, crbug.com/523259471");
+  }
+#endif
+
   [ChromeEarlGrey loadURL:self.testServer->GetURL("/defaultresponse")];
 
   // Close the tab.
   [ChromeEarlGrey closeTabAtIndex:0];
 }
 
+// TODO(crbug.com/523259471): Fix this flaky test.
 // Tests that the contextual panel transitions neatly between iOS sheet
 // controller (full iPad layout) and the panel's custom sheet component (other
 // window open/iPhone-style layout).
 - (void)testContexutalPaneliPadMultiwindow {
+#if TARGET_IPHONE_SIMULATOR
+  if (@available(iOS 18, *)) {
+    EARL_GREY_TEST_DISABLED(@"Flaky on iOS 18 simulator, crbug.com/523259471");
+  }
+#endif
+
+  if (@available(iOS 26.0, *)) {
+    // TODO(crbug.com/427699033): Re-enable test on iOS 26.
+    // Fails because it assumes a window will be compact after creating a new
+    // window.
+    EARL_GREY_TEST_DISABLED(@"Test disabled on iOS 26.");
+  }
+
   if (![ChromeEarlGrey areMultipleWindowsSupported]) {
     EARL_GREY_TEST_DISABLED(@"Multiple windows can't be opened.");
   }
 
   [ChromeEarlGrey loadURL:self.testServer->GetURL("/defaultresponse")];
 
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:
+                      ContextualPanelEntrypointImageViewMatcher()];
+
   [[EarlGrey
-      selectElementWithMatcher:grey_accessibilityID(
-                                   @"ContextualPanelEntrypointImageViewAXID")]
+      selectElementWithMatcher:ContextualPanelEntrypointImageViewMatcher()]
       performAction:grey_tap()];
 
   // Check that the contextual panel opened up.
@@ -251,18 +292,27 @@ std::unique_ptr<net::test_server::HttpResponse> GetLongResponseForFullscreen(
       performAction:grey_tap()];
 }
 
+// TODO(crbug.com/523259471): Fix this flaky test.
 // Tests that fullscreen is disabled when the omnibox switches to bottom
 // position.
 - (void)testBottomOmniboxDisablesFullscreen {
+#if TARGET_IPHONE_SIMULATOR
+  if (@available(iOS 18, *)) {
+    EARL_GREY_TEST_DISABLED(@"Flaky on iOS 18 simulator, crbug.com/523259471");
+  }
+#endif
+
   if (![ChromeEarlGrey isBottomOmniboxAvailable]) {
     EARL_GREY_TEST_SKIPPED(@"Test requires bottom omnibox");
   }
 
   [ChromeEarlGrey loadURL:self.testServer->GetURL("/long-fullscreen")];
 
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:
+                      ContextualPanelEntrypointImageViewMatcher()];
+
   [[EarlGrey
-      selectElementWithMatcher:grey_accessibilityID(
-                                   @"ContextualPanelEntrypointImageViewAXID")]
+      selectElementWithMatcher:ContextualPanelEntrypointImageViewMatcher()]
       performAction:grey_tap()];
 
   // Check that the contextual panel opened up.
@@ -277,7 +327,8 @@ std::unique_ptr<net::test_server::HttpResponse> GetLongResponseForFullscreen(
   [ChromeEarlGreyUI waitForToolbarVisible:NO];
 
   // Enable bottom omnibox.
-  [ChromeEarlGrey setBoolValue:YES forLocalStatePref:prefs::kBottomOmnibox];
+  [ChromeEarlGrey setBoolValue:YES
+             forLocalStatePref:omnibox::kIsOmniboxInBottomPosition];
   [ChromeEarlGreyUI waitForToolbarVisible:YES];
 
   // Make sure that panel can still be closed.
@@ -286,33 +337,44 @@ std::unique_ptr<net::test_server::HttpResponse> GetLongResponseForFullscreen(
       performAction:grey_tap()];
 }
 
+// TODO(crbug.com/523259471): Fix this flaky test.
 // Test that the Contextual Panel entrypoint's large chip can be dismissed via
 // swipe.
 - (void)testContextualPanelEntrypointLargeChipDismissable {
+#if TARGET_IPHONE_SIMULATOR
+  if (@available(iOS 18, *)) {
+    EARL_GREY_TEST_DISABLED(@"Flaky on iOS 18 simulator, crbug.com/523259471");
+  }
+#endif
+
   [ChromeEarlGrey loadURL:self.testServer->GetURL("/defaultresponse")];
 
-  // Wait for large chip entrypoint to appear.
+  NSString* entryPointLabel = kLocationBarBadgeLabelIdentifier;
+  id<GREYMatcher> entryPointMatcher = grey_allOf(
+      grey_accessibilityID(entryPointLabel), grey_sufficientlyVisible(), nil);
   [ChromeEarlGrey
-      waitForSufficientlyVisibleElementWithMatcher:
-          grey_accessibilityID(@"ContextualPanelEntrypointLabelAXID")];
+      waitForSufficientlyVisibleElementWithMatcher:entryPointMatcher];
 
   // Side swipe on the entrypoint.
-  [[EarlGrey
-      selectElementWithMatcher:grey_accessibilityID(
-                                   @"ContextualPanelEntrypointLabelAXID")]
+  [[EarlGrey selectElementWithMatcher:entryPointMatcher]
       performAction:grey_swipeSlowInDirectionWithStartPoint(kGREYDirectionLeft,
                                                             0.9, 0.5)];
 
   // Check that the entrypoint is now back to default size.
-  [[EarlGrey
-      selectElementWithMatcher:grey_accessibilityID(
-                                   @"ContextualPanelEntrypointLabelAXID")]
+  [[EarlGrey selectElementWithMatcher:entryPointMatcher]
       assertWithMatcher:grey_notVisible()];
 }
 
+// TODO(crbug.com/523259471): Fix this flaky test.
 // Test that the Contextual Panel entrypoint IPH is dismissed when the device
 // orientation changes.
 - (void)testOrientationChangeDismissesIPH {
+#if TARGET_IPHONE_SIMULATOR
+  if (@available(iOS 18, *)) {
+    EARL_GREY_TEST_DISABLED(@"Flaky on iOS 18 simulator, crbug.com/523259471");
+  }
+#endif
+
   [ChromeEarlGrey loadURL:self.testServer->GetURL("/defaultresponse")];
 
   // Check that the IPH has appeared.
@@ -322,8 +384,8 @@ std::unique_ptr<net::test_server::HttpResponse> GetLongResponseForFullscreen(
 
   // Switch to landscape.
   GREYAssert(
-      [EarlGrey rotateDeviceToOrientation:UIDeviceOrientationLandscapeLeft
-                                    error:nil],
+      [EarlGrey rotateInterfaceToOrientation:UIInterfaceOrientationLandscapeLeft
+                                       error:nil],
       @"Could not rotate device to Landscape Left");
 
   // Check that the IPH has disappeared.
@@ -332,9 +394,16 @@ std::unique_ptr<net::test_server::HttpResponse> GetLongResponseForFullscreen(
                                                  @"BubbleViewLabelIdentifier")];
 }
 
+// TODO(crbug.com/523259471): Fix this flaky test.
 // Tests that opening the keyboard on iPhone closes the panel. On iPad, the
 // panel is presented modally, so the panel wouldn't close.
 - (void)testKeyboardOpenClosesPanelOniPhone {
+#if TARGET_IPHONE_SIMULATOR
+  if (@available(iOS 18, *)) {
+    EARL_GREY_TEST_DISABLED(@"Flaky on iOS 18 simulator, crbug.com/523259471");
+  }
+#endif
+
   if ([ChromeEarlGrey isIPadIdiom]) {
     EARL_GREY_TEST_SKIPPED(@"Test conditions don't happen on iPad.");
   }
@@ -342,9 +411,11 @@ std::unique_ptr<net::test_server::HttpResponse> GetLongResponseForFullscreen(
   // Open a page wth a text field.
   [ChromeEarlGrey loadURL:self.testServer->GetURL("/simple_login_form.html")];
 
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:
+                      ContextualPanelEntrypointImageViewMatcher()];
+
   [[EarlGrey
-      selectElementWithMatcher:grey_accessibilityID(
-                                   @"ContextualPanelEntrypointImageViewAXID")]
+      selectElementWithMatcher:ContextualPanelEntrypointImageViewMatcher()]
       performAction:grey_tap()];
 
   // Check that the contextual panel opened up.

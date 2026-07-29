@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/browser/ash/app_list/search/omnibox/omnibox_result.h"
 
 #include <memory>
@@ -18,6 +13,7 @@
 #include "ash/public/cpp/app_list/app_list_types.h"
 #include "ash/public/cpp/app_list/vector_icons/vector_icons.h"
 #include "base/base64.h"
+#include "base/compiler_specific.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/run_loop.h"
@@ -44,6 +40,7 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/skia/include/core/SkBitmap.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/gfx/image/image.h"
 #include "ui/gfx/image/image_skia.h"
 #include "ui/gfx/paint_vector_icon.h"
@@ -134,8 +131,8 @@ bool IsSingletonTextVector(const std::vector<ash::SearchResultTextItem>& v,
     return false;
 
   for (int i = 0; i < ArraySize; ++i) {
-    if (result_tags[i].styles != tags[i].styles ||
-        result_tags[i].range != tags[i].range) {
+    if (result_tags[i].styles != UNSAFE_TODO(tags[i]).styles ||
+        result_tags[i].range != UNSAFE_TODO(tags[i]).range) {
       return false;
     }
   }
@@ -172,7 +169,7 @@ class OmniboxResultTest : public testing::Test {
         std::make_unique<::test::TestAppListControllerDelegate>();
 
     favicon_cache_ = std::make_unique<FaviconCache>(
-        /*favicon_service=*/&favicon_service_, /*history_service=*/nullptr);
+        &favicon_service_, /*history_service=*/nullptr);
 
     // Ensure the bookmark model is loaded.
     bookmark_model_ =
@@ -208,9 +205,9 @@ class OmniboxResultTest : public testing::Test {
 
     return std::make_unique<OmniboxResult>(
         profile_.get(), app_list_controller_delegate_.get(),
-        CreateResult(match, /*controller=*/nullptr, favicon_cache_.get(),
-                     bookmark_model_, input_),
-        /*query=*/query);
+        TemplateURLServiceFactory::GetForProfile(profile_.get()),
+        CreateResult(match, /*controller=*/nullptr, bookmark_model_, input_),
+        /*query=*/query, favicon_cache_.get());
   }
 
   const GURL& GetLastOpenedUrl() const {
@@ -282,7 +279,8 @@ TEST_F(OmniboxResultTest, Metrics) {
   const auto bookmarked_result = CreateOmniboxResult(
       "https://example.com", AutocompleteMatchType::HISTORY_URL);
   EXPECT_EQ(ash::OMNIBOX_BOOKMARK, bookmarked_result->metrics_type());
-  EXPECT_EQ(&omnibox::kBookmarkIcon,
+  EXPECT_EQ(&(features::IsRoundedIconsEnabled() ? omnibox::kStarsFilledIcon
+                                                : omnibox::kBookmarkOldIcon),
             bookmarked_result->icon().icon.GetVectorIcon().vector_icon());
 
   // Unbookmarked URLs belong to the general "recently visited" category and

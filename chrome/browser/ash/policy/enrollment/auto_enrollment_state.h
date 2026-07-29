@@ -7,10 +7,10 @@
 
 #include <optional>
 #include <string_view>
+#include <variant>
 
 #include "base/types/expected.h"
 #include "components/policy/core/common/cloud/cloud_policy_constants.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 
 namespace policy {
 
@@ -26,17 +26,16 @@ enum class AutoEnrollmentResult {
   kDisabled,
   // Check completed successfully, enrollment is suggested but not enforced.
   kSuggestedEnrollment,
+  // Device is already owned. This is an invalid state. We need to powerwash.
+  // See for instance
+  //   crbug.com/470630590
+  //   crbug.com/483169442
+  kDeviceAlreadyOwned,
 };
 
 // Represents a state determination error due to a timeout.
 struct AutoEnrollmentSafeguardTimeoutError {
   constexpr bool operator==(const AutoEnrollmentSafeguardTimeoutError&) const =
-      default;
-};
-
-// Represents a state determination error during clock sync.
-struct AutoEnrollmentSystemClockSyncError {
-  constexpr bool operator==(const AutoEnrollmentSystemClockSyncError&) const =
       default;
 };
 
@@ -77,13 +76,12 @@ struct AutoEnrollmentStateRetrievalResponseError {
 };
 
 using AutoEnrollmentError =
-    absl::variant<AutoEnrollmentSafeguardTimeoutError,
-                  AutoEnrollmentSystemClockSyncError,
-                  AutoEnrollmentStateKeysRetrievalError,
-                  AutoEnrollmentDMServerError,
-                  AutoEnrollmentStateAvailabilityResponseError,
-                  AutoEnrollmentPsmError,
-                  AutoEnrollmentStateRetrievalResponseError>;
+    std::variant<AutoEnrollmentSafeguardTimeoutError,
+                 AutoEnrollmentStateKeysRetrievalError,
+                 AutoEnrollmentDMServerError,
+                 AutoEnrollmentStateAvailabilityResponseError,
+                 AutoEnrollmentPsmError,
+                 AutoEnrollmentStateRetrievalResponseError>;
 
 // Indicates the current state of the auto-enrollment check.
 using AutoEnrollmentState =

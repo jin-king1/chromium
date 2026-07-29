@@ -8,7 +8,6 @@
 #include <memory>
 #include <utility>
 
-#include "base/containers/contains.h"
 #include "components/viz/common/resources/release_callback.h"
 #include "components/viz/common/resources/resource_id.h"
 #include "components/viz/common/resources/transferable_resource.h"
@@ -59,22 +58,10 @@ TransferableResourceTracker::ImportResources(
 TransferableResourceTracker::PositionedResource
 TransferableResourceTracker::ImportResource(
     SurfaceSavedFrame::OutputCopyResult output_copy) {
-  TransferableResource resource;
-
-  DCHECK(output_copy.shared_image);
-  if (output_copy.is_software) {
-      resource = TransferableResource::MakeSoftwareSharedImage(
-          output_copy.shared_image, gpu::SyncToken(),
-          output_copy.draw_data.size, output_copy.shared_image->format());
-      resource.color_space = output_copy.shared_image->color_space();
-  } else {
-      resource = TransferableResource::MakeGpu(
-          output_copy.shared_image, GL_TEXTURE_2D, output_copy.sync_token,
-          output_copy.draw_data.size, output_copy.shared_image->format(),
-          /*is_overlay_candidate=*/false,
-          TransferableResource::ResourceSource::kViewTransition);
-      resource.color_space = output_copy.shared_image->color_space();
-  }
+  auto resource = TransferableResource::Make(
+      output_copy.shared_image,
+      TransferableResource::ResourceSource::kViewTransition,
+      output_copy.sync_token);
 
   TransferableResourceHolder::ResourceReleaseCallback release_callback;
   if (output_copy.release_callback) {
@@ -87,14 +74,13 @@ TransferableResourceTracker::ImportResource(
   }
 
   resource.id = id_tracker_->AllocId(/*initial_ref_count=*/1);
-  DCHECK(!base::Contains(managed_resources_, resource.id));
+  DCHECK(!managed_resources_.contains(resource.id));
   managed_resources_.emplace(
       resource.id,
       TransferableResourceHolder(resource, std::move(release_callback)));
 
   PositionedResource result;
   result.resource = resource;
-  result.draw_data = output_copy.draw_data;
   return result;
 }
 
@@ -107,7 +93,7 @@ void TransferableResourceTracker::ReturnFrame(const ResourceFrame& frame) {
 }
 
 void TransferableResourceTracker::RefResource(ResourceId id) {
-  if (!base::Contains(managed_resources_, id)) {
+  if (!managed_resources_.contains(id)) {
     return;
   }
 
@@ -118,7 +104,7 @@ void TransferableResourceTracker::UnrefResource(
     ResourceId id,
     int count,
     const gpu::SyncToken& sync_token) {
-  if (!base::Contains(managed_resources_, id)) {
+  if (!managed_resources_.contains(id)) {
     return;
   }
 

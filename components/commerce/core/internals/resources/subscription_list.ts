@@ -28,7 +28,7 @@ export class SubscriptionListElement extends CrLitElement {
     };
   }
 
-  protected subscriptions_: Subscription[] = [];
+  protected accessor subscriptions_: Subscription[] = [];
 
   private commerceInternalsApi_: CommerceInternalsApiProxy =
       CommerceInternalsApiProxy.getInstance();
@@ -48,6 +48,12 @@ export class SubscriptionListElement extends CrLitElement {
     }
 
     this.subscriptions_ = subscriptions;
+  }
+}
+
+declare global {
+  interface HTMLElementTagNameMap {
+    'subscription-list': SubscriptionListElement;
   }
 }
 

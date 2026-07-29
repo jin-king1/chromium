@@ -30,9 +30,9 @@ TEST(KDFTest, Pbkdf2HmacSha1KnownAnswers) {
 
   for (const auto& c : cases) {
     std::vector<uint8_t> key(c.len);
-    crypto::kdf::DeriveKeyPbkdf2HmacSha1(
-        c.params, base::as_byte_span(c.password), base::as_byte_span(c.salt),
-        key, crypto::SubtlePassKey::ForTesting());
+    crypto::kdf::Pbkdf2HmacSha1(c.params, base::as_byte_span(c.password),
+                                base::as_byte_span(c.salt), key,
+                                crypto::SubtlePassKey::ForTesting());
 
     std::vector<uint8_t> result_bytes(c.len);
     ASSERT_TRUE(base::HexStringToSpan(c.result, result_bytes));
@@ -63,9 +63,9 @@ TEST(KDFTest, ScryptKnownAnswers) {
 
   for (const auto& c : cases) {
     std::vector<uint8_t> key(c.len);
-    crypto::kdf::DeriveKeyScrypt(c.params, base::as_byte_span(c.password),
-                                 base::as_byte_span(c.salt), key,
-                                 crypto::SubtlePassKey::ForTesting());
+    crypto::kdf::Scrypt(c.params, base::as_byte_span(c.password),
+                        base::as_byte_span(c.salt), key,
+                        crypto::SubtlePassKey::ForTesting());
 
     std::vector<uint8_t> result_bytes(c.len);
     ASSERT_TRUE(base::HexStringToSpan(c.result, result_bytes));
@@ -83,9 +83,44 @@ TEST(KDFTest, InvalidScryptParameters) {
   for (const auto& c : cases) {
     std::vector<uint8_t> key(64);
     EXPECT_DEATH_IF_SUPPORTED(
-        crypto::kdf::DeriveKeyScrypt(c, base::as_byte_span("password"),
-                                     base::as_byte_span("NaCl"), key,
-                                     crypto::SubtlePassKey::ForTesting()),
+        crypto::kdf::Scrypt(c, base::as_byte_span("password"),
+                            base::as_byte_span("NaCl"), key,
+                            crypto::SubtlePassKey::ForTesting()),
         "");
+  }
+}
+
+TEST(KDFTest, HkdfSha256KnownAnswer) {
+  // RFC 5869, Appendix A, Test Case 1
+  // clang-format off
+  constexpr auto kSecret = std::to_array<uint8_t>({
+    0x0b, 0x0b, 0x0b, 0x0b, 0x0b, 0x0b, 0x0b, 0x0b, 0x0b, 0x0b, 0x0b,
+    0x0b, 0x0b, 0x0b, 0x0b, 0x0b, 0x0b, 0x0b, 0x0b, 0x0b, 0x0b, 0x0b,
+  });
+  constexpr auto kSalt = std::to_array<uint8_t>({
+    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
+    0x0c,
+  });
+  constexpr auto kInfo = std::to_array<uint8_t>({
+    0xf0, 0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8, 0xf9,
+  });
+  constexpr auto kExpected = std::to_array<uint8_t>({
+    0x3c, 0xb2, 0x5f, 0x25, 0xfa, 0xac, 0xd5, 0x7a, 0x90, 0x43, 0x4f,
+    0x64, 0xd0, 0x36, 0x2f, 0x2a, 0x2d, 0x2d, 0x0a, 0x90, 0xcf, 0x1a,
+    0x5a, 0x4c, 0x5d, 0xb0, 0x2d, 0x56, 0xec, 0xc4, 0xc5, 0xbf, 0x34,
+    0x00, 0x72, 0x08, 0xd5, 0xb8, 0x87, 0x18, 0x58, 0x65
+  });
+  // clang-format on
+
+  {
+    std::array<uint8_t, std::size(kExpected)> out;
+    crypto::kdf::Hkdf(crypto::hash::kSha256, kSecret, kSalt, kInfo, out);
+    EXPECT_EQ(kExpected, out);
+  }
+
+  {
+    auto out = crypto::kdf::Hkdf<std::size(kExpected)>(crypto::hash::kSha256,
+                                                       kSecret, kSalt, kInfo);
+    EXPECT_EQ(kExpected, out);
   }
 }

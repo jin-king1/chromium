@@ -46,12 +46,12 @@ import java.util.concurrent.Callable;
 })
 public class WebXrVrCardboardTransitionTest {
     @ClassParameter
-    private static List<ParameterSet> sClassParams =
+    private static final List<ParameterSet> sClassParams =
             VrCardboardTestRuleUtils.generateDefaultTestRuleParameters();
 
     @Rule public RuleChain mRuleChain;
 
-    private ChromeActivityTestRule mTestRule;
+    private final ChromeActivityTestRule mTestRule;
     private WebXrVrTestFramework mWebXrVrTestFramework;
 
     public WebXrVrCardboardTransitionTest(Callable<ChromeActivityTestRule> callable)
@@ -145,7 +145,7 @@ public class WebXrVrCardboardTransitionTest {
     @MediumTest
     @CommandLineFlags.Add({"enable-features=WebXR,Cardboard"})
     @XrActivityRestriction({XrActivityRestriction.SupportedActivity.ALL})
-    @DisabledTest(message = "https://crbug.com/1229236")
+    @DisabledTest(message = "https://crbug.com/40778234")
     public void testNonImmersiveStopsDuringImmersive() {
         mWebXrVrTestFramework.loadFileAndAwaitInitialization(
                 "test_non_immersive_stops_during_immersive", PAGE_LOAD_TIMEOUT_S);

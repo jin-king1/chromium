@@ -10,7 +10,6 @@
 #include "components/prefs/pref_registry_simple.h"
 #include "components/user_manager/known_user.h"
 #include "components/user_manager/multi_user/multi_user_sign_in_policy.h"
-#include "components/user_manager/multi_user/multi_user_sign_in_policy_controller.h"
 #include "components/user_manager/user_directory_integrity_manager.h"
 #include "components/user_manager/user_manager_pref_names.h"
 #include "components/user_manager/user_names.h"
@@ -18,54 +17,6 @@
 namespace user_manager {
 
 UserManager* UserManager::instance = nullptr;
-
-UserManager::Observer::~Observer() = default;
-
-void UserManager::Observer::LocalStateChanged(UserManager* user_manager) {}
-
-void UserManager::Observer::OnUserListLoaded() {}
-
-void UserManager::Observer::OnDeviceLocalUserListUpdated() {}
-
-void UserManager::Observer::OnUserLoggedIn(const User& user) {}
-
-void UserManager::Observer::OnUserImageChanged(const User& user) {}
-
-void UserManager::Observer::OnUserImageIsEnterpriseManagedChanged(
-    const User& user,
-    bool is_enterprise_managed) {}
-
-void UserManager::Observer::OnUserProfileCreated(const User& user) {}
-
-void UserManager::Observer::OnUserProfileWillBeDestroyed(const User& user) {}
-
-void UserManager::Observer::OnUserProfileImageUpdateFailed(const User& user) {}
-
-void UserManager::Observer::OnUserProfileImageUpdated(
-    const User& user,
-    const gfx::ImageSkia& profile_image) {}
-
-void UserManager::Observer::OnUsersSignInConstraintsChanged() {}
-
-void UserManager::Observer::OnUserAffiliationUpdated(const User& user) {}
-
-void UserManager::Observer::OnUserRemoved(const AccountId& account_id,
-                                          UserRemovalReason reason) {}
-
-void UserManager::Observer::OnUserToBeRemoved(const AccountId& account_id) {}
-
-void UserManager::Observer::OnUserNotAllowed(const std::string& user_email) {}
-
-void UserManager::UserSessionStateObserver::ActiveUserChanged(
-    User* active_user) {}
-
-void UserManager::UserSessionStateObserver::UserAddedToSession(
-    const User* active_user) {}
-
-void UserManager::UserSessionStateObserver::OnLoginStateUpdated(
-    const User* active_user) {}
-
-UserManager::UserSessionStateObserver::~UserSessionStateObserver() = default;
 
 UserManager::UserAccountData::UserAccountData(
     const std::u16string& display_name,
@@ -107,7 +58,6 @@ void UserManager::RegisterPrefs(PrefRegistrySimple* registry) {
 
   UserDirectoryIntegrityManager::RegisterLocalStatePrefs(registry);
   KnownUser::RegisterPrefs(registry);
-  MultiUserSignInPolicyController::RegisterPrefs(registry);
 }
 
 // static

@@ -46,9 +46,10 @@ class ArrowBubbleDrawable extends Drawable implements Drawable.Callback {
 
     /**
      * Constructs an {@link ArrowBubbleDrawable} instance.
-     * @param context  Context to draw resources from.
+     *
+     * @param context Context to draw resources from.
      * @param isRoundBubble Whether the bubble should be round.
-     **/
+     */
     public ArrowBubbleDrawable(Context context, boolean isRoundBubble) {
         mContext = context;
         mIsRoundBubble = isRoundBubble;
@@ -89,14 +90,20 @@ class ArrowBubbleDrawable extends Drawable implements Drawable.Callback {
         invalidateSelf();
     }
 
-    /** @return The spacing needed on the left side of the {@link Drawable} for the arrow to fit. */
+    /**
+     * @return The spacing needed on the left side of the {@link Drawable} for the arrow to fit.
+     */
     public int getArrowLeftSpacing() {
+        if (!mShowArrow) return 0;
         mBubbleDrawable.getPadding(mCachedBubblePadding);
         return mRadiusPx + mCachedBubblePadding.left + mArrowWidthPx / 2;
     }
 
-    /** @return The spacing needed on the right side of the {@link Drawable} for the arrow to fit. */
+    /**
+     * @return The spacing needed on the right side of the {@link Drawable} for the arrow to fit.
+     */
     public int getArrowRightSpacing() {
+        if (!mShowArrow) return 0;
         mBubbleDrawable.getPadding(mCachedBubblePadding);
         return mRadiusPx + mCachedBubblePadding.right + mArrowWidthPx / 2;
     }
@@ -186,13 +193,19 @@ class ArrowBubbleDrawable extends Drawable implements Drawable.Callback {
                         null,
                         null));
 
-        // Calculate the bubble bounds.  Account for the arrow size requiring more space.
+        // Calculate the bubble bounds. If there's no arrow, the bubble occupies the entire
+        // bounds. Otherwise, we shrink the bubble to make room for the arrow.
         mBubbleDrawable.getPadding(mCachedBubblePadding);
-        mBubbleDrawable.setBounds(
-                bounds.left,
-                bounds.top + (mArrowOnTop ? (mArrowHeightPx - mCachedBubblePadding.top) : 0),
-                bounds.right,
-                bounds.bottom - (mArrowOnTop ? 0 : (mArrowHeightPx - mCachedBubblePadding.bottom)));
+        if (!mShowArrow) {
+            mBubbleDrawable.setBounds(bounds);
+        } else {
+            mBubbleDrawable.setBounds(
+                    bounds.left,
+                    bounds.top + (mArrowOnTop ? (mArrowHeightPx - mCachedBubblePadding.top) : 0),
+                    bounds.right,
+                    bounds.bottom
+                            - (mArrowOnTop ? 0 : (mArrowHeightPx - mCachedBubblePadding.bottom)));
+        }
     }
 
     @Override
@@ -215,6 +228,8 @@ class ArrowBubbleDrawable extends Drawable implements Drawable.Callback {
     @Override
     public boolean getPadding(Rect padding) {
         mBubbleDrawable.getPadding(padding);
+
+        if (!mShowArrow) return true;
 
         padding.set(
                 padding.left,

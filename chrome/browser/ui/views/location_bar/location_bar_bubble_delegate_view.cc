@@ -4,18 +4,17 @@
 
 #include "chrome/browser/ui/views/location_bar/location_bar_bubble_delegate_view.h"
 
+#include "base/check_is_test.h"
+#include "base/functional/bind.h"
 #include "build/build_config.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/grit/generated_resources.h"
-#include "components/autofill/core/common/autofill_payments_features.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/navigation_handle.h"
-#include "content/public/browser/render_view_host.h"
-#include "ui/accessibility/ax_role_properties.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/gfx/geometry/rect.h"
@@ -28,18 +27,18 @@ namespace {
 ax::mojom::Role GetAccessibleRoleForReason(
     LocationBarBubbleDelegateView::DisplayReason reason) {
   if (reason == LocationBarBubbleDelegateView::USER_GESTURE) {
-    // crbug.com/1132318: The bubble appears as a direct result of a user
+    // crbug.com/40721894: The bubble appears as a direct result of a user
     // action and will get focused. If we used an alert-like role, it would
     // produce an event that would cause double-speaking the bubble.
     return ax::mojom::Role::kDialog;
   }
 
-  // crbug.com/1079320, crbug.com/1119367, crbug.com/1119734: The bubble
+  // crbug.com/40689838, crbug.com/40714136, crbug.com/40714323: The bubble
   // appears spontaneously over the course of the user's interaction with
   // Chrome and doesn't get focused. We need an alert-like role so the
   // corresponding event is triggered and ATs announce the bubble.
 #if BUILDFLAG(IS_WIN)
-  // crbug.com/1125118: Windows ATs only announce these bubbles if the alert
+  // crbug.com/40717636: Windows ATs only announce these bubbles if the alert
   // role is used, despite it not being the most appropriate choice.
   // TODO(accessibility): review the role mappings for alerts and dialogs,
   // making sure they are translated to the best candidate in each flatform
@@ -58,10 +57,15 @@ LocationBarBubbleDelegateView::WebContentMouseHandler::WebContentMouseHandler(
     : bubble_(bubble), web_contents_(web_contents) {
   DCHECK(bubble_);
   DCHECK(web_contents_);
-  event_monitor_ = views::EventMonitor::CreateWindowMonitor(
-      this, web_contents_->GetTopLevelNativeWindow(),
-      {ui::EventType::kMousePressed, ui::EventType::kKeyPressed,
-       ui::EventType::kTouchPressed});
+  // In unittests `web_contents_` might not have a containing top-level window.
+  if (web_contents_->GetTopLevelNativeWindow()) {
+    event_monitor_ = views::EventMonitor::CreateWindowMonitor(
+        this, web_contents_->GetTopLevelNativeWindow(),
+        {ui::EventType::kMousePressed, ui::EventType::kKeyPressed,
+         ui::EventType::kTouchPressed});
+  } else {
+    CHECK_IS_TEST();
+  }
 }
 
 LocationBarBubbleDelegateView::WebContentMouseHandler::
@@ -78,24 +82,34 @@ void LocationBarBubbleDelegateView::WebContentMouseHandler::OnEvent(
 }
 
 LocationBarBubbleDelegateView::LocationBarBubbleDelegateView(
-    views::View* anchor_view,
+    views::BubbleAnchor anchor,
     content::WebContents* web_contents,
     bool autosize)
-    : BubbleDialogDelegateView(anchor_view,
+    : BubbleDialogDelegateView(anchor,
                                views::BubbleBorder::TOP_RIGHT,
                                views::BubbleBorder::DIALOG_SHADOW,
                                autosize),
       WebContentsObserver(web_contents) {
   // Add observer to close the bubble if the fullscreen state changes.
   if (web_contents) {
-    Browser* browser = chrome::FindBrowserWithTab(web_contents);
-    // |browser| can be null in tests.
-    if (browser) {
-      fullscreen_observation_.Observe(
-          browser->exclusive_access_manager()->fullscreen_controller());
-      fullscreen_controller_ = browser->exclusive_access_manager()
-                                   ->fullscreen_controller()
-                                   ->GetWeakPtr();
+    // Unit tests can use bare TestWebContents that are not attached to a tab,
+    // so fullscreen observation is only available for real browser windows.
+    tabs::TabInterface* const tab =
+        tabs::TabInterface::MaybeGetFromContents(web_contents);
+    if (tab) {
+      BrowserWindowInterface* const browser = tab->GetBrowserWindowInterface();
+      if (browser) {
+        FullscreenController* const fullscreen_controller =
+            browser->GetFeatures()
+                .exclusive_access_manager()
+                ->fullscreen_controller();
+        fullscreen_subscription_ =
+            fullscreen_controller->RegisterOnFullscreenStateChanged(
+                base::BindRepeating(
+                    &LocationBarBubbleDelegateView::OnFullscreenStateChanged,
+                    base::Unretained(this)));
+        fullscreen_controller_ = fullscreen_controller->GetWeakPtr();
+      }
     }
   }
   // TODO(pbos): Removing this seems to crash on linux-ozone-rel which seems
@@ -104,6 +118,14 @@ LocationBarBubbleDelegateView::LocationBarBubbleDelegateView(
   // role should not depend on if it's showing in the foreground or not.
   SetAccessibleWindowRole(GetAccessibleRoleForReason(display_reason_));
 }
+
+LocationBarBubbleDelegateView::LocationBarBubbleDelegateView(
+    views::View* anchor_view,
+    content::WebContents* web_contents,
+    bool autosize)
+    : LocationBarBubbleDelegateView(views::BubbleAnchor(anchor_view),
+                                    web_contents,
+                                    autosize) {}
 
 LocationBarBubbleDelegateView::~LocationBarBubbleDelegateView() {
   CHECK(!fullscreen_controller_.WasInvalidated());
@@ -177,7 +199,8 @@ void LocationBarBubbleDelegateView::DidFinishNavigation(
 gfx::Rect LocationBarBubbleDelegateView::GetAnchorBoundsInScreen() const {
   gfx::Rect bounds = GetBoundsInScreen();
   bounds.Inset(gfx::Insets::VH(
-      GetLayoutConstant(LOCATION_BAR_BUBBLE_ANCHOR_VERTICAL_INSET), 0));
+      GetLayoutConstant(LayoutConstant::kLocationBarBubbleAnchorVerticalInset),
+      0));
   return bounds;
 }
 

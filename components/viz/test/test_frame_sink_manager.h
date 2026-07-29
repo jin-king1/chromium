@@ -38,11 +38,16 @@ class TestFrameSinkManagerImpl : public mojom::FrameSinkManager {
   // mojom::FrameSinkManager:
   void RegisterFrameSinkId(const FrameSinkId& frame_sink_id,
                            bool report_activation) override {}
-  void InvalidateFrameSinkId(const FrameSinkId& frame_sink_id) override {}
+  void InvalidateFrameSinkId(const FrameSinkId& frame_sink_id,
+                             InvalidateFrameSinkIdCallback callback) override;
   void SetFrameSinkDebugLabel(const FrameSinkId& frame_sink_id,
                               const std::string& debug_label) override {}
   void CreateRootCompositorFrameSink(
       mojom::RootCompositorFrameSinkParamsPtr params) override {}
+#if BUILDFLAG(IS_MAC)
+  void CreateCompositorDisplayLink(
+      mojom::CompositorDisplayLinkParamsPtr params) override {}
+#endif
   void CreateFrameSinkBundle(
       const FrameSinkBundleId& bundle_id,
       mojo::PendingReceiver<mojom::FrameSinkBundle> receiver,
@@ -56,7 +61,7 @@ class TestFrameSinkManagerImpl : public mojom::FrameSinkManager {
       override {}
   void DestroyCompositorFrameSink(
       const FrameSinkId& frame_sink_id,
-      DestroyCompositorFrameSinkCallback callback) override {}
+      DestroyCompositorFrameSinkCallback callback) override;
   void RegisterFrameSinkHierarchy(
       const FrameSinkId& parent_frame_sink_id,
       const FrameSinkId& child_frame_sink_id) override {}
@@ -66,11 +71,13 @@ class TestFrameSinkManagerImpl : public mojom::FrameSinkManager {
   void AddVideoDetectorObserver(
       mojo::PendingRemote<mojom::VideoDetectorObserver> observer) override {}
   void CreateVideoCapturer(
-      mojo::PendingReceiver<mojom::FrameSinkVideoCapturer> receiver) override {}
+      mojo::PendingReceiver<mojom::FrameSinkVideoCapturer> receiver,
+      uint32_t capture_version_source) override {}
   void EvictSurfaces(const std::vector<SurfaceId>& surface_ids) override {}
   void RequestCopyOfOutput(const SurfaceId& surface_id,
                            std::unique_ptr<CopyOutputRequest> request,
-                           bool capture_exact_surface_id) override {}
+                           bool capture_exact_surface_id,
+                           base::TimeDelta timeout) override {}
 #if BUILDFLAG(IS_ANDROID)
   void CacheBackBuffer(uint32_t cache_id,
                        const FrameSinkId& root_frame_sink_id) override {}
@@ -91,12 +98,9 @@ class TestFrameSinkManagerImpl : public mojom::FrameSinkManager {
   void EnableFrameSinkManagerTestApi(
       mojo::PendingReceiver<mojom::FrameSinkManagerTestApi> receiver) override {
   }
-  void SetupRenderInputRouterDelegateConnection(
-      const base::UnguessableToken& grouping_id,
-      mojo::PendingRemote<input::mojom::RenderInputRouterDelegateClient>
-          rir_delegate_client_remote,
-      mojo::PendingReceiver<input::mojom::RenderInputRouterDelegate>
-          rir_delegate_receiver) override {}
+  void SetupRendererInputRouterDelegateRegistry(
+      mojo::PendingReceiver<mojom::RendererInputRouterDelegateRegistry>
+          receiver) override {}
   void NotifyRendererBlockStateChanged(
       bool blocked,
       const std::vector<FrameSinkId>& render_input_routers) override {}

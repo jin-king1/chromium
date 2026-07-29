@@ -61,8 +61,6 @@ class PasswordSyncBridge : public syncer::DataTypeSyncBridge {
                                  const PasswordStoreChangeList& changes);
 
   // DataTypeSyncBridge implementation.
-  std::unique_ptr<syncer::MetadataChangeList> CreateMetadataChangeList()
-      override;
   std::optional<syncer::ModelError> MergeFullSyncData(
       std::unique_ptr<syncer::MetadataChangeList> metadata_change_list,
       syncer::EntityChangeList entity_data) override;
@@ -72,16 +70,16 @@ class PasswordSyncBridge : public syncer::DataTypeSyncBridge {
   std::unique_ptr<syncer::DataBatch> GetDataForCommit(
       StorageKeyList storage_keys) override;
   std::unique_ptr<syncer::DataBatch> GetAllDataForDebugging() override;
-  std::string GetClientTag(const syncer::EntityData& entity_data) override;
-  std::string GetStorageKey(const syncer::EntityData& entity_data) override;
+  std::string GetClientTag(
+      const syncer::EntityData& entity_data) const override;
+  std::string GetStorageKey(
+      const syncer::EntityData& entity_data) const override;
   bool SupportsGetStorageKey() const override;
+  bool IsEntityDataValid(const syncer::EntityData& entity_data) const override;
   void ApplyDisableSyncChanges(std::unique_ptr<syncer::MetadataChangeList>
                                    delete_metadata_change_list) override;
   sync_pb::EntitySpecifics TrimAllSupportedFieldsFromRemoteSpecifics(
       const sync_pb::EntitySpecifics& entity_specifics) const override;
-
-  static std::string ComputeClientTagForTesting(
-      const sync_pb::PasswordSpecificsData& password_data);
 
  private:
   // On MacOS or Linux it may happen that some passwords cannot be decrypted due
@@ -91,8 +89,10 @@ class PasswordSyncBridge : public syncer::DataTypeSyncBridge {
   // store. This should be called during MergeFullSyncData().
   std::optional<syncer::ModelError> CleanupPasswordStore();
 
-  // Retrieves the storage keys of all unsynced passwords in the store.
-  std::set<FormPrimaryKey> GetUnsyncedPasswordsStorageKeys();
+  // Reads local credentials. If decryption failure is encountered, tries to
+  // clean up the database and re-read. Returns the error if fails.
+  std::optional<syncer::ModelError> ReadCredentialsOrCleanup(
+      PrimaryKeyToPasswordSpecificsDataMap* key_to_local_specifics_map);
 
   // If available, returns cached possibly trimmed PasswordSpecificsData for
   // given |storage_key|. By default, empty PasswordSpecificsData is returned.

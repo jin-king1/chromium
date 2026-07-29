@@ -29,10 +29,10 @@
 #include "extensions/browser/api/declarative_net_request/flat/extension_ruleset_generated.h"
 #include "extensions/browser/api/declarative_net_request/ruleset_matcher.h"
 #include "extensions/browser/api/web_request/web_request_info.h"
-#include "extensions/browser/api/web_request/web_request_resource_type.h"
 #include "extensions/browser/extensions_browser_client.h"
 #include "extensions/common/api/declarative_net_request/constants.h"
 #include "extensions/common/api/declarative_net_request/dnr_manifest_data.h"
+#include "extensions/common/api/web_request/web_request_resource_type.h"
 #include "extensions/common/error_utils.h"
 #include "extensions/common/extension_features.h"
 #include "extensions/common/features/feature_channel.h"
@@ -51,14 +51,17 @@ namespace flat_rule = url_pattern_index::flat;
 // url_pattern_index.fbs. Whenever an extension with an indexed ruleset format
 // version different from the one currently used by Chrome is loaded, the
 // extension ruleset will be reindexed.
-constexpr int kIndexedRulesetFormatVersion = 34;
+constexpr int kIndexedRulesetFormatVersion = 36;
 
 // This static assert is meant to catch cases where
 // url_pattern_index::kUrlPatternIndexFormatVersion is incremented without
 // updating kIndexedRulesetFormatVersion.
-static_assert(url_pattern_index::kUrlPatternIndexFormatVersion == 15,
+static_assert(url_pattern_index::kUrlPatternIndexFormatVersion == 16,
               "kUrlPatternIndexFormatVersion has changed, make sure you've "
               "also updated kIndexedRulesetFormatVersion above.");
+
+// Maximum size in bytes of a single ruleset file.
+constexpr size_t kMaxRulesetJsonBytes = std::numeric_limits<int>::max() - 1;
 
 constexpr int kInvalidIndexedRulesetFormatVersion = -1;
 int g_indexed_ruleset_format_version_for_testing =
@@ -76,6 +79,9 @@ int g_unsafe_dynamic_rule_limit_for_testing = kInvalidRuleLimit;
 int g_session_rule_limit_for_testing = kInvalidRuleLimit;
 int g_unsafe_session_rule_limit_for_testing = kInvalidRuleLimit;
 int g_disabled_static_rule_limit_for_testing = kInvalidRuleLimit;
+
+constexpr size_t kInvalidSizeLimit = 0;
+size_t g_max_ruleset_size_for_testing = kInvalidSizeLimit;
 
 int GetIndexedRulesetFormatVersion() {
   return g_indexed_ruleset_format_version_for_testing ==
@@ -426,6 +432,12 @@ int GetDisabledStaticRuleLimit() {
              : g_disabled_static_rule_limit_for_testing;
 }
 
+size_t GetMaximumRulesetFileSize() {
+  return g_max_ruleset_size_for_testing == kInvalidSizeLimit
+             ? kMaxRulesetJsonBytes
+             : g_max_ruleset_size_for_testing;
+}
+
 ScopedRuleLimitOverride CreateScopedStaticGuaranteedMinimumOverrideForTesting(
     int minimum) {
   return base::AutoReset<int>(&g_static_guaranteed_minimum_for_testing,
@@ -471,6 +483,15 @@ ScopedRuleLimitOverride CreateScopedDisabledStaticRuleLimitOverrideForTesting(
   return base::AutoReset<int>(&g_disabled_static_rule_limit_for_testing, limit);
 }
 
+base::AutoReset<size_t> CreateScopedMaxRulesetSizeOverrideForTesting(
+    size_t maximum_size) {
+  return base::AutoReset<size_t>(&g_max_ruleset_size_for_testing, maximum_size);
+}
+
+bool IsRulesetStatic(const RulesetID& id) {
+  return id != kDynamicRulesetID && id != kSessionRulesetID;
+}
+
 size_t GetEnabledStaticRuleCount(const CompositeMatcher* composite_matcher) {
   if (!composite_matcher) {
     return 0;
@@ -479,7 +500,7 @@ size_t GetEnabledStaticRuleCount(const CompositeMatcher* composite_matcher) {
   size_t enabled_static_rule_count = 0;
   for (const std::unique_ptr<RulesetMatcher>& matcher :
        composite_matcher->matchers()) {
-    if (matcher->id() == kDynamicRulesetID) {
+    if (!IsRulesetStatic(matcher->id())) {
       continue;
     }
 
@@ -543,6 +564,9 @@ std::string GetParseError(ParseResult error_reason, int rule_id) {
     case ParseResult::ERROR_EMPTY_REQUEST_DOMAINS_LIST:
       return ErrorUtils::FormatErrorMessage(
           kErrorEmptyList, base::NumberToString(rule_id), kRequestDomainsKey);
+    case ParseResult::ERROR_EMPTY_TOP_DOMAINS_LIST:
+      return ErrorUtils::FormatErrorMessage(
+          kErrorEmptyList, base::NumberToString(rule_id), kTopDomainsKey);
     case ParseResult::ERROR_DOMAINS_AND_INITIATOR_DOMAINS_BOTH_SPECIFIED:
       return ErrorUtils::FormatErrorMessage(
           kErrorDomainsAndInitiatorDomainsBothSpecified,
@@ -592,6 +616,13 @@ std::string GetParseError(ParseResult error_reason, int rule_id) {
       return ErrorUtils::FormatErrorMessage(kErrorNonAscii,
                                             base::NumberToString(rule_id),
                                             kExcludedRequestDomainsKey);
+    case ParseResult::ERROR_NON_ASCII_TOP_DOMAIN:
+      return ErrorUtils::FormatErrorMessage(
+          kErrorNonAscii, base::NumberToString(rule_id), kTopDomainsKey);
+    case ParseResult::ERROR_NON_ASCII_EXCLUDED_TOP_DOMAIN:
+      return ErrorUtils::FormatErrorMessage(kErrorNonAscii,
+                                            base::NumberToString(rule_id),
+                                            kExcludedTopDomainsKey);
     case ParseResult::ERROR_INVALID_URL_FILTER:
       return ErrorUtils::FormatErrorMessage(
           kErrorInvalidKey, base::NumberToString(rule_id), kUrlFilterKey);

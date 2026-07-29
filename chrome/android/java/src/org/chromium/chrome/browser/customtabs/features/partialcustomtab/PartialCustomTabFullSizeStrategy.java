@@ -8,6 +8,8 @@ import static android.view.ViewGroup.LayoutParams.MATCH_PARENT;
 
 import static androidx.browser.customtabs.CustomTabsCallback.ACTIVITY_LAYOUT_STATE_FULL_SCREEN;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.animation.ValueAnimator.AnimatorUpdateListener;
 import android.app.Activity;
 import android.graphics.drawable.GradientDrawable;
@@ -20,15 +22,19 @@ import androidx.annotation.Px;
 import androidx.annotation.StringRes;
 import androidx.browser.customtabs.CustomTabsCallback;
 
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider;
 import org.chromium.chrome.browser.customtabs.features.toolbar.CustomTabToolbar;
+import org.chromium.chrome.browser.customtabs.features.toolbar.CustomTabToolbarButtonsCoordinator;
 import org.chromium.chrome.browser.fullscreen.FullscreenManager;
 
 /**
  * CustomTabHeightStrategy for Partial Custom Tab Full-Size implementation. An instance of this
  * class should be owned by the CustomTabActivity.
  */
+@NullMarked
 public class PartialCustomTabFullSizeStrategy extends PartialCustomTabBaseStrategy {
     public PartialCustomTabFullSizeStrategy(
             Activity activity,
@@ -64,9 +70,14 @@ public class PartialCustomTabFullSizeStrategy extends PartialCustomTabBaseStrate
 
     @Override
     public void onToolbarInitialized(
-            View coordinatorView, CustomTabToolbar toolbar, @Px int toolbarCornerRadius) {
-        super.onToolbarInitialized(coordinatorView, toolbar, toolbarCornerRadius);
-        toolbar.setMinimizeButtonEnabled(true);
+            View coordinatorView,
+            CustomTabToolbar toolbar,
+            @Px int toolbarCornerRadius,
+            @Nullable CustomTabToolbarButtonsCoordinator toolbarButtonsCoordinator) {
+        super.onToolbarInitialized(
+                coordinatorView, toolbar, toolbarCornerRadius, toolbarButtonsCoordinator);
+        assumeNonNull(toolbarButtonsCoordinator);
+        toolbarButtonsCoordinator.setMinimizeButtonEnabled(true);
         updateDragBarVisibility(/* dragHandlebarVisibility= */ View.GONE);
     }
 
@@ -127,7 +138,7 @@ public class PartialCustomTabFullSizeStrategy extends PartialCustomTabBaseStrate
     @Override
     protected void setTopMargins(int shadowOffset, int handleOffset) {
         // No offset as we will not have handle view in full-screen
-        View handleView = mActivity.findViewById(org.chromium.chrome.R.id.custom_tabs_handle_view);
+        View handleView = mActivity.findViewById(R.id.custom_tabs_handle_view);
         ViewGroup.MarginLayoutParams lp =
                 (ViewGroup.MarginLayoutParams) handleView.getLayoutParams();
         lp.setMargins(0, 0, 0, 0);

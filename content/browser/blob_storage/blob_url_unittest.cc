@@ -2,17 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/342213636): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include <stdint.h>
 
 #include <limits>
 #include <memory>
 #include <string_view>
 
+#include "base/byte_size.h"
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
@@ -21,8 +19,8 @@
 #include "base/numerics/safe_conversions.h"
 #include "base/run_loop.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/time/time.h"
-#include "base/unguessable_token.h"
 #include "content/public/test/browser_task_environment.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/remote.h"
@@ -44,6 +42,7 @@
 #include "storage/browser/blob/blob_storage_context.h"
 #include "storage/browser/blob/blob_url_registry.h"
 #include "storage/browser/blob/blob_url_store_impl.h"
+#include "storage/browser/blob/features.h"
 #include "storage/browser/file_system/file_system_context.h"
 #include "storage/browser/file_system/file_system_operation_context.h"
 #include "storage/browser/file_system/file_system_url.h"
@@ -69,11 +68,11 @@ namespace {
 
 const int kBufferSize = 1024;
 const char kTestData1[] = "Hello";
-const char kTestData2[] = "Here it is data.";
+const std::string_view kTestData2 = "Here it is data.";
 const char kTestFileData1[] = "0123456789";
-const char kTestFileData2[] = "This is sample file.";
+const std::string_view kTestFileData2 = "This is sample file.";
 const char kTestFileSystemFileData1[] = "abcdefghijklmnop";
-const char kTestFileSystemFileData2[] = "File system file test data.";
+const std::string_view kTestFileSystemFileData2 = "File system file test data.";
 const char kTestDataHandleData1[] = "data handle test data1.";
 const char kTestDataHandleData2[] = "data handle test data2.";
 const char kTestDiskCacheSideData[] = "test side data";
@@ -193,7 +192,9 @@ class BlobURLTest : public testing::Test {
     expected_status_code_ = 200;
     expected_response_ = expected_response;
     TestRequest("GET", net::HttpRequestHeaders());
-    EXPECT_EQ(expected_content_length, response_headers_->GetContentLength());
+    EXPECT_EQ(
+        expected_content_length,
+        static_cast<int64_t>(response_headers_->GetContentLength()->InBytes()));
   }
 
   void TestErrorRequest(int expected_error_code) {
@@ -222,26 +223,13 @@ class BlobURLTest : public testing::Test {
         blob_remote.InitWithNewPipeAndPassReceiver());
 
     base::RunLoop register_loop;
-    base::UnguessableToken agent = base::UnguessableToken::Create();
-    url_store.Register(std::move(blob_remote), url, agent,
-                       net::SchemefulSite(origin), register_loop.QuitClosure());
+    url_store.Register(std::move(blob_remote), url,
+                       register_loop.QuitClosure());
     register_loop.Run();
 
-    base::RunLoop resolve_loop;
     mojo::Remote<network::mojom::URLLoaderFactory> url_loader_factory;
     url_store.ResolveAsURLLoaderFactory(
-        url, url_loader_factory.BindNewPipeAndPassReceiver(),
-        base::BindOnce(
-            [](base::OnceClosure done,
-               const base::UnguessableToken& agent_registered,
-               const std::optional<base::UnguessableToken>&
-                   unsafe_agent_cluster_id,
-               const std::optional<net::SchemefulSite>& unsafe_top_level_site) {
-              EXPECT_EQ(agent_registered, unsafe_agent_cluster_id);
-              std::move(done).Run();
-            },
-            resolve_loop.QuitClosure(), agent));
-    resolve_loop.Run();
+        url, url_loader_factory.BindNewPipeAndPassReceiver());
 
     mojo::PendingRemote<network::mojom::URLLoader> url_loader;
     network::TestURLLoaderClient url_loader_client;
@@ -271,12 +259,12 @@ class BlobURLTest : public testing::Test {
   }
 
   void BuildComplicatedData(std::string* expected_result) {
-    auto str1 = std::string(kTestData1 + 1, 2);
+    auto str1 = std::string(UNSAFE_TODO(kTestData1 + 1), 2);
     blob_data_->AppendData(str1);
     *expected_result = str1;
 
     blob_data_->AppendFile(temp_file1_, 2, 3, temp_file_modification_time1_);
-    *expected_result += std::string(kTestFileData1 + 2, 3);
+    *expected_result += std::string(UNSAFE_TODO(kTestFileData1 + 2), 3);
 
     blob_data_->AppendReadableDataHandle(
         base::MakeRefCounted<storage::FakeBlobDataHandle>(kTestDataHandleData1,
@@ -287,20 +275,24 @@ class BlobURLTest : public testing::Test {
         file_system_context_->CrackURLInFirstPartyContext(
             temp_file_system_file1_),
         3, 4, temp_file_system_file_modification_time1_, file_system_context_);
-    *expected_result += std::string(kTestFileSystemFileData1 + 3, 4);
+    *expected_result +=
+        std::string(UNSAFE_TODO(kTestFileSystemFileData1 + 3), 4);
 
-    auto str2 = std::string(kTestData2 + 4, 5);
+    auto str2 =
+        std::string(base::span<const char>(kTestData2).subspan(4u).data(), 5);
     blob_data_->AppendData(str2);
     *expected_result += str2;
 
     blob_data_->AppendFile(temp_file2_, 5, 6, temp_file_modification_time2_);
-    *expected_result += std::string(kTestFileData2 + 5, 6);
+    *expected_result += std::string(
+        base::span<const char>(kTestFileData2).subspan(5u).data(), 6);
 
     blob_data_->AppendFileSystemFile(
         file_system_context_->CrackURLInFirstPartyContext(
             temp_file_system_file2_),
         6, 7, temp_file_system_file_modification_time2_, file_system_context_);
-    *expected_result += std::string(kTestFileSystemFileData2 + 6, 7);
+    *expected_result += std::string(
+        base::span<const char>(kTestFileSystemFileData2).subspan(6u).data(), 7);
   }
 
   storage::BlobDataHandle* GetHandleFromBuilder() {
@@ -402,7 +394,7 @@ TEST_F(BlobURLTest, TestGetChangedFileRequest) {
 
 TEST_F(BlobURLTest, TestGetSlicedFileRequest) {
   blob_data_->AppendFile(temp_file1_, 2, 4, temp_file_modification_time1_);
-  std::string result(kTestFileData1 + 2, 4);
+  std::string result(UNSAFE_TODO(kTestFileData1 + 2), 4);
   TestSuccessNonrangeRequest(result, 4);
 }
 
@@ -470,7 +462,7 @@ TEST_F(BlobURLTest, TestGetSlicedFileSystemFileRequest) {
       file_system_context_->CrackURLInFirstPartyContext(
           temp_file_system_file1_),
       2, 4, temp_file_system_file_modification_time1_, file_system_context_);
-  std::string result(kTestFileSystemFileData1 + 2, 4);
+  std::string result(UNSAFE_TODO(kTestFileSystemFileData1 + 2), 4);
   TestSuccessNonrangeRequest(result, 4);
 }
 
@@ -500,7 +492,7 @@ TEST_F(BlobURLTest, TestGetRangeRequest1) {
   expected_response_ = result.substr(5, 10 - 5 + 1);
   TestRequest("GET", extra_headers);
 
-  EXPECT_EQ(6, response_headers_->GetContentLength());
+  EXPECT_EQ(6u, response_headers_->GetContentLength()->InBytes());
   EXPECT_FALSE(response_metadata_.has_value());
 
   int64_t first = 0, last = 0, length = 0;
@@ -521,7 +513,7 @@ TEST_F(BlobURLTest, TestGetRangeRequest2) {
   expected_response_ = result.substr(result.length() - 10);
   TestRequest("GET", extra_headers);
 
-  EXPECT_EQ(10, response_headers_->GetContentLength());
+  EXPECT_EQ(10u, response_headers_->GetContentLength()->InBytes());
   EXPECT_FALSE(response_metadata_.has_value());
 
   int64_t total = GetTotalBlobLength();
@@ -543,7 +535,7 @@ TEST_F(BlobURLTest, TestGetRangeRequest3) {
   expected_response_ = result.substr(0, 3);
   TestRequest("GET", extra_headers);
 
-  EXPECT_EQ(3, response_headers_->GetContentLength());
+  EXPECT_EQ(3u, response_headers_->GetContentLength()->InBytes());
   EXPECT_FALSE(response_metadata_.has_value());
 
   int64_t first = 0, last = 0, length = 0;
@@ -579,8 +571,8 @@ TEST_F(BlobURLTest, TestSideData) {
   expected_status_code_ = 200;
   expected_response_ = kTestDataHandleData2;
   TestRequest("GET", net::HttpRequestHeaders());
-  EXPECT_EQ(static_cast<int>(std::size(kTestDataHandleData2) - 1),
-            response_headers_->GetContentLength());
+  EXPECT_EQ(std::size(kTestDataHandleData2) - 1,
+            response_headers_->GetContentLength()->InBytes());
 
   EXPECT_EQ(std::string(kTestDiskCacheSideData), *response_metadata_);
 }
@@ -592,8 +584,8 @@ TEST_F(BlobURLTest, TestZeroSizeSideData) {
   expected_status_code_ = 200;
   expected_response_ = kTestDataHandleData2;
   TestRequest("GET", net::HttpRequestHeaders());
-  EXPECT_EQ(static_cast<int>(std::size(kTestDataHandleData2) - 1),
-            response_headers_->GetContentLength());
+  EXPECT_EQ(std::size(kTestDataHandleData2) - 1,
+            response_headers_->GetContentLength()->InBytes());
 
   EXPECT_FALSE(response_metadata_.has_value());
 }
@@ -601,7 +593,64 @@ TEST_F(BlobURLTest, TestZeroSizeSideData) {
 TEST_F(BlobURLTest, BrokenBlob) {
   blob_handle_ = blob_context_.AddBrokenBlob(
       "uuid", "", "", storage::BlobStatus::ERR_INVALID_CONSTRUCTION_ARGUMENTS);
-  TestErrorRequest(net::ERR_FAILED);
+  TestErrorRequest(net::ERR_BLOB_INVALID_CONSTRUCTION_ARGUMENTS);
+}
+
+// Verifies that invalid Fetch Range header values are reported as
+// ERR_REQUEST_RANGE_NOT_SATISFIABLE rather than falling back to serving
+// the full blob contents.
+TEST_F(BlobURLTest, InvalidRangeHeaderReturnsNetworkError) {
+  base::test::ScopedFeatureList feature_list(
+      features::kBlobURLFetchRangeHeaderValidation);
+  blob_data_->AppendData(kTestData1);
+  static constexpr const char* kInvalidRanges[] = {
+      "", "bytes", "bytes=-", "bytes=10-5", "bytes=0-5,15-", "bytes=-0",
+  };
+  for (const char* range : kInvalidRanges) {
+    SCOPED_TRACE(range);
+    net::HttpRequestHeaders extra_headers;
+    extra_headers.SetHeader(net::HttpRequestHeaders::kRange, range);
+    // Invalid Range syntax must fail with a network error
+    expected_error_code_ = net::ERR_REQUEST_RANGE_NOT_SATISFIABLE;
+    expected_response_ = "";
+    TestRequest("GET", extra_headers);
+  }
+}
+
+// A valid Fetch Range header with optional HTTP whitespace should still
+// produce a 206 Partial Content response with the correct range bounds.
+TEST_F(BlobURLTest, ValidRangeHeaderWithWhitespace) {
+  base::test::ScopedFeatureList feature_list(
+      features::kBlobURLFetchRangeHeaderValidation);
+  blob_data_->AppendData(std::string("0123456789ABCDEF"));
+  net::HttpRequestHeaders extra_headers;
+  extra_headers.SetHeader(net::HttpRequestHeaders::kRange, "bytes=5 - 10");
+  expected_error_code_ = net::OK;
+  expected_status_code_ = 206;
+  expected_response_ = "56789A";
+  TestRequest("GET", extra_headers);
+  // Valid Range headers containing spec-allowed whitespace must succeed.
+  int64_t first = 0, last = 0, length = 0;
+  ASSERT_TRUE(response_headers_);
+  EXPECT_TRUE(response_headers_->GetContentRangeFor206(&first, &last, &length));
+  EXPECT_EQ(5, first);
+  EXPECT_EQ(10, last);
+  EXPECT_EQ(16, length);
+}
+
+// Verify that disabling kBlobURLFetchRangeHeaderValidation causes invalid
+// Range headers to be ignored, returning the full blob with a 200 OK response.
+TEST_F(BlobURLTest, InvalidRangeHeaderServesFullBlobWhenValidationDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      features::kBlobURLFetchRangeHeaderValidation);
+  blob_data_->AppendData(kTestData1);
+  net::HttpRequestHeaders extra_headers;
+  extra_headers.SetHeader(net::HttpRequestHeaders::kRange, "bytes=abc");
+  expected_error_code_ = net::OK;
+  expected_status_code_ = 200;
+  expected_response_ = kTestData1;
+  TestRequest("GET", extra_headers);
 }
 
 }  // namespace content

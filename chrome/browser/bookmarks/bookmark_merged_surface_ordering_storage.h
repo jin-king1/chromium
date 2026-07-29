@@ -12,11 +12,13 @@
 #include "base/files/file_path.h"
 #include "base/files/important_file_writer.h"
 #include "base/functional/callback_forward.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/types/expected.h"
 #include "base/values.h"
-#include "chrome/browser/bookmarks/bookmark_merged_surface_service.h"
+#include "chrome/browser/bookmarks/bookmark_parent_folder.h"
 
+class BookmarkMergedSurfaceService;
 class BookmarkParentFolderChildren;
 
 // `BookmarkMergedSurfaceOrderingStorage` handles writing custom ordering
@@ -94,10 +96,10 @@ class BookmarkMergedSurfaceOrderingStorage
   // Returns a dict with the key representing one of the
   // `BookmarkParentFolder::PermanentFolderType` and the value a list of child
   // nodes ids if non-default order is tracked.
-  base::Value::Dict EncodeOrderingToDict() const;
+  base::DictValue EncodeOrderingToDict() const;
 
   // Returns list of child nodes id.
-  static base::Value::List EncodeChildren(
+  static base::ListValue EncodeChildren(
       const BookmarkParentFolderChildren& children);
 
   const raw_ptr<const BookmarkMergedSurfaceService> service_;

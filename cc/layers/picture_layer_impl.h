@@ -14,12 +14,13 @@
 #include <string>
 #include <vector>
 
+#include "base/containers/flat_set.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ptr_exclusion.h"
 #include "cc/cc_export.h"
 #include "cc/layers/layer.h"
-#include "cc/layers/layer_impl.h"
+#include "cc/layers/tile_based_layer_impl.h"
 #include "cc/layers/tile_size_calculator.h"
 #include "cc/paint/discardable_image_map.h"
 #include "cc/paint/image_id.h"
@@ -38,9 +39,8 @@ class MicroBenchmarkImpl;
 class Tile;
 
 class CC_EXPORT PictureLayerImpl
-    : public LayerImpl,
-      public PictureLayerTilingClient,
-      public ImageAnimationController::AnimationDriver {
+    : public TileBasedLayerImpl<PictureLayerTiling>,
+      public PictureLayerTilingClient {
  public:
   static std::unique_ptr<PictureLayerImpl> Create(LayerTreeImpl* tree_impl,
                                                   int id) {
@@ -51,25 +51,13 @@ class CC_EXPORT PictureLayerImpl
 
   PictureLayerImpl& operator=(const PictureLayerImpl&) = delete;
 
-  void SetIsBackdropFilterMask(bool is_backdrop_filter_mask) {
-    if (is_backdrop_filter_mask_ == is_backdrop_filter_mask) {
-      return;
-    }
-    is_backdrop_filter_mask_ = is_backdrop_filter_mask;
-    SetNeedsPushProperties();
-  }
-  bool is_backdrop_filter_mask() const { return is_backdrop_filter_mask_; }
-
   // LayerImpl overrides.
   mojom::LayerType GetLayerType() const override;
   std::unique_ptr<LayerImpl> CreateLayerImpl(
       LayerTreeImpl* tree_impl) const override;
-  void PushPropertiesTo(LayerImpl* layer) override;
-  void AppendQuads(const AppendQuadsContext& context,
-                   viz::CompositorRenderPass* render_pass,
-                   AppendQuadsData* append_quads_data) override;
-  void NotifyTileStateChanged(const Tile* tile) override;
-  gfx::Rect GetDamageRect() const override;
+  void CopyPropertiesTo(LayerImpl* layer) const override;
+  void MovePropertiesToActiveLayer(LayerImpl* active_layer) override;
+  void NotifyTileStateChanged(const Tile* tile, bool update_damage) override;
   void ResetChangeTracking() override;
   void ResetRasterScale();
   void DidBeginTracing() override;
@@ -77,9 +65,11 @@ class CC_EXPORT PictureLayerImpl
   void ReleaseTileResources() override;
   void RecreateTileResources() override;
   Region GetInvalidationRegionForDebugging() override;
-  gfx::Rect GetEnclosingVisibleRectInTargetSpace() const override;
   gfx::ContentColorUsage GetContentColorUsage() const override;
   DamageReasonSet GetDamageReasons() const override;
+  void DidDraw(viz::ClientResourceProvider* resource_provider) override;
+
+  bool ComputeCheckerboardedNeedsRecord() override;
 
   // PictureLayerTilingClient overrides.
   std::unique_ptr<Tile> CreateTile(const Tile::CreateInfo& info) override;
@@ -95,8 +85,7 @@ class CC_EXPORT PictureLayerImpl
   ScrollOffsetMap GetRasterInducingScrollOffsets() const override;
   const GlobalStateThatImpactsTilePriority& global_tile_state() const override;
 
-  // ImageAnimationController::AnimationDriver overrides.
-  bool ShouldAnimate(PaintImage::Id paint_image_id) const override;
+  bool ShouldAnimate(PaintImage::Id paint_image_id) const;
 
   void set_gpu_raster_max_texture_size(gfx::Size gpu_raster_max_texture_size) {
     if (gpu_raster_max_texture_size_ == gpu_raster_max_texture_size) {
@@ -110,17 +99,19 @@ class CC_EXPORT PictureLayerImpl
     return gpu_raster_max_texture_size_;
   }
 
-  void UpdateRasterSource(scoped_refptr<RasterSource> raster_source,
-                          Region* new_invalidation);
+  float GetMaximumContentsScaleForUseInAppendQuads() const override;
+
+  void StageNewRasterSourceForCommit(scoped_refptr<RasterSource> raster_source,
+                                     Region new_invalidation);
+  void CommitPendingRasterSource();
   void SetRasterSourceForTesting(scoped_refptr<RasterSource> raster_source,
                                  const Region& invalidation = Region());
   void RegenerateDiscardableImageMap();
   bool UpdateTiles();
+  bool HasAnimatedImages() const;
+  void AnnotateAnimatedImages(AnimatedImageDriverMap&) const;
 
   // Mask-related functions.
-  void GetContentsResourceId(viz::ResourceId* resource_id,
-                             gfx::Size* resource_size,
-                             gfx::SizeF* resource_uv_size) const override;
 
   size_t GPUMemoryUsageInBytes() const override;
 
@@ -182,25 +173,53 @@ class CC_EXPORT PictureLayerImpl
                                const PaintWorkletInput::PropertyValue& prev,
                                const PaintWorkletInput::PropertyValue& next);
 
-  void SetContentsScaleForTesting(float scale) {
-    ideal_contents_scale_ = raster_contents_scale_ =
-        gfx::Vector2dF(scale, scale);
-  }
-
-  void AddLastAppendQuadsTilingForTesting(PictureLayerTiling* tiling) {
-    last_append_quads_tilings_.push_back(tiling);
-  }
-
   void set_has_non_animated_image_update_rect() {
     has_non_animated_image_update_rect_ = true;
+  }
+  bool has_animated_image_update_rect() const {
+    return has_animated_image_update_rect_;
+  }
+  bool has_non_animated_image_update_rect() const {
+    return has_non_animated_image_update_rect_;
   }
 
   // Returns the set of tiles which have been updated since the last call to
   // this method. This returns tile indices for each updated tile, grouped by
   // the scale key of their respective tiling. Beware that this is not pruned,
   // so tilings or tiles identified within may no longer exist.
-  using TileUpdateSet = std::map<float, std::set<TileIndex>>;
+  struct TileUpdateIndex : public TileIndex {
+    TileUpdateIndex() = default;
+    TileUpdateIndex(int i, int j, bool update_damage)
+        : TileIndex(i, j), update_damage(update_damage) {}
+
+    // Indicate whether this tile's damage rect should be tracked by
+    // DamageTracker in viz side.
+    mutable bool update_damage;
+  };
+  using TileUpdateSet = std::map<float, std::set<TileUpdateIndex>>;
   TileUpdateSet TakeUpdatedTiles();
+
+  std::vector<float> TakeProposedTilingScalesForDeletion();
+
+  // This is called in TreesInViz mode after context lost and all tiles need
+  // to be re-wired to viz.
+  TileUpdateSet TakeAllTiles();
+
+  bool IsDirectlyCompositedImage() const override;
+  gfx::Rect RecordedBounds() const override;
+
+  void set_should_batch_updated_tiles() { should_batch_updated_tiles_ = true; }
+
+  bool should_batch_updated_tiles() const {
+    return should_batch_updated_tiles_;
+  }
+
+  // For testing.
+  void SetRasterContentsScaleForTesting(float scale) {
+    raster_contents_scale_ = gfx::Vector2dF(scale, scale);
+  }
+
+  void ClearLastAppendsQuadsScalesForTesting() { ClearLastAppendQuadsScales(); }
 
  protected:
   friend class RasterizeAndRecordBenchmarkImpl;
@@ -211,7 +230,6 @@ class CC_EXPORT PictureLayerImpl
   bool CanRecreateHighResTilingForLCDTextAndRasterTransform(
       const PictureLayerTiling& high_res) const;
   void UpdateTilingsForRasterScaleAndTranslation(bool adjusted_raster_scale);
-  void AddLowResolutionTilingIfNeeded();
   bool ShouldAdjustRasterScale() const;
   void RecalculateRasterScales();
   void AdjustRasterScaleForTransformAnimation(
@@ -219,9 +237,7 @@ class CC_EXPORT PictureLayerImpl
   float MinimumRasterContentsScaleForWillChangeTransform() const;
   // Returns false if raster translation is not applicable.
   bool CalculateRasterTranslation(gfx::Vector2dF& raster_translation) const;
-  void CleanUpTilingsOnActiveLayer(
-      const std::vector<raw_ptr<PictureLayerTiling, VectorExperimental>>&
-          used_tilings);
+  void CleanUpTilingsOnActiveLayer();
   float MinimumContentsScale() const;
   float MaximumContentsScale() const;
   void UpdateViewportRectForTilePriorityInContentSpace();
@@ -237,15 +253,14 @@ class CC_EXPORT PictureLayerImpl
 
   void UpdateRasterSourceInternal(
       scoped_refptr<RasterSource> raster_source,
-      Region* new_invalidation,
+      Region new_invalidation,
       const PictureLayerTilingSet* pending_set,
       const PaintWorkletRecordMap* pending_paint_worklet_records,
       const DiscardableImageMap* pending_discardable_image_map);
 
-  bool IsDirectlyCompositedImage() const;
   void UpdateDirectlyCompositedImageFromRasterSource();
 
-  void SanityCheckTilingState() const;
+  void SanityCheckTilingState() const override;
 
   void GetDebugBorderProperties(SkColor4f* color, float* width) const override;
   void GetAllPrioritizedTilesForTracing(
@@ -255,9 +270,6 @@ class CC_EXPORT PictureLayerImpl
   void UpdateIdealScales();
   float MaximumTilingContentsScale() const;
   std::unique_ptr<PictureLayerTilingSet> CreatePictureLayerTilingSet();
-
-  void RegisterAnimatedImages();
-  void UnregisterAnimatedImages();
 
   // Set the collection of PaintWorkletInput as well as their PaintImageId that
   // are part of this layer.
@@ -275,11 +287,39 @@ class CC_EXPORT PictureLayerImpl
   // RAW_PTR_EXCLUSION: Performance reasons (based on analysis of speedometer3).
   RAW_PTR_EXCLUSION PictureLayerImpl* twin_layer_ = nullptr;
 
+  // Tracks tiles changed since the last call to TakeUpdatedTiles().
+  TileUpdateSet updated_tiles_;
+
+  // Tracks all tiling contents-scale keys that this PictureLayerImpl has
+  // proposed for deletion since last call to TakeUpdatedScaleKeysToDelete().
+  // Used only in TreesInViz mode.
+  base::flat_set<float> proposed_tiling_scales_for_deletion_;
+
+  // When true, tile updates for this layer are batched in |updated_tiles_|
+  // instead of being sent to Viz immediately. This is necessary to prevent a
+  // race condition in TreesInViz mode where tile updates could arrive at Viz
+  // before the layer itself, causing the updates to be dropped. This flag is
+  // set during activation and cleared after the layer's properties (and batched
+  // tile updates) are sent to Viz during UpdateDisplayTree.
+  // Note that while we set this flag on active tree at activation and clear
+  // after the layer is sent to viz, for pending tree we always keep this flag
+  // set and never reset it. This is because all the pending tree updates must
+  // be batched.
+  // We also need to set it when there is a commit from PictureLayer
+  // to PictureLayerImpl to cover the commit directly to active tree cases where
+  // this flag will be reset again.
+  bool should_batch_updated_tiles_ = true;
+
   std::unique_ptr<PictureLayerTilingSet> tilings_ =
       CreatePictureLayerTilingSet();
   scoped_refptr<RasterSource> raster_source_;
   Region invalidation_;
   scoped_refptr<const DiscardableImageMap> discardable_image_map_;
+
+  // This values are taken from the PictureLayer during tree sync and applied
+  // during commit.
+  scoped_refptr<RasterSource> pending_raster_source_;
+  Region pending_invalidation_;
 
   // Ideal scales are calcuated from the transforms applied to the layer. They
   // represent the best known scale from the layer to the final output.
@@ -299,14 +339,11 @@ class CC_EXPORT PictureLayerImpl
   float raster_device_scale_ = 0.f;
   gfx::Vector2dF raster_source_scale_;
   gfx::Vector2dF raster_contents_scale_;
-  float low_res_raster_contents_scale_ = 0.f;
 
   float ideal_source_scale_key() const {
     return std::max(ideal_source_scale_.x(), ideal_source_scale_.y());
   }
-  float ideal_contents_scale_key() const {
-    return std::max(ideal_contents_scale_.x(), ideal_contents_scale_.y());
-  }
+  float GetIdealContentsScaleKey() const override;
   float raster_source_scale_key() const {
     return std::max(raster_source_scale_.x(), raster_source_scale_.y());
   }
@@ -314,12 +351,7 @@ class CC_EXPORT PictureLayerImpl
     return std::max(raster_contents_scale_.x(), raster_contents_scale_.y());
   }
 
-  bool is_backdrop_filter_mask_ : 1 = false;
-
   bool was_screen_space_transform_animating_ : 1 = false;
-  bool only_used_low_res_last_append_quads_ : 1 = false;
-
-  bool nearest_neighbor_ : 1 = false;
 
   // This is set by UpdateRasterSource() on change of raster source size. It's
   // used to recalculate raster scale for will-chagne:transform. It's reset to
@@ -336,6 +368,10 @@ class CC_EXPORT PictureLayerImpl
   LCDTextDisallowedReason lcd_text_disallowed_reason_ =
       LCDTextDisallowedReason::kNoText;
 
+ public:
+  void CleanUpTilings(const std::vector<float>& tiling_scales_to_clean_up);
+
+ protected:
   // If this scale is not zero, it indicates that this layer is a directly
   // composited image layer (i.e. the only thing drawn into this layer is an
   // image). The rasterized pixels will be the same as the image's original
@@ -352,14 +388,6 @@ class CC_EXPORT PictureLayerImpl
 
   gfx::Size gpu_raster_max_texture_size_;
 
-  // List of tilings that were used last time we appended quads. This can be
-  // used as an optimization not to remove tilings if they are still being
-  // drawn. Note that accessing this vector should only be done in the context
-  // of comparing pointers, since objects pointed to are not guaranteed to
-  // exist.
-  std::vector<raw_ptr<PictureLayerTiling, VectorExperimental>>
-      last_append_quads_tilings_;
-
   // The set of PaintWorkletInputs that are part of this PictureLayerImpl, and
   // their painted results (if any). During commit, Blink hands us a set of
   // PaintWorkletInputs that are part of this layer. These are then painted
@@ -369,12 +397,36 @@ class CC_EXPORT PictureLayerImpl
 
   TileSizeCalculator tile_size_calculator_{this};
 
-  // Denotes an area that is damaged and needs redraw. This is in the layer's
-  // space.
-  gfx::Rect damage_rect_;
+ private:
+  // TileBasedLayerImpl:
+  void WillAppendQuads() override;
+  void AppendQuadsForResourcelessSoftwareDraw(
+      const AppendQuadsContext& context,
+      viz::CompositorRenderPass* render_pass,
+      AppendQuadsData* append_quads_data,
+      viz::SharedQuadState* shared_quad_state,
+      const Occlusion& scaled_occlusion) override;
+  TilingSetCoverageIterator<PictureLayerTiling> Cover(
+      const gfx::Rect& coverage_rect,
+      float coverage_scale,
+      float ideal_contents_scale) const override;
+  void WillProcessReadyToDrawTile(
+      const TilingSetCoverageIterator<PictureLayerTiling>& iter) override;
+  bool ShouldUpdateApproximatedVisibleContentArea(
+      TileResolution resolution) const override;
+  bool ShouldReportTileAsMissing(
+      const gfx::Rect& tile_geometry_rect,
+      const gfx::Rect& scaled_viewport_for_tile_priority) const override;
+  void DidAppendQuad(viz::DrawQuad* quad,
+                     const TilingSetCoverageIterator<PictureLayerTiling>& iter,
+                     AppendQuadsData* append_quads_data,
+                     bool is_checkerboard) override;
 
-  // Tracks tiles changed since the last call to TakeUpdatedTiles().
-  TileUpdateSet updated_tiles_;
+  gfx::Rect GetScaledViewportForTilePriority(float scale) const override;
+
+ private:
+  TilingResolution GetTilingResolutionForDebugBorders(
+      const PictureLayerTiling* tiling) const override;
 };
 
 }  // namespace cc

@@ -9,6 +9,8 @@
 
 #include "base/memory/raw_ptr.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/test/gmock_callback_support.h"
 #include "build/build_config.h"
 #include "net/base/proxy_chain.h"
 #include "net/base/proxy_server.h"
@@ -49,6 +51,13 @@ class MockVisitor : public WebTransportClientVisitor {
               (override));
   MOCK_METHOD(void, OnConnectionFailed, (const WebTransportError&), (override));
   MOCK_METHOD(void,
+              OnLocalNetworkAccessCheck,
+              (const IPEndPoint&,
+               const NetLogWithSource&,
+               CompletionOnceCallback callback),
+              (override));
+  MOCK_METHOD(void, OnBeforeConnect, (const IPEndPoint&), (override));
+  MOCK_METHOD(void,
               OnClosed,
               (const std::optional<WebTransportCloseInfo>&),
               (override));
@@ -59,7 +68,7 @@ class MockVisitor : public WebTransportClientVisitor {
   MOCK_METHOD1(OnDatagramReceived, void(std::string_view));
   MOCK_METHOD0(OnCanCreateNewOutgoingBidirectionalStream, void());
   MOCK_METHOD0(OnCanCreateNewOutgoingUnidirectionalStream, void());
-  MOCK_METHOD1(OnDatagramProcessed, void(std::optional<quic::MessageStatus>));
+  MOCK_METHOD1(OnDatagramProcessed, void(std::optional<quic::DatagramStatus>));
 };
 
 // A clock that only mocks out WallNow(), but uses real Now() and
@@ -127,6 +136,8 @@ class DedicatedWebTransportHttp3Test : public TestWithTaskEnvironment {
             run_loop_->Quit();
           }
         });
+    ON_CALL(visitor_, OnLocalNetworkAccessCheck(_, _, _))
+        .WillByDefault(base::test::RunOnceCallback<2>(OK));
   }
 
   // Use a URLRequestContextBuilder to set `context_`.
@@ -150,7 +161,7 @@ class DedicatedWebTransportHttp3Test : public TestWithTaskEnvironment {
     // This is required to bypass the check that only allows known certificate
     // roots in QUIC.
     quic_context->params()->origins_to_force_quic_on.insert(
-        HostPortPair("test.example.com", 0));
+        url::SchemeHostPort("https", "test.example.com", 443));
     builder.set_quic_context(std::move(quic_context));
 
     builder.set_net_log(NetLog::Get());
@@ -207,10 +218,11 @@ class DedicatedWebTransportHttp3Test : public TestWithTaskEnvironment {
 TEST_F(DedicatedWebTransportHttp3Test, Connect) {
   StartServer();
   client_ = std::make_unique<DedicatedWebTransportHttp3Client>(
-      GetURL("/echo"), origin_, &visitor_, anonymization_key_, context_.get(),
-      WebTransportParameters());
+      GetURL("/echo"), origin_, &visitor_, anonymization_key_,
+      handles::kInvalidNetworkHandle, context_.get(), WebTransportParameters());
 
-  EXPECT_CALL(visitor_, OnConnected(_)).WillOnce(StopRunning());
+  EXPECT_CALL(visitor_, OnBeforeConnect);
+  EXPECT_CALL(visitor_, OnConnected).WillOnce(StopRunning());
   client_->Connect();
   Run();
   ASSERT_TRUE(client_->session() != nullptr);
@@ -218,6 +230,27 @@ TEST_F(DedicatedWebTransportHttp3Test, Connect) {
   client_->Close(std::nullopt);
   EXPECT_CALL(visitor_, OnClosed(_)).WillOnce(StopRunning());
   Run();
+}
+
+// Check that the Local Network Access check returning an error correctly fails
+// the connection before attempting the connection.
+TEST_F(DedicatedWebTransportHttp3Test, ConnectLocalNetworkAccessCheckFail) {
+  StartServer();
+  client_ = std::make_unique<DedicatedWebTransportHttp3Client>(
+      GetURL("/echo"), origin_, &visitor_, anonymization_key_,
+      handles::kInvalidNetworkHandle, context_.get(), WebTransportParameters());
+
+  EXPECT_CALL(visitor_, OnLocalNetworkAccessCheck)
+      .WillOnce(base::test::RunOnceCallback<2>(
+          ERR_BLOCKED_BY_LOCAL_NETWORK_ACCESS_CHECKS));
+
+  WebTransportError error;
+  EXPECT_CALL(visitor_, OnConnectionFailed)
+      .WillOnce(DoAll(StopRunning(), SaveArg<0>(&error)));
+  client_->Connect();
+  Run();
+  ASSERT_TRUE(client_->session() == nullptr);
+  EXPECT_EQ(error.net_error, ERR_BLOCKED_BY_LOCAL_NETWORK_ACCESS_CHECKS);
 }
 
 // Check that connecting via a proxy fails. This is currently not implemented,
@@ -231,11 +264,9 @@ TEST_F(DedicatedWebTransportHttp3Test, ConnectViaProxy) {
           TRAFFIC_ANNOTATION_FOR_TESTS));
   StartServer();
   client_ = std::make_unique<DedicatedWebTransportHttp3Client>(
-      GetURL("/echo"), origin_, &visitor_, anonymization_key_, context_.get(),
-      WebTransportParameters());
+      GetURL("/echo"), origin_, &visitor_, anonymization_key_,
+      handles::kInvalidNetworkHandle, context_.get(), WebTransportParameters());
 
-  // This will fail before the run loop starts.
-  EXPECT_CALL(visitor_, OnConnectionFailed(_));
   client_->Connect();
 }
 
@@ -248,10 +279,11 @@ TEST_F(DedicatedWebTransportHttp3Test, ConnectViaProxy) {
 TEST_F(DedicatedWebTransportHttp3Test, MAYBE_CloseTimeout) {
   StartServer();
   client_ = std::make_unique<DedicatedWebTransportHttp3Client>(
-      GetURL("/echo"), origin_, &visitor_, anonymization_key_, context_.get(),
-      WebTransportParameters());
+      GetURL("/echo"), origin_, &visitor_, anonymization_key_,
+      handles::kInvalidNetworkHandle, context_.get(), WebTransportParameters());
 
-  EXPECT_CALL(visitor_, OnConnected(_)).WillOnce(StopRunning());
+  EXPECT_CALL(visitor_, OnBeforeConnect);
+  EXPECT_CALL(visitor_, OnConnected).WillOnce(StopRunning());
   client_->Connect();
   Run();
   ASSERT_TRUE(client_->session() != nullptr);
@@ -275,9 +307,10 @@ TEST_F(DedicatedWebTransportHttp3Test, CloseReason) {
   StartServer();
   client_ = std::make_unique<DedicatedWebTransportHttp3Client>(
       GetURL("/session-close"), origin_, &visitor_, anonymization_key_,
-      context_.get(), WebTransportParameters());
+      handles::kInvalidNetworkHandle, context_.get(), WebTransportParameters());
 
-  EXPECT_CALL(visitor_, OnConnected(_)).WillOnce(StopRunning());
+  EXPECT_CALL(visitor_, OnBeforeConnect);
+  EXPECT_CALL(visitor_, OnConnected).WillOnce(StopRunning());
   client_->Connect();
   Run();
   ASSERT_TRUE(client_->session() != nullptr);
@@ -294,6 +327,43 @@ TEST_F(DedicatedWebTransportHttp3Test, CloseReason) {
       .WillOnce(DoAll(StopRunning(), SaveArg<0>(&received_close_info)));
   Run();
   EXPECT_THAT(received_close_info, Optional(close_info));
+}
+
+// Test negotiation of the application protocol via
+// https://www.ietf.org/archive/id/draft-ietf-webtrans-http3-12.html#name-application-protocol-negoti
+TEST_F(DedicatedWebTransportHttp3Test, SubprotocolHeader) {
+  StartServer();
+  WebTransportParameters parameters;
+  parameters.application_protocols = {"first", "second", "third"};
+  // The selected-subprotocol endpoint selects the first of the offered
+  // protocols by default, and echoes it on a unidirectional stream.
+  client_ = std::make_unique<DedicatedWebTransportHttp3Client>(
+      GetURL("/selected-subprotocol"), origin_, &visitor_, anonymization_key_,
+      handles::kInvalidNetworkHandle, context_.get(), parameters);
+
+  bool stream_received = false;
+  EXPECT_CALL(visitor_, OnConnected).WillOnce(StopRunning());
+  EXPECT_CALL(visitor_, OnIncomingUnidirectionalStreamAvailable).WillOnce([&] {
+    stream_received = true;
+    StopRunning();
+  });
+  client_->Connect();
+  Run();
+  ASSERT_TRUE(client_->session() != nullptr);
+
+  EXPECT_EQ(client_->session()->GetNegotiatedSubprotocol(), "first");
+
+  if (!stream_received) {
+    Run();
+  }
+
+  quic::WebTransportStream* stream =
+      client_->session()->AcceptIncomingUnidirectionalStream();
+  ASSERT_TRUE(stream != nullptr);
+  std::string read_buffer;
+  webtransport::Stream::ReadResult read_result = stream->Read(&read_buffer);
+  ASSERT_TRUE(read_result.fin);
+  EXPECT_EQ(read_buffer, "first");
 }
 
 }  // namespace

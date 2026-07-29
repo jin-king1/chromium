@@ -2,13 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
-#include "third_party/blink/renderer/core/html/lazy_load_image_observer.h"
-
+#include <array>
 #include <optional>
 #include <tuple>
 
@@ -18,8 +12,12 @@
 #include "third_party/blink/renderer/core/frame/web_local_frame_impl.h"
 #include "third_party/blink/renderer/core/html/html_iframe_element.h"
 #include "third_party/blink/renderer/core/html/html_image_element.h"
+#include "third_party/blink/renderer/core/html/media/lazy_load_media_observer.h"
 #include "third_party/blink/renderer/core/html_names.h"
+#include "third_party/blink/renderer/core/inspector/inspector_issue_storage.h"
+#include "third_party/blink/renderer/core/inspector/protocol/audits.h"
 #include "third_party/blink/renderer/core/loader/resource/image_resource.h"
+#include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/core/paint/paint_layer_scrollable_area.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
 #include "third_party/blink/renderer/core/style/style_image.h"
@@ -78,7 +76,8 @@ TEST_F(LazyLoadImagesSimTest, ImgSrcset) {
 
   // Scrolling down should load the larger image.
   GetDocument().View()->LayoutViewport()->SetScrollOffset(
-      ScrollOffset(0, 10000), mojom::blink::ScrollType::kProgrammatic);
+      ScrollOffset(0, 10000), mojom::blink::ScrollType::kProgrammatic,
+      cc::ScrollSourceType::kNone);
   SimRequest image_resource("https://example.com/img.png?200w", "image/png");
   Compositor().BeginFrame();
   test::RunPendingTasks();
@@ -121,8 +120,8 @@ class LazyLoadImagesParamsTest
   }
 
   int GetMargin() const {
-    static constexpr int kDistanceThresholdByEffectiveConnectionType[] = {
-        200, 300, 400, 500, 600, 700};
+    static constexpr auto kDistanceThresholdByEffectiveConnectionType =
+        std::to_array<int>({200, 300, 400, 500, 600, 700});
     return kDistanceThresholdByEffectiveConnectionType[static_cast<int>(
         GetParam())];
   }
@@ -278,7 +277,8 @@ TEST_P(LazyLoadImagesParamsTest, FarFromViewport) {
 
   // Scroll down so that the images are near the viewport.
   GetDocument().View()->LayoutViewport()->SetScrollOffset(
-      ScrollOffset(0, 150), mojom::blink::ScrollType::kProgrammatic);
+      ScrollOffset(0, 150), mojom::blink::ScrollType::kProgrammatic,
+      cc::ScrollSourceType::kNone);
 
   Compositor().BeginFrame();
   test::RunPendingTasks();
@@ -328,14 +328,14 @@ class LazyLoadImagesTest : public SimTest {
   }
 
   String MakeMainResourceString(const char* image_attributes) {
-    return String::Format(
+    return UNSAFE_TODO(String::Format(
         R"HTML(
         <body onload='console.log("main body onload");'>
         <div style='height: %dpx;'></div>
         <img src='https://example.com/image.png' %s
              onload='console.log("image onload");' />
         </body>)HTML",
-        kViewportHeight + kLoadingDistanceThreshold + 100, image_attributes);
+        kViewportHeight + kLoadingDistanceThreshold + 100, image_attributes));
   }
 
   void LoadMainResourceWithImageFarFromViewport(
@@ -483,7 +483,6 @@ TEST_F(LazyLoadImagesTest, AttributeChangedFromLazyToEager) {
       .getElementById(AtomicString("my_image"))
       ->setAttribute(html_names::kLoadingAttr, AtomicString("eager"));
 
-  Compositor().BeginFrame();
   test::RunPendingTasks();
 
   full_resource.Complete(TestImage());
@@ -558,7 +557,8 @@ TEST_F(LazyLoadImagesTest, ImageInsideLazyLoadedFrame) {
   // Scroll down so that the iframe is near the viewport, but the images within
   // it aren't near the viewport yet.
   GetDocument().View()->LayoutViewport()->SetScrollOffset(
-      ScrollOffset(0, 150), mojom::blink::ScrollType::kProgrammatic);
+      ScrollOffset(0, 150), mojom::blink::ScrollType::kProgrammatic,
+      cc::ScrollSourceType::kNone);
 
   Compositor().BeginFrame();
   test::RunPendingTasks();
@@ -620,7 +620,8 @@ TEST_F(LazyLoadImagesTest, ImageInsideLazyLoadedFrame) {
                                       "image/png");
 
   GetDocument().View()->LayoutViewport()->SetScrollOffset(
-      ScrollOffset(0, 250), mojom::blink::ScrollType::kProgrammatic);
+      ScrollOffset(0, 250), mojom::blink::ScrollType::kProgrammatic,
+      cc::ScrollSourceType::kNone);
 
   Compositor().BeginFrame();
   test::RunPendingTasks();
@@ -662,7 +663,7 @@ TEST_F(LazyLoadImagesTest, LazyLoadFileUrls) {
   // Scroll down such that the image is visible.
   GetDocument().View()->LayoutViewport()->SetScrollOffset(
       ScrollOffset(0, kViewportHeight + kLoadingDistanceThreshold),
-      mojom::blink::ScrollType::kProgrammatic);
+      mojom::blink::ScrollType::kProgrammatic, cc::ScrollSourceType::kNone);
 
   Compositor().BeginFrame();
   test::RunPendingTasks();
@@ -743,6 +744,51 @@ TEST_F(LazyLoadImagesTest, DeferredLazyLoadImagesKeptAliveForDecodeRequest) {
   // After GC, the image is still non-null, since it is kept alive due to the
   // outstanding decode request.
   EXPECT_NE(image, nullptr);
+}
+
+TEST_F(LazyLoadImagesTest, ReportLazyLoadImageIssueForUnsizedImage) {
+  SimRequest main_resource("https://example.com/", "text/html");
+  LoadURL("https://example.com/");
+  main_resource.Complete(R"HTML(
+    <body>
+    <img src='data:image/png,' loading='lazy'>
+    </body>)HTML");
+
+  Compositor().BeginFrame();
+  test::RunPendingTasks();
+
+  auto& storage = GetDocument().GetPage()->GetInspectorIssueStorage();
+  bool found_issue = false;
+  for (wtf_size_t i = 0; i < storage.size(); ++i) {
+    auto* issue = storage.at(i);
+    if (issue->getCode() ==
+            protocol::Audits::InspectorIssueCodeEnum::LazyLoadImageIssue &&
+        issue->getDetails()->hasLazyLoadImageIssueDetails()) {
+      found_issue = true;
+      const auto& details = issue->getDetails()->getLazyLoadImageIssueDetails();
+      EXPECT_EQ("data:image/png,", details->getUrl());
+    }
+  }
+  EXPECT_TRUE(found_issue);
+}
+
+TEST_F(LazyLoadImagesTest, NoLazyLoadImageIssueForSizedImage) {
+  SimRequest main_resource("https://example.com/", "text/html");
+  LoadURL("https://example.com/");
+  main_resource.Complete(R"HTML(
+    <body>
+    <img src='data:image/png,' loading='lazy' width='100' height='100'>
+    </body>)HTML");
+
+  Compositor().BeginFrame();
+  test::RunPendingTasks();
+
+  auto& storage = GetDocument().GetPage()->GetInspectorIssueStorage();
+  for (wtf_size_t i = 0; i < storage.size(); ++i) {
+    auto* issue = storage.at(i);
+    EXPECT_NE(protocol::Audits::InspectorIssueCodeEnum::LazyLoadImageIssue,
+              issue->getCode());
+  }
 }
 
 }  // namespace

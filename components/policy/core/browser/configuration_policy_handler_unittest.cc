@@ -18,7 +18,9 @@
 #include "components/policy/core/common/policy_types.h"
 #include "components/policy/core/common/schema.h"
 #include "components/prefs/pref_value_map.h"
+#include "components/strings/grit/components_strings.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#include "ui/base/l10n/l10n_util.h"
 
 namespace policy {
 
@@ -118,8 +120,7 @@ class StringListPolicyHandler : public ListPolicyHandler {
       : ListPolicyHandler(policy_name, base::Value::Type::STRING) {}
 
  protected:
-  void ApplyList(base::Value::List filtered_list,
-                 PrefValueMap* prefs) override {
+  void ApplyList(base::ListValue filtered_list, PrefValueMap* prefs) override {
     prefs->SetValue(kTestPref, base::Value(std::move(filtered_list)));
   }
 };
@@ -142,7 +143,7 @@ JsonStringHandlerForTesting() {
 }  // namespace
 
 TEST(ListPolicyHandlerTest, CheckPolicySettings) {
-  base::Value::List list;
+  base::ListValue list;
   base::Value dict(base::Value::Type::DICT);
   policy::PolicyMap policy_map;
   policy::PolicyErrorMap errors;
@@ -190,8 +191,8 @@ TEST(ListPolicyHandlerTest, CheckPolicySettings) {
 }
 
 TEST(StringListPolicyHandlerTest, ApplyPolicySettings) {
-  base::Value::List list;
-  base::Value::List expected;
+  base::ListValue list;
+  base::ListValue expected;
   PolicyMap policy_map;
   PrefValueMap prefs;
   base::Value* value;
@@ -229,7 +230,7 @@ TEST(StringListPolicyHandlerTest, ApplyPolicySettings) {
 }
 
 TEST(StringToIntEnumListPolicyHandlerTest, CheckPolicySettings) {
-  base::Value::List list;
+  base::ListValue list;
   PolicyMap policy_map;
   PolicyErrorMap errors;
   StringMappingListPolicyHandler handler(
@@ -265,8 +266,8 @@ TEST(StringToIntEnumListPolicyHandlerTest, CheckPolicySettings) {
 }
 
 TEST(StringMappingListPolicyHandlerTest, ApplyPolicySettings) {
-  base::Value::List list;
-  base::Value::List expected;
+  base::ListValue list;
+  base::ListValue expected;
   PolicyMap policy_map;
   PrefValueMap prefs;
   base::Value* value;
@@ -718,6 +719,18 @@ TEST(SchemaValidatingPolicyHandlerTest, CheckAndGetValueInvalid) {
   std::unique_ptr<base::Value> output_value;
   EXPECT_FALSE(handler.CheckAndGetValueForTest(policy_map, /*errors=*/nullptr,
                                                &output_value));
+
+  // When an error map is provided, the validation failure is reported as a
+  // blocking kError. The value fails validation outright, so no output value is
+  // produced (and, notably, the input value is never cloned).
+  PolicyErrorMap error_map;
+  output_value.reset();
+  EXPECT_FALSE(
+      handler.CheckAndGetValueForTest(policy_map, &error_map, &output_value));
+  EXPECT_FALSE(output_value);
+  EXPECT_THAT(error_map.GetErrors(kPolicyName),
+              testing::ElementsAre(testing::FieldsAre(
+                  testing::_, PolicyMap::MessageType::kError)));
 }
 
 TEST(SchemaValidatingPolicyHandlerTest, CheckAndGetValueUnknown) {
@@ -771,7 +784,7 @@ TEST(SchemaValidatingPolicyHandlerTest, CheckAndGetValueUnknown) {
       handler.CheckAndGetValueForTest(policy_map, &error_map, &output_value));
   ASSERT_TRUE(output_value);
   ASSERT_TRUE(output_value->is_dict());
-  const base::Value::Dict& output = output_value->GetDict();
+  const base::DictValue& output = output_value->GetDict();
 
   // Test that CheckAndGetValue outputs warnings about unknown properties.
   EXPECT_THAT(error_map.GetErrors(kPolicyName),
@@ -1129,14 +1142,14 @@ TEST(URLPolicyHandler, CheckOnlyValidURLApplied) {
   EXPECT_EQ(*expected, *value);
 }
 
-TEST(CloudUserOnlyPolicyHandler, CheckValidatesSource) {
+TEST(CloudUserOnlyPolicyChecker, CheckValidatesSource) {
   PolicyMap policy_map;
   PrefValueMap prefs;
   std::unique_ptr<base::Value> expected;
   const base::Value* value;
   PolicyErrorMap errors;
   PolicyHandlerParameters params;
-  CloudUserOnlyPolicyHandler handler(std::make_unique<SimplePolicyHandler>(
+  CloudUserOnlyPolicyChecker handler(std::make_unique<SimplePolicyHandler>(
       kTestPolicy, kTestPref, base::Value::Type::STRING));
 
   std::vector<PolicySource> all_sources{

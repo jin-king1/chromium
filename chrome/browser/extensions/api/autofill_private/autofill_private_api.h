@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_EXTENSIONS_API_AUTOFILL_PRIVATE_AUTOFILL_PRIVATE_API_H_
 #define CHROME_BROWSER_EXTENSIONS_API_AUTOFILL_PRIVATE_AUTOFILL_PRIVATE_API_H_
 
+#include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
 #include "components/prefs/pref_service.h"
 #include "extensions/browser/extension_function.h"
 #include "extensions/browser/extension_function_histogram_value.h"
@@ -12,8 +13,13 @@
 namespace autofill {
 class AddressDataManager;
 class ContentAutofillClient;
+class EntityDataManager;
 class PaymentsDataManager;
 }  // namespace autofill
+
+namespace device_reauth {
+class DeviceAuthenticator;
+}  // namespace device_reauth
 
 namespace extensions {
 
@@ -191,24 +197,6 @@ class AutofillPrivateGetCreditCardListFunction
 
  protected:
   ~AutofillPrivateGetCreditCardListFunction() override = default;
-
-  // ExtensionFunction overrides.
-  ResponseAction Run() override;
-};
-
-class AutofillPrivateMigrateCreditCardsFunction
-    : public AutofillPrivateExtensionFunction {
- public:
-  AutofillPrivateMigrateCreditCardsFunction() = default;
-  AutofillPrivateMigrateCreditCardsFunction(
-      const AutofillPrivateMigrateCreditCardsFunction&) = delete;
-  AutofillPrivateMigrateCreditCardsFunction& operator=(
-      const AutofillPrivateMigrateCreditCardsFunction&) = delete;
-  DECLARE_EXTENSION_FUNCTION("autofillPrivate.migrateCreditCards",
-                             AUTOFILLPRIVATE_MIGRATECREDITCARDS)
-
- protected:
-  ~AutofillPrivateMigrateCreditCardsFunction() override = default;
 
   // ExtensionFunction overrides.
   ResponseAction Run() override;
@@ -442,68 +430,6 @@ class AutofillPrivateBulkDeleteAllCvcsFunction
   ResponseAction Run() override;
 };
 
-class AutofillPrivateSetAutofillSyncToggleEnabledFunction
-    : public AutofillPrivateExtensionFunction {
- public:
-  AutofillPrivateSetAutofillSyncToggleEnabledFunction() = default;
-  AutofillPrivateSetAutofillSyncToggleEnabledFunction(
-      const AutofillPrivateSetAutofillSyncToggleEnabledFunction&) = delete;
-  AutofillPrivateSetAutofillSyncToggleEnabledFunction& operator=(
-      const AutofillPrivateSetAutofillSyncToggleEnabledFunction&) = delete;
-  DECLARE_EXTENSION_FUNCTION("autofillPrivate.setAutofillSyncToggleEnabled",
-                             AUTOFILLPRIVATE_SETAUTOFILLSYNCTOGGLEENABLED)
-
- protected:
-  ~AutofillPrivateSetAutofillSyncToggleEnabledFunction() override = default;
-
-  // ExtensionFunction overrides.
-  ResponseAction Run() override;
-};
-
-class AutofillPrivateIsUserEligibleForAutofillImprovementsFunction
-    : public AutofillPrivateExtensionFunction {
- public:
-  AutofillPrivateIsUserEligibleForAutofillImprovementsFunction() = default;
-  AutofillPrivateIsUserEligibleForAutofillImprovementsFunction(
-      const AutofillPrivateIsUserEligibleForAutofillImprovementsFunction&) =
-      delete;
-  AutofillPrivateIsUserEligibleForAutofillImprovementsFunction& operator=(
-      const AutofillPrivateIsUserEligibleForAutofillImprovementsFunction&) =
-      delete;
-  DECLARE_EXTENSION_FUNCTION(
-      "autofillPrivate.isUserEligibleForAutofillImprovements",
-      AUTOFILLPRIVATE_ISUSERELIGIBLEFORAUTOFILLIMPROVEMENTS)
-
- protected:
-  ~AutofillPrivateIsUserEligibleForAutofillImprovementsFunction() override =
-      default;
-
-  // ExtensionFunction overrides.
-  ResponseAction Run() override;
-};
-
-class AutofillPrivatePredictionImprovementsIphFeatureUsedFunction
-    : public AutofillPrivateExtensionFunction {
- public:
-  AutofillPrivatePredictionImprovementsIphFeatureUsedFunction() = default;
-  AutofillPrivatePredictionImprovementsIphFeatureUsedFunction(
-      const AutofillPrivatePredictionImprovementsIphFeatureUsedFunction&) =
-      delete;
-  AutofillPrivatePredictionImprovementsIphFeatureUsedFunction& operator=(
-      const AutofillPrivatePredictionImprovementsIphFeatureUsedFunction&) =
-      delete;
-  DECLARE_EXTENSION_FUNCTION(
-      "autofillPrivate.predictionImprovementsIphFeatureUsed",
-      AUTOFILLPRIVATE_PREDICTIONIMPROVEMENTSIPHFFEATUREUSED)
-
- protected:
-  ~AutofillPrivatePredictionImprovementsIphFeatureUsedFunction() override =
-      default;
-
-  // ExtensionFunction overrides.
-  ResponseAction Run() override;
-};
-
 class AutofillPrivateAddOrUpdateEntityInstanceFunction
     : public AutofillPrivateExtensionFunction {
  public:
@@ -520,6 +446,25 @@ class AutofillPrivateAddOrUpdateEntityInstanceFunction
 
   // ExtensionFunction overrides.
   ResponseAction Run() override;
+
+ private:
+  // Helper to initiate an asynchronous save request of a private pass
+  // `entity_instance` through the Wallet API. Returns true if the async request
+  // was started, false otherwise.
+  bool TrySavePrivatePassWithWalletAPI(
+      const autofill::EntityInstance& entity_instance);
+
+  // Callback for the WalletPassAccessManager::SaveWalletEntityInstance request
+  // for private passes.
+  void OnSavePrivatePassToWalletFinished(
+      autofill::EntityInstance original_entity,
+      std::optional<autofill::EntityInstance> saved_entity);
+
+  // Helper to save the entity locally and show a notification informing the
+  // user that the private pass couldn't be saved to wallet.
+  void SavePrivatePassLocallyAndNotifyAsFallback(
+      autofill::EntityDataManager& manager,
+      autofill::EntityInstance entity);
 };
 
 class AutofillPrivateRemoveEntityInstanceFunction
@@ -561,7 +506,7 @@ class AutofillPrivateLoadEntityInstancesFunction
 class AutofillPrivateGetEntityInstanceByGuidFunction
     : public AutofillPrivateExtensionFunction {
  public:
-  AutofillPrivateGetEntityInstanceByGuidFunction() = default;
+  AutofillPrivateGetEntityInstanceByGuidFunction();
   AutofillPrivateGetEntityInstanceByGuidFunction(
       const AutofillPrivateGetEntityInstanceByGuidFunction&) = delete;
   AutofillPrivateGetEntityInstanceByGuidFunction& operator=(
@@ -570,46 +515,208 @@ class AutofillPrivateGetEntityInstanceByGuidFunction
                              AUTOFILLPRIVATE_GETENTITYINSTANCEBYGUID)
 
  protected:
-  ~AutofillPrivateGetEntityInstanceByGuidFunction() override = default;
+  ~AutofillPrivateGetEntityInstanceByGuidFunction() override;
+
+  // ExtensionFunction overrides.
+  ResponseAction Run() override;
+
+ private:
+  void OnReauthCompleted(const autofill::EntityInstance& entity_instance,
+                         bool auth_succeeded);
+
+  std::unique_ptr<device_reauth::DeviceAuthenticator> authenticator_;
+};
+
+class AutofillPrivateGetWritableEntityTypesFunction
+    : public AutofillPrivateExtensionFunction {
+ public:
+  AutofillPrivateGetWritableEntityTypesFunction() = default;
+  AutofillPrivateGetWritableEntityTypesFunction(
+      const AutofillPrivateGetWritableEntityTypesFunction&) = delete;
+  AutofillPrivateGetWritableEntityTypesFunction& operator=(
+      const AutofillPrivateGetWritableEntityTypesFunction&) = delete;
+  DECLARE_EXTENSION_FUNCTION("autofillPrivate.getWritableEntityTypes",
+                             AUTOFILLPRIVATE_GETWRITABLEENTITYTYPES)
+
+ protected:
+  ~AutofillPrivateGetWritableEntityTypesFunction() override = default;
 
   // ExtensionFunction overrides.
   ResponseAction Run() override;
 };
 
-class AutofillPrivateGetAllEntityTypesFunction
+class AutofillPrivateGetAllAttributeTypesForEntityTypeNameFunction
     : public AutofillPrivateExtensionFunction {
  public:
-  AutofillPrivateGetAllEntityTypesFunction() = default;
-  AutofillPrivateGetAllEntityTypesFunction(
-      const AutofillPrivateGetAllEntityTypesFunction&) = delete;
-  AutofillPrivateGetAllEntityTypesFunction& operator=(
-      const AutofillPrivateGetAllEntityTypesFunction&) = delete;
-  DECLARE_EXTENSION_FUNCTION("autofillPrivate.getAllEntityTypes",
-                             AUTOFILLPRIVATE_GETALLENTITYTYPES)
+  AutofillPrivateGetAllAttributeTypesForEntityTypeNameFunction() = default;
+  AutofillPrivateGetAllAttributeTypesForEntityTypeNameFunction(
+      const AutofillPrivateGetAllAttributeTypesForEntityTypeNameFunction&) =
+      delete;
+  AutofillPrivateGetAllAttributeTypesForEntityTypeNameFunction& operator=(
+      const AutofillPrivateGetAllAttributeTypesForEntityTypeNameFunction&) =
+      delete;
+  DECLARE_EXTENSION_FUNCTION(
+      "autofillPrivate.getAllAttributeTypesForEntityTypeName",
+      AUTOFILLPRIVATE_GETALLATTRIBUTETYPESFORENTITYTYPENAME)
 
  protected:
-  ~AutofillPrivateGetAllEntityTypesFunction() override = default;
+  ~AutofillPrivateGetAllAttributeTypesForEntityTypeNameFunction() override =
+      default;
 
   // ExtensionFunction overrides.
   ResponseAction Run() override;
 };
 
-class AutofillPrivateGetAllAttributeTypesForEntityFunction
+class AutofillPrivateGetRequiredAttributeTypesForEntityTypeNameFunction
     : public AutofillPrivateExtensionFunction {
  public:
-  AutofillPrivateGetAllAttributeTypesForEntityFunction() = default;
-  AutofillPrivateGetAllAttributeTypesForEntityFunction(
-      const AutofillPrivateGetAllAttributeTypesForEntityFunction&) = delete;
-  AutofillPrivateGetAllAttributeTypesForEntityFunction& operator=(
-      const AutofillPrivateGetAllAttributeTypesForEntityFunction&) = delete;
-  DECLARE_EXTENSION_FUNCTION("autofillPrivate.getAllAttributeTypesForEntity",
-                             AUTOFILLPRIVATE_GETALLATTRIBUTETYPESFORENTITY)
+  AutofillPrivateGetRequiredAttributeTypesForEntityTypeNameFunction() = default;
+  AutofillPrivateGetRequiredAttributeTypesForEntityTypeNameFunction(
+      const AutofillPrivateGetRequiredAttributeTypesForEntityTypeNameFunction&) =
+      delete;
+  AutofillPrivateGetRequiredAttributeTypesForEntityTypeNameFunction& operator=(
+      const AutofillPrivateGetRequiredAttributeTypesForEntityTypeNameFunction&) =
+      delete;
+  DECLARE_EXTENSION_FUNCTION(
+      "autofillPrivate.getRequiredAttributeTypesForEntityTypeName",
+      AUTOFILLPRIVATE_GETREQUIREDATTRIBUTETYPESFORENTITYTYPENAME)
 
  protected:
-  ~AutofillPrivateGetAllAttributeTypesForEntityFunction() override = default;
+  ~AutofillPrivateGetRequiredAttributeTypesForEntityTypeNameFunction()
+      override = default;
 
   // ExtensionFunction overrides.
   ResponseAction Run() override;
+};
+
+class AutofillPrivateGetAutofillAiOptInStatusFunction
+    : public AutofillPrivateExtensionFunction {
+ public:
+  AutofillPrivateGetAutofillAiOptInStatusFunction() = default;
+  AutofillPrivateGetAutofillAiOptInStatusFunction(
+      const AutofillPrivateGetAutofillAiOptInStatusFunction&) = delete;
+  AutofillPrivateGetAutofillAiOptInStatusFunction& operator=(
+      const AutofillPrivateGetAutofillAiOptInStatusFunction&) = delete;
+  DECLARE_EXTENSION_FUNCTION("autofillPrivate.getAutofillAiOptInStatus",
+                             AUTOFILLPRIVATE_GETAUTOFILLAIOPTINSTATUS)
+
+ protected:
+  ~AutofillPrivateGetAutofillAiOptInStatusFunction() override = default;
+
+  // ExtensionFunction overrides.
+  ResponseAction Run() override;
+};
+
+class AutofillPrivateSetAutofillAiOptInStatusFunction
+    : public AutofillPrivateExtensionFunction {
+ public:
+  AutofillPrivateSetAutofillAiOptInStatusFunction() = default;
+  AutofillPrivateSetAutofillAiOptInStatusFunction(
+      const AutofillPrivateSetAutofillAiOptInStatusFunction&) = delete;
+  AutofillPrivateSetAutofillAiOptInStatusFunction& operator=(
+      const AutofillPrivateSetAutofillAiOptInStatusFunction&) = delete;
+  DECLARE_EXTENSION_FUNCTION("autofillPrivate.setAutofillAiOptInStatus",
+                             AUTOFILLPRIVATE_SETAUTOFILLAIOPTINSTATUS)
+
+ protected:
+  ~AutofillPrivateSetAutofillAiOptInStatusFunction() override = default;
+
+  // ExtensionFunction overrides.
+  ResponseAction Run() override;
+};
+
+class AutofillPrivateGetWalletablePassDetectionOptInStatusFunction
+    : public AutofillPrivateExtensionFunction {
+ public:
+  AutofillPrivateGetWalletablePassDetectionOptInStatusFunction() = default;
+  AutofillPrivateGetWalletablePassDetectionOptInStatusFunction(
+      const AutofillPrivateGetWalletablePassDetectionOptInStatusFunction&) =
+      delete;
+  AutofillPrivateGetWalletablePassDetectionOptInStatusFunction& operator=(
+      const AutofillPrivateGetWalletablePassDetectionOptInStatusFunction&) =
+      delete;
+  DECLARE_EXTENSION_FUNCTION(
+      "autofillPrivate.getWalletablePassDetectionOptInStatus",
+      AUTOFILLPRIVATE_GETWALLETABLEPASSDETECTIONOPTINSTATUS)
+
+ protected:
+  ~AutofillPrivateGetWalletablePassDetectionOptInStatusFunction() override =
+      default;
+
+  // ExtensionFunction overrides.
+  ResponseAction Run() override;
+};
+
+class AutofillPrivateSetWalletablePassDetectionOptInStatusFunction
+    : public AutofillPrivateExtensionFunction {
+ public:
+  AutofillPrivateSetWalletablePassDetectionOptInStatusFunction() = default;
+  AutofillPrivateSetWalletablePassDetectionOptInStatusFunction(
+      const AutofillPrivateSetWalletablePassDetectionOptInStatusFunction&) =
+      delete;
+  AutofillPrivateSetWalletablePassDetectionOptInStatusFunction& operator=(
+      const AutofillPrivateSetWalletablePassDetectionOptInStatusFunction&) =
+      delete;
+  DECLARE_EXTENSION_FUNCTION(
+      "autofillPrivate.setWalletablePassDetectionOptInStatus",
+      AUTOFILLPRIVATE_SETWALLETABLEPASSDETECTIONOPTINSTATUS)
+
+ protected:
+  ~AutofillPrivateSetWalletablePassDetectionOptInStatusFunction() override =
+      default;
+
+  // ExtensionFunction overrides.
+  ResponseAction Run() override;
+};
+
+class AutofillPrivateAuthenticateUserBeforeViewingEntityDataFunction
+    : public AutofillPrivateExtensionFunction {
+ public:
+  AutofillPrivateAuthenticateUserBeforeViewingEntityDataFunction();
+  AutofillPrivateAuthenticateUserBeforeViewingEntityDataFunction(
+      const AutofillPrivateAuthenticateUserBeforeViewingEntityDataFunction&) =
+      delete;
+  AutofillPrivateAuthenticateUserBeforeViewingEntityDataFunction& operator=(
+      const AutofillPrivateAuthenticateUserBeforeViewingEntityDataFunction&) =
+      delete;
+  DECLARE_EXTENSION_FUNCTION(
+      "autofillPrivate.authenticateUserBeforeViewingEntityData",
+      AUTOFILLPRIVATE_AUTHENTICATEUSERBEFOREVIEWINGENTITYDATA)
+
+ protected:
+  ~AutofillPrivateAuthenticateUserBeforeViewingEntityDataFunction() override;
+
+  // ExtensionFunction overrides.
+  ResponseAction Run() override;
+
+ private:
+  void OnReauthCompleted(bool auth_succeeded);
+
+  std::unique_ptr<device_reauth::DeviceAuthenticator> authenticator_;
+};
+
+class AutofillPrivateToggleAutofillAiReauthRequirementFunction
+    : public AutofillPrivateExtensionFunction {
+ public:
+  AutofillPrivateToggleAutofillAiReauthRequirementFunction();
+  AutofillPrivateToggleAutofillAiReauthRequirementFunction(
+      const AutofillPrivateToggleAutofillAiReauthRequirementFunction&) = delete;
+  AutofillPrivateToggleAutofillAiReauthRequirementFunction& operator=(
+      const AutofillPrivateToggleAutofillAiReauthRequirementFunction&) = delete;
+  DECLARE_EXTENSION_FUNCTION(
+      "autofillPrivate.toggleAutofillAiReauthRequirement",
+      AUTOFILLPRIVATE_TOGGLEAUTOFILLAIREAUTHREQUIREMENT)
+
+ protected:
+  ~AutofillPrivateToggleAutofillAiReauthRequirementFunction() override;
+
+  // ExtensionFunction overrides.
+  ResponseAction Run() override;
+
+ private:
+  void OnReauthCompleted(bool auth_succeeded);
+
+  std::unique_ptr<device_reauth::DeviceAuthenticator> authenticator_;
 };
 
 }  // namespace extensions

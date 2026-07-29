@@ -7,25 +7,21 @@
 
 #import <Foundation/Foundation.h>
 
+#import <vector>
+
+struct DriveItem;
 @class DriveFilePickerMediator;
 
 // Handles the browsing and searching a drive folder.
 @protocol DriveFilePickerMediatorDelegate
 
 // Browses a given drive collection.
-- (void)
-    browseDriveCollectionWithMediator:
-        (DriveFilePickerMediator*)driveFilePickerMediator
-                                title:(NSString*)title
-                        imagesPending:(NSMutableSet<NSString*>*)imagesPending
-                           imageCache:(NSCache<NSString*, UIImage*>*)imageCache
-                       collectionType:
-                           (DriveFilePickerCollectionType)collectionType
-                     folderIdentifier:(NSString*)folderIdentifier
-                               filter:(DriveFilePickerFilter)filter
-                  ignoreAcceptedTypes:(BOOL)ignoreAcceptedTypes
-                      sortingCriteria:(DriveItemsSortingType)sortingCriteria
-                     sortingDirection:(DriveItemsSortingOrder)sortingDirection;
+- (void)browseDriveCollectionWithMediator:
+            (DriveFilePickerMediator*)driveFilePickerMediator
+                               collection:
+                                   (std::unique_ptr<DriveFilePickerCollection>)
+                                       collection
+                                  options:(DriveFilePickerOptions)options;
 
 // Called when the mediator has stopped file selection in the web page.
 - (void)mediatorDidStopFileSelection:(DriveFilePickerMediator*)mediator;
@@ -36,11 +32,7 @@
 // Called when the mediator did update the filter/sorting criteria.
 - (void)browseDriveCollectionWithMediator:
             (DriveFilePickerMediator*)driveFilePickerMediator
-                          didUpdateFilter:(DriveFilePickerFilter)filter
-                          sortingCriteria:(DriveItemsSortingType)sortingCriteria
-                         sortingDirection:
-                             (DriveItemsSortingOrder)sortingDirection
-                      ignoreAcceptedTypes:(BOOL)ignoreAcceptedTypes;
+                         didUpdateOptions:(DriveFilePickerOptions)options;
 
 // Called when "Add account" button is triggered.
 - (void)mediatorDidTapAddAccount:(DriveFilePickerMediator*)mediator;
@@ -52,6 +44,10 @@
 // Called when the mediator has actives or stops the search.
 - (void)mediator:(DriveFilePickerMediator*)mediator
     didActivateSearch:(BOOL)searchActivated;
+
+// Called when the mediator picked Drive items (only in Composebox mode).
+- (void)mediator:(DriveFilePickerMediator*)mediator
+    didPickDriveItems:(const std::vector<DriveItem>&)driveItems;
 
 @end
 

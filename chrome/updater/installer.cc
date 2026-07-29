@@ -4,6 +4,7 @@
 
 #include "chrome/updater/installer.h"
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <utility>
@@ -12,21 +13,24 @@
 #include "base/files/file_enumerator.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
+#include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/logging.h"
-#include "base/notreached.h"
+#include "base/memory/scoped_refptr.h"
+#include "base/sequence_checker.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
 #include "base/threading/scoped_blocking_call.h"
 #include "base/time/time.h"
-#include "base/values.h"
 #include "base/version.h"
 #include "build/build_config.h"
 #include "chrome/updater/action_handler.h"
 #include "chrome/updater/app/app_utils.h"
 #include "chrome/updater/constants.h"
+#include "chrome/updater/get_updater_scope.h"
 #include "chrome/updater/update_service.h"
-#include "chrome/updater/update_usage_stats_task.h"
-#include "chrome/updater/updater_scope.h"
+#include "chrome/updater/usage_stats_permissions.h"
 #include "chrome/updater/util/util.h"
 #include "components/crx_file/crx_verifier.h"
 #include "components/update_client/update_client_errors.h"
@@ -86,24 +90,28 @@ Installer::Installer(
     const std::string& target_channel,
     const std::string& target_version_prefix,
     bool rollback_allowed,
+    std::optional<int> major_version_rollout_policy,
+    std::optional<int> minor_version_rollout_policy,
     bool update_disabled,
     UpdateService::PolicySameVersionUpdate policy_same_version_update,
     scoped_refptr<PersistedData> persisted_data,
-    crx_file::VerifierFormat crx_verifier_format)
+    crx_file::VerifierFormat crx_verifier_format,
+    std::optional<std::vector<uint8_t>> crx_public_key_hash)
     : updater_scope_(GetUpdaterScope()),
       app_id_(app_id),
       client_install_data_(client_install_data),
       install_data_index_(install_data_index),
       install_source_(install_source),
       rollback_allowed_(rollback_allowed),
+      major_version_rollout_policy_(major_version_rollout_policy),
+      minor_version_rollout_policy_(minor_version_rollout_policy),
       target_channel_(target_channel),
       target_version_prefix_(target_version_prefix),
       update_disabled_(update_disabled),
       policy_same_version_update_(policy_same_version_update),
       persisted_data_(persisted_data),
       crx_verifier_format_(crx_verifier_format),
-      usage_stats_enabled_(IsUpdaterOrCompanionApp(app_id) &&
-                           persisted_data->GetUsageStatsEnabled()),
+      crx_public_key_hash_(crx_public_key_hash),
       app_info_(AppInfo(GetUpdaterScope(), app_id, {}, {}, {}, {}, {})) {}
 
 Installer::~Installer() = default;
@@ -140,6 +148,9 @@ void Installer::MakeCrxComponentFromAppInfo(
   component.action_handler = MakeActionHandler();
   component.requires_network_encryption = false;
   component.crx_format_requirement = crx_verifier_format_;
+  if (crx_public_key_hash_) {
+    component.pk_hash = *crx_public_key_hash_;
+  }
   component.app_id = app_id_;
 
   // Query server for install data only when the client does not specify one.
@@ -161,6 +172,16 @@ void Installer::MakeCrxComponentFromAppInfo(
   component.target_version_prefix = target_version_prefix_;
   component.updates_enabled = !update_disabled_;
   component.install_source = install_source_;
+  if (major_version_rollout_policy_) {
+    component.installer_attributes.emplace(
+        "major_version_rollout_policy",
+        base::NumberToString(*major_version_rollout_policy_));
+  }
+  if (minor_version_rollout_policy_) {
+    component.installer_attributes.emplace(
+        "minor_version_rollout_policy",
+        base::NumberToString(*minor_version_rollout_policy_));
+  }
 
   std::move(callback).Run(component);
 }
@@ -181,19 +202,27 @@ Installer::Result Installer::InstallHelper(
                   kErrorMissingInstallParams);
   }
 
+  const base::FilePath installer_path =
+      unpack_path.AppendUTF8(install_params->run);
+  if (installer_path.ReferencesParent()) {
+    return Result(GOOPDATEINSTALL_E_FILENAME_INVALID,
+                  kErrorPathReferencesParent);
+  }
+
   // Assume the install params are ASCII for now.
   // Upon success, when the control flow returns back to the |update_client|,
   // the prefs are updated asynchronously with the new |pv| and |fingerprint|.
   // The task sequencing guarantees that the prefs will be updated by the
   // time another CrxDataCallback is invoked, which needs updated values.
   return RunApplicationInstaller(
-      app_info_, unpack_path.AppendUTF8(install_params->run),
-      install_params->arguments,
+      app_info_, installer_path, install_params->arguments,
       WriteInstallerDataToTempFile(unpack_path,
                                    client_install_data_.empty()
                                        ? install_params->server_install_data
                                        : client_install_data_),
-      usage_stats_enabled_, kWaitForAppInstaller, std::move(progress_callback));
+      /*usage_stats_enabled=*/IsUpdaterOrCompanionApp(app_id_) &&
+          AnyAppEnablesUsageStats(GetUpdaterScope()),
+      kWaitForAppInstaller, std::move(progress_callback));
 }
 
 void Installer::InstallWithSyncPrimitives(
@@ -205,11 +234,20 @@ void Installer::InstallWithSyncPrimitives(
                                                 base::BlockingType::WILL_BLOCK);
   const auto result = InstallHelper(unpack_path, std::move(install_params),
                                     std::move(progress_callback));
+  if (result.result.category != update_client::ErrorCategory::kNone) {
+    for (const auto& log_file :
+         GetFilesWithPredicate(unpack_path, [](const base::FilePath& item) {
+           return item.MatchesFinalExtension(FILE_PATH_LITERAL(".log"));
+         })) {
+      VLOG(2) << "===== Begin log file: " << log_file;
+      std::string log;
+      if (base::ReadFileToString(log_file, &log)) {
+        VLOG(2) << log;
+      }
+      VLOG(2) << "===== End log file: " << log_file;
+    }
+  }
   std::move(callback).Run(result);
-}
-
-void Installer::OnUpdateError(int error) {
-  LOG(ERROR) << "updater error: " << error << " for " << app_id_;
 }
 
 void Installer::Install(const base::FilePath& unpack_path,

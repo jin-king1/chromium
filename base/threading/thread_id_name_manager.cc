@@ -7,8 +7,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <algorithm>
+
 #include "base/check.h"
-#include "base/containers/contains.h"
 #include "base/memory/singleton.h"
 #include "base/strings/string_util.h"
 #include "base/trace_event/heap_profiler_allocation_context_tracker.h"  // no-presubmit-check
@@ -53,13 +54,13 @@ void ThreadIdNameManager::RegisterThread(PlatformThreadHandle::Handle handle,
 
 void ThreadIdNameManager::AddObserver(Observer* obs) {
   AutoLock locked(lock_);
-  DCHECK(!base::Contains(observers_, obs));
+  DCHECK(!std::ranges::contains(observers_, obs));
   observers_.push_back(obs);
 }
 
 void ThreadIdNameManager::RemoveObserver(Observer* obs) {
   AutoLock locked(lock_);
-  DCHECK(base::Contains(observers_, obs));
+  DCHECK(std::ranges::contains(observers_, obs));
   std::erase(observers_, obs);
 }
 
@@ -128,13 +129,11 @@ void ThreadIdNameManager::RemoveName(PlatformThreadHandle::Handle handle,
   AutoLock locked(lock_);
   auto handle_to_name_iter = thread_handle_to_interned_name_.find(handle);
 
-  CHECK(handle_to_name_iter != thread_handle_to_interned_name_.end(),
-        base::NotFatalUntil::M125);
+  CHECK(handle_to_name_iter != thread_handle_to_interned_name_.end());
   thread_handle_to_interned_name_.erase(handle_to_name_iter);
 
   auto id_to_handle_iter = thread_id_to_handle_.find(id);
-  CHECK(id_to_handle_iter != thread_id_to_handle_.end(),
-        base::NotFatalUntil::M125);
+  CHECK(id_to_handle_iter != thread_id_to_handle_.end());
   // The given |id| may have been re-used by the system. Make sure the
   // mapping points to the provided |handle| before removal.
   if (id_to_handle_iter->second != handle) {

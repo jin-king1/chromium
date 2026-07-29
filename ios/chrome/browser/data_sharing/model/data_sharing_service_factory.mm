@@ -16,28 +16,17 @@
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
 #import "ios/chrome/browser/sync/model/data_type_store_service_factory.h"
 #import "ios/chrome/common/channel_info.h"
-#import "ios/web/public/browser_state.h"
 #import "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace data_sharing {
+
 namespace {
 
-std::unique_ptr<KeyedService> BuildDataSharingService(
-    web::BrowserState* browser_state) {
-  if (!browser_state) {
-    return nullptr;
-  }
-
-  bool isFeatureEnabled =
-      base::FeatureList::IsEnabled(features::kDataSharingFeature) ||
-      base::FeatureList::IsEnabled(features::kDataSharingJoinOnly);
-
-  if (!isFeatureEnabled || browser_state->IsOffTheRecord()) {
+std::unique_ptr<KeyedService> BuildDataSharingService(ProfileIOS* profile) {
+  if (!features::IsDataSharingFunctionalityEnabled() ||
+      profile->IsOffTheRecord()) {
     return std::make_unique<EmptyDataSharingService>();
   }
-
-  ProfileIOS* profile = ProfileIOS::FromBrowserState(browser_state);
-  DCHECK(profile);
 
   auto data_sharing_service = std::make_unique<DataSharingServiceImpl>(
       profile->GetStatePath(), profile->GetSharedURLLoaderFactory(),
@@ -76,15 +65,14 @@ DataSharingServiceFactory::DataSharingServiceFactory()
 DataSharingServiceFactory::~DataSharingServiceFactory() = default;
 
 // static
-BrowserStateKeyedServiceFactory::TestingFactory
+DataSharingServiceFactory::TestingFactory
 DataSharingServiceFactory::GetDefaultFactory() {
-  return base::BindRepeating(&BuildDataSharingService);
+  return base::BindOnce(&BuildDataSharingService);
 }
 
 std::unique_ptr<KeyedService>
-DataSharingServiceFactory::BuildServiceInstanceFor(
-    web::BrowserState* browser_state) const {
-  return BuildDataSharingService(browser_state);
+DataSharingServiceFactory::BuildServiceInstanceFor(ProfileIOS* profile) const {
+  return BuildDataSharingService(profile);
 }
 
 }  // namespace data_sharing

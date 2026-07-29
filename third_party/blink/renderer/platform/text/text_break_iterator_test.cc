@@ -13,7 +13,7 @@ namespace blink {
 class TextBreakIteratorTest : public testing::Test {
  protected:
   void SetTestString(const char* test_string) {
-    test_string_ = String::FromUTF8(test_string);
+    test_string_ = String::FromUtf8(test_string);
   }
 
   void SetTestString16(Vector<UChar> input) { test_string_ = String(input); }
@@ -71,8 +71,8 @@ class TextBreakIteratorTest : public testing::Test {
   Vector<unsigned> GraphemesClusterList(String input,
                                         unsigned start,
                                         unsigned length) {
-    Vector<unsigned> result;
-    ::blink::GraphemesClusterList(StringView(input, start, length), &result);
+    Vector<unsigned> result(length);
+    ::blink::GraphemesClusterList(StringView(input, start, length), result);
     return result;
   }
 
@@ -97,6 +97,24 @@ TEST_F(TextBreakIteratorTest, PooledBreakIterator) {
   // Because `it2` is released, `it3` should be the same instance as `it2`.
   PooledBreakIterator it3 = AcquireLineBreakIterator(str, locale);
   EXPECT_EQ(it3.get(), ptr2);
+}
+
+TEST_F(TextBreakIteratorTest, PooledCharacterBreakIterator) {
+  String str16(u"a");
+  ASSERT_FALSE(str16.Is8Bit());
+  CharacterBreakIterator it1(str16);
+
+  // Get another and release. It should be a different instance than `it1`.
+  TextBreakIterator* ptr2;
+  {
+    CharacterBreakIterator it2(str16);
+    EXPECT_NE(it2.iterator_.get(), it1.iterator_.get());
+    ptr2 = it2.iterator_.get();
+  }
+
+  // Because `it2` is released, `it3` should be the same instance as `it2`.
+  CharacterBreakIterator it3(str16);
+  EXPECT_EQ(it3.iterator_.get(), ptr2);
 }
 
 static const LineBreakType all_break_types[] = {
@@ -188,7 +206,7 @@ TEST_F(TextBreakIteratorTest, ChineseSpaces) {
   MatchLineBreaks({3, 6, 9, 10}, LineBreakType::kKeepAll);
 }
 
-TEST_F(TextBreakIteratorTest, KeepEmojiZWJFamilyIsolate) {
+TEST_F(TextBreakIteratorTest, KeepEmojiZwjFamilyIsolate) {
   SetTestString("\U0001F468\u200D\U0001F469\u200D\U0001F467\u200D\U0001F466");
   MatchLineBreaks({11}, LineBreakType::kNormal);
   MatchLineBreaks({11}, LineBreakType::kBreakAll);
@@ -204,7 +222,7 @@ TEST_F(TextBreakIteratorTest, KeepEmojiModifierSequenceIsolate) {
   MatchLineBreaks({3}, LineBreakType::kKeepAll);
 }
 
-TEST_F(TextBreakIteratorTest, KeepEmojiZWJSequence) {
+TEST_F(TextBreakIteratorTest, KeepEmojiZwjSequence) {
   SetTestString(
       "abc \U0001F469\u200D\U0001F469\u200D\U0001F467\u200D\U0001F467 def");
   MatchLineBreaks({4, 16, 19}, LineBreakType::kNormal);
@@ -320,6 +338,33 @@ TEST_F(TextBreakIteratorTest, GraphemesClusterListTest) {
             Vector<unsigned>({0, 0}));
 }
 
+// word-break:break-all should NOT break before BA-class characters (LB21).
+// U+1361 ETHIOPIC WORDSPACE is line break class BA (Break After).
+// Breaks should occur AFTER U+1361, not before it.
+TEST_F(TextBreakIteratorTest, BreakAllEthiopic) {
+  // Text: U+1260 U+1361 U+1260 U+1361 U+1260
+  // (Ethiopic syllable BA, Ethiopic wordspace, repeated)
+  // AL     BA     AL     BA     AL
+  // LB21 prohibits breaking before BA, so the only break-all opportunities
+  // are after the BA characters (positions 2 and 4).
+  SetTestString16({0x1260, 0x1361, 0x1260, 0x1361, 0x1260});
+  MatchLineBreaks({2, 4, 5}, LineBreakType::kBreakAll);
+}
+
+// word-break:break-all + line-break:loose should allow break before BA-class
+// hyphens (U+2010, U+2013), relaxing LB21.
+TEST_F(TextBreakIteratorTest, BreakAllLooseHyphen) {
+  // Text: a a U+2010 a
+  // AL AL BA    AL
+  // With break-all + loose, break before BA is allowed.
+  SetTestString16({'a', 'a', 0x2010, 'a'});
+  LazyLineBreakIterator iterator(test_string_);
+  iterator.SetBreakType(LineBreakType::kBreakAll);
+  iterator.SetStrictness(LineBreakStrictness::kLoose);
+  TestIsBreakable({1, 2, 3, 4}, iterator);
+  TestNextBreakOpportunity({1, 2, 3, 4}, iterator);
+}
+
 TEST_F(TextBreakIteratorTest, SoftHyphen) {
   SetTestString("xy\u00ADxy\u00ADxy xy\u00ADxy");
   LazyLineBreakIterator break_iterator(test_string_);
@@ -334,6 +379,23 @@ TEST_F(TextBreakIteratorTest, HyphenMinusBeforeHighLatin) {
   MatchLineBreaks({6, 11});
   SetTestString("Lorem-èpsum");
   MatchLineBreaks({6, 11});
+}
+
+TEST_F(TextBreakIteratorTest, WordBreakSwedish) {
+  // "k:a" is interpreted as one word in Swedish and 2 words in English, up
+  // until ICU 76. See https://github.com/unicode-org/icu/pull/3249
+  const String text = "k:a";
+  std::unique_ptr<TextBreakIterator> english =
+      CreateWordBreakIteratorForTest(text, "en-us");
+  std::unique_ptr<TextBreakIterator> swedish =
+      CreateWordBreakIteratorForTest(text, "sv-se");
+  EXPECT_EQ(english->following(0), 1);
+#if U_ICU_VERSION_MAJOR_NUM >= 77
+  constexpr int swedish_expected = 1;
+#else
+  constexpr int swedish_expected = 3;
+#endif
+  EXPECT_EQ(swedish->following(0), swedish_expected);
 }
 
 }  // namespace blink

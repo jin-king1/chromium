@@ -31,6 +31,7 @@
 #include "chromeos/ash/components/login/auth/auth_performer.h"
 #include "chromeos/ash/components/osauth/impl/legacy_auth_surface_registry.h"
 #include "chromeos/ash/components/osauth/impl/request/password_manager_auth_request.h"
+#include "chromeos/ash/components/osauth/impl/request/payments_autofill_auth_request.h"
 #include "chromeos/ash/components/osauth/impl/request/settings_auth_request.h"
 #include "chromeos/ash/components/osauth/public/auth_factor_status_consumer.h"
 #include "chromeos/ash/components/osauth/public/auth_hub.h"
@@ -50,32 +51,11 @@ AuthPurpose InSessionAuthReasonToAuthPurpose(
   switch (reason) {
     case InSessionAuthDialogController::Reason::kAccessPasswordManager:
     case InSessionAuthDialogController::Reason::kAccessMultideviceSettings:
+    case InSessionAuthDialogController::Reason::kAccessAutofillPayments:
       return AuthPurpose::kUserVerification;
     case InSessionAuthDialogController::Reason::kAccessAuthenticationSettings:
       return AuthPurpose::kAuthSettings;
   }
-}
-
-std::unique_ptr<views::Widget> CreateAuthDialogWidget(
-    std::unique_ptr<views::View> contents_view) {
-  views::Widget::InitParams params(
-      views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET,
-      views::Widget::InitParams::TYPE_WINDOW_FRAMELESS);
-  params.opacity = views::Widget::InitParams::WindowOpacity::kTranslucent;
-  params.delegate = new views::WidgetDelegate();
-  params.show_state = ui::mojom::WindowShowState::kNormal;
-  params.parent = nullptr;
-  params.name = "AuthDialogWidget";
-
-  params.delegate->SetInitiallyFocusedView(contents_view.get());
-  params.delegate->SetModalType(ui::mojom::ModalType::kSystem);
-  params.delegate->SetOwnedByWidget(true);
-
-  std::unique_ptr<views::Widget> widget = std::make_unique<views::Widget>();
-  widget->Init(std::move(params));
-  widget->SetVisibilityAnimationTransition(views::Widget::ANIMATE_NONE);
-  widget->SetContentsView(std::move(contents_view));
-  return widget;
 }
 
 // TODO(b/271248452): Subscribe to primary display changes, so that the
@@ -83,7 +63,7 @@ std::unique_ptr<views::Widget> CreateAuthDialogWidget(
 // primary displays. We will need to also listen to `work_area` changes and
 // reposition the dialog accordingly when that changes.
 void CenterWidgetOnPrimaryDisplay(views::Widget* widget) {
-  auto bounds = display::Screen::GetScreen()->GetPrimaryDisplay().work_area();
+  auto bounds = display::Screen::Get()->GetPrimaryDisplay().work_area();
   bounds.ClampToCenteredSize(widget->GetContentsView()->GetPreferredSize());
   widget->SetBounds(bounds);
 }
@@ -138,6 +118,11 @@ void InSessionAuthDialogControllerImpl::ShowAuthDialog(
   } else if (reason == Reason::kAccessAuthenticationSettings) {
     Shell::Get()->active_session_auth_controller()->ShowAuthDialog(
         std::make_unique<SettingsAuthRequest>(std::move(on_auth_complete)));
+  } else if (reason == Reason::kAccessAutofillPayments) {
+    CHECK(prompt.has_value());
+    Shell::Get()->active_session_auth_controller()->ShowAuthDialog(
+        std::make_unique<PaymentsAutofillAuthRequest>(
+            base::UTF8ToUTF16(prompt.value()), std::move(on_auth_complete)));
   }
 }
 
@@ -183,8 +168,27 @@ void InSessionAuthDialogControllerImpl::OnUserAuthAttemptConfirmed(
 
   contents_view_ = contents_view.get();
   out_consumer = contents_view->GetAuthPanel();
-  dialog_ = CreateAuthDialogWidget(std::move(contents_view));
+
+  views::Widget::InitParams params(
+      views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET,
+      views::Widget::InitParams::TYPE_WINDOW_FRAMELESS);
+  params.opacity = views::Widget::InitParams::WindowOpacity::kTranslucent;
+  params.delegate = new views::WidgetDelegate();
+  params.show_state = ui::mojom::WindowShowState::kNormal;
+  params.parent = nullptr;
+  params.name = "AuthDialogWidget";
+
+  params.delegate->SetInitiallyFocusedView(contents_view.get());
+  params.delegate->SetModalType(ui::mojom::ModalType::kSystem);
+  params.delegate->SetOwnedByWidget(
+      views::WidgetDelegate::OwnedByWidgetPassKey());
+
+  dialog_ = std::make_unique<views::Widget>();
+  dialog_->Init(std::move(params));
+  dialog_->SetVisibilityAnimationTransition(views::Widget::ANIMATE_NONE);
+  dialog_->SetContentsView(std::move(contents_view));
   dialog_->Show();
+
   state_ = State::kShown;
   AuthParts::Get()
       ->GetLegacyAuthSurfaceRegistry()

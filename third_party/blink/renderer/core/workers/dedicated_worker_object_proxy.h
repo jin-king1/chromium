@@ -31,9 +31,6 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_WORKERS_DEDICATED_WORKER_OBJECT_PROXY_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_WORKERS_DEDICATED_WORKER_OBJECT_PROXY_H_
 
-#include <memory>
-
-#include "base/memory/scoped_refptr.h"
 #include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/messaging/message_port.h"
@@ -46,6 +43,7 @@
 namespace blink {
 
 struct BlinkTransferableMessage;
+struct JavaScriptFrameworkDetectionResult;
 class DedicatedWorkerMessagingProxy;
 class ParentExecutionContextTaskRunners;
 class ThreadedMessagingProxyBase;
@@ -78,11 +76,13 @@ class CORE_EXPORT DedicatedWorkerObjectProxy : public ThreadedObjectProxyBase {
 
   // ThreadedObjectProxyBase overrides.
   void ReportException(const String& error_message,
-                       std::unique_ptr<SourceLocation>,
+                       const SourceLocation*,
                        int exception_id) override;
   void DidFailToFetchClassicScript() final;
   void DidFailToFetchModuleScript() final;
-  void DidEvaluateTopLevelScript(bool success) override;
+  void DidEvaluateTopLevelScript(
+      bool success,
+      const JavaScriptFrameworkDetectionResult& result) override;
 
   const DedicatedWorkerToken& token() const { return token_; }
 

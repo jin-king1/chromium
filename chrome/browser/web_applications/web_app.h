@@ -7,27 +7,30 @@
 
 #include <stdint.h>
 
+#include <deque>
 #include <iosfwd>
+#include <memory>
 #include <optional>
-#include <set>
 #include <string>
 #include <vector>
 
+#include "base/check.h"
 #include "base/containers/flat_map.h"
 #include "base/containers/flat_set.h"
-#include "base/not_fatal_until.h"
 #include "base/time/time.h"
+#include "base/types/pass_key.h"
 #include "base/values.h"
-#include "base/version.h"
 #include "build/build_config.h"
-#include "chrome/browser/web_applications/features.h"
-#include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_integrity_block_data.h"
-#include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_storage_location.h"
-#include "chrome/browser/web_applications/isolated_web_apps/isolation_data.h"
+#include "chrome/browser/web_applications/generated_icon_fix_util.h"
+#include "chrome/browser/web_applications/model/app_installed_by.h"
+#include "chrome/browser/web_applications/model/display_override.h"
+#include "chrome/browser/web_applications/model/isolation_data.h"
+#include "chrome/browser/web_applications/model/migration_source.h"
+#include "chrome/browser/web_applications/model/pending_migration_info.h"
 #include "chrome/browser/web_applications/mojom/user_display_mode.mojom-forward.h"
 #include "chrome/browser/web_applications/proto/web_app.pb.h"
+#include "chrome/browser/web_applications/proto/web_app_install_state.pb.h"
 #include "chrome/browser/web_applications/proto/web_app_os_integration_state.pb.h"
-#include "chrome/browser/web_applications/proto/web_app_proto_package.pb.h"
 #include "chrome/browser/web_applications/scope_extension_info.h"
 #include "chrome/browser/web_applications/user_display_mode.h"
 #include "chrome/browser/web_applications/web_app_chromeos_data.h"
@@ -41,10 +44,7 @@
 #include "components/sync/model/string_ordinal.h"
 #include "components/sync/protocol/web_app_specifics.pb.h"
 #include "components/webapps/common/web_app_id.h"
-#include "services/network/public/cpp/permissions_policy/permissions_policy_declaration.h"
 #include "third_party/blink/public/common/manifest/manifest.h"
-#include "third_party/blink/public/mojom/manifest/capture_links.mojom-shared.h"
-#include "third_party/blink/public/mojom/manifest/display_mode.mojom-shared.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "url/gurl.h"
 
@@ -57,19 +57,49 @@ enum class WebappInstallSource;
 }
 
 namespace web_app {
-class TabbedModeScopeMatcher;
+class UrlPatternWithRegexMatcher;
+class WebAppScope;
+class WebAppSyncBridge;
 
+class InstalledByPassKey {
+  friend std::unique_ptr<WebApp> ParseWebAppProto(
+      const proto::WebApp& proto,
+      const webapps::AppId& expected_app_id);
+  InstalledByPassKey() = default;
+};
+
+// Represents an installed web app in RAM. Its member fields largely reflect all
+// the ways a site can configure their web app manifest, plus miscellaneous
+// internal bookkeeping and user settings.
+//
+// Some settings on this class can also be influenced by other sources of truth
+// like policy. Thus it is often safer to access properties via getters on the
+// WebAppRegistrar, which combines these sources of truth.
 class WebApp {
  public:
-  explicit WebApp(const webapps::AppId& app_id);
+  // This creates a web app object, and will CHECK-fail if the arguments are
+  // invalid. To be valid, the following invariants must hold:
+  // - All GURLs and the `manifest_id` must be non-empty and valid.
+  // - `start_url`, `manifest_id` and `scope` must be same-origin.
+  // - `manifest_id` must not contain a fragment.
+  // - `scope` must not contain a query or fragment.
+  // - `scope` must be a prefix of `start_url`.
+  WebApp(const webapps::ManifestId& manifest_id,
+         const GURL& start_url,
+         const GURL& scope,
+         std::optional<webapps::AppId> parent_app_id = std::nullopt);
+
+  // Create a web app object from just the incoming sync data.
+  // Callers are responsible for sanitizing the inputs in the sync_proto,
+  // otherwise construction might CHECK-fail.
+  explicit WebApp(const sync_pb::WebAppSpecifics& sync_proto);
   ~WebApp();
 
   // Copyable and move-assignable to support Copy-on-Write with Commit.
   WebApp(const WebApp& web_app);
   WebApp& operator=(WebApp&& web_app);
+  WebApp(WebApp&&);
 
-  // Explicitly disallow other copy ctors and assign operators.
-  WebApp(WebApp&&) = delete;
   WebApp& operator=(const WebApp&) = delete;
 
   const webapps::AppId& app_id() const { return app_id_; }
@@ -110,7 +140,7 @@ class WebApp {
         ResolvePlatformSpecificUserDisplayMode(sync_proto()));
   }
 
-  const std::vector<DisplayMode>& display_mode_override() const {
+  const std::vector<DisplayOverride>& display_mode_override() const {
     return display_mode_override_;
   }
 
@@ -148,6 +178,8 @@ class WebApp {
   // - Partially installed no integration: The app is considered installed, but
   // does not have any OS integration with the operating system (no shortcuts,
   // etc). This is used for preinstalled apps on non-CrOS device.
+  // - Suggested from migration: The app is not fully installed on this device,
+  // and is pending migration from another app.
   proto::InstallState install_state() const { return install_state_; }
 
   // Sync-initiated installation produces a stub app awaiting for full
@@ -165,8 +197,12 @@ class WebApp {
 
   // Represents the last time the Badging API was used.
   const base::Time& last_badging_time() const { return last_badging_time_; }
-  // Represents the last time this app is launched.
-  const base::Time& last_launch_time() const { return last_launch_time_; }
+  // Represents the last time this app is launched. This can be unset if the app
+  // has not been launched at all, like after installation when
+  // `kWebAppInstallDialog` is enabled.
+  const std::optional<base::Time>& last_launch_time() const {
+    return last_launch_time_;
+  }
   // Represents the time when this app is installed.
   const base::Time& first_install_time() const { return first_install_time_; }
   // Represents the time when this app is updated.
@@ -231,6 +267,13 @@ class WebApp {
     return validated_scope_extensions_;
   }
 
+  const std::optional<base::Time>&
+  origin_association_last_validation_check_time() const {
+    return origin_association_last_validation_check_time_;
+  }
+
+  WebAppScope GetScope() const;
+
   RunOnOsLoginMode run_on_os_login_mode() const {
     return run_on_os_login_mode_;
   }
@@ -246,9 +289,9 @@ class WebApp {
   // wins.
   const sync_pb::WebAppSpecifics& sync_proto() const {
     // Ensure the sync proto has been initialized.
-    CHECK(sync_proto_.has_start_url(), base::NotFatalUntil::M126);
-    CHECK(GURL(sync_proto_.start_url()).is_valid(), base::NotFatalUntil::M126);
-    CHECK(sync_proto_.has_relative_manifest_id(), base::NotFatalUntil::M126);
+    CHECK(sync_proto_.has_start_url());
+    CHECK(GURL(sync_proto_.start_url()).is_valid());
+    CHECK(sync_proto_.has_relative_manifest_id());
     return sync_proto_;
   }
 
@@ -257,8 +300,6 @@ class WebApp {
       const {
     return shortcuts_menu_item_infos_;
   }
-
-  blink::mojom::CaptureLinks capture_links() const { return capture_links_; }
 
   const GURL& manifest_url() const { return manifest_url_; }
 
@@ -270,10 +311,6 @@ class WebApp {
 
   const std::optional<webapps::AppId>& parent_app_id() const {
     return parent_app_id_;
-  }
-
-  const network::ParsedPermissionsPolicy& permissions_policy() const {
-    return permissions_policy_;
   }
 
   std::optional<webapps::WebappInstallSource> latest_install_source() const {
@@ -301,7 +338,10 @@ class WebApp {
     ExternalManagementConfig& operator=(
         ExternalManagementConfig&& external_management_config);
 
-    base::Value::Dict AsDebugValue() const;
+    friend bool operator==(const ExternalManagementConfig&,
+                           const ExternalManagementConfig&) = default;
+
+    base::DictValue AsDebugValue() const;
 
     bool is_placeholder = false;
     base::flat_set<GURL> install_urls;
@@ -324,20 +364,21 @@ class WebApp {
     return management_to_external_config_map_;
   }
 
-  const std::optional<blink::Manifest::TabStrip> tab_strip() const {
+  const std::optional<blink::Manifest::TabStrip>& tab_strip() const {
     return tab_strip_;
   }
 
   // Returns the list of patterns to match URLs against for tabbed mode home
   // tab navigations.
-  const std::vector<TabbedModeScopeMatcher>& GetTabbedModeHomeScope() const;
+  const std::vector<UrlPatternWithRegexMatcher>& GetTabbedModeHomeScope() const;
 
   // Only used on Mac.
   bool always_show_toolbar_in_fullscreen() const {
     return always_show_toolbar_in_fullscreen_;
   }
 
-  const proto::WebAppOsIntegrationState& current_os_integration_states() const {
+  const proto::os_state::WebAppOsIntegration& current_os_integration_states()
+      const {
     return current_os_integration_states_;
   }
 
@@ -353,7 +394,7 @@ class WebApp {
 
   const base::Time& latest_install_time() const { return latest_install_time_; }
 
-  const std::optional<GeneratedIconFix>& generated_icon_fix() const;
+  const std::optional<proto::GeneratedIconFix>& generated_icon_fix() const;
 
   int supported_links_offer_ignore_count() const {
     return supported_links_offer_ignore_count_;
@@ -366,13 +407,40 @@ class WebApp {
 
   bool was_shortcut_app() const { return was_shortcut_app_; }
 
+  bool diy_app_icons_masked_on_mac() const {
+    return diy_app_icons_masked_on_mac_;
+  }
+
   const std::vector<blink::Manifest::RelatedApplication>& related_applications()
       const {
     return related_applications_;
   }
 
+  const std::optional<proto::PendingUpdateInfo>& pending_update_info() const {
+    return pending_update_info_;
+  }
+
+  // Contains the metadata for trusted icons for the web app.
+  const std::vector<apps::IconInfo>& trusted_icons() const {
+    return trusted_icons_;
+  }
+
+  // Represents which icon sizes have been successfully stored on the disk from
+  // |trusted_icons| for the given |purpose|. `Monochrome` is not available
+  // here.
+  const SortedSizesPx& stored_trusted_icon_sizes(IconPurpose purpose) const;
+
+  // A list of up to ten most recent and unique page URLs that attempted to
+  // install this app via the Web Install API.
+  const std::deque<web_app::AppInstalledBy>& installed_by() const {
+    return installed_by_;
+  }
+
   // A Web App can be installed from multiple sources simultaneously. Installs
   // add a source to the app. Uninstalls remove a source from the app.
+  // `AddSource()` should always happen after the install state has been set for
+  // the web app. Without this, the CHECK inside this function can fail, or not
+  // catch the edge cases for which it might happen.
   void AddSource(WebAppManagement::Type source);
   void RemoveSource(WebAppManagement::Type source);
   bool HasAnySources() const;
@@ -392,17 +460,29 @@ class WebApp {
   bool IsKioskInstalledApp() const;
   bool CanUserUninstallWebApp() const;
   bool WasInstalledByUser() const;
+  bool WasInstalledByTrustedSources() const;
   // Returns the highest priority source. AppService assumes that every app has
   // just one install source.
   WebAppManagement::Type GetHighestPrioritySource() const;
 
   void SetName(const std::string& name);
   void SetDescription(const std::string& description);
-  void SetStartUrl(const GURL& start_url);
+
+  // Sets the start_url of the web app.  This call will CHECK-fail if the
+  // start_url is empty or not valid, or if `SetManifestId()` has not been
+  // called yet.
+  // TODO(): Remove this fallback as all web apps should be guaranteed to have
+  // the manifest_id set.
+  //
+  // The scope will have the query and fragment removed from the scope url,
+  // as per spec.
+  // This call will CHECK-fail if the scope is empty or not valid.
+  //
+  // Note: When serialized to disk, the code will CHECK-fail if the start_url is
+  // not prefixed by the scope.
+  void SetStartUrlAndScope(const GURL& start_url, const GURL& scope);
+
   void SetLaunchQueryParams(std::optional<std::string> launch_query_params);
-  // Sets the scope after clearing the query and fragment from the scope url, as
-  // per spec. This call will check-fail if the scope is not valid.
-  void SetScope(const GURL& scope);
   void SetThemeColor(std::optional<SkColor> theme_color);
   void SetDarkModeThemeColor(std::optional<SkColor> theme_color);
   void SetBackgroundColor(std::optional<SkColor> background_color);
@@ -410,7 +490,8 @@ class WebApp {
   void SetDisplayMode(DisplayMode display_mode);
   // Sets the UserDisplayMode for the current platform (CrOS or default).
   void SetUserDisplayMode(mojom::UserDisplayMode user_display_mode);
-  void SetDisplayModeOverride(std::vector<DisplayMode> display_mode_override);
+  void SetDisplayModeOverride(
+      std::vector<DisplayOverride> display_mode_override);
   void SetWebAppChromeOsData(std::optional<WebAppChromeOsData> chromeos_data);
   void SetInstallState(proto::InstallState install_state);
   void SetIsFromSyncAndPendingInstallation(
@@ -437,22 +518,19 @@ class WebApp {
   void SetScopeExtensions(base::flat_set<ScopeExtensionInfo> scope_extensions);
   void SetValidatedScopeExtensions(
       base::flat_set<ScopeExtensionInfo> validated_scope_extensions);
+  void SetOriginAssociationLastValidationCheckTime(
+      const std::optional<base::Time>& time);
   void SetLockScreenStartUrl(const GURL& lock_screen_start_url);
   void SetNoteTakingNewNoteUrl(const GURL& note_taking_new_note_url);
   void SetLastBadgingTime(const base::Time& time);
-  void SetLastLaunchTime(const base::Time& time);
+  void SetLastLaunchTime(const std::optional<base::Time>& last_launch_time);
   void SetFirstInstallTime(const base::Time& time);
   void SetManifestUpdateTime(const base::Time& time);
   void SetRunOnOsLoginMode(RunOnOsLoginMode mode);
-  void SetSyncProto(sync_pb::WebAppSpecifics sync_proto);
-  void SetCaptureLinks(blink::mojom::CaptureLinks capture_links);
   void SetManifestUrl(const GURL& manifest_url);
-  void SetManifestId(const webapps::ManifestId& manifest_id);
   void SetWindowControlsOverlayEnabled(bool enabled);
   void SetLaunchHandler(std::optional<LaunchHandler> launch_handler);
   void SetParentAppId(const std::optional<webapps::AppId>& parent_app_id);
-  void SetPermissionsPolicy(
-      network::ParsedPermissionsPolicy permissions_policy);
   void SetLatestInstallSource(
       std::optional<webapps::WebappInstallSource> latest_install_source);
   void SetAppSizeInBytes(std::optional<int64_t> app_size_in_bytes);
@@ -461,7 +539,7 @@ class WebApp {
       ExternalConfigMap management_to_external_config_map);
   void SetTabStrip(std::optional<blink::Manifest::TabStrip> tab_strip);
   void SetCurrentOsIntegrationStates(
-      proto::WebAppOsIntegrationState current_os_integration_states);
+      proto::os_state::WebAppOsIntegration current_os_integration_states);
   void SetIsolationData(IsolationData isolation_data);
   void SetLinkCapturingUserPreference(
       proto::LinkCapturingUserPreference user_link_capturing_preference);
@@ -469,8 +547,12 @@ class WebApp {
   void SetSupportedLinksOfferDismissCount(int dismiss_count);
   void SetIsDiyApp(bool is_diy_app);
   void SetWasShortcutApp(bool was_shortcut_app);
+  void SetDiyAppIconsMaskedOnMac(bool diy_app_icons_masked_on_mac);
   void SetRelatedApplications(
       std::vector<blink::Manifest::RelatedApplication> related_applications);
+  void SetPendingUpdateInfo(
+      std::optional<proto::PendingUpdateInfo> pending_update_info);
+  void SetTrustedIcons(std::vector<apps::IconInfo> trusted_icons);
 
   void AddPlaceholderInfoToManagementExternalConfigMap(
       WebAppManagement::Type source_type,
@@ -501,11 +583,56 @@ class WebApp {
 
   void SetLatestInstallTime(const base::Time& latest_install_time);
 
-  void SetGeneratedIconFix(std::optional<GeneratedIconFix> generated_icon_fix);
+  void SetGeneratedIconFix(
+      std::optional<proto::GeneratedIconFix> generated_icon_fix);
+
+  void SetStoredTrustedIconSizes(IconPurpose purpose, SortedSizesPx sizes);
+
+  const std::vector<MigrationSource>& unvalidated_migration_sources() const {
+    return unvalidated_migration_sources_;
+  }
+  const std::vector<MigrationSource>& validated_migration_sources() const {
+    return validated_migration_sources_;
+  }
+  const std::optional<PendingMigrationInfo>& pending_migration_info() const {
+    return pending_migration_info_;
+  }
+
+  void SetUnvalidatedMigrationSources(std::vector<MigrationSource> sources);
+  void SetValidatedMigrationSources(std::vector<MigrationSource> sources);
+  void SetPendingMigrationInfo(std::optional<PendingMigrationInfo> info);
+
+  void SetInstalledBy(InstalledByPassKey,
+                      std::deque<AppInstalledBy> installed_by);
+
+  // CHECK-fails if GURL in |AppInstalledBy| is invalid.
+  void AddInstalledByInfo(AppInstalledBy installed_by_data);
+
+  // Functions that set fields directly on the `sync_proto_`.
+  // CHECK-fails if `migrated_from_manifest_id` is invalid.
+  void SetMigratedFromManifestIdInSyncProto(
+      const webapps::ManifestId& migrated_from_manifest_id);
+  void UpdateDefaultUserDisplayModeInSyncProto(
+      sync_pb::WebAppSpecifics::UserDisplayMode display_mode);
+  void UpdateCrOsUserDisplayModeInSyncProto(
+      sync_pb::WebAppSpecifics::UserDisplayMode display_mode);
+  void SetUserPageOrdinal(syncer::StringOrdinal page_ordinal);
+  void SetUserLaunchOrdinal(syncer::StringOrdinal launch_ordinal);
+
+  // Makes sure that the app being constructed from sync has valid data.
+  // This will not CHECK-fail if the resolved manifest id doesn't match this
+  // app, and instead output the WebApp.ApplySyncDataToApp.ManifestIdMatch
+  // metric.
+  // It will CHECK-fail if the incoming sync proto doesn't have the
+  // relative_manifest_id field set, as that is a true failure case, because the
+  // WebAppSyncBridge takes care of adding that to the sync proto.
+  void MergeDataFromSyncSystem(
+      const sync_pb::WebAppSpecifics& incoming_sync,
+      base::PassKey<WebAppSyncBridge> sync_bridge_pass_key);
 
   // For logging and debug purposes.
   bool operator==(const WebApp&) const;
-  bool operator!=(const WebApp&) const;
+
   // Used by the WebAppTest suite to cover only platform agnostic fields to
   // avoid needing multiple platform specific expectation files per test.
   // Otherwise, the same as AsDebugValue().
@@ -514,8 +641,17 @@ class WebApp {
 
  private:
   friend class WebAppDatabase;
+  friend std::unique_ptr<WebApp> ParseWebAppProto(
+      const proto::WebApp& proto,
+      const webapps::AppId& expected_app_id);
+  friend std::unique_ptr<proto::WebApp> WebAppToProto(const WebApp& web_app);
   friend std::ostream& operator<<(std::ostream&, const WebApp&);
 
+  // This shouldn't be a public API. If the `manifest_id` needs to be set for a
+  // web app, use the constructors to do so.
+  void SetManifestId(const webapps::ManifestId& manifest_id);
+
+  // LINT.IfChange(MemberVariables)
   webapps::AppId app_id_;
 
   // This set always contains at least one source.
@@ -531,7 +667,7 @@ class WebApp {
   std::optional<SkColor> background_color_;
   std::optional<SkColor> dark_mode_background_color_;
   DisplayMode display_mode_ = DisplayMode::kUndefined;
-  std::vector<DisplayMode> display_mode_override_;
+  std::vector<DisplayOverride> display_mode_override_;
   std::optional<WebAppChromeOsData> chromeos_data_;
   proto::InstallState install_state_ =
       proto::InstallState::INSTALLED_WITHOUT_OS_INTEGRATION;
@@ -558,14 +694,17 @@ class WebApp {
   GURL lock_screen_start_url_;
   GURL note_taking_new_note_url_;
   base::Time last_badging_time_;
-  base::Time last_launch_time_;
+  // Denotes the last time an app was launched. If a `base::Time` instance is
+  // populated, it has to be valid, and cannot satisfy `base::Time::is_null()`,
+  // otherwise this code will crash. Consider setting the last launch time to
+  // `std::nullopt` instead if that is the case.
+  std::optional<base::Time> last_launch_time_;
   base::Time first_install_time_;
   base::Time manifest_update_time_;
   RunOnOsLoginMode run_on_os_login_mode_ = RunOnOsLoginMode::kNotRun;
   sync_pb::WebAppSpecifics sync_proto_;
-  blink::mojom::CaptureLinks capture_links_ =
-      blink::mojom::CaptureLinks::kUndefined;
   ClientData client_data_;
+  // This can be empty.
   GURL manifest_url_;
   webapps::ManifestId manifest_id_;
   // The state of the user's approval of the app's use of the File Handler API.
@@ -574,7 +713,6 @@ class WebApp {
   bool window_controls_overlay_enabled_ = false;
   std::optional<LaunchHandler> launch_handler_;
   std::optional<webapps::AppId> parent_app_id_;
-  network::ParsedPermissionsPolicy permissions_policy_;
   // The source of the latest install. WebAppRegistrar provides range
   // validation. Optional only to support legacy installations, since this used
   // to be tracked as a pref. It might also be null if the value read from the
@@ -593,17 +731,16 @@ class WebApp {
   // Only used on Mac.
   bool always_show_toolbar_in_fullscreen_ = true;
 
-  proto::WebAppOsIntegrationState current_os_integration_states_ =
-      proto::WebAppOsIntegrationState();
+  proto::os_state::WebAppOsIntegration current_os_integration_states_;
 
   std::optional<IsolationData> isolation_data_;
 
   proto::LinkCapturingUserPreference user_link_capturing_preference_ =
-      proto::LinkCapturingUserPreference::LINK_CAPTURING_PREFERENCE_DEFAULT;
+      proto::NAVIGATION_CAPTURING_PREFERENCE_DEFAULT;
 
   base::Time latest_install_time_;
 
-  std::optional<GeneratedIconFix> generated_icon_fix_;
+  std::optional<proto::GeneratedIconFix> generated_icon_fix_;
 
   int supported_links_offer_ignore_count_ = 0;
   int supported_links_offer_dismiss_count_ = 0;
@@ -612,17 +749,39 @@ class WebApp {
 
   bool was_shortcut_app_ = false;
 
+  bool diy_app_icons_masked_on_mac_ = false;
+
   std::vector<blink::Manifest::RelatedApplication> related_applications_;
+
+  std::optional<proto::PendingUpdateInfo> pending_update_info_;
+
+  // Metadata required for trusted icons stored in web_app.h
+  std::vector<apps::IconInfo> trusted_icons_;
+
+  // Cache information about stored trusted icon bitmaps on disk to make reading
+  // using the WebAppIconManager less intensive by not having to resort to file
+  // enumeration.
+  SortedSizesPx stored_trusted_icon_sizes_any_;
+  SortedSizesPx stored_trusted_icon_sizes_maskable_;
+
+  std::deque<AppInstalledBy> installed_by_;
+
+  std::vector<MigrationSource> unvalidated_migration_sources_;
+  std::vector<MigrationSource> validated_migration_sources_;
+  std::optional<PendingMigrationInfo> pending_migration_info_;
+
+  std::optional<base::Time> origin_association_last_validation_check_time_;
+  // LINT.ThenChange(//chrome/browser/web_applications/proto/web_app.proto)
 
   // New fields must be added to:
   //  - |operator==|
   //  - AsDebugValue()
-  //  - WebAppDatabase::CreateWebApp()
-  //  - WebAppDatabase::CreateWebAppProto()
+  //  - WebAppDatabaseSerialization::ParseWebAppProto()
+  //  - WebAppDatabaseSerialization::WebAppToProto()
   //  - CreateRandomWebApp()
   //  - web_app.proto
   // If parsed from manifest, also add to:
-  //  - GetManifestDataChanges() inside manifest_update_utils.h
+  //  - WebAppComparison::CompareWebApps() in web_app_comparison.h
   //  - SetWebAppManifestFields()
   // If the field relates to the app icons, add revert logic for it in:
   // - ManifestUpdateCheckCommand::RevertIdentityChangesIfNeeded()
@@ -644,9 +803,8 @@ class WebApp {
     // considered within home tab scope.
     //
     // An empty list means there is no home tab scope to match against (i.e.
-    // nothing matches), whereas an uninitialized list means it has not yet been
-    // needed.
-    std::optional<std::vector<TabbedModeScopeMatcher>> home_tab_scope;
+    // nothing matches), while a null list means it has not yet been needed.
+    std::optional<std::vector<UrlPatternWithRegexMatcher>> home_tab_scope;
   };
   mutable CachedDerivedData cached_derived_data_;
 };
@@ -657,32 +815,7 @@ std::ostream& operator<<(std::ostream& out, const WebApp& app);
 std::ostream& operator<<(
     std::ostream& out,
     const WebApp::ExternalManagementConfig& management_config);
-bool operator==(const WebApp::ExternalManagementConfig& management_config1,
-                const WebApp::ExternalManagementConfig& management_config2);
-bool operator!=(const WebApp::ExternalManagementConfig& management_config1,
-                const WebApp::ExternalManagementConfig& management_config2);
-
-namespace proto {
-
-bool operator==(const WebAppOsIntegrationState& os_integration_state1,
-                const WebAppOsIntegrationState& os_integration_state2);
-
-bool operator!=(const WebAppOsIntegrationState& os_integration_state1,
-                const WebAppOsIntegrationState& os_integration_state2);
-
-}  // namespace proto
-
-std::vector<std::string> GetSerializedAllowedOrigins(
-    const network::ParsedPermissionsPolicyDeclaration
-        permissions_policy_declaration);
 
 }  // namespace web_app
-
-namespace sync_pb {
-bool operator==(const WebAppSpecifics& sync_proto1,
-                const WebAppSpecifics& sync_proto2);
-bool operator!=(const WebAppSpecifics& sync_proto1,
-                const WebAppSpecifics& sync_proto2);
-}  // namespace sync_pb
 
 #endif  // CHROME_BROWSER_WEB_APPLICATIONS_WEB_APP_H_

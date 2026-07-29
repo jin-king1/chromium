@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40284755): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "base/strings/string_util.h"
 
 #include <math.h>
@@ -22,6 +17,8 @@
 #include <type_traits>
 
 #include "base/bits.h"
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/strings/utf_ostream_operators.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
@@ -492,11 +489,13 @@ TEST(StringUtilTest, IsStringUTF8) {
 }
 
 TEST(StringUtilTest, IsStringASCII) {
-  static char char_ascii[] = "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF";
-  static char16_t char16_ascii[] = {'0', '1', '2', '3', '4', '5', '6', '7', '8',
-                                    '9', '0', 'A', 'B', 'C', 'D', 'E', 'F', '0',
-                                    '1', '2', '3', '4', '5', '6', '7', '8', '9',
-                                    '0', 'A', 'B', 'C', 'D', 'E', 'F', 0};
+  static std::array<char, 49> char_ascii{
+      "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"};
+  static auto char16_ascii = std::to_array<char16_t>({
+      '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 'A',
+      'B', 'C', 'D', 'E', 'F', '0', '1', '2', '3', '4', '5', '6',
+      '7', '8', '9', '0', 'A', 'B', 'C', 'D', 'E', 'F', 0,
+  });
   static std::wstring wchar_ascii(
       L"0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF");
 
@@ -509,11 +508,12 @@ TEST(StringUtilTest, IsStringASCII) {
     for (size_t offset = 0; offset < 8; ++offset) {
       for (size_t len = 0, max_len = string_length - offset; len < max_len;
            ++len) {
-        EXPECT_TRUE(IsStringASCII(std::string_view(char_ascii + offset, len)));
+        EXPECT_TRUE(IsStringASCII(std::string_view(
+            base::span(char_ascii).subspan(offset).data(), len)));
         for (size_t char_pos = offset; char_pos < len; ++char_pos) {
           char_ascii[char_pos] |= '\x80';
-          EXPECT_FALSE(
-              IsStringASCII(std::string_view(char_ascii + offset, len)));
+          EXPECT_FALSE(IsStringASCII(std::string_view(
+              base::span(char_ascii).subspan(offset).data(), len)));
           char_ascii[char_pos] &= ~'\x80';
         }
       }
@@ -525,17 +525,17 @@ TEST(StringUtilTest, IsStringASCII) {
     for (size_t offset = 0; offset < 4; ++offset) {
       for (size_t len = 0, max_len = string_length - offset; len < max_len;
            ++len) {
-        EXPECT_TRUE(
-            IsStringASCII(std::u16string_view(char16_ascii + offset, len)));
+        EXPECT_TRUE(IsStringASCII(std::u16string_view(
+            base::span(char16_ascii).subspan(offset).data(), len)));
         for (size_t char_pos = offset; char_pos < len; ++char_pos) {
           char16_ascii[char_pos] |= 0x80;
-          EXPECT_FALSE(
-              IsStringASCII(std::u16string_view(char16_ascii + offset, len)));
+          EXPECT_FALSE(IsStringASCII(std::u16string_view(
+              base::span(char16_ascii).subspan(offset).data(), len)));
           char16_ascii[char_pos] &= ~0x80;
           // Also test when the upper half is non-zero.
           char16_ascii[char_pos] |= 0x100;
-          EXPECT_FALSE(
-              IsStringASCII(std::u16string_view(char16_ascii + offset, len)));
+          EXPECT_FALSE(IsStringASCII(std::u16string_view(
+              base::span(char16_ascii).subspan(offset).data(), len)));
           char16_ascii[char_pos] &= ~0x100;
         }
       }
@@ -563,12 +563,61 @@ TEST(StringUtilTest, IsStringASCII) {
 #endif  // WCHAR_T_IS_32_BIT
 }
 
-TEST(StringUtilTest, ConvertASCII) {
-  static const char* const char_cases[] = {"Google Video", "Hello, world\n",
-                                           "0123ABCDwxyz \a\b\t\r\n!+,.~"};
+TEST(StringUtilTest, FindFirstNonASCII) {
+  // Branch 1: Empty string
+  EXPECT_EQ(0u, FindFirstNonASCII(""));
+  EXPECT_EQ(0u, FindFirstNonASCII(u""));
 
-  static const wchar_t* const wchar_cases[] = {
-      L"Google Video", L"Hello, world\n", L"0123ABCDwxyz \a\b\t\r\n!+,.~"};
+  // Branch 2: All ASCII strings (returns view.length())
+  EXPECT_EQ(5u, FindFirstNonASCII("Hello"));
+  EXPECT_EQ(12u, FindFirstNonASCII("Hello World!"));
+  EXPECT_EQ(11u, FindFirstNonASCII(u"Hello World"));
+
+  std::string long_ascii(200, 'a');
+  EXPECT_EQ(200u, FindFirstNonASCII(long_ascii));
+
+  // Branch 3: Non-ASCII in remainder / trailing bytes (< 1 batch length)
+  EXPECT_EQ(0u, FindFirstNonASCII("\x80World"));
+  EXPECT_EQ(5u, FindFirstNonASCII("Hello\x80World"));
+  EXPECT_EQ(5u, FindFirstNonASCII(u"Hello\u0080World"));
+
+  // Branch 4: Non-ASCII in alignment prologue
+  // Align offset so pointer is not aligned to MachineWord boundary.
+  std::string prologue_str = "   \x80Hello";
+  EXPECT_EQ(0u, FindFirstNonASCII(prologue_str.substr(3)));
+
+  // Branch 5: Non-ASCII inside 16-word batch (length >= 128 bytes for char)
+  std::string batch_str(200, 'a');
+  batch_str[50] = '\x80';
+  EXPECT_EQ(50u, FindFirstNonASCII(batch_str));
+
+  batch_str[50] = 'a';
+  batch_str[127] = '\x80';
+  EXPECT_EQ(127u, FindFirstNonASCII(batch_str));
+
+  // Non-ASCII in second batch
+  batch_str[127] = 'a';
+  batch_str[150] = '\x80';
+  EXPECT_EQ(150u, FindFirstNonASCII(batch_str));
+
+  // Branch 6: Non-ASCII in remainder bytes after full batch execution
+  std::string remainder_str(135, 'a');
+  remainder_str[129] = '\x80';
+  EXPECT_EQ(129u, FindFirstNonASCII(remainder_str));
+
+#if defined(WCHAR_T_IS_32_BIT)
+  EXPECT_EQ(0u, FindFirstNonASCII(L""));
+  EXPECT_EQ(11u, FindFirstNonASCII(L"Hello World"));
+  EXPECT_EQ(5u, FindFirstNonASCII(L"Hello\x80World"));
+#endif
+}
+
+TEST(StringUtilTest, ConvertASCII) {
+  static const auto char_cases = std::to_array<const char*>(
+      {"Google Video", "Hello, world\n", "0123ABCDwxyz \a\b\t\r\n!+,.~"});
+
+  static const auto wchar_cases = std::to_array<const wchar_t*>(
+      {L"Google Video", L"Hello, world\n", L"0123ABCDwxyz \a\b\t\r\n!+,.~"});
 
   for (size_t i = 0; i < std::size(char_cases); ++i) {
     EXPECT_TRUE(IsStringASCII(char_cases[i]));
@@ -636,39 +685,6 @@ TEST(StringUtilTest, ToUpperASCII) {
   EXPECT_EQ(u'\x00e4', ToUpperASCII(u'\x00e4'));
 }
 
-TEST(StringUtilTest, FormatBytesUnlocalized) {
-  static const struct {
-    int64_t bytes;
-    const char* expected;
-  } cases[] = {
-      // Expected behavior: we show one post-decimal digit when we have
-      // under two pre-decimal digits, except in cases where it makes no
-      // sense (zero or bytes).
-      // Since we switch units once we cross the 1000 mark, this keeps
-      // the display of file sizes or bytes consistently around three
-      // digits.
-      {0, "0 B"},
-      {512, "512 B"},
-      {1024 * 1024, "1.0 MB"},
-      {1024 * 1024 * 1024, "1.0 GB"},
-      {10LL * 1024 * 1024 * 1024, "10.0 GB"},
-      {99LL * 1024 * 1024 * 1024, "99.0 GB"},
-      {105LL * 1024 * 1024 * 1024, "105 GB"},
-      {105LL * 1024 * 1024 * 1024 + 500LL * 1024 * 1024, "105 GB"},
-      {~(bits::LeftmostBit<int64_t>()), "8192 PB"},
-
-      {99 * 1024 + 103, "99.1 kB"},
-      {1024 * 1024 + 103, "1.0 MB"},
-      {1024 * 1024 + 205 * 1024, "1.2 MB"},
-      {1024 * 1024 * 1024 + (927 * 1024 * 1024), "1.9 GB"},
-      {10LL * 1024 * 1024 * 1024, "10.0 GB"},
-      {100LL * 1024 * 1024 * 1024, "100 GB"},
-  };
-
-  for (const auto& i : cases) {
-    EXPECT_EQ(ASCIIToUTF16(i.expected), FormatBytesUnlocalized(i.bytes));
-  }
-}
 TEST(StringUtilTest, ReplaceSubstringsAfterOffset) {
   static const struct {
     std::string_view str;
@@ -942,6 +958,48 @@ TEST(StringUtilTest, JoinStringInitializerList16) {
   EXPECT_EQ(u"a, b", JoinString({kPieceA, kPieceB}, separator));
 }
 
+TEST(StringUtilTest, JoinStringConstexpr) {
+  static_assert([] {
+    const std::string_view parts[] = {"apple", "banana", "cherry"};
+    return JoinString(parts, ", ") == "apple, banana, cherry";
+  }());
+
+  static_assert([] {
+    const std::string_view parts[] = {"apple", "banana", "", "cherry"};
+    return JoinString(parts, ", ") == "apple, banana, , cherry";
+  }());
+  static_assert([] { return JoinString({}, ", ") == ""; }());
+
+  static_assert([] {
+    const std::u16string_view parts[] = {u"apple", u"banana", u"cherry"};
+    return JoinString(parts, u", ") == u"apple, banana, cherry";
+  }());
+
+  static_assert([] { return JoinString({"a", "b", "c"}, "|") == "a|b|c"; }());
+
+  static_assert(
+      [] { return JoinString({u"a", u"b", u"c"}, u"|") == u"a|b|c"; }());
+
+  static_assert([] {
+    const std::string_view parts[] = {"apple"};
+    return JoinString(parts, ", ") == "apple";
+  }());
+
+  static_assert([] {
+    const std::string parts[] = {"apple", "banana"};
+    return JoinString(parts, ", ") == "apple, banana";
+  }());
+
+  static_assert([] {
+    const std::u16string parts[] = {u"apple", u"banana"};
+    return JoinString(parts, u", ") == u"apple, banana";
+  }());
+
+  static_assert([] {
+    return JoinString(base::span<const std::string_view>(), ", ") == "";
+  }());
+}
+
 TEST(StringUtilTest, StartsWith) {
   EXPECT_TRUE(
       StartsWith("javascript:url", "javascript", base::CompareCase::SENSITIVE));
@@ -1015,6 +1073,225 @@ TEST(StringUtilTest, EndsWith) {
                        base::CompareCase::INSENSITIVE_ASCII));
   EXPECT_TRUE(EndsWith(std::u16string(), std::u16string(),
                        base::CompareCase::SENSITIVE));
+}
+
+TEST(StringUtilTest, RemovePrefix) {
+  {
+    std::optional<std::string_view> result;
+
+    result = RemovePrefix("", "");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), "");
+    result = RemovePrefix("", "", CompareCase::INSENSITIVE_ASCII);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), "");
+
+    EXPECT_FALSE(RemovePrefix("", "xyz"));
+    EXPECT_FALSE(RemovePrefix("", "xyZ", CompareCase::INSENSITIVE_ASCII));
+
+    result = RemovePrefix("xyz", "");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), "xyz");
+    result = RemovePrefix("Xyz", "", CompareCase::INSENSITIVE_ASCII);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), "Xyz");
+
+    EXPECT_FALSE(RemovePrefix("abc", "xyz"));
+    EXPECT_FALSE(RemovePrefix("abc", "xyz", CompareCase::INSENSITIVE_ASCII));
+
+    result = RemovePrefix("xyz", "xyz");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), "");
+    result = RemovePrefix("Xyz", "xyZ", CompareCase::INSENSITIVE_ASCII);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), "");
+    EXPECT_EQ(result.value(), "");
+
+    EXPECT_FALSE(RemovePrefix("Xyz", "xyZ"));
+
+    result = RemovePrefix("xyz123", "xyz");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), "123");
+    result = RemovePrefix("Xyz123", "xyz", CompareCase::INSENSITIVE_ASCII);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), "123");
+  }
+  {
+    std::optional<std::u16string_view> result;
+
+    result = RemovePrefix(u"", u"");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), u"");
+    result = RemovePrefix(u"", u"", CompareCase::INSENSITIVE_ASCII);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), u"");
+
+    EXPECT_FALSE(RemovePrefix(u"", u"xyz"));
+    EXPECT_FALSE(RemovePrefix(u"", u"xyZ", CompareCase::INSENSITIVE_ASCII));
+
+    result = RemovePrefix(u"xyz", u"");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), u"xyz");
+    result = RemovePrefix(u"Xyz", u"", CompareCase::INSENSITIVE_ASCII);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), u"Xyz");
+
+    EXPECT_FALSE(RemovePrefix(u"abc", u"xyz"));
+    EXPECT_FALSE(RemovePrefix(u"abc", u"xyz", CompareCase::INSENSITIVE_ASCII));
+
+    result = RemovePrefix(u"xyz", u"xyz");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), u"");
+    result = RemovePrefix(u"Xyz", u"xyZ", CompareCase::INSENSITIVE_ASCII);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), u"");
+    EXPECT_EQ(result.value(), u"");
+
+    EXPECT_FALSE(RemovePrefix(u"Xyz", u"xyZ"));
+
+    result = RemovePrefix(u"xyz123", u"xyz");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), u"123");
+    result = RemovePrefix(u"Xyz123", u"xyz", CompareCase::INSENSITIVE_ASCII);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), u"123");
+  }
+#if BUILDFLAG(IS_WIN)
+  {
+    std::optional<std::wstring_view> result;
+
+    result = RemovePrefix(L"", L"");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), L"");
+    result = RemovePrefix(L"", L"", CompareCase::INSENSITIVE_ASCII);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), L"");
+
+    EXPECT_FALSE(RemovePrefix(L"", L"xyz"));
+    EXPECT_FALSE(RemovePrefix(L"", L"xyZ", CompareCase::INSENSITIVE_ASCII));
+
+    result = RemovePrefix(L"xyz", L"");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), L"xyz");
+    result = RemovePrefix(L"Xyz", L"", CompareCase::INSENSITIVE_ASCII);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), L"Xyz");
+
+    EXPECT_FALSE(RemovePrefix(L"abc", L"xyz"));
+    EXPECT_FALSE(RemovePrefix(L"abc", L"xyz", CompareCase::INSENSITIVE_ASCII));
+
+    result = RemovePrefix(L"xyz", L"xyz");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), L"");
+    result = RemovePrefix(L"Xyz", L"xyZ", CompareCase::INSENSITIVE_ASCII);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), L"");
+
+    EXPECT_FALSE(RemovePrefix(L"Xyz", L"xyZ"));
+
+    result = RemovePrefix(L"xyz123", L"xyz");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), L"123");
+    result = RemovePrefix(L"Xyz123", L"xyz", CompareCase::INSENSITIVE_ASCII);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), L"123");
+
+    // Non-ASCII
+    result = RemovePrefix(L"你好世界", L"你好");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), L"世界");
+    EXPECT_FALSE(RemovePrefix(L"你好世界", L"世界"));
+
+    // Case-insensitivity is ASCII-only.
+    result = RemovePrefix(L"ÄBC", L"Äbc", CompareCase::INSENSITIVE_ASCII);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), L"");
+    EXPECT_FALSE(RemovePrefix(L"ÄBC", L"äbc", CompareCase::INSENSITIVE_ASCII));
+  }
+#endif
+}
+
+TEST(StringUtilTest, RemoveSuffix) {
+  {
+    std::optional<std::string_view> result;
+
+    result = RemoveSuffix("", "");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), "");
+    result = RemoveSuffix("", "", CompareCase::INSENSITIVE_ASCII);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), "");
+
+    EXPECT_FALSE(RemoveSuffix("", "xyz"));
+    EXPECT_FALSE(RemoveSuffix("", "xyZ", CompareCase::INSENSITIVE_ASCII));
+
+    result = RemoveSuffix("xyz", "");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), "xyz");
+    result = RemoveSuffix("Xyz", "", CompareCase::INSENSITIVE_ASCII);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), "Xyz");
+
+    EXPECT_FALSE(RemoveSuffix("abc", "xyz"));
+    EXPECT_FALSE(RemoveSuffix("abc", "xyz", CompareCase::INSENSITIVE_ASCII));
+
+    result = RemoveSuffix("xyz", "xyz");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), "");
+    result = RemoveSuffix("Xyz", "xyZ", CompareCase::INSENSITIVE_ASCII);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), "");
+    EXPECT_EQ(result.value(), "");
+
+    EXPECT_FALSE(RemoveSuffix("Xyz", "xyZ"));
+
+    result = RemoveSuffix("123xyz", "xyz");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), "123");
+    result = RemoveSuffix("123Xyz", "xyZ", CompareCase::INSENSITIVE_ASCII);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), "123");
+  }
+  {
+    std::optional<std::u16string_view> result;
+
+    result = RemoveSuffix(u"", u"");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), u"");
+    result = RemoveSuffix(u"", u"", CompareCase::INSENSITIVE_ASCII);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), u"");
+
+    EXPECT_FALSE(RemoveSuffix(u"", u"xyz"));
+    EXPECT_FALSE(RemoveSuffix(u"", u"xyZ", CompareCase::INSENSITIVE_ASCII));
+
+    result = RemoveSuffix(u"xyz", u"");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), u"xyz");
+    result = RemoveSuffix(u"Xyz", u"", CompareCase::INSENSITIVE_ASCII);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), u"Xyz");
+
+    EXPECT_FALSE(RemoveSuffix(u"abc", u"xyz"));
+    EXPECT_FALSE(RemoveSuffix(u"abc", u"xyz", CompareCase::INSENSITIVE_ASCII));
+
+    result = RemoveSuffix(u"xyz", u"xyz");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), u"");
+    result = RemoveSuffix(u"Xyz", u"xyZ", CompareCase::INSENSITIVE_ASCII);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), u"");
+    EXPECT_EQ(result.value(), u"");
+
+    EXPECT_FALSE(RemoveSuffix(u"Xyz", u"xyZ"));
+
+    result = RemoveSuffix(u"123xyz", u"xyz");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), u"123");
+    result = RemoveSuffix(u"123Xyz", u"xyZ", CompareCase::INSENSITIVE_ASCII);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), u"123");
+  }
 }
 
 TEST(StringUtilTest, GetStringFWithOffsets) {
@@ -1305,11 +1582,12 @@ TEST(StringUtilTest, LcpyTest) {
     char16_t u16dst[10];
     wchar_t wdst[10];
     EXPECT_EQ(7U, strlcpy(dst, "abcdefg", std::size(dst)));
-    EXPECT_EQ(0, memcmp(dst, "abcdefg", sizeof(dst[0]) * 8));
+    EXPECT_EQ(0, UNSAFE_TODO(memcmp(dst, "abcdefg", sizeof(dst[0]) * 8)));
     EXPECT_EQ(7U, u16cstrlcpy(u16dst, u"abcdefg", std::size(u16dst)));
-    EXPECT_EQ(0, memcmp(u16dst, u"abcdefg", sizeof(u16dst[0]) * 8));
+    EXPECT_EQ(0,
+              UNSAFE_TODO(memcmp(u16dst, u"abcdefg", sizeof(u16dst[0]) * 8)));
     EXPECT_EQ(7U, wcslcpy(wdst, L"abcdefg", std::size(wdst)));
-    EXPECT_EQ(0, memcmp(wdst, L"abcdefg", sizeof(wdst[0]) * 8));
+    EXPECT_EQ(0, UNSAFE_TODO(memcmp(wdst, L"abcdefg", sizeof(wdst[0]) * 8)));
 
     EXPECT_EQ(7U, strlcpy(dst, "abcdefg"));
     EXPECT_EQ(base::span(dst).first(8u),
@@ -1355,11 +1633,11 @@ TEST(StringUtilTest, LcpyTest) {
     char16_t u16dst[8];
     wchar_t wdst[8];
     EXPECT_EQ(7U, strlcpy(dst, "abcdefg", std::size(dst)));
-    EXPECT_EQ(0, memcmp(dst, "abcdefg", 8));
+    EXPECT_EQ(0, UNSAFE_TODO(memcmp(dst, "abcdefg", 8)));
     EXPECT_EQ(7U, u16cstrlcpy(u16dst, u"abcdefg", std::size(u16dst)));
-    EXPECT_EQ(0, memcmp(u16dst, u"abcdefg", sizeof(u16dst)));
+    EXPECT_EQ(0, UNSAFE_TODO(memcmp(u16dst, u"abcdefg", sizeof(u16dst))));
     EXPECT_EQ(7U, wcslcpy(wdst, L"abcdefg", std::size(wdst)));
-    EXPECT_EQ(0, memcmp(wdst, L"abcdefg", sizeof(wdst)));
+    EXPECT_EQ(0, UNSAFE_TODO(memcmp(wdst, L"abcdefg", sizeof(wdst))));
 
     EXPECT_EQ(7U, strlcpy(dst, "abcdefg"));
     EXPECT_EQ(base::span(dst), base::span_with_nul_from_cstring("abcdefg"));
@@ -1375,11 +1653,11 @@ TEST(StringUtilTest, LcpyTest) {
     char16_t u16dst[7];
     wchar_t wdst[7];
     EXPECT_EQ(7U, strlcpy(dst, "abcdefg", std::size(dst)));
-    EXPECT_EQ(0, memcmp(dst, "abcdef", sizeof(dst[0]) * 7));
+    EXPECT_EQ(0, UNSAFE_TODO(memcmp(dst, "abcdef", sizeof(dst[0]) * 7)));
     EXPECT_EQ(7U, u16cstrlcpy(u16dst, u"abcdefg", std::size(u16dst)));
-    EXPECT_EQ(0, memcmp(u16dst, u"abcdef", sizeof(u16dst[0]) * 7));
+    EXPECT_EQ(0, UNSAFE_TODO(memcmp(u16dst, u"abcdef", sizeof(u16dst[0]) * 7)));
     EXPECT_EQ(7U, wcslcpy(wdst, L"abcdefg", std::size(wdst)));
-    EXPECT_EQ(0, memcmp(wdst, L"abcdef", sizeof(wdst[0]) * 7));
+    EXPECT_EQ(0, UNSAFE_TODO(memcmp(wdst, L"abcdef", sizeof(wdst[0]) * 7)));
 
     EXPECT_EQ(7U, strlcpy(dst, "abcdefg"));
     EXPECT_EQ(base::span(dst), base::span_with_nul_from_cstring("abcdef"));
@@ -1395,11 +1673,11 @@ TEST(StringUtilTest, LcpyTest) {
     char16_t u16dst[3];
     wchar_t wdst[3];
     EXPECT_EQ(7U, strlcpy(dst, "abcdefg", std::size(dst)));
-    EXPECT_EQ(0, memcmp(dst, "ab", sizeof(dst)));
+    EXPECT_EQ(0, UNSAFE_TODO(memcmp(dst, "ab", sizeof(dst))));
     EXPECT_EQ(7U, u16cstrlcpy(u16dst, u"abcdefg", std::size(u16dst)));
-    EXPECT_EQ(0, memcmp(u16dst, u"ab", sizeof(u16dst)));
+    EXPECT_EQ(0, UNSAFE_TODO(memcmp(u16dst, u"ab", sizeof(u16dst))));
     EXPECT_EQ(7U, wcslcpy(wdst, L"abcdefg", std::size(wdst)));
-    EXPECT_EQ(0, memcmp(wdst, L"ab", sizeof(wdst)));
+    EXPECT_EQ(0, UNSAFE_TODO(memcmp(wdst, L"ab", sizeof(wdst))));
 
     EXPECT_EQ(7U, strlcpy(dst, "abcdefg"));
     EXPECT_EQ(base::span(dst), base::span_with_nul_from_cstring("ab"));
@@ -1438,47 +1716,6 @@ TEST(StringUtilTest, WprintfFormatPortabilityTest) {
   for (const auto& i : cases) {
     EXPECT_EQ(i.portable, IsWprintfFormatPortable(i.input));
   }
-}
-
-TEST(StringUtilTest, MakeBasicStringPieceTest) {
-  constexpr char kFoo[] = "Foo";
-  static_assert(MakeStringPiece(kFoo, kFoo + 3) == kFoo, "");
-  static_assert(MakeStringPiece(kFoo, kFoo + 3).data() == kFoo, "");
-  static_assert(MakeStringPiece(kFoo, kFoo + 3).size() == 3, "");
-  static_assert(MakeStringPiece(kFoo + 3, kFoo + 3).empty(), "");
-  static_assert(MakeStringPiece(kFoo + 4, kFoo + 4).empty(), "");
-
-  std::string foo = kFoo;
-  EXPECT_EQ(MakeStringPiece(foo.begin(), foo.end()), foo);
-  EXPECT_EQ(MakeStringPiece(foo.begin(), foo.end()).data(), foo.data());
-  EXPECT_EQ(MakeStringPiece(foo.begin(), foo.end()).size(), foo.size());
-  EXPECT_TRUE(MakeStringPiece(foo.end(), foo.end()).empty());
-
-  constexpr char16_t kBar[] = u"Bar";
-  static_assert(MakeStringPiece16(kBar, kBar + 3) == kBar, "");
-  static_assert(MakeStringPiece16(kBar, kBar + 3).data() == kBar, "");
-  static_assert(MakeStringPiece16(kBar, kBar + 3).size() == 3, "");
-  static_assert(MakeStringPiece16(kBar + 3, kBar + 3).empty(), "");
-  static_assert(MakeStringPiece16(kBar + 4, kBar + 4).empty(), "");
-
-  std::u16string bar = kBar;
-  EXPECT_EQ(MakeStringPiece16(bar.begin(), bar.end()), bar);
-  EXPECT_EQ(MakeStringPiece16(bar.begin(), bar.end()).data(), bar.data());
-  EXPECT_EQ(MakeStringPiece16(bar.begin(), bar.end()).size(), bar.size());
-  EXPECT_TRUE(MakeStringPiece16(bar.end(), bar.end()).empty());
-
-  constexpr wchar_t kBaz[] = L"Baz";
-  static_assert(MakeWStringView(kBaz, kBaz + 3) == kBaz, "");
-  static_assert(MakeWStringView(kBaz, kBaz + 3).data() == kBaz, "");
-  static_assert(MakeWStringView(kBaz, kBaz + 3).size() == 3, "");
-  static_assert(MakeWStringView(kBaz + 3, kBaz + 3).empty(), "");
-  static_assert(MakeWStringView(kBaz + 4, kBaz + 4).empty(), "");
-
-  std::wstring baz = kBaz;
-  EXPECT_EQ(MakeWStringView(baz.begin(), baz.end()), baz);
-  EXPECT_EQ(MakeWStringView(baz.begin(), baz.end()).data(), baz.data());
-  EXPECT_EQ(MakeWStringView(baz.begin(), baz.end()).size(), baz.size());
-  EXPECT_TRUE(MakeWStringView(baz.end(), baz.end()).empty());
 }
 
 TEST(StringUtilTest, RemoveChars) {
@@ -1697,40 +1934,13 @@ TEST(StringUtilTest, IsUnicodeWhitespace) {
   EXPECT_TRUE(IsUnicodeWhitespace(L'\n'));
 }
 
-// Tests that MakeStringViewWithNulChars preserves internal NUL characters.
-TEST(StringUtilTest, MakeStringViewWithNulChars) {
-  {
-    const char kTestString[] = "abd\0def";
-    auto s = MakeStringViewWithNulChars(kTestString);
-    EXPECT_EQ(s.size(), 7u);
-    EXPECT_EQ(base::span(s), base::span_from_cstring(kTestString));
-  }
-  {
-    const wchar_t kTestString[] = L"abd\0def";
-    auto s = MakeStringViewWithNulChars(kTestString);
-    EXPECT_EQ(s.size(), 7u);
-    ASSERT_TRUE(base::span(s) == base::span_from_cstring(kTestString));
-  }
-  {
-    const char16_t kTestString[] = u"abd\0def";
-    auto s = MakeStringViewWithNulChars(kTestString);
-    EXPECT_EQ(s.size(), 7u);
-    EXPECT_TRUE(base::span(s) == base::span_from_cstring(kTestString));
-  }
-  {
-    const char32_t kTestString[] = U"abd\0def";
-    auto s = MakeStringViewWithNulChars(kTestString);
-    EXPECT_EQ(s.size(), 7u);
-    EXPECT_TRUE(base::span(s) == base::span_from_cstring(kTestString));
-  }
-}
-
 class WriteIntoTest : public testing::Test {
  protected:
   static void WritesCorrectly(size_t num_chars) {
     std::string buffer;
     char kOriginal[] = "supercali";
-    strncpy(WriteInto(&buffer, num_chars + 1), kOriginal, num_chars);
+    UNSAFE_TODO(
+        strncpy(WriteInto(&buffer, num_chars + 1), kOriginal, num_chars));
     // Using std::string(buffer.c_str()) instead of |buffer| truncates the
     // string at the first \0.
     EXPECT_EQ(
@@ -1750,7 +1960,7 @@ TEST_F(WriteIntoTest, WriteInto) {
   // Validate that WriteInto handles 0-length strings
   std::string empty;
   const char kOriginal[] = "original";
-  strncpy(WriteInto(&empty, 1), kOriginal, 0);
+  UNSAFE_TODO(strncpy(WriteInto(&empty, 1), kOriginal, 0));
   EXPECT_STREQ("", empty.c_str());
   EXPECT_EQ(0u, empty.size());
 
@@ -1760,7 +1970,7 @@ TEST_F(WriteIntoTest, WriteInto) {
   const char kDead[] = "dead";
   const std::string live = kLive;
   std::string dead = live;
-  strncpy(WriteInto(&dead, 5), kDead, 4);
+  UNSAFE_TODO(strncpy(WriteInto(&dead, 5), kDead, 4));
   EXPECT_EQ(kDead, dead);
   EXPECT_EQ(4u, dead.size());
   EXPECT_EQ(kLive, live);

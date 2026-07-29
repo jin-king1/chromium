@@ -8,11 +8,6 @@
 //    clang-format -i -style=chromium filename
 // DO NOT EDIT!
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 // It is included by raster_cmd_decoder.cc
 #ifndef GPU_COMMAND_BUFFER_SERVICE_RASTER_DECODER_AUTOGEN_H_
 #define GPU_COMMAND_BUFFER_SERVICE_RASTER_DECODER_AUTOGEN_H_
@@ -61,7 +56,7 @@ error::Error RasterDecoderImpl::HandleGenQueriesEXTImmediate(
   }
   auto queries_copy = std::make_unique<GLuint[]>(n);
   GLuint* queries_safe = queries_copy.get();
-  std::copy(queries, queries + n, queries_safe);
+  std::copy(queries, UNSAFE_TODO(queries + n), queries_safe);
   if (!gles2::CheckUniqueAndNonNullIds(n, queries_safe) ||
       !GenQueriesEXTHelper(n, queries_safe)) {
     return error::kInvalidArguments;
@@ -145,10 +140,33 @@ error::Error RasterDecoderImpl::HandleBeginRasterCHROMIUMImmediate(
   return error::kNoError;
 }
 
+error::Error RasterDecoderImpl::HandleRasterCHROMIUM(
+    uint32_t immediate_data_size,
+    const volatile void* cmd_data) {
+  const volatile raster::cmds::RasterCHROMIUM& c =
+      *static_cast<const volatile raster::cmds::RasterCHROMIUM*>(cmd_data);
+  GLuint raster_shm_id = static_cast<GLuint>(c.raster_shm_id);
+  GLuint raster_shm_offset = static_cast<GLuint>(c.raster_shm_offset);
+  GLuint raster_shm_size = static_cast<GLuint>(c.raster_shm_size);
+  GLuint font_shm_id = static_cast<GLuint>(c.font_shm_id);
+  GLuint font_shm_offset = static_cast<GLuint>(c.font_shm_offset);
+  GLuint font_shm_size = static_cast<GLuint>(c.font_shm_size);
+  DoRasterCHROMIUM(raster_shm_id, raster_shm_offset, raster_shm_size,
+                   font_shm_id, font_shm_offset, font_shm_size);
+  return error::kNoError;
+}
+
 error::Error RasterDecoderImpl::HandleEndRasterCHROMIUM(
     uint32_t immediate_data_size,
     const volatile void* cmd_data) {
   DoEndRasterCHROMIUM();
+  return error::kNoError;
+}
+
+error::Error RasterDecoderImpl::HandleFlushTileRasterGraphiteCommandsCHROMIUM(
+    uint32_t immediate_data_size,
+    const volatile void* cmd_data) {
+  DoFlushTileRasterGraphiteCommandsCHROMIUM();
   return error::kNoError;
 }
 
@@ -240,6 +258,48 @@ error::Error RasterDecoderImpl::HandleDeletePaintCachePathsINTERNAL(
   return error::kNoError;
 }
 
+error::Error RasterDecoderImpl::HandleDeletePaintCacheEffectsINTERNALImmediate(
+    uint32_t immediate_data_size,
+    const volatile void* cmd_data) {
+  const volatile raster::cmds::DeletePaintCacheEffectsINTERNALImmediate& c =
+      *static_cast<const volatile raster::cmds::
+                       DeletePaintCacheEffectsINTERNALImmediate*>(cmd_data);
+  GLsizei n = static_cast<GLsizei>(c.n);
+  uint32_t ids_size;
+  if (!base::CheckMul(n, sizeof(GLuint)).AssignIfValid(&ids_size)) {
+    return error::kOutOfBounds;
+  }
+  volatile const GLuint* ids =
+      gles2::GetImmediateDataAs<volatile const GLuint*>(c, ids_size,
+                                                        immediate_data_size);
+  if (ids == nullptr) {
+    return error::kOutOfBounds;
+  }
+  DeletePaintCacheEffectsINTERNALHelper(n, ids);
+  return error::kNoError;
+}
+
+error::Error RasterDecoderImpl::HandleDeletePaintCacheEffectsINTERNAL(
+    uint32_t immediate_data_size,
+    const volatile void* cmd_data) {
+  const volatile raster::cmds::DeletePaintCacheEffectsINTERNAL& c =
+      *static_cast<
+          const volatile raster::cmds::DeletePaintCacheEffectsINTERNAL*>(
+          cmd_data);
+  GLsizei n = static_cast<GLsizei>(c.n);
+  uint32_t ids_size;
+  if (!base::CheckMul(n, sizeof(GLuint)).AssignIfValid(&ids_size)) {
+    return error::kOutOfBounds;
+  }
+  const GLuint* ids = GetSharedMemoryAs<const GLuint*>(
+      c.ids_shm_id, c.ids_shm_offset, ids_size);
+  if (ids == nullptr) {
+    return error::kOutOfBounds;
+  }
+  DeletePaintCacheEffectsINTERNALHelper(n, ids);
+  return error::kNoError;
+}
+
 error::Error RasterDecoderImpl::HandleClearPaintCacheINTERNAL(
     uint32_t immediate_data_size,
     const volatile void* cmd_data) {
@@ -258,8 +318,10 @@ error::Error RasterDecoderImpl::HandleCopySharedImageINTERNALImmediate(
   GLint yoffset = static_cast<GLint>(c.yoffset);
   GLint x = static_cast<GLint>(c.x);
   GLint y = static_cast<GLint>(c.y);
-  GLsizei width = static_cast<GLsizei>(c.width);
-  GLsizei height = static_cast<GLsizei>(c.height);
+  GLsizei src_width = static_cast<GLsizei>(c.src_width);
+  GLsizei src_height = static_cast<GLsizei>(c.src_height);
+  GLsizei dest_width = static_cast<GLsizei>(c.dest_width);
+  GLsizei dest_height = static_cast<GLsizei>(c.dest_height);
   uint32_t mailboxes_size;
   if (!gles2::GLES2Util::ComputeDataSize<GLbyte, 32>(1, &mailboxes_size)) {
     return error::kOutOfBounds;
@@ -270,20 +332,31 @@ error::Error RasterDecoderImpl::HandleCopySharedImageINTERNALImmediate(
   volatile const GLbyte* mailboxes =
       gles2::GetImmediateDataAs<volatile const GLbyte*>(c, mailboxes_size,
                                                         immediate_data_size);
-  if (width < 0) {
+  if (src_width < 0) {
     LOCAL_SET_GL_ERROR(GL_INVALID_VALUE, "glCopySharedImageINTERNAL",
-                       "width < 0");
+                       "src_width < 0");
     return error::kNoError;
   }
-  if (height < 0) {
+  if (src_height < 0) {
     LOCAL_SET_GL_ERROR(GL_INVALID_VALUE, "glCopySharedImageINTERNAL",
-                       "height < 0");
+                       "src_height < 0");
+    return error::kNoError;
+  }
+  if (dest_width < 0) {
+    LOCAL_SET_GL_ERROR(GL_INVALID_VALUE, "glCopySharedImageINTERNAL",
+                       "dest_width < 0");
+    return error::kNoError;
+  }
+  if (dest_height < 0) {
+    LOCAL_SET_GL_ERROR(GL_INVALID_VALUE, "glCopySharedImageINTERNAL",
+                       "dest_height < 0");
     return error::kNoError;
   }
   if (mailboxes == nullptr) {
     return error::kOutOfBounds;
   }
-  DoCopySharedImageINTERNAL(xoffset, yoffset, x, y, width, height, mailboxes);
+  DoCopySharedImageINTERNAL(xoffset, yoffset, x, y, src_width, src_height,
+                            dest_width, dest_height, mailboxes);
   return error::kNoError;
 }
 
@@ -408,6 +481,10 @@ error::Error RasterDecoderImpl::HandleReadbackYUVImagePixelsINTERNALImmediate(
   const volatile raster::cmds::ReadbackYUVImagePixelsINTERNALImmediate& c =
       *static_cast<const volatile raster::cmds::
                        ReadbackYUVImagePixelsINTERNALImmediate*>(cmd_data);
+  GLuint src_x = static_cast<GLuint>(c.src_x);
+  GLuint src_y = static_cast<GLuint>(c.src_y);
+  GLuint src_width = static_cast<GLuint>(c.src_width);
+  GLuint src_height = static_cast<GLuint>(c.src_height);
   GLuint dst_width = static_cast<GLuint>(c.dst_width);
   GLuint dst_height = static_cast<GLuint>(c.dst_height);
   GLint shm_id = static_cast<GLint>(c.shm_id);
@@ -431,7 +508,8 @@ error::Error RasterDecoderImpl::HandleReadbackYUVImagePixelsINTERNALImmediate(
   if (mailbox == nullptr) {
     return error::kOutOfBounds;
   }
-  DoReadbackYUVImagePixelsINTERNAL(dst_width, dst_height, shm_id, shm_offset,
+  DoReadbackYUVImagePixelsINTERNAL(src_x, src_y, src_width, src_height,
+                                   dst_width, dst_height, shm_id, shm_offset,
                                    y_offset, y_stride, u_offset, u_stride,
                                    v_offset, v_stride, mailbox);
   return error::kNoError;

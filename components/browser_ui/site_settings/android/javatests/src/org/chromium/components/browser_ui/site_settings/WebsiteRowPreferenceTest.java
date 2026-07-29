@@ -17,7 +17,8 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.library_loader.LibraryLoader;
 import org.chromium.base.library_loader.LibraryProcessType;
@@ -32,6 +33,8 @@ import java.util.Arrays;
 @RunWith(BaseJUnit4ClassRunner.class)
 @Batch(Batch.PER_CLASS)
 public class WebsiteRowPreferenceTest {
+    @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
+
     @Rule
     public final BlankUiTestActivitySettingsTestRule mSettingsRule =
             new BlankUiTestActivitySettingsTestRule();
@@ -53,7 +56,6 @@ public class WebsiteRowPreferenceTest {
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
         WebsitePreferenceBridgeJni.setInstanceForTesting(mBridgeMock);
         mSettingsRule.launchPreference(PlaceholderSettingsForTest.class);
         mActivity = mSettingsRule.getActivity();
@@ -65,7 +67,11 @@ public class WebsiteRowPreferenceTest {
         Website website = new Website(WebsiteAddress.create("https://test.com"), null);
         mPreference =
                 new WebsiteRowPreference(
-                        mActivity, mDelegate, website, LayoutInflater.from(mActivity));
+                        mActivity,
+                        mDelegate,
+                        website,
+                        LayoutInflater.from(mActivity),
+                        /* isClickable= */ true);
         mPreference.setOnDeleteCallback(mOnDeleteCallback);
         mPreference.resetEntry();
         verify(mOnDeleteCallback).run();
@@ -82,7 +88,11 @@ public class WebsiteRowPreferenceTest {
                         Arrays.asList(origin1, origin2));
         mPreference =
                 new WebsiteRowPreference(
-                        mActivity, mDelegate, group, LayoutInflater.from(mActivity));
+                        mActivity,
+                        mDelegate,
+                        group,
+                        LayoutInflater.from(mActivity),
+                        /* isClickable= */ true);
         mPreference.setOnDeleteCallback(mOnDeleteCallback);
         mPreference.resetEntry();
         verify(mOnDeleteCallback).run();

@@ -80,7 +80,6 @@ enum ExternalLaunch {
 
 // The different stages of the first run experience. This is mapped to the
 // FirstRunStageResult enum in enums.xml for metrics.
-// TODO(crbug.com/40755663): Add welcome stage and record metrics.
 enum FirstRunStage {
   // The first run experience has started.
   kStart = 0,
@@ -131,12 +130,30 @@ enum FirstRunStage {
   kSearchEngineChoiceScreenCompletionWithSelection = 22,
   // The Search Engine Choice screen is closed without a Search Engine Choice
   // selected.
-  kSearchEngineChoiceScreenCompletionWithoutSelection = 23,
+  // DEPRECATED: It is not possible to complete the search engine choice screen
+  // without a selection.
+  // kSearchEngineChoiceScreenCompletionWithoutSelection = 23,
   // The FRE is interrupted due to a Chrome shutdown.
   kFirstRunInterrupted = 24,
+  // The Best Features screens are shown.
+  kBestFeaturesExperienceStart = 25,
+  // The Best Features screens are completed by exiting through the main screen.
+  kBestFeaturesExperienceCompletionThroughMainScreen = 26,
+  // The Best Features screens are completed by exiting through a detail screen.
+  kBestFeaturesExperienceCompletionThroughDetailScreen = 27,
+  // Interactive Lens screen shown.
+  kInteractiveLensStart = 28,
+  // Interactive Lens screen completed after interaction with Lens.
+  kInteractiveLensCompletionWithInteraction = 29,
+  // Interactive Lens screen completed without interaction with Lens.
+  kInteractiveLensCompletionWithoutInteraction = 30,
+  // Lens animated promo screen shown.
+  kAnimatedLensPromoStart = 31,
+  // Lens animated promo screen completed by tapping primary action.
+  kAnimatedLensPromoCompletionWithAction = 32,
   // Max value of the first run experience stages.
   // kMaxValue should share the value of the highest enumerator.
-  kMaxValue = kFirstRunInterrupted,
+  kMaxValue = kAnimatedLensPromoCompletionWithAction,
 };
 
 }  // namespace first_run

@@ -27,8 +27,8 @@ source_set("media_foundation_util") {
   deps = [
     "//base",
     "//gpu/ipc/common",
-    "//media:shared_memory_support",
     "//media/base",
+    "//media/formats",
     "//media/gpu:command_buffer_helper",
     "//third_party/libyuv",
   ]
@@ -53,7 +53,6 @@ component("color_space_util_win") {
   ]
   configs += [ "//media:media_config" ]
   deps = [
-    "//media:shared_memory_support",
     "//media/base",
     "//ui/gfx:color_space",
   ]
@@ -74,14 +73,6 @@ source_set("mf_cdm_proxy") {
 
 source_set("dcomp_texture_wrapper") {
   sources = [ "dcomp_texture_wrapper.h" ]
-  deps = [
-    "//base",
-    "//ui/gfx:memory_buffer",
-  ]
-}
-
-source_set("overlay_state_observer_subscription") {
-  sources = [ "overlay_state_observer_subscription.h" ]
   deps = [ "//base" ]
 }
 
@@ -99,6 +90,7 @@ source_set("test_support") {
     "test_utils.h",
   ]
   deps = [
+    ":mf_cdm_proxy",
     "//base",
     "//testing/gmock",
     "//testing/gtest",

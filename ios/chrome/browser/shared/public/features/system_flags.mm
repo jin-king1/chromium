@@ -13,11 +13,11 @@
 #import "base/feature_list.h"
 #import "base/metrics/field_trial.h"
 #import "base/strings/sys_string_conversions.h"
+#import "build/branding_buildflags.h"
 #import "components/autofill/core/common/autofill_switches.h"
 #import "components/password_manager/core/common/password_manager_features.h"
 #import "components/segmentation_platform/public/constants.h"
 #import "components/variations/variations_associated_data.h"
-#import "ios/chrome/browser/browsing_data/model/browsing_data_features.h"
 #import "ios/chrome/browser/flags/chrome_switches.h"
 #import "ios/chrome/browser/memory/model/features.h"
 #import "ios/chrome/browser/safety_check/model/ios_chrome_safety_check_manager_constants.h"
@@ -30,12 +30,13 @@ NSString* const kAlternateDiscoverFeedServerURL =
 NSString* const kEnableStartupCrash = @"EnableStartupCrash";
 NSString* const kFirstRunForceEnabled = @"FirstRunForceEnabled";
 NSString* const kFirstRunForceDisabled = @"FirstRunForceDisabled";
-NSString* const kUpgradePromoForceEnabled = @"UpgradePromoForceEnabled";
 NSString* const kOriginServerHost = @"AlternateOriginServerHost";
 NSString* const kWhatsNewPromoStatus = @"WhatsNewPromoStatus";
 NSString* const kClearApplicationGroup = @"ClearApplicationGroup";
 NSString* const kNextPromoForDisplayOverride = @"NextPromoForDisplayOverride";
+NSString* const kHomeSurfaceDuration = @"HomeSurfaceDuration";
 NSString* const kFirstRunRecency = @"FirstRunRecency";
+NSString* const kIgnoreDeviceLocaleConditions = @"IgnoreDeviceLocaleConditions";
 NSString* const kForceExperienceForDeviceSwitcherExperimentalSettings =
     @"ForceExperienceForDeviceSwitcher";
 NSString* const kForceExperienceForShopperExperimentalSettings =
@@ -58,16 +59,30 @@ NSString* const kShouldIgnoreHistorySyncDeclineLimits =
 NSString* const kSafetyCheckNotificationsInactivityThreshold =
     @"SafetyCheckNotificationsInactivityThreshold";
 BASE_FEATURE(kEnableThirdPartyKeyboardWorkaround,
-             "EnableThirdPartyKeyboardWorkaround",
              base::FEATURE_ENABLED_BY_DEFAULT);
-NSString* const kTabResumptionDecorationOverride =
-    @"TabResumptionDecorationOverride";
 NSString* const kTipsMagicStackLensShopWithImage =
     @"TipsMagicStackLensShopWithImage";
 NSString* const kTipsMagicStackStateOverride = @"TipsMagicStackStateOverride";
 NSString* const kInactiveTabsDemoMode = @"InactiveTabsDemoMode";
 NSString* const kInactiveTabsTestMode = @"InactiveTabsTestMode";
 NSString* const kAsyncStartupOverrideResponse = @"AsyncStartupOverrideResponse";
+NSString* const kLensResultPanelGwsURL = @"LensResultPanelGwsURL";
+NSString* const kCobrowseGwsURL = @"CobrowseGwsURL";
+NSString* const kForceDisableAIMEligibility = @"ForceDisableAIMEligibility";
+NSString* const kForceDisableCreateImagesEligibility =
+    @"ForceDisableCreateImagesEligibility";
+NSString* const kForceDisableCanvasEligibility =
+    @"ForceDisableCanvasEligibility";
+NSString* const kForceDisableDeepSearchEligibility =
+    @"ForceDisableDeepSearchEligibility";
+NSString* const kForceDisablePdfUploadEligibility =
+    @"ForceDisablePdfUploadEligibility";
+NSString* const kShowCatalogItems = @"ShowCatalogItems";
+NSString* const kForceMultiProfileForcedMigrationDone =
+    @"ForceMultiProfileForcedMigrationDone";
+NSString* const kShowBackendPromoDebugTools = @"ShowBackendPromoDebugTools";
+NSString* const kForcedPushNotificationType = @"ForcedPushNotificationType";
+NSString* const kForcedPushNotificationDelay = @"ForcedPushNotificationDelay";
 }  // namespace
 
 namespace experimental_flags {
@@ -80,11 +95,6 @@ bool AlwaysDisplayFirstRun() {
 bool NeverDisplayFirstRun() {
   return
       [[NSUserDefaults standardUserDefaults] boolForKey:kFirstRunForceDisabled];
-}
-
-bool AlwaysDisplayUpgradePromo() {
-  return [[NSUserDefaults standardUserDefaults]
-      boolForKey:kUpgradePromoForceEnabled];
 }
 
 NSString* GetOriginServerHost() {
@@ -100,37 +110,26 @@ bool ShouldResetNoticeCardOnFeedStart() {
   return [[NSUserDefaults standardUserDefaults] boolForKey:@"ResetNoticeCard"];
 }
 
-bool ShouldResetFirstFollowCount() {
-  return [[NSUserDefaults standardUserDefaults] boolForKey:@"ResetFirstFollow"];
-}
-
 bool ShouldForceContentNotificationsPromo() {
   return [[NSUserDefaults standardUserDefaults]
       boolForKey:@"ForceContentNotificationsPromo"];
 }
 
 bool ShouldForceFeedSigninPromo() {
+  base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
   return [[NSUserDefaults standardUserDefaults]
-      boolForKey:@"ForceFeedSigninPromo"];
+             boolForKey:@"ForceFeedSigninPromo"] ||
+         command_line->HasSwitch(switches::kForceFeedSigninPromo);
+}
+
+bool ShouldIgnoreDeviceLocaleConditions() {
+  return [[NSUserDefaults standardUserDefaults]
+      boolForKey:kIgnoreDeviceLocaleConditions];
 }
 
 bool ShouldIgnoreTileAblationConditions() {
   return [[NSUserDefaults standardUserDefaults]
       boolForKey:@"IgnoreTileAblationConditions"];
-}
-
-void DidResetFirstFollowCount() {
-  [[NSUserDefaults standardUserDefaults] setBool:NO forKey:@"ResetFirstFollow"];
-}
-
-bool ShouldAlwaysShowFirstFollow() {
-  return [[NSUserDefaults standardUserDefaults]
-      boolForKey:@"AlwaysShowFirstFollow"];
-}
-
-bool ShouldAlwaysShowFollowIPH() {
-  return
-      [[NSUserDefaults standardUserDefaults] boolForKey:@"AlwaysShowFollowIPH"];
 }
 
 bool IsMemoryDebuggingEnabled() {
@@ -216,6 +215,19 @@ std::optional<int> GetSafetyCheckWeakPasswordsCount() {
   }
 
   return weakPasswordsCount;
+}
+
+base::TimeDelta GetReturnToHomeSurfaceDuration() {
+  int duration = [[NSUserDefaults standardUserDefaults]
+      integerForKey:kHomeSurfaceDuration];
+  if (duration == 0) {
+    return base::Hours(4);
+  }
+  if (duration == -1) {
+    // if set to -1 the duration will be instant.
+    return base::Seconds(0);
+  }
+  return base::Seconds(duration);
 }
 
 std::optional<int> GetFirstRunRecency() {
@@ -331,15 +343,6 @@ bool ShouldUseInactiveTabsTestThreshold() {
       [[NSUserDefaults standardUserDefaults] boolForKey:kInactiveTabsTestMode];
 }
 
-NSString* GetTabResumptionDecorationOverride() {
-  NSString* override_value = [[NSUserDefaults standardUserDefaults]
-      stringForKey:kTabResumptionDecorationOverride];
-  if ([override_value length]) {
-    return override_value;
-  }
-  return nil;
-}
-
 bool ShouldOpenInIncognitoOverride() {
   NSString* value = [[NSUserDefaults standardUserDefaults]
       stringForKey:kAsyncStartupOverrideResponse];
@@ -364,6 +367,68 @@ bool AlwaysShowTheFirstPartyIncognitoUI() {
 bool EnableAIPrototypingMenu() {
   return [[NSUserDefaults standardUserDefaults]
       boolForKey:@"EnableAIPrototypingMenu"];
+}
+
+NSString* GetLensResultPanelGwsURL() {
+  return [[NSUserDefaults standardUserDefaults]
+      stringForKey:kLensResultPanelGwsURL];
+}
+
+NSString* GetCobrowseGwsURL() {
+  return [[NSUserDefaults standardUserDefaults] stringForKey:kCobrowseGwsURL];
+}
+
+bool ShouldForceDisableComposeboxAIM() {
+  return [[NSUserDefaults standardUserDefaults]
+      boolForKey:kForceDisableAIMEligibility];
+}
+
+bool ShouldForceDisableComposeboxCreateImages() {
+  return [[NSUserDefaults standardUserDefaults]
+      boolForKey:kForceDisableCreateImagesEligibility];
+}
+
+bool ShouldForceDisableComposeboxCanvas() {
+  return [[NSUserDefaults standardUserDefaults]
+      boolForKey:kForceDisableCanvasEligibility];
+}
+
+bool ShouldForceDisableComposeboxDeepSearch() {
+  return [[NSUserDefaults standardUserDefaults]
+      boolForKey:kForceDisableDeepSearchEligibility];
+}
+
+bool ShouldForceDisableComposeboxPdfUpload() {
+  return [[NSUserDefaults standardUserDefaults]
+      boolForKey:kForceDisablePdfUploadEligibility];
+}
+
+bool ShouldShowCatalogItems() {
+#if BUILDFLAG(CHROMIUM_BRANDING) && !defined(NDEBUG)
+  // Always show catalog items in debug builds.
+  return true;
+#else
+  return [[NSUserDefaults standardUserDefaults] boolForKey:kShowCatalogItems];
+#endif
+}
+
+bool ShouldForceMultiProfileForcedMigrationDone() {
+  return [[NSUserDefaults standardUserDefaults]
+      boolForKey:kForceMultiProfileForcedMigrationDone];
+}
+
+bool ShouldShowBackendPromoDebugTools() {
+  return [[NSUserDefaults standardUserDefaults]
+      boolForKey:kShowBackendPromoDebugTools];
+}
+int GetForcedPushNotificationType() {
+  return [[NSUserDefaults standardUserDefaults]
+      integerForKey:kForcedPushNotificationType];
+}
+
+int GetForcedPushNotificationDelay() {
+  return [[NSUserDefaults standardUserDefaults]
+      integerForKey:kForcedPushNotificationDelay];
 }
 
 }  // namespace experimental_flags

@@ -7,11 +7,13 @@
 #include <optional>
 
 #include "base/check.h"
-#include "base/containers/contains.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/lazy_instance.h"
 #include "base/logging.h"
+#include "base/notimplemented.h"
 #include "base/observer_list.h"
+#include "base/time/time.h"
 #include "base/unguessable_token.h"
 #include "build/build_config.h"
 #include "components/input/event_with_latency_info.h"
@@ -34,14 +36,20 @@
 #include "content/browser/renderer_host/render_widget_host_view_child_frame.h"
 #include "content/browser/renderer_host/scoped_view_transition_resources.h"
 #include "content/browser/renderer_host/text_input_manager.h"
+#include "content/browser/renderer_host/unbounded_surface_window.h"
 #include "content/browser/renderer_host/visible_time_request_trigger.h"
 #include "content/common/content_switches_internal.h"
+#include "content/common/features.h"
+#include "content/public/browser/render_widget_host_view.h"
 #include "content/public/common/page_visibility_state.h"
+#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/mojom/frame/intrinsic_sizing_info.mojom.h"
+#include "third_party/blink/public/mojom/unbounded_element/unbounded_element.mojom.h"
 #include "ui/base/ui_base_types.h"
 #include "ui/display/display_util.h"
 #include "ui/display/screen.h"
 #include "ui/events/event.h"
+#include "ui/events/gesture_detection/filtered_gesture_provider.h"
 #include "ui/events/keycodes/dom/dom_code.h"
 #include "ui/gfx/geometry/dip_util.h"
 #include "ui/gfx/geometry/point_conversions.h"
@@ -52,7 +60,13 @@
 #include "ui/ozone/public/ozone_platform.h"
 #endif
 
+#if BUILDFLAG(IS_WIN)
+#include "content/browser/renderer_host/input/stylus_handwriting_controller_win.h"
+#endif
+
 namespace content {
+
+void RenderWidgetHostViewBase::OnUnconfirmedTapConvertedToTap() {}
 
 RenderWidgetHostViewBase::RenderWidgetHostViewBase(RenderWidgetHost* host)
     : host_(RenderWidgetHostImpl::From(host)),
@@ -64,6 +78,12 @@ RenderWidgetHostViewBase::RenderWidgetHostViewBase(RenderWidgetHost* host)
 RenderWidgetHostViewBase::~RenderWidgetHostViewBase() {
   CHECK(!keyboard_locked_);
   CHECK(!IsPointerLocked());
+#if BUILDFLAG(IS_WIN)
+  if (StylusHandwritingControllerWin::IsHandwritingAPIAvailable()) {
+    StylusHandwritingControllerWin::GetInstance()->OnHandwritingViewDestroyed(
+        this);
+  }
+#endif  // BUILDFLAG(IS_WIN)
   // We call this here to guarantee that observers are notified before we go
   // away. However, some subclasses may wish to call this earlier in their
   // shutdown process, e.g. to force removal from
@@ -145,18 +165,35 @@ gfx::Size RenderWidgetHostViewBase::GetRequestedRendererSizeDevicePx() {
                                 GetDeviceScaleFactor());
 }
 
-uint32_t RenderWidgetHostViewBase::GetCaptureSequenceNumber() const {
-  // TODO(vmpstr): Implement this for overrides other than aura and child frame.
-  NOTIMPLEMENTED_LOG_ONCE();
-  return 0u;
-}
-
 ui::TextInputClient* RenderWidgetHostViewBase::GetTextInputClient() {
   return nullptr;
 }
 
 bool RenderWidgetHostViewBase::IsSurfaceAvailableForCopy() {
   return false;
+}
+
+// static
+bool RenderWidgetHostViewBase::TransformPointAndRectToRootView(
+    RenderWidgetHostViewBase* view,
+    RenderWidgetHostViewBase* root_view,
+    gfx::Point* transformed_point,
+    gfx::Rect* transformed_rect) {
+  gfx::Transform transform_to_main_frame;
+  if (!view->GetTransformToViewCoordSpace(root_view,
+                                          &transform_to_main_frame)) {
+    return false;
+  }
+
+  if (transformed_point) {
+    *transformed_point = transform_to_main_frame.MapPoint(*transformed_point);
+  }
+
+  if (transformed_rect) {
+    *transformed_rect = transform_to_main_frame.MapRect(*transformed_rect);
+  }
+
+  return true;
 }
 
 void RenderWidgetHostViewBase::CopyMainAndPopupFromSurface(
@@ -167,9 +204,16 @@ void RenderWidgetHostViewBase::CopyMainAndPopupFromSurface(
     const gfx::Rect& src_subrect,
     const gfx::Size& dst_size,
     float scale_factor,
-    base::OnceCallback<void(const SkBitmap&)> callback) {
-  if (!main_host || !main_frame_host)
+    base::TimeDelta timeout,
+    base::OnceCallback<void(const content::CopyFromSurfaceResult&)> callback) {
+  if (!main_host || !main_frame_host) {
+    if (base::FeatureList::IsEnabled(
+            features::kCopyFromSurfaceAlwaysCallCallback)) {
+      std::move(callback).Run(base::unexpected<content::CopyFromSurfaceError>(
+          content::CopyFromSurfaceError::kFrameGone));
+    }
     return;
+  }
 
 #if BUILDFLAG(IS_ANDROID)
   NOTREACHED()
@@ -177,92 +221,157 @@ void RenderWidgetHostViewBase::CopyMainAndPopupFromSurface(
          "DelegatedFrameHostAndroid::CopyFromCompositingSurface directly, "
          "and popups are not supported.";
 #else
-  if (!popup_host || !popup_frame_host) {
-    // No popup - just call CopyFromCompositingSurface once.
-    main_frame_host->CopyFromCompositingSurface(src_subrect, dst_size,
+  RenderWidgetHostViewBase* main_view =
+      main_host ? static_cast<RenderWidgetHostViewBase*>(main_host->GetView())
+                : nullptr;
+  UnboundedSurfaceWindow* unbounded_window =
+      main_view && main_view->HasActiveUnboundedSurface()
+          ? main_view->GetUnboundedSurfaceWindow()
+          : nullptr;
+  const bool has_popup = popup_host && popup_frame_host;
+  CHECK(!has_popup || !unbounded_window);
+
+  if (!has_popup && !unbounded_window) {
+    // No popup or unbounded window - just call CopyFromCompositingSurface
+    // once.
+    main_frame_host->CopyFromCompositingSurface(src_subrect, dst_size, timeout,
                                                 std::move(callback));
     return;
   }
 
-  // First locate the popup relative to the main page, in DIPs
+  // First locate the secondary window relative to the main page, in DIPs
   const gfx::Point parent_location =
-      main_host->GetView()->GetBoundsInRootWindow().origin();
-  const gfx::Point popup_location =
-      popup_host->GetView()->GetBoundsInRootWindow().origin();
+      main_view ? main_view->GetViewBounds().origin() : gfx::Point();
+  gfx::Point secondary_location;
+  if (popup_host && popup_frame_host) {
+    secondary_location = popup_host->GetView()->GetViewBounds().origin();
+  } else if (unbounded_window) {
+    DCHECK(base::FeatureList::IsEnabled(blink::features::kUnboundedElement));
+    secondary_location = unbounded_window->GetBounds().origin();
+  }
+
   const gfx::Point offset_dips =
-      PointAtOffsetFromOrigin(popup_location - parent_location);
+      PointAtOffsetFromOrigin(secondary_location - parent_location);
   const gfx::Vector2d offset_physical =
       ScaleToFlooredPoint(offset_dips, scale_factor).OffsetFromOrigin();
 
   // Queue up the request for the MAIN frame image first, but with a
-  // callback that launches a second request for the popup image.
-  //  1. Call CopyFromCompositingSurface for the main frame, with callback
-  //     |main_image_done_callback|. Inside |main_image_done_callback|:
-  //    a. Call CopyFromCompositingSurface again, this time on the popup
-  //       frame. For this call, build a new callback, |popup_done_callback|,
-  //       which:
-  //      i. Takes the main image as a parameter, combines the main image with
-  //         the just-acquired popup image, and then calls the original
-  //         (outer) callback with the combined image.
+  // callback that launches a second request for the secondary image.
   auto main_image_done_callback = base::BindOnce(
-      [](base::OnceCallback<void(const SkBitmap&)> final_callback,
-         const gfx::Vector2d offset,
+      [](base::OnceCallback<void(const content::CopyFromSurfaceResult&)>
+             final_callback,
+         const gfx::Vector2d offset, const bool was_capturing_popup,
+         base::WeakPtr<RenderWidgetHostImpl> main_host,
+         base::WeakPtr<RenderWidgetHostImpl> popup_host,
          base::WeakPtr<DelegatedFrameHost> popup_frame_host,
          const gfx::Rect src_subrect, const gfx::Size dst_size,
-         const SkBitmap& main_image) {
-        if (!popup_frame_host)
+         base::TimeDelta timeout,
+         const content::CopyFromSurfaceResult& main_result) {
+        RenderWidgetHostViewBase* main_view =
+            main_host
+                ? static_cast<RenderWidgetHostViewBase*>(main_host->GetView())
+                : nullptr;
+        UnboundedSurfaceWindow* unbounded_window =
+            main_view && main_view->HasActiveUnboundedSurface()
+                ? main_view->GetUnboundedSurfaceWindow()
+                : nullptr;
+
+        const bool has_popup = popup_host && popup_frame_host;
+        const bool secondary_surface_available =
+            was_capturing_popup ? has_popup : !!unbounded_window;
+        if (!secondary_surface_available) {
+          if (base::FeatureList::IsEnabled(
+                  features::kCopyFromSurfaceAlwaysCallCallback)) {
+            std::move(final_callback).Run(main_result);
+          }
           return;
+        }
 
         // Build a new callback that actually combines images.
         auto popup_done_callback = base::BindOnce(
-            [](base::OnceCallback<void(const SkBitmap&)> final_callback,
-               const gfx::Vector2d offset, const SkBitmap& main_image,
-               const SkBitmap& popup_image) {
-              // Draw popup_image into main_image.
-              SkCanvas canvas(main_image, SkSurfaceProps{});
-              canvas.drawImage(popup_image.asImage(), offset.x(), offset.y());
-              std::move(final_callback).Run(main_image);
-            },
-            std::move(final_callback), offset, std::move(main_image));
+            [](base::OnceCallback<void(const content::CopyFromSurfaceResult&)>
+                   final_callback,
+               const gfx::Vector2d offset,
+               const content::CopyFromSurfaceResult& main_result,
+               const content::CopyFromSurfaceResult& popup_result) {
+              // If main_result is not available, there is nothing to combine
+              // into.
+              if (!main_result.has_value()) {
+                std::move(final_callback).Run(main_result);
+                return;
+              }
 
-        // Second, request the popup image.
-        gfx::Rect popup_subrect(src_subrect - offset);
-        popup_frame_host->CopyFromCompositingSurface(
-            popup_subrect, dst_size, std::move(popup_done_callback));
+              if (popup_result.has_value()) {
+                // Draw secondary image into main_image only if secondary_image
+                // is valid.
+                SkCanvas canvas(main_result->bitmap, SkSurfaceProps{});
+                canvas.drawImage(popup_result->bitmap.asImage(), offset.x(),
+                                 offset.y());
+              }
+
+              std::move(final_callback).Run(main_result);
+            },
+            std::move(final_callback), offset, main_result);
+
+        // Second, request the secondary image.
+        if (was_capturing_popup) {
+          CHECK(has_popup);
+          gfx::Rect popup_subrect(src_subrect - offset);
+          popup_frame_host->CopyFromCompositingSurface(
+              popup_subrect, dst_size, timeout, std::move(popup_done_callback));
+          return;
+        } else {
+          CHECK(unbounded_window);
+          DCHECK(
+              base::FeatureList::IsEnabled(blink::features::kUnboundedElement));
+          gfx::Rect popup_subrect(src_subrect - offset);
+          unbounded_window->CopyFromSurface(popup_subrect, dst_size, timeout,
+                                            std::move(popup_done_callback));
+          return;
+        }
       },
-      std::move(callback), offset_physical, popup_frame_host, src_subrect,
-      dst_size);
+      std::move(callback), offset_physical, has_popup, main_host, popup_host,
+      popup_frame_host, src_subrect, dst_size, timeout);
 
   // Request the main image (happens first).
   main_frame_host->CopyFromCompositingSurface(
-      src_subrect, dst_size, std::move(main_image_done_callback));
+      src_subrect, dst_size, timeout, std::move(main_image_done_callback));
 #endif
 }
 
 void RenderWidgetHostViewBase::CopyFromSurface(
     const gfx::Rect& src_rect,
     const gfx::Size& output_size,
-    base::OnceCallback<void(const SkBitmap&)> callback) {
+    base::TimeDelta timeout,
+    base::OnceCallback<void(const content::CopyFromSurfaceResult&)> callback) {
   NOTIMPLEMENTED_LOG_ONCE();
-  std::move(callback).Run(SkBitmap());
+  std::move(callback).Run(base::unexpected<content::CopyFromSurfaceError>(
+      content::CopyFromSurfaceError::kNotImplemented));
 }
 
 void RenderWidgetHostViewBase::CopyFromExactSurface(
     const gfx::Rect& src_rect,
     const gfx::Size& output_size,
-    base::OnceCallback<void(const SkBitmap&)> callback) {
+    base::OnceCallback<void(const content::CopyFromSurfaceResult&)> callback) {
   NOTIMPLEMENTED_LOG_ONCE();
-  std::move(callback).Run(SkBitmap());
+  std::move(callback).Run(base::unexpected<content::CopyFromSurfaceError>(
+      content::CopyFromSurfaceError::kNotImplemented));
+}
+
+ui::FilteredGestureProvider*
+RenderWidgetHostViewBase::GetFilteredGestureProviderForTesting() {
+  return nullptr;
 }
 
 #if BUILDFLAG(IS_ANDROID)
-void RenderWidgetHostViewBase::CopyFromExactSurfaceWithIpcPriority(
+void RenderWidgetHostViewBase::CopyFromExactSurfaceWithIpcDelay(
     const gfx::Rect& src_rect,
     const gfx::Size& output_size,
-    base::OnceCallback<void(const SkBitmap&)> callback,
-    CopyOutputIpcPriority ipc_priority) {
+    base::OnceCallback<void(const content::CopyFromSurfaceResult&)> callback,
+    base::TimeDelta ipc_delay) {
   NOTIMPLEMENTED_LOG_ONCE();
-  std::move(callback).Run(SkBitmap());
+  std::move(callback).Run(base::unexpected<content::CopyFromSurfaceError>(
+      content::CopyFromSurfaceError::kNotImplemented));
 }
 #endif
 
@@ -395,6 +504,14 @@ WidgetType RenderWidgetHostViewBase::GetWidgetType() {
   return widget_type_;
 }
 
+gfx::Rect RenderWidgetHostViewBase::GetBoundsInScreenWithoutTransform() {
+  return GetBoundsInScreen();
+}
+
+gfx::Rect RenderWidgetHostViewBase::GetViewBoundsWithoutTransform() {
+  return GetViewBounds();
+}
+
 gfx::AcceleratedWidget
     RenderWidgetHostViewBase::AccessibilityGetAcceleratedWidget() {
   return gfx::kNullAcceleratedWidget;
@@ -402,19 +519,19 @@ gfx::AcceleratedWidget
 
 gfx::NativeViewAccessible
     RenderWidgetHostViewBase::AccessibilityGetNativeViewAccessible() {
-  return nullptr;
+  return gfx::NativeViewAccessible();
 }
 
 gfx::NativeViewAccessible
 RenderWidgetHostViewBase::AccessibilityGetNativeViewAccessibleForWindow() {
-  return nullptr;
+  return gfx::NativeViewAccessible();
 }
 
 bool RenderWidgetHostViewBase::ShouldInitiateStylusWriting() {
   return false;
 }
 
-bool RenderWidgetHostViewBase::RequestRepaintForTesting() {
+bool RenderWidgetHostViewBase::RequestRepaintOnNewSurface() {
   return false;
 }
 
@@ -446,6 +563,7 @@ void RenderWidgetHostViewBase::UpdateScreenInfo() {
   }
 
   auto new_screen_infos = GetNewScreenInfosForUpdate();
+  new_screen_infos.mutable_current().handwriting_radius = handwriting_radius_;
 
   if (scale_override_for_capture_ != 1.0f) {
     // If HiDPI capture mode is active, adjust the device scale factor to
@@ -476,7 +594,7 @@ void RenderWidgetHostViewBase::UpdateScreenInfo() {
           ->GetPlatformRuntimeProperties()
           .supports_per_window_scaling) {
     const float window_scale =
-        display::Screen::GetScreen()
+        display::Screen::Get()
             ->GetPreferredScaleFactorForView(GetNativeView())
             .value_or(1.0f);
     auto& screen = new_screen_infos.mutable_current();
@@ -579,6 +697,11 @@ display::ScreenInfos RenderWidgetHostViewBase::GetScreenInfos() const {
 
 void RenderWidgetHostViewBase::ResetGestureDetection() {}
 
+void RenderWidgetHostViewBase::SetShouldUseDefaultDeadlineOnResize(
+    bool enable) {
+  NOTIMPLEMENTED() << "Not supported on platform";
+}
+
 float RenderWidgetHostViewBase::GetDeviceScaleFactor() const {
   return GetScreenInfos().current().device_scale_factor;
 }
@@ -589,7 +712,7 @@ RenderWidgetHostViewBase::GetInputWeakPtr() {
 }
 
 input::RenderInputRouter* RenderWidgetHostViewBase::GetViewRenderInputRouter() {
-  return host()->GetRenderInputRouter();
+  return host() ? host()->GetRenderInputRouter() : nullptr;
 }
 
 void RenderWidgetHostViewBase::SetScaleOverrideForCapture(float scale) {
@@ -608,6 +731,10 @@ void RenderWidgetHostViewBase::OnAutoscrollStart() {
 
   // End the current scrolling seqeunce when autoscrolling starts.
   GetMouseWheelPhaseHandler()->DispatchPendingWheelEndEvent();
+}
+
+void RenderWidgetHostViewBase::OnAutoscrollTargetResolved(bool success) {
+  host()->OnAutoscrollTargetResolved(success);
 }
 
 DevicePosturePlatformProvider*
@@ -721,16 +848,17 @@ gfx::PointF RenderWidgetHostViewBase::TransformPointToRootCoordSpaceF(
   return RenderWidgetHostViewInput::TransformPointToRootCoordSpaceF(point);
 }
 
+gfx::PointF RenderWidgetHostViewBase::TransformRootPointToViewCoordSpace(
+    const gfx::PointF& point) {
+  return RenderWidgetHostViewInput::TransformRootPointToViewCoordSpace(point);
+}
+
 bool RenderWidgetHostViewBase::IsRenderWidgetHostViewChildFrame() const {
   return false;
 }
 
 bool RenderWidgetHostViewBase::HasSize() const {
   return true;
-}
-
-void RenderWidgetHostViewBase::Show() {
-  ShowWithVisibility(PageVisibilityState::kVisible);
 }
 
 void RenderWidgetHostViewBase::Destroy() {
@@ -807,7 +935,7 @@ display::ScreenInfos RenderWidgetHostViewBase::GetNewScreenInfosForUpdate() {
 
   display::ScreenInfos screen_infos;
 
-  if (auto* screen = display::Screen::GetScreen()) {
+  if (auto* screen = display::Screen::Get()) {
     gfx::NativeView native_view = GetNativeView();
     const auto& display = native_view
                               ? screen->GetDisplayNearestView(native_view)
@@ -828,6 +956,92 @@ display::ScreenInfos RenderWidgetHostViewBase::GetNewScreenInfosForUpdate() {
 void RenderWidgetHostViewBase::DidNavigate() {
   if (host())
     host()->SynchronizeVisualProperties();
+}
+
+void RenderWidgetHostViewBase::CreateUnboundedSurface(
+    mojo::PendingAssociatedReceiver<blink::mojom::UnboundedSurfaceHost> host,
+    mojo::PendingAssociatedRemote<blink::mojom::UnboundedSurfaceClient> client,
+    const gfx::Rect& bounds_in_dips,
+    base::WeakPtr<RenderWidgetHostViewBase> subframe_view) {}
+
+void RenderWidgetHostViewBase::UpdateUnboundedSurfaceBoundsInSubframeContext(
+    const gfx::Rect& bounds_in_dips,
+    RenderWidgetHostViewBase* subframe_view) {
+  if (!unbounded_surface_window_) {
+    return;
+  }
+  UpdateUnboundedSurfaceBounds(
+      ConvertSubframeBoundsToScreen(bounds_in_dips, subframe_view));
+}
+
+gfx::Rect RenderWidgetHostViewBase::ConvertSubframeBoundsToScreen(
+    const gfx::Rect& bounds_in_dips,
+    RenderWidgetHostViewBase* subframe_view) {
+  gfx::Rect transformed_bounds = bounds_in_dips;
+  if (subframe_view) {
+    TransformPointAndRectToRootView(subframe_view, this, nullptr,
+                                    &transformed_bounds);
+  }
+  gfx::Rect bounds_in_screen = transformed_bounds;
+  bounds_in_screen.Offset(GetViewBounds().OffsetFromOrigin());
+  return bounds_in_screen;
+}
+
+void RenderWidgetHostViewBase::UpdateUnboundedSurfaceBounds(
+    const gfx::Rect& bounds_in_screen) {
+  if (unbounded_surface_window_) {
+    unbounded_surface_window_->SetBounds(bounds_in_screen);
+  }
+}
+
+void RenderWidgetHostViewBase::DismissUnboundedSurface() {
+  if (unbounded_surface_window_) {
+    unbounded_surface_window_->Dismiss();
+  }
+}
+
+void RenderWidgetHostViewBase::DestroyUnboundedSurface(
+    base::WeakPtr<UnboundedSurfaceWindow> window) {
+  // Only destroy the window if it matches the active window to prevent
+  // asynchronous destruction tasks from destroying a newly created window.
+  // If the weak pointer is null, it means the window was already destroyed,
+  // so we do nothing.
+  if (window && unbounded_surface_window_.get() == window.get()) {
+    unbounded_surface_window_.reset();
+  }
+}
+
+bool RenderWidgetHostViewBase::HasActiveUnboundedSurface() const {
+  return !!unbounded_surface_window_;
+}
+
+viz::FrameSinkId RenderWidgetHostViewBase::GetUnboundedSurfaceFrameSinkId()
+    const {
+  return unbounded_surface_window_ ? unbounded_surface_window_->GetFrameSinkId()
+                                   : viz::FrameSinkId();
+}
+
+viz::LocalSurfaceId
+RenderWidgetHostViewBase::GetUnboundedSurfaceLocalSurfaceId() const {
+  return unbounded_surface_window_
+             ? unbounded_surface_window_->GetLocalSurfaceId()
+             : viz::LocalSurfaceId();
+}
+
+void RenderWidgetHostViewBase::GetUnboundedSurfaceCompositorFrameSink(
+    mojo::PendingReceiver<viz::mojom::CompositorFrameSink> sink,
+    mojo::PendingRemote<viz::mojom::CompositorFrameSinkClient> client) {
+  if (unbounded_surface_window_) {
+    unbounded_surface_window_->GetCompositorFrameSink(std::move(sink),
+                                                      std::move(client));
+  }
+}
+
+UnboundedSurfaceWindow* RenderWidgetHostViewBase::GetUnboundedSurfaceWindow()
+    const {
+  DCHECK(!unbounded_surface_window_ ||
+         base::FeatureList::IsEnabled(blink::features::kUnboundedElement));
+  return unbounded_surface_window_.get();
 }
 
 WebContentsAccessibility*
@@ -871,14 +1085,14 @@ void RenderWidgetHostViewBase::OnShowWithPageVisibility(
   const bool web_contents_is_visible =
       page_visibility == PageVisibilityState::kVisible;
 
-  if (host_->is_hidden()) {
+  if (host_->IsHidden()) {
     // If the WebContents is becoming visible, ask the compositor to report the
     // visibility time for metrics. Otherwise the widget is being rendered even
     // though the WebContents is hidden or occluded, for example due to being
     // captured, so it should not be included in visibility time metrics.
     NotifyHostAndDelegateOnWasShown(
         web_contents_is_visible ? visible_time_request_trigger.TakeRequest()
-                                : nullptr);
+                                : std::nullopt);
     return;
   }
 
@@ -891,7 +1105,7 @@ void RenderWidgetHostViewBase::OnShowWithPageVisibility(
     if (auto visible_time_request =
             visible_time_request_trigger.TakeRequest()) {
       RequestSuccessfulPresentationTimeFromHostOrDelegate(
-          std::move(visible_time_request));
+          std::move(*visible_time_request));
     }
     return;
   }
@@ -941,6 +1155,11 @@ void RenderWidgetHostViewBase::UpdateFrameSinkIdRegistration() {
 void RenderWidgetHostViewBase::SetViewTransitionResources(
     std::unique_ptr<ScopedViewTransitionResources> resources) {
   view_transition_resources_ = std::move(resources);
+}
+
+std::optional<uint32_t>
+RenderWidgetHostView::GetForceSpecifiedDeadlineForTesting() {
+  return std::nullopt;
 }
 
 }  // namespace content

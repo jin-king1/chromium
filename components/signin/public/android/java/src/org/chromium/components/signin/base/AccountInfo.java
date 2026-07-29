@@ -4,29 +4,40 @@
 
 package org.chromium.components.signin.base;
 
+import android.accounts.Account;
 import android.graphics.Bitmap;
 import android.text.TextUtils;
 
-import org.jni_zero.CalledByNative;
+import com.google.errorprone.annotations.DoNotMock;
 
+import org.jni_zero.CalledByNative;
+import org.jni_zero.JNINamespace;
+import org.jni_zero.JniType;
+
+import org.chromium.build.annotations.Contract;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.components.signin.AccountEmailDisplayHook;
+import org.chromium.components.signin.AccountUtils;
 import org.chromium.components.signin.SigninConstants;
 import org.chromium.components.signin.Tribool;
+import org.chromium.google_apis.gaia.CoreAccountId;
+import org.chromium.google_apis.gaia.GaiaId;
 
 import java.util.HashMap;
 
 /**
  * Stores all the information known about an account.
  *
- * This class has a native counterpart called AccountInfo.
+ * <p>This class has a native counterpart called AccountInfo.
  */
 @NullMarked
+@DoNotMock("Use TestAccounts or create a real instance.")
+@JNINamespace("signin")
 public class AccountInfo extends CoreAccountInfo {
     /** Used to instantiate `AccountInfo`. */
     public static class Builder {
-        private CoreAccountInfo mCoreAccountInfo;
+        private final CoreAccountInfo mCoreAccountInfo;
         private String mFullName = "";
         private String mGivenName = "";
         private @Nullable String mHostedDomain;
@@ -99,16 +110,16 @@ public class AccountInfo extends CoreAccountInfo {
     private final @Nullable String mHostedDomain;
 
     private final @Nullable Bitmap mAccountImage;
-    private AccountCapabilities mAccountCapabilities;
+    private final AccountCapabilities mAccountCapabilities;
 
     /** Used from JNI to marshal `AccountInfo` from C++ to Java. */
     @CalledByNative
     private AccountInfo(
-            CoreAccountId id,
-            String email,
-            GaiaId gaiaId,
-            String fullName,
-            String givenName,
+            @JniType("CoreAccountId") CoreAccountId id,
+            @JniType("std::string") String email,
+            @JniType("GaiaId") GaiaId gaiaId,
+            @JniType("std::string") String fullName,
+            @JniType("std::string") String givenName,
             @Nullable String hostedDomain,
             @Nullable Bitmap accountImage,
             AccountCapabilities accountCapabilities) {
@@ -139,13 +150,13 @@ public class AccountInfo extends CoreAccountInfo {
 
     /** Returns the full name of the account. */
     @CalledByNative
-    public String getFullName() {
+    public @JniType("std::string") String getFullName() {
         return mFullName;
     }
 
     /** Returns the given name of the account. */
     @CalledByNative
-    public String getGivenName() {
+    public @JniType("std::string") String getGivenName() {
         return mGivenName;
     }
 
@@ -170,11 +181,13 @@ public class AccountInfo extends CoreAccountInfo {
     }
 
     /** Gets the account's image. It can be the image user uploaded, monogram or null. */
+    @CalledByNative
     public @Nullable Bitmap getAccountImage() {
         return mAccountImage;
     }
 
     /** Returns the capability values associated with the account. */
+    @CalledByNative
     public AccountCapabilities getAccountCapabilities() {
         return mAccountCapabilities;
     }
@@ -187,6 +200,48 @@ public class AccountInfo extends CoreAccountInfo {
         return !TextUtils.isEmpty(mFullName)
                 || !TextUtils.isEmpty(mGivenName)
                 || mAccountImage != null;
+    }
+
+    /**
+     * Null-checking helper to create {@link Account} from a possibly null {@link AccountInfo}.
+     *
+     * @return {@link Account} for the argument if it is not null, null otherwise.
+     */
+    @Contract("!null -> !null")
+    public static @Nullable Account getAndroidAccountFrom(@Nullable AccountInfo accountInfo) {
+        return accountInfo == null
+                ? null
+                : AccountUtils.createAccountFromEmail(accountInfo.getEmail());
+    }
+
+    /**
+     * Null-checking helper to get an account id from a possibly null {@link AccountInfo}.
+     *
+     * @return {@link #getId()} for the argument if it is not null, null otherwise.
+     */
+    @Contract("!null -> !null")
+    public static @Nullable CoreAccountId getIdFrom(@Nullable AccountInfo accountInfo) {
+        return accountInfo == null ? null : accountInfo.getId();
+    }
+
+    /**
+     * Null-checking helper to get an email from a possibly null {@link AccountInfo}.
+     *
+     * @return {@link #getEmail()} for the argument if it is not null, null otherwise.
+     */
+    @Contract("!null -> !null")
+    public static @Nullable String getEmailFrom(@Nullable AccountInfo accountInfo) {
+        return accountInfo == null ? null : accountInfo.getEmail();
+    }
+
+    /**
+     * Null-checking helper to get a GaiaId from a possibly null {@link AccountInfo}.
+     *
+     * @return {@link #getGaiaId()} for the argument if it is not null, null otherwise.
+     */
+    @Contract("!null -> !null")
+    public static @Nullable GaiaId getGaiaIdFrom(@Nullable AccountInfo accountInfo) {
+        return accountInfo == null ? null : accountInfo.getGaiaId();
     }
 
     @CalledByNative

@@ -70,8 +70,7 @@ void RemoveErrorMessageFromStackTrace(const std::string& error_message,
 }
 
 std::string RedactErrorMessage(const std::string& message) {
-  return redaction::RedactionTool(/*first_party_extension_ids=*/nullptr)
-      .Redact(message);
+  return redaction::RedactionTool().Redact(message);
 }
 
 // Truncate the error message to no more than 1000 characters. Long messages
@@ -228,7 +227,7 @@ void ChromeJsErrorReportProcessor::OnConsentCheckCompleted(
       break;
   }
   params["full_url"] = source.spec();
-  params["url"] = source.path();
+  params["url"] = source.GetPath();
   params["src"] = source.spec();
   if (error_report->line_number) {
     params["line"] = base::NumberToString(*error_report->line_number);

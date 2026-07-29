@@ -29,7 +29,7 @@ import java.util.concurrent.TimeoutException;
 @Config(manifest = Config.NONE)
 public class SelectableItemViewBaseTest {
 
-    private static class SelectableItemViewBaseTestImpl<E> extends SelectableItemViewBase {
+    private static class SelectableItemViewBaseTestImpl<E> extends SelectableItemViewBase<E> {
         private final CallbackHelper mHandleNonSelectionClickHelper;
 
         public SelectableItemViewBaseTestImpl(
@@ -52,7 +52,7 @@ public class SelectableItemViewBaseTest {
         Activity activity = Robolectric.buildActivity(Activity.class).setup().get();
         mHandleNonSelectionClickHelper = new CallbackHelper();
         mSelectableItemViewBase =
-                new SelectableItemViewBaseTestImpl<Integer>(
+                new SelectableItemViewBaseTestImpl<>(
                         activity, /* attrs= */ null, mHandleNonSelectionClickHelper);
     }
 

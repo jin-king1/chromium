@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/browser/enterprise/connectors/test/deep_scanning_browsertest_base.h"
 
 #include "base/containers/span.h"
@@ -14,7 +9,7 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/enterprise/connectors/analysis/content_analysis_dialog.h"
+#include "chrome/browser/enterprise/connectors/analysis/content_analysis_dialog_controller.h"
 #include "chrome/browser/enterprise/connectors/analysis/files_request_handler.h"
 #include "chrome/browser/enterprise/connectors/connectors_service.h"
 #include "chrome/browser/enterprise/connectors/test/deep_scanning_test_utils.h"
@@ -22,6 +17,9 @@
 #include "chrome/browser/policy/dm_token_utils.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/test/base/testing_browser_process.h"
+#include "components/enterprise/connectors/core/cloud_content_scanning/clipboard_analysis_request.h"
+#include "components/enterprise/connectors/core/cloud_content_scanning/clipboard_request_handler.h"
+#include "components/enterprise/connectors/core/cloud_content_scanning/common.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
 #include "components/safe_browsing/core/common/features.h"
@@ -33,37 +31,70 @@ namespace {
 
 constexpr char kDmToken[] = "dm_token";
 
-constexpr base::TimeDelta kMinimumPendingDelay = base::Milliseconds(400);
 constexpr base::TimeDelta kSuccessTimeout = base::Milliseconds(100);
 constexpr base::TimeDelta kShowDialogDelay = base::Milliseconds(0);
 
-class UnresponsiveFilesRequestHandler : public FilesRequestHandler {
+class UnresponsiveFilesRequestHandler : public FilesRequestHandlerBase {
  public:
-  using FilesRequestHandler::FilesRequestHandler;
-
-  static std::unique_ptr<FilesRequestHandler> Create(
+  UnresponsiveFilesRequestHandler(
       ContentAnalysisInfo* content_analysis_info,
-      safe_browsing::BinaryUploadService* upload_service,
+      BinaryUploadService* upload_service,
       Profile* profile,
       GURL url,
       const std::string& source,
       const std::string& destination,
       const std::string& content_transfer_method,
-      safe_browsing::DeepScanAccessPoint access_point,
+      DeepScanAccessPoint access_point,
+      const std::vector<base::FilePath>& paths,
+      FilesRequestHandler::CompletionCallback callback)
+      : FilesRequestHandlerBase(
+            content_analysis_info,
+            upload_service,
+            url,
+            content_transfer_method,
+            access_point,
+            std::make_unique<FilesRequestHandler>(profile,
+                                                  source,
+                                                  destination,
+                                                  paths,
+                                                  std::move(callback))) {}
+
+  static std::unique_ptr<FilesRequestHandlerBase> Create(
+      ContentAnalysisInfo* content_analysis_info,
+      BinaryUploadService* upload_service,
+      Profile* profile,
+      GURL url,
+      const std::string& source,
+      const std::string& destination,
+      const std::string& content_transfer_method,
+      DeepScanAccessPoint access_point,
       const std::vector<base::FilePath>& paths,
       FilesRequestHandler::CompletionCallback callback) {
-    return base::WrapUnique(new UnresponsiveFilesRequestHandler(
+    return std::make_unique<UnresponsiveFilesRequestHandler>(
         content_analysis_info, upload_service, profile, url, source,
         destination, content_transfer_method, access_point, paths,
-        std::move(callback)));
+        std::move(callback));
   }
 
  private:
   void UploadFileForDeepScanning(
-      safe_browsing::BinaryUploadService::Result result,
+      enterprise_connectors::ScanRequestUploadResult result,
       const base::FilePath& path,
-      std::unique_ptr<safe_browsing::BinaryUploadService::Request> request)
-      override {
+      std::unique_ptr<BinaryUploadRequest> request) override {
+    // Do nothing.
+  }
+};
+
+class UnresponsiveClipboardRequestHandler : public ClipboardRequestHandler {
+ public:
+  using ClipboardRequestHandler::Create;
+
+ protected:
+  using ClipboardRequestHandler::ClipboardRequestHandler;
+
+ private:
+  void UploadForDeepScanning(
+      std::unique_ptr<ClipboardAnalysisRequest> request) override {
     // Do nothing.
   }
 };
@@ -78,19 +109,15 @@ class UnresponsiveContentAnalysisDelegate : public FakeContentAnalysisDelegate {
       std::string dm_token,
       content::WebContents* web_contents,
       Data data,
-      CompletionCallback callback) {
+      CompletionCallback callback,
+      DeepScanAccessPoint access_point) {
     FilesRequestHandler::SetFactoryForTesting(
         base::BindRepeating(&UnresponsiveFilesRequestHandler::Create));
+    enterprise_connectors::ClipboardRequestHandler::SetFactoryForTesting(
+        base::BindRepeating(&UnresponsiveClipboardRequestHandler::Create));
     return std::make_unique<UnresponsiveContentAnalysisDelegate>(
         delete_closure, status_callback, std::move(dm_token), web_contents,
-        std::move(data), std::move(callback));
-  }
-
- private:
-  void UploadTextForDeepScanning(
-      std::unique_ptr<safe_browsing::BinaryUploadService::Request> request)
-      override {
-    // Do nothing.
+        std::move(data), std::move(callback), access_point);
   }
 };
 
@@ -99,10 +126,10 @@ class UnresponsiveContentAnalysisDelegate : public FakeContentAnalysisDelegate {
 DeepScanningBrowserTestBase::DeepScanningBrowserTestBase() {
   // Change the time values of the upload UI to smaller ones to make tests
   // showing it run faster.
-  ContentAnalysisDialog::SetMinimumPendingDialogTimeForTesting(
-      kMinimumPendingDelay);
-  ContentAnalysisDialog::SetSuccessDialogTimeoutForTesting(kSuccessTimeout);
-  ContentAnalysisDialog::SetShowDialogDelayForTesting(kShowDialogDelay);
+  ContentAnalysisDialogController::SetSuccessDialogTimeoutForTesting(
+      kSuccessTimeout);
+  ContentAnalysisDialogController::SetShowDialogDelayForTesting(
+      kShowDialogDelay);
 }
 
 DeepScanningBrowserTestBase::~DeepScanningBrowserTestBase() = default;
@@ -111,11 +138,11 @@ void DeepScanningBrowserTestBase::TearDownOnMainThread() {
   ContentAnalysisDelegate::ResetFactoryForTesting();
   FilesRequestHandler::ResetFactoryForTesting();
 
-  ClearAnalysisConnector(browser()->profile()->GetPrefs(), FILE_ATTACHED);
-  ClearAnalysisConnector(browser()->profile()->GetPrefs(), FILE_DOWNLOADED);
-  ClearAnalysisConnector(browser()->profile()->GetPrefs(), BULK_DATA_ENTRY);
-  ClearAnalysisConnector(browser()->profile()->GetPrefs(), PRINT);
-  SetOnSecurityEventReporting(browser()->profile()->GetPrefs(), false);
+  ClearAnalysisConnector(browser()->GetProfile()->GetPrefs(), FILE_ATTACHED);
+  ClearAnalysisConnector(browser()->GetProfile()->GetPrefs(), FILE_DOWNLOADED);
+  ClearAnalysisConnector(browser()->GetProfile()->GetPrefs(), BULK_DATA_ENTRY);
+  ClearAnalysisConnector(browser()->GetProfile()->GetPrefs(), PRINT);
+  SetOnSecurityEventReporting(browser()->GetProfile()->GetPrefs(), false);
 }
 
 void DeepScanningBrowserTestBase::SetUpDelegate() {

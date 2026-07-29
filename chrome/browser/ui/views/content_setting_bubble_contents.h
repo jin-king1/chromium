@@ -5,11 +5,11 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_CONTENT_SETTING_BUBBLE_CONTENTS_H_
 #define CHROME_BROWSER_UI_VIEWS_CONTENT_SETTING_BUBBLE_CONTENTS_H_
 
-#include <map>
 #include <memory>
 #include <string>
 
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "chrome/browser/ui/content_settings/content_setting_bubble_model.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "ui/base/metadata/metadata_header_macros.h"
@@ -42,7 +42,7 @@ class ContentSettingBubbleContents : public content::WebContentsObserver,
   ContentSettingBubbleContents(
       std::unique_ptr<ContentSettingBubbleModel> content_setting_bubble_model,
       content::WebContents* web_contents,
-      views::View* anchor_view,
+      views::BubbleAnchor anchor,
       views::BubbleBorder::Arrow arrow);
   ContentSettingBubbleContents(const ContentSettingBubbleContents&) = delete;
   ContentSettingBubbleContents& operator=(const ContentSettingBubbleContents&) =
@@ -72,6 +72,10 @@ class ContentSettingBubbleContents : public content::WebContentsObserver,
     return content_setting_bubble_model_->bubble_content().message;
   }
 
+  ContentSettingBubbleModel* bubble_model_for_test() {
+    return content_setting_bubble_model_.get();
+  }
+
  protected:
   // views::WidgetDelegate:
   std::u16string GetWindowTitle() const override;
@@ -81,6 +85,8 @@ class ContentSettingBubbleContents : public content::WebContentsObserver,
   void Init() override;
 
  private:
+  FRIEND_TEST_ALL_PREFIXES(FramebustBlockBrowserTest, ModelAllowsRedirection);
+
   class ListItemContainer;
 
   // Create the extra view for this dialog, which contains any subset of: a
@@ -93,9 +99,9 @@ class ContentSettingBubbleContents : public content::WebContentsObserver,
   void OnPerformAction(views::Combobox* combobox);
 
   // content::WebContentsObserver:
-  void PrimaryPageChanged(content::Page& page) override;
   void OnVisibilityChanged(content::Visibility visibility) override;
-  void WebContentsDestroyed() override;
+
+  void ResetBubbleModelAndClose();
 
   // Provides data for this bubble.
   std::unique_ptr<ContentSettingBubbleModel> content_setting_bubble_model_;
@@ -107,6 +113,8 @@ class ContentSettingBubbleContents : public content::WebContentsObserver,
   RadioGroup radio_group_;
   raw_ptr<views::LabelButton, DanglingUntriaged> manage_button_ = nullptr;
   raw_ptr<views::Checkbox, DanglingUntriaged> manage_checkbox_ = nullptr;
+
+  base::WeakPtrFactory<ContentSettingBubbleContents> weak_factory_;
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_CONTENT_SETTING_BUBBLE_CONTENTS_H_

@@ -28,7 +28,6 @@ import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabClosureParams;
-import org.chromium.chrome.browser.tabmodel.TabGroupModelFilter;
 import org.chromium.chrome.browser.tabmodel.TabRemover;
 import org.chromium.chrome.browser.tasks.tab_management.TabListEditorAction.ActionDelegate;
 import org.chromium.chrome.browser.tasks.tab_management.TabListEditorAction.ActionObserver;
@@ -55,9 +54,8 @@ import java.util.stream.Collectors;
 public class TabListEditorCloseActionUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
-    @Mock private TabGroupModelFilter mGroupFilter;
     @Mock private TabRemover mTabRemover;
-    @Mock private SelectionDelegate<Integer> mSelectionDelegate;
+    @Mock private SelectionDelegate<TabListEditorItemSelectionId> mSelectionDelegate;
     @Mock private ActionDelegate mDelegate;
     @Mock private Profile mProfile;
 
@@ -74,11 +72,10 @@ public class TabListEditorCloseActionUnitTest {
                         IconPosition.START);
         mTabModel = spy(new MockTabModel(mProfile, null));
         mTabModel.setTabRemoverForTesting(mTabRemover);
-        when(mGroupFilter.getTabModel()).thenReturn(mTabModel);
     }
 
     private void configure(boolean actionOnRelatedTabs) {
-        mAction.configure(() -> mGroupFilter, mSelectionDelegate, mDelegate, actionOnRelatedTabs);
+        mAction.configure(() -> mTabModel, mSelectionDelegate, mDelegate, actionOnRelatedTabs);
     }
 
     @Test
@@ -114,10 +111,11 @@ public class TabListEditorCloseActionUnitTest {
         List<Integer> tabIds = Arrays.asList(5, 3, 7);
         List<Tab> tabs =
                 tabIds.stream().map(id -> mTabModel.addTab(id)).collect(Collectors.toList());
-        Set<Integer> tabIdsSet = Collections.singleton(3);
-        when(mSelectionDelegate.getSelectedItems()).thenReturn(tabIdsSet);
+        Set<TabListEditorItemSelectionId> itemIdsSet =
+                Collections.singleton(TabListEditorItemSelectionId.createTabId(3));
+        when(mSelectionDelegate.getSelectedItems()).thenReturn(itemIdsSet);
 
-        mAction.onSelectionStateChange(Arrays.asList(3));
+        mAction.onSelectionStateChange(Arrays.asList(TabListEditorItemSelectionId.createTabId(3)));
         assertEquals(true, mAction.getPropertyModel().get(TabListEditorActionProperties.ENABLED));
         assertEquals(1, mAction.getPropertyModel().get(TabListEditorActionProperties.ITEM_COUNT));
 
@@ -134,12 +132,17 @@ public class TabListEditorCloseActionUnitTest {
     public void testCloseActionWithTabs() throws TimeoutException {
         configure(false);
         List<Integer> tabIds = Arrays.asList(5, 3, 7);
+        List<TabListEditorItemSelectionId> itemIds =
+                Arrays.asList(
+                        TabListEditorItemSelectionId.createTabId(5),
+                        TabListEditorItemSelectionId.createTabId(3),
+                        TabListEditorItemSelectionId.createTabId(7));
         List<Tab> tabs =
                 tabIds.stream().map(id -> mTabModel.addTab(id)).collect(Collectors.toList());
-        Set<Integer> tabIdsSet = new LinkedHashSet<>(tabIds);
-        when(mSelectionDelegate.getSelectedItems()).thenReturn(tabIdsSet);
+        Set<TabListEditorItemSelectionId> itemIdsSet = new LinkedHashSet<>(itemIds);
+        when(mSelectionDelegate.getSelectedItems()).thenReturn(itemIdsSet);
 
-        mAction.onSelectionStateChange(tabIds);
+        mAction.onSelectionStateChange(itemIds);
         assertEquals(true, mAction.getPropertyModel().get(TabListEditorActionProperties.ENABLED));
         assertEquals(3, mAction.getPropertyModel().get(TabListEditorActionProperties.ITEM_COUNT));
 
@@ -202,7 +205,6 @@ public class TabListEditorCloseActionUnitTest {
         TabListHolder holder =
                 TabListEditorActionUnitTestHelper.configureTabs(
                         mTabModel,
-                        mGroupFilter,
                         /* tabGroupSyncService= */ null,
                         mSelectionDelegate,
                         tabIdGroups,
@@ -212,7 +214,7 @@ public class TabListEditorCloseActionUnitTest {
         assertEquals(5, holder.getSelectedTabs().get(0).getId());
         assertEquals(8, holder.getSelectedTabs().get(1).getId());
         assertEquals(1, holder.getSelectedTabs().get(2).getId());
-        mAction.onSelectionStateChange(holder.getSelectedTabIds());
+        mAction.onSelectionStateChange(holder.getSelectedItemIds());
         assertEquals(true, mAction.getPropertyModel().get(TabListEditorActionProperties.ENABLED));
         assertEquals(6, mAction.getPropertyModel().get(TabListEditorActionProperties.ITEM_COUNT));
 
@@ -273,7 +275,6 @@ public class TabListEditorCloseActionUnitTest {
         TabListHolder holder =
                 TabListEditorActionUnitTestHelper.configureTabs(
                         mTabModel,
-                        mGroupFilter,
                         /* tabGroupSyncService= */ null,
                         mSelectionDelegate,
                         tabIdGroups,
@@ -283,7 +284,7 @@ public class TabListEditorCloseActionUnitTest {
         assertEquals(5, holder.getSelectedTabs().get(0).getId());
         assertEquals(8, holder.getSelectedTabs().get(1).getId());
         assertEquals(1, holder.getSelectedTabs().get(2).getId());
-        mAction.onSelectionStateChange(holder.getSelectedTabIds());
+        mAction.onSelectionStateChange(holder.getSelectedItemIds());
         assertEquals(true, mAction.getPropertyModel().get(TabListEditorActionProperties.ENABLED));
         assertEquals(3, mAction.getPropertyModel().get(TabListEditorActionProperties.ITEM_COUNT));
 

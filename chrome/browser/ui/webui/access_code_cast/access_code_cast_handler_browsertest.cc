@@ -3,6 +3,9 @@
 // found in the LICENSE file.
 
 #include "chrome/test/media_router/access_code_cast/access_code_cast_integration_browsertest.h"
+#include "components/signin/public/base/consent_level.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
+#include "google_apis/gaia/google_service_auth_error.h"
 
 #if BUILDFLAG(IS_WIN)
 #include "base/win/windows_version.h"
@@ -19,17 +22,25 @@ class AccessCodeCastHandlerBrowserTest
 
 // TODO(b/235275754): Add a case for when the network is connected and we
 // surface a server error.
+//
+// TODO(crbug.com/513366591): Re-enable this test on Linux once the flakiness is
+// fixed.
+#if BUILDFLAG(IS_LINUX)
+#define MAYBE_ExpectNetworkErrorWhenNoNetwork \
+  DISABLED_ExpectNetworkErrorWhenNoNetwork
+#else
+#define MAYBE_ExpectNetworkErrorWhenNoNetwork ExpectNetworkErrorWhenNoNetwork
+#endif
 IN_PROC_BROWSER_TEST_F(AccessCodeCastHandlerBrowserTest,
-                       ExpectNetworkErrorWhenNoNetwork) {
+                       MAYBE_ExpectNetworkErrorWhenNoNetwork) {
   EnableAccessCodeCasting();
 
   // This tests that if the network is not present (we are not connected to the
   // internet), we will see a server error in the access code dialog box.
-  SetUpPrimaryAccountWithHostedDomain(signin::ConsentLevel::kSync,
-                                      browser()->profile());
+  SetUpPrimaryAccountWithHostedDomain(browser()->GetProfile());
 
   network::TestNetworkConnectionTracker::GetInstance()->SetConnectionType(
-      network::mojom::ConnectionType::CONNECTION_NONE);
+      net::NetworkChangeNotifier::ConnectionType::CONNECTION_NONE);
 
   auto* dialog_contents = ShowDialog();
   SetAccessCode("abcdef", dialog_contents);
@@ -78,8 +89,7 @@ IN_PROC_BROWSER_TEST_F(AccessCodeCastHandlerBrowserTest,
 
   EnableAccessCodeCasting();
 
-  SetUpPrimaryAccountWithHostedDomain(signin::ConsentLevel::kSync,
-                                      browser()->profile());
+  SetUpPrimaryAccountWithHostedDomain(browser()->GetProfile());
 
   auto* dialog_contents = ShowDialog();
   SetAccessCode("abcdef", dialog_contents);
@@ -94,13 +104,19 @@ IN_PROC_BROWSER_TEST_F(AccessCodeCastHandlerBrowserTest,
 }
 
 IN_PROC_BROWSER_TEST_F(AccessCodeCastHandlerBrowserTest,
-                       ExpectProfileSynErrorWhenNoSync) {
+                       ExpectErrorWhenNoSigninError) {
   EnableAccessCodeCasting();
 
-  // This tests that an account that does not have Sync enabled will throw a
-  // generic error.
-  SetUpPrimaryAccountWithHostedDomain(signin::ConsentLevel::kSignin,
-                                      browser()->profile());
+  // This tests that an account with auth error will throw a generic error.
+  SetUpPrimaryAccountWithHostedDomain(browser()->GetProfile());
+  signin::IdentityManager* identity_manager =
+      AccessCodeCastSinkServiceFactory::GetForProfile(browser()->GetProfile())
+          ->GetIdentityManager();
+  signin::UpdatePersistentErrorOfRefreshTokenForAccount(
+      identity_manager,
+      identity_manager->GetPrimaryAccountId(signin::ConsentLevel::kSignin),
+      GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+          GoogleServiceAuthError::InvalidGaiaCredentialsReason::UNKNOWN));
 
   auto* dialog_contents = ShowDialog();
   SetAccessCode("abcdef", dialog_contents);
@@ -147,8 +163,7 @@ IN_PROC_BROWSER_TEST_F(AccessCodeCastHandlerBrowserTest,
 
   EnableAccessCodeCasting();
 
-  SetUpPrimaryAccountWithHostedDomain(signin::ConsentLevel::kSync,
-                                      browser()->profile());
+  SetUpPrimaryAccountWithHostedDomain(browser()->GetProfile());
 
   auto* dialog_contents = ShowDialog();
   SetAccessCode("abcdef", dialog_contents);
@@ -196,8 +211,7 @@ IN_PROC_BROWSER_TEST_F(AccessCodeCastHandlerBrowserTest,
 
   EnableAccessCodeCasting();
 
-  SetUpPrimaryAccountWithHostedDomain(signin::ConsentLevel::kSync,
-                                      browser()->profile());
+  SetUpPrimaryAccountWithHostedDomain(browser()->GetProfile());
 
   auto* dialog_contents = ShowDialog();
   SetAccessCodeUsingKeyPress("ABCDEF");

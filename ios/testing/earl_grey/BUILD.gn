@@ -12,7 +12,7 @@ source_set("eg_app_support+eg2") {
     "//build/config/ios:xctest",
     "//ios/third_party/earl_grey2:app_framework+link",
     "//ios/web/common:uikit",
-    "//testing/gtest:gtest",
+    "//testing/gtest",
   ]
 
   sources = [
@@ -58,15 +58,21 @@ source_set("eg_test_support+eg2") {
     "//base",
     "//base/test:test_support",
     "//components/variations",
+    "//ios/testing:base_xc_test_case",
     "//ios/testing:system_alert_handler",
     "//ios/third_party/earl_grey2:test_lib",
     "//ios/third_party/edo",
     "//ios/web/common",
-    "//testing/gtest:gtest",
+    "//testing/gtest",
+    "//ui/base",
     "//ui/display",
   ]
 
   public_deps = [ "//ios/third_party/earl_grey2:test_lib" ]
+
+  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+  # enable the diagnostic by removing this line.
+  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 source_set("launch_configuration") {

@@ -179,12 +179,14 @@ typedef NSMutableArray<ListItem*> SectionItems;
 
 - (ListItem*)itemAtIndexPath:(NSIndexPath*)indexPath {
   DCHECK(indexPath);
-  DCHECK_LT(base::checked_cast<NSUInteger>(indexPath.section),
-            [_sections count]);
-  SectionItems* items = [_sections objectAtIndex:indexPath.section];
+  NSUInteger sectionIndex = base::checked_cast<NSUInteger>(indexPath.section);
+  NSUInteger itemIndex = base::checked_cast<NSUInteger>(indexPath.item);
 
-  DCHECK_LT(base::checked_cast<NSUInteger>(indexPath.item), [items count]);
-  return [items objectAtIndex:indexPath.item];
+  DCHECK_LT(sectionIndex, [_sections count]) << itemIndex;
+  SectionItems* items = [_sections objectAtIndex:sectionIndex];
+
+  DCHECK_LT(itemIndex, [items count]) << sectionIndex;
+  return [items objectAtIndex:itemIndex];
 }
 
 - (ListItem*)headerForSectionIndex:(NSInteger)sectionIndex {
@@ -449,8 +451,7 @@ typedef NSMutableArray<ListItem*> SectionItems;
       [defaults dictionaryForKey:kListModelCollapsedKey];
   NSMutableDictionary* newCollapsedSection =
       [NSMutableDictionary dictionaryWithDictionary:collapsedSections];
-  NSNumber* value = [NSNumber numberWithBool:collapsed];
-  [newCollapsedSection setValue:value forKey:sectionKey];
+  newCollapsedSection[sectionKey] = @(collapsed);
   [defaults setObject:newCollapsedSection forKey:kListModelCollapsedKey];
 }
 
@@ -458,7 +459,7 @@ typedef NSMutableArray<ListItem*> SectionItems;
   NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
   NSDictionary* collapsedSections =
       [defaults dictionaryForKey:kListModelCollapsedKey];
-  NSNumber* value = (NSNumber*)[collapsedSections valueForKey:sectionKey];
+  NSNumber* value = (NSNumber*)collapsedSections[sectionKey];
   return [value boolValue];
 }
 

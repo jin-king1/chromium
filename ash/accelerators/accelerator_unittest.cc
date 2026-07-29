@@ -5,12 +5,10 @@
 #include "ui/base/accelerators/accelerator.h"
 
 #include <memory>
+#include <string_view>
 
 #include "ash/accelerators/accelerator_controller_impl.h"
 #include "ash/app_list/test/app_list_test_helper.h"
-#include "ash/assistant/model/assistant_ui_model.h"
-#include "ash/public/cpp/assistant/controller/assistant_ui_controller.h"
-#include "ash/public/cpp/test/assistant_test_api.h"
 #include "ash/shell.h"
 #include "ash/shell_observer.h"
 #include "ash/system/network/network_observer.h"
@@ -27,7 +25,6 @@
 #include "base/test/test_future.h"
 #include "chromeos/ash/components/dbus/shill/shill_clients.h"
 #include "chromeos/ash/components/network/network_handler.h"
-#include "chromeos/ash/services/assistant/public/cpp/features.h"
 #include "chromeos/ash/services/assistant/test_support/scoped_assistant_browser_delegate.h"
 #include "ui/aura/window.h"
 #include "ui/base/accelerators/test_accelerator_target.h"
@@ -141,9 +138,9 @@ TEST_F(AcceleratorTest, Basic) {
 TEST_F(AcceleratorTest, NonRepeatableNeedingWindowActions) {
   // Create a bunch of windows to work with.
   aura::Window* window_1 =
-      CreateTestWindowInShellWithBounds(gfx::Rect(0, 0, 100, 100));
+      CreateTestWindowInShell({.bounds = {100, 100}, .window_id = 0}).release();
   aura::Window* window_2 =
-      CreateTestWindowInShellWithBounds(gfx::Rect(0, 0, 100, 100));
+      CreateTestWindowInShell({.bounds = {100, 100}, .window_id = 0}).release();
   window_1->Show();
   wm::ActivateWindow(window_1);
   window_2->Show();
@@ -187,57 +184,7 @@ TEST_F(AcceleratorTest, ToggleAppList) {
   GetAppListTestHelper()->CheckVisibility(false);
 }
 
-TEST_F(AcceleratorTest, SearchPlusAWithNewEntryPointDisabled) {
-  ASSERT_FALSE(ash::assistant::features::IsNewEntryPointEnabled());
-
-  base::UserActionTester user_action_tester;
-
-  std::unique_ptr<AssistantTestApi> test_api = AssistantTestApi::Create();
-  test_api->EnableAssistantAndWait();
-
-  ui::test::EmulateFullKeyPressReleaseSequence(
-      GetEventGenerator(), ui::VKEY_A,
-      /*control=*/false, /*shift=*/false, /*alt=*/false, /*command=*/true);
-
-  AssistantUiController* ui_controller = AssistantUiController::Get();
-  CHECK(ui_controller);
-  EXPECT_EQ(AssistantVisibility::kVisible,
-            ui_controller->GetModel()->visibility());
-  EXPECT_EQ(1, user_action_tester.GetActionCount(
-                   "VoiceInteraction.Started.Search_A"));
-}
-
-TEST_F(AcceleratorTest, AssistantKeyWithNewEntryPointDisabled) {
-  ASSERT_FALSE(ash::assistant::features::IsNewEntryPointEnabled());
-
-  base::UserActionTester user_action_tester;
-
-  std::unique_ptr<AssistantTestApi> test_api = AssistantTestApi::Create();
-  test_api->EnableAssistantAndWait();
-
-  ui::test::EmulateFullKeyPressReleaseSequence(
-      GetEventGenerator(), ui::VKEY_ASSISTANT,
-      /*control=*/false, /*shift=*/false, /*alt=*/false, /*command=*/false);
-
-  AssistantUiController* ui_controller = AssistantUiController::Get();
-  CHECK(ui_controller);
-  EXPECT_EQ(AssistantVisibility::kVisible,
-            ui_controller->GetModel()->visibility());
-  EXPECT_EQ(1, user_action_tester.GetActionCount(
-                   "VoiceInteraction.Started.Assistant"));
-  EXPECT_EQ(0, user_action_tester.GetActionCount(
-                   "Assistant.NewEntryPoint.AssistantKey"));
-}
-
-class AcceleratorNewEntryPointTest : public AcceleratorTest {
- private:
-  // Accelerators registration happens at early stage. Test body is late to
-  // configure a flag.
-  base::test::ScopedFeatureList scoped_feature_list{
-      ash::assistant::features::kEnableNewEntryPoint};
-};
-
-TEST_F(AcceleratorNewEntryPointTest, AssistantKeyWithNewEntryPointEnabled) {
+TEST_F(AcceleratorTest, AssistantKeyWithNewEntryPointEnabled) {
   base::UserActionTester user_action_tester;
 
   base::test::TestFuture<void> open_new_entry_point_future;
@@ -250,13 +197,11 @@ TEST_F(AcceleratorNewEntryPointTest, AssistantKeyWithNewEntryPointEnabled) {
       /*control=*/false, /*shift=*/false, /*alt=*/false, /*command=*/false);
 
   EXPECT_TRUE(open_new_entry_point_future.Wait());
-  EXPECT_EQ(0, user_action_tester.GetActionCount(
-                   "VoiceInteraction.Started.Assistant"));
   EXPECT_EQ(1, user_action_tester.GetActionCount(
                    "Assistant.NewEntryPoint.AssistantKey"));
 }
 
-TEST_F(AcceleratorNewEntryPointTest, NoSearchPlusAWithNewEntryPointEnabled) {
+TEST_F(AcceleratorTest, NoSearchPlusAWithNewEntryPointEnabled) {
   base::UserActionTester user_action_tester;
 
   base::test::TestFuture<void> open_new_entry_point_future;

@@ -34,17 +34,20 @@
 #include <ostream>
 #include <utility>
 
+#include "base/containers/span.h"
 #include "base/dcheck_is_on.h"
+#include "base/gtest_prod_util.h"
 #include "base/memory/raw_ref.h"
 #include "base/memory/stack_allocated.h"
+#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/input/web_input_event.h"
 #include "third_party/blink/public/web/web_ax_enums.h"
 #include "third_party/blink/renderer/core/accessibility/axid.h"
 #include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/editing/markers/document_marker.h"
-#include "third_party/blink/renderer/core/inspector/protocol/accessibility.h"
 #include "third_party/blink/renderer/core/layout/geometry/physical_rect.h"
 #include "third_party/blink/renderer/core/scroll/scroll_alignment.h"
+#include "third_party/blink/renderer/modules/accessibility/ax_block_flow_iterator.h"
 #include "third_party/blink/renderer/modules/accessibility/ax_enums.h"
 #include "third_party/blink/renderer/modules/modules_export.h"
 #include "third_party/blink/renderer/platform/graphics/color.h"
@@ -56,7 +59,6 @@
 #include "ui/accessibility/ax_common.h"
 #include "ui/accessibility/ax_enums.mojom-blink.h"
 #include "ui/accessibility/ax_mode.h"
-#include "ui/accessibility/ax_node_id_forward.h"
 #include "ui/accessibility/ax_tree_id.h"
 
 namespace gfx {
@@ -69,11 +71,16 @@ struct AXNodeData;
 struct AXRelativeBounds;
 }
 
+namespace cc {
+enum class ScrollSourceType;
+}
+
 namespace blink {
 
 class AbstractInlineTextBox;
 class AXObject;
 class AXObjectCacheImpl;
+class HTMLElement;
 class LayoutObject;
 class LocalFrameView;
 class Node;
@@ -234,11 +241,6 @@ class MODULES_EXPORT AXObject : public GarbageCollected<AXObject> {
       return left.current_ == right.current_;
     }
 
-    MODULES_EXPORT friend bool operator!=(const AncestorsIterator& left,
-                                          const AncestorsIterator& right) {
-      return !(left == right);
-    }
-
    private:
     explicit AncestorsIterator(AXObject& current) : current_(&current) {}
 
@@ -249,13 +251,12 @@ class MODULES_EXPORT AXObject : public GarbageCollected<AXObject> {
   };
 
  protected:
-  explicit AXObject(AXObjectCacheImpl&);
+  explicit AXObject(AXObjectCacheImpl&, bool is_node_object = false);
 
 #if DCHECK_IS_ON()
   bool is_initializing_ = false;
   bool is_computing_role_ = false;
   bool is_updating_cached_values_ = false;
-  bool is_initialized_ = false;
 #endif
 #if !defined(NDEBUG)
   // Keep track of what the object used to be, to make it easier to debug
@@ -301,7 +302,7 @@ class MODULES_EXPORT AXObject : public GarbageCollected<AXObject> {
   // When the corresponding WebCore object that this AXObject
   // wraps is deleted, it must be detached.
   virtual void Detach();
-  bool IsDetached() const;
+  bool IsDetached() const { return !ax_object_cache_; }
 
   // Updates the cached attribute values. This may be recursive, so to prevent
   // deadlocks, functions called here may only search up the tree (ancestors),
@@ -309,6 +310,10 @@ class MODULES_EXPORT AXObject : public GarbageCollected<AXObject> {
   // Fires children change on the parent if the node's ignored or included in
   // tree status changes. Use |notify_parent_of_ignored_changes = false| to
   // prevent this.
+  // The children-changed dispatch is queued and runs when the outermost
+  // update completes; it can remove this object, so callers that keep using
+  // the object afterwards must check IsDetached(). See
+  // AXObjectCacheImpl::ScopedCachedAttributeValuesUpdate.
   void UpdateCachedAttributeValuesIfNeeded(
       bool notify_parent_of_ignored_changes = true);
 
@@ -335,18 +340,21 @@ class MODULES_EXPORT AXObject : public GarbageCollected<AXObject> {
   // Wrappers that retrieve either an Accessibility Object Model property,
   // or the equivalent ARIA attribute, in that order.
   virtual AbstractInlineTextBox* GetInlineTextBox() const { return nullptr; }
+  virtual std::optional<AXBlockFlowIterator::FragmentIndex> GetFragmentIndex()
+      const {
+    return std::nullopt;
+  }
 
-  static const HeapVector<Member<Element>>* ElementsFromAttributeOrInternals(
-      const Element* from,
-      const QualifiedName& attribute);
+  static const GCedHeapVector<Member<Element>>*
+  ElementsFromAttributeOrInternals(const Element* from,
+                                   const QualifiedName& attribute);
   static Element* ElementFromAttributeOrInternals(
       const Element* from,
       const QualifiedName& attribute);
 
   // Serialize the properties of this node into |node_data|.
   void Serialize(ui::AXNodeData* node_data,
-                 ui::AXMode accessibility_mode,
-                 bool is_snapshot = false) const;
+                 ui::AXMode accessibility_mode) const;
 
   // Determine subclass type.
   virtual bool IsImageMapLink() const;
@@ -354,9 +362,10 @@ class MODULES_EXPORT AXObject : public GarbageCollected<AXObject> {
   virtual bool IsAXInlineTextBox() const;
   virtual bool IsList() const;
   virtual bool IsProgressIndicator() const;
-  virtual bool IsAXRadioInput() const;
   virtual bool IsSlider() const;
   virtual bool IsValidationMessage() const;
+
+  bool IsNodeObject() const { return is_node_object_; }
 
   // Returns true if this object is an ARIA text field, i.e. it is neither an
   // <input> nor a <textarea>, but it has an ARIA role of textbox, searchbox or
@@ -374,9 +383,6 @@ class MODULES_EXPORT AXObject : public GarbageCollected<AXObject> {
   bool IsImage() const;
   virtual bool IsInputImage() const;
   bool IsLink() const;
-  bool IsMenu() const;
-  bool IsMenuRelated() const;
-  bool IsMeter() const;
   virtual bool IsNativeImage() const;
   virtual bool IsNativeSpinButton() const;
 
@@ -402,11 +408,9 @@ class MODULES_EXPORT AXObject : public GarbageCollected<AXObject> {
 
   bool IsPresentational() const;
   bool IsRangeValueSupported() const;
-  bool IsScrollbar() const;
   virtual bool IsNativeSlider() const;
   virtual bool IsSpinButton() const;
   bool IsTabItem() const;
-  bool IsTabList() const;
 
   // This object is a text field. This is any widget in which the user should be
   // able to enter and edit text.
@@ -421,7 +425,6 @@ class MODULES_EXPORT AXObject : public GarbageCollected<AXObject> {
   bool IsTextField() const;
 
   bool IsTextObject() const;
-  bool IsTree() const { return RoleValue() == ax::mojom::blink::Role::kTree; }
   bool IsWebArea() const {
     return RoleValue() == ax::mojom::blink::Role::kRootWebArea;
   }
@@ -533,23 +536,54 @@ class MODULES_EXPORT AXObject : public GarbageCollected<AXObject> {
   bool ComputeIsDescendantOfDisabledNode();
   // Some objects, such as table header containers, could be the children of
   // more than one object but have only one primary parent.
-  bool HasIndirectChildren() const;
   bool IsExcludedByFormControlsFilter() const;
+
+  void SetIsOnScreen(bool visibility) { cached_is_on_screen_ = visibility; }
+  bool WasEverOnScreen() const {
+    return cached_is_on_screen_ ? cached_is_on_screen_.value() : false;
+  }
+
+#if BUILDFLAG(IS_ANDROID)
+  // These methods are used to compute paint order for Android XR.
+  // Paint order zero (0) is a reserved value indicating paint order
+  // could not be determined for an element (unknown).
+  // Notes:
+  // * Paint orders are computed over an entire widget, so for a particular
+  //   Document they may not start at 1.
+  // * Different widgets currently have independent and unrelated paint order
+  //   sequences. There is no global sequence. This includes the case of popup
+  //   windows, which share an AXObjectCacheImpl with their main Document, but
+  //   belong to a different widget.
+  int GetPaintOrder() const {
+    CHECK(blink::features::IsXrDevice());
+    return paint_order_;
+  }
+  void AnnotateXrHitTestOrder(const Document& document,
+                              const HashMap<DOMNodeId, int>& order_map,
+                              int inherited_paint_order);
+#endif
+
+  // A node can oly flip from off-screen to on-screen if it was explicitly
+  // marked as off-screen at some point. Since we keep track if a node was ever
+  // on-screen, it can't also flip from on-screen to off-screen because of this
+  // reason.
+  bool CanFlipFromOffScreenToOnScreen() const {
+    return cached_is_on_screen_ && !cached_is_on_screen_.value();
+  }
 
   //
   // Accessible name calculation
   //
 
+  typedef HeapVector<NameSource> NameSources;
+
   // Retrieves the accessible name of the object, an enum indicating where the
   // name was derived from, and a list of objects that were used to derive the
-  // name, if any.
+  // name, if any (can be null), and a list of all potential sources for the
+  // name, indicating which were used (can be null).
   virtual String GetName(ax::mojom::blink::NameFrom&,
-                         AXObjectVector* name_objects) const;
-
-  typedef HeapVector<NameSource> NameSources;
-  // Retrieves the accessible name of the object and a list of all potential
-  // sources for the name, indicating which were used.
-  String GetName(NameSources*) const;
+                         AXObjectVector* name_objects,
+                         NameSources* name_sources) const;
 
   typedef HeapVector<DescriptionSource> DescriptionSources;
   // Takes the result of nameFrom from calling |name|, above, and retrieves the
@@ -625,6 +659,9 @@ class MODULES_EXPORT AXObject : public GarbageCollected<AXObject> {
   // Used by objects of role ColorWellRole.
   virtual RGBA32 ColorValue() const { return Color::kTransparent.Rgb(); }
   virtual bool CanvasHasFallbackContent() const { return false; }
+  virtual String CanvasAnnotation() const { return String(); }
+  virtual bool HasRequestedOCR() const { return false; }
+  virtual void ClearHasRequestedOCR() {}
   // Returns the font family that was cascaded onto ComputedStyle. This may
   // contain non-user-friendly internal names.
   virtual const AtomicString& ComputedFontFamily() const { return g_null_atom; }
@@ -692,8 +729,6 @@ class MODULES_EXPORT AXObject : public GarbageCollected<AXObject> {
   // false. Must be called with clean layout.
   virtual void LoadInlineTextBoxes();
   virtual void LoadInlineTextBoxesHelper();
-  // When adding children to this node, consider inline textboxes.
-  virtual bool ShouldLoadInlineTextBoxes() const { return false; }
 
   // Walk the AXObjects on the same line.
   virtual AXObject* NextOnLine() const;
@@ -817,10 +852,15 @@ class MODULES_EXPORT AXObject : public GarbageCollected<AXObject> {
   // where it is difficult to check for this change, the role from (4) is used
   // instead of the final role from (5).
 
-  // (1) Determine the ARIA role purely based on the role attribute, when no
-  // additional rules or limitations on role usage are applied. Use
-  // RawAriaRole() instead if the raw role does not need to be recomputed.
-  ax::mojom::blink::Role DetermineRawAriaRole() const;
+  // (1) Determine the raw ARIA role based on the role attribute and parent
+  // context validation. Local presentational suppression rules or implicit
+  // role mappings are not applied. Use RawAriaRole() if the cached raw role
+  // does not need to be recomputed.
+  ax::mojom::blink::Role DetermineRawAriaRoleWithContext() const;
+  // Static helper for callers that only have an Element. Unlike the instance
+  // method, it maps the explicit role attribute (if present) to the internal
+  // role enum without validating parent context.
+  static ax::mojom::blink::Role DetermineRawAriaRole(const Element&);
 
   // (2) Determine the ARIA role after applying rules based on other properties.
   ax::mojom::blink::Role DetermineAriaRole() const;
@@ -833,6 +873,12 @@ class MODULES_EXPORT AXObject : public GarbageCollected<AXObject> {
   // RoleValue() instead if the role does not need to be recomputed.
   virtual ax::mojom::blink::Role DetermineRoleValue();
 
+  // Re-evaluates the object's role in place by calling DetermineRoleValue()
+  // and caching the result in role_. This is intended for relation updates
+  // (e.g., aria-owns) where the required parent context changes dynamically,
+  // requiring a role recompute before tree serialization.
+  void UpdateRole();
+
   // (5) Return the role after all possible rules from HTML-AAM, WAI-ARIA, etc.
   // have been applied.
   //
@@ -844,7 +890,7 @@ class MODULES_EXPORT AXObject : public GarbageCollected<AXObject> {
   // platforms ignore.
   ax::mojom::blink::Role ComputeFinalRoleForSerialization() const;
 
-  // Returns the cached raw ARIA role from DetermineRawAriaRole().
+  // Returns the cached raw ARIA role from DetermineRawAriaRoleWithContext().
   virtual ax::mojom::blink::Role RawAriaRole() const;
 
   // Returns the cached role from DetermineRoleValue().
@@ -864,6 +910,22 @@ class MODULES_EXPORT AXObject : public GarbageCollected<AXObject> {
       const String&,
       bool ignore_form_and_region = false);
 
+  // Determines if the role has a required parent context (e.g., a listitem
+  // requires a list, an option requires a listbox), and if so, whether the
+  // element is legally contained in that context (either in the DOM or via
+  // aria-owns). Returns true if the context is satisfied or if the role has
+  // no required context.
+  bool HasRequiredParentContext(ax::mojom::blink::Role role) const;
+
+  // Parses the explicit role attribute and returns the first valid ARIA role
+  // token that satisfies its required parent context. Falls back to subsequent
+  // tokens in the string, or returns Role::kUnknown if none satisfy the
+  // required context (triggering fallback to the host element's native role).
+  // Matches CORE-AAM: https://w3c.github.io/core-aam/#roleMappingComputedRole
+  ax::mojom::blink::Role FirstValidRoleInRoleStringWithContext(
+      const String& role_str,
+      bool ignore_form_and_region = false) const;
+
   // Return the equivalent ARIA name for an enumerated role, or g_null_atom.
   static const AtomicString& AriaRoleName(ax::mojom::blink::Role);
 
@@ -880,6 +942,10 @@ class MODULES_EXPORT AXObject : public GarbageCollected<AXObject> {
   // Get the role to be used in StringAttribute::kRole, which is used in the
   // xml-roles object attribute.
   const AtomicString& GetRoleStringForSerialization(ui::AXNodeData* node_data) const;
+
+  // Returns the first object (using pre-order search) that has the given role
+  // in the subtree rooted at this object.
+  AXObject* FirstObjectWithRole(ax::mojom::blink::Role role) const;
 
   // ARIA attributes.
   bool ElementHasAnyAriaAttribute(
@@ -900,28 +966,42 @@ class MODULES_EXPORT AXObject : public GarbageCollected<AXObject> {
   // autocomplete suggestion.
   virtual ax::mojom::blink::HasPopup HasPopup() const;
 
+  // Determines whether the `element` has an associated popup menu based on the
+  // aria-haspopup attribute. Returns null if the attribute is not set or set to
+  // an invalid value.
+  static std::optional<ax::mojom::blink::HasPopup> HasPopupFromAttribute(
+      const Element& element);
+
   // Determines whether this object is a popup, and what type.
   virtual ax::mojom::blink::IsPopup IsPopup() const;
 
   // Heuristic to get the target popover for an invoking element.
   AXObject* GetPopoverTargetForInvoker() const;
 
-  // Heuristic to get the target element defined by the `commandfor` attribute
-  // on an invoking element.
-  AXObject* GetCommandForElement() const;
+  // Retrieves the target element defined by the `commandfor` attribute
+  // on an invoking element, if a details relationship should be set up.
+  AXObject* GetCommandForElementForDetailsRelation() const;
 
-  // Heuristic to get the interest target for an invoking element.
-  // Returns null if the interest target points to plain content and can be
-  // expose as a description instead.
-  AXObject* GetInterestTargetForInvoker() const;
+  // Heuristic to get the target element for an element with the `interestfor`
+  // attribute. Returns null if the `interestfor` can be exposed as a
+  // description instead (even if there is a valid target element).
+  AXObject* GetInterestForTargetPopover() const;
 
   // Elements can be positioned relative to other elements with CSS anchor
   // positioning. This function returns the positioned element that should be
   // added to the aria-details list.
   AXObject* GetPositionedObjectForAnchor(ui::AXNodeData* node_data) const;
 
+  // Scroll marker pseudo-elements target their originating element which
+  // is located under a different parent in the layout tree.
+  AXObject* GetScrollMarkerTarget() const;
+
   // Heuristic to get the listbox for an <input role="combobox">.
   AXObject* GetControlsListboxForTextfieldCombobox() const;
+
+  // Scroll buttons and scroll marker groups are controls for the scrolling
+  // element.
+  AXObject* GetControlsForOverflowNavigation() const;
 
   // Returns true if this object is within or at the root of an editable region,
   // such as a contenteditable. Also, returns true if this object is an atomic
@@ -973,6 +1053,17 @@ class MODULES_EXPORT AXObject : public GarbageCollected<AXObject> {
   const AXObject* AncestorMenuListOption() const;
   const AXObject* AncestorMenuList() const;
 
+  // Helper for scroll markers in tabs mode.
+  // Returns true if the node is inside an inactive ::scroll-marker tab in tabs
+  // mode. Which is either being an originating element for a ::scroll-marker
+  // that is not selected, or being inside such an element.
+  virtual bool ComputeIsIgnoredAsInsideInactiveScrollMarkerTab() const {
+    return false;
+  }
+  bool InsideInactiveScrollMarkerTab() const {
+    return cached_is_ignored_as_inside_inactive_scroll_marker_tab_;
+  }
+
   // ARIA live-region features.
   bool IsLiveRegionRoot() const;  // Any live region, including polite="off".
   bool IsActiveLiveRegionRoot() const;  // Live region that is not polite="off".
@@ -1008,12 +1099,6 @@ class MODULES_EXPORT AXObject : public GarbageCollected<AXObject> {
   // Get the bounds in frame-relative coordinates as a PhysicalRect.
   PhysicalRect GetBoundsInFrameCoordinates() const;
 
-  // Explicitly set an object's bounding rect and offset container.
-  void SetElementRect(const PhysicalRect& r, AXObject* container) {
-    explicit_element_rect_ = r;
-    explicit_container_id_ = container->AXObjectID();
-  }
-
   // Hit testing.
   // Called on the root AX object to return the deepest available element.
   virtual AXObject* AccessibilityHitTest(const gfx::Point&) const {
@@ -1042,6 +1127,7 @@ class MODULES_EXPORT AXObject : public GarbageCollected<AXObject> {
   AncestorsIterator UnignoredAncestorsBegin() const;
   AncestorsIterator UnignoredAncestorsEnd() const;
 
+  // ------------ Fast methods for retrieving the cached children_ -------------
   // Returns the number of children, including children that are included in the
   // accessibility tree but are accessibility ignored.
   //
@@ -1063,19 +1149,6 @@ class MODULES_EXPORT AXObject : public GarbageCollected<AXObject> {
   // accessibility tree.
   const AXObjectVector& ChildrenIncludingIgnored() const;
   const AXObjectVector& ChildrenIncludingIgnored();
-
-  // Returns the node's unignored descendants that are one level deeper than
-  // this node, after removing all accessibility ignored nodes from the tree.
-  //
-  // Flattens accessibility ignored nodes, so each unignored child will have the
-  // same unignored parent, but may have a different parent in tree.
-  //
-  // Can be called on all nodes that are included in the accessibility tree,
-  // including those that are accessibility ignored.
-  // TODO(accessibility) This actually returns ignored children when they are
-  // included in the tree. A better name would be ChildrenIncludedInTree().
-  const AXObjectVector UnignoredChildren() const;
-  const AXObjectVector UnignoredChildren();
 
   // Returns the first child for this object.
   // Works for all nodes that are included in the accessibility tree, and may
@@ -1132,9 +1205,21 @@ class MODULES_EXPORT AXObject : public GarbageCollected<AXObject> {
   AXObject* PreviousInPostOrderIncludingIgnored(
       const AXObject* within = nullptr) const;
 
-  // Returns the first object (using pre-order search) that has the given role
-  // in the subtree rooted at this object.
-  AXObject* FirstObjectWithRole(ax::mojom::blink::Role role) const;
+  // --------------------------------------------------------------------------
+
+  // Returns the node's unignored descendants that are one level deeper than
+  // this node, after removing all accessibility ignored nodes from the tree.
+  //
+  // Flattens accessibility ignored nodes, so each unignored child will have the
+  // same unignored parent, but may have a different parent in tree.
+  //
+  // Can be called on all nodes that are included in the accessibility tree,
+  // including those that are accessibility ignored.
+  // This does more work than simply returning the cached children, because the
+  // the cached children are those that are included in the tree, and can
+  // contain ignored nodes (if IsIgnoredButIncludedInTree() is true).
+  const AXObjectVector UnignoredChildrenSlow() const;
+  const AXObjectVector UnignoredChildrenSlow();
 
   // Returns the number of children that are not accessibility ignored.
   //
@@ -1143,7 +1228,7 @@ class MODULES_EXPORT AXObject : public GarbageCollected<AXObject> {
   //
   // Can be called on all nodes that are included in the accessibility tree,
   // including those that are accessibility ignored.
-  int UnignoredChildCount() const;
+  int UnignoredChildCountSlow() const;
 
   // Returns the unignored child with the given index.
   //
@@ -1152,7 +1237,7 @@ class MODULES_EXPORT AXObject : public GarbageCollected<AXObject> {
   //
   // Can be called on all nodes that are included in the accessibility tree,
   // including those that are accessibility ignored.
-  AXObject* UnignoredChildAt(int index) const;
+  AXObject* UnignoredChildAtSlow(int index) const;
 
   // Next sibling for this object that's not accessibility ignored.
   //
@@ -1160,7 +1245,7 @@ class MODULES_EXPORT AXObject : public GarbageCollected<AXObject> {
   // same unignored parent, but may have a different parent in tree.
   //
   // Doesn't work with nodes that are accessibility ignored.
-  AXObject* UnignoredNextSibling() const;
+  AXObject* UnignoredNextSiblingSlow() const;
 
   // Previous sibling for this object that's not accessibility ignored.
   //
@@ -1168,17 +1253,17 @@ class MODULES_EXPORT AXObject : public GarbageCollected<AXObject> {
   // same unignored parent, but may have a different parent in tree.
   //
   // Doesn't work with nodes that are accessibility ignored.
-  AXObject* UnignoredPreviousSibling() const;
+  AXObject* UnignoredPreviousSiblingSlow() const;
 
   // Next object in tree using depth-first pre-order traversal that's
   // not accessibility ignored.
   // Doesn't work with nodes that are accessibility ignored.
-  AXObject* UnignoredNextInPreOrder() const;
+  AXObject* UnignoredNextInPreOrderSlow() const;
 
   // Previous object in tree using depth-first pre-order traversal that's
   // not accessibility ignored.
   // Doesn't work with nodes that are accessibility ignored.
-  AXObject* UnignoredPreviousInPreOrder() const;
+  AXObject* UnignoredPreviousInPreOrderSlow() const;
 
   // Get the parent of this object.
   //
@@ -1281,10 +1366,10 @@ class MODULES_EXPORT AXObject : public GarbageCollected<AXObject> {
 
   // There are two types of traversal for obtaining children:
   // 1. LayoutTreeBuilderTraversal. Despite the name, this traverses a flattened
-  // DOM tree that includes pseudo element children such as ::before, and where
+  // DOM tree that includes pseudo-element children such as ::before, and where
   // shadow DOM slotting has been run.
   // 2. LayoutObject traversal. This is necessary if there is no parent node,
-  // or in a pseudo element subtree.
+  // or in a pseudo-element subtree.
   bool ShouldUseLayoutObjectTraversalForChildren() const;
   // Is this a safe time to use FlatTreeTraversal in this document? Also covers
   // use of LayoutTreeBuilderTraversal, which is used often in the accessibility
@@ -1312,12 +1397,16 @@ class MODULES_EXPORT AXObject : public GarbageCollected<AXObject> {
   // If this object is associated with generated content, or a list marker,
   // returns a pseudoelement. It does not return the node that generated the
   // content or the list marker.
-  virtual Node* GetNode() const;
+  //
+  // This function is manually inlined because it is very hot and LTO/PGO
+  // doesn't manage to inline it. To call it, you will need to include
+  // ax_object-inl.h.
+  ALWAYS_INLINE Node* GetNode() const;
   // Looks for the first ancestor AXObject (inclusive) that has a node, and
   // returns that node.
-  Node* GetClosestNode() const {
-    return GetNode() ? GetNode() : ParentObject()->GetClosestNode();
-  }
+  //
+  // To call this function, you will need to include ax_object-inl.h.
+  ALWAYS_INLINE Node* GetClosestNode() const;
   // Looks for the first ancestor AXObject (inclusive) that has an element, and
   // returns that element.
   Element* GetClosestElement() const;
@@ -1353,6 +1442,9 @@ class MODULES_EXPORT AXObject : public GarbageCollected<AXObject> {
   // The following HasAriaFooAttribute() methods return true if the attribute
   // is present. `out_value` is filled with the value of the attribute or a
   // default value if the attribute is not present.
+  static bool AriaBooleanAttribute(const Element& element,
+                                   const QualifiedName&,
+                                   bool* out_value);
   bool AriaBooleanAttribute(const QualifiedName& attribute,
                             bool* out_value = nullptr) const;
   bool AriaFloatAttribute(const QualifiedName& attribute,
@@ -1377,8 +1469,9 @@ class MODULES_EXPORT AXObject : public GarbageCollected<AXObject> {
   gfx::Point GetScrollOffset() const;
   gfx::Point MinimumScrollOffset() const;
   gfx::Point MaximumScrollOffset() const;
-  void Scroll(ax::mojom::blink::Action scroll_action) const;
-  void SetScrollOffset(const gfx::Point&) const;
+  void Scroll(ax::mojom::blink::Action scroll_action,
+              cc::ScrollSourceType) const;
+  void SetScrollOffset(const gfx::Point&, cc::ScrollSourceType) const;
 
   // Tables and grids.
   bool IsTableLikeRole() const;
@@ -1478,9 +1571,13 @@ class MODULES_EXPORT AXObject : public GarbageCollected<AXObject> {
   // Returns a string representation of this object.
   // Must only be used after `init()`has been called.
   virtual String ToString(bool verbose = true) const;
+  static String GetNodeString(Node* node);
 
   void PopulateAXRelativeBounds(ui::AXRelativeBounds& bounds,
                                 bool* clips_children) const;
+
+  // Should inline text boxes be considered when adding children to this node.
+  bool ShouldLoadInlineTextBoxes() const;
 
  protected:
   AXID id_;
@@ -1489,12 +1586,12 @@ class MODULES_EXPORT AXObject : public GarbageCollected<AXObject> {
   // Only children that are included in tree, maybe rename to children_in_tree_.
   AXObjectVector children_;
   bool has_dirty_descendants_ = false;
+  // When true, actions may use more expensive layout-based computations.
+  // e.g. DefaultActionVerb::kClickInHitTest.
+  bool use_layout_based_action_ = false;
 
   // The final role, taking into account the ARIA role and native role.
   ax::mojom::blink::Role role_;
-
-  PhysicalRect explicit_element_rect_;
-  AXID explicit_container_id_;
 
   virtual void AddChildren() = 0;
 
@@ -1526,7 +1623,7 @@ class MODULES_EXPORT AXObject : public GarbageCollected<AXObject> {
                              bool* found_text_alternative) const;
   String TextFromElements(bool in_aria_labelledby_traversal,
                           AXObjectSet& visited,
-                          const HeapVector<Member<Element>>& elements,
+                          base::span<const Member<Element>> elements,
                           AXRelatedObjectVector* related_objects) const;
   static bool HasAriaLabelledbyElements(Element* from);
 
@@ -1538,7 +1635,6 @@ class MODULES_EXPORT AXObject : public GarbageCollected<AXObject> {
   ax::mojom::blink::Role ButtonRoleType() const;
 
   bool CanSetSelectedAttribute() const;
-  const AXObject* InertRoot() const;
 
   // Finds table, table row, and table cell parents and children
   // skipping over generic containers.
@@ -1587,10 +1683,7 @@ class MODULES_EXPORT AXObject : public GarbageCollected<AXObject> {
   void SerializeImageDataAttributes(ui::AXNodeData* node_data) const;
   void SerializeTextInsertionDeletionOffsetAttributes(
       ui::AXNodeData* node_data) const;
-
-  const std::optional<ui::AXTreeID>& child_tree_id() const {
-    return child_tree_id_;
-  }
+  void SerializeTextChangeTypesAttributes(ui::AXNodeData* node_data) const;
 
   void SetCachedValuesNeedUpdate(
       bool cached_values_need_update,
@@ -1599,7 +1692,18 @@ class MODULES_EXPORT AXObject : public GarbageCollected<AXObject> {
     ax_object_cache_ = &ax_object_cache;
   }
 
+  // Is it possible for inline textboxes to be attached to these type of node?
+  bool CanHaveInlineTextBoxChildren(const blink::AXObject* obj) const;
+
+#if defined(REDUCE_AX_INLINE_TEXTBOXES)
+  // Used on Android. On other platforms, this is effectively always true.
+  void SetAlwaysLoadInlineTextBoxes(bool should_load) {
+    always_load_inline_text_boxes_ = should_load;
+  }
+#endif
+
  private:
+  void NotifyCanvasIgnoredStateChanged(bool is_ignored);
   bool ComputeCanSetFocusAttribute();
   String KeyboardShortcut() const;
   void UpdateStyleAndLayoutTreeForNode(Node& node);
@@ -1610,12 +1714,22 @@ class MODULES_EXPORT AXObject : public GarbageCollected<AXObject> {
   // Returns true if this node should use the aria role combobox menu button.
   bool ShouldUseComboboxMenuButtonRole() const;
 
+  // Returns the AXObject of the invoking element's target `popover` if their
+  // details relation should be set up, and null otherwise.
+  AXObject* GetPopoverForDetailsRelation(const HTMLElement& popover,
+                                         bool exclude_plain_content) const;
+
+  // Whether this is an AXNodeObject.
+  bool is_node_object_ : 1 = false;
+
   bool children_dirty_ : 1 = false;
 
   // Do the rest of the cached_* member variables need to be recomputed?
   bool cached_values_need_update_ : 1 = true;
   // Do children need to recompute their cached values?
   bool child_cached_values_need_update_ : 1 = false;
+
+  std::optional<TreeUpdateReason> cached_values_dirty_reason_;
 
   // The following cached attribute values (the ones starting with cached_**)
   // are only valid if cached_values_need_update_ is false.
@@ -1632,19 +1746,23 @@ class MODULES_EXPORT AXObject : public GarbageCollected<AXObject> {
   bool cached_is_descendant_of_disabled_node_ : 1 = false;
   bool cached_can_set_focus_attribute_ : 1 = false;
   bool cached_is_in_menu_list_subtree_ : 1 = false;
+  // True if this object is inside the originating element for an inactive
+  // ::scroll-marker in tabs mode (non-::column case).
+  bool cached_is_ignored_as_inside_inactive_scroll_marker_tab_ : 1 = false;
+  bool always_load_inline_text_boxes_ : 1 = false;  // Used for Android only.
+  std::optional<bool> cached_is_on_screen_;
 
   Member<AXObject> cached_live_region_root_;
   gfx::RectF cached_local_bounding_box_;
 
   Member<AXObjectCacheImpl> ax_object_cache_;
 
+#if BUILDFLAG(IS_ANDROID)
+  int paint_order_ = 0;
+#endif
+
   bool IsCheckable() const;
   static bool IsNativeCheckboxInMixedState(const Node*);
-  static bool IncludesARIAWidgetRole(const String&);
-  static bool HasInteractiveARIAAttribute(const Element&);
-  ax::mojom::blink::Role RemapAriaRoleDueToParent(ax::mojom::blink::Role) const;
-  unsigned ComputeAriaColumnIndex() const;
-  unsigned ComputeAriaRowIndex() const;
   const ComputedStyle* GetComputedStyle() const;
   bool ComputeIsHiddenViaStyle(const ComputedStyle*);
   bool ComputeIsUsedForLabelOrDescription();
@@ -1664,6 +1782,9 @@ class MODULES_EXPORT AXObject : public GarbageCollected<AXObject> {
   bool RequestShowContextMenuAction();
   bool RequestExpandAction();
   bool RequestCollapseAction();
+  bool RequestReplaceRangesAction(const ui::AXActionData&);
+  bool RequestShowTooltipAction();
+  bool RequestHideTooltipAction();
 
   // Returns an updated layout object to be used in a native scroll action. Note
   // that this updates style for `GetNode()` as well as layout for any layout
@@ -1679,30 +1800,40 @@ class MODULES_EXPORT AXObject : public GarbageCollected<AXObject> {
   // from the parent.
   bool ShouldDestroyWhenDetachingFromParent() const;
 
+  // Returns true if the listitem is an orphan (i.e., not owned via aria-owns
+  // and not a descendant of a list element). Skips generic structural <div>
+  // wrappers without explicit roles as intervening containers.
+  // Matches HTML-AAM: https://w3c.github.io/html-aam/#el-li
+  bool IsOrphanedListItem(const Element&) const;
+
+  // Returns true if the option is an orphan (i.e., not owned via aria-owns
+  // and not a descendant of a select/listbox element). Skips generic <div>
+  // wrappers.
+  bool IsOrphanedOption(const Element&) const;
+
+  // Returns true if the treeitem is an orphan (i.e., not owned via aria-owns
+  // and not a descendant of a tree or group element). Skips generic <div>
+  // wrappers.
+  bool IsOrphanedTreeItem(const Element&) const;
+
   // Attaches the tree with the given ID to this object as a child tree and
   // updates the cache.
   void SetChildTree(const ui::AXTreeID& child_tree_id);
 
   static unsigned number_of_live_ax_objects_;
 
-  // The ID of another tree that should be attached to this object as a child
-  // tree. This should not be used for iframes since the child tree for an
-  // iframe can be retrieved from the child frame's embedding token. It should
-  // only be used whenever the `ax::mojom::Action::kStitchChildTree` is sent to
-  // the renderer requesting that another tree is joined with the existing tree.
-  // This might be needed when another tree with some generated content should
-  // be stitched into the current tree.
-  //
-  // TODO(accessibility): Store in AXObjectCacheImpl since it is not needed by
-  // most objects taking up valuable space.
-  std::optional<ui::AXTreeID> child_tree_id_;
-
   FRIEND_TEST_ALL_PREFIXES(AccessibilityTest, GetParentNodeForComputeParent);
   FRIEND_TEST_ALL_PREFIXES(AccessibilityTest, NodesRequiringCacheUpdate);
+  FRIEND_TEST_ALL_PREFIXES(AccessibilityTest,
+                           LoadInlineTextBoxesCrashsOnAndroid);
+  FRIEND_TEST_ALL_PREFIXES(AccessibilityTest,
+                           QueuedChildrenChangedFlattensReentrantDispatch);
+  FRIEND_TEST_ALL_PREFIXES(
+      AccessibilityTest,
+      UpdateChildrenIfNecessaryToleratesDetachDuringCachedValueUpdate);
 };
 
 MODULES_EXPORT bool operator==(const AXObject& first, const AXObject& second);
-MODULES_EXPORT bool operator!=(const AXObject& first, const AXObject& second);
 MODULES_EXPORT bool operator<(const AXObject& first, const AXObject& second);
 MODULES_EXPORT bool operator<=(const AXObject& first, const AXObject& second);
 MODULES_EXPORT bool operator>(const AXObject& first, const AXObject& second);

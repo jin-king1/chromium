@@ -21,10 +21,12 @@
 #include "media/base/encryption_scheme.h"
 #include "media/base/media_export.h"
 #include "media/base/status.h"
-#include "ui/gfx/color_space.h"
+#include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
 
 namespace media {
+
+struct MediaFormatColorSpace;
 
 // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.media
 enum class CodecType {
@@ -35,8 +37,10 @@ enum class CodecType {
 
 // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.media
 // GENERATED_JAVA_PREFIX_TO_STRIP: MEDIA_CODEC_
-// These enums are also reported to UMA so values should not be renumbered or
-// reused.
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+//
+// LINT.IfChange(MediaCodecStatus)
 enum MediaCodecStatus {
   MEDIA_CODEC_OK = 0,
   MEDIA_CODEC_TRY_AGAIN_LATER = 1,
@@ -67,8 +71,28 @@ enum MediaCodecStatus {
   MEDIA_CODEC_UNKNOWN_MEDIADRM_EXCEPTION = 26,
   MEDIA_CODEC_UNKNOWN_CODEC_EXCEPTION = 27,
   MEDIA_CODEC_LINEAR_BLOCK_EXCEPTION = 28,
-  MEDIA_CODEC_MAX = MEDIA_CODEC_UNKNOWN_CODEC_EXCEPTION,
+  MEDIA_CODEC_CERTIFICATE_MALFORMED = 29,
+  MEDIA_CODEC_CERTIFICATE_MISSING = 30,
+  MEDIA_CODEC_CRYPTO_LIBRARY = 31,
+  MEDIA_CODEC_INIT_DATA = 32,
+  MEDIA_CODEC_KEY_NOT_LOADED = 33,
+  MEDIA_CODEC_LICENSE_POLICY = 34,
+  MEDIA_CODEC_LICENSE_RELEASE = 35,
+  MEDIA_CODEC_LICENSE_REQUEST_REJECTED = 36,
+  MEDIA_CODEC_LICENSE_RESTORE = 37,
+  MEDIA_CODEC_LICENSE_STATE = 38,
+  MEDIA_CODEC_PROVISIONING_CERTIFICATE = 39,
+  MEDIA_CODEC_PROVISIONING_CONFIG = 40,
+  MEDIA_CODEC_PROVISIONING_PARSE = 41,
+  MEDIA_CODEC_PROVISIONING_REQUEST_REJECTED = 42,
+  MEDIA_CODEC_PROVISIONING_RETRY = 43,
+  MEDIA_CODEC_SECURE_STOP_RELEASE = 44,
+  MEDIA_CODEC_STORAGE_READ = 45,
+  MEDIA_CODEC_STORAGE_WRITE = 46,
+
+  MEDIA_CODEC_MAX = MEDIA_CODEC_STORAGE_WRITE,
 };
+// LINT.ThenChange(tools/metrics/histograms/metadata/media/enums.xml:MediaCodecError)
 
 struct MediaCodecResultTraits {
   enum class Codes : StatusCodeType {
@@ -103,10 +127,13 @@ class MEDIA_EXPORT MediaCodecBridge {
   // if an unexpected error happens, or kOk otherwise.
   virtual MediaCodecResult Flush() = 0;
 
-  // Returns the output size. This is valid after DequeueOutputBuffer()
-  // signals a format change by returning OUTPUT_FORMAT_CHANGED.
-  // Returns kError if an error occurs, or kOk otherwise.
-  virtual MediaCodecResult GetOutputSize(gfx::Size* size) = 0;
+  // Returns the output size (MediaFormat.KEY_WIDTH/HEIHT) and crop rect
+  // (KEY_CROP_*). If crop rect is not set, it will be set to the whole output
+  // size. This is valid after DequeueOutputBuffer() signals a format change by
+  // returning OUTPUT_FORMAT_CHANGED. Returns kError if an error occurs, or kOk
+  // otherwise.
+  virtual MediaCodecResult GetOutputSizeAndCropRect(gfx::Size& size,
+                                                    gfx::Rect& crop_rect) = 0;
 
   // Gets the sampling rate. This is valid after DequeueOutputBuffer()
   // signals a format change by returning kOutputFormatChanged.
@@ -124,20 +151,7 @@ class MEDIA_EXPORT MediaCodecBridge {
   // kOk on success, with |color_space| initialized, or
   // kError with |color_space| unmodified otherwise.
   virtual MediaCodecResult GetOutputColorSpace(
-      gfx::ColorSpace* color_space) = 0;
-
-  // Fills in |stride| with required Y-plane stride in the encoder's input
-  // buffer. Returns kOk on success, with |stride| initialized, or
-  // kError with |stride| unmodified otherwise.
-  // Fills in |slice_height| with required Y-plane height in the encoder's input
-  // buffer. (i.e. the number of rows that must be skipped to get from the top
-  // of the Y plane to the top of the UV plane in the bytebuffer.)
-  // Fills in |encoded_size| with actual size the encoder was configured for,
-  // which may differ if the codec requires 16x16 aligned resolutions.
-  // (see MediaFormat#KEY_STRIDE for more details)
-  virtual MediaCodecResult GetInputFormat(int* stride,
-                                          int* slice_height,
-                                          gfx::Size* encoded_size) = 0;
+      MediaFormatColorSpace* color_space) = 0;
 
   // Submits a byte array to the given input buffer. Call this after getting an
   // available buffer from DequeueInputBuffer(). `data` will be copied into the
@@ -209,17 +223,9 @@ class MEDIA_EXPORT MediaCodecBridge {
   // level 23 and higher (Marshmallow).
   virtual bool SetSurface(const base::android::JavaRef<jobject>& surface) = 0;
 
-  // Sets the video encoder target bitrate and framerate.
-  virtual void SetVideoBitrate(int bps, int frame_rate) = 0;
-
-  // Requests that the video encoder insert a key frame.
-  virtual void RequestKeyFrameSoon() = 0;
-
   // When the MediaCodec has been configured in async mode, this is called when
   // input or output buffers are available.
-  virtual void OnBuffersAvailable(
-      JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& obj) = 0;
+  virtual void OnBuffersAvailable(JNIEnv* env) = 0;
 
   // Returns the CodecType this codec was created with.
   virtual CodecType GetCodecType() const = 0;

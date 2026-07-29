@@ -64,6 +64,7 @@
 #include "third_party/blink/renderer/modules/webcodecs/video_frame_attachment.h"
 #include "third_party/blink/renderer/modules/webcodecs/video_frame_transfer_list.h"
 #include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
 namespace blink {
 
@@ -89,8 +90,8 @@ bool V8ScriptValueSerializerForModules::ExtractTransferable(
     if (transfer_list->video_frames.Contains(video_frame)) {
       exception_state.ThrowDOMException(
           DOMExceptionCode::kDataCloneError,
-          "VideoFrame at index " + String::Number(object_index) +
-              " is a duplicate of an earlier VideoFrame.");
+          StrCat({"VideoFrame at index ", String::Number(object_index),
+                  " is a duplicate of an earlier VideoFrame."}));
       return false;
     }
     transfer_list->video_frames.push_back(video_frame);
@@ -103,8 +104,8 @@ bool V8ScriptValueSerializerForModules::ExtractTransferable(
     if (transfer_list->audio_data_collection.Contains(audio_data)) {
       exception_state.ThrowDOMException(
           DOMExceptionCode::kDataCloneError,
-          "AudioData at index " + String::Number(object_index) +
-              " is a duplicate of an earlier AudioData.");
+          StrCat({"AudioData at index ", String::Number(object_index),
+                  " is a duplicate of an earlier AudioData."}));
       return false;
     }
     transfer_list->audio_data_collection.push_back(audio_data);
@@ -121,8 +122,8 @@ bool V8ScriptValueSerializerForModules::ExtractTransferable(
       if (transfer_list->data_channel_collection.Contains(channel)) {
         exception_state.ThrowDOMException(
             DOMExceptionCode::kDataCloneError,
-            "RTCDataChannel at index " + String::Number(object_index) +
-                " is a duplicate of an earlier RTCDataChannel.");
+            StrCat({"RTCDataChannel at index ", String::Number(object_index),
+                    " is a duplicate of an earlier RTCDataChannel."}));
         return false;
       }
 
@@ -138,8 +139,8 @@ bool V8ScriptValueSerializerForModules::ExtractTransferable(
       if (transferables.media_stream_tracks.Contains(track)) {
         exception_state.ThrowDOMException(
             DOMExceptionCode::kDataCloneError,
-            "MediaStreamTrack at index " + String::Number(object_index) +
-                " is a duplicate of an earlier MediaStreamTrack.");
+            StrCat({"MediaStreamTrack at index ", String::Number(object_index),
+                    " is a duplicate of an earlier MediaStreamTrack."}));
         return false;
       }
       transferables.media_stream_tracks.push_back(track);
@@ -154,23 +155,23 @@ bool V8ScriptValueSerializerForModules::ExtractTransferable(
     if (transfer_list->media_source_handles.Contains(media_source_handle)) {
       exception_state.ThrowDOMException(
           DOMExceptionCode::kDataCloneError,
-          "MediaSourceHandle at index " + String::Number(object_index) +
-              " is a duplicate of an earlier MediaSourceHandle.");
+          StrCat({"MediaSourceHandle at index ", String::Number(object_index),
+                  " is a duplicate of an earlier MediaSourceHandle."}));
       return false;
     }
     if (media_source_handle->is_detached()) {
       exception_state.ThrowDOMException(
           DOMExceptionCode::kDataCloneError,
-          "MediaSourceHandle at index " + String::Number(object_index) +
-              " is detached and cannot be transferred.");
+          StrCat({"MediaSourceHandle at index ", String::Number(object_index),
+                  " is detached and cannot be transferred."}));
       return false;
     }
     if (media_source_handle->is_used()) {
       exception_state.ThrowDOMException(
           DOMExceptionCode::kDataCloneError,
-          "MediaSourceHandle at index " + String::Number(object_index) +
-              " has been used as srcObject of media element already, and "
-              "cannot be transferred.");
+          StrCat({"MediaSourceHandle at index ", String::Number(object_index),
+                  " has been used as srcObject of media element already, and "
+                  "cannot be transferred."}));
       return false;
     }
     transfer_list->media_source_handles.push_back(media_source_handle);
@@ -224,7 +225,7 @@ bool V8ScriptValueSerializerForModules::WriteDOMObject(
     return WriteFileSystemHandle(kFileSystemDirectoryHandleTag, dir_handle);
   }
   if (auto* certificate = dispatcher.ToMostDerived<RTCCertificate>()) {
-    rtc::RTCCertificatePEM pem = certificate->Certificate()->ToPEM();
+    webrtc::RTCCertificatePEM pem = certificate->Certificate()->ToPEM();
     WriteAndRequireInterfaceTag(kRTCCertificateTag);
     WriteUTF8String(pem.private_key().c_str());
     WriteUTF8String(pem.certificate().c_str());
@@ -425,20 +426,34 @@ uint32_t AlgorithmIdForWireFormat(WebCryptoAlgorithmId id) {
       return kEd25519Tag;
     case kWebCryptoAlgorithmIdX25519:
       return kX25519Tag;
+    case kWebCryptoAlgorithmIdChaCha20Poly1305:
+      return kChaCha20Poly1305Tag;
+    case kWebCryptoAlgorithmIdMlDsa44:
+      return kMlDsa44Tag;
+    case kWebCryptoAlgorithmIdMlDsa65:
+      return kMlDsa65Tag;
+    case kWebCryptoAlgorithmIdMlDsa87:
+      return kMlDsa87Tag;
+    case kWebCryptoAlgorithmIdMlKem768:
+      return kMlKem768Tag;
+    case kWebCryptoAlgorithmIdMlKem1024:
+      return kMlKem1024Tag;
+    case kWebCryptoAlgorithmIdMlKem768X25519:
+      return kMlKem1024Tag;
   }
   NOTREACHED() << "Unknown algorithm ID " << id;
 }
 
-uint32_t AsymmetricKeyTypeForWireFormat(WebCryptoKeyType key_type) {
+uint32_t KeyTypeForWireFormat(WebCryptoKeyType key_type) {
   switch (key_type) {
     case kWebCryptoKeyTypePublic:
       return kPublicKeyType;
     case kWebCryptoKeyTypePrivate:
       return kPrivateKeyType;
     case kWebCryptoKeyTypeSecret:
-      break;
+      return kSecretKeyType;
   }
-  NOTREACHED() << "Unknown asymmetric key type " << key_type;
+  NOTREACHED() << "Unknown key type " << key_type;
 }
 
 uint32_t NamedCurveForWireFormat(WebCryptoNamedCurve named_curve) {
@@ -456,7 +471,7 @@ uint32_t NamedCurveForWireFormat(WebCryptoNamedCurve named_curve) {
 uint32_t KeyUsagesForWireFormat(WebCryptoKeyUsageMask usages,
                                 bool extractable) {
   // Reminder to update this when adding new key usages.
-  static_assert(kEndOfWebCryptoKeyUsage == (1 << 7) + 1,
+  static_assert(kEndOfWebCryptoKeyUsage == (1 << 11) + 1,
                 "update required when adding new key usages");
   uint32_t value = 0;
   if (extractable)
@@ -477,6 +492,18 @@ uint32_t KeyUsagesForWireFormat(WebCryptoKeyUsageMask usages,
     value |= kUnwrapKeyUsage;
   if (usages & kWebCryptoKeyUsageDeriveBits)
     value |= kDeriveBitsUsage;
+  if (usages & kWebCryptoKeyUsageEncapsulateKey) {
+    value |= kEncapsulateKeyUsage;
+  }
+  if (usages & kWebCryptoKeyUsageEncapsulateBits) {
+    value |= kEncapsulateBitsUsage;
+  }
+  if (usages & kWebCryptoKeyUsageDecapsulateKey) {
+    value |= kDecapsulateKeyUsage;
+  }
+  if (usages & kWebCryptoKeyUsageDecapsulateBits) {
+    value |= kDecapsulateBitsUsage;
+  }
   return value;
 }
 
@@ -510,7 +537,7 @@ bool V8ScriptValueSerializerForModules::WriteCryptoKey(
       const auto& params = *algorithm.RsaHashedParams();
       WriteOneByte(kRsaHashedKeyTag);
       WriteUint32(AlgorithmIdForWireFormat(algorithm.Id()));
-      WriteUint32(AsymmetricKeyTypeForWireFormat(key.GetType()));
+      WriteUint32(KeyTypeForWireFormat(key.GetType()));
       WriteUint32(params.ModulusLengthBits());
 
       if (params.PublicExponent().size() >
@@ -530,11 +557,14 @@ bool V8ScriptValueSerializerForModules::WriteCryptoKey(
       const auto& params = *algorithm.EcParams();
       WriteOneByte(kEcKeyTag);
       WriteUint32(AlgorithmIdForWireFormat(algorithm.Id()));
-      WriteUint32(AsymmetricKeyTypeForWireFormat(key.GetType()));
+      WriteUint32(KeyTypeForWireFormat(key.GetType()));
       WriteUint32(NamedCurveForWireFormat(params.NamedCurve()));
       break;
     }
     case kWebCryptoKeyAlgorithmParamsTypeNone:
+      // Ed25519, X25519, HKDF, and PBKDF2 are special-cased because they
+      // pre-dated the kNoParamsWithKeyTypeKeyTag. New algorithms that have no
+      // params for the key should use the default case.
       switch (algorithm.Id()) {
         case kWebCryptoAlgorithmIdEd25519:
         case kWebCryptoAlgorithmIdX25519: {
@@ -543,13 +573,21 @@ bool V8ScriptValueSerializerForModules::WriteCryptoKey(
                                     : kX25519KeyTag;
           WriteOneByte(tag);
           WriteUint32(AlgorithmIdForWireFormat(algorithm.Id()));
-          WriteUint32(AsymmetricKeyTypeForWireFormat(key.GetType()));
+          WriteUint32(KeyTypeForWireFormat(key.GetType()));
           break;
         }
-        default:
-          DCHECK(WebCryptoAlgorithm::IsKdf(algorithm.Id()));
+        case kWebCryptoAlgorithmIdHkdf:
+        case kWebCryptoAlgorithmIdPbkdf2: {
           WriteOneByte(kNoParamsKeyTag);
           WriteUint32(AlgorithmIdForWireFormat(algorithm.Id()));
+          break;
+        }
+        default: {
+          WriteOneByte(kNoParamsWithKeyTypeKeyTag);
+          WriteUint32(AlgorithmIdForWireFormat(algorithm.Id()));
+          WriteUint32(KeyTypeForWireFormat(key.GetType()));
+          break;
+        }
       }
       break;
   }
@@ -706,7 +744,9 @@ bool V8ScriptValueSerializerForModules::WriteMediaStreamTrack(
       MediaStreamVideoSource* const native_source =
           MediaStreamVideoSource::GetVideoSource(source);
       DCHECK(native_source);
-      WriteUint32(native_source->GetSubCaptureTargetVersion());
+      // TODO(crbug.com/40058526): Write the entire CaptureVersion if support
+      // for MST-transfer is ever finished; otherwise, remove all this code.
+      WriteUint32(native_source->GetCaptureVersion().sub_capture);
       break;
   }
   // TODO(crbug.com/1288839): Needs to move to FinalizeTransfer?
@@ -723,7 +763,7 @@ bool V8ScriptValueSerializerForModules::WriteRTCDataChannel(
   auto* attachment = GetSerializedScriptValue()
                          ->GetOrCreateAttachment<RTCDataChannelAttachment>();
   using NativeDataChannelVector =
-      Vector<rtc::scoped_refptr<webrtc::DataChannelInterface>>;
+      Vector<webrtc::scoped_refptr<webrtc::DataChannelInterface>>;
   NativeDataChannelVector& channels = attachment->DataChannels();
   channels.push_back(channel->TransferUnderlyingChannel());
   const uint32_t index = static_cast<uint32_t>(channels.size() - 1);

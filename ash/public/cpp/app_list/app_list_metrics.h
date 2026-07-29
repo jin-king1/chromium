@@ -52,7 +52,7 @@ enum class AppListShowSource {
   kTabletMode = 3,
   kSearchKeyFullscreen_DEPRECATED = 4,    // Migrated to kSearchKey.
   kShelfButtonFullscreen_DEPRECATED = 5,  // Obsolete on bubble launcher.
-  kAssistantEntryPoint = 6,
+  kAssistantEntryPoint_DEPRECATED = 6,    // Feature removed.
   kScrollFromShelf = 7,
   kBrowser = 8,
   kWelcomeTour = 9,
@@ -143,8 +143,8 @@ enum SearchResultType {
   OS_SETTINGS,
   // A Plugin VM App Result.
   PLUGIN_VM_APP,
-  // LaCrOS binary.
-  LACROS,
+  // LaCrOS binary. (Deprecated).
+  LACROS_DEPRECATED,
   // A Remote App Result.
   REMOTE_APP,
   // A Borealis App Result.
@@ -231,9 +231,6 @@ ASH_PUBLIC_EXPORT void RecordSearchResultOpenTypeHistogram(
     bool is_tablet_mode);
 
 ASH_PUBLIC_EXPORT void RecordDefaultSearchResultOpenTypeHistogram(
-    SearchResultType type);
-
-ASH_PUBLIC_EXPORT void RecordZeroStateSuggestionOpenTypeHistogram(
     SearchResultType type);
 
 ASH_PUBLIC_EXPORT void RecordLauncherIssuedSearchQueryLength(int query_length);

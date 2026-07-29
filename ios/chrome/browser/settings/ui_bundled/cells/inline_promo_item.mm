@@ -14,6 +14,7 @@
   if (self) {
     self.cellClass = [InlinePromoCell class];
     _shouldShowCloseButton = YES;
+    _shouldDisplayBadge = YES;
     _enabled = YES;
   }
   return self;
@@ -21,10 +22,10 @@
 
 #pragma mark - TableViewItem
 
-- (void)configureCell:(InlinePromoCell*)cell
-           withStyler:(ChromeTableViewStyler*)styler {
-  [super configureCell:cell withStyler:styler];
+- (void)configureCell:(InlinePromoCell*)cell {
+  [super configureCell:cell];
   cell.closeButton.hidden = !self.shouldShowCloseButton;
+  cell.badgeView.hidden = !self.shouldDisplayBadge;
   cell.promoImageView.image = self.promoImage;
   cell.promoTextLabel.text = self.promoText;
   cell.enabled = self.enabled;

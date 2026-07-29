@@ -9,6 +9,7 @@
 #include "base/json/json_reader.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
+#include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
@@ -163,7 +164,6 @@ ComponentUpdaterPolicyTest::MakeComponentRegistration(
       DoInstall(unpack_path, public_key, std::move(callback));
     }
 
-    MOCK_METHOD1(OnUpdateError, void(int error));
     MOCK_METHOD3(DoInstall,
                  void(const base::FilePath& unpack_path,
                       const std::string& public_key,
@@ -198,7 +198,7 @@ void ComponentUpdaterPolicyTest::UpdateComponent(
     const component_updater::ComponentRegistration& reg) {
   post_interceptor_->Reset();
   EXPECT_TRUE(post_interceptor_->ExpectRequest(
-      std::make_unique<update_client::PartialMatch>("updatecheck")));
+      std::make_unique<update_client::PartialMatch>(component_id_)));
   EXPECT_TRUE(cus_->RegisterComponent(reg));
   cus_->GetOnDemandUpdater().OnDemandUpdate(
       component_id_, component_updater::OnDemandUpdater::Priority::FOREGROUND,
@@ -240,10 +240,23 @@ void ComponentUpdaterPolicyTest::EndTest() {
 void ComponentUpdaterPolicyTest::VerifyExpectations(bool update_disabled) {
   EXPECT_EQ(1, post_interceptor_->GetHitCount())
       << post_interceptor_->GetRequestsAsString();
-  ASSERT_EQ(1, post_interceptor_->GetCount())
-      << post_interceptor_->GetRequestsAsString();
 
-  const auto& request = post_interceptor_->GetRequestBody(0);
+  // Find the request for our component. Other components may have been
+  // requested during browser initialization.
+  std::string request;
+  int matching_request_count = 0;
+  for (int i = 0; i < post_interceptor_->GetCount(); ++i) {
+    std::string body = post_interceptor_->GetRequestBody(i);
+    if (body.find(component_id_) != std::string::npos) {
+      matching_request_count++;
+      request = body;
+    }
+  }
+
+  ASSERT_EQ(1, matching_request_count)
+      << "Expected exactly 1 request for " << component_id_ << ", found "
+      << matching_request_count
+      << ". Requests: " << post_interceptor_->GetRequestsAsString();
 
   // Handle XML and JSON protocols.
   if (base::StartsWith(request, "<?xml", base::CompareCase::SENSITIVE)) {
@@ -253,10 +266,11 @@ void ComponentUpdaterPolicyTest::VerifyExpectations(bool update_disabled) {
                   update_disabled ? " updatedisabled=\"true\"" : "")));
   } else if (base::StartsWith(request, R"({"request":{)",
                               base::CompareCase::SENSITIVE)) {
-    const auto root = base::JSONReader::Read(request);
+    const auto root =
+        base::JSONReader::Read(request, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
     ASSERT_TRUE(root);
     const auto* update_check =
-        (*root->GetDict().FindDict("request")->FindList("app"))[0]
+        (*root->GetDict().FindDict("request")->FindList("apps"))[0]
             .GetDict()
             .FindDict("updatecheck");
     ASSERT_TRUE(update_check);

@@ -18,7 +18,7 @@ import type {Destination} from 'chrome://os-print/js/utils/print_preview_cros_ap
 import {strictQuery} from 'chrome://resources/ash/common/typescript_utils/strict_query.js';
 import {assert} from 'chrome://resources/js/assert.js';
 import {flush} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
-import {assertDeepEquals, assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chromeos/chai_assert.js';
+import {assertDeepEquals, assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {MockController} from 'chrome://webui-test/chromeos/mock_controller.m.js';
 import {eventToPromise, isVisible} from 'chrome://webui-test/test_util.js';
 
@@ -89,7 +89,7 @@ suite('DestinationDropdown', () => {
     const selected = getSelectedDestinationRow();
     const rowLabel =
         strictQuery<HTMLElement>('#label', selected.shadowRoot, HTMLElement);
-    return rowLabel.textContent!.trim();
+    return rowLabel.textContent.trim();
   }
 
   async function clickDropdownRowFor(destinationId: string): Promise<void> {

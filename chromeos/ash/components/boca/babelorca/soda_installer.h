@@ -5,7 +5,11 @@
 #ifndef CHROMEOS_ASH_COMPONENTS_BOCA_BABELORCA_SODA_INSTALLER_H_
 #define CHROMEOS_ASH_COMPONENTS_BOCA_BABELORCA_SODA_INSTALLER_H_
 
+#include <queue>
+
 #include "base/functional/callback_forward.h"
+#include "base/memory/raw_ptr.h"
+#include "base/scoped_observation.h"
 #include "components/prefs/pref_service.h"
 #include "components/soda/constants.h"
 #include "components/soda/soda_installer.h"
@@ -14,7 +18,16 @@ namespace ash::babelorca {
 
 class SodaInstaller : public speech::SodaInstaller::Observer {
  public:
-  using AvailabilityCallback = base::OnceCallback<void(bool success)>;
+  enum InstallationStatus {
+    kUninstalled,
+    kReady,
+    kInstalling,
+    kInstallationFailure,
+    kLanguageUnavailable,
+  };
+
+  using AvailabilityCallback =
+      base::OnceCallback<void(InstallationStatus status)>;
 
   SodaInstaller(PrefService* global_prefs,
                 PrefService* profile_prefs,
@@ -23,11 +36,8 @@ class SodaInstaller : public speech::SodaInstaller::Observer {
   SodaInstaller(const SodaInstaller&) = delete;
   SodaInstaller operator=(const SodaInstaller&) = delete;
 
-  // For a caller that wants to check the availability of SODA they will
-  // pass a callback.  If not installed this class will attempt to install
-  // and pass the result of the installation back in this callback.
-  // Otherwise this callback will invoke immediately with the availability.
-  void GetAvailabilityOrInstall(AvailabilityCallback callback);
+  InstallationStatus GetStatus();
+  void InstallSoda(AvailabilityCallback callback);
 
   // speech::SodaInstaller::Observer
   void OnSodaInstalled(speech::LanguageCode language_code) override;
@@ -37,10 +47,20 @@ class SodaInstaller : public speech::SodaInstaller::Observer {
                       int progress) override;
 
  private:
-  AvailabilityCallback callback_;
+  void FlushCallbacks(InstallationStatus result);
+
+  bool ValidLanguage();
+  bool IsAlreadyInstalled();
+
+  InstallationStatus status_ = InstallationStatus::kUninstalled;
+  std::queue<AvailabilityCallback> callbacks_;
   const std::string language_;
   raw_ptr<PrefService> global_prefs_;
   raw_ptr<PrefService> profile_prefs_;
+
+  base::ScopedObservation<speech::SodaInstaller,
+                          speech::SodaInstaller::Observer>
+      soda_installer_observation_{this};
 };
 
 }  // namespace ash::babelorca

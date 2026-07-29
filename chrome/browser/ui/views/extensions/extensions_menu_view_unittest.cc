@@ -5,69 +5,34 @@
 #include "chrome/browser/ui/views/extensions/extensions_menu_view.h"
 
 #include <algorithm>
-#include <memory>
 #include <string>
 #include <vector>
 
-#include "base/command_line.h"
 #include "base/containers/to_vector.h"
-#include "base/files/file_path.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/metrics/user_action_tester.h"
 #include "build/build_config.h"
 #include "chrome/browser/extensions/chrome_test_extension_loader.h"
-#include "chrome/browser/extensions/extension_action_test_util.h"
 #include "chrome/browser/extensions/extension_service.h"
-#include "chrome/browser/extensions/load_error_reporter.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/toolbar/toolbar_action_view_controller.h"
+#include "chrome/browser/ui/toolbar/toolbar_action_view_model.h"
 #include "chrome/browser/ui/views/extensions/extensions_menu_button.h"
 #include "chrome/browser/ui/views/extensions/extensions_menu_item_view.h"
 #include "chrome/browser/ui/views/extensions/extensions_toolbar_button.h"
-#include "chrome/browser/ui/views/extensions/extensions_toolbar_container.h"
+#include "chrome/browser/ui/views/extensions/extensions_toolbar_desktop.h"
 #include "chrome/browser/ui/views/extensions/extensions_toolbar_unittest.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
-#include "content/public/test/test_utils.h"
 #include "extensions/browser/test_extension_registry_observer.h"
 #include "extensions/common/extension.h"
 #include "extensions/test/test_extension_dir.h"
 #include "testing/gmock/include/gmock/gmock.h"
-#include "ui/events/event.h"
-#include "ui/views/controls/button/image_button.h"
 #include "ui/views/layout/animating_layout_manager_test_util.h"
 #include "ui/views/test/ax_event_counter.h"
 #include "ui/views/view_utils.h"
 #include "ui/views/widget/widget.h"
-
-namespace {
-
-// Manages a Browser instance created by BrowserWithTestWindowTest beyond the
-// default instance it creates in SetUp.
-class AdditionalBrowser {
- public:
-  explicit AdditionalBrowser(std::unique_ptr<Browser> browser)
-      : browser_(std::move(browser)),
-        browser_view_(BrowserView::GetBrowserViewForBrowser(browser_.get())) {}
-
-  ~AdditionalBrowser() {
-    // Tear down |browser_|, similar to TestWithBrowserView::TearDown.
-    browser_.release();
-    browser_view_->GetWidget()->CloseNow();
-  }
-
-  ExtensionsToolbarContainer* extensions_container() {
-    return browser_view_->toolbar()->extensions_container();
-  }
-
- private:
-  std::unique_ptr<Browser> browser_;
-  raw_ptr<BrowserView, DanglingUntriaged> browser_view_;
-};
-
-}  // namespace
 
 class ExtensionsMenuViewUnitTest : public ExtensionsToolbarUnitTest {
  public:
@@ -116,8 +81,9 @@ class ExtensionsMenuViewUnitTest : public ExtensionsToolbarUnitTest {
 void ExtensionsMenuViewUnitTest::SetUp() {
   ExtensionsToolbarUnitTest::SetUp();
 
-  ExtensionsMenuView::ShowBubble(extensions_container()->GetExtensionsButton(),
-                                 browser(), extensions_container());
+  ExtensionsMenuView::ShowBubble(
+      extensions_container()->GetExtensionsButton(), browser(),
+      extensions_container()->GetToolbarViewModel(), extensions_container());
 }
 
 scoped_refptr<const extensions::Extension>
@@ -159,7 +125,7 @@ ExtensionsMenuViewUnitTest::GetPinnedExtensionViews() {
       // queries the underlying model and not GetVisible(), as that relies on an
       // animation running, which is not reliable in unit tests on Mac.
       const bool is_visible = extensions_container()->IsActionVisibleOnToolbar(
-          action->view_controller()->GetId());
+          action->view_model()->GetId());
 #else
       const bool is_visible = action->GetVisible();
 #endif
@@ -177,14 +143,14 @@ ExtensionMenuItemView* ExtensionsMenuViewUnitTest::GetExtensionMenuItemView(
       extensions_menu()->extensions_menu_items_for_testing();
   auto iter =
       std::ranges::find(menu_items, name, [](ExtensionMenuItemView* item) {
-        return base::UTF16ToUTF8(item->view_controller()->GetActionName());
+        return base::UTF16ToUTF8(item->view_model()->GetActionName());
       });
   return iter == menu_items.end() ? nullptr : *iter;
 }
 
 std::vector<std::string> ExtensionsMenuViewUnitTest::GetPinnedExtensionNames() {
   return base::ToVector(GetPinnedExtensionViews(), [](ToolbarActionView* view) {
-    return base::UTF16ToUTF8(view->view_controller()->GetActionName());
+    return base::UTF16ToUTF8(view->view_model()->GetActionName());
   });
 }
 
@@ -264,26 +230,28 @@ TEST_F(ExtensionsMenuViewUnitTest, PinnedExtensionAppearsInToolbar) {
 TEST_F(ExtensionsMenuViewUnitTest, PinnedExtensionAppearsInAnotherWindow) {
   const std::string& extension_id =
       InstallExtensionAndLayout("Test Name")->id();
+  const auto is_action_visible_on_toolbar = [&extension_id](Browser* browser) {
+    return browser->GetBrowserView()
+        .toolbar()
+        ->extensions_container()
+        ->IsActionVisibleOnToolbar(extension_id);
+  };
 
-  AdditionalBrowser browser2(
-      CreateBrowser(browser()->profile(), browser()->type(),
-                    /* hosted_app */ false, /* browser_window */ nullptr));
+  Browser* browser2 =
+      CreateBrowserWithBrowserView(browser()->GetProfile(), browser()->type());
 
   ExtensionMenuItemView* menu_item = GetOnlyMenuItem();
   ASSERT_TRUE(menu_item);
   ClickPinButton(menu_item);
 
   // Window that was already open gets the pinned extension.
-  EXPECT_TRUE(
-      browser2.extensions_container()->IsActionVisibleOnToolbar(extension_id));
+  EXPECT_TRUE(is_action_visible_on_toolbar(browser2));
 
-  AdditionalBrowser browser3(
-      CreateBrowser(browser()->profile(), browser()->type(),
-                    /* hosted_app */ false, /* browser_window */ nullptr));
+  Browser* browser3 =
+      CreateBrowserWithBrowserView(browser()->GetProfile(), browser()->type());
 
   // Brand-new window also gets the pinned extension.
-  EXPECT_TRUE(
-      browser3.extensions_container()->IsActionVisibleOnToolbar(extension_id));
+  EXPECT_TRUE(is_action_visible_on_toolbar(browser3));
 }
 
 TEST_F(ExtensionsMenuViewUnitTest, PinnedExtensionRemovedWhenDisabled) {
@@ -345,7 +313,7 @@ TEST_F(ExtensionsMenuViewUnitTest, ReloadExtension) {
   constexpr char kManifest[] = R"({
         "name": "Test",
         "version": "1",
-        "manifest_version": 2
+        "manifest_version": 3
       })";
   extension_directory.WriteManifest(kManifest);
   extensions::ChromeTestExtensionLoader loader(profile());
@@ -382,7 +350,7 @@ TEST_F(ExtensionsMenuViewUnitTest, ReloadExtensionFailed) {
   constexpr char kManifest[] = R"({
         "name": "Test",
         "version": "1",
-        "manifest_version": 2
+        "manifest_version": 3
       })";
   extension_directory.WriteManifest(kManifest);
   extensions::ChromeTestExtensionLoader loader(profile());
@@ -394,19 +362,16 @@ TEST_F(ExtensionsMenuViewUnitTest, ReloadExtensionFailed) {
   ClickPinButton(menu_item);
 
   // Replace the extension's valid manifest with one containing errors. In this
-  // case, the error is that both the 'browser_action' and 'page_action' keys
-  // are specified instead of only one.
+  // case, the error is that the version key is invalid.
   constexpr char kManifestWithErrors[] = R"({
         "name": "Test",
-        "version": "1",
-        "manifest_version": 2,
-        "page_action" : {},
-        "browser_action" : {}
+        "version": 1,
+        "manifest_version": 3
       })";
   extension_directory.WriteManifest(kManifestWithErrors);
 
   // Reload the extension. It should fail due to the manifest errors.
-  extension_service()->ReloadExtensionWithQuietFailure(extension->id());
+  extension_registrar()->ReloadExtensionWithQuietFailure(extension->id());
   base::RunLoop().RunUntilIdle();
 
   // Since the extension is removed it's no longer visible on the toolbar or in
@@ -447,7 +412,7 @@ TEST_F(ExtensionsMenuViewUnitTest, WindowTitle) {
 }
 
 // TODO(crbug.com/40636292): When supported, add a test to verify the
-// ExtensionsToolbarContainer shrinks when the window is too small to show all
+// ExtensionsToolbarDesktop shrinks when the window is too small to show all
 // pinned extensions.
 // TODO(crbug.com/40636292): When supported, add a test to verify an extension
 // is shown when a bubble pops up and needs to draw attention to it.

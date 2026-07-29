@@ -7,11 +7,11 @@
 #include <stddef.h>
 
 #include <array>
+#include <optional>
 #include <utility>
 
 #include "base/containers/span.h"
 #include "base/no_destructor.h"
-#include "base/not_fatal_until.h"
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/app_mode/app_mode_utils.h"
@@ -20,7 +20,7 @@
 #include "chrome/browser/extensions/chrome_app_icon.h"
 #include "chrome/browser/extensions/chrome_app_icon_service.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/views/accelerator_table.h"
+#include "chrome/browser/ui/accelerator_table.h"
 #include "chrome/browser/ui/views/extensions/extension_keybinding_registry_views.h"
 #include "components/favicon/content/content_favicon_driver.h"
 #include "components/zoom/page_zoom.h"
@@ -28,14 +28,15 @@
 #include "extensions/browser/app_window/app_delegate.h"
 #include "extensions/browser/extension_util.h"
 #include "third_party/skia/include/core/SkRegion.h"
+#include "ui/base/hit_test.h"
 #include "ui/base/models/image_model.h"
 #include "ui/base/mojom/window_show_state.mojom.h"
-#include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/gfx/geometry/skia_conversions.h"
 #include "ui/gfx/image/image_skia.h"
 #include "ui/gfx/image/image_skia_operations.h"
 #include "ui/views/controls/webview/webview.h"
 #include "ui/views/widget/widget.h"
+#include "ui/views/window/frame_view.h"
 
 using extensions::AppWindow;
 
@@ -209,9 +210,13 @@ void ChromeNativeAppWindowViews::InitializeDefaultWindow(
   }
 }
 
-std::unique_ptr<views::NonClientFrameView>
+std::unique_ptr<views::FrameView>
 ChromeNativeAppWindowViews::CreateStandardDesktopAppFrame() {
-  return views::WidgetDelegateView::CreateNonClientFrameView(widget());
+  return views::WidgetDelegateView::CreateFrameView(widget());
+}
+
+bool ChromeNativeAppWindowViews::ShouldCreateNonStandardAppFrame() const {
+  return IsFrameless() || has_frame_color_;
 }
 
 bool ChromeNativeAppWindowViews::ShouldRemoveStandardFrame() {
@@ -287,10 +292,17 @@ ui::ImageModel ChromeNativeAppWindowViews::GetWindowIcon() {
   return ui::ImageModel();
 }
 
-std::unique_ptr<views::NonClientFrameView>
-ChromeNativeAppWindowViews::CreateNonClientFrameView(views::Widget* widget) {
-  return (IsFrameless() || has_frame_color_) ? CreateNonStandardAppFrame()
-                                             : CreateStandardDesktopAppFrame();
+std::unique_ptr<views::FrameView> ChromeNativeAppWindowViews::CreateFrameView(
+    views::Widget* widget) {
+  auto frame_view = ShouldCreateNonStandardAppFrame()
+                        ? CreateNonStandardAppFrame()
+                        : CreateStandardDesktopAppFrame();
+  if (ShouldCreateNonStandardAppFrame()) {
+    frame_view->set_non_client_hit_test_callback(base::BindRepeating(
+        &ChromeNativeAppWindowViews::NonClientHitTest, base::Unretained(this)));
+  }
+
+  return frame_view;
 }
 
 bool ChromeNativeAppWindowViews::WidgetHasHitTestMask() const {
@@ -298,7 +310,7 @@ bool ChromeNativeAppWindowViews::WidgetHasHitTestMask() const {
 }
 
 void ChromeNativeAppWindowViews::GetWidgetHitTestMask(SkPath* mask) const {
-  shape_->getBoundaryPath(mask);
+  *mask = shape_->getBoundaryPath();
 }
 
 // views::View implementation.
@@ -308,7 +320,7 @@ bool ChromeNativeAppWindowViews::AcceleratorPressed(
   const std::map<ui::Accelerator, int>& accelerator_table =
       GetAcceleratorTable();
   auto iter = accelerator_table.find(accelerator);
-  CHECK(iter != accelerator_table.end(), base::NotFatalUntil::M130);
+  CHECK(iter != accelerator_table.end());
   int command_id = iter->second;
   switch (command_id) {
     case IDC_CLOSE_WINDOW:
@@ -400,8 +412,9 @@ void ChromeNativeAppWindowViews::InitializeWindow(
   extension_keybinding_registry_ =
       std::make_unique<ExtensionKeybindingRegistryViews>(
           Profile::FromBrowserContext(app_window->browser_context()),
-          widget()->GetFocusManager(),
-          extensions::ExtensionKeybindingRegistry::PLATFORM_APPS_ONLY, nullptr);
+          /*tab_list_interface=*/nullptr,
+          extensions::ExtensionKeybindingRegistry::PLATFORM_APPS_ONLY,
+          widget()->GetFocusManager());
 }
 
 gfx::Image ChromeNativeAppWindowViews::GetCustomImage() {
@@ -435,4 +448,17 @@ void ChromeNativeAppWindowViews::OnIconUpdated(
   }
   DCHECK_EQ(app_icon_.get(), icon);
   UpdateWindowIcon();
+}
+
+int ChromeNativeAppWindowViews::NonClientHitTest(const gfx::Point& point) {
+  if (!widget()->IsFullscreen()) {
+    // Check for possible draggable region in the client area for the frameless
+    // window.
+    SkRegion* draggable_region = GetDraggableRegion();
+    if (draggable_region && draggable_region->contains(point.x(), point.y())) {
+      return HTCAPTION;
+    }
+  }
+
+  return HTNOWHERE;
 }

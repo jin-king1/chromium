@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "third_party/blink/renderer/modules/direct_sockets/udp_writable_stream_wrapper.h"
 
 #include "base/metrics/histogram_functions.h"
@@ -20,14 +15,18 @@
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_arraybuffer_arraybufferview.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_socket_dns_query_type.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_udp_message.h"
+#include "third_party/blink/renderer/core/core_probes_inl.h"
 #include "third_party/blink/renderer/core/dom/abort_signal.h"
 #include "third_party/blink/renderer/core/dom/dom_exception.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context_lifecycle_observer.h"
+#include "third_party/blink/renderer/core/frame/report.h"
+#include "third_party/blink/renderer/core/inspector/console_message.h"
 #include "third_party/blink/renderer/core/streams/underlying_sink_base.h"
 #include "third_party/blink/renderer/core/streams/writable_stream.h"
 #include "third_party/blink/renderer/core/streams/writable_stream_default_controller.h"
 #include "third_party/blink/renderer/core/typed_arrays/dom_array_piece.h"
+#include "third_party/blink/renderer/modules/direct_sockets/direct_sockets_features.h"
 #include "third_party/blink/renderer/modules/direct_sockets/stream_wrapper.h"
 #include "third_party/blink/renderer/modules/direct_sockets/udp_socket_mojo_remote.h"
 #include "third_party/blink/renderer/platform/bindings/exception_code.h"
@@ -44,11 +43,13 @@ UDPWritableStreamWrapper::UDPWritableStreamWrapper(
     ScriptState* script_state,
     CloseOnceCallback on_close,
     const Member<UDPSocketMojoRemote> udp_socket,
-    network::mojom::blink::RestrictedUDPSocketMode mode)
+    network::mojom::blink::RestrictedUDPSocketMode mode,
+    uint64_t inspector_id)
     : WritableStreamWrapper(script_state),
       on_close_(std::move(on_close)),
       udp_socket_(udp_socket),
-      mode_(mode) {
+      mode_(mode),
+      inspector_id_(inspector_id) {
   ScriptState::Scope scope(script_state);
 
   auto* sink = WritableStreamWrapper::MakeForwardingUnderlyingSink(this);
@@ -134,8 +135,7 @@ ScriptPromise<IDLUndefined> UDPWritableStreamWrapper::Write(
   }
 
   DOMArrayPiece array_piece(message->data());
-  base::span<const uint8_t> data{array_piece.Bytes(), array_piece.ByteLength()};
-
+  base::span<const uint8_t> data = array_piece.ByteSpan();
   if (data.empty()) {
     exception_state.ThrowTypeError(
         "UDPMessage: 'data' field must not be empty.");
@@ -147,20 +147,42 @@ ScriptPromise<IDLUndefined> UDPWritableStreamWrapper::Write(
       MakeGarbageCollected<ScriptPromiseResolver<IDLUndefined>>(
           GetScriptState(), exception_state.GetContext());
 
-  auto callback = WTF::BindOnce(&UDPWritableStreamWrapper::OnSend,
-                                WrapWeakPersistent(this));
+  auto callback =
+      BindOnce(&UDPWritableStreamWrapper::OnSend, WrapWeakPersistent(this));
   if (dest_addr) {
     udp_socket_->get()->SendTo(data, *dest_addr, dns_query_type,
                                std::move(callback));
   } else {
     udp_socket_->get()->Send(data, std::move(callback));
   }
+
+  // report to CDP
+  {
+    std::optional<String> probe_remote_addr;
+    std::optional<uint16_t> probe_remote_port;
+    if (message->hasRemoteAddress()) {
+      probe_remote_addr = message->remoteAddress();
+    }
+    if (message->hasRemotePort()) {
+      probe_remote_port = message->remotePort();
+    }
+    probe::DirectUDPSocketChunkSent(*GetScriptState(), inspector_id_, data,
+                                    std::move(probe_remote_addr),
+                                    std::move(probe_remote_port));
+  }
+
   return write_promise_resolver_->Promise();
 }
 
 void UDPWritableStreamWrapper::OnSend(int32_t result) {
   if (write_promise_resolver_) {
-    if (result == net::Error::OK) {
+    if (result == net::ERR_ADDRESS_UNREACHABLE &&
+        base::FeatureList::IsEnabled(kDirectSocketsAllowRecoverableErrors)) {
+      // Log recoverable errors and resolve to keep the WritableStream alive.
+      base::UmaHistogramSparse("DirectSockets.UDPWritableStreamError", -result);
+      write_promise_resolver_->Resolve();
+      write_promise_resolver_ = nullptr;
+    } else if (result >= net::OK) {
       write_promise_resolver_->Resolve();
       write_promise_resolver_ = nullptr;
     } else {
@@ -177,7 +199,8 @@ void UDPWritableStreamWrapper::CloseStream() {
   SetState(State::kClosed);
   DCHECK(!write_promise_resolver_);
 
-  std::move(on_close_).Run(/*exception=*/v8::Local<v8::Value>());
+  std::move(on_close_).Run(/*exception=*/v8::Local<v8::Value>(),
+                           /*net_error=*/net::OK);
 }
 
 void UDPWritableStreamWrapper::ErrorStream(int32_t error_code) {
@@ -196,10 +219,28 @@ void UDPWritableStreamWrapper::ErrorStream(int32_t error_code) {
   // ScriptValue.
   ScriptState::Scope scope{script_state};
 
+  // If sending to a multicast address was rejected due to missing
+  // 'direct-sockets-multicast' Permissions Policy, report a clear console
+  // error message so web developers understand why the stream was aborted.
+  // Note: This check (and console message) was added after the API shipped to
+  // ease transition for developers who might have relied on the previous
+  // behavior.
+  if (error_code == net::ERR_MULTICAST_NOT_ALLOWED &&
+      ExecutionContext::From(script_state)) {
+    ExecutionContext::From(script_state)
+        ->AddConsoleMessage(MakeGarbageCollected<ConsoleMessage>(
+            mojom::blink::ConsoleMessageSource::kJavaScript,
+            mojom::blink::ConsoleMessageLevel::kError,
+            "DirectSockets UDP packet sending failed with "
+            "ERR_MULTICAST_NOT_ALLOWED. Sending to a multicast address "
+            "requires 'direct-sockets-multicast' permissions policy."));
+  }
+
+  auto message =
+      String{"Stream aborted by the remote: " + net::ErrorToString(error_code)};
+
   auto exception = V8ThrowDOMException::CreateOrDie(
-      script_state->GetIsolate(), DOMExceptionCode::kNetworkError,
-      String{"Stream aborted by the remote: " +
-             net::ErrorToString(error_code)});
+      script_state->GetIsolate(), DOMExceptionCode::kNetworkError, message);
 
   if (write_promise_resolver_) {
     write_promise_resolver_->Reject(exception);
@@ -209,7 +250,7 @@ void UDPWritableStreamWrapper::ErrorStream(int32_t error_code) {
                         ScriptValue(script_state->GetIsolate(), exception));
   }
 
-  std::move(on_close_).Run(exception);
+  std::move(on_close_).Run(exception, error_code);
 }
 
 }  // namespace blink

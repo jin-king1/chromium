@@ -60,7 +60,6 @@
 
 using base::apple::CFToNSOwnershipCast;
 using base::apple::CFToNSPtrCast;
-using base::apple::NSToCFOwnershipCast;
 using base::apple::NSToCFPtrCast;
 using base::apple::ScopedCFTypeRef;
 
@@ -115,6 +114,16 @@ bool IsLastResortFont(CTFontRef font) {
                                       0) == kCFCompareEqualTo;
 }
 
+bool IsAppleColorEmojiFont(CTFontRef font) {
+  ScopedCFTypeRef<CFStringRef> family_name(
+      CTFontCopyName(font, kCTFontFamilyNameKey));
+  return family_name &&
+         (CFStringCompare(family_name.get(), CFSTR("Apple Color Emoji"),
+                          kCFCompareCaseInsensitive) == kCFCompareEqualTo ||
+          CFStringCompare(family_name.get(), CFSTR(".Apple Color Emoji UI"),
+                          kCFCompareCaseInsensitive) == kCFCompareEqualTo);
+}
+
 ScopedCFTypeRef<CTFontRef> GetSubstituteFont(CTFontRef ct_font,
                                              UChar32 character,
                                              float size) {
@@ -144,23 +153,19 @@ ScopedCFTypeRef<CTFontRef> GetSubstituteFont(CTFontRef ct_font,
     return ScopedCFTypeRef<CTFontRef>(nullptr);
   }
 
-  ScopedCFTypeRef<CFStringRef> substitute_font_name(
-      CTFontCopyName(substitute_font.get(), kCTFontFamilyNameKey));
   // System API might return colored "Apple Color Emoji" font for some emoji
-  // code points. But if emoji code point was requested and fallback_priority is
-  // not emoji presentation, it means that we need a monochromatic (text)
-  // presentation of emoji. To do that we will replace colored emoji font with
-  // the "Apple Symbols" monochromatic emoji font with "Apple Color Emoji"
+  // code points. It might also return ".Apple Color Emoji UI" when starting
+  // from system-ui. But if an emoji code point was requested and fallback
+  // priority is not emoji presentation, it means that we need a monochromatic
+  // (text) presentation of emoji. To do that we will replace colored emoji font
+  // with the "Apple Symbols" monochromatic emoji font with the color emoji
   // cascade list since it has better glyph coverage.
-  if (RuntimeEnabledFeatures::SystemFallbackEmojiVSSupportEnabled() &&
-      substitute_font_name &&
-      CFStringCompare(substitute_font_name.get(), CFSTR("Apple Color Emoji"),
-                      kCFCompareCaseInsensitive) == kCFCompareEqualTo &&
+  if (IsAppleColorEmojiFont(substitute_font.get()) &&
       Character::IsEmoji(character)) {
     NSArray* lang_list = @[ @"en" ];
-    NSArray* cascade_list(
+    NSArray* cascade_list =
         CFToNSOwnershipCast(CTFontCopyDefaultCascadeListForLanguages(
-            substitute_font.get(), NSToCFOwnershipCast(lang_list))));
+            substitute_font.get(), NSToCFPtrCast(lang_list)));
     NSDictionary* mono_emoji_attributes = @{
       CFToNSPtrCast(kCTFontNameAttribute) : @"Apple Symbols",
       CFToNSPtrCast(kCTFontCascadeListAttribute) : cascade_list,
@@ -277,17 +282,6 @@ bool IsSystemFontName(const AtomicString& font_name) {
   return !font_name.empty() && font_name[0] == '.';
 }
 
-void FontCacheRegisteredFontsChangedNotificationCallback(
-    CFNotificationCenterRef,
-    void* observer,
-    CFStringRef name,
-    const void*,
-    CFDictionaryRef) {
-  DCHECK_EQ(observer, &FontCache::Get());
-  DCHECK(CFEqual(name, kCTFontManagerRegisteredFontsChangedNotification));
-  FontCache::InvalidateFromAnyThread();
-}
-
 }  // namespace
 
 const char kColorEmojiFontMac[] = "Apple Color Emoji";
@@ -302,19 +296,18 @@ void FontCache::InvalidateFromAnyThread() {
   if (!IsMainThread()) {
     Thread::MainThread()
         ->GetTaskRunner(MainThreadTaskRunnerRestricted())
-        ->PostTask(FROM_HERE,
-                   WTF::BindOnce(&FontCache::InvalidateFromAnyThread));
+        ->PostTask(FROM_HERE, BindOnce(&FontCache::InvalidateFromAnyThread));
     return;
   }
   FontCache::Get().Invalidate();
 }
 
-void FontCache::PlatformInit() {
-  CFNotificationCenterAddObserver(
-      CFNotificationCenterGetLocalCenter(), this,
-      FontCacheRegisteredFontsChangedNotificationCallback,
-      kCTFontManagerRegisteredFontsChangedNotification, /*object=*/nullptr,
-      CFNotificationSuspensionBehaviorDeliverImmediately);
+bool FontCache::IsFontFamilyUnavailable(const AtomicString& family_name) const {
+  return unavailable_font_families_.Contains(family_name);
+}
+
+void FontCache::MarkFontFamilyAsUnavailable(const AtomicString& family_name) {
+  unavailable_font_families_.insert(family_name);
 }
 
 const SimpleFontData* FontCache::PlatformFallbackFontForCharacter(
@@ -332,13 +325,51 @@ const SimpleFontData* FontCache::PlatformFallbackFontForCharacter(
   const FontPlatformData& platform_data =
       font_data_to_substitute->PlatformData();
 
+  std::optional<CharacterFallbackKey> key;
+
+  // Caching results of going through the cascade list can introduces
+  // context sensitivity of fallback for individual characters. The
+  // cache may return a font that was the result for a previous fallback
+  // request. But if we had asked CoreText for the fallback for the
+  // current character, the result might have been different. This is
+  // particularly striking for symbols or emoji. Emoji in particular
+  // also need to go through fallback uncached to handle variation
+  // selectors right. To minimize risk of context sensitivity, perform
+  // caching only for ideographic codepoints, Unicode property
+  // [:Ideographic=Yes:].
+  if (Character::IsIdeographic(character) &&
+      RuntimeEnabledFeatures::MacCharacterFallbackCacheEnabled()) {
+    key = CharacterFallbackKey::Make(
+        platform_data.CtFont(), font_description.Weight().RawValue(),
+        font_description.Style().RawValue(),
+        static_cast<uint8_t>(font_description.Orientation()),
+        font_description.EffectiveFontSize());
+  }
+
+  if (key) {
+    CharacterFallbackCache::iterator found =
+        character_fallback_cache_.find(*key);
+    if (found != character_fallback_cache_.end() &&
+        found->value->PlatformData().TypefaceSp() &&
+        found->value->PlatformData().TypefaceSp()->unicharToGlyph(character)) {
+      return found->value;
+    }
+  }
+
   const FontPlatformData* alternate_font =
       GetAlternateFontPlatformData(font_description, character, platform_data);
   if (!alternate_font) {
     return nullptr;
   }
 
-  return FontDataFromFontPlatformData(alternate_font);
+  const SimpleFontData* fallback_font_data =
+      FontDataFromFontPlatformData(alternate_font);
+
+  if (key) {
+    character_fallback_cache_.insert(*key, fallback_font_data);
+  }
+
+  return fallback_font_data;
 }
 
 const SimpleFontData* FontCache::GetLastResortFallbackFont(
@@ -372,8 +403,7 @@ const FontPlatformData* FontCache::CreateFontPlatformData(
   }
 
   ScopedCFTypeRef<CTFontRef> matched_font;
-  if (alternate_name == AlternateFontName::kLocalUniqueFace &&
-      RuntimeEnabledFeatures::FontSrcLocalMatchingEnabled()) {
+  if (alternate_name == AlternateFontName::kLocalUniqueFace) {
     matched_font = MatchUniqueFont(creation_params.Family(), size);
   } else if (creation_params.Family() == font_family_names::kSystemUi) {
     matched_font =

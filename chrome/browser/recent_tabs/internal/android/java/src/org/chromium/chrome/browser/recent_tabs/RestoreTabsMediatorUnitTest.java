@@ -31,10 +31,12 @@ import static org.chromium.chrome.browser.recent_tabs.RestoreTabsProperties.VISI
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -68,6 +70,7 @@ import java.util.List;
 public class RestoreTabsMediatorUnitTest {
     private static final String RESTORE_TABS_USED = EventConstants.RESTORE_TABS_PROMO_USED;
 
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock private RestoreTabsControllerDelegate mDelegate;
     @Mock private ForeignSessionHelper mForeignSessionHelper;
     @Mock private TabCreatorManager mTabCreatorManager;
@@ -77,11 +80,10 @@ public class RestoreTabsMediatorUnitTest {
     @Mock private BottomSheetContent mBottomSheetContent;
 
     private PropertyModel mModel = RestoreTabsProperties.createDefaultModel();
-    private RestoreTabsMediator mMediator = new RestoreTabsMediator();
+    private final RestoreTabsMediator mMediator = new RestoreTabsMediator();
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
         TrackerFactory.setTrackerForTests(mTracker);
         mMediator.initialize(mModel, mProfile, mTabCreatorManager, mBottomSheetController);
     }

@@ -2,30 +2,30 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {isImageDataUrl, isNonEmptyFilePath} from 'chrome://resources/ash/common/sea_pen/sea_pen_utils.js';
+import {isImageDataUrl, isNonEmptyFilePath, isUrl} from 'chrome://resources/ash/common/sea_pen/sea_pen_utils.js';
 import {assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 
 suite('isImageDataUrlTest', function() {
   test('invalid types', function() {
-    for (const value of [null, undefined, false, 'not_url', 0, 1, {}]) {
-      assertFalse(isImageDataUrl(value), `${value} is not Url`);
+    for (const value of [null, undefined, false, 0, 1, {}]) {
+      assertFalse(isUrl(value), `${value} is not Url`);
     }
   });
 
   test('Url but not image data Url', function() {
     assertFalse(isImageDataUrl(
-        {url: 'data:text/html,%3Ch1%3EHello%2C%20World%21%3C%2Fh1%3E'}));
+        'data:text/html,%3Ch1%3EHello%2C%20World%21%3C%2Fh1%3E'));
   });
 
   test('image data url with invalid jpg type', function() {
     assertFalse(
-        isImageDataUrl({url: 'data:image/jpg;base64,a'}),
+        isImageDataUrl('data:image/jpg;base64,a'),
         'image/jpg should be image/jpeg');
   });
 
   test('valid image data url', function() {
-    assertTrue(isImageDataUrl({url: 'data:image/jpeg;base64,a'}));
-    assertTrue(isImageDataUrl({url: 'data:image/png;base64,a'}));
+    assertTrue(isImageDataUrl('data:image/jpeg;base64,a'));
+    assertTrue(isImageDataUrl('data:image/png;base64,a'));
   });
 });
 

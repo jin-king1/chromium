@@ -4,13 +4,18 @@
 
 #include "base/task/single_thread_task_runner.h"
 
+#include "base/barrier_closure.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/run_loop.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/task/task_traits.h"
+#include "base/task/thread_pool.h"
+#include "base/test/bind.h"
 #include "base/test/gtest_util.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_simple_task_runner.h"
+#include "base/threading/thread_checker.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace base {
@@ -37,7 +42,7 @@ TEST(SingleThreadTaskRunnerCurrentDefaultHandleTest, DeathOnImplicitOverride) {
       MakeRefCounted<TestSimpleTaskRunner>());
 
   SingleThreadTaskRunner::CurrentDefaultHandle sttcd(task_runner);
-  EXPECT_DCHECK_DEATH({
+  EXPECT_CHECK_DEATH({
     SingleThreadTaskRunner::CurrentDefaultHandle overriding_sttcd(
         overidding_task_runner);
   });
@@ -256,7 +261,7 @@ TEST(SingleThreadTaskRunnerCurrentDefaultHandleTest, DeathOnSTTCDOverOverride) {
 
   SingleThreadTaskRunner::CurrentHandleOverrideForTesting sttcd_override(
       task_runner);
-  EXPECT_DCHECK_DEATH({
+  EXPECT_CHECK_DEATH({
     SingleThreadTaskRunner::CurrentDefaultHandle overriding_sttrcd(
         overidding_task_runner);
   });
@@ -293,6 +298,39 @@ TEST(SingleThreadTaskRunnerCurrentDefaultHandleTest,
   EXPECT_EQ(task_runner, SingleThreadTaskRunner::GetCurrentDefault());
   EXPECT_EQ(task_runner, SequencedTaskRunner::GetCurrentDefault());
   EXPECT_DCHECK_DEATH({ RunLoop().RunUntilIdle(); });
+}
+
+TEST(SingleThreadTaskRunnerMainThreadDefaultHandleTest, Basic) {
+  EXPECT_CHECK_DEATH(std::ignore =
+                         SingleThreadTaskRunner::GetMainThreadDefault());
+
+  {
+    scoped_refptr<SingleThreadTaskRunner> task_runner(
+        MakeRefCounted<TestSimpleTaskRunner>());
+    SingleThreadTaskRunner::MainThreadDefaultHandle main_thread_default_handle(
+        task_runner);
+
+    EXPECT_TRUE(SingleThreadTaskRunner::GetMainThreadDefault());
+  }
+
+  EXPECT_CHECK_DEATH(std::ignore =
+                         SingleThreadTaskRunner::GetMainThreadDefault());
+}
+
+// Verify that running a `RunLoop` is supported in the scope of a
+// `MainThreadDefaultHandle` with `MayAlreadyExist`.
+TEST(SingleThreadTaskRunnerMainThreadDefaultHandleTest,
+     NestedRunLoopAllowedUnderHandleOverride) {
+  test::SingleThreadTaskEnvironment task_environment;
+  EXPECT_TRUE(SingleThreadTaskRunner::HasMainThreadDefault());
+  scoped_refptr<SingleThreadTaskRunner> task_runner(
+      MakeRefCounted<TestSimpleTaskRunner>());
+  SingleThreadTaskRunner::MainThreadDefaultHandle sttrcd_override(
+      task_runner,
+      SingleThreadTaskRunner::MainThreadDefaultHandle::MayAlreadyExist{});
+  EXPECT_TRUE(SingleThreadTaskRunner::HasMainThreadDefault());
+  EXPECT_EQ(task_runner, SingleThreadTaskRunner::GetMainThreadDefault());
+  RunLoop().RunUntilIdle();
 }
 
 }  // namespace base

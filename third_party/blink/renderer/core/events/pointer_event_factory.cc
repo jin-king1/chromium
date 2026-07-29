@@ -7,6 +7,7 @@
 #include "base/notreached.h"
 #include "base/trace_event/trace_event.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_pointer_event_init.h"
+#include "third_party/blink/renderer/core/dom/pseudo_element.h"
 #include "third_party/blink/renderer/core/events/pointer_event_util.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
@@ -378,48 +379,46 @@ PointerEvent* PointerEventFactory::Create(
 
   return PointerEvent::Create(
       type, pointer_event_init, web_pointer_event.TimeStamp(),
-      MouseEvent::kRealOrIndistinguishable, kMenuSourceNone,
+      MouseEvent::kRealOrIndistinguishable,
+      ui::mojom::blink::MenuSourceType::kNone,
       web_pointer_event.GetPreventCountingAsInteraction());
 }
 
 void PointerEventFactory::SetLastPosition(int pointer_id,
                                           const gfx::PointF& position_in_screen,
                                           WebInputEvent::Type event_type) {
-  PointerAttributes attributes = pointer_id_to_attributes_.Contains(pointer_id)
-                                     ? pointer_id_to_attributes_.at(pointer_id)
-                                     : PointerAttributes();
+  auto add_result = pointer_id_to_attributes_.insert(pointer_id, nullptr);
+  if (add_result.is_new_entry) {
+    add_result.stored_value->value = MakeGarbageCollected<PointerAttributes>();
+  }
+  PointerAttributes* attributes = add_result.stored_value->value;
 
   if (event_type == WebInputEvent::Type::kPointerRawUpdate) {
-    attributes.last_rawupdate_position = position_in_screen;
+    attributes->last_rawupdate_position = position_in_screen;
   } else {
-    attributes.last_position = position_in_screen;
+    attributes->last_position = position_in_screen;
   }
-
-  pointer_id_to_attributes_.Set(pointer_id, attributes);
 }
 
 void PointerEventFactory::RemoveLastPosition(const int pointer_id) {
-  PointerAttributes attributes = pointer_id_to_attributes_.at(pointer_id);
-  attributes.last_position.reset();
-  attributes.last_rawupdate_position.reset();
-  pointer_id_to_attributes_.Set(pointer_id, attributes);
+  PointerAttributes* attributes = pointer_id_to_attributes_.at(pointer_id);
+  attributes->last_position.reset();
+  attributes->last_rawupdate_position.reset();
 }
 
 gfx::PointF PointerEventFactory::GetLastPointerPosition(
     int pointer_id,
     const WebPointerProperties& event,
     WebInputEvent::Type event_type) const {
-  if (event_type == WebInputEvent::Type::kPointerRawUpdate) {
-    if (pointer_id_to_attributes_.Contains(pointer_id) &&
-        pointer_id_to_attributes_.at(pointer_id)
-            .last_rawupdate_position.has_value()) {
-      return pointer_id_to_attributes_.at(pointer_id)
-          .last_rawupdate_position.value();
-    }
-  } else {
-    if (pointer_id_to_attributes_.Contains(pointer_id) &&
-        pointer_id_to_attributes_.at(pointer_id).last_position.has_value()) {
-      return pointer_id_to_attributes_.at(pointer_id).last_position.value();
+  auto it = pointer_id_to_attributes_.find(pointer_id);
+  if (it != pointer_id_to_attributes_.end()) {
+    const PointerAttributes* attributes = it->value;
+    if (event_type == WebInputEvent::Type::kPointerRawUpdate) {
+      if (attributes->last_rawupdate_position.has_value()) {
+        return attributes->last_rawupdate_position.value();
+      }
+    } else if (attributes->last_position.has_value()) {
+      return attributes->last_position.value();
     }
   }
   // If pointer_id is not in the map, returns the current position so the
@@ -431,17 +430,17 @@ PointerEvent* PointerEventFactory::CreatePointerCancelEvent(
     const int pointer_id,
     base::TimeTicks platfrom_time_stamp,
     const int32_t device_id) {
-  CHECK(pointer_id_to_attributes_.Contains(pointer_id));
-  PointerAttributes attributes(pointer_id_to_attributes_.at(pointer_id));
-  attributes.is_active_buttons = false;
-  attributes.hovering = true;
-  pointer_id_to_attributes_.Set(pointer_id, attributes);
+  auto it = pointer_id_to_attributes_.find(pointer_id);
+  CHECK(it != pointer_id_to_attributes_.end());
+  PointerAttributes* attributes = it->value;
+  attributes->is_active_buttons = false;
+  attributes->hovering = true;
 
   PointerEventInit* pointer_event_init = PointerEventInit::Create();
 
   pointer_event_init->setPointerId(pointer_id);
   pointer_event_init->setPointerType(PointerTypeNameForWebPointPointerType(
-      pointer_id_to_attributes_.at(pointer_id).incoming_id.GetPointerType()));
+      attributes->incoming_id.GetPointerType()));
   pointer_event_init->setIsPrimary(IsPrimary(pointer_id));
 
   SetEventSpecificFields(pointer_event_init, event_type_names::kPointercancel);
@@ -537,10 +536,6 @@ PointerEventFactory::PointerEventFactory() {
   Clear();
 }
 
-PointerEventFactory::~PointerEventFactory() {
-  Clear();
-}
-
 void PointerEventFactory::Clear() {
   for (int type = 0;
        type <= ToInt(WebPointerProperties::PointerType::kMaxValue); type++) {
@@ -557,8 +552,8 @@ void PointerEventFactory::Clear() {
   // No need to add it to |pointer_incoming_id_mapping_| as it is not going to
   // be used with the existing APIs
   primary_id_[ToInt(WebPointerProperties::PointerType::kMouse)] = kMouseId;
-  PointerAttributes attributes;
-  attributes.incoming_id =
+  PointerAttributes* attributes = MakeGarbageCollected<PointerAttributes>();
+  attributes->incoming_id =
       IncomingId(WebPointerProperties::PointerType::kMouse, 0);
   pointer_id_to_attributes_.insert(kMouseId, attributes);
 
@@ -575,19 +570,18 @@ PointerId PointerEventFactory::AddOrUpdateIdAndActiveButtons(
     uint32_t unique_touch_event_id) {
   // Do not add extra mouse pointer as it was added in initialization.
   if (p.GetPointerType() == WebPointerProperties::PointerType::kMouse) {
-    PointerAttributes attributes = pointer_id_to_attributes_.at(kMouseId);
-    attributes.is_active_buttons = is_active_buttons;
-    pointer_id_to_attributes_.Set(kMouseId, attributes);
+    PointerAttributes* attributes = pointer_id_to_attributes_.at(kMouseId);
+    attributes->is_active_buttons = is_active_buttons;
     return kMouseId;
   }
 
-  if (pointer_incoming_id_mapping_.Contains(p)) {
-    PointerId mapped_id = pointer_incoming_id_mapping_.at(p);
-    PointerAttributes attributes = pointer_id_to_attributes_.at(mapped_id);
-    CHECK(attributes.incoming_id == p);
-    attributes.is_active_buttons = is_active_buttons;
-    attributes.hovering = hovering;
-    pointer_id_to_attributes_.Set(mapped_id, attributes);
+  auto it = pointer_incoming_id_mapping_.find(p);
+  if (it != pointer_incoming_id_mapping_.end()) {
+    PointerId mapped_id = it->value;
+    PointerAttributes* attributes = pointer_id_to_attributes_.at(mapped_id);
+    CHECK(attributes->incoming_id == p);
+    attributes->is_active_buttons = is_active_buttons;
+    attributes->hovering = hovering;
     return mapped_id;
   }
 
@@ -605,22 +599,27 @@ PointerId PointerEventFactory::AddOrUpdateIdAndActiveButtons(
   id_count_[type_int]++;
   pointer_incoming_id_mapping_.insert(p, mapped_id);
   pointer_id_to_attributes_.insert(
-      mapped_id,
-      PointerAttributes(p, is_active_buttons, hovering, unique_touch_event_id,
-                        /* last_position */ std::nullopt,
-                        /* last_rawupdate_position */ std::nullopt));
+      mapped_id, MakeGarbageCollected<PointerAttributes>(
+                     p, is_active_buttons, hovering, unique_touch_event_id,
+                     /* last_position */ std::nullopt,
+                     /* last_rawupdate_position */ std::nullopt));
   return mapped_id;
 }
 
 bool PointerEventFactory::Remove(const PointerId mapped_id) {
   // Do not remove mouse pointer id as it should always be there.
-  if (mapped_id == kMouseId || !pointer_id_to_attributes_.Contains(mapped_id)) {
+  if (mapped_id == kMouseId) {
+    return false;
+  }
+  auto it = pointer_id_to_attributes_.find(mapped_id);
+  if (it == pointer_id_to_attributes_.end()) {
     return false;
   }
 
-  IncomingId p = pointer_id_to_attributes_.at(mapped_id).incoming_id;
+  PointerAttributes* attributes = it->value;
+  IncomingId p = attributes->incoming_id;
   int type_int = p.PointerTypeInt();
-  PointerAttributes attributes = pointer_id_to_attributes_.Take(mapped_id);
+  pointer_id_to_attributes_.erase(it);
   pointer_incoming_id_mapping_.erase(p);
   if (primary_id_[type_int] == mapped_id) {
     primary_id_[type_int] = kInvalidId;
@@ -636,7 +635,7 @@ Vector<PointerId> PointerEventFactory::GetPointerIdsOfNonHoveringPointers()
   Vector<PointerId> mapped_ids;
 
   for (const auto& iter : pointer_id_to_attributes_) {
-    if (!iter.value.hovering) {
+    if (!iter.value->hovering) {
       mapped_ids.push_back(static_cast<PointerId>(iter.key));
     }
   }
@@ -647,11 +646,12 @@ Vector<PointerId> PointerEventFactory::GetPointerIdsOfNonHoveringPointers()
 }
 
 bool PointerEventFactory::IsPrimary(PointerId mapped_id) const {
-  if (!pointer_id_to_attributes_.Contains(mapped_id)) {
+  auto it = pointer_id_to_attributes_.find(mapped_id);
+  if (it == pointer_id_to_attributes_.end()) {
     return false;
   }
 
-  IncomingId p = pointer_id_to_attributes_.at(mapped_id).incoming_id;
+  IncomingId p = it->value->incoming_id;
   return primary_id_[p.PointerTypeInt()] == mapped_id;
 }
 
@@ -678,8 +678,8 @@ bool PointerEventFactory::IsPrimary(
 
 bool PointerEventFactory::IsActiveButtonsState(
     const PointerId pointer_id) const {
-  return pointer_id_to_attributes_.Contains(pointer_id) &&
-         pointer_id_to_attributes_.at(pointer_id).is_active_buttons;
+  auto it = pointer_id_to_attributes_.find(pointer_id);
+  return it != pointer_id_to_attributes_.end() && it->value->is_active_buttons;
 }
 
 WebPointerProperties::PointerType PointerEventFactory::GetPointerType(
@@ -687,7 +687,7 @@ WebPointerProperties::PointerType PointerEventFactory::GetPointerType(
   if (!IsActive(pointer_id)) {
     return WebPointerProperties::PointerType::kUnknown;
   }
-  return pointer_id_to_attributes_.at(pointer_id).incoming_id.GetPointerType();
+  return pointer_id_to_attributes_.at(pointer_id)->incoming_id.GetPointerType();
 }
 
 PointerId PointerEventFactory::GetPointerEventId(
@@ -696,43 +696,41 @@ PointerId PointerEventFactory::GetPointerEventId(
     return PointerEventFactory::kMouseId;
   }
   IncomingId incoming_id(properties.pointer_type, properties.id);
-  if (pointer_incoming_id_mapping_.Contains(incoming_id)) {
-    return pointer_incoming_id_mapping_.at(incoming_id);
-  }
-  return kInvalidId;
+  auto it = pointer_incoming_id_mapping_.find(incoming_id);
+  return it != pointer_incoming_id_mapping_.end() ? it->value : kInvalidId;
 }
 
 PointerId PointerEventFactory::GetPointerIdForTouchGesture(
     const uint32_t unique_touch_event_id) {
   const auto& unique_touch_id_matcher =
       [](const uint32_t unique_touch_event_id,
-         const blink::PointerEventFactory::PointerAttributes attributes) {
-        return attributes.incoming_id.GetPointerType() ==
+         const blink::PointerEventFactory::PointerAttributes* attributes) {
+        return attributes->incoming_id.GetPointerType() ==
                    WebPointerProperties::PointerType::kTouch &&
-               attributes.unique_touch_event_id == unique_touch_event_id;
+               attributes->unique_touch_event_id == unique_touch_event_id;
       };
 
   // First try currently active pointers.
-  for (const auto& id : pointer_id_to_attributes_.Keys()) {
-    if (unique_touch_id_matcher(unique_touch_event_id,
-                                pointer_id_to_attributes_.at(id))) {
-      return static_cast<PointerId>(id);
+  for (const auto& entry : pointer_id_to_attributes_) {
+    if (unique_touch_id_matcher(unique_touch_event_id, entry.value)) {
+      return static_cast<PointerId>(entry.key);
     }
   }
 
   // Then try recently removed pointers.
   for (const auto& id_attributes_pair : recently_removed_pointers_) {
     if (unique_touch_id_matcher(unique_touch_event_id,
-                                id_attributes_pair.second)) {
-      return static_cast<PointerId>(id_attributes_pair.first);
+                                id_attributes_pair->attributes)) {
+      return static_cast<PointerId>(id_attributes_pair->id);
     }
   }
 
   // If the unique id is unseen, reserve a new pointer-id and save it as
   // recently removed.
   PointerId pointer_id = GetNextAvailablePointerid();
-  PointerAttributes pointer_attributes;
-  pointer_attributes.incoming_id =
+  PointerAttributes* pointer_attributes =
+      MakeGarbageCollected<PointerAttributes>();
+  pointer_attributes->incoming_id =
       IncomingId(WebPointerProperties::PointerType::kTouch, kInvalidId);
   SaveRecentlyRemovedPointer(pointer_id, pointer_attributes);
 
@@ -741,11 +739,13 @@ PointerId PointerEventFactory::GetPointerIdForTouchGesture(
 
 void PointerEventFactory::SaveRecentlyRemovedPointer(
     PointerId pointer_id,
-    PointerAttributes pointer_attributes) {
+    PointerAttributes* pointer_attributes) {
   if (recently_removed_pointers_.size() == kRemovedPointersCapacity) {
-    recently_removed_pointers_.pop_front();
+    recently_removed_pointers_.EraseAt(0);
   }
-  recently_removed_pointers_.emplace_back(pointer_id, pointer_attributes);
+  recently_removed_pointers_.emplace_back(
+      MakeGarbageCollected<PointerIdAndAttributes>(pointer_id,
+                                                   pointer_attributes));
 }
 
 int32_t PointerEventFactory::GetBlinkDeviceId(
@@ -769,15 +769,113 @@ int32_t PointerEventFactory::GetBlinkDeviceId(
   if (result.is_new_entry) {
     result.stored_value->value = current_device_id_++;
   }
-  TRACE_EVENT_INSTANT1("event", "PointerEventFactory::GetBlinkDeviceId",
-                       TRACE_EVENT_SCOPE_THREAD, "id",
-                       result.stored_value->value);
+  TRACE_EVENT_INSTANT("event", "PointerEventFactory::GetBlinkDeviceId", "id",
+                      result.stored_value->value);
   return result.stored_value->value;
 }
 
 PointerId PointerEventFactory::GetNextAvailablePointerid() {
   // We do not handle the overflow of |current_id_| as it should be very rare.
   return current_id_++;
+}
+
+void PointerEventFactory::SetPointerDownTarget(PointerId pointer_id,
+                                               PointerTarget* pointer_target) {
+  PointerAttributes* attributes =
+      pointer_id_to_attributes_
+          .insert(pointer_id, MakeGarbageCollected<PointerAttributes>())
+          .stored_value->value;
+  attributes->pointer_down_target = pointer_target;
+  // Clear pointer_up_target to prevent the pointerup target from a previous
+  // click from being erroneously saved and used for the next light dismiss.
+  attributes->pointer_up_target = nullptr;
+}
+
+void PointerEventFactory::SetPointerUpTarget(PointerId pointer_id,
+                                             PointerTarget* pointer_target) {
+  PointerAttributes* attributes =
+      pointer_id_to_attributes_
+          .insert(pointer_id, MakeGarbageCollected<PointerAttributes>())
+          .stored_value->value;
+  attributes->pointer_up_target = pointer_target;
+}
+
+PointerEventFactory::PointerTarget* PointerEventFactory::GetPointerDownTarget(
+    PointerId pointer_id) const {
+  if (auto* attributes = GetPointerAttributesForId(pointer_id)) {
+    return attributes->pointer_down_target;
+  }
+  return nullptr;
+}
+
+PointerEventFactory::PointerTarget* PointerEventFactory::GetPointerUpTarget(
+    PointerId pointer_id) const {
+  if (auto* attributes = GetPointerAttributesForId(pointer_id)) {
+    return attributes->pointer_up_target;
+  }
+  return nullptr;
+}
+
+void PointerEventFactory::HandlePseudoElementRemoved(PseudoElement& pseudo) {
+  Element* originating_element = pseudo.ParentOrShadowHostElement();
+  if (!originating_element) {
+    return;
+  }
+  for (auto& entry : pointer_id_to_attributes_) {
+    PointerAttributes* attributes = entry.value;
+    if (attributes->pointer_down_target &&
+        attributes->pointer_down_target->node) {
+      Node* target = attributes->pointer_down_target->node;
+      if (target->IsPseudoElement() &&
+          pseudo.IsShadowIncludingInclusiveAncestorOf(*target)) {
+        attributes->pointer_down_target->node = originating_element;
+      }
+    }
+    if (attributes->pointer_up_target && attributes->pointer_up_target->node) {
+      Node* target = attributes->pointer_up_target->node;
+      if (target->IsPseudoElement() &&
+          pseudo.IsShadowIncludingInclusiveAncestorOf(*target)) {
+        attributes->pointer_up_target->node = originating_element;
+      }
+    }
+  }
+}
+
+PointerEventFactory::PointerAttributes*
+PointerEventFactory::GetPointerAttributesForId(PointerId pointer_id) const {
+  auto it = pointer_id_to_attributes_.find(pointer_id);
+  if (it == pointer_id_to_attributes_.end()) {
+    // This is needed for touch inputs because
+    // PointerEventManager::SendTouchPointerEvent calls
+    // PointerEventFactory::Remove on this pointer before GestureManager sends
+    // the click event.
+    for (auto& removed_pointer : recently_removed_pointers_) {
+      if (removed_pointer->id == pointer_id) {
+        return removed_pointer->attributes;
+      }
+    }
+    return nullptr;
+  }
+  return it->value;
+}
+
+void PointerEventFactory::RemovePointerTargets(PointerId pointer_id) {
+  auto it = pointer_id_to_attributes_.find(pointer_id);
+  if (it == pointer_id_to_attributes_.end()) {
+    return;
+  }
+  it->value->pointer_down_target = nullptr;
+  it->value->pointer_up_target = nullptr;
+}
+
+void PointerEventFactory::Trace(Visitor* visitor) const {
+  visitor->Trace(pointer_id_to_attributes_);
+  visitor->Trace(recently_removed_pointers_);
+}
+
+void PointerEventFactory::PointerAttributes::Trace(Visitor* visitor) const {
+  visitor->Trace(pointer_down_target);
+  visitor->Trace(pointer_up_target);
 }
 
 }  // namespace blink

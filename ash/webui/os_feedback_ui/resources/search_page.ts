@@ -9,7 +9,6 @@ import './os_feedback_shared.css.js';
 
 import {I18nMixin} from 'chrome://resources/ash/common/cr_elements/i18n_mixin.js';
 import {strictQuery} from 'chrome://resources/ash/common/typescript_utils/strict_query.js';
-import {stringToMojoString16} from 'chrome://resources/js/mojo_type_util.js';
 import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
 import type {FeedbackFlowButtonClickEvent} from './feedback_flow.js';
@@ -115,11 +114,11 @@ export class SearchPageElement extends SearchPageElementBase {
     };
   }
 
-  feedbackContext: FeedbackContext;
-  descriptionTemplate = '';
-  descriptionPlaceholderText: string = '';
-  private helpContentSearchResultCount: number = 0;
-  private noHelpContentDisplayed = false;
+  declare feedbackContext: FeedbackContext;
+  declare descriptionTemplate: string;
+  declare descriptionPlaceholderText: string;
+  declare private helpContentSearchResultCount: number;
+  declare private noHelpContentDisplayed: boolean;
   private helpContentProvider: HelpContentProviderInterface;
   /**
    * The event handler called when the iframe is loaded. It is set in the
@@ -164,6 +163,10 @@ export class SearchPageElement extends SearchPageElementBase {
 
   constructor() {
     super();
+    this.descriptionTemplate = '';
+    this.descriptionPlaceholderText = '';
+    this.helpContentSearchResultCount = 0;
+    this.noHelpContentDisplayed = false;
 
     this.helpContentProvider = getHelpContentProvider();
     this.lastPostedQuerySeqNo = -1;
@@ -250,7 +253,7 @@ export class SearchPageElement extends SearchPageElementBase {
     }
 
     const request: SearchRequest = {
-      query: stringToMojoString16(query),
+      query: query,
       maxResults: MAX_RESULTS,
     };
 

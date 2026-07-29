@@ -2,19 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "url/url_canon_icu.h"
 
 #include <stddef.h>
 
 #include <array>
 
-#include "base/logging.h"
 #include "base/memory/raw_ptr.h"
+#include "base/strings/string_view_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/icu/source/common/unicode/ucnv.h"
 #include "url/url_canon.h"
@@ -48,14 +43,14 @@ TEST(URLCanonIcuTest, ICUCharsetConverter) {
   for (size_t i = 0; i < std::size(icu_cases); i++) {
     test::UConvScoper conv(icu_cases[i].encoding);
     ASSERT_TRUE(conv.converter() != NULL);
-    ICUCharsetConverter converter(conv.converter());
+    IcuCharsetConverter converter(conv.converter());
 
     std::string str;
     StdStringCanonOutput output(&str);
 
     std::u16string input_str(
-        test_utils::TruncateWStringToUTF16(icu_cases[i].input));
-    converter.ConvertFromUTF16(input_str, &output);
+        test_utils::TruncateWStringToUtf16(icu_cases[i].input));
+    converter.ConvertFromUtf16(input_str, &output);
     output.Complete();
 
     EXPECT_STREQ(icu_cases[i].expected, str.c_str());
@@ -66,7 +61,7 @@ TEST(URLCanonIcuTest, ICUCharsetConverter) {
   const int static_size = 16;
   test::UConvScoper conv("utf-8");
   ASSERT_TRUE(conv.converter());
-  ICUCharsetConverter converter(conv.converter());
+  IcuCharsetConverter converter(conv.converter());
   for (int i = static_size - 2; i <= static_size + 2; i++) {
     // Make a string with the appropriate length.
     std::u16string input;
@@ -74,7 +69,7 @@ TEST(URLCanonIcuTest, ICUCharsetConverter) {
       input.push_back('a');
 
     RawCanonOutput<static_size> output;
-    converter.ConvertFromUTF16(input, &output);
+    converter.ConvertFromUtf16(input, &output);
     EXPECT_EQ(input.length(), output.length());
   }
 }
@@ -107,16 +102,12 @@ TEST(URLCanonIcuTest, QueryWithConverter) {
 
     test::UConvScoper conv(query_cases[i].encoding);
     ASSERT_TRUE(!query_cases[i].encoding || conv.converter());
-    ICUCharsetConverter converter(conv.converter());
+    IcuCharsetConverter converter(conv.converter());
 
     if (query_cases[i].input8) {
-      int len = static_cast<int>(strlen(query_cases[i].input8));
-      Component in_comp(0, len);
       std::string out_str;
-
       StdStringCanonOutput output(&out_str);
-      CanonicalizeQuery(query_cases[i].input8, in_comp, &converter, &output,
-                        &out_comp);
+      CanonicalizeQuery(query_cases[i].input8, &converter, &output, &out_comp);
       output.Complete();
 
       EXPECT_EQ(query_cases[i].expected, out_str);
@@ -124,13 +115,12 @@ TEST(URLCanonIcuTest, QueryWithConverter) {
 
     if (query_cases[i].input16) {
       std::u16string input16(
-          test_utils::TruncateWStringToUTF16(query_cases[i].input16));
-      int len = static_cast<int>(input16.length());
-      Component in_comp(0, len);
+          test_utils::TruncateWStringToUtf16(query_cases[i].input16));
+      Component in_comp(input16);
       std::string out_str;
 
       StdStringCanonOutput output(&out_str);
-      CanonicalizeQuery(input16.c_str(), in_comp, &converter, &output,
+      CanonicalizeQuery(in_comp.AsViewOn(input16), &converter, &output,
                         &out_comp);
       output.Complete();
 
@@ -142,7 +132,8 @@ TEST(URLCanonIcuTest, QueryWithConverter) {
   std::string out_str;
   StdStringCanonOutput output(&out_str);
   Component out_comp;
-  CanonicalizeQuery("a \x00z\x01", Component(0, 5), NULL, &output, &out_comp);
+  CanonicalizeQuery(base::MakeStringViewWithNulChars("a \x00z\x01"), nullptr,
+                    &output, &out_comp);
   output.Complete();
   EXPECT_EQ("?a%20%00z%01", out_str);
 }

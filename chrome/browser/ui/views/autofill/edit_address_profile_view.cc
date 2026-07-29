@@ -8,27 +8,26 @@
 #include <utility>
 
 #include "base/functional/bind.h"
+#include "base/notreached.h"
 #include "chrome/browser/autofill/personal_data_manager_factory.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/autofill/address_editor_controller.h"
 #include "chrome/browser/ui/autofill/autofill_bubble_base.h"
 #include "chrome/browser/ui/autofill/edit_address_profile_dialog_controller.h"
 #include "chrome/browser/ui/autofill/edit_address_profile_view.h"
 #include "chrome/browser/ui/tabs/public/tab_dialog_manager.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
-#include "chrome/browser/ui/tabs/public/tab_interface.h"
 #include "chrome/browser/ui/views/autofill/address_editor_view.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
-#include "components/autofill/core/common/autofill_features.h"
 #include "components/constrained_window/constrained_window_views.h"
 #include "components/strings/grit/components_strings.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/layout/box_layout.h"
-#include "ui/views/layout/fill_layout.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/widget/widget.h"
 
@@ -47,6 +46,7 @@ class AutofillBubbleUI : public AutofillBubbleBase {
  private:
   // Overrides from AutofillBubbleBase:
   void Hide() override;
+  bool IsMouseHovered() const override;
 
   void CloseWidget(views::Widget::ClosedReason closed_reason);
 
@@ -67,6 +67,11 @@ void AutofillBubbleUI::Hide() {
   dialog_->Close();
 }
 
+bool AutofillBubbleUI::IsMouseHovered() const {
+  // The edit view is not part of the bubbles managed by `BubbleManager`.
+  NOTREACHED();
+}
+
 void AutofillBubbleUI::CloseWidget(views::Widget::ClosedReason closed_reason) {
   // We need to hold the dialog here so it remains alive long enough for the
   // stack to be cleaned up from the WidgetClosed() call. This keeps potential
@@ -85,9 +90,11 @@ std::unique_ptr<AutofillBubbleBase> ShowEditAddressProfileDialogView(
   dialog->ShowForWebContents(web_contents);
   tabs::TabInterface* tab_interface =
       tabs::TabInterface::GetFromContents(web_contents);
-  auto widget = tab_interface->GetTabFeatures()
-                    ->tab_dialog_manager()
-                    ->CreateShowDialogAndBlockTabInteraction(dialog);
+  auto widget =
+      tab_interface->GetTabFeatures()
+          ->tab_dialog_manager()
+          ->CreateAndShowDialog(
+              dialog, std::make_unique<tabs::TabDialogManager::Params>());
   dialog->RequestFocus();
   return std::make_unique<AutofillBubbleUI>(std::move(widget), dialog);
 }
@@ -97,9 +104,8 @@ EditAddressProfileView::EditAddressProfileView(
     : controller_(controller) {
   DCHECK(controller);
 
-  // TODO(crbug.com/338254375): Remove the following two lines once this is the
-  // default state for widgets and the delegates.
-  SetOwnedByWidget(false);
+  // TODO(crbug.com/338254375): Remove the following line once this is the
+  // default state for widgets.
   SetOwnershipOfNewWidget(views::Widget::InitParams::CLIENT_OWNS_WIDGET);
 
   SetButtons(static_cast<int>(ui::mojom::DialogButton::kOk) |
@@ -137,7 +143,7 @@ void EditAddressProfileView::ShowForWebContents(
   DCHECK(web_contents);
   auto address_editor_controller = std::make_unique<AddressEditorController>(
       controller_->GetProfileToEdit(),
-      autofill::PersonalDataManagerFactory::GetForBrowserContext(
+      PersonalDataManagerFactory::GetForBrowserContext(
           web_contents->GetBrowserContext()),
       controller_->GetIsValidatable());
 

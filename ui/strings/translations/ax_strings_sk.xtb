@@ -37,7 +37,6 @@
 <translation id="2311842470354187719">zlom strany</translation>
 <translation id="2335594187091864976">výber dátumu a času</translation>
 <translation id="2393030564806080191">Hodnota farby v šestnástkovej sústave</translation>
-<translation id="2398813069815436052">dialógové okno je otvorené.</translation>
 <translation id="245932805758469625">počet sekúnd do konca videa</translation>
 <translation id="248395913932153421">Deň</translation>
 <translation id="2508569020611168319">zoznam kariet</translation>
@@ -223,6 +222,7 @@
 <translation id="8634971699417195529">Zobraziť výber mesiaca</translation>
 <translation id="8711688047404765493">výstup</translation>
 <translation id="8808573423886751634">kapitola</translation>
+<translation id="8826423933757944500">opis</translation>
 <translation id="8851136666856101339">hlavné</translation>
 <translation id="8861621546968757188">vyskakovacie tlačidlo dialógového okna</translation>
 <translation id="8889402386540077796">Odtieň</translation>
@@ -238,7 +238,6 @@
 <translation id="9138385573473225930">upozornenie</translation>
 <translation id="9155987714137265666"><ph name="WEEK" /> začínajúci <ph name="WEEK_START_DATE" /></translation>
 <translation id="9168329111483466115">poznámka pod čiarou</translation>
-<translation id="945780513535800434">Čiastočne začiarknuté</translation>
 <translation id="954003015749068518">zapnúť obraz v obraze</translation>
 <translation id="966787709310836684">ponuka</translation>
 </translationbundle>

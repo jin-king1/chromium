@@ -32,6 +32,7 @@ constexpr CGFloat kCornerRadius = 10;
 - (instancetype)initWithFrame:(CGRect)frame {
   self = [super initWithFrame:frame];
   if (self) {
+    self.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
     self.backgroundColor =
         [UIColor colorNamed:kGroupedSecondaryBackgroundColor];
     self.layer.cornerRadius = kCornerRadius;
@@ -119,13 +120,10 @@ constexpr CGFloat kCornerRadius = 10;
       [NSLayoutConstraint activateConstraints:_regularConstraints];
     }
 
-    if (@available(iOS 17, *)) {
-      [self
-          registerForTraitChanges:@[ UITraitPreferredContentSizeCategory.class ]
-                       withTarget:self
-                           action:@selector
-                           (updateConstraintsForFontSizeChange)];
-    }
+    [self
+        registerForTraitChanges:@[ UITraitPreferredContentSizeCategory.class ]
+                     withTarget:self
+                         action:@selector(updateConstraintsForFontSizeChange)];
   }
   return self;
 }
@@ -161,22 +159,6 @@ constexpr CGFloat kCornerRadius = 10;
         [UIColor colorNamed:kGroupedSecondaryBackgroundColor];
   }
 }
-
-#pragma mark - UIView
-
-#if !defined(__IPHONE_17_0) || __IPHONE_OS_VERSION_MIN_REQUIRED < __IPHONE_17_0
-- (void)traitCollectionDidChange:(UITraitCollection*)previousTraitCollection {
-  [super traitCollectionDidChange:previousTraitCollection];
-  if (@available(iOS 17, *)) {
-    return;
-  }
-  // Update constraints for user's preferredContentSize.
-  if (self.traitCollection.preferredContentSizeCategory !=
-      previousTraitCollection.preferredContentSizeCategory) {
-    [self updateConstraintsForFontSizeChange];
-  }
-}
-#endif
 
 #pragma mark - Private
 
@@ -236,8 +218,7 @@ constexpr CGFloat kCornerRadius = 10;
   UIImageSymbolConfiguration* boldConf = [UIImageSymbolConfiguration
       configurationWithWeight:UIImageSymbolWeightSemibold];
   conf = [conf configurationByApplyingConfiguration:boldConf];
-  UIImage* disclosure =
-      DefaultSymbolWithConfiguration(kChevronForwardSymbol, conf);
+  UIImage* disclosure = SymbolWithConfiguration(SymbolChevronForward, conf);
   UIImageView* disclosureIndicator =
       [[UIImageView alloc] initWithImage:disclosure];
   disclosureIndicator.tintColor = [UIColor colorNamed:kTextTertiaryColor];

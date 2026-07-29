@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "ui/events/event.h"
 
 #include <stddef.h>
@@ -17,8 +12,10 @@
 #include <memory>
 #include <string>
 
+#include "base/compiler_specific.h"
 #include "base/strings/strcat.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/simple_test_tick_clock.h"
 #include "base/test/task_environment.h"
 #include "build/build_config.h"
@@ -27,6 +24,7 @@
 #include "ui/base/ui_base_features.h"
 #include "ui/events/event_constants.h"
 #include "ui/events/event_utils.h"
+#include "ui/events/features.h"
 #include "ui/events/keycodes/dom/dom_code.h"
 #include "ui/events/keycodes/dom/keycode_converter.h"
 #include "ui/events/keycodes/keyboard_code_conversion.h"
@@ -127,10 +125,13 @@ TEST(EventTest, RepeatedClick) {
   EXPECT_FALSE(MouseEvent::IsRepeatedClickEvent(event1, event2));
 }
 
-// Automatic repeat flag setting is disabled on Wayland,
-// because the repeated event is generated inside ui/ozone/platform/wayland
-// and reliable.
+// TODO(https://crbug.com/411681432) Remove this test when IsRepeated is
+// removed.
 TEST(EventTest, RepeatedKeyEvent) {
+  // Ensure legacy key repeat synthesis feature is enabled.
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(kLegacyKeyRepeatSynthesis);
+
   base::TimeTicks start = base::TimeTicks::Now();
   base::TimeTicks time1 = start + base::Milliseconds(1);
   base::TimeTicks time2 = start + base::Milliseconds(2);
@@ -153,13 +154,12 @@ TEST(EventTest, RepeatedKeyEvent) {
   EXPECT_NE(event4.flags() & EF_IS_REPEAT, 0);
 }
 
+// TODO(https://crbug.com/411681432) Remove this test when IsRepeated is
+// removed.
 TEST(EventTest, NoRepeatedKeyEvent) {
-  // Temporarily set the global synthesize_key_repeat_enabled to false.
-  absl::Cleanup scoped_restore_settings =
-      [old_value = KeyEvent::IsSynthesizeKeyRepeatEnabled()] {
-        KeyEvent::SetSynthesizeKeyRepeatEnabled(old_value);
-      };
-  KeyEvent::SetSynthesizeKeyRepeatEnabled(false);
+  // Ensure legacy key repeat synthesis feature is disabled.
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(kLegacyKeyRepeatSynthesis);
 
   base::TimeTicks start = base::TimeTicks::Now();
   base::TimeTicks time1 = start + base::Milliseconds(1);
@@ -912,7 +912,7 @@ class AltGraphEventTest
                                  0));
     BYTE test_keyboard_state[256] = {};
     for (const auto& key_code : test_case().modifier_key_codes)
-      test_keyboard_state[key_code] = 0x80;
+      UNSAFE_TODO(test_keyboard_state[key_code]) = 0x80;
     CHECK(SetKeyboardState(test_keyboard_state));
   }
 

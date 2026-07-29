@@ -7,7 +7,10 @@ package org.chromium.chrome.browser.autofill.settings;
 import android.content.Context;
 
 import org.chromium.base.Callback;
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.R;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.components.autofill.AutofillFeatures;
 import org.chromium.ui.modaldialog.DialogDismissalCause;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modaldialog.ModalDialogProperties;
@@ -15,6 +18,7 @@ import org.chromium.ui.modaldialog.SimpleModalDialogController;
 import org.chromium.ui.modelutil.PropertyModel;
 
 /** Dialog that confirms whether the user wishes to delete all saved CVCs. */
+@NullMarked
 public class AutofillDeleteSavedCvcsConfirmationDialog {
     private final Context mContext;
     private final ModalDialogManager mModalDialogManager;
@@ -50,8 +54,13 @@ public class AutofillDeleteSavedCvcsConfirmationDialog {
                         .with(
                                 ModalDialogProperties.MESSAGE_PARAGRAPH_1,
                                 mContext.getString(
-                                        R.string
-                                                .autofill_delete_saved_cvcs_confirmation_dialog_message))
+                                        ChromeFeatureList.isEnabled(
+                                                        AutofillFeatures
+                                                                .AUTOFILL_ENABLE_WALLET_BRANDING)
+                                                ? R.string
+                                                        .autofill_delete_saved_cvcs_in_wallet_confirmation_dialog_message
+                                                : R.string
+                                                        .autofill_delete_saved_cvcs_confirmation_dialog_message))
                         .with(
                                 ModalDialogProperties.POSITIVE_BUTTON_TEXT,
                                 mContext.getString(

@@ -16,6 +16,8 @@ CSBRR::SafeBrowsingUrlApiType GetUrlApiTypeForThreatSource(
   switch (source) {
     case safe_browsing::ThreatSource::LOCAL_PVER4:
       return CSBRR::PVER4_NATIVE;
+    case safe_browsing::ThreatSource::LOCAL_PVER5_LOCAL_BLOCKLIST:
+      return CSBRR::PVER5_NATIVE_LOCAL_BLOCKLIST;
     case safe_browsing::ThreatSource::URL_REAL_TIME_CHECK:
       return CSBRR::REAL_TIME;
     case safe_browsing::ThreatSource::NATIVE_PVER5_REAL_TIME:
@@ -26,6 +28,8 @@ CSBRR::SafeBrowsingUrlApiType GetUrlApiTypeForThreatSource(
       return CSBRR::ANDROID_SAFEBROWSING;
     case safe_browsing::ThreatSource::CLIENT_SIDE_DETECTION:
       return CSBRR::CLIENT_SIDE_DETECTION;
+    case safe_browsing::ThreatSource::GLIC_COUNTER_ABUSE:
+      return CSBRR::GLIC;
     case safe_browsing::ThreatSource::UNKNOWN:
       return CSBRR::SAFE_BROWSING_URL_API_TYPE_UNSPECIFIED;
   }
@@ -68,10 +72,12 @@ CSBRR::ReportType GetReportTypeFromSBThreatType(SBThreatType threat_type) {
     case SB_THREAT_TYPE_SUBRESOURCE_FILTER:
     case SB_THREAT_TYPE_CSD_ALLOWLIST:
     case SB_THREAT_TYPE_HIGH_CONFIDENCE_ALLOWLIST:
+    case SB_THREAT_TYPE_CSD_DOWNLOAD_ALLOWLIST:
     case DEPRECATED_SB_THREAT_TYPE_URL_PASSWORD_PROTECTION_PHISHING:
     case DEPRECATED_SB_THREAT_TYPE_URL_CLIENT_SIDE_MALWARE:
     case SB_THREAT_TYPE_MANAGED_POLICY_WARN:
     case SB_THREAT_TYPE_MANAGED_POLICY_BLOCK:
+    case SB_THREAT_TYPE_WARNABLE_SUSPICIOUS_SITE:
       // Gated by SafeBrowsingBlockingPage::ShouldReportThreatDetails.
       NOTREACHED() << "We should not send report for threat type: "
                    << static_cast<int>(threat_type);
@@ -110,10 +116,12 @@ CSBRR::WarningShownInfo::WarningUXType GetWarningUXTypeFromSBThreatType(
     case SB_THREAT_TYPE_SUBRESOURCE_FILTER:
     case SB_THREAT_TYPE_CSD_ALLOWLIST:
     case SB_THREAT_TYPE_HIGH_CONFIDENCE_ALLOWLIST:
+    case SB_THREAT_TYPE_CSD_DOWNLOAD_ALLOWLIST:
     case DEPRECATED_SB_THREAT_TYPE_URL_PASSWORD_PROTECTION_PHISHING:
     case DEPRECATED_SB_THREAT_TYPE_URL_CLIENT_SIDE_MALWARE:
     case SB_THREAT_TYPE_MANAGED_POLICY_WARN:
     case SB_THREAT_TYPE_MANAGED_POLICY_BLOCK:
+    case SB_THREAT_TYPE_WARNABLE_SUSPICIOUS_SITE:
       NOTREACHED() << "We should not send report for threat type: "
                    << static_cast<int>(threat_type);
   }
@@ -160,6 +168,13 @@ GetSecurityInterstitialInteractionFromCommand(
     case security_interstitials::CMD_TEXT_NOT_FOUND:
     case security_interstitials::CMD_ERROR:
     case security_interstitials::CMD_REQUEST_SITE_ACCESS_PERMISSION:
+    case security_interstitials::CMD_OPEN_ANDROID_ADVANCED_PROTECTION_SETTINGS:
+    case security_interstitials::CMD_OPEN_HELP_CENTER_IN_NEW_TAB:
+    case security_interstitials::CMD_OPEN_DIAGNOSTIC_IN_NEW_TAB:
+    case security_interstitials::CMD_OPEN_REPORTING_PRIVACY_IN_NEW_TAB:
+    case security_interstitials::CMD_OPEN_WHITEPAPER_IN_NEW_TAB:
+    case security_interstitials::CMD_REPORT_PHISHING_ERROR_IN_NEW_TAB:
+    case security_interstitials::CMD_SHOW_CERTIFICATE_VIEWER:
       break;
   }
   return CSBRR::InterstitialInteraction::UNSPECIFIED;

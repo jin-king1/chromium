@@ -5,8 +5,10 @@
 #ifndef COMPONENTS_OPTIMIZATION_GUIDE_CORE_MODEL_EXECUTION_SAFETY_CONFIG_H_
 #define COMPONENTS_OPTIMIZATION_GUIDE_CORE_MODEL_EXECUTION_SAFETY_CONFIG_H_
 
+#include <cstddef>
 #include <optional>
 #include <string>
+#include <string_view>
 
 #include "components/optimization_guide/core/model_execution/substitution.h"
 #include "components/optimization_guide/core/optimization_guide_enums.h"
@@ -18,7 +20,7 @@ namespace optimization_guide {
 class SafetyConfig final {
  public:
   SafetyConfig();
-  explicit SafetyConfig(std::optional<proto::FeatureTextSafetyConfiguration>);
+  explicit SafetyConfig(proto::FeatureTextSafetyConfiguration);
   SafetyConfig(const SafetyConfig&);
   SafetyConfig(SafetyConfig&&);
   SafetyConfig& operator=(SafetyConfig&&);
@@ -40,6 +42,11 @@ class SafetyConfig final {
   // Whether this check is only for allowed languages.
   bool IsRequestCheckLanguageOnly(int check_idx) const;
 
+  // Whether the given text matches the block condition of the regex filter in
+  // the request check at the given index.
+  bool IsRequestBlockedByRegexFilter(int check_idx,
+                                     std::string_view text) const;
+
   // Evaluates scores for a request safety check.
   // `check_idx` must be < `NumResponseChecks()`.
   bool IsRequestUnsafe(
@@ -59,6 +66,10 @@ class SafetyConfig final {
   std::optional<SubstitutionResult> GetRawOutputCheckInput(
       const std::string&) const;
 
+  // Whether the given text matches the block condition of the regex filter in
+  // the raw output check.
+  bool IsRawOutputBlockedByRegexFilter(std::string_view text) const;
+
   // Evaluates scores of a raw output unsafe.
   bool IsRawOutputUnsafe(
       const on_device_model::mojom::SafetyInfoPtr& safety_info) const;
@@ -75,6 +86,11 @@ class SafetyConfig final {
       int check_idx,
       MultimodalMessageReadView request,
       MultimodalMessageReadView response) const;
+
+  // Whether the given text matches the block condition of the regex filter in
+  // the response check at the given index.
+  bool IsResponseBlockedByRegexFilter(int check_idx,
+                                      std::string_view text) const;
 
   // Evaluates scores for a response safety check.
   // `check_idx` must be < `NumResponseChecks()`.
@@ -93,6 +109,8 @@ class SafetyConfig final {
   // canceling.
   bool OnlyCancelUnsafeResponseOnComplete() const;
 
+  const proto::FeatureTextSafetyConfiguration& proto() const { return proto_; }
+
  private:
   // Whether the text is in a language not supported by the safety classifier,
   // or the language could not be detected despite the classifier requiring one
@@ -101,7 +119,7 @@ class SafetyConfig final {
       const on_device_model::mojom::SafetyInfoPtr& safety_info,
       double threshold) const;
 
-  std::optional<proto::FeatureTextSafetyConfiguration> proto_;
+  proto::FeatureTextSafetyConfiguration proto_;
 };
 
 }  // namespace optimization_guide

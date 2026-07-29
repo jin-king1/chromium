@@ -13,6 +13,7 @@
 
 #include "base/at_exit.h"
 #include "base/i18n/icu_util.h"
+#include "base/no_destructor.h"
 #include "components/subresource_filter/core/common/constants.h"
 #include "components/subresource_filter/core/common/first_party_origin.h"
 #include "components/subresource_filter/core/common/unindexed_ruleset.h"
@@ -26,9 +27,8 @@ struct TestCase {
   base::AtExitManager at_exit_manager;
 };
 
-TestCase* test_case = new TestCase();
-
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
+  static const base::NoDestructor<TestCase> test_case;
   FuzzedDataProvider fuzzed_data(data, size);
 
   // Split the input into two sections, the URL to check, and the ruleset
@@ -38,8 +38,9 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
 
   // Error out early if the URL isn't valid, since we early-return in the
   // IndexedRulesetMatcher pretty early if this is the case.
-  if (!url_to_check.is_valid())
+  if (!url_to_check.is_valid()) {
     return 0;
+  }
 
   std::vector<uint8_t> remaining_bytes =
       fuzzed_data.ConsumeRemainingBytes<uint8_t>();
@@ -50,17 +51,19 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
   subresource_filter::UnindexedRulesetReader reader(&input_stream);
 
   // Use the unindexed ruleset to build a flat indexed ruleset.
-  subresource_filter::RulesetIndexer indexer;
+  subresource_filter::RulesetIndexer indexer(0);
   url_pattern_index::proto::FilteringRules ruleset_chunk;
   while (reader.ReadNextChunk(&ruleset_chunk)) {
-    for (const auto& rule : ruleset_chunk.url_rules())
+    for (const auto& rule : ruleset_chunk.url_rules()) {
       indexer.AddUrlRule(rule);
+    }
   }
   indexer.Finish();
 
   // Error out if we were unable to fully read the unindexed version.
-  if (reader.num_bytes_read() != static_cast<int64_t>(remaining_bytes.size()))
+  if (reader.num_bytes_read() != static_cast<int64_t>(remaining_bytes.size())) {
     return 0;
+  }
 
   CHECK(subresource_filter::IndexedRulesetMatcher::Verify(
       indexer.data(), indexer.GetChecksum(),
@@ -77,6 +80,6 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
   matcher.GetLoadPolicyForResourceLoad(
       url_to_check, subresource_filter::FirstPartyOrigin(url::Origin()),
       url_pattern_index::proto::ELEMENT_TYPE_SCRIPT,
-      false /* disable_generic_rules */);
+      /*disable_generic_rules=*/false, /*out_rule=*/nullptr);
   return 0;
 }

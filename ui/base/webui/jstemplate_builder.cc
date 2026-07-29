@@ -4,11 +4,12 @@
 
 #include "ui/base/webui/jstemplate_builder.h"
 
+#include <optional>
+#include <string>
 #include <string_view>
 
 #include "base/check.h"
-#include "base/json/json_file_value_serializer.h"
-#include "base/json/json_string_value_serializer.h"
+#include "base/json/json_writer.h"
 #include "base/notreached.h"
 #include "base/strings/string_util.h"
 #include "ui/base/resource/resource_bundle.h"
@@ -21,7 +22,7 @@ namespace {
 
 // Appends a script tag with a variable name |templateData| that has the JSON
 // assigned to it.
-void AppendJsonHtml(const base::Value::Dict& json, std::string* output) {
+void AppendJsonHtml(const base::DictValue& json, std::string* output) {
   std::string javascript_string;
   AppendJsonJS(json, &javascript_string, /*from_js_module=*/false);
 
@@ -50,7 +51,7 @@ void AppendLoadTimeData(std::string* output) {
 }  // namespace
 
 std::string GetI18nTemplateHtml(std::string_view html_template,
-                                const base::Value::Dict& json) {
+                                const base::DictValue& json) {
   ui::TemplateReplacements replacements;
   ui::TemplateReplacementsFromDictionaryValue(json, &replacements);
   std::string output =
@@ -62,7 +63,7 @@ std::string GetI18nTemplateHtml(std::string_view html_template,
   return output;
 }
 
-void AppendJsonJS(const base::Value::Dict& json,
+void AppendJsonJS(const base::DictValue& json,
                   std::string* output,
                   bool from_js_module) {
   if (from_js_module) {
@@ -79,11 +80,10 @@ void AppendJsonJS(const base::Value::Dict& json,
 #endif  // BUILDFLAG(IS_CHROMEOS)
   }
 
-  std::string jstext;
-  JSONStringValueSerializer serializer(&jstext);
-  serializer.Serialize(json);
+  std::optional<std::string> jstext = base::WriteJson(json);
+  CHECK(jstext);
   output->append("loadTimeData.data = ");
-  output->append(jstext);
+  output->append(*jstext);
   output->append(";");
 }
 

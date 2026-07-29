@@ -66,10 +66,16 @@ std::u16string ChromeRecorderAppUIDelegate::GetLanguageDisplayName(
       g_browser_process->GetApplicationLocale(), /*is_for_ui=*/true);
 }
 
+std::string ChromeRecorderAppUIDelegate::GetDefaultTranscriptionLanguage() {
+  return std::string(speech::GetDefaultLiveCaptionLanguage(
+      g_browser_process->GetApplicationLocale(),
+      Profile::FromWebUI(web_ui_)->GetPrefs()));
+}
+
 void ChromeRecorderAppUIDelegate::OpenAiFeedbackDialog(
     const std::string& description_template) {
   Profile* profile = Profile::FromWebUI(web_ui_);
-  base::Value::Dict ai_metadata;
+  base::DictValue ai_metadata;
   ai_metadata.Set(feedback::kConchMetadataKey, "true");
   chrome::ShowFeedbackPage(/*page_url=*/GURL(ash::kChromeUIRecorderAppURL),
                            /*profile=*/profile,
@@ -78,7 +84,7 @@ void ChromeRecorderAppUIDelegate::OpenAiFeedbackDialog(
                            /*description_placeholder_text=*/std::string(),
                            /*category_tag=*/"chromeos-recorder-app",
                            /*extra_diagnostics=*/std::string(),
-                           /*autofill_metadata=*/base::Value::Dict(),
+                           /*autofill_metadata=*/base::DictValue(),
                            /*ai_metadata=*/std::move(ai_metadata));
 }
 
@@ -104,7 +110,7 @@ bool ChromeRecorderAppUIDelegate::CanUseGenerativeAiForCurrentProfile() {
 
   const AccountInfo extended_account_info =
       identity_manager->FindExtendedAccountInfoByAccountId(account_id);
-  if (extended_account_info.capabilities
+  if (extended_account_info.GetAccountCapabilities()
           .can_use_generative_ai_in_recorder_app() != signin::Tribool::kTrue) {
     return false;
   }
@@ -128,7 +134,7 @@ bool ChromeRecorderAppUIDelegate::CanUseSpeakerLabelForCurrentProfile() {
 
   const AccountInfo extended_account_info =
       identity_manager->FindExtendedAccountInfoByAccountId(account_id);
-  return extended_account_info.capabilities
+  return extended_account_info.GetAccountCapabilities()
              .can_use_speaker_label_in_recorder_app() == signin::Tribool::kTrue;
 }
 
@@ -138,9 +144,10 @@ void ChromeRecorderAppUIDelegate::RecordSpeakerLabelConsent(
   auto* identity_manager = IdentityManagerFactory::GetForProfile(profile);
   DCHECK(identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSignin));
 
-  const CoreAccountId account_id =
-      identity_manager->GetPrimaryAccountId(signin::ConsentLevel::kSignin);
+  const GaiaId gaia_id =
+      identity_manager->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin)
+          .gaia;
 
   ConsentAuditorFactory::GetForProfile(profile)
-      ->RecordRecorderSpeakerLabelConsent(account_id, consent);
+      ->RecordRecorderSpeakerLabelConsent(gaia_id, consent);
 }

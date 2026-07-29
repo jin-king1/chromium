@@ -4,7 +4,6 @@
 
 #include "ui/accessibility/ax_enum_util.h"
 
-#include "ui/accessibility/ax_enums.mojom-shared.h"
 #include "ui/accessibility/ax_enums.mojom.h"
 
 namespace ui {
@@ -37,14 +36,16 @@ const char* ToString(ax::mojom::Event event) {
       return "documentTitleChanged";
     case ax::mojom::Event::kEndOfTest:
       return "endOfTest";
+    case ax::mojom::Event::kEnabledChanged:
+      return "enabledChanged";
     case ax::mojom::Event::kExpandedChanged:
       return "expandedChanged";
     case ax::mojom::Event::kFocus:
       return "focus";
     case ax::mojom::Event::kFocusAfterMenuClose:
       return "focusAfterMenuClose";
-    case ax::mojom::Event::kFocusContext:
-      return "focusContext";
+    case ax::mojom::Event::kFocusContextDeprecated:
+      return "focusContextDeprecated";
     case ax::mojom::Event::kHide:
       return "hide";
     case ax::mojom::Event::kHitTestResult:
@@ -436,6 +437,8 @@ const char* ToString(ax::mojom::Role role) {
       return "menuItemCheckBox";
     case ax::mojom::Role::kMenuItemRadio:
       return "menuItemRadio";
+    case ax::mojom::Role::kMenuItemSeparator:
+      return "menuItemSeparator";
     case ax::mojom::Role::kMenuListOption:
       return "menuListOption";
     case ax::mojom::Role::kMenuListPopup:
@@ -868,6 +871,8 @@ ax::mojom::Role StringToRole(const std::string& role) {
     return ax::mojom::Role::kMenuItemCheckBox;
   } else if (role == "kMenuItemRadio") {
     return ax::mojom::Role::kMenuItemRadio;
+  } else if (role == "kMenuItemSeparator") {
+    return ax::mojom::Role::kMenuItemSeparator;
   } else if (role == "kMenuListOption") {
     return ax::mojom::Role::kMenuListOption;
   } else if (role == "kMenuListPopup") {
@@ -1018,8 +1023,8 @@ const char* ToString(ax::mojom::State state) {
       return "focusable";
     case ax::mojom::State::kHasActions:
       return "hasActions";
-    case ax::mojom::State::kHasInterestTarget:
-      return "hasInterestTarget";
+    case ax::mojom::State::kHasInterestFor:
+      return "hasInterestFor";
     case ax::mojom::State::kHorizontal:
       return "horizontal";
     case ax::mojom::State::kHovered:
@@ -1122,6 +1127,8 @@ const char* ToString(ax::mojom::Action action) {
       return "increment";
     case ax::mojom::Action::kLoadInlineTextBoxes:
       return "loadInlineTextBoxes";
+    case ax::mojom::Action::kReplaceRanges:
+      return "replaceRanges";
     case ax::mojom::Action::kReplaceSelectedText:
       return "replaceSelectedText";
     case ax::mojom::Action::kResumeMedia:
@@ -1178,23 +1185,13 @@ const char* ToString(ax::mojom::Action action) {
       return "suspendMedia";
     case ax::mojom::Action::kLongClick:
       return "longClick";
+    case ax::mojom::Action::kRequestLayoutBasedAction:
+      return "requestLayoutBasedAction";
   }
 
   return "";
 }
 
-const char* ToString(ax::mojom::ActionFlags action_flags) {
-  switch (action_flags) {
-    case ax::mojom::ActionFlags::kNone:
-      return "none";
-    case ax::mojom::ActionFlags::kRequestImages:
-      return "requestImages";
-    case ax::mojom::ActionFlags::kRequestInlineTextBoxes:
-      return "requestInlineTextBoxes";
-  }
-
-  return "";
-}
 
 const char* ToString(ax::mojom::ScrollAlignment scroll_alignment) {
   switch (scroll_alignment) {
@@ -1239,6 +1236,10 @@ const char* ToString(ax::mojom::DefaultActionVerb default_action_verb) {
       return "select";
     case ax::mojom::DefaultActionVerb::kUncheck:
       return "uncheck";
+    case ax::mojom::DefaultActionVerb::kClickInHitTest:
+      return "clickInHitTest";
+    case ax::mojom::DefaultActionVerb::kClickNotInHitTest:
+      return "clickNotInHitTest";
   }
 
   return "";
@@ -1289,6 +1290,8 @@ const char* ToString(ax::mojom::StringAttribute string_attribute) {
       return "ariaNotificationAnnouncement";
     case ax::mojom::StringAttribute::kAriaNotificationIdDeprecated:
       return "ariaNotificationId";
+    case ax::mojom::StringAttribute::kCanvasAnnotation:
+      return "canvasAnnotation";
     case ax::mojom::StringAttribute::kCheckedStateDescription:
       return "checkedStateDescription";
     case ax::mojom::StringAttribute::kChildTreeId:
@@ -1333,8 +1336,12 @@ const char* ToString(ax::mojom::StringAttribute string_attribute) {
       return "liveRelevant";
     case ax::mojom::StringAttribute::kLiveStatus:
       return "liveStatus";
+    case ax::mojom::StringAttribute::kMathArg:
+      return "mathArg";
     case ax::mojom::StringAttribute::kMathContent:
       return "mathContent";
+    case ax::mojom::StringAttribute::kMathIntent:
+      return "mathIntent";
     case ax::mojom::StringAttribute::kName:
       return "name";
     case ax::mojom::StringAttribute::kPlaceholder:
@@ -1351,6 +1358,8 @@ const char* ToString(ax::mojom::StringAttribute string_attribute) {
       return "url";
     case ax::mojom::StringAttribute::kValue:
       return "value";
+    case ax::mojom::StringAttribute::kAriaValueText:
+      return "ariaValueText";
     case ax::mojom::StringAttribute::kVirtualContent:
       return "virtualContent";
   }
@@ -1382,6 +1391,8 @@ ax::mojom::StringAttribute StringToStringAttribute(
     return ax::mojom::StringAttribute::kAriaNotificationAnnouncementDeprecated;
   } else if (string_attribute == "kAriaNotificationIdDeprecated") {
     return ax::mojom::StringAttribute::kAriaNotificationIdDeprecated;
+  } else if (string_attribute == "kCanvasAnnotation") {
+    return ax::mojom::StringAttribute::kCanvasAnnotation;
   } else if (string_attribute == "kCheckedStateDescription") {
     return ax::mojom::StringAttribute::kCheckedStateDescription;
   } else if (string_attribute == "kChildTreeId") {
@@ -1424,8 +1435,12 @@ ax::mojom::StringAttribute StringToStringAttribute(
     return ax::mojom::StringAttribute::kLiveRelevant;
   } else if (string_attribute == "kLiveStatus") {
     return ax::mojom::StringAttribute::kLiveStatus;
+  } else if (string_attribute == "kMathArg") {
+    return ax::mojom::StringAttribute::kMathArg;
   } else if (string_attribute == "kMathContent") {
     return ax::mojom::StringAttribute::kMathContent;
+  } else if (string_attribute == "kMathIntent") {
+    return ax::mojom::StringAttribute::kMathIntent;
   } else if (string_attribute == "kName") {
     return ax::mojom::StringAttribute::kName;
   } else if (string_attribute == "kPlaceholder") {
@@ -1441,7 +1456,9 @@ ax::mojom::StringAttribute StringToStringAttribute(
   } else if (string_attribute == "kUrl") {
     return ax::mojom::StringAttribute::kUrl;
   } else if (string_attribute == "kValue") {
-    return ax::mojom::StringAttribute::kUrl;
+    return ax::mojom::StringAttribute::kValue;
+  } else if (string_attribute == "kAriaValueText") {
+    return ax::mojom::StringAttribute::kAriaValueText;
   } else if (string_attribute == "kVirtualContent") {
     return ax::mojom::StringAttribute::kVirtualContent;
   } else {
@@ -1588,6 +1605,10 @@ const char* ToString(ax::mojom::IntAttribute int_attribute) {
       return "ariaNotificationPriority";
     case ax::mojom::IntAttribute::kMaxLength:
       return "maxLength";
+    case ax::mojom::IntAttribute::kPaintOrder:
+      return "paintOrder";
+    case ax::mojom::IntAttribute::kCommittedTextLength:
+      return "committedTextLength";
   }
 
   return "";
@@ -1808,6 +1829,10 @@ const char* ToString(ax::mojom::BoolAttribute bool_attribute) {
       return "longClickable";
     case ax::mojom::BoolAttribute::kHasHiddenOffscreenNodes:
       return "hasHiddenOffscreenNodes";
+    case ax::mojom::BoolAttribute::kHasComposition:
+      return "hasComposition";
+    case ax::mojom::BoolAttribute::kTextSuggestionSelectedByIME:
+      return "textSuggestionSelectedByIME";
   }
 
   return "";
@@ -1937,10 +1962,12 @@ const char* ToString(ax::mojom::StringListAttribute string_list_attribute) {
       return "none";
     case ax::mojom::StringListAttribute::kAriaNotificationAnnouncements:
       return "ariaNotificationAnnouncements";
-    case ax::mojom::StringListAttribute::kAriaNotificationIds:
-      return "ariaNotificationIds";
+    case ax::mojom::StringListAttribute::kAriaNotificationTypes:
+      return "ariaNotificationTypes";
     case ax::mojom::StringListAttribute::kCustomActionDescriptions:
       return "customActionDescriptions";
+    case ax::mojom::StringListAttribute::kTextOperationReplacementStrings:
+      return "textOperationReplacementStrings";
   }
 
   return "";
@@ -2020,6 +2047,8 @@ const char* ToString(ax::mojom::Command command) {
       return "none";
     case ax::mojom::Command::kClearSelection:
       return "clearSelection";
+    case ax::mojom::Command::kSpinButtonDecrement:
+      return "spinButtonDecrement";
     case ax::mojom::Command::kDelete:
       return "delete";
     case ax::mojom::Command::kDictate:
@@ -2030,6 +2059,8 @@ const char* ToString(ax::mojom::Command command) {
       return "format";
     case ax::mojom::Command::kHistory:
       return "history";
+    case ax::mojom::Command::kSpinButtonIncrement:
+      return "spinButtonIncrement";
     case ax::mojom::Command::kInsert:
       return "insert";
     case ax::mojom::Command::kMarker:
@@ -2397,8 +2428,8 @@ const char* ToString(ax::mojom::NameFrom name_from) {
       return "contents";
     case ax::mojom::NameFrom::kCssAltText:
       return "cssAltText";
-    case ax::mojom::NameFrom::kInterestTarget:
-      return "interestTarget";
+    case ax::mojom::NameFrom::kInterestFor:
+      return "interestFor";
     case ax::mojom::NameFrom::kPlaceholder:
       return "placeholder";
     case ax::mojom::NameFrom::kProhibited:
@@ -2428,8 +2459,8 @@ const char* ToString(ax::mojom::DescriptionFrom description_from) {
       return "attributeExplicitlyEmpty";
     case ax::mojom::DescriptionFrom::kButtonLabel:
       return "buttonLabel";
-    case ax::mojom::DescriptionFrom::kInterestTarget:
-      return "interestTarget";
+    case ax::mojom::DescriptionFrom::kInterestFor:
+      return "interestFor";
     case ax::mojom::DescriptionFrom::kPopoverTarget:
       return "popoverTarget";
     case ax::mojom::DescriptionFrom::kProhibitedNameRepair:
@@ -2474,10 +2505,12 @@ const char* ToString(ax::mojom::DetailsFrom details_from) {
       return "cssAnchor";
     case ax::mojom::DetailsFrom::kPopoverTarget:
       return "popoverTarget";
-    case ax::mojom::DetailsFrom::kInterestTarget:
-      return "interestTarget";
+    case ax::mojom::DetailsFrom::kInterestFor:
+      return "interestFor";
     case ax::mojom::DetailsFrom::kCommandfor:
       return "commandforAttribute";
+    case ax::mojom::DetailsFrom::kCssScrollMarkerPseudoElement:
+      return "cssScrollMarkerPseudoElement";
   }
 
   return "";

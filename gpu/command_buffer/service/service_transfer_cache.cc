@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "base/auto_reset.h"
+#include "base/byte_size.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_macros.h"
@@ -17,7 +18,6 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/trace_event/memory_dump_manager.h"
 #include "cc/paint/image_transfer_cache_entry.h"
-#include "gpu/command_buffer/service/service_discardable_manager.h"
 #include "gpu/config/gpu_finch_features.h"
 #include "third_party/skia/include/core/SkImage.h"
 #include "third_party/skia/include/gpu/ganesh/GrBackendSurface.h"
@@ -35,6 +35,56 @@ static size_t kMaxCacheEntries = 2000;
 
 constexpr base::TimeDelta kOldEntryCutoffTimeDelta = base::Seconds(25);
 constexpr base::TimeDelta kOldEntryPruneInterval = base::Seconds(30);
+
+size_t DiscardableCacheSizeLimit() {
+// Cache size values are designed to roughly correspond to existing image cache
+// sizes for 1-1.5 renderers. These will be updated as more types of data are
+// moved to this cache.
+#if BUILDFLAG(IS_ANDROID)
+  const size_t kLowEndCacheSizeBytes = 1024 * 1024;
+  const size_t kNormalCacheSizeBytes = 128 * 1024 * 1024;
+#else
+  const size_t kNormalCacheSizeBytes = 192 * 1024 * 1024;
+  const size_t kLargeCacheSizeBytes = 256 * 1024 * 1024;
+  // Device ram threshold at which we move from a normal cache to a large cache.
+  // While this is a GPU memory cache, we can't read GPU memory reliably, so we
+  // use system ram as a proxy.
+  constexpr base::ByteSize kLargeCacheSizeMemoryThreshold = base::GiBU(4);
+#endif  // BUILDFLAG(IS_ANDROID)
+
+#if BUILDFLAG(IS_ANDROID)
+  if (base::SysInfo::IsLowEndDevice()) {
+    return kLowEndCacheSizeBytes;
+  } else {
+    return kNormalCacheSizeBytes;
+  }
+#else
+  if (base::SysInfo::AmountOfTotalPhysicalMemory() <
+      kLargeCacheSizeMemoryThreshold) {
+    return kNormalCacheSizeBytes;
+  } else {
+    return kLargeCacheSizeBytes;
+  }
+#endif
+}
+
+size_t DiscardableCacheSizeLimitForPressure(
+    size_t base_cache_limit,
+    base::MemoryPressureLevel memory_pressure_level) {
+  switch (memory_pressure_level) {
+    case base::MEMORY_PRESSURE_LEVEL_NONE:
+      return base_cache_limit;
+    case base::MEMORY_PRESSURE_LEVEL_MODERATE:
+      // With moderate pressure, shrink to 1/4 our normal size.
+      return base_cache_limit / 4;
+    case base::MEMORY_PRESSURE_LEVEL_CRITICAL:
+      // With critical pressure, purge as much as possible.
+      return 0;
+
+    default:
+      NOTREACHED();
+  }
+}
 
 // Alias the image entry to its skia counterpart, taking ownership of the
 // memory and preventing double counting.
@@ -345,7 +395,7 @@ int ServiceTransferCache::RemoveOldEntriesUntil(
 }
 
 void ServiceTransferCache::PurgeMemory(
-    base::MemoryPressureListener::MemoryPressureLevel memory_pressure_level) {
+    base::MemoryPressureLevel memory_pressure_level) {
   base::AutoReset<size_t> reset_limit(
       &cache_size_limit_, DiscardableCacheSizeLimitForPressure(
                               cache_size_limit_, memory_pressure_level));
@@ -360,42 +410,6 @@ void ServiceTransferCache::DeleteAllEntriesForDecoder(int decoder_id) {
     }
     it = ForceDeleteEntry(it);
   }
-}
-
-bool ServiceTransferCache::CreateLockedHardwareDecodedImageEntry(
-    int decoder_id,
-    uint32_t entry_id,
-    ServiceDiscardableHandle handle,
-    GrDirectContext* context,
-    std::vector<sk_sp<SkImage>> plane_images,
-    SkYUVAInfo::PlaneConfig plane_config,
-    SkYUVAInfo::Subsampling subsampling,
-    SkYUVColorSpace yuv_color_space,
-    size_t buffer_byte_size,
-    bool needs_mips) {
-  EntryKey key(decoder_id, cc::TransferCacheEntryType::kImage, entry_id);
-  auto found = entries_.Peek(key);
-  if (found != entries_.end())
-    return false;
-
-  // Create the service-side image transfer cache entry.
-  auto entry = std::make_unique<cc::ServiceImageTransferCacheEntry>();
-  if (!entry->BuildFromHardwareDecodedImage(
-          context, std::move(plane_images), plane_config, subsampling,
-          yuv_color_space, buffer_byte_size, needs_mips)) {
-    return false;
-  }
-
-  // Insert it in the transfer cache.
-  total_size_ += entry->CachedSize();
-  if (key.entry_type == cc::TransferCacheEntryType::kImage) {
-    total_image_count_++;
-    total_image_size_ += entry->CachedSize();
-  }
-  entries_.Put(key, CacheEntryInternal(handle, std::move(entry)));
-  EnforceLimits();
-  MaybePostPruneOldEntries();
-  return true;
 }
 
 bool ServiceTransferCache::OnMemoryDump(

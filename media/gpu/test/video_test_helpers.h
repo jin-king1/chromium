@@ -102,7 +102,7 @@ class IvfWriter {
                        const gfx::Size& resolution,
                        uint32_t frame_rate,
                        uint32_t num_frames);
-  bool WriteFrame(uint32_t data_size, uint64_t timestamp, const uint8_t* data);
+  bool WriteFrame(uint64_t timestamp, base::span<const uint8_t> data);
 
  private:
   base::File output_file_;
@@ -115,7 +115,7 @@ class EncodedDataHelper {
       base::span<const uint8_t> stream,
       VideoCodec codec);
 
-  static bool HasConfigInfo(const uint8_t* data, size_t size, VideoCodec codec);
+  static bool HasConfigInfo(base::span<const uint8_t> data, VideoCodec codec);
 
   virtual ~EncodedDataHelper();
   virtual scoped_refptr<DecoderBuffer> GetNextBuffer() = 0;
@@ -138,7 +138,7 @@ class EncodedDataHelperH26x : public EncodedDataHelper {
   EncodedDataHelperH26x(base::span<const uint8_t> stream, VideoCodec codec);
   ~EncodedDataHelperH26x() override = default;
 
-  static bool HasConfigInfo(const uint8_t* data, size_t size, VideoCodec codec);
+  static bool HasConfigInfo(base::span<const uint8_t> data, VideoCodec codec);
 
   scoped_refptr<DecoderBuffer> GetNextBuffer() override;
 
@@ -220,8 +220,9 @@ constexpr size_t kPlatformBufferAlignment = 8;
 // Helper to align data and extract frames from raw video streams.
 // GetNextFrame() returns VideoFrames with a specified |storage_type|. The
 // VideoFrames are aligned by the specified |alignment| in the case of
-// MojoSharedBuffer VideoFrame. On the other hand, GpuMemoryBuffer based
-// VideoFrame is determined by the GpuMemoryBuffer allocation backend.
+// MojoSharedBuffer VideoFrame. On the other hand, MappableSharedImage-based
+// VideoFrame is determined by the MappableSI platform-specific underlying
+// allocation backend.
 // GetNextFrame() returns valid frame if AtEndOfStream() returns false, i.e.,
 // until GetNextFrame() is called |num_read_frames| times.
 // |num_frames| is the number of frames contained in |stream|. |num_read_frames|

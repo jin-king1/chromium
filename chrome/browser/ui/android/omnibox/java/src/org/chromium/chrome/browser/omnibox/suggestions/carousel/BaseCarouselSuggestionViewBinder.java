@@ -11,6 +11,7 @@ import android.view.ViewOutlineProvider;
 import androidx.annotation.ColorInt;
 import androidx.annotation.Px;
 
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.omnibox.R;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
 import org.chromium.chrome.browser.omnibox.suggestions.SuggestionCommonProperties;
@@ -18,18 +19,33 @@ import org.chromium.components.browser_ui.widget.RoundedCornerOutlineProvider;
 import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel;
+import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
 import org.chromium.ui.modelutil.SimpleRecyclerViewAdapter;
 
 /** Binder for the Carousel suggestions. */
-public interface BaseCarouselSuggestionViewBinder {
+@NullMarked
+public class BaseCarouselSuggestionViewBinder
+        implements PropertyModelChangeProcessor.ViewBinder<
+                PropertyModel, BaseCarouselSuggestionView, PropertyKey> {
+    private final OmniboxResourceProvider mResourceProvider;
+
+    public BaseCarouselSuggestionViewBinder(OmniboxResourceProvider resourceProvider) {
+        mResourceProvider = resourceProvider;
+    }
+
     /**
      * @see PropertyModelChangeProcessor.ViewBinder#bind(Object, Object, Object)
      */
-    public static void bind(PropertyModel model, BaseCarouselSuggestionView view, PropertyKey key) {
+    @Override
+    public void bind(PropertyModel model, BaseCarouselSuggestionView view, PropertyKey key) {
+        var adapter = (SimpleRecyclerViewAdapter) view.getAdapter();
+        if (adapter == null) {
+            adapter = BaseCarouselSuggestionItemViewBuilder.createAdapter(mResourceProvider);
+            view.setAdapter(adapter);
+        }
 
         if (key == BaseCarouselSuggestionViewProperties.TILES) {
             var items = model.get(BaseCarouselSuggestionViewProperties.TILES);
-            var adapter = (SimpleRecyclerViewAdapter) view.getAdapter();
             if (items != null) {
                 adapter.getModelList().set(items);
             } else {
@@ -39,7 +55,6 @@ public interface BaseCarouselSuggestionViewBinder {
             propagateCommonProperties(adapter.getModelList(), model);
         } else if (key == SuggestionCommonProperties.COLOR_SCHEME) {
             // Propagate color scheme to all tiles.
-            var adapter = (SimpleRecyclerViewAdapter) view.getAdapter();
             propagateCommonProperties(adapter.getModelList(), model);
         } else if (key == BaseCarouselSuggestionViewProperties.ITEM_DECORATION) {
             view.setItemDecoration(model.get(BaseCarouselSuggestionViewProperties.ITEM_DECORATION));
@@ -63,11 +78,8 @@ public interface BaseCarouselSuggestionViewBinder {
             // Specific values to apply if background is enabled.
             if (useBackground) {
                 // Note: this assumes carousel is not showing in the incognito mode.
-                bgColor =
-                        OmniboxResourceProvider.getStandardSuggestionBackgroundColor(
-                                view.getContext(),
-                                model.get(SuggestionCommonProperties.COLOR_SCHEME));
-                horizontalMargin = OmniboxResourceProvider.getSideSpacing(view.getContext());
+                bgColor = mResourceProvider.getStandardSuggestionBackgroundColor();
+                horizontalMargin = mResourceProvider.getSideSpacing();
                 outline =
                         new RoundedCornerOutlineProvider(
                                 view.getContext()

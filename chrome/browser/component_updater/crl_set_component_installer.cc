@@ -13,9 +13,9 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
-#include "base/lazy_instance.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
+#include "base/no_destructor.h"
 #include "base/task/thread_pool.h"
 #include "base/threading/scoped_blocking_call.h"
 #include "components/component_updater/component_installer.h"
@@ -77,8 +77,10 @@ class CRLSetData {
   base::FilePath crl_set_path_;
 };
 
-base::LazyInstance<CRLSetData>::Leaky g_crl_set_data =
-    LAZY_INSTANCE_INITIALIZER;
+CRLSetData& GetCRLSetData() {
+  static base::NoDestructor<CRLSetData> crl_set_data;
+  return *crl_set_data;
+}
 
 void CRLSetData::ConfigureCertVerifierServiceFactory() {
   if (crl_set_path_.empty()) {
@@ -103,7 +105,7 @@ void CRLSetData::UpdateCRLSetOnUI(const std::string& crl_set_bytes) {
 CRLSetPolicy::CRLSetPolicy() = default;
 CRLSetPolicy::~CRLSetPolicy() = default;
 
-bool CRLSetPolicy::VerifyInstallation(const base::Value::Dict& manifest,
+bool CRLSetPolicy::VerifyInstallation(const base::DictValue& manifest,
                                       const base::FilePath& install_dir) const {
   return base::PathExists(install_dir.Append(kCRLSetFile));
 }
@@ -117,7 +119,7 @@ bool CRLSetPolicy::RequiresNetworkEncryption() const {
 }
 
 update_client::CrxInstaller::Result CRLSetPolicy::OnCustomInstall(
-    const base::Value::Dict& manifest,
+    const base::DictValue& manifest,
     const base::FilePath& install_dir) {
   return update_client::CrxInstaller::Result(0);  // Nothing custom here.
 }
@@ -126,9 +128,9 @@ void CRLSetPolicy::OnCustomUninstall() {}
 
 void CRLSetPolicy::ComponentReady(const base::Version& version,
                                   const base::FilePath& install_dir,
-                                  base::Value::Dict manifest) {
-  g_crl_set_data.Get().set_crl_set_path(install_dir.Append(kCRLSetFile));
-  g_crl_set_data.Get().ConfigureCertVerifierServiceFactory();
+                                  base::DictValue manifest) {
+  GetCRLSetData().set_crl_set_path(install_dir.Append(kCRLSetFile));
+  GetCRLSetData().ConfigureCertVerifierServiceFactory();
 }
 
 base::FilePath CRLSetPolicy::GetRelativeInstallDir() const {

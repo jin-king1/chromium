@@ -82,12 +82,11 @@ class DiscardsGraphDumpImpl : public discards::mojom::GraphDump,
       const performance_manager::FrameNode* previous_opener) override;
   void OnEmbedderFrameNodeChanged(
       const performance_manager::PageNode* page_node,
-      const performance_manager::FrameNode* previous_embedder,
-      EmbeddingType previous_embedding_type) override;
+      const performance_manager::FrameNode* previous_embedder) override;
   void OnMainFrameUrlChanged(
       const performance_manager::PageNode* page_node) override;
-  void OnFaviconUpdated(
-      const performance_manager::PageNode* page_node) override;
+  void OnFaviconUpdated(const performance_manager::PageNode* page_node,
+                        blink::mojom::FaviconUpdateReason reason) override;
 
   // ProcessNodeObserver implementation:
   void OnProcessNodeAdded(

@@ -11,7 +11,7 @@
 #include "cc/cc_export.h"
 #include "cc/input/scroll_snap_data.h"
 #include "cc/paint/element_id.h"
-#include "cc/trees/mutator_host_client.h"
+#include "cc/trees/mutator_host_delegate.h"
 #include "cc/trees/property_tree_delegate.h"
 
 namespace gfx {
@@ -40,6 +40,7 @@ class CC_EXPORT PropertyTreeLayerTreeDelegate : public PropertyTreeDelegate {
   void UpdateScrollOffsetFromImpl(
       const ElementId& id,
       const gfx::Vector2dF& delta,
+      ScrollSourceType type,
       const std::optional<TargetSnapAreaElementIds>& snap_target_ids) override;
   void OnAnimateLayers() override;
   void RegisterViewportPropertyIds(const ViewportPropertyIds& ids) override;

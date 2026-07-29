@@ -14,17 +14,21 @@
 #include "base/barrier_callback.h"
 #include "base/check.h"
 #include "base/containers/flat_set.h"
+#include "base/containers/to_vector.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/notreached.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
+#include "chrome/browser/metrics/chrome_metrics_service_accessor.h"
 #include "chrome/browser/signin/bound_session_credentials/bound_session_cookie_controller.h"
 #include "chrome/browser/signin/bound_session_credentials/bound_session_cookie_controller_impl.h"
 #include "chrome/browser/signin/bound_session_credentials/bound_session_debug_info.h"
 #include "chrome/browser/signin/bound_session_credentials/bound_session_key.h"
+#include "chrome/browser/signin/bound_session_credentials/bound_session_params.pb.h"
 #include "chrome/browser/signin/bound_session_credentials/bound_session_params_storage.h"
 #include "chrome/browser/signin/bound_session_credentials/bound_session_params_util.h"
 #include "chrome/browser/signin/bound_session_credentials/bound_session_refresh_cookie_debug_report_fetcher.h"
@@ -33,6 +37,7 @@
 #include "chrome/common/google_url_loader_throttle.h"
 #include "chrome/common/renderer_configuration.mojom.h"
 #include "components/signin/public/base/signin_switches.h"
+#include "components/variations/synthetic_trials.h"
 #include "content/public/browser/storage_partition.h"
 #include "net/base/schemeful_site.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
@@ -40,9 +45,16 @@
 #include "url/origin.h"
 
 namespace {
+
+using SessionTerminationTrigger =
+    ::BoundSessionCookieRefreshServiceImpl::SessionTerminationTrigger;
+
 constexpr std::string_view kGoogleSessionTerminationHeader =
     "Sec-Session-Google-Termination";
 constexpr std::string_view kGoogleSessionTerminationSessionIdKey = "session_id";
+
+BASE_FEATURE(kUseDeviceBoundSessionsStorageMaskForDeletion,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Determines the precedence order of
 // `chrome::mojom::ResumeBlockedRequestsTrigger` when recording metrics.
@@ -119,6 +131,8 @@ GetRotationDebugTerminationReason(
                            : RotationDebugInfo::TERMINATION_REASON_OTHER;
     case kSessionOverride:
       return RotationDebugInfo::SESSION_OVERRIDE;
+    case kRotationStoppedTimeout:
+      return RotationDebugInfo::ROTATION_STOPPED_TIMEOUT;
     case kCookiesCleared:
       // `kCookiesCleared` should not be reported in the debug header.
       NOTREACHED();
@@ -140,24 +154,62 @@ GetThrottlerParamsForRequestCoverage(
   // Note: This is needed to ensure the correctness of metrics in case of
   // outages.
   return chrome::mojom::BoundSessionThrottlerParams::New(
-      controller->scope_url().host(), controller->scope_url().path(),
+      controller->scope_url().GetHost(), controller->scope_url().GetPath(),
       base::Time());
 }
+
+bool IsNewSessionRegistrationEnabled(const PrefService* profile_prefs) {
+  return switches::IsBoundSessionCredentialsEnabled(profile_prefs);
+}
+
+bool IsSessionInitializationEnabled(const PrefService* profile_prefs) {
+  // It should always be possible to initialize a session if the registration is
+  // enabled.
+  return IsNewSessionRegistrationEnabled(profile_prefs) ||
+         base::FeatureList::IsEnabled(kEnableBoundSessionCredentialsContinuity);
+}
+
+void RecordSessionTerminationTrigger(
+    SessionTerminationTrigger trigger,
+    bound_session_credentials::SessionOrigin session_origin) {
+  static constexpr std::string_view kHistogramName =
+      "Signin.BoundSessionCredentials.SessionTerminationTrigger";
+  base::UmaHistogramEnumeration(kHistogramName, trigger);
+  if (const std::optional<std::string_view> session_origin_suffix =
+          bound_session_credentials::GetSessionOriginHistogramSuffix(
+              session_origin);
+      session_origin_suffix.has_value()) {
+    base::UmaHistogramEnumeration(
+        base::StrCat({kHistogramName, *session_origin_suffix}), trigger);
+  }
+}
+
 }  // namespace
+
+BASE_FEATURE(kEnableBoundSessionCredentialsContinuity,
+#if BUILDFLAG(IS_WIN)
+             base::FEATURE_ENABLED_BY_DEFAULT
+#else
+             base::FEATURE_DISABLED_BY_DEFAULT
+#endif
+);
 
 BoundSessionCookieRefreshServiceImpl::BoundSessionCookieRefreshServiceImpl(
     unexportable_keys::UnexportableKeyService& key_service,
     std::unique_ptr<BoundSessionParamsStorage> session_params_storage,
     content::StoragePartition* storage_partition,
     network::NetworkConnectionTracker* network_connection_tracker,
+    const PrefService* profile_prefs,
     bool is_off_the_record_profile)
     : key_service_(key_service),
       session_params_storage_(std::move(session_params_storage)),
       storage_partition_(storage_partition),
       network_connection_tracker_(network_connection_tracker),
+      profile_prefs_(profile_prefs),
       is_off_the_record_profile_(is_off_the_record_profile) {
   CHECK(session_params_storage_);
   CHECK(storage_partition_);
+  CHECK(profile_prefs_);
   data_removal_observation_.Observe(storage_partition_);
 }
 
@@ -179,13 +231,19 @@ void BoundSessionCookieRefreshServiceImpl::Initialize() {
   }
 
   for (const auto& params : bound_session_params) {
-    InitializeBoundSession(params);
+    if (IsSessionInitializationEnabled(profile_prefs_)) {
+      InitializeBoundSession(params, /*is_new_session=*/false);
+    }
   }
   UpdateAllRenderers();
 }
 
 void BoundSessionCookieRefreshServiceImpl::RegisterNewBoundSession(
     const bound_session_credentials::BoundSessionParams& params) {
+  if (!IsNewSessionRegistrationEnabled(profile_prefs_)) {
+    return;
+  }
+
   if (!session_params_storage_->SaveParams(params)) {
     DVLOG(1) << "Invalid session params or failed to serialize session params.";
     return;
@@ -194,14 +252,14 @@ void BoundSessionCookieRefreshServiceImpl::RegisterNewBoundSession(
   auto it = cookie_controllers_.find(
       bound_session_credentials::GetBoundSessionKey(params));
   if (it != cookie_controllers_.end()) {
+    RecordSessionTerminationTrigger(SessionTerminationTrigger::kSessionOverride,
+                                    it->second->session_origin());
     cookie_controllers_.erase(it);
-    RecordSessionTerminationTrigger(
-        SessionTerminationTrigger::kSessionOverride);
     // Note: `NotifyBoundSessionTerminated()` is not called as new session is
     // starting with the same scope.
   }
 
-  InitializeBoundSession(params);
+  InitializeBoundSession(params, /*is_new_session=*/true);
   UpdateAllRenderers();
 }
 
@@ -254,6 +312,12 @@ BoundSessionCookieRefreshServiceImpl::GetBoundSessionThrottlerParams() const {
     }
   }
   return result;
+}
+
+std::vector<BoundSessionKey>
+BoundSessionCookieRefreshServiceImpl::GetAllSessions() const {
+  return base::ToVector(cookie_controllers_,
+                        [](const auto& key_value) { return key_value.first; });
 }
 
 void BoundSessionCookieRefreshServiceImpl::
@@ -332,6 +396,10 @@ void BoundSessionCookieRefreshServiceImpl::HandleRequestBlockedOnCookie(
 
 void BoundSessionCookieRefreshServiceImpl::CreateRegistrationRequest(
     BoundSessionRegistrationFetcherParam registration_params) {
+  if (!IsNewSessionRegistrationEnabled(profile_prefs_)) {
+    return;
+  }
+
   // Guardrail against registering non-SIDTS DBSC sessions while the client
   // lacks support for running multiple sessions at the same time. Can be
   // overridden with a Finch config parameter.
@@ -340,7 +408,7 @@ void BoundSessionCookieRefreshServiceImpl::CreateRegistrationRequest(
       switches::kEnableBoundSessionCredentialsExclusiveRegistrationPath.Get();
   if (!exclusive_registration_path.empty() &&
       !base::EqualsCaseInsensitiveASCII(
-          registration_params.registration_endpoint().path_piece(),
+          registration_params.registration_endpoint().path(),
           exclusive_registration_path)) {
     return;
   }
@@ -357,6 +425,15 @@ void BoundSessionCookieRefreshServiceImpl::CreateRegistrationRequest(
   if (registration_requests_.size() == 1U) {
     StartRegistrationRequest();
   }
+}
+
+void BoundSessionCookieRefreshServiceImpl::StopCookieRotation(
+    const BoundSessionKey& key) {
+  auto controller_it = cookie_controllers_.find(key);
+  if (controller_it == cookie_controllers_.end()) {
+    return;
+  }
+  controller_it->second->StopCookieRotation();
 }
 
 base::WeakPtr<BoundSessionCookieRefreshService>
@@ -418,6 +495,12 @@ void BoundSessionCookieRefreshServiceImpl::
   UpdateAllRenderers();
 }
 
+void BoundSessionCookieRefreshServiceImpl::OnCookieRotationStoppedTimeout(
+    BoundSessionCookieController* controller) {
+  TerminateSession(controller,
+                   SessionTerminationTrigger::kRotationStoppedTimeout);
+}
+
 void BoundSessionCookieRefreshServiceImpl::OnPersistentErrorEncountered(
     BoundSessionCookieController* controller,
     BoundSessionRefreshCookieFetcher::Result refresh_error) {
@@ -431,9 +514,14 @@ void BoundSessionCookieRefreshServiceImpl::OnStorageKeyDataCleared(
     content::StoragePartition::StorageKeyMatcherFunction storage_key_matcher,
     const base::Time begin,
     const base::Time end) {
-  // Only terminate a session if cookies are cleared.
-  // TODO(b/296372836): introduce a specific data type for bound sessions.
-  if (!(remove_mask & content::StoragePartition::REMOVE_DATA_MASK_COOKIES)) {
+  const uint32_t storage_mask =
+      base::FeatureList::IsEnabled(
+          kUseDeviceBoundSessionsStorageMaskForDeletion)
+          ? content::StoragePartition::REMOVE_DATA_MASK_DEVICE_BOUND_SESSIONS
+          : content::StoragePartition::REMOVE_DATA_MASK_COOKIES;
+
+  // Only terminate sessions if a relevant data type is cleared.
+  if (!(remove_mask & storage_mask)) {
     return;
   }
 
@@ -477,7 +565,9 @@ BoundSessionCookieRefreshServiceImpl::CreateBoundSessionCookieController(
 }
 
 void BoundSessionCookieRefreshServiceImpl::InitializeBoundSession(
-    const bound_session_credentials::BoundSessionParams& bound_session_params) {
+    const bound_session_credentials::BoundSessionParams& bound_session_params,
+    bool is_new_session) {
+  CHECK(IsSessionInitializationEnabled(profile_prefs_));
   std::unique_ptr<BoundSessionCookieController> controller =
       CreateBoundSessionCookieController(bound_session_params,
                                          is_off_the_record_profile_);
@@ -485,7 +575,7 @@ void BoundSessionCookieRefreshServiceImpl::InitializeBoundSession(
   auto [it, inserted] =
       cookie_controllers_.emplace(std::move(key), std::move(controller));
   CHECK(inserted);
-  it->second->Initialize();
+  it->second->Initialize(is_new_session);
 }
 
 void BoundSessionCookieRefreshServiceImpl::UpdateAllRenderers() {
@@ -510,21 +600,15 @@ void BoundSessionCookieRefreshServiceImpl::TerminateSession(
   base::flat_set<std::string> bound_cookie_names =
       controller->bound_cookie_names();
   MaybeReportTerminationReason(controller, trigger, refresh_error);
+  RecordSessionTerminationTrigger(trigger, controller->session_origin());
   cookie_controllers_.erase(it);
   // `controller` is no longer valid and must not be used.
 
   session_params_storage_->ClearParams(session_key.site,
                                        session_key.session_id);
   UpdateAllRenderers();
-  RecordSessionTerminationTrigger(trigger);
 
   NotifyBoundSessionTerminated(session_key.site, bound_cookie_names);
-}
-
-void BoundSessionCookieRefreshServiceImpl::RecordSessionTerminationTrigger(
-    SessionTerminationTrigger trigger) {
-  base::UmaHistogramEnumeration(
-      "Signin.BoundSessionCredentials.SessionTerminationTrigger", trigger);
 }
 
 void BoundSessionCookieRefreshServiceImpl::NotifyBoundSessionTerminated(
@@ -540,8 +624,9 @@ void BoundSessionCookieRefreshServiceImpl::MaybeReportTerminationReason(
     SessionTerminationTrigger trigger,
     std::optional<BoundSessionRefreshCookieFetcher::Result> refresh_error) {
   if (trigger == SessionTerminationTrigger::kCookiesCleared) {
-    // Do not send the debug report if cookies were cleared as the request won't
-    // be attributed to a user in any case.
+    // Do not send the debug report if cookies were cleared or the rotation was
+    // terminated due to a stopping timeout as the request won't be attributed
+    // to a user in any case.
     return;
   }
 

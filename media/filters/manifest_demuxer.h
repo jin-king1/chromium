@@ -14,7 +14,6 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/task/sequenced_task_runner.h"
-#include "base/threading/sequence_bound.h"
 #include "base/time/time.h"
 #include "media/base/container_names.h"
 #include "media/base/demuxer.h"
@@ -167,6 +166,21 @@ class MEDIA_EXPORT ManifestDemuxer : public Demuxer, ManifestDemuxerEngineHost {
 
     // Stop demuxing and clean up pending CBs.
     virtual void Stop() = 0;
+
+    // Handle track changes. Only one audio or video track is allowed to be
+    // enabled at once.
+    virtual void SelectAudioTrack(const MediaTrack::Id&) = 0;
+    virtual void SelectVideoTrack(const MediaTrack::Id&) = 0;
+
+    // ManifestDemuxer always provides at most 1 stream for each stream type,
+    // and instead performs track changes by flushing ChunkDemuxer internally
+    // and using different data sources. However, the actual types of streams
+    // are only known to the engine (ie, is this AudioOnly playback for some
+    // file which actually has video content). This gives the engine an
+    // opportunity to filter out streams which might not be declared in the
+    // manifest.
+    virtual std::vector<raw_ptr<DemuxerStream>> FilterDemuxerStreams(
+        std::vector<raw_ptr<DemuxerStream>>&&) = 0;
   };
 
   // ManifestDemuxer takes and keeps ownership of `impl` for the lifetime of
@@ -179,7 +193,7 @@ class MEDIA_EXPORT ManifestDemuxer : public Demuxer, ManifestDemuxerEngineHost {
   ~ManifestDemuxer() override;
 
   // `media::Demuxer` implementation
-  std::vector<DemuxerStream*> GetAllStreams() override;
+  std::vector<raw_ptr<DemuxerStream>> GetAllStreams() override;
   std::string GetDisplayName() const override;
   DemuxerType GetDemuxerType() const override;
   void Initialize(DemuxerHost* host, PipelineStatusCallback status_cb) override;
@@ -196,12 +210,10 @@ class MEDIA_EXPORT ManifestDemuxer : public Demuxer, ManifestDemuxerEngineHost {
   std::optional<container_names::MediaContainerName> GetContainerForMetrics()
       const override;
 
-  void OnEnabledAudioTracksChanged(const std::vector<MediaTrack::Id>& track_ids,
-                                   base::TimeDelta curr_time,
-                                   TrackChangeCB change_completed_cb) override;
-  void OnSelectedVideoTrackChanged(const std::vector<MediaTrack::Id>& track_ids,
-                                   base::TimeDelta curr_time,
-                                   TrackChangeCB change_completed_cb) override;
+  void OnTracksChanged(DemuxerStream::Type track_type,
+                       std::optional<MediaTrack::Id> track_id,
+                       base::TimeDelta curr_time,
+                       TrackChangeCB change_completed_cb) override;
 
   // `ManifestDemuxerEngineHost` implementation
   bool AddRole(std::string_view role, RelaxedParserSupportedType mime) override;
@@ -263,11 +275,18 @@ class MEDIA_EXPORT ManifestDemuxer : public Demuxer, ManifestDemuxerEngineHost {
     StreamLiveness liveness() const override;
     void EnableBitstreamConverter() override;
     bool SupportsConfigChanges() override;
+    bool ManagesTrackSwitchesInternally() const override;
 
    private:
     WrapperReadCb read_cb_;
     raw_ptr<DemuxerStream> stream_;
   };
+
+  void OnChunkDemuxerTracksChangeComplete(
+      DemuxerStream::Type type,
+      std::optional<MediaTrack::Id> track_id,
+      TrackChangeCB change_completed_cb,
+      DemuxerStream* stream);
 
   void OnChunkDemuxerInitialized(PipelineStatus init_status);
   void OnChunkDemuxerOpened();
@@ -282,13 +301,6 @@ class MEDIA_EXPORT ManifestDemuxer : public Demuxer, ManifestDemuxerEngineHost {
   void OnDemuxerStreamRead(DemuxerStream::ReadCB wrapped_read_cb,
                            DemuxerStream::Status status,
                            DemuxerStream::DecoderBufferVector buffers);
-
-  // Maps ChunkDemuxerStream instances to our internal ones for track changes.
-  void MapDemuxerStreams(TrackChangeCB cb,
-                         const std::vector<DemuxerStream*>&);
-
-  std::vector<MediaTrack::Id> MapTrackIds(
-      const std::vector<MediaTrack::Id>& track_ids);
 
   // Helper for the `Seek` call, so that returning from an event when a seek
   // is pending can continue the seek process.

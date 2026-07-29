@@ -4,25 +4,30 @@
 
 #include "third_party/blink/renderer/platform/graphics/gpu/shared_gpu_context.h"
 
+#include "base/command_line.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/task/single_thread_task_runner.h"
 #include "build/build_config.h"
 #include "gpu/command_buffer/client/gles2_interface.h"
 #include "gpu/command_buffer/client/raster_interface.h"
+#include "gpu/command_buffer/client/shared_image_interface.h"
 #include "gpu/config/gpu_driver_bug_workaround_type.h"
 #include "gpu/config/gpu_feature_info.h"
-#include "gpu/ipc/client/client_shared_image_interface.h"
 #include "gpu/ipc/client/gpu_channel_host.h"
-#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/public/platform/web_graphics_context_3d_provider.h"
 #include "third_party/blink/public/platform/web_url.h"
+#include "third_party/blink/renderer/platform/graphics/gpu/canvas_utils.h"
 #include "third_party/blink/renderer/platform/graphics/gpu/webgraphics_shared_image_interface_provider_impl.h"
 #include "third_party/blink/renderer/platform/scheduler/public/main_thread.h"
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 
 namespace blink {
+
+namespace {
+
+}  // namespace
 
 SharedGpuContext* SharedGpuContext::GetInstanceForCurrentThread() {
   DEFINE_THREAD_SAFE_STATIC_LOCAL(ThreadSpecific<SharedGpuContext>,
@@ -67,6 +72,15 @@ SharedGpuContext::ContextProviderWrapper() {
   return this_ptr->context_provider_wrapper_->GetWeakPtr();
 }
 
+base::WeakPtr<WebGraphicsContext3DProviderWrapper>
+SharedGpuContext::GetExistingContextProviderWrapper() {
+  SharedGpuContext* this_ptr = GetInstanceForCurrentThread();
+  if (!this_ptr->context_provider_wrapper_) {
+    return nullptr;
+  }
+  return this_ptr->context_provider_wrapper_->GetWeakPtr();
+}
+
 // static
 WebGraphicsSharedImageInterfaceProvider*
 SharedGpuContext::SharedImageInterfaceProvider() {
@@ -79,36 +93,12 @@ SharedGpuContext::SharedImageInterfaceProvider() {
   return this_ptr->shared_image_interface_provider_.get();
 }
 
-gpu::GpuMemoryBufferManager* SharedGpuContext::GetGpuMemoryBufferManager() {
-  SharedGpuContext* this_ptr = GetInstanceForCurrentThread();
-  if (!this_ptr->gpu_memory_buffer_manager_) {
-    this_ptr->CreateContextProviderIfNeeded(/*only_if_gpu_compositing =*/true);
-  }
-  return this_ptr->gpu_memory_buffer_manager_;
-}
-
-void SharedGpuContext::SetGpuMemoryBufferManagerForTesting(
-    gpu::GpuMemoryBufferManager* mgr) {
-  SharedGpuContext* this_ptr = GetInstanceForCurrentThread();
-  DCHECK(!this_ptr->gpu_memory_buffer_manager_ || !mgr);
-  this_ptr->gpu_memory_buffer_manager_ = mgr;
-}
-
 static void CreateContextProviderOnMainThread(
     bool only_if_gpu_compositing,
     bool* gpu_compositing_disabled,
     std::unique_ptr<WebGraphicsContext3DProviderWrapper>* wrapper,
-    gpu::GpuMemoryBufferManager** gpu_memory_buffer_manager,
     base::WaitableEvent* waitable_event) {
   DCHECK(IsMainThread());
-
-  Platform::ContextAttributes context_attributes;
-  context_attributes.enable_raster_interface = true;
-  context_attributes.support_grcontext = true;
-
-  // The shared GPU context should not trigger a switch to the high-performance
-  // GPU.
-  context_attributes.prefer_low_power_gpu = true;
 
   *gpu_compositing_disabled = Platform::Current()->IsGpuCompositingDisabled();
   if (*gpu_compositing_disabled && only_if_gpu_compositing) {
@@ -116,18 +106,13 @@ static void CreateContextProviderOnMainThread(
     return;
   }
 
-  Platform::GraphicsInfo graphics_info;
   auto context_provider =
-      Platform::Current()->CreateOffscreenGraphicsContext3DProvider(
-          context_attributes, WebURL(), &graphics_info);
+      Platform::Current()->CreateRasterGraphicsContextProvider(
+          WebURL(), Platform::RasterContextType::kSharedGpuContextWorker);
   if (context_provider) {
     *wrapper = std::make_unique<WebGraphicsContext3DProviderWrapper>(
         std::move(context_provider));
   }
-
-  // A reference to the GpuMemoryBufferManager can only be obtained on the main
-  // thread, but it is safe to use on other threads.
-  *gpu_memory_buffer_manager = Platform::Current()->GetGpuMemoryBufferManager();
 
   waitable_event->Signal();
 }
@@ -172,8 +157,6 @@ void SharedGpuContext::CreateContextProviderIfNeeded(
           std::make_unique<WebGraphicsContext3DProviderWrapper>(
               std::move(context_provider));
     }
-    gpu_memory_buffer_manager_ =
-        Platform::Current()->GetGpuMemoryBufferManager();
   } else {
     // This synchronous round-trip to the main thread is the reason why
     // SharedGpuContext encasulates the context provider: so we only have to do
@@ -187,7 +170,6 @@ void SharedGpuContext::CreateContextProviderIfNeeded(
             &CreateContextProviderOnMainThread, only_if_gpu_compositing,
             CrossThreadUnretained(&is_gpu_compositing_disabled_),
             CrossThreadUnretained(&context_provider_wrapper_),
-            CrossThreadUnretained(&gpu_memory_buffer_manager_),
             CrossThreadUnretained(&waitable_event)));
     waitable_event.Wait();
     if (context_provider_wrapper_ &&
@@ -231,18 +213,9 @@ void SharedGpuContext::CreateSharedImageInterfaceProviderIfNeeded() {
     waitable_event.Wait();
   }
 
-  if (!gpu_channel) {
-    return;
-  }
-
-  auto shared_image_interface = gpu_channel->CreateClientSharedImageInterface();
-  if (!shared_image_interface) {
-    return;
-  }
-
   shared_image_interface_provider_ =
-      std::make_unique<WebGraphicsSharedImageInterfaceProviderImpl>(
-          std::move(shared_image_interface));
+      WebGraphicsSharedImageInterfaceProviderImpl::TryCreate(
+          std::move(gpu_channel));
 }
 
 // static
@@ -262,44 +235,23 @@ void SharedGpuContext::Reset() {
   this_ptr->shared_image_interface_provider_.reset();
   this_ptr->context_provider_wrapper_.reset();
   this_ptr->context_provider_factory_.Reset();
-  this_ptr->gpu_memory_buffer_manager_ = nullptr;
 }
 
-bool SharedGpuContext::IsValidWithoutRestoring() {
+bool SharedGpuContext::IsValidWithoutRestoringForTesting() {
   SharedGpuContext* this_ptr = GetInstanceForCurrentThread();
   if (!this_ptr->context_provider_wrapper_)
     return false;
-  return this_ptr->context_provider_wrapper_->ContextProvider()
-             .ContextGL()
-             ->GetGraphicsResetStatusKHR() == GL_NO_ERROR;
-}
+  auto* gl_context =
+      this_ptr->context_provider_wrapper_->ContextProvider().ContextGL();
 
-bool SharedGpuContext::AllowSoftwareToAcceleratedCanvasUpgrade() {
-  SharedGpuContext* this_ptr = GetInstanceForCurrentThread();
-  bool only_if_gpu_compositing = false;
-  this_ptr->CreateContextProviderIfNeeded(only_if_gpu_compositing);
-  if (!this_ptr->context_provider_wrapper_)
-    return false;
-  return !this_ptr->context_provider_wrapper_->ContextProvider()
-              .GetGpuFeatureInfo()
-              .IsWorkaroundEnabled(
-                  gpu::DISABLE_SOFTWARE_TO_ACCELERATED_CANVAS_UPGRADE);
-}
-
-#if BUILDFLAG(IS_ANDROID)
-bool SharedGpuContext::MaySupportImageChromium() {
-  SharedGpuContext* this_ptr = GetInstanceForCurrentThread();
-  this_ptr->CreateContextProviderIfNeeded(/*only_if_gpu_compositing=*/true);
-  if (!this_ptr->context_provider_wrapper_) {
-    return false;
+  if (gl_context) {
+    return gl_context->GetGraphicsResetStatusKHR() == GL_NO_ERROR;
   }
-  const gpu::GpuFeatureInfo& gpu_feature_info =
-      this_ptr->context_provider_wrapper_->ContextProvider()
-          .GetGpuFeatureInfo();
-  return gpu_feature_info
-             .status_values[gpu::GPU_FEATURE_TYPE_ANDROID_SURFACE_CONTROL] ==
-         gpu::kGpuFeatureStatusEnabled;
-}
-#endif  // BUILDFLAG(IS_ANDROID)
 
-}  // blink
+  auto* raster_interface =
+      this_ptr->context_provider_wrapper_->ContextProvider().RasterInterface();
+  CHECK(raster_interface);
+  return raster_interface->GetGraphicsResetStatusKHR() == GL_NO_ERROR;
+}
+
+}  // namespace blink

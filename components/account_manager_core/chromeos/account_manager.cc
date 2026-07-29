@@ -23,7 +23,6 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/not_fatal_until.h"
 #include "base/notreached.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/task/sequenced_task_runner.h"
@@ -38,6 +37,7 @@
 #include "google_apis/gaia/gaia_auth_fetcher.h"
 #include "google_apis/gaia/gaia_auth_util.h"
 #include "google_apis/gaia/gaia_constants.h"
+#include "google_apis/gaia/gaia_urls.h"
 #include "google_apis/gaia/google_service_auth_error.h"
 #include "google_apis/gaia/oauth2_access_token_consumer.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
@@ -196,12 +196,21 @@ class AccountManager::AccessTokenFetcher : public OAuth2AccessTokenFetcher {
   }
 
   // OAuth2AccessTokenFetcher override:
+  // Note: OAuth2AccessTokenManager relies on asynchronous completions from
+  // OAuth2AccessTokenFetcher::Start(). Firing the callback synchronously can
+  // cause re-entrancy crashes, as observed e.g. in
+  // BookmarkMessageHandlerTest.CanNotUploadInSigninPending.
   void Start(const std::string& client_id,
              const std::string& client_secret,
              const std::vector<std::string>& scopes) override {
     DCHECK(!is_request_pending_);
-    client_id_ = client_id;
-    client_secret_ = client_secret;
+    client_id_ = client_id.empty()
+                     ? GaiaUrls::GetInstance()->oauth2_chrome_client_id()
+                     : client_id;
+    client_secret_ =
+        client_secret.empty()
+            ? GaiaUrls::GetInstance()->oauth2_chrome_client_secret()
+            : client_secret;
     scopes_ = scopes;
     if (!are_token_requests_allowed_) {
       is_request_pending_ = true;
@@ -228,16 +237,24 @@ class AccountManager::AccessTokenFetcher : public OAuth2AccessTokenFetcher {
     is_request_pending_ = false;
 
     if (account_key_.account_type() != ::account_manager::AccountType::kGaia) {
-      FireOnGetTokenFailure(GoogleServiceAuthError(
-          GoogleServiceAuthError::State::USER_NOT_SIGNED_UP));
+      base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+          FROM_HERE,
+          base::BindOnce(
+              &AccountManager::AccessTokenFetcher::FireOnGetTokenFailure,
+              weak_factory_.GetWeakPtr(),
+              GoogleServiceAuthError::CreateAccountNotFound()));
       return;
     }
 
     std::optional<std::string> maybe_token =
         account_manager_->GetRefreshToken(account_key_);
     if (!maybe_token.has_value()) {
-      FireOnGetTokenFailure(GoogleServiceAuthError(
-          GoogleServiceAuthError::State::USER_NOT_SIGNED_UP));
+      base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+          FROM_HERE,
+          base::BindOnce(
+              &AccountManager::AccessTokenFetcher::FireOnGetTokenFailure,
+              weak_factory_.GetWeakPtr(),
+              GoogleServiceAuthError::CreateAccountNotFound()));
       return;
     }
 
@@ -282,16 +299,16 @@ void AccountManager::SetPrefService(PrefService* pref_service) {
 }
 
 void AccountManager::InitializeInEphemeralMode(
-    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory) {
-  InitializeInEphemeralMode(url_loader_factory,
+    URLLoaderFactoryParam url_loader_factory) {
+  InitializeInEphemeralMode(std::move(url_loader_factory),
                             /* initialization_callback= */
                             base::DoNothing());
 }
 
 void AccountManager::InitializeInEphemeralMode(
-    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
+    URLLoaderFactoryParam url_loader_factory,
     base::OnceClosure initialization_callback) {
-  Initialize(/* home_dir= */ base::FilePath(), url_loader_factory,
+  Initialize(/* home_dir= */ base::FilePath(), std::move(url_loader_factory),
              /* delay_network_call_runner= */
              base::BindRepeating(
                  [](base::OnceClosure closure) { std::move(closure).Run(); }),
@@ -300,19 +317,20 @@ void AccountManager::InitializeInEphemeralMode(
 
 void AccountManager::Initialize(
     const base::FilePath& home_dir,
-    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
+    URLLoaderFactoryParam url_loader_factory,
     DelayNetworkCallRunner delay_network_call_runner) {
-  Initialize(home_dir, url_loader_factory, delay_network_call_runner,
+  Initialize(home_dir, std::move(url_loader_factory), delay_network_call_runner,
              base::DoNothing());
 }
 
 void AccountManager::Initialize(
     const base::FilePath& home_dir,
-    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
+    URLLoaderFactoryParam url_loader_factory,
     DelayNetworkCallRunner delay_network_call_runner,
     base::OnceClosure initialization_callback) {
   Initialize(
-      home_dir, url_loader_factory, std::move(delay_network_call_runner),
+      home_dir, std::move(url_loader_factory),
+      std::move(delay_network_call_runner),
       base::ThreadPool::CreateSequencedTaskRunner(
           {base::TaskShutdownBehavior::BLOCK_SHUTDOWN, base::MayBlock()}),
       std::move(initialization_callback));
@@ -320,7 +338,7 @@ void AccountManager::Initialize(
 
 void AccountManager::Initialize(
     const base::FilePath& home_dir,
-    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
+    URLLoaderFactoryParam url_loader_factory,
     DelayNetworkCallRunner delay_network_call_runner,
     scoped_refptr<base::SequencedTaskRunner> task_runner,
     base::OnceClosure initialization_callback) {
@@ -340,7 +358,7 @@ void AccountManager::Initialize(
 
   home_dir_ = home_dir;
   init_state_ = InitializationState::kInProgress;
-  url_loader_factory_ = url_loader_factory;
+  url_loader_factory_ = std::move(url_loader_factory);
   delay_network_call_runner_ = std::move(delay_network_call_runner);
   task_runner_ = task_runner;
 
@@ -572,7 +590,7 @@ void AccountManager::UpdateToken(
 
   DCHECK_EQ(init_state_, InitializationState::kInitialized);
   auto it = accounts_.find(account_key);
-  CHECK(it != accounts_.end(), base::NotFatalUntil::M130)
+  CHECK(it != accounts_.end())
       << "UpdateToken cannot be used for adding accounts";
   UpsertAccountInternal(account_key, AccountInfo{it->second.raw_email, token});
 }
@@ -691,8 +709,8 @@ void AccountManager::RemoveObserver(AccountManager::Observer* observer) {
 }
 
 void AccountManager::SetUrlLoaderFactoryForTests(
-    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory) {
-  url_loader_factory_ = url_loader_factory;
+    URLLoaderFactoryParam url_loader_factory) {
+  url_loader_factory_ = std::move(url_loader_factory);
 }
 
 std::unique_ptr<OAuth2AccessTokenFetcher>
@@ -801,7 +819,7 @@ void AccountManager::RevokeGaiaTokenOnServer(const std::string& refresh_token) {
 
   pending_token_revocation_requests_.emplace_back(
       std::make_unique<GaiaTokenRevocationRequest>(
-          url_loader_factory_, delay_network_call_runner_, refresh_token,
+          GetUrlLoaderFactory(), delay_network_call_runner_, refresh_token,
           weak_factory_.GetWeakPtr()));
 }
 
@@ -841,7 +859,22 @@ AccountManager::GetUrlLoaderFactory() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK_EQ(init_state_, InitializationState::kInitialized);
 
-  return url_loader_factory_;
+  // Forces the value if it is a callback, i.e., expected to be evaluated on
+  // the timing to use, which is now.
+  // TODO(crbug.com/458695293): Get rid of this laziness by updating the
+  // initialization of AccountManager in tests.
+  if (auto* callback = std::get_if<
+          base::OnceCallback<scoped_refptr<network::SharedURLLoaderFactory>()>>(
+          &url_loader_factory_)) {
+    scoped_refptr<network::SharedURLLoaderFactory> factory =
+        std::move(*callback).Run();
+    url_loader_factory_ = std::move(factory);
+  }
+
+  auto* ptr = std::get_if<scoped_refptr<network::SharedURLLoaderFactory>>(
+      &url_loader_factory_);
+  CHECK(ptr);
+  return *ptr;
 }
 
 base::WeakPtr<AccountManager> AccountManager::GetWeakPtr() {

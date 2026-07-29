@@ -10,6 +10,7 @@
 
 #include "base/base64.h"
 #include "base/command_line.h"
+#include "base/feature_list.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/notreached.h"
 #include "base/system/sys_info.h"
@@ -24,8 +25,8 @@
 #include "components/signin/public/identity_manager/access_token_fetcher.h"
 #include "components/signin/public/identity_manager/access_token_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
-#include "components/signin/public/identity_manager/scope_set.h"
 #include "components/supervised_user/core/browser/proto/parent_access_callback.pb.h"
+#include "components/sync/base/features.h"
 #include "google_apis/gaia/gaia_constants.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "url/gurl.h"
@@ -91,9 +92,6 @@ ParentAccessUiHandlerImpl::ParentAccessUiHandlerImpl(
 ParentAccessUiHandlerImpl::~ParentAccessUiHandlerImpl() = default;
 
 void ParentAccessUiHandlerImpl::GetOauthToken(GetOauthTokenCallback callback) {
-  signin::ScopeSet scopes;
-  scopes.insert(GaiaConstants::kParentApprovalOAuth2Scope);
-  scopes.insert(GaiaConstants::kProgrammaticChallengeOAuth2Scope);
 
   if (oauth2_access_token_fetcher_) {
     // Only one GetOauthToken call can happen at a time.
@@ -104,8 +102,12 @@ void ParentAccessUiHandlerImpl::GetOauthToken(GetOauthTokenCallback callback) {
 
   oauth2_access_token_fetcher_ =
       identity_manager_->CreateAccessTokenFetcherForAccount(
-          identity_manager_->GetPrimaryAccountId(signin::ConsentLevel::kSync),
-          "parent_access", scopes,
+          identity_manager_->GetPrimaryAccountId(
+              base::FeatureList::IsEnabled(
+                  syncer::kReplaceSyncPromosWithSignInPromos)
+                  ? signin::ConsentLevel::kSignin
+                  : signin::ConsentLevel::kSync),
+          signin::OAuthConsumerId::kParentAccess,
           base::BindOnce(&ParentAccessUiHandlerImpl::OnAccessTokenFetchComplete,
                          weak_ptr_factory_.GetWeakPtr(), std::move(callback)),
           signin::AccessTokenFetcher::Mode::kImmediate);

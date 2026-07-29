@@ -12,7 +12,7 @@ import type {ScanSource} from 'chrome://scanning/scanning.mojom-webui.js';
 import {ColorMode, PageSize, SourceType} from 'chrome://scanning/scanning.mojom-webui.js';
 import {getSourceTypeString} from 'chrome://scanning/scanning_app_util.js';
 import type {SourceSelectElement} from 'chrome://scanning/source_select.js';
-import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chromeos/chai_assert.js';
+import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 
 import {assertOrderedAlphabetically, createScannerSource} from './scanning_app_test_utils.js';
 
@@ -60,10 +60,10 @@ suite('sourceSelectTest', function() {
     assertEquals(2, select.length);
     assertEquals(
         getSourceTypeString(firstSource.type),
-        select.options[0]!.textContent!.trim());
+        select.options[0]!.textContent.trim());
     assertEquals(
         getSourceTypeString(secondSource.type),
-        select.options[1]!.textContent!.trim());
+        select.options[1]!.textContent.trim());
     assertEquals(secondSource.name, select.value);
   });
 

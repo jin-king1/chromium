@@ -173,7 +173,17 @@ enum class ProfileKeepAliveOrigin {
   // `kWaitingForFirstBrowserWindow`.
   kWaitingForGlicView = 41,
 
-  kMaxValue = kWaitingForGlicView,
+  // Used while importing bookmarks from Initial Preferences during Browser
+  // First Run.
+  kWaitingForBookmarksImportOnFirstRun = 42,
+
+  // Used while showing the Skills dialog.
+  kSkillsDialog = 43,
+
+  // Used during WebApp database cleanup from corruption
+  kWebAppDatabaseCorruptionRecovery = 44,
+
+  kMaxValue = kWebAppDatabaseCorruptionRecovery,
 };
 // LINT.ThenChange(/tools/metrics/histograms/metadata/profile/enums.xml)
 

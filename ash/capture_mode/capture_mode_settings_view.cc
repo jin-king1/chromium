@@ -26,6 +26,7 @@
 #include "ash/style/system_shadow.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
+#include "base/strings/utf_string_conversions.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -239,11 +240,17 @@ CaptureModeSettingsView::CaptureModeSettingsView(
         /*enabled=*/!custom_folder_managed_by_policy);
   }
 
-  SetBackground(views::CreateSolidBackground(kColorAshShieldAndBase80));
-  layer()->SetFillsBoundsOpaquely(false);
   layer()->SetRoundedCornerRadius(kRoundedCorners);
-  layer()->SetBackgroundBlur(ColorProvider::kBackgroundBlurSigma);
-  layer()->SetBackdropFilterQuality(ColorProvider::kBackgroundBlurQuality);
+  SetBackground(views::CreateSolidBackground(
+      chromeos::features::IsSystemBlurEnabled()
+          ? static_cast<ui::ColorId>(kColorAshShieldAndBase80)
+          : cros_tokens::kCrosSysSystemOnBaseOpaque));
+
+  if (chromeos::features::IsSystemBlurEnabled()) {
+    layer()->SetFillsBoundsOpaquely(false);
+    layer()->SetBackgroundBlur(ColorProvider::kBackgroundBlurSigma);
+    layer()->SetBackdropFilterQuality(ColorProvider::kBackgroundBlurQuality);
+  }
 
   // The options should appear vertically stacked on top of each other.
   contents()->SetLayoutManager(std::make_unique<views::BoxLayout>(

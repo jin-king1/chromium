@@ -27,10 +27,8 @@ namespace {
 using google::protobuf::RepeatedPtrField;
 
 uint64_t GetFreeDiskSpace(const base::FilePath& path) {
-  if (int64_t size = base::SysInfo::AmountOfFreeDiskSpace(path); size != -1) {
-    return static_cast<uint64_t>(size);
-  }
-  return 0;
+  return static_cast<uint64_t>(
+      base::SysInfo::AmountOfFreeDiskSpace(path).value_or(0));
 }
 
 base::expected<FlushedKey, FlushError> WriteEvents(const base::FilePath& path,
@@ -102,8 +100,15 @@ void ArenaEventBuffer::Purge() {
   events_->Purge();
 }
 
-uint64_t ArenaEventBuffer::Size() {
+uint64_t ArenaEventBuffer::Size() const {
+  // Note: We intentionally do not count the pre-init events in the size of the
+  // buffer, since callers expect that `Size()` reflects the events that are
+  // available for access.
   return proto() ? proto()->events_size() : 0;
+}
+
+bool ArenaEventBuffer::IsInitialized() const {
+  return events_ && events_->has_value();
 }
 
 RepeatedPtrField<StructuredEventProto> ArenaEventBuffer::Serialize() {

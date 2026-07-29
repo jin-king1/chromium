@@ -11,6 +11,9 @@
 @class AccountPickerConfiguration;
 @protocol AccountPickerCoordinatorDelegate;
 @protocol AccountPickerLogger;
+namespace signin_metrics {
+enum class AccessPoint;
+}  // namespace signin_metrics
 @protocol SystemIdentity;
 
 // Presents a bottom sheet that lets the user pick or add an account on the
@@ -30,14 +33,17 @@
 @property(nonatomic, weak)
     UIViewController* accountConfirmationChildViewController;
 
-// The identity currently presented as selected.
+// The identity currently presented as selected. If the identity button is
+// currently hidden through the `AccountPickerConsumer` interface then this will
+// be nil.
 @property(nonatomic, strong) id<SystemIdentity> selectedIdentity;
 
 // Inits the coordinator.
-- (instancetype)initWithBaseViewController:(UIViewController*)baseViewController
-                                   browser:(Browser*)browser
-                             configuration:
-                                 (AccountPickerConfiguration*)configuration
+- (instancetype)
+    initWithBaseViewController:(UIViewController*)baseViewController
+                       browser:(Browser*)browser
+                 configuration:(AccountPickerConfiguration*)configuration
+                   accessPoint:(signin_metrics::AccessPoint)accessPoint
     NS_DESIGNATED_INITIALIZER;
 
 - (instancetype)initWithBaseViewController:(UIViewController*)baseViewController

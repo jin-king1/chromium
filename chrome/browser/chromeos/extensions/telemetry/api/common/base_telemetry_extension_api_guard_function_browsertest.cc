@@ -6,21 +6,17 @@
 #include <string>
 
 #include "base/strings/string_util.h"
-#include "base/test/scoped_feature_list.h"
-#include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
+#include "chrome/browser/ash/test/regular_logged_in_browser_test_mixin.h"
 #include "chrome/browser/chromeos/extensions/telemetry/api/common/api_guard_delegate.h"
 #include "chrome/browser/chromeos/extensions/telemetry/api/common/base_telemetry_extension_browser_test.h"
 #include "chrome/browser/chromeos/extensions/telemetry/api/common/fake_api_guard_delegate.h"
-#include "chrome/browser/chromeos/extensions/telemetry/api/common/remote_probe_service_strategy.h"
+#include "chrome/browser/chromeos/extensions/telemetry/api/common/hardware_info_delegate.h"
 #include "chrome/common/chromeos/extensions/chromeos_system_extension_info.h"
+#include "chrome/test/base/mixin_based_in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
-#include "chromeos/crosapi/cpp/telemetry/fake_probe_service.h"
-#include "chromeos/crosapi/mojom/probe_service.mojom.h"
-#include "components/user_manager/scoped_user_manager.h"
-#include "components/user_manager/user.h"
-#include "components/user_manager/user_manager.h"
+#include "chromeos/ash/services/cros_healthd/public/cpp/fake_cros_healthd.h"
+#include "chromeos/ash/services/cros_healthd/public/mojom/cros_healthd_probe.mojom.h"
 #include "content/public/test/browser_test.h"
-#include "extensions/common/extension_features.h"
 #include "net/base/net_errors.h"
 #include "net/cert/x509_certificate.h"
 #include "net/dns/mock_host_resolver.h"
@@ -31,8 +27,6 @@
 namespace chromeos {
 
 namespace {
-
-namespace crosapi = ::crosapi::mojom;
 
 // The tests cases must be kept sorted for the test to pass. Tests should be
 // grouped by the API type, then sorted alphabetically within the same type.
@@ -713,18 +707,7 @@ std::string GetServiceWorkerForError(const std::string& error) {
 
 }  // namespace
 
-class TelemetryExtensionApiGuardBrowserTest
-    : public BaseTelemetryExtensionBrowserTest {
- public:
-  TelemetryExtensionApiGuardBrowserTest() {
-    // Include unreleased APIs.
-    feature_list_.InitAndEnableFeature(
-        extensions_features::kTelemetryExtensionPendingApprovalApi);
-  }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-};
+using TelemetryExtensionApiGuardBrowserTest = BaseTelemetryExtensionBrowserTest;
 
 IN_PROC_BROWSER_TEST_F(TelemetryExtensionApiGuardBrowserTest,
                        CanAccessApiReturnsError) {
@@ -739,7 +722,8 @@ IN_PROC_BROWSER_TEST_F(TelemetryExtensionApiGuardBrowserTest,
 
 // Class that use real ApiGuardDelegate instance to verify its behavior.
 class TelemetryExtensionApiGuardRealDelegateBrowserTest
-    : public BaseTelemetryExtensionBrowserTest {
+    : public InProcessBrowserTestMixinHostSupport<
+          BaseTelemetryExtensionBrowserTest> {
  public:
   TelemetryExtensionApiGuardRealDelegateBrowserTest()
       : https_server_(net::EmbeddedTestServer::TYPE_HTTPS) {
@@ -757,11 +741,13 @@ class TelemetryExtensionApiGuardRealDelegateBrowserTest
     https_server_.SetSSLConfig(net::EmbeddedTestServer::CERT_OK);
     ASSERT_TRUE(https_server_.InitializeAndListen());
 
-    BaseTelemetryExtensionBrowserTest::SetUp();
+    InProcessBrowserTestMixinHostSupport<
+        BaseTelemetryExtensionBrowserTest>::SetUp();
   }
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
-    BaseTelemetryExtensionBrowserTest::SetUpCommandLine(command_line);
+    InProcessBrowserTestMixinHostSupport<
+        BaseTelemetryExtensionBrowserTest>::SetUpCommandLine(command_line);
 
     command_line->AppendSwitchASCII(
         chromeos::switches::kTelemetryExtensionPwaOriginOverrideForTesting,
@@ -771,11 +757,8 @@ class TelemetryExtensionApiGuardRealDelegateBrowserTest
   void SetUpOnMainThread() override {
     // Skip BaseTelemetryExtensionBrowserTest::SetUpOnMainThread() as it sets up
     // a FakeApiGuardDelegate instance.
+    mixin_host_.SetUpOnMainThread();
     extensions::ExtensionBrowserTest::SetUpOnMainThread();
-
-    // Must be initialized before dealing with UserManager.
-    user_manager_enabler_ = std::make_unique<user_manager::ScopedUserManager>(
-        std::make_unique<ash::FakeChromeUserManager>());
 
     https_server_.StartAcceptingConnections();
 
@@ -786,33 +769,7 @@ class TelemetryExtensionApiGuardRealDelegateBrowserTest
     host_resolver()->AddRule("*", "127.0.0.1");
   }
 
-  void SetUpProbeService() {
-    fake_probe_service_ = std::make_unique<FakeProbeService>();
-    auto telemetry_info = crosapi::ProbeTelemetryInfo::New();
-    telemetry_info->system_result = crosapi::ProbeSystemResult::NewSystemInfo(
-        crosapi::ProbeSystemInfo::New(crosapi::ProbeOsInfo::New("HP")));
-    fake_probe_service_->SetProbeTelemetryInfoResponse(
-        std::move(telemetry_info));
-    RemoteProbeServiceStrategy::Get()->SetServiceForTesting(
-        fake_probe_service_->BindNewPipeAndPassRemote());
-  }
-
-  void TearDownOnMainThread() override {
-    // Explicitly removing the user is required; otherwise ProfileHelper keeps
-    // a dangling pointer to the User.
-    // TODO(b/208629291): Consider removing all users from ProfileHelper in the
-    // destructor of ash::FakeChromeUserManager.
-    GetFakeUserManager()->RemoveUserFromList(
-        GetFakeUserManager()->GetActiveUser()->GetAccountId());
-    user_manager_enabler_.reset();
-  }
-
  protected:
-  ash::FakeChromeUserManager* GetFakeUserManager() const {
-    return static_cast<ash::FakeChromeUserManager*>(
-        user_manager::UserManager::Get());
-  }
-
   GURL GetPwaGURL() const { return https_server_.GetURL("/ssl/google.html"); }
 
   // BaseTelemetryExtensionBrowserTest:
@@ -821,29 +778,35 @@ class TelemetryExtensionApiGuardRealDelegateBrowserTest
 
   net::EmbeddedTestServer https_server_;
 
-  std::unique_ptr<FakeProbeService> fake_probe_service_;
-
-  std::unique_ptr<user_manager::ScopedUserManager> user_manager_enabler_;
+  ash::RegularLoggedInBrowserTestMixin logged_in_mixin_{
+      &mixin_host_,
+      AccountId::FromUserEmailGaiaId("test@test", GaiaId("12345"))};
 };
 
 // Smoke test to verify that real ApiGuardDelegate works in prod.
-// TODO(b/338199240): Test is flaky.
 IN_PROC_BROWSER_TEST_F(TelemetryExtensionApiGuardRealDelegateBrowserTest,
-                       DISABLED_CanAccessRunBatteryCapacityRoutine) {
-  SetUpProbeService();
-
-  // Add a new user and make it owner.
-  auto* const user_manager = GetFakeUserManager();
-  const AccountId account_id = AccountId::FromUserEmail("user@example.com");
-  user_manager->AddUser(account_id);
-  user_manager->LoginUser(account_id);
-  user_manager->SwitchActiveUser(account_id);
-  user_manager->SetOwnerId(account_id);
+                       CanAccessRunBatteryCapacityRoutine) {
+  chromeos::HardwareInfoDelegate::Get().ClearCacheForTesting();
 
   // Make sure PWA UI is open and secure.
   auto* pwa_page_rfh =
       ui_test_utils::NavigateToURL(browser(), GURL(pwa_page_url()));
   ASSERT_TRUE(pwa_page_rfh);
+
+  auto os_info = ash::cros_healthd::mojom::OsInfo::New();
+  os_info->os_version = ash::cros_healthd::mojom::OsVersion::New();
+  os_info->oem_name = "HP";  // Using "HP", one of the allowed OEM names.
+
+  auto system_info = ash::cros_healthd::mojom::SystemInfo::New();
+  system_info->os_info = std::move(os_info);
+
+  auto telemetry_info = ash::cros_healthd::mojom::TelemetryInfo::New();
+  telemetry_info->system_result =
+      ash::cros_healthd::mojom::SystemResult::NewSystemInfo(
+          std::move(system_info));
+
+  ash::cros_healthd::FakeCrosHealthd::Get()
+      ->SetProbeTelemetryInfoResponseForTesting(std::move(telemetry_info));
 
   CreateExtensionAndRunServiceWorker(R"(
     chrome.test.runTests([
@@ -859,40 +822,57 @@ IN_PROC_BROWSER_TEST_F(TelemetryExtensionApiGuardRealDelegateBrowserTest,
 
 // Verify that manufacturer will be cached and only one call to probe service
 // will be made.
-// TODO(b/346211419): The test shows excessive flakiness.
 IN_PROC_BROWSER_TEST_F(TelemetryExtensionApiGuardRealDelegateBrowserTest,
-                       DISABLED_UseCacheForMultipleApiAccess) {
-  SetUpProbeService();
-
-  // Add a new user and make it owner.
-  auto* const user_manager = GetFakeUserManager();
-  const AccountId account_id = AccountId::FromUserEmail("user@example.com");
-  user_manager->AddUser(account_id);
-  user_manager->LoginUser(account_id);
-  user_manager->SwitchActiveUser(account_id);
-  user_manager->SetOwnerId(account_id);
+                       UseCacheForMultipleApiAccess) {
+  chromeos::HardwareInfoDelegate::Get().ClearCacheForTesting();
 
   // Make sure PWA UI is open and secure.
   auto* pwa_page_rfh =
       ui_test_utils::NavigateToURL(browser(), GURL(pwa_page_url()));
   ASSERT_TRUE(pwa_page_rfh);
 
+  auto os_info = ash::cros_healthd::mojom::OsInfo::New();
+  os_info->os_version = ash::cros_healthd::mojom::OsVersion::New();
+  os_info->oem_name = "HP";  // Using "HP", one of the allowed OEM names.
+
+  auto system_info = ash::cros_healthd::mojom::SystemInfo::New();
+  system_info->os_info = std::move(os_info);
+
+  auto telemetry_info = ash::cros_healthd::mojom::TelemetryInfo::New();
+  telemetry_info->system_result =
+      ash::cros_healthd::mojom::SystemResult::NewSystemInfo(
+          std::move(system_info));
+
+  ash::cros_healthd::FakeCrosHealthd::Get()
+      ->SetProbeTelemetryInfoResponseForTesting(std::move(telemetry_info));
+
   CreateExtensionAndRunServiceWorker(R"(
     chrome.test.runTests([
       async function runBatteryCapacityRoutine() {
-        let response =
-          await chrome.os.diagnostics.runBatteryCapacityRoutine();
-        chrome.test.assertEq({id: 0, status: "ready"}, response);
-        response =
+        const response =
           await chrome.os.diagnostics.runBatteryCapacityRoutine();
         chrome.test.assertEq({id: 0, status: "ready"}, response);
         chrome.test.succeed();
       }
     ]);
   )");
-  // Make sure that the manufacturer info is only gathered once on multiple API
-  // access.
-  EXPECT_EQ(fake_probe_service_->GetProbeTelemetryInfoCallCount(), 1);
+
+  // Set empty result now. We expect oem_name is cached, so regardless of the
+  // API result, the authorization should pass.
+  ash::cros_healthd::FakeCrosHealthd::Get()
+      ->SetProbeTelemetryInfoResponseForTesting(
+          ash::cros_healthd::mojom::TelemetryInfo::New());
+
+  CreateExtensionAndRunServiceWorker(R"(
+    chrome.test.runTests([
+      async function runBatteryCapacityRoutine() {
+        const response =
+          await chrome.os.diagnostics.runBatteryCapacityRoutine();
+        chrome.test.assertEq({id: 0, status: "ready"}, response);
+        chrome.test.succeed();
+      }
+    ]);
+  )");
 }
 
 }  // namespace chromeos

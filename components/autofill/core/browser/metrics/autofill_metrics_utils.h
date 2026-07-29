@@ -5,10 +5,18 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_METRICS_AUTOFILL_METRICS_UTILS_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_METRICS_AUTOFILL_METRICS_UTILS_H_
 
-#include "components/autofill/core/browser/autofill_field.h"
+#include <stdint.h>
+
+#include "base/containers/span.h"
+#include "base/memory/raw_ptr.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
+#include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/form_structure.h"
-#include "components/autofill/core/browser/metrics/autofill_metrics.h"
+#include "components/autofill/core/browser/form_types.h"
+#include "components/autofill/core/browser/suggestions/suggestion_util.h"
+#include "components/autofill/core/common/aliases.h"
+#include "components/autofill/core/common/dense_set.h"
+#include "components/autofill/core/common/unique_ids.h"
 
 namespace autofill::autofill_metrics {
 
@@ -36,15 +44,20 @@ struct DifferingProfileWithTypeSet {
   bool operator==(const DifferingProfileWithTypeSet& other) const = default;
 };
 
-// kAccount profiles are synced from an external source and have potentially
-// originated from outside of Autofill. In order to determine the added value
-// for Autofill, the `AutofillProfile::RecordType` is further resolved in some
-// metrics.
+// A superset of `AutofillProfile::RecordType` used for metrics. It breaks the
+// kAccount RecordType further down into kAccountChrome and kAccountNonChrome:
+// - kAccountChrome are addresses initially saved to the account by Chrome.
+// - kAccountNonChrome are addresses initially saved to the account by another
+//   integrator and made available to Chrome. Even if they are modified in
+//   Chrome, they remain kAccountNonChrome for metrics purposes.
 enum class AutofillProfileRecordTypeCategory {
   kLocalOrSyncable = 0,
   kAccountChrome = 1,
   kAccountNonChrome = 2,
-  kMaxValue = kAccountNonChrome
+  kAccountHome = 3,
+  kAccountWork = 4,
+  kAccountNameEmail = 5,
+  kMaxValue = kAccountNameEmail
 };
 
 // Maps the `profile` to its category, depending on the profile's
@@ -56,6 +69,10 @@ AutofillProfileRecordTypeCategory GetCategoryOfProfile(
 // metrics by category.
 const char* GetProfileCategorySuffix(
     AutofillProfileRecordTypeCategory category);
+
+// Converts the `record_type` to the histogram-suffix used for resolving some
+// metrics by record type.
+const char* GetProfileRecordTypeSuffix(AutofillProfile::RecordType record_type);
 
 // These values are persisted to UMA logs. Entries should not be renumbered
 // and numeric values should never be reused. This is the subset of field
@@ -75,7 +92,8 @@ enum class SettingsVisibleFieldTypeForMetrics {
   // kHonorificPrefix = 10,  // Deprecated in M123.
   kCompany = 11,
   kAdminLevel2 = 12,
-  kMaxValue = kAdminLevel2
+  kAlternativeName = 13,
+  kMaxValue = kAlternativeName
 };
 
 // Converts a server field type that can be edited in the settings to an enum
@@ -85,17 +103,37 @@ SettingsVisibleFieldTypeForMetrics ConvertSettingsVisibleFieldTypeForMetrics(
 
 // Returns the set of all fillable form types for `form.`
 DenseSet<FormTypeNameForLogging> GetFormTypesForLogging(
-    const FormStructure& form);
+    const FormStructure& form,
+    AutocompleteUnrecognizedBehavior ac_unrecognized_behavior);
 
 // Returns GetFormTypesForLogging() where entries need to correspond to
 // `FormType::kAddressForm`.
 DenseSet<FormTypeNameForLogging> GetAddressFormTypesForLogging(
-    const FormStructure& form);
+    const FormStructure& form,
+    AutocompleteUnrecognizedBehavior ac_unrecognized_behavior);
+
+// Returns GetFormTypesForLogging() where entries need to correspond to
+// `FormType::kOneTimePasswordForm`.
+DenseSet<FormTypeNameForLogging> GetOneTimePasswordTypesForLogging(
+    const FormStructure& form,
+    AutocompleteUnrecognizedBehavior ac_unrecognized_behavior);
+
+// Returns GetFormTypesForLogging() where entries need to correspond to
+// `FormType::kLoyaltyCardForm`.
+DenseSet<FormTypeNameForLogging> GetLoyaltyFormTypesForLogging(
+    const FormStructure& form,
+    AutocompleteUnrecognizedBehavior ac_unrecognized_behavior);
 
 // Returns GetFormTypesForLogging() where entries need to correspond to
 // `FormType::kCreditCardForm` or `FormType::kStandaloneCvcForm`.
 DenseSet<FormTypeNameForLogging> GetCreditCardFormTypesForLogging(
-    const FormStructure& form);
+    const FormStructure& form,
+    AutocompleteUnrecognizedBehavior ac_unrecognized_behavior);
+
+// Returns true if `profile` has at least 2 fields of the types
+// `ADDRESS_HOME_CITY`, `ADDRESS_HOME_STATE`, `ADDRESS_HOME_STREET_ADDRESS` or
+// `ADDRESS_HOME_ZIP` set.
+bool IsPostalAddress(const AutofillProfile& profile);
 
 // Returns whether the caller should log autofill suggestions shown metrics.
 // Some suggestions can be "displayed" without a direct user action (i.e. typing
@@ -123,6 +161,13 @@ int GetBucketForAcceptanceMetricsGroupedByFieldType(FieldType field_type,
 // `std::numeric_limits<int>::max()` in case `min_incompatible_sets` is empty.
 int GetDuplicationRank(
     base::span<const DifferingProfileWithTypeSet> min_incompatible_sets);
+
+// Returns 64-bit hash of the string of form global id, which consists of
+// |frame_token| and |renderer_id|.
+uint64_t FormGlobalIdToHash64Bit(const FormGlobalId& form_global_id);
+// Returns 64-bit hash of the string of field global id, which consists of
+// |frame_token| and |renderer_id|.
+uint64_t FieldGlobalIdToHash64Bit(const FieldGlobalId& field_global_id);
 
 }  // namespace autofill::autofill_metrics
 

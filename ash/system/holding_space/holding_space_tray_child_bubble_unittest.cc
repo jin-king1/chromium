@@ -36,7 +36,6 @@ class HoldingSpaceTrayChildBubbleTestBase : public HoldingSpaceAshTestBase {
     return child_bubble_;
   }
 
- private:
   // HoldingSpaceAshTestBase:
   void SetUp() override {
     HoldingSpaceAshTestBase::SetUp();
@@ -59,12 +58,14 @@ class HoldingSpaceTrayChildBubbleTestBase : public HoldingSpaceAshTestBase {
   }
 
   void TearDown() override {
+    child_bubble_ = nullptr;
     widget_.reset();
     view_delegate_.reset();
 
     AshTestBase::TearDown();
   }
 
+ private:
   // Invoked from `SetUp()` to create the `child_bubble()`.
   virtual std::unique_ptr<HoldingSpaceTrayChildBubble> CreateChildBubble(
       HoldingSpaceViewDelegate* view_delegate) {
@@ -74,8 +75,7 @@ class HoldingSpaceTrayChildBubbleTestBase : public HoldingSpaceAshTestBase {
 
   views::UniqueWidgetPtr widget_;
   std::unique_ptr<HoldingSpaceViewDelegate> view_delegate_;
-  raw_ptr<HoldingSpaceTrayChildBubble, DanglingUntriaged> child_bubble_ =
-      nullptr;
+  raw_ptr<HoldingSpaceTrayChildBubble> child_bubble_ = nullptr;
 };
 
 // Tests -----------------------------------------------------------------------
@@ -92,9 +92,7 @@ TEST_F(HoldingSpaceTrayChildBubbleTest, HasExpectedBubbleTreatment) {
   // Background.
   auto* background = child_bubble()->GetBackground();
   ASSERT_TRUE(background);
-  EXPECT_EQ(background->get_color(),
-            child_bubble()->GetColorProvider()->GetColor(
-                cros_tokens::kCrosSysSystemBaseElevated));
+  EXPECT_EQ(background->color(), cros_tokens::kCrosSysSystemBaseElevated);
   EXPECT_EQ(layer->background_blur(), ColorProvider::kBackgroundBlurSigma);
 
   // Border.
@@ -112,6 +110,12 @@ class HoldingSpaceTrayChildBubblePlaceholderTest
     : public HoldingSpaceTrayChildBubbleTestBase,
       public testing::WithParamInterface</*has_placeholder=*/bool> {
  protected:
+  void TearDown() override {
+    placeholder_ = nullptr;
+    section_ = nullptr;
+    HoldingSpaceTrayChildBubbleTestBase::TearDown();
+  }
+
   void ExpectPlaceholderOrGone() {
     if (has_placeholder()) {
       EXPECT_TRUE(child_bubble()->GetVisible());
@@ -172,8 +176,8 @@ class HoldingSpaceTrayChildBubblePlaceholderTest
   }
 
   // Owned by view hierarchy.
-  raw_ptr<views::View, DanglingUntriaged> placeholder_ = nullptr;
-  raw_ptr<views::View, DanglingUntriaged> section_ = nullptr;
+  raw_ptr<views::View> placeholder_ = nullptr;
+  raw_ptr<views::View> section_ = nullptr;
 };
 
 INSTANTIATE_TEST_SUITE_P(All,

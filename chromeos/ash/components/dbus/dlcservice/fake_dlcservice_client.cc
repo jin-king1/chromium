@@ -6,7 +6,6 @@
 
 #include <string_view>
 
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/task/single_thread_task_runner.h"
@@ -34,6 +33,16 @@ void FakeDlcserviceClient::Install(
   if (!skip_adding_dlc_info_on_error_ || error == dlcservice::kErrorNone) {
     dlcs_with_content_.add_dlc_infos()->set_id(id);
   }
+
+  // Simulate the progress. If progress has not yet been completed, the
+  // progress_callback will be invoked and subsequently marked as completed. The
+  // progress_callback is only invoked when should_simulate_install_progress_ is
+  // set to true through the set_simulate_install_progress method.
+  if (should_trigger_install_progress_ && !is_progress_completed_) {
+    progress_callback.Run(1.0);
+    is_progress_completed_ = true;
+  }
+
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
       FROM_HERE,
       base::BindOnce(std::move(callback), std::move(install_result)));
@@ -68,12 +77,12 @@ void FakeDlcserviceClient::GetDlcState(const std::string& dlc_id,
                                        GetDlcStateCallback callback) {
   VLOG(1) << "Requesting to get DLC state of: " << dlc_id;
   std::string error = dlcservice::kErrorNone;
-  if (base::Contains(get_dlc_state_errors_, dlc_id)) {
+  if (get_dlc_state_errors_.contains(dlc_id)) {
     error = get_dlc_state_errors_[std::string(dlc_id)];
   }
 
   dlcservice::DlcState state;
-  if (base::Contains(dlc_states_, dlc_id)) {
+  if (dlc_states_.contains(dlc_id)) {
     state = dlc_states_[std::string(dlc_id)];
   }
 
@@ -107,6 +116,12 @@ void FakeDlcserviceClient::AddObserver(Observer* observer) {
 
 void FakeDlcserviceClient::RemoveObserver(Observer* observer) {
   observers_.RemoveObserver(observer);
+}
+
+void FakeDlcserviceClient::WaitForServiceToBeAvailable(
+    base::OnceCallback<void(bool service_available)> callback) {
+  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, base::BindOnce(std::move(callback), service_available_));
 }
 
 std::string FakeDlcserviceClient::GetInstallError() {

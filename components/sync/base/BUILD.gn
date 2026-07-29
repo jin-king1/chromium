@@ -2,21 +2,11 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/buildflag_header.gni")
-import("//build/config/features.gni")
-import("//components/sync/base/features.gni")
 import("//testing/libfuzzer/fuzzer_test.gni")
 
 declare_args() {
   # Controls the product part of the user agent calculated in sync_util.cc.
   sync_user_agent_product = "Chrome"
-}
-
-if (is_ios) {
-  buildflag_header("ios_cpe_passkey_buildflag") {
-    header = "ios_cpe_passkey_buildflag.h"
-    flags = [ "IOS_PASSKEYS_ENABLED=$ios_cpe_enable_passkey_capabilities" ]
-  }
 }
 
 source_set("features") {
@@ -25,10 +15,6 @@ source_set("features") {
     "features.h",
   ]
   deps = [ "//base" ]
-
-  if (is_ios) {
-    deps += [ ":ios_cpe_passkey_buildflag" ]
-  }
 }
 
 static_library("base") {
@@ -40,6 +26,8 @@ static_library("base") {
     "collaboration_id.h",
     "command_line_switches.cc",
     "command_line_switches.h",
+    "custom_passphrase_bootstrap_token.cc",
+    "custom_passphrase_bootstrap_token.h",
     "data_type.cc",
     "data_type.h",
     "data_type_histogram.cc",
@@ -48,8 +36,6 @@ static_library("base") {
     "deletion_origin.h",
     "extensions_activity.cc",
     "extensions_activity.h",
-    "hash_util.cc",
-    "hash_util.h",
     "legacy_directory_deletion.cc",
     "legacy_directory_deletion.h",
     "page_transition_conversion.cc",
@@ -61,6 +47,7 @@ static_library("base") {
     "progress_marker_map.h",
     "report_unrecoverable_error.cc",
     "report_unrecoverable_error.h",
+    "server_defined_unique_tags.h",
     "stop_source.h",
     "storage_type.h",
     "sync_invalidation.cc",
@@ -90,6 +77,7 @@ static_library("base") {
   deps = [
     "//base",
     "//base:i18n",
+    "//components/os_crypt/async/common",
     "//components/pref_registry",
     "//components/prefs",
     "//components/signin/public/base",

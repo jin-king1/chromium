@@ -7,6 +7,7 @@
 
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/strings/stringprintf.h"
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
 #include "content/browser/process_lock.h"
@@ -16,6 +17,7 @@
 #include "content/common/content_navigation_policy.h"
 #include "content/common/features.h"
 #include "content/public/browser/back_forward_cache.h"
+#include "content/public/browser/security_principal.h"
 #include "content/public/browser/site_isolation_policy.h"
 #include "content/public/browser/web_exposed_isolation_level.h"
 #include "content/public/test/back_forward_cache_util.h"
@@ -149,7 +151,8 @@ class UnassignedSiteInstanceBrowserTest
     GURL result = regular_url();
     GURL::Replacements replacements;
     replacements.ClearPath();
-    if (!SiteIsolationPolicy::AreOriginKeyedProcessesEnabledByDefault()) {
+    if (!SiteIsolationPolicy::AreOriginKeyedProcessesEnabledByDefault(
+            shell()->web_contents()->GetBrowserContext())) {
       // Only include the port for origin-isolated urls.
       replacements.ClearPort();
     }
@@ -409,7 +412,7 @@ IN_PROC_BROWSER_TEST_P(UnassignedSiteInstanceBrowserTest,
   EXPECT_TRUE(popup_si->HasSite());
   EXPECT_EQ(popup_si, original_si);
 
-  if (!AreAllSitesIsolatedForTesting()) {
+  if (!AreStrictSiteInstancesEnabled()) {
     EXPECT_TRUE(popup_si->IsDefaultSiteInstance());
   }
 
@@ -443,7 +446,7 @@ IN_PROC_BROWSER_TEST_P(UnassignedSiteInstanceBrowserTest,
   EXPECT_TRUE(popup_si->HasSite());
   EXPECT_EQ(popup_si, original_si);
 
-  if (!AreAllSitesIsolatedForTesting()) {
+  if (!AreStrictSiteInstancesEnabled()) {
     EXPECT_TRUE(popup_si->IsDefaultSiteInstance());
   }
 
@@ -476,7 +479,7 @@ IN_PROC_BROWSER_TEST_P(UnassignedSiteInstanceBrowserTest,
   EXPECT_TRUE(popup_si->HasSite());
   EXPECT_EQ(popup_si, original_si);
 
-  if (!AreAllSitesIsolatedForTesting()) {
+  if (!AreStrictSiteInstancesEnabled()) {
     EXPECT_TRUE(popup_si->IsDefaultSiteInstance());
   }
 
@@ -513,7 +516,7 @@ IN_PROC_BROWSER_TEST_P(UnassignedSiteInstanceBrowserTest,
   EXPECT_TRUE(popup_si->HasSite());
   EXPECT_EQ(popup_si, original_si);
 
-  if (!AreAllSitesIsolatedForTesting()) {
+  if (!AreStrictSiteInstancesEnabled()) {
     EXPECT_TRUE(popup_si->IsDefaultSiteInstance());
   }
 
@@ -612,7 +615,7 @@ IN_PROC_BROWSER_TEST_P(UnassignedSiteInstanceBrowserTest,
   EXPECT_TRUE(iframe_si->HasSite());
   EXPECT_EQ(iframe_si, original_si);
 
-  if (!AreAllSitesIsolatedForTesting()) {
+  if (!AreStrictSiteInstancesEnabled()) {
     EXPECT_TRUE(iframe_si->IsDefaultSiteInstance());
   }
 
@@ -646,7 +649,7 @@ IN_PROC_BROWSER_TEST_P(UnassignedSiteInstanceBrowserTest,
   EXPECT_TRUE(iframe_si->HasSite());
   EXPECT_EQ(iframe_si, original_si);
 
-  if (!AreAllSitesIsolatedForTesting()) {
+  if (!AreStrictSiteInstancesEnabled()) {
     EXPECT_TRUE(iframe_si->IsDefaultSiteInstance());
   }
 
@@ -657,7 +660,7 @@ IN_PROC_BROWSER_TEST_P(UnassignedSiteInstanceBrowserTest,
   scoped_refptr<SiteInstanceImpl> post_navigation_si =
       original_rfh->child_at(0)->current_frame_host()->GetSiteInstance();
 
-  if (AreAllSitesIsolatedForTesting()) {
+  if (AreStrictSiteInstancesEnabled()) {
     EXPECT_FALSE(post_navigation_si->HasSite());
     EXPECT_TRUE(post_navigation_si->IsRelatedSiteInstance(original_si.get()));
   } else {
@@ -681,7 +684,7 @@ IN_PROC_BROWSER_TEST_P(UnassignedSiteInstanceBrowserTest,
   scoped_refptr<SiteInstanceImpl> instance1(
       web_contents()->GetPrimaryMainFrame()->GetSiteInstance());
   RenderProcessHost* process1 = instance1->GetProcess();
-  EXPECT_EQ(GURL(), instance1->GetSiteURL());
+  EXPECT_EQ(GURL(), instance1->GetSecurityPrincipal().GetDeprecatedSiteURL());
 
   // Navigate to page that uses up the site. It should reuse the previous
   // SiteInstance and set its site URL.
@@ -689,8 +692,9 @@ IN_PROC_BROWSER_TEST_P(UnassignedSiteInstanceBrowserTest,
   EXPECT_EQ(instance1,
             web_contents()->GetPrimaryMainFrame()->GetSiteInstance());
   EXPECT_TRUE(instance1->HasSite());
-  if (AreAllSitesIsolatedForTesting()) {
-    EXPECT_EQ(RegularUrlOriginMaybeWithPort(), instance1->GetSiteURL());
+  if (AreStrictSiteInstancesEnabled()) {
+    EXPECT_EQ(RegularUrlOriginMaybeWithPort(),
+              instance1->GetSecurityPrincipal().GetDeprecatedSiteURL());
   } else {
     EXPECT_TRUE(instance1->IsDefaultSiteInstance());
   }
@@ -707,7 +711,8 @@ IN_PROC_BROWSER_TEST_P(UnassignedSiteInstanceBrowserTest,
   EXPECT_NE(prev_entry_instance, instance1);
   EXPECT_NE(prev_entry_instance, nullptr);
   EXPECT_TRUE(prev_entry_instance->IsRelatedSiteInstance(instance1.get()));
-  EXPECT_EQ(GURL(), prev_entry_instance->GetSiteURL());
+  EXPECT_EQ(GURL(),
+            prev_entry_instance->GetSecurityPrincipal().GetDeprecatedSiteURL());
 
   // Navigate to bar.com, which destroys the previous RenderProcessHost.
   GURL other_regular_url(
@@ -723,7 +728,7 @@ IN_PROC_BROWSER_TEST_P(UnassignedSiteInstanceBrowserTest,
   EXPECT_TRUE(NavigateToURL(shell(), other_regular_url));
   exit_observer.Wait();
 
-  if (AreAllSitesIsolatedForTesting()) {
+  if (AreStrictSiteInstancesEnabled()) {
     EXPECT_NE(instance1,
               web_contents()->GetPrimaryMainFrame()->GetSiteInstance());
   } else {
@@ -745,6 +750,12 @@ IN_PROC_BROWSER_TEST_P(UnassignedSiteInstanceBrowserTest,
     // In site-per-process, we cannot use foo.com's SiteInstance for a.com.
     EXPECT_FALSE(instance1->IsSuitableForUrlInfo(
         UrlInfo::CreateForTesting(embedder_defined_unassigned_url())));
+  } else if (AreStrictSiteInstancesEnabled()) {
+    // If neither foo.com nor a.com require dedicated processes, and we're using
+    // default SiteInstanceGroup instead of default SiteInstance, then we can
+    // use the same process.
+    EXPECT_TRUE(instance1->IsSuitableForUrlInfo(
+        UrlInfo::CreateForTesting(embedder_defined_unassigned_url())));
   } else {
     // Since |instance1| is a default SiteInstance AND this test explicitly
     // ensures that ShouldAssignSiteForURL(url1) will return false, |url1|
@@ -764,7 +775,8 @@ IN_PROC_BROWSER_TEST_P(UnassignedSiteInstanceBrowserTest,
   EXPECT_EQ(embedder_defined_unassigned_url(),
             web_contents()->GetLastCommittedURL());
   EXPECT_NE(instance1, new_instance);
-  EXPECT_EQ(GURL(), new_instance->GetSiteURL());
+  EXPECT_EQ(GURL(),
+            new_instance->GetSecurityPrincipal().GetDeprecatedSiteURL());
   EXPECT_TRUE(new_instance->HasProcess());
 
   // Because embedder_defined_unassigned_url does not set a site URL, it should
@@ -885,7 +897,7 @@ IN_PROC_BROWSER_TEST_P(UnassignedSiteInstanceBrowserTest,
       web_contents->GetPrimaryMainFrame()->GetSiteInstance()->HasSite());
   auto process1_lock = process1->GetProcessLock();
   EXPECT_FALSE(process1_lock.is_invalid());
-  EXPECT_TRUE(process1_lock.allows_any_site());
+  EXPECT_TRUE(process1_lock.AllowsAnySite());
 
   // Now wait for second navigation to finish and ensure it also succeeds.
   ASSERT_TRUE(regular_manager.WaitForNavigationFinished());
@@ -900,12 +912,13 @@ IN_PROC_BROWSER_TEST_P(UnassignedSiteInstanceBrowserTest,
   RenderProcessHost* process2 =
       web_contents->GetPrimaryMainFrame()->GetProcess();
   EXPECT_NE(process1, process2);
-  EXPECT_EQ(
-      RegularUrlOriginMaybeWithPort(),
-      web_contents->GetPrimaryMainFrame()->GetSiteInstance()->GetSiteURL());
+  EXPECT_EQ(RegularUrlOriginMaybeWithPort(), web_contents->GetPrimaryMainFrame()
+                                                 ->GetSiteInstance()
+                                                 ->GetSecurityPrincipal()
+                                                 .GetDeprecatedSiteURL());
   EXPECT_EQ(ProcessLock::FromSiteInfo(SiteInfo::CreateForTesting(
                 IsolationContext(browser_context), regular_url())),
-            policy->GetProcessLock(process2->GetDeprecatedID()));
+            policy->GetProcessLock(process2->GetID()));
 
   // Ensure also that the regular url process didn't change midway through the
   // navigation.

@@ -7,6 +7,8 @@
 #include <optional>
 #include <string>
 
+#include "base/containers/fixed_flat_map.h"
+#include "base/containers/flat_map.h"
 #include "base/files/file_enumerator.h"
 #include "base/files/file_path.h"
 #include "base/metrics/field_trial_params.h"
@@ -24,10 +26,61 @@
 #include "ui/base/l10n/l10n_util.h"
 
 namespace speech {
+namespace {
+constexpr auto kChineseLocaleMap =
+    base::MakeFixedFlatMap<std::string_view, std::string_view>(
+        {{"cmn-hans-cn", "cmn-Hans-CN"},
+         {"cmn-hant-tw", "cmn-Hant-TW"},
+         {"zh-cn", "cmn-Hans-CN"},
+         {"zh-hans-cn", "cmn-Hans-CN"},
+         {"zh-hant-tw", "cmn-Hant-TW"},
+         {"zh-tw", "cmn-Hant-TW"}});
+
+constexpr auto kSodaLanguageToBcp47Map =
+    base::MakeFixedFlatMap<std::string_view, std::string_view>({
+        {"cmn-hans-cn", "zh"}, {"cmn-hant-tw", "zh-Hant"}, {"da-dk", "da-DK"},
+        {"de-be", "de-BE"},    {"de-ch", "de-CH"},         {"de-de", "de-DE"},
+        {"en-au", "en-AU"},    {"en-gb", "en-GB"},         {"en-ie", "en-IE"},
+        {"en-in", "en-IN"},    {"en-sg", "en-SG"},         {"en-us", "en-US"},
+        {"es-es", "es-ES"},    {"es-us", "es-US"},         {"fr-be", "fr-BE"},
+        {"fr-ca", "fr-CA"},    {"fr-ch", "fr-CH"},         {"fr-fr", "fr-FR"},
+        {"hi-in", "hi-IN"},    {"id-id", "id-ID"},         {"it-it", "it-IT"},
+        {"ja-jp", "ja-JP"},    {"ko-kr", "ko-KR"},         {"nb-no", "nb-NO"},
+        {"nl-nl", "nl-NL"},    {"pl-pl", "pl-PL"},         {"pt-br", "pt-BR"},
+        {"ru-ru", "ru-RU"},    {"sv-se", "sv-SE"},         {"th-th", "th-TH"},
+        {"tr-tr", "tr-TR"},    {"vi-vn", "vi-VN"},
+    });
+
+}  // namespace
+
+// If `language_name` is Chinese variant, then return the master locale.
+// Otherwise, return `language_name`.
+const std::string MaybeMapToChineseLocale(std::string_view language_name) {
+  auto chinese_locale =
+      kChineseLocaleMap.find(base::ToLowerASCII(language_name));
+  if (chinese_locale != kChineseLocaleMap.end()) {
+    return std::string(chinese_locale->second);
+  }
+
+  return std::string(language_name);
+}
+
+std::optional<std::string> GetBCP47LanguageCodeFromSodaLanguage(
+    std::string_view soda_language) {
+  auto it = kSodaLanguageToBcp47Map.find(base::ToLowerASCII(soda_language));
+  if (it != kSodaLanguageToBcp47Map.end()) {
+    return std::string(it->second);
+  }
+  return std::nullopt;
+}
+
 const char kUsEnglishLocale[] = "en-US";
 
 const char kEnglishLocaleNoCountry[] = "en";
 const char kChineseLocaleNoCountry[] = "cmn";
+
+const char kSodaPreemptiveDownloadStarted[] =
+    "SodaInstaller.PreemptiveDownloadStarted";
 
 const char kSodaBinaryInstallationResult[] =
     "SodaInstaller.BinaryInstallationResult";
@@ -91,7 +144,7 @@ const base::FilePath GetSodaTestResourcesDirectory() {
 }
 
 const base::FilePath GetLatestSodaLanguagePackDirectory(
-    const std::string& language) {
+    std::string_view language) {
   base::FileEnumerator enumerator(
       GetSodaLanguagePacksDirectory().AppendASCII(language), false,
       base::FileEnumerator::DIRECTORIES);
@@ -146,11 +199,12 @@ std::optional<SodaLanguagePackComponentConfig> GetLanguageComponentConfig(
 }
 
 std::optional<SodaLanguagePackComponentConfig> GetLanguageComponentConfig(
-    const std::string& language_name) {
+    std::string_view language_name) {
+  auto locale = MaybeMapToChineseLocale(language_name);
   for (const SodaLanguagePackComponentConfig& config :
        kLanguageComponentConfigs) {
     if (base::ToLowerASCII(config.language_name) ==
-        base::ToLowerASCII(language_name)) {
+        base::ToLowerASCII(locale)) {
       return config;
     }
   }
@@ -160,7 +214,13 @@ std::optional<SodaLanguagePackComponentConfig> GetLanguageComponentConfig(
 
 std::optional<SodaLanguagePackComponentConfig>
 GetLanguageComponentConfigMatchingLanguageSubtag(
-    const std::string& language_name) {
+    std::string_view language_name) {
+  // Use full locale to get Chinese variant config.
+  auto locale = MaybeMapToChineseLocale(language_name);
+  if (locale.substr(0, 3) == kChineseLocaleNoCountry) {
+    return GetLanguageComponentConfig(locale);
+  }
+
   for (const SodaLanguagePackComponentConfig& config :
        kLanguageComponentConfigs) {
     if (l10n_util::GetLanguage(base::ToLowerASCII(config.language_name)) ==
@@ -172,7 +232,7 @@ GetLanguageComponentConfigMatchingLanguageSubtag(
   return std::nullopt;
 }
 
-LanguageCode GetLanguageCodeByComponentId(const std::string& component_id) {
+LanguageCode GetLanguageCodeByComponentId(std::string_view component_id) {
   for (const SodaLanguagePackComponentConfig& config :
        kLanguageComponentConfigs) {
     if (crx_file::id_util::GenerateIdFromHash(config.public_key_sha) ==
@@ -197,7 +257,7 @@ std::string GetLanguageName(LanguageCode language_code) {
   return language_name;
 }
 
-LanguageCode GetLanguageCode(const std::string& language_name) {
+LanguageCode GetLanguageCode(std::string_view language_name) {
   std::optional<SodaLanguagePackComponentConfig> language_config =
       GetLanguageComponentConfig(language_name);
   if (language_config.has_value()) {
@@ -206,8 +266,8 @@ LanguageCode GetLanguageCode(const std::string& language_name) {
   return LanguageCode::kNone;
 }
 
-const std::u16string GetLanguageDisplayName(const std::string& language_name,
-                                            const std::string& display_locale) {
+const std::u16string GetLanguageDisplayName(std::string_view language_name,
+                                            std::string_view display_locale) {
   if (language_name.substr(0, 3) == kChineseLocaleNoCountry) {
     return l10n_util::GetDisplayNameForLocale(language_name.substr(0, 8),
                                               display_locale, true);
@@ -221,11 +281,11 @@ const std::u16string GetLanguageDisplayName(const std::string& language_name,
 const std::string GetInstallationSuccessTimeMetricForLanguagePack(
     const LanguageCode& language_code) {
   auto config = GetLanguageComponentConfig(language_code);
-  DCHECK(config && config->language_name);
+  DCHECK(config && !config->language_name.empty());
   return GetInstallationSuccessTimeMetricForLanguage(config->language_name);
 }
 const std::string GetInstallationSuccessTimeMetricForLanguage(
-    const std::string& language) {
+    std::string_view language) {
   return base::StrCat(
       {"SodaInstaller.Language.", language, ".InstallationSuccessTime"});
 }
@@ -233,12 +293,12 @@ const std::string GetInstallationSuccessTimeMetricForLanguage(
 const std::string GetInstallationFailureTimeMetricForLanguagePack(
     const LanguageCode& language_code) {
   auto config = GetLanguageComponentConfig(language_code);
-  DCHECK(config && config->language_name);
+  DCHECK(config && !config->language_name.empty());
   return GetInstallationFailureTimeMetricForLanguage(config->language_name);
 }
 
 const std::string GetInstallationFailureTimeMetricForLanguage(
-    const std::string& language) {
+    std::string_view language) {
   return base::StrCat(
       {"SodaInstaller.Language.", language, ".InstallationFailureTime"});
 }
@@ -246,18 +306,30 @@ const std::string GetInstallationFailureTimeMetricForLanguage(
 const std::string GetInstallationResultMetricForLanguagePack(
     const LanguageCode& language_code) {
   auto config = GetLanguageComponentConfig(language_code);
-  DCHECK(config && config->language_name);
+  DCHECK(config && !config->language_name.empty());
   return speech::GetInstallationResultMetricForLanguage(config->language_name);
 }
 
 const std::string GetInstallationResultMetricForLanguage(
-    const std::string& language) {
+    std::string_view language) {
   return base::StrCat(
       {"SodaInstaller.Language.", language, ".InstallationResult"});
 }
 
-const std::string GetDefaultLiveCaptionLanguage(
-    const std::string& application_locale,
+const std::string GetUninstalledDueToExpirationMetricForLanguage(
+    std::string_view language) {
+  return base::StrCat(
+      {"SodaInstaller.Language.", language, ".UninstalledDueToExpiration"});
+}
+
+const std::string GetRedownloadedAfterExpirationMetricForLanguage(
+    std::string_view language) {
+  return base::StrCat(
+      {"SodaInstaller.Language.", language, ".RedownloadedAfterExpiration"});
+}
+
+std::string_view GetDefaultLiveCaptionLanguage(
+    std::string_view application_locale,
     PrefService* profile_prefs) {
   std::optional<SodaLanguagePackComponentConfig> application_locale_config =
       GetLanguageComponentConfigMatchingLanguageSubtag(application_locale);

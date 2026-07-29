@@ -81,6 +81,8 @@ class COMPONENT_EXPORT(GLOBAL_MEDIA_CONTROLS) MediaProgressView
   void OnPaint(gfx::Canvas* canvas) override;
   void OnFocus() override;
   void OnBlur() override;
+  void OnMouseEntered(const ui::MouseEvent& event) override;
+  void OnMouseExited(const ui::MouseEvent& event) override;
   ui::Cursor GetCursor(const ui::MouseEvent& event) override;
   bool OnMousePressed(const ui::MouseEvent& event) override;
   bool OnMouseDragged(const ui::MouseEvent& event) override;
@@ -91,8 +93,15 @@ class COMPONENT_EXPORT(GLOBAL_MEDIA_CONTROLS) MediaProgressView
   // Updates the progress in UI given the new media position.
   void UpdateProgress(const media_session::MediaPosition& media_position);
 
+  // Returns the update interval based on the current progress line type
+  // (squiggly vs. straight).
+  base::TimeDelta GetUpdateInterval() const;
+
   // Helper functions for testing:
   double current_value_for_testing() const;
+  int phase_offset_for_testing() const;
+  double progress_amp_fraction_for_testing() const;
+  int straight_progress_stroke_width_for_testing() const;
   bool is_paused_for_testing() const;
   bool is_live_for_testing() const;
   bool use_paused_colors_for_testing() const;
@@ -102,6 +111,8 @@ class COMPONENT_EXPORT(GLOBAL_MEDIA_CONTROLS) MediaProgressView
       std::unique_ptr<base::OneShotTimer> test_timer);
   void set_progress_drag_started_delay_timer_for_testing(
       std::unique_ptr<base::OneShotTimer> test_timer);
+  gfx::SlideAnimation& slide_animation_for_testing();
+  gfx::SlideAnimation& thickness_animation_for_testing();
 
  private:
   // Fires an accessibility event if the progress has changed.
@@ -113,6 +124,7 @@ class COMPONENT_EXPORT(GLOBAL_MEDIA_CONTROLS) MediaProgressView
   void OnProgressDragStarted(double location);
   void DelayedProgressDragStarted(double location);
   void OnProgressDragEnded();
+  void PauseForDragging();
 
   // Updates the colors of the progress view based on whether the media is
   // paused.
@@ -163,6 +175,10 @@ class COMPONENT_EXPORT(GLOBAL_MEDIA_CONTROLS) MediaProgressView
   // lines.
   gfx::SlideAnimation slide_animation_;
 
+  // Animation for progress line to transition between thicker and less thick
+  // states.
+  gfx::SlideAnimation thickness_animation_;
+
   // Timer to continuously update the progress value if the media is playing.
   std::unique_ptr<base::OneShotTimer> update_progress_timer_ =
       std::make_unique<base::OneShotTimer>();
@@ -185,6 +201,9 @@ class COMPONENT_EXPORT(GLOBAL_MEDIA_CONTROLS) MediaProgressView
   // Whether the media is currently paused due to the user dragging the progress
   // line.
   bool paused_for_dragging_ = false;
+
+  // True if the user is currently dragging the progress line.
+  bool is_dragging_ = false;
 
   // Whether we should use the paused colors for the progress view.
   bool use_paused_colors_ = true;

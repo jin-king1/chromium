@@ -11,7 +11,7 @@
 #include "chrome/browser/accessibility/live_caption/live_caption_controller_factory.h"
 #include "chrome/browser/accessibility/live_caption/live_caption_speech_recognition_host.h"
 #include "chrome/browser/accessibility/live_caption/live_caption_test_util.h"
-#include "chrome/browser/accessibility/live_translate_controller_factory.h"
+#include "chrome/browser/accessibility/live_caption/live_translate_controller_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -27,27 +27,6 @@
 #include "content/public/test/browser_test.h"
 #include "net/test/embedded_test_server/http_request.h"
 #include "net/test/embedded_test_server/http_response.h"
-
-namespace {
-// A WebContentsObserver that allows waiting for some media to start or stop
-// playing fullscreen.
-class FullscreenEventsWaiter : public content::WebContentsObserver {
- public:
-  explicit FullscreenEventsWaiter(content::WebContents* web_contents);
-  FullscreenEventsWaiter(const FullscreenEventsWaiter& rhs) = delete;
-  FullscreenEventsWaiter& operator=(const FullscreenEventsWaiter& rhs) = delete;
-  ~FullscreenEventsWaiter() override;
-
-  void MediaEffectivelyFullscreenChanged(bool value) override;
-
-  // Wait for the current media playing fullscreen mode to be equal to
-  // |expected_media_fullscreen_mode|.
-  void Wait();
-
- private:
-  std::unique_ptr<base::RunLoop> run_loop_;
-};
-}  // namespace
 
 namespace captions {
 

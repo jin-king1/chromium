@@ -5,6 +5,7 @@
 #ifndef CONTENT_BROWSER_BTM_COOKIE_ACCESS_FILTER_H_
 #define CONTENT_BROWSER_BTM_COOKIE_ACCESS_FILTER_H_
 
+#include <string>
 #include <vector>
 
 #include "content/browser/btm/btm_utils.h"
@@ -32,10 +33,16 @@ class CONTENT_EXPORT CookieAccessFilter {
   // kUnknown. (Note: this depends on the order of previous calls to
   // AddAccess()).
   bool Filter(const std::vector<GURL>& urls,
-              std::vector<BtmDataAccessType>* result) const;
+              std::vector<BtmDataAccessType>& result) const;
 
   // Returns true iff AddAccess() has never been called.
   bool is_empty() const { return accesses_.empty(); }
+
+  // Returns a vector containing the URLs of added cookie accesses.
+  //
+  // TODO - crbug.com/406841434: Remove once we identify the source of
+  // mismatched cookie accesses.
+  std::vector<GURL> GetUrlsForDebuging() const;
 
  private:
   struct CookieAccess {

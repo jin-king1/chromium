@@ -8,19 +8,20 @@
 #include <string>
 #include <string_view>
 
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
 #include "base/functional/callback_helpers.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_dialogs.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/dialogs/browser_dialogs.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/grit/branded_strings.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/google/core/common/google_util.h"
 #include "components/strings/grit/components_strings.h"
+#include "components/sync/base/features.h"
 #include "components/sync/service/sync_service.h"
 #include "components/sync/service/sync_user_settings.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -36,7 +37,9 @@ namespace {
 void OpenSyncDashboardAndCloseDialog(BrowserWindowInterface& browser,
                                      ui::DialogModel* model) {
   GURL sync_dashboard_url = google_util::AppendGoogleLocaleParam(
-      GURL(chrome::kSyncGoogleDashboardURL),
+      GURL(base::FeatureList::IsEnabled(syncer::kSyncEnableNewSyncDashboardUrl)
+               ? chrome::kNewSyncGoogleDashboardURL
+               : chrome::kLegacySyncGoogleDashboardURL),
       g_browser_process->GetApplicationLocale());
   browser.OpenGURL(sync_dashboard_url,
                    WindowOpenDisposition::NEW_FOREGROUND_TAB);
@@ -128,8 +131,7 @@ void ShowSyncPassphraseDialog(
               &OnPasswordFieldChanged, base::Unretained(model)));
   // Dummy callback to own the subscription.
   dialog_builder.SetDialogDestroyingCallback(
-      base::BindOnce([](base::CallbackListSubscription subscription) {},
-                     std::move(subscription)));
+      base::DoNothingWithBoundArgs(std::move(subscription)));
 
   chrome::ShowBrowserModal(&browser, dialog_builder.Build());
 }

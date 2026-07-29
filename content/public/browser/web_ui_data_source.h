@@ -57,7 +57,7 @@ class WebUIDataSource {
 
   CONTENT_EXPORT static void Update(BrowserContext* browser_context,
                                     const std::string& source_name,
-                                    const base::Value::Dict& update);
+                                    const base::DictValue& update);
 
   // Adds a string keyed to its name to our dictionary.
   virtual void AddString(std::string_view name, std::u16string_view value) = 0;
@@ -76,7 +76,7 @@ class WebUIDataSource {
 
   // Add strings from `localized_strings` to our dictionary.
   virtual void AddLocalizedStrings(
-      const base::Value::Dict& localized_strings) = 0;
+      const base::DictValue& localized_strings) = 0;
 
   // Adds a boolean keyed to its name to our dictionary.
   virtual void AddBoolean(std::string_view name, bool value) = 0;
@@ -103,6 +103,19 @@ class WebUIDataSource {
 
   // Sets the resource to returned when no other paths match.
   virtual void SetDefaultResource(int resource_id) = 0;
+
+  // Adds a mapping between a path name and a response string.
+  // This is used for resources that are generated in the browser process and
+  // passed to the renderer via LocalResourceLoaderConfig, avoiding an IPC
+  // round-trip.
+  virtual void SetResourcePathToResponse(std::string_view path,
+                                         std::string_view content) = 0;
+
+  // Adds resources to the given map. This includes resources set via
+  // SetResourcePathToResponse() and, if UseStringsJs() is enabled, the
+  // generated strings.m.js.
+  virtual void PopulateWebUIResources(
+      base::flat_map<std::string, std::string>& resource_map) const = 0;
 
   // Used as a parameter to GotDataCallback. The caller has to run this callback
   // with the result for the path that they filtered, passing ownership of the

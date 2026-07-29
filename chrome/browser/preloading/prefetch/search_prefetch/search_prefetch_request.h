@@ -7,8 +7,10 @@
 
 #include <memory>
 
+#include "base/callback_list.h"
 #include "base/functional/callback.h"
 #include "chrome/browser/preloading/prefetch/search_prefetch/search_prefetch_url_loader.h"
+#include "chrome/browser/preloading/prerender/search_prewarm_progress_service.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "url/gurl.h"
 
@@ -18,6 +20,7 @@ class StreamingSearchPrefetchURLLoader;
 
 namespace content {
 class PreloadingAttempt;
+class WebContents;
 enum class PreloadingTriggeringOutcome;
 enum class PreloadingFailureReason;
 }  // namespace content
@@ -82,7 +85,8 @@ enum class SearchPrefetchStatus {
 //   more easily.
 class SearchPrefetchRequest {
  public:
-  SearchPrefetchRequest(const GURL& canonical_search_url,
+  SearchPrefetchRequest(Profile& profile,
+                        const GURL& canonical_search_url,
                         const GURL& prefetch_url,
                         bool navigation_prefetch,
                         content::PreloadingAttempt* prefetch_preloading_attempt,
@@ -98,7 +102,8 @@ class SearchPrefetchRequest {
   // Starts the network request to prefetch `prefetch_url_`. Sets various fields
   // on a resource request. Returns `false` if the request is not started (i.e.,
   // it would be deferred by throttles).
-  bool StartPrefetchRequest(Profile* profile);
+  bool StartPrefetchRequest(Profile* profile,
+                            content::WebContents& web_contents);
 
   // Called when SearchPrefetchService receives the hint that this prefetch
   // request can be upgraded to a prerender attempt.
@@ -123,10 +128,6 @@ class SearchPrefetchRequest {
   // And if the AutocompleteMatches suggests to prerender a search result,
   // `MaybeStartPrerenderSearchResult` will be called soon.
   void ResetPrerenderUpgrader();
-
-  // Record the time at which the user clicked a suggestion matching this
-  // prefetch.
-  void RecordClickTime();
 
   // Takes ownership of underlying data/objects needed to serve the response.
   scoped_refptr<StreamingSearchPrefetchURLLoader> TakeSearchPrefetchURLLoader();
@@ -154,6 +155,8 @@ class SearchPrefetchRequest {
   // destruction.
   void SetLoaderDestructionCallbackForTesting(
       base::OnceClosure streaming_url_loader_destruction_callback);
+
+  void OnSearchPrewarmFinished();
 
  private:
   // Stops the on-going prefetch and should mark |current_status_|
@@ -211,9 +214,6 @@ class SearchPrefetchRequest {
 
   base::TimeTicks time_start_prefetch_request_;
 
-  // The time at which the prefetched URL was clicked in the Omnibox.
-  base::TimeTicks time_clicked_;
-
   // Once set, this request will trigger search prerender upon receiving success
   // response.
   base::WeakPtr<PrerenderManager> prerender_manager_;
@@ -222,6 +222,24 @@ class SearchPrefetchRequest {
   // passed to log various metrics. We store WeakPtr as prerender can be deleted
   // before we receive a prefetch response or the prerender is not created.
   base::WeakPtr<content::PreloadingAttempt> prerender_preloading_attempt_;
+
+  // Prewarm page loading status tracker to throttle the concurrent requests to
+  // search.
+  base::WeakPtr<SearchPrewarmProgressService> prewarm_progress_service_;
+
+  base::CallbackListSubscription prewarm_finished_subscription_;
+
+  // Used to store the arguments if the request is throttled.
+  struct PendingRequest {
+    PendingRequest(Profile& profile, content::WebContents* web_contents);
+    ~PendingRequest();
+
+    raw_ptr<Profile> profile;
+    base::WeakPtr<content::WebContents> web_contents;
+  };
+  std::optional<PendingRequest> pending_request_;
+
+  base::WeakPtrFactory<SearchPrefetchRequest> weak_factory_{this};
 };
 
 // Used when DCHECK_STATE_TRANSITION triggers.

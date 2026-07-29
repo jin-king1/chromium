@@ -4,9 +4,14 @@
 
 package org.chromium.ui.test.util;
 
+import android.view.ViewGroup;
+import android.widget.FrameLayout;
+
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
 
+import org.chromium.base.ContextUtils;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.ui.base.ViewAndroidDelegate;
 
 /**
@@ -14,13 +19,15 @@ import org.chromium.ui.base.ViewAndroidDelegate;
  * {@code RenderWidgetHostViewAndroidTest}.
  */
 @JNINamespace("ui")
-class TestViewAndroidDelegate extends ViewAndroidDelegate {
+public class TestViewAndroidDelegate extends ViewAndroidDelegate {
     /** Stores the Visual Viewport bottom inset when under test, just like the real one. */
     private int mApplicationViewportInsetBottomPx;
 
-    /** Private constructor called by the create method from native. */
-    private TestViewAndroidDelegate() {
-        super(null);
+    /**
+     * @param containerView {@link ViewGroup} to be used as a container view.
+     */
+    public TestViewAndroidDelegate(@Nullable ViewGroup containerView) {
+        super(containerView);
     }
 
     /**
@@ -30,7 +37,10 @@ class TestViewAndroidDelegate extends ViewAndroidDelegate {
      */
     @CalledByNative
     private static TestViewAndroidDelegate create() {
-        return new TestViewAndroidDelegate();
+        FrameLayout layout = new FrameLayout(ContextUtils.getApplicationContext());
+        layout.setFocusable(true);
+        layout.setFocusableInTouchMode(true);
+        return new TestViewAndroidDelegate(layout);
     }
 
     /**

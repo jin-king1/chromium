@@ -3,8 +3,12 @@
 // found in the LICENSE file.
 
 import 'chrome://resources/cr_elements/cr_icon/cr_icon.js';
+import 'chrome://resources/cr_elements/cr_link_row/cr_link_row.js';
+import '/shared/settings/controls/cr_policy_pref_indicator.js';
+import './ai_logging_info_bullet.js';
 import '../controls/settings_toggle_button.js';
 import '../settings_columned_section.css.js';
+import '../settings_page/settings_subpage.js';
 import '../settings_shared.css.js';
 
 import {PrefsMixin} from '/shared/settings/prefs/prefs_mixin.js';
@@ -15,13 +19,16 @@ import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bu
 import type {SettingsToggleButtonElement} from '../controls/settings_toggle_button.js';
 import type {MetricsBrowserProxy} from '../metrics_browser_proxy.js';
 import {AiPageHistorySearchInteractions, MetricsBrowserProxyImpl} from '../metrics_browser_proxy.js';
+import {SettingsViewMixin} from '../settings_page/settings_view_mixin.js';
 
 import {getAiLearnMoreUrl} from './ai_learn_more_url_util.js';
 import {isFeatureDisabledByPolicy} from './ai_policy_indicator.js';
 import {AiEnterpriseFeaturePrefName, AiPageActions, FeatureOptInState} from './constants.js';
 import {getTemplate} from './history_search_page.html.js';
 
-const SettingsHistorySearchPageElementBase = PrefsMixin(PolymerElement);
+const SettingsHistorySearchPageElementBase =
+    SettingsViewMixin(PrefsMixin(PolymerElement));
+
 export class SettingsHistorySearchPageElement extends
     SettingsHistorySearchPageElementBase {
   static get is() {
@@ -34,11 +41,6 @@ export class SettingsHistorySearchPageElement extends
 
   static get properties() {
     return {
-      enableAiSettingsPageRefresh_: {
-        type: Boolean,
-        value: () => loadTimeData.getBoolean('enableAiSettingsPageRefresh'),
-      },
-
       featureOptInStateEnum_: {
         type: Object,
         value: FeatureOptInState,
@@ -56,16 +58,7 @@ export class SettingsHistorySearchPageElement extends
             [FeatureOptInState.DISABLED, FeatureOptInState.NOT_INITIALIZED],
       },
 
-      toggleSubLabel_: {
-        type: String,
-        value: () => {
-          return loadTimeData.getBoolean(
-                     'historyEmbeddingsAnswersFeatureEnabled') ?
-              loadTimeData.getString('historySearchAnswersSettingSublabel') :
-              loadTimeData.getString('historySearchSettingSublabel');
-        },
-      },
-
+      // TODO(crbug.com/362225975): Remove V2 suffixes.
       toggleSubLabelV2_: {
         type: String,
         value: () => {
@@ -89,9 +82,10 @@ export class SettingsHistorySearchPageElement extends
     };
   }
 
-  private enableAiSettingsPageRefresh_: boolean;
-  private numericUncheckedValues_: FeatureOptInState[];
-  private enterprisePref_: chrome.settingsPrivate.PrefObject;
+  declare private isAnswersFeatureEnabled_: boolean;
+  declare private numericUncheckedValues_: FeatureOptInState[];
+  declare private toggleSubLabelV2_: string;
+  declare private enterprisePref_: chrome.settingsPrivate.PrefObject;
   private metricsBrowserProxy_: MetricsBrowserProxy =
       MetricsBrowserProxyImpl.getInstance();
 
@@ -143,6 +137,11 @@ export class SettingsHistorySearchPageElement extends
 
   private isDisabledByPolicy_(): boolean {
     return isFeatureDisabledByPolicy(this.enterprisePref_);
+  }
+
+  // SettingsViewMixin implementation.
+  override focusBackButton() {
+    this.shadowRoot!.querySelector('settings-subpage')!.focusBackButton();
   }
 }
 

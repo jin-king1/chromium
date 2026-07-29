@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <string>
 
+#include "base/functional/callback_helpers.h"
+#include "services/network/public/cpp/web_sandbox_flags.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/origin_trials/scoped_test_origin_trial_policy.h"
 #include "third_party/blink/public/platform/web_runtime_features.h"
@@ -302,6 +304,11 @@ TEST_F(WebDocumentFirstPartyTest, EmptySandbox) {
       mock_policy_container_host.BindNewEndpointAndPassDedicatedRemote());
   params->policy_container->policies.sandbox_flags =
       network::mojom::blink::WebSandboxFlags::kAll;
+  if ((params->policy_container->policies.sandbox_flags &
+       network::mojom::blink::WebSandboxFlags::kOrigin) !=
+      network::mojom::blink::WebSandboxFlags::kNone) {
+    params->origin_to_commit = SecurityOrigin::CreateUniqueOpaque();
+  }
   frame->CommitNavigation(std::move(params), nullptr /* extra_data */);
   frame_test_helpers::PumpPendingRequestsForFrameToLoad(frame);
 
@@ -484,9 +491,12 @@ TEST_F(WebDocumentFirstPartyTest,
   // TODO(crbug.com/1329535): Remove if threaded preload scanner doesn't launch.
   // This is needed because the preload scanner creates a thread when loading a
   // page.
-  WTF::SetIsBeforeThreadCreatedForTest();
+  SetIsBeforeThreadCreatedForTest();
 #endif
   SchemeRegistry::RegisterURLSchemeAsFirstPartyWhenTopLevel("http");
+  base::ScopedClosureRunner cleanup(base::BindOnce([]() {
+    SchemeRegistry::RemoveURLSchemeAsFirstPartyWhenTopLevelForTest("http");
+  }));
 
   ASSERT_TRUE(SiteForCookiesEqual(g_nested_origin_a_in_origin_b,
                                   TopDocument()->SiteForCookies()));

@@ -24,6 +24,7 @@
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
+#include "base/notreached.h"
 #include "base/numerics/byte_conversions.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/stringprintf.h"
@@ -32,10 +33,13 @@
 #include "net/base/io_buffer.h"
 #include "net/base/net_errors.h"
 #include "net/http/http_response_headers.h"
+#include "net/log/net_log_capture_mode.h"
 #include "net/log/net_log_event_type.h"
+#include "net/log/net_log_source_type.h"
 #include "net/log/net_log_with_source.h"
 #include "net/storage_access_api/status.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
+#include "net/url_request/url_request_context.h"
 #include "net/websockets/websocket_errors.h"
 #include "net/websockets/websocket_event_interface.h"
 #include "net/websockets/websocket_frame.h"
@@ -128,10 +132,10 @@ void GetFrameTypeForOpcode(WebSocketFrameHeader::OpCode opcode,
   return;
 }
 
-base::Value::Dict NetLogFailParam(uint16_t code,
-                                  std::string_view reason,
-                                  std::string_view message) {
-  base::Value::Dict dict;
+base::DictValue NetLogFailParam(uint16_t code,
+                                std::string_view reason,
+                                std::string_view message) {
+  base::DictValue dict;
   dict.Set("code", code);
   dict.Set("reason", reason);
   dict.Set("internal_reason", message);
@@ -188,9 +192,10 @@ class WebSocketChannel::ConnectDelegate
     creator_->OnCreateURLRequest(request);
   }
 
-  void OnURLRequestConnected(URLRequest* request,
-                             const TransportInfo& info) override {
-    creator_->OnURLRequestConnected(request, info);
+  int OnURLRequestConnected(URLRequest* request,
+                            const TransportInfo& info,
+                            CompletionOnceCallback callback) override {
+    return creator_->OnURLRequestConnected(request, info, std::move(callback));
   }
 
   void OnSuccess(
@@ -248,9 +253,18 @@ WebSocketChannel::WebSocketChannel(
       closing_handshake_timeout_(
           base::Seconds(kClosingHandshakeTimeoutSeconds)),
       underlying_connection_close_timeout_(
-          base::Seconds(kUnderlyingConnectionCloseTimeoutSeconds)) {}
+          base::Seconds(kUnderlyingConnectionCloseTimeoutSeconds)),
+      creation_time_(base::TimeTicks::Now()),
+      net_log_(NetLogWithSource::Make(url_request_context->net_log(),
+                                      NetLogSourceType::WEBSOCKET_CHANNEL)) {
+  net_log_.BeginEvent(NetLogEventType::WEBSOCKET_ALIVE,
+                      [&](NetLogCaptureMode capture_mode) {
+                        return GetStateAsValue(capture_mode);
+                      });
+}
 
 WebSocketChannel::~WebSocketChannel() {
+  net_log_.EndEvent(NetLogEventType::WEBSOCKET_ALIVE);
   // The stream may hold a pointer to read_frames_, and so it needs to be
   // destroyed first.
   stream_.reset();
@@ -259,26 +273,61 @@ WebSocketChannel::~WebSocketChannel() {
   close_timer_.Stop();
 }
 
+// static
+const char* WebSocketChannel::StateToString(State state) {
+  switch (state) {
+    case FRESHLY_CONSTRUCTED:
+      return "FRESHLY_CONSTRUCTED";
+    case CONNECTING:
+      return "CONNECTING";
+    case CONNECTED:
+      return "CONNECTED";
+    case SEND_CLOSED:
+      return "SEND_CLOSED";
+    case RECV_CLOSED:
+      return "RECV_CLOSED";
+    case CLOSE_WAIT:
+      return "CLOSE_WAIT";
+    case CLOSED:
+      return "CLOSED";
+  }
+  NOTREACHED();
+}
+
+base::DictValue WebSocketChannel::GetStateAsValue(
+    NetLogCaptureMode capture_mode) const {
+  return base::DictValue()
+      .Set("url", SanitizeUrlForNetLog(socket_url_, capture_mode))
+      .Set("state", StateToString(state_));
+}
+
 void WebSocketChannel::SendAddChannelRequest(
     const GURL& socket_url,
     const std::vector<std::string>& requested_subprotocols,
     const url::Origin& origin,
-    const SiteForCookies& site_for_cookies,
     StorageAccessApiStatus storage_access_api_status,
     const IsolationInfo& isolation_info,
     const HttpRequestHeaders& additional_headers,
+    WebSocketPriorityHint priority_hint,
     NetworkTrafficAnnotationTag traffic_annotation) {
   SendAddChannelRequestWithSuppliedCallback(
-      socket_url, requested_subprotocols, origin, site_for_cookies,
-      storage_access_api_status, isolation_info, additional_headers,
-      traffic_annotation,
+      socket_url, requested_subprotocols, origin, storage_access_api_status,
+      isolation_info, additional_headers, priority_hint, traffic_annotation,
       base::BindOnce(&WebSocketStream::CreateAndConnectStream));
 }
 
 void WebSocketChannel::SetState(State new_state) {
   DCHECK_NE(state_, new_state);
 
+  State old_state = state_;
   state_ = new_state;
+
+  net_log_.AddEvent(NetLogEventType::WEBSOCKET_STATE_CHANGED,
+                    [old_state, new_state] {
+                      return base::DictValue()
+                          .Set("old_state", StateToString(old_state))
+                          .Set("new_state", StateToString(new_state));
+                    });
 }
 
 bool WebSocketChannel::InClosingState() const {
@@ -315,7 +364,7 @@ WebSocketChannel::ChannelState WebSocketChannel::SendFrame(
       (op_code == WebSocketFrameHeader::kOpCodeContinuation &&
        sending_text_message_)) {
     StreamingUtf8Validator::State state =
-        outgoing_utf8_validator_.AddBytes(buffer->span().first(buffer_size));
+        outgoing_utf8_validator_.AddBytes(buffer->first(buffer_size));
     if (state == StreamingUtf8Validator::INVALID ||
         (state == StreamingUtf8Validator::VALID_MIDPOINT && fin)) {
       // TODO(ricea): Kill renderer.
@@ -394,16 +443,16 @@ void WebSocketChannel::SendAddChannelRequestForTesting(
     const GURL& socket_url,
     const std::vector<std::string>& requested_subprotocols,
     const url::Origin& origin,
-    const SiteForCookies& site_for_cookies,
     StorageAccessApiStatus storage_access_api_status,
     const IsolationInfo& isolation_info,
     const HttpRequestHeaders& additional_headers,
+    WebSocketPriorityHint priority_hint,
     NetworkTrafficAnnotationTag traffic_annotation,
     WebSocketStreamRequestCreationCallback callback) {
   SendAddChannelRequestWithSuppliedCallback(
-      socket_url, requested_subprotocols, origin, site_for_cookies,
-      storage_access_api_status, isolation_info, additional_headers,
-      traffic_annotation, std::move(callback));
+      socket_url, requested_subprotocols, origin, storage_access_api_status,
+      isolation_info, additional_headers, priority_hint, traffic_annotation,
+      std::move(callback));
 }
 
 void WebSocketChannel::SetClosingHandshakeTimeoutForTesting(
@@ -420,26 +469,21 @@ void WebSocketChannel::SendAddChannelRequestWithSuppliedCallback(
     const GURL& socket_url,
     const std::vector<std::string>& requested_subprotocols,
     const url::Origin& origin,
-    const SiteForCookies& site_for_cookies,
     StorageAccessApiStatus storage_access_api_status,
     const IsolationInfo& isolation_info,
     const HttpRequestHeaders& additional_headers,
+    WebSocketPriorityHint priority_hint,
     NetworkTrafficAnnotationTag traffic_annotation,
     WebSocketStreamRequestCreationCallback callback) {
   DCHECK_EQ(FRESHLY_CONSTRUCTED, state_);
-  if (!socket_url.SchemeIsWSOrWSS()) {
-    // TODO(ricea): Kill the renderer (this error should have been caught by
-    // Javascript).
-    event_interface_->OnFailChannel("Invalid scheme", ERR_FAILED, std::nullopt);
-    // |this| is deleted here.
-    return;
-  }
+  CHECK(socket_url.SchemeIsWSOrWSS());
+
   socket_url_ = socket_url;
   auto connect_delegate = std::make_unique<ConnectDelegate>(this);
   stream_request_ = std::move(callback).Run(
-      socket_url_, requested_subprotocols, origin, site_for_cookies,
-      storage_access_api_status, isolation_info, additional_headers,
-      url_request_context_.get(), NetLogWithSource(), traffic_annotation,
+      socket_url_, requested_subprotocols, origin, storage_access_api_status,
+      isolation_info, additional_headers, url_request_context_.get(),
+      NetLogWithSource(), priority_hint, traffic_annotation,
       std::move(connect_delegate));
   SetState(CONNECTING);
 }
@@ -448,9 +492,11 @@ void WebSocketChannel::OnCreateURLRequest(URLRequest* request) {
   event_interface_->OnCreateURLRequest(request);
 }
 
-void WebSocketChannel::OnURLRequestConnected(URLRequest* request,
-                                             const TransportInfo& info) {
-  event_interface_->OnURLRequestConnected(request, info);
+int WebSocketChannel::OnURLRequestConnected(URLRequest* request,
+                                            const TransportInfo& info,
+                                            CompletionOnceCallback callback) {
+  return event_interface_->OnURLRequestConnected(request, info,
+                                                 std::move(callback));
 }
 
 void WebSocketChannel::OnConnectSuccess(
@@ -886,8 +932,7 @@ ChannelState WebSocketChannel::SendFrameInternal(
   header.final = fin;
   header.masked = true;
   header.payload_length = buffer_size;
-  frame->payload =
-      buffer->span().first(base::checked_cast<size_t>(buffer_size));
+  frame->payload = buffer->first(base::checked_cast<size_t>(buffer_size));
 
   if (data_being_sent_) {
     // Either the link to the WebSocket server is saturated, or several messages

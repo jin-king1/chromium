@@ -4,6 +4,8 @@
 
 package org.chromium.chrome.browser.task_manager;
 
+import android.graphics.Bitmap;
+
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
 import org.jni_zero.NativeMethods;
@@ -29,7 +31,7 @@ public class TaskManagerServiceBridge {
          */
         public final boolean hasDuplicates;
 
-        @CalledByNative("GpuMemoryUsage")
+        @CalledByNative
         GpuMemoryUsage(long bytes, boolean hasDuplicates) {
             this.bytes = bytes;
             this.hasDuplicates = hasDuplicates;
@@ -38,8 +40,7 @@ public class TaskManagerServiceBridge {
         @Override
         public boolean equals(Object other) {
             if (this == other) return true;
-            if (other == null) return false;
-            if (getClass() != other.getClass()) return false;
+            if (!(other instanceof GpuMemoryUsage)) return false;
             GpuMemoryUsage that = (GpuMemoryUsage) other;
             return this.bytes == that.bytes && this.hasDuplicates == that.hasDuplicates;
         }
@@ -74,6 +75,10 @@ public class TaskManagerServiceBridge {
         return TaskManagerServiceBridgeJni.get().getTitle(taskId);
     }
 
+    public Bitmap getIcon(long taskId) {
+        return TaskManagerServiceBridgeJni.get().getIcon(taskId);
+    }
+
     public long getMemoryFootprintUsage(long taskId) {
         return TaskManagerServiceBridgeJni.get().getMemoryFootprintUsage(taskId);
     }
@@ -103,7 +108,7 @@ public class TaskManagerServiceBridge {
     }
 
     public static class ObserverHandle {
-        private long mPointer;
+        private final long mPointer;
 
         ObserverHandle(long pointer) {
             mPointer = pointer;
@@ -122,6 +127,8 @@ public class TaskManagerServiceBridge {
         void removeObserver(long pointer);
 
         String getTitle(long taskid);
+
+        Bitmap getIcon(long taskId);
 
         long getMemoryFootprintUsage(long taskId);
 

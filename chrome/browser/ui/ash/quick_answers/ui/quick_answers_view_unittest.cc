@@ -355,7 +355,6 @@ TEST_F(QuickAnswersViewsTest, ResultWithPhoneticsAudio) {
   definition_result.phonetics_info.query_text = kPhoneticsInfoQueryText;
   definition_result.phonetics_info.phonetics_audio =
       GURL(kPhoneticsInfoAudioUrl);
-  definition_result.phonetics_info.tts_audio_enabled = true;
   SendResult(definition_result);
 
   ResultView* result_view = GetQuickAnswersView()->GetResultViewForTesting();
@@ -377,8 +376,6 @@ TEST_F(QuickAnswersViewsTest, ResultWithPhoneticsAudio) {
 
 TEST_F(QuickAnswersViewsTest, OpenSettings) {
   MockSettingsWindowManager mock_settings_window_manager;
-  chrome::SettingsWindowManager::SetInstanceForTesting(
-      &mock_settings_window_manager);
 
   EXPECT_CALL(
       mock_settings_window_manager,
@@ -523,7 +520,6 @@ TEST_F(QuickAnswersViewsTest, Definition) {
   definition_result.phonetics_info.query_text = kPhoneticsInfoQueryText;
   definition_result.phonetics_info.phonetics_audio =
       GURL(kPhoneticsInfoAudioUrl);
-  definition_result.phonetics_info.tts_audio_enabled = true;
   SendResult(definition_result);
 
   ResultView* result_view = GetQuickAnswersView()->GetResultViewForTesting();
@@ -626,7 +622,6 @@ TEST_F(QuickAnswersViewsTest, AccessibilityDescriptionMagicBoost) {
   definition_result.phonetics_info.query_text = kPhoneticsInfoQueryText;
   definition_result.phonetics_info.phonetics_audio =
       GURL(kPhoneticsInfoAudioUrl);
-  definition_result.phonetics_info.tts_audio_enabled = true;
   SendResult(definition_result);
 
   EXPECT_EQ(GetQuickAnswersView()->GetAccessibleDescription(),
@@ -648,7 +643,6 @@ TEST_F(QuickAnswersViewsTest, AccessibilityDescriptionRefresh) {
   definition_result.phonetics_info.query_text = kPhoneticsInfoQueryText;
   definition_result.phonetics_info.phonetics_audio =
       GURL(kPhoneticsInfoAudioUrl);
-  definition_result.phonetics_info.tts_audio_enabled = true;
   SendResult(definition_result);
 
   EXPECT_EQ(GetQuickAnswersView()->GetAccessibleDescription(),

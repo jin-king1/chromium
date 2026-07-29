@@ -38,6 +38,7 @@
 #include "ash/wm/work_area_insets.h"
 #include "base/command_line.h"
 #include "base/run_loop.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
@@ -58,6 +59,8 @@
 #include "ui/wm/core/window_util.h"
 
 namespace ash {
+
+using chromeos::AppType;
 
 using ::chromeos::WindowStateType;
 
@@ -153,7 +156,7 @@ class TabletModeWindowManagerTest : public AshTestBase {
   // Resize our desktop.
   void ResizeDesktop(int width_delta) {
     gfx::Size size =
-        display::Screen::GetScreen()
+        display::Screen::Get()
             ->GetDisplayNearestWindow(Shell::GetPrimaryRootWindow())
             .size();
     size.Enlarge(0, width_delta);
@@ -163,15 +166,19 @@ class TabletModeWindowManagerTest : public AshTestBase {
   // Create a window in one of the containers which are watched by the
   // TabletModeWindowManager. Note that this only works with one root window.
   aura::Window* CreateWindowInWatchedContainer(const InitParams& params) {
-    aura::test::TestWindowDelegate* delegate = NULL;
+    aura::test::TestWindowDelegate* delegate =
+        aura::test::TestWindowDelegate::CreateSelfDestroyingDelegate();
     if (!params.can_maximize) {
-      delegate = aura::test::TestWindowDelegate::CreateSelfDestroyingDelegate();
       delegate->set_window_component(HTCAPTION);
       if (!params.max_size.IsEmpty())
         delegate->set_maximum_size(params.max_size);
     }
-    aura::Window* window = aura::test::CreateTestWindowWithDelegateAndType(
-        delegate, params.type, 0, params.bounds, NULL, params.show_on_creation);
+    aura::Window* window =
+        aura::test::CreateTestWindow({.delegate = delegate,
+                                      .bounds = params.bounds,
+                                      .window_type = params.type,
+                                      .show = params.show_on_creation})
+            .release();
     int32_t behavior = aura::client::kResizeBehaviorNone |
                        aura::client::kResizeBehaviorCanFullscreen;
     behavior |= params.can_resize ? aura::client::kResizeBehaviorCanResize : 0;
@@ -947,7 +954,8 @@ TEST_F(TabletModeWindowManagerTest, UnminimizeInTabletMode) {
 // Tests that if we minimize a snapped window, it is snapped upon unminimizing.
 TEST_F(TabletModeWindowManagerTest, UnminimizeSnapInTabletMode) {
   Shell::Get()->tablet_mode_controller()->SetEnabledForTest(true);
-  std::unique_ptr<aura::Window> window = CreateAppWindow();
+  std::unique_ptr<aura::Window> window =
+      CreateWindowWithAppType(AppType::SYSTEM_APP);
   auto* window_state = WindowState::Get(window.get());
   WindowSnapWMEvent event(WM_EVENT_SNAP_PRIMARY);
   window_state->OnWMEvent(&event);
@@ -1173,6 +1181,43 @@ TEST_F(TabletModeWindowManagerTest, KeepPinnedModeOn_Case5) {
   // Exit tablet mode.
   DestroyTabletModeWindowManager();
   EXPECT_FALSE(window_state->IsPinned());
+}
+
+TEST_F(TabletModeWindowManagerTest, LockedFullscreenWindowCannotMinimize) {
+  std::unique_ptr<aura::Window> window(CreateWindow(
+      aura::client::WINDOW_TYPE_NORMAL, gfx::Rect(20, 140, 100, 100)));
+  WindowState* window_state = WindowState::Get(window.get());
+  EXPECT_FALSE(window_state->IsPinned());
+
+  // Enter tablet mode.
+  CreateTabletModeWindowManager();
+
+  // Pin the window (standard pin).
+  {
+    WMEvent event(WM_EVENT_PIN);
+    window_state->OnWMEvent(&event);
+  }
+  EXPECT_TRUE(window_state->IsPinned());
+  EXPECT_FALSE(window_state->IsLockedFullscreen());
+
+  // Standard pinned window should allow minimize event in tablet mode.
+  window_state->Minimize();
+  EXPECT_TRUE(window_state->IsMinimized());
+
+  // Locked fullscreen window should ignore minimize event.
+  window_state->Restore();
+  {
+    WMEvent event(WM_EVENT_LOCKED_FULLSCREEN);
+    window_state->OnWMEvent(&event);
+  }
+  EXPECT_TRUE(window_state->IsLockedFullscreen());
+
+  window_state->Minimize();
+  EXPECT_TRUE(window_state->IsLockedFullscreen());
+  EXPECT_FALSE(window_state->IsMinimized());
+
+  // Exit tablet mode.
+  DestroyTabletModeWindowManager();
 }
 
 // Verifies that if a window is un-full-screened while in tablet mode,
@@ -1582,13 +1627,30 @@ TEST_F(TabletModeWindowManagerTest, StateTypeChange) {
 TEST_F(TabletModeWindowManagerTest, SetPropertyOnUnmanagedWindow) {
   Shell::Get()->tablet_mode_controller()->SetEnabledForTest(true);
   InitParams params(aura::client::WINDOW_TYPE_NORMAL);
-  params.bounds = gfx::Rect(10, 10, 100, 100);
+  params.bounds = {10, 10, 100, 100};
   params.show_on_creation = false;
   std::unique_ptr<aura::Window> window(CreateWindowInWatchedContainer(params));
   WindowState::Get(window.get())->set_allow_set_bounds_direct(true);
   window->SetProperty(aura::client::kZOrderingKey,
                       ui::ZOrderLevel::kFloatingWindow);
   window->Show();
+}
+
+// Test that showing after creation keeps the fullscreen state in tablet mode.
+// See crbug.com/7073232 for the regression.
+TEST_F(TabletModeWindowManagerTest, ShowAfterCreateionKeepsFullscreenState) {
+  Shell::Get()->tablet_mode_controller()->SetEnabledForTest(true);
+  InitParams params(aura::client::WINDOW_TYPE_NORMAL);
+  params.bounds = {10, 10, 100, 100};
+  params.show_on_creation = false;
+  std::unique_ptr<aura::Window> window(CreateWindowInWatchedContainer(params));
+  ::wm::SetWindowFullscreen(window.get(), true);
+
+  // Show after creation will trigger ADDED_TO_WORKSPACE event.
+  window->Show();
+
+  EXPECT_TRUE(::wm::WindowStateIs(window.get(),
+                                  ui::mojom::WindowShowState::kFullscreen));
 }
 
 // Test that the minimized window bounds doesn't change until it's unminimized.
@@ -1813,7 +1875,7 @@ TEST_F(TabletModeWindowManagerTest,
 // Tests partial split clamshell <-> tablet transition.
 TEST_F(TabletModeWindowManagerTest, PartialClamshellTabletTransitionTest) {
   // 1. Create a window and snap to primary 2/3.
-  auto window1 = CreateTestWindow();
+  auto window1 = CreateWindowWithAppType();
   OverviewController* overview_controller = OverviewController::Get();
   const WindowSnapWMEvent snap_primary_two_third(WM_EVENT_SNAP_PRIMARY,
                                                  chromeos::kTwoThirdSnapRatio);
@@ -1824,7 +1886,7 @@ TEST_F(TabletModeWindowManagerTest, PartialClamshellTabletTransitionTest) {
   EXPECT_TRUE(overview_controller->InOverviewSession());
   EXPECT_TRUE(split_view_controller()->IsWindowInSplitView(window1.get()));
   const gfx::Rect work_area_bounds =
-      display::Screen::GetScreen()->GetPrimaryDisplay().work_area();
+      display::Screen::Get()->GetPrimaryDisplay().work_area();
   int divider_origin_x = split_view_controller()
                              ->split_view_divider()
                              ->GetDividerBoundsInScreen(
@@ -1841,7 +1903,7 @@ TEST_F(TabletModeWindowManagerTest, PartialClamshellTabletTransitionTest) {
             window1->bounds().width());
 
   // 2. Create another window and snap to secondary at 1/3.
-  auto window2 = CreateTestWindow();
+  auto window2 = CreateWindowWithAppType();
   const WindowSnapWMEvent snap_secondary_one_third(
       WM_EVENT_SNAP_SECONDARY, chromeos::kOneThirdSnapRatio);
   WindowState::Get(window2.get())->OnWMEvent(&snap_secondary_one_third);
@@ -1870,7 +1932,7 @@ TEST_F(TabletModeWindowManagerTest, PartialClamshellTabletTransitionTest) {
   // Exit tablet mode and verify the windows are still at 2/3, with allowance
   // for the divider width since it is only there in tablet mode.
   DestroyTabletModeWindowManager();
-  if (!display::Screen::GetScreen()->InTabletMode()) {
+  if (!display::Screen::Get()->InTabletMode()) {
     EXPECT_NEAR(
         std::round(work_area_bounds.width() * chromeos::kTwoThirdSnapRatio),
         window1->bounds().width(), divider_delta);
@@ -1907,18 +1969,10 @@ TEST_F(TabletModeWindowManagerTest, HomeLauncherVisibilityTest) {
       Shell::Get()->app_list_controller()->GetHomeScreenWindow();
   EXPECT_FALSE(home_screen_window->TargetVisibility());
 
-  base::HistogramTester tester;
-  tester.ExpectBucketCount(
-      kHotseatGestureHistogramName,
-      InAppShelfGestures::kHotseatHiddenDueToInteractionOutsideOfShelf, 0);
-
   // Tap at window to leave the overview mode.
   GetEventGenerator()->GestureTapAt(window->GetBoundsInScreen().CenterPoint());
   ShellTestApi().WaitForOverviewAnimationState(
       OverviewAnimationState::kExitAnimationComplete);
-  tester.ExpectBucketCount(
-      kHotseatGestureHistogramName,
-      InAppShelfGestures::kHotseatHiddenDueToInteractionOutsideOfShelf, 0);
 
   EXPECT_FALSE(overview_controller->InOverviewSession());
   EXPECT_TRUE(home_screen_window->TargetVisibility());
@@ -2005,6 +2059,56 @@ TEST_F(TabletModeWindowManagerTest, NonMaximizableWindowRestore) {
   // Restoring a kNormal window will keep it in the same kNormal state.
   window_state->Restore();
   EXPECT_EQ(window_state->GetStateType(), WindowStateType::kNormal);
+}
+
+TEST_F(TabletModeWindowManagerTest, StateTypeOnAttachNewDragWindow) {
+  CreateTabletModeWindowManager();
+
+  // Simulate tab drag out of maximized window.
+  {
+    std::unique_ptr<aura::Window> source_window =
+        CreateWindowWithAppType(AppType::BROWSER);
+    WindowState* source_window_state = WindowState::Get(source_window.get());
+
+    std::unique_ptr<aura::Window> drag_window =
+        CreateWindowWithAppType(AppType::BROWSER, {}, kShellWindowId_Invalid,
+                                /*delegate=*/nullptr, /*show=*/false);
+    WindowState* drag_window_state = WindowState::Get(drag_window.get());
+    drag_window->SetProperty(ash::kIsDraggingTabsKey, true);
+    drag_window->SetProperty(ash::kTabDraggingSourceWindowKey,
+                             source_window->GetWeakPtrAsWindow());
+
+    EXPECT_EQ(source_window_state->GetStateType(), WindowStateType::kMaximized);
+    EXPECT_EQ(drag_window_state->GetStateType(), WindowStateType::kDefault);
+    drag_window->Show();
+    EXPECT_EQ(drag_window_state->GetStateType(), WindowStateType::kMaximized);
+  }
+
+  // Simulate tab drag out of snapped window.
+  {
+    std::unique_ptr<aura::Window> source_window =
+        CreateWindowWithAppType(AppType::BROWSER);
+    WindowState* source_window_state = WindowState::Get(source_window.get());
+    const WindowSnapWMEvent primary_snap_event(WM_EVENT_SNAP_PRIMARY);
+    source_window_state->OnWMEvent(&primary_snap_event);
+
+    std::unique_ptr<aura::Window> drag_window =
+        CreateWindowWithAppType(AppType::BROWSER, {}, kShellWindowId_Invalid,
+                                /*delegate=*/nullptr, /*show=*/false);
+    WindowState* drag_window_state = WindowState::Get(drag_window.get());
+    drag_window->SetProperty(ash::kIsDraggingTabsKey, true);
+    drag_window->SetProperty(ash::kTabDraggingSourceWindowKey,
+                             source_window->GetWeakPtrAsWindow());
+
+    EXPECT_EQ(source_window_state->GetStateType(),
+              WindowStateType::kPrimarySnapped);
+    EXPECT_EQ(drag_window_state->GetStateType(), WindowStateType::kDefault);
+    drag_window->Show();
+    EXPECT_EQ(drag_window_state->GetStateType(),
+              WindowStateType::kPrimarySnapped);
+  }
+
+  DestroyTabletModeWindowManager();
 }
 
 }  // namespace ash

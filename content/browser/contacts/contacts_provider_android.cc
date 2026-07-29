@@ -17,6 +17,7 @@
 #include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/public/browser/contacts_picker_properties.h"
 #include "content/public/browser/web_contents.h"
+#include "third_party/jni_zero/system_jni_unchecked_exceptions/ByteBuffer_jni.h"
 #include "url/origin.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
@@ -25,7 +26,7 @@
 namespace content {
 
 ContactsProviderAndroid::ContactsProviderAndroid(
-    RenderFrameHostImpl* render_frame_host) {
+    RenderFrameHost* render_frame_host) {
   JNIEnv* env = base::android::AttachCurrentThread();
 
   WebContents* web_contents =
@@ -72,11 +73,11 @@ void ContactsProviderAndroid::Select(bool multiple,
 
 void ContactsProviderAndroid::AddContact(
     JNIEnv* env,
-    const base::android::JavaParamRef<jobjectArray>& names_java,
-    const base::android::JavaParamRef<jobjectArray>& emails_java,
-    const base::android::JavaParamRef<jobjectArray>& tel_java,
-    const base::android::JavaParamRef<jobjectArray>& addresses_java,
-    const base::android::JavaParamRef<jobjectArray>& icons_java) {
+    const base::android::JavaRef<JArray<jstring>>& names_java,
+    const base::android::JavaRef<JArray<jstring>>& emails_java,
+    const base::android::JavaRef<JArray<jstring>>& tel_java,
+    const base::android::JavaRef<JArray<JByteBuffer>>& addresses_java,
+    const base::android::JavaRef<JArray<JByteBuffer>>& icons_java) {
   DCHECK(callback_);
 
   std::optional<std::vector<std::string>> names;
@@ -107,11 +108,10 @@ void ContactsProviderAndroid::AddContact(
   if (addresses_java) {
     std::vector<payments::mojom::PaymentAddressPtr> addresses_vector;
 
-    for (const base::android::JavaRef<jbyteArray>& j_address :
-         addresses_java.ReadElements<jbyteArray>()) {
+    for (const auto& j_address : addresses_java.CreateView(env)) {
       payments::mojom::PaymentAddressPtr address;
       base::span<const uint8_t> address_bytes =
-          base::android::JavaByteBufferToSpan(env, j_address.obj());
+          base::android::JavaByteBufferToSpan(env, j_address);
       if (!payments::mojom::PaymentAddress::Deserialize(
               address_bytes.data(), address_bytes.size(), &address)) {
         continue;
@@ -126,11 +126,10 @@ void ContactsProviderAndroid::AddContact(
   if (icons_java) {
     std::vector<blink::mojom::ContactIconBlobPtr> icons_vector;
 
-    for (const base::android::JavaRef<jbyteArray>& j_icon :
-         icons_java.ReadElements<jbyteArray>()) {
+    for (const auto& j_icon : icons_java.CreateView(env)) {
       blink::mojom::ContactIconBlobPtr icon;
       base::span<const uint8_t> icon_bytes =
-          base::android::JavaByteBufferToSpan(env, j_icon.obj());
+          base::android::JavaByteBufferToSpan(env, j_icon);
       if (!blink::mojom::ContactIconBlob::Deserialize(
               icon_bytes.data(), icon_bytes.size(), &icon)) {
         continue;
@@ -149,8 +148,8 @@ void ContactsProviderAndroid::AddContact(
 }
 
 void ContactsProviderAndroid::EndContactsList(JNIEnv* env,
-                                              jint percentage_shared,
-                                              jint properties_requested) {
+                                              int32_t percentage_shared,
+                                              int32_t properties_requested) {
   DCHECK(callback_);
   ContactsPickerProperties properties =
       static_cast<ContactsPickerProperties>(properties_requested);
@@ -164,3 +163,5 @@ void ContactsProviderAndroid::EndWithPermissionDenied(JNIEnv* env) {
 }
 
 }  // namespace content
+
+DEFINE_JNI(ContactsDialogHost)

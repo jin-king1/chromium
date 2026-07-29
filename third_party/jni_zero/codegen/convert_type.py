@@ -28,7 +28,7 @@ def to_jni_expression(sb: common.StringBuilder,
     sb.param_list(['env', rvalue])
     return
 
-  if java_type == java_types.LIST:
+  if java_type.java_class == java_types.LIST_CLASS:
     sb(f'jni_zero::ToJniList')
     sb.param_list(['env', rvalue])
     return
@@ -93,9 +93,9 @@ def from_jni_expression(sb: common.StringBuilder,
     jtype = 'jobject'
 
   if release_ref:
-    rvalue = f'jni_zero::ScopedJavaLocalRef<{jtype}>(env, {rvalue})'
+    rvalue = f'jni_zero::ScopedJavaLocalRef<{jtype}>::Adopt(env, {rvalue})'
   else:
-    rvalue = f'jni_zero::JavaParamRef<{jtype}>(env, {rvalue})'
+    rvalue = f'jni_zero::JavaRef<{jtype}>::CreateLeaky(env, {rvalue})'
 
   if java_type.is_collection():
     sb(f'jni_zero::FromJniCollection<{T}>')

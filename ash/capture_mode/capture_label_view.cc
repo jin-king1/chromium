@@ -157,12 +157,17 @@ CaptureLabelView::CaptureLabelView(
       shadow_(SystemShadow::CreateShadowOnTextureLayer(
           SystemShadow::Type::kElevation12)) {
   SetPaintToLayer();
-  layer()->SetFillsBoundsOpaquely(false);
-
-  SetBackground(views::CreateSolidBackground(kColorAshShieldAndBase80));
   layer()->SetRoundedCornerRadius(gfx::RoundedCornersF(kCaptureLabelRadius));
-  layer()->SetBackgroundBlur(ColorProvider::kBackgroundBlurSigma);
-  layer()->SetBackdropFilterQuality(ColorProvider::kBackgroundBlurQuality);
+  SetBackground(views::CreateSolidBackground(
+      chromeos::features::IsSystemBlurEnabled()
+          ? static_cast<ui::ColorId>(kColorAshShieldAndBase80)
+          : cros_tokens::kCrosSysSystemOnBaseOpaque));
+
+  if (chromeos::features::IsSystemBlurEnabled()) {
+    layer()->SetFillsBoundsOpaquely(false);
+    layer()->SetBackgroundBlur(ColorProvider::kBackgroundBlurSigma);
+    layer()->SetBackdropFilterQuality(ColorProvider::kBackgroundBlurQuality);
+  }
 
   capture_button_container_ = AddChildView(std::make_unique<CaptureButtonView>(
       std::move(on_capture_button_pressed),
@@ -208,7 +213,7 @@ void CaptureLabelView::UpdateIconAndText() {
   CaptureModeController* controller = CaptureModeController::Get();
   const CaptureModeSource source = controller->source();
   const bool is_capturing_image = controller->type() == CaptureModeType::kImage;
-  const bool in_tablet_mode = display::Screen::GetScreen()->InTabletMode();
+  const bool in_tablet_mode = display::Screen::Get()->InTabletMode();
 
   // Depending on the current state, only one of the two views
   // `capture_button_container_` or `label_` can be visible at a time.
@@ -265,7 +270,13 @@ void CaptureLabelView::UpdateIconAndText() {
   label_->SetVisible(label_visibility);
   if (label_visibility && (label_->GetText() != text)) {
     label_->SetText(text);
-    capture_mode_util::TriggerAccessibilityAlertSoon(base::UTF16ToUTF8(text));
+
+    // Don't trigger an accessibility alert if we are in a Sunfish session, as
+    // the sunfish label text differs from the session open alert.
+    if (!capture_mode_session_->active_behavior()
+             ->ShouldPaintSunfishCaptureRegion()) {
+      capture_mode_util::TriggerAccessibilityAlertSoon(base::UTF16ToUTF8(text));
+    }
   }
 }
 

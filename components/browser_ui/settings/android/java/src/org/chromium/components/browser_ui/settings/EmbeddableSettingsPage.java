@@ -4,8 +4,9 @@
 
 package org.chromium.components.browser_ui.settings;
 
-import org.chromium.base.supplier.ObservableSupplier;
+import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 
 /**
  * The base interface for embeddable settings page fragments.
@@ -20,7 +21,7 @@ import org.chromium.build.annotations.NullMarked;
  * <p>Standalone fragments are shown as a whole and has better control of the activity.
  */
 @NullMarked
-public interface EmbeddableSettingsPage {
+public interface EmbeddableSettingsPage extends SettingsFragment {
     /**
      * Returns the title of the current setting page.
      *
@@ -29,5 +30,17 @@ public interface EmbeddableSettingsPage {
      *
      * <p>The activity will observe changes to this value and update the UI as necessary.
      */
-    ObservableSupplier<String> getPageTitle();
+    MonotonicObservableSupplier<String> getPageTitle();
+
+    /**
+     * Returns the "key" tag of the main_preference, or null.
+     *
+     * <p>If non null, the corresponding item in the main_preference is highlighted when this
+     * fragment is opened and at the bottom of the back stack.
+     */
+    // TODO(crbug.com/454312815): The value returned from here should be taken from xml file
+    // to keep the consistency with the main_preferences.xml.
+    default @Nullable String getMainMenuKey() {
+        return null;
+    }
 }

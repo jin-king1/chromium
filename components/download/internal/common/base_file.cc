@@ -2,16 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "components/download/public/common/base_file.h"
 
 #include <memory>
 #include <utility>
 
+#include "base/compiler_specific.h"
 #include "base/containers/heap_array.h"
 #include "base/files/file.h"
 #include "base/files/file_util.h"
@@ -20,6 +16,7 @@
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/notreached.h"
+#include "base/numerics/checked_math.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/pickle.h"
 #include "base/strings/stringprintf.h"
@@ -30,6 +27,7 @@
 #include "components/download/public/common/download_item.h"
 #include "components/download/public/common/download_stats.h"
 #include "components/services/quarantine/quarantine.h"
+#include "crypto/hash.h"
 #include "crypto/secure_hash.h"
 
 #if BUILDFLAG(IS_ANDROID)
@@ -133,17 +131,48 @@ DownloadInterruptReason BaseFile::Initialize(
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(!detached_);
 
+#if BUILDFLAG(IS_WIN)
+  constexpr uint32_t kTempFileFlags =
+      base::File::FLAG_READ | base::File::FLAG_WRITE |
+      base::File::FLAG_WIN_EXCLUSIVE_WRITE | base::File::FLAG_WIN_SHARE_DELETE;
+#endif
+
   if (full_path.empty()) {
     base::FilePath temp_file;
-    if ((default_directory.empty() ||
-         !base::CreateTemporaryFileInDir(default_directory, &temp_file)) &&
-        !base::CreateTemporaryFile(&temp_file)) {
-      return LogInterruptReason("Unable to create", 0,
-                                DOWNLOAD_INTERRUPT_REASON_FILE_FAILED);
+    base::File temp_base_file;
+    if (!default_directory.empty()) {
+#if BUILDFLAG(IS_WIN)
+      temp_base_file = base::CreateAndOpenTemporaryFileInDirWithFlags(
+          default_directory, &temp_file, kTempFileFlags);
+#else
+      temp_base_file =
+          base::CreateAndOpenTemporaryFileInDir(default_directory, &temp_file);
+#endif
+    }
+
+    if (!temp_base_file.IsValid()) {
+      base::FilePath system_temp_dir;
+      if (!base::GetTempDir(&system_temp_dir)) {
+        return LogInterruptReason("Unable to find temp directory", 0,
+                                  DOWNLOAD_INTERRUPT_REASON_FILE_FAILED);
+      }
+#if BUILDFLAG(IS_WIN)
+      temp_base_file = base::CreateAndOpenTemporaryFileInDirWithFlags(
+          system_temp_dir, &temp_file, kTempFileFlags);
+#else
+      temp_base_file =
+          base::CreateAndOpenTemporaryFileInDir(system_temp_dir, &temp_file);
+#endif
+      if (!temp_base_file.IsValid()) {
+        return LogInterruptReason("Unable to create temporary file", 0,
+                                  DOWNLOAD_INTERRUPT_REASON_FILE_FAILED);
+      }
     }
     full_path_ = temp_file;
+    file_ = std::move(temp_base_file);
   } else {
     full_path_ = full_path;
+    file_ = std::move(file);
   }
 
   bytes_so_far_ = bytes_so_far;
@@ -152,20 +181,19 @@ DownloadInterruptReason BaseFile::Initialize(
   // Sparse file doesn't validate hash.
   if (is_sparse_file_)
     secure_hash_.reset();
-  file_ = std::move(file);
 
   return Open(hash_so_far, bytes_wasted);
 }
 
-DownloadInterruptReason BaseFile::AppendDataToFile(const char* data,
-                                                   size_t data_len) {
+DownloadInterruptReason BaseFile::AppendDataToFile(
+    base::span<const uint8_t> data) {
   DCHECK(!is_sparse_file_);
-  return WriteDataToFile(bytes_so_far_, data, data_len);
+  return WriteDataToFile(bytes_so_far_, data);
 }
 
-DownloadInterruptReason BaseFile::WriteDataToFile(int64_t offset,
-                                                  const char* data,
-                                                  size_t data_len) {
+DownloadInterruptReason BaseFile::WriteDataToFile(
+    int64_t offset,
+    base::span<const uint8_t> data) {
   // NOTE(benwells): The above DCHECK won't be present in release builds,
   // so we log any occurences to see how common this error is in the wild.
   if (detached_)
@@ -177,13 +205,14 @@ DownloadInterruptReason BaseFile::WriteDataToFile(int64_t offset,
   }
 
   // TODO(phajdan.jr): get rid of this check.
-  if (data_len == 0)
+  if (data.size() == 0) {
     return DOWNLOAD_INTERRUPT_REASON_NONE;
+  }
 
   // Use nestable async event instead of sync event so that all the writes
   // belong to the same download will be grouped together.
   CONDITIONAL_TRACE(
-      NESTABLE_ASYNC_BEGIN0("download", "DownloadFileWrite", download_id_));
+      BEGIN("download", "DownloadFileWrite", perfetto::Track(download_id_)));
 
   if (bytes_so_far_ != offset) {
     // A hole is created in the file.
@@ -192,39 +221,36 @@ DownloadInterruptReason BaseFile::WriteDataToFile(int64_t offset,
   }
 
   // Writes to the file.
-  int64_t len = base::saturated_cast<int64_t>(data_len);
-  const char* current_data = data;
+  base::span<const uint8_t> current_data = data;
   int64_t current_offset = offset;
-  while (len > 0) {
+  while (!current_data.empty()) {
     // |write_result| may be less than |len|, and return an error on the next
     // write call when the disk is unavaliable.
-    int write_result = file_.Write(current_offset, current_data, len);
-    DCHECK_NE(0, write_result);
-
-    // Report errors on file writes.
-    if (write_result < 0)
+    std::optional<size_t> write_result =
+        file_.Write(current_offset, current_data);
+    if (!write_result.has_value()) {
       return LogSystemError("Write", logging::GetLastSystemErrorCode());
+    }
+
+    DCHECK_NE(0u, *write_result);
 
     // Update status.
-    DCHECK_LE(write_result, len);
-    len -= write_result;
-    current_data += write_result;
-    current_offset += write_result;
-    bytes_so_far_ += write_result;
+    bytes_so_far_ += *write_result;
+    current_offset += *write_result;
+    current_data = current_data.subspan(*write_result);
   }
 
-  CONDITIONAL_TRACE(NESTABLE_ASYNC_END1("download", "DownloadFileWrite",
-                                        download_id_, "bytes", data_len));
+  CONDITIONAL_TRACE(
+      END("download", perfetto::Track(download_id_), "bytes", data.size()));
 
   if (secure_hash_)
-    secure_hash_->Update(data, data_len);
+    secure_hash_->Update(data);
 
   return DOWNLOAD_INTERRUPT_REASON_NONE;
 }
 
 bool BaseFile::ValidateDataInFile(int64_t offset,
-                                  const char* data,
-                                  size_t data_len) {
+                                  base::span<const uint8_t> data) {
   if (!file_.IsValid())
     return false;
 
@@ -233,15 +259,17 @@ bool BaseFile::ValidateDataInFile(int64_t offset,
   if (offset > bytes_so_far_)
     return false;
 
-  if (data_len <= 0)
+  if (data.size() == 0) {
     return true;
+  }
 
-  auto buffer = base::HeapArray<char>::Uninit(data_len);
-  int bytes_read = file_.Read(offset, buffer.data(), buffer.size());
-  if (bytes_read < 0 || static_cast<size_t>(bytes_read) < data_len)
+  auto buffer = base::HeapArray<uint8_t>::Uninit(data.size());
+  std::optional<size_t> bytes_read = file_.Read(offset, buffer.as_span());
+  if (!bytes_read.has_value() || bytes_read.value() < data.size()) {
     return false;
+  }
 
-  return memcmp(data, buffer.data(), buffer.size()) == 0;
+  return base::span(buffer) == data;
 }
 
 DownloadInterruptReason BaseFile::Rename(const base::FilePath& new_path) {
@@ -360,27 +388,33 @@ DownloadInterruptReason BaseFile::CalculatePartialHash(
   // - at most kMaxBufferSize so that there's a reasonable bound.
   // - not larger than |bytes_so_far_| unless bytes_so_far_ is less than the
   //   hash size.
-  std::vector<char> buffer(std::max<int64_t>(
+  std::vector<uint8_t> buffer(std::max<int64_t>(
       kMinBufferSize, std::min<int64_t>(kMaxBufferSize, bytes_so_far_)));
 
   int64_t current_position = 0;
   while (current_position < bytes_so_far_) {
     // While std::min needs to work with int64_t, the result is always at most
     // kMaxBufferSize, which fits on an int.
-    int bytes_to_read =
-        std::min<int64_t>(buffer.size(), bytes_so_far_ - current_position);
-    int length = file_.ReadAtCurrentPos(&buffer.front(), bytes_to_read);
-    if (length == -1) {
+    size_t bytes_to_read =
+        // checked_cast is safe here because buffer.size() is always >= 0 and
+        // bytes_so_far_ >= current_position (the while loop condition) so the
+        // minimum of these two values is >= 0.
+        base::checked_cast<size_t>(
+            std::min<int64_t>(buffer.size(), bytes_so_far_ - current_position));
+    std::optional<size_t> length =
+        file_.ReadAtCurrentPos(base::span(buffer).first(bytes_to_read));
+    if (!length.has_value()) {
       return LogInterruptReason("Reading partial file",
                                 logging::GetLastSystemErrorCode(),
                                 DOWNLOAD_INTERRUPT_REASON_FILE_TOO_SHORT);
     }
 
-    if (length == 0)
+    if (*length == 0) {
       break;
+    }
 
-    secure_hash_->Update(&buffer.front(), length);
-    current_position += length;
+    secure_hash_->Update(base::span(buffer).first(*length));
+    current_position += *length;
   }
 
   if (current_position != bytes_so_far_) {
@@ -389,13 +423,12 @@ DownloadInterruptReason BaseFile::CalculatePartialHash(
   }
 
   if (!hash_to_expect.empty()) {
-    DCHECK_EQ(secure_hash_->GetHashLength(), hash_to_expect.size());
-    DCHECK(buffer.size() >= secure_hash_->GetHashLength());
+    std::array<uint8_t, crypto::hash::kSha256Size> result;
+    CHECK_EQ(secure_hash_->GetHashLength(), result.size());
     std::unique_ptr<crypto::SecureHash> partial_hash(secure_hash_->Clone());
-    partial_hash->Finish(&buffer.front(), buffer.size());
+    partial_hash->Finish(result);
 
-    if (memcmp(&buffer.front(), hash_to_expect.c_str(),
-               partial_hash->GetHashLength())) {
+    if (base::span(result) != base::as_byte_span(hash_to_expect)) {
       return LogInterruptReason("Verifying prefix hash", 0,
                                 DOWNLOAD_INTERRUPT_REASON_FILE_HASH_MISMATCH);
     }
@@ -419,9 +452,9 @@ DownloadInterruptReason BaseFile::Open(const std::string& hash_so_far,
     }
   }
 
-  CONDITIONAL_TRACE(NESTABLE_ASYNC_BEGIN2(
-      "download", "DownloadFileOpen", download_id_, "file_name",
-      full_path_.AsUTF8Unsafe(), "bytes_so_far", bytes_so_far_));
+  CONDITIONAL_TRACE(BEGIN(
+      "download", "DownloadFileOpen", perfetto::Track(download_id_),
+      "file_name", full_path_.AsUTF8Unsafe(), "bytes_so_far", bytes_so_far_));
 
   // For sparse file, skip hash validation.
   if (is_sparse_file_) {
@@ -460,6 +493,12 @@ DownloadInterruptReason BaseFile::Open(const std::string& hash_so_far,
       ClearFile();
       return LogSystemError("Truncating to last known offset", error);
     }
+
+    // If the file was truncated to the beginning, the hash state is no longer
+    // valid.
+    if (bytes_so_far_ == 0) {
+      secure_hash_ = crypto::SecureHash::Create(crypto::SecureHash::SHA256);
+    }
   } else if (file_size < bytes_so_far_) {
     // The file is shorter than we expected.  Our hashes won't be valid.
     *bytes_wasted = bytes_so_far_;
@@ -486,8 +525,7 @@ void BaseFile::ClearFile() {
   // This should only be called when we have a stream.
   DCHECK(file_.IsValid());
   file_.Close();
-  CONDITIONAL_TRACE(
-      NESTABLE_ASYNC_END0("download", "DownloadFileOpen", download_id_));
+  CONDITIONAL_TRACE(END("download", perfetto::Track(download_id_)));
 }
 
 DownloadInterruptReason BaseFile::LogNetError(const char* operation,

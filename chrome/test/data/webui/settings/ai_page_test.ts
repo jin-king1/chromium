@@ -15,7 +15,7 @@ import {isChildVisible, isVisible} from 'chrome://webui-test/test_util.js';
 import {TestEntityDataManagerProxy} from './test_entity_data_manager_proxy.js';
 import {TestMetricsBrowserProxy} from './test_metrics_browser_proxy.js';
 
-suite('ExperimentalAdvancedPage', function() {
+suite('AiPage', function() {
   let metricsBrowserProxy: TestMetricsBrowserProxy;
   let openWindowProxy: TestOpenWindowProxy;
   let page: SettingsAiPageElement;
@@ -28,13 +28,18 @@ suite('ExperimentalAdvancedPage', function() {
     openWindowProxy = new TestOpenWindowProxy();
     OpenWindowProxyImpl.setInstance(openWindowProxy);
 
-    // Override the `EntityDataManagerProxyImpl` for testing.
-    entityDataManager = new TestEntityDataManagerProxy();
-    EntityDataManagerProxyImpl.setInstance(entityDataManager);
-
-    loadTimeData.overrideValues({showAdvancedFeaturesMainControl: true});
+    loadTimeData.overrideValues({
+      showAiPage: true,
+      showAiPageAiFeatureSection: true,
+      showGoogleSearchAiModeWorkspaceControl: true,
+    });
     settingsPrefs = document.createElement('settings-prefs');
     return CrSettingsPrefs.initialized;
+  });
+
+  setup(function() {
+    entityDataManager = new TestEntityDataManagerProxy();
+    EntityDataManagerProxyImpl.setInstance(entityDataManager);
   });
 
   teardown(function() {
@@ -46,7 +51,7 @@ suite('ExperimentalAdvancedPage', function() {
   async function createPage() {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     page = document.createElement('settings-ai-page');
-    page.prefs = settingsPrefs.prefs;
+    page.prefs = settingsPrefs.prefs!;
     Router.getInstance().navigateTo(routes.AI);
     document.body.appendChild(page);
     return flushTasks();
@@ -70,16 +75,16 @@ suite('ExperimentalAdvancedPage', function() {
     assertEquals(action, await metricsBrowserProxy.whenCalled('recordAction'));
   }
 
-  test('FeaturesVisibilityWithRefreshEnabled', async () => {
+  test('FeatureRowsVisibility', async () => {
     // Case 1, a subset of the controls should be visible.
     loadTimeData.overrideValues({
-      autofillAiFeatureEnabled: true,
-      userEligibleForAutofillAi: true,
       showHistorySearchControl: false,
-      showCompareControl: true,
       showComposeControl: true,
-      showTabOrganizationControl: false,
       showPasswordChangeControl: false,
+      showAiSuggestionsControl: false,
+      showSkillsSettingPage: true,
+      showIndigoControl: false,
+      showGoogleSearchAiModeWorkspaceControl: true,
     });
     resetRouterForTesting();
     await createPage();
@@ -90,31 +95,26 @@ suite('ExperimentalAdvancedPage', function() {
     await verifyFeatureVisibilityMetrics(
         'Settings.AiPage.ElementVisibility.HistorySearch', false);
 
-    assertTrue(isChildVisible(page, '#compareRowV2'));
-    await verifyFeatureVisibilityMetrics(
-        'Settings.AiPage.ElementVisibility.Compare', true);
-
     assertTrue(isChildVisible(page, '#composeRowV2'));
     await verifyFeatureVisibilityMetrics(
         'Settings.AiPage.ElementVisibility.Compose', true);
-
-    assertFalse(isChildVisible(page, '#tabOrganizationRowV2'));
-    await verifyFeatureVisibilityMetrics(
-        'Settings.AiPage.ElementVisibility.TabOrganization', false);
-
-    assertTrue(isChildVisible(page, '#autofillAiRowV2'));
-    await verifyFeatureVisibilityMetrics(
-        'Settings.AiPage.ElementVisibility.AutofillAI', true);
 
     assertFalse(isChildVisible(page, '#passwordChangeRowV2'));
     await verifyFeatureVisibilityMetrics(
         'Settings.AiPage.ElementVisibility.PasswordChange', false);
 
-    // The old UI should not be visible if the refresh flag is enabled.
-    const toggles1 =
-        page.shadowRoot!.querySelectorAll('settings-toggle-button');
-    assertEquals(0, toggles1.length);
-    assertFalse(isChildVisible(page, '#historySearchRow'));
+    assertFalse(isChildVisible(page, '#aiSuggestionsRow'));
+    await verifyFeatureVisibilityMetrics(
+        'Settings.AiPage.ElementVisibility.AiSuggestions', false);
+
+    assertTrue(isChildVisible(page, '#skillsRow'));
+    assertTrue(isChildVisible(page, '#googleSearchAiModeWorkspaceRow'));
+    await verifyFeatureVisibilityMetrics(
+        'Settings.AiPage.ElementVisibility.GoogleSearchAiModeWorkspace', true);
+
+    assertFalse(isChildVisible(page, '#indigoRow'));
+    await verifyFeatureVisibilityMetrics(
+        'Settings.AiPage.ElementVisibility.Indigo', false);
 
     metricsBrowserProxy.resetResolver('recordBooleanHistogram');
 
@@ -124,13 +124,13 @@ suite('ExperimentalAdvancedPage', function() {
 
     // Case 2, a different subset of the controls should be visible.
     loadTimeData.overrideValues({
-      autofillAiFeatureEnabled: false,
-      userEligibleForAutofillAi: false,
       showHistorySearchControl: true,
-      showCompareControl: false,
       showComposeControl: false,
-      showTabOrganizationControl: true,
       showPasswordChangeControl: true,
+      showAiSuggestionsControl: true,
+      showSkillsSettingPage: false,
+      showIndigoControl: true,
+      showGoogleSearchAiModeWorkspaceControl: false,
     });
     resetRouterForTesting();
     await createPage();
@@ -140,31 +140,26 @@ suite('ExperimentalAdvancedPage', function() {
     await verifyFeatureVisibilityMetrics(
         'Settings.AiPage.ElementVisibility.HistorySearch', true);
 
-    assertFalse(isChildVisible(page, '#compareRowV2'));
-    await verifyFeatureVisibilityMetrics(
-        'Settings.AiPage.ElementVisibility.Compare', false);
-
     assertFalse(isChildVisible(page, '#composeRowV2'));
     await verifyFeatureVisibilityMetrics(
         'Settings.AiPage.ElementVisibility.Compose', false);
-
-    assertTrue(isChildVisible(page, '#tabOrganizationRowV2'));
-    await verifyFeatureVisibilityMetrics(
-        'Settings.AiPage.ElementVisibility.TabOrganization', true);
-
-    assertFalse(isChildVisible(page, '#autofillAiRowV2'));
-    await verifyFeatureVisibilityMetrics(
-        'Settings.AiPage.ElementVisibility.AutofillAI', false);
 
     assertTrue(isChildVisible(page, '#passwordChangeRowV2'));
     await verifyFeatureVisibilityMetrics(
         'Settings.AiPage.ElementVisibility.PasswordChange', true);
 
-    // The old UI should not be visible if the refresh flag is enabled.
-    const toggles2 =
-        page.shadowRoot!.querySelectorAll('settings-toggle-button');
-    assertEquals(0, toggles2.length);
-    assertFalse(isChildVisible(page, '#historySearchRow'));
+    assertTrue(isChildVisible(page, '#aiSuggestionsRow'));
+    await verifyFeatureVisibilityMetrics(
+        'Settings.AiPage.ElementVisibility.AiSuggestions', true);
+
+    assertFalse(isChildVisible(page, '#skillsRow'));
+    assertFalse(isChildVisible(page, '#googleSearchAiModeWorkspaceRow'));
+    await verifyFeatureVisibilityMetrics(
+        'Settings.AiPage.ElementVisibility.GoogleSearchAiModeWorkspace', false);
+
+    assertTrue(isChildVisible(page, '#indigoRow'));
+    await verifyFeatureVisibilityMetrics(
+        'Settings.AiPage.ElementVisibility.Indigo', true);
 
     metricsBrowserProxy.resetResolver('recordBooleanHistogram');
 
@@ -175,7 +170,7 @@ suite('ExperimentalAdvancedPage', function() {
 
   test('historySearchRow', async () => {
     loadTimeData.overrideValues({
-      showAdvancedFeaturesMainControl: true,
+      showAiPage: true,
       showHistorySearchControl: true,
     });
     resetRouterForTesting();
@@ -213,32 +208,9 @@ suite('ExperimentalAdvancedPage', function() {
     assertEquals(routes.AI, currentRoute.parent);
   });
 
-  test('compareRow', async () => {
-    loadTimeData.overrideValues({
-      showAdvancedFeaturesMainControl: true,
-      showCompareControl: true,
-    });
-    resetRouterForTesting();
-    await createPage();
-
-    const compareRow =
-        page.shadowRoot!.querySelector<HTMLElement>('#compareRowV2');
-
-    assertTrue(!!compareRow);
-    assertTrue(isVisible(compareRow));
-    compareRow.click();
-    await verifyFeatureInteractionMetrics(
-        AiPageInteractions.COMPARE_CLICK,
-        'Settings.AiPage.CompareEntryPointClick');
-
-    const currentRoute = Router.getInstance().getCurrentRoute();
-    assertEquals(routes.COMPARE, currentRoute);
-    assertEquals(routes.AI, currentRoute.parent);
-  });
-
   test('composeRow', async () => {
     loadTimeData.overrideValues({
-      showAdvancedFeaturesMainControl: true,
+      showAiPage: true,
       showComposeControl: true,
     });
     resetRouterForTesting();
@@ -257,101 +229,6 @@ suite('ExperimentalAdvancedPage', function() {
     const currentRoute = Router.getInstance().getCurrentRoute();
     assertEquals(routes.OFFER_WRITING_HELP, currentRoute);
     assertEquals(routes.AI, currentRoute.parent);
-  });
-
-  test('tabOrganizationRow', async () => {
-    loadTimeData.overrideValues({
-      showAdvancedFeaturesMainControl: true,
-      showTabOrganizationControl: true,
-    });
-    resetRouterForTesting();
-    await createPage();
-
-    const tabOrganizationRow =
-        page.shadowRoot!.querySelector<HTMLElement>('#tabOrganizationRowV2');
-
-    assertTrue(!!tabOrganizationRow);
-    assertTrue(isVisible(tabOrganizationRow));
-    tabOrganizationRow.click();
-    await verifyFeatureInteractionMetrics(
-        AiPageInteractions.TAB_ORGANIZATION_CLICK,
-        'Settings.AiPage.TabOrganizationEntryPointClick');
-
-    assertEquals(
-        routes.AI_TAB_ORGANIZATION, Router.getInstance().getCurrentRoute());
-  });
-
-  test('autofillAiRowVisible', async () => {
-    // The AutofillAI row should be visible if autofillAiFeatureEnabled and
-    // userEligibleForAutofillAi are true.
-    loadTimeData.overrideValues({
-      autofillAiFeatureEnabled: true,
-      userEligibleForAutofillAi: true,
-      showAiSettingsForTesting: false,
-    });
-    resetRouterForTesting();
-
-    await createPage();
-
-    const autofillAiRow =
-        page.shadowRoot!.querySelector<HTMLElement>('#autofillAiRowV2');
-    assertTrue(!!autofillAiRow);
-    assertTrue(isVisible(autofillAiRow));
-  });
-
-  test('autofillAiRowVisibleForTesting', async () => {
-    // The AutofillAI row should be visible if showAiSettingsForTesting is true.
-    loadTimeData.overrideValues({
-      autofillAiFeatureEnabled: false,
-      userEligibleForAutofillAi: false,
-      showAiSettingsForTesting: true,
-    });
-    resetRouterForTesting();
-
-    await createPage();
-
-    const autofillAiRow =
-        page.shadowRoot!.querySelector<HTMLElement>('#autofillAiRowV2');
-    assertTrue(!!autofillAiRow);
-    assertTrue(isVisible(autofillAiRow));
-  });
-
-  test('autofillAiRowNotVisible', async () => {
-    // The AutofillAI row should not be visible if autofillAiFeatureEnabled,
-    // userEligibleForAutofillAi and showAiSettingsForTesting are false.
-    loadTimeData.overrideValues({
-      autofillAiFeatureEnabled: false,
-      userEligibleForAutofillAi: false,
-      showAiSettingsForTesting: false,
-    });
-    resetRouterForTesting();
-
-    await createPage();
-
-    const autofillAiRow =
-        page.shadowRoot!.querySelector<HTMLElement>('#autofillAiRowV2');
-    assertTrue(!!autofillAiRow);
-    assertFalse(isVisible(autofillAiRow));
-  });
-
-  test('autofillAiRowClick', async () => {
-    loadTimeData.overrideValues({
-      autofillAiFeatureEnabled: true,
-      userEligibleForAutofillAi: true,
-    });
-    resetRouterForTesting();
-
-    await createPage();
-
-    const autofillAiRow =
-        page.shadowRoot!.querySelector<HTMLElement>('#autofillAiRowV2');
-    assertTrue(!!autofillAiRow);
-    autofillAiRow.click();
-
-    await verifyFeatureInteractionMetrics(
-        AiPageInteractions.AUTOFILL_AI_CLICK,
-        'Settings.AiPage.AutofillAIEntryPointClick');
-    assertEquals(routes.AUTOFILL_AI, Router.getInstance().getCurrentRoute());
   });
 
   test('PasswordChangeRow', async () => {
@@ -385,112 +262,132 @@ suite('ExperimentalAdvancedPage', function() {
     assertTrue(!!passwordChangeRow);
     assertFalse(isVisible(passwordChangeRow));
   });
-});
 
-// TODO(crbug.com/362225975): Remove after AiSettingsPageRefresh is launched.
-suite('ExperimentalAdvancedPageRefreshDisabled', () => {
-  let page: SettingsAiPageElement;
-  let settingsPrefs: SettingsPrefsElement;
-  let entityDataManager: TestEntityDataManagerProxy;
-  const testEntityWithLabels:
-      chrome.autofillPrivate.EntityInstanceWithLabels = {
-    guid: 'e4bbe384-ee63-45a4-8df3-713a58fdc181',
-    entityLabel: 'Toyota',
-    entitySubLabel: 'Car',
-  };
-
-  suiteSetup(function() {
-    loadTimeData.overrideValues({enableAiSettingsPageRefresh: false});
-    settingsPrefs = document.createElement('settings-prefs');
-    return CrSettingsPrefs.initialized;
-  });
-
-  setup(function() {
-    // Override the `EntityDataManagerProxyImpl` for testing.
-    entityDataManager = new TestEntityDataManagerProxy();
-    EntityDataManagerProxyImpl.setInstance(entityDataManager);
-  });
-
-  function createPage() {
-    document.body.innerHTML = window.trustedTypes!.emptyHTML;
-    page = document.createElement('settings-ai-page');
-    page.prefs = settingsPrefs.prefs;
-    document.body.appendChild(page);
-    return flushTasks();
-  }
-
-  test('HistorySearchVisibility', () => {
-    // Hide history search row.
+  test('IndigoRow', async () => {
     loadTimeData.overrideValues({
-      showHistorySearchControl: false,
-    });
-    createPage();
-
-    assertFalse(isChildVisible(page, '#historySearchRow'));
-    // V2 UI should be hidden while the refresh flag is disabled.
-    assertFalse(isChildVisible(page, '#historySearchRowV2'));
-
-    // Show history search row.
-    loadTimeData.overrideValues({
-      showHistorySearchControl: true,
-    });
-    createPage();
-
-    assertTrue(isChildVisible(page, '#historySearchRow'));
-    // V2 UI should still be hidden while the refresh flag is disabled.
-    assertFalse(isChildVisible(page, '#historySearchRowV2'));
-  });
-
-  // Always hide the Autofill AI row if `autofillAiFeatureEnabled` is false.
-  test('AutofillAIHiddenIfFeatureNotEnabled', async () => {
-    entityDataManager.setloadEntityInstancesResponse([testEntityWithLabels]);
-    loadTimeData.overrideValues({
-      autofillAiFeatureEnabled: false,
-      userEligibleForAutofillAi: true,
+      showIndigoControl: true,
+      indigoSavedUrl: 'https://example.com/custom_saved',
     });
     await createPage();
 
-    assertFalse(isChildVisible(page, '#autofillAiRow'));
-    // V2 UI should be hidden while the refresh flag is disabled.
-    assertFalse(isChildVisible(page, '#autofillAiRowV2'));
+    const indigoRow = page.shadowRoot!.querySelector<HTMLElement>('#indigoRow');
+    assertTrue(!!indigoRow);
+    assertTrue(isVisible(indigoRow));
+
+    indigoRow.click();
+    await verifyFeatureInteractionMetrics(
+        AiPageInteractions.INDIGO_CLICK,
+        'Settings.AiPage.IndigoEntryPointClick');
+
+    const url = await openWindowProxy.whenCalled('openUrl');
+    assertEquals(url, 'https://example.com/custom_saved');
   });
 
-  // The Autofill AI row is hidden if the user is not eligible and if the user
-  // has no data saved.
-  test('AutofillAIHiddenIfFeatureEnabled', async () => {
+  test('NoIndigoRowWhenFeatureDisabled', async () => {
     loadTimeData.overrideValues({
-      autofillAiFeatureEnabled: true,
-      userEligibleForAutofillAi: false,
+      showIndigoControl: false,
     });
     await createPage();
 
-    assertFalse(isChildVisible(page, '#autofillAiRow'));
-    // V2 UI should still be hidden while the refresh flag is disabled.
-    assertFalse(isChildVisible(page, '#autofillAiRowV2'));
+    const indigoRow = page.shadowRoot!.querySelector<HTMLElement>('#indigoRow');
+    assertTrue(!!indigoRow);
+    assertFalse(isVisible(indigoRow));
   });
 
-  // The Autofill AI row is visible if the user is eligible or if the user has
-  // data saved.
-  test('AutofillAIVisible', async () => {
+  test('aiSuggestionsRow', async () => {
     loadTimeData.overrideValues({
-      autofillAiFeatureEnabled: true,
-      userEligibleForAutofillAi: true,
+      showAiPage: true,
+      showAiSuggestionsControl: true,
+    });
+    resetRouterForTesting();
+    await createPage();
+
+    const aiSuggestionsRow =
+        page.shadowRoot!.querySelector<HTMLElement>('#aiSuggestionsRow');
+
+    assertTrue(!!aiSuggestionsRow);
+    assertTrue(isVisible(aiSuggestionsRow));
+    aiSuggestionsRow.click();
+    await verifyFeatureInteractionMetrics(
+        AiPageInteractions.AI_SUGGESTIONS_CLICK,
+        'Settings.AiPage.AiSuggestionsEntryPointClick');
+
+    const currentRoute = Router.getInstance().getCurrentRoute();
+    assertEquals(routes.AI_SUGGESTIONS, currentRoute);
+    assertEquals(routes.AI, currentRoute.parent);
+  });
+
+  test('skillsRow', async () => {
+    loadTimeData.overrideValues({
+      showAiPage: true,
+      showSkillsSettingPage: true,
+    });
+    resetRouterForTesting();
+    await createPage();
+
+    const skillsRow = page.shadowRoot!.querySelector<HTMLElement>('#skillsRow');
+
+    assertTrue(!!skillsRow);
+    assertTrue(isVisible(skillsRow));
+    skillsRow.click();
+
+    const currentRoute = Router.getInstance().getCurrentRoute();
+    assertEquals(routes.SKILLS, currentRoute);
+    assertEquals(routes.AI, currentRoute.parent);
+  });
+
+  test('GoogleSearchAiModeRow', async () => {
+    loadTimeData.overrideValues({
+      showGoogleSearchAiModeWorkspaceControl: true,
     });
     await createPage();
 
-    assertTrue(isChildVisible(page, '#autofillAiRow'));
-    // V2 UI should still be hidden while the refresh flag is disabled.
-    assertFalse(isChildVisible(page, '#autofillAiRowV2'));
+    const row = page.shadowRoot!.querySelector<HTMLElement>(
+        '#googleSearchAiModeWorkspaceRow');
+    assertTrue(!!row);
+    assertTrue(isVisible(row));
 
-    entityDataManager.setloadEntityInstancesResponse([testEntityWithLabels]);
+    page.setPrefValue('contextual_search.drive_consent_state', 0);
+    row.click();
+    await verifyFeatureInteractionMetrics(
+        AiPageInteractions.GOOGLE_SEARCH_AI_MODE_WORKSPACE_CLICK,
+        'Settings.AiPage.GoogleSearchAiModeWorkspaceEntryPointClick');
+
+    const url = await openWindowProxy.whenCalled('openUrl');
+    assertEquals(loadTimeData.getString('googleSearchAiModeWorkspaceUrl'), url);
+  });
+
+  test('GoogleSearchAiModeRowRestricted', async () => {
     loadTimeData.overrideValues({
-      autofillAiFeatureEnabled: true,
-      userEligibleForAutofillAi: false,
+      showGoogleSearchAiModeWorkspaceControl: true,
     });
     await createPage();
 
-    assertTrue(isChildVisible(page, '#autofillAiRow'));
-    // V2 UI should still be hidden while the refresh flag is disabled.
-    assertFalse(isChildVisible(page, '#autofillAiRowV2'));
+    const row = page.shadowRoot!.querySelector<HTMLElement>(
+        '#googleSearchAiModeWorkspaceRow');
+    assertTrue(!!row);
+    assertTrue(isVisible(row));
+
+    page.setPrefValue('contextual_search.drive_consent_state', 1);
+    row.click();
+    await verifyFeatureInteractionMetrics(
+        AiPageInteractions.GOOGLE_SEARCH_AI_MODE_WORKSPACE_CLICK,
+        'Settings.AiPage.GoogleSearchAiModeWorkspaceEntryPointClick');
+
+    const url = await openWindowProxy.whenCalled('openUrl');
+    assertEquals(
+        loadTimeData.getString('googleSearchAiModeRestrictedUrl'), url);
+  });
+
+  test('NoGoogleSearchAiModeRowWhenFeatureDisabled', async () => {
+    loadTimeData.overrideValues({
+      showGoogleSearchAiModeWorkspaceControl: false,
+    });
+    await createPage();
+
+    const row = page.shadowRoot!.querySelector<HTMLElement>(
+        '#googleSearchAiModeWorkspaceRow');
+    assertTrue(!!row);
+    assertFalse(isVisible(row));
   });
 });

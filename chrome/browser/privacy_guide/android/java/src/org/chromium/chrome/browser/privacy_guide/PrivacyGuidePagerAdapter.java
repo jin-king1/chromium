@@ -4,8 +4,12 @@
 
 package org.chromium.chrome.browser.privacy_guide;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import androidx.fragment.app.Fragment;
 import androidx.viewpager2.adapter.FragmentStateAdapter;
+
+import org.chromium.build.annotations.NullMarked;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -15,6 +19,7 @@ import java.util.List;
 import java.util.Set;
 
 /** Controls the behavior of the ViewPager to navigate between privacy guide steps. */
+@NullMarked
 public class PrivacyGuidePagerAdapter extends FragmentStateAdapter {
     private final List<Integer> mFragmentTypeList;
 
@@ -60,9 +65,6 @@ public class PrivacyGuidePagerAdapter extends FragmentStateAdapter {
         if (displayHandler.shouldDisplayCookies()) {
             fragmentTypesToDisplay.add(PrivacyGuideFragment.FragmentType.COOKIES);
         }
-        if (displayHandler.shouldDisplayAdTopics()) {
-            fragmentTypesToDisplay.add(PrivacyGuideFragment.FragmentType.AD_TOPICS);
-        }
         return Collections.unmodifiableSet(fragmentTypesToDisplay);
     }
 
@@ -80,12 +82,11 @@ public class PrivacyGuidePagerAdapter extends FragmentStateAdapter {
                 return new SafeBrowsingFragment();
             case PrivacyGuideFragment.FragmentType.COOKIES:
                 return new CookiesFragment();
-            case PrivacyGuideFragment.FragmentType.AD_TOPICS:
-                return new AdTopicsFragment();
             case PrivacyGuideFragment.FragmentType.DONE:
                 return new DoneFragment();
         }
-        return null;
+        assert false : "No matching fragmentType";
+        return assumeNonNull(null);
     }
 
     @Override

@@ -14,18 +14,6 @@
 #include <ctime>
 #include <ostream>
 #include <string>
-#ifdef _MSC_VER
-#ifdef _XBOX_ONE
-struct timeval {
-  int64_t tv_sec;  /* seconds */
-  int64_t tv_usec; /* and microseconds */
-};
-#else
-#include <winsock2.h>
-#endif  // _XBOX_ONE
-#else
-#include <sys/time.h>
-#endif
 
 #include "google/protobuf/duration.pb.h"
 #include "google/protobuf/timestamp.pb.h"
@@ -36,6 +24,9 @@ struct timeval {
 namespace google {
 namespace protobuf {
 namespace util {
+
+#undef PROTOBUF_EXPORT
+#define PROTOBUF_EXPORT
 
 // Utility functions for Timestamp and Duration.
 class PROTOBUF_EXPORT TimeUtil {
@@ -153,10 +144,10 @@ class PROTOBUF_EXPORT TimeUtil {
   static time_t TimestampToTimeT(const Timestamp& value);
 
   // Conversion to/from timeval
-  static Timestamp TimevalToTimestamp(const timeval& value);
-  static timeval TimestampToTimeval(const Timestamp& value);
-  static Duration TimevalToDuration(const timeval& value);
-  static timeval DurationToTimeval(const Duration& value);
+  static Timestamp TimevalToTimestamp(const struct timeval& value);
+  static struct timeval TimestampToTimeval(const Timestamp& value);
+  static Duration TimevalToDuration(const struct timeval& value);
+  static struct timeval DurationToTimeval(const Duration& value);
 };
 
 }  // namespace util

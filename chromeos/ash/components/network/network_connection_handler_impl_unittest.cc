@@ -8,7 +8,6 @@
 #include <memory>
 #include <set>
 
-#include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/json/json_reader.h"
 #include "base/strings/string_util.h"
@@ -43,6 +42,7 @@
 #include "net/cert/x509_certificate.h"
 #include "net/test/cert_test_util.h"
 #include "net/test/test_data_directory.h"
+#include "network_connection_observer.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/cros_system_api/dbus/service_constants.h"
 #include "third_party/cros_system_api/dbus/shill/dbus-constants.h"
@@ -80,8 +80,11 @@ class TestNetworkConnectionObserver : public NetworkConnectionObserver {
   ~TestNetworkConnectionObserver() override = default;
 
   // NetworkConnectionObserver
-  void ConnectToNetworkRequested(const std::string& service_path) override {
+  ConnectToNetworkRequestVerdict ConnectToNetworkRequested(
+      const std::string& service_path) override {
     requests_.insert(service_path);
+
+    return connect_to_network_verdict_;
   }
 
   void ConnectSucceeded(const std::string& service_path) override {
@@ -95,7 +98,6 @@ class TestNetworkConnectionObserver : public NetworkConnectionObserver {
 
   void DisconnectRequested(const std::string& service_path) override {
     requests_.insert(service_path);
-    disconnect_requests_.insert(service_path);
   }
 
   bool GetRequested(const std::string& service_path) {
@@ -109,14 +111,16 @@ class TestNetworkConnectionObserver : public NetworkConnectionObserver {
     return iter->second;
   }
 
-  const std::set<std::string>& disconnect_requests() {
-    return disconnect_requests_;
+  void SetConnectToNetworkVerdict(ConnectToNetworkRequestVerdict verdict) {
+    connect_to_network_verdict_ = verdict;
   }
 
  private:
-  std::set<std::string> disconnect_requests_;
   std::set<std::string> requests_;
   std::map<std::string, std::string> results_;
+
+  ConnectToNetworkRequestVerdict connect_to_network_verdict_ =
+      ConnectToNetworkRequestVerdict::kProceed;
 };
 
 class FakeTetherDelegate : public NetworkConnectionHandler::TetherDelegate {
@@ -352,7 +356,7 @@ class NetworkConnectionHandlerImplTest : public testing::Test {
   }
 
   void SetupUserPolicy(const std::string& network_configs_json) {
-    base::Value::List network_configs;
+    base::ListValue network_configs;
     if (!network_configs_json.empty()) {
       auto parsed_json = base::JSONReader::ReadAndReturnValueWithError(
           network_configs_json, base::JSON_ALLOW_TRAILING_COMMAS);
@@ -362,13 +366,13 @@ class NetworkConnectionHandlerImplTest : public testing::Test {
     }
     managed_config_handler_->SetPolicy(
         ::onc::ONC_SOURCE_USER_POLICY, helper_.UserHash(), network_configs,
-        /*global_network_config=*/base::Value::Dict());
+        /*global_network_config=*/base::DictValue());
     task_environment_.RunUntilIdle();
   }
 
   void SetupDevicePolicy(const std::string& network_configs_json,
-                         const base::Value::Dict& global_config) {
-    base::Value::List network_configs;
+                         const base::DictValue& global_config) {
+    base::ListValue network_configs;
     if (!network_configs_json.empty()) {
       auto parsed_json = base::JSONReader::ReadAndReturnValueWithError(
           network_configs_json, base::JSON_ALLOW_TRAILING_COMMAS);
@@ -441,17 +445,17 @@ class NetworkConnectionHandlerImplTest : public testing::Test {
 
   void SetCellularSimLocked() {
     // Simulate a locked SIM.
-    auto sim_lock_status = base::Value::Dict().Set(shill::kSIMLockTypeProperty,
-                                                   shill::kSIMLockPin);
+    auto sim_lock_status =
+        base::DictValue().Set(shill::kSIMLockTypeProperty, shill::kSIMLockPin);
     helper_.device_test()->SetDeviceProperty(
         kTestCellularDevicePath, shill::kSIMLockStatusProperty,
         base::Value(std::move(sim_lock_status)), /*notify_changed=*/true);
 
     // Set the cellular service to be the active profile.
-    auto sim_slot_infos = base::Value::List().Append(
-        base::Value::Dict()
-            .Set(shill::kSIMSlotInfoICCID, kTestIccid)
-            .Set(shill::kSIMSlotInfoPrimary, true));
+    auto sim_slot_infos =
+        base::ListValue().Append(base::DictValue()
+                                     .Set(shill::kSIMSlotInfoICCID, kTestIccid)
+                                     .Set(shill::kSIMSlotInfoPrimary, true));
     helper_.device_test()->SetDeviceProperty(
         kTestCellularDevicePath, shill::kSIMSlotInfoProperty,
         base::Value(std::move(sim_slot_infos)), /*notify_changed=*/true);
@@ -461,15 +465,15 @@ class NetworkConnectionHandlerImplTest : public testing::Test {
 
   void SetCellularSimCarrierLocked() {
     // Simulate a locked SIM.
-    base::Value::Dict sim_lock_status;
+    base::DictValue sim_lock_status;
     sim_lock_status.Set(shill::kSIMLockTypeProperty, shill::kSIMLockNetworkPin);
     helper_.device_test()->SetDeviceProperty(
         kTestCellularDevicePath, shill::kSIMLockStatusProperty,
         base::Value(std::move(sim_lock_status)), /*notify_changed=*/true);
 
     // Set the cellular service to be the active profile.
-    base::Value::List sim_slot_infos;
-    base::Value::Dict slot_info_item;
+    base::ListValue sim_slot_infos;
+    base::DictValue slot_info_item;
     slot_info_item.Set(shill::kSIMSlotInfoICCID, kTestIccid);
     slot_info_item.Set(shill::kSIMSlotInfoPrimary, true);
     sim_slot_infos.Append(std::move(slot_info_item));
@@ -682,7 +686,7 @@ TEST_F(NetworkConnectionHandlerImplTest,
 
   std::string wifi0_service_path = ConfigureService(kConfigWifi0Connectable);
   ASSERT_FALSE(wifi0_service_path.empty());
-  auto global_config = base::Value::Dict().Set(
+  auto global_config = base::DictValue().Set(
       ::onc::global_network_config::kAllowOnlyPolicyWiFiToConnect, true);
   SetupDevicePolicy("[]", global_config);
   SetupUserPolicy("[]");
@@ -697,6 +701,54 @@ TEST_F(NetworkConnectionHandlerImplTest,
 }
 
 TEST_F(NetworkConnectionHandlerImplTest,
+       NetworkConnectionHandlerConnectVetoedByObserver) {
+  // Global arrange: Configure a wifi service.
+  Init();
+
+  std::string wifi0_service_path = ConfigureService(kConfigWifi0Connectable);
+  ASSERT_FALSE(wifi0_service_path.empty());
+
+  // Part 1: Connection attempt vetoed.
+  // Part 1 Arrange: Observer will veto the connection request.
+  network_connection_observer()->SetConnectToNetworkVerdict(
+      ConnectToNetworkRequestVerdict::kVetoWaitingForScan);
+
+  // Part 1 Act: Attempt to connect.
+  Connect(wifi0_service_path);
+
+  // Part 1 Assert: Connection has failed with the correct error.
+  EXPECT_EQ(NetworkConnectionHandler::kErrorWaitingForScan,
+            GetResultAndReset());
+  EXPECT_NE(
+      shill::kStateOnline,
+      GetServiceStringProperty(wifi0_service_path, shill::kStateProperty));
+  // Observer expectations
+  EXPECT_TRUE(network_connection_observer()->GetRequested(wifi0_service_path));
+  EXPECT_EQ(NetworkConnectionHandler::kErrorWaitingForScan,
+            network_connection_observer()->GetResult(wifi0_service_path));
+
+  // Part 2: Connection attempt allowed.
+  // Part 2 Arrange: Observer will allow the connection request.
+  network_connection_observer()->SetConnectToNetworkVerdict(
+      ConnectToNetworkRequestVerdict::kProceed);
+
+  // Part 2 Act: Attempt to connect.
+  Connect(wifi0_service_path);
+
+  // Part 2 Assert: Connection has succeeded.
+  EXPECT_EQ(kSuccessResult, GetResultAndReset());
+  EXPECT_EQ(
+      shill::kStateOnline,
+      GetServiceStringProperty(wifi0_service_path, shill::kStateProperty));
+  // Observer expectations
+  EXPECT_TRUE(network_connection_observer()->GetRequested(wifi0_service_path));
+  EXPECT_EQ(kSuccessResult,
+            network_connection_observer()->GetResult(wifi0_service_path));
+  EXPECT_EQ("wifi0",
+            GetServiceStringProperty(wifi0_service_path, shill::kGuidProperty));
+}
+
+TEST_F(NetworkConnectionHandlerImplTest,
        NetworkConnectionHandlerConnectBlockedBySSID) {
   Init();
 
@@ -705,8 +757,8 @@ TEST_F(NetworkConnectionHandlerImplTest,
 
   // Set a device policy which blocks wifi0.
   auto blocked =
-      base::Value::List().Append("7769666930");  // hex(wifi0) = 7769666930
-  auto global_config = base::Value::Dict().Set(
+      base::ListValue().Append("7769666930");  // hex(wifi0) = 7769666930
+  auto global_config = base::DictValue().Set(
       ::onc::global_network_config::kBlockedHexSSIDs, std::move(blocked));
   SetupDevicePolicy("[]", global_config);
   SetupUserPolicy("[]");

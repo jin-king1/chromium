@@ -4,48 +4,62 @@
 
 package org.chromium.chrome.browser.ntp;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.annotation.SuppressLint;
 import android.content.res.Resources;
 import android.view.MotionEvent;
 import android.view.View;
 
-import androidx.annotation.NonNull;
 import androidx.annotation.VisibleForTesting;
 
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.feed.SnapScrollHelper;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 
 /** This class handles snap scroll for the search box on a {@link NewTabPage}. */
+@NullMarked
 public class SnapScrollHelperImpl implements SnapScrollHelper {
     private static final long SNAP_SCROLL_DELAY_MS = 30;
 
     private final NewTabPageManager mManager;
-    private final NewTabPageLayout mNewTabPageLayout;
+    private final NewTabPageCoordinator mNewTabPageCoordinator;
     private final Runnable mSnapScrollRunnable;
     private final Runnable mUpdateSearchBoxOnScrollRunnable;
     private final int mToolbarHeight;
     private final int mSearchBoxTransitionStartOffset;
     private final int mSearchBoxTransitionEndOffset;
 
-    private View mView;
+    private @Nullable View mView;
     private boolean mPendingSnapScroll;
     private int mLastScrollY = -1;
 
     /**
      * @param manager The {@link NewTabPageManager} to get information about user interactions on
-     *                the {@link NewTabPage}.
-     * @param newTabPageLayout The {@link NewTabPageLayout} associated with the {@link NewTabPage}.
+     *     the {@link NewTabPage}.
+     * @param newTabPageCoordinator The {@link NewTabPageCoordinator} associated with the {@link
+     *     NewTabPage}.
      */
-    public SnapScrollHelperImpl(NewTabPageManager manager, NewTabPageLayout newTabPageLayout) {
+    public SnapScrollHelperImpl(
+            NewTabPageManager manager, NewTabPageCoordinator newTabPageCoordinator) {
         mManager = manager;
-        mNewTabPageLayout = newTabPageLayout;
+        mNewTabPageCoordinator = newTabPageCoordinator;
         mSnapScrollRunnable = new SnapScrollRunnable();
-        mUpdateSearchBoxOnScrollRunnable = mNewTabPageLayout::updateSearchBoxOnScroll;
+        mUpdateSearchBoxOnScrollRunnable = mNewTabPageCoordinator::updateSearchBoxOnScroll;
 
-        Resources res = newTabPageLayout.getResources();
-        mToolbarHeight =
-                res.getDimensionPixelSize(R.dimen.toolbar_height_no_shadow)
-                        + res.getDimensionPixelSize(R.dimen.toolbar_progress_bar_height);
+        Resources res = newTabPageCoordinator.getNewTabPageLayout().getResources();
+        if (ChromeFeatureList.sAndroidProgressBarVisualUpdate.isEnabled()) {
+            mToolbarHeight =
+                    res.getDimensionPixelSize(R.dimen.toolbar_height_no_shadow)
+                            + res.getDimensionPixelSize(
+                                    R.dimen.toolbar_progress_bar_increased_height);
+        } else {
+            mToolbarHeight =
+                    res.getDimensionPixelSize(R.dimen.toolbar_height_no_shadow)
+                            + res.getDimensionPixelSize(R.dimen.toolbar_progress_bar_height);
+        }
         mSearchBoxTransitionStartOffset =
                 res.getDimensionPixelSize(R.dimen.ntp_search_box_transition_start_offset);
         mSearchBoxTransitionEndOffset =
@@ -56,7 +70,7 @@ public class SnapScrollHelperImpl implements SnapScrollHelper {
      * @param view The view on which this class needs to handle snap scroll.
      */
     @Override
-    public void setView(@NonNull View view) {
+    public void setView(View view) {
         if (mView != null) {
             mPendingSnapScroll = false;
             mLastScrollY = -1;
@@ -69,6 +83,7 @@ public class SnapScrollHelperImpl implements SnapScrollHelper {
         @SuppressLint("ClickableViewAccessibility")
         View.OnTouchListener onTouchListener =
                 (v, event) -> {
+                    assumeNonNull(mView);
                     mView.removeCallbacks(mSnapScrollRunnable);
 
                     if (event.getActionMasked() == MotionEvent.ACTION_CANCEL
@@ -86,7 +101,12 @@ public class SnapScrollHelperImpl implements SnapScrollHelper {
     /** Update scroll offset and perform snap scroll if necessary. */
     @Override
     public void handleScroll() {
-        int scrollY = mNewTabPageLayout.getScrollDelegate().getVerticalScrollOffset();
+        if (mView == null) return;
+
+        var scrollDelegate = mNewTabPageCoordinator.getScrollDelegate();
+        if (scrollDelegate == null) return;
+
+        int scrollY = scrollDelegate.getVerticalScrollOffset();
         if (mLastScrollY == scrollY) return;
 
         mLastScrollY = scrollY;
@@ -94,7 +114,7 @@ public class SnapScrollHelperImpl implements SnapScrollHelper {
             mView.removeCallbacks(mSnapScrollRunnable);
             mView.postDelayed(mSnapScrollRunnable, SNAP_SCROLL_DELAY_MS);
         }
-        mNewTabPageLayout.updateSearchBoxOnScroll();
+        mNewTabPageCoordinator.updateSearchBoxOnScroll();
     }
 
     /**
@@ -102,10 +122,12 @@ public class SnapScrollHelperImpl implements SnapScrollHelper {
      * update the search box position if necessary. This is used whenever {@link #handleScroll()} is
      * not reliable (e.g. when an item is dismissed, the items at the top of the viewport might not
      * move, and onScrolled() might not be called).
+     *
      * @param update Whether a new callback to update search box should be posted to {@link #mView}.
      */
     @Override
     public void resetSearchBoxOnScroll(boolean update) {
+        assumeNonNull(mView);
         mView.removeCallbacks(mUpdateSearchBoxOnScrollRunnable);
         if (update) mView.post(mUpdateSearchBoxOnScrollRunnable);
     }
@@ -122,7 +144,7 @@ public class SnapScrollHelperImpl implements SnapScrollHelper {
             scrollPosition = calculateSnapPositionForRegion(scrollPosition, 0, mToolbarHeight);
 
             // Snap scroll to prevent resting in the middle of the omnibox transition.
-            View fakeBox = mNewTabPageLayout.getSearchBoxView();
+            View fakeBox = mNewTabPageCoordinator.getSearchBoxView();
             int fakeBoxUpperBound = fakeBox.getTop() + fakeBox.getPaddingTop();
             scrollPosition =
                     calculateSnapPositionForRegion(
@@ -134,9 +156,20 @@ public class SnapScrollHelperImpl implements SnapScrollHelper {
         return scrollPosition;
     }
 
+    @Override
+    public void destroy() {
+        if (mView != null) {
+            mView.setOnTouchListener(null);
+            mView.removeCallbacks(mSnapScrollRunnable);
+            mView.removeCallbacks(mUpdateSearchBoxOnScrollRunnable);
+            mView = null;
+        }
+    }
+
     /**
      * Calculates the position to scroll to in order to move out of a region where {@code mView}
      * should not stay at rest.
+     *
      * @param currentScroll the current scroll position.
      * @param regionStart the beginning of the region to scroll out of.
      * @param regionEnd the end of the region to scroll out of.
@@ -173,7 +206,10 @@ public class SnapScrollHelperImpl implements SnapScrollHelper {
             assert mPendingSnapScroll;
             mPendingSnapScroll = false;
 
-            mNewTabPageLayout.getScrollDelegate().snapScroll();
+            var scrollDelegate = mNewTabPageCoordinator.getScrollDelegate();
+            if (scrollDelegate != null) {
+                scrollDelegate.snapScroll();
+            }
         }
     }
 }

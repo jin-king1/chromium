@@ -70,7 +70,7 @@ DOMFileSystem* DOMFileSystem::CreateIsolatedFileSystem(
     return nullptr;
 
   StringBuilder filesystem_name;
-  filesystem_name.Append(String::FromUTF8(storage::GetIdentifierFromOrigin(
+  filesystem_name.Append(String::FromUtf8(storage::GetIdentifierFromOrigin(
       context->GetSecurityOrigin()->ToUrlOrigin())));
   filesystem_name.Append(":Isolated_");
   filesystem_name.Append(filesystem_id);
@@ -88,7 +88,7 @@ DOMFileSystem* DOMFileSystem::CreateIsolatedFileSystem(
 
   return MakeGarbageCollected<DOMFileSystem>(
       context, filesystem_name.ToString(),
-      mojom::blink::FileSystemType::kIsolated, KURL(root_url.ToString()));
+      mojom::blink::FileSystemType::kIsolated, KURL(root_url));
 }
 
 DOMFileSystem::DOMFileSystem(ExecutionContext* context,
@@ -131,7 +131,7 @@ void DOMFileSystem::ReportError(ExecutionContext* execution_context,
   if (!error_callback)
     return;
   ScheduleCallback(execution_context,
-                   WTF::BindOnce(std::move(error_callback), error));
+                   blink::BindOnce(std::move(error_callback), error));
 }
 
 void DOMFileSystem::CreateWriter(
@@ -173,8 +173,8 @@ void DOMFileSystem::ScheduleCallback(ExecutionContext* execution_context,
   execution_context->GetTaskRunner(TaskType::kFileReading)
       ->PostTask(
           FROM_HERE,
-          WTF::BindOnce(&RunCallback, WrapWeakPersistent(execution_context),
-                        std::move(task), std::move(async_task_context)));
+          blink::BindOnce(&RunCallback, WrapWeakPersistent(execution_context),
+                          std::move(task), std::move(async_task_context)));
 }
 
 void DOMFileSystem::Trace(Visitor* visitor) const {

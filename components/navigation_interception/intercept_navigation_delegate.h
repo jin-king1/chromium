@@ -7,7 +7,7 @@
 
 #include <memory>
 
-#include "base/android/jni_weak_ref.h"
+#include "base/android/scoped_java_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "base/supports_user_data.h"
 #include "components/navigation_interception/intercept_navigation_throttle.h"
@@ -79,9 +79,8 @@ class InterceptNavigationDelegate : public base::SupportsUserData::Data {
 
   // Creates a InterceptNavigationThrottle that will direct all callbacks to
   // the InterceptNavigationDelegate.
-  static std::unique_ptr<content::NavigationThrottle> MaybeCreateThrottleFor(
-      content::NavigationHandle* handle,
-      navigation_interception::SynchronyMode mode);
+  static void MaybeCreateAndAdd(content::NavigationThrottleRegistry& registry,
+                                navigation_interception::SynchronyMode mode);
 
   void ShouldIgnoreNavigation(
       content::NavigationHandle* navigation_handle,
@@ -94,6 +93,10 @@ class InterceptNavigationDelegate : public base::SupportsUserData::Data {
   // If finishing the check synchronously is not possible, further
   // redirects/commits will be deferred.
   void RequestFinishPendingShouldIgnoreCheck();
+
+  base::WeakPtr<InterceptNavigationDelegate> GetWeakPtr() {
+    return weak_ptr_factory_.GetWeakPtr();
+  }
 
   // See ContentBrowserClient::HandleExternalProtocol for the semantics around
   // |out_factory|.
@@ -110,9 +113,15 @@ class InterceptNavigationDelegate : public base::SupportsUserData::Data {
 
   void OnSubframeAsyncActionTaken(
       JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& j_gurl);
+      const base::android::JavaRef<jobject>& j_gurl);
+
+ protected:
+  // For testing.
+  InterceptNavigationDelegate();
 
  private:
+  base::android::ScopedJavaLocalRef<jobject> GetJavaDelegate(JNIEnv* env);
+
   void LoaderCallback(
       const network::ResourceRequest& resource_request,
       mojo::PendingReceiver<network::mojom::URLLoader> pending_receiver,
@@ -120,7 +129,6 @@ class InterceptNavigationDelegate : public base::SupportsUserData::Data {
 
   void MaybeHandleSubframeAction();
 
-  JavaObjectWeakGlobalRef weak_jdelegate_;
   bool escape_external_handler_value_ = false;
 
   mojo::SelfOwnedReceiverRef<network::mojom::URLLoader> url_loader_;

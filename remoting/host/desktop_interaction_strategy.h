@@ -8,6 +8,7 @@
 #include <memory>
 
 #include "base/functional/callback_forward.h"
+#include "base/memory/weak_ptr.h"
 #include "remoting/host/action_executor.h"
 #include "remoting/host/active_display_monitor.h"
 #include "remoting/host/audio_capturer.h"
@@ -17,12 +18,14 @@
 #include "remoting/host/keyboard_layout_monitor.h"
 #include "remoting/proto/control.pb.h"
 #include "remoting/protocol/desktop_capturer.h"
+#include "remoting/protocol/mouse_cursor_monitor.h"
 #include "third_party/webrtc/modules/desktop_capture/desktop_capture_types.h"
 #include "third_party/webrtc/modules/desktop_capture/desktop_capturer.h"
-#include "third_party/webrtc/modules/desktop_capture/mouse_cursor_monitor.h"
 
 namespace remoting {
 
+class ClientSessionControl;
+class CurtainMode;
 class DesktopDisplayInfoMonitor;
 class LocalInputMonitor;
 
@@ -51,7 +54,7 @@ class DesktopInteractionStrategy {
   virtual std::unique_ptr<DesktopResizer> CreateDesktopResizer() = 0;
   virtual std::unique_ptr<DesktopCapturer> CreateVideoCapturer(
       webrtc::ScreenId id) = 0;
-  virtual std::unique_ptr<webrtc::MouseCursorMonitor>
+  virtual std::unique_ptr<protocol::MouseCursorMonitor>
   CreateMouseCursorMonitor() = 0;
   virtual std::unique_ptr<KeyboardLayoutMonitor> CreateKeyboardLayoutMonitor(
       base::RepeatingCallback<void(const protocol::KeyboardLayout&)>
@@ -63,6 +66,8 @@ class DesktopInteractionStrategy {
   virtual std::unique_ptr<DesktopDisplayInfoMonitor>
   CreateDisplayInfoMonitor() = 0;
   virtual std::unique_ptr<LocalInputMonitor> CreateLocalInputMonitor() = 0;
+  virtual std::unique_ptr<CurtainMode> CreateCurtainMode(
+      base::WeakPtr<ClientSessionControl> client_session_control) = 0;
 
  protected:
   // Wraps raw capturer in a differ wrapper if appropriate, and calls

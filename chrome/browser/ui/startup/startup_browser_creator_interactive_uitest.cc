@@ -12,17 +12,19 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/chrome_browser_main.h"
 #include "chrome/browser/chrome_browser_main_extra_parts.h"
+#include "chrome/browser/default_browser/default_browser_features.h"
 #include "chrome/browser/prefs/session_startup_pref.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profile_test_util.h"
 #include "chrome/browser/sessions/session_restore.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "chrome/browser/ui/startup/startup_browser_creator.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/test/base/chrome_test_utils.h"
 #include "chrome/test/base/in_process_browser_test.h"
-#include "chrome/test/base/ui_test_utils.h"
 #include "content/public/test/browser_test.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
@@ -56,7 +58,7 @@ IN_PROC_BROWSER_TEST_F(StartupBrowserCreatorTest, LastUsedProfileActivated) {
                            FILE_PATH_LITERAL("New Profile 4")));
 
   SessionStartupPref pref_urls(SessionStartupPref::URLS);
-  pref_urls.urls.push_back(ui_test_utils::GetTestUrl(
+  pref_urls.urls.push_back(chrome_test_utils::GetTestUrl(
       base::FilePath(base::FilePath::kCurrentDirectory),
       base::FilePath(FILE_PATH_LITERAL("title1.html"))));
   SessionStartupPref::SetStartupPref(&profile_1, pref_urls);
@@ -81,29 +83,40 @@ IN_PROC_BROWSER_TEST_F(StartupBrowserCreatorTest, LastUsedProfileActivated) {
     base::RunLoop().RunUntilIdle();
   }
 
-  Browser* new_browser = nullptr;
+  BrowserWindowInterface* new_browser = nullptr;
 
   // The last used profile (the profile_2 in this case) must be active.
-  ASSERT_EQ(1u, chrome::GetBrowserCount(&profile_2));
-  new_browser = chrome::FindBrowserWithProfile(&profile_2);
+  ASSERT_EQ(1u, ProfileBrowserCollection::GetForProfile(&profile_2)->GetSize());
+  new_browser = ProfileBrowserCollection::GetForProfile(&profile_2)
+                    ->GetLastActiveBrowser();
   ASSERT_TRUE(new_browser);
-  EXPECT_TRUE(new_browser->window()->IsActive());
+  EXPECT_TRUE(new_browser->GetWindow()->IsVisible());
+
+  // When bubble dialog surface is used for default browser prompts, focus will
+  // be on the bubble dialog instead.
+  if (default_browser::GetDefaultBrowserPromptSurface() !=
+      default_browser::DefaultBrowserPromptSurface::kBubbleDialog) {
+    EXPECT_TRUE(new_browser->GetWindow()->IsActive());
+  }
 
   // All other profiles browser should not be active.
-  ASSERT_EQ(1u, chrome::GetBrowserCount(&profile_1));
-  new_browser = chrome::FindBrowserWithProfile(&profile_1);
+  ASSERT_EQ(1u, ProfileBrowserCollection::GetForProfile(&profile_1)->GetSize());
+  new_browser = ProfileBrowserCollection::GetForProfile(&profile_1)
+                    ->GetLastActiveBrowser();
   ASSERT_TRUE(new_browser);
-  EXPECT_FALSE(new_browser->window()->IsActive());
+  EXPECT_FALSE(new_browser->GetWindow()->IsActive());
 
-  ASSERT_EQ(1u, chrome::GetBrowserCount(&profile_3));
-  new_browser = chrome::FindBrowserWithProfile(&profile_3);
+  ASSERT_EQ(1u, ProfileBrowserCollection::GetForProfile(&profile_3)->GetSize());
+  new_browser = ProfileBrowserCollection::GetForProfile(&profile_3)
+                    ->GetLastActiveBrowser();
   ASSERT_TRUE(new_browser);
-  EXPECT_FALSE(new_browser->window()->IsActive());
+  EXPECT_FALSE(new_browser->GetWindow()->IsActive());
 
-  ASSERT_EQ(1u, chrome::GetBrowserCount(&profile_4));
-  new_browser = chrome::FindBrowserWithProfile(&profile_4);
+  ASSERT_EQ(1u, ProfileBrowserCollection::GetForProfile(&profile_4)->GetSize());
+  new_browser = ProfileBrowserCollection::GetForProfile(&profile_4)
+                    ->GetLastActiveBrowser();
   ASSERT_TRUE(new_browser);
-  EXPECT_FALSE(new_browser->window()->IsActive());
+  EXPECT_FALSE(new_browser->GetWindow()->IsActive());
 }
 #endif  // !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_MAC)
 
@@ -144,7 +157,7 @@ class StartupPageTest : public InProcessBrowserTest {
   // InProcessBrowserTest:
   void CreatedBrowserMainParts(
       content::BrowserMainParts* browser_main_parts) override {
-    const std::vector<GURL> urls = {ui_test_utils::GetTestUrl(
+    const std::vector<GURL> urls = {chrome_test_utils::GetTestUrl(
         base::FilePath(FILE_PATH_LITERAL("focus")),
         base::FilePath(FILE_PATH_LITERAL("page_with_focus.html")))};
 
@@ -157,7 +170,7 @@ class StartupPageTest : public InProcessBrowserTest {
 
 IN_PROC_BROWSER_TEST_F(StartupPageTest, StartupPageFocus) {
   // Browser window should be active.
-  EXPECT_TRUE(browser()->window()->IsActive());
+  EXPECT_TRUE(browser()->GetWindow()->IsActive());
 
   // Focus should land in the content area.
   content::WebContents* contents =

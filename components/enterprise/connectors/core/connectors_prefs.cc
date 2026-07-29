@@ -9,7 +9,6 @@
 #include <vector>
 
 #include "build/build_config.h"
-#include "components/enterprise/buildflags/buildflags.h"
 #include "components/enterprise/connectors/core/common.h"
 #include "components/enterprise/connectors/core/service_provider_config.h"
 #include "components/enterprise/device_trust/prefs.h"
@@ -22,6 +21,13 @@
 namespace enterprise_connectors {
 
 // Profile Prefs
+#if BUILDFLAG(ENTERPRISE_CACHE_ENCRYPTION)
+const char kCacheEncryptionEnabledPref[] =
+    "enterprise_connectors.cache_encryption_enabled";
+const char kEncryptedCachePrimaryKey[] =
+    "enterprise.encrypted_cache_primary_key";
+#endif
+
 const char kOnFileAttachedPref[] = "enterprise_connectors.on_file_attached";
 
 const char kOnFileDownloadedPref[] = "enterprise_connectors.on_file_downloaded";
@@ -29,6 +35,10 @@ const char kOnFileDownloadedPref[] = "enterprise_connectors.on_file_downloaded";
 const char kOnBulkDataEntryPref[] = "enterprise_connectors.on_bulk_data_entry";
 
 const char kOnPrintPref[] = "enterprise_connectors.on_print";
+
+const char kOnTextCopiedPref[] = "enterprise_connectors.on_text_copied";
+
+const char kOnNetworkRequestPref[] = "enterprise_connectors.on_network_request";
 
 #if BUILDFLAG(IS_CHROMEOS)
 const char kOnFileTransferPref[] = "enterprise_connectors.on_file_transfer";
@@ -43,6 +53,11 @@ const char kOnFileDownloadedScopePref[] =
 const char kOnBulkDataEntryScopePref[] =
     "enterprise_connectors.scope.on_bulk_data_entry";
 const char kOnPrintScopePref[] = "enterprise_connectors.scope.on_print";
+const char kOnTextCopiedScopePref[] =
+    "enterprise_connectors.scope.on_text_copied";
+const char kOnNetworkRequestScopePref[] =
+    "enterprise_connectors.scope.on_network_request";
+
 #if BUILDFLAG(IS_CHROMEOS)
 const char kOnFileTransferScopePref[] =
     "enterprise_connectors.scope.on_file_transfer";
@@ -53,6 +68,8 @@ const char kOnSecurityEventScopePref[] =
 // Local State Prefs
 const char kLatestCrashReportCreationTime[] =
     "enterprise_connectors.latest_crash_report_creation_time";
+const char kLatestTelomereReportCreationTime[] =
+    "enterprise_connectors.latest_telomere_report_creation_time";
 
 void RegisterProfilePrefs(PrefRegistrySimple* registry) {
   registry->RegisterIntegerPref(kEnterpriseRealTimeUrlCheckMode,
@@ -60,32 +77,51 @@ void RegisterProfilePrefs(PrefRegistrySimple* registry) {
   registry->RegisterIntegerPref(kEnterpriseRealTimeUrlCheckScope, 0);
   registry->RegisterListPref(kOnSecurityEventPref);
   registry->RegisterIntegerPref(kOnSecurityEventScopePref, 0);
+  registry->RegisterListPref(kOnFileDownloadedPref);
+  registry->RegisterIntegerPref(kOnFileDownloadedScopePref, 0);
+  registry->RegisterListPref(kOnBulkDataEntryPref);
+  registry->RegisterIntegerPref(kOnBulkDataEntryScopePref, 0);
+  registry->RegisterListPref(kOnNetworkRequestPref);
+  registry->RegisterIntegerPref(kOnNetworkRequestScopePref, 0);
+  registry->RegisterIntegerPref(kWatermarkStyleFillOpacityPref,
+                                kWatermarkStyleFillOpacityDefault);
+  registry->RegisterIntegerPref(kWatermarkStyleOutlineOpacityPref,
+                                kWatermarkStyleOutlineOpacityDefault);
+  registry->RegisterIntegerPref(kWatermarkStyleFontSizePref,
+                                kWatermarkStyleFontSizeDefault);
+  registry->RegisterStringPref(kWatermarkStyleTimestampTimezonePref,
+                               kWatermarkStyleTimestampTimezoneDefault);
 
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
   registry->RegisterListPref(kOnFileAttachedPref);
-  registry->RegisterListPref(kOnFileDownloadedPref);
-  registry->RegisterListPref(kOnBulkDataEntryPref);
   registry->RegisterListPref(kOnPrintPref);
+  registry->RegisterListPref(kOnTextCopiedPref);
 #if BUILDFLAG(IS_CHROMEOS)
   registry->RegisterListPref(kOnFileTransferPref);
 #endif
   registry->RegisterIntegerPref(kOnFileAttachedScopePref, 0);
-  registry->RegisterIntegerPref(kOnFileDownloadedScopePref, 0);
-  registry->RegisterIntegerPref(kOnBulkDataEntryScopePref, 0);
   registry->RegisterIntegerPref(kOnPrintScopePref, 0);
+  registry->RegisterIntegerPref(kOnTextCopiedScopePref, 0);
+
 #if BUILDFLAG(IS_CHROMEOS)
   registry->RegisterIntegerPref(kOnFileTransferScopePref, 0);
 #endif
   RegisterDeviceTrustConnectorProfilePrefs(registry);
+#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 
 #if BUILDFLAG(ENTERPRISE_CLIENT_CERTIFICATES)
   client_certificates::RegisterProfilePrefs(registry);
 #endif  // BUILDFLAG(ENTERPRISE_CLIENT_CERTIFICATES)
-#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+
+#if BUILDFLAG(ENTERPRISE_CACHE_ENCRYPTION)
+  registry->RegisterBooleanPref(kCacheEncryptionEnabledPref, false);
+  registry->RegisterStringPref(kEncryptedCachePrimaryKey, "");
+#endif
 }
 
 void RegisterLocalStatePrefs(PrefRegistrySimple* registry) {
   registry->RegisterInt64Pref(kLatestCrashReportCreationTime, 0);
+  registry->RegisterInt64Pref(kLatestTelomereReportCreationTime, 0);
 
 #if BUILDFLAG(ENTERPRISE_CLIENT_CERTIFICATES)
   client_certificates::RegisterLocalStatePrefs(registry);

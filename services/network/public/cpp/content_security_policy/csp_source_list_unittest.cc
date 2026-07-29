@@ -7,6 +7,7 @@
 #include <algorithm>
 
 #include "base/memory/raw_ptr.h"
+#include "base/strings/string_util.h"
 #include "net/http/http_response_headers.h"
 #include "services/network/public/cpp/content_security_policy/content_security_policy.h"
 #include "services/network/public/mojom/content_security_policy.mojom.h"
@@ -400,7 +401,7 @@ TEST(CSPSourceList, SubsumeWithSelf) {
 
     GURL parsed_test_origin(test.origin);
     auto origin_b = mojom::CSPSource::New(
-        parsed_test_origin.scheme(), parsed_test_origin.host(),
+        parsed_test_origin.GetScheme(), parsed_test_origin.GetHost(),
         parsed_test_origin.EffectiveIntPort(), "", false, false);
     EXPECT_EQ(test.expected,
               CSPSourceListSubsumes(

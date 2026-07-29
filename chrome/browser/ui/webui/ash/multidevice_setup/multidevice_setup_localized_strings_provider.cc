@@ -11,9 +11,6 @@
 #include "base/system/sys_info.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/webui/ash/multidevice_setup/multidevice_setup_handler.h"
-#include "chrome/common/url_constants.h"
-#include "chrome/common/webui_url_constants.h"
-#include "chrome/grit/browser_resources.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/grit/multidevice_setup_resources.h"
 #include "chrome/grit/multidevice_setup_resources_map.h"
@@ -87,7 +84,10 @@ constexpr webui::LocalizedString kLocalizedStringsWithoutPlaceholders[] = {
     {"dialogAccessibilityTitle",
      IDS_MULTIDEVICE_SETUP_DIALOG_ACCESSIBILITY_TITLE},
     {"startSetupPageFeatureListHeader",
-     IDS_MULTIDEVICE_SETUP_START_SETUP_PAGE_FEATURE_LIST_HEADER}};
+     IDS_MULTIDEVICE_SETUP_START_SETUP_PAGE_FEATURE_LIST_HEADER},
+    {"pauseAnimationAriaLabel", IDS_OOBE_PAUSE_ANIMATION_MESSAGE},
+    {"playAnimationAriaLabel", IDS_OOBE_PLAY_ANIMATION_MESSAGE},
+};
 
 struct LocalizedStringWithName {
   LocalizedStringWithName(const char* name,

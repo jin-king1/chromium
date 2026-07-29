@@ -54,9 +54,9 @@ IOSSSLBlockingPage::IOSSSLBlockingPage(
     options_mask &= ~SSLErrorOptionsMask::SOFT_OVERRIDE_ENABLED;
   }
 
-  ssl_error_ui_.reset(new SSLErrorUI(request_url, cert_error, ssl_info,
-                                     options_mask, time_triggered, GURL(),
-                                     controller_.get()));
+  ssl_error_ui_.reset(new SSLErrorUI(request_url, (net::Error)cert_error,
+                                     ssl_info, options_mask, time_triggered,
+                                     GURL(), controller_.get()));
 
   ProfileIOS* profile =
       ProfileIOS::FromBrowserState(web_state_->GetBrowserState());
@@ -79,7 +79,7 @@ bool IOSSSLBlockingPage::ShouldCreateNewNavigation() const {
 IOSSSLBlockingPage::~IOSSSLBlockingPage() {}
 
 void IOSSSLBlockingPage::PopulateInterstitialStrings(
-    base::Value::Dict& load_time_data) const {
+    base::DictValue& load_time_data) const {
   ssl_error_ui_->PopulateStringsForHTML(load_time_data);
 }
 
@@ -95,7 +95,7 @@ void IOSSSLBlockingPage::HandleCommand(
   // the page to re-initiate the original navigation.
   if (command == security_interstitials::CMD_PROCEED) {
     web_state_->GetSessionCertificatePolicyCache()->RegisterAllowedCertificate(
-        ssl_info_.cert, request_url().host(), ssl_info_.cert_status);
+        ssl_info_.cert, request_url().GetHost(), ssl_info_.cert_status);
     web_state_->GetNavigationManager()->Reload(web::ReloadType::NORMAL,
                                                /*check_for_repost=*/true);
     return;

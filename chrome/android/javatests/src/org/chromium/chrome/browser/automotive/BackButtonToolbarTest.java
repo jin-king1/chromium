@@ -12,6 +12,7 @@ import static org.hamcrest.Matchers.instanceOf;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 
+import android.app.Activity;
 import android.content.Context;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -34,18 +35,23 @@ import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.BaseActivityTestRule;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags.Add;
+import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Feature;
+import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.Restriction;
+import org.chromium.chrome.R;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.settings.MainSettings;
 import org.chromium.chrome.browser.settings.SettingsActivity;
 import org.chromium.chrome.browser.settings.SettingsActivityTestRule;
-import org.chromium.chrome.test.AutomotiveContextWrapperTestRule;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.R;
+import org.chromium.chrome.test.OverrideContextWrapperTestRule;
 import org.chromium.components.browser_ui.widget.ChromeDialog;
 import org.chromium.components.browser_ui.widget.FullscreenAlertDialog;
+import org.chromium.ui.display.DisplayUtil;
 import org.chromium.ui.test.util.BlankUiTestActivity;
 import org.chromium.ui.test.util.DeviceRestriction;
 
@@ -63,8 +69,8 @@ public class BackButtonToolbarTest {
             new SettingsActivityTestRule<>(MainSettings.class);
 
     @Rule
-    public AutomotiveContextWrapperTestRule mAutomotiveContextWrapperTestRule =
-            new AutomotiveContextWrapperTestRule();
+    public OverrideContextWrapperTestRule mAutomotiveContextWrapperTestRule =
+            new OverrideContextWrapperTestRule();
 
     private static final int TEST_DIALOG_LAYOUT = R.layout.image_zoom_view;
     private CallbackHelper mBackPressCallbackHelper;
@@ -78,8 +84,9 @@ public class BackButtonToolbarTest {
     @Test
     @SmallTest
     @Restriction(DeviceRestriction.RESTRICTION_TYPE_AUTO)
+    @DisableFeatures(ChromeFeatureList.AUTOMOTIVE_BACK_BUTTON_BAR_STREAMLINE)
     @Feature({"Automotive Toolbar"})
-    public void testAutomotiveToolbar_ToolbarView() throws Exception {
+    public void testAutomotiveToolbar_ToolbarView_Legacy() throws Exception {
         // Launch Settings Activity, which uses a Toolbar View to implement the automotive toolbar.
         mSettingsActivityTestRule.startSettingsActivity();
         SettingsActivity settingsActivity = mSettingsActivityTestRule.getActivity();
@@ -87,7 +94,7 @@ public class BackButtonToolbarTest {
         // Check that the automotive toolbar is present with only a back button.
         Toolbar toolbar = settingsActivity.findViewById(R.id.back_button_toolbar);
         assertNotNull(toolbar);
-        assertEquals("Toolbar not visible", View.VISIBLE, toolbar.getVisibility());
+        CriteriaHelper.pollUiThread(() -> toolbar.getVisibility() == View.VISIBLE);
         assertEquals("Toolbar should only contain a back button", 1, toolbar.getChildCount());
         assertThat(toolbar.getChildAt(0), instanceOf(AppCompatImageButton.class));
 
@@ -100,6 +107,26 @@ public class BackButtonToolbarTest {
 
         // Verify that #onBackPressed was called.
         mBackPressCallbackHelper.waitForOnly();
+    }
+
+    @Test
+    @SmallTest
+    @Restriction(DeviceRestriction.RESTRICTION_TYPE_AUTO)
+    @EnableFeatures(ChromeFeatureList.AUTOMOTIVE_BACK_BUTTON_BAR_STREAMLINE)
+    @Feature({"Automotive Toolbar"})
+    public void testAutomotiveToolbar_ToolbarNotShowing() throws Exception {
+        DisplayUtil.setCarmaPhase1Version2ComplianceForTesting(true);
+
+        // Launch Settings Activity, which uses a Toolbar View to implement the automotive toolbar.
+        mSettingsActivityTestRule.startSettingsActivity();
+        SettingsActivity settingsActivity = mSettingsActivityTestRule.getActivity();
+
+        // Check that the automotive toolbar is present with only a back button.
+        Toolbar toolbar = settingsActivity.findViewById(R.id.back_button_toolbar);
+        assertNotNull(toolbar);
+        CriteriaHelper.pollUiThread(() -> toolbar.getVisibility() == View.GONE);
+        assertEquals("Toolbar should only contain a back button", 1, toolbar.getChildCount());
+        assertThat(toolbar.getChildAt(0), instanceOf(AppCompatImageButton.class));
     }
 
     @Test
@@ -258,7 +285,8 @@ public class BackButtonToolbarTest {
             throws Exception {
         return ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    final FullscreenAlertDialog dialog = new FullscreenAlertDialog(context);
+                    final FullscreenAlertDialog dialog =
+                            new FullscreenAlertDialog(context, /* shouldPadForContent= */ false);
                     View testView = LayoutInflater.from(context).inflate(TEST_DIALOG_LAYOUT, null);
                     dialog.setView(testView);
                     dialog.show();
@@ -271,7 +299,8 @@ public class BackButtonToolbarTest {
         return ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     final AlertDialog dialog =
-                            new FullscreenAlertDialog.Builder(context)
+                            new FullscreenAlertDialog.Builder(
+                                            context, /* shouldPadForContent= */ false)
                                     .setView(TEST_DIALOG_LAYOUT)
                                     .create();
                     dialog.show();
@@ -280,16 +309,19 @@ public class BackButtonToolbarTest {
     }
 
     private ChromeDialog createAndShowFullscreenChromeDialog(
-            Context context, boolean setContentView) throws Exception {
+            Activity activity, boolean setContentView) throws Exception {
         return ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     final ChromeDialog dialog =
-                            new ChromeDialog(context, R.style.ThemeOverlay_BrowserUI_Fullscreen);
+                            new ChromeDialog(
+                                    activity,
+                                    R.style.ThemeOverlay_BrowserUI_Fullscreen,
+                                    /* shouldPadForWindowInsets= */ true);
                     if (setContentView) {
                         dialog.setContentView(TEST_DIALOG_LAYOUT);
                     } else {
                         dialog.addContentView(
-                                LayoutInflater.from(context).inflate(TEST_DIALOG_LAYOUT, null),
+                                LayoutInflater.from(activity).inflate(TEST_DIALOG_LAYOUT, null),
                                 new LayoutParams(MATCH_PARENT, MATCH_PARENT));
                     }
                     dialog.show();

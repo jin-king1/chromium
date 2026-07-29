@@ -13,7 +13,6 @@
 #include <utility>
 #include <vector>
 
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/location.h"
@@ -21,6 +20,7 @@
 #include "base/memory/ref_counted.h"
 #include "base/strings/string_util.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/types/zip.h"
 #include "base/values.h"
 #include "components/url_formatter/url_fixer.h"
 #include "components/url_matcher/url_matcher.h"
@@ -174,12 +174,20 @@ ChromeRequireCTDelegate::ChromeRequireCTDelegate()
 
 ChromeRequireCTDelegate::~ChromeRequireCTDelegate() = default;
 
-net::TransportSecurityState::RequireCTDelegate::CTRequirementLevel
+net::RequireCTDelegate::CTRequirementLevel
 ChromeRequireCTDelegate::IsCTRequiredForHost(
     std::string_view hostname,
     const net::X509Certificate* chain,
-    const net::HashValueVector& spki_hashes) {
-  if (MatchHostname(hostname) || MatchSPKI(chain, spki_hashes)) {
+    const std::vector<net::SHA256HashValue>& spki_hashes) const {
+  if (MatchSPKI(chain, spki_hashes)) {
+    return CTRequirementLevel::NOT_REQUIRED_APPLIES_ACROSS_NAMES;
+  }
+  if (MatchHostname(hostname)) {
+    // Technically it should be possible to check all the hostname rules
+    // against all the SANs in the leaf and determine if this should apply
+    // across SANs. However this is hard to calculate and unclear if it is
+    // actually worth doing. Just do the simple way for now and only do
+    // hostname exclusion checks for the individual hostname.
     return CTRequirementLevel::NOT_REQUIRED;
   }
 
@@ -221,46 +229,31 @@ bool ChromeRequireCTDelegate::MatchHostname(std::string_view hostname) const {
 
 bool ChromeRequireCTDelegate::MatchSPKI(
     const net::X509Certificate* chain,
-    const net::HashValueVector& hashes) const {
+    const std::vector<net::SHA256HashValue>& hashes) const {
   if (spkis_.empty())
     return false;
 
-  // Scan the constrained SPKIs via |hashes| first, as an optimization. If
-  // there are matches, the SPKI hash will have to be recomputed anyways to
-  // find the matching certificate, but avoid recomputing all the hashes for
-  // the case where there is no match.
-  net::HashValueVector matches;
-  for (const auto& hash : hashes) {
-    if (std::binary_search(spkis_.begin(), spkis_.end(), hash)) {
-      matches.push_back(hash);
-    }
-  }
-  if (matches.empty())
-    return false;
-
-  CRYPTO_BUFFER* leaf_cert = chain->cert_buffer();
-
-  // As an optimization, since the leaf is allowed to be listed as an SPKI,
-  // a match on the leaf's SPKI hash can return early, without comparing
-  // the organization information to itself.
-  net::HashValue hash;
-  if (net::x509_util::CalculateSha256SpkiHash(leaf_cert, &hash) &&
-      base::Contains(matches, hash)) {
+  if (spkis_.contains(hashes.front())) {
+    // As an optimization, since the leaf is allowed to be listed as an
+    // SPKI, a match on the leaf's SPKI hash can return early, without
+    // comparing the organization information to itself.
     return true;
   }
 
-  // If there was a match (or multiple matches), it's necessary to recompute
-  // the hashes to find the associated certificate.
   std::vector<CRYPTO_BUFFER*> candidates;
-  for (const auto& buffer : chain->intermediate_buffers()) {
-    if (net::x509_util::CalculateSha256SpkiHash(buffer.get(), &hash) &&
-        base::Contains(matches, hash)) {
-      candidates.push_back(buffer.get());
+  auto intermediate_hashes = base::span(hashes).subspan(1u);
+  auto intermediate_buffers = chain->intermediate_buffers();
+  for (auto [hash, cert_buffer] :
+       base::zip(intermediate_hashes, intermediate_buffers)) {
+    if (spkis_.contains(hash)) {
+      candidates.push_back(cert_buffer.get());
     }
   }
-
-  if (candidates.empty())
+  if (candidates.empty()) {
     return false;
+  }
+
+  CRYPTO_BUFFER* leaf_cert = chain->cert_buffer();
 
   std::shared_ptr<const bssl::ParsedCertificate> parsed_leaf =
       bssl::ParsedCertificate::Create(bssl::UpRef(leaf_cert),
@@ -311,8 +304,7 @@ void ChromeRequireCTDelegate::AddFilters(
       // not desirable for those.
       url::RawCanonOutputT<char> output;
       url::CanonHostInfo host_info;
-      url::CanonicalizeHostVerbose(pattern.c_str(), parsed.host, &output,
-                                   &host_info);
+      url::CanonicalizeHostVerbose(pattern, parsed.host, &output, &host_info);
       // TODO(rsleevi): Use canonicalized form?
       if (host_info.family == url::CanonHostInfo::NEUTRAL) {
         // Match subdomains (implicit by the omission of '.'). Add in a
@@ -344,16 +336,15 @@ void ChromeRequireCTDelegate::AddFilters(
 
 void ChromeRequireCTDelegate::ParseSpkiHashes(
     const std::vector<std::string> spki_list,
-    net::HashValueVector* hashes) const {
+    absl::flat_hash_set<net::SHA256HashValue>* hashes) const {
   hashes->clear();
   for (const auto& value : spki_list) {
-    net::HashValue hash;
-    if (!hash.FromString(value)) {
+    std::optional<net::HashValue> hash = net::HashValue::FromString(value);
+    if (!hash || hash->tag() != net::HASH_VALUE_SHA256) {
       continue;
     }
-    hashes->push_back(std::move(hash));
+    hashes->insert(hash->sha256hashvalue());
   }
-  std::sort(hashes->begin(), hashes->end());
 }
 
 }  // namespace certificate_transparency

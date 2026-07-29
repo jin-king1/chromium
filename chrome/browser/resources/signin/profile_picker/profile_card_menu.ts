@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 import 'chrome://resources/cr_elements/cr_action_menu/cr_action_menu.js';
+import 'chrome://resources/cr_elements/cr_button/cr_button.js';
 import 'chrome://resources/cr_elements/cr_dialog/cr_dialog.js';
 import 'chrome://resources/cr_elements/cr_icon_button/cr_icon_button.js';
 import 'chrome://resources/cr_elements/cr_icon/cr_icon.js';
@@ -93,22 +94,22 @@ export class ProfileCardMenuElement extends ProfileCardMenuElementBase {
     };
   }
 
-  profileState: ProfileState = createDummyProfileState();
-  private statistics_: Statistics = {
+  accessor profileState: ProfileState = createDummyProfileState();
+  private accessor statistics_: Statistics = {
     BrowsingHistory: 0,
     Passwords: 0,
     Bookmarks: 0,
     Autofill: 0,
   };
-  protected moreActionsButtonAriaLabel_: string = '';
-  protected profileStatistics_: ProfileStatistics[] = [
+  protected accessor moreActionsButtonAriaLabel_: string = '';
+  protected accessor profileStatistics_: ProfileStatistics[] = [
     ProfileStatistics.BROWSING_HISTORY,
     ProfileStatistics.PASSWORDS,
     ProfileStatistics.BOOKMARKS,
     ProfileStatistics.AUTOFILL,
   ];
-  protected removeWarningText_: string = '';
-  protected removeWarningTitle_: string = '';
+  protected accessor removeWarningText_: string = '';
+  protected accessor removeWarningTitle_: string = '';
   private manageProfilesBrowserProxy_: ManageProfilesBrowserProxy =
       ManageProfilesBrowserProxyImpl.getInstance();
 
@@ -154,7 +155,7 @@ export class ProfileCardMenuElement extends ProfileCardMenuElementBase {
                                       'removeWarningLocalProfileTitle');
   }
 
-  protected onMoreActionsButtonClicked_(e: Event) {
+  protected onMoreActionsButtonClick_(e: Event) {
     e.stopPropagation();
     e.preventDefault();
     this.$.actionMenu.showAt(this.$.moreActionsButton);
@@ -162,7 +163,7 @@ export class ProfileCardMenuElement extends ProfileCardMenuElementBase {
         'ProfilePicker_ThreeDottedMenuClicked');
   }
 
-  protected onRemoveButtonClicked_(e: Event) {
+  protected onRemoveButtonClick_(e: Event) {
     e.stopPropagation();
     e.preventDefault();
     this.manageProfilesBrowserProxy_.getProfileStatistics(
@@ -200,14 +201,14 @@ export class ProfileCardMenuElement extends ProfileCardMenuElementBase {
                                    count.toString();
   }
 
-  protected onRemoveConfirmationClicked_(e: Event) {
+  protected onRemoveConfirmationClick_(e: Event) {
     e.stopPropagation();
     e.preventDefault();
     this.manageProfilesBrowserProxy_.removeProfile(
         this.profileState.profilePath);
   }
 
-  protected onRemoveCancelClicked_() {
+  protected onRemoveCancelClick_() {
     this.$.removeConfirmationDialog.cancel();
     this.manageProfilesBrowserProxy_.closeProfileStatistics();
   }
@@ -229,7 +230,7 @@ export class ProfileCardMenuElement extends ProfileCardMenuElementBase {
     }
   }
 
-  protected onCustomizeButtonClicked_() {
+  protected onCustomizeButtonClick_() {
     this.manageProfilesBrowserProxy_.openManageProfileSettingsSubPage(
         this.profileState.profilePath);
     this.$.actionMenu.close();

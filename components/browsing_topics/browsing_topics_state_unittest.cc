@@ -12,6 +12,8 @@
 #include "base/json/json_file_value_serializer.h"
 #include "base/json/values_util.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/strings/string_util.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
@@ -106,12 +108,12 @@ class BrowsingTopicsStateTest : public testing::Test {
   void CreateOrOverrideTestFile(std::vector<EpochTopics> epochs,
                                 base::Time next_scheduled_calculation_time,
                                 std::string hex_encoded_hmac_key) {
-    base::Value::List epochs_list;
+    base::ListValue epochs_list;
     for (const EpochTopics& epoch : epochs) {
       epochs_list.Append(epoch.ToDictValue());
     }
 
-    base::Value::Dict dict;
+    base::DictValue dict;
     dict.Set("epochs", std::move(epochs_list));
     dict.Set("next_scheduled_calculation_time",
              base::TimeToValue(next_scheduled_calculation_time));

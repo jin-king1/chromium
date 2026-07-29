@@ -10,9 +10,10 @@
 
 #include "base/containers/flat_map.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "ui/gfx/geometry/size_f.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/ozone/platform/wayland/host/wayland_subsurface.h"
 #include "ui/ozone/platform/wayland/host/wayland_window_observer.h"
 
@@ -40,6 +41,10 @@ class WaylandWindowManager {
 
   // Notifies observers that the window's wayland role has been assigned.
   void NotifyWindowRoleAssigned(WaylandWindow* window);
+
+  // Notifies observers that `window` has been removed the session it
+  // did belong to.
+  void NotifyWindowRemovedFromSession(WaylandWindow* window);
 
   // Stores the window that should grab the located events.
   void GrabLocatedEvents(WaylandWindow* event_grabber);
@@ -76,6 +81,9 @@ class WaylandWindowManager {
   // Returns a current focused window by keyboard.
   WaylandWindow* GetCurrentKeyboardFocusedWindow() const;
 
+  // Returns a current focused window by text input.
+  WaylandWindow* GetCurrentTextInputFocusedWindow() const;
+
   // Sets the given window as the pointer focused window.
   // If there already is another, the old one will be unset.
   // If nullptr is passed to |window|, it means pointer focus is unset from
@@ -97,8 +105,20 @@ class WaylandWindowManager {
   // The given |window| must be managed by this manager.
   void SetKeyboardFocusedWindow(WaylandWindow* window);
 
+  // Sets the given window as the text input focused window.
+  // If there already is another, the old one will be unset.
+  // If nullptr is passed to |window|, it means text-input focus is unset from
+  // any window.
+  // The given |window| must be managed by this manager.
+  // Text input focus usually follows keyboard focus.
+  void SetTextInputFocusedWindow(WaylandWindow* window);
+
   // Returns all stored windows.
   std::vector<WaylandWindow*> GetAllWindows() const;
+
+  // Same as above, but for callers that may destroy windows while iterating on
+  // them.
+  std::vector<base::WeakPtr<WaylandWindow>> GetAllWindowsAsWeakPtr() const;
 
   // Returns true if the |window| still exists.
   bool IsWindowValid(const WaylandWindow* window) const;
@@ -131,6 +151,7 @@ class WaylandWindowManager {
  private:
   raw_ptr<WaylandWindow> pointer_focused_window_ = nullptr;
   raw_ptr<WaylandWindow> keyboard_focused_window_ = nullptr;
+  raw_ptr<WaylandWindow> text_input_focused_window_ = nullptr;
 
   const raw_ptr<WaylandConnection> connection_;
 

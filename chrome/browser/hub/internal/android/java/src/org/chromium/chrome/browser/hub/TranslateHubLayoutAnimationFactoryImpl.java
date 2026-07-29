@@ -8,12 +8,12 @@ import android.animation.AnimatorSet;
 import android.animation.ObjectAnimator;
 import android.view.View;
 
-import androidx.annotation.NonNull;
-
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.chrome.browser.hub.HubColorMixer.StateChange;
 import org.chromium.ui.interpolators.Interpolators;
-import org.chromium.ui.util.XrUtils;
 
 /** Implementation of {@link TranslateHubLayoutAnimationFactory}. */
+@NullMarked
 public class TranslateHubLayoutAnimationFactoryImpl {
 
     /**
@@ -22,8 +22,9 @@ public class TranslateHubLayoutAnimationFactoryImpl {
      * long)}.
      */
     public static HubLayoutAnimatorProvider createTranslateUpAnimatorProvider(
-            @NonNull HubContainerView hubContainerView,
-            @NonNull ScrimController scrimController,
+            HubColorMixer colorMixer,
+            HubContainerView hubContainerView,
+            ScrimController scrimController,
             long durationMs,
             float yOffset) {
         AnimatorSet animatorSet = new AnimatorSet();
@@ -48,11 +49,14 @@ public class TranslateHubLayoutAnimationFactoryImpl {
                         animator.setDuration(durationMs);
                         animatorSet.play(animator);
 
-                        // The scrim is not needed on an XR device when in full space mode the
-                        // transparent background provides spatial look, so we skip it.
-                        if (!XrUtils.getInstance().isFsmOnXrDevice()) {
-                            scrimController.startShowingScrim();
-                        }
+                        scrimController.startShowingScrim();
+                    }
+
+                    @Override
+                    public void onEnd(boolean wasForcedToFinish) {
+                        scrimController.startHidingScrim();
+                        colorMixer.processStateChange(
+                                StateChange.TRANSLATE_UP_TABLET_ANIMATION_END);
                     }
 
                     @Override
@@ -72,8 +76,9 @@ public class TranslateHubLayoutAnimationFactoryImpl {
      * long)}.
      */
     public static HubLayoutAnimatorProvider createTranslateDownAnimatorProvider(
-            @NonNull HubContainerView hubContainerView,
-            @NonNull ScrimController scrimController,
+            HubColorMixer colorMixer,
+            HubContainerView hubContainerView,
+            ScrimController scrimController,
             long durationMs,
             float yOffset) {
         ObjectAnimator animator =
@@ -90,6 +95,12 @@ public class TranslateHubLayoutAnimationFactoryImpl {
                     @Override
                     public void beforeStart() {
                         scrimController.startHidingScrim();
+                    }
+
+                    @Override
+                    public void onStart() {
+                        colorMixer.processStateChange(
+                                StateChange.TRANSLATE_DOWN_TABLET_ANIMATION_START);
                     }
 
                     @Override

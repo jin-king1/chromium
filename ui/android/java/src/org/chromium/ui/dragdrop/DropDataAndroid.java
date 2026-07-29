@@ -12,29 +12,39 @@ import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
 
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.url.GURL;
 
 /** Bare minimal wrapper class of native content::DropData. */
 @JNINamespace("ui")
 @NullMarked
 public class DropDataAndroid {
-    public final String text;
-    public final GURL gurl;
-    public final byte[] imageContent;
-    public final String imageContentExtension;
-    public final String imageFilename;
+    public static final String EXTRA_CUSTOM_DATA = "org.chromium.ui.dragdrop.customData";
+    public static final String EXTRA_EFFECT_ALLOWED = "org.chromium.ui.dragdrop.effectAllowed";
+
+    public final @Nullable String text;
+    public final @Nullable GURL gurl;
+    public final byte @Nullable [] imageContent;
+    public final @Nullable String imageContentExtension;
+    public final @Nullable String imageFilename;
+    public final @Nullable String customData;
+    public final @Nullable String effectAllowed;
 
     protected DropDataAndroid(
-            String text,
-            GURL gurl,
-            byte[] imageContent,
-            String imageContentExtension,
-            String imageFilename) {
+            @Nullable String text,
+            @Nullable GURL gurl,
+            byte @Nullable [] imageContent,
+            @Nullable String imageContentExtension,
+            @Nullable String imageFilename,
+            @Nullable String customData,
+            @Nullable String effectAllowed) {
         this.text = text;
         this.gurl = gurl;
         this.imageContent = imageContent;
         this.imageContentExtension = imageContentExtension;
         this.imageFilename = imageFilename;
+        this.customData = customData;
+        this.effectAllowed = effectAllowed;
     }
 
     @VisibleForTesting
@@ -44,8 +54,17 @@ public class DropDataAndroid {
             GURL gurl,
             byte[] imageContent,
             String imageContentExtension,
-            String imageFilename) {
-        return new DropDataAndroid(text, gurl, imageContent, imageContentExtension, imageFilename);
+            String imageFilename,
+            String customData,
+            String effectAllowed) {
+        return new DropDataAndroid(
+                text,
+                gurl,
+                imageContent,
+                imageContentExtension,
+                imageFilename,
+                customData,
+                effectAllowed);
     }
 
     /** Return whether this data presents a plain of text. */

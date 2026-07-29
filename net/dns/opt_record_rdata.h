@@ -39,7 +39,6 @@ class NET_EXPORT_PRIVATE OptRecordRdata : public RecordRdata {
     virtual ~Opt();
 
     bool operator==(const Opt& other) const;
-    bool operator!=(const Opt& other) const;
 
     virtual uint16_t GetCode() const = 0;
     base::span<const uint8_t> data() const { return data_; }
@@ -51,6 +50,21 @@ class NET_EXPORT_PRIVATE OptRecordRdata : public RecordRdata {
 
   class NET_EXPORT_PRIVATE EdeOpt : public Opt {
    public:
+    // Metadata for Filtering Details (db/id) are defined in Version 2 of
+    // https://datatracker.ietf.org/doc/draft-nottingham-public-resolver-errors/02/
+    struct NET_EXPORT_PRIVATE FilteringDetails {
+      FilteringDetails();
+      ~FilteringDetails();
+
+      FilteringDetails(const FilteringDetails&);
+      FilteringDetails& operator=(const FilteringDetails&);
+      FilteringDetails(FilteringDetails&&) noexcept;
+      FilteringDetails& operator=(FilteringDetails&&) noexcept;
+
+      std::string database_operator_id;  // "db" Filtering Database Operator ID
+      std::string incident_id;           // "id" Filtering Incident ID
+    };
+
     static const uint16_t kOptCode = dns_protocol::kEdnsExtendedDnsError;
 
     // The following errors are defined by in the IANA registry.
@@ -100,6 +114,10 @@ class NET_EXPORT_PRIVATE OptRecordRdata : public RecordRdata {
     // Attempts to parse an EDE option from `data`. Returns nullptr on failure.
     static std::unique_ptr<EdeOpt> Create(base::span<const uint8_t> data);
 
+    // Allocates an EDE option suitable for a DNS query that indicates support
+    // for EDE with Structured DNS Errors.
+    static std::unique_ptr<EdeOpt> CreateStructuredErrorsRequest();
+
     uint16_t GetCode() const override;
     uint16_t info_code() const { return info_code_; }
     std::string_view extra_text() const { return extra_text_; }
@@ -109,11 +127,16 @@ class NET_EXPORT_PRIVATE OptRecordRdata : public RecordRdata {
     // Convert a uint16_t to an EdeInfoCode enum.
     static EdeInfoCode GetEnumFromInfoCode(uint16_t info_code);
 
+    const std::vector<FilteringDetails>& filtering_details() const {
+      return filtering_details_;
+    }
+
    private:
     EdeOpt();
 
     uint16_t info_code_;
     std::string extra_text_;
+    std::vector<FilteringDetails> filtering_details_;
   };
 
   class NET_EXPORT_PRIVATE PaddingOpt : public Opt {
@@ -121,8 +144,8 @@ class NET_EXPORT_PRIVATE OptRecordRdata : public RecordRdata {
     static const uint16_t kOptCode = dns_protocol::kEdnsPadding;
 
     PaddingOpt() = delete;
-    // Construct a PaddingOpt with the specified padding string.
-    explicit PaddingOpt(std::string padding);
+    // Construct a PaddingOpt with the specified padding.
+    explicit PaddingOpt(base::span<const uint8_t> padding);
     // Constructs PaddingOpt with '\0' character padding of specified length.
     // Note: This padding_len only specifies the length of the data section.
     // Users must take into account the header length `Opt::kHeaderSize`
@@ -184,7 +207,6 @@ class NET_EXPORT_PRIVATE OptRecordRdata : public RecordRdata {
   ~OptRecordRdata() override;
 
   bool operator==(const OptRecordRdata& other) const;
-  bool operator!=(const OptRecordRdata& other) const;
 
   // Checks whether two OptRecordRdata objects are equal. This comparison takes
   // into account the order of insertion. Two OptRecordRdata objects with

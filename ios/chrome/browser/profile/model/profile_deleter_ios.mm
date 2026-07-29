@@ -5,6 +5,7 @@
 #import "ios/chrome/browser/profile/model/profile_deleter_ios.h"
 
 #import <optional>
+#import <string>
 
 #import "base/check.h"
 #import "base/files/file_path.h"
@@ -20,6 +21,7 @@
 #import "base/task/task_traits.h"
 #import "base/task/thread_pool.h"
 #import "base/uuid.h"
+#import "ios/chrome/browser/enterprise/client_certificates/cert_utils.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/web/public/browser_state_utils.h"
 
@@ -34,14 +36,24 @@ DeletionResult ResultFromBool(bool success) {
   return success ? DeletionResult::kSuccess : DeletionResult::kFailure;
 }
 
+// Deletes everything on disk (and keychain) for the profile.
+bool DeleteProfileDataOnBackgroundThread(const base::FilePath& profile_dir,
+                                         std::string profile_name) {
+  client_certificates::DeleteClientCertificateKeys(profile_name);
+  return base::DeletePathRecursively(profile_dir);
+}
+
 // Deletes the Profile storage for a given profile. This is the last step
 // when deleting a profile as once this is deleted, there is no way to
 // get any information back from the profile.
 void DeleteProfileStorage(const TaskRunnerPtr& task_runner,
                           const base::FilePath& profile_dir,
+                          std::string profile_name,
                           DeletionResultCallback callback) {
   task_runner->PostTaskAndReplyWithResult(
-      FROM_HERE, base::BindOnce(&base::DeletePathRecursively, profile_dir),
+      FROM_HERE,
+      base::BindOnce(&DeleteProfileDataOnBackgroundThread, profile_dir,
+                     std::move(profile_name)),
       base::BindOnce(&ResultFromBool).Then(std::move(callback)));
 }
 
@@ -50,6 +62,7 @@ void DeleteProfileStorage(const TaskRunnerPtr& task_runner,
 // to the next stage.
 void WebkitStorageDeleted(const TaskRunnerPtr& task_runner,
                           const base::FilePath& profile_dir,
+                          std::string profile_name,
                           DeletionResultCallback callback,
                           NSError* error) {
   if (error != nil) {
@@ -59,7 +72,8 @@ void WebkitStorageDeleted(const TaskRunnerPtr& task_runner,
     return;
   }
 
-  DeleteProfileStorage(task_runner, profile_dir, std::move(callback));
+  DeleteProfileStorage(task_runner, profile_dir, std::move(profile_name),
+                       std::move(callback));
 }
 
 // Deletes the WebKit storage for a given profile. This is the first step
@@ -68,16 +82,19 @@ void WebkitStorageDeleted(const TaskRunnerPtr& task_runner,
 // profile's data on disk has been deleted).
 void DeleteWebkitStorage(const TaskRunnerPtr& task_runner,
                          const base::FilePath& profile_dir,
+                         std::string profile_name,
                          DeletionResultCallback callback,
                          const base::Uuid& webkit_storage_id) {
   if (!base::ios::IsRunningOnIOS17OrLater() || !webkit_storage_id.is_valid()) {
-    DeleteProfileStorage(task_runner, profile_dir, std::move(callback));
+    DeleteProfileStorage(task_runner, profile_dir, std::move(profile_name),
+                         std::move(callback));
     return;
   }
 
   web::RemoveDataStorageForIdentifier(
-      webkit_storage_id, base::BindOnce(&WebkitStorageDeleted, task_runner,
-                                        profile_dir, std::move(callback)));
+      webkit_storage_id,
+      base::BindOnce(&WebkitStorageDeleted, task_runner, profile_dir,
+                     std::move(profile_name), std::move(callback)));
 }
 
 // Determines the WebKit storage identifier by loading the preferences,
@@ -109,6 +126,7 @@ base::Uuid DetermineWebkitStorageId(const base::FilePath& profile_dir,
 // Invoked after checking whether the profile storage exists on disk.
 void DeleteProfileIfExists(const TaskRunnerPtr& task_runner,
                            const base::FilePath& profile_dir,
+                           std::string profile_name,
                            const base::Uuid& default_uuid,
                            DeletionResultCallback callback,
                            bool profile_storage_exists) {
@@ -123,7 +141,7 @@ void DeleteProfileIfExists(const TaskRunnerPtr& task_runner,
       FROM_HERE,
       base::BindOnce(&DetermineWebkitStorageId, profile_dir, default_uuid),
       base::BindOnce(&DeleteWebkitStorage, task_runner, profile_dir,
-                     std::move(callback)));
+                     std::move(profile_name), std::move(callback)));
 }
 
 }  // namespace
@@ -138,7 +156,7 @@ ProfileDeleterIOS::ProfileDeleterIOS() {
 
 ProfileDeleterIOS::~ProfileDeleterIOS() = default;
 
-void ProfileDeleterIOS::DeleteProfile(const std::string& profile_name,
+void ProfileDeleterIOS::DeleteProfile(std::string_view profile_name,
                                       const base::FilePath& storage_dir,
                                       DeletionResultCallback callback) {
   base::FilePath profile_dir = storage_dir.Append(profile_name);
@@ -146,5 +164,6 @@ void ProfileDeleterIOS::DeleteProfile(const std::string& profile_name,
   task_runner_->PostTaskAndReplyWithResult(
       FROM_HERE, base::BindOnce(&base::DirectoryExists, profile_dir),
       base::BindOnce(&DeleteProfileIfExists, task_runner_, profile_dir,
-                     default_uuid, std::move(callback)));
+                     std::string(profile_name), default_uuid,
+                     std::move(callback)));
 }

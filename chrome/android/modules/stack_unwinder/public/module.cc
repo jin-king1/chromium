@@ -14,8 +14,12 @@ namespace stack_unwinder {
 
 // static
 bool Module::IsInstalled() {
-  JNIEnv* env = base::android::AttachCurrentThread();
-  return Java_StackUnwinderModuleProvider_isModuleInstalled(env);
+  if (base::android::IsJavaAvailable()) {
+    JNIEnv* env = base::android::AttachCurrentThread();
+    return Java_StackUnwinderModuleProvider_isModuleInstalled(env);
+  } else {
+    return false;
+  }
 }
 
 // static
@@ -31,18 +35,9 @@ std::unique_ptr<Module> Module::Load() {
   JNIEnv* env = base::android::AttachCurrentThread();
   Java_StackUnwinderModuleProvider_ensureNativeLoaded(env);
 
-  DoNothingFunction do_nothing = reinterpret_cast<DoNothingFunction>(
-      Java_StackUnwinderModuleProvider_getDoNothingFunction(env));
-
-  return base::WrapUnique(new Module(do_nothing));
-}
-
-void Module::DoNothing() {
-  return do_nothing_();
-}
-
-Module::Module(DoNothingFunction do_nothing) : do_nothing_(do_nothing) {
-  DCHECK(do_nothing);
+  return base::WrapUnique(new Module());
 }
 
 }  // namespace stack_unwinder
+
+DEFINE_JNI(StackUnwinderModuleProvider)

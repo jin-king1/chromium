@@ -28,11 +28,6 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "third_party/blink/renderer/modules/crypto/normalize_algorithm.h"
 
 #include <algorithm>
@@ -46,6 +41,7 @@
 #include "third_party/blink/renderer/bindings/core/v8/dictionary.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_object_string.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_crypto_key.h"
+#include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/typed_arrays/dom_array_piece.h"
 #include "third_party/blink/renderer/core/typed_arrays/dom_typed_array.h"
 #include "third_party/blink/renderer/modules/crypto/crypto_key.h"
@@ -99,6 +95,13 @@ constexpr AlgorithmNameMappingArray kAlgorithmNameMappings = {{
     {"AES-CTR", 7, kWebCryptoAlgorithmIdAesCtr},
     {"RSA-PSS", 7, kWebCryptoAlgorithmIdRsaPss},
     {"RSA-OAEP", 8, kWebCryptoAlgorithmIdRsaOaep},
+    {"ML-DSA-44", 9, kWebCryptoAlgorithmIdMlDsa44},
+    {"ML-DSA-65", 9, kWebCryptoAlgorithmIdMlDsa65},
+    {"ML-DSA-87", 9, kWebCryptoAlgorithmIdMlDsa87},
+    {"ML-KEM-768", 10, kWebCryptoAlgorithmIdMlKem768},
+    {"ML-KEM-1024", 11, kWebCryptoAlgorithmIdMlKem1024},
+    {"MLKEM768-X25519", 15, kWebCryptoAlgorithmIdMlKem768X25519},
+    {"CHACHA20-POLY1305", 17, kWebCryptoAlgorithmIdChaCha20Poly1305},
     {"RSASSA-PKCS1-V1_5", 17, kWebCryptoAlgorithmIdRsaSsaPkcs1v1_5},
 }};
 
@@ -140,7 +143,7 @@ constexpr bool VerifyAlgorithmNameMappings() {
       return false;
     }
     auto is_valid_algorithm_char = [](char c) {
-      return IsASCII(c) && c == ToASCIIUpper(c);
+      return IsAscii(c) && c == ToAsciiUpper(c);
     };
     if (!std::ranges::all_of(name, is_valid_algorithm_char)) {
       return false;
@@ -173,9 +176,10 @@ bool AlgorithmNameComparator(const AlgorithmNameMapping& a,
   for (size_t i = 0; i < a_name.size(); ++i) {
     const size_t reverse_index = a_name.size() - i - 1;
     CharType c2 = b[reverse_index];
-    if (!IsASCII(c2))
+    if (!IsAscii(c2)) {
       return false;
-    c2 = ToASCIIUpper(c2);
+    }
+    c2 = ToAsciiUpper(c2);
 
     const CharType c1 = a_name[reverse_index];
     if (c1 < c2)
@@ -187,8 +191,9 @@ bool AlgorithmNameComparator(const AlgorithmNameMapping& a,
 }
 
 std::optional<WebCryptoAlgorithmId> LookupAlgorithmIdByName(
+    v8::Isolate* isolate,
     const String& algorithm_name) {
-  auto it = WTF::VisitCharacters(algorithm_name, [&](auto algo_chars) {
+  auto it = VisitCharacters(algorithm_name, [&](auto algo_chars) {
     using CharType = decltype(algo_chars)::value_type;
     auto begin = kAlgorithmNameMappings.begin();
     auto end = kAlgorithmNameMappings.end();
@@ -201,20 +206,19 @@ std::optional<WebCryptoAlgorithmId> LookupAlgorithmIdByName(
   }
 
   if (it->algorithm_name_length != algorithm_name.length() ||
-      !DeprecatedEqualIgnoringCase(algorithm_name, it->algorithm_name))
+      !EqualIgnoringAsciiCase(algorithm_name, it->algorithm_name)) {
     return std::nullopt;
+  }
 
   WebCryptoAlgorithmId id = it->algorithm_id;
 
-  if (!RuntimeEnabledFeatures::WebCryptoCurve25519Enabled()) {
-    if (id == kWebCryptoAlgorithmIdX25519) {
-      return std::nullopt;
-    }
-  }
-  if (!RuntimeEnabledFeatures::WebCryptoEd25519Enabled()) {
-    if (id == kWebCryptoAlgorithmIdEd25519) {
-      return std::nullopt;
-    }
+  if ((id == kWebCryptoAlgorithmIdChaCha20Poly1305 ||
+       WebCryptoAlgorithm::IsMlDsa(id) || id == kWebCryptoAlgorithmIdMlKem768 ||
+       id == kWebCryptoAlgorithmIdMlKem1024 ||
+       id == kWebCryptoAlgorithmIdMlKem768X25519) &&
+      !RuntimeEnabledFeatures::WebCryptoPQCEnabled(
+          ExecutionContext::From(isolate->GetCurrentContext()))) {
+    return std::nullopt;
   }
   return id;
 }
@@ -733,15 +737,15 @@ bool ParseAesCtrParams(const Dictionary& raw,
 
 // Defined by the WebCrypto spec as:
 //
-//     dictionary AesGcmParams : Algorithm {
+//     dictionary AeadParams : Algorithm {
 //       required BufferSource iv;
 //       BufferSource additionalData;
 //       [EnforceRange] octet tagLength;
 //     }
-bool ParseAesGcmParams(const Dictionary& raw,
-                       std::unique_ptr<WebCryptoAlgorithmParams>& params,
-                       const ErrorContext& context,
-                       ExceptionState& exception_state) {
+bool ParseAeadParams(const Dictionary& raw,
+                     std::unique_ptr<WebCryptoAlgorithmParams>& params,
+                     const ErrorContext& context,
+                     ExceptionState& exception_state) {
   std::vector<uint8_t> iv;
   if (!GetBufferSource(raw, "iv", iv, context, exception_state))
     return false;
@@ -758,7 +762,7 @@ bool ParseAesGcmParams(const Dictionary& raw,
                         exception_state))
     return false;
 
-  params = std::make_unique<WebCryptoAesGcmParams>(
+  params = std::make_unique<WebCryptoAeadParams>(
       std::move(iv), has_additional_data, std::move(additional_data),
       has_tag_length, tag_length);
   return true;
@@ -1008,6 +1012,32 @@ bool ParseHkdfParams(v8::Isolate* isolate,
   return true;
 }
 
+// Defined by the WebCrypto spec as:
+//
+//     dictionary ContextParams : Algorithm {
+//       BufferSource context;
+//     };
+bool ParseContextParams(const Dictionary& raw,
+                        std::unique_ptr<WebCryptoAlgorithmParams>& params,
+                        const ErrorContext& error_context,
+                        ExceptionState& exception_state) {
+  bool has_param_context;
+  std::vector<uint8_t> param_context;
+
+  if (!GetOptionalBufferSource(raw, "context", has_param_context, param_context,
+                               error_context, exception_state)) {
+    return false;
+  }
+
+  if (has_param_context) {
+    params = std::make_unique<WebCryptoContextParams>(std::move(param_context));
+  } else {
+    params = std::make_unique<WebCryptoContextParams>(std::nullopt);
+  }
+
+  return true;
+}
+
 bool ParseAlgorithmParams(v8::Isolate* isolate,
                           const Dictionary& raw,
                           WebCryptoAlgorithmParamsType type,
@@ -1042,9 +1072,9 @@ bool ParseAlgorithmParams(v8::Isolate* isolate,
     case kWebCryptoAlgorithmParamsTypeAesCtrParams:
       context.Add("AesCtrParams");
       return ParseAesCtrParams(raw, params, context, exception_state);
-    case kWebCryptoAlgorithmParamsTypeAesGcmParams:
-      context.Add("AesGcmParams");
-      return ParseAesGcmParams(raw, params, context, exception_state);
+    case kWebCryptoAlgorithmParamsTypeAeadParams:
+      context.Add("AeadParams");
+      return ParseAeadParams(raw, params, context, exception_state);
     case kWebCryptoAlgorithmParamsTypeRsaOaepParams:
       context.Add("RsaOaepParams");
       return ParseRsaOaepParams(raw, params, context, exception_state);
@@ -1072,6 +1102,9 @@ bool ParseAlgorithmParams(v8::Isolate* isolate,
     case kWebCryptoAlgorithmParamsTypePbkdf2Params:
       context.Add("Pbkdf2Params");
       return ParsePbkdf2Params(isolate, raw, params, context, exception_state);
+    case kWebCryptoAlgorithmParamsTypeContextParams:
+      context.Add("ContextParams");
+      return ParseContextParams(raw, params, context, exception_state);
   }
   NOTREACHED();
 }
@@ -1100,6 +1133,12 @@ const char* OperationToString(WebCryptoOperation op) {
       return "wrapKey";
     case kWebCryptoOperationUnwrapKey:
       return "unwrapKey";
+    case kWebCryptoOperationEncapsulate:
+      return "encapsulate";
+    case kWebCryptoOperationDecapsulate:
+      return "decapsulate";
+    case kWebCryptoOperationGetPublicKey:
+      return "getPublicKey";
   }
   return nullptr;
 }
@@ -1112,7 +1151,7 @@ bool ParseAlgorithmDictionary(v8::Isolate* isolate,
                               ErrorContext context,
                               ExceptionState& exception_state) {
   std::optional<WebCryptoAlgorithmId> algorithm_id =
-      LookupAlgorithmIdByName(algorithm_name);
+      LookupAlgorithmIdByName(isolate, algorithm_name);
   if (!algorithm_id) {
     SetNotSupportedError(context.ToString("Unrecognized name"),
                          exception_state);

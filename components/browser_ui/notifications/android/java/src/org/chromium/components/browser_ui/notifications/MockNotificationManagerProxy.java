@@ -61,7 +61,7 @@ public class MockNotificationManagerProxy implements NotificationManagerProxy {
 
     private int mMutationCount;
 
-    private boolean mNotificationsEnabled = true;
+    private final boolean mNotificationsEnabled = true;
 
     public MockNotificationManagerProxy() {
         mNotifications = new LinkedHashMap<>();
@@ -147,7 +147,7 @@ public class MockNotificationManagerProxy implements NotificationManagerProxy {
 
     @Override
     public List<NotificationChannel> getNotificationChannels() {
-        return new ArrayList<NotificationChannel>(mChannels.values());
+        return new ArrayList<>(mChannels.values());
     }
 
     @Override

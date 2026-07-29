@@ -29,7 +29,6 @@
 #include "ui/aura/window_observer.h"
 #include "ui/wm/public/activation_change_observer.h"
 #include "ui/wm/public/activation_client.h"
-#include "url/gurl.h"
 
 namespace aura {
 class Window;
@@ -88,6 +87,7 @@ class DlpContentManagerAsh : public DlpContentManager,
   // based on the currently visible content. Depending on the result, calls
   // |callback| and passes an indicator whether to proceed or not.
   void CheckCaptureModeInitRestriction(
+      bool shutting_down,
       ash::OnCaptureModeDlpRestrictionChecked callback);
 
   // DlpContentManager overrides:
@@ -184,6 +184,7 @@ class DlpContentManagerAsh : public DlpContentManager,
   // calls |callback| with an indicator whether to proceed or not.
   void CheckScreenCaptureRestriction(
       ConfidentialContentsInfo info,
+      bool shutting_down,
       ash::OnCaptureModeDlpRestrictionChecked callback);
 
   // Map of window observers for the current confidential WebContents.
@@ -221,7 +222,10 @@ class DlpContentManagerAsh : public DlpContentManager,
   // Map to save all windows of a receiver with pending restrictions.
   std::map<mojo::ReceiverId, std::set<std::string>> pending_restrictions_owner_;
 
-  base::ScopedObservation<::wm::ActivationClient, wm::ActivationChangeObserver>
+  // TODO(crbug.com/498093686): remove when the DlpContentManagerAsh is no
+  // longer outliving the ActivationClient it observes.
+  base::ScopedObservation<::wm::ActivationClient,
+                          wm::ActivationChangeObserver>::LeakedDanglingUntriaged
       window_activation_observation_{this};
 };
 

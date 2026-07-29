@@ -1,18 +1,14 @@
 // Copyright 2020 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
-
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
+#include <array>
 #include <cstring>
 #include <limits>
 #include <memory>
 #include <utility>
 #include <vector>
 
+#include "base/functional/callback_helpers.h"
 #include "base/location.h"
 #include "base/run_loop.h"
 #include "base/task/sequenced_task_runner.h"
@@ -23,9 +19,11 @@
 #include "build/build_config.h"
 #include "media/audio/audio_opus_encoder.h"
 #include "media/audio/simple_sources.h"
+#include "media/base/audio_bus.h"
 #include "media/base/audio_encoder.h"
 #include "media/base/audio_timestamp_helper.h"
 #include "media/base/converting_audio_fifo.h"
+#include "media/base/media_serializers.h"
 #include "media/base/status.h"
 #include "media/media_buildflags.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -77,7 +75,7 @@ struct TestAudioParams {
   const int sample_rate;
 };
 
-constexpr TestAudioParams kTestAudioParamsOpus[] = {
+constexpr auto kTestAudioParamsOpus = std::to_array<TestAudioParams>({
     {AudioCodec::kOpus, 2, 48000},
     // Change to mono:
     {AudioCodec::kOpus, 1, 48000},
@@ -89,42 +87,18 @@ constexpr TestAudioParams kTestAudioParamsOpus[] = {
     {AudioCodec::kOpus, 2, 44100},
     {AudioCodec::kOpus, 2, 96000},
     {AudioCodec::kOpus, 2, kAudioSampleRateWithDelay},
-};
+});
 
 #if HAS_AAC_ENCODER
-constexpr TestAudioParams kTestAudioParamsAAC[] = {
-    {AudioCodec::kAAC, 2, 48000}, {AudioCodec::kAAC, 6, 48000},
-    {AudioCodec::kAAC, 1, 48000}, {AudioCodec::kAAC, 2, 44100},
-    {AudioCodec::kAAC, 6, 44100}, {AudioCodec::kAAC, 1, 44100},
-};
+constexpr auto kTestAudioParamsAAC = std::to_array<TestAudioParams>({
+    {AudioCodec::kAAC, 2, 48000},
+    {AudioCodec::kAAC, 6, 48000},
+    {AudioCodec::kAAC, 1, 48000},
+    {AudioCodec::kAAC, 2, 44100},
+    {AudioCodec::kAAC, 6, 44100},
+    {AudioCodec::kAAC, 1, 44100},
+});
 #endif  // HAS_AAC_ENCODER
-
-std::string EncoderStatusCodeToString(EncoderStatus::Codes code) {
-  switch (code) {
-    case EncoderStatus::Codes::kOk:
-      return "kOk";
-    case EncoderStatus::Codes::kEncoderInitializeNeverCompleted:
-      return "kEncoderInitializeNeverCompleted";
-    case EncoderStatus::Codes::kEncoderInitializeTwice:
-      return "kEncoderInitializeTwice";
-    case EncoderStatus::Codes::kEncoderFailedEncode:
-      return "kEncoderFailedEncode";
-    case EncoderStatus::Codes::kEncoderUnsupportedProfile:
-      return "kEncoderUnsupportedProfile";
-    case EncoderStatus::Codes::kEncoderUnsupportedCodec:
-      return "kEncoderUnsupportedCodec";
-    case EncoderStatus::Codes::kEncoderUnsupportedConfig:
-      return "kEncoderUnsupportedConfig";
-    case EncoderStatus::Codes::kEncoderInitializationError:
-      return "kEncoderInitializationError";
-    case EncoderStatus::Codes::kEncoderFailedFlush:
-      return "kEncoderFailedFlush";
-    case EncoderStatus::Codes::kEncoderMojoConnectionError:
-      return "kEncoderMojoConnectionError";
-    default:
-      NOTREACHED();
-  }
-}
 
 bool TimesAreNear(base::TimeTicks t1,
                   base::TimeTicks t2,
@@ -224,8 +198,7 @@ class AudioEncodersTest : public ::testing::TestWithParam<TestAudioParams> {
     AudioEncoder::EncoderStatusCB done_cb =
         base::BindLambdaForTesting([&](EncoderStatus error) {
           if (!error.is_ok()) {
-            FAIL() << "Error code: " << EncoderStatusCodeToString(error.code())
-                   << "\nError message: " << error.message();
+            FAIL() << MediaSerializeForTesting(error);
           }
           called_done = true;
         });
@@ -268,8 +241,7 @@ class AudioEncodersTest : public ::testing::TestWithParam<TestAudioParams> {
       pending_callback_results_.emplace_back();
       done_cb = base::BindLambdaForTesting([&](EncoderStatus error) {
         if (!error.is_ok()) {
-          FAIL() << "Error code: " << EncoderStatusCodeToString(error.code())
-                 << "\nError message: " << error.message();
+          FAIL() << MediaSerializeForTesting(error);
         }
 
         pending_callback_results_[pending_callback_count_].status_code =
@@ -294,8 +266,9 @@ class AudioEncodersTest : public ::testing::TestWithParam<TestAudioParams> {
     bool flush_done = false;
     auto flush_done_cb = base::BindLambdaForTesting([&](EncoderStatus error) {
       if (error.code() != status_code) {
-        FAIL() << "Expected " << EncoderStatusCodeToString(status_code)
-               << " but got " << EncoderStatusCodeToString(error.code());
+        FAIL() << "Expected " << static_cast<int>(status_code) << " but got "
+               << static_cast<int>(error.code())
+               << " Full trace: " << MediaSerializeForTesting(error);
       }
       flush_done = true;
     });
@@ -384,7 +357,7 @@ TEST_P(AudioEncodersTest, InitializeTwice) {
   auto done_cb = base::BindLambdaForTesting([&](EncoderStatus error) {
     if (error.code() != EncoderStatus::Codes::kEncoderInitializeTwice)
       FAIL() << "Expected kEncoderInitializeTwice error but got "
-             << EncoderStatusCodeToString(error.code());
+             << MediaSerializeForTesting(error);
     called_done = true;
   });
 
@@ -409,7 +382,7 @@ TEST_P(AudioEncodersTest, EncodeWithoutInitialize) {
   auto done_cb = base::BindLambdaForTesting([&](EncoderStatus error) {
     if (error.code() != EncoderStatus::Codes::kEncoderInitializeNeverCompleted)
       FAIL() << "Expected kEncoderInitializeNeverCompleted error but got "
-             << EncoderStatusCodeToString(error.code());
+             << MediaSerializeForTesting(error);
     called_done = true;
   });
 
@@ -464,8 +437,7 @@ TEST_P(AudioEncodersTest, EncodeAndFlushTwice) {
       bool called_flush = false;
       auto flush_cb = base::BindLambdaForTesting([&](EncoderStatus error) {
         if (error.code() != EncoderStatus::Codes::kOk) {
-          FAIL() << "Expected kOk but got "
-                 << EncoderStatusCodeToString(error.code());
+          FAIL() << "Expected kOk but got " << MediaSerializeForTesting(error);
         }
         called_flush = true;
       });
@@ -492,8 +464,7 @@ TEST_P(AudioEncodersTest, ProvideInputAfterDoneCb) {
   bool called_done = false;
   auto done_lambda = [&](EncoderStatus error) {
     if (error.code() != EncoderStatus::Codes::kOk)
-      FAIL() << "Expected kOk but got "
-             << EncoderStatusCodeToString(error.code());
+      FAIL() << "Expected kOk but got " << MediaSerializeForTesting(error);
     called_done = true;
   };
   AudioEncoder::EncoderStatusCB done_cb =
@@ -713,17 +684,17 @@ TEST_P(AudioOpusEncoderTest, ExtraData) {
   EXPECT_EQ(extra[2], 'u');
   EXPECT_EQ(extra[3], 's');
 
-  uint16_t* sample_rate_ptr = reinterpret_cast<uint16_t*>(extra.data() + 12);
+  uint16_t sample_rate = (static_cast<uint16_t>(extra[13]) << 8) + extra[12];
   if (options_.sample_rate < std::numeric_limits<uint16_t>::max())
-    EXPECT_EQ(*sample_rate_ptr, options_.sample_rate);
+    EXPECT_EQ(sample_rate, options_.sample_rate);
   else
-    EXPECT_EQ(*sample_rate_ptr, 48000);
+    EXPECT_EQ(sample_rate, 48000);
 
-  uint8_t* channels_ptr = reinterpret_cast<uint8_t*>(extra.data() + 9);
-  EXPECT_EQ(*channels_ptr, options_.channels);
+  uint8_t channels = extra[9];
+  EXPECT_EQ(channels, options_.channels);
 
-  uint16_t* skip_ptr = reinterpret_cast<uint16_t*>(extra.data() + 10);
-  EXPECT_GT(*skip_ptr, 0);
+  uint16_t skip = extra[10];
+  EXPECT_GT(skip, 0);
 }
 
 TEST_P(AudioOpusEncoderTest, FullCycleEncodeDecode) {
@@ -825,11 +796,36 @@ TEST_P(AudioOpusEncoderTest, FullCycleEncodeDecode_BitrateMode) {
 
 // Tests we can configure the AudioOpusEncoder's extra options.
 TEST_P(AudioOpusEncoderTest, FullCycleEncodeDecode_OpusOptions) {
-  // TODO(crbug.com/40243924): Test an OpusOptions::frame_duration which forces
-  // repacketization.
   constexpr media::AudioEncoder::OpusOptions kTestOpusOptions[] = {
       // Base case
       {.frame_duration = base::Milliseconds(20),
+       .complexity = 10,
+       .packet_loss_perc = 0,
+       .use_in_band_fec = false,
+       .use_dtx = false},
+
+      // Test Repacketizer by using valid non-standard durations
+      {.frame_duration = base::Milliseconds(30),
+       .complexity = 10,
+       .packet_loss_perc = 0,
+       .use_in_band_fec = false,
+       .use_dtx = false},
+      {.frame_duration = base::Microseconds(117500),
+       .complexity = 10,
+       .packet_loss_perc = 0,
+       .use_in_band_fec = false,
+       .use_dtx = false},
+      {.frame_duration = base::Microseconds(7500),
+       .complexity = 10,
+       .packet_loss_perc = 0,
+       .use_in_band_fec = false,
+       .use_dtx = false},
+      {.frame_duration = base::Milliseconds(80),
+       .complexity = 10,
+       .packet_loss_perc = 0,
+       .use_in_band_fec = false,
+       .use_dtx = false},
+      {.frame_duration = base::Milliseconds(120),
        .complexity = 10,
        .packet_loss_perc = 0,
        .use_in_band_fec = false,
@@ -908,7 +904,7 @@ TEST_P(AudioOpusEncoderTest, FullCycleEncodeDecode_OpusOptions) {
 
 TEST_P(AudioOpusEncoderTest, VariableChannelCounts) {
   constexpr int kTestToneFrequency = 440;
-  SineWaveAudioSource sources[] = {
+  std::array<SineWaveAudioSource, 3> sources = {
       SineWaveAudioSource(1, kTestToneFrequency, options_.sample_rate),
       SineWaveAudioSource(2, kTestToneFrequency, options_.sample_rate),
       SineWaveAudioSource(3, kTestToneFrequency, options_.sample_rate)};
@@ -963,22 +959,23 @@ class AACAudioEncoderTest : public AudioEncodersTest {
   void InitializeDecoder() {
     decoder_ = std::make_unique<FFmpegAudioDecoder>(
         base::SequencedTaskRunner::GetCurrentDefault(), &media_log);
-    ChannelLayout channel_layout = CHANNEL_LAYOUT_NONE;
+    ChannelLayoutConfig channel_layout_config;
     switch (options_.channels) {
       case 1:
-        channel_layout = CHANNEL_LAYOUT_MONO;
+        channel_layout_config = ChannelLayoutConfig::Mono();
         break;
       case 2:
-        channel_layout = CHANNEL_LAYOUT_STEREO;
+        channel_layout_config = ChannelLayoutConfig::Stereo();
         break;
       case 6:
-        channel_layout = CHANNEL_LAYOUT_5_1_BACK;
+        channel_layout_config =
+            ChannelLayoutConfig::FromLayout<CHANNEL_LAYOUT_5_1_BACK>();
         break;
       default:
         NOTREACHED();
     }
     AudioDecoderConfig config(AudioCodec::kAAC, SampleFormat::kSampleFormatS16,
-                              channel_layout, options_.sample_rate,
+                              channel_layout_config, options_.sample_rate,
                               /*extra_data=*/std::vector<uint8_t>(),
                               EncryptionScheme::kUnencrypted);
     auto init_cb = [](DecoderStatus decoder_status) {

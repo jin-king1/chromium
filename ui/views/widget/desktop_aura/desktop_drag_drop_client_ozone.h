@@ -7,6 +7,7 @@
 
 #include <memory>
 
+#include "base/auto_reset.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
@@ -20,7 +21,7 @@
 #include "ui/base/dragdrop/os_exchange_data.h"
 #include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/geometry/size.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/platform_window/wm/wm_drag_handler.h"
 #include "ui/platform_window/wm/wm_drop_handler.h"
 #include "ui/views/views_export.h"
@@ -49,6 +50,11 @@ class VIEWS_EXPORT DesktopDragDropClientOzone
       delete;
 
   ~DesktopDragDropClientOzone() override;
+
+  // Called by the window-move (tab-drag) entry point so that a
+  // renderer-initiated data drag cannot start inside the window-move's nested
+  // kNestableTasksAllowed RunLoop. See StartDragAndDrop.
+  [[nodiscard]] static base::AutoReset<bool> ScopedSuppressForWindowMove();
 
  protected:
   friend class DesktopDragDropClientOzoneTest;

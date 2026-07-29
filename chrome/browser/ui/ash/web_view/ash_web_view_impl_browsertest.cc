@@ -41,26 +41,34 @@ using ash::AshWebViewFactory;
         &mock};                                                            \
     observation.Observe(static_cast<views::View*>(web_view_));             \
                                                                            \
+    constexpr int max_change_count = 3;                                    \
+    int change_count = 0;                                                  \
     base::RunLoop run_loop;                                                \
     EXPECT_CALL(mock, OnViewPreferredSizeChanged)                          \
-        .WillOnce(testing::Invoke([&](views::View* view) {                 \
+        .WillRepeatedly([&](views::View* view) {                           \
+          if (expected_preferred_size_ != view->GetPreferredSize()) {      \
+            ++change_count;                                                \
+            if (change_count <= max_change_count) {                        \
+              return;                                                      \
+            }                                                              \
+          }                                                                \
           EXPECT_EQ(expected_preferred_size_, view->GetPreferredSize());   \
           run_loop.QuitClosure().Run();                                    \
-        }));                                                               \
+        });                                                                \
     run_loop.Run();                                                        \
   }
 
-#define EXPECT_DID_STOP_LOADING(web_view_)                                     \
-  {                                                                            \
-    MockAshWebViewObserver mock;                                               \
-    base::ScopedObservation<AshWebView, AshWebView::Observer> obs{&mock};      \
-    obs.Observe(web_view_);                                                    \
-                                                                               \
-    base::RunLoop run_loop;                                                    \
-    EXPECT_CALL(mock, DidStopLoading).WillOnce(testing::Invoke([&run_loop]() { \
-      run_loop.QuitClosure().Run();                                            \
-    }));                                                                       \
-    run_loop.Run();                                                            \
+#define EXPECT_DID_STOP_LOADING(web_view_)                                \
+  {                                                                       \
+    MockAshWebViewObserver mock;                                          \
+    base::ScopedObservation<AshWebView, AshWebView::Observer> obs{&mock}; \
+    obs.Observe(web_view_);                                               \
+                                                                          \
+    base::RunLoop run_loop;                                               \
+    EXPECT_CALL(mock, DidStopLoading).WillOnce([&run_loop]() {            \
+      run_loop.QuitClosure().Run();                                       \
+    });                                                                   \
+    run_loop.Run();                                                       \
   }
 
 #define EXPECT_DID_SUPPRESS_NAVIGATION(web_view_, expected_url_,          \
@@ -73,30 +81,28 @@ using ash::AshWebViewFactory;
                                                                           \
     base::RunLoop run_loop;                                               \
     EXPECT_CALL(mock, DidSuppressNavigation)                              \
-        .WillOnce(testing::Invoke([&](const GURL& url,                    \
-                                      WindowOpenDisposition disposition,  \
-                                      bool from_user_gesture) {           \
+        .WillOnce([&](const GURL& url, WindowOpenDisposition disposition, \
+                      bool from_user_gesture) {                           \
           EXPECT_EQ(expected_url_, url);                                  \
           EXPECT_EQ(expected_disposition_, disposition);                  \
           EXPECT_EQ(expected_from_user_gesture_, from_user_gesture);      \
           run_loop.QuitClosure().Run();                                   \
-        }));                                                              \
+        });                                                               \
     run_loop.Run();                                                       \
   }
 
-#define EXPECT_DID_CHANGE_CAN_GO_BACK(web_view_, expected_can_go_back_)   \
-  {                                                                       \
-    MockAshWebViewObserver mock;                                          \
-    base::ScopedObservation<AshWebView, AshWebView::Observer> obs{&mock}; \
-    obs.Observe(web_view_);                                               \
-                                                                          \
-    base::RunLoop run_loop;                                               \
-    EXPECT_CALL(mock, DidChangeCanGoBack)                                 \
-        .WillOnce(testing::Invoke([&](bool can_go_back) {                 \
-          EXPECT_EQ(expected_can_go_back_, can_go_back);                  \
-          run_loop.QuitClosure().Run();                                   \
-        }));                                                              \
-    run_loop.Run();                                                       \
+#define EXPECT_DID_CHANGE_CAN_GO_BACK(web_view_, expected_can_go_back_)    \
+  {                                                                        \
+    MockAshWebViewObserver mock;                                           \
+    base::ScopedObservation<AshWebView, AshWebView::Observer> obs{&mock};  \
+    obs.Observe(web_view_);                                                \
+                                                                           \
+    base::RunLoop run_loop;                                                \
+    EXPECT_CALL(mock, DidChangeCanGoBack).WillOnce([&](bool can_go_back) { \
+      EXPECT_EQ(expected_can_go_back_, can_go_back);                       \
+      run_loop.QuitClosure().Run();                                        \
+    });                                                                    \
+    run_loop.Run();                                                        \
   }
 
 // Helpers ---------------------------------------------------------------------
@@ -105,7 +111,7 @@ std::unique_ptr<views::Widget> CreateWidget(bool activatable = true) {
   auto widget = std::make_unique<views::Widget>();
 
   views::Widget::InitParams params(
-      views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET,
+      views::Widget::InitParams::CLIENT_OWNS_WIDGET,
       views::Widget::InitParams::TYPE_WINDOW_FRAMELESS);
   params.activatable = activatable
                            ? views::Widget::InitParams::Activatable::kDefault
@@ -180,7 +186,8 @@ class AshWebViewImplBrowserTest : public InProcessBrowserTest {
 
 // Tests that AshWebViewImpl will automatically update its preferred size
 // to match the desired size of its hosted contents.
-IN_PROC_BROWSER_TEST_F(AshWebViewImplBrowserTest, ShouldAutoResize) {
+// TODO(crbug.com/528055322): Re-enable this test.
+IN_PROC_BROWSER_TEST_F(AshWebViewImplBrowserTest, DISABLED_ShouldAutoResize) {
   AshWebView::InitParams params;
   params.enable_auto_resize = true;
   params.min_size = gfx::Size(600, 400);

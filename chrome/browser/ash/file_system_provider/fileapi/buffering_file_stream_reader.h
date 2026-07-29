@@ -9,7 +9,7 @@
 
 #include <memory>
 
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "net/base/completion_once_callback.h"
 #include "storage/browser/file_system/file_stream_reader.h"
@@ -45,7 +45,7 @@ class BufferingFileStreamReader : public storage::FileStreamReader {
   int Read(net::IOBuffer* buf,
            int buf_len,
            net::CompletionOnceCallback callback) override;
-  int64_t GetLength(net::Int64CompletionOnceCallback callback) override;
+  int64_t GetLength(GetLengthCallback callback) override;
 
  private:
   // Copies data from the preloading buffer and updates the internal iterator.

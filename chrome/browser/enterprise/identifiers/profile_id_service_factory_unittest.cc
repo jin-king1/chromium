@@ -20,6 +20,7 @@
 #include "chrome/test/base/testing_profile_manager.h"
 #include "components/enterprise/browser/identifiers/identifiers_prefs.h"
 #include "components/enterprise/browser/identifiers/profile_id_service.h"
+#include "components/prefs/pref_service.h"
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -61,6 +62,8 @@ class ProfileIdServiceFactoryTest : public testing::Test,
     store_.set_policy_data_for_testing(std::move(policy_data));
     fake_statistics_provider_.SetMachineStatistic(ash::system::kSerialNumberKey,
                                                   kFakeDeviceID);
+    fake_statistics_provider_.SetLoadingState(
+        ash::system::StatisticsProvider::LoadingState::kFinished);
 #endif  // !BUILDFLAG(IS_CHROMEOS)
 
     EXPECT_TRUE(profile_manager_.SetUp());
@@ -97,7 +100,7 @@ class ProfileIdServiceFactoryTest : public testing::Test,
 
   void OnProfileCreationStarted(Profile* profile) override {
     if (!preset_guid_.empty()) {
-      enterprise::PresetProfileManagmentData::Get(profile)->SetGuid(
+      enterprise::PresetProfileManagementData::Get(profile)->SetGuid(
           preset_guid_);
     }
   }
@@ -140,7 +143,8 @@ class ProfileIdServiceFactoryTest : public testing::Test,
     BUILDFLAG(IS_ANDROID)
   policy::FakeBrowserDMTokenStorage storage_;
 #else
-  policy::MockCloudPolicyStore store_;
+  policy::MockCloudPolicyStore store_{
+      policy::dm_protocol::GetChromeUserPolicyType()};
 #if BUILDFLAG(IS_CHROMEOS)
   ash::system::ScopedFakeStatisticsProvider fake_statistics_provider_;
 #endif

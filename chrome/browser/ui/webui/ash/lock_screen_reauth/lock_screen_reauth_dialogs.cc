@@ -4,10 +4,12 @@
 
 #include "chrome/browser/ui/webui/ash/lock_screen_reauth/lock_screen_reauth_dialogs.h"
 
+#include <algorithm>
 #include <memory>
 #include <string>
 
-#include "base/containers/contains.h"
+#include "ash/constants/webui_url_constants.h"
+#include "base/check_deref.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/json/json_writer.h"
@@ -15,6 +17,8 @@
 #include "base/task/single_thread_task_runner.h"
 #include "chrome/browser/ash/login/helper.h"
 #include "chrome/browser/ash/login/profile_auth_data.h"
+#include "chrome/browser/ash/login/signin_partition_manager.h"
+#include "chrome/browser/ash/login/signin_partition_manager_factory.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/media/webrtc/media_capture_devices_dispatcher.h"
@@ -26,15 +30,13 @@
 #include "chrome/browser/ui/webui/ash/lock_screen_reauth/lock_screen_network_dialog.h"
 #include "chrome/browser/ui/webui/ash/lock_screen_reauth/lock_screen_reauth_handler.h"
 #include "chrome/browser/ui/webui/ash/lock_screen_reauth/lock_screen_start_reauth_ui.h"
-#include "chrome/common/webui_url_constants.h"
-#include "chrome/grit/browser_resources.h"
-#include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/components/network/network_connection_handler.h"
 #include "chromeos/ash/components/network/network_handler.h"
 #include "chromeos/ash/components/network/network_state_handler.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui_data_source.h"
 #include "services/network/public/mojom/network_context.mojom.h"
 #include "ui/aura/window.h"
@@ -137,15 +139,11 @@ void LockScreenStartReauthDialog::OnProfileInitialized(Profile* profile) {
 
   profile_ = profile->GetPrimaryOTRProfile(/*create_if_needed=*/true);
   ShowSystemDialogForBrowserContext(profile_);
-  const NetworkStateInformer::State state = network_state_informer_->state();
-  // Show network or captive portal screen if needed.
-  // TODO(crbug.com/1237407): Handle other states in NetworkStateInformer
-  // properly.
-  if (state == NetworkStateInformer::OFFLINE) {
-    ShowLockScreenNetworkDialog();
-  } else if (state == NetworkStateInformer::CAPTIVE_PORTAL) {
-    ShowLockScreenCaptivePortalDialog();
-  }
+  // Network state observation should start only after `profile_` is
+  // initialized, because in `UpdateState` we assume that `profile_` can be used
+  // as a browser context for the network dialog.
+  network_state_scoped_observation_.Observe(network_state_informer_.get());
+  UpdateState(NetworkError::ERROR_REASON_UPDATE);
 }
 
 // static
@@ -228,7 +226,7 @@ void LockScreenStartReauthDialog::ShowLockScreenNetworkDialog() {
   if (lock_screen_network_dialog_) {
     return;
   }
-  DCHECK(profile_);
+  CHECK(profile_);
   is_network_dialog_visible_ = true;
   lock_screen_network_dialog_ =
       std::make_unique<LockScreenNetworkDialog>(base::BindOnce(
@@ -239,6 +237,7 @@ void LockScreenStartReauthDialog::ShowLockScreenNetworkDialog() {
 
 void LockScreenStartReauthDialog::ShowLockScreenCaptivePortalDialog() {
   TerminateAutoReload();
+  CHECK(profile_);
   if (!captive_portal_dialog_) {
     captive_portal_dialog_ = std::make_unique<LockScreenCaptivePortalDialog>();
     OnCaptivePortalDialogReadyForTesting();
@@ -271,15 +270,14 @@ void LockScreenStartReauthDialog::OnCaptivePortalDialogReadyForTesting() {
 }
 
 LockScreenStartReauthDialog::LockScreenStartReauthDialog()
-    : BaseLockDialog(GURL(chrome::kChromeUILockScreenStartReauthURL),
+    : BaseLockDialog(GURL(ash::kChromeUILockScreenStartReauthURL),
                      CalculateOobeDialogSizeForPrimaryDisplay()),
       network_state_informer_(base::MakeRefCounted<NetworkStateInformer>()) {
   network_state_informer_->Init();
-  scoped_observation_.Observe(network_state_informer_.get());
 
   HttpAuthDialog::AddObserver(this);
 
-  enable_ash_httpauth_ = HttpAuthDialog::Enable();
+  enable_system_httpauth_ = HttpAuthDialog::Enable();
 
   g_browser_process->profile_manager()->CreateProfileAsync(
       ProfileHelper::GetLockScreenProfileDir(),
@@ -290,7 +288,6 @@ LockScreenStartReauthDialog::LockScreenStartReauthDialog()
 LockScreenStartReauthDialog::~LockScreenStartReauthDialog() {
   DCHECK_EQ(this, g_dialog);
   HttpAuthDialog::RemoveObserver(this);
-  scoped_observation_.Reset();
   DeleteLockScreenNetworkDialog();
   g_dialog = nullptr;
 }
@@ -299,25 +296,39 @@ void LockScreenStartReauthDialog::OnWebviewLoadAborted() {
   UpdateState(NetworkError::ERROR_REASON_FRAME_ERROR);
 }
 
+LockScreenReauthHandler* LockScreenStartReauthDialog::GetHandler() {
+  auto* web_ui = webui();
+  if (!web_ui) {
+    return nullptr;
+  }
+  auto* controller = web_ui->GetController();
+  if (!controller) {
+    return nullptr;
+  }
+  auto* reauth_ui = &CHECK_DEREF(controller->GetAs<LockScreenStartReauthUI>());
+  return reauth_ui->GetMainHandler();
+}
+
 void LockScreenStartReauthDialog::TerminateAutoReload() {
-  LockScreenReauthHandler* reauth_handler =
-      static_cast<LockScreenStartReauthUI*>(webui()->GetController())
-          ->GetMainHandler();
-  reauth_handler->GetAutoReloadManager().Terminate();
+  LockScreenReauthHandler* reauth_handler = GetHandler();
+  if (reauth_handler) {
+    reauth_handler->GetAutoReloadManager().Terminate();
+  }
 }
 
 void LockScreenStartReauthDialog::ReactivateAutoReload() {
-  LockScreenReauthHandler* reauth_handler =
-      static_cast<LockScreenStartReauthUI*>(webui()->GetController())
-          ->GetMainHandler();
-  reauth_handler->ActivateAutoReload();
+  LockScreenReauthHandler* reauth_handler = GetHandler();
+  if (reauth_handler) {
+    reauth_handler->ActivateAutoReload();
+  }
 }
 
 bool LockScreenStartReauthDialog::IsAutoReloadActive() {
-  LockScreenReauthHandler* reauth_handler =
-      static_cast<LockScreenStartReauthUI*>(webui()->GetController())
-          ->GetMainHandler();
-  return reauth_handler->GetAutoReloadManager().IsAutoReloadActive();
+  LockScreenReauthHandler* reauth_handler = GetHandler();
+  if (reauth_handler) {
+    return reauth_handler->GetAutoReloadManager().IsAutoReloadActive();
+  }
+  return false;
 }
 
 void LockScreenStartReauthDialog::UpdateState(
@@ -353,10 +364,8 @@ void LockScreenStartReauthDialog::UpdateState(
   }
   if (should_reload_gaia_) {
     DismissLockScreenNetworkDialog();
-    LockScreenReauthHandler* reauth_handler =
-        static_cast<LockScreenStartReauthUI*>(webui()->GetController())
-            ->GetMainHandler();
-    if (reauth_handler->IsAuthenticatorLoaded({})) {
+    LockScreenReauthHandler* reauth_handler = GetHandler();
+    if (reauth_handler && reauth_handler->IsAuthenticatorLoaded({})) {
       reauth_handler->ReloadGaiaAuthenticator();
       should_reload_gaia_ = false;
     }
@@ -399,7 +408,8 @@ void LockScreenStartReauthDialog::ForceUpdateStateForTesting(
 }
 
 web_modal::WebContentsModalDialogHost*
-LockScreenStartReauthDialog::GetWebContentsModalDialogHost() {
+LockScreenStartReauthDialog::GetWebContentsModalDialogHost(
+    content::WebContents* web_contents) {
   return this;
 }
 
@@ -432,8 +442,9 @@ void LockScreenStartReauthDialog::RemoveObserver(
 }
 
 void LockScreenStartReauthDialog::TransferHttpAuthCaches() {
+  CHECK(profile_);
   content::StoragePartition* webview_storage_partition =
-      login::SigninPartitionManager::Factory::GetForBrowserContext(profile_)
+      login::SigninPartitionManagerFactory::GetForBrowserContext(profile_)
           ->GetCurrentStoragePartition();
   if (webview_storage_partition) {
     // Transfer auth cache to system network context. This allows to preserve
@@ -504,8 +515,8 @@ bool LockScreenStartReauthDialog::Matches(content::WebContents* web_contents) {
   // are open in the user's active session. We use NavigationController objects
   // for comparison because `LoginHandler` uses them as the source of
   // proxy-related notifications.
-  return base::Contains(webui()->GetWebContents()->GetInnerWebContents(),
-                        web_contents);
+  return std::ranges::contains(webui()->GetWebContents()->GetInnerWebContents(),
+                               web_contents);
 }
 
 void LockScreenStartReauthDialog::ReenableNetworkUpdates() {

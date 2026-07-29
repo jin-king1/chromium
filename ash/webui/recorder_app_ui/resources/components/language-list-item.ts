@@ -9,19 +9,18 @@ import './cra/cra-icon.js';
 import './settings-row.js';
 import './spoken-message.js';
 
+import type {PropertyDeclarations, PropertyValues} from 'chrome://resources/mwc/lit/index.js';
 import {
   css,
   html,
   nothing,
-  PropertyDeclarations,
-  PropertyValues,
 } from 'chrome://resources/mwc/lit/index.js';
 
 import {i18n} from '../core/i18n.js';
-import {ModelState} from '../core/on_device_model/types.js';
+import type {ModelState} from '../core/on_device_model/types.js';
 import {ReactiveLitElement} from '../core/reactive/lit.js';
 import {signal} from '../core/reactive/signal.js';
-import {LangPackInfo} from '../core/soda/language_info.js';
+import type {LangPackInfo} from '../core/soda/language_info.js';
 import {
   assertExhaustive,
   assertExists,
@@ -143,6 +142,12 @@ export class LanguageListItem extends ReactiveLitElement {
     const kind = this.sodaState.kind;
     const name = assertExists(this.langPackInfo).displayName;
     switch (kind) {
+      case 'needsReboot':
+        return html`
+          <spoken-message slot="status" role="status" aria-live="polite">
+            ${i18n.languagePickerLanguageNeedsRebootStatusMessage(name)}
+          </spoken-message>
+        `;
       case 'error':
         return html`
           <spoken-message slot="status" role="status" aria-live="polite">
@@ -190,6 +195,13 @@ export class LanguageListItem extends ReactiveLitElement {
     switch (kind) {
       case 'notInstalled':
         return downloadButton;
+      case 'needsReboot':
+        return html`
+          <span slot="description" class="error">
+            ${i18n.languagePickerLanguageNeedsRebootDescription}
+          </span>
+          ${downloadButton}
+        `;
       case 'error':
         // Shows the download button for users to try again.
         return html`
@@ -240,6 +252,9 @@ export class LanguageListItem extends ReactiveLitElement {
     switch (kind) {
       case 'notInstalled': {
         return i18n.languagePickerLanguageNotDownloadedAriaLabel(name);
+      }
+      case 'needsReboot': {
+        return i18n.languagePickerLanguageNeedsRebootAriaLabel(name);
       }
       case 'error': {
         return i18n.languagePickerLanguageDownloadErrorAriaLabel(name);

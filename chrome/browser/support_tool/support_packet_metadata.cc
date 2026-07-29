@@ -15,7 +15,6 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
 #include "base/i18n/time_formatting.h"
 #include "base/location.h"
 #include "base/strings/string_util.h"
@@ -26,11 +25,12 @@
 #include "base/time/time.h"
 #include "base/uuid.h"
 #include "base/values.h"
+#include "build/build_config.h"
 #include "chrome/browser/policy/policy_ui_utils.h"
 #include "chrome/browser/support_tool/data_collector.h"
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
 #include "chromeos/ash/components/system/statistics_provider.h"
-#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+#endif  // BUILDFLAG(IS_CHROMEOS)
 #include "components/feedback/redaction_tool/pii_types.h"
 #include "components/policy/core/browser/webui/json_generation.h"
 
@@ -48,9 +48,9 @@ const char kPlatformKey[] = "Platform";
 const char kOSKey[] = "OS";
 const char kChromeVersionKey[] = "Chrome Version";
 const char kChromeRevisionKey[] = "Chrome Revision";
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
 const char kSerialNumberKey[] = "Serial Number";
-#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+#endif  // BUILDFLAG(IS_CHROMEOS)
 const char kErrorMessagesKey[] = "Support Tool Errors";
 
 const std::pair<const char* const, redaction::PIIType> kMetadataKeys[] = {
@@ -64,9 +64,9 @@ const std::pair<const char* const, redaction::PIIType> kMetadataKeys[] = {
     {kOSKey, PIIType::kNone},
     {kChromeVersionKey, PIIType::kNone},
     {kChromeRevisionKey, PIIType::kNone},
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
     {kSerialNumberKey, PIIType::kSerial},
-#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+#endif  // BUILDFLAG(IS_CHROMEOS)
     {kErrorMessagesKey, PIIType::kNone}};
 
 void WriteContentsOnFile(base::FilePath metadata_file,
@@ -108,7 +108,7 @@ SupportPacketMetadata::SupportPacketMetadata(
 SupportPacketMetadata::~SupportPacketMetadata() = default;
 
 void SupportPacketMetadata::SetChromeMetadataFields() {
-  base::Value::Dict chrome_metadata = policy::GetChromeMetadataValue(
+  base::DictValue chrome_metadata = policy::GetChromeMetadataValue(
       policy::GetChromeMetadataParams(/*application_name=*/"Support Tool"));
 
   FindStringAndSetInSupportPacketMetadata(
@@ -122,7 +122,7 @@ void SupportPacketMetadata::SetChromeMetadataFields() {
 }
 
 void SupportPacketMetadata::FindStringAndSetInSupportPacketMetadata(
-    const base::Value::Dict& chrome_metadata,
+    const base::DictValue& chrome_metadata,
     const char* chrome_metadata_key,
     const char* support_packet_key) {
   const std::string* value = chrome_metadata.FindString(chrome_metadata_key);
@@ -138,7 +138,7 @@ void SupportPacketMetadata::PopulateMetadataContents(
   metadata_[kDataCollectorListKey] =
       GetDataCollectorsListString(data_collectors_included);
   metadata_[kTimestampKey] = GetTimestampString(timestamp);
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
   ash::system::StatisticsProvider::GetInstance()
       ->ScheduleOnMachineStatisticsLoaded(
           base::BindOnce(&SupportPacketMetadata::OnMachineStatisticsLoaded,
@@ -146,10 +146,10 @@ void SupportPacketMetadata::PopulateMetadataContents(
                          std::move(on_metadata_contents_populated)));
 #else
   std::move(on_metadata_contents_populated).Run();
-#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+#endif  // BUILDFLAG(IS_CHROMEOS)
 }
 
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
 void SupportPacketMetadata::OnMachineStatisticsLoaded(
     base::OnceClosure on_metadata_contents_populated) {
   const std::optional<std::string_view> machine_serial =
@@ -160,7 +160,7 @@ void SupportPacketMetadata::OnMachineStatisticsLoaded(
   }
   std::move(on_metadata_contents_populated).Run();
 }
-#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 const std::string& SupportPacketMetadata::GetCaseId() {
   return metadata_[kSupportCaseIdKey];

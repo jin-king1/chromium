@@ -8,33 +8,47 @@
 #include <memory>
 
 #include "base/memory/ptr_util.h"
+#include "base/memory/values_equivalent.h"
 #include "third_party/blink/renderer/core/animation/css/css_timing_data.h"
 #include "third_party/blink/renderer/core/animation/effect_model.h"
 #include "third_party/blink/renderer/core/animation/timing.h"
 #include "third_party/blink/renderer/core/style/computed_style_constants.h"
+#include "third_party/blink/renderer/core/style/scoped_css_name.h"
 #include "third_party/blink/renderer/core/style/style_name_or_keyword.h"
 #include "third_party/blink/renderer/core/style/style_timeline.h"
+#include "third_party/blink/renderer/core/style/style_trigger_attachment.h"
 
 namespace blink {
 
 class CORE_EXPORT CSSAnimationData final : public CSSTimingData {
  public:
+  using TriggerAttachmentsListType =
+      HeapVector<Member<const StyleTriggerAttachmentVector>>;
+
   CSSAnimationData();
   explicit CSSAnimationData(const CSSAnimationData&);
 
-  std::unique_ptr<CSSAnimationData> Clone() const {
-    return base::WrapUnique(new CSSAnimationData(*this));
+  void Trace(Visitor* visitor) const override {
+    visitor->Trace(name_list_);
+    visitor->Trace(timeline_trigger_name_list_);
+    visitor->Trace(trigger_attachments_list_);
+    CSSTimingData::Trace(visitor);
   }
 
+  bool NamesMatch(const CSSAnimationData& other) const;
   bool AnimationsMatchForStyleRecalc(const CSSAnimationData& other) const;
   bool operator==(const CSSAnimationData& other) const {
     return AnimationsMatchForStyleRecalc(other);
   }
+  bool TimelineTriggerNamesMatch(const CSSAnimationData& other) const;
+  bool TriggersMatchForStyleRecalc(const CSSAnimationData& other) const;
 
   Timing ConvertToTiming(size_t index) const;
   const StyleTimeline& GetTimeline(size_t index) const;
 
-  const Vector<AtomicString>& NameList() const { return name_list_; }
+  const HeapVector<Member<const ScopedCSSName>>& NameList() const {
+    return name_list_;
+  }
   const Vector<StyleTimeline>& TimelineList() const { return timeline_list_; }
 
   const Vector<double>& IterationCountList() const {
@@ -59,25 +73,36 @@ class CORE_EXPORT CSSAnimationData final : public CSSTimingData {
   const Vector<EffectModel::CompositeOperation>& CompositionList() const {
     return composition_list_;
   }
-  const Vector<EAnimationTriggerType>& TriggerTypeList() const {
-    return trigger_type_list_;
-  }
-  const Vector<StyleTimeline>& TriggerTimelineList() const {
-    return trigger_timeline_list_;
-  }
-  const Vector<std::optional<TimelineOffset>>& TriggerRangeStartList() const {
-    return trigger_range_start_list_;
-  }
-  const Vector<std::optional<TimelineOffset>>& TriggerRangeEndList() const {
-    return trigger_range_end_list_;
-  }
-  const Vector<std::optional<TimelineOffset>>& TriggerExitRangeStartList()
+  const HeapVector<Member<const ScopedCSSName>>& TimelineTriggerNameList()
       const {
-    return trigger_exit_range_start_list_;
+    return timeline_trigger_name_list_;
   }
-  const Vector<std::optional<TimelineOffset>>& TriggerExitRangeEndList() const {
-    return trigger_exit_range_end_list_;
+  const Vector<std::optional<TimelineOffset>>&
+  TimelineTriggerActivationRangeStartList() const {
+    return timeline_trigger_activation_range_start_list_;
   }
+  const Vector<std::optional<TimelineOffset>>&
+  TimelineTriggerActivationRangeEndList() const {
+    return timeline_trigger_activation_range_end_list_;
+  }
+  const Vector<TimelineOffsetOrAuto>& TimelineTriggerActiveRangeStartList()
+      const {
+    return timeline_trigger_active_range_start_list_;
+  }
+  const Vector<TimelineOffsetOrAuto>& TimelineTriggerActiveRangeEndList()
+      const {
+    return timeline_trigger_active_range_end_list_;
+  }
+  const Vector<StyleTimeline>& TimelineTriggerSourceList() const {
+    return timeline_trigger_source_list_;
+  }
+  const StyleTimeline& GetTimelineTriggerSource(size_t index) const;
+
+  const TriggerAttachmentsListType& TriggerAttachmentsList() const {
+    return trigger_attachments_list_;
+  }
+  const Member<const StyleTriggerAttachmentVector> GetTriggerAttachments(
+      size_t index) const;
 
   EffectModel::CompositeOperation GetComposition(size_t animation_index) const {
     if (!composition_list_.size()) {
@@ -87,19 +112,12 @@ class CORE_EXPORT CSSAnimationData final : public CSSTimingData {
     return composition_list_[index];
   }
 
-  Vector<AtomicString>& NameList() { return name_list_; }
+  HeapVector<Member<const ScopedCSSName>>& NameList() { return name_list_; }
   Vector<StyleTimeline>& TimelineList() { return timeline_list_; }
   Vector<double>& IterationCountList() { return iteration_count_list_; }
   Vector<Timing::PlaybackDirection>& DirectionList() { return direction_list_; }
   Vector<Timing::FillMode>& FillModeList() { return fill_mode_list_; }
   Vector<EAnimPlayState>& PlayStateList() { return play_state_list_; }
-  Vector<EAnimationTriggerType>& TriggerTypeList() {
-    return trigger_type_list_;
-  }
-  Vector<StyleTimeline>& TriggerTimelineList() {
-    return trigger_timeline_list_;
-  }
-
   Vector<std::optional<TimelineOffset>>& RangeStartList() {
     return range_start_list_;
   }
@@ -109,18 +127,28 @@ class CORE_EXPORT CSSAnimationData final : public CSSTimingData {
   Vector<EffectModel::CompositeOperation>& CompositionList() {
     return composition_list_;
   }
-
-  Vector<std::optional<TimelineOffset>>& TriggerRangeStartList() {
-    return trigger_range_start_list_;
+  HeapVector<Member<const ScopedCSSName>>& TimelineTriggerNameList() {
+    return timeline_trigger_name_list_;
   }
-  Vector<std::optional<TimelineOffset>>& TriggerRangeEndList() {
-    return trigger_range_end_list_;
+  Vector<std::optional<TimelineOffset>>&
+  TimelineTriggerActivationRangeStartList() {
+    return timeline_trigger_activation_range_start_list_;
   }
-  Vector<std::optional<TimelineOffset>>& TriggerExitRangeStartList() {
-    return trigger_exit_range_start_list_;
+  Vector<std::optional<TimelineOffset>>&
+  TimelineTriggerActivationRangeEndList() {
+    return timeline_trigger_activation_range_end_list_;
   }
-  Vector<std::optional<TimelineOffset>>& TriggerExitRangeEndList() {
-    return trigger_exit_range_end_list_;
+  Vector<TimelineOffsetOrAuto>& TimelineTriggerActiveRangeStartList() {
+    return timeline_trigger_active_range_start_list_;
+  }
+  Vector<TimelineOffsetOrAuto>& TimelineTriggerActiveRangeEndList() {
+    return timeline_trigger_active_range_end_list_;
+  }
+  Vector<StyleTimeline>& TimelineTriggerSourceList() {
+    return timeline_trigger_source_list_;
+  }
+  TriggerAttachmentsListType& TriggerAttachmentsList() {
+    return trigger_attachments_list_;
   }
 
   bool HasSingleInitialTimeline() const {
@@ -137,7 +165,8 @@ class CORE_EXPORT CSSAnimationData final : public CSSTimingData {
   }
 
   static std::optional<double> InitialDuration();
-  static const AtomicString& InitialName();
+  static const ScopedCSSName* InitialName() { return nullptr; }
+  static const AtomicString& InitialNameString() { return g_null_atom; }
   static const StyleTimeline& InitialTimeline();
   static Timing::PlaybackDirection InitialDirection() {
     return Timing::PlaybackDirection::NORMAL;
@@ -154,25 +183,31 @@ class CORE_EXPORT CSSAnimationData final : public CSSTimingData {
   static EffectModel::CompositeOperation InitialComposition() {
     return EffectModel::CompositeOperation::kCompositeReplace;
   }
-  static const StyleTimeline& InitialTriggerTimeline();
-  static EAnimationTriggerType InitialTriggerType() {
-    return EAnimationTriggerType::kOnce;
-  }
-  static std::optional<TimelineOffset> InitialTriggerRangeStart() {
+  static const ScopedCSSName* InitialTimelineTriggerName() { return nullptr; }
+  static std::optional<TimelineOffset>
+  InitialTimelineTriggerActivationRangeStart() {
     return std::nullopt;
   }
-  static std::optional<TimelineOffset> InitialTriggerRangeEnd() {
+  static std::optional<TimelineOffset>
+  InitialTimelineTriggerActivationRangeEnd() {
     return std::nullopt;
   }
-  static std::optional<TimelineOffset> InitialTriggerExitRangeStart() {
-    return std::nullopt;
+  static TimelineOffsetOrAuto InitialTimelineTriggerActiveRangeStart() {
+    return TimelineOffsetOrAuto();
   }
-  static std::optional<TimelineOffset> InitialTriggerExitRangeEnd() {
-    return std::nullopt;
+  static TimelineOffsetOrAuto InitialTimelineTriggerActiveRangeEnd() {
+    return TimelineOffsetOrAuto();
+  }
+  static const StyleTimeline& InitialTimelineTriggerSource();
+  static Member<StyleTriggerAttachmentVector> InitialTriggerAttachments() {
+    return nullptr;
   }
 
+  static bool TimelineTriggerDataChanged(const CSSAnimationData* old_data,
+                                         const CSSAnimationData* new_data);
+
  private:
-  Vector<AtomicString> name_list_;
+  HeapVector<Member<const ScopedCSSName>> name_list_;
   Vector<StyleTimeline> timeline_list_;
   Vector<std::optional<TimelineOffset>> range_start_list_;
   Vector<std::optional<TimelineOffset>> range_end_list_;
@@ -181,12 +216,17 @@ class CORE_EXPORT CSSAnimationData final : public CSSTimingData {
   Vector<Timing::FillMode> fill_mode_list_;
   Vector<EAnimPlayState> play_state_list_;
   Vector<EffectModel::CompositeOperation> composition_list_;
-  Vector<EAnimationTriggerType> trigger_type_list_;
-  Vector<StyleTimeline> trigger_timeline_list_;
-  Vector<std::optional<TimelineOffset>> trigger_range_start_list_;
-  Vector<std::optional<TimelineOffset>> trigger_range_end_list_;
-  Vector<std::optional<TimelineOffset>> trigger_exit_range_start_list_;
-  Vector<std::optional<TimelineOffset>> trigger_exit_range_end_list_;
+
+  HeapVector<Member<const ScopedCSSName>> timeline_trigger_name_list_;
+  Vector<std::optional<TimelineOffset>>
+      timeline_trigger_activation_range_start_list_;
+  Vector<std::optional<TimelineOffset>>
+      timeline_trigger_activation_range_end_list_;
+  Vector<TimelineOffsetOrAuto> timeline_trigger_active_range_start_list_;
+  Vector<TimelineOffsetOrAuto> timeline_trigger_active_range_end_list_;
+  Vector<StyleTimeline> timeline_trigger_source_list_;
+
+  TriggerAttachmentsListType trigger_attachments_list_;
 };
 
 }  // namespace blink

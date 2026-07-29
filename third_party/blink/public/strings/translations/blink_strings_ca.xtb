@@ -8,7 +8,7 @@
 <translation id="1311894908970423688">El valor ha de ser <ph name="VALUE_DATE_OR_TIME" />.</translation>
 <translation id="1588438908519853928">Normal</translation>
 <translation id="1591562245178063882">Aquest mes</translation>
-<translation id="1637811476055996098">Trieu els fitxers</translation>
+<translation id="1637811476055996098">Tria els fitxers</translation>
 <translation id="1729654308190250600">Introduïu una adreça electrònica.</translation>
 <translation id="1758486001363313524">Altres...</translation>
 <translation id="1921819250265091946">dd</translation>
@@ -20,6 +20,7 @@
 <translation id="2226276347425096477">Escurceu aquest text a un màxim de <ph name="MAX_CHARACTERS" /> caràcters (ara n'esteu utilitzant <ph name="CURRENT_LENGTH" />).</translation>
 <translation id="2247351761944213033">Setmana <ph name="WEEKNUMBER" />, <ph name="YEAR" /></translation>
 <translation id="2277199496770840904">Pista <ph name="NUMBER" /></translation>
+<translation id="2500270406326775625">URL de dades</translation>
 <translation id="2507943997699731163">Empleneu aquest camp.</translation>
 <translation id="2613802280814924224">Introduïu un valor vàlid. El valor vàlid més proper és <ph name="VALID_VALUE" />.</translation>
 <translation id="2653659639078652383">Envia</translation>
@@ -91,7 +92,7 @@
 <translation id="8199524924445686405">aaaa</translation>
 <translation id="8284326494547611709">Subtítols</translation>
 <translation id="835897206747267392">Valor no vàlid.</translation>
-<translation id="839593075537728968">El valor ha d'oscil·lar entre <ph name="MINIMUM_TIME" /> i <ph name="MAXIMUM_TIME" />.</translation>
+<translation id="839593075537728968">El valor ha d'estar entre <ph name="MINIMUM_TIME" /> i <ph name="MAXIMUM_TIME" />.</translation>
 <translation id="8444882422881193423"><ph name="NUMBER_OF_FILES" /> fitxers</translation>
 <translation id="8451268428117625855">Seleccioneu un fitxer.</translation>
 <translation id="8637593834423658414">1,75</translation>

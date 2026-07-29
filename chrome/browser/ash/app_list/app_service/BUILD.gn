@@ -2,8 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/chromeos/ui_mode.gni")
-
 assert(is_chromeos)
 
 static_library("app_service") {
@@ -26,14 +24,16 @@ static_library("app_service") {
     "app_service_promise_app_model_builder.h",
   ]
 
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
+  public_deps = [
+    "//chrome/browser:browser_public_dependencies",
+    "//components/app_icon_loader",
+  ]
 
   deps = [
     "//ash/constants",
     "//ash/public/cpp",
+    "//ash/strings",
     "//base",
-    "//chrome/app:branded_strings",
-    "//chrome/app:generated_resources",
     "//chrome/browser/apps/app_service/app_icon:util",
     "//chrome/browser/ash/app_list",
     "//chrome/browser/ash/app_list/arc",
@@ -45,7 +45,9 @@ static_library("app_service") {
     "//chrome/browser/ash/plugin_vm",
     "//chrome/browser/ash/remote_apps",
     "//chrome/browser/profiles:profile",
-    "//chrome/browser/ui/webui/ash/settings/app_management",
+    "//chrome/browser/ui:chrome_pages",
+    "//chromeos/ash/components/browser_context_helper",
+    "//chromeos/ash/experiences/settings_ui",
     "//chromeos/constants",
     "//components/app_constants",
     "//components/services/app_service",
@@ -73,6 +75,7 @@ source_set("unit_tests") {
   deps = [
     "//ash/constants",
     "//ash/public/cpp",
+    "//ash/strings",
     "//base",
     "//base/test:test_support",
     "//chrome/app:generated_resources",
@@ -100,6 +103,7 @@ source_set("unit_tests") {
     "//chrome/common:constants",
     "//chrome/common:non_code_constants",
     "//chrome/test:test_support",
+    "//chromeos/ash/components/browser_context_helper",
     "//chromeos/ash/components/dbus/cicerone",
     "//chromeos/ash/components/dbus/concierge",
     "//chromeos/ash/components/dbus/seneschal",
@@ -143,10 +147,9 @@ source_set("browser_tests") {
     "//ash/public/cpp",
     "//base",
     "//base/test:test_support",
-    "//chrome/app:generated_resources",
     "//chrome/browser",
     "//chrome/browser/apps/app_service",
-    "//chrome/browser/apps/app_service:constants",
+    "//chrome/browser/apps/platform_apps:browser_test_support",
     "//chrome/browser/ash/app_list",
     "//chrome/browser/ash/app_list/arc:test_support",
     "//chrome/browser/ash/app_list/test:test_support",
@@ -157,6 +160,7 @@ source_set("browser_tests") {
     "//chrome/browser/profiles:profile",
     "//chrome/browser/ui",
     "//chrome/browser/ui/ash/shelf",
+    "//chrome/browser/ui/web_applications",
     "//chrome/browser/web_applications",
     "//chrome/browser/web_applications:web_applications_test_support",
     "//chrome/common:constants",
@@ -182,4 +186,8 @@ source_set("browser_tests") {
     "//ui/views",
     "//url",
   ]
+
+  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+  # enable the diagnostic by removing this line.
+  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }

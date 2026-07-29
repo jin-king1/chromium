@@ -34,10 +34,12 @@
 #include "third_party/blink/renderer/platform/text/text_direction.h"
 #include "third_party/blink/renderer/platform/wtf/casting.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
+#include "ui/gfx/geometry/rect.h"
 
 namespace blink {
 
 struct AttributeTriggers;
+class AttachInternalsOptions;
 class Color;
 class DocumentFragment;
 class ElementInternals;
@@ -50,6 +52,7 @@ class TextControlElement;
 class V8UnionStringLegacyNullToEmptyStringOrTrustedScript;
 class V8UnionBooleanOrTogglePopoverOptions;
 class ShowPopoverOptions;
+class UnboundedEventData;
 
 enum TranslateAttributeMode {
   kTranslateAttributeYes,
@@ -103,6 +106,16 @@ enum class TopLayerElementType {
   kFullscreen,
 };
 
+enum class PopoverHideResult {
+  kHidden,
+  kForcedOpenByInspector,
+};
+
+enum class UnboundedEvents {
+  kFire,
+  kSuppress,
+};
+
 class CORE_EXPORT HTMLElement : public Element {
   DEFINE_WRAPPERTYPEINFO();
 
@@ -114,12 +127,16 @@ class CORE_EXPORT HTMLElement : public Element {
     return HasLocalName(name.LocalName());
   }
 
-  const char* NameInHeapSnapshot() const override;
+  ElementType GetElementType() const override {
+    return ElementType::kHTMLElement;
+  }
+
+  const char* GetHumanReadableName() const override;
 
   String title() const final;
 
   void setInnerText(const String&);
-  V8UnionStringLegacyNullToEmptyStringOrTrustedScript* innerTextForBinding();
+  String innerTextForBinding();
   virtual void setInnerTextForBinding(
       const V8UnionStringLegacyNullToEmptyStringOrTrustedScript*
           string_or_trusted_script,
@@ -139,6 +156,9 @@ class CORE_EXPORT HTMLElement : public Element {
   virtual const AtomicString& autocapitalize() const;
   void setAutocapitalize(const AtomicString&);
 
+  virtual bool autocorrect() const;
+  void setAutocorrect(bool);
+
   virtual bool draggable() const;
   void setDraggable(bool);
 
@@ -155,9 +175,12 @@ class CORE_EXPORT HTMLElement : public Element {
 
   void AccessKeyAction(SimulatedClickCreationScope creation_scope) override;
 
+  String accessKeyLabel();
+
   bool ShouldSerializeEndTag() const;
 
   virtual HTMLFormElement* formOwner() const;
+  virtual HTMLElement* formForBinding() const;
 
   HTMLFormElement* FindFormAncestor() const;
 
@@ -178,12 +201,27 @@ class CORE_EXPORT HTMLElement : public Element {
             const_cast<const Element*>(element)));
   }
 
+  // https://html.spec.whatwg.org/multipage/dom.html#directionality-of-the-attribute
+  // direction_result is the resulting directionality; it is set only
+  // when the return value is not null.
+  const AtomicString& GetDirectionalAttribute(const QualifiedName& attr_name,
+                                              TextDirection& direction_result);
+
   virtual bool IsHTMLBodyElement() const { return false; }
   // TODO(crbug.com/1123606): Remove this virtual method once the fenced frame
   // origin trial is over.
   virtual bool IsHTMLFencedFrameElement() const { return false; }
   virtual bool IsHTMLFrameSetElement() const { return false; }
-  virtual bool IsHTMLPermissionElement() const { return false; }
+  // TODO(crbug.com/483423896): Remove this method when the install element
+  // trial is over.
+  virtual bool IsHTMLInstallElement() const { return false; }
+  // TODO(crbug.com/443013457): Remove these 2 methods when the
+  // permission/usermedia trials are over.
+  virtual bool IsHTMLCapabilityElementBase() const { return false; }
+  virtual bool IsHTMLMediaCaptureElementBase() const { return false; }
+  virtual bool IsHTMLUserMediaElement() const { return false; }
+  virtual bool IsHTMLCameraElement() const { return false; }
+  virtual bool IsHTMLMicrophoneElement() const { return false; }
   virtual bool IsHTMLUnknownElement() const { return false; }
   virtual bool IsPluginElement() const { return false; }
 
@@ -197,6 +235,9 @@ class CORE_EXPORT HTMLElement : public Element {
   virtual bool IsInteractiveContent() const;
   void DefaultEventHandler(Event&) override;
 
+  // Returns the axes on which this element has native arrow key behavior.
+  FocusgroupFlags NativeArrowKeyAxes() const override;
+
   // Used to handle return/space key events and simulate clicks. Returns true
   // if the event is handled.
   bool HandleKeyboardActivation(Event& event);
@@ -206,9 +247,11 @@ class CORE_EXPORT HTMLElement : public Element {
 
   bool IsDisabledFormControl() const override;
   bool MatchesEnabledPseudoClass() const override;
+  bool MatchesDisabledPseudoClass() const override;
   bool MatchesReadOnlyPseudoClass() const override;
   bool MatchesReadWritePseudoClass() const override;
   bool MatchesValidityPseudoClasses() const override;
+  bool MatchesDefaultPseudoClass() const override;
   bool willValidate() const override;
   bool IsValidElement() override;
 
@@ -216,9 +259,10 @@ class CORE_EXPORT HTMLElement : public Element {
 
   virtual String AltText() const { return String(); }
 
-  // unclosedOffsetParent doesn't return Elements which are closed shadow hidden
-  // from this element. offsetLeftForBinding and offsetTopForBinding have their
-  // values adjusted for this as well.
+  // unclosedScrollParent and unclosedOffsetParent don't return Elements which
+  // are closed shadow hidden from this element. offsetLeftForBinding and
+  // offsetTopForBinding have their values adjusted for this as well.
+  Element* unclosedScrollParent();
   Element* unclosedOffsetParent();
   int offsetLeftForBinding();
   int offsetTopForBinding();
@@ -226,6 +270,8 @@ class CORE_EXPORT HTMLElement : public Element {
   int offsetHeightForBinding();
 
   ElementInternals* attachInternals(ExceptionState& exception_state);
+  ElementInternals* attachInternals(const AttachInternalsOptions* options,
+                                    ExceptionState& exception_state);
   virtual FormAssociated* ToFormAssociatedOrNull() { return nullptr; }
   bool IsFormAssociatedCustomElement() const;
 
@@ -235,7 +281,7 @@ class CORE_EXPORT HTMLElement : public Element {
   void AdjustDirectionAutoAfterRecalcAssignedNodes();
   virtual bool CalculateAndAdjustAutoDirectionality();
 
-  V8UnionBooleanOrStringOrUnrestrictedDouble* hidden() const;
+  V8UnionBooleanOrStringOrUnrestrictedDouble::Ret hidden(ScriptState*) const;
   void setHidden(const V8UnionBooleanOrStringOrUnrestrictedDouble*);
 
   // https://html.spec.whatwg.org/C/#potentially-render-blocking
@@ -243,7 +289,9 @@ class CORE_EXPORT HTMLElement : public Element {
 
   // Popover API related functions.
   void UpdatePopoverAttribute(const AtomicString&);
-  bool HasPopoverAttribute() const;
+  // IsPopover returns true if the element has popover data (i.e. has the
+  // popover attribute or is the menulist element).
+  bool IsPopover() const;
   PopoverValueType PopoverType() const;
   bool popoverOpen() const;
   // IsPopoverReady returns true if the popover is in a state where it can be
@@ -252,11 +300,13 @@ class CORE_EXPORT HTMLElement : public Element {
   // state in |action|. |include_event_handler_text| adds some additional text
   // to the exception if an exception is thrown. When |expected_document| is
   // set, it will be compared to the current document and return false if they
-  // do not match.
+  // do not match. Passing a non-null |expected_document| also signifies that
+  // this is an internal re-validation check (e.g. after a beforetoggle event),
+  // which will bypass the re-entrancy check for show operations.
   bool IsPopoverReady(PopoverTriggerAction action,
                       ExceptionState* exception_state,
                       bool include_event_handler_text,
-                      Document* expected_document) const;
+                      Document* expected_document);
   bool togglePopover(ExceptionState& exception_state);
   bool togglePopover(V8UnionBooleanOrTogglePopoverOptions* options_or_force,
                      ExceptionState& exception_state);
@@ -269,30 +319,54 @@ class CORE_EXPORT HTMLElement : public Element {
   // response to clicking a button with popovershowtarget.
   virtual void ShowPopoverInternal(Element* invoker,
                                    ExceptionState* exception_state);
-  virtual void HidePopoverInternal(HidePopoverFocusBehavior focus_behavior,
-                                   HidePopoverTransitionBehavior event_firing,
-                                   ExceptionState* exception_state);
+  // Attempts to hide the popover, which may fail if a popover is forcefully
+  // kept open by the inspector. In that case,
+  // PopoverHideResult::kForceOpenedByInspector is returned. In most normal
+  // cases, this function returns PopoverHideResult::kHidden.
+  virtual PopoverHideResult HidePopoverInternal(
+      Element* invoker,
+      HidePopoverFocusBehavior focus_behavior,
+      HidePopoverTransitionBehavior event_firing,
+      ExceptionState* exception_state);
   void PopoverHideFinishIfNeeded(bool immediate);
-  static const HTMLElement* FindTopmostPopoverAncestor(
+  static HTMLElement* FindTopmostPopoverAncestor(
       Element& new_popover_or_top_layer_element,
-      HeapVector<Member<HTMLElement>>& stack_to_check,
+      HeapVector<Member<HTMLElement>>* stack_to_check,
       Element* new_popovers_invoker,
-      TopLayerElementType top_layer_element_type =
-          TopLayerElementType::kPopover);
+      TopLayerElementType top_layer_element_type);
   static const HTMLElement* TopLayerElementPopoverAncestor(
       Element& top_layer_element,
       TopLayerElementType top_layer_element_type);
 
+  // HandlePopoverLightDismiss is only called when the LightDismissFromClick
+  // flag is disabled, and HandlePopoverLightDismissForClick is only called when
+  // LightDismissFromClick is enabled.
+  // HandlePopoverLightDismiss is called twice for each click, once for
+  // pointerdown and once for pointerup.
+  // HandlePopoverLightDismissForClick is only called once for each click and
+  // contains the relevant information from the corresponding pointerdown and
+  // pointerup events.
   static void HandlePopoverLightDismiss(const PointerEvent& event,
                                         const Node& node);
+  static void HidePopoversForLightDismiss(const HTMLElement* target_popover,
+                                          Document& document);
+  static void HandlePopoverLightDismissForClick(const Node& pointer_down_target,
+                                                const Node& pointer_up_target);
   void InvokePopover(Element& invoker);
   void SetPopoverFocusOnShow();
   // This hides all visible popovers up to, but not including,
-  // |endpoint|. If |endpoint| is nullptr, all popovers are hidden.
-  static void HideAllPopoversUntil(const HTMLElement*,
-                                   Document&,
-                                   HidePopoverFocusBehavior,
-                                   HidePopoverTransitionBehavior);
+  // |endpoint|. If |endpoint| is nullptr, all popovers are hidden. Hiding
+  // (some) popovers may be prevented by the inspector. In that case, this
+  // function will return PopoverHideResult::kForcedOpenByInspector, and the
+  // `popovers_held_open_by_inspector` output param will contain the list of
+  // popovers held open above |endpoint| on its stack in top to bottom order.
+  static PopoverHideResult HideAllPopoversUntil(
+      const HTMLElement*,
+      Document&,
+      HidePopoverFocusBehavior,
+      HidePopoverTransitionBehavior,
+      HeapVector<Member<HTMLElement>>* popovers_held_open_by_inspector =
+          nullptr);
 
   void SetImplicitAnchor(Element* element);
   Element* implicitAnchor() const;
@@ -315,10 +389,21 @@ class CORE_EXPORT HTMLElement : public Element {
   // See: crbug.com/1490919, https://open-ui.org/components/invokers.explainer/
   bool IsValidBuiltinCommand(HTMLElement& invoker,
                              CommandEventType command) override;
-  bool IsValidBuiltinPopoverCommand(HTMLElement& invoker,
-                                    CommandEventType command);
+  bool IsValidBuiltinPopoverCommand(CommandEventType command);
   bool HandleCommandInternal(HTMLElement& invoker,
                              CommandEventType command) override;
+  // This is true if this element *can* be a command invoker: it is an element
+  // type that supports command invokers (e.g. buttons and menuitems), and the
+  // element isn't in a state that disqualifies it (e.g. a disabled state). This
+  // function doesn't connect directly to the `command*` attributes themselves;
+  // i.e. this will not change state if the `commandfor` attribute is changed.
+  virtual bool CanBeCommandInvoker() const;
+  static CommandEventType GetCommandEventType(const AtomicString& type,
+                                              ExecutionContext*);
+  virtual bool HandleCommandForActivation();
+  Element* commandForElement() const;
+  AtomicString command() const;
+  void setCommand(const AtomicString& type);
 
   // This allows developers to enable or disable browser-provided writing
   // suggestions. If the attribute is not explicitly set on an element, it
@@ -327,8 +412,22 @@ class CORE_EXPORT HTMLElement : public Element {
   AtomicString writingSuggestions() const;
   void setWritingSuggestions(const AtomicString& value);
 
+  // See comment on this method in element.h
+  bool IsRenderedInTopLayer() const override;
+
+  // The Unbounded Element API. See crbug.com/508672616.
+  ScriptPromise<IDLUndefined> showUnboundedElement(ScriptState*);
+  ScriptPromise<IDLUndefined> hideUnboundedElement(ScriptState*);
+  bool IsUnboundedElementActive() const;
+  void SetUnboundedElementActive(bool active,
+                                 UnboundedEvents = UnboundedEvents::kFire);
+  void AttachLayoutTree(AttachContext& context) override;
+  gfx::Rect LastSentUnboundedBounds() const;
+  void SetLastSentUnboundedBounds(const gfx::Rect& bounds);
+
  protected:
   FocusableState SupportsFocus(UpdateBehavior update_behavior) const override;
+  int DefaultTabIndex() const override;
 
   enum AllowPercentage { kDontAllowPercentageValues, kAllowPercentageValues };
   enum AllowZero { kDontAllowZeroValues, kAllowZeroValues };
@@ -381,6 +480,10 @@ class CORE_EXPORT HTMLElement : public Element {
   void FinishParsingChildren() override;
 
  private:
+  bool IsAutocapitalizeOrAutocorrectInheriting() const;
+  UnboundedEventData* GetUnboundedEventData() const;
+  UnboundedEventData& EnsureUnboundedEventData();
+
   String nodeName() const final;
 
   bool IsHTMLElement() const =
@@ -396,9 +499,15 @@ class CORE_EXPORT HTMLElement : public Element {
 
   TranslateAttributeMode GetTranslateAttributeMode() const;
 
+  void HandleKeydownEvent(KeyboardEvent&);
   void HandleKeypressEvent(KeyboardEvent&);
 
-  static void CloseEntirePopoverStack(
+  void SetPopoverInvoker(Element* invoker);
+
+  // Attempts to hide a popover stack.  Hiding (some) popovers may be prevented
+  // by the inspector. In that case, PopoverHideResult::kForceOpenedByInspector
+  // is returned.
+  static PopoverHideResult CloseEntirePopoverStack(
       HeapVector<Member<HTMLElement>>& stack,
       HidePopoverFocusBehavior focus_behavior,
       HidePopoverTransitionBehavior transition_behavior);
@@ -412,6 +521,8 @@ class CORE_EXPORT HTMLElement : public Element {
   void OnNonceAttrChanged(const AttributeModificationParams&);
   void OnPopoverChanged(const AttributeModificationParams&);
   void OnContainerTimingAttrChanged(const AttributeModificationParams&);
+  void OnContainerTimingIgnoreAttrChanged(const AttributeModificationParams&);
+  void OnRoleAttrChanged(const AttributeModificationParams&);
 
   int AdjustedOffsetForZoom(LayoutUnit);
   int OffsetTopOrLeft(bool top);

@@ -1,6 +1,6 @@
 {
   "GPU FYI Linux Builder": {},
-  "Linux FYI Experimental Release (Intel UHD 630)": {
+  "Linux FYI Experimental Release (AMD 780M)": {
     "isolated_scripts": [
       {
         "args": [
@@ -17,13 +17,96 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "noop_sleep_tests",
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
-            "gpu": "8086:9bc5-23.2.1",
-            "os": "Ubuntu-22.04.5",
+            "display_server": "x11",
+            "gpu": "1002:1900-25.2.2",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu.experimental"
+          },
+          "expiration": 43200,
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      }
+    ]
+  },
+  "Linux FYI Experimental Release (AMD 890M)": {
+    "isolated_scripts": [
+      {
+        "args": [
+          "noop_sleep",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc",
+          "--enforce-browser-version",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "noop_sleep_tests",
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "1002:150e-25.0.7",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu.experimental"
+          },
+          "expiration": 43200,
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      }
+    ]
+  },
+  "Linux FYI Experimental Release (AMD RX 5500XT)": {
+    "isolated_scripts": [
+      {
+        "args": [
+          "noop_sleep",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc",
+          "--enforce-browser-version",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "noop_sleep_tests",
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "1002:7340-25.2.8",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "expiration": 21600,
@@ -37,7 +120,7 @@
       }
     ]
   },
-  "Linux FYI Experimental Release (NVIDIA)": {
+  "Linux FYI Experimental Release (AMD RX 9070XT)": {
     "gtest_tests": [
       {
         "args": [
@@ -46,15 +129,19 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//third_party/angle/src/tests:angle_unittests",
+        "module_scheme": "gtest",
         "name": "angle_unittests",
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
-            "pool": "chromium.tests.gpu"
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "1002:7550-25.2.8",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu.experimental"
           },
-          "expiration": 21600,
+          "expiration": 43200,
           "hard_timeout": 1800,
           "io_timeout": 1800,
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
@@ -73,15 +160,19 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//gpu:gl_tests",
+        "module_scheme": "gtest",
         "name": "gl_tests_passthrough",
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
-            "pool": "chromium.tests.gpu"
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "1002:7550-25.2.8",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu.experimental"
           },
-          "expiration": 21600,
+          "expiration": 43200,
           "hard_timeout": 1800,
           "io_timeout": 1800,
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
@@ -99,6 +190,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//ui/gl:gl_unittests",
+        "module_scheme": "gtest",
         "name": "gl_unittests",
         "precommit_args": [
           "--gerrit-issue=${patch_issue}",
@@ -108,11 +201,13 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
-            "pool": "chromium.tests.gpu"
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "1002:7550-25.2.8",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu.experimental"
           },
-          "expiration": 21600,
+          "expiration": 43200,
           "hard_timeout": 1800,
           "io_timeout": 1800,
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
@@ -124,21 +219,25 @@
         "args": [
           "--enable-gpu",
           "--use-gpu-in-tests",
-          "--gtest_filter=*GpuMemoryBufferImplTest*",
+          "--gtest_filter=*MappableBufferTest*",
           "--no-xvfb"
         ],
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
-        "name": "gpu_memory_buffer_impl_tests",
+        "module_name": "//gpu:gpu_unittests",
+        "module_scheme": "gtest",
+        "name": "mappable_buffer_tests",
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
-            "pool": "chromium.tests.gpu"
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "1002:7550-25.2.8",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu.experimental"
           },
-          "expiration": 21600,
+          "expiration": 43200,
           "hard_timeout": 1800,
           "io_timeout": 1800,
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
@@ -148,48 +247,25 @@
       },
       {
         "args": [
-          "--enable-gpu",
-          "--test-launcher-bot-mode",
-          "--test-launcher-jobs=1",
-          "--gtest_filter=TabCaptureApiPixelTest.EndToEnd*",
-          "--no-xvfb"
-        ],
-        "merge": {
-          "script": "//testing/merge_scripts/standard_gtest_merge.py"
-        },
-        "name": "tab_capture_end2end_tests",
-        "swarming": {
-          "containment_type": "AUTO",
-          "dimensions": {
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
-            "pool": "chromium.tests.gpu"
-          },
-          "expiration": 21600,
-          "hard_timeout": 1800,
-          "io_timeout": 1800,
-          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
-        },
-        "test": "browser_tests",
-        "test_id_prefix": "ninja://chrome/test:browser_tests/"
-      },
-      {
-        "args": [
           "--use-gpu-in-tests",
           "--no-xvfb"
         ],
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//gpu/vulkan:vulkan_tests",
+        "module_scheme": "gtest",
         "name": "vulkan_tests",
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
-            "pool": "chromium.tests.gpu"
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "1002:7550-25.2.8",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu.experimental"
           },
-          "expiration": 21600,
+          "expiration": 43200,
           "hard_timeout": 1800,
           "io_timeout": 1800,
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
@@ -214,6 +290,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "context_lost_passthrough_tests",
         "resultdb": {
           "enable": true,
@@ -222,11 +300,13 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
-            "pool": "chromium.tests.gpu"
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "1002:7550-25.2.8",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu.experimental"
           },
-          "expiration": 21600,
+          "expiration": 43200,
           "hard_timeout": 1800,
           "idempotent": false,
           "io_timeout": 1800,
@@ -254,6 +334,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "expected_color_pixel_passthrough_test",
         "precommit_args": [
           "--gerrit-issue=${patch_issue}",
@@ -267,11 +349,13 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
-            "pool": "chromium.tests.gpu"
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "1002:7550-25.2.8",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu.experimental"
           },
-          "expiration": 21600,
+          "expiration": 43200,
           "hard_timeout": 1800,
           "idempotent": false,
           "io_timeout": 1800,
@@ -295,6 +379,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "gpu_process_launch_tests",
         "resultdb": {
           "enable": true,
@@ -303,11 +389,13 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
-            "pool": "chromium.tests.gpu"
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "1002:7550-25.2.8",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu.experimental"
           },
-          "expiration": 21600,
+          "expiration": 43200,
           "hard_timeout": 1800,
           "idempotent": false,
           "io_timeout": 1800,
@@ -331,6 +419,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "hardware_accelerated_feature_tests",
         "resultdb": {
           "enable": true,
@@ -339,11 +429,13 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
-            "pool": "chromium.tests.gpu"
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "1002:7550-25.2.8",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu.experimental"
           },
-          "expiration": 21600,
+          "expiration": 43200,
           "hard_timeout": 1800,
           "idempotent": false,
           "io_timeout": 1800,
@@ -363,14 +455,16 @@
           "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --force_high_performance_gpu",
           "--enforce-browser-version",
           "--expected-vendor-id",
-          "10de",
+          "1002",
           "--expected-device-id",
-          "2184",
+          "7550",
           "--jobs=4"
         ],
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "info_collection_tests",
         "resultdb": {
           "enable": true,
@@ -379,11 +473,13 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
-            "pool": "chromium.tests.gpu"
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "1002:7550-25.2.8",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu.experimental"
           },
-          "expiration": 21600,
+          "expiration": 43200,
           "hard_timeout": 1800,
           "idempotent": false,
           "io_timeout": 1800,
@@ -411,6 +507,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "pixel_skia_gold_passthrough_test",
         "precommit_args": [
           "--gerrit-issue=${patch_issue}",
@@ -424,11 +522,13 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
-            "pool": "chromium.tests.gpu"
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "1002:7550-25.2.8",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu.experimental"
           },
-          "expiration": 21600,
+          "expiration": 43200,
           "hard_timeout": 1800,
           "idempotent": false,
           "io_timeout": 1800,
@@ -453,6 +553,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "screenshot_sync_passthrough_tests",
         "resultdb": {
           "enable": true,
@@ -461,11 +563,13 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
-            "pool": "chromium.tests.gpu"
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "1002:7550-25.2.8",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu.experimental"
           },
-          "expiration": 21600,
+          "expiration": 43200,
           "hard_timeout": 1800,
           "idempotent": false,
           "io_timeout": 1800,
@@ -489,6 +593,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "trace_test",
         "resultdb": {
           "enable": true,
@@ -497,11 +603,678 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "1002:7550-25.2.8",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu.experimental"
+          },
+          "expiration": 43200,
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      },
+      {
+        "args": [
+          "webcodecs",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc",
+          "--enforce-browser-version",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "webcodecs_tests",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "1002:7550-25.2.8",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu.experimental"
+          },
+          "expiration": 43200,
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      },
+      {
+        "args": [
+          "webgl2_conformance",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --force_high_performance_gpu",
+          "--enforce-browser-version",
+          "--webgl-conformance-version=2.0.1",
+          "--read-abbreviated-json-results-from=../../content/test/data/gpu/webgl2_conformance_linux_runtimes.json",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "webgl2_conformance_gl_passthrough_tests",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "1002:7550-25.2.8",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu.experimental"
+          },
+          "expiration": 43200,
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
+          "shards": 5
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      },
+      {
+        "args": [
+          "webgl1_conformance",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --force_high_performance_gpu",
+          "--enforce-browser-version",
+          "--read-abbreviated-json-results-from=../../content/test/data/gpu/webgl1_conformance_linux_runtimes.json",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "webgl_conformance_gl_passthrough_tests",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "1002:7550-25.2.8",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu.experimental"
+          },
+          "expiration": 43200,
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
+          "shards": 2
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      }
+    ]
+  },
+  "Linux FYI Experimental Release (Intel UHD 630)": {
+    "isolated_scripts": [
+      {
+        "args": [
+          "noop_sleep",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc",
+          "--enforce-browser-version",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "noop_sleep_tests",
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "8086:9bc5-23.2.1",
+            "os": "Ubuntu-22.04.5",
             "pool": "chromium.tests.gpu"
           },
           "expiration": 21600,
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      }
+    ]
+  },
+  "Linux FYI Experimental Release (NVIDIA RTX 5080)": {
+    "gtest_tests": [
+      {
+        "args": [
+          "--no-xvfb"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//third_party/angle/src/tests:angle_unittests",
+        "module_scheme": "gtest",
+        "name": "angle_unittests",
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "10de:2c02-595.58.03",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu.experimental"
+          },
+          "expiration": 43200,
+          "hard_timeout": 1800,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "angle_unittests",
+        "test_id_prefix": "ninja://third_party/angle/src/tests:angle_unittests/",
+        "use_isolated_scripts_api": true
+      },
+      {
+        "args": [
+          "--use-cmd-decoder=passthrough",
+          "--use-gl=angle",
+          "--use-gpu-in-tests",
+          "--no-xvfb"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_gtest_merge.py"
+        },
+        "module_name": "//gpu:gl_tests",
+        "module_scheme": "gtest",
+        "name": "gl_tests_passthrough",
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "10de:2c02-595.58.03",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu.experimental"
+          },
+          "expiration": 43200,
+          "hard_timeout": 1800,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
+          "shards": 2
+        },
+        "test": "gl_tests",
+        "test_id_prefix": "ninja://gpu:gl_tests/"
+      },
+      {
+        "args": [
+          "--use-gpu-in-tests",
+          "--no-xvfb",
+          "--git-revision=${got_revision}"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_gtest_merge.py"
+        },
+        "module_name": "//ui/gl:gl_unittests",
+        "module_scheme": "gtest",
+        "name": "gl_unittests",
+        "precommit_args": [
+          "--gerrit-issue=${patch_issue}",
+          "--gerrit-patchset=${patch_set}",
+          "--buildbucket-id=${buildbucket_build_id}"
+        ],
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "10de:2c02-595.58.03",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu.experimental"
+          },
+          "expiration": 43200,
+          "hard_timeout": 1800,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "gl_unittests",
+        "test_id_prefix": "ninja://ui/gl:gl_unittests/"
+      },
+      {
+        "args": [
+          "--enable-gpu",
+          "--use-gpu-in-tests",
+          "--gtest_filter=*MappableBufferTest*",
+          "--no-xvfb"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_gtest_merge.py"
+        },
+        "module_name": "//gpu:gpu_unittests",
+        "module_scheme": "gtest",
+        "name": "mappable_buffer_tests",
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "10de:2c02-595.58.03",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu.experimental"
+          },
+          "expiration": 43200,
+          "hard_timeout": 1800,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "gpu_unittests",
+        "test_id_prefix": "ninja://gpu:gpu_unittests/"
+      },
+      {
+        "args": [
+          "--use-gpu-in-tests",
+          "--no-xvfb"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_gtest_merge.py"
+        },
+        "module_name": "//gpu/vulkan:vulkan_tests",
+        "module_scheme": "gtest",
+        "name": "vulkan_tests",
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "10de:2c02-595.58.03",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu.experimental"
+          },
+          "expiration": 43200,
+          "hard_timeout": 1800,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "vulkan_tests",
+        "test_id_prefix": "ninja://gpu/vulkan:vulkan_tests/"
+      }
+    ],
+    "isolated_scripts": [
+      {
+        "args": [
+          "context_lost",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle",
+          "--enforce-browser-version",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "context_lost_passthrough_tests",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "10de:2c02-595.58.03",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu.experimental"
+          },
+          "expiration": 43200,
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      },
+      {
+        "args": [
+          "expected_color",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle",
+          "--enforce-browser-version",
+          "--git-revision=${got_revision}",
+          "--dont-restore-color-profile-after-test",
+          "--test-machine-name",
+          "${buildername}",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "expected_color_pixel_passthrough_test",
+        "precommit_args": [
+          "--gerrit-issue=${patch_issue}",
+          "--gerrit-patchset=${patch_set}",
+          "--buildbucket-id=${buildbucket_build_id}"
+        ],
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "10de:2c02-595.58.03",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu.experimental"
+          },
+          "expiration": 43200,
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      },
+      {
+        "args": [
+          "gpu_process",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc",
+          "--enforce-browser-version",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "gpu_process_launch_tests",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "10de:2c02-595.58.03",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu.experimental"
+          },
+          "expiration": 43200,
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      },
+      {
+        "args": [
+          "hardware_accelerated_feature",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc",
+          "--enforce-browser-version",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "hardware_accelerated_feature_tests",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "10de:2c02-595.58.03",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu.experimental"
+          },
+          "expiration": 43200,
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      },
+      {
+        "args": [
+          "info_collection",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --force_high_performance_gpu",
+          "--enforce-browser-version",
+          "--expected-vendor-id",
+          "10de",
+          "--expected-device-id",
+          "2c02",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "info_collection_tests",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "10de:2c02-595.58.03",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu.experimental"
+          },
+          "expiration": 43200,
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      },
+      {
+        "args": [
+          "pixel",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle",
+          "--enforce-browser-version",
+          "--git-revision=${got_revision}",
+          "--dont-restore-color-profile-after-test",
+          "--test-machine-name",
+          "${buildername}",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "pixel_skia_gold_passthrough_test",
+        "precommit_args": [
+          "--gerrit-issue=${patch_issue}",
+          "--gerrit-patchset=${patch_set}",
+          "--buildbucket-id=${buildbucket_build_id}"
+        ],
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "10de:2c02-595.58.03",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu.experimental"
+          },
+          "expiration": 43200,
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      },
+      {
+        "args": [
+          "screenshot_sync",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle",
+          "--enforce-browser-version",
+          "--dont-restore-color-profile-after-test",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "screenshot_sync_passthrough_tests",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "10de:2c02-595.58.03",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu.experimental"
+          },
+          "expiration": 43200,
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      },
+      {
+        "args": [
+          "trace_test",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc",
+          "--enforce-browser-version",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "trace_test",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "10de:2c02-595.58.03",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu.experimental"
+          },
+          "expiration": 43200,
           "hard_timeout": 1800,
           "idempotent": false,
           "io_timeout": 1800,
@@ -529,6 +1302,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "vulkan_pixel_skia_gold_test",
         "precommit_args": [
           "--gerrit-issue=${patch_issue}",
@@ -542,11 +1317,53 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
-            "pool": "chromium.tests.gpu"
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "10de:2c02-595.58.03",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu.experimental"
           },
-          "expiration": 21600,
+          "expiration": 43200,
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      },
+      {
+        "args": [
+          "webcodecs",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc",
+          "--enforce-browser-version",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "webcodecs_tests",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "10de:2c02-595.58.03",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu.experimental"
+          },
+          "expiration": 43200,
           "hard_timeout": 1800,
           "idempotent": false,
           "io_timeout": 1800,
@@ -572,6 +1389,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "webgl2_conformance_gl_passthrough_tests",
         "resultdb": {
           "enable": true,
@@ -580,11 +1399,13 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
-            "pool": "chromium.tests.gpu"
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "10de:2c02-595.58.03",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu.experimental"
           },
-          "expiration": 21600,
+          "expiration": 43200,
           "hard_timeout": 1800,
           "idempotent": false,
           "io_timeout": 1800,
@@ -610,6 +1431,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "webgl_conformance_gl_passthrough_tests",
         "resultdb": {
           "enable": true,
@@ -618,6 +1441,48 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "10de:2c02-595.58.03",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu.experimental"
+          },
+          "expiration": 43200,
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
+          "shards": 2
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      }
+    ]
+  },
+  "Linux FYI Experimental Release (NVIDIA)": {
+    "isolated_scripts": [
+      {
+        "args": [
+          "noop_sleep",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc",
+          "--enforce-browser-version",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "noop_sleep_tests",
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_server": "x11",
             "gpu": "10de:2184-535.183.01",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -626,8 +1491,7 @@
           "hard_timeout": 1800,
           "idempotent": false,
           "io_timeout": 1800,
-          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
-          "shards": 2
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "telemetry_gpu_integration_test",
         "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
@@ -643,13 +1507,16 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//third_party/angle/src/tests:angle_unittests",
+        "module_scheme": "gtest",
         "name": "angle_unittests",
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
-            "gpu": "1002:7340-23.2.1",
-            "os": "Ubuntu-22.04",
+            "display_server": "x11",
+            "gpu": "1002:7340-25.2.8",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -670,13 +1537,16 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//gpu:gl_tests",
+        "module_scheme": "gtest",
         "name": "gl_tests_passthrough",
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
-            "gpu": "1002:7340-23.2.1",
-            "os": "Ubuntu-22.04",
+            "display_server": "x11",
+            "gpu": "1002:7340-25.2.8",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -696,6 +1566,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//ui/gl:gl_unittests",
+        "module_scheme": "gtest",
         "name": "gl_unittests",
         "precommit_args": [
           "--gerrit-issue=${patch_issue}",
@@ -706,8 +1578,9 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
-            "gpu": "1002:7340-23.2.1",
-            "os": "Ubuntu-22.04",
+            "display_server": "x11",
+            "gpu": "1002:7340-25.2.8",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -721,19 +1594,22 @@
         "args": [
           "--enable-gpu",
           "--use-gpu-in-tests",
-          "--gtest_filter=*GpuMemoryBufferImplTest*",
+          "--gtest_filter=*MappableBufferTest*",
           "--no-xvfb"
         ],
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
-        "name": "gpu_memory_buffer_impl_tests",
+        "module_name": "//gpu:gpu_unittests",
+        "module_scheme": "gtest",
+        "name": "mappable_buffer_tests",
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
-            "gpu": "1002:7340-23.2.1",
-            "os": "Ubuntu-22.04",
+            "display_server": "x11",
+            "gpu": "1002:7340-25.2.8",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -745,46 +1621,22 @@
       },
       {
         "args": [
-          "--enable-gpu",
-          "--test-launcher-bot-mode",
-          "--test-launcher-jobs=1",
-          "--gtest_filter=TabCaptureApiPixelTest.EndToEnd*",
-          "--no-xvfb"
-        ],
-        "merge": {
-          "script": "//testing/merge_scripts/standard_gtest_merge.py"
-        },
-        "name": "tab_capture_end2end_tests",
-        "swarming": {
-          "containment_type": "AUTO",
-          "dimensions": {
-            "display_attached": "1",
-            "gpu": "1002:7340-23.2.1",
-            "os": "Ubuntu-22.04",
-            "pool": "chromium.tests.gpu"
-          },
-          "hard_timeout": 1800,
-          "io_timeout": 1800,
-          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
-        },
-        "test": "browser_tests",
-        "test_id_prefix": "ninja://chrome/test:browser_tests/"
-      },
-      {
-        "args": [
           "--use-gpu-in-tests",
           "--no-xvfb"
         ],
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//gpu/vulkan:vulkan_tests",
+        "module_scheme": "gtest",
         "name": "vulkan_tests",
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
-            "gpu": "1002:7340-23.2.1",
-            "os": "Ubuntu-22.04",
+            "display_server": "x11",
+            "gpu": "1002:7340-25.2.8",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -811,6 +1663,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "context_lost_passthrough_tests",
         "resultdb": {
           "enable": true,
@@ -820,8 +1674,9 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
-            "gpu": "1002:7340-23.2.1",
-            "os": "Ubuntu-22.04",
+            "display_server": "x11",
+            "gpu": "1002:7340-25.2.8",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -851,6 +1706,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "expected_color_pixel_passthrough_test",
         "precommit_args": [
           "--gerrit-issue=${patch_issue}",
@@ -865,8 +1722,9 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
-            "gpu": "1002:7340-23.2.1",
-            "os": "Ubuntu-22.04",
+            "display_server": "x11",
+            "gpu": "1002:7340-25.2.8",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -892,6 +1750,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "gpu_process_launch_tests",
         "resultdb": {
           "enable": true,
@@ -901,8 +1761,9 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
-            "gpu": "1002:7340-23.2.1",
-            "os": "Ubuntu-22.04",
+            "display_server": "x11",
+            "gpu": "1002:7340-25.2.8",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -928,6 +1789,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "hardware_accelerated_feature_tests",
         "resultdb": {
           "enable": true,
@@ -937,8 +1800,9 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
-            "gpu": "1002:7340-23.2.1",
-            "os": "Ubuntu-22.04",
+            "display_server": "x11",
+            "gpu": "1002:7340-25.2.8",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -968,6 +1832,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "info_collection_tests",
         "resultdb": {
           "enable": true,
@@ -977,8 +1843,9 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
-            "gpu": "1002:7340-23.2.1",
-            "os": "Ubuntu-22.04",
+            "display_server": "x11",
+            "gpu": "1002:7340-25.2.8",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -1008,6 +1875,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "pixel_skia_gold_passthrough_test",
         "precommit_args": [
           "--gerrit-issue=${patch_issue}",
@@ -1022,8 +1891,9 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
-            "gpu": "1002:7340-23.2.1",
-            "os": "Ubuntu-22.04",
+            "display_server": "x11",
+            "gpu": "1002:7340-25.2.8",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -1050,6 +1920,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "screenshot_sync_passthrough_tests",
         "resultdb": {
           "enable": true,
@@ -1059,8 +1931,9 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
-            "gpu": "1002:7340-23.2.1",
-            "os": "Ubuntu-22.04",
+            "display_server": "x11",
+            "gpu": "1002:7340-25.2.8",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -1086,6 +1959,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "trace_test",
         "resultdb": {
           "enable": true,
@@ -1095,8 +1970,48 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
-            "gpu": "1002:7340-23.2.1",
-            "os": "Ubuntu-22.04",
+            "display_server": "x11",
+            "gpu": "1002:7340-25.2.8",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      },
+      {
+        "args": [
+          "webcodecs",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc",
+          "--enforce-browser-version",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "webcodecs_tests",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "1002:7340-25.2.8",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -1124,6 +2039,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "webgl2_conformance_gl_passthrough_tests",
         "resultdb": {
           "enable": true,
@@ -1133,8 +2050,9 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
-            "gpu": "1002:7340-23.2.1",
-            "os": "Ubuntu-22.04",
+            "display_server": "x11",
+            "gpu": "1002:7340-25.2.8",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -1162,6 +2080,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "webgl_conformance_gl_passthrough_tests",
         "resultdb": {
           "enable": true,
@@ -1171,8 +2091,9 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
-            "gpu": "1002:7340-23.2.1",
-            "os": "Ubuntu-22.04",
+            "display_server": "x11",
+            "gpu": "1002:7340-25.2.8",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -1187,10 +2108,245 @@
     ]
   },
   "Linux FYI Release (AMD RX 7600)": {
+    "gtest_tests": [
+      {
+        "args": [
+          "--no-xvfb"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//third_party/angle/src/tests:angle_unittests",
+        "module_scheme": "gtest",
+        "name": "angle_unittests",
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "1002:7480-25.0.7",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "angle_unittests",
+        "test_id_prefix": "ninja://third_party/angle/src/tests:angle_unittests/",
+        "use_isolated_scripts_api": true
+      },
+      {
+        "args": [
+          "--use-cmd-decoder=passthrough",
+          "--use-gl=angle",
+          "--use-gpu-in-tests",
+          "--no-xvfb"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_gtest_merge.py"
+        },
+        "module_name": "//gpu:gl_tests",
+        "module_scheme": "gtest",
+        "name": "gl_tests_passthrough",
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "1002:7480-25.0.7",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
+          "shards": 2
+        },
+        "test": "gl_tests",
+        "test_id_prefix": "ninja://gpu:gl_tests/"
+      },
+      {
+        "args": [
+          "--use-gpu-in-tests",
+          "--no-xvfb",
+          "--git-revision=${got_revision}"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_gtest_merge.py"
+        },
+        "module_name": "//ui/gl:gl_unittests",
+        "module_scheme": "gtest",
+        "name": "gl_unittests",
+        "precommit_args": [
+          "--gerrit-issue=${patch_issue}",
+          "--gerrit-patchset=${patch_set}",
+          "--buildbucket-id=${buildbucket_build_id}"
+        ],
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "1002:7480-25.0.7",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "gl_unittests",
+        "test_id_prefix": "ninja://ui/gl:gl_unittests/"
+      },
+      {
+        "args": [
+          "--enable-gpu",
+          "--use-gpu-in-tests",
+          "--gtest_filter=*MappableBufferTest*",
+          "--no-xvfb"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_gtest_merge.py"
+        },
+        "module_name": "//gpu:gpu_unittests",
+        "module_scheme": "gtest",
+        "name": "mappable_buffer_tests",
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "1002:7480-25.0.7",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "gpu_unittests",
+        "test_id_prefix": "ninja://gpu:gpu_unittests/"
+      },
+      {
+        "args": [
+          "--use-gpu-in-tests",
+          "--no-xvfb"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_gtest_merge.py"
+        },
+        "module_name": "//gpu/vulkan:vulkan_tests",
+        "module_scheme": "gtest",
+        "name": "vulkan_tests",
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "1002:7480-25.0.7",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "vulkan_tests",
+        "test_id_prefix": "ninja://gpu/vulkan:vulkan_tests/"
+      }
+    ],
     "isolated_scripts": [
       {
         "args": [
-          "noop_sleep",
+          "context_lost",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle",
+          "--enforce-browser-version",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "context_lost_passthrough_tests",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "1002:7480-25.0.7",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      },
+      {
+        "args": [
+          "expected_color",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle",
+          "--enforce-browser-version",
+          "--git-revision=${got_revision}",
+          "--dont-restore-color-profile-after-test",
+          "--test-machine-name",
+          "${buildername}",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "expected_color_pixel_passthrough_test",
+        "precommit_args": [
+          "--gerrit-issue=${patch_issue}",
+          "--gerrit-patchset=${patch_set}",
+          "--buildbucket-id=${buildbucket_build_id}"
+        ],
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "1002:7480-25.0.7",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      },
+      {
+        "args": [
+          "gpu_process",
           "--show-stdout",
           "--browser=release",
           "--passthrough",
@@ -1203,12 +2359,19 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
-        "name": "noop_sleep_tests",
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "gpu_process_launch_tests",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
-            "gpu": "1002:7480-24.2.8",
+            "display_server": "x11",
+            "gpu": "1002:7480-25.0.7",
             "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
@@ -1216,6 +2379,337 @@
           "idempotent": false,
           "io_timeout": 1800,
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      },
+      {
+        "args": [
+          "hardware_accelerated_feature",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc",
+          "--enforce-browser-version",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "hardware_accelerated_feature_tests",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "1002:7480-25.0.7",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      },
+      {
+        "args": [
+          "info_collection",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --force_high_performance_gpu",
+          "--enforce-browser-version",
+          "--expected-vendor-id",
+          "1002",
+          "--expected-device-id",
+          "7480",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "info_collection_tests",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "1002:7480-25.0.7",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      },
+      {
+        "args": [
+          "pixel",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle",
+          "--enforce-browser-version",
+          "--git-revision=${got_revision}",
+          "--dont-restore-color-profile-after-test",
+          "--test-machine-name",
+          "${buildername}",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "pixel_skia_gold_passthrough_test",
+        "precommit_args": [
+          "--gerrit-issue=${patch_issue}",
+          "--gerrit-patchset=${patch_set}",
+          "--buildbucket-id=${buildbucket_build_id}"
+        ],
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "1002:7480-25.0.7",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      },
+      {
+        "args": [
+          "screenshot_sync",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle",
+          "--enforce-browser-version",
+          "--dont-restore-color-profile-after-test",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "screenshot_sync_passthrough_tests",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "1002:7480-25.0.7",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      },
+      {
+        "args": [
+          "trace_test",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc",
+          "--enforce-browser-version",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "trace_test",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "1002:7480-25.0.7",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      },
+      {
+        "args": [
+          "webcodecs",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc",
+          "--enforce-browser-version",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "webcodecs_tests",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "1002:7480-25.0.7",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      },
+      {
+        "args": [
+          "webgl2_conformance",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --force_high_performance_gpu",
+          "--enforce-browser-version",
+          "--webgl-conformance-version=2.0.1",
+          "--read-abbreviated-json-results-from=../../content/test/data/gpu/webgl2_conformance_linux_runtimes.json",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "webgl2_conformance_gl_passthrough_tests",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "1002:7480-25.0.7",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
+          "shards": 5
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      },
+      {
+        "args": [
+          "webgl1_conformance",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --force_high_performance_gpu",
+          "--enforce-browser-version",
+          "--read-abbreviated-json-results-from=../../content/test/data/gpu/webgl1_conformance_linux_runtimes.json",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "webgl_conformance_gl_passthrough_tests",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "1002:7480-25.0.7",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
+          "shards": 2
         },
         "test": "telemetry_gpu_integration_test",
         "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
@@ -1231,10 +2725,13 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//third_party/angle/src/tests:angle_unittests",
+        "module_scheme": "gtest",
         "name": "angle_unittests",
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
+            "display_server": "x11",
             "gpu": "8086:9bc5-23.2.1",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -1257,10 +2754,13 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//gpu:gl_tests",
+        "module_scheme": "gtest",
         "name": "gl_tests_passthrough",
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
+            "display_server": "x11",
             "gpu": "8086:9bc5-23.2.1",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -1282,6 +2782,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//ui/gl:gl_unittests",
+        "module_scheme": "gtest",
         "name": "gl_unittests",
         "precommit_args": [
           "--gerrit-issue=${patch_issue}",
@@ -1291,6 +2793,7 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
+            "display_server": "x11",
             "gpu": "8086:9bc5-23.2.1",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -1306,16 +2809,19 @@
         "args": [
           "--enable-gpu",
           "--use-gpu-in-tests",
-          "--gtest_filter=*GpuMemoryBufferImplTest*",
+          "--gtest_filter=*MappableBufferTest*",
           "--no-xvfb"
         ],
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
-        "name": "gpu_memory_buffer_impl_tests",
+        "module_name": "//gpu:gpu_unittests",
+        "module_scheme": "gtest",
+        "name": "mappable_buffer_tests",
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
+            "display_server": "x11",
             "gpu": "8086:9bc5-23.2.1",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -1335,10 +2841,13 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//gpu/vulkan:vulkan_tests",
+        "module_scheme": "gtest",
         "name": "vulkan_tests",
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
+            "display_server": "x11",
             "gpu": "8086:9bc5-23.2.1",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -1367,6 +2876,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "context_lost_passthrough_tests",
         "resultdb": {
           "enable": true,
@@ -1375,6 +2886,7 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
+            "display_server": "x11",
             "gpu": "8086:9bc5-23.2.1",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -1406,6 +2918,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "expected_color_pixel_passthrough_test",
         "precommit_args": [
           "--gerrit-issue=${patch_issue}",
@@ -1419,6 +2933,7 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
+            "display_server": "x11",
             "gpu": "8086:9bc5-23.2.1",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -1446,6 +2961,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "gpu_process_launch_tests",
         "resultdb": {
           "enable": true,
@@ -1454,6 +2971,7 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
+            "display_server": "x11",
             "gpu": "8086:9bc5-23.2.1",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -1481,6 +2999,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "hardware_accelerated_feature_tests",
         "resultdb": {
           "enable": true,
@@ -1489,6 +3009,7 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
+            "display_server": "x11",
             "gpu": "8086:9bc5-23.2.1",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -1520,6 +3041,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "info_collection_tests",
         "resultdb": {
           "enable": true,
@@ -1528,6 +3051,7 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
+            "display_server": "x11",
             "gpu": "8086:9bc5-23.2.1",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -1559,6 +3083,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "pixel_skia_gold_passthrough_test",
         "precommit_args": [
           "--gerrit-issue=${patch_issue}",
@@ -1572,6 +3098,7 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
+            "display_server": "x11",
             "gpu": "8086:9bc5-23.2.1",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -1600,6 +3127,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "screenshot_sync_passthrough_tests",
         "resultdb": {
           "enable": true,
@@ -1608,6 +3137,7 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
+            "display_server": "x11",
             "gpu": "8086:9bc5-23.2.1",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -1635,6 +3165,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "trace_test",
         "resultdb": {
           "enable": true,
@@ -1643,6 +3175,45 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
+            "display_server": "x11",
+            "gpu": "8086:9bc5-23.2.1",
+            "os": "Ubuntu-22.04",
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      },
+      {
+        "args": [
+          "webcodecs",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc",
+          "--enforce-browser-version",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "webcodecs_tests",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_server": "x11",
             "gpu": "8086:9bc5-23.2.1",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -1672,6 +3243,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "webgl2_conformance_gl_passthrough_tests",
         "resultdb": {
           "enable": true,
@@ -1680,6 +3253,7 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
+            "display_server": "x11",
             "gpu": "8086:9bc5-23.2.1",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -1709,6 +3283,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "webgl_conformance_gl_passthrough_tests",
         "resultdb": {
           "enable": true,
@@ -1717,6 +3293,7 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
+            "display_server": "x11",
             "gpu": "8086:9bc5-23.2.1",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -1741,13 +3318,16 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//third_party/angle/src/tests:angle_unittests",
+        "module_scheme": "gtest",
         "name": "angle_unittests",
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
+            "display_server": "x11",
             "gpu": "8086:4680-23.2.1",
-            "os": "Ubuntu-22.04.4",
+            "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -1769,13 +3349,16 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//gpu:gl_tests",
+        "module_scheme": "gtest",
         "name": "gl_tests_passthrough",
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
+            "display_server": "x11",
             "gpu": "8086:4680-23.2.1",
-            "os": "Ubuntu-22.04.4",
+            "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -1795,6 +3378,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//ui/gl:gl_unittests",
+        "module_scheme": "gtest",
         "name": "gl_unittests",
         "precommit_args": [
           "--gerrit-issue=${patch_issue}",
@@ -1805,8 +3390,9 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
+            "display_server": "x11",
             "gpu": "8086:4680-23.2.1",
-            "os": "Ubuntu-22.04.4",
+            "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -1820,19 +3406,22 @@
         "args": [
           "--enable-gpu",
           "--use-gpu-in-tests",
-          "--gtest_filter=*GpuMemoryBufferImplTest*",
+          "--gtest_filter=*MappableBufferTest*",
           "--no-xvfb"
         ],
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
-        "name": "gpu_memory_buffer_impl_tests",
+        "module_name": "//gpu:gpu_unittests",
+        "module_scheme": "gtest",
+        "name": "mappable_buffer_tests",
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
+            "display_server": "x11",
             "gpu": "8086:4680-23.2.1",
-            "os": "Ubuntu-22.04.4",
+            "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -1844,46 +3433,22 @@
       },
       {
         "args": [
-          "--enable-gpu",
-          "--test-launcher-bot-mode",
-          "--test-launcher-jobs=1",
-          "--gtest_filter=TabCaptureApiPixelTest.EndToEnd*",
-          "--no-xvfb"
-        ],
-        "merge": {
-          "script": "//testing/merge_scripts/standard_gtest_merge.py"
-        },
-        "name": "tab_capture_end2end_tests",
-        "swarming": {
-          "containment_type": "AUTO",
-          "dimensions": {
-            "display_attached": "1",
-            "gpu": "8086:4680-23.2.1",
-            "os": "Ubuntu-22.04.4",
-            "pool": "chromium.tests.gpu"
-          },
-          "hard_timeout": 1800,
-          "io_timeout": 1800,
-          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
-        },
-        "test": "browser_tests",
-        "test_id_prefix": "ninja://chrome/test:browser_tests/"
-      },
-      {
-        "args": [
           "--use-gpu-in-tests",
           "--no-xvfb"
         ],
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//gpu/vulkan:vulkan_tests",
+        "module_scheme": "gtest",
         "name": "vulkan_tests",
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
+            "display_server": "x11",
             "gpu": "8086:4680-23.2.1",
-            "os": "Ubuntu-22.04.4",
+            "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -1910,6 +3475,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "context_lost_passthrough_tests",
         "resultdb": {
           "enable": true,
@@ -1919,8 +3486,9 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
+            "display_server": "x11",
             "gpu": "8086:4680-23.2.1",
-            "os": "Ubuntu-22.04.4",
+            "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -1950,6 +3518,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "expected_color_pixel_passthrough_test",
         "precommit_args": [
           "--gerrit-issue=${patch_issue}",
@@ -1964,8 +3534,9 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
+            "display_server": "x11",
             "gpu": "8086:4680-23.2.1",
-            "os": "Ubuntu-22.04.4",
+            "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -1991,6 +3562,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "gpu_process_launch_tests",
         "resultdb": {
           "enable": true,
@@ -2000,8 +3573,9 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
+            "display_server": "x11",
             "gpu": "8086:4680-23.2.1",
-            "os": "Ubuntu-22.04.4",
+            "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -2027,6 +3601,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "hardware_accelerated_feature_tests",
         "resultdb": {
           "enable": true,
@@ -2036,8 +3612,9 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
+            "display_server": "x11",
             "gpu": "8086:4680-23.2.1",
-            "os": "Ubuntu-22.04.4",
+            "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -2067,6 +3644,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "info_collection_tests",
         "resultdb": {
           "enable": true,
@@ -2076,8 +3655,9 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
+            "display_server": "x11",
             "gpu": "8086:4680-23.2.1",
-            "os": "Ubuntu-22.04.4",
+            "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -2107,6 +3687,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "pixel_skia_gold_passthrough_test",
         "precommit_args": [
           "--gerrit-issue=${patch_issue}",
@@ -2121,8 +3703,9 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
+            "display_server": "x11",
             "gpu": "8086:4680-23.2.1",
-            "os": "Ubuntu-22.04.4",
+            "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -2149,6 +3732,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "screenshot_sync_passthrough_tests",
         "resultdb": {
           "enable": true,
@@ -2158,8 +3743,9 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
+            "display_server": "x11",
             "gpu": "8086:4680-23.2.1",
-            "os": "Ubuntu-22.04.4",
+            "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -2185,6 +3771,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "trace_test",
         "resultdb": {
           "enable": true,
@@ -2194,8 +3782,48 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
+            "display_server": "x11",
             "gpu": "8086:4680-23.2.1",
-            "os": "Ubuntu-22.04.4",
+            "os": "Ubuntu-22.04",
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      },
+      {
+        "args": [
+          "webcodecs",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc",
+          "--enforce-browser-version",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "webcodecs_tests",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_attached": "1",
+            "display_server": "x11",
+            "gpu": "8086:4680-23.2.1",
+            "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -2223,6 +3851,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "webgl2_conformance_gl_passthrough_tests",
         "resultdb": {
           "enable": true,
@@ -2232,8 +3862,9 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
+            "display_server": "x11",
             "gpu": "8086:4680-23.2.1",
-            "os": "Ubuntu-22.04.4",
+            "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -2261,6 +3892,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "webgl_conformance_gl_passthrough_tests",
         "resultdb": {
           "enable": true,
@@ -2270,8 +3903,9 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
+            "display_server": "x11",
             "gpu": "8086:4680-23.2.1",
-            "os": "Ubuntu-22.04.4",
+            "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -2285,7 +3919,7 @@
       }
     ]
   },
-  "Linux FYI Release (NVIDIA)": {
+  "Linux FYI Release (NVIDIA RTX 4070 Super)": {
     "gtest_tests": [
       {
         "args": [
@@ -2294,12 +3928,15 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//third_party/angle/src/tests:angle_unittests",
+        "module_scheme": "gtest",
         "name": "angle_unittests",
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "gpu": "10de:2184-440.100",
-            "os": "Ubuntu-18.04.5|Ubuntu-18.04.6",
+            "display_server": "x11",
+            "gpu": "10de:2783-580.95.05",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -2320,12 +3957,15 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//gpu:gl_tests",
+        "module_scheme": "gtest",
         "name": "gl_tests_passthrough",
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "gpu": "10de:2184-440.100",
-            "os": "Ubuntu-18.04.5|Ubuntu-18.04.6",
+            "display_server": "x11",
+            "gpu": "10de:2783-580.95.05",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -2345,6 +3985,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//ui/gl:gl_unittests",
+        "module_scheme": "gtest",
         "name": "gl_unittests",
         "precommit_args": [
           "--gerrit-issue=${patch_issue}",
@@ -2354,8 +3996,9 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "gpu": "10de:2184-440.100",
-            "os": "Ubuntu-18.04.5|Ubuntu-18.04.6",
+            "display_server": "x11",
+            "gpu": "10de:2783-580.95.05",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -2369,18 +4012,21 @@
         "args": [
           "--enable-gpu",
           "--use-gpu-in-tests",
-          "--gtest_filter=*GpuMemoryBufferImplTest*",
+          "--gtest_filter=*MappableBufferTest*",
           "--no-xvfb"
         ],
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
-        "name": "gpu_memory_buffer_impl_tests",
+        "module_name": "//gpu:gpu_unittests",
+        "module_scheme": "gtest",
+        "name": "mappable_buffer_tests",
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "gpu": "10de:2184-440.100",
-            "os": "Ubuntu-18.04.5|Ubuntu-18.04.6",
+            "display_server": "x11",
+            "gpu": "10de:2783-580.95.05",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -2398,12 +4044,15 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//gpu/vulkan:vulkan_tests",
+        "module_scheme": "gtest",
         "name": "vulkan_tests",
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "gpu": "10de:2184-440.100",
-            "os": "Ubuntu-18.04.5|Ubuntu-18.04.6",
+            "display_server": "x11",
+            "gpu": "10de:2783-580.95.05",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -2430,6 +4079,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "context_lost_passthrough_tests",
         "resultdb": {
           "enable": true,
@@ -2438,8 +4089,9 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "gpu": "10de:2184-440.100",
-            "os": "Ubuntu-18.04.5|Ubuntu-18.04.6",
+            "display_server": "x11",
+            "gpu": "10de:2783-580.95.05",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -2469,6 +4121,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "expected_color_pixel_passthrough_test",
         "precommit_args": [
           "--gerrit-issue=${patch_issue}",
@@ -2482,8 +4136,9 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "gpu": "10de:2184-440.100",
-            "os": "Ubuntu-18.04.5|Ubuntu-18.04.6",
+            "display_server": "x11",
+            "gpu": "10de:2783-580.95.05",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -2509,6 +4164,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "gpu_process_launch_tests",
         "resultdb": {
           "enable": true,
@@ -2517,8 +4174,9 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "gpu": "10de:2184-440.100",
-            "os": "Ubuntu-18.04.5|Ubuntu-18.04.6",
+            "display_server": "x11",
+            "gpu": "10de:2783-580.95.05",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -2544,6 +4202,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "hardware_accelerated_feature_tests",
         "resultdb": {
           "enable": true,
@@ -2552,8 +4212,9 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "gpu": "10de:2184-440.100",
-            "os": "Ubuntu-18.04.5|Ubuntu-18.04.6",
+            "display_server": "x11",
+            "gpu": "10de:2783-580.95.05",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -2577,12 +4238,14 @@
           "--expected-vendor-id",
           "10de",
           "--expected-device-id",
-          "2184",
+          "2783",
           "--jobs=4"
         ],
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "info_collection_tests",
         "resultdb": {
           "enable": true,
@@ -2591,8 +4254,9 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "gpu": "10de:2184-440.100",
-            "os": "Ubuntu-18.04.5|Ubuntu-18.04.6",
+            "display_server": "x11",
+            "gpu": "10de:2783-580.95.05",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -2622,6 +4286,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "pixel_skia_gold_passthrough_test",
         "precommit_args": [
           "--gerrit-issue=${patch_issue}",
@@ -2635,8 +4301,9 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "gpu": "10de:2184-440.100",
-            "os": "Ubuntu-18.04.5|Ubuntu-18.04.6",
+            "display_server": "x11",
+            "gpu": "10de:2783-580.95.05",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -2663,6 +4330,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "screenshot_sync_passthrough_tests",
         "resultdb": {
           "enable": true,
@@ -2671,8 +4340,9 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "gpu": "10de:2184-440.100",
-            "os": "Ubuntu-18.04.5|Ubuntu-18.04.6",
+            "display_server": "x11",
+            "gpu": "10de:2783-580.95.05",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -2698,6 +4368,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "trace_test",
         "resultdb": {
           "enable": true,
@@ -2706,8 +4378,9 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "gpu": "10de:2184-440.100",
-            "os": "Ubuntu-18.04.5|Ubuntu-18.04.6",
+            "display_server": "x11",
+            "gpu": "10de:2783-580.95.05",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -2737,6 +4410,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "vulkan_pixel_skia_gold_test",
         "precommit_args": [
           "--gerrit-issue=${patch_issue}",
@@ -2750,8 +4425,47 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "gpu": "10de:2184-440.100",
-            "os": "Ubuntu-18.04.5|Ubuntu-18.04.6",
+            "display_server": "x11",
+            "gpu": "10de:2783-580.95.05",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      },
+      {
+        "args": [
+          "webcodecs",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc",
+          "--enforce-browser-version",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "webcodecs_tests",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_server": "x11",
+            "gpu": "10de:2783-580.95.05",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -2779,6 +4493,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "webgl2_conformance_gl_passthrough_tests",
         "resultdb": {
           "enable": true,
@@ -2787,8 +4503,9 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "gpu": "10de:2184-440.100",
-            "os": "Ubuntu-18.04.5|Ubuntu-18.04.6",
+            "display_server": "x11",
+            "gpu": "10de:2783-580.95.05",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -2816,6 +4533,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "webgl_conformance_gl_passthrough_tests",
         "resultdb": {
           "enable": true,
@@ -2824,8 +4543,649 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "gpu": "10de:2184-440.100",
-            "os": "Ubuntu-18.04.5|Ubuntu-18.04.6",
+            "display_server": "x11",
+            "gpu": "10de:2783-580.95.05",
+            "os": "Ubuntu-24.04",
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
+          "shards": 2
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      }
+    ]
+  },
+  "Linux FYI Release (NVIDIA)": {
+    "gtest_tests": [
+      {
+        "args": [
+          "--no-xvfb"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//third_party/angle/src/tests:angle_unittests",
+        "module_scheme": "gtest",
+        "name": "angle_unittests",
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_server": "x11",
+            "gpu": "10de:2184-535.183.01",
+            "os": "Ubuntu-22.04",
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "angle_unittests",
+        "test_id_prefix": "ninja://third_party/angle/src/tests:angle_unittests/",
+        "use_isolated_scripts_api": true
+      },
+      {
+        "args": [
+          "--use-cmd-decoder=passthrough",
+          "--use-gl=angle",
+          "--use-gpu-in-tests",
+          "--no-xvfb"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_gtest_merge.py"
+        },
+        "module_name": "//gpu:gl_tests",
+        "module_scheme": "gtest",
+        "name": "gl_tests_passthrough",
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_server": "x11",
+            "gpu": "10de:2184-535.183.01",
+            "os": "Ubuntu-22.04",
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
+          "shards": 2
+        },
+        "test": "gl_tests",
+        "test_id_prefix": "ninja://gpu:gl_tests/"
+      },
+      {
+        "args": [
+          "--use-gpu-in-tests",
+          "--no-xvfb",
+          "--git-revision=${got_revision}"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_gtest_merge.py"
+        },
+        "module_name": "//ui/gl:gl_unittests",
+        "module_scheme": "gtest",
+        "name": "gl_unittests",
+        "precommit_args": [
+          "--gerrit-issue=${patch_issue}",
+          "--gerrit-patchset=${patch_set}",
+          "--buildbucket-id=${buildbucket_build_id}"
+        ],
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_server": "x11",
+            "gpu": "10de:2184-535.183.01",
+            "os": "Ubuntu-22.04",
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "gl_unittests",
+        "test_id_prefix": "ninja://ui/gl:gl_unittests/"
+      },
+      {
+        "args": [
+          "--enable-gpu",
+          "--use-gpu-in-tests",
+          "--gtest_filter=*MappableBufferTest*",
+          "--no-xvfb"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_gtest_merge.py"
+        },
+        "module_name": "//gpu:gpu_unittests",
+        "module_scheme": "gtest",
+        "name": "mappable_buffer_tests",
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_server": "x11",
+            "gpu": "10de:2184-535.183.01",
+            "os": "Ubuntu-22.04",
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "gpu_unittests",
+        "test_id_prefix": "ninja://gpu:gpu_unittests/"
+      },
+      {
+        "args": [
+          "--use-gpu-in-tests",
+          "--no-xvfb"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_gtest_merge.py"
+        },
+        "module_name": "//gpu/vulkan:vulkan_tests",
+        "module_scheme": "gtest",
+        "name": "vulkan_tests",
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_server": "x11",
+            "gpu": "10de:2184-535.183.01",
+            "os": "Ubuntu-22.04",
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "vulkan_tests",
+        "test_id_prefix": "ninja://gpu/vulkan:vulkan_tests/"
+      }
+    ],
+    "isolated_scripts": [
+      {
+        "args": [
+          "context_lost",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle",
+          "--enforce-browser-version",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "context_lost_passthrough_tests",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_server": "x11",
+            "gpu": "10de:2184-535.183.01",
+            "os": "Ubuntu-22.04",
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      },
+      {
+        "args": [
+          "expected_color",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle",
+          "--enforce-browser-version",
+          "--git-revision=${got_revision}",
+          "--dont-restore-color-profile-after-test",
+          "--test-machine-name",
+          "${buildername}",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "expected_color_pixel_passthrough_test",
+        "precommit_args": [
+          "--gerrit-issue=${patch_issue}",
+          "--gerrit-patchset=${patch_set}",
+          "--buildbucket-id=${buildbucket_build_id}"
+        ],
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_server": "x11",
+            "gpu": "10de:2184-535.183.01",
+            "os": "Ubuntu-22.04",
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      },
+      {
+        "args": [
+          "gpu_process",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc",
+          "--enforce-browser-version",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "gpu_process_launch_tests",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_server": "x11",
+            "gpu": "10de:2184-535.183.01",
+            "os": "Ubuntu-22.04",
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      },
+      {
+        "args": [
+          "hardware_accelerated_feature",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc",
+          "--enforce-browser-version",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "hardware_accelerated_feature_tests",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_server": "x11",
+            "gpu": "10de:2184-535.183.01",
+            "os": "Ubuntu-22.04",
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      },
+      {
+        "args": [
+          "info_collection",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --force_high_performance_gpu",
+          "--enforce-browser-version",
+          "--expected-vendor-id",
+          "10de",
+          "--expected-device-id",
+          "2184",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "info_collection_tests",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_server": "x11",
+            "gpu": "10de:2184-535.183.01",
+            "os": "Ubuntu-22.04",
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      },
+      {
+        "args": [
+          "pixel",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle",
+          "--enforce-browser-version",
+          "--git-revision=${got_revision}",
+          "--dont-restore-color-profile-after-test",
+          "--test-machine-name",
+          "${buildername}",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "pixel_skia_gold_passthrough_test",
+        "precommit_args": [
+          "--gerrit-issue=${patch_issue}",
+          "--gerrit-patchset=${patch_set}",
+          "--buildbucket-id=${buildbucket_build_id}"
+        ],
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_server": "x11",
+            "gpu": "10de:2184-535.183.01",
+            "os": "Ubuntu-22.04",
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      },
+      {
+        "args": [
+          "screenshot_sync",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle",
+          "--enforce-browser-version",
+          "--dont-restore-color-profile-after-test",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "screenshot_sync_passthrough_tests",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_server": "x11",
+            "gpu": "10de:2184-535.183.01",
+            "os": "Ubuntu-22.04",
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      },
+      {
+        "args": [
+          "trace_test",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc",
+          "--enforce-browser-version",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "trace_test",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_server": "x11",
+            "gpu": "10de:2184-535.183.01",
+            "os": "Ubuntu-22.04",
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      },
+      {
+        "args": [
+          "pixel",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-vulkan=native --disable-vulkan-fallback-to-gl-for-testing --enable-features=Vulkan --use-gl=angle --use-angle=gl --use-cmd-decoder=passthrough",
+          "--enforce-browser-version",
+          "--git-revision=${got_revision}",
+          "--dont-restore-color-profile-after-test",
+          "--test-machine-name",
+          "${buildername}",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "vulkan_pixel_skia_gold_test",
+        "precommit_args": [
+          "--gerrit-issue=${patch_issue}",
+          "--gerrit-patchset=${patch_set}",
+          "--buildbucket-id=${buildbucket_build_id}"
+        ],
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_server": "x11",
+            "gpu": "10de:2184-535.183.01",
+            "os": "Ubuntu-22.04",
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      },
+      {
+        "args": [
+          "webcodecs",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc",
+          "--enforce-browser-version",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "webcodecs_tests",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_server": "x11",
+            "gpu": "10de:2184-535.183.01",
+            "os": "Ubuntu-22.04",
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      },
+      {
+        "args": [
+          "webgl2_conformance",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --force_high_performance_gpu",
+          "--enforce-browser-version",
+          "--webgl-conformance-version=2.0.1",
+          "--read-abbreviated-json-results-from=../../content/test/data/gpu/webgl2_conformance_linux_runtimes.json",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "webgl2_conformance_gl_passthrough_tests",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_server": "x11",
+            "gpu": "10de:2184-535.183.01",
+            "os": "Ubuntu-22.04",
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
+          "shards": 5
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
+      },
+      {
+        "args": [
+          "webgl1_conformance",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --force_high_performance_gpu",
+          "--enforce-browser-version",
+          "--read-abbreviated-json-results-from=../../content/test/data/gpu/webgl1_conformance_linux_runtimes.json",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "webgl_conformance_gl_passthrough_tests",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "display_server": "x11",
+            "gpu": "10de:2184-535.183.01",
+            "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,

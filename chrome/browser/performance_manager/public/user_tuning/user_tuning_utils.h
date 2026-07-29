@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "base/byte_size.h"
 #include "chrome/browser/resource_coordinator/lifecycle_unit_state.mojom-forward.h"
 
 namespace performance_manager {
@@ -25,7 +26,7 @@ bool IsRefreshRateThrottled();
 bool IsBatterySaverModeManagedByOS();
 
 // Helper for logic to get the memory footprint estimate for a discarded page.
-uint64_t GetDiscardedMemoryEstimateForPage(
+base::ByteSize GetDiscardedMemoryEstimateForPage(
     const performance_manager::PageNode* node);
 
 // Returns a list of human-readable reasons why a page can't be discarded, or an
@@ -37,12 +38,14 @@ std::vector<std::string> GetCannotDiscardReasonsForPageNode(
 // chrome://discards UI - most discards should use the more detailed methods in
 // PageDiscardingHelper.
 void DiscardPage(const performance_manager::PageNode* page_node,
-                 ::mojom::LifecycleUnitDiscardReason reason);
+                 ::mojom::LifecycleUnitDiscardReason reason,
+                 bool ignore_minimum_time_in_background = false);
 
 // Chooses and discards a PageNode if possible. This is a shortcut for the
 // chrome://discards UI - most discards should use the more detailed methods in
 // PageDiscardingHelper.
-void DiscardAnyPage(::mojom::LifecycleUnitDiscardReason reason);
+void DiscardAnyPage(::mojom::LifecycleUnitDiscardReason reason,
+                    bool ignore_minimum_time_in_background = false);
 
 }  // namespace performance_manager::user_tuning
 

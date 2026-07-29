@@ -41,7 +41,9 @@ TEST_EXPECTED_STR = 'Expected output: '
 TEST_ACTUAL_STR = 'Actual'
 TEST_END_STR = '<-- End-of-file -->'
 
-TEST_NAME_REGEX = re.compile('content.test.*accessibility.([^@]*)')
+TEST_NAME_REGEX = re.compile(r'(?:content.test.*accessibility|'
+                             r'third_party.aria-practices.src.content.patterns)'
+                             r'.([^@]*)')
 
 # A global that keeps track of files we've already updated, so we don't
 # bother to update the same file twice.
@@ -55,11 +57,11 @@ def _clean_line(line: str) -> str:
       line = result.group(1)
   # For Android tests:
   if line[:2] == 'I ' or line[:2] == 'E ':
-    if result := re.search('[I|E].*run_tests_on_device\([^\)]+\)\s+(.*)', line):
+    if result := re.search(r'[IE].*run_tests_on_device\([^\)]+\)\s+(.*)', line):
       line = result.group(1)
   # For Android content_shell_test_apk tests:
   elif line[:2] == 'C ':
-    if result := re.search('C\s+\d+\.\d+s Main\s+([T|E|A|a|W|\+](.*))', line):
+    if result := re.search(r'C\s+\d+\.\d+s Main\s+([TEAaW+](.*))', line):
       line = result.group(1)
   return line
 
@@ -86,7 +88,9 @@ def _get_individual_test_logs(
 
 def _write_file(filename: str, data: List[str], directory=TEST_DATA_PATH):
   '''Write data to a file.'''
-  with open(full_path := os.path.join(directory, filename), 'w') as f:
+  with open(full_path := os.path.join(directory, filename),
+            'w',
+            encoding='utf-8') as f:
     f.writelines(data)
     completed_files.add(full_path)
     print(".", end="", flush=True)
@@ -140,7 +144,8 @@ def get_trybot_log(patch_set: Optional[int]) -> List:
       capture_output=True,
       text=True,
   ).stdout):
-    raise ValueError('Did not find an issue attached to the current branch.')
+    raise ValueError('Did not find an issue attached to the current branch. '
+                     'Note for Googlers: you might just need to run gcert.')
   return json.loads(output)
 
 
@@ -214,7 +219,9 @@ def main():
 
   for builder_id in failing_builder_ids:
     for url in _get_artifacts_for_failing_tests(builder_id):
-      test_log = s.get(url).text.split('\n')
+      response = s.get(url)
+      response.encoding = 'utf-8'
+      test_log = response.text.split('\n')
       for log in _get_individual_test_logs(test_log):
         expected_file, actual_text = _parse_log(log)
         _write_file(expected_file, actual_text)

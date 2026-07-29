@@ -6,6 +6,7 @@
 
 #include <memory>
 #include <string_view>
+#include <utility>
 
 #include "base/base64.h"
 #include "base/feature_list.h"
@@ -14,6 +15,7 @@
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/task_environment.h"
+#include "crypto/hash.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "net/base/hash_value.h"
 #include "net/cert/ct_serialization.h"
@@ -35,7 +37,6 @@
 #include "services/network/test/test_utils.h"
 #include "services/network/url_loader_factory.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/abseil-cpp/absl/utility/utility.h"
 
 namespace network {
 
@@ -618,7 +619,8 @@ TEST_F(SCTAuditingHandlerTest, HandlerWithPersistencePath) {
   origin->set_port(443);
 
   // Fake a HashValue to use as the key.
-  net::HashValue reporter_key(net::HASH_VALUE_SHA256);
+  std::array<uint8_t, crypto::hash::kSha256Size> zero_hash = {0};
+  net::HashValue reporter_key(net::HASH_VALUE_SHA256, zero_hash);
 
   handler.AddReporter(reporter_key, std::move(report), std::nullopt);
   ASSERT_EQ(handler.GetPendingReportersForTesting()->size(), 1u);
@@ -677,7 +679,8 @@ TEST_F(SCTAuditingHandlerTest, DataRoundTrip) {
     origin->set_port(443);
 
     // Fake a HashValue to use as the key.
-    net::HashValue reporter_key(net::HASH_VALUE_SHA256);
+    std::array<uint8_t, crypto::hash::kSha256Size> zero_hash = {0};
+    net::HashValue reporter_key(net::HASH_VALUE_SHA256, zero_hash);
 
     SCTAuditingReporter::SCTHashdanceMetadata metadata;
     metadata.leaf_hash = "leaf hash";

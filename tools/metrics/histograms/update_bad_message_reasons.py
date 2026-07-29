@@ -13,7 +13,9 @@ from __future__ import print_function
 import os
 import sys
 
-from update_histogram_enum import UpdateHistogramEnum
+import setup_modules  # pylint: disable=unused-import
+
+from chromium_src.tools.metrics.histograms.update_histogram_enum import UpdateHistogramEnum
 
 if __name__ == '__main__':
   if len(sys.argv) > 1:
@@ -30,9 +32,6 @@ if __name__ == '__main__':
       },
       'components/guest_view/browser/bad_message.h': {
           'name': 'BadMessageReasonGuestView'
-      },
-      'components/nacl/browser/bad_message.h': {
-          'name': 'BadMessageReasonNaCl'
       },
       'components/password_manager/content/browser/bad_message.h': {
           'name': 'BadMessageReasonPasswordManager'

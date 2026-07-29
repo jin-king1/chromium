@@ -7,17 +7,17 @@
 #include "base/containers/circular_deque.h"
 #include "base/lazy_instance.h"
 #include "base/strings/utf_string_conversions.h"
+#include "chrome/browser/ash/browser_delegate/browser_controller.h"
 #include "chrome/browser/ash/login/helper.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
-#include "chrome/browser/ui/browser_dialogs.h"
-#include "chrome/browser/ui/browser_finder.h"
+#include "chrome/browser/ui/dialogs/browser_dialogs.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
 #include "ui/aura/window.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
 #include "ui/gfx/geometry/rect.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/views/widget/widget.h"
 
 namespace ash {
@@ -121,8 +121,9 @@ bool LoginWebDialog::HandleOpenURLFromTab(
   // but there is no browser window associated with it. A helper screen will
   // fire an auto-reload, which in turn leads to opening a new browser window,
   // so we must suppress it.
-  // http://crbug.com/443096
-  return (source && !chrome::FindBrowserWithTab(source));
+  // http://crbug.com/41148677
+  return source &&
+         !ash::BrowserController::GetInstance()->GetBrowserForTab(source);
 }
 
 bool LoginWebDialog::MaybeCloseWindow(WebDialogDelegate& delegate,

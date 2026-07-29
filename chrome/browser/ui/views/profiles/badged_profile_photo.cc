@@ -8,10 +8,9 @@
 #include "chrome/browser/profiles/profile_avatar_icon_util.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/color/color_id.h"
-#include "ui/color/color_provider.h"
 #include "ui/gfx/canvas.h"
-#include "ui/gfx/color_palette.h"
 #include "ui/gfx/image/image.h"
 #include "ui/gfx/paint_vector_icon.h"
 #include "ui/views/controls/image_view.h"
@@ -49,12 +48,12 @@ END_METADATA
 
 void CustomImageView::OnPaint(gfx::Canvas* canvas) {
   // Remove the part of the ImageView that contains the badge.
-  SkPath mask;
-  mask.addCircle(
-      GetMirroredXInView(kBadgedProfilePhotoWidth - kBadgeIconSize / 2),
-      kBadgedProfilePhotoHeight - kBadgeIconSize / 2,
-      kBadgeIconSize / 2 + kBadgeBorderWidth);
-  mask.toggleInverseFillType();
+  const SkPath mask =
+      SkPath::Circle(
+          GetMirroredXInView(kBadgedProfilePhotoWidth - kBadgeIconSize / 2),
+          kBadgedProfilePhotoHeight - kBadgeIconSize / 2,
+          kBadgeIconSize / 2 + kBadgeBorderWidth)
+          .makeFillType(SkPathFillType::kInverseWinding);
   canvas->ClipPath(mask, true);
   ImageView::OnPaint(canvas);
 }
@@ -73,36 +72,41 @@ class BadgeView : public views::ImageView {
   void OnThemeChanged() override {
     ::views::ImageView::OnThemeChanged();
     switch (badge_type_) {
-      case BadgedProfilePhoto::BADGE_TYPE_SUPERVISOR:
+      case BadgedProfilePhoto::BadgeType::kSupervisor:
         SetImage(ui::ImageModel::FromVectorIcon(
-            kSupervisorAccountCircleIcon, ui::kColorIcon, kBadgeIconSize));
+            features::IsRoundedIconsEnabled() ? kSupervisedUserCircleFilledIcon
+                                              : kSupervisorAccountCircleOldIcon,
+            ui::kColorIcon, kBadgeIconSize));
         break;
-      case BadgedProfilePhoto::BADGE_TYPE_CHILD:
+      case BadgedProfilePhoto::BadgeType::kChild:
         SetImage(ui::ImageModel::FromVectorIcon(
-            kAccountChildCircleIcon, ui::kColorIcon, kBadgeIconSize));
+            features::IsRoundedIconsEnabled() ? kAccountChildFilledIcon
+                                              : kAccountChildCircleOldIcon,
+            ui::kColorIcon, kBadgeIconSize));
         break;
-      case BadgedProfilePhoto::BADGE_TYPE_SYNC_COMPLETE:
+      case BadgedProfilePhoto::BadgeType::kSyncComplete:
         SetImage(ui::ImageModel::FromVectorIcon(
-            kSyncCircleIcon, ui::kColorAlertLowSeverity, kBadgeIconSize));
+            kSyncCircleCustomIcon, ui::kColorAlertLowSeverity, kBadgeIconSize));
         break;
-      case BadgedProfilePhoto::BADGE_TYPE_SYNC_ERROR:
-        SetImage(ui::ImageModel::FromVectorIcon(
-            kSyncErrorCircleIcon, ui::kColorAlertHighSeverity, kBadgeIconSize));
+      case BadgedProfilePhoto::BadgeType::kSyncError:
+        SetImage(ui::ImageModel::FromVectorIcon(kSyncErrorCircleCustomIcon,
+                                                ui::kColorAlertHighSeverity,
+                                                kBadgeIconSize));
         break;
-      case BadgedProfilePhoto::BADGE_TYPE_SYNC_PAUSED:
+      case BadgedProfilePhoto::BadgeType::kSyncPaused:
         SetImage(ui::ImageModel::FromVectorIcon(
-            kSyncPausedCircleIcon, ui::kColorButtonBackgroundProminent,
+            kSyncPausedCircleCustomIcon, ui::kColorButtonBackgroundProminent,
             kBadgeIconSize));
         break;
-      case BadgedProfilePhoto::BADGE_TYPE_SYNC_DISABLED:
+      case BadgedProfilePhoto::BadgeType::kSyncDisabled:
         SetImage(ui::ImageModel::FromVectorIcon(
-            kSyncCircleIcon, ui::kColorIconDisabled, kBadgeIconSize));
+            kSyncCircleCustomIcon, ui::kColorIconDisabled, kBadgeIconSize));
         break;
-      case BadgedProfilePhoto::BADGE_TYPE_SYNC_OFF:
+      case BadgedProfilePhoto::BadgeType::kSyncOff:
         SetImage(ui::ImageModel::FromVectorIcon(
-            kSyncPausedCircleIcon, ui::kColorIcon, kBadgeIconSize));
+            kSyncPausedCircleCustomIcon, ui::kColorIcon, kBadgeIconSize));
         break;
-      case BadgedProfilePhoto::BADGE_TYPE_NONE:
+      case BadgedProfilePhoto::BadgeType::kNone:
         NOTREACHED();
     }
     SizeToPreferredSize();
@@ -126,7 +130,7 @@ BadgedProfilePhoto::BadgedProfilePhoto(BadgeType badge_type,
   // Create and add image view for profile icon.
   gfx::Image profile_photo_circular = profiles::GetSizedAvatarIcon(
       profile_photo, kImageSize, kImageSize, profiles::SHAPE_CIRCLE);
-  views::ImageView* profile_photo_view = badge_type == BADGE_TYPE_NONE
+  views::ImageView* profile_photo_view = badge_type == BadgeType::kNone
                                              ? new views::ImageView()
                                              : new CustomImageView();
   profile_photo_view->SetImage(
@@ -134,7 +138,7 @@ BadgedProfilePhoto::BadgedProfilePhoto(BadgeType badge_type,
   profile_photo_view->SizeToPreferredSize();
   AddChildViewRaw(profile_photo_view);
 
-  if (badge_type != BADGE_TYPE_NONE) {
+  if (badge_type != BadgeType::kNone) {
     AddChildView(std::make_unique<BadgeView>(badge_type));
   }
 

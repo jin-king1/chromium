@@ -64,23 +64,19 @@ class PreflightCacheTest : public testing::Test {
 
   void AppendEntry(const url::Origin& origin,
                    const GURL& url,
-                   const net::NetworkIsolationKey& network_isolation_key,
-                   mojom::IPAddressSpace target_ip_address_space =
-                       mojom::IPAddressSpace::kUnknown) {
-    cache_.AppendEntry(origin, url, network_isolation_key,
-                       target_ip_address_space, CreateEntry());
+                   const net::NetworkIsolationKey& network_isolation_key) {
+    cache_.AppendEntry(origin, url, network_isolation_key, CreateEntry());
   }
 
   bool CheckEntryAndRefreshCache(
       const url::Origin& origin,
       const GURL& url,
-      const net::NetworkIsolationKey& network_isolation_key,
-      mojom::IPAddressSpace target_ip_address_space =
-          mojom::IPAddressSpace::kUnknown) {
+      const net::NetworkIsolationKey& network_isolation_key) {
     return cache_.CheckIfRequestCanSkipPreflight(
-        origin, url, network_isolation_key, target_ip_address_space,
+        origin, url, network_isolation_key,
         network::mojom::CredentialsMode::kInclude, /*method=*/"POST",
-        net::HttpRequestHeaders(), /*is_revalidating=*/false, net_log_, true);
+        net::HttpRequestHeaders(), /*is_revalidating=*/false, net_log_, true,
+        /*is_ad_auction_trusted_signals_request=*/false);
   }
 
   bool CheckOptionMethodEntryAndRefreshCache(
@@ -88,9 +84,10 @@ class PreflightCacheTest : public testing::Test {
       const GURL& url,
       const net::NetworkIsolationKey& network_isolation_key) {
     return cache_.CheckIfRequestCanSkipPreflight(
-        origin, url, network_isolation_key, mojom::IPAddressSpace::kUnknown,
+        origin, url, network_isolation_key,
         network::mojom::CredentialsMode::kInclude, /*method=*/"OPTION",
-        net::HttpRequestHeaders(), /*is_revalidating=*/false, net_log_, true);
+        net::HttpRequestHeaders(), /*is_revalidating=*/false, net_log_, true,
+        /*is_ad_auction_trusted_signals_request=*/false);
   }
 
   void ClearCache(mojom::ClearDataFilterPtr url_filter) {
@@ -99,8 +96,7 @@ class PreflightCacheTest : public testing::Test {
 
   bool DoesEntryExists(const url::Origin& origin, const std::string& url) {
     return cache_.DoesEntryExistForTesting(origin, url,
-                                           net::NetworkIsolationKey(),
-                                           mojom::IPAddressSpace::kUnknown);
+                                           net::NetworkIsolationKey());
   }
 
   void Advance(int seconds) { clock_.Advance(base::Seconds(seconds)); }
@@ -113,11 +109,11 @@ class PreflightCacheTest : public testing::Test {
     return std::size(kCacheEntries);
   }
 
- private:
   // testing::Test implementation.
   void SetUp() override { PreflightResult::SetTickClockForTesting(&clock_); }
   void TearDown() override { PreflightResult::SetTickClockForTesting(nullptr); }
 
+ protected:
   base::test::TaskEnvironment env_;
   PreflightCache cache_;
   base::SimpleTestTickClock clock_;
@@ -226,6 +222,51 @@ TEST_F(PreflightCacheTest, RespectsNetworkIsolationKeys) {
   EXPECT_FALSE(CheckEntryAndRefreshCache(kOrigin1, kUrl2, kNik));
 }
 
+TEST_F(PreflightCacheTest, RespectsIsAdAuctionTrustedSignalsRequest) {
+  const url::Origin origin;
+  const GURL url("http://a.test/A");
+  const net::NetworkIsolationKey nik;
+
+  net::HttpRequestHeaders headers;
+  headers.SetHeader("Content-Type",
+                    "message/ad-auction-trusted-signals-request");
+
+  // Add an entry that does not include any allowed headers. A request with
+  // `headers` will only succeed if `is_ad_auction_trusted_signals_request` is
+  // true.
+  AppendEntry(origin, url, nik);
+  EXPECT_TRUE(cache_.CheckIfRequestCanSkipPreflight(
+      origin, url, nik, network::mojom::CredentialsMode::kInclude,
+      /*method=*/"POST", headers, /*is_revalidating=*/false, net_log_,
+      /*acam_preflight_spec_conformant=*/true,
+      /*is_ad_auction_trusted_signals_request=*/true));
+  EXPECT_FALSE(cache_.CheckIfRequestCanSkipPreflight(
+      origin, url, nik, network::mojom::CredentialsMode::kInclude,
+      /*method=*/"POST", headers, /*is_revalidating=*/false, net_log_,
+      /*acam_preflight_spec_conformant=*/true,
+      /*is_ad_auction_trusted_signals_request=*/false));
+
+  // Update the entry to allow any "Content-Type" header. Requests will now be
+  // allowed with `headers`, regardless of the value of
+  // `is_ad_auction_trusted_signals_request`.
+  cache_.AppendEntry(
+      origin, url, nik,
+      PreflightResult::Create(
+          mojom::CredentialsMode::kInclude, /*allow_methods_header=*/"POST",
+          /*allow_headers_header=*/"Content-Type",
+          /*max_age_header=*/"5", /*detected_error=*/nullptr));
+  EXPECT_TRUE(cache_.CheckIfRequestCanSkipPreflight(
+      origin, url, nik, network::mojom::CredentialsMode::kInclude,
+      /*method=*/"POST", headers, /*is_revalidating=*/false, net_log_,
+      /*acam_preflight_spec_conformant=*/true,
+      /*is_ad_auction_trusted_signals_request=*/true));
+  EXPECT_TRUE(cache_.CheckIfRequestCanSkipPreflight(
+      origin, url, nik, network::mojom::CredentialsMode::kInclude,
+      /*method=*/"POST", headers, /*is_revalidating=*/false, net_log_,
+      /*acam_preflight_spec_conformant=*/true,
+      /*is_ad_auction_trusted_signals_request=*/false));
+}
+
 TEST_F(PreflightCacheTest, HandlesOpaqueOrigins) {
   const url::Origin kOrigin1;
   const url::Origin kOrigin2;
@@ -256,33 +297,6 @@ TEST_F(PreflightCacheTest, HandlesOpaqueOrigins) {
   EXPECT_FALSE(CheckEntryAndRefreshCache(
       kOrigin1, kUrl,
       net::NetworkIsolationKey(net::SchemefulSite(), net::SchemefulSite())));
-}
-
-TEST_F(PreflightCacheTest, PrivateNetworkAccess) {
-  const url::Origin origin;
-  const GURL url("http://www.test.com/A");
-  const net::SchemefulSite Site = net::SchemefulSite(origin);
-  const net::NetworkIsolationKey nik(Site, Site);
-
-  // The cache starts empty.
-  EXPECT_EQ(0u, CountEntries());
-
-  AppendEntry(origin, url, nik, mojom::IPAddressSpace::kUnknown);
-  EXPECT_EQ(1u, CountEntries());
-  EXPECT_TRUE(CheckEntryAndRefreshCache(origin, url, nik,
-                                        mojom::IPAddressSpace::kUnknown));
-
-  AppendEntry(origin, url, nik, mojom::IPAddressSpace::kPrivate);
-  AppendEntry(origin, url, nik, mojom::IPAddressSpace::kLocal);
-  EXPECT_EQ(3u, CountEntries());
-  EXPECT_TRUE(CheckEntryAndRefreshCache(origin, url, nik,
-                                        mojom::IPAddressSpace::kPrivate));
-  EXPECT_TRUE(CheckEntryAndRefreshCache(origin, url, nik,
-                                        mojom::IPAddressSpace::kLocal));
-
-  // Check that an entry we never inserted is not found in the cache.
-  EXPECT_FALSE(CheckEntryAndRefreshCache(origin, url, nik,
-                                         mojom::IPAddressSpace::kPublic));
 }
 
 TEST_F(PreflightCacheTest, NetLogCheckCacheExist) {

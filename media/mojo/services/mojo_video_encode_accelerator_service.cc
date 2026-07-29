@@ -8,6 +8,8 @@
 #include <utility>
 
 #include "base/logging.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/strings/stringprintf.h"
 #include "base/task/bind_post_task.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/trace_event/trace_event.h"
@@ -18,6 +20,7 @@
 #include "media/mojo/services/mojo_media_log.h"
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "mojo/public/cpp/system/platform_handle.h"
+#include "third_party/perfetto/include/perfetto/tracing/track.h"
 
 namespace media {
 
@@ -79,7 +82,8 @@ void MojoVideoEncodeAcceleratorService::Initialize(
       config.output_profile == VP8PROFILE_ANY) {
     MEDIA_LOG(ERROR, media_log_.get())
         << __func__ << " VP8 encoding disabled by GPU policy";
-    std::move(success_callback).Run(false);
+    std::move(success_callback)
+        .Run({EncoderStatus::Codes::kEncoderInitializationError});
     return;
   }
 
@@ -88,7 +92,8 @@ void MojoVideoEncodeAcceleratorService::Initialize(
       config.output_profile <= VP9PROFILE_PROFILE3) {
     MEDIA_LOG(ERROR, media_log_.get())
         << __func__ << " VP9 encoding disabled by GPU policy";
-    std::move(success_callback).Run(false);
+    std::move(success_callback)
+        .Run({EncoderStatus::Codes::kEncoderInitializationError});
     return;
   }
 
@@ -97,20 +102,23 @@ void MojoVideoEncodeAcceleratorService::Initialize(
       config.output_profile <= H264PROFILE_MAX) {
     MEDIA_LOG(ERROR, media_log_.get())
         << __func__ << " H.264 encoding disabled by GPU policy";
-    std::move(success_callback).Run(false);
+    std::move(success_callback)
+        .Run({EncoderStatus::Codes::kEncoderInitializationError});
     return;
   }
 
   if (encoder_) {
     MEDIA_LOG(ERROR, media_log_.get())
         << __func__ << " VEA is already initialized";
-    std::move(success_callback).Run(false);
+    std::move(success_callback)
+        .Run({EncoderStatus::Codes::kEncoderInitializationError});
     return;
   }
 
   if (!client) {
     MEDIA_LOG(ERROR, media_log_.get()) << __func__ << "null |client|";
-    std::move(success_callback).Run(false);
+    std::move(success_callback)
+        .Run({EncoderStatus::Codes::kEncoderInitializationError});
     return;
   }
   vea_client_.Bind(std::move(client));
@@ -121,22 +129,59 @@ void MojoVideoEncodeAcceleratorService::Initialize(
     MEDIA_LOG(ERROR, media_log_.get())
         << __func__ << "too large input_visible_size "
         << config.input_visible_size.ToString();
-    std::move(success_callback).Run(false);
+    std::move(success_callback)
+        .Run({EncoderStatus::Codes::kEncoderInitializationError});
     return;
   }
 
-  encoder_ = std::move(create_vea_callback_)
-                 .Run(config, this, gpu_preferences_, gpu_workarounds_,
-                      gpu_device_, media_log_->Clone(),
-                      get_command_buffer_helper_cb_, gpu_task_runner_);
-  if (!encoder_) {
+  for (const auto& spatial_layer : config.spatial_layers) {
+    if (spatial_layer.width > limits::kMaxDimension ||
+        spatial_layer.height > limits::kMaxDimension ||
+        base::CheckMul<uint64_t>(spatial_layer.width, spatial_layer.height)
+                .ValueOrDefault(std::numeric_limits<uint64_t>::max()) >
+            limits::kMaxCanvas) {
+      MEDIA_LOG(ERROR, media_log_.get())
+          << __func__ << "too large spatial_layer " << spatial_layer.width
+          << "x" << spatial_layer.height;
+      std::move(success_callback)
+          .Run({EncoderStatus::Codes::kEncoderInitializationError});
+      return;
+    }
+    if (spatial_layer.width > config.input_visible_size.width() ||
+        spatial_layer.height > config.input_visible_size.height()) {
+      MEDIA_LOG(ERROR, media_log_.get())
+          << __func__
+          << " spatial layer size is larger than input_visible_size: "
+          << spatial_layer.width << "x" << spatial_layer.height << " vs "
+          << config.input_visible_size.ToString();
+
+      std::move(success_callback)
+          .Run({EncoderStatus::Codes::kEncoderInitializationError});
+      return;
+    }
+  }
+
+  encoder_.reset();
+  if (config.framerate == 0) {
+    MEDIA_LOG(ERROR, media_log_.get()) << __func__ << " framerate must be > 0";
+    std::move(success_callback)
+        .Run({EncoderStatus::Codes::kEncoderInitializationError});
+    return;
+  }
+  auto encoder_or_error =
+      std::move(create_vea_callback_)
+          .Run(config, this, gpu_preferences_, gpu_workarounds_, gpu_device_,
+               media_log_->Clone(), get_command_buffer_helper_cb_,
+               gpu_task_runner_);
+  if (!encoder_or_error.has_value()) {
     MEDIA_LOG(ERROR, media_log_.get())
         << __func__ << " Error creating or initializing VEA";
-    std::move(success_callback).Run(false);
+    std::move(success_callback).Run(std::move(encoder_or_error).error());
     return;
   }
+  encoder_ = std::move(encoder_or_error).value();
 
-  std::move(success_callback).Run(true);
+  std::move(success_callback).Run({EncoderStatus::Codes::kOk});
   return;
 }
 
@@ -156,8 +201,7 @@ void MojoVideoEncodeAcceleratorService::Encode(
   }
 
   if (frame->coded_size() != input_coded_size_ &&
-      frame->storage_type() != media::VideoFrame::STORAGE_GPU_MEMORY_BUFFER &&
-      !frame->HasSharedImage()) {
+      !frame->HasMappableSharedImage() && !frame->HasSharedImage()) {
     NotifyErrorStatus({EncoderStatus::Codes::kInvalidInputFrame,
                        "wrong input coded size, expected " +
                            input_coded_size_.ToString() + ", got " +
@@ -340,12 +384,10 @@ void MojoVideoEncodeAcceleratorService::BitstreamBufferReady(
     int64_t timestamp = metadata.timestamp.InMicroseconds();
     const auto timestamp_it = timestamps_.Peek(timestamp);
     if (timestamp_it != timestamps_.end()) {
-      TRACE_EVENT_NESTABLE_ASYNC_BEGIN_WITH_TIMESTAMP0(
-          "media", "MojoVEAService::EncodingFrameDuration", timestamp,
-          timestamp_it->second);
-      TRACE_EVENT_NESTABLE_ASYNC_END_WITH_TIMESTAMP1(
-          "media", "MojoVEAService::EncodingFrameDuration", timestamp,
-          base::TimeTicks::Now(), "timestamp", timestamp);
+      TRACE_EVENT_BEGIN("media", "MojoVEAService::EncodingFrameDuration",
+                        perfetto::Track(timestamp), timestamp_it->second);
+      TRACE_EVENT_END("media", perfetto::Track(timestamp),
+                      base::TimeTicks::Now(), "timestamp", timestamp);
     }
   }
 

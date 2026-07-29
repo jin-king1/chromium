@@ -2,14 +2,17 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "third_party/blink/renderer/modules/webcodecs/video_frame.h"
 
+#include <algorithm>
+#include <array>
+
+#include "base/containers/span_reader.h"
+#include "base/functional/callback_helpers.h"
+#include "base/rand_util.h"
+#include "base/test/null_task_runner.h"
 #include "components/viz/test/test_context_provider.h"
+#include "components/viz/test/test_raster_interface.h"
 #include "media/base/video_frame.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/web/web_heap.h"
@@ -22,6 +25,7 @@
 #include "third_party/blink/renderer/bindings/modules/v8/v8_union_blob_htmlcanvaselement_htmlimageelement_htmlvideoelement_imagebitmap_imagedata_offscreencanvas_svgimageelement_videoframe.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_union_cssimagevalue_htmlcanvaselement_htmlimageelement_htmlvideoelement_imagebitmap_offscreencanvas_svgimageelement_videoframe.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_video_decoder_config.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_video_frame_buffer_init.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_video_frame_copy_to_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_video_frame_init.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_video_frame_metadata.h"
@@ -30,7 +34,7 @@
 #include "third_party/blink/renderer/modules/webcodecs/video_frame_handle.h"
 #include "third_party/blink/renderer/modules/webcodecs/video_frame_monitor.h"
 #include "third_party/blink/renderer/modules/webcodecs/webcodecs_logger.h"
-#include "third_party/blink/renderer/platform/graphics/canvas_resource_provider.h"
+#include "third_party/blink/renderer/platform/graphics/accelerated_static_bitmap_image.h"
 #include "third_party/blink/renderer/platform/graphics/gpu/shared_gpu_context.h"
 #include "third_party/blink/renderer/platform/graphics/skia/skia_utils.h"
 #include "third_party/blink/renderer/platform/graphics/test/gpu_test_utils.h"
@@ -54,8 +58,8 @@ ImageBitmap* ToImageBitmap(V8TestingScope* v8_scope, ScriptValue value) {
 class VideoFrameTest : public testing::Test {
  public:
   void SetUp() override {
-    test_context_provider_ = viz::TestContextProvider::Create();
-    InitializeSharedGpuContextGLES2(test_context_provider_.get());
+    test_context_provider_ = viz::TestContextProvider::CreateRaster();
+    InitializeSharedGpuContext(test_context_provider_.get());
   }
 
   void TearDown() override { SharedGpuContext::Reset(); }
@@ -118,10 +122,143 @@ TEST_F(VideoFrameTest, ConstructorAndAttributes) {
   EXPECT_EQ(nullptr, blink_frame->frame());
 }
 
-TEST_F(VideoFrameTest, CopyToRGB) {
+TEST_F(VideoFrameTest, ConstructorWithTimestamp) {
   V8TestingScope scope;
 
-  ScopedWebCodecsCopyToRGBForTest feature(true);
+  scoped_refptr<media::VideoFrame> media_frame = CreateBlackMediaVideoFrame(
+      base::Microseconds(1000), media::PIXEL_FORMAT_I420,
+      gfx::Size(112, 208) /* coded_size */,
+      gfx::Size(100, 200) /* visible_size */);
+
+  // Case 1: Constructor with explicit timestamp override
+  VideoFrame* frame_with_ts = MakeGarbageCollected<VideoFrame>(
+      media_frame, scope.GetExecutionContext(), "source_id", nullptr,
+      base::Microseconds(2000));
+  EXPECT_EQ(2000, frame_with_ts->timestamp());
+  frame_with_ts->close();
+
+  // Case 2: Constructor with std::nullopt timestamp (should use media_frame
+  // timestamp)
+  VideoFrame* frame_with_nullopt =
+      MakeGarbageCollected<VideoFrame>(media_frame, scope.GetExecutionContext(),
+                                       "source_id", nullptr, std::nullopt);
+  EXPECT_EQ(1000, frame_with_nullopt->timestamp());
+  frame_with_nullopt->close();
+
+  // Case 3: Constructor with default timestamp (should use media_frame
+  // timestamp)
+  VideoFrame* frame_default = MakeGarbageCollected<VideoFrame>(
+      media_frame, scope.GetExecutionContext(), "source_id", nullptr);
+  EXPECT_EQ(1000, frame_default->timestamp());
+  frame_default->close();
+}
+
+TEST_F(VideoFrameTest, CreateFromVideoFrameWithTimestampOverride) {
+  V8TestingScope scope;
+
+  scoped_refptr<media::VideoFrame> media_frame = CreateBlackMediaVideoFrame(
+      base::Microseconds(1000), media::PIXEL_FORMAT_I420,
+      gfx::Size(112, 208) /* coded_size */,
+      gfx::Size(100, 200) /* visible_size */);
+
+  VideoFrame* frame_with_ts = MakeGarbageCollected<VideoFrame>(
+      media_frame, scope.GetExecutionContext(), "source_id", nullptr,
+      base::Microseconds(2000));
+
+  auto* source = MakeGarbageCollected<V8CanvasImageSource>(frame_with_ts);
+  auto* init = VideoFrameInit::Create();
+
+  // Creating a VideoFrame from another VideoFrame should bring over the
+  // overridden timestamp.
+  VideoFrame* new_frame = VideoFrame::Create(scope.GetScriptState(), source,
+                                             init, scope.GetExceptionState());
+  ASSERT_TRUE(new_frame);
+  EXPECT_EQ(2000, new_frame->timestamp());
+
+  // Also verify explicit override works.
+  init->setTimestamp(3000);
+  VideoFrame* new_frame_override = VideoFrame::Create(
+      scope.GetScriptState(), source, init, scope.GetExceptionState());
+  ASSERT_TRUE(new_frame_override);
+  EXPECT_EQ(3000, new_frame_override->timestamp());
+
+  frame_with_ts->close();
+}
+
+TEST_F(VideoFrameTest, ConstructorOddSize) {
+  V8TestingScope scope;
+
+  constexpr auto kOddSize = gfx::Size(61, 21);
+  const auto kOddUVSize = gfx::Size(std::ceil(kOddSize.width() / 2.0),
+                                    std::ceil(kOddSize.height() / 2.0));
+  const size_t allocation_size =
+      static_cast<size_t>(kOddSize.Area64() * 2 + kOddUVSize.Area64() * 2);
+
+  auto* array_buffer = DOMArrayBuffer::Create(allocation_size, 1);
+
+  // Fill buffer with random data for hash and extents testing.
+  base::RandBytes(array_buffer->ByteSpan());
+
+  std::string media_frame_hash;
+  {
+    const size_t kYAPlaneByteSize = static_cast<size_t>(kOddSize.Area64());
+    const size_t kUVPlaneByteSize = static_cast<size_t>(kOddUVSize.Area64());
+    auto src_media_frame = media::VideoFrame::WrapExternalYuvaData(
+        media::PIXEL_FORMAT_I420A, kOddSize, gfx::Rect(kOddSize), kOddSize,
+        kOddSize.width(), kOddUVSize.width(), kOddUVSize.width(),
+        kOddSize.width(), array_buffer->ByteSpan().first(kYAPlaneByteSize),
+        array_buffer->ByteSpan().subspan(kYAPlaneByteSize, kUVPlaneByteSize),
+        array_buffer->ByteSpan().subspan(kYAPlaneByteSize + kUVPlaneByteSize,
+                                         kUVPlaneByteSize),
+        array_buffer->ByteSpan().subspan(
+            kYAPlaneByteSize + kUVPlaneByteSize * 2, kYAPlaneByteSize),
+        base::TimeDelta());
+    ASSERT_TRUE(src_media_frame);
+    media_frame_hash =
+        media::VideoFrame::HexHashOfFrameForTesting(*src_media_frame);
+  }
+
+  auto* init = VideoFrameBufferInit::Create();
+  init->setTimestamp(0);
+  init->setCodedWidth(kOddSize.width());
+  init->setCodedHeight(kOddSize.height());
+  init->setFormat(V8VideoPixelFormat::Enum::kI420A);
+  init->setDisplayWidth(kOddSize.width());
+  init->setDisplayHeight(kOddSize.height());
+
+  // Test non-transfer constructor first then the transfer constructor.
+  for (bool test_transfer : {false, true}) {
+    SCOPED_TRACE(test_transfer);
+    if (test_transfer) {
+      HeapVector<Member<DOMArrayBuffer>> transfer;
+      transfer.push_back(Member<DOMArrayBuffer>(array_buffer));
+      init->setTransfer(std::move(transfer));
+    }
+
+    VideoFrame* blink_frame = VideoFrame::Create(
+        scope.GetScriptState(),
+        MakeGarbageCollected<V8AllowSharedBufferSource>(array_buffer), init,
+        scope.GetExceptionState());
+    ASSERT_TRUE(blink_frame);
+
+    EXPECT_LE(static_cast<unsigned>(kOddSize.width()),
+              blink_frame->codedWidth());
+    EXPECT_LE(static_cast<unsigned>(kOddSize.height()),
+              blink_frame->codedHeight());
+    EXPECT_EQ(static_cast<unsigned>(kOddSize.width()),
+              blink_frame->displayWidth());
+    EXPECT_EQ(static_cast<unsigned>(kOddSize.height()),
+              blink_frame->displayHeight());
+
+    auto blink_media_frame = blink_frame->frame();
+    EXPECT_EQ(media_frame_hash,
+              media::VideoFrame::HexHashOfFrameForTesting(*blink_media_frame));
+    blink_frame->close();
+  }
+}
+
+TEST_F(VideoFrameTest, CopyToRGB) {
+  V8TestingScope scope;
   scoped_refptr<media::VideoFrame> media_frame = CreateBlackMediaVideoFrame(
       base::Microseconds(1000), media::PIXEL_FORMAT_I420,
       /* coded_size= */ gfx::Size(64, 48),
@@ -134,10 +271,8 @@ TEST_F(VideoFrameTest, CopyToRGB) {
   uint32_t buffer_size =
       blink_frame->allocationSize(options, scope.GetExceptionState());
   auto* buffer = DOMArrayBuffer::Create(buffer_size, 1);
-  uint8_t* data = static_cast<uint8_t*>(buffer->Data());
-
   // Set buffer to white pixels.
-  memset(data, 0xff, buffer_size);
+  std::ranges::fill(buffer->ByteSpan(), 0xff);
   AllowSharedBufferSource* destination =
       MakeGarbageCollected<AllowSharedBufferSource>(buffer);
 
@@ -149,14 +284,69 @@ TEST_F(VideoFrameTest, CopyToRGB) {
   ASSERT_TRUE(tester.IsFulfilled());
 
   // Check that after copyTo() all the pixels are black.
+  base::SpanReader<const uint8_t> reader(buffer->ByteSpan());
   for (int y = 0; y < media_frame->coded_size().height(); y++) {
     for (int x = 0; x < media_frame->coded_size().width(); x++) {
-      uint8_t* addr = &data[y * media_frame->stride(0) + x * 4];
-      ASSERT_EQ(addr[0], 0) << " R x: " << x << " y: " << y;
-      ASSERT_EQ(addr[1], 0) << " G x: " << x << " y: " << y;
-      ASSERT_EQ(addr[2], 0) << " B x: " << x << " y: " << y;
+      uint8_t r, g, b, a;
+      ASSERT_TRUE(reader.ReadU8BigEndian(r));
+      ASSERT_TRUE(reader.ReadU8BigEndian(g));
+      ASSERT_TRUE(reader.ReadU8BigEndian(b));
+      ASSERT_TRUE(reader.ReadU8BigEndian(a));
+      ASSERT_EQ(r, 0) << " R x: " << x << " y: " << y;
+      ASSERT_EQ(g, 0) << " G x: " << x << " y: " << y;
+      ASSERT_EQ(b, 0) << " B x: " << x << " y: " << y;
     }
   }
+
+  blink_frame->close();
+}
+
+TEST_F(VideoFrameTest, CopyToRGBXFromBuffer) {
+  V8TestingScope scope;
+  auto* src_buffer = DOMArrayBuffer::Create(4, 1);
+  src_buffer->ByteSpan().copy_from(std::to_array<uint8_t>({10, 20, 30, 40}));
+
+  auto* init = VideoFrameBufferInit::Create();
+  init->setTimestamp(0);
+  init->setCodedWidth(1);
+  init->setCodedHeight(1);
+  init->setFormat(V8VideoPixelFormat::Enum::kRGBX);
+  init->setDisplayWidth(1);
+  init->setDisplayHeight(1);
+
+  VideoFrame* blink_frame = VideoFrame::Create(
+      scope.GetScriptState(),
+      MakeGarbageCollected<V8AllowSharedBufferSource>(src_buffer), init,
+      scope.GetExceptionState());
+  ASSERT_TRUE(blink_frame);
+
+  VideoFrameCopyToOptions* options = VideoFrameCopyToOptions::Create();
+  options->setFormat(V8VideoPixelFormat::Enum::kRGBX);
+
+  uint32_t buffer_size =
+      blink_frame->allocationSize(options, scope.GetExceptionState());
+  ASSERT_EQ(buffer_size, 4u);
+  auto* dst_buffer = DOMArrayBuffer::Create(buffer_size, 1);
+  std::ranges::fill(dst_buffer->ByteSpan(), 0xff);
+  AllowSharedBufferSource* destination =
+      MakeGarbageCollected<AllowSharedBufferSource>(dst_buffer);
+
+  auto promise = blink_frame->copyTo(scope.GetScriptState(), destination,
+                                     options, scope.GetExceptionState());
+
+  ScriptPromiseTester tester(scope.GetScriptState(), promise);
+  tester.WaitUntilSettled();
+  ASSERT_TRUE(tester.IsFulfilled());
+
+  base::SpanReader<const uint8_t> reader(dst_buffer->ByteSpan());
+  uint8_t r, g, b, a;
+  ASSERT_TRUE(reader.ReadU8BigEndian(r));
+  ASSERT_TRUE(reader.ReadU8BigEndian(g));
+  ASSERT_TRUE(reader.ReadU8BigEndian(b));
+  ASSERT_TRUE(reader.ReadU8BigEndian(a));
+  EXPECT_EQ(r, 10);
+  EXPECT_EQ(g, 20);
+  EXPECT_EQ(b, 30);
 
   blink_frame->close();
 }
@@ -397,15 +587,18 @@ TEST_F(VideoFrameTest, ImageReuse_VideoFrameFromVideoFrameFromImage) {
 TEST_F(VideoFrameTest, VideoFrameFromGPUImageBitmap) {
   V8TestingScope scope;
 
-  auto context_provider_wrapper = SharedGpuContext::ContextProviderWrapper();
-  auto resource_provider = CanvasResourceProvider::CreateSharedImageProvider(
-      gfx::Size(100, 100), GetN32FormatForCanvas(), kPremul_SkAlphaType,
-      gfx::ColorSpace::CreateSRGB(),
-      CanvasResourceProvider::ShouldInitialize::kNo, context_provider_wrapper,
-      RasterMode::kGPU, gpu::SharedImageUsageSet());
+  auto client_si = gpu::ClientSharedImage::CreateForTesting(
+      gpu::SHARED_IMAGE_USAGE_RASTER_READ);
+  gpu::SyncToken token;
+  token.Set(gpu::CommandBufferNamespace::GPU_IO,
+            gpu::CommandBufferId::FromUnsafeValue(64), 100);
 
   scoped_refptr<StaticBitmapImage> bitmap =
-      resource_provider->Snapshot(FlushReason::kTesting);
+      AcceleratedStaticBitmapImage::CreateFromCanvasSharedImage(
+          std::move(client_si), token, kPremul_SkAlphaType, gfx::HDRMetadata(),
+          SharedGpuContext::ContextProviderWrapper(),
+          base::PlatformThread::CurrentRef(),
+          base::MakeRefCounted<base::NullTaskRunner>(), base::DoNothing());
   ASSERT_TRUE(bitmap->IsTextureBacked());
 
   auto* image_bitmap = MakeGarbageCollected<ImageBitmap>(bitmap);
@@ -458,24 +651,27 @@ TEST_F(VideoFrameTest, HandleMonitoring) {
       SkImageInfo::MakeN32Premul(5, 5, SkColorSpace::MakeSRGB())));
   sk_sp<SkImage> sk_image = surface->makeImageSnapshot();
   auto handle_2_1 = base::MakeRefCounted<VideoFrameHandle>(
-      media_frame2, sk_image, scope.GetExecutionContext(), source1);
+      media_frame2, sk_image, std::nullopt, scope.GetExecutionContext(),
+      source1);
   verify_expectations(/* source1 */ 2, 1, 1, /* source2 */ 0, 0, 0);
 
   auto& logger = WebCodecsLogger::From(*scope.GetExecutionContext());
   auto handle_1_1b = base::MakeRefCounted<VideoFrameHandle>(
-      media_frame1, sk_image, logger.GetCloseAuditor(), source1);
+      media_frame1, sk_image, std::nullopt, logger.GetCloseAuditor(), source1);
   verify_expectations(/* source1 */ 2, 2, 1, /* source2 */ 0, 0, 0);
 
-  auto handle_1_2 =
-      base::MakeRefCounted<VideoFrameHandle>(media_frame1, sk_image, source2);
+  auto handle_1_2 = base::MakeRefCounted<VideoFrameHandle>(
+      media_frame1, sk_image, std::nullopt,
+      scoped_refptr<WebCodecsLogger::VideoFrameCloseAuditor>(), source2);
   verify_expectations(/* source1 */ 2, 2, 1, /* source2 */ 1, 1, 0);
 
   auto non_monitored1 = base::MakeRefCounted<VideoFrameHandle>(
-      media_frame2, sk_image, scope.GetExecutionContext());
+      media_frame2, sk_image, std::nullopt, scope.GetExecutionContext());
   verify_expectations(/* source1 */ 2, 2, 1, /* source2 */ 1, 1, 0);
 
-  auto non_monitored2 =
-      base::MakeRefCounted<VideoFrameHandle>(media_frame1, sk_image);
+  auto non_monitored2 = base::MakeRefCounted<VideoFrameHandle>(
+      media_frame1, sk_image, std::nullopt,
+      scoped_refptr<WebCodecsLogger::VideoFrameCloseAuditor>());
   verify_expectations(/* source1 */ 2, 2, 1, /* source2 */ 1, 1, 0);
 
   // Move constructor
@@ -580,80 +776,6 @@ TEST_F(VideoFrameTest, VideoFrameMonitoring) {
   EXPECT_TRUE(monitor.IsEmpty());
 }
 
-TEST_F(VideoFrameTest, TestExternalAllocatedMemoryIsReportedCorrectlyOnClose) {
-  V8TestingScope scope;
-
-  scoped_refptr<media::VideoFrame> media_frame = CreateBlackMediaVideoFrame(
-      base::Microseconds(1000), media::PIXEL_FORMAT_I420,
-      gfx::Size(112, 208) /* coded_size */,
-      gfx::Size(100, 200) /* visible_size */);
-
-  int64_t initial_external_memory = V8ExternalMemoryAccounterBase::
-      GetTotalAmountOfExternalAllocatedMemoryForTesting(scope.GetIsolate());
-
-  VideoFrame* blink_frame =
-      CreateBlinkVideoFrame(media_frame, scope.GetExecutionContext());
-
-  EXPECT_GT(
-      V8ExternalMemoryAccounterBase::
-          GetTotalAmountOfExternalAllocatedMemoryForTesting(scope.GetIsolate()),
-      initial_external_memory);
-
-  // Calling close should decrement externally allocated memory.
-  blink_frame->close();
-
-  EXPECT_EQ(
-      V8ExternalMemoryAccounterBase::
-          GetTotalAmountOfExternalAllocatedMemoryForTesting(scope.GetIsolate()),
-      initial_external_memory);
-
-  // Calling close another time should not decrement external memory twice.
-  blink_frame->close();
-
-  EXPECT_EQ(
-      V8ExternalMemoryAccounterBase::
-          GetTotalAmountOfExternalAllocatedMemoryForTesting(scope.GetIsolate()),
-      initial_external_memory);
-
-  blink_frame = nullptr;
-  blink::WebHeap::CollectAllGarbageForTesting();
-
-  // Check the destructor does not double decrement the external memory.
-  EXPECT_EQ(
-      V8ExternalMemoryAccounterBase::
-          GetTotalAmountOfExternalAllocatedMemoryForTesting(scope.GetIsolate()),
-      initial_external_memory);
-}
-
-TEST_F(VideoFrameTest,
-       TestExternalAllocatedMemoryIsReportedCorrectlyOnDestruction) {
-  V8TestingScope scope;
-
-  scoped_refptr<media::VideoFrame> media_frame = CreateBlackMediaVideoFrame(
-      base::Microseconds(1000), media::PIXEL_FORMAT_I420,
-      gfx::Size(112, 208) /* coded_size */,
-      gfx::Size(100, 200) /* visible_size */);
-
-  int64_t initial_external_memory = V8ExternalMemoryAccounterBase::
-      GetTotalAmountOfExternalAllocatedMemoryForTesting(scope.GetIsolate());
-
-  CreateBlinkVideoFrame(media_frame, scope.GetExecutionContext());
-
-  EXPECT_GT(
-      V8ExternalMemoryAccounterBase::
-          GetTotalAmountOfExternalAllocatedMemoryForTesting(scope.GetIsolate()),
-      initial_external_memory);
-
-  blink::WebHeap::CollectAllGarbageForTesting();
-
-  // Check the destructor correctly decrements the reported
-  // externally allocated memory  when close has not been called before.
-  EXPECT_EQ(
-      V8ExternalMemoryAccounterBase::
-          GetTotalAmountOfExternalAllocatedMemoryForTesting(scope.GetIsolate()),
-      initial_external_memory);
-}
-
 TEST_F(VideoFrameTest, MetadataBackgroundBlurIsExposedCorrectly) {
   V8TestingScope scope;
 
@@ -680,6 +802,70 @@ TEST_F(VideoFrameTest, MetadataBackgroundBlurIsExposedCorrectly) {
                 ->backgroundBlur()
                 ->enabled(),
             false);
+}
+
+// Verifies that if the RTP timestamp is set in the media::VideoFrame metadata,
+// it is correctly exposed to JavaScript via the Blink VideoFrame metadata.
+TEST_F(VideoFrameTest, MetadataRtpTimestampExposedCorrectly) {
+  V8TestingScope scope;
+
+  ScopedVideoFrameMetadataRtpTimestampForTest enabled(true);
+
+  scoped_refptr<media::VideoFrame> media_frame =
+      CreateDefaultBlackMediaVideoFrame();
+
+  auto* blink_frame =
+      CreateBlinkVideoFrame(media_frame, scope.GetExecutionContext());
+
+  // RTP timestamp not populated when it isn't present in `media_frame`
+  // netadata.
+  EXPECT_FALSE(
+      blink_frame->metadata(scope.GetExceptionState())->hasRtpTimestamp());
+
+  media::VideoFrameMetadata metadata = media_frame->metadata();
+
+  // Convert microseconds to RTP timestamp (90 kHz clock) and set it in the
+  // metadata.
+  metadata.rtp_timestamp =
+      media_frame->timestamp().InMicroseconds() * 90.0 / 1000.0;
+
+  // Update the frame with the new metadata.
+  media_frame->set_metadata(metadata);
+
+  // RTP timestamp available as a property when it is set in the 'media_frame'
+  // metadata.
+  EXPECT_TRUE(
+      blink_frame->metadata(scope.GetExceptionState())->hasRtpTimestamp());
+
+  // RTP timestamp populated when it is set in the 'media_frame' metadata.
+  EXPECT_EQ(blink_frame->metadata(scope.GetExceptionState())->rtpTimestamp(),
+            *metadata.rtp_timestamp);
+}
+
+// Verifies that when the VideoFrameMetadataRtpTimestamp feature is disabled,
+// the RTP timestamp set in the media::VideoFrame metadata is not exposed to
+// JavaScript via the Blink VideoFrame metadata dictionary.
+TEST_F(VideoFrameTest, MetadataRtpTimestampNotExposedWhenFeatureDisabled) {
+  V8TestingScope scope;
+
+  ScopedVideoFrameMetadataRtpTimestampForTest disabled(false);
+
+  scoped_refptr<media::VideoFrame> media_frame =
+      CreateDefaultBlackMediaVideoFrame();
+
+  auto* blink_frame =
+      CreateBlinkVideoFrame(media_frame, scope.GetExecutionContext());
+
+  media::VideoFrameMetadata metadata = media_frame->metadata();
+  // Convert microseconds to RTP timestamp (90 kHz clock) and set it in the
+  // metadata.
+  metadata.rtp_timestamp =
+      media_frame->timestamp().InMicroseconds() * 90.0 / 1000.0;
+  media_frame->set_metadata(metadata);
+
+  // RTP timestamp should not be exposed when feature is disabled
+  EXPECT_FALSE(
+      blink_frame->metadata(scope.GetExceptionState())->hasRtpTimestamp());
 }
 
 }  // namespace

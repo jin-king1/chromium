@@ -24,7 +24,6 @@
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/compositor/layer.h"
 #include "ui/gfx/paint_vector_icon.h"
-#include "ui/strings/grit/ui_strings.h"
 #include "ui/views/background.h"
 #include "ui/views/highlight_border.h"
 #include "ui/views/layout/box_layout.h"
@@ -94,13 +93,19 @@ CaptureModeBarView::CaptureModeBarView()
     : shadow_(SystemShadow::CreateShadowOnTextureLayer(
           SystemShadow::Type::kElevation12)) {
   SetPaintToLayer();
-  SetBackground(views::CreateSolidBackground(kColorAshShieldAndBase80));
+  SetBackground(views::CreateSolidBackground(
+      chromeos::features::IsSystemBlurEnabled()
+          ? static_cast<ui::ColorId>(kColorAshShieldAndBase80)
+          : cros_tokens::kCrosSysSystemOnBaseOpaque));
+
+  if (chromeos::features::IsSystemBlurEnabled()) {
+    layer()->SetFillsBoundsOpaquely(false);
+    layer()->SetBackgroundBlur(ColorProvider::kBackgroundBlurSigma);
+    layer()->SetBackdropFilterQuality(ColorProvider::kBackgroundBlurQuality);
+  }
 
   const int border_radius = capture_mode::kCaptureBarHeight / 2;
-  layer()->SetFillsBoundsOpaquely(false);
   layer()->SetRoundedCornerRadius(gfx::RoundedCornersF(border_radius));
-  layer()->SetBackgroundBlur(ColorProvider::kBackgroundBlurSigma);
-  layer()->SetBackdropFilterQuality(ColorProvider::kBackgroundBlurQuality);
 
   auto* box_layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
       views::BoxLayout::Orientation::kHorizontal, kBarPadding,
@@ -133,12 +138,12 @@ void CaptureModeBarView::AppendSettingsButton() {
   CaptureModeSessionFocusCycler::HighlightHelper::Install(settings_button_);
 }
 
-void CaptureModeBarView::AppendCloseButton() {
+void CaptureModeBarView::AppendCloseButton(int accessible_name_id) {
   close_button_ = AddChildView(std::make_unique<IconButton>(
       base::BindRepeating(&CaptureModeBarView::OnCloseButtonPressed,
                           base::Unretained(this)),
       IconButton::Type::kMediumFloating, &kCaptureModeCloseIcon,
-      l10n_util::GetStringUTF16(IDS_APP_ACCNAME_CLOSE),
+      l10n_util::GetStringUTF16(accessible_name_id),
       /*is_togglable=*/false,
       /*has_border=*/true));
 

@@ -2,12 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {TestRunner} from 'test_runner';
 import {BindingsTestRunner} from 'bindings_test_runner';
-import {SourcesTestRunner} from 'sources_test_runner';
-
 import * as Common from 'devtools/core/common/common.js';
+import * as TextUtils from 'devtools/core/text_utils/text_utils.js';
 import * as Workspace from 'devtools/models/workspace/workspace.js';
+import {SourcesTestRunner} from 'sources_test_runner';
+import {TestRunner} from 'test_runner';
 
 (async function() {
   TestRunner.addResult(
@@ -47,7 +47,7 @@ import * as Workspace from 'devtools/models/workspace/workspace.js';
     return promise;
 
     function onSource(uiSourceCode) {
-      uiSourceCode.requestContent().then(({ content, error, isEncoded }) => fulfill(content));
+      uiSourceCode.requestContentData().then(TextUtils.ContentData.ContentData.asDeferredContent).then(({ content, error, isEncoded }) => fulfill(content));
     }
   }
 })();

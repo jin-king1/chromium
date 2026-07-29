@@ -4,25 +4,33 @@
 
 #include "components/autofill/core/browser/studies/autofill_ablation_study.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
+#include <array>
+#include <memory>
+#include <string>
+#include <string_view>
+
 #include "base/base64.h"
-#include "base/check_op.h"
-#include "base/command_line.h"
 #include "base/containers/span.h"
-#include "base/hash/md5.h"
 #include "base/memory/ptr_util.h"
 #include "base/metrics/field_trial.h"
+#include "base/metrics/field_trial_params.h"
 #include "base/no_destructor.h"
 #include "base/numerics/byte_conversions.h"
 #include "base/rand_util.h"
 #include "base/strings/string_number_conversions.h"
-#include "base/strings/string_util.h"
 #include "base/time/time.h"
-#include "components/autofill/core/browser/integrators/autofill_optimization_guide.h"
+#include "base/types/zip.h"
+#include "components/autofill/core/browser/integrators/optimization_guide/autofill_optimization_guide_decider.h"
 #include "components/autofill/core/common/autofill_clock.h"
+#include "components/autofill/core/common/autofill_debug_features.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_prefs.h"
 #include "components/optimization_guide/proto/hints.pb.h"
 #include "components/prefs/pref_service.h"
+#include "crypto/hash.h"
 #include "third_party/icu/source/i18n/unicode/timezone.h"
 #include "url/gurl.h"
 #include "url/origin.h"
@@ -45,17 +53,12 @@ using ::autofill::features::kAutofillAblationStudyAblationWeightPerMilleParam;
 using ::autofill::features::kAutofillAblationStudyEnabledForAddressesParam;
 using ::autofill::features::kAutofillAblationStudyEnabledForPaymentsParam;
 using ::autofill::features::kAutofillEnableAblationStudy;
-using ::autofill::features::test::kAutofillShowTypePredictions;
+using ::autofill::features::debug::kAutofillShowTypePredictions;
 
 namespace {
 
-// Number of bytes that we use to randomly seed the MD5Sum.
+// Number of bytes that we use to randomly seed the hash.
 constexpr size_t kSeedLengthInBytes = 8;
-
-// Converts the 8-byte prefix of an MD5 hash into a uint64_t value.
-inline uint64_t DigestToUInt64(const base::MD5Digest& digest) {
-  return base::U64FromBigEndian(base::span(digest.a).first<8u>());
-}
 
 // Returns the ablation seed from prefs and creates one if that has not happened
 // before.
@@ -63,12 +66,12 @@ std::string GetSeed(PrefService* pref_service) {
   if (!pref_service) {
     return std::string();
   }
-  if (!pref_service->HasPrefPath(autofill::prefs::kAutofillAblationSeedPref)) {
+  if (!pref_service->HasPrefPath(prefs::kAutofillAblationSeedPref)) {
     pref_service->SetString(
-        autofill::prefs::kAutofillAblationSeedPref,
+        prefs::kAutofillAblationSeedPref,
         base::Base64Encode(base::RandBytesAsVector(kSeedLengthInBytes)));
   }
-  return pref_service->GetString(autofill::prefs::kAutofillAblationSeedPref);
+  return pref_service->GetString(prefs::kAutofillAblationSeedPref);
 }
 
 }  // namespace
@@ -106,14 +109,11 @@ int DaysSinceLocalWindowsEpoch(base::Time now) {
 uint64_t GetAblationHash(const std::string& seed,
                          const GURL& url,
                          base::Time now) {
-  // Derive a random number from |seed|, |url|'s security origin and today's
-  // date.
-  base::MD5Context ctx;
-  base::MD5Init(&ctx);
+  crypto::hash::Hasher hasher(crypto::hash::kSha256);
 
   // Incorporate |seed| into the MD5Sum. This ensures that on each browser
   // start the behavior is shuffled.
-  base::MD5Update(&ctx, seed);
+  hasher.Update(seed);
 
   // Incorporate |url|'s security origin into the MD5Sum. This ensures that
   // different sites can have different behavior but the behavior on a single
@@ -124,18 +124,18 @@ uint64_t GetAblationHash(const std::string& seed,
   // so that individual users don't experience an excessive amount of ablation
   // cases.
   url::Origin origin = url::Origin::Create(url);
-  base::MD5Update(&ctx, origin.Serialize());
+  hasher.Update(origin.Serialize());
 
   // Incorporate the date into MD5Sum. This ensures that the behavior stays the
   // same during a `kAblationWindowInDays` period but changes afterwards.
   int days_since_epoch = DaysSinceLocalWindowsEpoch(now);
   int day_window = days_since_epoch / kAblationWindowInDays;
-  base::MD5Update(&ctx, base::NumberToString(day_window));
+  hasher.Update(base::NumberToString(day_window));
 
   // Derive 64 bit hash.
-  base::MD5Digest digest;
-  base::MD5Final(&digest, &ctx);
-  return DigestToUInt64(digest);
+  std::array<uint8_t, crypto::hash::kSha256Size> hash;
+  hasher.Finish(hash);
+  return base::U64FromBigEndian(base::span(hash).first<sizeof(uint64_t)>());
 }
 
 int GetDayInAblationWindow(base::Time now) {
@@ -158,7 +158,7 @@ const AutofillAblationStudy& AutofillAblationStudy::disabled_study() {
 AblationGroup AutofillAblationStudy::GetAblationGroup(
     const GURL& url,
     FormTypeForAblationStudy form_type,
-    AutofillOptimizationGuide* autofill_optimization_guide) const {
+    AutofillOptimizationGuideDecider* autofill_optimization_guide) const {
   if (!base::FeatureList::IsEnabled(kAutofillEnableAblationStudy)) {
     return AblationGroup::kDefault;
   }
@@ -183,37 +183,39 @@ AblationGroup AutofillAblationStudy::GetAblationGroup(
       break;
   }
 
-  std::array<const base::FeatureParam<int>*, 6> ablation_list_params = {
-      &kAutofillAblationStudyAblationWeightPerMilleList1Param,
-      &kAutofillAblationStudyAblationWeightPerMilleList2Param,
-      &kAutofillAblationStudyAblationWeightPerMilleList3Param,
-      &kAutofillAblationStudyAblationWeightPerMilleList4Param,
-      &kAutofillAblationStudyAblationWeightPerMilleList5Param,
-      &kAutofillAblationStudyAblationWeightPerMilleList6Param,
-  };
+  const auto ablation_list_params =
+      std::to_array<const base::FeatureParam<int>*>(
+          {&kAutofillAblationStudyAblationWeightPerMilleList1Param,
+           &kAutofillAblationStudyAblationWeightPerMilleList2Param,
+           &kAutofillAblationStudyAblationWeightPerMilleList3Param,
+           &kAutofillAblationStudyAblationWeightPerMilleList4Param,
+           &kAutofillAblationStudyAblationWeightPerMilleList5Param,
+           &kAutofillAblationStudyAblationWeightPerMilleList6Param});
   using OptimizationType = optimization_guide::proto::OptimizationType;
-  constexpr std::array<OptimizationType, 6> ablation_optimization_types = {
-      OptimizationType::AUTOFILL_ABLATION_SITES_LIST1,
-      OptimizationType::AUTOFILL_ABLATION_SITES_LIST2,
-      OptimizationType::AUTOFILL_ABLATION_SITES_LIST3,
-      OptimizationType::AUTOFILL_ABLATION_SITES_LIST4,
-      OptimizationType::AUTOFILL_ABLATION_SITES_LIST5,
-      OptimizationType::AUTOFILL_ABLATION_SITES_LIST6};
+  static constexpr auto ablation_optimization_types =
+      std::to_array<OptimizationType>(
+          {OptimizationType::AUTOFILL_ABLATION_SITES_LIST1,
+           OptimizationType::AUTOFILL_ABLATION_SITES_LIST2,
+           OptimizationType::AUTOFILL_ABLATION_SITES_LIST3,
+           OptimizationType::AUTOFILL_ABLATION_SITES_LIST4,
+           OptimizationType::AUTOFILL_ABLATION_SITES_LIST5,
+           OptimizationType::AUTOFILL_ABLATION_SITES_LIST6});
 
   base::Time now = AutofillClock::Now();
-  for (size_t i = 0; i < ablation_list_params.size(); ++i) {
+  for (auto [param, optimization_type] :
+       base::zip(ablation_list_params, ablation_optimization_types)) {
     // Do some basic checks for plausibility. Note that for testing purposes
     // we allow that ablation_weight == 1000. In this case 100% of forms are
     // in the ablation case. In practice ablation_weight * 2 <= total_weight
     // should be true to get meaningful results (have an equally sized
     // ablation and control group).
-    int ablation_weight = ablation_list_params[i]->Get();
+    const int ablation_weight = param->Get();
     if (ablation_weight <= 0 || ablation_weight > 1000) {
       continue;
     }
     if (!autofill_optimization_guide ||
         !autofill_optimization_guide->IsEligibleForAblation(
-            url, ablation_optimization_types[i])) {
+            url, optimization_type)) {
       continue;
     }
     return GetAblationGroupImpl(url, now, ablation_weight);

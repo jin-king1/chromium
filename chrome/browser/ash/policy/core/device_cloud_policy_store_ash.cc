@@ -6,12 +6,12 @@
 
 #include <utility>
 
+#include "ash/constants/ash_pref_names.h"
+#include "base/check_deref.h"
 #include "base/files/file_path.h"
-#include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/path_service.h"
 #include "base/sequence_checker.h"
 #include "base/task/sequenced_task_runner.h"
@@ -22,7 +22,6 @@
 #include "chrome/browser/ash/policy/dev_mode/dev_mode_policy_util.h"
 #include "chrome/browser/ash/policy/value_validation/onc_device_policy_value_validator.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/common/pref_names.h"
 #include "chromeos/ash/components/install_attributes/install_attributes.h"
 #include "chromeos/dbus/constants/dbus_paths.h"
 #include "components/ownership/owner_key_util.h"
@@ -35,14 +34,6 @@
 
 namespace em = enterprise_management;
 
-namespace features {
-
-BASE_FEATURE(kDeviceIdValidation,
-             "DeviceIdValidation",
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
-}  // namespace features
-
 namespace policy {
 
 namespace {
@@ -51,10 +42,6 @@ const char kDMTokenCheckHistogram[] = "Enterprise.EnrolledPolicyHasDMToken";
 const char kPolicyCheckHistogram[] = "Enterprise.EnrolledDevicePolicyPresent";
 
 bool CanUseDeviceIdValidation() {
-  if (!base::FeatureList::IsEnabled(features::kDeviceIdValidation)) {
-    return false;
-  }
-
   // The devices are storing the OS version in the local state at enrollment,
   // starting from version M122. For those devices the stats shows 100%
   // matching of device_id from policy with the value from install attributes.
@@ -62,7 +49,7 @@ bool CanUseDeviceIdValidation() {
   // validation now.
   auto* local_state = g_browser_process->local_state();
   return local_state &&
-         !local_state->GetString(prefs::kEnrollmentVersionOS).empty();
+         !local_state->GetString(ash::prefs::kEnrollmentVersionOS).empty();
 }
 
 }  // namespace
@@ -71,7 +58,8 @@ DeviceCloudPolicyStoreAsh::DeviceCloudPolicyStoreAsh(
     ash::DeviceSettingsService* device_settings_service,
     ash::InstallAttributes* install_attributes,
     scoped_refptr<base::SequencedTaskRunner> background_task_runner)
-    : device_settings_service_(device_settings_service),
+    : CloudPolicyStore(dm_protocol::kChromeDevicePolicyType),
+      device_settings_service_(device_settings_service),
       install_attributes_(install_attributes),
       background_task_runner_(background_task_runner) {
   device_settings_service_->AddObserver(this);
@@ -179,11 +167,9 @@ DeviceCloudPolicyStoreAsh::CreateValidator(
   if (CanUseDeviceIdValidation()) {
     validator->ValidateDeviceId(install_attributes_->GetDeviceId(),
                                 CloudPolicyValidatorBase::DEVICE_ID_REQUIRED);
+  } else {
+    validator->ValidateDomain(install_attributes_->GetDomain());
   }
-
-  // TODO(b:256551074): The domain validation is planned to be removed when we
-  // confirm that the device_id validation works.
-  validator->ValidateDomain(install_attributes_->GetDomain());
   validator->ValidatePolicyType(dm_protocol::kChromeDevicePolicyType);
   validator->ValidatePayload();
   validator->ValidateValues(std::make_unique<ONCDevicePolicyValueValidator>());
@@ -191,7 +177,7 @@ DeviceCloudPolicyStoreAsh::CreateValidator(
 }
 
 void DeviceCloudPolicyStoreAsh::OnPolicyToStoreValidated(
-    DeviceCloudPolicyValidator* validator) {
+    CloudPolicyValidatorBase* validator) {
   validation_result_ = validator->GetValidationResult();
   if (!validator->success()) {
     status_ = STATUS_VALIDATION_ERROR;
@@ -199,7 +185,10 @@ void DeviceCloudPolicyStoreAsh::OnPolicyToStoreValidated(
     return;
   }
 
-  if (GetDeviceBlockDevModePolicyValue(*(validator->payload())) &&
+  CHECK_EQ(validator->policy_type(), dm_protocol::kChromeDevicePolicyType);
+
+  auto* typed_validator = static_cast<DeviceCloudPolicyValidator*>(validator);
+  if (GetDeviceBlockDevModePolicyValue(*(typed_validator->payload())) &&
       !IsDeviceBlockDevModePolicyAllowed()) {
     LOG(ERROR) << "Rejected device policy: DeviceBlockDevmode not allowed";
     status_ = STATUS_BAD_STATE;
@@ -270,6 +259,11 @@ void DeviceCloudPolicyStoreAsh::UpdateStatusFromService() {
     case ash::DeviceSettingsService::STORE_VALIDATION_ERROR:
       status_ = STATUS_LOAD_ERROR;
       return;
+    case ash::DeviceSettingsService::STORE_KEY_UNAVAILABLE_NOT_INITIALIZED:
+    case ash::DeviceSettingsService::STORE_KEY_UNAVAILABLE_NOT_LOCKED:
+    case ash::DeviceSettingsService::STORE_KEY_UNAVAILABLE_MANAGED:
+      status_ = STATUS_BAD_STATE;
+      return;
   }
   NOTREACHED();
 }
@@ -283,6 +277,9 @@ void DeviceCloudPolicyStoreAsh::CheckDMToken() {
     case ash::DeviceSettingsService::STORE_NO_POLICY:
     case ash::DeviceSettingsService::STORE_INVALID_POLICY:
     case ash::DeviceSettingsService::STORE_VALIDATION_ERROR:
+    case ash::DeviceSettingsService::STORE_KEY_UNAVAILABLE_NOT_INITIALIZED:
+    case ash::DeviceSettingsService::STORE_KEY_UNAVAILABLE_NOT_LOCKED:
+    case ash::DeviceSettingsService::STORE_KEY_UNAVAILABLE_MANAGED:
       // Continue with the check below.
       break;
     case ash::DeviceSettingsService::STORE_OPERATION_FAILED:
@@ -336,11 +333,14 @@ void DeviceCloudPolicyStoreAsh::CheckDMToken() {
              << "no DM token! Status: " << service_status
              << ", debug_info: " << debug_info.str() << ".";
 
+  // TODO(crbug.com/404133022): Avoid using g_browser_process.
+  PrefService& local_state = CHECK_DEREF(g_browser_process->local_state());
+
   // At the time LoginDisplayHostWebUI decides whether enrollment flow is to
   // be started, policy hasn't been read yet.  To work around this, once the
   // need for recovery is detected upon policy load, a flag is stored in prefs
   // which is accessed by LoginDisplayHostWebUI early during (next) boot.
-  ash::StartupUtils::MarkEnrollmentRecoveryRequired();
+  ash::StartupUtils::MarkEnrollmentRecoveryRequired(local_state);
 }
 
 void DeviceCloudPolicyStoreAsh::UpdateFirstPoliciesLoaded() {

@@ -6,7 +6,6 @@
 
 #include <vector>
 
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/task/single_thread_task_runner.h"
@@ -14,7 +13,7 @@
 #include "cc/test/test_client_shared_image_interface.h"
 #include "cc/tiles/image_decode_cache_utils.h"
 #include "cc/trees/layer_tree_frame_sink_client.h"
-#include "cc/trees/raster_context_provider_wrapper.h"
+#include "components/viz/common/features.h"
 #include "components/viz/common/frame_sinks/begin_frame_source.h"
 #include "components/viz/common/frame_sinks/delay_based_time_source.h"
 #include "components/viz/common/resources/returned_resource.h"
@@ -47,13 +46,7 @@ FakeLayerTreeFrameSink::FakeLayerTreeFrameSink(
     scoped_refptr<viz::RasterContextProvider> worker_context_provider)
     : LayerTreeFrameSink(
           std::move(context_provider),
-          worker_context_provider
-              ? base::MakeRefCounted<RasterContextProviderWrapper>(
-                    std::move(worker_context_provider),
-                    /*dark_mode_filter=*/nullptr,
-                    ImageDecodeCacheUtils::GetWorkingSetBytesForImageDecode(
-                        /*for_renderer=*/false))
-              : nullptr,
+          std::move(worker_context_provider),
           base::SingleThreadTaskRunner::GetCurrentDefault(),
           base::MakeRefCounted<TestClientSharedImageInterface>(
               base::MakeRefCounted<gpu::TestSharedImageInterface>())) {}
@@ -103,7 +96,9 @@ std::unique_ptr<LayerContext> FakeLayerTreeFrameSink::CreateLayerContext(
 }
 
 void FakeLayerTreeFrameSink::DidReceiveCompositorFrameAck() {
-  client_->DidReceiveCompositorFrameAck();
+  if (!base::FeatureList::IsEnabled(features::kNoCompositorFrameAcks)) {
+    client_->DidReceiveCompositorFrameAck();
+  }
 }
 
 void FakeLayerTreeFrameSink::ReturnResourcesHeldByParent() {

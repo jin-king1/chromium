@@ -48,6 +48,19 @@ AxisEdge AxisEdgeFromItemPosition(GridTrackSizingDirection track_direction,
   *auto_behavior = AutoSizeBehavior::kFitContent;
   *is_overflow_safe = alignment.Overflow() == OverflowAlignment::kSafe;
 
+  const bool applies_alignment = ([&]() {
+    if (!parent_grid_style.IsDisplayGridLanes()) {
+      return true;
+    }
+
+    // We currently only apply alignment in the grid axis of a grid-lanes
+    // container.
+    //
+    // TODO(almaher): Update alignment logic if needed once we resolve on
+    // https://github.com/w3c/csswg-drafts/issues/10275.
+    return parent_grid_style.GridLanesTrackSizingDirection() == track_direction;
+  })();
+
   // Auto-margins take precedence over any alignment properties.
   if (item_style.MayHaveMargin() && !is_out_of_flow) {
     const bool is_start_auto =
@@ -105,7 +118,9 @@ AxisEdge AxisEdgeFromItemPosition(GridTrackSizingDirection track_direction,
     case ItemPosition::kEnd:
       return AxisEdge::kEnd;
     case ItemPosition::kStretch:
-      *auto_behavior = AutoSizeBehavior::kStretchExplicit;
+      if (applies_alignment) {
+        *auto_behavior = AutoSizeBehavior::kStretchExplicit;
+      }
       return AxisEdge::kStart;
     case ItemPosition::kBaseline:
       return AxisEdge::kFirstBaseline;
@@ -120,8 +135,10 @@ AxisEdge AxisEdgeFromItemPosition(GridTrackSizingDirection track_direction,
       return root_grid_writing_direction.IsRtl() ? AxisEdge::kStart
                                                  : AxisEdge::kEnd;
     case ItemPosition::kNormal:
-      *auto_behavior = is_replaced ? AutoSizeBehavior::kFitContent
-                                   : AutoSizeBehavior::kStretchImplicit;
+      if (applies_alignment) {
+        *auto_behavior = is_replaced ? AutoSizeBehavior::kFitContent
+                                     : AutoSizeBehavior::kStretchImplicit;
+      }
       return AxisEdge::kStart;
     case ItemPosition::kLegacy:
     case ItemPosition::kAuto:
@@ -166,6 +183,9 @@ GridItemData::GridItemData(
   // context as specified in:
   //   https://drafts.csswg.org/css-contain-2/#containment-layout
   //   https://drafts.csswg.org/css-contain-2/#containment-paint
+  //
+  // TODO(almaher): Check for grid-lanes here, as well, once we add support
+  // for grid-lanes subgridded to another grid* container.
   if (node.IsGrid() && !node.ShouldApplyLayoutContainment() &&
       !node.ShouldApplyPaintContainment() &&
       !style.IsContainerForSizeContainerQueries()) {
@@ -176,6 +196,16 @@ GridItemData::GridItemData(
     has_subgridded_rows = is_parallel_with_root_grid
                               ? style.GridTemplateRows().IsSubgriddedAxis()
                               : style.GridTemplateColumns().IsSubgriddedAxis();
+
+    // If the parent grid is a grid-lanes container, then we only consider
+    // subgrids in the grid axis.
+    if (parent_grid_style.IsDisplayGridLanes()) {
+      if (parent_grid_style.GridLanesTrackSizingDirection() == kForColumns) {
+        has_subgridded_rows = false;
+      } else {
+        has_subgridded_columns = false;
+      }
+    }
   }
 
   const bool is_out_of_flow = node.IsOutOfFlowPositioned();
@@ -289,6 +319,17 @@ void GridItemData::SetAlignmentFallback(
             ? AxisEdge::kStart
             : AxisEdge::kEnd;
   }
+}
+
+void GridItemData::UpdateSpan(
+    const GridSpan& span,
+    GridTrackSizingDirection track_direction,
+    wtf_size_t start_offset,
+    const GridLayoutTrackCollection& track_collection) {
+  resolved_position.SetSpan(span, track_direction);
+  MaybeTranslateSpan(start_offset, track_direction);
+  ResetPlacementIndices();
+  ComputeSetIndices(track_collection);
 }
 
 void GridItemData::ComputeSetIndices(
@@ -419,14 +460,6 @@ LayoutUnit GridItemData::CalculateAvailableSize(
   const auto available_size =
       track_collection.CalculateSetSpanSize(begin_set_index, end_set_index);
   return available_size.MightBeSaturated() ? LayoutUnit() : available_size;
-}
-
-GridItems::GridItems(const GridItems& other)
-    : first_subgridded_item_index_(other.first_subgridded_item_index_) {
-  item_data_.ReserveInitialCapacity(other.item_data_.size());
-  for (const auto& grid_item : other.item_data_) {
-    item_data_.emplace_back(MakeGarbageCollected<GridItemData>(*grid_item));
-  }
 }
 
 void GridItems::Append(GridItems* other) {

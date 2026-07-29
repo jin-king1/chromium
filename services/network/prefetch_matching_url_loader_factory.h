@@ -22,10 +22,6 @@
 #include "services/network/public/mojom/url_loader_factory.mojom.h"
 #include "url/gurl.h"
 
-namespace base {
-class UnguessableToken;
-}
-
 namespace net {
 struct MutableNetworkTrafficAnnotationTag;
 }
@@ -89,16 +85,16 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) PrefetchMatchingURLLoaderFactory final
 
   net::handles::NetworkHandle GetBoundNetworkForTesting() const;
 
-  void CancelRequestsIfNonceMatchesAndUrlNotExempted(
-      const base::UnguessableToken& nonce,
-      const std::set<GURL>& exemptions);
-
   // Methods called from CorsURLLoaderFactory.
   void DestroyURLLoaderFactory(cors::CorsURLLoaderFactory* factory);
 
   // Returns true if there are live mojo connections requiring this class and
   // the CorsURLLoaderFactory it owns be kept alive.
   bool HasAdditionalReferences() const;
+
+  // Returns true if this URLLoaderFactory should not be reset when
+  // calling `ResetURLLoaderFactories()`.
+  bool ShouldIgnoreFactoryReset() const;
 
   // Returns the owned CorsURLLoaderFactory for unit tests. It's not a good idea
   // to call this and also call other methods on this object.
@@ -108,6 +104,7 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) PrefetchMatchingURLLoaderFactory final
   void OnDisconnect();
   bool IsRequestSafeForMatching(const ResourceRequest& request);
 
+  const bool ignore_factory_reset_;
   const std::unique_ptr<cors::CorsURLLoaderFactory> next_;
   const raw_ptr<NetworkContext> context_;
   const raw_ptr<PrefetchCache> cache_;

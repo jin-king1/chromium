@@ -11,6 +11,7 @@
 #include "base/time/time.h"
 #include "components/media_router/common/providers/cast/certificate/cast_cert_reader.h"
 #include "components/media_router/common/providers/cast/certificate/cast_cert_test_helpers.h"
+#include "components/media_router/common/providers/cast/certificate/cast_crl.h"
 #include "components/media_router/common/providers/cast/certificate/switches.h"
 #include "net/cert/x509_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -22,6 +23,18 @@
 namespace cast_certificate {
 
 namespace {
+
+class MockCastCRL : public CastCRL {
+ public:
+  explicit MockCastCRL(bool revoked) : revoked_(revoked) {}
+  bool CheckRevocation(const bssl::ParsedCertificateList& trusted_chain,
+                       const base::Time& time) const override {
+    return !revoked_;
+  }
+
+ private:
+  bool revoked_;
+};
 
 // Creates an std::string given a uint8_t array.
 template <size_t N>
@@ -204,9 +217,18 @@ base::Time JanuaryFirst2015() {
 // Returns 2037-03-01 00:00:00 UTC.
 //
 // This is so far in the future that the test chains in this unit-test
-// should all be invalid.
+// should all be invalid. However, it may be before the long-term expiry grace
+// period cutoff for those certificates that are long-term.
 base::Time MarchFirst2037() {
   return CreateDate(2037, 3, 1);
+}
+
+// Returns 2052-02-29 00:00:00 UTC.
+//
+// This is so far in the future that the test chains in this unit-test
+// should all be invalid, even considering the long-term expiry grace period.
+base::Time FebruaryTwentyNinth2052() {
+  return CreateDate(2052, 2, 29);
 }
 
 // Tests verifying a valid certificate chain of length 2:
@@ -371,7 +393,7 @@ TEST(VerifyCastDeviceCertTest, Vizio) {
 
 // Tests verifying a valid certificate chain of length 2 using expired
 // time points.
-TEST(VerifyCastDeviceCertTest, ChromecastGen2InvalidTime) {
+TEST(VerifyCastDeviceCertTest, ChromecastGen2ExpiryGracePeriodEnforced) {
   const char* kCertsFile = "chromecast_gen2.pem";
 
   // Control test - certificate should be valid at some time otherwise
@@ -383,9 +405,13 @@ TEST(VerifyCastDeviceCertTest, ChromecastGen2InvalidTime) {
   RunTest(CastCertError::ERR_CERTS_DATE_INVALID, "", CastDeviceCertPolicy::NONE,
           kCertsFile, JanuaryFirst2015(), TRUST_STORE_BUILTIN, "");
 
-  // Use a time after notAfter.
-  RunTest(CastCertError::ERR_CERTS_DATE_INVALID, "", CastDeviceCertPolicy::NONE,
+  // Use a time after notAfter -- but before the long-term expiry grace period.
+  RunTest(CastCertError::OK, "3ZZAK6 FA8FCA3F0D35", CastDeviceCertPolicy::NONE,
           kCertsFile, MarchFirst2037(), TRUST_STORE_BUILTIN, "");
+
+  // Use a time after notAfter and after the long-term expiry grace period.
+  RunTest(CastCertError::ERR_CERTS_DATE_INVALID, "", CastDeviceCertPolicy::NONE,
+          kCertsFile, FebruaryTwentyNinth2052(), TRUST_STORE_BUILTIN, "");
 }
 
 // Tests verifying a valid certificate chain of length 3:
@@ -619,6 +645,63 @@ TEST(VerifyCastDeviceCertTest, DeviceCertHas2048BitRsaKey) {
           "rsa2048_device_cert.pem", AprilFirst2016(),
           TRUST_STORE_FROM_TEST_FILE,
           "signeddata/rsa2048_device_cert_data.pem");
+}
+
+TEST(CastCertValidatorRevocationTest, StaleDeviceCrlBypassesFallbackCrl) {
+  // Load a valid certificate chain.
+  auto certs = ReadCertificateChainFromFile(
+      testing::GetCastCertificatesSubDirectory().AppendASCII(
+          "chromecast_gen1.pem"));
+  ASSERT_FALSE(certs.empty());
+
+  // Setup trust store.
+  bssl::CertErrors errors;
+  std::shared_ptr<const bssl::ParsedCertificate> root =
+      bssl::ParsedCertificate::Create(
+          net::x509_util::CreateCryptoBuffer(certs.back()), {}, &errors);
+  ASSERT_TRUE(root) << errors.ToDebugString();
+  certs.pop_back();
+
+  bssl::TrustStoreInMemory trust_store;
+  trust_store.AddTrustAnchorWithConstraints(std::move(root));
+
+  std::unique_ptr<CertVerificationContext> context;
+  CastDeviceCertPolicy policy;
+  base::Time time = AprilFirst2016();
+
+  // 1. No device CRL, fallback CRL revokes.
+  // Expect: ERR_CERTS_REVOKED_BY_FALLBACK_CRL
+  {
+    MockCastCRL fallback_crl(true);  // Revoked
+    CastCertError result = VerifyDeviceCertUsingCustomTrustStore(
+        certs, time, &context, &policy, nullptr, &fallback_crl,
+        CRLPolicy::CRL_REQUIRED_WITH_FALLBACK, &trust_store);
+    EXPECT_EQ(CastCertError::ERR_CERTS_REVOKED_BY_FALLBACK_CRL, result);
+  }
+
+  // 2. Device CRL (not revoking), fallback CRL (revoking).
+  // This is the VULNERABILITY: device CRL shadows fallback CRL.
+  // Expect: ERR_CERTS_REVOKED_BY_FALLBACK_CRL
+  {
+    MockCastCRL device_crl(false);   // Not revoked (stale CRL)
+    MockCastCRL fallback_crl(true);  // Revoked
+    CastCertError result = VerifyDeviceCertUsingCustomTrustStore(
+        certs, time, &context, &policy, &device_crl, &fallback_crl,
+        CRLPolicy::CRL_REQUIRED_WITH_FALLBACK, &trust_store);
+
+    EXPECT_EQ(CastCertError::ERR_CERTS_REVOKED_BY_FALLBACK_CRL, result);
+  }
+
+  // 3. Valid device CRL, no fallback CRL (e.g. built-in fallback CRL expired).
+  // Expect: OK
+  {
+    MockCastCRL device_crl(false);  // Not revoked
+    CastCertError result = VerifyDeviceCertUsingCustomTrustStore(
+        certs, time, &context, &policy, &device_crl, nullptr,
+        CRLPolicy::CRL_REQUIRED_WITH_FALLBACK, &trust_store);
+
+    EXPECT_EQ(CastCertError::OK, result);
+  }
 }
 
 }  // namespace

@@ -9,7 +9,6 @@
 
 #include "base/containers/span.h"
 #include "cc/cc_export.h"
-#include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkCanvas.h"
 #include "third_party/skia/include/core/SkPixelRef.h"
 #include "ui/gfx/geometry/size.h"
@@ -26,7 +25,6 @@ class CC_EXPORT UIResourceBitmap {
  public:
   enum UIResourceFormat {
     RGBA8,
-    ALPHA_8,
     ETC1
   };
 

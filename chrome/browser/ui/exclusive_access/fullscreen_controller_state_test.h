@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_UI_EXCLUSIVE_ACCESS_FULLSCREEN_CONTROLLER_STATE_TEST_H_
 #define CHROME_BROWSER_UI_EXCLUSIVE_ACCESS_FULLSCREEN_CONTROLLER_STATE_TEST_H_
 
+#include <array>
 #include <memory>
 #include <sstream>
 
@@ -171,14 +172,12 @@ class FullscreenControllerStateTest {
   // The state the FullscreenController is expected to be in.
   State state_ = STATE_NORMAL;
 
-  // Human defined |State| that results given each [state][event] pair.
-  State transition_table_[NUM_STATES][NUM_EVENTS];
-
   // Generated information about the transitions between states [from][to].
   // View generated data with: out/Release/unit_tests
   //     --gtest_filter="FullscreenController*DebugLogStateTables"
   //     --gtest_also_run_disabled_tests
-  StateTransitionInfo state_transitions_[NUM_STATES][NUM_STATES];
+  std::array<std::array<StateTransitionInfo, NUM_STATES>, NUM_STATES>
+      state_transitions_;
 
   // Log of operations reported on errors via GetAndClearDebugLog().
   std::ostringstream debugging_log_;

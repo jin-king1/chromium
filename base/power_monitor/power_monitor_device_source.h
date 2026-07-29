@@ -93,7 +93,7 @@ class BASE_EXPORT PowerMonitorDeviceSource : public PowerMonitorSource {
   };
 #endif  // BUILDFLAG(IS_WIN)
 
-#if BUILDFLAG(IS_APPLE) || BUILDFLAG(IS_WIN)
+#if (BUILDFLAG(IS_APPLE) && !BUILDFLAG(IS_IOS_TVOS)) || BUILDFLAG(IS_WIN)
   void PlatformInit();
   void PlatformDestroy();
 #endif  // BUILDFLAG(IS_APPLE) || BUILDFLAG(IS_WIN)
@@ -116,7 +116,6 @@ class BASE_EXPORT PowerMonitorDeviceSource : public PowerMonitorSource {
 #if BUILDFLAG(IS_ANDROID)
   PowerThermalObserver::DeviceThermalState GetCurrentThermalState()
       const override;
-  int GetRemainingBatteryCapacity() const override;
 #endif  // BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(IS_WIN)
@@ -165,8 +164,7 @@ class BASE_EXPORT PowerMonitorDeviceSource : public PowerMonitorSource {
   PowerMessageWindow power_message_window_;
   // |speed_limit_observer_| is owned by the main/UI thread but the
   // SpeedLimitObserverWin is bound to a different sequence.
-  std::unique_ptr<base::SequenceBound<SpeedLimitObserverWin>>
-      speed_limit_observer_;
+  base::SequenceBound<SpeedLimitObserverWin> speed_limit_observer_;
 #endif
 
 #if BUILDFLAG(IS_CHROMEOS)

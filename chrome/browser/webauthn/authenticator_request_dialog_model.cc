@@ -30,7 +30,7 @@
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "device/fido/discoverable_credential_metadata.h"
-#include "device/fido/fido_types.h"
+#include "device/fido/public/fido_types.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/gfx/paint_vector_icon.h"
 
@@ -51,9 +51,11 @@ StepUIType step_ui_type(AuthenticatorRequestDialogModel::Step step) {
     case AuthenticatorRequestDialogModel::Step::kNotStarted:
     case AuthenticatorRequestDialogModel::Step::kPasskeyAutofill:
     case AuthenticatorRequestDialogModel::Step::kPasskeyUpgrade:
+    case AuthenticatorRequestDialogModel::Step::kPasswordOsAuth:
+    case AuthenticatorRequestDialogModel::Step::kPlatformAuthenticator:
       return StepUIType::NONE;
 
-    case AuthenticatorRequestDialogModel::Step::kRecoverSecurityDomain:
+    case AuthenticatorRequestDialogModel::Step::kGPMRecoverSecurityDomain:
     case AuthenticatorRequestDialogModel::Step::kGPMReauthForPinReset:
       return StepUIType::WINDOW;
 
@@ -92,30 +94,38 @@ AUTHENTICATOR_EVENTS
 // static
 std::u16string AuthenticatorRequestDialogModel::GetMechanismDescription(
     const device::DiscoverableCredentialMetadata& cred,
-    const std::optional<std::string>& phone_name) {
-  if (cred.source == device::AuthenticatorType::kPhone) {
-    return l10n_util::GetStringFUTF16(IDS_WEBAUTHN_SOURCE_PHONE,
-                                      base::UTF8ToUTF16(*phone_name));
-  }
+    UIPresentation ui_presentation) {
+  bool immediate_mode = UIPresentation::kModalImmediate == ui_presentation;
   if (cred.provider_name) {
-    return base::UTF8ToUTF16(*cred.provider_name);
+    return immediate_mode ? l10n_util::GetStringFUTF16(
+                                IDS_PASSWORD_MANAGER_PASSKEY_FROM_PROVIDER,
+                                base::UTF8ToUTF16(*cred.provider_name))
+                          : base::UTF8ToUTF16(*cred.provider_name);
   }
   int message;
   switch (cred.source) {
     case device::AuthenticatorType::kWinNative:
-      message = IDS_WEBAUTHN_SOURCE_WINDOWS_HELLO;
+      message = immediate_mode ? IDS_PASSWORD_MANAGER_PASSKEY_FROM_WINDOWS_HELLO
+                               : IDS_WEBAUTHN_SOURCE_WINDOWS_HELLO;
       break;
     case device::AuthenticatorType::kTouchID:
-      message = IDS_WEBAUTHN_SOURCE_CHROME_PROFILE;
+      message = immediate_mode
+                    ? IDS_PASSWORD_MANAGER_PASSKEY_FROM_CHROME_PROFILE
+                    : IDS_WEBAUTHN_SOURCE_CHROME_PROFILE;
       break;
     case device::AuthenticatorType::kICloudKeychain:
-      message = IDS_WEBAUTHN_SOURCE_ICLOUD_KEYCHAIN;
+      message = immediate_mode
+                    ? IDS_PASSWORD_MANAGER_PASSKEY_FROM_ICLOUD_KEYCHAIN
+                    : IDS_WEBAUTHN_SOURCE_ICLOUD_KEYCHAIN;
       break;
     case device::AuthenticatorType::kEnclave:
-      message = IDS_WEBAUTHN_SOURCE_GOOGLE_PASSWORD_MANAGER;
+      message = immediate_mode
+                    ? IDS_PASSWORD_MANAGER_PASSKEY_FROM_GOOGLE_PASSWORD_MANAGER
+                    : IDS_WEBAUTHN_SOURCE_GOOGLE_PASSWORD_MANAGER;
       break;
     case device::AuthenticatorType::kOther:
       // "Other" is USB security keys and the virtual authenticator.
+      CHECK(!immediate_mode);
       message = IDS_WEBAUTHN_SOURCE_USB_SECURITY_KEY;
       break;
     default:
@@ -193,7 +203,7 @@ AuthenticatorRequestDialogModel::GetGpmAccountInfo() {
     return std::nullopt;
   }
   signin::IdentityManager* identity_manager =
-      IdentityManagerFactory::GetForProfile(profile);
+      IdentityManagerFactory::GetForProfile(profile->GetOriginalProfile());
   if (!identity_manager) {
     return std::nullopt;
   }
@@ -254,6 +264,7 @@ std::ostream& operator<<(std::ostream& os,
       {Step::kMechanismSelection, "kMechanismSelection"},
       {Step::kErrorNoAvailableTransports, "kErrorNoAvailableTransports"},
       {Step::kErrorNoPasskeys, "kErrorNoPasskeys"},
+      {Step::kErrorGpmDisabled, "kErrorGpmDisabled"},
       {Step::kErrorInternalUnrecognized, "kErrorInternalUnrecognized"},
       {Step::kErrorWindowsHelloNotEnabled, "kErrorWindowsHelloNotEnabled"},
       {Step::kTimedOut, "kTimedOut"},
@@ -267,8 +278,6 @@ std::ostream& operator<<(std::ostream& os,
       {Step::kBlePowerOnManual, "kBlePowerOnManual"},
       {Step::kBlePermissionMac, "kBlePermissionMac"},
       {Step::kOffTheRecordInterstitial, "kOffTheRecordInterstitial"},
-      {Step::kPhoneConfirmationSheet, "kPhoneConfirmationSheet"},
-      {Step::kCableActivate, "kCableActivate"},
       {Step::kCableV2QRCode, "kCableV2QRCode"},
       {Step::kCableV2Connecting, "kCableV2Connecting"},
       {Step::kCableV2Connected, "kCableV2Connected"},
@@ -296,18 +305,18 @@ std::ostream& operator<<(std::ostream& os,
       {Step::kGPMEnterArbitraryPin, "kGPMEnterArbitraryPin"},
       {Step::kGPMTouchID, "kGPMTouchID"},
       {Step::kGPMCreatePasskey, "kGPMCreatePasskey"},
-      {Step::kGPMConfirmOffTheRecordCreate, "kGPMConfirmOffTheRecordCreate"},
-      {Step::kCreatePasskey, "kCreatePasskey"},
+      {Step::kChromeProfileCreatePasskey, "kChromeProfileCreatePasskey"},
       {Step::kGPMError, "kGPMError"},
       {Step::kGPMConnecting, "kGPMConnecting"},
-      {Step::kRecoverSecurityDomain, "kRecoverSecurityDomain"},
-      {Step::kTrustThisComputerAssertion, "kTrustThisComputerAssertion"},
-      {Step::kTrustThisComputerCreation, "kTrustThisComputerCreation"},
+      {Step::kGPMRecoverSecurityDomain, "kGPMRecoverSecurityDomain"},
+      {Step::kGPMTrustThisComputerAssertion, "kGPMTrustThisComputerAssertion"},
+      {Step::kGPMTrustThisComputerCreation, "kGPMTrustThisComputerCreation"},
       {Step::kGPMReauthForPinReset, "kGPMReauthForPinReset"},
       {Step::kGPMLockedPin, "kGPMLockedPin"},
-      {Step::kErrorFetchingChallenge, "kErrorFetchingChallenge"},
+      {Step::kPasswordOsAuth, "kPasswordAuth"},
+      {Step::kPlatformAuthenticator, "kPlatformAuthenticator"},
   });
-  static_assert(Step::kMaxValue == Step::kErrorFetchingChallenge &&
+  static_assert(Step::kMaxValue == Step::kPlatformAuthenticator &&
                     kStepNames.size() - 1 == static_cast<int>(Step::kMaxValue),
                 "implement operator<< overload when adding new Step values");
   return os << kStepNames.at(step);
@@ -316,12 +325,12 @@ std::ostream& operator<<(std::ostream& os,
 AuthenticatorRequestDialogModel::Mechanism::Mechanism(
     AuthenticatorRequestDialogModel::Mechanism::Type in_type,
     std::u16string in_name,
-    std::u16string in_short_name,
     const gfx::VectorIcon& in_icon,
-    base::RepeatingClosure in_callback)
+    base::RepeatingClosure in_callback,
+    std::u16string in_display_name)
     : type(std::move(in_type)),
       name(std::move(in_name)),
-      short_name(std::move(in_short_name)),
+      display_name(std::move(in_display_name)),
       icon(in_icon),
       callback(std::move(in_callback)) {}
 AuthenticatorRequestDialogModel::Mechanism::~Mechanism() = default;
@@ -329,11 +338,26 @@ AuthenticatorRequestDialogModel::Mechanism::Mechanism(Mechanism&&) = default;
 
 AuthenticatorRequestDialogModel::Mechanism::CredentialInfo::CredentialInfo(
     device::AuthenticatorType source_in,
-    std::vector<uint8_t> user_id_in)
-    : source(source_in), user_id(std::move(user_id_in)) {}
+    std::vector<uint8_t> user_id_in,
+    std::optional<base::Time> last_used_time_in)
+    : source(source_in),
+      user_id(std::move(user_id_in)),
+      last_used_time(last_used_time_in) {}
 AuthenticatorRequestDialogModel::Mechanism::CredentialInfo::CredentialInfo(
     const CredentialInfo&) = default;
 AuthenticatorRequestDialogModel::Mechanism::CredentialInfo::~CredentialInfo() =
     default;
 bool AuthenticatorRequestDialogModel::Mechanism::CredentialInfo::operator==(
     const CredentialInfo&) const = default;
+
+AuthenticatorRequestDialogModel::Mechanism::PasswordInfo::PasswordInfo(
+    std::optional<base::Time> last_used_time_in,
+    std::optional<std::u16string> origin_in)
+    : last_used_time(std::move(last_used_time_in)),
+      origin(std::move(origin_in)) {}
+AuthenticatorRequestDialogModel::Mechanism::PasswordInfo::PasswordInfo(
+    const PasswordInfo&) = default;
+AuthenticatorRequestDialogModel::Mechanism::PasswordInfo::~PasswordInfo() =
+    default;
+bool AuthenticatorRequestDialogModel::Mechanism::PasswordInfo::operator==(
+    const PasswordInfo&) const = default;

@@ -7,24 +7,29 @@
 #include <memory>
 #include <optional>
 
+#include "base/command_line.h"
+#include "base/files/file_path.h"
 #include "base/location.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/test/scoped_command_line.h"
 #include "build/chromeos_buildflags.h"
 #include "content/public/browser/browser_context.h"
 #include "extensions/browser/blocklist_extension_prefs.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extensions_test.h"
+#include "extensions/browser/management_policy.h"
 #include "extensions/browser/test_extension_registry_observer.h"
 #include "extensions/browser/test_extensions_browser_client.h"
+#include "extensions/common/constants.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_builder.h"
+#include "extensions/common/switches.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "base/test/scoped_feature_list.h"
-#include "chrome/common/pref_names.h"  // nogncheck
 #include "components/account_id/account_id.h"  // nogncheck
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/testing_pref_service.h"
@@ -39,8 +44,8 @@ namespace {
 using testing::Return;
 using testing::_;
 
-using LoadErrorBehavior = ExtensionRegistrar::LoadErrorBehavior;
-
+// Supplies dependencies needed by the tests. Specifically,
+// ExtensionRegistrar::CanBlockExtension() depends on ManagementPolicy.
 class TestExtensionSystem : public MockExtensionSystem {
  public:
   explicit TestExtensionSystem(content::BrowserContext* context)
@@ -50,6 +55,12 @@ class TestExtensionSystem : public MockExtensionSystem {
   TestExtensionSystem& operator=(const TestExtensionSystem&) = delete;
 
   ~TestExtensionSystem() override {}
+
+  // ExtensionSystem:
+  ManagementPolicy* management_policy() override { return &policy_; }
+
+ private:
+  ManagementPolicy policy_;
 };
 
 class TestExtensionRegistrarDelegate : public ExtensionRegistrar::Delegate {
@@ -64,10 +75,10 @@ class TestExtensionRegistrarDelegate : public ExtensionRegistrar::Delegate {
   ~TestExtensionRegistrarDelegate() override = default;
 
   // ExtensionRegistrar::Delegate:
-  MOCK_METHOD1(CanAddExtension, bool(const Extension*));
   MOCK_METHOD2(PreAddExtension,
                void(const Extension* extension,
                     const Extension* old_extension));
+  MOCK_METHOD1(OnAddNewOrUpdatedExtension, void(const Extension* extension));
   MOCK_METHOD1(PostActivateExtension,
                void(scoped_refptr<const Extension> extension));
   MOCK_METHOD1(PostDeactivateExtension,
@@ -77,18 +88,23 @@ class TestExtensionRegistrarDelegate : public ExtensionRegistrar::Delegate {
   MOCK_METHOD2(PostUninstallExtension,
                void(scoped_refptr<const Extension> extension,
                     base::OnceClosure done_callback));
-  MOCK_METHOD1(PostNotifyUninstallExtension,
-               void(scoped_refptr<const Extension> extension));
-  MOCK_METHOD3(LoadExtensionForReload,
+  MOCK_METHOD2(LoadExtensionForReload,
                void(const ExtensionId& extension_id,
-                    const base::FilePath& path,
-                    LoadErrorBehavior load_error_behavior));
+                    const base::FilePath& path));
+  MOCK_METHOD2(LoadExtensionForReloadWithQuietFailure,
+               void(const ExtensionId& extension_id,
+                    const base::FilePath& path));
   MOCK_METHOD2(ShowExtensionDisabledError, void(const Extension*, bool));
-  MOCK_METHOD0(FinishDelayedInstallationsIfAny, void());
   MOCK_METHOD1(CanEnableExtension, bool(const Extension* extension));
   MOCK_METHOD1(CanDisableExtension, bool(const Extension* extension));
   MOCK_METHOD1(ShouldBlockExtension, bool(const Extension* extension));
   MOCK_METHOD1(GrantActivePermissions, void(const Extension* extension));
+  MOCK_METHOD0(UpdateExternalExtensionAlert, void());
+  MOCK_METHOD4(OnExtensionInstalled,
+               void(const Extension* extension,
+                    const syncer::StringOrdinal& page_ordinal,
+                    int install_flags,
+                    base::DictValue ruleset_install_prefs));
 };
 
 }  // namespace
@@ -107,17 +123,14 @@ class ExtensionRegistrarTest : public ExtensionsTest {
     extensions_browser_client()->set_extension_system_factory(&factory_);
     extension_ = ExtensionBuilder("extension").Build();
     registrar_ = std::make_unique<ExtensionRegistrar>(browser_context());
-    registrar_->SetDelegate(delegate());
+    registrar_->Init(delegate(), /*extensions_enabled=*/true,
+                     base::CommandLine::ForCurrentProcess(), base::FilePath(),
+                     base::FilePath());
 
     // Mock defaults.
-    ON_CALL(delegate_, CanAddExtension(extension_.get()))
-        .WillByDefault(Return(true));
     ON_CALL(delegate_, CanEnableExtension(extension_.get()))
         .WillByDefault(Return(true));
-    ON_CALL(delegate_, CanDisableExtension(extension_.get()))
-        .WillByDefault(Return(true));
-    ON_CALL(delegate_, ShouldBlockExtension(extension_.get()))
-        .WillByDefault(Return(false));
+    ON_CALL(delegate_, CanDisableExtension(_)).WillByDefault(Return(true));
     EXPECT_CALL(delegate_, PostActivateExtension(_)).Times(0);
     EXPECT_CALL(delegate_, PostDeactivateExtension(_)).Times(0);
   }
@@ -288,9 +301,8 @@ class ExtensionRegistrarTest : public ExtensionsTest {
     SCOPED_TRACE("ReloadEnabledExtension");
     EXPECT_CALL(delegate_, PostDeactivateExtension(extension()));
     EXPECT_CALL(delegate_,
-                LoadExtensionForReload(extension()->id(), extension()->path(),
-                                       LoadErrorBehavior::kNoisy));
-    registrar()->ReloadExtension(extension()->id(), LoadErrorBehavior::kNoisy);
+                LoadExtensionForReload(extension()->id(), extension()->path()));
+    registrar()->ReloadExtension(extension()->id());
     VerifyMock();
 
     // ExtensionRegistrar should have disabled the extension in preparation for
@@ -306,9 +318,8 @@ class ExtensionRegistrarTest : public ExtensionsTest {
   void ReloadTerminatedExtension() {
     SCOPED_TRACE("ReloadTerminatedExtension");
     EXPECT_CALL(delegate_,
-                LoadExtensionForReload(extension()->id(), extension()->path(),
-                                       LoadErrorBehavior::kNoisy));
-    registrar()->ReloadExtension(extension()->id(), LoadErrorBehavior::kNoisy);
+                LoadExtensionForReload(extension()->id(), extension()->path()));
+    registrar()->ReloadExtension(extension()->id());
     VerifyMock();
 
     // The extension should remain in the terminated set until the reload
@@ -442,7 +453,7 @@ TEST_F(ExtensionRegistrarTest, AddBlocklisted) {
   registrar()->DisableExtension(extension()->id(),
                                 {disable_reason::DISABLE_USER_ACTION});
   ExpectInSet(ExtensionRegistry::BLOCKLISTED);
-  registrar()->ReloadExtension(extension()->id(), LoadErrorBehavior::kQuiet);
+  registrar()->ReloadExtensionWithQuietFailure(extension()->id());
   ExpectInSet(ExtensionRegistry::BLOCKLISTED);
 
   RemoveBlocklistedExtension();
@@ -450,8 +461,7 @@ TEST_F(ExtensionRegistrarTest, AddBlocklisted) {
 
 TEST_F(ExtensionRegistrarTest, AddBlocked) {
   // Block extensions.
-  ON_CALL(*delegate(), ShouldBlockExtension(extension().get()))
-      .WillByDefault(Return(true));
+  registrar()->BlockAllExtensions();
 
   // A blocked extension can be added.
   AddBlockedExtension();
@@ -502,6 +512,27 @@ TEST_F(ExtensionRegistrarTest, ReloadExtension) {
   AddEnabledExtension();
 }
 
+TEST_F(ExtensionRegistrarTest, ReloadExtensionWithNewDisableReason) {
+  AddEnabledExtension();
+  ReloadEnabledExtension();
+
+  // Add a new disable reason while the extension is reloading.
+  auto* prefs = ExtensionPrefs::Get(browser_context());
+  prefs->AddDisableReason(extension()->id(),
+                          disable_reason::DISABLE_USER_ACTION);
+
+  // Add the now-reloaded extension back into the registrar.
+  // It should NOT be enabled because of the new disable reason.
+  registrar()->AddExtension(extension());
+  ExpectInSet(ExtensionRegistry::DISABLED);
+
+  // The `DISABLE_RELOAD` reason should be gone, but the user action reason
+  // should remain.
+  EXPECT_THAT(
+      prefs->GetDisableReasons(extension()->id()),
+      testing::UnorderedElementsAre(disable_reason::DISABLE_USER_ACTION));
+}
+
 TEST_F(ExtensionRegistrarTest, RemoveReloadedExtension) {
   AddEnabledExtension();
   ReloadEnabledExtension();
@@ -511,7 +542,7 @@ TEST_F(ExtensionRegistrarTest, RemoveReloadedExtension) {
   RemoveDisabledExtension();
 
   // Attempting to reload it silently fails.
-  registrar()->ReloadExtension(extension()->id(), LoadErrorBehavior::kQuiet);
+  registrar()->ReloadExtensionWithQuietFailure(extension()->id());
   ExpectInSet(ExtensionRegistry::NONE);
 }
 
@@ -526,6 +557,77 @@ TEST_F(ExtensionRegistrarTest, ReloadTerminatedExtension) {
   // enabled once re-added to the registrar, since ExtensionPrefs shouldn't say
   // it's disabled.
   AddEnabledExtension();
+}
+
+TEST_F(ExtensionRegistrarTest, AddDisableFlagExemptedExtension) {
+  // Disable extensions but exempt the test extension.
+  registrar()->set_extensions_enabled_for_test(false);
+  registrar()->AddDisableFlagExemptedExtension(extension()->id());
+
+  // Add the test extension.
+  AddEnabledExtension();
+
+  // The extension is enabled because it was exempted from disablement.
+  ExpectInSet(ExtensionRegistry::ENABLED);
+}
+
+TEST_F(ExtensionRegistrarTest, AddAndRemoveComponentExtension) {
+  EXPECT_CALL(*delegate(), PostActivateExtension(extension()));
+  registrar()->AddComponentExtension(extension().get());
+  ExpectInSet(ExtensionRegistry::ENABLED);
+
+  EXPECT_CALL(*delegate(), PostDeactivateExtension(extension()));
+  registrar()->RemoveComponentExtension(extension()->id());
+  ExpectInSet(ExtensionRegistry::NONE);
+}
+
+TEST_F(ExtensionRegistrarTest, Enabledness) {
+  base::FilePath install_dir =
+      browser_context()->GetPath().AppendASCII(kInstallDirectoryName);
+  base::FilePath unpacked_install_dir =
+      browser_context()->GetPath().AppendASCII(kUnpackedInstallDirectoryName);
+
+  // The profile lifetimes must not overlap: services may use global variables.
+  {
+    // By default, we are enabled.
+    base::test::ScopedCommandLine command_line;
+
+    ExtensionRegistrar* registrar = ExtensionRegistrar::Get(browser_context());
+    registrar->Init(delegate(), true, command_line.GetProcessCommandLine(),
+                    install_dir, unpacked_install_dir);
+    EXPECT_TRUE(registrar->extensions_enabled());
+  }
+
+  {
+    base::test::ScopedCommandLine command_line;
+    command_line.GetProcessCommandLine()->AppendSwitch(
+        switches::kDisableExtensions);
+
+    ExtensionRegistrar* registrar = ExtensionRegistrar::Get(browser_context());
+    registrar->Init(delegate(), true, command_line.GetProcessCommandLine(),
+                    install_dir, unpacked_install_dir);
+    EXPECT_FALSE(registrar->extensions_enabled());
+  }
+
+  // TODO(crbug.com/406544103): Test disabling an extension in a profile here.
+  // TODO(crbug.com/406544103): Test enabling an extension in a profile here.
+}
+
+TEST_F(ExtensionRegistrarTest, DisableUninstalledExtension) {
+  // Verify that `extension()` has not been added to `ExtensionRegistry`.
+  ExpectInSet(ExtensionRegistry::NONE);
+
+  // Call `ExtensionRegistrar::DisableExtension()` on the uninstalled
+  // extension ID and verify it returns early safely without crashing or
+  // invoking delegate functions.
+  registrar()->DisableExtension(extension()->id(),
+                                {disable_reason::DISABLE_USER_ACTION});
+  ExpectInSet(ExtensionRegistry::NONE);
+
+  // Verify that we didn't write disable reasons to prefs.
+  EXPECT_TRUE(ExtensionPrefs::Get(browser_context())
+                  ->GetDisableReasons(extension()->id())
+                  .empty());
 }
 
 }  // namespace extensions

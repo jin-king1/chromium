@@ -6,12 +6,19 @@
 
 #include <android/keycodes.h>
 
+#include "base/android/callback_android.h"
 #include "base/android/jni_android.h"
 #include "base/android/jni_array.h"
 #include "base/android/jni_string.h"
+#include "base/android/scoped_hardware_buffer_handle.h"
+#include "base/android/scoped_java_ref.h"
+#include "base/feature_list.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/notimplemented.h"
 #include "base/trace_event/trace_event.h"
-#include "components/embedder_support/android/delegate/color_picker_bridge.h"
+#include "components/embedder_support/android/delegate/html_color_picker_bridge.h"
 #include "components/input/native_web_keyboard_event.h"
 #include "content/public/browser/color_chooser.h"
 #include "content/public/browser/global_request_id.h"
@@ -20,26 +27,38 @@
 #include "content/public/browser/page_navigator.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_contents_delegate.h"
+#include "content/public/common/content_features.h"
 #include "content/public/common/referrer.h"
 #include "content/public/common/resource_request_body_android.h"
+#include "printing/buildflags/buildflags.h"
+#include "third_party/blink/public/common/features_generated.h"
 #include "third_party/blink/public/mojom/devtools/console_message.mojom.h"
 #include "third_party/blink/public/mojom/frame/blocked_navigation_types.mojom.h"
 #include "third_party/blink/public/mojom/frame/fullscreen.mojom.h"
 #include "ui/android/color_utils_android.h"
+#include "ui/android/resources/capture_result.h"
 #include "ui/android/view_android.h"
+#include "ui/android/window_android.h"
 #include "ui/base/window_open_disposition.h"
 #include "ui/gfx/android/java_bitmap.h"
-#include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/android/rect_jni_conversion.h"
 #include "url/android/gurl_android.h"
 #include "url/gurl.h"
 
+#if BUILDFLAG(ENABLE_PRINTING)
+#include "components/printing/browser/print_composite_client.h"  // nogncheck
+#endif
+
 // Must come after all headers that specialize FromJniType() / ToJniType().
-#include "components/embedder_support/android/web_contents_delegate_jni_headers/WebContentsDelegateAndroid_jni.h"
+#include "components/embedder_support/android/web_contents_delegate_jni/WebContentsDelegateAndroid_jni.h"
 
 using base::android::AttachCurrentThread;
-using base::android::ConvertUTF8ToJavaString;
 using base::android::ConvertUTF16ToJavaString;
+using base::android::ConvertUTF8ToJavaString;
 using base::android::JavaRef;
+using base::android::ScopedHardwareBufferHandle;
+using base::android::ScopedJavaGlobalRef;
 using base::android::ScopedJavaLocalRef;
 using content::ColorChooser;
 using content::RenderWidgetHostView;
@@ -50,14 +69,21 @@ namespace web_contents_delegate_android {
 
 WebContentsDelegateAndroid::WebContentsDelegateAndroid(
     JNIEnv* env,
-    const jni_zero::JavaRef<jobject>& obj)
-    : weak_java_delegate_(env, obj) {}
+    const jni_zero::JavaRef<jobject>& obj) {
+  Java_WebContentsDelegateAndroid_registerRef(
+      env, reinterpret_cast<intptr_t>(this), obj);
+}
 
-WebContentsDelegateAndroid::~WebContentsDelegateAndroid() = default;
+WebContentsDelegateAndroid::~WebContentsDelegateAndroid() {
+  JNIEnv* env = AttachCurrentThread();
+  Java_WebContentsDelegateAndroid_unregisterRef(
+      env, reinterpret_cast<intptr_t>(this));
+}
 
 ScopedJavaLocalRef<jobject> WebContentsDelegateAndroid::GetJavaDelegate(
     JNIEnv* env) const {
-  return weak_java_delegate_.get(env);
+  return Java_WebContentsDelegateAndroid_getDelegate(
+      env, reinterpret_cast<intptr_t>(this));
 }
 
 // ----------------------------------------------------------------------------
@@ -69,7 +95,7 @@ WebContentsDelegateAndroid::OpenColorChooser(
     WebContents* source,
     SkColor color,
     const std::vector<blink::mojom::ColorSuggestionPtr>& suggestions) {
-  return std::make_unique<ColorPickerBridge>(source, color, suggestions);
+  return std::make_unique<HtmlColorPickerBridge>(source, color, suggestions);
 }
 
 // OpenURLFromTab() will be called when we're performing a browser-intiated
@@ -128,8 +154,9 @@ void WebContentsDelegateAndroid::NavigationStateChanged(
     content::InvalidateTypes changed_flags) {
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jobject> obj = GetJavaDelegate(env);
-  if (obj.is_null())
+  if (obj.is_null()) {
     return;
+  }
   Java_WebContentsDelegateAndroid_navigationStateChanged(env, obj,
                                                          changed_flags);
 }
@@ -138,16 +165,18 @@ void WebContentsDelegateAndroid::VisibleSecurityStateChanged(
     WebContents* source) {
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jobject> obj = GetJavaDelegate(env);
-  if (obj.is_null())
+  if (obj.is_null()) {
     return;
+  }
   Java_WebContentsDelegateAndroid_visibleSSLStateChanged(env, obj);
 }
 
 void WebContentsDelegateAndroid::ActivateContents(WebContents* contents) {
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jobject> obj = GetJavaDelegate(env);
-  if (obj.is_null())
+  if (obj.is_null()) {
     return;
+  }
   Java_WebContentsDelegateAndroid_activateContents(env, obj);
 }
 
@@ -169,8 +198,9 @@ void WebContentsDelegateAndroid::RendererUnresponsive(
     base::RepeatingClosure hang_monitor_restarter) {
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jobject> obj = GetJavaDelegate(env);
-  if (obj.is_null())
+  if (obj.is_null()) {
     return;
+  }
   Java_WebContentsDelegateAndroid_rendererUnresponsive(env, obj);
 }
 
@@ -179,12 +209,14 @@ void WebContentsDelegateAndroid::RendererResponsive(
     content::RenderWidgetHost* render_widget_host) {
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jobject> obj = GetJavaDelegate(env);
-  if (obj.is_null())
+  if (obj.is_null()) {
     return;
+  }
   Java_WebContentsDelegateAndroid_rendererResponsive(env, obj);
 }
 
 bool WebContentsDelegateAndroid::IsWebContentsCreationOverridden(
+    content::RenderFrameHost* opener,
     content::SiteInstance* source_site_instance,
     content::mojom::WindowContainerType window_container_type,
     const GURL& opener_url,
@@ -192,47 +224,40 @@ bool WebContentsDelegateAndroid::IsWebContentsCreationOverridden(
     const GURL& target_url) {
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jobject> obj = GetJavaDelegate(env);
-  if (obj.is_null())
+  if (obj.is_null()) {
     return false;
+  }
   ScopedJavaLocalRef<jobject> java_gurl =
       url::GURLAndroid::FromNativeGURL(env, target_url);
   return !Java_WebContentsDelegateAndroid_shouldCreateWebContents(env, obj,
                                                                   java_gurl);
 }
 
-void WebContentsDelegateAndroid::WebContentsCreated(
-    WebContents* source_contents,
-    int opener_render_process_id,
-    int opener_render_frame_id,
-    const std::string& frame_name,
-    const GURL& target_url,
-    WebContents* new_contents) {
+void WebContentsDelegateAndroid::CanDownload(
+    const GURL& url,
+    const std::string& request_method,
+    base::OnceCallback<void(bool)> callback) {
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jobject> obj = GetJavaDelegate(env);
-  if (obj.is_null())
+  if (obj.is_null()) {
+    std::move(callback).Run(true);
     return;
-
-  ScopedJavaLocalRef<jobject> jsource_contents;
-  if (source_contents)
-    jsource_contents = source_contents->GetJavaWebContents();
-  ScopedJavaLocalRef<jobject> jnew_contents;
-  if (new_contents)
-    jnew_contents = new_contents->GetJavaWebContents();
-
-  ScopedJavaLocalRef<jobject> java_gurl =
-      url::GURLAndroid::FromNativeGURL(env, target_url);
-  Java_WebContentsDelegateAndroid_webContentsCreated(
-      env, obj, jsource_contents, opener_render_process_id,
-      opener_render_frame_id,
-      base::android::ConvertUTF8ToJavaString(env, frame_name), java_gurl,
-      jnew_contents);
+  }
+  ScopedJavaLocalRef<jobject> j_gurl =
+      url::GURLAndroid::FromNativeGURL(env, url);
+  ScopedJavaLocalRef<jstring> j_method =
+      base::android::ConvertUTF8ToJavaString(env, request_method);
+  bool allowed =
+      Java_WebContentsDelegateAndroid_canDownload(env, obj, j_gurl, j_method);
+  std::move(callback).Run(allowed);
 }
 
 void WebContentsDelegateAndroid::CloseContents(WebContents* source) {
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jobject> obj = GetJavaDelegate(env);
-  if (obj.is_null())
+  if (obj.is_null()) {
     return;
+  }
   Java_WebContentsDelegateAndroid_closeContents(env, obj);
 }
 
@@ -244,9 +269,10 @@ bool WebContentsDelegateAndroid::DidAddMessageToConsole(
     const std::u16string& source_id) {
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jobject> obj = GetJavaDelegate(env);
-  if (obj.is_null())
+  if (obj.is_null()) {
     return WebContentsDelegate::DidAddMessageToConsole(
         source, log_level, message, line_no, source_id);
+  }
   ScopedJavaLocalRef<jstring> jmessage(ConvertUTF16ToJavaString(env, message));
   ScopedJavaLocalRef<jstring> jsource_id(
       ConvertUTF16ToJavaString(env, source_id));
@@ -271,21 +297,35 @@ bool WebContentsDelegateAndroid::DidAddMessageToConsole(
       env, obj, jlevel, jmessage, line_no, jsource_id);
 }
 
-// This is either called from TabContents::DidNavigateMainFramePostCommit() with
-// an empty GURL or responding to RenderViewHost::OnMsgUpateTargetURL(). In
-// Chrome, the latter is not always called, especially not during history
-// navigation. So we only handle the first case and pass the source TabContents'
-// url to Java to update the UI.
+// Called when the target URL under the cursor changes. For example, when
+// the user hovers over a link. Passes the URL to the Java side.
 void WebContentsDelegateAndroid::UpdateTargetURL(WebContents* source,
                                                  const GURL& url) {
-  if (!url.is_empty())
-    return;
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jobject> obj = GetJavaDelegate(env);
-  if (obj.is_null())
+  if (obj.is_null()) {
     return;
-  Java_WebContentsDelegateAndroid_onUpdateUrl(
-      env, obj, url::GURLAndroid::FromNativeGURL(env, source->GetVisibleURL()));
+  }
+  Java_WebContentsDelegateAndroid_onUpdateTargetUrl(
+      env, obj, url::GURLAndroid::FromNativeGURL(env, url));
+}
+
+content::KeyboardEventProcessingResult
+WebContentsDelegateAndroid::PreHandleKeyboardEvent(
+    WebContents* source,
+    const input::NativeWebKeyboardEvent& event) {
+  if (event.os_event.is_null()) {
+    return content::KeyboardEventProcessingResult::NOT_HANDLED;
+  }
+  ui::WindowAndroid* window = source->GetTopLevelNativeWindow();
+  if (window) {
+    JNIEnv* env = AttachCurrentThread();
+    if (Java_WebContentsDelegateAndroid_preHandleKeyboardEvent(
+            env, window->GetJavaObject(), event.os_event)) {
+      return content::KeyboardEventProcessingResult::HANDLED;
+    }
+  }
+  return content::KeyboardEventProcessingResult::NOT_HANDLED;
 }
 
 bool WebContentsDelegateAndroid::HandleKeyboardEvent(
@@ -295,18 +335,27 @@ bool WebContentsDelegateAndroid::HandleKeyboardEvent(
   if (!key_event.is_null()) {
     JNIEnv* env = AttachCurrentThread();
     ScopedJavaLocalRef<jobject> obj = GetJavaDelegate(env);
-    if (obj.is_null())
-      return true;
-    Java_WebContentsDelegateAndroid_handleKeyboardEvent(env, obj, key_event);
+    if (!obj.is_null()) {
+      Java_WebContentsDelegateAndroid_handleKeyboardEvent(env, obj, key_event);
+    }
+
+    ui::WindowAndroid* window = source->GetTopLevelNativeWindow();
+    if (window) {
+      if (Java_WebContentsDelegateAndroid_handleKeyboardEventFallback(
+              env, window->GetJavaObject(), event.os_event)) {
+        return true;
+      }
+    }
   }
-  return true;
+  return WebContentsDelegate::HandleKeyboardEvent(source, event);
 }
 
 bool WebContentsDelegateAndroid::TakeFocus(WebContents* source, bool reverse) {
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jobject> obj = GetJavaDelegate(env);
-  if (obj.is_null())
+  if (obj.is_null()) {
     return WebContentsDelegate::TakeFocus(source, reverse);
+  }
   return Java_WebContentsDelegateAndroid_takeFocus(env, obj, reverse);
 }
 
@@ -314,20 +363,33 @@ void WebContentsDelegateAndroid::ShowRepostFormWarningDialog(
     WebContents* source) {
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jobject> obj = GetJavaDelegate(env);
-  if (obj.is_null())
+  if (obj.is_null()) {
     return;
+  }
   Java_WebContentsDelegateAndroid_showRepostFormWarningDialog(env, obj);
 }
 
 bool WebContentsDelegateAndroid::ShouldBlockMediaRequest(const GURL& url) {
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jobject> obj = GetJavaDelegate(env);
-  if (obj.is_null())
+  if (obj.is_null()) {
     return false;
+  }
   ScopedJavaLocalRef<jobject> j_gurl =
       url::GURLAndroid::FromNativeGURL(env, url);
   return Java_WebContentsDelegateAndroid_shouldBlockMediaRequest(env, obj,
                                                                  j_gurl);
+}
+
+bool WebContentsDelegateAndroid::CanEnterFullscreenModeForTab(
+    content::RenderFrameHost* requesting_frame) {
+  JNIEnv* env = AttachCurrentThread();
+  ScopedJavaLocalRef<jobject> obj = GetJavaDelegate(env);
+  if (obj.is_null()) {
+    return true;
+  }
+  return Java_WebContentsDelegateAndroid_canEnterFullscreenModeForTab(
+      env, obj, requesting_frame->GetJavaRenderFrameHost());
 }
 
 void WebContentsDelegateAndroid::EnterFullscreenModeForTab(
@@ -335,10 +397,13 @@ void WebContentsDelegateAndroid::EnterFullscreenModeForTab(
     const blink::mojom::FullscreenOptions& options) {
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jobject> obj = GetJavaDelegate(env);
-  if (obj.is_null())
+  if (obj.is_null()) {
     return;
+  }
   Java_WebContentsDelegateAndroid_enterFullscreenModeForTab(
-      env, obj, options.prefers_navigation_bar, options.prefers_status_bar);
+      env, obj, requesting_frame->GetJavaRenderFrameHost(),
+      options.prefers_navigation_bar, options.prefers_status_bar,
+      options.display_id);
 }
 
 void WebContentsDelegateAndroid::FullscreenStateChangedForTab(
@@ -346,72 +411,118 @@ void WebContentsDelegateAndroid::FullscreenStateChangedForTab(
     const blink::mojom::FullscreenOptions& options) {
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jobject> obj = GetJavaDelegate(env);
-  if (obj.is_null())
+  if (obj.is_null()) {
     return;
+  }
   Java_WebContentsDelegateAndroid_fullscreenStateChangedForTab(
-      env, obj, options.prefers_navigation_bar, options.prefers_status_bar);
+      env, obj, requesting_frame->GetJavaRenderFrameHost(),
+      options.prefers_navigation_bar, options.prefers_status_bar,
+      options.display_id);
 }
 
 void WebContentsDelegateAndroid::ExitFullscreenModeForTab(
     WebContents* web_contents) {
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jobject> obj = GetJavaDelegate(env);
-  if (obj.is_null())
+  if (obj.is_null()) {
     return;
+  }
   Java_WebContentsDelegateAndroid_exitFullscreenModeForTab(env, obj);
+}
+
+void WebContentsDelegateAndroid::RequestKeyboardLock(WebContents* web_contents,
+                                                     bool esc_key_locked) {
+  JNIEnv* env = AttachCurrentThread();
+  ScopedJavaLocalRef<jobject> obj = GetJavaDelegate(env);
+  if (obj.is_null()) {
+    return;
+  }
+  Java_WebContentsDelegateAndroid_requestKeyboardLock(env, obj, esc_key_locked);
+}
+
+void WebContentsDelegateAndroid::CancelKeyboardLockRequest(
+    WebContents* web_contents) {
+  JNIEnv* env = AttachCurrentThread();
+  ScopedJavaLocalRef<jobject> obj = GetJavaDelegate(env);
+  if (obj.is_null()) {
+    return;
+  }
+  Java_WebContentsDelegateAndroid_cancelKeyboardLockRequest(env, obj);
 }
 
 bool WebContentsDelegateAndroid::IsFullscreenForTabOrPending(
     const WebContents* web_contents) {
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jobject> obj = GetJavaDelegate(env);
-  if (obj.is_null())
+  if (obj.is_null()) {
     return false;
+  }
   return Java_WebContentsDelegateAndroid_isFullscreenForTabOrPending(env, obj);
+}
+
+content::FullscreenState WebContentsDelegateAndroid::GetFullscreenState(
+    const WebContents* web_contents) const {
+  content::FullscreenState state;
+  JNIEnv* env = AttachCurrentThread();
+  ScopedJavaLocalRef<jobject> obj = GetJavaDelegate(env);
+  if (obj.is_null()) {
+    return state;
+  }
+  state = WebContentsDelegate::GetFullscreenState(web_contents);
+  state.target_display_id =
+      Java_WebContentsDelegateAndroid_getFullscreenTargetDisplay(env, obj);
+  return state;
 }
 
 void WebContentsDelegateAndroid::OnDidBlockNavigation(
     content::WebContents* web_contents,
     const GURL& blocked_url,
+    const GURL& initiator_url,
+    const url::Origin& initiator_origin,
     blink::mojom::NavigationBlockedReason reason) {}
 
 int WebContentsDelegateAndroid::GetTopControlsHeight() {
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jobject> obj = GetJavaDelegate(env);
-  if (obj.is_null())
+  if (obj.is_null()) {
     return 0;
+  }
   return Java_WebContentsDelegateAndroid_getTopControlsHeight(env, obj);
 }
 
 int WebContentsDelegateAndroid::GetTopControlsMinHeight() {
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jobject> obj = GetJavaDelegate(env);
-  if (obj.is_null())
+  if (obj.is_null()) {
     return 0;
+  }
   return Java_WebContentsDelegateAndroid_getTopControlsMinHeight(env, obj);
 }
 
 int WebContentsDelegateAndroid::GetBottomControlsHeight() {
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jobject> obj = GetJavaDelegate(env);
-  if (obj.is_null())
+  if (obj.is_null()) {
     return 0;
+  }
   return Java_WebContentsDelegateAndroid_getBottomControlsHeight(env, obj);
 }
 
 int WebContentsDelegateAndroid::GetBottomControlsMinHeight() {
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jobject> obj = GetJavaDelegate(env);
-  if (obj.is_null())
+  if (obj.is_null()) {
     return 0;
+  }
   return Java_WebContentsDelegateAndroid_getBottomControlsMinHeight(env, obj);
 }
 
 bool WebContentsDelegateAndroid::ShouldAnimateBrowserControlsHeightChanges() {
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jobject> obj = GetJavaDelegate(env);
-  if (obj.is_null())
+  if (obj.is_null()) {
     return false;
+  }
   return Java_WebContentsDelegateAndroid_shouldAnimateBrowserControlsHeightChanges(
       env, obj);
 }
@@ -420,8 +531,9 @@ bool WebContentsDelegateAndroid::DoBrowserControlsShrinkRendererSize(
     content::WebContents* contents) {
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jobject> obj = GetJavaDelegate(env);
-  if (obj.is_null())
+  if (obj.is_null()) {
     return false;
+  }
   return Java_WebContentsDelegateAndroid_controlsResizeView(env, obj);
 }
 
@@ -429,8 +541,9 @@ int WebContentsDelegateAndroid::GetVirtualKeyboardHeight(
     content::WebContents* contents) {
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jobject> obj = GetJavaDelegate(env);
-  if (obj.is_null())
+  if (obj.is_null()) {
     return false;
+  }
   return Java_WebContentsDelegateAndroid_getVirtualKeyboardHeight(env, obj);
 }
 
@@ -439,8 +552,9 @@ blink::mojom::DisplayMode WebContentsDelegateAndroid::GetDisplayMode(
   JNIEnv* env = base::android::AttachCurrentThread();
 
   ScopedJavaLocalRef<jobject> obj = GetJavaDelegate(env);
-  if (obj.is_null())
+  if (obj.is_null()) {
     return blink::mojom::DisplayMode::kUndefined;
+  }
 
   return static_cast<blink::mojom::DisplayMode>(
       Java_WebContentsDelegateAndroid_getDisplayModeChecked(env, obj));
@@ -467,16 +581,63 @@ bool WebContentsDelegateAndroid::MaybeCopyContentAreaAsBitmap(
     return false;
   }
   base::TimeTicks start_time = base::TimeTicks::Now();
-  std::unique_ptr<base::OnceCallback<void(const SkBitmap&)>> wrapped_callback =
-      std::make_unique<base::OnceCallback<void(const SkBitmap&)>>(
-          std::move(callback));
+  // Convert the C++ callback to a JNI callback using ToJniCallback.
+  auto wrapped_callback = base::BindOnce(
+      [](base::OnceCallback<void(const SkBitmap&)> callback,
+         const ui::CaptureResult& result) {
+        TRACE_EVENT("content",
+                    "WebContentsDelegateAndroid::MaybeCopyContentAreaAsBitmap::"
+                    "Callback");
+        if (!result) {
+          // Failed because of Out of Memory Error.
+          // Pass in an empty bitmap, rather than null in this case.
+          std::move(callback).Run(SkBitmap());
+        } else {
+          SkBitmap skbitmap = result.GetBitmap();
+          skbitmap.setImmutable();
+          CHECK(!skbitmap.drawsNothing());
+          std::move(callback).Run(skbitmap);
+        }
+      },
+      std::move(callback));
   if (Java_WebContentsDelegateAndroid_maybeCopyContentAreaAsBitmap(
-          env, obj, reinterpret_cast<jlong>(wrapped_callback.get()))) {
-    // Ownership of callback has been transferred to java side and will be
-    // transferred back in |MaybeCopyContentAreaAsBitmapOutcome|.
-    wrapped_callback.release();
+          env, obj,
+          base::android::ToJniCallback(env, std::move(wrapped_callback)))) {
     base::UmaHistogramTimes("Android.MaybeCopyContentAreaAsBitmap.Time",
                             base::TimeTicks::Now() - start_time);
+    return true;
+  }
+  return false;
+}
+
+bool WebContentsDelegateAndroid::MaybeCopyContentAreaAsHardwareBuffer(
+    content::HardwareBufferResultCallback output_callback) {
+  TRACE_EVENT(
+      "content",
+      "WebContentsDelegateAndroid::MaybeCopyContentAreaAsHardwareBuffer");
+  JNIEnv* env = AttachCurrentThread();
+  ScopedJavaLocalRef<jobject> java_delegate = GetJavaDelegate(env);
+  if (java_delegate.is_null()) {
+    return false;
+  }
+  // Wrap the result C++ callback as a JNI callback and convert the types.
+  auto wrapped_output_callback = base::BindOnce(
+      [](content::HardwareBufferResultCallback output_callback,
+         const ui::CaptureResult& result) {
+        if (!result) {
+          std::move(output_callback)
+              .Run(base::android::ScopedHardwareBufferHandle(),
+                   base::ScopedClosureRunner());
+          return;
+        }
+        std::move(output_callback)
+            .Run(result.GetHardwareBuffer(), result.GetReleaseCallback());
+      },
+      std::move(output_callback));
+  if (Java_WebContentsDelegateAndroid_maybeCopyContentAreaAsHardwareBuffer(
+          env, java_delegate,
+          base::android::ToJniCallback(env,
+                                       std::move(wrapped_output_callback)))) {
     return true;
   }
   return false;
@@ -490,7 +651,6 @@ SkBitmap WebContentsDelegateAndroid::MaybeCopyContentAreaAsBitmapSync() {
   if (obj.is_null()) {
     return SkBitmap();
   }
-  base::TimeTicks start_time = base::TimeTicks::Now();
   ScopedJavaLocalRef<jobject> bitmap =
       Java_WebContentsDelegateAndroid_maybeCopyContentAreaAsBitmapSync(env,
                                                                        obj);
@@ -500,8 +660,6 @@ SkBitmap WebContentsDelegateAndroid::MaybeCopyContentAreaAsBitmapSync() {
   gfx::JavaBitmap java_bitmap_lock(bitmap);
   SkBitmap skbitmap = gfx::CreateSkBitmapFromJavaBitmap(java_bitmap_lock);
   skbitmap.setImmutable();
-  base::UmaHistogramTimes("Android.MaybeCopyContentAreaAsBitmapSync.Time",
-                          base::TimeTicks::Now() - start_time);
   return skbitmap;
 }
 
@@ -548,10 +706,10 @@ WebContentsDelegateAndroid::GetBackForwardTransitionFallbackUXConfig() {
     return {};
   }
   // Java colors are already in 32bit ARBG, same as `SkColor`.
-  jint favicon_background =
+  int32_t favicon_background =
       Java_WebContentsDelegateAndroid_getBackForwardTransitionFallbackUXFaviconBackgroundColor(
           env, obj);
-  jint page_background =
+  int32_t page_background =
       Java_WebContentsDelegateAndroid_getBackForwardTransitionFallbackUXPageBackgroundColor(
           env, obj);
   return {
@@ -571,27 +729,57 @@ void WebContentsDelegateAndroid::ContentsZoomChange(bool zoom_in) {
   Java_WebContentsDelegateAndroid_contentsZoomChange(env, obj, zoom_in);
 }
 
-void JNI_WebContentsDelegateAndroid_MaybeCopyContentAreaAsBitmapOutcome(
-    JNIEnv* env,
-    jlong callback_ptr,
-    const base::android::JavaParamRef<jobject>& bitmap) {
-  TRACE_EVENT(
-      "content",
-      "JNI_WebContentsDelegateAndroid_MaybeCopyContentAreaAsBitmapOutcome");
-  std::unique_ptr<base::OnceCallback<void(const SkBitmap&)>> callback(
-      reinterpret_cast<base::OnceCallback<void(const SkBitmap&)>*>(
-          callback_ptr));
-  if (bitmap.is_null()) {
-    // Failed because of Out of Memory Error.
-    // Pass in an empty bitmap, rather than null in this case.
-    std::move(*callback).Run(SkBitmap());
-  } else {
-    gfx::JavaBitmap java_bitmap_lock(bitmap);
-    SkBitmap skbitmap = gfx::CreateSkBitmapFromJavaBitmap(java_bitmap_lock);
-    skbitmap.setImmutable();
-    CHECK(!skbitmap.drawsNothing());
-    std::move(*callback).Run(skbitmap);
+content::NavigationController::UserAgentOverrideOption
+WebContentsDelegateAndroid::ShouldOverrideUserAgentForPreloading(
+    const GURL& url) {
+  // Killswitch
+  if (!base::FeatureList::IsEnabled(
+          features::kPreloadingRespectUserAgentOverride)) {
+    return WebContentsDelegate::ShouldOverrideUserAgentForPreloading(url);
   }
+
+  JNIEnv* env = AttachCurrentThread();
+  ScopedJavaLocalRef<jobject> obj = GetJavaDelegate(env);
+  if (obj.is_null()) {
+    // Fallback to base class version when JNI is unavailable.
+    return WebContentsDelegate::ShouldOverrideUserAgentForPreloading(url);
+  }
+
+  ScopedJavaLocalRef<jobject> j_url =
+      url::GURLAndroid::FromNativeGURL(env, url);
+  int j_override_option =
+      Java_WebContentsDelegateAndroid_shouldOverrideUserAgentForPreloading(
+          env, obj, j_url);
+  return static_cast<content::NavigationController::UserAgentOverrideOption>(
+      j_override_option);
+}
+
+void WebContentsDelegateAndroid::SetContentsBounds(content::WebContents* source,
+                                                   const gfx::Rect& bounds) {
+  JNIEnv* env = AttachCurrentThread();
+  ScopedJavaLocalRef<jobject> obj = GetJavaDelegate(env);
+  if (obj.is_null()) {
+    return;
+  }
+
+  ScopedJavaLocalRef<jobject> jsource = source->GetJavaWebContents();
+
+  Java_WebContentsDelegateAndroid_setContentsBounds(env, obj, jsource, bounds);
+}
+
+void WebContentsDelegateAndroid::PrintCrossProcessSubframe(
+    content::WebContents* web_contents,
+    const gfx::Rect& rect,
+    int document_cookie,
+    content::RenderFrameHost* subframe_host) const {
+#if BUILDFLAG(ENABLE_PRINTING)
+  auto* client = printing::PrintCompositeClient::FromWebContents(web_contents);
+  if (client) {
+    client->PrintCrossProcessSubframe(rect, document_cookie, subframe_host);
+  }
+#endif
 }
 
 }  // namespace web_contents_delegate_android
+
+DEFINE_JNI(WebContentsDelegateAndroid)

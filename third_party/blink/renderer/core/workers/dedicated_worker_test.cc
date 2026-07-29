@@ -9,13 +9,11 @@
 #include <memory>
 
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
 #include "base/run_loop.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/bind.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/mojom/v8_cache_options.mojom-blink.h"
 #include "third_party/blink/public/mojom/worker/dedicated_worker_host.mojom-blink.h"
 #include "third_party/blink/public/platform/task_type.h"
@@ -30,6 +28,7 @@
 #include "third_party/blink/renderer/core/dom/events/event.h"
 #include "third_party/blink/renderer/core/event_type_names.h"
 #include "third_party/blink/renderer/core/events/message_event.h"
+#include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/inspector/thread_debugger_common_impl.h"
@@ -48,11 +47,13 @@
 #include "third_party/blink/renderer/core/workers/global_scope_creation_params.h"
 #include "third_party/blink/renderer/core/workers/parent_execution_context_task_runners.h"
 #include "third_party/blink/renderer/core/workers/worker_backing_thread_startup_data.h"
+#include "third_party/blink/renderer/core/workers/worker_or_worklet_global_scope.h"
 #include "third_party/blink/renderer/core/workers/worker_thread.h"
 #include "third_party/blink/renderer/core/workers/worker_thread_test_helper.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/heap/visitor.h"
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
+#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 #include "third_party/blink/renderer/platform/testing/unit_test_helpers.h"
 #include "third_party/blink/renderer/platform/weborigin/security_origin.h"
 #include "third_party/blink/renderer/platform/weborigin/security_policy.h"
@@ -77,7 +78,7 @@ class CustomEventWithData final : public Event {
 
   explicit CustomEventWithData(const AtomicString& event_type,
                                scoped_refptr<SerializedScriptValue> data,
-                               MessagePortArray* ports)
+                               GCedMessagePortArray* ports)
       : Event(event_type, Bubbles::kNo, Cancelable::kNo),
         data_as_serialized_script_value_(
             SerializedScriptValue::Unpack(std::move(data))),
@@ -95,11 +96,11 @@ class CustomEventWithData final : public Event {
     return data_as_serialized_script_value_->Value();
   }
 
-  MessagePortArray* ports() { return ports_; }
+  GCedMessagePortArray* ports() { return ports_; }
 
  private:
   Member<UnpackedSerializedScriptValue> data_as_serialized_script_value_;
-  Member<MessagePortArray> ports_;
+  Member<GCedMessagePortArray> ports_;
 };
 
 ScriptValue CreateStringScriptValue(ScriptState* script_state,
@@ -115,7 +116,7 @@ CustomEventFactoryCallback(base::RepeatingClosure quit_closure,
       [quit_closure = std::move(quit_closure), out_event](
           ScriptState*, CustomEventMessage data) -> Event* {
         CustomEventWithData* result = MakeGarbageCollected<CustomEventWithData>(
-            AtomicString::FromUTF8(kCustomEventName), std::move(data.message));
+            AtomicString::FromUtf8(kCustomEventName), std::move(data.message));
         if (out_event) {
           *out_event = result;
         }
@@ -130,7 +131,7 @@ CrossThreadFunction<Event*(ScriptState*)> CustomEventFactoryErrorCallback(
   return CrossThreadBindRepeating(base::BindLambdaForTesting(
       [quit_closure = std::move(quit_closure), out_event](ScriptState*) {
         Event* result = MakeGarbageCollected<CustomEventWithData>(
-            AtomicString::FromUTF8(kCustomErrorEventName));
+            AtomicString::FromUtf8(kCustomErrorEventName));
         if (out_event) {
           *out_event = result;
         }
@@ -145,10 +146,10 @@ CustomEventWithPortsFactoryCallback(base::RepeatingClosure quit_closure,
   return CrossThreadBindRepeating(base::BindLambdaForTesting(
       [quit_closure = std::move(quit_closure), out_event](
           ScriptState* script_state, CustomEventMessage message) -> Event* {
-        MessagePortArray* ports = MessagePort::EntanglePorts(
+        GCedMessagePortArray* ports = MessagePort::EntanglePorts(
             *ExecutionContext::From(script_state), std::move(message.ports));
         CustomEventWithData* result = MakeGarbageCollected<CustomEventWithData>(
-            AtomicString::FromUTF8(kCustomEventName),
+            AtomicString::FromUtf8(kCustomEventName),
             std::move(message.message), ports);
         if (out_event) {
           *out_event = result;
@@ -228,6 +229,7 @@ class DedicatedWorkerThreadForTest final : public DedicatedWorkerThread {
     To<DedicatedWorkerGlobalScope>(GlobalScope())
         ->Initialize(script_url, network::mojom::ReferrerPolicy::kDefault,
                      Vector<network::mojom::blink::ContentSecurityPolicyPtr>(),
+                     DocumentPolicy::DocumentPolicyBundle{},
                      nullptr /* response_origin_trial_tokens */);
   }
 };
@@ -286,26 +288,15 @@ class DedicatedWorkerMessagingProxyForTest
       std::unique_ptr<GlobalScopeCreationParams> params = nullptr) {
     scoped_refptr<const SecurityOrigin> security_origin =
         SecurityOrigin::Create(script_url_);
-    auto worker_settings = std::make_unique<WorkerSettings>(
-        To<LocalDOMWindow>(GetExecutionContext())->GetFrame()->GetSettings());
     if (!params) {
-      params = std::make_unique<GlobalScopeCreationParams>(
-          script_url_, mojom::blink::ScriptType::kClassic,
-          "fake global scope name", "fake user agent", UserAgentMetadata(),
-          nullptr /* web_worker_fetch_context */,
-          Vector<network::mojom::blink::ContentSecurityPolicyPtr>(),
-          Vector<network::mojom::blink::ContentSecurityPolicyPtr>(),
-          network::mojom::ReferrerPolicy::kDefault, security_origin.get(),
-          false /* starter_secure_context */,
-          CalculateHttpsState(security_origin.get()),
-          nullptr /* worker_clients */, nullptr /* content_settings_client */,
-          nullptr /* inherited_trial_features */,
-          base::UnguessableToken::Create(), std::move(worker_settings),
-          mojom::blink::V8CacheOptions::kDefault,
-          nullptr /* worklet_module_responses_map */);
+      params = GlobalScopeCreationParams::CreateForWorkerForTesting(
+          security_origin.get(), script_url_,
+          GetExecutionContext()->GetExecutionContextToken(),
+          std::make_unique<WorkerSettings>(
+              To<LocalDOMWindow>(GetExecutionContext())
+                  ->GetFrame()
+                  ->GetSettings()));
     }
-    params->parent_context_token =
-        GetExecutionContext()->GetExecutionContextToken();
     InitializeWorkerThread(
         std::move(params),
         WorkerBackingThreadStartupData(
@@ -313,14 +304,13 @@ class DedicatedWorkerMessagingProxyForTest
             WorkerBackingThreadStartupData::AtomicsWaitMode::kAllow),
         WorkerObjectProxy().token());
 
-    if (base::FeatureList::IsEnabled(features::kPlzDedicatedWorker)) {
-      PostCrossThreadTask(
-          *GetDedicatedWorkerThread()->GetTaskRunner(TaskType::kInternalTest),
-          FROM_HERE,
-          CrossThreadBindOnce(
-              &DedicatedWorkerThreadForTest::InitializeGlobalScope,
-              CrossThreadUnretained(GetDedicatedWorkerThread()), script_url_));
-    }
+    PostCrossThreadTask(
+        *GetDedicatedWorkerThread()->GetTaskRunner(TaskType::kInternalTest),
+        FROM_HERE,
+        CrossThreadBindOnce(
+            &DedicatedWorkerThreadForTest::InitializeGlobalScope,
+            CrossThreadUnretained(GetDedicatedWorkerThread()), script_url_));
+
   }
 
   void EvaluateClassicScript(const String& source) {
@@ -352,11 +342,6 @@ class FakeWebDedicatedWorkerHostFactoryClient
     : public WebDedicatedWorkerHostFactoryClient {
  public:
   // Implements WebDedicatedWorkerHostFactoryClient.
-  void CreateWorkerHostDeprecated(
-      const DedicatedWorkerToken& dedicated_worker_token,
-      const WebURL& script_url,
-      const WebSecurityOrigin& origin,
-      CreateWorkerHostCallback callback) override {}
   void CreateWorkerHost(
       const DedicatedWorkerToken& dedicated_worker_token,
       const WebURL& script_url,
@@ -411,6 +396,22 @@ DedicatedWorkerTest::WorkerMessagingProxy() {
 
 DedicatedWorkerThreadForTest* DedicatedWorkerTest::GetWorkerThread() {
   return worker_messaging_proxy_->GetDedicatedWorkerThread();
+}
+
+void DedicatedWorkerTest::RunOnWorkerThread(
+    CrossThreadOnceFunction<void(ExecutionContext*)> task) {
+  base::RunLoop run_loop;
+  PostCrossThreadTaskAndReply(
+      *GetWorkerThread()->GetTaskRunner(TaskType::kInternalTest), FROM_HERE,
+      CrossThreadBindOnce(
+          [](CrossThreadOnceFunction<void(ExecutionContext*)> task,
+             DedicatedWorkerThreadForTest* worker_thread) {
+            auto* execution_context = worker_thread->GlobalScope();
+            std::move(task).Run(execution_context);
+          },
+          std::move(task), CrossThreadUnretained(GetWorkerThread())),
+      CrossThreadOnceClosure(run_loop.QuitClosure()));
+  run_loop.Run();
 }
 
 void DedicatedWorkerTest::StartWorker(
@@ -613,27 +614,27 @@ TEST_F(DedicatedWorkerTest, DispatchMessageEventOnWorkerGlobalScope) {
       *GetWorkerThread()->GetTaskRunner(TaskType::kInternalTest), FROM_HERE,
       CrossThreadBindOnce(
           [](DedicatedWorkerThreadForTest* worker_thread,
-             AtomicString* event_type, WTF::CrossThreadOnceClosure quit_1,
-             WTF::CrossThreadOnceClosure quit_2) {
+             AtomicString* event_type, CrossThreadOnceClosure quit_1,
+             CrossThreadOnceClosure quit_2) {
             auto* global_scope = worker_thread->GlobalScope();
             auto* wait = MakeGarbageCollected<WaitForEvent>();
             wait->AddEventListener(global_scope, event_type_names::kMessage);
             wait->AddEventListener(global_scope,
                                    event_type_names::kMessageerror);
-            wait->AddCompletionClosure(WTF::BindOnce(
+            wait->AddCompletionClosure(BindOnce(
                 [](WaitForEvent* wait, AtomicString* event_type,
-                   WTF::CrossThreadOnceClosure quit_closure) {
+                   CrossThreadOnceClosure quit_closure) {
                   *event_type = wait->GetLastEvent()->type();
                   std::move(quit_closure).Run();
                 },
-                WrapPersistent(wait), WTF::Unretained(event_type),
+                WrapPersistent(wait), Unretained(event_type),
                 std::move(quit_2)));
             std::move(quit_1).Run();
           },
           CrossThreadUnretained(GetWorkerThread()),
           CrossThreadUnretained(&event_type),
-          WTF::CrossThreadOnceClosure(run_loop_1.QuitClosure()),
-          WTF::CrossThreadOnceClosure(run_loop_2.QuitClosure())));
+          CrossThreadOnceClosure(run_loop_1.QuitClosure()),
+          CrossThreadOnceClosure(run_loop_2.QuitClosure())));
 
   // Wait for the first run loop to quit, which signals that the event listeners
   // are registered. Then post the message and wait to be notified of the
@@ -661,15 +662,16 @@ TEST_F(DedicatedWorkerTest, TopLevelFrameSecurityOrigin) {
   StartWorker(WorkerObject()->CreateGlobalScopeCreationParams(
       script_url, network::mojom::ReferrerPolicy::kDefault,
       Vector<network::mojom::blink::ContentSecurityPolicyPtr>(),
-      mojo::NullReceiver(), mojo::NullReceiver()));
+      DocumentPolicy::DocumentPolicyBundle{}, mojo::NullReceiver(),
+      mojo::NullReceiver()));
   base::RunLoop run_loop;
 
   PostCrossThreadTask(
       *GetWorkerThread()->GetTaskRunner(TaskType::kInternalTest), FROM_HERE,
       CrossThreadBindOnce(
           [](DedicatedWorkerThreadForTest* worker_thread,
-             WTF::CrossThreadOnceClosure quit,
-             const SecurityOrigin* security_origin, const KURL& script_url) {
+             CrossThreadOnceClosure quit, const SecurityOrigin* security_origin,
+             const KURL& script_url) {
             // Check the worker's top level frame security origin.
             auto* worker_global_scope =
                 static_cast<WorkerGlobalScope*>(worker_thread->GlobalScope());
@@ -689,6 +691,7 @@ TEST_F(DedicatedWorkerTest, TopLevelFrameSecurityOrigin) {
                   nested_worker_object->CreateGlobalScopeCreationParams(
                       script_url, network::mojom::ReferrerPolicy::kDefault,
                       Vector<network::mojom::blink::ContentSecurityPolicyPtr>(),
+                      DocumentPolicy::DocumentPolicyBundle{},
                       mojo::NullReceiver(), mojo::NullReceiver());
               ASSERT_TRUE(
                   nested_worker_params->top_level_frame_security_origin);
@@ -698,7 +701,7 @@ TEST_F(DedicatedWorkerTest, TopLevelFrameSecurityOrigin) {
             std::move(quit).Run();
           },
           CrossThreadUnretained(GetWorkerThread()),
-          WTF::CrossThreadOnceClosure(run_loop.QuitClosure()),
+          CrossThreadOnceClosure(run_loop.QuitClosure()),
           CrossThreadUnretained(WorkerObject()
                                     ->GetExecutionContext()
                                     ->GetSecurityContext()
@@ -732,27 +735,27 @@ TEST_F(DedicatedWorkerTest,
       *GetWorkerThread()->GetTaskRunner(TaskType::kInternalTest), FROM_HERE,
       CrossThreadBindOnce(
           [](DedicatedWorkerThreadForTest* worker_thread,
-             AtomicString* event_type, WTF::CrossThreadOnceClosure quit_1,
-             WTF::CrossThreadOnceClosure quit_2) {
+             AtomicString* event_type, CrossThreadOnceClosure quit_1,
+             CrossThreadOnceClosure quit_2) {
             auto* global_scope = worker_thread->GlobalScope();
             auto* wait = MakeGarbageCollected<WaitForEvent>();
             wait->AddEventListener(global_scope, event_type_names::kMessage);
             wait->AddEventListener(global_scope,
                                    event_type_names::kMessageerror);
-            wait->AddCompletionClosure(WTF::BindOnce(
+            wait->AddCompletionClosure(BindOnce(
                 [](WaitForEvent* wait, AtomicString* event_type,
-                   WTF::CrossThreadOnceClosure quit_closure) {
+                   CrossThreadOnceClosure quit_closure) {
                   *event_type = wait->GetLastEvent()->type();
                   std::move(quit_closure).Run();
                 },
-                WrapPersistent(wait), WTF::Unretained(event_type),
+                WrapPersistent(wait), Unretained(event_type),
                 std::move(quit_2)));
             std::move(quit_1).Run();
           },
           CrossThreadUnretained(worker_thread),
           CrossThreadUnretained(&event_type),
-          WTF::CrossThreadOnceClosure(run_loop_1.QuitClosure()),
-          WTF::CrossThreadOnceClosure(run_loop_2.QuitClosure())));
+          CrossThreadOnceClosure(run_loop_1.QuitClosure()),
+          CrossThreadOnceClosure(run_loop_2.QuitClosure())));
 
   // Wait for the first run loop to quit, which signals that the event listeners
   // are registered. Then post the message and wait to be notified of the
@@ -946,6 +949,52 @@ TEST_F(DedicatedWorkerTest, PostCustomEventNoMessage) {
   EXPECT_EQ(event->type(), kCustomEventName);
   EXPECT_EQ(event->DataAsSerializedScriptValue(), nullptr);
   EXPECT_EQ(event->ports(), nullptr);
+}
+
+class DedicatedWorkerDocumentPolicyTest
+    : public DedicatedWorkerTest,
+      public testing::WithParamInterface<bool> {
+ public:
+  bool IsFeatureEnabled() const { return GetParam(); }
+};
+
+INSTANTIATE_TEST_SUITE_P(DocumentPolicyFeature,
+                         DedicatedWorkerDocumentPolicyTest,
+                         testing::Bool(),
+                         [](const testing::TestParamInfo<bool>& info) {
+                           return info.param ? "FeatureEnabled"
+                                             : "FeatureDisabled";
+                         });
+
+// Test that Document-Policy is set in DedicatedWorker.
+TEST_P(DedicatedWorkerDocumentPolicyTest, DocumentPolicyInDedicatedWorker) {
+  ScopedDocumentPolicyInDedicatedWorkerForTest scoped_feature(
+      IsFeatureEnabled());
+
+  StartWorker();
+  WaitUntilWorkerIsRunning();
+
+  base::RunLoop run_loop;
+  bool has_document_policy = false;
+
+  PostCrossThreadTask(
+      *GetWorkerThread()->GetTaskRunner(TaskType::kInternalTest), FROM_HERE,
+      CrossThreadBindOnce(
+          [](base::RepeatingClosure quit_closure, bool* out_has_policy,
+             DedicatedWorkerThreadForTest* worker_thread) {
+            DedicatedWorkerGlobalScope* global_scope =
+                To<DedicatedWorkerGlobalScope>(worker_thread->GlobalScope());
+            EXPECT_NE(global_scope, nullptr);
+            *out_has_policy =
+                (global_scope->GetSecurityContext().GetDocumentPolicy() !=
+                 nullptr);
+            quit_closure.Run();
+          },
+          run_loop.QuitClosure(), CrossThreadUnretained(&has_document_policy),
+          CrossThreadUnretained(GetWorkerThread())));
+
+  run_loop.Run();
+  EXPECT_EQ(has_document_policy, IsFeatureEnabled());
 }
 
 }  // namespace blink

@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "media/gpu/chromeos/vulkan_overlay_adaptor.h"
 
 #include <linux/videodev2.h>
@@ -15,19 +10,20 @@
 
 #include <cstdint>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 #include "base/bits.h"
 #include "base/command_line.h"
 #include "base/files/file_path.h"
-#include "base/files/file_util.h"
 #include "base/functional/callback.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/rand_util.h"
 #include "base/run_loop.h"
 #include "base/test/bind.h"
 #include "components/viz/common/resources/shared_image_format.h"
+#include "gpu/command_buffer/client/test_shared_image_interface.h"
 #include "gpu/command_buffer/common/mailbox.h"
+#include "gpu/command_buffer/common/shared_image_info.h"
 #include "gpu/command_buffer/common/shared_image_usage.h"
 #include "gpu/command_buffer/service/shared_context_state.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_backing.h"
@@ -45,6 +41,7 @@
 #include "media/gpu/test/image_quality_metrics.h"
 #include "media/gpu/test/video_test_environment.h"
 #include "media/gpu/video_frame_mapper_factory.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 #include "third_party/libyuv/include/libyuv.h"
 #include "ui/gfx/overlay_transform.h"
 #include "ui/gl/gl_bindings.h"
@@ -121,6 +118,17 @@ const base::FilePath::CharType* kMT2TImage =
     FILE_PATH_LITERAL("crowd_run_1080x512.mt2t");
 
 constexpr int kLibYUVSuccess = 0;
+
+base::span<const uint32_t> ConvertBytesSpanToUint32Span(
+    base::span<const uint8_t> bytes) {
+  CHECK_EQ(bytes.size() % sizeof(uint32_t), 0u);
+  // SAFETY: The above CHECK_EQ() ensures that the size of `bytes` is divisible
+  // by sizeof(uint32_t), and thus the range bytes.data() + size is valid for
+  // uint32_t once you divide by sizeof(uint32_t).
+  return UNSAFE_BUFFERS(
+      base::span(reinterpret_cast<const uint32_t*>(bytes.data()),
+                 bytes.size() / sizeof(uint32_t)));
+}
 
 scoped_refptr<VideoFrame> ConvMM21ToI420(const VideoFrame& in_frame) {
   CHECK_EQ(in_frame.format(), VideoPixelFormat::PIXEL_FORMAT_NV12);
@@ -472,7 +480,7 @@ scoped_refptr<VideoFrame> ProcessFrameLibyuv(scoped_refptr<VideoFrame> in_frame,
   // steps for a given frame. Some of these conversions are not completely
   // lossless, so we want to minimize distortion.
   std::vector<FrameState> frame_states = {FrameState(in_fourcc, false)};
-  std::unordered_set<FrameState> seen_states;
+  absl::flat_hash_set<FrameState> seen_states;
   std::vector<std::vector<
       base::RepeatingCallback<scoped_refptr<VideoFrame>(const VideoFrame&)>>>
       paths = {{}};
@@ -534,15 +542,19 @@ scoped_refptr<VideoFrame> ProcessFrameLibyuv(scoped_refptr<VideoFrame> in_frame,
   return frame;
 }
 
-void InitWithImage(const uint8_t* img_data,
+void InitWithImage(base::span<const uint8_t> img_data,
                    const gfx::Size size,
                    uint8_t* y_plane,
                    size_t y_stride,
                    uint8_t* uv_plane,
                    size_t uv_stride) {
-  libyuv::NV12Copy(img_data, size.width(), img_data + size.GetArea(),
-                   size.width(), y_plane, y_stride, uv_plane, uv_stride,
-                   size.width(), size.height());
+  const size_t area = base::checked_cast<size_t>(size.GetArea());
+  CHECK_GE(img_data.size(), area * 3 / 2);
+  auto y_span = img_data.first(area);
+  auto uv_span = img_data.subspan(area);
+  libyuv::NV12Copy(y_span.data(), size.width(), uv_span.data(), size.width(),
+                   y_plane, y_stride, uv_plane, uv_stride, size.width(),
+                   size.height());
 }
 
 void InitWithRandom(const gfx::Size size,
@@ -579,7 +591,7 @@ class VulkanOverlayAdaptorTest
       public testing::WithParamInterface<VulkanOverlayAdaptorTestParam> {
  public:
   VulkanOverlayAdaptorTest();
-  ~VulkanOverlayAdaptorTest() = default;
+  ~VulkanOverlayAdaptorTest();
 
   struct PrintToStringParamName {
     template <class ParamType>
@@ -631,6 +643,7 @@ class VulkanOverlayAdaptorTest
   scoped_refptr<gl::GLShareGroup> share_group_;
   scoped_refptr<gl::GLSurface> surface_;
   scoped_refptr<gl::GLContext> context_;
+  scoped_refptr<gpu::TestSharedImageInterface> test_sii_;
   scoped_refptr<gpu::SharedContextState> context_state_;
   gpu::SharedImageManager shared_image_manager_;
   gpu::GpuPreferences gpu_preferences_;
@@ -645,7 +658,8 @@ VulkanOverlayAdaptorTest::VulkanOverlayAdaptorTest()
                                                   gfx::Size())),
       context_(gl::init::CreateGLContext(share_group_.get(),
                                          surface_.get(),
-                                         gl::GLContextAttribs())) {
+                                         gl::GLContextAttribs())),
+      test_sii_(base::MakeRefCounted<gpu::TestSharedImageInterface>()) {
   context_->MakeCurrent(surface_.get());
   context_state_ = base::MakeRefCounted<gpu::SharedContextState>(
       share_group_, surface_, context_, false, base::DoNothing(),
@@ -653,6 +667,10 @@ VulkanOverlayAdaptorTest::VulkanOverlayAdaptorTest()
   shared_image_factory_ = std::make_unique<gpu::SharedImageFactory>(
       gpu_preferences_, gpu_workarounds_, gpu_info_, context_state_.get(),
       &shared_image_manager_, nullptr, false);
+}
+
+VulkanOverlayAdaptorTest::~VulkanOverlayAdaptorTest() {
+  shared_image_factory_->DestroyAllSharedImages(true);
 }
 
 void VulkanOverlayAdaptorTest::ProcessMailboxes(
@@ -664,11 +682,13 @@ void VulkanOverlayAdaptorTest::ProcessMailboxes(
     gfx::OverlayTransform transform,
     VulkanOverlayAdaptor& processor) {
   auto in_vulkan_representation = shared_image_manager_.ProduceVulkan(
-      in_mailbox, nullptr, processor.GetVulkanDeviceQueue(),
-      processor.GetVulkanImplementation(), /*needs_detiling=*/true);
+      in_mailbox, context_state_->memory_type_tracker(),
+      processor.GetVulkanDeviceQueue(), processor.GetVulkanImplementation(),
+      /*needs_detiling=*/true);
   auto out_vulkan_representation = shared_image_manager_.ProduceVulkan(
-      out_mailbox, nullptr, processor.GetVulkanDeviceQueue(),
-      processor.GetVulkanImplementation(), /*needs_detiling=*/true);
+      out_mailbox, context_state_->memory_type_tracker(),
+      processor.GetVulkanDeviceQueue(), processor.GetVulkanImplementation(),
+      /*needs_detiling=*/true);
   {
     std::vector<VkSemaphore> begin_semaphores;
     std::vector<VkSemaphore> end_semaphores;
@@ -702,14 +722,15 @@ scoped_refptr<VideoFrame> VulkanOverlayAdaptorTest::CreateVideoFrame(
                           kMM21TileHeight) *
           bpp_numerator / bpp_denom);
 
-  scoped_refptr<VideoFrame> frame = CreateGpuMemoryBufferVideoFrame(
-      VideoPixelFormat::PIXEL_FORMAT_NV12, alloc_size, visible_rect, alloc_size,
-      kNullTimestamp, gfx::BufferUsage::SCANOUT_CPU_READ_WRITE);
+  scoped_refptr<VideoFrame> frame = CreateMappableSharedImageVideoFrame(
+      VideoPixelFormat::PIXEL_FORMAT_NV12, gfx::ColorSpace::CreateREC709(),
+      alloc_size, visible_rect, alloc_size, kNullTimestamp,
+      gfx::BufferUsage::SCANOUT_CPU_READ_WRITE, test_sii_.get());
 
   std::unique_ptr<VideoFrameMapper> frame_mapper =
       VideoFrameMapperFactory::CreateMapper(
           VideoPixelFormat::PIXEL_FORMAT_NV12,
-          VideoFrame::STORAGE_GPU_MEMORY_BUFFER,
+          VideoFrame::STORAGE_MAPPABLE_SHARED_IMAGE,
           /*force_linear_buffer_mapper=*/true);
   scoped_refptr<VideoFrame> mapped_frame =
       frame_mapper->Map(frame, PROT_READ | PROT_WRITE);
@@ -722,15 +743,14 @@ scoped_refptr<VideoFrame> VulkanOverlayAdaptorTest::CreateVideoFrame(
            mapped_frame->stride(VideoFrame::Plane::kUV));
 
   auto gmb = CreateGpuMemoryBufferHandle(frame.get());
-  viz::SharedImageFormat format_nv12 = viz::SharedImageFormat::MultiPlane(
-      viz::SharedImageFormat::PlaneConfig::kY_UV,
-      viz::SharedImageFormat::Subsampling::k420,
-      viz::SharedImageFormat::ChannelFormat::k8);
+  viz::SharedImageFormat format_nv12 = viz::MultiPlaneFormat::kNV12;
   format_nv12.SetPrefersExternalSampler();
   shared_image_factory_->CreateSharedImage(
-      mailbox, format_nv12, frame->coded_size(), gfx::ColorSpace::CreateSRGB(),
-      kTopLeft_GrSurfaceOrigin, kOpaque_SkAlphaType,
-      gpu::SharedImageUsage::SHARED_IMAGE_USAGE_DISPLAY_READ, "TestLabel",
+      mailbox,
+      gpu::SharedImageInfo(
+          format_nv12, frame->coded_size(), gfx::ColorSpace::CreateREC709(),
+          kTopLeft_GrSurfaceOrigin, kOpaque_SkAlphaType,
+          gpu::SharedImageUsage::SHARED_IMAGE_USAGE_DISPLAY_READ, "TestLabel"),
       std::move(gmb));
 
   return mapped_frame;
@@ -742,28 +762,31 @@ scoped_refptr<VideoFrame> VulkanOverlayAdaptorTest::CreateFramebuffer(
     bool is_10bit) {
   constexpr base::TimeDelta kNullTimestamp;
 
-  scoped_refptr<VideoFrame> frame = CreateGpuMemoryBufferVideoFrame(
+  scoped_refptr<VideoFrame> frame = CreateMappableSharedImageVideoFrame(
       is_10bit ? VideoPixelFormat::PIXEL_FORMAT_XR30
                : VideoPixelFormat::PIXEL_FORMAT_ARGB,
-      coded_size, gfx::Rect(coded_size), coded_size, kNullTimestamp,
-      gfx::BufferUsage::SCANOUT_CPU_READ_WRITE);
+      gfx::ColorSpace::CreateSRGB(), coded_size, gfx::Rect(coded_size),
+      coded_size, kNullTimestamp, gfx::BufferUsage::SCANOUT_CPU_READ_WRITE,
+      test_sii_.get());
 
   auto gmb = CreateGpuMemoryBufferHandle(frame.get());
+  auto si_format = is_10bit ? viz::SinglePlaneFormat::kBGRA_1010102
+                            : viz::SinglePlaneFormat::kBGRA_8888;
   shared_image_factory_->CreateSharedImage(
       mailbox,
-      is_10bit ? viz::SinglePlaneFormat::kBGRA_1010102
-               : viz::SinglePlaneFormat::kBGRA_8888,
-      coded_size, gfx::ColorSpace::CreateSRGB(), kTopLeft_GrSurfaceOrigin,
-      kUnpremul_SkAlphaType,
-      gpu::SharedImageUsage::SHARED_IMAGE_USAGE_DISPLAY_WRITE |
-          gpu::SharedImageUsage::SHARED_IMAGE_USAGE_SCANOUT,
-      "TestLabel", std::move(gmb));
+      gpu::SharedImageInfo(
+          si_format, coded_size, gfx::ColorSpace::CreateSRGB(),
+          kTopLeft_GrSurfaceOrigin, kUnpremul_SkAlphaType,
+          gpu::SharedImageUsage::SHARED_IMAGE_USAGE_DISPLAY_WRITE |
+              gpu::SharedImageUsage::SHARED_IMAGE_USAGE_SCANOUT,
+          "TestLabel"),
+      std::move(gmb));
 
   std::unique_ptr<VideoFrameMapper> frame_mapper =
       VideoFrameMapperFactory::CreateMapper(
           is_10bit ? VideoPixelFormat::PIXEL_FORMAT_XR30
                    : VideoPixelFormat::PIXEL_FORMAT_ARGB,
-          VideoFrame::STORAGE_GPU_MEMORY_BUFFER,
+          VideoFrame::STORAGE_MAPPABLE_SHARED_IMAGE,
           /*force_linear_buffer_mapper=*/true);
   scoped_refptr<VideoFrame> mapped_frame =
       frame_mapper->Map(frame, PROT_READ | PROT_WRITE);
@@ -779,7 +802,7 @@ TEST_P(VulkanOverlayAdaptorTest, Correctness) {
   auto in_mailbox = gpu::Mailbox::Generate();
   auto out_mailbox = gpu::Mailbox::Generate();
 
-  test::Image image(media::g_source_directory.Append(
+  test::Image image(media::GetSourceDir().Append(
       base::FilePath(is_10bit ? kMT2TImage : kMM21Image)));
   ASSERT_TRUE(image.Load());
   gfx::Size size(
@@ -787,7 +810,7 @@ TEST_P(VulkanOverlayAdaptorTest, Correctness) {
                           kMM21TileWidth),
       base::bits::AlignUp(base::checked_cast<size_t>(image.Size().height()),
                           kMM21TileHeight));
-  auto init_cb = base::BindOnce(&InitWithImage, image.Data());
+  auto init_cb = base::BindOnce(&InitWithImage, image.DataSpan());
   auto in_frame =
       CreateVideoFrame(in_mailbox, image.Size(), image.VisibleRect(),
                        std::move(init_cb), is_10bit);
@@ -832,19 +855,21 @@ TEST_P(VulkanOverlayAdaptorTest, Correctness) {
   // raw, packed image data.
   auto packed_in_frame = VideoFrame::WrapExternalData(
       VideoPixelFormat::PIXEL_FORMAT_NV12, in_frame->coded_size(),
-      in_frame->visible_rect(), in_frame->coded_size(), image.Data(),
-      in_frame->coded_size().GetArea() * 3 / 2, base::TimeDelta());
+      in_frame->visible_rect(), in_frame->coded_size(),
+      image.DataSpan().first(
+          static_cast<size_t>(in_frame->coded_size().GetArea() * 3 / 2)),
+      base::TimeDelta());
 
   auto libyuv_out_frame =
       ProcessFrameLibyuv(packed_in_frame, in_fourcc, image.Size(), out_fourcc,
                          output_size, transform);
   if (is_10bit) {
     psnr = test::ComputeAR30PSNR(
-        reinterpret_cast<const uint32_t*>(
-            out_frame->visible_data(VideoFrame::Plane::kARGB)),
+        ConvertBytesSpanToUint32Span(
+            out_frame->GetVisiblePlaneData(VideoFrame::Plane::kARGB)),
         out_frame->stride(VideoFrame::Plane::kARGB) / 4,
-        reinterpret_cast<const uint32_t*>(
-            libyuv_out_frame->visible_data(VideoFrame::Plane::kARGB)),
+        ConvertBytesSpanToUint32Span(
+            libyuv_out_frame->GetVisiblePlaneData(VideoFrame::Plane::kARGB)),
         libyuv_out_frame->stride(VideoFrame::Plane::kARGB) / 4,
         output_size.width(), output_size.height());
   } else {
@@ -1010,9 +1035,9 @@ int main(int argc, char** argv) {
     }
 
     if (it->first == "source_directory") {
-      media::g_source_directory = base::FilePath(it->second);
+      media::GetSourceDir() = base::FilePath(it->second);
     } else if (it->first == "output_directory") {
-      media::g_output_directory = base::FilePath(it->second);
+      media::GetOutputDir() = base::FilePath(it->second);
     } else {
       std::cout << "unknown option: --" << it->first << "\n"
                 << media::usage_msg;

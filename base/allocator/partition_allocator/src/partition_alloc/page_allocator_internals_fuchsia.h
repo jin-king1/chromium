@@ -1,6 +1,7 @@
 // Copyright 2019 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
+
 //
 // This file implements memory allocation primitives for PageAllocator using
 // Fuchsia's VMOs (Virtual Memory Objects). VMO API is documented in
@@ -19,6 +20,7 @@
 #include <lib/zx/vmo.h>
 
 #include <cstdint>
+#include <cstring>
 
 #include "partition_alloc/page_allocator.h"
 #include "partition_alloc/partition_alloc_base/fuchsia/fuchsia_logging.h"

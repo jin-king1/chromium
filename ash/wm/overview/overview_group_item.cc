@@ -17,6 +17,7 @@
 #include "ash/wm/overview/overview_item_view.h"
 #include "ash/wm/overview/overview_session.h"
 #include "ash/wm/overview/overview_utils.h"
+#include "ash/wm/overview/overview_window_drag_controller.h"
 #include "ash/wm/snap_group/snap_group.h"
 #include "ash/wm/snap_group/snap_group_controller.h"
 #include "ash/wm/splitview/layout_divider_controller.h"
@@ -204,9 +205,8 @@ void OverviewGroupItem::SetBounds(const gfx::RectF& target_bounds,
 
   aura::Window* item0_window = item0->GetWindow();
   aura::Window* item1_window = item1->GetWindow();
-  const gfx::Rect work_area = display::Screen::GetScreen()
-                                  ->GetDisplayNearestWindow(item0_window)
-                                  .work_area();
+  const gfx::Rect work_area =
+      display::Screen::Get()->GetDisplayNearestWindow(item0_window).work_area();
   const bool is_horizontal = IsLayoutHorizontal(item0_window);
   item_widget_->SetBounds(gfx::ToRoundedRect(target_bounds));
 
@@ -467,6 +467,11 @@ void OverviewGroupItem::OnMovingItemToAnotherDesk() {
 void OverviewGroupItem::Shutdown() {
   for (const auto& overview_item : overview_items_) {
     overview_item->Shutdown();
+  }
+  if (IsDragItem() && overview_grid_->drop_target()) {
+    auto* drag_controller = overview_session_->window_drag_controller();
+    CHECK(drag_controller);
+    drag_controller->ResetGesture();
   }
 }
 

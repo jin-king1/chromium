@@ -23,20 +23,18 @@
 #include "chrome/browser/ui/views/chrome_typography.h"
 #include "chrome/browser/ui/views/controls/rich_hover_button.h"
 #include "chrome/browser/ui/views/page_info/chosen_object_view.h"
-#include "chrome/browser/ui/views/page_info/page_info_history_controller.h"
 #include "chrome/browser/ui/views/page_info/page_info_navigation_handler.h"
 #include "chrome/browser/ui/views/page_info/page_info_security_content_view.h"
 #include "chrome/browser/ui/views/page_info/page_info_view_factory.h"
 #include "chrome/browser/ui/views/page_info/permission_toggle_row_view.h"
 #include "chrome/browser/ui/views/page_info/star_rating_view.h"
+#include "chrome/browser/ui/views/sub_apps_permission_explanation.h"
 #include "chrome/browser/vr/vr_tab_helper.h"
 #include "chrome/common/url_constants.h"
-#include "components/content_settings/core/common/cookie_blocking_3pcd_status.h"
 #include "components/page_info/core/about_this_site_service.h"
 #include "components/page_info/core/features.h"
 #include "components/page_info/page_info_ui_delegate.h"
 #include "components/permissions/permission_util.h"
-#include "components/privacy_sandbox/privacy_sandbox_features.h"
 #include "components/strings/grit/components_branded_strings.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/vector_icons/vector_icons.h"
@@ -56,7 +54,10 @@
 #include "ui/views/controls/separator.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/flex_layout.h"
+#include "ui/views/metadata/view_factory.h"
+#include "ui/views/vector_icons.h"
 #include "ui/views/view_class_properties.h"
+#include "ui/views/widget/widget.h"
 
 #if BUILDFLAG(FULL_SAFE_BROWSING)
 #include "chrome/browser/safe_browsing/chrome_password_protection_service.h"
@@ -76,16 +77,20 @@ int GetSeparatorPadding() {
 }  // namespace
 
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(PageInfoMainView, kCookieButtonElementId);
+DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(PageInfoMainView,
+                                      kPrivacyAndSiteDataButtonElementId);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(PageInfoMainView, kMainLayoutElementId);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(PageInfoMainView, kPermissionsElementId);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(PageInfoMainView,
                                       kMerchantTrustElementId);
 
-PageInfoMainView::ContainerView::ContainerView() {
+PageInfoMainView::ContainerView::ContainerView(bool set_extra_right_margin) {
   auto box_layout = std::make_unique<views::BoxLayout>(
       views::BoxLayout::Orientation::kVertical);
-  box_layout->set_inside_border_insets(
-      gfx::Insets::TLBR(0, 0, 0, kContainerExtraRightMargin));
+  if (set_extra_right_margin) {
+    box_layout->set_inside_border_insets(
+        gfx::Insets::TLBR(0, 0, 0, kContainerExtraRightMargin));
+  }
   SetLayoutManager(std::move(box_layout));
 }
 
@@ -100,7 +105,6 @@ PageInfoMainView::PageInfoMainView(
     PageInfo* presenter,
     ChromePageInfoUiDelegate* ui_delegate,
     PageInfoNavigationHandler* navigation_handler,
-    PageInfoHistoryController* history_controller,
     base::OnceClosure initialized_callback,
     bool allow_extended_site_info)
     : presenter_(presenter),
@@ -138,8 +142,7 @@ PageInfoMainView::PageInfoMainView(
 
   int link_text_id = 0;
   int tooltip_text_id = 0;
-  if (ui_delegate_->ShouldShowSiteSettings(&link_text_id, &tooltip_text_id) &&
-      !base::FeatureList::IsEnabled(page_info::kPageInfoHideSiteSettings)) {
+  if (ui_delegate_->ShouldShowSiteSettings(&link_text_id, &tooltip_text_id)) {
     site_settings_link_ = AddChildView(std::make_unique<RichHoverButton>(
         base::BindRepeating(
             [](PageInfoMainView* view) {
@@ -158,11 +161,10 @@ PageInfoMainView::PageInfoMainView(
         l10n_util::GetStringUTF16(tooltip_text_id));
   }
 
-  if (base::FeatureList::IsEnabled(page_info::kPageInfoHistoryDesktop)) {
-    history_controller->InitRow(AddChildView(CreateContainerView()));
-  }
-
-  extended_site_info_section_ = AddChildView(CreateContainerView());
+  // No extra right margins since the children are also containers and will have
+  // the extra margin set.
+  extended_site_info_section_ =
+      AddChildView(CreateContainerView(/*set_extra_right_margin=*/false));
   extended_site_info_section_->AddChildView(
       PageInfoViewFactory::CreateSeparator(GetSeparatorPadding()));
   extended_site_info_section_->SetID(
@@ -187,28 +189,29 @@ PageInfoMainView::PageInfoMainView(
 
 PageInfoMainView::~PageInfoMainView() = default;
 
-void PageInfoMainView::SetCookieInfo(const CookiesNewInfo& cookie_info) {
+void PageInfoMainView::SetCookieInfo(const CookiesInfo& cookie_info) {
   // Ensure we don't add this button multiple times in error.
   if (cookie_button_ != nullptr) {
     return;
   }
 
-  // Create a cookie button that opens a cookies subpage.
   cookie_button_ =
       site_settings_view_->AddChildView(std::make_unique<RichHoverButton>(
           base::BindRepeating(&PageInfoNavigationHandler::OpenCookiesPage,
                               base::Unretained(navigation_handler_)),
           PageInfoViewFactory::GetImageModel(
-              vector_icons::kCookieChromeRefreshIcon),
+              features::IsRoundedIconsEnabled()
+                  ? vector_icons::kCookieIcon
+                  : vector_icons::kCookieChromeRefreshOldIcon),
           l10n_util::GetStringUTF16(IDS_PAGE_INFO_COOKIES_HEADER),
           /*subtitle_text=*/std::u16string(),
           PageInfoViewFactory::GetOpenSubpageIcon()));
+  cookie_button_->SetTooltipText(
+      l10n_util::GetStringUTF16(IDS_PAGE_INFO_COOKIES_TOOLTIP));
   cookie_button_->SetID(
       PageInfoViewFactory::VIEW_ID_PAGE_INFO_LINK_OR_BUTTON_COOKIES_SUBPAGE);
   cookie_button_->SetProperty(views::kElementIdentifierKey,
                               kCookieButtonElementId);
-  cookie_button_->SetTooltipText(
-      l10n_util::GetStringUTF16(IDS_PAGE_INFO_COOKIES_TOOLTIP));
   cookie_button_->SetTitleTextStyleAndColor(views::style::STYLE_BODY_3_MEDIUM,
                                             kColorPageInfoForeground);
   cookie_button_->SetSubtitleTextStyleAndColor(
@@ -219,6 +222,8 @@ void PageInfoMainView::SetPermissionInfo(
     const PermissionInfoList& permission_info_list,
     ChosenObjectInfoList chosen_object_info_list) {
   if (permission_info_list.empty() && chosen_object_info_list.empty()) {
+    toggle_rows_.clear();
+    syncable_permission_rows_.clear();
     permissions_view_->RemoveAllChildViews();
     return;
   }
@@ -247,6 +252,9 @@ void PageInfoMainView::SetPermissionInfo(
     UpdateResetButton(permission_info_list);
     return;
   }
+
+  ChromeLayoutProvider* layout_provider = ChromeLayoutProvider::Get();
+
   const int separator_padding = GetSeparatorPadding();
   permissions_view_->AddChildView(
       PageInfoViewFactory::CreateSeparator(GetSeparatorPadding()));
@@ -263,6 +271,31 @@ void PageInfoMainView::SetPermissionInfo(
   content_view->SetID(PageInfoViewFactory::VIEW_ID_PAGE_INFO_PERMISSION_VIEW);
   content_view->SetProperty(views::kElementIdentifierKey,
                             kPermissionsElementId);
+
+  const int controls_spacing = layout_provider->GetDistanceMetric(
+      views::DISTANCE_RELATED_CONTROL_VERTICAL);
+  const int side_button_padding =
+      layout_provider
+          ->GetInsetsMetric(ChromeInsetsMetric::INSETS_PAGE_INFO_HOVER_BUTTON)
+          .left();
+
+  if (std::optional<std::u16string> explanation =
+          GetSubAppsPermissionExplanation(ui_delegate_->GetWebContents())) {
+    auto* label = content_view->AddChildView(std::make_unique<views::Label>(
+        *explanation, views::style::CONTEXT_DIALOG_BODY_TEXT,
+        views::style::STYLE_BODY_4));
+    label->SetMultiLine(true);
+    label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+    label->SetProperty(
+        views::kMarginsKey,
+        gfx::Insets::TLBR(controls_spacing, side_button_padding,
+                          controls_spacing, side_button_padding));
+    label->SetProperty(views::kCrossAxisAlignmentKey,
+                       views::LayoutAlignment::kStretch);
+    label->SetMaximumWidth(layout_provider->GetDistanceMetric(
+                               views::DISTANCE_BUBBLE_PREFERRED_WIDTH) -
+                           side_button_padding * 2);
+  }
 
   // If there is a permission that supports one time grants, offset all other
   // permissions to align toggles.
@@ -296,8 +329,6 @@ void PageInfoMainView::SetPermissionInfo(
         content_view->AddChildView(std::move(object_view)));
   }
 
-  const int controls_spacing = ChromeLayoutProvider::Get()->GetDistanceMetric(
-      views::DISTANCE_RELATED_CONTROL_VERTICAL);
   reset_button_ = content_view->AddChildView(
       std::make_unique<views::MdTextButton>(base::BindRepeating(
           [=](PageInfoMainView* view) {
@@ -315,16 +346,12 @@ void PageInfoMainView::SetPermissionInfo(
           base::Unretained(this))));
   reset_button_->SetProperty(views::kCrossAxisAlignmentKey,
                              views::LayoutAlignment::kStart);
-  ChromeLayoutProvider* layout_provider = ChromeLayoutProvider::Get();
   // Offset the reset button by left button padding, icon size and distance
   // between icon and label to match text in the row above.
-  const int side_offset =
-      layout_provider
-          ->GetInsetsMetric(ChromeInsetsMetric::INSETS_PAGE_INFO_HOVER_BUTTON)
-          .left() +
-      GetLayoutConstant(PAGE_INFO_ICON_SIZE) +
-      layout_provider->GetDistanceMetric(
-          views::DISTANCE_RELATED_LABEL_HORIZONTAL);
+  const int side_offset = side_button_padding +
+                          GetLayoutConstant(LayoutConstant::kPageInfoIconSize) +
+                          layout_provider->GetDistanceMetric(
+                              views::DISTANCE_RELATED_LABEL_HORIZONTAL);
   reset_button_->SetProperty(
       views::kMarginsKey,
       gfx::Insets::TLBR(controls_spacing, side_offset, controls_spacing, 0));
@@ -350,8 +377,7 @@ void PageInfoMainView::UpdateResetButton(
         permission.source == content_settings::SettingSource::kUser &&
         (ui_delegate_->ShouldShowAllow(permission.type) ||
          ui_delegate_->ShouldShowAsk(permission.type));
-    if (is_permission_user_managed &&
-        permission.setting != CONTENT_SETTING_DEFAULT) {
+    if (is_permission_user_managed && permission.setting) {
       reset_button_->SetEnabled(true);
       reset_button_->SetVisible(true);
     }
@@ -380,7 +406,7 @@ void PageInfoMainView::SetIdentityInfo(const IdentityInfo& identity_info) {
     // base::Unretained(navigation_handler_) is safe because navigation_handler_
     // is the bubble view which is the owner of this view and therefore will
     // always exist when this view exists.
-    connection_button_ = security_container_view_->AddChildView(
+    connection_button_ = security_container_view_->AddChildViewRaw(
         std::make_unique<RichHoverButton>(
             base::BindRepeating(&PageInfoNavigationHandler::OpenSecurityPage,
                                 base::Unretained(navigation_handler_)),
@@ -410,9 +436,7 @@ void PageInfoMainView::SetIdentityInfo(const IdentityInfo& identity_info) {
 
     // Fetch the data when the UI is enabled or if the control survey may be
     // shown.
-    if (merchant_trust_section_ ||
-        base::FeatureList::IsEnabled(
-            page_info::kMerchantTrustEvaluationControlSurvey)) {
+    if (merchant_trust_section_) {
       ui_delegate_->GetMerchantTrustInfo(
           base::BindOnce(&PageInfoMainView::OnMerchantTrustDataFetched,
                          weak_factory_.GetWeakPtr()));
@@ -445,8 +469,9 @@ void PageInfoMainView::SetPageFeatureInfo(const PageFeatureInfo& info) {
       content_view->SetLayoutManager(std::make_unique<views::FlexLayout>());
 
   auto icon = std::make_unique<NonAccessibleImageView>();
-  icon->SetImage(
-      PageInfoViewFactory::GetImageModel(vector_icons::kVrHeadsetIcon));
+  icon->SetImage(PageInfoViewFactory::GetImageModel(
+      features::IsRoundedIconsEnabled() ? vector_icons::kCardboardFilledIcon
+                                        : vector_icons::kVrHeadsetOldIcon));
   content_view->AddChildView(std::move(icon));
 
   auto label = std::make_unique<views::Label>(
@@ -532,8 +557,9 @@ void PageInfoMainView::OnChosenObjectDeleted(
   PreferredSizeChanged();
 }
 
-std::unique_ptr<views::View> PageInfoMainView::CreateContainerView() {
-  return std::make_unique<ContainerView>();
+std::unique_ptr<views::View> PageInfoMainView::CreateContainerView(
+    bool set_extra_right_margin) {
+  return std::make_unique<ContainerView>(set_extra_right_margin);
 }
 
 void PageInfoMainView::HandleMoreInfoRequest(views::View* source) {
@@ -561,8 +587,6 @@ void PageInfoMainView::OnMerchantTrustDataFetched(
   if (!merchant_data.has_value()) {
     return;
   }
-
-  ui_delegate_->RecordPageInfoWithMerchantTrustOpenTime();
 
   if (!merchant_trust_section_) {
     return;
@@ -625,6 +649,7 @@ std::unique_ptr<views::View> PageInfoMainView::CreateBubbleHeaderView() {
               views::BubbleFrameView::CreateCloseButton(
                   base::BindRepeating(&PageInfoNavigationHandler::CloseBubble,
                                       base::Unretained(navigation_handler_))))
+              .SetID(PageInfoViewFactory::VIEW_ID_PAGE_INFO_CLOSE_BUTTON)
               .SetVisible(true)
               .SetProperty(views::kCrossAxisAlignmentKey,
                            views::LayoutAlignment::kStart)
@@ -677,9 +702,11 @@ std::unique_ptr<views::View> PageInfoMainView::CreateAboutThisSiteButton(
 
 std::unique_ptr<views::View> PageInfoMainView::CreateAdPersonalizationButton() {
   auto ads_personalization_button = std::make_unique<RichHoverButton>(
-      base::BindRepeating(&PageInfoNavigationHandler::OpenCookiesPage,
+      base::BindRepeating(&PageInfoNavigationHandler::OpenAdPersonalizationPage,
                           base::Unretained(navigation_handler_)),
-      PageInfoViewFactory::GetImageModel(vector_icons::kAdsClickIcon),
+      PageInfoViewFactory::GetImageModel(features::IsRoundedIconsEnabled()
+                                             ? vector_icons::kAdsClickIcon
+                                             : vector_icons::kAdsClickOldIcon),
       l10n_util::GetStringUTF16(IDS_PAGE_INFO_AD_PRIVACY_HEADER),
       std::u16string(), PageInfoViewFactory::GetOpenSubpageIcon());
   ads_personalization_button->SetID(
@@ -723,9 +750,10 @@ PageInfoMainView::CreateMerchantTrustSubpageButton(
     page_info::MerchantData value) {
   auto button = std::make_unique<RichHoverButton>(
       base::BindRepeating(&PageInfoNavigationHandler::OpenMerchantTrustPage,
-                          base::Unretained(navigation_handler_),
-                          page_info::MerchantBubbleOpenReferrer::kPageInfo),
-      PageInfoViewFactory::GetImageModel(vector_icons::kStorefrontIcon),
+                          base::Unretained(navigation_handler_)),
+      PageInfoViewFactory::GetImageModel(
+          features::IsRoundedIconsEnabled() ? vector_icons::kStorefrontIcon
+                                            : vector_icons::kStorefrontOldIcon),
       l10n_util::GetStringUTF16(IDS_PAGE_INFO_MERCHANT_TRUST_HEADER),
       std::u16string(), PageInfoViewFactory::GetOpenSubpageIcon());
 
@@ -737,7 +765,9 @@ PageInfoMainView::CreateMerchantTrustLaunchButton(GURL page_url) {
   auto button = std::make_unique<RichHoverButton>(
       base::BindRepeating(&PageInfoMainView::OpenMerchantTrustSidePanel,
                           weak_factory_.GetWeakPtr(), page_url),
-      PageInfoViewFactory::GetImageModel(vector_icons::kStorefrontIcon),
+      PageInfoViewFactory::GetImageModel(
+          features::IsRoundedIconsEnabled() ? vector_icons::kStorefrontIcon
+                                            : vector_icons::kStorefrontOldIcon),
       l10n_util::GetStringUTF16(IDS_PAGE_INFO_MERCHANT_TRUST_HEADER),
       std::u16string(), PageInfoViewFactory::GetLaunchIcon());
   return button;

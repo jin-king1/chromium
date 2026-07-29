@@ -24,19 +24,17 @@
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "components/page_info/android/jni_headers/ConnectionInfoView_jni.h"
 
-using base::android::CheckException;
 using base::android::ConvertUTF16ToJavaString;
 using base::android::ConvertUTF8ToJavaString;
-using base::android::GetClass;
-using base::android::JavaParamRef;
+using base::android::JavaRef;
 using base::android::ScopedJavaLocalRef;
 using content::WebContents;
 
 // static
-static jlong JNI_ConnectionInfoView_Init(
+static int64_t JNI_ConnectionInfoView_Init(
     JNIEnv* env,
-    const JavaParamRef<jobject>& obj,
-    const JavaParamRef<jobject>& java_web_contents) {
+    const JavaRef<jobject>& obj,
+    const JavaRef<jobject>& java_web_contents) {
   content::WebContents* web_contents =
       content::WebContents::FromJavaWebContents(java_web_contents);
   DCHECK(web_contents);
@@ -47,7 +45,7 @@ static jlong JNI_ConnectionInfoView_Init(
 
 ConnectionInfoViewAndroid::ConnectionInfoViewAndroid(
     JNIEnv* env,
-    jobject java_page_info_pop,
+    const base::android::JavaRef<jobject>& java_page_info_pop,
     WebContents* web_contents) {
   page_info_client_ = page_info::GetPageInfoClient();
   DCHECK(page_info_client_);
@@ -68,15 +66,13 @@ ConnectionInfoViewAndroid::ConnectionInfoViewAndroid(
 
 ConnectionInfoViewAndroid::~ConnectionInfoViewAndroid() = default;
 
-void ConnectionInfoViewAndroid::Destroy(JNIEnv* env,
-                                        const JavaParamRef<jobject>& obj) {
+void ConnectionInfoViewAndroid::Destroy(JNIEnv* env) {
   delete this;
 }
 
 void ConnectionInfoViewAndroid::ResetCertDecisions(
     JNIEnv* env,
-    const JavaParamRef<jobject>& obj,
-    const JavaParamRef<jobject>& java_web_contents) {
+    const JavaRef<jobject>& java_web_contents) {
   presenter_->OnRevokeSSLErrorBypassButtonPressed();
 }
 
@@ -130,3 +126,5 @@ void ConnectionInfoViewAndroid::SetIdentityInfo(
           env, l10n_util::GetStringUTF8(IDS_PAGE_INFO_HELP_CENTER_LINK)));
   Java_ConnectionInfoView_onReady(env, popup_jobject_);
 }
+
+DEFINE_JNI(ConnectionInfoView)

@@ -11,7 +11,6 @@
 
 // Provides an interface for embedders to access the WebState's web view in a
 // limited and controlled manner.
-// TODO(crbug.com/41211285): rename protocol to CRWContentViewProxy.
 @protocol CRWWebViewProxy <NSObject>
 
 // The web view's bounding rectangle (relative to its parent).
@@ -19,6 +18,18 @@
 
 // The web view's frame rectangle.
 @property(readonly, assign) CGRect frame;
+
+// Whether to ignore the value of `obscuredInsets`. If set to `YES` then
+// setting the `obscuredInsets` property will not have any effect.
+@property(nonatomic, assign) BOOL ignoreObscuredInsets;
+
+// Web view's obscured insets. If `ignoreObscuredInsets` is set to `YES` then
+// setting this property will not have any effect.
+@property(nonatomic, assign) UIEdgeInsets obscuredInsets;
+
+// Sets the web view's min and max viewport insets.
+- (void)setMinimumViewportInset:(UIEdgeInsets)minInset
+           maximumViewportInset:(UIEdgeInsets)maxInset;
 
 // Adds an offset to the scrollable content's frame.
 @property(nonatomic, assign) CGPoint contentOffset;
@@ -40,6 +51,9 @@
 // back-forward list navigations.
 @property(nonatomic) BOOL allowsBackForwardNavigationGestures;
 
+// Whether or not long pressing a link in the web view renders a link preview.
+@property(nonatomic) BOOL allowsLinkPreview;
+
 // Returns the webview's gesture recognizers.
 @property(nonatomic, readonly) NSArray* gestureRecognizers;
 
@@ -51,6 +65,9 @@
 // property.
 @property(nonatomic, assign) BOOL shouldUseViewContentInset;
 
+// YES if the keyboard is currently visible for use in the web view.
+@property(nonatomic, readonly, getter=isKeyboardVisible) BOOL keyboardVisible;
+
 // Register the given insets for the given caller.
 - (void)registerInsets:(UIEdgeInsets)insets forCaller:(id)caller;
 
@@ -59,9 +76,6 @@
 
 // Wrapper around the addSubview method of the webview.
 - (void)addSubview:(UIView*)view;
-
-// YES if the keyboard is currently visible for use in the web view.
-@property(nonatomic, readonly, getter=isKeyboardVisible) BOOL keyboardVisible;
 
 // Wrapper around the becomeFirstResponder method of the webview.
 - (BOOL)becomeFirstResponder;

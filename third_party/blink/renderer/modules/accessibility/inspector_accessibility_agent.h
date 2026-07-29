@@ -95,19 +95,6 @@ class MODULES_EXPORT InspectorAccessibilityAgent
   void ScheduleAXUpdateIfNeeded(TimerBase*, Document*);
 
  private:
-  // Used to store the queries received by queryAXTree. The queries are
-  // processed once the a11y tree is clean and ready for traversing
-  // (AXReadyCallback).
-  struct AXQuery {
-   public:
-    std::optional<int> dom_node_id;
-    std::optional<int> backend_node_id;
-    std::optional<String> object_id;
-    std::optional<String> accessible_name;
-    std::optional<String> role;
-    std::unique_ptr<QueryAXTreeCallback> callback;
-  };
-
   // Timer bound to a Document and an InspectorAccessibilityAgent instance,
   // similar to HeapTaskRunnerTimer
   // (third_party/blink/renderer/platform/timer.h).
@@ -137,10 +124,11 @@ class MODULES_EXPORT InspectorAccessibilityAgent
     void Fired() override { (agent_->*function_)(this, document_); }
 
     base::OnceClosure BindTimerClosure() final {
-      return WTF::BindOnce(&DocumentTimer::RunInternalTrampoline,
-                           WTF::Unretained(this),
-                           WrapWeakPersistent(agent_.Get()),
-                           WrapWeakPersistent(document_.Get()));
+      // TODO(https://crbug.com/521917543): avoid UnretainedException().
+      return BindOnce(&DocumentTimer::RunInternalTrampoline,
+                      blink::subtle::UnretainedException(this),
+                      WrapWeakPersistent(agent_.Get()),
+                      WrapWeakPersistent(document_.Get()));
     }
 
    private:
@@ -158,7 +146,10 @@ class MODULES_EXPORT InspectorAccessibilityAgent
     TimerFiredFunction function_;
   };
 
-  void CompleteQuery(AXQuery&);
+  void CompleteQuery(Node* root_dom_node,
+                     std::optional<String> accessible_name,
+                     std::optional<String> role,
+                     std::unique_ptr<QueryAXTreeCallback> callback);
   bool MarkAXObjectDirty(AXObject* ax_object);
   // Unconditionally enables the agent, even if |enabled_.Get()==true|.
   // For idempotence, call enable().
@@ -166,7 +157,6 @@ class MODULES_EXPORT InspectorAccessibilityAgent
   LocalFrame* FrameFromIdOrRoot(const std::optional<String>& frame_id);
   void ScheduleAXChangeNotification(Document* document);
   AXObjectCacheImpl& AttachToAXObjectCache(Document*);
-  void ProcessPendingQueries(Document&);
   void ProcessPendingDirtyNodes(Document&);
 
   Member<InspectedFrames> inspected_frames_;
@@ -175,7 +165,8 @@ class MODULES_EXPORT InspectorAccessibilityAgent
   HashSet<AXID> nodes_requested_;
   // The collected dirty AXObjects that should be refreshed in the AX tree view
   // in DevTools.
-  HeapHashMap<WeakMember<Document>, Member<HeapHashSet<WeakMember<AXObject>>>>
+  HeapHashMap<WeakMember<Document>,
+              Member<GCedHeapHashSet<WeakMember<AXObject>>>>
       dirty_nodes_;
   // Time when every document was synced.
   HeapHashMap<WeakMember<Document>, base::Time> last_sync_times_;
@@ -186,8 +177,6 @@ class MODULES_EXPORT InspectorAccessibilityAgent
   // happens per document.
   HeapHashMap<WeakMember<Document>, Member<DisallowNewWrapper<DocumentTimer>>>
       timers_;
-
-  HeapHashMap<WeakMember<Document>, Vector<AXQuery>> queries_;
 
   HeapHashSet<WeakMember<Document>> load_complete_needs_processing_;
 };

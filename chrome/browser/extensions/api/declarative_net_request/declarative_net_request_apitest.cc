@@ -5,8 +5,10 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
+#include "base/strings/stringprintf.h"
 #include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
+#include "chrome/browser/extensions/extension_apitest.h"
 #include "chrome/common/chrome_features.h"
 #include "components/version_info/version_info.h"
 #include "content/public/common/content_features.h"
@@ -14,6 +16,7 @@
 #include "content/public/test/prerender_test_util.h"
 #include "extensions/browser/api/declarative_net_request/constants.h"
 #include "extensions/browser/api/declarative_net_request/utils.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension_features.h"
 #include "extensions/common/features/feature_channel.h"
 #include "extensions/test/extension_test_message_listener.h"
@@ -22,40 +25,25 @@
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "third_party/blink/public/common/features.h"
 
-#if BUILDFLAG(IS_ANDROID)
-#include "chrome/browser/extensions/extension_platform_apitest.h"
-#else
-#include "chrome/browser/extensions/extension_apitest.h"
-#endif
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace {
 
-using ContextType = extensions::browser_test_util::ContextType;
 using extensions::ScopedCurrentChannel;
 
-#if BUILDFLAG(IS_ANDROID)
-using ExtensionApiTestBase = extensions::ExtensionPlatformApiTest;
-#else
-using ExtensionApiTestBase = extensions::ExtensionApiTest;
-#endif
-
-class DeclarativeNetRequestApiTest : public ExtensionApiTestBase {
+class DeclarativeNetRequestApiTest : public extensions::ExtensionApiTest {
  public:
   DeclarativeNetRequestApiTest() {
     feature_list_.InitWithFeatures(
         /*enabled_features=*/{},
         // TODO(crbug.com/40248833): Use HTTPS URLs in tests to avoid having to
         // disable this feature.
-        /*disabled_features=*/{features::kHttpsUpgrades});
+        /*disabled_features=*/{
+            features::kHttpsUpgrades,
+            features::kHttpsFirstBalancedModeAutoEnable,
+        });
   }
-  explicit DeclarativeNetRequestApiTest(ContextType context_type)
-      : ExtensionApiTestBase(context_type) {
-    feature_list_.InitWithFeatures(
-        /*enabled_features=*/{},
-        // TODO(crbug.com/40248833): Use HTTPS URLs in tests to avoid having to
-        // disable this feature.
-        /*disabled_features=*/{features::kHttpsUpgrades});
-  }
+
   ~DeclarativeNetRequestApiTest() override = default;
   DeclarativeNetRequestApiTest(const DeclarativeNetRequestApiTest&) = delete;
   DeclarativeNetRequestApiTest& operator=(const DeclarativeNetRequestApiTest&) =
@@ -64,7 +52,7 @@ class DeclarativeNetRequestApiTest : public ExtensionApiTestBase {
  protected:
   // ExtensionApiTest override.
   void SetUpOnMainThread() override {
-    ExtensionApiTestBase::SetUpOnMainThread();
+    extensions::ExtensionApiTest::SetUpOnMainThread();
     ASSERT_TRUE(StartEmbeddedTestServer());
 
     // Map all hosts to localhost.
@@ -90,29 +78,11 @@ class DeclarativeNetRequestApiTest : public ExtensionApiTestBase {
   base::test::ScopedFeatureList feature_list_;
 };
 
-class DeclarativeNetRequestLazyApiTest
-    : public DeclarativeNetRequestApiTest,
-      public testing::WithParamInterface<ContextType> {
- public:
-  DeclarativeNetRequestLazyApiTest()
-      : DeclarativeNetRequestApiTest(GetParam()) {}
-};
-
-#if !BUILDFLAG(IS_ANDROID)
-// Android only supports service worker.
-INSTANTIATE_TEST_SUITE_P(EventPage,
-                         DeclarativeNetRequestLazyApiTest,
-                         ::testing::Values(ContextType::kEventPage));
-#endif
-INSTANTIATE_TEST_SUITE_P(ServiceWorker,
-                         DeclarativeNetRequestLazyApiTest,
-                         ::testing::Values(ContextType::kServiceWorker));
-
-IN_PROC_BROWSER_TEST_P(DeclarativeNetRequestLazyApiTest, DynamicRules) {
+IN_PROC_BROWSER_TEST_F(DeclarativeNetRequestApiTest, DynamicRules) {
   ASSERT_TRUE(RunExtensionTest("dynamic_rules")) << message_;
 }
 
-IN_PROC_BROWSER_TEST_P(DeclarativeNetRequestLazyApiTest, RegexRuleMessage) {
+IN_PROC_BROWSER_TEST_F(DeclarativeNetRequestApiTest, RegexRuleMessage) {
   // Ensure the error message for large RegEx rules is updated with the
   // correct value for the memory limit.
   std::string expected_amount = base::StringPrintf(
@@ -122,7 +92,7 @@ IN_PROC_BROWSER_TEST_P(DeclarativeNetRequestLazyApiTest, RegexRuleMessage) {
 }
 
 class DeclarativeNetRequestSafeRulesLazyApiTest
-    : public DeclarativeNetRequestLazyApiTest {
+    : public DeclarativeNetRequestApiTest {
  public:
   DeclarativeNetRequestSafeRulesLazyApiTest() {
     scoped_feature_list_.InitAndEnableFeature(
@@ -133,26 +103,13 @@ class DeclarativeNetRequestSafeRulesLazyApiTest
   base::test::ScopedFeatureList scoped_feature_list_;
 };
 
-#if !BUILDFLAG(IS_ANDROID)
-// Android only supports service worker.
-INSTANTIATE_TEST_SUITE_P(PersistentBackground,
-                         DeclarativeNetRequestSafeRulesLazyApiTest,
-                         ::testing::Values(ContextType::kPersistentBackground));
-INSTANTIATE_TEST_SUITE_P(EventPage,
-                         DeclarativeNetRequestSafeRulesLazyApiTest,
-                         ::testing::Values(ContextType::kEventPage));
-#endif
-INSTANTIATE_TEST_SUITE_P(ServiceWorker,
-                         DeclarativeNetRequestSafeRulesLazyApiTest,
-                         ::testing::Values(ContextType::kServiceWorker));
-
-// Flaky on ASAN/MSAN: https://crbug.com/1167168
+// Flaky on ASAN/MSAN: https://crbug.com/40742546
 #if defined(ADDRESS_SANITIZER) || defined(MEMORY_SANITIZER)
 #define MAYBE_DynamicRulesLimits DISABLED_DynamicRulesLimits
 #else
 #define MAYBE_DynamicRulesLimits DynamicRulesLimits
 #endif
-IN_PROC_BROWSER_TEST_P(DeclarativeNetRequestSafeRulesLazyApiTest,
+IN_PROC_BROWSER_TEST_F(DeclarativeNetRequestSafeRulesLazyApiTest,
                        MAYBE_DynamicRulesLimits) {
   ExtensionTestMessageListener listener("ready", ReplyBehavior::kWillReply);
 
@@ -181,31 +138,30 @@ IN_PROC_BROWSER_TEST_P(DeclarativeNetRequestSafeRulesLazyApiTest,
   EXPECT_TRUE(result_catcher.GetNextResult()) << result_catcher.message();
 }
 
-#if !BUILDFLAG(IS_ANDROID)
-// TODO(crbug.com/391932982): Port to desktop Android when chrome.tabs API is
-// available.
-IN_PROC_BROWSER_TEST_P(DeclarativeNetRequestLazyApiTest, OnRulesMatchedDebug) {
+IN_PROC_BROWSER_TEST_F(DeclarativeNetRequestApiTest, OnRulesMatchedDebug) {
   ASSERT_TRUE(RunExtensionTest("on_rules_matched_debug")) << message_;
 }
 
-// This test uses webRequest/webRequestBlocking, so it's not currently
-// supported for service workers.
+#if !BUILDFLAG(IS_ANDROID)
+// TODO(https://crbug.com/491516661): This test uses an MV2 extension because it
+// explicitly exercises capabilities linked to MV2 (webRequestBlocking). This
+// can be updated in the future with e.g.  a policy-installed extension. Also,
+// Android does not support MV2 extensions, so until this test is updated to
+// MV3, skip it on Android.
 IN_PROC_BROWSER_TEST_F(DeclarativeNetRequestApiTest, ModifyHeaders) {
   ASSERT_TRUE(RunExtensionTest("modify_headers")) << message_;
 }
-
-// TODO(crbug.com/391932982): Port to desktop Android when chrome.tabs API is
-// available.
-IN_PROC_BROWSER_TEST_P(DeclarativeNetRequestLazyApiTest, GetMatchedRules) {
-  ASSERT_TRUE(RunExtensionTest("get_matched_rules")) << message_;
-}
 #endif  // !BUILDFLAG(IS_ANDROID)
 
-IN_PROC_BROWSER_TEST_P(DeclarativeNetRequestLazyApiTest, IsRegexSupported) {
+IN_PROC_BROWSER_TEST_F(DeclarativeNetRequestApiTest, GetMatchedRules) {
+  ASSERT_TRUE(RunExtensionTest("get_matched_rules")) << message_;
+}
+
+IN_PROC_BROWSER_TEST_F(DeclarativeNetRequestApiTest, IsRegexSupported) {
   ASSERT_TRUE(RunExtensionTest("is_regex_supported")) << message_;
 }
 
-IN_PROC_BROWSER_TEST_P(DeclarativeNetRequestLazyApiTest, TestMatchOutcome) {
+IN_PROC_BROWSER_TEST_F(DeclarativeNetRequestApiTest, TestMatchOutcome) {
   ASSERT_TRUE(RunExtensionTest("test_match_outcome")) << message_;
 }
 
@@ -216,8 +172,7 @@ IN_PROC_BROWSER_TEST_F(DeclarativeNetRequestApiTest, UpdateStaticRules) {
 class DeclarativeNetRequestApiFencedFrameTest
     : public DeclarativeNetRequestApiTest {
  protected:
-  DeclarativeNetRequestApiFencedFrameTest()
-      : DeclarativeNetRequestApiTest(ContextType::kPersistentBackground) {
+  DeclarativeNetRequestApiFencedFrameTest() {
     feature_list_.InitWithFeaturesAndParameters(
         {{blink::features::kFencedFrames, {{}}},
          {features::kPrivacySandboxAdsAPIsOverride, {}}},
@@ -239,9 +194,8 @@ IN_PROC_BROWSER_TEST_F(DeclarativeNetRequestApiFencedFrameTest, DISABLED_Load) {
   ASSERT_TRUE(RunExtensionTest("fenced_frames")) << message_;
 }
 
-#if !BUILDFLAG(IS_ANDROID)
 class DeclarativeNetRequestApiPrerenderingTest
-    : public DeclarativeNetRequestLazyApiTest {
+    : public DeclarativeNetRequestApiTest {
  public:
   DeclarativeNetRequestApiPrerenderingTest() = default;
   ~DeclarativeNetRequestApiPrerenderingTest() override = default;
@@ -250,26 +204,13 @@ class DeclarativeNetRequestApiPrerenderingTest
   content::test::ScopedPrerenderFeatureList scoped_feature_list_;
 };
 
-INSTANTIATE_TEST_SUITE_P(PersistentBackground,
-                         DeclarativeNetRequestApiPrerenderingTest,
-                         ::testing::Values(ContextType::kPersistentBackground));
-INSTANTIATE_TEST_SUITE_P(EventPage,
-                         DeclarativeNetRequestApiPrerenderingTest,
-                         ::testing::Values(ContextType::kEventPage));
-INSTANTIATE_TEST_SUITE_P(ServiceWorker,
-                         DeclarativeNetRequestApiPrerenderingTest,
-                         ::testing::Values(ContextType::kServiceWorker));
-
-// TODO(crbug.com/391932982): Port to desktop Android when chrome.tabs API is
-// available.
-IN_PROC_BROWSER_TEST_P(DeclarativeNetRequestApiPrerenderingTest,
+IN_PROC_BROWSER_TEST_F(DeclarativeNetRequestApiPrerenderingTest,
                        PrerenderedPageInterception) {
   ASSERT_TRUE(RunExtensionTest("prerendering")) << message_;
 }
-#endif
 
 class DeclarativeNetRequestLazyApiResponseHeadersTest
-    : public DeclarativeNetRequestLazyApiTest {
+    : public DeclarativeNetRequestApiTest {
  public:
   DeclarativeNetRequestLazyApiResponseHeadersTest() {
     scoped_feature_list_.InitAndEnableFeature(
@@ -279,25 +220,12 @@ class DeclarativeNetRequestLazyApiResponseHeadersTest
  private:
   // TODO(crbug.com/40727004): Once feature is launched to stable and feature
   // flag can be removed, replace usages of this test class with just
-  // DeclarativeNetRequestLazyApiTest.
+  // DeclarativeNetRequestApiTest.
   base::test::ScopedFeatureList scoped_feature_list_;
   ScopedCurrentChannel current_channel_override_{version_info::Channel::DEV};
 };
 
-#if !BUILDFLAG(IS_ANDROID)
-// Android only supports service worker.
-INSTANTIATE_TEST_SUITE_P(PersistentBackground,
-                         DeclarativeNetRequestLazyApiResponseHeadersTest,
-                         ::testing::Values(ContextType::kPersistentBackground));
-INSTANTIATE_TEST_SUITE_P(EventPage,
-                         DeclarativeNetRequestLazyApiResponseHeadersTest,
-                         ::testing::Values(ContextType::kEventPage));
-#endif
-INSTANTIATE_TEST_SUITE_P(ServiceWorker,
-                         DeclarativeNetRequestLazyApiResponseHeadersTest,
-                         ::testing::Values(ContextType::kServiceWorker));
-
-IN_PROC_BROWSER_TEST_P(DeclarativeNetRequestLazyApiResponseHeadersTest,
+IN_PROC_BROWSER_TEST_F(DeclarativeNetRequestLazyApiResponseHeadersTest,
                        TestMatchOutcomeWithResponseHeaders) {
   ASSERT_TRUE(RunExtensionTest("test_match_outcome_response_headers"))
       << message_;

@@ -6,39 +6,33 @@
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_METRICS_AUTOFILL_METRICS_H_
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include <memory>
-#include <set>
 #include <string>
 #include <string_view>
-#include <utility>
+#include <variant>
 #include <vector>
 
 #include "base/containers/flat_set.h"
-#include "base/memory/raw_ptr.h"
-#include "base/memory/raw_ref.h"
+#include "base/memory/stack_allocated.h"
 #include "base/time/time.h"
-#include "components/autofill/core/browser/autofill_progress_dialog_type.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/filling/filling_product.h"
 #include "components/autofill/core/browser/form_types.h"
 #include "components/autofill/core/browser/metrics/form_events/form_events.h"
-#include "components/autofill/core/browser/metrics/log_event.h"
 #include "components/autofill/core/browser/payments/payments_autofill_client.h"
 #include "components/autofill/core/browser/suggestions/suggestion_hiding_reason.h"
+#include "components/autofill/core/browser/ui/autofill_image_fetcher_base.h"
+#include "components/autofill/core/browser/ui/payments/autofill_progress_ui_type.h"
 #include "components/autofill/core/browser/ui/popup_interaction.h"
 #include "components/autofill/core/common/dense_set.h"
 #include "components/autofill/core/common/mojom/autofill_types.mojom-forward.h"
-#include "components/autofill/core/common/signatures.h"
 #include "components/autofill/core/common/unique_ids.h"
-#include "components/security_state/core/security_state.h"
 #include "services/metrics/public/cpp/ukm_recorder.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
-
-class GURL;
 
 namespace autofill {
 
@@ -54,20 +48,6 @@ extern const int kMaxBucketsCount;
 
 class AutofillMetrics {
  public:
-  // These values are persisted to logs. Entries should not be renumbered and
-  // numeric values should never be reused.
-  enum DeveloperEngagementMetric {
-    // Parsed a form that is potentially autofillable and does not contain any
-    // web developer-specified field type hint.
-    FILLABLE_FORM_PARSED_WITHOUT_TYPE_HINTS = 0,
-    // Parsed a form that is potentially autofillable and contains at least one
-    // web developer-specified field type hint, a la
-    // http://is.gd/whatwg_autocomplete
-    FILLABLE_FORM_PARSED_WITH_TYPE_HINTS = 1,
-    FORM_CONTAINS_UPI_VPA_HINT_DEPRECATED = 2,
-    NUM_DEVELOPER_ENGAGEMENT_METRICS,
-  };
-
   // These values are persisted to logs. Entries should not be renumbered and
   // numeric values should never be reused.
   enum InfoBarMetric {
@@ -115,6 +95,20 @@ class AutofillMetrics {
     // keyboard accessory.
     kKeyboardAccessory = 2,
     kMaxValue = kKeyboardAccessory
+  };
+
+  // The user action that triggered the acceptance of a suggestion entry.
+  // These values are used in enums.xml; do not reorder or renumber entries!
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  enum class SuggestionAcceptedMethod {
+    // The user clicked on the suggestion.
+    kMouse = 0,
+    // The user pressed enter or tab to accept the suggestion.
+    kKeyboard = 1,
+    // The user tapped on the suggestion.
+    kTap = 2,
+    kMaxValue = kTap,
   };
 
   // Represents card submitted state.
@@ -455,6 +449,41 @@ class AutofillMetrics {
     kMaxValue = kPassword
   };
 
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  enum class AtMemoryTriggerSource {
+    kTypedTrigger = 0,
+    kContextMenu = 1,
+    kKeyboardShortcut = 2,
+    kMaxValue = kKeyboardShortcut
+  };
+
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  //
+  // Represents the status of Autofill prompts when at least one prompt can be
+  // displayed.
+  enum class AutofillPromptStatus {
+    // Both prompts could have been displayed.
+    kAddressAndCreditCardShown = 0,
+    // Only the address prompt could have been displayed.
+    kAddressShown = 1,
+    // Only the credit card prompt could have been displayed.
+    kCreditCardShown = 2,
+    kMaxValue = kCreditCardShown,
+  };
+
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  //
+  // LINT.IfChange(AutofillStrikeDatabaseBlockReason)
+  enum class AutofillStrikeDatabaseBlockReason {
+    kMaxStrikeLimitReached = 0,
+    kRequiredDelayNotMet = 1,
+    kMaxValue = kRequiredDelayNotMet,
+  };
+  // LINT.ThenChange(/tools/metrics/histograms/metadata/autofill/enums.xml:AutofillStrikeDatabaseBlockReason)
+
   // Utility class for determining the seamlessness of a credit card fill.
   class CreditCardSeamlessness {
    public:
@@ -574,14 +603,14 @@ class AutofillMetrics {
   static void LogScanCreditCardPromptMetric(ScanCreditCardPromptMetric metric);
   static void LogProgressDialogResultMetric(
       bool is_canceled_by_user,
-      AutofillProgressDialogType autofill_progress_dialog_type);
+      AutofillProgressUiType autofill_progress_dialog_type);
   static void LogProgressDialogShown(
-      AutofillProgressDialogType autofill_progress_dialog_type);
+      AutofillProgressUiType autofill_progress_dialog_type);
 
-  // Returns a string representation of the given AutofillProgressDialogType for
+  // Returns a string representation of the given AutofillProgressUiType for
   // constructing subhistogram paths.
   static std::string_view GetDialogTypeStringForLogging(
-      AutofillProgressDialogType autofill_progress_dialog_type);
+      AutofillProgressUiType autofill_progress_dialog_type);
 
   // Should be called when credit card scan is finished. |duration| should be
   // the time elapsed between launching the credit card scanner and getting back
@@ -589,8 +618,6 @@ class AutofillMetrics {
   // if the scan was cancelled.
   static void LogScanCreditCardCompleted(base::TimeDelta duration,
                                          bool completed);
-
-  static void LogDeveloperEngagementMetric(DeveloperEngagementMetric metric);
 
   static void LogServerQueryMetric(ServerQueryMetric metric);
 
@@ -722,10 +749,6 @@ class AutofillMetrics {
   // used.
   static void LogAutocompleteDaysSinceLastUse(size_t days);
 
-  // Logs the number of days since an unaccepted Autocomplete suggestion was
-  // last used.
-  static void LogUnacceptedAutocompleteSuggestionDaysSinceLastUse(size_t days);
-
   // Logs the fact that an autocomplete popup was shown.
   static void OnAutocompleteSuggestionsShown();
 
@@ -754,8 +777,8 @@ class AutofillMetrics {
   };
 
   // Logs several metrics about seamlessness. These are qualitative and bitmask
-  // UMA and UKM metrics as well as a UKM metric indicating whether
-  // "shared-autofill" did or would make a difference.
+  // UMA and UKM metrics as well as a UKM metric indicating whether the
+  // policy-controlled feature "autofill" did or would make a difference.
   //
   // The metrics are:
   // - UMA metrics "Autofill.CreditCard.Seamless{Fillable,Fills}.AtFillTime
@@ -797,21 +820,6 @@ class AutofillMetrics {
   static void LogUploadEvent(mojom::SubmissionSource submission_source,
                              bool was_sent);
 
-  // Logs the developer engagement ukm for the specified |url| and autofill
-  // fields in the form structure. |developer_engagement_metrics| is a bitmask
-  // of |AutofillMetrics::DeveloperEngagementMetric|. |is_for_credit_card| is
-  // true if the form is a credit card form. |form_types| is set of
-  // FormType recorded for the page. This will be stored as a bit vector
-  // in UKM.
-  static void LogDeveloperEngagementUkm(
-      ukm::UkmRecorder* ukm_recorder,
-      ukm::SourceId source_id,
-      const GURL& url,
-      bool is_for_credit_card,
-      DenseSet<FormTypeNameForLogging> form_types,
-      int developer_engagement_metrics,
-      FormSignature form_signature);
-
   // Converts form type to bit vector to store in UKM.
   static int64_t FormTypesToBitVector(
       const DenseSet<FormTypeNameForLogging>& form_types);
@@ -849,10 +857,17 @@ class AutofillMetrics {
   static void LogVerificationStatusOfAddressTokensOnProfileUsage(
       const AutofillProfile& profile);
 
-  // Logs the image fetching result for one image in AutofillImageFetcher.
-  static void LogImageFetchResult(bool succeeded);
-  // Logs the roundtrip latency for fetching an image in AutofillImageFetcher.
-  static void LogImageFetcherRequestLatency(base::TimeDelta latency);
+  // Logs the image fetching result for one `image_type` in
+  // AutofillImageFetcher.
+  static void LogImageFetchResult(
+      AutofillImageFetcherBase::ImageType image_type,
+      bool succeeded);
+  // Logs the overall image fetching result for a `image_type` in
+  // AutofillImageFetcher after a maximum preset number of attempts during
+  // browser startup.
+  static void LogImageFetchOverallResult(
+      AutofillImageFetcherBase::ImageType image_type,
+      bool succeeded);
 
   // Logs a field's (PredictionState, AutocompleteState) pair on form submit.
   static void LogAutocompletePredictionCollisionState(
@@ -869,17 +884,9 @@ class AutofillMetrics {
   // Returns the histogram string for the passed in
   // `payments::PaymentsAutofillClient::PaymentsRpcCardType` or
   // `CreditCard::RecordType`, starting with a period.
-  static std::string GetHistogramStringForCardType(
-      absl::variant<payments::PaymentsAutofillClient::PaymentsRpcCardType,
-                    CreditCard::RecordType> card_type);
-
-  // Returns 64-bit hash of the string of form global id, which consists of
-  // |frame_token| and |renderer_id|.
-  static uint64_t FormGlobalIdToHash64Bit(const FormGlobalId& form_global_id);
-  // Returns 64-bit hash of the string of field global id, which consists of
-  // |frame_token| and |renderer_id|.
-  static uint64_t FieldGlobalIdToHash64Bit(
-      const FieldGlobalId& field_global_id);
+  static std::string_view GetHistogramStringForCardType(
+      std::variant<payments::PaymentsAutofillClient::PaymentsRpcCardType,
+                   CreditCard::RecordType> card_type);
 
   // Logs the Autofill2_FieldInfoAfterSubmission UKM event after the form is
   // submitted and uploaded for votes to the crowdsourcing server.
@@ -890,17 +897,31 @@ class AutofillMetrics {
       base::TimeTicks form_submitted_timestamp);
 
   // This metric is recorded when an address is deleted from a first-level popup
-  // using shift+delete.
-  static void LogDeleteAddressProfileFromPopup();
+  // using shift+delete. `record_type` holds the record
+  // type of the profile that was deleted.
+  static void LogDeleteAddressProfileFromPopup(
+      AutofillProfile::RecordType record_type);
 
-  // This metric is recorded when an address is deleted from the keyboard
-  // accessory.
-  static void LogDeleteAddressProfileFromKeyboardAccessory();
+  // Records the outcome of an address profile deletion initiated from the
+  // keyboard accessory. `delete_confirmed` is true if the user confirmed the
+  // deletion prompt, and false if they canceled. `record_type` holds the record
+  // type of the profile that was deleted.
+  static void LogDeleteAddressProfileFromKeyboardAccessory(
+      bool delete_confirmed,
+      AutofillProfile::RecordType record_type);
 
   static void LogAutocompleteEvent(AutocompleteEvent event);
 
-  static void LogAutofillPopupVisibleDuration(FillingProduct filling_product,
-                                              base::TimeDelta duration);
+  // TODO(crbug.com/316143236): Remove all datalist related metrics once
+  // debugging is complete.
+  static void LogDataListSuggestionsShown();
+
+  static void LogDataListSuggestionsUpdated();
+
+  static void LogDataListSuggestionsInserted();
+
+  // Logs the status of Autofill prompts.
+  static void LogAutofillPromptStatus(AutofillPromptStatus status);
 };
 
 #if defined(UNIT_TEST)
@@ -912,7 +933,7 @@ int GetFieldTypeUserEditStatusMetric(
 std::string GetCreditCardTypeSuffix(
     payments::PaymentsAutofillClient::PaymentsRpcCardType card_type);
 
-const std::string PaymentsRpcResultToMetricsSuffix(
+const std::string_view PaymentsRpcResultToMetricsSuffix(
     payments::PaymentsAutofillClient::PaymentsRpcResult result);
 
 }  // namespace autofill

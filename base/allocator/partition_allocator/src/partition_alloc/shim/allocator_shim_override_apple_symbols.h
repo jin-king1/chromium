@@ -9,7 +9,10 @@
 #ifndef PARTITION_ALLOC_SHIM_ALLOCATOR_SHIM_OVERRIDE_APPLE_SYMBOLS_H_
 #define PARTITION_ALLOC_SHIM_ALLOCATOR_SHIM_OVERRIDE_APPLE_SYMBOLS_H_
 
+#include <cstring>
+
 #include "partition_alloc/buildflags.h"
+#include "partition_alloc/partition_alloc_base/compiler_specific.h"
 
 #if PA_BUILDFLAG(USE_ALLOCATOR_SHIM)
 #include "partition_alloc/shim/malloc_zone_functions_apple.h"
@@ -19,7 +22,7 @@ namespace allocator_shim {
 
 MallocZoneFunctions MallocZoneFunctionsToReplaceDefault() {
   MallocZoneFunctions new_functions;
-  memset(&new_functions, 0, sizeof(MallocZoneFunctions));
+  PA_UNSAFE_TODO(memset(&new_functions, 0, sizeof(MallocZoneFunctions)));
   new_functions.size = [](malloc_zone_t* zone, const void* ptr) -> size_t {
     return ShimGetSizeEstimate(ptr, zone);
   };
@@ -62,7 +65,7 @@ MallocZoneFunctions MallocZoneFunctionsToReplaceDefault() {
   };
   new_functions.free_definite_size = [](malloc_zone_t* zone, void* ptr,
                                         size_t size) {
-    ShimFreeDefiniteSize(ptr, size, zone);
+    ShimFreeWithSize(ptr, size, zone);
   };
   new_functions.try_free_default = [](malloc_zone_t* zone, void* ptr) {
     ShimTryFreeDefault(ptr, zone);

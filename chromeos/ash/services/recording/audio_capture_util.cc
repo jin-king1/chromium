@@ -2,13 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "chromeos/ash/services/recording/audio_capture_util.h"
 
+#include "base/containers/span.h"
 #include "base/memory/aligned_memory.h"
 #include "base/numerics/safe_conversions.h"
 #include "chromeos/ash/services/recording/recording_service_constants.h"
@@ -72,7 +69,7 @@ void AccumulateBusTo(const media::AudioBus& source,
                      media::AudioBus* destination,
                      int destination_start_frame,
                      int length) {
-  CHECK_EQ(source.channels(), source.channels());
+  CHECK_EQ(source.channels(), destination->channels());
   CHECK_LE(length, source.frames());
   CHECK_LE(destination_start_frame + length, destination->frames());
 
@@ -81,8 +78,8 @@ void AccumulateBusTo(const media::AudioBus& source,
   const size_t count = base::checked_cast<size_t>(length);
 
   for (int i = 0; i < source.channels(); ++i) {
-    auto src = source.channel_span(i).first(count);
-    auto dest = destination->channel_span(i).subspan(dest_offset, count);
+    auto src = source.channel(i).first(count);
+    auto dest = destination->channel(i).subspan(dest_offset, count);
     if (CanUseVectorMath(src, dest)) {
       media::vector_math::FMAC(src, /*scale=*/1, dest);
     } else {

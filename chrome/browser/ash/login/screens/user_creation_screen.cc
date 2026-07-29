@@ -8,6 +8,7 @@
 #include "chrome/browser/ash/login/error_screens_histogram_helper.h"
 #include "chrome/browser/ash/login/wizard_context.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
+#include "chrome/browser/ui/ash/login/webui_login_view.h"
 #include "chrome/browser/ui/webui/ash/login/error_screen_handler.h"
 #include "chrome/browser/ui/webui/ash/login/user_creation_screen_handler.h"
 #include "chromeos/ash/components/install_attributes/install_attributes.h"
@@ -128,7 +129,7 @@ void UserCreationScreen::SetChildSetupStep() {
   view_->SetChildSetupStep();
 }
 
-void UserCreationScreen::OnUserAction(const base::Value::List& args) {
+void UserCreationScreen::OnUserAction(const base::ListValue& args) {
   const std::string& action_id = args[0].GetString();
   if (action_id == kUserActionSignIn) {
     context()->sign_in_as_child = false;
@@ -159,10 +160,12 @@ void UserCreationScreen::OnUserAction(const base::Value::List& args) {
 
 bool UserCreationScreen::HandleAccelerator(LoginAcceleratorAction action) {
   if (action == LoginAcceleratorAction::kStartEnrollment) {
+    LoginDisplayHost::default_host()->GetWebUILoginView()->RequestFocus();
     RunExitCallback(Result::ENTERPRISE_ENROLL_SHORTCUT);
     return true;
   }
   if (action == LoginAcceleratorAction::kStartKioskEnrollment) {
+    LoginDisplayHost::default_host()->GetWebUILoginView()->RequestFocus();
     RunExitCallback(Result::KIOSK_ENTERPRISE_ENROLL);
     return true;
   }

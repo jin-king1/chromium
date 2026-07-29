@@ -7,6 +7,7 @@
 #include <memory>
 
 #include "base/functional/callback_helpers.h"
+#include "base/strings/stringprintf.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "chrome/test/base/testing_profile.h"
@@ -69,9 +70,9 @@ TEST_F(FederatedIdentityAccountKeyedPermissionContextTest,
 
   // Old Format
   {
-    base::Value::Dict new_object;
+    base::DictValue new_object;
     new_object.Set(kTestIdpOriginKey, idp.Serialize());
-    base::Value::List account_list;
+    base::ListValue account_list;
     account_list.Append(account);
     new_object.Set("account-ids", base::Value(std::move(account_list)));
     context()->GrantObjectPermission(rp, std::move(new_object));
@@ -132,18 +133,18 @@ TEST_F(FederatedIdentityAccountKeyedPermissionContextTest,
   const std::string account_c("wellesley");
 
   {
-    base::Value::Dict new_object;
+    base::DictValue new_object;
     new_object.Set(kTestIdpOriginKey, idp1.Serialize());
-    base::Value::List account_list;
+    base::ListValue account_list;
     account_list.Append(account_a);
     account_list.Append(account_b);
     new_object.Set("account-ids", base::Value(std::move(account_list)));
     context()->GrantObjectPermission(rp, std::move(new_object));
   }
   {
-    base::Value::Dict new_object;
+    base::DictValue new_object;
     new_object.Set(kTestIdpOriginKey, idp2.Serialize());
-    base::Value::List account_list;
+    base::ListValue account_list;
     account_list.Append(account_c);
     new_object.Set("account-ids", base::Value(std::move(account_list)));
     context()->GrantObjectPermission(rp, std::move(new_object));
@@ -277,7 +278,7 @@ TEST_F(FederatedIdentityAccountKeyedPermissionContextTest,
     EXPECT_EQ(*str1, *str2);
   }
 
-  base::Value::List* account_list1 =
+  base::ListValue* account_list1 =
       granted_objects1[0]->value.FindList("account-ids");
   ASSERT_TRUE(account_list1);
   ASSERT_EQ(account_list1->size(), 1u);
@@ -287,7 +288,7 @@ TEST_F(FederatedIdentityAccountKeyedPermissionContextTest,
   EXPECT_TRUE(account_dict1.FindString("account-id"));
   EXPECT_TRUE(account_dict1.FindString("timestamp"));
 
-  base::Value::List* account_list2 =
+  base::ListValue* account_list2 =
       granted_objects1[0]->value.FindList("account-ids");
   ASSERT_TRUE(account_list2);
   ASSERT_EQ(account_list2->size(), 1u);
@@ -303,15 +304,15 @@ TEST_F(FederatedIdentityAccountKeyedPermissionContextTest,
 }
 
 // Test that FederatedIdentityAccountKeyedPermissionContext can recover from
-// crbug.com/1381130
+// crbug.com/40245060
 TEST_F(FederatedIdentityAccountKeyedPermissionContextTest, RecoverFrom1381130) {
-  // crbug.com/1381130 only occurred when RP=IDP.
+  // crbug.com/40245060 only occurred when RP=IDP.
   const url::Origin site = url::Origin::Create(GURL("https://example.com"));
   std::string account{"conestogo"};
 
   // Storing data not associated with a signed-in account is bad because it
   // makes the expected behaviour of RevokePermission() unclear.
-  base::Value::Dict new_object;
+  base::DictValue new_object;
   new_object.Set(kTestIdpOriginKey, site.Serialize());
   new_object.Set("bug", base::Value("wrong"));
   context()->GrantObjectPermission(site, std::move(new_object));
@@ -381,30 +382,7 @@ TEST_F(FederatedIdentityAccountKeyedPermissionContextTest, RevokeNoMatch) {
 }
 
 TEST_F(FederatedIdentityAccountKeyedPermissionContextTest,
-       GetSharingPermissionGrantsAsContentSettings_FeatureDisabled) {
-  base::test::ScopedFeatureList features;
-  features.InitAndDisableFeature(blink::features::kFedCmWithStorageAccessAPI);
-  const url::Origin relying_party_requester =
-      url::Origin::Create(GURL("https://www.relying_party_requester.com"));
-  const url::Origin relying_party_embedder =
-      url::Origin::Create(GURL("https://www.relying_party_embedder.com"));
-  const url::Origin identity_provider =
-      url::Origin::Create(GURL("https://www.identity_provider.com"));
-
-  context()->GrantPermission(relying_party_requester, relying_party_embedder,
-                             identity_provider, "my_account");
-  ASSERT_TRUE(
-      context()->HasPermission(net::SchemefulSite(relying_party_embedder),
-                               net::SchemefulSite(identity_provider)));
-
-  EXPECT_THAT(context()->GetSharingPermissionGrantsAsContentSettings(),
-              IsEmpty());
-}
-
-TEST_F(FederatedIdentityAccountKeyedPermissionContextTest,
-       GetSharingPermissionGrantsAsContentSettings_FeatureEnabled) {
-  base::test::ScopedFeatureList features;
-  features.InitAndEnableFeature(blink::features::kFedCmWithStorageAccessAPI);
+       GetSharingPermissionGrantsAsContentSettings) {
   const url::Origin relying_party_requester =
       url::Origin::Create(GURL("https://www.relying_party_requester.com"));
   const url::Origin relying_party_embedder =
@@ -468,12 +446,12 @@ TEST_F(FederatedIdentityAccountKeyedPermissionContextTest,
       base::StringPrintf("%s<%s", identity_provider.Serialize().c_str(),
                          relying_party_embedder.Serialize().c_str());
 
-  base::Value::Dict new_object;
+  base::DictValue new_object;
   new_object.Set("rp-requester", relying_party_requester.Serialize());
   new_object.Set("rp-embedder", relying_party_embedder.Serialize());
   new_object.Set("idp-origin", identity_provider.Serialize());
 
-  base::Value::List account_list;
+  base::ListValue account_list;
   account_list.Append(account_a);
   account_list.Append(account_b);
   new_object.Set("account-ids", base::Value(std::move(account_list)));

@@ -10,10 +10,10 @@
 #include "base/types/strong_alias.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/css/css_property_name.h"
+#include "third_party/blink/renderer/core/css/css_property_value.h"
 #include "third_party/blink/renderer/core/css/properties/css_property.h"
 #include "third_party/blink/renderer/core/css/resolver/cascade_filter.h"
 #include "third_party/blink/renderer/core/css/resolver/cascade_origin.h"
-#include "third_party/blink/renderer/core/css/rule_set.h"
 #include "third_party/blink/renderer/platform/wtf/vector_traits.h"
 #include "third_party/blink/renderer/platform/wtf/wtf_size_t.h"
 
@@ -22,6 +22,7 @@ namespace blink {
 class CSSProperty;
 class CSSVariableData;
 class CSSProperty;
+class StyleRuleFunction;
 
 namespace cssvalue {
 
@@ -108,7 +109,7 @@ class CORE_EXPORT CascadeResolver {
   bool AllowSubstitution(CSSVariableData*) const;
 
   bool Rejects(const CSSProperty& property) {
-    if (!filter_.Rejects(property)) {
+    if (filter_.Accepts(property)) {
       return false;
     }
     rejected_flags_ |= property.GetFlags();
@@ -153,8 +154,7 @@ class CORE_EXPORT CascadeResolver {
   friend class StyleCascade;
   friend class TestCascadeResolver;
 
-  CascadeResolver(CascadeFilter filter, uint8_t generation)
-      : filter_(filter), generation_(generation) {}
+  explicit CascadeResolver(CascadeFilter filter) : filter_(filter) {}
 
   // If the given property is already being applied, returns true.
   //
@@ -186,7 +186,6 @@ class CORE_EXPORT CascadeResolver {
   // cycle_start_ and cycle_end_.
   wtf_size_t cycle_end_ = kNotFound;
   CascadeFilter filter_;
-  const uint8_t generation_ = 0;
   CSSProperty::Flags author_flags_ = 0;
   CSSProperty::Flags flags_ = 0;
   CSSProperty::Flags rejected_flags_ = 0;

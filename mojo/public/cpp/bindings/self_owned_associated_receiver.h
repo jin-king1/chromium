@@ -6,6 +6,7 @@
 #define MOJO_PUBLIC_CPP_BINDINGS_SELF_OWNED_ASSOCIATED_RECEIVER_H_
 
 #include <memory>
+#include <string_view>
 #include <utility>
 
 #include "base/memory/scoped_refptr.h"
@@ -95,6 +96,25 @@ class SelfOwnedAssociatedReceiver {
     std::ignore = receiver_.SwapImplForTesting(new_impl.get());
     impl_.swap(new_impl);
     return new_impl;
+  }
+
+  // Reports the currently dispatching message as bad. This destroys the
+  // SelfOwnedAssociatedReceiver instance.
+  void ReportBadMessage(std::string_view error) {
+    GetBadMessageCallback().Run(error);
+  }
+
+  ReportBadMessageCallback GetBadMessageCallback() {
+    return base::BindOnce(
+        [](ReportBadMessageCallback inner_callback,
+           base::WeakPtr<SelfOwnedAssociatedReceiver> self_owner,
+           std::string_view error) {
+          std::move(inner_callback).Run(error);
+          if (self_owner) {
+            self_owner->Close();
+          }
+        },
+        receiver_.GetBadMessageCallback(), weak_factory_.GetWeakPtr());
   }
 
  private:

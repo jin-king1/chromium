@@ -5,8 +5,8 @@
 package org.chromium.content_shell_apk;
 
 import org.chromium.base.process_launcher.ChildProcessConnection;
-import org.chromium.base.process_launcher.FileDescriptorInfo;
 import org.chromium.base.process_launcher.IChildProcessService;
+import org.chromium.base.process_launcher.IFileDescriptorInfo;
 import org.chromium.content.browser.ChildProcessLauncherHelperImpl;
 import org.chromium.content.browser.LauncherThread;
 
@@ -56,7 +56,7 @@ public final class ChildProcessLauncherTestUtils {
     public static ChildProcessLauncherHelperImpl startForTesting(
             final boolean sandboxed,
             final String[] commandLine,
-            final FileDescriptorInfo[] filesToBeMapped,
+            final IFileDescriptorInfo[] filesToBeMapped,
             final boolean doSetupConnection) {
         return runOnLauncherAndGetResult(
                 new Callable<ChildProcessLauncherHelperImpl>() {
@@ -69,7 +69,9 @@ public final class ChildProcessLauncherTestUtils {
                                 /* reducePriorityOnBackground= */ false,
                                 /* canUseWarmUpConnection= */ true,
                                 /* binderCallback= */ null,
-                                doSetupConnection);
+                                doSetupConnection,
+                                /* isSpareRenderer= */ false,
+                                /* isForOutermostMainFrame= */ true);
                     }
                 });
     }

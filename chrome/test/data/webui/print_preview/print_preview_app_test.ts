@@ -33,7 +33,6 @@ suite('PrintPreviewAppTest', function() {
     serializedDefaultDestinationSelectionRulesStr: null,
     pdfPrinterDisabled: false,
     destinationsManaged: false,
-    previewIsFromArc: false,
     uiLocale: 'en-us',
   };
 
@@ -63,15 +62,15 @@ suite('PrintPreviewAppTest', function() {
 
   test('PrintPresets', async () => {
     await initialize();
-    assertEquals(1, page.settings.copies.value);
-    assertFalse(page.settings.duplex.value);
+    assertEquals(1, page.getSettingValue('copies'));
+    assertFalse(page.getSettingValue('duplex'));
 
     // Send preset values of duplex LONG_EDGE and 2 copies.
     const copies = 2;
     const duplex = DuplexMode.LONG_EDGE;
     webUIListenerCallback('print-preset-options', true, copies, duplex);
-    assertEquals(copies, page.getSettingValue('copies') as number);
-    assertTrue(page.getSettingValue('duplex') as boolean);
+    assertEquals(copies, page.getSettingValue('copies'));
+    assertTrue(page.getSettingValue('duplex'));
     assertFalse(page.getSetting('duplex').setFromUi);
     assertFalse(page.getSetting('copies').setFromUi);
   });
@@ -79,21 +78,21 @@ suite('PrintPreviewAppTest', function() {
   test('DestinationsManaged', async () => {
     initialSettings.destinationsManaged = true;
     await initialize();
-    const sidebar = page.shadowRoot!.querySelector('print-preview-sidebar')!;
+    const sidebar = page.shadowRoot.querySelector('print-preview-sidebar')!;
     assertTrue(sidebar.controlsManaged);
   });
 
   test('HeaderFooterManaged', async () => {
     initialSettings.policies = {headerFooter: {allowedMode: true}};
     await initialize();
-    const sidebar = page.shadowRoot!.querySelector('print-preview-sidebar')!;
+    const sidebar = page.shadowRoot.querySelector('print-preview-sidebar')!;
     assertTrue(sidebar.controlsManaged);
   });
 
   test('CssBackgroundManaged', async () => {
     initialSettings.policies = {cssBackground: {allowedMode: 1}};
     await initialize();
-    const sidebar = page.shadowRoot!.querySelector('print-preview-sidebar')!;
+    const sidebar = page.shadowRoot.querySelector('print-preview-sidebar')!;
     assertTrue(sidebar.controlsManaged);
   });
 });

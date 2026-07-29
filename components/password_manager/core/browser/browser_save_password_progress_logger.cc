@@ -16,6 +16,7 @@
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
+#include "components/autofill/core/browser/autofill_server_prediction.h"
 #include "components/autofill/core/browser/autofill_type.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/form_structure.h"
@@ -29,6 +30,7 @@
 #include "components/password_manager/core/browser/password_manager.h"
 #include "components/password_manager/core/browser/votes_uploader.h"
 
+using autofill::AutofillServerPrediction;
 using autofill::AutofillType;
 using autofill::AutofillUploadContents;
 using autofill::FieldGlobalId;
@@ -147,13 +149,13 @@ std::string GetFormFieldDataWithPropertiesMaskLogString(
 // field.
 std::string GetFieldServerPredictionLogString(
     FieldGlobalId field_id,
-    const base::flat_map<FieldGlobalId, AutofillType::ServerPrediction>&
+    const base::flat_map<FieldGlobalId, AutofillServerPrediction>&
         predictions) {
   if (!predictions.contains(field_id)) {
     return std::string();
   }
   std::string result;
-  const AutofillType::ServerPrediction& prediction = predictions.at(field_id);
+  const AutofillServerPrediction& prediction = predictions.at(field_id);
 
   if (prediction.server_type() != autofill::NO_SERVER_DATA) {
     base::StrAppend(&result, {", Server Type= ",
@@ -175,7 +177,7 @@ std::string GetFieldServerPredictionLogString(
 // contained in `form`.
 std::string GetFormFieldsDataAndServerPredictionsLogString(
     const FormData& form,
-    const base::flat_map<FieldGlobalId, AutofillType::ServerPrediction>&
+    const base::flat_map<FieldGlobalId, AutofillServerPrediction>&
         predictions) {
   std::string result;
   for (const FormFieldData& field : form.fields()) {
@@ -213,6 +215,22 @@ std::string GetFormDataFieldsAndModelPredictionsLogString(
   return result;
 }
 
+std::string StoreToString(PasswordForm::Store store) {
+  std::vector<std::string_view> stores;
+  if (static_cast<int>(store) &
+      static_cast<int>(PasswordForm::Store::kProfileStore)) {
+    stores.push_back("Profile Store");
+  }
+  if (static_cast<int>(store) &
+      static_cast<int>(PasswordForm::Store::kAccountStore)) {
+    stores.push_back("Account Store");
+  }
+  if (stores.empty()) {
+    return "Not Set";
+  }
+  return base::JoinString(stores, ", ");
+}
+
 }  // namespace
 
 BrowserSavePasswordProgressLogger::BrowserSavePasswordProgressLogger(
@@ -224,9 +242,14 @@ BrowserSavePasswordProgressLogger::BrowserSavePasswordProgressLogger(
 BrowserSavePasswordProgressLogger::~BrowserSavePasswordProgressLogger() =
     default;
 
+void BrowserSavePasswordProgressLogger::LogValue(StringID label,
+                                                 const base::Value& log) {
+  autofill::SavePasswordProgressLogger::LogValue(label, log);
+}
+
 void BrowserSavePasswordProgressLogger::LogFormDataWithServerPredictions(
     const autofill::FormData& form,
-    const base::flat_map<FieldGlobalId, AutofillType::ServerPrediction>&
+    const base::flat_map<FieldGlobalId, AutofillServerPrediction>&
         predictions) {
   std::string message = "Server predictions: {\n";
   message += GetFormDataLog(form);
@@ -248,21 +271,30 @@ void BrowserSavePasswordProgressLogger::LogFormDataWithModelPredictions(
 void BrowserSavePasswordProgressLogger::LogFormStructure(
     StringID label,
     const FormStructure& form_structure,
+    const autofill::EncodeUploadRequestOptions& vote_metadata,
     std::optional<PasswordAttributesMetadata> password_attributes) {
-  std::string message = GetStringFromID(label) + ": {\n";
-  message += GetStringFromID(STRING_FORM_SIGNATURE) + ": " +
-             FormSignatureToDebugString(form_structure.form_signature()) + "\n";
-  message +=
-      GetStringFromID(STRING_ALTERNATIVE_FORM_SIGNATURE) + ": " +
-      FormSignatureToDebugString(form_structure.alternative_form_signature()) +
-      "\n";
-  message += GetStringFromID(STRING_ORIGIN) + ": " +
-             ScrubURL(form_structure.source_url()) + "\n";
-  message += GetStringFromID(STRING_ACTION) + ": " +
-             ScrubURL(form_structure.target_url()) + "\n";
-  message += FormStructureToFieldsLogString(form_structure);
-  message += VotesPasswordAttributesLogString(password_attributes);
-  message += "}";
+  std::string message = base::StrCat(
+      {GetStringFromID(label),
+       ": {\n",
+       GetStringFromID(STRING_FORM_SIGNATURE),
+       ": ",
+       FormSignatureToDebugString(form_structure.form_signature()),
+       "\n",
+       GetStringFromID(STRING_ALTERNATIVE_FORM_SIGNATURE),
+       ": ",
+       FormSignatureToDebugString(form_structure.alternative_form_signature()),
+       "\n",
+       GetStringFromID(STRING_ORIGIN),
+       ": ",
+       ScrubURL(form_structure.source_url()),
+       "\n",
+       GetStringFromID(STRING_ACTION),
+       ": ",
+       ScrubURL(form_structure.target_url()),
+       "\n",
+       FormStructureToFieldsLogString(form_structure, vote_metadata),
+       VotesPasswordAttributesLogString(password_attributes),
+       "}"});
   SendLog(message);
 }
 
@@ -270,12 +302,10 @@ void BrowserSavePasswordProgressLogger::LogSuccessiveOrigins(
     StringID label,
     const GURL& old_origin,
     const GURL& new_origin) {
-  std::string message = GetStringFromID(label) + ": {\n";
-  message +=
-      GetStringFromID(STRING_ORIGIN) + ": " + ScrubURL(old_origin) + "\n";
-  message +=
-      GetStringFromID(STRING_ORIGIN) + ": " + ScrubURL(new_origin) + "\n";
-  message += "}";
+  std::string message = base::StrCat(
+      {GetStringFromID(label), ": {\n", GetStringFromID(STRING_ORIGIN), ": ",
+       ScrubURL(old_origin), "\n", GetStringFromID(STRING_ORIGIN), ": ",
+       ScrubURL(new_origin), "\n", "}"});
   SendLog(message);
 }
 
@@ -321,9 +351,10 @@ std::string BrowserSavePasswordProgressLogger::VotesPasswordAttributesLogString(
 
 // static
 std::string BrowserSavePasswordProgressLogger::FormStructureToFieldsLogString(
-    const FormStructure& form_structure) {
-  std::string result;
-  result += GetStringFromID(STRING_FIELDS) + ": " + "\n";
+    const FormStructure& form_structure,
+    const autofill::EncodeUploadRequestOptions& vote_metadata) {
+  std::string result =
+      base::StrCat({GetStringFromID(STRING_FIELDS), ": ", "\n"});
   for (const auto& field : form_structure) {
     std::string field_info =
         GetFormFieldDataWithPropertiesMaskLogString(*field);
@@ -348,22 +379,30 @@ std::string BrowserSavePasswordProgressLogger::FormStructureToFieldsLogString(
       base::StrAppend(&field_info, {", VOTE: ", FieldTypeToStringView(type)});
     }
 
-    if (field->vote_type()) {
-      field_info += ", vote_type=" + VoteTypeToString(field->vote_type());
-    }
+    if (auto it = vote_metadata.fields.find(field->global_id());
+        it != vote_metadata.fields.end()) {
+      const autofill::EncodeUploadRequestOptions::Field& field_metadata =
+          it->second;
 
-    if (field->initial_value_hash().has_value()) {
-      field_info += ", initial value hash=";
-      field_info += NumberToString(field->initial_value_hash().value());
-    }
+      if (field_metadata.vote_type) {
+        field_info +=
+            ", vote_type=" + VoteTypeToString(field_metadata.vote_type);
+      }
 
-    std::string generation = GenerationTypeToString(field->generation_type());
-    if (!generation.empty()) {
-      field_info += ", GENERATION_EVENT: " + generation;
-    }
+      if (field_metadata.initial_value_hash.has_value()) {
+        field_info += ", initial value hash=";
+        field_info += NumberToString(field_metadata.initial_value_hash.value());
+      }
 
-    if (field->generated_password_changed()) {
-      field_info += ", generated password changed";
+      std::string generation =
+          GenerationTypeToString(field_metadata.generation_type);
+      if (!generation.empty()) {
+        field_info += ", GENERATION_EVENT: " + generation;
+      }
+
+      if (field_metadata.generated_password_changed) {
+        field_info += ", generated password changed";
+      }
     }
 
     if (field->password_requirements()) {
@@ -383,20 +422,35 @@ void BrowserSavePasswordProgressLogger::LogString(StringID label,
   LogValue(label, base::Value(s));
 }
 
+void BrowserSavePasswordProgressLogger::LogPasswordSaveAndUpdate(
+    StringID label,
+    PasswordForm::Store store) {
+  LogString(STRING_MESSAGE, base::StrCat({GetStringFromID(label), " on ",
+                                          StoreToString(store)}));
+}
+
+void BrowserSavePasswordProgressLogger::LogNumberResultsForStore(
+    PasswordForm::Store store,
+    size_t count) {
+  LogString(STRING_NUMBER_RESULTS,
+            base::StrCat({" ", StoreToString(store), ": ",
+                          base::NumberToString(count)}));
+}
+
 void BrowserSavePasswordProgressLogger::LogSuccessfulSubmissionIndicatorEvent(
     autofill::mojom::SubmissionIndicatorEvent event) {
   std::ostringstream submission_event_string_stream;
   submission_event_string_stream << event;
-  std::string message =
-      GetStringFromID(STRING_SUCCESSFUL_SUBMISSION_INDICATOR_EVENT) + ": " +
-      submission_event_string_stream.str();
+  std::string message = base::StrCat(
+      {GetStringFromID(STRING_SUCCESSFUL_SUBMISSION_INDICATOR_EVENT), ": ",
+       submission_event_string_stream.str(), "\n"});
   SendLog(message);
 }
 
 void BrowserSavePasswordProgressLogger::LogPasswordForm(
     BrowserSavePasswordProgressLogger::StringID label,
     const PasswordForm& form) {
-  base::Value::Dict log;
+  base::DictValue log;
   log.Set(GetStringFromID(STRING_SCHEME_MESSAGE),
           GetStringFromID(FormSchemeToStringID(form.scheme)));
   log.Set(GetStringFromID(STRING_SCHEME_MESSAGE),
@@ -424,7 +478,7 @@ void BrowserSavePasswordProgressLogger::LogPasswordForm(
         GetStringFromID(STRING_CONFIRMATION_PASSWORD_ELEMENT_RENDERER_ID),
         NumberToString(form.confirmation_password_element_renderer_id.value()));
   }
-  log.Set(GetStringFromID(STRING_PASSWORD_GENERATED),
+  log.Set(GetStringFromID(STRING_PASSWORD_IS_GENERATED),
           form.type == PasswordForm::Type::kGenerated);
   log.Set(GetStringFromID(STRING_TIMES_USED), form.times_used_in_html_form);
   LogValue(label, base::Value(std::move(log)));
@@ -446,6 +500,44 @@ void BrowserSavePasswordProgressLogger::LogPasswordRequirements(
   SendLog(s.str());
 }
 
+void BrowserSavePasswordProgressLogger::LogProvisionalSaveFailure(
+    PasswordManagerMetricsRecorder::ProvisionalSaveFailure failure,
+    std::optional<GURL> main_frame_url,
+    std::optional<GURL> form_origin) {
+  switch (failure) {
+    case PasswordManagerMetricsRecorder::SAVING_DISABLED:
+      LogMessage(STRING_SAVING_DISABLED);
+      break;
+    case PasswordManagerMetricsRecorder::EMPTY_PASSWORD:
+      LogMessage(SavePasswordProgressLogger::STRING_EMPTY_PASSWORD);
+      break;
+    case PasswordManagerMetricsRecorder::MATCHING_NOT_COMPLETE:
+      LogMessage(SavePasswordProgressLogger::STRING_MATCHING_NOT_COMPLETE);
+      break;
+    case PasswordManagerMetricsRecorder::NO_MATCHING_FORM:
+      LogMessage(SavePasswordProgressLogger::STRING_NO_MATCHING_FORM);
+      break;
+    case PasswordManagerMetricsRecorder::INVALID_FORM:
+      LogMessage(SavePasswordProgressLogger::STRING_INVALID_FORM);
+      break;
+    case PasswordManagerMetricsRecorder::SYNC_CREDENTIAL:
+      LogMessage(SavePasswordProgressLogger::STRING_SYNC_CREDENTIAL);
+      break;
+    case PasswordManagerMetricsRecorder::SAVING_ON_HTTP_AFTER_HTTPS:
+      CHECK(main_frame_url);
+      CHECK(form_origin);
+      LogSuccessiveOrigins(
+          SavePasswordProgressLogger::
+              STRING_BLOCK_PASSWORD_SAME_ORIGIN_INSECURE_SCHEME,
+          main_frame_url->DeprecatedGetOriginAsURL(),
+          form_origin->DeprecatedGetOriginAsURL());
+      break;
+    case PasswordManagerMetricsRecorder::MAX_FAILURE_VALUE:
+      NOTREACHED();
+  }
+  LogMessage(SavePasswordProgressLogger::STRING_DECISION_DROP);
+}
+
 void BrowserSavePasswordProgressLogger::SendLog(const std::string& log) {
   LOG_AF(*log_manager_) << autofill::Tag{"div"}
                         << autofill::Attrib{"class", "preserve-white-space"}
@@ -456,7 +548,8 @@ void BrowserSavePasswordProgressLogger::SendLog(const std::string& log) {
 std::string BrowserSavePasswordProgressLogger::PasswordAttributeLogString(
     StringID string_id,
     const std::string& attribute_value) {
-  return GetStringFromID(string_id) + ": " + attribute_value + "\n";
+  return base::StrCat(
+      {GetStringFromID(string_id), ": ", attribute_value, "\n"});
 }
 
 // static
@@ -469,18 +562,16 @@ std::string BrowserSavePasswordProgressLogger::BinaryPasswordAttributeLogString(
 
 std::string BrowserSavePasswordProgressLogger::GetFormDataLog(
     const FormData& form) {
-  std::string result =
-      GetStringFromID(STRING_FORM_SIGNATURE) + ": " +
-      FormSignatureToDebugString(autofill::CalculateFormSignature(form)) + "\n";
-  result += GetStringFromID(STRING_ALTERNATIVE_FORM_SIGNATURE) + ": " +
-            FormSignatureToDebugString(
-                autofill::CalculateAlternativeFormSignature(form)) +
-            "\n";
-  result += GetStringFromID(STRING_ORIGIN) + ": " + ScrubURL(form.url()) + "\n";
-  result +=
-      GetStringFromID(STRING_ACTION) + ": " + ScrubURL(form.action()) + "\n";
+  std::string result = base::StrCat(
+      {GetStringFromID(STRING_FORM_SIGNATURE), ": ",
+       FormSignatureToDebugString(autofill::CalculateFormSignature(form)), "\n",
+       GetStringFromID(STRING_ALTERNATIVE_FORM_SIGNATURE), ": ",
+       FormSignatureToDebugString(
+           autofill::CalculateAlternativeFormSignature(form)),
+       "\n", GetStringFromID(STRING_ORIGIN), ": ", ScrubURL(form.url()), "\n",
+       GetStringFromID(STRING_ACTION), ": ", ScrubURL(form.action()), "\n"});
   if (form.fields().size() > 0) {
-    result += GetStringFromID(STRING_FIELDS) + ": " + "\n";
+    base::StrAppend(&result, {GetStringFromID(STRING_FIELDS), ": ", "\n"});
   }
   return result;
 }

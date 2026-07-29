@@ -16,13 +16,13 @@
 #include "base/system/sys_info.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/protobuf_matchers.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
 #include "chrome/browser/ui/webui/ash/parent_access/parent_access_dialog.h"
 #include "chrome/browser/ui/webui/ash/parent_access/parent_access_metrics_utils.h"
 #include "chrome/browser/ui/webui/ash/parent_access/parent_access_ui.mojom.h"
 #include "chrome/browser/ui/webui/ash/parent_access/parent_access_ui_handler_delegate.h"
-#include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/google/core/common/google_util.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
@@ -30,9 +30,10 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
-using ::testing::_;
-
 namespace ash {
+
+using base::test::EqualsProto;
+using ::testing::_;
 
 class FakeParentAccessUiHandlerDelegate : public ParentAccessUiHandlerDelegate {
  public:
@@ -145,7 +146,7 @@ TEST_P(ParentAccessUiHandlerImplTestParameterized, GetParentAccessUrl) {
         ASSERT_TRUE(webview_url.has_query());
 
         // Split the query string into a map of keys to values.
-        std::string query_str = webview_url.query();
+        std::string query_str = webview_url.GetQuery();
         url::Component query(0, query_str.length());
         url::Component key;
         url::Component value;
@@ -235,14 +236,6 @@ TEST_P(ParentAccessUiHandlerImplTestParameterized,
         one_fetch_run_loop.Quit();
       }));
   one_fetch_run_loop.Run();
-}
-
-MATCHER_P(EqualsProto,
-          message,
-          "Match a proto Message equal to the matcher's argument.") {
-  std::string expected_serialized = message.SerializeAsString();
-  std::string actual_serialized = arg.SerializeAsString();
-  return expected_serialized == actual_serialized;
 }
 
 // Verifies that the parent approvals sequence is handled correctly.

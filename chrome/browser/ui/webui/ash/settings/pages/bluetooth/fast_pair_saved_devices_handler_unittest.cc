@@ -42,15 +42,6 @@ const char kSavedDeviceNameKey[] = "name";
 const char kSavedDeviceImageUrlKey[] = "imageUrl";
 const char kSavedDeviceAccountKeyKey[] = "accountKey";
 
-const char kDisplayUrlBase64[] =
-    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGQAAABkCAIAAAD/"
-    "gAIDAAAA5klEQVR4nO3QQQkAIADAQLV/"
-    "Z63gXiLcJRibYw8urdcBPzErMCswKzArMCswKzArMCswKzArMCswKzArMCswKzArMCswKzArMC"
-    "swKzArMCswKzArMCswKzArMCswKzArMCswKzArMCswKzArMCswKzArMCswKzArMCswKzArMCsw"
-    "KzArMCswKzArMCswKzArMCswKzArMCswKzArMCswKzArMCswKzArMCswKzArMCswKzArMCswKz"
-    "ArMCswKzArMCswKzArMCswKzArMCswKzArMCswKzArMCswKzArMCswKzArMCs4iV8Bx6UARfcA"
-    "AAAASUVORK5CYII=";
-
 const char kDeviceName1[] = "I16max";
 const char kImageBytes1[] = "01010101001010101010101010101";
 const std::vector<uint8_t> kAccountKey1 = {0xA0, 0xBA, 0xF0, 0xBB, 0x95, 0x1F,
@@ -141,6 +132,16 @@ class TestFastPairSavedDevicesHandler : public FastPairSavedDevicesHandler {
   using FastPairSavedDevicesHandler::set_web_ui;
 };
 
+const char* GetExpectedImageDataUrl() {
+  return "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGQAAABkCAIAAAD/"
+         "gAIDAAAA10lEQVR4nOzQQQ0AIAwAsYXg3zJY2P1bCb3zhqUzrMkKZAWyAlmBrEBWICuQ"
+         "FcgKZAWyAlmBrEBWICuQFcgKZAWyAlmBrEBWICuQFcgKZAWyAlmBrEBWICuQFcgKZAWy"
+         "AlmBrEBWICuQFcgKZAWyAlmBrEBWICuQFcgKZAWyAlmBrEBWICuQFcgKZAWyAlmBrEB"
+         "WICuQFcgKZAWyAlmBrEBWICuQFcgKZAWyAlmBrEBWICuQFcgKZAWyAlmBrEBWICuQF"
+         "cgKZAWyAlmBrEBWICuQFcgKZAUfAAD//"
+         "7xo61IAAAAGSURBVAMA6ioByljQE+sAAAAASUVORK5CYII=";
+}
+
 }  // namespace
 
 class FastPairSavedDevicesHandlerTest : public testing::Test {
@@ -218,7 +219,7 @@ class FastPairSavedDevicesHandlerTest : public testing::Test {
 
     // Size should be in sync with size of devices list created in
     // |InitializeSavedDevicesList|
-    const base::Value::List* saved_devices_list =
+    const base::ListValue* saved_devices_list =
         saved_devices_list_call_data.arg2()->GetIfList();
     ASSERT_EQ(3u, saved_devices_list->size());
 
@@ -240,7 +241,7 @@ class FastPairSavedDevicesHandlerTest : public testing::Test {
       const content::TestWebUI::CallData& saved_devices_list_call_data) {
     ASSERT_EQ(kSavedDevicesListMessage,
               saved_devices_list_call_data.arg1()->GetString());
-    const base::Value::List* saved_devices_list =
+    const base::ListValue* saved_devices_list =
         saved_devices_list_call_data.arg2()->GetIfList();
     ASSERT_TRUE(saved_devices_list->empty());
   }
@@ -257,14 +258,14 @@ class FastPairSavedDevicesHandlerTest : public testing::Test {
   }
 
   void LoadPage() {
-    // `HandleReceivedMessages` has to use a Value::List due to the API.
-    base::Value::List args;
+    // `HandleReceivedMessages` has to use a base::ListValue due to the API.
+    base::ListValue args;
     test_web_ui()->HandleReceivedMessage(kLoadSavedDevicePage, args);
   }
 
   void RemoveDevice(const std::vector<uint8_t>& account_key) {
-    // `HandleReceivedMessages` has to use a Value::List due to the API.
-    base::Value::List args;
+    // `HandleReceivedMessages` has to use a base::ListValue due to the API.
+    base::ListValue args;
     args.Append(EncodeKey(account_key));
     test_web_ui()->HandleReceivedMessage(kRemoveSavedDevice, args);
   }
@@ -302,13 +303,14 @@ TEST_F(FastPairSavedDevicesHandlerTest, GetSavedDevices) {
 
   // We mock the image decoder to return the same test image, which is why
   // the base64 encoded images are all the same here.
-  VerifySavedDevicesList(
-      *test_web_ui()->call_data()[1], /*device_name1=*/kDeviceName1,
-      /*expected_device_url1=*/kDisplayUrlBase64, /*account_key1=*/kAccountKey1,
-      /*device_name2=*/kDeviceName2, /*expected_device_url2=*/kDisplayUrlBase64,
-      /*account_key2=*/kAccountKey2, /*device_name3=*/kDeviceName3,
-      /*expected_device_url3=*/kDisplayUrlBase64,
-      /*account_key3=*/kAccountKey3);
+  const char* expected_test_image_url = GetExpectedImageDataUrl();
+  VerifySavedDevicesList(*test_web_ui()->call_data()[1],
+                         /*device_name1=*/kDeviceName1, expected_test_image_url,
+                         /*account_key1=*/kAccountKey1,
+                         /*device_name2=*/kDeviceName2, expected_test_image_url,
+                         /*account_key2=*/kAccountKey2,
+                         /*device_name3=*/kDeviceName3, expected_test_image_url,
+                         /*account_key3=*/kAccountKey3);
   histogram_tester().ExpectTotalCount(kSavedDevicesTotalUxLoadTimeMetricName,
                                       1);
 }
@@ -339,13 +341,17 @@ TEST_F(FastPairSavedDevicesHandlerTest, DISABLED_ReloadBeforePageLoadsIgnored) {
   EXPECT_EQ(2u, test_web_ui()->call_data().size());
   VerifyOptInStatus(*test_web_ui()->call_data()[0],
                     nearby::fastpair::OptInStatus::STATUS_OPTED_IN);
-  VerifySavedDevicesList(
-      *test_web_ui()->call_data()[1], /*device_name1=*/kDeviceName1,
-      /*expected_device_url1=*/kDisplayUrlBase64, /*account_key1=*/kAccountKey1,
-      /*device_name2=*/kDeviceName2, /*expected_device_url2=*/kDisplayUrlBase64,
-      /*account_key2=*/kAccountKey2, /*device_name3=*/kDeviceName3,
-      /*expected_device_url3=*/kDisplayUrlBase64,
-      /*account_key3=*/kAccountKey3);
+
+  // We mock the image decoder to return the same test image, which is why
+  // the base64 encoded images are all the same here.
+  const char* expected_test_image_url = GetExpectedImageDataUrl();
+  VerifySavedDevicesList(*test_web_ui()->call_data()[1],
+                         /*device_name1=*/kDeviceName1, expected_test_image_url,
+                         /*account_key1=*/kAccountKey1,
+                         /*device_name2=*/kDeviceName2, expected_test_image_url,
+                         /*account_key2=*/kAccountKey2,
+                         /*device_name3=*/kDeviceName3, expected_test_image_url,
+                         /*account_key3=*/kAccountKey3);
   histogram_tester().ExpectTotalCount(kSavedDevicesTotalUxLoadTimeMetricName,
                                       1);
 }
@@ -368,13 +374,17 @@ TEST_F(FastPairSavedDevicesHandlerTest, ReloadAfterPageLoads) {
   EXPECT_EQ(2u, test_web_ui()->call_data().size());
   VerifyOptInStatus(*test_web_ui()->call_data()[0],
                     nearby::fastpair::OptInStatus::STATUS_OPTED_IN);
-  VerifySavedDevicesList(
-      *test_web_ui()->call_data()[1], /*device_name1=*/kDeviceName1,
-      /*expected_device_url1=*/kDisplayUrlBase64, /*account_key1=*/kAccountKey1,
-      /*device_name2=*/kDeviceName2, /*expected_device_url2=*/kDisplayUrlBase64,
-      /*account_key2=*/kAccountKey2, /*device_name3=*/kDeviceName3,
-      /*expected_device_url3=*/kDisplayUrlBase64,
-      /*account_key3=*/kAccountKey3);
+
+  // We mock the image decoder to return the same test image, which is why
+  // the base64 encoded images are all the same here.
+  const char* expected_test_image_url = GetExpectedImageDataUrl();
+  VerifySavedDevicesList(*test_web_ui()->call_data()[1],
+                         /*device_name1=*/kDeviceName1, expected_test_image_url,
+                         /*account_key1=*/kAccountKey1,
+                         /*device_name2=*/kDeviceName2, expected_test_image_url,
+                         /*account_key2=*/kAccountKey2,
+                         /*device_name3=*/kDeviceName3, expected_test_image_url,
+                         /*account_key3=*/kAccountKey3);
   histogram_tester().ExpectTotalCount(kSavedDevicesTotalUxLoadTimeMetricName,
                                       1);
 
@@ -386,22 +396,22 @@ TEST_F(FastPairSavedDevicesHandlerTest, ReloadAfterPageLoads) {
   EXPECT_EQ(4u, test_web_ui()->call_data().size());
   VerifyOptInStatus(*test_web_ui()->call_data()[0],
                     nearby::fastpair::OptInStatus::STATUS_OPTED_IN);
-  VerifySavedDevicesList(
-      *test_web_ui()->call_data()[1], /*device_name1=*/kDeviceName1,
-      /*expected_device_url1=*/kDisplayUrlBase64, /*account_key1=*/kAccountKey1,
-      /*device_name2=*/kDeviceName2, /*expected_device_url2=*/kDisplayUrlBase64,
-      /*account_key2=*/kAccountKey2, /*device_name3=*/kDeviceName3,
-      /*expected_device_url3=*/kDisplayUrlBase64,
-      /*account_key3=*/kAccountKey3);
+  VerifySavedDevicesList(*test_web_ui()->call_data()[1],
+                         /*device_name1=*/kDeviceName1, expected_test_image_url,
+                         /*account_key1=*/kAccountKey1,
+                         /*device_name2=*/kDeviceName2, expected_test_image_url,
+                         /*account_key2=*/kAccountKey2,
+                         /*device_name3=*/kDeviceName3, expected_test_image_url,
+                         /*account_key3=*/kAccountKey3);
   VerifyOptInStatus(*test_web_ui()->call_data()[2],
                     nearby::fastpair::OptInStatus::STATUS_OPTED_IN);
-  VerifySavedDevicesList(
-      *test_web_ui()->call_data()[1], /*device_name1=*/kDeviceName1,
-      /*expected_device_url1=*/kDisplayUrlBase64, /*account_key1=*/kAccountKey1,
-      /*device_name2=*/kDeviceName2, /*expected_device_url2=*/kDisplayUrlBase64,
-      /*account_key2=*/kAccountKey2, /*device_name3=*/kDeviceName3,
-      /*expected_device_url3=*/kDisplayUrlBase64,
-      /*account_key3=*/kAccountKey3);
+  VerifySavedDevicesList(*test_web_ui()->call_data()[1],
+                         /*device_name1=*/kDeviceName1, expected_test_image_url,
+                         /*account_key1=*/kAccountKey1,
+                         /*device_name2=*/kDeviceName2, expected_test_image_url,
+                         /*account_key2=*/kAccountKey2,
+                         /*device_name3=*/kDeviceName3, expected_test_image_url,
+                         /*account_key3=*/kAccountKey3);
   histogram_tester().ExpectTotalCount(kSavedDevicesTotalUxLoadTimeMetricName,
                                       2);
 }
@@ -445,13 +455,17 @@ TEST_F(FastPairSavedDevicesHandlerTest, SavedDevicesBecomesEmpty) {
   EXPECT_EQ(2u, test_web_ui()->call_data().size());
   VerifyOptInStatus(*test_web_ui()->call_data()[0],
                     nearby::fastpair::OptInStatus::STATUS_OPTED_IN);
-  VerifySavedDevicesList(
-      *test_web_ui()->call_data()[1], /*device_name1=*/kDeviceName1,
-      /*expected_device_url1=*/kDisplayUrlBase64, /*account_key1=*/kAccountKey1,
-      /*device_name2=*/kDeviceName2, /*expected_device_url2=*/kDisplayUrlBase64,
-      /*account_key2=*/kAccountKey2, /*device_name3=*/kDeviceName3,
-      /*expected_device_url3=*/kDisplayUrlBase64,
-      /*account_key3=*/kAccountKey3);
+
+  // We mock the image decoder to return the same test image, which is why
+  // the base64 encoded images are all the same here.
+  const char* expected_test_image_url = GetExpectedImageDataUrl();
+  VerifySavedDevicesList(*test_web_ui()->call_data()[1],
+                         /*device_name1=*/kDeviceName1, expected_test_image_url,
+                         /*account_key1=*/kAccountKey1,
+                         /*device_name2=*/kDeviceName2, expected_test_image_url,
+                         /*account_key2=*/kAccountKey2,
+                         /*device_name3=*/kDeviceName3, expected_test_image_url,
+                         /*account_key3=*/kAccountKey3);
   histogram_tester().ExpectTotalCount(kSavedDevicesTotalUxLoadTimeMetricName,
                                       1);
   histogram_tester().ExpectBucketCount(kSavedDevicesCountMetricName,
@@ -491,13 +505,17 @@ TEST_F(FastPairSavedDevicesHandlerTest, SavedDevicesChanges) {
   EXPECT_EQ(2u, test_web_ui()->call_data().size());
   VerifyOptInStatus(*test_web_ui()->call_data()[0],
                     nearby::fastpair::OptInStatus::STATUS_OPTED_IN);
-  VerifySavedDevicesList(
-      *test_web_ui()->call_data()[1], /*device_name1=*/kDeviceName1,
-      /*expected_device_url1=*/kDisplayUrlBase64, /*account_key1=*/kAccountKey1,
-      /*device_name2=*/kDeviceName2, /*expected_device_url2=*/kDisplayUrlBase64,
-      /*account_key2=*/kAccountKey2, /*device_name3=*/kDeviceName3,
-      /*expected_device_url3=*/kDisplayUrlBase64,
-      /*account_key3=*/kAccountKey3);
+
+  // We mock the image decoder to return the same test image, which is why
+  // the base64 encoded images are all the same here.
+  const char* expected_test_image_url = GetExpectedImageDataUrl();
+  VerifySavedDevicesList(*test_web_ui()->call_data()[1],
+                         /*device_name1=*/kDeviceName1, expected_test_image_url,
+                         /*account_key1=*/kAccountKey1,
+                         /*device_name2=*/kDeviceName2, expected_test_image_url,
+                         /*account_key2=*/kAccountKey2,
+                         /*device_name3=*/kDeviceName3, expected_test_image_url,
+                         /*account_key3=*/kAccountKey3);
   histogram_tester().ExpectTotalCount(kSavedDevicesTotalUxLoadTimeMetricName,
                                       1);
 
@@ -514,13 +532,13 @@ TEST_F(FastPairSavedDevicesHandlerTest, SavedDevicesChanges) {
   EXPECT_EQ(4u, test_web_ui()->call_data().size());
   VerifyOptInStatus(*test_web_ui()->call_data()[2],
                     nearby::fastpair::OptInStatus::STATUS_OPTED_IN);
-  VerifySavedDevicesList(
-      *test_web_ui()->call_data()[3], /*device_name1=*/kDeviceName4,
-      /*expected_device_url1=*/kDisplayUrlBase64, /*account_key1=*/kAccountKey4,
-      /*device_name2=*/kDeviceName5, /*expected_device_url2=*/kDisplayUrlBase64,
-      /*account_key2=*/kAccountKey5, /*device_name3=*/kDeviceName6,
-      /*expected_device_url3=*/kDisplayUrlBase64,
-      /*account_key3=*/kAccountKey6);
+  VerifySavedDevicesList(*test_web_ui()->call_data()[3],
+                         /*device_name1=*/kDeviceName4, expected_test_image_url,
+                         /*account_key1=*/kAccountKey4,
+                         /*device_name2=*/kDeviceName5, expected_test_image_url,
+                         /*account_key2=*/kAccountKey5,
+                         /*device_name3=*/kDeviceName6, expected_test_image_url,
+                         /*account_key3=*/kAccountKey6);
   histogram_tester().ExpectTotalCount(kSavedDevicesTotalUxLoadTimeMetricName,
                                       2);
 }
@@ -568,13 +586,17 @@ TEST_F(FastPairSavedDevicesHandlerTest, RemoveSavedDevice) {
   LoadPage();
   base::RunLoop().RunUntilIdle();
   EXPECT_EQ(2u, test_web_ui()->call_data().size());
-  VerifySavedDevicesList(
-      *test_web_ui()->call_data()[1], /*device_name1=*/kDeviceName1,
-      /*expected_device_url1=*/kDisplayUrlBase64, /*account_key1=*/kAccountKey1,
-      /*device_name2=*/kDeviceName2, /*expected_device_url2=*/kDisplayUrlBase64,
-      /*account_key2=*/kAccountKey2, /*device_name3=*/kDeviceName3,
-      /*expected_device_url3=*/kDisplayUrlBase64,
-      /*account_key3=*/kAccountKey3);
+
+  // We mock the image decoder to return the same test image, which is why
+  // the base64 encoded images are all the same here.
+  const char* expected_test_image_url = GetExpectedImageDataUrl();
+  VerifySavedDevicesList(*test_web_ui()->call_data()[1],
+                         /*device_name1=*/kDeviceName1, expected_test_image_url,
+                         /*account_key1=*/kAccountKey1,
+                         /*device_name2=*/kDeviceName2, expected_test_image_url,
+                         /*account_key2=*/kAccountKey2,
+                         /*device_name3=*/kDeviceName3, expected_test_image_url,
+                         /*account_key3=*/kAccountKey3);
   histogram_tester().ExpectBucketCount(kSavedDeviceRemoveResultMetricName,
                                        /*success=*/true, 0);
   histogram_tester().ExpectBucketCount(kSavedDeviceRemoveResultMetricName,
@@ -591,16 +613,16 @@ TEST_F(FastPairSavedDevicesHandlerTest, RemoveSavedDevice) {
   base::RunLoop().RunUntilIdle();
   EXPECT_EQ(4u, test_web_ui()->call_data().size());
 
-  const base::Value::List* saved_devices_list =
+  const base::ListValue* saved_devices_list =
       test_web_ui()->call_data()[3]->arg2()->GetIfList();
   ASSERT_EQ(2u, saved_devices_list->size());
   AssertDeviceInList(/*device=*/*(saved_devices_list->begin()),
                      /*expected_device_name=*/kDeviceName1,
-                     /*expected_base64_image_url=*/kDisplayUrlBase64,
+                     expected_test_image_url,
                      /*expected_account_key=*/kAccountKey1);
   AssertDeviceInList(/*device=*/*(saved_devices_list->begin() + 1),
                      /*expected_device_name=*/kDeviceName2,
-                     /*expected_base64_image_url=*/kDisplayUrlBase64,
+                     expected_test_image_url,
                      /*expected_account_key=*/kAccountKey2);
 
   histogram_tester().ExpectBucketCount(kSavedDeviceRemoveResultMetricName,

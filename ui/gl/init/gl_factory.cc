@@ -11,7 +11,6 @@
 
 #include "base/command_line.h"
 #include "base/logging.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/strings/string_util.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
@@ -20,7 +19,6 @@
 #include "ui/gl/gl_surface.h"
 #include "ui/gl/gl_utils.h"
 #include "ui/gl/init/gl_initializer.h"
-#include "ui/gl/startup_trace.h"
 
 #if BUILDFLAG(IS_OZONE)
 #include "ui/base/ui_base_features.h"
@@ -53,15 +51,26 @@ GLImplementationParts GetRequestedGLImplementation() {
   // If the passthrough command decoder is enabled, put ANGLE first if allowed
   if (UsePassthroughCommandDecoder(cmd)) {
     std::vector<GLImplementationParts> angle_impls = {};
-    bool software_gl_in_allow_list = false;
+    std::vector<GLImplementationParts> software_impls = {};
     auto iter = allowed_impls.begin();
     while (iter != allowed_impls.end()) {
-      if ((*iter) == GetSoftwareGLImplementation()) {
-        software_gl_in_allow_list = true;
-        allowed_impls.erase(iter);
+      // Filter out disabled software implementations
+      if (IsSwiftShaderGLImplementation(*iter) &&
+          !features::IsSwiftShaderAllowed(cmd)) {
+        iter = allowed_impls.erase(iter);
+        continue;
+      }
+      if (IsWARPGLImplementation(*iter) && !features::IsWARPAllowed(cmd)) {
+        iter = allowed_impls.erase(iter);
+        continue;
+      }
+
+      if (IsSoftwareGLImplementation(*iter)) {
+        software_impls.emplace_back(*iter);
+        iter = allowed_impls.erase(iter);
       } else if (iter->gl == kGLImplementationEGLANGLE) {
         angle_impls.emplace_back(*iter);
-        allowed_impls.erase(iter);
+        iter = allowed_impls.erase(iter);
       } else {
         iter++;
       }
@@ -69,11 +78,9 @@ GLImplementationParts GetRequestedGLImplementation() {
     allowed_impls.insert(allowed_impls.begin(), angle_impls.begin(),
                          angle_impls.end());
     // Insert software implementations at the end, after all other hardware
-    // implementations. If SwiftShader is not allowed as a fallback, don't
-    // re-insert it.
-    if (software_gl_in_allow_list && features::IsSwiftShaderAllowed(cmd)) {
-      allowed_impls.emplace_back(GetSoftwareGLImplementation());
-    }
+    // implementations.
+    allowed_impls.insert(allowed_impls.end(), software_impls.begin(),
+                         software_impls.end());
   }
 
   if (allowed_impls.empty()) {
@@ -110,7 +117,6 @@ GLDisplay* InitializeGLOneOffPlatformHelper(bool init_extensions,
                                             gl::GpuPreference gpu_preference) {
   TRACE_EVENT1("gpu,startup", "gl::init::InitializeGLOneOffPlatformHelper",
                "init_extensions", init_extensions);
-  GPU_STARTUP_TRACE_EVENT("gl::init::InitializeGLOneOffPlatformHelper");
 
   const base::CommandLine* cmd = base::CommandLine::ForCurrentProcess();
   bool disable_gl_drawing = cmd->HasSwitch(switches::kDisableGLDrawingForTests);
@@ -122,7 +128,7 @@ GLDisplay* InitializeGLOneOffPlatformHelper(bool init_extensions,
 }  // namespace
 
 GLDisplay* InitializeGLOneOff(gl::GpuPreference gpu_preference) {
-  GPU_STARTUP_TRACE_EVENT("gl::init::InitializeOneOff");
+  TRACE_EVENT("gpu,startup", "gl::init::InitializeOneOff");
 
   if (!InitializeStaticGLBindingsOneOff())
     return nullptr;
@@ -137,7 +143,6 @@ GLDisplay* InitializeGLNoExtensionsOneOff(bool init_bindings,
                                           gl::GpuPreference gpu_preference) {
   TRACE_EVENT1("gpu,startup", "gl::init::InitializeNoExtensionsOneOff",
                "init_bindings", init_bindings);
-  GPU_STARTUP_TRACE_EVENT("gl::init::InitializeNoExtensionsOneOff");
   if (init_bindings) {
     if (!InitializeStaticGLBindingsOneOff())
       return nullptr;
@@ -151,7 +156,7 @@ GLDisplay* InitializeGLNoExtensionsOneOff(bool init_bindings,
 
 bool InitializeStaticGLBindingsOneOff() {
   DCHECK_EQ(kGLImplementationNone, GetGLImplementation());
-  GPU_STARTUP_TRACE_EVENT("gl::init::InitializeStaticGLBindingsOneOff");
+  TRACE_EVENT("gpu,startup", "gl::init::InitializeStaticGLBindingsOneOff");
 
   GLImplementationParts impl = GetRequestedGLImplementation();
   if (impl.gl == kGLImplementationDisabled) {

@@ -8,11 +8,13 @@ import android.graphics.drawable.Drawable;
 import android.view.View;
 import android.widget.CompoundButton;
 
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.WritableBooleanPropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.WritableObjectPropertyKey;
 
 /** Hosts the properties for the improved bookmarks save flow. */
+@NullMarked
 public class ImprovedBookmarkSaveFlowProperties {
     /** Encapsulates the display text for folders. */
     static class FolderText {
@@ -47,6 +49,8 @@ public class ImprovedBookmarkSaveFlowProperties {
             new WritableObjectPropertyKey<>();
     public static final WritableObjectPropertyKey<CharSequence> SUBTITLE =
             new WritableObjectPropertyKey<>();
+    public static final WritableBooleanPropertyKey ADJUST_SUBTITLE_LAYOUT_DIRECTION =
+            new WritableBooleanPropertyKey();
     public static final WritableBooleanPropertyKey PRICE_TRACKING_VISIBLE =
             new WritableBooleanPropertyKey();
     public static final WritableBooleanPropertyKey PRICE_TRACKING_ENABLED =
@@ -61,6 +65,7 @@ public class ImprovedBookmarkSaveFlowProperties {
         BOOKMARK_ROW_ICON,
         TITLE,
         SUBTITLE,
+        ADJUST_SUBTITLE_LAYOUT_DIRECTION,
         PRICE_TRACKING_VISIBLE,
         PRICE_TRACKING_ENABLED,
         PRICE_TRACKING_SWITCH_CHECKED,

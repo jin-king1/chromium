@@ -9,7 +9,6 @@
 #import <utility>
 #import <vector>
 
-#import "base/containers/contains.h"
 #import "base/containers/flat_set.h"
 #import "base/memory/raw_ptr.h"
 #import "base/strings/sys_string_conversions.h"
@@ -18,9 +17,9 @@
 #import "components/password_manager/core/browser/features/password_manager_features_util.h"
 #import "components/password_manager/core/browser/password_form.h"
 #import "components/password_manager/core/browser/password_manager_metrics_util.h"
-#import "components/password_manager/core/browser/password_sync_util.h"
 #import "components/password_manager/core/browser/ui/credential_ui_entry.h"
 #import "components/password_manager/core/common/password_manager_pref_names.h"
+#import "components/prefs/pref_service.h"
 #import "components/signin/public/identity_manager/account_info.h"
 #import "components/sync/service/sync_service.h"
 #import "ios/chrome/browser/passwords/model/ios_chrome_password_check_manager.h"
@@ -205,7 +204,7 @@ bool AreMatchingCredentials(const CredentialUIEntry& credential,
         usernamesWithSameDomainDict;
 
 // Display name to use for the Password Details view.
-@property(nonatomic, strong) NSString* displayName;
+@property(nonatomic, copy) NSString* displayName;
 
 // The context in which the password details are accessed.
 @property(nonatomic, assign) DetailsContext context;
@@ -233,7 +232,7 @@ bool AreMatchingCredentials(const CredentialUIEntry& credential,
   _passwordCheckObserver =
       std::make_unique<PasswordCheckObserverBridge>(self, _manager.get());
   _credentials = credentials;
-  _displayName = displayName;
+  _displayName = [displayName copy];
   _context = context;
   _prefService = prefService;
   _syncService = syncService;
@@ -270,6 +269,7 @@ bool AreMatchingCredentials(const CredentialUIEntry& credential,
 - (void)disconnect {
   _passwordCheckObserver.reset();
   _manager = nullptr;
+  _prefService = nullptr;
 }
 
 - (void)removeCredential:(CredentialDetails*)credentialDetails {
@@ -322,9 +322,12 @@ bool AreMatchingCredentials(const CredentialUIEntry& credential,
   }
 
   it->stored_in = {password_manager::PasswordForm::Store::kAccountStore};
-  self.savedPasswordsPresenter->MoveCredentialsToAccount(
-      {*it}, password_manager::metrics_util::MoveToAccountStoreTrigger::
-                 kExplicitlyTriggeredInSettings);
+  self.savedPasswordsPresenter->MoveCredentialsToAccount({*it});
+
+  base::UmaHistogramEnumeration(
+      "PasswordManager.AccountStorage.MoveToAccountStoreFlowAccepted2",
+      password_manager::metrics_util::MoveToAccountStoreTrigger::
+          kExplicitlyTriggeredInSettings);
   [self providePasswordsToConsumer];
 }
 
@@ -445,15 +448,8 @@ bool AreMatchingCredentials(const CredentialUIEntry& credential,
   }
 }
 
-- (void)didFinishEditingPasswordDetails {
+- (void)didFinishEditingCredentialDetails {
   [self providePasswordsToConsumer];
-}
-
-- (void)passwordDetailsViewController:
-            (PasswordDetailsTableViewController*)viewController
-                didAddPasswordDetails:(NSString*)username
-                             password:(NSString*)password {
-  NOTREACHED();
 }
 
 - (BOOL)isUsernameReused:(NSString*)newUsername forDomain:(NSString*)domain {
@@ -579,8 +575,7 @@ bool AreMatchingCredentials(const CredentialUIEntry& credential,
     // storage is enabled.
     credentialDetails.shouldOfferToMoveToAccount =
         self.context == DetailsContext::kPasswordSettings &&
-        password_manager::features_util::IsAccountStorageEnabled(
-            _prefService, _syncService) &&
+        password_manager::features_util::IsAccountStorageActive(_syncService) &&
         ShouldShowLocalOnlyIcon(credential, _syncService);
     [passwords addObject:credentialDetails];
   }
@@ -630,7 +625,7 @@ bool AreMatchingCredentials(const CredentialUIEntry& credential,
 
 // Returns YES if all of the following conditions are met:
 // * Build is branded (bypassed with a command line switch in EG tests).
-// * User is syncing or signed in with account storage enabled.
+// * User is signed in with account storage enabled.
 - (BOOL)shouldDisplayShareButton {
 #if !BUILDFLAG(GOOGLE_CHROME_BRANDING)
   if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
@@ -639,9 +634,7 @@ bool AreMatchingCredentials(const CredentialUIEntry& credential,
   }
 #endif  // !BUILDFLAG(GOOGLE_CHROME_BRANDING)
 
-  return password_manager::sync_util::GetAccountForSaving(_prefService,
-                                                          _syncService)
-      .has_value();
+  return password_manager::features_util::IsAccountStorageActive(_syncService);
 }
 
 @end

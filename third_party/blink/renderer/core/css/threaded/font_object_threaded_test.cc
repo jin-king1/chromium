@@ -13,7 +13,7 @@
 #include "third_party/blink/renderer/platform/fonts/font_custom_platform_data.h"
 #include "third_party/blink/renderer/platform/fonts/font_description.h"
 #include "third_party/blink/renderer/platform/fonts/font_selector.h"
-#include "third_party/blink/renderer/platform/fonts/shaping/caching_word_shape_iterator.h"
+#include "third_party/blink/renderer/platform/fonts/plain_text_node.h"
 #include "third_party/blink/renderer/platform/fonts/shaping/harfbuzz_shaper.h"
 #include "third_party/blink/renderer/platform/fonts/shaping/shape_result_view.h"
 #include "third_party/blink/renderer/platform/fonts/text_fragment_paint_info.h"
@@ -21,6 +21,7 @@
 #include "third_party/blink/renderer/platform/language.h"
 #include "third_party/blink/renderer/platform/testing/font_test_helpers.h"
 #include "third_party/blink/renderer/platform/testing/unit_test_helpers.h"
+#include "third_party/blink/renderer/platform/text/text_run.h"
 
 using blink::test::CreateTestFont;
 
@@ -36,7 +37,9 @@ TSAN_TEST(FontObjectThreadedTest, GetFontDefinition) {
         MakeGarbageCollected<MutableCSSPropertyValueSet>(kHTMLStandardMode);
     CSSParser::ParseValue(style, CSSPropertyID::kFont, "15px Ahem", true);
 
-    FontDescription desc = FontStyleResolver::ComputeFont(*style, nullptr);
+    auto maybe = FontStyleResolver::ComputeFont(*style, nullptr);
+    ASSERT_TRUE(maybe.has_value());
+    FontDescription desc = maybe.value();
 
     EXPECT_EQ(desc.SpecifiedSize(), 15);
     EXPECT_EQ(desc.ComputedSize(), 15);
@@ -95,8 +98,9 @@ TSAN_TEST(FontObjectThreadedTest, TextIntercepts) {
     Vector<Font::TextIntercept> text_intercepts;
 
     // 4 intercept ranges for below baseline p glyphs in the test string
-    font->GetTextIntercepts(text_paint_info, default_paint,
-                            below_baseline_bounds, text_intercepts);
+    font->GetTextIntercepts(
+        text_paint_info, Font::InkSkipCJKHandling::kExcludeCJK, default_paint,
+        below_baseline_bounds, text_intercepts);
     EXPECT_EQ(text_intercepts.size(), 4u);
     for (auto text_intercept : text_intercepts) {
       EXPECT_GT(text_intercept.end_, text_intercept.begin_);
@@ -104,8 +108,9 @@ TSAN_TEST(FontObjectThreadedTest, TextIntercepts) {
 
     std::tuple<float, float> above_baseline_bounds = std::make_tuple(-4, -2);
     // 5 intercept ranges for the above baseline E ACUTE glyphs
-    font->GetTextIntercepts(text_paint_info, default_paint,
-                            above_baseline_bounds, text_intercepts);
+    font->GetTextIntercepts(
+        text_paint_info, Font::InkSkipCJKHandling::kExcludeCJK, default_paint,
+        above_baseline_bounds, text_intercepts);
     EXPECT_EQ(text_intercepts.size(), 5u);
     for (auto text_intercept : text_intercepts) {
       EXPECT_GT(text_intercept.end_, text_intercept.begin_);
@@ -123,26 +128,24 @@ TSAN_TEST(FontObjectThreadedTest, WordShaperTest) {
 
     Font* font = MakeGarbageCollected<Font>(font_description);
     ASSERT_TRUE(font->CanShapeWordByWord());
-    ShapeCache* cache = MakeGarbageCollected<ShapeCache>();
 
     TextRun text_run(base::byte_span_from_cstring("ABC DEF."));
+    auto* node = MakeGarbageCollected<PlainTextNode>(
+        text_run, /* normalize_space */ true, *font, /* supports_bidi */ true,
+        nullptr);
 
-    const ShapeResult* result = nullptr;
-    CachingWordShapeIterator iter(cache, text_run, font);
-
-    ASSERT_TRUE(iter.Next(&result));
+    ASSERT_EQ(3u, node->ItemList().size());
+    const ShapeResult* result = node->ItemList()[0].GetShapeResult();
     EXPECT_EQ(0u, result->StartIndex());
     EXPECT_EQ(3u, result->EndIndex());
 
-    ASSERT_TRUE(iter.Next(&result));
+    result = node->ItemList()[1].GetShapeResult();
     EXPECT_EQ(0u, result->StartIndex());
     EXPECT_EQ(1u, result->EndIndex());
 
-    ASSERT_TRUE(iter.Next(&result));
+    result = node->ItemList()[2].GetShapeResult();
     EXPECT_EQ(0u, result->StartIndex());
     EXPECT_EQ(4u, result->EndIndex());
-
-    ASSERT_FALSE(iter.Next(&result));
   });
 }
 

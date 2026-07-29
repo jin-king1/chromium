@@ -25,17 +25,6 @@
 #include "third_party/blink/renderer/platform/wtf/cross_thread_copier_base.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 
-namespace WTF {
-
-template <>
-struct CrossThreadCopier<media::AudioParameters> {
-  STATIC_ONLY(CrossThreadCopier);
-  using Type = media::AudioParameters;
-  static Type Copy(Type pointer) { return pointer; }
-};
-
-}  // namespace WTF
-
 namespace blink {
 
 namespace {

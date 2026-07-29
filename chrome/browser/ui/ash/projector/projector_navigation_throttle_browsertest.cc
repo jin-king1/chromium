@@ -6,7 +6,6 @@
 
 #include "ash/constants/ash_features.h"
 #include "ash/webui/projector_app/public/cpp/projector_app_constants.h"
-#include "ash/webui/system_apps/public/system_web_app_type.h"
 #include "base/auto_reset.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/test/metrics/histogram_tester.h"
@@ -15,21 +14,21 @@
 #include "base/time/tick_clock.h"
 #include "base/time/time.h"
 #include "chrome/browser/apps/app_service/metrics/app_service_metrics.h"
-#include "chrome/browser/apps/link_capturing/chromeos_link_capturing_delegate.h"
 #include "chrome/browser/apps/link_capturing/chromeos_reimpl_navigation_capturing_throttle.h"
 #include "chrome/browser/apps/link_capturing/link_capturing_feature_test_support.h"
+#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/ash/system_web_apps/system_web_app_manager.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/global_features.h"
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_list.h"
-#include "chrome/browser/ui/browser_list_observer.h"
-#include "chrome/browser/ui/browser_navigator.h"
-#include "chrome/browser/ui/browser_navigator_params.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+#include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "chromeos/ash/components/system_web_apps/system_web_app_type.h"
+#include "components/application_locale_storage/application_locale_storage.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/common/page_type.h"
 #include "content/public/test/browser_test.h"
@@ -46,6 +45,12 @@ namespace {
 constexpr char kFilePath[] = "xyz";
 
 constexpr char kStartTime[] = "21 Jan 2022 10:00:00 GMT";
+
+enum class ProjectorAppNavigationType {
+  kFromOmnibox,
+  kTargetSelfLink,
+  kTargetBlankLink,
+};
 
 }  // namespace
 
@@ -73,20 +78,14 @@ class ProjectorNavigationThrottleTest : public InProcessBrowserTest {
     task_runner_->AdvanceMockTickClock(forward_by);
   }
 
-  void SetUpMockClock(bool use_v2) {
-    if (use_v2) {
-      clock_reset_ = std::make_unique<base::AutoReset<const base::TickClock*>>(
-          apps::ChromeOsReimplNavigationCapturingThrottle::SetClockForTesting(
-              task_runner_->GetMockTickClock()));
-    } else {
-      clock_reset_ = std::make_unique<base::AutoReset<const base::TickClock*>>(
-          apps::ChromeOsLinkCapturingDelegate::SetClockForTesting(
-              task_runner_->GetMockTickClock()));
-    }
+  void SetUpMockClock() {
+    clock_reset_ = std::make_unique<base::AutoReset<const base::TickClock*>>(
+        apps::ChromeOsReimplNavigationCapturingThrottle::SetClockForTesting(
+            task_runner_->GetMockTickClock()));
   }
 
  protected:
-  Profile* profile() { return browser()->profile(); }
+  Profile* profile() { return browser()->GetProfile(); }
   scoped_refptr<base::TestMockTimeTaskRunner> task_runner_;
 
  private:
@@ -96,8 +95,8 @@ class ProjectorNavigationThrottleTest : public InProcessBrowserTest {
 
 using LinkCapturingFeatureVersion = apps::test::LinkCapturingFeatureVersion;
 
-using ProjectorAppNavigationParams =
-    std::tuple<LinkCapturingFeatureVersion, bool, std::string>;
+using ProjectorAppNavigationParams = std::
+    tuple<LinkCapturingFeatureVersion, ProjectorAppNavigationType, std::string>;
 
 class ProjectorNavigationCapturingParameterizedTest
     : public ProjectorNavigationThrottleTest,
@@ -111,7 +110,14 @@ class ProjectorNavigationCapturingParameterizedTest
   LinkCapturingFeatureVersion feature_version() const {
     return std::get<LinkCapturingFeatureVersion>(GetParam());
   }
-  bool navigate_from_link() const { return std::get<bool>(GetParam()); }
+  bool navigate_from_link() const {
+    return std::get<ProjectorAppNavigationType>(GetParam()) !=
+           ProjectorAppNavigationType::kFromOmnibox;
+  }
+  bool navigate_target_blank() const {
+    return std::get<ProjectorAppNavigationType>(GetParam()) ==
+           ProjectorAppNavigationType::kTargetBlankLink;
+  }
   std::string url_params() const { return std::get<std::string>(GetParam()); }
 
  private:
@@ -124,8 +130,7 @@ class ProjectorNavigationCapturingParameterizedTest
 // the SWA.
 IN_PROC_BROWSER_TEST_P(ProjectorNavigationCapturingParameterizedTest,
                        NavigationRedirects) {
-  SetUpMockClock(feature_version() ==
-                 LinkCapturingFeatureVersion::kV2DefaultOff);
+  SetUpMockClock();
   base::HistogramTester histogram_tester;
 
   std::string url = kChromeUIUntrustedProjectorPwaUrl;
@@ -137,41 +142,45 @@ IN_PROC_BROWSER_TEST_P(ProjectorNavigationCapturingParameterizedTest,
   GURL gurl(url);
 
   // Prior to navigation, there is only one browser available.
-  EXPECT_EQ(BrowserList::GetInstance()->size(), 1u);
+  EXPECT_EQ(GlobalBrowserCollection::GetInstance()->GetSize(), 1u);
 
   // We have to listen for both the browser being removed AND the new browser
   // being added.
-  ui_test_utils::BrowserChangeObserver removed_observer(
-      nullptr, ui_test_utils::BrowserChangeObserver::ChangeType::kRemoved);
-  ui_test_utils::BrowserChangeObserver added_observer(
-      nullptr, ui_test_utils::BrowserChangeObserver::ChangeType::kAdded);
+  ui_test_utils::BrowserDestroyedObserver browser_destroyed_observer;
+  ui_test_utils::BrowserCreatedObserver browser_created_observer;
   if (navigate_from_link()) {
-    // Simulate the user clicking a link.
-    NavigateParams params(browser(), gurl,
-                          ui::PageTransition::PAGE_TRANSITION_LINK);
-    Navigate(&params);
+    if (navigate_target_blank()) {
+      EXPECT_TRUE(content::ExecJs(
+          browser()->tab_strip_model()->GetActiveWebContents(),
+          content::JsReplace("window.open($1, '_blank', 'noopener');",
+                             gurl.spec())));
+    } else {
+      NavigateParams params(browser(), gurl,
+                            ui::PageTransition::PAGE_TRANSITION_LINK);
+      Navigate(&params);
+    }
   } else {
     // Simulate the user typing the url into the omnibox.
     ui_test_utils::NavigateToURLWithDisposition(
         browser(), gurl, WindowOpenDisposition::CURRENT_TAB,
         ui_test_utils::BrowserTestWaitFlags::BROWSER_TEST_WAIT_FOR_BROWSER);
+    browser_destroyed_observer.Wait();
   }
 
-  removed_observer.Wait();
-  added_observer.Wait();
+  BrowserWindowInterface* const swa_browser = browser_created_observer.Wait();
 
   // During the navigation, we closed the previous browser to prevent dangling
   // about:blank pages and opened a new app browser for the Projector SWA.
   // There is still only one browser available.
-  EXPECT_EQ(BrowserList::GetInstance()->size(), 1u);
-  // Select the first available browser, which should be the SWA.
-  SelectFirstBrowser();
-  Browser* app_browser =
-      FindSystemWebAppBrowser(profile(), SystemWebAppType::PROJECTOR);
+  EXPECT_EQ(GlobalBrowserCollection::GetInstance()->GetSize(),
+            navigate_target_blank() ? 2u : 1u);
+  // Set the default browser to the swa browser.
+  SetBrowser(swa_browser);
+  ash::BrowserDelegate* app_browser = FindSystemWebAppBrowser(
+      profile(), SystemWebAppType::PROJECTOR, ash::BrowserType::kApp);
   // Projector SWA is now open.
   ASSERT_TRUE(app_browser);
-  content::WebContents* tab =
-      app_browser->tab_strip_model()->GetActiveWebContents();
+  content::WebContents* tab = app_browser->GetActiveWebContents();
   ASSERT_TRUE(tab);
   EXPECT_EQ(tab->GetController().GetVisibleEntry()->GetPageType(),
             content::PAGE_TYPE_NORMAL);
@@ -200,9 +209,12 @@ INSTANTIATE_TEST_SUITE_P(
     ProjectorNavigationCapturingParameterizedTest,
     ::testing::Combine(
         /*link_capturing_feature_version=*/::testing::Values(
-            LinkCapturingFeatureVersion::kV1DefaultOff,
-            LinkCapturingFeatureVersion::kV2DefaultOff),
-        /*navigate_from_link=*/testing::Bool(),
+            LinkCapturingFeatureVersion::kV2DefaultOff,
+            LinkCapturingFeatureVersion::kV2DefaultOn),
+        /*navigate_from_link=*/
+        testing::Values(ProjectorAppNavigationType::kFromOmnibox,
+                        ProjectorAppNavigationType::kTargetSelfLink,
+                        ProjectorAppNavigationType::kTargetBlankLink),
         /*url_params=*/
         ::testing::Values("resourceKey=abc", "resourceKey=abc&xyz=123", "")),
     [](const testing::TestParamInfo<ProjectorAppNavigationParams>& info) {
@@ -210,8 +222,17 @@ INSTANTIATE_TEST_SUITE_P(
       test_name.append(apps::test::ToString(
           std::get<LinkCapturingFeatureVersion>(info.param)));
       test_name.append("_");
-      test_name.append(std::get<bool>(info.param) ? "navigate_from_link"
-                                                  : "navigate_from_omnibox");
+      switch (std::get<ProjectorAppNavigationType>(info.param)) {
+        case ProjectorAppNavigationType::kFromOmnibox:
+          test_name.append("navigate_from_omnibox");
+          break;
+        case ProjectorAppNavigationType::kTargetSelfLink:
+          test_name.append("navigate_from_link");
+          break;
+        case ProjectorAppNavigationType::kTargetBlankLink:
+          test_name.append("navigate_from_target_blank_link");
+          break;
+      }
       test_name.append("_");
 
       // The query params have "=" in them which is not considered a valid param
@@ -244,9 +265,9 @@ class ProjectorNavigationThrottleRedirectionParameterized
 
 IN_PROC_BROWSER_TEST_P(ProjectorNavigationThrottleRedirectionParameterized,
                        NoBlankTab) {
-  SetUpMockClock(GetParam() == LinkCapturingFeatureVersion::kV2DefaultOff);
+  SetUpMockClock();
   // Prior to navigation, there is only one browser available.
-  EXPECT_EQ(BrowserList::GetInstance()->size(), 1u);
+  EXPECT_EQ(GlobalBrowserCollection::GetInstance()->GetSize(), 1u);
 
   // Suppose the user clicks a link like https://screencast.apps.chrome in
   // gchat. The redirect URL actually looks like the below.
@@ -257,10 +278,8 @@ IN_PROC_BROWSER_TEST_P(ProjectorNavigationThrottleRedirectionParameterized,
           "screencast.apps.chrome&sa=D&source=hangouts&ust=1642759200000000")));
 
   // We wait for both the old browser to close and the new app browser to open.
-  ui_test_utils::BrowserChangeObserver removed_observer(
-      nullptr, ui_test_utils::BrowserChangeObserver::ChangeType::kRemoved);
-  ui_test_utils::BrowserChangeObserver added_observer(
-      nullptr, ui_test_utils::BrowserChangeObserver::ChangeType::kAdded);
+  ui_test_utils::BrowserDestroyedObserver browser_destroyed_observer;
+  ui_test_utils::BrowserCreatedObserver browser_created_observer;
   // The Google servers would redirect to the URL in the ?q= query parameter.
   // Simulate this behavior in this test without actually pinging the Google
   // servers to prevent flakiness.
@@ -268,22 +287,21 @@ IN_PROC_BROWSER_TEST_P(ProjectorNavigationThrottleRedirectionParameterized,
       browser(), GURL(kChromeUIUntrustedProjectorPwaUrl),
       WindowOpenDisposition::CURRENT_TAB,
       ui_test_utils::BrowserTestWaitFlags::BROWSER_TEST_WAIT_FOR_BROWSER);
-  removed_observer.Wait();
-  added_observer.Wait();
+  browser_destroyed_observer.Wait();
+  BrowserWindowInterface* const swa_browser = browser_created_observer.Wait();
 
   // During the navigation, we closed the previous browser to prevent dangling
   // blank redirect pages and opened a new app browser for the Projector SWA.
   // There is still only one browser available.
-  EXPECT_EQ(BrowserList::GetInstance()->size(), 1u);
-  // Select the first available browser, which should be the SWA.
-  SelectFirstBrowser();
-  Browser* app_browser =
-      FindSystemWebAppBrowser(profile(), SystemWebAppType::PROJECTOR);
+  EXPECT_EQ(GlobalBrowserCollection::GetInstance()->GetSize(), 1u);
+  // Set the default browser to the swa browser.
+  SetBrowser(swa_browser);
+  ash::BrowserDelegate* app_browser = FindSystemWebAppBrowser(
+      profile(), SystemWebAppType::PROJECTOR, ash::BrowserType::kApp);
 
   // Projector SWA is now open.
   ASSERT_TRUE(app_browser);
-  content::WebContents* tab =
-      app_browser->tab_strip_model()->GetActiveWebContents();
+  content::WebContents* tab = app_browser->GetActiveWebContents();
   ASSERT_TRUE(tab);
   EXPECT_EQ(tab->GetController().GetVisibleEntry()->GetPageType(),
             content::PAGE_TYPE_NORMAL);
@@ -303,12 +321,11 @@ IN_PROC_BROWSER_TEST_P(ProjectorNavigationThrottleRedirectionParameterized,
       browser(), untrusted_url, WindowOpenDisposition::NEW_WINDOW,
       ui_test_utils::BrowserTestWaitFlags::BROWSER_TEST_WAIT_FOR_BROWSER);
 
-  Browser* app_browser =
-      FindSystemWebAppBrowser(profile(), SystemWebAppType::PROJECTOR);
+  ash::BrowserDelegate* app_browser = FindSystemWebAppBrowser(
+      profile(), SystemWebAppType::PROJECTOR, ash::BrowserType::kApp);
   // Projector SWA is now open.
   ASSERT_TRUE(app_browser);
-  content::WebContents* tab =
-      app_browser->tab_strip_model()->GetActiveWebContents();
+  content::WebContents* tab = app_browser->GetActiveWebContents();
   ASSERT_TRUE(tab);
   EXPECT_EQ(tab->GetController().GetVisibleEntry()->GetPageType(),
             content::PAGE_TYPE_NORMAL);
@@ -320,8 +337,8 @@ IN_PROC_BROWSER_TEST_P(ProjectorNavigationThrottleRedirectionParameterized,
 INSTANTIATE_TEST_SUITE_P(
     ,
     ProjectorNavigationThrottleRedirectionParameterized,
-    ::testing::Values(LinkCapturingFeatureVersion::kV1DefaultOff,
-                      LinkCapturingFeatureVersion::kV2DefaultOff),
+    ::testing::Values(LinkCapturingFeatureVersion::kV2DefaultOff,
+                      LinkCapturingFeatureVersion::kV2DefaultOn),
     [](const testing::TestParamInfo<LinkCapturingFeatureVersion>& info) {
       return apps::test::ToString(info.param);
     });
@@ -349,7 +366,7 @@ class ProjectorNavigationThrottleLocaleTest
 // Verifies that the Projector app can detect locale changes.
 IN_PROC_BROWSER_TEST_P(ProjectorNavigationThrottleLocaleTest,
                        UntrustedNavigationLocaleDetection) {
-  g_browser_process->SetApplicationLocale(locale());
+  g_browser_process->GetFeatures()->application_locale_storage()->Set(locale());
 
   GURL untrusted_url(kChromeUIUntrustedProjectorUrl);
 
@@ -360,11 +377,11 @@ IN_PROC_BROWSER_TEST_P(ProjectorNavigationThrottleLocaleTest,
 
   navigation_observer.Wait();
 
-  Browser* app_browser =
-      FindSystemWebAppBrowser(profile(), SystemWebAppType::PROJECTOR);
+  ash::BrowserDelegate* app_browser = FindSystemWebAppBrowser(
+      profile(), SystemWebAppType::PROJECTOR, ash::BrowserType::kApp);
 
-  content::WebContents* tab =
-      app_browser->tab_strip_model()->GetActiveWebContents();
+  ASSERT_TRUE(app_browser);
+  content::WebContents* tab = app_browser->GetActiveWebContents();
   ASSERT_TRUE(tab);
   EXPECT_TRUE(WaitForLoadStop(tab));
 

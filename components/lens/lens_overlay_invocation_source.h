@@ -13,6 +13,8 @@ namespace lens {
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
 //
+// GENERATED_JAVA_ENUM_PACKAGE: org.chromium.chrome.browser.ui.lens
+//
 // LINT.IfChange(LensOverlayInvocationSource)
 enum class LensOverlayInvocationSource {
   // The Chrome app ("3-dot") menu entry.
@@ -45,11 +47,60 @@ enum class LensOverlayInvocationSource {
   // The context menu when long pressing a web image.
   kContextMenu = 8,
 
-  kMaxValue = kContextMenu
+  // The Lens suggestion in the omnibox.
+  kOmniboxPageAction = 9,
+
+  // The contextual suggestions in the omnibox that take you directly to
+  // contextual answers in the side panel.
+  kOmniboxContextualSuggestion = 10,
+
+  // The Lens homework action chip in the omnibox.
+  kHomeworkActionChip = 11,
+
+  // The Lens entry point in the AI hub menu.
+  kAIHub = 12,
+
+  // The Lens entry point in the Interactive Lens screen in the First Run
+  // Experience.
+  kFREPromo = 13,
+
+  // The content area context menu entry that is available when the user
+  // right-clicks on selected text. Only used on Desktop.
+  kContentAreaContextMenuText = 14,
+
+  // The content area context menu entry that is available when the user
+  // right-clicks on a video frame. Only used on Desktop.
+  kContentAreaContextMenuVideo = 15,
+
+  // The compose or real box in the NTP realbox.
+  kNtpContextualQuery = 16,
+
+  // The compose flow in the omnibox.
+  kOmniboxContextualQuery = 17,
+
+  // The composebox on the Contextual Tasks page.
+  kContextualTasksComposebox = 18,
+
+  // The cobrowse toolbar button.
+  kCobrowseToolbarButton = 19,
+
+  // The cobrowse pinned toolbar button.
+  kCobrowsePinnedToolbarButton = 20,
+
+  // Action chips shown on the new tab page.
+  kNtpActionChips = 21,
+
+  // The AIM button on the App Bar in Chrome iOS.
+  kAppBarAimButton = 22,
+
+  // The everywhere omnibox contextual composebox.
+  kOmniboxEverywhereComposebox = 23,
+
+  kMaxValue = kOmniboxEverywhereComposebox
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/lens/enums.xml:LensOverlayInvocationSource)
 // When adding a value here, also update:
-// - tools/metrics/histograms/metadata/lens/histogram.xml: <variants
+// - tools/metrics/histograms/metadata/lens/histograms.xml: <variants
 // name="InvocationSources">
 }  // namespace lens
 

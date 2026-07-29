@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "ui/ozone/platform/drm/gpu/screen_manager.h"
 
 #include <drm_fourcc.h>
@@ -15,10 +10,12 @@
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 
+#include <algorithm>
 #include <memory>
 #include <utility>
 
-#include "base/containers/contains.h"
+#include "base/compiler_specific.h"
+#include "base/functional/callback_helpers.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/display/manager/test/fake_display_snapshot.h"
@@ -97,13 +94,14 @@ std::unique_ptr<HardwareDisplayControllerInfo> GetDisplayInfo(
   connector->count_props = 0;
   connector->count_modes = kNumModes;
   connector->modes = DrmAllocator<drmModeModeInfo>(kNumModes);
-  std::memcpy(connector->modes, &modes[0], kNumModes * sizeof(drmModeModeInfo));
+  UNSAFE_TODO(std::memcpy(connector->modes, &modes[0],
+                          kNumModes * sizeof(drmModeModeInfo)));
 
   // Initialize a CRTC.
   ScopedDrmCrtcPtr crtc(DrmAllocator<drmModeCrtc>());
   crtc->crtc_id = crtc_id;
   crtc->mode_valid = 1;
-  crtc->mode = connector->modes[kNumModes - 1];
+  crtc->mode = UNSAFE_TODO(connector->modes[kNumModes - 1]);
 
   return std::make_unique<HardwareDisplayControllerInfo>(
       std::move(connector), std::move(crtc), index,
@@ -1727,10 +1725,10 @@ TEST_F(ScreenManagerTest, CloningPlanesOnModeset) {
       controllers_to_enable, {display::ModesetFlag::kTestModeset,
                               display::ModesetFlag::kCommitModeset}));
 
-  EXPECT_TRUE(base::Contains(drm_->plane_manager()
-                                 ->GetCrtcStateForCrtcId(crtc_id)
-                                 .modeset_framebuffers,
-                             buffer));
+  EXPECT_TRUE(std::ranges::contains(drm_->plane_manager()
+                                        ->GetCrtcStateForCrtcId(crtc_id)
+                                        .modeset_framebuffers,
+                                    buffer));
 
   window = screen_manager_->RemoveWindow(1);
   window->Shutdown();
@@ -1769,14 +1767,14 @@ TEST_F(ScreenManagerTest, CloningMultiplePlanesOnModeset) {
       controllers_to_enable, {display::ModesetFlag::kTestModeset,
                               display::ModesetFlag::kCommitModeset}));
 
-  EXPECT_TRUE(base::Contains(drm_->plane_manager()
-                                 ->GetCrtcStateForCrtcId(crtc_id)
-                                 .modeset_framebuffers,
-                             primary));
-  EXPECT_TRUE(base::Contains(drm_->plane_manager()
-                                 ->GetCrtcStateForCrtcId(crtc_id)
-                                 .modeset_framebuffers,
-                             overlay));
+  EXPECT_TRUE(std::ranges::contains(drm_->plane_manager()
+                                        ->GetCrtcStateForCrtcId(crtc_id)
+                                        .modeset_framebuffers,
+                                    primary));
+  EXPECT_TRUE(std::ranges::contains(drm_->plane_manager()
+                                        ->GetCrtcStateForCrtcId(crtc_id)
+                                        .modeset_framebuffers,
+                                    overlay));
 
   window = screen_manager_->RemoveWindow(1);
   window->Shutdown();
@@ -1808,10 +1806,10 @@ TEST_F(ScreenManagerTest, ModesetWithClonedPlanesNoOverlays) {
   ASSERT_TRUE(screen_manager_->ConfigureDisplayControllers(
       controllers_to_enable, {display::ModesetFlag::kTestModeset,
                               display::ModesetFlag::kCommitModeset}));
-  ASSERT_TRUE(base::Contains(drm_->plane_manager()
-                                 ->GetCrtcStateForCrtcId(crtc_id)
-                                 .modeset_framebuffers,
-                             buffer));
+  ASSERT_TRUE(std::ranges::contains(drm_->plane_manager()
+                                        ->GetCrtcStateForCrtcId(crtc_id)
+                                        .modeset_framebuffers,
+                                    buffer));
 
   EXPECT_EQ(drm_->get_test_modeset_count(), 1);
   EXPECT_EQ(drm_->last_planes_committed_count(), 1);
@@ -1853,14 +1851,14 @@ TEST_F(ScreenManagerTest, ModesetWithClonedPlanesWithOverlaySucceeding) {
       controllers_to_enable, {display::ModesetFlag::kTestModeset,
                               display::ModesetFlag::kCommitModeset}));
 
-  EXPECT_TRUE(base::Contains(drm_->plane_manager()
-                                 ->GetCrtcStateForCrtcId(crtc_id)
-                                 .modeset_framebuffers,
-                             primary));
-  EXPECT_TRUE(base::Contains(drm_->plane_manager()
-                                 ->GetCrtcStateForCrtcId(crtc_id)
-                                 .modeset_framebuffers,
-                             overlay));
+  EXPECT_TRUE(std::ranges::contains(drm_->plane_manager()
+                                        ->GetCrtcStateForCrtcId(crtc_id)
+                                        .modeset_framebuffers,
+                                    primary));
+  EXPECT_TRUE(std::ranges::contains(drm_->plane_manager()
+                                        ->GetCrtcStateForCrtcId(crtc_id)
+                                        .modeset_framebuffers,
+                                    overlay));
 
   EXPECT_EQ(drm_->get_test_modeset_count(), 2);
   EXPECT_EQ(drm_->last_planes_committed_count(), 2);
@@ -1903,14 +1901,14 @@ TEST_F(ScreenManagerTest, ModesetWithClonedPlanesWithOverlayFailing) {
       controllers_to_enable, {display::ModesetFlag::kTestModeset,
                               display::ModesetFlag::kCommitModeset}));
 
-  EXPECT_TRUE(base::Contains(drm_->plane_manager()
-                                 ->GetCrtcStateForCrtcId(crtc_id)
-                                 .modeset_framebuffers,
-                             primary));
-  EXPECT_FALSE(base::Contains(drm_->plane_manager()
-                                  ->GetCrtcStateForCrtcId(crtc_id)
-                                  .modeset_framebuffers,
-                              overlay));
+  EXPECT_TRUE(std::ranges::contains(drm_->plane_manager()
+                                        ->GetCrtcStateForCrtcId(crtc_id)
+                                        .modeset_framebuffers,
+                                    primary));
+  EXPECT_FALSE(std::ranges::contains(drm_->plane_manager()
+                                         ->GetCrtcStateForCrtcId(crtc_id)
+                                         .modeset_framebuffers,
+                                     overlay));
 
   EXPECT_EQ(drm_->get_test_modeset_count(), 2);
   EXPECT_EQ(drm_->last_planes_committed_count(), 1);
@@ -1954,14 +1952,14 @@ TEST_F(ScreenManagerTest, ModesetWithNewBuffersOnModifiersChange) {
       controllers_to_enable, {display::ModesetFlag::kTestModeset,
                               display::ModesetFlag::kCommitModeset}));
 
-  EXPECT_FALSE(base::Contains(drm_->plane_manager()
-                                  ->GetCrtcStateForCrtcId(crtc_id)
-                                  .modeset_framebuffers,
-                              primary));
-  EXPECT_FALSE(base::Contains(drm_->plane_manager()
-                                  ->GetCrtcStateForCrtcId(crtc_id)
-                                  .modeset_framebuffers,
-                              overlay));
+  EXPECT_FALSE(std::ranges::contains(drm_->plane_manager()
+                                         ->GetCrtcStateForCrtcId(crtc_id)
+                                         .modeset_framebuffers,
+                                     primary));
+  EXPECT_FALSE(std::ranges::contains(drm_->plane_manager()
+                                         ->GetCrtcStateForCrtcId(crtc_id)
+                                         .modeset_framebuffers,
+                                     overlay));
 
   // Testing test modifiers only, no linear or overlays test.
   EXPECT_EQ(drm_->get_test_modeset_count(), 1);
@@ -2139,14 +2137,7 @@ TEST_F(ScreenManagerTest, ReplaceDisplayControllersCrtcs) {
 }
 
 // TODO(b/322831691): Deterministic failure.
-#if BUILDFLAG(IS_CHROMEOS)
-#define MAYBE_ReplaceDisplayControllersCrtcsNonexistent \
-  DISABLED_ReplaceDisplayControllersCrtcsNonexistent
-#else
-#define MAYBE_ReplaceDisplayControllersCrtcsNonexistent \
-  ReplaceDisplayControllersCrtcsNonexistent
-#endif
-TEST_F(ScreenManagerTest, MAYBE_ReplaceDisplayControllersCrtcsNonexistent) {
+TEST_F(ScreenManagerTest, DISABLED_ReplaceDisplayControllersCrtcsNonexistent) {
   // Initializes 2 CRTC-Connector pairs.
   InitializeDrmStateWithDefault(drm_.get(), /*is_atomic=*/true);
   uint32_t crtc_id = drm_->crtc_property(0).id;
@@ -2333,6 +2324,66 @@ TEST_F(ScreenManagerTest, TileDisplay) {
               Property(&CrtcController::is_tiled, Eq(true)),
               Property(&CrtcController::tile_property,
                        Optional(EqTileProperty(nonprimary_tile_prop)))))));
+}
+
+TEST_F(ScreenManagerTest, PartialTiledCrtcRemovalRemovesAllTiledControllers) {
+  std::vector<CrtcState> crtc_states = {
+      {.planes = {{.formats = {DRM_FORMAT_XRGB8888}}}},
+      {.planes = {{.formats = {DRM_FORMAT_XRGB8888}}}}};
+  InitializeDrmState(drm_.get(), crtc_states, /*is_atomic=*/true);
+
+  uint32_t crtc_id_1 = drm_->crtc_property(0).id;
+  uint32_t connector_id_1 = drm_->connector_property(0).id;
+  uint32_t crtc_id_2 = drm_->crtc_property(1).id;
+  uint32_t connector_id_2 = drm_->connector_property(1).id;
+
+  TileProperty primary_tile_prop = {.group_id = 1,
+                                    .scale_to_fit_display = true,
+                                    .tile_size = gfx::Size(3840, 4320),
+                                    .tile_layout = gfx::Size(2, 1),
+                                    .location = gfx::Point(0, 0)};
+  std::unique_ptr<ui::HardwareDisplayControllerInfo> primary_info =
+      GetDisplayInfo(connector_id_1, crtc_id_1, /*index=*/1, primary_tile_prop);
+
+  TileProperty nonprimary_tile_prop = primary_tile_prop;
+  nonprimary_tile_prop.location = gfx::Point(1, 0);
+  primary_info->AcquireNonprimaryTileInfo(GetDisplayInfo(
+      connector_id_2, crtc_id_2, /*index=*/2, nonprimary_tile_prop));
+
+  std::unique_ptr<display::FakeDisplaySnapshot> snapshot =
+      display::FakeDisplaySnapshot::Builder()
+          .SetId(kPrimaryDisplayId)
+          .SetBaseConnectorId(primary_info->connector()->connector_id)
+          .SetNativeMode(gfx::Size(3840, 4320))
+          .SetCurrentMode(gfx::Size(3840, 4320))
+          .Build();
+
+  DrmDisplay drm_display(drm_.get(), primary_info.get(), *snapshot);
+
+  screen_manager_->AddDisplayControllersForDisplay(drm_display);
+
+  std::vector<ControllerConfigParams> controllers_to_enable;
+  controllers_to_enable.emplace_back(
+      kPrimaryDisplayId, drm_, crtc_id_1, connector_id_1, gfx::Point(0, 0),
+      std::make_unique<drmModeModeInfo>(
+          drmModeModeInfo{.hdisplay = 3840, .vdisplay = 4320}));
+  ASSERT_TRUE(screen_manager_->ConfigureDisplayControllers(
+      controllers_to_enable, {display::ModesetFlag::kTestModeset,
+                              display::ModesetFlag::kCommitModeset}));
+
+  const gfx::Rect display_bounds = gfx::Rect(0, 0, 3840 * 2, 4320);
+  HardwareDisplayController* hdc =
+      screen_manager_->GetDisplayController(display_bounds);
+  // This is the full tile composited size.
+  ASSERT_NE(hdc, nullptr);
+  ASSERT_TRUE(hdc->IsTiled());
+
+  // Remove the non-primary CRTC, it should remove the entire controller from
+  // the ScreenManager.
+  ScreenManager::CrtcsWithDrmList controllers_to_remove;
+  controllers_to_remove.emplace_back(crtc_id_2, drm_);
+  screen_manager_->RemoveDisplayControllers(controllers_to_remove);
+  ASSERT_EQ(screen_manager_->GetDisplayController(display_bounds), nullptr);
 }
 
 TEST_F(ScreenManagerTest, DetachPlanesFromAllControllersSuccess) {

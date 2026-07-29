@@ -10,9 +10,9 @@
 
 #include "ash/public/cpp/arc_game_controls_flag.h"
 #include "ash/shell.h"
-#include "ash/test/ash_test_base.h"
 #include "ash/wm/tablet_mode/tablet_mode_controller_test_api.h"
 #include "ash/wm/window_util.h"
+#include "base/strings/string_util.h"
 #include "chrome/browser/ash/app_list/arc/arc_app_test.h"
 #include "chrome/browser/ash/arc/input_overlay/actions/action.h"
 #include "chrome/browser/ash/arc/input_overlay/arc_input_overlay_metrics.h"
@@ -21,6 +21,7 @@
 #include "chrome/browser/ash/arc/input_overlay/test/event_capturer.h"
 #include "chrome/browser/ash/arc/input_overlay/test/test_utils.h"
 #include "chrome/browser/ash/arc/input_overlay/util.h"
+#include "chrome/test/base/chrome_ash_test_base.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chromeos/ash/experiences/arc/test/fake_compatibility_mode_instance.h"
 #include "components/ukm/test_ukm_recorder.h"
@@ -114,12 +115,11 @@ class TestArcInputOverlayManager : public ArcInputOverlayManager {
 
 // ArcInputOverlayManagerTest needs to run on MainThread when involving with
 // profile and mojo connection.
-class ArcInputOverlayManagerTest : public ash::AshTestBase {
+class ArcInputOverlayManagerTest : public ChromeAshTestBase {
  public:
   ArcInputOverlayManagerTest()
-      : ash::AshTestBase(std::unique_ptr<base::test::TaskEnvironment>(
-            std::make_unique<content::BrowserTaskEnvironment>(
-                base::test::TaskEnvironment::TimeSource::MOCK_TIME))) {}
+      : ChromeAshTestBase(std::make_unique<content::BrowserTaskEnvironment>(
+            base::test::TaskEnvironment::TimeSource::MOCK_TIME)) {}
 
   bool IsInputOverlayEnabled(const aura::Window* window) const {
     return arc_test_input_overlay_manager_->input_overlay_enabled_windows_
@@ -168,15 +168,18 @@ class ArcInputOverlayManagerTest : public ash::AshTestBase {
   }
 
  protected:
-  // ash::AshTestBase:
+  // ChromeAshTestBase:
   void SetUp() override {
-    ash::AshTestBase::SetUp();
+    arc_app_test_.set_wait_compatibility_mode(true);
+    arc_app_test_.PreProfileSetUp();
+
+    ChromeAshTestBase::SetUp();
+
     arc_test_input_overlay_manager_ =
         base::WrapUnique(new TestArcInputOverlayManager());
 
     profile_ = std::make_unique<TestingProfile>();
-    arc_app_test_.set_wait_compatibility_mode(true);
-    arc_app_test_.SetUp(profile_.get());
+    arc_app_test_.PostProfileSetUp(profile_.get());
 
     SimulatedAppInstalled(task_environment(), arc_app_test_,
                           kEnabledPackageName,
@@ -189,11 +192,12 @@ class ArcInputOverlayManagerTest : public ash::AshTestBase {
   }
 
   void TearDown() override {
-    arc_app_test_.TearDown();
+    arc_app_test_.PreProfileTearDown();
     profile_.reset();
     arc_test_input_overlay_manager_->Shutdown();
     arc_test_input_overlay_manager_.reset();
-    ash::AshTestBase::TearDown();
+    ChromeAshTestBase::TearDown();
+    arc_app_test_.PostProfileTearDown();
   }
 
   std::unique_ptr<ArcInputOverlayManager> arc_test_input_overlay_manager_;
@@ -233,7 +237,7 @@ TEST_F(ArcInputOverlayManagerTest, TestPropertyChangeAndWindowDestroy) {
 }
 
 TEST_F(ArcInputOverlayManagerTest, TestWindowDestroyNoWait) {
-  // This test is to check UAF issue reported in crbug.com/1363030.
+  // This test is to check UAF issue reported in crbug.com/40060949.
   task_environment()->RunUntilIdle();
   auto arc_window = CreateArcWindow(ash::Shell::GetPrimaryRootWindow(),
                                     window_bounds, kEnabledPackageName);
@@ -306,9 +310,9 @@ TEST_F(ArcInputOverlayManagerTest, TestWindowFocusChangeWithNullWidget) {
       std::make_unique<aura::test::TestWindowDelegate>();
   test_window_delegate->set_window_component(HTCAPTION);
   std::unique_ptr<aura::Window> window_no_widget(
-      CreateTestWindowInShellWithDelegateAndType(
-          test_window_delegate.get(), aura::client::WINDOW_TYPE_NORMAL, 0,
-          gfx::Rect(100, 100)));
+      CreateTestWindowInShell({.delegate = test_window_delegate.get(),
+                               .bounds = {100, 100},
+                               .window_id = 0}));
   EXPECT_FALSE(views::Widget::GetWidgetForNativeWindow(window_no_widget.get()));
 
   // Focus on the window without widget.
@@ -348,9 +352,9 @@ TEST_F(ArcInputOverlayManagerTest, TestKeyEventSourceRewriterForMultiDisplay) {
       aura::client::GetFocusClient(ash::Shell::GetPrimaryRootWindow());
   UpdateDisplay("1000x900,1000x900");
   aura::Window::Windows root_windows = ash::Shell::GetAllRootWindows();
-  display::Display display0 = display::Screen::GetScreen()->GetDisplayMatching(
+  display::Display display0 = display::Screen::Get()->GetDisplayMatching(
       root_windows[0]->GetBoundsInScreen());
-  display::Display display1 = display::Screen::GetScreen()->GetDisplayMatching(
+  display::Display display1 = display::Screen::Get()->GetDisplayMatching(
       root_windows[1]->GetBoundsInScreen());
 
   // Test when launching input overlay window on the secondary display, there
@@ -480,7 +484,7 @@ TEST_F(ArcInputOverlayManagerTest, TestWindowBoundsChanged) {
 
   // Confirm the content bounds and touch down positions are updated after
   // window bounds changed.
-  auto display = display::Screen::GetScreen()->GetDisplayMatching(
+  auto display = display::Screen::Get()->GetDisplayMatching(
       ash::Shell::GetPrimaryRootWindow()->GetBoundsInScreen());
   auto new_window_bounds = gfx::Rect(10, 10, 150, 150);
   arc_window->GetNativeWindow()->SetBoundsInScreen(new_window_bounds, display);

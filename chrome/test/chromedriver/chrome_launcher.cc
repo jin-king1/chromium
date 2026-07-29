@@ -27,11 +27,13 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
+#include "base/strings/string_view_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/threading/platform_thread.h"
 #include "base/time/time.h"
+#include "base/uuid.h"
 #include "build/build_config.h"
 #include "chrome/common/chrome_constants.h"
 #include "chrome/common/chrome_result_codes.h"
@@ -59,8 +61,8 @@
 #include "chrome/test/chromedriver/net/sync_websocket_factory.h"
 #include "components/crx_file/crx_verifier.h"
 #include "components/embedder_support/switches.h"
-#include "crypto/rsa_private_key.h"
-#include "crypto/sha2.h"
+#include "crypto/hash.h"
+#include "crypto/keypair.h"
 #include "services/network/public/mojom/url_loader_factory.mojom.h"
 #include "third_party/zlib/google/zip.h"
 #include "url/gurl.h"
@@ -86,6 +88,14 @@ const char* const kCommonSwitches[] = {
     embedder_support::kDisablePopupBlocking,
     "enable-automation",
     "allow-pre-commit-input",
+    // https://crbug.com/445332809.
+    "disable-features=IgnoreDuplicateNavs",
+    // https://crbug.com/431928370.
+    "disable-features=Prewarm",
+    // https://github.com/GoogleChromeLabs/chromium-bidi/issues/3894.
+    "disable-background-networking",
+    "disable-background-timer-throttling",
+    "disable-backgrounding-occluded-windows",
 };
 
 const char* const kDesktopSwitches[] = {
@@ -103,14 +113,6 @@ const char* const kDesktopSwitches[] = {
     "no-service-autorun",
 };
 
-#if BUILDFLAG(IS_WIN)
-
-const char* const kWindowsDesktopSwitches[] = {
-    "disable-backgrounding-occluded-windows",
-};
-
-#endif
-
 const char* const kAndroidSwitches[] = {
     "disable-fre", "enable-remote-debugging",
 };
@@ -118,6 +120,8 @@ const char* const kAndroidSwitches[] = {
 const char kEnableCrashReport[] = "enable-crash-reporter-for-testing";
 const base::FilePath::CharType kDevToolsActivePort[] =
     FILE_PATH_LITERAL("DevToolsActivePort");
+
+const char kTempAndroidUserDataDirFormat[] = "/data/data/%s/temp_profile_%s";
 
 enum ChromeType { Remote, Desktop, Android, Replay };
 
@@ -266,9 +270,9 @@ Status PrepareDesktopCommandLine(const Capabilities& capabilities,
 Status GetBrowserInfo(DevToolsClient& client,
                       const Timeout& timeout,
                       BrowserInfo& browser_info) {
-  base::Value::Dict result;
+  base::DictValue result;
   Status status = client.SendCommandAndGetResultWithTimeout(
-      "Browser.getVersion", base::Value::Dict(), &timeout, &result);
+      "Browser.getVersion", base::DictValue(), &timeout, &result);
   if (status.IsOk()) {
     status = browser_info.FillFromBrowserVersionResponse(result);
   } else {
@@ -717,9 +721,8 @@ Status LaunchDesktopChrome(network::mojom::URLLoaderFactory* factory,
     if (chrome_exit_code == CHROME_RESULT_CODE_NORMAL_EXIT_PROCESS_NOTIFIED ||
         chrome_exit_code == content::RESULT_CODE_NORMAL_EXIT) {
       return Status(kSessionNotCreated,
-                    "probably user data directory is already in use, "
-                    "please specify a unique value for --user-data-dir "
-                    "argument, or don't use --user-data-dir");
+                    "Chrome instance exited. "
+                    "Examine ChromeDriver verbose log to determine the cause.");
     }
     std::string termination_reason =
         internal::GetTerminationReason(chrome_status);
@@ -822,12 +825,44 @@ Status LaunchAndroidChrome(network::mojom::URLLoaderFactory* factory,
   }
   for (auto excluded_switch : capabilities.exclude_switches)
     switches.RemoveSwitch(excluded_switch);
+
+  // We intentionally store the paths as string and not as base::FilePath,
+  // in order to make sure the paths are formatted for android, and not for
+  // the host OS.
+  std::string user_data_dir;
+  if (switches.HasSwitch("user-data-dir")) {
+    base::FilePath::StringType user_data_dir_value =
+        switches.GetSwitchValueNative("user-data-dir");
+    if (user_data_dir_value.empty()) {
+      return Status(kInvalidArgument, "user data dir can not be empty");
+    }
+
+#if BUILDFLAG(IS_WIN)
+    user_data_dir = base::WideToUTF8(user_data_dir_value);
+#else
+    user_data_dir = user_data_dir_value;
+#endif
+  } else if (capabilities.prefs.get() || capabilities.local_state.get()) {
+    user_data_dir = base::StringPrintf(
+        kTempAndroidUserDataDirFormat, capabilities.android_package.c_str(),
+        base::Uuid::GenerateRandomV4().AsLowercaseString().c_str());
+    switches.SetSwitch("user-data-dir", user_data_dir);
+  }
+
+  std::string preferences_path =
+      base::StringPrintf("%s/%s/%s", user_data_dir.c_str(),
+                         chrome::kInitialProfile, chrome::kPreferencesFilename);
+  std::string local_state_path = base::StringPrintf(
+      "%s/%s", user_data_dir.c_str(), chrome::kLocalStateFilename);
+
   status = device->SetUp(
       capabilities.android_package, capabilities.android_activity,
       capabilities.android_process, capabilities.android_device_socket,
       capabilities.android_exec_name, switches.ToString(),
       capabilities.android_use_running_app,
-      capabilities.android_keep_app_data_dir, &devtools_port);
+      capabilities.android_keep_app_data_dir, &devtools_port, preferences_path,
+      capabilities.prefs.get(), local_state_path,
+      capabilities.local_state.get());
   if (status.IsError()) {
     device->TearDown();
     return WrapStatusIfNeeded(status, kSessionNotCreated);
@@ -955,11 +990,6 @@ Switches GetDesktopSwitches() {
   for (auto* desktop_switch : kDesktopSwitches) {
     switches.SetUnparsedSwitch(desktop_switch);
   }
-#if BUILDFLAG(IS_WIN)
-  for (auto* win_desktop_switch : kWindowsDesktopSwitches) {
-    switches.SetUnparsedSwitch(win_desktop_switch);
-  }
-#endif
   return switches;
 }
 
@@ -1002,8 +1032,7 @@ namespace internal {
 void ConvertHexadecimalToIDAlphabet(std::string& id) {
   for (size_t i = 0; i < id.size(); ++i) {
     int val;
-    if (base::HexStringToInt(
-            base::MakeStringPiece(id.begin() + i, id.begin() + i + 1), &val)) {
+    if (base::HexStringToInt(std::string_view(&id[i], 1), &val)) {
       id[i] = val + 'a';
     } else {
       id[i] = 'a';
@@ -1011,15 +1040,15 @@ void ConvertHexadecimalToIDAlphabet(std::string& id) {
   }
 }
 
-std::string GenerateExtensionId(const std::string& input) {
-  uint8_t hash[16];
-  crypto::SHA256HashString(input, hash, sizeof(hash));
-  std::string output = base::ToLowerASCII(base::HexEncode(hash));
+std::string GenerateExtensionId(std::string_view input) {
+  auto hash = crypto::hash::Sha256(input);
+  auto hash_first16 = base::span<uint8_t>(hash).first<16>();
+  std::string output = base::HexEncodeLower(hash_first16);
   ConvertHexadecimalToIDAlphabet(output);
   return output;
 }
 
-Status GetExtensionBackgroundPage(const base::Value::Dict& manifest,
+Status GetExtensionBackgroundPage(const base::DictValue& manifest,
                                   const std::string& id,
                                   std::string& bg_page) {
   std::string bg_page_name;
@@ -1086,19 +1115,13 @@ Status ProcessExtension(const std::string& extension,
                                        static_cast<int>(result)));
     }
   } else {
-    // Not a CRX file. Generate RSA keypair to get a valid extension id.
-    std::unique_ptr<crypto::RSAPrivateKey> key_pair(
-        crypto::RSAPrivateKey::Create(2048));
-    if (!key_pair)
-      return Status(kUnknownError, "cannot generate RSA key pair");
-    std::vector<uint8_t> public_key_vector;
-    if (!key_pair->ExportPublicKey(&public_key_vector))
-      return Status(kUnknownError, "cannot extract public key");
-    std::string public_key =
-        std::string(reinterpret_cast<char*>(&public_key_vector.front()),
-                    public_key_vector.size());
-    id = GenerateExtensionId(public_key);
-    public_key_base64 = base::Base64Encode(public_key);
+    // Not a CRX file. Generate a fresh RSA key pair and use its public key as
+    // the extension's signing key. Note that the private key is discarded
+    // immediately so this key can never be used to actually sign anything.
+    std::vector<uint8_t> pubkey =
+        crypto::keypair::PrivateKey::GenerateRsa2048().ToSubjectPublicKeyInfo();
+    id = GenerateExtensionId(base::as_string_view(pubkey));
+    public_key_base64 = base::Base64Encode(pubkey);
   }
 
   // Unzip the crx file.
@@ -1111,9 +1134,9 @@ Status ProcessExtension(const std::string& extension,
   std::string manifest_data;
   if (!base::ReadFileToString(manifest_path, &manifest_data))
     return Status(kUnknownError, "cannot read manifest");
-  std::optional<base::Value> manifest_value =
-      base::JSONReader::Read(manifest_data);
-  base::Value::Dict* manifest =
+  std::optional<base::Value> manifest_value = base::JSONReader::Read(
+      manifest_data, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
+  base::DictValue* manifest =
       manifest_value ? manifest_value->GetIfDict() : nullptr;
   if (!manifest)
     return Status(kUnknownError, "invalid manifest");
@@ -1141,7 +1164,7 @@ Status ProcessExtension(const std::string& extension,
     }
   } else {
     manifest->Set("key", public_key_base64);
-    base::JSONWriter::Write(*manifest, &manifest_data);
+    manifest_data = base::WriteJson(*manifest).value_or("");
     if (!base::WriteFile(manifest_path, manifest_data)) {
       return Status(kUnknownError, "cannot add 'key' to manifest");
     }
@@ -1200,15 +1223,15 @@ Status ProcessExtensions(const std::vector<std::string>& extensions,
 
 Status WritePrefsFile(const std::string& template_string,
                       const base::FilePath& path,
-                      const base::Value::Dict* custom_prefs) {
-  auto parsed_json =
-      base::JSONReader::ReadAndReturnValueWithError(template_string);
+                      const base::DictValue* custom_prefs) {
+  auto parsed_json = base::JSONReader::ReadAndReturnValueWithError(
+      template_string, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   if (!parsed_json.has_value()) {
     return Status(kUnknownError, "cannot parse internal JSON template: " +
                                      parsed_json.error().message);
   }
 
-  base::Value::Dict* prefs = parsed_json->GetIfDict();
+  base::DictValue* prefs = parsed_json->GetIfDict();
   if (!prefs)
     return Status(kUnknownError, "malformed prefs dictionary");
 
@@ -1218,18 +1241,17 @@ Status WritePrefsFile(const std::string& template_string,
     }
   }
 
-  std::string prefs_str;
-  base::JSONWriter::Write(*prefs, &prefs_str);
+  std::string prefs_str = base::WriteJson(*prefs).value_or("");
   VLOG(0) << "Populating " << path.BaseName().value()
-          << " file: " << PrettyPrintValue(base::Value(prefs->Clone()));
+          << " file: " << PrettyPrintValue(*prefs);
   return base::WriteFile(path, prefs_str)
              ? Status(kOk)
              : Status(kUnknownError, "failed to write prefs file");
 }
 
 Status PrepareUserDataDir(const base::FilePath& user_data_dir,
-                          const base::Value::Dict* custom_prefs,
-                          const base::Value::Dict* custom_local_state) {
+                          const base::DictValue* custom_prefs,
+                          const base::DictValue* custom_local_state) {
   base::FilePath default_dir =
       user_data_dir.AppendASCII(chrome::kInitialProfile);
   if (!base::CreateDirectory(default_dir))
@@ -1339,6 +1361,8 @@ std::string GetTerminationReason(base::TerminationStatus status) {
     case base::TERMINATION_STATUS_INTEGRITY_FAILURE:
       return "integrity failure";
 #endif
+    case base::TERMINATION_STATUS_EVICTED_FOR_MEMORY:
+      return "evicted for memory";
     case base::TERMINATION_STATUS_MAX_ENUM:
       NOTREACHED();
   }

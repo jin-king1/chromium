@@ -7,7 +7,6 @@ package org.chromium.android_webview;
 import android.os.CancellationSignal;
 import android.os.ParcelFileDescriptor;
 import android.print.PrintAttributes;
-import android.util.Log;
 import android.view.ViewGroup;
 
 import org.jni_zero.CalledByNative;
@@ -15,6 +14,7 @@ import org.jni_zero.JNINamespace;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.android_webview.common.Lifetime;
+import org.chromium.base.Log;
 import org.chromium.build.annotations.DoNotInline;
 
 /**
@@ -32,7 +32,6 @@ public class AwPdfExporter {
     // potential errors: invalid print parameters, already pending, IO error
     private AwPdfExporterCallback mResultCallback;
     private PrintAttributes mAttributes;
-    private ParcelFileDescriptor mFd;
     // Maintain a reference to the top level object (i.e. WebView) since in a common
     // use case (offscreen webview) application may expect the framework's print manager
     // to own the Webview (via PrintDocumentAdapter).
@@ -43,10 +42,11 @@ public class AwPdfExporter {
     public interface AwPdfExporterCallback {
         /**
          * Called by the native side when PDF generation is done.
+         *
          * @param pageCount How many pages native side wrote to PDF file descriptor. Non-positive
-         *                  value indicates native side writing failed.
+         *     value indicates native side writing failed.
          */
-        public void pdfWritingDone(int pageCount);
+        void pdfWritingDone(int pageCount);
     }
 
     AwPdfExporter(ViewGroup containerView) {
@@ -87,14 +87,8 @@ public class AwPdfExporter {
         }
         mResultCallback = resultCallback;
         mAttributes = attributes;
-        mFd = fd;
         AwPdfExporterJni.get()
-                .exportToPdf(
-                        mNativeAwPdfExporter,
-                        AwPdfExporter.this,
-                        mFd.getFd(),
-                        pages,
-                        cancellationSignal);
+                .exportToPdf(mNativeAwPdfExporter, this, fd.detachFd(), pages, cancellationSignal);
     }
 
     @CalledByNative
@@ -135,8 +129,6 @@ public class AwPdfExporter {
         mResultCallback.pdfWritingDone(pageCount);
         mResultCallback = null;
         mAttributes = null;
-        // The caller should close the file.
-        mFd = null;
     }
 
     @CalledByNative
@@ -178,7 +170,7 @@ public class AwPdfExporter {
     interface Natives {
         void exportToPdf(
                 long nativeAwPdfExporter,
-                AwPdfExporter caller,
+                AwPdfExporter self,
                 int fd,
                 int[] pages,
                 CancellationSignal cancellationSignal);

@@ -3,7 +3,6 @@
 # found in the LICENSE file.
 
 import("//build/config/cast.gni")
-import("//build/config/chromeos/ui_mode.gni")
 import("//build/toolchain/toolchain.gni")
 
 declare_args() {
@@ -62,9 +61,7 @@ declare_args() {
     ozone_platform = "headless"
     ozone_platform_headless = true
 
-    if (is_cast_audio_only) {
-      # Just use headless for audio-only Cast platforms.
-    } else if (is_castos) {
+    if (is_castos) {
       # Enable the Cast ozone platform on all video CastOS builds.
       ozone_platform_cast = true
 
@@ -77,7 +74,7 @@ declare_args() {
       } else {
         ozone_platform = "cast"
       }
-    } else if (is_chromeos_ash) {
+    } else if (is_chromeos) {
       ozone_platform = "x11"
       ozone_platform_drm = true
       ozone_platform_x11 = true

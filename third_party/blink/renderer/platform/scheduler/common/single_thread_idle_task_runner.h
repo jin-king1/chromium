@@ -28,7 +28,7 @@ class IdleHelper;
 // (in base::TimeTicks) when they are run. The idle task is expected to
 // complete by this deadline.
 class SingleThreadIdleTaskRunner
-    : public WTF::ThreadSafeRefCounted<SingleThreadIdleTaskRunner> {
+    : public ThreadSafeRefCounted<SingleThreadIdleTaskRunner> {
  public:
   using IdleTask = base::OnceCallback<void(base::TimeTicks)>;
 
@@ -76,16 +76,13 @@ class SingleThreadIdleTaskRunner
                                    const base::TimeDelta delay,
                                    IdleTask idle_task);
 
-  virtual void PostNonNestableIdleTask(const base::Location& from_here,
-                                       IdleTask idle_task);
-
   bool RunsTasksInCurrentSequence() const;
 
  protected:
   virtual ~SingleThreadIdleTaskRunner();
 
  private:
-  friend class WTF::ThreadSafeRefCounted<SingleThreadIdleTaskRunner>;
+  friend class ThreadSafeRefCounted<SingleThreadIdleTaskRunner>;
   friend class IdleHelper;
 
   void RunTask(IdleTask idle_task);

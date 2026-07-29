@@ -13,11 +13,10 @@
 #include "base/memory/weak_ptr.h"
 #include "base/types/optional_ref.h"
 #include "chrome/browser/keyboard_accessory/android/accessory_sheet_data.h"
-#include "chrome/browser/keyboard_accessory/android/affiliated_plus_profiles_provider.h"
 #include "chrome/browser/keyboard_accessory/android/password_accessory_controller.h"
-#include "chrome/browser/password_manager/android/access_loss/password_access_loss_warning_bridge.h"
 #include "chrome/browser/password_manager/android/all_passwords_bottom_sheet_helper.h"
 #include "chrome/browser/password_manager/android/grouped_affiliations/acknowledge_grouped_credential_sheet_controller.h"
+#include "chrome/browser/password_manager/android/password_manager_error_message_helper_bridge.h"
 #include "components/autofill/core/common/mojom/autofill_types.mojom-forward.h"
 #include "components/autofill/core/common/password_generation_util.h"
 #include "components/password_manager/core/browser/credential_cache.h"
@@ -32,18 +31,12 @@
 class ManualFillingController;
 class AllPasswordsBottomSheetController;
 
-namespace plus_addresses {
-class AllPlusAddressesBottomSheetController;
-class PlusAddressService;
-}  // namespace plus_addresses
-
 // Use either PasswordAccessoryController::GetOrCreate or
 // PasswordAccessoryController::GetIfExisting to obtain instances of this class.
 // This class exists for every tab and should never store state based on the
 // contents of one of its frames. This can cause cross-origin hazards.
 class PasswordAccessoryControllerImpl
     : public PasswordAccessoryController,
-      public AffiliatedPlusProfilesProvider::Observer,
       public content::WebContentsObserver,
       public content::WebContentsUserData<PasswordAccessoryControllerImpl> {
  public:
@@ -70,8 +63,7 @@ class PasswordAccessoryControllerImpl
                        bool enabled) override;
 
   // PasswordAccessoryController:
-  void RegisterPlusProfilesProvider(
-      base::WeakPtr<AffiliatedPlusProfilesProvider> provider) override;
+
   void RefreshSuggestionsForField(
       autofill::mojom::FocusedFieldType focused_field_type,
       bool is_field_eligible_for_manual_generation) override;
@@ -99,8 +91,8 @@ class PasswordAccessoryControllerImpl
       PasswordDriverSupplierForFocusedFrame driver_supplier,
       std::unique_ptr<AcknowledgeGroupedCredentialSheetController>
           grouped_credential_sheet_controller,
-      std::unique_ptr<PasswordAccessLossWarningBridge>
-          access_loss_warning_bridge);
+      std::unique_ptr<PasswordManagerErrorMessageHelperBridge>
+          password_manager_error_message_helper_bridge);
 
   // Returns true if the current site attached to `web_contents_` has a SECURE
   // security level.
@@ -113,10 +105,6 @@ class PasswordAccessoryControllerImpl
     security_level_for_testing_ = security_level;
   }
 
-  plus_addresses::AllPlusAddressesBottomSheetController*
-  GetAllPlusAddressesControllerForTesting() {
-    return all_plus_addresses_bottom_sheet_controller_.get();
-  }
 #endif
  protected:
   // This constructor can also be used by |CreateForWebContentsForTesting|
@@ -130,8 +118,8 @@ class PasswordAccessoryControllerImpl
       PasswordDriverSupplierForFocusedFrame driver_supplier,
       std::unique_ptr<AcknowledgeGroupedCredentialSheetController>
           grouped_credential_sheet_controller,
-      std::unique_ptr<PasswordAccessLossWarningBridge>
-          access_loss_warning_bridge);
+      std::unique_ptr<PasswordManagerErrorMessageHelperBridge>
+          password_manager_error_message_helper_bridge);
 
  private:
   friend class content::WebContentsUserData<PasswordAccessoryControllerImpl>;
@@ -217,20 +205,8 @@ class PasswordAccessoryControllerImpl
   // the Bottom Sheet view is destroyed.
   void AllPasswordsSheetDismissed();
 
-  // Fills `plus_address` into the currently focused field. Called when the
-  // manually triggered plus address creation bottom sheet is accepted by the
-  // user.
-  void OnPlusAddressCreated(const std::string& plus_address);
-
-  // Triggers the filling `plus_address` into the currently focused field.
-  void OnPlusAddressSelected(
-      base::optional_ref<const std::string> plus_address);
-
   // Fetches suggestions and propagates them to the frontend.
   void RefreshSuggestions();
-
-  // AffiliatedPlusProfilesProvider::Observer:
-  void OnAffiliatedPlusProfilesFetched() override;
 
   // Depending on the credential match type, there may be additional user
   // confirmation needed (e. g. for grouped credentials). After confirmation,
@@ -259,10 +235,6 @@ class PasswordAccessoryControllerImpl
   // The password accessory controller object to forward client requests to.
   base::WeakPtr<ManualFillingController> manual_filling_controller_;
 
-  // The plus profiles provider that is used to generate the plus profiles
-  // section for the frontend.
-  base::WeakPtr<AffiliatedPlusProfilesProvider> plus_profiles_provider_;
-
   // The password manager client is used to update the save passwords status
   // for the currently focused origin.
   const raw_ptr<password_manager::PasswordManagerClient> password_client_;
@@ -276,7 +248,7 @@ class PasswordAccessoryControllerImpl
   // focus is lost, this data needs to be reset to std::nullopt to make sure
   // that data related to a former frame isn't displayed incorrectly in a
   // different one.
-  std::optional<LastFocusInfo> last_focus_info_ = std::nullopt;
+  std::optional<LastFocusInfo> last_focus_info_;
 
   // The observer to notify if available suggestions change.
   FillingSourceObserver source_observer_;
@@ -289,6 +261,9 @@ class PasswordAccessoryControllerImpl
   // first call to |ShowAllPasswords()|.
   std::unique_ptr<AllPasswordsBottomSheetController>
       all_passords_bottom_sheet_controller_;
+
+  std::unique_ptr<PasswordManagerErrorMessageHelperBridge>
+      password_manager_error_message_helper_bridge_;
 
   // Helper for determining whether a bottom sheet showing passwords is useful.
   AllPasswordsBottomSheetHelper all_passwords_helper_{
@@ -304,14 +279,7 @@ class PasswordAccessoryControllerImpl
   std::unique_ptr<AcknowledgeGroupedCredentialSheetController>
       grouped_credential_sheet_controller_;
 
-  // Bridge used for showing the password access loss warning sheet after
-  // filling credentials.
-  std::unique_ptr<PasswordAccessLossWarningBridge> access_loss_warning_bridge_;
 
-  const raw_ptr<plus_addresses::PlusAddressService> plus_address_service_;
-
-  std::unique_ptr<plus_addresses::AllPlusAddressesBottomSheetController>
-      all_plus_addresses_bottom_sheet_controller_;
 
   base::WeakPtrFactory<PasswordAccessoryControllerImpl> weak_ptr_factory_{this};
 

@@ -11,7 +11,6 @@
 
 #include "base/apple/scoped_cftyperef.h"
 #include "base/files/file_path.h"
-#include "base/format_macros.h"
 #include "base/strings/stringprintf.h"
 #include "build/build_config.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -402,76 +401,6 @@ TEST(FoundationUtilTest, CFRangeToNSRange) {
   EXPECT_FALSE(CFRangeToNSRange(CFRangeMake(LONG_MIN, LONG_MAX), &range_out));
 }
 
-TEST(StringNumberConversionsTest, FormatNSInteger) {
-  // The PRI[dxu]NS macro assumes that NSInteger is a typedef to "int" on
-  // 32-bit architecture and a typedef to "long" on 64-bit architecture
-  // (respectively "unsigned int" and "unsigned long" for NSUInteger). Use
-  // pointer incompatibility to validate this at compilation.
-#if defined(ARCH_CPU_64_BITS)
-  typedef long FormatNSIntegerAsType;
-  typedef unsigned long FormatNSUIntegerAsType;
-#else
-  typedef int FormatNSIntegerAsType;
-  typedef unsigned int FormatNSUIntegerAsType;
-#endif  // defined(ARCH_CPU_64_BITS)
-
-  NSInteger some_nsinteger;
-  [[maybe_unused]] FormatNSIntegerAsType* pointer_to_some_nsinteger =
-      &some_nsinteger;
-
-  NSUInteger some_nsuinteger;
-  [[maybe_unused]] FormatNSUIntegerAsType* pointer_to_some_nsuinteger =
-      &some_nsuinteger;
-
-  // Check that format specifier works correctly for NSInteger.
-  const struct {
-    NSInteger value;
-    const char* expected;
-    const char* expected_hex;
-  } nsinteger_cases[] = {
-#if !defined(ARCH_CPU_64_BITS)
-      {12345678, "12345678", "bc614e"},
-      {-12345678, "-12345678", "ff439eb2"},
-#else
-      {12345678, "12345678", "bc614e"},
-      {-12345678, "-12345678", "ffffffffff439eb2"},
-      {137451299150l, "137451299150", "2000bc614e"},
-      {-137451299150l, "-137451299150", "ffffffdfff439eb2"},
-#endif  // !defined(ARCH_CPU_64_BITS)
-  };
-
-  for (const auto& nsinteger_case : nsinteger_cases) {
-    EXPECT_EQ(nsinteger_case.expected,
-              StringPrintf("%" PRIdNS, nsinteger_case.value));
-    EXPECT_EQ(nsinteger_case.expected_hex,
-              StringPrintf("%" PRIxNS, nsinteger_case.value));
-  }
-
-  // Check that format specifier works correctly for NSUInteger.
-  const struct {
-    NSUInteger value;
-    const char* expected;
-    const char* expected_hex;
-  } nsuinteger_cases[] = {
-#if !defined(ARCH_CPU_64_BITS)
-      {12345678u, "12345678", "bc614e"},
-      {4282621618u, "4282621618", "ff439eb2"},
-#else
-      {12345678u, "12345678", "bc614e"},
-      {4282621618u, "4282621618", "ff439eb2"},
-      {137451299150ul, "137451299150", "2000bc614e"},
-      {18446743936258252466ul, "18446743936258252466", "ffffffdfff439eb2"},
-#endif  // !defined(ARCH_CPU_64_BITS)
-  };
-
-  for (const auto& nsuinteger_case : nsuinteger_cases) {
-    EXPECT_EQ(nsuinteger_case.expected,
-              StringPrintf("%" PRIuNS, nsuinteger_case.value));
-    EXPECT_EQ(nsuinteger_case.expected_hex,
-              StringPrintf("%" PRIxNS, nsuinteger_case.value));
-  }
-}
-
 TEST(FoundationUtilTest, NSDataToSpan) {
   {
     NSData* data = [NSData data];
@@ -539,20 +468,52 @@ TEST(FoundationUtilTest, CFDataToSpan) {
 #define EXPECT_LOG_EQ(expected, val) \
   EXPECT_EQ(expected, (std::ostringstream() << (val)).str())
 
-TEST(FoundationLoggingTest, ObjCObject) {
-  EXPECT_LOG_EQ("Hello, world!", @"Hello, world!");
+TEST(FoundationLoggingTest, CFErrorRef) {
+  EXPECT_LOG_EQ("(null CFErrorRef)", static_cast<CFErrorRef>(nullptr));
+  ScopedCFTypeRef<CFErrorRef> error(
+      CFErrorCreate(kCFAllocatorDefault, kCFErrorDomainOSStatus, -50, nullptr));
+  EXPECT_LOG_EQ("Code: -50 Domain: NSOSStatusErrorDomain Desc: The operation "
+                "couldn’t be completed. (OSStatus error -50.)",
+                error.get());
 }
 
-TEST(FoundationLoggingTest, ObjCNil) {
-  EXPECT_LOG_EQ("(nil)", static_cast<id>(nil));
+TEST(FoundationLoggingTest, CFStringRef) {
+  EXPECT_LOG_EQ("(null CFStringRef)", static_cast<CFStringRef>(nullptr));
+  EXPECT_LOG_EQ("Hello, world!", CFSTR("Hello, world!"));
 }
 
 TEST(FoundationLoggingTest, CFRange) {
   EXPECT_LOG_EQ("{0, 100}", CFRangeMake(0, 100));
 }
 
+TEST(FoundationLoggingTest, ObjCObject) {
+  EXPECT_LOG_EQ("Hello, world!", @"Hello, world!");
+  NSArray* array = @[ @1, @2, @3 ];
+  EXPECT_LOG_EQ("(\n    1,\n    2,\n    3\n)", array);
+  NSDictionary* dict = @{@"key1" : @"value1", @"key2" : @"value2"};
+  EXPECT_LOG_EQ("{\n    key1 = value1;\n    key2 = value2;\n}", dict);
+}
+
+TEST(FoundationLoggingTest, ObjCNil) {
+  EXPECT_LOG_EQ("(nil)", static_cast<id>(nil));
+}
+
 TEST(FoundationLoggingTest, NSRange) {
   EXPECT_LOG_EQ("{0, 100}", NSMakeRange(0, 100));
 }
+
+#if BUILDFLAG(IS_MAC)
+
+TEST(FoundationLoggingTest, NSPoint) {
+  EXPECT_LOG_EQ("{50, 100}", NSMakePoint(50, 100));
+}
+TEST(FoundationLoggingTest, NSRect) {
+  EXPECT_LOG_EQ("{{10, 20}, {30, 40}}", NSMakeRect(10, 20, 30, 40));
+}
+TEST(FoundationLoggingTest, NSSize) {
+  EXPECT_LOG_EQ("{0, 100}", NSMakeSize(0, 100));
+}
+
+#endif  // IS_MAC
 
 }  // namespace base::apple

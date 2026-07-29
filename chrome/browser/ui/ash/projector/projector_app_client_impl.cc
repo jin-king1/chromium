@@ -4,39 +4,47 @@
 
 #include "chrome/browser/ui/ash/projector/projector_app_client_impl.h"
 
+#include <optional>
 #include <string>
 
-#include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
-#include "ash/webui/annotator/untrusted_annotator_page_handler_impl.h"
 #include "ash/webui/projector_app/public/cpp/projector_app_constants.h"
+#include "base/check.h"
+#include "base/check_deref.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
-#include "chrome/browser/browser_process.h"
+#include "base/memory/raw_ref.h"
 #include "chrome/browser/feedback/show_feedback_page.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
+#include "chrome/browser/ui/ash/account_manager/account_manager_dialog_coordinator.h"
+#include "chrome/browser/ui/ash/account_manager/account_manager_dialog_coordinator_factory.h"
 #include "chrome/browser/ui/ash/projector/projector_soda_installation_controller.h"
-#include "components/account_manager_core/account_manager_facade.h"
-#include "components/account_manager_core/chromeos/account_manager_facade_factory.h"
+#include "components/account_manager_core/account_manager_metrics.h"
+#include "components/application_locale_storage/application_locale_storage.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/soda/constants.h"
-#include "content/public/browser/browser_thread.h"
+#include "content/public/browser/browser_context.h"
 #include "content/public/browser/storage_partition.h"
 
 namespace {
 
 constexpr char kUsEnglishLocale[] = "en-US";
 
-inline const std::string& GetLocale() {
-  return g_browser_process->GetApplicationLocale();
-}
+// Launches account reauthentication dialog for provided `email`.
+// Note: the added/reauthenticated account may not match the account provided
+// in the `email` field if user decided to edit the email inside the dialog.
+void ShowProjectorAccountReauthDialog(content::BrowserContext* browser_context,
+                                      const std::string& email) {
+  CHECK(browser_context);
 
-inline speech::LanguageCode GetLocaleLanguageCode() {
-  return speech::GetLanguageCode(GetLocale());
+  ash::AccountManagerDialogCoordinatorFactory::GetForProfile(
+      Profile::FromBrowserContext(browser_context))
+      ->ShowReauthAccountDialog(
+          account_manager::AccountAdditionSource::kChromeOSProjectorAppReauth,
+          email, base::DoNothing());
 }
 
 }  // namespace
@@ -70,8 +78,12 @@ void ProjectorAppClientImpl::RegisterProfilePrefs(
       user_prefs::PrefRegistrySyncable::SYNCABLE_OS_PREF);
 }
 
-ProjectorAppClientImpl::ProjectorAppClientImpl()
-    : pending_screencast_manager_(base::BindRepeating(
+ProjectorAppClientImpl::ProjectorAppClientImpl(
+    PrefService* local_state,
+    ApplicationLocaleStorage* application_locale_storage)
+    : local_state_(CHECK_DEREF(local_state)),
+      application_locale_storage_(CHECK_DEREF(application_locale_storage)),
+      pending_screencast_manager_(base::BindRepeating(
           &ProjectorAppClientImpl::NotifyScreencastsPendingStatusChanged,
           base::Unretained(this))) {}
 
@@ -119,11 +131,12 @@ void ProjectorAppClientImpl::NotifyScreencastsPendingStatusChanged(
 
 bool ProjectorAppClientImpl::ShouldDownloadSoda() const {
   return ProjectorSodaInstallationController::ShouldDownloadSoda(
-      GetLocaleLanguageCode());
+      speech::GetLanguageCode(application_locale_storage_->Get()));
 }
 
 void ProjectorAppClientImpl::InstallSoda() {
-  return ProjectorSodaInstallationController::InstallSoda(GetLocale());
+  return ProjectorSodaInstallationController::InstallSoda(
+      *local_state_, application_locale_storage_->Get());
 }
 
 void ProjectorAppClientImpl::OnSodaInstallProgress(int combined_progress) {
@@ -180,10 +193,6 @@ void ProjectorAppClientImpl::ToggleFileSyncingNotificationForPaths(
 }
 
 void ProjectorAppClientImpl::HandleAccountReauth(const std::string& email) {
-  ::GetAccountManagerFacade(
-      ProfileManager::GetActiveUserProfile()->GetPath().value())
-      ->ShowReauthAccountDialog(
-          account_manager::AccountManagerFacade::AccountAdditionSource::
-              kChromeOSProjectorAppReauth,
-          email, base::DoNothing());
+  ShowProjectorAccountReauthDialog(ProfileManager::GetActiveUserProfile(),
+                                   email);
 }

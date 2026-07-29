@@ -13,10 +13,12 @@
 #include <utility>
 #include <vector>
 
+#include "base/containers/span.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/notreached.h"
 #include "base/numerics/safe_conversions.h"
+#include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/trace_event/process_memory_dump.h"
@@ -24,7 +26,7 @@
 #include "base/trace_event/traced_value.h"
 #include "build/build_config.h"
 #include "cc/debug/debug_colors.h"
-#include "cc/metrics/dropped_frame_counter.h"
+#include "cc/metrics/frame_sorter.h"
 #include "cc/paint/display_item_list.h"
 #include "cc/paint/image_provider.h"
 #include "cc/paint/paint_canvas.h"
@@ -57,11 +59,11 @@
 #include "third_party/skia/include/core/SkFont.h"
 #include "third_party/skia/include/core/SkPaint.h"
 #include "third_party/skia/include/core/SkPath.h"
+#include "third_party/skia/include/core/SkPathBuilder.h"
 #include "third_party/skia/include/core/SkSurface.h"
 #include "third_party/skia/include/core/SkTextBlob.h"
 #include "third_party/skia/include/core/SkTypeface.h"
 #include "third_party/skia/include/gpu/ganesh/GrDirectContext.h"
-#include "ui/gfx/buffer_format_util.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/geometry/size_conversions.h"
@@ -79,10 +81,12 @@ void DrawArc(PaintCanvas* canvas,
              const PaintFlags& flags) {
   DCHECK_GT(sweep_angle, 0.f);
   DCHECK_LT(sweep_angle, 360.f);
-  SkPath path;
-  path.moveTo(oval.centerX(), oval.centerY());
-  path.arcTo(oval, start_angle, sweep_angle, false /* forceMoveTo */);
-  path.close();
+  const SkPath path =
+      SkPathBuilder()
+          .moveTo(oval.centerX(), oval.centerY())
+          .arcTo(oval, start_angle, sweep_angle, false /* forceMoveTo */)
+          .close()
+          .detach();
   canvas->drawPath(path, flags);
 }
 
@@ -207,6 +211,10 @@ void HeadsUpDisplayLayerImpl::UpdateHudTexture(
   // Update state that will be drawn.
   UpdateHudContents();
 
+  // Note the layer properties changed, to force the layer to update changes to
+  // Viz/Display.
+  NoteLayerPropertyChanged();
+
   viz::RasterContextProvider* raster_context_provider = nullptr;
   std::optional<viz::RasterContextProvider::ScopedRasterContextLock> lock;
   if (draw_mode == DRAW_MODE_HARDWARE) {
@@ -247,17 +255,10 @@ void HeadsUpDisplayLayerImpl::UpdateHudTexture(
       auto* sii = raster_context_provider->SharedImageInterface();
 
       pool_resource.InstallGpuBacking(sii, raster_caps.tile_overlay_candidate,
-                                      raster_caps.use_gpu_rasterization,
                                       "HeadsUpDisplayLayer");
-
-      auto* ri = raster_context_provider->RasterInterface();
-      ri->WaitSyncTokenCHROMIUM(sii->GenUnverifiedSyncToken().GetConstData());
+      pool_resource.backing()->returned_sync_token =
+          pool_resource.backing()->shared_image()->creation_sync_token();
       needs_clear = true;
-    } else if (pool_resource.backing()->returned_sync_token.HasData()) {
-      auto* ri = raster_context_provider->RasterInterface();
-      ri->WaitSyncTokenCHROMIUM(
-          pool_resource.backing()->returned_sync_token.GetConstData());
-      pool_resource.backing()->returned_sync_token = gpu::SyncToken();
     }
   } else {
     DCHECK_EQ(draw_mode, DRAW_MODE_SOFTWARE);
@@ -278,6 +279,12 @@ void HeadsUpDisplayLayerImpl::UpdateHudTexture(
     auto* backing = pool_resource.backing();
     auto* ri = raster_context_provider->RasterInterface();
 
+    std::unique_ptr<gpu::RasterScopedAccess> ri_access =
+        backing->shared_image()->BeginRasterAccess(
+            ri, backing->returned_sync_token, /*readonly=*/false);
+    if (backing->returned_sync_token.HasData()) {
+      backing->returned_sync_token = gpu::SyncToken();
+    }
     if (raster_caps.use_gpu_rasterization) {
       // If using |gpu_raster|, DrawHudContents() directly to a gpu texture
       // which is wrapped in an SkSurface.
@@ -296,7 +303,7 @@ void HeadsUpDisplayLayerImpl::UpdateHudTexture(
       ri->BeginRasterCHROMIUM(background_color, needs_clear, msaa_sample_count,
                               gpu::raster::kNoMSAA, can_use_lcd_text,
                               /*visible=*/true, gfx::ColorSpace::CreateSRGB(),
-                              /*hdr_headroom=*/1.f,
+                              /*hdr_headroom=*/0.f,
                               backing->shared_image()->mailbox().name);
       constexpr gfx::Vector2dF post_translate(0.f, 0.f);
       constexpr gfx::Vector2dF post_scale(1.f, 1.f);
@@ -306,7 +313,8 @@ void HeadsUpDisplayLayerImpl::UpdateHudTexture(
       ri->RasterCHROMIUM(
           display_item_list.get(), &image_provider, size, gfx::Rect(size),
           gfx::Rect(size), post_translate, post_scale, /*requires_clear=*/false,
-          /*raster_inducing_scroll_offsets=*/nullptr, &max_op_size_limit);
+          /*raster_inducing_scroll_offsets=*/nullptr, &max_op_size_limit,
+          base::RepeatingCallback<void(SkCanvas*, uint32_t)>());
       ri->EndRasterCHROMIUM();
     } else {
       // If not using |gpu_raster| but using gpu compositing, DrawHudContents()
@@ -335,7 +343,7 @@ void HeadsUpDisplayLayerImpl::UpdateHudTexture(
     }
 
     backing->mailbox_sync_token =
-        viz::ClientResourceProvider::GenerateSyncTokenHelper(ri);
+        gpu::RasterScopedAccess::EndAccess(std::move(ri_access));
   } else {
     // If not using gpu compositing, we DrawHudContents() directly into a shared
     // memory bitmap, wrapped in an SkSurface, that can be shared to the display
@@ -358,7 +366,7 @@ void HeadsUpDisplayLayerImpl::UpdateHudTexture(
     DrawHudContents(&canvas);
 
     auto sii = layer_tree_frame_sink->shared_image_interface();
-    backing->mailbox_sync_token = sii->GenVerifiedSyncToken();
+    backing->mailbox_sync_token = sii->GenUnverifiedSyncToken();
   }
 
   // Exports the backing to the ResourceProvider, giving it a ResourceId that
@@ -391,22 +399,17 @@ void HeadsUpDisplayLayerImpl::UpdateHudTexture(
       // The acquired resource's size could be bigger than actually needed due
       // to reuse. In this case, only use the part of the texture that is within
       // the bounds.
-      gfx::PointF uv_bottom_right(1.f, 1.f);
-      if (in_flight_resource_.size() != internal_content_bounds_) {
-        uv_bottom_right.set_x(
-            static_cast<double>(internal_content_bounds_.width()) /
-            static_cast<double>(in_flight_resource_.size().width()));
-        uv_bottom_right.set_y(
-            static_cast<double>(internal_content_bounds_.height()) /
-            static_cast<double>(in_flight_resource_.size().height()));
-      }
+      gfx::PointF uv_bottom_right(internal_content_bounds_.width(),
+                                  internal_content_bounds_.height());
+
       quad->SetNew(sqs, quad_rect, visible_rect, /*needs_blending=*/true,
-                   resource_id, /*premultiplied_alpha=*/true,
-                   /*uv_top_left=*/gfx::PointF(),
-                   /*uv_bottom_right=*/uv_bottom_right,
-                   /*background_color=*/SkColors::kTransparent,
-                   /*nearest_neighbor=*/false, /*secure_output_only=*/false,
-                   gfx::ProtectedVideoType::kClear);
+                   resource_id,
+                   /*top_left=*/gfx::PointF(),
+                   /*bottom_right=*/uv_bottom_right,
+                   /*background=*/SkColors::kTransparent,
+                   /*nearest=*/false, /*secure_output=*/false,
+                   gfx::ProtectedVideoType::kClear,
+                   /*is_tex_coords_normalized=*/false);
       ValidateQuadResources(quad);
       break;
     }
@@ -434,29 +437,49 @@ void HeadsUpDisplayLayerImpl::SetHUDTypeface(sk_sp<SkTypeface> typeface) {
   NoteLayerPropertyChanged();
 }
 
-const std::vector<gfx::Rect>& HeadsUpDisplayLayerImpl::LayoutShiftRects()
-    const {
-  return layout_shift_rects_;
+void HeadsUpDisplayLayerImpl::SetWebVitalsDebugRects(
+    const std::vector<WebVitalsDebugRect>& rects) {
+  web_vitals_debug_rects_ = rects;
+  if (!web_vitals_debug_rects_.empty()) {
+    NoteLayerPropertyChanged();
+  }
 }
 
-void HeadsUpDisplayLayerImpl::SetLayoutShiftRects(
-    const std::vector<gfx::Rect>& rects) {
-  layout_shift_rects_ = rects;
+const std::vector<WebVitalsDebugRect>&
+HeadsUpDisplayLayerImpl::WebVitalsDebugRects() const {
+  return web_vitals_debug_rects_;
 }
 
-void HeadsUpDisplayLayerImpl::ClearLayoutShiftRects() {
-  layout_shift_rects_.clear();
+void HeadsUpDisplayLayerImpl::ClearWebVitalsDebugRects() {
+  web_vitals_debug_rects_.clear();
 }
 
-void HeadsUpDisplayLayerImpl::PushPropertiesTo(LayerImpl* layer) {
-  LayerImpl::PushPropertiesTo(layer);
+void HeadsUpDisplayLayerImpl::GetContentsResourceId(
+    viz::ResourceId* resource_id,
+    gfx::Size* resource_size,
+    gfx::SizeF* resource_uv_size) const {
+  if (in_flight_resource_ && in_flight_resource_.backing()) {
+    *resource_id = in_flight_resource_.resource_id_for_export();
+    *resource_size = in_flight_resource_.size();
+    // HUD layers use the full texture.
+    *resource_uv_size = gfx::SizeF(1.f, 1.f);
+  } else {
+    *resource_id = viz::kInvalidResourceId;
+    *resource_size = gfx::Size();
+    *resource_uv_size = gfx::SizeF();
+  }
+}
 
-  HeadsUpDisplayLayerImpl* layer_impl =
-      static_cast<HeadsUpDisplayLayerImpl*>(layer);
+void HeadsUpDisplayLayerImpl::CopyPropertiesTo(LayerImpl* layer) const {
+  LayerImpl::CopyPropertiesTo(layer);
+  static_cast<HeadsUpDisplayLayerImpl*>(layer)->SetHUDTypeface(typeface_);
+}
 
-  layer_impl->SetHUDTypeface(typeface_);
-  layer_impl->SetLayoutShiftRects(layout_shift_rects_);
-  layout_shift_rects_.clear();
+void HeadsUpDisplayLayerImpl::MovePropertiesToActiveLayer(
+    LayerImpl* active_layer) {
+  LayerImpl::MovePropertiesToActiveLayer(active_layer);
+  static_cast<HeadsUpDisplayLayerImpl*>(active_layer)
+      ->SetWebVitalsDebugRects(std::move(web_vitals_debug_rects_));
 }
 
 void HeadsUpDisplayLayerImpl::UpdateHudContents() {
@@ -469,7 +492,7 @@ void HeadsUpDisplayLayerImpl::UpdateHudContents() {
 
     if (debug_state.show_fps_counter) {
       throughput_value_ =
-          layer_tree_impl()->dropped_frame_counter()->GetAverageThroughput();
+          layer_tree_impl()->frame_sorter()->GetAverageThroughput();
       const auto& args = layer_tree_impl()->CurrentBeginFrameArgs();
       if (args.IsValid())
         frame_interval_ = args.interval;
@@ -519,8 +542,7 @@ void HeadsUpDisplayLayerImpl::DrawHudContents(PaintCanvas* canvas) {
   SkRect area = SkRect::MakeXYWH(0, 0, 0, 0);
 
   if (debug_state.show_fps_counter) {
-    area = DrawFrameThroughputDisplay(
-        canvas, layer_tree_impl()->dropped_frame_counter(), 0, 0);
+    area = DrawFrameThroughputDisplay(canvas, 0, 0);
     area = DrawGpuRasterizationStatus(canvas, 0, area.bottom(),
                                       std::max<SkScalar>(area.width(), 150));
   }
@@ -634,9 +656,9 @@ void HeadsUpDisplayLayerImpl::DrawSeparatorLine(PaintCanvas* canvas,
 
 SkRect HeadsUpDisplayLayerImpl::DrawFrameThroughputDisplay(
     PaintCanvas* canvas,
-    const DroppedFrameCounter* dropped_frame_counter,
     int right,
     int top) const {
+  FrameSorter* frame_sorter = layer_tree_impl()->frame_sorter();
   const int kPadding = 4;
   const int kGap = 6;
 
@@ -644,7 +666,7 @@ SkRect HeadsUpDisplayLayerImpl::DrawFrameThroughputDisplay(
   const int kFontHeight = 12;
 
   const int kGraphWidth =
-      base::saturated_cast<int>(dropped_frame_counter->frame_history_size());
+      base::saturated_cast<int>(frame_sorter->frame_history_size());
   const int kGraphHeight = 40;
 
   int width = kGraphWidth + 4 * kPadding;
@@ -688,17 +710,16 @@ SkRect HeadsUpDisplayLayerImpl::DrawFrameThroughputDisplay(
   DrawGraphLines(canvas, &flags, graph_bounds);
 
   // Collect the frames graph data.
-  SkPath good_path;
-  SkPath dropped_path;
-  SkPath partial_path;
-  for (auto it = dropped_frame_counter->End(); it; --it) {
+  SkPathBuilder good_path;
+  SkPathBuilder dropped_path;
+  SkPathBuilder partial_path;
+  for (auto it = frame_sorter->End(); it; --it) {
     const auto state = **it;
     int x = graph_bounds.left() + it.index();
-    SkPath& path = state == DroppedFrameCounter::kFrameStateDropped
-                       ? dropped_path
-                       : state == DroppedFrameCounter::kFrameStateComplete
-                             ? good_path
-                             : partial_path;
+    SkPathBuilder& path =
+        state == FrameInfo::FrameFinalState::kDropped        ? dropped_path
+        : state == FrameInfo::FrameFinalState::kPresentedAll ? good_path
+                                                             : partial_path;
     path.moveTo(x, graph_bounds.top());
     path.lineTo(x, graph_bounds.bottom());
   }
@@ -709,13 +730,13 @@ SkRect HeadsUpDisplayLayerImpl::DrawFrameThroughputDisplay(
   flags.setStrokeWidth(1);
 
   flags.setColor(DebugColors::FPSDisplaySuccessfulFrame());
-  canvas->drawPath(good_path, flags);
+  canvas->drawPath(good_path.detach(), flags);
 
   flags.setColor(DebugColors::FPSDisplayDroppedFrame());
-  canvas->drawPath(dropped_path, flags);
+  canvas->drawPath(dropped_path.detach(), flags);
 
   flags.setColor(DebugColors::FPSDisplayMissedFrame());
-  canvas->drawPath(partial_path, flags);
+  canvas->drawPath(partial_path.detach(), flags);
 
   return area;
 }
@@ -810,7 +831,7 @@ SkRect HeadsUpDisplayLayerImpl::DrawGpuRasterizationStatus(PaintCanvas* canvas,
                                                            int width) const {
   std::string status;
   SkColor color = SK_ColorRED;
-  if (layer_tree_impl()->use_gpu_rasterization()) {
+  if (layer_tree_impl()->raster_caps().use_gpu_rasterization) {
     status = "on";
     color = SK_ColorGREEN;
   } else {
@@ -903,23 +924,39 @@ void HeadsUpDisplayLayerImpl::DrawDebugRects(
     DebugRectHistory* debug_rect_history) {
   PaintFlags flags;
 
-  const std::vector<DebugRect>& debug_rects = debug_rect_history->debug_rects();
-  std::vector<DebugRect> new_paint_rects;
-  std::vector<DebugRect> new_layout_shift_rects;
-
-  for (size_t i = 0; i < debug_rects.size(); ++i) {
+  for (auto& debug_rect : debug_rect_history->debug_rects()) {
     SkColor4f stroke_color = SkColors::kTransparent;
     SkColor4f fill_color = SkColors::kTransparent;
     float stroke_width = 0.f;
     std::string label_text;
 
-    switch (debug_rects[i].type) {
+    switch (debug_rect.type) {
+      case DebugRectType::kInteractionContentfulPaint:
+        stroke_color = DebugColors::InteractionContentfulPaintRectBorderColor(
+            debug_rect.fade_step);
+        fill_color = DebugColors::InteractionContentfulPaintRectFillColor(
+            debug_rect.fade_step);
+        stroke_width = DebugColors::InteractionContentfulPaintRectBorderWidth();
+        break;
       case DebugRectType::kLayoutShift:
-        new_layout_shift_rects.push_back(debug_rects[i]);
-        continue;
+        stroke_color =
+            DebugColors::LayoutShiftRectBorderColor(debug_rect.fade_step);
+        fill_color =
+            DebugColors::LayoutShiftRectFillColor(debug_rect.fade_step);
+        stroke_width = DebugColors::LayoutShiftRectBorderWidth();
+        break;
+      case DebugRectType::kNavigationContentfulPaint:
+        stroke_color = DebugColors::NavigationContentfulPaintRectBorderColor(
+            debug_rect.fade_step);
+        fill_color = DebugColors::NavigationContentfulPaintRectFillColor(
+            debug_rect.fade_step);
+        stroke_width = DebugColors::NavigationContentfulPaintRectBorderWidth();
+        break;
       case DebugRectType::kPaint:
-        new_paint_rects.push_back(debug_rects[i]);
-        continue;
+        stroke_color = DebugColors::PaintRectBorderColor(debug_rect.fade_step);
+        fill_color = DebugColors::PaintRectFillColor(debug_rect.fade_step);
+        stroke_width = DebugColors::PaintRectBorderWidth();
+        break;
       case DebugRectType::kPropertyChanged:
         stroke_color = DebugColors::PropertyChangedRectBorderColor();
         fill_color = DebugColors::PropertyChangedRectFillColor();
@@ -940,7 +977,7 @@ void HeadsUpDisplayLayerImpl::DrawDebugRects(
         fill_color = DebugColors::TouchEventHandlerRectFillColor();
         stroke_width = DebugColors::TouchEventHandlerRectBorderWidth();
         label_text = "touch event listener: ";
-        label_text.append(TouchActionToString(debug_rects[i].touch_action));
+        label_text.append(TouchActionToString(debug_rect.touch_action));
         break;
       case DebugRectType::kWheelEventHandler:
         stroke_color = DebugColors::WheelEventHandlerRectBorderColor();
@@ -966,7 +1003,7 @@ void HeadsUpDisplayLayerImpl::DrawDebugRects(
         stroke_width = DebugColors::MainThreadScrollRepaintRectBorderWidth();
         label_text = "main thread scroll repaint: ";
         label_text.append(base::ToLowerASCII(MainThreadScrollingReason::AsText(
-            debug_rects[i].main_thread_scroll_repaint_reasons)));
+            debug_rect.main_thread_scroll_repaint_reasons)));
         break;
       case DebugRectType::kRasterInducingScroll:
         stroke_color = DebugColors::RasterInducingScrollRectBorderColor();
@@ -982,39 +1019,13 @@ void HeadsUpDisplayLayerImpl::DrawDebugRects(
         break;
     }
 
-    DrawDebugRect(canvas, &flags, debug_rects[i], stroke_color, fill_color,
+    DrawDebugRect(canvas, &flags, debug_rect, stroke_color, fill_color,
                   stroke_width, label_text);
+    debug_rect.fade_step--;
   }
 
-  if (new_paint_rects.size()) {
-    paint_rects_.swap(new_paint_rects);
-    paint_rects_fade_step_ = DebugColors::kFadeSteps;
-  }
-  if (paint_rects_fade_step_ > 0) {
-    paint_rects_fade_step_--;
-    for (auto& paint_rect : paint_rects_) {
-      DrawDebugRect(canvas, &flags, paint_rect,
-                    DebugColors::PaintRectBorderColor(paint_rects_fade_step_),
-                    DebugColors::PaintRectFillColor(paint_rects_fade_step_),
-                    DebugColors::PaintRectBorderWidth(), "");
-    }
-  }
-  if (new_layout_shift_rects.size()) {
-    layout_shift_debug_rects_.swap(new_layout_shift_rects);
-    layout_shift_rects_fade_step_ = DebugColors::kFadeSteps;
-  }
-  if (layout_shift_rects_fade_step_ > 0) {
-    layout_shift_rects_fade_step_--;
-    for (auto& layout_shift_debug_rect : layout_shift_debug_rects_) {
-      // TODO(crbug.com/40219248): Remove all instances of toSkColor below and
-      // make all SkColor4f.
-      DrawDebugRect(
-          canvas, &flags, layout_shift_debug_rect,
-          DebugColors::LayoutShiftRectBorderColor(),
-          DebugColors::LayoutShiftRectFillColor(layout_shift_rects_fade_step_),
-          DebugColors::LayoutShiftRectBorderWidth(), "");
-    }
-  }
+  std::erase_if(debug_rect_history->debug_rects(),
+                [](auto& debug_rect) { return debug_rect.fade_step <= 0; });
 }
 
 void HeadsUpDisplayLayerImpl::AsValueInto(

@@ -9,13 +9,14 @@
 #include "chrome/browser/renderer_preferences_util.h"
 #include "chrome/browser/ui/blocked_content/popunder_preventer.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
-#include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/webui/chrome_web_contents_handler.h"
 #include "chrome/browser/ui/webui/constrained_web_dialog_ui.h"
 #include "components/constrained_window/constrained_window_views.h"
 #include "components/input/native_web_keyboard_event.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
+#include "components/web_modal/web_contents_modal_dialog_manager_delegate.h"
+#include "components/zoom/zoom_controller.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
@@ -35,7 +36,7 @@ namespace {
 
 gfx::Size RestrictToPlatformMinimumSize(const gfx::Size& min_size) {
 #if BUILDFLAG(IS_MAC)
-  // http://crbug.com/78973 - MacOS does not handle zero-sized windows well.
+  // http://crbug.com/40552209 - MacOS does not handle zero-sized windows well.
   gfx::Size adjusted_min_size(1, 1);
   adjusted_min_size.SetToMax(min_size);
   return adjusted_min_size;
@@ -81,7 +82,7 @@ class ConstrainedDialogWebView : public views::WebView,
   std::u16string GetWindowTitle() const override;
   std::u16string GetAccessibleWindowTitle() const override;
   views::View* GetContentsView() override;
-  std::unique_ptr<views::NonClientFrameView> CreateNonClientFrameView(
+  std::unique_ptr<views::FrameView> CreateFrameView(
       views::Widget* widget) override;
   bool ShouldShowCloseButton() const override;
 
@@ -99,7 +100,7 @@ class ConstrainedDialogWebView : public views::WebView,
   base::WeakPtr<content::WebContents> initiator_web_contents_;
 
   // Showing a dialog should not activate, but on the Mac it does
-  // (https://crbug.com/1073587). Make sure it cannot be used to generate a
+  // (https://crbug.com/40127640). Make sure it cannot be used to generate a
   // popunder.
   PopunderPreventer popunder_preventer_;
 
@@ -136,7 +137,7 @@ class WebDialogWebContentsDelegateViews
       content::WebContents* source,
       const input::NativeWebKeyboardEvent& event) override {
     // Forward shortcut keys in dialog to our initiator's delegate.
-    // http://crbug.com/104586
+    // http://crbug.com/40116210
     if (!initiator_web_contents_) {
       return false;
     }
@@ -173,7 +174,7 @@ class WebDialogWebContentsDelegateViews
           web_modal::WebContentsModalDialogManager::FromWebContents(
               top_level_web_contents)
               ->delegate()
-              ->GetWebContentsModalDialogHost());
+              ->GetWebContentsModalDialogHost(top_level_web_contents));
     }
   }
 
@@ -460,8 +461,8 @@ views::View* ConstrainedDialogWebView::GetContentsView() {
   return this;
 }
 
-std::unique_ptr<views::NonClientFrameView>
-ConstrainedDialogWebView::CreateNonClientFrameView(views::Widget* widget) {
+std::unique_ptr<views::FrameView> ConstrainedDialogWebView::CreateFrameView(
+    views::Widget* widget) {
   return views::DialogDelegate::CreateDialogFrameView(widget);
 }
 

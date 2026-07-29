@@ -35,14 +35,15 @@
 #include "components/update_client/update_client.h"
 #include "components/update_client/update_client_errors.h"
 #include "components/update_client/utils.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 
 namespace update_client {
 
 namespace {
 
-base::Value::Dict MakeEvent(UpdateClient::PingParams ping_params,
-                            const base::Version& previous_version) {
-  base::Value::Dict event;
+base::DictValue MakeEvent(UpdateClient::PingParams ping_params,
+                          const base::Version& previous_version) {
+  base::DictValue event;
   event.Set("eventtype", ping_params.event_type);
   event.Set("eventresult", ping_params.result);
   if (ping_params.error_code) {
@@ -62,7 +63,6 @@ base::Value::Dict MakeEvent(UpdateClient::PingParams ping_params,
 
 UpdateContext::UpdateContext(
     scoped_refptr<Configurator> config,
-    scoped_refptr<CrxCache> crx_cache,
     bool is_foreground,
     bool is_install,
     const std::vector<std::string>& ids,
@@ -72,7 +72,6 @@ UpdateContext::UpdateContext(
     bool is_update_check_only,
     base::RepeatingCallback<int64_t(const base::FilePath&)> get_available_space)
     : config(config),
-      crx_cache_(crx_cache),
       is_foreground(is_foreground),
       is_install(is_install),
       ids(ids),
@@ -99,8 +98,7 @@ UpdateEngine::UpdateEngine(
     : config_(config),
       update_checker_factory_(update_checker_factory),
       ping_manager_(ping_manager),
-      notify_observers_callback_(notify_observers_callback),
-      crx_cache_(base::MakeRefCounted<CrxCache>(config->GetCrxCachePath())) {}
+      notify_observers_callback_(notify_observers_callback) {}
 
 UpdateEngine::~UpdateEngine() = default;
 
@@ -154,7 +152,7 @@ base::RepeatingClosure UpdateEngine::InvokeOperation(
 
   scoped_refptr<UpdateContext> update_context =
       base::MakeRefCounted<UpdateContext>(
-          config_, crx_cache_, is_foreground, is_install, ids,
+          config_, is_foreground, is_install, ids,
           crx_state_change_callback
               ? base::BindRepeating(
                     [](UpdateClient::CrxStateChangeCallback a,
@@ -260,7 +258,7 @@ void UpdateEngine::UpdateCheckResultsAvailable(
   // Only positive values for throttle_sec are effective. 0 means that no
   // throttling occurs and it resets the throttle.
   // Negative values are not trusted and are ignored.
-  constexpr int kMaxRetryAfterSec = 24 * 60 * 60;  // 24 hours.
+  static constexpr int kMaxRetryAfterSec = 24 * 60 * 60;  // 24 hours.
   const int throttle_sec =
       std::min(update_context->retry_after_sec, kMaxRetryAfterSec);
   if (throttle_sec >= 0) {
@@ -279,8 +277,9 @@ void UpdateEngine::UpdateCheckResultsAvailable(
   if (error) {
     CHECK(!results);
     for (const auto& id : update_context->components_to_check_for_updates) {
-      CHECK_EQ(1u, update_context->components.count(id));
-      auto& component = update_context->components.at(id);
+      auto it = update_context->components.find(id);
+      CHECK(it != update_context->components.end());
+      auto& component = it->second;
       component->SetUpdateCheckResult(std::nullopt, ErrorCategory::kUpdateCheck,
                                       error, complete);
     }
@@ -290,20 +289,25 @@ void UpdateEngine::UpdateCheckResultsAvailable(
   CHECK(results);
   CHECK_EQ(0, error);
 
-  std::map<std::string, ProtocolParser::Result> id_to_result;
-  for (const auto& result : results->list) {
-    id_to_result[result.extension_id] = result;
+  absl::flat_hash_map<std::string, ProtocolParser::App> id_to_result;
+  id_to_result.reserve(results->apps.size());
+  for (const auto& result : results->apps) {
+    id_to_result[result.app_id] = result;
   }
 
   for (const auto& id : update_context->components_to_check_for_updates) {
-    CHECK_EQ(1u, update_context->components.count(id));
-    auto& component = update_context->components.at(id);
+    auto components_it = update_context->components.find(id);
+    CHECK(components_it != update_context->components.end());
+    auto& component = components_it->second;
     const auto& it = id_to_result.find(id);
     if (it != id_to_result.end()) {
       const auto& result = it->second;
       const auto& [category, protocol_error] = [](const std::string& status) {
-        // First, handle app status literals which can be folded down as an
-        // updatecheck status
+        // "ok" and "noupdate" are non-error cases.
+        if (status == "ok" || status == "noupdate") {
+          return std::make_pair(ErrorCategory::kNone, ProtocolError::NONE);
+        }
+        // Some app status literals can be folded down as an updatecheck status.
         if (status == "error-unknownApplication") {
           return std::make_pair(ErrorCategory::kUpdateCheck,
                                 ProtocolError::UNKNOWN_APPLICATION);
@@ -336,9 +340,13 @@ void UpdateEngine::UpdateCheckResultsAvailable(
           return std::make_pair(ErrorCategory::kUpdateCheck,
                                 ProtocolError::INTERNAL);
         }
-        // If the parser has return a valid result and the status is not one of
-        // the literals above, then this must be a success an not a parse error.
-        return std::make_pair(ErrorCategory::kNone, ProtocolError::NONE);
+        if (status == "error-inexpressible") {
+          return std::make_pair(ErrorCategory::kUpdateCheck,
+                                ProtocolError::INEXPRESSIBLE);
+        }
+        // Otherwise, this is an unknown status.
+        return std::make_pair(ErrorCategory::kUpdateCheck,
+                              ProtocolError::UNKNOWN_ERROR);
       }(result.status);
       component->SetUpdateCheckResult(
           result, category, static_cast<int>(protocol_error), complete);
@@ -360,8 +368,9 @@ void UpdateEngine::UpdateCheckComplete(
 
     // Handle the |kChecking| state and transition the component to the
     // next state, depending on the update check results.
-    CHECK_EQ(1u, update_context->components.count(id));
-    auto& component = update_context->components.at(id);
+    auto components_it = update_context->components.find(id);
+    CHECK(components_it != update_context->components.end());
+    auto& component = components_it->second;
     CHECK_EQ(component->state(), ComponentState::kChecking);
     component->Handle(base::DoNothing());
   }
@@ -390,8 +399,9 @@ void UpdateEngine::HandleComponent(
   }
 
   const auto& id = queue.front();
-  CHECK_EQ(1u, update_context->components.count(id));
-  const auto& component = update_context->components.at(id);
+  auto components_it = update_context->components.find(id);
+  CHECK(components_it != update_context->components.end());
+  auto& component = components_it->second;
   CHECK(component);
 
   auto& next_update_delay = update_context->next_update_delay;
@@ -417,8 +427,9 @@ void UpdateEngine::HandleComponentComplete(
   CHECK(!queue.empty());
 
   const auto& id = queue.front();
-  CHECK_EQ(1u, update_context->components.count(id));
-  const auto& component = update_context->components.at(id);
+  auto components_it = update_context->components.find(id);
+  CHECK(components_it != update_context->components.end());
+  auto& component = components_it->second;
   CHECK(component);
 
   base::OnceClosure callback =
@@ -487,7 +498,7 @@ void UpdateEngine::SendPing(const CrxComponent& crx_component,
                             UpdateClient::PingParams ping_params,
                             Callback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  std::vector<base::Value::Dict> events;
+  std::vector<base::DictValue> events;
   events.push_back(MakeEvent(ping_params, crx_component.version));
   ping_manager_->SendPing(
       base::StrCat(

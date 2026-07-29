@@ -7,21 +7,25 @@
 #include <stddef.h>
 
 #include <memory>
+#include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 #include "base/containers/fixed_flat_map.h"
 #include "base/containers/to_vector.h"
-#include "base/memory/raw_ptr.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/synchronization/lock.h"
+#include "chrome/browser/browser_process.h"
 #include "chrome/browser/extensions/api/settings_private/prefs_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/extensions/api/autofill_private.h"
 #include "chrome/common/pref_names.h"
-#include "chrome/grit/branded_strings.h"
 #include "components/autofill/core/browser/autofill_type.h"
+#include "components/autofill/core/browser/country_type.h"
 #include "components/autofill/core/browser/data_manager/addresses/address_data_manager.h"
 #include "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
@@ -42,6 +46,7 @@
 #include "components/prefs/pref_service.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/sync/base/user_selectable_type.h"
+#include "components/variations/service/variations_service.h"
 #include "extensions/browser/extensions_browser_client.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -51,6 +56,14 @@
 namespace autofill_private = extensions::api::autofill_private;
 
 namespace {
+
+bool ShouldUseNewFopDisplay() {
+#if BUILDFLAG(IS_ANDROID)
+  return false;
+#else
+  return true;
+#endif
+}
 
 // Gets the string corresponding to |type| from |profile|.
 std::string GetStringFromProfile(const autofill::AutofillProfile& profile,
@@ -65,9 +78,13 @@ autofill_private::AddressRecordType ConvertProfileRecordType(
     case autofill::AutofillProfile::RecordType::kLocalOrSyncable:
       return autofill_private::AddressRecordType::kLocalOrSyncable;
     case autofill::AutofillProfile::RecordType::kAccount:
-    case autofill::AutofillProfile::RecordType::kAccountHome:
-    case autofill::AutofillProfile::RecordType::kAccountWork:
       return autofill_private::AddressRecordType::kAccount;
+    case autofill::AutofillProfile::RecordType::kAccountHome:
+      return autofill_private::AddressRecordType::kAccountHome;
+    case autofill::AutofillProfile::RecordType::kAccountWork:
+      return autofill_private::AddressRecordType::kAccountWork;
+    case autofill::AutofillProfile::RecordType::kAccountNameEmail:
+      return autofill_private::AddressRecordType::kAccountNameEmail;
   }
   NOTREACHED();
 }
@@ -80,9 +97,9 @@ autofill_private::AddressEntry ProfileToAddressEntry(
   // Add all address fields to the entry.
   address.guid = profile.guid();
 
-  std::ranges::transform(
+  address.fields = base::ToVector(
       autofill::AutofillProfile::kDatabaseStoredTypes,
-      back_inserter(address.fields), [&profile](auto field_type) {
+      [&profile](auto field_type) {
         autofill_private::AddressField field;
         field.type =
             autofill_private::ParseFieldType(FieldTypeToStringView(field_type));
@@ -110,32 +127,72 @@ autofill_private::AddressEntry ProfileToAddressEntry(
 }
 
 std::string CardNetworkToIconResourceIdString(const std::string& network) {
+  if (network == autofill::kAmericanExpressCard &&
+      base::FeatureList::IsEnabled(
+          autofill::features::kAutofillEnableNewAmexNetworkArt)) {
+    return "chrome://theme/IDR_AUTOFILL_METADATA_CC_AMEX_NEW";
+  }
+
+  if (ShouldUseNewFopDisplay()) {
+    static constexpr auto kNetworkToResourceIdStringMap =
+        base::MakeFixedFlatMap<std::string_view, std::string_view>(
+            {{autofill::kAmericanExpressCard,
+              "chrome://theme/IDR_AUTOFILL_METADATA_CC_AMEX"},
+             {autofill::kDiscoverCard,
+              "chrome://theme/IDR_AUTOFILL_METADATA_CC_DISCOVER"},
+             {autofill::kDinersCard,
+              "chrome://theme/IDR_AUTOFILL_METADATA_CC_DINERS"},
+             {autofill::kEloCard,
+              "chrome://theme/IDR_AUTOFILL_METADATA_CC_ELO"},
+             {autofill::kJCBCard,
+              "chrome://theme/IDR_AUTOFILL_METADATA_CC_JCB"},
+             {autofill::kMasterCard,
+              "chrome://theme/IDR_AUTOFILL_METADATA_CC_MASTERCARD"},
+             {autofill::kMirCard,
+              "chrome://theme/IDR_AUTOFILL_METADATA_CC_MIR"},
+             {autofill::kTroyCard,
+              "chrome://theme/IDR_AUTOFILL_METADATA_CC_TROY"},
+             {autofill::kUnionPay,
+              "chrome://theme/IDR_AUTOFILL_METADATA_CC_UNIONPAY"},
+             {autofill::kVerveCard,
+              "chrome://theme/IDR_AUTOFILL_METADATA_CC_VERVE"},
+             {autofill::kVisaCard,
+              "chrome://theme/IDR_AUTOFILL_METADATA_CC_VISA"}});
+
+    auto it = kNetworkToResourceIdStringMap.find(network);
+    return it != kNetworkToResourceIdStringMap.end()
+               ? std::string(it->second)
+               : "chrome://theme/IDR_AUTOFILL_METADATA_CC_GENERIC";
+  }
   static constexpr auto kNetworkToResourceIdStringMap =
       base::MakeFixedFlatMap<std::string_view, std::string_view>(
           {{autofill::kDiscoverCard,
-            "chrome://theme/IDR_AUTOFILL_METADATA_CC_DISCOVER"},
+            "chrome://theme/IDR_AUTOFILL_METADATA_CC_DISCOVER_OLD"},
            {autofill::kMasterCard,
-            "chrome://theme/IDR_AUTOFILL_METADATA_CC_MASTERCARD"},
+            "chrome://theme/IDR_AUTOFILL_METADATA_CC_MASTERCARD_OLD"},
            {autofill::kVisaCard,
-            "chrome://theme/IDR_AUTOFILL_METADATA_CC_VISA"},
+            "chrome://theme/IDR_AUTOFILL_METADATA_CC_VISA_OLD"},
            {autofill::kAmericanExpressCard,
-            "chrome://theme/IDR_AUTOFILL_METADATA_CC_AMEX"},
+            "chrome://theme/IDR_AUTOFILL_METADATA_CC_AMEX_OLD"},
            {autofill::kDinersCard,
-            "chrome://theme/IDR_AUTOFILL_METADATA_CC_DINERS"},
-           {autofill::kJCBCard, "chrome://theme/IDR_AUTOFILL_METADATA_CC_JCB"},
-           {autofill::kEloCard, "chrome://theme/IDR_AUTOFILL_METADATA_CC_ELO"},
-           {autofill::kMirCard, "chrome://theme/IDR_AUTOFILL_METADATA_CC_MIR"},
+            "chrome://theme/IDR_AUTOFILL_METADATA_CC_DINERS_OLD"},
+           {autofill::kJCBCard,
+            "chrome://theme/IDR_AUTOFILL_METADATA_CC_JCB_OLD"},
+           {autofill::kEloCard,
+            "chrome://theme/IDR_AUTOFILL_METADATA_CC_ELO_OLD"},
+           {autofill::kMirCard,
+            "chrome://theme/IDR_AUTOFILL_METADATA_CC_MIR_OLD"},
            {autofill::kTroyCard,
-            "chrome://theme/IDR_AUTOFILL_METADATA_CC_TROY"},
+            "chrome://theme/IDR_AUTOFILL_METADATA_CC_TROY_OLD"},
            {autofill::kUnionPay,
-            "chrome://theme/IDR_AUTOFILL_METADATA_CC_UNIONPAY"},
+            "chrome://theme/IDR_AUTOFILL_METADATA_CC_UNIONPAY_OLD"},
            {autofill::kVerveCard,
-            "chrome://theme/IDR_AUTOFILL_METADATA_CC_VERVE"}});
+            "chrome://theme/IDR_AUTOFILL_METADATA_CC_VERVE_OLD"}});
 
   auto it = kNetworkToResourceIdStringMap.find(network);
   return it != kNetworkToResourceIdStringMap.end()
              ? std::string(it->second)
-             : "chrome://theme/IDR_AUTOFILL_METADATA_CC_GENERIC";
+             : "chrome://theme/IDR_AUTOFILL_METADATA_CC_GENERIC_OLD";
 }
 
 autofill_private::IbanEntry IbanToIbanEntry(const autofill::Iban& iban) {
@@ -164,18 +221,29 @@ autofill_private::IbanEntry IbanToIbanEntry(const autofill::Iban& iban) {
   return iban_entry;
 }
 
-std::string PayOverTimeIssuerToIconResourceIdString(const std::string& issuer) {
-  static constexpr auto kPayOverTimeIssuerToResourceIdStringMap =
-      base::MakeFixedFlatMap<std::string_view, std::string_view>(
-          {{autofill::kBnplAffirmIssuerId,
-            "chrome://theme/IDR_AUTOFILL_AFFIRM_LINKED"},
-           {autofill::kBnplZipIssuerId,
-            "chrome://theme/IDR_AUTOFILL_ZIP_LINKED"}});
-
-  auto it = kPayOverTimeIssuerToResourceIdStringMap.find(issuer);
-  return it != kPayOverTimeIssuerToResourceIdStringMap.end()
-             ? std::string(it->second)
-             : "chrome://theme/IDR_AUTOFILL_METADATA_BNPL_GENERIC";
+std::pair<std::string, std::string> PayOverTimeIssuerToIconResourceIdString(
+    autofill::BnplIssuer::IssuerId issuer) {
+  switch (issuer) {
+    case autofill::BnplIssuer::IssuerId::kBnplAffirm:
+      return std::pair<std::string, std::string>(
+          "chrome://theme/IDR_AUTOFILL_AFFIRM_LINKED",
+          "chrome://theme/IDR_AUTOFILL_AFFIRM_LINKED_DARK");
+    case autofill::BnplIssuer::IssuerId::kBnplZip:
+      return std::pair<std::string, std::string>(
+          "chrome://theme/IDR_AUTOFILL_ZIP_LINKED",
+          "chrome://theme/IDR_AUTOFILL_ZIP_LINKED_DARK");
+    // TODO(crbug.com/408268581): Handle Afterpay issuer enum value when adding
+    // Afterpay to the BNPL flow.
+    case autofill::BnplIssuer::IssuerId::kBnplAfterpay:
+      return std::pair<std::string, std::string>(
+          "chrome://theme/IDR_AUTOFILL_METADATA_BNPL_GENERIC",
+          "chrome://theme/IDR_AUTOFILL_METADATA_BNPL_GENERIC");
+    case autofill::BnplIssuer::IssuerId::kBnplKlarna:
+      return std::pair<std::string, std::string>(
+          "chrome://theme/IDR_AUTOFILL_KLARNA_LINKED",
+          "chrome://theme/IDR_AUTOFILL_KLARNA_LINKED_DARK");
+  }
+  NOTREACHED();
 }
 
 autofill_private::PayOverTimeIssuerEntry BnplIssuerToPayOverTimeIssuerEntry(
@@ -184,12 +252,16 @@ autofill_private::PayOverTimeIssuerEntry BnplIssuerToPayOverTimeIssuerEntry(
 
   autofill_private::PayOverTimeIssuerEntry issuer_entry;
 
-  issuer_entry.issuer_id = issuer.issuer_id();
+  issuer_entry.issuer_id =
+      autofill::ConvertToBnplIssuerIdString(issuer.issuer_id());
   issuer_entry.instrument_id =
       base::NumberToString(issuer.payment_instrument()->instrument_id());
   issuer_entry.display_name = base::UTF16ToUTF8(issuer.GetDisplayName());
-  issuer_entry.image_src =
+
+  std::pair<std::string, std::string> issuer_icons =
       PayOverTimeIssuerToIconResourceIdString(issuer.issuer_id());
+  issuer_entry.image_src = std::move(issuer_icons.first);
+  issuer_entry.image_src_dark = std::move(issuer_icons.second);
 
   return issuer_entry;
 }
@@ -199,15 +271,12 @@ autofill_private::PayOverTimeIssuerEntry BnplIssuerToPayOverTimeIssuerEntry(
 namespace extensions::autofill_util {
 
 AddressEntryList GenerateAddressList(const autofill::AddressDataManager& adm) {
-  const std::vector<const autofill::AutofillProfile*>& profiles =
+  const std::vector<const autofill::AutofillProfile*> profiles =
       adm.GetProfilesForSettings();
-  // TODO(crbug.com/40283168): Replace by `profiles`.
+
   std::vector<std::u16string> labels =
       autofill::AutofillProfile::CreateDifferentiatingLabels(
-          std::vector<
-              raw_ptr<const autofill::AutofillProfile, VectorExperimental>>(
-              profiles.begin(), profiles.end()),
-          ExtensionsBrowserClient::Get()->GetApplicationLocale());
+          profiles, ExtensionsBrowserClient::Get()->GetApplicationLocale());
   DCHECK_EQ(labels.size(), profiles.size());
 
   AddressEntryList list;
@@ -219,28 +288,29 @@ AddressEntryList GenerateAddressList(const autofill::AddressDataManager& adm) {
   return list;
 }
 
-CountryEntryList GenerateCountryList(const autofill::AddressDataManager& adm,
-                                     bool for_account_address_profile) {
+CountryEntryList GenerateCountryList() {
   autofill::CountryComboboxModel model;
-  model.SetCountries(adm, base::RepeatingCallback<bool(const std::string&)>(),
-                     ExtensionsBrowserClient::Get()->GetApplicationLocale());
+  const variations::VariationsService* variations_service =
+      g_browser_process->variations_service();
+  model.SetCountries(
+      autofill::GeoIpCountryCode(variations_service
+                                     ? variations_service->GetLatestCountry()
+                                     : std::string()),
+      extensions::ExtensionsBrowserClient::Get()->GetApplicationLocale());
   const std::vector<std::unique_ptr<autofill::AutofillCountry>>& countries =
       model.countries();
 
-  CountryEntryList list;
+  extensions::autofill_util::CountryEntryList list;
   for (const auto& country : countries) {
-    // A null |country| means "insert a space here", so we add a country w/o a
-    // |name| or |country_code| to the list and let the UI handle it.
+    // A null `country` means "insert a space here", so we add a country w/o a
+    // `name` or `country_code` to the list and let the UI handle it.
     if (!country) {
       list.emplace_back();
       continue;
     }
-    if (!for_account_address_profile ||
-        adm.IsCountryEligibleForAccountStorage(country->country_code())) {
-      api::autofill_private::CountryEntry& entry = list.emplace_back();
-      entry.name = base::UTF16ToUTF8(country->name());
-      entry.country_code = country->country_code();
-    }
+    autofill_private::CountryEntry& entry = list.emplace_back();
+    entry.name = base::UTF16ToUTF8(country->name());
+    entry.country_code = country->country_code();
   }
 
   return list;
@@ -263,8 +333,21 @@ IbanEntryList GenerateIbanList(const autofill::PaymentsDataManager& paydm) {
 
 PayOverTimeIssuerEntryList GeneratePayOverTimeIssuerList(
     const autofill::PaymentsDataManager& paydm) {
-  return base::ToVector(paydm.GetLinkedBnplIssuers(),
-                        &BnplIssuerToPayOverTimeIssuerEntry);
+  std::vector<autofill::BnplIssuer> linked_issuers =
+      base::ToVector(paydm.GetLinkedBnplIssuers());
+
+  // Remove the issuer entry if a BNPL issuer is linked externally, due to
+  // missing terms of services acceptance.
+  linked_issuers.erase(
+      std::remove_if(
+          linked_issuers.begin(), linked_issuers.end(),
+          [](autofill::BnplIssuer& issuer) {
+            return issuer.payment_instrument()->action_required().contains(
+                autofill::PaymentInstrument::ActionRequired::kAcceptTos);
+          }),
+      linked_issuers.end());
+
+  return base::ToVector(linked_issuers, &BnplIssuerToPayOverTimeIssuerEntry);
 }
 
 std::optional<api::autofill_private::AccountInfo> GetAccountInfo(
@@ -280,10 +363,6 @@ std::optional<api::autofill_private::AccountInfo> GetAccountInfo(
       adm.IsSyncFeatureEnabledForAutofill();
   api_account.is_eligible_for_address_account_storage =
       adm.IsEligibleForAddressAccountStorage();
-  api_account.is_autofill_sync_toggle_enabled =
-      adm.IsAutofillUserSelectableTypeEnabled();
-  api_account.is_autofill_sync_toggle_available =
-      adm.IsAutofillSyncToggleAvailable();
   return std::move(api_account);
 }
 

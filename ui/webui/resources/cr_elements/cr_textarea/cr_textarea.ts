@@ -18,7 +18,6 @@ export interface CrTextareaElement {
     footerContainer: HTMLElement,
     input: HTMLTextAreaElement,
     label: HTMLElement,
-    mirror: HTMLElement,
     secondFooter: HTMLElement,
     underline: HTMLElement,
   };
@@ -84,11 +83,6 @@ export class CrTextareaElement extends CrLitElement {
       /** Caption of the text area. */
       label: {type: String},
 
-      /**
-       * Text inside the text area. If the text exceeds the bounds of the text
-       * area, i.e. if it has more than |rows| lines, a scrollbar is shown by
-       * default when autogrow is not set.
-       */
       value: {
         type: String,
         notify: true,
@@ -106,15 +100,6 @@ export class CrTextareaElement extends CrLitElement {
 
       /** Whether the textarea can auto-grow vertically or not. */
       autogrow: {
-        type: Boolean,
-        reflect: true,
-      },
-
-      /**
-       * Attribute to enable limiting the maximum height of a autogrow textarea.
-       * Use --cr-textarea-autogrow-max-height to set the height.
-       */
-      hasMaxHeight: {
         type: Boolean,
         reflect: true,
       },
@@ -139,21 +124,20 @@ export class CrTextareaElement extends CrLitElement {
     };
   }
 
-  override autofocus: boolean = false;
-  disabled: boolean = false;
-  readonly: boolean = false;
-  required: boolean = false;
-  rows: number = 3;
-  label: string = '';
-  maxlength?: number;
-  value: string = '';
-  placeholder: string = '';
-  autogrow: boolean = false;
-  hasMaxHeight: boolean = false;
-  invalid: boolean = false;
-  firstFooter: string = '';
-  secondFooter: string = '';
-  protected internalValue_: string = '';
+  override accessor autofocus: boolean = false;
+  accessor disabled: boolean = false;
+  accessor readonly: boolean = false;
+  accessor required: boolean = false;
+  accessor rows: number = 3;
+  accessor label: string = '';
+  accessor maxlength: number|undefined;
+  accessor value: string = '';
+  accessor placeholder: string = '';
+  accessor autogrow: boolean = false;
+  accessor invalid: boolean = false;
+  accessor firstFooter: string = '';
+  accessor secondFooter: string = '';
+  protected accessor internalValue_: string = '';
 
   override willUpdate(changedProperties: PropertyValues<this>) {
     super.willUpdate(changedProperties);
@@ -190,26 +174,20 @@ export class CrTextareaElement extends CrLitElement {
     this.fire('change', {sourceEvent: e});
   }
 
-  protected calculateMirror_(): string {
-    if (!this.autogrow) {
-      return '';
-    }
-    // Browsers do not render empty divs. The extra space is used to render the
-    // div when empty.
-    const tokens = this.value ? this.value.split('\n') : [''];
-
-    while (this.rows > 0 && tokens.length < this.rows) {
-      tokens.push('');
-    }
-    return tokens.join('\n') + '&nbsp;';
-  }
-
   protected onInput_(e: Event) {
     this.internalValue_ = (e.target as HTMLInputElement).value;
     this.value = this.internalValue_;
   }
 
-  protected onInputFocusChange_() {
+  protected onFocus_() {
+    this.onInputFocusChange_();
+  }
+
+  protected onBlur_() {
+    this.onInputFocusChange_();
+  }
+
+  private onInputFocusChange_() {
     // focused_ is used instead of :focus-within, so focus on elements within
     // the suffix slot does not trigger a change in input styles.
     if (this.shadowRoot.activeElement === this.$.input) {

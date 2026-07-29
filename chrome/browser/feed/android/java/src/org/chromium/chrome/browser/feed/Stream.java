@@ -4,34 +4,35 @@
 
 package org.chromium.chrome.browser.feed;
 
-import androidx.annotation.Nullable;
 import androidx.recyclerview.widget.RecyclerView;
 
 import org.chromium.base.Callback;
-import org.chromium.base.supplier.ObservableSupplier;
-import org.chromium.base.supplier.ObservableSupplierImpl;
+import org.chromium.base.supplier.NonNullObservableSupplier;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.feed.FeedListContentManager.FeedContent;
 import org.chromium.chrome.browser.xsurface.HybridListRenderer;
 import org.chromium.chrome.browser.xsurface.feed.FeedSurfaceScope;
 import org.chromium.chrome.browser.xsurface.feed.FeedUserInteractionReliabilityLogger.ClosedReason;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /** Interface used for interacting with the Stream library in order to render a stream of cards. */
+@NullMarked
 public interface Stream {
     /** The mediator of multiple Streams. */
-    public interface StreamsMediator {
+    interface StreamsMediator {
         /**
          * Allows the switching to another Stream.
+         *
          * @param streamKind The {@link StreamKind} of the stream to switch to.
          */
         default void switchToStreamKind(@StreamKind int streamKind) {}
 
         /** Request the immediate refresh of the contents of the active stream. */
         default void refreshStream() {}
-
-        /** Disable the follow button, used in case of an error scenario. */
-        default void disableFollowButton() {}
     }
 
     /** Called when the Stream is no longer needed. */
@@ -79,10 +80,8 @@ public interface Stream {
     }
 
     /** Whether the stream has unread content */
-    default ObservableSupplier<Boolean> hasUnreadContent() {
-        ObservableSupplierImpl<Boolean> result = new ObservableSupplierImpl<>();
-        result.set(false);
-        return result;
+    default NonNullObservableSupplier<Boolean> hasUnreadContent() {
+        return ObservableSuppliers.alwaysFalse();
     }
 
     /** Returns the last content fetch time. */
@@ -106,8 +105,8 @@ public interface Stream {
     void bind(
             RecyclerView view,
             FeedListContentManager manager,
-            FeedScrollState savedInstanceState,
-            FeedSurfaceScope surfaceScope,
+            @Nullable FeedScrollState savedInstanceState,
+            @Nullable FeedSurfaceScope surfaceScope,
             HybridListRenderer renderer,
             @Nullable FeedReliabilityLogger reliabilityLogger,
             int headerCount);
@@ -150,5 +149,10 @@ public interface Stream {
     /** Returns a reason to describe how the stream is closed. */
     default @ClosedReason int getClosedReason() {
         return ClosedReason.LEAVE_FEED;
+    }
+
+    /** Returns a list of feed article urls. */
+    default List<String> getFeedUrls() {
+        return new ArrayList<String>();
     }
 }

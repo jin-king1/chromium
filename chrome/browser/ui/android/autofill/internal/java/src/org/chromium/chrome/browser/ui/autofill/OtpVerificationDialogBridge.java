@@ -6,12 +6,12 @@ package org.chromium.chrome.browser.ui.autofill;
 
 import android.content.Context;
 
-import androidx.annotation.Nullable;
-
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
 import org.jni_zero.NativeMethods;
 
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 
@@ -20,9 +20,10 @@ import org.chromium.ui.modaldialog.ModalDialogManager;
  * the OTP verification dialog and also show an error message when OTP verification fails.
  */
 @JNINamespace("autofill")
+@NullMarked
 class OtpVerificationDialogBridge implements OtpVerificationDialogCoordinator.Delegate {
-    private final long mNativeOtpVerificationDialogView;
-    private OtpVerificationDialogCoordinator mDialogCoordinator;
+    private long mNativeOtpVerificationDialogView;
+    private final OtpVerificationDialogCoordinator mDialogCoordinator;
 
     OtpVerificationDialogBridge(
             long nativeOtpVerificationDialogView,
@@ -54,17 +55,21 @@ class OtpVerificationDialogBridge implements OtpVerificationDialogCoordinator.De
 
     @Override
     public void onConfirm(String otp) {
+        if (mNativeOtpVerificationDialogView == 0) return;
         OtpVerificationDialogBridgeJni.get().onConfirm(mNativeOtpVerificationDialogView, otp);
     }
 
     @Override
     public void onNewOtpRequested() {
+        if (mNativeOtpVerificationDialogView == 0) return;
         OtpVerificationDialogBridgeJni.get().onNewOtpRequested(mNativeOtpVerificationDialogView);
     }
 
     @Override
     public void onDialogDismissed() {
+        if (mNativeOtpVerificationDialogView == 0) return;
         OtpVerificationDialogBridgeJni.get().onDialogDismissed(mNativeOtpVerificationDialogView);
+        mNativeOtpVerificationDialogView = 0;
     }
 
     /**

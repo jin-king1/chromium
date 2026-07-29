@@ -23,22 +23,26 @@ class SigninUIError {
  public:
   // An error type.
   // Different types of UI might be shown for different error types.
-  enum class Type {
-    kOk,
-    kOther,
-    kUsernameNotAllowedByPatternFromPrefs,
-    kWrongReauthAccount,
-    kAccountAlreadyUsedByAnotherProfile,
-    kProfileWasUsedByAnotherAccount,
-    kFromGoogleServiceAuthError,
-    kFromCredentialProviderUiExitCode,
-    kProfileIsBlocked,
+  // LINT.IfChange(SigninUIErrorType)
+  enum class Type : int {
+    kOk = 0,
+    kUsernameNotAllowedByPatternFromPrefs = 1,
+    kWrongReauthAccount = 2,
+    kAccountAlreadyUsedByAnotherProfile = 3,
+    kProfileWasUsedByAnotherAccount = 4,
+    kFromGoogleServiceAuthError = 5,
+    kFromCredentialProviderUiExitCode = 6,
+    kNoProfile = 7,
+    kSigninDisallowed = 8,
+    kSigninCookiesDisallowed = 9,
+    kNoIdentityManager = 10,
+    kMaxValue = kNoIdentityManager,
   };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/profile/enums.xml:SigninUIErrorType)
 
   // Following static functions construct a `SigninUIError` with a corresponding
   // type and error message.
   static SigninUIError Ok();
-  static SigninUIError Other(const std::string& email);
   static SigninUIError UsernameNotAllowedByPatternFromPrefs(
       const std::string& email);
   static SigninUIError WrongReauthAccount(const std::string& email,
@@ -57,7 +61,10 @@ class SigninUIError {
       const std::string& email,
       credential_provider::UiExitCodes exit_code);
 #endif
-  static SigninUIError ProfileIsBlocked();
+  static SigninUIError NoProfile(const std::string& email);
+  static SigninUIError SigninDisallowed(const std::string& email);
+  static SigninUIError SigninCookiesDisallowed(const std::string& email);
+  static SigninUIError NoIdentityManager(const std::string& email);
 
   SigninUIError(const SigninUIError& other);
   SigninUIError& operator=(const SigninUIError& other);
@@ -79,15 +86,13 @@ class SigninUIError {
   credential_provider::UiExitCodes credential_provider_exit_code() const;
 #endif
 
-  bool operator==(const SigninUIError& other) const;
-  bool operator!=(const SigninUIError& other) const;
+  friend bool operator==(const SigninUIError&, const SigninUIError&) = default;
 
  private:
   SigninUIError(Type type,
                 const std::string& email,
                 const std::u16string& error_message);
 
-  // Don't forget to update operator==() when adding new class members.
   Type type_;
   std::u16string email_;
   std::u16string message_;
@@ -119,6 +124,9 @@ class ForceSigninUIError {
     kReauthTimeout,
     // Signin pattern not matching.
     kSigninPatternNotMatching,
+    // Reauth flows are not supported in Glic Mode, redirects the user to do the
+    // reauth in the Regular Picker.
+    kReauthNotSupportedByGlicFlow,
   };
 
   // Helper pair to get the error messages based on the `Type` error enum to be
@@ -134,6 +142,7 @@ class ForceSigninUIError {
   static ForceSigninUIError ReauthWrongAccount(const std::string& email);
   static ForceSigninUIError ReauthTimeout();
   static ForceSigninUIError SigninPatternNotMatching(const std::string& email);
+  static ForceSigninUIError ReauthNotSupportedByGlicFlow();
 
   // Returns the error messages for the given `error`.
   // `type_` must not be `ForceSigninUIError::kNone`.

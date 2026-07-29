@@ -11,14 +11,13 @@ namespace arc {
 // When enabled, the versions of ChromeOS and ARC are exchanged during
 // handshake. This feature reduces unnecessary inter-process communications.
 BASE_FEATURE(kArcExchangeVersionOnMojoHandshake,
-             "ArcExchangeVersionOnMojoHandshake",
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Controls whether to always start ARC automatically, or wait for the user's
 // action to start it later in an on-demand manner. Already enabled by default
 // for managed users. In V2, it will be expand to more users such as unmanaged
 // users.
-BASE_FEATURE(kArcOnDemandV2, "ArcOnDemandV2", base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kArcOnDemandV2, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Controls whether ARC should be activated on any app launches. If set to
 // false, inactive_interval will be checked.
@@ -36,8 +35,16 @@ BASE_FEATURE_PARAM(base::TimeDelta,
                    "inactive_interval",
                    base::Days(7));
 
+// Controls how long of inactivity are allowed before ARC on Demand is
+// triggered for 4GiB devices.
+BASE_FEATURE_PARAM(base::TimeDelta,
+                   kArcOnDemandInactiveIntervalFor4GiB,
+                   &kArcOnDemandV2,
+                   "inactive_interval_4gib",
+                   base::Days(0));
+
 // Controls whether to start ARC with the GKI kernel.
-BASE_FEATURE(kArcVmGki, "ArcVmGki", base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kArcVmGki, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Controls block IO schedulers in ARCVM.
 BASE_FEATURE(kBlockIoScheduler,
@@ -51,28 +58,10 @@ BASE_FEATURE_PARAM(bool,
                    "data_block_io_scheduler",
                    true);
 
-// Controls ACTION_BOOT_COMPLETED broadcast for third party applications on ARC.
-// When disabled, third party apps will not receive this broadcast.
-BASE_FEATURE(kBootCompletedBroadcastFeature,
-             "ArcBootCompletedBroadcast",
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
-// Controls whether independent ARC container app killer is enabled to replace
-// the ARC container app killing in TabManagerDelegate.
-BASE_FEATURE(kContainerAppKiller,
-             "ContainerAppKiller",
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
-// Controls experimental Custom Tabs feature for ARC.
-BASE_FEATURE(kCustomTabsExperimentFeature,
-             "ArcCustomTabsExperiment",
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
 // Defers the ARC actvation until the user session start up tasks
 // are completed to give more resources to critical tasks for user session
 // starting.
 BASE_FEATURE(kDeferArcActivationUntilUserSessionStartUpTaskCompletion,
-             "DeferArcActivationUntilUserSessionStartUpTaskCompletion",
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 // We decide whether to defer ARC activation by taking a look at recent
@@ -99,33 +88,7 @@ BASE_FEATURE_PARAM(int,
 // Controls whether attestation will be used on ARCVM.
 BASE_FEATURE(kEnableArcAttestation,
              "ArcAttestation",
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-// Controls whether we automatically send ARCVM into Doze mode
-// when it is mostly idle - even if Chrome is still active.
-BASE_FEATURE(kEnableArcIdleManager,
-             "ArcIdleManager",
              base::FEATURE_ENABLED_BY_DEFAULT);
-
-// For test purposes, ignore battery status changes, allowing Doze mode to
-// kick in even if we do not receive powerd changes related to battery.
-BASE_FEATURE_PARAM(bool,
-                   kEnableArcIdleManagerIgnoreBatteryForPLT,
-                   &kEnableArcIdleManager,
-                   "ignore_battery_for_test",
-                   true);
-
-BASE_FEATURE_PARAM(int,
-                   kEnableArcIdleManagerDelayMs,
-                   &kEnableArcIdleManager,
-                   "delay_ms",
-                   360 * 1000);
-
-BASE_FEATURE_PARAM(bool,
-                   kEnableArcIdleManagerPendingIdleReactivate,
-                   &kEnableArcIdleManager,
-                   "pending_idle_reactivate",
-                   false);
 
 // Controls whether to enable support for s2idle in ARCVM.
 BASE_FEATURE(kEnableArcS2Idle, "ArcS2Idle", base::FEATURE_DISABLED_BY_DEFAULT);
@@ -142,11 +105,6 @@ BASE_FEATURE(kEnableArcVmDataMigration,
 BASE_FEATURE(kEnableFriendlierErrorDialog,
              "FriendlierErrorDialog",
              base::FEATURE_ENABLED_BY_DEFAULT);
-
-// Controls whether WebView Zygote is lazily initialized in ARC.
-BASE_FEATURE(kEnableLazyWebViewInit,
-             "LazyWebViewInit",
-             base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Controls whether crosvm for ARCVM does per-VM core scheduling on devices with
 // MDS/L1TF vulnerabilities. When this feature is disabled, crosvm does per-vCPU
@@ -249,12 +207,6 @@ BASE_FEATURE(kArcVmPvclock,
              "ArcEnablePvclock",
              base::FEATURE_ENABLED_BY_DEFAULT);
 
-// Enables/disables mlock() of guest memory for ARCVM.
-// Often used in combination with kGuestZram.
-BASE_FEATURE(kLockGuestMemory,
-             "ArcLockGuestMemory",
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
 // Toggles between native bridge implementations for ARC.
 // Note, that we keep the original feature name to preserve
 // corresponding metrics.
@@ -264,46 +216,14 @@ BASE_FEATURE(kNativeBridgeToggleFeature,
 
 // When enabled, utility processes are spawned to perform hardware decode
 // acceleration on behalf of ARC++/ARCVM instead of using the GPU process.
-BASE_FEATURE(kOutOfProcessVideoDecoding,
-             "OutOfProcessVideoDecoding",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kOutOfProcessVideoDecoding, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // When enabled, Android per-app-language settings will be surfaced in ChromeOS
 // Settings page.
-BASE_FEATURE(kPerAppLanguage,
-             "PerAppLanguage",
-             base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kPerAppLanguage, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kResizeCompat,
              "ArcResizeCompat",
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-BASE_FEATURE(kRoundedWindowCompat,
-             "ArcRoundedWindowCompat",
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
-const char kRoundedWindowCompatStrategy[] = "RoundedWindowCompatStrategy";
-// The following values must be matched with `RoundedWindowCompatStrategy` enum
-// defined in //chromeos/ash/experiences/arc/mojom/chrome_feature_flags.mojom.
-const char kRoundedWindowCompatStrategy_BottomOnlyGesture[] = "1";
-const char kRoundedWindowCompatStrategy_LeftRightBottomGesture[] = "2";
-
-// Controls ARCVM real time vcpu feature on a device with 2 logical cores
-// online.
-// When you change the default, you also need to change the chromeExtraAgas
-// in tast-tests/src/chromiumos/tast/local/bundles/cros/arc/cpu_set.go to
-// match it to the new default.
-BASE_FEATURE(kRtVcpuDualCore,
-             "ArcRtVcpuDualCore",
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-// Controls ARCVM real time vcpu feature on a device with 3+ logical cores
-// online.
-// When you change the default, you also need to modify the chromeExtraAgas
-// in tast-tests/src/chromiumos/tast/local/bundles/cros/arc/cpu_set.go to
-// add ArcRtVcpuQuadCore there. Otherwise, the test will start failing.
-BASE_FEATURE(kRtVcpuQuadCore,
-             "ArcRtVcpuQuadCore",
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 // When enabled, tracing raw files are saved in order to help debug failures.
@@ -314,24 +234,6 @@ BASE_FEATURE(kSaveRawFilesOnTracing,
 // When enabled, skip dropping ARCVM page cache after boot.
 BASE_FEATURE(kSkipDropCaches,
              "ArcSkipDropPageCache",
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
-// When enabled, CertStoreService will talk to KeyMint instead of Keymaster on
-// ARC-T.
-BASE_FEATURE(kSwitchToKeyMintOnT,
-             "ArcSwitchToKeyMintOnT",
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
-// On boards that blocks KeyMint at launch, enable this feature to force enable
-// KeyMint.
-BASE_FEATURE(kSwitchToKeyMintOnTOverride,
-             "ArcSwitchToKeyMintOnTOverride",
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-// When enabled, ARC will pass install priority to Play in sync install
-// requests.
-BASE_FEATURE(kSyncInstallPriority,
-             "ArcSyncInstallPriority",
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 // When enabled, ARC will not be throttled when there is active audio stream
@@ -447,28 +349,6 @@ BASE_FEATURE_PARAM(base::TimeDelta,
                    &kVmmSwapPolicy,
                    "min_shrink_interval",
                    base::Minutes(10));
-
-// Controls the feature to delay low memory kills of high priority apps when the
-// memory pressure is below foreground.
-BASE_FEATURE(kPriorityAppLmkDelay,
-             "ArcPriorityAppLmkDelay",
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
-// Controls the time to wait for inactivity of a high priority app before
-// considering it to be killed. The default value is 5 minutes.
-BASE_FEATURE_PARAM(int,
-                   kPriorityAppLmkDelaySecond,
-                   &kPriorityAppLmkDelay,
-                   "priority_app_lmk_delay_sec",
-                   60 * 5);
-
-// Controls the list of apps to be considered as high priority that would have a
-// delay before considered to be killed.
-BASE_FEATURE_PARAM(std::string,
-                   kPriorityAppLmkDelayList,
-                   &kPriorityAppLmkDelay,
-                   "priority_app_lmk_delay_list",
-                   "");
 
 // Controls the feature to update the minimum Android process state to be
 // considered to be killed under perceptible memory pressure. This is to prevent

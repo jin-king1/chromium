@@ -14,7 +14,6 @@
 #include "components/autofill/core/browser/ui/payments/autofill_error_dialog_controller_impl.h"
 #include "components/autofill/core/browser/ui/payments/autofill_error_dialog_view.h"
 #include "content/public/browser/web_contents.h"
-#include "content/public/browser/web_contents_user_data.h"
 #include "content/public/test/browser_test.h"
 
 namespace autofill {
@@ -52,6 +51,9 @@ class AutofillErrorDialogViewNativeViewsBrowserTest
     } else if (name.find("permanent") != std::string::npos) {
       autofill_error_dialog_context.type =
           AutofillErrorDialogType::kVirtualCardPermanentError;
+    } else if (name.find("unsupported_currency") != std::string::npos) {
+      autofill_error_dialog_context.type =
+          AutofillErrorDialogType::kBnplUnsupportedCurrencyError;
     } else if (name.find("bnpl") != std::string::npos) {
       autofill_error_dialog_context.type =
           AutofillErrorDialogType::kBnplPermanentError;
@@ -191,6 +193,29 @@ IN_PROC_BROWSER_TEST_P(AutofillErrorDialogViewNativeViewsBrowserTest,
               : 0)));
 }
 
+// Verify that the dialog is shown, and the metrics for shown are incremented
+// correctly for a BNPL unsupported currency error.
+IN_PROC_BROWSER_TEST_P(AutofillErrorDialogViewNativeViewsBrowserTest,
+                       InvokeUi_bnpl_unsupported_currency) {
+  base::HistogramTester histogram_tester;
+
+  ShowAndVerifyUi();
+
+  // Verify that the metric for shown is incremented.
+  EXPECT_THAT(histogram_tester.GetAllSamples("Autofill.ErrorDialogShown"),
+              BucketsAre(base::Bucket(
+                  AutofillErrorDialogType::kBnplUnsupportedCurrencyError, 1)));
+
+  EXPECT_THAT(
+      histogram_tester.GetAllSamples(
+          "Autofill.ErrorDialogShown.WithServerText"),
+      BucketsAre(base::Bucket(
+          AutofillErrorDialogType::kBnplUnsupportedCurrencyError,
+          /*count=*/server_did_return_title() && server_did_return_description()
+              ? 1
+              : 0)));
+}
+
 // Ensures closing current tab while dialog being visible is correctly handled,
 // and the metrics for shown are incremented correctly.
 IN_PROC_BROWSER_TEST_P(AutofillErrorDialogViewNativeViewsBrowserTest,
@@ -223,7 +248,7 @@ IN_PROC_BROWSER_TEST_P(AutofillErrorDialogViewNativeViewsBrowserTest,
 
   ShowUi("temporary");
   VerifyUi();
-  browser()->window()->Close();
+  browser()->GetWindow()->Close();
   base::RunLoop().RunUntilIdle();
 
   EXPECT_THAT(histogram_tester.GetAllSamples("Autofill.ErrorDialogShown"),

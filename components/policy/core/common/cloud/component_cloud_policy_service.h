@@ -10,7 +10,7 @@
 
 #include "base/compiler_specific.h"
 #include "base/memory/raw_ptr.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
 #include "build/build_config.h"
@@ -24,6 +24,7 @@
 #include "components/policy/core/common/schema_registry.h"
 #include "components/policy/core/common/values_util.h"
 #include "components/policy/policy_export.h"
+#include "extensions/buildflags/buildflags.h"
 
 namespace base {
 class SequencedTaskRunner;
@@ -95,7 +96,7 @@ class POLICY_EXPORT ComponentCloudPolicyService
       SchemaRegistry* schema_registry,
       CloudPolicyCore* core,
       CloudPolicyClient* client,
-#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+#if (!BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_EXTENSIONS_CORE)) && !BUILDFLAG(IS_IOS)
       std::unique_ptr<ResourceCache> cache,
 #endif
       scoped_refptr<base::SequencedTaskRunner> backend_task_runner);
@@ -146,8 +147,12 @@ class POLICY_EXPORT ComponentCloudPolicyService
   // the registration state is tracked by looking at the CloudPolicyStore
   // instead.
 
+  void SetIsInitializedForTesting(bool is_initialized) {
+    policy_installed_ = is_initialized;
+  }
+
  private:
-#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+#if (!BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_EXTENSIONS_CORE)) && !BUILDFLAG(IS_IOS)
   class Backend;
 
   void UpdateFromSuperiorStore();

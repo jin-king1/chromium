@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_CSS_PARSER_CSS_SELECTOR_PARSER_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_CSS_PARSER_CSS_SELECTOR_PARSER_H_
 
@@ -23,6 +18,7 @@
 
 namespace blink {
 
+class ActiveNavigationCondition;
 class CSSParserContext;
 class CSSParserTokenStream;
 class CSSParserObserver;
@@ -88,7 +84,8 @@ class CORE_EXPORT CSSSelectorParser {
   CSSSelectorList* ConsumeNthChildOfSelectors(CSSParserTokenStream&);
 
   static bool SupportsComplexSelector(CSSParserTokenStream&,
-                                      const CSSParserContext*);
+                                      const CSSParserContext*,
+                                      StyleSheetContents*);
 
   static CSSSelector::PseudoType ParsePseudoType(const AtomicString&,
                                                  bool has_arguments,
@@ -109,6 +106,9 @@ class CORE_EXPORT CSSSelectorParser {
       const StyleRule* parent_rule_for_nesting,
       StyleSheetContents*,
       HeapVector<CSSSelector>&);
+
+  static ActiveNavigationCondition* ParseActiveNavigationCondition(
+      CSSParserTokenStream&);
 
  private:
   enum ResultFlag {
@@ -183,7 +183,6 @@ class CORE_EXPORT CSSSelectorParser {
   base::span<CSSSelector> ConsumeComplexSelector(
       CSSParserTokenStream& stream,
       CSSNestingType,
-      bool first_in_complex_selector_list,
       ResultFlags&);
 
   // ConsumePartialComplexSelector() method provides the common logic of
@@ -237,14 +236,18 @@ class CORE_EXPORT CSSSelectorParser {
                                    bool has_element_name,
                                    const AtomicString& element_name,
                                    wtf_size_t start_index_of_compound_selector);
-  void SplitCompoundAtImplicitShadowCrossingCombinator(
+  void SplitCompoundAtImplicitCombinator(
       base::span<CSSSelector> compound_selector);
   void RecordUsageAndDeprecations(base::span<CSSSelector>,
+                                  CSSNestingType,
                                   bool* has_visited_style = nullptr);
   static bool ContainsUnknownWebkitPseudoElements(
       base::span<CSSSelector> selectors);
 
   void SetInSupportsParsing() { in_supports_parsing_ = true; }
+
+  void PushUnparsedComplexSelector(CSSNestingType nesting_type,
+                                   AtomicString invalid_selector_text);
 
   const CSSParserContext* context_;
   // The parent rule pointed to by the nesting selector (&).
@@ -256,8 +259,8 @@ class CORE_EXPORT CSSSelectorParser {
 
   bool failed_parsing_ = false;
   bool disallow_pseudo_elements_ = false;
-  // If we're inside a pseudo class that only accepts compound selectors,
-  // for example :host, inner :is()/:where() pseudo classes are also only
+  // If we're inside a pseudo-class that only accepts compound selectors,
+  // for example :host, inner :is()/:where() pseudo-classes are also only
   // allowed to contain compound selectors.
   bool inside_compound_pseudo_ = false;
   // When parsing a compound which includes a pseudo-element, the simple
@@ -335,7 +338,8 @@ class CORE_EXPORT CSSSelectorParser {
       DCHECK_GE(vector_.size(), initial_size_);
       // SAFETY: Performance sensitive. Depends upon the invariant
       // that initial_size_ is always in range.
-      return UNSAFE_BUFFERS({vector_.begin() + initial_size_, vector_.end()});
+      return UNSAFE_BUFFERS(
+          {base::unchecked, vector_.begin() + initial_size_, vector_.end()});
     }
 
     // Make sure the added elements are left on the vector after

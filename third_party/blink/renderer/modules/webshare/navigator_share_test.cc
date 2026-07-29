@@ -45,17 +45,17 @@ class MockShareService : public ShareService {
 
   void set_error(mojom::ShareError value) { error_ = value; }
 
-  const WTF::String& title() const { return title_; }
-  const WTF::String& text() const { return text_; }
+  const String& title() const { return title_; }
+  const String& text() const { return text_; }
   const KURL& url() const { return url_; }
-  const WTF::Vector<SharedFilePtr>& files() const { return files_; }
+  const Vector<SharedFilePtr>& files() const { return files_; }
   mojom::ShareError error() const { return error_; }
 
  private:
-  void Share(const WTF::String& title,
-             const WTF::String& text,
+  void Share(const String& title,
+             const String& text,
              const KURL& url,
-             WTF::Vector<SharedFilePtr> files,
+             Vector<SharedFilePtr> files,
              ShareCallback callback) override {
     title_ = title;
     text_ = text;
@@ -71,10 +71,10 @@ class MockShareService : public ShareService {
   }
 
   mojo::Receiver<ShareService> receiver_{this};
-  WTF::String title_;
-  WTF::String text_;
+  String title_;
+  String text_;
   KURL url_;
-  WTF::Vector<SharedFilePtr> files_;
+  Vector<SharedFilePtr> files_;
   mojom::ShareError error_;
 };
 
@@ -119,9 +119,8 @@ class NavigatorShareTest : public testing::Test {
     test::RunPendingTasks();
 
     GetFrame().GetBrowserInterfaceBroker().SetBinderForTesting(
-        ShareService::Name_,
-        WTF::BindRepeating(&MockShareService::Bind,
-                           WTF::Unretained(&mock_share_service_)));
+        ShareService::Name_, BindRepeating(&MockShareService::Bind,
+                                           Unretained(&mock_share_service_)));
   }
 
   void TearDown() override {
@@ -235,6 +234,26 @@ TEST_F(NavigatorShareTest, CancelShareWithFile) {
   EXPECT_TRUE(GetDocument().IsUseCounted(WebFeature::kWebShareContainingUrl));
   EXPECT_TRUE(GetDocument().IsUseCounted(
       WebFeature::kWebShareUnsuccessfulContainingFiles));
+}
+
+TEST_F(NavigatorShareTest, ShareFileUrlWithBaseTag) {
+  GetDocument().SetBaseURLOverride(KURL("file:///"));
+
+  const String url = "file:///etc/passwd";
+  ShareData* share_data = MakeGarbageCollected<ShareData>();
+  share_data->setUrl(url);
+
+  LocalFrame::NotifyUserActivation(
+      &GetFrame(), mojom::UserActivationNotificationType::kTest);
+  Navigator* navigator = GetFrame().DomWindow()->navigator();
+  DummyExceptionStateForTesting exception_state;
+  NavigatorShare::share(GetScriptState(), *navigator, share_data,
+                        exception_state);
+
+  // Regression test for crbug.com/501541341.
+  // Verify that the URL is rejected by CanShareInternal even when the
+  // document's base URL protocol is manipulated to match the shared URL.
+  EXPECT_TRUE(exception_state.HadException());
 }
 
 }  // namespace blink

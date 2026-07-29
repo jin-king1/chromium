@@ -68,6 +68,8 @@ export class SettingsGoogleDriveSubpageElement extends
     SettingsGoogleDriveSubpageElementBase {
   constructor() {
     super();
+    this.contentCacheSize_ = ContentCacheSizeType.CALCULATING;
+    this.showSpinner = false;
     this.proxy_ = GoogleDriveBrowserProxy.getInstance();
   }
 
@@ -81,15 +83,6 @@ export class SettingsGoogleDriveSubpageElement extends
 
   static get properties() {
     return {
-      /**
-       * Used by DeepLinkingMixin to focus this page's deep links.
-       */
-      supportedSettingIds: {
-        type: Object,
-        value: () => new Set<Setting>(
-            [Setting.kGoogleDriveRemoveAccess, Setting.kGoogleDriveFileSync]),
-      },
-
       /**
        * Ensures the data binding is updated on the UI when
        * `contentCacheSize_` is updated.
@@ -137,6 +130,12 @@ export class SettingsGoogleDriveSubpageElement extends
     ];
   }
 
+  // DeepLinkingMixin override
+  override supportedSettingIds = new Set<Setting>([
+    Setting.kGoogleDriveRemoveAccess,
+    Setting.kGoogleDriveFileSync,
+  ]);
+
   /**
    * Reflects the state of `prefs.gdata.disabled` pref.
    */
@@ -171,8 +170,7 @@ export class SettingsGoogleDriveSubpageElement extends
   /**
    * Keeps track of the last requested total content cache size.
    */
-  private contentCacheSize_: string|ContentCacheSizeType =
-      ContentCacheSizeType.CALCULATING;
+  declare private contentCacheSize_: string|ContentCacheSizeType;
 
   /**
    * The number of files that have currently been listed, this count is the one
@@ -189,11 +187,12 @@ export class SettingsGoogleDriveSubpageElement extends
   /**
    * Whether to show the spinner in the top right of the settings page.
    */
-  private showSpinner: boolean = false;
+  declare private showSpinner: boolean;
 
   private updateContentCacheSizeInterval_: number;
 
-  private isDriveFsBulkPinningEnabled_: boolean;
+  declare private readonly isDriveFsBulkPinningEnabled_: boolean;
+  declare private readonly isDriveFsMirrorSyncEnabled_: boolean;
 
   /**
    * Returns the browser proxy page handler (to invoke functions).
@@ -616,8 +615,6 @@ export class SettingsGoogleDriveSubpageElement extends
 
   /** Gets the mirror sync sub label. */
   private getMirrorSyncDescription_(): string {
-    // TODO(b/338158838) Get size of MyFiles.
-    // TODO(b/338158838) Get available space on Google Drive.
     return this.i18n('googleDriveMirrorSyncDescription');
   }
 }

@@ -18,6 +18,7 @@
 #include "chrome/browser/bookmarks/bookmark_merged_surface_service.h"
 #include "chrome/browser/bookmarks/bookmark_merged_surface_service_factory.h"
 #include "chrome/browser/bookmarks/bookmark_model_factory.h"
+#include "chrome/browser/bookmarks/bookmark_test_helpers.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/bookmarks/bookmark_utils.h"
 #include "chrome/browser/ui/bookmarks/bookmark_utils_desktop.h"
@@ -27,6 +28,7 @@
 #include "chrome/test/base/testing_profile.h"
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/bookmarks/browser/bookmark_node.h"
+#include "components/bookmarks/common/bookmark_bar_visibility_state.h"
 #include "components/bookmarks/common/bookmark_pref_names.h"
 #include "components/bookmarks/test/bookmark_test_helpers.h"
 #include "components/saved_tab_groups/public/features.h"
@@ -36,6 +38,7 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/clipboard/clipboard.h"
 #include "ui/base/clipboard/test/test_clipboard.h"
+#include "ui/gfx/native_ui_types.h"
 
 using base::ASCIIToUTF16;
 using bookmarks::BookmarkModel;
@@ -54,6 +57,8 @@ std::u16string NodesToString(
                                   node->GetTitle();
                          });
 }
+
+}  // namespace
 
 class BookmarkContextMenuControllerTest : public testing::Test {
  public:
@@ -75,7 +80,10 @@ class BookmarkContextMenuControllerTest : public testing::Test {
     bookmarks::test::WaitForBookmarkModelToLoad(model_);
     AddTestData(model_);
 
-    chrome::BookmarkNavigationWrapper::SetInstanceForTesting(&wrapper_);
+    WaitForBookmarkMergedSurfaceServiceToLoad(
+        BookmarkMergedSurfaceServiceFactory::GetForProfile(profile_.get()));
+
+    bookmarks::BookmarkNavigationWrapper::SetInstanceForTesting(&wrapper_);
 
     // CutCopyPasteNode executes IDC_CUT and IDC_COPY commands.
     ui::TestClipboard::CreateForCurrentThread();
@@ -85,7 +93,7 @@ class BookmarkContextMenuControllerTest : public testing::Test {
     ui::Clipboard::DestroyClipboardForCurrentThread();
   }
 
-  // Creates the following structure:
+  // Creates the following structure under the Local BookmarkBar node:
   // a
   // F1
   //  f1a
@@ -95,7 +103,7 @@ class BookmarkContextMenuControllerTest : public testing::Test {
   // F3
   // F4
   //   f4a
-  static void AddTestData(BookmarkModel* model) {
+  void AddTestData(BookmarkModel* model) {
     const BookmarkNode* bb_node = model->bookmark_bar_node();
     std::string test_base = "file:///c:/tmp/";
     model->AddURL(bb_node, 0, u"a", GURL(test_base + "a"));
@@ -106,6 +114,31 @@ class BookmarkContextMenuControllerTest : public testing::Test {
     model->AddFolder(bb_node, 2, u"F2");
     model->AddFolder(bb_node, 3, u"F3");
     const BookmarkNode* f4 = model->AddFolder(bb_node, 4, u"F4");
+    model->AddURL(f4, 0, u"f4a", GURL(test_base + "f4a"));
+  }
+
+  // Creates the following structure under the Account BookmarkBar node:
+  // a
+  // F1
+  //  f1a
+  //  F11
+  //   f11a
+  // F2
+  // F3
+  // F4
+  //   f4a
+  void AddAccountTestData(BookmarkModel* model) {
+    const BookmarkNode* a_bb_node = model->account_bookmark_bar_node();
+    CHECK(a_bb_node);
+    std::string test_base = "file:///c:/tmp_account/";
+    model->AddURL(a_bb_node, 0, u"a", GURL(test_base + "a"));
+    const BookmarkNode* f1 = model->AddFolder(a_bb_node, 1, u"F1");
+    model->AddURL(f1, 0, u"f1a", GURL(test_base + "f1a"));
+    const BookmarkNode* f11 = model->AddFolder(f1, 1, u"F11");
+    model->AddURL(f11, 0, u"f11a", GURL(test_base + "f11a"));
+    model->AddFolder(a_bb_node, 2, u"F2");
+    model->AddFolder(a_bb_node, 3, u"F3");
+    const BookmarkNode* f4 = model->AddFolder(a_bb_node, 4, u"F4");
     model->AddURL(f4, 0, u"f4a", GURL(test_base + "f4a"));
   }
 
@@ -127,8 +160,8 @@ TEST_F(BookmarkContextMenuControllerTest, DeleteURL) {
       model_->bookmark_bar_node()->children().front().get(),
   };
   BookmarkContextMenuController controller(
-      nullptr, nullptr, nullptr, profile_.get(), BookmarkLaunchLocation::kNone,
-      nodes);
+      gfx::NativeWindow(), nullptr, nullptr, profile_.get(),
+      BookmarkLaunchLocation::kNone, nodes, /*can_paste=*/false);
   GURL url = model_->bookmark_bar_node()->children().front()->url();
   ASSERT_TRUE(controller.IsCommandIdEnabled(IDC_BOOKMARK_BAR_REMOVE));
   // Delete the URL.
@@ -144,13 +177,15 @@ TEST_F(BookmarkContextMenuControllerTest, SingleURL) {
       model_->bookmark_bar_node()->children().front().get(),
   };
   BookmarkContextMenuController controller(
-      nullptr, nullptr, nullptr, profile_.get(), BookmarkLaunchLocation::kNone,
-      nodes);
+      gfx::NativeWindow(), nullptr, nullptr, profile_.get(),
+      BookmarkLaunchLocation::kNone, nodes, /*can_paste=*/false);
   EXPECT_TRUE(controller.IsCommandIdEnabled(IDC_BOOKMARK_BAR_OPEN_ALL));
   EXPECT_TRUE(
       controller.IsCommandIdEnabled(IDC_BOOKMARK_BAR_OPEN_ALL_NEW_WINDOW));
   EXPECT_TRUE(
       controller.IsCommandIdEnabled(IDC_BOOKMARK_BAR_OPEN_ALL_INCOGNITO));
+  // Due to no active browser.
+  EXPECT_FALSE(controller.IsCommandIdEnabled(IDC_BOOKMARK_BAR_OPEN_SPLIT_VIEW));
   EXPECT_TRUE(controller.IsCommandIdEnabled(IDC_BOOKMARK_BAR_REMOVE));
   EXPECT_TRUE(controller.IsCommandIdEnabled(IDC_BOOKMARK_BAR_ADD_NEW_BOOKMARK));
   EXPECT_TRUE(controller.IsCommandIdEnabled(IDC_BOOKMARK_BAR_NEW_FOLDER));
@@ -164,8 +199,8 @@ TEST_F(BookmarkContextMenuControllerTest, MultipleURLs) {
       model_->bookmark_bar_node()->children()[1]->children()[0].get(),
   };
   BookmarkContextMenuController controller(
-      nullptr, nullptr, nullptr, profile_.get(), BookmarkLaunchLocation::kNone,
-      nodes);
+      gfx::NativeWindow(), nullptr, nullptr, profile_.get(),
+      BookmarkLaunchLocation::kNone, nodes, /*can_paste=*/false);
   EXPECT_TRUE(controller.IsCommandIdEnabled(IDC_BOOKMARK_BAR_OPEN_ALL));
   EXPECT_TRUE(
       controller.IsCommandIdEnabled(IDC_BOOKMARK_BAR_OPEN_ALL_NEW_WINDOW));
@@ -183,13 +218,14 @@ TEST_F(BookmarkContextMenuControllerTest, SingleFolder) {
       model_->bookmark_bar_node()->children()[2].get(),
   };
   BookmarkContextMenuController controller(
-      nullptr, nullptr, nullptr, profile_.get(), BookmarkLaunchLocation::kNone,
-      nodes);
+      gfx::NativeWindow(), nullptr, nullptr, profile_.get(),
+      BookmarkLaunchLocation::kNone, nodes, /*can_paste=*/false);
   EXPECT_FALSE(controller.IsCommandIdEnabled(IDC_BOOKMARK_BAR_OPEN_ALL));
   EXPECT_FALSE(
       controller.IsCommandIdEnabled(IDC_BOOKMARK_BAR_OPEN_ALL_NEW_WINDOW));
   EXPECT_FALSE(
       controller.IsCommandIdEnabled(IDC_BOOKMARK_BAR_OPEN_ALL_INCOGNITO));
+  EXPECT_FALSE(controller.IsCommandIdEnabled(IDC_BOOKMARK_BAR_OPEN_SPLIT_VIEW));
   EXPECT_TRUE(controller.IsCommandIdEnabled(IDC_BOOKMARK_BAR_REMOVE));
   EXPECT_TRUE(controller.IsCommandIdEnabled(IDC_BOOKMARK_BAR_ADD_NEW_BOOKMARK));
   EXPECT_TRUE(controller.IsCommandIdEnabled(IDC_BOOKMARK_BAR_NEW_FOLDER));
@@ -203,8 +239,8 @@ TEST_F(BookmarkContextMenuControllerTest, MultipleEmptyFolders) {
       model_->bookmark_bar_node()->children()[3].get(),
   };
   BookmarkContextMenuController controller(
-      nullptr, nullptr, nullptr, profile_.get(), BookmarkLaunchLocation::kNone,
-      nodes);
+      gfx::NativeWindow(), nullptr, nullptr, profile_.get(),
+      BookmarkLaunchLocation::kNone, nodes, /*can_paste=*/false);
   EXPECT_FALSE(controller.IsCommandIdEnabled(IDC_BOOKMARK_BAR_OPEN_ALL));
   EXPECT_FALSE(
       controller.IsCommandIdEnabled(IDC_BOOKMARK_BAR_OPEN_ALL_NEW_WINDOW));
@@ -223,8 +259,8 @@ TEST_F(BookmarkContextMenuControllerTest, MultipleFoldersWithURLs) {
       model_->bookmark_bar_node()->children()[4].get(),
   };
   BookmarkContextMenuController controller(
-      nullptr, nullptr, nullptr, profile_.get(), BookmarkLaunchLocation::kNone,
-      nodes);
+      gfx::NativeWindow(), nullptr, nullptr, profile_.get(),
+      BookmarkLaunchLocation::kNone, nodes, /*can_paste=*/false);
   EXPECT_TRUE(controller.IsCommandIdEnabled(IDC_BOOKMARK_BAR_OPEN_ALL));
   EXPECT_TRUE(
       controller.IsCommandIdEnabled(IDC_BOOKMARK_BAR_OPEN_ALL_NEW_WINDOW));
@@ -249,9 +285,9 @@ TEST_F(BookmarkContextMenuControllerTest, DisableIncognito) {
   std::vector<raw_ptr<const BookmarkNode, VectorExperimental>> nodes = {
       model_->bookmark_bar_node()->children().front().get(),
   };
-  BookmarkContextMenuController controller(nullptr, nullptr, nullptr, incognito,
-                                           BookmarkLaunchLocation::kNone,
-                                           nodes);
+  BookmarkContextMenuController controller(
+      gfx::NativeWindow(), nullptr, nullptr, incognito,
+      BookmarkLaunchLocation::kNone, nodes, /*can_paste=*/false);
   EXPECT_FALSE(controller.IsCommandIdEnabled(IDC_BOOKMARK_BAR_OPEN_INCOGNITO));
   EXPECT_FALSE(
       controller.IsCommandIdEnabled(IDC_BOOKMARK_BAR_OPEN_ALL_INCOGNITO));
@@ -263,8 +299,8 @@ TEST_F(BookmarkContextMenuControllerTest, DisabledItemsWithOtherNode) {
     std::vector<raw_ptr<const BookmarkNode, VectorExperimental>> nodes{
         model_->other_node()};
     BookmarkContextMenuController controller(
-        nullptr, nullptr, nullptr, profile_.get(),
-        BookmarkLaunchLocation::kNone, nodes);
+        gfx::NativeWindow(), nullptr, nullptr, profile_.get(),
+        BookmarkLaunchLocation::kNone, nodes, /*can_paste=*/false);
     EXPECT_FALSE(controller.IsCommandIdEnabled(IDC_BOOKMARK_BAR_EDIT));
     EXPECT_FALSE(controller.IsCommandIdEnabled(IDC_BOOKMARK_BAR_REMOVE));
   }
@@ -275,8 +311,8 @@ TEST_F(BookmarkContextMenuControllerTest, DisabledItemsWithOtherNode) {
     std::vector<raw_ptr<const BookmarkNode, VectorExperimental>> nodes{
         model_->account_other_node(), model_->other_node()};
     BookmarkContextMenuController controller(
-        nullptr, nullptr, nullptr, profile_.get(),
-        BookmarkLaunchLocation::kNone, nodes);
+        gfx::NativeWindow(), nullptr, nullptr, profile_.get(),
+        BookmarkLaunchLocation::kNone, nodes, /*can_paste=*/false);
     EXPECT_FALSE(controller.IsCommandIdEnabled(IDC_BOOKMARK_BAR_EDIT));
     EXPECT_FALSE(controller.IsCommandIdEnabled(IDC_BOOKMARK_BAR_REMOVE));
   }
@@ -299,9 +335,9 @@ TEST_F(BookmarkContextMenuControllerTest,
   for (const auto& nodes : nodes_selections) {
     SCOPED_TRACE(NodesToString(nodes));
     BookmarkContextMenuController controller(
-        nullptr, nullptr, nullptr, profile_.get(),
-        BookmarkLaunchLocation::kNone, nodes);
-    const bool has_urls = chrome::HasBookmarkURLs(nodes);
+        gfx::NativeWindow(), nullptr, nullptr, profile_.get(),
+        BookmarkLaunchLocation::kNone, nodes, /*can_paste=*/false);
+    const bool has_urls = bookmarks::HasBookmarkURLs(nodes);
     EXPECT_EQ(controller.IsCommandIdEnabled(IDC_BOOKMARK_BAR_OPEN_ALL),
               has_urls);
     EXPECT_EQ(
@@ -344,8 +380,8 @@ TEST_F(BookmarkContextMenuControllerTest,
   for (const auto& nodes : nodes_selections) {
     SCOPED_TRACE(NodesToString(nodes));
     BookmarkContextMenuController controller(
-        nullptr, nullptr, nullptr, profile_.get(),
-        BookmarkLaunchLocation::kNone, nodes);
+        gfx::NativeWindow(), nullptr, nullptr, profile_.get(),
+        BookmarkLaunchLocation::kNone, nodes, /*can_paste=*/false);
     EXPECT_FALSE(
         controller.IsCommandIdEnabled(IDC_BOOKMARK_BAR_ADD_TO_BOOKMARKS_BAR));
     EXPECT_TRUE(controller.IsCommandIdEnabled(
@@ -363,8 +399,8 @@ TEST_F(BookmarkContextMenuControllerTest,
   ASSERT_NE(node->parent()->type(), BookmarkNode::Type::BOOKMARK_BAR);
 
   BookmarkContextMenuController controller(
-      nullptr, nullptr, nullptr, profile_.get(), BookmarkLaunchLocation::kNone,
-      nodes);
+      gfx::NativeWindow(), nullptr, nullptr, profile_.get(),
+      BookmarkLaunchLocation::kNone, nodes, /*can_paste=*/false);
   EXPECT_TRUE(
       controller.IsCommandIdEnabled(IDC_BOOKMARK_BAR_ADD_TO_BOOKMARKS_BAR));
   EXPECT_FALSE(controller.IsCommandIdEnabled(
@@ -377,9 +413,9 @@ TEST_F(BookmarkContextMenuControllerTest, CutCopyPasteNode) {
       model_->bookmark_bar_node()->children()[0].get(),
   };
   std::unique_ptr<BookmarkContextMenuController> controller(
-      new BookmarkContextMenuController(nullptr, nullptr, nullptr,
-                                        profile_.get(),
-                                        BookmarkLaunchLocation::kNone, nodes));
+      new BookmarkContextMenuController(
+          gfx::NativeWindow(), nullptr, nullptr, profile_.get(),
+          BookmarkLaunchLocation::kNone, nodes, /*can_paste=*/false));
   EXPECT_TRUE(controller->IsCommandIdEnabled(IDC_COPY));
   EXPECT_TRUE(controller->IsCommandIdEnabled(IDC_CUT));
 
@@ -387,8 +423,8 @@ TEST_F(BookmarkContextMenuControllerTest, CutCopyPasteNode) {
   controller->ExecuteCommand(IDC_COPY, 0);
 
   controller = base::WrapUnique(new BookmarkContextMenuController(
-      nullptr, nullptr, nullptr, profile_.get(), BookmarkLaunchLocation::kNone,
-      nodes));
+      gfx::NativeWindow(), nullptr, nullptr, profile_.get(),
+      BookmarkLaunchLocation::kNone, nodes, /*can_paste=*/true));
   size_t old_count = bb_node->children().size();
   controller->ExecuteCommand(IDC_PASTE, 0);
 
@@ -397,8 +433,8 @@ TEST_F(BookmarkContextMenuControllerTest, CutCopyPasteNode) {
   ASSERT_EQ(bb_node->children()[0]->url(), bb_node->children()[1]->url());
 
   controller = base::WrapUnique(new BookmarkContextMenuController(
-      nullptr, nullptr, nullptr, profile_.get(), BookmarkLaunchLocation::kNone,
-      nodes));
+      gfx::NativeWindow(), nullptr, nullptr, profile_.get(),
+      BookmarkLaunchLocation::kNone, nodes, /*can_paste=*/false));
   // Cut the URL.
   controller->ExecuteCommand(IDC_CUT, 0);
   ASSERT_TRUE(bb_node->children()[0]->is_url());
@@ -409,8 +445,9 @@ TEST_F(BookmarkContextMenuControllerTest, CutCopyPasteNode) {
 TEST_F(BookmarkContextMenuControllerTest,
        ManagedShowAppsShortcutInBookmarksBar) {
   BookmarkContextMenuController controller(
-      nullptr, nullptr, nullptr, profile_.get(), BookmarkLaunchLocation::kNone,
-      {model_->other_node()});
+      gfx::NativeWindow(), nullptr, nullptr, profile_.get(),
+      BookmarkLaunchLocation::kNone, {model_->other_node()},
+      /*can_paste=*/false);
 
   // By default, the pref is not managed and the command is enabled.
   sync_preferences::TestingPrefServiceSyncable* prefs =
@@ -435,8 +472,9 @@ TEST_F(BookmarkContextMenuControllerTest,
 
 TEST_F(BookmarkContextMenuControllerTest, ShowTabGroupsPref) {
   BookmarkContextMenuController controller(
-      nullptr, nullptr, nullptr, profile_.get(), BookmarkLaunchLocation::kNone,
-      {model_->bookmark_bar_node()});
+      gfx::NativeWindow(), nullptr, nullptr, profile_.get(),
+      BookmarkLaunchLocation::kNone, {model_->bookmark_bar_node()},
+      /*can_paste=*/false);
   EXPECT_TRUE(
       controller.IsCommandIdEnabled(IDC_BOOKMARK_BAR_TOGGLE_SHOW_TAB_GROUPS));
 
@@ -461,6 +499,49 @@ TEST_F(BookmarkContextMenuControllerTest, ShowTabGroupsPref) {
       bookmarks::prefs::kShowTabGroupsInBookmarkBar));
 }
 
+TEST_F(BookmarkContextMenuControllerTest, SubmenuPrefs) {
+  BookmarkContextMenuController controller(
+      gfx::NativeWindow(), nullptr, nullptr, profile_.get(),
+      BookmarkLaunchLocation::kNone, {model_->bookmark_bar_node()},
+      /*can_paste=*/false);
+
+  controller.ExecuteCommand(IDC_BOOKMARK_BAR_SUBMENU_ALWAYS_SHOW, 0);
+  EXPECT_TRUE(
+      controller.IsCommandIdChecked(IDC_BOOKMARK_BAR_SUBMENU_ALWAYS_SHOW));
+  EXPECT_FALSE(
+      controller.IsCommandIdChecked(IDC_BOOKMARK_BAR_SUBMENU_ALWAYS_HIDE));
+  EXPECT_FALSE(
+      controller.IsCommandIdChecked(IDC_BOOKMARK_BAR_SUBMENU_ONLY_ON_NTP));
+  EXPECT_EQ(
+      profile_->GetPrefs()->GetInteger(
+          bookmarks::prefs::kBookmarkBarVisibilityState),
+      static_cast<int>(bookmarks::BookmarkBarVisibilityState::kAlwaysShow));
+
+  controller.ExecuteCommand(IDC_BOOKMARK_BAR_SUBMENU_ALWAYS_HIDE, 0);
+  EXPECT_FALSE(
+      controller.IsCommandIdChecked(IDC_BOOKMARK_BAR_SUBMENU_ALWAYS_SHOW));
+  EXPECT_TRUE(
+      controller.IsCommandIdChecked(IDC_BOOKMARK_BAR_SUBMENU_ALWAYS_HIDE));
+  EXPECT_FALSE(
+      controller.IsCommandIdChecked(IDC_BOOKMARK_BAR_SUBMENU_ONLY_ON_NTP));
+  EXPECT_EQ(
+      profile_->GetPrefs()->GetInteger(
+          bookmarks::prefs::kBookmarkBarVisibilityState),
+      static_cast<int>(bookmarks::BookmarkBarVisibilityState::kAlwaysHide));
+
+  controller.ExecuteCommand(IDC_BOOKMARK_BAR_SUBMENU_ONLY_ON_NTP, 0);
+  EXPECT_FALSE(
+      controller.IsCommandIdChecked(IDC_BOOKMARK_BAR_SUBMENU_ALWAYS_SHOW));
+  EXPECT_FALSE(
+      controller.IsCommandIdChecked(IDC_BOOKMARK_BAR_SUBMENU_ALWAYS_HIDE));
+  EXPECT_TRUE(
+      controller.IsCommandIdChecked(IDC_BOOKMARK_BAR_SUBMENU_ONLY_ON_NTP));
+  EXPECT_EQ(
+      profile_->GetPrefs()->GetInteger(
+          bookmarks::prefs::kBookmarkBarVisibilityState),
+      static_cast<int>(bookmarks::BookmarkBarVisibilityState::kOnlyShowOnNtp));
+}
+
 TEST_F(BookmarkContextMenuControllerTest, GetParentForNewNodesSelectionURL) {
   // This tests the case where selection contains one item and that item is an
   // url.
@@ -480,8 +561,8 @@ TEST_F(BookmarkContextMenuControllerTest, GetParentForNewNodesSelectionURL) {
     ASSERT_TRUE(parent);
     EXPECT_EQ(*parent.get(), BookmarkParentFolder::BookmarkBarFolder());
     BookmarkContextMenuController controller(
-        nullptr, nullptr, nullptr, profile_.get(),
-        BookmarkLaunchLocation::kNone, nodes);
+        gfx::NativeWindow(), nullptr, nullptr, profile_.get(),
+        BookmarkLaunchLocation::kNone, nodes, /*can_paste=*/false);
     // New nodes added just after page.
     EXPECT_EQ(controller.GetIndexForNewNodes(), page_index + 1u);
   }
@@ -510,8 +591,8 @@ TEST_F(BookmarkContextMenuControllerTest,
     ASSERT_TRUE(parent);
     EXPECT_EQ(*parent.get(), BookmarkParentFolder::OtherFolder());
     BookmarkContextMenuController controller(
-        nullptr, nullptr, nullptr, profile_.get(),
-        BookmarkLaunchLocation::kNone, nodes);
+        gfx::NativeWindow(), nullptr, nullptr, profile_.get(),
+        BookmarkLaunchLocation::kNone, nodes, /*can_paste=*/false);
     // New nodes added just after page.
     EXPECT_EQ(controller.GetIndexForNewNodes(), other_folder_children_count);
   }
@@ -528,9 +609,158 @@ TEST_F(BookmarkContextMenuControllerTest,
   ASSERT_TRUE(parent);
   EXPECT_EQ(*parent.get(), BookmarkParentFolder::FromFolderNode(folder_node));
   BookmarkContextMenuController controller(
-      nullptr, nullptr, nullptr, profile_.get(), BookmarkLaunchLocation::kNone,
-      nodes);
+      gfx::NativeWindow(), nullptr, nullptr, profile_.get(),
+      BookmarkLaunchLocation::kNone, nodes, /*can_paste=*/false);
   EXPECT_EQ(controller.GetIndexForNewNodes(), 0u);
 }
 
-}  // namespace
+TEST_F(BookmarkContextMenuControllerTest,
+       ComputeNodeToFocusForBookmarkManagerReturnsNoNode) {
+  model_->CreateAccountPermanentFolders();
+  AddAccountTestData(model_);
+  const BookmarkNode* a_bb_node = model_->account_bookmark_bar_node();
+  ASSERT_GE(a_bb_node->children().size(), 2u);
+  const BookmarkNode* child1_node = a_bb_node->children()[0].get();
+  const BookmarkNode* child2_node = a_bb_node->children()[1].get();
+
+  // Selecting two nodes that are not permanent nodes should not return any node to focus.
+  BookmarkContextMenuController controller(
+      gfx::NativeWindow(), nullptr, nullptr, profile_.get(),
+      BookmarkLaunchLocation::kNone, {child1_node, child2_node},
+      /*can_paste=*/false);
+  EXPECT_EQ(nullptr, controller.ComputeNodeToFocusForBookmarkManager());
+}
+
+TEST_F(BookmarkContextMenuControllerTest,
+       ComputeNodeToFocusForBookmarkManagerForPermanentNodesSelection) {
+  const BookmarkNode* l_bb_node = model_->bookmark_bar_node();
+
+  // Selecting local bookmark bar permanent node when not having account data.
+  {
+    ASSERT_FALSE(model_->account_bookmark_bar_node());
+    BookmarkContextMenuController controller(
+        gfx::NativeWindow(), nullptr, nullptr, profile_.get(),
+        BookmarkLaunchLocation::kNone, {l_bb_node}, /*can_paste=*/false);
+    EXPECT_EQ(l_bb_node, controller.ComputeNodeToFocusForBookmarkManager());
+  }
+
+  model_->CreateAccountPermanentFolders();
+  AddAccountTestData(model_);
+  const BookmarkNode* a_bb_node = model_->account_bookmark_bar_node();
+
+  // Selecting both bookmark bar permanent nodes should default to the account.
+  {
+    BookmarkContextMenuController controller(
+        gfx::NativeWindow(), nullptr, nullptr, profile_.get(),
+        BookmarkLaunchLocation::kNone, {a_bb_node, l_bb_node},
+        /*can_paste=*/false);
+    EXPECT_EQ(a_bb_node, controller.ComputeNodeToFocusForBookmarkManager());
+  }
+
+  // Selecting account bookmark bar permanent node directly.
+  {
+    BookmarkContextMenuController controller(
+        gfx::NativeWindow(), nullptr, nullptr, profile_.get(),
+        BookmarkLaunchLocation::kNone, {a_bb_node}, /*can_paste=*/false);
+    EXPECT_EQ(a_bb_node, controller.ComputeNodeToFocusForBookmarkManager());
+  }
+
+  // Selecting local bookmark bar permanent node directly will return the
+  // account one (assuming it exists).
+  {
+    ASSERT_TRUE(a_bb_node);
+    BookmarkContextMenuController controller(
+        gfx::NativeWindow(), nullptr, nullptr, profile_.get(),
+        BookmarkLaunchLocation::kNone, {l_bb_node}, /*can_paste=*/false);
+    EXPECT_EQ(a_bb_node, controller.ComputeNodeToFocusForBookmarkManager());
+  }
+}
+
+TEST_F(BookmarkContextMenuControllerTest,
+       ComputeNodeToFocusForBookmarkManagerForDirectChildrenOfPermanentNodes) {
+  model_->CreateAccountPermanentFolders();
+  AddAccountTestData(model_);
+
+  const BookmarkNode* l_bb_node = model_->bookmark_bar_node();
+  ASSERT_GE(l_bb_node->children().size(), 2u);
+  const BookmarkNode* a_bb_node = model_->account_bookmark_bar_node();
+  ASSERT_GE(a_bb_node->children().size(), 2u);
+
+  // Selecting a Url child of Local BookmarkBar. Should return Local
+  // BookmarkBar.
+  {
+    const BookmarkNode* local_url = l_bb_node->children()[0].get();
+    ASSERT_TRUE(local_url->is_url());
+    ASSERT_TRUE(local_url->parent()->is_permanent_node());
+    BookmarkContextMenuController controller(
+        gfx::NativeWindow(), nullptr, nullptr, profile_.get(),
+        BookmarkLaunchLocation::kNone, {local_url}, /*can_paste=*/false);
+    EXPECT_EQ(l_bb_node, controller.ComputeNodeToFocusForBookmarkManager());
+  }
+
+  // Selecting a Url child of Account BookmarkBar. Should return Account
+  // BookmarkBar.
+  {
+    const BookmarkNode* account_url = a_bb_node->children()[0].get();
+    ASSERT_TRUE(account_url->is_url());
+    ASSERT_TRUE(account_url->parent()->is_permanent_node());
+    BookmarkContextMenuController controller(
+        gfx::NativeWindow(), nullptr, nullptr, profile_.get(),
+        BookmarkLaunchLocation::kNone, {account_url}, /*can_paste=*/false);
+    EXPECT_EQ(a_bb_node, controller.ComputeNodeToFocusForBookmarkManager());
+  }
+
+  // Selecting a folder child of Local BookmarkBar. Should return the folder.
+  {
+    const BookmarkNode* local_folder = l_bb_node->children()[1].get();
+    ASSERT_TRUE(local_folder->is_folder());
+    ASSERT_TRUE(local_folder->parent()->is_permanent_node());
+    BookmarkContextMenuController controller(
+        gfx::NativeWindow(), nullptr, nullptr, profile_.get(),
+        BookmarkLaunchLocation::kNone, {local_folder}, /*can_paste=*/false);
+    EXPECT_EQ(local_folder, controller.ComputeNodeToFocusForBookmarkManager());
+  }
+
+  // Selecting a folder child of Account BookmarkBar. Should return the folder.
+  {
+    const BookmarkNode* account_folder = a_bb_node->children()[1].get();
+    ASSERT_TRUE(account_folder->is_folder());
+    ASSERT_TRUE(account_folder->parent()->is_permanent_node());
+    BookmarkContextMenuController controller(
+        gfx::NativeWindow(), nullptr, nullptr, profile_.get(),
+        BookmarkLaunchLocation::kNone, {account_folder}, /*can_paste=*/false);
+    EXPECT_EQ(account_folder,
+              controller.ComputeNodeToFocusForBookmarkManager());
+  }
+}
+
+TEST_F(
+    BookmarkContextMenuControllerTest,
+    ComputeNodeToFocusForBookmarkManagerForNonDirectChildrenOfPermanentNodes) {
+  const BookmarkNode* l_bb_node = model_->bookmark_bar_node();
+  ASSERT_GE(l_bb_node->children().size(), 2u);
+  const BookmarkNode* F1 = l_bb_node->children()[1].get();
+  ASSERT_GE(F1->children().size(), 2u);
+
+  // Selecting a url bookmark should focus on its parent.
+  {
+    const BookmarkNode* f1 = F1->children()[0].get();
+    ASSERT_TRUE(f1->is_url());
+    ASSERT_FALSE(f1->parent()->is_permanent_node());
+    BookmarkContextMenuController controller(
+        gfx::NativeWindow(), nullptr, nullptr, profile_.get(),
+        BookmarkLaunchLocation::kNone, {f1}, /*can_paste=*/false);
+    EXPECT_EQ(F1, controller.ComputeNodeToFocusForBookmarkManager());
+  }
+
+  // Selecting a folder should focus on itself.
+  {
+    const BookmarkNode* F11 = F1->children()[1].get();
+    ASSERT_TRUE(F11->is_folder());
+    ASSERT_FALSE(F11->parent()->is_permanent_node());
+    BookmarkContextMenuController controller(
+        gfx::NativeWindow(), nullptr, nullptr, profile_.get(),
+        BookmarkLaunchLocation::kNone, {F11}, /*can_paste=*/false);
+    EXPECT_EQ(F11, controller.ComputeNodeToFocusForBookmarkManager());
+  }
+}

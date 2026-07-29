@@ -4,12 +4,12 @@
 
 #include "device/fido/make_credential_request_handler.h"
 
+#include <algorithm>
 #include <map>
 #include <set>
 #include <utility>
 
 #include "base/barrier_closure.h"
-#include "base/containers/contains.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/json/json_writer.h"
@@ -19,20 +19,20 @@
 #include "build/build_config.h"
 #include "components/cbor/diagnostic_writer.h"
 #include "components/device_event_log/device_event_log.h"
-#include "device/fido/features.h"
+#include "crypto/hash.h"
 #include "device/fido/fido_authenticator.h"
-#include "device/fido/fido_constants.h"
 #include "device/fido/fido_discovery_factory.h"
-#include "device/fido/fido_parsing_utils.h"
-#include "device/fido/fido_transport_protocol.h"
-#include "device/fido/fido_types.h"
 #include "device/fido/filter.h"
 #include "device/fido/make_credential_task.h"
+#include "device/fido/public/features.h"
+#include "device/fido/public/fido_constants.h"
+#include "device/fido/public/fido_transport_protocol.h"
+#include "device/fido/public/fido_types.h"
 
 #if BUILDFLAG(IS_WIN)
 #include "device/fido/win/authenticator.h"
 #include "device/fido/win/type_conversions.h"
-#include "third_party/microsoft_webauthn/webauthn.h"
+#include "third_party/microsoft_webauthn/src/webauthn.h"
 #endif
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -155,7 +155,7 @@ MakeCredentialStatus IsCandidateAuthenticatorPostTouch(
         continue;
       }
 
-      if (base::Contains(*supported_algorithms, algo.algorithm)) {
+      if (std::ranges::contains(*supported_algorithms, algo.algorithm)) {
         at_least_one_common_algorithm = true;
         break;
       }
@@ -270,12 +270,20 @@ bool ValidateResponseExtensions(
       if (!request.hmac_secret || !it.second.is_bool()) {
         return false;
       }
+    } else if (ext_name == kExtensionHmacSecretMc) {
+      if (!request.hmac_secret || !it.second.is_bytestring()) {
+        return false;
+      }
     } else if (ext_name == kExtensionCredBlob) {
       if (!request.cred_blob || !it.second.is_bool()) {
         return false;
       }
     } else if (ext_name == kExtensionMinPINLength) {
       if (!request.min_pin_length_requested || !it.second.is_unsigned()) {
+        return false;
+      }
+    } else if (ext_name == kExtensionCmtgKey) {
+      if (!request.cmtg_key || !it.second.is_bytestring()) {
         return false;
       }
     } else {
@@ -293,8 +301,7 @@ bool ResponseValid(const FidoAuthenticator& authenticator,
                    const CtapMakeCredentialRequest& request,
                    const AuthenticatorMakeCredentialResponse& response,
                    const MakeCredentialOptions& options) {
-  if (response.GetRpIdHash() !=
-      fido_parsing_utils::CreateSHA256Hash(request.rp.id)) {
+  if (response.GetRpIdHash() != crypto::hash::Sha256(request.rp.id)) {
     FIDO_LOG(ERROR) << "Invalid RP ID hash";
     return false;
   }
@@ -359,12 +366,10 @@ MakeCredentialRequestHandler::MakeCredentialRequestHandler(
   DCHECK(!request_.cred_protect_enforce);
 
   transport_availability_info().request_type = FidoRequestType::kMakeCredential;
-  transport_availability_info().is_off_the_record_context =
-      options_.is_off_the_record_context;
   transport_availability_info().resident_key_requirement =
       options_.resident_key;
   transport_availability_info().attestation_conveyance_preference =
-      request.attestation_preference;
+      request_.attestation_preference;
   transport_availability_info().user_verification_requirement =
       request_.user_verification;
   transport_availability_info().request_is_internal_only =
@@ -390,7 +395,7 @@ MakeCredentialRequestHandler::MakeCredentialRequestHandler(
   auto available_transports =
       base::STLSetIntersection<base::flat_set<FidoTransportProtocol>>(
           supported_transports, allowed_transports);
-  bool consider_enclave = request.authenticator_attachment !=
+  bool consider_enclave = request_.authenticator_attachment !=
                           AuthenticatorAttachment::kCrossPlatform;
   if (options_.is_passkey_upgrade_request) {
     consider_enclave = true;
@@ -554,6 +559,9 @@ void MakeCredentialRequestHandler::AuthenticatorRemoved(
 
   FidoRequestHandlerBase::AuthenticatorRemoved(discovery, authenticator);
 
+  if (bio_enroller_ && authenticator == bio_enroller_->authenticator()) {
+    bio_enroller_.reset();
+  }
   if (authenticator == selected_authenticator_for_pin_uv_auth_token_) {
     selected_authenticator_for_pin_uv_auth_token_ = nullptr;
     // Authenticator could have been removed during PIN entry, PIN fallback
@@ -883,11 +891,12 @@ void MakeCredentialRequestHandler::OnEnrollmentDone(
 
 void MakeCredentialRequestHandler::OnEnrollmentError(
     CtapDeviceResponseCode status) {
+  FidoAuthenticator* authenticator = bio_enroller_->authenticator();
   bio_enroller_.reset();
   state_ = State::kFinished;
   std::move(completion_callback_)
       .Run(MakeCredentialStatus::kAuthenticatorResponseInvalid, std::nullopt,
-           bio_enroller_->authenticator());
+           authenticator);
 }
 
 void MakeCredentialRequestHandler::OnEnrollmentDismissed() {
@@ -1014,7 +1023,10 @@ void MakeCredentialRequestHandler::SpecializeRequestForAuthenticator(
   }
 
   if (request->hmac_secret) {
-    request->prf = auth_options.supports_prf;
+    bool supports_prf_or_hmac_secret_mc =
+        auth_options.supports_prf || (auth_options.supports_hmac_secret &&
+                                      auth_options.supports_hmac_secret_mc);
+    request->prf = supports_prf_or_hmac_secret_mc;
     request->hmac_secret =
         !auth_options.supports_prf && auth_options.supports_hmac_secret;
     if (request->prf || request->hmac_secret) {
@@ -1028,7 +1040,7 @@ void MakeCredentialRequestHandler::SpecializeRequestForAuthenticator(
     }
     // Evaluating the PRF at creation time is only supported with the "prf"
     // extension.
-    if (request->prf_input && !auth_options.supports_prf) {
+    if (request->prf_input && !supports_prf_or_hmac_secret_mc) {
       request->prf_input.reset();
     }
   }
@@ -1064,6 +1076,10 @@ void MakeCredentialRequestHandler::SpecializeRequestForAuthenticator(
        authenticator->Options().max_cred_blob_length.value() <
            request->cred_blob->size())) {
     request->cred_blob.reset();
+  }
+
+  if (request->cmtg_key && !authenticator->Options().supports_cmtg_key) {
+    request->cmtg_key = false;
   }
 }
 

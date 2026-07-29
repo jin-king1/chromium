@@ -2,8 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {mojoString16ToString} from 'chrome://resources/js/mojo_type_util.js';
-import type {String16} from 'chrome://resources/mojo/mojo/public/mojom/base/string16.mojom-webui.js';
 import type {Time} from 'chrome://resources/mojo/mojo/public/mojom/base/time.mojom-webui.js';
 import type {Origin} from 'chrome://resources/mojo/url/mojom/origin.mojom-webui.js';
 
@@ -22,7 +20,7 @@ export function time(mojoTime: Time): Date {
   const windowsEpoch = Date.UTC(1601, 0, 1, 0, 0, 0, 0);
   const unixEpoch = Date.UTC(1970, 0, 1, 0, 0, 0, 0);
   // |epochDeltaInMs| equals to
-  // base::Time::kTimeTToMicrosecondsOffset.
+  // base::Time::kMicrosecondsFromWindowsToUnixEpoch.
   const epochDeltaInMs = unixEpoch - windowsEpoch;
   const timeInMs = Number(mojoTime.internalValue) / 1000;
 
@@ -30,8 +28,8 @@ export function time(mojoTime: Time): Date {
 }
 
 // Joins a list of Mojom strings to a comma separated JS string.
-export function scope(mojoScope: String16[]): string {
-  return `[${mojoScope.map(s => mojoString16ToString(s)).join(', ')}]`;
+export function scope(mojoScope: string[]): string {
+  return `[${mojoScope.join(', ')}]`;
 }
 
 export function origin(mojoOrigin: Origin): string {

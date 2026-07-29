@@ -22,7 +22,9 @@
 #include "ui/views/animation/ink_drop_host.h"
 #include "ui/views/animation/ink_drop_observer.h"
 #include "ui/views/controls/button/label_button.h"
+#include "ui/views/controls/button/single_animated_image_container.h"
 #include "ui/views/controls/label.h"
+#include "ui/views/layout/flex_layout_types.h"
 #include "ui/views/widget/widget_observer.h"
 
 namespace gfx {
@@ -36,18 +38,60 @@ class AXVirtualView;
 // View used to draw a bubble, containing an icon and a label. We use this as a
 // base for the classes that handle the location icon (including the EV bubble),
 // tab-to-search UI, and content settings.
+class StandardIconLabelBubbleAnimationLayoutStrategy;
+class SlideAndCrossfadeIconLabelBubbleAnimationLayoutStrategy;
+
 class IconLabelBubbleView : public views::InkDropObserver,
                             public views::LabelButton {
   METADATA_HEADER(IconLabelBubbleView, views::LabelButton)
+  friend class StandardIconLabelBubbleAnimationLayoutStrategy;
+  friend class SlideAndCrossfadeIconLabelBubbleAnimationLayoutStrategy;
 
  public:
   static constexpr int kTrailingPaddingPreMd = 2;
+
+  // The length of the separator's fade animation. These values are empirical.
+  static constexpr int kIconLabelBubbleFadeInDurationMs = 250;
+  static constexpr int kIconLabelBubbleFadeOutDurationMs = 175;
 
   // Determines when the icon label background should be visible.
   enum class BackgroundVisibility {
     kNever,
     kWithLabel,
     kAlways,
+  };
+
+  enum class AnimationStyle {
+    kStandard,
+    kSlideAndCrossfade,
+  };
+
+  class IconLabelBubbleAnimationLayoutStrategy {
+   public:
+    explicit IconLabelBubbleAnimationLayoutStrategy(IconLabelBubbleView& host);
+    virtual ~IconLabelBubbleAnimationLayoutStrategy();
+
+    IconLabelBubbleView* host() const { return host_; }
+
+    virtual views::ProposedLayout CalculateProposedLayout(
+        const views::SizeBounds& size_bounds,
+        const IconLabelBubbleView* host) const = 0;
+    virtual gfx::Size CalculatePreferredSize(
+        const views::SizeBounds& available_size,
+        const IconLabelBubbleView* host) const = 0;
+    virtual void UpdateAnimationProgress(IconLabelBubbleView* host,
+                                         double progress) = 0;
+    virtual void OnLayerAdded(IconLabelBubbleView* host, ui::Layer* layer) {}
+    virtual void OnLayerRemoved(IconLabelBubbleView* host, ui::Layer* layer) {}
+    virtual std::optional<base::TimeDelta> GetAnimationDuration(bool show) const = 0;
+    virtual void SetupAnimation(gfx::SlideAnimation* animation, bool show) const = 0;
+    virtual void ResetAnimation(IconLabelBubbleView* host, bool show_label) = 0;
+    virtual void OnAnimationEnded(IconLabelBubbleView* host) = 0;
+    virtual bool ShouldCollapse() const;
+    virtual views::ImageView* GetTrailingImageView();
+
+   private:
+    raw_ptr<IconLabelBubbleView> host_;
   };
 
   // TODO(tluk): These should be updated to return ColorIds instead of raw
@@ -103,21 +147,29 @@ class IconLabelBubbleView : public views::InkDropObserver,
   void InkDropRippleAnimationEnded(views::InkDropState state) override;
 
   // views::LabelButton:
-  void Layout(PassKey) override;
+  views::ProposedLayout CalculateProposedLayout(
+      const views::SizeBounds& size_bounds) const override;
+  gfx::Size GetMinimumSize() const override;
+  void OnBoundsChanged(const gfx::Rect& previous_bounds) override;
 
   // Returns true when the label should be visible.
   virtual bool ShouldShowLabel() const;
 
-  virtual void SetBackgroundVisibility(
-      BackgroundVisibility background_visibility);
+  void SetBackgroundVisibility(BackgroundVisibility background_visibility);
 
   // Sets whether tonal colors are used for the background of the view when
   // expanded to show the label.
-  virtual void SetUseTonalColorsWhenExpanded(bool use_tonal_colors);
+  void SetUseTonalColorsWhenExpanded(bool use_tonal_colors);
 
   void SetLabel(std::u16string_view label);
   void SetLabel(std::u16string_view label, std::u16string_view accessible_name);
   void SetFontList(const gfx::FontList& font_list);
+
+  // Applies additional padding around the icon and label whenever the label
+  // is visible and not collapsed.
+  void SetExpandedLabelAdditionalInsets(const views::Inset1D& insets);
+
+  void SetCrossfadeImage(const ui::ImageModel& image);
 
   gfx::RoundedCornersF GetCornerRadii() const;
   void SetCornerRadii(const gfx::RoundedCornersF& radii);
@@ -127,11 +179,18 @@ class IconLabelBubbleView : public views::InkDropObserver,
   }
   views::View* GetImageContainerView() { return image_container_view(); }
 
+  views::SingleAnimatedImageContainer& animated_image_container() {
+    CHECK(image_container());
+    return *static_cast<views::SingleAnimatedImageContainer*>(
+        image_container());
+  }
+
   // Exposed for testing.
   views::View* separator_view() const { return separator_view_; }
 
   // Exposed for testing.
   bool is_animating_label() const { return slide_animation_.is_animating(); }
+  AnimationStyle animation_style() const { return animation_style_; }
 
   void set_next_element_interior_padding(int padding) {
     next_element_interior_padding_ = padding;
@@ -141,13 +200,9 @@ class IconLabelBubbleView : public views::InkDropObserver,
     grow_animation_starting_width_ = width;
   }
 
-  // Reduces the slide duration to 1ms such that animation still follows
-  // through in the code but is short enough that it is essentially skipped.
-  void ReduceAnimationTimeForTesting();
-
-  // Enables tests to reset slide animation to a state where the label is not
-  // showing.
-  void ResetSlideAnimationForTesting() { ResetSlideAnimation(false); }
+  gfx::SlideAnimation& slide_animation_for_testing() {
+    return slide_animation_;
+  }
 
  protected:
   static constexpr int kOpenTimeMS = 150;
@@ -199,6 +254,9 @@ class IconLabelBubbleView : public views::InkDropObserver,
   void AnimationEnded(const gfx::Animation* animation) override;
   void AnimationProgressed(const gfx::Animation* animation) override;
   void AnimationCanceled(const gfx::Animation* animation) override;
+  void RemoveLayerFromRegions(ui::Layer* old_layer) override;
+  void AddLayerToRegion(ui::Layer* new_layer,
+                        views::LayerRegion region) override;
 
   const gfx::FontList& font_list() const { return label()->font_list(); }
 
@@ -209,12 +267,16 @@ class IconLabelBubbleView : public views::InkDropObserver,
 
   gfx::Size GetSizeForLabelWidth(int label_width) const;
 
+  views::ImageView* GetCrossfadeImageView();
+  bool IsAnimationShowing() const;
+  void UpdateAnimationProgress();
+
   // Sets the border padding around this view.
   virtual void UpdateBorder();
 
   // Set up for icons that animate their labels in. Animating out is initiated
   // manually.
-  void SetUpForAnimation();
+  void SetUpForAnimation(base::TimeDelta duration = base::Milliseconds(150));
 
   // Set up for icons that animate their labels in and then automatically out
   // after a period of time. The duration of the slide includes the just the
@@ -225,7 +287,7 @@ class IconLabelBubbleView : public views::InkDropObserver,
 
   // Animates the view in and disables highlighting for hover and focus. If a
   // |string_id| is provided it also sets/changes the label to that string.
-  // TODO(bruthig): See https://crbug.com/669253. Since the ink drop highlight
+  // TODO(bruthig): See https://crbug.com/41288467. Since the ink drop highlight
   // currently cannot handle host resizes, the highlight needs to be disabled
   // when the animation is running.
   void AnimateIn(std::optional<int> string_id);
@@ -342,6 +404,13 @@ class IconLabelBubbleView : public views::InkDropObserver,
   std::optional<ui::ColorId> foreground_color_id_;
 
   std::optional<gfx::RoundedCornersF> radii_;
+
+  // Padding that should be applied when the label is expanded.
+  views::Inset1D expanded_label_additional_insets_;
+
+  AnimationStyle animation_style_ = AnimationStyle::kStandard;
+  std::unique_ptr<IconLabelBubbleAnimationLayoutStrategy>
+      animation_layout_strategy_;
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_LOCATION_BAR_ICON_LABEL_BUBBLE_VIEW_H_

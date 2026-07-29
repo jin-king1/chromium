@@ -38,7 +38,7 @@ public class NetworkChangeNotifier {
      * The alert is fired on the UI thread.
      */
     public interface ConnectionTypeObserver {
-        public void onConnectionTypeChanged(int connectionType);
+        void onConnectionTypeChanged(int connectionType);
     }
 
     private final ArrayList<Long> mNativeChangeNotifiers;
@@ -69,6 +69,12 @@ public class NetworkChangeNotifier {
 
     public static boolean isInitialized() {
         return sInstance != null;
+    }
+
+    /** Forwards the kDeriveConnectionTypeFromCapabilities feature flag from native to Java. */
+    @CalledByNative
+    public static void setDeriveConnectionTypeFromCapabilities(boolean enabled) {
+        ConnectivityManagerWrapper.setDeriveConnectionTypeFromCapabilities(enabled);
     }
 
     public static void resetInstanceForTests() {
@@ -267,7 +273,7 @@ public class NetworkChangeNotifier {
                     // the experiment as its definitely a redundant call.
                     if (forceUpdateNetworkState) mAutoDetector.updateCurrentNetworkState();
 
-                    final NetworkChangeNotifierAutoDetect.NetworkState networkState =
+                    final ConnectivityManagerWrapper.NetworkState networkState =
                             mAutoDetector.getCurrentNetworkState();
 
                     updateCurrentConnectionType(networkState.getConnectionType());
@@ -372,10 +378,7 @@ public class NetworkChangeNotifier {
         for (Long nativeChangeNotifier : mNativeChangeNotifiers) {
             NetworkChangeNotifierJni.get()
                     .notifyConnectionTypeChanged(
-                            nativeChangeNotifier,
-                            NetworkChangeNotifier.this,
-                            newConnectionType,
-                            defaultNetId);
+                            nativeChangeNotifier, newConnectionType, defaultNetId);
         }
         for (ConnectionTypeObserver observer : mConnectionTypeObservers) {
             observer.onConnectionTypeChanged(newConnectionType);
@@ -391,8 +394,7 @@ public class NetworkChangeNotifier {
     void notifyObserversOfConnectionCostChange(int newConnectionCost) {
         for (Long nativeChangeNotifier : mNativeChangeNotifiers) {
             NetworkChangeNotifierJni.get()
-                    .notifyConnectionCostChanged(
-                            nativeChangeNotifier, NetworkChangeNotifier.this, newConnectionCost);
+                    .notifyConnectionCostChanged(nativeChangeNotifier, newConnectionCost);
         }
     }
 
@@ -400,8 +402,7 @@ public class NetworkChangeNotifier {
     void notifyObserversOfConnectionSubtypeChange(int connectionSubtype) {
         for (Long nativeChangeNotifier : mNativeChangeNotifiers) {
             NetworkChangeNotifierJni.get()
-                    .notifyConnectionSubtypeChanged(
-                            nativeChangeNotifier, NetworkChangeNotifier.this, connectionSubtype);
+                    .notifyConnectionSubtypeChanged(nativeChangeNotifier, connectionSubtype);
         }
     }
 
@@ -409,11 +410,7 @@ public class NetworkChangeNotifier {
     void notifyObserversOfNetworkConnect(long netId, int connectionType) {
         for (Long nativeChangeNotifier : mNativeChangeNotifiers) {
             NetworkChangeNotifierJni.get()
-                    .notifyOfNetworkConnect(
-                            nativeChangeNotifier,
-                            NetworkChangeNotifier.this,
-                            netId,
-                            connectionType);
+                    .notifyOfNetworkConnect(nativeChangeNotifier, netId, connectionType);
         }
     }
 
@@ -421,17 +418,14 @@ public class NetworkChangeNotifier {
     void notifyObserversOfNetworkSoonToDisconnect(long netId) {
         for (Long nativeChangeNotifier : mNativeChangeNotifiers) {
             NetworkChangeNotifierJni.get()
-                    .notifyOfNetworkSoonToDisconnect(
-                            nativeChangeNotifier, NetworkChangeNotifier.this, netId);
+                    .notifyOfNetworkSoonToDisconnect(nativeChangeNotifier, netId);
         }
     }
 
     /** Alerts all observers of a network disconnect. */
     void notifyObserversOfNetworkDisconnect(long netId) {
         for (Long nativeChangeNotifier : mNativeChangeNotifiers) {
-            NetworkChangeNotifierJni.get()
-                    .notifyOfNetworkDisconnect(
-                            nativeChangeNotifier, NetworkChangeNotifier.this, netId);
+            NetworkChangeNotifierJni.get().notifyOfNetworkDisconnect(nativeChangeNotifier, netId);
         }
     }
 
@@ -444,8 +438,7 @@ public class NetworkChangeNotifier {
     void notifyObserversToPurgeActiveNetworkList(long[] activeNetIds) {
         for (Long nativeChangeNotifier : mNativeChangeNotifiers) {
             NetworkChangeNotifierJni.get()
-                    .notifyPurgeActiveNetworkList(
-                            nativeChangeNotifier, NetworkChangeNotifier.this, activeNetIds);
+                    .notifyPurgeActiveNetworkList(nativeChangeNotifier, activeNetIds);
         }
     }
 
@@ -481,33 +474,24 @@ public class NetworkChangeNotifier {
     @NativeMethods
     interface Natives {
         @NativeClassQualifiedName("NetworkChangeNotifierDelegateAndroid")
-        void notifyConnectionTypeChanged(
-                long nativePtr,
-                NetworkChangeNotifier caller,
-                int newConnectionType,
-                long defaultNetId);
+        void notifyConnectionTypeChanged(long nativePtr, int newConnectionType, long defaultNetId);
 
         @NativeClassQualifiedName("NetworkChangeNotifierDelegateAndroid")
-        void notifyConnectionCostChanged(
-                long nativePtr, NetworkChangeNotifier caller, int newConnectionCost);
+        void notifyConnectionCostChanged(long nativePtr, int newConnectionCost);
 
         @NativeClassQualifiedName("NetworkChangeNotifierDelegateAndroid")
-        void notifyConnectionSubtypeChanged(
-                long nativePtr, NetworkChangeNotifier caller, int subType);
+        void notifyConnectionSubtypeChanged(long nativePtr, int subType);
 
         @NativeClassQualifiedName("NetworkChangeNotifierDelegateAndroid")
-        void notifyOfNetworkConnect(
-                long nativePtr, NetworkChangeNotifier caller, long netId, int connectionType);
+        void notifyOfNetworkConnect(long nativePtr, long netId, int connectionType);
 
         @NativeClassQualifiedName("NetworkChangeNotifierDelegateAndroid")
-        void notifyOfNetworkSoonToDisconnect(
-                long nativePtr, NetworkChangeNotifier caller, long netId);
+        void notifyOfNetworkSoonToDisconnect(long nativePtr, long netId);
 
         @NativeClassQualifiedName("NetworkChangeNotifierDelegateAndroid")
-        void notifyOfNetworkDisconnect(long nativePtr, NetworkChangeNotifier caller, long netId);
+        void notifyOfNetworkDisconnect(long nativePtr, long netId);
 
         @NativeClassQualifiedName("NetworkChangeNotifierDelegateAndroid")
-        void notifyPurgeActiveNetworkList(
-                long nativePtr, NetworkChangeNotifier caller, long[] activeNetIds);
+        void notifyPurgeActiveNetworkList(long nativePtr, long[] activeNetIds);
     }
 }

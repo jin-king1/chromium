@@ -8,22 +8,22 @@
 #include <string>
 
 #include "base/memory/raw_ptr.h"
-#include "base/time/time.h"
 #include "chrome/browser/ui/url_identity.h"
 #include "chrome/browser/ui/views/permissions/permission_prompt_base_view.h"
 #include "chrome/browser/ui/views/permissions/permission_prompt_style.h"
-#include "chrome/grit/generated_resources.h"
 #include "components/permissions/permission_prompt.h"
 #include "components/permissions/permission_util.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 
+namespace content {
+class WebContents;
+}
+
 namespace permissions {
 enum class PermissionAction;
 enum class RequestType;
 }  // namespace permissions
-
-class Browser;
 
 constexpr int DISTANCE_BUTTON_VERTICAL = 8;
 
@@ -47,9 +47,8 @@ class PermissionPromptBubbleBaseView : public PermissionPromptBaseView {
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kAllowButtonElementId);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kAllowOnceButtonElementId);
   PermissionPromptBubbleBaseView(
-      Browser* browser,
+      content::WebContents* web_contents,
       base::WeakPtr<permissions::PermissionPrompt::Delegate> delegate,
-      base::TimeTicks permission_requested_time,
       PermissionPromptStyle prompt_style);
   PermissionPromptBubbleBaseView(const PermissionPromptBubbleBaseView&) =
       delete;
@@ -84,7 +83,8 @@ class PermissionPromptBubbleBaseView : public PermissionPromptBaseView {
   std::u16string GetPermissionFragmentForTesting() const;
 
  protected:
-  void CreatePermissionButtons(const std::u16string& allow_always_text);
+  void CreatePermissionButtons(const std::u16string& allow_always_text,
+                               const std::u16string& block_text);
   void CreateExtraTextLabel(const std::u16string& extra_text);
 
   void CreateWidget();
@@ -113,8 +113,6 @@ class PermissionPromptBubbleBaseView : public PermissionPromptBaseView {
   }
 
   base::WeakPtr<permissions::PermissionPrompt::Delegate> delegate_;
-
-  base::TimeTicks permission_requested_time_;
 
   PermissionPromptStyle prompt_style_;
 

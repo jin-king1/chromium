@@ -4,7 +4,6 @@
 
 #include "third_party/blink/renderer/platform/graphics/parkable_image.h"
 
-#include "base/debug/stack_trace.h"
 #include "base/feature_list.h"
 #include "base/memory/asan_interface.h"
 #include "base/memory/ref_counted.h"
@@ -29,9 +28,7 @@
 
 namespace blink {
 
-BASE_FEATURE(kDelayParkingImages,
-             "DelayParkingImages",
-             base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kDelayParkingImages, base::FEATURE_ENABLED_BY_DEFAULT);
 
 namespace {
 
@@ -110,7 +107,7 @@ class ParkableImageSegmentReader : public SegmentReader {
   explicit ParkableImageSegmentReader(scoped_refptr<ParkableImage> image);
   size_t size() const override;
   base::span<const uint8_t> GetSomeData(size_t position) const override;
-  sk_sp<SkData> GetAsSkData() const override;
+  sk_sp<const SkData> GetAsSkData() const override;
   void LockData() override;
   void UnlockData() override;
 
@@ -142,7 +139,7 @@ base::span<const uint8_t> ParkableImageSegmentReader::GetSomeData(
   return RWBufferGetSomeData(iter, position_of_block, position);
 }
 
-sk_sp<SkData> ParkableImageSegmentReader::GetAsSkData() const {
+sk_sp<const SkData> ParkableImageSegmentReader::GetAsSkData() const {
   if (!parkable_image_) {
     return nullptr;
   }
@@ -196,7 +193,7 @@ void ParkableImageSegmentReader::UnlockData() {
 
 constexpr base::TimeDelta ParkableImageImpl::kParkingDelay;
 
-void ParkableImageImpl::Append(WTF::SharedBuffer* buffer, size_t offset) {
+void ParkableImageImpl::Append(SharedBuffer* buffer, size_t offset) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   base::AutoLock lock(lock_);
   DCHECK(!is_frozen());
@@ -304,7 +301,6 @@ void ParkableImageImpl::WriteToDiskInBackground(
   DCHECK(!IsMainThread());
   base::AutoLock lock(parkable_image->lock_);
 
-  DCHECK(ParkableImageManager::IsParkableImagesToDiskEnabled());
   DCHECK(parkable_image);
   DCHECK(parkable_image->reserved_chunk_);
   DCHECK(!parkable_image->on_disk_metadata_);
@@ -320,7 +316,7 @@ void ParkableImageImpl::WriteToDiskInBackground(
       base::checked_cast<wtf_size_t>(parkable_image->size()));
 
   do {
-    vector.AppendSpan(*it);
+    vector.append_range(*it);
   } while (it.Next());
 
   auto reserved_chunk = std::move(parkable_image->reserved_chunk_);
@@ -404,7 +400,6 @@ bool ParkableImageImpl::TransientlyUnableToPark() const {
 
 bool ParkableImageImpl::MaybePark(
     scoped_refptr<base::SingleThreadTaskRunner> task_runner) {
-  DCHECK(ParkableImageManager::IsParkableImagesToDiskEnabled());
   DCHECK(IsMainThread());
 
   base::AutoLock lock(lock_);
@@ -459,8 +454,6 @@ void ParkableImageImpl::Unpark() {
     AsanUnpoisonBuffer(rw_buffer_.get());
     return;
   }
-
-  DCHECK(ParkableImageManager::IsParkableImagesToDiskEnabled());
 
   TRACE_EVENT1("blink", "ParkableImageImpl::Unpark", "size", size());
 
@@ -537,7 +530,7 @@ scoped_refptr<SharedBuffer> ParkableImage::Data() {
   return impl_->Data();
 }
 
-void ParkableImage::Append(WTF::SharedBuffer* buffer, size_t offset) {
+void ParkableImage::Append(SharedBuffer* buffer, size_t offset) {
   DCHECK(impl_);
   impl_->Append(buffer, offset);
 }

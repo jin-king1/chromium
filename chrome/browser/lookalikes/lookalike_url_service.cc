@@ -4,14 +4,13 @@
 
 #include "chrome/browser/lookalikes/lookalike_url_service.h"
 
+#include <algorithm>
 #include <utility>
 
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/metrics/field_trial_params.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/time/default_clock.h"
 #include "base/trace_event/trace_event.h"
 #include "chrome/browser/safe_browsing/user_interaction_observer.h"
@@ -43,22 +42,19 @@ std::vector<DomainInfo> UpdateEngagedSitesOnWorkerThread(
     scoped_refptr<HostContentSettingsMap> map) {
   TRACE_EVENT0("navigation",
                "LookalikeUrlService UpdateEngagedSitesOnWorkerThread");
-  std::vector<DomainInfo> new_engaged_sites;
 
   auto details =
-      site_engagement::SiteEngagementService::GetAllDetailsInBackground(now,
-                                                                        map);
+      site_engagement::SiteEngagementService::GetAllDetailsInBackground(
+          now, map, site_engagement::SiteEngagementService::URLSets::HTTP,
+          blink::mojom::EngagementLevel::MEDIUM);
   TRACE_EVENT1("navigation", "LookalikeUrlService SiteEngagementService",
                "site_count", details.size());
+  std::vector<DomainInfo> new_engaged_sites;
+  new_engaged_sites.reserve(details.size());
   for (const site_engagement::mojom::SiteEngagementDetails& detail : details) {
-    if (!detail.origin.SchemeIsHTTPOrHTTPS()) {
-      continue;
-    }
-    // Ignore sites with an engagement score below threshold.
-    if (!site_engagement::SiteEngagementService::IsEngagementAtLeast(
-            detail.total_score, blink::mojom::EngagementLevel::MEDIUM)) {
-      continue;
-    }
+    DCHECK(detail.origin.SchemeIsHTTPOrHTTPS());
+    DCHECK(site_engagement::SiteEngagementService::IsEngagementAtLeast(
+        detail.total_score, blink::mojom::EngagementLevel::MEDIUM));
     const DomainInfo domain_info = lookalikes::GetDomainInfo(detail.origin);
     if (domain_info.domain_and_registry.empty()) {
       continue;
@@ -74,12 +70,6 @@ std::vector<DomainInfo> UpdateEngagedSitesOnWorkerThread(
 std::string GetETLDPlusOneWithPrivateRegistries(const std::string& hostname) {
   return net::registry_controlled_domains::GetDomainAndRegistry(
       hostname, net::registry_controlled_domains::INCLUDE_PRIVATE_REGISTRIES);
-}
-
-void RecordReputationStatusWithEngagedSitesTime(base::TimeTicks start) {
-  UMA_HISTOGRAM_TIMES(
-      "Security.SafetyTips.GetReputationStatusWithEngagedSitesTime",
-      base::TimeTicks::Now() - start);
 }
 
 }  // namespace
@@ -160,10 +150,10 @@ LookalikeUrlService::CheckUrlForLookalikes(
   LookalikeUrlCheckResult result;
 
   // Don't warn on non-HTTP(s) sites or non-public domains.
-  if (!url.SchemeIsHTTPOrHTTPS() || net::HostStringIsLocalhost(url.host()) ||
-      net::IsHostnameNonUnique(url.host()) ||
-      lookalikes::GetETLDPlusOne(url.host()).empty() ||
-      lookalikes::IsSafeTLD(url.host())) {
+  if (!url.SchemeIsHTTPOrHTTPS() || net::HostStringIsLocalhost(url.GetHost()) ||
+      net::IsHostnameNonUnique(url.GetHost()) ||
+      lookalikes::GetETLDPlusOne(url.GetHost()).empty() ||
+      lookalikes::IsSafeTLD(url.GetHost())) {
     return result;
   }
 
@@ -188,15 +178,16 @@ LookalikeUrlService::CheckUrlForLookalikes(
     }
   }
 
+  if (url_formatter::IsTopDomain(url)) {
+    return result;
+  }
+
   // GetDomainInfo() is expensive, so do possible early-abort checks first.
   base::TimeTicks get_domain_info_start = base::TimeTicks::Now();
   const DomainInfo navigated_domain = lookalikes::GetDomainInfo(url);
   result.get_domain_info_duration =
       base::TimeTicks::Now() - get_domain_info_start;
 
-  if (IsTopDomain(navigated_domain)) {
-    return result;
-  }
 
   // Ensure that this URL is not already engaged. We can't use the synchronous
   // SiteEngagementService::IsEngagementAtLeast as it has side effects. We check
@@ -204,8 +195,8 @@ LookalikeUrlService::CheckUrlForLookalikes(
   // ignores the scheme which is okay since it's more conservative: If the user
   // is engaged with http://domain.test, not showing the warning on
   // https://domain.test is acceptable.
-  if (base::Contains(engaged_sites, navigated_domain.domain_and_registry,
-                     &DomainInfo::domain_and_registry)) {
+  if (std::ranges::contains(engaged_sites, navigated_domain.domain_and_registry,
+                            &DomainInfo::domain_and_registry)) {
     return result;
   }
 
@@ -271,8 +262,6 @@ void LookalikeUrlService::CheckSafetyTipStatusWithEngagedSites(
     const GURL& url,
     SafetyTipCheckCallback callback,
     const std::vector<DomainInfo>& engaged_sites) {
-  base::TimeTicks start = base::TimeTicks::Now();
-
   LookalikeUrlCheckResult lookalike_result =
       CheckUrlForLookalikes(url, engaged_sites,
                             /*stop_checking_on_allowlist_or_ignore=*/false);
@@ -282,7 +271,6 @@ void LookalikeUrlService::CheckSafetyTipStatusWithEngagedSites(
 
   if (lookalike_result.action_type != LookalikeActionType::kShowSafetyTip) {
     std::move(callback).Run(result);
-    RecordReputationStatusWithEngagedSitesTime(start);
     return;
   }
 
@@ -295,7 +283,6 @@ void LookalikeUrlService::CheckSafetyTipStatusWithEngagedSites(
     // This will record a UKM but it won't show a warning.
     result.safety_tip_status = SafetyTipStatus::kNone;
     std::move(callback).Run(result);
-    RecordReputationStatusWithEngagedSitesTime(start);
     return;
   }
 
@@ -308,22 +295,21 @@ void LookalikeUrlService::CheckSafetyTipStatusWithEngagedSites(
     // there's no additional action required.
   }
   std::move(callback).Run(result);
-  RecordReputationStatusWithEngagedSitesTime(start);
 }
 
 bool LookalikeUrlService::IsIgnored(const GURL& url) const {
   return warning_dismissed_etld1s_.count(
-             GetETLDPlusOneWithPrivateRegistries(url.host())) > 0;
+             GetETLDPlusOneWithPrivateRegistries(url.GetHost())) > 0;
 }
 
 void LookalikeUrlService::SetUserIgnore(const GURL& url) {
   warning_dismissed_etld1s_.insert(
-      GetETLDPlusOneWithPrivateRegistries(url.host()));
+      GetETLDPlusOneWithPrivateRegistries(url.GetHost()));
 }
 
 void LookalikeUrlService::OnUIDisabledFirstVisit(const GURL& url) {
   warning_dismissed_etld1s_.insert(
-      GetETLDPlusOneWithPrivateRegistries(url.host()));
+      GetETLDPlusOneWithPrivateRegistries(url.GetHost()));
 }
 
 void LookalikeUrlService::ResetWarningDismissedETLDPlusOnesForTesting() {

@@ -203,12 +203,13 @@ class InspectorHighlightBase {
   virtual std::unique_ptr<protocol::DictionaryValue> AsProtocolValue()
       const = 0;
 
- protected:
   static bool BuildNodeQuads(Node*,
                              gfx::QuadF* content,
                              gfx::QuadF* padding,
                              gfx::QuadF* border,
                              gfx::QuadF* margin);
+
+ protected:
   std::unique_ptr<protocol::ListValue> highlight_paths_;
   float scale_;
 };
@@ -282,7 +283,9 @@ class CORE_EXPORT InspectorHighlight : public InspectorHighlightBase {
   ColorFormat color_format_;
 };
 
-std::unique_ptr<protocol::DictionaryValue> InspectorFlexContainerHighlight(
+// CORE_EXPORT is required to make these functions available for unit tests.
+std::unique_ptr<protocol::DictionaryValue> CORE_EXPORT
+InspectorFlexContainerHighlight(
     Node* node,
     const InspectorFlexContainerHighlightConfig& config);
 
@@ -298,7 +301,6 @@ std::unique_ptr<protocol::DictionaryValue> InspectorIsolatedElementHighlight(
     Element* element,
     const InspectorIsolationModeHighlightConfig& config);
 
-// CORE_EXPORT is required to make these functions available for unit tests.
 std::unique_ptr<protocol::DictionaryValue> CORE_EXPORT
 InspectorGridHighlight(Node*, const InspectorGridHighlightConfig& config);
 

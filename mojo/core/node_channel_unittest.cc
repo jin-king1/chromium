@@ -2,13 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "mojo/core/node_channel.h"
 
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
+#include "base/containers/span_writer.h"
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/memory/scoped_refptr.h"
@@ -114,10 +112,15 @@ TEST_F(NodeChannelTest, MessagesCannotBeSmallerThanOldestVersion) {
   auto message =
       Channel::Message::CreateMessage(capacity, capacity, /*num_handles=*/0);
 
-  memset(message->mutable_payload(), 0, capacity);
+  {
+    base::span<char> payload = message->mutable_payload_span();
+    std::ranges::fill(payload, 0);
 
-  // Set the type of this message as REQUEST_PORT_MERGE (6)
-  *reinterpret_cast<uint32_t*>(message->mutable_payload()) = 6;
+    // Set the type of this message as REQUEST_PORT_MERGE (6)
+    auto writer =
+        base::SpanWriter<uint8_t>(base::as_writable_byte_span(payload));
+    EXPECT_TRUE(writer.WriteU32NativeEndian(6));
+  }
 
   // This short message should be ignored.
   remote_channel->SendChannelMessage(std::move(message));

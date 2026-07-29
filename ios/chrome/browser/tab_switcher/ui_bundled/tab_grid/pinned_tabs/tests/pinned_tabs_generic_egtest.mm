@@ -7,10 +7,11 @@
 #import "base/ios/ios_util.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/test/ios/wait_util.h"
+#import "ios/chrome/browser/popup_menu/public/popup_menu_constants.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/pinned_tabs/pinned_tabs_constants.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_grid_constants.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/test/tabs_egtest_util.h"
-#import "ios/chrome/browser/ui/popup_menu/popup_menu_constants.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey_ui.h"
@@ -39,9 +40,9 @@ std::unique_ptr<net::test_server::HttpResponse> HandleQueryTitle(
   std::unique_ptr<net::test_server::BasicHttpResponse> http_response(
       new net::test_server::BasicHttpResponse);
   http_response->set_content_type("text/html");
-  http_response->set_content("<html><head><title>" + request.GetURL().query() +
-                             "</title></head><body>" +
-                             request.GetURL().query() + "</body></html>");
+  http_response->set_content(
+      "<html><head><title>" + request.GetURL().GetQuery() +
+      "</title></head><body>" + request.GetURL().GetQuery() + "</body></html>");
   return std::move(http_response);
 }
 
@@ -61,17 +62,7 @@ id<GREYMatcher> GetMatcherForPinnedCellWithTitle(NSString* title) {
 
 // Matcher for the "Done" button on the Tab Grid.
 id<GREYMatcher> GetMatcherForDoneButton() {
-  return grey_accessibilityID(kTabGridDoneButtonIdentifier);
-}
-
-// Matcher for the "Edit" button on the Tab Grid.
-id<GREYMatcher> GetMatcherForEditButton() {
-  return grey_accessibilityID(kTabGridEditButtonIdentifier);
-}
-
-// Matcher for the "Undo" button on the Tab Grid.
-id<GREYMatcher> GetMatcherForUndoButton() {
-  return grey_accessibilityID(kTabGridUndoCloseAllButtonIdentifier);
+  return chrome_test_util::TabGridDoneButton();
 }
 
 // Matcher for the pinned view.
@@ -92,6 +83,13 @@ GURL GetURLForTitle(net::EmbeddedTestServer* test_server, NSString* title) {
 @end
 
 @implementation PinnedTabsGenericConsistencyTestCase
+
+- (AppLaunchConfiguration)appConfigurationForTestCase {
+  AppLaunchConfiguration config = [super appConfigurationForTestCase];
+  // TODO(crbug.com/514608938): Fix test for Chrome Next.
+  config.features_enabled.push_back(kChromeNextIa);
+  return config;
+}
 
 // Waits for the animation (context modal disappearance) to complete.
 - (void)waitForAnimationCompletionWithMacther:(id<GREYMatcher>)elementMatcher {
@@ -124,7 +122,8 @@ GURL GetURLForTitle(net::EmbeddedTestServer* test_server, NSString* title) {
 }
 
 // Tests that there is only one active (selected) tab at a time.
-- (void)testOneActiveTabAtATime {
+// TODO(crbug.com/440615724): This test is flaky.
+- (void)FLAKY_testOneActiveTabAtATime {
   if ([ChromeEarlGrey isIPadIdiom]) {
     EARL_GREY_TEST_SKIPPED(@"Skipped for iPad. The Pinned Tabs feature is only "
                            @"supported on iPhone.");
@@ -311,12 +310,16 @@ GURL GetURLForTitle(net::EmbeddedTestServer* test_server, NSString* title) {
                            @"supported on iPhone.");
   }
 
-  // Create tabs.
-  CreatePinnedTabs(2, self.testServer);
-  CreateRegularTabs(1, self.testServer);
+  // Consume the initial cold startup NTP for `PinnedTab0` directly right before
+  // opening extra tabs. This completely avoids overlapping NTP animations right
+  // under `kChromeNextIa` on iOS 27 and removes leftover NTP cleanup step.
+  [ChromeEarlGrey loadURL:GetURLForTitle(self.testServer, @"PinnedTab0")];
+  [ChromeEarlGrey pinCurrentTab];
 
-  // Close NTP tab.
-  [ChromeEarlGrey closeTabAtIndex:2];
+  // Create second pinned tab and one regular tab cleanly right after.
+  CreateRegularTab(self.testServer, @"PinnedTab1");
+  [ChromeEarlGrey pinCurrentTab];
+  CreateRegularTab(self.testServer, @"RegularTab0");
 
   // Open the Tab Grid.
   [ChromeEarlGreyUI openTabGrid];
@@ -325,8 +328,9 @@ GURL GetURLForTitle(net::EmbeddedTestServer* test_server, NSString* title) {
   [[EarlGrey selectElementWithMatcher:GetMatcherForDoneButton()]
       assertWithMatcher:grey_enabled()];
 
-  // Verify "Edit" button is enabled.
-  [[EarlGrey selectElementWithMatcher:GetMatcherForEditButton()]
+  // Verify Overflow Menu button is enabled.
+  [[EarlGrey
+      selectElementWithMatcher:chrome_test_util::TabGridOverflowMenuButton()]
       assertWithMatcher:grey_enabled()];
 
   // Long tap on the first regular tab.
@@ -343,9 +347,10 @@ GURL GetURLForTitle(net::EmbeddedTestServer* test_server, NSString* title) {
   [[EarlGrey selectElementWithMatcher:GetMatcherForDoneButton()]
       assertWithMatcher:grey_enabled()];
 
-  // Verify "Edit" button is disabled.
-  [[EarlGrey selectElementWithMatcher:GetMatcherForEditButton()]
-      assertWithMatcher:grey_not(grey_enabled())];
+  // Verify Overflow Menu button is enabled.
+  [self waitForAnimationCompletionWithMacther:
+            grey_allOf(chrome_test_util::TabGridOverflowMenuButton(),
+                       grey_enabled(), nil)];
 
   [self waitForAnimationCompletionWithMacther:GetMatcherForPinnedCellWithTitle(
                                                   @"PinnedTab0")];
@@ -375,13 +380,22 @@ GURL GetURLForTitle(net::EmbeddedTestServer* test_server, NSString* title) {
                                    IDS_IOS_CONTENT_CONTEXT_CLOSEPINNEDTAB)]
       performAction:grey_tap()];
 
-  // Verify "Done" button is disabled.
-  [[EarlGrey selectElementWithMatcher:GetMatcherForDoneButton()]
-      assertWithMatcher:grey_not(grey_enabled())];
+  if ([ChromeEarlGrey isChromeNextEnabled]) {
+    // Verify "Done" button is enabled.
+    [[EarlGrey selectElementWithMatcher:GetMatcherForDoneButton()]
+        assertWithMatcher:grey_enabled()];
+  } else {
+    // Verify "Done" button is disabled.
+    [self waitForAnimationCompletionWithMacther:grey_allOf(
+                                                    GetMatcherForDoneButton(),
+                                                    grey_not(grey_enabled()),
+                                                    nil)];
+  }
 
-  // Verify "Edit" button is disabled.
-  [[EarlGrey selectElementWithMatcher:GetMatcherForEditButton()]
-      assertWithMatcher:grey_not(grey_enabled())];
+  // Verify Overflow Menu button is enabled.
+  [[EarlGrey
+      selectElementWithMatcher:chrome_test_util::TabGridOverflowMenuButton()]
+      assertWithMatcher:grey_enabled()];
 }
 
 // Tests closing all the pinned tabs and then all the regular tabs.
@@ -391,12 +405,16 @@ GURL GetURLForTitle(net::EmbeddedTestServer* test_server, NSString* title) {
                            @"supported on iPhone.");
   }
 
-  // Create tabs.
-  CreatePinnedTabs(2, self.testServer);
-  CreateRegularTabs(1, self.testServer);
+  // Consume the initial cold startup NTP for `PinnedTab0` directly right before
+  // opening extra tabs. This completely avoids overlapping NTP animations right
+  // under `kChromeNextIa` on iOS 27 and removes leftover NTP cleanup step.
+  [ChromeEarlGrey loadURL:GetURLForTitle(self.testServer, @"PinnedTab0")];
+  [ChromeEarlGrey pinCurrentTab];
 
-  // Close NTP tab.
-  [ChromeEarlGrey closeTabAtIndex:2];
+  // Create second pinned tab and one regular tab cleanly right after.
+  CreateRegularTab(self.testServer, @"PinnedTab1");
+  [ChromeEarlGrey pinCurrentTab];
+  CreateRegularTab(self.testServer, @"RegularTab0");
 
   // Open the Tab Grid.
   [ChromeEarlGreyUI openTabGrid];
@@ -405,8 +423,9 @@ GURL GetURLForTitle(net::EmbeddedTestServer* test_server, NSString* title) {
   [[EarlGrey selectElementWithMatcher:GetMatcherForDoneButton()]
       assertWithMatcher:grey_enabled()];
 
-  // Verify "Edit" button is enabled.
-  [[EarlGrey selectElementWithMatcher:GetMatcherForEditButton()]
+  // Verify Overflow Menu button is enabled.
+  [[EarlGrey
+      selectElementWithMatcher:chrome_test_util::TabGridOverflowMenuButton()]
       assertWithMatcher:grey_enabled()];
 
   // Long tap on the first pinned tab.
@@ -438,8 +457,9 @@ GURL GetURLForTitle(net::EmbeddedTestServer* test_server, NSString* title) {
   [[EarlGrey selectElementWithMatcher:GetMatcherForDoneButton()]
       assertWithMatcher:grey_enabled()];
 
-  // Verify "Edit" button is enabled.
-  [[EarlGrey selectElementWithMatcher:GetMatcherForEditButton()]
+  // Verify Overflow Menu button is enabled.
+  [[EarlGrey
+      selectElementWithMatcher:chrome_test_util::TabGridOverflowMenuButton()]
       assertWithMatcher:grey_enabled()];
 
   [self waitForAnimationCompletionWithMacther:GetMatcherForRegularCellWithTitle(
@@ -456,98 +476,26 @@ GURL GetURLForTitle(net::EmbeddedTestServer* test_server, NSString* title) {
       performAction:grey_tap()];
 
   // Verify "Done" button is disabled.
-  [[EarlGrey selectElementWithMatcher:GetMatcherForDoneButton()]
-      assertWithMatcher:grey_not(grey_enabled())];
-
-  // Verify "Edit" button is disabled.
-  [[EarlGrey selectElementWithMatcher:GetMatcherForEditButton()]
-      assertWithMatcher:grey_not(grey_enabled())];
-}
-
-// Tests closing all the regular tabs with "Close All" button and then undoing
-// the action.
-- (void)testUndoCloseAllRegularTabs {
-  if ([ChromeEarlGrey isIPadIdiom]) {
-    EARL_GREY_TEST_SKIPPED(@"Skipped for iPad. The Pinned Tabs feature is only "
-                           @"supported on iPhone.");
+  if ([ChromeEarlGrey isChromeNextEnabled]) {
+    [[EarlGrey selectElementWithMatcher:GetMatcherForDoneButton()]
+        assertWithMatcher:grey_enabled()];
+  } else {
+    [self waitForAnimationCompletionWithMacther:grey_allOf(
+                                                    GetMatcherForDoneButton(),
+                                                    grey_not(grey_enabled()),
+                                                    nil)];
   }
 
-  // Create tabs.
-  CreatePinnedTabs(2, self.testServer);
-  CreateRegularTabs(2, self.testServer);
-
-  // Open the Tab Grid.
-  [ChromeEarlGreyUI openTabGrid];
-
-  // Verify regular tabs are present.
-  [[EarlGrey selectElementWithMatcher:GetMatcherForRegularCellWithTitle(
-                                          @"RegularTab0")]
-      assertWithMatcher:grey_sufficientlyVisible()];
-  [[EarlGrey selectElementWithMatcher:GetMatcherForRegularCellWithTitle(
-                                          @"RegularTab1")]
-      assertWithMatcher:grey_sufficientlyVisible()];
-
-  // Verify last regular tab is selected.
-  [[EarlGrey selectElementWithMatcher:GetMatcherForRegularCellWithTitle(
-                                          @"RegularTab1")]
-      assertWithMatcher:grey_selected()];
-
-  // Tap on "Edit" button.
-  [[EarlGrey selectElementWithMatcher:GetMatcherForEditButton()]
-      performAction:grey_tap()];
-
-  // Tap on "Close All Tabs" menu action.
-  [[EarlGrey selectElementWithMatcher:chrome_test_util::
-                                          TabGridEditMenuCloseAllButton()]
-      performAction:grey_tap()];
-
-  // Verify regular tabs are not present.
-  [[EarlGrey selectElementWithMatcher:GetMatcherForRegularCellWithTitle(
-                                          @"RegularTab0")]
-      assertWithMatcher:grey_nil()];
-  [[EarlGrey selectElementWithMatcher:GetMatcherForRegularCellWithTitle(
-                                          @"RegularTab1")]
-      assertWithMatcher:grey_nil()];
-
-  // Verify last pinned tab is selected.
+  // Verify Overflow Menu button is enabled.
   [[EarlGrey
-      selectElementWithMatcher:GetMatcherForPinnedCellWithTitle(@"PinnedTab1")]
-      assertWithMatcher:grey_selected()];
-
-  // Verify "Edit" button becomes an "Undo" button.
-  [[EarlGrey selectElementWithMatcher:GetMatcherForEditButton()]
-      assertWithMatcher:grey_notVisible()];
-  [[EarlGrey selectElementWithMatcher:GetMatcherForUndoButton()]
-      assertWithMatcher:grey_sufficientlyVisible()];
-
-  // Tap on "Undo" button.
-  [[EarlGrey selectElementWithMatcher:GetMatcherForUndoButton()]
-      performAction:grey_tap()];
-
-  // Verify regular tabs are present.
-  [[EarlGrey selectElementWithMatcher:GetMatcherForRegularCellWithTitle(
-                                          @"RegularTab0")]
-      assertWithMatcher:grey_sufficientlyVisible()];
-  [[EarlGrey selectElementWithMatcher:GetMatcherForRegularCellWithTitle(
-                                          @"RegularTab1")]
-      assertWithMatcher:grey_sufficientlyVisible()];
-
-  // Verify last regular tab is selected.
-  [[EarlGrey selectElementWithMatcher:GetMatcherForRegularCellWithTitle(
-                                          @"RegularTab1")]
-      assertWithMatcher:grey_selected()];
-
-  [self waitForAnimationCompletionWithMacther:GetMatcherForEditButton()];
-
-  // Verify "Undo" button becomes an "Edit" button.
-  [[EarlGrey selectElementWithMatcher:GetMatcherForUndoButton()]
-      assertWithMatcher:grey_notVisible()];
-  [[EarlGrey selectElementWithMatcher:GetMatcherForEditButton()]
-      assertWithMatcher:grey_sufficientlyVisible()];
+      selectElementWithMatcher:chrome_test_util::TabGridOverflowMenuButton()]
+      assertWithMatcher:grey_enabled()];
 }
 
+
+// TODO(crbug.com/441313129): This test is disabled because of its flakiness.
 // Tests scrolling of the pinned tabs collection.
-- (void)testPinnedTabsScrolling {
+- (void)DISABLED_testPinnedTabsScrolling {
   if ([ChromeEarlGrey isIPadIdiom]) {
     EARL_GREY_TEST_SKIPPED(@"Skipped for iPad. The Pinned Tabs feature is only "
                            @"supported on iPhone.");

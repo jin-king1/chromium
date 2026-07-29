@@ -13,6 +13,7 @@
 #include "third_party/blink/renderer/core/html/custom/custom_element_reaction_factory.h"
 #include "third_party/blink/renderer/core/html/custom/custom_element_reaction_stack.h"
 #include "third_party/blink/renderer/core/html/custom/custom_element_registry.h"
+#include "third_party/blink/renderer/core/html/custom/custom_element_registry_assignment.h"
 #include "third_party/blink/renderer/core/html/html_element.h"
 #include "third_party/blink/renderer/core/html/html_unknown_element.h"
 #include "third_party/blink/renderer/core/html_element_factory.h"
@@ -21,24 +22,6 @@
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string_hash.h"
 
 namespace blink {
-
-CustomElementRegistry* CustomElement::Registry(const Element& element) {
-  return Registry(element.GetTreeScope());
-}
-
-CustomElementRegistry* CustomElement::Registry(const TreeScope& tree_scope) {
-  if (RuntimeEnabledFeatures::ScopedCustomElementRegistryEnabled()) {
-    if (const ShadowRoot* shadow = DynamicTo<ShadowRoot>(tree_scope)) {
-      if (CustomElementRegistry* registry = shadow->registry()) {
-        return registry;
-      }
-    }
-  }
-  if (LocalDOMWindow* window = tree_scope.GetDocument().domWindow()) {
-    return window->customElements();
-  }
-  return nullptr;
-}
 
 static CustomElementDefinition* DefinitionForElementWithoutCheck(
     const Element& element) {
@@ -60,7 +43,7 @@ Vector<AtomicString>& CustomElement::EmbedderCustomElementNames() {
 }
 
 void CustomElement::AddEmbedderCustomElementName(const AtomicString& name) {
-  DCHECK_EQ(name, name.LowerASCII());
+  DCHECK(name.ContainsNoAsciiUpper());
   DCHECK(Document::IsValidName(name)) << name;
   DCHECK(!IsKnownBuiltinTagName(name)) << name;
   DCHECK(!IsValidName(name, false)) << name;
@@ -73,7 +56,7 @@ void CustomElement::AddEmbedderCustomElementName(const AtomicString& name) {
 void CustomElement::AddEmbedderCustomElementNameForTesting(
     const AtomicString& name,
     ExceptionState& exception_state) {
-  if (name != name.LowerASCII() || !Document::IsValidName(name) ||
+  if (!name.ContainsNoAsciiUpper() || !Document::IsValidName(name) ||
       IsKnownBuiltinTagName(name) || IsValidName(name, false)) {
     exception_state.ThrowDOMException(DOMExceptionCode::kSyntaxError,
                                       "Name cannot be used");
@@ -115,7 +98,7 @@ bool CustomElement::ShouldCreateCustomizedBuiltinElement(
     const AtomicString& local_name,
     const Document& document) {
   return HtmlElementTypeForTag(local_name, &document) !=
-         HTMLElementType::kHTMLUnknownElement;
+         ElementType::kHTMLUnknownElement;
 }
 
 bool CustomElement::ShouldCreateCustomizedBuiltinElement(
@@ -126,25 +109,24 @@ bool CustomElement::ShouldCreateCustomizedBuiltinElement(
 }
 
 static CustomElementDefinition* DefinitionFor(
-    const TreeScope& tree_scope,
+    const Document& document,
     const CustomElementDescriptor desc) {
-  if (CustomElementRegistry* registry = CustomElement::Registry(tree_scope)) {
+  if (CustomElementRegistry* registry = document.customElementRegistry()) {
     return registry->DefinitionFor(desc);
   }
   return nullptr;
 }
 
 // https://dom.spec.whatwg.org/#concept-create-element
-HTMLElement* CustomElement::CreateCustomElement(TreeScope& tree_scope,
+HTMLElement* CustomElement::CreateCustomElement(Document& document,
                                                 const QualifiedName& tag_name,
                                                 CreateElementFlags flags) {
   DCHECK(ShouldCreateCustomElement(tag_name)) << tag_name;
-  Document& document = tree_scope.GetDocument();
   // 4. Let definition be the result of looking up a custom element
   // definition given document, namespace, localName, and is.
   if (auto* definition = DefinitionFor(
-          tree_scope, CustomElementDescriptor(tag_name.LocalName(),
-                                              tag_name.LocalName()))) {
+          document, CustomElementDescriptor(tag_name.LocalName(),
+                                            tag_name.LocalName()))) {
     DCHECK(definition->Descriptor().IsAutonomous());
     // 6. Otherwise, if definition is non-null, then:
     return definition->CreateElement(document, tag_name, flags);
@@ -152,28 +134,30 @@ HTMLElement* CustomElement::CreateCustomElement(TreeScope& tree_scope,
   // 7. Otherwise:
   return To<HTMLElement>(
       CreateUncustomizedOrUndefinedElementTemplate<kQNameIsValid>(
-          document, tag_name, flags, g_null_atom));
+          document, tag_name, flags, g_null_atom,
+          CustomElementRegistryAssignment::Inherit()));
 }
 
-// Step 7 of https://dom.spec.whatwg.org/#concept-create-element
+// Step 6 of https://dom.spec.whatwg.org/#concept-create-element
 template <CustomElement::CreateUUCheckLevel level>
 Element* CustomElement::CreateUncustomizedOrUndefinedElementTemplate(
     Document& document,
     const QualifiedName& tag_name,
     const CreateElementFlags flags,
-    const AtomicString& is_value) {
+    const AtomicString& is_value,
+    CustomElementRegistryAssignment registry_assignment) {
   if (level == kQNameIsValid) {
     DCHECK(is_value.IsNull());
     DCHECK(ShouldCreateCustomElement(tag_name)) << tag_name;
   }
 
-  // 7.1. Let interface be the element interface for localName and namespace.
-  // 7.2. Set result to a new element that implements interface, with ...
+  // 6.1. Let interface be the element interface for localName and namespace.
+  // 6.2. Set result to a new element that implements interface, with ...
   Element* element = document.CreateRawElement(tag_name, flags);
   if (level == kCheckAll && !is_value.IsNull())
     element->SetIsValue(is_value);
 
-  // 7.3. If namespace is the HTML namespace, and either localName is a
+  // 6.3. If namespace is the HTML namespace, and either localName is a
   // valid custom element name or is is non-null, then set result’s
   // custom element state to "undefined".
   if (level == kQNameIsValid)
@@ -182,6 +166,9 @@ Element* CustomElement::CreateUncustomizedOrUndefinedElementTemplate(
            (CustomElement::IsValidName(tag_name.LocalName()) ||
             !is_value.IsNull()))
     element->SetCustomElementState(CustomElementState::kUndefined);
+  if (RuntimeEnabledFeatures::ScopedCustomElementRegistryEnabled()) {
+    element->SetCustomElementRegistry(registry_assignment);
+  }
 
   return element;
 }
@@ -190,13 +177,16 @@ Element* CustomElement::CreateUncustomizedOrUndefinedElement(
     Document& document,
     const QualifiedName& tag_name,
     const CreateElementFlags flags,
-    const AtomicString& is_value) {
+    const AtomicString& is_value,
+    CustomElementRegistryAssignment registry_assignment) {
   return CreateUncustomizedOrUndefinedElementTemplate<kCheckAll>(
-      document, tag_name, flags, is_value);
+      document, tag_name, flags, is_value, registry_assignment);
 }
 
-HTMLElement* CustomElement::CreateFailedElement(Document& document,
-                                                const QualifiedName& tag_name) {
+HTMLElement* CustomElement::CreateFailedElement(
+    Document& document,
+    const QualifiedName& tag_name,
+    CustomElementRegistry* registry) {
   CHECK(ShouldCreateCustomElement(tag_name))
       << "HTMLUnknownElement with built-in tag name: " << tag_name;
 
@@ -210,6 +200,11 @@ HTMLElement* CustomElement::CreateFailedElement(Document& document,
 
   auto* element = MakeGarbageCollected<HTMLUnknownElement>(tag_name, document);
   element->SetCustomElementState(CustomElementState::kFailed);
+  if (RuntimeEnabledFeatures::ScopedCustomElementRegistryEnabled() &&
+      registry) {
+    element->SetCustomElementRegistry(
+        CustomElementRegistryAssignment::Explicit(registry));
+  }
   return element;
 }
 
@@ -308,23 +303,38 @@ void CustomElement::EnqueueFormStateRestoreCallback(Element& element,
   }
 }
 
+void CustomElement::EnqueueToolFillCallback(Element& element,
+                                            const String& value) {
+  auto& definition = *DefinitionForElementWithoutCheck(element);
+  if (definition.HasToolFillCallback()) {
+    Enqueue(element, CustomElementReactionFactory::CreateToolFillCallback(
+                         definition, value));
+  }
+}
+
 void CustomElement::TryToUpgrade(Element& element) {
   // Try to upgrade an element
   // https://html.spec.whatwg.org/C/#concept-try-upgrade
 
   DCHECK_EQ(element.GetCustomElementState(), CustomElementState::kUndefined);
 
-  CustomElementRegistry* registry = CustomElement::Registry(element);
+  CustomElementRegistry* registry = element.customElementRegistry();
+
   if (!registry)
     return;
   const AtomicString& is_value = element.IsValue();
   if (CustomElementDefinition* definition =
           registry->DefinitionFor(CustomElementDescriptor(
               is_value.IsNull() ? element.localName() : is_value,
-              element.localName())))
+              element.localName()))) {
     definition->EnqueueUpgradeReaction(element);
-  else
+  } else {
+    // Ensure the element's document is in the registry's associated document
+    // set so that CollectCandidates can find these candidates later when a
+    // definition is registered.
+    registry->AssociatedWith(element.GetDocument());
     registry->AddCandidate(element);
+  }
 }
 
 }  // namespace blink

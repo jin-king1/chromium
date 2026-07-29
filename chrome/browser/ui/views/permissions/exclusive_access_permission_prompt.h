@@ -14,7 +14,6 @@
 #include "components/permissions/permission_request.h"
 #include "components/permissions/request_type.h"
 
-class Browser;
 class ExclusiveAccessPermissionPromptView;
 
 namespace content {
@@ -32,7 +31,6 @@ class ExclusiveAccessPermissionPrompt
       public EmbeddedPermissionPromptContentScrimView::Delegate {
  public:
   ExclusiveAccessPermissionPrompt(
-      Browser* browser,
       content::WebContents* web_contents,
       permissions::PermissionPrompt::Delegate* delegate);
   ~ExclusiveAccessPermissionPrompt() override;
@@ -58,6 +56,8 @@ class ExclusiveAccessPermissionPrompt
 
   std::unique_ptr<views::Widget> content_scrim_widget_;
   views::ViewTracker prompt_view_tracker_;
+  std::optional<content::WebContents::ScopedIgnoreInputEvents>
+      scoped_ignore_input_events_;
 
   const raw_ptr<permissions::PermissionPrompt::Delegate> delegate_;
 

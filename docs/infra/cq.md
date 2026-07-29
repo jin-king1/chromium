@@ -26,7 +26,7 @@ described below.
 This runs all the normal set of tests for a CL. When the dry-run has complete,
 it will simply report the results of the CQ attempt as a Gerrit comment on the
 CL and take no further action. This mode is intended to be used frequently as a
-CL is developed. Can be triggered via either the `CQ DRY RUN` button in Gerrit
+CL is developed. Can be triggered via either the `CQ Dry Run` button in Gerrit
 or by applying the `Commit-Queue +1` label vote. See
 [below](#what-exactly-does-the-cq-run) for the anatomy of a build on the CQ.
 
@@ -34,7 +34,7 @@ or by applying the `Commit-Queue +1` label vote. See
 
 Runs all the same tests as dry-run. If there are no new regressions introduced,
 the CL will be submitted into the repo. This mode should only be used when a CL
-is finalized. Can be triggered via either the `SUBMIT TO CQ` button in Gerrit or
+is finalized. Can be triggered via either the `Submit to CQ` button in Gerrit or
 by applying the `Commit-Queue +2` label vote.
 
 ### Mega-CQ Dry-Run
@@ -103,13 +103,31 @@ The Chromium CQ supports a variety of options that can change what it checks.
   Whenever there is an active prod freeze (usually around Christmas), it can be
   bypassed by setting this footer.
 
-* `Include-Ci-Only-Tests: true`
+* `Include-Ci-Only-Tests: true` or
+  `Include-Ci-Only-Tests: <comma-separated-builder-ids>|<comma-separated-tests>`
 
-  Some builder configurations may run some tests only post-submit (on CI), and
-  not pre-submit by default (in the CQ), for one reason or another (for
-  example, if the tests are too slow, or too expensive). In order to still be
-  able to explicitly reproduce what the CI builder is doing, you can specify
-  this footer to run those tests pre-submit anyway.
+  Some builder configurations may be configured to run some tests only after
+  submission (on CI) and not before submission (in the CQ) by default. Possible
+  reasons this might be are that the tests are too slow or too expensive or
+  there is insufficient capacity to run the tests for every CL. In order to
+  still be able to explicitly reproduce what the CI builder is doing, you can
+  specify this footer to run those tests before submission anyway. Specifying
+  true will run all such tests on any triggered try builders. Specifying builder
+  IDs and tests will run only the named tests defined for the identified CI
+  builders on the try builders that mirror those CI builders. A * can be used in
+  place of a builder ID or test name to match any builder/test.
+
+  Constructing a footer value manually should generally be unnecessary: tests
+  configured to run only on CI will have the necessary footer included in their
+  step text and in the build summary when they fail.
+
+  If it is necessary to construct a footer manually, the builder IDs have the
+  format of _builder-group_:_builder-name_. _builder-name_ is the name of the CI
+  builder that the test is configured for. _builder-group_ is the "builder
+  group" of that builder, which is a concept specific to chromium infra. The
+  builder group of a builder can be found by going to a build of the builder,
+  and finding the `builder_group` property in the `Input Properties` section of
+  the `Infra` tab.
 
 * `No-Presubmit: true`
 
@@ -146,6 +164,42 @@ The Chromium CQ supports a variety of options that can change what it checks.
   Skip-Clang-Tidy-Checks: google-explicit-constructor
   Skip-Clang-Tidy-Checks: modernize-*,readability-*
   ```
+
+* `Merge-Approval-Bypass: <reason>`
+
+  Bypasses merge-approval check on release branches. Googlers can read more at
+  http://go/chrome-merge-process.
+
+* `Max-Compile-Failures: <number>`
+
+  Specifies the number of compilation failures each trybot should collect before
+  terminating the build (0 means infinity).
+
+## Google-internal CQ Builders
+
+A small subset of builders on the CQ are "Google-internal". This means they
+compile Google Chrome binaries using internal resources rather than public
+builds of Chromium. See [here](../chromium_browser_vs_google_chrome.md) for more
+info on the difference between the two types. Such CQ builders have a few
+differences compared to most other public builders:
+- They only run in full CQ runs (CQ+2 mode) for non-Googlers, and _not_ dry-runs
+  (CQ+1 mode). This may lead to a non-Googler's CL passing a dry-run, but
+  failing a subsequent full CQ run.
+- Their logs are Googler-only. On Gerrit, their failures will post a nondescript
+  comment like `This CL has failed the run. Reason: Tryjob has failed`, and
+  opening the build directly will lead to a simple `does not have permission to
+  view it` error if the user is not a Googler.
+
+You can see the list of such builders on the CQ
+[here](../../infra/config/generated/cq-builders.md#required-builders-chrome).
+If you're a non-Googler and these are the only builders reporting failures on
+your CL, you will likely need the assistance of a Googler to provide the
+relevant compile failure from the builder. In such a case, try reaching out to
+any Googlers that have reviewed your CL. Otherwise, you can reach out to the
+[#halp](https://chromium.slack.com/messages/CGGPN5GDT/) or
+[#ops](https://chromium.slack.com/messages/CGM8DQ3ST/) channels on slack.
+Googlers can read more about the details of these internal CQ builders
+[here](http://goto.google.com/chrome-cq#internal-builders-on-the-cq).
 
 ## FAQ
 
@@ -229,7 +283,7 @@ There are several requirements for a builder to be added to the Commit Queue.
   If a configuration only fails once every couple of weeks on the waterfalls,
   then it's probably not worth adding it to the commit queue.
 
-Please email estaab@chromium.org, who will approve new build configurations.
+Please email bpastene@chromium.org, who will approve new build configurations.
 
 ### How do I ensure a trybot runs on all changes to a specific directory?
 

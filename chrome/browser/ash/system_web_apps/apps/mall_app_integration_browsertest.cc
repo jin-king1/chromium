@@ -5,9 +5,9 @@
 #include "ash/constants/ash_features.h"
 #include "ash/webui/mall/url_constants.h"
 #include "ash/webui/print_preview_cros/url_constants.h"
-#include "ash/webui/system_apps/public/system_web_app_type.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/ash/system_web_apps/test_support/system_web_app_integration_test.h"
+#include "chromeos/ash/components/system_web_apps/system_web_app_type.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
@@ -19,11 +19,6 @@ namespace {
 
 class MallAppIntegrationTest : public ash::SystemWebAppIntegrationTest {
  public:
-  MallAppIntegrationTest() {
-    features_.InitWithFeatures({chromeos::features::kCrosMall},
-                               /*disabled_features=*/{});
-  }
-
   std::string GetMallEmbedUrl(content::WebContents* contents) {
     // Poll to wait for an iframe to be embedded on the page, and resolve with
     // the 'src' attribute.
@@ -41,9 +36,6 @@ class MallAppIntegrationTest : public ash::SystemWebAppIntegrationTest {
 
     return content::EvalJs(contents, kScript).ExtractString();
   }
-
- private:
-  base::test::ScopedFeatureList features_;
 };
 
 // Test that the Mall app installs and launches correctly.

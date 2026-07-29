@@ -30,13 +30,11 @@
 #include "chrome/browser/enterprise/connectors/common.h"
 #include "chrome/browser/extensions/api/downloads/downloads_api.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/webui/downloads/downloads.mojom.h"
 #include "components/download/public/common/download_danger_type.h"
 #include "components/download/public/common/download_item.h"
 #include "components/download/public/common/download_item_rename_handler.h"
 #include "components/safe_browsing/core/common/features.h"
-#include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/url_formatter/elide_url.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/download_item_utils.h"
@@ -61,6 +59,14 @@ using TailoredWarningType = DownloadUIModel::TailoredWarningType;
 using DownloadVector = DownloadManager::DownloadVector;
 
 namespace {
+
+// Character limit for URL/origin strings displayed in the downloads page, to
+// avoid surpassing mojo data limit (c.f. crbug.com/40684561). If it's really
+// this long, the user won't be able to see the whole thing anyway.
+// Use a much smaller limit than url::kMaxURLChars (2M) since this is for
+// display only, and long URLs will affect page load speed and may cause
+// JavaScript errors (https://crbug.com/41495722).
+const size_t kMaxDisplayURLChars = 16 * 1024;
 
 // Returns an enum value to be used as the |danger_type| value in
 // CreateDownloadData().
@@ -91,6 +97,10 @@ downloads::mojom::DangerType GetDangerType(
       return downloads::mojom::DangerType::kBlockedTooLarge;
     case download::DOWNLOAD_DANGER_TYPE_SENSITIVE_CONTENT_WARNING:
       return downloads::mojom::DangerType::kSensitiveContentWarning;
+    case download::DOWNLOAD_DANGER_TYPE_FORCE_SAVE_TO_GDRIVE:
+      return downloads::mojom::DangerType::kForcedSaveToGdrive;
+    case download::DOWNLOAD_DANGER_TYPE_FORCE_SAVE_TO_ONEDRIVE:
+      return downloads::mojom::DangerType::kForcedSaveToOnedrive;
     case download::DOWNLOAD_DANGER_TYPE_SENSITIVE_CONTENT_BLOCK:
       return downloads::mojom::DangerType::kSensitiveContentBlock;
     case download::DOWNLOAD_DANGER_TYPE_DEEP_SCANNED_FAILED:
@@ -121,8 +131,6 @@ downloads::mojom::TailoredWarningType GetTailoredWarningType(
       return downloads::mojom::TailoredWarningType::kSuspiciousArchive;
     case TailoredWarningType::kCookieTheft:
       return downloads::mojom::TailoredWarningType::kCookieTheft;
-    case TailoredWarningType::kCookieTheftWithAccountInfo:
-      return downloads::mojom::TailoredWarningType::kCookieTheftWithAccountInfo;
     case TailoredWarningType::kNoTailoredWarning:
       return downloads::mojom::TailoredWarningType::
           kNoApplicableTailoredWarningType;
@@ -155,33 +163,30 @@ std::string TimeFormatLongDate(const base::Time& time) {
   return base::UTF16ToUTF8(base::i18n::UnicodeStringToString16(date_string));
 }
 
-std::u16string GetFormattedDisplayUrl(const GURL& url) {
-  std::u16string result = url_formatter::FormatUrlForSecurityDisplay(url);
-  // Truncate long URL to avoid surpassing mojo data limit (c.f.
-  // crbug.com/1070451). If it's really this long, the user won't be able to see
-  // the whole thing anyway. We truncate the beginning so that the end of it is
-  // shown, which contains the eTLD+1.
-  // Note:
-  // - This may truncate the scheme part of the URL.
-  // - Use a much smaller limit than url::kMaxURLChars (2M) since this is for
-  //   display only, and long URLs will affect page load speed and may cause
-  //   JavaScript errors (https://crbug.com/1522764).
-  const size_t kMaxDisplayURLChars = 16 * 1024;
+
+
+// Returns a formatted string representing the initiator origin of the download
+// request. May return empty string if there is no suitable origin to display.
+std::u16string GetFormattedInitiatorOrigin(const download::DownloadItem* item) {
+  // Nullopt initiator typically indicates a browser-initiated request. Do not
+  // display an origin in this case.
+  if (!item->GetRequestInitiator()) {
+    return std::u16string();
+  }
+  // Omit the origin display if the download was not initiated by a user
+  // gesture, since the user may not have interacted with the origin in this
+  // case.
+  if (!item->HasUserGesture()) {
+    return std::u16string();
+  }
+  std::u16string result = url_formatter::FormatOriginForSecurityDisplay(
+      *item->GetRequestInitiator());
+  // If the result is too long, prefer to omit the origin display, rather than
+  // truncate.
   if (result.size() > kMaxDisplayURLChars) {
-    result = result.substr(result.size() - kMaxDisplayURLChars);
+    return std::u16string();
   }
   return result;
-}
-
-void FillUrlFields(const GURL& url,
-                   std::optional<GURL>& data_url,
-                   std::u16string& display_url_out) {
-  // If URL is too long, don't make it clickable.
-  if (url.is_valid() && url.spec().length() <= url::kMaxURLChars) {
-    data_url = std::make_optional<GURL>(url);
-  }
-
-  display_url_out = GetFormattedDisplayUrl(url);
 }
 
 }  // namespace
@@ -208,7 +213,7 @@ void DownloadsListTracker::Reset() {
 bool DownloadsListTracker::SetSearchTerms(
     const std::vector<std::string>& search_terms) {
   std::vector<std::u16string> new_terms;
-  new_terms.resize(search_terms.size());
+  new_terms.reserve(search_terms.size());
 
   for (const auto& t : search_terms) {
     new_terms.push_back(base::UTF8ToUTF16(t));
@@ -333,8 +338,8 @@ downloads::mojom::DataPtr DownloadsListTracker::CreateDownloadData(
 
   file_value->started =
       static_cast<int>(download_item->GetStartTime().ToTimeT());
-  file_value->since_string = base::UTF16ToUTF8(
-      ui::TimeFormat::RelativeDate(download_item->GetStartTime(), nullptr));
+  file_value->since_string = base::UTF16ToUTF8(ui::TimeFormat::RelativeDate(
+      download_item->GetStartTime(), std::nullopt));
   file_value->date_string = TimeFormatLongDate(download_item->GetStartTime());
 
   file_value->id = base::NumberToString(download_item->GetId());
@@ -376,12 +381,13 @@ downloads::mojom::DataPtr DownloadsListTracker::CreateDownloadData(
   file_name = base::i18n::GetDisplayStringInLTRDirectionality(file_name);
 
   file_value->file_name = base::UTF16ToUTF8(file_name);
-  FillUrlFields(download_item->GetURL(), file_value->url,
-                file_value->display_url);
-  if (download_item->HasUserGesture()) {
-    FillUrlFields(download_item->GetReferrerUrl(), file_value->referrer_url,
-                  file_value->display_referrer_url);
+  // Include URL unless it is too long.
+  if (download_item->GetURL().is_valid() &&
+      download_item->GetURL().spec().length() <= url::kMaxURLChars) {
+    file_value->url = std::make_optional<GURL>(download_item->GetURL());
   }
+  file_value->display_initiator_origin =
+      GetFormattedInitiatorOrigin(download_item);
   file_value->total = download_item->GetTotalBytes();
   file_value->file_externally_removed =
       download_item->GetFileExternallyRemoved();
@@ -394,7 +400,7 @@ downloads::mojom::DataPtr DownloadsListTracker::CreateDownloadData(
   std::u16string progress_status_text;
   bool retry = false;
   // This will always be populated, but we set a null value to start with.
-  std::optional<downloads::mojom::State> state = std::nullopt;
+  std::optional<downloads::mojom::State> state;
 
   switch (download_item->GetState()) {
     case download::DownloadItem::IN_PROGRESS: {
@@ -492,7 +498,9 @@ downloads::mojom::DataPtr DownloadsListTracker::CreateDownloadData(
   file_value->has_safe_browsing_verdict =
       WasSafeBrowsingVerdictObtained(download_item);
 
-  MaybeRecordDangerousDownloadWarningShown(download_model);
+  if (download_model.IsDangerous()) {
+    MaybeRecordDangerousDownloadWarningShown(download_model);
+  }
 
   if (download_item->IsDangerous()) {
     // It's likely that SHOWN has already been logged from the download bubble,
@@ -504,20 +512,6 @@ downloads::mojom::DataPtr DownloadsListTracker::CreateDownloadData(
     DownloadItemWarningData::AddWarningActionEvent(
         download_item, DownloadItemWarningData::WarningSurface::DOWNLOADS_PAGE,
         DownloadItemWarningData::WarningAction::SHOWN);
-  }
-
-  if (tailored_warning_type ==
-      downloads::mojom::TailoredWarningType::kCookieTheftWithAccountInfo) {
-    if (auto* identity_manager =
-            IdentityManagerFactory::GetForProfile(download_model.profile());
-        identity_manager) {
-      std::string email =
-          identity_manager->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin)
-              .email;
-      if (!email.empty()) {
-        file_value->account_email = std::move(email);
-      }
-    }
   }
 
   return file_value;
@@ -552,8 +546,7 @@ bool DownloadsListTracker::ShouldShow(const DownloadItem& item) const {
          !item.IsTemporary() && !item.IsTransient() &&
          !item.GetFileNameToReportUser().empty() &&
          !item.GetTargetFilePath().empty() && !item.GetURL().is_empty() &&
-         DownloadItemModel(const_cast<DownloadItem*>(&item))
-             .ShouldShowInShelf() &&
+         DownloadItemModel(const_cast<DownloadItem*>(&item)).ShouldShowInUi() &&
          DownloadQuery::MatchesQuery(search_terms_, item);
 }
 

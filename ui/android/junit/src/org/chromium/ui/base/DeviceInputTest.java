@@ -9,9 +9,15 @@ import static android.view.InputDevice.KEYBOARD_TYPE_NONE;
 import static android.view.InputDevice.KEYBOARD_TYPE_NON_ALPHABETIC;
 import static android.view.InputDevice.SOURCE_KEYBOARD;
 import static android.view.InputDevice.SOURCE_MOUSE;
+import static android.view.InputDevice.SOURCE_TOUCHPAD;
 
+import static com.google.common.truth.Truth.assertThat;
+
+import android.content.Context;
+import android.content.res.Configuration;
 import android.util.SparseArray;
 import android.view.InputDevice;
+import android.view.MotionEvent;
 
 import androidx.test.filters.SmallTest;
 
@@ -25,14 +31,20 @@ import org.robolectric.annotation.Implements;
 import org.robolectric.annotation.Resetter;
 import org.robolectric.shadow.api.Shadow;
 
+import org.chromium.base.ContextUtils;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 
+import java.util.ArrayList;
 import java.util.function.Consumer;
 
 /** Tests for {@link DeviceInput}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(shadows = {DeviceInputTest.ShadowInputDevice.class})
+@Config(
+        shadows = {
+            DeviceInputTest.ShadowInputDevice.class,
+            DeviceInputTest.ShadowInputDevice.ShadowMotionRange.class
+        })
 public class DeviceInputTest {
 
     @After
@@ -177,6 +189,35 @@ public class DeviceInputTest {
 
     @Test
     @SmallTest
+    public void testSupportsKeyboard() {
+        Context context = ContextUtils.getApplicationContext();
+        Configuration config = context.getResources().getConfiguration();
+
+        // Detach physical keyboard
+        config.keyboard = Configuration.KEYBOARD_NOKEYS;
+        config.hardKeyboardHidden = Configuration.HARDKEYBOARDHIDDEN_YES;
+        Assert.assertFalse("Should be false when NO_KEYS", DeviceInput.supportsKeyboard(context));
+
+        // Attach a virtual/hidden alphabetical keyboard
+        config.keyboard = Configuration.KEYBOARD_QWERTY;
+        config.hardKeyboardHidden = Configuration.HARDKEYBOARDHIDDEN_YES;
+        Assert.assertFalse(
+                "Should be false when keyboard is present but hidden",
+                DeviceInput.supportsKeyboard(context));
+
+        // Attach a physical alphabetical keyboard
+        config.hardKeyboardHidden = Configuration.HARDKEYBOARDHIDDEN_NO;
+        Assert.assertTrue(
+                "Should be true when QWERTY is visible", DeviceInput.supportsKeyboard(context));
+
+        // Attach a numerical keyboard
+        config.keyboard = Configuration.KEYBOARD_12KEY;
+        Assert.assertTrue(
+                "Should be true when 12KEY is visible", DeviceInput.supportsKeyboard(context));
+    }
+
+    @Test
+    @SmallTest
     public void testSupportsPrecisionPointer() {
         int nextDeviceId = 1;
 
@@ -207,6 +248,54 @@ public class DeviceInputTest {
         Assert.assertTrue(DeviceInput.supportsPrecisionPointer());
     }
 
+    @Test
+    @SmallTest
+    public void testSupportsMotionRanges() {
+        int deviceId = 1;
+
+        ShadowInputDevice.attach(deviceId)
+                .setSources(SOURCE_TOUCHPAD)
+                .addMotionRange(MotionEvent.AXIS_X, SOURCE_TOUCHPAD, 5)
+                .addMotionRange(MotionEvent.AXIS_Y, SOURCE_TOUCHPAD, 10);
+
+        // Verify initial state.
+        Assert.assertEquals(
+                DeviceInput.getTouchpadXAxisMotionRange(deviceId).getResolution(), 5, 0.01);
+        Assert.assertEquals(
+                DeviceInput.getTouchpadYAxisMotionRange(deviceId).getResolution(), 10, 0.01);
+    }
+
+    @Test
+    @SmallTest
+    public void testSupportsMotionRangesWrongSource() {
+        int deviceId = 1;
+
+        ShadowInputDevice.attach(deviceId)
+                .setSources(SOURCE_TOUCHPAD)
+                .addMotionRange(MotionEvent.AXIS_X, SOURCE_MOUSE, 5)
+                .addMotionRange(MotionEvent.AXIS_Y, SOURCE_MOUSE, 10);
+
+        // Verify initial state.
+        Assert.assertNull(DeviceInput.getTouchpadXAxisMotionRange(deviceId));
+        Assert.assertNull(DeviceInput.getTouchpadYAxisMotionRange(deviceId));
+    }
+
+    @Test
+    @SmallTest
+    public void testSupportsMotionRangesWrongDeviceId() {
+        int deviceId = 1;
+        int nonExistentDeviceId = 2;
+
+        ShadowInputDevice.attach(deviceId)
+                .setSources(SOURCE_TOUCHPAD)
+                .addMotionRange(MotionEvent.AXIS_X, SOURCE_TOUCHPAD, 5)
+                .addMotionRange(MotionEvent.AXIS_Y, SOURCE_TOUCHPAD, 10);
+
+        // Verify initial state.
+        Assert.assertNull(DeviceInput.getTouchpadXAxisMotionRange(nonExistentDeviceId));
+        Assert.assertNull(DeviceInput.getTouchpadYAxisMotionRange(nonExistentDeviceId));
+    }
+
     @Implements(InputDevice.class)
     public static class ShadowInputDevice extends org.robolectric.shadows.ShadowInputDevice {
 
@@ -216,9 +305,10 @@ public class DeviceInputTest {
         private boolean mIsVirtual;
         private int mKeyboardType;
         private int mSources;
+        private final ArrayList<InputDevice.MotionRange> mMotionRanges = new ArrayList<>();
 
         public static ShadowInputDevice attach(int deviceId) {
-            assert sDevicesById.indexOfKey(deviceId) < 0;
+            assertThat(sDevicesById.indexOfKey(deviceId)).isLessThan(0);
 
             InputDevice device = Shadow.newInstanceOf(InputDevice.class);
             sDevicesById.put(deviceId, device);
@@ -299,6 +389,20 @@ public class DeviceInputTest {
             return mSources;
         }
 
+        public ShadowInputDevice addMotionRange(int axis, int source, float resolution) {
+            InputDevice.MotionRange motionRange =
+                    Shadow.newInstanceOf(InputDevice.MotionRange.class);
+            mMotionRanges.add(motionRange);
+
+            ShadowMotionRange shadowMotionRange = Shadow.extract(motionRange);
+            shadowMotionRange.mAxis = axis;
+            shadowMotionRange.mSource = source;
+            shadowMotionRange.mResolution = resolution;
+
+            notifyInputDeviceChanged(mId);
+            return this;
+        }
+
         public ShadowInputDevice setSources(int sources) {
             if (mSources != sources) {
                 mSources = sources;
@@ -323,6 +427,37 @@ public class DeviceInputTest {
         @Implementation
         public boolean supportsSource(int source) {
             return (getSources() & source) == source;
+        }
+
+        @Implementation
+        public InputDevice.MotionRange getMotionRange(int axis, int source) {
+            final int numRanges = mMotionRanges.size();
+            for (int i = 0; i < numRanges; i++) {
+                final InputDevice.MotionRange range = mMotionRanges.get(i);
+                if (range.getAxis() == axis && range.getSource() == source) {
+                    return range;
+                }
+            }
+            return null;
+        }
+
+        @Implements(InputDevice.MotionRange.class)
+        public static class ShadowMotionRange {
+            private int mAxis;
+            private int mSource;
+            private float mResolution;
+
+            public int getAxis() {
+                return mAxis;
+            }
+
+            public int getSource() {
+                return mSource;
+            }
+
+            public float getResolution() {
+                return mResolution;
+            }
         }
     }
 }

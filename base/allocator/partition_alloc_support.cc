@@ -14,8 +14,11 @@
 #include <string_view>
 
 #include "base/allocator/partition_alloc_features.h"
+#include "base/allocator/scheduler_loop_quarantine_config.h"
 #include "base/at_exit.h"
 #include "base/check.h"
+#include "base/command_line.h"
+#include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/cpu.h"
 #include "base/debug/dump_without_crashing.h"
@@ -26,25 +29,32 @@
 #include "base/functional/callback.h"
 #include "base/immediate_crash.h"
 #include "base/location.h"
+#include "base/logging.h"
 #include "base/memory/post_delayed_memory_reduction_task.h"
 #include "base/memory/raw_ptr_asan_service.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/no_destructor.h"
 #include "base/pending_task.h"
+#include "base/rand_util.h"
 #include "base/strings/string_split.h"
 #include "base/strings/stringprintf.h"
+#include "base/synchronization/lock_impl.h"
+#include "base/synchronization/lock_metrics_recorder.h"
 #include "base/system/sys_info.h"
+#include "base/task/common/task_annotator.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/thread_annotations.h"
 #include "base/threading/platform_thread.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
-#include "base/trace_event/base_tracing.h"
+#include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
 #include "partition_alloc/allocation_guard.h"
+#include "partition_alloc/allocator_config.h"
 #include "partition_alloc/buildflags.h"
 #include "partition_alloc/dangling_raw_ptr_checks.h"
+#include "partition_alloc/in_slot_metadata.h"
 #include "partition_alloc/memory_reclaimer.h"
 #include "partition_alloc/page_allocator.h"
 #include "partition_alloc/partition_alloc_base/debug/alias.h"
@@ -57,23 +67,23 @@
 #include "partition_alloc/partition_root.h"
 #include "partition_alloc/pointers/instance_tracer.h"
 #include "partition_alloc/pointers/raw_ptr.h"
+#include "partition_alloc/random.h"
+#include "partition_alloc/scheduler_loop_quarantine.h"
 #include "partition_alloc/shim/allocator_shim.h"
 #include "partition_alloc/shim/allocator_shim_default_dispatch_to_partition_alloc.h"
 #include "partition_alloc/shim/allocator_shim_dispatch_to_noop_on_free.h"
+#include "partition_alloc/spinning_mutex.h"
 #include "partition_alloc/stack/stack.h"
 #include "partition_alloc/thread_cache.h"
 
 #if BUILDFLAG(IS_ANDROID)
+#include "base/android/background_thread_pool_field_trial.h"
 #include "base/system/sys_info.h"
 #endif
 
 #if PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
 #include "partition_alloc/memory_reclaimer.h"
-#endif
-
-#if PA_BUILDFLAG( \
-    ENABLE_ALLOCATOR_SHIM_PARTITION_ALLOC_DISPATCH_WITH_ADVANCED_CHECKS_SUPPORT)
-#include "partition_alloc/shim/allocator_shim_default_dispatch_to_partition_alloc_with_advanced_checks.h"
+#include "partition_alloc/shim/allocator_shim_default_dispatch_to_partition_alloc.h"
 #endif
 
 #if BUILDFLAG(IS_ANDROID) && PA_BUILDFLAG(HAS_MEMORY_TAGGING)
@@ -97,10 +107,10 @@ BootloaderOverride GetBootloaderOverride() {
       "persist.device_config.runtime_native_boot.bootloader_override",
       bootloader_override_str);
 
-  if (strcmp(bootloader_override_str, "force_on") == 0) {
+  if (UNSAFE_TODO(strcmp(bootloader_override_str, "force_on")) == 0) {
     return BootloaderOverride::kForceOn;
   }
-  if (strcmp(bootloader_override_str, "force_off") == 0) {
+  if (UNSAFE_TODO(strcmp(bootloader_override_str, "force_off")) == 0) {
     return BootloaderOverride::kForceOff;
   }
   return BootloaderOverride::kDefault;
@@ -112,41 +122,94 @@ BootloaderOverride GetBootloaderOverride() {
 // paste this minute.
 constexpr base::TimeDelta kFirstPAPurgeOrReclaimDelay = base::Minutes(1);
 
+#if PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
+// Only tolerate up to |total_size_of_committed_pages >>
+// k***MaxEmptySlotSpansDirtyBytesShift| dirty bytes in empty slot
+// spans.
+constexpr int kForegroundMaxEmptySlotSpansDirtyBytesShift = 2;
+constexpr int kBackgroundMaxEmptySlotSpansDirtyBytesShift = 3;
+constexpr int kDefaultMaxEmptySlotSpansDirtyBytesShift = 3;
+#endif
+
 // This is defined in content/public/common/content_switches.h, which is not
 // accessible in ::base. They must be kept in sync.
 namespace switches {
+constexpr char kGpuProcess[] = "gpu-process";
+constexpr char kProcessType[] = "type";
 [[maybe_unused]] constexpr char kRendererProcess[] = "renderer";
+const char kUtilitySubType[] = "utility-sub-type";
 constexpr char kZygoteProcess[] = "zygote";
 }  // namespace switches
 
-}  // namespace
+[[maybe_unused]] std::string GetProcessType() {
+  const CommandLine* command_line = CommandLine::ForCurrentProcess();
+  return command_line->GetSwitchValueASCII(switches::kProcessType);
+}
 
-namespace {
+// Returns a "process type identifier" for the current process.
+// It is the process type (e.g. "renderer", "gpu-process") for non-utility
+// processes. For the browser process, it is "browser".
+// For utility processes, it is "utility" followed by "." and the utility
+// sub-type name (e.g. "utility.network.mojom.NetworkService").
+[[maybe_unused]] std::string GetProcessTypeIdentifier() {
+  const CommandLine* command_line = CommandLine::ForCurrentProcess();
+  std::string process_type =
+      command_line->GetSwitchValueASCII(switches::kProcessType);
+  if (process_type.empty()) {
+    return "browser";
+  }
+  if (process_type == "utility") {
+    std::string utility_subtype =
+        command_line->GetSwitchValueASCII(switches::kUtilitySubType);
+    if (!utility_subtype.empty()) {
+      return "utility." + utility_subtype;
+    }
+  }
+  return process_type;
+}
+
+class LockMetricsRecorderSupport
+    : public partition_alloc::internal::LockMetricsRecorderInterface {
+ public:
+  LockMetricsRecorderSupport() = default;
+
+  static LockMetricsRecorderSupport* Instance() {
+    static LockMetricsRecorderSupport instance;
+    return &instance;
+  }
+
+  bool ShouldRecordLockAcquisitionTime() const override {
+    auto* recorder = base::LockMetricsRecorder::GetForCurrentThread();
+    return recorder && recorder->ShouldRecordLockAcquisitionTime();
+  }
+
+  void RecordLockAcquisitionTime(
+      partition_alloc::internal::base::TimeDelta sample) override {
+    auto* recorder = base::LockMetricsRecorder::GetForCurrentThread();
+    if (recorder) {
+      recorder->RecordLockAcquisitionTime(
+          base::LockMetricsRecorder::LockMetricSample{
+              Microseconds(sample.InMicroseconds()),
+              base::LockMetricsRecorder::LockType::kPartitionAllocLock});
+    }
+  }
+};
 
 void RunThreadCachePeriodicPurge() {
   // Micros, since periodic purge should typically take at most a few ms.
-  SCOPED_UMA_HISTOGRAM_TIMER_MICROS("Memory.PartitionAlloc.PeriodicPurge");
+  SCOPED_UMA_HISTOGRAM_TIMER_MICROS_SUBSAMPLED(
+      "Memory.PartitionAlloc.PeriodicPurge.Subsampled",
+      base::ShouldRecordSubsampledMetric(0.01));
   TRACE_EVENT0("memory", "PeriodicPurge");
-  auto& instance = ::partition_alloc::ThreadCacheRegistry::Instance();
-  instance.RunPeriodicPurge();
+  ::partition_alloc::ThreadCache::RunPeriodicPurge();
   TimeDelta delay =
-      Microseconds(instance.GetPeriodicPurgeNextIntervalInMicroseconds());
+      Microseconds(::partition_alloc::ThreadCache::
+                       GetPeriodicPurgeNextIntervalInMicroseconds());
   SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
       FROM_HERE, BindOnce(RunThreadCachePeriodicPurge), delay);
 }
 
 }  // namespace
-
-// When enabled, disable the memory reclaimer in background.
-BASE_FEATURE(kDisableMemoryReclaimerInBackground,
-             "DisableMemoryReclaimerInBackground",
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
-// When enabled, limit the time memory reclaimer may take, returning early when
-// exceeded.
-BASE_FEATURE(kPartitionAllocShortMemoryReclaim,
-             "PartitionAllocShortMemoryReclaim",
-             base::FEATURE_ENABLED_BY_DEFAULT);
 
 // static
 MemoryReclaimerSupport& MemoryReclaimerSupport::Instance() {
@@ -205,16 +268,7 @@ void MemoryReclaimerSupport::Run() {
   TRACE_EVENT0("base", "partition_alloc::MemoryReclaimer::Reclaim()");
   has_pending_task_ = false;
 
-  {
-    // Micros, since memory reclaiming should typically take at most a few ms.
-    SCOPED_UMA_HISTOGRAM_TIMER_MICROS("Memory.PartitionAlloc.MemoryReclaim");
-    if (base::FeatureList::IsEnabled(kPartitionAllocShortMemoryReclaim)) {
-      ::partition_alloc::MemoryReclaimer::Instance()->ReclaimFast();
-    } else {
-      ::partition_alloc::MemoryReclaimer::Instance()->ReclaimNormal();
-    }
-  }
-
+  ::partition_alloc::MemoryReclaimer::Instance()->ReclaimFast();
   MaybeScheduleTask();
 }
 
@@ -230,10 +284,7 @@ TimeDelta MemoryReclaimerSupport::GetInterval() {
 }
 
 void MemoryReclaimerSupport::MaybeScheduleTask(TimeDelta delay) {
-  if (has_pending_task_ ||
-      (base::FeatureList::IsEnabled(kDisableMemoryReclaimerInBackground) &&
-       !in_foreground_) ||
-      !task_runner_) {
+  if (has_pending_task_ || !in_foreground_ || !task_runner_) {
     return;
   }
 
@@ -245,10 +296,10 @@ void MemoryReclaimerSupport::MaybeScheduleTask(TimeDelta delay) {
 }
 
 void StartThreadCachePeriodicPurge() {
-  auto& instance = ::partition_alloc::ThreadCacheRegistry::Instance();
-  TimeDelta delay = std::max(
-      Microseconds(instance.GetPeriodicPurgeNextIntervalInMicroseconds()),
-      kFirstPAPurgeOrReclaimDelay);
+  TimeDelta delay =
+      std::max(Microseconds(::partition_alloc::ThreadCache::
+                                GetPeriodicPurgeNextIntervalInMicroseconds()),
+               kFirstPAPurgeOrReclaimDelay);
 
   SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
       FROM_HERE, BindOnce(RunThreadCachePeriodicPurge), delay);
@@ -285,8 +336,10 @@ std::map<std::string, std::string> ProposeSyntheticFinchTrials() {
     partition_alloc::TagViolationReportingMode reporting_mode =
         partition_alloc::TagViolationReportingMode::kUndefined;
 #if PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
-    reporting_mode = allocator_shim::internal::PartitionAllocMalloc::Allocator()
-                         ->memory_tagging_reporting_mode();
+    reporting_mode =
+        allocator_shim::internal::PartitionAllocMalloc::Allocator(
+            allocator_shim::AllocToken(allocator_shim::kDefaultPartitionIndex))
+            ->memory_tagging_reporting_mode();
 #endif  // PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
     switch (bootloader_override) {
       case BootloaderOverride::kDefault:
@@ -326,6 +379,23 @@ std::map<std::string, std::string> ProposeSyntheticFinchTrials() {
   }
 #endif  // PA_BUILDFLAG(HAS_MEMORY_TAGGING)
 
+#if PA_CONFIG(MOVE_METADATA_OUT_OF_GIGACAGE) && \
+    PA_BUILDFLAG(ENABLE_MOVE_METADATA_OUT_OF_GIGACAGE_TRIAL)
+  switch (partition_alloc::GetExternalMetadataTrialGroup()) {
+    case partition_alloc::ExternalMetadataTrialGroup::kEnabled:
+      trials.emplace(partition_alloc::kExternalMetadataTrialName,
+                     partition_alloc::kExternalMetadataTrialGroup_Enabled);
+      break;
+    case partition_alloc::ExternalMetadataTrialGroup::kDisabled:
+      trials.emplace(partition_alloc::kExternalMetadataTrialName,
+                     partition_alloc::kExternalMetadataTrialGroup_Disabled);
+      break;
+    default:
+      break;
+  }
+#endif  // PA_CONFIG(MOVE_METADATA_OUT_OF_GIGACAGE) &&
+        // PA_BUILDFLAG(ENABLE_MOVE_METADATA_OUT_OF_GIGACAGE_TRIAL)
+
   return trials;
 }
 
@@ -333,12 +403,16 @@ namespace {
 
 bool ShouldEnableFeatureOnProcess(
     features::internal::PAFeatureEnabledProcesses enabled_processes,
-    const std::string& process_type) {
+    std::string_view process_type) {
   switch (enabled_processes) {
     case features::internal::PAFeatureEnabledProcesses::kBrowserOnly:
       return process_type.empty();
     case features::internal::PAFeatureEnabledProcesses::kNonRenderer:
       return process_type != switches::kRendererProcess;
+    case features::internal::PAFeatureEnabledProcesses::kGPUOnly:
+      return process_type == switches::kGpuProcess;
+    case features::internal::PAFeatureEnabledProcesses::kBrowserAndGPU:
+      return process_type.empty() || process_type == switches::kGpuProcess;
     case features::internal::PAFeatureEnabledProcesses::kBrowserAndRenderer:
       return process_type.empty() || process_type == switches::kRendererProcess;
     case features::internal::PAFeatureEnabledProcesses::kRendererOnly:
@@ -349,17 +423,6 @@ bool ShouldEnableFeatureOnProcess(
       return true;
   }
 }
-
-#if PA_CONFIG(ENABLE_SHADOW_METADATA)
-bool ShouldEnableShadowMetadata(const std::string& process_type) {
-  if (!base::FeatureList::IsEnabled(
-          base::features::kPartitionAllocShadowMetadata)) {
-    return false;
-  }
-  return ShouldEnableFeatureOnProcess(
-      features::kShadowMetadataEnabledProcessesParam.Get(), process_type);
-}
-#endif  // PA_CONFIG(ENABLE_SHADOW_METADATA)
 
 }  // namespace
 
@@ -429,7 +492,7 @@ std::optional<DanglingPointerFreeInfo> TakeDanglingPointerFreeInfo(
 // Extract from the StackTrace output, the signature of the pertinent caller.
 // This function is meant to be used only by Chromium developers, to list what
 // are all the dangling raw_ptr occurrences in a table.
-std::string ExtractDanglingPtrSignature(std::string stacktrace) {
+std::string ExtractDanglingPtrSignature(std::string_view stacktrace) {
   std::vector<std::string_view> lines = SplitStringPiece(
       stacktrace, "\r\n", KEEP_WHITESPACE, SPLIT_WANT_NONEMPTY);
 
@@ -638,7 +701,7 @@ void CheckDanglingRawPtrBufferEmpty() {
   g_stack_trace_buffer = DanglingRawPtrBuffer();
 #else
   bool errors = false;
-  for (auto entry : g_stack_trace_buffer) {
+  for (const auto& entry : g_stack_trace_buffer) {
     if (!entry) {
       continue;
     }
@@ -664,9 +727,10 @@ void CheckDanglingRawPtrBufferEmpty() {
       LOG(ERROR) << debug::StackTrace(
                         // This call truncates the `nullptr` tail of the stack
                         // trace (see the `is_partitioned` CHECK above).
-                        span(raw_stack_trace.begin(),
-                             std::ranges::partition_point(
-                                 raw_stack_trace, is_frame_ptr_not_null)))
+                        UNSAFE_TODO(
+                            span(raw_stack_trace.begin(),
+                                 std::ranges::partition_point(
+                                     raw_stack_trace, is_frame_ptr_not_null))))
                  << "\n";
     }
 #else
@@ -785,11 +849,27 @@ void InstallUnretainedDanglingRawPtrChecks() {
   }
 }
 
-void ReconfigurePartitionForKnownProcess(const std::string& process_type) {
+bool IsSchedulerLoopQuarantineEnabled(std::string_view process_type) {
+#if PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
+  return base::allocator::PartitionAllocSupport::
+             ShouldEnablePartitionAllocWithAdvancedChecks(process_type) &&
+         base::FeatureList::IsEnabled(
+             base::features::kPartitionAllocSchedulerLoopQuarantine);
+#else
+  return false;
+#endif  // PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
+}
+
+void ReconfigurePartitionForKnownProcess(std::string_view process_type) {
   DCHECK_NE(process_type, switches::kZygoteProcess);
   // TODO(keishi): Move the code to enable BRP back here after Finch
   // experiments.
 }
+
+#if PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
+BASE_FEATURE(kPartitionAllocMakeSchedulerLoopQuarantinePurgeNoOp,
+             FEATURE_ENABLED_BY_DEFAULT);
+#endif  // PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
 
 void MakeFreeNoOp() {
   // Ignoring `free()` during Shutdown would allow developers to introduce new
@@ -802,9 +882,40 @@ void MakeFreeNoOp() {
     return;
   }
 #endif  // PA_BUILDFLAG(ENABLE_DANGLING_RAW_PTR_CHECKS)
+
 #if PA_BUILDFLAG(USE_ALLOCATOR_SHIM)
   allocator_shim::InsertNoOpOnFreeAllocatorShimOnShutDown();
 #endif  // PA_BUILDFLAG(USE_ALLOCATOR_SHIM)
+
+#if PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
+  if (base::FeatureList::IsEnabled(
+          kPartitionAllocMakeSchedulerLoopQuarantinePurgeNoOp)) {
+    partition_alloc::internal::ThreadBoundSchedulerLoopQuarantineBranch::
+        DangerouslyDisablePurge();
+  }
+#endif  // PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
+}
+
+// Apply specialized configuration to the quarantine branch for the current
+// thread.
+void ReconfigureSchedulerLoopQuarantineBranch(
+    SchedulerLoopQuarantineBranchType branch_type) {
+#if PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
+  if (!base::FeatureList::IsEnabled(
+          base::features::kPartitionAllocSchedulerLoopQuarantine)) {
+    return;
+  }
+  std::string process_type_identifier = GetProcessTypeIdentifier();
+  partition_alloc::internal::SchedulerLoopQuarantineConfig config =
+      GetSchedulerLoopQuarantineConfiguration(process_type_identifier,
+                                              branch_type);
+  for (size_t alloc_token = 0; alloc_token < allocator_shim::kNumPartitions;
+       alloc_token++) {
+    allocator_shim::internal::PartitionAllocMalloc::Allocator(
+        allocator_shim::AllocToken(alloc_token))
+        ->ReconfigureSchedulerLoopQuarantineForCurrentThread(config);
+  }
+#endif  // PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
 }
 
 PartitionAllocSupport* PartitionAllocSupport::Get() {
@@ -822,7 +933,7 @@ void PartitionAllocSupport::ReconfigureForTests() {
 
 // static
 bool PartitionAllocSupport::ShouldEnableMemoryTagging(
-    const std::string& process_type) {
+    std::string_view process_type) {
   // Check kPartitionAllocMemoryTagging first so the Feature is activated even
   // when mte bootloader flag is disabled.
   if (!base::FeatureList::IsEnabled(
@@ -833,7 +944,6 @@ bool PartitionAllocSupport::ShouldEnableMemoryTagging(
     return false;
   }
 
-  DCHECK(base::FeatureList::GetInstance());
   if (base::FeatureList::IsEnabled(
           base::features::kKillPartitionAllocMemoryTagging)) {
     return false;
@@ -849,7 +959,7 @@ bool PartitionAllocSupport::ShouldEnableMemoryTaggingInRendererProcess() {
 
 // static
 bool PartitionAllocSupport::ShouldEnablePartitionAllocWithAdvancedChecks(
-    const std::string& process_type) {
+    std::string_view process_type) {
 #if !PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
   return false;
 #else
@@ -866,10 +976,7 @@ bool PartitionAllocSupport::ShouldEnablePartitionAllocWithAdvancedChecks(
 
 // static
 PartitionAllocSupport::BrpConfiguration
-PartitionAllocSupport::GetBrpConfiguration(const std::string& process_type) {
-  // TODO(bartekn): Switch to DCHECK once confirmed there are no issues.
-  CHECK(base::FeatureList::GetInstance());
-
+PartitionAllocSupport::GetBrpConfiguration(std::string_view process_type) {
 #if PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC) && \
     PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SUPPORT) && \
     !PA_BUILDFLAG(FORCE_DISABLE_BACKUP_REF_PTR_FEATURE)
@@ -885,6 +992,10 @@ PartitionAllocSupport::GetBrpConfiguration(const std::string& process_type) {
         .enable_brp = true,
         .extra_extras_size = static_cast<size_t>(
             base::features::kBackupRefPtrExtraExtrasSizeParam.Get()),
+        .suppress_double_free_detected_crash = static_cast<bool>(
+            base::features::kBackupRefPtrSuppressDoubleFreeDetectedCrash.Get()),
+        .suppress_corruption_detected_crash = static_cast<bool>(
+            base::features::kBackupRefPtrSuppressCorruptionDetectedCrash.Get()),
     };
   }
 #endif
@@ -892,11 +1003,12 @@ PartitionAllocSupport::GetBrpConfiguration(const std::string& process_type) {
   return {
       .enable_brp = false,
       .extra_extras_size = 0,
+      .suppress_double_free_detected_crash = false,
+      .suppress_corruption_detected_crash = false,
   };
 }
 
-void PartitionAllocSupport::ReconfigureEarlyish(
-    const std::string& process_type) {
+void PartitionAllocSupport::ReconfigureEarlyish(std::string_view process_type) {
   {
     base::AutoLock scoped_lock(lock_);
 
@@ -904,6 +1016,7 @@ void PartitionAllocSupport::ReconfigureEarlyish(
     // is earlier than ContentMain().
     if (called_for_tests_) {
       DCHECK(called_earlyish_);
+      established_process_type_ = process_type;
       return;
     }
 
@@ -921,15 +1034,27 @@ void PartitionAllocSupport::ReconfigureEarlyish(
     ReconfigurePartitionForKnownProcess(process_type);
   }
 
+#if PA_BUILDFLAG(ENABLE_PARTITION_LOCK_PRIORITY_INHERITANCE) && \
+    PA_BUILDFLAG(IS_ANDROID)
+  if (base::android::BackgroundThreadPoolFieldTrial::
+          ShouldUsePriorityInheritanceLocks()) {
+    partition_alloc::internal::SpinningMutex::EnableUsePriorityInheritance();
+  }
+#endif  // PA_BUILDFLAG(ENABLE_PARTITION_LOCK_PRIORITY_INHERITANCE) &&
+        // PA_BUILDFLAG(IS_ANDROID)
+
   // These initializations are only relevant for PartitionAlloc-Everywhere
   // builds.
 #if PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
   allocator_shim::EnablePartitionAllocMemoryReclaimer();
 #endif  // PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
+
+  partition_alloc::internal::SpinningMutex::SetLockMetricsRecorder(
+      LockMetricsRecorderSupport::Instance());
 }
 
 void PartitionAllocSupport::ReconfigureAfterZygoteFork(
-    const std::string& process_type) {
+    std::string_view process_type) {
   {
     base::AutoLock scoped_lock(lock_);
     // TODO(bartekn): Switch to DCHECK once confirmed there are no issues.
@@ -951,18 +1076,36 @@ void PartitionAllocSupport::ReconfigureAfterZygoteFork(
     established_process_type_ = process_type;
   }
 
+  // The generator backing GetRandomPageBase() is seeded once and its state is
+  // inherited across fork(). Reinitialize it so that each child process
+  // derives its own address-space-randomization hints.
+  partition_alloc::internal::ReinitializeRandomGenerator();
+
   if (process_type != switches::kZygoteProcess) {
     ReconfigurePartitionForKnownProcess(process_type);
   }
 }
 
 void PartitionAllocSupport::ReconfigureAfterFeatureListInit(
-    const std::string& process_type,
-    bool configure_dangling_pointer_detector) {
-  if (configure_dangling_pointer_detector) {
+    std::string_view process_type,
+    FeatureListConfiguration config) {
+#if !BUILDFLAG(IS_WIN)
+  // TODO(mikt): Fix failure on `DelayloadsTest.ChromeElfDllLoadSanityTest`.
+  CHECK(process_type == GetProcessType());
+#endif  // !BUILDFLAG(IS_WIN)
+
+  // In Death Tests, `FeatureList` is never initialized. Even in these cases
+  // we call this method to finalize the allocator configuration.
+  // TODO(https://crbug.com/432019338): Remove this param once fixed.
+  if (!config.is_in_death_test_child) {
+    CHECK(base::FeatureList::GetInstance());
+  }
+
+  if (config.configure_dangling_pointer_detector) {
     base::allocator::InstallDanglingRawPtrChecks();
   }
   base::allocator::InstallUnretainedDanglingRawPtrChecks();
+
   {
     base::AutoLock scoped_lock(lock_);
     // Avoid initializing more than once.
@@ -993,13 +1136,28 @@ void PartitionAllocSupport::ReconfigureAfterFeatureListInit(
   DCHECK_NE(process_type, switches::kZygoteProcess);
   [[maybe_unused]] BrpConfiguration brp_config =
       GetBrpConfiguration(process_type);
+#if PA_BUILDFLAG(IS_IOS) && PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SUPPORT)
+  if (brp_config.suppress_double_free_detected_crash) {
+    partition_alloc::internal::SuppressDoubleFreeDetectedCrash();
+  }
+  if (brp_config.suppress_corruption_detected_crash) {
+    partition_alloc::internal::SuppressCorruptionDetectedCrash();
+  }
+#endif  // PA_BUILDFLAG(IS_IOS) && PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SUPPORT)
 
   // Configure ASAN hooks to report the `MiraclePtr status`. This is enabled
   // only if BackupRefPtr is normally enabled in the current process for the
-  // current platform. Note that CastOS and iOS aren't protected by BackupRefPtr
-  // a the moment, so they are excluded.
-#if PA_BUILDFLAG(USE_ASAN_BACKUP_REF_PTR) && !PA_BUILDFLAG(IS_CASTOS) && \
-    !PA_BUILDFLAG(IS_IOS)
+  // current platform.
+#if PA_BUILDFLAG(USE_ASAN_BACKUP_REF_PTR)
+#if PA_BUILDFLAG(USE_ASAN_BACKUP_REF_PTR_V2)
+  base::RawPtrAsanService::GetInstance().Configure(
+      ShouldEnableFeatureOnProcess(
+          base::features::kBackupRefPtrEnabledProcessesParam.Get(),
+          process_type),
+      {.enable_data_race_check = RawPtrAsanServiceOptions::kDisabled,
+       .enable_free_after_quarantined_check =
+           RawPtrAsanServiceOptions::kDisabled});
+#else
   if (ShouldEnableFeatureOnProcess(
           base::features::kBackupRefPtrEnabledProcessesParam.Get(),
           process_type)) {
@@ -1015,6 +1173,7 @@ void PartitionAllocSupport::ReconfigureAfterFeatureListInit(
                                                EnableExtractionCheck(false),
                                                EnableInstantiationCheck(false));
   }
+#endif  // PA_BUILDFLAG(USE_ASAN_BACKUP_REF_PTR_V2)
 #endif  // PA_BUILDFLAG(USE_ASAN_BACKUP_REF_PTR)
 
 #if PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
@@ -1030,22 +1189,54 @@ void PartitionAllocSupport::ReconfigureAfterFeatureListInit(
       break;
   }
 
-  const bool scheduler_loop_quarantine = base::FeatureList::IsEnabled(
-      base::features::kPartitionAllocSchedulerLoopQuarantine);
-  const size_t scheduler_loop_quarantine_branch_capacity_in_bytes =
-      static_cast<size_t>(
-          base::features::kPartitionAllocSchedulerLoopQuarantineBranchCapacity
-              .Get());
-  const bool zapping_by_free_flags = base::FeatureList::IsEnabled(
-      base::features::kPartitionAllocZappingByFreeFlags);
+  std::string process_type_identifier = GetProcessTypeIdentifier();
+  const auto scheduler_loop_quarantine_global_config =
+      GetSchedulerLoopQuarantineConfiguration(
+          process_type_identifier, SchedulerLoopQuarantineBranchType::kGlobal);
+  const auto scheduler_loop_quarantine_thread_local_config =
+      GetSchedulerLoopQuarantineConfiguration(
+          process_type_identifier,
+          SchedulerLoopQuarantineBranchType::kThreadLocalDefault);
+  const auto
+      scheduler_loop_quarantine_for_advanced_memory_safety_checks_config =
+          GetSchedulerLoopQuarantineConfiguration(
+              process_type_identifier,
+              SchedulerLoopQuarantineBranchType::kAdvancedMemorySafetyChecks);
+
+  if (HasSchedulerLoopQuarantineTaskControl(process_type_identifier)) {
+    base::EnableSchedulerLoopQuarantineTaskControlledPurge();
+  }
+
   const bool eventually_zero_freed_memory = base::FeatureList::IsEnabled(
       base::features::kPartitionAllocEventuallyZeroFreedMemory);
-  const bool fewer_memory_regions = base::FeatureList::IsEnabled(
-      base::features::kPartitionAllocFewerMemoryRegions);
 
   bool enable_memory_tagging = false;
   partition_alloc::TagViolationReportingMode memory_tagging_reporting_mode =
       partition_alloc::TagViolationReportingMode::kUndefined;
+
+#if !BUILDFLAG(IS_CHROMEOS)
+  // Enable free with size on non-ChromeOS purely based on feature flag.
+  const bool enable_free_with_size =
+      base::FeatureList::IsEnabled(base::features::kPartitionAllocFreeWithSize);
+#else
+  bool enable_free_with_size = false;  // Default to false.
+  // TODO(crbug.com/495493036): Remove this opt out once the bug is fixed.
+  static constexpr auto kOptOutChromeOSPlatforms =
+      std::to_array<std::string_view>(
+          {std::string_view("REX"), std::string_view("OVIS")});
+  if (std::ranges::find(kOptOutChromeOSPlatforms,
+                        base::SysInfo::HardwareModelName()) ==
+      kOptOutChromeOSPlatforms.end()) {
+    // If we aren't on an opt-d out device, check the feature enablement. This
+    // prevents the device being considered part of the experiment if it was
+    // opt-ed out (querying for feature status marks as active).
+    enable_free_with_size = base::FeatureList::IsEnabled(
+        base::features::kPartitionAllocFreeWithSize);
+  }
+#endif  // !BUILDFLAG(IS_CHROMEOS)
+
+  const bool enable_strict_free_size_check =
+      base::features::kPartitionAllocStrictFreeSizeCheck.Get();
 
 #if PA_BUILDFLAG(HAS_MEMORY_TAGGING)
   // ShouldEnableMemoryTagging() checks kKillPartitionAllocMemoryTagging but
@@ -1131,21 +1322,17 @@ void PartitionAllocSupport::ReconfigureAfterFeatureListInit(
   }
 #endif  // PA_BUILDFLAG(HAS_MEMORY_TAGGING)
 
-  allocator_shim::UseSmallSingleSlotSpans use_small_single_slot_spans(
-      base::FeatureList::IsEnabled(
-          features::kPartitionAllocUseSmallSingleSlotSpans));
-
   allocator_shim::ConfigurePartitions(
       allocator_shim::EnableBrp(brp_config.enable_brp),
       brp_config.extra_extras_size,
       allocator_shim::EnableMemoryTagging(enable_memory_tagging),
       memory_tagging_reporting_mode, bucket_distribution,
-      allocator_shim::SchedulerLoopQuarantine(scheduler_loop_quarantine),
-      scheduler_loop_quarantine_branch_capacity_in_bytes,
-      allocator_shim::ZappingByFreeFlags(zapping_by_free_flags),
+      scheduler_loop_quarantine_global_config,
+      scheduler_loop_quarantine_thread_local_config,
+      scheduler_loop_quarantine_for_advanced_memory_safety_checks_config,
       allocator_shim::EventuallyZeroFreedMemory(eventually_zero_freed_memory),
-      allocator_shim::FewerMemoryRegions(fewer_memory_regions),
-      use_small_single_slot_spans);
+      allocator_shim::EnableFreeWithSize(enable_free_with_size),
+      allocator_shim::EnableStrictFreeSizeCheck(enable_strict_free_size_check));
 
   const uint32_t extras_size = allocator_shim::GetMainPartitionRootExtrasSize();
   // As per description, extras are optional and are expected not to
@@ -1154,54 +1341,68 @@ void PartitionAllocSupport::ReconfigureAfterFeatureListInit(
   UmaHistogramCounts100("Memory.PartitionAlloc.PartitionRoot.ExtrasSize",
                         int(extras_size));
 
-  partition_alloc::internal::StackTopRegistry::Get().NotifyThreadCreated(
-      partition_alloc::internal::GetStackTop());
+#if PA_CONFIG(DYNAMICALLY_SELECT_POOL_SIZE)
+  // We don't care about the normal case... That is just daily sessions, we
+  // don't want to record this if it isn't interesting to reduce impact on data
+  // volume and sampling.
+  if (partition_alloc::internal::PartitionAddressSpace::
+          IsCorePoolSizeReduced()) {
+    base::UmaHistogramBoolean("Memory.PartitionAlloc.CorePoolSizeReduced",
+                              true);
+  }
+#endif
 
-  allocator_shim::internal::PartitionAllocMalloc::Allocator()
-      ->EnableThreadCacheIfSupported();
+  for (size_t alloc_token = 0; alloc_token < allocator_shim::kNumPartitions;
+       alloc_token++) {
+    allocator_shim::internal::PartitionAllocMalloc::Allocator(
+        allocator_shim::AllocToken(alloc_token))
+        ->EnableThreadCacheIfSupported();
+  }
 
   if (base::FeatureList::IsEnabled(
           base::features::kPartitionAllocLargeEmptySlotSpanRing)) {
-    allocator_shim::internal::PartitionAllocMalloc::Allocator()
-        ->EnableLargeEmptySlotSpanRing();
+    int16_t size = static_cast<int16_t>(
+        features::kPartitionAllocLargeEmptySlotSpanRingSize.Get());
+    for (size_t alloc_token = 0; alloc_token < allocator_shim::kNumPartitions;
+         alloc_token++) {
+      allocator_shim::internal::PartitionAllocMalloc::Allocator(
+          allocator_shim::AllocToken(alloc_token))
+          ->AdjustSlotSpanRing(size, kDefaultMaxEmptySlotSpansDirtyBytesShift);
+    }
   }
 
-  if (process_type == "" &&
-      base::FeatureList::IsEnabled(
-          base::features::kPartitionAllocSchedulerLoopQuarantine)) {
-    // `ReconfigureAfterTaskRunnerInit()` is called on the UI thread.
-    const size_t capacity_in_bytes = static_cast<size_t>(
-        base::features::kPartitionAllocSchedulerLoopQuarantineBrowserUICapacity
-            .Get());
-    allocator_shim::internal::PartitionAllocMalloc::Allocator()
-        ->SetSchedulerLoopQuarantineThreadLocalBranchCapacity(
-            capacity_in_bytes);
+  // `ReconfigureAfterTaskRunnerInit()` is called on the Main thread, however
+  // if there is no concern about UaF during the browser process start up
+  // (because no web content is being loaded) it is safe to delay the feature to
+  // avoid impacting process start up metrics.
+  //
+  // See SchedulerLoopQuarantineWebContentsObserver for more details.
+  const bool is_browser = process_type.empty();
+  if (!is_browser) {
+    ReconfigureSchedulerLoopQuarantineBranch(
+        SchedulerLoopQuarantineBranchType::kMain);
   }
 
-#if PA_BUILDFLAG( \
-    ENABLE_ALLOCATOR_SHIM_PARTITION_ALLOC_DISPATCH_WITH_ADVANCED_CHECKS_SUPPORT)
   bool enable_pa_with_advanced_checks =
       ShouldEnablePartitionAllocWithAdvancedChecks(process_type);
   if (enable_pa_with_advanced_checks) {
-    allocator_shim::InstallCustomDispatchForPartitionAllocWithAdvancedChecks();
+    allocator_shim::InstallPartitionAllocWithAdvancedChecks();
   }
-#endif  // PA_BUILDFLAG(
-        // ENABLE_ALLOCATOR_SHIM_PARTITION_ALLOC_DISPATCH_WITH_ADVANCED_CHECKS_SUPPORT)
 #endif  // PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
 
 #if BUILDFLAG(IS_WIN)
   // Browser process only, since this is the one we want to prevent from
   // crashing the most (as it takes down all the tabs).
-  if (base::FeatureList::IsEnabled(
-          base::features::kPageAllocatorRetryOnCommitFailure) &&
-      process_type.empty()) {
+  if (process_type.empty() &&
+      base::FeatureList::IsEnabled(
+          base::features::kPageAllocatorRetryOnCommitFailure)) {
     partition_alloc::SetRetryOnCommitFailure(true);
   }
 #endif
 }
 
 void PartitionAllocSupport::ReconfigureAfterTaskRunnerInit(
-    const std::string& process_type) {
+    std::string_view process_type) {
   {
     base::AutoLock scoped_lock(lock_);
 
@@ -1224,56 +1425,31 @@ void PartitionAllocSupport::ReconfigureAfterTaskRunnerInit(
   // initialized later.
   DCHECK(process_type != switches::kZygoteProcess);
 
-  partition_alloc::ThreadCacheRegistry::Instance().SetPurgingConfiguration(
-      base::features::GetThreadCacheMinPurgeInterval(),
-      base::features::GetThreadCacheMaxPurgeInterval(),
-      base::features::GetThreadCacheDefaultPurgeInterval(),
-      size_t(base::features::GetThreadCacheMinCachedMemoryForPurgingBytes()));
-
   base::allocator::StartThreadCachePeriodicPurge();
 
-  if (base::FeatureList::IsEnabled(
-          base::features::kEnableConfigurableThreadCacheMultiplier)) {
-    // If kEnableConfigurableThreadCacheMultiplier is enabled, override the
-    // multiplier value with the corresponding feature param.
-#if BUILDFLAG(IS_ANDROID)
-    ::partition_alloc::ThreadCacheRegistry::Instance().SetThreadCacheMultiplier(
-        base::features::GetThreadCacheMultiplierForAndroid());
-#else   // BUILDFLAG(IS_ANDROID)
-    ::partition_alloc::ThreadCacheRegistry::Instance().SetThreadCacheMultiplier(
-        base::features::GetThreadCacheMultiplier());
-#endif  // BUILDFLAG(IS_ANDROID)
-  } else {
 #if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_CHROMEOS)
-    // If kEnableConfigurableThreadCacheMultiplier is not enabled, lower
-    // thread cache limits on Android low end device to avoid stranding too much
-    // memory in the caches.
-    if (SysInfo::IsLowEndDeviceOrPartialLowEndModeEnabled(
-            features::kPartialLowEndModeExcludePartitionAllocSupport)) {
-      ::partition_alloc::ThreadCacheRegistry::Instance()
-          .SetThreadCacheMultiplier(
-              ::partition_alloc::ThreadCache::kDefaultMultiplier / 2.);
-    }
-#endif  // BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_CHROMEOS)
+  // Lower thread cache limits to avoid stranding too much memory in the caches.
+  if (SysInfo::IsLowEndDeviceOrPartialLowEndModeEnabled(
+          features::kPartialLowEndModeExcludePartitionAllocSupport)) {
+    ::partition_alloc::ThreadCache::SetThreadCacheMultiplier(
+        ::partition_alloc::ThreadCache::kDefaultMultiplier / 2.);
   }
+#endif  // BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_CHROMEOS)
 
   // Renderer processes are more performance-sensitive, increase thread cache
   // limits.
   if (process_type == switches::kRendererProcess &&
       base::FeatureList::IsEnabled(
           base::features::kPartitionAllocLargeThreadCacheSize)) {
-    largest_cached_size_ =
-        size_t(base::features::GetPartitionAllocLargeThreadCacheSizeValue());
+    largest_cached_size_ = ::partition_alloc::kThreadCacheLargeSizeThreshold;
 
 #if BUILDFLAG(IS_ANDROID)
     // Use appropriately lower amount for Android devices with 3GB or less.
     // Devices almost always report less physical memory than what they actually
     // have, so use 3.2GB (a threshold commonly uses throughout code) to avoid
     // accidentally catching devices advertised as 4GB.
-    if (base::SysInfo::AmountOfPhysicalMemoryMB() < 3.2 * 1024) {
-      largest_cached_size_ = size_t(
-          base::features::
-              GetPartitionAllocLargeThreadCacheSizeValueForLowRAMAndroid());
+    if (base::SysInfo::AmountOfTotalPhysicalMemory().InGiBF() < 3.2) {
+      largest_cached_size_ = ::partition_alloc::kThreadCacheDefaultSizeThreshold;
     }
 #endif  // BUILDFLAG(IS_ANDROID)
 
@@ -1298,15 +1474,6 @@ void PartitionAllocSupport::ReconfigureAfterTaskRunnerInit(
   partition_alloc::PartitionRoot::SetSortActiveSlotSpansEnabled(
       base::FeatureList::IsEnabled(
           base::features::kPartitionAllocSortActiveSlotSpans));
-
-#if PA_CONFIG(ENABLE_SHADOW_METADATA)
-  if (ShouldEnableShadowMetadata(process_type)) {
-    partition_alloc::PartitionRoot::EnableShadowMetadata(
-        partition_alloc::internal::PoolHandleMask::kRegular |
-        partition_alloc::internal::PoolHandleMask::kBRP |
-        partition_alloc::internal::PoolHandleMask::kConfigurable);
-  }
-#endif  // PA_CONFIG(ENABLE_SHADOW_METADATA)
 }
 
 void PartitionAllocSupport::OnForegrounded(bool has_main_frame) {
@@ -1329,7 +1496,15 @@ void PartitionAllocSupport::OnForegrounded(bool has_main_frame) {
 #endif  // PA_CONFIG(THREAD_CACHE_SUPPORTED)
   if (base::FeatureList::IsEnabled(
           features::kPartitionAllocAdjustSizeWhenInForeground)) {
-    allocator_shim::AdjustDefaultAllocatorForForeground();
+    int16_t size = static_cast<int16_t>(
+        features::kPartitionAllocForegroundEmptySlotSpanRingSize.Get());
+    for (size_t alloc_token = 0; alloc_token < allocator_shim::kNumPartitions;
+         alloc_token++) {
+      allocator_shim::internal::PartitionAllocMalloc::Allocator(
+          allocator_shim::AllocToken(alloc_token))
+          ->AdjustSlotSpanRing(size,
+                               kForegroundMaxEmptySlotSpansDirtyBytesShift);
+    }
   }
 #endif  // PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
 }
@@ -1368,16 +1543,39 @@ void PartitionAllocSupport::OnBackgrounded() {
 #endif  // PA_CONFIG(THREAD_CACHE_SUPPORTED)
   if (base::FeatureList::IsEnabled(
           features::kPartitionAllocAdjustSizeWhenInForeground)) {
-    allocator_shim::AdjustDefaultAllocatorForBackground();
+    int16_t size = static_cast<int16_t>(
+        features::kPartitionAllocBackgroundEmptySlotSpanRingSize.Get());
+    for (size_t alloc_token = 0; alloc_token < allocator_shim::kNumPartitions;
+         alloc_token++) {
+      allocator_shim::internal::PartitionAllocMalloc::Allocator(
+          allocator_shim::AllocToken(alloc_token))
+          ->AdjustSlotSpanRing(size,
+                               kBackgroundMaxEmptySlotSpansDirtyBytesShift);
+    }
   }
 #endif  // PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
 }
 
 #if PA_BUILDFLAG(ENABLE_DANGLING_RAW_PTR_CHECKS)
 std::string PartitionAllocSupport::ExtractDanglingPtrSignatureForTests(
-    std::string stacktrace) {
+    std::string_view stacktrace) {
   return ExtractDanglingPtrSignature(stacktrace);
 }
 #endif
+
+void CheckHeapIntegrity(const void* ptr) {
+#if PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
+  partition_alloc::PartitionRoot::CheckMetadataIntegrity(ptr);
+#endif  // PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
+}
+
+// The function here is called right before crashing with
+// `DoubleFreeOrCorruptionDetected()`. We provide an address for the slot start
+// to the function, and it may use that for debugging purpose.
+void SetDoubleFreeOrCorruptionDetectedFn(void (*fn)(uintptr_t)) {
+#if PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SUPPORT)
+  partition_alloc::internal::InSlotMetadata::SetCorruptionDetectedFn(fn);
+#endif  // PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SUPPORT)
+}
 
 }  // namespace base::allocator

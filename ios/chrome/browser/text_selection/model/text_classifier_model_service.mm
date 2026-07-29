@@ -7,8 +7,9 @@
 #import <string>
 
 #import "base/files/file_path.h"
+#import "base/task/thread_pool.h"
+#import "components/optimization_guide/core/delivery/optimization_guide_model_provider.h"
 #import "components/optimization_guide/core/optimization_guide_logger.h"
-#import "components/optimization_guide/core/optimization_guide_model_provider.h"
 #import "components/optimization_guide/proto/models.pb.h"
 #import "ios/chrome/browser/optimization_guide/model/optimization_guide_service.h"
 
@@ -18,7 +19,10 @@ TextClassifierModelService::TextClassifierModelService(
   DCHECK(opt_guide_service_);
   opt_guide_service_->AddObserverForOptimizationTargetModel(
       optimization_guide::proto::OPTIMIZATION_TARGET_TEXT_CLASSIFIER,
-      /*model_metadata=*/std::nullopt, this);
+      /*model_metadata=*/std::nullopt,
+      base::ThreadPool::CreateSequencedTaskRunner(
+          {base::MayBlock(), base::TaskPriority::USER_VISIBLE}),
+      this);
   opt_guide_service_->RegisterOptimizationTypes(
       {optimization_guide::proto::TEXT_CLASSIFIER_ENTITY_DETECTION});
 }
@@ -55,7 +59,7 @@ void TextClassifierModelService::OnModelUpdated(
     model_path_ = base::FilePath();
     return;
   }
-  model_path_ = model_info->GetModelFilePath();
+  model_path_ = model_info->model_file_path;
 }
 
 bool TextClassifierModelService::ShouldRecordInternalsPageLog() const {

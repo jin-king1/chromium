@@ -5,11 +5,12 @@
 package org.chromium.android_webview.common;
 
 import android.content.Context;
-import android.os.Handler;
-import android.os.HandlerThread;
 
 import org.chromium.base.Callback;
+import org.chromium.base.ServiceLoaderUtil;
+import org.chromium.base.StrictModeContext;
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.TraceEvent;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 
@@ -22,20 +23,20 @@ public abstract class PlatformServiceBridge {
     private static @Nullable PlatformServiceBridge sInstance;
     private static final Object sInstanceLock = new Object();
 
-    private static @Nullable HandlerThread sHandlerThread;
-    private static @Nullable Handler sHandler;
-    private static final Object sHandlerLock = new Object();
-
     protected PlatformServiceBridge() {}
 
     @SuppressWarnings("unused")
     public static PlatformServiceBridge getInstance() {
         synchronized (sInstanceLock) {
             if (sInstance == null) {
-                // Load an instance of PlatformServiceBridgeImpl. Because this can change
-                // depending on the GN configuration, this may not be the PlatformServiceBridgeImpl
-                // defined upstream.
-                sInstance = new PlatformServiceBridgeImpl();
+                try (TraceEvent ignoredEvent =
+                                TraceEvent.scoped("PlatformServiceBridge.getInstance.maybeCreate");
+                        StrictModeContext ignored = StrictModeContext.allowDiskReads()) {
+                    sInstance = ServiceLoaderUtil.maybeCreate(PlatformServiceBridge.class);
+                }
+                if (sInstance == null) {
+                    sInstance = new NoOpPlatformServiceBridge();
+                }
             }
             return sInstance;
         }
@@ -50,18 +51,6 @@ public abstract class PlatformServiceBridge {
         }
     }
 
-    // Return a handler appropriate for executing blocking Platform Service tasks.
-    public static Handler getHandler() {
-        synchronized (sHandlerLock) {
-            if (sHandler == null) {
-                sHandlerThread = new HandlerThread("PlatformServiceBridgeHandlerThread");
-                sHandlerThread.start();
-                sHandler = new Handler(sHandlerThread.getLooper());
-            }
-        }
-        return sHandler;
-    }
-
     // Can WebView use Google Play Services (a.k.a. GMS)?
     public boolean canUseGms() {
         return false;
@@ -74,7 +63,7 @@ public abstract class PlatformServiceBridge {
     }
 
     // Overriding implementations may call "callback" asynchronously, on any thread.
-    public void querySafeBrowsingUserConsent(final Callback<Boolean> callback) {
+    public void querySafeBrowsingUserConsent(final Callback<@Nullable Boolean> callback) {
         // User opt-in preference depends on a SafetyNet API. In purely upstream builds (which don't
         // communicate with GMS), assume the user has not opted in.
         callback.onResult(false);
@@ -85,10 +74,7 @@ public abstract class PlatformServiceBridge {
     // to avoid blocking the critical path for startup.
     public void queryMetricsSetting(Callback<Boolean> callback) {
         ThreadUtils.assertOnUiThread();
-        ThreadUtils.postOnUiThread(
-                () -> {
-                    callback.onResult(false);
-                });
+        ThreadUtils.postOnUiThread(callback.bind(false));
     }
 
     public void setSafeBrowsingHandler() {
@@ -145,6 +131,8 @@ public abstract class PlatformServiceBridge {
             long cloudProjectNumber,
             @MediaIntegrityApiStatus int apiStatus,
             ValueOrErrorCallback<MediaIntegrityProvider, MediaIntegrityErrorWrapper> callback) {
+        MediaIntegrityNonRecoverableErrorLogger.log(
+                MediaIntegrityNonRecoverableErrorLogger.AOSP_BUILD);
         callback.onError(
                 new MediaIntegrityErrorWrapper(MediaIntegrityErrorCode.NON_RECOVERABLE_ERROR));
     }

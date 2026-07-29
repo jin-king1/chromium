@@ -14,9 +14,7 @@
 #import "components/variations/pref_names.h"
 #import "components/variations/scoped_variations_ids_provider.h"
 #import "components/variations/seed_response.h"
-#import "components/variations/service/ui_string_overrider.h"
 #import "components/variations/service/variations_service.h"
-#import "components/variations/synthetic_trial_registry.h"
 #import "components/variations/variations_switches.h"
 #import "components/variations/variations_test_utils.h"
 #import "ios/chrome/browser/flags/ios_chrome_field_trials.h"
@@ -35,18 +33,18 @@
 
 namespace {
 
-using ::variations::kTestSeedData;
 using ::variations::SeedApplicationStage;
+using ::variations::TestSeedData;
 
 // Returns a seed. If `valid` is true, this will return a seed using
-// kTestSeedData, otherwise it will return a seed with unmatching signature.
+// TestSeedData(), otherwise it will return a seed with unmatching signature.
 std::unique_ptr<variations::SeedResponse> GetSeed(bool valid) {
   std::string data;
-  base::Base64Decode(kTestSeedData.base64_compressed_data, &data);
+  base::Base64Decode(TestSeedData().base64_compressed_data, &data);
 
   auto seed = std::make_unique<variations::SeedResponse>();
   seed->signature =
-      valid ? kTestSeedData.base64_signature : "invalid signature";
+      valid ? TestSeedData().base64_signature : "invalid signature";
   seed->data = data;
   seed->is_gzip_compressed = true;
   seed->date = base::Time::Now();
@@ -104,15 +102,10 @@ class IOSChromeVariationsSeedStoreTest : public PlatformTest {
     if (variations_service_) {
       return;
     }
-    CHECK(!synthetic_trial_registry_);
-    synthetic_trial_registry_ =
-        std::make_unique<variations::SyntheticTrialRegistry>();
     variations_service_ = variations::VariationsService::Create(
         std::make_unique<IOSChromeVariationsServiceClient>(), GetLocalState(),
         GetMetricsStateManager(), "dummy-disable-background-switch",
-        variations::UIStringOverrider(),
-        network::TestNetworkConnectionTracker::CreateGetter(),
-        synthetic_trial_registry_.get());
+        network::TestNetworkConnectionTracker::CreateGetter());
   }
 
   // Sets up field trials. If the test seed is simulate-fetched, this step
@@ -121,7 +114,7 @@ class IOSChromeVariationsSeedStoreTest : public PlatformTest {
     CHECK(variations_service_);
     std::unique_ptr<base::FeatureList> feature_list(new base::FeatureList);
     variations_service_->SetUpFieldTrials(
-        std::vector<std::string>(), std::string(),
+        std::vector<std::string>(),
         std::vector<base::FeatureList::FeatureOverrideInfo>(),
         std::move(feature_list), &ios_field_trials_);
   }
@@ -129,14 +122,14 @@ class IOSChromeVariationsSeedStoreTest : public PlatformTest {
   // Verify that the study in the test seed is `applied`.
   void VerifyTestSeedTrialExists(bool applied) {
     bool trial_exists =
-        base::FieldTrialList::TrialExists(kTestSeedData.study_names[0]);
+        base::FieldTrialList::TrialExists(TestSeedData().study_names[0]);
     EXPECT_EQ(applied, trial_exists);
   }
 
  private:
   // Test set up dependencies.
   base::test::TaskEnvironment task_environment_;
-  variations::ScopedVariationsIdsProvider scoped_variations_ids_provider_{
+  variations::test::ScopedVariationsIdsProvider scoped_variations_ids_provider_{
       variations::VariationsIdsProvider::Mode::kUseSignedInState};
   std::unique_ptr<base::FeatureList> original_feature_list_;
   // Variations service dependencies.
@@ -145,7 +138,6 @@ class IOSChromeVariationsSeedStoreTest : public PlatformTest {
   std::unique_ptr<metrics::MetricsStateManager> metrics_state_manager_;
   // Variations service.
   std::unique_ptr<variations::VariationsService> variations_service_;
-  std::unique_ptr<variations::SyntheticTrialRegistry> synthetic_trial_registry_;
   IOSChromeFieldTrials ios_field_trials_;
 };
 

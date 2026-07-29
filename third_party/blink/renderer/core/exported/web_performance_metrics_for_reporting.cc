@@ -141,14 +141,19 @@ double WebPerformanceMetricsForReporting::FirstPaint() const {
       .InSecondsF();
 }
 
+base::TimeTicks WebPerformanceMetricsForReporting::FirstPaintAsMonotonicTime()
+    const {
+  return private_->timingForReporting()->FirstPaintAsMonotonicTimeForMetrics();
+}
+
 double WebPerformanceMetricsForReporting::FirstImagePaint() const {
   return base::Milliseconds(private_->timingForReporting()->FirstImagePaint())
       .InSecondsF();
 }
 
 double WebPerformanceMetricsForReporting::FirstContentfulPaint() const {
-  return base::Milliseconds(private_->timingForReporting()
-                                ->FirstContentfulPaintIgnoringSoftNavigations())
+  return base::Milliseconds(
+             private_->timingForReporting()->FirstContentfulPaint())
       .InSecondsF();
 }
 
@@ -174,12 +179,6 @@ LargestContentfulPaintDetailsForReporting
 WebPerformanceMetricsForReporting::LargestContentfulDetailsForMetrics() const {
   return (private_->timingForReporting()
               ->LargestContentfulPaintDetailsForMetrics());
-}
-
-LargestContentfulPaintDetailsForReporting WebPerformanceMetricsForReporting::
-    SoftNavigationLargestContentfulDetailsForMetrics() const {
-  return (private_->timingForReporting()
-              ->SoftNavigationLargestContentfulPaintDetailsForMetrics());
 }
 
 double WebPerformanceMetricsForReporting::FirstEligibleToPaint() const {
@@ -279,6 +278,33 @@ WebPerformanceMetricsForReporting::UserTimingMarkFullyVisible() const {
 std::optional<base::TimeDelta>
 WebPerformanceMetricsForReporting::UserTimingMarkInteractive() const {
   return private_->timingForReporting()->UserTimingMarkInteractive();
+}
+
+base::TimeDelta WebPerformanceMetricsForReporting::SystemFallbackFontTime()
+    const {
+  return private_->timingForReporting()->SystemFallbackFontTime();
+}
+
+uint32_t WebPerformanceMetricsForReporting::SystemFallbackFontCount() const {
+  return private_->timingForReporting()->SystemFallbackFontCount();
+}
+
+base::TimeDelta
+WebPerformanceMetricsForReporting::SystemFallbackFontInitialDuration() const {
+  return private_->timingForReporting()->SystemFallbackFontInitialDuration();
+}
+
+uint32_t WebPerformanceMetricsForReporting::ShapeCacheHitCount() const {
+  return private_->timingForReporting()->ShapeCacheHitCount();
+}
+
+uint32_t WebPerformanceMetricsForReporting::ShapeCacheMissCount() const {
+  return private_->timingForReporting()->ShapeCacheMissCount();
+}
+
+std::vector<ScriptFontFallbackDetailsForReporting>
+WebPerformanceMetricsForReporting::GetScriptFontFallbackDetails() const {
+  return private_->timingForReporting()->GetScriptFontFallbackDetails();
 }
 
 std::optional<std::tuple<std::string, base::TimeDelta>>

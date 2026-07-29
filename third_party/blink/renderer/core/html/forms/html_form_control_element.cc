@@ -51,11 +51,16 @@
 #include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/keywords.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
+#include "third_party/blink/renderer/core/page/chrome_client.h"
+#include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_fetcher.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+#include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
+#include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
+#include "third_party/blink/renderer/platform/wtf/wtf_size_t.h"
 
 namespace blink {
 
@@ -79,7 +84,7 @@ String HTMLFormControlElement::formAction() const {
   if (action.empty()) {
     return GetDocument().Url();
   }
-  return GetDocument().CompleteURL(StripLeadingAndTrailingHTMLSpaces(action));
+  return GetDocument().CompleteURL(StripLeadingAndTrailingHtmlSpaces(action));
 }
 
 void HTMLFormControlElement::setFormAction(const AtomicString& value) {
@@ -136,13 +141,23 @@ void HTMLFormControlElement::DetachLayoutTree(bool performing_reattach) {
 
 void HTMLFormControlElement::AttributeChanged(
     const AttributeModificationParams& params) {
+  if (RuntimeEnabledFeatures::WebMCPEnabled(GetExecutionContext())) {
+    if (HTMLFormElement* form = Form()) {
+      form->ScheduleWebMCPSchemaUpdateIfActive();
+    }
+  }
   HTMLElement::AttributeChanged(params);
   if (params.name == html_names::kDisabledAttr &&
       params.old_value.IsNull() != params.new_value.IsNull()) {
-    DisabledAttributeChanged();
-    if (params.reason == AttributeModificationReason::kDirectly &&
-        IsDisabledFormControl() && AdjustedFocusedElementInTreeScope() == this)
-      blur();
+    DisabledAttributeChanged(DisabledChangedReason::kAttributeChanged);
+    if (!RuntimeEnabledFeatures::
+            AvoidSynchronousBlurOnDisabledAttributeChangeEnabled()) {
+      if (params.reason == AttributeModificationReason::kDirectly &&
+          IsDisabledFormControl() &&
+          AdjustedFocusedElementInTreeScope() == this) {
+        blur();
+      }
+    }
   }
 }
 
@@ -171,12 +186,13 @@ void HTMLFormControlElement::ParseAttribute(
   }
 }
 
-void HTMLFormControlElement::DisabledAttributeChanged() {
+void HTMLFormControlElement::DisabledAttributeChanged(
+    DisabledChangedReason reason) {
   // Don't blur in this function because this is called for descendants of
   // <fieldset> while tree traversal.
   EventDispatchForbiddenScope event_forbidden;
 
-  ListedElement::DisabledAttributeChanged();
+  ListedElement::DisabledAttributeChanged(reason);
   InvalidateIfHasEffectiveAppearance();
 
   // TODO(dmazzoni): http://crbug.com/699438.
@@ -196,6 +212,10 @@ void HTMLFormControlElement::RequiredAttributeChanged() {
 }
 
 bool HTMLFormControlElement::IsReadOnly() const {
+  if (RuntimeEnabledFeatures::FixHTMLFormControlElementIsReadOnlyEnabled() &&
+      !SupportsReadOnly()) {
+    return false;
+  }
   return FastHasAttribute(html_names::kReadonlyAttr);
 }
 
@@ -214,6 +234,17 @@ void HTMLFormControlElement::SetAutofillState(WebAutofillState autofill_state) {
   PseudoStateChanged(CSSSelector::kPseudoAutofillPreviewed);
 }
 
+bool HTMLFormControlElement::IsAutofillable() const {
+  if (Page* page = GetDocument().GetPage()) {
+    return page->GetChromeClient().IsAutofillableElement(*this);
+  }
+  return false;
+}
+
+bool HTMLFormControlElement::MatchesToolSubmitActivePseudoClass() const {
+  return Form() && Form()->IsActiveToolSubmitButton(this);
+}
+
 bool HTMLFormControlElement::IsAutocompleteEmailUrlOrPassword() const {
   DEFINE_STATIC_LOCAL(HashSet<AtomicString>, values,
                       ({AtomicString("username"), AtomicString("new-password"),
@@ -223,7 +254,7 @@ bool HTMLFormControlElement::IsAutocompleteEmailUrlOrPassword() const {
       FastGetAttribute(html_names::kAutocompleteAttr);
   if (autocomplete.IsNull())
     return false;
-  return values.Contains(autocomplete.LowerASCII());
+  return values.Contains(autocomplete.ToAsciiLower());
 }
 
 const AtomicString& HTMLFormControlElement::autocapitalize() const {
@@ -268,6 +299,13 @@ void HTMLFormControlElement::DidChangeForm() {
     formOwner()->InvalidateDefaultButtonStyle();
 }
 
+// Note HTMLFormControlElement also inherits from HTMLElement, which has its own
+// formForBinding for non-form control elements. This function is needed to
+// ensure we are calling the correct version from ListedElement.
+HTMLElement* HTMLFormControlElement::formForBinding() const {
+  return ListedElement::RetargetedForm();
+}
+
 HTMLFormElement* HTMLFormControlElement::formOwner() const {
   return ListedElement::Form();
 }
@@ -284,7 +322,7 @@ bool HTMLFormControlElement::IsDisabledFormControl() const {
   // saved page formats.
   if (GetDocument().Fetcher()->Archive()) {
     if (base::FeatureList::IsEnabled(blink::features::kMHTML_Improvements)) {
-      if (GetDocument().Url().ProtocolIsInHTTPFamily()) {
+      if (GetDocument().Url().ProtocolIsInHttpFamily()) {
         return true;
       }
     } else {
@@ -336,12 +374,28 @@ bool HTMLFormControlElement::MatchesValidityPseudoClasses() const {
   return willValidate();
 }
 
+String HTMLFormControlElement::GetWebMCPParameterName() const {
+  CHECK(RuntimeEnabledFeatures::WebMCPEnabled(GetExecutionContext()));
+  String name = String(GetName()).StripWhiteSpace();
+  // Eventually add more logic here to use the label, tool-param-name, etc.
+  return name;
+}
+
 bool HTMLFormControlElement::IsValidElement() {
   return ListedElement::IsValidElement();
 }
 
 bool HTMLFormControlElement::IsSuccessfulSubmitButton() const {
   return CanBeSuccessfulSubmitButton() && !IsDisabledFormControl();
+}
+
+bool HTMLFormControlElement::IsValidPopoverTrigger() {
+  if (!IsInTreeScope() ||
+      SupportsPopoverTriggering() == PopoverTriggerSupport::kNone ||
+      IsDisabledFormControl()) {
+    return false;
+  }
+  return !(Form() && IsSuccessfulSubmitButton());
 }
 
 // The element referenced by the `popovertarget` attribute is returned if a)
@@ -353,109 +407,86 @@ HTMLFormControlElement::PopoverTargetElement
 HTMLFormControlElement::popoverTargetElement() {
   const PopoverTargetElement no_element{.popover = nullptr,
                                         .action = PopoverTriggerAction::kNone};
-  if (!IsInTreeScope() ||
-      SupportsPopoverTriggering() == PopoverTriggerSupport::kNone ||
-      IsDisabledFormControl() || (Form() && IsSuccessfulSubmitButton())) {
+  if (!IsValidPopoverTrigger()) {
     return no_element;
   }
 
-  Element* target_element;
-  target_element = GetElementAttributeResolvingReferenceTarget(
+  Element* target_element = GetElementAttributeResolvingReferenceTarget(
       html_names::kPopovertargetAttr);
-
-
   if (!target_element) {
     return no_element;
   }
+
   auto* target_popover = DynamicTo<HTMLElement>(target_element);
-  if (!target_popover || !target_popover->HasPopoverAttribute()) {
+  if (!target_popover || !target_popover->IsPopover()) {
     return no_element;
   }
+
   // The default action is "toggle".
   PopoverTriggerAction action = PopoverTriggerAction::kToggle;
   auto action_value =
-      getAttribute(html_names::kPopovertargetactionAttr).LowerASCII();
-  if (action_value == "show") {
+      getAttribute(html_names::kPopovertargetactionAttr).ToAsciiLower();
+  if (action_value == keywords::kShow) {
     action = PopoverTriggerAction::kShow;
-  } else if (action_value == "hide") {
+  } else if (action_value == keywords::kHide) {
     action = PopoverTriggerAction::kHide;
   }
   return PopoverTargetElement{.popover = target_popover, .action = action};
 }
 
-Element* HTMLFormControlElement::interestTargetElement() {
-  if (!RuntimeEnabledFeatures::HTMLInterestTargetAttributeEnabled(
-          GetDocument().GetExecutionContext())) {
-    return nullptr;
-  }
-  if (!IsInTreeScope() || IsDisabledFormControl()) {
-    return nullptr;
-  }
-
-  return GetElementAttributeResolvingReferenceTarget(
-      html_names::kInteresttargetAttr);
-}
-
 void HTMLFormControlElement::DefaultEventHandler(Event& event) {
+  HTMLElement::DefaultEventHandler(event);
   // Buttons that aren't form participants might be Invoker buttons or Popover
   // buttons.
-  if (event.type() == event_type_names::kDOMActivate && IsInTreeScope() &&
-      !IsDisabledFormControl() && (!Form() || !IsSuccessfulSubmitButton())) {
-    auto popover = popoverTargetElement();
+  if (event.DefaultHandled() ||
+      event.type() != event_type_names::kDOMActivate ||
+      !IsValidPopoverTrigger()) {
+    return;
+  }
+  auto popover = popoverTargetElement();
+  if (popover.popover) {
+    bool event_target_was_nested_popover = false;
+    if (auto* target_node = event.RawTarget()->ToNode()) {
+      event_target_was_nested_popover =
+          IsShadowIncludingAncestorOf(*popover.popover) &&
+          popover.popover->IsShadowIncludingInclusiveAncestorOf(*target_node);
+    }
 
-    // CommandFor should have been handled in
-    // HTMLButtonElement::DefaultEventHandler
-    DCHECK(!IsA<HTMLButtonElement>(this) ||
-           !DynamicTo<HTMLButtonElement>(this)->commandForElement());
+    if (!event_target_was_nested_popover) {
+      // Buttons with a popovertarget will invoke popovers, which is the same
+      // logic as an invoketarget with an appropriate command (e.g.
+      // togglePopover), sans the `CommandEvent` dispatch. Calling
+      // `HandleCommandInternal()` does not dispatch the event but can handle
+      // the popover triggering logic. `popovertargetaction` must also be
+      // mapped to the equivalent `command` string:
+      //  popovertargetaction=toggle -> command=togglePopover
+      //  popovertargetaction=show -> command=showPopover
+      //  popovertargetaction=hide -> command=hidePopover
+      // We must check to ensure the action is one of the available popover
+      // invoker actions so that popovertargetaction cannot be set to
+      // something like showModal.
+      CHECK_NE(SupportsPopoverTriggering(), PopoverTriggerSupport::kNone);
+      CHECK_NE(popover.action, PopoverTriggerAction::kNone);
 
-    if (popover.popover) {
-      bool event_target_was_nested_popover = false;
-      if (auto* target_node = event.target()->ToNode()) {
-        bool button_is_ancestor_of_popover =
-            IsShadowIncludingAncestorOf(*popover.popover);
-        event_target_was_nested_popover =
-            button_is_ancestor_of_popover &&
-            popover.popover->IsShadowIncludingInclusiveAncestorOf(*target_node);
+      CommandEventType action;
+      switch (popover.action) {
+        case PopoverTriggerAction::kToggle:
+          action = CommandEventType::kTogglePopover;
+          break;
+        case PopoverTriggerAction::kShow:
+          action = CommandEventType::kShowPopover;
+          break;
+        case PopoverTriggerAction::kHide:
+          action = CommandEventType::kHidePopover;
+          break;
+        case PopoverTriggerAction::kNone:
+          NOTREACHED();
       }
 
-      if (!event_target_was_nested_popover) {
-        // Buttons with a popovertarget will invoke popovers, which is the same
-        // logic as an invoketarget with an appropriate command (e.g.
-        // togglePopover), sans the `CommandEvent` dispatch. Calling
-        // `HandleCommandInternal()` does not dispatch the event but can handle
-        // the popover triggering logic. `popovertargetaction` must also be
-        // mapped to the equivalent `command` string:
-        //  popovertargetaction=toggle -> command=togglePopover
-        //  popovertargetaction=show -> command=showPopover
-        //  popovertargetaction=hide -> command=hidePopover
-        // We must check to ensure the action is one of the available popover
-        // invoker actions so that popovertargetaction cannot be set to
-        // something like showModal.
-        auto trigger_support = SupportsPopoverTriggering();
-        CHECK_NE(trigger_support, PopoverTriggerSupport::kNone);
-        CHECK_NE(popover.action, PopoverTriggerAction::kNone);
-        CommandEventType action;
-
-        switch (popover.action) {
-          case PopoverTriggerAction::kToggle:
-            action = CommandEventType::kTogglePopover;
-            break;
-          case PopoverTriggerAction::kShow:
-            action = CommandEventType::kShowPopover;
-            break;
-          case PopoverTriggerAction::kHide:
-            action = CommandEventType::kHidePopover;
-            break;
-          case PopoverTriggerAction::kNone:
-            NOTREACHED();
-        }
-
-        CHECK(popover.popover->IsValidBuiltinCommand(*this, action));
-        popover.popover->HandleCommandInternal(*this, action);
-      }
+      CHECK(popover.popover->IsValidBuiltinCommand(*this, action));
+      popover.popover->HandleCommandInternal(*this, action);
     }
   }
-  HTMLElement::DefaultEventHandler(event);
 }
 
 // static

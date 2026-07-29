@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "base/json/values_util.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "base/types/optional_ref.h"
@@ -16,10 +17,10 @@
 #include "chrome/browser/profiles/profile.h"
 #include "components/content_settings/core/common/content_settings_types.h"
 #include "components/permissions/object_permission_context_base.h"
+#include "content/public/browser/webid/constants.h"
 #include "third_party/blink/public/common/webid/login_status_account.h"
 #include "third_party/blink/public/common/webid/login_status_options.h"
-#include "third_party/blink/public/mojom/webid/federated_auth_request.mojom-forward.h"
-#include "third_party/blink/public/mojom/webid/federated_auth_request.mojom.h"
+#include "third_party/blink/public/mojom/webid/federated_request.mojom.h"
 #include "url/origin.h"
 
 using blink::common::webid::LoginStatusAccount;
@@ -40,55 +41,24 @@ const char kIdpSigninOptionsExpirationKey[] = "expiration";
 // purpose of expiration.
 const char kIdpSigninOptionsLastModifiedKey[] = "last-modified";
 
-// Keys for account properties within LoginStatusOptions accounts list.
-const char kId[] = "id";
-const char kEmail[] = "email";
-const char kName[] = "name";
-const char kGivenName[] = "given-name";
-const char kPicture[] = "picture";
-
-base::Value::Dict DictFromAccount(const LoginStatusAccount& account) {
-  base::Value::Dict dict;
-  dict.Set(kId, account.id);
-  dict.Set(kEmail, account.email);
-  dict.Set(kName, account.name);
+base::DictValue DictFromAccount(const LoginStatusAccount& account) {
+  base::DictValue dict;
+  dict.Set(content::webid::kAccountIdKey, account.id);
+  dict.Set(content::webid::kAccountEmailKey, account.email);
+  dict.Set(content::webid::kAccountNameKey, account.name);
   if (account.given_name.has_value()) {
-    dict.Set(kGivenName, account.given_name.value());
+    dict.Set(content::webid::kAccountGivenNameKey, account.given_name.value());
   }
 
   if (account.picture.has_value()) {
-    dict.Set(kPicture, account.picture.value().spec());
+    dict.Set(content::webid::kAccountPictureKey,
+             account.picture.value().spec());
   }
   return dict;
 }
 
-std::optional<LoginStatusAccount> AccountFromDict(const base::Value& value) {
-  const base::Value::Dict* dict = value.GetIfDict();
-  if (!dict) {
-    return std::nullopt;
-  }
-  const std::string* id = dict->FindString(kId);
-  const std::string* email = dict->FindString(kEmail);
-  const std::string* name = dict->FindString(kName);
-  const std::string* given_name = dict->FindString(kGivenName);
-  const std::string* picture = dict->FindString(kPicture);
-
-  std::optional<GURL> picture_url =
-      picture ? std::make_optional(GURL(*picture)) : std::nullopt;
-
-  // These are required fields in the IDL type IdentityProviderAccount; if
-  // they aren't present this isn't usable.
-  if (id && email && name) {
-    return std::make_optional(LoginStatusAccount(
-        *id, *email, *name, base::optional_ref(given_name), picture_url));
-  } else {
-    return std::nullopt;
-  }
-}
-
-base::Value::Dict DictFromLoginStatusOptions(
-    const LoginStatusOptions& options) {
-  base::Value::Dict dict;
+base::DictValue DictFromLoginStatusOptions(const LoginStatusOptions& options) {
+  base::DictValue dict;
 
   dict.Set(kIdpSigninOptionsLastModifiedKey,
            base::TimeToValue(base::Time::Now()));
@@ -98,7 +68,7 @@ base::Value::Dict DictFromLoginStatusOptions(
              base::TimeDeltaToValue(options.expiration.value()));
   }
 
-  base::Value::List accounts;
+  base::ListValue accounts;
   for (const auto& input_account : options.accounts) {
     accounts.Append(DictFromAccount(input_account));
   }
@@ -107,32 +77,10 @@ base::Value::Dict DictFromLoginStatusOptions(
   return dict;
 }
 
-LoginStatusOptions LoginStatusOptionsFromDict(base::Value::Dict* dict) {
-  CHECK(dict);
-  LoginStatusOptions options;
-
-  base::Value::List* accounts_list =
-      dict->FindList(kIdpSigninOptionsAccountsKey);
-
-  if (!accounts_list) {
-    return options;
-  }
-
-  options.expiration =
-      base::ValueToTimeDelta(dict->Find(kIdpSigninOptionsExpirationKey));
-  for (const auto& account_value : *accounts_list) {
-    std::optional<LoginStatusAccount> maybe_account =
-        AccountFromDict(account_value);
-    if (maybe_account.has_value()) {
-      options.accounts.emplace_back(std::move(maybe_account.value()));
-    }
-  }
-  return options;
-}
 // Take a dictionary representing the stored accounts list and expiration
 // information for a given IdP and returns "true" if the current time exceeds
 // the last modified time plus the expiration duration.
-bool IsExpired(const base::Value::Dict* options) {
+bool IsExpired(const base::DictValue* options) {
   CHECK(options);
   std::optional<base::TimeDelta> expiration =
       base::ValueToTimeDelta(options->Find(kIdpSigninOptionsExpirationKey));
@@ -173,8 +121,8 @@ FederatedIdentityIdentityProviderSigninStatusContext::GetSigninStatus(
   return granted_object->value.FindBool(kIdpSigninStatusKey);
 }
 
-std::vector<LoginStatusAccount>
-FederatedIdentityIdentityProviderSigninStatusContext::GetAccountProfiles(
+base::ListValue
+FederatedIdentityIdentityProviderSigninStatusContext::GetAccounts(
     const url::Origin& identity_provider) {
   auto granted_object =
       GetGrantedObject(identity_provider, identity_provider.Serialize());
@@ -182,14 +130,18 @@ FederatedIdentityIdentityProviderSigninStatusContext::GetAccountProfiles(
   if (granted_object) {
     bool is_logged_in =
         granted_object->value.FindBool(kIdpSigninStatusKey).value_or(false);
-    base::Value::Dict* options_dict =
+    base::DictValue* options_dict =
         granted_object->value.FindDict(kIdpSigninOptionsKey);
     if (is_logged_in && options_dict && !IsExpired(options_dict)) {
-      return LoginStatusOptionsFromDict(options_dict).accounts;
+      base::ListValue* accounts_list =
+          options_dict->FindList(kIdpSigninOptionsAccountsKey);
+      if (accounts_list) {
+        return accounts_list->Clone();
+      }
     }
   }
 
-  return {};
+  return base::ListValue();
 }
 
 void FederatedIdentityIdentityProviderSigninStatusContext::SetSigninStatus(
@@ -202,7 +154,7 @@ void FederatedIdentityIdentityProviderSigninStatusContext::SetSigninStatus(
     return;
   }
 
-  base::Value::Dict new_object;
+  base::DictValue new_object;
   new_object.Set(kIdpKey, identity_provider.Serialize());
   new_object.Set(kIdpSigninStatusKey, base::Value(signin_status));
 
@@ -221,7 +173,7 @@ void FederatedIdentityIdentityProviderSigninStatusContext::SetSigninStatus(
     // but still needs to preserve any existing IDP options. If the options
     // have already expired, we can safely discard them.
     if (!options.has_value()) {
-      base::Value::Dict* existing_options =
+      base::DictValue* existing_options =
           granted_object->value.FindDict(kIdpSigninOptionsKey);
       if (signin_status && existing_options && !IsExpired(existing_options)) {
         new_object.Set(kIdpSigninOptionsKey, existing_options->Clone());
@@ -237,12 +189,12 @@ void FederatedIdentityIdentityProviderSigninStatusContext::SetSigninStatus(
 
 std::string
 FederatedIdentityIdentityProviderSigninStatusContext::GetKeyForObject(
-    const base::Value::Dict& object) {
+    const base::DictValue& object) {
   return *object.FindString(kIdpKey);
 }
 
 bool FederatedIdentityIdentityProviderSigninStatusContext::IsValidObject(
-    const base::Value::Dict& object) {
+    const base::DictValue& object) {
   return object.FindString(kIdpKey);
 }
 
@@ -251,11 +203,11 @@ void FederatedIdentityIdentityProviderSigninStatusContext::
   // Replace any valid-but-expired entries with a copy that only contains the
   // basic login status
   for (const auto& granted_object : GetAllGrantedObjects()) {
-    base::Value::Dict* options_dict =
+    base::DictValue* options_dict =
         granted_object->value.FindDict(kIdpSigninOptionsKey);
     if (IsValidObject(granted_object->value) && options_dict &&
         IsExpired(options_dict)) {
-      base::Value::Dict new_object;
+      base::DictValue new_object;
       url::Origin identity_provider =
           url::Origin::Create(GURL(*granted_object->value.FindString(kIdpKey)));
       bool signin_status =
@@ -271,7 +223,7 @@ void FederatedIdentityIdentityProviderSigninStatusContext::
 
 std::u16string
 FederatedIdentityIdentityProviderSigninStatusContext::GetObjectDisplayName(
-    const base::Value::Dict& object) {
+    const base::DictValue& object) {
   DCHECK(IsValidObject(object));
   return base::UTF8ToUTF16(*object.FindString(kIdpKey));
 }

@@ -30,16 +30,13 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "third_party/blink/renderer/bindings/core/v8/script_controller.h"
 
 #include <memory>
+#include <string_view>
 #include <utility>
 
+#include "base/compiler_specific.h"
 #include "base/functional/callback_helpers.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_evaluation_result.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
@@ -205,7 +202,7 @@ void ScriptController::SetWasmEvalErrorMessageForWorld(
 namespace {
 
 Vector<const char*>& RegisteredExtensionNames() {
-  DEFINE_STATIC_LOCAL(Vector<const char*>, extension_names, ());
+  DEFINE_THREAD_SAFE_STATIC_LOCAL(Vector<const char*>, extension_names, ());
   return extension_names;
 }
 
@@ -214,8 +211,9 @@ Vector<const char*>& RegisteredExtensionNames() {
 void ScriptController::RegisterExtensionIfNeeded(
     std::unique_ptr<v8::Extension> extension) {
   for (const auto* extension_name : RegisteredExtensionNames()) {
-    if (!strcmp(extension_name, extension->name()))
+    if (std::string_view(extension_name) == extension->name()) {
       return;
+    }
   }
   RegisteredExtensionNames().push_back(extension->name());
   v8::RegisterExtension(std::move(extension));
@@ -274,7 +272,7 @@ void ScriptController::ExecuteJavaScriptURL(
   // We pass |SanitizeScriptErrors::kDoNotSanitize| because |muted errors| is
   // false by default.
   ClassicScript* script = ClassicScript::Create(
-      script_source, KURL(), base_url, ScriptFetchOptions(),
+      script_source, NullUrl(), base_url, ScriptFetchOptions(),
       ScriptSourceLocationType::kJavascriptUrl,
       SanitizeScriptErrors::kDoNotSanitize);
 
@@ -325,7 +323,7 @@ void ScriptController::ExecuteJavaScriptURL(
   String result = ToCoreString(isolate, v8::Local<v8::String>::Cast(v8_result));
   WebNavigationParams::FillStaticResponse(
       params.get(), "text/html", "UTF-8",
-      StringUTF8Adaptor(result, Utf8ConversionMode::kStrictReplacingErrors));
+      StringUtf8Adaptor(result, Utf8ConversionMode::kStrictReplacingErrors));
   params->frame_load_type = WebFrameLoadType::kReplaceCurrentItem;
   window_->GetFrame()->Loader().CommitNavigation(std::move(params), nullptr,
                                                  CommitReason::kJavascriptUrl);
@@ -380,22 +378,6 @@ bool ScriptController::CanExecuteScript(ExecuteScriptPolicy policy) {
 
 v8::Isolate* ScriptController::GetIsolate() const {
   return window_proxy_manager_->GetIsolate();
-}
-
-DOMWrapperWorld* ScriptController::CreateNewInspectorIsolatedWorld(
-    const String& world_name) {
-  DOMWrapperWorld* world = DOMWrapperWorld::Create(
-      GetIsolate(), DOMWrapperWorld::WorldType::kInspectorIsolated);
-  // Bail out if we could not create an isolated world.
-  if (!world)
-    return nullptr;
-  if (!world_name.empty()) {
-    DOMWrapperWorld::SetNonMainWorldHumanReadableName(world->GetWorldId(),
-                                                      world_name);
-  }
-  // Make sure the execution context exists.
-  WindowProxy(*world);
-  return world;
 }
 
 }  // namespace blink

@@ -7,11 +7,11 @@
 
 #include <stdint.h>
 
+#include <array>
 #include <iosfwd>
 #include <optional>
 #include <string>
 
-#include "base/gtest_prod_util.h"
 #include "build/build_config.h"
 #include "third_party/skia/include/core/SkRefCnt.h"
 #include "ui/gfx/color_space_export.h"
@@ -263,7 +263,6 @@ class COLOR_SPACE_EXPORT ColorSpace {
   static constexpr float kDefaultSDRWhiteLevel = 203.f;
 
   bool operator==(const ColorSpace& other) const;
-  bool operator!=(const ColorSpace& other) const;
   bool operator<(const ColorSpace& other) const;
   size_t GetHash() const;
   std::string ToString() const;
@@ -314,6 +313,15 @@ class COLOR_SPACE_EXPORT ColorSpace {
   // Return a combined color space with has the same primary and transfer than
   // the caller but replacing the matrix and range with the given values.
   ColorSpace GetWithMatrixAndRange(MatrixID matrix, RangeID range) const;
+
+  // Return this color space with an HDR version of its transfer function
+  // (if possible).
+  ColorSpace GetAsHDR() const;
+
+  // Return this color space with the specified transfer function.
+  ColorSpace GetWithTransferFunction(TransferID) const;
+  ColorSpace GetWithTransferFunction(const skcms_TransferFunction&,
+                                     bool is_hdr) const;
 
   // This will return nullptr for non-RGB spaces, spaces with non-FULL
   // range, unspecified spaces, and spaces that require but are not provided
@@ -397,7 +405,7 @@ class COLOR_SPACE_EXPORT ColorSpace {
   static bool GetTransferFunction(TransferID, skcms_TransferFunction* fn);
   static size_t TransferParamCount(TransferID);
 
-  void SetCustomTransferFunction(const skcms_TransferFunction& fn);
+  void SetCustomTransferFunction(const skcms_TransferFunction& fn, bool is_hdr);
   void SetCustomPrimaries(const skcms_Matrix3x3& to_XYZD50);
 
   PrimaryID primaries_ = PrimaryID::INVALID;
@@ -406,15 +414,17 @@ class COLOR_SPACE_EXPORT ColorSpace {
   RangeID range_ = RangeID::INVALID;
 
   // Only used if primaries_ is PrimaryID::CUSTOM.
-  float custom_primary_matrix_[9] = {};
+  std::array<float, 9> custom_primary_matrix_ = {};
 
   // Parameters for the transfer function. The interpretation depends on
   // |transfer_|. Only TransferParamCount() of these parameters are used, all
   // others must be zero.
   // - CUSTOM and CUSTOM_HDR: Entries A through G of the skcms_TransferFunction
   //   structure in alphabetical order.
-  // - SMPTEST2084: SDR white point.
-  float transfer_params_[7] = {};
+  // - PQ: SDR white point (entry A of the skcms_TransferFunction structure).
+  // - HLG: SDR white point, peak luminance, and system gamma (entries A, B, and
+  //        C of the skcms_TransferFunction).
+  std::array<float, 7> transfer_params_ = {};
 
   friend struct IPC::ParamTraits<gfx::ColorSpace>;
   friend struct mojo::StructTraits<gfx::mojom::ColorSpaceDataView,

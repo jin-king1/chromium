@@ -86,7 +86,7 @@ public class DownloadDirectoryProvider {
      * can exist at the same time.
      */
     private class AllDirectoriesTask extends AsyncTask<ArrayList<DirectoryOption>> {
-        private DownloadDirectoryProvider.Delegate mDelegate;
+        private final DownloadDirectoryProvider.Delegate mDelegate;
 
         AllDirectoriesTask(DownloadDirectoryProvider.Delegate delegate) {
             mDelegate = delegate;
@@ -208,7 +208,7 @@ public class DownloadDirectoryProvider {
     private @Nullable AllDirectoriesTask mAllDirectoriesTask;
     private @Nullable ArrayList<DirectoryOption> mDirectoryOptions;
     private @Nullable String mExternalStorageDirectory;
-    private ArrayList<Callback<ArrayList<DirectoryOption>>> mCallbacks = new ArrayList<>();
+    private final ArrayList<Callback<ArrayList<DirectoryOption>>> mCallbacks = new ArrayList<>();
 
     protected DownloadDirectoryProvider() {
         registerSDCardReceiver();
@@ -290,6 +290,14 @@ public class DownloadDirectoryProvider {
             this.directories = directories;
             this.directoriesPreR = directoriesPreR;
         }
+
+        /** Returns whether there is any download directories on secondary storage. */
+        public boolean isEmpty() {
+            if (directories != null && directories.size() > 0) {
+                return false;
+            }
+            return directoriesPreR.size() == 0;
+        }
     }
 
     /**
@@ -318,6 +326,7 @@ public class DownloadDirectoryProvider {
 
     /**
      * Returns whether the downloaded file path is on an external SD card.
+     *
      * @param filePath The download file path.
      */
     public static boolean isDownloadOnSDCard(String filePath) {

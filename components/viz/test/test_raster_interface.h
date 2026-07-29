@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "base/functional/callback.h"
+#include "components/viz/common/resources/shared_image_format.h"
 #include "components/viz/test/test_context_support.h"
 #include "gpu/command_buffer/client/raster_interface.h"
 #include "gpu/command_buffer/common/capabilities.h"
@@ -38,9 +39,6 @@ class TestRasterInterface : public gpu::raster::RasterInterface {
   void set_context_lost(bool context_lost) { context_lost_ = context_lost; }
 
   // Capability setters below here.
-  void set_gpu_rasterization(bool gpu_rasterization) {
-    caps_.gpu_rasterization = gpu_rasterization;
-  }
   void set_msaa_is_slow(bool msaa_is_slow) {
     caps_.msaa_is_slow = msaa_is_slow;
   }
@@ -50,8 +48,16 @@ class TestRasterInterface : public gpu::raster::RasterInterface {
   void set_max_texture_size(int max_texture_size) {
     caps_.max_texture_size = max_texture_size;
   }
-  void set_supports_gpu_memory_buffer_format(gfx::BufferFormat format,
-                                             bool support);
+  void set_texture_format_bgra8888(bool texture_format_bgra8888) {
+    caps_.texture_format_bgra8888 = texture_format_bgra8888;
+  }
+  void set_texture_rg(bool texture_rg) { caps_.texture_rg = texture_rg; }
+  void set_texture_norm16(bool texture_norm16) {
+    caps_.texture_norm16 = texture_norm16;
+  }
+  void set_texture_half_float_linear(bool texture_half_float_linear) {
+    caps_.texture_half_float_linear = texture_half_float_linear;
+  }
 
   // gpu::raster::RasterInterface implementation.
   void Finish() override;
@@ -64,11 +70,7 @@ class TestRasterInterface : public gpu::raster::RasterInterface {
   void DeleteQueriesEXT(GLsizei n, const GLuint* queries) override;
   void BeginQueryEXT(GLenum target, GLuint id) override;
   void EndQueryEXT(GLenum target) override;
-  void QueryCounterEXT(GLuint id, GLenum target) override;
   void GetQueryObjectuivEXT(GLuint id, GLenum pname, GLuint* params) override;
-  void GetQueryObjectui64vEXT(GLuint id,
-                              GLenum pname,
-                              GLuint64* params) override;
   void CopySharedImage(const gpu::Mailbox& source_mailbox,
                        const gpu::Mailbox& dest_mailbox,
                        GLint xoffset,
@@ -77,6 +79,10 @@ class TestRasterInterface : public gpu::raster::RasterInterface {
                        GLint y,
                        GLsizei width,
                        GLsizei height) override {}
+  void CopySharedImage(const gpu::Mailbox& source_mailbox,
+                       const gpu::Mailbox& dest_mailbox,
+                       const gfx::Rect& source_rect,
+                       const gfx::Rect& dest_rect) override {}
   void WritePixels(const gpu::Mailbox& dest_mailbox,
                    int dst_x_offset,
                    int dst_y_offset,
@@ -102,13 +108,11 @@ class TestRasterInterface : public gpu::raster::RasterInterface {
                       const gfx::Vector2dF& post_scale,
                       bool requires_clear,
                       const ScrollOffsetMap* raster_inducing_scroll_offsets,
-                      size_t* max_op_size_hint) override {}
+                      size_t* max_op_size_hint,
+                      base::RepeatingCallback<void(SkCanvas*, uint32_t)>
+                          custom_raster_callback) override {}
   void EndRasterCHROMIUM() override {}
-  gpu::SyncToken ScheduleImageDecode(base::span<const uint8_t> encoded_data,
-                                     const gfx::Size& output_size,
-                                     uint32_t transfer_cache_entry_id,
-                                     const gfx::ColorSpace& target_color_space,
-                                     bool needs_mips) override;
+  void FlushTileRasterGraphiteCommandsCHROMIUM() override {}
   void ReadbackARGBPixelsAsync(
       const gpu::Mailbox& source_mailbox,
       GLenum source_target,
@@ -117,21 +121,20 @@ class TestRasterInterface : public gpu::raster::RasterInterface {
       const gfx::Point& source_starting_point,
       const SkImageInfo& dst_info,
       GLuint dst_row_bytes,
-      unsigned char* out,
+      base::span<uint8_t> out,
       base::OnceCallback<void(bool)> readback_done) override {}
   void ReadbackYUVPixelsAsync(
       const gpu::Mailbox& source_mailbox,
       GLenum source_target,
-      const gfx::Size& source_size,
+      const gfx::Rect& source_rect,
       const gfx::Rect& output_rect,
       bool vertically_flip_texture,
       int y_plane_row_stride_bytes,
-      unsigned char* y_plane_data,
+      base::span<uint8_t> y_plane_data,
       int u_plane_row_stride_bytes,
-      unsigned char* u_plane_data,
+      base::span<uint8_t> u_plane_data,
       int v_plane_row_stride_bytes,
-      unsigned char* v_plane_data,
-      const gfx::Point& paste_location,
+      base::span<uint8_t> v_plane_data,
       base::OnceCallback<void()> release_mailbox,
       base::OnceCallback<void(bool)> readback_done) override {}
   bool ReadbackImagePixels(const gpu::Mailbox& source_mailbox,
@@ -141,18 +144,6 @@ class TestRasterInterface : public gpu::raster::RasterInterface {
                            int src_y,
                            int plane_index,
                            void* dst_pixels) override;
-  GLuint CreateAndConsumeForGpuRaster(const gpu::Mailbox& mailbox) override;
-  GLuint CreateAndConsumeForGpuRaster(
-      const scoped_refptr<gpu::ClientSharedImage>& shared_image) override;
-  void DeleteGpuRasterTexture(GLuint texture) override;
-  void BeginGpuRaster() override;
-  void EndGpuRaster() override;
-  void BeginSharedImageAccessDirectCHROMIUM(GLuint texture,
-                                            GLenum mode) override;
-  void EndSharedImageAccessDirectCHROMIUM(GLuint texture) override;
-  void InitializeDiscardableTextureCHROMIUM(GLuint texture) override;
-  void UnlockDiscardableTextureCHROMIUM(GLuint texture) override;
-  bool LockDiscardableTextureCHROMIUM(GLuint texture) override;
   void TraceBeginCHROMIUM(const char* category_name,
                           const char* trace_name) override {}
   void TraceEndCHROMIUM() override {}
@@ -169,6 +160,7 @@ class TestRasterInterface : public gpu::raster::RasterInterface {
   gpu::Capabilities caps_;
   base::OnceClosure context_lost_callback_;
   raw_ptr<TestContextSupport> test_support_ = nullptr;
+  const uint64_t test_command_buffer_id_ = 2u;
 
   bool context_lost_ = false;
   uint64_t next_insert_fence_sync_ = 1;

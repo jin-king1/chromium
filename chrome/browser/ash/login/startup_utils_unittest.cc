@@ -4,9 +4,11 @@
 
 #include "chrome/browser/ash/login/startup_utils.h"
 
+#include "base/check_deref.h"
 #include "base/functional/callback_helpers.h"
 #include "base/test/scoped_command_line.h"
 #include "base/test/task_environment.h"
+#include "build/branding_buildflags.h"
 #include "chrome/browser/ash/policy/enrollment/enrollment_test_helper.h"
 #include "chrome/browser/prefs/browser_prefs.h"
 #include "chrome/test/base/testing_browser_process.h"
@@ -18,20 +20,13 @@
 // other utility functions in StartupUtils.
 class StartupUtilsTest : public testing::Test {
  protected:
-  StartupUtilsTest() {
-    RegisterLocalState(fake_local_state_.registry());
-    TestingBrowserProcess::GetGlobal()->SetLocalState(&fake_local_state_);
-  }
-
   ~StartupUtilsTest() override {
     TestingBrowserProcess::GetGlobal()->SetShuttingDown(true);
-    TestingBrowserProcess::GetGlobal()->SetLocalState(nullptr);
   }
 
   base::test::TaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
 
-  TestingPrefServiceSimple fake_local_state_;
   ash::system::ScopedFakeStatisticsProvider statistics_provider_;
   base::test::ScopedCommandLine command_line_;
   policy::test::EnrollmentTestHelper enrollment_test_helper_{
@@ -42,7 +37,9 @@ TEST_F(StartupUtilsTest, MarkDeviceRegisteredDeletesFlexConfig) {
   enrollment_test_helper_.SetUpFlexDevice();
   enrollment_test_helper_.SetUpEnrollmentTokenConfig();
 
-  ash::StartupUtils::MarkDeviceRegistered(base::DoNothing());
+  ash::StartupUtils::MarkDeviceRegistered(
+      CHECK_DEREF(TestingBrowserProcess::GetGlobal()->local_state()),
+      base::DoNothing());
 
   const std::string* enrollment_token =
       enrollment_test_helper_.GetEnrollmentTokenFromOobeConfiguration();

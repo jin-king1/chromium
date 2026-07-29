@@ -15,6 +15,7 @@
 #include "third_party/blink/public/mojom/fetch/fetch_api_request.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/fetch/fetch_api_response.mojom-blink.h"
 #include "third_party/blink/public/mojom/loader/request_context_frame_type.mojom-blink.h"
+#include "third_party/blink/public/mojom/service_worker/service_worker_fetch_response_callback.mojom-blink.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_stream_handle.mojom-blink.h"
 #include "third_party/blink/public/platform/task_type.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_value.h"
@@ -45,82 +46,75 @@ namespace {
 // unusual failures.
 const String GetMessageForResponseError(ServiceWorkerResponseError error,
                                         const KURL& request_url) {
-  String error_message = "The FetchEvent for \"" + request_url.GetString() +
-                         "\" resulted in a network error response: ";
+  StringView error_message;
   switch (error) {
     case ServiceWorkerResponseError::kPromiseRejected:
-      error_message = error_message + "the promise was rejected.";
+      error_message = "the promise was rejected.";
       break;
     case ServiceWorkerResponseError::kDefaultPrevented:
       error_message =
-          error_message +
           "preventDefault() was called without calling respondWith().";
       break;
     case ServiceWorkerResponseError::kNoV8Instance:
       error_message =
-          error_message +
           "an object that was not a Response was passed to respondWith().";
       break;
     case ServiceWorkerResponseError::kResponseTypeError:
-      error_message = error_message +
-                      "the promise was resolved with an error response object.";
+      error_message = "the promise was resolved with an error response object.";
       break;
     case ServiceWorkerResponseError::kResponseTypeOpaque:
       error_message =
-          error_message +
-          "an \"opaque\" response was used for a request whose type "
-          "is not no-cors";
+          "an \"opaque\" response was used for a request whose type is not "
+          "no-cors";
       break;
     case ServiceWorkerResponseError::kResponseTypeNotBasicOrDefault:
       NOTREACHED();
     case ServiceWorkerResponseError::kBodyUsed:
       error_message =
-          error_message +
-          "a Response whose \"bodyUsed\" is \"true\" cannot be used "
-          "to respond to a request.";
+          "a Response whose \"bodyUsed\" is \"true\" cannot be used to respond "
+          "to a request.";
       break;
     case ServiceWorkerResponseError::kResponseTypeOpaqueForClientRequest:
-      error_message = error_message +
-                      "an \"opaque\" response was used for a client request.";
+      error_message = "an \"opaque\" response was used for a client request.";
       break;
     case ServiceWorkerResponseError::kResponseTypeOpaqueRedirect:
-      error_message = error_message +
-                      "an \"opaqueredirect\" type response was used for a "
-                      "request whose redirect mode is not \"manual\".";
+      error_message =
+          "an \"opaqueredirect\" type response was used for a request whose "
+          "redirect mode is not \"manual\".";
       break;
     case ServiceWorkerResponseError::kResponseTypeCorsForRequestModeSameOrigin:
-      error_message = error_message +
-                      "a \"cors\" type response was used for a request whose "
-                      "mode is \"same-origin\".";
+      error_message =
+          "a \"cors\" type response was used for a request whose mode is "
+          "\"same-origin\".";
       break;
     case ServiceWorkerResponseError::kBodyLocked:
-      error_message = error_message +
-                      "a Response whose \"body\" is locked cannot be used to "
-                      "respond to a request.";
+      error_message =
+          "a Response whose \"body\" is locked cannot be used to respond to a "
+          "request.";
       break;
     case ServiceWorkerResponseError::kRedirectedResponseForNotFollowRequest:
-      error_message = error_message +
-                      "a redirected response was used for a request whose "
-                      "redirect mode is not \"follow\".";
+      error_message =
+          "a redirected response was used for a request whose redirect mode is "
+          "not \"follow\".";
       break;
     case ServiceWorkerResponseError::kDataPipeCreationFailed:
-      error_message = error_message + "insufficient resources.";
+      error_message = "insufficient resources.";
       break;
     case ServiceWorkerResponseError::kResponseBodyBroken:
-      error_message =
-          error_message + "a response body's status could not be checked.";
+      error_message = "a response body's status could not be checked.";
       break;
     case ServiceWorkerResponseError::kDisallowedByCorp:
-      error_message = error_message +
-                      "Cross-Origin-Resource-Policy prevented from serving the "
-                      "response to the client.";
+      error_message =
+          "Cross-Origin-Resource-Policy prevented from serving the response to "
+          "the client.";
       break;
     case ServiceWorkerResponseError::kUnknown:
     default:
-      error_message = error_message + "an unexpected error occurred.";
+      error_message = "an unexpected error occurred.";
       break;
   }
-  return error_message;
+  return StrCat({"The FetchEvent for \"", request_url.GetString(),
+                 "\" resulted in a network error response: ", error_message});
 }
 
 bool IsNavigationRequest(mojom::RequestContextFrameType frame_type) {
@@ -236,6 +230,22 @@ class UploadingCompletionObserver
 
 }  // namespace
 
+mojom::blink::ServiceWorkerFetchHandlerErrorsPtr
+FetchRespondWithObserver::CreateFetchHandlerErrors() const {
+  if (!race_fetch_net_error_code_.has_value() &&
+      !regular_fetch_net_error_code_.has_value()) {
+    return nullptr;
+  }
+  auto errors = mojom::blink::ServiceWorkerFetchHandlerErrors::New();
+  if (race_fetch_net_error_code_.has_value()) {
+    errors->race_fetch_error_code = *race_fetch_net_error_code_;
+  }
+  if (regular_fetch_net_error_code_.has_value()) {
+    errors->regular_fetch_error_code = *regular_fetch_net_error_code_;
+  }
+  return errors;
+}
+
 // This function may be called when an exception is scheduled. Thus, it must
 // never invoke any code that might throw. In particular, it must never invoke
 // JavaScript.
@@ -256,7 +266,7 @@ void FetchRespondWithObserver::OnResponseRejected(
       To<ServiceWorkerGlobalScope>(GetExecutionContext());
   service_worker_global_scope->RespondToFetchEvent(
       event_id_, request_url_, range_request_, std::move(response),
-      event_dispatch_time_, base::TimeTicks::Now());
+      event_dispatch_time_, base::TimeTicks::Now(), CreateFetchHandlerErrors());
   event_->RejectHandledPromise(error_message);
 }
 
@@ -366,7 +376,7 @@ void FetchRespondWithObserver::OnResponseFulfilled(ScriptState* script_state,
       service_worker_global_scope->RespondToFetchEvent(
           event_id_, request_url_, range_request_,
           std::move(fetch_api_response), event_dispatch_time_,
-          base::TimeTicks::Now());
+          base::TimeTicks::Now(), CreateFetchHandlerErrors());
       event_->ResolveHandledPromise();
       return;
     }
@@ -394,13 +404,14 @@ void FetchRespondWithObserver::OnResponseFulfilled(ScriptState* script_state,
 
     service_worker_global_scope->RespondToFetchEventWithResponseStream(
         event_id_, request_url_, range_request_, std::move(fetch_api_response),
-        std::move(stream_handle), event_dispatch_time_, base::TimeTicks::Now());
+        std::move(stream_handle), event_dispatch_time_, base::TimeTicks::Now(),
+        CreateFetchHandlerErrors());
     event_->ResolveHandledPromise();
     return;
   }
   service_worker_global_scope->RespondToFetchEvent(
       event_id_, request_url_, range_request_, std::move(fetch_api_response),
-      event_dispatch_time_, base::TimeTicks::Now());
+      event_dispatch_time_, base::TimeTicks::Now(), CreateFetchHandlerErrors());
   event_->ResolveHandledPromise();
 }
 
@@ -443,7 +454,7 @@ void FetchRespondWithObserver::OnNoResponse(ScriptState* script_state) {
   service_worker_global_scope->RespondToFetchEventWithNoResponse(
       event_id_, event_.Get(), request_url_, range_request_,
       std::move(request_body_to_pass), event_dispatch_time_,
-      base::TimeTicks::Now());
+      base::TimeTicks::Now(), CreateFetchHandlerErrors());
   event_->ResolveHandledPromise();
 }
 
@@ -472,6 +483,8 @@ FetchRespondWithObserver::FetchRespondWithObserver(
       request_destination_(request.destination),
       request_body_has_source_(request.body.FormBody()),
       range_request_(request.headers.Contains(http_names::kRange)),
+      race_network_request_token_(
+          request.service_worker_race_network_request_token),
       corp_checker_(std::move(corp_checker)),
       task_runner_(context->GetTaskRunner(TaskType::kNetworking)) {}
 

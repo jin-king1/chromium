@@ -9,6 +9,7 @@
 #import "base/metrics/user_metrics.h"
 #import "base/metrics/user_metrics_action.h"
 #import "base/notreached.h"
+#import "google_apis/gaia/gaia_id.h"
 #import "ios/chrome/browser/authentication/ui_bundled/cells/table_view_identity_item.h"
 #import "ios/chrome/browser/authentication/ui_bundled/identity_chooser/identity_chooser_add_account_item.h"
 #import "ios/chrome/browser/authentication/ui_bundled/identity_chooser/identity_chooser_header_item.h"
@@ -16,7 +17,6 @@
 #import "ios/chrome/browser/keyboard/ui_bundled/UIKeyCommand+Chrome.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/list_model/list_item+Controller.h"
-#import "ios/chrome/browser/shared/ui/table_view/legacy_chrome_table_view_styler.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 
 namespace {
@@ -118,7 +118,8 @@ typedef NS_ENUM(NSInteger, ItemType) {
   [self reconfigureCellsForItems:@[ changedItem ]];
 }
 
-- (TableViewIdentityItem*)tableViewIdentityItemWithGaiaID:(NSString*)gaiaID {
+- (TableViewIdentityItem*)tableViewIdentityItemWithGaiaID:
+    (const GaiaId&)gaiaID {
   for (TableViewIdentityItem* item in [self.tableViewModel
            itemsInSectionWithIdentifier:IdentitiesSectionIdentifier]) {
     if (item.type != IdentityItemType) {
@@ -126,7 +127,7 @@ typedef NS_ENUM(NSInteger, ItemType) {
     }
     TableViewIdentityItem* identityItem =
         base::apple::ObjCCastStrict<TableViewIdentityItem>(item);
-    if ([identityItem.gaiaID isEqualToString:gaiaID]) {
+    if (identityItem.gaiaID == gaiaID) {
       return identityItem;
     }
   }
@@ -153,7 +154,7 @@ typedef NS_ENUM(NSInteger, ItemType) {
 }
 
 - (void)keyCommand_close {
-  base::RecordAction(base::UserMetricsAction("MobileKeyCommandClose"));
+  base::RecordAction(base::UserMetricsAction(kMobileKeyCommandClose));
   [self dismissViewControllerAnimated:YES completion:nil];
 }
 

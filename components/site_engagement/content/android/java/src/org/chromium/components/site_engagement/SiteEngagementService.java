@@ -6,6 +6,7 @@ package org.chromium.components.site_engagement;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.ThreadUtils;
@@ -41,8 +42,7 @@ public class SiteEngagementService {
     public double getScore(String url) {
         assert ThreadUtils.runningOnUiThread();
         if (mNativePointer == 0) return 0.0;
-        return SiteEngagementServiceJni.get()
-                .getScore(mNativePointer, SiteEngagementService.this, url);
+        return SiteEngagementServiceJni.get().getScore(mNativePointer, url);
     }
 
     /**
@@ -52,8 +52,7 @@ public class SiteEngagementService {
     public void resetBaseScoreForUrl(String url, double score) {
         assert ThreadUtils.runningOnUiThread();
         if (mNativePointer == 0) return;
-        SiteEngagementServiceJni.get()
-                .resetBaseScoreForURL(mNativePointer, SiteEngagementService.this, url, score);
+        SiteEngagementServiceJni.get().resetBaseScoreForURL(mNativePointer, url, score);
     }
 
     /** Sets site engagement param values to constants for testing. */
@@ -84,12 +83,11 @@ public class SiteEngagementService {
         void setParamValuesForTesting();
 
         double getScore(
-                long nativeSiteEngagementServiceAndroid, SiteEngagementService caller, String url);
+                long nativeSiteEngagementServiceAndroid, @JniType("std::string") String url);
 
         void resetBaseScoreForURL(
                 long nativeSiteEngagementServiceAndroid,
-                SiteEngagementService caller,
-                String url,
+                @JniType("std::string") String url,
                 double score);
     }
 }

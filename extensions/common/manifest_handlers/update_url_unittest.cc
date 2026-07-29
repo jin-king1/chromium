@@ -3,8 +3,8 @@
 // found in the LICENSE file.
 
 #include "extensions/common/manifest_constants.h"
+#include "extensions/common/manifest_handlers/manifest_url_handlers.h"
 #include "extensions/common/manifest_test.h"
-#include "extensions/common/manifest_url_handlers.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 using extensions::Extension;
@@ -25,7 +25,7 @@ TEST_F(UpdateURLManifestTest, UpdateUrls) {
                Extension::NO_FLAGS),
       Testcase("update_url_valid_4.json", ManifestLocation::kInternal,
                Extension::NO_FLAGS)};
-  RunTestcases(testcases, EXPECT_TYPE_SUCCESS);
+  RunTestcases(testcases, ExpectType::kSuccess);
 
   // Test some invalid update urls
   const Testcase testcases2[] = {
@@ -35,5 +35,5 @@ TEST_F(UpdateURLManifestTest, UpdateUrls) {
                ManifestLocation::kInternal, Extension::NO_FLAGS),
       Testcase("update_url_invalid_3.json", errors::kInvalidUpdateURL,
                ManifestLocation::kInternal, Extension::NO_FLAGS)};
-  RunTestcases(testcases2, EXPECT_TYPE_ERROR);
+  RunTestcases(testcases2, ExpectType::kError);
 }

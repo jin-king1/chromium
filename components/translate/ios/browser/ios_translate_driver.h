@@ -7,6 +7,7 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
 
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
@@ -77,15 +78,18 @@ class IOSTranslateDriver
   // TranslateDriver methods.
   void OnIsPageTranslatedChanged() override;
   void OnTranslateEnabledChanged() override;
+  void TranslateControllerWasDestroyed(
+      TranslateController* translate_controller) override;
+
   bool IsLinkNavigation() override;
   void PrepareToTranslatePage(int page_seq_no,
-                              const std::string& original_source_lang,
-                              const std::string& target_lang,
+                              std::string_view original_source_lang,
+                              std::string_view target_lang,
                               bool triggered_from_menu) override;
   void TranslatePage(int page_seq_no,
-                     const std::string& translate_script,
-                     const std::string& source_lang,
-                     const std::string& target_lang) override;
+                     std::string_view translate_script,
+                     std::string_view source_lang,
+                     std::string_view target_lang) override;
   void RevertTranslation(int page_seq_no) override;
   bool IsIncognito() const override;
   const std::string& GetContentsMimeType() override;
@@ -156,6 +160,8 @@ class IOSTranslateDriver
   base::ScopedObservation<language::IOSLanguageDetectionTabHelper,
                           language::IOSLanguageDetectionTabHelper::Observer>
       language_detection_observation_{this};
+  base::ScopedObservation<TranslateController, TranslateController::Observer>
+      translate_controller_observation_{this};
 
   base::WeakPtrFactory<IOSTranslateDriver> weak_ptr_factory_{this};
 };

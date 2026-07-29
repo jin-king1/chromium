@@ -4,13 +4,16 @@
 
 #include "partition_alloc/address_pool_manager.h"
 
+#include <array>
 #include <cstdint>
+#include <cstring>
 
 #include "partition_alloc/address_space_stats.h"
 #include "partition_alloc/build_config.h"
 #include "partition_alloc/buildflags.h"
 #include "partition_alloc/page_allocator.h"
 #include "partition_alloc/partition_alloc_base/bits.h"
+#include "partition_alloc/partition_alloc_base/compiler_specific.h"
 #include "partition_alloc/partition_alloc_constants.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -107,7 +110,7 @@ TEST_F(PartitionAllocAddressPoolManagerTest, ManyPages) {
 }
 
 TEST_F(PartitionAllocAddressPoolManagerTest, PagesFragmented) {
-  uintptr_t addrs[kPageCnt];
+  std::array<uintptr_t, kPageCnt> addrs;
   for (size_t i = 0; i < kPageCnt; ++i) {
     addrs[i] = GetAddressPoolManager()->Reserve(pool_, 0, kSuperPageSize);
     EXPECT_EQ(addrs[i], base_address_ + i * kSuperPageSize);
@@ -133,7 +136,7 @@ TEST_F(PartitionAllocAddressPoolManagerTest, PagesFragmented) {
 }
 
 TEST_F(PartitionAllocAddressPoolManagerTest, GetUsedSuperpages) {
-  uintptr_t addrs[kPageCnt];
+  std::array<uintptr_t, kPageCnt> addrs;
   for (size_t i = 0; i < kPageCnt; ++i) {
     addrs[i] = GetAddressPoolManager()->Reserve(pool_, 0, kSuperPageSize);
     EXPECT_EQ(addrs[i], base_address_ + i * kSuperPageSize);
@@ -231,7 +234,7 @@ TEST_F(PartitionAllocAddressPoolManagerTest, DecommittedDataIsErased) {
                           PageAccessibilityConfiguration::kReadWrite),
                       PageAccessibilityDisposition::kRequireUpdate);
 
-  memset(reinterpret_cast<void*>(address), 42, kSuperPageSize);
+  PA_UNSAFE_TODO(memset(reinterpret_cast<void*>(address), 42, kSuperPageSize));
   GetAddressPoolManager()->UnreserveAndDecommit(pool_, address, kSuperPageSize);
 
   uintptr_t address2 =
@@ -244,7 +247,7 @@ TEST_F(PartitionAllocAddressPoolManagerTest, DecommittedDataIsErased) {
 
   uint32_t sum = 0;
   for (size_t i = 0; i < kSuperPageSize; i++) {
-    sum += reinterpret_cast<uint8_t*>(address2)[i];
+    sum += PA_UNSAFE_TODO(reinterpret_cast<uint8_t*>(address2)[i]);
   }
   EXPECT_EQ(0u, sum) << sum / 42 << " bytes were not zeroed";
 
@@ -282,8 +285,9 @@ TEST_F(PartitionAllocAddressPoolManagerTest, RegularPoolUsageChanges) {
 
 TEST(PartitionAllocAddressPoolManagerTest, IsManagedByRegularPool) {
   constexpr size_t kAllocCount = 8;
-  static const size_t kNumPages[kAllocCount] = {1, 4, 7, 8, 13, 16, 31, 60};
-  uintptr_t addrs[kAllocCount];
+  static const std::array<size_t, kAllocCount> kNumPages = {1,  4,  7,  8,
+                                                            13, 16, 31, 60};
+  std::array<uintptr_t, kAllocCount> addrs;
   for (size_t i = 0; i < kAllocCount; ++i) {
     addrs[i] = AddressPoolManager::GetInstance().Reserve(
         kRegularPoolHandle, 0,
@@ -332,8 +336,8 @@ TEST(PartitionAllocAddressPoolManagerTest, IsManagedByRegularPool) {
 TEST(PartitionAllocAddressPoolManagerTest, IsManagedByBRPPool) {
   constexpr size_t kAllocCount = 4;
   // Totally (1+3+7+11) * 2MB = 44MB allocation
-  static const size_t kNumPages[kAllocCount] = {1, 3, 7, 11};
-  uintptr_t addrs[kAllocCount];
+  static const std::array<size_t, kAllocCount> kNumPages = {1, 3, 7, 11};
+  std::array<uintptr_t, kAllocCount> addrs;
   for (size_t i = 0; i < kAllocCount; ++i) {
     addrs[i] = AddressPoolManager::GetInstance().Reserve(
         kBRPPoolHandle, 0, kSuperPageSize * kNumPages[i]);

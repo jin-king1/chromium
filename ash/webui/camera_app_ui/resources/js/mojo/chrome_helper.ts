@@ -7,36 +7,11 @@ import {reportError} from '../error.js';
 import {Point} from '../geometry.js';
 import * as localDev from '../local_dev.js';
 import {getCanUseBigBuffer} from '../models/load_time_data.js';
-import {
-  ErrorLevel,
-  ErrorType,
-  MimeType,
-} from '../type.js';
+import {ErrorLevel, ErrorType, MimeType} from '../type.js';
 import {windowController} from '../window_controller.js';
 
-import {
-  AspectRatio,
-  BigBuffer,
-  CameraAppHelper,
-  CameraAppHelperRemote,
-  CameraIntentAction,
-  EventsSenderRemote,
-  ExternalScreenMonitorCallbackRouter,
-  FileMonitorResult,
-  LidState,
-  LidStateMonitorCallbackRouter,
-  OcrResult,
-  PdfBuilderRemote,
-  Rotation,
-  ScreenLockedMonitorCallbackRouter,
-  ScreenState,
-  ScreenStateMonitorCallbackRouter,
-  StorageMonitorCallbackRouter,
-  StorageMonitorStatus,
-  SWPrivacySwitchMonitorCallbackRouter,
-  TabletModeMonitorCallbackRouter,
-  WifiConfig,
-} from './type.js';
+import type {AspectRatio, BigBuffer, CameraAppHelperRemote, CaptureDestination, CloudUpload, EventsSenderRemote, FileType, LidState, LocalFile, OcrResult, ScreenState, WifiConfig} from './type.js';
+import {CameraAppHelper, CameraIntentAction, ExternalScreenMonitorCallbackRouter, FileMonitorResult, LidStateMonitorCallbackRouter, PdfBuilderRemote, Rotation, ScreenLockedMonitorCallbackRouter, ScreenStateMonitorCallbackRouter, StorageMonitorCallbackRouter, StorageMonitorStatus, SWPrivacySwitchMonitorCallbackRouter, TabletModeMonitorCallbackRouter} from './type.js';
 import {wrapEndpoint} from './util.js';
 
 /**
@@ -52,7 +27,7 @@ function castToNumberArray(data: Uint8Array): number[] {
   // This cast is to workaround that the generated mojo binding only accepts
   // number[], but actually can be passed Uint8Array (which also supports
   // indexing via [] and length).
-  // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+
   return data as unknown as number[];
 }
 
@@ -234,10 +209,14 @@ export abstract class ChromeHelper {
   abstract isMetricsAndCrashReportingEnabled(): Promise<boolean>;
 
   /**
-   * Sends the broadcast to ARC to notify the new photo/video is captured.
+   * Notifies completion of capture.
+   * Also sends the broadcast to ARC to notify the new photo/video is captured.
    */
-  abstract sendNewCaptureBroadcast(args: {isVideo: boolean, name: string}):
-      void;
+  abstract processCapturedLocalFile(fileName: string, fileType: FileType):
+      Promise<boolean>;
+
+  abstract processCapturedFileForCloudUpload(
+      fileName: string, fileType: FileType, thumbnail: Blob): Promise<boolean>;
 
   /**
    * Monitors for the file deletion of the file given by its `name` and
@@ -396,7 +375,7 @@ class ChromeHelperImpl extends ChromeHelper {
   }
 
   override openUrlInBrowser(url: string): void {
-    this.remote.openUrlInBrowser({url: url});
+    this.remote.openUrlInBrowser(url);
   }
 
   private async checkReturn(
@@ -432,10 +411,37 @@ class ChromeHelperImpl extends ChromeHelper {
     return isEnabled;
   }
 
-  override sendNewCaptureBroadcast({isVideo, name}:
-                                       {isVideo: boolean, name: string}): void {
-    this.remote.sendNewCaptureBroadcast(isVideo, name);
+  override async processCapturedLocalFile(fileName: string, fileType: FileType):
+      Promise<boolean> {
+    const localFile: LocalFile = {
+      fileName,
+    };
+    const captureDestination: CaptureDestination = {
+      localFile,
+    };
+    const {succeeded} =
+        await this.remote.processCapturedFile(fileType, captureDestination);
+    return succeeded;
   }
+
+  override async processCapturedFileForCloudUpload(
+      fileName: string,
+      fileType: FileType,
+      thumbnail: Blob,
+      ): Promise<boolean> {
+    const numArray = await createNumArrayFromBlob(thumbnail);
+    const cloudUpload: CloudUpload = {
+      fileName,
+      thumbnail: numArray,
+    };
+    const captureDestination: CaptureDestination = {
+      cloudUpload,
+    };
+    const {succeeded} =
+        await this.remote.processCapturedFile(fileType, captureDestination);
+    return succeeded;
+  }
+
 
   override async monitorFileDeletion(name: string, callback: () => void):
       Promise<void> {

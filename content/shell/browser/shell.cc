@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "content/shell/browser/shell.h"
 
 #include <stddef.h>
@@ -17,6 +12,7 @@
 #include <utility>
 
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
 #include "base/no_destructor.h"
@@ -35,6 +31,7 @@
 #include "content/public/browser/file_select_listener.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
+#include "content/public/browser/page.h"
 #include "content/public/browser/picture_in_picture_window_controller.h"
 #include "content/public/browser/presentation_receiver_flags.h"
 #include "content/public/browser/render_process_host.h"
@@ -52,6 +49,7 @@
 #include "third_party/blink/public/common/peerconnection/webrtc_ip_handling_policy.h"
 #include "third_party/blink/public/common/renderer_preferences/renderer_preferences.h"
 #include "third_party/blink/public/mojom/choosers/file_chooser.mojom-forward.h"
+#include "third_party/blink/public/mojom/input/pointer_lock_result.mojom.h"
 #include "third_party/blink/public/mojom/window_features/window_features.mojom.h"
 
 namespace content {
@@ -139,7 +137,8 @@ Shell* Shell::CreateShell(std::unique_ptr<WebContents> web_contents,
   // main frame being created as a WebContentsObservers. This gives the delegate
   // a chance to act on the main frame accordingly.
   if (raw_web_contents->GetPrimaryMainFrame()->IsRenderFrameLive())
-    g_platform->MainFrameCreated(shell);
+    g_platform->MainFrameCreated(shell,
+                                 raw_web_contents->GetPrimaryMainFrame());
 
   return shell;
 }
@@ -207,8 +206,11 @@ void Shell::Shutdown() {
   if (quit_loop)
     std::move(quit_loop).Run();
 
-  // Pump the message loop to allow window teardown tasks to run.
+  // Pump the message loop to allow window teardown tasks to run. On iOS the
+  // run loop is controlled differently and cannot be pumped.
+#if !BUILDFLAG(IS_IOS)
   base::RunLoop().RunUntilIdle();
+#endif  // !BUILDFLAG(IS_IOS)
 }
 
 gfx::Size Shell::AdjustWindowSize(const gfx::Size& initial_size) {
@@ -239,8 +241,9 @@ Shell* Shell::CreateNewWindow(BrowserContext* browser_context,
 }
 
 void Shell::RenderFrameCreated(RenderFrameHost* frame_host) {
-  if (frame_host == web_contents_->GetPrimaryMainFrame())
-    g_platform->MainFrameCreated(this);
+  if (frame_host == frame_host->GetOutermostMainFrame()) {
+    g_platform->MainFrameCreated(this, frame_host);
+  }
 }
 
 void Shell::LoadURL(const GURL& url) {
@@ -323,10 +326,11 @@ WebContents* Shell::AddNewContents(
   }
 #endif  // !BUILDFLAG(IS_ANDROID)
 
+  WebContents* result = new_contents.get();
   CreateShell(
       std::move(new_contents), AdjustWindowSize(window_features.bounds.size()),
       !delay_popup_contents_delegate_for_testing_ /* should_set_delegate */);
-  return nullptr;
+  return result;
 }
 
 void Shell::GoBackOrForward(int offset) {
@@ -579,6 +583,25 @@ void Shell::RegisterProtocolHandler(RenderFrameHost* requesting_frame,
     registry->OnAcceptRegisterProtocolHandler(handler);
   }
 }
+
+void Shell::UnregisterProtocolHandler(RenderFrameHost* requesting_frame,
+                                      const std::string& protocol,
+                                      const GURL& url,
+                                      bool user_gesture) {
+  BrowserContext* context = requesting_frame->GetBrowserContext();
+  if (context->IsOffTheRecord()) {
+    return;
+  }
+
+  custom_handlers::ProtocolHandler handler =
+      custom_handlers::ProtocolHandler::CreateProtocolHandler(
+          protocol, url, GetProtocolHandlerSecurityLevel(requesting_frame));
+  custom_handlers::ProtocolHandlerRegistry* registry = custom_handlers::
+      SimpleProtocolHandlerRegistryFactory::GetForBrowserContext(context, true);
+  CHECK(registry);
+
+  registry->RemoveHandler(handler);
+}
 #endif
 
 void Shell::RequestPointerLock(WebContents* web_contents,
@@ -766,7 +789,7 @@ gfx::Size Shell::GetShellDefaultSize() {
     const std::string size_str = command_line->GetSwitchValueASCII(
         switches::kContentShellHostWindowSize);
     int width, height;
-    if (sscanf(size_str.c_str(), "%dx%d", &width, &height) == 2) {
+    if (UNSAFE_TODO(sscanf(size_str.c_str(), "%dx%d", &width, &height)) == 2) {
       default_shell_size = gfx::Size(width, height);
     } else {
       LOG(ERROR) << "Invalid size \"" << size_str << "\" given to --"

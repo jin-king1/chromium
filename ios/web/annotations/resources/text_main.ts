@@ -20,7 +20,7 @@ import {TextExtractor} from '//ios/web/annotations/resources/text_extractor.js';
 import {TextIntersectionObserver} from '//ios/web/annotations/resources/text_intersection_observer.js';
 import {TextStyler} from '//ios/web/annotations/resources/text_styler.js';
 import {IdleTaskTracker} from '//ios/web/annotations/resources/text_tasks.js';
-import {gCrWeb} from '//ios/web/public/js_messaging/resources/gcrweb.js';
+import {CrWebApi, gCrWeb} from '//ios/web/public/js_messaging/resources/gcrweb.js';
 import {sendWebKitMessage} from '//ios/web/public/js_messaging/resources/utils.js';
 
 // Used to trigger text extraction and decoration when system is idle.
@@ -95,7 +95,6 @@ function decorateChunk(
 // Consumer of taps on annotations. Forwards to the browser side.
 function tapConsumer(
     annotation: HTMLElementWithSymbolIndex, cancel: boolean): void {
-  decorator?.highlightAnnotation(annotation);
   sendWebKitMessage('annotations', {
     command: 'annotations.onClick',
     cancel: cancel,
@@ -120,7 +119,7 @@ function decorationNodeRemovedConsumer(node: NodeWithSymbolIndex): void {
 // Mark: Public API
 
 // Starts the annotation observer.
-function start(): void {
+function start(maxTextLength: number): void {
   // Check for already started or for a page request to not detect intent.
   if (hasNoIntentDetection() || intersectionObserver) {
     return;
@@ -128,7 +127,7 @@ function start(): void {
   const root = document.documentElement;
   idleTaskTracker = new IdleTaskTracker();
   click = new TextClick(root, tapConsumer, () => decorator?.decorations);
-  extractor = new TextExtractor(textChunkConsumer);
+  extractor = new TextExtractor(textChunkConsumer, maxTextLength);
   styler = new TextStyler();
   decorator = new TextDecorator(styler);
   intersectionObserver =
@@ -171,15 +170,12 @@ function removeDecorationsWithType(type: string): void {
   decorator?.removeDecorationsOfType(type);
 }
 
-function removeHighlight(): void {
-  decorator?.removeHighlight();
-}
+const annotations = new CrWebApi('annotations');
 
-gCrWeb.annotations = {
-  start,
-  stop,
-  decorateAnnotations,
-  removeDecorations,
-  removeDecorationsWithType,
-  removeHighlight,
-};
+annotations.addFunction('start', start);
+annotations.addFunction('stop', stop);
+annotations.addFunction('decorateAnnotations', decorateAnnotations);
+annotations.addFunction('removeDecorations', removeDecorations);
+annotations.addFunction('removeDecorationsWithType', removeDecorationsWithType);
+
+gCrWeb.registerApi(annotations);

@@ -8,6 +8,7 @@
 #import <UIKit/UIKit.h>
 
 #include <string>
+#include <string_view>
 
 #include "base/ios/block_types.h"
 
@@ -15,7 +16,9 @@
 @class AlertCoordinator;
 class AuthenticationService;
 class Browser;
+class GaiaId;
 class PrefService;
+class ProfileIOS;
 
 namespace signin {
 class IdentityManager;
@@ -35,7 +38,7 @@ typedef NS_ENUM(NSUInteger, SignoutActionSheetCoordinatorResult) {
   SignoutActionSheetCoordinatorResultKeepOnDevice,
 };
 
-// Enum to describe all 3 cases for a user being signed-in and syncing.
+// Enum to describe all 3 cases for a user being signed-in.
 enum class SignedInUserState {
   // Sign-in with UNO. The sign-out needs to ask confirmation to sign out only
   // if there are unsaved data. When signed out, a snackbar needs to be
@@ -93,7 +96,7 @@ NSString* ViewControllerPresentationStatusDescription(
     UIViewController* view_controller);
 
 // Returns an alert coordinator asking the user whether they accept to switch to
-// a managed account.
+// a managed account. Must only be called if separate profiles is disabled.
 AlertCoordinator* ManagedConfirmationDialogContentForHostedDomain(
     NSString* hosted_domain,
     Browser* browser,
@@ -105,8 +108,7 @@ AlertCoordinator* ManagedConfirmationDialogContentForHostedDomain(
 // hosted domain.
 BOOL ShouldShowManagedConfirmationForHostedDomain(
     NSString* hosted_domain,
-    signin_metrics::AccessPoint access_point,
-    NSString* gaia_ID,
+    const GaiaId& gaia_ID,
     PrefService* prefs);
 
 // Returns the current sign-in&sync state.
@@ -119,7 +121,9 @@ SignedInUserState GetSignedInUserState(
 // `GetLeavingPrimaryAccountConfirmationDialog()` needs to be shown, even if
 // there is no unsynced data.
 bool ForceLeavingPrimaryAccountConfirmationDialog(
-    SignedInUserState signed_in_user_state);
+    SignedInUserState signed_in_user_state,
+    ProfileIOS* profile,
+    const GaiaId& gaia_id_to_sign_in);
 
 // Returns a dialog for the user to confirm to sign out, switch account.
 // `anchorView` and `anchorRect` is the position that triggered sign-in.

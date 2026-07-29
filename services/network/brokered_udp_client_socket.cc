@@ -5,8 +5,10 @@
 #include "services/network/brokered_udp_client_socket.h"
 
 #include "base/component_export.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/sequence_checker.h"
 #include "base/task/single_thread_task_runner.h"
 #include "build/build_config.h"
@@ -52,7 +54,7 @@ BrokeredUdpClientSocket::~BrokeredUdpClientSocket() {
 }
 
 int BrokeredUdpClientSocket::Connect(const net::IPEndPoint& address) {
-  if (!broker_helper_.ShouldBroker(address.address())) {
+  if (!client_socket_factory_->ShouldBroker(address.address())) {
     return ConnectInternal(address);
   }
   // Brokered sockets can only support asynchronous connections so this does not
@@ -103,10 +105,13 @@ int BrokeredUdpClientSocket::ConnectAsyncInternal(
   DCHECK(!socket_);
   CHECK(!connect_called_);
   connect_called_ = true;
-  if (!broker_helper_.ShouldBroker(address.address())) {
+  if (!client_socket_factory_->ShouldBroker(address.address())) {
+    // `start_time` is not used in this case, so we pass an empty TimeTicks
+    // object.
     return DidCompleteCreate(/*should_broker=*/false, address,
-                             std::move(callback), network::TransferableSocket(),
-                             net::OK);
+                             std::move(callback),
+                             /*start_time=*/base::TimeTicks(),
+                             network::TransferableSocket(), net::OK);
   }
   net_log_source_.BeginEvent(net::NetLogEventType::BROKERED_CREATE_SOCKET);
   client_socket_factory_->BrokerCreateUdpSocket(
@@ -114,7 +119,7 @@ int BrokeredUdpClientSocket::ConnectAsyncInternal(
       base::BindOnce(
           base::IgnoreResult(&BrokeredUdpClientSocket::DidCompleteCreate),
           brokered_weak_ptr_factory_.GetWeakPtr(), /*should_broker=*/true,
-          address, std::move(callback)));
+          address, std::move(callback), base::TimeTicks::Now()));
   return net::ERR_IO_PENDING;
 }
 
@@ -146,10 +151,17 @@ int BrokeredUdpClientSocket::DidCompleteCreate(
     bool should_broker,
     const net::IPEndPoint& address,
     net::CompletionOnceCallback callback,
+    base::TimeTicks start_time,
     network::TransferableSocket socket,
     int result) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (should_broker) {
+    const auto now = base::TimeTicks::Now();
+    // TODO(crbug.com/489579955): This histogram is recorded very frequently.
+    // Remove it once enough data is collected.
+    UMA_HISTOGRAM_CUSTOM_MICROSECONDS_TIMES(
+        "Network.BrokeredUdpClientSocket.SocketCreationTime", now - start_time,
+        base::Microseconds(1), base::Milliseconds(10), 100);
     net_log_source_.EndEventWithNetErrorCode(
         net::NetLogEventType::BROKERED_CREATE_SOCKET, result);
     if (result != net::OK) {
@@ -221,6 +233,21 @@ int BrokeredUdpClientSocket::Read(net::IOBuffer* buf,
     return net::ERR_SOCKET_NOT_CONNECTED;
   }
   return socket_->Read(buf, buf_len, std::move(callback));
+}
+
+base::expected<net::DatagramsMetadata, net::Error>
+BrokeredUdpClientSocket::ReadMultiple(
+    net::IOBuffer* buf,
+    size_t buf_len,
+    size_t maximum_packet_size,
+    base::OnceCallback<void(base::expected<net::DatagramsMetadata, net::Error>)>
+        callback) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (!socket_) {
+    return base::unexpected(net::ERR_SOCKET_NOT_CONNECTED);
+  }
+  return socket_->ReadMultiple(buf, buf_len, maximum_packet_size,
+                               std::move(callback));
 }
 
 int BrokeredUdpClientSocket::Write(
@@ -324,6 +351,9 @@ void BrokeredUdpClientSocket::SetIOSNetworkServiceType(
 
 net::DscpAndEcn BrokeredUdpClientSocket::GetLastTos() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (!socket_) {
+    return net::DscpAndEcn(net::DSCP_DEFAULT, net::ECN_DEFAULT);
+  }
   return socket_->GetLastTos();
 }
 

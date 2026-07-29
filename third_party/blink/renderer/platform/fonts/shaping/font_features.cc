@@ -11,12 +11,6 @@
 
 namespace blink {
 
-namespace {
-
-constexpr FontFeatureRange kChws{{{'c', 'h', 'w', 's'}, 1}};
-
-}  // namespace
-
 //
 // Ensure `FontFeatureTag` is compatible with `hb_tag_t`.
 //
@@ -34,22 +28,6 @@ static_assert(offsetof(FontFeatureRange, value) ==
 static_assert(offsetof(FontFeatureRange, start) ==
               offsetof(hb_feature_t, start));
 static_assert(offsetof(FontFeatureRange, end) == offsetof(hb_feature_t, end));
-
-bool FontFeatureRange::IsInitial(base::span<const FontFeatureRange> features) {
-  return features.size() == 1 && features[0] == kChws;
-}
-
-const hb_feature_t* FontFeatures::ToHarfBuzzData() const {
-  return reinterpret_cast<const hb_feature_t*>(features_.data());
-}
-
-std::optional<uint32_t> FontFeatures::FindValueForTesting(uint32_t tag) const {
-  for (const FontFeatureRange& feature : features_) {
-    if (feature.tag == tag)
-      return feature.value;
-  }
-  return std::nullopt;
-}
 
 template <wtf_size_t InlineCapacity>
 void FontFeatureRange::FromFontDescription(
@@ -261,15 +239,24 @@ void FontFeatureRange::FromFontDescription(
   }
 }
 
-void FontFeatures::Initialize(const FontDescription& description) {
-  FontFeatureRange::FromFontDescription(description, features_);
-}
-
 //
 // Explicitly instantiate template functions.
 //
 template PLATFORM_EXPORT void FontFeatureRange::FromFontDescription(
     const FontDescription&,
     Vector<FontFeatureRange, FontFeatureRange::kInitialSize>&);
+template PLATFORM_EXPORT void FontFeatureRange::FromFontDescription(
+    const FontDescription&,
+    FontFeatureRanges&);
+
+#if EXPENSIVE_DCHECKS_ARE_ON()
+void FontFeatureRangesSaver::CheckIsAdditionsOnly() const {
+  DCHECK_GE(features_->size(), num_features_before_);
+  const wtf_size_t size = std::min(features_->size(), num_features_before_);
+  for (wtf_size_t i = 0; i < size; ++i) {
+    DCHECK_EQ((*features_)[i], saved_features_[i]);
+  }
+}
+#endif  // EXPENSIVE_DCHECKS_ARE_ON()
 
 }  // namespace blink

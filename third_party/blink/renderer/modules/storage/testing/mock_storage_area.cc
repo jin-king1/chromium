@@ -37,32 +37,28 @@ void MockStorageArea::Put(
     const Vector<uint8_t>& key,
     const Vector<uint8_t>& value,
     const std::optional<Vector<uint8_t>>& client_old_value,
-    const String& source,
+    mojom::blink::StorageAreaSourcePtr source,
     PutCallback callback) {
-  observed_puts_.push_back(ObservedPut{key, value, source});
+  observed_puts_.push_back(ObservedPut(key, value, std::move(source)));
   std::move(callback).Run(true);
 }
 
 void MockStorageArea::Delete(
     const Vector<uint8_t>& key,
     const std::optional<Vector<uint8_t>>& client_old_value,
-    const String& source,
+    mojom::blink::StorageAreaSourcePtr source,
     DeleteCallback callback) {
-  observed_deletes_.push_back(ObservedDelete{key, source});
-  std::move(callback).Run(true);
+  observed_deletes_.push_back(ObservedDelete(key, std::move(source)));
+  std::move(callback).Run();
 }
 
 void MockStorageArea::DeleteAll(
-    const String& source,
+    mojom::blink::StorageAreaSourcePtr source,
     mojo::PendingRemote<mojom::blink::StorageAreaObserver> new_observer,
     DeleteAllCallback callback) {
-  observed_delete_alls_.push_back(source);
+  observed_delete_alls_.push_back(std::move(source));
   ++observer_count_;
-  std::move(callback).Run(true);
-}
-
-void MockStorageArea::Get(const Vector<uint8_t>& key, GetCallback callback) {
-  NOTREACHED();
+  std::move(callback).Run();
 }
 
 void MockStorageArea::GetAll(
@@ -75,10 +71,6 @@ void MockStorageArea::GetAll(
   for (const auto& entry : key_values_)
     entries.push_back(mojom::blink::KeyValue::New(entry.key, entry.value));
   std::move(callback).Run(std::move(entries));
-}
-
-void MockStorageArea::Checkpoint() {
-  ++observed_checkpoints_;
 }
 
 }  // namespace blink

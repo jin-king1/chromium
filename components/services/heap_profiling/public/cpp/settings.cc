@@ -7,6 +7,7 @@
 #include "base/base_switches.h"
 #include "base/command_line.h"
 #include "base/feature_list.h"
+#include "base/logging.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/strings/string_number_conversions.h"
 #include "components/services/heap_profiling/public/cpp/switches.h"
@@ -57,6 +58,9 @@ Mode ConvertStringToMode(const std::string& mode) {
     return Mode::kUtilitySampling;
   if (mode == kMemlogModeUtilityAndBrowser)
     return Mode::kUtilityAndBrowser;
+  if (mode == kMemlogModeAllUtilities) {
+    return Mode::kAllUtilities;
+  }
   DLOG(ERROR) << "Unsupported value: \"" << mode << "\" passed to --"
               << kMemlogMode;
   return Mode::kNone;

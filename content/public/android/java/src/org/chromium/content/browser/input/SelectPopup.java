@@ -4,6 +4,7 @@
 
 package org.chromium.content.browser.input;
 
+
 import android.content.Context;
 import android.view.View;
 import android.view.ViewGroup;
@@ -20,8 +21,8 @@ import org.chromium.content.browser.PopupController.HideablePopup;
 import org.chromium.content.browser.WindowEventObserver;
 import org.chromium.content.browser.WindowEventObserverManager;
 import org.chromium.content.browser.webcontents.WebContentsImpl;
-import org.chromium.content.browser.webcontents.WebContentsImpl.UserDataFactory;
 import org.chromium.content_public.browser.WebContents;
+import org.chromium.content_public.browser.WebContents.UserDataFactory;
 import org.chromium.ui.accessibility.AccessibilityState;
 import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.base.ViewAndroidDelegate;
@@ -41,17 +42,18 @@ public class SelectPopup
     /** UI for Select popup. */
     public interface Ui {
         /** Shows the popup. */
-        public void show();
+        void show();
 
         /**
          * Hides the popup.
+         *
          * @param sendsCancelMessage Sends cancel message before hiding if true.
          */
-        public void hide(boolean sendsCancelMessage);
+        void hide(boolean sendsCancelMessage);
     }
 
     private final WebContentsImpl mWebContents;
-    private View mContainerView;
+    private @Nullable View mContainerView;
     private @Nullable Ui mPopupView;
     private long mNativeSelectPopup;
     private long mNativeSelectPopupSourceFrame;
@@ -62,13 +64,13 @@ public class SelectPopup
 
     /**
      * Get {@link SelectPopup} object used for the give WebContents.
+     *
      * @param webContents {@link WebContents} object.
      * @return {@link SelectPopup} object.
      */
     public static SelectPopup fromWebContents(WebContents webContents) {
         SelectPopup ret =
-                ((WebContentsImpl) webContents)
-                        .getOrSetUserData(SelectPopup.class, UserDataFactoryLazyHolder.INSTANCE);
+                webContents.getOrSetUserData(SelectPopup.class, UserDataFactoryLazyHolder.INSTANCE);
         assert ret != null;
         return ret;
     }
@@ -94,11 +96,6 @@ public class SelectPopup
         WindowEventObserverManager.from(mWebContents).addObserver(this);
     }
 
-    /** Close popup. Called when {@link WindowAndroid} is updated. */
-    public void close() {
-        mPopupView = null;
-    }
-
     // HideablePopup
 
     @Override
@@ -111,7 +108,7 @@ public class SelectPopup
     // ViewAndroidDelegate.ContainerViewObserver
 
     @Override
-    public void onUpdateContainerView(ViewGroup view) {
+    public void onUpdateContainerView(@Nullable ViewGroup view) {
         mContainerView = view;
         hide();
     }
@@ -120,17 +117,24 @@ public class SelectPopup
 
     @Override
     public void onWindowAndroidChanged(@Nullable WindowAndroid windowAndroid) {
-        close();
+        if (mPopupView == null) return;
+        mPopupView.hide(true);
+        mPopupView = null;
+        assert mNativeSelectPopupSourceFrame == 0;
     }
 
     /**
-     * Called (from native) when the lt&;select&gt; popup needs to be shown.
+     * Called (from native) when the &lt;select&gt; popup needs to be shown.
+     *
      * @param anchorView View anchored for popup.
      * @param nativeSelectPopupSourceFrame The native RenderFrameHost that owns the popup.
-     * @param items           Items to show.
-     * @param enabled         POPUP_ITEM_TYPEs for items.
-     * @param multiple        Whether the popup menu should support multi-select.
+     * @param items Items to show.
+     * @param enabled POPUP_ITEM_TYPEs for items.
+     * @param multiple Whether the popup menu should support multi-select.
      * @param selectedIndices Indices of selected items.
+     * @param rightAligned Whether the popup menu should be right aligned.
+     * @param itemHeight The height of each item in the dropdown in pixels.
+     * @param fontSize The font size of the label text in pixels.
      */
     @SuppressWarnings("unused")
     @CalledByNative
@@ -141,8 +145,12 @@ public class SelectPopup
             int[] enabled,
             boolean multiple,
             int[] selectedIndices,
-            boolean rightAligned) {
-        if (mContainerView.getParent() == null || mContainerView.getVisibility() != View.VISIBLE) {
+            boolean rightAligned,
+            int itemHeight,
+            double fontSize) {
+        if (mContainerView == null
+                || mContainerView.getParent() == null
+                || mContainerView.getVisibility() != View.VISIBLE) {
             mNativeSelectPopupSourceFrame = nativeSelectPopupSourceFrame;
             selectMenuItems(null);
             return;
@@ -170,6 +178,8 @@ public class SelectPopup
                             popupItems,
                             selectedIndices,
                             rightAligned,
+                            itemHeight,
+                            fontSize,
                             mWebContents);
         } else {
             mPopupView =
@@ -208,11 +218,7 @@ public class SelectPopup
     public void selectMenuItems(int @Nullable [] indices) {
         if (mNativeSelectPopup != 0) {
             SelectPopupJni.get()
-                    .selectMenuItems(
-                            mNativeSelectPopup,
-                            SelectPopup.this,
-                            mNativeSelectPopupSourceFrame,
-                            indices);
+                    .selectMenuItems(mNativeSelectPopup, mNativeSelectPopupSourceFrame, indices);
         }
         mNativeSelectPopupSourceFrame = 0;
         mPopupView = null;
@@ -222,7 +228,6 @@ public class SelectPopup
     interface Natives {
         void selectMenuItems(
                 long nativeSelectPopup,
-                SelectPopup caller,
                 long nativeSelectPopupSourceFrame,
                 int @Nullable [] indices);
     }

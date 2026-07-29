@@ -54,6 +54,7 @@ enum DecoderCapability {
   kClearOnly,
   kEncryptedOnly,
   kAlwaysSucceed,
+  kTooManyDecoders,
 };
 
 bool DecoderCapabilitySupportsDecryption(DecoderCapability capability) {
@@ -65,6 +66,8 @@ bool DecoderCapabilitySupportsDecryption(DecoderCapability capability) {
     case kEncryptedOnly:
       return true;
     case kAlwaysSucceed:
+      return true;
+    case kTooManyDecoders:
       return true;
   }
 }
@@ -82,6 +85,8 @@ DecoderStatus IsConfigSupported(DecoderCapability capability,
                           : DecoderStatus::Codes::kUnsupportedEncryptionMode;
     case kAlwaysSucceed:
       return DecoderStatus::Codes::kOk;
+    case kTooManyDecoders:
+      return DecoderStatus::Codes::kTooManyDecoders;
   }
 }
 
@@ -105,8 +110,8 @@ class AudioDecoderSelectorTestParam {
 
   // StreamTraits() takes different parameters depending on the type.
   static std::unique_ptr<StreamTraits> CreateStreamTraits(MediaLog* media_log) {
-    return std::make_unique<StreamTraits>(media_log, CHANNEL_LAYOUT_STEREO,
-                                          kSampleFormatPlanarF32);
+    return std::make_unique<StreamTraits>(
+        media_log, ChannelLayoutConfig::Stereo(), kSampleFormatPlanarF32);
   }
 
   static void UseNormalClearDecoderConfig(
@@ -234,7 +239,7 @@ class DecoderSelectorTest : public ::testing::Test {
   void OnWaiting(WaitingReason reason) { NOTREACHED(); }
   void OnOutput(scoped_refptr<Output> output) { NOTREACHED(); }
 
-  MOCK_METHOD0_T(NoDecoderSelected, void());
+  MOCK_METHOD1_T(NoDecoderSelected, void(DecoderStatus::Codes));
   MOCK_METHOD1_T(OnDecoderSelected, void(int));
   MOCK_METHOD1_T(OnDecoderSelected, void(DecoderType));
   MOCK_METHOD1_T(OnDemuxerStreamSelected,
@@ -253,7 +258,7 @@ class DecoderSelectorTest : public ::testing::Test {
     } else if (decoder.has_value()) {
       OnDecoderSelected(decoder->GetDecoderType());
     } else {
-      NoDecoderSelected();
+      NoDecoderSelected(std::move(decoder).error().code());
     }
 
     if (decrypting_demuxer_stream)
@@ -344,11 +349,14 @@ class DecoderSelectorTest : public ::testing::Test {
     }
   }
 
-  void CreateDecoderSelector() {
+  void CreateDecoderSelector(bool supports_config_changes = false,
+                             bool enable_priority_based_selection = true) {
+    EXPECT_CALL(demuxer_stream_, SupportsConfigChanges())
+        .WillRepeatedly(Return(supports_config_changes));
     decoder_selector_ = std::make_unique<Selector>(
         task_environment_.GetMainThreadTaskRunner(),
         base::BindRepeating(&Self::CreateDecoders, base::Unretained(this)),
-        &media_log_, /*enable_priority_based_selection=*/true);
+        &media_log_, enable_priority_based_selection);
     decoder_selector_->Initialize(
         traits_.get(), &demuxer_stream_, cdm_context_.get(),
         base::BindRepeating(&Self::OnWaiting, base::Unretained(this)));
@@ -413,7 +421,17 @@ TYPED_TEST(DecoderSelectorTest, ClearStream_NoDecoders) {
   this->UseClearDecoderConfig();
   this->CreateDecoderSelector();
 
-  EXPECT_CALL(*this, NoDecoderSelected());
+  EXPECT_CALL(*this,
+              NoDecoderSelected(DecoderStatus::Codes::kUnsupportedConfig));
+  this->SelectNextDecoder();
+}
+
+TYPED_TEST(DecoderSelectorTest, ClearStream_TooManyDecoders) {
+  this->AddMockDecoder(kDecoder1, kTooManyDecoders);
+  this->UseClearDecoderConfig();
+  this->CreateDecoderSelector();
+
+  EXPECT_CALL(*this, NoDecoderSelected(DecoderStatus::Codes::kTooManyDecoders));
   this->SelectNextDecoder();
 }
 
@@ -422,7 +440,8 @@ TYPED_TEST(DecoderSelectorTest, ClearStream_NoClearDecoder) {
   this->UseClearDecoderConfig();
   this->CreateDecoderSelector();
 
-  EXPECT_CALL(*this, NoDecoderSelected());
+  EXPECT_CALL(*this,
+              NoDecoderSelected(DecoderStatus::Codes::kUnsupportedConfig));
   this->SelectNextDecoder();
 }
 
@@ -457,7 +476,7 @@ TYPED_TEST(DecoderSelectorTest, ClearStream_ExternalFallback) {
   EXPECT_CALL(*this, OnDecoderSelected(kDecoder2));
   this->SelectNextDecoder();
 
-  EXPECT_CALL(*this, NoDecoderSelected());
+  EXPECT_CALL(*this, NoDecoderSelected(DecoderStatus::Codes::kFailed));
   this->SelectNextDecoder();
 }
 
@@ -497,7 +516,60 @@ TEST_F(VideoDecoderSelectorTest, ClearStream_PrioritizeSoftwareDecoders) {
   this->SelectNextDecoder();
   EXPECT_CALL(*this, OnDecoderSelected(kDecoder3));
   this->SelectNextDecoder();
-  EXPECT_CALL(*this, NoDecoderSelected());
+  EXPECT_CALL(*this, NoDecoderSelected(DecoderStatus::Codes::kFailed));
+  this->SelectNextDecoder();
+}
+
+// Test decoders are not prioritized when config changes are supported.
+TEST_F(VideoDecoderSelectorTest,
+       ClearStream_PrioritizeSoftwareDecodersDisabled) {
+  this->AddMockPlatformDecoder(kDecoder1, kClearOnly);
+  this->AddMockDecoder(kDecoder2, kClearOnly);
+  this->AddMockPlatformDecoder(kDecoder3, kAlwaysSucceed);
+  this->AddMockDecoder(kDecoder4, kAlwaysSucceed);
+
+  // Create a clear config that will cause software decoders to be
+  // prioritized on any platform.
+  this->demuxer_stream_.set_video_decoder_config(
+      TestVideoConfig::Custom(gfx::Size(64, 64)));
+  this->CreateDecoderSelector(/*supports_config_changes=*/true,
+                              /*enable_priority_based_selection=*/true);
+
+  EXPECT_CALL(*this, OnDecoderSelected(kDecoder1));
+  this->SelectNextDecoder();
+  EXPECT_CALL(*this, OnDecoderSelected(kDecoder2));
+  this->SelectNextDecoder();
+  EXPECT_CALL(*this, OnDecoderSelected(kDecoder3));
+  this->SelectNextDecoder();
+  EXPECT_CALL(*this, OnDecoderSelected(kDecoder4));
+  this->SelectNextDecoder();
+  EXPECT_CALL(*this, NoDecoderSelected(DecoderStatus::Codes::kFailed));
+  this->SelectNextDecoder();
+}
+
+TEST_F(VideoDecoderSelectorTest,
+       ClearStream_PrioritizeSoftwareDecodersFullyDisabled) {
+  this->AddMockPlatformDecoder(kDecoder1, kClearOnly);
+  this->AddMockDecoder(kDecoder2, kClearOnly);
+  this->AddMockPlatformDecoder(kDecoder3, kAlwaysSucceed);
+  this->AddMockDecoder(kDecoder4, kAlwaysSucceed);
+
+  // Create a clear config that will cause software decoders to be
+  // prioritized on any platform.
+  this->demuxer_stream_.set_video_decoder_config(
+      TestVideoConfig::Custom(gfx::Size(64, 64)));
+  this->CreateDecoderSelector(/*supports_config_changes=*/false,
+                              /*enable_priority_based_selection=*/false);
+
+  EXPECT_CALL(*this, OnDecoderSelected(kDecoder1));
+  this->SelectNextDecoder();
+  EXPECT_CALL(*this, OnDecoderSelected(kDecoder2));
+  this->SelectNextDecoder();
+  EXPECT_CALL(*this, OnDecoderSelected(kDecoder3));
+  this->SelectNextDecoder();
+  EXPECT_CALL(*this, OnDecoderSelected(kDecoder4));
+  this->SelectNextDecoder();
+  EXPECT_CALL(*this, NoDecoderSelected(DecoderStatus::Codes::kFailed));
   this->SelectNextDecoder();
 }
 
@@ -522,7 +594,7 @@ TEST_F(VideoDecoderSelectorTest, ClearStream_PrioritizePlatformDecoders) {
   this->SelectNextDecoder();
   EXPECT_CALL(*this, OnDecoderSelected(kDecoder4));
   this->SelectNextDecoder();
-  EXPECT_CALL(*this, NoDecoderSelected());
+  EXPECT_CALL(*this, NoDecoderSelected(DecoderStatus::Codes::kFailed));
   this->SelectNextDecoder();
 }
 
@@ -546,7 +618,8 @@ TYPED_TEST(DecoderSelectorTest,
   this->UseEncryptedDecoderConfig();
   this->CreateDecoderSelector();
 
-  EXPECT_CALL(*this, NoDecoderSelected());
+  EXPECT_CALL(*this,
+              NoDecoderSelected(DecoderStatus::Codes::kUnsupportedConfig));
   this->SelectNextDecoder();
 }
 
@@ -556,7 +629,8 @@ TYPED_TEST(DecoderSelectorTest, EncryptedStream_NoDecryptor_OneClearDecoder) {
   this->UseEncryptedDecoderConfig();
   this->CreateDecoderSelector();
 
-  EXPECT_CALL(*this, NoDecoderSelected());
+  EXPECT_CALL(*this, NoDecoderSelected(
+                         DecoderStatus::Codes::kUnsupportedEncryptionMode));
   this->SelectNextDecoder();
 }
 
@@ -607,7 +681,8 @@ TYPED_TEST(DecoderSelectorTest, EncryptedStream_DecryptOnly_NoDecoder) {
   this->UseEncryptedDecoderConfig();
   this->CreateDecoderSelector();
 
-  EXPECT_CALL(*this, NoDecoderSelected());
+  EXPECT_CALL(*this,
+              NoDecoderSelected(DecoderStatus::Codes::kUnsupportedConfig));
   this->SelectNextDecoder();
 }
 
@@ -744,7 +819,7 @@ TEST_F(VideoDecoderSelectorTest, EncryptedStream_PrioritizeSoftwareDecoders) {
   this->SelectNextDecoder();
   EXPECT_CALL(*this, OnDecoderSelected(kDecoder3));
   this->SelectNextDecoder();
-  EXPECT_CALL(*this, NoDecoderSelected());
+  EXPECT_CALL(*this, NoDecoderSelected(DecoderStatus::Codes::kFailed));
   this->SelectNextDecoder();
 }
 
@@ -765,7 +840,7 @@ TEST_F(VideoDecoderSelectorTest, EncryptedStream_PrioritizePlatformDecoders) {
   this->SelectNextDecoder();
   EXPECT_CALL(*this, OnDecoderSelected(kDecoder4));
   this->SelectNextDecoder();
-  EXPECT_CALL(*this, NoDecoderSelected());
+  EXPECT_CALL(*this, NoDecoderSelected(DecoderStatus::Codes::kFailed));
   this->SelectNextDecoder();
 }
 

@@ -50,7 +50,6 @@ void UntrustworthyContextMenuParams::Assign(
   y = other.y;
   link_url = other.link_url;
   link_text = other.link_text;
-  impression = other.impression;
   unfiltered_link_url = other.unfiltered_link_url;
   src_url = other.src_url;
   has_image_contents = other.has_image_contents;
@@ -76,7 +75,9 @@ void UntrustworthyContextMenuParams::Assign(
   source_type = other.source_type;
   selection_rect = other.selection_rect;
   selection_start_offset = other.selection_start_offset;
-  opened_from_highlight = other.opened_from_highlight;
+  annotation_type = other.annotation_type;
+  opened_from_interest_for = other.opened_from_interest_for;
+  interest_for_node_id = other.interest_for_node_id;
   form_control_type = other.form_control_type;
   is_content_editable_for_autofill = other.is_content_editable_for_autofill;
   field_renderer_id = other.field_renderer_id;

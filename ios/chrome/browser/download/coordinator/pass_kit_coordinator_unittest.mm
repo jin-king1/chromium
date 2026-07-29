@@ -13,7 +13,6 @@
 #import "base/memory/raw_ptr.h"
 #import "base/test/ios/wait_util.h"
 #import "base/test/metrics/histogram_tester.h"
-#import "base/test/task_environment.h"
 #import "components/infobars/core/confirm_infobar_delegate.h"
 #import "components/infobars/core/infobar.h"
 #import "ios/chrome/browser/download/model/download_test_util.h"
@@ -28,6 +27,7 @@
 #import "ios/chrome/test/scoped_key_window.h"
 #import "ios/web/public/test/fakes/fake_navigation_manager.h"
 #import "ios/web/public/test/fakes/fake_web_state.h"
+#import "ios/web/public/test/web_task_environment.h"
 #import "testing/gtest/include/gtest/gtest.h"
 #import "testing/platform_test.h"
 #import "ui/base/device_form_factor.h"
@@ -55,8 +55,8 @@ class PassKitCoordinatorTest : public PlatformTest {
     web_state_ = browser_->GetWebStateList()->GetActiveWebState();
     handler_ = [[FakeWebContentHandler alloc] init];
 
-    PassKitTabHelper::GetOrCreateForWebState(web_state_)
-        ->SetWebContentsHandler(handler_);
+    PassKitTabHelper::CreateForWebState(web_state_);
+    PassKitTabHelper::FromWebState(web_state_)->SetWebContentsHandler(handler_);
     InfoBarManagerImpl::CreateForWebState(web_state_);
 
     [scoped_key_window_.Get() setRootViewController:base_view_controller_];
@@ -65,10 +65,10 @@ class PassKitCoordinatorTest : public PlatformTest {
   ~PassKitCoordinatorTest() override { [coordinator_ stop]; }
 
   PassKitTabHelper* tab_helper() {
-    return PassKitTabHelper::GetOrCreateForWebState(web_state_);
+    return PassKitTabHelper::FromWebState(web_state_);
   }
 
-  base::test::TaskEnvironment task_environment_;
+  web::WebTaskEnvironment task_environment_;
   std::unique_ptr<TestProfileIOS> profile_;
   std::unique_ptr<TestBrowser> browser_;
   UIViewController* base_view_controller_;
@@ -97,7 +97,7 @@ TEST_F(PassKitCoordinatorTest, ValidPassKitObject) {
   // .. or on iPad device running iOS18.2.
   const bool runningIOS18_2 = base::ios::IsRunningOnOrLater(18, 2, 0) &&
                               !base::ios::IsRunningOnOrLater(18, 3, 0);
-#if TARGET_IPHONE_SIMULATOR
+#if TARGET_OS_SIMULATOR
   const bool simulator = true;
 #else
   const bool simulator = false;

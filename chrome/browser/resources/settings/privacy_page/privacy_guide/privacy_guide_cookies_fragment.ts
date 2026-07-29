@@ -11,17 +11,16 @@
 import 'chrome://resources/cr_elements/cr_icon/cr_icon.js';
 import '/shared/settings/prefs/prefs.js';
 import './privacy_guide_fragment_shared.css.js';
+import '../../controls/collapse_radio_button.js';
 import '../../controls/settings_radio_group.js';
-import '../../privacy_page/collapse_radio_button.js';
+import '../../icons.html.js';
 
 import {PrefsMixin} from '/shared/settings/prefs/prefs_mixin.js';
 import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
-import {loadTimeData} from '../../i18n_setup.js';
 import type {MetricsBrowserProxy} from '../../metrics_browser_proxy.js';
 import {MetricsBrowserProxyImpl, PrivacyGuideSettingsStates, PrivacyGuideStepsEligibleAndReached} from '../../metrics_browser_proxy.js';
-import {CookieControlsMode} from '../../site_settings/constants.js';
-import {ThirdPartyCookieBlockingSetting} from '../../site_settings/site_settings_prefs_browser_proxy.js';
+import {ThirdPartyCookieBlockingSetting} from '../../site_settings/site_settings_browser_proxy.js';
 
 import {getTemplate} from './privacy_guide_cookies_fragment.html.js';
 
@@ -39,30 +38,10 @@ export class PrivacyGuideCookiesFragmentElement extends
 
   static get properties() {
     return {
-      /**
-       * Preferences state.
-       */
-      prefs: {
-        type: Object,
-        notify: true,
-      },
-
-      /** Cookie control modes for use in bindings. */
-      cookieControlsModeEnum_: {
-        type: Object,
-        value: CookieControlsMode,
-      },
-
       /* Third party cookie blocking settings for use in bindings. */
       thirdPartyCookieBlockingSettingEnum_: {
         type: Object,
         value: ThirdPartyCookieBlockingSetting,
-      },
-
-      isAlwaysBlock3pcsIncognitoEnabled_: {
-        type: Boolean,
-        value: () =>
-            loadTimeData.getBoolean('isAlwaysBlock3pcsIncognitoEnabled'),
       },
     };
   }

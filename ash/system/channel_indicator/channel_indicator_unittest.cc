@@ -5,7 +5,6 @@
 #include "ash/system/channel_indicator/channel_indicator.h"
 
 #include "ash/public/cpp/shelf_types.h"
-#include "ash/resources/vector_icons/vector_icons.h"
 #include "ash/session/session_controller_impl.h"
 #include "ash/shelf/shelf.h"
 #include "ash/shell.h"
@@ -47,7 +46,8 @@ class ChannelIndicatorViewTest
     std::unique_ptr<TestShellDelegate> shell_delegate =
         std::make_unique<TestShellDelegate>();
     shell_delegate->set_channel(static_cast<version_info::Channel>(GetParam()));
-    AshTestBase::SetUp(std::move(shell_delegate));
+    set_shell_delegate(std::move(shell_delegate));
+    AshTestBase::SetUp();
   }
 
   void SetSessionState(session_manager::SessionState state) {

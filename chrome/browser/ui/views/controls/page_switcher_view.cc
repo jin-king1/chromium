@@ -6,7 +6,6 @@
 
 #include <utility>
 
-#include "chrome/browser/ui/views/page_info/page_info_view_factory.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/views/layout/fill_layout.h"
 
@@ -19,7 +18,7 @@ PageSwitcherView::~PageSwitcherView() = default;
 
 void PageSwitcherView::SwitchToPage(std::unique_ptr<views::View> page) {
   if (current_page_) {
-    RemoveChildViewT(std::exchange(current_page_, nullptr).get());
+    RemoveChildViewT(std::exchange(current_page_, nullptr));
   }
   current_page_ = AddChildView(std::move(page));
   PreferredSizeChanged();

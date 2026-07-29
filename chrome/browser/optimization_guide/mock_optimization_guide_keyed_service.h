@@ -9,29 +9,23 @@
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
 #include "components/optimization_guide/core/model_execution/feature_keys.h"
 #include "components/optimization_guide/proto/model_quality_service.pb.h"
+#include "components/optimization_guide/public/mojom/model_broker.mojom-forward.h"
 #include "testing/gmock/include/gmock/gmock.h"
-
-class TestingPrefServiceSimple;
 
 // Mocks the opt guide service, to be used in unittests.
 //
 // Can be used with `ChromeRenderViewHostTestHarness` based tests.
-//
-// For non ChromeRenderViewHostTestHarness based tests set the local state using
-// `MockOptimizationGuideKeyedService::Initialize()` and then reset using
-// `MockOptimizationGuideKeyedService::TearDown()`.
 class MockOptimizationGuideKeyedService : public OptimizationGuideKeyedService {
  public:
-  static void Initialize(TestingPrefServiceSimple* local_state);
-  static void InitializeWithExistingTestLocalState();
-  static void TearDown();
-  static void ResetForTesting();
-
   MockOptimizationGuideKeyedService();
   ~MockOptimizationGuideKeyedService() override;
 
   void Shutdown() override;
 
+  MOCK_METHOD(std::unique_ptr<optimization_guide::ModelBrokerClient>,
+              CreateModelBrokerClient,
+              (),
+              (override));
   MOCK_METHOD(void,
               RegisterOptimizationTypes,
               (const std::vector<optimization_guide::proto::OptimizationType>&),
@@ -60,32 +54,32 @@ class MockOptimizationGuideKeyedService : public OptimizationGuideKeyedService {
        std::optional<optimization_guide::proto::RequestContextMetadata>
            request_context_metadata),
       (override));
-  MOCK_METHOD(std::unique_ptr<Session>,
+  MOCK_METHOD(std::unique_ptr<optimization_guide::OnDeviceSession>,
               StartSession,
-              (optimization_guide::ModelBasedCapabilityKey feature,
-               const std::optional<optimization_guide::SessionConfigParams>&
-                   config_params));
+              (optimization_guide::mojom::OnDeviceFeature feature,
+               const optimization_guide::SessionConfigParams& config_params,
+               base::WeakPtr<OptimizationGuideLogger> logger));
   MOCK_METHOD(
       void,
       ExecuteModel,
       (optimization_guide::ModelBasedCapabilityKey,
        const google::protobuf::MessageLite&,
-       const std::optional<base::TimeDelta>&,
+       const optimization_guide::ModelExecutionOptions&,
        optimization_guide::OptimizationGuideModelExecutionResultCallback));
   MOCK_METHOD(void,
               AddOnDeviceModelAvailabilityChangeObserver,
-              (optimization_guide::ModelBasedCapabilityKey feature,
+              (optimization_guide::mojom::OnDeviceFeature feature,
                optimization_guide::OnDeviceModelAvailabilityObserver* observer),
               (override));
   MOCK_METHOD(void,
               RemoveOnDeviceModelAvailabilityChangeObserver,
-              (optimization_guide::ModelBasedCapabilityKey feature,
+              (optimization_guide::mojom::OnDeviceFeature feature,
                optimization_guide::OnDeviceModelAvailabilityObserver* observer),
               (override));
   MOCK_METHOD(bool,
               ShouldFeatureBeCurrentlyEnabledForUser,
               (optimization_guide::UserVisibleFeatureKey),
-              (const));
+              (const, override));
   MOCK_METHOD(bool,
               ShouldFeatureAllowModelExecutionForSignedInUser,
               (optimization_guide::UserVisibleFeatureKey),
@@ -106,6 +100,7 @@ class MockOptimizationGuideKeyedService : public OptimizationGuideKeyedService {
               AddObserverForOptimizationTargetModel,
               (optimization_guide::proto::OptimizationTarget,
                const std::optional<optimization_guide::proto::Any>&,
+               scoped_refptr<base::SequencedTaskRunner>,
                optimization_guide::OptimizationTargetModelObserver*),
               (override));
   MOCK_METHOD(void,
@@ -123,17 +118,15 @@ class MockOptimizationGuideKeyedService : public OptimizationGuideKeyedService {
 
   MOCK_METHOD(optimization_guide::OnDeviceModelEligibilityReason,
               GetOnDeviceModelEligibility,
-              (optimization_guide::ModelBasedCapabilityKey),
+              (optimization_guide::mojom::OnDeviceFeature),
               (override));
 
-  MOCK_METHOD(std::optional<optimization_guide::SamplingParamsConfig>,
-              GetSamplingParamsConfig,
-              (optimization_guide::ModelBasedCapabilityKey),
-              (override));
-
-  MOCK_METHOD(std::optional<const optimization_guide::proto::Any>,
-              GetFeatureMetadata,
-              (optimization_guide::ModelBasedCapabilityKey),
+  MOCK_METHOD(void,
+              GetOnDeviceModelEligibilityAsync,
+              (optimization_guide::mojom::OnDeviceFeature,
+               const on_device_model::Capabilities&,
+               base::OnceCallback<
+                   void(optimization_guide::OnDeviceModelEligibilityReason)>),
               (override));
 };
 

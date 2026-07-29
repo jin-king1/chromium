@@ -35,11 +35,13 @@
 #include "third_party/blink/public/mojom/indexeddb/indexeddb.mojom-blink.h"
 #include "third_party/blink/public/platform/web_blob_info.h"
 #include "third_party/blink/renderer/core/dom/dom_exception.h"
+#include "third_party/blink/renderer/core/dom/quota_exceeded_error.h"
 #include "third_party/blink/renderer/modules/indexed_db_names.h"
 #include "third_party/blink/renderer/modules/indexeddb/idb_metadata.h"
 #include "third_party/blink/renderer/modules/indexeddb/idb_open_db_request.h"
 #include "third_party/blink/renderer/modules/indexeddb/idb_value.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 
 namespace blink {
@@ -51,7 +53,14 @@ IDBFactoryClient::IDBFactoryClient(IDBOpenDBRequest* request)
 }
 
 IDBFactoryClient::~IDBFactoryClient() {
-  Detach();
+  if (!request_) {
+    return;
+  }
+  // This path is reachable when the backend force-deletes the bucket while a
+  // request (such as `Open()`) is in flight, dropping the `IDBFactoryClient`
+  // pipe. Match the error that would be returned if the request had made it
+  // into the `ConnectionCoordinator` before the bucket was forcibly deleted.
+  Error(mojom::blink::IDBException::kAbortError, u"The connection was closed.");
 }
 
 void IDBFactoryClient::Detach() {
@@ -86,8 +95,15 @@ void IDBFactoryClient::Error(mojom::blink::IDBException code,
 
   IDBOpenDBRequest* request = request_.Get();
   Detach();
-  request->OnDBFactoryError(MakeGarbageCollected<DOMException>(
-      static_cast<DOMExceptionCode>(code), message));
+  DOMException* dom_exception;
+  if (code == mojom::blink::IDBException::kQuotaError &&
+      RuntimeEnabledFeatures::QuotaExceededErrorUpdateEnabled()) {
+    dom_exception = MakeGarbageCollected<QuotaExceededError>(message);
+  } else {
+    dom_exception = MakeGarbageCollected<DOMException>(
+        static_cast<DOMExceptionCode>(code), message);
+  }
+  request->OnDBFactoryError(dom_exception);
 }
 
 void IDBFactoryClient::OpenSuccess(
@@ -103,7 +119,7 @@ void IDBFactoryClient::OpenSuccess(
     IDBOpenDBRequest* request = request_.Get();
     Detach();
     request->OnOpenDBSuccess(std::move(pending_database), task_runner_,
-                             IDBDatabaseMetadata(metadata));
+                             metadata);
     // `this` may be deleted because event dispatch can run a nested loop.
 }
 

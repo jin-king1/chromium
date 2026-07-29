@@ -40,15 +40,8 @@ bool IsPasskeyFromAnotherDeviceContextMenuEnabled(
   }
 
   const autofill::LocalFrameToken frame_token = af_driver->GetFrameToken();
-  autofill::FormStructure* form =
-      af_driver->GetAutofillManager().FindCachedFormById(
-          {frame_token, autofill::FormRendererId(form_renderer_id)});
-  if (!form) {
-    return false;
-  }
-
-  // If the field does not have autocomplete="webauthn", the entry is disabled:
-  auto* field = form->GetFieldById(
+  auto [form, field] = af_driver->GetAutofillManager().FindFormAndField(
+      {frame_token, autofill::FormRendererId(form_renderer_id)},
       {frame_token, autofill::FieldRendererId(field_renderer_id)});
   if (!field || !field->parsed_autocomplete()
                      .value_or(autofill::AutocompleteParsingResult())

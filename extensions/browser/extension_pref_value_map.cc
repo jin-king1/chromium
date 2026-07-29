@@ -77,7 +77,7 @@ bool ExtensionPrefValueMap::CanExtensionControlPref(
     NOTREACHED() << "Extension " << extension_id
                  << " is not registered but accesses pref " << pref_key
                  << " (incognito: " << incognito << ")."
-                 << " http://crbug.com/454513";
+                 << " http://crbug.com/40403830";
   }
 
   if (incognito && !ext->second->incognito_enabled) {
@@ -251,8 +251,10 @@ void ExtensionPrefValueMap::GetExtensionControlledKeys(
 const base::Value* ExtensionPrefValueMap::GetEffectivePrefValue(
     const std::string& key,
     bool incognito,
-    bool* from_incognito) const {
-  auto winner = GetEffectivePrefValueController(key, incognito, from_incognito);
+    bool* from_incognito,
+    std::optional<std::string> ignore_extension_id) const {
+  auto winner = GetEffectivePrefValueController(key, incognito, from_incognito,
+                                                ignore_extension_id);
   if (winner == entries_.end()) {
     return nullptr;
   }
@@ -299,7 +301,8 @@ ExtensionPrefValueMap::ExtensionEntryMap::const_iterator
 ExtensionPrefValueMap::GetEffectivePrefValueController(
     const std::string& key,
     bool incognito,
-    bool* from_incognito) const {
+    bool* from_incognito,
+    std::optional<std::string> ignore_extension_id) const {
   auto winner = entries_.cend();
   base::Time winners_install_time;
 
@@ -316,6 +319,9 @@ ExtensionPrefValueMap::GetEffectivePrefValueController(
       continue;
     }
     if (incognito && !incognito_enabled) {
+      continue;
+    }
+    if (ignore_extension_id && *ignore_extension_id == ext_id) {
       continue;
     }
 

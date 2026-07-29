@@ -6,7 +6,9 @@ package org.chromium.chrome.browser.toolbar.adaptive;
 
 import android.content.Context;
 
-import org.chromium.base.supplier.Supplier;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.components.feature_engagement.Tracker;
 import org.chromium.ui.base.DeviceFormFactor;
 
@@ -14,12 +16,14 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Supplier;
 
 /** Embedder-specific behavior of Adaptive Toolbar. */
+@NullMarked
 public interface AdaptiveToolbarBehavior {
 
     /** List of the button variants both BrApp/CCT have in common. */
-    public static final Set<Integer> COMMON_BUTTONS =
+    Set<Integer> COMMON_BUTTONS =
             Set.of(
                     AdaptiveToolbarButtonVariant.SHARE,
                     AdaptiveToolbarButtonVariant.ADD_TO_BOOKMARKS,
@@ -27,15 +31,27 @@ public interface AdaptiveToolbarBehavior {
                     AdaptiveToolbarButtonVariant.PRICE_INSIGHTS,
                     AdaptiveToolbarButtonVariant.PRICE_TRACKING,
                     AdaptiveToolbarButtonVariant.READER_MODE,
-                    AdaptiveToolbarButtonVariant.READ_ALOUD,
-                    AdaptiveToolbarButtonVariant.PAGE_SUMMARY);
+                    AdaptiveToolbarButtonVariant.READ_ALOUD);
 
     /** Default list of valid button variants used for BrApp. */
-    public static Set<Integer> sValidButtons = new HashSet<>();
+    Set<Integer> sValidButtons = new HashSet<>();
 
     /** Returns {@code true} if adaptive toolbar button feature is enabled. */
     default boolean shouldInitialize() {
         return true;
+    }
+
+    /** Returns {@code true} if a long click on the button shows a popup menu for settings UI. */
+    default boolean canShowSettings() {
+        return true;
+    }
+
+    /**
+     * Returns {@code true} if the button with a chip string should show a text bubble instead of
+     * expansion/collapse animation.
+     */
+    default boolean shouldShowTextBubble() {
+        return false;
     }
 
     /**
@@ -45,7 +61,8 @@ public interface AdaptiveToolbarBehavior {
      * @param trackerSupplier {@link Tracker} supplier buttons need for instantiation.
      */
     void registerPerSurfaceButtons(
-            AdaptiveToolbarButtonController controller, Supplier<Tracker> trackerSupplier);
+            AdaptiveToolbarButtonController controller,
+            Supplier<@Nullable Tracker> trackerSupplier);
 
     /**
      * Filter the segmentation results and pick the one to display on the UI.
@@ -57,16 +74,25 @@ public interface AdaptiveToolbarBehavior {
     int resultFilter(List<@AdaptiveToolbarButtonVariant Integer> segmentationResults);
 
     /**
+     * Whether the manually chosen button type can be displayed. The button may need to be hidden if
+     * invalid or duplicated with custom action button on Custom Tabs.
+     *
+     * @param manualOverride Manually chosen button from settings.
+     */
+    boolean canShowManualOverride(@AdaptiveToolbarButtonVariant int manualOverride);
+
+    /**
      * Default implementation of {@link AdaptiveToolbarBehavior} that takes into the device form
      * factor into account. Used for tabbed chrome browser and its settings UI, also in tests.
      *
      * @param context {@link Context} object.
      */
-    public static AdaptiveToolbarBehavior getDefaultBehavior(Context context) {
+    static AdaptiveToolbarBehavior getDefaultBehavior(Context context) {
         return new AdaptiveToolbarBehavior() {
             @Override
             public void registerPerSurfaceButtons(
-                    AdaptiveToolbarButtonController controller, Supplier<Tracker> trackerSupplier) {
+                    AdaptiveToolbarButtonController controller,
+                    Supplier<@Nullable Tracker> trackerSupplier) {
                 // Not implemented by design. Default behavior object is used for
                 // AdaptiveToolbarStatePredictor while this method is used by
                 // AdaptiveToolbarUiCoordinator only.
@@ -78,8 +104,18 @@ public interface AdaptiveToolbarBehavior {
             }
 
             @Override
+            public boolean canShowManualOverride(int manualOverride) {
+                return true;
+            }
+
+            @Override
             public boolean useRawResults() {
                 return DeviceFormFactor.isNonMultiDisplayContextOnTablet(context);
+            }
+
+            @Override
+            public @AdaptiveToolbarButtonVariant int getSegmentationDefault(Profile profile) {
+                return AdaptiveToolbarFeatures.getDefaultButtonVariant(context, profile);
             }
         };
     }
@@ -92,11 +128,12 @@ public interface AdaptiveToolbarBehavior {
      * @param segmentationResults An ordered list of predicted toolbar button ID.
      * @return The top choice made from the input results.
      */
-    public static int defaultResultFilter(Context context, List<Integer> segmentationResults) {
+    static int defaultResultFilter(Context context, List<Integer> segmentationResults) {
         if (sValidButtons.isEmpty()) {
             sValidButtons.addAll(COMMON_BUTTONS);
             sValidButtons.add(AdaptiveToolbarButtonVariant.NEW_TAB);
             sValidButtons.add(AdaptiveToolbarButtonVariant.VOICE);
+            sValidButtons.add(AdaptiveToolbarButtonVariant.GLIC);
         }
 
         List<Integer> validResults = new ArrayList<>();
@@ -126,4 +163,11 @@ public interface AdaptiveToolbarBehavior {
      * thresholds to fine-tune model distribution.
      */
     boolean useRawResults();
+
+    /** Returns the default button variant when none of the predicted results cannot be chosen. */
+    @AdaptiveToolbarButtonVariant
+    int getSegmentationDefault(Profile profile);
+
+    /** Destroys the instance. */
+    default void destroy() {}
 }

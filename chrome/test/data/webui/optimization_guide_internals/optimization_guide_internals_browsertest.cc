@@ -7,6 +7,8 @@
 #include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/strings/strcat.h"
+#include "base/strings/stringprintf.h"
+#include "base/task/thread_pool.h"
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/browser_process.h"
@@ -20,11 +22,11 @@
 #include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "chrome/test/base/web_ui_mocha_browser_test.h"
-#include "components/optimization_guide/core/model_util.h"
+#include "components/optimization_guide/core/delivery/model_util.h"
+#include "components/optimization_guide/core/delivery/prediction_model_override.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/optimization_guide/core/optimization_guide_logger.h"
 #include "components/optimization_guide/core/optimization_guide_switches.h"
-#include "components/optimization_guide/core/prediction_model_override.h"
 #include "components/optimization_guide/optimization_guide_internals/webui/url_constants.h"
 #include "components/prefs/pref_service.h"
 #include "components/webui/chrome_urls/pref_names.h"
@@ -59,7 +61,7 @@ class OptimizationGuideInternalsLoggerBrowserTest
  protected:
   void SetUpOnMainThread() override {
     auto* logger = OptimizationGuideKeyedServiceFactory::GetForProfile(
-                       browser()->profile())
+                       browser()->GetProfile())
                        ->GetOptimizationGuideLogger();
     EXPECT_FALSE(logger->ShouldEnableDebugLogs());
     WebUIMochaBrowserTest::SetUpOnMainThread();
@@ -68,7 +70,7 @@ class OptimizationGuideInternalsLoggerBrowserTest
   void OnWebContentsAvailable(content::WebContents* web_contents) override {
     // Once the internals page is open, debug logs should get enabled.
     auto* logger = OptimizationGuideKeyedServiceFactory::GetForProfile(
-                       browser()->profile())
+                       browser()->GetProfile())
                        ->GetOptimizationGuideLogger();
     EXPECT_TRUE(logger->ShouldEnableDebugLogs());
   }
@@ -84,7 +86,7 @@ class OptimizationGuideInternalsLogMessageBrowserTest
  protected:
   void OnWebContentsAvailable(content::WebContents* web_contents) override {
     auto* service = OptimizationGuideKeyedServiceFactory::GetForProfile(
-        browser()->profile());
+        browser()->GetProfile());
     service->RegisterOptimizationTypes({optimization_guide::proto::NOSCRIPT});
     chrome::AddTabAt(browser(), GURL(url::kAboutBlankURL), -1, true);
 
@@ -142,13 +144,13 @@ class OptimizationGuideInternalsModelsPageBrowserTest
               base::ScopedAllowBlockingForTesting scoped_allow_blocking;
 
               EXPECT_TRUE(model_info.has_value());
-              EXPECT_EQ(123, model_info->GetVersion());
-              EXPECT_TRUE(model_info->GetModelFilePath().IsAbsolute());
-              EXPECT_TRUE(base::PathExists(model_info->GetModelFilePath()));
+              EXPECT_EQ(123, model_info->version);
+              EXPECT_TRUE(model_info->model_file_path.IsAbsolute());
+              EXPECT_TRUE(base::PathExists(model_info->model_file_path));
 
-              EXPECT_EQ(1U, model_info->GetAdditionalFiles().size());
+              EXPECT_EQ(1U, model_info->additional_files.size());
               for (const base::FilePath& add_file :
-                   model_info->GetAdditionalFiles()) {
+                   model_info->additional_files) {
                 EXPECT_TRUE(add_file.IsAbsolute());
                 EXPECT_TRUE(base::PathExists(add_file));
               }
@@ -156,10 +158,13 @@ class OptimizationGuideInternalsModelsPageBrowserTest
               run_loop.Quit();
             }));
 
-    OptimizationGuideKeyedServiceFactory::GetForProfile(browser()->profile())
-        ->AddObserverForOptimizationTargetModel(optimization_target,
-                                                /*model_metadata=*/std::nullopt,
-                                                &model_file_observer);
+    OptimizationGuideKeyedServiceFactory::GetForProfile(browser()->GetProfile())
+        ->AddObserverForOptimizationTargetModel(
+            optimization_target,
+            /*model_metadata=*/std::nullopt,
+            base::ThreadPool::CreateSequencedTaskRunner(
+                {base::MayBlock(), base::TaskPriority::BEST_EFFORT}),
+            &model_file_observer);
 
     run_loop.Run();
   }
@@ -169,4 +174,40 @@ class OptimizationGuideInternalsModelsPageBrowserTest
 IN_PROC_BROWSER_TEST_F(OptimizationGuideInternalsModelsPageBrowserTest,
                        InternalsModelsPageOpen) {
   RunTestCase("InternalsModelsPageOpen");
+}
+
+class OptimizationGuideInternalsMqlsLogsBrowserTest
+    : public OptimizationGuideInternalsBrowserTest {
+ protected:
+  void SetUpOnMainThread() override {
+    auto* model_quality_logs_uploader_service =
+        OptimizationGuideKeyedServiceFactory::GetForProfile(
+            browser()->GetProfile())
+            ->GetModelQualityLogsUploaderService();
+    std::unique_ptr<optimization_guide::ModelQualityLogEntry> log_entry =
+        std::make_unique<optimization_guide::ModelQualityLogEntry>(
+            model_quality_logs_uploader_service->GetWeakPtr());
+
+    optimization_guide::proto::ComposeLoggingData compose_logging_data;
+    optimization_guide::proto::ComposeRequest request;
+    request.mutable_generate_params()->set_user_input("a user typed this");
+    optimization_guide::proto::ComposeResponse response;
+    response.set_output("compose response");
+    optimization_guide::proto::ComposeQuality quality;
+    quality.set_final_status(
+        optimization_guide::proto::FinalStatus::STATUS_INSERTED);
+    *(compose_logging_data.mutable_request()) = request;
+    *(compose_logging_data.mutable_response()) = response;
+    *(compose_logging_data.mutable_quality()) = quality;
+    *(log_entry->log_ai_data_request()->mutable_compose()) =
+        compose_logging_data;
+
+    WebUIMochaBrowserTest::SetUpOnMainThread();
+  }
+};
+
+// Verifies MQLS logs are added when #mqls-logs page is open.
+IN_PROC_BROWSER_TEST_F(OptimizationGuideInternalsMqlsLogsBrowserTest,
+                       InternalsMqlsLogsPageOpen) {
+  RunTestCase("InternalsMqlsLogsPageOpen");
 }

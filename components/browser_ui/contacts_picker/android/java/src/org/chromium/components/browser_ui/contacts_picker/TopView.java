@@ -5,6 +5,7 @@
 package org.chromium.components.browser_ui.contacts_picker;
 
 import android.content.Context;
+import android.graphics.Typeface;
 import android.text.style.StyleSpan;
 import android.util.AttributeSet;
 import android.view.View;
@@ -91,8 +92,9 @@ public class TopView extends RelativeLayout
         super.onFinishInflate();
 
         mCheckboxContainer = findViewById(R.id.content);
-        if (ContactsPickerFeatureMap.isEnabled(
-                ContactsPickerFeatureList.CONTACTS_PICKER_SELECT_ALL)) {
+        if (!ContactsPickerFeatureMap.shouldShowSystemContactsPicker()
+                && ContactsPickerFeatureMap.isEnabled(
+                        ContactsPickerFeatureList.CONTACTS_PICKER_SELECT_ALL)) {
             mCheckboxContainer.setVisibility(View.VISIBLE);
         }
         mSelectAllBox = findViewById(R.id.checkbox);
@@ -106,35 +108,39 @@ public class TopView extends RelativeLayout
         textView.setText(R.string.top_view_names_filter_label);
         mNamesFilterChip.setSelected(true);
         mNamesFilterChip.setOnClickListener(this);
-        mNamesFilterChip.setIcon(R.drawable.ic_check_googblue_24dp, false);
+        mNamesFilterChip.setIconWithTint(
+                R.drawable.ic_check_googblue_24dp, /* tintWithTextColor= */ false);
 
         mAddressFilterChip = findViewById(R.id.address_filter);
         textView = mAddressFilterChip.getPrimaryTextView();
         textView.setText(R.string.top_view_address_filter_label);
         mAddressFilterChip.setSelected(true);
         mAddressFilterChip.setOnClickListener(this);
-        mAddressFilterChip.setIcon(R.drawable.ic_check_googblue_24dp, false);
+        mAddressFilterChip.setIconWithTint(
+                R.drawable.ic_check_googblue_24dp, /* tintWithTextColor= */ false);
 
         mEmailFilterChip = findViewById(R.id.email_filter);
         textView = mEmailFilterChip.getPrimaryTextView();
         textView.setText(R.string.top_view_email_filter_label);
         mEmailFilterChip.setSelected(true);
         mEmailFilterChip.setOnClickListener(this);
-        mEmailFilterChip.setIcon(R.drawable.ic_check_googblue_24dp, false);
+        mEmailFilterChip.setIconWithTint(
+                R.drawable.ic_check_googblue_24dp, /* tintWithTextColor= */ false);
 
         mTelephonesFilterChip = findViewById(R.id.tel_filter);
         textView = mTelephonesFilterChip.getPrimaryTextView();
         textView.setText(R.string.top_view_telephone_filter_label);
         mTelephonesFilterChip.setSelected(true);
         mTelephonesFilterChip.setOnClickListener(this);
-        mTelephonesFilterChip.setIcon(R.drawable.ic_check_googblue_24dp, false);
+        mTelephonesFilterChip.setIconWithTint(
+                R.drawable.ic_check_googblue_24dp, /* tintWithTextColor= */ false);
 
         mIconsFilterChip = findViewById(R.id.icon_filter);
         textView = mIconsFilterChip.getPrimaryTextView();
         textView.setText(R.string.top_view_icon_filter_label);
         mIconsFilterChip.setSelected(true);
         mIconsFilterChip.setOnClickListener(this);
-        mIconsFilterChip.setIcon(R.drawable.ic_check_googblue_24dp, false);
+        mIconsFilterChip.setIconWithTint(R.drawable.ic_check_googblue_24dp, false);
     }
 
     @Override
@@ -189,8 +195,9 @@ public class TopView extends RelativeLayout
         }
 
         chipView.setSelected(!chipView.isSelected());
-        chipView.setIcon(
-                chipView.isSelected() ? R.drawable.ic_check_googblue_24dp : iconResId, true);
+        chipView.setIconWithTint(
+                chipView.isSelected() ? R.drawable.ic_check_googblue_24dp : iconResId,
+                /* tintWithTextColor= */ true);
         mChipToggledCallback.onChipToggled(chip);
     }
 
@@ -202,7 +209,7 @@ public class TopView extends RelativeLayout
     @Initializer
     public void setSiteString(String origin) {
         TextView explanation = findViewById(R.id.explanation);
-        StyleSpan boldSpan = new StyleSpan(android.graphics.Typeface.BOLD);
+        StyleSpan boldSpan = new StyleSpan(Typeface.BOLD);
         explanation.setText(
                 SpanApplier.applySpans(
                         mContext.getString(R.string.disclaimer_sharing_contact_details, origin),

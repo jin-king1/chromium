@@ -18,10 +18,11 @@
 #include "components/content_settings/core/common/content_settings.h"
 #include "components/content_settings/core/common/content_settings_pattern.h"
 #include "components/content_settings/core/common/content_settings_types.h"
-#include "components/content_settings/core/common/cookie_blocking_3pcd_status.h"
+#include "components/content_settings/core/common/cookie_controls_state.h"
 #include "components/page_info/core/page_info_action.h"
 #include "components/safe_browsing/buildflags.h"
 #include "components/security_state/core/security_state.h"
+#include "content/public/browser/reload_type.h"
 #include "content/public/browser/web_contents.h"
 #include "net/base/schemeful_site.h"
 
@@ -79,6 +80,8 @@ class PageInfo : private content_settings::CookieControlsObserver,
     SITE_IDENTITY_STATUS_CERT,
     // The website provided a valid EV certificate.
     SITE_IDENTITY_STATUS_EV_CERT,
+    // The website provided a valid 1-QWAC certificate.
+    SITE_IDENTITY_STATUS_1QWAC_CERT,
     // Site identity could not be verified because the site did not provide a
     // certificate. This is the expected state for HTTP connections.
     SITE_IDENTITY_STATUS_NO_CERT,
@@ -86,9 +89,6 @@ class PageInfo : private content_settings::CookieControlsObserver,
     SITE_IDENTITY_STATUS_ERROR,
     // The site is a trusted internal chrome page.
     SITE_IDENTITY_STATUS_INTERNAL_PAGE,
-    // The profile has accessed data using an administrator-provided
-    // certificate, so the administrator might be able to intercept data.
-    SITE_IDENTITY_STATUS_ADMIN_PROVIDED_CERT,
     // The website provided a valid certificate, but the certificate or chain
     // is using a deprecated signature algorithm.
     SITE_IDENTITY_STATUS_DEPRECATED_SIGNATURE_ALGORITHM,
@@ -142,9 +142,9 @@ class PageInfo : private content_settings::CookieControlsObserver,
     // Site permission |type|.
     ContentSettingsType type = ContentSettingsType::DEFAULT;
     // The current value for the permission |type| (e.g. ALLOW or BLOCK).
-    ContentSetting setting = CONTENT_SETTING_DEFAULT;
+    std::optional<PermissionSetting> setting;
     // The global default settings for this permission |type|.
-    ContentSetting default_setting = CONTENT_SETTING_DEFAULT;
+    PermissionSetting default_setting;
     // The settings source e.g. user, extensions, policy, ... .
     content_settings::SettingSource source =
         content_settings::SettingSource::kNone;
@@ -157,6 +157,11 @@ class PageInfo : private content_settings::CookieControlsObserver,
     base::Time last_used;
     // Whether the permission is in use.
     bool is_in_use = false;
+
+#if BUILDFLAG(IS_ANDROID)
+    // Whether the permission was requested in this session.
+    bool is_requested = false;
+#endif  // BUILDFLAG(IS_ANDROID)
   };
 
   // Creates a PageInfo for the passed |url| using the given |ssl| status
@@ -177,16 +182,6 @@ class PageInfo : private content_settings::CookieControlsObserver,
   // clicked.
   void OnThirdPartyToggleClicked(bool block_third_party_cookies);
 
-  // Checks whether this permission is currently the factory default, as set by
-  // Chrome. Specifically, that the following three conditions are true:
-  //   - The current active setting comes from the default or pref provider.
-  //   - The setting is the factory default setting (as opposed to a global
-  //     default setting set by the user).
-  //   - The setting is a wildcard setting applying to all origins (which can
-  //     only be set from the default provider).
-  static bool IsPermissionFactoryDefault(const PermissionInfo& info,
-                                         bool is_incognito);
-
   // Returns whether this page info is for an internal page.
   static bool IsFileOrInternalPage(const GURL& url);
 
@@ -204,7 +199,7 @@ class PageInfo : private content_settings::CookieControlsObserver,
 
   // This method is called when ever a permission setting is changed.
   void OnSitePermissionChanged(ContentSettingsType type,
-                               ContentSetting value,
+                               std::optional<PermissionSetting> value,
                                std::optional<url::Origin> requesting_origin,
                                bool is_one_time);
 
@@ -229,6 +224,10 @@ class PageInfo : private content_settings::CookieControlsObserver,
   // Handles opening the link to show all sites settings with a filter for
   // current site's fps  and records the event.
   void OpenAllSitesViewFilteredToRws();
+
+  // Handles opening the link to show Chrome Sync settings and records the
+  // event.
+  void OpenSyncSettingsView();
 
   // Handles opening the cookies dialog and records the event.
   void OpenCookiesDialog();
@@ -257,6 +256,10 @@ class PageInfo : private content_settings::CookieControlsObserver,
   // This method is called when the user opens the Cookies & Site Data subpage.
   void OnCookiesPageOpened();
 
+#if BUILDFLAG(IS_CHROMEOS)
+  bool ShouldSyncCookiesForCurrentUrl();
+#endif
+
   // Return a pointer to the ObjectPermissionContextBase corresponding to the
   // content settings type, |type|. Returns nullptr for content settings
   // for which there's no ObjectPermissionContextBase.
@@ -268,8 +271,6 @@ class PageInfo : private content_settings::CookieControlsObserver,
     return site_connection_status_;
   }
 
-  const GURL& site_url() const { return site_url_; }
-
   const SiteIdentityStatus& site_identity_status() const {
     return site_identity_status_;
   }
@@ -277,6 +278,8 @@ class PageInfo : private content_settings::CookieControlsObserver,
   const SafeBrowsingStatus& safe_browsing_status() const {
     return safe_browsing_status_;
   }
+
+  const GURL& site_url() const { return site_url_; }
 
   // For most sites, this returns a human-friendly string based on site origin,
   // without scheme, the username and password, the path or trivial subdomains.
@@ -310,13 +313,9 @@ class PageInfo : private content_settings::CookieControlsObserver,
                            ShowInfoBarWhenBlockingThirdPartyCookies);
 
   // CookieControlsObserver:
-  void OnStatusChanged(bool controls_visible,
-                       bool protections_on,
+  void OnStatusChanged(CookieControlsState controls_state,
                        CookieControlsEnforcement enforcement,
-                       CookieBlocking3pcdStatus blocking_status,
-                       base::Time expiration,
-                       std::vector<content_settings::TrackingProtectionFeature>
-                           features) override;
+                       base::Time expiration) override;
 
   // Populates this object's UI state with provided security context. This
   // function does not update visible UI-- that's part of Present*().
@@ -329,7 +328,7 @@ class PageInfo : private content_settings::CookieControlsObserver,
   void PopulatePermissionInfo(PermissionInfo& permission_info,
                               HostContentSettingsMap* content_settings,
                               const content_settings::SettingInfo& info,
-                              ContentSetting setting) const;
+                              PermissionSetting setting) const;
 
   // Returns whether |info| should be displayed in the UI.
   bool ShouldShowPermission(const PageInfo::PermissionInfo& info) const;
@@ -388,7 +387,6 @@ class PageInfo : private content_settings::CookieControlsObserver,
 
   // Get the count of blocked and allowed sites.
   int GetSitesWithAllowedCookiesAccessCount();
-  int GetThirdPartySitesWithBlockedCookiesAccessCount(const GURL& site_url);
 
   bool IsIsolatedWebApp() const;
 
@@ -427,6 +425,9 @@ class PageInfo : private content_settings::CookieControlsObserver,
 
   // For secure connection |certificate_| is set to the server certificate.
   scoped_refptr<net::X509Certificate> certificate_;
+
+  // The 2-QWAC certificate for a website, if it has one.
+  scoped_refptr<net::X509Certificate> two_qwac_;
 
   // Status of the connection to the website.
   SiteConnectionStatus site_connection_status_;
@@ -485,22 +486,14 @@ class PageInfo : private content_settings::CookieControlsObserver,
 
   std::u16string site_name_for_testing_;
 
-  std::unique_ptr<content_settings::CookieControlsController> controller_;
+  std::unique_ptr<content_settings::CookieControlsController>
+      cookie_controller_;
   base::ScopedObservation<content_settings::CookieControlsController,
                           content_settings::CookieControlsObserver>
-      observation_{this};
-
-  bool protections_on_ = true;
-  bool controls_visible_ = true;
-
-  CookieControlsEnforcement enforcement_ =
+      cookie_observation_{this};
+  CookieControlsEnforcement cookie_enforcement_ =
       CookieControlsEnforcement::kNoEnforcement;
-
-  CookieBlocking3pcdStatus blocking_status_ =
-      CookieBlocking3pcdStatus::kNotIn3pcd;
-
-  std::vector<content_settings::TrackingProtectionFeature> features_;
-
+  CookieControlsState cookie_controls_state_ = CookieControlsState::kBlocked3pc;
   base::Time cookie_exception_expiration_;
 
   bool is_subscribed_to_permission_change_for_testing = false;

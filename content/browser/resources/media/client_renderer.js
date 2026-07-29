@@ -4,7 +4,10 @@
 
 import {$} from 'chrome://resources/js/util.js';
 
+import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {millisecondsToString} from './util.js';
+import '/strings.m.js';
+
 
 /**
  * CSS classes added / removed in JS to trigger styling changes.
@@ -100,7 +103,8 @@ export class ClientRenderer {
           generalAudioInformationTableElement.querySelector('tbody');
     }
 
-    this.players = null;
+    this.players = {};
+    this.registeredCdms = [];
     this.selectedPlayer = null;
     this.selectedAudioComponentType = null;
     this.selectedAudioComponentId = null;
@@ -113,22 +117,18 @@ export class ClientRenderer {
     };
     this.filterText = $('filter-text');
     if (this.filterText) {
-      this.filterText.onkeyup = this.onTextChange_.bind(this);
+      this.filterText.addEventListener('input', this.onTextChange_.bind(this));
     }
 
-    const copyPropertiesButtons =
-        document.getElementsByClassName('copy-properties-button');
-    if (copyPropertiesButtons) {
-      for (let i = 0; i < copyPropertiesButtons.length; i++) {
-        copyPropertiesButtons[i].onclick = this.copyProperties_.bind(this);
-      }
+    this.playerFilterText = $('player-filter-text');
+    if (this.playerFilterText) {
+      this.playerFilterText.addEventListener(
+          'input', this.onPlayerFilterChange_.bind(this));
     }
 
-    const copyLogButtons = document.getElementsByClassName('copy-log-button');
-    if (copyLogButtons) {
-      for (let i = 0; i < copyLogButtons.length; i++) {
-        copyLogButtons[i].onclick = this.copyLog_.bind(this);
-      }
+    this.copyLogButton = $('copy-log-button');
+    if (this.copyLogButton) {
+      this.copyLogButton.onclick = this.copyLog_.bind(this);
     }
 
     this.saveLogButton = $('save-log-button');
@@ -136,11 +136,36 @@ export class ClientRenderer {
       this.saveLogButton.onclick = this.saveLog_.bind(this);
     }
 
-    this.hiddenKeys = ['component_id', 'component_type', 'owner_id'];
+    this.copyCdmsButton = $('copy-cdm-button');
+    if (this.copyCdmsButton) {
+      this.copyCdmsButton.onclick = this.copyCdms_.bind(this);
+    }
 
-    // Tell CSS to hide certain content prior to making selections.
+    this.closePlayerViewButton = $('close-player-view-button');
+    if (this.closePlayerViewButton) {
+      this.closePlayerViewButton.onclick = () => {
+        $('main-container').classList.remove('mobile-player-view-active');
+        document.body.classList.add(ClientRendererCss.NO_PLAYERS_SELECTED);
+        if (this.selectedPlayer) {
+          const element = this.playerListElement.querySelector(
+              `.tree-item[data-id="${this.selectedPlayer.id}"]`);
+          if (element) {
+            element.classList.remove('selected');
+          }
+          this.selectedPlayer = null;
+          const titleElement = $('player-details-title');
+          if (titleElement) {
+            titleElement.textContent = 'Player Properties';
+            titleElement.title = '';
+          }
+        }
+      };
+    }
+
+    this.hiddenKeys = ['component_id', 'component_type', 'owner_id'];
+    this.revision = loadTimeData.getString('revision');
+
     document.body.classList.add(ClientRendererCss.NO_PLAYERS_SELECTED);
-    document.body.classList.add(ClientRendererCss.NO_COMPONENTS_SELECTED);
   }
 
   /**
@@ -192,11 +217,19 @@ export class ClientRenderer {
    * @param sessions A list of CDM info that contain the current state.
    */
   updateRegisteredCdms(cdms) {
-    removeChildren(this.cdmListElement_);
+    this.registeredCdms = cdms || [];
+    const fragment = document.createDocumentFragment();
 
-    cdms.forEach(cdm => {
-      this.cdmListElement_.appendChild(this.createCdmRow_(cdm));
+    this.registeredCdms.forEach(cdm => {
+      fragment.appendChild(this.createCdmRow_(cdm));
     });
+
+    removeChildren(this.cdmListElement_);
+    this.cdmListElement_.appendChild(fragment);
+
+    if (this.copyCdmsButton) {
+      this.copyCdmsButton.disabled = this.registeredCdms.length === 0;
+    }
   }
 
   /**
@@ -229,6 +262,12 @@ export class ClientRenderer {
       removeChildren(this.logTable);
       removeChildren(this.graphElement);
       document.body.classList.add(ClientRendererCss.NO_PLAYERS_SELECTED);
+      this.selectedPlayer = null;
+      const titleElement = $('player-details-title');
+      if (titleElement) {
+        titleElement.textContent = 'Player Properties';
+        titleElement.title = '';
+      }
     }
     this.redrawPlayerList_(players);
   }
@@ -248,9 +287,11 @@ export class ClientRenderer {
     if (key === 'error') {
       player.playerState = 'errored';
     } else if (
-        key === 'event' && value === 'kWebMediaPLayerDestroyed' &&
+        key === 'event' && value === 'kWebMediaPlayerDestroyed' &&
         player.playerState !== 'errored') {
       player.playerState = 'ended';
+    } else if (key === 'url') {
+      player.loweredUrl = value.toLowerCase();
     }
     if ([
           'url',
@@ -300,7 +341,8 @@ export class ClientRenderer {
   redrawVideoCaptureCapabilities(videoCaptureCapabilities, keys) {
     const copyButtonElement = $('video-capture-capabilities-copy-button');
     copyButtonElement.onclick = function() {
-      this.renderClipboard(JSON.stringify(videoCaptureCapabilities, null, 2));
+      this.renderClipboard(
+          JSON.stringify(videoCaptureCapabilities, null, 2), copyButtonElement);
     }.bind(this);
 
     const videoTableBodyElement = $('video-capture-capabilities-tbody');
@@ -365,10 +407,6 @@ export class ClientRenderer {
   }
 
   redrawAudioComponentList_(componentType, components) {
-    // Group name imposes rule that only one component can be selected
-    // (and have its properties displayed) at a time.
-    const buttonGroupName = 'audio-components';
-
     const listElement = this.getListElementForAudioComponent_(componentType);
     if (!listElement) {
       console.error(
@@ -378,15 +416,29 @@ export class ClientRenderer {
 
     const fragment = document.createDocumentFragment();
     for (const id in components) {
-      const li = document.createElement('li');
-      const buttonCb = this.selectAudioComponent_.bind(
-          this, componentType, id, components[id]);
-      const friendlyName = this.getAudioComponentName_(componentType, id);
-      const label = document.createElement('label');
-      label.appendChild(document.createTextNode(friendlyName));
-      li.appendChild(
-          createSelectableButton(id, buttonGroupName, label, buttonCb));
-      fragment.appendChild(li);
+      const component = components[id];
+
+      const treeItem = document.createElement('div');
+      treeItem.classList.add('tree-item');
+      treeItem.dataset.id = id;
+      treeItem.classList.add(ClientRendererCss.ACTIVE_PLAYER);
+
+      const treeItemHeader = document.createElement('div');
+      treeItemHeader.classList.add('tree-item-header');
+      treeItemHeader.textContent =
+          this.getAudioComponentName_(componentType, id);
+      treeItem.appendChild(treeItemHeader);
+
+      const children = document.createElement('div');
+      children.classList.add('tree-item-children');
+      treeItem.appendChild(children);
+
+      treeItemHeader.addEventListener('click', (e) => {
+        treeItem.classList.toggle('expanded');
+        this.selectAudioComponent_(componentType, id, component);
+      });
+
+      fragment.appendChild(treeItem);
     }
     removeChildren(listElement);
     listElement.appendChild(fragment);
@@ -395,12 +447,32 @@ export class ClientRenderer {
         this.selectedAudioComponentType === componentType &&
         this.selectedAudioComponentId in components) {
       // Re-select the selected component since the button was just recreated.
-      selectSelectableButton(this.selectedAudioComponentId);
+      const element = listElement.querySelector(
+          `.tree-item[data-id="${this.selectedAudioComponentId}"]`);
+      if (element) {
+        element.classList.add('selected');
+      }
     }
   }
 
   selectAudioComponent_(componentType, componentId, componentData) {
-    document.body.classList.remove(ClientRendererCss.NO_COMPONENTS_SELECTED);
+    const audioWrapper = $('audio-component-list-wrapper');
+    if (audioWrapper) {
+      const previouslySelected =
+          audioWrapper.querySelector('.tree-item.selected');
+      if (previouslySelected) {
+        previouslySelected.classList.remove('selected');
+      }
+    }
+
+    const listElement = this.getListElementForAudioComponent_(componentType);
+    if (listElement) {
+      const element =
+          listElement.querySelector(`.tree-item[data-id="${componentId}"]`);
+      if (element) {
+        element.classList.add('selected');
+      }
+    }
 
     this.selectedAudioComponentType = componentType;
     this.selectedAudioComponentId = componentId;
@@ -415,82 +487,119 @@ export class ClientRenderer {
   redrawPlayerList_(players) {
     this.players = players;
 
-    // Group name imposes rule that only one component can be selected
-    // (and have its properties displayed) at a time.
-    const buttonGroupName = 'player-buttons';
-
-    let hasPlayers = false;
     const fragment = document.createDocumentFragment();
     for (const id in players) {
-      hasPlayers = true;
       const player = players[id];
       const p = player.properties;
-      const label = document.createElement('label');
 
-      const nameText = p.url || 'Player ' + player.id;
-      const nameNode = document.createElement('div');
-      nameNode.appendChild(document.createTextNode(nameText));
-      nameNode.className = 'player-name';
-      label.appendChild(nameNode);
-
-      const frame = [];
-      if (p.frame_title) {
-        frame.push(p.frame_title);
-      }
-      if (p.frame_url) {
-        frame.push(p.frame_url);
-      }
-      const frameText = frame.join(' - ');
-      if (frameText) {
-        const frameNode = document.createElement('div');
-        frameNode.className = 'player-frame';
-        frameNode.appendChild(document.createTextNode(frameText));
-        label.appendChild(frameNode);
+      if (!player.loweredUrl) {
+        player.loweredUrl = (p.url || 'Player ' + player.id).toLowerCase();
       }
 
-      const desc = [];
-      if (p.width && p.height) {
-        desc.push(p.width + 'x' + p.height);
+      const url = p.url || 'Player ' + player.id;
+
+      const treeItem = document.createElement('div');
+      treeItem.classList.add('tree-item');
+      if (player.playerState === 'errored') {
+        treeItem.classList.add(ClientRendererCss.ERRORED_PLAYER);
+      } else if (player.playerState === 'ended') {
+        treeItem.classList.add(ClientRendererCss.ENDED_PLAYER);
+      } else {
+        treeItem.classList.add(ClientRendererCss.ACTIVE_PLAYER);
       }
-      if (p.video_codec_name) {
-        desc.push(p.video_codec_name);
+      treeItem.dataset.id = id;
+
+      const treeItemHeader = document.createElement('div');
+      treeItemHeader.classList.add('tree-item-header');
+      treeItemHeader.classList.add('selectable-button');
+
+      const playerName = document.createElement('div');
+      playerName.classList.add('player-name');
+      if (url.length > 64) {
+        playerName.textContent = url.substring(0, 61) + '...';
+      } else {
+        playerName.textContent = url;
       }
-      if (p.video_codec_name && p.audio_codec_name) {
-        desc.push('+');
-      }
-      if (p.audio_codec_name) {
-        desc.push(p.audio_codec_name);
-      }
-      if (p.event) {
-        desc.push('(' + p.event + ')');
-      }
-      const descText = desc.join(' ');
-      if (descText) {
-        const descNode = document.createElement('div');
-        descNode.className = 'player-desc';
-        descNode.appendChild(document.createTextNode(descText));
-        label.appendChild(descNode);
+      playerName.title = url;
+      treeItemHeader.appendChild(playerName);
+
+      let lastEvent = '';
+      for (let i = player.allEvents.length - 1; i >= 0; i--) {
+        if (player.allEvents[i].key === 'event') {
+          lastEvent = player.allEvents[i].value;
+          break;
+        }
       }
 
-      const li = document.createElement('li');
-      const buttonCb = this.selectPlayer_.bind(this, player);
-      li.appendChild(createSelectableButton(
-          id, buttonGroupName, label, buttonCb, player.playerState));
-      fragment.appendChild(li);
+      if (lastEvent) {
+        const playerFrame = document.createElement('div');
+        playerFrame.classList.add('player-frame');
+        playerFrame.textContent =
+            lastEvent === 'kWebMediaPlayerDestroyed' ? 'Destroyed' : lastEvent;
+        treeItemHeader.appendChild(playerFrame);
+      }
+      treeItem.appendChild(treeItemHeader);
+
+      const children = document.createElement('div');
+      children.classList.add('tree-item-children');
+      treeItem.appendChild(children);
+
+      treeItemHeader.addEventListener('click', (e) => {
+        treeItem.classList.toggle('expanded');
+        this.selectPlayer_(player);
+      });
+
+      fragment.appendChild(treeItem);
     }
     removeChildren(this.playerListElement);
     this.playerListElement.appendChild(fragment);
 
+    this.applyPlayerFilter_();
+
     if (this.selectedPlayer && this.selectedPlayer.id in players) {
       // Re-select the selected player since the button was just recreated.
-      selectSelectableButton(this.selectedPlayer.id);
+      const element = this.playerListElement.querySelector(
+          `.tree-item[data-id="${this.selectedPlayer.id}"]`);
+      if (element) {
+        element.classList.add('selected');
+      }
     }
+  }
 
-    this.saveLogButton.style.display = hasPlayers ? 'inline-block' : 'none';
+  applyPlayerFilter_() {
+    const filterText =
+        this.playerFilterText ? this.playerFilterText.value.toLowerCase() : '';
+    const items = this.playerListElement.querySelectorAll('.tree-item');
+    for (const item of items) {
+      const id = item.dataset.id;
+      const player = this.players[id];
+      if (filterText && player && player.loweredUrl &&
+          !player.loweredUrl.includes(filterText)) {
+        item.hidden = true;
+      } else {
+        item.hidden = false;
+      }
+    }
   }
 
   selectPlayer_(player) {
+    if (window.innerWidth <= 768) {
+      $('main-container').classList.add('mobile-player-view-active');
+    }
+
     document.body.classList.remove(ClientRendererCss.NO_PLAYERS_SELECTED);
+
+    const previouslySelected =
+        this.playerListElement.querySelector('.tree-item.selected');
+    if (previouslySelected) {
+      previouslySelected.classList.remove('selected');
+    }
+
+    const element = this.playerListElement.querySelector(
+        `.tree-item[data-id="${player.id}"]`);
+    if (element) {
+      element.classList.add('selected');
+    }
 
     this.selectedPlayer = player;
     this.selectedPlayerLogIndex = 0;
@@ -502,6 +611,13 @@ export class ClientRenderer {
     removeChildren(this.logTable);
     removeChildren(this.graphElement);
     this.drawLog_();
+
+    const titleElement = $('player-details-title');
+    if (titleElement) {
+      const playerName = player.properties.url || 'Player ' + player.id;
+      titleElement.textContent = playerName;
+      titleElement.title = playerName;
+    }
   }
 
   drawProperties_(propertyMap, propertiesTable) {
@@ -519,21 +635,90 @@ export class ClientRenderer {
       const valueCell = row.insertCell(-1);
 
       keyCell.appendChild(document.createTextNode(key));
-      valueCell.appendChild(document.createTextNode(JSON.stringify(value)));
+      valueCell.appendChild(this.createValueCellContent_(key, value));
+    }
+  }
+
+  applyCodeSearchLinkage_(status_obj) {
+    if (status_obj.hasOwnProperty('stack')) {
+      status_obj['stack'] = status_obj['stack'].map(e => {
+        if (typeof(e) === 'string') return e;
+        return '~{' + e['file'] + '%' + e['line'] + '}~';
+      });
+    }
+    if (status_obj.hasOwnProperty('cause')) {
+      status_obj['cause'] = this.applyCodeSearchLinkage_(status_obj['cause']);
+    }
+    return status_obj;
+  }
+
+  createValueCellContent_(key, value) {
+    // This is a bit of a hack, but it's the only way to get the stack trace
+    // to link to the code search.
+    const urlPrefix = 'https://source.chromium.org/chromium/chromium/src/+/main:';
+
+    const re = new RegExp('~{([^%]*)%([0-9]+)}~', 'g');
+    try {
+      if (key === 'kHlsBufferedRanges') {
+        return document.createTextNode(JSON.stringify(value));
+      }
+      const pre = document.createElement('pre');
+      const text = JSON.stringify(this.applyCodeSearchLinkage_(value), null, 2);
+      let lastIndex = 0;
+      for (const match of text.matchAll(re)) {
+        if (match.index > lastIndex) {
+          pre.appendChild(
+              document.createTextNode(text.substring(lastIndex, match.index)));
+        }
+        const a = document.createElement('a');
+        a.href = urlPrefix + match[1] + ';l=' + match[2];
+
+        // Building locally gives a commit hash of 80 zeros separated in the
+        // middle by a dash.
+        if (!this.revision.startsWith('0000000')) {
+          a.href += ';drc=' + this.revision;
+        }
+
+        a.textContent = match[1] + '#' + match[2];
+        a.target = '_blank';
+        a.rel = 'noopener';
+        pre.appendChild(a);
+        lastIndex = match.index + match[0].length;
+      }
+      if (lastIndex < text.length) {
+        pre.appendChild(document.createTextNode(text.substring(lastIndex)));
+      }
+      return pre;
+    } catch (e) {
+      return document.createTextNode(JSON.stringify(value));
     }
   }
 
   appendEventToLog_(event) {
-    if (this.filterFunction(event.key)) {
-      const row = this.logTable.insertRow(-1);
+    const row = this.logTable.insertRow(-1);
+    row.classList.add('log-entry');
+    row.dataset.key = event.key;
 
-      const timestampCell = row.insertCell(-1);
-      timestampCell.classList.add('timestamp');
-      timestampCell.appendChild(
-          document.createTextNode(millisecondsToString(event.time)));
-      row.insertCell(-1).appendChild(document.createTextNode(event.key));
-      row.insertCell(-1).appendChild(
-          document.createTextNode(JSON.stringify(event.value)));
+    const timestampCell = row.insertCell(-1);
+    timestampCell.classList.add('log-timestamp');
+    timestampCell.textContent = millisecondsToString(event.time);
+
+    const propertyCell = row.insertCell(-1);
+    propertyCell.classList.add('log-property');
+    propertyCell.textContent = event.key;
+
+    const valueCell = row.insertCell(-1);
+    valueCell.classList.add('log-value');
+    valueCell.appendChild(this.createValueCellContent_(event.key, event.value));
+
+    if (event.key.toLowerCase().includes('error')) {
+      row.classList.add('log-error');
+    } else if (event.key.toLowerCase().includes('warning')) {
+      row.classList.add('log-warning');
+    }
+
+    if (!this.filterFunction(event.key)) {
+      row.hidden = true;
     }
   }
 
@@ -563,30 +748,41 @@ export class ClientRenderer {
     const p = this.selectedPlayer;
     const playerLog = {properties: p.properties, events: p.allEvents};
 
-    this.renderClipboard(JSON.stringify(playerLog, null, 2));
+    this.renderClipboard(
+        JSON.stringify(playerLog, null, 2), this.copyLogButton);
   }
 
-  renderClipboard(string) {
-    navigator.clipboard.writeText(string);
-  }
-
-  copyProperties_() {
-    if (!this.selectedPlayer && !this.selectedAudioCompontentData) {
+  copyCdms_() {
+    if (!this.registeredCdms || this.registeredCdms.length === 0) {
       return;
     }
-    const properties =
-        this.selectedAudioCompontentData || this.selectedPlayer.properties;
-    const stringBuffer = [];
 
-    for (const key in properties) {
-      const value = properties[key];
-      stringBuffer.push(key.toString());
-      stringBuffer.push(': ');
-      stringBuffer.push(value.toString());
-      stringBuffer.push('\n');
+    const orderedCdms = this.registeredCdms.map(cdm => {
+      return {
+        name: cdm.name || '',
+        version: cdm.version || '',
+        status: cdm.status || '',
+        key_system: cdm.key_system || '',
+        robustness: cdm.robustness || '',
+        path: cdm.path || '',
+        capability: cdm.capability || {},
+      };
+    });
+    this.renderClipboard(
+        JSON.stringify(orderedCdms, null, 2), this.copyCdmsButton);
+  }
+
+  renderClipboard(string, feedbackElement) {
+    navigator.clipboard.writeText(string);
+    if (feedbackElement) {
+      const originalText = feedbackElement.textContent;
+      feedbackElement.textContent = 'Copied!';
+      feedbackElement.disabled = true;
+      setTimeout(() => {
+        feedbackElement.textContent = originalText;
+        feedbackElement.disabled = false;
+      }, 1000);
     }
-
-    this.renderClipboard(stringBuffer.join(''));
   }
 
   onTextChange_(event) {
@@ -606,11 +802,21 @@ export class ClientRenderer {
       });
     };
 
-    if (this.selectedPlayer) {
-      removeChildren(this.logTable);
-      this.selectedPlayerLogIndex = 0;
-      this.drawLog_();
+    this.applyLogFilter_();
+  }
+
+  applyLogFilter_() {
+    for (const row of this.logTable.children) {
+      if (this.filterFunction(row.dataset.key)) {
+        row.hidden = false;
+      } else {
+        row.hidden = true;
+      }
     }
+  }
+
+  onPlayerFilterChange_(event) {
+    this.applyPlayerFilter_();
   }
 
   createAudioFocusSessionRow_(session) {
@@ -624,14 +830,32 @@ export class ClientRenderer {
 
   createCdmRow_(cdm) {
     const template = $('cdm-row');
-    const span = template.content.querySelectorAll('span');
-    span[0].textContent = 'Key System: ' + cdm.key_system;
-    span[1].textContent = 'Robustness: ' + cdm.robustness;
-    span[2].textContent = 'Name: ' + cdm.name;
-    span[3].textContent = 'Version: ' + cdm.version;
-    span[4].textContent = 'Path: ' + cdm.path;
-    span[5].textContent = 'Status: ' + cdm.status;
-    span[6].textContent = 'Capabilities: ' + JSON.stringify(cdm.capability);
-    return document.importNode(template.content, true);
+    const clone = document.importNode(template.content, true);
+    const tableBody = clone.querySelector('tbody');
+
+
+    const addRow = (key, value) => {
+      const row = tableBody.insertRow(-1);
+      const keyCell = row.insertCell(-1);
+      const valueCell = row.insertCell(-1);
+      keyCell.textContent = key;
+      if (typeof value === 'object') {
+        const pre = document.createElement('pre');
+        pre.textContent = JSON.stringify(value, null, 2);
+        valueCell.appendChild(pre);
+      } else {
+        valueCell.textContent = value;
+      }
+    };
+
+    addRow('Key System', cdm.key_system);
+    addRow('Robustness', cdm.robustness);
+    addRow('Name', cdm.name);
+    addRow('Version', cdm.version);
+    addRow('Path', cdm.path);
+    addRow('Status', cdm.status);
+    addRow('Capabilities', cdm.capability);
+
+    return clone;
   }
 }

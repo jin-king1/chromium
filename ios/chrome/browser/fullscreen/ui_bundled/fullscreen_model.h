@@ -10,10 +10,12 @@
 #include <cmath>
 
 #import "base/observer_list.h"
+#include "base/memory/weak_ptr.h"
 #import "ios/chrome/browser/broadcaster/ui_bundled/chrome_broadcast_observer_bridge.h"
 #import "ios/chrome/browser/fullscreen/ui_bundled/scoped_fullscreen_disabler.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
-#import "ios/chrome/browser/toolbar/ui_bundled/fullscreen/toolbars_size_observer.h"
+#import "ios/chrome/browser/toolbar/legacy/ui_bundled/fullscreen/toolbars_size_observer.h"
+#import "ios/public/provider/chrome/browser/fullscreen/fullscreen_api.h"
 #import "ios/web/common/features.h"
 
 class FullscreenModelObserver;
@@ -47,7 +49,7 @@ class FullscreenModel : public ChromeBroadcastObserverInterface,
   // Whether the base offset has been recorded after state has been invalidated
   // by navigations or toolbar height changes.
   bool has_base_offset() const {
-    CHECK(base::FeatureList::IsEnabled(web::features::kSmoothScrollingDefault));
+    CHECK(ios::provider::IsFullscreenSmoothScrollingSupported());
     return !std::isnan(base_offset_);
   }
 
@@ -80,7 +82,7 @@ class FullscreenModel : public ChromeBroadcastObserverInterface,
 
   // Whether the view is scrolled all the way to the bottom.
   bool is_scrolled_to_bottom() const {
-    if (base::FeatureList::IsEnabled(web::features::kSmoothScrollingDefault)) {
+    if (ios::provider::IsFullscreenSmoothScrollingSupported()) {
       return y_content_offset_ + scroll_view_height_ >= content_height_;
     } else {
       return y_content_offset_ -
@@ -103,7 +105,10 @@ class FullscreenModel : public ChromeBroadcastObserverInterface,
   UIEdgeInsets current_toolbar_insets() const {
     return GetToolbarInsetsAtProgress(progress_);
   }
-
+  // Setter for whether the force fullscreen mode was triggered manually.
+  void set_manually_forced(bool manually_forced) {
+    manually_forced_ = manually_forced;
+  }
   // Returns the toolbar insets at `progress`.
   UIEdgeInsets GetToolbarInsetsAtProgress(CGFloat progress) const {
     return UIEdgeInsetsMake(GetCollapsedTopToolbarHeight() +
@@ -205,15 +210,9 @@ class FullscreenModel : public ChromeBroadcastObserverInterface,
     return fullscreen_scroll_direction_;
   }
 
-  // Helper for updating `progress_` accordingly to `distance_offset_`.
-  CGFloat UpdateProgressHelper(CGFloat progress_shift,
-                               CGFloat delta,
-                               CGFloat delta_shift,
-                               CGFloat toolbar_height);
-
-  // Helper for updating `scrolling_delay_delta_shift_down_to_up` and
-  // `scrolling_delay_delta_shift_up_to_down`.
-  CGFloat GetNewDeltaShift(CGFloat delta) const;
+  // Sets the last scroll direction. If the direction has changed, the base
+  // offset is updated.
+  void SetLastScrollDirection(FullscreenModelScrollDirection direction);
 
   // Updates `speed_` of the fullscreen model accordingly to
   // fullscreen flag `fullscreen transition experiment`.
@@ -232,7 +231,7 @@ class FullscreenModel : public ChromeBroadcastObserverInterface,
     kIgnore,                       // Ignore the scroll.
     kUpdateBaseOffset,             // Update `base_offset_` only.
     kUpdateProgress,               // Update `progress_` only.
-    kUpdateBaseOffsetAndProgress,  // Update `bse_offset_` and `progress_`.
+    kUpdateBaseOffsetAndProgress,  // Update `base_offset_` and `progress_`.
   };
   ScrollAction ActionForScrollFromOffset(CGFloat from_offset) const;
 
@@ -251,6 +250,10 @@ class FullscreenModel : public ChromeBroadcastObserverInterface,
   // Setter for `progress_`.  Notifies observers of the new value if
   // `notify_observers` is true.
   void SetProgress(CGFloat progress);
+
+  // Returns true if the size of the scroll is more than the threshold to begin
+  // entering or exiting fullscreen.
+  bool ScrollThresholdExceeded() const;
 
   // ChromeBroadcastObserverInterface:
   void OnScrollViewSizeBroadcasted(CGSize scroll_view_size) override;
@@ -314,16 +317,27 @@ class FullscreenModel : public ChromeBroadcastObserverInterface,
   // Current direction of scrolling initiated by the user.
   FullscreenModelScrollDirection fullscreen_scroll_direction_ =
       FullscreenModelScrollDirection::kNone;
-  // Distance in pixels before triggering fullscreen transition.
-  CGFloat distance_offset_ = 0.0;
   // Speed of fullscreen transition.
   CGFloat speed_ = 1.0;
-  CGFloat scrolling_delay_progress_shift_down_to_up_ = 0.0;
-  CGFloat scrolling_delay_delta_shift_down_to_up_ = 0.0;
-  CGFloat scrolling_delay_progress_shift_up_to_down_ = 1.0;
-  CGFloat scrolling_delay_delta_shift_up_to_down_ = 0.0;
+  // Time when scrolling started.
+  std::optional<base::TimeTicks> start_scrolling_time_ = std::nullopt;
+  // True is the scrolling time have been recorded.
+  bool is_scrolling_time_recorded_ = false;
+  // Time when fullscreen mode was entered.
+  std::optional<base::TimeTicks> time_entered_fullscreen_ = std::nullopt;
+  // Time when fullscreen mode was exited.
+  std::optional<base::TimeTicks> time_exited_fullscreen_ = std::nullopt;
+  // The minimum scroll amount that will result in beginning to enter or exit
+  // fullscreen.
+  CGFloat scroll_threshold_ = 0.0;
+  // The content offset when the most recent drag event started.
+  CGFloat offset_at_start_of_drag_ = 0;
+  // Whether the force fullscreen mode was triggered manually.
+  bool manually_forced_ = false;
 
   friend class FullscreenModelTest;
+
+  base::WeakPtrFactory<FullscreenModel> weak_factory_{this};
 };
 
 #endif  // IOS_CHROME_BROWSER_FULLSCREEN_UI_BUNDLED_FULLSCREEN_MODEL_H_

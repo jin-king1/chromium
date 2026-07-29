@@ -4,20 +4,18 @@
 
 package org.chromium.chrome.test.util.browser.tabmodel;
 
-import org.chromium.base.supplier.Supplier;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.MockTab;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tabmodel.IncognitoTabModelInternal;
-import org.chromium.chrome.browser.tabmodel.PassthroughTabUngrouper;
-import org.chromium.chrome.browser.tabmodel.TabGroupModelFilter;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelInternal;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorBase;
+import org.chromium.chrome.browser.tabmodel.TabModelType;
 import org.chromium.chrome.browser.tabmodel.TabModelUtils;
-import org.chromium.chrome.browser.tabmodel.TabUngrouper;
 import org.chromium.content_public.browser.LoadUrlParams;
 
 /**
@@ -28,7 +26,10 @@ public class MockTabModelSelector extends TabModelSelectorBase {
     public static final int ID_OFFSET = 100000;
     public static final int INCOGNITO_ID_OFFSET = 200000;
     private static int sCurTabOffset;
-    private int mTabCount;
+    private final int mTabCount;
+
+    private final Profile mProfile;
+    private final Profile mIncognitoProfile;
 
     public MockTabModelSelector(
             Profile profile,
@@ -36,11 +37,29 @@ public class MockTabModelSelector extends TabModelSelectorBase {
             int tabCount,
             int incognitoTabCount,
             MockTabModel.MockTabModelDelegate delegate) {
-        super(null, false);
+        this(
+                profile,
+                incognitoProfile,
+                tabCount,
+                incognitoTabCount,
+                delegate,
+                TabModelType.STANDARD);
+    }
+
+    public MockTabModelSelector(
+            Profile profile,
+            Profile incognitoProfile,
+            int tabCount,
+            int incognitoTabCount,
+            MockTabModel.MockTabModelDelegate delegate,
+            @TabModelType int tabModelType) {
+        super(new MockTabCreatorManager(), false);
+        ((MockTabCreatorManager) getTabCreatorManager()).initialize(this);
+        mProfile = profile;
+        mIncognitoProfile = incognitoProfile;
         initialize(
-                new MockTabModel(profile, delegate),
-                new MockTabModel(incognitoProfile, delegate),
-                MockTabModelSelector::createTabUngrouper);
+                new MockTabModel(profile, delegate, tabModelType),
+                new MockTabModel(incognitoProfile, delegate, tabModelType));
         for (int i = 0; i < tabCount; i++) {
             addMockTab();
         }
@@ -62,8 +81,8 @@ public class MockTabModelSelector extends TabModelSelectorBase {
     public void initializeTabModels(
             TabModelInternal normalModel, IncognitoTabModelInternal incognitoModel) {
         destroy();
-        getTabGroupModelFilterProvider().resetTabGroupModelFilterListForTesting();
-        initialize(normalModel, incognitoModel, MockTabModelSelector::createTabUngrouper);
+        resetTabModelListForTesting();
+        initialize(normalModel, incognitoModel);
     }
 
     private static int nextIdOffset() {
@@ -95,8 +114,8 @@ public class MockTabModelSelector extends TabModelSelectorBase {
     }
 
     @Override
-    public boolean isSessionRestoreInProgress() {
-        return false;
+    public boolean isTabModelRestored() {
+        return true;
     }
 
     @Override
@@ -104,8 +123,8 @@ public class MockTabModelSelector extends TabModelSelectorBase {
         return (MockTab) super.getCurrentTab();
     }
 
-    private static TabUngrouper createTabUngrouper(
-            boolean isIncognitoBranded, Supplier<TabGroupModelFilter> tabGroupModelFilterSupplier) {
-        return new PassthroughTabUngrouper(tabGroupModelFilterSupplier);
+    @Override
+    public @Nullable Profile getProfile(boolean offTheRecord) {
+        return offTheRecord ? mIncognitoProfile : mProfile;
     }
 }

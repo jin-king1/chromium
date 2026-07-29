@@ -8,7 +8,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -25,7 +24,6 @@
 #include "content/browser/renderer_host/browsing_context_state.h"
 #include "content/browser/renderer_host/frame_tree.h"
 #include "content/browser/renderer_host/page_lifecycle_state_manager.h"
-#include "content/browser/renderer_host/render_widget_host_impl.h"
 #include "content/browser/renderer_host/render_widget_host_owner_delegate.h"
 #include "content/browser/site_instance_group.h"
 #include "content/browser/site_instance_impl.h"
@@ -34,7 +32,7 @@
 #include "content/public/browser/global_routing_id.h"
 #include "content/public/browser/render_process_host_observer.h"
 #include "content/public/browser/render_view_host.h"
-#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "ipc/constants.mojom-forward.h"
 #include "net/base/load_states.h"
 #include "third_party/blink/public/common/renderer_preferences/renderer_preferences.h"
 #include "third_party/blink/public/common/tokens/tokens.h"
@@ -54,6 +52,7 @@ namespace content {
 
 class AgentSchedulingGroupHost;
 class RenderProcessHost;
+class RenderWidgetHostImpl;
 
 // A callback which will be called immediately before EnterBackForwardCache
 // starts.
@@ -146,17 +145,21 @@ class CONTENT_EXPORT RenderViewHostImpl
   // Set up the `blink::WebView` child process. Virtual because it is overridden
   // by TestRenderViewHost.
   // `opener_route_id` parameter indicates which `blink::WebView` created this
-  //   (MSG_ROUTING_NONE if none).
+  //   (IPC::mojom::kRoutingIdNone if none).
   // `window_was_opened_by_another_window` is true if this top-level frame was
   //   created by another window, as opposed to independently created (through
   //   the browser UI, etc). This is true even when the window is opened with
   //   "noopener", and even if the opener has been closed since.
   // `proxy_route_id` is only used when creating a `blink::WebView` in an
   //   inactive state.
+  // `navigation_metrics_token` identifies the navigation for which this
+  //   view is being created, if any. This is used for navigation-related
+  //   metrics and trace events recorded in the renderer process.
   virtual bool CreateRenderView(
       const std::optional<blink::FrameToken>& opener_frame_token,
       int proxy_route_id,
-      bool window_was_opened_by_another_window);
+      bool window_was_opened_by_another_window,
+      const std::optional<base::UnguessableToken>& navigation_metrics_token);
 
   RenderViewHostDelegate* GetDelegate();
 
@@ -181,7 +184,9 @@ class CONTENT_EXPORT RenderViewHostImpl
   // Tracks whether this RenderViewHost is in an active state (rather than
   // pending unload or unloaded), according to its main frame
   // RenderFrameHost.
-  bool is_active() const { return main_frame_routing_id_ != MSG_ROUTING_NONE; }
+  bool is_active() const {
+    return main_frame_routing_id_ != IPC::mojom::kRoutingIdNone;
+  }
   int main_frame_routing_id() const { return main_frame_routing_id_; }
 
   // Returns true if the `blink::WebView` is active and has not crashed.
@@ -218,10 +223,11 @@ class CONTENT_EXPORT RenderViewHostImpl
 
   // Tells the renderer process to request a page-scale animation based on the
   // specified point/rect.
-  void AnimateDoubleTapZoom(const gfx::Point& point, const gfx::Rect& rect);
+  void AnimateDoubleTapZoom(const gfx::Point& point,
+                            const gfx::Rect& rect) override;
 
   // Requests a page-scale animation based on the specified rect.
-  void ZoomToFindInPageRect(const gfx::Rect& rect_to_zoom);
+  void ZoomToFindInPageRect(const gfx::Rect& rect_to_zoom) override;
 
   // Tells the renderer view to focus the first (last if reverse is true) node.
   void SetInitialFocus(bool reverse);
@@ -230,13 +236,16 @@ class CONTENT_EXPORT RenderViewHostImpl
   // re-entrantly.
   void PostRenderViewReady();
 
-  // Sets the routing id for the main frame. When set to MSG_ROUTING_NONE, the
-  // view is not considered active.
+  // Sets the routing id for the main frame. When set to
+  // IPC::mojom::kRoutingIdNone, the view is not considered active.
   void SetMainFrameRoutingId(int routing_id);
 
   // Called when the RenderFrameHostImpls/RenderFrameProxyHosts that own this
   // RenderViewHost enter the BackForwardCache.
-  void EnterBackForwardCache();
+  // `new_navigation_request_url` is a URL for the next new page's
+  // navigation_request_url, not the bfcached page's URL.
+  void EnterBackForwardCache(
+      const base::optional_ref<const GURL> new_navigation_request_url);
 
   // Indicates whether or not |this| has received an acknowledgement from
   // renderer that it has enered BackForwardCache.
@@ -342,10 +351,8 @@ class CONTENT_EXPORT RenderViewHostImpl
   void RenderWidgetDidForwardMouseEvent(
       const blink::WebMouseEvent& mouse_event) override;
 
-  bool ShouldContributePriorityToProcess() override;
   void SetBackgroundOpaque(bool opaque) override;
   bool IsMainFrameActive() override;
-  bool IsNeverComposited() override;
   blink::web_pref::WebPreferences GetWebkitPreferencesForWidget() override;
 
   // IPC message handlers.
@@ -369,7 +376,6 @@ class CONTENT_EXPORT RenderViewHostImpl
   FRIEND_TEST_ALL_PREFIXES(RenderViewHostTest, RoutingIdSane);
 
   // IPC::Listener implementation.
-  bool OnMessageReceived(const IPC::Message& msg) override;
   std::string ToDebugString() override;
 
   void RenderViewReady();

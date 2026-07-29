@@ -2,6 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import 'chrome://resources/cr_elements/cr_radio_group/cr_radio_group.js';
+import './selectable_icon_button.js';
+
+import {assertNotReachedCase} from 'chrome://resources/js/assert.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
@@ -17,13 +21,6 @@ export const BRUSH_TYPES: AnnotationBrushType[] = [
   AnnotationBrushType.ERASER,
 ];
 
-export interface InkBrushSelectorElement {
-  $: {
-    eraser: HTMLElement,
-    highlighter: HTMLElement,
-    pen: HTMLElement,
-  };
-}
 
 export class InkBrushSelectorElement extends CrLitElement {
   static get is() {
@@ -47,17 +44,16 @@ export class InkBrushSelectorElement extends CrLitElement {
     };
   }
 
-  currentType: AnnotationBrushType = AnnotationBrushType.PEN;
+  accessor currentType: AnnotationBrushType = AnnotationBrushType.PEN;
 
-  protected onBrushClick_(e: Event) {
-    const targetElement = e.currentTarget as HTMLElement;
-    const newType = targetElement.dataset['brush'] as AnnotationBrushType;
-    if (this.currentType === newType) {
+  protected onSelectedChanged_(e: CustomEvent<{value: string}>) {
+    const newType = e.detail.value as AnnotationBrushType;
+    if (newType === this.currentType) {
+      // Don't record programmatic changes to metrics.
       return;
     }
 
     this.currentType = newType;
-
     switch (newType) {
       case AnnotationBrushType.ERASER:
         record(UserAction.SELECT_INK2_BRUSH_ERASER);
@@ -68,19 +64,23 @@ export class InkBrushSelectorElement extends CrLitElement {
       case AnnotationBrushType.PEN:
         record(UserAction.SELECT_INK2_BRUSH_PEN);
         break;
+      default:
+        assertNotReachedCase(newType);
     }
   }
 
   protected getIcon_(type: AnnotationBrushType): string {
-    const isCurrentType = this.isCurrentType_(type);
+    const isCurrentType = type === this.currentType;
     switch (type) {
       case AnnotationBrushType.ERASER:
-        return isCurrentType ? 'pdf:ink-eraser-fill' : 'pdf:ink-eraser';
+        return isCurrentType ? 'pdf-ink:ink-eraser-fill' : 'pdf-ink:ink-eraser';
       case AnnotationBrushType.HIGHLIGHTER:
-        return isCurrentType ? 'pdf:ink-highlighter-fill' :
-                               'pdf:ink-highlighter';
+        return isCurrentType ? 'pdf-ink:ink-highlighter-fill' :
+                               'pdf-ink:ink-highlighter';
       case AnnotationBrushType.PEN:
-        return isCurrentType ? 'pdf:ink-pen-fill' : 'pdf:ink-pen';
+        return isCurrentType ? 'pdf-ink:ink-pen-fill' : 'pdf-ink:ink-pen';
+      default:
+        assertNotReachedCase(type);
     }
   }
 
@@ -92,11 +92,9 @@ export class InkBrushSelectorElement extends CrLitElement {
         return loadTimeData.getString('annotationHighlighter');
       case AnnotationBrushType.PEN:
         return loadTimeData.getString('annotationPen');
+      default:
+        assertNotReachedCase(type);
     }
-  }
-
-  protected isCurrentType_(type: AnnotationBrushType): boolean {
-    return this.currentType === type;
   }
 }
 

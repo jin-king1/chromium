@@ -8,6 +8,8 @@
 #include <sys/ioctl.h>
 
 #include "base/files/file_enumerator.h"
+#include "base/logging.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/posix/eintr_wrapper.h"
 #include "base/run_loop.h"
 #include "base/task/single_thread_task_runner.h"
@@ -15,6 +17,7 @@
 #include "base/test/task_environment.h"
 #include "build/build_config.h"
 #include "gpu/command_buffer/client/test_shared_image_interface.h"
+#include "media/capture/video/linux/v4l2_capture_device_impl.h"
 #include "media/capture/video/mock_video_capture_device_client.h"
 #include "media/capture/video/video_capture_device.h"
 #include "media/capture/video/video_capture_device_descriptor.h"
@@ -29,14 +32,12 @@
 #include "media/capture/video/linux/fake_device_provider.h"
 #include "media/capture/video/linux/fake_v4l2_impl.h"
 #include "media/capture/video/linux/video_capture_device_linux.h"
-#include "media/video/fake_gpu_memory_buffer.h"
 #endif  // BUILDFLAG(IS_LINUX)
 
 using base::test::RunClosure;
 using ::testing::_;
 
 #if BUILDFLAG(IS_LINUX)
-using testing::Invoke;
 using testing::InvokeWithoutArgs;
 #endif  // BUILDFLAG(IS_LINUX)
 
@@ -262,6 +263,7 @@ class MockV4l2GpuClient : public VideoCaptureDevice::Client {
       base::TimeTicks reference_time,
       base::TimeDelta timestamp,
       std::optional<base::TimeTicks> capture_begin_time,
+      const gfx::Size& natural_size,
       const std::optional<VideoFrameMetadata>& metadata,
       int frame_feedback_id = 0) override {}
 
@@ -271,6 +273,7 @@ class MockV4l2GpuClient : public VideoCaptureDevice::Client {
       base::TimeDelta timestamp,
       std::optional<base::TimeTicks> capture_begin_time,
       const gfx::Rect& visible_rect,
+      const gfx::Size& natural_size,
       const std::optional<media::VideoFrameMetadata>&) override {}
 
   void OnCaptureConfigurationChanged() override {}
@@ -316,8 +319,9 @@ class MockV4l2GpuClient : public VideoCaptureDevice::Client {
 class MockCaptureHandleProvider
     : public VideoCaptureDevice::Client::Buffer::HandleProvider {
  public:
-  MockCaptureHandleProvider(const gfx::Size& size, gfx::BufferFormat format) {
-    gmb_ = std::make_unique<FakeGpuMemoryBuffer>(size, format);
+  MockCaptureHandleProvider(const gfx::Size& size,
+                            viz::SharedImageFormat format) {
+    gmb_handle_ = gpu::TestSharedImageInterface::CreateGMBHandle(format, size);
   }
   // Duplicate as an writable (unsafe) shared memory region.
   base::UnsafeSharedMemoryRegion DuplicateAsUnsafeRegion() override {
@@ -332,10 +336,9 @@ class MockCaptureHandleProvider
 
   // Clone a |GpuMemoryBufferHandle| for IPC.
   gfx::GpuMemoryBufferHandle GetGpuMemoryBufferHandle() override {
-    gfx::GpuMemoryBufferHandle handle;
-    return gmb_->CloneHandle();
+    return gmb_handle_.Clone();
   }
-  std::unique_ptr<FakeGpuMemoryBuffer> gmb_;
+  gfx::GpuMemoryBufferHandle gmb_handle_;
 };
 
 class V4l2CaptureDelegateGPUMemoryBufferTest
@@ -348,7 +351,7 @@ class V4l2CaptureDelegateGPUMemoryBufferTest
   void SetUp() override {
     device_factory_ = std::make_unique<VideoCaptureDeviceFactoryV4L2>(
         base::SingleThreadTaskRunner::GetCurrentDefault());
-    scoped_refptr<FakeV4L2Impl> fake_v4l2(new FakeV4L2Impl());
+    auto fake_v4l2 = base::MakeRefCounted<FakeV4L2Impl>();
     fake_v4l2_ = fake_v4l2.get();
     auto fake_device_provider = std::make_unique<FakeDeviceProvider>();
     fake_device_provider_ = fake_device_provider.get();
@@ -357,7 +360,6 @@ class V4l2CaptureDelegateGPUMemoryBufferTest
     base::CommandLine::ForCurrentProcess()->AppendSwitch(
         ::switches::kVideoCaptureUseGpuMemoryBuffer);
     test_sii_ = base::MakeRefCounted<gpu::TestSharedImageInterface>();
-    test_sii_->UseTestGMBInSharedImageCreationWithBufferUsage();
     VideoCaptureGpuChannelHost::GetInstance().SetSharedImageInterface(
         test_sii_);
   }
@@ -453,16 +455,16 @@ TEST_P(V4l2CaptureDelegateGPUMemoryBufferTest, CameraCaptureOneCopy) {
       std::make_unique<MockV4l2GpuClient>();
   MockV4l2GpuClient* client_ptr = client.get();
   EXPECT_CALL(*client_ptr, ReserveOutputBuffer)
-      .WillRepeatedly(Invoke(
+      .WillRepeatedly(
           [](const gfx::Size& size, VideoPixelFormat format, int feedback_id,
              VideoCaptureDevice::Client::Buffer* capture_buffer,
              int* require_new_buffer_id, int* retire_old_buffer_id) {
             EXPECT_EQ(format, PIXEL_FORMAT_NV12);
             capture_buffer->handle_provider =
                 std::make_unique<MockCaptureHandleProvider>(
-                    size, gfx::BufferFormat::YUV_420_BIPLANAR);
+                    size, viz::MultiPlaneFormat::kNV12);
             return VideoCaptureDevice::Client::ReserveResult::kSucceeded;
-          }));
+          });
 
   base::RunLoop wait_loop;
   EXPECT_CALL(*client_ptr, OnIncomingCapturedBufferExt)

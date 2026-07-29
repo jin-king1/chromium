@@ -4,25 +4,39 @@
 
 #include "chrome/browser/ui/views/overlay/video_overlay_window_views.h"
 
+#include <algorithm>
 #include <memory>
 #include <utility>
 
-#include "base/containers/contains.h"
+#include "base/i18n/rtl.h"
 #include "base/memory/raw_ptr.h"
 #include "base/test/mock_callback.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "chrome/browser/picture_in_picture/auto_pip_setting_overlay_view.h"
 #include "chrome/browser/picture_in_picture/picture_in_picture_occlusion_tracker.h"
+#include "chrome/browser/picture_in_picture/picture_in_picture_widget_fade_animator.h"
 #include "chrome/browser/picture_in_picture/picture_in_picture_window_manager.h"
+#include "chrome/browser/picture_in_picture/scoped_tuck_picture_in_picture.h"
+#include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/overlay/back_to_tab_button.h"
 #include "chrome/browser/ui/views/overlay/close_image_button.h"
+#include "chrome/browser/ui/views/overlay/hang_up_button.h"
 #include "chrome/browser/ui/views/overlay/minimize_button.h"
+#include "chrome/browser/ui/views/overlay/overlay_window_live_caption_button.h"
+#include "chrome/browser/ui/views/overlay/overlay_window_live_caption_dialog.h"
 #include "chrome/browser/ui/views/overlay/playback_image_button.h"
 #include "chrome/browser/ui/views/overlay/simple_overlay_window_image_button.h"
+#include "chrome/browser/ui/views/overlay/toggle_camera_button.h"
+#include "chrome/browser/ui/views/overlay/toggle_microphone_button.h"
+#include "chrome/browser/ui/views/overlay/toggle_mute_button.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/views/chrome_views_test_base.h"
 #include "components/global_media_controls/public/views/media_progress_view.h"
+#include "components/live_caption/pref_names.h"
+#include "components/prefs/pref_service.h"
+#include "components/prefs/testing_pref_service.h"
+#include "components/soda/mock_soda_installer.h"
 #include "components/vector_icons/vector_icons.h"
 #include "content/public/browser/overlay_window.h"
 #include "content/public/browser/video_picture_in_picture_window_controller.h"
@@ -32,6 +46,8 @@
 #include "services/media_session/public/cpp/media_position.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "ui/base/models/image_model.h"
+#include "ui/base/ui_base_features.h"
+#include "ui/color/color_provider_key.h"
 #include "ui/compositor/layer.h"
 #include "ui/display/test/test_screen.h"
 #include "ui/events/base_event_utils.h"
@@ -39,7 +55,12 @@
 #include "ui/events/test/event_generator.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/vector2d.h"
+#include "ui/native_theme/mock_os_settings_provider.h"
+#include "ui/views/accessibility/view_accessibility.h"
+#include "ui/views/animation/widget_fade_animator.h"
 #include "ui/views/controls/button/label_button.h"
+#include "ui/views/controls/button/toggle_button.h"
+#include "ui/views/controls/combobox/combobox.h"
 #include "ui/views/controls/image_view.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/test/button_test_api.h"
@@ -122,6 +143,8 @@ class TestVideoPictureInPictureWindowController
   void ToggleMicrophone() override {}
   void ToggleCamera() override {}
   void HangUp() override {}
+  void RequestMute(bool mute) override {}
+  bool GetMuteStatus() override { return false; }
   MOCK_METHOD(void, SeekTo, (base::TimeDelta time));
   const gfx::Rect& GetSourceBounds() const override { return source_bounds_; }
   void GetMediaImage(
@@ -137,8 +160,11 @@ class TestVideoPictureInPictureWindowController
               (const media_session::MediaImage& image,
                int minimum_size_px,
                int desired_size_px));
-  std::optional<gfx::Rect> GetWindowBounds() override { return std::nullopt; }
+  std::optional<gfx::Rect> GetWindowBoundsInScreen() override {
+    return std::nullopt;
+  }
   std::optional<url::Origin> GetOrigin() override { return std::nullopt; }
+  MOCK_METHOD(bool, IsImmersive, (), (const, override));
   void SetOnWindowCreatedNotifyObserversCallback(base::OnceClosure) override {}
 
  private:
@@ -158,6 +184,10 @@ class VideoOverlayWindowViewsTest : public ChromeViewsTestBase {
     // Purposely skip ChromeViewsTestBase::SetUp() as that creates ash::Shell
     // on ChromeOS, which we don't want.
     ViewsTestBase::SetUp();
+    test_views_delegate()->set_layout_provider(
+        ChromeLayoutProvider::CreateLayoutProvider());
+    mock_soda_installer_ = std::make_unique<speech::MockSodaInstaller>();
+    mock_soda_installer_->NeverDownloadSodaForTesting();
     // web_contents_ needs to be created after the constructor, so that
     // |feature_list_| can be initialized before other threads check if a
     // feature is enabled.
@@ -177,6 +207,7 @@ class VideoOverlayWindowViewsTest : public ChromeViewsTestBase {
     overlay_window_->set_overlay_view_cb_for_testing(
         base::BindRepeating(&VideoOverlayWindowViewsTest::GetOverlayViewImpl,
                             base::Unretained(this)));
+    overlay_window_->set_meets_user_interaction_for_testing(true);
 
     // On some platforms, OnNativeWidgetMove is invoked on creation.
     WaitForMove();
@@ -223,17 +254,26 @@ class VideoOverlayWindowViewsTest : public ChromeViewsTestBase {
         base::Milliseconds(1));
   }
 
+  void WaitForLayout() { task_environment()->FastForwardBy(base::Seconds(1)); }
+
   void DestroyOverlayWindow() { overlay_window_.reset(); }
 
   void AddEnabledFeature(base::test::FeatureRef feature) {
     enabled_features_.push_back(feature);
   }
 
+  void GestureTapOnView(views::View* view) {
+    event_generator_->GestureTapAt(view->GetBoundsInScreen().CenterPoint());
+  }
+
+  TestingProfile& profile() { return profile_; }
+
  private:
   std::unique_ptr<AutoPipSettingOverlayView> GetOverlayViewImpl() {
     return std::move(overlay_view_);
   }
 
+  std::unique_ptr<speech::MockSodaInstaller> mock_soda_installer_;
   TestingProfile profile_;
   content::TestWebContentsFactory web_contents_factory_;
   raw_ptr<content::WebContents> web_contents_;
@@ -419,44 +459,6 @@ TEST_F(VideoOverlayWindowViewsTest, IgnoreInvalidMaximumSize) {
   EXPECT_EQ(gfx::Size(800, 800), overlay_window().GetMaximumSize());
 }
 
-// Tests that Next Track button bounds are updated right away when window
-// controls are hidden.
-TEST_F(VideoOverlayWindowViewsTest, NextTrackButtonAddedWhenControlsHidden) {
-  ASSERT_FALSE(overlay_window().AreControlsVisible());
-  ASSERT_TRUE(overlay_window()
-                  .next_track_controls_view_for_testing()
-                  ->size()
-                  .IsEmpty());
-
-  const auto origin_before_layout =
-      overlay_window().next_track_controls_view_for_testing()->origin();
-
-  overlay_window().SetNextTrackButtonVisibility(true);
-  EXPECT_NE(overlay_window().next_track_controls_view_for_testing()->origin(),
-            origin_before_layout);
-  EXPECT_FALSE(overlay_window().IsLayoutPendingForTesting());
-}
-
-// Tests that Previous Track button bounds are updated right away when window
-// controls are hidden.
-TEST_F(VideoOverlayWindowViewsTest,
-       PreviousTrackButtonAddedWhenControlsHidden) {
-  ASSERT_FALSE(overlay_window().AreControlsVisible());
-  ASSERT_TRUE(overlay_window()
-                  .previous_track_controls_view_for_testing()
-                  ->size()
-                  .IsEmpty());
-
-  const auto origin_before_layout =
-      overlay_window().previous_track_controls_view_for_testing()->origin();
-
-  overlay_window().SetPreviousTrackButtonVisibility(true);
-  EXPECT_NE(
-      overlay_window().previous_track_controls_view_for_testing()->origin(),
-      origin_before_layout);
-  EXPECT_FALSE(overlay_window().IsLayoutPendingForTesting());
-}
-
 TEST_F(VideoOverlayWindowViewsTest, UpdateNaturalSizeDoesNotMoveWindow) {
   // Enter PiP.
   overlay_window().UpdateNaturalSize({300, 200});
@@ -480,7 +482,7 @@ TEST_F(VideoOverlayWindowViewsTest, UpdateNaturalSizeDoesNotMoveWindow) {
 // Tests that the OverlayWindowFrameView does not accept events so they can
 // propagate to the overlay.
 TEST_F(VideoOverlayWindowViewsTest, HitTestFrameView) {
-  // Since the NonClientFrameView is the only non-custom direct descendent of
+  // Since the FrameView is the only non-custom direct descendent of
   // the NonClientView, we can assume that if the frame does not accept the
   // point but the NonClientView does, then it will be handled by one of the
   // custom overlay views.
@@ -493,7 +495,7 @@ TEST_F(VideoOverlayWindowViewsTest, HitTestFrameView) {
 // With pillarboxing, the close button doesn't cover the video area. Make sure
 // hovering the button doesn't get handled like normal mouse exit events
 // causing the controls to hide.
-// TODO(http://crbug/1509791): Fix and re-enable.
+// TODO(http://crbug.com/41482397): Fix and re-enable.
 TEST_F(VideoOverlayWindowViewsTest, DISABLED_NoMouseExitWithinWindowBounds) {
   overlay_window().UpdateNaturalSize({10, 400});
   WaitForMove();
@@ -601,7 +603,7 @@ TEST_F(VideoOverlayWindowViewsTest, SmallDisplayWorkAreaDoesNotCrash) {
             overlay_window().video_layer_for_testing()->size());
 }
 
-// TODO(http://crbug/1509791): Fix and re-enable.
+// TODO(http://crbug.com/41482397): Fix and re-enable.
 TEST_F(VideoOverlayWindowViewsTest, DISABLED_ControlsAreHiddenDuringMove) {
   // Set the initial position.
   overlay_window().SetBounds({0, 0, 100, 100});
@@ -743,61 +745,58 @@ TEST_F(VideoOverlayWindowViewsTest, IsTrackedByTheOcclusionObserver) {
 
   // Check that the PictureInPictureOcclusionTracker is observing the
   // VideoOverlayWindowViews.
-  EXPECT_TRUE(base::Contains(tracker->GetPictureInPictureWidgetsForTesting(),
-                             &overlay_window()));
+  EXPECT_TRUE(std::ranges::contains(
+      tracker->GetPictureInPictureWidgetsForTesting(), &overlay_window()));
 
   // Check that it's no longer observed when the widget is destroyed.
   DestroyOverlayWindow();
   EXPECT_EQ(0u, tracker->GetPictureInPictureWidgetsForTesting().size());
 }
 
-TEST_F(VideoOverlayWindowViewsTest, ProgressBarNotDrawnWhen2024UIIsDisabled) {
-  overlay_window().ForceControlsVisibleForTesting(true);
-  global_media_controls::MediaProgressView* progress_view =
-      overlay_window().progress_view_for_testing();
-  ASSERT_EQ(nullptr, progress_view);
+TEST_F(VideoOverlayWindowViewsTest, CanBeTuckedToTheSideOfTheScreen) {
+  // Place the window on the left side of the screen.
+  SetDisplayWorkArea({0, 0, 2000, 2000});
+  overlay_window().SetBounds({{400, 400}, {500, 500}});
+
+  // If we tell it to force tucking, it should tuck to the left side of the
+  // screen.
+  overlay_window().SetForcedTucking(true);
+  overlay_window().FinishTuckAnimationForTesting();
+  EXPECT_LT(overlay_window().GetWindowBoundsInScreen().x(), 0);
+
+  // If we tell it to stop tucking, it should be put back in its original
+  // position.
+  overlay_window().SetForcedTucking(false);
+  overlay_window().FinishTuckAnimationForTesting();
+  EXPECT_EQ(overlay_window().GetWindowBoundsInScreen().x(), 400);
 }
 
-TEST_F(VideoOverlayWindowViewsTest, TimestampNotDrawnWhen2024UIIsDisabled) {
-  overlay_window().ForceControlsVisibleForTesting(true);
-  views::Label* timestamp = overlay_window().timestamp_for_testing();
-  ASSERT_EQ(nullptr, timestamp);
+TEST_F(VideoOverlayWindowViewsTest, UntucksWhenReshownIfNecessary) {
+  // Place the window on the left side of the screen.
+  SetDisplayWorkArea({0, 0, 2000, 2000});
+  overlay_window().SetBounds({{400, 400}, {500, 500}});
+  overlay_window().ShowInactive();
+
+  // Start tucking via a ScopedTuckPictureInPicture.
+  auto scoped_tuck = std::make_unique<ScopedTuckPictureInPicture>();
+  overlay_window().FinishTuckAnimationForTesting();
+  EXPECT_LT(overlay_window().GetWindowBoundsInScreen().x(), 0);
+
+  // Hide ourselves. This will mean if tucking ends then the
+  // PictureInPictureWindowManager won't actually notify us.
+  overlay_window().Hide();
+
+  // End tucking.
+  scoped_tuck.reset();
+
+  // Show ourselves. We should check with the PictureInPictureWindowManager and
+  // realize we should no longer tuck.
+  overlay_window().ShowInactive();
+  overlay_window().FinishTuckAnimationForTesting();
+  EXPECT_EQ(overlay_window().GetWindowBoundsInScreen().x(), 400);
 }
 
-TEST_F(VideoOverlayWindowViewsTest,
-       ReplayAndForward10SecondsNotDrawnWhen2024UIIsDisabled) {
-  overlay_window().ForceControlsVisibleForTesting(true);
-  SimpleOverlayWindowImageButton* replay_10_seconds_button =
-      overlay_window().replay_10_seconds_button_for_testing();
-  SimpleOverlayWindowImageButton* forward_10_seconds_button =
-      overlay_window().forward_10_seconds_button_for_testing();
-  ASSERT_EQ(nullptr, replay_10_seconds_button);
-  ASSERT_EQ(nullptr, forward_10_seconds_button);
-}
-
-TEST_F(VideoOverlayWindowViewsTest, FaviconNotDrawnWhen2024UIIsDisabled) {
-  overlay_window().ForceControlsVisibleForTesting(true);
-  views::ImageView* favicon = overlay_window().favicon_view_for_testing();
-  ASSERT_EQ(nullptr, favicon);
-}
-
-TEST_F(VideoOverlayWindowViewsTest, OriginNotDrawnWhen2024UIIsDisabled) {
-  overlay_window().ForceControlsVisibleForTesting(true);
-  views::Label* origin = overlay_window().origin_for_testing();
-  ASSERT_EQ(nullptr, origin);
-}
-
-class VideoOverlayWindowViewsWith2024UITest
-    : public VideoOverlayWindowViewsTest {
- public:
-  void SetUp() override {
-    AddEnabledFeature(media::kVideoPictureInPictureControlsUpdate2024);
-    VideoOverlayWindowViewsTest::SetUp();
-  }
-};
-
-TEST_F(VideoOverlayWindowViewsWith2024UITest,
-       MinimizeButtonClosesWithoutPausing) {
+TEST_F(VideoOverlayWindowViewsTest, MinimizeButtonClosesWithoutPausing) {
   views::test::ButtonTestApi minimize_button_clicker(
       overlay_window().minimize_button_for_testing());
   ui::MouseEvent dummy_event(ui::EventType::kMousePressed, gfx::Point(0, 0),
@@ -813,7 +812,7 @@ TEST_F(VideoOverlayWindowViewsWith2024UITest,
   testing::Mock::VerifyAndClearExpectations(&pip_window_controller());
 }
 
-TEST_F(VideoOverlayWindowViewsWith2024UITest, ShowsBackToTabImageButton) {
+TEST_F(VideoOverlayWindowViewsTest, ShowsBackToTabImageButton) {
   overlay_window().ForceControlsVisibleForTesting(true);
   OverlayWindowBackToTabButton* back_to_tab_image_button =
       overlay_window().back_to_tab_button_for_testing();
@@ -830,13 +829,13 @@ TEST_F(VideoOverlayWindowViewsWith2024UITest, ShowsBackToTabImageButton) {
   testing::Mock::VerifyAndClearExpectations(&pip_window_controller());
 }
 
-TEST_F(VideoOverlayWindowViewsWith2024UITest, ProgressBarSeeksVideo) {
+TEST_F(VideoOverlayWindowViewsTest, ProgressBarSeeksVideo) {
   overlay_window().ShowInactive();
   overlay_window().SetPlayPauseButtonVisibility(true);
   overlay_window().ForceControlsVisibleForTesting(true);
 
   // Move time forward to ensure controls layout is completed.
-  task_environment()->FastForwardBy(base::Seconds(1));
+  WaitForLayout();
 
   global_media_controls::MediaProgressView* progress_view =
       overlay_window().progress_view_for_testing();
@@ -884,7 +883,7 @@ TEST_F(VideoOverlayWindowViewsWith2024UITest, ProgressBarSeeksVideo) {
   EXPECT_TRUE(forward_10_seconds_button->IsDrawn());
 }
 
-TEST_F(VideoOverlayWindowViewsWith2024UITest, TimestampDisplaysCurrentTime) {
+TEST_F(VideoOverlayWindowViewsTest, TimestampDisplaysCurrentTime) {
   overlay_window().ForceControlsVisibleForTesting(true);
   media_session::MediaPosition media_position(/*playback_rate=*/0,
                                               /*duration=*/base::Seconds(100),
@@ -898,8 +897,7 @@ TEST_F(VideoOverlayWindowViewsWith2024UITest, TimestampDisplaysCurrentTime) {
   EXPECT_EQ(u"0:42 / 1:40", timestamp->GetText());
 }
 
-TEST_F(VideoOverlayWindowViewsWith2024UITest,
-       ReplayAndForward10SecondsSeekVideo) {
+TEST_F(VideoOverlayWindowViewsTest, ReplayAndForward10SecondsSeekVideo) {
   overlay_window().ForceControlsVisibleForTesting(true);
   media_session::MediaPosition media_position(/*playback_rate=*/0,
                                               /*duration=*/base::Seconds(100),
@@ -928,8 +926,6 @@ TEST_F(VideoOverlayWindowViewsWith2024UITest,
   testing::Mock::VerifyAndClearExpectations(&pip_window_controller());
 
   // Clicking the forward 10 seconds button should seek forwards 10 seconds.
-  PictureInPictureWindowManager::GetInstance()
-      ->set_window_controller_for_testing(&pip_window_controller());
   EXPECT_CALL(pip_window_controller(), SeekTo(base::Seconds(52)));
   forward_button_clicker.NotifyClick(dummy_event);
   testing::Mock::VerifyAndClearExpectations(&pip_window_controller());
@@ -959,7 +955,94 @@ TEST_F(VideoOverlayWindowViewsWith2024UITest,
   testing::Mock::VerifyAndClearExpectations(&pip_window_controller());
 }
 
-TEST_F(VideoOverlayWindowViewsWith2024UITest, DisplaysFavicon) {
+// Gesture events are not supported on Mac.
+#if !BUILDFLAG(IS_MAC)
+TEST_F(VideoOverlayWindowViewsTest,
+       ReplayAndForward10SecondsSeekVideo_GestureTap) {
+  overlay_window().ShowInactive();
+  overlay_window().SetPlayPauseButtonVisibility(true);
+  overlay_window().ForceControlsVisibleForTesting(true);
+  media_session::MediaPosition media_position(/*playback_rate=*/0,
+                                              /*duration=*/base::Seconds(100),
+                                              /*position=*/base::Seconds(42),
+                                              /*end_of_media=*/false);
+  overlay_window().SetMediaPosition(media_position);
+  WaitForLayout();
+
+  SimpleOverlayWindowImageButton* replay_10_seconds_button =
+      overlay_window().replay_10_seconds_button_for_testing();
+  SimpleOverlayWindowImageButton* forward_10_seconds_button =
+      overlay_window().forward_10_seconds_button_for_testing();
+  ASSERT_NE(nullptr, replay_10_seconds_button);
+  ASSERT_NE(nullptr, forward_10_seconds_button);
+  EXPECT_TRUE(replay_10_seconds_button->IsDrawn());
+  EXPECT_TRUE(forward_10_seconds_button->IsDrawn());
+
+  // Tapping the replay 10 seconds button should seek backwards 10 seconds.
+  PictureInPictureWindowManager::GetInstance()
+      ->set_window_controller_for_testing(&pip_window_controller());
+  EXPECT_CALL(pip_window_controller(), SeekTo(base::Seconds(32)));
+  GestureTapOnView(replay_10_seconds_button);
+  testing::Mock::VerifyAndClearExpectations(&pip_window_controller());
+
+  // Tapping the forward 10 seconds button should seek forwards 10 seconds.
+  EXPECT_CALL(pip_window_controller(), SeekTo(base::Seconds(52)));
+  GestureTapOnView(forward_10_seconds_button);
+  testing::Mock::VerifyAndClearExpectations(&pip_window_controller());
+
+  // Tapping the replay 10 seconds button less than 10 seconds into the video
+  // should seek to the beginning.
+  media_session::MediaPosition early_media_position(
+      /*playback_rate=*/0,
+      /*duration=*/base::Seconds(100),
+      /*position=*/base::Seconds(4),
+      /*end_of_media=*/false);
+  overlay_window().SetMediaPosition(early_media_position);
+  EXPECT_CALL(pip_window_controller(), SeekTo(base::Seconds(0)));
+  GestureTapOnView(replay_10_seconds_button);
+  testing::Mock::VerifyAndClearExpectations(&pip_window_controller());
+
+  // Tapping the forward 10 seconds button with less than 10 seconds left in
+  // the video should seek to the end.
+  media_session::MediaPosition late_media_position(
+      /*playback_rate=*/0,
+      /*duration=*/base::Seconds(100),
+      /*position=*/base::Seconds(97),
+      /*end_of_media=*/false);
+  overlay_window().SetMediaPosition(late_media_position);
+  EXPECT_CALL(pip_window_controller(), SeekTo(base::Seconds(100)));
+  GestureTapOnView(forward_10_seconds_button);
+  testing::Mock::VerifyAndClearExpectations(&pip_window_controller());
+}
+#endif  // BUILDFLAG(IS_MAC)
+
+TEST_F(VideoOverlayWindowViewsTest, ReplayAndForward10SecondsOnKeyPress) {
+  overlay_window().ForceControlsVisibleForTesting(true);
+  media_session::MediaPosition media_position(/*playback_rate=*/0,
+                                              /*duration=*/base::Seconds(100),
+                                              /*position=*/base::Seconds(42),
+                                              /*end_of_media=*/false);
+  overlay_window().SetMediaPosition(media_position);
+
+  ui::KeyEvent left_event(ui::EventType::kKeyPressed, ui::VKEY_LEFT,
+                          ui::EF_NONE);
+  ui::KeyEvent right_event(ui::EventType::kKeyPressed, ui::VKEY_RIGHT,
+                           ui::EF_NONE);
+
+  // The left arrow key should seek the video backwards 10 seconds.
+  PictureInPictureWindowManager::GetInstance()
+      ->set_window_controller_for_testing(&pip_window_controller());
+  EXPECT_CALL(pip_window_controller(), SeekTo(base::Seconds(32)));
+  overlay_window().OnKeyEvent(&left_event);
+  testing::Mock::VerifyAndClearExpectations(&pip_window_controller());
+
+  // The right arrow key should seek the video forwards 10 seconds.
+  EXPECT_CALL(pip_window_controller(), SeekTo(base::Seconds(52)));
+  overlay_window().OnKeyEvent(&right_event);
+  testing::Mock::VerifyAndClearExpectations(&pip_window_controller());
+}
+
+TEST_F(VideoOverlayWindowViewsTest, DisplaysFavicon) {
   overlay_window().ForceControlsVisibleForTesting(true);
   views::ImageView* favicon_view = overlay_window().favicon_view_for_testing();
   ASSERT_NE(nullptr, favicon_view);
@@ -969,8 +1052,10 @@ TEST_F(VideoOverlayWindowViewsWith2024UITest, DisplaysFavicon) {
   {
     ui::ImageModel image_model = favicon_view->GetImageModel();
     EXPECT_TRUE(image_model.IsVectorIcon());
-    EXPECT_EQ(image_model.GetVectorIcon().vector_icon(),
-              &vector_icons::kGlobeIcon);
+    EXPECT_EQ(
+        image_model.GetVectorIcon().vector_icon(),
+        &(features::IsRoundedIconsEnabled() ? vector_icons::kGlobeIcon
+                                            : vector_icons::kGlobeOldIcon));
   }
 
   // Setting the favicon should use that instead.
@@ -998,12 +1083,14 @@ TEST_F(VideoOverlayWindowViewsWith2024UITest, DisplaysFavicon) {
     overlay_window().SetFaviconImages({});
     ui::ImageModel image_model = favicon_view->GetImageModel();
     EXPECT_TRUE(image_model.IsVectorIcon());
-    EXPECT_EQ(image_model.GetVectorIcon().vector_icon(),
-              &vector_icons::kGlobeIcon);
+    EXPECT_EQ(
+        image_model.GetVectorIcon().vector_icon(),
+        &(features::IsRoundedIconsEnabled() ? vector_icons::kGlobeIcon
+                                            : vector_icons::kGlobeOldIcon));
   }
 }
 
-TEST_F(VideoOverlayWindowViewsWith2024UITest, DisplaysOrigin) {
+TEST_F(VideoOverlayWindowViewsTest, DisplaysOrigin) {
   overlay_window().ForceControlsVisibleForTesting(true);
   views::Label* origin = overlay_window().origin_for_testing();
   ASSERT_NE(nullptr, origin);
@@ -1013,14 +1100,30 @@ TEST_F(VideoOverlayWindowViewsWith2024UITest, DisplaysOrigin) {
   EXPECT_EQ(origin->GetText(), u"google.com");
 }
 
-TEST_F(VideoOverlayWindowViewsWith2024UITest,
+TEST_F(VideoOverlayWindowViewsTest, OriginLabelHasCorrectDirectionality) {
+  views::Label* origin = overlay_window().origin_for_testing();
+  ASSERT_NE(nullptr, origin);
+
+  // The directionality should be LTR to prevent spoofing.
+  EXPECT_EQ(base::i18n::LEFT_TO_RIGHT, origin->GetTextDirectionForTesting());
+
+  // Set the source title to a RTL string.
+  const char16_t kRtl[] = u"אבג";
+  overlay_window().SetSourceTitle(kRtl);
+  EXPECT_EQ(kRtl, origin->GetText());
+
+  // The directionality should still be LTR to prevent spoofing.
+  EXPECT_EQ(base::i18n::LEFT_TO_RIGHT, origin->GetTextDirectionForTesting());
+}
+
+TEST_F(VideoOverlayWindowViewsTest,
        ControlsNeverHideWhileProgressBarIsDragged) {
   overlay_window().ShowInactive();
   overlay_window().SetPlayPauseButtonVisibility(true);
   overlay_window().ForceControlsVisibleForTesting(true);
 
   // Move time forward to ensure controls layout is completed.
-  task_environment()->FastForwardBy(base::Seconds(1));
+  WaitForLayout();
 
   global_media_controls::MediaProgressView* progress_view =
       overlay_window().progress_view_for_testing();
@@ -1051,4 +1154,688 @@ TEST_F(VideoOverlayWindowViewsWith2024UITest,
   // Once the drag ends, the controls should be able to hide.
   task_environment()->FastForwardBy(base::Seconds(7));
   EXPECT_TRUE(overlay_window().GetControlsContainerView()->IsDrawn());
+}
+
+TEST_F(VideoOverlayWindowViewsTest, LiveStatusShownForLiveVideos) {
+  overlay_window().ForceControlsVisibleForTesting(true);
+  views::Label* timestamp = overlay_window().timestamp_for_testing();
+  views::Label* live_status = overlay_window().live_status_for_testing();
+  ASSERT_NE(nullptr, timestamp);
+  ASSERT_NE(nullptr, live_status);
+
+  // The timestamp should start out visible while the live status should start
+  // out hidden.
+  EXPECT_FALSE(live_status->GetVisible());
+  EXPECT_TRUE(timestamp->GetVisible());
+
+  // Setting the position to live should hide the timestamp and show the live
+  // status.
+  media_session::MediaPosition live_media_position(
+      /*playback_rate=*/0,
+      /*duration=*/base::TimeDelta::Max(),
+      /*position=*/base::Seconds(42),
+      /*end_of_media=*/false);
+  overlay_window().SetMediaPosition(live_media_position);
+  EXPECT_TRUE(live_status->GetVisible());
+  EXPECT_FALSE(timestamp->GetVisible());
+
+  // Setting the position to a non-live video should hide the live status and
+  // show the timestamp.
+  media_session::MediaPosition media_position(/*playback_rate=*/0,
+                                              /*duration=*/base::Seconds(100),
+                                              /*position=*/base::Seconds(42),
+                                              /*end_of_media=*/false);
+  overlay_window().SetMediaPosition(media_position);
+  EXPECT_FALSE(live_status->GetVisible());
+  EXPECT_TRUE(timestamp->GetVisible());
+}
+
+TEST_F(VideoOverlayWindowViewsTest, NextAndPreviousShareVisibility) {
+  overlay_window().ForceControlsVisibleForTesting(true);
+  SimpleOverlayWindowImageButton* next_button =
+      overlay_window().next_track_controls_view_for_testing();
+  SimpleOverlayWindowImageButton* prev_button =
+      overlay_window().previous_track_controls_view_for_testing();
+
+  ASSERT_NE(nullptr, next_button);
+  ASSERT_NE(nullptr, prev_button);
+
+  // If only "nexttrack" is enabled, both buttons are shown but only the next
+  // button is enabled.
+  overlay_window().SetNextTrackButtonVisibility(true);
+  WaitForLayout();
+  EXPECT_TRUE(next_button->GetVisible());
+  EXPECT_TRUE(prev_button->GetVisible());
+  EXPECT_TRUE(next_button->GetEnabled());
+  EXPECT_FALSE(prev_button->GetEnabled());
+
+  // If both previous and next track are enabled, then both buttons are shown
+  // and enabled.
+  overlay_window().SetPreviousTrackButtonVisibility(true);
+  WaitForLayout();
+  EXPECT_TRUE(next_button->GetVisible());
+  EXPECT_TRUE(prev_button->GetVisible());
+  EXPECT_TRUE(next_button->GetEnabled());
+  EXPECT_TRUE(prev_button->GetEnabled());
+
+  // When disabled again, the buttons are hidden.
+  overlay_window().SetNextTrackButtonVisibility(false);
+  overlay_window().SetPreviousTrackButtonVisibility(false);
+  WaitForLayout();
+  EXPECT_FALSE(next_button->GetVisible());
+  EXPECT_FALSE(prev_button->GetVisible());
+
+  // If only "previousslide" is enabled, both buttons are shown but only the
+  // previous button is enabled.
+  overlay_window().SetPreviousSlideButtonVisibility(true);
+  WaitForLayout();
+  EXPECT_TRUE(next_button->GetVisible());
+  EXPECT_TRUE(prev_button->GetVisible());
+  EXPECT_FALSE(next_button->GetEnabled());
+  EXPECT_TRUE(prev_button->GetEnabled());
+
+  // If both previous and next slide are enabled, then both buttons are shown
+  // and enabled.
+  overlay_window().SetNextSlideButtonVisibility(true);
+  WaitForLayout();
+  EXPECT_TRUE(next_button->GetVisible());
+  EXPECT_TRUE(prev_button->GetVisible());
+  EXPECT_TRUE(next_button->GetEnabled());
+  EXPECT_TRUE(prev_button->GetEnabled());
+
+  // When disabled again, the buttons are hidden.
+  overlay_window().SetNextSlideButtonVisibility(false);
+  overlay_window().SetPreviousSlideButtonVisibility(false);
+  WaitForLayout();
+  EXPECT_FALSE(next_button->GetVisible());
+  EXPECT_FALSE(prev_button->GetVisible());
+}
+
+TEST_F(VideoOverlayWindowViewsTest,
+       FastForwardAndRewindAreHiddenForLiveVideos) {
+  overlay_window().ForceControlsVisibleForTesting(true);
+  SimpleOverlayWindowImageButton* replay_10_seconds_button =
+      overlay_window().replay_10_seconds_button_for_testing();
+  SimpleOverlayWindowImageButton* forward_10_seconds_button =
+      overlay_window().forward_10_seconds_button_for_testing();
+  ASSERT_NE(nullptr, replay_10_seconds_button);
+  ASSERT_NE(nullptr, forward_10_seconds_button);
+
+  // For live media, the fast-forward and rewind buttons should be hidden.
+  media_session::MediaPosition live_media_position(
+      /*playback_rate=*/0,
+      /*duration=*/base::TimeDelta::Max(),
+      /*position=*/base::Seconds(42),
+      /*end_of_media=*/false);
+  overlay_window().SetMediaPosition(live_media_position);
+  EXPECT_FALSE(replay_10_seconds_button->GetVisible());
+  EXPECT_FALSE(forward_10_seconds_button->GetVisible());
+}
+
+TEST_F(VideoOverlayWindowViewsTest, VideoConferencingUI) {
+  overlay_window().ForceControlsVisibleForTesting(true);
+  ToggleCameraButton* toggle_camera_button =
+      overlay_window().toggle_camera_button_for_testing();
+  ToggleMicrophoneButton* toggle_microphone_button =
+      overlay_window().toggle_microphone_button_for_testing();
+  HangUpButton* hang_up_button = overlay_window().hang_up_button_for_testing();
+  global_media_controls::MediaProgressView* progress_view =
+      overlay_window().progress_view_for_testing();
+
+  ASSERT_NE(nullptr, toggle_camera_button);
+  ASSERT_NE(nullptr, toggle_microphone_button);
+  ASSERT_NE(nullptr, hang_up_button);
+  ASSERT_NE(nullptr, progress_view);
+
+  // The VC controls should start hidden, and other controls should be shown.
+  WaitForLayout();
+  EXPECT_FALSE(toggle_camera_button->IsDrawn());
+  EXPECT_FALSE(toggle_microphone_button->IsDrawn());
+  EXPECT_FALSE(hang_up_button->IsDrawn());
+  EXPECT_TRUE(progress_view->IsDrawn());
+
+  // If at least one VC control is available, it should be shown and the non-VC
+  // controls should be hidden.
+  overlay_window().SetHangUpButtonVisibility(true);
+  WaitForLayout();
+  EXPECT_FALSE(toggle_camera_button->IsDrawn());
+  EXPECT_FALSE(toggle_microphone_button->IsDrawn());
+  EXPECT_TRUE(hang_up_button->IsDrawn());
+  EXPECT_FALSE(progress_view->IsDrawn());
+
+  // Enabling other VC controls should show those.
+  overlay_window().SetToggleCameraButtonVisibility(true);
+  overlay_window().SetToggleMicrophoneButtonVisibility(true);
+  WaitForLayout();
+  EXPECT_TRUE(toggle_camera_button->IsDrawn());
+  EXPECT_TRUE(toggle_microphone_button->IsDrawn());
+  EXPECT_TRUE(hang_up_button->IsDrawn());
+  EXPECT_FALSE(progress_view->IsDrawn());
+
+  // Disabling all VC controls should show the non-VC controls again.
+  overlay_window().SetHangUpButtonVisibility(false);
+  overlay_window().SetToggleCameraButtonVisibility(false);
+  overlay_window().SetToggleMicrophoneButtonVisibility(false);
+  WaitForLayout();
+  EXPECT_FALSE(toggle_camera_button->IsDrawn());
+  EXPECT_FALSE(toggle_microphone_button->IsDrawn());
+  EXPECT_FALSE(hang_up_button->IsDrawn());
+  EXPECT_TRUE(progress_view->IsDrawn());
+}
+
+TEST_F(VideoOverlayWindowViewsTest, LiveCaption) {
+  overlay_window().ForceControlsVisibleForTesting(true);
+  profile().GetPrefs()->SetBoolean(prefs::kLiveCaptionEnabled, false);
+  OverlayWindowLiveCaptionButton* live_caption_button =
+      overlay_window().live_caption_button_for_testing();
+  OverlayWindowLiveCaptionDialog* live_caption_dialog =
+      overlay_window().live_caption_dialog_for_testing();
+
+  ASSERT_NE(nullptr, live_caption_button);
+  ASSERT_NE(nullptr, live_caption_dialog);
+
+  {
+    // The accessible data of the toggle button should show the state as
+    // collapsed.
+    ui::AXNodeData node_data;
+    live_caption_button->GetViewAccessibility().GetAccessibleNodeData(
+        &node_data);
+    EXPECT_FALSE(node_data.HasState(ax::mojom::State::kExpanded));
+    EXPECT_TRUE(node_data.HasState(ax::mojom::State::kCollapsed));
+  }
+
+  // The live caption button should start visible and the live caption dialog
+  // should start invisible.
+  WaitForLayout();
+  EXPECT_TRUE(live_caption_button->IsDrawn());
+  EXPECT_FALSE(live_caption_dialog->IsDrawn());
+
+  // Pressing the live caption button should display the live caption dialog.
+  views::test::ButtonTestApi live_caption_button_clicker(live_caption_button);
+  ui::MouseEvent dummy_event(ui::EventType::kMousePressed, gfx::Point(0, 0),
+                             gfx::Point(0, 0), ui::EventTimeForNow(), 0, 0);
+  live_caption_button_clicker.NotifyClick(dummy_event);
+  WaitForLayout();
+  EXPECT_TRUE(live_caption_dialog->IsDrawn());
+
+  {
+    // The accessible data of the toggle button should show the state as
+    // expanded once the dialog is there.
+    ui::AXNodeData node_data;
+    live_caption_button->GetViewAccessibility().GetAccessibleNodeData(
+        &node_data);
+    EXPECT_TRUE(node_data.HasState(ax::mojom::State::kExpanded));
+    EXPECT_FALSE(node_data.HasState(ax::mojom::State::kCollapsed));
+  }
+
+  // The live caption button should be enabled and toggled off, while the live
+  // translate button should be disabled and toggled off.
+  EXPECT_FALSE(profile().GetPrefs()->GetBoolean(prefs::kLiveCaptionEnabled));
+  views::ToggleButton* live_caption_toggle_button =
+      live_caption_dialog->live_caption_button_for_testing();
+  views::ToggleButton* live_translate_toggle_button =
+      live_caption_dialog->live_translate_button_for_testing();
+  EXPECT_TRUE(live_caption_toggle_button->GetEnabled());
+  EXPECT_FALSE(live_caption_toggle_button->GetIsOn());
+  EXPECT_FALSE(live_translate_toggle_button->GetEnabled());
+  EXPECT_FALSE(live_translate_toggle_button->GetIsOn());
+
+  // Toggling the live caption button should enable the live translate button
+  // and also enable the live caption pref.
+  views::test::ButtonTestApi live_caption_toggle_button_clicker(
+      live_caption_toggle_button);
+  live_caption_toggle_button_clicker.NotifyClick(dummy_event);
+  WaitForLayout();
+  EXPECT_TRUE(profile().GetPrefs()->GetBoolean(prefs::kLiveCaptionEnabled));
+  EXPECT_TRUE(live_caption_toggle_button->GetIsOn());
+  EXPECT_TRUE(live_translate_toggle_button->GetEnabled());
+  EXPECT_FALSE(live_translate_toggle_button->GetIsOn());
+
+  // Turn off LiveCaption, because leaving it on breaks the test harness when it
+  // tries to destroy the UI.
+  profile().GetPrefs()->SetBoolean(prefs::kLiveCaptionEnabled, false);
+}
+
+TEST_F(VideoOverlayWindowViewsTest, LiveCaption_MouseClickOutside) {
+  overlay_window().ForceControlsVisibleForTesting(true);
+  OverlayWindowLiveCaptionButton* live_caption_button =
+      overlay_window().live_caption_button_for_testing();
+  OverlayWindowLiveCaptionDialog* live_caption_dialog =
+      overlay_window().live_caption_dialog_for_testing();
+
+  ASSERT_NE(nullptr, live_caption_button);
+  ASSERT_NE(nullptr, live_caption_dialog);
+
+  // The live caption button should start visible and the live caption dialog
+  // should start invisible.
+  WaitForLayout();
+  EXPECT_TRUE(live_caption_button->IsDrawn());
+  EXPECT_FALSE(live_caption_dialog->IsDrawn());
+
+  // Pressing the live caption button should display the live caption dialog.
+  views::test::ButtonTestApi live_caption_button_clicker(live_caption_button);
+  ui::MouseEvent dummy_event(ui::EventType::kMousePressed, gfx::Point(0, 0),
+                             gfx::Point(0, 0), ui::EventTimeForNow(), 0, 0);
+  live_caption_button_clicker.NotifyClick(dummy_event);
+  WaitForLayout();
+  EXPECT_TRUE(live_caption_dialog->IsDrawn());
+
+  // Clicking outside of the live caption dialog should close the live caption
+  // dialog.
+  gfx::Point outside_point = live_caption_dialog->bounds().origin();
+  outside_point.Offset(-20, -20);
+  ui::MouseEvent click_outside_event(ui::EventType::kMousePressed,
+                                     outside_point, outside_point,
+                                     ui::EventTimeForNow(), 0, 0);
+  overlay_window().OnMouseEvent(&click_outside_event);
+  EXPECT_FALSE(live_caption_dialog->IsDrawn());
+}
+
+// Gesture events are not supported on Mac.
+#if !BUILDFLAG(IS_MAC)
+
+TEST_F(VideoOverlayWindowViewsTest, LiveCaption_GestureTapOutside) {
+  overlay_window().ForceControlsVisibleForTesting(true);
+  OverlayWindowLiveCaptionButton* live_caption_button =
+      overlay_window().live_caption_button_for_testing();
+  OverlayWindowLiveCaptionDialog* live_caption_dialog =
+      overlay_window().live_caption_dialog_for_testing();
+
+  ASSERT_NE(nullptr, live_caption_button);
+  ASSERT_NE(nullptr, live_caption_dialog);
+
+  // The live caption button should start visible and the live caption dialog
+  // should start invisible.
+  WaitForLayout();
+  EXPECT_TRUE(live_caption_button->IsDrawn());
+  EXPECT_FALSE(live_caption_dialog->IsDrawn());
+
+  // Pressing the live caption button should display the live caption dialog.
+  views::test::ButtonTestApi live_caption_button_clicker(live_caption_button);
+  ui::MouseEvent dummy_event(ui::EventType::kMousePressed, gfx::Point(0, 0),
+                             gfx::Point(0, 0), ui::EventTimeForNow(), 0, 0);
+  live_caption_button_clicker.NotifyClick(dummy_event);
+  WaitForLayout();
+  EXPECT_TRUE(live_caption_dialog->IsDrawn());
+
+  // Tapping outside of the live caption dialog should close the live caption
+  // dialog.
+  gfx::Point outside_point = live_caption_dialog->bounds().origin();
+  outside_point.Offset(-20, -20);
+  ui::GestureEvent tap_outside_event(
+      outside_point.x(), outside_point.y(), 0, base::TimeTicks::Now(),
+      ui::GestureEventDetails(ui::EventType::kGestureTap));
+  overlay_window().OnGestureEvent(&tap_outside_event);
+  EXPECT_FALSE(live_caption_dialog->IsDrawn());
+}
+
+TEST_F(VideoOverlayWindowViewsTest, LiveCaption_GestureTap) {
+  overlay_window().ShowInactive();
+  overlay_window().SetPlayPauseButtonVisibility(true);
+  overlay_window().ForceControlsVisibleForTesting(true);
+
+  OverlayWindowLiveCaptionButton* live_caption_button =
+      overlay_window().live_caption_button_for_testing();
+  OverlayWindowLiveCaptionDialog* live_caption_dialog =
+      overlay_window().live_caption_dialog_for_testing();
+  views::ToggleButton* live_caption_toggle_button =
+      live_caption_dialog->live_caption_button_for_testing();
+  views::ToggleButton* live_translate_toggle_button =
+      live_caption_dialog->live_translate_button_for_testing();
+  views::Combobox* target_language_combobox =
+      live_caption_dialog->target_language_combobox_for_testing();
+
+  profile().GetPrefs()->SetBoolean(prefs::kLiveCaptionEnabled, false);
+  profile().GetPrefs()->SetBoolean(prefs::kLiveTranslateEnabled, false);
+
+  ASSERT_NE(nullptr, live_caption_button);
+  ASSERT_NE(nullptr, live_caption_dialog);
+  ASSERT_NE(nullptr, live_caption_toggle_button);
+  ASSERT_NE(nullptr, live_translate_toggle_button);
+  ASSERT_NE(nullptr, target_language_combobox);
+
+  // Click the live caption button to display the live caption dialog.
+  WaitForLayout();
+  views::test::ButtonTestApi live_caption_button_clicker(live_caption_button);
+  ui::MouseEvent dummy_event(ui::EventType::kMousePressed, gfx::Point(0, 0),
+                             gfx::Point(0, 0), ui::EventTimeForNow(), 0, 0);
+  live_caption_button_clicker.NotifyClick(dummy_event);
+  WaitForLayout();
+  EXPECT_TRUE(live_caption_dialog->IsDrawn());
+
+  // Tap the live caption toggle button to enable live caption.
+  EXPECT_FALSE(profile().GetPrefs()->GetBoolean(prefs::kLiveCaptionEnabled));
+  GestureTapOnView(live_caption_toggle_button);
+  WaitForLayout();
+  EXPECT_TRUE(profile().GetPrefs()->GetBoolean(prefs::kLiveCaptionEnabled));
+
+  // Tap the live translate button to enable live translate.
+  EXPECT_FALSE(profile().GetPrefs()->GetBoolean(prefs::kLiveTranslateEnabled));
+  GestureTapOnView(live_translate_toggle_button);
+  WaitForLayout();
+  EXPECT_TRUE(profile().GetPrefs()->GetBoolean(prefs::kLiveTranslateEnabled));
+
+  // Tap the target language combobox to open the target language selection.
+  EXPECT_FALSE(target_language_combobox->IsMenuRunning());
+  GestureTapOnView(target_language_combobox);
+  WaitForLayout();
+  EXPECT_TRUE(target_language_combobox->IsMenuRunning());
+
+  profile().GetPrefs()->SetBoolean(prefs::kLiveCaptionEnabled, false);
+  profile().GetPrefs()->SetBoolean(prefs::kLiveTranslateEnabled, false);
+}
+
+#endif  // BUILDFLAG(IS_MAC)
+
+TEST_F(VideoOverlayWindowViewsTest, InitialTitleAndScrimVisibility) {
+  overlay_window().ForceControlsVisibleForTesting(false);
+  overlay_window().ShowInactive();
+  WaitForLayout();
+
+  // The initial title hide timer should be running.
+  EXPECT_TRUE(
+      overlay_window().initial_title_hide_timer_for_testing().IsRunning());
+
+  // Title and scrim should be visible.
+  EXPECT_TRUE(overlay_window().AreTitleAndScrimVisibleForTesting());
+}
+
+TEST_F(VideoOverlayWindowViewsTest, TitleAndScrimHideAfterTimer) {
+  overlay_window().ShowInactive();
+  WaitForLayout();
+
+  // Fast forward time to fire the timer.
+  task_environment()->FastForwardBy(
+      VideoOverlayWindowViews::kTitleShowDuration);
+
+  // Timer should not be running anymore.
+  EXPECT_FALSE(
+      overlay_window().initial_title_hide_timer_for_testing().IsRunning());
+
+  // Title and scrim should now be animating to hidden.
+  EXPECT_FALSE(overlay_window().AreTitleAndScrimVisibleForTesting());
+  EXPECT_FALSE(overlay_window().AreControlsVisible());
+}
+
+TEST_F(VideoOverlayWindowViewsTest, MouseHoverShowsAllControls) {
+  overlay_window().ShowInactive();
+  WaitForLayout();
+
+  // Move mouse over the window.
+  const auto controls_top_scrim_bounds =
+      overlay_window().controls_top_scrim_view_for_testing()->bounds();
+  const gfx::Point moved_location(controls_top_scrim_bounds.CenterPoint());
+  ui::MouseEvent moved_event(ui::EventType::kMouseMoved, moved_location,
+                             moved_location, ui::EventTimeForNow(), ui::EF_NONE,
+                             ui::EF_NONE);
+  overlay_window().OnMouseEvent(&moved_event);
+
+  // Timer should not be running anymore.
+  EXPECT_FALSE(
+      overlay_window().initial_title_hide_timer_for_testing().IsRunning());
+
+  // All controls should now be visible or animating to visible.
+  EXPECT_TRUE(overlay_window().AreTitleAndScrimVisibleForTesting());
+  EXPECT_TRUE(overlay_window().AreControlsVisible());
+}
+
+TEST_F(VideoOverlayWindowViewsTest, PlaybackControlsContainerVisibility) {
+  overlay_window().ShowInactive();
+  overlay_window().ForceControlsVisibleForTesting(true);
+  overlay_window().SetPlayPauseButtonVisibility(true);
+  WaitForLayout();
+
+  views::View* playback_controls_container =
+      overlay_window().playback_controls_container_for_testing();
+  ASSERT_NE(nullptr, playback_controls_container);
+
+  // Initially, the playback_controls_container should be drawn.
+  EXPECT_TRUE(playback_controls_container->IsDrawn());
+
+  // Verify that the playback_controls_container is hidden.
+  overlay_window().SetPlaybackControlsVisibility(false);
+  WaitForLayout();
+  EXPECT_FALSE(playback_controls_container->IsDrawn());
+
+  // Providing a new surface should restore the playback_controls_container.
+  const viz::SurfaceId surface_id(viz::FrameSinkId(1, 1),
+                                  viz::LocalSurfaceId());
+  overlay_window().SetSurfaceId(surface_id);
+  WaitForLayout();
+  EXPECT_TRUE(playback_controls_container->IsDrawn());
+}
+
+TEST_F(VideoOverlayWindowViewsTest, TopControlsAreAlwaysOnTheRight) {
+  const gfx::Rect work_area(0, 0, 4000, 4000);
+  SetDisplayWorkArea(work_area);
+  overlay_window().ShowInactive();
+  overlay_window().ForceControlsVisibleForTesting(true, true);
+
+  constexpr int kMargin = 100;
+  const gfx::Size window_size(500, 500);
+
+  const gfx::Rect top_left_quadrant_bounds(gfx::Point(kMargin, kMargin),
+                                           window_size);
+  const gfx::Rect top_right_quadrant_bounds(
+      gfx::Point(work_area.width() - window_size.width() - kMargin, kMargin),
+      window_size);
+  const gfx::Rect bottom_left_quadrant_bounds(
+      gfx::Point(kMargin, work_area.height() - window_size.height() - kMargin),
+      window_size);
+  const gfx::Rect bottom_right_quadrant_bounds(
+      gfx::Point(work_area.width() - window_size.width() - kMargin,
+                 work_area.height() - window_size.height() - kMargin),
+      window_size);
+
+  struct {
+    std::string name;
+    gfx::Rect bounds;
+  } quadrant_test_cases[] = {
+      {"Top-left", top_left_quadrant_bounds},
+      {"Top-right", top_right_quadrant_bounds},
+      {"Bottom-left", bottom_left_quadrant_bounds},
+      {"Bottom-right", bottom_right_quadrant_bounds},
+  };
+
+  for (const auto& test_case : quadrant_test_cases) {
+    SCOPED_TRACE(testing::Message() << "Quadrant: " << test_case.name);
+    overlay_window().SetBounds(test_case.bounds);
+    overlay_window().OnUpdateControlsBounds();
+
+    // The top controls (minimize, back-to-tab, close) should always be on the
+    // top-right of the picture-in-picture window, regardless of which quadrant
+    // the window is in.
+    const auto pip_window_bounds = overlay_window().GetWindowBoundsInScreen();
+    const auto check_control_bounds = [&](const views::View* button_view) {
+      EXPECT_GT(button_view->GetMirroredBounds().x(),
+                pip_window_bounds.width() / 2);
+      EXPECT_LT(button_view->GetMirroredBounds().y(),
+                pip_window_bounds.height() / 2);
+    };
+
+    check_control_bounds(overlay_window().close_button_for_testing());
+    check_control_bounds(overlay_window().minimize_button_for_testing());
+    check_control_bounds(overlay_window().back_to_tab_button_for_testing());
+  }
+}
+
+class VideoOverlayWindowWithShowAnimationTest
+    : public VideoOverlayWindowViewsTest {
+ public:
+  void SetUp() override {
+    VideoOverlayWindowViewsTest::SetUp();
+#if BUILDFLAG(IS_WIN)
+    GTEST_SKIP() << "Fade in animation is disabled on Windows.";
+#endif
+  }
+};
+
+TEST_F(VideoOverlayWindowWithShowAnimationTest,
+       FadeInAnimationIsUsedOnWindowShow) {
+  // ShowInactive should trigger the fade-in animation.
+  overlay_window().ShowInactive();
+
+  // Get the PiP fade animator.
+  PictureInPictureWidgetFadeAnimator* pip_fade_animator =
+      overlay_window().get_fade_animator_for_testing();
+  EXPECT_NE(nullptr, pip_fade_animator);
+
+  // Get the widget fade animator and verify that it is fading in.
+  views::WidgetFadeAnimator* widget_fade_animator =
+      pip_fade_animator->GetWidgetFadeAnimatorForTesting();
+  EXPECT_NE(nullptr, widget_fade_animator);
+  EXPECT_TRUE(widget_fade_animator->IsFadingIn());
+}
+
+TEST_F(VideoOverlayWindowWithShowAnimationTest,
+       FadeInAnimationIsCancelledOnHide) {
+  overlay_window().ShowInactive();
+
+  // Get the PiP fade animator.
+  PictureInPictureWidgetFadeAnimator* pip_fade_animator =
+      overlay_window().get_fade_animator_for_testing();
+  EXPECT_NE(nullptr, pip_fade_animator);
+
+  // Get the widget fade animator and verify that it is fading in.
+  views::WidgetFadeAnimator* widget_fade_animator =
+      pip_fade_animator->GetWidgetFadeAnimatorForTesting();
+  EXPECT_NE(nullptr, widget_fade_animator);
+  EXPECT_TRUE(widget_fade_animator->IsFadingIn());
+
+  // Hiding the window should cancel the animation.
+  overlay_window().Hide();
+  EXPECT_EQ(nullptr, overlay_window()
+                         .get_fade_animator_for_testing()
+                         ->GetWidgetFadeAnimatorForTesting());
+}
+
+TEST_F(VideoOverlayWindowWithShowAnimationTest,
+       FadeInAnimationIsCancelledOnClose) {
+  overlay_window().ShowInactive();
+
+  // Get the PiP fade animator.
+  PictureInPictureWidgetFadeAnimator* pip_fade_animator =
+      overlay_window().get_fade_animator_for_testing();
+  EXPECT_NE(nullptr, pip_fade_animator);
+
+  // Get the widget fade animator and verify that it is fading in.
+  views::WidgetFadeAnimator* widget_fade_animator =
+      pip_fade_animator->GetWidgetFadeAnimatorForTesting();
+  EXPECT_NE(nullptr, widget_fade_animator);
+  EXPECT_TRUE(widget_fade_animator->IsFadingIn());
+
+  // Closing the window should cancel the animation.
+  overlay_window().Close();
+  EXPECT_EQ(nullptr, overlay_window()
+                         .get_fade_animator_for_testing()
+                         ->GetWidgetFadeAnimatorForTesting());
+}
+
+TEST_F(VideoOverlayWindowWithShowAnimationTest,
+       AnimatorIsResetWhenWidgetIsDestroyedDuringAnimation) {
+  overlay_window().ShowInactive();
+
+  // Get the PiP fade animator.
+  PictureInPictureWidgetFadeAnimator* pip_fade_animator =
+      overlay_window().get_fade_animator_for_testing();
+  EXPECT_NE(nullptr, pip_fade_animator);
+
+  // Get the widget fade animator and verify that it is fading in.
+  views::WidgetFadeAnimator* widget_fade_animator =
+      pip_fade_animator->GetWidgetFadeAnimatorForTesting();
+  EXPECT_NE(nullptr, widget_fade_animator);
+  EXPECT_TRUE(widget_fade_animator->IsFadingIn());
+
+  // Destroying the widget during the animation should not crash.
+  DestroyOverlayWindow();
+}
+
+// Test fixture with kPictureInPictureMuteControl enabled.
+class VideoOverlayWindowWithMuteControlTest
+    : public VideoOverlayWindowViewsTest {
+ public:
+  void SetUp() override {
+    AddEnabledFeature(media::kPictureInPictureMuteControl);
+    VideoOverlayWindowViewsTest::SetUp();
+  }
+};
+
+// When the feature is disabled (default), the mute button should not be
+// created and SetMediaMuted should be a no-op.
+TEST_F(VideoOverlayWindowViewsTest, ToggleMuteButton_FeatureFlagDisabled) {
+  EXPECT_EQ(nullptr, overlay_window().toggle_mute_button_for_testing());
+
+  // Calling SetMediaMuted with no button should not crash.
+  overlay_window().SetMediaMuted(true);
+  overlay_window().SetMediaMuted(false);
+}
+
+// When the feature is enabled, the mute button should be created.
+TEST_F(VideoOverlayWindowWithMuteControlTest,
+       ToggleMuteButton_FeatureFlagEnabled) {
+  ToggleMuteButton* toggle_mute_button =
+      overlay_window().toggle_mute_button_for_testing();
+  ASSERT_NE(nullptr, toggle_mute_button);
+}
+
+// The mute button should be visible in playback mode but hidden when video
+// conferencing controls are shown.
+TEST_F(VideoOverlayWindowWithMuteControlTest, ToggleMuteButton_Visibility) {
+  ToggleMuteButton* toggle_mute_button =
+      overlay_window().toggle_mute_button_for_testing();
+  ASSERT_NE(nullptr, toggle_mute_button);
+
+  // Trigger a controls layout update so the mute button gets positioned and
+  // made visible for playback mode.
+  overlay_window().SetPlayPauseButtonVisibility(true);
+  overlay_window().ForceControlsVisibleForTesting(true);
+  WaitForLayout();
+
+  // In playback mode, the mute button should be drawn.
+  EXPECT_TRUE(toggle_mute_button->IsDrawn());
+
+  // When VC controls are shown, the mute button should be hidden.
+  overlay_window().SetHangUpButtonVisibility(true);
+  WaitForLayout();
+  EXPECT_FALSE(toggle_mute_button->IsDrawn());
+
+  // When VC controls are hidden again, the mute button should reappear.
+  overlay_window().SetHangUpButtonVisibility(false);
+  WaitForLayout();
+  EXPECT_TRUE(toggle_mute_button->IsDrawn());
+}
+
+// SetMediaMuted should update the button's muted state.
+TEST_F(VideoOverlayWindowWithMuteControlTest, ToggleMuteButton_StateToggle) {
+  ToggleMuteButton* toggle_mute_button =
+      overlay_window().toggle_mute_button_for_testing();
+  ASSERT_NE(nullptr, toggle_mute_button);
+
+  // Initially unmuted.
+  EXPECT_FALSE(toggle_mute_button->is_muted_for_testing());
+
+  overlay_window().SetMediaMuted(true);
+  EXPECT_TRUE(toggle_mute_button->is_muted_for_testing());
+
+  overlay_window().SetMediaMuted(false);
+  EXPECT_FALSE(toggle_mute_button->is_muted_for_testing());
+}
+
+// The mute button should participate in hit testing.
+TEST_F(VideoOverlayWindowWithMuteControlTest, ToggleMuteButton_HitTest) {
+  ToggleMuteButton* toggle_mute_button =
+      overlay_window().toggle_mute_button_for_testing();
+  ASSERT_NE(nullptr, toggle_mute_button);
+
+  // Trigger a controls layout so the mute button is positioned and visible.
+  overlay_window().SetPlayPauseButtonVisibility(true);
+  overlay_window().ForceControlsVisibleForTesting(true);
+  WaitForLayout();
+  ASSERT_TRUE(toggle_mute_button->IsDrawn());
+
+  const gfx::Rect mute_button_bounds =
+      overlay_window().GetToggleMuteButtonBounds();
+  EXPECT_FALSE(mute_button_bounds.IsEmpty());
+  EXPECT_TRUE(overlay_window().ControlsHitTestContainsPoint(
+      mute_button_bounds.CenterPoint()));
 }

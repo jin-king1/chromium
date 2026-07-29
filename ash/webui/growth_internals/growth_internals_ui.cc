@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "ash/webui/growth_internals/growth_internals_ui.h"
 
@@ -37,7 +33,7 @@ GrowthInternalsUI::GrowthInternalsUI(content::WebUI* web_ui)
           web_ui->GetWebContents()->GetBrowserContext(),
           std::string(kGrowthInternalsHost));
 
-  data_source->AddResourcePath("", IDR_GROWTH_INTERNALS_INDEX_HTML);
+  data_source->SetDefaultResource(IDR_GROWTH_INTERNALS_INDEX_HTML);
   data_source->AddResourcePaths(kGrowthInternalsResources);
 
   data_source->OverrideContentSecurityPolicy(

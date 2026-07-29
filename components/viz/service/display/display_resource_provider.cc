@@ -8,7 +8,6 @@
 #include <string>
 
 #include "base/atomic_sequence_num.h"
-#include "base/not_fatal_until.h"
 #include "base/notreached.h"
 #include "base/numerics/safe_math.h"
 #include "base/strings/stringprintf.h"
@@ -16,7 +15,6 @@
 #include "base/trace_event/memory_dump_manager.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
-#include "components/viz/common/resources/resource_sizes.h"
 #include "gpu/command_buffer/common/mailbox.h"
 #include "gpu/command_buffer/common/shared_image_trace_utils.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_format_service_utils.h"
@@ -67,11 +65,12 @@ bool DisplayResourceProvider::OnMemoryDump(
     const auto& resource = resource_entry.second;
 
     bool backing_memory_allocated = false;
-    if (resource.transferable.is_software)
+    if (resource.transferable.GetIsSoftware()) {
       backing_memory_allocated =
           resource.shared_image_representation_created_and_set;
-    else
+    } else {
       backing_memory_allocated = !!resource.image_context;
+    }
 
     if (!backing_memory_allocated) {
       // Don't log unallocated resources - they have no backing memory.
@@ -88,9 +87,10 @@ bool DisplayResourceProvider::OnMemoryDump(
 
     // Texture resources may not come with a size, in which case don't report
     // one.
-    if (!resource.transferable.size.IsEmpty()) {
-      uint64_t total_bytes = resource.transferable.format.EstimatedSizeInBytes(
-          resource.transferable.size);
+    if (!resource.transferable.GetSize().IsEmpty()) {
+      uint64_t total_bytes =
+          resource.transferable.GetFormat().EstimatedSizeInBytes(
+              resource.transferable.GetSize());
       dump->AddScalar(base::trace_event::MemoryAllocatorDump::kNameSize,
                       base::trace_event::MemoryAllocatorDump::kUnitsBytes,
                       static_cast<uint64_t>(total_bytes));
@@ -122,7 +122,7 @@ bool DisplayResourceProvider::IsBackedBySurfaceView(ResourceId id) const {
 }
 #endif
 
-#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_ANDROID)
 bool DisplayResourceProvider::DoesResourceWantPromotionHint(
     ResourceId id) const {
   const ChildResource* resource = TryGetResource(id);
@@ -138,14 +138,35 @@ bool DisplayResourceProvider::IsOverlayCandidate(ResourceId id) const {
   // TODO(ericrk): We should never fail TryGetResource, but we appear to
   // be doing so on Android in rare cases. Handle this gracefully until a
   // better solution can be found. https://crbug.com/811858
-  return resource && resource->transferable.is_overlay_candidate;
+  if (!resource) {
+    return false;
+  }
+  // Agtm rendering is currently only implemented in shaders. Use the
+  // mechanism of claiming that resources which have Agtm metadata were
+  // not marked as overlays to ensure that rendering falls back to shaders
+  // on all platforms.
+  // https://crbug.com/395659818
+  if (gfx::HdrMetadataAgtm::IsEnabled()) {
+    if (resource->transferable.hdr_metadata.HasAgtm()) {
+      return false;
+    }
+  }
+  return resource->transferable.GetIsOverlayCandidate();
+}
+
+bool DisplayResourceProvider::IsLowLatencyRendering(ResourceId id) const {
+  const ChildResource* resource = TryGetResource(id);
+  return resource && !resource->transferable.is_empty() &&
+         resource->transferable.shared_image()->usage().Has(
+             gpu::SHARED_IMAGE_USAGE_CONCURRENT_READ_WRITE);
 }
 
 SurfaceId DisplayResourceProvider::GetSurfaceId(ResourceId id) const {
   const ChildResource* resource = GetResource(id);
-  return children_.contains(resource->child_id)
-             ? children_.at(resource->child_id).surface_id
-             : SurfaceId();
+  if (auto it = children_.find(resource->child_id); it != children_.end()) {
+    return it->second.surface_id;
+  }
+  return SurfaceId();
 }
 
 int DisplayResourceProvider::GetChildId(ResourceId id) const {
@@ -154,24 +175,23 @@ int DisplayResourceProvider::GetChildId(ResourceId id) const {
 }
 
 bool DisplayResourceProvider::IsResourceSoftwareBacked(ResourceId id) const {
-  return GetResource(id)->transferable.is_software;
+  return GetResource(id)->transferable.GetIsSoftware();
 }
 
 const gfx::Size DisplayResourceProvider::GetResourceBackedSize(
     ResourceId id) const {
-  return GetResource(id)->transferable.size;
+  return GetResource(id)->transferable.GetSize();
 }
 
 SharedImageFormat DisplayResourceProvider::GetSharedImageFormat(
     ResourceId id) const {
   const ChildResource* resource = GetResource(id);
-  return resource->transferable.format;
+  return resource->transferable.GetFormat();
 }
 
-const gfx::ColorSpace& DisplayResourceProvider::GetColorSpace(
-    ResourceId id) const {
+gfx::ColorSpace DisplayResourceProvider::GetColorSpace(ResourceId id) const {
   const ChildResource* resource = GetResource(id);
-  return resource->transferable.color_space;
+  return resource->transferable.GetColorSpace();
 }
 
 bool DisplayResourceProvider::GetNeedsDetiling(ResourceId id) const {
@@ -187,7 +207,12 @@ const gfx::HDRMetadata& DisplayResourceProvider::GetHDRMetadata(
 
 GrSurfaceOrigin DisplayResourceProvider::GetOrigin(ResourceId id) const {
   const ChildResource* resource = GetResource(id);
-  return resource->transferable.origin;
+  return resource->transferable.GetOrigin();
+}
+
+SkAlphaType DisplayResourceProvider::GetAlphaType(ResourceId id) const {
+  const ChildResource* resource = GetResource(id);
+  return resource->transferable.GetAlphaType();
 }
 
 int DisplayResourceProvider::CreateChild(ReturnCallback return_callback,
@@ -205,7 +230,7 @@ int DisplayResourceProvider::CreateChild(ReturnCallback return_callback,
 
 void DisplayResourceProvider::DestroyChild(int child_id) {
   auto it = children_.find(child_id);
-  CHECK(it != children_.end(), base::NotFatalUntil::M130);
+  CHECK(it != children_.end());
   DestroyChildInternal(it, NORMAL);
 }
 
@@ -229,19 +254,24 @@ void DisplayResourceProvider::ReceiveFromChild(
       continue;
     }
 
-    if (transferable_resource.is_software != IsSoftware() ||
+    if (transferable_resource.GetIsSoftware() != IsSoftware() ||
         transferable_resource.is_empty()) {
       TRACE_EVENT0(
           "viz", "DisplayResourceProvider::ReceiveFromChild dropping invalid");
-      std::vector<ReturnedResource> returned;
-      returned.push_back(transferable_resource.ToReturnedResource());
+      std::vector<ReturnedResourceViz> returned;
+      returned.push_back(transferable_resource.ToReturnedResourceViz());
       child_info.return_callback.Run(std::move(returned));
       continue;
     }
 
     ResourceId local_id = resource_id_generator_.GenerateNextId();
-    resources_.emplace(local_id,
-                       ChildResource(child_id, transferable_resource));
+    bool inserted =
+        resources_
+            .emplace(local_id, ChildResource(child_id, transferable_resource))
+            .second;
+    // Verify there wasn't a ResourceId collision. A collision is only possible
+    // after `resource_id_generator_` hit the max ID and wrapped around.
+    CHECK(inserted);
     child_info.child_to_parent_map[transferable_resource.id] = local_id;
   }
 }
@@ -278,7 +308,7 @@ const std::unordered_map<ResourceId, ResourceId, ResourceIdHasher>&
 DisplayResourceProvider::GetChildToParentMap(int child) const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   auto it = children_.find(child);
-  CHECK(it != children_.end(), base::NotFatalUntil::M130);
+  CHECK(it != children_.end());
   DCHECK(!it->second.marked_for_deletion);
   return it->second.child_to_parent_map;
 }
@@ -293,7 +323,7 @@ DisplayResourceProvider::GetResource(ResourceId id) const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(id);
   auto it = resources_.find(id);
-  CHECK(it != resources_.end(), base::NotFatalUntil::M130);
+  CHECK(it != resources_.end());
   return &it->second;
 }
 
@@ -391,7 +421,7 @@ void DisplayResourceProvider::DeleteAndReturnUnusedResourcesToChild(
     return;
   }
 
-  std::vector<ReturnedResource> to_return =
+  std::vector<ReturnedResourceViz> to_return =
       DeleteAndReturnUnusedResourcesToChildImpl(child_info, style, unused);
 
   if (!to_return.empty())
@@ -498,14 +528,16 @@ DisplayResourceProvider::ScopedReadLockSharedImage::operator=(
 void DisplayResourceProvider::ScopedReadLockSharedImage::SetReleaseFence(
     gfx::GpuFenceHandle release_fence) {
   DCHECK(resource_);
+  DCHECK_EQ(SynchronizationType(),
+            TransferableResource::SynchronizationType::kReleaseFence);
   resource_->release_fence = std::move(release_fence);
 }
 
-bool DisplayResourceProvider::ScopedReadLockSharedImage::HasReadLockFence()
+TransferableResource::SynchronizationType
+DisplayResourceProvider::ScopedReadLockSharedImage::SynchronizationType()
     const {
   DCHECK(resource_);
-  return resource_->transferable.synchronization_type ==
-         TransferableResource::SynchronizationType::kGpuCommandsCompleted;
+  return resource_->transferable.synchronization_type;
 }
 
 void DisplayResourceProvider::ScopedReadLockSharedImage::Reset() {
@@ -513,7 +545,9 @@ void DisplayResourceProvider::ScopedReadLockSharedImage::Reset() {
     return;
   DCHECK(resource_->lock_for_overlay_count);
   resource_->lock_for_overlay_count--;
-  resource_provider_->TryReleaseResource(resource_id_, resource_);
+  ChildResource* resource = resource_;
+  resource_ = nullptr;
+  resource_provider_->TryReleaseResource(resource_id_, resource);
   resource_provider_ = nullptr;
   resource_id_ = kInvalidResourceId;
 }

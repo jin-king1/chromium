@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_CHROMEOS_APP_MODE_KIOSK_POLICIES_H_
 #define CHROME_BROWSER_CHROMEOS_APP_MODE_KIOSK_POLICIES_H_
 
+#include "base/memory/raw_ptr.h"
 #include "components/prefs/pref_service.h"
 
 namespace chromeos {
@@ -15,8 +16,8 @@ class KioskPolicies {
   explicit KioskPolicies(PrefService* pref_service);
   ~KioskPolicies() = default;
 
-  // Returns `false` if `prefs::kNewWindowsInKioskAllowed` preference is not
-  // found in the pref service, otherwise returns its value.
+  // Returns `false` if `ash::prefs::kNewWindowsInKioskAllowed` preference is
+  // not found in the pref service, otherwise returns its value.
   bool IsWindowCreationAllowed() const;
 
  private:

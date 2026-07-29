@@ -8,11 +8,10 @@
 #include <vector>
 
 #include "base/functional/callback.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/one_shot_event.h"
 #include "base/scoped_observation.h"
+#include "base/time/time.h"
 #include "chrome/browser/apps/app_service/app_icon/app_icon_factory.h"
-#include "chrome/browser/apps/app_service/app_launch_params.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/apps/app_service/launch_utils.h"
@@ -25,16 +24,18 @@
 #include "chrome/browser/prefs/incognito_mode_prefs.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
-#include "chrome/browser/ui/browser_navigator.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/extensions/app_launch_params.h"
 #include "chrome/browser/ui/extensions/application_launch.h"
 #include "chrome/browser/ui/extensions/extension_enable_flow.h"
 #include "chrome/browser/ui/extensions/extension_enable_flow_delegate.h"
+#include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/common/extensions/extension_constants.h"
 #include "chrome/common/extensions/extension_metrics.h"
 #include "chrome/common/extensions/manifest_handlers/app_launch_info.h"
+#include "components/services/app_service/public/cpp/app_launch_params.h"
 #include "components/services/app_service/public/cpp/app_launch_util.h"
 #include "components/services/app_service/public/cpp/app_registry_cache.h"
 #include "components/services/app_service/public/cpp/app_types.h"
@@ -45,12 +46,14 @@
 #include "components/services/app_service/public/cpp/types_util.h"
 #include "content/public/browser/clear_site_data_utils.h"
 #include "content/public/browser/web_contents.h"
+#include "extensions/browser/extension_registrar.h"
 #include "extensions/browser/extension_system.h"
 #include "extensions/browser/extension_util.h"
 #include "extensions/browser/install_prefs_helper.h"
 #include "extensions/browser/ui_util.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/extension_urls.h"
+#include "extensions/common/manifest_handlers/description_info.h"
 #include "extensions/common/manifest_handlers/options_page_info.h"
 #include "extensions/common/switches.h"
 #include "ui/base/window_open_disposition_utils.h"
@@ -140,7 +143,7 @@ AppPtr ExtensionAppsBase::CreateAppImpl(const extensions::Extension* extension,
                                        ? InstallSource::kSystem
                                        : InstallSource::kChromeWebStore);
   app->short_name = extension->short_name();
-  app->description = extension->description();
+  app->description = extensions::DescriptionInfo::GetDescription(*extension);
   app->version = extension->GetVersionForDisplay();
   app->installer_package_id =
       apps::PackageId(apps::PackageType::kChromeApp, extension->id());
@@ -162,7 +165,6 @@ AppPtr ExtensionAppsBase::CreateAppImpl(const extensions::Extension* extension,
 
   const extensions::ManagementPolicy* policy =
       extensions::ExtensionSystem::Get(profile())->management_policy();
-  DCHECK(policy);
   app->allow_uninstall = policy->UserMayModifySettings(extension, nullptr) &&
                          !policy->MustRemainInstalled(extension, nullptr);
   app->allow_close = true;
@@ -189,7 +191,7 @@ content::WebContents* ExtensionAppsBase::LaunchAppWithIntentImpl(
     LaunchCallback callback) {
   const auto* extension = MaybeGetExtension(app_id);
   if (!extension || !extensions::util::IsAppLaunchable(app_id, profile_)) {
-    std::move(callback).Run(ConvertBoolToLaunchResult(/*success=*/false));
+    std::move(callback).Run(LaunchResult::kFailed);
     return nullptr;
   }
 
@@ -208,7 +210,7 @@ content::WebContents* ExtensionAppsBase::LaunchAppWithIntentImpl(
       extensions::GetLaunchContainer(extensions::ExtensionPrefs::Get(profile_),
                                      extension),
       std::move(intent), profile_);
-  std::move(callback).Run(ConvertBoolToLaunchResult(/*success=*/true));
+  std::move(callback).Run(LaunchResult::kSuccess);
   return LaunchImpl(std::move(params));
 }
 
@@ -221,7 +223,7 @@ void ExtensionAppsBase::LaunchAppWithParamsImpl(AppLaunchParams&& params,
   LaunchImpl(std::move(params));
 
   // TODO(crbug.com/40787924): Add launch return value.
-  std::move(callback).Run(LaunchResult());
+  std::move(callback).Run(LaunchResult::kFailed);
 }
 
 const extensions::Extension* ExtensionAppsBase::MaybeGetExtension(
@@ -359,6 +361,7 @@ void ExtensionAppsBase::Launch(const std::string& app_id,
     case apps::LaunchSource::kFromSparky:
     case apps::LaunchSource::kFromNavigationCapturing:
     case apps::LaunchSource::kFromWebInstallApi:
+    case apps::LaunchSource::kFromMigration:
       break;
   }
 
@@ -434,10 +437,8 @@ void ExtensionAppsBase::Uninstall(const std::string& app_id,
   }
 
   std::u16string error;
-  extensions::ExtensionSystem::Get(profile())
-      ->extension_service()
-      ->UninstallExtension(
-          app_id, GetExtensionUninstallReason(uninstall_source), &error);
+  extensions::ExtensionRegistrar::Get(profile())->UninstallExtension(
+      app_id, GetExtensionUninstallReason(uninstall_source), &error);
 
   if (!report_abuse) {
     return;
@@ -467,12 +468,14 @@ void ExtensionAppsBase::OpenNativeSettings(const std::string& app_id) {
 
   } else if (extensions::ui_util::ShouldDisplayInExtensionSettings(
                  *extension)) {
-    Browser* browser = chrome::FindTabbedBrowser(profile_, false);
+    BrowserWindowInterface* browser =
+        ProfileBrowserCollection::GetForProfile(profile_)->FindTabbedBrowser();
     if (!browser) {
       browser = Browser::Create(Browser::CreateParams(profile_, true));
     }
 
-    chrome::ShowExtensions(browser, extension->id());
+    chrome::ShowExtensions(browser->GetBrowserForMigrationOnly(),
+                           extension->id());
   }
 }
 

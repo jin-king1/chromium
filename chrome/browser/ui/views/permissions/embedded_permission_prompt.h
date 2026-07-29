@@ -7,8 +7,8 @@
 
 #include <optional>
 
-#include "base/containers/fixed_flat_map.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/safe_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/permissions/system/system_permission_settings.h"
 #include "chrome/browser/ui/views/permissions/embedded_permission_prompt_base_view.h"
@@ -21,8 +21,6 @@
 #include "components/permissions/permission_request.h"
 #include "components/permissions/request_type.h"
 
-class Browser;
-
 namespace content {
 class WebContents;
 }
@@ -32,8 +30,7 @@ class EmbeddedPermissionPrompt
       public EmbeddedPermissionPromptViewDelegate,
       public EmbeddedPermissionPromptContentScrimView::Delegate {
  public:
-  EmbeddedPermissionPrompt(Browser* browser,
-                           content::WebContents* web_contents,
+  EmbeddedPermissionPrompt(content::WebContents* web_contents,
                            permissions::PermissionPrompt::Delegate* delegate);
   ~EmbeddedPermissionPrompt() override;
   EmbeddedPermissionPrompt(const EmbeddedPermissionPrompt&) = delete;
@@ -55,6 +52,7 @@ class EmbeddedPermissionPrompt
   bool IsAskPrompt() const override;
   std::optional<permissions::feature_params::PermissionElementPromptPosition>
   GetPromptPosition() const override;
+  std::optional<gfx::Rect> GetViewBoundsInScreen() const override;
 
   // EmbeddedPermissionPromptViewDelegate:
   void Allow() override;
@@ -63,11 +61,11 @@ class EmbeddedPermissionPrompt
   void Acknowledge() override;
   void StopAllowing() override;
   void ShowSystemSettings() override;
+  void SystemPermissionsNoLongerDenied() override;
   base::WeakPtr<permissions::PermissionPrompt::Delegate>
   GetPermissionPromptDelegate() const override;
-  const std::vector<
-      raw_ptr<permissions::PermissionRequest, VectorExperimental>>&
-  Requests() const override;
+  const std::vector<base::SafeRef<permissions::PermissionRequest>>& Requests()
+      const override;
 
   // EmbeddedPermissionPromptContentScrimView::Delegate:
   void DismissScrim() override;
@@ -89,6 +87,8 @@ class EmbeddedPermissionPrompt
   void CloseView();
   void CloseViewAndScrim();
 
+  void FocusThenClose();
+
   void FinalizePrompt();
   void SendDelegateAction(Action action);
 
@@ -99,12 +99,15 @@ class EmbeddedPermissionPrompt
 
   std::unique_ptr<views::Widget> content_scrim_widget_;
   views::ViewTracker prompt_view_tracker_;
+  views::ViewTracker previously_focused_view_tracker_;
+  std::unique_ptr<tabs::ScopedTabModalUI> scoped_tab_modal_ui_;
+  std::optional<content::WebContents::ScopedIgnoreInputEvents>
+      scoped_ignore_input_events_;
 
   raw_ptr<permissions::PermissionPrompt::Delegate> delegate_;
 
   std::set<ContentSettingsType> prompt_types_;
-  std::vector<raw_ptr<permissions::PermissionRequest, VectorExperimental>>
-      requests_;
+  std::vector<base::SafeRef<permissions::PermissionRequest>> requests_;
 
   std::unique_ptr<permissions::EmbeddedPermissionPromptFlowModel> prompt_model_;
   base::WeakPtrFactory<EmbeddedPermissionPrompt> weak_factory_{this};

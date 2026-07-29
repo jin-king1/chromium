@@ -85,7 +85,7 @@ TEST_F(QuickInsertWidgetTest, CreateWidgetHasCorrectHierarchy) {
   FakeQuickInsertViewDelegate delegate;
   auto widget = QuickInsertWidget::Create(&delegate, kDefaultAnchorBounds);
 
-  // Widget should contain a NonClientView, which has a NonClientFrameView for
+  // Widget should contain a NonClientView, which has a FrameView for
   // borders and shadows, and a ClientView with a sole child of the
   // QuickInsertView.
   ASSERT_TRUE(widget);
@@ -118,7 +118,7 @@ TEST_F(QuickInsertWidgetTest, ClickingOutsideClosesQuickInsertWidget) {
 
 TEST_F(QuickInsertWidgetTest, LosingFocusClosesQuickInsertWidget) {
   // Create something other than Quick Insert to focus.
-  auto window = CreateTestWindow();
+  auto window = CreateWindowWithAppType();
   window->Show();
 
   // Create the fake Quick Insert and make sure it has focus.
@@ -164,11 +164,9 @@ TEST_F(QuickInsertWidgetTest, CreatesCenteredWidget) {
       QuickInsertWidget::CreateCentered(&delegate, gfx::Rect(10, 10, 10, 10));
   widget->Show();
 
-  EXPECT_EQ(widget->GetWindowBoundsInScreen().CenterPoint(),
-            display::Screen::GetScreen()
-                ->GetPrimaryDisplay()
-                .work_area()
-                .CenterPoint());
+  EXPECT_EQ(
+      widget->GetWindowBoundsInScreen().CenterPoint(),
+      display::Screen::Get()->GetPrimaryDisplay().work_area().CenterPoint());
 }
 
 }  // namespace

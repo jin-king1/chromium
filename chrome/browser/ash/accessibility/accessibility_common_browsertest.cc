@@ -2,21 +2,21 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "ash/constants/ash_extension_constants.h"
 #include "ash/constants/ash_pref_names.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/ash/accessibility/accessibility_manager.h"
 #include "chrome/browser/ash/accessibility/accessibility_test_utils.h"
 #include "chrome/browser/extensions/component_loader.h"
-#include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/common/extensions/extension_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/prefs/pref_service.h"
 #include "components/version_info/channel.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/test_utils.h"
 #include "extensions/browser/extension_host_test_helper.h"
-#include "extensions/browser/extension_system.h"
+#include "extensions/browser/extension_registry_test_helper.h"
+#include "extensions/common/constants.h"
 #include "extensions/common/features/feature_channel.h"
 #include "ui/accessibility/accessibility_features.h"
 
@@ -33,7 +33,8 @@ class AccessibilityCommonTest
 
   void SetUpOnMainThread() override {
     console_observer_ = std::make_unique<ExtensionConsoleErrorObserver>(
-        browser()->profile(), extension_misc::kAccessibilityCommonExtensionId);
+        browser()->GetProfile(),
+        extension_misc::kAccessibilityCommonExtensionId);
   }
 
   void TearDownOnMainThread() override {
@@ -43,10 +44,8 @@ class AccessibilityCommonTest
   }
 
   bool DoesComponentExtensionExist(const std::string& id) {
-    return extensions::ExtensionSystem::Get(
+    return extensions::ComponentLoader::Get(
                AccessibilityManager::Get()->profile())
-        ->extension_service()
-        ->component_loader()
         ->Exists(id);
   }
 
@@ -70,8 +69,14 @@ IN_PROC_BROWSER_TEST_P(AccessibilityCommonTest, ToggleFeatures) {
   {
     extensions::ExtensionHostTestHelper host_helper(
         manager->profile(), extension_misc::kAccessibilityCommonExtensionId);
+    extensions::ExtensionRegistryTestHelper observer(
+        extension_misc::kAccessibilityCommonExtensionId, manager->profile());
     pref_service->SetBoolean(prefs::kAccessibilityAutoclickEnabled, true);
-    host_helper.WaitForHostCompletedFirstLoad();
+    if (observer.WaitForManifestVersion() == 3) {
+      observer.WaitForServiceWorkerStart();
+    } else {
+      host_helper.WaitForHostCompletedFirstLoad();
+    }
   }
 
   EXPECT_EQ(1U, enabled_features.size());
@@ -130,14 +135,6 @@ class AccessibilityCommonFaceGazeTest : public AccessibilityCommonTest {
       delete;
   AccessibilityCommonFaceGazeTest& operator=(
       const AccessibilityCommonFaceGazeTest&) = delete;
-
-  void SetUpCommandLine(base::CommandLine* command_line) override {
-    scoped_feature_list_.InitAndEnableFeature(features::kAccessibilityFaceGaze);
-    AccessibilityCommonTest::SetUpCommandLine(command_line);
-  }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 INSTANTIATE_TEST_SUITE_P(AllChannels,
@@ -165,8 +162,14 @@ IN_PROC_BROWSER_TEST_P(AccessibilityCommonFaceGazeTest, ToggleFaceGaze) {
   // to load.
   extensions::ExtensionHostTestHelper host_helper(
       manager->profile(), extension_misc::kAccessibilityCommonExtensionId);
+  extensions::ExtensionRegistryTestHelper observer(
+      extension_misc::kAccessibilityCommonExtensionId, manager->profile());
   pref_service->SetBoolean(prefs::kAccessibilityFaceGazeEnabled, true);
-  host_helper.WaitForHostCompletedFirstLoad();
+  if (observer.WaitForManifestVersion() == 3) {
+    observer.WaitForServiceWorkerStart();
+  } else {
+    host_helper.WaitForHostCompletedFirstLoad();
+  }
 
   EXPECT_EQ(1U, enabled_features.size());
   EXPECT_EQ(1U, enabled_features.count(prefs::kAccessibilityFaceGazeEnabled));

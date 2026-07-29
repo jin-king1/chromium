@@ -70,8 +70,6 @@ class TestStoragePartition : public StoragePartition {
   cert_verifier::mojom::CertVerifierServiceUpdater*
   GetCertVerifierServiceUpdater() override;
 
-  storage::SharedStorageManager* GetSharedStorageManager() override;
-
   void set_url_loader_factory_for_browser_process(
       network::TestURLLoaderFactory* factory) {
     test_url_loader_factory_ = factory;
@@ -93,8 +91,8 @@ class TestStoragePartition : public StoragePartition {
       const url::Origin& top_frame_origin) override;
 
   mojo::PendingRemote<network::mojom::URLLoaderNetworkServiceObserver>
-  CreateURLLoaderNetworkObserverForFrame(int process_id,
-                                         int routing_id) override;
+  CreateURLLoaderNetworkObserverForFrame(
+      const content::GlobalRenderFrameHostId& frame_id) override;
 
   mojo::PendingRemote<network::mojom::URLLoaderNetworkServiceObserver>
   CreateURLLoaderNetworkObserverForNavigationRequest(
@@ -114,11 +112,6 @@ class TestStoragePartition : public StoragePartition {
     background_sync_context_ = context;
   }
   BackgroundSyncContext* GetBackgroundSyncContext() override;
-
-  void set_database_tracker(storage::DatabaseTracker* tracker) {
-    database_tracker_ = tracker;
-  }
-  storage::DatabaseTracker* GetDatabaseTracker() override;
 
   void set_dom_storage_context(DOMStorageContext* context) {
     dom_storage_context_ = context;
@@ -155,13 +148,6 @@ class TestStoragePartition : public StoragePartition {
   }
   PlatformNotificationContext* GetPlatformNotificationContext() override;
 
-  InterestGroupManager* GetInterestGroupManager() override;
-
-  AttributionDataModel* GetAttributionDataModel() override;
-
-  PrivateAggregationDataModel* GetPrivateAggregationDataModel() override;
-
-  CookieDeprecationLabelManager* GetCookieDeprecationLabelManager() override;
 
 #if BUILDFLAG(ENABLE_LIBRARY_CDMS)
   CdmStorageDataModel* GetCdmStorageDataModel() override;
@@ -169,6 +155,10 @@ class TestStoragePartition : public StoragePartition {
 
   network::mojom::DeviceBoundSessionManager* GetDeviceBoundSessionManager()
       override;
+  void set_device_bound_session_manager(
+      network::mojom::DeviceBoundSessionManager* device_bound_session_manager) {
+    device_bound_session_manager_ = device_bound_session_manager;
+  }
 
   void DeleteStaleSessionData() override {}
 
@@ -211,21 +201,18 @@ class TestStoragePartition : public StoragePartition {
   ZoomLevelDelegate* GetZoomLevelDelegate() override;
 
   void ClearDataForOrigin(uint32_t remove_mask,
-                          uint32_t quota_storage_remove_mask,
                           const GURL& storage_origin,
                           base::OnceClosure callback) override;
   void ClearDataForBuckets(const blink::StorageKey& storage_key,
                            const std::set<std::string>& buckets,
                            base::OnceClosure callback) override;
   void ClearData(uint32_t remove_mask,
-                 uint32_t quota_storage_remove_mask,
                  const blink::StorageKey& storage_key,
                  const base::Time begin,
                  const base::Time end,
                  base::OnceClosure callback) override;
 
   void ClearData(uint32_t remove_mask,
-                 uint32_t quota_storage_remove_mask,
                  BrowsingDataFilterBuilder* filter_builder,
                  StorageKeyPolicyMatcherFunction storage_key_policy_matcher,
                  network::mojom::CookieDeletionFilterPtr cookie_deletion_filter,
@@ -252,7 +239,6 @@ class TestStoragePartition : public StoragePartition {
   void FlushNetworkInterfaceForTesting() override;
   void FlushCertVerifierInterfaceForTesting() override;
   void WaitForDeletionTasksForTesting() override;
-  void WaitForCodeCacheShutdownForTesting() override;
   void SetNetworkContextForTesting(
       mojo::PendingRemote<network::mojom::NetworkContext>
           network_context_remote) override;
@@ -274,7 +260,6 @@ class TestStoragePartition : public StoragePartition {
   raw_ptr<storage::QuotaManager> quota_manager_ = nullptr;
   raw_ptr<BackgroundSyncContext> background_sync_context_ = nullptr;
   raw_ptr<storage::FileSystemContext> file_system_context_ = nullptr;
-  raw_ptr<storage::DatabaseTracker> database_tracker_ = nullptr;
   raw_ptr<DOMStorageContext> dom_storage_context_ = nullptr;
   mojo::Remote<storage::mojom::LocalStorageControl> local_storage_control_;
   mojo::Remote<storage::mojom::IndexedDBControl> indexed_db_control_;
@@ -283,6 +268,8 @@ class TestStoragePartition : public StoragePartition {
   raw_ptr<SharedWorkerService> shared_worker_service_ = nullptr;
   mojo::Remote<storage::mojom::CacheStorageControl> cache_storage_control_;
   raw_ptr<GeneratedCodeCacheContext> generated_code_cache_context_ = nullptr;
+  raw_ptr<network::mojom::DeviceBoundSessionManager>
+      device_bound_session_manager_ = nullptr;
   raw_ptr<BrowsingTopicsSiteDataManager> browsing_topics_site_data_manager_ =
       nullptr;
   raw_ptr<PlatformNotificationContext> platform_notification_context_ = nullptr;

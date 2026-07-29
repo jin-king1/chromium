@@ -49,6 +49,7 @@ class CalendarUpNextViewPixelTest : public AshTestBase {
   }
 
   void TearDown() override {
+    up_next_view_ = nullptr;
     widget_.reset();
     controller_.reset();
 
@@ -107,7 +108,7 @@ class CalendarUpNextViewPixelTest : public AshTestBase {
   }
 
   std::unique_ptr<views::Widget> widget_;
-  raw_ptr<CalendarUpNextView, DanglingUntriaged> up_next_view_ = nullptr;
+  raw_ptr<CalendarUpNextView> up_next_view_;
   std::unique_ptr<CalendarViewController> controller_;
 };
 
@@ -133,7 +134,7 @@ TEST_F(CalendarUpNextViewPixelTest,
 
   EXPECT_TRUE(GetPixelDiffer()->CompareUiComponentsOnPrimaryScreen(
       "calendar_up_next_single_upcoming_event",
-      /*revision_number=*/9, Widget()));
+      /*revision_number=*/10, Widget()));
 }
 
 TEST_F(CalendarUpNextViewPixelTest,
@@ -160,7 +161,7 @@ TEST_F(CalendarUpNextViewPixelTest,
 
   EXPECT_TRUE(GetPixelDiffer()->CompareUiComponentsOnPrimaryScreen(
       "calendar_up_next_multiple_upcoming_events",
-      /*revision_number=*/9, Widget()));
+      /*revision_number=*/10, Widget()));
 }
 
 TEST_F(
@@ -191,7 +192,7 @@ TEST_F(
 
   EXPECT_TRUE(GetPixelDiffer()->CompareUiComponentsOnPrimaryScreen(
       "calendar_up_next_multiple_upcoming_events_press_scroll_right_button",
-      /*revision_number=*/8, Widget()));
+      /*revision_number=*/9, Widget()));
 }
 
 TEST_F(CalendarUpNextViewPixelTest, ShouldShowJoinMeetingButton) {
@@ -216,7 +217,7 @@ TEST_F(CalendarUpNextViewPixelTest, ShouldShowJoinMeetingButton) {
 
   EXPECT_TRUE(GetPixelDiffer()->CompareUiComponentsOnPrimaryScreen(
       "calendar_up_next_join_button",
-      /*revision_number=*/9, Widget()));
+      /*revision_number=*/10, Widget()));
 }
 
 }  // namespace ash

@@ -14,6 +14,8 @@
 #include "base/functional/callback_helpers.h"
 #include "base/path_service.h"
 #include "base/strings/escape.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/threading/thread_restrictions.h"
@@ -34,6 +36,8 @@
 #include "ui/accessibility/platform/inspect/ax_api_type.h"
 #include "ui/accessibility/platform/inspect/ax_tree_formatter.h"
 #if BUILDFLAG(IS_WIN)
+#include "base/test/run_until.h"
+#include "ui/accessibility/platform/ax_platform_node_win.h"
 #include "ui/accessibility/platform/browser_accessibility_manager_win.h"
 #endif
 
@@ -41,6 +45,29 @@ namespace content {
 
 using ui::AXPropertyFilter;
 using ui::AXTreeFormatter;
+
+namespace {
+
+void WaitForWindowsAccessibilityEventTestTeardown() {
+#if BUILDFLAG(IS_WIN)
+  // Dump event tests inspect Windows accessibility objects while the page is
+  // live. Shell teardown can briefly leave destroyed nodes waiting on those
+  // COM references to release.
+  const auto get_ghost_count = [] {
+    return ui::AXPlatformNodeWin::GetCounts().ghost_nodes;
+  };
+  if (get_ghost_count() == 0) {
+    return;
+  }
+
+  EXPECT_TRUE(base::test::RunUntil([&] { return get_ghost_count() == 0; }))
+      << "Timed out waiting for Windows accessibility event test teardown; "
+      << get_ghost_count()
+      << " AXPlatformNodeWin COM references are still alive.";
+#endif
+}
+
+}  // namespace
 
 // See content/test/data/accessibility/readme.md for an overview.
 //
@@ -78,8 +105,6 @@ class DumpAccessibilityEventsTest : public DumpAccessibilityTestBase {
  public:
   void SetUpCommandLine(base::CommandLine* command_line) override {
     command_line->AppendSwitchASCII(switches::kEnableBlinkFeatures,
-                                    "KeyboardFocusableScrollers");
-    command_line->AppendSwitchASCII(switches::kEnableBlinkFeatures,
                                     "ShadowRootReferenceTarget");
     // Enable AOMAriaRelationshipProperties
     command_line->AppendSwitchASCII(switches::kEnableBlinkFeatures,
@@ -87,31 +112,83 @@ class DumpAccessibilityEventsTest : public DumpAccessibilityTestBase {
     DumpAccessibilityTestBase::SetUpCommandLine(command_line);
   }
 
-  std::vector<ui::AXPropertyFilter> DefaultFilters() const override {
-    std::vector<ui::AXPropertyFilter> property_filters;
-    // Suppress spurious focus events on the document object.
-    property_filters.emplace_back("EVENT_OBJECT_FOCUS*DOCUMENT*",
-                                  AXPropertyFilter::DENY);
-    property_filters.emplace_back("AutomationFocusChanged*document*",
-                                  AXPropertyFilter::DENY);
-    // Implementing IRawElementProviderAdviseEvents causes Win7 to fire
-    // spurious focus events (regardless of what the implementation does).
-    property_filters.emplace_back("AutomationFocusChanged on role=region",
-                                  AXPropertyFilter::DENY);
-    return property_filters;
+  void PostRunTestOnMainThread() override {
+    ContentBrowserTest::PostRunTestOnMainThread();
+    WaitForWindowsAccessibilityEventTestTeardown();
   }
 
-  std::vector<std::string> Dump(ui::AXMode mode) override;
+  std::vector<std::string> Dump() override;
 
   void OnDiffFailed() override;
   void RunEventTest(const base::FilePath::CharType* file_path);
 
- private:
+ protected:
+  bool ShouldDumpAccessibilityTreeAfterEachGoPass() const {
+    return scenario_.events_tree_dump_enabled;
+  }
+
+  std::vector<ui::AXPropertyFilter> DefaultFilters() const override {
+    std::vector<ui::AXPropertyFilter> filters =
+        DumpAccessibilityTestBase::DefaultFilters();
+
+    // Event-specific filters
+    // Suppress spurious focus events on the document object.
+    filters.emplace_back("EVENT_OBJECT_FOCUS*DOCUMENT*",
+                         AXPropertyFilter::DENY);
+    filters.emplace_back("AutomationFocusChanged*document*",
+                         AXPropertyFilter::DENY);
+    // Implementing IRawElementProviderAdviseEvents causes Win7 to fire
+    // spurious focus events (regardless of what the implementation does).
+    filters.emplace_back("AutomationFocusChanged on role=region",
+                         AXPropertyFilter::DENY);
+
+    // Tree-specific filters
+    // States that are not included in the default tree dumps, but which help us
+    // verify that state-change events and attributes are in sync.
+    filters.emplace_back("indeterminate*", ui::AXPropertyFilter::ALLOW);
+    filters.emplace_back("pressed*", ui::AXPropertyFilter::ALLOW);
+    filters.emplace_back("focused*", ui::AXPropertyFilter::ALLOW);
+    // In the case of tree dumps with many generic objects, these make it easier
+    // to identify which element is which.
+    filters.emplace_back("htmlTag*", ui::AXPropertyFilter::ALLOW);
+    filters.emplace_back("className*", ui::AXPropertyFilter::ALLOW);
+    return filters;
+  }
+
   std::string initial_tree_;
   std::string final_tree_;
+
+  // If tree dumping is enabled we'll have a "before" and an "after" tree dump
+  // for each `go()` run. Depending on the tree associated with a given test,
+  // the ability to quickly identify what changed in response to an interaction
+  // can be hard to spot. Adding a simple marker to the end of each changed line
+  // in the "after" tree makes it possible to dump the full tree without
+  // modifications and locate the difference(s).
+  std::vector<std::string> AddDiffMarkersToAfterTree(
+      const std::vector<std::string>& before_tree_lines,
+      const std::vector<std::string>& after_tree_lines) const {
+    // Don't add diff markers if the before tree is too small.
+    if (before_tree_lines.size() <= 3) {
+      return after_tree_lines;
+    }
+    std::set<std::string> before_lines_set(before_tree_lines.begin(),
+                                           before_tree_lines.end());
+    std::vector<std::string> marked_after_lines;
+    for (const std::string& after_line : after_tree_lines) {
+      if (before_lines_set.find(after_line) == before_lines_set.end()) {
+        marked_after_lines.push_back(after_line + " <<<<<< CHANGED");
+      } else {
+        marked_after_lines.push_back(after_line);
+      }
+    }
+    return marked_after_lines;
+  }
+
+  std::pair<base::Value, std::vector<std::string>> CaptureEvents(
+      InvokeAction invoke_action) override;
 };
 
-std::vector<std::string> DumpAccessibilityEventsTest::Dump(ui::AXMode mode) {
+std::vector<std::string> DumpAccessibilityEventsTest::Dump() {
   WebContentsImpl* web_contents = GetWebContents();
 
   // Save a copy of the accessibility tree (as a text dump); we'll
@@ -121,18 +198,46 @@ std::vector<std::string> DumpAccessibilityEventsTest::Dump(ui::AXMode mode) {
   final_tree_.clear();
   bool run_go_again = false;
   std::vector<std::string> result;
+  int go_pass_number = 1;
+
   do {
-    // Dump the event logs, running them through any filters specified
-    // in the HTML file.
-    auto [go_results, event_logs] = CaptureEvents(
-        base::BindOnce([](RenderFrameHostImpl* frame,
-                          std::string script) { return EvalJs(frame, script); },
-                       web_contents->GetPrimaryMainFrame(), "go()"),
-        ui::kAXModeComplete);
+    std::vector<std::string> before_tree_lines;
+    // 1. Optionally dump the before-run accessibility tree.
+    if (ShouldDumpAccessibilityTreeAfterEachGoPass()) {
+      // For the first go pass, wait for final tree contents like tree tests do.
+      // This ensures the document has fully loaded before dumping the tree.
+      if (go_pass_number == 1) {
+        WaitForFinalTreeContents();
+      }
+#if BUILDFLAG(IS_ANDROID)
+      // By default, Android does not load inline text boxes. We need to
+      // explicitly load them to ensure consistent Blink trees.
+      if (ui::BrowserAccessibilityManager* manager = GetManager()) {
+        manager->LoadInlineTextBoxes(*manager->GetBrowserAccessibilityRoot());
+        content::WaitForAccessibilityTreeToChange(GetWebContents(),
+                                                  base::Milliseconds(500));
+      }
+#endif
+      std::string initial_tree_dump = DumpTreeAsString();
+      result.emplace_back("=== Accessibility tree before go() pass " +
+                          base::NumberToString(go_pass_number) + " ===");
+      before_tree_lines =
+          base::SplitString(initial_tree_dump, "\n", base::KEEP_WHITESPACE,
+                            base::SPLIT_WANT_NONEMPTY);
+      for (const std::string& line : before_tree_lines) {
+        result.push_back(line);
+      }
+      result.emplace_back("=== End accessibility tree ===");
+    }
+
+    // 2. Capture and log the events for this `go()` run.
+    auto [go_results, event_logs] = CaptureEvents(base::BindOnce(
+        [](RenderFrameHostImpl* frame, std::string script) {
+          return EvalJs(frame, script).TakeValue();
+        },
+        web_contents->GetPrimaryMainFrame(),
+        "typeof go === 'function' ? go() : false"));
     run_go_again = go_results == true;
-    // Save a copy of the final accessibility tree (as a text dump); we'll
-    // log this for the user later if the test fails.
-    final_tree_.append(DumpUnfilteredAccessibilityTreeAsString());
 
     for (auto& event_log : event_logs) {
       if (AXTreeFormatter::MatchesPropertyFilters(scenario_.property_filters,
@@ -141,9 +246,37 @@ std::vector<std::string> DumpAccessibilityEventsTest::Dump(ui::AXMode mode) {
       }
     }
 
+    // 3. Optionally dump the after-run accessibility tree, noting any changes.
+    if (ShouldDumpAccessibilityTreeAfterEachGoPass()) {
+#if BUILDFLAG(IS_ANDROID)
+      if (ui::BrowserAccessibilityManager* manager = GetManager()) {
+        manager->LoadInlineTextBoxes(*manager->GetBrowserAccessibilityRoot());
+      }
+#endif
+      std::string final_tree_dump = DumpTreeAsString();
+      result.emplace_back("=== Accessibility tree after go() pass " +
+                          base::NumberToString(go_pass_number) + " ===");
+      std::vector<std::string> after_tree_lines =
+          base::SplitString(final_tree_dump, "\n", base::KEEP_WHITESPACE,
+                            base::SPLIT_WANT_NONEMPTY);
+
+      std::vector<std::string> marked_after_lines =
+          AddDiffMarkersToAfterTree(before_tree_lines, after_tree_lines);
+
+      for (const std::string& line : marked_after_lines) {
+        result.push_back(line);
+      }
+      result.emplace_back("=== End accessibility tree ===");
+    }
+
+    // Save a copy of the final accessibility tree (as a text dump); we'll
+    // log this for the user later if the test fails.
+    final_tree_.append(DumpUnfilteredAccessibilityTreeAsString());
+
     if (run_go_again) {
       final_tree_.append("=== Start Continuation ===\n");
       result.emplace_back("=== Start Continuation ===");
+      go_pass_number++;
     }
   } while (run_go_again);
 
@@ -173,6 +306,28 @@ void DumpAccessibilityEventsTest::RunEventTest(
   RunTest(event_file, "accessibility/event");
 }
 
+std::pair<base::Value, std::vector<std::string>>
+DumpAccessibilityEventsTest::CaptureEvents(InvokeAction invoke_action) {
+  // Platforms that support event recording should do their normal thing.
+  if (GetParam() != ui::AXApiType::kBlink) {
+    return DumpAccessibilityTestBase::CaptureEvents(std::move(invoke_action));
+  }
+
+  // Execute this `go()` run for blink tests.
+  base::Value action_result = std::move(invoke_action).Run();
+
+  if (ShouldDumpAccessibilityTreeAfterEachGoPass()) {
+    // Wait for DOM changes to propagate to accessibility tree.
+    // Note that some tests have their own logic to indicate readiness, so
+    // not receiving an update is not necessarily a bug.
+    content::WaitForAccessibilityTreeToChange(GetWebContents(),
+                                              base::Milliseconds(500));
+  }
+
+  std::vector<std::string> empty_events;
+  return std::make_pair(std::move(action_result), std::move(empty_events));
+}
+
 class DumpAccessibilityEventsTestExceptUIA
     : public DumpAccessibilityEventsTest {};
 
@@ -188,7 +343,7 @@ struct DumpAccessibilityEventsTestPassToString {
 INSTANTIATE_TEST_SUITE_P(
     All,
     DumpAccessibilityEventsTest,
-    ::testing::ValuesIn(DumpAccessibilityTestBase::EventTestPasses()),
+    ::testing::ValuesIn(DumpAccessibilityTestBase::EventTestPassesWithBlink()),
     DumpAccessibilityEventsTestPassToString());
 
 INSTANTIATE_TEST_SUITE_P(
@@ -196,6 +351,23 @@ INSTANTIATE_TEST_SUITE_P(
     DumpAccessibilityEventsTestExceptUIA,
     ::testing::ValuesIn(DumpAccessibilityTestBase::EventTestPassesExceptUIA()),
     DumpAccessibilityEventsTestPassToString());
+
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+class DumpAccessibilityEventsWithMaterialDesignTest
+    : public DumpAccessibilityEventsTest {
+ public:
+  void SetUpOnMainThread() override {
+    SetUpMaterialDesignRequestHandler();
+    DumpAccessibilityEventsTest::SetUpOnMainThread();
+  }
+};
+
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    DumpAccessibilityEventsWithMaterialDesignTest,
+    ::testing::ValuesIn(DumpAccessibilityTestBase::EventTestPassesWithBlink()),
+    DumpAccessibilityEventsTestPassToString());
+#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 
 class DumpAccessibilityEventsWithExperimentalWebFeaturesTest
     : public DumpAccessibilityEventsTest {
@@ -220,6 +392,8 @@ GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(
 GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(DumpAccessibilityEventsTest);
 GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(
     DumpAccessibilityEventsTestExceptUIA);
+GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(
+    DumpAccessibilityEventsWithMaterialDesignTest);
 
 IN_PROC_BROWSER_TEST_P(
     DumpAccessibilityEventsTest,
@@ -255,8 +429,9 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
   RunEventTest(FILE_PATH_LITERAL("aria-button-expand.html"));
 }
 
+// TODO(crbug.com/40844027): Disabled due to flakiness.
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
-                       AccessibilityEventsAriaComboBoxCollapse) {
+                       DISABLED_AccessibilityEventsAriaComboBoxCollapse) {
   RunEventTest(FILE_PATH_LITERAL("aria-combo-box-collapse.html"));
 }
 
@@ -303,6 +478,15 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
   RunEventTest(FILE_PATH_LITERAL("aria-hidden-changed.html"));
 }
 
+// TODO(crbug.com/468203351): flakes due to COM interface leaks on Windows
+// platforms. Only run on Android, Linux, and Mac.
+#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC)
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
+                       AccessibilityEventsAriaInvalidStatusChanged) {
+  RunEventTest(FILE_PATH_LITERAL("aria-invalid-status-changed.html"));
+}
+#endif
+
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
                        AccessibilityEventsAriaLevelChanged) {
   RunEventTest(FILE_PATH_LITERAL("aria-level-changed.html"));
@@ -322,6 +506,15 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
                        AccessibilityEventsAriaMultilineChanged) {
   RunEventTest(FILE_PATH_LITERAL("aria-multiline-changed.html"));
 }
+
+// TODO(crbug.com/468203351): flakes due to COM interface leaks on Windows
+// platforms. Only run on Android, Linux, and Mac.
+#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC)
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
+                       AccessibilityEventsAriaMeterValueChange) {
+  RunEventTest(FILE_PATH_LITERAL("aria-meter-value-change.html"));
+}
+#endif
 
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
                        AccessibilityEventsAriaPosinsetChanged) {
@@ -383,8 +576,9 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
   RunEventTest(FILE_PATH_LITERAL("aria-tree-expand.html"));
 }
 
+// TODO(crbug.com/372910798): Disabled due to flakiness.
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
-                       AccessibilityEventsAriaTreeItemFocus) {
+                       DISABLED_AccessibilityEventsAriaTreeItemFocus) {
   RunEventTest(FILE_PATH_LITERAL("aria-treeitem-focus.html"));
 }
 
@@ -393,8 +587,9 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
   RunEventTest(FILE_PATH_LITERAL("aria-treeitem-focus-reference-target.html"));
 }
 
+// TODO(crbug.com/509331079): Re-enable this test.
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
-                       AccessibilityEventsAriaComboBoxFocus) {
+                       DISABLED_AccessibilityEventsAriaComboBoxFocus) {
   RunEventTest(FILE_PATH_LITERAL("aria-combo-box-focus.html"));
 }
 
@@ -408,8 +603,7 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
   RunEventTest(FILE_PATH_LITERAL("aria-combo-box-delay-show-list.html"));
 }
 
-// TODO(crbug.com/40844027): Flaky on win
-IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTestExceptUIA,
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
                        AccessibilityEventsAriaComboBoxNext) {
   RunEventTest(FILE_PATH_LITERAL("aria-combo-box-next.html"));
 }
@@ -445,6 +639,24 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
 }
 
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
+                       AccessibilityEventsAriaSpinbuttonAppendingTextChanged) {
+  RunEventTest(
+      FILE_PATH_LITERAL("aria-spinbutton-appending-text-changed.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(
+    DumpAccessibilityEventsTest,
+    AccessibilityEventsNativeSpinbuttonAppendingTextChanged) {
+  RunEventTest(
+      FILE_PATH_LITERAL("native-spinbutton-appending-text-changed.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
+                       AccessibilityEventsNativeSpinbuttonArrowUpChanged) {
+  RunEventTest(FILE_PATH_LITERAL("native-spinbutton-arrow-up-changed.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
                        AccessibilityEventsAddAlert) {
   RunEventTest(FILE_PATH_LITERAL("add-alert.html"));
 }
@@ -457,6 +669,16 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
                        AccessibilityEventsAddAlertContent) {
   RunEventTest(FILE_PATH_LITERAL("add-alert-content.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
+                       AccessibilityEventsAlertShadowDomIgnoredReparented) {
+  RunEventTest(FILE_PATH_LITERAL("alert-shadow-dom-ignored-reparented.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
+                       AccessibilityEventsAlertShadowDomIgnoredChanged) {
+  RunEventTest(FILE_PATH_LITERAL("alert-shadow-dom-ignored-changed.html"));
 }
 
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
@@ -511,7 +733,18 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
 
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
                        AccessibilityEventsCheckedStateChanged) {
+  // TODO(crbug.com/441088517): Fix the flakiness and enable this on blink.
+  if (GetParam() == ui::AXApiType::kBlink) {
+    GTEST_SKIP() << "Skipping this test case on blink because of flakiness. "
+                 << "See crbug.com/441088517";
+  }
+
   RunEventTest(FILE_PATH_LITERAL("checked-state-changed.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
+                       AccessibilityEventsButtonHasPopupCheckedStateChanged) {
+  RunEventTest(FILE_PATH_LITERAL("button-haspopup-checked-state-changed.html"));
 }
 
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
@@ -519,28 +752,8 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
   RunEventTest(FILE_PATH_LITERAL("checked-mixed-changed.html"));
 }
 
-// http:/crbug.com/889013
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
-                       DISABLED_AccessibilityEventsCaretHide) {
-  RunEventTest(FILE_PATH_LITERAL("caret-hide.html"));
-}
-
-// http:/crbug.com/889013
-IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
-                       DISABLED_AccessibilityEventsCaretMove) {
-  RunEventTest(FILE_PATH_LITERAL("caret-move.html"));
-}
-
-// Flaky on Windows, disabled on Linux: https://crbug.com/1186887
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
-#define MAYBE_AccessibilityEventsCaretMoveHiddenInput \
-  DISABLED_AccessibilityEventsCaretMoveHiddenInput
-#else
-#define MAYBE_AccessibilityEventsCaretMoveHiddenInput \
-  AccessibilityEventsCaretMoveHiddenInput
-#endif
-IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
-                       MAYBE_AccessibilityEventsCaretMoveHiddenInput) {
+                       AccessibilityEventsCaretMoveHiddenInput) {
   RunEventTest(FILE_PATH_LITERAL("caret-move-hidden-input.html"));
 }
 
@@ -549,16 +762,8 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
   RunEventTest(FILE_PATH_LITERAL("checkbox-validity.html"));
 }
 
-// Flaky on TSAN, see https://crbug.com/1066702
-#if defined(THREAD_SANITIZER)
-#define MAYBE_AccessibilityEventsCaretBrowsingEnabled \
-  DISABLED_AccessibilityEventsCaretBrowsingEnabled
-#else
-#define MAYBE_AccessibilityEventsCaretBrowsingEnabled \
-  AccessibilityEventsCaretBrowsingEnabled
-#endif
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
-                       MAYBE_AccessibilityEventsCaretBrowsingEnabled) {
+                       AccessibilityEventsCaretBrowsingEnabled) {
   // This actually enables caret browsing without setting the pref.
   GetWebContents()->GetMutableRendererPrefs()->caret_browsing_enabled = true;
   // This notifies accessibility that caret browsing is on so that it sends
@@ -654,6 +859,24 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
 }
 
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
+                       AccessibilityEventsDescriptionChangePaneTitle) {
+  RunEventTest(FILE_PATH_LITERAL("description-changed-pane-title.html"));
+}
+
+// TODO(crbug.com/399735836): Fix failure on Windows
+#if BUILDFLAG(IS_WIN)
+#define MAYBE_AccessibilityEventsDescriptionChangeSubtree \
+  DISABLED_AccessibilityEventsDescriptionChangeSubtree
+#else
+#define MAYBE_AccessibilityEventsDescriptionChangeSubtree \
+  AccessibilityEventsDescriptionChangeSubtree
+#endif
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
+                       MAYBE_AccessibilityEventsDescriptionChangeSubtree) {
+  RunEventTest(FILE_PATH_LITERAL("description-changed-subtree.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
                        AccessibilityEventsDescriptionChangeIndirect) {
   RunEventTest(FILE_PATH_LITERAL("description-change-indirect.html"));
 }
@@ -661,6 +884,11 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
                        AccessibilityEventsDescriptionChangeNoRelation) {
   RunEventTest(FILE_PATH_LITERAL("description-change-no-relation.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
+                       AccessibilityEventsDialogPaneNameChanged) {
+  RunEventTest(FILE_PATH_LITERAL("dialog-pane-name-change.html"));
 }
 
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
@@ -693,6 +921,11 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
                        AccessibilityEventsFocusListboxMultiselect) {
   RunEventTest(FILE_PATH_LITERAL("focus-listbox-multiselect.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
+                       AccessibilitySelectListboxActivateOptions) {
+  RunEventTest(FILE_PATH_LITERAL("select-multiple-activate-options.html"));
 }
 
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
@@ -820,6 +1053,90 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
                        AccessibilityEventsMenuListFocus) {
   RunEventTest(FILE_PATH_LITERAL("menulist-focus.html"));
 }
+
+// The Material Design tests are not supported on Android.
+// In the case of Windows, many DumpAccessibility* tests fail due to
+// crrev.com/c/6620083 which causes tests to fail if there is a leaked COM
+// object. The Material Design tests are not special; just more tests that
+// fail due to the leak.
+// TODO(crbug.com/424781310): Re-enable these tests on Windows once the leak
+// issue is resolved.
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_WIN) && !BUILDFLAG(IS_IOS)
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsWithMaterialDesignTest,
+                       MaterialDesignButtonEvents) {
+  RunEventTest(FILE_PATH_LITERAL("material-design-button.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsWithMaterialDesignTest,
+                       MaterialDesignCheckboxEvents) {
+  RunEventTest(FILE_PATH_LITERAL("material-design-checkbox.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsWithMaterialDesignTest,
+                       MaterialDesignListEvents) {
+  RunEventTest(FILE_PATH_LITERAL("material-design-list.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsWithMaterialDesignTest,
+                       MaterialDesignMenuEvents) {
+  RunEventTest(FILE_PATH_LITERAL("material-design-menu.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsWithMaterialDesignTest,
+                       MaterialDesignRadioEvents) {
+  RunEventTest(FILE_PATH_LITERAL("material-design-radio.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsWithMaterialDesignTest,
+                       MaterialDesignSwitchEvents) {
+  RunEventTest(FILE_PATH_LITERAL("material-design-switch.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsWithMaterialDesignTest,
+                       MaterialDesignSliderEvents) {
+  RunEventTest(FILE_PATH_LITERAL("material-design-slider.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsWithMaterialDesignTest,
+                       MaterialDesignProgressEvents) {
+  RunEventTest(FILE_PATH_LITERAL("material-design-progress.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsWithMaterialDesignTest,
+                       MaterialDesignTabsEvents) {
+  RunEventTest(FILE_PATH_LITERAL("material-design-tabs.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsWithMaterialDesignTest,
+                       MaterialDesignTextFieldEvents) {
+  RunEventTest(FILE_PATH_LITERAL("material-design-text-field.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsWithMaterialDesignTest,
+                       MaterialDesignSelectEvents) {
+  RunEventTest(FILE_PATH_LITERAL("material-design-select.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsWithMaterialDesignTest,
+                       MaterialDesignDialogEvents) {
+  RunEventTest(FILE_PATH_LITERAL("material-design-dialog.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsWithMaterialDesignTest,
+                       MaterialDesignIconButtonEvents) {
+  RunEventTest(FILE_PATH_LITERAL("material-design-icon-button.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsWithMaterialDesignTest,
+                       MaterialDesignFabEvents) {
+  RunEventTest(FILE_PATH_LITERAL("material-design-fab.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsWithMaterialDesignTest,
+                       MaterialDesignChipsEvents) {
+  RunEventTest(FILE_PATH_LITERAL("material-design-chips.html"));
+}
+#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_WIN) && !BUILDFLAG(IS_IOS)
 
 // TODO(crbug.com/40841326): disabled on UIA
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTestExceptUIA,
@@ -1114,6 +1431,16 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
 }
 
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
+                       AccessibilityEventsMenuPopupCreated) {
+  RunEventTest(FILE_PATH_LITERAL("menu-popup-created.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
+                       AccessibilityEventsMenuPopupStatic) {
+  RunEventTest(FILE_PATH_LITERAL("menu-popup-static.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
                        AccessibilityEventsMenubarShowHideMenus) {
   RunEventTest(FILE_PATH_LITERAL("menubar-show-hide-menus.html"));
 }
@@ -1132,9 +1459,37 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest, DeleteSubtree) {
   RunEventTest(FILE_PATH_LITERAL("delete-subtree.html"));
 }
 
+// TODO(crbug.com/487613492): Disabled due to ghost UIA COM refs on Windows bots.
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
+                       DISABLED_AccessibilityEventsCssHighlightSpellingError) {
+  RunEventTest(FILE_PATH_LITERAL("css-highlight-spelling-error.html"));
+}
+
+// TODO(crbug.com/487613492): Disabled due to ghost UIA COM refs on Windows bots.
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
+                       DISABLED_AccessibilityEventsCssHighlightGrammarError) {
+  RunEventTest(FILE_PATH_LITERAL("css-highlight-grammar-error.html"));
+}
+
+// TODO(crbug.com/487613492): Disabled due to ghost UIA COM refs on Windows bots.
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
+                       DISABLED_AccessibilityEventsCssHighlightAdded) {
+  RunEventTest(FILE_PATH_LITERAL("css-highlight-added.html"));
+}
+
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsWithExperimentalWebFeaturesTest,
                        CarouselWithTabs) {
   RunEventTest(FILE_PATH_LITERAL("carousel-with-tabs.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsWithExperimentalWebFeaturesTest,
+                       CarouselWithLinks) {
+  RunEventTest(FILE_PATH_LITERAL("carousel-with-links.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsWithExperimentalWebFeaturesTest,
+                       MenuListInvokerNameChange) {
+  RunEventTest(FILE_PATH_LITERAL("menulist-invoker-name-change.html"));
 }
 
 }  // namespace content

@@ -4,16 +4,20 @@
 
 package org.chromium.chrome.browser.dragdrop;
 
+import android.content.Context;
+
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.ui.dragdrop.DropDataAndroid;
 
 /** Chrome-specific drop data. */
+@NullMarked
 public abstract class ChromeDropDataAndroid extends DropDataAndroid {
     public final boolean allowDragToCreateInstance;
     public final int windowId;
 
     /** Not generated from java */
     ChromeDropDataAndroid(Builder builder) {
-        super(null, null, null, null, null);
+        super(null, null, null, null, null, null, null);
         allowDragToCreateInstance = builder.mAllowDragToCreateInstance;
         windowId = builder.mWindowId;
     }
@@ -22,7 +26,10 @@ public abstract class ChromeDropDataAndroid extends DropDataAndroid {
     public abstract boolean isIncognito();
 
     /** Build clip data text with tab info. */
-    public abstract String buildTabClipDataText();
+    public abstract String buildTabClipDataText(Context context);
+
+    /** Get supported MimeTypes for the associated browser content. */
+    public abstract String[] getSupportedMimeTypes();
 
     /** Builder for @{@link ChromeDropDataAndroid} instance. */
     public abstract static class Builder {

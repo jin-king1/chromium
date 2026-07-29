@@ -9,7 +9,6 @@
 #include <type_traits>
 
 #include "base/base_export.h"
-#include "base/callback_list.h"
 #include "base/check.h"
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
@@ -19,7 +18,6 @@
 #include "base/message_loop/message_pump_for_ui.h"
 #include "base/pending_task.h"
 #include "base/task/sequence_manager/task_time_observer.h"
-#include "base/task/single_thread_task_runner.h"
 #include "base/task/task_observer.h"
 #include "build/build_config.h"
 
@@ -36,6 +34,8 @@ class WebTaskEnvironment;
 }
 
 namespace base {
+
+class CallbackListSubscription;
 
 namespace test {
 bool RunUntil(FunctionRef<bool(void)>);
@@ -130,11 +130,6 @@ class BASE_EXPORT CurrentThread {
   // DestructionObserver is receiving a notification callback.
   void RemoveDestructionObserver(DestructionObserver* destruction_observer);
 
-  // Forwards to SequenceManager::SetTaskRunner().
-  // DEPRECATED(https://crbug.com/825327): only owners of the SequenceManager
-  // instance should replace its TaskRunner.
-  void SetTaskRunner(scoped_refptr<SingleThreadTaskRunner> task_runner);
-
   // Forwards to SequenceManager::(Add|Remove)TaskObserver.
   // DEPRECATED(https://crbug.com/825327): only owners of the SequenceManager
   // instance should add task observers on it.
@@ -221,6 +216,8 @@ class BASE_EXPORT CurrentThread {
   // Returns the IOWatcher instance exposed by this thread, if any.
   IOWatcher* GetIOWatcher();
 
+  bool IsAsyncIOSupported() const;
+
  protected:
   explicit CurrentThread(
       sequence_manager::internal::SequenceManagerImpl* sequence_manager)
@@ -238,8 +235,6 @@ class BASE_EXPORT CurrentThread {
   raw_ptr<sequence_manager::internal::SequenceManagerImpl> current_;
 };
 
-#if !BUILDFLAG(IS_NACL)
-
 // UI extension of CurrentThread.
 class BASE_EXPORT CurrentUIThread : public CurrentThread {
  public:
@@ -252,7 +247,7 @@ class BASE_EXPORT CurrentUIThread : public CurrentThread {
 
   CurrentUIThread* operator->() { return this; }
 
-#if BUILDFLAG(IS_OZONE) && !BUILDFLAG(IS_FUCHSIA) && !BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_OZONE) && !BUILDFLAG(IS_FUCHSIA)
   static_assert(
       std::is_base_of_v<WatchableIOMessagePumpPosix, MessagePumpForUI>,
       "CurrentThreadForUI::WatchFileDescriptor is supported only"
@@ -281,8 +276,15 @@ class BASE_EXPORT CurrentUIThread : public CurrentThread {
 #endif
 
 #if BUILDFLAG(IS_WIN)
-  void AddMessagePumpObserver(MessagePumpForUI::Observer* observer);
-  void RemoveMessagePumpObserver(MessagePumpForUI::Observer* observer);
+  void RegisterNativeEventObserver(
+      MessagePumpForUI::NativeEventObserver* observer);
+  void UnregisterNativeEventObserver(
+      MessagePumpForUI::NativeEventObserver* observer);
+
+  // For testing only, allows overriding the current observer.
+  // Returns the previous observer.
+  MessagePumpForUI::NativeEventObserver* ResetNativeEventObserverForTesting(
+      MessagePumpForUI::NativeEventObserver* observer);
 #endif
 
  private:
@@ -292,8 +294,6 @@ class BASE_EXPORT CurrentUIThread : public CurrentThread {
 
   MessagePumpForUI* GetMessagePumpForUI() const;
 };
-
-#endif  // !BUILDFLAG(IS_NACL)
 
 // ForIO extension of CurrentThread.
 class BASE_EXPORT CurrentIOThread : public CurrentThread {
@@ -306,8 +306,6 @@ class BASE_EXPORT CurrentIOThread : public CurrentThread {
   static bool IsSet();
 
   CurrentIOThread* operator->() { return this; }
-
-#if !BUILDFLAG(IS_NACL)
 
 #if BUILDFLAG(IS_WIN)
   // Please see MessagePumpWin for definitions of these methods.
@@ -324,7 +322,8 @@ class BASE_EXPORT CurrentIOThread : public CurrentThread {
                            MessagePumpForIO::FdWatcher* delegate);
 #endif  // BUILDFLAG(IS_WIN)
 
-#if BUILDFLAG(IS_MAC) || (BUILDFLAG(IS_IOS) && !BUILDFLAG(CRONET_BUILD))
+#if BUILDFLAG(IS_MAC) || \
+    (BUILDFLAG(IS_IOS) && !BUILDFLAG(CRONET_BUILD) && !BUILDFLAG(IS_IOS_TVOS))
   bool WatchMachReceivePort(
       mach_port_t port,
       MessagePumpForIO::MachPortWatchController* controller,
@@ -339,8 +338,6 @@ class BASE_EXPORT CurrentIOThread : public CurrentThread {
                      MessagePumpForIO::ZxHandleWatchController* controller,
                      MessagePumpForIO::ZxHandleWatcher* delegate);
 #endif  // BUILDFLAG(IS_FUCHSIA)
-
-#endif  // !BUILDFLAG(IS_NACL)
 
  private:
   explicit CurrentIOThread(

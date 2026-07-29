@@ -4,7 +4,6 @@
 
 #import "ios/chrome/browser/settings/ui_bundled/settings_app_interface.h"
 
-#import "base/containers/contains.h"
 #import "base/strings/sys_string_conversions.h"
 #import "components/browsing_data/core/pref_names.h"
 #import "components/metrics/metrics_pref_names.h"
@@ -19,37 +18,32 @@
 #import "ios/chrome/browser/search_engines/model/template_url_prepopulate_data_resolver_factory.h"
 #import "ios/chrome/browser/search_engines/model/template_url_service_factory.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
+#import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/browser/browser_provider.h"
 #import "ios/chrome/browser/shared/model/browser/browser_provider_interface.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
+#import "ios/chrome/common/crash_report/crash_helper.h"
 #import "ios/chrome/test/app/chrome_test_util.h"
 #import "ios/chrome/test/app/tab_test_util.h"
 #import "ios/web/public/navigation/navigation_manager.h"
 #import "ios/web/public/web_state.h"
 #import "third_party/search_engines_data/resources/definitions/prepopulated_engines.h"
 
-namespace {
-
-std::vector<std::string> listHosts;
-std::string portForRewrite;
-
-bool HostToLocalHostRewrite(GURL* url, web::BrowserState* context) {
-  DCHECK(url);
-  for (const std::string& host : listHosts) {
-    if (base::Contains(url->host(), host)) {
-      *url = GURL("http://127.0.0.1:" + portForRewrite + "/" + host);
-      return true;
-    }
-  }
-
-  return false;
+// Test specific helpers for settings_egtest.mm.
+@implementation SettingsAppInterface {
+  std::vector<std::string> _listHosts;
+  std::string _portForRewrite;
 }
 
-}  // namespace
-
-// Test specific helpers for settings_egtest.mm.
-@implementation SettingsAppInterface : NSObject
++ (instancetype)sharedInstance {
+  static SettingsAppInterface* sharedInstance = nil;
+  static dispatch_once_t onceToken;
+  dispatch_once(&onceToken, ^{
+    sharedInstance = [[SettingsAppInterface alloc] init];
+  });
+  return sharedInstance;
+}
 
 + (void)restoreClearBrowsingDataCheckmarksToDefault {
   ProfileIOS* profile = chrome_test_util::GetOriginalProfile();
@@ -72,6 +66,9 @@ bool HostToLocalHostRewrite(GURL* url, web::BrowserState* context) {
 + (void)setMetricsReportingEnabled:(BOOL)reportingEnabled {
   chrome_test_util::SetBooleanLocalStatePref(
       metrics::prefs::kMetricsReportingEnabled, reportingEnabled);
+
+  // Update the Crashpad reporting state.
+  crash_helper::common::SetUserEnabledUploading(reportingEnabled);
 }
 
 + (BOOL)isCrashpadEnabled {
@@ -84,9 +81,9 @@ bool HostToLocalHostRewrite(GURL* url, web::BrowserState* context) {
 
 + (BOOL)settingsRegisteredKeyboardCommands {
   SceneState* sceneState = chrome_test_util::GetForegroundActiveScene();
-  UIViewController* viewController =
-      sceneState.browserProviderInterface.mainBrowserProvider.viewController;
-  return viewController.presentedViewController.keyCommands != nil;
+  UIViewController* presentedViewController =
+      sceneState.window.rootViewController.presentedViewController;
+  return presentedViewController.keyCommands != nil;
 }
 
 + (void)overrideSearchEngineWithURL:(NSString*)searchEngineURL {
@@ -120,20 +117,40 @@ bool HostToLocalHostRewrite(GURL* url, web::BrowserState* context) {
   auto templateURL = std::make_unique<TemplateURL>(*templateURLData.get());
   service->SetUserSelectedDefaultSearchProvider(templateURL.get());
   search_engines::WipeSearchEngineChoicePrefs(
-      *prefs, search_engines::WipeSearchEngineChoiceReason::kCommandLineFlag);
+      *prefs, search_engines::SearchEngineChoiceWipeReason::kCommandLineFlag);
 }
 
 + (void)addURLRewriterForHosts:(NSArray<NSString*>*)hosts
                         onPort:(NSString*)port {
-  listHosts.clear();
+  SettingsAppInterface* shared = [SettingsAppInterface sharedInstance];
+  shared->_listHosts.clear();
   for (NSString* host in hosts) {
-    listHosts.push_back(base::SysNSStringToUTF8(host));
+    shared->_listHosts.push_back(base::SysNSStringToUTF8(host));
   }
-  portForRewrite = base::SysNSStringToUTF8(port);
+  shared->_portForRewrite = base::SysNSStringToUTF8(port);
+
+  auto hostToLocalHostRewrite = [](GURL* url, web::BrowserState* context) {
+    return [SettingsAppInterface hostToLocalHostRewriteForURL:url
+                                                      context:context];
+  };
 
   chrome_test_util::GetCurrentWebState()
       ->GetNavigationManager()
-      ->AddTransientURLRewriter(&HostToLocalHostRewrite);
+      ->AddTransientURLRewriter(hostToLocalHostRewrite);
+}
+
++ (bool)hostToLocalHostRewriteForURL:(GURL*)url
+                             context:(web::BrowserState*)context {
+  DCHECK(url);
+  SettingsAppInterface* shared = [SettingsAppInterface sharedInstance];
+  for (const std::string& host : shared->_listHosts) {
+    if (url->host().contains(host)) {
+      *url = GURL("http://127.0.0.1:" + shared->_portForRewrite + "/" + host);
+      return true;
+    }
+  }
+
+  return false;
 }
 
 @end

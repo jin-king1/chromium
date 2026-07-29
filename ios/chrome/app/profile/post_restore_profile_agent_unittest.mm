@@ -6,6 +6,7 @@
 
 #import "base/memory/raw_ptr.h"
 #import "base/values.h"
+#import "components/sync/test/test_sync_service.h"
 #import "ios/chrome/app/profile/profile_init_stage.h"
 #import "ios/chrome/app/profile/profile_state.h"
 #import "ios/chrome/app/profile/profile_state_observer.h"
@@ -23,6 +24,8 @@
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
 #import "ios/chrome/browser/signin/model/signin_util.h"
+#import "ios/chrome/browser/sync/model/sync_service_factory.h"
+#import "ios/chrome/browser/sync/model/test_sync_service_utils.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/web/public/test/web_task_environment.h"
 #import "testing/platform_test.h"
@@ -35,8 +38,7 @@ namespace {
 const char kFakePreRestoreAccountEmail[] = "person@example.org";
 
 // Creates a mock PromosManager.
-std::unique_ptr<KeyedService> CreateMockPromosManager(
-    web::BrowserState* context) {
+std::unique_ptr<KeyedService> CreateMockPromosManager(ProfileIOS* profile) {
   return std::make_unique<NiceMock<MockPromosManager>>();
 }
 
@@ -51,6 +53,8 @@ class PostRestoreProfileAgentTest : public PlatformTest {
         AuthenticationServiceFactory::GetInstance(),
         AuthenticationServiceFactory::GetFactoryWithDelegate(
             std::make_unique<FakeAuthenticationServiceDelegate>()));
+    builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
+                              base::BindRepeating(&CreateTestSyncService));
     builder.AddTestingFactory(PromosManagerFactory::GetInstance(),
                               base::BindOnce(&CreateMockPromosManager));
     profile_ = std::move(builder).Build();
@@ -65,6 +69,8 @@ class PostRestoreProfileAgentTest : public PlatformTest {
     profile_agent_ = [[PostRestoreProfileAgent alloc] init];
     [profile_state_ addAgent:profile_agent_];
   }
+
+  ~PostRestoreProfileAgentTest() override { profile_state_.profile = nullptr; }
 
   void TriggerProfileStateChange() {
     [profile_agent_ profileState:profile_state_
@@ -90,7 +96,8 @@ class PostRestoreProfileAgentTest : public PlatformTest {
         FakeSystemIdentityManager::FromSystemIdentityManager(
             GetApplicationContext()->GetSystemIdentityManager());
     system_identity_manager->AddIdentity(fake_identity);
-    auth_service_->SignIn(fake_identity, signin_metrics::AccessPoint::kUnknown);
+    auth_service_->SignIn(fake_identity,
+                          signin_metrics::AccessPoint::kStartPage);
   }
 
   PrefService* pref_service() { return profile_.get()->GetPrefs(); }

@@ -6,7 +6,8 @@
 
 #include <dlfcn.h>
 
-#include "base/files/file_util.h"
+#include "base/check.h"
+#include "base/logging.h"
 #include "sandbox/linux/syscall_broker/broker_command.h"
 #include "sandbox/linux/syscall_broker/broker_file_permission.h"
 #include "services/screen_ai/buildflags/buildflags.h"

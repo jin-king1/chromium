@@ -8,6 +8,7 @@
 
 #include "base/command_line.h"
 #include "base/strings/stringprintf.h"
+#include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_attributes_storage.h"
@@ -15,11 +16,11 @@
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile_manager.h"
 #include "components/prefs/pref_registry_simple.h"
+#include "components/prefs/pref_service.h"
 #include "components/prefs/testing_pref_service.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/sync_preferences/pref_service_syncable.h"
 #include "content/public/test/browser_task_environment.h"
-#include "profiles_state.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace {
@@ -81,11 +82,9 @@ INSTANTIATE_TEST_SUITE_P(ProfilesState,
 class IsGuestModeEnabledTest : public testing::TestWithParam<bool> {
  public:
   IsGuestModeEnabledTest()
-      : profile_manager_(TestingBrowserProcess::GetGlobal(),
-                         &testing_local_state_),
-        testing_local_state_(TestingBrowserProcess::GetGlobal()) {
-    testing_local_state_.Get()->SetBoolean(prefs::kBrowserGuestModeEnabled,
-                                           BrowserGuestModePrefValue());
+      : profile_manager_(TestingBrowserProcess::GetGlobal()) {
+    TestingBrowserProcess::GetGlobal()->local_state()->SetBoolean(
+        prefs::kBrowserGuestModeEnabled, BrowserGuestModePrefValue());
   }
 
   void SetUp() override { ASSERT_TRUE(profile_manager_.SetUp()); }
@@ -121,7 +120,7 @@ class IsGuestModeEnabledTest : public testing::TestWithParam<bool> {
         /*avatar_id=*/0, /*testing_factories=*/{},
         /*is_supervised_profile=*/is_subject_to_parental_controls,
         /*is_new_profile=*/std::nullopt,
-        /*policy_service=*/std::nullopt, /*is_main_profile=*/false,
+        /*policy_service=*/std::nullopt,
         /*shared_url_loader_factory=*/nullptr);
 
     return profile;
@@ -129,7 +128,6 @@ class IsGuestModeEnabledTest : public testing::TestWithParam<bool> {
 
   content::BrowserTaskEnvironment task_environment_;
   TestingProfileManager profile_manager_;
-  ScopedTestingLocalState testing_local_state_;
 };
 
 TEST_P(IsGuestModeEnabledTest, NoProfiles) {

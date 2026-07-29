@@ -11,6 +11,10 @@
 #include "components/history/core/browser/history_service_observer.h"
 #include "components/search_engines/template_url_service_client.h"
 
+namespace history {
+struct VisitedURLInfo;
+}
+
 class TemplateURLService;
 
 namespace ios {
@@ -41,8 +45,7 @@ class TemplateURLServiceClientImpl : public TemplateURLServiceClient,
 
   // history::HistoryServiceObserver:
   void OnURLVisited(history::HistoryService* history_service,
-                    const history::URLRow& url_row,
-                    const history::VisitRow& new_visit) override;
+                    const history::VisitedURLInfo& visited_url_info) override;
 
   raw_ptr<TemplateURLService> owner_;
   raw_ptr<history::HistoryService> history_service_;

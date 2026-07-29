@@ -15,11 +15,14 @@
 #import "components/keyed_service/core/keyed_service.h"
 #import "components/password_manager/core/browser/insecure_credentials_helper.h"
 #import "components/password_manager/core/browser/password_reuse_detector.h"
-#import "components/password_manager/core/browser/password_store/password_store_interface.h"
 #import "components/safe_browsing/core/browser/password_protection/metrics_util.h"
 #import "components/safe_browsing/core/common/proto/csd.pb.h"
 #import "components/safe_browsing/ios/browser/password_protection/password_protection_service.h"
 #import "components/sync/protocol/gaia_password_reuse.pb.h"
+
+namespace password_manager {
+class PasswordStoreInterface;
+}
 
 class GURL;
 class PrefService;
@@ -102,7 +105,8 @@ class ChromePasswordProtectionService
       const std::string& username,
       safe_browsing::PasswordType password_type,
       bool is_phishing_url,
-      bool warning_shown) override;
+      bool warning_shown,
+      const safe_browsing::ReferrerChain& referrer_chain) override;
 
   void ReportPasswordChanged() override;
 
@@ -143,9 +147,6 @@ class ChromePasswordProtectionService
   GetUrlDisplayExperiment() const override;
 
   AccountInfo GetAccountInfo() const override;
-
-  safe_browsing::ChromeUserPopulation::UserPopulation GetUserPopulationPref()
-      const override;
 
   AccountInfo GetAccountInfoForUsername(
       const std::string& username) const override;
@@ -251,7 +252,7 @@ class ChromePasswordProtectionService
 
   // Returns the GAIA-account-scoped PasswordStore associated with this
   // instance. The account password store contains passwords stored in the
-  // account and is accessible only when the user is signed in and non syncing.
+  // account and is accessible only when the user is signed in.
   password_manager::PasswordStoreInterface* GetAccountPasswordStore() const;
 
   // Gets prefs associated with `profile_`.

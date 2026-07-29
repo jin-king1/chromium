@@ -7,7 +7,10 @@ package org.chromium.chrome.browser.auxiliary_search;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -28,7 +31,6 @@ import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Captor;
 import org.mockito.Mock;
-import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
@@ -38,6 +40,7 @@ import org.chromium.base.TimeUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
+import org.chromium.chrome.browser.auxiliary_search.AuxiliarySearchController.AuxiliarySearchHostType;
 import org.chromium.chrome.browser.auxiliary_search.AuxiliarySearchGroupProto.AuxiliarySearchEntry;
 import org.chromium.chrome.browser.auxiliary_search.AuxiliarySearchMetrics.RequestStatus;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
@@ -45,9 +48,12 @@ import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.ui.favicon.FaviconHelper;
+import org.chromium.ui.test.util.MockitoHelper;
+import org.chromium.url.GURL;
 import org.chromium.url.JUnitTestGURLs;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -73,37 +79,30 @@ public class AuxiliarySearchControllerImplUnitTest {
     @Mock private AuxiliarySearchHooks mHooks;
 
     @Captor private ArgumentCaptor<Callback<List<Tab>>> mCallbackCaptor;
+    @Captor private ArgumentCaptor<Callback<Boolean>> mDeleteCallbackCaptor;
+    @Captor private ArgumentCaptor<Callback<Boolean>> mBackgroundTaskCompleteCallbackCaptor;
+    @Captor private ArgumentCaptor<Callback<Boolean>> mDonationCompleteCallbackCaptor;
+    @Captor private ArgumentCaptor<Callback<Boolean>> mFaviconDonationCompleteCallbackCaptor;
+    @Captor private ArgumentCaptor<FaviconHelper.FaviconImageCallback> mFaviconImageCallbackCaptor1;
+    @Captor private ArgumentCaptor<FaviconHelper.FaviconImageCallback> mFaviconImageCallbackCaptor2;
 
     @Captor
     private ArgumentCaptor<Callback<List<AuxiliarySearchDataEntry>>> mEntryReadyCallbackCaptor;
 
-    @Captor private ArgumentCaptor<Callback<Boolean>> mDeleteCallbackCaptor;
-    @Captor private ArgumentCaptor<Callback<Boolean>> mBackgroundTaskCompleteCallbackCaptor;
-    @Captor private ArgumentCaptor<Callback<Boolean>> mDonationCompleteCallbackCaptor;
-    @Captor private ArgumentCaptor<FaviconHelper.FaviconImageCallback> mFaviconImageCallbackCaptor1;
-    @Captor private ArgumentCaptor<FaviconHelper.FaviconImageCallback> mFaviconImageCallbackCaptor2;
-
-    private AuxiliarySearchDataEntry mDataEntry1;
-    private AuxiliarySearchDataEntry mDataEntry2;
     private AuxiliarySearchControllerImpl mAuxiliarySearchControllerImpl;
 
     @Before
     public void setUp() {
         when(mContext.getResources()).thenReturn(mResources);
 
-        mAuxiliarySearchControllerImpl =
-                new AuxiliarySearchControllerImpl(
-                        mContext,
-                        mProfile,
-                        mAuxiliarySearchProvider,
-                        mAuxiliarySearchDonor,
-                        mFaviconHelper);
+        AuxiliarySearchControllerFactory.getInstance().setHooksForTesting(mHooks);
+        createController();
     }
 
     @After
     public void tearDown() {
         mFakeTime.resetTimes();
-        mAuxiliarySearchControllerImpl.destroy();
+        mAuxiliarySearchControllerImpl.destroy(mActivityLifecycleDispatcher);
     }
 
     @Test
@@ -118,7 +117,7 @@ public class AuxiliarySearchControllerImplUnitTest {
                         .build();
         mAuxiliarySearchControllerImpl.onResumeWithNative();
 
-        verify(mAuxiliarySearchDonor).deleteAllTabs(mDeleteCallbackCaptor.capture());
+        verify(mAuxiliarySearchDonor).deleteAll(mDeleteCallbackCaptor.capture());
         mFakeTime.advanceMillis(timeDelta);
 
         mDeleteCallbackCaptor.getValue().onResult(true);
@@ -143,10 +142,11 @@ public class AuxiliarySearchControllerImplUnitTest {
                         mProfile,
                         mAuxiliarySearchProvider,
                         mAuxiliarySearchDonor,
-                        mFaviconHelper);
+                        mFaviconHelper,
+                        AuxiliarySearchHostType.CTA);
         mAuxiliarySearchControllerImpl.onResumeWithNative();
 
-        verify(mAuxiliarySearchDonor).deleteAllTabs(any(Callback.class));
+        verify(mAuxiliarySearchDonor).deleteAll(MockitoHelper.anyCallback());
         assertFalse(mAuxiliarySearchControllerImpl.getHasDeletingTaskForTesting());
 
         AuxiliarySearchUtils.resetSharedPreferenceForTesting();
@@ -165,7 +165,7 @@ public class AuxiliarySearchControllerImplUnitTest {
         verify(mAuxiliarySearchProvider).getTabsSearchableDataProtoAsync(mCallbackCaptor.capture());
         mFakeTime.advanceMillis(timeDelta);
 
-        mCallbackCaptor.getValue().onResult(new ArrayList<>());
+        mCallbackCaptor.getValue().onResult(Collections.emptyList());
         histogramWatcher.assertExpected();
     }
 
@@ -175,27 +175,67 @@ public class AuxiliarySearchControllerImplUnitTest {
         mAuxiliarySearchControllerImpl.onPauseWithNative();
 
         verify(mAuxiliarySearchProvider, never())
-                .getTabsSearchableDataProtoAsync(any(Callback.class));
+                .getTabsSearchableDataProtoAsync(MockitoHelper.anyCallback());
+    }
+
+    @Test
+    public void testDonateCustomTabs() {
+        int timeDelta = 50;
+        var histogramWatcher =
+                HistogramWatcher.newBuilder()
+                        .expectIntRecord("Search.AuxiliarySearch.QueryTime.CustomTabs", timeDelta)
+                        .expectIntRecords("Search.AuxiliarySearch.CustomTabFetchResults.Count", 0)
+                        .build();
+
+        long beginTime = 4 * TimeUtils.MILLISECONDS_PER_MINUTE;
+        GURL url = JUnitTestGURLs.URL_1;
+        mAuxiliarySearchControllerImpl.donateCustomTabs(url, beginTime);
+        verify(mAuxiliarySearchProvider)
+                .getCustomTabsAsync(
+                        eq(url),
+                        eq(beginTime - AuxiliarySearchControllerImpl.TIME_RANGE_MS),
+                        mEntryReadyCallbackCaptor.capture());
+
+        mFakeTime.advanceMillis(timeDelta);
+        mEntryReadyCallbackCaptor.getValue().onResult(Collections.emptyList());
+        histogramWatcher.assertExpected();
+
+        List<AuxiliarySearchDataEntry> entries =
+                AuxiliarySearchTestHelper.createAuxiliarySearchDataEntries_CustomTabs(
+                        TimeUtils.uptimeMillis());
+        assertEquals(3, entries.size());
+        histogramWatcher =
+                HistogramWatcher.newBuilder()
+                        .expectIntRecords(
+                                "Search.AuxiliarySearch.CustomTabFetchResults.Count",
+                                entries.size())
+                        .build();
+        mEntryReadyCallbackCaptor.getValue().onResult(entries);
+        histogramWatcher.assertExpected();
     }
 
     @Test
     public void testOnDestroy() {
-        assertEquals(1, AuxiliarySearchConfigManager.getInstance().getObserverListSizeForTesting());
+        int currentSize =
+                AuxiliarySearchConfigManager.getInstance().getObserverListSizeForTesting();
+        createController();
+
+        assertEquals(
+                currentSize + 1,
+                AuxiliarySearchConfigManager.getInstance().getObserverListSizeForTesting());
         mAuxiliarySearchControllerImpl.register(mActivityLifecycleDispatcher);
 
-        mAuxiliarySearchControllerImpl.destroy();
+        mAuxiliarySearchControllerImpl.destroy(mActivityLifecycleDispatcher);
 
         verify(mActivityLifecycleDispatcher).unregister(eq(mAuxiliarySearchControllerImpl));
-
         verify(mFaviconHelper).destroy();
-
-        assertEquals(0, AuxiliarySearchConfigManager.getInstance().getObserverListSizeForTesting());
+        assertEquals(
+                currentSize,
+                AuxiliarySearchConfigManager.getInstance().getObserverListSizeForTesting());
     }
 
     @Test
     public void testRegister() {
-        mAuxiliarySearchControllerImpl.register(mActivityLifecycleDispatcher);
-
         verify(mActivityLifecycleDispatcher).register(eq(mAuxiliarySearchControllerImpl));
     }
 
@@ -223,9 +263,10 @@ public class AuxiliarySearchControllerImplUnitTest {
         // Verifies that Donor won't donate if it can't.
         when(mAuxiliarySearchDonor.canDonate()).thenReturn(false);
         mAuxiliarySearchControllerImpl.onBackgroundTaskStart(
-                entries, map, Mockito.mock(Callback.class), now);
+                entries, map, MockitoHelper.mockCallback(), now);
 
-        verify(mAuxiliarySearchDonor, never()).donateFavicons(any(), eq(map), any(Callback.class));
+        verify(mAuxiliarySearchDonor, never())
+                .donateFavicons(any(), eq(map), MockitoHelper.anyCallback());
 
         // Verifies that Donor will donate if it can.
         var histogramWatcher =
@@ -234,7 +275,7 @@ public class AuxiliarySearchControllerImplUnitTest {
                         .build();
         when(mAuxiliarySearchDonor.canDonate()).thenReturn(true);
         mAuxiliarySearchControllerImpl.onBackgroundTaskStart(
-                entries, map, Mockito.mock(Callback.class), now);
+                entries, map, MockitoHelper.mockCallback(), now);
 
         verify(mAuxiliarySearchDonor)
                 .donateFavicons(
@@ -246,7 +287,6 @@ public class AuxiliarySearchControllerImplUnitTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.ANDROID_APP_INTEGRATION_WITH_FAVICON)
     public void testOnNonSensitiveTabsAvailable() {
         long now = TimeUtils.uptimeMillis();
 
@@ -272,30 +312,6 @@ public class AuxiliarySearchControllerImplUnitTest {
     }
 
     @Test
-    @EnableFeatures({
-        ChromeFeatureList.ANDROID_APP_INTEGRATION_WITH_FAVICON,
-        ChromeFeatureList.ANDROID_APP_INTEGRATION_MULTI_DATA_SOURCE
-    })
-    public void testOnNonSensitiveHistoryDataAvailable_EmptyList() {
-        long now = TimeUtils.uptimeMillis();
-        int timeDelta = 50;
-        var histogramWatcher =
-                HistogramWatcher.newBuilder()
-                        .expectIntRecord("Search.AuxiliarySearch.QueryTime.Tabs", timeDelta)
-                        .build();
-
-        // Verifies the case when the entry list is empty.
-        mFakeTime.advanceMillis(timeDelta);
-        List<AuxiliarySearchDataEntry> entries = new ArrayList<>();
-        mAuxiliarySearchControllerImpl.onNonSensitiveHistoryDataAvailable(entries, now);
-
-        histogramWatcher.assertExpected();
-        verify(mAuxiliarySearchDonor, never())
-                .donateEntries(eq(entries), mDonationCompleteCallbackCaptor.capture());
-    }
-
-    @Test
-    @EnableFeatures(ChromeFeatureList.ANDROID_APP_INTEGRATION_WITH_FAVICON)
     public void testOnNonSensitiveDataAvailable() {
         long now = TimeUtils.uptimeMillis();
         int timeDelta = 50;
@@ -319,10 +335,7 @@ public class AuxiliarySearchControllerImplUnitTest {
 
     @Test
     @SmallTest
-    @EnableFeatures({
-        ChromeFeatureList.ANDROID_APP_INTEGRATION_WITH_FAVICON,
-        ChromeFeatureList.ANDROID_APP_INTEGRATION_MULTI_DATA_SOURCE
-    })
+    @EnableFeatures({ChromeFeatureList.ANDROID_APP_INTEGRATION_MULTI_DATA_SOURCE})
     public void testOnNonSensitiveDataAvailable_AuxiliarySearchDataEntry() {
         long now = TimeUtils.uptimeMillis();
         int timeDelta = 50;
@@ -334,46 +347,32 @@ public class AuxiliarySearchControllerImplUnitTest {
 
     private <T> void testOnNonSensitiveDataAvailableImpl(
             List<T> entries, long startTime, int timeDelta) {
-        mAuxiliarySearchControllerImpl.onNonSensitiveDataAvailable(entries, startTime);
+        mAuxiliarySearchControllerImpl.onNonSensitiveDataAvailable(
+                entries, startTime, /* onDonationCompleteRunnable= */ null);
 
         verify(mAuxiliarySearchDonor)
-                .donateEntries(eq(entries), mDonationCompleteCallbackCaptor.capture());
+                .donateEntries(
+                        eq(entries), any(int[].class), mDonationCompleteCallbackCaptor.capture());
+
         verify(mFaviconHelper)
                 .getLocalFaviconImageForURL(
                         eq(mProfile),
                         eq(JUnitTestGURLs.URL_1),
                         anyInt(),
+                        anyBoolean(),
                         mFaviconImageCallbackCaptor1.capture());
         verify(mFaviconHelper)
                 .getLocalFaviconImageForURL(
                         eq(mProfile),
                         eq(JUnitTestGURLs.URL_2),
                         anyInt(),
+                        anyBoolean(),
                         mFaviconImageCallbackCaptor2.capture());
 
-        Bitmap bitmap = Bitmap.createBitmap(20, 20, Config.RGB_565);
         mFakeTime.advanceMillis(timeDelta);
-        var histogramWatcher =
+        HistogramWatcher histogramWatcher =
                 HistogramWatcher.newBuilder()
-                        .expectIntRecord(
-                                AuxiliarySearchMetrics.HISTOGRAM_FAVICON_FIRST_DONATE_COUNT, 1)
-                        .expectIntRecord(
-                                AuxiliarySearchMetrics.HISTOGRAM_QUERYTIME_FAVICONS, timeDelta)
-                        .build();
-
-        mFaviconImageCallbackCaptor1.getValue().onFaviconAvailable(bitmap, null);
-        verify(mAuxiliarySearchDonor, never())
-                .donateEntries(any(Map.class), mDonationCompleteCallbackCaptor.capture());
-        mFaviconImageCallbackCaptor2.getValue().onFaviconAvailable(null, null);
-        verify(mAuxiliarySearchDonor)
-                .donateEntries(any(Map.class), mDonationCompleteCallbackCaptor.capture());
-        histogramWatcher.assertExpected();
-
-        // Verifies the callback is called when the donation completes successfully.
-        mFakeTime.advanceMillis(timeDelta);
-        histogramWatcher =
-                HistogramWatcher.newBuilder()
-                        .expectIntRecord("Search.AuxiliarySearch.DonateTime", timeDelta * 2)
+                        .expectIntRecord("Search.AuxiliarySearch.DonateTime", timeDelta)
                         .expectIntRecords(
                                 "Search.AuxiliarySearch.DonationRequestStatus",
                                 RequestStatus.SUCCESSFUL)
@@ -381,10 +380,40 @@ public class AuxiliarySearchControllerImplUnitTest {
 
         mDonationCompleteCallbackCaptor.getValue().onResult(true);
         histogramWatcher.assertExpected();
+
+        Bitmap bitmap = Bitmap.createBitmap(20, 20, Config.RGB_565);
+        mFakeTime.advanceMillis(timeDelta);
+        histogramWatcher =
+                HistogramWatcher.newBuilder()
+                        .expectIntRecord(
+                                AuxiliarySearchMetrics.HISTOGRAM_FAVICON_FIRST_DONATE_COUNT, 1)
+                        .expectIntRecord(
+                                AuxiliarySearchMetrics.HISTOGRAM_QUERYTIME_FAVICONS, timeDelta * 2)
+                        .build();
+
+        mFaviconImageCallbackCaptor1.getValue().onFaviconAvailable(bitmap, null);
+        verify(mAuxiliarySearchDonor, never())
+                .donateEntries(anyMap(), mFaviconDonationCompleteCallbackCaptor.capture());
+        mFaviconImageCallbackCaptor2.getValue().onFaviconAvailable(null, null);
+        verify(mAuxiliarySearchDonor)
+                .donateEntries(anyMap(), mFaviconDonationCompleteCallbackCaptor.capture());
+        histogramWatcher.assertExpected();
+
+        // Verifies the callback is called when the donation completes successfully.
+        mFakeTime.advanceMillis(timeDelta);
+        histogramWatcher =
+                HistogramWatcher.newBuilder()
+                        .expectIntRecord("Search.AuxiliarySearch.DonateTime", timeDelta * 3)
+                        .expectIntRecords(
+                                "Search.AuxiliarySearch.DonationRequestStatus",
+                                RequestStatus.SUCCESSFUL)
+                        .build();
+
+        mFaviconDonationCompleteCallbackCaptor.getValue().onResult(true);
+        histogramWatcher.assertExpected();
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.ANDROID_APP_INTEGRATION_WITH_FAVICON)
     public void testOnNonSensitiveTabsAvailable_AfterDestroy() {
         long now = TimeUtils.uptimeMillis();
         int timeDelta = 50;
@@ -408,64 +437,32 @@ public class AuxiliarySearchControllerImplUnitTest {
 
         verify(mAuxiliarySearchProvider).getTabsSearchableDataProtoAsync(mCallbackCaptor.capture());
 
-        mAuxiliarySearchControllerImpl.destroy();
+        mAuxiliarySearchControllerImpl.destroy(mActivityLifecycleDispatcher);
         mFakeTime.advanceMillis(timeDelta);
         mCallbackCaptor.getAllValues().get(0).onResult(tabs);
 
-        verify(mAuxiliarySearchDonor, never()).donateEntries(any(List.class), any(Callback.class));
-    }
-
-    @Test
-    @EnableFeatures({
-        ChromeFeatureList.ANDROID_APP_INTEGRATION_WITH_FAVICON,
-        ChromeFeatureList.ANDROID_APP_INTEGRATION_MULTI_DATA_SOURCE
-    })
-    public void testOnNonSensitiveHistoryDataAvailable_AfterDestroy() {
-        long now = TimeUtils.uptimeMillis();
-        int timeDelta = 50;
-
-        mDataEntry1 =
-                new AuxiliarySearchDataEntry(
-                        /* type= */ AuxiliarySearchEntryType.TAB,
-                        /* url= */ JUnitTestGURLs.URL_1,
-                        /* title= */ "Title 1",
-                        /* lastActiveTime= */ now - 2,
-                        /* tabId= */ TAB_ID_1,
-                        /* appId= */ null,
-                        /* visitId= */ -1);
-        mDataEntry2 =
-                new AuxiliarySearchDataEntry(
-                        /* type= */ AuxiliarySearchEntryType.TAB,
-                        /* url= */ JUnitTestGURLs.URL_2,
-                        /* title= */ "Title 2",
-                        /* lastActiveTime= */ now - 1,
-                        /* tabId= */ TAB_ID_2,
-                        /* appId= */ null,
-                        /* visitId= */ -1);
-
-        List<AuxiliarySearchDataEntry> entries = new ArrayList<>();
-        entries.add(mDataEntry1);
-        entries.add(mDataEntry2);
-
-        when(mAuxiliarySearchDonor.canDonate()).thenReturn(true);
-        mAuxiliarySearchControllerImpl.onPauseWithNative();
-
-        verify(mAuxiliarySearchProvider)
-                .getHistorySearchableDataProtoAsync(mEntryReadyCallbackCaptor.capture());
-
-        mAuxiliarySearchControllerImpl.destroy();
-        mFakeTime.advanceMillis(timeDelta);
-        mEntryReadyCallbackCaptor.getAllValues().get(0).onResult(entries);
-
-        verify(mAuxiliarySearchDonor, never()).donateEntries(any(List.class), any(Callback.class));
+        verify(mAuxiliarySearchDonor, never())
+                .donateEntries(anyList(), any(int[].class), MockitoHelper.anyCallback());
     }
 
     @Test
     public void testOnConfigChanged() {
         mAuxiliarySearchControllerImpl.onConfigChanged(false);
-        verify(mAuxiliarySearchDonor).onConfigChanged(eq(false), any(Callback.class));
+        verify(mAuxiliarySearchDonor).onConfigChanged(eq(false), MockitoHelper.anyCallback());
 
         mAuxiliarySearchControllerImpl.onConfigChanged(true);
-        verify(mAuxiliarySearchDonor).onConfigChanged(eq(true), any(Callback.class));
+        verify(mAuxiliarySearchDonor).onConfigChanged(eq(true), MockitoHelper.anyCallback());
+    }
+
+    private void createController() {
+        mAuxiliarySearchControllerImpl =
+                new AuxiliarySearchControllerImpl(
+                        mContext,
+                        mProfile,
+                        mAuxiliarySearchProvider,
+                        mAuxiliarySearchDonor,
+                        mFaviconHelper,
+                        AuxiliarySearchHostType.CTA);
+        mAuxiliarySearchControllerImpl.register(mActivityLifecycleDispatcher);
     }
 }

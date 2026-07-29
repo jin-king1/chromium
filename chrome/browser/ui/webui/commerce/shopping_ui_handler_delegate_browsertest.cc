@@ -8,14 +8,22 @@
 #include "base/uuid.h"
 #include "chrome/browser/bookmarks/bookmark_model_factory.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/signin/identity_manager_factory.h"
+#include "chrome/browser/sync/local_or_syncable_bookmark_sync_service_factory.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_list.h"
 #include "chrome/browser/ui/webui/feedback/feedback_dialog.h"
+#include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/chrome_test_utils.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/bookmarks/browser/bookmark_model.h"
+#include "components/bookmarks/test/bookmark_test_helpers.h"
 #include "components/commerce/core/commerce_utils.h"
+#include "components/signin/public/base/consent_level.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
+#include "components/signin/public/identity_manager/identity_test_utils.h"
+#include "components/sync/base/features.h"
+#include "components/sync_bookmarks/bookmark_sync_service.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/test_navigation_observer.h"
 
@@ -28,8 +36,28 @@ class ShoppingUiHandlerDelegateBrowserTest : public InProcessBrowserTest {
  public:
   void SetUpOnMainThread() override {
     InProcessBrowserTest::SetUpOnMainThread();
+
     profile_ = Profile::FromBrowserContext(web_contents()->GetBrowserContext());
+    signin::ConsentLevel consent_level =
+        syncer::IsReplaceSyncPromosWithSignInPromosEnabled()
+            ? signin::ConsentLevel::kSignin
+            : signin::ConsentLevel::kSync;
+    signin::MakePrimaryAccountAvailable(
+        IdentityManagerFactory::GetForProfile(profile_), "test@email.com",
+        consent_level);
+
     bookmark_model_ = BookmarkModelFactory::GetForBrowserContext(profile_);
+    bookmarks::test::WaitForBookmarkModelToLoad(bookmark_model_);
+
+    // If we are not syncing, we need to add account nodes in order to use the
+    // handler. If we are, we need to pretend sync is on for bookmarks.
+    if (consent_level == signin::ConsentLevel::kSignin) {
+      bookmark_model_->CreateAccountPermanentFolders();
+    } else {
+      LocalOrSyncableBookmarkSyncServiceFactory::GetForProfile(
+          browser()->GetProfile())
+          ->SetIsTrackingMetadataForTesting();
+    }
   }
 
  protected:
@@ -56,6 +84,10 @@ class ShoppingUiHandlerDelegateBrowserTest : public InProcessBrowserTest {
 
   raw_ptr<Profile, DanglingUntriaged> profile_;
   raw_ptr<bookmarks::BookmarkModel, DanglingUntriaged> bookmark_model_;
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
+  base::test::ScopedFeatureList feature_list_{
+      syncer::kReplaceSyncPromosWithSignInPromos};
+#endif
 };
 
 IN_PROC_BROWSER_TEST_F(ShoppingUiHandlerDelegateBrowserTest,
@@ -76,14 +108,17 @@ IN_PROC_BROWSER_TEST_F(ShoppingUiHandlerDelegateBrowserTest,
   const GURL url = GURL(kExampleUrl);
   NavigateToURL(url);
 
-  const bookmarks::BookmarkNode* other_node = bookmark_model_->other_node();
+  const bookmarks::BookmarkNode* parent =
+      syncer::IsReplaceSyncPromosWithSignInPromosEnabled()
+          ? bookmark_model_->account_other_node()
+          : bookmark_model_->other_node();
   auto* existing_node = bookmark_model_->AddNewURL(
-      other_node, other_node->children().size(), u"test", url);
-  size_t bookmark_count = other_node->children().size();
+      parent, parent->children().size(), u"test", url);
+  size_t bookmark_count = parent->children().size();
 
   auto* node = delegate->GetOrAddBookmarkForCurrentUrl();
   ASSERT_EQ(existing_node->id(), node->id());
-  ASSERT_EQ(bookmark_count, other_node->children().size());
+  ASSERT_EQ(bookmark_count, parent->children().size());
 }
 
 IN_PROC_BROWSER_TEST_F(ShoppingUiHandlerDelegateBrowserTest,
@@ -93,13 +128,16 @@ IN_PROC_BROWSER_TEST_F(ShoppingUiHandlerDelegateBrowserTest,
   const GURL url = GURL(kExampleUrl);
   NavigateToURL(url);
 
-  const bookmarks::BookmarkNode* other_node = bookmark_model_->other_node();
-  size_t bookmark_count = other_node->children().size();
+  const bookmarks::BookmarkNode* parent =
+      syncer::IsReplaceSyncPromosWithSignInPromosEnabled()
+          ? bookmark_model_->account_other_node()
+          : bookmark_model_->other_node();
+  size_t bookmark_count = parent->children().size();
 
   auto* node = delegate->GetOrAddBookmarkForCurrentUrl();
 
   DCHECK(node);
-  ASSERT_EQ(bookmark_count + 1, other_node->children().size());
+  ASSERT_EQ(bookmark_count + 1, parent->children().size());
 }
 
 IN_PROC_BROWSER_TEST_F(ShoppingUiHandlerDelegateBrowserTest,
@@ -171,30 +209,27 @@ IN_PROC_BROWSER_TEST_F(ShoppingUiHandlerDelegateBrowserTest,
   EXPECT_EQ(valid_url, web_contents()->GetLastCommittedURL());
 }
 
-// The feedback dialog on CrOS & LaCrOS happens at the system level,
-// which cannot be easily tested here. LaCrOS has a separate feedback
-// browser test which gives us some coverage.
+// The feedback dialog on CrOS happens at the system level, which cannot be
+// easily tested here.
 #if !BUILDFLAG(IS_CHROMEOS)
+// When the user has the page saved locally, an account node is created instead
+// so that the feature can be used.
 IN_PROC_BROWSER_TEST_F(ShoppingUiHandlerDelegateBrowserTest,
-                       TestShowFeedbackForProductSpecifications) {
-  const std::string log_id = "test_id";
-  ASSERT_EQ(nullptr, FeedbackDialog::GetInstanceForTest());
-
+                       TestGetLocalBookmarkCreatesNewAccountBookmark) {
   auto delegate =
       std::make_unique<commerce::ShoppingUiHandlerDelegate>(profile_);
-  delegate->ShowFeedbackForProductSpecifications(log_id);
+  const GURL url = GURL(kExampleUrl);
+  NavigateToURL(url);
 
-  // Feedback dialog should be non-null with correct meta data.
-  CHECK(FeedbackDialog::GetInstanceForTest());
-  EXPECT_EQ(chrome::kChromeUIFeedbackURL,
-            FeedbackDialog::GetInstanceForTest()->GetDialogContentURL());
-  std::optional<base::Value::Dict> meta_data = base::JSONReader::ReadDict(
-      FeedbackDialog::GetInstanceForTest()->GetDialogArgs());
-  ASSERT_TRUE(meta_data.has_value());
-  ASSERT_EQ(*meta_data->FindString("categoryTag"), "compare");
-  std::optional<base::Value::Dict> ai_meta_data =
-      base::JSONReader::ReadDict(*meta_data->FindString("aiMetadata"));
-  ASSERT_TRUE(ai_meta_data.has_value());
-  ASSERT_EQ(*ai_meta_data->FindString("log_id"), log_id);
+  auto* existing_node = bookmark_model_->AddNewURL(
+      bookmark_model_->other_node(),
+      bookmark_model_->other_node()->children().size(), u"test", url);
+  size_t account_bookmark_count =
+      bookmark_model_->account_other_node()->children().size();
+
+  auto* node = delegate->GetOrAddBookmarkForCurrentUrl();
+  EXPECT_NE(existing_node->id(), node->id());
+  EXPECT_EQ(account_bookmark_count + 1,
+            bookmark_model_->account_other_node()->children().size());
 }
 #endif  // !BUILDFLAG(IS_CHROMEOS)

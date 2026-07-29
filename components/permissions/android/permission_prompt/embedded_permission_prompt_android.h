@@ -37,15 +37,17 @@ class EmbeddedPermissionPromptAndroid : public PermissionPromptAndroid {
   // PermissionPrompt:
   PermissionPromptDisposition GetPromptDisposition() const override;
   bool ShouldFinalizeRequestAfterDecided() const override;
+  std::optional<gfx::Rect> GetViewBoundsInScreen() const override;
+  bool IsAskPrompt() const override;
 
   // PermissionPromptAndroid:
   EmbeddedPermissionPromptFlowModel::Variant GetEmbeddedPromptVariant()
       const override;
-  void Closing() override;
-  void Accept() override;
-  void AcceptThisTime() override;
-  void Acknowledge() override;
-  void Deny() override;
+  void Dismiss(const PromptOptions& prompt_options) override;
+  void Accept(const PromptOptions& prompt_options) override;
+  void AcceptThisTime(const PromptOptions& prompt_options) override;
+  void Acknowledge(const PromptOptions& prompt_options) override;
+  void Deny(const PromptOptions& prompt_options) override;
   void Resumed() override;
   void SystemSettingsShown() override;
   void SystemPermissionResolved(bool accepted) override;
@@ -54,21 +56,16 @@ class EmbeddedPermissionPromptAndroid : public PermissionPromptAndroid {
       const override;
   PermissionRequest::AnnotatedMessageText GetAnnotatedMessageText()
       const override;
-  base::android::ScopedJavaLocalRef<jstring> GetPositiveButtonText(
-      JNIEnv* env,
+  std::u16string GetPositiveButtonText(bool is_one_time) const override;
+  std::u16string GetNegativeButtonText(bool is_one_time) const override;
+  std::u16string GetPositiveEphemeralButtonText(
       bool is_one_time) const override;
-  base::android::ScopedJavaLocalRef<jstring> GetNegativeButtonText(
-      JNIEnv* env,
-      bool is_one_time) const override;
-  base::android::ScopedJavaLocalRef<jstring> GetPositiveEphemeralButtonText(
-      JNIEnv* env,
-      bool is_one_time) const override;
+
   bool ShouldUseRequestingOriginFavicon() const override;
   std::vector<permissions::ElementAnchoredBubbleVariant> GetPromptVariants()
       const override;
-  const std::vector<
-      raw_ptr<permissions::PermissionRequest, VectorExperimental>>&
-  Requests() const override;
+  const std::vector<base::SafeRef<permissions::PermissionRequest>>& Requests()
+      const override;
   int GetIconId() const override;
 
  private:

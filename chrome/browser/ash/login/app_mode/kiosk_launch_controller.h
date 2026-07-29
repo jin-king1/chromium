@@ -13,6 +13,7 @@
 #include "base/functional/callback.h"
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/scoped_observation.h"
@@ -29,9 +30,15 @@
 #include "chrome/browser/ash/login/app_mode/network_ui_controller.h"
 #include "chrome/browser/ash/login/screens/app_launch_splash_screen.h"
 
+class PrefService;
+
 namespace app_mode {
 class ForceInstallObserver;
 }  // namespace app_mode
+
+namespace policy {
+class PolicyService;
+}  // namespace policy
 
 namespace ash {
 
@@ -115,11 +122,20 @@ class KioskLaunchController : public KioskAppLauncher::Observer,
   using LaunchCompleteCallback =
       base::OnceCallback<void(KioskAppLaunchError::Error error)>;
 
-  KioskLaunchController(LoginDisplayHost* host,
+  // `local_state` and `policy_service` must be non-null, and must outlive
+  // `this`.
+  KioskLaunchController(PrefService* local_state,
+                        const policy::PolicyService* policy_service,
+                        LoginDisplayHost* host,
                         AppLaunchedCallback app_launched_callback,
                         AppLaunchSplashScreen* splash_screen,
                         LaunchCompleteCallback done_callback);
+
+  // `local_state` and `policy_service` must be non-null, and must outlive
+  // `this`.
   KioskLaunchController(
+      PrefService* local_state,
+      const policy::PolicyService* policy_service,
       LoginDisplayHost* host,
       AppLaunchSplashScreen* splash_screen,
       kiosk::LoadProfileCallback profile_loader,
@@ -176,7 +192,7 @@ class KioskLaunchController : public KioskAppLauncher::Observer,
   class ScopedAcceleratorDisabler;
 
   enum AppState {
-    kCreatingProfile = 0,  // Profile is being created.
+    kCreatingProfile = 0,   // Profile is being created.
     kInitLauncher,          // Launcher is initializing
     kInstallingApp,         // App is being installed.
     kInstallingExtensions,  // Force-installed extensions are being installed.
@@ -195,6 +211,7 @@ class KioskLaunchController : public KioskAppLauncher::Observer,
   void OnLaunchFailed(KioskAppLaunchError::Error error) override;
   void OnAppInstalling() override;
   void OnAppPrepared() override;
+  void OnAppLaunching() override;
   void OnAppLaunched() override;
   void OnAppDataUpdated() override;
   void OnAppWindowCreated(const std::optional<std::string>& app_name) override;
@@ -228,6 +245,9 @@ class KioskLaunchController : public KioskAppLauncher::Observer,
 
   const KioskApp& kiosk_app() const;
   const KioskAppId& kiosk_app_id() const;
+
+  const raw_ref<PrefService> local_state_;
+  const raw_ref<const policy::PolicyService> policy_service_;
 
   bool auto_launch_ = false;  // Whether current app is being auto-launched.
 

@@ -10,11 +10,11 @@ import static androidx.test.espresso.action.ViewActions.click;
 import static androidx.test.espresso.assertion.ViewAssertions.doesNotExist;
 import static androidx.test.espresso.assertion.ViewAssertions.matches;
 import static androidx.test.espresso.contrib.RecyclerViewActions.scrollTo;
-import static androidx.test.espresso.intent.Intents.intended;
 import static androidx.test.espresso.matcher.PreferenceMatchers.withKey;
 import static androidx.test.espresso.matcher.ViewMatchers.hasDescendant;
 import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
+import static androidx.test.espresso.matcher.ViewMatchers.withParent;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
 
 import static org.hamcrest.CoreMatchers.allOf;
@@ -25,16 +25,15 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import static org.chromium.chrome.browser.settings.MainSettings.PREF_APPEARANCE;
-import static org.chromium.chrome.browser.settings.MainSettings.PREF_TOOLBAR_SHORTCUT;
-import static org.chromium.chrome.browser.settings.MainSettings.PREF_UI_THEME;
+import static org.chromium.base.test.transit.ViewFinder.waitForNoView;
 
 import android.app.Activity;
 import android.content.Intent;
-import android.os.Build;
 import android.os.Looper;
 import android.provider.Settings;
 import android.text.TextUtils;
@@ -47,7 +46,6 @@ import androidx.annotation.StringRes;
 import androidx.preference.Preference;
 import androidx.test.espresso.contrib.RecyclerViewActions;
 import androidx.test.espresso.intent.Intents;
-import androidx.test.espresso.intent.matcher.IntentMatchers;
 import androidx.test.filters.LargeTest;
 import androidx.test.filters.MediumTest;
 import androidx.test.filters.SmallTest;
@@ -65,10 +63,11 @@ import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.Mockito;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 
-import org.chromium.base.BuildInfo;
 import org.chromium.base.ContextUtils;
+import org.chromium.base.DeviceInfo;
 import org.chromium.base.PackageManagerUtils;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.CommandLineFlags;
@@ -80,8 +79,11 @@ import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
+import org.chromium.base.test.util.Restriction;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.about_settings.AboutChromeSettings;
 import org.chromium.chrome.browser.appearance.settings.AppearanceSettingsFragment;
+import org.chromium.chrome.browser.autofill.settings.AutofillAndPasswordsFragment.AutofillSettingsReferrer;
 import org.chromium.chrome.browser.autofill.settings.AutofillPaymentMethodsFragment;
 import org.chromium.chrome.browser.autofill.settings.AutofillProfilesFragment;
 import org.chromium.chrome.browser.download.settings.DownloadSettings;
@@ -91,22 +93,13 @@ import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.homepage.HomepageTestRule;
 import org.chromium.chrome.browser.homepage.settings.HomepageSettings;
 import org.chromium.chrome.browser.language.settings.LanguageSettings;
-import org.chromium.chrome.browser.magic_stack.HomeModulesConfigManager;
-import org.chromium.chrome.browser.magic_stack.HomeModulesConfigSettings;
-import org.chromium.chrome.browser.night_mode.NightModeMetrics.ThemeSettingsEntry;
-import org.chromium.chrome.browser.night_mode.settings.ThemeSettingsFragment;
-import org.chromium.chrome.browser.password_check.PasswordCheck;
-import org.chromium.chrome.browser.password_check.PasswordCheckFactory;
 import org.chromium.chrome.browser.password_manager.PasswordManagerUtilBridge;
 import org.chromium.chrome.browser.password_manager.PasswordManagerUtilBridgeJni;
-import org.chromium.chrome.browser.password_manager.settings.PasswordSettings;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.privacy.settings.PrivacySettings;
 import org.chromium.chrome.browser.profiles.Profile;
-import org.chromium.chrome.browser.safety_check.SafetyCheckSettingsFragment;
 import org.chromium.chrome.browser.safety_hub.SafetyHubFragment;
-import org.chromium.chrome.browser.safety_hub.SafetyHubMetricUtils;
 import org.chromium.chrome.browser.search_engines.TemplateUrlServiceFactory;
 import org.chromium.chrome.browser.search_engines.settings.SearchEngineSettings;
 import org.chromium.chrome.browser.signin.SigninAndHistorySyncActivityLauncherImpl;
@@ -117,7 +110,6 @@ import org.chromium.chrome.browser.sync.settings.ManageSyncSettings;
 import org.chromium.chrome.browser.sync.settings.SignInPreference;
 import org.chromium.chrome.browser.tasks.tab_management.TabsSettings;
 import org.chromium.chrome.browser.toolbar.ToolbarPositionController;
-import org.chromium.chrome.browser.toolbar.adaptive.settings.AdaptiveToolbarSettingsFragment;
 import org.chromium.chrome.browser.toolbar.settings.AddressBarSettingsFragment;
 import org.chromium.chrome.browser.tracing.settings.DeveloperSettings;
 import org.chromium.chrome.browser.ui.default_browser_promo.DefaultBrowserPromoUtils;
@@ -125,42 +117,46 @@ import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.signin.BottomSheetSigninAndHistorySyncConfig;
 import org.chromium.chrome.browser.ui.signin.BottomSheetSigninAndHistorySyncConfig.NoAccountSigninMode;
 import org.chromium.chrome.browser.ui.signin.BottomSheetSigninAndHistorySyncConfig.WithAccountSigninMode;
+import org.chromium.chrome.browser.ui.signin.BottomSheetSigninAndHistorySyncCoordinator;
 import org.chromium.chrome.browser.ui.signin.SigninAndHistorySyncActivityLauncher;
 import org.chromium.chrome.browser.ui.signin.history_sync.HistorySyncConfig;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.R;
 import org.chromium.chrome.test.util.ChromeRenderTestRule;
 import org.chromium.chrome.test.util.browser.signin.SigninTestRule;
-import org.chromium.chrome.test.util.browser.sync.SyncTestUtil;
-import org.chromium.components.autofill.AutofillFeatures;
 import org.chromium.components.browser_ui.accessibility.AccessibilitySettings;
+import org.chromium.components.browser_ui.settings.search.SettingsIndexData;
 import org.chromium.components.browser_ui.site_settings.SiteSettings;
 import org.chromium.components.feature_engagement.Tracker;
 import org.chromium.components.policy.test.annotations.Policies;
 import org.chromium.components.search_engines.TemplateUrl;
 import org.chromium.components.search_engines.TemplateUrlService;
+import org.chromium.components.signin.SigninFeatures;
 import org.chromium.components.signin.base.AccountInfo;
 import org.chromium.components.signin.base.CoreAccountInfo;
-import org.chromium.components.signin.identitymanager.ConsentLevel;
 import org.chromium.components.signin.metrics.SigninAccessPoint;
 import org.chromium.components.signin.test.util.AccountCapabilitiesBuilder;
 import org.chromium.components.signin.test.util.TestAccounts;
 import org.chromium.ui.base.DeviceFormFactor;
-import org.chromium.ui.test.util.ViewUtils;
+import org.chromium.ui.test.util.GmsCoreVersionRestriction;
 import org.chromium.ui.text.SpanApplier;
 import org.chromium.ui.text.SpanApplier.SpanInfo;
 
 import java.io.IOException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Stream;
 
 /** Test for {@link MainSettings}. Main purpose is to have a quick confidence check on the xml. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE, "show-autofill-signatures"})
 @DoNotBatch(reason = "Tests cannot run batched because they launch a Settings activity.")
+@DisableFeatures({ChromeFeatureList.DATA_SHARING, ChromeFeatureList.SETTINGS_MULTI_COLUMN})
+@EnableFeatures(
+        ChromeFeatureList.HOME_BUTTON_REMOVAL
+                + ":set_default_to_false_on_homepage_on_desktop/false")
 public class MainSettingsFragmentTest {
     private static final String SEARCH_ENGINE_SHORT_NAME = "Google";
 
-    private static final int RENDER_TEST_REVISION = 13;
+    private static final int RENDER_TEST_REVISION = 14;
     private static final String RENDER_TEST_DESCRIPTION =
             "Alert icon on identity error for signed in users";
 
@@ -173,6 +169,8 @@ public class MainSettingsFragmentTest {
 
     // SettingsActivity needs to be initialized and destroyed with the mock
     // signin environment setup in SyncTestRule
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
+
     @Rule
     public final RuleChain mRuleChain =
             RuleChain.outerRule(mSyncTestRule)
@@ -190,24 +188,23 @@ public class MainSettingsFragmentTest {
     @Mock public TemplateUrlService mMockTemplateUrlService;
     @Mock public TemplateUrl mMockSearchEngine;
 
-    @Mock private PasswordCheck mPasswordCheck;
     @Mock private PasswordManagerUtilBridge.Natives mPasswordManagerUtilBridgeJniMock;
 
     @Mock private SigninAndHistorySyncActivityLauncher mSigninAndHistorySyncActivityLauncher;
-    @Mock private HomeModulesConfigManager mHomeModulesConfigManager;
+    @Mock private BottomSheetSigninAndHistorySyncCoordinator mSigninCoordinator;
 
     @Mock private Tracker mTestTracker;
     @Mock private DefaultBrowserPromoUtils mMockDefaultBrowserPromoUtils;
+
+    @Mock private SettingsIndexData mSearchIndexDataMock;
 
     private MainSettings mMainSettings;
 
     @Before
     public void setup() {
-        // ObservableSupplierImpl needs a Looper.
+        // ObservableSupplier needs a Looper.
         Looper.prepare();
-        MockitoAnnotations.initMocks(this);
         InstrumentationRegistry.getInstrumentation().setInTouchMode(true);
-        PasswordCheckFactory.setPasswordCheckForTesting(mPasswordCheck);
         PasswordManagerUtilBridgeJni.setInstanceForTesting(mPasswordManagerUtilBridgeJniMock);
         SigninAndHistorySyncActivityLauncherImpl.setLauncherForTest(
                 mSigninAndHistorySyncActivityLauncher);
@@ -220,6 +217,20 @@ public class MainSettingsFragmentTest {
                         ChromePreferenceKeys.ADDRESS_BAR_SETTINGS_VIEW_COUNT,
                         ChromePreferenceKeys.APPEARANCE_SETTINGS_VIEW_COUNT)
                 .forEach(key -> prefs.writeInt(key, MainSettings.NEW_LABEL_MAX_VIEW_COUNT));
+
+        when(mSigninAndHistorySyncActivityLauncher
+                        .createBottomSheetSigninCoordinatorAndObserveAddAccountResult(
+                                any(),
+                                any(),
+                                any(),
+                                any(),
+                                any(),
+                                any(),
+                                any(),
+                                any(),
+                                any(),
+                                eq(SigninAccessPoint.SETTINGS)))
+                .thenReturn(mSigninCoordinator);
     }
 
     @After
@@ -230,47 +241,29 @@ public class MainSettingsFragmentTest {
     @Test
     @LargeTest
     @Feature({"RenderTest"})
-    public void testRenderSignedOutAccountManagementRows() throws IOException {
-        startSettings();
-        waitForOptionsMenu();
-
-        View accountRow =
-                mSettingsActivityTestRule
-                        .getActivity()
-                        .findViewById(R.id.account_management_account_row);
-        mRenderTestRule.render(accountRow, "main_settings_signed_out_account");
-        View googleServicesRow =
-                mSettingsActivityTestRule
-                        .getActivity()
-                        .findViewById(R.id.account_management_google_services_row);
-        mRenderTestRule.render(googleServicesRow, "main_settings_signed_out_google_services");
-    }
-
-    @Test
-    @LargeTest
-    @Feature({"RenderTest"})
     @Policies.Add({@Policies.Item(key = "BrowserSignin", string = "0")})
+    @DisabledTest(message = "https://crbug.com/433576895")
     public void testRenderSigninDisabledByPolicyAccountRow() throws IOException {
         startSettings();
         waitForOptionsMenu();
 
+        onView(withId(R.id.recycler_view))
+                .perform(scrollTo(hasDescendant(withText(R.string.signin_settings_title))));
+
+        onView(withId(R.id.account_management_account_row)).check(matches(isDisplayed()));
+
         View accountRow =
                 mSettingsActivityTestRule
                         .getActivity()
                         .findViewById(R.id.account_management_account_row);
+        ChromeRenderTestRule.sanitize(accountRow);
         mRenderTestRule.render(accountRow, "main_settings_signin_disabled_by_policy_account");
     }
 
-    /**
-     * Test for the "Account" section.
-     *
-     * <p>TODO(b/324562205): update to check for Safety Hub instead of Safety Check once it's fully
-     * launched.
-     */
+    /** Test for the "Account" section. */
     @Test
     @SmallTest
-    @EnableFeatures(AutofillFeatures.AUTOFILL_VIRTUAL_VIEW_STRUCTURE_ANDROID)
-    @DisableFeatures(ChromeFeatureList.SAFETY_HUB)
+    @DisableFeatures(ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID)
     public void testStartup() {
         startSettings();
 
@@ -288,24 +281,12 @@ public class MainSettingsFragmentTest {
                 mMainSettings
                         .findPreference(MainSettings.PREF_ACCOUNT_AND_GOOGLE_SERVICES_SECTION)
                         .isVisible());
-        Assert.assertFalse(
-                "Sync preference should be hidden",
-                mMainSettings.findPreference(MainSettings.PREF_MANAGE_SYNC).isVisible());
 
         // Assert for "Basics" section
         assertSettingsExists(MainSettings.PREF_SEARCH_ENGINE, SearchEngineSettings.class);
-        if (supportThirdPartyFillingSetting()) {
-            assertSettingsExists(MainSettings.PREF_AUTOFILL_OPTIONS, null);
-            assertSettingsExists(MainSettings.PREF_AUTOFILL_SECTION, null);
-        } else {
-            Assert.assertNull(
-                    "Third party filling setting should be hidden",
-                    mMainSettings.findPreference(MainSettings.PREF_AUTOFILL_OPTIONS));
-            Assert.assertNull(
-                    "Autofill section header should be hidden",
-                    mMainSettings.findPreference(MainSettings.PREF_AUTOFILL_SECTION));
-        }
-        assertSettingsExists(MainSettings.PREF_PASSWORDS, PasswordSettings.class);
+        assertSettingsExists(MainSettings.PREF_AUTOFILL_OPTIONS, null);
+        assertSettingsExists(MainSettings.PREF_AUTOFILL_SECTION, null);
+        assertSettingsExists(MainSettings.PREF_PASSWORDS, null);
         assertSettingsExists("autofill_payment_methods", AutofillPaymentMethodsFragment.class);
         assertSettingsExists("autofill_addresses", AutofillProfilesFragment.class);
         if (supportNotificationSettings()) {
@@ -325,12 +306,12 @@ public class MainSettingsFragmentTest {
 
         // Assert for advanced section
         assertSettingsExists("privacy", PrivacySettings.class);
-        if (BuildInfo.getInstance().isAutomotive) {
+        if (DeviceInfo.isAutomotive()) {
             Assert.assertNull(
                     "Safety check should not be shown on automotive",
-                    mMainSettings.findPreference(MainSettings.PREF_SAFETY_CHECK));
+                    mMainSettings.findPreference(MainSettings.PREF_SAFETY_HUB));
         } else {
-            assertSettingsExists(MainSettings.PREF_SAFETY_CHECK, SafetyCheckSettingsFragment.class);
+            assertSettingsExists(MainSettings.PREF_SAFETY_HUB, SafetyHubFragment.class);
         }
         assertSettingsExists("accessibility", AccessibilitySettings.class);
         assertSettingsExists("content_settings", SiteSettings.class);
@@ -342,32 +323,6 @@ public class MainSettingsFragmentTest {
 
     @Test
     @SmallTest
-    @DisableFeatures({
-        ChromeFeatureList.SAFETY_HUB,
-        AutofillFeatures.AUTOFILL_VIRTUAL_VIEW_STRUCTURE_ANDROID
-    })
-    public void testLegacyOrderRemainsConsistent() {
-        startSettings();
-        @Nullable Preference prevPref = null;
-        for (int i = 0; i < mMainSettings.getPreferenceScreen().getPreferenceCount(); ++i) {
-            Preference pref = mMainSettings.getPreferenceScreen().getPreference(i);
-            if (!pref.isShown()) { // Skip invisible prefs.
-                continue;
-            }
-            if (prevPref == null) { // Skip first pref.
-                prevPref = pref;
-                continue;
-            }
-            assertTrue(
-                    prevPref.getTitle() + " should precede " + pref.getTitle(),
-                    pref.getOrder() > prevPref.getOrder());
-        }
-    }
-
-    @Test
-    @SmallTest
-    @EnableFeatures(AutofillFeatures.AUTOFILL_VIRTUAL_VIEW_STRUCTURE_ANDROID)
-    @DisableFeatures(ChromeFeatureList.SAFETY_HUB)
     public void testConsistentOrder() {
         startSettings();
         @Nullable Preference prevPref = null;
@@ -397,7 +352,7 @@ public class MainSettingsFragmentTest {
         onView(withText(accountInfo.getEmail())).perform(click());
         onView(withId(R.id.recycler_view)).perform(RecyclerViewActions.scrollToLastPosition());
         onView(withText(R.string.sign_out)).perform(click());
-        Assert.assertNull(mSyncTestRule.getSigninTestRule().getPrimaryAccount(ConsentLevel.SIGNIN));
+        Assert.assertNull(mSyncTestRule.getSigninTestRule().getPrimaryAccount());
 
         Activity activity = mSettingsActivityTestRule.getActivity();
         final String expectedSnackbarMessage =
@@ -420,14 +375,14 @@ public class MainSettingsFragmentTest {
     @Feature({"Sync"})
     @Policies.Add(@Policies.Item(key = "SyncDisabled", string = "true"))
     public void testPressingSignOutSyncDisabled() {
-        CoreAccountInfo accountInfo = mSyncTestRule.setUpAccountAndSignInForTesting();
+        CoreAccountInfo accountInfo = mSyncTestRule.setUpAccountAndSignInWithoutWaitingForTesting();
 
         startSettings();
 
         onView(withText(accountInfo.getEmail())).perform(click());
         onView(withId(R.id.recycler_view)).perform(RecyclerViewActions.scrollToLastPosition());
         onView(withText(R.string.sign_out)).perform(click());
-        Assert.assertNull(mSyncTestRule.getSigninTestRule().getPrimaryAccount(ConsentLevel.SIGNIN));
+        Assert.assertNull(mSyncTestRule.getSigninTestRule().getPrimaryAccount());
 
         Activity activity = mSettingsActivityTestRule.getActivity();
         final String expectedSnackbarMessage =
@@ -447,35 +402,12 @@ public class MainSettingsFragmentTest {
     }
 
     @Test
-    @LargeTest
-    @Feature({"Sync"})
-    public void testPressingTurnOffSync() {
-        mSyncTestRule.setUpChildAccountAndEnableSyncForTesting();
-
-        startSettings();
-
-        onView(withText(R.string.sync_category_title)).perform(click());
-        onView(withId(R.id.recycler_view)).perform(RecyclerViewActions.scrollToLastPosition());
-        onView(withText(R.string.turn_off_sync)).perform(click());
-        onView(withText(R.string.continue_button)).perform(click());
-        Assert.assertNull(mSyncTestRule.getSigninTestRule().getPrimaryAccount(ConsentLevel.SYNC));
-        Assert.assertNotNull(
-                mSyncTestRule.getSigninTestRule().getPrimaryAccount(ConsentLevel.SIGNIN));
-
-        Activity activity = mSettingsActivityTestRule.getActivity();
-        CriteriaHelper.pollUiThread(
-                () -> {
-                    SnackbarManager snackbarManager =
-                            ((SnackbarManager.SnackbarManageable) activity).getSnackbarManager();
-                    Criteria.checkThat(snackbarManager.isShowing(), Matchers.is(false));
-                    TextView snackbarMessage = activity.findViewById(R.id.snackbar_message);
-                    Criteria.checkThat(snackbarMessage, Matchers.nullValue());
-                });
-    }
-
-    @Test
     @MediumTest
-    public void testSignInRowLaunchesSignInFlowForSignedOutAccounts() {
+    @DisableFeatures({
+        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
+        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT
+    })
+    public void testSignInRowLaunchesSignInFlowForSignedOutAccounts_legacy() {
         mSyncTestRule.addTestAccount();
         startSettings();
 
@@ -500,9 +432,37 @@ public class MainSettingsFragmentTest {
         assertNull(config.selectedCoreAccountId);
     }
 
+    @Test
+    @MediumTest
+    @EnableFeatures({
+        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
+        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT
+    })
+    public void testSignInRowLaunchesSignInFlowForSignedOutAccounts() {
+        startSettings();
+
+        onView(withId(R.id.recycler_view))
+                .perform(scrollTo(hasDescendant(withText(R.string.signin_settings_title))));
+        onView(withText(R.string.signin_settings_subtitle)).check(matches(isDisplayed()));
+        onView(withText(R.string.signin_settings_title)).perform(click());
+
+        verify(mSigninCoordinator)
+                .startSigninFlow(any(BottomSheetSigninAndHistorySyncConfig.class));
+        verify(mSigninAndHistorySyncActivityLauncher, never())
+                .createBottomSheetSigninIntentOrShowError(
+                        any(Activity.class),
+                        any(Profile.class),
+                        any(BottomSheetSigninAndHistorySyncConfig.class),
+                        any(Integer.class));
+    }
+
     // Tests that no alert icon is visible if there are no identity errors.
     @Test
     @SmallTest
+    // Specifies the test to run only with the GMS Core version greater than or equal to 24w15 which
+    // is the min version that supports split stores UPM backend, to avoid
+    // UserActionableError.NEEDS_UPM_BACKEND_UPGRADE.
+    @Restriction(GmsCoreVersionRestriction.RESTRICTION_TYPE_VERSION_GE_24W15)
     public void testSigninRowShowsNoAlertWhenNoIdentityErrors() {
         // Sign-in and open settings.
         mSyncTestRule.setUpAccountAndSignInForTesting();
@@ -537,6 +497,7 @@ public class MainSettingsFragmentTest {
     @Test
     @LargeTest
     @Feature({"RenderTest"})
+    @DisableFeatures(ChromeFeatureList.SETTINGS_MULTI_COLUMN)
     public void testRenderOnIdentityErrorForSignedInUsers() throws IOException {
         FakeSyncServiceImpl fakeSyncService =
                 ThreadUtils.runOnUiThreadBlocking(
@@ -549,7 +510,6 @@ public class MainSettingsFragmentTest {
         fakeSyncService.setRequiresClientUpgrade(true);
         // Sign in and wait for sync machinery to be active.
         CoreAccountInfo accountInfo = mSyncTestRule.setUpAccountAndSignInForTesting();
-        SyncTestUtil.waitForSyncTransportActive();
 
         startSettings();
 
@@ -560,17 +520,18 @@ public class MainSettingsFragmentTest {
                 () -> {
                     return signInPreference
                             .getProfileDataCache()
-                            .hasProfileDataForTesting(accountInfo.getEmail());
+                            .hasProfileDataForTesting(accountInfo.getId());
                 });
 
         // Wait for the default browser promo view to disappear to avoid flakiness due to race
         // conditions.
-        ViewUtils.waitForViewCheckingState(withId(R.id.promo_card_view), ViewUtils.VIEW_NULL);
+        waitForNoView(withId(R.id.promo_card_view));
         View view =
                 mSettingsActivityTestRule
                         .getActivity()
                         .findViewById(android.R.id.content)
                         .getRootView();
+        ChromeRenderTestRule.sanitize(view);
         mRenderTestRule.render(view, "main_settings_signed_in_identity_error");
     }
 
@@ -599,6 +560,61 @@ public class MainSettingsFragmentTest {
 
     @Test
     @SmallTest
+    @EnableFeatures(
+            ChromeFeatureList.HOME_BUTTON_REMOVAL
+                    + ":remove_home_button_everywhere/true/set_default_to_false_on_homepage_on_desktop/false")
+    @DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testHomeButtonRemovalEnabled() {
+        startSettings();
+
+        // Verify UI removal
+        Assert.assertNull(
+                "Homepage preference should be removed when flag is on",
+                mMainSettings.findPreference(MainSettings.PREF_HOMEPAGE));
+
+        // Verify Search Index removal
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    MainSettings.SEARCH_INDEX_DATA_PROVIDER.updateDynamicPreferences(
+                            mSettingsActivityTestRule.getActivity(),
+                            mSearchIndexDataMock,
+                            mMainSettings.getProfile());
+                });
+
+        verify(mSearchIndexDataMock)
+                .removeEntry(
+                        MainSettings.SEARCH_INDEX_DATA_PROVIDER.getUniqueId(
+                                MainSettings.PREF_HOMEPAGE));
+    }
+
+    @Test
+    @SmallTest
+    @EnableFeatures(ChromeFeatureList.HOME_BUTTON_REMOVAL + ":remove_home_button_everywhere/false")
+    public void testHomeButtonRemovalDisabled() {
+        startSettings();
+
+        // Verify UI visibility
+        Assert.assertNotNull(
+                "Homepage preference should be visible when flag is off",
+                mMainSettings.findPreference(MainSettings.PREF_HOMEPAGE));
+
+        // Verify Search Index (not removed)
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    MainSettings.SEARCH_INDEX_DATA_PROVIDER.updateDynamicPreferences(
+                            mSettingsActivityTestRule.getActivity(),
+                            mSearchIndexDataMock,
+                            mMainSettings.getProfile());
+                });
+
+        verify(mSearchIndexDataMock, never())
+                .removeEntry(
+                        MainSettings.SEARCH_INDEX_DATA_PROVIDER.getUniqueId(
+                                MainSettings.PREF_HOMEPAGE));
+    }
+
+    @Test
+    @SmallTest
     public void testSearchEngineDisabled() {
         Mockito.doReturn(false).when(mMockTemplateUrlService).isLoaded();
         configureMockSearchEngine();
@@ -613,21 +629,6 @@ public class MainSettingsFragmentTest {
         Assert.assertTrue(
                 "Search Engine preference should be disabled when service is not ready.",
                 TextUtils.isEmpty(searchEngineSettings.getSummary()));
-    }
-
-    @Test
-    @SmallTest
-    public void testManageSyncRowIsNotShownWithoutSyncConsent() throws InterruptedException {
-        startSettings();
-
-        Assert.assertFalse(
-                "Sync preference should be hidden when the user is signed out.",
-                mMainSettings.findPreference(MainSettings.PREF_MANAGE_SYNC).isVisible());
-
-        mSyncTestRule.setUpAccountAndSignInForTesting();
-        Assert.assertFalse(
-                "Sync preference should not be shown when the user is signed in.",
-                mMainSettings.findPreference(MainSettings.PREF_MANAGE_SYNC).isVisible());
     }
 
     @Test
@@ -650,7 +651,7 @@ public class MainSettingsFragmentTest {
                 () -> {
                     return !signInPreference
                             .getProfileDataCache()
-                            .getProfileDataOrDefault(accountInfo.getEmail())
+                            .getById(accountInfo.getId())
                             .hasDisplayableEmailAddress();
                 });
         ThreadUtils.runOnUiThreadBlocking(signInPreference::syncStateChanged);
@@ -663,7 +664,6 @@ public class MainSettingsFragmentTest {
 
     @Test
     @SmallTest
-    @DisabledTest(message = "crbug.com/362211398")
     public void
             testAccountManagementRowForChildAccountWithNonDisplayableAccountEmailWithEmptyDisplayName()
                     throws InterruptedException {
@@ -672,24 +672,26 @@ public class MainSettingsFragmentTest {
         // Account set up.
         // If both fullName and givenName are empty, accountCapabilities is ignored.
         final SigninTestRule signinTestRule = mSyncTestRule.getSigninTestRule();
-        signinTestRule.addAccountThenSignin(
-                TestAccounts.TEST_ACCOUNT_NON_DISPLAYABLE_EMAIL_AND_NO_NAME);
+        AccountInfo accountInfo = TestAccounts.CHILD_ACCOUNT_NON_DISPLAYABLE_EMAIL_AND_NO_NAME;
+        signinTestRule.addAccount(accountInfo);
+        // Child accounts are signed-in automatically in the background.
+        signinTestRule.waitForSignin(accountInfo);
 
         SignInPreference signInPreference = mMainSettings.findPreference(MainSettings.PREF_SIGN_IN);
         CriteriaHelper.pollUiThread(
                 () -> {
                     return !signInPreference
                             .getProfileDataCache()
-                            .getProfileDataOrDefault(
-                                    TestAccounts.TEST_ACCOUNT_NON_DISPLAYABLE_EMAIL_AND_NO_NAME
-                                            .getEmail())
+                            .getById(
+                                    TestAccounts.CHILD_ACCOUNT_NON_DISPLAYABLE_EMAIL_AND_NO_NAME
+                                            .getId())
                             .hasDisplayableEmailAddress();
                 });
         ThreadUtils.runOnUiThreadBlocking(signInPreference::syncStateChanged);
 
         mSettingsActivityTestRule.startSettingsActivity();
 
-        onView(withText(TestAccounts.TEST_ACCOUNT_NON_DISPLAYABLE_EMAIL_AND_NO_NAME.getEmail()))
+        onView(withText(TestAccounts.CHILD_ACCOUNT_NON_DISPLAYABLE_EMAIL_AND_NO_NAME.getEmail()))
                 .check(doesNotExist());
         onView(allOf(withText(R.string.default_google_account_username), isDisplayed()))
                 .check(matches(isDisplayed()));
@@ -707,33 +709,24 @@ public class MainSettingsFragmentTest {
 
     @Test
     @SmallTest
-    public void testDestroysPasswordCheck() {
-        startSettings();
-        Activity activity = mMainSettings.getActivity();
-        activity.finish();
-        CriteriaHelper.pollUiThread(() -> activity.isDestroyed());
-        Assert.assertNull(PasswordCheckFactory.getPasswordCheckInstance());
-    }
-
-    @Test
-    @SmallTest
     // Setting BrowserSignin suppresses the sync promo so the password settings preference
     // is visible without scrolling.
     @Policies.Add({
         @Policies.Item(key = "PasswordManagerEnabled", string = "false"),
         @Policies.Item(key = "BrowserSignin", string = "0")
     })
+    @DisabledTest(message = "Proabably never worked. crbug.com/446200399")
     public void testPasswordsItemClickableWhenManaged() {
         startSettings();
+        var managedStrMatcher =
+                allOf(withText(R.string.managed_by_your_organization), isDisplayed());
         onData(withKey(MainSettings.PREF_PASSWORDS))
                 .inAdapterView(
                         allOf(
-                                isDisplayed(),
                                 hasDescendant(withText(R.string.password_manager_settings_title)),
-                                hasDescendant(
-                                        allOf(
-                                                withText(R.string.managed_by_your_organization),
-                                                isDisplayed()))));
+                                hasDescendant(managedStrMatcher)))
+                .check(matches(isDisplayed()));
+
         Assert.assertTrue(mMainSettings.findPreference(MainSettings.PREF_PASSWORDS).isEnabled());
         Assert.assertNotNull(
                 mMainSettings
@@ -747,17 +740,17 @@ public class MainSettingsFragmentTest {
     // Setting BrowserSignin suppresses the sync promo so the password settings preference
     // is visible without scrolling.
     @Policies.Add(@Policies.Item(key = "BrowserSignin", string = "0"))
+    @DisabledTest(message = "Proabably never worked. crbug.com/446200399")
     public void testPasswordsItemEnabledWhenNotManaged() throws InterruptedException {
         startSettings();
+        var managedStrMatcher =
+                allOf(withText(R.string.managed_by_your_organization), not(isDisplayed()));
         onData(withKey(MainSettings.PREF_PASSWORDS))
                 .inAdapterView(
                         allOf(
-                                isDisplayed(),
                                 hasDescendant(withText(R.string.password_manager_settings_title)),
-                                hasDescendant(
-                                        allOf(
-                                                withText(R.string.managed_by_your_organization),
-                                                not(isDisplayed())))));
+                                hasDescendant(managedStrMatcher)))
+                .check(matches(isDisplayed()));
         Assert.assertTrue(mMainSettings.findPreference(MainSettings.PREF_PASSWORDS).isEnabled());
         Assert.assertNotNull(
                 mMainSettings
@@ -767,181 +760,23 @@ public class MainSettingsFragmentTest {
 
     @Test
     @SmallTest
-    @DisableFeatures(ChromeFeatureList.PLUS_ADDRESSES_ENABLED)
-    public void testPlusAddressesHiddenWhenNotEnabled() {
-        Assert.assertFalse(ChromeFeatureList.isEnabled(ChromeFeatureList.PLUS_ADDRESSES_ENABLED));
-        startSettings();
-        Assert.assertNull(mMainSettings.findPreference(MainSettings.PREF_PLUS_ADDRESSES));
-    }
-
-    @Test
-    @SmallTest
-    public void testPlusAddressesHiddenWhenLabelIsEmpty() {
-        Assert.assertTrue(
-                ChromeFeatureList.getFieldTrialParamByFeature(
-                                ChromeFeatureList.PLUS_ADDRESSES_ENABLED, "settings-label")
-                        .isEmpty());
-        startSettings();
-        Assert.assertNull(mMainSettings.findPreference(MainSettings.PREF_PLUS_ADDRESSES));
-    }
-
-    @Test
-    @SmallTest
-    @CommandLineFlags.Add({
-        "enable-features=PlusAddressesEnabled:"
-                + "settings-label/PlusAddressesTestTitle/"
-                + "manage-url/https%3A%2F%2Ftest.plusaddresses.google.com"
-    })
-    public void testPlusAddressesEnabled() {
-        startSettings();
-        Preference preference = mMainSettings.findPreference(MainSettings.PREF_PLUS_ADDRESSES);
-        Assert.assertNotNull(preference);
-        Assert.assertTrue(preference.isVisible());
-        Assert.assertEquals("PlusAddressesTestTitle", preference.getTitle());
-        onView(withId(R.id.recycler_view))
-                .perform(scrollTo(hasDescendant(withText("PlusAddressesTestTitle"))));
-        onView(withText("PlusAddressesTestTitle")).perform(click());
-        intended(IntentMatchers.hasData("https://test.plusaddresses.google.com"));
-    }
-
-    @Test
-    @SmallTest
-    public void testHomeModulesConfigSettingsWithCustomizableModule() {
-        when(mHomeModulesConfigManager.hasModuleShownInSettings()).thenReturn(true);
-        HomeModulesConfigManager.setInstanceForTesting(mHomeModulesConfigManager);
-        startSettings();
-        assertSettingsExists(
-                MainSettings.PREF_HOME_MODULES_CONFIG, HomeModulesConfigSettings.class);
-    }
-
-    @Test
-    @SmallTest
-    public void testHomeModulesConfigSettingsWithoutCustomizableModule() {
-        when(mHomeModulesConfigManager.hasModuleShownInSettings()).thenReturn(false);
-        HomeModulesConfigManager.setInstanceForTesting(mHomeModulesConfigManager);
-        startSettings();
-        Assert.assertNull(
-                "Home modules config setting should not be shown on automotive",
-                mMainSettings.findPreference(MainSettings.PREF_HOME_MODULES_CONFIG));
-    }
-
-    @Test
-    @SmallTest
-    @EnableFeatures({
-        ChromeFeatureList.TAB_GROUP_SYNC_ANDROID,
-        ChromeFeatureList.TAB_GROUP_SYNC_AUTO_OPEN_KILL_SWITCH
-    })
-    @DisableFeatures(ChromeFeatureList.ANDROID_TAB_DECLUTTER)
-    public void testTabsSettingsOn_GroupSync_KillSwitchInactive() {
+    public void testTabsSettingsOn() {
         startSettings();
         assertSettingsExists(MainSettings.PREF_TABS, TabsSettings.class);
     }
 
     @Test
     @SmallTest
-    @EnableFeatures(ChromeFeatureList.TAB_GROUP_SYNC_ANDROID)
-    @DisableFeatures({
-        ChromeFeatureList.ANDROID_TAB_DECLUTTER,
-        ChromeFeatureList.TAB_GROUP_SYNC_AUTO_OPEN_KILL_SWITCH
-    })
-    public void testTabsSettingsOn_GroupSync_KillSwitchActive() {
-        startSettings();
-        Assert.assertNull(
-                "Tabs settings should not be shown",
-                mMainSettings.findPreference(MainSettings.PREF_TABS));
-    }
-
-    @Test
-    @SmallTest
-    @DisableFeatures({
-        ChromeFeatureList.TAB_GROUP_SYNC_ANDROID,
-        ChromeFeatureList.TAB_GROUP_SYNC_AUTO_OPEN_KILL_SWITCH
-    })
-    @EnableFeatures(ChromeFeatureList.ANDROID_TAB_DECLUTTER)
-    public void testTabsSettingsOn_Declutter() {
-        startSettings();
-        assertSettingsExists(MainSettings.PREF_TABS, TabsSettings.class);
-    }
-
-    @Test
-    @SmallTest
-    @DisableFeatures({
-        ChromeFeatureList.ANDROID_TAB_DECLUTTER,
-        ChromeFeatureList.TAB_GROUP_SYNC_ANDROID
-    })
-    @EnableFeatures(ChromeFeatureList.TAB_GROUP_SYNC_AUTO_OPEN_KILL_SWITCH)
-    public void testTabsSettingsOff() {
-        startSettings();
-        Assert.assertNull(
-                "Tabs settings should not be shown",
-                mMainSettings.findPreference(MainSettings.PREF_TABS));
-    }
-
-    @Test
-    @SmallTest
-    @EnableFeatures(ChromeFeatureList.SAFETY_HUB)
-    public void testSafetyHubFlagOn() {
-        startSettings();
-        if (BuildInfo.getInstance().isAutomotive) {
-            Assert.assertNull(
-                    "Safety hub should not be shown on automotive",
-                    mMainSettings.findPreference(MainSettings.PREF_SAFETY_HUB));
-            Assert.assertNull(
-                    "Safety check should not be shown on automotive",
-                    mMainSettings.findPreference(MainSettings.PREF_SAFETY_CHECK));
-            return;
-        }
-
-        assertSettingsExists(MainSettings.PREF_SAFETY_HUB, SafetyHubFragment.class);
-        // Safety check should be hidden when safety hub is enabled.
-        Assert.assertNull(
-                "Safety check setting should be hidden",
-                mMainSettings.findPreference(MainSettings.PREF_SAFETY_CHECK));
-
-        // Verify that the correct metrics are logged.
-        HistogramWatcher histogramExpectation =
-                HistogramWatcher.newSingleRecordWatcher(
-                        SafetyHubMetricUtils.EXTERNAL_INTERACTIONS_HISTOGRAM_NAME,
-                        SafetyHubMetricUtils.ExternalInteractions.OPEN_FROM_SETTINGS_PAGE);
-        onView(withId(R.id.recycler_view))
-                .perform(scrollTo(hasDescendant(withText(R.string.prefs_safety_check))));
-        onView(withText(R.string.prefs_safety_check)).perform(click());
-        histogramExpectation.assertExpected();
-    }
-
-    @Test
-    @SmallTest
-    @DisableFeatures(ChromeFeatureList.SAFETY_HUB)
-    public void testSafetyHubFlagOff() {
-        startSettings();
-        if (BuildInfo.getInstance().isAutomotive) {
-            Assert.assertNull(
-                    "Safety hub should not be shown on automotive",
-                    mMainSettings.findPreference(MainSettings.PREF_SAFETY_HUB));
-            Assert.assertNull(
-                    "Safety check should not be shown on automotive",
-                    mMainSettings.findPreference(MainSettings.PREF_SAFETY_CHECK));
-        } else {
-            assertSettingsExists(MainSettings.PREF_SAFETY_CHECK, SafetyCheckSettingsFragment.class);
-            // Safety hub should be hidden when the flag is disabled.
-            Assert.assertNull(
-                    "Safety hub setting should be hidden",
-                    mMainSettings.findPreference(MainSettings.PREF_SAFETY_HUB));
-        }
-    }
-
-    @Test
-    @SmallTest
-    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_TOOLBAR)
     public void testAndroidAddressBarFlagOn() {
         startSettings();
         // This setting should only appear for certain devices, even if the flag is enabled. Since
         // this is an instrumentation test there's not a good way to fake or force device
         // characteristics, so we just fork the test's behavior based on the eligibility state.
         boolean showSetting =
-                BuildInfo.getInstance().isFoldable
-                        || !DeviceFormFactor.isNonMultiDisplayContextOnTablet(
-                                mSettingsActivityTestRule.getActivity());
+                !DeviceInfo.isAutomotive()
+                        && (DeviceInfo.isFoldable()
+                                || !DeviceFormFactor.isNonMultiDisplayContextOnTablet(
+                                        mSettingsActivityTestRule.getActivity()));
         if (!showSetting) {
             Assert.assertNull(
                     "Address Bar should not be shown for for ineligible devices",
@@ -959,7 +794,6 @@ public class MainSettingsFragmentTest {
 
     @Test
     @SmallTest
-    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_TOOLBAR)
     public void testAndroidAddressBar_newLabel() {
         Assume.assumeThat(supportAddressBarSettings(), is(true));
         testNewPreferenceLabel(
@@ -971,7 +805,6 @@ public class MainSettingsFragmentTest {
 
     @Test
     @SmallTest
-    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_TOOLBAR)
     public void testAndroidAddressBar_cleanUpBadPrefValue() {
         ChromeSharedPreferences.getInstance()
                 .writeInt(ChromePreferenceKeys.ADDRESS_BAR_SETTINGS_CLICKED, 1);
@@ -989,16 +822,6 @@ public class MainSettingsFragmentTest {
 
     @Test
     @SmallTest
-    @DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_TOOLBAR)
-    public void testAndroidAddressBarFlagOff() {
-        startSettings();
-        Assert.assertNull(
-                "Address Bar should not be shown when flag is off, regardless of device",
-                mMainSettings.findPreference(MainSettings.PREF_ADDRESS_BAR));
-    }
-
-    @Test
-    @SmallTest
     @EnableFeatures(ChromeFeatureList.DEFAULT_BROWSER_PROMO_ANDROID2)
     public void testDefaultBrowserPromoCard() throws InterruptedException {
         when(mTestTracker.shouldTriggerHelpUi(any())).thenReturn(true);
@@ -1010,41 +833,221 @@ public class MainSettingsFragmentTest {
         Preference preference = mMainSettings.findPreference(MainSettings.PREF_SETTINGS_PROMO_CARD);
         Assert.assertNotNull(
                 "Settings promo preference exist when feature flag is enabled", preference);
-        Assert.assertTrue("Settings promo card is not showing", preference.isVisible());
     }
 
     @Test
     @SmallTest
-    @EnableFeatures(ChromeFeatureList.ANDROID_APPEARANCE_SETTINGS)
-    public void testAppearanceSettingsEnabled() {
+    @EnableFeatures(ChromeFeatureList.DEFAULT_BROWSER_PROMO_ENTRY_POINT)
+    public void testDefaultBrowserSettingEnabled() {
         startSettings();
-        assertSettingsExists(PREF_APPEARANCE, AppearanceSettingsFragment.class);
-        Assert.assertNull(mMainSettings.findPreference(PREF_TOOLBAR_SHORTCUT));
-        Assert.assertNull(mMainSettings.findPreference(PREF_UI_THEME));
+        Preference preference = mMainSettings.findPreference(MainSettings.PREF_DEFAULT_BROWSER);
+        Assert.assertNotNull(
+                "Default Browser preference should exist when flag is enabled", preference);
+        Assert.assertTrue("Default Browser preference should be visible", preference.isVisible());
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    var indexProvider = MainSettings.SEARCH_INDEX_DATA_PROVIDER;
+                    indexProvider.updateDynamicPreferences(
+                            mSettingsActivityTestRule.getActivity(),
+                            mSearchIndexDataMock,
+                            mMainSettings.getProfile());
+                });
+
+        // Verify that the preference is not removed from the index so that it remains searchable.
+        verify(mSearchIndexDataMock, never())
+                .removeEntry(
+                        MainSettings.SEARCH_INDEX_DATA_PROVIDER.getUniqueId(
+                                MainSettings.PREF_DEFAULT_BROWSER));
     }
 
     @Test
     @SmallTest
-    @DisableFeatures(ChromeFeatureList.ANDROID_APPEARANCE_SETTINGS)
-    public void testAppearanceSettingsDisabled() {
+    @DisableFeatures(ChromeFeatureList.DEFAULT_BROWSER_PROMO_ENTRY_POINT)
+    public void testDefaultBrowserSettingDisabled() {
         startSettings();
-        Assert.assertNull(mMainSettings.findPreference(PREF_APPEARANCE));
-        assertSettingsExists(PREF_TOOLBAR_SHORTCUT, AdaptiveToolbarSettingsFragment.class);
-        final var themePref = assertSettingsExists(PREF_UI_THEME, ThemeSettingsFragment.class);
-        Assert.assertEquals(
-                ThemeSettingsEntry.SETTINGS,
-                themePref.getExtras().getInt(ThemeSettingsFragment.KEY_THEME_SETTINGS_ENTRY));
+        Assert.assertNull(
+                "Default Browser preference should not exist when flag is disabled",
+                mMainSettings.findPreference(MainSettings.PREF_DEFAULT_BROWSER));
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    var indexProvider = MainSettings.SEARCH_INDEX_DATA_PROVIDER;
+                    indexProvider.updateDynamicPreferences(
+                            mSettingsActivityTestRule.getActivity(),
+                            mSearchIndexDataMock,
+                            mMainSettings.getProfile());
+                });
+
+        // Verify that the preference is removed from the search index so that it does not appear in
+        // search results.
+        verify(mSearchIndexDataMock)
+                .removeEntry(
+                        MainSettings.SEARCH_INDEX_DATA_PROVIDER.getUniqueId(
+                                MainSettings.PREF_DEFAULT_BROWSER));
     }
 
     @Test
     @SmallTest
-    @EnableFeatures(ChromeFeatureList.ANDROID_APPEARANCE_SETTINGS)
     public void testAppearanceSettingsNewLabel() {
         testNewPreferenceLabel(
                 AppearanceSettingsFragment.class,
                 MainSettings.PREF_APPEARANCE,
                 ChromePreferenceKeys.APPEARANCE_SETTINGS_VIEW_COUNT,
                 R.string.appearance_settings);
+    }
+
+    @Test
+    @SmallTest
+    @DisableFeatures(ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID)
+    public void testAutofillAndPasswordsDisabledSettingsEntries() {
+        startSettings();
+
+        Assert.assertNull(
+                "Autofill and passwords preference should be hidden",
+                mMainSettings.findPreference(MainSettings.PREF_AUTOFILL_AND_PASSWORDS));
+        Assert.assertNotNull(
+                "Autofill section should be visible",
+                mMainSettings.findPreference(MainSettings.PREF_AUTOFILL_SECTION));
+        Assert.assertNotNull(
+                "Passwords preference should be visible",
+                mMainSettings.findPreference(MainSettings.PREF_PASSWORDS));
+        Assert.assertNotNull(
+                "Payment methods preference should be visible",
+                mMainSettings.findPreference(MainSettings.PREF_AUTOFILL_PAYMENTS));
+        Assert.assertNotNull(
+                "Addresses preference should be visible",
+                mMainSettings.findPreference(MainSettings.PREF_AUTOFILL_ADDRESSES));
+        Assert.assertNotNull(
+                "Autofill options preference should be visible",
+                mMainSettings.findPreference(MainSettings.PREF_AUTOFILL_OPTIONS));
+        Assert.assertNull(
+                "Autofill and passwords preference should be hidden",
+                mMainSettings.findPreference(MainSettings.PREF_AUTOFILL_AND_PASSWORDS));
+    }
+
+    @Test
+    @SmallTest
+    @DisableFeatures(ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID)
+    public void testAutofillAndPasswordsDisabledSearchIndexUpdated() {
+        startSettings();
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    MainSettings.SEARCH_INDEX_DATA_PROVIDER.updateDynamicPreferences(
+                            mSettingsActivityTestRule.getActivity(),
+                            mSearchIndexDataMock,
+                            mMainSettings.getProfile());
+                });
+        verify(mSearchIndexDataMock, never())
+                .removeEntry(
+                        MainSettings.SEARCH_INDEX_DATA_PROVIDER.getUniqueId(
+                                MainSettings.PREF_AUTOFILL_SECTION));
+        verify(mSearchIndexDataMock, atLeastOnce())
+                .removeEntry(
+                        MainSettings.SEARCH_INDEX_DATA_PROVIDER.getUniqueId(
+                                MainSettings.PREF_AUTOFILL_AND_PASSWORDS));
+    }
+
+    @Test
+    @SmallTest
+    @EnableFeatures(ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID)
+    public void testAutofillAndPasswordsEnabledSettingsEntries() {
+        startSettings();
+
+        Assert.assertNotNull(
+                "Autofill and passwords preference should be visible",
+                mMainSettings.findPreference(MainSettings.PREF_AUTOFILL_AND_PASSWORDS));
+        Assert.assertEquals(
+                mMainSettings.getString(R.string.autofill_and_passwords_settings_title),
+                mMainSettings
+                        .findPreference(MainSettings.PREF_AUTOFILL_AND_PASSWORDS)
+                        .getTitle()
+                        .toString());
+
+        Assert.assertNull(
+                "Autofill section should be hidden",
+                mMainSettings.findPreference(MainSettings.PREF_AUTOFILL_SECTION));
+        Assert.assertNull(
+                "Passwords preference should be hidden",
+                mMainSettings.findPreference(MainSettings.PREF_PASSWORDS));
+        Assert.assertNull(
+                "Payment methods preference should be hidden",
+                mMainSettings.findPreference(MainSettings.PREF_AUTOFILL_PAYMENTS));
+        Assert.assertNull(
+                "Addresses preference should be hidden",
+                mMainSettings.findPreference(MainSettings.PREF_AUTOFILL_ADDRESSES));
+        Assert.assertNull(
+                "Autofill options preference should be hidden",
+                mMainSettings.findPreference(MainSettings.PREF_AUTOFILL_OPTIONS));
+    }
+
+    @Test
+    @SmallTest
+    @EnableFeatures(ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID)
+    public void testAutofillAndPasswordsEnabledSearchIndexUpdated() {
+        startSettings();
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    MainSettings.SEARCH_INDEX_DATA_PROVIDER.updateDynamicPreferences(
+                            mSettingsActivityTestRule.getActivity(),
+                            mSearchIndexDataMock,
+                            mMainSettings.getProfile());
+                });
+        verify(mSearchIndexDataMock, atLeastOnce())
+                .removeEntry(
+                        MainSettings.SEARCH_INDEX_DATA_PROVIDER.getUniqueId(
+                                MainSettings.PREF_AUTOFILL_SECTION));
+        verify(mSearchIndexDataMock, atLeastOnce())
+                .removeEntry(
+                        MainSettings.SEARCH_INDEX_DATA_PROVIDER.getUniqueId(
+                                MainSettings.PREF_PASSWORDS));
+        verify(mSearchIndexDataMock, atLeastOnce())
+                .removeEntry(
+                        MainSettings.SEARCH_INDEX_DATA_PROVIDER.getUniqueId(
+                                MainSettings.PREF_AUTOFILL_PAYMENTS));
+        verify(mSearchIndexDataMock, atLeastOnce())
+                .removeEntry(
+                        MainSettings.SEARCH_INDEX_DATA_PROVIDER.getUniqueId(
+                                MainSettings.PREF_AUTOFILL_ADDRESSES));
+        verify(mSearchIndexDataMock, atLeastOnce())
+                .removeEntry(
+                        MainSettings.SEARCH_INDEX_DATA_PROVIDER.getUniqueId(
+                                MainSettings.PREF_AUTOFILL_OPTIONS));
+    }
+
+    @Test
+    @SmallTest
+    @EnableFeatures(ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID)
+    public void testClickAutofillAndPasswordsLaunchesNewScreen() {
+        var histogramWatcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Autofill.YourSavedInfoSettingsPage.VisitReferrer",
+                        AutofillSettingsReferrer.SETTINGS_MENU);
+        startSettings();
+
+        // Anonymous class as fake is used instead of a mock.
+        // ProGuard/R8 sees MainSettings.Observer having single implementation, inlining the
+        // implementation instead of the interface and causing a ClassCastException using a mock.
+        AtomicBoolean selected = new AtomicBoolean(false);
+        MainSettings.Observer observer = preference -> selected.set(true);
+        mMainSettings.addObserver(observer);
+
+        onView(withId(R.id.recycler_view))
+                .perform(
+                        scrollTo(
+                                hasDescendant(
+                                        withText(R.string.autofill_and_passwords_settings_title))));
+        onView(withText(R.string.autofill_and_passwords_settings_title)).perform(click());
+
+        onView(
+                        allOf(
+                                withText(R.string.autofill_and_passwords_settings_title),
+                                withParent(withId(R.id.action_bar))))
+                .check(matches(isDisplayed()));
+        assertTrue(selected.get());
+        histogramWatcher.assertExpected();
     }
 
     private void startSettings() {
@@ -1092,15 +1095,15 @@ public class MainSettingsFragmentTest {
 
         if (settingsFragmentClass == null) return pref;
 
+        String fragment = ThreadUtils.runOnUiThreadBlocking(pref::getFragment);
         try {
-            Assert.assertNotNull(
-                    "Fragment attached to the preference is null.", pref.getFragment());
+            Assert.assertNotNull("Fragment attached to the preference is null.", fragment);
             Assert.assertEquals(
                     "Preference class is different.",
                     settingsFragmentClass,
-                    Class.forName(pref.getFragment()));
+                    Class.forName(fragment));
         } catch (ClassNotFoundException e) {
-            throw new AssertionError("Pref fragment <" + pref.getFragment() + "> is not found.");
+            throw new AssertionError("Pref fragment <" + fragment + "> is not found.");
         }
         return pref;
     }
@@ -1111,13 +1114,8 @@ public class MainSettingsFragmentTest {
     }
 
     private boolean supportNotificationSettings() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return false;
         return PackageManagerUtils.canResolveActivity(
                 new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS));
-    }
-
-    private boolean supportThirdPartyFillingSetting() {
-        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.O;
     }
 
     private void testNewPreferenceLabel(

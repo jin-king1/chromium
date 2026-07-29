@@ -37,7 +37,6 @@
 <translation id="2311842470354187719">sideskift</translation>
 <translation id="2335594187091864976">dato- og klokkeslettvelger</translation>
 <translation id="2393030564806080191">Heksadesimal fargeverdi</translation>
-<translation id="2398813069815436052">En dialogboks er åpnet.</translation>
 <translation id="245932805758469625">antall sekunder med video som gjenstår</translation>
 <translation id="248395913932153421">Dag</translation>
 <translation id="2508569020611168319">faneliste</translation>
@@ -185,6 +184,7 @@
 <translation id="7341556277900466204">Fargebrønn</translation>
 <translation id="7353453495576941748">anerkjennelse</translation>
 <translation id="7405738980073107433">sluttnoter</translation>
+<translation id="7485247394850195592">Alfakanal</translation>
 <translation id="7491962110804786152">tab</translation>
 <translation id="7529102961911894712">tilbakelink</translation>
 <translation id="7647456547678091388">tips</translation>
@@ -223,6 +223,7 @@
 <translation id="8634971699417195529">Vis månedsvelger</translation>
 <translation id="8711688047404765493">utdata</translation>
 <translation id="8808573423886751634">kapittel</translation>
+<translation id="8826423933757944500">bildetekst</translation>
 <translation id="8851136666856101339">main</translation>
 <translation id="8861621546968757188">knapp som åpner dialogboks i forgrunnen</translation>
 <translation id="8889402386540077796">Fargetone</translation>
@@ -238,7 +239,6 @@
 <translation id="9138385573473225930">varsel</translation>
 <translation id="9155987714137265666"><ph name="WEEK" />, med start <ph name="WEEK_START_DATE" /></translation>
 <translation id="9168329111483466115">fotnote</translation>
-<translation id="945780513535800434">delvis avmerket</translation>
 <translation id="954003015749068518">start bilde-i-bilde</translation>
 <translation id="966787709310836684">meny</translation>
 </translationbundle>

@@ -4,7 +4,6 @@
 
 import("//ash/ambient/resources/resources.gni")
 import("//build/config/chrome_build.gni")
-import("//chromeos/ash/components/scalable_iph/scalable_iph.gni")
 import("//tools/grit/repack.gni")
 import("//ui/base/ui_features.gni")
 
@@ -20,6 +19,7 @@ repack("ash_test_resources_unscaled") {
     "$root_gen_dir/ash/system/mahi/resources/mahi_resources.pak",
     "$root_gen_dir/ash/system/video_conference/resources/vc_resources.pak",
     "$root_gen_dir/ash/wm/overview/birch/resources/coral_resources.pak",
+    "$root_gen_dir/ui/resources/ui_lottie_resources.pak",
   ]
   deps = [
     "//ash/public/cpp/resources:ash_public_unscaled_resources",
@@ -27,6 +27,7 @@ repack("ash_test_resources_unscaled") {
     "//ash/system/mahi/resources:mahi_resources",
     "//ash/system/video_conference/resources:vc_resources",
     "//ash/wm/overview/birch/resources:coral_resources_grit",
+    "//ui/resources",
   ]
 
   if (include_ash_ambient_animation_resources) {
@@ -36,7 +37,7 @@ repack("ash_test_resources_unscaled") {
     deps += [ "//ash/ambient/resources:lottie_resources" ]
   }
 
-  if (enable_cros_scalable_iph) {
+  if (is_chrome_branded) {
     sources += [ "$root_gen_dir/chromeos/ash/ash_resources.pak" ]
     deps += [ "//chromeos/ash/resources" ]
   }

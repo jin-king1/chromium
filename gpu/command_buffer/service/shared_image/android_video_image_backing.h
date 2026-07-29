@@ -11,7 +11,7 @@
 
 #include "gpu/command_buffer/service/shared_image/android_image_backing.h"
 #include "gpu/gpu_gles2_export.h"
-#include "gpu/ipc/common/vulkan_ycbcr_info.h"
+#include "gpu/vulkan/vulkan_ycbcr_info.h"
 
 namespace viz {
 class VulkanContextProvider;
@@ -21,7 +21,6 @@ namespace gpu {
 class DawnContextProvider;
 struct Mailbox;
 struct VulkanYCbCrInfo;
-class AbstractTextureAndroid;
 class RefCountedLock;
 class StreamTextureSharedImageInterface;
 class SharedContextState;
@@ -70,9 +69,6 @@ class GPU_GLES2_EXPORT AndroidVideoImageBacking : public AndroidImageBacking {
                            SkAlphaType alpha_type,
                            std::string debug_label,
                            bool is_thread_safe);
-
-  std::unique_ptr<AbstractTextureAndroid> GenAbstractTexture(
-      const bool passthrough);
 };
 
 }  // namespace gpu

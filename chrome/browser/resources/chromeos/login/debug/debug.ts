@@ -540,6 +540,33 @@ const KNOWN_SCREENS: ScreenDefType[] = [
           });
         },
       },
+      {
+        // Device disabled with location tracking enabled
+        id: 'location-tracking',
+        trigger: (screen: any) => {
+          screen.onBeforeShow({
+            serial: '1234567890',
+            domain: 'example.com',
+            message: 'Please return this device to the techstop.',
+            locationTrackingEnabled: true,
+          });
+        },
+      },
+      {
+        // Device disabled with restriction schedule
+        id: 'restriction-schedule',
+        trigger: (screen: any) => {
+          screen.onBeforeShow({
+            serial: '1234567890',
+            domain: 'example.com',
+            message: 'Please return this device to the techstop.',
+            deviceRestrictionScheduleEnabled: true,
+            deviceName: 'Chromebook',
+            restrictionScheduleEndDay: 'Monday',
+            restrictionScheduleEndTime: '5:00 PM',
+          });
+        },
+      },
     ],
   },
   {
@@ -939,6 +966,10 @@ const KNOWN_SCREENS: ScreenDefType[] = [
     kind: ScreenKind.NORMAL,
   },
   {
+    id: 'remove-local-auth-factors',
+    kind: ScreenKind.NORMAL,
+  },
+  {
     id: 'local-data-loss-warning',
     kind: ScreenKind.NORMAL,
     states: [
@@ -1195,7 +1226,6 @@ const KNOWN_SCREENS: ScreenDefType[] = [
     kind: ScreenKind.NORMAL,
     handledSteps:
         'loaded,loading,play-load-error,google-eula,cros-eula,arc,privacy',
-    // TODO(b/260014420): Use localized URLs for eulaUrl and additionalTosUrl.
     states: [
       {
         id: 'regular-owner',
@@ -1387,7 +1417,6 @@ const KNOWN_SCREENS: ScreenDefType[] = [
     id: 'guest-tos',
     kind: ScreenKind.NORMAL,
     handledSteps: 'loading,overview,google-eula,cros-eula',
-    // TODO(b/260014420): Use localized URLs for googleEulaURL and crosEulaURL.
     states: [
       {
         id: 'overview',

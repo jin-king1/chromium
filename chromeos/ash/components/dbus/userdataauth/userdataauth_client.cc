@@ -312,6 +312,14 @@ class UserDataAuthClientImpl : public UserDataAuthClient {
                     std::move(callback));
   }
 
+  void GenerateFreshRecoveryId(
+      const ::user_data_auth::GenerateFreshRecoveryIdRequest& request,
+      GenerateFreshRecoveryIdCallback callback) override {
+    CallProtoMethod(::user_data_auth::kGenerateFreshRecoveryId,
+                    ::user_data_auth::kUserDataAuthInterface, request,
+                    std::move(callback));
+  }
+
   void GetAuthSessionStatus(
       const ::user_data_auth::GetAuthSessionStatusRequest& request,
       GetAuthSessionStatusCallback callback) override {
@@ -340,14 +348,6 @@ class UserDataAuthClientImpl : public UserDataAuthClient {
       const ::user_data_auth::GetArcDiskFeaturesRequest& request,
       GetArcDiskFeaturesCallback callback) override {
     CallProtoMethod(::user_data_auth::kGetArcDiskFeatures,
-                    ::user_data_auth::kUserDataAuthInterface, request,
-                    std::move(callback));
-  }
-
-  void GetRecoverableKeyStores(
-      const ::user_data_auth::GetRecoverableKeyStoresRequest& request,
-      GetRecoverableKeyStoresCallback callback) override {
-    CallProtoMethod(::user_data_auth::kGetRecoverableKeyStores,
                     ::user_data_auth::kUserDataAuthInterface, request,
                     std::move(callback));
   }

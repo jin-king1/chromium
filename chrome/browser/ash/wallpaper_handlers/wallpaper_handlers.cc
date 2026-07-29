@@ -19,6 +19,8 @@
 #include "base/command_line.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/strings/strcat.h"
+#include "base/strings/string_util.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/net/system_network_context_manager.h"
 #include "content/public/browser/browser_thread.h"
@@ -64,7 +66,7 @@ constexpr std::string_view kCustomizationIdFilteringPrefix =
     "chromebook_customization_id_";
 
 // Returns the corresponding test url if |kTestWallpaperServer| is present,
-// otherwise returns |url| as is. See https://crbug.com/914144.
+// otherwise returns |url| as is. See https://crbug.com/40606096.
 std::string MaybeConvertToTestUrl(std::string url) {
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
           ash::switches::kTestWallpaperServer)) {
@@ -142,7 +144,7 @@ class BackdropFetcher {
 
  private:
   // Called when the download completes.
-  void OnURLFetchComplete(std::unique_ptr<std::string> response_body) {
+  void OnURLFetchComplete(std::optional<std::string> response_body) {
     if (!response_body) {
       int response_code = -1;
       if (simple_loader_->ResponseInfo() &&

@@ -39,3 +39,9 @@ NSString* const kPasswordSettingsChangePinButtonId =
     @"PasswordSettingsChangePinButtonId";
 NSString* const kPasswordSettingsChangePinDescriptionId =
     @"PasswordSettingsChangePinDescriptionId";
+
+NSString* const kPasswordSettingsAutomaticPasskeyUpgradeToggleId =
+    @"PasswordSettingsAutomaticPasskeyUpgradeToggleId";
+
+NSString* const kPasswordSettingsCredentialExportButtonId =
+    @"PasswordSettingsCredentialExportButtonId";

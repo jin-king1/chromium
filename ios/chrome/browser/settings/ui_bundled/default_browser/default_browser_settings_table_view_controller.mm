@@ -9,9 +9,16 @@
 #import "base/metrics/user_metrics_action.h"
 #import "base/strings/strcat.h"
 #import "ios/chrome/browser/default_browser/model/utils.h"
-#import "ios/chrome/browser/default_promo/ui_bundled/default_browser_instructions_view_controller.h"
-#import "ios/chrome/browser/intents/intents_donation_helper.h"
+#import "ios/chrome/browser/default_browser/promo/public/features.h"
+#import "ios/chrome/browser/default_browser/promo/ui/default_browser_instructions_view_controller.h"
+#import "ios/chrome/browser/intents/model/intents_donation_helper.h"
+#import "ios/chrome/browser/ntp/model/set_up_list_item_type.h"
+#import "ios/chrome/browser/ntp/model/set_up_list_prefs.h"
 #import "ios/chrome/browser/settings/ui_bundled/settings_table_view_controller_constants.h"
+#import "ios/chrome/browser/shared/model/application_context/application_context.h"
+#import "ios/chrome/browser/shared/public/commands/picture_in_picture_commands.h"
+#import "ios/chrome/browser/shared/public/commands/scene_commands.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/table_view/table_view_utils.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
@@ -44,6 +51,9 @@ enum class DefaultBrowserSettingsPageUsage {
   // Whether the user visited the iOS Default Browser settings page.
   BOOL _defaultBrowserSettingsVisited;
 
+  // Whether to use the new Default Apps destination when going to iOS settings.
+  BOOL _useDefaultAppsDestination;
+
   // The view controller for default browser instructions.
   DefaultBrowserInstructionsViewController* _instructionsViewController;
 }
@@ -61,6 +71,8 @@ enum class DefaultBrowserSettingsPageUsage {
   self.title = l10n_util::GetNSString(IDS_IOS_SETTINGS_SET_DEFAULT_BROWSER);
   self.shouldHideDoneButton = YES;
   self.tableView.accessibilityIdentifier = kDefaultBrowserSettingsTableViewId;
+
+  _useDefaultAppsDestination = [self shouldUseDefaultAppsDestination];
 
   [self addDefaultBrowserVideoInstructionsView];
 
@@ -99,6 +111,20 @@ enum class DefaultBrowserSettingsPageUsage {
 
 #pragma mark Private
 
+// Returns whether the Default Apps destination should be used.
+- (BOOL)shouldUseDefaultAppsDestination {
+  if (IsDefaultBrowserPictureInPictureEnabled()) {
+    return IsDefaultAppsPictureInPictureVariant();
+  }
+
+  BOOL isFromOneTimeDefaultBrowserNotification =
+      self.source == DefaultBrowserSettingsPageSource::kTipsNotification &&
+      base::FeatureList::IsEnabled(kIOSOneTimeDefaultBrowserNotification);
+  return IsDefaultAppsDestinationAvailable() &&
+         (isFromOneTimeDefaultBrowserNotification ||
+          IsUseDefaultAppsDestinationForPromosEnabled());
+}
+
 // Responds to user action to go to default browser iOS settings.
 - (void)openSettingsButtonPressed {
   // Record iOS settings opened only once per app settings display. As
@@ -116,21 +142,32 @@ enum class DefaultBrowserSettingsPageUsage {
 
   _defaultBrowserSettingsVisited = YES;
 
-  [[UIApplication sharedApplication]
-                openURL:[NSURL URLWithString:UIApplicationOpenSettingsURLString]
-                options:{}
-      completionHandler:nil];
+  PrefService* localState = GetApplicationContext()->GetLocalState();
+  if (localState) {
+    // Mark the Set Up List Item as complete. This is a no-op if the item is
+    // already complete.
+    set_up_list_prefs::MarkItemComplete(localState,
+                                        SetUpListItemType::kDefaultBrowser);
+  }
+
+  if (IsDefaultBrowserPictureInPictureEnabled()) {
+    [self.sceneHandler closePresentedViews];
+  }
+  OpenIOSDefaultBrowserSettingsPage(_useDefaultAppsDestination,
+                                    /*ui_application_to_use=*/nil,
+                                    self.PIPHandler);
 }
 
 // Adds default browser video instructions view as a background view.
 - (void)addDefaultBrowserVideoInstructionsView {
   _instructionsViewController =
       [[DefaultBrowserInstructionsViewController alloc]
-          initWithDismissButton:NO
-               hasRemindMeLater:NO
-                       hasSteps:YES
-                  actionHandler:self
-                      titleText:nil];
+              initWithDismissButton:NO
+                   hasRemindMeLater:NO
+          useDefaultAppsDestination:_useDefaultAppsDestination
+                           hasSteps:YES
+                          titleText:nil];
+  _instructionsViewController.actionHandler = self;
   [self addChildViewController:_instructionsViewController];
 
   self.tableView.backgroundView = [[UIView alloc] init];

@@ -9,7 +9,6 @@
 #include <utility>
 #include <vector>
 
-#include "base/containers/contains.h"
 #include "base/containers/queue.h"
 #include "base/logging.h"
 #include "base/task/bind_post_task.h"
@@ -218,17 +217,37 @@ void NetworkTelemetrySampler::CollectNetworksStates(
       network_telemetry->set_device_path(network->device_path());
     }
 
-    if (!network->GetIpAddress().empty()) {
-      network_telemetry->set_ip_address(network->GetIpAddress());
+    const auto* network_config = network->network_config();
+    if (network_config) {
+      if (network_config->ipv4_address.has_value()) {
+        network_telemetry->set_ip_address(
+            network_config->ipv4_address->addr.ToString());
+      }
+      if (network_config->ipv4_gateway.has_value()) {
+        network_telemetry->set_gateway(
+            network_config->ipv4_gateway->ToString());
+      }
+
+      for (const auto& ipv6_address : network_config->ipv6_addresses) {
+        network_telemetry->add_ipv6_address(ipv6_address.addr.ToString());
+      }
+
+      if (network_config->ipv6_gateway.has_value()) {
+        network_telemetry->set_ipv6_gateway(
+            network_config->ipv6_gateway->ToString());
+      }
     }
 
-    if (!network->GetGateway().empty()) {
-      network_telemetry->set_gateway(network->GetGateway());
+    network_telemetry->set_is_metered(network->metered());
+
+    if (network->max_downlink_speed_kbps().has_value()) {
+      network_telemetry->set_link_down_speed_kbps(
+          network->max_downlink_speed_kbps().value());
     }
 
     if (type.Equals(::ash::NetworkTypePattern::WiFi())) {
       network_telemetry->set_signal_strength(network->signal_strength());
-      if (base::Contains(service_path_rssi_map, network->path())) {
+      if (service_path_rssi_map.contains(network->path())) {
         network_telemetry->set_signal_strength_dbm(
             service_path_rssi_map.at(network->path()));
       } else {

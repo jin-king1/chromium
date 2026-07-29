@@ -5,17 +5,20 @@
 #ifndef IOS_CHROME_BROWSER_DOWNLOAD_MODEL_AR_QUICK_LOOK_TAB_HELPER_H_
 #define IOS_CHROME_BROWSER_DOWNLOAD_MODEL_AR_QUICK_LOOK_TAB_HELPER_H_
 
-#include <memory>
+#import <memory>
+#import <optional>
 
 #import "base/memory/raw_ptr.h"
-#include "base/memory/weak_ptr.h"
-#include "ios/web/public/download/download_task_observer.h"
-#import "ios/web/public/lazy_web_state_user_data.h"
+#import "base/scoped_observation.h"
+#import "ios/web/public/download/download_task_observer.h"
+#import "ios/web/public/web_state_observer.h"
+#import "ios/web/public/web_state_user_data.h"
 
 @protocol ARQuickLookTabHelperDelegate;
 
 namespace web {
 class DownloadTask;
+class NavigationContext;
 class WebState;
 }  // namespace web
 
@@ -49,7 +52,8 @@ enum class IOSDownloadARModelState {
 // TabHelper to download and preview USDZ format 3D models for AR.
 class ARQuickLookTabHelper
     : public web::DownloadTaskObserver,
-      public web::LazyWebStateUserData<ARQuickLookTabHelper> {
+      public web::WebStateObserver,
+      public web::WebStateUserData<ARQuickLookTabHelper> {
  public:
   ARQuickLookTabHelper(const ARQuickLookTabHelper&) = delete;
   ARQuickLookTabHelper& operator=(const ARQuickLookTabHelper&) = delete;
@@ -71,7 +75,7 @@ class ARQuickLookTabHelper
   explicit ARQuickLookTabHelper(web::WebState* web_state);
 
  private:
-  friend class web::LazyWebStateUserData<ARQuickLookTabHelper>;
+  friend class web::WebStateUserData<ARQuickLookTabHelper>;
 
   // Previews the downloaded file given by current download task.
   void DidFinishDownload();
@@ -81,9 +85,22 @@ class ARQuickLookTabHelper
   // web::DownloadTaskObserver:
   void OnDownloadUpdated(web::DownloadTask* download_task) override;
 
+  // web::WebStateObserver overrides:
+  void WasShown(web::WebState* web_state) override;
+  void DidStartNavigation(web::WebState* web_state,
+                          web::NavigationContext* navigation_context) override;
+
   // Previews the downloaded USDZ file or confirms the download if download has
   // not started.
   void ConfirmOrPreviewDownload(web::DownloadTask* download_task);
+
+  // Structure to hold the metadata of an AR Quick Look preview that completed
+  // while the web state was hidden, allowing it to be deferred.
+  struct PendingARPreview {
+    NSURL* file_url;
+    NSURL* canonical_url;
+    bool allow_content_scaling;
+  };
 
   raw_ptr<web::WebState> web_state_ = nullptr;
   __weak id<ARQuickLookTabHelperDelegate> delegate_ = nil;
@@ -91,7 +108,11 @@ class ARQuickLookTabHelper
   // The current download task.
   std::unique_ptr<web::DownloadTask> download_task_;
 
-  WEB_STATE_USER_DATA_KEY_DECL();
+  // The preview that completed while the tab was hidden.
+  std::optional<PendingARPreview> pending_preview_;
+
+  base::ScopedObservation<web::WebState, web::WebStateObserver>
+      web_state_observation_{this};
 };
 
 #endif  // IOS_CHROME_BROWSER_DOWNLOAD_MODEL_AR_QUICK_LOOK_TAB_HELPER_H_

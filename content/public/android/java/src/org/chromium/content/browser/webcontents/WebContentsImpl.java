@@ -24,6 +24,7 @@ import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.Callback;
@@ -51,6 +52,7 @@ import org.chromium.content.browser.framehost.RenderFrameHostImpl;
 import org.chromium.content.browser.input.ImeAdapterImpl;
 import org.chromium.content.browser.selection.SelectionPopupControllerImpl;
 import org.chromium.content_public.browser.ChildProcessImportance;
+import org.chromium.content_public.browser.ContentFeatureMap;
 import org.chromium.content_public.browser.GlobalRenderFrameHostId;
 import org.chromium.content_public.browser.ImageDownloadCallback;
 import org.chromium.content_public.browser.JavaScriptCallback;
@@ -66,6 +68,7 @@ import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.browser.WebContentsInternals;
 import org.chromium.content_public.browser.WebContentsObserver;
 import org.chromium.content_public.browser.back_forward_transition.AnimationStage;
+import org.chromium.content_public.common.ContentFeatures;
 import org.chromium.ui.BrowserControlsOffsetTagDefinitions;
 import org.chromium.ui.OverscrollRefreshHandler;
 import org.chromium.ui.base.EventForwarder;
@@ -77,8 +80,10 @@ import org.chromium.url.GURL;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -92,6 +97,11 @@ public class WebContentsImpl
                 RenderFrameHostDelegate,
                 WindowEventObserver {
     private static final String TAG = "WebContentsImpl";
+
+    // Map from native web contents pointer to WebContentsImpl to allow scaling of unlimited web
+    // contents objects.
+    // ScopedGlobalRef tables are finite.
+    private static final Map<Long, WebContentsImpl> sWebContentsMap = new HashMap<>();
 
     private static final String PARCEL_VERSION_KEY = "version";
     private static final String PARCEL_WEBCONTENTS_KEY = "webcontents";
@@ -144,39 +154,13 @@ public class WebContentsImpl
                 }
             };
 
-    /**
-     * Factory interface passed to {@link #getOrSetUserData()} for instantiation of
-     * class as user data.
-     *
-     * Constructor method reference comes handy for class Foo to provide the factory.
-     * Use lazy initialization to avoid having to generate too many anonymous references.
-     *
-     * <code>
-     * public class Foo {
-     *     static final class FoofactoryLazyHolder {
-     *         private static final UserDataFactory<Foo> INSTANCE = Foo::new;
-     *     }
-     *     ....
-     *
-     *     webContents.getOrsetUserData(Foo.class, FooFactoryLazyHolder.INSTANCE);
-     *
-     *     ....
-     * }
-     * </code>
-     *
-     * @param <T> Class to instantiate.
-     */
-    public interface UserDataFactory<T> {
-        T create(WebContents webContents);
-    }
-
     // Note this list may be incomplete. Frames that never had to initialize java side would
     // not have an entry here. This is here mainly to keep the java RenderFrameHosts alive, since
     // native side generally cannot safely hold strong references to them.
     private final List<RenderFrameHostImpl> mFrames = new ArrayList<>();
 
     private long mNativeWebContentsAndroid;
-    private @Nullable NavigationController mNavigationController;
+    private final NavigationController mNavigationController;
 
     // Lazily created proxy observer for handling all Java-based WebContentsObservers.
     private @Nullable WebContentsObserverProxy mObserverProxy;
@@ -234,6 +218,8 @@ public class WebContentsImpl
         assert nativeWebContentsAndroid != 0;
         mNativeWebContentsAndroid = nativeWebContentsAndroid;
         mNavigationController = navigationController;
+        var oldValue = sWebContentsMap.put(mNativeWebContentsAndroid, this);
+        assert oldValue == null;
     }
 
     @CalledByNative
@@ -243,13 +229,18 @@ public class WebContentsImpl
         return new WebContentsImpl(nativeWebContentsAndroid, navigationController);
     }
 
+    @CalledByNative
+    public static @Nullable WebContentsImpl getJavaObject(long nativeWebContents) {
+        return sWebContentsMap.get(nativeWebContents);
+    }
+
     @Override
     @Initializer
     public void setDelegates(
             String productVersion,
             ViewAndroidDelegate viewDelegate,
-            InternalAccessDelegate accessDelegate,
-            WindowAndroid windowAndroid,
+            @Nullable InternalAccessDelegate accessDelegate,
+            @Nullable WindowAndroid windowAndroid,
             InternalsHolder internalsHolder) {
         assert internalsHolder != null;
 
@@ -311,12 +302,17 @@ public class WebContentsImpl
     @VisibleForTesting
     void clearNativePtr() {
         mNativeDestroyThrowable = new RuntimeException("clearNativePtr");
+        long nativeWebContentsAndroid = mNativeWebContentsAndroid;
+        assert nativeWebContentsAndroid != 0;
         mNativeWebContentsAndroid = 0;
-        mNavigationController = null;
-        if (mObserverProxy != null) {
-            mObserverProxy.webContentsDestroyed();
-            mObserverProxy = null;
+        clearJavaWebContentsObservers();
+        UserDataHost userDataHost = getUserDataHost();
+        if (userDataHost != null) {
+            userDataHost.destroy();
+            mInternalsHolder.set(null);
         }
+        var removedValue = sWebContentsMap.remove(nativeWebContentsAndroid);
+        assert removedValue != null;
     }
 
     // =================== RenderFrameHostDelegate overrides ===================
@@ -404,7 +400,20 @@ public class WebContentsImpl
 
         if (mNativeWebContentsAndroid != 0) {
             WebContentsImplJni.get().destroyWebContents(mNativeWebContentsAndroid);
+
+            if (mNativeWebContentsAndroid != 0) {
+                // Normally the native object would have been destroyed by clearNativePtr() being
+                // called from destroyWebContents(). However, if JNI is mocked it will not have been
+                // invoked so invoke it explicitly here.
+                clearNativePtr();
+            }
         }
+    }
+
+    @Override
+    public boolean isBeingCaptured() {
+        return mNativeWebContentsAndroid != 0
+                && WebContentsImplJni.get().isBeingCaptured(mNativeWebContentsAndroid);
     }
 
     @Override
@@ -421,7 +430,7 @@ public class WebContentsImpl
     }
 
     @Override
-    public @Nullable NavigationController getNavigationController() {
+    public NavigationController getNavigationController() {
         return mNavigationController;
     }
 
@@ -544,6 +553,13 @@ public class WebContentsImpl
     }
 
     @Override
+    public void discard(Runnable onDiscarded) {
+        checkNotDestroyed();
+        assert ContentFeatureMap.isEnabled(ContentFeatures.WEB_CONTENTS_DISCARD);
+        WebContentsImplJni.get().discard(mNativeWebContentsAndroid, onDiscarded);
+    }
+
+    @Override
     public boolean isLoading() {
         checkNotDestroyed();
         return WebContentsImplJni.get().isLoading(mNativeWebContentsAndroid);
@@ -624,10 +640,14 @@ public class WebContentsImpl
     }
 
     @Override
-    public void setImportance(@ChildProcessImportance int primaryMainFrameImportance) {
+    public void setPrimaryPageImportance(
+            @ChildProcessImportance int mainFrameImportance,
+            @ChildProcessImportance int subframeImportance) {
         checkNotDestroyed();
+        assert mainFrameImportance >= subframeImportance;
         WebContentsImplJni.get()
-                .setImportance(mNativeWebContentsAndroid, primaryMainFrameImportance);
+                .setPrimaryPageImportance(
+                        mNativeWebContentsAndroid, mainFrameImportance, subframeImportance);
     }
 
     @Override
@@ -897,19 +917,22 @@ public class WebContentsImpl
                     new EventForwarder.StylusWritingDelegate() {
                         @Override
                         public boolean handleTouchEvent(MotionEvent motionEvent) {
+                            ViewAndroidDelegate viewAndroidDelegate = getViewAndroidDelegate();
                             return mStylusWritingHandler != null
+                                    && viewAndroidDelegate != null
+                                    && viewAndroidDelegate.getContainerView() != null
                                     && mStylusWritingHandler.handleTouchEvent(
-                                            motionEvent,
-                                            assumeNonNull(getViewAndroidDelegate())
-                                                    .getContainerView());
+                                            motionEvent, viewAndroidDelegate.getContainerView());
                         }
 
                         @Override
                         public void handleHoverEvent(MotionEvent motionEvent) {
-                            if (mStylusWritingHandler != null) {
+                            ViewAndroidDelegate viewAndroidDelegate = getViewAndroidDelegate();
+                            if (mStylusWritingHandler != null
+                                    && viewAndroidDelegate != null
+                                    && viewAndroidDelegate.getContainerView() != null) {
                                 mStylusWritingHandler.handleHoverEvent(
-                                        motionEvent,
-                                        assumeNonNull(getViewAndroidDelegate()).getContainerView());
+                                        motionEvent, viewAndroidDelegate.getContainerView());
                             }
                         }
                     });
@@ -931,7 +954,7 @@ public class WebContentsImpl
     }
 
     @Override
-    public void setOverscrollRefreshHandler(OverscrollRefreshHandler handler) {
+    public void setOverscrollRefreshHandler(@Nullable OverscrollRefreshHandler handler) {
         checkNotDestroyed();
         WebContentsImplJni.get().setOverscrollRefreshHandler(mNativeWebContentsAndroid, handler);
     }
@@ -1045,15 +1068,7 @@ public class WebContentsImpl
         return mRenderCoordinates;
     }
 
-    /**
-     * Retrieves or stores a user data object for this WebContents.
-     * @param key Class instance of the object used as the key.
-     * @param userDataFactory Factory that creates an object of the generic class. A new object
-     *        is created if it hasn't been created and non-null factory is given.
-     * @return The created or retrieved user data object. Can be null if the object was
-     *         not created yet, or {@code userDataFactory} is null, or the internal data
-     *         storage is already garbage-collected.
-     */
+    @Override
     public <T extends UserData> @Nullable T getOrSetUserData(
             Class<T> key, @Nullable UserDataFactory<T> userDataFactory) {
         // For tests that go without calling |initialize|.
@@ -1104,6 +1119,7 @@ public class WebContentsImpl
         internals.userDataHost.setUserData(key, userData);
     }
 
+    @Override
     public <T extends UserData> void removeUserData(Class<T> key) {
         UserDataHost userDataHost = getUserDataHost();
         if (userDataHost == null) return;
@@ -1174,6 +1190,12 @@ public class WebContentsImpl
     }
 
     @Override
+    public void showInterestInElement(int nodeID) {
+        if (mNativeWebContentsAndroid == 0) return;
+        WebContentsImplJni.get().showInterestInElement(mNativeWebContentsAndroid, nodeID);
+    }
+
+    @Override
     public void notifyRendererPreferenceUpdate() {
         if (mNativeWebContentsAndroid == 0) return;
         WebContentsImplJni.get().notifyRendererPreferenceUpdate(mNativeWebContentsAndroid);
@@ -1239,6 +1261,19 @@ public class WebContentsImpl
     }
 
     @Override
+    public void setCanAcceptLoadDrops(boolean enabled) {
+        checkNotDestroyed();
+        WebContentsImplJni.get().setCanAcceptLoadDrops(mNativeWebContentsAndroid, enabled);
+    }
+
+    @Override
+    public boolean getCanAcceptLoadDropsForTesting() {
+        checkNotDestroyed();
+        return WebContentsImplJni.get()
+                .getCanAcceptLoadDropsForTesting(mNativeWebContentsAndroid); // IN-TEST
+    }
+
+    @Override
     public void updateOffsetTagDefinitions(
             BrowserControlsOffsetTagDefinitions offsetTagDefinitions) {
         if (mNativeWebContentsAndroid == 0) return;
@@ -1262,6 +1297,39 @@ public class WebContentsImpl
     public void setSupportsForwardTransitionAnimation(boolean supports) {
         WebContentsImplJni.get()
                 .setSupportsForwardTransitionAnimation(mNativeWebContentsAndroid, supports);
+    }
+
+    @Override
+    public boolean hasOpener() {
+        return WebContentsImplJni.get().hasOpener(mNativeWebContentsAndroid);
+    }
+
+    @Override
+    public int getOriginalWindowOpenDisposition() {
+        return WebContentsImplJni.get().getOriginalWindowOpenDisposition(mNativeWebContentsAndroid);
+    }
+
+    @Override
+    public void updateWindowControlsOverlay(Rect rect) {
+        WebContentsImplJni.get()
+                .updateWindowControlsOverlay(
+                        mNativeWebContentsAndroid, rect.left, rect.top, rect.right, rect.bottom);
+    }
+
+    @Override
+    public void setSupportsDraggableRegions(boolean supportsDraggableRegions) {
+        WebContentsImplJni.get()
+                .setSupportsDraggableRegions(mNativeWebContentsAndroid, supportsDraggableRegions);
+    }
+
+    @Override
+    public @Nullable WebContents getDocumentPictureInPictureOpener() {
+        return WebContentsImplJni.get()
+                .getDocumentPictureInPictureOpener(mNativeWebContentsAndroid);
+    }
+
+    /*package*/ @Nullable WebContentsObserverProxy getWebContentsObserverProxy() {
+        return mObserverProxy;
     }
 
     @VisibleForTesting(otherwise = VisibleForTesting.PACKAGE_PRIVATE)
@@ -1308,6 +1376,9 @@ public class WebContentsImpl
 
         String getEncoding(long nativeWebContentsAndroid);
 
+        void discard(
+                long nativeWebContentsAndroid, @JniType("base::OnceClosure") Runnable onDiscarded);
+
         boolean isLoading(long nativeWebContentsAndroid);
 
         boolean shouldShowLoadingUI(long nativeWebContentsAndroid);
@@ -1332,7 +1403,8 @@ public class WebContentsImpl
 
         void collapseSelection(long nativeWebContentsAndroid);
 
-        void setImportance(long nativeWebContentsAndroid, int importance);
+        void setPrimaryPageImportance(
+                long nativeWebContentsAndroid, int mainFrameImportance, int subframeImportance);
 
         void suspendAllMediaPlayers(long nativeWebContentsAndroid);
 
@@ -1410,11 +1482,11 @@ public class WebContentsImpl
                 long nativeWebContentsAndroid,
                 ViewStructure viewStructureRoot,
                 ViewStructureBuilder viewStructureBuilder,
-                Runnable doneCallback);
+                @JniType("base::OnceClosure") Runnable doneCallback);
 
         void setOverscrollRefreshHandler(
                 long nativeWebContentsAndroid,
-                OverscrollRefreshHandler nativeOverscrollRefreshHandler);
+                @Nullable OverscrollRefreshHandler nativeOverscrollRefreshHandler);
 
         void setSpatialNavigationDisabled(long nativeWebContentsAndroid, boolean disabled);
 
@@ -1442,6 +1514,8 @@ public class WebContentsImpl
 
         int getHeight(long nativeWebContentsAndroid);
 
+        boolean isBeingCaptured(long nativeWebContentsAndroid);
+
         EventForwarder getOrCreateEventForwarder(long nativeWebContentsAndroid);
 
         void setViewAndroidDelegate(
@@ -1455,6 +1529,8 @@ public class WebContentsImpl
 
         void setDisplayCutoutSafeArea(
                 long nativeWebContentsAndroid, int top, int left, int bottom, int right);
+
+        void showInterestInElement(long nativeWebContentsAndroid, int nodeID);
 
         void notifyRendererPreferenceUpdate(long nativeWebContentsAndroid);
 
@@ -1471,6 +1547,10 @@ public class WebContentsImpl
 
         void setLongPressLinkSelectText(long nativeWebContentsAndroid, boolean enabled);
 
+        void setCanAcceptLoadDrops(long nativeWebContentsAndroid, boolean enabled);
+
+        boolean getCanAcceptLoadDropsForTesting(long nativeWebContentsAndroid);
+
         void updateOffsetTagDefinitions(
                 long nativeWebContentsAndroid,
                 BrowserControlsOffsetTagDefinitions offsetTagDefinitions);
@@ -1479,5 +1559,17 @@ public class WebContentsImpl
                 long nativeWebContentsAndroid, Callback<Bitmap> callback);
 
         void setSupportsForwardTransitionAnimation(long nativeWebContentsAndroid, boolean enabled);
+
+        boolean hasOpener(long nativeWebContentsAndroid);
+
+        WebContents getDocumentPictureInPictureOpener(long nativeWebContentsAndroid);
+
+        int getOriginalWindowOpenDisposition(long nativeWebContentsAndroid);
+
+        void updateWindowControlsOverlay(
+                long nativeWebContentsAndroid, int left, int top, int right, int bottom);
+
+        void setSupportsDraggableRegions(
+                long nativeWebContentsAndroid, boolean supportsDraggableRegions);
     }
 }

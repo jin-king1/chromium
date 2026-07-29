@@ -211,16 +211,11 @@ class StaticMap {
   friend class StaticMap::ValueInserter;
 
   // Returns a pointer to the one true instance of MapName class.
-  static MapName* GetMap() {
+  static StaticMap* GetMap() {
     // TODO: Uses gtl::NoDestructor for the thread-safe one-time
     // initialization if gtl::NoDestructor will be open sourced by ABSL.
-    static MapName* instance = new MapName();
+    static StaticMap* instance = new MapName();
     return instance;
-  }
-
-  // Workaround for http://crbug.com/393942204
-  void Unused() {
-    absl::MutexLock l(&map_lock_);
   }
 
   absl::Mutex map_lock_;

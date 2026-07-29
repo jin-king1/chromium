@@ -24,10 +24,6 @@
 #include "components/variations/seed_response.h"
 #include "components/variations/variations_safe_seed_store.h"
 
-#if BUILDFLAG(IS_CHROMEOS)
-#include "chromeos/ash/components/dbus/featured/featured.pb.h"
-#endif  // BUILDFLAG(IS_CHROMEOS)
-
 class PrefService;
 class PrefRegistrySimple;
 
@@ -45,13 +41,8 @@ struct ValidatedSeed {
   ValidatedSeed(ValidatedSeed&& other);
   ValidatedSeed& operator=(ValidatedSeed&& other);
 
-  // Returns whether a seed matches an already stored seed.
-  bool MatchesStoredSeed(const StoredSeed& stored_seed) const;
-
-  // Gzipped and base-64 encoded serialized VariationsSeed.
-  std::string base64_seed_data;
-  // Gzipped serialized VariationsSeed.
-  std::string compressed_seed_data;
+  // Serialized VariationsSeed.
+  std::string seed_data;
   // A cryptographic signature on the seed_data.
   std::string base64_seed_signature;
   // The seed data parsed as a proto.
@@ -62,6 +53,18 @@ struct ValidatedSeed {
 // seed from Local State.
 class COMPONENT_EXPORT(VARIATIONS) VariationsSeedStore {
  public:
+  // The seed store contains two distinct seeds:
+  //   (1) The most recently fetched, or "latest", seed; and
+  //   (2) A "safe" seed, which has been observed to keep Chrome in a basically
+  //       functional state. In particular, a safe seed is one that allows
+  //       Chrome to receive new seed updates from the server.
+  // Note that it's possible for both seeds to be empty, and it's possible for
+  // the two seeds to be identical in their contents.
+  enum class SeedType {
+    LATEST,
+    SAFE,
+  };
+
   // |local_state| provides access to Local State prefs. Must not be null.
   // |initial_seed|, if not null, is stored in this seed store. It is used (A)
   // by Android Chrome and iOS to supply a first-run seed and (B) by Android
@@ -91,14 +94,27 @@ class COMPONENT_EXPORT(VARIATIONS) VariationsSeedStore {
 
   virtual ~VariationsSeedStore();
 
-  // Loads the variations seed data from local state into |seed|, as well as the
-  // raw pref values into |seed_data| and |base64_signature|. If there is a
+  // Callback for loading and parsing the seed. The result should only be
+  // considered valid if `success` is true.
+  using LoadSeedCallback =
+      base::OnceCallback<void(/*seed_data=*/std::string,
+                              /*seed_signature=*/std::string,
+                              /*success=*/bool,
+                              /*seed=*/VariationsSeed)>;
+
+  // Loads the latest seed and calls `done_callback` with the result. If the
+  // load is unsuccessful, the prefs associated with the seed will be cleared.
+  void LoadSeed(LoadSeedCallback done_callback,
+                bool require_synchronous = false);
+
+  // Loads the variations seed data into `seed`, as well as the
+  // raw pref values into `seed_data` and `base64_signature`. If there is a
   // problem with loading, clears the seed pref value and returns false. If
   // successful, fills the the outparams with the loaded data and returns true.
   // Virtual for testing.
-  [[nodiscard]] virtual bool LoadSeed(VariationsSeed* seed,
-                                      std::string* seed_data,
-                                      std::string* base64_seed_signature);
+  [[nodiscard]] virtual bool LoadSeedSync(VariationsSeed* seed,
+                                          std::string* seed_data,
+                                          std::string* base64_seed_signature);
 
   // Stores the given seed |data| (serialized protobuf) to local state, along
   // with a base64-encoded digital signature for seed and the date when it was
@@ -115,45 +131,53 @@ class COMPONENT_EXPORT(VARIATIONS) VariationsSeedStore {
   // performed synchronously, whereas otherwise some processing can be async.
   // Note: Strings are passed by value to support std::move() semantics.
   void StoreSeedData(
+      base::OnceCallback<void(bool, VariationsSeed)> done_callback,
       std::string data,
       std::string base64_seed_signature,
       std::string country_code,
+      std::string geo_level1,
       base::Time date_fetched,
       bool is_delta_compressed,
       bool is_gzip_compressed,
-      base::OnceCallback<void(bool, VariationsSeed)> done_callback,
-      bool require_synchronous = false);
+      bool require_synchronous);
 
-  // Loads the safe variations seed data from local state into |seed| and
-  // updates any relevant fields in |client_state|. Returns true iff the safe
-  // seed was read successfully from prefs. If the safe seed could not be
-  // loaded, it is guaranteed that no fields in |client_state| are modified.
+  // Loads the safe variations seed data. Returns true iff the safe seed was
+  // read successfully from prefs.
   //
   // Side effect: Upon failing to read or validate the safe seed, clears all
   // of the safe seed pref values.
-  //
-  // Virtual for testing and for early-boot CrOS experiments to use a different
-  // safe seed.
-  [[nodiscard]] virtual bool LoadSafeSeed(VariationsSeed* seed,
-                                          ClientFilterableState* client_state);
+  void LoadSafeSeed(LoadSeedCallback done_callback,
+                    bool require_synchronous = false);
 
-  // Stores the given |seed_data| (a serialized protobuf) to local state as a
-  // safe seed, along with a base64-encoded digital signature for seed and any
-  // additional client metadata relevant to the safe seed. Returns true on
+  // Loads the safe variations seed data into `seed` and updates any relevant
+  // fields in `client_state`. Returns true iff the safe seed was read
+  // successfully from prefs. If the safe seed could not be loaded, it is
+  // guaranteed that no fields in `client_state` are modified.
+  //
+  // Side effect: Upon failing to read or validate the safe seed, clears all
+  // of the safe seed pref values.
+  [[nodiscard]] virtual bool LoadSafeSeedSync(
+      VariationsSeed* seed,
+      ClientFilterableState* client_state);
+
+  // Stores the given `seed_data` (a serialized protobuf) as a safe seed, along
+  // with a base64-encoded digital signature for seed and any additional client
+  // metadata relevant to the safe seed. Calls `done_callback` with true on
   // success or false on failure; no prefs are updated in case of failure.
   // Virtual for testing.
-  virtual bool StoreSafeSeed(const std::string& seed_data,
+  virtual void StoreSafeSeed(base::OnceCallback<void(bool)> done_callback,
+                             const std::string& seed_data,
                              const std::string& base64_seed_signature,
                              int seed_milestone,
                              const ClientFilterableState& client_state,
                              base::Time seed_fetch_time);
 
-  // Loads the last fetch time (for the latest seed) that was persisted to the
-  // local state.
-  base::Time GetLastFetchTime() const;
+  // Loads the last fetch time (for the latest seed) that was persisted. Returns
+  // base::Time() if there is no seed.
+  base::Time GetLatestSeedFetchTime() const;
 
-  // Returns the time at which the safe seed was persisted to the local state.
-  //
+  // Returns the client-side timestamp at which the safe seed was fetched.
+  // Returns base::Time() if there is no safe seed.
   // Virtual for early-boot CrOS experiments to use a different safe seed.
   virtual base::Time GetSafeSeedFetchTime() const;
 
@@ -170,11 +194,12 @@ class COMPONENT_EXPORT(VARIATIONS) VariationsSeedStore {
   void RecordLastFetchTime(base::Time fetch_time);
 
   // Loads the last server-provided seed date (for the latest seed) that was
-  // persisted to the local state. (See GetTimeForStudyDateChecks.)
+  // persisted to the local state.
+  // (See VariationsSeedStore::GetTimeForStudyDateChecks().)
   base::Time GetLatestTimeForStudyDateChecks() const;
 
   // Loads the last server-provided safe seed date of when the seed to be used
-  // was fetched. (See GetTimeForStudyDateChecks.)
+  // was fetched. (See VariationsSeedStore::GetTimeForStudyDateChecks().)
   base::Time GetSafeSeedTimeForStudyDateChecks() const;
 
   // Returns the time to use when determining whether a client should
@@ -197,6 +222,9 @@ class COMPONENT_EXPORT(VARIATIONS) VariationsSeedStore {
   // different day.
   void UpdateSeedDateAndLogDayChange(base::Time server_date_fetched);
 
+  // Creates a histogram for the result of the update of the seed date.
+  void LogSeedDayChange(base::Time server_date_fetched);
+
   // Returns the serial number of the most recently received seed, or an empty
   // string if there is no seed (or if it could not be read).
   // Side-effect: If there is a failure while attempting to read the latest seed
@@ -205,15 +233,32 @@ class COMPONENT_EXPORT(VARIATIONS) VariationsSeedStore {
   // more efficient to call LoadSeed() prior to calling this method.
   const std::string& GetLatestSerialNumber();
 
+  // Returns the latest country code that was received from the server.
+  std::string GetLatestCountry();
+
+  // Returns the first country code returned by the variations server after the
+  // client upgraded to the version returned by
+  // GetPermanentConsistencyVersion().
+  std::string GetPermanentConsistencyCountry();
+
+  // Gets the version applied to studies with permanent consistency. The version
+  // at the time of storing the permanent consistency country.
+  std::string GetPermanentConsistencyVersion();
+
+  // Sets the country code and version applied to studies with permanent
+  // consistency.
+  void SetPermanentConsistencyCountryAndVersion(std::string_view country,
+                                                std::string_view version);
+
+  // Clears the country code and version applied to studies with permanent
+  // consistency.
+  void ClearPermanentConsistencyCountryAndVersion();
+
   PrefService* local_state() { return local_state_; }
   const PrefService* local_state() const { return local_state_; }
 
   // Registers Local State prefs used by this class.
   static void RegisterPrefs(PrefRegistrySimple* registry);
-
-  // Loads the last fetch time (for the latest seed) that was persisted to
-  // |local_state|.
-  static base::Time GetLastFetchTimeFromPrefService(PrefService* local_state);
 
   static VerifySignatureResult VerifySeedSignatureForTesting(
       const std::string& seed_bytes,
@@ -238,14 +283,20 @@ class COMPONENT_EXPORT(VARIATIONS) VariationsSeedStore {
   void SetSafeSeedReaderWriterForTesting(
       std::unique_ptr<SeedReaderWriter> seed_reader_writer);
 
+  // Allows to remove the safe and latest seeds from memory after they have been
+  // persisted to disk. This will cause next reads to potentially have to read
+  // from disk.
+  void AllowToPurgeSeedsDataFromMemory();
+
+  // Calls `done_callback` with the stored seed info for debugging. Reads either
+  // the latest or the safe seed, according to the specified `seed_type`.
+  void GetStoredSeedInfoForDebugging(
+      base::OnceCallback<void(StoredSeedInfo)> done_callback,
+      SeedType seed_type);
+
  protected:
-  // Verify an already-loaded |seed_data| along with its |base64_seed_signature|
-  // and, if verification passes, parse it into |*seed|.
-  [[nodiscard]] LoadSeedResult VerifyAndParseSeed(
-      VariationsSeed* seed,
-      const std::string& seed_data,
-      const std::string& base64_seed_signature,
-      std::optional<VerifySignatureResult>* verify_signature_result);
+  // Stores the serial number of the latest seed.
+  void StoreLatestSerialNumber(std::string_view serial_number);
 
  private:
   FRIEND_TEST_ALL_PREFIXES(VariationsSeedStoreTest, VerifySeedSignature);
@@ -256,6 +307,7 @@ class COMPONENT_EXPORT(VARIATIONS) VariationsSeedStore {
     std::string data;
     std::string base64_seed_signature;
     std::string country_code;
+    std::string geo_level1;
     base::Time date_fetched;
     bool is_gzip_compressed = false;
     bool is_delta_compressed = false;
@@ -286,17 +338,14 @@ class COMPONENT_EXPORT(VARIATIONS) VariationsSeedStore {
     SeedProcessingResult& operator=(SeedProcessingResult&& other);
   };
 
-  // The seed store contains two distinct seeds:
-  //   (1) The most recently fetched, or "latest", seed; and
-  //   (2) A "safe" seed, which has been observed to keep Chrome in a basically
-  //       functional state. In particular, a safe seed is one that allows
-  //       Chrome to receive new seed updates from the server.
-  // Note that it's possible for both seeds to be empty, and it's possible for
-  // the two seeds to be identical in their contents.
-  enum class SeedType {
-    LATEST,
-    SAFE,
-  };
+  // Callback for reading both seeds. They contain the result of loading the
+  // safe and latest seeds.
+  using ReadBothSeedsCallback = base::OnceCallback<void(
+      SeedReaderWriter::ReadSeedDataResult /*safe_seed_result*/,
+      SeedReaderWriter::ReadSeedDataResult /*latest_seed_result*/)>;
+
+  // Class for reading both latest and safe seeds in parallel.
+  class TwoSeedReader;
 
   // Clears all prefs related to variations seed storage for the specified seed
   // type.
@@ -311,52 +360,83 @@ class COMPONENT_EXPORT(VARIATIONS) VariationsSeedStore {
   void ImportInitialSeed(std::unique_ptr<SeedResponse> initial_seed);
 #endif  // BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
 
-  // Loads the variations seed data from local state into |seed|, as well as the
-  // raw pref values into |seed_data| and |base64_signature|. Loads either the
-  // safe seed or the latest seed, according to the |seed_type|. Returns whether
-  // loading the seed was successful.
-  // Side-effect: Upon any failure to read or validate the safe seed, clears all
-  // of the pref values for the seed. This occurs iff the method returns false.
-  [[nodiscard]] LoadSeedResult LoadSeedImpl(SeedType seed_type,
-                                            VariationsSeed* seed,
-                                            std::string* seed_data,
-                                            std::string* base64_seed_signature);
+  // Reads the variations seed data from SeedReaderWriter into |seed_data|, and
+  // returns the result of the load. If a pointer for the signature is provided,
+  // the signature will be read and stored into |base64_seed_signature|. The
+  // value stored into |seed_data| should only be used if the result is SUCCESS.
+  // Reads either the latest or the safe seed, according to the specified
+  // |seed_type|. Side-effect: If the read fails, clears the prefs associated
+  // with the seed.
+  [[nodiscard]] LoadSeedResult ReadSeedData(
+      SeedType seed_type,
+      std::string* seed_data,
+      std::string* base64_seed_signature = nullptr);
 
-  // Reads the variations seed data from prefs into |seed_data|, and returns the
-  // result of the load. The value stored into |seed_data| should only be used
-  // if the result is SUCCESS. Reads either the latest or the safe seed,
-  // according to the specified |seed_type|.
-  // Side-effect: If the read fails, clears the prefs associated with the seed.
-  [[nodiscard]] LoadSeedResult ReadSeedData(SeedType seed_type,
-                                            std::string* seed_data);
+  // Same as above, but allows for asynchronous reads if the seed has to be read
+  // from the seed file. Synchronous reads should only be used on startup, since
+  // it may block the UI thread. The |done_callback| will be called when the
+  // read is complete. The result of the read will be handled by
+  // VariationsSeedStore::ReadSeedDataCallback().
+  void ReadSeedData(SeedReaderWriter::ReadSeedDataCallback done_callback,
+                    SeedType seed_type,
+                    bool require_synchronous);
 
-  // Resolves a |delta_bytes| against the latest seed.
-  // Returns success or an error, populating |seed_bytes| on success.
-  [[nodiscard]] StoreSeedResult ResolveDelta(const std::string& delta_bytes,
-                                             std::string* seed_bytes);
+  // Callback for VariationsSeedStore::ReadSeedData(). If the read was
+  // successful, it will call the |done_callback| with the result of the read
+  // and the seed data. If the read was unsuccessful, it will clear the prefs
+  // associated with the seed and call the |done_callback| with empty seed data.
+  void CheckReadSeedDataResultAndRunCallback(
+      SeedReaderWriter::ReadSeedDataCallback done_callback,
+      SeedType seed_type,
+      bool require_synchronous,
+      SeedReaderWriter::ReadSeedDataResult read_result);
 
-  // Resolves instance manipulations applied to received data.
-  // Returns success or an error, populating |seed_bytes| on success.
-  [[nodiscard]] StoreSeedResult ResolveInstanceManipulations(
-      const std::string& data,
-      const InstanceManipulations& im,
-      std::string* seed_bytes);
+  // Processes the seed data (decompression, parsing and signature
+  // verification) and stores the result.
+  void ProcessAndStoreSeedData(
+      base::OnceCallback<void(bool, VariationsSeed)> done_callback,
+      SeedData seed_data,
+      bool require_synchronous,
+      SeedReaderWriter::ReadSeedDataResult read_result);
 
   // Called on the UI thread after the seed has been processed.
   void OnSeedDataProcessed(
       base::OnceCallback<void(bool, VariationsSeed)> done_callback,
+      bool require_synchronous,
       SeedProcessingResult result);
 
-  // Updates the latest seed with validated data.
-  void StoreValidatedSeed(const ValidatedSeed& seed,
-                          const std::string& country_code,
-                          base::Time date_fetched);
+  // Stores the validated seed and calls `done_callback` with the result of the
+  // store and the validated seed.
+  void StoreValidatedSeed(
+      base::OnceCallback<void(bool, VariationsSeed)> done_callback,
+      ValidatedSeed seed,
+      std::string country_code,
+      std::string geo_level1,
+      base::Time date_fetched,
+      bool require_synchronous,
+      SeedReaderWriter::ReadSeedDataResult read_result);
+
+  // Called after the safe seed has been stored. It records the result of the
+  // store and calls `done_callback`.
+  void OnValidatedSafeSeedStored(base::OnceCallback<void(bool)> done_callback,
+                                 StoreSeedResult store_result);
+
+  // Reads both the safe and latest seeds. The callback is called with the
+  // results of each read in that order.
+  void ReadBothSeedsData(ReadBothSeedsCallback done_callback);
 
   // Updates the safe seed with validated data.
-  void StoreValidatedSafeSeed(const ValidatedSeed& seed,
-                              int seed_milestone,
-                              const ClientFilterableState& client_state,
-                              base::Time seed_fetch_time);
+  void StoreValidatedSafeSeed(
+      base::OnceCallback<void(StoreSeedResult)> done_callback,
+      ValidatedSeed seed,
+      int seed_milestone,
+      base::Time reference_date,
+      std::string session_consistency_country,
+      std::string permanent_consistency_country,
+      std::string locale,
+      base::Time seed_fetch_time,
+      SeedReaderWriter::ReadSeedDataResult safe_seed_read_result,
+      SeedReaderWriter::ReadSeedDataResult latest_seed_read_result);
 
   // Processes seed data (decompression, parsing and signature verification).
   // This is meant to be called on a background thread in the case of periodic
@@ -384,14 +464,29 @@ class COMPONENT_EXPORT(VARIATIONS) VariationsSeedStore {
                                             const std::string& patch,
                                             std::string* output);
 
+  // Verify an already-loaded `seed_data` along with its `base64_seed_signature`
+  // and, if verification passes, parse it into `*seed`.
+  [[nodiscard]] LoadSeedResult VerifyAndParseSeedImpl(
+      VariationsSeed* seed,
+      const std::string& seed_data,
+      const std::string& base64_seed_signature,
+      std::optional<VerifySignatureResult>* verify_signature_result);
+
+  // Verifies the seed from `read_result`, parses it into a VariationsSeed and
+  // calls `done_callback` with the result.
+  void VerifyAndParseSeedAndRunCallback(
+      LoadSeedCallback done_callback,
+      SeedType seed_type,
+      SeedReaderWriter::ReadSeedDataResult read_result);
+
+  // Logs the result of loading the seed.
+  void LogLoadSeedResult(SeedType seed_type, LoadSeedResult result);
+
   // The pref service used to persist the variations seed.
   raw_ptr<PrefService> local_state_;
 
   // Setters and getters for safe seed state.
   std::unique_ptr<VariationsSafeSeedStore> safe_seed_store_;
-
-  // Cached serial number from the most recently fetched variations seed.
-  std::string latest_serial_number_;
 
   // Whether to validate signatures on the seed. Always on except in unit tests.
   const bool signature_verification_enabled_;
@@ -401,28 +496,6 @@ class COMPONENT_EXPORT(VARIATIONS) VariationsSeedStore {
 
   // Handles reads and writes to seed files.
   std::unique_ptr<SeedReaderWriter> seed_reader_writer_;
-
-#if BUILDFLAG(IS_CHROMEOS)
-  // Gets the combined server and client state used for early boot variations
-  // platform disaster recovery.
-  featured::SeedDetails GetSafeSeedStateForPlatform(
-      const ValidatedSeed& seed,
-      const int seed_milestone,
-      const ClientFilterableState& client_state,
-      const base::Time seed_fetch_time);
-
-  // Retries sending the safe seed to platform. Does not retry after two failed
-  // attempts.
-  void MaybeRetrySendSafeSeed(const featured::SeedDetails& safe_seed,
-                              bool success);
-
-  // Sends the safe seed to the platform.
-  void SendSafeSeedToPlatform(const featured::SeedDetails& safe_seed);
-
-  // A counter that keeps track of how many times the current safe seed is sent
-  // to platform.
-  size_t send_seed_to_platform_attempts_ = 0;
-#endif  // BUILDFLAG(IS_CHROMEOS)
 
   // Note: This should remain the last member so it'll be destroyed and
   // invalidate its weak pointers before any other members are destroyed.

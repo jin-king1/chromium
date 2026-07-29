@@ -6,6 +6,7 @@ package org.chromium.chrome.test.util;
 
 import org.junit.Assert;
 
+import org.chromium.base.ThreadUtils;
 import org.chromium.base.Token;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabModel;
@@ -54,23 +55,24 @@ public class TabBinningUtil {
         List<TabBin> tabBins = new ArrayList<>();
         Set<Token> alreadySeenGroupIds = new HashSet<>();
 
-        int binIndex = -1;
-        Token prevGroupId = null;
-        for (int tabIndex = 0; tabIndex < tabModel.getCount(); tabIndex++) {
-            Tab tab = tabModel.getTabAt(tabIndex);
-            Token groupId = tab.getTabGroupId();
-            if (groupId == null || !Objects.equals(prevGroupId, groupId)) {
-                binIndex++;
-                verifyNoDuplicateGroupIds(groupId, alreadySeenGroupIds);
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    int binIndex = -1;
+                    Token prevGroupId = null;
+                    for (int tabIndex = 0; tabIndex < tabModel.getCount(); tabIndex++) {
+                        Tab tab = tabModel.getTabAt(tabIndex);
+                        Token groupId = tab.getTabGroupId();
+                        if (groupId == null || !Objects.equals(prevGroupId, groupId)) {
+                            binIndex++;
+                            verifyNoDuplicateGroupIds(groupId, alreadySeenGroupIds);
 
-                // Add new Bin to list.
-                int rootId = tab.getRootId();
-                tabBins.add(new TabBin(groupId, rootId));
-            }
-            List<Tab> tabList = tabBins.get(binIndex).tabs;
-            tabList.add(tab);
-            prevGroupId = groupId;
-        }
+                            tabBins.add(new TabBin(groupId));
+                        }
+                        List<Tab> tabList = tabBins.get(binIndex).tabs;
+                        tabList.add(tab);
+                        prevGroupId = groupId;
+                    }
+                });
         return tabBins;
     }
 
@@ -113,6 +115,8 @@ public class TabBinningUtil {
             if (expectedBin instanceof Integer tabId) {
                 sb.append(tabId);
             } else if (expectedBin instanceof List<?> list) {
+                // Callers pass List<Integer> via varargs Object[]; element type is not recoverable.
+                @SuppressWarnings("unchecked")
                 List<Integer> tabIdsInGroup = (List<Integer>) list;
                 sb.append("[");
                 String separator = "";

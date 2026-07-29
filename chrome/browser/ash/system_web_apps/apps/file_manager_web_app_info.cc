@@ -123,9 +123,9 @@ FileManagerSystemAppDelegate::GetWebAppInfo() const {
                     });
 
   // Drive & Google Docs:
-  AppendFileHandler(
-      *info, "open-hosted-generic",
-      {"gdraw", "gtable", "gform", "gmaps", "gsite", "glink", "gmaillayout"});
+  AppendFileHandler(*info, "open-hosted-generic",
+                    {"gdraw", "gtable", "gform", "gmaps", "gsite", "glink",
+                     "gmaillayout", "gprj"});
   AppendFileHandler(*info, "open-hosted-gdoc", {"gdoc"});
   AppendFileHandler(*info, "open-hosted-gsheet", {"gsheet"});
   AppendFileHandler(*info, "open-hosted-gslides", {"gslides"});
@@ -135,7 +135,7 @@ FileManagerSystemAppDelegate::GetWebAppInfo() const {
   AppendFileHandler(
       *info, "view-in-browser",
       {"htm", "html", "mht", "mhtml", "shtml", "xht", "xhtml", "svg", "txt"},
-      "text/plain");
+      "text/*");
 
   // Crostini:
   AppendFileHandler(*info, "install-linux-package", {"deb"});
@@ -148,7 +148,7 @@ bool FileManagerSystemAppDelegate::ShouldCaptureNavigations() const {
   return true;
 }
 
-Browser* FileManagerSystemAppDelegate::GetWindowForLaunch(
+ash::BrowserDelegate* FileManagerSystemAppDelegate::GetWindowForLaunch(
     Profile* profile,
     const GURL& url) const {
   return nullptr;

@@ -5,6 +5,7 @@
 #include "components/signin/internal/identity_manager/profile_oauth2_token_service_delegate.h"
 
 #include "base/auto_reset.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/observer_list.h"
 #include "components/signin/internal/identity_manager/profile_oauth2_token_service_observer.h"
 #include "google_apis/gaia/google_service_auth_error.h"
@@ -37,8 +38,6 @@ std::string SourceToString(SourceForRefreshTokenOperation source) {
       return "Unknown";
     case SourceForRefreshTokenOperation::kTokenService_LoadCredentials:
       return "TokenService::LoadCredentials";
-    case SourceForRefreshTokenOperation::kInlineLoginHandler_Signin:
-      return "InlineLoginHandler::Signin";
     case SourceForRefreshTokenOperation::kPrimaryAccountManager_ClearAccount:
       return "PrimaryAccountManager::ClearAccount";
     case SourceForRefreshTokenOperation::kUserMenu_SignOutAllAccounts:
@@ -77,6 +76,9 @@ std::string SourceToString(SourceForRefreshTokenOperation source) {
     case SourceForRefreshTokenOperation::
         kEnterprisePolicy_AccountNotAllowedInContentArea:
       return "AccountsPolicyManager::RemoveUnallowedAccounts";
+    case SourceForRefreshTokenOperation::
+        kDiceAccountReconcilorDelegate_RefreshTokensBoundToDifferentKeys:
+      return "DiceAccountReconcilorDelegate::RefreshTokensBoundToDifferentKeys";
   }
 }
 
@@ -179,6 +181,9 @@ void ProfileOAuth2TokenServiceDelegate::FireRefreshTokenAvailable(
   ScopedBatchChange batch(this);
   for (auto& observer : observer_list_) {
     observer.OnRefreshTokenAvailable(account_id);
+    // Always call `OnAuthErrorChanged()` when refresh token is updated.
+    observer.OnAuthErrorChanged(account_id, token_error,
+                                update_refresh_token_source_);
   }
 }
 
@@ -193,19 +198,29 @@ void ProfileOAuth2TokenServiceDelegate::FireRefreshTokenRevoked(
     on_refresh_token_revoked_callback_.Run(account_id, source_string);
   }
 
+  // Copy the account ID to avoid a use-after-free if one of the observers
+  // owns the reference to the account ID and destroys it in
+  // `OnRefreshTokenRevoked()`.
+  CoreAccountId account_id_copy = account_id;
   ScopedBatchChange batch(this);
   for (auto& observer : observer_list_) {
-    observer.OnRefreshTokenRevoked(account_id);
+    observer.OnRefreshTokenRevoked(account_id_copy);
   }
 
   CHECK(on_refresh_token_revoked_notified_callback_);
-  on_refresh_token_revoked_notified_callback_.Run(account_id);
+  on_refresh_token_revoked_notified_callback_.Run(account_id_copy);
 }
 
 void ProfileOAuth2TokenServiceDelegate::FireRefreshTokensLoaded() {
   // Reset the state for update refresh token operations to Unknown as this
   // was the original state before LoadCredentials was called.
   update_refresh_token_source_ = SourceForRefreshTokenOperation::kUnknown;
+
+  if (load_credentials_timer_.has_value()) {
+    base::UmaHistogramMediumTimes("Signin.RefreshTokensLoaded.Duration",
+                                  load_credentials_timer_->Elapsed());
+    load_credentials_timer_.reset();
+  }
 
   for (auto& observer : observer_list_) {
     observer.OnRefreshTokensLoaded();
@@ -265,15 +280,15 @@ const net::BackoffEntry* ProfileOAuth2TokenServiceDelegate::BackoffEntry()
 }
 
 void ProfileOAuth2TokenServiceDelegate::LoadCredentials(
-    const CoreAccountId& primary_account_id,
-    bool is_syncing) {
+    const CoreAccountId& primary_account_id) {
   DCHECK_EQ(SourceForRefreshTokenOperation::kUnknown,
             update_refresh_token_source_);
+  load_credentials_timer_ = base::ElapsedTimer();
   // AutoReset is not used here since the call to loading the credentials is
   // asynchronous. The source will be reset in `FireRefreshTokensLoaded()`.
   update_refresh_token_source_ =
       SourceForRefreshTokenOperation::kTokenService_LoadCredentials;
-  LoadCredentialsInternal(primary_account_id, is_syncing);
+  LoadCredentialsInternal(primary_account_id);
 }
 
 void ProfileOAuth2TokenServiceDelegate::ExtractCredentials(
@@ -309,20 +324,11 @@ void ProfileOAuth2TokenServiceDelegate::RevokeCredentials(
 void ProfileOAuth2TokenServiceDelegate::UpdateCredentials(
     const CoreAccountId& account_id,
     const std::string& refresh_token,
-    SourceForRefreshTokenOperation source
-#if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
-    ,
-    const std::vector<uint8_t>& wrapped_binding_key
-#endif  // BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
-) {
+    SourceForRefreshTokenOperation source,
+    const signin::TokenBindingInfo& token_binding_info) {
   base::AutoReset<SourceForRefreshTokenOperation> auto_reset(
       &update_refresh_token_source_, source);
-  UpdateCredentialsInternal(account_id, refresh_token
-#if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
-                            ,
-                            wrapped_binding_key
-#endif  // BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
-  );
+  UpdateCredentialsInternal(account_id, refresh_token, token_binding_info);
 }
 
 bool ProfileOAuth2TokenServiceDelegate::FixAccountErrorIfPossible() {
@@ -414,6 +420,11 @@ void ProfileOAuth2TokenServiceDelegate::ResetBackOffEntry() {
                     "constructor.";
   }
   backoff_entry_->Reset();
+}
+
+FakeProfileOAuth2TokenServiceDelegate* ProfileOAuth2TokenServiceDelegate::
+    AsFakeProfileOAuth2TokenServiceDelegateForTesting() {
+  return nullptr;
 }
 
 void ProfileOAuth2TokenServiceDelegate::

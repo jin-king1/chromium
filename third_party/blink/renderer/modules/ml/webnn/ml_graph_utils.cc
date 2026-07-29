@@ -19,7 +19,7 @@
 
 namespace blink {
 
-HeapVector<Member<const MLOperator>>* GetOperatorsInTopologicalOrder(
+HeapVector<Member<MLOperator>> GetOperatorsInTopologicalOrder(
     const MLNamedOperands& named_outputs) {
   // A WebNN graph is represented by a directed acyclic graph (DAG) that has
   // operators as vertices and operand as edges. The topological sorting is
@@ -32,12 +32,11 @@ HeapVector<Member<const MLOperator>>* GetOperatorsInTopologicalOrder(
   // https://en.wikipedia.org/wiki/Depth-first_search
 
   // The topologically sorted operators.
-  auto* toposorted_operators =
-      MakeGarbageCollected<HeapVector<Member<const MLOperator>>>();
+  HeapVector<Member<MLOperator>> toposorted_operators;
 
   // The to-visit stack and visited set for DFS graph traversal.
-  HeapDeque<Member<const MLOperator>> operators_to_visit;
-  HeapHashSet<Member<const MLOperator>> visited_operators;
+  HeapDeque<Member<MLOperator>> operators_to_visit;
+  HeapHashSet<Member<MLOperator>> visited_operators;
   // Enumerate output operands and initialize the to-visit stack with their
   // dependent operators.
   for (const auto& output : named_outputs) {
@@ -46,14 +45,14 @@ HeapVector<Member<const MLOperator>>* GetOperatorsInTopologicalOrder(
   }
   while (operators_to_visit.size() > 0) {
     // Get the current operator from the top of the to-visit stack.
-    const auto& current_operator = operators_to_visit.back();
+    auto& current_operator = operators_to_visit.back();
     if (!visited_operators.Contains(current_operator.Get())) {
       // The current operator is not visited, check whether its dependent
       // operators are visited or not.
       bool skip_visit = false;
       for (const auto& operand : current_operator->Inputs()) {
         if (operand->Kind() == webnn::mojom::blink::Operand::Kind::kOutput) {
-          const auto* dependent_operator = operand->Operator();
+          auto* dependent_operator = operand->Operator();
           CHECK(dependent_operator);
           if (!visited_operators.Contains(dependent_operator)) {
             // As there is an dependent operator is not visited, skip visiting
@@ -67,7 +66,7 @@ HeapVector<Member<const MLOperator>>* GetOperatorsInTopologicalOrder(
       if (!skip_visit) {
         // When all dependent operators have been visited, visit the current
         // operator and add it into the visited set.
-        toposorted_operators->push_back(current_operator);
+        toposorted_operators.push_back(current_operator);
         visited_operators.insert(current_operator);
         // Pop the current operator from the to-visit stack.
         operators_to_visit.pop_back();
@@ -147,8 +146,8 @@ base::expected<void, String> ValidateFilterLayout(
     // TODO(crbug.com/1273291): support other layouts by transposing the
     // filter operand.
     if (filter_layout.AsEnum() != V8MLConv2dFilterOperandLayout::Enum::kOhwi) {
-      return base::unexpected(String::Format(
-          "The filter layout %s is not supported.", filter_layout.AsCStr()));
+      return base::unexpected(UNSAFE_TODO(String::Format(
+          "The filter layout %s is not supported.", filter_layout.AsCStr())));
     }
   } else {
     // For depthwise conv2d, NHWC input layout expects weights layout in ihwo
@@ -158,8 +157,8 @@ base::expected<void, String> ValidateFilterLayout(
     // TODO(crbug.com/1273291): support other layouts by transposing the
     // filter operand.
     if (filter_layout.AsEnum() != V8MLConv2dFilterOperandLayout::Enum::kIhwo) {
-      return base::unexpected(String::Format(
-          "The filter layout %s is not supported.", filter_layout.AsCStr()));
+      return base::unexpected(UNSAFE_TODO(String::Format(
+          "The filter layout %s is not supported.", filter_layout.AsCStr())));
     }
   }
 
@@ -274,6 +273,17 @@ bool IsLogicalBinaryOperator(
     case webnn::mojom::blink::ElementWiseBinary::Kind::kLogicalOr:
     case webnn::mojom::blink::ElementWiseBinary::Kind::kLogicalXor:
       return true;
+  }
+}
+
+bool IsLogicalUnaryOperator(webnn::mojom::blink::ElementWiseUnary::Kind kind) {
+  switch (kind) {
+    case webnn::mojom::blink::ElementWiseUnary::Kind::kIsNaN:
+    case webnn::mojom::blink::ElementWiseUnary::Kind::kIsInfinite:
+    case webnn::mojom::blink::ElementWiseUnary::Kind::kLogicalNot:
+      return true;
+    default:
+      return false;
   }
 }
 

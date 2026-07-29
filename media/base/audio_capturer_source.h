@@ -9,12 +9,12 @@
 #include <vector>
 
 #include "base/memory/ref_counted.h"
-#include "media/base/audio_bus.h"
 #include "media/base/audio_parameters.h"
 #include "media/base/media_export.h"
 
 namespace media {
 
+class AudioBus;
 class AudioProcessorControls;
 struct AudioGlitchInfo;
 
@@ -35,6 +35,7 @@ class AudioCapturerSource
     kSystemPermissions = 1,
     kDeviceInUse = 2,
     kSocketError = 3,
+    kDeviceRemoved = 4,
   };
 
   class CaptureCallback {

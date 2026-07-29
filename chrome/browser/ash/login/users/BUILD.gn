@@ -38,6 +38,7 @@ static_library("users") {
     "//ash/constants",
     "//ash/public/cpp",
     "//chrome/browser:browser_process",
+    "//chrome/browser:browser_process_platform_part",
     "//chrome/browser/ash/app_mode",
     "//chrome/browser/ash/login",
     "//chrome/browser/ash/login/session",
@@ -60,6 +61,7 @@ static_library("users") {
     "//chromeos/ash/components/install_attributes",
     "//chromeos/ash/components/login/auth/public:authpublic",
     "//chromeos/ash/components/network",
+    "//chromeos/ash/components/policy/device_local_account",
     "//chromeos/ash/components/timezone",
     "//chromeos/ash/experiences/arc:arc_base_utils",
     "//chromeos/components/onc",
@@ -88,6 +90,8 @@ static_library("test_support") {
   sources = [
     "fake_chrome_user_manager.cc",
     "fake_chrome_user_manager.h",
+    "scoped_account_id_annotator.cc",
+    "scoped_account_id_annotator.h",
   ]
 
   public_deps = [
@@ -100,10 +104,13 @@ static_library("test_support") {
   deps = [
     ":users",
     "//ash/constants",
+    "//chrome/browser",
     "//chrome/browser:browser_process",
+    "//chrome/browser:browser_process_platform_part",
     "//chrome/browser/ash/login/users/default_user_image",
     "//chrome/browser/ash/profiles",
     "//chrome/browser/ui",
+    "//chromeos/ash/components/browser_context_helper",
     "//chromeos/ash/components/login/login_state",
     "//chromeos/ash/components/settings",
     "//components/user_manager:common",
@@ -141,6 +148,7 @@ source_set("browser_tests") {
     "//chromeos/ash/components/dbus",
     "//chromeos/ash/components/dbus/session_manager",
     "//chromeos/ash/components/dbus/userdataauth",
+    "//chromeos/ash/components/policy/device_policy:test_support",
     "//chromeos/dbus/constants",
     "//components/ownership",
     "//components/policy/core/common",
@@ -176,6 +184,7 @@ source_set("unit_tests") {
     "//base",
     "//chrome/browser",
     "//chrome/browser:browser_process",
+    "//chrome/browser:browser_process_platform_part",
     "//chrome/browser/ash/settings:test_support",
     "//chrome/browser/policy:onc",
     "//chrome/browser/prefs",
@@ -186,13 +195,17 @@ source_set("unit_tests") {
     "//chromeos/ash/components/cryptohome",
     "//chromeos/ash/components/dbus/concierge",
     "//chromeos/ash/components/dbus/userdataauth",
+    "//chromeos/ash/components/policy/device_local_account",
     "//chromeos/ash/components/settings",
     "//chromeos/ash/components/system",
     "//components/account_id",
+    "//components/account_id:test_support",
     "//components/policy/core/common",
     "//components/prefs",
+    "//components/session_manager/test:test_support",
     "//components/sync_preferences:test_support",
     "//components/user_manager",
+    "//components/user_manager:multi_user",
     "//content/public/common",
     "//content/test:test_support",
     "//extensions/common",
@@ -206,4 +219,8 @@ source_set("unit_tests") {
     "avatar:unit_tests",
     "default_user_image:unit_tests",
   ]
+
+  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+  # enable the diagnostic by removing this line.
+  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }

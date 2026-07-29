@@ -94,7 +94,8 @@ void LayoutSVGModelObject::AddOutlineRects(OutlineRectCollector& collector,
     *info = OutlineInfo::GetUnzoomedFromStyle(StyleRef());
 }
 
-gfx::RectF LayoutSVGModelObject::LocalBoundingBoxRectForAccessibility() const {
+gfx::RectF LayoutSVGModelObject::LocalBoundingBoxRectForAccessibility(
+    IncludeDescendants include_descendants) const {
   NOT_DESTROYED();
   return DecoratedBoundingBox();
 }
@@ -103,6 +104,21 @@ void LayoutSVGModelObject::WillBeDestroyed() {
   NOT_DESTROYED();
   SVGResources::ClearEffects(*this);
   LayoutObject::WillBeDestroyed();
+}
+
+bool LayoutSVGModelObject::MapToVisualRectInAncestorSpaceInternal(
+    const LayoutBoxModelObject* ancestor,
+    TransformState& transform_state,
+    VisualRectFlags visual_rect_flags) const {
+  NOT_DESTROYED();
+  transform_state.Flatten();
+  PhysicalRect rect = PhysicalRect::FastAndLossyFromRectF(
+      transform_state.LastPlanarQuad().BoundingBox());
+  // Apply other mappings on local SVG coordinates.
+  bool retval = SVGLayoutSupport::MapToVisualRectInAncestorSpace(
+      *this, ancestor, gfx::RectF(rect), rect, visual_rect_flags);
+  transform_state.SetQuad(gfx::QuadF(gfx::RectF(rect)));
+  return retval;
 }
 
 bool LayoutSVGModelObject::CheckForImplicitTransformChange(
@@ -132,25 +148,26 @@ void LayoutSVGModelObject::ImageChanged(WrappedImagePtr image,
     if (style_image && image == style_image->Data()) {
       SetShouldDoFullPaintInvalidationWithoutLayoutChange(
           PaintInvalidationReason::kImage);
-      if (style_image->IsMaskSource()) {
-        // Since an invalid <mask> reference does not yield a paint property on
-        // SVG content (see CSSMaskPainter), we need to update paint properties
-        // when such a reference changes.
-        SetNeedsPaintPropertyUpdate();
-      }
+      // Since an invalid <mask> reference does not yield a paint property on
+      // SVG content (see CSSMaskPainter), we need to update paint properties
+      // when such a reference changes.
+      SetNeedsPaintPropertyUpdate();
       break;
     }
   }
 }
 
-void LayoutSVGModelObject::StyleDidChange(StyleDifference diff,
-                                          const ComputedStyle* old_style) {
+void LayoutSVGModelObject::StyleDidChange(
+    StyleDifference diff,
+    const ComputedStyle* old_style,
+    const StyleChangeContext& style_change_context) {
   NOT_DESTROYED();
-  LayoutObject::StyleDidChange(diff, old_style);
+  LayoutObject::StyleDidChange(diff, old_style, style_change_context);
 
   if (diff.NeedsFullLayout()) {
-    if (diff.TransformChanged())
+    if (diff.transform_changed) {
       SetNeedsTransformUpdate();
+    }
   }
 
   SetHasTransformRelatedProperty(
@@ -162,15 +179,17 @@ void LayoutSVGModelObject::StyleDidChange(StyleDifference diff,
     return;
 
   if (!IsSVGHiddenContainer()) {
-    if (diff.BlendModeChanged()) {
+    if (diff.blend_mode_changed) {
       DCHECK(IsBlendingAllowed());
       Parent()->DescendantIsolationRequirementsChanged(
           StyleRef().HasBlendMode() ? kDescendantIsolationRequired
                                     : kDescendantIsolationNeedsUpdate);
     }
-    if (StyleRef().HasCurrentTransformRelatedAnimation() &&
-        !old_style->HasCurrentTransformRelatedAnimation()) {
-      Parent()->SetSVGDescendantMayHaveTransformRelatedAnimation();
+    if ((StyleRef().HasCurrentTransformRelatedAnimation() &&
+         !old_style->HasCurrentTransformRelatedAnimation()) ||
+        (StyleRef().HasNonIdentityTransformOperation() &&
+         !old_style->HasNonIdentityTransformOperation())) {
+      Parent()->SetSVGDescendantMayHaveTransformRelatedOperations();
     }
   }
 
@@ -181,13 +200,6 @@ void LayoutSVGModelObject::StyleDidChange(StyleDifference diff,
 void LayoutSVGModelObject::InsertedIntoTree() {
   NOT_DESTROYED();
   LayoutObject::InsertedIntoTree();
-  if (!RuntimeEnabledFeatures::SvgViewportOptimizationEnabled()) {
-    // Ensure that the viewport dependency flag gets set on the ancestor chain.
-    if (SVGSelfOrDescendantHasViewportDependency()) {
-      ClearSVGSelfOrDescendantHasViewportDependency();
-      SetSVGSelfOrDescendantHasViewportDependency();
-    }
-  }
   LayoutSVGResourceContainer::MarkForLayoutAndParentResourceInvalidation(*this,
                                                                          false);
   if (StyleRef().HasSVGEffect())

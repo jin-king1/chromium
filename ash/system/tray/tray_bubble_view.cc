@@ -46,8 +46,10 @@
 #include "ui/gfx/color_palette.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/gfx/geometry/skia_conversions.h"
 #include "ui/views/accessibility/view_accessibility.h"
+#include "ui/views/background.h"
 #include "ui/views/bubble/bubble_frame_view.h"
 #include "ui/views/highlight_border.h"
 #include "ui/views/layout/box_layout.h"
@@ -59,7 +61,7 @@
 
 using views::BubbleBorder;
 using views::BubbleFrameView;
-using views::NonClientFrameView;
+using views::FrameView;
 using views::View;
 using views::ViewsDelegate;
 using views::Widget;
@@ -319,19 +321,7 @@ TrayBubbleView::TrayBubbleView(const InitParams& init_params)
   // an alert dialog. This would make screen readers announce the whole of the
   // system tray which is undesirable.
   SetAccessibleWindowRole(ax::mojom::Role::kDialog);
-  // We force to create contents background since the bubble border background
-  // is not shown in this view.
-  set_force_create_contents_background(true);
-  // Bubbles that use transparent colors should not paint their ClientViews to a
-  // layer as doing so could result in visual artifacts.
-  SetPaintClientToLayer(false);
   SetButtons(static_cast<int>(ui::mojom::DialogButton::kNone));
-
-  const ui::ColorId background_color_id =
-      chromeos::features::IsSystemBlurEnabled()
-          ? cros_tokens::kCrosSysSystemBaseElevated
-          : cros_tokens::kCrosSysSystemBaseElevatedOpaque;
-  set_background_color(background_color_id);
 
   DCHECK(delegate_);
   DCHECK(params_.parent_window);
@@ -347,29 +337,40 @@ TrayBubbleView::TrayBubbleView(const InitParams& init_params)
   set_close_on_deactivate(init_params.close_on_deactivate);
   set_margins(init_params.margin.has_value() ? init_params.margin.value()
                                              : gfx::Insets());
+  set_use_round_corners(false);
+  SetBackgroundColor(SK_ColorTRANSPARENT);
+  set_layer_type((params_.translucent || params_.transparent)
+                     ? ui::LAYER_NOT_DRAWN
+                     : ui::LAYER_TEXTURED);
 
-  if (init_params.translucent) {
-    // TODO(crbug.com/40832096): In the dark light mode feature, remove layer
-    // creation in children views of this view to improve performance.
-    SetPaintToLayer(ui::LAYER_TEXTURED);
+  // Always create a layer so that the layer for FocusRing stays in this view's
+  // layer. Without it, the layer for FocusRing goes above the NativeViewHost
+  // and may steal events.
+  SetPaintToLayer(init_params.transparent ? ui::LAYER_NOT_DRAWN
+                                          : ui::LAYER_TEXTURED);
+
+  if (!init_params.transparent) {
     layer()->SetRoundedCornerRadius(
         gfx::RoundedCornersF{static_cast<float>(params_.corner_radius)});
     layer()->SetIsFastRoundedCorner(true);
-    if (chromeos::features::IsSystemBlurEnabled()) {
-      layer()->SetFillsBoundsOpaquely(false);
+    SetBorder(std::make_unique<views::HighlightBorder>(
+        params_.corner_radius,
+        views::HighlightBorder::Type::kHighlightBorderOnShadow));
+
+    const bool is_translucent =
+        init_params.translucent && chromeos::features::IsSystemBlurEnabled();
+
+    // A translucent TrayBubbleView initializes the widget with NOT_DRAWN_LAYER.
+    // Therefore the BubbleFrameView(FrameView) that provides the
+    // background will not be painted. Therefore TrayBubbleView should paint its
+    // own background.
+    SetBackground(views::CreateSolidBackground(
+        is_translucent ? cros_tokens::kCrosSysSystemBaseElevated
+                       : cros_tokens::kCrosSysSystemBaseElevatedOpaque));
+    layer()->SetFillsBoundsOpaquely(!is_translucent);
+    if (is_translucent) {
       layer()->SetBackgroundBlur(ColorProvider::kBackgroundBlurSigma);
       layer()->SetBackdropFilterQuality(ColorProvider::kBackgroundBlurQuality);
-    }
-  } else {
-    // Create a layer so that the layer for FocusRing stays in this view's
-    // layer. Without it, the layer for FocusRing goes above the
-    // NativeViewHost and may steal events.
-    SetPaintToLayer(ui::LAYER_NOT_DRAWN);
-
-    if (!init_params.transparent) {
-      SetPaintToLayer();
-      layer()->SetRoundedCornerRadius(
-          gfx::RoundedCornersF{static_cast<float>(params_.corner_radius)});
     }
   }
 
@@ -391,9 +392,11 @@ TrayBubbleView::TrayBubbleView(const InitParams& init_params)
   if (init_params.anchor_mode == AnchorMode::kRect) {
     SetAnchorView(nullptr);
     SetAnchorRect(init_params.anchor_rect);
+    SetUseAnchorWindowBounds(true);
   } else {
     SetAnchorView(init_params.anchor_view);
     SetAnchorRect(gfx::Rect());
+    SetUseAnchorWindowBounds(false);
   }
 
   message_center::MessageCenter::Get()->AddObserver(this);
@@ -546,32 +549,23 @@ void TrayBubbleView::OnWidgetBoundsChanged(views::Widget* widget,
   Shell::Get()->system_tray_notifier()->NotifyTrayBubbleBoundsChanged(this);
 }
 
-ui::LayerType TrayBubbleView::GetLayerType() const {
-  if (params_.translucent || params_.transparent) {
-    return ui::LAYER_NOT_DRAWN;
-  }
-  return ui::LAYER_TEXTURED;
-}
-
-std::unique_ptr<NonClientFrameView> TrayBubbleView::CreateNonClientFrameView(
-    Widget* widget) {
+std::unique_ptr<FrameView> TrayBubbleView::CreateFrameView(Widget* widget) {
   // Create the customized bubble border.
   std::unique_ptr<BubbleBorder> bubble_border =
       std::make_unique<BubbleBorder>(arrow(), BubbleBorder::NO_SHADOW);
-  if (params_.corner_radius) {
-    bubble_border->SetCornerRadius(params_.corner_radius);
+  if (GetParams().round_corners) {
+    bubble_border->set_rounded_corners(gfx::RoundedCornersF(GetCornerRadius()));
   }
+
+  bubble_border->SetColor(background_color());
   bubble_border->set_avoid_shadow_overlap(true);
   if (params_.insets.has_value()) {
     bubble_border->set_insets(params_.insets.value());
   }
 
-  auto frame = BubbleDialogDelegateView::CreateNonClientFrameView(widget);
+  auto frame = BubbleDialogDelegateView::CreateFrameView(widget);
   auto* frame_ptr = static_cast<views::BubbleFrameView*>(frame.get());
   frame_ptr->SetBubbleBorder(std::move(bubble_border));
-  if (params_.anchor_mode == AnchorMode::kView) {
-    frame_ptr->set_use_anchor_window_bounds(false);
-  }
 
   return frame;
 }
@@ -582,7 +576,8 @@ bool TrayBubbleView::WidgetHasHitTestMask() const {
 
 void TrayBubbleView::GetWidgetHitTestMask(SkPath* mask) const {
   DCHECK(mask);
-  mask->addRect(gfx::RectToSkRect(GetBubbleFrameView()->GetContentsBounds()));
+  *mask = SkPath::Rect(
+      gfx::RectToSkRect(GetBubbleFrameView()->GetContentsBounds()));
 }
 
 std::u16string TrayBubbleView::GetAccessibleWindowTitle() const {
@@ -642,23 +637,6 @@ void TrayBubbleView::OnMouseExited(const ui::MouseEvent& event) {
   if (delegate_ && mouse_actively_entered_) {
     delegate_->OnMouseExitedView();
   }
-}
-
-void TrayBubbleView::OnThemeChanged() {
-  views::BubbleDialogDelegateView::OnThemeChanged();
-  if (params_.transparent) {
-    return;
-  }
-
-  SetBorder(std::make_unique<views::HighlightBorder>(
-      params_.corner_radius,
-      views::HighlightBorder::Type::kHighlightBorderOnShadow));
-
-  const ui::ColorId background_color_id =
-      chromeos::features::IsSystemBlurEnabled()
-          ? cros_tokens::kCrosSysSystemBaseElevated
-          : cros_tokens::kCrosSysSystemBaseElevatedOpaque;
-  set_background_color(GetColorProvider()->GetColor(background_color_id));
 }
 
 void TrayBubbleView::MouseMovedOutOfHost() {

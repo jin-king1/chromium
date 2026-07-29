@@ -4,12 +4,14 @@
 
 package org.chromium.chrome.browser.app.tabmodel;
 
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.chrome.browser.app.tabwindow.TabWindowManagerSingleton;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabModelObserver;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorObserver;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorTabObserver;
-import org.chromium.chrome.browser.tabmodel.TabWindowManager;
+import org.chromium.chrome.browser.tabwindow.TabWindowManager;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -19,6 +21,7 @@ import java.util.List;
  *
  * <p>AllTabObserver will initially notify for all current tabs when constructed.
  */
+@NullMarked
 public class AllTabObserver implements TabWindowManager.Observer, TabModelObserver {
     public interface Observer {
         /** Called when a Tab is added. */
@@ -76,6 +79,26 @@ public class AllTabObserver implements TabWindowManager.Observer, TabModelObserv
     private final List<TabModelSelectorState> mTabModelSelectorStates = new ArrayList<>();
     private final Observer mObserver;
 
+    private static final List<AllTabObserver> sAllTabObservers = new ArrayList<>();
+    private static final List<Tab> sCustomTabs = new ArrayList<>();
+
+    /** Call when a {@link Tab} that is not covered by {@link TabWindowManager} is added. */
+    public static void addCustomTab(Tab tab) {
+        sCustomTabs.add(tab);
+        for (var allTabObserver : sAllTabObservers) {
+            allTabObserver.mObserver.onTabAdded(tab);
+        }
+    }
+
+    /** Call when a {@link Tab} that is not covered by {@link TabWindowManager} is removed. */
+    public static void removeCustomTab(Tab tab) {
+        if (sCustomTabs.remove(tab)) {
+            for (var allTabObserver : sAllTabObservers) {
+                allTabObserver.mObserver.onTabRemoved(tab);
+            }
+        }
+    }
+
     /** Observes all added and removed tabs. */
     public AllTabObserver(Observer observer) {
         mTabWindowManager = TabWindowManagerSingleton.getInstance();
@@ -87,10 +110,15 @@ public class AllTabObserver implements TabWindowManager.Observer, TabModelObserv
         }
 
         mTabWindowManager.addObserver(this);
+        sAllTabObservers.add(this);
+        for (Tab tab : sCustomTabs) {
+            mObserver.onTabAdded(tab);
+        }
     }
 
     /** Destroys this object. */
     public void destroy() {
+        sAllTabObservers.remove(this);
         mTabWindowManager.removeObserver(this);
         for (var tabModelSelectorState : mTabModelSelectorStates) {
             tabModelSelectorState.destroy();
@@ -102,5 +130,10 @@ public class AllTabObserver implements TabWindowManager.Observer, TabModelObserv
     @Override
     public void onTabModelSelectorAdded(TabModelSelector selector) {
         mTabModelSelectorStates.add(new TabModelSelectorState(selector));
+    }
+
+    public static void resetForTesting() {
+        sCustomTabs.clear();
+        sAllTabObservers.clear();
     }
 }

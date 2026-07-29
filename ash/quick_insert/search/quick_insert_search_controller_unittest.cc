@@ -49,7 +49,6 @@ using ::testing::Each;
 using ::testing::ElementsAre;
 using ::testing::Eq;
 using ::testing::Field;
-using ::testing::Invoke;
 using ::testing::IsEmpty;
 using ::testing::IsSupersetOf;
 using ::testing::NiceMock;
@@ -116,25 +115,21 @@ class ScopedFakeResourceBundleDelegate {
  public:
   explicit ScopedFakeResourceBundleDelegate(
       base::span<const FakeResource> resources) {
-    original_resource_bundle_ =
-        ui::ResourceBundle::SwapSharedInstanceForTesting(nullptr);
-    ui::ResourceBundle::InitSharedInstanceWithLocale(
-        "en-US", &delegate_, ui::ResourceBundle::DO_NOT_LOAD_COMMON_RESOURCES);
-
     for (const auto& [resource, data] : resources) {
       ON_CALL(delegate_, LoadDataResourceString(resource))
           .WillByDefault(testing::Return(data));
     }
   }
 
-  ~ScopedFakeResourceBundleDelegate() {
-    ui::ResourceBundle::CleanupSharedInstance();
-    ui::ResourceBundle::SwapSharedInstanceForTesting(original_resource_bundle_);
-  }
-
  private:
   testing::NiceMock<ui::MockResourceBundleDelegate> delegate_;
-  raw_ptr<ui::ResourceBundle> original_resource_bundle_;
+
+  // A ResourceBundle that uses the test's mock delegate.
+  ui::ResourceBundle resource_bundle_with_mock_delegate_{&delegate_};
+
+  // Swap in the test ResourceBundle for the lifetime of the test.
+  ui::ResourceBundle::SharedInstanceSwapperForTesting resource_bundle_swapper_{
+      &resource_bundle_with_mock_delegate_};
 };
 
 TEST_F(QuickInsertSearchControllerTest, SendsQueryToCrosSearchImmediately) {
@@ -999,7 +994,7 @@ TEST_F(QuickInsertSearchControllerTest, LoadsEmojiDataInAllLanguages) {
       "_comp_ime_jkghodnilhceideoidjikpgommlajknknacl_mozc_jp,"
       "_comp_ime_jkghodnilhceideoidjikpgommlajknknacl_mozc_us");
   prefs_service().registry()->RegisterDictionaryPref(
-      prefs::kEmojiPickerPreferences, base::Value::Dict());
+      prefs::kEmojiPickerPreferences, base::DictValue());
   MockEmojiSearchResultsCallback results_callback;
   EXPECT_CALL(
       results_callback,
@@ -1048,7 +1043,7 @@ TEST_F(QuickInsertSearchControllerTest,
       "_comp_ime_jkghodnilhceideoidjikpgommlajknkxkb:notareallanguage"
       "_comp_ime_jkghodnilhceideoidjikpgommlajknkxkb:someotherfakelanguage");
   prefs_service().registry()->RegisterDictionaryPref(
-      prefs::kEmojiPickerPreferences, base::Value::Dict());
+      prefs::kEmojiPickerPreferences, base::DictValue());
   MockEmojiSearchResultsCallback results_callback;
   EXPECT_CALL(results_callback,
               Call(ElementsAre(
@@ -1099,7 +1094,7 @@ TEST_F(QuickInsertSearchControllerTest, LoadsEmojiDataOnPrefsChange) {
       prefs::kLanguagePreloadEngines,
       "_comp_ime_jkghodnilhceideoidjikpgommlajknkxkb:us::eng");
   prefs_service().registry()->RegisterDictionaryPref(
-      prefs::kEmojiPickerPreferences, base::Value::Dict());
+      prefs::kEmojiPickerPreferences, base::DictValue());
 
   QuickInsertSearchController controller(
       /*burn_in_period=*/base::Milliseconds(100));
@@ -1170,7 +1165,7 @@ TEST_F(QuickInsertSearchControllerTest, LoadsEmojiDataForJapaneseUiLocale) {
       prefs::kLanguagePreloadEngines,
       "_comp_ime_jkghodnilhceideoidjikpgommlajknkxkb:us::eng");
   prefs_service().registry()->RegisterDictionaryPref(
-      prefs::kEmojiPickerPreferences, base::Value::Dict());
+      prefs::kEmojiPickerPreferences, base::DictValue());
 
   QuickInsertSearchController controller(
       /*burn_in_period=*/base::Milliseconds(100));

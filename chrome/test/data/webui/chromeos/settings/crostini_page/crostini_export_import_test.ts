@@ -4,8 +4,8 @@
 
 import 'chrome://os-settings/lazy_load.js';
 
-import type {ContainerInfo, ContainerSelectElement, CrostiniPortSetting, SettingsCrostiniExportImportElement} from 'chrome://os-settings/lazy_load.js';
-import {CrostiniBrowserProxyImpl, GuestOsBrowserProxyImpl} from 'chrome://os-settings/lazy_load.js';
+import type {ContainerInfo, CrostiniPortSetting, SettingsCrostiniExportImportElement} from 'chrome://os-settings/lazy_load.js';
+import {CrostiniBrowserProxyImpl, GuestOsBrowserProxyImpl, VmType} from 'chrome://os-settings/lazy_load.js';
 import {Router, routes, settingMojom} from 'chrome://os-settings/os_settings.js';
 import {webUIListenerCallback} from 'chrome://resources/js/cr.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
@@ -33,28 +33,22 @@ suite('<settings-crostini-export-import>', () => {
   let guestOsBrowserProxy: TestGuestOsBrowserProxy;
   let crostiniBrowserProxy: TestCrostiniBrowserProxy;
 
-  const multipleContainers: ContainerInfo[] = [
-    {
-      id: {
-        vm_name: 'termina',
-        container_name: 'penguin',
-      },
-      ipv4: '1.2.3.4',
-    },
-    {
-      id: {
-        vm_name: 'not-termina',
-        container_name: 'not-penguin',
-
-      },
-      ipv4: '1.2.3.5',
-    },
-  ];
   const singleContainer: ContainerInfo[] = [
     {
       id: {
         vm_name: 'termina',
         container_name: 'penguin',
+        vm_type: VmType.TERMINA,
+      },
+      ipv4: '1.2.3.4',
+    },
+  ];
+  const baguetteContainer: ContainerInfo[] = [
+    {
+      id: {
+        vm_name: 'termina',
+        container_name: '',
+        vm_type: VmType.BAGUETTE,
       },
       ipv4: '1.2.3.4',
     },
@@ -88,26 +82,14 @@ suite('<settings-crostini-export-import>', () => {
     flush();
   }
 
-  function selectContainerByIndex(
-      select: ContainerSelectElement, index: number): void {
-    const mdSelect = select.shadowRoot!.querySelector<HTMLSelectElement>(
-        'select#selectContainer.md-select');
-    assertTrue(!!mdSelect);
-    mdSelect.selectedIndex = index;
-    mdSelect.dispatchEvent(new CustomEvent('change'));
-    flush();
-  }
-
   setup(async () => {
     loadTimeData.overrideValues({
       isCrostiniAllowed: true,
       isCrostiniSupported: true,
       showCrostiniExportImport: true,
-      showCrostiniContainerUpgrade: true,
       showCrostiniPortForwarding: true,
       showCrostiniDiskResize: true,
       arcAdbSideloadingSupported: true,
-      showCrostiniExtraContainers: true,
     });
     crostiniBrowserProxy = new TestCrostiniBrowserProxy();
     crostiniBrowserProxy.containerInfo = singleContainer;
@@ -163,33 +145,18 @@ suite('<settings-crostini-export-import>', () => {
         '#export cr-button');
     assertTrue(!!exportBtn);
     exportBtn.click();
-    assertEquals(
-        1, crostiniBrowserProxy.getCallCount('exportCrostiniContainer'));
+    assertEquals(1, crostiniBrowserProxy.getCallCount('exportDiskImage'));
   });
 
-  test('Export multi container', async () => {
-    crostiniBrowserProxy.containerInfo = multipleContainers;
-    webUIListenerCallback('crostini-container-info', multipleContainers);
-    await flushTasks();
-
-    assertTrue(
-        !!subpage.shadowRoot!.querySelector('#exportCrostiniLabel .secondary'));
-    const select = subpage.shadowRoot!.querySelector<ContainerSelectElement>(
-        '#exportContainerSelect');
-    assertTrue(!!select);
-    selectContainerByIndex(select, 1);
-
+  test('Export disk image', () => {
+    crostiniBrowserProxy.containerInfo = baguetteContainer;
+    assertNull(
+        subpage.shadowRoot!.querySelector('#exportCrostiniLabel .secondary'));
     const exportBtn = subpage.shadowRoot!.querySelector<HTMLButtonElement>(
         '#export cr-button');
     assertTrue(!!exportBtn);
     exportBtn.click();
-
-    assertEquals(
-        1, crostiniBrowserProxy.getCallCount('exportCrostiniContainer'));
-    const args = crostiniBrowserProxy.getArgs('exportCrostiniContainer');
-    assertEquals(1, args.length);
-    assertEquals('not-termina', args[0].vm_name);
-    assertEquals('not-penguin', args[0].container_name);
+    assertEquals(1, crostiniBrowserProxy.getCallCount('exportDiskImage'));
   });
 
   test('Import single container', async () => {
@@ -214,17 +181,13 @@ suite('<settings-crostini-export-import>', () => {
         1, crostiniBrowserProxy.getCallCount('importCrostiniContainer'));
   });
 
-  test('Import multi container', async () => {
-    crostiniBrowserProxy.containerInfo = multipleContainers;
-    webUIListenerCallback('crostini-container-info', multipleContainers);
+  test('Import disk image', async () => {
+    crostiniBrowserProxy.containerInfo = baguetteContainer;
+    webUIListenerCallback('crostini-container-info', baguetteContainer);
     await flushTasks();
 
-    assertTrue(
-        !!subpage.shadowRoot!.querySelector('#importCrostiniLabel .secondary'));
-    const select = subpage.shadowRoot!.querySelector<ContainerSelectElement>(
-        '#importContainerSelect');
-    assertTrue(!!select);
-    selectContainerByIndex(select, 1);
+    assertNull(
+        subpage.shadowRoot!.querySelector('#importCrostiniLabel .secondary'));
 
     const importBtn = subpage.shadowRoot!.querySelector<HTMLButtonElement>(
         '#import cr-button');
@@ -235,19 +198,12 @@ suite('<settings-crostini-export-import>', () => {
     const importConfirmationDialog = subpage.shadowRoot!.querySelector(
         'settings-crostini-import-confirmation-dialog');
     assertTrue(!!importConfirmationDialog);
-
     const continueBtn =
         importConfirmationDialog.shadowRoot!.querySelector<HTMLButtonElement>(
             'cr-dialog cr-button[id="continue"]');
     assertTrue(!!continueBtn);
     continueBtn.click();
-
-    assertEquals(
-        1, crostiniBrowserProxy.getCallCount('importCrostiniContainer'));
-    const args = crostiniBrowserProxy.getArgs('importCrostiniContainer');
-    assertEquals(1, args.length);
-    assertEquals('not-termina', args[0].vm_name);
-    assertEquals('not-penguin', args[0].container_name);
+    assertEquals(1, crostiniBrowserProxy.getCallCount('importDiskImage'));
   });
 
   test('Export import buttons get disabled on operation status', async () => {

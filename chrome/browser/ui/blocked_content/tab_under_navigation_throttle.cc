@@ -40,7 +40,7 @@
 #include "chrome/browser/ui/blocked_content/framebust_block_tab_helper.h"
 #endif
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 #include "extensions/common/constants.h"
 #endif
 
@@ -63,29 +63,30 @@ void LogTabUnderAttempt(content::NavigationHandle* handle) {
 }  // namespace
 
 // static
-std::unique_ptr<content::NavigationThrottle>
-TabUnderNavigationThrottle::MaybeCreate(content::NavigationHandle* handle) {
+void TabUnderNavigationThrottle::MaybeCreateAndAdd(
+    content::NavigationThrottleRegistry& registry) {
   // TODO(crbug.com/40187173): TabUnderNavigationThrottle doesn't block
   // prerendering activations. However, currently prerender is same-origin only
   // so a prerendered activation could never be classified as a tab-under.
   // Otherwise, it should be safe to avoid creating a throttle in non primary
   // pages because prerendered pages should not be able to open popups. A
   // tab-under could therefore never occur within the non-primary page.
-  if (handle->IsInPrimaryMainFrame()) {
-    return base::WrapUnique(new TabUnderNavigationThrottle(handle));
+  if (registry.GetNavigationHandle().IsInPrimaryMainFrame()) {
+    registry.AddThrottle(
+        base::WrapUnique(new TabUnderNavigationThrottle(registry)));
   }
-  return nullptr;
 }
 
 TabUnderNavigationThrottle::~TabUnderNavigationThrottle() = default;
 
 TabUnderNavigationThrottle::TabUnderNavigationThrottle(
-    content::NavigationHandle* handle)
-    : content::NavigationThrottle(handle),
+    content::NavigationThrottleRegistry& registry)
+    : content::NavigationThrottle(registry),
       has_opened_popup_since_last_user_gesture_at_start_(
           HasOpenedPopupSinceLastUserGesture()),
-      started_in_foreground_(handle->GetWebContents()->GetVisibility() ==
-                             content::Visibility::VISIBLE) {}
+      started_in_foreground_(
+          registry.GetNavigationHandle().GetWebContents()->GetVisibility() ==
+          content::Visibility::VISIBLE) {}
 
 bool TabUnderNavigationThrottle::IsSuspiciousClientRedirect() const {
   // This throttle is only created for primary main frame navigations. See
@@ -94,8 +95,8 @@ bool TabUnderNavigationThrottle::IsSuspiciousClientRedirect() const {
   DCHECK(!navigation_handle()->HasCommitted());
 
   // Some browser initiated navigations have HasUserGesture set to false. This
-  // should eventually be fixed in crbug.com/617904. In the meantime, just dont
-  // block browser initiated ones.
+  // should eventually be fixed in crbug.com/41257523. In the meantime, just
+  // dont block browser initiated ones.
   if (started_in_foreground_ || navigation_handle()->HasUserGesture() ||
       !navigation_handle()->IsRendererInitiated()) {
     return false;
@@ -118,7 +119,7 @@ bool TabUnderNavigationThrottle::IsSuspiciousClientRedirect() const {
     return false;
   }
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   // Exempt navigating to or from extension URLs, as they will redirect pages in
   // the background. By exempting in both directions, extensions can always
   // round-trip a page through an extension URL in order to perform arbitrary
@@ -158,14 +159,15 @@ void TabUnderNavigationThrottle::ShowUI() {
           blocked_content::FramebustBlockedMessageDelegate::FromWebContents(
               web_contents);
   framebust_blocked_message_delegate->ShowMessage(
-      url,
+      url, navigation_handle()->GetInitiatorOrigin(),
       HostContentSettingsMapFactory::GetForProfile(
           web_contents->GetBrowserContext()),
       base::NullCallback());
 #else
   if (auto* tab_helper =
           FramebustBlockTabHelper::FromWebContents(web_contents)) {
-    tab_helper->AddBlockedUrl(url, base::NullCallback());
+    tab_helper->AddBlockedUrl(url, navigation_handle()->GetInitiatorOrigin(),
+                              base::NullCallback());
   }
 #endif
 }

@@ -136,6 +136,10 @@ class MockBluetoothAdapter : public BluetoothAdapter {
                void(const UUIDList& uuids,
                     base::OnceClosure callback,
                     ErrorCallback error_callback));
+  MOCK_METHOD3(SetSimpleSecurePairingEnabled,
+               void(bool enabled,
+                    base::OnceClosure callback,
+                    ErrorCallback error_callback));
   MOCK_METHOD0(GetLowEnergyScanSessionHardwareOffloadingStatus,
                LowEnergyScanSessionHardwareOffloadingStatus());
   MOCK_METHOD2(
@@ -175,8 +179,11 @@ class MockBluetoothAdapter : public BluetoothAdapter {
   // RemoveObserver(). Test fakes can use this function to notify the observers
   // about events.
   base::ObserverList<
-      device::BluetoothAdapter::Observer>::UncheckedAndDanglingUntriaged&
-  GetObservers() {
+      device::BluetoothAdapter::Observer,
+      /*check_empty=*/false,
+      base::ObserverListReentrancyPolicy::kAllowReentrancyUntriaged>::
+      UncheckedAndDanglingUntriaged&
+      GetObservers() {
     return observers_;
   }
 

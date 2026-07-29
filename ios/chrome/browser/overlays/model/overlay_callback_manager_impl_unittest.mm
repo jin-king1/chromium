@@ -6,14 +6,14 @@
 
 #import "base/functional/bind.h"
 #import "ios/chrome/browser/overlays/model/public/overlay_response.h"
+#import "ios/chrome/browser/overlays/model/public/overlay_response_info.h"
 #import "ios/chrome/browser/overlays/model/test/fake_overlay_user_data.h"
-#import "ios/chrome/browser/overlays/model/test/overlay_test_macros.h"
 #import "testing/platform_test.h"
 
 namespace {
 // Fake dispatch response info types.
-DEFINE_TEST_OVERLAY_RESPONSE_INFO(FirstResponseInfo);
-DEFINE_TEST_OVERLAY_RESPONSE_INFO(SecondResponseInfo);
+DEFINE_STATELESS_OVERLAY_RESPONSE_INFO(FirstResponseInfo);
+DEFINE_STATELESS_OVERLAY_RESPONSE_INFO(SecondResponseInfo);
 }  // namespace
 
 using OverlayCallbackManagerImplTest = PlatformTest;
@@ -93,4 +93,26 @@ TEST_F(OverlayCallbackManagerImplTest, DispatchCallbacks) {
 
   EXPECT_EQ(2U, first_execution_count);
   EXPECT_EQ(2U, second_execution_count);
+}
+
+// Tests that OverlayCallbackManagerImpl safely handles being destroyed during
+// the execution of a dispatch callback.
+TEST_F(OverlayCallbackManagerImplTest, DispatchCallbacksWithDestruction) {
+  auto manager = std::make_unique<OverlayCallbackManagerImpl>();
+  std::unique_ptr<OverlayCallbackManagerImpl>* manager_ptr = &manager;
+
+  void (^destroy_callback_block)(OverlayResponse* response) =
+      ^(OverlayResponse* response) {
+        manager_ptr->reset();
+      };
+
+  manager->AddDispatchCallback(
+      OverlayDispatchCallback(base::BindRepeating(destroy_callback_block),
+                              FirstResponseInfo::ResponseSupport()));
+
+  // Send a response and make sure nothing crashes.
+  manager->DispatchResponse(
+      OverlayResponse::CreateWithInfo<FirstResponseInfo>());
+
+  EXPECT_FALSE(manager);
 }

@@ -2,9 +2,10 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//components/guest_view/buildflags/buildflags.gni")
+import("//content/public/common/features.gni")
 import("//extensions/buildflags/buildflags.gni")
 import("//pdf/features.gni")
-import("//ppapi/buildflags/buildflags.gni")
 
 assert(is_win || is_mac || is_linux || is_chromeos || is_android)
 
@@ -21,6 +22,7 @@ source_set("content_settings") {
     "//base",
     "//chrome/browser/permissions",
     "//chrome/browser/profiles:profile",
+    "//chrome/browser/safe_browsing:advanced_protection",
     "//chrome/browser/ui/tabs:tabs_public",
     "//components/browsing_data/content",
     "//components/content_settings/browser",
@@ -32,6 +34,8 @@ source_set("content_settings") {
     "//content/public/browser",
   ]
 
+  deps = []
+
   allow_circular_includes_from = []
 
   if (is_android) {
@@ -39,11 +43,15 @@ source_set("content_settings") {
       "javascript_optimizer_provider_android.h",
       "request_desktop_site_web_contents_observer_android.h",
     ]
+    public_deps += [ "//chrome/browser/preferences:android" ]
   } else {
     sources += [
       "generated_cookie_prefs.h",
+      "generated_javascript_optimizer_pref.h",
       "generated_permission_prompting_behavior_pref.h",
     ]
+
+    deps += [ "//components/content_settings/browser/ui" ]
 
     if (enable_extensions) {
       public_deps += [ "//chrome/browser/extensions" ]
@@ -70,6 +78,8 @@ source_set("impl") {
     ":content_settings_factory",
     ":content_settings_util",
     "//chrome/browser:browser_process",
+    "//chrome/browser:browser_process_platform_part",
+    "//chrome/browser/browsing_data",
     "//chrome/browser/media/webrtc",
     "//chrome/browser/permissions",
     "//chrome/browser/permissions/system",
@@ -77,9 +87,14 @@ source_set("impl") {
     "//chrome/browser/profiles",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/search_engines",
+    "//chrome/browser/site_protection",
+    "//chrome/browser/site_protection:utils",
+    "//chrome/browser/ui/tabs:utils",
     "//components/content_settings/browser",
+    "//components/content_settings/browser/ui",
     "//components/content_settings/core/browser",
     "//components/content_settings/core/browser:cookie_settings",
+    "//components/guest_view/buildflags",
     "//components/pref_registry",
     "//components/supervised_user/core/browser",
     "//pdf:features",
@@ -100,13 +115,15 @@ source_set("impl") {
   } else {
     sources += [
       "generated_cookie_prefs.cc",
+      "generated_javascript_optimizer_pref.cc",
       "generated_permission_prompting_behavior_pref.cc",
     ]
 
-    deps += [
-      "//chrome/browser/ui/tabs",
-      "//components/guest_view/browser",
-    ]
+    deps += [ "//chrome/browser/ui/tabs" ]
+  }
+
+  if (enable_guest_view) {
+    deps += [ "//components/guest_view/browser" ]
   }
 
   if (enable_extensions_core) {
@@ -114,7 +131,10 @@ source_set("impl") {
   }
 
   if (enable_pdf) {
-    deps += [ "//chrome/browser/pdf" ]
+    deps += [
+      "//chrome/browser/pdf",
+      "//extensions/browser/mime_handler",
+    ]
   }
 }
 
@@ -141,11 +161,14 @@ source_set("content_settings_factory_impl") {
   deps = [
     ":content_settings",
     ":content_settings_factory",
+    "//chrome/browser/browsing_data",
     "//chrome/browser/notifications",
     "//chrome/browser/permissions",
     "//chrome/browser/profiles",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/search_engines",
+    "//chrome/browser/supervised_user",
+    "//chrome/browser/webid",
     "//components/content_settings/core/browser",
     "//components/content_settings/core/browser:cookie_settings",
     "//components/permissions:permissions_common",
@@ -155,12 +178,16 @@ source_set("content_settings_factory_impl") {
 
   public_deps = [ "//chrome/browser:browser_public_dependencies" ]
 
-  if (enable_extensions) {
+  if (enable_extensions_core) {
     deps += [ "//extensions/browser" ]
   }
 
   if (is_android) {
-    deps += [ "//chrome/browser/notifications:notifications_java_enum_srcjar" ]
+    deps += [
+      "//chrome/browser/flags:flags_android",
+      "//chrome/browser/notifications:notifications_java_enum_srcjar",
+      "//chrome/browser/webapps/installable:android",
+    ]
   }
 }
 
@@ -176,13 +203,19 @@ source_set("content_settings_util_impl") {
   deps = [
     ":content_settings_util",
     "//base",
+    "//chrome/browser/browsing_data",
+    "//chrome/browser/ui/browser_window",
     "//content/public/browser",
   ]
 
   public_deps = [ "//chrome/browser:browser_public_dependencies" ]
 
   if (!is_android) {
-    deps += [ "//chrome/browser/ui/tabs:tab_strip" ]
+    deps += [
+      "//chrome/browser/ui/location_bar",
+      "//chrome/browser/ui/tabs:tab_strip",
+      "//chrome/browser/ui/views/picture_in_picture",
+    ]
   }
 }
 
@@ -200,8 +233,11 @@ if (!is_android) {
       ":content_settings_factory",
       "//base",
       "//base/test:test_support",
+      "//chrome/browser/browsing_data",
       "//chrome/browser/profiles:profile",
       "//chrome/browser/ui",
+      "//chrome/browser/ui:view_ids",
+      "//chrome/browser/ui/browser_window",
       "//chrome/browser/ui/content_settings",
       "//chrome/test:test_support_ui",
       "//components/content_settings/browser",
@@ -210,7 +246,6 @@ if (!is_android) {
       "//content/public/browser",
       "//content/public/common",
       "//content/test:test_support",
-      "//net:test_support",
       "//net:test_support",
       "//testing/gtest",
       "//third_party/blink/public/common",
@@ -231,10 +266,9 @@ if (!is_android) {
         "//components/browsing_data/content",
         "//components/content_settings/core/browser:cookie_settings",
         "//components/content_settings/core/common",
-        "//components/nacl/common:buildflags",
         "//components/prefs",
+        "//content/public/common:buildflags",
         "//pdf:buildflags",
-        "//ppapi/buildflags",
         "//services/network/public/cpp",
         "//testing/gmock",
         "//third_party/widevine/cdm:buildflags",
@@ -243,6 +277,10 @@ if (!is_android) {
       if (enable_pdf) {
         deps += [ "//components/pdf/browser" ]
       }
+    }
+
+    if (enable_pdf) {
+      deps += [ "//chrome/browser/pdf:pdf_extension_test_base" ]
     }
   }
 }
@@ -276,17 +314,21 @@ source_set("unit_tests") {
     "//base/test:test_support",
     "//build:chromeos_buildflags",
     "//chrome/browser",
+    "//chrome/browser/browsing_data",
     "//chrome/browser/permissions",
     "//chrome/browser/prefs",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/ui",
+    "//chrome/browser/ui:recently_audible_helper",
     "//chrome/browser/ui/tabs:tab_enums",
+    "//chrome/browser/ui/tabs:utils",
     "//chrome/common",
     "//chrome/common:constants",
     "//chrome/common:non_code_constants",
     "//chrome/test:test_support",
     "//components/client_hints/common",
     "//components/content_settings/browser",
+    "//components/content_settings/browser/ui",
     "//components/content_settings/core/browser:cookie_settings",
     "//components/content_settings/core/browser:test_support",
     "//components/content_settings/core/common:features",
@@ -302,10 +344,10 @@ source_set("unit_tests") {
     "//components/ukm:test_support",
     "//components/ukm/content",
     "//content/public/browser",
+    "//content/public/common:buildflags",
     "//content/test:test_support",
     "//media",
     "//net",
-    "//ppapi/buildflags",
     "//testing/gtest",
     "//third_party/blink/public/common:headers",
     "//url",
@@ -313,8 +355,12 @@ source_set("unit_tests") {
 
   if (is_android) {
     sources += [ "javascript_optimizer_provider_android_unittest.cc" ]
+    deps += [ "//chrome/browser/android:tabs_public" ]
   } else {
-    sources += [ "generated_cookie_prefs_unittest.cc" ]
+    sources += [
+      "generated_cookie_prefs_unittest.cc",
+      "generated_javascript_optimizer_pref_unittest.cc",
+    ]
 
     deps += [
       "//chrome/browser/extensions",

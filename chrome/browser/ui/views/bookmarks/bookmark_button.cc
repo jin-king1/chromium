@@ -11,19 +11,25 @@
 #include "chrome/browser/predictors/loading_predictor.h"
 #include "chrome/browser/predictors/loading_predictor_config.h"
 #include "chrome/browser/predictors/loading_predictor_factory.h"
+#include "chrome/browser/preloading/bookmarkbar_preload/bookmarkbar_preload_pipeline_manager.h"
 #include "chrome/browser/preloading/chrome_preloading.h"
 #include "chrome/browser/preloading/prerender/prerender_manager.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/layout_constants.h"
-#include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/views/bookmarks/bookmark_bar_view.h"
 #include "chrome/browser/ui/views/bookmarks/bookmark_button_util.h"
 #include "chrome/browser/ui/views/event_utils.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_ink_drop_util.h"
+#include "chrome/common/pref_names.h"
 #include "chrome/grit/generated_resources.h"
+#include "components/prefs/pref_service.h"
 #include "content/public/browser/navigation_handle.h"
+#include "content/public/browser/preloading_data.h"
+#include "content/public/browser/web_contents.h"
+#include "services/network/public/cpp/constants.h"
 #include "ui/base/l10n/l10n_util.h"
-#include "ui/base/ui_base_features.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/widget/tooltip_manager.h"
 
@@ -37,20 +43,12 @@ enum class PreloadBookmarkMetricsEvent {
 };
 
 // These are used as control the behavior of kBookmarkTriggerForPrerender2.
-const base::FeatureParam<int> kPreconnectStartDelayOnMouseHoverByMiliseconds{
-    &features::kBookmarkTriggerForPrerender2,
+const base::FeatureParam<int> kPreconnectStartDelayOnMouseHoverByMilliseconds{
+    &features::kBookmarkTriggerForPreconnect,
     "preconnect_start_delay_on_mouse_hover_ms", 100};
-const base::FeatureParam<int> kPrerenderStartDelayOnMouseHoverByMiliseconds{
-    &features::kBookmarkTriggerForPrerender2,
-    "prerender_start_delay_on_mouse_hover_ms", 300};
-const base::FeatureParam<bool> kPrerenderBookmarkBarOnMousePressedTrigger{
-    &features::kBookmarkTriggerForPrerender2,
-    "prerender_bookmarkbar_on_mouse_pressed_trigger", true};
-// The hover trigger is not enabled as we are aware that this negatively
-// affects other navigations like Omnibox search.
-const base::FeatureParam<bool> kPrerenderBookmarkBarOnMouseHoverTrigger{
-    &features::kBookmarkTriggerForPrerender2,
-    "prerender_bookmarkbar_on_mouse_hover_trigger", false};
+const base::FeatureParam<int> kPrefetchStartDelayOnMouseHoverByMilliseconds{
+    &features::kBookmarkTriggerForPrefetch,
+    "prefetch_start_delay_on_mouse_hover_ms", 300};
 
 // BookmarkButtonBase -----------------------------------------------
 
@@ -59,16 +57,15 @@ const base::FeatureParam<bool> kPrerenderBookmarkBarOnMouseHoverTrigger{
 BookmarkButtonBase::BookmarkButtonBase(PressedCallback callback,
                                        std::u16string_view title)
     : LabelButton(std::move(callback), title) {
-  ConfigureInkDropForToolbar(this);
+  ConfigureInkDrop(this);
 
   SetImageLabelSpacing(
-      GetLayoutConstant(BOOKMARK_BAR_BUTTON_IMAGE_LABEL_PADDING));
+      GetLayoutConstant(LayoutConstant::kBookmarkBarButtonImageLabelPadding));
 
   views::InstallPillHighlightPathGenerator(this);
 
   SetFocusBehavior(FocusBehavior::ACCESSIBLE_ONLY);
   views::FocusRing::Get(this)->SetOutsetFocusRingDisabled(true);
-  SetHideInkDropWhenShowingContextMenu(false);
 
   show_animation_ = std::make_unique<gfx::SlideAnimation>(this);
   if (!BookmarkBarView::GetAnimationsEnabled()) {
@@ -119,6 +116,18 @@ BookmarkButton::BookmarkButton(PressedCallback callback,
 
 BookmarkButton::~BookmarkButton() = default;
 
+void BookmarkButton::OnButtonPressed(const ui::Event& event) {
+  if (base::FeatureList::IsEnabled(features::kBookmarkTriggerForPrefetch) &&
+      browser_) {
+    browser_->GetProfile()->GetPrefs()->SetInt64(
+        prefs::kBookmarkBarNavigationCount,
+        browser_->GetProfile()->GetPrefs()->GetInt64(
+            prefs::kBookmarkBarNavigationCount) +
+            1);
+  }
+  callback_.Run(event);
+}
+
 void BookmarkButton::AddedToWidget() {
   BookmarkButtonBase::AddedToWidget();
 
@@ -138,17 +147,12 @@ void BookmarkButton::OnBoundsChanged(const gfx::Rect& previous_bounds) {
   UpdateMaxTooltipWidth();
 }
 
-void BookmarkButton::UpdateTooltipText() {
-  if (!GetWidget()) {
-    return;
+std::u16string BookmarkButton::GetRenderedTooltipText(
+    const gfx::Point& p) const {
+  if (tooltip_text_needs_update_) {
+    const_cast<BookmarkButton*>(this)->MaybeUpdateTooltipText();
   }
-
-  const views::TooltipManager* tooltip_manager =
-      GetWidget()->GetTooltipManager();
-  if (tooltip_manager) {
-    SetTooltipText(BookmarkBarView::CreateToolTipForURLAndTitle(
-        max_tooltip_width_, tooltip_manager->GetFontList(), *url_, GetText()));
-  }
+  return GetTooltipText();
 }
 
 void BookmarkButton::AdjustAccessibleName(std::u16string& new_name,
@@ -165,54 +169,98 @@ void BookmarkButton::AdjustAccessibleName(std::u16string& new_name,
 
 void BookmarkButton::SetText(std::u16string_view text) {
   BookmarkButtonBase::SetText(text);
-  UpdateTooltipText();
+  tooltip_text_needs_update_ = true;
+}
+
+void BookmarkButton::MaybeUpdateTooltipText() {
+  if (!tooltip_text_needs_update_) {
+    return;
+  }
+  tooltip_text_needs_update_ = false;
+  if (!GetWidget()) {
+    return;
+  }
+  const views::TooltipManager* tooltip_manager =
+      GetWidget()->GetTooltipManager();
+  if (tooltip_manager) {
+    SetTooltipText(BookmarkBarView::CreateToolTipForURLAndTitle(
+        max_tooltip_width_, tooltip_manager->GetFontList(), *url_, GetText()));
+  }
 }
 
 void BookmarkButton::OnMouseEntered(const ui::MouseEvent& event) {
+  // Compute the tooltip text before it's queried by the tooltip manager.
+  MaybeUpdateTooltipText();
+
   // Reset source information for taking metrics for following mouse events.
 
   BookmarkButtonBase::OnMouseEntered(event);
 
-  if (base::FeatureList::IsEnabled(features::kBookmarkTriggerForPrerender2) &&
-      kPrerenderBookmarkBarOnMouseHoverTrigger.Get()) {
-    preloading_timer_.Start(
+  if (base::FeatureList::IsEnabled(features::kBookmarkTriggerForPrefetch) &&
+      browser_) {
+    browser_->GetProfile()->GetPrefs()->SetInt64(
+        prefs::kBookmarkBarHoverCount,
+        browser_->GetProfile()->GetPrefs()->GetInt64(
+            prefs::kBookmarkBarHoverCount) +
+            1);
+  }
+
+  if (base::FeatureList::IsEnabled(features::kBookmarkTriggerForPreconnect)) {
+    preconnect_timer_.Start(
         FROM_HERE,
         base::Milliseconds(
-            kPreconnectStartDelayOnMouseHoverByMiliseconds.Get()),
+            kPreconnectStartDelayOnMouseHoverByMilliseconds.Get()),
         base::BindRepeating(&BookmarkButton::StartPreconnecting,
                             base::Unretained(this), *url_));
-    // Now we should register the callback function that will be used to
-    // compute the preloading recall.
-    if (auto* web_contents =
-            browser_->tab_strip_model()->GetActiveWebContents()) {
-      content::PreloadingData* preloading_data =
-          content::PreloadingData::GetOrCreateForWebContents(web_contents);
-      preloading_data->SetIsNavigationInDomainCallback(
-          chrome_preloading_predictor::kMouseHoverOrMouseDownOnBookmarkBar,
-          base::BindRepeating(
-              [](content::NavigationHandle* navigation_handle) -> bool {
-                return ui::PageTransitionCoreTypeIs(
-                           navigation_handle->GetPageTransition(),
-                           ui::PAGE_TRANSITION_AUTO_BOOKMARK) &&
-                       ui::PageTransitionIsNewNavigation(
-                           navigation_handle->GetPageTransition());
-              }));
-    }
+  }
+
+  if (base::FeatureList::IsEnabled(features::kBookmarkTriggerForPrefetch)) {
+    prefetch_timer_.Start(
+        FROM_HERE,
+        base::Milliseconds(kPrefetchStartDelayOnMouseHoverByMilliseconds.Get()),
+        base::BindRepeating(&BookmarkButton::StartPreloading,
+                            base::Unretained(this), *url_,
+                            content::PreloadingType::kPrefetch));
+  }
+
+  // Now we should register the callback function that will be used to
+  // compute the preloading recall.
+  if (auto* web_contents =
+          browser_->tab_strip_model()->GetActiveWebContents()) {
+    content::PreloadingData* preloading_data =
+        content::PreloadingData::GetOrCreateForWebContents(web_contents);
+    preloading_data->SetIsNavigationInDomainCallback(
+        chrome_preloading_predictor::kMouseHoverOrMouseDownOnBookmarkBar,
+        base::BindRepeating(
+            [](content::NavigationHandle* navigation_handle) -> bool {
+              return ui::PageTransitionCoreTypeIs(
+                         navigation_handle->GetPageTransition(),
+                         ui::PAGE_TRANSITION_AUTO_BOOKMARK) &&
+                     ui::PageTransitionIsNewNavigation(
+                         navigation_handle->GetPageTransition());
+            }));
+  }
+}
+
+void BookmarkButton::StopPreloadingTimers() {
+  if (base::FeatureList::IsEnabled(features::kBookmarkTriggerForPreconnect)) {
+    preconnect_timer_.Stop();
+  }
+
+  if (base::FeatureList::IsEnabled(features::kBookmarkTriggerForPrefetch)) {
+    prefetch_timer_.Stop();
   }
 }
 
 void BookmarkButton::OnMouseExited(const ui::MouseEvent& event) {
   BookmarkButtonBase::OnMouseExited(event);
-  if (base::FeatureList::IsEnabled(features::kBookmarkTriggerForPrerender2)) {
-    preloading_timer_.Stop();
-    if (prerender_web_contents_) {
-      auto* prerender_manager =
-          PrerenderManager::FromWebContents(&(*prerender_web_contents_));
-      prerender_manager->StopPrerenderBookmark(prerender_handle_);
-      prerender_handle_ = nullptr;
-      prerender_web_contents_ = nullptr;
-    }
+  StopPreloadingTimers();
+
+  if (!GetBookmarkBarPreloadPipelineManager()) {
+    return;
   }
+
+  GetBookmarkBarPreloadPipelineManager()->ResetPrerender();
 }
 
 bool BookmarkButton::OnMousePressed(const ui::MouseEvent& event) {
@@ -221,10 +269,21 @@ bool BookmarkButton::OnMousePressed(const ui::MouseEvent& event) {
     base::UmaHistogramEnumeration("Prerender.Experimental.BookmarkMetrics",
                                   PreloadBookmarkMetricsEvent::kMouseDown);
   }
-  if (event.IsOnlyLeftMouseButton() &&
-      base::FeatureList::IsEnabled(features::kBookmarkTriggerForPrerender2) &&
-      kPrerenderBookmarkBarOnMousePressedTrigger.Get()) {
-    StartPrerendering(*url_);
+
+  if (event.IsOnlyLeftMouseButton()) {
+    // Stopping preloading timers to avoid starting preconnect/prefetch after
+    // prerender has been started.
+    StopPreloadingTimers();
+    // Starting prefetch before prerender. With
+    // `UsePrefetchPrerenderIntegration()` being true, preloading can fall back
+    // to prefetch if prerender fails. If a prefetch has been started, this
+    // function call will do nothing.
+    if (base::FeatureList::IsEnabled(features::kBookmarkTriggerForPrefetch)) {
+      StartPreloading(*url_, content::PreloadingType::kPrefetch);
+    }
+    // Starting prerender. If a prerender has been started, this function call
+    // will do nothing.
+    StartPreloading(*url_, content::PreloadingType::kPrerender);
   }
   return result;
 }
@@ -239,51 +298,43 @@ void BookmarkButton::OnWidgetBoundsChanged(views::Widget* widget,
 }
 
 void BookmarkButton::StartPreconnecting(GURL url) {
-  CHECK(base::FeatureList::IsEnabled(features::kBookmarkTriggerForPrerender2));
-  if (prerender_handle_) {
+  CHECK(base::FeatureList::IsEnabled(features::kBookmarkTriggerForPreconnect));
+  // TODO(crbug.com/413259638): Introduce preconnect related tests once the
+  // related infrastructure is completed.
+  if (!GetBookmarkBarPreloadPipelineManager() ||
+      GetBookmarkBarPreloadPipelineManager()->IsPreloadingStarted()) {
     return;
   }
 
-  // Directly start prerendering to avoid timer overhead.
-  if (kPrerenderStartDelayOnMouseHoverByMiliseconds.Get() -
-          kPreconnectStartDelayOnMouseHoverByMiliseconds.Get() <=
-      0) {
-    StartPrerendering(url);
-  } else {
-    auto* loading_predictor =
-        predictors::LoadingPredictorFactory::GetForProfile(browser_->profile());
-    if (loading_predictor) {
-      loading_predictor->PrepareForPageLoad(
-          /*initiator_origin=*/std::nullopt, url,
-          predictors::HintOrigin::BOOKMARK_BAR, true);
-    }
-
-    preloading_timer_.Start(
-        FROM_HERE,
-        base::Milliseconds(
-            kPrerenderStartDelayOnMouseHoverByMiliseconds.Get() -
-            kPreconnectStartDelayOnMouseHoverByMiliseconds.Get()),
-        base::BindRepeating(&BookmarkButton::StartPrerendering,
-                            base::Unretained(this), url));
+  auto* loading_predictor = predictors::LoadingPredictorFactory::GetForProfile(
+      browser_->GetProfile());
+  if (loading_predictor) {
+    loading_predictor->PrepareForPageLoad(
+        /*initiator_origin=*/std::nullopt, url,
+        predictors::HintOrigin::BOOKMARK_BAR,
+        network::GetNoOpNetworkRestrictionsId(), true);
   }
 }
 
-void BookmarkButton::StartPrerendering(GURL url) {
-  CHECK(base::FeatureList::IsEnabled(features::kBookmarkTriggerForPrerender2));
-  if (prerender_handle_) {
-    return;
-  }
-  auto* active_web_contents =
-      browser_->tab_strip_model()->GetActiveWebContents();
-  if (!active_web_contents) {
+void BookmarkButton::StartPreloading(const GURL& url,
+                                     content::PreloadingType preloadingType) {
+  if (!GetBookmarkBarPreloadPipelineManager()) {
     return;
   }
 
-  prerender_web_contents_ = active_web_contents->GetWeakPtr();
-  PrerenderManager::CreateForWebContents(prerender_web_contents_.get());
-  auto* prerender_manager =
-      PrerenderManager::FromWebContents(prerender_web_contents_.get());
-  prerender_handle_ = prerender_manager->StartPrerenderBookmark(url);
+  switch (preloadingType) {
+    case content::PreloadingType::kPrerender:
+      GetBookmarkBarPreloadPipelineManager()->StartPrerender(url);
+      break;
+    case content::PreloadingType::kPrefetch:
+      GetBookmarkBarPreloadPipelineManager()->StartPrefetch(url);
+      break;
+    case content::PreloadingType::kUnspecified:
+    case content::PreloadingType::kPreconnect:
+    case content::PreloadingType::kNoStatePrefetch:
+    case content::PreloadingType::kPrerenderUntilScript:
+      NOTREACHED();
+  }
 }
 
 void BookmarkButton::UpdateMaxTooltipWidth() {
@@ -298,8 +349,20 @@ void BookmarkButton::UpdateMaxTooltipWidth() {
   int max_tooltip_width = tooltip_manager->GetMaxWidth(p);
   if (max_tooltip_width != max_tooltip_width_) {
     max_tooltip_width_ = max_tooltip_width;
-    UpdateTooltipText();
+    tooltip_text_needs_update_ = true;
   }
+}
+
+BookmarkBarPreloadPipelineManager*
+BookmarkButton::GetBookmarkBarPreloadPipelineManager() {
+  tabs::TabInterface* active_tab = browser_->tab_strip_model()->GetActiveTab();
+  // TODO(crbug.com/413259638): active_tab is only expected to be null if the
+  // tab_strip is being initialized or destroyed, but putting a CHECK had caused
+  // crbug.com/448228076.
+  if (!active_tab) {
+    return nullptr;
+  }
+  return active_tab->GetTabFeatures()->bookmarkbar_preload_pipeline_manager();
 }
 
 BEGIN_METADATA(BookmarkButton)

@@ -20,6 +20,7 @@
 #include "ui/views/controls/separator.h"
 #include "ui/views/layout/box_layout_view.h"
 #include "ui/views/layout/flex_layout_view.h"
+#include "ui/views/metadata/view_factory.h"
 
 namespace {
 constexpr int kSeparatorBottomMargin = 16;
@@ -58,7 +59,10 @@ void SubpageView::SetUpSubpageTitle(views::Button::PressedCallback callback) {
           .right());
 
   auto back_button = views::CreateVectorImageButtonWithNativeTheme(
-      std::move(callback), vector_icons::kArrowBackChromeRefreshIcon,
+      std::move(callback),
+      features::IsRoundedIconsEnabled()
+          ? vector_icons::kArrowBackIcon
+          : vector_icons::kArrowBackChromeRefreshOldIcon,
       kBackIconSize);
   back_button->SetID(VIEW_ID_SUBPAGE_BACK_BUTTON);
   back_button->SetTooltipText(l10n_util::GetStringUTF16(IDS_ACCNAME_BACK));

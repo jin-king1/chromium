@@ -5,7 +5,6 @@
 #include <sys/socket.h>
 
 #include "base/compiler_specific.h"
-#include "base/files/file_util.h"
 #include "base/files/scoped_file.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
@@ -25,8 +24,6 @@
 #endif
 
 namespace base {
-
-#if !BUILDFLAG(IS_NACL)
 
 namespace {
 
@@ -699,7 +696,5 @@ TEST_P(FdWatchControllerPosixTest, TimerThenIoEvent) {
 }
 
 }  // namespace
-
-#endif  // !BUILDFLAG(IS_NACL)
 
 }  // namespace base

@@ -7,6 +7,7 @@
 #include <string>
 
 #include "base/command_line.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/strings/string_util.h"
@@ -17,6 +18,7 @@
 #include "chrome/browser/extensions/activity_log/activity_log_task_runner.h"
 #include "chrome/browser/extensions/activity_log/fullstream_ui_policy.h"
 #include "chrome/common/chrome_switches.h"
+#include "extensions/buildflags/buildflags.h"
 #include "sql/error_delegate_util.h"
 #include "sql/init_status.h"
 #include "sql/sqlite_result_code_values.h"
@@ -25,6 +27,8 @@
 #if BUILDFLAG(IS_MAC)
 #include "base/apple/backup_util.h"
 #endif
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace extensions {
 
@@ -40,10 +44,7 @@ static const int kSizeThresholdForFlush = 200;
 ActivityDatabase::ActivityDatabase(ActivityDatabase::Delegate* delegate)
     : delegate_(delegate),
       db_(sql::DatabaseOptions()
-              .set_page_size(4096)
               .set_cache_size(32)
-              .set_preload(base::FeatureList::IsEnabled(
-                  sql::features::kPreOpenPreloadDatabase))
               // TODO(pwnall): Add a meta table and remove this option.
               .set_mmap_alt_status_discouraged(true)
               .set_enable_views_discouraged(
@@ -97,12 +98,6 @@ void ActivityDatabase::Init(const base::FilePath& db_name) {
   sql::InitStatus stat = committer.Commit() ? sql::INIT_OK : sql::INIT_FAILURE;
   if (stat != sql::INIT_OK)
     return LogInitFailure();
-
-  // Pre-loads the first <cache-size> pages into the cache.
-  // Doesn't do anything if the database is new.
-  if (!base::FeatureList::IsEnabled(sql::features::kPreOpenPreloadDatabase)) {
-    db_.Preload();
-  }
 
   valid_db_ = true;
   timer_.Start(FROM_HERE,

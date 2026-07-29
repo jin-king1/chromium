@@ -41,6 +41,7 @@
 #if BUILDFLAG(IS_CHROMEOS)
 #include "ash/constants/ash_switches.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
+#include "chrome/common/chrome_features.h"
 #else
 #include "components/enterprise/browser/controller/fake_browser_dm_token_storage.h"
 #endif  // BUILDFLAG(IS_CHROMEOS)
@@ -100,6 +101,12 @@ class PolicyPrefsTest : public PlatformBrowserTest {
         true /* is_first_policy_load_complete_return */);
     BrowserPolicyConnector::SetPolicyProviderForTesting(
         GetMockPolicyProvider());
+
+#if BUILDFLAG(IS_ANDROID)
+    // Intentionally leak the mock provider on Android. See comment in
+    // GetMockPolicyProvider() for details.
+    ::testing::Mock::AllowLeak(GetMockPolicyProvider());
+#endif  // BUILDFLAG(IS_ANDROID)
   }
 
   void TearDownOnMainThread() override { ClearProviderPolicy(); }
@@ -141,13 +148,20 @@ class PolicyPrefsTest : public PlatformBrowserTest {
 class ChunkedPolicyPrefsTest : public PolicyPrefsTest,
                                public ::testing::WithParamInterface<size_t> {
  public:
-  ChunkedPolicyPrefsTest() = default;
+  ChunkedPolicyPrefsTest() {
+#if BUILDFLAG(IS_CHROMEOS)
+    feature_list_.InitAndEnableFeature(features::kCameraCloudStorage);
+#endif
+  }
   ChunkedPolicyPrefsTest(const ChunkedPolicyPrefsTest&) = delete;
   ChunkedPolicyPrefsTest& operator=(const ChunkedPolicyPrefsTest&) = delete;
   ~ChunkedPolicyPrefsTest() override = default;
 
  protected:
   PrefMappingChunkInfo chunk_info_{GetParam(), GetNumChunks()};
+#if BUILDFLAG(IS_CHROMEOS)
+  base::test::ScopedFeatureList feature_list_;
+#endif
 };
 
 // Verifies that policies make their corresponding preferences become managed,

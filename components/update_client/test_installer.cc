@@ -24,8 +24,7 @@
 namespace update_client {
 
 TestInstaller::TestInstaller()
-    : error_(0),
-      install_count_(0),
+    : install_count_(0),
       install_error_(InstallError::NONE),
       task_runner_(base::SequencedTaskRunner::GetCurrentDefault()) {}
 
@@ -36,10 +35,6 @@ TestInstaller::~TestInstaller() {
   if (!unpack_path_.empty()) {
     EXPECT_FALSE(base::DirectoryExists(unpack_path_));
   }
-}
-
-void TestInstaller::OnUpdateError(int error) {
-  error_ = error;
 }
 
 void TestInstaller::Install(const base::FilePath& unpack_path,
@@ -98,7 +93,7 @@ void VersionedTestInstaller::Install(
     std::unique_ptr<InstallParams> /*install_params*/,
     ProgressCallback progress_callback,
     Callback callback) {
-  std::optional<base::Value::Dict> manifest =
+  std::optional<base::DictValue> manifest =
       update_client::ReadManifest(unpack_path);
   if (!manifest) {
     return;

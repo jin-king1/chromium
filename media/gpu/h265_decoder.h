@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <array>
 #include <memory>
 #include <vector>
 
@@ -23,6 +24,10 @@
 #include "media/parsers/h265_parser.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
+
+#if BUILDFLAG(ENABLE_PLATFORM_DOLBY_VISION)
+#include "media/gpu/dolby_vision_metadata.h"
+#endif  // BUILDFLAG(ENABLE_PLATFORM_DOLBY_VISION)
 
 namespace media {
 
@@ -201,7 +206,7 @@ class MEDIA_GPU_EXPORT H265Decoder final : public AcceleratedVideoDecoder {
   ~H265Decoder() override;
 
   // AcceleratedVideoDecoder implementation.
-  void SetStream(int32_t id, const DecoderBuffer& decoder) override;
+  void SetStream(int32_t id, scoped_refptr<DecoderBuffer> decoder) override;
   [[nodiscard]] bool Flush() override;
   void Reset() override;
   [[nodiscard]] DecodeResult Decode() override;
@@ -211,7 +216,6 @@ class MEDIA_GPU_EXPORT H265Decoder final : public AcceleratedVideoDecoder {
   uint8_t GetBitDepth() const override;
   VideoChromaSampling GetChromaSampling() const override;
   VideoColorSpace GetVideoColorSpace() const override;
-  std::optional<gfx::HDRMetadata> GetHDRMetadata() const override;
   size_t GetRequiredNumOfPictures() const override;
   size_t GetNumReferenceFrames() const override;
 
@@ -305,9 +309,6 @@ class MEDIA_GPU_EXPORT H265Decoder final : public AcceleratedVideoDecoder {
   // Parser in use.
   H265Parser parser_;
 
-  // Most recent call to SetStream().
-  raw_ptr<const uint8_t, DanglingUntriaged> current_stream_ = nullptr;
-  size_t current_stream_size_ = 0;
 
   // Decrypting config for the most recent data passed to SetStream().
   std::unique_ptr<DecryptConfig> current_decrypt_config_;
@@ -318,7 +319,10 @@ class MEDIA_GPU_EXPORT H265Decoder final : public AcceleratedVideoDecoder {
 
   // Keep track of when SetStream() is called so that
   // H265Accelerator::SetStream() can be called.
-  bool current_stream_has_been_changed_ = false;
+  bool decoder_buffer_has_been_changed_ = false;
+
+  // Most recent call to SetStream().
+  scoped_refptr<media::DecoderBuffer> decoder_buffer_;
 
   // DPB in use.
   H265DPB dpb_;
@@ -340,18 +344,18 @@ class MEDIA_GPU_EXPORT H265Decoder final : public AcceleratedVideoDecoder {
   // Global state values, needed in decoding. See spec.
   scoped_refptr<H265Picture> prev_tid0_pic_;
   int max_pic_order_cnt_lsb_;
-  bool curr_delta_poc_msb_present_flag_[kMaxDpbSize];
-  bool foll_delta_poc_msb_present_flag_[kMaxDpbSize];
+  std::array<bool, kMaxDpbSize> curr_delta_poc_msb_present_flag_;
+  std::array<bool, kMaxDpbSize> foll_delta_poc_msb_present_flag_;
   int num_poc_st_curr_before_;
   int num_poc_st_curr_after_;
   int num_poc_st_foll_;
   int num_poc_lt_curr_;
   int num_poc_lt_foll_;
-  int poc_st_curr_before_[kMaxDpbSize];
-  int poc_st_curr_after_[kMaxDpbSize];
-  int poc_st_foll_[kMaxDpbSize];
-  int poc_lt_curr_[kMaxDpbSize];
-  int poc_lt_foll_[kMaxDpbSize];
+  std::array<int, kMaxDpbSize> poc_st_curr_before_;
+  std::array<int, kMaxDpbSize> poc_st_curr_after_;
+  std::array<int, kMaxDpbSize> poc_st_foll_;
+  std::array<int, kMaxDpbSize> poc_lt_curr_;
+  std::array<int, kMaxDpbSize> poc_lt_foll_;
   H265Picture::Vector ref_pic_list0_;
   H265Picture::Vector ref_pic_list1_;
   H265Picture::Vector ref_pic_set_lt_curr_;
@@ -389,7 +393,10 @@ class MEDIA_GPU_EXPORT H265Decoder final : public AcceleratedVideoDecoder {
   // Video color space of input bitstream.
   VideoColorSpace picture_color_space_;
   // HDR metadata in the bitstream.
-  std::optional<gfx::HDRMetadata> hdr_metadata_;
+  gfx::HDRMetadata hdr_metadata_bitstream_;
+#if BUILDFLAG(ENABLE_PLATFORM_DOLBY_VISION)
+  std::vector<DolbyVisionMetadata> dolby_vision_metadata_;
+#endif  // BUILDFLAG(ENABLE_PLATFORM_DOLBY_VISION)
 
   const std::unique_ptr<H265Accelerator> accelerator_;
 };

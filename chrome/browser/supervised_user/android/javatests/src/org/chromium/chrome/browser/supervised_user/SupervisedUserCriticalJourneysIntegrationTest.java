@@ -9,12 +9,13 @@ import static androidx.test.espresso.action.ViewActions.longClick;
 import static androidx.test.espresso.assertion.ViewAssertions.matches;
 import static androidx.test.espresso.matcher.ViewMatchers.isClickable;
 import static androidx.test.espresso.matcher.ViewMatchers.isEnabled;
-import static androidx.test.espresso.matcher.ViewMatchers.withId;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
 
+import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.not;
 
 import android.os.Build;
+import android.view.View;
 
 import androidx.test.filters.LargeTest;
 
@@ -31,12 +32,17 @@ import org.chromium.base.test.util.DisableIf;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tabmodel.SupportedProfileType;
 import org.chromium.chrome.browser.ui.appmenu.AppMenuTestSupport;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
+import org.chromium.chrome.test.transit.ntp.RegularNewTabPageStation;
+import org.chromium.chrome.test.util.BottomBarTestUtils;
 import org.chromium.chrome.test.util.browser.signin.SigninTestRule;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.net.test.EmbeddedTestServer;
+import org.chromium.ui.base.DeviceFormFactor;
 
 /** Verifies the main user journeys for supervised users. */
 @RunWith(ChromeJUnit4ClassRunner.class)
@@ -46,7 +52,8 @@ public class SupervisedUserCriticalJourneysIntegrationTest {
     private static final String TEST_PAGE = "/chrome/test/data/android/test.html";
 
     @Rule
-    public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
+    public FreshCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.freshChromeTabbedActivityRule();
 
     public final SigninTestRule mSigninTestRule = new SigninTestRule();
     private WebContents mWebContents;
@@ -55,9 +62,11 @@ public class SupervisedUserCriticalJourneysIntegrationTest {
     public final RuleChain mRuleChain =
             RuleChain.outerRule(mSigninTestRule).around(mActivityTestRule);
 
+    private RegularNewTabPageStation mNtp;
+
     @Before
     public void setUp() {
-        mActivityTestRule.startMainActivityWithURL(null);
+        mNtp = mActivityTestRule.startFromLauncherAtNtp();
         mSigninTestRule.addChildTestAccountThenWaitForSignin();
         mWebContents = mActivityTestRule.getWebContents();
     }
@@ -71,13 +80,13 @@ public class SupervisedUserCriticalJourneysIntegrationTest {
                             mActivityTestRule.getProfile(/* incognito= */ false), BLOCKED_SITE_URL);
                 });
 
-        EmbeddedTestServer testServer = mActivityTestRule.getEmbeddedTestServerRule().getServer();
+        EmbeddedTestServer testServer = mActivityTestRule.getTestServer();
         String blockedHost = testServer.getURLWithHostName(BLOCKED_SITE_URL, "/");
         mActivityTestRule.loadUrl(blockedHost);
 
-        Tab tab = mActivityTestRule.getActivity().getActivityTab();
+        Tab tab = mActivityTestRule.getActivityTab();
         Assert.assertTrue(tab.isShowingErrorPage());
-        String title = mActivityTestRule.getActivity().getCurrentWebContents().getTitle();
+        String title = mActivityTestRule.getWebContents().getTitle();
         Assert.assertFalse(title.isEmpty());
         WebsiteParentApprovalTestUtils.checkLocalApprovalsButtonIsVisible(mWebContents);
         WebsiteParentApprovalTestUtils.checkRemoteApprovalsButtonIsVisible(mWebContents);
@@ -91,29 +100,39 @@ public class SupervisedUserCriticalJourneysIntegrationTest {
                     AppMenuTestSupport.showAppMenu(
                             mActivityTestRule.getAppMenuCoordinator(), null, false);
                 });
-        onView(withText(R.string.menu_new_incognito_tab)).check(matches(not(isEnabled())));
-        onView(withText(R.string.menu_new_incognito_tab)).check(matches(not(isClickable())));
+        int incognitoMenuItemStringId =
+                mActivityTestRule.getActivity().getSupportedProfileType()
+                                == SupportedProfileType.REGULAR
+                        ? R.string.menu_new_incognito_window
+                        : R.string.menu_new_incognito_tab;
+        onView(withText(incognitoMenuItemStringId)).check(matches(not(isEnabled())));
+        onView(withText(incognitoMenuItemStringId)).check(matches(not(isClickable())));
     }
 
     @Test
     @LargeTest
     @DisableIf.Build(sdk_equals = Build.VERSION_CODES.S_V2, message = "crbug.com/41485872")
+    @DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM) // crbug.com/511288668
     public void incognitoModeIsUnavailableFromTabSwitcherActionMenu() {
-        onView(withId(R.id.tab_switcher_button)).perform(longClick());
-        onView(withText(R.string.menu_new_incognito_tab)).check(matches(not(isEnabled())));
-        onView(withText(R.string.menu_new_incognito_tab)).check(matches(not(isClickable())));
+        View tabSwitcherBtn =
+                BottomBarTestUtils.findViewById(
+                        mActivityTestRule.getActivity(), R.id.tab_switcher_button);
+        onView(is(tabSwitcherBtn)).perform(longClick());
+        int incognitoMenuItemStringId =
+                mActivityTestRule.getActivity().getSupportedProfileType()
+                                == SupportedProfileType.REGULAR
+                        ? R.string.menu_new_incognito_window
+                        : R.string.menu_new_incognito_tab;
+        onView(withText(incognitoMenuItemStringId)).check(matches(not(isEnabled())));
+        onView(withText(incognitoMenuItemStringId)).check(matches(not(isClickable())));
     }
 
     @Test
     @LargeTest
     public void matureSitesAreBlockedBySafeSites() throws Exception {
-        SupervisedUserSettingsTestUtils.setUpTestUrlLoaderFactoryHelper();
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     SupervisedUserSettingsTestUtils.setKidsManagementResponseForTesting(
-                            mActivityTestRule.getProfile(/* incognito= */ false),
-                            /* isAllowed= */ false);
-                    SupervisedUserSettingsTestUtils.setSafeSearchResponseForTesting(
                             mActivityTestRule.getProfile(/* incognito= */ false),
                             /* isAllowed= */ false);
                 });
@@ -123,25 +142,20 @@ public class SupervisedUserCriticalJourneysIntegrationTest {
         String blockedHost = testServer.getURL(TEST_PAGE);
         mActivityTestRule.loadUrl(blockedHost);
 
-        Tab tab = mActivityTestRule.getActivity().getActivityTab();
+        Tab tab = mActivityTestRule.getActivityTab();
         Assert.assertTrue(tab.isShowingErrorPage());
-        String title = mActivityTestRule.getActivity().getCurrentWebContents().getTitle();
+        String title = mActivityTestRule.getWebContents().getTitle();
         Assert.assertFalse(title.isEmpty());
         WebsiteParentApprovalTestUtils.checkLocalApprovalsButtonIsVisible(mWebContents);
         WebsiteParentApprovalTestUtils.checkRemoteApprovalsButtonIsVisible(mWebContents);
-        SupervisedUserSettingsTestUtils.tearDownTestUrlLoaderFactoryHelper();
     }
 
     @Test
     @LargeTest
     public void regularSitesAreNotBlockedBySafeSites() throws Exception {
-        SupervisedUserSettingsTestUtils.setUpTestUrlLoaderFactoryHelper();
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     SupervisedUserSettingsTestUtils.setKidsManagementResponseForTesting(
-                            mActivityTestRule.getProfile(/* incognito= */ false),
-                            /* isAllowed= */ true);
-                    SupervisedUserSettingsTestUtils.setSafeSearchResponseForTesting(
                             mActivityTestRule.getProfile(/* incognito= */ false),
                             /* isAllowed= */ true);
                 });
@@ -151,10 +165,9 @@ public class SupervisedUserCriticalJourneysIntegrationTest {
         String notBlockedHost = testServer.getURL(TEST_PAGE);
         mActivityTestRule.loadUrl(notBlockedHost);
 
-        Tab tab = mActivityTestRule.getActivity().getActivityTab();
+        Tab tab = mActivityTestRule.getActivityTab();
         Assert.assertFalse(tab.isShowingErrorPage());
-        String title = mActivityTestRule.getActivity().getCurrentWebContents().getTitle();
+        String title = mActivityTestRule.getWebContents().getTitle();
         Assert.assertFalse(title.isEmpty());
-        SupervisedUserSettingsTestUtils.tearDownTestUrlLoaderFactoryHelper();
     }
 }

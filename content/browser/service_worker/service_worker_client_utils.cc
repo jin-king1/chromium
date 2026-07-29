@@ -10,6 +10,7 @@
 #include <tuple>
 #include <utility>
 
+#include "base/debug/crash_logging.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
@@ -17,9 +18,11 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
+#include "content/browser/connection_allowlist_utils.h"
 #include "content/browser/renderer_host/frame_tree_node.h"
 #include "content/browser/renderer_host/navigation_request.h"
 #include "content/browser/renderer_host/navigator.h"
+#include "content/browser/renderer_host/policy_container_host.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/browser/service_worker/service_worker_client.h"
 #include "content/browser/service_worker/service_worker_context_core.h"
@@ -42,6 +45,8 @@
 #include "content/public/common/content_client.h"
 #include "content/public/common/content_features.h"
 #include "content/public/common/page_visibility_state.h"
+#include "services/network/public/cpp/connection_allowlist.h"
+#include "services/network/public/cpp/features.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
 #include "third_party/blink/public/mojom/loader/request_context_frame_type.mojom.h"
 #include "ui/base/window_open_disposition.h"
@@ -63,7 +68,7 @@ using OpenURLCallback = base::OnceCallback<void(GlobalRenderFrameHostId)>;
 // WebContents to be initialized, run the |callback| passed to its constructor
 // then self destroy.
 // The callback will receive the GlobalRenderFrameHostId. If something went
-// wrong it will have MSG_ROUTING_NONE.
+// wrong it will have IPC::mojom::kRoutingIdNone.
 class OpenURLObserver : public WebContentsObserver {
  public:
   OpenURLObserver(WebContents* web_contents,
@@ -282,6 +287,14 @@ void AddNonWindowClient(
       blink::mojom::ServiceWorkerClientLifecycleState::kActive,
       base::TimeTicks(), service_worker_client.create_time());
   out_clients->push_back(std::move(client_info));
+
+  if (service_worker_client.GetClientType() ==
+      blink::mojom::ServiceWorkerClientType::kSharedWorker) {
+    // This is recorded per the SharedWorker client.
+    base::UmaHistogramBoolean(
+        "ServiceWorker.AddNonWindowClient.SharedWorkerScript.IsBlob",
+        url.SchemeIsBlob());
+  }
 }
 
 struct ServiceWorkerClientInfoSort {
@@ -486,15 +499,25 @@ void FocusWindowClient(
   std::move(callback).Run(std::move(result));
 }
 
-void OpenWindow(const GURL& url,
-                const GURL& script_url,
-                const blink::StorageKey& key,
-                int worker_id,
-                int worker_process_id,
-                const base::WeakPtr<ServiceWorkerContextCore>& context,
-                WindowType type,
-                NavigationCallback callback) {
+void OpenWindow(
+    const GURL& url,
+    const GURL& script_url,
+    const blink::StorageKey& key,
+    int worker_id,
+    int worker_process_id,
+    scoped_refptr<PolicyContainerHost> service_worker_policy_container_host,
+    const base::WeakPtr<ServiceWorkerContextCore>& context,
+    WindowType type,
+    NavigationCallback callback) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
+
+  if (service_worker_policy_container_host &&
+      !ConnectionAllowlistAllowsUrlAndReportIfNeeded(
+          service_worker_policy_container_host->policies(), url)) {
+    DidNavigate(context, script_url, key, std::move(callback),
+                GlobalRenderFrameHostId());
+    return;
+  }
 
   RenderProcessHost* render_process_host =
       RenderProcessHost::FromID(worker_process_id);
@@ -527,9 +550,11 @@ void OpenWindow(const GURL& url,
           ? WindowOpenDisposition::NEW_POPUP
           : WindowOpenDisposition::NEW_FOREGROUND_TAB,
       ui::PAGE_TRANSITION_AUTO_TOPLEVEL, true /* is_renderer_initiated */);
-  // TODO(https://crbug.com/382542907): Remove `open_pwa_window_if_possible` or
-  // make it IWA-specific.
-  params.open_app_window_if_possible = type == WindowType::NEW_TAB_WINDOW;
+
+  // Technically this field is equivalent to (disposition == NEW_FOREGROUND_TAB)
+  // && (transition == AUTO_TOPLEVEL) && is_renderer_initiated; this
+  // constellation of params is unique to just service worker navigations.
+  params.is_service_worker_open_window = type == WindowType::NEW_TAB_WINDOW;
   params.initiator_origin =
       url::Origin::Create(script_url.DeprecatedGetOriginAsURL());
 
@@ -542,12 +567,15 @@ void OpenWindow(const GURL& url,
                                     std::move(callback))));
 }
 
-void NavigateClient(const GURL& url,
-                    const GURL& script_url,
-                    const blink::StorageKey& key,
-                    const GlobalRenderFrameHostId& rfh_id,
-                    const base::WeakPtr<ServiceWorkerContextCore>& context,
-                    NavigationCallback callback) {
+void NavigateClient(
+    const GURL& url,
+    const GURL& script_url,
+    const blink::StorageKey& key,
+    const GlobalRenderFrameHostId& rfh_id,
+    const network::mojom::ClientSecurityStatePtr worker_client_security_state,
+    scoped_refptr<PolicyContainerHost> service_worker_policy_container_host,
+    const base::WeakPtr<ServiceWorkerContextCore>& context,
+    NavigationCallback callback) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 
   RenderFrameHostImpl* rfhi = RenderFrameHostImpl::FromID(rfh_id);
@@ -582,26 +610,44 @@ void NavigateClient(const GURL& url,
     return;
   }
 
+  base::UmaHistogramBoolean(
+      "ServiceWorker.WindowClientNavigationIPAddressSpaceMismatch",
+      rfhi->BuildClientSecurityState()->ip_address_space !=
+          worker_client_security_state->ip_address_space);
+
+  if (service_worker_policy_container_host &&
+      !ConnectionAllowlistAllowsUrlAndReportIfNeeded(
+          service_worker_policy_container_host->policies(), url)) {
+    DidNavigate(context, script_url, key, std::move(callback),
+                GlobalRenderFrameHostId());
+    return;
+  }
+
   FrameTreeNodeId frame_tree_node_id =
       rfhi->frame_tree_node()->frame_tree_node_id();
   Navigator& navigator = rfhi->frame_tree_node()->navigator();
+
+  // Create the observer before RequestOpenURL to avoid missing synchronous
+  // DidFinishNavigation events (e.g. if blocked by Connection Allowlist).
+  new OpenURLObserver(web_contents, frame_tree_node_id,
+                      base::BindOnce(&DidNavigate, context, script_url, key,
+                                     std::move(callback)));
+
   // Service workers don't have documents, so it's ok to use nullopt for
   // `initiator_base_url` in the following call.
   navigator.RequestOpenURL(
-      rfhi, url, nullptr /* initiator_frame_token */,
-      ChildProcessHost::kInvalidUniqueID /* initiator_process_id */,
+      rfhi, url, &(rfhi->GetFrameToken()) /* initiator_frame_token */,
+      rfhi->GetProcess()->GetDeprecatedID() /* initiator_process_id */,
       url::Origin::Create(script_url), /* initiator_base_url= */ std::nullopt,
-      nullptr /* post_body */, std::string() /* extra_headers */,
+      rfhi->CreateInitiatorStateFromCurrentFrame(), nullptr /* post_body */,
+      std::string() /* extra_headers */,
       Referrer::SanitizeForRequest(
           url, Referrer(script_url, network::mojom::ReferrerPolicy::kDefault)),
       WindowOpenDisposition::CURRENT_TAB,
       false /* should_replace_current_entry */, false /* user_gesture */,
       blink::mojom::TriggeringEventInfo::kUnknown,
       std::string() /* href_translate */, nullptr /* blob_url_loader_factory */,
-      std::nullopt, false /* has_rel_opener */);
-  new OpenURLObserver(web_contents, frame_tree_node_id,
-                      base::BindOnce(&DidNavigate, context, script_url, key,
-                                     std::move(callback)));
+      false /* has_rel_opener */, false /* started_by_ad */);
 }
 
 void GetClient(ServiceWorkerClient* service_worker_client,
@@ -638,6 +684,12 @@ void GetClient(ServiceWorkerClient* service_worker_client,
         base::TimeTicks(), service_worker_client->create_time());
     base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, base::BindOnce(std::move(callback), std::move(client_info)));
+    if (service_worker_client->GetClientType() ==
+        blink::mojom::ServiceWorkerClientType::kSharedWorker) {
+      base::UmaHistogramBoolean(
+          "ServiceWorker.GetClient.SharedWorkerScript.IsBlob",
+          url.SchemeIsBlob());
+    }
   }
 }
 

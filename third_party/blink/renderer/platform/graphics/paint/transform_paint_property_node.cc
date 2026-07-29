@@ -5,6 +5,7 @@
 #include "third_party/blink/renderer/platform/graphics/paint/transform_paint_property_node.h"
 
 #include "base/memory/values_equivalent.h"
+#include "cc/trees/sticky_position_constraint.h"
 #include "third_party/blink/renderer/platform/graphics/paint/scroll_paint_property_node.h"
 #include "third_party/blink/renderer/platform/heap/persistent.h"
 #include "third_party/blink/renderer/platform/transforms/affine_transform.h"
@@ -83,13 +84,15 @@ PaintPropertyChangeType TransformPaintPropertyNode::State::ComputeChange(
       is_for_svg_child != other.is_for_svg_child ||
       backface_visibility != other.backface_visibility ||
       rendering_context_id != other.rendering_context_id ||
+      direct_compositing_reasons != other.direct_compositing_reasons ||
       compositor_element_id != other.compositor_element_id ||
       // This change affects cull rect expansion for scrolling contents.
       UsesCompositedScrolling() != other.UsesCompositedScrolling() ||
       // This change affects cull rect expansion for the element itself.
       RequiresCullRectExpansion() != other.RequiresCullRectExpansion() ||
       scroll != other.scroll ||
-      scroll_translation_for_fixed != other.scroll_translation_for_fixed ||
+      scroll_parent_scroll_translation !=
+          other.scroll_parent_scroll_translation ||
       !base::ValuesEquivalent(sticky_constraint, other.sticky_constraint) ||
       !base::ValuesEquivalent(anchor_position_scroll_data,
                               other.anchor_position_scroll_data) ||
@@ -97,27 +100,12 @@ PaintPropertyChangeType TransformPaintPropertyNode::State::ComputeChange(
     return PaintPropertyChangeType::kChangedOnlyValues;
   }
 
-  auto change =
-      ComputeTransformChange(other.transform_and_origin, animation_state);
-
-  bool non_reraster_values_changed =
-      direct_compositing_reasons != other.direct_compositing_reasons;
-  if (non_reraster_values_changed) {
-    // Both transform change and non-reraster change is upgraded to value
-    // change to avoid loss of non-reraster change when PaintPropertyTreeBuilder
-    // downgrades kChangedOnlySimpleValues to kChangedOnlyCompositedValues
-    // after a successful direct update.
-    return change != PaintPropertyChangeType::kUnchanged
-               ? PaintPropertyChangeType::kChangedOnlyValues
-               : PaintPropertyChangeType::kChangedOnlyNonRerasterValues;
-  }
-
-  return change;
+  return ComputeTransformChange(other.transform_and_origin, animation_state);
 }
 
 void TransformPaintPropertyNode::State::Trace(Visitor* visitor) const {
   visitor->Trace(scroll);
-  visitor->Trace(scroll_translation_for_fixed);
+  visitor->Trace(scroll_parent_scroll_translation);
 }
 
 TransformPaintPropertyNode::TransformPaintPropertyNode(RootTag)
@@ -174,6 +162,61 @@ void TransformPaintPropertyNodeOrAlias::ClearChangedToRoot(
   }
 }
 
+bool TransformPaintPropertyNode::CanMergeForFixedPosition(
+    const TransformPaintPropertyNode& other) const {
+  // A fixed-position transform node can have kFixedPosition and other
+  // fixed-position-specific compositing reasons such as kUndoOverscroll.
+  // The two nodes can be merged only if they have the exact same reasons.
+  return DirectCompositingReasons() == other.DirectCompositingReasons() &&
+         RequiresCompositingForFixedPositionOnly() &&
+         other.RequiresCompositingForFixedPositionOnly() &&
+         ScrollParentScrollTranslation() ==
+             other.ScrollParentScrollTranslation() &&
+         Parent() == other.Parent();
+}
+
+cc::StickyPositionConstraint::CanMergeResult
+TransformPaintPropertyNode::CanMergeForStickyPosition(
+    const TransformPaintPropertyNode& other) const {
+  if (!RequiresCompositingForStickyPositionOnly() ||
+      !other.RequiresCompositingForStickyPositionOnly() ||
+      UnaliasedParent()->NearestDirectlyCompositedAncestor() !=
+          other.UnaliasedParent()->NearestDirectlyCompositedAncestor() ||
+      &NearestScrollTranslationNode() !=
+          &other.NearestScrollTranslationNode()) {
+    return cc::StickyPositionConstraint::CanMergeResult::kCannotMerge;
+  }
+
+  auto* constraint = GetStickyConstraint();
+  auto* other_constraint = other.GetStickyConstraint();
+  if (!constraint && !other_constraint) {
+    return cc::StickyPositionConstraint::CanMergeResult::kCanAlwaysMerge;
+  }
+  if (!constraint || !other_constraint) {
+    return cc::StickyPositionConstraint::CanMergeResult::kCannotMerge;
+  }
+  const auto* scroll_node = NearestScrollTranslationNode().ScrollNode();
+  CHECK(scroll_node);
+  auto scroll_element_id = scroll_node->GetCompositorElementId();
+  std::optional<gfx::RectF> scroll_range_f;
+  auto can_use_scroll_range = [scroll_element_id](CompositorElementId id1,
+                                                  CompositorElementId id2) {
+    return id1 == id2 && (!id1 || id1 == scroll_element_id);
+  };
+  if (can_use_scroll_range(constraint->x_scroll_ancestor_element_id,
+                           other_constraint->x_scroll_ancestor_element_id) &&
+      can_use_scroll_range(constraint->y_scroll_ancestor_element_id,
+                           other_constraint->y_scroll_ancestor_element_id)) {
+    gfx::Rect scroll_range = scroll_node->ScrollingContentsCullRect();
+    scroll_range.Intersect(scroll_node->ContentsRect());
+    scroll_range.Offset(-scroll_node->ContentsRect().OffsetFromOrigin());
+    scroll_range.set_size(scroll_range.size() -
+                          scroll_node->ContainerRect().size());
+    scroll_range_f.emplace(scroll_range);
+  }
+  return constraint->CanMerge(*other_constraint, scroll_range_f);
+}
+
 std::unique_ptr<JSONObject> TransformPaintPropertyNode::ToJSON() const {
   auto json = TransformPaintPropertyNodeOrAlias::ToJSON();
   if (IsIdentityOr2dTranslation()) {
@@ -181,8 +224,9 @@ std::unique_ptr<JSONObject> TransformPaintPropertyNode::ToJSON() const {
       json->SetString("translation2d", String(Get2dTranslation().ToString()));
   } else {
     String matrix(Matrix().ToDecomposedString());
-    if (matrix.EndsWith("\n"))
-      matrix = matrix.Left(matrix.length() - 1);
+    if (matrix.ends_with('\n')) {
+      matrix = matrix.substr(0, matrix.length() - 1);
+    }
     json->SetString("matrix", matrix.Replace("\n", ", "));
     json->SetString("origin", String(Origin().ToString()));
   }
@@ -200,7 +244,7 @@ std::unique_ptr<JSONObject> TransformPaintPropertyNode::ToJSON() const {
   }
   if (state_.rendering_context_id) {
     json->SetString("renderingContextId",
-                    String::Format("%x", state_.rendering_context_id));
+                    String::HexNumber(state_.rendering_context_id));
   }
   if (state_.direct_compositing_reasons != CompositingReason::kNone) {
     json->SetString(
@@ -214,10 +258,10 @@ std::unique_ptr<JSONObject> TransformPaintPropertyNode::ToJSON() const {
   if (state_.scroll)
     json->SetString("scroll", String::Format("%p", state_.scroll.Get()));
 
-  if (state_.scroll_translation_for_fixed) {
+  if (state_.scroll_parent_scroll_translation) {
     json->SetString(
-        "scroll_translation_for_fixed",
-        String::Format("%p", state_.scroll_translation_for_fixed.Get()));
+        "scroll_parent_scroll_translation",
+        String::Format("%p", state_.scroll_parent_scroll_translation.Get()));
   }
   return json;
 }

@@ -9,11 +9,14 @@
 #include <type_traits>
 
 #include "base/command_line.h"
+#include "base/feature_list.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/metrics_hashes.h"
 #include "base/strings/string_number_conversions.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_features.h"
+#include "chrome/browser/devtools/features.h"
+#include "chrome/browser/devtools/protocol/ads_handler.h"
 #include "chrome/browser/devtools/protocol/autofill_handler.h"
 #include "chrome/browser/devtools/protocol/browser_handler.h"
 #include "chrome/browser/devtools/protocol/cast_handler.h"
@@ -25,15 +28,18 @@
 #include "chrome/browser/devtools/protocol/storage_handler.h"
 #include "chrome/browser/devtools/protocol/system_info_handler.h"
 #include "chrome/browser/devtools/protocol/target_handler.h"
+#include "chrome/browser/devtools/protocol/webmcp_handler.h"
 #include "chrome/common/chrome_switches.h"
 #include "content/public/browser/devtools_agent_host.h"
 #include "content/public/browser/devtools_agent_host_client.h"
 #include "content/public/browser/devtools_agent_host_client_channel.h"
 #include "content/public/browser/devtools_manager_delegate.h"
+#include "third_party/blink/public/common/features.h"
 #include "third_party/inspector_protocol/crdtp/dispatch.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/devtools/protocol/window_manager_handler.h"
+#include "chromeos/dbus/constants/dbus_switches.h"
 #endif
 
 namespace {
@@ -42,7 +48,8 @@ template <typename Handler>
 bool IsDomainAvailableToUntrustedClient() {
   return std::disjunction_v<std::is_same<Handler, PageHandler>,
                             std::is_same<Handler, EmulationHandler>,
-                            std::is_same<Handler, TargetHandler>>;
+                            std::is_same<Handler, TargetHandler>,
+                            std::is_same<Handler, WebMCPHandler>>;
 }
 
 }  // namespace
@@ -53,10 +60,17 @@ ChromeDevToolsSession::ChromeDevToolsSession(
   content::DevToolsAgentHost* agent_host = channel->GetAgentHost();
   if (agent_host->GetWebContents() &&
       agent_host->GetType() == content::DevToolsAgentHost::kTypePage) {
+    if (IsDomainAvailableToUntrustedClient<AdsHandler>() ||
+        channel->GetClient()->IsTrusted()) {
+      ads_handler_ = std::make_unique<AdsHandler>(
+          agent_host->GetWebContents(), &dispatcher_,
+          channel->GetClient()->IsTrusted());
+    }
     if (IsDomainAvailableToUntrustedClient<PageHandler>() ||
         channel->GetClient()->IsTrusted()) {
       page_handler_ = std::make_unique<PageHandler>(
-          agent_host, agent_host->GetWebContents(), &dispatcher_);
+          agent_host, agent_host->GetWebContents(), &dispatcher_,
+          channel->GetClient()->IsTrusted());
     }
     if (IsDomainAvailableToUntrustedClient<SecurityHandler>() ||
         channel->GetClient()->IsTrusted()) {
@@ -82,15 +96,18 @@ ChromeDevToolsSession::ChromeDevToolsSession(
       autofill_handler_ =
           std::make_unique<AutofillHandler>(&dispatcher_, agent_host->GetId());
     }
+    if (base::FeatureList::IsEnabled(blink::features::kDevToolsWebMCPSupport) &&
+        (IsDomainAvailableToUntrustedClient<WebMCPHandler>() ||
+         channel->GetClient()->IsTrusted())) {
+      webmcp_handler_ = std::make_unique<WebMCPHandler>(
+          &dispatcher_, agent_host->GetWebContents());
+    }
   }
   if (IsDomainAvailableToUntrustedClient<ExtensionsHandler>() ||
       channel->GetClient()->IsTrusted()) {
     extensions_handler_ = std::make_unique<ExtensionsHandler>(
         &dispatcher_, agent_host->GetId(),
-        channel->GetClient()->AllowUnsafeOperations() &&
-            base::CommandLine::ForCurrentProcess()->HasSwitch(
-                ::switches::kEnableUnsafeExtensionDebugging) &&
-            agent_host->GetType() == content::DevToolsAgentHost::kTypeBrowser);
+        agent_host->GetType() == content::DevToolsAgentHost::kTypeBrowser);
   }
   if (IsDomainAvailableToUntrustedClient<EmulationHandler>() ||
       channel->GetClient()->IsTrusted()) {
@@ -112,9 +129,18 @@ ChromeDevToolsSession::ChromeDevToolsSession(
       channel->GetClient()->IsTrusted()) {
     system_info_handler_ = std::make_unique<SystemInfoHandler>(&dispatcher_);
   }
+
   if ((agent_host->GetType() == content::DevToolsAgentHost::kTypeBrowser ||
        agent_host->GetType() == content::DevToolsAgentHost::kTypePage) &&
-      channel->GetClient()->AllowUnsafeOperations()) {
+      (channel->GetClient()->AllowUnsafeOperations()
+#if BUILDFLAG(IS_CHROMEOS)
+       // Also enable on ChromeOS in dev mode.
+       || (base::CommandLine::ForCurrentProcess()->HasSwitch(
+               chromeos::switches::kSystemDevMode) &&
+           base::CommandLine::ForCurrentProcess()->HasSwitch(
+               switches::kEnableDevToolsPwaHandler))
+#endif
+           )) {
     if (IsDomainAvailableToUntrustedClient<PWAHandler>() ||
         channel->GetClient()->IsTrusted()) {
       pwa_handler_ =
@@ -137,10 +163,14 @@ base::HistogramBase::Sample32 GetCommandUmaId(std::string_view command_name) {
 void ChromeDevToolsSession::HandleCommand(
     base::span<const uint8_t> message,
     content::DevToolsManagerDelegate::NotHandledCallback callback) {
-  crdtp::Dispatchable dispatchable(crdtp::SpanFrom(message));
+  crdtp::Dispatchable dispatchable(
+      crdtp::SpanFrom(message), std::string_view(),
+      [cb = std::move(callback)](int call_id, crdtp::span<uint8_t> method,
+                                 crdtp::span<uint8_t> message,
+                                 std::string_view fallthrough_data) {
+        cb.Run(message);
+      });
   DCHECK(dispatchable.ok());  // Checked by content::DevToolsSession.
-  crdtp::UberDispatcher::DispatchResult dispatched =
-      dispatcher_.Dispatch(dispatchable);
 
   auto command_uma_id = GetCommandUmaId(std::string_view(
       reinterpret_cast<const char*>(dispatchable.Method().data()),
@@ -151,12 +181,7 @@ void ChromeDevToolsSession::HandleCommand(
   base::UmaHistogramSparse("DevTools.CDPCommandFrom" + client_type,
                            command_uma_id);
 
-  if (!dispatched.MethodFound()) {
-    std::move(callback).Run(message);
-    return;
-  }
-  pending_commands_[dispatchable.CallId()] = std::move(callback);
-  dispatched.Run();
+  dispatcher_.Dispatch(dispatchable);
 }
 
 // The following methods handle responses or notifications coming from
@@ -164,7 +189,6 @@ void ChromeDevToolsSession::HandleCommand(
 void ChromeDevToolsSession::SendProtocolResponse(
     int call_id,
     std::unique_ptr<protocol::Serializable> message) {
-  pending_commands_.erase(call_id);
   client_channel_->DispatchProtocolMessageToClient(message->Serialize());
 }
 
@@ -174,11 +198,3 @@ void ChromeDevToolsSession::SendProtocolNotification(
 }
 
 void ChromeDevToolsSession::FlushProtocolNotifications() {}
-
-void ChromeDevToolsSession::FallThrough(int call_id,
-                                        crdtp::span<uint8_t> method,
-                                        crdtp::span<uint8_t> message) {
-  auto callback = std::move(pending_commands_[call_id]);
-  pending_commands_.erase(call_id);
-  std::move(callback).Run(message);
-}

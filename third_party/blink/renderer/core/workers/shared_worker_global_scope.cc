@@ -31,6 +31,7 @@
 #include "third_party/blink/renderer/core/workers/shared_worker_global_scope.h"
 
 #include <memory>
+
 #include "base/feature_list.h"
 #include "services/metrics/public/cpp/mojo_ukm_recorder.h"
 #include "third_party/blink/public/common/features.h"
@@ -82,6 +83,7 @@ void SharedWorkerGlobalScope::Initialize(
     const KURL& response_url,
     network::mojom::ReferrerPolicy response_referrer_policy,
     Vector<network::mojom::blink::ContentSecurityPolicyPtr> response_csp,
+    DocumentPolicy::DocumentPolicyBundle response_document_policy,
     const Vector<String>* response_origin_trial_tokens) {
   // Step 12.3. "Set worker global scope's url to response's url."
   InitializeURL(response_url);
@@ -110,6 +112,8 @@ void SharedWorkerGlobalScope::Initialize(
           : std::move(response_csp);
   InitContentSecurityPolicyFromVector(std::move(csp_headers));
   BindContentSecurityPolicyToExecutionContext();
+
+  // TODO(crbug.com/488089239): Enable Document Policy in Shared Workers.
 
   OriginTrialContext::AddTokens(this, response_origin_trial_tokens);
 
@@ -153,12 +157,11 @@ void SharedWorkerGlobalScope::FetchAndRunClassicScript(
       script_url, std::move(worker_main_script_load_params), context_type,
       destination, network::mojom::RequestMode::kSameOrigin,
       network::mojom::CredentialsMode::kSameOrigin,
-      WTF::BindOnce(
-          &SharedWorkerGlobalScope::DidReceiveResponseForClassicScript,
-          WrapWeakPersistent(this), WrapPersistent(classic_script_loader)),
-      WTF::BindOnce(&SharedWorkerGlobalScope::DidFetchClassicScript,
-                    WrapWeakPersistent(this),
-                    WrapPersistent(classic_script_loader), stack_id));
+      BindOnce(&SharedWorkerGlobalScope::DidReceiveResponseForClassicScript,
+               WrapWeakPersistent(this), WrapPersistent(classic_script_loader)),
+      BindOnce(&SharedWorkerGlobalScope::DidFetchClassicScript,
+               WrapWeakPersistent(this), WrapPersistent(classic_script_loader),
+               stack_id));
 }
 
 // https://html.spec.whatwg.org/C/#worker-processing-model
@@ -169,9 +172,7 @@ void SharedWorkerGlobalScope::FetchAndRunModuleScript(
     std::unique_ptr<PolicyContainer> policy_container,
     const FetchClientSettingsObjectSnapshot& outside_settings_object,
     WorkerResourceTimingNotifier& outside_resource_timing_notifier,
-    network::mojom::CredentialsMode credentials_mode,
-    RejectCoepUnsafeNone reject_coep_unsafe_none) {
-  DCHECK(!reject_coep_unsafe_none);
+    network::mojom::CredentialsMode credentials_mode) {
   if (worker_main_script_load_params) {
     SetWorkerMainScriptLoadingParametersForModules(
         std::move(worker_main_script_load_params));
@@ -203,8 +204,8 @@ void SharedWorkerGlobalScope::Connect(MessagePortChannel channel) {
   auto* port = MakeGarbageCollected<MessagePort>(*this);
   port->Entangle(std::move(channel));
   MessageEvent* event =
-      MessageEvent::Create(MakeGarbageCollected<MessagePortArray>(1, port),
-                           String(), String(), port);
+      MessageEvent::Create(MakeGarbageCollected<GCedMessagePortArray>(1, port),
+                           /*origin=*/nullptr, String(), port);
   event->initEvent(event_type_names::kConnect, false, false);
   DispatchEvent(*event);
 }
@@ -254,6 +255,7 @@ void SharedWorkerGlobalScope::DidFetchClassicScript(
                  ? mojo::Clone(classic_script_loader->GetContentSecurityPolicy()
                                    ->GetParsedPolicies())
                  : Vector<network::mojom::blink::ContentSecurityPolicyPtr>(),
+             classic_script_loader->GetDocumentPolicy(),
              classic_script_loader->OriginTrialTokens());
 
   // Step 12.7. "Asynchronously complete the perform the fetch steps with
@@ -275,7 +277,7 @@ void SharedWorkerGlobalScope::Trace(Visitor* visitor) const {
 }
 
 bool SharedWorkerGlobalScope::CrossOriginIsolatedCapability() const {
-  return Agent::IsCrossOriginIsolated();
+  return GetAgent()->IsCrossOriginIsolated();
 }
 
 bool SharedWorkerGlobalScope::IsIsolatedContext() const {

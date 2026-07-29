@@ -1,43 +1,34 @@
-// Copyright 2024 The Chromium Authors
+// Copyright 2026 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
 #include "chrome/browser/ai/ai_utils.h"
 
-#include "third_party/blink/public/mojom/ai/model_streaming_responder.mojom.h"
+#include "base/logging.h"
 
-using ModelExecutionError = optimization_guide::
-    OptimizationGuideModelExecutionError::ModelExecutionError;
+namespace ai {
 
-blink::mojom::ModelStreamingResponseStatus AIUtils::ConvertModelExecutionError(
-    ModelExecutionError error) {
-  switch (error) {
-    case ModelExecutionError::kUnknown:
-      return blink::mojom::ModelStreamingResponseStatus::kErrorUnknown;
-    case ModelExecutionError::kInvalidRequest:
-      return blink::mojom::ModelStreamingResponseStatus::kErrorInvalidRequest;
-    case ModelExecutionError::kRequestThrottled:
-      return blink::mojom::ModelStreamingResponseStatus::kErrorRequestThrottled;
-    case ModelExecutionError::kPermissionDenied:
-      return blink::mojom::ModelStreamingResponseStatus::kErrorPermissionDenied;
-    case ModelExecutionError::kGenericFailure:
-      return blink::mojom::ModelStreamingResponseStatus::kErrorGenericFailure;
-    case ModelExecutionError::kRetryableError:
-      return blink::mojom::ModelStreamingResponseStatus::kErrorRetryableError;
-    case ModelExecutionError::kNonRetryableError:
-      return blink::mojom::ModelStreamingResponseStatus::
-          kErrorNonRetryableError;
-    case ModelExecutionError::kUnsupportedLanguage:
-      return blink::mojom::ModelStreamingResponseStatus::
-          kErrorUnsupportedLanguage;
-    case ModelExecutionError::kFiltered:
-      return blink::mojom::ModelStreamingResponseStatus::kErrorFiltered;
-    case ModelExecutionError::kDisabled:
-      return blink::mojom::ModelStreamingResponseStatus::kErrorDisabled;
-    case ModelExecutionError::kCancelled:
-      return blink::mojom::ModelStreamingResponseStatus::kErrorCancelled;
-    case ModelExecutionError::kResponseLowQuality:
-      return blink::mojom::ModelStreamingResponseStatus::
-          kErrorResponseLowQuality;
+on_device_model::mojom::ResponseConstraintPtr ToMojomResponseConstraint(
+    const optimization_guide::proto::ResponseConstraint& constraint) {
+  switch (constraint.format_case()) {
+    case optimization_guide::proto::ResponseConstraint::kRegex:
+      if (constraint.regex().empty()) {
+        VLOG(1) << "LLM response regex constraint is empty. This forbids the "
+                   "model from creating any output.";
+      }
+      return on_device_model::mojom::ResponseConstraint::NewRegex(
+          constraint.regex());
+    case optimization_guide::proto::ResponseConstraint::kJsonSchema:
+      if (constraint.json_schema().empty()) {
+        VLOG(1) << "LLM response json schema constraint is empty. This forbids "
+                   "the model from creating any output.";
+      }
+      return on_device_model::mojom::ResponseConstraint::NewJsonSchema(
+          constraint.json_schema());
+    case optimization_guide::proto::ResponseConstraint::FORMAT_NOT_SET:
+      VLOG(1) << "LLM response constraint format is not set.";
+      return nullptr;
   }
 }
+
+}  // namespace ai

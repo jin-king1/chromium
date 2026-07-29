@@ -41,18 +41,7 @@ typedef void (^TabSwitcherImageFetchingCompletionBlock)(TabSwitcherItem* item,
 @property(nonatomic, assign) GURL URL;
 #endif
 @property(nonatomic, readonly) NSString* title;
-@property(nonatomic, readonly) BOOL hidesTitle;
 @property(nonatomic, readonly) BOOL showsActivity;
-
-#pragma mark - Image Fetching
-
-// Fetches the favicon, calling `completion` on the calling sequence when the
-// operation completes.
-- (void)fetchFavicon:(TabSwitcherImageFetchingCompletionBlock)completion;
-
-// Fetches the snapshot, calling `completion` on the calling sequence when the
-// operation completes.
-- (void)fetchSnapshot:(TabSwitcherImageFetchingCompletionBlock)completion;
 
 @end
 

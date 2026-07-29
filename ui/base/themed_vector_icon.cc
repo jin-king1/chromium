@@ -6,6 +6,7 @@
 
 #include "ui/color/color_provider.h"
 #include "ui/color/color_variant.h"
+#include "ui/gfx/image/image_skia.h"
 #include "ui/gfx/paint_vector_icon.h"
 #include "ui/gfx/vector_icon_types.h"
 #include "ui/gfx/vector_icon_utils.h"
@@ -61,7 +62,7 @@ gfx::ImageSkia ThemedVectorIcon::GetImageSkia(SkColor color) const {
 }
 
 SkColor ThemedVectorIcon::GetColor(const ColorProvider* color_provider) const {
-  return color_.ConvertToSkColor(color_provider);
+  return color_.ResolveToSkColor(color_provider);
 }
 
 gfx::ImageSkia ThemedVectorIcon::GetImageSkia(SkColor color,

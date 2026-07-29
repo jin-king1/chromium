@@ -75,12 +75,14 @@ class PLATFORM_EXPORT AffineTransform {
 
   bool IsIdentity() const {
     return gfx::AllTrue(
-        gfx::LoadDouble4(transform_) == gfx::Double4{1, 0, 0, 1} &
-        gfx::LoadDouble4(&transform_[2]) == gfx::Double4{0, 1, 0, 0});
+        gfx::LoadDouble4(base::span(transform_).first<4u>()) ==
+            gfx::Double4{1, 0, 0, 1} &
+        gfx::LoadDouble4(base::span(transform_).subspan<2u>()) ==
+            gfx::Double4{0, 1, 0, 0});
   }
 
   bool IsIdentityOrTranslation() const {
-    return gfx::AllTrue(gfx::LoadDouble4(transform_) ==
+    return gfx::AllTrue(gfx::LoadDouble4(base::span(transform_).first<4u>()) ==
                         gfx::Double4{1, 0, 0, 1});
   }
 
@@ -138,14 +140,11 @@ class PLATFORM_EXPORT AffineTransform {
   [[nodiscard]] SkM44 ToSkM44() const;
 
   bool operator==(const AffineTransform& m2) const {
-    return gfx::AllTrue(gfx::LoadDouble4(transform_) ==
-                            gfx::LoadDouble4(m2.transform_) &
-                        gfx::LoadDouble4(&transform_[2]) ==
-                            gfx::LoadDouble4(&m2.transform_[2]));
-  }
-
-  bool operator!=(const AffineTransform& other) const {
-    return !(*this == other);
+    return gfx::AllTrue(
+        gfx::LoadDouble4(base::span(transform_).first<4u>()) ==
+            gfx::LoadDouble4(base::span(m2.transform_).first<4u>()) &
+        gfx::LoadDouble4(base::span(transform_).subspan<2u>()) ==
+            gfx::LoadDouble4(base::span(m2.transform_).subspan<2u>()));
   }
 
   // *this = *this * t (i.e., a multRight)
@@ -198,7 +197,7 @@ class PLATFORM_EXPORT AffineTransform {
     return ClampToWithNaNTo0<float>(value);
   }
 
-  double transform_[6];
+  std::array<double, 6> transform_;
 };
 
 PLATFORM_EXPORT std::ostream& operator<<(std::ostream&, const AffineTransform&);

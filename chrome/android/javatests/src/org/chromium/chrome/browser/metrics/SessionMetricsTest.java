@@ -15,12 +15,15 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
 import org.chromium.chrome.test.util.ChromeApplicationTestUtils;
+import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.url.JUnitTestGURLs;
 
 @RunWith(ChromeJUnit4ClassRunner.class)
@@ -28,8 +31,8 @@ import org.chromium.url.JUnitTestGURLs;
 @DoNotBatch(reason = "Test interacts with activity startup & shutdown.")
 public class SessionMetricsTest {
     @Rule
-    public ChromeTabbedActivityTestRule mTabbedActivityTestRule =
-            new ChromeTabbedActivityTestRule();
+    public FreshCtaTransitTestRule mTabbedActivityTestRule =
+            ChromeTransitTestRules.freshChromeTabbedActivityRule();
 
     private static final String TABBED_SESSION_CONTAINED_GOOGLE_SEARCH_HISTOGRAM =
             "Session.Android.TabbedSessionContainedGoogleSearch";
@@ -48,6 +51,7 @@ public class SessionMetricsTest {
 
     @Test
     @SmallTest
+    @DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM) // crbug.com/511287776
     public void testSessionContainedGoogleSearchPage() {
         HistogramWatcher histogramWatcher =
                 HistogramWatcher.newBuilder()
@@ -55,7 +59,7 @@ public class SessionMetricsTest {
                         .build();
 
         // Load Google SRP twice, but ensure histogram is only recorded to once.
-        mTabbedActivityTestRule.startMainActivityOnBlankPage();
+        mTabbedActivityTestRule.startOnBlankPage();
         mTabbedActivityTestRule.waitForActivityNativeInitializationComplete();
         mTabbedActivityTestRule.loadUrl(
                 JUnitTestGURLs.SEARCH_URL.getSpec(), LOAD_URL_TOTAL_WAIT_TIME_SECONDS);
@@ -79,7 +83,7 @@ public class SessionMetricsTest {
         // Histogram record is false when session does not contain SRP.
         // Initial launch of the flaky test runner can result in Chrome being put to sleep so extra
         // records are allowed in case that happens.
-        mTabbedActivityTestRule.startMainActivityOnBlankPage();
+        mTabbedActivityTestRule.startOnBlankPage();
         mTabbedActivityTestRule.waitForActivityNativeInitializationComplete();
         ChromeApplicationTestUtils.fireHomeScreenIntent(mAppContext);
 

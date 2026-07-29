@@ -1,10 +1,13 @@
 // Copyright 2022 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
+import 'chrome://resources/cr_elements/cr_button/cr_button.js';
+import 'chrome://resources/cr_elements/cr_drawer/cr_drawer.js';
 import 'chrome://resources/cr_elements/cr_page_host_style.css.js';
 import 'chrome://resources/cr_elements/cr_page_selector/cr_page_selector.js';
 import 'chrome://resources/cr_elements/cr_shared_style.css.js';
 import 'chrome://resources/cr_elements/cr_toast/cr_toast.js';
+import 'chrome://resources/cr_elements/cr_scrollable.css.js';
 import '/shared/settings/prefs/prefs.js';
 import './checkup_section.js';
 import './checkup_details_section.js';
@@ -21,11 +24,12 @@ import type {CrToastElement} from '//resources/cr_elements/cr_toast/cr_toast.js'
 import {focusWithoutInk} from '//resources/js/focus_without_ink.js';
 import {loadTimeData} from '//resources/js/load_time_data.js';
 import type {SettingsPrefsElement} from '/shared/settings/prefs/prefs.js';
-import {CrContainerShadowMixin} from 'chrome://resources/cr_elements/cr_container_shadow_mixin.js';
+import {ColorChangeUpdater, COLORS_CSS_SELECTOR} from 'chrome://resources/cr_components/color_change_listener/colors_css_updater.js';
 import type {CrDrawerElement} from 'chrome://resources/cr_elements/cr_drawer/cr_drawer.js';
 import type {CrPageSelectorElement} from 'chrome://resources/cr_elements/cr_page_selector/cr_page_selector.js';
 import {FindShortcutMixin} from 'chrome://resources/cr_elements/find_shortcut_mixin.js';
 import {I18nMixin} from 'chrome://resources/cr_elements/i18n_mixin.js';
+import {assert} from 'chrome://resources/js/assert.js';
 import {EventTracker} from 'chrome://resources/js/event_tracker.js';
 import {PluralStringProxyImpl} from 'chrome://resources/js/plural_string_proxy.js';
 import {getDeepActiveElement, listenOnce} from 'chrome://resources/js/util.js';
@@ -33,6 +37,7 @@ import type {DomIf} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundle
 import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
 import type {CheckupSectionElement} from './checkup_section.js';
+import type {BackupPasswordRemovedEvent} from './credential_details/backup_password_details_card.js';
 import type {PasswordRemovedEvent} from './credential_details/password_details_card.js';
 import type {FocusConfig} from './focus_config.js';
 import {getTemplate} from './password_manager_app.html.js';
@@ -71,14 +76,15 @@ export interface PasswordManagerAppElement {
     passwords: PasswordsSectionElement,
     prefs: SettingsPrefsElement,
     toast: CrToastElement,
+    scrollableShadow: HTMLElement,
     settings: SettingsSectionElement,
     sidebar: PasswordManagerSideBarElement,
     toolbar: PasswordManagerToolbarElement,
   };
 }
 
-const PasswordManagerAppElementBase = FindShortcutMixin(
-    I18nMixin(CrContainerShadowMixin(RouteObserverMixin(PolymerElement))));
+const PasswordManagerAppElementBase =
+    FindShortcutMixin(I18nMixin(RouteObserverMixin(PolymerElement)));
 
 export class PasswordManagerAppElement extends PasswordManagerAppElementBase {
   static get is() {
@@ -113,6 +119,7 @@ export class PasswordManagerAppElement extends PasswordManagerAppElementBase {
 
       pageTitle_: {
         type: String,
+        value: () => loadTimeData.getString('passwordManagerTitle'),
       },
 
       /*
@@ -146,25 +153,33 @@ export class PasswordManagerAppElement extends PasswordManagerAppElementBase {
     };
   }
 
-  private selectedPage_: Page;
-  private narrow_: boolean;
-  private collapsed_: boolean;
-  private pageTitle_: string = this.i18n('passwordManagerTitle');
-  private toastMessage_: string;
-  private showUndo_: boolean;
-  private focusConfig_: FocusConfig;
+  declare private prefs_: {[key: string]: unknown};
+  declare private selectedPage_: Page;
+  declare private narrow_: boolean;
+  declare private collapsed_: boolean;
+  declare private pageTitle_: string;
+  declare private toastMessage_: string;
+  declare private showUndo_: boolean;
+  declare private focusConfig_: FocusConfig;
   private eventTracker_: EventTracker = new EventTracker();
 
   override connectedCallback() {
     super.connectedCallback();
 
-    const narrowQuery = window.matchMedia('(max-width: 1036px)');
+    const enableWebuiRefresh2026 =
+        loadTimeData.getString('webuiRefresh2026') !== '';
+    if (enableWebuiRefresh2026) {
+      this.addThemedColors_();
+      ColorChangeUpdater.forDocument().start();
+    }
+
+    const narrowQuery = window.matchMedia('(max-width: 1300px)');
     this.narrow_ = narrowQuery.matches;
     this.eventTracker_.add(
         narrowQuery, 'change',
         (e: MediaQueryListEvent) => this.narrow_ = e.matches);
 
-    const collapsedQuery = window.matchMedia('(max-width: 1200px)');
+    const collapsedQuery = window.matchMedia('(max-width: 1605px)');
     this.collapsed_ = collapsedQuery.matches;
     this.eventTracker_.add(
         collapsedQuery, 'change',
@@ -195,7 +210,7 @@ export class PasswordManagerAppElement extends PasswordManagerAppElementBase {
       controlledSettingParent:
           loadTimeData.getString('controlledSettingParent'),
 
-      // <if expr="chromeos_ash">
+      // <if expr="is_chromeos">
       controlledSettingShared:
           loadTimeData.getString('controlledSettingShared'),
       controlledSettingWithOwner:
@@ -229,16 +244,10 @@ export class PasswordManagerAppElement extends PasswordManagerAppElementBase {
 
   override currentRouteChanged(route: Route): void {
     this.selectedPage_ = route.page;
-    setTimeout(() => {  // Async to allow page to load.
-      if (route.page === Page.CHECKUP_DETAILS ||
-          route.page === Page.PASSWORD_CHANGE) {
-        this.enableScrollObservation(false);
-        this.setForceDropShadows(true);
-      } else {
-        this.setForceDropShadows(false);
-        this.enableScrollObservation(true);
-      }
-    }, 0);
+    this.$.scrollableShadow.classList.toggle(
+        'force-on',
+        route.page === Page.CHECKUP_DETAILS ||
+            route.page === Page.PASSWORD_CHANGE);
   }
 
   // Override FindShortcutMixin methods.
@@ -263,7 +272,7 @@ export class PasswordManagerAppElement extends PasswordManagerAppElementBase {
     if (this.$.drawer.open && !this.narrow_) {
       this.$.drawer.close();
     }
-    // Window is greater than 980px but less than 1200px.
+    // Window is greater than 1300px but less than 1605px.
     if (!this.narrow_ && this.collapsed_) {
       this.pageTitle_ = this.i18n('passwordManagerString');
     } else {
@@ -308,6 +317,12 @@ export class PasswordManagerAppElement extends PasswordManagerAppElementBase {
 
   private onPasswordRemoved_(_event: PasswordRemovedEvent) {
     // TODO(crbug.com/40234318): Show different message if account store user.
+    this.showUndo_ = true;
+    this.toastMessage_ = this.i18n('passwordDeleted');
+    this.$.toast.show();
+  }
+
+  private onBackupPasswordRemoved_(_event: BackupPasswordRemovedEvent) {
     this.showUndo_ = true;
     this.toastMessage_ = this.i18n('passwordDeleted');
     this.$.toast.show();
@@ -368,6 +383,15 @@ export class PasswordManagerAppElement extends PasswordManagerAppElementBase {
       }
       handler();
     }
+  }
+
+  // TODO(crub.com/509908129): Add static stylesheet in password_manager.html
+  private addThemedColors_() {
+    assert(document.body.querySelector(COLORS_CSS_SELECTOR) === null);
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = 'chrome://theme/colors.css?sets=ui,chrome';
+    document.body.appendChild(link);
   }
 }
 declare global {

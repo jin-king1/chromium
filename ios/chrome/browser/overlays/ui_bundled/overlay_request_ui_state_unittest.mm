@@ -7,10 +7,13 @@
 #import "base/functional/bind.h"
 #import "base/functional/callback.h"
 #import "base/functional/callback_helpers.h"
+#import "base/test/task_environment.h"
 #import "ios/chrome/browser/overlays/model/public/overlay_request.h"
 #import "ios/chrome/browser/overlays/model/test/fake_overlay_user_data.h"
 #import "ios/chrome/browser/overlays/ui_bundled/test/fake_overlay_request_coordinator.h"
 #import "ios/chrome/browser/overlays/ui_bundled/test/fake_overlay_request_coordinator_delegate.h"
+#import "ios/chrome/browser/shared/model/browser/test/test_browser.h"
+#import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "testing/platform_test.h"
 
 // Test fixture for OverlayRequestUIState.
@@ -18,13 +21,19 @@ class OverlayRequestUIStateTest : public PlatformTest {
  public:
   OverlayRequestUIStateTest()
       : PlatformTest(),
-        request_(OverlayRequest::CreateWithConfig<FakeOverlayUserData>()),
-        state_(request_.get()) {}
+        profile_(TestProfileIOS::Builder().Build()),
+        browser_(std::make_unique<TestBrowser>(profile_.get())),
+        request_(OverlayRequest::CreateWithConfig<FakeOverlayUserData>()) {}
 
   OverlayRequest* request() { return request_.get(); }
   OverlayRequestUIState& state() { return state_; }
 
  private:
+  base::test::TaskEnvironment task_environment_;
+
+ protected:
+  std::unique_ptr<ProfileIOS> profile_;
+  std::unique_ptr<TestBrowser> browser_;
   std::unique_ptr<OverlayRequest> request_;
   OverlayRequestUIState state_;
 };
@@ -48,7 +57,7 @@ TEST_F(OverlayRequestUIStateTest, OverlayUIWillBePresented) {
   FakeOverlayRequestCoordinator* coordinator =
       [[FakeOverlayRequestCoordinator alloc]
           initWithBaseViewController:nil
-                             browser:nullptr
+                             browser:browser_.get()
                              request:request()
                             delegate:&delegate];
   state().OverlayUIWillBePresented(coordinator);
@@ -81,7 +90,7 @@ TEST_F(OverlayRequestUIStateTest, OverlayUIWasDismissed) {
   FakeOverlayRequestCoordinator* coordinator =
       [[FakeOverlayRequestCoordinator alloc]
           initWithBaseViewController:nil
-                             browser:nullptr
+                             browser:browser_.get()
                              request:request()
                             delegate:&delegate];
   state().OverlayUIWillBePresented(coordinator);

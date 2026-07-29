@@ -6,7 +6,6 @@
 #define COMPONENTS_FEATURE_ENGAGEMENT_INTERNAL_SINGLE_INVALID_CONFIGURATION_H_
 
 #include <string>
-#include <unordered_set>
 
 #include "base/feature_list.h"
 #include "build/build_config.h"
@@ -27,6 +26,7 @@ class SingleInvalidConfiguration : public Configuration {
   ~SingleInvalidConfiguration() override;
 
   // Configuration implementation.
+  bool HasFeatureConfig(const base::Feature& feature) const override;
   const FeatureConfig& GetFeatureConfig(
       const base::Feature& feature) const override;
   const FeatureConfig& GetFeatureConfigByName(

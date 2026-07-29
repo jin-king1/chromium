@@ -13,7 +13,6 @@
 #include "base/command_line.h"
 #include "base/files/file.h"
 #include "base/files/file_path.h"
-#include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/location.h"
@@ -381,22 +380,6 @@ TEST_F(OfflinePageUtilsTest, ScheduleDownload) {
   EXPECT_EQ(1, FindRequestByNamespaceAndURL(kDownloadNamespace, kTestPage4Url));
 }
 
-#if BUILDFLAG(IS_ANDROID)
-TEST_F(OfflinePageUtilsTest, ScheduleDownloadWithFailedFileAcecssRequest) {
-  DownloadControllerBase::Get()->SetApproveFileAccessRequestForTesting(false);
-  OfflinePageUtils::ScheduleDownload(
-      web_contents(), kDownloadNamespace, kTestPage4Url,
-      OfflinePageUtils::DownloadUIActionFlags::NONE);
-
-  // Here, we're waiting to make sure a request is not created. We can't use
-  // QuitClosure, since there's no callback threaded through ScheduleDownload.
-  // Instead, just wait a bit and assume ScheduleDownload is complete.
-  RunTasksForDuration(base::Seconds(1));
-
-  EXPECT_EQ(0, FindRequestByNamespaceAndURL(kDownloadNamespace, kTestPage4Url));
-}
-#endif
-
 TEST_F(OfflinePageUtilsTest, TestGetCachedOfflinePageSizeBetween) {
   // The clock will be at 03:00:00 after adding pages.
   CreateCachedOfflinePages();
@@ -478,7 +461,7 @@ TEST_F(OfflinePageUtilsTest, TestGetCachedOfflinePageSizeEdgeCase) {
                                             clock()->Now()));
 }
 
-// Timeout on Android.  http://crbug.com/981972
+// Timeout on Android.  http://crbug.com/40635196
 #if BUILDFLAG(IS_ANDROID)
 #define MAYBE_TestExtractOfflineHeaderValueFromNavigationEntry \
   DISABLED_TestExtractOfflineHeaderValueFromNavigationEntry

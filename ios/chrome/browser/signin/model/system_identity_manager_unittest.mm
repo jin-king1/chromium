@@ -39,6 +39,18 @@ class TestSystemIdentityManager : public SystemIdentityManager {
     NOTREACHED();
   }
   void DismissDialogs() final {}
+  void RegisterExternalPrivacyContextProvider(
+      id<ExternalPrivacyContextUIProvider> provider) final {
+    NOTREACHED();
+  }
+  void UnregisterExternalPrivacyContextProvider(
+      id<ExternalPrivacyContextUIProvider> provider) final {
+    NOTREACHED();
+  }
+  void ExternalPrivacyContextProviderReady(
+      id<ExternalPrivacyContextUIProvider> provider) final {
+    NOTREACHED();
+  }
   id<SystemIdentityInteractionManager> CreateInteractionManager() final {
     NOTREACHED();
   }
@@ -49,7 +61,7 @@ class TestSystemIdentityManager : public SystemIdentityManager {
                       ForgetIdentityCallback callback) final {
     NOTREACHED();
   }
-  bool IdentityRemovedByUser(NSString* gaia_id) final { NOTREACHED(); }
+  bool IdentityRemovedByUser(const GaiaId& gaia_id) final { NOTREACHED(); }
   void GetAccessToken(id<SystemIdentity> identity,
                       const std::set<std::string>& scopes,
                       AccessTokenCallback callback) final {
@@ -80,10 +92,25 @@ class TestSystemIdentityManager : public SystemIdentityManager {
                          FetchCapabilitiesCallback callback) final {
     NOTREACHED();
   }
+  void FetchCapabilitiesWithPartial(
+      id<SystemIdentity> identity,
+      const std::vector<std::string>& names,
+      FetchCapabilitiesCompletion completion,
+      FetchPartialCapabilitiesCallback partial_callback) final {
+    NOTREACHED();
+  }
   bool HandleMDMNotification(id<SystemIdentity> identity,
                              NSArray<id<SystemIdentity>>* active_identities,
                              id<RefreshAccessTokenError> error,
                              HandleMDMCallback callback) final {
+    NOTREACHED();
+  }
+  bool DisplayMDMNotification(id<SystemIdentity> identity,
+                              const GoogleServiceAuthError& error,
+                              HandleMDMCallback callback) final {
+    NOTREACHED();
+  }
+  bool IsScopeLimitedError(id<RefreshAccessTokenError> error) final {
     NOTREACHED();
   }
   bool IsMDMError(id<SystemIdentity> identity, NSError* error) final {

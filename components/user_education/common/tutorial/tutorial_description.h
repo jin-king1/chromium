@@ -17,6 +17,7 @@
 #include "components/user_education/common/help_bubble/help_bubble_params.h"
 #include "components/user_education/common/user_education_metadata.h"
 #include "ui/base/interaction/element_identifier.h"
+#include "ui/base/interaction/element_specifier.h"
 #include "ui/base/interaction/element_tracker.h"
 #include "ui/base/interaction/interaction_sequence.h"
 
@@ -157,7 +158,7 @@ struct TutorialDescription {
   ~TutorialDescription();
 
   using ContextMode = ui::InteractionSequence::ContextMode;
-  using ElementSpecifier = std::variant<ui::ElementIdentifier, std::string>;
+  using ElementSpecifier = ui::ElementSpecifier;
 
   // Callback used to determine if the "then" branch of a conditional should be
   // followed. Note that `element` may be null if no matching element exists.
@@ -202,14 +203,18 @@ struct TutorialDescription {
       return *this;
     }
 
-    ui::ElementIdentifier element_id() const { return element_id_; }
-    std::string element_name() const { return element_name_; }
+    ui::ElementIdentifier element_id() const { return element_.identifier(); }
+    std::string_view element_name() const { return element_.name(); }
+    ElementSpecifier element() const { return element_; }
     ui::InteractionSequence::StepType step_type() const { return step_type_; }
     ui::CustomElementEventType event_type() const { return event_type_; }
     int title_text_id() const { return title_text_id_; }
     int body_text_id() const { return body_text_id_; }
     int screenreader_text_id() const { return screenreader_text_id_; }
     HelpBubbleArrow arrow() const { return arrow_; }
+    const std::optional<bool>& focus_on_show_hint() const {
+      return focus_on_show_hint_;
+    }
     std::optional<bool> must_remain_visible() const {
       return must_remain_visible_;
     }
@@ -237,18 +242,14 @@ struct TutorialDescription {
          ui::CustomElementEventType event_type = ui::CustomElementEventType());
 
     // The element used by interaction sequence to observe and attach a bubble.
-    ui::ElementIdentifier element_id_;
-
-    // The element, referred to by name, used by the interaction sequence
-    // to observe and potentially attach a bubble. must be non-empty.
-    std::string element_name_;
+    ElementSpecifier element_;
 
     // The step type for InteractionSequence::Step.
     ui::InteractionSequence::StepType step_type_ =
         ui::InteractionSequence::StepType::kShown;
 
     // The event type for the step if `step_type` is kCustomEvent.
-    ui::CustomElementEventType event_type_ = ui::CustomElementEventType();
+    ui::CustomElementEventType event_type_;
 
     // The title text to be populated in the bubble.
     int title_text_id_ = 0;
@@ -261,6 +262,12 @@ struct TutorialDescription {
 
     // The positioning of the bubble arrow.
     HelpBubbleArrow arrow_ = HelpBubbleArrow::kNone;
+
+    // Whether a tutorial bubble should receive focus when it is shown. This is
+    // a behavioral hint; how it is actually implemented will depend on the
+    // bubble implementation (for example, bubbles attached to menu items cannot
+    // take focus for system activation reasons).
+    std::optional<bool> focus_on_show_hint_;
 
     // Should the element remain visible through the entire step, this should be
     // set to false for hidden steps and for shown steps that precede hidden
@@ -287,7 +294,7 @@ struct TutorialDescription {
     // element for naming. The return value is a boolean which controls whether
     // the Interaction Sequence should continue or not. If false is returned
     // the tutorial will abort
-    NameElementsCallback name_elements_callback_ = NameElementsCallback();
+    NameElementsCallback name_elements_callback_;
 
     // Where to search for the step's target element. Default is the context the
     // tutorial started in.
@@ -297,7 +304,7 @@ struct TutorialDescription {
     // bubble associated with this step. Note that a "Next" button won't render:
     // 1. if `next_button_callback` is null
     // 2. if this step is the last step of a tutorial
-    NextButtonCallback next_button_callback_ = NextButtonCallback();
+    NextButtonCallback next_button_callback_;
 
     // Platform-specific properties that can be set for a bubble step. If an
     // extended property evolves to warrant cross-platform support, it should be
@@ -341,6 +348,13 @@ struct TutorialDescription {
 
     BubbleStep& SetBubbleArrow(HelpBubbleArrow arrow) {
       arrow_ = arrow;
+      return *this;
+    }
+
+    // Normally, non-final tutorial bubbles aren't focused, to avoid interfering
+    // with the user's journey through the UI. However, this can be overridden.
+    BubbleStep& SetBubbleFocusOnShow(bool focus_on_show) {
+      focus_on_show_hint_ = focus_on_show;
       return *this;
     }
 

@@ -13,12 +13,11 @@ import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.text.TextUtils;
 import android.util.ArrayMap;
 import android.util.SizeF;
 import android.widget.RemoteViews;
 
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.ContextUtils;
@@ -26,9 +25,15 @@ import org.chromium.base.IntentUtils;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.IntentHandler;
 import org.chromium.chrome.browser.browserservices.intents.WebappConstants;
 import org.chromium.chrome.browser.document.ChromeLauncherActivity;
+import org.chromium.chrome.browser.incognito.IncognitoUtils;
+import org.chromium.chrome.browser.lens.LensController;
+import org.chromium.chrome.browser.lens.LensEntryPoint;
+import org.chromium.chrome.browser.lens.LensIntentParams;
 import org.chromium.chrome.browser.searchwidget.SearchActivityClientImpl;
 import org.chromium.chrome.browser.ui.quickactionsearchwidget.QuickActionSearchWidgetProviderDelegate;
 import org.chromium.chrome.browser.ui.searchactivityutils.SearchActivityExtras.IntentOrigin;
@@ -43,7 +48,11 @@ import java.util.Map;
  * {@link AppWidgetProvider} for a widget that provides an entry point for users to quickly perform
  * actions in Chrome.
  */
+@NullMarked
 public abstract class QuickActionSearchWidgetProvider extends AppWidgetProvider {
+    public static final String ACTION_START_LENS =
+            "org.chromium.chrome.browser.quickactionsearchwidget.ACTION_START_LENS";
+
     /**
      * A sub class of {@link QuickActionSearchWidgetProvider} that provides the widget that can
      * resize.
@@ -51,10 +60,9 @@ public abstract class QuickActionSearchWidgetProvider extends AppWidgetProvider 
     public static class QuickActionSearchWidgetProviderSearch
             extends QuickActionSearchWidgetProvider {
         @Override
-        @NonNull
         RemoteViews createWidget(
-                @NonNull Context context,
-                @NonNull SearchActivityPreferences prefs,
+                Context context,
+                SearchActivityPreferences prefs,
                 int areaWidthDp,
                 int areaHeightDp) {
             return getDelegate()
@@ -95,10 +103,9 @@ public abstract class QuickActionSearchWidgetProvider extends AppWidgetProvider 
     public static class QuickActionSearchWidgetProviderDino
             extends QuickActionSearchWidgetProvider {
         @Override
-        @NonNull
         RemoteViews createWidget(
-                @NonNull Context context,
-                @NonNull SearchActivityPreferences prefs,
+                Context context,
+                SearchActivityPreferences prefs,
                 int areaWidthDp,
                 int areaHeightDp) {
             return getDelegate()
@@ -115,10 +122,27 @@ public abstract class QuickActionSearchWidgetProvider extends AppWidgetProvider 
     private static @Nullable QuickActionSearchWidgetProviderDelegate sDelegate;
 
     @Override
-    public void onUpdate(
-            @NonNull Context context,
-            @NonNull AppWidgetManager manager,
-            @Nullable int[] widgetIds) {
+    public void onReceive(Context context, Intent intent) {
+        super.onReceive(context, intent);
+        if (intent == null) return;
+
+        if (Intent.ACTION_LOCALE_CHANGED.equals(intent.getAction())) {
+            updateWidgetsWithNewLocale(context);
+        } else if (ACTION_START_LENS.equals(intent.getAction())) {
+            String account = SearchActivityPreferencesManager.getCurrent().accountEmail;
+            LensController.getInstance()
+                    .startLens(
+                            context,
+                            new LensIntentParams.Builder(
+                                            LensEntryPoint.QUICK_ACTION_SEARCH_WIDGET,
+                                            /* isIncognito= */ TextUtils.isEmpty(account))
+                                    .withAccountName(account)
+                                    .build());
+        }
+    }
+
+    @Override
+    public void onUpdate(Context context, AppWidgetManager manager, int @Nullable [] widgetIds) {
         updateWidgets(context, manager, SearchActivityPreferencesManager.getCurrent(), widgetIds);
     }
 
@@ -129,6 +153,13 @@ public abstract class QuickActionSearchWidgetProvider extends AppWidgetProvider 
         onUpdate(context, manager, new int[] {widgetId});
     }
 
+    private void updateWidgetsWithNewLocale(Context context) {
+        // Force delegate recreation to ensure that all intents are created with the new locale.
+        sDelegate = null;
+        AppWidgetManager manager = AppWidgetManager.getInstance(context);
+        updateWidgets(context, manager, SearchActivityPreferencesManager.getCurrent(), null);
+    }
+
     /**
      * Apply update to widgets, reflecting feature availability on the widget surface.
      *
@@ -137,12 +168,12 @@ public abstract class QuickActionSearchWidgetProvider extends AppWidgetProvider 
      * @param preferences Search Activity preferences.
      * @param widgetIds List of Widget IDs that should be updated.
      */
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     void updateWidgets(
-            @NonNull Context context,
-            @NonNull AppWidgetManager manager,
-            @NonNull SearchActivityPreferences preferences,
-            @NonNull int[] widgetIds) {
+            Context context,
+            AppWidgetManager manager,
+            SearchActivityPreferences preferences,
+            int @Nullable [] widgetIds) {
         if (widgetIds == null) {
             // Query all widgets associated with this component.
             widgetIds = manager.getAppWidgetIds(new ComponentName(context, getClass().getName()));
@@ -157,20 +188,27 @@ public abstract class QuickActionSearchWidgetProvider extends AppWidgetProvider 
 
     /** Get (create if necessary) an instance of QuickActionSearchWidgetProviderDelegate. */
     @VisibleForTesting(otherwise = VisibleForTesting.PROTECTED)
-    protected @NonNull QuickActionSearchWidgetProviderDelegate getDelegate() {
+    protected QuickActionSearchWidgetProviderDelegate getDelegate() {
         if (sDelegate != null) return sDelegate;
 
         Context context = ContextUtils.getApplicationContext();
         Intent trustedIncognitoIntent =
-                IntentHandler.createTrustedOpenNewTabIntent(context, /* incognito= */ true);
+                IncognitoUtils.shouldOpenIncognitoAsWindow()
+                        ? IntentHandler.createTrustedOpenNewWindowIntent(
+                                context, /* incognito= */ true)
+                        : IntentHandler.createTrustedOpenNewTabIntent(
+                                context, /* incognito= */ true);
         trustedIncognitoIntent.putExtra(IntentHandler.EXTRA_INVOKED_FROM_APP_WIDGET, true);
         trustedIncognitoIntent.addFlags(
                 Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NEW_DOCUMENT);
         Intent dinoIntent = createDinoIntent(context);
 
+        Intent startLensIntent = new Intent(context, QuickActionSearchWidgetProviderSearch.class);
+        startLensIntent.setAction(ACTION_START_LENS);
+
         sDelegate =
                 new QuickActionSearchWidgetProviderDelegate(
-                        context, trustedIncognitoIntent, dinoIntent);
+                        context, trustedIncognitoIntent, dinoIntent, startLensIntent);
         return sDelegate;
     }
 
@@ -201,11 +239,8 @@ public abstract class QuickActionSearchWidgetProvider extends AppWidgetProvider 
      * @return RemoteViews description for a single widget layout.
      */
     @VisibleForTesting(otherwise = VisibleForTesting.PROTECTED)
-    abstract @NonNull RemoteViews createWidget(
-            @NonNull Context context,
-            @NonNull SearchActivityPreferences prefs,
-            int areaWidthDp,
-            int areaHeightDp);
+    abstract RemoteViews createWidget(
+            Context context, SearchActivityPreferences prefs, int areaWidthDp, int areaHeightDp);
 
     /**
      * Acquire the RemoteViews that represent the widget.
@@ -215,11 +250,7 @@ public abstract class QuickActionSearchWidgetProvider extends AppWidgetProvider 
      * @param options Options bundle passed by AppWidgetManager.
      */
     @VisibleForTesting(otherwise = VisibleForTesting.PROTECTED)
-    @NonNull
-    RemoteViews getRemoteViews(
-            @NonNull Context context,
-            @NonNull SearchActivityPreferences prefs,
-            @NonNull Bundle options) {
+    RemoteViews getRemoteViews(Context context, SearchActivityPreferences prefs, Bundle options) {
         var views = getSizeMappedRemoteViews(context, prefs, options);
         if (views != null) {
             return views;
@@ -236,11 +267,8 @@ public abstract class QuickActionSearchWidgetProvider extends AppWidgetProvider 
      * @return RemoteViews describing widget for landscape and portrait screen orientations.
      */
     @VisibleForTesting(otherwise = VisibleForTesting.PROTECTED)
-    @NonNull
     RemoteViews getOrientationSpecificRemoteViews(
-            @NonNull Context context,
-            @NonNull SearchActivityPreferences prefs,
-            @NonNull Bundle options) {
+            Context context, SearchActivityPreferences prefs, Bundle options) {
         var portraitViews =
                 createWidget(
                         context,
@@ -268,11 +296,8 @@ public abstract class QuickActionSearchWidgetProvider extends AppWidgetProvider 
      *     null, if the AppWidgetManager did not specify the sizes.
      */
     @VisibleForTesting(otherwise = VisibleForTesting.PROTECTED)
-    @Nullable
-    RemoteViews getSizeMappedRemoteViews(
-            @NonNull Context context,
-            @NonNull SearchActivityPreferences prefs,
-            @NonNull Bundle options) {
+    @Nullable RemoteViews getSizeMappedRemoteViews(
+            Context context, SearchActivityPreferences prefs, Bundle options) {
         // On Android S and above, attempt to build widget from supplied array of sizes.
         // This is reserved to Android S because appropriate RemoteViews constructor may not be
         // available.
@@ -319,7 +344,7 @@ public abstract class QuickActionSearchWidgetProvider extends AppWidgetProvider 
                     // Make the Widget available to all Chrome users who participated in an
                     // experiment in the past. This can trigger disk access. Unfortunately,
                     // we need to keep it for a little bit longer -- see:
-                    // https://crbug.com/1309116
+                    // https://crbug.com/40219337
                     setWidgetEnabled(true, true);
                 });
 
@@ -364,7 +389,7 @@ public abstract class QuickActionSearchWidgetProvider extends AppWidgetProvider 
      *     be enabled or not.
      */
     private static void setWidgetComponentEnabled(
-            @NonNull Class<? extends QuickActionSearchWidgetProvider> component,
+            Class<? extends QuickActionSearchWidgetProvider> component,
             boolean shouldEnableWidgetComponent) {
         // The initialization must be performed on a background thread because the following logic
         // can trigger disk access. The PostTask in ProcessInitializationHandler can be removed once

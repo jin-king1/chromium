@@ -16,7 +16,6 @@
 #include <vector>
 
 #include "base/compiler_specific.h"
-#include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/location.h"
@@ -284,8 +283,7 @@ size_t WaitForSamplingComplete(
                            return &info.get()->completed;
                          });
   // Wait for one profiler to finish.
-  return WaitableEvent::WaitMany(sampling_completed_rawptrs.data(),
-                                 sampling_completed_rawptrs.size());
+  return WaitableEvent::WaitMany(sampling_completed_rawptrs);
 }
 
 // Returns a duration that is longer than the test timeout. We would use
@@ -785,7 +783,7 @@ PROFILER_TEST_F(StackSamplingProfilerTest, GetNextSampleTime_NormalExecution) {
   const auto& GetNextSampleTime =
       StackSamplingProfiler::TestPeer::GetNextSampleTime;
 
-  const TimeTicks scheduled_current_sample_time = TimeTicks::UnixEpoch();
+  const TimeTicks scheduled_current_sample_time = TimeTicks() + base::Hours(1);
   const TimeDelta sampling_interval = Milliseconds(10);
 
   // When executing the sample at exactly the scheduled time the next sample
@@ -814,7 +812,7 @@ PROFILER_TEST_F(StackSamplingProfilerTest, GetNextSampleTime_DelayedExecution) {
   const auto& GetNextSampleTime =
       StackSamplingProfiler::TestPeer::GetNextSampleTime;
 
-  const TimeTicks scheduled_current_sample_time = TimeTicks::UnixEpoch();
+  const TimeTicks scheduled_current_sample_time = TimeTicks() + base::Hours(1);
   const TimeDelta sampling_interval = Milliseconds(10);
 
   // When executing the sample between 0.5 and 1.5 intervals after the scheduled

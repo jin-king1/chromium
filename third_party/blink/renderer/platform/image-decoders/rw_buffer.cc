@@ -11,6 +11,7 @@
 #include "base/atomic_ref_count.h"
 #include "base/check.h"
 #include "base/check_op.h"
+#include "base/containers/span.h"
 #include "base/memory/raw_ptr.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/partitions.h"
 
@@ -35,7 +36,11 @@ struct RWBuffer::BufferBlock {
     // SAFETY: The Alloc() function (in RWBuffer::BufferBlock or
     // RWBuffer::BufferHead) allocates an extra `capacity_` bytes at the end of
     // the object.
-    return UNSAFE_BUFFERS({reinterpret_cast<uint8_t*>(this + 1), capacity_});
+    //
+    // `base::unchecked`: This site shows up when profiling `decode-gif.html`.
+    // See https://crbug.com/525087502.
+    return UNSAFE_BUFFERS(base::span(
+        base::unchecked, reinterpret_cast<uint8_t*>(this + 1), capacity_));
   }
   base::span<const uint8_t> Buffer() const {
     return const_cast<RWBuffer::BufferBlock*>(this)->Buffer();
@@ -44,8 +49,8 @@ struct RWBuffer::BufferBlock {
   static RWBuffer::BufferBlock* Alloc(size_t length) {
     size_t capacity = LengthToCapacity(length);
     void* buffer =
-        WTF::Partitions::BufferMalloc(sizeof(RWBuffer::BufferBlock) + capacity,
-                                      "blink::RWBuffer::BufferBlock");
+        Partitions::BufferMalloc(sizeof(RWBuffer::BufferBlock) + capacity,
+                                 "blink::RWBuffer::BufferBlock");
     return new (buffer) RWBuffer::BufferBlock(capacity);
   }
 
@@ -92,7 +97,7 @@ struct RWBuffer::BufferHead {
     size_t capacity = LengthToCapacity(length);
     size_t size = sizeof(RWBuffer::BufferHead) + capacity;
     void* buffer =
-        WTF::Partitions::BufferMalloc(size, "blink::RWBuffer::BufferHead");
+        Partitions::BufferMalloc(size, "blink::RWBuffer::BufferHead");
     return new (buffer) RWBuffer::BufferHead(capacity);
   }
 
@@ -108,14 +113,12 @@ struct RWBuffer::BufferHead {
       // Like unique(), the acquire is only needed on success.
       RWBuffer::BufferBlock* block = block_.next_;
 
-      // `buffer_` has a `raw_ptr` that needs to be destroyed to
-      // properly lower the refcount.
-      block_.~BufferBlock();
-      WTF::Partitions::BufferFree(const_cast<RWBuffer::BufferHead*>(this));
+      this->~BufferHead();
+      Partitions::BufferFree(const_cast<RWBuffer::BufferHead*>(this));
       while (block) {
         RWBuffer::BufferBlock* next = block->next_;
         block->~BufferBlock();
-        WTF::Partitions::BufferFree(block);
+        Partitions::BufferFree(block);
         block = next;
       }
     }

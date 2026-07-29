@@ -2,24 +2,21 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'chrome://resources/cr_elements/cr_shared_vars.css.js';
 import '/strings.m.js';
 import 'chrome://resources/cr_elements/cr_toggle/cr_toggle.js';
 
-import type {PriceTrackingBrowserProxy} from '//resources/cr_components/commerce/price_tracking_browser_proxy.js';
-import {PriceTrackingBrowserProxyImpl} from '//resources/cr_components/commerce/price_tracking_browser_proxy.js';
+import type {BrowserProxy as PriceTrackingBrowserProxy} from '//resources/cr_components/commerce/price_tracking.mojom-webui.js';
+import {browserProxyFactory as priceTrackingBrowserProxyFactory} from '//resources/cr_components/commerce/price_tracking.mojom-webui.js';
 import type {BookmarkProductInfo, ProductInfo} from '//resources/cr_components/commerce/shared.mojom-webui.js';
 import type {PriceInsightsInfo} from '//resources/cr_components/commerce/shopping_service.mojom-webui.js';
 import {PriceInsightsInfo_PriceBucket} from '//resources/cr_components/commerce/shopping_service.mojom-webui.js';
-import type {ShoppingServiceBrowserProxy} from '//resources/cr_components/commerce/shopping_service_browser_proxy.js';
-import {ShoppingServiceBrowserProxyImpl} from '//resources/cr_components/commerce/shopping_service_browser_proxy.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
-import type {String16} from 'chrome://resources/mojo/mojo/public/mojom/base/string16.mojom-webui.js';
-import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
-import {getTemplate} from './price_tracking_section.html.js';
+import {getCss} from './price_tracking_section.css.js';
+import {getHtml} from './price_tracking_section.html.js';
 
-export interface PriceTrackingSection {
+export interface PriceTrackingSectionElement {
   $: {
     toggleTitle: HTMLElement,
     toggleAnnotation: HTMLElement,
@@ -27,49 +24,70 @@ export interface PriceTrackingSection {
   };
 }
 
-function decodeString16(arr: String16) {
-  return arr.data.map(ch => String.fromCodePoint(ch)).join('');
-}
-
-export class PriceTrackingSection extends PolymerElement {
+export class PriceTrackingSectionElement extends CrLitElement {
   static get is() {
     return 'price-tracking-section';
   }
 
-  static get template() {
-    return getTemplate();
+  static override get styles() {
+    return getCss();
   }
 
-  static get properties() {
-    return {
-      productInfo: Object,
+  override render() {
+    return getHtml.bind(this)();
+  }
 
-      isProductTracked: {
-        type: Boolean,
-        value: false,
-      },
+  static override get properties() {
+    return {
+      productInfo: {type: Object},
+      isProductTracked: {type: Boolean},
+      folderName_: {type: String},
+      saveLocationEndText_: {type: String},
+      saveLocationStartText_: {type: String},
+      showSaveLocationText_: {type: Boolean},
+      toggleAnnotationText_: {type: String},
     };
   }
 
-  productInfo: ProductInfo;
-  priceInsightsInfo: PriceInsightsInfo;
-  isProductTracked: boolean;
-  private listenerIds_: number[] = [];
-  private toggleAnnotationText_: string;
-  private saveLocationStartText_: string;
-  private saveLocationEndText_: string;
-  private showSaveLocationText_: boolean;
-  private folderName_: string;
+  accessor productInfo: ProductInfo = {
+    title: '',
+    clusterTitle: '',
+    domain: '',
+    imageUrl: '',
+    productUrl: '',
+    currentPrice: '',
+    previousPrice: '',
+    clusterId: BigInt(0),
+    categoryLabels: [],
+    priceSummary: '',
+  };
+  accessor isProductTracked: boolean = false;
+  protected accessor folderName_: string = '';
+  protected accessor saveLocationStartText_: string = '';
+  protected accessor saveLocationEndText_: string = '';
+  protected accessor showSaveLocationText_: boolean = false;
+  protected accessor toggleAnnotationText_: string = '';
+  priceInsightsInfo: PriceInsightsInfo = {
+    clusterId: BigInt(0),
+    typicalLowPrice: '',
+    typicalHighPrice: '',
+    catalogAttributes: '',
+    jackpot: '',
+    bucket: PriceInsightsInfo_PriceBucket.MIN_VALUE,
+    hasMultipleCatalogs: false,
+    history: [],
+    locale: '',
+    currencyCode: '',
+  };
 
-  private shoppingApi_: ShoppingServiceBrowserProxy =
-      ShoppingServiceBrowserProxyImpl.getInstance();
+  private listenerIds_: number[] = [];
   private priceTrackingProxy_: PriceTrackingBrowserProxy =
-      PriceTrackingBrowserProxyImpl.getInstance();
+      priceTrackingBrowserProxyFactory.getInstance();
 
   override connectedCallback() {
     super.connectedCallback();
 
-    const callbackRouter = this.priceTrackingProxy_.getCallbackRouter();
+    const callbackRouter = this.priceTrackingProxy_.callbackRouter;
     this.listenerIds_.push(
         callbackRouter.priceTrackedForBookmark.addListener(
             (product: BookmarkProductInfo) =>
@@ -88,15 +106,22 @@ export class PriceTrackingSection extends PolymerElement {
     this.updatePriceTrackingSection_(this.isProductTracked);
   }
 
+  override disconnectedCallback() {
+    super.disconnectedCallback();
+
+    this.listenerIds_.forEach(
+        id => this.priceTrackingProxy_.callbackRouter.removeListener(id));
+  }
+
   private async updatePriceTrackingSection_(tracked: boolean) {
     if (!tracked) {
       this.folderName_ = '';
       this.toggleAnnotationText_ =
           loadTimeData.getString('trackPriceDescription');
     } else {
-      const {name} = await this.priceTrackingProxy_
-                         .getParentBookmarkFolderNameForCurrentUrl();
-      this.folderName_ = decodeString16(name);
+      this.folderName_ = (await this.priceTrackingProxy_.handler
+                              .getParentBookmarkFolderNameForCurrentUrl())
+                             .name;
 
       this.toggleAnnotationText_ =
           loadTimeData.getString('trackPriceSaveDescription');
@@ -125,15 +150,12 @@ export class PriceTrackingSection extends PolymerElement {
     this.showSaveLocationText_ = true;
   }
 
-  override disconnectedCallback() {
-    super.disconnectedCallback();
-
-    this.listenerIds_.forEach(
-        id => this.priceTrackingProxy_.getCallbackRouter().removeListener(id));
+  protected onToggleCheckedChanged_(e: CustomEvent<{value: boolean}>) {
+    this.isProductTracked = e.detail.value;
   }
 
-  private onPriceTrackingToggled_() {
-    this.priceTrackingProxy_.setPriceTrackingStatusForCurrentUrl(
+  protected onToggleChange_() {
+    this.priceTrackingProxy_.handler.setPriceTrackingStatusForCurrentUrl(
         this.isProductTracked);
     chrome.metricsPrivate.recordEnumerationValue(
         this.isProductTracked ?
@@ -157,8 +179,8 @@ export class PriceTrackingSection extends PolymerElement {
     this.updatePriceTrackingSection_(false);
   }
 
-  private onFolderClicked_() {
-    this.priceTrackingProxy_.showBookmarkEditorForCurrentUrl();
+  protected onToggleAnnotationButtonClick_() {
+    this.priceTrackingProxy_.handler.showBookmarkEditorForCurrentUrl();
     chrome.metricsPrivate.recordUserAction(
         'Commerce.PriceTracking.' +
         'EditedBookmarkFolderFromPriceInsightsSidePanel');
@@ -178,17 +200,18 @@ export class PriceTrackingSection extends PolymerElement {
   private async onProductBookmarkMoved(product: BookmarkProductInfo) {
     if (product.info.clusterId === this.productInfo.clusterId &&
         this.isProductTracked) {
-      const {name} = await this.priceTrackingProxy_
-                         .getParentBookmarkFolderNameForCurrentUrl();
-      this.folderName_ = decodeString16(name);
+      this.folderName_ = (await this.priceTrackingProxy_.handler
+                              .getParentBookmarkFolderNameForCurrentUrl())
+                             .name;
     }
   }
 }
 
 declare global {
   interface HTMLElementTagNameMap {
-    'price-tracking-section': PriceTrackingSection;
+    'price-tracking-section': PriceTrackingSectionElement;
   }
 }
 
-customElements.define(PriceTrackingSection.is, PriceTrackingSection);
+customElements.define(
+    PriceTrackingSectionElement.is, PriceTrackingSectionElement);

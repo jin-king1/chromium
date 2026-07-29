@@ -4,7 +4,9 @@
 
 #include "chrome/browser/ui/views/profiles/profile_picker_view.h"
 
-#include "base/containers/contains.h"
+#include <algorithm>
+
+#include "base/check_deref.h"
 #include "base/debug/dump_without_crashing.h"
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
@@ -14,7 +16,6 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/not_fatal_until.h"
 #include "base/notreached.h"
 #include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
@@ -34,16 +35,22 @@
 #include "chrome/browser/signin/signin_util.h"
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/themes/theme_service_factory.h"
+#include "chrome/browser/ui/accelerator_table.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
-#include "chrome/browser/ui/views/accelerator_table.h"
+#include "chrome/browser/ui/views/profiles/first_run_flow_controller.h"
 #include "chrome/browser/ui/views/profiles/profile_management_flow_controller.h"
 #include "chrome/browser/ui/views/profiles/profile_management_flow_controller_impl.h"
 #include "chrome/browser/ui/views/profiles/profile_management_types.h"
 #include "chrome/browser/ui/views/profiles/profile_picker_feature_promo_controller.h"
 #include "chrome/browser/ui/views/profiles/profile_picker_flow_controller.h"
 #include "chrome/browser/ui/views/profiles/profile_picker_glic_flow_controller.h"
+#include "chrome/browser/ui/views/profiles/profile_picker_omnibox_everywhere_flow_controller.h"
+#include "chrome/browser/ui/views/profiles/profile_picker_toolbar.h"
+#include "chrome/browser/ui/views/profiles/profile_picker_utils.h"
+#include "chrome/browser/ui/views/profiles/profile_picker_widget.h"
 #include "chrome/browser/ui/webui/signin/profile_picker_ui.h"
+#include "chrome/browser/ui/webui/signin/signin_ui_error.h"
 #include "chrome/browser/ui/webui/signin/signin_url_utils.h"
 #include "chrome/browser/user_education/user_education_service_factory.h"
 #include "chrome/common/pref_names.h"
@@ -52,8 +59,10 @@
 #include "components/keep_alive_registry/keep_alive_types.h"
 #include "components/prefs/pref_service.h"
 #include "components/signin/public/base/signin_metrics.h"
+#include "components/signin/public/base/signin_switches.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/startup_metric_utils/browser/startup_metric_utils.h"
+#include "components/web_modal/web_contents_modal_dialog_manager.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/context_menu_params.h"
 #include "content/public/browser/navigation_handle.h"
@@ -64,16 +73,11 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/views/controls/webview/webview.h"
-#include "ui/views/layout/flex_layout.h"
+#include "ui/views/layout/fill_layout.h"
 #include "ui/views/view.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/widget/widget.h"
 #include "url/gurl.h"
-
-#if BUILDFLAG(ENABLE_DICE_SUPPORT)
-#include "chrome/browser/ui/views/profiles/first_run_flow_controller_dice.h"
-#include "chrome/browser/ui/views/profiles/profile_picker_dice_sign_in_toolbar.h"
-#endif
 
 #if BUILDFLAG(IS_WIN)
 #include "chrome/browser/shell_integration_win.h"
@@ -101,37 +105,13 @@ constexpr int kWindowHeight = 758;
 constexpr float kMaxRatioOfWorkArea = 0.9;
 
 constexpr int kSupportedAcceleratorCommands[] = {
-    IDC_CLOSE_TAB,  IDC_CLOSE_WINDOW,    IDC_EXIT,
-    IDC_FULLSCREEN, IDC_MINIMIZE_WINDOW, IDC_BACK,
-#if BUILDFLAG(ENABLE_DICE_SUPPORT)
-    IDC_RELOAD
-#endif
-};
-
-class ProfilePickerWidget : public views::Widget {
- public:
-  explicit ProfilePickerWidget(ProfilePickerView* profile_picker_view)
-      : profile_picker_view_(profile_picker_view) {
-    views::Widget::InitParams params(
-        views::Widget::InitParams::NATIVE_WIDGET_OWNS_WIDGET);
-    params.delegate = profile_picker_view_;
-#if BUILDFLAG(IS_LINUX)
-    params.wm_class_name = shell_integration_linux::GetProgramClassName();
-    params.wm_class_class = shell_integration_linux::GetProgramClassClass();
-    params.wayland_app_id = params.wm_class_class;
-#endif
-    Init(std::move(params));
-  }
-  ~ProfilePickerWidget() override = default;
-
- private:
-  const raw_ptr<ProfilePickerView, DanglingUntriaged> profile_picker_view_;
-};
+    IDC_CLOSE_TAB,       IDC_CLOSE_WINDOW, IDC_EXIT,  IDC_FULLSCREEN,
+    IDC_MINIMIZE_WINDOW, IDC_BACK,         IDC_RELOAD};
 
 // Returns whether the current flow is part of the classic profile picker flow.
 // Checking this should become eventually unnecessary as flows move away from
 // using static calls and global variables, and keep calls to native contained
-// within their own steps. See crbug.com/1359352.
+// within their own steps. See crbug.com/40237338.
 bool IsClassicProfilePickerFlow(const ProfilePicker::Params& params) {
   switch (params.entry_point()) {
     case ProfilePicker::EntryPoint::kAppMenuProfileSubMenuAddNewProfile:
@@ -147,9 +127,11 @@ bool IsClassicProfilePickerFlow(const ProfilePicker::Params& params) {
     case ProfilePicker::EntryPoint::kProfileIdle:
     case ProfilePicker::EntryPoint::kOnStartupNoProfile:
     case ProfilePicker::EntryPoint::kNewSessionOnExistingProcessNoProfile:
+    case ProfilePicker::EntryPoint::kOnStartupCreateProfileWithEmail:
       return true;
     case ProfilePicker::EntryPoint::kFirstRun:
     case ProfilePicker::EntryPoint::kGlicManager:
+    case ProfilePicker::EntryPoint::kOmniboxEverywhere:
       return false;
   }
 }
@@ -180,64 +162,63 @@ void ProfilePicker::Show(Params&& params) {
   if (g_profile_picker_view) {
     g_profile_picker_view->UpdateParams(std::move(params));
   } else {
+    if (g_browser_process->IsShuttingDown()) {
+      // The profile picker takes a KeepAlive, which is not possible during
+      // shutdown.
+      return;
+    }
     g_profile_picker_view = new ProfilePickerView(std::move(params));
   }
   g_profile_picker_view->Display();
 }
 
 // static
-base::FilePath ProfilePicker::GetSwitchProfilePath() {
-  if (g_profile_picker_view) {
-    return g_profile_picker_view->GetProfilePickerFlowController()
-        ->GetSwitchProfilePathOrEmpty();
-  }
-  return base::FilePath();
-}
-
-#if BUILDFLAG(ENABLE_DICE_SUPPORT)
-// static
-void ProfilePicker::SwitchToDiceSignIn(
+void ProfilePicker::SwitchToSignIn(
     ProfilePicker::ProfileInfo profile_info,
     base::OnceCallback<void(bool)> switch_finished_callback) {
   if (g_profile_picker_view) {
-    g_profile_picker_view->SwitchToDiceSignIn(
-        std::move(profile_info), std::move(switch_finished_callback));
+    g_profile_picker_view->SwitchToSignIn(
+        std::move(profile_info),
+        StepSwitchFinishedCallback(std::move(switch_finished_callback)));
   }
 }
 
 // static
 void ProfilePicker::SwitchToReauth(
     Profile* profile,
+    base::OnceCallback<void(bool)> switch_finished_callback,
     base::OnceCallback<void(const ForceSigninUIError&)> on_error_callback) {
   if (g_profile_picker_view) {
-    g_profile_picker_view->SwitchToReauth(profile,
-                                          std::move(on_error_callback));
+    g_profile_picker_view->SwitchToReauth(
+        profile,
+        StepSwitchFinishedCallback(std::move(switch_finished_callback)),
+        std::move(on_error_callback));
   }
 }
-#endif
 
 // static
 void ProfilePicker::SwitchToSignedOutPostIdentityFlow(
-    std::optional<SkColor> profile_color,
-    base::OnceCallback<void(bool)> switch_finished_callback) {
+    std::optional<SkColor> profile_color) {
   if (g_profile_picker_view) {
-    g_profile_picker_view->SwitchToSignedOutPostIdentityFlow(
-        profile_color, std::move(switch_finished_callback));
+    g_profile_picker_view->SwitchToSignedOutPostIdentityFlow(profile_color);
   }
 }
 
 // static
-void ProfilePicker::PickProfile(const base::FilePath& profile_path,
-                                ProfilePickingArgs args) {
+void ProfilePicker::PickProfile(
+    const base::FilePath& profile_path,
+    ProfilePickingArgs args,
+    base::OnceCallback<void(bool)> pick_profile_complete_callback) {
   if (g_profile_picker_view) {
-    g_profile_picker_view->flow_controller_->PickProfile(profile_path, args);
+    g_profile_picker_view->flow_controller_->PickProfile(
+        profile_path, args, std::move(pick_profile_complete_callback));
   }
 }
 
 // static
-void ProfilePicker::CancelSignedInFlow() {
+void ProfilePicker::CancelSignInFlow() {
   if (g_profile_picker_view) {
-    g_profile_picker_view->flow_controller_.get()->CancelPostSignInFlow();
+    g_profile_picker_view->flow_controller_.get()->CancelSigninFlow();
   }
 }
 
@@ -323,14 +304,14 @@ void ProfilePickerView::NavigationFinishedObserver::DidFinishNavigation(
     // Don't notify if the URL for the finishing navigation does not match.
     // The navigation may have been replaced by a new one. We are mindful to
     // allow redirections, which are necessary for example for Gaia sign-in
-    // pages (see crbug.com/1430681).
+    // pages (see crbug.com/40901873).
     return;
   }
 
   if (navigation_handle->IsErrorPage() &&
       requested_url_.SchemeIs(content::kChromeUIScheme)) {
     // We observed some cases where the navigation to the intended page fails
-    // (see crbug.com/1442159).
+    // (see crbug.com/40910391).
     // Loading the wrong URL may lead to crashes if we are expecting a certain
     // WebUI page to be loaded in the web contents. For these cases we will not
     // notify of the finished navigation to avoid crashing, but this negatively
@@ -361,8 +342,10 @@ void ProfilePickerView::ShowScreen(
   }
 
   if (url.is_empty()) {
-    DCHECK(!navigation_finished_closure);
     ShowScreenFinished(contents);
+    if (navigation_finished_closure) {
+      std::move(navigation_finished_closure).Run();
+    }
     return;
   }
 
@@ -418,12 +401,17 @@ void ProfilePickerView::Clear() {
   // TODO(crbug.com/40232473): Here we set owned by widget to ensure the
   // DeleteDelegate() call deletes this instance. Once the full migration to
   // "client owns delegate" is done, this will need to change.
-  SetOwnedByWidget(true);
+  SetOwnedByWidget(OwnedByWidgetPassKey());
   DeleteDelegate();
 }
 
 bool ProfilePickerView::ShouldUseDarkColors() const {
-  return GetNativeTheme()->ShouldUseDarkColors();
+  return GetNativeTheme()->preferred_color_scheme() ==
+         ui::NativeTheme::PreferredColorScheme::kDark;
+}
+
+bool ProfilePickerView::AreEffectsEnabled() const {
+  return toolbar_ ? toolbar_->AreEffectsEnabled() : true;
 }
 
 content::WebContents* ProfilePickerView::GetPickerContents() const {
@@ -431,6 +419,12 @@ content::WebContents* ProfilePickerView::GetPickerContents() const {
 }
 
 content::WebContentsDelegate* ProfilePickerView::GetWebContentsDelegate() {
+  return this;
+}
+
+web_modal::WebContentsModalDialogHost*
+ProfilePickerView::GetWebContentsModalDialogHost(
+    content::WebContents* web_contents) {
   return this;
 }
 
@@ -444,26 +438,23 @@ void ProfilePickerView::Reset(StepSwitchFinishedCallback callback) {
 }
 
 void ProfilePickerView::SwitchToSignedOutPostIdentityFlow(
-    std::optional<SkColor> profile_color,
-    base::OnceCallback<void(bool)> switch_finished_callback) {
+    std::optional<SkColor> profile_color) {
   ProfileManager::CreateMultiProfileAsync(
       g_browser_process->profile_manager()
           ->GetProfileAttributesStorage()
           .ChooseNameForNewProfile(),
       profiles::GetPlaceholderAvatarIndex(), /*is_hidden=*/true,
       base::BindOnce(&ProfilePickerView::OnLocalProfileInitialized,
-                     weak_ptr_factory_.GetWeakPtr(), profile_color,
-                     std::move(switch_finished_callback)));
+                     weak_ptr_factory_.GetWeakPtr(), profile_color));
 }
 
 void ProfilePickerView::OnLocalProfileInitialized(
     std::optional<SkColor> profile_color,
-    base::OnceCallback<void(bool)> switch_finished_callback,
     Profile* profile) {
   if (!profile) {
     NOTREACHED() << "Local fail in creating new profile";
   }
-  CHECK(!signin_util::IsForceSigninEnabled(), base::NotFatalUntil::M127);
+  CHECK(!signin_util::IsForceSigninEnabled());
 
   // Apply a new color to the profile or use the default theme.
   // TODO(b/328587059): Share the theme color logic with the same code in
@@ -476,38 +467,38 @@ void ProfilePickerView::OnLocalProfileInitialized(
     theme_service->UseDefaultTheme();
   }
 
-  // TODO(crbug.com/40209493): Add shortcut creation.
-  // Skip the FRE for this profile as sign-in was offered as part of the flow.
-  profile->GetPrefs()->SetBoolean(prefs::kHasSeenWelcomePage, true);
-  GetProfilePickerFlowController()->SwitchToSignedOutPostIdentityFlow(
-      profile, std::move(switch_finished_callback));
+  GetProfilePickerFlowController()->SwitchToSignedOutPostIdentityFlow(profile);
 }
 
-#if BUILDFLAG(ENABLE_DICE_SUPPORT)
-void ProfilePickerView::SetNativeToolbarVisible(bool visible) {
-  if (!visible) {
-    toolbar_->SetVisible(false);
-    return;
-  }
-
-  if (toolbar_->children().empty()) {
-    toolbar_->BuildToolbar(
-        base::BindRepeating(&ProfilePickerView::NavigateBack,
-                            // Binding as Unretained as `this` is the
-                            // `toolbar_`'s parent and outlives it.
-                            base::Unretained(this)));
-  }
-  toolbar_->SetVisible(true);
+void ProfilePickerView::SetNativeToolbarSigninButtonsVisible(bool visible) {
+  CHECK_DEREF(toolbar_).SetSigninButtonsVisible(visible);
 }
 
-bool ProfilePickerView::IsNativeToolbarVisibleForTesting() const {
-  return toolbar_->GetVisible();
+void ProfilePickerView::SetNativeToolbarDontSignInButtonVisible(bool visible) {
+  CHECK_DEREF(toolbar_).SetDontSignInButtonVisible(visible);
+}
+
+void ProfilePickerView::SetNativeToolbarStartBrowsingButtonVisible(
+    bool visible) {
+  CHECK_DEREF(toolbar_).SetStartBrowsingButtonVisible(visible);
+}
+
+void ProfilePickerView::SetNativeToolbarEffectsControlButtonVisible(
+    bool visible) {
+  CHECK_DEREF(toolbar_).SetEffectsControlButtonVisible(visible);
+}
+
+bool ProfilePickerView::AreNativeToolbarSigninButtonsVisibleForTesting() const {
+  return CHECK_DEREF(toolbar_).AreSigninButtonsVisibleForTesting();  // IN-TEST
 }
 
 SkColor ProfilePickerView::GetPreferredBackgroundColor() const {
   return GetColorProvider()->GetColor(kColorToolbar);
 }
-#endif
+
+bool ProfilePickerView::CanNavigateBack() const {
+  return flow_controller_ && flow_controller_->CanNavigateBack();
+}
 
 bool ProfilePickerView::HandleKeyboardEvent(
     content::WebContents* source,
@@ -523,6 +514,25 @@ bool ProfilePickerView::HandleContextMenu(
     const content::ContextMenuParams& params) {
   // Ignores context menu.
   return true;
+}
+
+content::WebContents* ProfilePickerView::AddNewContents(
+    content::WebContents* source,
+    std::unique_ptr<content::WebContents> new_contents,
+    const GURL& target_url,
+    WindowOpenDisposition disposition,
+    const blink::mojom::WindowFeatures& window_features,
+    bool user_gesture,
+    bool* was_blocked) {
+  if (params_.entry_point() != ProfilePicker::EntryPoint::kFirstRun) {
+    return content::WebContentsDelegate::AddNewContents(
+        source, std::move(new_contents), target_url, disposition,
+        window_features, user_gesture, was_blocked);
+  }
+  CHECK(source);
+  OpenLearnMorePopup(Profile::FromBrowserContext(source->GetBrowserContext()),
+                     std::move(new_contents), target_url, window_features);
+  return nullptr;
 }
 
 gfx::NativeView ProfilePickerView::GetHostView() const {
@@ -551,17 +561,16 @@ ProfilePickerView::ProfilePickerView(ProfilePicker::Params&& params)
   // Setup the WidgetDelegate.
   SetHasWindowSizeControls(true);
   SetTitle(kWindowTitleId);
+  SetProperty(views::kElementIdentifierKey, kViewId);
 
   ConfigureAccelerators();
 
   // Record creation metrics.
   base::UmaHistogramEnumeration("ProfilePicker.Shown", params_.entry_point());
   if (params_.entry_point() == ProfilePicker::EntryPoint::kOnStartup) {
-    DCHECK(creation_time_on_startup_.is_null());
-    creation_time_on_startup_ = base::TimeTicks::Now();
     base::UmaHistogramTimes(
         "ProfilePicker.StartupTime.BeforeCreation",
-        creation_time_on_startup_ -
+        base::TimeTicks::Now() -
             startup_metric_utils::GetCommon().MainEntryPointTicks());
   }
 }
@@ -628,6 +637,10 @@ void ProfilePickerView::Init(Profile* picker_profile) {
   contents_ = content::WebContents::Create(
       content::WebContents::CreateParams(picker_profile));
   contents_->SetDelegate(this);
+  web_modal::WebContentsModalDialogManager::CreateForWebContents(
+      contents_.get());
+  web_modal::WebContentsModalDialogManager::FromWebContents(contents_.get())
+      ->SetDelegate(this);
 
   // Destroy the System Profile when the ProfilePickerView is closed (assuming
   // its refcount hits 0). We need to use GetOriginalProfile() here because
@@ -646,14 +659,10 @@ void ProfilePickerView::Init(Profile* picker_profile) {
   // determine certain aspects of it. E.g. see `GetAccessibleWindowTitle()`.
   flow_controller_ = CreateFlowController(picker_profile, GetClearClosure());
 
-  // The widget is owned by the native widget.
-  ProfilePickerWidget* widget = new ProfilePickerWidget(this);
+  toolbar_ = AddChildView(flow_controller_->CreateToolbarBuilder().Build());
 
-  // Enforce dark mode for the Glic version as it has a Dark background; this
-  // allows all colors to adapt accordingly.
-  if (params_.entry_point() == ProfilePicker::EntryPoint::kGlicManager) {
-    widget->SetColorModeOverride(ui::ColorProviderKey::ColorMode::kDark);
-  }
+  // The widget is owned by the native widget.
+  new ProfilePickerWidget(this);
 
 #if BUILDFLAG(IS_WIN)
   // Set the app id for the user manager to the app id of its parent.
@@ -676,12 +685,6 @@ void ProfilePickerView::FinishInit() {
     prefs->SetBoolean(prefs::kBrowserProfilePickerShown, true);
   }
 
-  if (params_.entry_point() == ProfilePicker::EntryPoint::kOnStartup) {
-    DCHECK(!creation_time_on_startup_.is_null());
-    base::UmaHistogramTimes("ProfilePicker.StartupTime.WebViewCreated",
-                            base::TimeTicks::Now() - creation_time_on_startup_);
-  }
-
   if (g_profile_picker_opened_callback_for_testing) {
     std::move(*g_profile_picker_opened_callback_for_testing).Run();
     delete g_profile_picker_opened_callback_for_testing;
@@ -692,18 +695,16 @@ void ProfilePickerView::FinishInit() {
 std::unique_ptr<ProfileManagementFlowController>
 ProfilePickerView::CreateFlowController(Profile* picker_profile,
                                         ClearHostClosure clear_host_callback) {
-#if BUILDFLAG(ENABLE_DICE_SUPPORT)
   if (params_.entry_point() == ProfilePicker::EntryPoint::kFirstRun) {
     auto first_run_exited_callback =
         base::BindOnce(&ProfilePicker::Params::NotifyFirstRunExited,
                        // Unretained ok because the controller is owned
                        // by this through `initialized_steps_`.
                        base::Unretained(&params_));
-    return std::make_unique<FirstRunFlowControllerDice>(
+    return std::make_unique<FirstRunFlowController>(
         /*host=*/this, std::move(clear_host_callback), picker_profile,
         std::move(first_run_exited_callback));
   }
-#endif
 
   if (params_.entry_point() == ProfilePicker::EntryPoint::kGlicManager) {
     auto profile_picked_callback =
@@ -716,27 +717,36 @@ ProfilePickerView::CreateFlowController(Profile* picker_profile,
         std::move(profile_picked_callback));
   }
 
+  if (params_.entry_point() == ProfilePicker::EntryPoint::kOmniboxEverywhere) {
+    auto profile_picked_callback =
+        base::BindOnce(&ProfilePicker::Params::NotifyProfilePicked,
+                       base::Unretained(&params_));
+    return std::make_unique<ProfilePickerOmniboxEverywhereFlowController>(
+        /*host=*/this, std::move(clear_host_callback),
+        std::move(profile_picked_callback));
+  }
+
   DCHECK(IsClassicProfilePickerFlow(params_));
   return std::make_unique<ProfilePickerFlowController>(
       /*host=*/this, std::move(clear_host_callback), params_.entry_point(),
-      params_.on_select_profile_target_url());
+      params_.on_select_profile_target_url(), params_.initial_email());
 }
 
-#if BUILDFLAG(ENABLE_DICE_SUPPORT)
-void ProfilePickerView::SwitchToDiceSignIn(
+void ProfilePickerView::SwitchToSignIn(
     ProfilePicker::ProfileInfo profile_info,
-    base::OnceCallback<void(bool)> switch_finished_callback) {
-  GetProfilePickerFlowController()->SwitchToDiceSignIn(
+    StepSwitchFinishedCallback switch_finished_callback) {
+  GetProfilePickerFlowController()->SwitchToSignIn(
       std::move(profile_info), std::move(switch_finished_callback));
 }
 
 void ProfilePickerView::SwitchToReauth(
     Profile* profile,
+    StepSwitchFinishedCallback switch_finished_callback,
     base::OnceCallback<void(const ForceSigninUIError&)> on_error_callback) {
   GetProfilePickerFlowController()->SwitchToReauth(
-      profile, std::move(on_error_callback));
+      profile, std::move(switch_finished_callback),
+      std::move(on_error_callback));
 }
-#endif
 
 void ProfilePickerView::WindowClosing() {
   // If a profile is locked, it might have been loaded and it's first browser
@@ -805,7 +815,7 @@ gfx::Size ProfilePickerView::GetMinimumSize() const {
 
 bool ProfilePickerView::AcceleratorPressed(const ui::Accelerator& accelerator) {
   const auto& iter = accelerator_table_.find(accelerator);
-  CHECK(iter != accelerator_table_.end(), base::NotFatalUntil::M130);
+  CHECK(iter != accelerator_table_.end());
   int command_id = iter->second;
   switch (command_id) {
     case IDC_CLOSE_TAB:
@@ -828,18 +838,17 @@ bool ProfilePickerView::AcceleratorPressed(const ui::Accelerator& accelerator) {
       GetWidget()->Minimize();
       break;
     case IDC_BACK: {
-      NavigateBack();
+      if (CanNavigateBack()) {
+        flow_controller_->OnNavigateBackRequested();
+      }
       break;
     }
-#if BUILDFLAG(ENABLE_DICE_SUPPORT)
     // Always reload bypassing cache.
     case IDC_RELOAD:
     case IDC_RELOAD_BYPASSING_CACHE:
     case IDC_RELOAD_CLEARING_CACHE:
       flow_controller_->OnReloadRequested();
       break;
-
-#endif
     default:
       NOTREACHED() << "Unexpected command_id: " << command_id;
   }
@@ -859,22 +868,14 @@ bool ProfilePickerView::GetAcceleratorForCommandId(
   return false;
 }
 
-void ProfilePickerView::BuildLayout() {
-  SetLayoutManager(std::make_unique<views::FlexLayout>())
-      ->SetOrientation(views::LayoutOrientation::kVertical)
-      .SetMainAxisAlignment(views::LayoutAlignment::kStart)
-      .SetCrossAxisAlignment(views::LayoutAlignment::kStretch)
-      .SetDefault(
-          views::kFlexBehaviorKey,
-          views::FlexSpecification(views::MinimumFlexSizeRule::kScaleToMinimum,
-                                   views::MaximumFlexSizeRule::kUnbounded));
+void ProfilePickerView::Layout(PassKey) {
+  LayoutSuperclass<views::WidgetDelegateView>(this);
+  CHECK(toolbar_);
+  toolbar_->SetBounds(0, 0, width(), toolbar_->GetPreferredSize().height());
+}
 
-#if BUILDFLAG(ENABLE_DICE_SUPPORT)
-  auto toolbar = std::make_unique<ProfilePickerDiceSignInToolbar>();
-  toolbar_ = AddChildView(std::move(toolbar));
-  // Toolbar gets built and set visible once we it's needed for the Dice signin.
-  SetNativeToolbarVisible(false);
-#endif
+void ProfilePickerView::BuildLayout() {
+  SetLayoutManager(std::make_unique<views::FillLayout>());
 
   auto web_view = std::make_unique<views::WebView>();
   web_view->set_allow_accelerators(true);
@@ -902,14 +903,11 @@ void ProfilePickerView::ShowScreenFinished(
   }
 }
 
-void ProfilePickerView::NavigateBack() {
-  flow_controller_->OnNavigateBackRequested();
-}
-
 void ProfilePickerView::ConfigureAccelerators() {
   const std::vector<AcceleratorMapping> accelerator_list(GetAcceleratorList());
   for (const auto& entry : accelerator_list) {
-    if (!base::Contains(kSupportedAcceleratorCommands, entry.command_id)) {
+    if (!std::ranges::contains(kSupportedAcceleratorCommands,
+                               entry.command_id)) {
       continue;
     }
     ui::Accelerator accelerator(entry.keycode, entry.modifiers);
@@ -941,6 +939,7 @@ void ProfilePickerView::InitializeFeaturePromo(Profile* system_profile) {
 
   feature_promo_ = std::make_unique<ProfilePickerFeaturePromoController>(
       tracker_service, user_education_service, g_profile_picker_view);
+  feature_promo_->Init();
 }
 
 ProfilePickerFlowController* ProfilePickerView::GetProfilePickerFlowController()
@@ -960,20 +959,20 @@ void ProfilePickerView::UpdateAccessibleNameForRootView(views::WebView*) {
   }
 }
 
-void ProfilePickerView::ShowForceSigninErrorDialog(
-    const ForceSigninUIError& error,
+void ProfilePickerView::ShowSigninErrorDialog(
+    const std::variant<ForceSigninUIError, SigninUIError>& error,
     bool switch_step_success) {
   if (!switch_step_success) {
     return;
   }
-
-  CHECK(signin_util::IsForceSigninEnabled());
   ProfilePickerUI* web_ui = web_view_->GetWebContents()
                                 ->GetWebUI()
                                 ->GetController()
                                 ->GetAs<ProfilePickerUI>();
-  web_ui->ShowForceSigninErrorDialog(error);
+  web_ui->ShowSigninErrorDialog(error);
 }
 
 BEGIN_METADATA(ProfilePickerView)
 END_METADATA
+
+DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(ProfilePickerView, kViewId);

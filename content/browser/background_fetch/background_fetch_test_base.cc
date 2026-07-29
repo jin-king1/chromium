@@ -5,18 +5,19 @@
 #include "content/browser/background_fetch/background_fetch_test_base.h"
 
 #include <stdint.h>
+
 #include <map>
 #include <memory>
 #include <utility>
 
 #include "base/check.h"
 #include "base/check_deref.h"
-#include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/memory/weak_ptr.h"
 #include "base/run_loop.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/time/time.h"
 #include "content/browser/background_fetch/background_fetch_registration_id.h"
 #include "content/browser/service_worker/service_worker_context_core.h"
@@ -25,6 +26,7 @@
 #include "content/public/browser/browser_thread.h"
 #include "third_party/blink/public/common/service_worker/service_worker_status_code.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
+#include "third_party/blink/public/mojom/frame/policy_container.mojom.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_registration_options.mojom.h"
 #include "url/gurl.h"
 
@@ -112,12 +114,15 @@ int64_t BackgroundFetchTestBase::RegisterServiceWorkerForOrigin(
   const blink::StorageKey key = blink::StorageKey::CreateFirstParty(origin);
 
   {
+    auto fetch_client_settings_object =
+        blink::mojom::FetchClientSettingsObject::New();
+    fetch_client_settings_object->policy_container_policies =
+        blink::mojom::PolicyContainerPolicies::New();
     blink::mojom::ServiceWorkerRegistrationOptions options;
     options.scope = GetScopeForId(origin.GetURL().spec(), next_pattern_id_++);
     base::RunLoop run_loop;
     embedded_worker_test_helper_.context()->RegisterServiceWorker(
-        script_url, key, options,
-        blink::mojom::FetchClientSettingsObject::New(),
+        script_url, key, options, std::move(fetch_client_settings_object),
         base::BindOnce(&DidRegisterServiceWorker,
                        &service_worker_registration_id, run_loop.QuitClosure()),
         /*requesting_frame_id=*/GlobalRenderFrameHostId(),
@@ -136,7 +141,7 @@ int64_t BackgroundFetchTestBase::RegisterServiceWorkerForOrigin(
 
   {
     base::RunLoop run_loop;
-    embedded_worker_test_helper_.context()->registry()->FindRegistrationForId(
+    embedded_worker_test_helper_.context()->registry().FindRegistrationForId(
         service_worker_registration_id, key,
         base::BindOnce(&DidFindServiceWorkerRegistration,
                        &service_worker_registration, run_loop.QuitClosure()));
@@ -164,7 +169,7 @@ void BackgroundFetchTestBase::UnregisterServiceWorker(
   const GURL scope = GetScopeForId(kTestOrigin, service_worker_registration_id);
   embedded_worker_test_helper_.context()->UnregisterServiceWorker(
       scope, blink::StorageKey::CreateFirstParty(url::Origin::Create(scope)),
-      /*is_immediate=*/false,
+      /*is_immediate=*/false, ServiceWorkerRegistration::DeleteInitiator::kTest,
       base::BindOnce(&DidUnregisterServiceWorker, run_loop.QuitClosure()));
   run_loop.Run();
 }

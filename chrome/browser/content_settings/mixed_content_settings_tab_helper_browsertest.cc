@@ -7,10 +7,10 @@
 #include "base/command_line.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_content_setting_bubble_model_delegate.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/content_settings/content_setting_bubble_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
-#include "components/network_session_configurator/common/network_switches.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
@@ -33,9 +33,8 @@ class MixedContentSettingsTabHelperBrowserTest : public InProcessBrowserTest {
 
   void SetUpOnMainThread() override {
     host_resolver()->AddRule("*", "127.0.0.1");
-    ssl_server_.AddDefaultHandlers(GetChromeTestDataDir());
-    ssl_server_.SetSSLConfig(net::EmbeddedTestServer::CERT_OK);
-    ASSERT_TRUE(ssl_server_.Start());
+    test_server()->AddDefaultHandlers(GetChromeTestDataDir());
+    ASSERT_TRUE(test_server()->Start());
   }
 
   content::WebContents* web_contents() {
@@ -43,20 +42,13 @@ class MixedContentSettingsTabHelperBrowserTest : public InProcessBrowserTest {
   }
 
  protected:
-  void SetUpCommandLine(base::CommandLine* command_line) override {
-    // For using an HTTPS server.
-    base::CommandLine::ForCurrentProcess()->AppendSwitch(
-        switches::kIgnoreCertificateErrors);
-  }
-
   content::RenderFrameHost* current_frame_host() {
     return web_contents()->GetPrimaryMainFrame();
   }
 
-  net::EmbeddedTestServer* test_server() { return &ssl_server_; }
-
- private:
-  net::EmbeddedTestServer ssl_server_{net::EmbeddedTestServer::TYPE_HTTPS};
+  net::EmbeddedTestServer* test_server() {
+    return &embedded_https_test_server();
+  }
 };
 
 // Tests that openers can share their settings with the WebContents they opened.
@@ -80,11 +72,14 @@ IN_PROC_BROWSER_TEST_F(MixedContentSettingsTabHelperBrowserTest,
   // Emulates link clicking on the mixed script bubble to allow mixed content
   // to run.
   content::TestNavigationObserver observer(web_contents());
-  std::unique_ptr<ContentSettingBubbleModel> model(
-      ContentSettingBubbleModel::CreateContentSettingBubbleModel(
-          browser()->content_setting_bubble_model_delegate(), web_contents(),
-          ContentSettingsType::MIXEDSCRIPT));
-  model->OnCustomLinkClicked();
+  {
+    std::unique_ptr<ContentSettingBubbleModel> model(
+        ContentSettingBubbleModel::CreateContentSettingBubbleModel(
+            browser()->GetFeatures().content_setting_bubble_model_delegate(),
+            web_contents()->GetPrimaryPage(),
+            ContentSettingsType::MIXEDSCRIPT));
+    model->OnCustomLinkClicked();
+  }
 
   // Waits for reload.
   observer.Wait();
@@ -154,12 +149,14 @@ IN_PROC_BROWSER_TEST_F(MixedContentSettingsTabHelperPrerenderBrowserTest,
   // to run.
   content::TestNavigationObserver observer(
       browser()->tab_strip_model()->GetActiveWebContents());
-  std::unique_ptr<ContentSettingBubbleModel> model(
-      ContentSettingBubbleModel::CreateContentSettingBubbleModel(
-          browser()->content_setting_bubble_model_delegate(),
-          browser()->tab_strip_model()->GetActiveWebContents(),
-          ContentSettingsType::MIXEDSCRIPT));
-  model->OnCustomLinkClicked();
+  {
+    std::unique_ptr<ContentSettingBubbleModel> model(
+        ContentSettingBubbleModel::CreateContentSettingBubbleModel(
+            browser()->GetFeatures().content_setting_bubble_model_delegate(),
+            web_contents()->GetPrimaryPage(),
+            ContentSettingsType::MIXEDSCRIPT));
+    model->OnCustomLinkClicked();
+  }
 
   // Waits for reload.
   observer.Wait();
@@ -170,7 +167,7 @@ IN_PROC_BROWSER_TEST_F(MixedContentSettingsTabHelperPrerenderBrowserTest,
   // Loads a page in the prerendering.
   GURL prerender_url(test_server()->GetURL(
       "/content_setting_bubble/mixed_script.html?prerendering"));
-  const content::FrameTreeNodeId host_id =
+  const content::PrerenderHostId host_id =
       prerender_helper()->AddPrerender(prerender_url);
   content::RenderFrameHost* prerender_rfh =
       prerender_helper()->GetPrerenderedMainFrameHost(host_id);
@@ -206,7 +203,7 @@ IN_PROC_BROWSER_TEST_F(MixedContentSettingsTabHelperPrerenderBrowserTest,
   // Loads a page in the prerendering.
   GURL prerender_url(
       test_server()->GetURL("/content_setting_bubble/mixed_script.html"));
-  const content::FrameTreeNodeId host_id =
+  const content::PrerenderHostId host_id =
       prerender_helper()->AddPrerender(prerender_url);
   content::RenderFrameHost* prerender_rfh =
       prerender_helper()->GetPrerenderedMainFrameHost(host_id);
@@ -247,7 +244,7 @@ IN_PROC_BROWSER_TEST_F(MixedContentSettingsTabHelperPrerenderBrowserTest,
   // Loads a page in the prerendering.
   GURL prerender_url(
       test_server()->GetURL("/content_setting_bubble/mixed_script.html"));
-  content::FrameTreeNodeId host_id =
+  content::PrerenderHostId host_id =
       prerender_helper()->AddPrerender(prerender_url);
   content::RenderFrameHost* prerender_rfh =
       prerender_helper()->GetPrerenderedMainFrameHost(host_id);
@@ -322,12 +319,15 @@ IN_PROC_BROWSER_TEST_F(MixedContentSettingsTabHelperFencedFrameBrowserTest,
   // to run.
   content::TestNavigationObserver observer(
       browser()->tab_strip_model()->GetActiveWebContents());
-  std::unique_ptr<ContentSettingBubbleModel> model(
-      ContentSettingBubbleModel::CreateContentSettingBubbleModel(
-          browser()->content_setting_bubble_model_delegate(),
-          browser()->tab_strip_model()->GetActiveWebContents(),
-          ContentSettingsType::MIXEDSCRIPT));
-  model->OnCustomLinkClicked();
+
+  {
+    std::unique_ptr<ContentSettingBubbleModel> model(
+        ContentSettingBubbleModel::CreateContentSettingBubbleModel(
+            browser()->GetFeatures().content_setting_bubble_model_delegate(),
+            web_contents()->GetPrimaryPage(),
+            ContentSettingsType::MIXEDSCRIPT));
+    model->OnCustomLinkClicked();
+  }
 
   // Waits for reload.
   observer.Wait();

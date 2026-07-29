@@ -1,7 +1,8 @@
 Name: Annotation
 Short Name: annotation-jvm
-URL: https://developer.android.com/jetpack/androidx/releases/annotation#1.9.1
-Version: 1.9.1
+URL: https://androidx.dev/snapshots/builds/15963504/artifacts/repository/androidx/annotation/annotation-jvm/1.11.0-SNAPSHOT/annotation-jvm-1.11.0-20260728.210420-1.jar
+Version: 1.11.0-SNAPSHOT
+Update Mechanism: Autoroll
 License: Apache-2.0
 License File: LICENSE
 CPEPrefix: unknown
@@ -11,6 +12,9 @@ License Android Compatible: yes
 
 Description:
 Provides source annotations for tooling and readability.
+
+See also: https://developer.android.com/jetpack/androidx/releases/annotation#1.11.0-SNAPSHOT
+
 
 Local Modifications:
 No modifications.

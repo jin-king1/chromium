@@ -16,6 +16,12 @@ namespace android {
 // to Android payment apps.
 BASE_DECLARE_FEATURE(kAndroidPaymentIntentsOmitDeprecatedParameters);
 
+// If enabled, then the Android intent payment app factory will 'yield' to an
+// internal factory if present for the following payment methods:
+// - https://google.com/pay
+// - https://pay.google.com/authentication.
+BASE_DECLARE_FEATURE(kDeduplicateNativePaymentApps);
+
 // If enabled, use Android intents for the following payment methods:
 // - https://google.com/pay
 // - https://pay.google.com/authentication.
@@ -24,6 +30,10 @@ BASE_DECLARE_FEATURE(kGooglePayViaAndroidIntents);
 // If enabled, then the web merchant origin and web wallet parameters will be
 // omitted from the isReadyToPayRequest. See: https://crbug.com/1406655.
 BASE_DECLARE_FEATURE(kOmitParametersInReadyToPay);
+
+// If enabled, the payment details update service reconnects to the Android
+// payment app when the connection is lost unexpectedly.
+BASE_DECLARE_FEATURE(kReconnectOnLostConnectionToUpdatePaymentDetailsService);
 
 // If enabled, then Clank displays an alert dialog with the content of the
 // IS_READY_TO_PAY intent, whenever Clank fires this intent.

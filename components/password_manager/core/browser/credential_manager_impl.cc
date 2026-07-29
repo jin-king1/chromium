@@ -3,20 +3,36 @@
 // found in the LICENSE file.
 #include "components/password_manager/core/browser/credential_manager_impl.h"
 
+#include <algorithm>
 #include <memory>
+#include <optional>
 #include <string>
 
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/metrics/user_metrics.h"
+#include "base/strings/utf_string_conversions.h"
 #include "components/affiliations/core/browser/affiliation_utils.h"
+#include "components/device_reauth/device_authenticator.h"
 #include "components/password_manager/core/browser/credential_manager_logger.h"
 #include "components/password_manager/core/browser/credential_manager_pending_request_task.h"
 #include "components/password_manager/core/browser/credential_manager_utils.h"
+#include "components/password_manager/core/browser/features/password_features.h"
 #include "components/password_manager/core/browser/form_fetcher_impl.h"
 #include "components/password_manager/core/browser/form_saver.h"
 #include "components/password_manager/core/browser/leak_detection/leak_detection_request_utils.h"
+#include "components/password_manager/core/browser/password_feature_manager.h"
+#include "components/password_manager/core/browser/password_form.h"
+#include "components/password_manager/core/browser/password_manager_interface.h"
 #include "components/password_manager/core/browser/password_manager_util.h"
+#include "components/password_manager/core/browser/password_store/password_form_converters.h"
+#include "components/password_manager/core/browser/password_ui_utils.h"
+#include "components/password_manager/core/common/credential_manager_types.h"
 #include "components/password_manager/core/common/password_manager_pref_names.h"
+#include "components/strings/grit/components_strings.h"
+#include "ui/base/l10n/l10n_util.h"
+#include "url/origin.h"
 
 namespace password_manager {
 
@@ -34,7 +50,9 @@ void RunGetCallback(GetCallback callback, const CredentialInfo& info) {
 CredentialManagerImpl::CredentialManagerImpl(PasswordManagerClient* client)
     : client_(client), leak_delegate_(client) {}
 
-CredentialManagerImpl::~CredentialManagerImpl() = default;
+CredentialManagerImpl::~CredentialManagerImpl() {
+  CancelBiometricReauthIfOngoing();
+}
 
 void CredentialManagerImpl::Store(const CredentialInfo& credential,
                                   StoreCallback callback) {
@@ -48,10 +66,14 @@ void CredentialManagerImpl::Store(const CredentialInfo& credential,
   std::move(callback).Run();
 
   if (credential.type == CredentialType::CREDENTIAL_TYPE_EMPTY ||
-      !client_->IsSavingAndFillingEnabled(origin.GetURL())) {
+      !client_->IsSavingAndFillingEnabled(origin)) {
     return;
   }
 
+  // Get the submitted form before it's erased in `NotifyStorePasswordCalled`.
+  std::optional<PasswordForm> submitted_form =
+      client_->GetPasswordManager()->GetSubmittedCredentials();
+  last_submitted_form_ = submitted_form ? submitted_form : last_submitted_form_;
   client_->NotifyStorePasswordCalled();
 
   std::unique_ptr<PasswordForm> form(
@@ -77,6 +99,25 @@ void CredentialManagerImpl::Store(const CredentialInfo& credential,
   }
   form_manager_ = std::make_unique<CredentialManagerPasswordFormManager>(
       client_, std::move(form), this, nullptr, std::move(form_fetcher));
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+  if (!last_submitted_form_) {
+    return;
+  }
+  bool pwm_credential_matches_cmapi_credential =
+      origin.IsSameOriginWith(last_submitted_form_->url) &&
+      last_submitted_form_->username_value == credential.id &&
+      last_submitted_form_->password_value == credential.password;
+  // Propagate the permissions set during Actor Login flow. The permission is
+  // stored in `PasswordFormManager` owned by Password Manager.
+  // last_submitted_form_ is saved as a member field because `Update` clears all
+  // password forms tracked by Password Manager and we are not guaranteed to
+  // receive a single `Update` call from a website.
+  if (base::FeatureList::IsEnabled(password_manager::features::kActorLogin) &&
+      last_submitted_form_->actor_login_approved &&
+      pwm_credential_matches_cmapi_credential) {
+    form_manager_->SetShouldStoreActorLoginPermission();
+  }
+#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 }
 
 void CredentialManagerImpl::PreventSilentAccess(
@@ -89,7 +130,7 @@ void CredentialManagerImpl::PreventSilentAccess(
   std::move(callback).Run();
 
   PasswordStoreInterface* store = GetProfilePasswordStore();
-  if (!store || !client_->IsSavingAndFillingEnabled(GetOrigin().GetURL())) {
+  if (!store || !client_->IsSavingAndFillingEnabled(GetOrigin())) {
     return;
   }
 
@@ -101,7 +142,7 @@ void CredentialManagerImpl::PreventSilentAccess(
 }
 
 void CredentialManagerImpl::Get(CredentialMediationRequirement mediation,
-                                int requested_credential_type_flags,
+                                bool include_passwords,
                                 const std::vector<GURL>& federations,
                                 GetCallback callback) {
   using metrics_util::LogCredentialManagerGetResult;
@@ -111,6 +152,15 @@ void CredentialManagerImpl::Get(CredentialMediationRequirement mediation,
     CredentialManagerLogger(client_->GetCurrentLogManager())
         .LogRequestCredential(GetOrigin(), mediation, federations);
   }
+
+  // Return an empty credential if there is an active actor task.
+  if (client_->IsActorTaskActive()) {
+    std::move(callback).Run(CredentialManagerError::SUCCESS, CredentialInfo());
+    LogCredentialManagerGetResult(
+        metrics_util::CredentialManagerGetResult::kNone, mediation);
+    return;
+  }
+
   if (pending_request_ || !store) {
     // Callback error.
     std::move(callback).Run(
@@ -124,7 +174,7 @@ void CredentialManagerImpl::Get(CredentialMediationRequirement mediation,
 
   // Return an empty credential if the current page has TLS errors, or if the
   // page is being prerendered.
-  if (!client_->IsFillingEnabled(GetOrigin().GetURL())) {
+  if (!client_->IsFillingEnabled(GetOrigin())) {
     std::move(callback).Run(CredentialManagerError::SUCCESS, CredentialInfo());
     LogCredentialManagerGetResult(
         metrics_util::CredentialManagerGetResult::kNone, mediation);
@@ -149,11 +199,11 @@ void CredentialManagerImpl::Get(CredentialMediationRequirement mediation,
   }
   pending_request_ = std::make_unique<CredentialManagerPendingRequestTask>(
       this, base::BindOnce(&RunGetCallback, std::move(callback)), mediation,
-      requested_credential_type_flags, federations,
-      GetSynthesizedFormForOrigin());
+      include_passwords, federations, GetSynthesizedFormForOrigin());
 }
 
-void CredentialManagerImpl::ResetPendingRequest() {
+void CredentialManagerImpl::ResetAfterDisconnecting() {
+  CancelBiometricReauthIfOngoing();
   pending_request_.reset();
 }
 
@@ -196,13 +246,37 @@ void CredentialManagerImpl::SendPasswordForm(
       if (form->skip_zero_click && IsZeroClickAllowed()) {
         PasswordForm update_form = *form;
         update_form.skip_zero_click = false;
-        store->UpdateLogin(update_form);
+        store->UpdateLogin(
+            password_manager::FromPasswordForm(std::move(update_form)));
       }
     }
     base::RecordAction(
         base::UserMetricsAction("CredentialManager_AccountChooser_Accepted"));
     metrics_util::LogCredentialManagerGetResult(
         metrics_util::CredentialManagerGetResult::kAccountChooser, mediation);
+
+    std::unique_ptr<device_reauth::DeviceAuthenticator> authenticator =
+        client_->GetDeviceAuthenticator();
+    if (authenticator &&
+        client_->IsReauthBeforeFillingRequired(authenticator.get())) {
+      authenticator_ = std::move(authenticator);
+      std::u16string message;
+#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS)
+      const std::u16string origin = base::UTF8ToUTF16(
+          password_manager::GetShownOrigin(client_->GetLastCommittedOrigin()));
+      message = l10n_util::GetStringFUTF16(IDS_PASSWORD_MANAGER_FILLING_REAUTH,
+                                           origin);
+#endif
+      auto on_reauth_completed = base::BindOnce(
+          &CredentialManagerImpl::OnReauthCompleted,
+          weak_ptr_factory_.GetWeakPtr(), std::move(send_callback), info);
+
+      authenticator_->AuthenticateWithMessage(
+          message, metrics_util::TimeCallbackMediumTimes(
+                       std::move(on_reauth_completed),
+                       "PasswordManager.PasswordFilling.AuthenticationTime2"));
+      return;
+    }
   } else {
     base::RecordAction(
         base::UserMetricsAction("CredentialManager_AccountChooser_Dismissed"));
@@ -224,6 +298,26 @@ PasswordStoreInterface* CredentialManagerImpl::GetAccountPasswordStore() {
   return client_ ? client_->GetAccountPasswordStore() : nullptr;
 }
 
+void CredentialManagerImpl::CancelBiometricReauthIfOngoing() {
+  if (!authenticator_) {
+    return;
+  }
+  authenticator_->Cancel();
+  authenticator_.reset();
+}
+
+void CredentialManagerImpl::OnReauthCompleted(
+    SendCredentialCallback send_callback,
+    CredentialInfo info,
+    bool auth_succeeded) {
+  authenticator_.reset();
+  if (!auth_succeeded) {
+    SendCredential(std::move(send_callback), CredentialInfo());
+    return;
+  }
+  SendCredential(std::move(send_callback), info);
+}
+
 void CredentialManagerImpl::DoneRequiringUserMediation() {
   DCHECK(pending_require_user_mediation_);
   pending_require_user_mediation_.reset();
@@ -232,13 +326,14 @@ void CredentialManagerImpl::DoneRequiringUserMediation() {
 void CredentialManagerImpl::OnProvisionalSaveComplete() {
   DCHECK(form_manager_);
   const PasswordForm& form = form_manager_->GetPendingCredentials();
-  DCHECK(client_->IsSavingAndFillingEnabled(form.url));
+  DCHECK(client_->IsSavingAndFillingEnabled(GetOrigin(), form.url));
+  last_submitted_form_ = std::nullopt;
 
   if (form.federation_origin.IsValid()) {
     // If this is a federated credential, check it against the federated matches
     // produced by the PasswordFormManager. If a match is found, update it and
     // return.
-    for (const password_manager::PasswordForm& match :
+    for (const password_manager::StoredCredential& match :
          form_manager_->GetFormFetcher()->GetFederatedMatches()) {
       if (match.username_value == form.username_value &&
           match.federation_origin == form.federation_origin) {

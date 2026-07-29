@@ -26,12 +26,11 @@
 #include "mojo/public/cpp/system/platform_handle.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/abseil-cpp/absl/utility/utility.h"
 #include "third_party/blink/renderer/platform/testing/task_environment.h"
+#include "third_party/blink/renderer/platform/wtf/functional.h"
 
 using testing::_;
 using testing::AtLeast;
-using testing::Invoke;
 using testing::Mock;
 using testing::StrictMock;
 
@@ -491,7 +490,7 @@ TEST(MojoAudioInputIPC, Controls_Called_AfterStreamCreated_WithProcessing) {
 
   media_controls->SetPreferredNumCaptureChannels(1);
   media_controls->GetStats(
-      base::BindOnce([](const media::AudioProcessingStats& stats) {}));
+      BindOnce([](const media::AudioProcessingStats& stats) {}));
   base::RunLoop().RunUntilIdle();
 
   ipc->CloseStream();

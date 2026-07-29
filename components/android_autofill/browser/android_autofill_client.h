@@ -6,11 +6,13 @@
 #define COMPONENTS_ANDROID_AUTOFILL_BROWSER_ANDROID_AUTOFILL_CLIENT_H_
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "base/android/jni_weak_ref.h"
 #include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/dcheck_is_on.h"
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
@@ -18,8 +20,12 @@
 #include "components/autofill/content/browser/content_autofill_driver.h"
 #include "components/autofill/core/browser/autofill_trigger_source.h"
 #include "components/autofill/core/browser/crowdsourcing/votes_uploader.h"
+#include "components/autofill/core/browser/data_manager/valuables/valuables_data_manager.h"
+#include "components/autofill/core/browser/filling/filling_product.h"
 #include "components/autofill/core/browser/metrics/form_interactions_ukm_logger.h"
 #include "components/autofill/core/browser/payments/legal_message_line.h"
+#include "components/credential_management/content_credential_manager.h"
+#include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_contents_user_data.h"
 #include "ui/android/view_android.h"
 
@@ -27,7 +33,6 @@ namespace autofill {
 class AutocompleteHistoryManager;
 class AutofillSuggestionDelegate;
 class PersonalDataManager;
-class StrikeDatabase;
 enum class SuggestionType;
 }  // namespace autofill
 
@@ -35,11 +40,14 @@ namespace content {
 class WebContents;
 }
 
+namespace strike_database {
+class StrikeDatabase;
+}  // namespace strike_database
+
 namespace syncer {
 class SyncService;
 }
 
-class PersonalDataManager;
 class PrefService;
 
 namespace android_autofill {
@@ -72,7 +80,8 @@ namespace android_autofill {
 // test derives from it. Member functions should be final unless they need to be
 // mocked or overridden in subclasses and you have verified that they are not
 // called, directly or indirectly, from the constructor.
-class AndroidAutofillClient : public autofill::ContentAutofillClient {
+class AndroidAutofillClient : public autofill::ContentAutofillClient,
+                              public content::WebContentsObserver {
  public:
   static void CreateForWebContents(content::WebContents* contents);
 
@@ -88,7 +97,9 @@ class AndroidAutofillClient : public autofill::ContentAutofillClient {
   scoped_refptr<network::SharedURLLoaderFactory> GetURLLoaderFactory() final;
   autofill::AutofillCrowdsourcingManager& GetCrowdsourcingManager() final;
   autofill::VotesUploader& GetVotesUploader() override;
+  bool HasPersonalDataManager() const final;
   autofill::PersonalDataManager& GetPersonalDataManager() final;
+  autofill::ValuablesDataManager* GetValuablesDataManager() override;
   autofill::EntityDataManager* GetEntityDataManager() override;
   autofill::SingleFieldFillRouter& GetSingleFieldFillRouter() final;
   autofill::AutocompleteHistoryManager* GetAutocompleteHistoryManager() final;
@@ -98,7 +109,7 @@ class AndroidAutofillClient : public autofill::ContentAutofillClient {
   signin::IdentityManager* GetIdentityManager() final;
   const signin::IdentityManager* GetIdentityManager() const final;
   autofill::FormDataImporter* GetFormDataImporter() final;
-  autofill::StrikeDatabase* GetStrikeDatabase() final;
+  strike_database::StrikeDatabase* GetStrikeDatabase() final;
   ukm::UkmRecorder* GetUkmRecorder() final;
   autofill::AddressNormalizer* GetAddressNormalizer() final;
   const GURL& GetLastCommittedPrimaryMainFrameURL() const final;
@@ -110,30 +121,37 @@ class AndroidAutofillClient : public autofill::ContentAutofillClient {
   void ConfirmSaveAddressProfile(
       const autofill::AutofillProfile& profile,
       const autofill::AutofillProfile* original_profile,
-      bool is_migration_to_account,
+      SaveAddressBubbleType save_address_bubble_type,
       AddressProfileSavePromptCallback callback) final;
   SuggestionUiSessionId ShowAutofillSuggestions(
       const autofill::AutofillClient::PopupOpenArgs& open_args,
       base::WeakPtr<autofill::AutofillSuggestionDelegate> delegate) final;
   void UpdateAutofillDataListValues(
       base::span<const autofill::SelectOption> datalist) final;
-  void HideAutofillSuggestions(autofill::SuggestionHidingReason reason) final;
+  void HideSuggestions(autofill::SuggestionHidingReason reason,
+                       std::optional<autofill::FillingProduct> product) final;
   bool IsAutofillEnabled() const final;
   bool IsAutofillProfileEnabled() const final;
-  bool IsAutofillPaymentMethodsEnabled() const final;
+  bool IsWalletPublicPassStorageEnabled() const final;
   bool IsAutocompleteEnabled() const final;
   bool IsPasswordManagerEnabled() const final;
-  void DidFillForm(autofill::AutofillTriggerSource trigger_source,
-                   bool is_refill) final;
+  bool UsesPlatformAutofill() const final;
   bool IsContextSecure() const final;
-  autofill::FormInteractionsFlowId GetCurrentFormInteractionsFlowId() final;
   autofill::autofill_metrics::FormInteractionsUkmLogger&
   GetFormInteractionsUkmLogger() final;
+  metrics::ProfileMetricsService* GetProfileMetricsService() override;
 
   // ContentAutofillClient:
   std::unique_ptr<autofill::AutofillManager> CreateManager(
       base::PassKey<autofill::ContentAutofillDriver> pass_key,
       autofill::ContentAutofillDriver& driver) final;
+
+  credential_management::ContentCredentialManager* GetContentCredentialManager()
+      override;
+
+  // content::WebContentsObserver:
+  void PrimaryPageChanged(content::Page& page) override;
+  void WebContentsDestroyed() override;
 
  protected:
   // Protected for testing.
@@ -153,6 +171,9 @@ class AndroidAutofillClient : public autofill::ContentAutofillClient {
 
   autofill::autofill_metrics::FormInteractionsUkmLogger
       form_interactions_ukm_logger_{this};
+
+  // Content credential manager to handle navigator.credentials calls.
+  credential_management::ContentCredentialManager content_credential_manager_;
 
   base::WeakPtrFactory<AndroidAutofillClient> weak_ptr_factory_{this};
 };

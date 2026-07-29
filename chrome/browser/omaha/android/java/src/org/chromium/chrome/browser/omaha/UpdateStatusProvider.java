@@ -18,8 +18,9 @@ import androidx.annotation.IntDef;
 
 import com.google.android.gms.common.GooglePlayServicesUtil;
 
-import org.chromium.base.BuildInfo;
+import org.chromium.base.ApkInfo;
 import org.chromium.base.Callback;
+import org.chromium.base.DeviceInfo;
 import org.chromium.base.ObserverList;
 import org.chromium.base.PackageUtils;
 import org.chromium.base.ThreadUtils;
@@ -165,7 +166,7 @@ public class UpdateStatusProvider {
 
         // If we have already stored the current version to a preference, no need to store it again,
         // unless their Chrome version has changed.
-        String currentlyUsedVersion = BuildInfo.getInstance().versionName;
+        String currentlyUsedVersion = ApkInfo.getPackageVersionName();
         if (mStatus.latestUnsupportedVersion != null
                 && mStatus.latestUnsupportedVersion.equals(currentlyUsedVersion)) {
             return;
@@ -191,6 +192,8 @@ public class UpdateStatusProvider {
             mMetrics.startUpdate();
 
             Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(mStatus.updateUrl));
+            // Ensure that the app vs browser disambiguation dialog is not shown.
+            intent.addFlags(Intent.FLAG_ACTIVITY_REQUIRE_NON_BROWSER);
             if (newTask) intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             context.startActivity(intent);
         } catch (ActivityNotFoundException e) {
@@ -296,7 +299,7 @@ public class UpdateStatusProvider {
                 boolean allowedToUpdate =
                         checkForSufficientStorage()
                                 // Disable the version update check for automotive. See b/297925838.
-                                && !BuildInfo.getInstance().isAutomotive
+                                && !DeviceInfo.isAutomotive()
                                 && PackageUtils.isPackageInstalled(
                                         GooglePlayServicesUtil.GOOGLE_PLAY_STORE_PACKAGE);
                 status.updateState =

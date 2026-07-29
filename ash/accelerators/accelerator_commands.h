@@ -69,9 +69,7 @@ ASH_EXPORT bool CanLock();
 
 ASH_EXPORT bool CanMoveActiveWindowBetweenDisplays();
 
-ASH_EXPORT bool CanCreateSnapGroup();
-
-ASH_EXPORT void CreateSnapGroup();
+ASH_EXPORT bool CanToggleSnapGroup();
 
 ASH_EXPORT bool CanMinimizeTopWindowOnBack();
 
@@ -80,6 +78,8 @@ ASH_EXPORT bool CanPerformMagnifierZoom();
 ASH_EXPORT bool CanScreenshot(bool take_screenshot);
 
 ASH_EXPORT bool CanShowStylusTools();
+
+ASH_EXPORT bool CanStartSunfishSession();
 
 ASH_EXPORT bool CanStopScreenRecording();
 
@@ -290,6 +290,9 @@ ASH_EXPORT void ShowShortcutCustomizationApp();
 // Brings up task manager.
 ASH_EXPORT void ShowTaskManager();
 
+// Starts a Sunfish-behavior capture mode session.
+ASH_EXPORT void StartSunfishSession();
+
 // Stops the capture mode recording.
 ASH_EXPORT void StopScreenRecording();
 
@@ -385,6 +388,10 @@ ASH_EXPORT bool ToggleMinimized();
 
 // Turns on or off Mouse Keys.
 ASH_EXPORT void ToggleMouseKeys();
+
+// If a snap group is visible, sever it. Otherwise create or replace a snap
+// group with two suitably snapped windows.
+ASH_EXPORT void ToggleSnapGroup();
 
 // Minimizes the topmost unminimized snap groups. If there is no such snap
 // group, restores the most recently used minimized snap group.

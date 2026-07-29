@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40284755): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "base/system/sys_info.h"
 
 #include <stddef.h>
@@ -60,10 +55,14 @@ class ChromeOSVersionInfo {
   ChromeOSVersionInfo() {
     std::string lsb_release, lsb_release_time_str;
     std::unique_ptr<Environment> env(Environment::Create());
+    std::optional<std::string> lsb_release_var = env->GetVar(kLsbReleaseKey);
+    std::optional<std::string> lsb_release_time_var =
+        env->GetVar(kLsbReleaseTimeKey);
     bool parsed_from_env =
-        env->GetVar(kLsbReleaseKey, &lsb_release) &&
-        env->GetVar(kLsbReleaseTimeKey, &lsb_release_time_str);
+        lsb_release_var.has_value() && lsb_release_time_var.has_value();
     if (parsed_from_env) {
+      lsb_release = std::move(lsb_release_var.value());
+      lsb_release_time_str = std::move(lsb_release_time_var.value());
       double us = 0;
       if (StringToDouble(lsb_release_time_str, &us)) {
         lsb_release_time_ = Time::FromSecondsSinceUnixEpoch(us);
@@ -133,7 +132,7 @@ class ChromeOSVersionInfo {
     // Parse the version from the first matching recognized version key.
     std::string version;
     for (size_t i = 0; i < std::size(kLinuxStandardBaseVersionKeys); ++i) {
-      std::string key = kLinuxStandardBaseVersionKeys[i];
+      std::string key = UNSAFE_TODO(kLinuxStandardBaseVersionKeys[i]);
       if (GetLsbReleaseValue(key, &version) && !version.empty()) {
         break;
       }
@@ -153,7 +152,7 @@ class ChromeOSVersionInfo {
     std::string release_name;
     if (GetLsbReleaseValue(kChromeOsReleaseNameKey, &release_name)) {
       for (size_t i = 0; i < std::size(kChromeOsReleaseNames); ++i) {
-        if (release_name == kChromeOsReleaseNames[i]) {
+        if (release_name == UNSAFE_TODO(kChromeOsReleaseNames[i])) {
           is_running_on_chromeos_ = true;
           break;
         }

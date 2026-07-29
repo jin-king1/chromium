@@ -12,6 +12,20 @@ ACTION_XML_PATH = '../../../tools/metrics/actions/actions.xml'
 PRESUBMIT_VERSION = '2.0.0'
 
 
+def CheckIconNames(input_api, output_api):
+  import sys
+  old_sys_path = sys.path[:]
+  try:
+    sys.path.append(
+        input_api.os_path.join(input_api.PresubmitLocalPath(), '..', '..', '..',
+                               'tools', 'resources', 'icon_checker'))
+    import icon_checker
+    affected_icons = icon_checker.ExtractIconsFromHtml(input_api)
+    return icon_checker.CheckIcons(input_api, output_api, affected_icons)
+  finally:
+    sys.path = old_sys_path
+
+
 def InternalCheckUserActionUpdate(input_api, output_api, action_xml_path):
   """Checks if any new user action has been added."""
   if any('actions.xml' == input_api.os_path.basename(f) for f in
@@ -86,7 +100,7 @@ def IsBoolean(new_content_lines, metric_name, input_api):
 
   html_element_re = r'<(.*?)(^|\s+)metric\s*=\s*"%s"(.*?)>' % (metric_name)
   type_re = (r'datatype\s*=\s*"boolean"|type\s*=\s*"checkbox"|'
-      'type\s*=\s*"radio".*?value\s*=\s*("true"|"false")')
+      r'type\s*=\s*"radio".*?value\s*=\s*("true"|"false")')
 
   match = input_api.re.search(html_element_re, new_content, input_api.re.DOTALL)
   return (match and
@@ -134,6 +148,9 @@ def CheckNoNewJs(input_api, output_api):
     'chrome/browser/resources/bluetooth_internals/',
     'chrome/browser/resources/chromeos/',
     'chrome/browser/resources/device_log/',
+    # TODO(crbug.com/403113291): Migrate incognito_navigation_blocked_page to
+    # TypeScript and remove exception.
+    'chrome/browser/resources/enterprise/incognito_navigation_blocked_page/',
     'chrome/browser/resources/gaia_auth_host/',
     'chrome/browser/resources/hangout_services/',
     'chrome/browser/resources/inspect/',
@@ -162,9 +179,11 @@ def CheckNoNewPolymer(input_api, output_api):
   EXCLUDED_PATHS = [
     'chrome/browser/resources/ash/',
     'chrome/browser/resources/chromeos/',
+    'chrome/browser/resources/lens/overlay/',
     'chrome/browser/resources/password_manager/',
-    'chrome/browser/resources/print_preview/',
     'chrome/browser/resources/settings/',
+    # Temporary exception to allow refactoring before Lit migration.
+    'chrome/browser/resources/side_panel/bookmarks/',
   ]
 
   normalized_excluded_paths = []
@@ -183,5 +202,6 @@ def CheckNoNewPolymer(input_api, output_api):
 
 def CheckPatchFormatted(input_api, output_api):
   results = input_api.canned_checks.CheckPatchFormatted(input_api, output_api,
-                                                         check_js=True)
+                                                         check_js=True,
+                                                         check_python=False)
   return results

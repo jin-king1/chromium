@@ -11,8 +11,10 @@
 #include "base/test/scoped_feature_list.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 #include "url/gurl.h"
 #include "url/origin_abstract_tests.h"
+#include "url/origin_debug.h"
 #include "url/url_util.h"
 
 namespace url {
@@ -206,6 +208,18 @@ TEST_F(OriginTest, OpaqueOriginComparison) {
   EXPECT_EQ(opaque_b, url::Origin::Resolve(GURL("about:srcdoc"), opaque_b));
   EXPECT_EQ(opaque_b,
             url::Origin::Resolve(GURL("about:blank?hello#whee"), opaque_b));
+}
+
+TEST_F(OriginTest, Hashing) {
+  url::Origin origin = url::Origin::Create(GURL("http://www.google.com"));
+  url::Origin opaque;
+  EXPECT_FALSE(HasNonceTokenBeenInitialized(opaque));
+
+  // Test that origins support absl hashing. Hashing an opaque origin should
+  // trigger lazy initialization of its nonce.
+  absl::flat_hash_set<url::Origin> origin_set{origin, opaque};
+  EXPECT_TRUE(HasNonceTokenBeenInitialized(opaque));
+  EXPECT_THAT(origin_set, ::testing::UnorderedElementsAre(origin, opaque));
 }
 
 TEST_F(OriginTest, ConstructFromTuple) {
@@ -834,9 +848,9 @@ TEST_F(OriginTest, OriginWithAndroidWebViewHackEnabled) {
   // When AndroidWebViewHack is enabled, only a scheme part is checked. Thus,
   // "nonstandard://a.com/" and "nonstandard://b.com/" are considered as the
   // same origin. This is not ideal, given that a host and a port are available
-  // when kStandardCompliantNonSpecialSchemeURLParsing flag is enabled, but we
-  // can't check a host nor a port to avoid breaking existing WebView code.
-  // See https://crbug.com/40063064 for details.
+  // for non-special url schemes being parsed after complying with the
+  // standards, but we can't check a host nor a port to avoid breaking existing
+  // WebView code. See https://crbug.com/40063064 for details.
   EXPECT_TRUE(a_origin.IsSameOriginWith(b_origin));
   EXPECT_TRUE(a_origin.IsSameOriginWith(b_url));
   EXPECT_TRUE(a_origin.CanBeDerivedFrom(b_url));

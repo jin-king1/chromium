@@ -4,46 +4,67 @@
 
 package org.chromium.components.webauthn;
 
-import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import androidx.annotation.IntDef;
 
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.InOrder;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.Mockito;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.ParameterizedRobolectricTestRunner;
 import org.robolectric.ParameterizedRobolectricTestRunner.Parameter;
 import org.robolectric.ParameterizedRobolectricTestRunner.Parameters;
 
-import org.chromium.base.Callback;
 import org.chromium.base.test.BaseRobolectricTestRule;
 
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 import java.util.Arrays;
 import java.util.Collection;
 
 @RunWith(ParameterizedRobolectricTestRunner.class)
 public class BarrierTest {
-    public enum ApiCallType {
-        NONE,
-        CRED_MAN,
-        FIDO_2_API,
+    @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
+
+    @IntDef({ApiCallType.NONE, ApiCallType.CRED_MAN, ApiCallType.FIDO_2_API})
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface ApiCallType {
+        int NONE = 0;
+        int CRED_MAN = 1;
+        int FIDO_2_API = 2;
     }
 
-    public enum ApiCallStatus {
-        NONE,
-        SUCCESS,
-        FAILURE,
+    @IntDef({ApiCallStatus.NONE, ApiCallStatus.SUCCESS, ApiCallStatus.FAILURE})
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface ApiCallStatus {
+        int NONE = 0;
+        int SUCCESS = 1;
+        int FAILURE = 2;
     }
 
-    public enum Expectation {
-        NONE,
-        CRED_MAN_RAN,
-        FIDO_2_API_RAN,
-        BOTH_RAN,
-        ERROR_RAN,
+    @IntDef({
+        Expectation.NONE,
+        Expectation.CRED_MAN_RAN,
+        Expectation.FIDO_2_API_RAN,
+        Expectation.BOTH_RAN,
+        Expectation.ERROR_RAN
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface Expectation {
+        int NONE = 0;
+        int CRED_MAN_RAN = 1;
+        int FIDO_2_API_RAN = 2;
+        int BOTH_RAN = 3;
+        int ERROR_RAN = 4;
     }
 
     @Parameters
@@ -166,38 +187,39 @@ public class BarrierTest {
     }
 
     @Parameter(0)
-    public Barrier.Mode mMode;
+    public @Barrier.Mode int mMode;
 
     @Parameter(1)
-    public ApiCallType mFirstCompletedApi;
+    public @ApiCallType int mFirstCompletedApi;
 
     @Parameter(2)
-    public ApiCallStatus mFirstCompletedStatus;
+    public @ApiCallStatus int mFirstCompletedStatus;
 
     @Parameter(3)
-    public ApiCallType mSecondCompletedApi;
+    public @ApiCallType int mSecondCompletedApi;
 
     @Parameter(4)
-    public ApiCallStatus mSecondCompletedStatus;
+    public @ApiCallStatus int mSecondCompletedStatus;
 
     @Parameter(5)
-    public Expectation mExpectation;
+    public @Expectation int mExpectation;
 
     @Rule(order = -2)
     public BaseRobolectricTestRule mBaseRule = new BaseRobolectricTestRule();
 
     @Mock Runnable mCredManSuccesfulRunnable;
     @Mock Runnable mFido2ApiSuccessfulRunnable;
-    @Mock Callback<Integer> mErrorCallback;
+    @Mock AuthenticationContextProvider mAuthenticationContextProvider;
+    @Mock WebauthnRequestCallback mRequestCallback;
 
     @Before
     public void setUp() throws Exception {
-        MockitoAnnotations.openMocks(this);
+        when(mAuthenticationContextProvider.getRequestCallback()).thenReturn(mRequestCallback);
     }
 
     @Test
     public void testScenarios() {
-        Barrier barrier = new Barrier(mErrorCallback);
+        Barrier barrier = new Barrier(mAuthenticationContextProvider);
         barrier.resetAndSetWaitStatus(mMode);
 
         if (mFirstCompletedApi == ApiCallType.CRED_MAN
@@ -228,33 +250,35 @@ public class BarrierTest {
         }
 
         switch (mExpectation) {
-            case BOTH_RAN:
+            case Expectation.BOTH_RAN:
+                InOrder inOrder =
+                        Mockito.inOrder(mCredManSuccesfulRunnable, mFido2ApiSuccessfulRunnable);
+                inOrder.verify(mCredManSuccesfulRunnable).run();
+                inOrder.verify(mFido2ApiSuccessfulRunnable).run();
+                verify(mRequestCallback, times(0)).onComplete(any());
+                break;
+            case Expectation.ERROR_RAN:
+                verify(mFido2ApiSuccessfulRunnable, times(0)).run();
+                verify(mCredManSuccesfulRunnable, times(0)).run();
+                verify(mRequestCallback, times(1)).onComplete(any());
+                break;
+            case Expectation.FIDO_2_API_RAN:
                 verify(mFido2ApiSuccessfulRunnable, times(1)).run();
-                verify(mCredManSuccesfulRunnable, times(1)).run();
-                verify(mErrorCallback, times(0)).onResult(anyInt());
-                break;
-            case ERROR_RAN:
-                verify(mFido2ApiSuccessfulRunnable, times(0)).run();
                 verify(mCredManSuccesfulRunnable, times(0)).run();
-                verify(mErrorCallback, times(1)).onResult(anyInt());
+                verify(mRequestCallback, times(0)).onComplete(any());
                 break;
-            case FIDO_2_API_RAN:
-                verify(mFido2ApiSuccessfulRunnable, times(1)).run();
-                verify(mCredManSuccesfulRunnable, times(0)).run();
-                verify(mErrorCallback, times(0)).onResult(anyInt());
-                break;
-            case CRED_MAN_RAN:
+            case Expectation.CRED_MAN_RAN:
                 verify(mFido2ApiSuccessfulRunnable, times(0)).run();
                 verify(mCredManSuccesfulRunnable, times(1)).run();
-                verify(mErrorCallback, times(0)).onResult(anyInt());
+                verify(mRequestCallback, times(0)).onComplete(any());
                 break;
-            case NONE:
+            case Expectation.NONE:
                 verify(mFido2ApiSuccessfulRunnable, times(0)).run();
                 verify(mCredManSuccesfulRunnable, times(0)).run();
-                verify(mErrorCallback, times(0)).onResult(anyInt());
+                verify(mRequestCallback, times(0)).onComplete(any());
                 break;
             default:
-                assert false : "Unhandled expectation " + mExpectation;
+                throw new AssertionError(mExpectation);
         }
     }
 }

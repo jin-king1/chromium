@@ -8,8 +8,8 @@
 #include "chrome/browser/ui/browser.h"
 #include "chrome/test/base/chrome_test_utils.h"
 #include "chrome/test/base/platform_browser_test.h"
-#include "components/plus_addresses/features.h"
-#include "components/plus_addresses/plus_address_service.h"
+#include "components/plus_addresses/core/browser/plus_address_service.h"
+#include "components/plus_addresses/core/common/features.h"
 #include "components/signin/public/base/consent_level.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
 #include "content/public/test/browser_test.h"
@@ -50,7 +50,7 @@ IN_PROC_BROWSER_TEST_F(PlusAddressServiceBrowserTest, VerifyNonNullService) {
 IN_PROC_BROWSER_TEST_F(PlusAddressServiceBrowserTest,
                        VerifyShouldShowManualFallback) {
   auto* identity_manager =
-      IdentityManagerFactory::GetForProfile(browser()->profile());
+      IdentityManagerFactory::GetForProfile(browser()->GetProfile());
   signin::MakePrimaryAccountAvailable(identity_manager, "plus@plus.plus",
                                       signin::ConsentLevel::kSignin);
   plus_addresses::PlusAddressService* plus_address_service =

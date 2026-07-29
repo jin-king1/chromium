@@ -54,18 +54,17 @@ namespace {
 
 // Gets the encoding for the form.
 // TODO(tkent): Use FormDataEncoder::encodingFromAcceptCharset().
-void GetFormEncoding(const HTMLFormElement& form, WTF::TextEncoding* encoding) {
+void GetFormEncoding(const HTMLFormElement& form, TextEncoding* encoding) {
   String str(form.FastGetAttribute(html_names::kAcceptCharsetAttr));
   str.Replace(',', ' ');
-  Vector<String> charsets;
-  str.Split(' ', charsets);
-  for (const String& charset : charsets) {
-    *encoding = WTF::TextEncoding(charset);
+  Vector<StringView> charsets = StringView(str).SplitSkippingEmpty(' ');
+  for (const auto& charset : charsets) {
+    *encoding = TextEncoding(charset);
     if (encoding->IsValid())
       return;
   }
   if (form.GetDocument().Loader())
-    *encoding = WTF::TextEncoding(form.GetDocument().Encoding());
+    *encoding = TextEncoding(form.GetDocument().Encoding());
 }
 
 // If the form does not have an activated submit button, the first submit
@@ -184,7 +183,7 @@ HTMLInputElement* FindSuitableSearchInputElement(const HTMLFormElement& form) {
 // Return false if the provided HTMLInputElement is not found in the form
 bool BuildSearchString(const HTMLFormElement& form,
                        Vector<char>* encoded_string,
-                       const WTF::TextEncoding& encoding,
+                       const TextEncoding& encoding,
                        const HTMLInputElement* text_element) {
   bool is_element_found = false;
   for (ListedElement* item : form.ListedElements()) {
@@ -206,7 +205,7 @@ bool BuildSearchString(const HTMLFormElement& form,
                                               FormDataEncoder::kNormalizeCRLF);
       encoded_string->push_back('=');
       if (control == text_element) {
-        encoded_string->AppendSpan(base::span_from_cstring("{searchTerms}"));
+        encoded_string->append_range(base::span_from_cstring("{searchTerms}"));
         is_element_found = true;
       } else {
         FormDataEncoder::EncodeStringAsFormData(
@@ -228,11 +227,12 @@ WebSearchableFormData::WebSearchableFormData(
       static_cast<HTMLInputElement*>(selected_input_element);
 
   // Only consider forms that GET data.
-  if (EqualIgnoringASCIICase(
-          form_element->FastGetAttribute(html_names::kMethodAttr), "post"))
+  if (EqualIgnoringAsciiCase(
+          form_element->FastGetAttribute(html_names::kMethodAttr), "post")) {
     return;
+  }
 
-  WTF::TextEncoding encoding;
+  TextEncoding encoding;
   GetFormEncoding(*form_element, &encoding);
   if (!encoding.IsValid()) {
     // Need a valid encoding to encode the form elements.

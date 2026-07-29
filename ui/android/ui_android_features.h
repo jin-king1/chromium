@@ -17,21 +17,49 @@ namespace ui {
 // ships.
 UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kAndroidHDR);
 
-// Enables converting trackpad click gestures to mouse events in
-// order for them to be interpreted similar to a desktop
-// experience (i.e. double-click to select word.)
-UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kConvertTrackpadEventsToMouse);
+// Feature controlling how to compute work area on Android.
+// TODO(crbug.com/372385871): Cleanup flag after investigating nothing is broken
+// after changing the default behavior for
+// availWidth/availHeight/availTop/availLeft.
+UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kAndroidUseCorrectDisplayWorkArea);
+
+// Use Android WindowManager's WindowMetrics as the data source for top-level
+// browser window bounds in Blink.
+UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kAndroidUseCorrectWindowBounds);
+
+// Enables usage of the display topology API to obtain information about all
+// displays.
+UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kAndroidUseDisplayTopology);
+
+// Enables using occlusion information from Android to save CPU and memory.
+UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kAndroidWindowOcclusion);
+
+// Guard changes to block mouse events on views.
+UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kBlockMouseEventsOnView);
+
+// Guard the caching of WindowMetrics for gesture navigation detection.
+UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kCachedGestureNavMetrics);
+
+// When launching an intent, check whether the caller has the permission to
+// access a URI before returning the result.
+UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kCheckIntentCallerPermission);
+
+// Controls defense against Confused Deputy clipboard URI exfiltration.
+UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kClipboardConfusedDeputyDefenseText);
+UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kClipboardConfusedDeputyDefenseImages);
+UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kClipboardConfusedDeputyDefenseFiles);
 
 // Use the old-style opening of an External Picker when uploading files.
 UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kDeprecatedExternalPickerFunction);
 
-// Flip the back/forward direction of navigation gestures when the UI language
-// is an RTL language.
-UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kMirrorBackForwardGesturesInRTL);
+// Whether photo picker should be disabled for video capture.
+UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kDisablePhotoPickerForVideoCapture);
 
-// Reports all of the available pointer types (i.e. coarse, fine) to content
-// rather than just the first one detected.
-UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kReportAllAvailablePointerTypes);
+// Guard changes to use maximum window metrics for gesture navigation detection.
+UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kMaximumWindowForGestureNavDetection);
+
+// Whether to enable the refactor of the smallestScreenWidthDp override.
+UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kRefactorMinWidthContextOverride);
 
 // Reports bottom overscrolls on the web page.
 UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kReportBottomOverscrolls);
@@ -49,21 +77,29 @@ UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kSelectFileOpenDocument);
 UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(
     kSendTouchMovesToEventForwarderObservers);
 
-// When launching an intent, check whether the caller has the permission to
-// access a URI before returning the result.
-UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kCheckIntentCallerPermission);
+// Update display for context on configuration changed and activity resumed.
+UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kAndroidUpdateDisplayForContext);
 
-// Whether photo picker should be disabled for video capture.
-UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kDisablePhotoPickerForVideoCapture);
-
-// Feature controlling how to compute work area on Android.
-// TODO(crbug.com/372385871): Cleanup flag after investigating nothing is broken
-// after changing the default behavior for
-// availWidth/availHeight/availTop/availLeft.
-UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kUsingCorrectWorkArea);
+// Kill switch to turn off new supportKeyabord method
+UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kSupportKeyboard);
 
 // Enables the new ETC1 encoder (used in tab and back/forward thumbnails).
 UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kUseNewEtc1Encoder);
+
+// Conducts a check to determine if the View is eligible to a Hit. This is a
+// mitigation of when the prerendered view (hidden) somehow receives the touch
+// event even though it is hidden, due to the ordering of the `children_` in
+// `ViewAndroid`. Refer to crbug.com/442832509 for more details.
+UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kCheckHitEligibility);
+
+// Enables touchpad overscroll for history navigation.
+UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(
+    kAndroidTouchpadOverscrollHistoryNavigation);
+
+// Update padding for display calculations to use view width instead of screen
+// width.
+UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kUpdatePaddingForDisplayCalculation);
+
 }  // namespace ui
 
 #endif  // UI_ANDROID_UI_ANDROID_FEATURES_H_

@@ -101,11 +101,6 @@ std::vector<GroupEvent> EmptyDataSharingService::GetGroupEventsSinceStartup() {
   return {};
 }
 
-bool EmptyDataSharingService::ShouldInterceptNavigationForShareURL(
-    const GURL& url) {
-  return false;
-}
-
 void EmptyDataSharingService::HandleShareURLNavigationIntercepted(
     const GURL& url,
     std::unique_ptr<ShareURLInterceptionContext> context) {}
@@ -113,11 +108,6 @@ void EmptyDataSharingService::HandleShareURLNavigationIntercepted(
 std::unique_ptr<GURL> EmptyDataSharingService::GetDataSharingUrl(
     const GroupData& group_data) {
   return nullptr;
-}
-
-DataSharingService::ParseUrlResult EmptyDataSharingService::ParseDataSharingUrl(
-    const GURL& url) {
-  return GroupToken();
 }
 
 void EmptyDataSharingService::EnsureGroupVisibility(
@@ -138,6 +128,10 @@ void EmptyDataSharingService::GetAvatarImageForURL(
 void EmptyDataSharingService::SetSDKDelegate(
     std::unique_ptr<DataSharingSDKDelegate> sdk_delegate) {}
 
+DataSharingSDKDelegate* EmptyDataSharingService::GetSDKDelegate() {
+  return nullptr;
+}
+
 void EmptyDataSharingService::SetUIDelegate(
     std::unique_ptr<DataSharingUIDelegate> ui_delegate) {}
 
@@ -154,6 +148,13 @@ void EmptyDataSharingService::SetPreviewServerProxyForTesting(
     std::unique_ptr<PreviewServerProxy> preview_server_proxy) {}
 PreviewServerProxy* EmptyDataSharingService::GetPreviewServerProxyForTesting() {
   return nullptr;
+}
+
+void EmptyDataSharingService::OnCollaborationGroupRemoved(
+    const GroupId& group_id) {}
+
+bool EmptyDataSharingService::IsContextIdShared(const ContextId& context_id) {
+  return false;
 }
 
 }  // namespace data_sharing

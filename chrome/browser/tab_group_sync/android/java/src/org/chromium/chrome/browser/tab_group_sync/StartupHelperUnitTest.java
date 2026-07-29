@@ -10,6 +10,7 @@ import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -20,20 +21,19 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
 
 import org.chromium.base.Token;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabCreationState;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tab.TabSelectionType;
-import org.chromium.chrome.browser.tabmodel.TabGroupModelFilter;
 import org.chromium.chrome.test.util.browser.tabmodel.MockTabModel;
 import org.chromium.components.prefs.PrefService;
 import org.chromium.components.tab_group_sync.ClosingSource;
@@ -59,7 +59,6 @@ public class StartupHelperUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock private Profile mProfile;
     private MockTabModel mTabModel;
-    private @Mock TabGroupModelFilter mTabGroupModelFilter;
     private TabGroupSyncService mTabGroupSyncService;
     private @Mock LocalTabGroupMutationHelper mLocalMutationHelper;
     private @Mock RemoteTabGroupMutationHelper mRemoteMutationHelper;
@@ -68,24 +67,23 @@ public class StartupHelperUnitTest {
     private Tab mTab1;
     private Tab mTab2;
 
-    private static Tab prepareTab(int tabId, int rootId) {
-        Tab tab = Mockito.mock(Tab.class);
-        Mockito.doReturn(tabId).when(tab).getId();
-        Mockito.doReturn(rootId).when(tab).getRootId();
-        Mockito.doReturn(GURL.emptyGURL()).when(tab).getUrl();
-        Mockito.doReturn(TAB_TITLE_1).when(tab).getTitle();
-        Mockito.doReturn(System.currentTimeMillis()).when(tab).getTimestampMillis();
+    private static Tab prepareTab(int tabId, Token tabGroupId) {
+        Tab tab = mock(Tab.class);
+        when(tab.getId()).thenReturn(tabId);
+        when(tab.getTabGroupId()).thenReturn(tabGroupId);
+        when(tab.getUrl()).thenReturn(GURL.emptyGURL());
+        when(tab.getTitle()).thenReturn(TAB_TITLE_1);
+        when(tab.getTimestampMillis()).thenReturn(System.currentTimeMillis());
         return tab;
     }
 
     @Before
     public void setUp() {
         mTabGroupSyncService = spy(new TestTabGroupSyncService());
-        mTab1 = prepareTab(TAB_ID_1, ROOT_ID_1);
-        mTab2 = prepareTab(TAB_ID_2, ROOT_ID_1);
+        mTab1 = prepareTab(TAB_ID_1, TOKEN_1);
+        mTab2 = prepareTab(TAB_ID_2, TOKEN_1);
 
         mTabModel = spy(new MockTabModel(mProfile, null));
-        when(mTabGroupModelFilter.getTabModel()).thenReturn(mTabModel);
 
         doAnswer(
                         invocation -> {
@@ -101,14 +99,15 @@ public class StartupHelperUnitTest {
 
         mStartupHelper =
                 new StartupHelper(
-                        mTabGroupModelFilter,
+                        mTabModel,
                         mTabGroupSyncService,
                         mLocalMutationHelper,
                         mRemoteMutationHelper,
                         mPrefService);
 
-        when(mTabGroupModelFilter.getRootIdFromTabGroupId(eq(TOKEN_1))).thenReturn(ROOT_ID_1);
-        when(mTabGroupModelFilter.getTabGroupIdFromRootId(eq(ROOT_ID_1))).thenReturn(TOKEN_1);
+        when(mTabModel.tabGroupExists(TOKEN_1)).thenReturn(true);
+        when(mTabModel.getGroupLastShownTabId(any())).thenReturn(Tab.INVALID_TAB_ID);
+        when(mTabModel.getGroupLastShownTabId(TOKEN_1)).thenReturn(ROOT_ID_1);
 
         when(mTabGroupSyncService.getDeletedGroupIds()).thenReturn(new ArrayList<>());
         when(mTabGroupSyncService.getAllGroupIds()).thenReturn(new String[0]);
@@ -131,15 +130,11 @@ public class StartupHelperUnitTest {
     }
 
     private void createLocalGroupWithTwoTabs() {
-        List<Integer> tabIds = new ArrayList<>();
         List<Tab> tabs = new ArrayList<>();
-        tabIds.add(TAB_ID_1);
-        tabIds.add(TAB_ID_2);
         tabs.add(mTab1);
         tabs.add(mTab2);
-        when(mTabGroupModelFilter.getRelatedTabIds(ROOT_ID_1)).thenReturn(tabIds);
-        when(mTabGroupModelFilter.getRelatedTabList(ROOT_ID_1)).thenReturn(tabs);
-        when(mTabGroupModelFilter.getRelatedTabListForRootId(ROOT_ID_1)).thenReturn(tabs);
+        when(mTabModel.getRelatedTabList(ROOT_ID_1)).thenReturn(tabs);
+        when(mTabModel.getTabsInGroup(TOKEN_1)).thenReturn(tabs);
 
         when(mTab1.getTabGroupId()).thenReturn(TOKEN_1);
         when(mTab2.getTabGroupId()).thenReturn(TOKEN_1);
@@ -157,12 +152,16 @@ public class StartupHelperUnitTest {
         List<LocalTabGroupId> deletedIds = new ArrayList<>();
         deletedIds.add(LOCAL_TAB_GROUP_ID_1);
         when(mTabGroupSyncService.getDeletedGroupIds()).thenReturn(deletedIds);
+        HistogramWatcher histogramExpectation =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "TabGroups.CloseTabGroupsDeletedRemotely", 1);
 
         // Init. Deleted groups should be closed.
         mStartupHelper.initializeTabGroupSync();
         verify(mTabGroupSyncService).getDeletedGroupIds();
         verify(mLocalMutationHelper, atLeastOnce())
                 .closeTabGroup(eq(LOCAL_TAB_GROUP_ID_1), eq(ClosingSource.CLEANED_UP_ON_STARTUP));
+        histogramExpectation.assertExpected();
     }
 
     @Test

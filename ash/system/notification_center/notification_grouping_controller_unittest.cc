@@ -17,16 +17,18 @@
 #include "ash/system/tray/tray_background_view.h"
 #include "ash/system/unified/unified_system_tray.h"
 #include "ash/test/ash_test_base.h"
-#include "base/run_loop.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/time/time.h"
 #include "ui/color/color_id.h"
-#include "ui/compositor/scoped_animation_duration_scale_mode.h"
 #include "ui/compositor/test/layer_animation_stopped_waiter.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/gfx/vector_icon_types.h"
 #include "ui/message_center/notification_view_controller.h"
 #include "ui/message_center/public/cpp/notification_types.h"
 #include "ui/message_center/public/cpp/notifier_id.h"
+#include "ui/message_center/test/message_center_waiter.h"
 #include "ui/message_center/views/message_popup_view.h"
 #include "ui/message_center/views/message_view.h"
 #include "ui/views/animation/slide_out_controller.h"
@@ -181,8 +183,6 @@ class NotificationGroupingControllerTest : public AshTestBase {
     ui::GestureEvent gesture_event(0, 0, ui::EF_NONE, base::TimeTicks(),
                                    details);
     slide_out_controller->OnGestureEvent(&gesture_event);
-
-    base::RunLoop().RunUntilIdle();
   }
 
   void GenerateSwipe(int swipe_amount,
@@ -523,8 +523,8 @@ TEST_F(NotificationGroupingControllerTest,
   const GURL url(u"http://test-url.com/");
 
   // Enable animations.
-  ui::ScopedAnimationDurationScaleMode duration(
-      ui::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode duration(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
 
   id0 = AddNotificationWithOriginUrl(url);
   id1 = AddNotificationWithOriginUrl(url);
@@ -540,8 +540,8 @@ TEST_F(NotificationGroupingControllerTest,
 TEST_F(NotificationGroupingControllerTest,
        ParentNotificationRemovedDuringAnimation) {
   // Enable animations.
-  ui::ScopedAnimationDurationScaleMode duration(
-      ui::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode duration(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
 
   auto* message_center = MessageCenter::Get();
   std::string id0, id1;
@@ -593,8 +593,12 @@ TEST_F(NotificationGroupingControllerTest, NotificationSwipeGestureBehavior) {
 
   // Swiping out a group child notification while the parent notification is
   // expanded should only slide and remove the group child notification.
-  GenerateSwipe(300, GetSlideOutController(
-                         static_cast<AshNotificationView*>(message_view_3)));
+  {
+    message_center::MessageCenterWaiter waiter(id3);
+    GenerateSwipe(300, GetSlideOutController(
+                           static_cast<AshNotificationView*>(message_view_3)));
+    waiter.WaitUntilRemoved();
+  }
   EXPECT_FALSE(message_center->FindNotificationById(id3));
   EXPECT_TRUE(message_center->FindNotificationById(parent_id));
 
@@ -606,6 +610,8 @@ TEST_F(NotificationGroupingControllerTest, NotificationSwipeGestureBehavior) {
   // notification center.
   GenerateSwipe(300, GetSlideOutController(
                          static_cast<AshNotificationView*>(message_view_2)));
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return !message_center->FindPopupNotificationById(parent_id); }));
 
   EXPECT_FALSE(message_center->FindPopupNotificationById(parent_id));
   EXPECT_TRUE(message_center->FindNotificationById(id1));

@@ -25,7 +25,7 @@ import type {SeaPenOption, SeaPenTemplate} from './constants.js';
 import {getSeaPenTemplates} from './constants.js';
 import {isSeaPenTextInputEnabled, isSeaPenUseExptTemplateEnabled} from './load_time_booleans.js';
 import type {SeaPenQuery, SeaPenThumbnail, SeaPenUserVisibleQuery} from './sea_pen.mojom-webui.js';
-import {getSeaPenThumbnails} from './sea_pen_controller.js';
+import {clearSeaPenThumbnails, getSeaPenThumbnails} from './sea_pen_controller.js';
 import type {SeaPenTemplateChip, SeaPenTemplateId, SeaPenTemplateOption} from './sea_pen_generated.mojom-webui.js';
 import {getSeaPenProvider} from './sea_pen_interface_provider.js';
 import {logGenerateSeaPenWallpaper} from './sea_pen_metrics_logger.js';
@@ -140,25 +140,31 @@ export class SeaPenTemplateQueryElement extends WithSeaPenStore {
           return isSeaPenUseExptTemplateEnabled();
         },
       },
+
+      autoplay_: {
+        type: Boolean,
+        value: false,
+      }
     };
   }
 
   // TODO(b/319719709) this should be SeaPenTemplateId.
-  templateId: string|null;
-  private seaPenTemplate_: SeaPenTemplate;
-  private seaPenQuery_: SeaPenQuery|null;
-  private selectedOptions_: Map<SeaPenTemplateChip, SeaPenOption>;
-  private templateTokens_: TemplateToken[];
-  private options_: SeaPenOption[]|null;
-  private selectedChip_: ChipToken|null;
-  private thumbnails_: SeaPenThumbnail[]|null;
-  private thumbnailsLoading_: boolean;
-  private searchButtonText_: string;
-  private searchButtonIcon_: string;
-  private isSelectingOptions: boolean;
+  declare templateId: string|null;
+  declare private autoplay_: boolean;
+  declare private seaPenTemplate_: SeaPenTemplate;
+  declare private seaPenQuery_: SeaPenQuery|null;
+  declare private selectedOptions_: Map<SeaPenTemplateChip, SeaPenOption>;
+  declare private templateTokens_: TemplateToken[];
+  declare private options_: SeaPenOption[]|null;
+  declare private selectedChip_: ChipToken|null;
+  declare private thumbnails_: SeaPenThumbnail[]|null;
+  declare private thumbnailsLoading_: boolean;
+  declare private searchButtonText_: string;
+  declare private searchButtonIcon_: string;
+  declare private isSelectingOptions: boolean;
   private containerOriginalHeight_: number;
   private resizeObserver_: ResizeObserver;
-  private seaPenUseExptTemplateEnabled_: boolean;
+  declare private seaPenUseExptTemplateEnabled_: boolean;
 
   static get observers() {
     return [
@@ -181,11 +187,6 @@ export class SeaPenTemplateQueryElement extends WithSeaPenStore {
         new ResizeObserver(() => this.animateContainerHeight());
 
     beforeNextRender(this, () => {
-      const inspireMeAnimation = this.getInspireMeAnimationElement_();
-      if (inspireMeAnimation) {
-        inspireMeAnimation.autoplay = false;
-      }
-
       this.containerOriginalHeight_ = this.$.container.scrollHeight;
       this.$.container.style.height = `${this.containerOriginalHeight_}px`;
     });
@@ -193,6 +194,7 @@ export class SeaPenTemplateQueryElement extends WithSeaPenStore {
 
   override disconnectedCallback() {
     super.disconnectedCallback();
+    clearSeaPenThumbnails(this.getStore());
     this.resizeObserver_.disconnect();
     this.removeEventListener('click', this.onClick_);
   }

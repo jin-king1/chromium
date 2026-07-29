@@ -46,7 +46,8 @@ std::string ReadAppLocale() {
     return std::string();
   }
 
-  std::optional<base::Value> settings = base::JSONReader::Read(input);
+  std::optional<base::Value> settings =
+      base::JSONReader::Read(input, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   if (!settings.has_value()) {
     return std::string();
   }
@@ -64,7 +65,7 @@ void WriteAppLocale(const std::string& app_locale) {
     return;
   }
 
-  auto settings = base::Value::Dict().Set(kAppLocaleKey, app_locale);
+  auto settings = base::DictValue().Set(kAppLocaleKey, app_locale);
   std::string output;
   if (!base::JSONWriter::Write(settings, &output)) {
     return;

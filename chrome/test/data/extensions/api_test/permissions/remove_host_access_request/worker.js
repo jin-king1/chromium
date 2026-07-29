@@ -73,7 +73,7 @@ chrome.test.runTests([
   // Tests that an error is returned when the request to remove has an invalid
   // pattern.
   async function invalidPattern() {
-    let tab = await navigateTo('requested.com');
+    const tab = await navigateTo('requested.com');
 
     const request = {tabId: tab.id, pattern: 'invalid pattern'};
     await chrome.test.assertPromiseRejects(
@@ -82,5 +82,5 @@ chrome.test.runTests([
             `'pattern'.`);
 
     chrome.test.succeed();
-  }
-])
+  },
+]);

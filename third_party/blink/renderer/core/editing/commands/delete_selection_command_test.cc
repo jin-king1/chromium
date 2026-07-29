@@ -34,13 +34,13 @@ TEST_F(DeleteSelectionCommandTest, deleteListFromTable) {
       "</ol></td></tr></table>"
       "</div>");
 
-  Element* div = GetDocument().QuerySelector(AtomicString("div"));
-  Element* table = GetDocument().QuerySelector(AtomicString("table"));
-  Element* br = GetDocument().QuerySelector(AtomicString("br"));
+  Element* div = QuerySelector("div");
+  Element* table = QuerySelector("table");
+  Element* br = QuerySelector("br");
 
   LocalFrame* frame = GetDocument().GetFrame();
   frame->Selection().SetSelection(
-      SelectionInDOMTree::Builder()
+      SelectionInDomTree::Builder()
           .Collapse(Position(br, PositionAnchorType::kBeforeAnchor))
           .Extend(Position(table, PositionAnchorType::kAfterAnchor))
           .Build(),
@@ -57,10 +57,10 @@ TEST_F(DeleteSelectionCommandTest, deleteListFromTable) {
 
   EXPECT_TRUE(command->Apply()) << "the delete command should have succeeded";
   EXPECT_EQ("<div contenteditable=\"true\"><br></div>",
-            GetDocument().body()->innerHTML());
-  EXPECT_TRUE(frame->Selection().GetSelectionInDOMTree().IsCaret());
+            GetDocument().body()->GetInnerHTMLString());
+  EXPECT_TRUE(frame->Selection().GetSelectionInDomTree().IsCaret());
   EXPECT_EQ(Position(div, 0), frame->Selection()
-                                  .ComputeVisibleSelectionInDOMTree()
+                                  .ComputeVisibleSelectionInDomTree()
                                   .Anchor()
                                   .ToOffsetInAnchor());
 }

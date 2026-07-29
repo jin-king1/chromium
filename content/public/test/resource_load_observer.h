@@ -8,7 +8,6 @@
 #include <string>
 #include <vector>
 
-#include "base/files/file_util.h"
 #include "base/functional/callback_forward.h"
 #include "base/time/time.h"
 #include "content/public/browser/web_contents_observer.h"
@@ -24,6 +23,7 @@ class ResourceLoadObserver : public WebContentsObserver {
  public:
   struct ResourceLoadEntry {
     ResourceLoadEntry(blink::mojom::ResourceLoadInfoPtr resource_load_info,
+                      const GURL& original_url,
                       bool resource_is_associated_with_main_frame);
     ~ResourceLoadEntry();
     ResourceLoadEntry(ResourceLoadEntry&&);
@@ -32,6 +32,7 @@ class ResourceLoadObserver : public WebContentsObserver {
     ResourceLoadEntry& operator=(const ResourceLoadEntry&) = delete;
 
     blink::mojom::ResourceLoadInfoPtr resource_load_info;
+    GURL original_url;
     bool resource_is_associated_with_main_frame;
   };
 
@@ -78,6 +79,7 @@ class ResourceLoadObserver : public WebContentsObserver {
   void ResourceLoadComplete(
       content::RenderFrameHost* render_frame_host,
       const GlobalRequestID& request_id,
+      const GURL& original_url,
       const blink::mojom::ResourceLoadInfo& resource_load_info) override;
   void DidLoadResourceFromMemoryCache(
       content::RenderFrameHost* render_frame_host,

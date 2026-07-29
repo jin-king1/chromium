@@ -2,24 +2,23 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "headless/lib/headless_content_main_delegate.h"
 
 #include <cstdint>
 #include <memory>
 #include <utility>
+#include <variant>
 
 #include "base/base_switches.h"
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
 #include "base/environment.h"
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/lazy_instance.h"
+#include "base/logging/logging_settings.h"
+#include "base/notimplemented.h"
 #include "base/path_service.h"
 #include "base/process/current_process.h"
 #include "base/run_loop.h"
@@ -44,7 +43,6 @@
 #include "headless/lib/utility/headless_content_utility_client.h"
 #include "headless/public/switches.h"
 #include "sandbox/policy/switches.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 #include "third_party/blink/public/common/switches.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/resource/resource_bundle.h"
@@ -73,23 +71,22 @@
 
 #if BUILDFLAG(IS_POSIX)
 #include <signal.h>
+
+#if !BUILDFLAG(IS_MAC) && !BUILDFLAG(IS_ANDROID)
+#include "v8/include/v8-wasm-trap-handler-posix.h"
 #endif
+#endif  // BUILDFLAG(IS_POSIX)
 
 #if defined(HEADLESS_USE_PREFS)
-#include "components/prefs/pref_service.h"
+#include "components/prefs/pref_service.h"  // nogncheck
 #endif
 
 #if defined(HEADLESS_SUPPORT_FIELD_TRIALS)
 #include "content/public/app/initialize_mojo_core.h"
 #include "headless/lib/browser/headless_field_trials.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 #endif
 
 namespace headless {
-
-namespace features {
-BASE_FEATURE(kVirtualTime, "VirtualTime", base::FEATURE_DISABLED_BY_DEFAULT);
-}
 
 const base::FilePath::CharType kDefaultProfileName[] =
     FILE_PATH_LITERAL("Default");
@@ -304,9 +301,12 @@ void HeadlessContentMainDelegate::InitLogging(
 
   logging::LoggingDestination log_mode;
   base::FilePath log_filename(FILE_PATH_LITERAL("chrome_debug.log"));
-  if (command_line.GetSwitchValueASCII(::switches::kEnableLogging) ==
-      "stderr") {
-    log_mode = logging::LOG_TO_SYSTEM_DEBUG_LOG | logging::LOG_TO_STDERR;
+  const std::string logging_dest =
+      command_line.GetSwitchValueASCII(::switches::kEnableLogging);
+  if (logging_dest == "stderr") {
+    log_mode = logging::LOG_TO_STDERR;
+  } else if (logging_dest == "system") {
+    log_mode = logging::LOG_TO_SYSTEM_DEBUG_LOG;
   } else {
     base::FilePath custom_filename(
         command_line.GetSwitchValuePath(::switches::kEnableLogging));
@@ -360,10 +360,9 @@ void HeadlessContentMainDelegate::InitLogging(
     }
   }
 
-  std::string filename;
   std::unique_ptr<base::Environment> env(base::Environment::Create());
-  if (env->GetVar(kLogFileName, &filename) && !filename.empty()) {
-    log_path = base::FilePath::FromUTF8Unsafe(filename);
+  if (std::optional<std::string> filename = env->GetVar(kLogFileName)) {
+    log_path = base::FilePath::FromUTF8Unsafe(filename.value());
   }
 
   // On Windows, having non canonical forward slashes in log file name causes
@@ -411,6 +410,10 @@ void HeadlessContentMainDelegate::InitCrashReporter(
 #if !BUILDFLAG(IS_WIN)
     crash_reporter::InitializeCrashpad(process_type.empty(), process_type);
 #endif  // !BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_POSIX) && !BUILDFLAG(IS_MAC) && !BUILDFLAG(IS_ANDROID)
+    crash_reporter::SetFirstChanceExceptionHandler(
+        v8::TryHandleWebAssemblyTrapPosix);
+#endif
     crash_keys::SetSwitchesFromCommandLine(command_line, nullptr);
   }
 #endif  // BUILDFLAG(IS_FUCHSIA)
@@ -442,7 +445,7 @@ void HeadlessContentMainDelegate::PreSandboxStartup() {
   InitApplicationLocale(command_line);
 }
 
-absl::variant<int, content::MainFunctionParams>
+std::variant<int, content::MainFunctionParams>
 HeadlessContentMainDelegate::RunProcess(
     const std::string& process_type,
     content::MainFunctionParams main_function_params) {
@@ -470,7 +473,7 @@ HeadlessContentMainDelegate::RunProcess(
 void SIGTERMProfilingShutdown(int signal) {
   content::Profiling::Stop();
   struct sigaction sigact;
-  memset(&sigact, 0, sizeof(sigact));
+  UNSAFE_TODO(memset(&sigact, 0, sizeof(sigact)));
   sigact.sa_handler = SIG_DFL;
   CHECK_EQ(sigaction(SIGTERM, &sigact, NULL), 0);
   raise(signal);
@@ -496,6 +499,8 @@ void HeadlessContentMainDelegate::ZygoteForked() {
     const std::string process_type =
         command_line.GetSwitchValueASCII(::switches::kProcessType);
     crash_reporter::InitializeCrashpad(false, process_type);
+    crash_reporter::SetFirstChanceExceptionHandler(
+        v8::TryHandleWebAssemblyTrapPosix);
     crash_keys::SetSwitchesFromCommandLine(command_line, nullptr);
   }
 }
@@ -559,8 +564,9 @@ HeadlessContentMainDelegate::CreateContentUtilityClient() {
 
 std::optional<int> HeadlessContentMainDelegate::PostEarlyInitialization(
     InvokedIn invoked_in) {
-  if (absl::holds_alternative<InvokedInChildProcess>(invoked_in))
+  if (std::holds_alternative<InvokedInChildProcess>(invoked_in)) {
     return std::nullopt;
+  }
 
 #if defined(HEADLESS_USE_PREFS)
   browser_->CreatePrefService();
@@ -604,7 +610,7 @@ bool HeadlessContentMainDelegate::ShouldCreateFeatureList(
     InvokedIn invoked_in) {
   // The content layer is always responsible for creating the FeatureList in
   // child processes.
-  if (absl::holds_alternative<InvokedInChildProcess>(invoked_in)) {
+  if (std::holds_alternative<InvokedInChildProcess>(invoked_in)) {
     return true;
   }
 

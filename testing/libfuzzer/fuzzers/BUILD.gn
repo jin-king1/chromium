@@ -16,11 +16,41 @@ group("fuzzers") {
 fuzzer_test("empty_fuzzer") {
   sources = [ "empty_fuzzer.cc" ]
   additional_configs = [ "//testing/libfuzzer:no_clusterfuzz" ]
+
+  # TODO(crbug.com/509668952): Remove this when smoke tests support FuzzTest.
+  is_fuzztest_compatible = false
 }
 
 fuzzer_test("string_compare_fuzzer") {
   sources = [ "string_compare_fuzzer.cc" ]
   additional_configs = [ "//testing/libfuzzer:no_clusterfuzz" ]
+
+  # TODO(crbug.com/509668952): Remove this when smoke tests support FuzzTest.
+  is_fuzztest_compatible = false
+}
+
+test("string_compare_fuzztest_fuzzer") {
+  sources = [ "string_compare_fuzztest_fuzzer.cc" ]
+  fuzztests = [ "TestFuzzer.StringCompare" ]
+  deps = [ "//third_party/fuzztest:fuzztest_gtest_main" ]
+  configs += [ "//testing/libfuzzer:no_clusterfuzz" ]
+}
+
+if (use_centipede) {
+  # Manually wrap the LLVM-style fuzzer to use FUZZ_TEST.
+  test("string_compare_fuzztest_wrapper_fuzzer") {
+    sources = [ "string_compare_fuzzer.cc" ]
+    fuzztests = [ "LLVMFuzzer.TestOneInput" ]
+    deps = [ "//third_party/fuzztest:llvm_wrapper" ]
+    configs += [ "//testing/libfuzzer:no_clusterfuzz" ]
+  }
+}
+
+test("string_compare_seeded_fuzztest_fuzzer") {
+  sources = [ "string_compare_seeded_fuzztest_fuzzer.cc" ]
+  fuzztests = [ "TestFuzzer.StringCompareWithSeeds" ]
+  deps = [ "//third_party/fuzztest:fuzztest_gtest_main" ]
+  configs += [ "//testing/libfuzzer:no_clusterfuzz" ]
 }
 
 fuzzer_test("string_compare_proto_fuzzer") {
@@ -30,17 +60,40 @@ fuzzer_test("string_compare_proto_fuzzer") {
     "//third_party/libprotobuf-mutator",
   ]
   additional_configs = [ "//testing/libfuzzer:no_clusterfuzz" ]
+
+  # TODO(crbug.com/505034799): Migrate to FUZZ_TEST.
+  is_fuzztest_compatible = false
+}
+
+# TODO(crbug.com/526667982): Fix when Mac Arm64 builds are fixed.
+# The fuzzer depends on //content/public/browser, which is not supported in
+# builds where use_blink is false (such as standard iOS/Catalyst).
+if (!(is_mac && current_cpu == "arm64") && use_blink) {
+  # Regression test fuzzer for LPM. Depends on //content/public/browser to more
+  # closely match other LPM fuzzers and catch errors that would be present in
+  # those fuzzers. See https://crbug.com/524216727.
+  fuzzer_test("lpm_empty_fuzzer") {
+    sources = [ "lpm_empty_fuzzer.cc" ]
+    deps = [
+      "//content/public/browser",
+      "//third_party/libprotobuf-mutator",
+    ]
+    additional_configs = [ "//testing/libfuzzer:no_clusterfuzz" ]
+
+    # TODO(crbug.com/505034799): Migrate to FUZZ_TEST.
+    is_fuzztest_compatible = false
+  }
 }
 
 fuzzer_test("snappy_compress_fuzzer") {
   sources = [ "snappy_compress_fuzzer.cc" ]
-  deps = [ "//third_party/snappy:snappy" ]
+  deps = [ "//third_party/snappy" ]
   seed_corpus = "//third_party/snappy/src/testdata"
 }
 
 fuzzer_test("snappy_uncompress_fuzzer") {
   sources = [ "snappy_uncompress_fuzzer.cc" ]
-  deps = [ "//third_party/snappy:snappy" ]
+  deps = [ "//third_party/snappy" ]
   seed_corpus = "//third_party/snappy/src/testdata"
 }
 
@@ -53,7 +106,7 @@ fuzzer_test("template_url_parser_fuzzer") {
     "//mojo/core/embedder",
     "//services/data_decoder/public/cpp",
     "//services/data_decoder/public/cpp:test_support",
-    "//third_party/libxml:libxml",
+    "//third_party/libxml",
   ]
   dict = "//third_party/libxml/fuzz/xml.dict"
   libfuzzer_options = [ "max_len=4096" ]
@@ -66,13 +119,20 @@ fuzzer_test("url_parse_proto_fuzzer") {
     "//base:i18n",
     "//testing/libfuzzer/proto:url_proto",
     "//third_party/libprotobuf-mutator",
-    "//url:url",
+    "//url",
   ]
+
+  # TODO(crbug.com/505034799): Migrate to FUZZ_TEST.
+  is_fuzztest_compatible = false
 }
 
 fuzzer_test("libsrtp_fuzzer") {
   sources = [ "libsrtp_fuzzer.cc" ]
-  deps = [ "//third_party/libsrtp" ]
+  deps = [
+    "//base",
+    "//testing/libfuzzer:libfuzzer_base_wrappers",
+    "//third_party/libsrtp",
+  ]
   libfuzzer_options = [ "max_len=1500" ]
 }
 
@@ -86,6 +146,7 @@ fuzzer_test("gfx_png_image_fuzzer") {
   sources = [ "gfx_png_image_fuzzer.cc" ]
   deps = [
     "//base",
+    "//testing/libfuzzer:libfuzzer_base_wrappers",
     "//ui/base",
     "//ui/gfx",
   ]
@@ -95,7 +156,7 @@ fuzzer_test("gfx_png_image_fuzzer") {
 
 fuzzer_test("libxml_xml_read_memory_fuzzer") {
   sources = [ "libxml_xml_read_memory_fuzzer.cc" ]
-  deps = [ "//third_party/libxml:libxml" ]
+  deps = [ "//third_party/libxml" ]
   dict = "//third_party/libxml/fuzz/xml.dict"
   seed_corpus = "//third_party/libxml/fuzz/seed_corpus"
 }
@@ -104,7 +165,8 @@ fuzzer_test("libpng_progressive_read_fuzzer") {
   sources = [ "libpng_read_fuzzer.cc" ]
   deps = [
     "//base",
-    "//third_party/libpng",
+    "//testing/libfuzzer:libfuzzer_base_wrappers",
+    "//third_party/libpng:libpng_for_testonly",
   ]
   dict = "dicts/png.dict"
   seed_corpuses = libpng_seed_corpuses
@@ -143,7 +205,6 @@ template("v8_fuzzer") {
       "handle_sigtrap=1",
       "handle_segv=1",
     ]
-    environment_variables = [ "AFL_DRIVER_DONT_DEFER=1" ]
   }
 }
 
@@ -192,6 +253,7 @@ if (v8_enable_webassembly) {
   v8_fuzzer("multi_return_fuzzer") {
     # TODO(https://crbug.com/394563978): Remove once experiment ends.
     high_end_job_required = true
+    high_end_debug_job_required = true
   }
 
   v8_fuzzer("wasm_code_fuzzer") {
@@ -199,6 +261,7 @@ if (v8_enable_webassembly) {
 
     # TODO(https://crbug.com/394563978): Remove once experiment ends.
     high_end_job_required = true
+    high_end_debug_job_required = true
   }
 
   v8_fuzzer("wasm_module_fuzzer") {
@@ -207,6 +270,7 @@ if (v8_enable_webassembly) {
 
     # TODO(https://crbug.com/394563978): Remove once experiment ends.
     high_end_job_required = true
+    high_end_debug_job_required = true
   }
 
   v8_fuzzer("wasm_async_fuzzer") {
@@ -215,6 +279,7 @@ if (v8_enable_webassembly) {
 
     # TODO(https://crbug.com/394563978): Remove once experiment ends.
     high_end_job_required = true
+    high_end_debug_job_required = true
   }
 
   v8_fuzzer("wasm_streaming_fuzzer") {
@@ -223,6 +288,7 @@ if (v8_enable_webassembly) {
 
     # TODO(https://crbug.com/394563978): Remove once experiment ends.
     high_end_job_required = true
+    high_end_debug_job_required = true
   }
 
   # These fuzzers are not supported in official builds as they depend on
@@ -234,6 +300,7 @@ if (v8_enable_webassembly) {
 
       # TODO(https://crbug.com/394563978): Remove once experiment ends.
       high_end_job_required = true
+      high_end_debug_job_required = true
     }
 
     v8_fuzzer("wasm_compile_fuzzer") {
@@ -241,6 +308,7 @@ if (v8_enable_webassembly) {
 
       # TODO(https://crbug.com/394563978): Remove once experiment ends.
       high_end_job_required = true
+      high_end_debug_job_required = true
     }
 
     v8_fuzzer("wasm_compile_simd_fuzzer") {
@@ -248,6 +316,7 @@ if (v8_enable_webassembly) {
 
       # TODO(https://crbug.com/394563978): Remove once experiment ends.
       high_end_job_required = true
+      high_end_debug_job_required = true
     }
 
     v8_fuzzer("wasm_compile_wasmgc_fuzzer") {
@@ -255,6 +324,15 @@ if (v8_enable_webassembly) {
 
       # TODO(https://crbug.com/394563978): Remove once experiment ends.
       high_end_job_required = true
+      high_end_debug_job_required = true
+    }
+
+    v8_fuzzer("wasm_compile_revec_fuzzer") {
+      max_len = 500
+
+      # TODO(https://crbug.com/394563978): Remove once experiment ends.
+      high_end_job_required = true
+      high_end_debug_job_required = true
     }
 
     v8_fuzzer("wasm_init_expr_fuzzer") {
@@ -262,6 +340,7 @@ if (v8_enable_webassembly) {
 
       # TODO(https://crbug.com/394563978): Remove once experiment ends.
       high_end_job_required = true
+      high_end_debug_job_required = true
     }
 
     v8_fuzzer("wasm_deopt_fuzzer") {
@@ -269,6 +348,7 @@ if (v8_enable_webassembly) {
 
       # TODO(https://crbug.com/394563978): Remove once experiment ends.
       high_end_job_required = true
+      high_end_debug_job_required = true
     }
   }
 }
@@ -340,12 +420,18 @@ fuzzer_test("angle_translator_fuzzer") {
 
 fuzzer_test("sha1_fuzzer") {
   sources = [ "sha1_fuzzer.cc" ]
-  deps = [ "//base" ]
+  deps = [
+    "//base",
+    "//testing/libfuzzer:libfuzzer_base_wrappers",
+  ]
 }
 
 fuzzer_test("hash_fuzzer") {
   sources = [ "hash_fuzzer.cc" ]
-  deps = [ "//base" ]
+  deps = [
+    "//base",
+    "//testing/libfuzzer:libfuzzer_base_wrappers",
+  ]
 }
 
 action("gen_javascript_parser_proto") {
@@ -383,16 +469,19 @@ fuzzer_test("javascript_parser_proto_fuzzer") {
     ":javascript_parser_proto",
     "//base",
     "//third_party/libprotobuf-mutator",
-    "//v8:v8",
+    "//v8",
     "//v8:v8_libplatform",
   ]
+
+  # TODO(crbug.com/505034799): Migrate to FUZZ_TEST.
+  is_fuzztest_compatible = false
 }
 
 fuzzer_test("v8_fully_instrumented_fuzzer") {
   sources = [ "v8_fuzzer.cc" ]
   deps = [
     "//base",
-    "//v8:v8",
+    "//v8",
     "//v8:v8_libplatform",
   ]
   dict = "dicts/generated/javascript.dict"
@@ -419,6 +508,9 @@ fuzzer_test("skia_image_filter_proto_fuzzer") {
     "//testing/libfuzzer/proto:skia_image_filter_proto",
     "//third_party/libprotobuf-mutator",
   ]
+
+  # TODO(crbug.com/505034799): Migrate to FUZZ_TEST.
+  is_fuzztest_compatible = false
 }
 
 # We build the libyuv_scale_fuzzer both for fuzztest
@@ -431,6 +523,7 @@ source_set("libyuv_scale_fuzzer_common") {
     "libyuv_scale_fuzzer.h",
   ]
 
+  deps = [ "//base" ]
   public_deps = [ "//third_party/libyuv" ]
 }
 
@@ -475,25 +568,29 @@ test("paint_vector_icon_fuzztest") {
     "//base",
     "//skia:skia_switches",
     "//third_party/fuzztest:fuzztest_gtest_main",
-    "//ui/gfx:gfx",
+    "//ui/gfx",
   ]
 }
 
-test("chrome_tint_wgsl_fuzzer") {
-  sources = [
-    "tint_wgsl_fuzzer.cc",
-    "tint_wgsl_fuzzer_grammar.h",
-  ]
-  fuzztests = [
-    "ChromiumTintWgslTest.CanParseProgramWithoutCrashing",
-    "ChromiumTintWgslTest.CanConvertWgslToIRWithoutCrashing",
-  ]
-  fuzztest_stack_limit_kb = 512
+# Figure why this fuzzer constantly misbehaves on libfuzzer builds.
+# See crbug.com/406454922.
+if (use_centipede) {
+  test("chrome_tint_wgsl_fuzzer") {
+    sources = [
+      "tint_wgsl_fuzzer.cc",
+      "tint_wgsl_fuzzer_grammar.h",
+    ]
+    fuzztests = [
+      "ChromiumTintWgslTest.CanParseProgramWithoutCrashing",
+      "ChromiumTintWgslTest.CanConvertWgslToIRWithoutCrashing",
+    ]
+    fuzztest_additional_args = [ "--stack_limit_kb=512" ]
 
-  deps = [
-    "//base",
-    "//third_party/dawn/src/tint/cmd/fuzz/wgsl:fuzz",
-    "//third_party/dawn/src/tint/lang/wgsl/reader:reader",
-    "//third_party/fuzztest:fuzztest_gtest_main",
-  ]
+    deps = [
+      "//base",
+      "//third_party/dawn/src/tint/cmd/fuzz/wgsl:fuzz",
+      "//third_party/dawn/src/tint/lang/wgsl/reader",
+      "//third_party/fuzztest:fuzztest_gtest_main",
+    ]
+  }
 }

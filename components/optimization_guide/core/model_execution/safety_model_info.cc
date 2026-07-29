@@ -9,8 +9,7 @@
 #include "base/memory/ptr_util.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/types/optional_ref.h"
-#include "components/optimization_guide/core/model_info.h"
-#include "components/optimization_guide/core/optimization_guide_constants.h"
+#include "components/optimization_guide/core/delivery/model_info.h"
 #include "components/optimization_guide/core/optimization_guide_enums.h"
 #include "components/optimization_guide/core/optimization_guide_util.h"
 #include "components/optimization_guide/proto/model_execution.pb.h"
@@ -39,29 +38,24 @@ class ScopedTextSafetyModelMetadataValidityLogger {
       TextSafetyModelMetadataValidity::kUnknown;
 };
 
-bool HasRequiredSafetyFiles(const ModelInfo& model_info) {
-  return model_info.GetAdditionalFileWithBaseName(kTsDataFile) &&
-         model_info.GetAdditionalFileWithBaseName(kTsSpModelFile);
-}
-
 }  // namespace
 
 std::unique_ptr<SafetyModelInfo> SafetyModelInfo::Load(
     base::optional_ref<const ModelInfo> opt_model_info) {
-  if (!opt_model_info.has_value() || !HasRequiredSafetyFiles(*opt_model_info)) {
+  if (!opt_model_info.has_value()) {
     return nullptr;
   }
   const ModelInfo& model_info = *opt_model_info;
   ScopedTextSafetyModelMetadataValidityLogger logger;
 
-  if (!model_info.GetModelMetadata()) {
+  if (!model_info.model_metadata) {
     logger.set_validity(TextSafetyModelMetadataValidity::kNoMetadata);
     return nullptr;
   }
 
   std::optional<proto::TextSafetyModelMetadata> model_metadata =
       ParsedAnyMetadata<proto::TextSafetyModelMetadata>(
-          *model_info.GetModelMetadata());
+          *model_info.model_metadata);
   if (!model_metadata) {
     logger.set_validity(TextSafetyModelMetadataValidity::kMetadataWrongType);
     return nullptr;
@@ -94,15 +88,11 @@ std::optional<proto::FeatureTextSafetyConfiguration> SafetyModelInfo::GetConfig(
 }
 
 base::FilePath SafetyModelInfo::GetDataPath() const {
-  return *model_info_.GetAdditionalFileWithBaseName(kTsDataFile);
-}
-
-base::FilePath SafetyModelInfo::GetSpModelPath() const {
-  return *model_info_.GetAdditionalFileWithBaseName(kTsSpModelFile);
+  return model_info_.model_file_path;
 }
 
 int64_t SafetyModelInfo::GetVersion() const {
-  return model_info_.GetVersion();
+  return model_info_.version;
 }
 
 SafetyModelInfo::SafetyModelInfo(

@@ -10,6 +10,7 @@
 typedef NS_ENUM(NSInteger, BubbleAlignment);
 typedef NS_ENUM(NSInteger, BubbleArrowDirection);
 typedef NS_ENUM(NSInteger, BubbleViewType);
+typedef NS_ENUM(NSInteger, BubblePageControlPage);
 
 @protocol BubbleViewDelegate;
 
@@ -19,14 +20,43 @@ typedef NS_ENUM(NSInteger, BubbleViewType);
 
 // Initializes the bubble with the given text, titleString, arrow direction,
 // alignment, type of bubble view and bubble view's delegate (handles bubble
-// view's buttons taps).
+// view's buttons taps). Optional `page number` that when set, shows a page
+// control with the number highlighted.
 - (instancetype)initWithText:(NSString*)text
                        title:(NSString*)titleString
               arrowDirection:(BubbleArrowDirection)direction
                    alignment:(BubbleAlignment)alignment
               bubbleViewType:(BubbleViewType)type
+             pageControlPage:(BubblePageControlPage)page
+                    delegate:(id<BubbleViewDelegate>)delegate;
+
+// Extends initializer above with `customNextButtonTitle`.
+- (instancetype)initWithText:(NSString*)text
+                       title:(NSString*)titleString
+              arrowDirection:(BubbleArrowDirection)direction
+                   alignment:(BubbleAlignment)alignment
+              bubbleViewType:(BubbleViewType)type
+             pageControlPage:(BubblePageControlPage)page
+       customNextButtonTitle:(NSString*)customNextButtonTitle
+                    delegate:(id<BubbleViewDelegate>)delegate;
+
+// Extends initializer above with `totalPageControlPages`.
+- (instancetype)initWithText:(NSString*)text
+                       title:(NSString*)titleString
+              arrowDirection:(BubbleArrowDirection)direction
+                   alignment:(BubbleAlignment)alignment
+              bubbleViewType:(BubbleViewType)type
+             pageControlPage:(BubblePageControlPage)page
+       totalPageControlPages:(NSInteger)totalPageControlPages
+       customNextButtonTitle:(NSString*)customNextButtonTitle
                     delegate:(id<BubbleViewDelegate>)delegate
     NS_DESIGNATED_INITIALIZER;
+
+// The total number of pages in the Bubble PageControl.
+@property(nonatomic, assign) NSInteger totalPageControlPages;
+
+// Custom title for the action button.
+@property(nonatomic, copy) NSString* customNextButtonTitle;
 
 - (instancetype)init NS_UNAVAILABLE;
 
@@ -35,11 +65,12 @@ typedef NS_ENUM(NSInteger, BubbleViewType);
 
 - (instancetype)initWithCoder:(NSCoder*)aDecoder NS_UNAVAILABLE;
 
-// Animates the bubble view in with a fade-in and sink-down animation.
+// Animates the bubble view in with a fade-in and sink-down animation if
+// `animated` is YES, otherwise it just shows the bubble view.
 //
 // The caller is responsible for adding the bubble view controller to the
 // view hierarchy.
-- (void)animateContentIn;
+- (void)displayAnimated:(BOOL)animated;
 
 // If `hidden`, the arrow hides behind the bubble; otherwise, it is visible and
 // pointing to the anchor point. If `animated`, the arrow will be slid out of /
@@ -56,6 +87,10 @@ typedef NS_ENUM(NSInteger, BubbleViewType);
 // Changes the bubbleView's alignment offset, this might change the bubbleView's
 // size.
 - (void)setBubbleAlignmentOffset:(CGFloat)alignmentOffset;
+
+// Sets the maximum content size category for the bubble view. If set, the
+// bubble view will not scale its text beyond this category.
+@property(nonatomic, copy) UIContentSizeCategory maximumContentSizeCategory;
 
 @end
 

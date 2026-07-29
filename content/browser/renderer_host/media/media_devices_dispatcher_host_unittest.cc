@@ -6,6 +6,7 @@
 
 #include <stddef.h>
 
+#include <algorithm>
 #include <memory>
 #include <queue>
 #include <utility>
@@ -19,6 +20,7 @@
 #include "base/strings/stringprintf.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/bind.h"
+#include "base/test/gmock_callback_support.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "build/build_config.h"
@@ -52,6 +54,7 @@
 #include "media/capture/video/video_capture_system_impl.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver_set.h"
+#include "mojo/public/cpp/system/functions.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features_generated.h"
@@ -76,16 +79,6 @@ const char kDefaultAudioDeviceID[] = "fake_audio_input_2";
 const char kHashedDeviceId[] =
     "6e8234b71bf42fc1be87430dd3305da590577819e2bacef805b2cab540fd291e";
 const char kRawDeviceId[] = "Speaker (High Definition Audio)";
-
-// testing::InvokeArgument<N> does not work with base::OnceCallback. Use this
-// gmock action template to invoke base::OnceCallback. `k` is the k-th argument
-// and `T` is the callback's type.
-ACTION_TEMPLATE(InvokeCallbackArgument,
-                HAS_2_TEMPLATE_PARAMS(int, k, typename, T),
-                AND_4_VALUE_PARAMS(status, param, device_id, renderer)) {
-  std::move(const_cast<T&>(std::get<k>(args)))
-      .Run(status, param, device_id, renderer);
-}
 
 void PhysicalDevicesEnumerated(base::OnceClosure quit_closure,
                                MediaDeviceEnumeration* out,
@@ -216,7 +209,8 @@ class MediaDevicesDispatcherHostTest
     InitializeRenderFrameHost();
     host_ = std::make_unique<MediaDevicesDispatcherHost>(
         render_frame_host_->GetMainFrame()->GetGlobalFrameToken(),
-        render_frame_host_->GetGlobalId(), media_stream_manager_.get());
+        render_frame_host_->GetGlobalId(), media_stream_manager_.get(),
+        true /* is_outermost_main_frame */);
     media_stream_manager_->media_devices_manager()
         ->set_get_salt_and_origin_cb_for_testing(base::BindRepeating(
             &MediaDevicesDispatcherHostTest::GetSaltAndOrigin,
@@ -308,10 +302,11 @@ class MediaDevicesDispatcherHostTest
   MOCK_METHOD0(MockAudioInputCapabilitiesCallback, void());
   MOCK_METHOD0(MockAllVideoInputDeviceFormatsCallback, void());
   MOCK_METHOD0(MockAvailableVideoInputDeviceFormatsCallback, void());
-  MOCK_METHOD2(MockOnBadMessage, void(int, bad_message::BadMessageReason));
+  MOCK_METHOD2(MockOnBadMessage,
+               void(ChildProcessId, bad_message::BadMessageReason));
 
   void OnCaptureHandleConfigAccepted(
-      int render_process_id,
+      ChildProcessId render_process_id,
       int render_frame_id,
       blink::mojom::CaptureHandleConfigPtr config) {
     ASSERT_TRUE(expected_set_capture_handle_config_.has_value());
@@ -326,7 +321,7 @@ class MediaDevicesDispatcherHostTest
   }
 
   void ExpectOnCaptureHandleConfigAccepted(
-      int render_process_id,
+      ChildProcessId render_process_id,
       int render_frame_id,
       blink::mojom::CaptureHandleConfigPtr config) {
     ASSERT_FALSE(expected_set_capture_handle_config_);
@@ -639,7 +634,7 @@ class MediaDevicesDispatcherHostTest
   std::vector<blink::WebMediaDeviceInfoArray> enumerated_devices_;
 
   struct ExpectedCaptureHandleConfig {
-    int render_process_id;
+    ChildProcessId render_process_id;
     int render_frame_id;
     blink::mojom::CaptureHandleConfigPtr config;
   };
@@ -768,8 +763,8 @@ TEST_P(MediaDevicesDispatcherHostTest,
   // Verify that both added devices are present and only those.
   ASSERT_EQ(audio_output_devices.size(), 2u);
 
-  EXPECT_TRUE(base::Contains(audio_output_devices, hmac_device_info1));
-  EXPECT_TRUE(base::Contains(audio_output_devices, hmac_device_info2));
+  EXPECT_TRUE(std::ranges::contains(audio_output_devices, hmac_device_info1));
+  EXPECT_TRUE(std::ranges::contains(audio_output_devices, hmac_device_info2));
 }
 
 TEST_P(MediaDevicesDispatcherHostTest, SubscribeDeviceChange) {
@@ -951,6 +946,7 @@ TEST_P(MediaDevicesDispatcherHostTest,
     MediaDevicesDispatcherHost::Create(
         render_frame_host_->GetMainFrame()->GetGlobalFrameToken(),
         render_frame_host_->GetGlobalId(), media_stream_manager_.get(),
+        true /* is_outermost_main_frame */,
         client.BindNewPipeAndPassReceiver());
     EXPECT_TRUE(client.is_bound());
     EXPECT_EQ(media_stream_manager_->media_devices_manager()
@@ -966,11 +962,42 @@ TEST_P(MediaDevicesDispatcherHostTest,
 }
 
 TEST_P(MediaDevicesDispatcherHostTest, SetPreferredSinkIdNoFeature) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      blink::features::kPreferredAudioOutputDevices);
   EXPECT_CALL(*this,
               MockOnBadMessage(
                   render_frame_host_->GetGlobalId().child_id,
                   bad_message::MDDH_SET_PREFERRED_SINK_ID_WITHOUT_FEATURE));
   host_->SetPreferredSinkId(kDefaultAudioDeviceID, base::DoNothing());
+}
+
+TEST_P(MediaDevicesDispatcherHostTest, SetPreferredSinkIdNotMainFrame) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      blink::features::kPreferredAudioOutputDevices);
+
+  std::string received_error;
+  mojo::SetDefaultProcessErrorHandler(base::BindLambdaForTesting(
+      [&](const std::string& error) { received_error = error; }));
+
+  mojo::Remote<blink::mojom::MediaDevicesDispatcherHost> client;
+  MediaDevicesDispatcherHost::Create(
+      render_frame_host_->GetMainFrame()->GetGlobalFrameToken(),
+      render_frame_host_->GetGlobalId(), media_stream_manager_.get(),
+      /*is_outermost_main_frame=*/false, client.BindNewPipeAndPassReceiver());
+
+  base::test::TestFuture<media::OutputDeviceStatus> future;
+  client->SetPreferredSinkId(kDefaultAudioDeviceID, future.GetCallback());
+
+  EXPECT_EQ(
+      future.Get(),
+      media::OutputDeviceStatus::OUTPUT_DEVICE_STATUS_ERROR_NOT_AUTHORIZED);
+  EXPECT_EQ(
+      received_error,
+      "setPreferredSinkId can only be called from the top-level document.");
+
+  mojo::SetDefaultProcessErrorHandler(base::NullCallback());
 }
 
 TEST_P(MediaDevicesDispatcherHostTest, SelectAudioOutputNoFeature) {
@@ -1085,12 +1112,9 @@ TEST_P(SetPreferredSinkIdTest, DispatchPreferredAudioOutputDeviceManager) {
 
   EXPECT_CALL(*mock_authorization_handler,
               RequestDeviceAuthorization(_, _, kHashedDeviceId, _))
-      .WillOnce(
-          InvokeCallbackArgument<
-              3,
-              AudioOutputAuthorizationHandler::AuthorizationCompletedCallback>(
-              media::OutputDeviceStatus::OUTPUT_DEVICE_STATUS_OK,
-              media::AudioParameters(), kRawDeviceId, ""));
+      .WillOnce(base::test::RunOnceCallback<3>(
+          media::OutputDeviceStatus::OUTPUT_DEVICE_STATUS_OK,
+          media::AudioParameters(), kRawDeviceId, ""));
 
   EXPECT_CALL(*manager, SetPreferredSinkId(_, kRawDeviceId, _)).Times(1);
   host_->SetPreferredSinkId(kHashedDeviceId, base::DoNothing());
@@ -1115,8 +1139,7 @@ TEST_P(SetPreferredSinkIdTest,
 
   EXPECT_CALL(*mock_authorization_handler,
               RequestDeviceAuthorization(_, _, kHashedDeviceId, _))
-      .WillOnce(InvokeCallbackArgument<3, AudioOutputAuthorizationHandler::
-                                              AuthorizationCompletedCallback>(
+      .WillOnce(base::test::RunOnceCallback<3>(
           media::OutputDeviceStatus::OUTPUT_DEVICE_STATUS_ERROR_NOT_AUTHORIZED,
           media::AudioParameters(), kRawDeviceId, ""));
 

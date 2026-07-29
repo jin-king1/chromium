@@ -10,6 +10,9 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 
+import static org.chromium.chrome.browser.hub.HubColorMixer.StateChange.TRANSLATE_DOWN_TABLET_ANIMATION_START;
+import static org.chromium.chrome.browser.hub.HubColorMixer.StateChange.TRANSLATE_UP_TABLET_ANIMATION_END;
+
 import android.app.Activity;
 import android.view.View;
 import android.widget.FrameLayout;
@@ -25,9 +28,9 @@ import org.mockito.Mock;
 import org.mockito.Spy;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.RobolectricUtil;
 import org.chromium.ui.base.TestActivity;
 
 /** Unit tests for {@link TranslateHubLayoutAnimationFactoryImpl}. */
@@ -46,6 +49,7 @@ public class TranslateHubLayoutAnimationFactoryImplUnitTest {
     @Spy private HubLayoutAnimationListener mListener;
 
     @Mock private ScrimController mScrimController;
+    @Mock private HubColorMixer mHubColorMixer;
 
     private Activity mActivity;
     private FrameLayout mRootView;
@@ -68,7 +72,7 @@ public class TranslateHubLayoutAnimationFactoryImplUnitTest {
                             // Force a layout to ensure width and height are defined.
                             mHubContainerView.layout(0, 0, 100, 100);
                         });
-        ShadowLooper.runUiThreadTasks();
+        RobolectricUtil.runAllBackgroundAndUi();
     }
 
     @Test
@@ -76,7 +80,7 @@ public class TranslateHubLayoutAnimationFactoryImplUnitTest {
     public void testTranslateUp() {
         HubLayoutAnimatorProvider animatorProvider =
                 TranslateHubLayoutAnimationFactory.createTranslateUpAnimatorProvider(
-                        mHubContainerView, mScrimController, DURATION_MS, 50);
+                        mHubColorMixer, mHubContainerView, mScrimController, DURATION_MS, 50);
         assertEquals(
                 HubLayoutAnimationType.TRANSLATE_UP, animatorProvider.getPlannedAnimationType());
 
@@ -100,17 +104,18 @@ public class TranslateHubLayoutAnimationFactoryImplUnitTest {
                             public void onEnd(boolean wasForcedToFinish) {
                                 assertEquals(View.VISIBLE, mHubContainerView.getVisibility());
                                 assertEquals(50f, mHubContainerView.getY(), FLOAT_TOLERANCE);
+                                verify(mScrimController).startHidingScrim();
                             }
                         });
         runner.addListener(mListener);
 
         runner.runWithWaitForAnimatorTimeout(TIMEOUT_MS);
 
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
 
         verify(mListener).beforeStart();
         verify(mListener).onEnd(eq(false));
-        verify(mScrimController, never()).startHidingScrim();
+        verify(mHubColorMixer).processStateChange(TRANSLATE_UP_TABLET_ANIMATION_END);
     }
 
     @Test
@@ -118,11 +123,11 @@ public class TranslateHubLayoutAnimationFactoryImplUnitTest {
     public void testTranslateDown() {
         // Ensure the view is visible for hide.
         mHubContainerView.setVisibility(View.VISIBLE);
-        ShadowLooper.runUiThreadTasks();
+        RobolectricUtil.runAllBackgroundAndUi();
 
         HubLayoutAnimatorProvider animatorProvider =
                 TranslateHubLayoutAnimationFactory.createTranslateDownAnimatorProvider(
-                        mHubContainerView, mScrimController, DURATION_MS, 50);
+                        mHubColorMixer, mHubContainerView, mScrimController, DURATION_MS, 50);
         assertEquals(
                 HubLayoutAnimationType.TRANSLATE_DOWN, animatorProvider.getPlannedAnimationType());
 
@@ -155,11 +160,12 @@ public class TranslateHubLayoutAnimationFactoryImplUnitTest {
 
         runner.runWithWaitForAnimatorTimeout(TIMEOUT_MS);
 
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
 
         verify(mListener).beforeStart();
         verify(mListener).onEnd(eq(false));
         verify(mListener).afterEnd();
         verify(mScrimController, never()).startShowingScrim();
+        verify(mHubColorMixer).processStateChange(TRANSLATE_DOWN_TABLET_ANIMATION_START);
     }
 }

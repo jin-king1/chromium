@@ -131,8 +131,7 @@ void WindowMiniViewHeaderView::UpdateTitleLabel(aura::Window* window) {
 }
 
 void WindowMiniViewHeaderView::RefreshHeaderViewRoundedCorners() {
-  const int default_corner_radius =
-      window_util::GetMiniWindowRoundedCornerRadius();
+  const int default_corner_radius = kWindowMiniViewCornerRadius;
   const gfx::RoundedCornersF new_rounded_corners =
       custom_header_view_rounded_corners_.value_or(gfx::RoundedCornersF(
           default_corner_radius, default_corner_radius, 0, 0));
@@ -158,9 +157,10 @@ void WindowMiniViewHeaderView::ResetRoundedCorners() {
 void WindowMiniViewHeaderView::OnThemeChanged() {
   View::OnThemeChanged();
   CHECK(GetColorProvider());
-  layer()->SetColor(GetColorProvider()->GetColor(cros_tokens::kCrosSysHeader));
-  separator_->layer()->SetColor(
-      GetColorProvider()->GetColor(kColorAshWindowHeaderStrokeColor));
+  layer()->AsSolidColor()->SetColor(SkColor4f::FromColor(
+      GetColorProvider()->GetColor(cros_tokens::kCrosSysHeader)));
+  separator_->layer()->AsSolidColor()->SetColor(SkColor4f::FromColor(
+      GetColorProvider()->GetColor(kColorAshWindowHeaderStrokeColor)));
 }
 
 BEGIN_METADATA(WindowMiniViewHeaderView)

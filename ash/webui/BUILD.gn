@@ -19,6 +19,9 @@ test("ash_webui_unittests") {
   ]
 
   deps = [
+    "//ash/constants",
+    "//ash/webui/annotator:unit_tests",
+    "//ash/webui/boca_receiver_app_ui:unit_tests",
     "//ash/webui/boca_ui:unit_tests",
     "//ash/webui/camera_app_ui:unit_tests",
     "//ash/webui/common/backend:unit_tests",
@@ -31,12 +34,12 @@ test("ash_webui_unittests") {
     "//ash/webui/file_manager:unit_tests",
     "//ash/webui/graduation:unit_tests",
     "//ash/webui/help_app_ui:unit_tests",
-    "//ash/webui/metrics:unit_tests",
     "//ash/webui/os_feedback_ui/backend:unit_tests",
     "//ash/webui/personalization_app:unit_tests",
     "//ash/webui/print_management/backend:unit_tests",
     "//ash/webui/print_preview_cros:unit_tests",
     "//ash/webui/projector_app:unit_tests",
+    "//ash/webui/recorder_app_ui:unit_tests",
     "//ash/webui/scanning:unit_tests",
     "//ash/webui/scanning/mojom:unit_tests",
     "//ash/webui/settings/public/constants:unit_tests",
@@ -47,11 +50,12 @@ test("ash_webui_unittests") {
     "//ash/webui/status_area_internals:unit_tests",
     "//base",
     "//base/test:test_support",
+    "//build:chromeos_buildflags",
     "//content/test:test_support",
     "//mojo/core/embedder",
     "//ui/accessibility:test_support",
-    "//ui/base:base",
-    "//ui/color:color",
+    "//ui/base",
+    "//ui/color",
     "//ui/gl",
     "//ui/gl:test_support",
   ]

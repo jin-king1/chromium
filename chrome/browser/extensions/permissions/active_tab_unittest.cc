@@ -12,10 +12,8 @@
 #include "base/values.h"
 #include "build/chromeos_buildflags.h"
 #include "chrome/browser/extensions/chrome_test_extension_loader.h"
-#include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/extension_service_test_base.h"
 #include "chrome/browser/extensions/extension_util.h"
-#include "chrome/browser/extensions/permissions/active_tab_permission_granter.h"
 #include "chrome/browser/extensions/tab_helper.h"
 #include "chrome/browser/extensions/test_extension_system.h"
 #include "chrome/browser/profiles/profile.h"
@@ -31,9 +29,12 @@
 #include "content/public/test/navigation_simulator.h"
 #include "content/public/test/web_contents_tester.h"
 #include "extensions/browser/disable_reason.h"
+#include "extensions/browser/extension_registrar.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_util.h"
+#include "extensions/browser/permissions/active_tab_permission_granter.h"
 #include "extensions/browser/test_extension_registry_observer.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_builder.h"
@@ -42,6 +43,8 @@
 #include "extensions/common/features/feature_channel.h"
 #include "extensions/common/permissions/permissions_data.h"
 #include "extensions/test/test_extension_dir.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 using extensions::mojom::APIPermissionID;
 
@@ -77,9 +80,12 @@ class ActiveTabTest : public ChromeRenderViewHostTestHarness {
         extension(CreateTestExtension("deadbeef", true, false)),
         another_extension(CreateTestExtension("feedbeef", true, false)),
         extension_without_active_tab(
-            CreateTestExtension("badbeef", false, false)),
-        extension_with_tab_capture(
-            CreateTestExtension("cafebeef", true, true)) {}
+            CreateTestExtension("badbeef", false, false)) {
+#if BUILDFLAG(ENABLE_EXTENSIONS)
+    // Desktop Android does not yet support tab capture API or permission.
+    extension_with_tab_capture = CreateTestExtension("cafebeef", true, true);
+#endif
+  }
 
   void SetUp() override {
     ChromeRenderViewHostTestHarness::SetUp();
@@ -87,14 +93,17 @@ class ActiveTabTest : public ChromeRenderViewHostTestHarness {
 
     // We need to add extensions to the ExtensionService; else trying to commit
     // any of their URLs fails and redirects to about:blank.
-    ExtensionService* service =
-        static_cast<TestExtensionSystem*>(ExtensionSystem::Get(profile()))
-            ->CreateExtensionService(base::CommandLine::ForCurrentProcess(),
-                                     base::FilePath(), false);
-    service->AddExtension(extension.get());
-    service->AddExtension(another_extension.get());
-    service->AddExtension(extension_without_active_tab.get());
-    service->AddExtension(extension_with_tab_capture.get());
+    static_cast<TestExtensionSystem*>(ExtensionSystem::Get(profile()))
+        ->CreateExtensionService(base::CommandLine::ForCurrentProcess(),
+                                 base::FilePath(), false);
+
+    auto* extension_registrar = ExtensionRegistrar::Get(profile());
+    extension_registrar->AddExtension(extension);
+    extension_registrar->AddExtension(another_extension);
+    extension_registrar->AddExtension(extension_without_active_tab);
+#if BUILDFLAG(ENABLE_EXTENSIONS)
+    extension_registrar->AddExtension(extension_with_tab_capture);
+#endif
   }
 
   int tab_id() {
@@ -102,8 +111,7 @@ class ActiveTabTest : public ChromeRenderViewHostTestHarness {
   }
 
   ActiveTabPermissionGranter* active_tab_permission_granter() {
-    return TabHelper::FromWebContents(web_contents())
-        ->active_tab_permission_granter();
+    return ActiveTabPermissionGranter::FromWebContents(web_contents());
   }
 
   bool IsAllowed(const scoped_refptr<const Extension>& extension_refptr,
@@ -182,8 +190,10 @@ class ActiveTabTest : public ChromeRenderViewHostTestHarness {
   // An extension without the activeTab permission.
   scoped_refptr<const Extension> extension_without_active_tab;
 
+#if BUILDFLAG(ENABLE_EXTENSIONS)
   // An extension with both the activeTab and tabCapture permission.
   scoped_refptr<const Extension> extension_with_tab_capture;
+#endif
 };
 
 TEST_F(ActiveTabTest, GrantToSinglePage) {
@@ -294,7 +304,7 @@ TEST_F(ActiveTabTest, CapturingPagesWithActiveTab) {
   std::vector<GURL> test_urls = {
       GURL("https://example.com"),
       GURL(chrome::kChromeUIVersionURL),
-      GURL(chrome::kChromeUINewTabURL),
+      chrome::ChromeUINewTabURLAsGURL(),
       GURL("http://[2607:f8b0:4005:805::200e]"),
       ExtensionsClient::Get()->GetWebstoreBaseURL(),
       ExtensionsClient::Get()->GetNewWebstoreBaseURL(),
@@ -336,9 +346,9 @@ TEST_F(ActiveTabTest, Unloading) {
   EXPECT_TRUE(IsAllowed(extension, google));
 
   // Unloading the extension should clear its tab permissions.
-  ExtensionSystem::Get(web_contents()->GetBrowserContext())
-      ->extension_service()
-      ->DisableExtension(extension->id(), disable_reason::DISABLE_USER_ACTION);
+  ExtensionRegistrar::Get(web_contents()->GetBrowserContext())
+      ->DisableExtension(extension->id(),
+                         {disable_reason::DISABLE_USER_ACTION});
 
   // Note: can't EXPECT_FALSE(IsAllowed) here because uninstalled extensions
   // are just that... considered to be uninstalled, and the manager might
@@ -405,6 +415,8 @@ TEST_F(ActiveTabTest, SameDocumentNavigations) {
   EXPECT_TRUE(IsAllowed(extension, chromium_h1));
 }
 
+#if BUILDFLAG(ENABLE_EXTENSIONS)
+// Desktop Android does not yet support the tab capture API or permission.
 TEST_F(ActiveTabTest, ChromeUrlGrants) {
   GURL internal(chrome::kChromeUIVersionURL);
   NavigateAndCommit(internal);
@@ -422,6 +434,7 @@ TEST_F(ActiveTabTest, ChromeUrlGrants) {
   EXPECT_FALSE(permissions_data->HasAPIPermissionForTab(
       tab_id() + 1, APIPermissionID::kTabCaptureForTab));
 }
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
 
 // Tests that an extension can have it's active tab permission cleared.
 TEST_F(ActiveTabTest, ClearActiveExtensionAndNotify) {
@@ -487,7 +500,7 @@ void ActiveTabWithServiceTest::SetUp() {
 
 // Tests that an extension can only capture file:// URLs with the active tab
 // permission when it has file access granted.
-// Regression test for https://crbug.com/810220.
+// Regression test for https://crbug.com/40090425.
 TEST_F(ActiveTabWithServiceTest, FileURLs) {
   InitializeEmptyExtensionService();
 
@@ -523,8 +536,7 @@ TEST_F(ActiveTabWithServiceTest, FileURLs) {
 
   TabHelper::CreateForWebContents(web_contents.get());
   ActiveTabPermissionGranter* permission_granter =
-      TabHelper::FromWebContents(web_contents.get())
-          ->active_tab_permission_granter();
+      ActiveTabPermissionGranter::FromWebContents(web_contents.get());
   ASSERT_TRUE(permission_granter);
   const int tab_id =
       sessions::SessionTabHelper::IdForTab(web_contents.get()).id();

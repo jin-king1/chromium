@@ -35,6 +35,14 @@
 
 - (void)populateItems:(NSArray<GridItemIdentifier*>*)items
     selectedItemIdentifier:(GridItemIdentifier*)selectedItemIdentifier {
+  [self populateItems:items
+      selectedItemIdentifier:selectedItemIdentifier
+                  completion:nil];
+}
+
+- (void)populateItems:(NSArray<GridItemIdentifier*>*)items
+    selectedItemIdentifier:(GridItemIdentifier*)selectedItemIdentifier
+                completion:(void (^)(void))completion {
   _selectedItem = selectedItemIdentifier;
   _items.clear();
   for (GridItemIdentifier* item in items) {
@@ -53,6 +61,9 @@
         NOTREACHED();
     }
   }
+  if (completion) {
+    completion();
+  }
 }
 
 - (void)insertItem:(GridItemIdentifier*)item
@@ -66,9 +77,7 @@
 
 - (void)removeItemWithIdentifier:(GridItemIdentifier*)removedItem
           selectedItemIdentifier:(GridItemIdentifier*)selectedItemIdentifier {
-  auto it = std::remove(_items.begin(), _items.end(),
-                        removedItem.tabSwitcherItem.identifier);
-  _items.erase(it, _items.end());
+  std::erase(_items, removedItem.tabSwitcherItem.identifier);
   _selectedItem = selectedItemIdentifier;
 }
 
@@ -83,13 +92,13 @@
   if (it != _items.end()) {
     *it = replacementItem.tabSwitcherItem.identifier;
   }
+  _replaceItemCount++;
 }
 
 - (void)moveItem:(GridItemIdentifier*)item
       beforeItem:(GridItemIdentifier*)nextItemIdentifier {
   web::WebStateID moved_id = item.tabSwitcherItem.identifier;
-  auto it = std::remove(_items.begin(), _items.end(), moved_id);
-  _items.erase(it, _items.end());
+  std::erase(_items, moved_id);
   if (nextItemIdentifier) {
     _items.insert(std::find(std::begin(_items), std::end(_items),
                             nextItemIdentifier.tabSwitcherItem.identifier),
@@ -107,19 +116,15 @@
   // No-op.
 }
 
-- (void)willCloseAll {
-}
-
-- (void)didCloseAll {
-}
-
-- (void)willUndoCloseAll {
-}
-
-- (void)didUndoCloseAll {
-}
-
 - (void)reload {
+}
+
+#pragma mark - InactiveTabsInfoConsumer
+
+- (void)updateInactiveTabsCount:(NSInteger)count {
+}
+
+- (void)updateInactiveTabsDaysThreshold:(NSInteger)daysThreshold {
 }
 
 @end

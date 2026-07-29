@@ -58,8 +58,10 @@ class MockProfileBuilder : public ProfileBuilder {
     std::move(completed_callback_).Run();
   }
   ModuleCache* GetModuleCache() override { return &module_cache_; }
-  MOCK_METHOD2(OnSampleCompleted,
-               void(std::vector<Frame> frames, TimeTicks sample_timestamp));
+  MOCK_METHOD(void,
+              OnSampleCompleted,
+              (std::vector<Frame> frames, TimeTicks sample_timestamp),
+              (override));
 
  protected:
   ModuleCache module_cache_;
@@ -148,7 +150,8 @@ class ThreadGroupProfilerTest : public testing::Test {
     ThreadGroupProfiler::SetClient(
         std::make_unique<MockThreadGroupProfilerClient>());
     profiler_ = std::make_unique<ThreadGroupProfiler>(
-        ThreadPool::CreateSequencedTaskRunner({}), /*thread_group_type=*/0,
+        ThreadPool::CreateSequencedTaskRunner({MayBlock()}),
+        /*thread_group_type=*/0,
         std::make_unique<MockPeriodicSamplingScheduler>(kTimeToNextCollection),
         GetMockProfilerFactory(sampling_profilers_,
                                sampling_profilers_created_));

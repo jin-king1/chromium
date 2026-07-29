@@ -9,7 +9,7 @@
 
 #include "base/functional/callback_helpers.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/base/interaction/framework_specific_implementation.h"
+#include "ui/base/interaction/safe_castable.h"
 #include "ui/views/bubble/bubble_border.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/test/views_test_base.h"
@@ -27,7 +27,7 @@ class DummyWidgetFocusSupplier : public test::internal::WidgetFocusSupplier {
   DummyWidgetFocusSupplier() = default;
   ~DummyWidgetFocusSupplier() override = default;
 
-  DECLARE_FRAMEWORK_SPECIFIC_METADATA()
+  DECLARE_SAFE_CAST_TARGET()
 
  protected:
   Widget::Widgets GetAllWidgets() const override {
@@ -35,7 +35,7 @@ class DummyWidgetFocusSupplier : public test::internal::WidgetFocusSupplier {
   }
 };
 
-DEFINE_FRAMEWORK_SPECIFIC_METADATA(DummyWidgetFocusSupplier)
+DEFINE_SAFE_CAST_TARGET(DummyWidgetFocusSupplier)
 
 }  // namespace
 
@@ -53,7 +53,7 @@ class WidgetFocusObserverTest : public ViewsTestBase {
 TEST_F(WidgetFocusObserverTest, NoWidgets) {
   test::WidgetFocusObserver observer;
   observer.SetStateObserverStateChangedCallback(base::DoNothing());
-  EXPECT_EQ(gfx::NativeView(), observer.GetStateObserverInitialState());
+  EXPECT_EQ(nullptr, observer.GetStateObserverInitialState());
 }
 
 TEST_F(WidgetFocusObserverTest, OneWidget) {
@@ -64,7 +64,7 @@ TEST_F(WidgetFocusObserverTest, OneWidget) {
 
   test::WidgetFocusObserver observer;
   observer.SetStateObserverStateChangedCallback(base::DoNothing());
-  EXPECT_EQ(widget->GetNativeView(), observer.GetStateObserverInitialState());
+  EXPECT_EQ(widget.get(), observer.GetStateObserverInitialState());
 }
 
 TEST_F(WidgetFocusObserverTest, SeveralWidgets) {
@@ -85,7 +85,7 @@ TEST_F(WidgetFocusObserverTest, SeveralWidgets) {
 
   test::WidgetFocusObserver observer;
   observer.SetStateObserverStateChangedCallback(base::DoNothing());
-  EXPECT_EQ(widget2->GetNativeView(), observer.GetStateObserverInitialState());
+  EXPECT_EQ(widget2.get(), observer.GetStateObserverInitialState());
 }
 
 TEST_F(WidgetFocusObserverTest, AfterActivate) {
@@ -109,7 +109,7 @@ TEST_F(WidgetFocusObserverTest, AfterActivate) {
 
   test::WidgetFocusObserver observer;
   observer.SetStateObserverStateChangedCallback(base::DoNothing());
-  EXPECT_EQ(widget3->GetNativeView(), observer.GetStateObserverInitialState());
+  EXPECT_EQ(widget3.get(), observer.GetStateObserverInitialState());
 }
 
 TEST_F(WidgetFocusObserverTest, Bubble) {
@@ -119,16 +119,17 @@ TEST_F(WidgetFocusObserverTest, Bubble) {
   visible_waiter.Wait();
 
   auto bubble = std::make_unique<BubbleDialogDelegateView>(
-      widget->GetRootView(), BubbleBorder::LEFT_CENTER);
-  auto* const bubble_widget =
-      BubbleDialogDelegate::CreateBubble(std::move(bubble));
+      BubbleDialogDelegateView::CreatePassKey(), widget->GetRootView(),
+      BubbleBorder::LEFT_CENTER);
+  auto* const bubble_widget = BubbleDialogDelegate::CreateBubbleDeprecated(
+      std::move(bubble), Widget::InitParams::NATIVE_WIDGET_OWNS_WIDGET);
   test::WidgetVisibleWaiter visible_waiter2(bubble_widget);
   bubble_widget->Show();
   visible_waiter2.Wait();
 
   test::WidgetFocusObserver observer;
   observer.SetStateObserverStateChangedCallback(base::DoNothing());
-  EXPECT_EQ(bubble_widget->GetNativeView(),
+  EXPECT_EQ(bubble_widget,
             observer.GetStateObserverInitialState());
 }
 

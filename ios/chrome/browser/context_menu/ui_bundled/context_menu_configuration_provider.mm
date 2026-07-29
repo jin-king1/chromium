@@ -4,6 +4,7 @@
 
 #import "ios/chrome/browser/context_menu/ui_bundled/context_menu_configuration_provider.h"
 
+#import "base/ios/block_types.h"
 #import "base/ios/ios_util.h"
 #import "base/memory/weak_ptr.h"
 #import "base/metrics/histogram_functions.h"
@@ -18,10 +19,22 @@
 #import "ios/chrome/browser/context_menu/ui_bundled/context_menu_configuration_provider_delegate.h"
 #import "ios/chrome/browser/context_menu/ui_bundled/context_menu_utils.h"
 #import "ios/chrome/browser/context_menu/ui_bundled/image_preview_view_controller.h"
+#import "ios/chrome/browser/enterprise/connectors/connectors_service.h"
+#import "ios/chrome/browser/enterprise/connectors/connectors_service_factory.h"
+#import "ios/chrome/browser/enterprise/connectors/connectors_util.h"
+#import "ios/chrome/browser/enterprise/data_controls/model/data_controls_tab_helper.h"
 #import "ios/chrome/browser/favicon/model/favicon_loader.h"
 #import "ios/chrome/browser/favicon/model/ios_chrome_favicon_loader_factory.h"
 #import "ios/chrome/browser/incognito_reauth/ui_bundled/incognito_reauth_commands.h"
 #import "ios/chrome/browser/incognito_reauth/ui_bundled/incognito_reauth_scene_agent.h"
+#import "ios/chrome/browser/intelligence/bwg/metrics/gemini_metrics.h"
+#import "ios/chrome/browser/intelligence/bwg/model/gemini_service.h"
+#import "ios/chrome/browser/intelligence/bwg/model/gemini_service_factory.h"
+#import "ios/chrome/browser/intelligence/bwg/model/gemini_tab_helper.h"
+#import "ios/chrome/browser/intelligence/bwg/utils/gemini_availability.h"
+#import "ios/chrome/browser/intelligence/bwg/utils/gemini_constants.h"
+#import "ios/chrome/browser/intelligence/bwg/utils/gemini_feature_availability.h"
+#import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/lens/ui_bundled/lens_availability.h"
 #import "ios/chrome/browser/lens/ui_bundled/lens_entrypoint.h"
 #import "ios/chrome/browser/menu/ui_bundled/browser_action_factory.h"
@@ -30,6 +43,8 @@
 #import "ios/chrome/browser/photos/model/photos_availability.h"
 #import "ios/chrome/browser/photos/model/photos_metrics.h"
 #import "ios/chrome/browser/policy/model/policy_util.h"
+#import "ios/chrome/browser/reader_mode/model/reader_mode_content_tab_helper.h"
+#import "ios/chrome/browser/reader_mode/model/reader_mode_tab_helper.h"
 #import "ios/chrome/browser/reading_list/model/reading_list_browser_agent.h"
 #import "ios/chrome/browser/search_engines/model/search_engines_util.h"
 #import "ios/chrome/browser/search_engines/model/template_url_service_factory.h"
@@ -37,15 +52,18 @@
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
+#import "ios/chrome/browser/shared/model/utils/mime_type_util.h"
 #import "ios/chrome/browser/shared/model/web_state_list/tab_group_utils.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/public/commands/activity_service_commands.h"
 #import "ios/chrome/browser/shared/public/commands/activity_service_share_url_command.h"
-#import "ios/chrome/browser/shared/public/commands/application_commands.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
+#import "ios/chrome/browser/shared/public/commands/enhanced_calendar_commands.h"
+#import "ios/chrome/browser/shared/public/commands/gemini_commands.h"
 #import "ios/chrome/browser/shared/public/commands/lens_commands.h"
 #import "ios/chrome/browser/shared/public/commands/mini_map_commands.h"
 #import "ios/chrome/browser/shared/public/commands/reading_list_add_command.h"
+#import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/shared/public/commands/search_image_with_lens_command.h"
 #import "ios/chrome/browser/shared/public/commands/unit_conversion_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
@@ -62,16 +80,25 @@
 #import "ios/chrome/browser/web/model/web_navigation_util.h"
 #import "ios/chrome/common/ui/favicon/favicon_constants.h"
 #import "ios/chrome/grit/ios_strings.h"
+#import "ios/components/enterprise/data_controls/clipboard_enums.h"
+#import "ios/components/enterprise/data_controls/metrics_utils.h"
 #import "ios/public/provider/chrome/browser/context_menu/context_menu_api.h"
 #import "ios/public/provider/chrome/browser/lens/lens_api.h"
 #import "ios/web/common/features.h"
 #import "ios/web/common/url_scheme_util.h"
+#import "ios/web/public/js_image_transcoder/java_script_image_transcoder.h"
 #import "ios/web/public/ui/context_menu_params.h"
 #import "ios/web/public/web_state.h"
+#import "ios/web/public/web_state_delegate.h"
 #import "net/base/apple/url_conversions.h"
 #import "ui/base/device_form_factor.h"
 #import "ui/base/l10n/l10n_util.h"
 #import "url/gurl.h"
+
+using data_controls::ClipboardAction;
+using data_controls::ClipboardSource;
+using data_controls::RecordClipboardOutcomeMetrics;
+using data_controls::RecordClipboardSourceMetrics;
 
 namespace {
 
@@ -109,6 +136,9 @@ NSString* const kAlertAccessibilityIdentifier = @"AlertAccessibilityIdentifier";
 
   // Whether the context menu is presented in the lens overlay.
   BOOL _isLensOverlay;
+
+  // Image transcoder to locally re-encode images to search.
+  std::unique_ptr<web::JavaScriptImageTranscoder> _imageTranscoder;
 }
 
 - (instancetype)initWithBrowser:(Browser*)browser
@@ -142,6 +172,7 @@ NSString* const kAlertAccessibilityIdentifier = @"AlertAccessibilityIdentifier";
   _imageSaver = nil;
   [_imageCopier stop];
   _imageCopier = nil;
+  _imageTranscoder = nullptr;
   _baseWebState = nullptr;
 }
 
@@ -167,44 +198,9 @@ NSString* const kAlertAccessibilityIdentifier = @"AlertAccessibilityIdentifier";
                                                actionProvider:actionProvider];
 }
 
-#pragma mark - Properties
-
-- (web::WebState*)webState {
-  if (base::FeatureList::IsEnabled(kEnableLensOverlay) && _baseWebState) {
-    return _baseWebState.get();
-  }
-  return self.browser ? self.browser->GetWebStateList()->GetActiveWebState()
-                      : nullptr;
-}
-
-#pragma mark - Private
-
-// Returns a preview for the images in contextual menu for a given image web
-// state.
-- (UIContextMenuContentPreviewProvider)
-    contextMenuContentPreviewProviderForWebState:(web::WebState*)webState
-                                          params:
-                                              (web::ContextMenuParams)params {
-  if (!base::FeatureList::IsEnabled(kShareInWebContextMenuIOS) ||
-      !params.src_url.is_valid() || params.link_url.is_valid()) {
-    return nil;
-  }
-
-  ImagePreviewViewController* previewViewController =
-      [[ImagePreviewViewController alloc]
-          initWithSrcURL:net::NSURLWithGURL(params.src_url)
-                webState:webState];
-  [previewViewController loadPreview];
-  return ^() {
-    return previewViewController;
-  };
-}
-
-// Returns an action based contextual menu for a given web state (link, image,
-// copy and intent detection actions).
-- (UIContextMenuActionProvider)
-    contextMenuActionProviderForWebState:(web::WebState*)webState
-                                  params:(web::ContextMenuParams)params {
+- (UIMenu*)contextMenuForWebState:(web::WebState*)webState
+                           params:(web::ContextMenuParams)params
+                         scenario:(MenuScenarioHistogram)menuScenario {
   // Reset the URL.
   _URLToLoad = GURL();
 
@@ -226,12 +222,6 @@ NSString* const kAlertAccessibilityIdentifier = @"AlertAccessibilityIdentifier";
   web::Referrer referrer(lastCommittedURL, web::ReferrerPolicyDefault);
 
   NSMutableArray<UIMenuElement*>* menuElements = [[NSMutableArray alloc] init];
-  // TODO(crbug.com/40823789) add scenario for not a link and not an image.
-  MenuScenarioHistogram menuScenario =
-      isImage && isLink ? kMenuScenarioHistogramContextMenuImageLink
-      : isImage         ? kMenuScenarioHistogramContextMenuImage
-                        : kMenuScenarioHistogramContextMenuLink;
-
   NSString* menuTitle = nil;
   UIAction* showFullURL = nil;
 
@@ -240,7 +230,18 @@ NSString* const kAlertAccessibilityIdentifier = @"AlertAccessibilityIdentifier";
 
     if (!IsImageTitle(params) &&
         menuTitle.length > kContextMenuMaxURLTitleLength + 1) {
-      if (base::FeatureList::IsEnabled(kShareInWebContextMenuIOS)) {
+      if (IsIOSWebContextMenuNewTitleEnabled()) {
+        NSString* fullURL = menuTitle;
+        // Truncate context menu titles that originate from URLs, leaving text
+        // titles untruncated.
+        menuTitle = [[menuTitle substringToIndex:kContextMenuMaxURLTitleLength]
+            stringByAppendingString:kContextMenuEllipsis];
+        __weak __typeof(self) weakSelf = self;
+        ProceduralBlock block = ^{
+          [weakSelf showFullURLPopUp:params URLString:fullURL];
+        };
+        ios::provider::AttachBlockToContextMenu(menuTitle, block);
+      } else {
         // "Show URL action" at the top of the context menu.
         __weak __typeof(self) weakSelf = self;
         BrowserActionFactory* actionFactory =
@@ -253,11 +254,6 @@ NSString* const kAlertAccessibilityIdentifier = @"AlertAccessibilityIdentifier";
                                              URLString:menuTitle];
                           }];
         menuTitle = nil;
-      } else {
-        // Truncate context menu titles that originate from URLs, leaving text
-        // titles untruncated.
-        menuTitle = [[menuTitle substringToIndex:kContextMenuMaxURLTitleLength]
-            stringByAppendingString:kContextMenuEllipsis];
       }
     }
   }
@@ -293,7 +289,9 @@ NSString* const kAlertAccessibilityIdentifier = @"AlertAccessibilityIdentifier";
             HandlerForProtocol(self.browser->GetCommandDispatcher(),
                                MiniMapCommands),
             HandlerForProtocol(self.browser->GetCommandDispatcher(),
-                               UnitConversionCommands));
+                               UnitConversionCommands),
+            HandlerForProtocol(self.browser->GetCommandDispatcher(),
+                               EnhancedCalendarCommands));
     if (result && result.elements) {
       [menuElements addObjectsFromArray:result.elements];
       menuTitle = result.title;
@@ -310,8 +308,81 @@ NSString* const kAlertAccessibilityIdentifier = @"AlertAccessibilityIdentifier";
     return nil;
   }
 
-  UIMenu* menu = [UIMenu menuWithTitle:menuTitle children:menuElements];
+  return [UIMenu menuWithTitle:menuTitle children:menuElements];
+}
 
+- (void)recordMenuShown:(MenuScenarioHistogram)scenario {
+  RecordMenuShown(scenario);
+}
+
+#pragma mark - Properties
+
+- (web::WebState*)webState {
+  if (_baseWebState) {
+    return _baseWebState.get();
+  }
+  web::WebState* activeWebState =
+      self.browser ? self.browser->GetWebStateList()->GetActiveWebState()
+                   : nullptr;
+  if (activeWebState) {
+    // Check if there is an alternate webState.
+    ReaderModeTabHelper* readerModeTabHelper =
+        ReaderModeTabHelper::FromWebState(activeWebState);
+    if (readerModeTabHelper) {
+      web::WebState* readerModeWebState =
+          readerModeTabHelper->GetReaderModeWebState();
+      if (readerModeWebState) {
+        return readerModeWebState;
+      }
+    }
+  }
+  return activeWebState;
+}
+
+#pragma mark - Private
+
+// Returns a preview for the images in contextual menu for a given image web
+// state.
+- (UIContextMenuContentPreviewProvider)
+    contextMenuContentPreviewProviderForWebState:(web::WebState*)webState
+                                          params:
+                                              (web::ContextMenuParams)params {
+  if (!params.src_url.is_valid() || params.link_url.is_valid()) {
+    return nil;
+  }
+
+  ImagePreviewViewController* previewViewController =
+      [[ImagePreviewViewController alloc]
+          initWithSrcURL:net::NSURLWithGURL(params.src_url)
+                webState:webState
+                 frameID:base::SysUTF8ToNSString(params.frame_id)
+             frameOrigin:params.frame_security_origin];
+  [previewViewController loadPreview];
+  return ^() {
+    return previewViewController;
+  };
+}
+
+// Returns an action based contextual menu for a given web state (link, image,
+// copy and intent detection actions).
+- (UIContextMenuActionProvider)
+    contextMenuActionProviderForWebState:(web::WebState*)webState
+                                  params:(web::ContextMenuParams)params {
+  const bool isLink = params.link_url.is_valid();
+  const bool isImage = params.src_url.is_valid();
+
+  // TODO(crbug.com/40823789) add scenario for not a link and not an image.
+  MenuScenarioHistogram menuScenario =
+      [self getMenuScenarioHistogramWithWebState:webState
+                                         isImage:isImage
+                                          isLink:isLink];
+
+  UIMenu* menu = [self contextMenuForWebState:webState
+                                       params:params
+                                     scenario:menuScenario];
+  if (menu.children.count == 0) {
+    return nil;
+  }
   UIContextMenuActionProvider actionProvider =
       ^(NSArray<UIMenuElement*>* suggestedActions) {
         RecordMenuShown(menuScenario);
@@ -342,8 +413,7 @@ NSString* const kAlertAccessibilityIdentifier = @"AlertAccessibilityIdentifier";
   NSMutableArray<UIMenuElement*>* linkOpeningElements =
       [[NSMutableArray alloc] init];
 
-  if (showFullURLAction &&
-      base::FeatureList::IsEnabled(kShareInWebContextMenuIOS)) {
+  if (showFullURLAction) {
     [linkOpeningElements addObject:showFullURLAction];
   }
 
@@ -370,16 +440,14 @@ NSString* const kAlertAccessibilityIdentifier = @"AlertAccessibilityIdentifier";
     }];
     [linkOpeningElements addObject:openNewTab];
 
-    if (IsTabGroupInGridEnabled()) {
-      // Open in Tab Group.
-      UIMenuElement* openLinkInGroupMenu =
-          [self openLinkInGroupMenuElement:linkURL
-                                  scenario:scenario
-                                  referrer:referrer
-                            isOffTheRecord:isOffTheRecord
-                                    params:params];
-      [linkOpeningElements addObject:openLinkInGroupMenu];
-    }
+    // Open in Tab Group.
+    UIMenuElement* openLinkInGroupMenu =
+        [self openLinkInGroupMenuElement:linkURL
+                                scenario:scenario
+                                referrer:referrer
+                          isOffTheRecord:isOffTheRecord
+                                  params:params];
+    [linkOpeningElements addObject:openLinkInGroupMenu];
 
     if (!isOffTheRecord) {
       // Open in Incognito Tab.
@@ -433,15 +501,13 @@ NSString* const kAlertAccessibilityIdentifier = @"AlertAccessibilityIdentifier";
   }
 
   // Copy Link.
-  UIAction* copyLink =
-      [actionFactory actionToCopyURL:[[CrURL alloc] initWithGURL:linkURL]];
+  UIAction* copyLink = [actionFactory actionToCopyURLWithBlock:^{
+    [weakSelf copyLinkWithURL:linkURL];
+  }];
   [linkMenuElements addObject:copyLink];
 
   // Share Link.
-  // TODO(crbug.com/351817704): Disable the share menu with lens overlay as the
-  // share sheet is not presented in `baseViewController`.
-  if (!_isLensOverlay &&
-      base::FeatureList::IsEnabled(kShareInWebContextMenuIOS)) {
+  if ([self isSharingAllowed]) {
     UIAction* shareLink = [actionFactory actionToShareWithBlock:^{
       [weakSelf shareURLFromContextMenu:linkURL
                                URLTitle:params.text ? params.text : @""
@@ -478,19 +544,16 @@ NSString* const kAlertAccessibilityIdentifier = @"AlertAccessibilityIdentifier";
       [self imageSavingElementsWithURL:imageURL
                               scenario:scenario
                               referrer:referrer
-                              webState:webState];
+                              webState:webState
+                                params:params];
   [imageMenuElements addObjectsFromArray:imageSavingElements];
 
   // Copy Image.
   UIAction* copyImage = [actionFactory actionCopyImageWithBlock:^{
-    ContextMenuConfigurationProvider* strongSelf = weakSelf;
-    if (!strongSelf || !strongSelf.baseViewController) {
-      return;
-    }
-    [strongSelf.imageCopier copyImageAtURL:imageURL
-                                  referrer:referrer
-                                  webState:strongSelf.webState
-                        baseViewController:strongSelf.baseViewController];
+    [weakSelf copyImageAtURL:imageURL
+                    referrer:referrer
+                     frameID:params.frame_id
+                 frameOrigin:params.frame_security_origin];
   }];
   [imageMenuElements addObject:copyImage];
 
@@ -508,17 +571,57 @@ NSString* const kAlertAccessibilityIdentifier = @"AlertAccessibilityIdentifier";
   NSArray<UIMenuElement*>* imageSearchingElements =
       [self imageSearchingElementsWithURL:imageURL
                                  scenario:scenario
-                                 referrer:referrer];
+                                 referrer:referrer
+                                   params:params];
+
+  // Launch the Gemini experience with an image attached.
+  UIMenuElement* geminiElement = nil;
+  // To show the Gemini element, we check three distinct layers of availability:
+  // - Feature-level (`IsFeatureAvailable`): Handles fine-grained or regulatory
+  //   restrictions for specific features like ImageRemix, even when Gemini is
+  //   generally allowed for the user.
+  // - Page-specific (`IsGeminiAvailableForWebState`): Ensures the current page
+  //   context can be extracted and used.
+  // - Profile-level (`IsProfileEligibleForGemini`): Checks account-wide
+  //   eligibility such as enterprise policies, workspace restrictions, and
+  //   login state.
+  BOOL canShowGeminiElement =
+      gemini::IsGeminiAvailable(gemini::EntryPoint::ImageContextMenu,
+                                self.browser->GetProfile(), webState)
+          .enabled;
+  BOOL geminiAboveSearch = IsGeminiImageRemixToolShowAboveSearchImageEnabled();
+  BOOL geminiBelowSearch = IsGeminiImageRemixToolShowBelowSearchImageEnabled();
+
+  if (canShowGeminiElement && (geminiAboveSearch || geminiBelowSearch)) {
+    RecordImageRemixContextMenuEntryPointShown();
+
+    ProceduralBlock geminiElementCallback = ^{
+      [weakSelf openGeminiWithImageURL:imageURL
+                              referrer:referrer
+                                params:params];
+    };
+    geminiElement = [actionFactory
+        actionToOpenImageInGeminiWithBlock:geminiElementCallback];
+  }
+
+  // Display the gemini element either above or below the search image
+  // element based on the flags.
+  if (geminiElement && geminiAboveSearch) {
+    [imageMenuElements addObject:geminiElement];
+  }
+
   [imageMenuElements addObjectsFromArray:imageSearchingElements];
+
+  // Ensure we don't show gemini twice if both flags are enabled.
+  if (geminiElement && geminiBelowSearch && !geminiAboveSearch) {
+    [imageMenuElements addObject:geminiElement];
+  }
 
   // Share Image.
   // Shares the URL of the image and not the image itself.
   // This avoids doing in process image processing by working as the share sheet
   // fetches the image to share it.
-  // TODO(crbug.com/351817704): Disable the share menu with lens overlay as the
-  // share sheet is not presented in `baseViewController`.
-  if (!_isLensOverlay &&
-      base::FeatureList::IsEnabled(kShareInWebContextMenuIOS) && !isLink) {
+  if (!isLink && [self isSharingAllowed]) {
     UIAction* shareImage = [actionFactory actionToShareWithBlock:^{
       [weakSelf shareURLFromContextMenu:imageURL
                                URLTitle:GetContextMenuTitle(params)
@@ -533,18 +636,48 @@ NSString* const kAlertAccessibilityIdentifier = @"AlertAccessibilityIdentifier";
 // Lens.
 - (void)searchImageWithURL:(GURL)imageURL
                  usingLens:(BOOL)usingLens
-                  referrer:(web::Referrer)referrer {
+                  referrer:(web::Referrer)referrer
+                    params:(web::ContextMenuParams)params {
   ImageFetchTabHelper* imageFetcher =
       ImageFetchTabHelper::FromWebState(self.webState);
   DCHECK(imageFetcher);
+
   __weak ContextMenuConfigurationProvider* weakSelf = self;
-  imageFetcher->GetImageData(imageURL, referrer, ^(NSData* data) {
-    if (usingLens) {
-      [weakSelf searchImageUsingLensWithData:data];
-    } else {
-      [weakSelf searchByImageData:data imageURL:imageURL];
-    }
-  });
+  imageFetcher->GetImageData(
+      imageURL, referrer, params.frame_id, params.frame_security_origin,
+      ^(NSData* rawData) {
+        // Arbitrary web image data requires sanitization before use.
+        [weakSelf
+            sanitizeImageData:rawData
+                     mimeType:kJPEGImageMimeType
+                   completion:^(NSData* transcodedData) {
+                     if (usingLens) {
+                       [weakSelf searchImageUsingLensWithData:transcodedData];
+                     } else {
+                       [weakSelf searchByImageData:transcodedData
+                                          imageURL:imageURL];
+                     }
+                   }];
+      });
+}
+
+// Sanitizes a web image data before use by passing it through the transcoder.
+- (void)sanitizeImageData:(NSData*)imageData
+                 mimeType:(std::string)mimeType
+               completion:(void (^)(NSData*))completion {
+  if (!_imageTranscoder) {
+    _imageTranscoder = std::make_unique<web::JavaScriptImageTranscoder>();
+  }
+  _imageTranscoder->TranscodeImage(
+      imageData, base::SysUTF8ToNSString(mimeType), nil, nil, nil,
+      base::BindOnce(^(NSData* result, NSError* error) {
+        if (error) {
+          completion(nil);
+          return;
+        }
+
+        completion(result);
+      }));
 }
 
 // Starts a reverse image search based on `imageData` and `imageURL` in a new
@@ -662,7 +795,7 @@ NSString* const kAlertAccessibilityIdentifier = @"AlertAccessibilityIdentifier";
 
   // Check if the URL was a valid link to avoid having the `Open in Tab Group`
   // option twice.
-  if (!IsTabGroupInGridEnabled() || isLink) {
+  if (isLink) {
     [imageOpeningMenuElements addObject:openImageInNewTab];
   } else {
     // Array for the actions/menus used to open an image in a new tab.
@@ -697,7 +830,8 @@ NSString* const kAlertAccessibilityIdentifier = @"AlertAccessibilityIdentifier";
     imageSavingElementsWithURL:(GURL)imageURL
                       scenario:(MenuScenarioHistogram)scenario
                       referrer:(web::Referrer)referrer
-                      webState:(web::WebState*)webState {
+                      webState:(web::WebState*)webState
+                        params:(web::ContextMenuParams)params {
   // TODO(crbug.com/351817704): Save to photo is not presented in the
   // baseViewController.
   const bool saveToPhotosAvailable =
@@ -721,6 +855,8 @@ NSString* const kAlertAccessibilityIdentifier = @"AlertAccessibilityIdentifier";
     [strongSelf.imageSaver saveImageAtURL:imageURL
                                  referrer:referrer
                                  webState:strongSelf.webState
+                                  frameID:params.frame_id
+                              frameOrigin:params.frame_security_origin
                        baseViewController:strongSelf.baseViewController];
     base::UmaHistogramEnumeration(
         kSaveToPhotosContextMenuActionsHistogram,
@@ -729,11 +865,17 @@ NSString* const kAlertAccessibilityIdentifier = @"AlertAccessibilityIdentifier";
             : SaveToPhotosContextMenuActions::kUnavailableDidSaveImageLocally);
   }];
 
+  auto* service =
+      enterprise_connectors::ConnectorsServiceFactory::GetForProfile(
+          self.browser->GetProfile());
+  bool downloadConnectorEnabled =
+      enterprise_connectors::IsDownloadConnectorEnabled(service);
   policy::DownloadRestriction download_restriction =
       static_cast<policy::DownloadRestriction>(
           self.browser->GetProfile()->GetPrefs()->GetInteger(
               policy::policy_prefs::kDownloadRestrictions));
-  if (download_restriction == policy::DownloadRestriction::ALL_FILES) {
+  if (download_restriction == policy::DownloadRestriction::ALL_FILES ||
+      downloadConnectorEnabled) {
     saveImage.subtitle =
         l10n_util::GetNSString(IDS_POLICY_ACTION_BLOCKED_BY_ORGANIZATION);
     saveImage.attributes = UIMenuElementAttributesDisabled;
@@ -741,48 +883,50 @@ NSString* const kAlertAccessibilityIdentifier = @"AlertAccessibilityIdentifier";
 
   [imageSavingElements addObject:saveImage];
 
+  if (!saveToPhotosAvailable) {
+    return imageSavingElements;
+  }
+
   // Save Image to Photos.
-  if (saveToPhotosAvailable) {
-    base::RecordAction(base::UserMetricsAction(
-        "MobileWebContextMenuImageWithSaveToPhotosImpression"));
-    UIAction* saveImageToPhotosAction = [actionFactory
-        actionToSaveToPhotosWithImageURL:imageURL
-                                referrer:referrer
-                                webState:webState
-                                   block:^{
-                                     base::UmaHistogramEnumeration(
-                                         kSaveToPhotosContextMenuActionsHistogram,
-                                         SaveToPhotosContextMenuActions::
-                                             kAvailableDidSaveImageToGooglePhotos);
-                                   }];
-    [imageSavingElements addObject:saveImageToPhotosAction];
-  }
+  base::RecordAction(base::UserMetricsAction(
+      "MobileWebContextMenuImageWithSaveToPhotosImpression"));
+  UIAction* saveImageToPhotosAction = [actionFactory
+      actionToSaveToPhotosWithImageURL:imageURL
+                              referrer:referrer
+                              webState:webState
+                                params:params
+                                 block:^{
+                                   base::UmaHistogramEnumeration(
+                                       kSaveToPhotosContextMenuActionsHistogram,
+                                       SaveToPhotosContextMenuActions::
+                                           kAvailableDidSaveImageToGooglePhotos);
+                                 }];
 
-  if (IsSaveToPhotosActionImprovementEnabled() && saveToPhotosAvailable) {
-    UIImage* image;
-    if (@available(iOS 17, *)) {
-      image = DefaultSymbolWithPointSize(kPhotoBadgeArrowDownSymbol,
-                                         kSymbolActionPointSize);
-    } else {
-      image = DefaultSymbolWithPointSize(kPhotoSymbol, kSymbolActionPointSize);
-    }
-    UIMenu* saveImageInMenu = [UIMenu
-        menuWithTitle:l10n_util::GetNSString(IDS_IOS_TOOLS_MENU_SAVE_IMAGE_IN)
-                image:image
-           identifier:nil
-              options:UIMenuOptionsSingleSelection
-             children:imageSavingElements];
-    return @[ saveImageInMenu ];
+  if (downloadConnectorEnabled) {
+    saveImageToPhotosAction.subtitle =
+        l10n_util::GetNSString(IDS_POLICY_ACTION_BLOCKED_BY_ORGANIZATION);
+    saveImageToPhotosAction.attributes = UIMenuElementAttributesDisabled;
   }
+  [imageSavingElements addObject:saveImageToPhotosAction];
 
-  return imageSavingElements;
+  // Save Image Menu.
+  UIImage* image = DefaultSymbolWithPointSize(kPhotoBadgeArrowDownSymbol,
+                                              kSymbolActionPointSize);
+  UIMenu* saveImageInMenu = [UIMenu
+      menuWithTitle:l10n_util::GetNSString(IDS_IOS_TOOLS_MENU_SAVE_IMAGE_IN)
+              image:image
+         identifier:nil
+            options:UIMenuOptionsSingleSelection
+           children:imageSavingElements];
+  return @[ saveImageInMenu ];
 }
 
 // Returns the context menu elements for image searching.
 - (NSArray<UIMenuElement*>*)
     imageSearchingElementsWithURL:(GURL)imageURL
                          scenario:(MenuScenarioHistogram)scenario
-                         referrer:(web::Referrer)referrer {
+                         referrer:(web::Referrer)referrer
+                           params:(web::ContextMenuParams)params {
   if (_isLensOverlay) {
     return @[];
   }
@@ -809,7 +953,8 @@ NSString* const kAlertAccessibilityIdentifier = @"AlertAccessibilityIdentifier";
         [actionFactory actionToSearchImageUsingLensWithBlock:^{
           [weakSelf searchImageWithURL:imageURL
                              usingLens:YES
-                              referrer:referrer];
+                              referrer:referrer
+                                params:params];
         }];
     [imageSearchingMenuElements addObject:searchImageWithLensAction];
   }
@@ -823,7 +968,8 @@ NSString* const kAlertAccessibilityIdentifier = @"AlertAccessibilityIdentifier";
                              Block:^{
                                [weakSelf searchImageWithURL:imageURL
                                                   usingLens:NO
-                                                   referrer:referrer];
+                                                   referrer:referrer
+                                                     params:params];
                              }];
     [imageSearchingMenuElements addObject:searchByImage];
   }
@@ -835,10 +981,16 @@ NSString* const kAlertAccessibilityIdentifier = @"AlertAccessibilityIdentifier";
 // on Show Full URL button from the context menu.
 - (void)showFullURLPopUp:(web::ContextMenuParams)params
                URLString:(NSString*)URLString {
-  UIAlertController* alert =
-      [UIAlertController alertControllerWithTitle:@""
-                                          message:URLString
-                                   preferredStyle:UIAlertControllerStyleAlert];
+  // Due to a UIKit bug, UIAlertController that show a URL may truncate their
+  // last line. To avoid masking useful information, add an artificial empty
+  // last line that can be truncated safely.
+  // The "..." will still be visible but no useful information will be lost.
+  // TODO(crbug.com/407565099): remove workaround.
+  UIAlertController* alert = [UIAlertController
+      alertControllerWithTitle:@""
+                       message:[URLString
+                                   stringByAppendingString:@"\u00a0\n\u00a0"]
+                preferredStyle:UIAlertControllerStyleAlert];
 
   UIAlertAction* defaultAction = [UIAlertAction
       actionWithTitle:l10n_util::GetNSString(IDS_IOS_CLOSE_ALERT_BUTTON_LABEL)
@@ -875,6 +1027,168 @@ NSString* const kAlertAccessibilityIdentifier = @"AlertAccessibilityIdentifier";
 - (void)didOpenTabInBackground:(GURL)URL {
   [self.delegate contextMenuConfigurationProvider:self
                  didOpenNewTabInBackgroundWithURL:URL];
+}
+
+- (MenuScenarioHistogram)getMenuScenarioHistogramWithWebState:
+                             (web::WebState*)webState
+                                                      isImage:(BOOL)isImage
+                                                       isLink:(BOOL)isLink {
+  // Check that the Reader Mode web state implicitly checking that the content
+  // tab helper is attached.
+  ReaderModeContentTabHelper* readerModeContentTabHelper =
+      ReaderModeContentTabHelper::FromWebState(webState);
+  BOOL isReaderModeActive = readerModeContentTabHelper;
+  if (isReaderModeActive) {
+    if (isImage && isLink) {
+      return kMenuScenarioHistogramReaderModeContextMenuImageLink;
+    } else if (isImage) {
+      return kMenuScenarioHistogramReaderModeContextMenuImage;
+    } else {
+      return kMenuScenarioHistogramReaderModeContextMenuLink;
+    }
+  } else {
+    if (isImage && isLink) {
+      return kMenuScenarioHistogramContextMenuImageLink;
+    } else if (isImage) {
+      return kMenuScenarioHistogramContextMenuImage;
+    } else {
+      return kMenuScenarioHistogramContextMenuLink;
+    }
+  }
+}
+
+- (void)copyImageAtURL:(GURL)imageURL
+              referrer:(web::Referrer)referrer
+               frameID:(const std::string&)frameID
+           frameOrigin:(const url::Origin&)frameOrigin {
+  if (!self.webState) {
+    return;
+  }
+
+  RecordClipboardSourceMetrics(ClipboardAction::kCopy,
+                               ClipboardSource::kCustomAction);
+
+  const std::string frameIDCopy = frameID;
+  const url::Origin frameOriginCopy = frameOrigin;
+
+  __weak __typeof(self) weakSelf = self;
+  ProceduralBlock finishCopyImage = ^{
+    ContextMenuConfigurationProvider* strongSelf = weakSelf;
+    if (!strongSelf || !strongSelf.baseViewController) {
+      return;
+    }
+    [weakSelf.imageCopier copyImageAtURL:imageURL
+                                referrer:referrer
+                                webState:strongSelf.webState
+                                 frameID:frameIDCopy
+                             frameOrigin:frameOriginCopy
+                      baseViewController:strongSelf.baseViewController];
+  };
+
+  web::WebStateDelegate* webStateDelegate = self.webState->GetDelegate();
+  if (!webStateDelegate) {
+    RecordClipboardOutcomeMetrics(ClipboardAction::kCopy, true);
+    finishCopyImage();
+    return;
+  }
+
+  // Check if copying content from the current web page is allowed by
+  // policies.
+  webStateDelegate->ShouldAllowCopy(
+      self.webState, base::BindOnce(^(bool allowed) {
+        RecordClipboardOutcomeMetrics(ClipboardAction::kCopy, allowed);
+        if (allowed) {
+          finishCopyImage();
+        }
+      }));
+}
+
+// Checks enterprise policy and copies the given `linkURL` to the pasteboard.
+- (void)copyLinkWithURL:(GURL)linkURL {
+  if (!self.webState) {
+    return;
+  }
+
+  RecordClipboardSourceMetrics(ClipboardAction::kCopy,
+                               ClipboardSource::kCustomAction);
+
+  web::WebStateDelegate* webStateDelegate = self.webState->GetDelegate();
+  if (!webStateDelegate) {
+    RecordClipboardOutcomeMetrics(ClipboardAction::kCopy, true);
+    StoreURLInPasteboard(linkURL);
+    return;
+  }
+
+  // Check if copying content from the current web page is allowed by
+  // policies.
+  webStateDelegate->ShouldAllowCopy(
+      self.webState, base::BindOnce(^(bool allowed) {
+        RecordClipboardOutcomeMetrics(ClipboardAction::kCopy, allowed);
+        if (allowed) {
+          StoreURLInPasteboard(linkURL);
+        }
+      }));
+}
+
+// Returns true if sharing from the context menu is allowed.
+- (BOOL)isSharingAllowed {
+  // TODO(crbug.com/351817704): Disable the share menu with lens overlay as the
+  // share sheet is not presented in `baseViewController`.
+  if (_isLensOverlay) {
+    return NO;
+  }
+
+  auto* data_controls_tab_helper =
+      data_controls::DataControlsTabHelper::FromWebState(self.webState);
+  return data_controls_tab_helper->ShouldAllowShare();
+}
+
+// Opens the Gemini overlay with an image attached. Fetches the image from
+// `imageURL` using `referrer`, and then sanitizes/transcodes the image.
+- (void)openGeminiWithImageURL:(GURL)imageURL
+                      referrer:(web::Referrer)referrer
+                        params:(web::ContextMenuParams)params {
+  ImageFetchTabHelper* imageFetcher =
+      ImageFetchTabHelper::FromWebState(self.webState);
+  CHECK(imageFetcher);
+
+  __weak ContextMenuConfigurationProvider* weakSelf = self;
+  imageFetcher->GetImageData(
+      imageURL, referrer, params.frame_id, params.frame_security_origin,
+      ^(NSData* imageData) {
+        // Safely transcode image data.
+        [weakSelf sanitizeImageData:imageData
+                           mimeType:kPortableNetworkGraphicMimeType
+                         completion:^(NSData* transcodedData) {
+                           UIImage* imageFromData = nil;
+                           if (transcodedData) {
+                             imageFromData =
+                                 [UIImage imageWithData:transcodedData];
+                           }
+
+                           [weakSelf openGeminiWithImage:imageFromData];
+                         }];
+      });
+}
+
+// Opens the Gemini overlay with an image attached. The sanitized `image` is
+// passed to Gemini.
+- (void)openGeminiWithImage:(UIImage*)image {
+  double aspectRatio = 0.0;
+  if (image.size.width > 0 && image.size.height > 0) {
+    aspectRatio = image.size.width / image.size.height;
+  }
+  RecordImageRemixContextMenuEntryPointTapped(aspectRatio);
+
+  id<GeminiCommands> handler =
+      HandlerForProtocol(_browser->GetCommandDispatcher(), GeminiCommands);
+  GeminiStartupState* state = [[GeminiStartupState alloc]
+      initWithEntryPoint:gemini::EntryPoint::ImageContextMenu];
+  state.imageAttachment = image;
+  [handler startGeminiEntryFlowWithStartupState:state
+                             baseViewController:self.baseViewController
+                       showSnackbarOnCompletion:YES
+                                     completion:nil];
 }
 
 @end

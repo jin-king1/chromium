@@ -12,6 +12,7 @@ import static org.hamcrest.Matchers.is;
 import android.app.Activity;
 import android.content.Intent;
 import android.text.TextUtils;
+import android.view.View;
 
 import androidx.annotation.CallSuper;
 import androidx.annotation.Nullable;
@@ -26,14 +27,30 @@ import com.google.android.apps.common.testing.accessibility.framework.checks.Tou
 
 import org.junit.Assert;
 import org.junit.rules.ExternalResource;
+import org.junit.runner.Description;
+import org.junit.runners.model.Statement;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
 import org.chromium.base.test.util.ApplicationTestUtils;
+import org.chromium.base.ui.KeyboardUtils;
+
+import java.util.EnumSet;
 
 /**
  * A replacement for ActivityTestRule, designed for use in Chromium. This implementation supports
  * launching the target activity through a launcher or redirect from another Activity.
+ *
+ * <p>This would make more sense to be in //ui/android but it's difficult to move since it's used
+ * broadly.
+ *
+ * <p>Relevant adaptations:
+ *
+ * <ul>
+ *   <li>Enables accessibility checks (with some suppressions).
+ *   <li>Finishes the Activity after the test (by default).
+ *   <li>Checks that the soft keyboard is hidden after the test.
+ * </ul>
  *
  * @param <T> The type of Activity this Rule will use.
  */
@@ -43,6 +60,7 @@ public class BaseActivityTestRule<T extends Activity> extends ExternalResource {
     private final Class<T> mActivityClass;
     private boolean mFinishActivity = true;
     private T mActivity;
+    private boolean mIsClassRule;
 
     /**
      * @param activityClass The Class of the Activity the TestRule will use.
@@ -97,10 +115,20 @@ public class BaseActivityTestRule<T extends Activity> extends ExternalResource {
     }
 
     @Override
+    public Statement apply(Statement base, Description description) {
+        mIsClassRule = (description.getMethodName() == null);
+        return super.apply(base, description);
+    }
+
+    @Override
     @CallSuper
     protected void after() {
-        if (mFinishActivity && mActivity != null) {
-            finishActivity();
+        try {
+            ensureSoftKeyboardIsHidden();
+        } finally {
+            if ((mIsClassRule || mFinishActivity) && mActivity != null) {
+                finishActivity();
+            }
         }
     }
 
@@ -111,6 +139,16 @@ public class BaseActivityTestRule<T extends Activity> extends ExternalResource {
      */
     public void setFinishActivity(boolean finishActivity) {
         mFinishActivity = finishActivity;
+    }
+
+    protected void ensureSoftKeyboardIsHidden() {
+        T activity = getActivity();
+        if (activity != null) {
+            View decorView = activity.getWindow().getDecorView();
+            if (KeyboardUtils.isAndroidSoftKeyboardShowing(decorView)) {
+                Log.w(TAG, "Soft keyboard should not be showing at the end of a test.");
+            }
+        }
     }
 
     /**
@@ -155,16 +193,14 @@ public class BaseActivityTestRule<T extends Activity> extends ExternalResource {
         final Intent intent = startIntent;
         // Android system pauses the activity on delivering an intent to an existing activity.
         // https://developer.android.com/reference/android/app/Activity#onNewIntent(android.content.Intent)
-        Stage targetStage =
-                ((startIntent.getFlags() & Intent.FLAG_ACTIVITY_SINGLE_TOP) != 0
-                                && mActivity != null
-                                && !mActivity.isFinishing())
-                        ? Stage.PAUSED
-                        : Stage.CREATED;
+        EnumSet<Stage> targetStages =
+                (startIntent.getFlags() & Intent.FLAG_ACTIVITY_SINGLE_TOP) != 0
+                        ? EnumSet.of(Stage.PAUSED, Stage.CREATED)
+                        : EnumSet.of(Stage.CREATED);
         mActivity =
                 ApplicationTestUtils.waitForActivityWithClass(
                         mActivityClass,
-                        targetStage,
+                        targetStages,
                         () -> ContextUtils.getApplicationContext().startActivity(intent));
         return mActivity;
     }

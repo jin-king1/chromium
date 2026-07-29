@@ -4,6 +4,8 @@
 
 #include "content/browser/btm/cookie_access_filter.h"
 
+#include <string>
+
 #include "content/browser/btm/btm_utils.h"
 
 namespace content {
@@ -38,9 +40,9 @@ void CookieAccessFilter::AddAccess(const GURL& url, CookieOperation op) {
 // To handle that corner case (imperfectly), if the same URL appears multiple
 // times in a row, it will get the same BtmDataAccessType for all of them.
 bool CookieAccessFilter::Filter(const std::vector<GURL>& urls,
-                                std::vector<BtmDataAccessType>* result) const {
-  result->clear();
-  result->resize(urls.size(), BtmDataAccessType::kNone);
+                                std::vector<BtmDataAccessType>& result) const {
+  result.clear();
+  result.resize(urls.size(), BtmDataAccessType::kNone);
 
   size_t url_idx = 0;
   size_t access_idx = 0;
@@ -53,7 +55,7 @@ bool CookieAccessFilter::Filter(const std::vector<GURL>& urls,
       //
       // Move on to the next redirect URL, but keep trying the same cookie URL
       // (in case we coalesced multiple visits into a single accesses_ entry).
-      (*result)[url_idx] = accesses_[access_idx].type;
+      result[url_idx] = accesses_[access_idx].type;
       ++url_idx;
       matched = true;
     } else if (matched) {
@@ -84,8 +86,17 @@ bool CookieAccessFilter::Filter(const std::vector<GURL>& urls,
   }
 
   // Otherwise, fill the entire result vector with kUnknown and return false.
-  std::fill(result->begin(), result->end(), BtmDataAccessType::kUnknown);
+  std::fill(result.begin(), result.end(), BtmDataAccessType::kUnknown);
   return false;
+}
+
+std::vector<GURL> CookieAccessFilter::GetUrlsForDebuging() const {
+  std::vector<GURL> urls;
+  for (const CookieAccess& access : accesses_) {
+    urls.push_back(access.url);
+  }
+
+  return urls;
 }
 
 }  // namespace content

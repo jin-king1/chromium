@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "components/viz/service/frame_sinks/video_capture/video_capture_overlay.h"
 
 #include <array>
@@ -15,6 +10,10 @@
 #include <vector>
 
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
+#include "base/containers/auto_spanification_helper.h"
+#include "base/containers/heap_array.h"
+#include "base/containers/span.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
@@ -29,6 +28,7 @@
 #include "media/base/video_util.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
+#include "skia/ext/rgba_to_yuva.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/skia/include/core/SkBitmap.h"
@@ -38,7 +38,6 @@
 #include "third_party/skia/include/core/SkImageInfo.h"
 #include "third_party/skia/include/core/SkPixmap.h"
 #include "ui/gfx/color_space.h"
-#include "ui/gfx/color_transform.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/geometry/size.h"
@@ -90,15 +89,17 @@ class VideoCaptureOverlayTest : public testing::Test {
     // image blending algorithms are working properly.
     constexpr SkColor4f kTestImageBackground =
         SkColor4f{1.0f, 1.0f, 1.0f, 1.0f};
-    constexpr SkColor4f kTestImageColors[4] = {
+    constexpr std::array<SkColor4f, 4> kTestImageColors = {
         SkColor4f{1.0f, 0.0f, 0.0f, 0.667f},
         SkColor4f{0.0f, 0.933f, 0.0f, 0.733f},
         SkColor4f{0.0f, 0.0f, 0.467f, 0.8f},
         SkColor4f{0.4f, 0.4f, 0.0f, 0.867f},
     };
-    constexpr SkIRect kTestImageColorRects[4] = {
-        SkIRect::MakeXYWH(4, 2, 4, 4), SkIRect::MakeXYWH(16, 2, 4, 4),
-        SkIRect::MakeXYWH(4, 10, 4, 4), SkIRect::MakeXYWH(16, 10, 4, 4),
+    constexpr std::array<SkIRect, 4> kTestImageColorRects = {
+        SkIRect::MakeXYWH(4, 2, 4, 4),
+        SkIRect::MakeXYWH(16, 2, 4, 4),
+        SkIRect::MakeXYWH(4, 10, 4, 4),
+        SkIRect::MakeXYWH(16, 10, 4, 4),
     };
 
     SkBitmap result;
@@ -456,9 +457,11 @@ class VideoCaptureOverlayRenderTest
     if (is_argb_test()) {
       uint8_t* dst = frame->GetWritableVisibleData(VideoFrame::Plane::kARGB);
       const int stride = frame->stride(VideoFrame::Plane::kARGB);
-      for (int row = 0; row < size.height(); ++row, dst += stride) {
+      for (int row = 0; row < size.height();
+           ++row, UNSAFE_TODO(dst += stride)) {
         uint32_t* const begin = reinterpret_cast<uint32_t*>(dst);
-        std::fill(begin, begin + size.width(), UINT32_C(0xff000000));
+        std::fill(begin, UNSAFE_TODO(begin + size.width()),
+                  UINT32_C(0xff000000));
       }
     } else /* if (!is_argb_test()) */ {
       media::FillYUV(frame.get(), 0x00, 0x80, 0x80);
@@ -479,74 +482,9 @@ class VideoCaptureOverlayRenderTest
         png_color_space.ToSkColorSpace());
     SkBitmap canonical_bitmap;
     CHECK(canonical_bitmap.tryAllocPixels(canonical_format, 0));
-
-    // Populate |canonical_bitmap| with data from the frame. For I420, use
-    // gfx::ColorTransform to map back from YUV→RGB.
-    switch (frame.format()) {
-      case media::PIXEL_FORMAT_ARGB: {
-        // Map from the video frame's ARGB format to the canonical
-        // representation.
-        const SkImageInfo frame_format = SkImageInfo::Make(
-            frame.visible_rect().width(), frame.visible_rect().height(),
-            kBGRA_8888_SkColorType, kUnpremul_SkAlphaType,
-            frame.ColorSpace().ToSkColorSpace());
-        canonical_bitmap.writePixels(
-            SkPixmap(frame_format, frame.visible_data(VideoFrame::Plane::kARGB),
-                     frame.stride(VideoFrame::Plane::kARGB)),
-            0, 0);
-        break;
-      }
-
-      case media::PIXEL_FORMAT_I420: {
-        // Map from I420 planar [0,255] (of which only [16,235] is used) values
-        // to interleaved [0.0,1.0] values.
-        const gfx::Size& size = frame.visible_rect().size();
-        std::unique_ptr<gfx::ColorTransform::TriStim[]> colors(
-            new gfx::ColorTransform::TriStim[size.GetArea()]);
-        int pos = 0;
-        for (int row = 0; row < size.height(); ++row) {
-          const uint8_t* y = frame.visible_data(VideoFrame::Plane::kY) +
-                             (row * frame.stride(VideoFrame::Plane::kY));
-          const uint8_t* u = frame.visible_data(VideoFrame::Plane::kU) +
-                             ((row / 2) * frame.stride(VideoFrame::Plane::kU));
-          const uint8_t* v = frame.visible_data(VideoFrame::Plane::kV) +
-                             ((row / 2) * frame.stride(VideoFrame::Plane::kV));
-          for (int col = 0; col < size.width(); ++col) {
-            colors[pos].SetPoint(y[col] / 255.0f, u[col / 2] / 255.0f,
-                                 v[col / 2] / 255.0f);
-            ++pos;
-          }
-        }
-
-        // Execute the YUV→RGB conversion.
-        gfx::ColorTransform::NewColorTransform(frame.ColorSpace(),
-                                               png_color_space)
-            ->Transform(colors.get(), size.GetArea());
-
-        // Map back from interleaved [0.0,1.0] values to intervealed ARGB,
-        // setting alpha=100%.
-        const auto ToClamped255 = [](float value) -> uint32_t {
-          value = (value * 255.0f) + 0.5f /* rounding */;
-          return base::saturated_cast<uint8_t>(value);
-        };
-        pos = 0;
-        for (int row = 0; row < size.height(); ++row) {
-          uint32_t* out = canonical_bitmap.getAddr32(0, row);
-          for (int col = 0; col < size.width(); ++col) {
-            out[col] = ((UINT32_C(255) << SK_A32_SHIFT) |
-                        (ToClamped255(colors[pos].x()) << SK_R32_SHIFT) |
-                        (ToClamped255(colors[pos].y()) << SK_G32_SHIFT) |
-                        (ToClamped255(colors[pos].z()) << SK_B32_SHIFT));
-            ++pos;
-          }
-        }
-
-        break;
-      }
-
-      default:
-        NOTREACHED();
-    }
+    skia::ConvertYUVAToRGBA(frame.GetVisibleSkYUVAInfo(), frame.BitDepth(),
+                            frame.GetVisiblePlanesSkPixmaps(),
+                            canonical_bitmap.pixmap());
 
     // Determine the full path to the golden file to compare the results.
     base::FilePath golden_file_path;
@@ -591,11 +529,11 @@ class VideoCaptureOverlayRenderTest
     return matches_golden_file;
   }
 
-  void ExpectRendersAs(VideoCaptureOverlay::OnceRenderer* renderers,
-                       const char* const* expected_files,
-                       const std::size_t count,
+  void ExpectRendersAs(base::span<VideoCaptureOverlay::OnceRenderer> renderers,
+                       base::span<const char* const> expected_files,
                        const gfx::Size& video_frame_size) {
-    for (std::size_t i = 0; i < count; ++i) {
+    ASSERT_EQ(renderers.size(), expected_files.size());
+    for (std::size_t i = 0; i < renderers.size(); ++i) {
       auto frame = CreateVideoFrame(video_frame_size);
       CHECK(renderers[i]);
       std::move(renderers[i]).Run(frame.get());
@@ -694,7 +632,7 @@ TEST_P(VideoCaptureOverlayRenderTest, MovesAround) {
   const gfx::Size video_frame_size(test_bitmap.width() * 4,
                                    test_bitmap.height() * 4);
 
-  const gfx::RectF relative_image_bounds[6] = {
+  const std::array<gfx::RectF, 6> relative_image_bounds = {
       gfx::RectF(0.0f, 0.0f, 0.5f, 0.5f),
       gfx::RectF(1.0f / video_frame_size.width(), 0.0f, 0.5f, 0.5f),
       gfx::RectF(2.0f / video_frame_size.width(), 0.0f, 0.5f, 0.5f),
@@ -705,7 +643,7 @@ TEST_P(VideoCaptureOverlayRenderTest, MovesAround) {
       gfx::RectF(0.5f, 0.5f, 0.5f, 0.5f),
   };
 
-  VideoCaptureOverlay::OnceRenderer renderers[6];
+  std::array<VideoCaptureOverlay::OnceRenderer, 6> renderers;
   for (int i = 0; i < 6; ++i) {
     if (i == 0) {
       overlay.SetImageAndBounds(test_bitmap, relative_image_bounds[i]);
@@ -728,8 +666,7 @@ TEST_P(VideoCaptureOverlayRenderTest, MovesAround) {
       "overlay_moves_2_1.png", "overlay_moves_2_2.png", "overlay_moves_lr.png",
   };
 
-  ExpectRendersAs(renderers, kGoldenFiles.data(), kGoldenFiles.size(),
-                  video_frame_size);
+  ExpectRendersAs(renderers, kGoldenFiles, video_frame_size);
 }
 
 // Tests that the overlay will be partially rendered (clipped) when any part of
@@ -765,14 +702,14 @@ TEST_P(VideoCaptureOverlayRenderTest, ClipsToContentBounds) {
                                   test_bitmap.width() * 2,
                                   test_bitmap.height() * 2);
 
-  const gfx::RectF relative_image_bounds[4] = {
+  const std::array<gfx::RectF, 4> relative_image_bounds = {
       gfx::RectF(-0.25f, -0.25f, 0.5f, 0.5f),
       gfx::RectF(0.75f, -0.25f, 0.5f, 0.5f),
       gfx::RectF(0.75f, 0.75f, 0.5f, 0.5f),
       gfx::RectF(-0.25f, 0.75f, 0.5f, 0.5f),
   };
 
-  VideoCaptureOverlay::OnceRenderer renderers[4];
+  std::array<VideoCaptureOverlay::OnceRenderer, 4> renderers;
   for (int i = 0; i < 4; ++i) {
     if (i == 0) {
       overlay.SetImageAndBounds(test_bitmap, relative_image_bounds[i]);
@@ -797,8 +734,7 @@ TEST_P(VideoCaptureOverlayRenderTest, ClipsToContentBounds) {
       "overlay_clips_ll.png",
   };
 
-  ExpectRendersAs(renderers, kGoldenFiles.data(), kGoldenFiles.size(),
-                  video_frame_size);
+  ExpectRendersAs(renderers, kGoldenFiles, video_frame_size);
 }
 
 TEST_P(VideoCaptureOverlayRenderTest, HandlesEmptySubRegion) {
@@ -842,14 +778,14 @@ TEST_P(VideoCaptureOverlayRenderTest, ClipsToSubregionBounds) {
   const gfx::Rect compositor_frame_subrect(
       test_bitmap.width(), test_bitmap.height(), test_bitmap.width() * 2,
       test_bitmap.height() * 2);
-  const gfx::RectF relative_image_bounds[4] = {
+  const std::array<gfx::RectF, 4> relative_image_bounds = {
       gfx::RectF(0.125f, .125f, 0.25f, 0.25f),
       gfx::RectF(0.625f, .125f, 0.25f, 0.25f),
       gfx::RectF(0.625f, 0.625f, 0.25f, 0.25f),
       gfx::RectF(.125f, 0.625f, 0.25f, 0.25f),
   };
 
-  VideoCaptureOverlay::OnceRenderer renderers[4];
+  std::array<VideoCaptureOverlay::OnceRenderer, 4> renderers;
   for (int i = 0; i < 4; ++i) {
     if (i == 0) {
       overlay.SetImageAndBounds(test_bitmap, relative_image_bounds[i]);
@@ -874,8 +810,7 @@ TEST_P(VideoCaptureOverlayRenderTest, ClipsToSubregionBounds) {
       "overlay_clips_ll_subregion.png",
   };
 
-  ExpectRendersAs(renderers, kGoldenFiles.data(), kGoldenFiles.size(),
-                  compositor_frame_subrect.size());
+  ExpectRendersAs(renderers, kGoldenFiles, compositor_frame_subrect.size());
 }
 
 TEST_P(VideoCaptureOverlayRenderTest, ScalesToContentRegion) {
@@ -896,14 +831,14 @@ TEST_P(VideoCaptureOverlayRenderTest, ScalesToContentRegion) {
       test_bitmap.width() * 2, test_bitmap.height() * 2,
       test_bitmap.width() * 6, test_bitmap.height() * 6);
 
-  const gfx::RectF relative_image_bounds[4] = {
+  const std::array<gfx::RectF, 4> relative_image_bounds = {
       gfx::RectF(0.125f, .125f, 0.25f, 0.25f),
       gfx::RectF(0.625f, .125f, 0.25f, 0.25f),
       gfx::RectF(0.625f, 0.625f, 0.25f, 0.25f),
       gfx::RectF(.125f, 0.625f, 0.25f, 0.25f),
   };
 
-  VideoCaptureOverlay::OnceRenderer renderers[4];
+  std::array<VideoCaptureOverlay::OnceRenderer, 4> renderers;
   for (int i = 0; i < 4; ++i) {
     if (i == 0) {
       overlay.SetImageAndBounds(test_bitmap, relative_image_bounds[i]);
@@ -928,7 +863,7 @@ TEST_P(VideoCaptureOverlayRenderTest, ScalesToContentRegion) {
       "overlay_clips_ll_contentscaled.png",
   };
 
-  ExpectRendersAs(renderers, kGoldenFiles.data(), kGoldenFiles.size(),
+  ExpectRendersAs(renderers, kGoldenFiles,
                   gfx::Size(content_rect.right(), content_rect.bottom()));
 }
 

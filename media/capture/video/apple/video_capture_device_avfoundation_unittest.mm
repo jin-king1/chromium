@@ -3,11 +3,11 @@
 // found in the LICENSE file.
 
 #include "media/capture/video/apple/video_capture_device_avfoundation.h"
-#include "media/capture/video/apple/test/fake_av_capture_device_format.h"
 
 #include <memory>
 
 #include "base/functional/bind.h"
+#include "base/logging.h"
 #include "base/run_loop.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/test/bind.h"
@@ -16,6 +16,7 @@
 #include "base/time/time.h"
 #include "media/base/video_types.h"
 #include "media/capture/video/apple/sample_buffer_transformer.h"
+#include "media/capture/video/apple/test/fake_av_capture_device_format.h"
 #include "media/capture/video/apple/test/mock_video_capture_device_avfoundation_frame_receiver.h"
 #include "media/capture/video/apple/test/pixel_buffer_test_utils.h"
 #include "media/capture/video/apple/test/video_capture_test_utils.h"
@@ -56,16 +57,15 @@ TEST(VideoCaptureDeviceAVFoundationMacTest,
     base::RunLoop first_frame_received(
         base::RunLoop::Type::kNestableTasksAllowed);
     EXPECT_CALL(frame_receiver, ReceiveExternalGpuMemoryBufferFrame)
-        .WillRepeatedly(
-            testing::Invoke(WithArg<0>([&](CapturedExternalVideoBuffer frame) {
-              if (has_received_first_frame) {
-                // Ignore subsequent frames.
-                return;
-              }
-              EXPECT_EQ(frame.format.pixel_format, PIXEL_FORMAT_NV12);
-              has_received_first_frame = true;
-              first_frame_received.Quit();
-            })));
+        .WillRepeatedly(WithArg<0>([&](CapturedExternalVideoBuffer frame) {
+          if (has_received_first_frame) {
+            // Ignore subsequent frames.
+            return;
+          }
+          EXPECT_EQ(frame.format.pixel_format, PIXEL_FORMAT_NV12);
+          has_received_first_frame = true;
+          first_frame_received.Quit();
+        }));
     first_frame_received.Run();
 
     [captureDevice stopCapture];

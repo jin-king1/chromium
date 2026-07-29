@@ -30,7 +30,7 @@ constexpr char kSingleDisplayConfig[] =
     "1024, 768, 60.0, 1.0, [1.0], {'is-current': <true>}), ('800x600@60', 800, "
     "600, 60.0, 1.0, [1.0], {})], {})], [(0, 0, 1.0, 0, true, [('DUMMY0', "
     "'unknown', 'unknown', 'unknown')], {})], {'global-scale-required': "
-    "<true>})";
+    "<true>, 'layout-mode': <uint32 2>})";
 constexpr char kDualDisplayConfig[] =
     "(124, [(('DUMMY0', 'unknown', 'unknown', 'unknown'), [('800x600@60', 800, "
     "600, 60.0, 1.0, [1.0], {}), ('1600x1200@60', 1600, 1200, 60.0, 1.0, [1.0, "
@@ -39,7 +39,7 @@ constexpr char kDualDisplayConfig[] =
     "<true>}), ('1600x1200@60', 1600, 1200, 60.0, 1.0, [1.0, 2.0], {})], {})], "
     "[(0, 0, 1.0, 0, true, [('DUMMY0', 'unknown', 'unknown', 'unknown')], {}), "
     "(1600, 500, 1.0, 0, false, [('DUMMY1', 'unknown', 'unknown', 'unknown')], "
-    "{})], {'global-scale-required': <true>})";
+    "{})], {'global-scale-required': <true>, 'layout-mode': <uint32 2>})";
 
 ScopedGVariant CreateDisplayConfig(const char* serialized) {
   webrtc::Scoped<GError> error;
@@ -66,25 +66,30 @@ TEST_F(GnomeDisplayConfigDBusClientTest, GetMonitorsConfigReturnsCorrectInfo) {
   client.Init();
 
   auto callback = [](GnomeDisplayConfig config) {
-    EXPECT_EQ(123U, config.serial);
+    EXPECT_EQ(config.serial, 123U);
     EXPECT_TRUE(config.global_scale_required);
-    ASSERT_EQ(1U, config.monitors.count("DUMMY0"));
+    EXPECT_EQ(config.layout_mode, GnomeDisplayConfig::LayoutMode::kPhysical);
+    ASSERT_EQ(config.monitors.count("DUMMY0"), 1U);
     const auto& monitor = config.monitors["DUMMY0"];
-    EXPECT_EQ(0, monitor.x);
-    EXPECT_EQ(0, monitor.y);
-    EXPECT_EQ(1.0, monitor.scale);
+    EXPECT_EQ(monitor.x, 0);
+    EXPECT_EQ(monitor.y, 0);
+    EXPECT_EQ(monitor.scale, 1.0);
     EXPECT_TRUE(monitor.is_primary);
-    ASSERT_EQ(2U, monitor.modes.size());
+    ASSERT_EQ(monitor.modes.size(), 2U);
     const auto& mode1 = monitor.modes[0];
     const auto& mode2 = monitor.modes[1];
-    EXPECT_EQ("1024x768@60", mode1.name);
-    EXPECT_EQ(1024, mode1.width);
-    EXPECT_EQ(768, mode1.height);
+    EXPECT_EQ(mode1.name, "1024x768@60");
+    EXPECT_EQ(mode1.width, 1024);
+    EXPECT_EQ(mode1.height, 768);
     EXPECT_TRUE(mode1.is_current);
-    EXPECT_EQ("800x600@60", mode2.name);
-    EXPECT_EQ(800, mode2.width);
-    EXPECT_EQ(600, mode2.height);
+    ASSERT_EQ(mode1.supported_scales.size(), 1U);
+    EXPECT_EQ(mode1.supported_scales[0], 1.0);
+    EXPECT_EQ(mode2.name, "800x600@60");
+    EXPECT_EQ(mode2.width, 800);
+    EXPECT_EQ(mode2.height, 600);
     EXPECT_FALSE(mode2.is_current);
+    ASSERT_EQ(mode2.supported_scales.size(), 1U);
+    EXPECT_EQ(mode2.supported_scales[0], 1.0);
   };
   client.GetMonitorsConfig(
       base::BindOnce(callback).Then(run_loop.QuitClosure()));
@@ -102,24 +107,29 @@ TEST_F(GnomeDisplayConfigDBusClientTest, CorrectInfoForSecondMonitor) {
   client.Init();
 
   auto callback = [](GnomeDisplayConfig config) {
-    EXPECT_EQ(124U, config.serial);
-    ASSERT_EQ(1U, config.monitors.count("DUMMY1"));
+    EXPECT_EQ(config.serial, 124U);
+    ASSERT_EQ(config.monitors.count("DUMMY1"), 1U);
     const auto& monitor = config.monitors["DUMMY1"];
-    EXPECT_EQ(1600, monitor.x);
-    EXPECT_EQ(500, monitor.y);
-    EXPECT_EQ(1.0, monitor.scale);
+    EXPECT_EQ(monitor.x, 1600);
+    EXPECT_EQ(monitor.y, 500);
+    EXPECT_EQ(monitor.scale, 1.0);
     EXPECT_FALSE(monitor.is_primary);
-    ASSERT_EQ(2U, monitor.modes.size());
+    ASSERT_EQ(monitor.modes.size(), 2U);
     const auto& mode1 = monitor.modes[0];
     const auto& mode2 = monitor.modes[1];
-    EXPECT_EQ("800x600@60", mode1.name);
-    EXPECT_EQ(800, mode1.width);
-    EXPECT_EQ(600, mode1.height);
+    EXPECT_EQ(mode1.name, "800x600@60");
+    EXPECT_EQ(mode1.width, 800);
+    EXPECT_EQ(mode1.height, 600);
     EXPECT_TRUE(mode1.is_current);
-    EXPECT_EQ("1600x1200@60", mode2.name);
-    EXPECT_EQ(1600, mode2.width);
-    EXPECT_EQ(1200, mode2.height);
+    ASSERT_EQ(mode1.supported_scales.size(), 1U);
+    EXPECT_EQ(mode1.supported_scales[0], 1.0);
+    EXPECT_EQ(mode2.name, "1600x1200@60");
+    EXPECT_EQ(mode2.width, 1600);
+    EXPECT_EQ(mode2.height, 1200);
     EXPECT_FALSE(mode2.is_current);
+    ASSERT_EQ(mode2.supported_scales.size(), 2U);
+    EXPECT_EQ(mode2.supported_scales[0], 1.0);
+    EXPECT_EQ(mode2.supported_scales[1], 2.0);
   };
   client.GetMonitorsConfig(
       base::BindOnce(callback).Then(run_loop.QuitClosure()));
@@ -147,15 +157,17 @@ TEST_F(GnomeDisplayConfigDBusClientTest, CorrectConfigBuiltForGnome) {
 
   GnomeDisplayConfig config;
   config.serial = 123;
+  config.layout_mode = GnomeDisplayConfig::LayoutMode::kPhysical;
   config.monitors["DUMMY0"] = dummy0;
 
   std::string expected_format =
-      "(123, 2, [(10, 20, 1.0, 0, true, [('DUMMY0', '800x600', {})])], {})";
+      "(123, 2, [(10, 20, 1.0, 0, true, [('DUMMY0', '800x600', {})])], "
+      "{'layout-mode': <uint32 2>})";
   ScopedGVariant logical_monitors = config.BuildMonitorsConfigParameters();
   webrtc::Scoped<char> actual_format(
       g_variant_print(logical_monitors.get(), FALSE));
 
-  EXPECT_EQ(expected_format, actual_format.get());
+  EXPECT_EQ(actual_format.get(), expected_format);
 }
 
 }  // namespace remoting

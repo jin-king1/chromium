@@ -34,6 +34,27 @@ enum class FirstRunSentinelCreationResult {
   kMaxValue = kFileSystemError,
 };
 
+// An enumeration of startup temperatures. This must be kept in sync with
+// the UMA StartupType enumeration defined in histograms.xml.
+// LINT.IfChange(StartupTemperature)
+enum StartupTemperature {
+  // The startup was a cold start: nearly all of the binaries and resources were
+  // brought into memory using hard faults.
+  COLD_STARTUP_TEMPERATURE = 0,
+  // The startup was a warm start: the binaries and resources were mostly
+  // already resident in memory and effectively no hard faults were observed.
+  WARM_STARTUP_TEMPERATURE = 1,
+  // The startup type couldn't quite be classified as warm or cold, but rather
+  // was somewhere in between.
+  LUKEWARM_STARTUP_TEMPERATURE = 2,
+  // Startup temperature wasn't yet determined, or could not be determined.
+  UNDETERMINED_STARTUP_TEMPERATURE = 3,
+  // This must be after all meaningful values. All new values should be added
+  // above this one.
+  STARTUP_TEMPERATURE_COUNT,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/startup/enums.xml:StartupTemperature)
+
 class COMPONENT_EXPORT(STARTUP_METRIC_UTILS)
     BrowserStartupMetricRecorder final {
  public:
@@ -92,6 +113,19 @@ class COMPONENT_EXPORT(STARTUP_METRIC_UTILS)
       base::TimeTicks now,
       base::TimeTicks render_process_host_init_time);
 
+  // Similar to `RecordFirstWebContentsNonEmptyPaint`, but only for auto
+  // launches by the OS.
+  void RecordFirstWebContentsNonEmptyPaintForOsLaunch(base::TimeTicks now);
+
+  // Call this with the time when the first web contents had a first contentful
+  // paint. Records at most once per session.
+  void RecordFirstWebContentsFirstContentfulPaint(base::TimeTicks fcp_ticks);
+
+  // Call this with the time when the first web contents had a largest
+  // contentful paint. Only recorded if the first contentful paint was already
+  // recorded for this session. Records at most once per session.
+  void RecordFirstWebContentsLargestContentfulPaint(base::TimeTicks lcp_ticks);
+
   // Call this with the time when the first web contents began navigating its
   // main frame / successfully committed its navigation for the main frame.
   // These functions must be called after RecordApplicationStartTime(), because
@@ -106,9 +140,9 @@ class COMPONENT_EXPORT(STARTUP_METRIC_UTILS)
 
   void RecordFirstRunSentinelCreation(FirstRunSentinelCreationResult result);
 
-  // On Windows, records the number of hard-faults that have occurred in the
-  // current chrome.exe process since it was started. This is a nop on other
-  // platforms.
+  // On Windows, macOS, and Linux, records the number of hard-faults that have
+  // occurred in the current chrome process since it was started. This is a nop
+  // on other platforms.
   void RecordHardFaultHistogram();
 
   // Call this to record an arbitrary startup timing histogram with startup
@@ -132,6 +166,16 @@ class COMPONENT_EXPORT(STARTUP_METRIC_UTILS)
 
   bool ShouldLogStartupHistogram() const;
 
+  // Returns the startup temperature if available.
+  StartupTemperature GetStartupTemperature() const;
+
+  // Returns true if this is the first run of the browser.
+  bool IsFirstRun() const;
+
+  // Returns the appropriate application start ticks for use in startup metrics.
+  // Returns a null TimeTicks if a value has not been recorded yet.
+  base::TimeTicks GetApplicationStartTicksForStartup() const;
+
 #if BUILDFLAG(IS_CHROMEOS)
   // On ChromeOS, the time at which the first browser window is opened may not
   // match the application start time mainly because the login screen is often
@@ -151,9 +195,9 @@ class COMPONENT_EXPORT(STARTUP_METRIC_UTILS)
       BrowserStartupMetricRecorder& GetBrowser();
 
   // Only permit construction from within GetBrowser().
-  BrowserStartupMetricRecorder() = default;
+  BrowserStartupMetricRecorder();
 
-#if BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
   // Returns the hard fault count of the current process, or nullopt if it can't
   // be determined.
   std::optional<uint32_t> GetHardFaultCountForCurrentProcess();
@@ -168,6 +212,8 @@ class COMPONENT_EXPORT(STARTUP_METRIC_UTILS)
       const char* histogram_basename,
       base::TimeTicks begin_ticks,
       base::TimeTicks end_ticks);
+
+  void EmitBrowserWindowDisplayHistogram();
 
   // Mark as volatile to defensively make sure usage is thread-safe.
   // Note that at the time of this writing, access is only on the UI thread.
@@ -186,6 +232,13 @@ class COMPONENT_EXPORT(STARTUP_METRIC_UTILS)
   bool is_privacy_sandbox_attestations_component_ready_recorded_ = false;
 
   bool is_privacy_sandbox_attestations_first_check_recorded_ = false;
+
+  bool is_first_run_ = false;
+
+  bool is_browser_window_display_metric_emitted_ = false;
+
+  bool did_record_startup_fcp_ = false;
+  bool did_record_startup_lcp_ = false;
 };
 
 COMPONENT_EXPORT(STARTUP_METRIC_UTILS)

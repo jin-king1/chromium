@@ -11,7 +11,6 @@
 #include "base/check.h"
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
-#include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/metrics/histogram.h"
@@ -19,6 +18,7 @@
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/threading/thread_checker.h"
+#include "components/leveldb_proto/internal/leveldb_proto_feature_list.h"
 #include "components/leveldb_proto/public/proto_database.h"
 #include "third_party/leveldatabase/env_chromium.h"
 #include "third_party/leveldatabase/leveldb_chrome.h"
@@ -34,25 +34,9 @@ namespace leveldb_proto {
 
 namespace {
 
-// Covers 8MB block cache,
-const int kMaxApproxMemoryUseMB = 16;
-
 bool PrefixStopCallback(const std::string& prefix, const std::string& key) {
   return base::StartsWith(key, prefix, base::CompareCase::SENSITIVE);
 }
-
-// Controls whether database writes are asynchronous. This reduces disk
-// contention and improves overall browser speed. The last asynchronous writes
-// may be lost in case of operating system or power failure (note: a mere
-// process crash wouldn't prevent a write from completing), but leveldb_proto
-// clients don't have strong persistence requirements (see
-// https://docs.google.com/document/d/1nd74W_uUZrU0sOFjWO9xyxFhQPIR1uBcJyoRWkw0_LA/edit?usp=sharing).
-// Database corruption is not a concern due to leveldb's journaling system. More
-// details at
-// https://github.com/google/leveldb/blob/main/doc/index.md#synchronous-writes.
-BASE_FEATURE(kLevelDBProtoAsyncWrite,
-             "LevelDBProtoAsyncWrite",
-             base::FEATURE_ENABLED_BY_DEFAULT);
 
 }  // namespace
 
@@ -72,14 +56,7 @@ Enums::KeyIteratorAction LevelDB::ComputeIteratorAction(
   return Enums::kSkipAndContinue;
 }
 
-LevelDB::LevelDB(const char* client_name) {
-  // Used in lieu of UMA_HISTOGRAM_ENUMERATION because the histogram name is
-  // not a constant.
-  approx_memtable_mem_histogram_ = base::LinearHistogram::FactoryGet(
-      std::string("LevelDB.ApproximateMemTableMemoryUse.") + client_name, 1,
-      kMaxApproxMemoryUseMB * 1048576, kMaxApproxMemoryUseMB * 4,
-      base::Histogram::kUmaTargetedHistogramFlag);
-}
+LevelDB::LevelDB(const char* client_name) {}
 
 LevelDB::~LevelDB() {
   DFAKE_SCOPED_LOCK(thread_checker_);
@@ -117,18 +94,6 @@ leveldb::Status LevelDB::Init(const base::FilePath& database_dir,
   }
 
   if (status.ok()) {
-    if (!in_mem) {
-      // Record the approximate memory usage of this DB right after init.
-      // This should just be the size of the MemTable since we haven't done any
-      // reads/writes and the block cache should be empty.
-      uint64_t approx_mem = 0;
-      std::string usage_string;
-      if (GetApproximateMemoryUse(&approx_mem)) {
-        approx_memtable_mem_histogram_->Add(
-            approx_mem -
-            leveldb_chrome::GetSharedBrowserBlockCache()->TotalCharge());
-      }
-    }
     // Don't log warnings when result is InvalidArgument and create_if_missing
     // is false, as this means the DB file doesn't exist and the client didn't
     // ask to create a new one.
@@ -348,12 +313,6 @@ leveldb::Status LevelDB::Destroy() {
   if (!status.ok())
     LOG(WARNING) << "Unable to destroy " << path << ": " << status.ToString();
   return status;
-}
-
-bool LevelDB::GetApproximateMemoryUse(uint64_t* approx_mem) {
-  std::string usage_string;
-  return (db_->GetProperty("leveldb.approximate-memory-usage", &usage_string) &&
-          base::StringToUint64(usage_string, approx_mem));
 }
 
 }  // namespace leveldb_proto

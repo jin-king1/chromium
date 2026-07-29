@@ -24,7 +24,10 @@
 #include "ash/wm/overview/overview_controller.h"
 #include "ash/wm/pip/pip_controller.h"
 #include "ash/wm/pip/pip_window_resizer.h"
+#include "ash/wm/snap_group/snap_group.h"
+#include "ash/wm/snap_group/snap_group_controller.h"
 #include "ash/wm/splitview/split_view_utils.h"
+#include "ash/wm/tablet_mode/tablet_mode_window_resizer.h"
 #include "ash/wm/tile_group/window_splitter.h"
 #include "ash/wm/toplevel_window_event_handler.h"
 #include "ash/wm/window_animations.h"
@@ -33,7 +36,6 @@
 #include "ash/wm/window_util.h"
 #include "ash/wm/wm_event.h"
 #include "ash/wm/workspace/phantom_window_controller.h"
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/histogram_macros.h"
@@ -304,14 +306,23 @@ std::unique_ptr<WindowResizer> CreateWindowResizerForTabletMode(
   WindowState* window_state = WindowState::Get(window);
 
   // Dragging floated windows in tablet mode is allowed.
-  // TODO(crbug.com/1338715): Investigate if we need to wrap the resizer in a
-  // DragWindowResizer.
   if (window_state->IsFloated() && window_component == HTCAPTION) {
     window_state->CreateDragDetails(point_in_parent, HTCAPTION, source);
     return std::make_unique<TabletModeFloatWindowResizer>(window_state);
   }
 
-  return nullptr;
+  // Don't allow dragging non-browser windows.
+  chromeos::AppType app_type = static_cast<chromeos::AppType>(
+      window->GetProperty(chromeos::kAppTypeKey));
+  if (app_type != chromeos::AppType::BROWSER) {
+    return nullptr;
+  }
+
+  window_state->CreateDragDetails(point_in_parent, window_component, source);
+  auto resizer = std::make_unique<TabletModeWindowResizer>(
+      window_state, std::make_unique<TabletModeWindowDragDelegate>());
+  window_state->OnDragStarted(window_component);
+  return resizer;
 }
 
 // When dragging, drags events have to moved pass this threshold before the
@@ -328,7 +339,7 @@ int GetDraggingThreshold(const DragDetails& details) {
       WindowStateType::kDefault,        WindowStateType::kNormal,
       WindowStateType::kPrimarySnapped, WindowStateType::kSecondarySnapped,
       WindowStateType::kMaximized,      WindowStateType::kFloated};
-  DCHECK(base::Contains(draggable_states, state));
+  DCHECK(std::ranges::contains(draggable_states, state));
 #endif
 
   // Snapped and maximized windows need to be dragged a certain amount before
@@ -491,7 +502,8 @@ std::unique_ptr<WindowResizer> CreateWindowResizer(
     aura::Window* window,
     const gfx::PointF& point_in_parent,
     int window_component,
-    wm::WindowMoveSource source) {
+    wm::WindowMoveSource source,
+    bool for_pinch) {
   DCHECK(window);
 
   WindowState* window_state = WindowState::Get(window);
@@ -520,13 +532,22 @@ std::unique_ptr<WindowResizer> CreateWindowResizer(
       window_state->CreateDragDetails(point_in_parent, window_component,
                                       source);
       MaybeRecordResizeHandleUsage(window, point_in_parent);
-      return std::make_unique<PipWindowResizer>(window_state);
+      auto pip_resizer =
+          std::make_unique<PipWindowResizer>(window_state, for_pinch);
+      // Wrap PipWindowResizer with DragWindowResizer to allow it to cross
+      // display boundaries.
+      return std::make_unique<DragWindowResizer>(std::move(pip_resizer),
+                                                 window_state);
     } else {
       return nullptr;
     }
   }
 
-  if (display::Screen::GetScreen()->InTabletMode()) {
+  // For windows in always-top-container, allow for default resizing/dragging in
+  // tablet-mode.
+  const auto* parent = window->parent();
+  if (display::Screen::Get()->InTabletMode() && parent &&
+      parent->GetId() != kShellWindowId_AlwaysOnTopContainer) {
     return CreateWindowResizerForTabletMode(window, point_in_parent,
                                             window_component, source);
   }
@@ -570,7 +591,6 @@ std::unique_ptr<WindowResizer> CreateWindowResizer(
   // layout manager that a drag has started or stopped. It may be possible to
   // refactor and eliminate chaining.
   std::unique_ptr<WindowResizer> window_resizer;
-  const auto* parent = window->parent();
   if (parent &&
       // TODO(afakhry): Maybe use switchable containers?
       (desks_util::IsDeskContainer(parent) ||
@@ -692,6 +712,7 @@ void WorkspaceWindowResizer::Drag(const gfx::PointF& location_in_parent,
   gfx::Rect bounds = CalculateBoundsForDrag(location_in_parent);
   AdjustBoundsForMainWindow(sticky_size, &bounds);
 
+  auto weak_this = GetWeakPtr();
   if (bounds != GetTarget()->bounds()) {
     if (!did_move_or_resize_) {
       if (!details().restore_bounds_in_parent.IsEmpty()) {
@@ -702,21 +723,11 @@ void WorkspaceWindowResizer::Drag(const gfx::PointF& location_in_parent,
             // restored (i.e. update the caption buttons and height of the
             // browser frame).
 
-            // TODO(http://crbug.com/1200599): Speculative, remove if not fixed.
-            // Change window property kFrameRestoreLookKey or window bounds may
-            // cause the window being destroyed during the drag and return early
-            // if that's the case.
-            base::WeakPtr<WorkspaceWindowResizer> resizer(
-                weak_ptr_factory_.GetWeakPtr());
             window_state()->window()->SetProperty(kFrameRestoreLookKey, true);
-            if (!resizer) {
-              return;
-            }
+            CHECK(weak_this);
             CrossFadeAnimation(window_state()->window(), bounds,
                                /*maximize=*/false);
-            if (!resizer) {
-              return;
-            }
+            CHECK(weak_this);
 
             base::RecordAction(
                 base::UserMetricsAction("WindowDrag_Unmaximize"));
@@ -726,19 +737,16 @@ void WorkspaceWindowResizer::Drag(const gfx::PointF& location_in_parent,
         }
       }
       RestackWindows();
+      CHECK(weak_this);
     }
     did_move_or_resize_ = true;
   }
 
   if (!attached_windows_.empty()) {
     LayoutAttachedWindows(&bounds);
+    CHECK(weak_this);
   }
   if (aura::Window* window = GetTarget(); bounds != window->bounds()) {
-    // SetBounds needs to be called to update the layout which affects where the
-    // phantom window is drawn. Keep track if the window was destroyed during
-    // the drag and quit early if so.
-    base::WeakPtr<WorkspaceWindowResizer> resizer(
-        weak_ptr_factory_.GetWeakPtr());
     // If a window is snapped, then starts drag to unsnap, at this point its
     // state type hasn't been updated yet. Suppress from force updating the snap
     // ratio which would be using the restore or normal bounds.
@@ -746,7 +754,10 @@ void WorkspaceWindowResizer::Drag(const gfx::PointF& location_in_parent,
     window_state->set_can_update_snap_ratio(false);
     SetBoundsDuringResize(bounds);
     window_state->set_can_update_snap_ratio(true);
-    if (!resizer) {
+    // SetBounds needs to be called to update the layout which affects where the
+    // phantom window is drawn. Keep track if the window was destroyed during
+    // the drag and quit early if so.
+    if (!weak_this) {
       return;
     }
   }
@@ -769,7 +780,7 @@ void WorkspaceWindowResizer::Drag(const gfx::PointF& location_in_parent,
   // continue performing any snap or maximize logic. Otherwise, resize top edge
   // to the top of display will fire maximize |dwell_countdown_timer_|
   // (crbug.com/1251859).
-  if (details().window_component != HTCAPTION) {
+  if (details().bounds_change != WindowResizer::kBoundsChange_Repositions) {
     return;
   }
 
@@ -785,9 +796,8 @@ void WorkspaceWindowResizer::Drag(const gfx::PointF& location_in_parent,
         kSnapTriggerVerticalMoveThreshold;
   }
 
-  display::Display display =
-      display::Screen::GetScreen()->GetDisplayNearestPoint(
-          gfx::ToRoundedPoint(location_in_screen));
+  display::Display display = display::Screen::Get()->GetDisplayNearestPoint(
+      gfx::ToRoundedPoint(location_in_screen));
   const SnapType snap_type = GetSnapType(display, location_in_screen);
   // Start dwell countdown if move window to the top of screen.
   if (IsSnapTopOrMaximize(snap_type, display)) {
@@ -939,6 +949,15 @@ void WorkspaceWindowResizer::CompleteDrag() {
       // window to.
       window_state()->SaveCurrentBoundsForRestore();
 
+      // Break the Snap Group when dragging a window out of it. Check
+      // `window_resizer_` to avoid breaking the group if it is tab dragging.
+      if (auto* snap_group =
+              SnapGroupController::Get()->GetSnapGroupForGivenWindow(
+                  window_state()->window())) {
+        SnapGroupController::Get()->RemoveSnapGroup(
+            snap_group, SnapGroupExitPoint::kDragWindowOut);
+      }
+
       // Since we saved the current bounds to the restore bounds, the restore
       // animation will use the current bounds as the target bounds, so we can
       // disable the animation here.
@@ -994,16 +1013,22 @@ void WorkspaceWindowResizer::RevertDrag() {
     return;
   }
 
-  ResetFrameRestoreLookKey(window_state());
-  GetTarget()->SetBounds(details().initial_bounds_in_parent);
-  if (!details().restore_bounds_in_parent.IsEmpty()) {
-    window_state()->SetRestoreBoundsInParent(
-        details().restore_bounds_in_parent);
+  if (!GetTarget()->is_destroying()) {
+    ResetFrameRestoreLookKey(window_state());
+    GetTarget()->SetBounds(details().initial_bounds_in_parent);
+    if (!details().restore_bounds_in_parent.IsEmpty()) {
+      window_state()->SetRestoreBoundsInParent(
+          details().restore_bounds_in_parent);
+    }
   }
 
   if (details().window_component == HTRIGHT) {
     int last_x = details().initial_bounds_in_parent.right();
     for (size_t i = 0; i < attached_windows_.size(); ++i) {
+      if (attached_windows_[i]->is_destroying()) {
+        continue;
+      }
+
       gfx::Rect bounds(attached_windows_[i]->bounds());
       bounds.set_x(last_x);
       bounds.set_width(initial_size_[i]);
@@ -1013,6 +1038,9 @@ void WorkspaceWindowResizer::RevertDrag() {
   } else {
     int last_y = details().initial_bounds_in_parent.bottom();
     for (size_t i = 0; i < attached_windows_.size(); ++i) {
+      if (attached_windows_[i]->is_destroying()) {
+        continue;
+      }
       gfx::Rect bounds(attached_windows_[i]->bounds());
       bounds.set_y(last_y);
       bounds.set_height(initial_size_[i]);
@@ -1190,6 +1218,11 @@ void WorkspaceWindowResizer::LayoutAttachedWindows(gfx::Rect* bounds) {
     bounds->set_height(bounds->height() + leftovers);
   }
 
+  // An Window Observer should not delete |this| when SetBounds() is called
+  // (via OnWindowPropertyChanged, OnWindowVisibilityChanged, etc.), so make
+  // sure |this| is valid throughout the loop to prevent a UAF when accessing
+  // `attached_windows_`.
+  WindowResizer::ScopedDeleteBlocker blocker(this);
   DCHECK_EQ(attached_windows_.size(), sizes.size());
   int last = PrimaryAxisCoordinate(bounds->right(), bounds->bottom());
   for (size_t i = 0; i < attached_windows_.size(); ++i) {
@@ -1381,7 +1414,7 @@ bool WorkspaceWindowResizer::UpdateMagnetismWindow(
   for (auto i = children.rbegin();
        i != children.rend() && !matcher.AreEdgesObscured(); ++i) {
     // Ignore already attached windows.
-    if (base::Contains(attached_windows_, *i)) {
+    if (std::ranges::contains(attached_windows_, *i)) {
       continue;
     }
 
@@ -1410,8 +1443,7 @@ void WorkspaceWindowResizer::AdjustBoundsForMainWindow(int sticky_size,
   gfx::Point last_location_in_screen =
       gfx::ToRoundedPoint(last_location_in_screen_);
   display::Display display =
-      display::Screen::GetScreen()->GetDisplayNearestPoint(
-          last_location_in_screen);
+      display::Screen::Get()->GetDisplayNearestPoint(last_location_in_screen);
   gfx::Rect work_area = display.work_area();
   wm::ConvertRectFromScreen(GetTarget()->parent(), &work_area);
   if (details().window_component == HTCAPTION) {
@@ -1654,12 +1686,23 @@ void WorkspaceWindowResizer::RestackWindows() {
     map[index] = attached_window;
   }
 
+  aura::WindowTracker tracker;
+  for (const auto& pair : map) {
+    tracker.Add(pair.second);
+  }
+
+  // StackChildAtTop and StackChildBelow have the potential to synchronously
+  // free |this| which could cause a UAF in the following iteration.
+  WindowResizer::ScopedDeleteBlocker blocker(this);
+
   // Reorder the windows starting at the topmost.
   parent->StackChildAtTop(map.rbegin()->second);
+
   for (auto i = map.rbegin(); i != map.rend();) {
     aura::Window* window = i->second;
     ++i;
-    if (i != map.rend()) {
+    if (i != map.rend() && tracker.Contains(window) &&
+        tracker.Contains(i->second)) {
       parent->StackChildBelow(i->second, window);
     }
   }
@@ -1704,7 +1747,7 @@ bool WorkspaceWindowResizer::AreBoundsValidSnappedBounds(
       state->snap_ratio().value_or(chromeos::kDefaultSnapRatio);
   gfx::Rect snapped_bounds = GetSnappedWindowBounds(
       screen_util::GetDisplayWorkAreaBoundsInParent(window),
-      display::Screen::GetScreen()->GetDisplayNearestWindow(window), window,
+      display::Screen::Get()->GetDisplayNearestWindow(window), window,
       snapped_type, snap_ratio);
   return bounds_in_parent.ApproximatelyEqual(snapped_bounds, 1);
 }

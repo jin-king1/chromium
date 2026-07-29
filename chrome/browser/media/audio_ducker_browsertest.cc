@@ -6,15 +6,14 @@
 
 #include "base/functional/bind.h"
 #include "base/run_loop.h"
-#include "base/test/scoped_feature_list.h"
 #include "chrome/browser/ui/browser.h"
+#include "chrome/test/base/chrome_test_utils.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "content/public/browser/media_session.h"
 #include "content/public/browser/media_session_service.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
-#include "media/base/media_switches.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "services/media_session/public/cpp/test/audio_focus_test_util.h"
@@ -33,9 +32,7 @@ using media_session::mojom::MediaSessionInfo;
 
 class AudioDuckerBrowserTest : public InProcessBrowserTest {
  public:
-  AudioDuckerBrowserTest() {
-    feature_list_.InitAndEnableFeature(media::kAudioDucking);
-  }
+  AudioDuckerBrowserTest() = default;
   AudioDuckerBrowserTest(const AudioDuckerBrowserTest&) = delete;
   AudioDuckerBrowserTest& operator=(const AudioDuckerBrowserTest&) = delete;
   ~AudioDuckerBrowserTest() override = default;
@@ -103,14 +100,13 @@ class AudioDuckerBrowserTest : public InProcessBrowserTest {
   }
 
  private:
-  base::test::ScopedFeatureList feature_list_;
   std::unique_ptr<media_session::test::TestAudioFocusObserver>
       audio_focus_observer_;
 };
 
 IN_PROC_BROWSER_TEST_F(AudioDuckerBrowserTest,
                        DucksAudioInOtherTabs_MediaPlaying) {
-  GURL test_page_url = ui_test_utils::GetTestUrl(
+  GURL test_page_url = chrome_test_utils::GetTestUrl(
       base::FilePath(base::FilePath::kCurrentDirectory),
       base::FilePath(kTestPage));
 
@@ -173,7 +169,7 @@ IN_PROC_BROWSER_TEST_F(AudioDuckerBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(AudioDuckerBrowserTest,
                        DucksAudioInOtherTabs_NoMediaPlaying) {
-  GURL test_page_url = ui_test_utils::GetTestUrl(
+  GURL test_page_url = chrome_test_utils::GetTestUrl(
       base::FilePath(base::FilePath::kCurrentDirectory),
       base::FilePath(kTestPage));
 
@@ -184,7 +180,7 @@ IN_PROC_BROWSER_TEST_F(AudioDuckerBrowserTest,
   PlayVideoAndWaitForAudioFocus(*web_contents1);
 
   // Open a second test page that has no video.
-  GURL test_page_no_player_url = ui_test_utils::GetTestUrl(
+  GURL test_page_no_player_url = chrome_test_utils::GetTestUrl(
       base::FilePath(base::FilePath::kCurrentDirectory),
       base::FilePath(kTestPageStartWithNoPlayer));
 

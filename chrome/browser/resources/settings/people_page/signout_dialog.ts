@@ -18,6 +18,7 @@ import '../settings_shared.css.js';
 import type {CrDialogElement} from '//resources/cr_elements/cr_dialog/cr_dialog.js';
 import {WebUiListenerMixin} from '//resources/cr_elements/web_ui_listener_mixin.js';
 import {sanitizeInnerHtml} from '//resources/js/parse_html_subset.js';
+import {htmlEscape} from '//resources/js/util.js';
 import {microTask, PolymerElement} from '//resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 import {ProfileInfoBrowserProxyImpl} from '/shared/settings/people_page/profile_info_browser_proxy.js';
 import type {SyncStatus} from '/shared/settings/people_page/sync_browser_proxy.js';
@@ -75,17 +76,17 @@ export class SettingsSignoutDialogElement extends
     };
   }
 
-  syncStatus: SyncStatus|null;
-  private deleteProfile_: boolean;
-  private deleteProfileWarningVisible_: boolean;
-  private deleteProfileWarning_: string;
+  declare syncStatus: SyncStatus|null;
+  declare private deleteProfile_: boolean;
+  declare private deleteProfileWarningVisible_: boolean;
+  declare private deleteProfileWarning_: string;
 
   override connectedCallback() {
     super.connectedCallback();
 
     this.addWebUiListener(
         'profile-stats-count-ready', this.handleProfileStatsCount_.bind(this));
-    // <if expr="not chromeos_ash">
+    // <if expr="not is_chromeos">
     ProfileInfoBrowserProxyImpl.getInstance().getProfileStatsCount();
     // </if>
     microTask.run(() => {
@@ -128,18 +129,19 @@ export class SettingsSignoutDialogElement extends
     }
   }
 
-  // <if expr="not chromeos_ash">
+  // <if expr="not is_chromeos">
   private getDisconnectExplanationHtml_(domain: string): TrustedHTML {
     if (domain) {
       return sanitizeInnerHtml(loadTimeData.getStringF(
-          'syncDisconnectManagedProfileExplanation', `<span>${domain}</span>`));
+          'syncDisconnectManagedProfileExplanation',
+          `<span>${htmlEscape(domain)}</span>`));
     }
     return sanitizeInnerHtml(
         loadTimeData.getString('syncDisconnectExplanation'));
   }
   // </if>
 
-  // <if expr="chromeos_ash">
+  // <if expr="is_chromeos">
   private getDisconnectExplanationHtml_(_domain: string): TrustedHTML {
     return sanitizeInnerHtml(
         loadTimeData.getString('syncDisconnectExplanation'));
@@ -152,10 +154,10 @@ export class SettingsSignoutDialogElement extends
 
   private onDisconnectConfirm_() {
     this.$.dialog.close();
-    // <if expr="not chromeos_ash">
+    // <if expr="not is_chromeos">
     SyncBrowserProxyImpl.getInstance().signOut(this.deleteProfile_);
     // </if>
-    // <if expr="chromeos_ash">
+    // <if expr="is_chromeos">
     // Chrome OS users are always signed-in, so just turn off sync.
     SyncBrowserProxyImpl.getInstance().turnOffSync();
     // </if>

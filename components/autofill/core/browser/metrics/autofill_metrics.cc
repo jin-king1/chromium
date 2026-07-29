@@ -4,21 +4,35 @@
 
 #include "components/autofill/core/browser/metrics/autofill_metrics.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <algorithm>
+#include <functional>
+#include <memory>
+#include <optional>
+#include <string>
+#include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
-#include "base/containers/contains.h"
+#include "base/check.h"
+#include "base/check_op.h"
 #include "base/containers/fixed_flat_map.h"
+#include "base/containers/flat_map.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/metrics/user_metrics.h"
+#include "base/metrics/user_metrics_action.h"
+#include "base/notreached.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/time/time.h"
-#include "base/types/cxx23_to_underlying.h"
 #include "components/autofill/core/browser/autofill_field.h"
 #include "components/autofill/core/browser/autofill_type.h"
-#include "components/autofill/core/browser/data_model/payments/autofill_offer_data.h"
+#include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
+#include "components/autofill/core/browser/data_model/addresses/autofill_structured_address_component.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
 #include "components/autofill/core/browser/data_quality/autofill_data_util.h"
 #include "components/autofill/core/browser/data_quality/validation.h"
@@ -29,17 +43,26 @@
 #include "components/autofill/core/browser/form_types.h"
 #include "components/autofill/core/browser/metrics/autofill_metrics_utils.h"
 #include "components/autofill/core/browser/metrics/form_events/form_event_logger_base.h"
+#include "components/autofill/core/browser/metrics/form_events/form_events.h"
 #include "components/autofill/core/browser/metrics/form_interactions_ukm_logger.h"
 #include "components/autofill/core/browser/payments/card_unmask_challenge_option.h"
 #include "components/autofill/core/browser/payments/payments_autofill_client.h"
+#include "components/autofill/core/browser/suggestions/suggestion_hiding_reason.h"
+#include "components/autofill/core/browser/ui/autofill_image_fetcher_base.h"
+#include "components/autofill/core/browser/ui/payments/autofill_progress_ui_type.h"
 #include "components/autofill/core/browser/ui/popup_interaction.h"
+#include "components/autofill/core/common/autocomplete_parsing_util.h"
 #include "components/autofill/core/common/autofill_clock.h"
-#include "components/autofill/core/common/autofill_prefs.h"
-#include "components/autofill/core/common/form_data.h"
-#include "components/autofill/core/common/form_interactions_flow.h"
-#include "components/language/core/browser/language_usage_metrics.h"
-#include "services/metrics/public/cpp/metrics_utils.h"
+#include "components/autofill/core/common/dense_set.h"
+#include "components/autofill/core/common/html_field_types.h"
+#include "components/autofill/core/common/metrics_enums.h"
+#include "components/autofill/core/common/mojom/autofill_types.mojom-shared.h"
+#include "components/autofill/core/common/signatures.h"
+#include "components/autofill/core/common/unique_ids.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
+#include "services/metrics/public/cpp/ukm_recorder.h"
+#include "services/metrics/public/cpp/ukm_source_id.h"
+#include "url/origin.h"
 
 namespace autofill {
 
@@ -92,6 +115,20 @@ constexpr auto kStructuredAddressTypeToNameMap =
          {ADDRESS_HOME_APT_NUM, "ApartmentNumber"},
          {ADDRESS_HOME_SUBPREMISE, "SubPremise"}});
 
+const std::string_view GetImageTypeString(
+    AutofillImageFetcherBase::ImageType image_type) {
+  switch (image_type) {
+    case AutofillImageFetcherBase::ImageType::kCreditCardArtImage:
+      return "CreditCardArt";
+    case AutofillImageFetcherBase::ImageType::kPixAccountImage:
+      NOTREACHED() << "Pix account images are available only on Android.";
+    case AutofillImageFetcherBase::ImageType::kValuableImage:
+      return "ValuableImage";
+  }
+  NOTREACHED() << "Unhandled AutofillImageFetcherBase::ImageType "
+               << std::to_underlying(image_type);
+}
+
 }  // namespace
 
 // This function encodes the integer value of a |FieldType| and the
@@ -99,19 +136,19 @@ constexpr auto kStructuredAddressTypeToNameMap =
 // The lower four bits are used to encode the editing status and the higher
 // 12 bits are used to encode the field type.
 int GetFieldTypeUserEditStatusMetric(
-    FieldType server_type,
+    FieldType field_type,
     AutofillMetrics::AutofilledFieldUserEditingStatusMetric metric) {
-  static_assert(FieldType::MAX_VALID_FIELD_TYPE <= (UINT16_MAX >> 4),
-                "Autofill::ServerTypes value needs more than 12 bits.");
+  static_assert(std::to_underlying(FieldType::MAX_VALID_FIELD_TYPE) < (1 << 12),
+                "autofill::FieldType value needs more than 12 bits.");
 
   static_assert(
-      static_cast<int>(
-          AutofillMetrics::AutofilledFieldUserEditingStatusMetric::kMaxValue) <=
-          (UINT16_MAX >> 12),
+      std::to_underlying(
+          AutofillMetrics::AutofilledFieldUserEditingStatusMetric::kMaxValue) <
+          (1 << 4),
       "AutofillMetrics::AutofilledFieldUserEditingStatusMetric value needs "
-      "more than 4 bits");
+      "more than 4 bits.");
 
-  return (server_type << 4) | static_cast<int>(metric);
+  return (std::to_underlying(field_type) << 4) | std::to_underlying(metric);
 }
 
 const int kMaxBucketsCount = 50;
@@ -261,7 +298,7 @@ void AutofillMetrics::LogScanCreditCardCompleted(base::TimeDelta duration,
 // static
 void AutofillMetrics::LogProgressDialogResultMetric(
     bool is_canceled_by_user,
-    AutofillProgressDialogType autofill_progress_dialog_type) {
+    AutofillProgressUiType autofill_progress_dialog_type) {
   base::UmaHistogramBoolean(base::StrCat({"Autofill.ProgressDialog.",
                                           GetDialogTypeStringForLogging(
                                               autofill_progress_dialog_type),
@@ -270,7 +307,7 @@ void AutofillMetrics::LogProgressDialogResultMetric(
 }
 
 void AutofillMetrics::LogProgressDialogShown(
-    AutofillProgressDialogType autofill_progress_dialog_type) {
+    AutofillProgressUiType autofill_progress_dialog_type) {
   base::UmaHistogramBoolean(base::StrCat({"Autofill.ProgressDialog.",
                                           GetDialogTypeStringForLogging(
                                               autofill_progress_dialog_type),
@@ -279,20 +316,23 @@ void AutofillMetrics::LogProgressDialogShown(
 }
 
 std::string_view AutofillMetrics::GetDialogTypeStringForLogging(
-    AutofillProgressDialogType autofill_progress_dialog_type) {
+    AutofillProgressUiType autofill_progress_dialog_type) {
   switch (autofill_progress_dialog_type) {
-    case AutofillProgressDialogType::kVirtualCardUnmaskProgressDialog:
+    case AutofillProgressUiType::kVirtualCardUnmaskProgressUi:
       return "VirtualCardUnmask";
-    case AutofillProgressDialogType::kServerCardUnmaskProgressDialog:
+    case AutofillProgressUiType::kServerCardUnmaskProgressUi:
       return "ServerCardUnmask";
-    case AutofillProgressDialogType::kServerIbanUnmaskProgressDialog:
+    case AutofillProgressUiType::kServerIbanUnmaskProgressUi:
       return "ServerIbanUnmask";
-    case AutofillProgressDialogType::
-        kCardInfoRetrievalEnrolledUnmaskProgressDialog:
+    case AutofillProgressUiType::kCardInfoRetrievalEnrolledUnmaskProgressUi:
       return "CardInfoRetrievalEnrolledUnmask";
-    case AutofillProgressDialogType::k3dsFetchVcnProgressDialog:
+    case AutofillProgressUiType::k3dsFetchVcnProgressUi:
       return "3dsFetchVirtualCard";
-    case AutofillProgressDialogType::kUnspecified:
+    case AutofillProgressUiType::kBnplFetchVcnProgressUi:
+      return "BnplFetchVirtualCard";
+    case AutofillProgressUiType::kBnplAmountExtractionProgressUi:
+    // TODO(crbug.com/430575808): Implement Logging for progress screen.
+    case AutofillProgressUiType::kUnspecified:
       NOTREACHED();
   }
 }
@@ -301,10 +341,10 @@ std::string_view AutofillMetrics::GetDialogTypeStringForLogging(
 void AutofillMetrics::LogUnmaskPromptEvent(UnmaskPromptEvent event,
                                            bool has_valid_nickname,
                                            CreditCard::RecordType card_type) {
-  base::UmaHistogramEnumeration("Autofill.UnmaskPrompt" +
-                                    GetHistogramStringForCardType(card_type) +
-                                    ".Events",
-                                event, NUM_UNMASK_PROMPT_EVENTS);
+  base::UmaHistogramEnumeration(
+      base::StrCat({"Autofill.UnmaskPrompt",
+                    GetHistogramStringForCardType(card_type), ".Events"}),
+      event, NUM_UNMASK_PROMPT_EVENTS);
   if (has_valid_nickname) {
     base::UmaHistogramEnumeration("Autofill.UnmaskPrompt.Events.WithNickname",
                                   event, NUM_UNMASK_PROMPT_EVENTS);
@@ -530,51 +570,53 @@ void AutofillMetrics::LogUnmaskingDuration(base::TimeDelta duration,
 }
 
 // static
-void AutofillMetrics::LogDeveloperEngagementMetric(
-    DeveloperEngagementMetric metric) {
-  DCHECK_LT(metric, NUM_DEVELOPER_ENGAGEMENT_METRICS);
-  UMA_HISTOGRAM_ENUMERATION("Autofill.DeveloperEngagement", metric,
-                            NUM_DEVELOPER_ENGAGEMENT_METRICS);
-}
-
-// static
 void AutofillMetrics::LogEditedAutofilledFieldAtSubmission(
     autofill_metrics::FormInteractionsUkmLogger& form_interactions_ukm_logger,
     ukm::SourceId source_id,
     const FormStructure& form,
     const AutofillField& field) {
+  CHECK(field.all_modifiers().contains(FieldModifier::kAutofill));
   AutofilledFieldUserEditingStatusMetric editing_metric =
-      field.previously_autofilled()
-          ? AutofilledFieldUserEditingStatusMetric::AUTOFILLED_FIELD_WAS_EDITED
-          : AutofilledFieldUserEditingStatusMetric::
-                AUTOFILLED_FIELD_WAS_NOT_EDITED;
+      field.last_modifier() == FieldModifier::kAutofill
+          ? AutofilledFieldUserEditingStatusMetric::
+                AUTOFILLED_FIELD_WAS_NOT_EDITED
+          : AutofilledFieldUserEditingStatusMetric::AUTOFILLED_FIELD_WAS_EDITED;
 
   // Record the aggregated UMA statistics.
   base::UmaHistogramEnumeration(
       "Autofill.EditedAutofilledFieldAtSubmission2.Aggregate", editing_metric);
 
   // Record the type specific UMA statistics.
-  base::UmaHistogramSparse(
-      "Autofill.EditedAutofilledFieldAtSubmission2.ByFieldType",
-      GetFieldTypeUserEditStatusMetric(field.Type().GetStorableType(),
-                                       editing_metric));
+  if (std::optional<FieldType> ft = field.autofilled_type()) {
+    base::UmaHistogramSparse(
+        "Autofill.EditedAutofilledFieldAtSubmission2.ByFieldType",
+        GetFieldTypeUserEditStatusMetric(*ft, editing_metric));
+  }
 
-  // Record the metric for FormsAI specific fields.
+  // Record the metric for Autofill AI specific fields.
   if (field.filling_product() == FillingProduct::kAutofillAi) {
     base::UmaHistogramEnumeration(
-        "Autofill.FormsAI.EditedAutofilledFieldAtSubmission", editing_metric);
+        "Autofill.Ai.EditedAutofilledFieldAtSubmission", editing_metric);
+    if (std::optional<FieldType> field_type = field.autofilled_type()) {
+      // Record the type specific UMA statistics.
+      base::UmaHistogramSparse(
+          "Autofill.Ai.EditedAutofilledFieldAtSubmission.ByFieldType",
+          GetFieldTypeUserEditStatusMetric(*field_type, editing_metric));
+    }
   }
 
   // Record the UMA statistics spliced by the autocomplete attribute value.
-  FormType form_type = FieldTypeGroupToFormType(field.Type().group());
-  if (form_type == FormType::kAddressForm ||
-      form_type == FormType::kCreditCardForm) {
-    bool autocomplete_off = field.autocomplete_attribute() == "off";
-    const std::string autocomplete_histogram = base::StrCat(
-        {"Autofill.Autocomplete.", autocomplete_off ? "Off" : "NotOff",
-         ".EditedAutofilledFieldAtSubmission2.",
-         form_type == FormType::kAddressForm ? "Address" : "CreditCard"});
-    base::UmaHistogramEnumeration(autocomplete_histogram, editing_metric);
+  if (std::optional<FieldType> ft = field.autofilled_type()) {
+    FormType form_type = FieldTypeGroupToFormType(GroupTypeOfFieldType(*ft));
+    if (form_type == FormType::kAddressForm ||
+        form_type == FormType::kCreditCardForm) {
+      bool autocomplete_off = field.autocomplete_attribute() == "off";
+      const std::string autocomplete_histogram = base::StrCat(
+          {"Autofill.Autocomplete.", autocomplete_off ? "Off" : "NotOff",
+           ".EditedAutofilledFieldAtSubmission2.",
+           form_type == FormType::kAddressForm ? "Address" : "CreditCard"});
+      base::UmaHistogramEnumeration(autocomplete_histogram, editing_metric);
+    }
   }
 
   // If the field was edited, record the event to UKM.
@@ -624,16 +666,16 @@ void AutofillMetrics::LogFormFillDurationFromInteraction(
     parent_metric = "Autofill.FillDuration.FromInteraction.WithoutAutofill";
   }
   LogFormFillDuration(parent_metric, duration);
-  if (base::Contains(form_types, FormType::kCreditCardForm)) {
+  if (form_types.contains(FormType::kCreditCardForm)) {
     LogFormFillDuration(parent_metric + ".CreditCard", duration);
   }
-  if (base::Contains(form_types, FormType::kAddressForm)) {
+  if (form_types.contains(FormType::kAddressForm)) {
     LogFormFillDuration(parent_metric + ".Address", duration);
   }
-  if (base::Contains(form_types, FormType::kPasswordForm)) {
+  if (form_types.contains(FormType::kPasswordForm)) {
     LogFormFillDuration(parent_metric + ".Password", duration);
   }
-  if (base::Contains(form_types, FormType::kUnknownFormType)) {
+  if (form_types.contains(FormType::kUnknownFormType)) {
     LogFormFillDuration(parent_metric + ".Unknown", duration);
   }
 }
@@ -994,7 +1036,7 @@ void AutofillMetrics::LogCreditCardSeamlessnessAtFillTime(
       if (only_visible_fields && !field->is_visible()) {
         continue;
       }
-      autofilled_types.insert(field->Type().GetStorableType());
+      autofilled_types.insert(field->Type().GetCreditCardType());
     }
     return CreditCardSeamlessness(autofilled_types);
   };
@@ -1051,45 +1093,49 @@ void AutofillMetrics::LogCreditCardSeamlessnessAtFillTime(
         s.QualitativeMetricAsInt());
   }
 
-  // In a multi-frame form, a cross-origin field is filled only if
-  // shared-autofill is enabled in the field's frame. Here, we log whether
-  // shared-autofill did or would improve the fill seamlessness.
+  // In a multi-frame form, a cross-origin field is filled only if the
+  // policy-controlled feature "autofill" is enabled in the field's frame. Here,
+  // we log whether the policy-controlled feature "autofill" did or would
+  // improve the fill seamlessness.
   //
   // This is referring to the actual fill, not the hypothetical scenarios
   // assuming that the card on file is complete or that there's no security
   // policy.
   //
   // See FormForest::GetRendererFormsOfBrowserForm() for details when a field
-  // requires shared-autofill in order to be autofilled.
+  // requires the policy-controlled feature "autofill" in order to be
+  // autofilled.
   //
-  // Shared-autofill is a policy-controlled feature. As such, a parent frame
-  // can enable it in a child frame with in the iframe's "allow" attribute:
-  // <iframe allow="shared-autofill">. Whether it's enabled in the main frame is
-  // controller by an HTTP header; by default, it is.
-  auto RequiresSharedAutofill = [&](const AutofillField& field) {
-    auto IsSensitiveFieldType = [](FieldType field_type) {
-      switch (field_type) {
-        case CREDIT_CARD_TYPE:
-        case CREDIT_CARD_NAME_FULL:
-        case CREDIT_CARD_NAME_FIRST:
-        case CREDIT_CARD_NAME_LAST:
-          return false;
-        default:
-          return true;
-      }
-    };
-    const url::Origin& main_origin = p.form.main_frame_origin();
-    const url::Origin& triggered_origin = p.field.origin();
-    return field.origin() != triggered_origin &&
-           (field.origin() != main_origin ||
-            IsSensitiveFieldType(field.Type().GetStorableType())) &&
-           triggered_origin == main_origin;
-  };
+  // "autofill" is a policy-controlled feature. As such, a parent frame can
+  // enable it in a child frame with in the iframe's "allow" attribute: <iframe
+  // allow="autofill">. Whether it's enabled in the main frame is controller by
+  // an HTTP header; by default, it is.
+  auto requires_enabled_policy_controlled_feature_autofill =
+      [&](const AutofillField& field) {
+        auto IsSensitiveFieldType = [](FieldType field_type) {
+          switch (field_type) {
+            case CREDIT_CARD_TYPE:
+            case CREDIT_CARD_NAME_FULL:
+            case CREDIT_CARD_NAME_FIRST:
+            case CREDIT_CARD_NAME_LAST:
+              return false;
+            default:
+              return true;
+          }
+        };
+        const url::Origin& main_origin = p.form.main_frame_origin();
+        const url::Origin& triggered_origin = p.field.origin();
+        return field.origin() != triggered_origin &&
+               (field.origin() != main_origin ||
+                std::ranges::any_of(field.Type().GetTypes(),
+                                    IsSensitiveFieldType)) &&
+               triggered_origin == main_origin;
+      };
 
   bool some_field_needs_shared_autofill = false;
   bool some_field_has_shared_autofill = false;
   for (const auto& field : p.form) {
-    if (RequiresSharedAutofill(*field) &&
+    if (requires_enabled_policy_controlled_feature_autofill(*field) &&
         p.newly_filled_fields.contains(field->global_id())) {
       if (!p.safe_fields.contains(field->global_id())) {
         some_field_needs_shared_autofill = true;
@@ -1161,12 +1207,6 @@ void AutofillMetrics::LogAutocompleteDaysSinceLastUse(size_t days) {
 }
 
 // static
-void AutofillMetrics::LogUnacceptedAutocompleteSuggestionDaysSinceLastUse(
-    size_t days) {
-  UMA_HISTOGRAM_COUNTS_1000("Autocomplete.Unaccepted.DaysSinceLastUse", days);
-}
-
-// static
 void AutofillMetrics::OnAutocompleteSuggestionsShown() {
   AutofillMetrics::LogAutocompleteEvent(
       AutocompleteEvent::AUTOCOMPLETE_SUGGESTIONS_SHOWN);
@@ -1186,17 +1226,6 @@ void AutofillMetrics::LogAutocompleteEvent(AutocompleteEvent event) {
   DCHECK_LT(event, AutocompleteEvent::NUM_AUTOCOMPLETE_EVENTS);
   base::UmaHistogramEnumeration("Autocomplete.Events3", event,
                                 NUM_AUTOCOMPLETE_EVENTS);
-}
-
-// static
-void AutofillMetrics::LogAutofillPopupVisibleDuration(
-    FillingProduct filling_product,
-    base::TimeDelta duration) {
-  base::UmaHistogramTimes("Autofill.Popup.VisibleDuration", duration);
-  base::UmaHistogramTimes(
-      base::StrCat({"Autofill.Popup.VisibleDuration.",
-                    FillingProductToString(filling_product)}),
-      duration);
 }
 
 // static
@@ -1232,46 +1261,33 @@ void AutofillMetrics::LogUploadEvent(SubmissionSource submission_source,
 }
 
 // static
-void AutofillMetrics::LogDeveloperEngagementUkm(
-    ukm::UkmRecorder* ukm_recorder,
-    ukm::SourceId source_id,
-    const GURL& url,
-    bool is_for_credit_card,
-    DenseSet<FormTypeNameForLogging> form_types,
-    int developer_engagement_metrics,
-    FormSignature form_signature) {
-  DCHECK(developer_engagement_metrics);
-  DCHECK_LT(developer_engagement_metrics,
-            1 << NUM_DEVELOPER_ENGAGEMENT_METRICS);
-  if (!url.is_valid())
-    return;
-
-  ukm::builders::Autofill_DeveloperEngagement(source_id)
-      .SetDeveloperEngagement(developer_engagement_metrics)
-      .SetIsForCreditCard(is_for_credit_card)
-      .SetFormTypes(FormTypesToBitVector(form_types))
-      .SetFormSignature(HashFormSignature(form_signature))
-      .Record(ukm_recorder);
-}
-
-// static
 void AutofillMetrics::LogAutofillFieldInfoAfterSubmission(
     ukm::UkmRecorder* ukm_recorder,
     ukm::SourceId source_id,
     const FormStructure& form,
     base::TimeTicks form_submitted_timestamp) {
+  auto field_rank_map = base::MakeFlatMap<FieldSignature, size_t>(
+      form.fields(), std::less<>(),
+      [](const std::unique_ptr<AutofillField>& field) {
+        return std::make_pair(field->GetFieldSignature(), 0);
+      });
+
   for (const auto& field : form) {
     // The possible field submitted types determined by comparing the submitted
     // value in the field with the data stored in the Autofill server. We will
     // have at most three possible field submitted types.
     FieldType submitted_type1 = UNKNOWN_TYPE;
+    const size_t field_rank = ++field_rank_map.at(field->GetFieldSignature());
 
     ukm::builders::Autofill2_FieldInfoAfterSubmission builder(source_id);
     builder
         .SetFormSessionIdentifier(
-            AutofillMetrics::FormGlobalIdToHash64Bit(form.global_id()))
+            autofill_metrics::FormGlobalIdToHash64Bit(form.global_id()))
+        .SetFormSignature(HashFormSignature(form.form_signature()))
         .SetFieldSessionIdentifier(
-            AutofillMetrics::FieldGlobalIdToHash64Bit(field->global_id()));
+            autofill_metrics::FieldGlobalIdToHash64Bit(field->global_id()))
+        .SetFieldSignature(HashFieldSignature(field->GetFieldSignature()))
+        .SetRankInFieldSignatureGroup(field_rank);
 
     const FieldTypeSet& type_set = field->possible_types();
     if (!type_set.empty()) {
@@ -1387,13 +1403,23 @@ void AutofillMetrics::LogVirtualCardMetadataSynced(bool existing_card) {
 }
 
 // static
-void AutofillMetrics::LogImageFetchResult(bool succeeded) {
-  base::UmaHistogramBoolean("Autofill.ImageFetcher.Result", succeeded);
+void AutofillMetrics::LogImageFetchResult(
+    AutofillImageFetcherBase::ImageType image_type,
+    bool succeeded) {
+  base::UmaHistogramBoolean(
+      base::StrCat({"Autofill.ImageFetcher.", GetImageTypeString(image_type),
+                    ".Result"}),
+      succeeded);
 }
 
 // static
-void AutofillMetrics::LogImageFetcherRequestLatency(base::TimeDelta duration) {
-  base::UmaHistogramLongTimes("Autofill.ImageFetcher.RequestLatency", duration);
+void AutofillMetrics::LogImageFetchOverallResult(
+    AutofillImageFetcherBase::ImageType image_type,
+    bool succeeded) {
+  base::UmaHistogramBoolean(
+      base::StrCat({"Autofill.ImageFetcher.", GetImageTypeString(image_type),
+                    ".OverallResultOnBrowserStart"}),
+      succeeded);
 }
 
 // static
@@ -1460,39 +1486,32 @@ void AutofillMetrics::LogAutocompletePredictionCollisionTypes(
       FieldType::MAX_VALID_FIELD_TYPE);
 }
 
-const std::string PaymentsRpcResultToMetricsSuffix(PaymentsRpcResult result) {
-  std::string result_suffix;
-
+const std::string_view PaymentsRpcResultToMetricsSuffix(
+    PaymentsRpcResult result) {
   switch (result) {
     case PaymentsRpcResult::kSuccess:
-      result_suffix = ".Success";
-      break;
+      return ".Success";
     case PaymentsRpcResult::kTryAgainFailure:
     case PaymentsRpcResult::kPermanentFailure:
-      result_suffix = ".Failure";
-      break;
+      return ".Failure";
     case PaymentsRpcResult::kNetworkError:
-      result_suffix = ".NetworkError";
-      break;
+      return ".NetworkError";
     case PaymentsRpcResult::kVcnRetrievalTryAgainFailure:
     case PaymentsRpcResult::kVcnRetrievalPermanentFailure:
-      result_suffix = ".VcnRetrievalFailure";
-      break;
+      return ".VcnRetrievalFailure";
     case PaymentsRpcResult::kClientSideTimeout:
-      result_suffix = ".ClientSideTimeout";
-      break;
+      return ".ClientSideTimeout";
     case PaymentsRpcResult::kNone:
       NOTREACHED();
   }
-
-  return result_suffix;
+  return "";
 }
 
 // static
-std::string AutofillMetrics::GetHistogramStringForCardType(
-    absl::variant<PaymentsRpcCardType, CreditCard::RecordType> card_type) {
-  if (absl::holds_alternative<PaymentsRpcCardType>(card_type)) {
-    switch (absl::get<PaymentsRpcCardType>(card_type)) {
+std::string_view AutofillMetrics::GetHistogramStringForCardType(
+    std::variant<PaymentsRpcCardType, CreditCard::RecordType> card_type) {
+  if (std::holds_alternative<PaymentsRpcCardType>(card_type)) {
+    switch (std::get<PaymentsRpcCardType>(card_type)) {
       case PaymentsRpcCardType::kServerCard:
         return ".ServerCard";
       case PaymentsRpcCardType::kVirtualCard:
@@ -1501,8 +1520,8 @@ std::string AutofillMetrics::GetHistogramStringForCardType(
         DUMP_WILL_BE_NOTREACHED();
         break;
     }
-  } else if (absl::holds_alternative<CreditCard::RecordType>(card_type)) {
-    switch (absl::get<CreditCard::RecordType>(card_type)) {
+  } else if (std::holds_alternative<CreditCard::RecordType>(card_type)) {
+    switch (std::get<CreditCard::RecordType>(card_type)) {
       case CreditCard::RecordType::kFullServerCard:
       case CreditCard::RecordType::kMaskedServerCard:
         return ".ServerCard";
@@ -1517,39 +1536,68 @@ std::string AutofillMetrics::GetHistogramStringForCardType(
 }
 
 // static
-void AutofillMetrics::LogDeleteAddressProfileFromPopup() {
+void AutofillMetrics::LogDeleteAddressProfileFromPopup(
+    AutofillProfile::RecordType record_type) {
   // Only the "confirmed" bucket can be recorded, as the user cannot cancel this
   // type of deletion.
-  base::UmaHistogramBoolean("Autofill.ProfileDeleted.Popup",
+  base::UmaHistogramBoolean("Autofill.ProfileDeleted.Popup.Total",
                             /*delete_confirmed=*/true);
-  base::UmaHistogramBoolean("Autofill.ProfileDeleted.Any",
+  base::UmaHistogramBoolean("Autofill.ProfileDeleted.Any.Total",
                             /*delete_confirmed=*/true);
+
+  base::UmaHistogramBoolean(
+      base::StrCat({"Autofill.ProfileDeleted.Popup.",
+                    autofill_metrics::GetProfileRecordTypeSuffix(record_type)}),
+      /*delete_confirmed=*/true);
+  base::UmaHistogramBoolean(
+      base::StrCat({"Autofill.ProfileDeleted.Any.",
+                    autofill_metrics::GetProfileRecordTypeSuffix(record_type)}),
+      /*delete_confirmed=*/true);
 }
 
 // static
-void AutofillMetrics::LogDeleteAddressProfileFromKeyboardAccessory() {
-  // Only the "confirmed" bucket is recorded here, as the cancellation can only
-  // be recorded from Java.
-  base::UmaHistogramBoolean("Autofill.ProfileDeleted.KeyboardAccessory",
-                            /*delete_confirmed=*/true);
-  base::UmaHistogramBoolean("Autofill.ProfileDeleted.Any",
-                            /*delete_confirmed=*/true);
+void AutofillMetrics::LogDeleteAddressProfileFromKeyboardAccessory(
+    bool delete_confirmed,
+    AutofillProfile::RecordType record_type) {
+  base::UmaHistogramBoolean("Autofill.ProfileDeleted.KeyboardAccessory.Total",
+                            delete_confirmed);
+  base::UmaHistogramBoolean("Autofill.ProfileDeleted.Any.Total",
+                            delete_confirmed);
+
+  base::UmaHistogramBoolean(
+      base::StrCat({"Autofill.ProfileDeleted.KeyboardAccessory.",
+                    autofill_metrics::GetProfileRecordTypeSuffix(record_type)}),
+      delete_confirmed);
+  base::UmaHistogramBoolean(
+      base::StrCat({"Autofill.ProfileDeleted.Any.",
+                    autofill_metrics::GetProfileRecordTypeSuffix(record_type)}),
+      delete_confirmed);
 }
 
 // static
-uint64_t AutofillMetrics::FormGlobalIdToHash64Bit(
-    const FormGlobalId& form_global_id) {
-  return StrToHash64Bit(
-      base::NumberToString(form_global_id.renderer_id.value()) +
-      form_global_id.frame_token.ToString());
+void AutofillMetrics::LogDataListSuggestionsShown() {
+  base::UmaHistogramEnumeration(
+      "Autofill.DataList.Events",
+      AutofillDataListEvents::kDataListSuggestionsShown);
 }
 
 // static
-uint64_t AutofillMetrics::FieldGlobalIdToHash64Bit(
-    const FieldGlobalId& field_global_id) {
-  return StrToHash64Bit(
-      base::NumberToString(field_global_id.renderer_id.value()) +
-      field_global_id.frame_token.ToString());
+void AutofillMetrics::LogDataListSuggestionsUpdated() {
+  base::UmaHistogramEnumeration(
+      "Autofill.DataList.Events",
+      AutofillDataListEvents::kDataListSuggestionsUpdated);
+}
+
+// static
+void AutofillMetrics::LogDataListSuggestionsInserted() {
+  base::UmaHistogramEnumeration(
+      "Autofill.DataList.Events",
+      AutofillDataListEvents::kDataListSuggestionsInserted);
+}
+
+// static
+void AutofillMetrics::LogAutofillPromptStatus(AutofillPromptStatus status) {
+  base::UmaHistogramEnumeration("Autofill.PromptStatus", status);
 }
 
 }  // namespace autofill

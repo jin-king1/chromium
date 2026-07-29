@@ -4,12 +4,14 @@
 
 #include "components/autofill/core/browser/heuristic_source.h"
 
+#include <optional>
+#include <string_view>
+
 #include "base/feature_list.h"
 #include "base/notreached.h"
-#include "components/autofill/core/browser/form_parsing/autofill_parsing_utils.h"
+#include "build/buildflag.h"
 #include "components/autofill/core/browser/form_parsing/regex_patterns.h"
 #include "components/autofill/core/common/autofill_features.h"
-#include "components/autofill/core/common/dense_set.h"
 
 namespace autofill {
 
@@ -33,6 +35,18 @@ std::optional<PatternFile> HeuristicSourceToPatternFile(
     case HeuristicSource::kAutofillMachineLearning:
     case HeuristicSource::kPasswordManagerMachineLearning:
       return std::nullopt;
+  }
+  NOTREACHED();
+}
+
+std::string_view HeuristicSourceToString(HeuristicSource source) {
+  switch (source) {
+    case HeuristicSource::kRegexes:
+      return "Regexes";
+    case HeuristicSource::kAutofillMachineLearning:
+      return "Autofill machine learning";
+    case HeuristicSource::kPasswordManagerMachineLearning:
+      return "Password manager machine learning";
   }
   NOTREACHED();
 }

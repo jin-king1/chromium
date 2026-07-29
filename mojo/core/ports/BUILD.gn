@@ -38,15 +38,13 @@ component("ports") {
 
   defines = [ "IS_MOJO_CORE_PORTS_IMPL" ]
 
-  if (target_os == "chromeos") {
+  if (is_chromeos) {
     defines += [ "MOJO_BACKWARDS_COMPAT" ]
   }
 
   public_deps = [ "//base" ]
 
-  if (!is_nacl) {
-    deps = [ "//crypto" ]
-  }
+  deps = [ "//crypto" ]
 
   if (!is_debug && !optimize_for_size) {
     configs -= [ "//build/config/compiler:default_optimization" ]

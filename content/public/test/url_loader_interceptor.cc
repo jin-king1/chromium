@@ -8,6 +8,7 @@
 #include <string_view>
 #include <utility>
 
+#include "base/byte_size.h"
 #include "base/containers/unique_ptr_adapters.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
@@ -17,6 +18,8 @@
 #include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/strings/string_util.h"
 #include "base/synchronization/lock.h"
 #include "base/test/bind.h"
 #include "base/threading/thread_restrictions.h"
@@ -404,7 +407,7 @@ URLLoaderInterceptor::ServeFilesFromDirectoryAtOrigin(
 
         // Remove the leading slash from the url path, so that it can be
         // treated as a relative path by base::FilePath::AppendASCII.
-        auto path = base::TrimString(params->url_request.url.path_piece(), "/",
+        auto path = base::TrimString(params->url_request.url.path(), "/",
                                      base::TRIM_LEADING);
 
         // URLLoaderInterceptor insists that all files exist unless
@@ -463,7 +466,7 @@ void URLLoaderInterceptor::WriteResponse(
                             std::nullopt);
 
   network::URLLoaderCompletionStatus status;
-  status.decoded_body_length = body.size();
+  status.decoded_body_length = base::ByteSize(body.size());
   status.error_code = net::OK;
   client->OnComplete(status);
 }
@@ -540,7 +543,7 @@ bool URLLoaderInterceptor::Intercept(RequestParams* params) {
   // mock.failed.request is a special request whereby the query indicates what
   // error code to respond with.
   if (params->url_request.url.DomainIs("mock.failed.request")) {
-    std::string query = params->url_request.url.query();
+    std::string query = params->url_request.url.GetQuery();
     std::string error_code = query.substr(query.find("=") + 1);
 
     int error = 0;

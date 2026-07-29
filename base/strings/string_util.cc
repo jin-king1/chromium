@@ -15,6 +15,7 @@
 #include <wchar.h>
 
 #include <algorithm>
+#include <array>
 #include <limits>
 #include <optional>
 #include <string_view>
@@ -23,9 +24,11 @@
 
 #include "base/check_op.h"
 #include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/no_destructor.h"
 #include "base/strings/string_util_impl_helpers.h"
 #include "base/strings/string_util_internal.h"
+#include "base/strings/trim_string_internal.h"
 #include "base/strings/utf_string_conversion_utils.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/third_party/icu/icu_utf.h"
@@ -58,7 +61,7 @@ bool IsWprintfFormatPortable(const wchar_t* format) {
           return false;
         }
 
-        if (wcschr(L"diouxXeEfgGaAcspn%", *position)) {
+        if (UNSAFE_TODO(wcschr(L"diouxXeEfgGaAcspn%", *position))) {
           // Portable, keep scanning the rest of the format string.
           in_specification = false;
         }
@@ -140,16 +143,18 @@ bool TrimString(std::string_view input,
 std::u16string_view TrimString(std::u16string_view input,
                                std::u16string_view trim_chars,
                                TrimPositions positions) {
-  return internal::TrimStringPieceT(input, trim_chars, positions);
+  return internal::TrimStringPieceT(input, trim_chars, positions & TRIM_LEADING,
+                                    positions & TRIM_TRAILING);
 }
 
 std::string_view TrimString(std::string_view input,
                             std::string_view trim_chars,
                             TrimPositions positions) {
-  return internal::TrimStringPieceT(input, trim_chars, positions);
+  return internal::TrimStringPieceT(input, trim_chars, positions & TRIM_LEADING,
+                                    positions & TRIM_TRAILING);
 }
 
-void TruncateUTF8ToByteSize(const std::string& input,
+void TruncateUTF8ToByteSize(std::string_view input,
                             const size_t byte_size,
                             std::string* output) {
   DCHECK(output);
@@ -201,7 +206,8 @@ TrimPositions TrimWhitespace(std::u16string_view input,
 std::u16string_view TrimWhitespace(std::u16string_view input,
                                    TrimPositions positions) {
   return internal::TrimStringPieceT(
-      input, std::u16string_view(kWhitespaceUTF16), positions);
+      input, std::u16string_view(kWhitespaceUTF16), positions & TRIM_LEADING,
+      positions & TRIM_TRAILING);
 }
 
 TrimPositions TrimWhitespaceASCII(std::string_view input,
@@ -214,7 +220,8 @@ TrimPositions TrimWhitespaceASCII(std::string_view input,
 std::string_view TrimWhitespaceASCII(std::string_view input,
                                      TrimPositions positions) {
   return internal::TrimStringPieceT(input, std::string_view(kWhitespaceASCII),
-                                    positions);
+                                    positions & TRIM_LEADING,
+                                    positions & TRIM_TRAILING);
 }
 
 std::u16string CollapseWhitespace(std::u16string_view text,
@@ -247,6 +254,20 @@ bool IsStringASCII(std::u16string_view str) {
 #if defined(WCHAR_T_IS_32_BIT)
 bool IsStringASCII(std::wstring_view str) {
   return internal::DoIsStringASCII(str.data(), str.length());
+}
+#endif
+
+size_t FindFirstNonASCII(std::string_view str) {
+  return internal::FindFirstNonASCII(str.data(), str.length());
+}
+
+size_t FindFirstNonASCII(std::u16string_view str) {
+  return internal::FindFirstNonASCII(str.data(), str.length());
+}
+
+#if defined(WCHAR_T_IS_32_BIT)
+size_t FindFirstNonASCII(std::wstring_view str) {
+  return internal::FindFirstNonASCII(str.data(), str.length());
 }
 #endif
 
@@ -286,6 +307,46 @@ bool EndsWith(std::u16string_view str,
   return internal::EndsWithT(str, search_for, case_sensitivity);
 }
 
+std::optional<std::string_view> RemovePrefix(std::string_view string,
+                                             std::string_view prefix,
+                                             CompareCase case_sensitivity) {
+  if (!StartsWith(string, prefix, case_sensitivity)) {
+    return std::nullopt;
+  }
+  string.remove_prefix(prefix.size());
+  return string;
+}
+
+std::optional<std::u16string_view> RemovePrefix(std::u16string_view string,
+                                                std::u16string_view prefix,
+                                                CompareCase case_sensitivity) {
+  if (!StartsWith(string, prefix, case_sensitivity)) {
+    return std::nullopt;
+  }
+  string.remove_prefix(prefix.size());
+  return string;
+}
+
+std::optional<std::string_view> RemoveSuffix(std::string_view string,
+                                             std::string_view suffix,
+                                             CompareCase case_sensitivity) {
+  if (!EndsWith(string, suffix, case_sensitivity)) {
+    return std::nullopt;
+  }
+  string.remove_suffix(suffix.size());
+  return string;
+}
+
+std::optional<std::u16string_view> RemoveSuffix(std::u16string_view string,
+                                                std::u16string_view suffix,
+                                                CompareCase case_sensitivity) {
+  if (!EndsWith(string, suffix, case_sensitivity)) {
+    return std::nullopt;
+  }
+  string.remove_suffix(suffix.size());
+  return string;
+}
+
 char HexDigitToInt(char c) {
   DCHECK(IsHexDigit(c));
   if (c >= '0' && c <= '9') {
@@ -293,31 +354,6 @@ char HexDigitToInt(char c) {
   }
   return (c >= 'A' && c <= 'F') ? static_cast<char>(c - 'A' + 10)
                                 : static_cast<char>(c - 'a' + 10);
-}
-
-static const char* const kByteStringsUnlocalized[] = {" B",  " kB", " MB",
-                                                      " GB", " TB", " PB"};
-
-std::u16string FormatBytesUnlocalized(int64_t bytes) {
-  double unit_amount = static_cast<double>(bytes);
-  size_t dimension = 0;
-  const int kKilo = 1024;
-  while (unit_amount >= kKilo &&
-         dimension < std::size(kByteStringsUnlocalized) - 1) {
-    unit_amount /= kKilo;
-    dimension++;
-  }
-
-  char buf[64];
-  if (bytes != 0 && dimension > 0 && unit_amount < 100) {
-    base::snprintf(buf, std::size(buf), "%.1lf%s", unit_amount,
-                   UNSAFE_TODO(kByteStringsUnlocalized[dimension]));
-  } else {
-    base::snprintf(buf, std::size(buf), "%.0lf%s", unit_amount,
-                   UNSAFE_TODO(kByteStringsUnlocalized[dimension]));
-  }
-
-  return ASCIIToUTF16(buf);
 }
 
 void ReplaceFirstSubstringAfterOffset(std::u16string* str,
@@ -362,36 +398,6 @@ char* WriteInto(std::string* str, size_t length_with_null) {
 
 char16_t* WriteInto(std::u16string* str, size_t length_with_null) {
   return internal::WriteIntoT(str, length_with_null);
-}
-
-std::string JoinString(span<const std::string> parts,
-                       std::string_view separator) {
-  return internal::JoinStringT(parts, separator);
-}
-
-std::u16string JoinString(span<const std::u16string> parts,
-                          std::u16string_view separator) {
-  return internal::JoinStringT(parts, separator);
-}
-
-std::string JoinString(span<const std::string_view> parts,
-                       std::string_view separator) {
-  return internal::JoinStringT(parts, separator);
-}
-
-std::u16string JoinString(span<const std::u16string_view> parts,
-                          std::u16string_view separator) {
-  return internal::JoinStringT(parts, separator);
-}
-
-std::string JoinString(std::initializer_list<std::string_view> parts,
-                       std::string_view separator) {
-  return internal::JoinStringT(parts, separator);
-}
-
-std::u16string JoinString(std::initializer_list<std::u16string_view> parts,
-                          std::u16string_view separator) {
-  return internal::JoinStringT(parts, separator);
 }
 
 std::u16string ReplaceStringPlaceholders(std::u16string_view format_string,

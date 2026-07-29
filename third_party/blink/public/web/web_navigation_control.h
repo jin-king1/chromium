@@ -8,7 +8,6 @@
 #include <memory>
 #include <vector>
 
-#include "base/functional/callback.h"
 #include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/public/web/web_document_loader.h"
 #include "third_party/blink/public/web/web_frame_load_type.h"
@@ -36,7 +35,10 @@ class WebNavigationControl : public WebLocalFrame {
   // Returns `true` if all the frames agreed to proceed with unloading
   // from their respective event handlers.
   // Note: this may lead to the destruction of the frame.
-  virtual bool DispatchBeforeUnloadEvent(bool is_reload) = 0;
+  virtual bool DispatchBeforeUnloadEvent(
+      bool is_reload,
+      base::TimeTicks& out_before_unload_dialog_opened_time,
+      base::TimeTicks& out_before_unload_dialog_closed_time) = 0;
 
   // Commits a cross-document navigation in the frame. See WebNavigationParams
   // for details. Calls WebLocalFrameClient::DidCommitNavigation synchronously

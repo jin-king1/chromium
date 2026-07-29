@@ -45,16 +45,17 @@ export class ChromeSigninAppElement extends ChromeSigninAppElementBase {
     };
   }
 
-  protected interceptionParameters_: ChromeSigninInterceptionParameters = {
-    title: '',
-    subtitle: '',
-    fullName: '',
-    givenName: '',
-    email: '',
-    pictureUrl: '',
-    managedUserBadge: '',
-    userBadgeAltText: '',
-  };
+  protected accessor interceptionParameters_:
+      ChromeSigninInterceptionParameters = {
+        title: '',
+        subtitle: '',
+        fullName: '',
+        givenName: '',
+        email: '',
+        pictureUrl: '',
+        managedUserBadge: '',
+        userBadgeAltText: '',
+      };
   private diceWebSigninInterceptBrowserProxy_:
       DiceWebSigninInterceptBrowserProxy =
           DiceWebSigninInterceptBrowserProxyImpl.getInstance();
@@ -83,11 +84,11 @@ export class ChromeSigninAppElement extends ChromeSigninAppElementBase {
     this.diceWebSigninInterceptBrowserProxy_.initializedWithHeight(height);
   }
 
-  protected onCancel_() {
+  protected onCancelClick_() {
     this.diceWebSigninInterceptBrowserProxy_.cancel();
   }
 
-  protected onAccept_() {
+  protected onAcceptClick_() {
     this.diceWebSigninInterceptBrowserProxy_.accept();
   }
 

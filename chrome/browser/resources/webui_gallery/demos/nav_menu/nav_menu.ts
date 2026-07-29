@@ -8,7 +8,7 @@ import '//resources/cr_elements/cr_nav_menu_item_style.css.js';
 import '//resources/cr_elements/cr_ripple/cr_ripple.js';
 import '//resources/cr_elements/icons.html.js';
 
-import type {CrMenuSelector} from '//resources/cr_elements/cr_menu_selector/cr_menu_selector.js';
+import type {CrMenuSelectorElement} from '//resources/cr_elements/cr_menu_selector/cr_menu_selector.js';
 import {getCss} from '//resources/cr_elements/cr_nav_menu_item_style_lit.css.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 
@@ -16,7 +16,7 @@ import {getHtml} from './nav_menu.html.js';
 
 export interface NavMenuElement {
   $: {
-    selector: CrMenuSelector,
+    selector: CrMenuSelectorElement,
   };
 }
 
@@ -48,33 +48,40 @@ export class NavMenuElement extends CrLitElement {
     };
   }
 
-  protected menuItems_: Array<{icon: string, name: string, path: string}> = [
-    {
-      icon: 'cr:person',
-      name: 'Menu item 1',
-      path: '/path-1',
-    },
-    {
-      icon: 'cr:sync',
-      name: 'Menu item 2',
-      path: '/path-2',
-    },
-    {
-      icon: 'cr:star',
-      name: 'Menu item 3',
-      path: '/path-3',
-    },
-  ];
-  selectedIndex?: number;
-  showIcons: boolean = false;
-  showRipples: boolean = false;
+  protected accessor menuItems_:
+      Array<{icon: string, name: string, path: string}> = [
+        {
+          icon: 'cr:person',
+          name: 'Menu item 1',
+          path: '/path-1',
+        },
+        {
+          icon: 'cr:sync',
+          name: 'Menu item 2',
+          path: '/path-2',
+        },
+        {
+          icon: 'cr:star',
+          name: 'Menu item 3',
+          path: '/path-3',
+        },
+      ];
+  accessor selectedIndex: number|undefined;
+  accessor showIcons: boolean = false;
+  accessor showRipples: boolean = false;
 
   protected onSelectorClick_(e: MouseEvent) {
     e.preventDefault();
   }
 
-  protected onSelectedIndexChanged_(e: CustomEvent<{value: number}>) {
+  protected onSelectedIndexSelectedChanged_(e: CustomEvent<{value: number}>) {
     this.selectedIndex = e.detail.value;
+  }
+}
+
+declare global {
+  interface HTMLElementTagNameMap {
+    'nav-menu': NavMenuElement;
   }
 }
 

@@ -14,21 +14,20 @@
 
 #include "base/memory/raw_ptr.h"
 #include "base/test/metrics/histogram_tester.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/win/scoped_bstr.h"
 #include "base/win/scoped_co_mem.h"
 #include "base/win/scoped_variant.h"
 #include "third_party/iaccessible2/ia2_api_all.h"
-#include "ui/accessibility/accessibility_features.h"
 #include "ui/accessibility/ax_action_data.h"
 #include "ui/accessibility/ax_constants.mojom.h"
-#include "ui/accessibility/platform/ax_platform_for_test.h"
+#include "ui/accessibility/platform/ax_platform.h"
 #include "ui/accessibility/platform/ax_platform_node_win.h"
 #include "ui/gfx/render_text_test_api.h"
 #include "ui/views/accessibility/test_list_grid_view.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/controls/scroll_view.h"
+#include "ui/views/controls/table/table_view.h"
 #include "ui/views/controls/textfield/textfield.h"
 #include "ui/views/controls/textfield/textfield_test_api.h"
 #include "ui/views/test/views_test_base.h"
@@ -722,8 +721,6 @@ class ViewAXPlatformNodeDelegateWinInnerTextRangeTest
   void SetUp() override {
     ViewAXPlatformNodeDelegateWinTest::SetUp();
 
-    scoped_feature_list_.InitAndEnableFeature(features::kUiaProvider);
-
     widget_ = std::make_unique<Widget>();
 
     Widget::InitParams params =
@@ -764,7 +761,7 @@ class ViewAXPlatformNodeDelegateWinInnerTextRangeTest
   }
 
   void MockAXModeAdded() {
-    ui::AXMode mode = ui::AXPlatformForTest::GetInstance().GetProcessMode();
+    ui::AXMode mode = ui::AXPlatform::GetInstance().GetMode();
     widget_->OnAXModeAdded(mode);
   }
 
@@ -781,7 +778,6 @@ class ViewAXPlatformNodeDelegateWinInnerTextRangeTest
   raw_ptr<Textfield> textfield_ = nullptr;  // Owned by views hierarchy.
   raw_ptr<Label> label_ = nullptr;          // Owned by views hierarchy.
   std::unique_ptr<Widget> widget_;
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 TEST_F(ViewAXPlatformNodeDelegateWinInnerTextRangeTest,

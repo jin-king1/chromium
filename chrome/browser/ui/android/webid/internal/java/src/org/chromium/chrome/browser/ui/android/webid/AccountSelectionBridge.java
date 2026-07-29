@@ -21,6 +21,7 @@ import org.chromium.chrome.browser.ui.android.webid.data.Account;
 import org.chromium.chrome.browser.ui.android.webid.data.IdentityCredentialTokenError;
 import org.chromium.chrome.browser.ui.android.webid.data.IdentityProviderData;
 import org.chromium.chrome.browser.ui.android.webid.data.IdentityProviderMetadata;
+import org.chromium.chrome.browser.ui.android.webid.data.RelyingPartyData;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetControllerProvider;
 import org.chromium.content.webid.IdentityRequestDialogDismissReason;
@@ -50,11 +51,12 @@ class AccountSelectionBridge implements AccountSelectionComponent.Delegate {
             Tab tab,
             WindowAndroid windowAndroid,
             BottomSheetController bottomSheetController,
-            @RpMode.EnumType int rpMode) {
+            @RpMode.EnumType int rpMode,
+            boolean canShowUi) {
         mNativeView = nativeView;
         mAccountSelectionComponent =
                 new AccountSelectionCoordinator(
-                        tab, windowAndroid, bottomSheetController, rpMode, this);
+                        tab, windowAndroid, bottomSheetController, rpMode, canShowUi, this);
     }
 
     @CalledByNative
@@ -83,13 +85,14 @@ class AccountSelectionBridge implements AccountSelectionComponent.Delegate {
             long nativeView,
             WebContents webContents,
             WindowAndroid windowAndroid,
-            @RpMode.EnumType int rpMode) {
+            @RpMode.EnumType int rpMode,
+            boolean canShowUi) {
         BottomSheetController bottomSheetController =
                 BottomSheetControllerProvider.from(windowAndroid);
         if (bottomSheetController == null) return null;
         Tab tab = TabUtils.fromWebContents(webContents);
         return new AccountSelectionBridge(
-                nativeView, tab, windowAndroid, bottomSheetController, rpMode);
+                nativeView, tab, windowAndroid, bottomSheetController, rpMode, canShowUi);
     }
 
     @CalledByNative
@@ -98,30 +101,32 @@ class AccountSelectionBridge implements AccountSelectionComponent.Delegate {
         mNativeView = 0;
     }
 
+    @CalledByNative
+    private void setCanShowUi(boolean canShowUi) {
+        mAccountSelectionComponent.setCanShowUi(canShowUi);
+    }
+
     /**
      * Shows the accounts in a bottom sheet UI allowing user to select one.
      *
      * @param rpForDisplay is the formatted RP URL to display in the FedCM prompt.
      * @param accounts is the list of accounts to be shown.
      * @param idpDataList is the list of IDP datas.
-     * @param isAutoReauthn represents whether this is an auto re-authn flow.
      * @param newAccounts represents the newly logged in accounts.
      * @return whether the invocation is successful. If false is returned, the caller must assume
      *     that onDismiss was called and must return early.
      */
     @CalledByNative
     private boolean showAccounts(
-            @JniType("std::string") String rpForDisplay,
+            RelyingPartyData rpData,
             Account[] accounts,
             IdentityProviderData[] idpDataList,
-            boolean isAutoReauthn,
             Account[] newAccounts) {
         assert accounts != null && accounts.length > 0;
         return mAccountSelectionComponent.showAccounts(
-                rpForDisplay,
+                rpData,
                 Arrays.asList(accounts),
                 Arrays.asList(idpDataList),
-                isAutoReauthn,
                 Arrays.asList(newAccounts));
     }
 
@@ -139,12 +144,12 @@ class AccountSelectionBridge implements AccountSelectionComponent.Delegate {
      */
     @CalledByNative
     private boolean showFailureDialog(
-            @JniType("std::string") String rpForDisplay,
+            RelyingPartyData rpData,
             @JniType("std::string") String idpForDisplay,
             IdentityProviderMetadata idpMetadata,
             @RpContext.EnumType int rpContext) {
         return mAccountSelectionComponent.showFailureDialog(
-                rpForDisplay, idpForDisplay, idpMetadata, rpContext);
+                rpData, idpForDisplay, idpMetadata, rpContext);
     }
 
     /**
@@ -156,20 +161,19 @@ class AccountSelectionBridge implements AccountSelectionComponent.Delegate {
      * @param idpMetadata is the metadata of the IDP.
      * @param rpContext is a {@link String} representing the desired text to be used in the title of
      *     the FedCM prompt: "signin", "continue", etc.
-     * @param IdentityCredentialTokenError is contains the error code and url to display in the
-     *     FedCM prompt.
+     * @param error Contains the error code and url to display in the FedCM prompt.
      * @return whether the invocation is successful. If false is returned, the caller must assume
      *     that onDismiss was called and must return early.
      */
     @CalledByNative
     private boolean showErrorDialog(
-            @JniType("std::string") String rpForDisplay,
+            RelyingPartyData rpData,
             @JniType("std::string") String idpForDisplay,
             IdentityProviderMetadata idpMetadata,
             @RpContext.EnumType int rpContext,
             IdentityCredentialTokenError error) {
         return mAccountSelectionComponent.showErrorDialog(
-                rpForDisplay, idpForDisplay, idpMetadata, rpContext, error);
+                rpData, idpForDisplay, idpMetadata, rpContext, error);
     }
 
     /**
@@ -185,10 +189,23 @@ class AccountSelectionBridge implements AccountSelectionComponent.Delegate {
      */
     @CalledByNative
     private boolean showLoadingDialog(
-            @JniType("std::string") String rpForDisplay,
+            RelyingPartyData rpData,
             @JniType("std::string") String idpForDisplay,
             @RpContext.EnumType int rpContext) {
-        return mAccountSelectionComponent.showLoadingDialog(rpForDisplay, idpForDisplay, rpContext);
+        return mAccountSelectionComponent.showLoadingDialog(rpData, idpForDisplay, rpContext);
+    }
+
+    /**
+     * Shows a verifying dialog with the selected account.
+     *
+     * @param rpData is the data for the relying party.
+     * @param account is the selected account to be shown.
+     * @param isAutoReauthn represents whether this is an auto re-authn flow.
+     */
+    @CalledByNative
+    private boolean showVerifyingDialog(
+            RelyingPartyData rpData, Account account, boolean isAutoReauthn) {
+        return mAccountSelectionComponent.showVerifyingDialog(rpData, account, isAutoReauthn);
     }
 
     @CalledByNative
@@ -239,7 +256,7 @@ class AccountSelectionBridge implements AccountSelectionComponent.Delegate {
                             mNativeView,
                             account.getIdentityProviderData().getIdpMetadata().getConfigUrl(),
                             account.getId(),
-                            account.isSignIn());
+                            account.isIdpClaimedSignIn() || account.isBrowserTrustedSignIn());
         }
     }
 

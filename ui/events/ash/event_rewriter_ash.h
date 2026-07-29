@@ -54,27 +54,19 @@ class EventRewriterAsh : public EventRewriter {
     explicit MutableKeyState(const KeyEvent* key_event);
     constexpr MutableKeyState(int input_flags,
                               DomCode input_code,
-                              DomKey::Base input_key,
+                              DomKey input_key,
                               KeyboardCode input_key_code)
         : flags(input_flags),
           code(input_code),
           key(input_key),
           key_code(input_key_code) {}
 
-    friend bool operator==(const MutableKeyState& lhs,
-                           const MutableKeyState& rhs) {
-      return lhs.flags == rhs.flags && lhs.code == rhs.code &&
-             lhs.key == rhs.key && lhs.key_code == rhs.key_code;
-    }
-
-    friend bool operator!=(const MutableKeyState& lhs,
-                           const MutableKeyState& rhs) {
-      return !(lhs == rhs);
-    }
+    friend bool operator==(const MutableKeyState&,
+                           const MutableKeyState&) = default;
 
     int flags = 0;
     DomCode code = DomCode::NONE;
-    DomKey::Base key = 0;
+    DomKey key = DomKey::NONE;
     KeyboardCode key_code = KeyboardCode::VKEY_NONAME;
   };
 

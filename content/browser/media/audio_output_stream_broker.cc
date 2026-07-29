@@ -7,7 +7,7 @@
 #include <utility>
 
 #include "base/functional/bind.h"
-#include "base/metrics/histogram_macros.h"
+#include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
 #include "content/browser/browser_main_loop.h"
 #include "content/browser/media/audio_stream_broker_helper.h"
@@ -21,6 +21,7 @@
 #include "media/audio/audio_logging.h"
 #include "media/mojo/mojom/audio_data_pipe.mojom.h"
 #include "media/mojo/mojom/audio_output_stream.mojom.h"
+#include "third_party/perfetto/include/perfetto/tracing/track.h"
 
 namespace content {
 
@@ -62,6 +63,10 @@ StreamBrokerDisconnectReason GetDisconnectReason(DisconnectReason reason,
   }
 }
 
+perfetto::NamedTrack GetTracingTrack(const AudioOutputStreamBroker* broker) {
+  return perfetto::NamedTrack::FromPointer("AudioOutputStreamBroker", broker);
+}
+
 }  // namespace
 
 AudioOutputStreamBroker::AudioOutputStreamBroker(
@@ -86,7 +91,7 @@ AudioOutputStreamBroker::AudioOutputStreamBroker(
   DCHECK(client_);
   DCHECK(deleter_);
   DCHECK(group_id_);
-  TRACE_EVENT_NESTABLE_ASYNC_BEGIN0("audio", "AudioOutputStreamBroker", this);
+  TRACE_EVENT_BEGIN("audio", "AudioOutputStreamBroker", GetTracingTrack(this));
 
   MediaObserver* media_observer =
       GetContentClient()->browser()->GetMediaObserver();
@@ -114,8 +119,9 @@ AudioOutputStreamBroker::~AudioOutputStreamBroker() {
       GetDisconnectReason(disconnect_reason_, AwaitingCreated());
 
   if (AwaitingCreated()) {
-    TRACE_EVENT_NESTABLE_ASYNC_END1("audio", "CreateStream", this, "success",
-                                    "failed or cancelled");
+    // End "CreateStream" trace event.
+    TRACE_EVENT_END("audio", GetTracingTrack(this), "success",
+                    "failed or cancelled");
   }
 
   if (MediaStreamManager::GetPreferredOutputManagerInstance()) {
@@ -123,9 +129,9 @@ AudioOutputStreamBroker::~AudioOutputStreamBroker() {
         main_frame_token_, this);
   }
 
-  TRACE_EVENT_NESTABLE_ASYNC_END1("audio", "AudioOutputStreamBroker", this,
-                                  "disconnect reason",
-                                  static_cast<uint32_t>(reason));
+  // End "AudioOutputStreamBroker" trace event.
+  TRACE_EVENT_END("audio", GetTracingTrack(this), "disconnect reason",
+                  static_cast<uint32_t>(reason));
 }
 
 void AudioOutputStreamBroker::CreateStream(
@@ -133,8 +139,8 @@ void AudioOutputStreamBroker::CreateStream(
   DCHECK_CALLED_ON_VALID_SEQUENCE(owning_sequence_);
   DCHECK(!observer_receiver_.is_bound());
   DCHECK(!device_switch_interface_.is_bound());
-  TRACE_EVENT_NESTABLE_ASYNC_BEGIN1("audio", "CreateStream", this, "device id",
-                                    output_device_id_);
+  TRACE_EVENT_BEGIN("audio", "CreateStream", GetTracingTrack(this), "device id",
+                    output_device_id_);
 
   stream_creation_start_time_ = base::TimeTicks::Now();
 
@@ -189,8 +195,8 @@ void AudioOutputStreamBroker::StreamCreated(
     mojo::PendingRemote<media::mojom::AudioOutputStream> stream,
     media::mojom::ReadWriteAudioDataPipePtr data_pipe) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(owning_sequence_);
-  TRACE_EVENT_NESTABLE_ASYNC_END1("audio", "CreateStream", this, "success",
-                                  !!data_pipe);
+  // End "CreateStream" trace event.
+  TRACE_EVENT_END("audio", GetTracingTrack(this), "success", !!data_pipe);
   stream_creation_start_time_ = base::TimeTicks();
 
   if (!data_pipe) {
@@ -208,16 +214,16 @@ void AudioOutputStreamBroker::ObserverBindingLost(
     uint32_t reason,
     const std::string& description) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(owning_sequence_);
-  TRACE_EVENT_NESTABLE_ASYNC_INSTANT1("audio", "ObserverBindingLost", this,
-                                      "reset reason", reason);
+  TRACE_EVENT_INSTANT("audio", "ObserverBindingLost", GetTracingTrack(this),
+                      "reset reason", reason);
   if (reason > static_cast<uint32_t>(DisconnectReason::kMaxValue)) {
     NOTREACHED() << "Invalid reason: " << reason;
   }
 
   DisconnectReason reason_enum = static_cast<DisconnectReason>(reason);
 
-  // TODO(crbug.com/40551225): Don't propagate errors if we can retry
-  // instead.
+  // Errors are propagated to the client, which is responsible for retries. See
+  // crbug.com/40551225 for context.
   client_.ResetWithReason(
       static_cast<uint32_t>(DisconnectReason::kPlatformError), std::string());
   Cleanup((reason_enum == DisconnectReason::kPlatformError && AwaitingCreated())

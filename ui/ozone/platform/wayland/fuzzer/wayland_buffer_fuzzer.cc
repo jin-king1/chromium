@@ -18,6 +18,7 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
+#include "base/logging.h"
 #include "base/message_loop/message_pump_type.h"
 #include "base/no_destructor.h"
 #include "base/task/single_thread_task_executor.h"
@@ -28,7 +29,9 @@
 #include "base/test/test_timeouts.h"
 #include "mojo/core/embedder/embedder.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#include "ui/gfx/color_space.h"
 #include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/hdr_metadata.h"
 #include "ui/ozone/platform/wayland/host/wayland_buffer_manager_host.h"
 #include "ui/ozone/platform/wayland/host/wayland_connection.h"
 #include "ui/ozone/platform/wayland/host/wayland_event_source.h"
@@ -72,7 +75,7 @@ class MockPlatformWindowDelegate : public ui::PlatformWindowDelegate {
   MOCK_METHOD0(OnWillDestroyAcceleratedWidget, void());
   MOCK_METHOD0(OnAcceleratedWidgetDestroyed, void());
   MOCK_METHOD1(OnActivationChanged, void(bool active));
-  MOCK_METHOD0(OnMouseEnter, void());
+  MOCK_METHOD0(OnCursorUpdate, void());
 };
 
 struct Environment {
@@ -149,8 +152,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
   test_api.SyncDisplay();
 
   base::FilePath temp_dir, temp_path;
-  base::ScopedFD fd =
-      base::CreateAndOpenFdForTemporaryFileInDir(temp_dir, &temp_path);
+  base::ScopedFD fd = base::CreateAndOpenFdForTemporaryFileInDir(
+      temp_dir, /*name_prefix=*/{}, &temp_path);
   EXPECT_TRUE(fd.is_valid());
 
   // 10K screens are reality these days.
@@ -183,7 +186,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
   env.SetTerminateGpuCallback(manager_host);
   manager_host->CreateDmabufBasedBuffer(
       mojo::PlatformHandle(std::move(fd)), buffer_size, strides, offsets,
-      modifiers, kFormat, kPlaneCount, kBufferId);
+      modifiers, kFormat, kPlaneCount, gfx::ColorSpace(), gfx::HDRMetadata(),
+      kBufferId);
 
   // Wait until the buffers are created.
   test_api.SyncDisplay();

@@ -11,22 +11,23 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "components/input/native_web_keyboard_event.h"
-#include "content/browser/child_process_security_policy_impl.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/browser/renderer_host/render_view_host_delegate_view.h"
 #include "content/browser/renderer_host/render_widget_helper.h"
+#include "content/browser/security/cpsp/child_process_security_policy_impl.h"
 #include "content/common/features.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/common/bindings_policy.h"
+#include "content/public/common/child_process_id.h"
 #include "content/public/common/content_client.h"
 #include "content/public/common/drop_data.h"
 #include "content/public/common/url_constants.h"
 #include "content/public/test/mock_render_process_host.h"
 #include "content/public/test/navigation_simulator.h"
+#include "content/public/test/test_content_browser_client.h"
 #include "content/test/navigation_simulator_impl.h"
-#include "content/test/test_content_browser_client.h"
 #include "content/test/test_render_view_host.h"
 #include "content/test/test_web_contents.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
@@ -52,7 +53,7 @@ class RenderViewHostTestBrowserClient : public TestContentBrowserClient {
   ~RenderViewHostTestBrowserClient() override {}
 
   bool IsHandledURL(const GURL& url) override {
-    return url.scheme() == url::kFileScheme;
+    return url.GetScheme() == url::kFileScheme;
   }
 };
 
@@ -84,15 +85,15 @@ class MockDraggingRenderViewHostDelegateView
     : public RenderViewHostDelegateView {
  public:
   ~MockDraggingRenderViewHostDelegateView() override {}
-  void StartDragging(const DropData& drop_data,
-                     const url::Origin& source_origin,
-                     blink::DragOperationsMask allowed_ops,
-                     const gfx::ImageSkia& image,
-                     const gfx::Vector2d& cursor_offset,
-                     const gfx::Rect& drag_obj_rect,
-                     const blink::mojom::DragEventSourceInfo& event_info,
-                     RenderWidgetHostImpl* source_rwh) override {
-    drag_url_ = drop_data.url;
+  void StartDragging(
+      RenderFrameHost& source_rfh,
+      const DropData& drop_data,
+      blink::DragOperationsMask allowed_ops,
+      const gfx::ImageSkia& image,
+      const gfx::Vector2d& cursor_offset,
+      const gfx::Rect& drag_obj_rect,
+      const blink::mojom::DragEventSourceInfo& event_info) override {
+    drag_url_ = drop_data.url_infos.front().url;
     html_base_url_ = drop_data.html_base_url;
   }
 
@@ -121,29 +122,29 @@ TEST_F(RenderViewHostTest, StartDragging) {
 
   GURL blocked_url = GURL(kBlockedURL);
   GURL file_url = GURL("file:///home/user/secrets.txt");
-  drop_data.url = file_url;
   drop_data.html_base_url = file_url;
+  drop_data.url_infos = {ui::ClipboardUrlInfo{file_url, u""}};
   test_rvh()->TestStartDragging(drop_data);
   EXPECT_EQ(blocked_url, delegate_view.drag_url());
   EXPECT_EQ(blocked_url, delegate_view.html_base_url());
 
   GURL http_url = GURL("http://www.domain.com/index.html");
-  drop_data.url = http_url;
   drop_data.html_base_url = http_url;
+  drop_data.url_infos = {ui::ClipboardUrlInfo{http_url, u""}};
   test_rvh()->TestStartDragging(drop_data);
   EXPECT_EQ(http_url, delegate_view.drag_url());
   EXPECT_EQ(http_url, delegate_view.html_base_url());
 
   GURL https_url = GURL("https://www.domain.com/index.html");
-  drop_data.url = https_url;
   drop_data.html_base_url = https_url;
+  drop_data.url_infos = {ui::ClipboardUrlInfo{https_url, u""}};
   test_rvh()->TestStartDragging(drop_data);
   EXPECT_EQ(https_url, delegate_view.drag_url());
   EXPECT_EQ(https_url, delegate_view.html_base_url());
 
   GURL javascript_url = GURL("javascript:alert('I am a bookmarklet')");
-  drop_data.url = javascript_url;
   drop_data.html_base_url = http_url;
+  drop_data.url_infos = {ui::ClipboardUrlInfo{javascript_url, u""}};
   test_rvh()->TestStartDragging(drop_data);
   EXPECT_EQ(javascript_url, delegate_view.drag_url());
   EXPECT_EQ(http_url, delegate_view.html_base_url());
@@ -161,9 +162,8 @@ TEST_F(RenderViewHostTest, DragEnteredFileURLsStillBlocked) {
   GURL highlighted_file_url = net::FilePathToFileURL(highlighted_file_path);
   GURL dragged_file_url = net::FilePathToFileURL(dragged_file_path);
   GURL sensitive_file_url = net::FilePathToFileURL(sensitive_file_path);
-  dropped_data.url = highlighted_file_url;
-  dropped_data.filenames.push_back(
-      ui::FileInfo(dragged_file_path, base::FilePath()));
+  dropped_data.url_infos = {ui::ClipboardUrlInfo{highlighted_file_url, u""}};
+  dropped_data.filenames.emplace_back(dragged_file_path, base::FilePath());
 
   // TODO(paulmeyer): These will need to target the correct specific
   // RenderWidgetHost to work with OOPIFs. See crbug.com/647249.
@@ -173,16 +173,17 @@ TEST_F(RenderViewHostTest, DragEnteredFileURLsStillBlocked) {
       base::DoNothing());
 
   int id = process()->GetDeprecatedID();
+  ChildProcessId process_id = process()->GetID();
   ChildProcessSecurityPolicyImpl* policy =
       ChildProcessSecurityPolicyImpl::GetInstance();
 
   // Permissions are not granted at DragEnter.
   EXPECT_FALSE(policy->CanRequestURL(id, highlighted_file_url));
-  EXPECT_FALSE(policy->CanReadFile(id, highlighted_file_path));
+  EXPECT_FALSE(policy->CanReadFile(process_id, highlighted_file_path));
   EXPECT_FALSE(policy->CanRequestURL(id, dragged_file_url));
-  EXPECT_FALSE(policy->CanReadFile(id, dragged_file_path));
+  EXPECT_FALSE(policy->CanReadFile(process_id, dragged_file_path));
   EXPECT_FALSE(policy->CanRequestURL(id, sensitive_file_url));
-  EXPECT_FALSE(policy->CanReadFile(id, sensitive_file_path));
+  EXPECT_FALSE(policy->CanReadFile(process_id, sensitive_file_path));
 }
 
 TEST_F(RenderViewHostTest, MessageWithBadHistoryItemFiles) {
@@ -194,7 +195,7 @@ TEST_F(RenderViewHostTest, MessageWithBadHistoryItemFiles) {
   EXPECT_EQ(1, process()->bad_msg_count());
 
   ChildProcessSecurityPolicyImpl::GetInstance()->GrantReadFile(
-      process()->GetDeprecatedID(), file_path);
+      process()->GetID(), file_path);
   test_rvh()->TestOnUpdateStateWithFile(file_path);
   EXPECT_EQ(1, process()->bad_msg_count());
 }
@@ -214,7 +215,7 @@ TEST_F(RenderViewHostTest, NavigationWithBadHistoryItemFiles) {
   EXPECT_EQ(1, process()->bad_msg_count());
 
   ChildProcessSecurityPolicyImpl::GetInstance()->GrantReadFile(
-      process()->GetDeprecatedID(), file_path);
+      process()->GetID(), file_path);
   auto navigation2 =
       NavigationSimulatorImpl::CreateRendererInitiated(url, main_test_rfh());
   navigation2->set_page_state(

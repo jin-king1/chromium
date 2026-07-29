@@ -4,15 +4,14 @@
 
 #include "partition_alloc/partition_bucket.h"
 
-#include <algorithm>
+#include <bit>
 #include <cstdint>
 #include <tuple>
 
 #include "partition_alloc/address_pool_manager.h"
 #include "partition_alloc/build_config.h"
 #include "partition_alloc/buildflags.h"
-#include "partition_alloc/freeslot_bitmap.h"
-#include "partition_alloc/freeslot_bitmap_constants.h"
+#include "partition_alloc/internal/partition_root_internal.h"
 #include "partition_alloc/oom.h"
 #include "partition_alloc/page_allocator.h"
 #include "partition_alloc/page_allocator_constants.h"
@@ -21,6 +20,7 @@
 #include "partition_alloc/partition_alloc_base/bits.h"
 #include "partition_alloc/partition_alloc_base/compiler_specific.h"
 #include "partition_alloc/partition_alloc_base/component_export.h"
+#include "partition_alloc/partition_alloc_base/cxx_wrapper/algorithm.h"
 #include "partition_alloc/partition_alloc_base/debug/alias.h"
 #include "partition_alloc/partition_alloc_base/immediate_crash.h"
 #include "partition_alloc/partition_alloc_base/thread_annotations.h"
@@ -32,8 +32,8 @@
 #include "partition_alloc/partition_freelist_entry.h"
 #include "partition_alloc/partition_oom.h"
 #include "partition_alloc/partition_page.h"
-#include "partition_alloc/partition_root.h"
 #include "partition_alloc/reservation_offset_table.h"
+#include "partition_alloc/slot_start.h"
 #include "partition_alloc/tagging.h"
 
 namespace partition_alloc::internal {
@@ -175,13 +175,12 @@ uintptr_t ReserveMemoryFromPool(pool_handle pool,
   return reserved_address;
 }
 
-SlotSpanMetadata<MetadataKind::kReadOnly>* PartitionDirectMap(
-    PartitionRoot* root,
-    AllocFlags flags,
-    size_t raw_size,
-    size_t slot_span_alignment) {
+SlotSpanMetadata* PartitionDirectMap(PartitionRoot* root,
+                                     AllocFlags flags,
+                                     size_t raw_size,
+                                     size_t slot_span_alignment) {
   PA_DCHECK((slot_span_alignment >= PartitionPageSize()) &&
-            base::bits::HasSingleBit(slot_span_alignment));
+            std::has_single_bit(slot_span_alignment));
 
   // No static EXCLUSIVE_LOCKS_REQUIRED(), as the checker doesn't understand
   // scoped unlocking.
@@ -217,24 +216,10 @@ SlotSpanMetadata<MetadataKind::kReadOnly>* PartitionDirectMap(
     PartitionExcessiveAllocationSize(raw_size);
   }
 
-  PartitionDirectMapExtent<MetadataKind::kReadOnly>* map_extent = nullptr;
-  PartitionDirectMapExtent<MetadataKind::kWritable>* writable_map_extent =
-      nullptr;
-  PartitionPageMetadata<MetadataKind::kReadOnly>* page_metadata = nullptr;
+  PartitionDirectMapExtent* map_extent = nullptr;
+  PartitionPageMetadata* page_metadata = nullptr;
 
   {
-#if PA_CONFIG(ENABLE_SHADOW_METADATA)
-    // Because of the performance reason, PartitionRoot's lock is unlocked
-    // here. However this causes multi-thread issue when running
-    // EnableShadowMetadata(). If some thread is running PartitionDirectMap()
-    // and unlock PartitionRoot lock and also another thread is running
-    // EnableShadowMetadata(), the metadata page's permission will be modified
-    // by both threads and chrome will crash. c.f. crbug.com/378809882
-    // Be careful. This should not block PartitionDirectMap() in another thread.
-    internal::SharedLock shared_lock(
-        PartitionRoot::g_shadow_metadata_init_mutex_);
-#endif  // PA_CONFIG(ENABLE_SHADOW_METADATA)
-
     // Getting memory for direct-mapped allocations doesn't interact with the
     // rest of the allocator, but takes a long time, as it involves several
     // system calls. Although no mmap() (or equivalent) calls are made on
@@ -251,7 +236,7 @@ SlotSpanMetadata<MetadataKind::kReadOnly>* PartitionDirectMap(
     // Note that this only affects allocations that are not served out of the
     // thread cache, but as a simple example the buffer partition in blink is
     // frequently used for large allocations (e.g. ArrayBuffer), and frequent,
-    // small ones (e.g. WTF::String), and does not have a thread cache.
+    // small ones (e.g. blink::String), and does not have a thread cache.
     ScopedUnlockGuard scoped_unlock{PartitionRootLock(root)};
 
     const size_t slot_size = PartitionRoot::GetDirectMapSlotSize(raw_size);
@@ -289,28 +274,21 @@ SlotSpanMetadata<MetadataKind::kReadOnly>* PartitionDirectMap(
       PartitionOutOfMemoryMappingFailure(root, reservation_size);
     }
 
-    root->total_size_of_direct_mapped_pages.fetch_add(
+    root->total_size_of_direct_mapped_pages_.fetch_add(
         reservation_size, std::memory_order_relaxed);
 
     // Shift by 1 partition page (metadata + guard pages) and alignment padding.
-    const uintptr_t slot_start =
-        reservation_start + PartitionPageSize() + padding_for_alignment;
+    const auto slot_start = UntaggedSlotStart::Unchecked(
+        reservation_start + PartitionPageSize() + padding_for_alignment);
 
+    uintptr_t metadata_start = PartitionSuperPageToMetadataPage(
+        reservation_start, root->MetadataOffset());
     {
       ScopedSyscallTimer timer{root};
-#if PA_CONFIG(ENABLE_SHADOW_METADATA)
-      if (PartitionAddressSpace::IsShadowMetadataEnabled(root->ChoosePool())) {
-        PartitionAddressSpace::MapMetadata(reservation_start,
-                                           /*copy_metadata=*/false);
-      } else
-#endif  // PA_CONFIG(ENABLE_SHADOW_METADATA)
-      {
-        RecommitSystemPages(reservation_start + SystemPageSize(),
-                            SystemPageSize(),
-                            root->PageAccessibilityWithThreadIsolationIfEnabled(
-                                PageAccessibilityConfiguration::kReadWrite),
-                            PageAccessibilityDisposition::kRequireUpdate);
-      }
+      RecommitSystemPages(metadata_start, SystemPageSize(),
+                          root->PageAccessibilityWithThreadIsolationIfEnabled(
+                              PageAccessibilityConfiguration::kReadWrite),
+                          PageAccessibilityDisposition::kRequireUpdate);
     }
 
     if (pool == kBRPPoolHandle) {
@@ -332,81 +310,57 @@ SlotSpanMetadata<MetadataKind::kReadOnly>* PartitionDirectMap(
     // so no other thread can update the same offset table entries at the
     // same time. Furthermore, nobody will be ready these offsets until this
     // function returns.
-    auto* offset_ptr = ReservationOffsetPointer(reservation_start);
-    [[maybe_unused]] const auto* offset_ptr_end =
-        GetReservationOffsetTableEnd(reservation_start);
+    root->GetReservationOffsetTable().SetDirectMapReservationStart(
+        reservation_start, reservation_size);
 
-    // |raw_size| > MaxBucketed(). So |reservation_size| > 0.
-    PA_DCHECK(reservation_size > 0);
-    const uint16_t offset_end = (reservation_size - 1) >> kSuperPageShift;
-    for (uint16_t offset = 0; offset <= offset_end; ++offset) {
-      PA_DCHECK(offset < kOffsetTagNormalBuckets);
-      PA_DCHECK(offset_ptr < offset_ptr_end);
-      *offset_ptr++ = offset;
-    }
-
-    auto* super_page_extent = PartitionSuperPageToExtent(reservation_start);
-    auto* writable_super_page_extent = super_page_extent->ToWritable(root);
-    writable_super_page_extent->root = root;
+    auto* super_page_extent =
+        PartitionSuperPageToExtent(reservation_start, root);
+    super_page_extent->root = root;
     // The new structures are all located inside a fresh system page so they
     // will all be zeroed out. These DCHECKs are for documentation and to assert
     // our expectations of the kernel.
     PA_DCHECK(!super_page_extent->number_of_consecutive_super_pages);
     PA_DCHECK(!super_page_extent->next);
 
-    PartitionPageMetadata<MetadataKind::kWritable>* first_page_metadata =
-        reinterpret_cast<PartitionPageMetadata<MetadataKind::kWritable>*>(
-            writable_super_page_extent) +
-        1;
-    page_metadata =
-        PartitionPageMetadata<MetadataKind::kReadOnly>::FromAddr(slot_start);
-    PartitionPageMetadata<MetadataKind::kWritable>* writable_page_metadata =
-        page_metadata->ToWritable(root);
-    // |first_page_metadata| and |writable_page_metadata| may be equal, if there
-    // is no alignment padding.
-    if (writable_page_metadata != first_page_metadata) {
-      PA_DCHECK(writable_page_metadata > first_page_metadata);
-      PA_DCHECK(writable_page_metadata - first_page_metadata <=
-                PartitionPageMetadata<
-                    MetadataKind::kReadOnly>::kMaxSlotSpanMetadataOffset);
+    PartitionPageMetadata* first_page_metadata = PA_UNSAFE_TODO(
+        reinterpret_cast<PartitionPageMetadata*>(super_page_extent) + 1);
+    page_metadata = PartitionPageMetadata::FromAddr(slot_start.value(), root);
+    // |first_page_metadata| and |page_metadata| may be equal, if there is no
+    // alignment padding.
+    if (page_metadata != first_page_metadata) {
+      PA_DCHECK(page_metadata > first_page_metadata);
+      PA_DCHECK(page_metadata - first_page_metadata <=
+                PartitionPageMetadata::kMaxSlotSpanMetadataOffset);
       PA_CHECK(!first_page_metadata->is_valid);
       first_page_metadata->has_valid_span_after_this = true;
       first_page_metadata->slot_span_metadata_offset =
-          writable_page_metadata - first_page_metadata;
+          page_metadata - first_page_metadata;
     }
     auto* direct_map_metadata =
-        reinterpret_cast<PartitionDirectMapMetadata<MetadataKind::kReadOnly>*>(
-            page_metadata);
-    auto* writable_direct_map_metadata =
-        reinterpret_cast<PartitionDirectMapMetadata<MetadataKind::kWritable>*>(
-            writable_page_metadata);
+        reinterpret_cast<PartitionDirectMapMetadata*>(page_metadata);
     // Since direct map metadata is larger than PartitionPageMetadata, make sure
     // the first and the last bytes are on the same system page, i.e. within the
     // super page metadata region.
     PA_DCHECK(
         base::bits::AlignDown(reinterpret_cast<uintptr_t>(direct_map_metadata),
                               SystemPageSize()) ==
-        base::bits::AlignDown(
-            reinterpret_cast<uintptr_t>(direct_map_metadata) +
-                sizeof(PartitionDirectMapMetadata<MetadataKind::kReadOnly>) - 1,
-            SystemPageSize()));
-    PA_DCHECK(writable_page_metadata ==
-              &writable_direct_map_metadata->page_metadata);
-    writable_page_metadata->is_valid = true;
-    PA_DCHECK(!writable_page_metadata->has_valid_span_after_this);
-    PA_DCHECK(!writable_page_metadata->slot_span_metadata_offset);
-    PA_DCHECK(!writable_page_metadata->slot_span_metadata.next_slot_span);
-    PA_DCHECK(!writable_page_metadata->slot_span_metadata.marked_full);
-    PA_DCHECK(!writable_page_metadata->slot_span_metadata.num_allocated_slots);
-    PA_DCHECK(
-        !writable_page_metadata->slot_span_metadata.num_unprovisioned_slots);
-    PA_DCHECK(!writable_page_metadata->slot_span_metadata.in_empty_cache());
+        base::bits::AlignDown(reinterpret_cast<uintptr_t>(direct_map_metadata) +
+                                  sizeof(PartitionDirectMapMetadata) - 1,
+                              SystemPageSize()));
+    PA_DCHECK(page_metadata == &direct_map_metadata->page_metadata);
+    page_metadata->is_valid = true;
+    PA_DCHECK(!page_metadata->has_valid_span_after_this);
+    PA_DCHECK(!page_metadata->slot_span_metadata_offset);
+    PA_DCHECK(!page_metadata->slot_span_metadata.next_slot_span);
+    PA_DCHECK(!page_metadata->slot_span_metadata.marked_full);
+    PA_DCHECK(!page_metadata->slot_span_metadata.num_allocated_slots);
+    PA_DCHECK(!page_metadata->slot_span_metadata.num_unprovisioned_slots);
+    PA_DCHECK(!page_metadata->slot_span_metadata.in_empty_cache());
 
     PA_DCHECK(!direct_map_metadata->second_page_metadata
                    .subsequent_page_metadata.raw_size);
     // Raw size is set later, by the caller.
-    writable_direct_map_metadata->second_page_metadata
-        .slot_span_metadata_offset = 1;
+    direct_map_metadata->second_page_metadata.slot_span_metadata_offset = 1;
 
     PA_DCHECK(!direct_map_metadata->bucket.active_slot_spans_head);
     PA_DCHECK(!direct_map_metadata->bucket.empty_slot_spans_head);
@@ -414,13 +368,11 @@ SlotSpanMetadata<MetadataKind::kReadOnly>* PartitionDirectMap(
     PA_DCHECK(!direct_map_metadata->bucket.num_system_pages_per_slot_span);
     PA_DCHECK(!direct_map_metadata->bucket.num_full_slot_spans);
 
-    writable_direct_map_metadata->bucket.slot_size = slot_size;
-    writable_direct_map_metadata->bucket.can_store_raw_size = true;
+    direct_map_metadata->bucket.slot_size = slot_size;
+    direct_map_metadata->bucket.can_store_raw_size = true;
 
-    // SlotSpanMetadata must point to the bucket inside the giga cage.
-    new (&writable_page_metadata->slot_span_metadata)
-        SlotSpanMetadata<MetadataKind::kWritable>(
-            const_cast<PartitionBucket*>(&direct_map_metadata->bucket));
+    new (&page_metadata->slot_span_metadata)
+        SlotSpanMetadata(&direct_map_metadata->bucket);
 
     // It is typically possible to map a large range of inaccessible pages, and
     // this is leveraged in multiple places, including the pools. However,
@@ -436,13 +388,15 @@ SlotSpanMetadata<MetadataKind::kReadOnly>* PartitionDirectMap(
     // Direct map never uses tagging, as size is always >kMaxMemoryTaggingSize.
     PA_DCHECK(raw_size > kMaxMemoryTaggingSize);
     const bool ok = root->TryRecommitSystemPagesForDataWithAcquiringLock(
-        slot_start, slot_size, PageAccessibilityDisposition::kRequireUpdate,
-        false);
+        slot_start.value(), slot_size,
+        PageAccessibilityDisposition::kRequireUpdate, false);
     if (!ok) {
       if (!return_null) {
         PartitionOutOfMemoryCommitFailure(root, slot_size);
       }
 
+      root->GetReservationOffsetTable().SetNotAllocatedTag(reservation_start,
+                                                           reservation_size);
       {
         ScopedSyscallTimer timer{root};
 #if !PA_BUILDFLAG(HAS_64_BIT_POINTERS)
@@ -453,35 +407,31 @@ SlotSpanMetadata<MetadataKind::kReadOnly>* PartitionDirectMap(
             pool, reservation_start, reservation_size);
       }
 
-      root->total_size_of_direct_mapped_pages.fetch_sub(
+      root->total_size_of_direct_mapped_pages_.fetch_sub(
           reservation_size, std::memory_order_relaxed);
 
       return nullptr;
     }
 
-    auto* next_entry =
-        root->get_freelist_dispatcher()->EmplaceAndInitNull(slot_start);
+    auto* next_entry = FreelistEntry::EmplaceAndInitNull(slot_start);
 
-    writable_page_metadata->slot_span_metadata.SetFreelistHead(next_entry,
-                                                               root);
+    page_metadata->slot_span_metadata.SetFreelistHead(next_entry);
 
-    writable_map_extent = &writable_direct_map_metadata->direct_map_extent;
-    writable_map_extent->reservation_size = reservation_size;
-    writable_map_extent->padding_for_alignment = padding_for_alignment;
-    // Point to read-only bucket.
-    writable_map_extent->bucket = &direct_map_metadata->bucket;
     map_extent = &direct_map_metadata->direct_map_extent;
+    map_extent->reservation_size = reservation_size;
+    map_extent->padding_for_alignment = padding_for_alignment;
+    map_extent->bucket = &direct_map_metadata->bucket;
   }
 
   PartitionRootLock(root).AssertAcquired();
 
   // Maintain the doubly-linked list of all direct mappings.
-  writable_map_extent->next_extent = root->direct_map_list;
+  map_extent->next_extent = root->direct_map_list_;
   if (map_extent->next_extent) {
-    map_extent->next_extent->ToWritable(root)->prev_extent = map_extent;
+    map_extent->next_extent->prev_extent = map_extent;
   }
-  writable_map_extent->prev_extent = nullptr;
-  root->direct_map_list = map_extent;
+  map_extent->prev_extent = nullptr;
+  root->direct_map_list_ = map_extent;
 
   return &page_metadata->slot_span_metadata;
 }
@@ -609,7 +559,7 @@ uint8_t ComputeSystemPagesPerSlotSpan(size_t slot_size,
     size_t waste = (system_page_count * SystemPageSize()) % slot_size;
     // In case the waste is too large (more than 5% of a page), don't try to use
     // the "small" slot span formula. This happens when we have a lot of
-    // buckets, in some cases the formula doesn't find a nice, small size.
+    // buckets_, in some cases the formula doesn't find a nice, small size.
     if (waste <= .05 * SystemPageSize()) {
       return system_page_count;
     }
@@ -618,12 +568,10 @@ uint8_t ComputeSystemPagesPerSlotSpan(size_t slot_size,
   return ComputeSystemPagesPerSlotSpanInternal(slot_size);
 }
 
-void PartitionBucket::Init(uint32_t new_slot_size,
-                           bool use_small_single_slot_spans) {
+void PartitionBucket::Init(uint32_t new_slot_size) {
   slot_size = new_slot_size;
   slot_size_reciprocal = kReciprocalMask / new_slot_size + 1;
-  active_slot_spans_head = SlotSpanMetadata<
-      MetadataKind::kReadOnly>::get_sentinel_slot_span_non_const();
+  active_slot_spans_head = SlotSpanMetadata::get_sentinel_slot_span_non_const();
   empty_slot_spans_head = nullptr;
   decommitted_slot_spans_head = nullptr;
   num_full_slot_spans = 0;
@@ -636,16 +584,17 @@ void PartitionBucket::Init(uint32_t new_slot_size,
       ;
   num_system_pages_per_slot_span =
       ComputeSystemPagesPerSlotSpan(slot_size, prefer_smaller_slot_spans);
+  PA_CHECK(num_system_pages_per_slot_span > 0);
 
-  InitCanStoreRawSize(use_small_single_slot_spans);
+  InitCanStoreRawSize();
 }
 
-PA_ALWAYS_INLINE SlotSpanMetadata<MetadataKind::kReadOnly>*
-PartitionBucket::AllocNewSlotSpan(PartitionRoot* root,
-                                  AllocFlags flags,
-                                  size_t slot_span_alignment) {
-  PA_DCHECK(!(root->next_partition_page % PartitionPageSize()));
-  PA_DCHECK(!(root->next_partition_page_end % PartitionPageSize()));
+PA_ALWAYS_INLINE SlotSpanMetadata* PartitionBucket::AllocNewSlotSpan(
+    PartitionRoot* root,
+    AllocFlags flags,
+    size_t slot_span_alignment) {
+  PA_DCHECK(!(root->next_partition_page_ % PartitionPageSize()));
+  PA_DCHECK(!(root->next_partition_page_end_ % PartitionPageSize()));
 
   size_t num_partition_pages = get_pages_per_slot_span();
   size_t slot_span_reservation_size = num_partition_pages
@@ -656,9 +605,9 @@ PartitionBucket::AllocNewSlotSpan(PartitionRoot* root,
   PA_DCHECK(slot_span_committed_size <= slot_span_reservation_size);
 
   uintptr_t adjusted_next_partition_page =
-      base::bits::AlignUp(root->next_partition_page, slot_span_alignment);
+      base::bits::AlignUp(root->next_partition_page_, slot_span_alignment);
   if (adjusted_next_partition_page + slot_span_reservation_size >
-      root->next_partition_page_end) [[unlikely]] {
+      root->next_partition_page_end_) [[unlikely]] {
     // AllocNewSuperPage() may crash (e.g. address space exhaustion), put data
     // on stack.
     PA_DEBUG_DATA_ON_STACK("slotsize", slot_size);
@@ -669,34 +618,32 @@ PartitionBucket::AllocNewSlotSpan(PartitionRoot* root,
     if (!AllocNewSuperPage(root, flags)) {
       return nullptr;
     }
-    // AllocNewSuperPage() updates root->next_partition_page, re-query.
+    // AllocNewSuperPage() updates root->next_partition_page_, re-query.
     adjusted_next_partition_page =
-        base::bits::AlignUp(root->next_partition_page, slot_span_alignment);
+        base::bits::AlignUp(root->next_partition_page_, slot_span_alignment);
     PA_CHECK(adjusted_next_partition_page + slot_span_reservation_size <=
-             root->next_partition_page_end);
+             root->next_partition_page_end_);
   }
 
   auto* gap_start_page =
-      PartitionPageMetadata<MetadataKind::kReadOnly>::FromAddr(
-          root->next_partition_page);
-  auto* gap_end_page = PartitionPageMetadata<MetadataKind::kReadOnly>::FromAddr(
-      adjusted_next_partition_page);
-  for (auto* page = gap_start_page->ToWritable(root);
-       page < gap_end_page->ToWritable(root); ++page) {
+      PartitionPageMetadata::FromAddr(root->next_partition_page_, root);
+  auto* gap_end_page =
+      PartitionPageMetadata::FromAddr(adjusted_next_partition_page, root);
+  for (auto* page = gap_start_page; page < gap_end_page;
+       PA_UNSAFE_TODO(++page)) {
     PA_DCHECK(!page->is_valid);
     page->has_valid_span_after_this = true;
   }
-  root->next_partition_page =
+  root->next_partition_page_ =
       adjusted_next_partition_page + slot_span_reservation_size;
 
   uintptr_t slot_span_start = adjusted_next_partition_page;
   auto* slot_span = &gap_end_page->slot_span_metadata;
-  InitializeSlotSpan(slot_span, root);
-
+  InitializeSlotSpan(slot_span);
   // Now that slot span is initialized, it's safe to call FromSlotStart.
   PA_DCHECK(slot_span ==
-            SlotSpanMetadata<MetadataKind::kReadOnly>::FromSlotStart(
-                slot_span_start));
+            SlotSpanMetadata::FromSlotStart(
+                UntaggedSlotStart::Unchecked(slot_span_start), root));
 
   // System pages in the super page come in a decommited state. Commit them
   // before vending them back.
@@ -717,13 +664,13 @@ PartitionBucket::AllocNewSlotSpan(PartitionRoot* root,
 
   // Double check that we had enough space in the super page for the new slot
   // span.
-  PA_DCHECK(root->next_partition_page <= root->next_partition_page_end);
+  PA_DCHECK(root->next_partition_page_ <= root->next_partition_page_end_);
 
   return slot_span;
 }
 
-void PartitionBucket::InitCanStoreRawSize(bool use_small_single_slot_spans) {
-  // By definition, direct map buckets can store the raw size. The value
+void PartitionBucket::InitCanStoreRawSize() {
+  // By definition, direct map buckets_ can store the raw size. The value
   // of `can_store_raw_size` is set explicitly in that code path (see
   // `PartitionDirectMap()`), bypassing this method.
   PA_DCHECK(!is_direct_mapped());
@@ -738,8 +685,7 @@ void PartitionBucket::InitCanStoreRawSize(bool use_small_single_slot_spans) {
   if (slot_size <= MaxRegularSlotSpanSize()) [[likely]] {
     // Even when the slot size is below the standard floor for single
     // slot spans, there exist spans that happen to have exactly one
-    // slot per. If `use_small_single_slot_spans` is true, we use more
-    // nuanced criteria for determining if a span is "single-slot."
+    // slot per.
     //
     // The conditions are all of:
     // *  Don't deal with slots trafficked by the thread cache [1].
@@ -756,9 +702,9 @@ void PartitionBucket::InitCanStoreRawSize(bool use_small_single_slot_spans) {
     // [2] ../../PartitionAlloc.md#layout-in-memory
     const bool not_handled_by_thread_cache =
         slot_size > kThreadCacheLargeSizeThreshold;
-    can_store_raw_size =
-        use_small_single_slot_spans && not_handled_by_thread_cache &&
-        get_slots_per_span() == 1u && get_pages_per_slot_span() > 1u;
+    can_store_raw_size = not_handled_by_thread_cache &&
+                         get_slots_per_span() == 1u &&
+                         get_pages_per_slot_span() > 1u;
     return;
   }
 
@@ -777,7 +723,7 @@ uintptr_t PartitionBucket::AllocNewSuperPageSpan(PartitionRoot* root,
   // address region as much as possible. This is important for not causing
   // page table bloat and not fragmenting address spaces in 32 bit
   // architectures.
-  uintptr_t requested_address = root->next_super_page;
+  uintptr_t requested_address = root->next_super_page_;
   pool_handle pool = root->ChoosePool();
   uintptr_t super_page_span_start = ReserveMemoryFromPool(
       pool, requested_address, super_page_count * kSuperPageSize);
@@ -817,41 +763,35 @@ PA_ALWAYS_INLINE uintptr_t
 PartitionBucket::InitializeSuperPage(PartitionRoot* root,
                                      uintptr_t super_page,
                                      uintptr_t requested_address) {
-  *ReservationOffsetPointer(super_page) = kOffsetTagNormalBuckets;
+  root->GetReservationOffsetTable().SetNormalBucketsTag(super_page);
 
-  root->total_size_of_super_pages.fetch_add(kSuperPageSize,
-                                            std::memory_order_relaxed);
+  root->total_size_of_super_pages_.fetch_add(kSuperPageSize,
+                                             std::memory_order_relaxed);
 
-  root->next_super_page = super_page + kSuperPageSize;
-  uintptr_t state_bitmap =
-      super_page + PartitionPageSize() +
-      (is_direct_mapped() ? 0 : ReservedFreeSlotBitmapSize());
+  root->next_super_page_ = super_page + kSuperPageSize;
+  uintptr_t state_bitmap = super_page + PartitionPageSize();
   uintptr_t payload = state_bitmap;
 
-  root->next_partition_page = payload;
-  root->next_partition_page_end = root->next_super_page - PartitionPageSize();
+  root->next_partition_page_ = payload;
+  root->next_partition_page_end_ = root->next_super_page_ - PartitionPageSize();
   PA_DCHECK(payload == SuperPagePayloadBegin(super_page));
-  PA_DCHECK(root->next_partition_page_end == SuperPagePayloadEnd(super_page));
+  PA_DCHECK(root->next_partition_page_end_ == SuperPagePayloadEnd(super_page));
 
+  uintptr_t metadata_start =
+      PartitionSuperPageToMetadataPage(super_page, root->MetadataOffset());
   // Keep the first partition page in the super page inaccessible to serve as a
   // guard page, except an "island" in the middle where we put page metadata and
   // also a tiny amount of extent metadata.
   {
     ScopedSyscallTimer timer{root};
-#if PA_CONFIG(ENABLE_SHADOW_METADATA)
-    if (PartitionAddressSpace::IsShadowMetadataEnabled(root->ChoosePool())) {
-      PartitionAddressSpace::MapMetadata(super_page, /*copy_metadata=*/false);
-    } else
-#endif  // PA_CONFIG(ENABLE_SHADOW_METADATA)
-    {
-      RecommitSystemPages(super_page + SystemPageSize(), SystemPageSize(),
-                          root->PageAccessibilityWithThreadIsolationIfEnabled(
-                              PageAccessibilityConfiguration::kReadWrite),
-                          PageAccessibilityDisposition::kRequireUpdate);
-    }
+    RecommitSystemPages(metadata_start, SystemPageSize(),
+                        root->PageAccessibilityWithThreadIsolationIfEnabled(
+                            PageAccessibilityConfiguration::kReadWrite),
+                        PageAccessibilityDisposition::kRequireUpdate);
   }
 
-  if (root->ChoosePool() == kBRPPoolHandle) {
+#if PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SUPPORT)
+  if (root->brp_enabled()) {
     // Allocate a system page for InSlotMetadata table (only one of its
     // elements will be used). Shadow metadata does not need to protect
     // this table, because (1) corrupting the table won't help with the
@@ -863,6 +803,7 @@ PartitionBucket::InitializeSuperPage(PartitionRoot* root,
                             PageAccessibilityConfiguration::kReadWrite),
                         PageAccessibilityDisposition::kRequireUpdate);
   }
+#endif  // PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SUPPORT)
 
   // If we were after a specific address, but didn't get it, assume that
   // the system chose a lousy address. Here most OS'es have a default
@@ -871,99 +812,71 @@ PartitionBucket::InitializeSuperPage(PartitionRoot* root,
   // successful mapping, which is far from random. So we just get fresh
   // randomness for the next mapping attempt.
   if (requested_address && requested_address != super_page) {
-    root->next_super_page = 0;
+    root->next_super_page_ = 0;
   }
 
   // We allocated a new super page so update super page metadata.
   // First check if this is a new extent or not.
-  auto* latest_extent = PartitionSuperPageToExtent(super_page);
-  auto* writable_latest_extent = latest_extent->ToWritable(root);
-#if PA_BUILDFLAG(DCHECKS_ARE_ON)
-  PA_DCHECK(writable_latest_extent->ToReadOnly(root) == latest_extent);
-#endif  // PA_BUILDFLAG(DCHECKS_ARE_ON)
+  auto* latest_extent =
+      PartitionSuperPageToExtent(super_page, root->MetadataOffset());
   // By storing the root in every extent metadata object, we have a fast way
   // to go from a pointer within the partition to the root object.
-  writable_latest_extent->root = root;
+  latest_extent->root = root;
 #if PA_BUILDFLAG(DCHECKS_ARE_ON)
-  PA_DCHECK(writable_latest_extent->root == root);
   PA_DCHECK(latest_extent->root == root);
 #endif  // PA_BUILDFLAG(DCHECKS_ARE_ON)
   // Most new extents will be part of a larger extent, and these two fields
   // are unused, but we initialize them to 0 so that we get a clear signal
   // in case they are accidentally used.
-  writable_latest_extent->number_of_consecutive_super_pages = 0;
-  writable_latest_extent->next = nullptr;
-  writable_latest_extent->number_of_nonempty_slot_spans = 0;
+  latest_extent->number_of_consecutive_super_pages = 0;
+  latest_extent->next = nullptr;
+  latest_extent->number_of_nonempty_slot_spans = 0;
 
-  PartitionSuperPageExtentEntry<MetadataKind::kReadOnly>* current_extent =
-      root->current_extent;
+  PartitionSuperPageExtentEntry* current_extent_ = root->current_extent_;
   const bool is_new_extent = super_page != requested_address;
   if (is_new_extent) [[unlikely]] {
-    if (!current_extent) [[unlikely]] {
-      PA_DCHECK(!root->first_extent);
-      root->first_extent = latest_extent;
+    if (!current_extent_) [[unlikely]] {
+      PA_DCHECK(!root->first_extent_);
+      root->first_extent_ = latest_extent;
     } else {
-      PA_DCHECK(current_extent->number_of_consecutive_super_pages);
-      current_extent->ToWritable(root)->next = latest_extent;
+      PA_DCHECK(current_extent_->number_of_consecutive_super_pages);
+      current_extent_->next = latest_extent;
     }
-    root->current_extent = latest_extent;
-    writable_latest_extent->number_of_consecutive_super_pages = 1;
+    root->current_extent_ = latest_extent;
+    latest_extent->number_of_consecutive_super_pages = 1;
   } else {
     // We allocated next to an existing extent so just nudge the size up a
     // little.
-    PA_DCHECK(current_extent->number_of_consecutive_super_pages);
-    ++current_extent->ToWritable(root)->number_of_consecutive_super_pages;
-    PA_DCHECK(payload > SuperPagesBeginFromExtent(current_extent) &&
-              payload < SuperPagesEndFromExtent(current_extent));
+    PA_DCHECK(current_extent_->number_of_consecutive_super_pages);
+    ++current_extent_->number_of_consecutive_super_pages;
+    PA_DCHECK(payload > SuperPagesBeginFromExtent(current_extent_) &&
+              payload < SuperPagesEndFromExtent(current_extent_));
   }
-
-#if PA_BUILDFLAG(USE_FREESLOT_BITMAP)
-  // Commit the pages for freeslot bitmap.
-  if (!is_direct_mapped()) {
-    uintptr_t freeslot_bitmap_addr = super_page + PartitionPageSize();
-    PA_DCHECK(SuperPageFreeSlotBitmapAddr(super_page) == freeslot_bitmap_addr);
-    ScopedSyscallTimer timer{root};
-    RecommitSystemPages(freeslot_bitmap_addr, CommittedFreeSlotBitmapSize(),
-                        root->PageAccessibilityWithThreadIsolationIfEnabled(
-                            PageAccessibilityConfiguration::kReadWrite),
-                        PageAccessibilityDisposition::kRequireUpdate);
-  }
-#endif
 
   return payload;
 }
 
 PA_ALWAYS_INLINE void PartitionBucket::InitializeSlotSpan(
-    SlotSpanMetadata<MetadataKind::kReadOnly>* slot_span,
-    PartitionRoot* root) {
-  SlotSpanMetadata<MetadataKind::kWritable>* writable_slot_span =
-      slot_span->ToWritable(root);
-  new (writable_slot_span) SlotSpanMetadata<MetadataKind::kWritable>(this);
+    SlotSpanMetadata* slot_span) {
+  new (slot_span) SlotSpanMetadata(this);
 
-  writable_slot_span->Reset();
+  slot_span->Reset();
 
   uint16_t num_partition_pages = get_pages_per_slot_span();
-  auto* page_metadata =
-      reinterpret_cast<PartitionPageMetadata<MetadataKind::kWritable>*>(
-          writable_slot_span);
-  for (uint16_t i = 0; i < num_partition_pages; ++i, ++page_metadata) {
-    PA_DCHECK(i <= PartitionPageMetadata<
-                       MetadataKind::kReadOnly>::kMaxSlotSpanMetadataOffset);
+  auto* page_metadata = reinterpret_cast<PartitionPageMetadata*>(slot_span);
+  for (uint16_t i = 0; i < num_partition_pages;
+       ++i, PA_UNSAFE_TODO(++page_metadata)) {
+    PA_DCHECK(i <= PartitionPageMetadata::kMaxSlotSpanMetadataOffset);
     page_metadata->slot_span_metadata_offset = i;
     page_metadata->is_valid = true;
   }
-#if PA_CONFIG(ENABLE_SHADOW_METADATA) && PA_BUILDFLAG(DCHECKS_ARE_ON)
-  PA_DCHECK(slot_span->bucket == this);
-#endif  // PA_CONFIG(ENABLE_SHADOW_METADATA) && PA_BUILDFLAG(DCHECKS_ARE_ON)
 }
 
-PA_ALWAYS_INLINE uintptr_t PartitionBucket::ProvisionMoreSlotsAndAllocOne(
-    PartitionRoot* root,
-    AllocFlags flags,
-    SlotSpanMetadata<MetadataKind::kReadOnly>* slot_span) {
-  PA_DCHECK(
-      slot_span !=
-      SlotSpanMetadata<MetadataKind::kReadOnly>::get_sentinel_slot_span());
+PA_ALWAYS_INLINE uintptr_t
+PartitionBucket::ProvisionMoreSlotsAndAllocOne(PartitionRoot* root,
+                                               AllocFlags flags,
+                                               SlotSpanMetadata* slot_span) {
+  PA_DCHECK(slot_span != SlotSpanMetadata::get_sentinel_slot_span());
   size_t num_slots = slot_span->num_unprovisioned_slots;
   PA_DCHECK(num_slots);
   PA_DCHECK(num_slots <= get_slots_per_span());
@@ -975,12 +888,12 @@ PA_ALWAYS_INLINE uintptr_t PartitionBucket::ProvisionMoreSlotsAndAllocOne(
   PA_DCHECK(!slot_span->get_freelist_head());
   PA_DCHECK(!slot_span->is_full());
 
-  uintptr_t slot_span_start =
-      SlotSpanMetadata<MetadataKind::kReadOnly>::ToSlotSpanStart(slot_span);
+  SlotSpanStart slot_span_start =
+      SlotSpanMetadata::ToSlotSpanStart(slot_span, root);
   // If we got here, the first unallocated slot is either partially or fully on
   // an uncommitted page. If the latter, it must be at the start of that page.
   uintptr_t return_slot =
-      slot_span_start + (slot_size * slot_span->num_allocated_slots);
+      slot_span_start.value() + (slot_size * slot_span->num_allocated_slots);
   uintptr_t next_slot = return_slot + slot_size;
   uintptr_t commit_start = base::bits::AlignUp(return_slot, SystemPageSize());
   PA_DCHECK(next_slot > commit_start);
@@ -1010,15 +923,15 @@ PA_ALWAYS_INLINE uintptr_t PartitionBucket::ProvisionMoreSlotsAndAllocOne(
     }
   }
 
-  SlotSpanMetadata<MetadataKind::kWritable>* writable_slot_span =
-      slot_span->ToWritable(root);
   // The slot being returned is considered allocated.
-  writable_slot_span->num_allocated_slots++;
+  slot_span->num_allocated_slots++;
   // Round down, because a slot that doesn't fully fit in the new page(s) isn't
   // provisioned.
   size_t slots_to_provision = (commit_end - return_slot) / slot_size;
-  writable_slot_span->num_unprovisioned_slots -= slots_to_provision;
-  PA_DCHECK(slot_span->num_allocated_slots +
+  slot_span->num_unprovisioned_slots -= slots_to_provision;
+  // Note: the bitfields are promoted to int for arithmetic operations, so the
+  // static_casts are necessary to avoid -Werror=sign-compare.
+  PA_DCHECK(static_cast<size_t>(slot_span->num_allocated_slots) +
                 slot_span->num_unprovisioned_slots <=
             get_slots_per_span());
 
@@ -1031,11 +944,9 @@ PA_ALWAYS_INLINE uintptr_t PartitionBucket::ProvisionMoreSlotsAndAllocOne(
   }
 #endif  // PA_BUILDFLAG(HAS_MEMORY_TAGGING)
   // Add all slots that fit within so far committed pages to the free list.
-  PartitionFreelistEntry* prev_entry = nullptr;
+  FreelistEntry* prev_entry = nullptr;
   uintptr_t next_slot_end = next_slot + slot_size;
   size_t free_list_entries_added = 0;
-
-  const auto* freelist_dispatcher = root->get_freelist_dispatcher();
 
   while (next_slot_end <= commit_end) {
     void* next_slot_ptr;
@@ -1053,19 +964,16 @@ PA_ALWAYS_INLINE uintptr_t PartitionBucket::ProvisionMoreSlotsAndAllocOne(
     next_slot_ptr = reinterpret_cast<void*>(next_slot);
 #endif
 
-    auto* entry = freelist_dispatcher->EmplaceAndInitNull(next_slot_ptr);
+    auto* entry = FreelistEntry::EmplaceAndInitNull(next_slot_ptr);
 
     if (!slot_span->get_freelist_head()) {
       PA_DCHECK(!prev_entry);
       PA_DCHECK(!free_list_entries_added);
-      writable_slot_span->SetFreelistHead(entry, root);
+      slot_span->SetFreelistHead(entry);
     } else {
       PA_DCHECK(free_list_entries_added);
-      freelist_dispatcher->SetNext(prev_entry, entry);
+      prev_entry->SetNext(entry);
     }
-#if PA_BUILDFLAG(USE_FREESLOT_BITMAP)
-    FreeSlotBitmapMarkSlotAsFree(next_slot);
-#endif
     next_slot = next_slot_end;
     next_slot_end = next_slot + slot_size;
     prev_entry = entry;
@@ -1073,10 +981,6 @@ PA_ALWAYS_INLINE uintptr_t PartitionBucket::ProvisionMoreSlotsAndAllocOne(
     free_list_entries_added++;
 #endif
   }
-
-#if PA_BUILDFLAG(USE_FREESLOT_BITMAP)
-  FreeSlotBitmapMarkSlotAsFree(return_slot);
-#endif
 
 #if PA_BUILDFLAG(DCHECKS_ARE_ON)
   // The only provisioned slot not added to the free list is the one being
@@ -1086,25 +990,23 @@ PA_ALWAYS_INLINE uintptr_t PartitionBucket::ProvisionMoreSlotsAndAllocOne(
   // is large), meaning that |slot_span->freelist_head| can be nullptr.
   if (slot_span->get_freelist_head()) {
     PA_DCHECK(free_list_entries_added);
-    freelist_dispatcher->CheckFreeList(slot_span->get_freelist_head(),
-                                       slot_size);
+    slot_span->get_freelist_head()->CheckFreeList(slot_size);
   }
 #endif
 
   // We had no free slots, and created some (potentially 0) in sorted order.
-  writable_slot_span->set_freelist_sorted();
+  slot_span->set_freelist_sorted();
 
   return return_slot;
 }
 
-bool PartitionBucket::SetNewActiveSlotSpan(PartitionRoot* root) {
-  SlotSpanMetadata<MetadataKind::kReadOnly>* slot_span = active_slot_spans_head;
-  if (slot_span ==
-      SlotSpanMetadata<MetadataKind::kReadOnly>::get_sentinel_slot_span()) {
+bool PartitionBucket::SetNewActiveSlotSpan() {
+  SlotSpanMetadata* slot_span = active_slot_spans_head;
+  if (slot_span == SlotSpanMetadata::get_sentinel_slot_span()) {
     return false;
   }
 
-  SlotSpanMetadata<MetadataKind::kReadOnly>* next_slot_span;
+  SlotSpanMetadata* next_slot_span;
 
   // The goal here is to find a suitable slot span in the active list. Suitable
   // slot spans are |is_active()|, i.e. they either have (a) freelist entries,
@@ -1136,8 +1038,8 @@ bool PartitionBucket::SetNewActiveSlotSpan(PartitionRoot* root) {
   // Note that in most cases, the whole list will not be walked and maintained
   // at this stage.
 
-  SlotSpanMetadata<MetadataKind::kReadOnly>* to_provision_head = nullptr;
-  SlotSpanMetadata<MetadataKind::kReadOnly>* to_provision_tail = nullptr;
+  SlotSpanMetadata* to_provision_head = nullptr;
+  SlotSpanMetadata* to_provision_tail = nullptr;
 
   for (; slot_span; slot_span = next_slot_span) {
     next_slot_span = slot_span->next_slot_span;
@@ -1156,30 +1058,30 @@ bool PartitionBucket::SetNewActiveSlotSpan(PartitionRoot* root) {
           to_provision_head = slot_span;
         }
         if (to_provision_tail) {
-          to_provision_tail->ToWritable(root)->next_slot_span = slot_span;
+          to_provision_tail->next_slot_span = slot_span;
         }
         to_provision_tail = slot_span;
-        slot_span->ToWritable(root)->next_slot_span = nullptr;
+        slot_span->next_slot_span = nullptr;
       }
     } else if (slot_span->is_empty()) {
-      slot_span->ToWritable(root)->next_slot_span = empty_slot_spans_head;
+      slot_span->next_slot_span = empty_slot_spans_head;
       empty_slot_spans_head = slot_span;
     } else if (slot_span->is_decommitted()) [[likely]] {
-      slot_span->ToWritable(root)->next_slot_span = decommitted_slot_spans_head;
+      slot_span->next_slot_span = decommitted_slot_spans_head;
       decommitted_slot_spans_head = slot_span;
     } else {
       PA_DCHECK(slot_span->is_full());
       // Move this slot span... nowhere, and also mark it as full. We need it
       // marked so that free'ing can tell, and move it back into the active
       // list.
-      slot_span->ToWritable(root)->marked_full = 1;
+      slot_span->marked_full = 1;
       ++num_full_slot_spans;
       // Overflow. Most likely a correctness issue in the code.  It is in theory
       // possible that the number of full slot spans really reaches (1 << 24),
       // but this is very unlikely (and not possible with most pool settings).
       PA_CHECK(num_full_slot_spans);
       // Not necessary but might help stop accidents.
-      slot_span->ToWritable(root)->next_slot_span = nullptr;
+      slot_span->next_slot_span = nullptr;
     }
   }
 
@@ -1191,8 +1093,8 @@ bool PartitionBucket::SetNewActiveSlotSpan(PartitionRoot* root) {
     // the active list, past the span with freelist entries.
     if (to_provision_head) {
       auto* next = slot_span->next_slot_span;
-      slot_span->ToWritable(root)->next_slot_span = to_provision_head;
-      to_provision_tail->ToWritable(root)->next_slot_span = next;
+      slot_span->next_slot_span = to_provision_head;
+      to_provision_tail->next_slot_span = next;
     }
     active_slot_spans_head = slot_span;
   } else if (to_provision_head) {
@@ -1201,26 +1103,23 @@ bool PartitionBucket::SetNewActiveSlotSpan(PartitionRoot* root) {
     active_slot_spans_head = to_provision_head;
   } else {
     // Active list is now empty.
-    active_slot_spans_head = SlotSpanMetadata<
-        MetadataKind::kReadOnly>::get_sentinel_slot_span_non_const();
+    active_slot_spans_head =
+        SlotSpanMetadata::get_sentinel_slot_span_non_const();
   }
 
   return usable_active_list_head;
 }
 
-void PartitionBucket::MaintainActiveList(PartitionRoot* root) {
-  SlotSpanMetadata<MetadataKind::kReadOnly>* slot_span = active_slot_spans_head;
-  if (slot_span ==
-      SlotSpanMetadata<MetadataKind::kReadOnly>::get_sentinel_slot_span()) {
+void PartitionBucket::MaintainActiveList() {
+  SlotSpanMetadata* slot_span = active_slot_spans_head;
+  if (slot_span == SlotSpanMetadata::get_sentinel_slot_span()) {
     return;
   }
 
-  SlotSpanMetadata<MetadataKind::kReadOnly>* new_active_slot_spans_head =
-      nullptr;
-  SlotSpanMetadata<MetadataKind::kReadOnly>* new_active_slot_spans_tail =
-      nullptr;
+  SlotSpanMetadata* new_active_slot_spans_head = nullptr;
+  SlotSpanMetadata* new_active_slot_spans_tail = nullptr;
 
-  SlotSpanMetadata<MetadataKind::kReadOnly>* next_slot_span;
+  SlotSpanMetadata* next_slot_span;
   for (; slot_span; slot_span = next_slot_span) {
     next_slot_span = slot_span->next_slot_span;
 
@@ -1230,46 +1129,38 @@ void PartitionBucket::MaintainActiveList(PartitionRoot* root) {
         new_active_slot_spans_head = slot_span;
       }
       if (new_active_slot_spans_tail) {
-        new_active_slot_spans_tail->ToWritable(root)->next_slot_span =
-            slot_span;
+        new_active_slot_spans_tail->next_slot_span = slot_span;
       }
       new_active_slot_spans_tail = slot_span;
-      slot_span->ToWritable(root)->next_slot_span = nullptr;
+      slot_span->next_slot_span = nullptr;
     } else if (slot_span->is_empty()) {
       // For the empty and decommitted lists, LIFO ordering makes sense (since
       // it would lead to reusing memory which has been touched relatively
       // recently, which only matters for committed spans though).
-      slot_span->ToWritable(root)->next_slot_span = empty_slot_spans_head;
+      slot_span->next_slot_span = empty_slot_spans_head;
       empty_slot_spans_head = slot_span;
     } else if (slot_span->is_decommitted()) {
-      slot_span->ToWritable(root)->next_slot_span = decommitted_slot_spans_head;
+      slot_span->next_slot_span = decommitted_slot_spans_head;
       decommitted_slot_spans_head = slot_span;
     } else {
       // Full slot spans are not tracked, just accounted for.
       PA_DCHECK(slot_span->is_full());
-      slot_span->ToWritable(root)->marked_full = 1;
+      slot_span->marked_full = 1;
       ++num_full_slot_spans;
       PA_CHECK(num_full_slot_spans);  // Overflow.
-      slot_span->ToWritable(root)->next_slot_span = nullptr;
+      slot_span->next_slot_span = nullptr;
     }
   }
 
   if (!new_active_slot_spans_head) {
-    new_active_slot_spans_head = SlotSpanMetadata<
-        MetadataKind::kReadOnly>::get_sentinel_slot_span_non_const();
+    new_active_slot_spans_head =
+        SlotSpanMetadata::get_sentinel_slot_span_non_const();
   }
   active_slot_spans_head = new_active_slot_spans_head;
-#if PA_CONFIG(ENABLE_SHADOW_METADATA) && PA_BUILDFLAG(DCHECKS_ARE_ON)
-  // If ShadowMetadata is enabled, `active_slot_spans_heads` must not point
-  // to a writable SlotSpanMetadata. Instead, it points to a sentinel
-  // SlotSpanMetadata or a readonly SlotSpanMetadata (inside the gigacage).
-  PA_DCHECK(
-      !PartitionAddressSpace::IsShadowMetadataEnabled(root->ChoosePool()) ||
-      !PartitionAddressSpace::IsInPoolShadow(active_slot_spans_head));
-#endif  // PA_CONFIG(ENABLE_SHADOW_METADATA) && PA_BUILDFLAG(DCHECKS_ARE_ON)
 }
 
-void PartitionBucket::SortSmallerSlotSpanFreeLists(PartitionRoot* root) {
+void PartitionBucket::SortSmallerSlotSpanFreeLists(
+    [[maybe_unused]] const PartitionRoot* root) {
   for (auto* slot_span = active_slot_spans_head; slot_span;
        slot_span = slot_span->next_slot_span) {
     // No need to sort the freelist if it's already sorted. Note that if the
@@ -1281,15 +1172,14 @@ void PartitionBucket::SortSmallerSlotSpanFreeLists(PartitionRoot* root) {
     // spans, which may required paging.
     if (slot_span->num_allocated_slots > 0 &&
         !slot_span->freelist_is_sorted()) {
-      slot_span->ToWritable(root)->SortFreelist(root);
+      slot_span->SortFreelist(root);
     }
   }
 }
 
 PA_COMPONENT_EXPORT(PARTITION_ALLOC)
-bool CompareSlotSpans(const SlotSpanMetadata<MetadataKind::kReadOnly>* a,
-                      const SlotSpanMetadata<MetadataKind::kReadOnly>* b) {
-  auto criteria_tuple = [](SlotSpanMetadata<MetadataKind::kReadOnly> const* a) {
+bool CompareSlotSpans(const SlotSpanMetadata* a, const SlotSpanMetadata* b) {
+  auto criteria_tuple = [](SlotSpanMetadata const* a) {
     size_t freelist_length = a->GetFreelistLength();
     // The criteria are, in order (hence the lexicographic comparison below):
     // 1. Prefer slot spans with freelist entries. The ones without freelist
@@ -1316,22 +1206,21 @@ bool CompareSlotSpans(const SlotSpanMetadata<MetadataKind::kReadOnly>* a,
   return criteria_tuple(a) < criteria_tuple(b);
 }
 
-void PartitionBucket::SortActiveSlotSpans(PartitionRoot* root) {
+void PartitionBucket::SortActiveSlotSpans() {
   // Sorting up to |kMaxSlotSpansToSort| slot spans. This is capped for two
   // reasons:
   // - Limiting execution time
   // - Current code cannot allocate.
   //
   // In practice though, it's rare to have that many active slot spans.
-  SlotSpanMetadata<MetadataKind::kReadOnly>*
-      active_spans_array[kMaxSlotSpansToSort];
+  SlotSpanMetadata* active_spans_array[kMaxSlotSpansToSort];
   size_t index = 0;
-  SlotSpanMetadata<MetadataKind::kReadOnly>* overflow_spans_start = nullptr;
+  SlotSpanMetadata* overflow_spans_start = nullptr;
 
   for (auto* slot_span = active_slot_spans_head; slot_span;
        slot_span = slot_span->next_slot_span) {
     if (index < kMaxSlotSpansToSort) {
-      active_spans_array[index++] = slot_span;
+      PA_UNSAFE_TODO(active_spans_array[index++]) = slot_span;
     } else {
       // Starting from this one, not sorting the slot spans.
       overflow_spans_start = slot_span;
@@ -1358,33 +1247,33 @@ void PartitionBucket::SortActiveSlotSpans(PartitionRoot* root) {
   // it may not throw std::bad_alloc, which constrains the implementation. In
   // addition, this is protected by the reentrancy guard, so we would detect
   // such an allocation.
-  std::sort(active_spans_array, active_spans_array + index, CompareSlotSpans);
+  std::sort(active_spans_array, PA_UNSAFE_TODO(active_spans_array + index),
+            CompareSlotSpans);
 
   active_slot_spans_head = overflow_spans_start;
 
   // Reverse order, since we insert at the head of the list.
   for (int i = index - 1; i >= 0; i--) {
-    if (active_spans_array[i] ==
-        SlotSpanMetadata<MetadataKind::kReadOnly>::get_sentinel_slot_span()) {
+    if (PA_UNSAFE_TODO(active_spans_array[i]) ==
+        SlotSpanMetadata::get_sentinel_slot_span()) {
       // The sentinel is const, don't try to write to it.
       PA_DCHECK(active_slot_spans_head == nullptr);
     } else {
-      active_spans_array[i]->ToWritable(root)->next_slot_span =
-          active_slot_spans_head;
+      PA_UNSAFE_TODO(active_spans_array[i]->next_slot_span =
+                         active_slot_spans_head);
     }
-    active_slot_spans_head = active_spans_array[i];
+    active_slot_spans_head = PA_UNSAFE_TODO(active_spans_array[i]);
   }
 }
 
-uintptr_t PartitionBucket::SlowPathAlloc(
-    PartitionRoot* root,
-    AllocFlags flags,
-    size_t raw_size,
-    size_t slot_span_alignment,
-    SlotSpanMetadata<MetadataKind::kReadOnly>** slot_span,
-    bool* is_already_zeroed) {
+uintptr_t PartitionBucket::SlowPathAlloc(PartitionRoot* root,
+                                         AllocFlags flags,
+                                         size_t raw_size,
+                                         size_t slot_span_alignment,
+                                         SlotSpanMetadata** slot_span,
+                                         bool* is_already_zeroed) {
   PA_DCHECK((slot_span_alignment >= PartitionPageSize()) &&
-            base::bits::HasSingleBit(slot_span_alignment));
+            std::has_single_bit(slot_span_alignment));
 
   // The slow path is called when the freelist is empty. The only exception is
   // when a higher-order alignment is requested, in which case the freelist
@@ -1393,7 +1282,7 @@ uintptr_t PartitionBucket::SlowPathAlloc(
   PA_DCHECK(!active_slot_spans_head->get_freelist_head() ||
             allocate_aligned_slot_span);
 
-  SlotSpanMetadata<MetadataKind::kReadOnly>* new_slot_span = nullptr;
+  SlotSpanMetadata* new_slot_span = nullptr;
   // |new_slot_span->bucket| will always be |this|, except when |this| is the
   // sentinel bucket, which is used to signal a direct mapped allocation.  In
   // this case |new_bucket| will be set properly later. This avoids a read for
@@ -1401,7 +1290,7 @@ uintptr_t PartitionBucket::SlowPathAlloc(
   PartitionBucket* new_bucket = this;
   *is_already_zeroed = false;
 
-  // For the PartitionRoot::Alloc() API, we have a bunch of buckets
+  // For the PartitionRoot::Alloc() API, we have a bunch of buckets_
   // marked as special cases. We bounce them through to the slow path so that
   // we can still have a blazing fast hot path due to lack of corner-case
   // branches.
@@ -1411,11 +1300,10 @@ uintptr_t PartitionBucket::SlowPathAlloc(
   // false where it sweeps the active list and may move things into the empty or
   // decommitted lists which affects the subsequent conditional.
   if (is_direct_mapped()) [[unlikely]] {
-    PA_DCHECK(raw_size > kMaxBucketed);
-    PA_DCHECK(this == &root->sentinel_bucket);
-    PA_DCHECK(
-        active_slot_spans_head ==
-        SlotSpanMetadata<MetadataKind::kReadOnly>::get_sentinel_slot_span());
+    PA_DCHECK(raw_size > BucketIndexLookup::kMaxBucketSize);
+    PA_DCHECK(this == &root->sentinel_bucket_);
+    PA_DCHECK(active_slot_spans_head ==
+              SlotSpanMetadata::get_sentinel_slot_span());
 
     // No fast path for direct-mapped allocations.
     if (ContainsFlags(flags, AllocFlags::kFastPathOrReturnNull)) {
@@ -1425,27 +1313,11 @@ uintptr_t PartitionBucket::SlowPathAlloc(
     new_slot_span =
         PartitionDirectMap(root, flags, raw_size, slot_span_alignment);
     if (new_slot_span) {
-#if !PA_CONFIG(ENABLE_SHADOW_METADATA)
       new_bucket = new_slot_span->bucket;
-#else
-      // |new_slot_span| must be in the giga cage.
-      PA_DCHECK(IsManagedByPartitionAlloc(
-          reinterpret_cast<uintptr_t>(new_slot_span)));
-      // |new_slot_span->bucket| must point to a bucket inside the giga cage,
-      // because the new slotspan is in the giga cage.
-      PA_DCHECK(IsManagedByPartitionAlloc(
-          reinterpret_cast<uintptr_t>(new_slot_span->bucket)));
-      // To make the writable PartitionBucket, need to apply
-      // |root->ShadowPoolOffset()|.
-      new_bucket = reinterpret_cast<PartitionBucket*>(
-          reinterpret_cast<intptr_t>(new_slot_span->bucket) +
-          root->ShadowPoolOffset());
-#endif  // PA_CONFIG(ENABLE_SHADOW_METADATA)
     }
     // Memory from PageAllocator is always zeroed.
     *is_already_zeroed = true;
-  } else if (!allocate_aligned_slot_span && SetNewActiveSlotSpan(root))
-      [[likely]] {
+  } else if (!allocate_aligned_slot_span && SetNewActiveSlotSpan()) [[likely]] {
     // First, did we find an active slot span in the active list?
     new_slot_span = active_slot_spans_head;
     PA_DCHECK(new_slot_span->is_active());
@@ -1461,22 +1333,20 @@ uintptr_t PartitionBucket::SlowPathAlloc(
       empty_slot_spans_head = new_slot_span->next_slot_span;
       // Accept the empty slot span unless it got decommitted.
       if (new_slot_span->get_freelist_head()) {
-        new_slot_span->ToWritable(root)->next_slot_span = nullptr;
+        new_slot_span->next_slot_span = nullptr;
         new_slot_span->ToSuperPageExtent()
-            ->ToWritable(root)
             ->IncrementNumberOfNonemptySlotSpans();
 
         // Re-activating an empty slot span, update accounting.
         size_t dirty_size = base::bits::AlignUp(
             new_slot_span->GetProvisionedSize(), SystemPageSize());
-        PA_DCHECK(root->empty_slot_spans_dirty_bytes >= dirty_size);
-        root->empty_slot_spans_dirty_bytes -= dirty_size;
+        PA_DCHECK(root->empty_slot_spans_dirty_bytes_ >= dirty_size);
+        root->empty_slot_spans_dirty_bytes_ -= dirty_size;
 
         break;
       }
       PA_DCHECK(new_slot_span->is_decommitted());
-      new_slot_span->ToWritable(root)->next_slot_span =
-          decommitted_slot_spans_head;
+      new_slot_span->next_slot_span = decommitted_slot_spans_head;
       decommitted_slot_spans_head = new_slot_span;
     }
     if (!new_slot_span) [[unlikely]] {
@@ -1493,15 +1363,15 @@ uintptr_t PartitionBucket::SlowPathAlloc(
         // If lazy commit is enabled, pages will be recommitted when
         // provisioning slots, in ProvisionMoreSlotsAndAllocOne(), not here.
         if (!kUseLazyCommit) {
-          uintptr_t slot_span_start =
-              SlotSpanMetadata<MetadataKind::kReadOnly>::ToSlotSpanStart(
-                  new_slot_span);
+          SlotSpanStart slot_span_start =
+              SlotSpanMetadata::ToSlotSpanStart(new_slot_span, root);
           // Since lazy commit isn't used, we have a guarantee that all slot
           // span pages have been previously committed, and then decommitted
           // using PageAccessibilityDisposition::kAllowKeepForPerf, so use the
           // same option as an optimization.
           const bool ok = root->TryRecommitSystemPagesForDataLocked(
-              slot_span_start, new_slot_span->bucket->get_bytes_per_span(),
+              slot_span_start.value(),
+              new_slot_span->bucket->get_bytes_per_span(),
               PageAccessibilityDisposition::kAllowKeepForPerf,
               slot_size <= kMaxMemoryTaggingSize);
           if (!ok) {
@@ -1515,7 +1385,7 @@ uintptr_t PartitionBucket::SlowPathAlloc(
         }
 
         decommitted_slot_spans_head = new_slot_span->next_slot_span;
-        new_slot_span->ToWritable(root)->Reset();
+        new_slot_span->Reset();
         *is_already_zeroed = DecommittedMemoryIsAlwaysZeroed();
       }
       PA_DCHECK(new_slot_span);
@@ -1536,9 +1406,8 @@ uintptr_t PartitionBucket::SlowPathAlloc(
 
   // Bail if we had a memory allocation failure.
   if (!new_slot_span) [[unlikely]] {
-    PA_DCHECK(
-        active_slot_spans_head ==
-        SlotSpanMetadata<MetadataKind::kReadOnly>::get_sentinel_slot_span());
+    PA_DCHECK(active_slot_spans_head ==
+              SlotSpanMetadata::get_sentinel_slot_span());
     if (ContainsFlags(flags, AllocFlags::kReturnNull)) {
       return 0;
     }
@@ -1549,25 +1418,21 @@ uintptr_t PartitionBucket::SlowPathAlloc(
   }
   *slot_span = new_slot_span;
 
-  PA_DCHECK(new_bucket != &root->sentinel_bucket);
+  PA_DCHECK(new_bucket != &root->sentinel_bucket_);
   new_bucket->active_slot_spans_head = new_slot_span;
   if (new_slot_span->CanStoreRawSize()) {
-    new_slot_span->ToWritable(root)->SetRawSize(raw_size);
+    new_slot_span->SetRawSize(raw_size);
   }
 
   // If we found an active slot span with free slots, or an empty slot span, we
   // have a usable freelist head.
   if (new_slot_span->get_freelist_head() != nullptr) [[likely]] {
-    const PartitionFreelistDispatcher* freelist_dispatcher =
-        root->get_freelist_dispatcher();
-    PartitionFreelistEntry* entry =
-        new_slot_span->ToWritable(root)->PopForAlloc(new_bucket->slot_size,
-                                                     freelist_dispatcher);
+    FreelistEntry* entry = new_slot_span->PopForAlloc(new_bucket->slot_size);
 
     // We may have set *is_already_zeroed to true above, make sure that the
     // freelist entry doesn't contain data. Either way, it wouldn't be a good
     // idea to let users see our internal data.
-    uintptr_t slot_start = freelist_dispatcher->ClearForAllocation(entry);
+    uintptr_t slot_start = entry->ClearForAllocation();
     return slot_start;
   }
 
@@ -1585,15 +1450,14 @@ uintptr_t PartitionBucket::AllocNewSuperPageSpanForGwpAsan(
 }
 
 void PartitionBucket::InitializeSlotSpanForGwpAsan(
-    SlotSpanMetadata<MetadataKind::kReadOnly>* slot_span,
-    PartitionRoot* root) {
-  InitializeSlotSpan(slot_span, root);
+    SlotSpanMetadata* slot_span) {
+  InitializeSlotSpan(slot_span);
 }
 
 size_t PartitionBucket::SlotSpanCommittedSize(PartitionRoot* root) const {
   // With lazy commit, we certainly don't want to commit more than
   // necessary. This is not reached, but keep the CHECK() as documentation.
-  PA_CHECK(!kUseLazyCommit);
+  static_assert(!(kUseLazyCommit && kUseFewerMemoryRegions));
 
   // Memory is reserved in units of PartitionPage, but a given slot span may be
   // smaller than the reserved area. For instance (assuming 4k pages), for a
@@ -1617,7 +1481,9 @@ size_t PartitionBucket::SlotSpanCommittedSize(PartitionRoot* root) const {
   // less than 2^16, and Chromium sometimes hits the limit (see
   // /proc/sys/vm/max_map_count for the current limit), largely because of
   // PartitionAlloc contributing thousands of regions. Locally, on a Linux
-  // system, this reduces the number of PartitionAlloc regions by up to ~4x.
+  // system, this reduces the number of PartitionAlloc regions by up to
+  // ~4x. This has been shown to meaningfully reduce crash rate on Linux-based
+  // platforms.
   //
   // Why is it safe?
   // The extra memory is not used by anything, so committing it doesn't make a
@@ -1632,19 +1498,13 @@ size_t PartitionBucket::SlotSpanCommittedSize(PartitionRoot* root) const {
   // the size of the VMA red-black tree in the kernel), it might increase
   // slightly the cases where we bump into the sandbox memory limit.
   //
-  // Is it safe to do while running?
-  // Since this is decided through root settings, the value changes at runtime,
-  // so we may decommit memory that was never committed. This is safe onLinux,
-  // since decommitting is just changing permissions back to PROT_NONE, which
-  // the tail end would already have.
-  //
   // Can we do better?
   // For simplicity, we do not "fix" the regions that were committed before the
   // settings are changed (after feature list initialization). This means that
   // we end up with more regions that we could. The intent is to run a field
   // experiment, then change the default value, at which point we get the full
   // impact, so this is only temporary.
-  return root->settings.fewer_memory_regions
+  return kUseFewerMemoryRegions
              ? (get_pages_per_slot_span() << PartitionPageShift())
              : get_bytes_per_span();
 }

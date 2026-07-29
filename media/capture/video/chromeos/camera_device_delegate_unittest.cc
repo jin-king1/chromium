@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "media/capture/video/chromeos/camera_device_delegate.h"
 
 #include <stddef.h>
@@ -15,6 +10,7 @@
 #include <memory>
 #include <utility>
 
+#include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/run_loop.h"
@@ -168,7 +164,6 @@ class CameraDeviceDelegateTest : public ::testing::Test {
 
   void SetUp() override {
     test_sii_ = base::MakeRefCounted<gpu::TestSharedImageInterface>();
-    test_sii_->UseTestGMBInSharedImageCreationWithBufferUsage();
     VideoCaptureDeviceFactoryChromeOS::SetSharedImageInterface(test_sii_);
     camera_hal_delegate_ = std::make_unique<CameraHalDelegate>(ui_task_runner_);
     if (!camera_hal_delegate_->Init()) {
@@ -184,7 +179,6 @@ class CameraDeviceDelegateTest : public ::testing::Test {
   }
 
   void TearDown() override {
-    VideoCaptureDeviceFactoryChromeOS::SetGpuBufferManager(nullptr);
     VideoCaptureDeviceFactoryChromeOS::SetSharedImageInterface(nullptr);
     camera_device_delegate_.reset();
     camera_hal_delegate_.reset();
@@ -261,7 +255,8 @@ class CameraDeviceDelegateTest : public ::testing::Test {
     stream_configurations[11] = static_cast<int32_t>(
         cros::mojom::Camera3StreamType::CAMERA3_STREAM_OUTPUT);
     uint8_t* as_int8 = reinterpret_cast<uint8_t*>(stream_configurations.data());
-    entry->data.assign(as_int8, as_int8 + entry->count * sizeof(int32_t));
+    entry->data.assign(as_int8,
+                       UNSAFE_TODO(as_int8 + entry->count * sizeof(int32_t)));
     static_metadata->entries->push_back(std::move(entry));
 
     entry = cros::mojom::CameraMetadataEntry::New();
@@ -279,7 +274,8 @@ class CameraDeviceDelegateTest : public ::testing::Test {
     entry->count = 1;
     int32_t jpeg_max_size = kJpegMaxBufferSize;
     as_int8 = reinterpret_cast<uint8_t*>(&jpeg_max_size);
-    entry->data.assign(as_int8, as_int8 + entry->count * sizeof(int32_t));
+    entry->data.assign(as_int8,
+                       UNSAFE_TODO(as_int8 + entry->count * sizeof(int32_t)));
     static_metadata->entries->push_back(std::move(entry));
 
     entry = cros::mojom::CameraMetadataEntry::New();
@@ -289,8 +285,9 @@ class CameraDeviceDelegateTest : public ::testing::Test {
     entry->type = cros::mojom::EntryType::TYPE_BYTE;
     entry->count = 1;
     uint8_t pipeline_max_depth = 1;
-    entry->data.assign(&pipeline_max_depth,
-                       &pipeline_max_depth + entry->count * sizeof(uint8_t));
+    entry->data.assign(
+        &pipeline_max_depth,
+        UNSAFE_TODO(&pipeline_max_depth + entry->count * sizeof(uint8_t)));
     static_metadata->entries->push_back(std::move(entry));
 
     entry = cros::mojom::CameraMetadataEntry::New();
@@ -302,7 +299,8 @@ class CameraDeviceDelegateTest : public ::testing::Test {
     std::vector<int32_t> available_fps_ranges = {kDefaultMinFrameRate,
                                                  kDefaultMaxFrameRate};
     as_int8 = reinterpret_cast<uint8_t*>(available_fps_ranges.data());
-    entry->data.assign(as_int8, as_int8 + entry->count * sizeof(int32_t));
+    entry->data.assign(as_int8,
+                       UNSAFE_TODO(as_int8 + entry->count * sizeof(int32_t)));
     static_metadata->entries->push_back(std::move(entry));
 
     entry = cros::mojom::CameraMetadataEntry::New();
@@ -313,7 +311,8 @@ class CameraDeviceDelegateTest : public ::testing::Test {
     entry->count = 4;
     std::vector<int32_t> active_array_size = {0, 0, 1920, 1080};
     as_int8 = reinterpret_cast<uint8_t*>(active_array_size.data());
-    entry->data.assign(as_int8, as_int8 + entry->count * sizeof(int32_t));
+    entry->data.assign(as_int8,
+                       UNSAFE_TODO(as_int8 + entry->count * sizeof(int32_t)));
     static_metadata->entries->push_back(std::move(entry));
 
     switch (camera_id) {
@@ -627,7 +626,7 @@ TEST_F(CameraDeviceDelegateTest, StopBeforeOpened) {
       };
   EXPECT_CALL(mock_camera_module_, DoOpenDevice(0, _, _))
       .Times(1)
-      .WillOnce(Invoke(open_device_quit_loop_cb));
+      .WillOnce(open_device_quit_loop_cb);
 
   // Wait until the QuitRunLoop() call in |mock_camera_module_->OpenDevice()|.
   DoLoop();
@@ -666,7 +665,7 @@ TEST_F(CameraDeviceDelegateTest, StopAfterInitialized) {
 
   EXPECT_CALL(mock_camera_device_, DoConfigureStreams(_, _))
       .Times(1)
-      .WillOnce(Invoke(
+      .WillOnce(
           [this](cros::mojom::Camera3StreamConfigurationPtr& config,
                  base::OnceCallback<void(
                      int32_t, cros::mojom::Camera3StreamConfigurationPtr)>&
@@ -675,7 +674,7 @@ TEST_F(CameraDeviceDelegateTest, StopAfterInitialized) {
                       this->GetState());
             std::move(callback).Run(-ENODEV, {});
             this->QuitRunLoop();
-          }));
+          });
 
   // Wait until the QuitRunLoop call in |mock_camera_device_->ConfigureStreams|.
   DoLoop();
@@ -705,15 +704,14 @@ TEST_F(CameraDeviceDelegateTest, StopAfterStreamConfigured) {
 
   EXPECT_CALL(mock_camera_device_, DoConstructDefaultRequestSettings(_, _))
       .Times(1)
-      .WillOnce(Invoke(
-          [this](cros::mojom::Camera3RequestTemplate type,
-                 base::OnceCallback<void(cros::mojom::CameraMetadataPtr)>&
-                     callback) {
-            EXPECT_EQ(CameraDeviceContext::State::kStreamConfigured,
-                      this->GetState());
-            std::move(callback).Run({});
-            this->QuitRunLoop();
-          }));
+      .WillOnce([this](cros::mojom::Camera3RequestTemplate type,
+                       base::OnceCallback<void(cros::mojom::CameraMetadataPtr)>&
+                           callback) {
+        EXPECT_EQ(CameraDeviceContext::State::kStreamConfigured,
+                  this->GetState());
+        std::move(callback).Run({});
+        this->QuitRunLoop();
+      });
 
   // Wait until the QuitRunLoop call in |mock_camera_device_->ConfigureStreams|.
   DoLoop();
@@ -762,7 +760,7 @@ TEST_F(CameraDeviceDelegateTest, FailToOpenDevice) {
       };
   EXPECT_CALL(mock_camera_module_, DoOpenDevice(0, _, _))
       .Times(1)
-      .WillOnce(Invoke(open_device_with_error_cb));
+      .WillOnce(open_device_with_error_cb);
 
   device_delegate_thread_.task_runner()->PostTask(
       FROM_HERE, base::BindOnce(&CameraDeviceDelegate::AllocateAndStart,

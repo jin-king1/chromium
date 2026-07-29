@@ -42,8 +42,20 @@ class FakeRestrictedUDPSocket
     : public GarbageCollected<FakeRestrictedUDPSocket>,
       public network::mojom::blink::RestrictedUDPSocket {
  public:
+  void JoinGroup(const net::IPAddress& address,
+                 const std::optional<net::IPAddress>& source_address,
+                 JoinGroupCallback) override {
+    NOTREACHED();
+  }
+
+  void LeaveGroup(const net::IPAddress& address,
+                  const std::optional<net::IPAddress>& source_address,
+                  LeaveGroupCallback) override {
+    NOTREACHED();
+  }
+
   void Send(base::span<const uint8_t> data, SendCallback callback) override {
-    data_.AppendSpan(data);
+    data_.append_range(data);
     std::move(callback).Run(net::Error::OK);
   }
 
@@ -84,9 +96,9 @@ class StreamCreator : public GarbageCollected<StreamCreator> {
 
     auto* script_state = scope.GetScriptState();
     stream_wrapper_ = MakeGarbageCollected<UDPWritableStreamWrapper>(
-        script_state,
-        WTF::BindOnce(&StreamCreator::Close, WrapWeakPersistent(this)),
-        udp_socket, network::mojom::RestrictedUDPSocketMode::CONNECTED);
+        script_state, BindOnce(&StreamCreator::Close, WrapWeakPersistent(this)),
+        udp_socket, network::mojom::RestrictedUDPSocketMode::CONNECTED,
+        /*inspector_id=*/0);
     return stream_wrapper_.Get();
   }
 
@@ -103,7 +115,7 @@ class StreamCreator : public GarbageCollected<StreamCreator> {
   void Cleanup() { receiver_.reset(); }
 
  private:
-  void Close(v8::Local<v8::Value> exception) {
+  void Close(v8::Local<v8::Value> exception, int net_error) {
     close_called_with_ = !exception.IsEmpty();
   }
 

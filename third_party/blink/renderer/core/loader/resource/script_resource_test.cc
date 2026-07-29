@@ -14,6 +14,7 @@
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
 #include "third_party/blink/renderer/platform/weborigin/scheme_registry.h"
 #include "third_party/blink/renderer/platform/wtf/text/text_encoding.h"
+#include "url/gurl.h"
 
 namespace blink {
 namespace {
@@ -23,7 +24,7 @@ TEST(ScriptResourceTest, SuccessfulRevalidation) {
   V8TestingScope scope;
   const KURL url("https://www.example.com/script.js");
   ScriptResource* resource =
-      ScriptResource::CreateForTest(scope.GetIsolate(), url, UTF8Encoding());
+      ScriptResource::CreateForTest(scope.GetIsolate(), url, Utf8Encoding());
   ResourceResponse response(url);
   response.SetHttpStatusCode(200);
 
@@ -34,7 +35,7 @@ TEST(ScriptResourceTest, SuccessfulRevalidation) {
 
   auto* original_handler = resource->CacheHandler();
   EXPECT_TRUE(original_handler);
-  EXPECT_EQ(UTF8Encoding().GetName(), original_handler->Encoding());
+  EXPECT_EQ(Utf8Encoding().GetName(), original_handler->Encoding());
 
   resource->SetRevalidatingRequest(ResourceRequestHead(url));
   ResourceResponse revalidation_response(url);
@@ -77,7 +78,7 @@ TEST(ScriptResourceTest, RedirectDuringRevalidation) {
   V8TestingScope scope;
   const KURL url("https://www.example.com/script.js");
   ScriptResource* resource =
-      ScriptResource::CreateForTest(scope.GetIsolate(), url, UTF8Encoding());
+      ScriptResource::CreateForTest(scope.GetIsolate(), url, Utf8Encoding());
   ResourceResponse response(url);
   response.SetHttpStatusCode(200);
 
@@ -105,7 +106,7 @@ TEST(ScriptResourceTest, RedirectDuringRevalidation) {
 TEST(ScriptResourceTest, WebUICodeCacheEnabled) {
   test::TaskEnvironment task_environment;
 #if DCHECK_IS_ON()
-  WTF::SetIsBeforeThreadCreatedForTest();  // Required for next operation:
+  SetIsBeforeThreadCreatedForTest();  // Required for next operation:
 #endif
   SchemeRegistry::RegisterURLSchemeAsCodeCacheWithHashing(
       "codecachewithhashing");
@@ -113,7 +114,7 @@ TEST(ScriptResourceTest, WebUICodeCacheEnabled) {
   V8TestingScope scope;
   const KURL url("codecachewithhashing://www.example.com/script.js");
   ScriptResource* resource =
-      ScriptResource::CreateForTest(scope.GetIsolate(), url, UTF8Encoding());
+      ScriptResource::CreateForTest(scope.GetIsolate(), url, Utf8Encoding());
   ResourceResponse response(url);
   response.SetHttpStatusCode(200);
 
@@ -125,12 +126,13 @@ TEST(ScriptResourceTest, WebUICodeCacheEnabled) {
   auto* handler = resource->CacheHandler();
   EXPECT_TRUE(handler);
   EXPECT_TRUE(handler->HashRequired());
-  EXPECT_EQ(UTF8Encoding().GetName(), handler->Encoding());
+  EXPECT_EQ(Utf8Encoding().GetName(), handler->Encoding());
 
 #if DCHECK_IS_ON()
-  WTF::SetIsBeforeThreadCreatedForTest();  // Required for next operation:
+  SetIsBeforeThreadCreatedForTest();  // Required for next operation:
 #endif
-  SchemeRegistry::RemoveURLSchemeAsCodeCacheWithHashing("codecachewithhashing");
+  SchemeRegistry::RemoveURLSchemeAsCodeCacheWithHashingForTest(
+      "codecachewithhashing");
 }
 
 TEST(ScriptResourceTest, WebUICodeCacheDisabled) {
@@ -138,7 +140,7 @@ TEST(ScriptResourceTest, WebUICodeCacheDisabled) {
   V8TestingScope scope;
   const KURL url("nocodecachewithhashing://www.example.com/script.js");
   ScriptResource* resource =
-      ScriptResource::CreateForTest(scope.GetIsolate(), url, UTF8Encoding());
+      ScriptResource::CreateForTest(scope.GetIsolate(), url, Utf8Encoding());
   ResourceResponse response(url);
   response.SetHttpStatusCode(200);
 
@@ -156,7 +158,7 @@ TEST(ScriptResourceTest, CodeCacheEnabledByResponseFlag) {
   V8TestingScope scope;
   const KURL url("https://www.example.com/script.js");
   ScriptResource* resource =
-      ScriptResource::CreateForTest(scope.GetIsolate(), url, UTF8Encoding());
+      ScriptResource::CreateForTest(scope.GetIsolate(), url, Utf8Encoding());
   ResourceResponse response(url);
   response.SetHttpStatusCode(200);
   response.SetShouldUseSourceHashForJSCodeCache(true);
@@ -169,7 +171,7 @@ TEST(ScriptResourceTest, CodeCacheEnabledByResponseFlag) {
   auto* handler = resource->CacheHandler();
   EXPECT_TRUE(handler);
   EXPECT_TRUE(handler->HashRequired());
-  EXPECT_EQ(UTF8Encoding().GetName(), handler->Encoding());
+  EXPECT_EQ(Utf8Encoding().GetName(), handler->Encoding());
 }
 
 class MockTestingPlatformForCodeCache : public TestingPlatformSupport {
@@ -200,7 +202,7 @@ TEST(ScriptResourceTest, WebUICodeCachePlatformOverride) {
   const auto create_resource = [&scope]() {
     const KURL url("codecachewithhashing://www.example.com/script.js");
     ScriptResource* resource =
-        ScriptResource::CreateForTest(scope.GetIsolate(), url, UTF8Encoding());
+        ScriptResource::CreateForTest(scope.GetIsolate(), url, Utf8Encoding());
     ResourceResponse response(url);
     response.SetHttpStatusCode(200);
 
@@ -221,7 +223,7 @@ TEST(ScriptResourceTest, WebUICodeCachePlatformOverride) {
     auto* handler = resource->CacheHandler();
     EXPECT_TRUE(handler);
     EXPECT_TRUE(handler->HashRequired());
-    EXPECT_EQ(UTF8Encoding().GetName(), handler->Encoding());
+    EXPECT_EQ(Utf8Encoding().GetName(), handler->Encoding());
   }
 
   {
@@ -234,7 +236,8 @@ TEST(ScriptResourceTest, WebUICodeCachePlatformOverride) {
     EXPECT_FALSE(handler);
   }
 
-  SchemeRegistry::RemoveURLSchemeAsCodeCacheWithHashing("codecachewithhashing");
+  SchemeRegistry::RemoveURLSchemeAsCodeCacheWithHashingForTest(
+      "codecachewithhashing");
 }
 
 class TestingPlatformForWebUIBundledCodeCache : public TestingPlatformSupport {
@@ -268,12 +271,12 @@ TEST(ScriptResourceTest, CreatesHandlerForWebUIBundledCodeCaching) {
   // Define lambda to enable / disable bundled code caching for the URL scheme.
   const auto enable_webui_bundled_code_caching = [&](bool enable) {
 #if DCHECK_IS_ON()
-    WTF::SetIsBeforeThreadCreatedForTest();  // Required for next operation:
+    SetIsBeforeThreadCreatedForTest();  // Required for next operation:
 #endif
     if (enable) {
       SchemeRegistry::RegisterURLSchemeAsWebUIBundledBytecode("chrome");
     } else {
-      SchemeRegistry::RemoveURLSchemeAsWebUIBundledBytecodeForTesting("chrome");
+      SchemeRegistry::RemoveURLSchemeAsWebUIBundledBytecodeForTest("chrome");
     }
   };
 
@@ -283,7 +286,7 @@ TEST(ScriptResourceTest, CreatesHandlerForWebUIBundledCodeCaching) {
                                            bool expect_handler) {
     const KURL url(url_str);
     ScriptResource* resource =
-        ScriptResource::CreateForTest(scope.GetIsolate(), url, UTF8Encoding());
+        ScriptResource::CreateForTest(scope.GetIsolate(), url, Utf8Encoding());
     ResourceResponse response(url);
     response.SetHttpStatusCode(200);
 
@@ -297,7 +300,7 @@ TEST(ScriptResourceTest, CreatesHandlerForWebUIBundledCodeCaching) {
     if (handler) {
       EXPECT_EQ(CachedMetadataHandler::ServingSource::kWebUIBundledCache,
                 handler->GetServingSource());
-      EXPECT_EQ(UTF8Encoding().GetName(), handler->Encoding());
+      EXPECT_EQ(Utf8Encoding().GetName(), handler->Encoding());
     }
   };
 

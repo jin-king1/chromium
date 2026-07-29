@@ -50,7 +50,8 @@ function dateToMojoTime(date: Date) {
   // milliseconds.
   const windowsEpoch = Date.UTC(1601, 0, 1, 0, 0, 0, 0);
   const unixEpoch = Date.UTC(1970, 0, 1, 0, 0, 0, 0);
-  // `epochDeltaInMs` is equal to `base::Time::kTimeTToMicrosecondsOffset`.
+  // `epochDeltaInMs` is equal to
+  // `base::Time::kMicrosecondsFromWindowsToUnixEpoch`.
   const epochDeltaInMs = unixEpoch - windowsEpoch;
   const internalValue = BigInt(date.valueOf() + epochDeltaInMs) * BigInt(1000);
   return {internalValue} as Time;
@@ -124,7 +125,7 @@ function checkTableContents(
   if (footerPrefix === undefined) {
     assert(footerElement.textContent === '');
   } else {
-    assert(footerElement.textContent!.startsWith(footerPrefix));
+    assert(footerElement.textContent.startsWith(footerPrefix));
   }
 }
 
@@ -226,7 +227,7 @@ suite('LocationInternalsUITest', function() {
   test('RefreshStatus', async function() {
     // Check that the initial status indicates the API is not initialized.
     const refreshStatus = getRequiredElement<HTMLElement>(REFRESH_STATUS_ID);
-    assert(refreshStatus.textContent!.includes(REFRESH_STATUS_UNINITIALIZED));
+    assert(refreshStatus.textContent.includes(REFRESH_STATUS_UNINITIALIZED));
 
     // Simulate an update and check that the status message indicates success.
     await simulateDiagnosticsUpdate({
@@ -236,7 +237,7 @@ suite('LocationInternalsUITest', function() {
       positionCacheDiagnostics: null,
       wifiPollingPolicyDiagnostics: null,
     });
-    assert(refreshStatus.textContent!.includes(REFRESH_STATUS_SUCCESS));
+    assert(refreshStatus.textContent.includes(REFRESH_STATUS_SUCCESS));
   });
 
   test('NetworkLocationDiagnosticsHidden', async function() {
@@ -425,6 +426,7 @@ suite('LocationInternalsUITest', function() {
             heading: 90.0,
             speed: 1.0,
             timestamp: dateToMojoTime(new Date('2020-01-12T22:27:00')),
+            isPrecise: true,
           },
         },
       },
@@ -469,6 +471,7 @@ suite('LocationInternalsUITest', function() {
             heading: BAD_HEADING,
             speed: BAD_SPEED,
             timestamp: dateToMojoTime(new Date('2020-01-12T22:27:00')),
+            isPrecise: true,
           },
         },
       },
@@ -510,6 +513,7 @@ suite('LocationInternalsUITest', function() {
             heading: BAD_HEADING,
             speed: BAD_SPEED,
             timestamp: dateToMojoTime(new Date('2020-01-12T22:27:00')),
+            isPrecise: true,
           },
         },
         hitRate: null,

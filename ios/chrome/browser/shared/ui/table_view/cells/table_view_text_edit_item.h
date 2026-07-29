@@ -25,6 +25,9 @@ typedef NS_ENUM(NSInteger, TableViewTextEditItemIconType) {
 // The delegate for this table view text edit item.
 @property(nonatomic, weak) id<TableViewTextEditItemDelegate> delegate;
 
+// The delegate for the textfield.
+@property(nonatomic, weak) id<UITextFieldDelegate> textFieldDelegate;
+
 // Name of the text field.
 // Displayed in a label next to the text field.
 @property(nonatomic, copy) NSString* fieldNameLabelText;
@@ -49,7 +52,7 @@ typedef NS_ENUM(NSInteger, TableViewTextEditItemIconType) {
 @property(nonatomic, copy) NSString* identifyingIconAccessibilityLabel;
 
 // Accessibility label override for the cell.
-@property(nonatomic, strong) NSString* cellAccessibilityLabel;
+@property(nonatomic, copy) NSString* cellAccessibilityLabel;
 
 // Whether to hide or display the trailing icon.
 // Changing this value can change the text color for the text field.
@@ -87,11 +90,14 @@ typedef NS_ENUM(NSInteger, TableViewTextEditItemIconType) {
 // Whether the aspect of the cell should mark the text as valid.
 - (void)setHasValidText:(BOOL)hasValidText;
 
+// Updates the text field value and refreshes the cell.
+- (void)updateTextFieldValue:(NSString*)textFieldValue;
+
 @end
 
-// TableViewTextEditCell implements an TableViewCell subclass containing a label
-// and a text field.
-@interface TableViewTextEditCell : TableViewCell
+// TableViewTextEditCell implements an LegacyTableViewCell subclass containing a
+// label and a text field.
+@interface TableViewTextEditCell : LegacyTableViewCell
 
 // Label at the leading edge of the cell. It displays the item's
 // fieldNameLabelText.
@@ -110,7 +116,7 @@ typedef NS_ENUM(NSInteger, TableViewTextEditItemIconType) {
 @property(nonatomic, strong) UIImageView* iconView;
 
 // Accessibility label override for the cell.
-@property(nonatomic, strong) NSString* accessibilityLabelValue;
+@property(nonatomic, copy) NSString* accessibilityLabelValue;
 
 // Sets `self.identifyingIconButton` icon.
 - (void)setIdentifyingIcon:(UIImage*)icon;

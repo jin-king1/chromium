@@ -10,12 +10,14 @@ set noparent
 pdr@chromium.org
 wangxianzhu@chromium.org
 vmiura@chromium.org
+zmo@chromium.org
+zork@chromium.org
 
 # mac-specific
 ccameron@chromium.org
 
 # scheduling / begin frames
-sunnyps@chromium.org
+jonross@chromium.org
 szager@chromium.org
 
 # tiles, tile management, and raster work
@@ -23,7 +25,7 @@ vmiura@chromium.org
 vmpstr@chromium.org
 
 # texture uploading
-sunnyps@chromium.org
+vasilyt@chromium.org
 
 # math / geometry
 dbaron@chromium.org
@@ -48,13 +50,14 @@ jonross@chromium.org
 bokan@chromium.org
 flackr@chromium.org
 jonross@chromium.org
-skobes@chromium.org
 
 # metrics
 jonross@chromium.org
+gaiko@google.com
+# ScrollJank metrics
+petrcermak@chromium.org
 
 # paint
-sunnyps@chromium.org
 vasilyt@chromium.org
 fmalita@chromium.org
 

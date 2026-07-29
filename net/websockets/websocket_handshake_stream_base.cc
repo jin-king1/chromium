@@ -20,7 +20,7 @@ namespace net {
 
 namespace {
 
-size_t AddVectorHeaderIfNonEmpty(const char* name,
+size_t AddVectorHeaderIfNonEmpty(std::string_view name,
                                  const std::vector<std::string>& value,
                                  HttpRequestHeaders* headers) {
   if (value.empty()) {
@@ -36,7 +36,7 @@ size_t AddVectorHeaderIfNonEmpty(const char* name,
 
 // static
 std::string WebSocketHandshakeStreamBase::MultipleHeaderValuesMessage(
-    const std::string& header_name) {
+    std::string_view header_name) {
   return base::StrCat(
       {"'", header_name,
        "' header must not appear more than once in a response"});
@@ -115,8 +115,9 @@ bool WebSocketHandshakeStreamBase::ValidateExtensions(
   while (std::optional<std::string_view> header_value =
              headers->EnumerateHeader(&iter,
                                       websockets::kSecWebSocketExtensions)) {
-    WebSocketExtensionParser parser;
-    if (!parser.Parse(*header_value)) {
+    const std::vector<WebSocketExtension> extensions =
+        ParseWebSocketExtensions(*header_value);
+    if (extensions.empty()) {
       // TODO(yhirano) Set appropriate failure message.
       *failure_message =
           base::StrCat({"'Sec-WebSocket-Extensions' header value is "
@@ -125,7 +126,6 @@ bool WebSocketHandshakeStreamBase::ValidateExtensions(
       return false;
     }
 
-    const std::vector<WebSocketExtension>& extensions = parser.extensions();
     for (const auto& extension : extensions) {
       if (extension.name() == "permessage-deflate") {
         if (seen_permessage_deflate) {
@@ -145,9 +145,9 @@ bool WebSocketHandshakeStreamBase::ValidateExtensions(
 
         header_values.emplace_back(*header_value);
       } else {
-        *failure_message = "Found an unsupported extension '" +
-                           extension.name() +
-                           "' in 'Sec-WebSocket-Extensions' header";
+        *failure_message =
+            base::StrCat({"Found an unsupported extension '", extension.name(),
+                          "' in 'Sec-WebSocket-Extensions' header"});
         return false;
       }
     }

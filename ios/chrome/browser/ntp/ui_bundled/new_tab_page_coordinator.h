@@ -6,7 +6,6 @@
 #define IOS_CHROME_BROWSER_NTP_UI_BUNDLED_NEW_TAB_PAGE_COORDINATOR_H_
 
 #import "ios/chrome/browser/discover_feed/model/feed_constants.h"
-#import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_configuring.h"
 #import "ios/chrome/browser/shared/coordinator/chrome_coordinator/chrome_coordinator.h"
 
 namespace web {
@@ -16,9 +15,9 @@ class WebState;
 @class BubblePresenter;
 @protocol NewTabPageComponentFactoryProtocol;
 @protocol NewTabPageControllerDelegate;
+@protocol PromosManagerUIHandler;
 
-// Coordinator handling the NTP.
-@interface NewTabPageCoordinator : ChromeCoordinator <NewTabPageConfiguring>
+@interface NewTabPageCoordinator : ChromeCoordinator
 
 // Initializes this coordinator with its `browser`, a nil base view
 // controller, and the given `componentFactory`.
@@ -42,9 +41,6 @@ class WebState;
 // Returns `YES` if the coordinator is started.
 @property(nonatomic, readonly) BOOL started;
 
-// Currently selected feed.
-@property(nonatomic, readonly) FeedType selectedFeed;
-
 // If set to NO, then the omnibox will not be automatically focused when the
 // view appears if this coordinator is started after Chrome has been fully
 // initialized (i.e. reloaded programmatically via `[NTPCoordinator start]`).
@@ -59,8 +55,8 @@ class WebState;
 // Called when a snapshot of the content will be taken.
 - (void)willUpdateSnapshot;
 
-// Whether the NTP is scrolled to the top.
-- (BOOL)isScrolledToTop;
+// Scroll the NTP to the top.
+- (void)scrollToTop;
 
 // Reloads the content of the NewTabPage. Does not do anything on Incognito.
 - (void)reload;
@@ -80,17 +76,10 @@ class WebState;
 // Tell location bar has taken focus.
 - (void)locationBarDidBecomeFirstResponder;
 
-// Constrains the named layout guide for the feed IPH.
-- (void)constrainNamedGuideForFeedIPH;
 
-// Updates the new tab page based on if there is unseen content in the Following
-// feed.
-- (void)updateFollowingFeedHasUnseenContent:(BOOL)hasUnseenContent;
-
-// Called when the given `feedType` has completed layout updates of type
+// Called when the feed has completed layout updates of type
 // `updateType`.
-- (void)handleFeedModelOfType:(FeedType)feedType
-                didEndUpdates:(FeedLayoutUpdateType)updateType;
+- (void)handleFeedModelDidEndUpdates:(FeedLayoutUpdateType)updateType;
 
 // Checks if there are any WebStates showing an NTP at this time. If not, then
 // stops the NTP.
@@ -104,6 +93,27 @@ class WebState;
 
 // Presents an IPH bubble to highlight the Lens icon in the NTP Fakebox.
 - (void)presentLensIconBubble;
+
+// Navigates to the NTP if needed and presents an IPH bubble to highlight the
+// AI Mode button.
+- (void)presentAIModeBubble;
+
+// Shows the Home Background Customization promo.
+- (void)showHomeBackgroundCustomizationPromoWithUIHandler:
+    (id<PromosManagerUIHandler>)uiHandler;
+
+// Returns `YES` if the feed is currently visible on the NTP.
+- (BOOL)isFeedVisible;
+
+// Dismisses all presented views owned by the NTP.
+- (void)clearPresentedState;
+
+// Called when the home customization action is tapped in the NTP overflow menu.
+// Presents the  customization menu.
+- (void)customizationMenuWasTapped;
+
+// Controls the visibility of the blue dot on the NTP.
+- (void)setBlueDotVisible:(BOOL)visible;
 
 @end
 

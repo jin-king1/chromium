@@ -28,6 +28,7 @@ class TestPageBroadcast : public blink::mojom::PageBroadcast {
   void ActivatePrerenderedPage(blink::mojom::PrerenderPageActivationParamsPtr
                                    prerender_page_activation_params,
                                ActivatePrerenderedPageCallback) override;
+  void UpgradePrerenderUntilScriptToFullPrerender() override;
   void UpdateWebPreferences(
       const blink::web_pref::WebPreferences& preferences) override;
   void UpdateRendererPreferences(
@@ -41,15 +42,15 @@ class TestPageBroadcast : public blink::mojom::PageBroadcast {
       blink::mojom::FrameReplicationStatePtr replication_state,
       bool is_loading,
       const base::UnguessableToken& devtools_frame_token,
+      const std::optional<base::UnguessableToken>& navigation_metrics_token,
       blink::mojom::RemoteFrameInterfacesFromBrowserPtr remote_frame_interfaces,
       blink::mojom::RemoteMainFrameInterfacesPtr remote_main_frame_interfaces)
       override;
-  void UpdatePageBrowsingContextGroup(const blink::BrowsingContextGroupInfo&
-                                          browsing_context_group_info) override;
-  void SetPageAttributionSupport(
-      network::mojom::AttributionSupport support) override;
+  void UpdatePageBrowsingContextGroup(
+      const base::UnguessableToken& browsing_context_group_token) override;
   void UpdateColorProviders(
       const blink::ColorProviderColorMaps& color_provider_colors) override;
+  void SetSupportsDraggableRegions(bool supports_draggable_regions) override;
 
   mojo::AssociatedReceiver<blink::mojom::PageBroadcast> receiver_;
 };

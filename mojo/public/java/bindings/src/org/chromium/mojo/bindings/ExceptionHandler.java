@@ -4,6 +4,7 @@
 
 package org.chromium.mojo.bindings;
 
+import org.chromium.base.JavaUtils;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 
@@ -17,24 +18,24 @@ public interface ExceptionHandler {
      * Receives a notification that an unhandled {@link RuntimeException} has been thrown in an
      * {@link Interface} implementation or one of the {@link Callbacks} internal classes.
      *
-     * Normal implementations should either throw the exception or return whether the connection
+     * <p>Normal implementations should either throw the exception or return whether the connection
      * should be kept alive or terminated.
      */
-    public boolean handleException(RuntimeException e);
+    boolean handleException(Throwable e);
 
     /**
      * The default ExceptionHandler, which simply throws the exception upon receiving it. It can
      * also delegate the handling of the exceptions to another instance of ExceptionHandler.
      */
-    public static class DefaultExceptionHandler implements ExceptionHandler {
+    class DefaultExceptionHandler implements ExceptionHandler {
         private @Nullable ExceptionHandler mDelegate;
 
         @Override
-        public boolean handleException(RuntimeException e) {
+        public boolean handleException(Throwable e) {
             if (mDelegate != null) {
                 return mDelegate.handleException(e);
             }
-            throw e;
+            throw JavaUtils.throwUnchecked(e);
         }
 
         private DefaultExceptionHandler() {}

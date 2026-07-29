@@ -18,8 +18,10 @@
 #include "ash/shell.h"
 #include "ash/style/dark_light_mode_controller_impl.h"
 #include "ash/test/pixel/ash_pixel_differ.h"
+#include "ash/test/pixel/ash_pixel_test_helper.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "chromeos/ash/components/cryptohome/system_salt_getter.h"
 #include "chromeos/ash/components/dbus/cryptohome/account_identifier_operators.h"
@@ -50,7 +52,9 @@ constexpr char kTestAccount[] = "user@test.com";
 constexpr GaiaId::Literal kFakeGaia("fake_gaia");
 constexpr char kExpectedPassword[] = "qwerty";
 
-class LocalAuthenticationRequestControllerImplPixelTest : public AshTestBase {
+class LocalAuthenticationRequestControllerImplPixelTest
+    : public AshTestBase,
+      public testing::WithParamInterface</*enable_system_blur=*/bool> {
  public:
   LocalAuthenticationRequestControllerImplPixelTest(
       const LocalAuthenticationRequestControllerImplPixelTest&) = delete;
@@ -66,7 +70,9 @@ class LocalAuthenticationRequestControllerImplPixelTest : public AshTestBase {
 
   std::optional<pixel_test::InitParams> CreatePixelTestInitParams()
       const override {
-    return pixel_test::InitParams();
+    pixel_test::InitParams init_params;
+    init_params.system_blur_enabled = GetParam();
+    return init_params;
   }
 
   void SetUp() override {
@@ -194,7 +200,16 @@ class LocalAuthenticationRequestControllerImplPixelTest : public AshTestBase {
       PressAndReleaseKey(ui::KeyboardCode::VKEY_A);
     }
     PressAndReleaseKey(ui::KeyboardCode::VKEY_RETURN);
-    base::RunLoop().RunUntilIdle();
+    if (success) {
+      ASSERT_TRUE(
+          base::test::RunUntil([&] { return successful_validation_ == 1; }));
+    } else {
+      ASSERT_TRUE(base::test::RunUntil([] {
+        auto* view = LocalAuthenticationRequestWidget::GetViewForTesting();
+        return view && LocalAuthenticationRequestView::TestApi(view).state() ==
+                           LocalAuthenticationRequestViewState::kError;
+      }));
+    }
   }
 
   base::test::ScopedFeatureList scoped_features_;
@@ -215,9 +230,14 @@ class LocalAuthenticationRequestControllerImplPixelTest : public AshTestBase {
   std::unique_ptr<user_manager::ScopedUserManager> scoped_user_manager_;
 };
 
+INSTANTIATE_TEST_SUITE_P(
+    /* no prefix */,
+    LocalAuthenticationRequestControllerImplPixelTest,
+    testing::Bool());
+
 // Tests local authentication dialog showing/hiding and focus behavior for
 // password field
-TEST_F(LocalAuthenticationRequestControllerImplPixelTest, FailedValidation) {
+TEST_P(LocalAuthenticationRequestControllerImplPixelTest, FailedValidation) {
   EXPECT_FALSE(LocalAuthenticationRequestWidget::Get());
 
   StartLocalAuthenticationRequest();
@@ -235,16 +255,20 @@ TEST_F(LocalAuthenticationRequestControllerImplPixelTest, FailedValidation) {
 
   // Verify the UI.
   EXPECT_TRUE(GetPixelDiffer()->CompareUiComponentsOnPrimaryScreen(
-      "Ready", /*revision_number=*/4, view));
+      GenerateScreenshotName("Ready"),
+      /*revision_number=*/pixel_test_helper()->IsSystemBlurEnabled() ? 5 : 0,
+      view));
 
   SimulateValidation(false);
   // Verify the UI.
   EXPECT_TRUE(GetPixelDiffer()->CompareUiComponentsOnPrimaryScreen(
-      "Fail", /*revision_number=*/4, view));
+      GenerateScreenshotName("Fail"),
+      /*revision_number=*/pixel_test_helper()->IsSystemBlurEnabled() ? 5 : 0,
+      view));
 }
 
 // Tests local authentication dialog theme change
-TEST_F(LocalAuthenticationRequestControllerImplPixelTest, ThemeChange) {
+TEST_P(LocalAuthenticationRequestControllerImplPixelTest, ThemeChange) {
   EXPECT_FALSE(LocalAuthenticationRequestWidget::Get());
 
   StartLocalAuthenticationRequest();
@@ -262,7 +286,9 @@ TEST_F(LocalAuthenticationRequestControllerImplPixelTest, ThemeChange) {
   DarkLightModeControllerImpl::Get()->SetDarkModeEnabledForTest(false);
   // Verify the UI.
   EXPECT_TRUE(GetPixelDiffer()->CompareUiComponentsOnPrimaryScreen(
-      "Light", /*revision_number=*/3, view));
+      GenerateScreenshotName("Light"),
+      /*revision_number=*/pixel_test_helper()->IsSystemBlurEnabled() ? 4 : 0,
+      view));
 }
 
 }  // namespace

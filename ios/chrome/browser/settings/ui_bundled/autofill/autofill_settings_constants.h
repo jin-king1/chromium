@@ -12,16 +12,32 @@ extern NSString* const kAutofillProfileTableViewID;
 extern NSString* const kAutofillPaymentMethodsToolbarId;
 extern NSString* const kAutofillAddressSwitchViewId;
 extern NSString* const kAutofillAddressManagedViewId;
+extern NSString* const kEnhancedAutofillTableViewId;
+extern NSString* const kAutofillVerificationSwitchTableViewId;
 
 extern NSString* const kAutofillCreditCardTableViewId;
 extern NSString* const kAutofillCreditCardSwitchViewId;
 extern NSString* const kAutofillCreditCardManagedViewId;
+extern NSString* const kAutofillDeleteSecurityCodesButtonId;
 extern NSString* const kAutofillMandatoryReauthSwitchViewId;
+extern NSString* const kAutofillSaveSecurityCodesSwitchViewId;
+extern NSString* const kAutofillSecurityCvcsTableViewId;
+extern NSString* const kEnhancedAutofillSwitchViewId;
 
 // Accessibility identifier for the edit card table view.
 extern NSString* const kAutofillCreditCardEditTableViewId;
 
 // Accessibility identifier for the migrate to account button.
 extern NSString* const kAutofillAddressMigrateToAccountButtonId;
+
+// Accessibility identifier for the edit cell button in the section.
+extern NSString* const kAutofillEditButtonCellId;
+
+// Accessibility identifier for the Pay Over Time settings entry cell.
+extern NSString* const kAutofillPayOverTimeCellId;
+
+// Accessibility identifier for the BNPL subpage.
+extern NSString* const kAutofillBnplTableViewId;
+extern NSString* const kAutofillBnplSwitchViewId;
 
 #endif  // IOS_CHROME_BROWSER_SETTINGS_UI_BUNDLED_AUTOFILL_AUTOFILL_SETTINGS_CONSTANTS_H_

@@ -21,7 +21,6 @@
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_widget_host_view.h"
-#include "content/public/browser/site_instance.h"
 #include "content/public/browser/web_contents.h"
 #include "extensions/browser/bad_message.h"
 #include "extensions/browser/event_router.h"
@@ -30,10 +29,12 @@
 #include "extensions/browser/extension_host_observer.h"
 #include "extensions/browser/extension_host_queue.h"
 #include "extensions/browser/extension_host_registry.h"
+#include "extensions/browser/extension_registrar.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_web_contents_observer.h"
 #include "extensions/browser/extensions_browser_client.h"
 #include "extensions/browser/process_manager.h"
+#include "extensions/browser/safe_browsing_delegate.h"
 #include "extensions/browser/view_type_utils.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_urls.h"
@@ -48,7 +49,6 @@
 #include "ui/color/color_provider_utils.h"
 
 using content::RenderProcessHost;
-using content::SiteInstance;
 using content::WebContents;
 
 namespace extensions {
@@ -130,7 +130,6 @@ void EmitDispatchTimeMetrics(const EventDispatchSource& dispatch_source,
 }  // namespace
 
 ExtensionHost::ExtensionHost(const Extension* extension,
-                             SiteInstance* site_instance,
                              content::BrowserContext* browser_context,
                              const GURL& url,
                              mojom::ViewType host_type)
@@ -140,20 +139,16 @@ ExtensionHost::ExtensionHost(const Extension* extension,
       browser_context_(browser_context),
       initial_url_(url),
       extension_host_type_(host_type) {
+  DCHECK(delegate_);
   DCHECK(host_type == mojom::ViewType::kExtensionBackgroundPage ||
          host_type == mojom::ViewType::kOffscreenDocument ||
          host_type == mojom::ViewType::kExtensionPopup ||
          host_type == mojom::ViewType::kExtensionSidePanel);
-  // NOTE: `site_instance` may be null if the kRemoveRootSiteInstance feature
-  // is active. `WebContents::CreateParams` handles a null SiteInstance the
-  // same as if no SiteInstance argument were passed.
-  if (site_instance) {
-    // If a SiteInstance is passed, it must match the `browser_context`
-    // associated with the ExtensionHost.
-    CHECK_EQ(browser_context_, site_instance->GetBrowserContext());
-  }
-  host_contents_ = WebContents::Create(
-      WebContents::CreateParams(browser_context_, site_instance));
+  WebContents::CreateParams create_params(browser_context_);
+  create_params.is_never_composited =
+      host_type == mojom::ViewType::kExtensionBackgroundPage ||
+      host_type == mojom::ViewType::kOffscreenDocument;
+  host_contents_ = WebContents::Create(create_params);
   host_contents_->SetOwnerLocationForDebug(FROM_HERE);
   content::WebContentsObserver::Observe(host_contents_.get());
   host_contents_->SetDelegate(this);
@@ -166,7 +161,9 @@ ExtensionHost::ExtensionHost(const Extension* extension,
 
   // Listen for when an extension is unloaded from the same profile, as it may
   // be the same extension that this points to.
-  ExtensionRegistry::Get(browser_context_)->AddObserver(this);
+  auto* registry = ExtensionRegistry::Get(browser_context_);
+  DCHECK(registry);
+  registry->AddObserver(this);
 
   // Set up web contents observers and pref observers.
   delegate_->OnExtensionHostCreated(host_contents());
@@ -176,8 +173,9 @@ ExtensionHost::ExtensionHost(const Extension* extension,
 
   // Create password reuse detection manager when new extension web contents are
   // created.
-  ExtensionsBrowserClient::Get()->CreatePasswordReuseDetectionManager(
-      host_contents_.get());
+  ExtensionsBrowserClient::Get()
+      ->GetSafeBrowsingDelegate()
+      ->CreatePasswordReuseDetectionManager(host_contents_.get());
 
   ExtensionHostRegistry::Get(browser_context_)->ExtensionHostCreated(this);
 }
@@ -241,7 +239,8 @@ void ExtensionHost::CreateRendererNow() {
   if (IsBackgroundPage()) {
     DCHECK(IsRendererLive());
     // Connect orphaned dev-tools instances.
-    delegate_->OnMainFrameCreatedForBackgroundPage(this);
+    ExtensionRegistrar::Get(browser_context())
+        ->DidCreateMainFrameForBackgroundPage(this);
   }
 }
 
@@ -464,7 +463,7 @@ void ExtensionHost::OnEventAck(int event_id,
   const auto it = unacked_messages_.find(event_id);
   if (it == unacked_messages_.end()) {
     // Ideally, we'd be able to kill the renderer in the case of it sending an
-    // ack for an event that we haven't seen. However, https://crbug.com/939279
+    // ack for an event that we haven't seen. However, crbug.com/41445461
     // demonstrates that there are cases in which this can happen in other
     // situations. We should track those down and fix them, but for now
     // log and gracefully exit.
@@ -544,31 +543,8 @@ content::WebContents* ExtensionHost::AddNewContents(
     const blink::mojom::WindowFeatures& window_features,
     bool user_gesture,
     bool* was_blocked) {
-  // First, if the creating extension view was associated with a tab contents,
-  // use that tab content's delegate. We must be careful here that the
-  // associated tab contents has the same profile as the new tab contents. In
-  // the case of extensions in 'spanning' incognito mode, they can mismatch.
-  // We don't want to end up putting a normal tab into an incognito window, or
-  // vice versa.
-  // Note that we don't do this for popup windows, because we need to associate
-  // those with their extension_app_id.
-  if (disposition != WindowOpenDisposition::NEW_POPUP) {
-    WebContents* associated_contents = GetAssociatedWebContents();
-    if (associated_contents &&
-        associated_contents->GetBrowserContext() ==
-            new_contents->GetBrowserContext()) {
-      WebContentsDelegate* delegate = associated_contents->GetDelegate();
-      if (delegate) {
-        delegate->AddNewContents(associated_contents, std::move(new_contents),
-                                 target_url, disposition, window_features,
-                                 user_gesture, was_blocked);
-        return nullptr;
-      }
-    }
-  }
-
-  delegate_->CreateTab(std::move(new_contents), extension_id_, disposition,
-                       window_features, user_gesture);
+  delegate_->CreateTab(std::move(new_contents), target_url, extension_id_,
+                       disposition, window_features, user_gesture);
 
   return nullptr;
 }
@@ -630,12 +606,6 @@ bool ExtensionHost::CheckMediaAccessPermission(
     blink::mojom::MediaStreamType type) {
   return delegate_->CheckMediaAccessPermission(
       render_frame_host, security_origin, type, extension());
-}
-
-bool ExtensionHost::IsNeverComposited(content::WebContents* web_contents) {
-  mojom::ViewType view_type = extensions::GetViewType(web_contents);
-  return view_type == mojom::ViewType::kExtensionBackgroundPage ||
-         view_type == mojom::ViewType::kOffscreenDocument;
 }
 
 content::PictureInPictureResult ExtensionHost::EnterPictureInPicture(

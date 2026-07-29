@@ -4,13 +4,21 @@
 
 #include "components/autofill/core/browser/metrics/quality_metrics_filling.h"
 
-#include <algorithm>
+#include <stddef.h>
+#include <stdint.h>
 
-#include "base/containers/fixed_flat_set.h"
+#include <memory>
+#include <string_view>
+
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/strcat.h"
+#include "components/autofill/core/browser/autofill_field.h"
 #include "components/autofill/core/browser/field_types.h"
+#include "components/autofill/core/browser/form_structure.h"
+#include "components/autofill/core/browser/form_types.h"
+#include "components/autofill/core/browser/metrics/autofill_metrics.h"
 #include "components/autofill/core/browser/metrics/autofill_metrics_utils.h"
+#include "components/autofill/core/browser/suggestions/suggestion_util.h"
 
 namespace autofill::autofill_metrics {
 
@@ -38,37 +46,40 @@ constexpr std::string_view kGarbageHadPredictionVariant =
 // Field types whose associated values typically are small numbers (< 100). When
 // determining the possible types of a submitted field, the small numbers have a
 // high chance of causing false positive matches.
-constexpr DenseSet<FieldType> kFieldTypesRepresentingSmallNumbers = {
+constexpr FieldTypeSet kFieldTypesRepresentingSmallNumbers = {
     CREDIT_CARD_EXP_MONTH,     CREDIT_CARD_EXP_2_DIGIT_YEAR,
     PHONE_HOME_COUNTRY_CODE,   PHONE_HOME_NUMBER_PREFIX,
     ADDRESS_HOME_HOUSE_NUMBER, ADDRESS_HOME_APT_NUM,
     ADDRESS_HOME_FLOOR};
 
 // Records the percentage of input text field characters that were autofilled.
-void LogAutomationRate(const FormStructure& form) {
+void LogAutomationRate(
+    const FormStructure& form,
+    AutocompleteUnrecognizedBehavior ac_unrecognized_behavior) {
   size_t total_length_autofilled_fields = 0;
   size_t total_length = 0;
-  for (const auto& field : form.fields()) {
+  for (const std::unique_ptr<AutofillField>& field : form.fields()) {
     if (!field->IsTextInputElement()) {
       continue;
     }
     // The field value at form submission should have changed since page load.
-    if (!field->initial_value_changed().value_or(true)) {
+    if (field->initial_value() == field->value()) {
       continue;
     }
-    size_t field_size = field->value(ValueSemantics::kCurrent).size();
+    size_t field_size = field->value().size();
     // Skip fields containing too many characters to reduce distortion by
     // fields that are likely not autofillable.
     if (field_size > kAutomationRateFieldSizeThreshold) {
       continue;
     }
-    if (field->is_autofilled()) {
+    if (field->last_modifier() == FieldModifier::kAutofill) {
       total_length_autofilled_fields += field_size;
     }
     total_length += field_size;
   }
   if (total_length > 0) {
-    for (const auto form_type : GetFormTypesForLogging(form)) {
+    for (const auto form_type :
+         GetFormTypesForLogging(form, ac_unrecognized_behavior)) {
       base::UmaHistogramPercentage(
           base::StrCat({"Autofill.AutomationRate.",
                         FormTypeNameForLoggingToStringView(form_type)}),
@@ -99,15 +110,14 @@ int GetFieldTypeAutofillDataUtilization(
 // entered". Note that fields that were submitted with a prefilled value
 // don't get recorded. Emitted on form submission.
 void LogDataUtilization(const FormStructure& form) {
-  for (const auto& field : form.fields()) {
+  for (const std::unique_ptr<AutofillField>& field : form.fields()) {
     // A pre-filled field value should have changed since page load. Otherwise,
     // no reporting is necessary.
-    if (field->initial_value_changed().has_value() &&
-        !field->initial_value_changed().value()) {
+    if (field->initial_value() == field->value()) {
       continue;
     }
     // Determine fillable possible types.
-    DenseSet<FieldType> fillable_possible_types;
+    FieldTypeSet fillable_possible_types;
     for (FieldType possible_type : field->possible_types()) {
       if (IsFillableFieldType(possible_type)) {
         fillable_possible_types.insert(possible_type);
@@ -117,21 +127,25 @@ void LogDataUtilization(const FormStructure& form) {
       continue;
     }
     // Determine if "SelectedFieldTypes" variants should be logged.
-    const bool kLogSelectedTypes = !fillable_possible_types.contains_any(
+    const bool log_selected_types = !fillable_possible_types.contains_any(
         kFieldTypesRepresentingSmallNumbers);
 
     const AutofillDataUtilization sample =
-        field->is_autofilled() ? AutofillDataUtilization::kAutofilled
-                               : AutofillDataUtilization::kNotAutofilled;
+        field->last_modifier() == FieldModifier::kAutofill
+            ? AutofillDataUtilization::kAutofilled
+            : AutofillDataUtilization::kNotAutofilled;
 
-    const bool kAutocompleteStateIsGarbage =
+    const bool autocomplete_state_is_garbage =
         AutofillMetrics::AutocompleteStateForSubmittedField(*field) ==
         AutofillMetrics::AutocompleteState::kGarbage;
+
+    FieldTypeSet field_types = field->Type().GetTypes();
+    field_types.erase_all({NO_SERVER_DATA, UNKNOWN_TYPE, EMPTY_TYPE});
 
     for (std::string_view histogram_base :
          {kUmaDataUtilizationAllTypes, kUmaDataUtilizationSelectedTypes}) {
       if (histogram_base == kUmaDataUtilizationSelectedTypes &&
-          !kLogSelectedTypes) {
+          !log_selected_types) {
         continue;
       }
       // Emit "Aggregate" variants.
@@ -139,21 +153,19 @@ void LogDataUtilization(const FormStructure& form) {
           base::StrCat({histogram_base, kAggregateVariant}), sample);
 
       // Emit "Garbage" variants.
-      if (kAutocompleteStateIsGarbage) {
+      if (autocomplete_state_is_garbage) {
         base::UmaHistogramEnumeration(
             base::StrCat({histogram_base, kGarbageVariant}), sample);
       }
 
       // Emit "HadPrediction" and "NoPrediction" variants.
-      const bool kHadPrediction =
-          field->Type().GetStorableType() > FieldType::EMPTY_TYPE;
-      const std::string_view kPredictionVariant =
-          kHadPrediction ? kHadPredictionVariant : kNoPredictionVariant;
+      const std::string_view prediction_variant =
+          !field_types.empty() ? kHadPredictionVariant : kNoPredictionVariant;
       base::UmaHistogramEnumeration(
-          base::StrCat({histogram_base, kPredictionVariant}), sample);
+          base::StrCat({histogram_base, prediction_variant}), sample);
 
       // Emit "GarbageHadPrediction" variants.
-      if (kHadPrediction && kAutocompleteStateIsGarbage) {
+      if (!field_types.empty() && autocomplete_state_is_garbage) {
         base::UmaHistogramEnumeration(
             base::StrCat({histogram_base, kGarbageHadPredictionVariant}),
             sample);
@@ -166,24 +178,22 @@ void LogDataUtilization(const FormStructure& form) {
           "Autofill.DataUtilization.ByPossibleType",
           GetFieldTypeAutofillDataUtilization(type, sample));
       // Emit "HadPrediction" and "NoPrediction" variants.
-      const bool kHadPrediction =
-          field->Type().GetStorableType() > FieldType::EMPTY_TYPE;
-      const std::string_view kPredictionVariant =
-          kHadPrediction ? kHadPredictionVariant : kNoPredictionVariant;
+      const std::string_view prediction_variant =
+          !field_types.empty() ? kHadPredictionVariant : kNoPredictionVariant;
       base::UmaHistogramSparse(
-          base::StrCat({"Autofill.DataUtilization.", kPredictionVariant,
+          base::StrCat({"Autofill.DataUtilization.", prediction_variant,
                         ".ByPossibleType"}),
           GetFieldTypeAutofillDataUtilization(type, sample));
       // Emit variant for Garbage and Autocomplete off.
-      if (kAutocompleteStateIsGarbage) {
+      if (autocomplete_state_is_garbage) {
         base::UmaHistogramSparse(
             base::StrCat({"Autofill.DataUtilization.", kGarbageVariant,
-                          kPredictionVariant, ".ByPossibleType"}),
+                          prediction_variant, ".ByPossibleType"}),
             GetFieldTypeAutofillDataUtilization(type, sample));
       } else if (field->autocomplete_attribute() == "off") {
         base::UmaHistogramSparse(
             base::StrCat({"Autofill.DataUtilization.", kAutocompleteOffVariant,
-                          kPredictionVariant, ".ByPossibleType"}),
+                          prediction_variant, ".ByPossibleType"}),
             GetFieldTypeAutofillDataUtilization(type, sample));
       }
     }
@@ -192,8 +202,10 @@ void LogDataUtilization(const FormStructure& form) {
 
 }  // namespace
 
-void LogFillingQualityMetrics(const FormStructure& form) {
-  LogAutomationRate(form);
+void LogFillingQualityMetrics(
+    const FormStructure& form,
+    AutocompleteUnrecognizedBehavior ac_unrecognized_behavior) {
+  LogAutomationRate(form, ac_unrecognized_behavior);
   LogDataUtilization(form);
 }
 

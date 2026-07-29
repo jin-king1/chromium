@@ -8,7 +8,7 @@
 #include "build/build_config.h"
 #include "ui/accelerated_widget_mac/accelerated_widget_mac_export.h"
 #include "ui/gfx/ca_layer_params.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 
 namespace ui {
 
@@ -24,7 +24,7 @@ class ACCELERATED_WIDGET_MAC_EXPORT CALayerFrameSink {
 
   // Update the embedder's CALayer tree to show the content described by
   // |ca_layer_params|.
-  virtual void UpdateCALayerTree(const gfx::CALayerParams& ca_layer_params) = 0;
+  virtual void UpdateCALayerTree(gfx::CALayerParams ca_layer_params) = 0;
 };
 
 }  // namespace ui

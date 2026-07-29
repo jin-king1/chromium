@@ -1,7 +1,8 @@
 Name: libusbx
-URL: https://libusb.info/
+URL: https://github.com/libusb/libusb
 Version: 1.0.17
 Revision: 0c3d17c9b1c96afe6889ae4595abb22072fc1c0d
+Update Mechanism: Manual (https://crbug.com/422342817)
 CPEPrefix: cpe:/a:libusb:libusb:1.0.17:rc1
 License: LGPL-2.1
 License File: src/COPYING
@@ -35,3 +36,5 @@ Local Modifications:
   ef8776ddea18ad5d2bf0a9d994c4cbfb6cc6f94d
 - unsigned-shifts.patch has been applied, which is a partial backport of
   upstream's 8a05a3f4e7424eb2071e4dbe1796cff3b660a141
+- darwin-cfsource-null.patch has been applied, which is a backport of
+  upstream's edd1a4bfe4b037e67b65e4538fd880123fb004f7

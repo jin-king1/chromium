@@ -29,6 +29,7 @@
 #include "base/metrics/metrics_hashes.h"
 #include "base/process/launch.h"
 #include "base/process/process.h"
+#include "base/sampling_heap_profiler/lock_free_address_hash_set.h"
 #include "base/sampling_heap_profiler/poisson_allocation_sampler.h"
 #include "base/sampling_heap_profiler/sampling_heap_profiler.h"
 #include "base/strings/string_number_conversions.h"
@@ -163,7 +164,7 @@ using ::testing::Lt;
 using ::testing::Optional;
 using ::testing::Property;
 using ::testing::ResultOf;
-using ::testing::UnorderedElementsAreArray;
+using ::testing::UnorderedElementsAre;
 using ::testing::Values;
 using ::testing::ValuesIn;
 
@@ -379,6 +380,8 @@ class ProfilerSetUpMixin {
 constexpr char kTestChildTypeSwitch[] = "heap-profiler-test-child-type";
 constexpr char kTestNumAllocationsSwitch[] =
     "heap-profiler-test-num-allocations";
+constexpr char kTestExpectChildProfileSwitch[] =
+    "heap-profiler-expect-child-profile";
 
 // Runs the heap profiler in a multiprocess test child. This is used instead of
 // HeapProfilerControllerTest::CreateHeapProfiler() in tests that create real
@@ -399,6 +402,8 @@ class MultiprocessTestChild final : public mojom::TestConnector,
   MultiprocessTestChild& operator=(const MultiprocessTestChild&) = delete;
 
   void RunTestInChild() {
+    base::HistogramTester histogram_tester;
+
     // Get the process type and number of allocations to simulate.
     const base::CommandLine* command_line =
         base::CommandLine::ForCurrentProcess();
@@ -407,6 +412,8 @@ class MultiprocessTestChild final : public mojom::TestConnector,
     ASSERT_TRUE(base::StringToInt(
         command_line->GetSwitchValueASCII(kTestChildTypeSwitch),
         &process_type));
+    const ProfilerProcessType profiler_process_type =
+        static_cast<ProfilerProcessType>(process_type);
     int num_allocations = 0;
     ASSERT_TRUE(base::StringToInt(
         command_line->GetSwitchValueASCII(kTestNumAllocationsSwitch),
@@ -429,9 +436,8 @@ class MultiprocessTestChild final : public mojom::TestConnector,
 
     // Start the heap profiler and wait for TakeSnapshot() messages from the
     // parent.
-    HeapProfilerController controller(
-        version_info::Channel::STABLE,
-        static_cast<ProfilerProcessType>(process_type));
+    HeapProfilerController controller(version_info::Channel::STABLE,
+                                      profiler_process_type);
     controller.SuppressRandomnessForTesting();
     ASSERT_TRUE(controller.IsEnabled());
     controller.StartIfEnabled();
@@ -447,6 +453,37 @@ class MultiprocessTestChild final : public mojom::TestConnector,
 
     // Loop until the TestConnector::Disconnect() message.
     task_env().RunUntilQuit();
+
+    // Profiler stats should be logged whether or not a snapshot was taken, as
+    // long as the child is profiled at all.
+    size_t expected_histogram_count =
+        command_line->HasSwitch(kTestExpectChildProfileSwitch) ? 1 : 0;
+    switch (profiler_process_type) {
+      case ProfilerProcessType::kGpu:
+        histogram_tester.ExpectTotalCount(
+            "HeapProfiling.InProcess.SamplesPerSnapshot.GPU",
+            expected_histogram_count);
+        break;
+      case ProfilerProcessType::kNetworkService:
+        histogram_tester.ExpectTotalCount(
+            "HeapProfiling.InProcess.SamplesPerSnapshot.Network",
+            expected_histogram_count);
+        break;
+      case ProfilerProcessType::kRenderer:
+        histogram_tester.ExpectTotalCount(
+            "HeapProfiling.InProcess.SamplesPerSnapshot.Renderer",
+            expected_histogram_count);
+        break;
+      case ProfilerProcessType::kUtility:
+        histogram_tester.ExpectTotalCount(
+            "HeapProfiling.InProcess.SamplesPerSnapshot.Utility",
+            expected_histogram_count);
+        break;
+      default:
+        FAIL() << "Unexpected process type " << process_type;
+    }
+    histogram_tester.ExpectTotalCount(
+        "HeapProfiling.InProcess.SamplesPerSnapshot", expected_histogram_count);
   }
 
   // mojom::TestConnector:
@@ -568,6 +605,9 @@ class MultiprocessTestParent {
         base::NumberToString(static_cast<int>(process_type)));
     child_command_line.AppendSwitchASCII(kTestNumAllocationsSwitch,
                                          base::NumberToString(num_allocations));
+    if (should_profile) {
+      child_command_line.AppendSwitch(kTestExpectChildProfileSwitch);
+    }
 
     // Attach a mojo channel to the child.
     mojo::PlatformChannel channel;
@@ -622,6 +662,7 @@ class MultiprocessTestParent {
 class MockSnapshotController : public mojom::SnapshotController {
  public:
   MOCK_METHOD(void, TakeSnapshot, (uint32_t, uint32_t), (override));
+  MOCK_METHOD(void, LogMetricsWithoutSnapshot, (), (override));
 };
 
 // Configurations of the HeapProfiler* features to test.
@@ -644,6 +685,8 @@ struct FeatureTestParams {
   int network_snapshot_prob = 100;
   int renderer_snapshot_prob = 100;
   int utility_snapshot_prob = 100;
+  // Whether the UseLockFreeBloomFilter optimization is enabled.
+  bool bloom_filter_enabled = false;
 
   base::FieldTrialParams ToFieldTrialParams() const;
 
@@ -687,8 +730,11 @@ base::FieldTrialParams FeatureTestParams::ToFieldTrialParams() const {
 std::vector<FeatureRefAndParams> FeatureTestParams::GetEnabledFeatures() const {
   std::vector<FeatureRefAndParams> enabled_features;
   if (feature_enabled) {
-    enabled_features.push_back(
-        FeatureRefAndParams(kHeapProfilerReporting, ToFieldTrialParams()));
+    enabled_features.emplace_back(kHeapProfilerReporting, ToFieldTrialParams());
+  }
+  if (bloom_filter_enabled) {
+    enabled_features.emplace_back(base::kUseLockFreeBloomFilter,
+                                  base::FieldTrialParams());
   }
   return enabled_features;
 }
@@ -696,7 +742,10 @@ std::vector<FeatureRefAndParams> FeatureTestParams::GetEnabledFeatures() const {
 std::vector<FeatureRef> FeatureTestParams::GetDisabledFeatures() const {
   std::vector<FeatureRef> disabled_features;
   if (!feature_enabled) {
-    disabled_features.push_back(FeatureRef(kHeapProfilerReporting));
+    disabled_features.emplace_back(kHeapProfilerReporting);
+  }
+  if (!bloom_filter_enabled) {
+    disabled_features.emplace_back(base::kUseLockFreeBloomFilter);
   }
   return disabled_features;
 }
@@ -988,6 +1037,31 @@ TEST_P(HeapProfilerControllerTest, EmptyProfile) {
   EXPECT_TRUE(sample_received_);
 }
 
+TEST_P(HeapProfilerControllerTest, SamplingIntervalVariance) {
+  ScopedCallbacks callbacks = CreateScopedCallbacks(
+      /*expect_take_snapshot=*/true, /*expect_sampled_profile=*/true);
+  StartHeapProfiling(
+      version_info::Channel::STABLE, ProfilerProcessType::kBrowser,
+      /*expect_enabled=*/true, callbacks.first_snapshot_callback(),
+      callbacks.collector_callback());
+
+  // At this point, the profiler is started. The requested sampling rate is
+  // kSamplingRate (1024). The actual sampling rate should also be 1024.
+  // We change the actual sampling rate to simulate another user changing it.
+  base::PoissonAllocationSampler::Get()->SetSamplingInterval(kSamplingRate * 2);
+
+  task_env().RunUntilQuit();
+
+  // The ratio should be (kSamplingRate * 2) / kSamplingRate = 2, which is 200%.
+  histogram_tester_.ExpectUniqueSample(
+      "HeapProfiling.InProcess.SamplingIntervalVariance.Browser", 200, 1);
+  histogram_tester_.ExpectUniqueSample(
+      "HeapProfiling.InProcess.SamplingIntervalVariance", 200, 1);
+
+  // Restore the sampling interval so other tests aren't affected.
+  base::PoissonAllocationSampler::Get()->SetSamplingInterval(kSamplingRate);
+}
+
 // Test the feature on various channels in the browser process.
 constexpr FeatureTestParams kChannelConfigs[] = {
     // Disabled.
@@ -1019,6 +1093,14 @@ constexpr FeatureTestParams kChannelConfigs[] = {
         .feature_enabled = true,
         .stable = {.probability = 0.0, .expect_browser_sample = false},
         .nonstable = {.probability = 1.0, .expect_browser_sample = true},
+    },
+    // Enabled on all channels, with the LockFreeBloomFilter optimization.
+    // Ensures test coverage of the code that calculates bloom filter metrics.
+    {
+        .feature_enabled = true,
+        .stable = {.probability = 1.0, .expect_browser_sample = true},
+        .nonstable = {.probability = 1.0, .expect_browser_sample = true},
+        .bloom_filter_enabled = true,
     },
 };
 
@@ -1344,7 +1426,7 @@ MULTIPROCESS_TEST_MAIN(HeapProfilerControllerChildMain) {
   MultiprocessTestChild child(kMultipleChildConfigs[0].GetEnabledFeatures(),
                               kMultipleChildConfigs[0].GetDisabledFeatures());
   child.RunTestInChild();
-  return 0;
+  return ::testing::Test::HasFailure();
 }
 
 TEST_P(HeapProfilerControllerMultipleChildTest, EndToEnd) {
@@ -1487,15 +1569,23 @@ TEST_P(HeapProfilerControllerMultipleChildTest, EndToEnd) {
   // be profiled - the 5th is invisible to the profiler.
   EXPECT_THAT(
       received_profiles,
-      UnorderedElementsAreArray({
+      UnorderedElementsAre(
           sampled_profile_matches(metrics::Process::BROWSER_PROCESS, 0, 100, 1),
           sampled_profile_matches(metrics::Process::GPU_PROCESS, 1, 100, 1),
           sampled_profile_matches(metrics::Process::UTILITY_PROCESS, 2, 50, 1),
           // The first renderer should be skipped.
           sampled_profile_matches(metrics::Process::RENDERER_PROCESS, 0, 66, 3),
           sampled_profile_matches(metrics::Process::RENDERER_PROCESS, 4, 66, 3),
-          sampled_profile_matches(metrics::Process::RENDERER_PROCESS, 5, 66, 3),
-      }));
+          sampled_profile_matches(metrics::Process::RENDERER_PROCESS, 5, 66,
+                                  3)));
+
+  // Make sure both per-process and aggregate profiler stats are logged.
+  // Subprocess metrics aren't hooked up in this test, so `histogram_tester_`
+  // only sees the browser process histograms.
+  histogram_tester_.ExpectTotalCount(
+      "HeapProfiling.InProcess.SamplesPerSnapshot.Browser", 1);
+  histogram_tester_.ExpectTotalCount(
+      "HeapProfiling.InProcess.SamplesPerSnapshot", 1);
 }
 
 #endif  // ENABLE_MULTIPROCESS_TESTS

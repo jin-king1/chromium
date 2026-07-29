@@ -7,16 +7,17 @@
 #import "base/apple/foundation_util.h"
 #import "base/check_op.h"
 #import "base/strings/sys_string_conversions.h"
-#import "ios/chrome/browser/policy/model/management_state.h"
+#import "ios/chrome/browser/authentication/ui_bundled/cells/signin_promo_view_constants.h"
 #import "ios/chrome/browser/settings/ui_bundled/cells/settings_cells_constants.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
-#import "ios/chrome/browser/shared/ui/table_view/legacy_chrome_table_view_styler.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/browser/signin/model/constants.h"
 #import "ios/chrome/browser/signin/model/signin_util.h"
+#import "ios/chrome/browser/signin/ui/avatar/ai_tier_avatar_view.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/table_view/table_view_cells_constants.h"
 #import "ios/chrome/grit/ios_strings.h"
+#import "ui/base/l10n/l10n_util.h"
 #import "ui/base/l10n/l10n_util_mac.h"
 
 namespace {
@@ -26,17 +27,13 @@ namespace {
 const CGFloat kEnterpriseIconSpacing = 4.0;
 // The vertical space between labels.
 const CGFloat kLabelVerticalSpacing = 2.0;
-// The button padding.
-const CGFloat kButtonPadding = 8.0;
-// The button corner radius.
-const CGFloat kButtonCornerRadius = 15.0;
 
 // Returns a tinted version of the enterprise building icon.
 UIImage* GetEnterpriseIcon() {
   UIColor* color = [UIColor colorNamed:kTextSecondaryColor];
   return SymbolWithPalette(
-      CustomSymbolWithConfiguration(
-          kEnterpriseSymbol,
+      SymbolWithConfiguration(
+          SymbolEnterprise,
           [UIImageSymbolConfiguration
               configurationWithFont:
                   [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote]]),
@@ -54,85 +51,78 @@ UIImage* GetEnterpriseIcon() {
   NSString* _name;
   // Email subtitle displayed in secondary label.
   NSString* _email;
-  // True if the "Managed by your organization" label is present.
-  BOOL _managed;
-  // The account avatar.
-  UIImageView* _imageView;
+  // The avatar view.
+  AITierAvatarView* _avatarView;
   // Whether to use large margin.
   BOOL _useLargeMargins;
   // The constraint for the top padding.
   NSLayoutConstraint* _topPaddingConstraint;
-  // Whether to add manage your account button.
-  BOOL _addManageYourAccountButton;
-  // Manage your account button.
-  UIButton* _button;
-  // Manage your account button action.
-  ProceduralBlock _manageYourAccountButtonAction;
+  // Management label.
+  UILabel* _managementLabel;
+  // The full name of the AI tier.
+  NSString* _aiTierFullName;
 }
 
 - (instancetype)initWithFrame:(CGRect)frame
-                      avatarImage:(UIImage*)avatarImage
-                             name:(NSString*)name
-                            email:(NSString*)email
-                  managementState:(ManagementState)managementState
-                  useLargeMargins:(BOOL)useLargeMargins
-       addManageYourAccountButton:(BOOL)addManageYourAccountButton
-    manageYourAccountButtonAction:
-        (ProceduralBlock)manageYourAccountButtonAction {
+                  avatarImage:(UIImage*)avatarImage
+              showsAITierRing:(BOOL)showsAITierRing
+               aiTierFullName:(NSString*)aiTierFullName
+                         name:(NSString*)name
+                        email:(NSString*)email
+        managementDescription:(NSString*)managementDescription
+              useLargeMargins:(BOOL)useLargeMargins {
   self = [super initWithFrame:frame];
   if (self) {
     CHECK(avatarImage);
     CHECK(email);
     _avatarImage = avatarImage;
+    _aiTierFullName = [aiTierFullName copy];
     _name = name ? name : email;
     _email = name ? email : nil;
     _useLargeMargins = useLargeMargins;
-    _addManageYourAccountButton = addManageYourAccountButton;
-    _manageYourAccountButtonAction = manageYourAccountButtonAction;
-    CHECK_EQ(_addManageYourAccountButton,
-             _manageYourAccountButtonAction != nil);
-    _managed = managementState.is_profile_managed();
-
     self.isAccessibilityElement = YES;
     self.accessibilityTraits |= UIAccessibilityTraitHeader;
+    self.accessibilityIdentifier =
+        CentralAccountViewAccessibilityIdentifier(email);
 
-    _imageView = [[UIImageView alloc] initWithImage:_avatarImage];
-    // Creates the image rounded corners.
-    _imageView.layer.cornerRadius =
-        GetSizeForIdentityAvatarSize(IdentityAvatarSize::Large).width / 2.0f;
-    _imageView.clipsToBounds = YES;
-    _imageView.translatesAutoresizingMaskIntoConstraints = NO;
-    [self addSubview:_imageView];
+    CGFloat outerSize =
+        GetSizeForIdentityAvatarSize(IdentityAvatarSize::Large).width;
+    _avatarView =
+        [[AITierAvatarView alloc] initWithAvatarImage:_avatarImage
+                                            outerSize:outerSize
+                                      showsAITierRing:showsAITierRing];
+    [self addSubview:_avatarView];
 
-    UILabel* titleLabel = [[UILabel alloc] init];
-    titleLabel.text = _name;
-    titleLabel.textAlignment = NSTextAlignmentCenter;
-    titleLabel.numberOfLines = 1;
-    titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-    titleLabel.adjustsFontForContentSizeCategory = YES;
-    titleLabel.font =
+    UILabel* nameLabel = [[UILabel alloc] init];
+    nameLabel.text = _name;
+    nameLabel.textAlignment = NSTextAlignmentCenter;
+    nameLabel.numberOfLines = 1;
+    nameLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    nameLabel.adjustsFontForContentSizeCategory = YES;
+    nameLabel.font =
         [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
-    titleLabel.textColor = [UIColor colorNamed:kTextPrimaryColor];
-    titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    [self addSubview:titleLabel];
+    nameLabel.textColor = [UIColor colorNamed:kTextPrimaryColor];
+    nameLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    [self addSubview:nameLabel];
 
-    UILabel* subtitleLabel = [[UILabel alloc] init];
-    subtitleLabel.text = _email;
-    subtitleLabel.textAlignment = NSTextAlignmentCenter;
-    subtitleLabel.numberOfLines = 1;
-    subtitleLabel.adjustsFontForContentSizeCategory = YES;
-    subtitleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-    subtitleLabel.textColor = [UIColor colorNamed:kTextSecondaryColor];
-    subtitleLabel.font =
+    UILabel* emailLabel = [[UILabel alloc] init];
+    emailLabel.text = _email;
+    emailLabel.textAlignment = NSTextAlignmentCenter;
+    emailLabel.numberOfLines = 1;
+    emailLabel.adjustsFontForContentSizeCategory = YES;
+    emailLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    emailLabel.textColor = [UIColor colorNamed:kTextSecondaryColor];
+    emailLabel.font =
         [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
-    subtitleLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    [self addSubview:subtitleLabel];
+    emailLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    [self addSubview:emailLabel];
     CGFloat bottomMargin =
         _useLargeMargins
             ? (2 * kTableViewLargeVerticalSpacing)
             : (kTableViewLargeVerticalSpacing + kTableViewVerticalSpacing);
 
-    if (_managed) {
+    if (managementDescription) {
+      CHECK_GT(managementDescription.length, 0u, base::NotFatalUntil::M140);
       UIImage* managementIcon = GetEnterpriseIcon();
       UIImageView* managementIconView =
           [[UIImageView alloc] initWithImage:managementIcon];
@@ -153,22 +143,21 @@ UIImage* GetEnterpriseIcon() {
                                               UILayoutConstraintAxisVertical];
       [self addSubview:managementIconView];
 
-      UILabel* managementLabel = [[UILabel alloc] init];
-      // TODO(crbug.com/349071774): In Phase 2, display the domain name or
-      // admin-provided company name/icon (when available).
-      managementLabel.text = l10n_util::GetNSString(
-          IDS_IOS_ENTERPRISE_MANAGED_BY_YOUR_ORGANIZATION);
-      managementLabel.textAlignment = NSTextAlignmentNatural;
-      managementLabel.numberOfLines = 1;
-      managementLabel.adjustsFontForContentSizeCategory = YES;
-      managementLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-      managementLabel.textColor = [UIColor colorNamed:kTextSecondaryColor];
-      managementLabel.font =
+      _managementLabel = [[UILabel alloc] init];
+      // TODO(crbug.com/349071774): In Phase 2, display the admin-provided
+      // company icon (when available).
+      _managementLabel.text = managementDescription;
+      _managementLabel.textAlignment = NSTextAlignmentNatural;
+      _managementLabel.numberOfLines = 1;
+      _managementLabel.adjustsFontForContentSizeCategory = YES;
+      _managementLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+      _managementLabel.textColor = [UIColor colorNamed:kTextSecondaryColor];
+      _managementLabel.font =
           [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
-      managementLabel.translatesAutoresizingMaskIntoConstraints = NO;
+      _managementLabel.translatesAutoresizingMaskIntoConstraints = NO;
 
       UIStackView* horizontalStack = [[UIStackView alloc]
-          initWithArrangedSubviews:@[ managementIconView, managementLabel ]];
+          initWithArrangedSubviews:@[ managementIconView, _managementLabel ]];
       horizontalStack.axis = UILayoutConstraintAxisHorizontal;
       horizontalStack.distribution = UIStackViewDistributionEqualSpacing;
       horizontalStack.alignment = UIStackViewAlignmentCenter;
@@ -178,7 +167,7 @@ UIImage* GetEnterpriseIcon() {
 
       [NSLayoutConstraint activateConstraints:@[
         [horizontalStack.topAnchor
-            constraintEqualToAnchor:subtitleLabel.bottomAnchor
+            constraintEqualToAnchor:emailLabel.bottomAnchor
                            constant:kLabelVerticalSpacing],
         [horizontalStack.centerXAnchor
             constraintEqualToAnchor:self.centerXAnchor],
@@ -188,81 +177,114 @@ UIImage* GetEnterpriseIcon() {
         [horizontalStack.trailingAnchor
             constraintLessThanOrEqualToAnchor:self.trailingAnchor
                                      constant:-kTableViewHorizontalSpacing],
+        [self.bottomAnchor constraintEqualToAnchor:horizontalStack.bottomAnchor
+                                          constant:bottomMargin],
       ]];
 
-      if (_addManageYourAccountButton) {
-        [self addButton];
-        [_button.topAnchor constraintEqualToAnchor:horizontalStack.bottomAnchor
-                                          constant:3 * kLabelVerticalSpacing]
-            .active = YES;
-        [self.bottomAnchor constraintEqualToAnchor:_button.bottomAnchor
-                                          constant:bottomMargin]
-            .active = YES;
-      } else {
-        [self.bottomAnchor constraintEqualToAnchor:horizontalStack.bottomAnchor
-                                          constant:bottomMargin]
-            .active = YES;
-      }
-    } else if (_addManageYourAccountButton) {
-      [self addButton];
-      [_button.topAnchor constraintEqualToAnchor:subtitleLabel.bottomAnchor
-                                        constant:3 * kLabelVerticalSpacing]
-          .active = YES;
-      [self.bottomAnchor constraintEqualToAnchor:_button.bottomAnchor
-                                        constant:bottomMargin]
-          .active = YES;
     } else {
-      [self.bottomAnchor constraintEqualToAnchor:subtitleLabel.bottomAnchor
+      [self.bottomAnchor constraintEqualToAnchor:emailLabel.bottomAnchor
                                         constant:bottomMargin]
           .active = YES;
     }
-    _topPaddingConstraint = [_imageView.topAnchor
+    _topPaddingConstraint = [_avatarView.topAnchor
         constraintEqualToAnchor:self.topAnchor
                        constant:(_useLargeMargins
                                      ? kTableViewLargeVerticalSpacing
                                      : kTopLargePadding)];
     [NSLayoutConstraint activateConstraints:@[
-      [_imageView.centerXAnchor constraintEqualToAnchor:self.centerXAnchor],
+      [_avatarView.centerXAnchor constraintEqualToAnchor:self.centerXAnchor],
       _topPaddingConstraint,
-      [_imageView.widthAnchor
+      [_avatarView.widthAnchor
           constraintEqualToConstant:GetSizeForIdentityAvatarSize(
                                         IdentityAvatarSize::Large)
                                         .width],
-      [_imageView.heightAnchor constraintEqualToAnchor:_imageView.widthAnchor],
+      [_avatarView.heightAnchor
+          constraintEqualToAnchor:_avatarView.widthAnchor],
 
-      [titleLabel.topAnchor constraintEqualToAnchor:_imageView.bottomAnchor
-                                           constant:kTableViewVerticalSpacing],
-      [titleLabel.leadingAnchor
+      [nameLabel.topAnchor constraintEqualToAnchor:_avatarView.bottomAnchor
+                                          constant:kTableViewVerticalSpacing],
+      [nameLabel.leadingAnchor
           constraintEqualToAnchor:self.leadingAnchor
                          constant:kTableViewHorizontalSpacing],
-      [titleLabel.trailingAnchor
+      [nameLabel.trailingAnchor
           constraintEqualToAnchor:self.trailingAnchor
                          constant:-kTableViewHorizontalSpacing],
 
-      [subtitleLabel.topAnchor constraintEqualToAnchor:titleLabel.bottomAnchor
-                                              constant:kLabelVerticalSpacing],
-      [subtitleLabel.leadingAnchor
-          constraintEqualToAnchor:titleLabel.leadingAnchor],
-      [subtitleLabel.trailingAnchor
-          constraintEqualToAnchor:titleLabel.trailingAnchor],
+      [emailLabel.topAnchor constraintEqualToAnchor:nameLabel.bottomAnchor
+                                           constant:kLabelVerticalSpacing],
+      [emailLabel.leadingAnchor
+          constraintEqualToAnchor:nameLabel.leadingAnchor],
+      [emailLabel.trailingAnchor
+          constraintEqualToAnchor:nameLabel.trailingAnchor],
     ]];
     [self updateFrame];
   }
   return self;
 }
 
+#pragma mark - UIAccessibility
+
 - (NSString*)accessibilityLabel {
-  NSMutableString* accessibilityLabel =
-      [NSMutableString stringWithString:_name];
-  if (_email) {
-    [accessibilityLabel appendFormat:@", %@", _email];
+  NSString* aiTierString = nil;
+  if (_aiTierFullName.length > 0) {
+    aiTierString = l10n_util::GetNSStringF(
+        IDS_IOS_ACCOUNT_VIEW_ACCESSIBILITY_LABEL_MEMBERSHIPS_AI_TIER,
+        base::SysNSStringToUTF16(_aiTierFullName));
   }
-  if (_managed) {
-    NSString* managedString =
-        l10n_util::GetNSString(IDS_IOS_ENTERPRISE_MANAGED_BY_YOUR_ORGANIZATION);
-    [accessibilityLabel appendFormat:@". %@", managedString];
+
+  if (_email != nil) {
+    // Both name and email are present.
+    if ([self managed]) {
+      if (aiTierString) {
+        return l10n_util::GetNSStringF(
+            IDS_IOS_ACCOUNT_VIEW_ACCESSIBILITY_LABEL_NAME_MANAGED_STATUS_AI_TIER,
+            base::SysNSStringToUTF16(_name), base::SysNSStringToUTF16(_email),
+            base::SysNSStringToUTF16([self managementDescription]),
+            base::SysNSStringToUTF16(aiTierString));
+      } else {
+        return l10n_util::GetNSStringF(
+            IDS_IOS_ACCOUNT_VIEW_ACCESSIBILITY_LABEL_NAME_MANAGED_STATUS,
+            base::SysNSStringToUTF16(_name), base::SysNSStringToUTF16(_email),
+            base::SysNSStringToUTF16([self managementDescription]));
+      }
+    } else {
+      if (aiTierString) {
+        return l10n_util::GetNSStringF(
+            IDS_IOS_ACCOUNT_VIEW_ACCESSIBILITY_LABEL_NAME_AI_TIER,
+            base::SysNSStringToUTF16(_name), base::SysNSStringToUTF16(_email),
+            base::SysNSStringToUTF16(aiTierString));
+      } else {
+        return l10n_util::GetNSStringF(
+            IDS_IOS_ACCOUNT_VIEW_ACCESSIBILITY_LABEL_NAME,
+            base::SysNSStringToUTF16(_name), base::SysNSStringToUTF16(_email));
+      }
+    }
+  } else {
+    // Only email is present (stored in _name).
+    if ([self managed]) {
+      if (aiTierString) {
+        return l10n_util::GetNSStringF(
+            IDS_IOS_ACCOUNT_VIEW_ACCESSIBILITY_LABEL_MANAGED_STATUS_AI_TIER,
+            base::SysNSStringToUTF16(_name),
+            base::SysNSStringToUTF16([self managementDescription]),
+            base::SysNSStringToUTF16(aiTierString));
+      } else {
+        return l10n_util::GetNSStringF(
+            IDS_IOS_ACCOUNT_VIEW_ACCESSIBILITY_LABEL_MANAGED_STATUS,
+            base::SysNSStringToUTF16(_name),
+            base::SysNSStringToUTF16([self managementDescription]));
+      }
+    } else {
+      if (aiTierString) {
+        return l10n_util::GetNSStringF(
+            IDS_IOS_ACCOUNT_VIEW_ACCESSIBILITY_LABEL_AI_TIER,
+            base::SysNSStringToUTF16(_name),
+            base::SysNSStringToUTF16(aiTierString));
+      } else {
+        return _name;
+      }
+    }
   }
-  return accessibilityLabel;
 }
 
 // Updates the frame size.
@@ -280,6 +302,10 @@ UIImage* GetEnterpriseIcon() {
   return _avatarImage;
 }
 
+- (UIView*)avatarView {
+  return _avatarView;
+}
+
 - (NSString*)name {
   return _name;
 }
@@ -288,8 +314,16 @@ UIImage* GetEnterpriseIcon() {
   return _email;
 }
 
+- (NSString*)aiTierFullName {
+  return _aiTierFullName;
+}
+
 - (BOOL)managed {
-  return _managed;
+  return _managementLabel != nil;
+}
+
+- (NSString*)managementDescription {
+  return _managementLabel.text;
 }
 
 - (void)updateTopPadding:(CGFloat)existingPadding {
@@ -297,59 +331,6 @@ UIImage* GetEnterpriseIcon() {
       (_useLargeMargins ? kTableViewLargeVerticalSpacing : kTopLargePadding);
   _topPaddingConstraint.constant = topPadding - existingPadding;
   [self updateFrame];
-}
-
-#pragma mark Private
-
-// Executes `_manageYourAccountButtonAction` action when Manage your Account
-// button is tapped.
-- (void)buttonTapped:(id)sender {
-  CHECK(_addManageYourAccountButton);
-  if (_manageYourAccountButtonAction) {
-    _manageYourAccountButtonAction();
-  }
-}
-
-// Adds Manage your Account button.
-- (void)addButton {
-  _button = [UIButton buttonWithType:UIButtonTypeSystem];
-
-  UIButtonConfiguration* configuration =
-      [UIButtonConfiguration plainButtonConfiguration];
-  configuration.contentInsets = NSDirectionalEdgeInsetsMake(
-      kButtonPadding, 2 * kButtonPadding, kButtonPadding, 2 * kButtonPadding);
-  configuration.background.backgroundColor =
-      [UIColor colorNamed:kGroupedSecondaryBackgroundColor];
-  configuration.baseForegroundColor = [UIColor colorNamed:kBlueColor];
-  configuration.background.cornerRadius = kButtonCornerRadius;
-
-  UIFont* font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
-  NSDictionary* attributes = @{NSFontAttributeName : font};
-  NSMutableAttributedString* string = [[NSMutableAttributedString alloc]
-      initWithString:
-          l10n_util::GetNSString(
-              IDS_IOS_GOOGLE_ACCOUNT_SETTINGS_MANAGE_GOOGLE_ACCOUNT_ITEM)];
-  [string addAttributes:attributes range:NSMakeRange(0, string.length)];
-  configuration.attributedTitle = string;
-
-  _button.configuration = configuration;
-  _button.translatesAutoresizingMaskIntoConstraints = NO;
-
-  [_button addTarget:self
-                action:@selector(buttonTapped:)
-      forControlEvents:UIControlEventTouchUpInside];
-
-  [self addSubview:_button];
-
-  [NSLayoutConstraint activateConstraints:@[
-    [_button.centerXAnchor constraintEqualToAnchor:self.centerXAnchor],
-    [_button.leadingAnchor
-        constraintGreaterThanOrEqualToAnchor:self.leadingAnchor
-                                    constant:kTableViewHorizontalSpacing],
-    [_button.trailingAnchor
-        constraintLessThanOrEqualToAnchor:self.trailingAnchor
-                                 constant:kTableViewHorizontalSpacing],
-  ]];
 }
 
 @end

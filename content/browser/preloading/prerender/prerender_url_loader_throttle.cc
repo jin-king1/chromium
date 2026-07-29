@@ -21,8 +21,7 @@ PrerenderURLLoaderThrottle::PrerenderURLLoaderThrottle(
 // static
 std::unique_ptr<PrerenderURLLoaderThrottle>
 PrerenderURLLoaderThrottle::MaybeCreate(FrameTreeNodeId frame_tree_node_id) {
-  if (!base::FeatureList::IsEnabled(
-          features::kPrerender2FallbackPrefetchSpecRules)) {
+  if (!features::UsePrefetchPrerenderIntegration()) {
     return nullptr;
   }
 
@@ -39,14 +38,24 @@ PrerenderURLLoaderThrottle::MaybeCreate(FrameTreeNodeId frame_tree_node_id) {
     return nullptr;
   }
 
+  PrerenderHostId prerender_host_id =
+      frame_tree_node->frame_tree().delegate()->GetPrerenderHostId();
   PrerenderHost* prerender_host =
-      prerender_host_registry->FindNonReservedHostById(frame_tree_node_id);
+      prerender_host_registry->FindNonReservedHostById(prerender_host_id);
   if (!prerender_host) {
     return nullptr;
   }
 
   if (!prerender_host->ShouldAbortNavigationBecausePrefetchUnavailable()) {
     return nullptr;
+  }
+
+  if (frame_tree_node->navigation_request()) {
+    auto& preload_serving_metrics_holder =
+        *PreloadServingMetricsHolder::GetOrCreateForNavigationHandle(
+            *frame_tree_node->navigation_request());
+    preload_serving_metrics_holder
+        .SetIsPrerenderAbortedByPrerenderURLLoaderThrottle(true);
   }
 
   // If the prefetch ahead of prerender "failed", `PrerenderURLLoaderThrottle`
@@ -75,7 +84,7 @@ void PrerenderURLLoaderThrottle::WillStartRequest(
   }
 
   prerender_host_registry->CancelHost(
-      frame_tree_node_id_,
+      frame_tree_node->frame_tree().delegate()->GetPrerenderHostId(),
       PrerenderCancellationReason(
           PrerenderFinalStatus::kPrerenderFailedDuringPrefetch));
 }

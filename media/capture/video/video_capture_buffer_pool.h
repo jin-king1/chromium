@@ -9,11 +9,12 @@
 #include "media/capture/capture_export.h"
 #include "media/capture/mojom/video_capture_buffer.mojom.h"
 #include "media/capture/mojom/video_capture_types.mojom.h"
+#include "media/capture/video/video_capture_buffer_pool_constants.h"
 #include "media/capture/video/video_capture_device.h"
 #include "media/capture/video_capture_types.h"
 #include "mojo/public/cpp/system/buffer.h"
 #include "ui/gfx/geometry/size.h"
-#include "ui/gfx/gpu_memory_buffer.h"
+#include "ui/gfx/gpu_memory_buffer_handle.h"
 
 namespace media {
 
@@ -42,7 +43,9 @@ class VideoCaptureBufferHandle;
 class CAPTURE_EXPORT VideoCaptureBufferPool
     : public base::RefCountedThreadSafe<VideoCaptureBufferPool> {
  public:
-  static constexpr int kInvalidId = -1;
+  REQUIRE_ADOPTION_FOR_REFCOUNTED_TYPE();
+
+  static constexpr int kInvalidId = VideoCaptureBufferPoolConstants::kInvalidId;
 
   // Provides a duplicate region referring to the buffer. Destruction of this
   // duplicate does not result in releasing the shared memory held by the
@@ -56,6 +59,9 @@ class CAPTURE_EXPORT VideoCaptureBufferPool
       int buffer_id) = 0;
 
   virtual gfx::GpuMemoryBufferHandle GetGpuMemoryBufferHandle(
+      int buffer_id) = 0;
+
+  virtual media::mojom::VideoBufferHandlePtr GetVideoBufferHandle(
       int buffer_id) = 0;
 
   // Returns the buffer type of the buffer. Useful when deciding whether to
@@ -124,10 +130,8 @@ class CAPTURE_EXPORT VideoCaptureBufferPool
   virtual void RelinquishConsumerHold(int buffer_id, int num_clients) = 0;
 
  protected:
-  virtual ~VideoCaptureBufferPool() {}
-
- private:
   friend class base::RefCountedThreadSafe<VideoCaptureBufferPool>;
+  virtual ~VideoCaptureBufferPool() = default;
 };
 
 }  // namespace media

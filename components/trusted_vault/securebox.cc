@@ -14,9 +14,10 @@
 #include <vector>
 
 #include "base/check_op.h"
+#include "base/containers/span.h"
 #include "base/location.h"
 #include "base/memory/ptr_util.h"
-#include "crypto/hkdf.h"
+#include "crypto/kdf.h"
 #include "crypto/openssl_util.h"
 #include "crypto/random.h"
 #include "third_party/boringssl/src/include/openssl/aead.h"
@@ -42,11 +43,6 @@ const uint8_t kHkdfSalt[] = {'S', 'E', 'C', 'U',  'R', 'E',
 const char kHkdfInfoWithPublicKey[] = "P256 HKDF-SHA-256 AES-128-GCM";
 const char kHkdfInfoWithoutPublicKey[] = "SHARED HKDF-SHA-256 AES-128-GCM";
 
-// Returns bytes representation of |str| (without trailing \0).
-base::span<const uint8_t> StringToBytes(std::string_view str) {
-  return base::as_byte_span(str);
-}
-
 // Concatenates spans in |bytes_spans|.
 std::vector<uint8_t> ConcatBytes(
     const std::vector<base::span<const uint8_t>>& bytes_spans) {
@@ -63,11 +59,16 @@ std::vector<uint8_t> ConcatBytes(
   return result;
 }
 
-// Creates public EC_KEY from |public_key_bytes|. |public_key_bytes| must be
-// a X9.62 formatted NIST P-256 point.
+// Creates public EC_KEY from |public_key_bytes|. Returns nullptr if
+// |public_key_bytes| does not represent a X9.62 formatted NIST P-256 point.
 bssl::UniquePtr<EC_KEY> ECPublicKeyFromBytes(
     base::span<const uint8_t> public_key_bytes,
     const crypto::OpenSSLErrStackTracer& err_tracer) {
+  if (public_key_bytes.size() != kECPointLength) {
+    // |public_key_bytes| doesn't represent a valid NIST P-256 point.
+    return nullptr;
+  }
+
   bssl::UniquePtr<EC_KEY> ec_key(
       EC_KEY_new_by_curve_name(NID_X9_62_prime256v1));
   DCHECK(ec_key);
@@ -135,8 +136,9 @@ std::array<uint8_t, kAES128KeyLength> SecureBoxComputeSecret(
   }
 
   std::vector<uint8_t> key_material = ConcatBytes({dh_secret, shared_secret});
-  return crypto::HkdfSha256<kAES128KeyLength>(key_material, kHkdfSalt,
-                                              StringToBytes(hkdf_info));
+  return crypto::kdf::Hkdf<kAES128KeyLength>(crypto::hash::kSha256,
+                                             key_material, kHkdfSalt,
+                                             base::as_byte_span(hkdf_info));
 }
 
 // This function implements AES-GCM, using AES-128, a 96-bit nonce, and 128-bit

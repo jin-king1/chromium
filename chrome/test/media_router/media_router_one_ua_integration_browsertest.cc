@@ -4,7 +4,6 @@
 #include <memory>
 
 #include "base/cfi_buildflags.h"
-#include "base/files/file_util.h"
 #include "base/path_service.h"
 #include "build/build_config.h"
 #include "chrome/test/media_router/media_router_integration_browsertest.h"
@@ -52,8 +51,7 @@ class MediaRouterIntegrationOneUABrowserTest
   void CaptureOffScreenTab() {
     GURL receiver_page =
         embedded_test_server()->GetURL("/presentation_receiver.html");
-    EXPECT_EQ(static_cast<int>(test_provider_->get_presentation_ids().size()),
-              1);
+    EXPECT_EQ(test_provider_->get_presentation_ids().size(), 1u);
     std::string presentation_id = test_provider_->get_presentation_ids().at(0);
     test_provider_->CaptureOffScreenTab(GetActiveWebContents(), receiver_page,
                                         presentation_id);
@@ -104,7 +102,7 @@ IN_PROC_BROWSER_TEST_F(MediaRouterIntegrationOneUABrowserTest,
      (BUILDFLAG(CFI_CAST_CHECK) || BUILDFLAG(CFI_ICALL_CHECK) || \
       BUILDFLAG(CFI_ENFORCEMENT_TRAP) ||                         \
       BUILDFLAG(CFI_ENFORCEMENT_DIAGNOSTIC)))
-// https://crbug.com/966827. Flaky on Linux CFI.
+// https://crbug.com/41460888. Flaky on Linux CFI.
 // TODO(crbug.com/380369297): Flaky in Chromium OS waterfall.
 #define MAYBE_ReconnectSession MANUAL_ReconnectSession
 #else

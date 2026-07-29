@@ -31,7 +31,7 @@ suite('ComposePage', function() {
     MetricsBrowserProxyImpl.setInstance(metricsBrowserProxy);
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     page = document.createElement('settings-offer-writing-help-page');
-    page.prefs = settingsPrefs.prefs;
+    page.prefs = settingsPrefs.prefs!;
     document.body.appendChild(page);
     return flushTasks();
   }
@@ -185,42 +185,5 @@ suite('ComposePage', function() {
     assertTrue(!!indicator);
     assertTrue(!!indicator.pref);
     assertEquals(AiEnterpriseFeaturePrefName.COMPOSE, indicator.pref.key);
-  });
-});
-
-// TODO(crbug.com/362225975): Remove after AiSettingsPageRefresh is launched.
-suite('ComposePageRefreshDisabled', function() {
-  let page: SettingsOfferWritingHelpPageElement;
-  let settingsPrefs: SettingsPrefsElement;
-
-  suiteSetup(function() {
-    loadTimeData.overrideValues({
-      enableComposeProactiveNudge: true,
-      enableAiSettingsPageRefresh: false,
-    });
-
-    settingsPrefs = document.createElement('settings-prefs');
-    return CrSettingsPrefs.initialized;
-  });
-
-  function createPage() {
-    document.body.innerHTML = window.trustedTypes!.emptyHTML;
-    page = document.createElement('settings-offer-writing-help-page');
-    page.prefs = settingsPrefs.prefs;
-    document.body.appendChild(page);
-    return flushTasks();
-  }
-
-  test('FeatureVisibility', async () => {
-    // Refresh flag is disabled, HelpMeWrite section and OfferWritingHelp toggle
-    // separator should be hidden.
-    await createPage();
-
-    assertFalse(isChildVisible(page, '#helpMeWriteLabel'));
-    const toggle =
-        page.shadowRoot!.querySelector<HTMLElement>('settings-toggle-button');
-    assertTrue(!!toggle);
-    assertTrue(isVisible(toggle));
-    assertFalse(toggle.classList.contains('hr'));
   });
 });

@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "chrome/browser/ui/views/extensions/browser_action_drag_data.h"
 
 #include <stdint.h>
@@ -14,9 +9,7 @@
 #include "base/check.h"
 #include "base/no_destructor.h"
 #include "base/pickle.h"
-#include "base/strings/string_util.h"
 #include "chrome/browser/profiles/profile.h"
-#include "ui/base/clipboard/clipboard.h"
 
 namespace {
 
@@ -26,10 +19,10 @@ const char kClipboardFormatString[] = "chromium/x-browser-actions";
 }  // namespace
 
 BrowserActionDragData::BrowserActionDragData()
-    : profile_(nullptr), index_(static_cast<size_t>(-1)) {}
+    : index_(static_cast<size_t>(-1)) {}
 
 BrowserActionDragData::BrowserActionDragData(const std::string& id, int index)
-    : profile_(nullptr), id_(id), index_(index) {}
+    : id_(id), index_(index) {}
 
 bool BrowserActionDragData::GetDropFormats(
     std::set<ui::ClipboardFormatType>* format_types) {
@@ -48,7 +41,7 @@ bool BrowserActionDragData::CanDrop(const ui::OSExchangeData& data,
 }
 
 bool BrowserActionDragData::IsFromProfile(const Profile* profile) const {
-  return profile_ == profile;
+  return profile_unique_id_ == profile->UniqueId();
 }
 
 void BrowserActionDragData::Write(Profile* profile,
@@ -88,7 +81,7 @@ BrowserActionDragData::GetBrowserActionFormatType() {
 
 void BrowserActionDragData::WriteToPickle(Profile* profile,
                                           base::Pickle* pickle) const {
-  pickle->WriteBytes(&profile, sizeof(profile));
+  pickle->WriteString(profile->UniqueId());
   pickle->WriteString(id_);
   pickle->WriteUInt64(index_);
 }
@@ -96,11 +89,9 @@ void BrowserActionDragData::WriteToPickle(Profile* profile,
 bool BrowserActionDragData::ReadFromPickle(base::Pickle* pickle) {
   base::PickleIterator data_iterator(*pickle);
 
-  const char* tmp;
-  if (!data_iterator.ReadBytes(&tmp, sizeof(profile_))) {
+  if (!data_iterator.ReadString(&profile_unique_id_)) {
     return false;
   }
-  memcpy(&profile_, tmp, sizeof(profile_));
 
   if (!data_iterator.ReadString(&id_)) {
     return false;

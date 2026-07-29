@@ -46,6 +46,7 @@
 #include "third_party/blink/renderer/core/fileapi/public_url_manager.h"
 #include "third_party/blink/renderer/core/frame/csp/content_security_policy.h"
 #include "third_party/blink/renderer/core/frame/csp/execution_context_csp_delegate.h"
+#include "third_party/blink/renderer/core/frame/integrity_policy.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/inspector/console_message.h"
@@ -227,9 +228,6 @@ bool ExecutionContext::SharedArrayBufferTransferAllowed() const {
 
   CHECK(origin);
 
-  if (SecurityPolicy::IsSharedArrayBufferAlwaysAllowedForOrigin(origin))
-    return true;
-
 #if BUILDFLAG(IS_ANDROID)
   return false;
 #else
@@ -324,6 +322,10 @@ bool ExecutionContext::DispatchErrorEventInternal(
 // IsContextFrozenOrPaused() makes sense.
 bool ExecutionContext::IsContextPaused() const {
   return lifecycle_state_ == mojom::blink::FrameLifecycleState::kPaused;
+}
+
+bool ExecutionContext::IsContextFrozen() const {
+  return lifecycle_state_ == mojom::blink::FrameLifecycleState::kFrozen;
 }
 
 LoaderFreezeMode ExecutionContext::GetLoaderFreezeMode() const {
@@ -451,11 +453,16 @@ bool ExecutionContext::IsSecureContext(String& error_message) const {
 
 // https://w3c.github.io/webappsec-referrer-policy/#determine-requests-referrer
 String ExecutionContext::OutgoingReferrer() const {
+  return OutgoingReferrerUrl().GetString();
+}
+
+KURL ExecutionContext::OutgoingReferrerUrl() const {
   // Step 3.1: "If environment's global object is a Window object, then"
-  // This case is implemented in Document::OutgoingReferrer().
+  // This case is overridden and implemented in
+  // LocalDOMWindow::OutgoingReferrerUrl().
 
   // Step 3.2: "Otherwise, let referrerSource be environment's creation URL."
-  return Url().StrippedForUseAsReferrer();
+  return Url().UrlStrippedForUseAsReferrer();
 }
 
 void ExecutionContext::ParseAndSetReferrerPolicy(
@@ -478,27 +485,27 @@ void ExecutionContext::ParseAndSetReferrerPolicy(
     SetReferrerPolicy(referrer_policy);
   } else {
     String error_reason;
-    if (source == kPolicySourceMetaTag && policy.Contains(',')) {
+    if (source == kPolicySourceMetaTag && policy.contains(',')) {
       // Only a single token is permitted for Meta-specified policies
       // (https://crbug.com/1093914).
       error_reason =
           "A policy specified by a meta element must contain only one token.";
     } else {
-      error_reason =
-          "The value '" + policy + "' is not one of " +
-          ((source == kPolicySourceMetaTag)
-               ? "'always', 'default', 'never', 'origin-when-crossorigin', "
-               : "") +
-          "'no-referrer', 'no-referrer-when-downgrade', 'origin', "
-          "'origin-when-cross-origin', 'same-origin', 'strict-origin', "
-          "'strict-origin-when-cross-origin', or 'unsafe-url'.";
+      error_reason = StrCat(
+          {"The value '", policy, "' is not one of ",
+           ((source == kPolicySourceMetaTag)
+                ? "'always', 'default', 'never', 'origin-when-crossorigin', "
+                : ""),
+           "'no-referrer', 'no-referrer-when-downgrade', 'origin', "
+           "'origin-when-cross-origin', 'same-origin', 'strict-origin', "
+           "'strict-origin-when-cross-origin', or 'unsafe-url'."});
     }
 
     AddConsoleMessage(MakeGarbageCollected<ConsoleMessage>(
         mojom::ConsoleMessageSource::kRendering,
         mojom::ConsoleMessageLevel::kError,
-        "Failed to set referrer policy: " + error_reason +
-            " The referrer policy has been left unchanged."));
+        StrCat({"Failed to set referrer policy: ", error_reason,
+                " The referrer policy has been left unchanged."})));
   }
 }
 
@@ -520,8 +527,13 @@ void ExecutionContext::SetReferrerPolicy(
 void ExecutionContext::SetPolicyContainer(
     std::unique_ptr<PolicyContainer> container) {
   policy_container_ = std::move(container);
-  security_context_.SetSandboxFlags(
-      policy_container_->GetPolicies().sandbox_flags);
+  const mojom::blink::PolicyContainerPolicies& policies =
+      policy_container_->GetPolicies();
+  security_context_.SetSandboxFlags(policies.sandbox_flags);
+
+  IntegrityPolicy::LogParsingErrorsIfAny(this, policies.integrity_policy);
+  IntegrityPolicy::LogParsingErrorsIfAny(this,
+                                         policies.integrity_policy_report_only);
 }
 
 std::unique_ptr<PolicyContainer> ExecutionContext::TakePolicyContainer() {
@@ -608,6 +620,11 @@ bool ExecutionContext::IsFeatureEnabled(
   return security_context_.IsFeatureEnabled(feature, threshold_value).enabled;
 }
 
+PolicyValue ExecutionContext::GetDocumentPolicyValue(
+    mojom::blink::DocumentPolicyFeature feature) const {
+  return security_context_.GetDocumentPolicyValue(feature);
+}
+
 bool ExecutionContext::IsFeatureEnabled(
     mojom::blink::DocumentPolicyFeature feature,
     ReportOptions report_option,
@@ -643,59 +660,6 @@ bool ExecutionContext::IsFeatureEnabled(
 
 bool ExecutionContext::RequireTrustedTypes() const {
   return require_trusted_types_;
-}
-
-namespace {
-using ContextType = ExecutionContext::Proto::ContextType;
-ContextType GetContextType(const ExecutionContext& execution_context) {
-  if (execution_context.IsWorkletGlobalScope()) {
-    return ContextType::WORKLET;
-  } else if (execution_context.IsDedicatedWorkerGlobalScope()) {
-    return ContextType::DEDICATED_WORKER;
-  } else if (execution_context.IsSharedWorkerGlobalScope()) {
-    return ContextType::SHARED_WORKER;
-  } else if (execution_context.IsServiceWorkerGlobalScope()) {
-    return ContextType::SERVICE_WORKER;
-  } else if (execution_context.IsWindow()) {
-    return ContextType::WINDOW;
-  }
-  return ContextType::UNKNOWN_CONTEXT;
-}
-
-using WorldType = ExecutionContext::Proto::WorldType;
-WorldType GetWorldType(const ExecutionContext& execution_context) {
-  auto* current_world = execution_context.GetCurrentWorld();
-  if (current_world == nullptr) {
-    return WorldType::WORLD_UNKNOWN;
-  }
-
-  switch (current_world->GetWorldType()) {
-    case DOMWrapperWorld::WorldType::kMain:
-      return WorldType::WORLD_MAIN;
-    case DOMWrapperWorld::WorldType::kIsolated:
-      return WorldType::WORLD_ISOLATED;
-    case DOMWrapperWorld::WorldType::kInspectorIsolated:
-      return WorldType::WORLD_INSPECTOR_ISOLATED;
-    case DOMWrapperWorld::WorldType::kRegExp:
-      return WorldType::WORLD_REG_EXP;
-    case DOMWrapperWorld::WorldType::kForV8ContextSnapshotNonMain:
-      return WorldType::WORLD_FOR_V8_CONTEXT_SNAPSHOT_NON_MAIN;
-    case DOMWrapperWorld::WorldType::kWorkerOrWorklet:
-      return WorldType::WORLD_WORKER;
-    case DOMWrapperWorld::WorldType::kShadowRealm:
-      return WorldType::WORLD_SHADOW_REALM;
-    default:
-      return WorldType::WORLD_UNKNOWN;
-  }
-}
-}  // namespace
-
-void ExecutionContext::WriteIntoTrace(
-    perfetto::TracedProto<ExecutionContext::Proto> proto) const {
-  proto->set_url(Url().GetString().Utf8());
-  proto->set_origin(GetSecurityOrigin()->ToString().Utf8());
-  proto->set_type(GetContextType(*this));
-  proto->set_world_type(GetWorldType(*this));
 }
 
 bool ExecutionContext::CrossOriginIsolatedCapabilityOrDisabledWebSecurity()

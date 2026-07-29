@@ -4,11 +4,12 @@
 
 package org.chromium.chrome.browser.browserservices.permissiondelegation;
 
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.notifications.NotificationChannelStatus;
 import org.chromium.chrome.browser.notifications.channels.ChromeChannelDefinitions;
 import org.chromium.chrome.browser.notifications.channels.SiteChannelsManager;
 import org.chromium.chrome.browser.webapps.WebappRegistry;
-import org.chromium.components.content_settings.ContentSettingValues;
+import org.chromium.components.content_settings.ContentSetting;
 import org.chromium.components.embedder_support.util.Origin;
 
 /**
@@ -19,44 +20,56 @@ import org.chromium.components.embedder_support.util.Origin;
  * <p>Lifecycle: Singleton. Thread safety: Only call methods on a single thread. Native: Does not
  * require native.
  */
+@NullMarked
 public class NotificationChannelPreserver {
     private NotificationChannelPreserver() {}
 
     /** Deletes the SiteChannel if called on a version of Android that requires it. */
     static void deleteChannelIfNeeded(Origin origin) {
-        SiteChannelsManager siteChannelsManager = SiteChannelsManager.getInstance();
+        SiteChannelsManager.getInstance()
+                .getChannelIdForOriginAsync(
+                        origin.toString(),
+                        (channelId) -> {
+                            deleteSiteChannel(origin, channelId);
+                        });
+    }
 
-        String channelId = siteChannelsManager.getChannelIdForOrigin(origin.toString());
+    private static void deleteSiteChannel(Origin origin, String channelId) {
         if (ChromeChannelDefinitions.ChannelId.SITES.equals(channelId)) {
             // If we were given the generic "sites" channel that meant no origin-specific channel
             // existed. We don't need to do anything.
             return;
         }
 
-        @NotificationChannelStatus int status = siteChannelsManager.getChannelStatus(channelId);
-        if (status == NotificationChannelStatus.UNAVAILABLE) {
-            // This shouldn't happen if we passed the above conditional return - but it just means
-            // that the channel doesn't exist, so again, we don't need to do anything.
-            return;
-        }
+        SiteChannelsManager siteChannelsManager = SiteChannelsManager.getInstance();
+        siteChannelsManager.getChannelStatusAsync(
+                channelId,
+                (status) -> {
+                    if (status == NotificationChannelStatus.UNAVAILABLE) {
+                        // This shouldn't happen if we passed the above conditional return - but it
+                        // just means
+                        // that the channel doesn't exist, so again, we don't need to do anything.
+                        return;
+                    }
 
-        assert status == NotificationChannelStatus.ENABLED
-                || status == NotificationChannelStatus.BLOCKED;
+                    assert status == NotificationChannelStatus.ENABLED
+                            || status == NotificationChannelStatus.BLOCKED;
 
-        @ContentSettingValues
-        int settingValue =
-                status == NotificationChannelStatus.ENABLED
-                        ? ContentSettingValues.ALLOW
-                        : ContentSettingValues.BLOCK;
-        WebappRegistry.getInstance()
-                .getPermissionStore()
-                .setPreInstallNotificationPermission(origin, settingValue);
-        siteChannelsManager.deleteSiteChannel(channelId);
+                    @ContentSetting
+                    int settingValue =
+                            status == NotificationChannelStatus.ENABLED
+                                    ? ContentSetting.ALLOW
+                                    : ContentSetting.BLOCK;
+                    WebappRegistry.getInstance()
+                            .getPermissionStore()
+                            .setPreInstallNotificationPermission(origin, settingValue);
+                    siteChannelsManager.deleteSiteChannel(channelId);
+                });
     }
 
     /** Restores the SiteChannel if called on a version of Android that requires it. */
     static void restoreChannelIfNeeded(Origin origin) {
-        @ContentSettingValues
+        @ContentSetting
         Integer settingValue =
                 WebappRegistry.getInstance()
                         .getPermissionStore()
@@ -67,7 +80,7 @@ public class NotificationChannelPreserver {
             return;
         }
 
-        boolean enabled = settingValue == ContentSettingValues.ALLOW;
+        boolean enabled = settingValue == ContentSetting.ALLOW;
         SiteChannelsManager.getInstance()
                 .createSiteChannel(origin.toString(), System.currentTimeMillis(), enabled);
     }

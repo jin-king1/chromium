@@ -14,19 +14,18 @@
 #include "base/memory/scoped_refptr.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/strings/utf_string_conversions.h"
-#include "chrome/browser/ash/policy/core/browser_policy_connector_ash.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
-#include "chrome/browser/browser_process.h"
-#include "chrome/browser/browser_process_platform_part_ash.h"
 #include "chrome/browser/feature_engagement/tracker_factory.h"
 #include "chrome/browser/notifications/notification_display_service.h"
 #include "chrome/browser/notifications/notification_display_service_factory.h"
 #include "chrome/browser/policy/profile_policy_connector.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/google_one/google_one_offer_iph_tab_helper_constants.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
+#include "chromeos/ash/components/install_attributes/install_attributes.h"
 #include "chromeos/ui/vector_icons/vector_icons.h"
 #include "components/feature_engagement/public/feature_constants.h"
 #include "components/feature_engagement/public/tracker.h"
+#include "components/user_manager/user_manager.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_user_data.h"
 #include "ui/message_center/public/cpp/notification.h"
@@ -52,7 +51,7 @@ class DriveIphTabHelperNotificationDelegate
       return;
     }
 
-    ash::NewWindowDelegate::GetPrimary()->OpenUrl(
+    ash::NewWindowDelegate::GetInstance()->OpenUrl(
         GURL(kGoogleOneOfferUrl),
         ash::NewWindowDelegate::OpenUrlFrom::kUserInteraction,
         ash::NewWindowDelegate::Disposition::kNewForegroundTab);
@@ -155,9 +154,7 @@ void GoogleOneOfferIphTabHelper::PrimaryPageChanged(content::Page& page) {
 
   // Google One offer is eligible for a device, not for an account. Do not show
   // a notification if a device is enrolled.
-  if (g_browser_process->platform_part()
-          ->browser_policy_connector_ash()
-          ->IsDeviceEnterpriseManaged()) {
+  if (ash::InstallAttributes::Get()->IsEnterpriseManaged()) {
     return;
   }
 
@@ -176,7 +173,9 @@ void GoogleOneOfferIphTabHelper::PrimaryPageChanged(content::Page& page) {
     return;
   }
 
-  if (!ash::ProfileHelper::IsOwnerProfile(profile)) {
+  auto* user =
+      ash::BrowserContextHelper::Get()->GetUserByBrowserContext(profile);
+  if (!user_manager::UserManager::Get()->IsOwnerUser(user)) {
     return;
   }
 

@@ -7,45 +7,62 @@
 
 #include "third_party/blink/public/common/scheduler/task_attribution_id.h"
 #include "third_party/blink/renderer/core/core_export.h"
-#include "third_party/blink/renderer/core/scheduler/script_wrappable_task_state.h"
+#include "third_party/blink/renderer/core/scheduler/task_attribution_task_state.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/heap/member.h"
 #include "third_party/blink/renderer/platform/scheduler/public/task_attribution_info.h"
 #include "third_party/blink/renderer/platform/wtf/casting.h"
 
 namespace blink {
-class ExecutionContext;
 class SchedulerTaskContext;
 class SoftNavigationContext;
+class ScriptToolContext;
+class ResourceTimingContext;
 
 class CORE_EXPORT TaskAttributionInfoImpl final
-    : public GarbageCollected<TaskAttributionInfoImpl>,
-      public WrappableTaskState,
+    : public TaskAttributionTaskState,
       public scheduler::TaskAttributionInfo {
  public:
-  TaskAttributionInfoImpl(scheduler::TaskAttributionId, SoftNavigationContext*);
-
-  // `WrappableTaskState` implementation:
+  TaskAttributionInfoImpl(SoftNavigationContext*,
+                          ResourceTimingContext*,
+                          ScriptToolContext*,
+                          uint32_t async_data_for_test = 0);
+  // `TaskAttributionTaskState` implementation:
   scheduler::TaskAttributionInfo* GetTaskAttributionInfo() override;
-  SchedulerTaskContext* GetSchedulerTaskContextFor(
-      const ExecutionContext&) override;
+  SchedulerTaskContext* GetSchedulerTaskContext() override;
+  bool IsTaskAttributionInfoImpl() const override;
+  TaskAttributionTaskState* ForkAndSetVariable(
+      ResourceTimingContext*) override;
+  TaskAttributionTaskState* ForkAndSetVariable(
+      SoftNavigationContext*) override;
+  TaskAttributionTaskState* ForkAndSetVariable(ScriptToolContext*) override;
 
   // `scheduler::TaskAttributionInfo` implementation:
   scheduler::TaskAttributionId Id() const override;
+  uint32_t AsyncDataForTest() const override;
   SoftNavigationContext* GetSoftNavigationContext() override;
+  ResourceTimingContext* GetResourceTimingContext() override;
+  ScriptToolContext* GetScriptToolContext() override;
 
   void Trace(Visitor*) const override;
 
  private:
   const scheduler::TaskAttributionId id_;
+  const uint32_t async_data_for_test_;
   Member<SoftNavigationContext> soft_navigation_context_;
+  Member<ResourceTimingContext> resource_timing_context_;
+  Member<ScriptToolContext> script_tool_context_;
 };
 
-// `TaskAttributionInfoImpl` is the only implementation of
-// `scheduler::TaskAttributionInfo`, so this cast is always safe.
 template <>
 struct DowncastTraits<TaskAttributionInfoImpl> {
+  // `TaskAttributionInfoImpl` is the only implementation of
+  // `scheduler::TaskAttributionInfo`, so this cast is always safe.
   static bool AllowFrom(const scheduler::TaskAttributionInfo&) { return true; }
+  static bool AllowFrom(
+      const TaskAttributionTaskState& task_attribution_task_state) {
+    return task_attribution_task_state.IsTaskAttributionInfoImpl();
+  }
 };
 
 }  // namespace blink

@@ -11,9 +11,9 @@
 #include <vector>
 
 #include "base/functional/callback_forward.h"
+#include "base/memory/raw_ref.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
-#include "base/scoped_multi_source_observation.h"
 #include "base/scoped_observation.h"
 #include "base/values.h"
 #include "chrome/browser/ash/login/demo_mode/demo_mode_idle_handler.h"
@@ -26,9 +26,16 @@
 #include "components/user_manager/user_manager.h"
 #include "extensions/browser/app_window/app_window_registry.h"
 
+class ApplicationLocaleStorage;
+class PrefService;
+
 namespace base {
 class OneShotTimer;
-}
+}  // namespace base
+
+namespace component_updater {
+class ComponentManagerAsh;
+}  // namespace component_updater
 
 namespace ash {
 
@@ -43,7 +50,8 @@ class DemoComponents;
 // started and the state of demo mode resources.
 class DemoSession : public session_manager::SessionManagerObserver,
                     public user_manager::UserManager::UserSessionStateObserver,
-                    public chromeos::PowerManagerClient::Observer {
+                    public chromeos::PowerManagerClient::Observer,
+                    public DemoModeIdleHandler::Observer {
  public:
   // Type of demo mode configuration.
   // Warning: DemoModeConfig is stored in local state. Existing entries should
@@ -98,13 +106,8 @@ class DemoSession : public session_manager::SessionManagerObserver,
   // TODO(b/366092466): Refactor demo code that not related to ChromeOS UI to
   // //chromeos/ash/components/demo_mode.
 
-  // DO NOT USE. Please use `IsDeviceInDemoMode()` in
-  // chromeos/ash/components/demo_mode/utils/demo_session_utils.h
-  // Whether the device is set up to run demo sessions.
-  static bool IsDeviceInDemoMode();
-
   // Returns current demo mode configuration.
-  static DemoModeConfig GetDemoConfig();
+  static DemoModeConfig GetDemoConfig(const PrefService& local_state);
 
   // Sets demo mode configuration for tests. Should be cleared by calling
   // ResetDemoConfigForTesting().
@@ -116,7 +119,16 @@ class DemoSession : public session_manager::SessionManagerObserver,
   // If the device is set up to run in demo mode, marks demo session as started,
   // and requests load of demo session resources.
   // Creates global DemoSession instance if required.
-  static DemoSession* StartIfInDemoMode();
+  //
+  // `local_state` and `application_locale_storage` must be non-null and must
+  // outlive the created DemoSession. (I.e., they must be valid until
+  // `ShutDownIfInitialized` is called.)
+  // `component_manager_ash` must be non-null.
+  static DemoSession* StartIfInDemoMode(
+      PrefService* local_state,
+      const ApplicationLocaleStorage* application_locale_storage,
+      scoped_refptr<component_updater::ComponentManagerAsh>
+          component_manager_ash);
 
   // Deletes the global DemoSession instance if it was previously created.
   static void ShutDownIfInitialized();
@@ -143,7 +155,8 @@ class DemoSession : public session_manager::SessionManagerObserver,
   // `value`: The ISO country code.
   // `title`: The display name of the country in the current locale.
   // `selected`: Whether the country is currently selected.
-  static base::Value::List GetCountryList();
+  static base::ListValue GetCountryList(PrefService& local_state,
+                                        const std::string& application_locale);
 
   // Records the launch of an app in Demo mode from the specified source.
   static void RecordAppLaunchSource(AppLaunchSource source);
@@ -183,19 +196,28 @@ class DemoSession : public session_manager::SessionManagerObserver,
   // if the splash screen is already removed or never shown.
   void RemoveSplashScreen();
 
+  DemoModeIdleHandler* GetIdleHandlerForTest() const;
+
+  // Gets blocking task runner for test to ensure blocking tasks get flushed.
+  scoped_refptr<base::SequencedTaskRunner> GetBlockingTaskRunnerForTest();
+
  private:
-  DemoSession();
+  // `local_state` and `application_locale_storage` must be non-null and must
+  // outlive `this`.
+  // `component_manager_ash` must be non-null.
+  DemoSession(PrefService* local_state,
+              const ApplicationLocaleStorage* application_locale_storage,
+              scoped_refptr<component_updater::ComponentManagerAsh>
+                  component_manager_ash);
   ~DemoSession() override;
+
+  // DemoModeIdleHandler::Observer:
+  void OnLocalFilesCleanupCompleted() override;
 
   void OnDemoAppComponentLoaded();
 
-  // Get country code and full name in current language pair sorted by their
-  // full name in currently selected language.
-  static std::vector<CountryCodeAndFullNamePair>
-  GetSortedCountryCodeAndNamePairList();
-
   // Installs resources for Demo Mode from the offline demo mode resources, such
-  // as apps and media.
+  // as photos and other media.
   void InstallDemoResources();
 
   // Find image path then show the splash screen.
@@ -212,9 +234,12 @@ class DemoSession : public session_manager::SessionManagerObserver,
   void SetKeyboardBrightnessToOneHundredPercentFromCurrentLevel(
       std::optional<double> keyboard_brightness_percentage);
 
-  // Allocate the device to a group in the experiment and register the
-  // synthetic field trial.
-  void RegisterDemoModeAAExperiment();
+  void RestoreDefaultLocaleForNextSession();
+
+  const raw_ref<PrefService> local_state_;
+  const raw_ref<const ApplicationLocaleStorage> application_locale_storage_;
+  const scoped_refptr<component_updater::ComponentManagerAsh>
+      component_manager_ash_;
 
   // Whether demo session has been started.
   bool started_ = false;
@@ -228,6 +253,9 @@ class DemoSession : public session_manager::SessionManagerObserver,
   base::ScopedObservation<session_manager::SessionManager,
                           session_manager::SessionManagerObserver>
       session_manager_observation_{this};
+
+  base::ScopedObservation<DemoModeIdleHandler, DemoModeIdleHandler::Observer>
+      idle_handler_observation_{this};
 
   // The fallback timer that ensures the splash screen is removed in case the
   // screensaver app takes an extra long time to be shown.
@@ -244,6 +272,10 @@ class DemoSession : public session_manager::SessionManagerObserver,
   // Handle device idle action for demo mode. Affect both MGS and demo account
   // sessions. Constructed while demo app is available.
   std::unique_ptr<DemoModeIdleHandler> idle_handler_;
+
+  // Task runner for file cleanup and re-install demo mode resource at the end
+  // of shopper sessions.
+  scoped_refptr<base::SequencedTaskRunner> blocking_task_runner_;
 
   base::WeakPtrFactory<DemoSession> weak_ptr_factory_{this};
 };

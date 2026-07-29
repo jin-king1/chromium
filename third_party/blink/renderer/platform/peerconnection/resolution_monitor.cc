@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "third_party/blink/renderer/platform/peerconnection/resolution_monitor.h"
 
@@ -19,11 +15,9 @@
 #include "media/base/decoder_buffer.h"
 #include "media/parsers/vp8_parser.h"
 #include "media/parsers/vp9_parser.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 #include "third_party/libgav1/src/src/buffer_pool.h"
 #include "third_party/libgav1/src/src/decoder_state.h"
 #include "third_party/libgav1/src/src/obu_parser.h"
-#include "third_party/webrtc/api/array_view.h"
 #include "third_party/webrtc/common_video/h264/h264_common.h"
 #include "third_party/webrtc/common_video/h264/sps_parser.h"
 
@@ -42,7 +36,7 @@ class Vp8ResolutionMonitor : public ResolutionMonitor {
 
     media::Vp8Parser parser;
     media::Vp8FrameHeader frame_header;
-    if (!parser.ParseFrame(buffer.data(), buffer.size(), &frame_header)) {
+    if (!parser.ParseFrame(buffer, &frame_header)) {
       DLOG(ERROR) << "Failed to parse vp8 stream";
       current_resolution_ = std::nullopt;
     } else {
@@ -61,7 +55,7 @@ class Vp8ResolutionMonitor : public ResolutionMonitor {
 
 class Vp9ResolutionMonitor : public ResolutionMonitor {
  public:
-  Vp9ResolutionMonitor() : parser_(/*parsing_compressed_header=*/false) {}
+  Vp9ResolutionMonitor() = default;
 
   ~Vp9ResolutionMonitor() override = default;
 
@@ -71,8 +65,9 @@ class Vp9ResolutionMonitor : public ResolutionMonitor {
     if (buffer.side_data()) {
       frame_sizes = buffer.side_data()->spatial_layers;
     }
-    parser_.SetStream(buffer.data(), base::checked_cast<off_t>(buffer.size()),
-                      frame_sizes, /*stream_config=*/nullptr);
+
+    parser_.SetStream(buffer, frame_sizes,
+                      /*stream_config=*/nullptr);
 
     gfx::Size frame_size;
     bool parse_error = false;
@@ -127,9 +122,10 @@ class Av1ResolutionMonitor : public ResolutionMonitor {
 
   std::optional<gfx::Size> GetResolution(
       const media::DecoderBuffer& buffer) override {
+    auto buffer_span = base::span(buffer);
     auto parser = base::WrapUnique(new (std::nothrow) libgav1::ObuParser(
-        buffer.data(), buffer.size(), kDefaultOperatingPoint, &buffer_pool_,
-        &decoder_state_));
+        buffer_span.data(), buffer_span.size(), kDefaultOperatingPoint,
+        &buffer_pool_, &decoder_state_));
     if (current_sequence_header_) {
       parser->set_sequence_header(*current_sequence_header_);
     }
@@ -240,22 +236,22 @@ class H264ResolutionMonitor : public ResolutionMonitor {
     }
 
     std::optional<gfx::Size> resolution;
-    rtc::ArrayView<const uint8_t> webrtc_buffer(buffer);
+    base::span<const uint8_t> buffer_span(buffer);
     std::vector<webrtc::H264::NaluIndex> nalu_indices =
-        webrtc::H264::FindNaluIndices(webrtc_buffer);
+        webrtc::H264::FindNaluIndices(buffer_span);
     for (const auto& nalu_index : nalu_indices) {
       if (nalu_index.payload_size < webrtc::H264::kNaluTypeSize) {
         DLOG(ERROR) << "H.264 SPS NALU size too small for parsing NALU type.";
         return std::nullopt;
       }
-      auto nalu_payload = webrtc_buffer.subview(nalu_index.payload_start_offset,
-                                                nalu_index.payload_size);
+      auto nalu_payload = buffer_span.subspan(nalu_index.payload_start_offset,
+                                              nalu_index.payload_size);
       if (webrtc::H264::ParseNaluType(nalu_payload[0]) ==
           webrtc::H264::NaluType::kSps) {
         // Parse without NALU header.
         std::optional<webrtc::SpsParser::SpsState> sps =
             webrtc::SpsParser::ParseSps(
-                nalu_payload.subview(webrtc::H264::kNaluTypeSize));
+                nalu_payload.subspan(webrtc::H264::kNaluTypeSize));
         if (!sps || !sps->width || !sps->height) {
           DLOG(ERROR) << "Failed parsing H.264 SPS.";
           return std::nullopt;

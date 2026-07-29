@@ -4,8 +4,12 @@
 
 package org.chromium.chrome.browser.safety_check;
 
-import androidx.annotation.IntDef;
+import android.view.View;
 
+import androidx.annotation.IntDef;
+import androidx.preference.Preference;
+
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.PropertyModel.WritableIntPropertyKey;
@@ -15,6 +19,7 @@ import org.chromium.ui.modelutil.PropertyModel.WritableObjectPropertyKey;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 
+@NullMarked
 class SafetyCheckProperties {
     /** State of the Safe Browsing check, one of the {@link SafeBrowsingState} values. */
     static final WritableIntPropertyKey SAFE_BROWSING_STATE = new WritableIntPropertyKey();
@@ -23,15 +28,16 @@ class SafetyCheckProperties {
     static final WritableIntPropertyKey UPDATES_STATE = new WritableIntPropertyKey();
 
     /** Listener for the Safe Browsing element click events. */
-    static final WritableObjectPropertyKey SAFE_BROWSING_CLICK_LISTENER =
-            new WritableObjectPropertyKey();
+    static final WritableObjectPropertyKey<Preference.OnPreferenceClickListener>
+            SAFE_BROWSING_CLICK_LISTENER = new WritableObjectPropertyKey<>();
 
     /** Listener for the updates element click events. */
-    static final WritableObjectPropertyKey UPDATES_CLICK_LISTENER = new WritableObjectPropertyKey();
+    static final WritableObjectPropertyKey<Preference.OnPreferenceClickListener>
+            UPDATES_CLICK_LISTENER = new WritableObjectPropertyKey<>();
 
     /** Listener for Safety check button click events. */
-    static final WritableObjectPropertyKey SAFETY_CHECK_BUTTON_CLICK_LISTENER =
-            new WritableObjectPropertyKey();
+    static final WritableObjectPropertyKey<View.OnClickListener>
+            SAFETY_CHECK_BUTTON_CLICK_LISTENER = new WritableObjectPropertyKey<>();
 
     /** Timestamp of the last run, a Long object. */
     static final WritableLongPropertyKey LAST_RUN_TIMESTAMP = new WritableLongPropertyKey();

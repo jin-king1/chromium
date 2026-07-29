@@ -19,6 +19,7 @@
 #include "build/chromeos_buildflags.h"
 #include "cc/base/completion_event.h"
 #include "cc/base/devtools_instrumentation.h"
+#include "cc/base/features.h"
 #include "cc/benchmarks/benchmark_instrumentation.h"
 #include "cc/input/browser_controls_offset_manager.h"
 #include "cc/input/browser_controls_offset_tag_modifications.h"
@@ -27,11 +28,12 @@
 #include "cc/resources/ui_resource_manager.h"
 #include "cc/scheduler/commit_earlyout_reason.h"
 #include "cc/scheduler/scheduler.h"
+#include "cc/trees/client_layer_tree_host_impl.h"
 #include "cc/trees/compositor_commit_data.h"
 #include "cc/trees/latency_info_swap_promise.h"
 #include "cc/trees/layer_tree_frame_sink.h"
 #include "cc/trees/layer_tree_host.h"
-#include "cc/trees/layer_tree_host_single_thread_client.h"
+#include "cc/trees/layer_tree_host_single_thread_delegate.h"
 #include "cc/trees/layer_tree_impl.h"
 #include "cc/trees/mutator_host.h"
 #include "cc/trees/paint_holding_reason.h"
@@ -40,22 +42,30 @@
 #include "components/viz/common/frame_sinks/delay_based_time_source.h"
 #include "components/viz/common/frame_timing_details.h"
 #include "components/viz/common/gpu/raster_context_provider.h"
+#include "third_party/perfetto/include/perfetto/tracing/track.h"
 
 namespace cc {
 
+namespace {
+perfetto::NamedTrack GetTracingTrack(const SingleThreadProxy* proxy) {
+  return perfetto::NamedTrack::FromPointer("cc::SingleThreadProxy", proxy);
+}
+}  // namespace
+
 std::unique_ptr<Proxy> SingleThreadProxy::Create(
     LayerTreeHost* layer_tree_host,
-    LayerTreeHostSingleThreadClient* client,
+    LayerTreeHostSingleThreadDelegate* delegate,
     TaskRunnerProvider* task_runner_provider) {
   return base::WrapUnique(
-      new SingleThreadProxy(layer_tree_host, client, task_runner_provider));
+      new SingleThreadProxy(layer_tree_host, delegate, task_runner_provider));
 }
 
-SingleThreadProxy::SingleThreadProxy(LayerTreeHost* layer_tree_host,
-                                     LayerTreeHostSingleThreadClient* client,
-                                     TaskRunnerProvider* task_runner_provider)
+SingleThreadProxy::SingleThreadProxy(
+    LayerTreeHost* layer_tree_host,
+    LayerTreeHostSingleThreadDelegate* delegate,
+    TaskRunnerProvider* task_runner_provider)
     : layer_tree_host_(layer_tree_host),
-      single_thread_client_(client),
+      single_thread_delegate_(delegate),
       task_runner_provider_(task_runner_provider),
       next_frame_is_newly_committed_frame_(false),
 #if DCHECK_IS_ON()
@@ -94,9 +104,7 @@ void SingleThreadProxy::Start() {
     scheduler_settings.commit_to_active_tree = true;
 
     std::unique_ptr<CompositorTimingHistory> compositor_timing_history(
-        new CompositorTimingHistory(
-            CompositorTimingHistory::BROWSER_UMA,
-            layer_tree_host_->rendering_stats_instrumentation()));
+        new CompositorTimingHistory(CompositorTimingHistory::BROWSER_UMA));
     scheduler_on_impl_thread_ = std::make_unique<Scheduler>(
         this, scheduler_settings, layer_tree_host_->GetId(),
         task_runner_provider_->MainThreadTaskRunner(),
@@ -180,7 +188,7 @@ void SingleThreadProxy::SetLayerTreeFrameSink(
       DebugScopedSetImplThread impl(task_runner_provider_);
       scheduler_on_impl_thread_->DidCreateAndInitializeLayerTreeFrameSink();
     } else if (!inside_synchronous_composite_) {
-      SetNeedsCommit();
+      SetNeedsCommit(false);
     }
     layer_tree_frame_sink_creation_requested_ = false;
     layer_tree_frame_sink_lost_ = false;
@@ -192,7 +200,7 @@ void SingleThreadProxy::SetLayerTreeFrameSink(
   }
 }
 
-void SingleThreadProxy::SetNeedsAnimate(bool urgent) {
+void SingleThreadProxy::SetNeedsAnimate(BeginMainFrameReason, bool urgent) {
   TRACE_EVENT0("cc", "SingleThreadProxy::SetNeedsAnimate");
   DCHECK(task_runner_provider_->IsMainThread());
   if (animate_requested_)
@@ -298,14 +306,14 @@ void SingleThreadProxy::CommitComplete() {
   next_frame_is_newly_committed_frame_ = true;
 }
 
-void SingleThreadProxy::SetNeedsCommit() {
+void SingleThreadProxy::SetNeedsCommit(bool urgent) {
   DCHECK(task_runner_provider_->IsMainThread());
   if (commit_requested_)
     return;
   commit_requested_ = true;
   DebugScopedSetImplThread impl(task_runner_provider_);
   if (scheduler_on_impl_thread_)
-    scheduler_on_impl_thread_->SetNeedsBeginMainFrame(/* urgent = */ false);
+    scheduler_on_impl_thread_->SetNeedsBeginMainFrame(urgent);
 }
 
 void SingleThreadProxy::SetNeedsRedraw(const gfx::Rect& damage_rect) {
@@ -323,6 +331,31 @@ void SingleThreadProxy::SetTargetLocalSurfaceId(
     return;
   DebugScopedSetImplThread impl(task_runner_provider_);
   host_impl_->SetTargetLocalSurfaceId(target_local_surface_id);
+}
+
+void SingleThreadProxy::SetUnboundedFrameSink(
+    std::unique_ptr<LayerTreeFrameSink> unbounded_frame_sink,
+    const viz::LocalSurfaceId& local_surface_id) {
+  DCHECK(task_runner_provider_->IsMainThread());
+  DCHECK(layer_tree_host_->GetSettings().enable_unbounded_element);
+  DebugScopedSetImplThread impl(task_runner_provider_);
+  host_impl_->SetUnboundedFrameSink(std::move(unbounded_frame_sink),
+                                    local_surface_id);
+}
+
+void SingleThreadProxy::DismissUnboundedFrameSink() {
+  DCHECK(task_runner_provider_->IsMainThread());
+  DCHECK(layer_tree_host_->GetSettings().enable_unbounded_element);
+  DebugScopedSetImplThread impl(task_runner_provider_);
+  host_impl_->DismissUnboundedFrameSink();
+}
+
+void SingleThreadProxy::SetUnboundedLocalSurfaceId(
+    const viz::LocalSurfaceId& local_surface_id) {
+  DCHECK(task_runner_provider_->IsMainThread());
+  DCHECK(layer_tree_host_->GetSettings().enable_unbounded_element);
+  DebugScopedSetImplThread impl(task_runner_provider_);
+  host_impl_->SetUnboundedLocalSurfaceId(local_surface_id);
 }
 
 void SingleThreadProxy::DetachInputDelegateAndRenderFrameObserver() {
@@ -347,13 +380,11 @@ void SingleThreadProxy::SetDeferMainFrameUpdate(bool defer_main_frame_update) {
     return;
 
   if (defer_main_frame_update) {
-    TRACE_EVENT_NESTABLE_ASYNC_BEGIN0(
-        "cc", "SingleThreadProxy::SetDeferMainFrameUpdate",
-        TRACE_ID_LOCAL(this));
+    TRACE_EVENT_BEGIN("cc", "SingleThreadProxy::SetDeferMainFrameUpdate",
+                      GetTracingTrack(this));
   } else {
-    TRACE_EVENT_NESTABLE_ASYNC_END0(
-        "cc", "SingleThreadProxy::SetDeferMainFrameUpdate",
-        TRACE_ID_LOCAL(this));
+    TRACE_EVENT_END("cc", /*"SingleThreadProxy::SetDeferMainFrameUpdate"*/
+                    GetTracingTrack(this));
   }
 
   defer_main_frame_update_ = defer_main_frame_update;
@@ -366,7 +397,8 @@ void SingleThreadProxy::SetDeferMainFrameUpdate(bool defer_main_frame_update) {
   scheduler_on_impl_thread_->SetDeferBeginMainFrame(defer_main_frame_update_);
 }
 
-void SingleThreadProxy::SetPauseRendering(bool pause_rendering) {
+void SingleThreadProxy::SetPauseRendering(bool pause_rendering,
+                                          bool delay_until_visibility_change) {
   DCHECK(task_runner_provider_->IsMainThread());
   // Pause updates only makes sense if there's a scheduler. In synchronous mode,
   // the client controls when a frame is produced.
@@ -377,11 +409,11 @@ void SingleThreadProxy::SetPauseRendering(bool pause_rendering) {
 
   pause_rendering_ = pause_rendering;
   if (pause_rendering_) {
-    TRACE_EVENT_NESTABLE_ASYNC_BEGIN0(
-        "cc", "SingleThreadProxy::SetPauseRendering", TRACE_ID_LOCAL(this));
+    TRACE_EVENT_BEGIN("cc", "SingleThreadProxy::SetPauseRendering",
+                      GetTracingTrack(this));
   } else {
-    TRACE_EVENT_NESTABLE_ASYNC_END0(
-        "cc", "SingleThreadProxy::SetPauseRendering", TRACE_ID_LOCAL(this));
+    TRACE_EVENT_END("cc", /*"SingleThreadProxy::SetPauseRendering"*/
+                    GetTracingTrack(this));
   }
 
   // The scheduler needs to know that it should not issue BeginFrame.
@@ -400,31 +432,29 @@ bool SingleThreadProxy::StartDeferringCommits(base::TimeDelta timeout,
   if (IsDeferringCommits())
     return false;
 
-  TRACE_EVENT_NESTABLE_ASYNC_BEGIN0("cc", "SingleThreadProxy::SetDeferCommits",
-                                    TRACE_ID_LOCAL(this));
+  TRACE_EVENT_BEGIN("cc", "SingleThreadProxy::SetDeferCommits",
+                    GetTracingTrack(this));
 
   paint_holding_reason_ = reason;
   commits_restart_time_ = base::TimeTicks::Now() + timeout;
 
   // Notify dependent systems that the deferral status has changed.
-  layer_tree_host_->OnDeferCommitsChanged(true, reason, std::nullopt);
+  layer_tree_host_->OnDeferCommitsChanged(true, reason);
   return true;
 }
 
-void SingleThreadProxy::StopDeferringCommits(
-    PaintHoldingCommitTrigger trigger) {
+void SingleThreadProxy::StopDeferringCommits() {
   DCHECK(task_runner_provider_->IsMainThread());
   if (!IsDeferringCommits())
     return;
   auto reason = *paint_holding_reason_;
   paint_holding_reason_.reset();
   commits_restart_time_ = base::TimeTicks();
-  UMA_HISTOGRAM_ENUMERATION("PaintHolding.CommitTrigger2", trigger);
-  TRACE_EVENT_NESTABLE_ASYNC_END0("cc", "SingleThreadProxy::SetDeferCommits",
-                                  TRACE_ID_LOCAL(this));
+  TRACE_EVENT_END("cc", /*"SingleThreadProxy::SetDeferCommits"*/
+                  GetTracingTrack(this));
 
   // Notify dependent systems that the deferral status has changed.
-  layer_tree_host_->OnDeferCommitsChanged(false, reason, trigger);
+  layer_tree_host_->OnDeferCommitsChanged(false, reason);
 }
 
 bool SingleThreadProxy::IsDeferringCommits() const {
@@ -444,13 +474,20 @@ void SingleThreadProxy::Stop() {
     DebugScopedSetMainThreadBlocked main_thread_blocked(task_runner_provider_);
     DebugScopedSetImplThread impl(task_runner_provider_);
 
-    // Prevent the scheduler from performing actions while we're in an
+    // Prevent the scheduler from performing scheduled actions while we're in an
     // inconsistent state.
     if (scheduler_on_impl_thread_)
       scheduler_on_impl_thread_->Stop();
+
     // Take away the LayerTreeFrameSink before destroying things so it doesn't
     // try to call into its client mid-shutdown.
     host_impl_->ReleaseLayerTreeFrameSink();
+
+    // The `Scheduler` has a raw_ptr to the CompositorFrameReportingController
+    // that is owned by the LTHI.
+    if (scheduler_on_impl_thread_) {
+      scheduler_on_impl_thread_->TearDown();
+    }
 
     // It is important to destroy LTHI before the Scheduler since it can make
     // callbacks that access it during destruction cleanup.
@@ -461,10 +498,11 @@ void SingleThreadProxy::Stop() {
 }
 
 void SingleThreadProxy::QueueImageDecode(int request_id,
-                                         const DrawImage& image) {
+                                         const DrawImage& image,
+                                         bool speculative) {
   DCHECK(task_runner_provider_->IsMainThread());
   DebugScopedSetImplThread impl(task_runner_provider_);
-  host_impl_->QueueImageDecode(request_id, image);
+  host_impl_->QueueImageDecode(request_id, image, speculative);
 }
 
 void SingleThreadProxy::SetMutator(std::unique_ptr<LayerTreeMutator> mutator) {
@@ -523,7 +561,7 @@ void SingleThreadProxy::SetNeedsOneBeginImplFrameOnImplThread() {
          task_runner_provider_->IsImplThread());
   TRACE_EVENT0("cc",
                "SingleThreadProxy::SetNeedsOneBeginImplFrameOnImplThread");
-  single_thread_client_->ScheduleAnimationForWebTests();
+  single_thread_delegate_->ScheduleAnimationForWebTests();
   if (scheduler_on_impl_thread_)
     scheduler_on_impl_thread_->SetNeedsOneBeginImplFrame();
   needs_impl_frame_ = true;
@@ -537,10 +575,11 @@ void SingleThreadProxy::SetNeedsPrepareTilesOnImplThread() {
     scheduler_on_impl_thread_->SetNeedsPrepareTiles();
 }
 
-void SingleThreadProxy::SetNeedsCommitOnImplThread(bool urgent) {
+void SingleThreadProxy::SetNeedsCommitOnImplThread(BeginMainFrameReason reason,
+                                                   bool urgent) {
   DCHECK(!task_runner_provider_->HasImplThread() ||
          task_runner_provider_->IsImplThread());
-  single_thread_client_->ScheduleAnimationForWebTests();
+  single_thread_delegate_->ScheduleAnimationForWebTests();
   if (scheduler_on_impl_thread_)
     scheduler_on_impl_thread_->SetNeedsBeginMainFrame(urgent);
   commit_requested_ = true;
@@ -555,6 +594,8 @@ void SingleThreadProxy::SetVideoNeedsBeginFrames(bool needs_begin_frames) {
   if (scheduler_on_impl_thread_)
     scheduler_on_impl_thread_->SetVideoNeedsBeginFrames(needs_begin_frames);
 }
+
+void SingleThreadProxy::DidChangeBeginFrameSourcePaused(bool paused) {}
 
 bool SingleThreadProxy::IsInsideDraw() {
   DCHECK(!task_runner_provider_->HasImplThread() ||
@@ -604,7 +645,7 @@ void SingleThreadProxy::DidLoseLayerTreeFrameSinkOnImplThread() {
     // This must happen before we notify the scheduler as it may try to recreate
     // the output surface if already in BEGIN_IMPL_FRAME_STATE_IDLE.
     layer_tree_host_->DidLoseLayerTreeFrameSink();
-    single_thread_client_->DidLoseLayerTreeFrameSink();
+    single_thread_delegate_->DidLoseLayerTreeFrameSink();
   }
   if (scheduler_on_impl_thread_)
     scheduler_on_impl_thread_->DidLoseLayerTreeFrameSink();
@@ -653,6 +694,7 @@ void SingleThreadProxy::SetNeedsImplSideInvalidation(
 
 void SingleThreadProxy::NotifyImageDecodeRequestFinished(
     int request_id,
+    bool speculative,
     bool decode_succeeded) {
   DCHECK(!task_runner_provider_->HasImplThread() ||
          task_runner_provider_->IsImplThread());
@@ -667,7 +709,8 @@ void SingleThreadProxy::NotifyImageDecodeRequestFinished(
       DebugScopedSetMainThread main_thread(task_runner_provider_);
       IssueImageDecodeFinishedCallbacks();
     } else {
-      SetNeedsCommitOnImplThread(/* urgent = */ false);
+      SetNeedsCommitOnImplThread(BeginMainFrameReason::kOther,
+                                 /* urgent = */ false);
     }
   }
 }
@@ -739,16 +782,11 @@ void SingleThreadProxy::FrameSinksToThrottleUpdated(
     const base::flat_set<viz::FrameSinkId>& ids) {
   DCHECK(!task_runner_provider_->HasImplThread() ||
          task_runner_provider_->IsImplThread());
-  single_thread_client_->FrameSinksToThrottleUpdated(ids);
+  single_thread_delegate_->FrameSinksToThrottleUpdated(ids);
 }
 
 void SingleThreadProxy::RequestBeginMainFrameNotExpected(bool new_state) {
   DCHECK(task_runner_provider_->IsMainThread());
-  if (scheduler_on_impl_thread_) {
-    DebugScopedSetImplThread impl(task_runner_provider_);
-    scheduler_on_impl_thread_->SetMainThreadWantsBeginMainFrameNotExpected(
-        new_state);
-  }
 }
 
 viz::BeginFrameArgs SingleThreadProxy::BeginImplFrameForTest(
@@ -805,11 +843,14 @@ void SingleThreadProxy::CompositeImmediatelyForTest(
     // Note: We do not want to prevent SetNeedsAnimate from requesting
     // a commit here.
     commit_requested_ = true;
-    StopDeferringCommits(PaintHoldingCommitTrigger::kFeatureDisabled);
+    if (base::FeatureList::IsEnabled(
+            features::kStopDeferringCommitsInCompositeForTest)) {
+      StopDeferringCommits();
+    }
     layer_tree_host_->RecordStartOfFrameMetrics();
     DoBeginMainFrame(begin_frame_args);
     commit_requested_ = false;
-    DoPainting(begin_frame_args);
+    DoPainting();
     layer_tree_host_->RecordEndOfFrameMetrics(frame_begin_time,
                                               /* trackers */ 0u);
     DoCommit(begin_frame_args);
@@ -834,7 +875,7 @@ void SingleThreadProxy::CompositeImmediatelyForTest(
     host_impl_->Animate();
 
     if (raster) {
-      LayerTreeHostImpl::FrameData frame;
+      FrameData frame;
       frame.begin_frame_ack = viz::BeginFrameAck(begin_frame_args, true);
       frame.origin_begin_main_frame_args = begin_frame_args;
       DoComposite(&frame);
@@ -867,7 +908,7 @@ void SingleThreadProxy::ScheduleRequestNewLayerTreeFrameSink() {
   }
 }
 
-DrawResult SingleThreadProxy::DoComposite(LayerTreeHostImpl::FrameData* frame) {
+DrawResult SingleThreadProxy::DoComposite(FrameData* frame) {
   TRACE_EVENT0("cc", "SingleThreadProxy::DoComposite");
 
   DrawResult draw_result;
@@ -903,7 +944,7 @@ DrawResult SingleThreadProxy::DoComposite(LayerTreeHostImpl::FrameData* frame) {
           scheduler_on_impl_thread_->DidSubmitCompositorFrame(
               submit_info.value());
         }
-        single_thread_client_->DidSubmitCompositorFrame();
+        single_thread_delegate_->DidSubmitCompositorFrame();
       }
     }
     host_impl_->DidDrawAllLayers(*frame);
@@ -939,16 +980,6 @@ void SingleThreadProxy::SetSourceURL(ukm::SourceId source_id, const GURL& url) {
   // need to record UKM in that case.
 }
 
-void SingleThreadProxy::SetUkmSmoothnessDestination(
-    base::WritableSharedMemoryMapping ukm_smoothness_data) {
-  DCHECK(task_runner_provider_->IsMainThread());
-}
-
-void SingleThreadProxy::SetUkmDroppedFramesDestination(
-    base::WritableSharedMemoryMapping ukm_smoothness_data) {
-  DCHECK(task_runner_provider_->IsMainThread());
-}
-
 void SingleThreadProxy::ClearHistory() {
   DCHECK(task_runner_provider_->IsImplThread());
   if (scheduler_on_impl_thread_)
@@ -974,6 +1005,15 @@ void SingleThreadProxy::SetWaitingForScrollEvent(
   }
 }
 
+bool SingleThreadProxy::IsRenderingPaused() const {
+  return pause_rendering_;
+}
+
+void SingleThreadProxy::NotifyNewLocalSurfaceIdExpectedWhilePaused() {
+  DebugScopedSetImplThread impl(task_runner_provider_);
+  host_impl_->NotifyNewLocalSurfaceIdExpectedWhilePaused();
+}
+
 size_t SingleThreadProxy::CommitDurationSampleCountForTesting() const {
   DCHECK(scheduler_on_impl_thread_);
   return scheduler_on_impl_thread_
@@ -987,10 +1027,9 @@ void SingleThreadProxy::SetRenderFrameObserver(
   host_impl_->SetRenderFrameObserver(std::move(observer));
 }
 
-double SingleThreadProxy::GetPercentDroppedFrames() const {
+double SingleThreadProxy::GetAverageThroughput() const {
   DebugScopedSetImplThread impl(task_runner_provider_);
-  return host_impl_->dropped_frame_counter()
-      ->sliding_window_current_percent_dropped();
+  return host_impl_->frame_sorter()->GetAverageThroughput();
 }
 
 void SingleThreadProxy::UpdateBrowserControlsState(
@@ -1039,28 +1078,11 @@ void SingleThreadProxy::ScheduledActionSendBeginMainFrame(
 
 void SingleThreadProxy::FrameIntervalUpdated(base::TimeDelta interval) {
   DebugScopedSetImplThread impl(task_runner_provider_);
-  single_thread_client_->FrameIntervalUpdated(interval);
+  single_thread_delegate_->FrameIntervalUpdated(interval);
 }
 
 void SingleThreadProxy::OnBeginImplFrameDeadline() {
   host_impl_->OnBeginImplFrameDeadline();
-}
-
-void SingleThreadProxy::SendBeginMainFrameNotExpectedSoon() {
-  // DebugScopedSetImplThread here is just a formality; all SchedulerClient
-  // methods should have it.
-  DebugScopedSetImplThread impl(task_runner_provider_);
-  DebugScopedSetMainThread main(task_runner_provider_);
-  layer_tree_host_->BeginMainFrameNotExpectedSoon();
-}
-
-void SingleThreadProxy::ScheduledActionBeginMainFrameNotExpectedUntil(
-    base::TimeTicks time) {
-  // DebugScopedSetImplThread here is just a formality; all SchedulerClient
-  // methods should have it.
-  DebugScopedSetImplThread impl(task_runner_provider_);
-  DebugScopedSetMainThread main(task_runner_provider_);
-  layer_tree_host_->BeginMainFrameNotExpectedUntil(time);
 }
 
 void SingleThreadProxy::BeginMainFrame(
@@ -1082,15 +1104,14 @@ void SingleThreadProxy::BeginMainFrame(
   update_layers_requested_ = false;
 
   if (defer_main_frame_update_) {
-    TRACE_EVENT_INSTANT0("cc", "EarlyOut_DeferBeginMainFrame",
-                         TRACE_EVENT_SCOPE_THREAD);
+    TRACE_EVENT_INSTANT("cc", "EarlyOut_DeferBeginMainFrame");
     BeginMainFrameAbortedOnImplThread(
         CommitEarlyOutReason::kAbortedDeferredMainFrameUpdate);
     return;
   }
 
   if (!layer_tree_host_->IsVisible()) {
-    TRACE_EVENT_INSTANT0("cc", "EarlyOut_NotVisible", TRACE_EVENT_SCOPE_THREAD);
+    TRACE_EVENT_INSTANT("cc", "EarlyOut_NotVisible");
 
     // Since the commit is deferred due to the page becoming invisible, the
     // metrics are not meaningful anymore (as the page might become visible in
@@ -1111,7 +1132,7 @@ void SingleThreadProxy::BeginMainFrame(
   // DoBeginMainFrame because the latter updates scroll offsets, which
   // we should avoid if deferring commits.
   if (IsDeferringCommits() && frame_start_time > commits_restart_time_)
-    StopDeferringCommits(ReasonToTimeoutTrigger(*paint_holding_reason_));
+    StopDeferringCommits();
 
   layer_tree_host_->RecordStartOfFrameMetrics();
   DoBeginMainFrame(begin_frame_args);
@@ -1123,8 +1144,7 @@ void SingleThreadProxy::BeginMainFrame(
   // right now.
   if (defer_main_frame_update_ || IsDeferringCommits() ||
       begin_frame_args.animate_only) {
-    TRACE_EVENT_INSTANT0("cc", "EarlyOut_DeferCommit_InsideBeginMainFrame",
-                         TRACE_EVENT_SCOPE_THREAD);
+    TRACE_EVENT_INSTANT("cc", "EarlyOut_DeferCommit_InsideBeginMainFrame");
     BeginMainFrameAbortedOnImplThread(
         CommitEarlyOutReason::kAbortedDeferredCommit);
     layer_tree_host_->RecordEndOfFrameMetrics(frame_start_time,
@@ -1133,7 +1153,7 @@ void SingleThreadProxy::BeginMainFrame(
     return;
   }
 
-  DoPainting(begin_frame_args);
+  DoPainting();
   layer_tree_host_->RecordEndOfFrameMetrics(frame_start_time,
                                             /* trackers */ 0u);
 }
@@ -1172,14 +1192,13 @@ void SingleThreadProxy::DoBeginMainFrame(
   did_apply_compositor_deltas_ = false;
 }
 
-void SingleThreadProxy::DoPainting(const viz::BeginFrameArgs& commit_args) {
+void SingleThreadProxy::DoPainting() {
   layer_tree_host_->UpdateLayers();
   update_layers_requested_ = false;
 
   std::unique_ptr<BeginMainFrameMetrics> begin_main_frame_metrics =
       layer_tree_host_->TakeBeginMainFrameMetrics();
-  host_impl_->ReadyToCommit(commit_args,
-                            /*scroll_and_viewport_changes_synced=*/true,
+  host_impl_->ReadyToCommit(/*scroll_and_viewport_changes_synced=*/true,
                             begin_main_frame_metrics.get(),
                             /*commit_timeout=*/false);
 
@@ -1208,7 +1227,7 @@ void SingleThreadProxy::BeginMainFrameAbortedOnImplThread(
 
 DrawResult SingleThreadProxy::ScheduledActionDrawIfPossible() {
   DebugScopedSetImplThread impl(task_runner_provider_);
-  LayerTreeHostImpl::FrameData frame;
+  FrameData frame;
   frame.begin_frame_ack =
       scheduler_on_impl_thread_->CurrentBeginFrameAckForActiveTree();
   frame.origin_begin_main_frame_args =
@@ -1310,5 +1329,6 @@ void SingleThreadProxy::DidReceiveCompositorFrameAck() {
   DebugScopedSetMainThread main(task_runner_provider_);
   layer_tree_host_->DidReceiveCompositorFrameAckDeprecatedForCompositor();
 }
+
 
 }  // namespace cc

@@ -41,6 +41,9 @@ class SVGScriptElement final : public SVGElement,
 
  public:
   SVGScriptElement(Document&, const CreateElementFlags);
+  ElementType GetElementType() const final {
+    return ElementType::kSVGScriptElement;
+  }
 
   ScriptLoader* Loader() const final { return loader_.Get(); }
 
@@ -57,6 +60,9 @@ class SVGScriptElement final : public SVGElement,
 
   void Trace(Visitor*) const override;
 
+  void setAsync(bool);
+  bool async() const;
+
  private:
   void ParseAttribute(const AttributeModificationParams&) override;
   InsertionNotificationRequest InsertedInto(ContainerNode&) override;
@@ -71,7 +77,6 @@ class SVGScriptElement final : public SVGElement,
   bool HaveLoadedRequiredResources() override;
 
   // ScriptElementBase overrides:
-  bool AsyncAttributeValue() const override { return false; }
   String CharsetAttributeValue() const override { return String(); }
   String CrossOriginAttributeValue() const override { return String(); }
   bool DeferAttributeValue() const override { return false; }
@@ -83,12 +88,13 @@ class SVGScriptElement final : public SVGElement,
   String FetchPriorityAttributeValue() const override { return String(); }
   String LanguageAttributeValue() const override { return String(); }
   bool NomoduleAttributeValue() const override { return false; }
+  bool AsyncAttributeValue() const override;
   String SourceAttributeValue() const override;
   String TypeAttributeValue() const override;
+  String CacheHintAttributeValue() const override { return String(); }
   String ChildTextContent() override;
   String ScriptTextInternalSlot() const override;
   bool HasSourceAttribute() const override;
-  bool HasAttributionsrcAttribute() const override { return false; }
   bool IsConnected() const override;
   bool HasChildren() const override;
   const AtomicString& GetNonceForElement() const override;
@@ -97,7 +103,7 @@ class SVGScriptElement final : public SVGElement,
   }
   bool IsPotentiallyRenderBlocking() const override { return false; }
   bool AllowInlineScriptForCSP(const AtomicString& nonce,
-                               const WTF::OrdinalNumber&,
+                               const OrdinalNumber&,
                                const String& script_content) override;
   Document& GetDocument() const override;
   ExecutionContext* GetExecutionContext() const override;
@@ -106,7 +112,8 @@ class SVGScriptElement final : public SVGElement,
 
   Type GetScriptElementType() override;
 
-  Element& CloneWithoutAttributesAndChildren(Document&) const override;
+  Element& CloneWithoutAttributesAndChildren(Document&, CustomElementRegistry*)
+      const override;
   bool LayoutObjectIsNeeded(const DisplayStyle&) const override {
     return false;
   }

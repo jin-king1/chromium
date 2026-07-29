@@ -8,6 +8,7 @@
 #include <memory>
 
 #include "base/callback_list.h"
+#include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/ash/login/help_app_launcher.h"
 #include "chrome/browser/ash/login/screens/base_screen.h"
@@ -16,6 +17,8 @@
 #include "chrome/browser/ui/webui/ash/login/network_state_informer.h"
 #include "chromeos/ash/components/network/network_connection_observer.h"
 #include "components/web_modal/web_contents_modal_dialog_manager_delegate.h"
+
+class PrefService;
 
 namespace ash {
 
@@ -26,7 +29,9 @@ class ErrorScreenView;
 class ErrorScreen : public BaseScreen,
                     public NetworkConnectionObserver {
  public:
-  explicit ErrorScreen(base::WeakPtr<ErrorScreenView> view);
+  // `local_state` must be non-null and must outlive `this`.
+  ErrorScreen(const PrefService* local_state,
+              base::WeakPtr<ErrorScreenView> view);
 
   ErrorScreen(const ErrorScreen&) = delete;
   ErrorScreen& operator=(const ErrorScreen&) = delete;
@@ -95,21 +100,24 @@ class ErrorScreen : public BaseScreen,
   // been created.
   void MaybeInitCaptivePortalWindowProxy(content::WebContents* web_contents);
 
-  void ShowNetworkErrorMessage(NetworkStateInformer::State state,
-                               NetworkError::ErrorReason reason);
+  void ShowNetworkErrorMessage(
+      NetworkStateInformer::State state,
+      NetworkError::ErrorReason reason,
+      bool show_offline_login_option_if_allowed = true);
 
  protected:
   // BaseScreen:
   void ShowImpl() override;
   void HideImpl() override;
-  void OnUserAction(const base::Value::List& args) override;
+  void OnUserAction(const base::ListValue& args) override;
 
  private:
   // Handle user action to open captive portal page.
   void ShowCaptivePortal();
 
   // NetworkConnectionObserver overrides:
-  void ConnectToNetworkRequested(const std::string& service_path) override;
+  ConnectToNetworkRequestVerdict ConnectToNetworkRequested(
+      const std::string& service_path) override;
 
   // Default hide_closure for Hide().
   void DefaultHideCallback();
@@ -149,7 +157,11 @@ class ErrorScreen : public BaseScreen,
   void StartGuestSessionAfterOwnershipCheck(
       DeviceSettingsService::OwnershipStatus ownership_status);
 
+  const raw_ref<const PrefService> local_state_;
+
   bool is_persistent_ = false;
+
+  bool is_offline_login_link_shown_ = false;
 
   base::WeakPtr<ErrorScreenView> view_;
 

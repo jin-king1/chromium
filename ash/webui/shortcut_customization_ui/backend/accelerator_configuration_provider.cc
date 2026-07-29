@@ -18,9 +18,8 @@
 #include "ash/constants/ash_pref_names.h"
 #include "ash/public/cpp/accelerator_actions.h"
 #include "ash/public/cpp/accelerators_util.h"
-#include "ash/public/mojom/accelerator_configuration.mojom-shared.h"
+#include "ash/public/cpp/capture_mode/capture_mode_api.h"
 #include "ash/public/mojom/accelerator_configuration.mojom.h"
-#include "ash/public/mojom/accelerator_info.mojom-forward.h"
 #include "ash/public/mojom/accelerator_info.mojom-shared.h"
 #include "ash/public/mojom/accelerator_keys.mojom.h"
 #include "ash/quick_insert/quick_insert_controller.h"
@@ -29,12 +28,12 @@
 #include "ash/webui/shortcut_customization_ui/backend/accelerator_layout_table.h"
 #include "ash/webui/shortcut_customization_ui/mojom/shortcut_customization.mojom.h"
 #include "base/check.h"
-#include "base/containers/contains.h"
 #include "base/containers/fixed_flat_map.h"
 #include "base/containers/flat_map.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/user_metrics.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "components/prefs/pref_member.h"
 #include "mojo/public/cpp/bindings/clone_traits.h"
@@ -235,7 +234,7 @@ bool IsAcceleratorHidden(AcceleratorActionId action_id,
   const auto& iter = GetHiddenAcceleratorMap().find(action_id);
   if (iter != GetHiddenAcceleratorMap().end()) {
     const std::vector<ui::Accelerator>& hidden_accelerators = iter->second;
-    if (base::Contains(hidden_accelerators, accelerator)) {
+    if (std::ranges::contains(hidden_accelerators, accelerator)) {
       return true;
     }
   }
@@ -363,7 +362,7 @@ std::optional<AcceleratorConfigResult> ValidateAccelerator(
   }
 
   // Case: Reserved keys cannot be part of a custom accelerator.
-  if (base::Contains(kReservedKeys, accelerator.key_code())) {
+  if (std::ranges::contains(kReservedKeys, accelerator.key_code())) {
     VLOG(1) << "Failed to validate accelerator: "
             << accelerator.GetShortcutText() << " with error: "
             << static_cast<int>(AcceleratorConfigResult::kReservedKeyNotAllowed)
@@ -461,6 +460,8 @@ bool ShouldExcludeItem(const AcceleratorLayoutDetails& details) {
       return true;
     case kToggleCameraAllowed:
       return !features::IsToggleCameraShortcutEnabled();
+    case kStartSunfishSession:
+      return !CanShowSunfishOrScannerUi();
   }
 
   return false;
@@ -552,9 +553,7 @@ namespace shortcut_ui {
 
 AcceleratorConfigurationProvider::AcceleratorConfigurationProvider(
     PrefService* pref_service)
-    : ash_accelerator_configuration_(
-          Shell::Get()->ash_accelerator_configuration()),
-      sequenced_task_runner_(base::SequencedTaskRunner::GetCurrentDefault()) {
+    : sequenced_task_runner_(base::SequencedTaskRunner::GetCurrentDefault()) {
   // Observe keyboard input method changes.
   input_method::InputMethodManager::Get()->AddObserver(this);
 
@@ -564,26 +563,14 @@ AcceleratorConfigurationProvider::AcceleratorConfigurationProvider(
     Shell::Get()->accelerator_prefs()->AddObserver(this);
   }
 
-  if (features::IsInputDeviceSettingsSplitEnabled()) {
-    // `InputDeviceSettingsController` provides updates whenever a device is
-    // connected/disconnected or if its settings changed. In any of these cases,
-    // accelerators must be updated.
-    // Observer is removed on destruction of `InputDeviceSettingsController`,
-    // which happens before this class is destroyed.
-    Shell::Get()->input_device_settings_controller()->AddObserver(this);
-  } else {
-    // Observe connected keyboard events.
-    ui::DeviceDataManager::GetInstance()->AddObserver(this);
+  // `InputDeviceSettingsController` provides updates whenever a device is
+  // connected/disconnected or if its settings changed. In any of these cases,
+  // accelerators must be updated.
+  // Observer is removed on destruction of `InputDeviceSettingsController`,
+  // which happens before this class is destroyed.
+  Shell::Get()->input_device_settings_controller()->AddObserver(this);
 
-    send_function_keys_pref_ = std::make_unique<BooleanPrefMember>();
-    send_function_keys_pref_->Init(
-        ash::prefs::kSendFunctionKeys, pref_service,
-        base::BindRepeating(&AcceleratorConfigurationProvider::
-                                ScheduleNotifyAcceleratorsUpdated,
-                            base::Unretained(this)));
-  }
-
-  ash_accelerator_configuration_->AddAcceleratorsUpdatedCallback(
+  Shell::Get()->ash_accelerator_configuration()->AddAcceleratorsUpdatedCallback(
       base::BindRepeating(
           &AcceleratorConfigurationProvider::OnAcceleratorsUpdated,
           weak_ptr_factory_.GetWeakPtr()));
@@ -625,9 +612,7 @@ AcceleratorConfigurationProvider::~AcceleratorConfigurationProvider() {
   if (Shell::HasInstance()) {
     Shell::Get()->accelerator_controller()->SetPreventProcessingAccelerators(
         /*prevent_processing_accelerators=*/false);
-    if (features::IsInputDeviceSettingsSplitEnabled()) {
-      Shell::Get()->input_device_settings_controller()->RemoveObserver(this);
-    }
+    Shell::Get()->input_device_settings_controller()->RemoveObserver(this);
     if (Shell::Get()->accelerator_prefs()->IsUserEnterpriseManaged()) {
       Shell::Get()->accelerator_prefs()->RemoveObserver(this);
     }
@@ -640,7 +625,7 @@ void AcceleratorConfigurationProvider::IsMutable(
   bool is_mutable = false;
   switch (source) {
     case ash::mojom::AcceleratorSource::kAsh:
-      is_mutable = ash_accelerator_configuration_->IsMutable();
+      is_mutable = Shell::Get()->ash_accelerator_configuration()->IsMutable();
       break;
     case ash::mojom::AcceleratorSource::kBrowser:
     case ash::mojom::AcceleratorSource::kAmbient:
@@ -679,7 +664,7 @@ void AcceleratorConfigurationProvider::GetConflictAccelerator(
 
   // Validate the source and action.
   std::optional<AcceleratorConfigResult> error_result = ValidateSourceAndAction(
-      source, action_id, ash_accelerator_configuration_);
+      source, action_id, Shell::Get()->ash_accelerator_configuration());
   // `kActionLocked` from `ValidateSourceAndAction` indicates a non-ash source.
   // We still want to check the conflict in the case its from a non-ash source.
   if (error_result.has_value() &&
@@ -726,7 +711,8 @@ void AcceleratorConfigurationProvider::GetConflictAccelerator(
 
   // Check if the accelerator conflicts with an existing ash accelerator.
   const AcceleratorAction* found_ash_action =
-      ash_accelerator_configuration_->FindAcceleratorAction(accelerator);
+      Shell::Get()->ash_accelerator_configuration()->FindAcceleratorAction(
+          accelerator);
 
   // Conflict detected, return the conflict with an error.
   if (found_ash_action) {
@@ -861,9 +847,10 @@ void AcceleratorConfigurationProvider::AddAccelerator(
 
   // Validate the source and action, if no errors then validate the accelerator.
   std::optional<AcceleratorConfigResult> error_result = ValidateSourceAndAction(
-      source, action_id, ash_accelerator_configuration_);
+      source, action_id, Shell::Get()->ash_accelerator_configuration());
   if (!error_result.has_value() &&
-      !base::Contains(GetDefaultAcceleratorsForId(action_id), accelerator)) {
+      !std::ranges::contains(GetDefaultAcceleratorsForId(action_id),
+                             accelerator)) {
     error_result = ValidateAccelerator(accelerator);
   }
 
@@ -917,8 +904,9 @@ void AcceleratorConfigurationProvider::AddAccelerator(
 
   // Continue with adding the accelerator.
   pending_accelerator_.reset();
-  result_data->result = ash_accelerator_configuration_->AddUserAccelerator(
-      action_id, accelerator);
+  result_data->result =
+      Shell::Get()->ash_accelerator_configuration()->AddUserAccelerator(
+          action_id, accelerator);
   LogAddAccelerator(source, accelerator, result_data->result);
   base::UmaHistogramEnumeration(kShortcutCustomizationHistogramName,
                                 ShortcutCustomizationAction::kAddAccelerator);
@@ -944,7 +932,7 @@ void AcceleratorConfigurationProvider::RemoveAccelerator(
 
   std::optional<AcceleratorConfigResult> validated_source_action_result =
       ValidateSourceAndAction(source, action_id,
-                              ash_accelerator_configuration_);
+                              Shell::Get()->ash_accelerator_configuration());
   if (validated_source_action_result.has_value()) {
     result_data->result = *validated_source_action_result;
     LogRemoveAccelerator(source, accelerator_to_remove, result_data->result);
@@ -953,8 +941,8 @@ void AcceleratorConfigurationProvider::RemoveAccelerator(
   }
 
   AcceleratorConfigResult result =
-      ash_accelerator_configuration_->RemoveAccelerator(action_id,
-                                                        accelerator_to_remove);
+      Shell::Get()->ash_accelerator_configuration()->RemoveAccelerator(
+          action_id, accelerator_to_remove);
   result_data->result = result;
   LogRemoveAccelerator(source, accelerator_to_remove, result_data->result);
   base::UmaHistogramEnumeration(
@@ -969,7 +957,8 @@ void AcceleratorConfigurationProvider::RemoveAccelerator(
   // Only record this metric if the removed accelerator is a default accelerator
   // for `action_id`.
   std::optional<AcceleratorAction> default_id =
-      ash_accelerator_configuration_->GetIdForDefaultAccelerator(accelerator);
+      Shell::Get()->ash_accelerator_configuration()->GetIdForDefaultAccelerator(
+          accelerator);
   if (default_id == action_id) {
     RecordEncodedAcceleratorHistogram(kRemoveDefaultAcceleratorHistogramName,
                                       action_id, accelerator);
@@ -991,10 +980,10 @@ void AcceleratorConfigurationProvider::ReplaceAccelerator(
   AcceleratorResultDataPtr result_data = AcceleratorResultData::New();
 
   std::optional<AcceleratorConfigResult> error_result = ValidateSourceAndAction(
-      source, action_id, ash_accelerator_configuration_);
+      source, action_id, Shell::Get()->ash_accelerator_configuration());
   if (!error_result.has_value() &&
-      !base::Contains(GetDefaultAcceleratorsForId(action_id),
-                      new_accelerator)) {
+      !std::ranges::contains(GetDefaultAcceleratorsForId(action_id),
+                             new_accelerator)) {
     error_result = ValidateAccelerator(new_accelerator);
   }
 
@@ -1008,7 +997,7 @@ void AcceleratorConfigurationProvider::ReplaceAccelerator(
 
   // Verify old accelerator exists.
   const AcceleratorAction* old_accelerator_id =
-      ash_accelerator_configuration_->FindAcceleratorAction(
+      Shell::Get()->ash_accelerator_configuration()->FindAcceleratorAction(
           accelerator_to_replace);
   if (!old_accelerator_id || *old_accelerator_id != action_id) {
     result_data->result = AcceleratorConfigResult::kNotFound;
@@ -1041,8 +1030,9 @@ void AcceleratorConfigurationProvider::ReplaceAccelerator(
 
   // Continue with replacing the accelerator.
   pending_accelerator_.reset();
-  result_data->result = ash_accelerator_configuration_->ReplaceAccelerator(
-      action_id, accelerator_to_replace, new_accelerator);
+  result_data->result =
+      Shell::Get()->ash_accelerator_configuration()->ReplaceAccelerator(
+          action_id, accelerator_to_replace, new_accelerator);
   LogReplaceAccelerator(source, accelerator_to_replace, new_accelerator,
                         result_data->result);
 
@@ -1067,7 +1057,7 @@ void AcceleratorConfigurationProvider::RestoreDefault(
 
   std::optional<AcceleratorConfigResult> validated_source_action_result =
       ValidateSourceAndAction(source, action_id,
-                              ash_accelerator_configuration_);
+                              Shell::Get()->ash_accelerator_configuration());
   if (validated_source_action_result.has_value()) {
     result_data->result = *validated_source_action_result;
     LogRestoreDefault(action_id, result_data->result);
@@ -1076,7 +1066,7 @@ void AcceleratorConfigurationProvider::RestoreDefault(
   }
 
   AcceleratorConfigResult result =
-      ash_accelerator_configuration_->RestoreDefault(action_id);
+      Shell::Get()->ash_accelerator_configuration()->RestoreDefault(action_id);
   result_data->result = result;
   base::UmaHistogramEnumeration(kShortcutCustomizationHistogramName,
                                 ShortcutCustomizationAction::kResetAction);
@@ -1094,7 +1084,7 @@ void AcceleratorConfigurationProvider::RestoreAllDefaults(
   CHECK(Shell::Get()->accelerator_prefs()->IsCustomizationAllowed());
   AcceleratorResultDataPtr result_data = AcceleratorResultData::New();
   AcceleratorConfigResult result =
-      ash_accelerator_configuration_->RestoreAllDefaults();
+      Shell::Get()->ash_accelerator_configuration()->RestoreAllDefaults();
   result_data->result = result;
   VLOG(1) << "RestoreAllDefaults completed with error code: "
           << result_data->result;
@@ -1154,7 +1144,7 @@ void AcceleratorConfigurationProvider::RecordEditDialogCompletedActions(
 void AcceleratorConfigurationProvider::HasCustomAccelerators(
     HasCustomAcceleratorsCallback callback) {
   std::move(callback).Run(
-      ash_accelerator_configuration_->HasCustomAccelerators());
+      Shell::Get()->ash_accelerator_configuration()->HasCustomAccelerators());
 }
 
 void AcceleratorConfigurationProvider::RecordAddOrEditSubactions(
@@ -1329,7 +1319,8 @@ AcceleratorConfigurationProvider::PreprocessAddAccelerator(
 
   // Check if the accelerator conflicts with an existing ash accelerator.
   const AcceleratorAction* found_ash_action =
-      ash_accelerator_configuration_->FindAcceleratorAction(accelerator);
+      Shell::Get()->ash_accelerator_configuration()->FindAcceleratorAction(
+          accelerator);
 
   // Accelerator does not exist, can add this accelerator.
   if (!found_ash_action) {
@@ -1337,7 +1328,8 @@ AcceleratorConfigurationProvider::PreprocessAddAccelerator(
   }
 
   // Always allow using deprecated accelerators.
-  if (ash_accelerator_configuration_->IsDeprecated(accelerator)) {
+  if (Shell::Get()->ash_accelerator_configuration()->IsDeprecated(
+          accelerator)) {
     return std::nullopt;
   }
 
@@ -1407,7 +1399,8 @@ AcceleratorConfigurationProvider::MaybeHandleNonSearchAccelerator(
     AcceleratorActionId action_id) {
   // Disable non-search accelerator warning when re-adding the default
   // accelerator.
-  if (base::Contains(GetDefaultAcceleratorsForId(action_id), accelerator)) {
+  if (std::ranges::contains(GetDefaultAcceleratorsForId(action_id),
+                            accelerator)) {
     return AcceleratorConflictErrorState::kStandby;
   }
 
@@ -1468,7 +1461,9 @@ std::vector<ui::Accelerator>
 AcceleratorConfigurationProvider::GetDefaultAcceleratorsForId(
     uint32_t action_id) const {
   const std::vector<ui::Accelerator>& raw_default_accelerators =
-      ash_accelerator_configuration_->GetDefaultAcceleratorsForId(action_id);
+      Shell::Get()
+          ->ash_accelerator_configuration()
+          ->GetDefaultAcceleratorsForId(action_id);
 
   std::vector<ui::Accelerator> default_accelerators;
   for (const auto& accelerator : raw_default_accelerators) {
@@ -1603,14 +1598,15 @@ void AcceleratorConfigurationProvider::PopulateAshAcceleratorConfig(
     // Check if the default accelerators are available, if not re-add them but
     // mark them as disabled.
     const std::vector<ui::Accelerator>& default_accelerators =
-        ash_accelerator_configuration_->GetDefaultAcceleratorsForId(
-            layout->action_id);
+        Shell::Get()
+            ->ash_accelerator_configuration()
+            ->GetDefaultAcceleratorsForId(layout->action_id);
     for (const auto& default_accelerator : default_accelerators) {
-      if (base::Contains(accelerators, default_accelerator)) {
+      if (std::ranges::contains(accelerators, default_accelerator)) {
         continue;
       }
       const bool is_accelerator_locked =
-          ash_accelerator_configuration_->IsAcceleratorLocked(
+          Shell::Get()->ash_accelerator_configuration()->IsAcceleratorLocked(
               default_accelerator);
 
       // Append the missing default accelerators but marked as disabled by user.
@@ -1626,7 +1622,8 @@ void AcceleratorConfigurationProvider::PopulateAshAcceleratorConfig(
         continue;
       }
       const bool is_accelerator_locked =
-          ash_accelerator_configuration_->IsAcceleratorLocked(accelerator);
+          Shell::Get()->ash_accelerator_configuration()->IsAcceleratorLocked(
+              accelerator);
       CreateAndAppendAliasedAccelerators(
           accelerator, layout->locked, mojom::AcceleratorType::kDefault,
           mojom::AcceleratorState::kEnabled,

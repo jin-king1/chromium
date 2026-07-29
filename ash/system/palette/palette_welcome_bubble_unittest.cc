@@ -56,8 +56,8 @@ class PaletteWelcomeBubbleTest : public AshTestBase {
 
     welcome_bubble_ = std::make_unique<PaletteWelcomeBubble>(
         StatusAreaWidgetTestHelper::GetStatusAreaWidget()->palette_tray());
-    GetSessionControllerClient()->AddUserSession({kUser1Email});
-    GetSessionControllerClient()->AddUserSession({kUser2Email});
+    SimulateUserLogin({kUser1Email});
+    SimulateUserLogin({kUser2Email});
     GetSessionControllerClient()->SwitchActiveUser(
         AccountId::FromUserEmail(kUser1Email));
   }
@@ -148,7 +148,7 @@ TEST_F(PaletteWelcomeBubbleTest, BubbleNotShownInactiveSession) {
 
 TEST_F(PaletteWelcomeBubbleTest, BubbleNotShownKiosk) {
   ClearLogin();
-  SimulateKioskMode(user_manager::UserType::kWebKioskApp);
+  SimulateKioskMode(user_manager::UserType::kKioskWebApp);
   SetCanLockScreen(false);
 
   welcome_bubble_->ShowIfNeeded();

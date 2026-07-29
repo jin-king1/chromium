@@ -6,9 +6,7 @@
 
 #include <stddef.h>
 
-#include "base/containers/contains.h"
 #include "base/containers/flat_set.h"
-#include "base/containers/to_vector.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/strcat.h"
 #include "base/strings/utf_string_conversions.h"
@@ -29,14 +27,11 @@
 #include "components/signin/public/identity_manager/accounts_in_cookie_jar_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/identity_utils.h"
+#include "components/signin/public/identity_manager/signin_constants.h"
 #include "content/public/browser/storage_partition.h"
 #include "google_apis/gaia/gaia_id.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/gfx/image/image.h"
-
-#if BUILDFLAG(ENABLE_GLIC)
-#include "chrome/browser/glic/glic_enabling.h"
-#endif
 
 namespace {
 
@@ -48,7 +43,7 @@ void UpdateAccountsPrefs(
     return;
   }
 
-  base::flat_set<GaiaId> account_ids_in_chrome =
+  const base::flat_set<GaiaId> account_ids_in_chrome =
       signin::GetAllGaiaIdsForKeyedPreferences(&identity_manager,
                                                accounts_in_cookie_jar_info);
 
@@ -59,8 +54,8 @@ void UpdateAccountsPrefs(
   // above checks on cookies and primary account.
 
   SigninPrefs signin_prefs(pref_service);
-  size_t removed_count = signin_prefs.RemoveAllAccountPrefsExcept(
-      base::ToVector(account_ids_in_chrome));
+  size_t removed_count =
+      signin_prefs.RemoveAllAccountPrefsExcept(account_ids_in_chrome);
 
   if (removed_count > 0) {
     // There is a maximum of 10 Gaia accounts on the web. If we add the Chrome
@@ -106,10 +101,6 @@ GAIAInfoUpdateService::GAIAInfoUpdateService(
   }
 
   gaia_id_of_profile_attribute_entry_ = entry->GetGAIAId();
-
-#if BUILDFLAG(ENABLE_GLIC)
-  entry->SetIsGlicEligible(glic::GlicEnabling::IsEnabledForProfile(profile_));
-#endif
 }
 
 GAIAInfoUpdateService::~GAIAInfoUpdateService() = default;
@@ -132,36 +123,6 @@ void GAIAInfoUpdateService::UpdatePrimaryAccount() {
 }
 
 void GAIAInfoUpdateService::UpdatePrimaryAccount(const AccountInfo& info) {
-  if (!info.IsValid())
-    return;
-
-  ProfileAttributesEntry* entry =
-      profile_attributes_storage_->GetProfileAttributesWithPath(profile_path_);
-  if (!entry) {
-    return;
-  }
-  gaia_id_of_profile_attribute_entry_ = info.gaia;
-  entry->SetGAIAGivenName(base::UTF8ToUTF16(info.given_name));
-  entry->SetGAIAName(base::UTF8ToUTF16(info.full_name));
-  entry->SetHostedDomain(info.hosted_domain);
-
-  if (info.picture_url == kNoPictureURLFound) {
-    entry->SetGAIAPicture(std::string(), gfx::Image());
-  } else if (!info.account_image.IsEmpty()) {
-    // Only set the image if it is not empty, to avoid clearing the image if we
-    // fail to download it on one of the 24 hours interval to refresh the data.
-    entry->SetGAIAPicture(info.last_downloaded_image_url_with_size,
-                          info.account_image);
-  }
-
-#if BUILDFLAG(ENABLE_GLIC)
-  // TODO(crbug.com/388211126): Make the setter name match with the
-  // `GlicEnabling` function.
-  entry->SetIsGlicEligible(glic::GlicEnabling::IsEnabledForProfile(profile_));
-#endif
-}
-
-void GAIAInfoUpdateService::UpdateAnyAccount(const AccountInfo& info) {
   if (!info.IsValid()) {
     return;
   }
@@ -171,10 +132,21 @@ void GAIAInfoUpdateService::UpdateAnyAccount(const AccountInfo& info) {
   if (!entry) {
     return;
   }
+  gaia_id_of_profile_attribute_entry_ = info.GetGaiaId();
+  entry->SetGAIAGivenName(base::UTF8ToUTF16(info.GetGivenName().value_or("")));
+  entry->SetGAIAName(base::UTF8ToUTF16(info.GetFullName().value_or("")));
+  entry->SetHostedDomain(info.GetHostedDomain());
+  entry->SetIsManaged(info.IsManaged());
 
-  // This is idempotent, i.e. the second and any further call for the same
-  // account info has no further impact.
-  entry->AddAccountName(info.full_name);
+  if (info.GetAvatarUrl().has_value() && info.GetAvatarUrl()->empty()) {
+    entry->SetGAIAPicture(std::string(), gfx::Image());
+  } else if (info.GetAvatarImage().has_value()) {
+    // Only set the image if it is not empty, to avoid clearing the image if we
+    // fail to download it on one of the 24 hours interval to refresh the data.
+    entry->SetGAIAPicture(
+        std::string(info.GetLastDownloadedAvatarUrlWithSize().value_or("")),
+        *info.GetAvatarImage());
+  }
 }
 
 void GAIAInfoUpdateService::ClearProfileEntry() {
@@ -187,7 +159,8 @@ void GAIAInfoUpdateService::ClearProfileEntry() {
   entry->SetGAIAName(std::u16string());
   entry->SetGAIAGivenName(std::u16string());
   entry->SetGAIAPicture(std::string(), gfx::Image());
-  entry->SetHostedDomain(std::string());
+  entry->SetHostedDomain(std::nullopt);
+  entry->SetIsManaged(signin::Tribool::kFalse);
   entry->SetIsGlicEligible(false);
 }
 
@@ -216,8 +189,6 @@ void GAIAInfoUpdateService::OnPrimaryAccountChanged(
 
 void GAIAInfoUpdateService::OnExtendedAccountInfoUpdated(
     const AccountInfo& info) {
-  UpdateAnyAccount(info);
-
   if (!ShouldUpdatePrimaryAccount())
     return;
 
@@ -233,28 +204,6 @@ void GAIAInfoUpdateService::OnExtendedAccountInfoUpdated(
 void GAIAInfoUpdateService::OnAccountsInCookieUpdated(
     const signin::AccountsInCookieJarInfo& accounts_in_cookie_jar_info,
     const GoogleServiceAuthError& error) {
-  ProfileAttributesEntry* entry =
-      profile_attributes_storage_->GetProfileAttributesWithPath(profile_path_);
-  if (!entry) {
-    return;
-  }
-
-  // We can fully regenerate the info about all accounts only when there are no
-  // signed-out accounts. This means that for instance clearing cookies will
-  // reset the info.
-  if (accounts_in_cookie_jar_info.GetSignedOutAccounts().empty()) {
-    entry->ClearAccountNames();
-
-    // Regenerate based on the info from signed-in accounts (if not available
-    // now, it will be regenerated soon via OnExtendedAccountInfoUpdated() once
-    // downloaded).
-    for (gaia::ListedAccount account :
-         accounts_in_cookie_jar_info.GetPotentiallyInvalidSignedInAccounts()) {
-      UpdateAnyAccount(
-          identity_manager_->FindExtendedAccountInfoByAccountId(account.id));
-    }
-  }
-
   UpdateAccountsPrefs(pref_service_.get(), *identity_manager_,
                       accounts_in_cookie_jar_info);
 }

@@ -55,6 +55,10 @@ class SigninUI {
   // After users update from CloudReady to a new OS version show them new
   // license agreement and data collection consent.
   virtual void ShowNewTermsForFlexUsers() = 0;
+  // Show the password selection screen for the user.
+  virtual void ShowPasswordSelectionScreen() = 0;
+  // Show the remove local auth factors screen for the user.
+  virtual void ShowRemoveLocalAuthFactorsScreen() = 0;
 
   virtual void StartEncryptionMigration(
       std::unique_ptr<UserContext> user_context,
@@ -83,10 +87,15 @@ class SigninUI {
   virtual void ShowSigninError(SigninError error,
                                const std::string& details) = 0;
 
+  virtual void ShowOobeNotCompletedError() = 0;
+
   // Show the SAML Confirm Password screen and continue authentication after
   // that (or show the error screen).
   virtual void SAMLConfirmPassword(
       ::login::StringList scraped_passwords,
+      std::unique_ptr<UserContext> user_context) = 0;
+
+  virtual void ShowSamlConfirmPassword(
       std::unique_ptr<UserContext> user_context) = 0;
 };
 

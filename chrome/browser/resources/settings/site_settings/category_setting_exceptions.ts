@@ -16,8 +16,8 @@ import {loadTimeData} from '../i18n_setup.js';
 
 import {getTemplate} from './category_setting_exceptions.html.js';
 import {ContentSetting, ContentSettingsTypes} from './constants.js';
+import {DefaultSettingSource} from './site_settings_browser_proxy.js';
 import {SiteSettingsMixin} from './site_settings_mixin.js';
-import {DefaultSettingSource} from './site_settings_prefs_browser_proxy.js';
 
 const CategorySettingExceptionsElementBase =
     SiteSettingsMixin(WebUiListenerMixin(PolymerElement));
@@ -95,13 +95,13 @@ export class CategorySettingExceptionsElement extends
     ];
   }
 
-  description: string;
-  private readOnlyList: boolean;
-  private defaultManaged_: boolean;
-  blockHeader: string;
-  allowHeader: string;
-  searchFilter: string;
-  private showAllowSiteList_: boolean;
+  declare description: string;
+  declare private readOnlyList: boolean;
+  declare private defaultManaged_: boolean;
+  declare blockHeader: string;
+  declare allowHeader: string;
+  declare searchFilter: string;
+  declare private showAllowSiteList_: boolean;
 
   override ready() {
     super.ready();
@@ -117,7 +117,8 @@ export class CategorySettingExceptionsElement extends
   private computeShowAllowSiteList_(): boolean {
     // TODO(crbug.com/40101962): This function should return true when the
     // feature flag for Persistent Permissions is removed.
-    return this.category !== ContentSettingsTypes.FILE_SYSTEM_WRITE;
+    return this.category !== ContentSettingsTypes.FILE_SYSTEM_WRITE &&
+        this.category !== ContentSettingsTypes.INLINE_CUE_MENU;
   }
 
   /**

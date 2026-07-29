@@ -66,9 +66,10 @@ TEST_F(VideoFrameMetadataStructTraitsTest, EmptyMetadata) {
   EXPECT_FALSE(metadata_out.capture_update_rect.has_value());
   EXPECT_FALSE(metadata_out.transformation.has_value());
   EXPECT_FALSE(metadata_out.allow_overlay);
+  EXPECT_FALSE(metadata_out.region_capture_rect.has_value());
   EXPECT_FALSE(metadata_out.copy_required);
   EXPECT_FALSE(metadata_out.end_of_stream);
-  EXPECT_FALSE(metadata_out.texture_owner);
+  EXPECT_FALSE(metadata_out.in_surface_view);
   EXPECT_FALSE(metadata_out.wants_promotion_hint);
   EXPECT_FALSE(metadata_out.protected_video);
   EXPECT_FALSE(metadata_out.hw_protected);
@@ -96,6 +97,11 @@ TEST_F(VideoFrameMetadataStructTraitsTest, EmptyMetadata) {
   EXPECT_FALSE(metadata_out.frame_sequence.has_value());
   EXPECT_FALSE(metadata_out.source_id.has_value());
   EXPECT_FALSE(metadata_out.background_blur.has_value());
+#if BUILDFLAG(IS_ANDROID)
+  EXPECT_FALSE(metadata_out.ycbcr_info.has_value());
+#endif
+
+  EXPECT_EQ(metadata_out.capture_version, media::CaptureVersion());
 }
 
 TEST_F(VideoFrameMetadataStructTraitsTest, ValidMetadata) {
@@ -110,6 +116,7 @@ TEST_F(VideoFrameMetadataStructTraitsTest, ValidMetadata) {
 
   // gfx::Rects
   metadata_in.capture_update_rect = gfx::Rect(12, 34, 360, 480);
+  metadata_in.region_capture_rect = gfx::Rect(56, 78, 180, 240);
 
   // VideoTransformation
   metadata_in.transformation = VideoTransformation(VIDEO_ROTATION_90, true);
@@ -118,7 +125,7 @@ TEST_F(VideoFrameMetadataStructTraitsTest, ValidMetadata) {
   metadata_in.allow_overlay = true;
   metadata_in.copy_required = true;
   metadata_in.end_of_stream = true;
-  metadata_in.texture_owner = true;
+  metadata_in.in_surface_view = true;
   metadata_in.wants_promotion_hint = true;
   metadata_in.protected_video = true;
   metadata_in.hw_protected = true;
@@ -155,17 +162,29 @@ TEST_F(VideoFrameMetadataStructTraitsTest, ValidMetadata) {
 
   metadata_in.background_blur = media::EffectInfo{.enabled = true};
 
+#if BUILDFLAG(IS_ANDROID)
+  metadata_in.ycbcr_info = gpu::VulkanYCbCrInfo(
+      /*image_format=*/0, /*external_format=*/2, /*suggested_ycbcr_model=*/3,
+      /*suggested_ycbcr_range=*/1, /*suggested_xchroma_offset=*/0,
+      /*suggested_ychroma_offset=*/1, /*format_features=*/7);
+#endif
+
+  metadata_in.capture_version =
+      media::CaptureVersion(/*source=*/123, /*sub_capture=*/456);
+
   VideoFrameMetadata metadata_out;
 
   ASSERT_TRUE(RoundTrip(metadata_in, &metadata_out));
 
   EXPECT_EQ(metadata_in.capture_counter, metadata_out.capture_counter);
   EXPECT_EQ(metadata_in.capture_update_rect, metadata_out.capture_update_rect);
+  EXPECT_EQ(metadata_in.region_capture_rect, metadata_out.region_capture_rect);
   EXPECT_EQ(metadata_in.transformation, metadata_out.transformation);
   EXPECT_EQ(metadata_in.allow_overlay, metadata_out.allow_overlay);
+  EXPECT_EQ(metadata_in.capture_version, metadata_out.capture_version);
   EXPECT_EQ(metadata_in.copy_required, metadata_out.copy_required);
   EXPECT_EQ(metadata_in.end_of_stream, metadata_out.end_of_stream);
-  EXPECT_EQ(metadata_in.texture_owner, metadata_out.texture_owner);
+  EXPECT_EQ(metadata_in.in_surface_view, metadata_out.in_surface_view);
   EXPECT_EQ(metadata_in.wants_promotion_hint,
             metadata_out.wants_promotion_hint);
   EXPECT_EQ(metadata_in.protected_video, metadata_out.protected_video);
@@ -201,6 +220,23 @@ TEST_F(VideoFrameMetadataStructTraitsTest, ValidMetadata) {
   EXPECT_EQ(metadata_in.source_id, metadata_out.source_id);
   EXPECT_EQ(metadata_in.background_blur->enabled,
             metadata_out.background_blur->enabled);
+#if BUILDFLAG(IS_ANDROID)
+  ASSERT_TRUE(metadata_out.ycbcr_info.has_value());
+  EXPECT_EQ(metadata_in.ycbcr_info->image_format,
+            metadata_out.ycbcr_info->image_format);
+  EXPECT_EQ(metadata_in.ycbcr_info->external_format,
+            metadata_out.ycbcr_info->external_format);
+  EXPECT_EQ(metadata_in.ycbcr_info->suggested_ycbcr_model,
+            metadata_out.ycbcr_info->suggested_ycbcr_model);
+  EXPECT_EQ(metadata_in.ycbcr_info->suggested_ycbcr_range,
+            metadata_out.ycbcr_info->suggested_ycbcr_range);
+  EXPECT_EQ(metadata_in.ycbcr_info->suggested_xchroma_offset,
+            metadata_out.ycbcr_info->suggested_xchroma_offset);
+  EXPECT_EQ(metadata_in.ycbcr_info->suggested_ychroma_offset,
+            metadata_out.ycbcr_info->suggested_ychroma_offset);
+  EXPECT_EQ(metadata_in.ycbcr_info->format_features,
+            metadata_out.ycbcr_info->format_features);
+#endif
 }
 
 }  // namespace media

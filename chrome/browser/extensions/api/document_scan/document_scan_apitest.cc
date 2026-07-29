@@ -4,22 +4,23 @@
 
 #include <string_view>
 
+#include "ash/constants/ash_pref_names.h"
 #include "base/auto_reset.h"
 #include "base/check_deref.h"
 #include "base/containers/map_util.h"
+#include "base/files/file_util.h"
 #include "base/notreached.h"
 #include "base/path_service.h"
+#include "chrome/browser/ash/scanning/fake_lorgnette_scanner_manager.h"
+#include "chrome/browser/ash/scanning/lorgnette_scanner_manager_factory.h"
 #include "chrome/browser/extensions/api/document_scan/document_scan_api_handler.h"
 #include "chrome/browser/extensions/api/document_scan/document_scan_test_utils.h"
-#include "chrome/browser/extensions/api/document_scan/fake_document_scan_ash.h"
 #include "chrome/browser/extensions/api/document_scan/scanner_discovery_runner.h"
 #include "chrome/browser/extensions/api/document_scan/start_scan_runner.h"
 #include "chrome/browser/extensions/extension_apitest.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/common/chrome_paths.h"
-#include "chrome/common/pref_names.h"
-#include "chromeos/crosapi/mojom/document_scan.mojom.h"
 #include "components/prefs/scoped_user_pref_update.h"
 #include "content/public/test/browser_test.h"
 #include "extensions/browser/extension_registry_observer.h"
@@ -30,8 +31,6 @@
 namespace extensions {
 
 namespace {
-
-constexpr size_t kRealBackendMinimumReadSize = 32768;
 
 // Enum used to initialize the parameterized test with different types of
 // extensions.
@@ -88,8 +87,8 @@ class AutoTruster : public extensions::ExtensionRegistryObserver {
     if (extension->permissions_data()->HasAPIPermission("documentScan")) {
       PrefService* prefs =
           Profile::FromBrowserContext(browser_context)->GetPrefs();
-      ScopedListPrefUpdate update(prefs,
-                                  prefs::kDocumentScanAPITrustedExtensions);
+      ScopedListPrefUpdate update(
+          prefs, ash::prefs::kDocumentScanAPITrustedExtensions);
       update->Append(extension->id());
     }
   }
@@ -105,13 +104,27 @@ class AutoTruster : public extensions::ExtensionRegistryObserver {
 class DocumentScanApiTest : public ExtensionApiTest,
                             public testing::WithParamInterface<ExtensionType> {
  public:
-  void SetUpOnMainThread() override {
-    ExtensionApiTest::SetUpOnMainThread();
+  void SetUpBrowserContextKeyedServices(
+      content::BrowserContext* context) override {
+    ExtensionApiTest::SetUpBrowserContextKeyedServices(context);
+    ash::LorgnetteScannerManagerFactory::GetInstance()->SetTestingFactory(
+        context, base::BindRepeating([](content::BrowserContext* context)
+                                         -> std::unique_ptr<KeyedService> {
+          return std::make_unique<ash::FakeLorgnetteScannerManager>();
+        }));
+  }
 
-    DocumentScanAPIHandler::Get(browser()->profile())
-        ->SetDocumentScanForTesting(&document_scan_ash_);
-
-    document_scan()->SetSmallestMaxReadSize(kRealBackendMinimumReadSize);
+  void AddScanners(std::vector<lorgnette::ScannerInfo> scanners) {
+    lorgnette::ScannerConfig config_template;
+    (*config_template.mutable_options())["option1"] =
+        CreateTestScannerOption("option1", 5);
+    lorgnette::OptionGroup* group = config_template.add_option_groups();
+    group->set_title("title");
+    group->add_members("item1");
+    group->add_members("item2");
+    for (auto& scanner : scanners) {
+      lorgnette_manager()->AddScanner(std::move(scanner), config_template);
+    }
   }
 
  protected:
@@ -126,10 +139,10 @@ class DocumentScanApiTest : public ExtensionApiTest,
     ASSERT_TRUE(RunExtensionTest(dir->UnpackedPath(), run_options, {}));
   }
 
-  FakeDocumentScanAsh* document_scan() { return &document_scan_ash_; }
-
- private:
-  FakeDocumentScanAsh document_scan_ash_;
+  ash::FakeLorgnetteScannerManager* lorgnette_manager() {
+    return static_cast<ash::FakeLorgnetteScannerManager*>(
+        ash::LorgnetteScannerManagerFactory::GetForBrowserContext(profile()));
+  }
 };
 
 IN_PROC_BROWSER_TEST_P(DocumentScanApiTest, TestLoadPermissions) {
@@ -149,7 +162,7 @@ IN_PROC_BROWSER_TEST_P(DocumentScanApiTest, StartScan_PermissionDenied) {
   // case it still needs a valid scanner handle, so set the discovery
   // confirmation result.
   ScannerDiscoveryRunner::SetDiscoveryConfirmationResultForTesting(true);
-  document_scan()->AddScanner(CreateTestScannerInfo());
+  AddScanners({CreateTestScannerInfo()});
   base::AutoReset<std::optional<bool>> testing_scope =
       StartScanRunner::SetStartScanConfirmationResultForTesting(false);
   RunTest("start_scan_denied.html");
@@ -159,10 +172,10 @@ IN_PROC_BROWSER_TEST_P(DocumentScanApiTest, PerformScan_PermissionAllowed) {
   ScannerDiscoveryRunner::SetDiscoveryConfirmationResultForTesting(true);
   base::AutoReset<std::optional<bool>> testing_scope =
       StartScanRunner::SetStartScanConfirmationResultForTesting(true);
-  document_scan()->AddScanner(CreateTestScannerInfo());
-  const std::vector<std::string> scan_data = {"img", "data", "img", "data", ""};
-  document_scan()->SetReadScanDataResponses(
-      scan_data, crosapi::mojom::ScannerOperationResult::kEndOfData);
+  lorgnette::ScannerInfo scanner_info = CreateTestScannerInfo();
+  AddScanners({scanner_info});
+  lorgnette_manager()->SetDataForFutureScanJobs(
+      scanner_info.name(), {"img", "data", "img", "data", ""});
   RunTest("perform_scan.html");
   // TODO(b/313494616): Load a second extension to verify (lack of)
   // cross-extension handle sharing.
@@ -175,10 +188,10 @@ IN_PROC_BROWSER_TEST_P(DocumentScanApiTest, PerformScan_ExtensionTrusted) {
   ScannerDiscoveryRunner::SetDiscoveryConfirmationResultForTesting(false);
   base::AutoReset<std::optional<bool>> testing_scope =
       StartScanRunner::SetStartScanConfirmationResultForTesting(false);
-  document_scan()->AddScanner(CreateTestScannerInfo());
-  const std::vector<std::string> scan_data = {"img", "data", "img", "data", ""};
-  document_scan()->SetReadScanDataResponses(
-      scan_data, crosapi::mojom::ScannerOperationResult::kEndOfData);
+  lorgnette::ScannerInfo scanner_info = CreateTestScannerInfo();
+  AddScanners({scanner_info});
+  lorgnette_manager()->SetDataForFutureScanJobs(
+      scanner_info.name(), {"img", "data", "img", "data", ""});
   RunTest("perform_scan.html");
 }
 

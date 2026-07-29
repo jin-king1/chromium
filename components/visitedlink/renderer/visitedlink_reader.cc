@@ -2,17 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "components/visitedlink/renderer/visitedlink_reader.h"
 
 #include <stddef.h>
 #include <stdint.h>
 
 #include "base/check.h"
+#include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_functions.h"
 #include "third_party/blink/public/common/features.h"
@@ -26,6 +22,12 @@ VisitedLinkReader::VisitedLinkReader() = default;
 
 VisitedLinkReader::~VisitedLinkReader() {
   FreeTable();
+}
+
+bool VisitedLinkReader::UsePartitionedDatabase() const {
+  return base::FeatureList::IsEnabled(
+             blink::features::kPartitionVisitedLinkDatabaseWithSelfLinks) ||
+         is_pseudo_partitioned_;
 }
 
 base::RepeatingCallback<
@@ -64,10 +66,7 @@ void VisitedLinkReader::UpdateVisitedLinks(
   // to free old objects.
   FreeTable();
   DCHECK(hash_table_ == nullptr);
-  if (base::FeatureList::IsEnabled(
-          blink::features::kPartitionVisitedLinkDatabase) ||
-      base::FeatureList::IsEnabled(
-          blink::features::kPartitionVisitedLinkDatabaseWithSelfLinks)) {
+  if (UsePartitionedDatabase()) {
     return UpdatePartitionedVisitedLinks(std::move(table_region));
   }
   return UpdateUnpartitionedVisitedLinks(std::move(table_region));
@@ -87,7 +86,7 @@ void VisitedLinkReader::UpdateUnpartitionedVisitedLinks(
     const SharedHeader* header =
         static_cast<const SharedHeader*>(header_mapping.memory());
     table_len = header->length;
-    memcpy(salt_, header->salt, sizeof(salt_));
+    salt_ = header->salt;
   }
 
   // Now we know the length, so map the table contents.
@@ -96,8 +95,9 @@ void VisitedLinkReader::UpdateUnpartitionedVisitedLinks(
     return;
 
   // Commit the data.
-  hash_table_ = const_cast<Fingerprint*>(reinterpret_cast<const Fingerprint*>(
-      static_cast<const SharedHeader*>(table_mapping_.memory()) + 1));
+  hash_table_ =
+      const_cast<Fingerprint*>(reinterpret_cast<const Fingerprint*>(UNSAFE_TODO(
+          static_cast<const SharedHeader*>(table_mapping_.memory()) + 1)));
   table_length_ = table_len;
   base::UmaHistogramCounts10M(
       "History.VisitedLinks.HashTableLengthOnReaderInit", table_length_);
@@ -127,9 +127,10 @@ void VisitedLinkReader::UpdatePartitionedVisitedLinks(
   }
 
   // Commit the data.
-  hash_table_ = const_cast<Fingerprint*>(reinterpret_cast<const Fingerprint*>(
-      static_cast<const PartitionedSharedHeader*>(table_mapping_.memory()) +
-      1));
+  hash_table_ =
+      const_cast<Fingerprint*>(reinterpret_cast<const Fingerprint*>(UNSAFE_TODO(
+          static_cast<const PartitionedSharedHeader*>(table_mapping_.memory()) +
+          1)));
   table_length_ = table_len;
   base::UmaHistogramCounts10M(
       "History.VisitedLinks.HashTableLengthOnReaderInit", table_length_);

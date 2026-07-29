@@ -40,6 +40,8 @@ public class GpmCredManRequestDecorator implements CredManRequestDecorator {
             "com.android.chrome.PASSWORDS_ONLY_FOR_THE_CHANNEL";
     private static final String PASSWORDS_WITH_NO_USERNAME_INCLUDED =
             "com.android.chrome.PASSWORDS_WITH_NO_USERNAME_INCLUDED";
+    private static final String REQUEST_CUSTOM_CREDENTIAL_KEY =
+            "com.android.chrome.REQUEST_CUSTOM_CREDENTIAL";
 
     private static @Nullable GpmCredManRequestDecorator sInstance;
 
@@ -93,7 +95,7 @@ public class GpmCredManRequestDecorator implements CredManRequestDecorator {
         // error which is handled by calling Play Services to render the error.
         getCredentialRequestBundle.putBoolean(
                 CRED_MAN_PREFIX + "BUNDLE_KEY_PREFER_IMMEDIATELY_AVAILABLE_CREDENTIALS",
-                helper.getPreferImmediatelyAvailable() && helper.getPlayServicesAvailable());
+                helper.getPreferImmediatelyAvailable());
     }
 
     @Override
@@ -115,6 +117,7 @@ public class GpmCredManRequestDecorator implements CredManRequestDecorator {
                 publicKeyCredentialOptionBundle, helper.getRenderFrameHost());
         // Do not include any passkeys from GPM if `helper.getIgnoreGpm()` is true.
         publicKeyCredentialOptionBundle.putBoolean(IGNORE_GPM_KEY, helper.getIgnoreGpm());
+        publicKeyCredentialOptionBundle.putBoolean(REQUEST_CUSTOM_CREDENTIAL_KEY, true);
     }
 
     @Override

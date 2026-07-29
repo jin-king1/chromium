@@ -19,15 +19,18 @@ class GURL;
 namespace extensions {
 
 struct IconsInfo : public Extension::ManifestData {
+  static const char* kManifestDataKey;
+
   // The icons for the extension.
   ExtensionIconSet icons;
 
   // Return the icon set for the given `extension`.
   static const ExtensionIconSet& GetIcons(const Extension* extension) {
-    return GetIcons(extension, ExtensionIconVariant::ColorScheme::kLight);
+    DCHECK(extension);
+    return GetIcons(*extension, ExtensionIconVariant::ColorScheme::kLight);
   }
   static const ExtensionIconSet& GetIcons(
-      const Extension* extension,
+      const Extension& extension,
       std::optional<ExtensionIconVariant::ColorScheme> color_scheme);
 
   // Get an extension icon as a resource.
@@ -63,7 +66,7 @@ class IconsHandler : public ManifestHandler {
   ~IconsHandler() override;
 
   bool Parse(Extension* extension, std::u16string* error) override;
-  bool Validate(const Extension* extension,
+  bool Validate(const Extension& extension,
                 std::string* error,
                 std::vector<InstallWarning>* warnings) const override;
 

@@ -30,12 +30,6 @@ constexpr char kCampbellHashKey[] =
     "\x78\xb6\xa7\x59\x06\x11\xc7\xea\x09\x7e\x92\xe3\xe9\xff\xa6\x01\x4c"
     "\x03\x18\x32";
 
-// The hash value for the secret key of the mantis feature.
-constexpr char kMantisHashKey[] =
-    "\x7c\x8c\x82\x6f\x3e\xcd\x16\xf0\xfb\xfe\xfc\x9c\x2a\x48\x07\x75\x7e\xea"
-    "\x46\xf2";
-
-
 }  // namespace
 
 // Please keep the order of these switches synchronized with the header file
@@ -200,10 +194,6 @@ const char kArcVmUreadaheadMode[] = "arcvm-ureadahead-mode";
 
 // Madvises the kernel to use Huge Pages for guest memory.
 const char kArcVmUseHugePages[] = "arcvm-use-hugepages";
-
-// Clear the fast ink buffer upon creation. This is needed on some devices that
-// do not zero out new buffers.
-const char kAshClearFastInkBuffer[] = "ash-clear-fast-ink-buffer";
 
 // Force the pointer (cursor) position to be kept inside root windows.
 const char kAshConstrainPointerToRoot[] = "ash-constrain-pointer-to-root";
@@ -471,11 +461,19 @@ const char kDisableOOBENetworkScreenSkippingForTesting[] =
 // Disables per-user timezone.
 const char kDisablePerUserTimezone[] = "disable-per-user-timezone";
 
+// If set, the power button in tablet mode is disabled.
+const char kDisablePowerButtonInTabletMode[] =
+    "disable-power-button-in-tablet-mode";
+
 // Disables rollback option on reset screen.
 const char kDisableRollbackOption[] = "disable-rollback-option";
 
 // Disables volume adjust sound.
 const char kDisableVolumeAdjustSound[] = "disable-volume-adjust-sound";
+
+// Disables the Welcome Recap feature for factory testing.
+const char kDisableWelcomeRecapForFactoryTest[] =
+    "disable-welcome-recap-for-factory-testing";
 
 // DEPRECATED. Please use --arc-availability=officially-supported.
 // Enables starting the ARC instance upon session start.
@@ -487,8 +485,10 @@ const char kEnableArcVm[] = "enable-arcvm";
 // Enables ARCVM DLC.
 const char kEnableArcVmDlc[] = "enable-arcvm-dlc";
 
-// Enables ARCVM realtime VCPU feature.
-const char kEnableArcVmRtVcpu[] = "enable-arcvm-rt-vcpu";
+// This flag is set when the device's hardware meets the hardware requirements
+// for the ARCVM DLC.
+const char kArcVmDlcHardwareRequirementSatisfied[] =
+    "arcvm-dlc-hardware-satisfied";
 
 // Used to override `kDisableBirchWeatherApiForTesting` for specific tast tests.
 const char kEnableBirchWeatherApiForTestingOverride[] =
@@ -553,27 +553,9 @@ const char kEnterpriseForceManualEnrollmentInTestBuilds[] =
 const char kEnterpriseEnableUnifiedStateDetermination[] =
     "enterprise-enable-state-determination";
 
-// Whether to enable forced enterprise re-enrollment.
-const char kEnterpriseEnableForcedReEnrollment[] =
-    "enterprise-enable-forced-re-enrollment";
-
 // Whether to enable forced enterprise re-enrollment on Flex.
 const char kEnterpriseEnableForcedReEnrollmentOnFlex[] =
     "enterprise-enable-forced-re-enrollment-on-flex";
-
-// Whether to enable initial enterprise enrollment.
-const char kEnterpriseEnableInitialEnrollment[] =
-    "enterprise-enable-initial-enrollment";
-
-// Power of the power-of-2 initial modulus that will be used by the
-// auto-enrollment client. E.g. "4" means the modulus will be 2^4 = 16.
-const char kEnterpriseEnrollmentInitialModulus[] =
-    "enterprise-enrollment-initial-modulus";
-
-// Power of the power-of-2 maximum modulus that will be used by the
-// auto-enrollment client.
-const char kEnterpriseEnrollmentModulusLimit[] =
-    "enterprise-enrollment-modulus-limit";
 
 // Disallow blocking developer mode through enterprise device policy:
 // - Fail enterprise enrollment if enrolling would block dev mode.
@@ -797,9 +779,6 @@ const char kBrowserDataMigrationForUser[] = "browser-data-migration-for-user";
 const char kBrowserDataBackwardMigrationForUser[] =
     "browser-data-backward-migration-for-user";
 
-// Supply secret key for Mantis feature.
-const char kMantisFeatureKey[] = "mantis-feature-key";
-
 // Tells Chrome to forcefully trigger backward data migration.
 extern const char kForceBrowserDataBackwardMigration[] =
     "force-browser-data-backward-migration";
@@ -815,9 +794,6 @@ const char kBrowserDataBackwardMigrationMode[] =
 // Force skip or force migration. Should only be used for testing.
 const char kForceBrowserDataMigrationForTesting[] =
     "force-browser-data-migration-for-testing";
-
-// The base URL for the App Mall.
-const char kMallUrl[] = "mall-url";
 
 // Determines the URL to be used when calling the backend.
 const char kMarketingOptInUrl[] = "marketing-opt-in-url";
@@ -862,6 +838,10 @@ const char kOobeSkipNewUserCheckForTesting[] =
 // Skips all other OOBE pages after user login.
 const char kOobeSkipPostLogin[] = "oobe-skip-postlogin";
 
+// Disable metrics consent for testing.
+const char kOobeDisablePreConsentMetricsForTesting[] =
+    "oobe-disable-pre-consent-metrics-for-testing";
+
 // Returns true if we should skip split modifier check on the split modifier
 // info screen.
 const char kOobeSkipSplitModifierCheckForTesting[] =
@@ -882,6 +862,9 @@ const char kOobeTriggerSyncTimeoutForTests[] =
 
 // If set, the overview button will be visible.
 const char kOverviewButtonForTests[] = "overview-button-for-tests";
+
+// If set, the overrrides the overscan settings on all displays.
+const char kOverscanInsetsOverride[] = "overscan-insets-override";
 
 // Controls how often the HiddenNetworkHandler class checks for wrongly hidden
 // networks. The interval should be provided in seconds, should follow the
@@ -955,9 +938,6 @@ const char kSamlPasswordChangeUrl[] = "saml-password-change-url";
 // smaller shelf in clamshell mode.
 const char kShelfHotseat[] = "shelf-hotseat";
 
-// Supply secret key for Seal feature.
-const char kSealKey[] = "seal-key";
-
 // Testing grace period for DeviceScheduledReboot policy. Useful for tast tests.
 // See `ShouldSkipRebootDueToGracePeriod` in scheduled_task_util.h.
 const char kScheduledRebootGracePeriodInSecondsForTesting[] =
@@ -1018,6 +998,9 @@ const char kTemporaryAllowEmptyPasswordsInTests[] =
 
 // Enables testing for encryption migration UI.
 const char kTestEncryptionMigrationUI[] = "test-encryption-migration-ui";
+
+// Passes the name of the current running automated test to Chrome.
+const char kTestName[] = "test-name";
 
 // Enables the wallpaper picker to fetch images from the test server.
 const char kTestWallpaperServer[] = "test-wallpaper-server";
@@ -1094,6 +1077,28 @@ const char kAllowDefaultShelfPinLayoutIgnoringSync[] =
 // behavior to be active regardless of system state.
 const char kForceRefreshRateThrottle[] = "force-refresh-rate-throttle";
 
+// Value of GAIA auth code for --force-app-mode.
+const char kAppModeAuthCode[] = "app-mode-auth-code";
+
+// Value of OAuth2 refresh token for --force-app-mode.
+const char kAppModeOAuth2Token[] = "app-mode-oauth-token";
+
+// Allows setting a different destination ID for connection-monitoring GCM
+// messages. Useful when running against a non-prod management server.
+const char kMonitoringDestinationID[] = "monitoring-destination-id";
+
+// Frequency in Milliseconds for system log uploads. Should only be used for
+// testing purposes.
+const char kSystemLogUploadFrequency[] = "system-log-upload-frequency";
+
+// When specified with a url string as parameter, the given url overrides the
+// Android Messages for Web PWA installation and app urls using a base of the
+// given domain with approrpiate suffixes.
+const char kCustomAndroidMessagesDomain[] = "custom-android-messages-domain";
+
+// Enables verbose logging level for Nearby Share.
+const char kNearbyShareVerboseLogging[] = "nearby-share-verbose-logging";
+
 bool IsAuthSessionCryptohomeEnabled() {
   return base::CommandLine::ForCurrentProcess()->HasSwitch(
       kCryptohomeUseAuthSession);
@@ -1124,6 +1129,11 @@ bool ShouldSkipSplitModifierCheckForTesting() {
 
 bool ShouldSkipOobePostLogin() {
   return base::CommandLine::ForCurrentProcess()->HasSwitch(kOobeSkipPostLogin);
+}
+
+bool ShouldDisablePreConsentMetricsForTesting() {
+  return base::CommandLine::ForCurrentProcess()->HasSwitch(
+      kOobeDisablePreConsentMetricsForTesting);
 }
 
 bool ShouldShowAccessibilityButtonOnMarketingOptInForTesting() {
@@ -1239,11 +1249,6 @@ bool IsUsingShelfAutoDim() {
   return base::CommandLine::ForCurrentProcess()->HasSwitch(kEnableDimShelf);
 }
 
-bool ShouldClearFastInkBuffer() {
-  return base::CommandLine::ForCurrentProcess()->HasSwitch(
-      kAshClearFastInkBuffer);
-}
-
 bool HasHps() {
   return base::CommandLine::ForCurrentProcess()->HasSwitch(kHasHps);
 }
@@ -1286,21 +1291,14 @@ bool IsCampbellSecretKeyMatched() {
   return key_matched;
 }
 
-bool IsMantisSecretKeyMatched() {
-  // Commandline looks like:
-  //  out/Default/chrome --user-data-dir=/tmp/tmp123
-  //  --mantis-feature-key="INSERT KEY HERE"
-  //  --enable-features=MediaAppImageMantis
-  const std::string provided_key_hash = base::SHA1HashString(
-      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
-          kMantisFeatureKey));
+bool IsPerUserTimezoneEnabled() {
+  return !base::CommandLine::ForCurrentProcess()->HasSwitch(
+      kDisablePerUserTimezone);
+}
 
-  const bool key_matched = (provided_key_hash == kMantisHashKey);
-  if (!key_matched) {
-    LOG(ERROR) << "Provided secret key does not match the expected one.";
-  }
-
-  return key_matched;
+bool IsFineGrainedTimeZoneDetectionEnabled() {
+  return !base::CommandLine::ForCurrentProcess()->HasSwitch(
+      kDisableFineGrainedTimeZoneDetection);
 }
 
 }  // namespace ash::switches

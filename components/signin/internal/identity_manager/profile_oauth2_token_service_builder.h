@@ -28,21 +28,15 @@ class SigninClient;
 class DeviceAccountsProvider;
 #endif
 
-namespace signin {
-enum class AccountConsistencyMethod;
-}
-
 namespace network {
 class NetworkConnectionTracker;
 }
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
 class TokenWebData;
-#if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
 namespace unexportable_keys {
 class UnexportableKeyService;
 }
-#endif  // BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
 #endif
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -55,7 +49,6 @@ std::unique_ptr<ProfileOAuth2TokenService> BuildProfileOAuth2TokenService(
     PrefService* pref_service,
     AccountTrackerService* account_tracker_service,
     network::NetworkConnectionTracker* network_connection_tracker,
-    signin::AccountConsistencyMethod account_consistency,
 #if BUILDFLAG(IS_CHROMEOS)
     account_manager::AccountManagerFacade* account_manager_facade,
     bool is_regular_profile,
@@ -65,9 +58,7 @@ std::unique_ptr<ProfileOAuth2TokenService> BuildProfileOAuth2TokenService(
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
     scoped_refptr<TokenWebData> token_web_data,
-#if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
     unexportable_keys::UnexportableKeyService* unexportable_key_service,
-#endif  // BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 #if BUILDFLAG(IS_IOS)
     std::unique_ptr<DeviceAccountsProvider> device_accounts_provider,

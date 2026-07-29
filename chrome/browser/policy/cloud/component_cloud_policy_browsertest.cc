@@ -9,7 +9,6 @@
 #include "base/command_line.h"
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
-#include "base/files/file_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
 #include "base/path_service.h"
@@ -128,7 +127,7 @@ class ComponentCloudPolicyTest : public extensions::ExtensionBrowserTest {
     client_info.device_token = kDMToken;
     client_info.allowed_policy_types = {
         policy::dm_protocol::kChromeExtensionPolicyType,
-        policy::dm_protocol::kChromeUserPolicyType,
+        policy::dm_protocol::GetChromeUserPolicyType(),
     };
     test_server_.client_storage()->RegisterClient(client_info);
     ASSERT_TRUE(test_server_.Start());
@@ -193,17 +192,17 @@ class ComponentCloudPolicyTest : public extensions::ExtensionBrowserTest {
 
 #if BUILDFLAG(IS_CHROMEOS)
     UserCloudPolicyManagerAsh* policy_manager =
-        browser()->profile()->GetUserCloudPolicyManagerAsh();
+        browser()->GetProfile()->GetUserCloudPolicyManagerAsh();
     ASSERT_TRUE(policy_manager);
 #else
     // Mock a signed-in user. This is used by the UserCloudPolicyStore to pass
     // the account id to the UserCloudPolicyValidator.
     signin::SetPrimaryAccount(
-        IdentityManagerFactory::GetForProfile(browser()->profile()),
-        PolicyBuilder::kFakeUsername, signin::ConsentLevel::kSync);
+        IdentityManagerFactory::GetForProfile(browser()->GetProfile()),
+        PolicyBuilder::kFakeUsername, signin::ConsentLevel::kSignin);
 
     UserCloudPolicyManager* policy_manager =
-        browser()->profile()->GetUserCloudPolicyManager();
+        browser()->GetProfile()->GetUserCloudPolicyManager();
     ASSERT_TRUE(policy_manager);
     policy_manager->SetSigninAccountId(
         PolicyBuilder::GetFakeAccountIdForTesting());
@@ -234,7 +233,7 @@ class ComponentCloudPolicyTest : public extensions::ExtensionBrowserTest {
 #if !BUILDFLAG(IS_CHROMEOS)
   void SignOut() {
     auto* primary_account_mutator =
-        IdentityManagerFactory::GetForProfile(browser()->profile())
+        IdentityManagerFactory::GetForProfile(browser()->GetProfile())
             ->GetPrimaryAccountMutator();
     primary_account_mutator->ClearPrimaryAccount(
         signin_metrics::ProfileSignout::kTest);
@@ -243,7 +242,7 @@ class ComponentCloudPolicyTest : public extensions::ExtensionBrowserTest {
 
   void RefreshPolicies() {
     ProfilePolicyConnector* profile_connector =
-        browser()->profile()->GetProfilePolicyConnector();
+        browser()->GetProfile()->GetProfilePolicyConnector();
     PolicyService* policy_service = profile_connector->policy_service();
     base::RunLoop run_loop;
     policy_service->RefreshPolicies(run_loop.QuitClosure(),

@@ -42,8 +42,30 @@ std::string LabelSourceToString(FormFieldData::LabelSource label_source) {
       return "ForShadowHostName";
     case FormFieldData::LabelSource::kOverlayingLabel:
       return "OverlayingLabel";
-    case FormFieldData::LabelSource::kDefaultSelectText:
-      return "DefaultSelectText";
+  }
+}
+
+bool IsLabelHigherQualityThanPlaceholder(
+    FormFieldData::LabelSource label_source) {
+  switch (label_source) {
+    case FormFieldData::LabelSource::kCombined:
+    case FormFieldData::LabelSource::kForId:
+    case FormFieldData::LabelSource::kForName:
+    case FormFieldData::LabelSource::kForShadowHostId:
+    case FormFieldData::LabelSource::kForShadowHostName:
+    case FormFieldData::LabelSource::kLabelTag:
+    case FormFieldData::LabelSource::kPTag:
+      return true;
+    case FormFieldData::LabelSource::kAriaLabel:
+    case FormFieldData::LabelSource::kDdTag:
+    case FormFieldData::LabelSource::kDivTable:
+    case FormFieldData::LabelSource::kLiTag:
+    case FormFieldData::LabelSource::kOverlayingLabel:
+    case FormFieldData::LabelSource::kPlaceHolder:
+    case FormFieldData::LabelSource::kTdTag:
+    case FormFieldData::LabelSource::kUnknown:
+    case FormFieldData::LabelSource::kValue:
+      return false;
   }
 }
 

@@ -3,6 +3,7 @@
 # found in the LICENSE file.
 
 import("//ui/webui/resources/tools/build_webui.gni")
+import("//ui/webui/webui_features.gni")
 
 assert(!is_android)
 
@@ -15,26 +16,46 @@ build_webui("build") {
     "power_bookmarks.html",
   ]
 
-  # Files holding a Polymer element definition and have an equivalent .html file.
-  web_component_files = [
-    "commerce/shopping_list.ts",
-    "power_bookmarks_context_menu.ts",
-    "power_bookmarks_edit_dialog.ts",
-    "power_bookmarks_labels.ts",
-    "power_bookmarks_list.ts",
-  ]
-
-  non_web_component_files = [
+  ts_files = [
     "bookmarks_api_proxy.ts",
+    "commerce/shopping_list.html.ts",
+    "commerce/shopping_list.ts",
+    "keyboard_arrow_navigation_service.ts",
+    "power_bookmarks_metrics.ts",
+    "power_bookmarks_add_folder_button.html.ts",
+    "power_bookmarks_add_folder_button.ts",
+    "power_bookmarks_app.html.ts",
+    "power_bookmarks_app.ts",
+    "power_bookmarks_list_header.html.ts",
+    "power_bookmarks_list_header.ts",
+    "power_bookmarks_list.html.ts",
+    "power_bookmarks_list.ts",
     "power_bookmark_row.html.ts",
     "power_bookmark_row.ts",
+    "power_bookmark_row_item.html.ts",
+    "power_bookmark_row_item.ts",
+    "power_bookmarks_context_menu.html.ts",
+    "power_bookmarks_context_menu.ts",
     "power_bookmarks_drag_manager.ts",
+    "power_bookmarks_edit_dialog.html.ts",
+    "power_bookmarks_edit_dialog.ts",
+    "power_bookmarks_labels.html.ts",
+    "power_bookmarks_labels.ts",
     "power_bookmarks_service.ts",
     "power_bookmarks_utils.ts",
-    "keyboard_arrow_navigation_service.ts",
   ]
 
-  css_files = [ "power_bookmark_row.css" ]
+  css_files = [
+    "power_bookmark_row.css",
+    "power_bookmark_row_item.css",
+    "power_bookmarks_add_folder_button.css",
+    "power_bookmarks_app.css",
+    "power_bookmarks_list_header.css",
+    "power_bookmarks_list.css",
+    "power_bookmarks_context_menu.css",
+    "power_bookmarks_edit_dialog.css",
+    "commerce/shopping_list.css",
+  ]
 
   icons_html_files = [
     "commerce/icons.html",
@@ -55,7 +76,6 @@ build_webui("build") {
   ts_deps = [
     "../shared:build_ts",
     "//third_party/lit/v3_0:build_ts",
-    "//third_party/polymer/v3_0:library",
     "//ui/webui/resources/cr_components/color_change_listener:build_ts",
     "//ui/webui/resources/cr_components/commerce:build_ts",
     "//ui/webui/resources/cr_components/page_image_service:build_ts",
@@ -69,6 +89,6 @@ build_webui("build") {
             "$root_gen_dir/chrome/browser/resources/side_panel/shared/tsc/*",
             target_gen_dir) ]
 
-  html_to_wrapper_template = "detect"
   webui_context_type = "trusted"
+  generate_code_cache = enable_webui_generate_code_cache
 }

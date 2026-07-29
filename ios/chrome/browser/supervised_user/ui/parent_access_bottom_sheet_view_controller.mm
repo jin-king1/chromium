@@ -6,6 +6,7 @@
 
 #import "base/functional/callback.h"
 #import "components/strings/grit/components_strings.h"
+#import "ios/chrome/browser/keyboard/ui_bundled/UIKeyCommand+Chrome.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/browser/supervised_user/ui/constants.h"
@@ -18,6 +19,7 @@
 namespace {
 
 constexpr CGFloat kCloseButtonPadding = 16;
+constexpr CGFloat kWidgetContentHeight = 410;
 
 // Custom detent identifier for when the bottom sheet is expanded.
 NSString* const kCustomBottomSheetDetentIdentifier = @"customBottomSheetDetent";
@@ -38,8 +40,8 @@ UIImage* CloseButtonImage(BOOL highlighted) {
     palette = [transparentPalette copy];
   }
 
-  return SymbolWithPalette(
-      DefaultSymbolWithPointSize(kXMarkCircleFillSymbol, 30), palette);
+  return SymbolWithPalette(SymbolWithPointSize(SymbolXMarkCircleFill, 30),
+                           palette);
 }
 
 }  // namespace
@@ -84,6 +86,7 @@ UIImage* CloseButtonImage(BOOL highlighted) {
     return;
   }
   _webView = view;
+  _webView.translatesAutoresizingMaskIntoConstraints = NO;
   _webView.hidden = _webViewHidden;
   [self.view addSubview:_webView];
   AddSameConstraints(_webView, self.view);
@@ -112,23 +115,44 @@ UIImage* CloseButtonImage(BOOL highlighted) {
   }
 }
 
+#pragma mark - UIAccessibilityAction
+
+// Dismiss the bottom sheet via the escape accessibility gesture.
+- (BOOL)accessibilityPerformEscape {
+  [self closeBottomSheetRequested];
+  return YES;
+}
+
+#pragma mark - UIResponder
+
+// To always be able to register key commands via -keyCommands, the VC must be
+// able to become first responder.
+- (BOOL)canBecomeFirstResponder {
+  return YES;
+}
+
+- (NSArray<UIKeyCommand*>*)keyCommands {
+  return @[ UIKeyCommand.cr_close ];
+}
+
+- (void)keyCommand_close {
+  [self closeBottomSheetRequested];
+}
+
 #pragma mark - Private
 
 // Returns a custom detent between the medium and large detents.
 // This is necessary because the WebView height is dynamic and
 // `preferredHeightDetent` is not applicable.
-// TODO(crbug.com/384514294): Update the custom height if needed.
 - (UISheetPresentationControllerDetent*)customHeightDetentWithIdentifier:
     (NSString*)identifier {
   auto resolver = ^CGFloat(
       id<UISheetPresentationControllerDetentResolutionContext> context) {
-    CGFloat largeDetentHeight = [UISheetPresentationControllerDetent.largeDetent
-        resolvedValueInContext:context];
-    CGFloat mediumDetentHeight =
-        [UISheetPresentationControllerDetent.mediumDetent
+    CGFloat largeDetentHeight =
+        [[UISheetPresentationControllerDetent largeDetent]
             resolvedValueInContext:context];
-    // Make sure detent is at least 75% of the maximum detent.
-    return MAX(mediumDetentHeight, largeDetentHeight * 0.75);
+    // Limit custom detent height at the maximum height.
+    return MIN(kWidgetContentHeight, largeDetentHeight);
   };
 
   return
@@ -139,42 +163,17 @@ UIImage* CloseButtonImage(BOOL highlighted) {
 - (void)updateBottomSheetDetents {
   UISheetPresentationController* presentationController =
       self.sheetPresentationController;
-  switch (ui::GetDeviceFormFactor()) {
-    case ui::DeviceFormFactor::DEVICE_FORM_FACTOR_PHONE:
-      if (IsPortrait(self.view.window)) {
-        // In portrait mode, the bottom sheet occupies the bottom half of the
-        // screen.
-        presentationController.detents =
-            @[ [UISheetPresentationControllerDetent mediumDetent] ];
-        presentationController.selectedDetentIdentifier =
-            UISheetPresentationControllerDetentIdentifierMedium;
-      } else {
-        // In landscape mode, the bottom sheet is centered horizontally and
-        // occupies half of the screen width.
-        presentationController.detents =
-            @[ [UISheetPresentationControllerDetent largeDetent] ];
-        presentationController.selectedDetentIdentifier =
-            UISheetPresentationControllerDetentIdentifierLarge;
-      }
-      break;
-    default:
-      // On devices where the screen width difference between portrait and
-      // landscape is less pronounced, display the bottom sheet with a custom
-      // detent.
-      presentationController.detents = @[
-        [self
-            customHeightDetentWithIdentifier:kCustomBottomSheetDetentIdentifier]
-      ];
-      presentationController.selectedDetentIdentifier =
-          kCustomBottomSheetDetentIdentifier;
-      break;
-  }
+
+  presentationController.detents = @[ [self
+      customHeightDetentWithIdentifier:kCustomBottomSheetDetentIdentifier] ];
+  presentationController.selectedDetentIdentifier =
+      kCustomBottomSheetDetentIdentifier;
 }
 
-- (void)closeButtonTapped {
+- (void)closeBottomSheetRequested {
   // Hide the WebView to prevent a white flash in dark mode.
   [self setWebViewHidden:YES];
-  [self.presentationDelegate closeButtonTapped:self];
+  [self.presentationDelegate closeBottomSheetRequested:self];
 }
 
 // Creates, initializes, and adds `_closeButton` to the bottom sheet.
@@ -190,7 +189,7 @@ UIImage* CloseButtonImage(BOOL highlighted) {
   _closeButton = [UIButton
       buttonWithConfiguration:closeButtonConfiguration
                 primaryAction:[UIAction actionWithHandler:^(UIAction* action) {
-                  [weakSelf closeButtonTapped];
+                  [weakSelf closeBottomSheetRequested];
                 }]];
 
   _closeButton.translatesAutoresizingMaskIntoConstraints = NO;
@@ -217,8 +216,9 @@ UIImage* CloseButtonImage(BOOL highlighted) {
   [NSLayoutConstraint activateConstraints:@[
     [_closeButton.topAnchor constraintEqualToAnchor:self.view.topAnchor
                                            constant:kCloseButtonPadding],
-    [_closeButton.rightAnchor constraintEqualToAnchor:self.view.rightAnchor
-                                             constant:-kCloseButtonPadding]
+    [_closeButton.trailingAnchor
+        constraintEqualToAnchor:self.view.trailingAnchor
+                       constant:-kCloseButtonPadding]
   ]];
 }
 

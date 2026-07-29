@@ -14,6 +14,7 @@ import org.chromium.base.shared_preferences.SharedPreferencesManager;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -126,6 +127,10 @@ public class CachedFlagUtils {
     public static void cacheNativeFlagsImmediately(
             @JniType("std::map<std::string, std::string>") Map<String, String> features) {
         if (features.isEmpty()) return;
+        // If sListsOfCachedFlags is null, then we have not called setFullListOfFlags(),
+        // which means we are in early start-up, which means this function is not executed as a
+        // result of user manually turning on/off a flag, which means we should do nothing.
+        if (sListsOfCachedFlags == null) return;
 
         final SharedPreferences.Editor editor =
                 CachedFlagsSharedPreferences.getInstance().getEditor();
@@ -159,18 +164,15 @@ public class CachedFlagUtils {
             @JniType("std::map<std::string, std::map<std::string, std::string>>")
                     Map<String, Map<String, String>> featureParams) {
         if (featureParams.isEmpty()) return;
+        // If sListsOfFeatureParams is null, then we have not called setFullListOfFeatureParams(),
+        // which means we are in early start-up, which means this function is not executed as a
+        // result of user manually turning on/off a flag, which means we should do nothing.
+        if (sListsOfFeatureParams == null) return;
 
-        final SharedPreferencesManager manager = CachedFlagsSharedPreferences.getInstance();
-        for (var entry : featureParams.entrySet()) {
-            String featureName = entry.getKey();
-            // All cached feature params related to this feature name should have a prefix of
-            // CachedFlagsSharedPreferences.FLAGS_FEATURE_PARAM_CACHED.createKey(featureName + "*")
-            // in the SharedPrefs, so we clear all keys with this prefix in the SharedPrefs
-            manager.removeKeysWithPrefix(
-                    CachedFlagsSharedPreferences.FLAGS_FEATURE_PARAM_CACHED, featureName);
-        }
+        eraseFeatureParamCachedValues(new ArrayList<>(featureParams.keySet()));
 
-        final SharedPreferences.Editor editor = manager.getEditor();
+        final SharedPreferences.Editor editor =
+                CachedFlagsSharedPreferences.getInstance().getEditor();
         for (var entry : featureParams.entrySet()) {
             String featureName = entry.getKey();
             for (var innerEntry : entry.getValue().entrySet()) {
@@ -183,5 +185,56 @@ public class CachedFlagUtils {
             }
         }
         editor.apply();
+    }
+
+    /**
+     * Given a list of feature names, find the CachedFlag instances corresponding to these feature
+     * names, and erase all the values in SharedPrefs cached by these CachedFlags.
+     *
+     * @param featuresToErase A list of feature names which we need to remove the cached values.
+     */
+    @CalledByNative
+    public static void eraseNativeFlagCachedValues(
+            @JniType("std::vector<std::string>") List<String> featuresToErase) {
+        if (featuresToErase.isEmpty()) return;
+        // If sListsOfCachedFlags is null, then we have not called setFullListOfFlags(),
+        // which means we are in early start-up, which means this function is not executed as a
+        // result of user manually turning on/off a flag, which means we should do nothing.
+        if (sListsOfCachedFlags == null) return;
+
+        final SharedPreferences.Editor editor =
+                CachedFlagsSharedPreferences.getInstance().getEditor();
+        for (String featureName : featuresToErase) {
+            CachedFlag feature = getSpecificCachedFlag(featureName);
+            if (feature == null) continue;
+            editor.remove(feature.getSharedPreferenceKey());
+        }
+        editor.apply();
+    }
+
+    /**
+     * Given a list of feature names, erase all the values in SharedPrefs cached by all the
+     * CachedFeatureParams related to these feature names.
+     *
+     * @param featuresWithParamsToErase A list of feature names which we need to remove the cached
+     *     values.
+     */
+    @CalledByNative
+    public static void eraseFeatureParamCachedValues(
+            @JniType("std::vector<std::string>") List<String> featuresWithParamsToErase) {
+        if (featuresWithParamsToErase.isEmpty()) return;
+        // If sListsOfFeatureParams is null, then we have not called setFullListOfFeatureParams(),
+        // which means we are in early start-up, which means this function is not executed as a
+        // result of user manually turning on/off a flag, which means we should do nothing.
+        if (sListsOfFeatureParams == null) return;
+
+        final SharedPreferencesManager manager = CachedFlagsSharedPreferences.getInstance();
+        for (String featureName : featuresWithParamsToErase) {
+            // All cached feature params related to this feature name should have a prefix of
+            // CachedFlagsSharedPreferences.FLAGS_FEATURE_PARAM_CACHED.createKey(featureName + "*")
+            // in the SharedPrefs, so we clear all keys with this prefix in the SharedPrefs
+            manager.removeKeysWithPrefix(
+                    CachedFlagsSharedPreferences.FLAGS_FEATURE_PARAM_CACHED, featureName);
+        }
     }
 }

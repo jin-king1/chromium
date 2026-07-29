@@ -33,19 +33,13 @@ UpgradeParams::PackageCacheMode GetPackagesCacheMode() {
 }  // namespace
 
 UpgradeParams::UpgradeParams()
-    : skip_boot_completed_broadcast(
-          !base::FeatureList::IsEnabled(arc::kBootCompletedBroadcastFeature)),
-      packages_cache_mode(GetPackagesCacheMode()),
+    : packages_cache_mode(GetPackagesCacheMode()),
       skip_gms_core_cache(base::CommandLine::ForCurrentProcess()->HasSwitch(
           ash::switches::kArcDisableGmsCoreCache)),
       skip_tts_cache(base::CommandLine::ForCurrentProcess()->HasSwitch(
           ash::switches::kArcDisableTtsCache)),
       skip_dexopt_cache(base::CommandLine::ForCurrentProcess()->HasSwitch(
           ash::switches::kArcDisableDexOptCache)),
-      enable_priority_app_lmk_delay(
-          base::FeatureList::IsEnabled(kPriorityAppLmkDelay)),
-      priority_app_lmk_delay_second(kPriorityAppLmkDelaySecond.Get()),
-      priority_app_lmk_delay_list(kPriorityAppLmkDelayList.Get()),
       enable_lmk_perceptible_min_state_update(
           base::FeatureList::IsEnabled(kLmkPerceptibleMinStateUpdate)) {}
 

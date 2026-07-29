@@ -4,7 +4,7 @@
 
 import '../cr_shared_vars.css.js';
 
-import {assert} from '//resources/js/assert.js';
+import {assert, assertNotReachedCase} from '//resources/js/assert.js';
 import {FocusOutlineManager} from '//resources/js/focus_outline_manager.js';
 import {FocusRow} from '//resources/js/focus_row.js';
 import {focusWithoutInk} from '//resources/js/focus_without_ink.js';
@@ -14,6 +14,15 @@ import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 
 import {getCss} from './cr_action_menu.css.js';
 import {getHtml} from './cr_action_menu.html.js';
+
+/**
+ * @param e The focusout event.
+ * @param element The element that should contain the focus.
+ * @return Whether the focus is moving outside of the element.
+ */
+function hasFocusoutOutside(e: FocusEvent, element: Element|null): boolean {
+  return !element || !element.contains(e.relatedTarget as Node);
+}
 
 interface ShowAtConfig {
   top?: number;
@@ -83,6 +92,8 @@ function getStartPointWithAnchor(
     case AnchorAlignment.AFTER_END:
       startPoint = end;
       break;
+    default:
+      assertNotReachedCase(anchorAlignment);
   }
 
   if (startPoint + menuLength > max) {
@@ -143,20 +154,33 @@ export class CrActionMenuElement extends CrLitElement {
       // and reposition to its anchor accordingly.
       autoReposition: {type: Boolean},
 
+      // Setting this flag will cause the menu to automatically close when
+      // focus moves outside the menu.
+      autoCloseOnFocusout: {type: Boolean},
+
       open: {
         type: Boolean,
         notify: true,
+      },
+
+      // Setting this flag will cause the menu to open as a non-modal dialog.
+      // Useful when the menu needs to remain open while interacting with
+      // other parts of the page.
+      nonModal: {
+        type: Boolean,
+        reflect: true,
       },
 
       // Descriptor of the menu. Should be something along the lines of "menu"
       roleDescription: {type: String},
     };
   }
-
-  accessibilityLabel?: string;
-  autoReposition: boolean = false;
-  open: boolean = false;
-  roleDescription?: string;
+  accessor accessibilityLabel: string|undefined;
+  accessor autoReposition: boolean = false;
+  accessor autoCloseOnFocusout: boolean = false;
+  accessor open: boolean = false;
+  accessor roleDescription: string|undefined;
+  accessor nonModal: boolean = false;
 
   private boundClose_: (() => void)|null = null;
   private resizeObserver_: ResizeObserver|null = null;
@@ -164,16 +188,17 @@ export class CrActionMenuElement extends CrLitElement {
   private anchorElement_: HTMLElement|null = null;
   private lastConfig_: ShowAtPositionConfig|null = null;
 
-  override firstUpdated() {
-    this.addEventListener('keydown', this.onKeyDown_.bind(this));
-    this.addEventListener('mouseover', this.onMouseover_);
-    this.addEventListener('click', this.onClick_);
-  }
-
   override disconnectedCallback() {
     super.disconnectedCallback();
 
     this.removeListeners_();
+  }
+
+  override firstUpdated() {
+    this.addEventListener('keydown', this.onKeyDown_.bind(this));
+    this.addEventListener('mouseover', this.onMouseover_);
+    this.addEventListener('click', this.onClick_);
+    this.addEventListener('focusout', this.onFocusout_.bind(this));
   }
 
   /**
@@ -190,6 +215,12 @@ export class CrActionMenuElement extends CrLitElement {
     if (this.resizeObserver_) {
       this.resizeObserver_.disconnect();
       this.resizeObserver_ = null;
+    }
+  }
+
+  protected onFocusout_(e: FocusEvent) {
+    if (this.autoCloseOnFocusout && hasFocusoutOutside(e, this)) {
+      this.close();
     }
   }
 
@@ -223,7 +254,8 @@ export class CrActionMenuElement extends CrLitElement {
       return;
     }
 
-    if (e.key !== 'Enter' && e.key !== 'ArrowUp' && e.key !== 'ArrowDown') {
+    if ((e.key !== 'Enter' || (isMac && e.ctrlKey)) && e.key !== 'ArrowUp' &&
+        e.key !== 'ArrowDown') {
       return;
     }
 
@@ -372,7 +404,7 @@ export class CrActionMenuElement extends CrLitElement {
     // and so that the dialog is positioned at the top-start corner of the
     // document.
     this.resetStyle_();
-    this.$.dialog.showModal();
+    this.nonModal ? this.$.dialog.show() : this.$.dialog.showModal();
     this.open = true;
 
     config.top += scrollTop;

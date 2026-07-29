@@ -4,10 +4,13 @@
 
 #include "chrome/updater/app/app_update.h"
 
+#include <memory>
+
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/memory/scoped_refptr.h"
 #include "chrome/updater/app/app.h"
+#include "chrome/updater/branded_constants.h"
 #include "chrome/updater/constants.h"
 #include "chrome/updater/lock.h"
 #include "chrome/updater/setup.h"

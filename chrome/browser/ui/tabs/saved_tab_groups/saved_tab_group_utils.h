@@ -5,21 +5,25 @@
 #ifndef CHROME_BROWSER_UI_TABS_SAVED_TAB_GROUPS_SAVED_TAB_GROUP_UTILS_H_
 #define CHROME_BROWSER_UI_TABS_SAVED_TAB_GROUPS_SAVED_TAB_GROUP_UTILS_H_
 
-#include <unordered_set>
+#include <vector>
 
+#include "base/containers/span.h"
 #include "base/uuid.h"
-#include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_keyed_service.h"
-#include "chrome/browser/ui/tabs/tab_group.h"
+#include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_metrics.h"
+#include "chrome/browser/ui/tabs/saved_tab_groups/tab_group_menu_utils.h"
 #include "chrome/browser/ui/tabs/tab_group_deletion_dialog_controller.h"
-#include "chrome/browser/ui/views/tabs/recent_activity_bubble_dialog_view.h"
 #include "components/data_sharing/public/group_data.h"
 #include "components/saved_tab_groups/public/saved_tab_group.h"
 #include "components/saved_tab_groups/public/types.h"
+#include "components/sync/base/collaboration_id.h"
+#include "components/tabs/public/tab_group.h"
+#include "components/user_education/common/help_bubble/help_bubble_params.h"
 #include "ui/base/interaction/element_tracker.h"
 #include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 
 class Browser;
+class BrowserWindowInterface;
 class Profile;
 
 namespace content {
@@ -50,22 +54,14 @@ class SavedTabGroupUtils {
   // Helper method for checking whether the feature can be used.
   static bool IsEnabledForProfile(Profile* profile);
 
-  // TODO(crbug.com/350514491): Default to using the TabGroupSyncService when
-  // crbug.com/350514491 is complete.
-  // When IsTabGroupSyncServiceDesktopMigrationEnabled() is true use the
-  // TabGroupSyncService. Otherwise, use SavedTabGroupKeyedService::proxy. This
-  // function will only return nullptr when the services cannot be created, or
-  // the profile is non-regular (Ex: incognito or guest mode).
-  static TabGroupSyncService* GetServiceForProfile(Profile* profile);
-
   static void RemoveGroupFromTabstrip(
-      const Browser* browser,
+      Browser* browser,
       const tab_groups::TabGroupId& local_group);
-  static void UngroupSavedGroup(const Browser* browser,
+  static void UngroupSavedGroup(Browser* browser,
                                 const base::Uuid& saved_group_guid);
-  static void DeleteSavedGroup(const Browser* browser,
+  static void DeleteSavedGroup(Browser* browser,
                                const base::Uuid& saved_group_guid);
-  static void LeaveSharedGroup(const Browser* browser,
+  static void LeaveSharedGroup(Browser* browser,
                                const base::Uuid& saved_group_guid);
 
   // Open the `url` to the end of `browser` tab strip as a new ungrouped tab.
@@ -80,13 +76,21 @@ class SavedTabGroupUtils {
   static void ToggleGroupPinState(Browser* browser,
                                   const base::Uuid& saved_group_guid);
 
+  // Opens a saved tab group and optionally focuses it if the appropriate
+  // feature is enabled.
+  static std::optional<tab_groups::LocalTabGroupID> OpenSavedTabGroup(
+      BrowserWindowInterface* browser,
+      const base::Uuid& saved_group_guid,
+      OpeningSource opening_source,
+      TabGroupSyncService* tab_group_service = nullptr);
+
   // Helper method to show the deletion dialog, if its needed. It either
   // runs the callback if the dialog is not shown or it shows the dialog
   // and the callback is run asynchronously through the dialog.
   static void MaybeShowSavedTabGroupDeletionDialog(
-      const Browser* browser,
+      Browser* browser,
       GroupDeletionReason reason,
-      const std::vector<TabGroupId>& group_ids,
+      base::span<const TabGroupId> group_ids,
       base::OnceCallback<void(DeletionDialogController::DeletionDialogTiming)>
           callback);
 
@@ -127,18 +131,6 @@ class SavedTabGroupUtils {
   static std::vector<content::WebContents*> GetWebContentsesInGroup(
       tab_groups::TabGroupId group_id);
 
-  // Returns the set of urls currently stored in the saved tab group.
-  static std::unordered_set<std::string> GetURLsInSavedTabGroup(
-      Profile* profile,
-      const base::Uuid& saved_id);
-
-  // Moves an open saved tab group from `source_browser` to `target_browser`.
-  static void MoveGroupToExistingWindow(
-      Browser* source_browser,
-      Browser* target_browser,
-      const tab_groups::TabGroupId& local_group_id,
-      const base::Uuid& saved_group_id);
-
   // Activates the first tab in the saved group. If a tab in the group is
   // already activated, then we focus the window the group belongs to instead.
   static void FocusFirstTabOrWindowInOpenGroup(
@@ -148,6 +140,10 @@ class SavedTabGroupUtils {
   // the SavedTabGroupBar::EverythingMenuButton or the AppMenuButton.
   static ui::TrackedElement* GetAnchorElementForTabGroupsV2IPH(
       const ui::ElementTracker::ElementList& elements);
+
+  // Returns the correct help bubble arrow for the Saved Groups V2 IPH.
+  static user_education::HelpBubbleArrow GetArrowForTabGroupsV2IPH(
+      const ui::TrackedElement* el);
 
   // Returns true if new tab groups should be pinned.
   static bool ShouldAutoPinNewTabGroups(Profile* profile);
@@ -167,23 +163,35 @@ class SavedTabGroupUtils {
   // is missing or not accessible.
   static std::vector<data_sharing::GroupMember> GetMembersOfSharedTabGroup(
       Profile* profile,
-      const tab_groups::CollaborationId& collaboration_id);
+      const syncer::CollaborationId& collaboration_id);
 
   // Returns the GroupId for this tab group's collaboration.
   static std::optional<data_sharing::GroupId> GetDataSharingGroupId(
       Profile* profile,
       LocalTabGroupID group_id);
 
-  // Returns the Recent Activity Log for this tab group.
+  // Returns the Recent Activity Log for this tab group. Optionally, filter for
+  // the given tab.
   static std::vector<collaboration::messaging::ActivityLogItem>
-  GetRecentActivity(Profile* profile, LocalTabGroupID group_id);
+  GetRecentActivity(Profile* profile,
+                    LocalTabGroupID group_id,
+                    std::optional<LocalTabID> tab_id = std::nullopt);
 
   // Returns the tab with this id if contained in this group. The group
   // must exist.
   static tabs::TabInterface* GetGroupedTab(LocalTabGroupID group_id,
                                            LocalTabID tab_id);
-};
 
+  static void PerformTabGroupMenuAction(const TabGroupMenuAction& action,
+                                        const TabGroupMenuContext& context,
+                                        Browser* browser,
+                                        TabGroupSyncService* tab_group_service);
+
+  static void RecordOpenSharedGroupMetrics(const TabGroupMenuContext& context);
+
+  static void RecordSavedTabGroupSubmenuMetric(
+      const TabGroupMenuContext& context);
+};
 }  // namespace tab_groups
 
 #endif  // CHROME_BROWSER_UI_TABS_SAVED_TAB_GROUPS_SAVED_TAB_GROUP_UTILS_H_

@@ -8,7 +8,8 @@ import("//ui/webui/resources/tools/build_webui.gni")
 build_webui("build") {
   static_files = [ "network.html" ]
 
-  # Files holding a Polymer element definition AND have an equivalent .html file.
+  # Files holding a Polymer element definition AND have an equivalent .html
+  # file.
   web_component_files = [
     "network_logs_ui.ts",
     "network_metrics_ui.ts",
@@ -16,7 +17,7 @@ build_webui("build") {
     "network_ui.ts",
   ]
 
-  non_web_component_files = [ "network_ui_browser_proxy.ts" ]
+  ts_files = [ "network_ui_browser_proxy.ts" ]
 
   ts_definitions = [
     "//chrome/browser/resources/chromeos/network_ui/third_party/uPlot.iife.min.d.ts",

@@ -5,11 +5,11 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_DATA_MODEL_ADDRESSES_AUTOFILL_STRUCTURED_ADDRESS_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_DATA_MODEL_ADDRESSES_AUTOFILL_STRUCTURED_ADDRESS_H_
 
+#include <optional>
 #include <string>
 #include <vector>
 
-#include "base/feature_list.h"
-#include "components/autofill/core/browser/data_model/addresses/autofill_feature_guarded_address_component.h"
+#include "components/autofill/core/browser/country_type.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_structured_address_component.h"
 #include "components/autofill/core/browser/field_types.h"
 
@@ -30,6 +30,13 @@ class HouseNumberNode : public AddressComponent {
   ~HouseNumberNode() override;
 };
 
+// A node that represents the house number and apartment.
+class HouseNumberAndApartmentNode : public AddressComponent {
+ public:
+  explicit HouseNumberAndApartmentNode(SubcomponentsList children);
+  ~HouseNumberAndApartmentNode() override;
+};
+
 // Contains the specific location in the street (e.g. street name and house
 // number info.)
 class StreetLocationNode : public AddressComponent {
@@ -45,11 +52,18 @@ class FloorNode : public AddressComponent {
   ~FloorNode() override;
 };
 
-// The number of the apartment.
+// The apartment node.
 class ApartmentNode : public AddressComponent {
  public:
   explicit ApartmentNode(SubcomponentsList children);
   ~ApartmentNode() override;
+};
+
+// The number of the apartment.
+class ApartmentNumNode : public AddressComponent {
+ public:
+  explicit ApartmentNumNode(SubcomponentsList children);
+  ~ApartmentNumNode() override;
 };
 
 // The SubPremise normally contains the floor and the apartment number.
@@ -113,6 +127,12 @@ class BetweenStreetsOrLandmarkNode : public AddressComponent {
   ~BetweenStreetsOrLandmarkNode() override;
 };
 
+class StreetLocationAndLocalityNode : public AddressComponent {
+ public:
+  explicit StreetLocationAndLocalityNode(SubcomponentsList children);
+  ~StreetLocationAndLocalityNode() override;
+};
+
 // The StreetAddress incorporates all the information specifically related to
 // the street address (e.g. street location. between streets, subpremise, etc).
 class StreetAddressNode : public AddressComponent {
@@ -128,7 +148,7 @@ class StreetAddressNode : public AddressComponent {
 
   std::u16string GetValueForComparison(
       const std::u16string& value,
-      const AddressComponent& other) const override;
+      const AddressCountryCode& common_country_code) const override;
 
  protected:
   // Gives the component with the higher verification status precedence.
@@ -206,7 +226,7 @@ class StateNode : public AddressComponent {
 
   std::u16string GetValueForComparison(
       const std::u16string& value,
-      const AddressComponent& other) const override;
+      const AddressCountryCode& common_country_code) const override;
 };
 
 // Stores the postal code of an address.
@@ -217,7 +237,7 @@ class PostalCodeNode : public AddressComponent {
 
   std::u16string GetValueForComparison(
       const std::u16string& value,
-      const AddressComponent& other) const override;
+      const AddressCountryCode& common_country_code) const override;
 };
 
 // Stores the sorting code.

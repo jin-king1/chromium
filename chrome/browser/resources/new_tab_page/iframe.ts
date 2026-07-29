@@ -42,11 +42,11 @@ export class IframeElement extends CrLitElement {
     };
   }
 
-  allow: string;
-  src: string;
+  accessor allow: string = '';
+  accessor src: string = '';
 
   // Sends message to iframe.
-  postMessage(message: any) {
+  postMessage(message: unknown) {
     assert(this.shadowRoot);
     WindowProxy.getInstance().postMessage(
         strictQuery(this.shadowRoot, '#iframe', HTMLIFrameElement), message,
@@ -55,6 +55,12 @@ export class IframeElement extends CrLitElement {
 
   protected getSrc_(): string {
     return WindowProxy.getInstance().createIframeSrc(this.src);
+  }
+}
+
+declare global {
+  interface HTMLElementTagNameMap {
+    'ntp-iframe': IframeElement;
   }
 }
 

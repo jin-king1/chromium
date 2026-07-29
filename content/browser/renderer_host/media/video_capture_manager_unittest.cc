@@ -21,7 +21,6 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
-#include "build/android_buildflags.h"
 #include "build/build_config.h"
 #include "content/browser/renderer_host/media/fake_video_capture_provider.h"
 #include "content/browser/renderer_host/media/in_process_video_capture_provider.h"
@@ -30,23 +29,20 @@
 #include "content/browser/renderer_host/media/video_capture_provider_switcher.h"
 #include "content/browser/screenlock_monitor/screenlock_monitor.h"
 #include "content/browser/screenlock_monitor/screenlock_monitor_source.h"
+#include "content/common/features.h"
 #include "content/public/browser/content_browser_client.h"
 #include "content/public/browser/desktop_media_id.h"
 #include "content/public/common/buildflags.h"
 #include "content/public/common/content_client.h"
+#include "content/public/common/content_features.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/test_browser_context.h"
 #include "media/base/media_switches.h"
 #include "media/capture/video/fake_video_capture_device_factory.h"
 #include "media/capture/video/video_capture_system_impl.h"
-#include "services/video_effects/public/cpp/buildflags.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/mediastream/media_stream_request.h"
-
-#if BUILDFLAG(ENABLE_VIDEO_EFFECTS)
-#include "services/video_effects/public/mojom/video_effects_processor.mojom-forward.h"
-#endif
 
 using ::testing::_;
 using ::testing::AnyNumber;
@@ -202,9 +198,8 @@ class MockFrameObserver : public VideoCaptureControllerEventHandler {
                      const ReadyBuffer& buffer) override {}
   void OnFrameDropped(const VideoCaptureControllerID& id,
                       media::VideoCaptureFrameDropReason reason) override {}
-  void OnNewSubCaptureTargetVersion(
-      const VideoCaptureControllerID& id,
-      uint32_t sub_capture_target_version) override {}
+  void OnNewCaptureVersion(const VideoCaptureControllerID& id,
+                           media::CaptureVersion capture_version) override {}
   void OnFrameWithEmptyRegionCapture(const VideoCaptureControllerID&) override {
   }
   void OnEnded(const VideoCaptureControllerID& id) override {}
@@ -236,34 +231,17 @@ class ScreenlockMonitorTestSource : public ScreenlockMonitorSource {
   }
 };
 
-#if BUILDFLAG(ENABLE_VIDEO_EFFECTS)
-class MockBrowserClient : public content::ContentBrowserClient {
- public:
-  MOCK_METHOD(void,
-              BindReadonlyVideoEffectsManager,
-              (const std::string& device_id,
-               content::BrowserContext* browser_context,
-               mojo::PendingReceiver<media::mojom::ReadonlyVideoEffectsManager>
-                   video_effects_manager),
-              (override));
-
-  MOCK_METHOD(
-      void,
-      BindVideoEffectsProcessor,
-      (const std::string& device_id,
-       content::BrowserContext* browser_context,
-       mojo::PendingReceiver<video_effects::mojom::VideoEffectsProcessor>
-           video_effects_processor),
-      (override));
-};
-#endif  // BUILDFLAG(ENABLE_VIDEO_EFFECTS)
-
 }  // namespace
 
 // Test class
 class VideoCaptureManagerTest : public testing::Test {
  public:
-  VideoCaptureManagerTest() {}
+  VideoCaptureManagerTest() {
+#if BUILDFLAG(IS_ANDROID)
+    scoped_feature_list_.InitAndDisableFeature(
+        media::kAndroidEnableBackgroundMediaCapturing);
+#endif
+  }
 
   VideoCaptureManagerTest(const VideoCaptureManagerTest&) = delete;
   VideoCaptureManagerTest& operator=(const VideoCaptureManagerTest&) = delete;
@@ -301,9 +279,6 @@ class VideoCaptureManagerTest : public testing::Test {
 
  protected:
   void SetUp() override {
-#if BUILDFLAG(ENABLE_VIDEO_EFFECTS)
-    content::SetBrowserClientForTesting(&browser_client_);
-#endif
     listener_ = std::make_unique<MockMediaStreamProviderListener>();
     auto video_capture_device_factory =
         std::make_unique<WrappedDeviceFactory>();
@@ -356,18 +331,21 @@ class VideoCaptureManagerTest : public testing::Test {
     }
   }
 
-  VideoCaptureControllerID StartClient(const base::UnguessableToken& session_id,
-                                       bool expect_success) {
+  VideoCaptureControllerID StartClient(
+      const base::UnguessableToken& session_id,
+      bool expect_success,
+      std::optional<url::Origin> origin = std::nullopt,
+      bool is_allowed_on_lock_screen = false) {
     media::VideoCaptureParams params;
     params.requested_format = media::VideoCaptureFormat(
         gfx::Size(320, 240), 30, media::PIXEL_FORMAT_I420);
 
     VideoCaptureControllerID client_id = base::UnguessableToken::Create();
     vcm_->ConnectClient(
-        session_id, params, client_id, frame_observer_.get(), std::nullopt,
+        session_id, params, client_id, render_frame_host_id_,
+        frame_observer_.get(), origin, is_allowed_on_lock_screen,
         base::BindOnce(&VideoCaptureManagerTest::OnGotControllerCallback,
-                       base::Unretained(this), client_id, expect_success),
-        /*browser_context=*/&browser_context_);
+                       base::Unretained(this), client_id, expect_success));
     base::RunLoop().RunUntilIdle();
     return client_id;
   }
@@ -400,7 +378,7 @@ class VideoCaptureManagerTest : public testing::Test {
     base::RunLoop().RunUntilIdle();
   }
 
-#if BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_DESKTOP_ANDROID)
+#if BUILDFLAG(IS_ANDROID)
   void ApplicationStateChange(base::android::ApplicationState state) {
     vcm_->OnApplicationStateChange(state);
   }
@@ -418,19 +396,14 @@ class VideoCaptureManagerTest : public testing::Test {
   raw_ptr<WrappedDeviceFactory> video_capture_device_factory_;
   blink::MediaStreamDevices devices_;
   content::TestBrowserContext browser_context_;
-#if BUILDFLAG(ENABLE_VIDEO_EFFECTS)
-  MockBrowserClient browser_client_;
-#endif
+  GlobalRenderFrameHostId render_frame_host_id_ = GlobalRenderFrameHostId(1, 1);
+  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 // Test cases
 
 // Try to open, start, stop and close a device.
 TEST_F(VideoCaptureManagerTest, CreateAndClose) {
-#if BUILDFLAG(ENABLE_VIDEO_EFFECTS)
-  EXPECT_CALL(browser_client_, BindReadonlyVideoEffectsManager(_, _, _))
-      .Times(0);
-#endif
   InSequence s;
   EXPECT_CALL(*listener_,
               Opened(blink::mojom::MediaStreamType::DEVICE_VIDEO_CAPTURE, _));
@@ -448,22 +421,6 @@ TEST_F(VideoCaptureManagerTest, CreateAndClose) {
   base::RunLoop().RunUntilIdle();
   vcm_->UnregisterListener(listener_.get());
 }
-
-#if BUILDFLAG(ENABLE_VIDEO_EFFECTS)
-// Try to start and stop a device with an effects processor
-TEST_F(VideoCaptureManagerTest, CreateWithVideoEffectsProcessor) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(media::kCameraMicEffects);
-  mojo::PendingReceiver<media::mojom::ReadonlyVideoEffectsManager> receiver;
-  EXPECT_CALL(browser_client_, BindVideoEffectsProcessor(devices_.front().id,
-                                                         &browser_context_, _))
-      .Times(1);
-
-  base::UnguessableToken video_session_id = vcm_->Open(devices_.front());
-  auto client_id = StartClient(video_session_id, true);
-  StopClient(client_id);
-}
-#endif  // BUILDFLAG(ENABLE_VIDEO_EFFECTS)
 
 TEST_F(VideoCaptureManagerTest, CreateAndCloseMultipleTimes) {
   InSequence s;
@@ -857,6 +814,34 @@ TEST_F(VideoCaptureManagerTest, OpenNotExisting) {
   vcm_->UnregisterListener(listener_.get());
 }
 
+// Try open a non-existing fake device that uses the
+// FakeVideoCaptureDeviceLauncher.
+TEST_F(VideoCaptureManagerTest, OpenNotExistingFakeDevice) {
+  // Use a device ID that we know won't be found by the fake device factory.
+  std::string invalid_device_id = "invalid_fake_device_id";
+
+  // Create a device descriptor for the invalid device.
+  blink::MediaStreamDevice dummy_device(
+      blink::mojom::MediaStreamType::DEVICE_VIDEO_CAPTURE, invalid_device_id,
+      "Invalid Fake Device");
+
+  EXPECT_CALL(*frame_observer_, OnError(_, _));
+  EXPECT_CALL(*listener_, Opened(_, _));
+  EXPECT_CALL(*listener_, Closed(_, _));
+
+  // This should trigger the fix in FakeVideoCaptureDeviceLauncher::LaunchDeviceAsync
+  // because the fake device factory will return an error when it can't find the ID.
+  base::UnguessableToken session_id = vcm_->Open(dummy_device);
+  VideoCaptureControllerID client_id = StartClient(session_id, true);
+  base::RunLoop().RunUntilIdle();
+
+  StopClient(client_id);
+  vcm_->Close(session_id);
+  base::RunLoop().RunUntilIdle();
+
+  vcm_->UnregisterListener(listener_.get());
+}
+
 // Start a device without calling Open, using a non-magic ID.
 TEST_F(VideoCaptureManagerTest, StartInvalidSession) {
   StartClient(base::UnguessableToken::Create(), false);
@@ -935,7 +920,7 @@ TEST_F(VideoCaptureManagerTest, PauseAndResumeClient) {
   vcm_->UnregisterListener(listener_.get());
 }
 
-#if BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_DESKTOP_ANDROID)
+#if BUILDFLAG(IS_ANDROID)
 // Try to open, start, pause and resume a device.
 TEST_F(VideoCaptureManagerTest, PauseAndResumeDevice) {
   InSequence s;
@@ -968,7 +953,7 @@ TEST_F(VideoCaptureManagerTest, PauseAndResumeDevice) {
   base::RunLoop().RunUntilIdle();
   vcm_->UnregisterListener(listener_.get());
 }
-#elif !BUILDFLAG(IS_DESKTOP_ANDROID)
+#else
 TEST_F(VideoCaptureManagerTest, PauseAndResumeDeviceOnScreenLock) {
   vcm_->set_idle_close_timeout_for_testing(base::TimeDelta());
 
@@ -985,18 +970,16 @@ TEST_F(VideoCaptureManagerTest, PauseAndResumeDeviceOnScreenLock) {
   screenlock_monitor_source_->GenerateScreenLockedEvent();
   ASSERT_FALSE(video_capture_device_factory_->has_active_devices());
 
-  // Starting another client while the screen is locked should defer the actual
-  // start of the device, but appear open. Since the device is already started,
-  // the OnStarted() will appear before Opened().
-  EXPECT_CALL(*frame_observer_, OnStarted(_));
+  // Starting another client while the screen is locked should reject the
+  // client for a disallowed origin.
   EXPECT_CALL(*listener_,
               Opened(blink::mojom::MediaStreamType::DEVICE_VIDEO_CAPTURE, _));
   auto video_session_id2 = vcm_->Open(devices_.front());
-  auto client_id2 = StartClient(video_session_id2, true);
+  StartClient(video_session_id2, false);
   ASSERT_FALSE(video_capture_device_factory_->has_active_devices());
 
   // Unlock the screen now.
-  EXPECT_CALL(*frame_observer_, OnStarted(_)).Times(2);
+  EXPECT_CALL(*frame_observer_, OnStarted(_)).Times(1);
   screenlock_monitor_source_->GenerateScreenUnlockedEvent();
   ASSERT_TRUE(video_capture_device_factory_->has_active_devices());
 
@@ -1010,7 +993,6 @@ TEST_F(VideoCaptureManagerTest, PauseAndResumeDeviceOnScreenLock) {
   StopClient(client_id);
   vcm_->Close(video_session_id);
 
-  StopClient(client_id2);
   vcm_->Close(video_session_id2);
 
   // Wait to check callbacks before removing the listener.
@@ -1047,6 +1029,160 @@ TEST_F(VideoCaptureManagerTest, ScreenLockDoesNothingBeforeTimeout) {
 
   // Wait to check callbacks before removing the listener.
   base::RunLoop().RunUntilIdle();
+  vcm_->UnregisterListener(listener_.get());
+}
+
+// Lock the screen before any session exists, then open and connect a client.
+// The device must not be started until the screen is unlocked.
+TEST_F(VideoCaptureManagerTest,
+       ScreenLockDefersDeviceStartWithoutPriorSessions) {
+  screenlock_monitor_source_->GenerateScreenLockedEvent();
+  EXPECT_FALSE(vcm_->is_idle_close_timer_running_for_testing());
+
+  EXPECT_CALL(*listener_,
+              Opened(blink::mojom::MediaStreamType::DEVICE_VIDEO_CAPTURE, _));
+  EXPECT_CALL(*frame_observer_, OnStarted(_)).Times(0);
+  auto video_session_id = vcm_->Open(devices_.front());
+  StartClient(video_session_id, false);
+  EXPECT_FALSE(video_capture_device_factory_->has_active_devices());
+  Mock::VerifyAndClearExpectations(frame_observer_.get());
+
+  screenlock_monitor_source_->GenerateScreenUnlockedEvent();
+
+  base::RunLoop run_loop;
+  EXPECT_CALL(*listener_,
+              Closed(blink::mojom::MediaStreamType::DEVICE_VIDEO_CAPTURE,
+                     video_session_id))
+      .WillOnce(testing::InvokeWithoutArgs([&run_loop]() { run_loop.Quit(); }));
+  vcm_->Close(video_session_id);
+  run_loop.Run();
+
+  vcm_->UnregisterListener(listener_.get());
+}
+
+// Open and connect a client, lock the screen, close the session, then open and
+// connect a new client while still locked. The device must not be started
+// until the screen is unlocked.
+TEST_F(VideoCaptureManagerTest,
+       ScreenLockDefersDeviceStartAfterLockedSessionClosed) {
+  vcm_->set_idle_close_timeout_for_testing(base::TimeDelta::Max());
+
+  EXPECT_CALL(*listener_,
+              Opened(blink::mojom::MediaStreamType::DEVICE_VIDEO_CAPTURE, _));
+  EXPECT_CALL(*frame_observer_, OnStarted(_));
+  auto video_session_id = vcm_->Open(devices_.front());
+  auto client_id = StartClient(video_session_id, true);
+  ASSERT_TRUE(video_capture_device_factory_->has_active_devices());
+
+  screenlock_monitor_source_->GenerateScreenLockedEvent();
+  EXPECT_TRUE(vcm_->is_idle_close_timer_running_for_testing());
+
+  {
+    base::RunLoop run_loop;
+    EXPECT_CALL(*listener_,
+                Closed(blink::mojom::MediaStreamType::DEVICE_VIDEO_CAPTURE,
+                       video_session_id))
+        .WillOnce(
+            testing::InvokeWithoutArgs([&run_loop]() { run_loop.Quit(); }));
+    StopClient(client_id);
+    vcm_->Close(video_session_id);
+    run_loop.Run();
+  }
+
+  ASSERT_FALSE(video_capture_device_factory_->has_active_devices());
+  EXPECT_FALSE(vcm_->is_idle_close_timer_running_for_testing());
+  Mock::VerifyAndClearExpectations(listener_.get());
+  Mock::VerifyAndClearExpectations(frame_observer_.get());
+
+  EXPECT_CALL(*listener_,
+              Opened(blink::mojom::MediaStreamType::DEVICE_VIDEO_CAPTURE, _));
+  EXPECT_CALL(*frame_observer_, OnStarted(_)).Times(0);
+  auto video_session_id2 = vcm_->Open(devices_.front());
+  StartClient(video_session_id2, false);
+  EXPECT_FALSE(video_capture_device_factory_->has_active_devices());
+  Mock::VerifyAndClearExpectations(frame_observer_.get());
+
+  screenlock_monitor_source_->GenerateScreenUnlockedEvent();
+
+  {
+    base::RunLoop run_loop;
+    EXPECT_CALL(*listener_,
+                Closed(blink::mojom::MediaStreamType::DEVICE_VIDEO_CAPTURE,
+                       video_session_id2))
+        .WillOnce(
+            testing::InvokeWithoutArgs([&run_loop]() { run_loop.Quit(); }));
+    vcm_->Close(video_session_id2);
+    run_loop.Run();
+  }
+
+  vcm_->UnregisterListener(listener_.get());
+}
+
+class TestContentBrowserClientForLockScreen : public ContentBrowserClient {
+ public:
+  explicit TestContentBrowserClientForLockScreen(
+      const url::Origin& allowed_origin)
+      : allowed_origin_(allowed_origin) {}
+
+  bool IsVideoCaptureAllowedWhileScreenLocked(
+      const url::Origin& origin) override {
+    return origin == allowed_origin_;
+  }
+
+ private:
+  url::Origin allowed_origin_;
+};
+
+// Lock the screen, then open and connect a client for an authorized origin.
+// The device MUST be started for the authorized origin, but rejected for
+// others.
+TEST_F(VideoCaptureManagerTest, ScreenLockAllowsAuthorizedOriginDeviceStart) {
+  const url::Origin allowed_origin =
+      url::Origin::Create(GURL("https://allowed-origin.com"));
+  const url::Origin disallowed_origin =
+      url::Origin::Create(GURL("https://disallowed-origin.com"));
+
+  TestContentBrowserClientForLockScreen test_browser_client(allowed_origin);
+  ContentBrowserClient* old_browser_client =
+      SetBrowserClientForTesting(&test_browser_client);
+
+  screenlock_monitor_source_->GenerateScreenLockedEvent();
+
+  // 1. Starting video capture for a disallowed origin while locked rejects
+  // starting the device.
+  EXPECT_CALL(*listener_,
+              Opened(blink::mojom::MediaStreamType::DEVICE_VIDEO_CAPTURE, _));
+  EXPECT_CALL(*frame_observer_, OnStarted(_)).Times(0);
+  auto video_session_id1 = vcm_->Open(devices_.front());
+  StartClient(video_session_id1, false, disallowed_origin);
+  EXPECT_FALSE(video_capture_device_factory_->has_active_devices());
+  Mock::VerifyAndClearExpectations(frame_observer_.get());
+
+  // 2. Starting video capture for an authorized origin while locked starts the
+  // device immediately.
+  EXPECT_CALL(*listener_,
+              Opened(blink::mojom::MediaStreamType::DEVICE_VIDEO_CAPTURE, _));
+  EXPECT_CALL(*frame_observer_, OnStarted(_)).Times(1);
+  auto video_session_id2 = vcm_->Open(devices_.front());
+  auto client_id2 = StartClient(video_session_id2, true, allowed_origin,
+                                /*is_allowed_on_lock_screen=*/true);
+  EXPECT_TRUE(video_capture_device_factory_->has_active_devices());
+
+  {
+    base::RunLoop run_loop;
+    EXPECT_CALL(*listener_,
+                Closed(blink::mojom::MediaStreamType::DEVICE_VIDEO_CAPTURE, _))
+        .Times(2)
+        .WillOnce(testing::Return())
+        .WillOnce(
+            testing::InvokeWithoutArgs([&run_loop]() { run_loop.Quit(); }));
+    vcm_->Close(video_session_id1);
+    StopClient(client_id2);
+    vcm_->Close(video_session_id2);
+    run_loop.Run();
+  }
+
+  SetBrowserClientForTesting(old_browser_client);
   vcm_->UnregisterListener(listener_.get());
 }
 #endif

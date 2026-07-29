@@ -5,9 +5,11 @@
 import {assert} from 'chrome://resources/js/assert.js';
 import {CustomElement} from 'chrome://resources/js/custom_element.js';
 
-import type {AngleFeature, BrowserBridge, ClientInfo, FeatureStatus, Problem} from './browser_bridge.js';
+import type {AngleFeature, BrowserBridge, ClientInfo, Data, FeatureStatus, Problem} from './browser_bridge.js';
 import {getTemplate} from './info_view.html.js';
+// <if expr="enable_vulkan">
 import {VulkanInfo} from './vulkan_info.js';
+// </if>
 
 /**
  * Given a blob and a filename, prompts user to
@@ -144,11 +146,6 @@ function createElem(
   return elem;
 }
 
-export interface Data {
-  description: string;
-  id?: string;
-  value: string;
-}
 
 export interface ArrayData {
   description: string;
@@ -265,7 +262,7 @@ function createLinkPair(textContent: string, href: string) {
 function getDataValue(data: Data|ArrayData): string {
   return Array.isArray(data.value) ?
       data.value.map(data => getDataValue(data)).join(',') :
-      data.value;
+      data.value.toString();
 }
 
 /**
@@ -293,8 +290,8 @@ function getActiveGPU(data: Data[]|ArrayData[]) {
 }
 
 /** convert a value to a string or empty string if null or undefined */
-function safeString(value: any) {
-  return typeof value === 'undefined' || value === null ? '' : value.toString();
+function safeString(value: unknown) {
+  return typeof value === 'undefined' || value === null ? '' : String(value);
 }
 
 const kSections = {
@@ -306,7 +303,6 @@ const kSections = {
   angleFeatures: ['ANGLE Features', 'ul'],
   dawnInfo: ['Dawn Info', 'ul'],
   compositorInfo: ['Compositor Information', 'div'],
-  gpuMemoryBufferInfo: ['GpuMemoryBuffers Status', 'div'],
   displayInfo: ['Display(s) Information', 'div'],
   videoAccelerationInfo: ['Video Acceleration Information', 'div'],
   vulkanInfo: ['Vulkan Information', 'div'],
@@ -563,7 +559,6 @@ export class InfoViewElement extends CustomElement {
 
       this.setTable_(sections.basicInfo, gpuInfo.basicInfo);
       this.setTable_(sections.compositorInfo, gpuInfo.compositorInfo);
-      this.setTable_(sections.gpuMemoryBufferInfo, gpuInfo.gpuMemoryBufferInfo);
       this.setTable_(sections.displayInfo, gpuInfo.displayInfo);
       this.setTable_(
           sections.videoAccelerationInfo, gpuInfo.videoAcceleratorsInfo);
@@ -582,6 +577,7 @@ export class InfoViewElement extends CustomElement {
 
       this.updateSectionTable_(sections.diagnostics, gpuInfo.diagnostics);
 
+      // <if expr="enable_vulkan">
       this.setTable_(
           sections.vulkanInfo,
           gpuInfo.vulkanInfo ? [{
@@ -590,7 +586,7 @@ export class InfoViewElement extends CustomElement {
             'id': 'vulkan-info-value',
           }] :
                                []);
-
+      // </if>
       this.setTable_(sections.devicePerfInfo, gpuInfo.devicePerfInfo);
     } else {
       sections.basicInfo.list.textContent = '... loading ...';
@@ -663,7 +659,6 @@ export class InfoViewElement extends CustomElement {
       'protected_video_decode': 'Hardware Protected Video Decode',
       'surface_control': 'Surface Control',
       'vpx_decode': 'VPx Video Decode',
-      'webgl2': 'WebGL2',
       'canvas_oop_rasterization': 'Canvas out-of-process rasterization',
       'raw_draw': 'Raw Draw',
       'video_encode': 'Video Encode',
@@ -672,6 +667,8 @@ export class InfoViewElement extends CustomElement {
       'webgpu': 'WebGPU',
       'skia_graphite': 'Skia Graphite',
       'webnn': 'WebNN',
+      'trees_in_viz': 'TreesInViz',
+      'webgpu_on_vk_via_gl_interop': 'WebGPU interop',
     };
 
     const statusMap: Record<string, {label: string, class: string}> = {

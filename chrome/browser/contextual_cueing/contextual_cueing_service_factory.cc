@@ -1,15 +1,15 @@
-// Copyright 2025 The Chromium Authors
+// Copyright 2026 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
 #include "chrome/browser/contextual_cueing/contextual_cueing_service_factory.h"
 
 #include "base/no_destructor.h"
-#include "chrome/browser/contextual_cueing/contextual_cueing_features.h"
 #include "chrome/browser/contextual_cueing/contextual_cueing_service.h"
-#include "chrome/browser/page_content_annotations/page_content_extraction_service_factory.h"
+#include "chrome/browser/contextual_cueing/features.h"
 #include "chrome/browser/profiles/profile.h"
 #include "components/keyed_service/core/keyed_service.h"
+#include "components/pref_registry/pref_registry_syncable.h"
 
 namespace contextual_cueing {
 
@@ -29,30 +29,26 @@ ContextualCueingServiceFactory* ContextualCueingServiceFactory::GetInstance() {
 
 ContextualCueingServiceFactory::ContextualCueingServiceFactory()
     : ProfileKeyedServiceFactory(
-          "ContextualCueingService",
+          "ContextualCueingServiceV2",
           ProfileSelections::Builder()
               .WithRegular(ProfileSelection::kOriginalOnly)
-              .Build()) {
-  DependsOn(page_content_annotations::PageContentExtractionServiceFactory::
-                GetInstance());
-}
+              .Build()) {}
 
 ContextualCueingServiceFactory::~ContextualCueingServiceFactory() = default;
 
 std::unique_ptr<KeyedService>
 ContextualCueingServiceFactory::BuildServiceInstanceForBrowserContext(
     content::BrowserContext* context) const {
-  if (!base::FeatureList::IsEnabled(contextual_cueing::kContextualCueing)) {
+  if (!base::FeatureList::IsEnabled(kContextualCueingV2)) {
     return nullptr;
   }
-  return std::make_unique<ContextualCueingService>(
-      page_content_annotations::PageContentExtractionServiceFactory::
-          GetForProfile(Profile::FromBrowserContext(context)));
+  Profile* profile = Profile::FromBrowserContext(context);
+  return std::make_unique<ContextualCueingService>(profile->GetPrefs());
 }
 
 bool ContextualCueingServiceFactory::ServiceIsCreatedWithBrowserContext()
     const {
-  return base::FeatureList::IsEnabled(contextual_cueing::kContextualCueing);
+  return base::FeatureList::IsEnabled(kContextualCueingV2);
 }
 
 bool ContextualCueingServiceFactory::ServiceIsNULLWhileTesting() const {

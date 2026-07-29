@@ -11,6 +11,7 @@
 
 #include "base/check_deref.h"
 #include "base/check_op.h"
+#include "base/containers/flat_map.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
@@ -27,31 +28,45 @@
 #include "chrome/browser/history/history_service_factory.h"
 #include "chrome/browser/history/history_utils.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/supervised_user/supervised_user_service_factory.h"
+#include "chrome/browser/signin/chrome_signin_pref_names.h"
+#include "chrome/browser/signin/identity_manager_factory.h"
+#include "chrome/browser/signin/signin_ui_util.h"
+#include "chrome/browser/supervised_user/supervised_user_url_filtering_service_factory.h"
 #include "chrome/browser/sync/device_info_sync_service_factory.h"
 #include "chrome/browser/sync/sync_service_factory.h"
-#include "chrome/browser/ui/browser_finder.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/chrome_pages.h"
+#include "chrome/browser/ui/hats/hats_service.h"
+#include "chrome/browser/ui/hats/hats_service_factory.h"
+#include "chrome/browser/ui/hats/survey_config.h"
+#include "chrome/browser/ui/profiles/profile_view_utils.h"
 #include "chrome/browser/ui/url_identity.h"
 #include "chrome/browser/ui/webui/favicon_source.h"
+#include "chrome/browser/ui/webui/signin/signin_utils.h"
+#include "chrome/browser/ui/webui/top_chrome/top_chrome_web_ui_controller.h"
 #include "chrome/common/buildflags.h"
+#include "chrome/common/chrome_features.h"
 #include "chrome/common/pref_names.h"
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/bookmarks/browser/bookmark_utils.h"
 #include "components/favicon/core/fallback_url_util.h"
 #include "components/favicon/core/large_icon_service.h"
 #include "components/favicon_base/favicon_url_parser.h"
+#include "components/history/core/browser/features.h"
 #include "components/history_clusters/core/config.h"
 #include "components/history_clusters/core/features.h"
 #include "components/history_clusters/core/history_clusters_prefs.h"
-#include "components/history_embeddings/history_embeddings_features.h"
+#include "components/history_embeddings/core/history_embeddings_features.h"
 #include "components/keyed_service/core/service_access_type.h"
 #include "components/prefs/pref_service.h"
 #include "components/query_parser/snippet.h"
+#include "components/signin/public/base/signin_pref_names.h"
+#include "components/signin/public/base/signin_prefs.h"
+#include "components/signin/public/identity_manager/account_info.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/strings/grit/components_strings.h"
-#include "components/supervised_user/core/browser/supervised_user_preferences.h"
-#include "components/supervised_user/core/browser/supervised_user_service.h"
-#include "components/supervised_user/core/browser/supervised_user_url_filter.h"
+#include "components/supervised_user/core/browser/supervised_user_url_filtering_service.h"
 #include "components/supervised_user/core/browser/supervised_user_utils.h"
 #include "components/sync/protocol/sync_enums.pb.h"
 #include "components/sync/service/sync_service.h"
@@ -70,6 +85,21 @@ using history::HistoryService;
 using history::WebHistoryService;
 
 namespace {
+
+#if !BUILDFLAG(IS_CHROMEOS)
+constexpr int kHistorySyncPromoShownThreshold = 5;
+constexpr base::TimeDelta kHistorySyncPromoCooldown = base::Days(7);
+
+history::mojom::AccountInfoPtr CreateAccountInfoDataMojo(
+    const AccountInfo& info) {
+  auto account_info_mojo = history::mojom::AccountInfo::New();
+  account_info_mojo->name = std::string(info.GetFullName().value_or(""));
+  account_info_mojo->email = std::string(info.GetEmail());
+  account_info_mojo->account_image_src =
+      GURL(signin::GetAccountPictureUrl(info));
+  return account_info_mojo;
+}
+#endif
 
 // Identifiers for the type of device from which a history entry originated.
 static const char kDeviceTypeLaptop[] = "laptop";
@@ -206,7 +236,7 @@ history::mojom::HistoryEntryPtr HistoryEntryToMojom(
     const syncer::DeviceInfoTracker* tracker,
     base::Clock* clock) {
   auto result_mojom = history::mojom::HistoryEntry::New();
-  base::Value::Dict dictionary;
+  base::DictValue dictionary;
   auto url_and_title = SetHistoryEntryUrlAndTitle(entry);
   result_mojom->url = url_and_title.first;
   result_mojom->title = url_and_title.second;
@@ -221,7 +251,7 @@ history::mojom::HistoryEntryPtr HistoryEntryToMojom(
   // When the domain is empty, use the scheme instead. This allows for a
   // sensible treatment of e.g. file: URLs when group by domain is on.
   if (domain.empty()) {
-    domain = base::UTF8ToUTF16(entry.url.scheme() + ":");
+    domain = base::UTF8ToUTF16(entry.url.GetScheme() + ":");
   }
 
   // The items which are to be written into result are also described in
@@ -231,16 +261,21 @@ history::mojom::HistoryEntryPtr HistoryEntryToMojom(
   result_mojom->domain = base::UTF16ToUTF8(domain);
 
   result_mojom->fallback_favicon_text =
-      base::UTF16ToASCII(favicon::GetFallbackIconText(entry.url));
+      base::UTF16ToUTF8(favicon::GetFallbackIconText(entry.url));
 
   result_mojom->time = entry.time.InMillisecondsFSinceUnixEpoch();
 
-  // Pass the timestamps in a list.
-  std::vector<double> timestamps;
-  for (const base::Time& timestamp : entry.all_timestamps) {
-    timestamps.push_back(timestamp.InMillisecondsFSinceUnixEpoch());
+  // Pass the timestamps in a map.
+  base::flat_map<std::string, std::vector<double>> all_timestamps;
+  for (const auto& [url, timestamps] : entry.all_timestamps) {
+    std::vector<double> timestamps_for_url;
+    // Add all timestamps for this URL.
+    for (const base::Time& timestamp : timestamps) {
+      timestamps_for_url.push_back(timestamp.InMillisecondsFSinceUnixEpoch());
+    }
+    all_timestamps[url.spec()] = std::move(timestamps_for_url);
   }
-  result_mojom->all_timestamps = std::move(timestamps);
+  result_mojom->all_timestamps = std::move(all_timestamps);
 
   // Always pass the short date since it is needed both in the search and in
   // the monthly view.
@@ -258,9 +293,8 @@ history::mojom::HistoryEntryPtr HistoryEntryToMojom(
   if (entry.is_search_result) {
     snippet_string = entry.snippet;
   } else {
-    base::Time midnight = clock->Now().LocalMidnight();
     std::u16string date_str =
-        ui::TimeFormat::RelativeDate(entry.time, &midnight);
+        ui::TimeFormat::RelativeDate(entry.time, clock->Now().LocalMidnight());
     if (date_str.empty()) {
       date_str = base::TimeFormatFriendlyDate(entry.time);
     } else {
@@ -283,12 +317,11 @@ history::mojom::HistoryEntryPtr HistoryEntryToMojom(
 
   supervised_user::FilteringBehavior filtering_behavior;
   if (profile.IsChild()) {
-    supervised_user::SupervisedUserService* supervised_user_service =
-        SupervisedUserServiceFactory::GetForProfile(&profile);
-    supervised_user::SupervisedUserURLFilter* url_filter =
-        supervised_user_service->GetURLFilter();
     filtering_behavior =
-        url_filter->GetFilteringBehavior(entry.url.GetWithEmptyPath()).behavior;
+        supervised_user::SupervisedUserUrlFilteringServiceFactory::
+            GetForProfile(&profile)
+                ->GetFilteringBehavior(entry.url.GetWithEmptyPath())
+                .behavior;
     is_blocked_visit = entry.blocked_visit;
     result_mojom->host_filtering_behavior =
         FilteringBehaviorToMojom(filtering_behavior);
@@ -304,6 +337,7 @@ history::mojom::HistoryEntryPtr HistoryEntryToMojom(
   result_mojom->blocked_visit = is_blocked_visit;
   result_mojom->is_url_in_remote_user_data = IsEntryInRemoteUserData(entry);
   result_mojom->remote_icon_url_for_uma = entry.remote_icon_url_for_uma.spec();
+  result_mojom->is_actor_visit = entry.is_actor_visit;
 
   // Additional debugging fields shown only if the debug feature is enabled.
   if (history_clusters::GetConfig().user_visible_debug) {
@@ -311,7 +345,7 @@ history::mojom::HistoryEntryPtr HistoryEntryToMojom(
     debug_mojom->is_url_in_local_database = IsUrlInLocalDatabase(entry);
     debug_mojom->visit_count = entry.visit_count;
     debug_mojom->typed_count = entry.typed_count;
-    result_mojom->debug_info = std::move(debug_mojom);
+    result_mojom->debug = std::move(debug_mojom);
   }
 
   return result_mojom;
@@ -326,10 +360,17 @@ BrowsingHistoryHandler::BrowsingHistoryHandler(
     : profile_(profile),
       web_contents_(web_contents),
       page_handler_(this, std::move(pending_page_handler)),
+      identity_manager_(
+          CHECK_DEREF(IdentityManagerFactory::GetForProfile(profile))),
       clock_(base::DefaultClock::GetInstance()),
       browsing_history_service_(nullptr) {}
 
 BrowsingHistoryHandler::~BrowsingHistoryHandler() = default;
+
+void BrowsingHistoryHandler::SetSidePanelUIEmbedder(
+    base::WeakPtr<TopChromeWebUIController::Embedder> side_panel_embedder) {
+  side_panel_embedder_ = side_panel_embedder;
+}
 
 void BrowsingHistoryHandler::SetPage(
     mojo::PendingRemote<history::mojom::Page> pending_page) {
@@ -339,6 +380,51 @@ void BrowsingHistoryHandler::SetPage(
     std::move(deferred_callback).Run();
   }
   deferred_callbacks_.clear();
+
+  HatsService* hats_service =
+      HatsServiceFactory::GetForProfile(profile_,
+                                        /* create_if_necessary = */ true);
+  if (!hats_service) {
+    return;
+  }
+
+  // Experiment group HaTS survey should trigger if the HaTS experiment group
+  // feature is enabled and any of the history improvement features is enabled.
+  // Check the HaTS feature last, so that clients are only counted as active if
+  // one of the other feature is enabled.
+  if ((history::IsBrowsingHistoryActorIntegrationM3Enabled() ||
+       base::FeatureList::IsEnabled(
+           history::kBrowsingHistorySimilarVisitsGrouping)) &&
+      base::FeatureList::IsEnabled(
+          features::kHappinessTrackingSurveysForDesktopHistoryPageExperiment)) {
+    hats_service->LaunchDelayedSurveyForWebContents(
+        kHatsSurveyTriggerHistoryPageExperiment, web_contents_,
+        features::kHappinessTrackingSurveysForDesktopHistoryPageExperimentTime
+            .Get()
+            .InMilliseconds());
+  }
+
+  // Control group HaTS survey should trigger if the HaTS control group feature
+  // is enabled and none of the history improvement features is enabled.
+  // Check the HaTS feature last, so that clients are only counted as active if
+  // all of the other features are disabled.
+  if (!history::IsBrowsingHistoryActorIntegrationM3Enabled() &&
+      !base::FeatureList::IsEnabled(
+          history::kBrowsingHistorySimilarVisitsGrouping) &&
+      base::FeatureList::IsEnabled(
+          features::kHappinessTrackingSurveysForDesktopHistoryPageControl)) {
+    hats_service->LaunchDelayedSurveyForWebContents(
+        kHatsSurveyTriggerHistoryPageControl, web_contents_,
+        features::kHappinessTrackingSurveysForDesktopHistoryPageControlTime
+            .Get()
+            .InMilliseconds());
+  }
+}
+
+void BrowsingHistoryHandler::ShowSidePanelUI() {
+  if (side_panel_embedder_) {
+    side_panel_embedder_->ShowUI();
+  }
 }
 
 void BrowsingHistoryHandler::StartQueryHistory() {
@@ -350,12 +436,14 @@ void BrowsingHistoryHandler::StartQueryHistory() {
       this, local_history, sync_service);
 
   // 150 = RESULTS_PER_PAGE from chrome/browser/resources/history/constants.js
-  SendHistoryQuery(150, std::string(), std::nullopt);
+  SendHistoryQuery(150, std::string(), std::nullopt, true, true);
 }
 
 void BrowsingHistoryHandler::QueryHistory(const std::string& query,
                                           int max_count,
                                           std::optional<double> begin_timestamp,
+                                          bool include_user_visits,
+                                          bool include_actor_visits,
                                           QueryHistoryCallback callback) {
   if (!browsing_history_service_) {
     // Page was refreshed, so need to call StartQueryHistory here
@@ -374,16 +462,22 @@ void BrowsingHistoryHandler::QueryHistory(const std::string& query,
 
   query_history_callback_ = std::move(callback);
 
-  SendHistoryQuery(max_count, query, begin_timestamp);
+  SendHistoryQuery(max_count, query, begin_timestamp, include_user_visits,
+                   include_actor_visits);
 }
 
 void BrowsingHistoryHandler::SendHistoryQuery(
     int max_count,
     const std::string& query,
-    std::optional<double> begin_timestamp) {
+    std::optional<double> begin_timestamp,
+    bool include_user_visits,
+    bool include_actor_visits) {
   history::QueryOptions options;
   options.max_count = max_count;
+  options.policy_for_404_visits = history::VisitQuery404sPolicy::kExclude404s;
   options.duplicate_policy = history::QueryOptions::REMOVE_DUPLICATES_PER_DAY;
+  options.include_actor_visits = include_actor_visits;
+  options.include_user_visits = include_user_visits;
   std::string query_without_prefix = query;
 
   const std::string kHostPrefix = "host:";
@@ -409,8 +503,9 @@ void BrowsingHistoryHandler::QueryHistoryContinuation(
   }
   query_history_callback_ = std::move(callback);
 
-  DCHECK(query_history_continuation_);
-  std::move(query_history_continuation_).Run();
+  if (!query_history_continuation_.is_null()) {
+    std::move(query_history_continuation_).Run();
+  }
 }
 
 void BrowsingHistoryHandler::RemoveVisits(
@@ -434,7 +529,7 @@ void BrowsingHistoryHandler::RemoveVisits(
     for (const auto& timestamp : timestamps) {
       base::Time visit_time =
           base::Time::FromMillisecondsSinceUnixEpoch(timestamp);
-      entry.all_timestamps.insert(visit_time);
+      entry.all_timestamps[entry.url].insert(visit_time);
     }
 
     items_to_remove.push_back(entry);
@@ -446,9 +541,160 @@ void BrowsingHistoryHandler::RemoveVisits(
 void BrowsingHistoryHandler::OpenClearBrowsingDataDialog() {
   // TODO(beng): This is an improper direct dependency on Browser. Route this
   // through some sort of delegate.
-  Browser* browser = chrome::FindBrowserWithTab(web_contents_);
+  BrowserWindowInterface* browser =
+      GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(web_contents_);
   chrome::ShowClearBrowsingDataDialog(browser);
 }
+
+void BrowsingHistoryHandler::TurnOnHistorySync() {
+#if !BUILDFLAG(IS_CHROMEOS)
+  BrowserWindowInterface* browser =
+      GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(web_contents_);
+  if (browser) {
+    signin_ui_util::SignInAndEnableHistorySync(
+        browser, profile_,
+        signin_metrics::AccessPoint::kRecentTabs);
+  }
+#else
+  // This is not expected to be called on ChromeOS as the screen that uses this
+  // function is never shown for ChromeOS (using <if expr="not is_chromeos">).
+  NOTREACHED();
+#endif
+}
+
+#if !BUILDFLAG(IS_CHROMEOS)
+void BrowsingHistoryHandler::ShouldShowHistoryPageHistorySyncPromo(
+    ShouldShowHistoryPageHistorySyncPromoCallback callback) {
+  const int promo_shown_count = GetHistoryPageHistorySyncPromoShownCount();
+
+  // If the promo has been shown more than the threshold, the promo should not
+  // be shown.
+  if (promo_shown_count >= kHistorySyncPromoShownThreshold) {
+    std::move(callback).Run(false);
+    return;
+  }
+
+  const bool shown_after_dismissal =
+      IsHistoryPageHistorySyncPromoShownAfterDismissal();
+  // If the promo was dismissed and shown once after dismissal, the promo should
+  // not be shown anymore.
+  if (shown_after_dismissal) {
+    std::move(callback).Run(false);
+    return;
+  }
+  const base::Time last_dismissed_timestamp =
+      GetHistoryPageHistorySyncPromoLastDismissedTimestamp();
+  const bool was_dismissed = !last_dismissed_timestamp.is_null();
+  // If the promo was dismissed and the cooldown has not passed, the promo
+  // should not be shown.
+  if (was_dismissed &&
+      clock_->Now() < last_dismissed_timestamp + kHistorySyncPromoCooldown) {
+    std::move(callback).Run(false);
+    return;
+  }
+
+  std::move(callback).Run(true);
+}
+
+void BrowsingHistoryHandler::RecordHistoryPageHistorySyncPromoDismissed() {
+  SetHistoryPageHistorySyncPromoLastDismissedTimestamp(clock_->Now());
+}
+
+void BrowsingHistoryHandler::IncrementHistoryPageHistorySyncPromoShownCount() {
+  IncrementHistoryPageHistorySyncPromoShownCountPref();
+
+  const base::Time last_dismissed_timestamp =
+      GetHistoryPageHistorySyncPromoLastDismissedTimestamp();
+  const bool was_dismissed = !last_dismissed_timestamp.is_null();
+  if (was_dismissed) {
+    SetHistoryPageHistorySyncPromoShownAfterDismissal();
+  }
+}
+
+int BrowsingHistoryHandler::GetHistoryPageHistorySyncPromoShownCount() const {
+  const AccountInfo account =
+      signin_ui_util::GetSingleAccountForPromos(&identity_manager_.get());
+  if (account.GetGaiaId().empty()) {
+    return profile_->GetPrefs()->GetInteger(
+        prefs::kHistoryPageHistorySyncPromoShownCountPerProfile);
+  }
+
+  return SigninPrefs(*profile_->GetPrefs())
+      .GetHistoryPageHistorySyncPromoShownCount(account.GetGaiaId());
+}
+
+base::Time
+BrowsingHistoryHandler::GetHistoryPageHistorySyncPromoLastDismissedTimestamp()
+    const {
+  const AccountInfo account =
+      signin_ui_util::GetSingleAccountForPromos(&identity_manager_.get());
+  if (account.GetGaiaId().empty()) {
+    return profile_->GetPrefs()->GetTime(
+        prefs::kHistoryPageHistorySyncPromoLastDismissedTimestampPerProfile);
+  }
+
+  return SigninPrefs(*profile_->GetPrefs())
+      .GetHistoryPageHistorySyncPromoLastDismissedTimestamp(account.GetGaiaId())
+      .value_or(base::Time());
+}
+
+bool BrowsingHistoryHandler::IsHistoryPageHistorySyncPromoShownAfterDismissal()
+    const {
+  const AccountInfo account =
+      signin_ui_util::GetSingleAccountForPromos(&identity_manager_.get());
+  if (account.GetGaiaId().empty()) {
+    return profile_->GetPrefs()->GetBoolean(
+        prefs::kHistoryPageHistorySyncPromoShownAfterDismissalPerProfile);
+  }
+
+  return SigninPrefs(*profile_->GetPrefs())
+      .GetHistoryPageHistorySyncPromoShownAfterDismissal(account.GetGaiaId());
+}
+
+void BrowsingHistoryHandler::
+    SetHistoryPageHistorySyncPromoLastDismissedTimestamp(base::Time time) {
+  const AccountInfo account =
+      signin_ui_util::GetSingleAccountForPromos(&identity_manager_.get());
+  if (account.GetGaiaId().empty()) {
+    profile_->GetPrefs()->SetTime(
+        prefs::kHistoryPageHistorySyncPromoLastDismissedTimestampPerProfile,
+        time);
+  } else {
+    SigninPrefs(*profile_->GetPrefs())
+        .SetHistoryPageHistorySyncPromoLastDismissedTimestamp(
+            account.GetGaiaId(), time);
+  }
+}
+
+void BrowsingHistoryHandler::
+    IncrementHistoryPageHistorySyncPromoShownCountPref() {
+  const AccountInfo account =
+      signin_ui_util::GetSingleAccountForPromos(&identity_manager_.get());
+  if (account.GetGaiaId().empty()) {
+    const int promo_shown_count = profile_->GetPrefs()->GetInteger(
+        prefs::kHistoryPageHistorySyncPromoShownCountPerProfile);
+    profile_->GetPrefs()->SetInteger(
+        prefs::kHistoryPageHistorySyncPromoShownCountPerProfile,
+        promo_shown_count + 1);
+  } else {
+    SigninPrefs(*profile_->GetPrefs())
+        .IncrementHistoryPageHistorySyncPromoShownCount(account.GetGaiaId());
+  }
+}
+
+void BrowsingHistoryHandler::
+    SetHistoryPageHistorySyncPromoShownAfterDismissal() {
+  const AccountInfo account =
+      signin_ui_util::GetSingleAccountForPromos(&identity_manager_.get());
+  if (account.GetGaiaId().empty()) {
+    profile_->GetPrefs()->SetBoolean(
+        prefs::kHistoryPageHistorySyncPromoShownAfterDismissalPerProfile, true);
+  } else {
+    SigninPrefs(*profile_->GetPrefs())
+        .SetHistoryPageHistorySyncPromoShownAfterDismissal(account.GetGaiaId());
+  }
+}
+#endif
 
 void BrowsingHistoryHandler::RemoveBookmark(const std::string& url) {
   BookmarkModel* model = BookmarkModelFactory::GetForBrowserContext(profile_);
@@ -529,4 +775,39 @@ void BrowsingHistoryHandler::HasOtherFormsOfBrowsingHistory(
 
 Profile* BrowsingHistoryHandler::GetProfile() {
   return profile_;
+}
+
+void BrowsingHistoryHandler::RequestAccountInfo(
+    RequestAccountInfoCallback callback) {
+#if !BUILDFLAG(IS_CHROMEOS)
+  AccountInfo account_info =
+      signin_ui_util::GetSingleAccountForPromos(&identity_manager_.get());
+  std::move(callback).Run(CreateAccountInfoDataMojo(account_info));
+
+  if (!identity_manager_observation_.IsObserving()) {
+    identity_manager_observation_.Observe(&identity_manager_.get());
+  }
+#else
+  // This is not expected to be called on ChromeOS as the screen that uses this
+  // function is never shown for ChromeOS (using <if expr="not is_chromeos">).
+  NOTREACHED();
+#endif
+}
+
+void BrowsingHistoryHandler::OnExtendedAccountInfoUpdated(
+    const AccountInfo& info) {
+#if !BUILDFLAG(IS_CHROMEOS)
+  AccountInfo account_to_display =
+      signin_ui_util::GetSingleAccountForPromos(&identity_manager_.get());
+
+  if (info.IsEmpty() || !info.IsValid() ||
+      info.account_id != account_to_display.account_id) {
+    return;
+  }
+  page_->SendAccountInfo(CreateAccountInfoDataMojo(info));
+#else
+  // This is not expected to be called on ChromeOS as the screen that uses this
+  // function is never shown for ChromeOS (using <if expr="not is_chromeos">).
+  NOTREACHED();
+#endif
 }

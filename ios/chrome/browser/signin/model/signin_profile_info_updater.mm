@@ -7,11 +7,13 @@
 #import <string>
 
 #import "base/strings/utf_string_conversions.h"
+#import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/identity_manager/account_info.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/profile/profile_attributes_ios.h"
 #import "ios/chrome/browser/shared/model/profile/profile_attributes_storage_ios.h"
 #import "ios/chrome/browser/shared/model/profile/profile_manager_ios.h"
+#import "ios/chrome/common/app_group/app_group_constants.h"
 
 SigninProfileInfoUpdater::SigninProfileInfoUpdater(
     signin::IdentityManager* identity_manager,
@@ -25,7 +27,7 @@ SigninProfileInfoUpdater::SigninProfileInfoUpdater(
 
   signin_error_controller_observation_.Observe(signin_error_controller);
 
-  UpdateBrowserStateInfo();
+  UpdateProfileInfo();
   // TODO(crbug.com/40603806): Call OnErrorChanged() here, to catch any change
   // that happened since the construction of SigninErrorController. BrowserState
   // metrics depend on this bug and must be fixed first.
@@ -38,7 +40,7 @@ void SigninProfileInfoUpdater::Shutdown() {
   signin_error_controller_observation_.Reset();
 }
 
-void SigninProfileInfoUpdater::UpdateBrowserStateInfo() {
+void SigninProfileInfoUpdater::UpdateProfileInfo() {
   GetApplicationContext()
       ->GetProfileManager()
       ->GetProfileAttributesStorage()
@@ -50,6 +52,15 @@ void SigninProfileInfoUpdater::UpdateBrowserStateInfo() {
               },
               identity_manager_->GetPrimaryAccountInfo(
                   signin::ConsentLevel::kSignin)));
+}
+
+void SigninProfileInfoUpdater::UpdateWidgetsInfo(
+    const signin::PrimaryAccountChangeEvent& event) {
+  NSUserDefaults* shared_defaults = app_group::GetGroupUserDefaults();
+  const std::string& current_gaia_id =
+      event.GetCurrentState().primary_account.gaia.ToString();
+  [shared_defaults setObject:base::SysUTF8ToNSString(current_gaia_id)
+                      forKey:app_group::kPrimaryAccount];
 }
 
 void SigninProfileInfoUpdater::OnErrorChanged() {
@@ -66,5 +77,6 @@ void SigninProfileInfoUpdater::OnErrorChanged() {
 
 void SigninProfileInfoUpdater::OnPrimaryAccountChanged(
     const signin::PrimaryAccountChangeEvent& event) {
-  UpdateBrowserStateInfo();
+  UpdateProfileInfo();
+  UpdateWidgetsInfo(event);
 }

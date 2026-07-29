@@ -5,7 +5,6 @@
 #ifndef CHROME_BROWSER_EXTENSIONS_API_AUTOFILL_PRIVATE_AUTOFILL_UTIL_H_
 #define CHROME_BROWSER_EXTENSIONS_API_AUTOFILL_PRIVATE_AUTOFILL_UTIL_H_
 
-#include <map>
 #include <memory>
 #include <optional>
 
@@ -32,12 +31,8 @@ using CallbackAfterSuccessfulUserAuth = base::OnceCallback<void(bool)>;
 // Uses `adm` to generate a list of up-to-date AddressEntry objects.
 AddressEntryList GenerateAddressList(const autofill::AddressDataManager& adm);
 
-// Uses `adm` to generate a list of up-to-date CountryEntry objects.
-// Depending on the `for_account_address_profile` and
-// `AutofillEnableAccountStorageForIneligibleCountries`, unsupported countries
-// are filtered from the resulting list.
-CountryEntryList GenerateCountryList(const autofill::AddressDataManager& adm,
-                                     bool for_account_address_profile);
+// Generate a list of up-to-date `CountryEntry` objects that can be stored.
+CountryEntryList GenerateCountryList();
 
 // Uses `paydm` to generate a list of up-to-date CreditCardEntry
 // objects.

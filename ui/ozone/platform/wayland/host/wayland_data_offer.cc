@@ -4,8 +4,9 @@
 
 #include "ui/ozone/platform/wayland/host/wayland_data_offer.h"
 
+#include <algorithm>
+
 #include "base/check.h"
-#include "base/containers/contains.h"
 #include "base/files/file_util.h"
 #include "ui/base/clipboard/clipboard_constants.h"
 
@@ -38,8 +39,9 @@ void WaylandDataOffer::Reject(uint32_t serial) {
 }
 
 base::ScopedFD WaylandDataOffer::Receive(const std::string& mime_type) {
-  if (!base::Contains(mime_types(), mime_type))
+  if (!std::ranges::contains(mime_types(), mime_type)) {
     return base::ScopedFD();
+  }
 
   base::ScopedFD read_fd;
   base::ScopedFD write_fd;
@@ -49,8 +51,9 @@ base::ScopedFD WaylandDataOffer::Receive(const std::string& mime_type) {
   // mimetype, then it is safer to "read" the clipboard data with
   // a mimetype mime_type known to be available.
   std::string effective_mime_type = mime_type;
-  if (mime_type == kMimeTypeText && text_plain_mime_type_inserted())
-    effective_mime_type = kMimeTypeTextUtf8;
+  if (mime_type == kMimeTypePlainText && text_plain_mime_type_inserted()) {
+    effective_mime_type = kMimeTypeUtf8PlainText;
+  }
 
   wl_data_offer_receive(data_offer_.get(), effective_mime_type.data(),
                         write_fd.get());

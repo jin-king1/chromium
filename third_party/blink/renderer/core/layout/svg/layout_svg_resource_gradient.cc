@@ -66,7 +66,7 @@ struct GradientData {
   USING_FAST_MALLOC(GradientData);
 
  public:
-  scoped_refptr<Gradient> gradient;
+  std::unique_ptr<Gradient> gradient;
   AffineTransform userspace_transform;
 };
 
@@ -147,7 +147,8 @@ bool LayoutSVGResourceGradient::ApplyShader(
     const gfx::RectF& reference_box,
     const AffineTransform* additional_transform,
     const AutoDarkMode& auto_dark_mode,
-    cc::PaintFlags& flags) {
+    cc::PaintFlags& flags,
+    PaintFlags /* paint_flags */) {
   NOT_DESTROYED();
   ClearInvalidationMask();
 

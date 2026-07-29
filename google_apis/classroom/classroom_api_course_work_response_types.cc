@@ -39,12 +39,6 @@ constexpr char kDueTimeMinutesComponent[] = "minutes";
 constexpr char kDueTimeSecondsComponent[] = "seconds";
 constexpr char kDueTimeNanosComponent[] = "nanos";
 
-constexpr char kApiResponseCourseWorkItemMaterialDriveKey[] = "driveFile";
-constexpr char kApiResponseCourseWorkItemMaterialYoutubeVideoKey[] =
-    "youtubeVideo";
-constexpr char kApiResponseCourseWorkItemMaterialLinkKey[] = "link";
-constexpr char kApiResponseCourseWorkItemMaterialFormKey[] = "form";
-
 constexpr char kPublishedCourseWorkItemState[] = "PUBLISHED";
 constexpr char kAssignmentCourseWorkItemType[] = "ASSIGNMENT";
 constexpr char kShortAnswerQuestionCourseWorkItemType[] =
@@ -80,7 +74,7 @@ bool ConvertCourseWorkItemAlternateLink(std::string_view input, GURL* output) {
 }
 
 base::TimeDelta GetCourseWorkItemDueTime(
-    const base::Value::Dict& raw_course_work_item) {
+    const base::DictValue& raw_course_work_item) {
   const auto* const time =
       raw_course_work_item.FindDict(kApiResponseCourseWorkItemDueTimeKey);
   if (!time) {
@@ -98,7 +92,7 @@ base::TimeDelta GetCourseWorkItemDueTime(
 }
 
 std::optional<CourseWorkItem::DueDateTime> GetCourseWorkItemDueDateTime(
-    const base::Value::Dict& raw_course_work_item) {
+    const base::DictValue& raw_course_work_item) {
   const auto* const date =
       raw_course_work_item.FindDict(kApiResponseCourseWorkItemDueDateKey);
   if (!date) {
@@ -121,76 +115,6 @@ std::optional<CourseWorkItem::DueDateTime> GetCourseWorkItemDueDateTime(
 }
 
 }  // namespace
-
-// ----- Material -----
-
-Material::Material() = default;
-
-Material::~Material() = default;
-
-// static
-bool Material::ConvertMaterial(const base::Value* input, Material* output) {
-  const base::Value::Dict* dict = input->GetIfDict();
-  if (!dict) {
-    return false;
-  }
-
-  const auto* const sharedDriveFile =
-      dict->FindDict(kApiResponseCourseWorkItemMaterialDriveKey);
-  const auto* const youtubeVideo =
-      dict->FindDict(kApiResponseCourseWorkItemMaterialYoutubeVideoKey);
-  const auto* const link =
-      dict->FindDict(kApiResponseCourseWorkItemMaterialLinkKey);
-  const auto* const form =
-      dict->FindDict(kApiResponseCourseWorkItemMaterialFormKey);
-  if (sharedDriveFile) {
-    const auto* const driveFile =
-        sharedDriveFile->FindDict(kApiResponseCourseWorkItemMaterialDriveKey);
-    if (!driveFile) {
-      // Shared drive file should contain a drive file.
-      return false;
-    }
-    const std::string* title =
-        driveFile->FindString(kApiResponseCourseWorkItemTitleKey);
-    if (!title) {
-      // Title is required field.
-      return false;
-    }
-    output->title_ = *title;
-    output->type_ = Material::Type::kSharedDriveFile;
-  } else if (youtubeVideo) {
-    const std::string* title =
-        youtubeVideo->FindString(kApiResponseCourseWorkItemTitleKey);
-    if (!title) {
-      // Title is required field.
-      return false;
-    }
-    output->title_ = *title;
-    output->type_ = Material::Type::kYoutubeVideo;
-  } else if (link) {
-    const std::string* title =
-        link->FindString(kApiResponseCourseWorkItemTitleKey);
-    if (!title) {
-      // Title is required field.
-      return false;
-    }
-    output->title_ = *title;
-    output->type_ = Material::Type::kLink;
-  } else if (form) {
-    const std::string* title =
-        form->FindString(kApiResponseCourseWorkItemTitleKey);
-    if (!title) {
-      // Title is required field.
-      return false;
-    }
-    output->title_ = *title;
-    output->type_ = Material::Type::kForm;
-  } else {
-    output->type_ = Material::Type::kUnknown;
-  }
-
-  return true;
-}
 
 // ----- CourseWorkItem -----
 
@@ -228,7 +152,7 @@ void CourseWorkItem::RegisterJSONConverter(
 bool CourseWorkItem::ConvertCourseWorkItem(const base::Value* input,
                                            CourseWorkItem* output) {
   base::JSONValueConverter<CourseWorkItem> converter;
-  const base::Value::Dict* dict = input->GetIfDict();
+  const base::DictValue* dict = input->GetIfDict();
   if (!dict || !converter.Convert(*dict, output)) {
     return false;
   }
@@ -246,7 +170,7 @@ CourseWork::~CourseWork() = default;
 // static
 void CourseWork::RegisterJSONConverter(
     base::JSONValueConverter<CourseWork>* converter) {
-  // TODO(crbug.com/40911919): Handle base::Value::Dict here.
+  // TODO(crbug.com/40911919): Handle base::DictValue here.
   converter->RegisterRepeatedCustomValue<CourseWorkItem>(
       kApiResponseCourseWorkKey, &CourseWork::items_,
       &CourseWorkItem::ConvertCourseWorkItem);

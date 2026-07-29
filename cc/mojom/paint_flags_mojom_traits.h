@@ -5,6 +5,7 @@
 #ifndef CC_MOJOM_PAINT_FLAGS_MOJOM_TRAITS_H_
 #define CC_MOJOM_PAINT_FLAGS_MOJOM_TRAITS_H_
 
+#include "base/notreached.h"
 #include "cc/mojom/paint_flags.mojom-shared.h"
 #include "cc/paint/paint_flags.h"
 #include "mojo/public/cpp/bindings/struct_traits.h"
@@ -27,21 +28,17 @@ struct EnumTraits<cc::mojom::FilterQuality, cc::PaintFlags::FilterQuality> {
     NOTREACHED();
   }
 
-  static bool FromMojom(cc::mojom::FilterQuality input,
-                        cc::PaintFlags::FilterQuality* out) {
+  static cc::PaintFlags::FilterQuality FromMojom(
+      cc::mojom::FilterQuality input) {
     switch (input) {
       case cc::mojom::FilterQuality::kNone:
-        *out = cc::PaintFlags::FilterQuality::kNone;
-        return true;
+        return cc::PaintFlags::FilterQuality::kNone;
       case cc::mojom::FilterQuality::kLow:
-        *out = cc::PaintFlags::FilterQuality::kLow;
-        return true;
+        return cc::PaintFlags::FilterQuality::kLow;
       case cc::mojom::FilterQuality::kMedium:
-        *out = cc::PaintFlags::FilterQuality::kMedium;
-        return true;
+        return cc::PaintFlags::FilterQuality::kMedium;
       case cc::mojom::FilterQuality::kHigh:
-        *out = cc::PaintFlags::FilterQuality::kHigh;
-        return true;
+        return cc::PaintFlags::FilterQuality::kHigh;
     }
     NOTREACHED();
   }

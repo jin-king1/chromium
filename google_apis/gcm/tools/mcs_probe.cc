@@ -10,7 +10,6 @@
 #include <cstddef>
 #include <cstdio>
 #include <memory>
-#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -18,10 +17,12 @@
 #include "base/at_exit.h"
 #include "base/command_line.h"
 #include "base/compiler_specific.h"
+#include "base/containers/flat_set.h"
 #include "base/files/scoped_file.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/logging.h"
+#include "base/logging/logging_settings.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/ref_counted.h"
 #include "base/message_loop/message_pump_type.h"
@@ -162,6 +163,15 @@ class MyTestCertVerifier : public net::CertVerifier {
     verify_result->verified_cert = params.certificate();
     return net::OK;
   }
+  void Verify2QwacBinding(
+      const std::string& binding,
+      const std::string& hostname,
+      const scoped_refptr<net::X509Certificate>& tls_cert,
+      base::OnceCallback<void(const scoped_refptr<net::X509Certificate>&)>
+          callback,
+      const net::NetLogWithSource& net_log) override {
+    std::move(callback).Run(nullptr);
+  }
   void SetConfig(const Config& config) override {}
   void AddObserver(Observer* observer) override {}
   void RemoveObserver(Observer* observer) override {}
@@ -255,7 +265,7 @@ MCSProbe::MCSProbe(const base::CommandLine& command_line)
       net_log_(net::NetLog::Get()),
       file_thread_("FileThread") {
   network_connection_tracker_->SetConnectionType(
-      network::mojom::ConnectionType::CONNECTION_ETHERNET);
+      net::NetworkChangeNotifier::ConnectionType::CONNECTION_ETHERNET);
   if (command_line.HasSwitch(kRMQFileName)) {
     gcm_store_path_ = command_line.GetSwitchValuePath(kRMQFileName);
   }
@@ -356,8 +366,8 @@ void MCSProbe::InitializeNetworkState() {
   builder.set_net_log(net_log_);
   builder.set_host_resolver(
       net::HostResolver::CreateStandaloneResolver(net_log_));
-  http_auth_preferences_.set_allowed_schemes(
-      std::set<std::string>{net::kBasicAuthScheme});
+  http_auth_preferences_.SetAllowedSchemes(
+      base::flat_set<std::string>({net::kBasicAuthScheme}));
   builder.SetHttpAuthHandlerFactory(
       net::HttpAuthHandlerRegistryFactory::Create(&http_auth_preferences_));
   builder.set_proxy_resolution_service(
@@ -376,7 +386,8 @@ void MCSProbe::InitializeNetworkState() {
       /*cors_exempt_header_list=*/std::vector<std::string>());
   auto url_loader_factory_params =
       network::mojom::URLLoaderFactoryParams::New();
-  url_loader_factory_params->process_id = network::mojom::kBrowserProcessId;
+  url_loader_factory_params->process_id =
+      network::OriginatingProcessId::browser();
   url_loader_factory_params->is_orb_enabled = false;
   network_context_->CreateURLLoaderFactory(
       url_loader_factory_.BindNewPipeAndPassReceiver(),

@@ -11,7 +11,6 @@
 #include "base/functional/bind.h"
 #include "base/i18n/message_formatter.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/timer/elapsed_timer.h"
 #include "chrome/browser/ash/file_manager/copy_or_move_io_task.h"
 #include "chrome/browser/ash/file_manager/file_tasks.h"
@@ -21,7 +20,6 @@
 #include "chrome/browser/ash/file_system_provider/provided_file_system_info.h"
 #include "chrome/browser/ash/file_system_provider/service.h"
 #include "chrome/browser/ui/webui/ash/cloud_upload/cloud_upload_util.h"
-#include "chrome/common/extensions/extension_constants.h"
 #include "chrome/grit/generated_resources.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
@@ -38,6 +36,7 @@ namespace ash::cloud_upload {
 OneDriveUploadHandler::OneDriveUploadHandler(
     Profile* profile,
     const storage::FileSystemURL& source_url,
+    UploadType upload_type,
     UploadCallback callback,
     base::SafeRef<CloudOpenMetrics> cloud_open_metrics)
     : profile_(profile),
@@ -50,8 +49,11 @@ OneDriveUploadHandler::OneDriveUploadHandler(
               l10n_util::GetStringUTF8(IDS_OFFICE_FILE_HANDLER_APP_MICROSOFT),
               // TODO(b/242685536) Update when support for multi-files is added.
               /*num_files=*/1,
-              GetUploadType(profile, source_url))),
+              upload_type)),
       source_url_(source_url),
+      operation_type_(upload_type == UploadType::kCopy
+                          ? file_manager::io_task::OperationType::kCopy
+                          : file_manager::io_task::OperationType::kMove),
       callback_(std::move(callback)),
       cloud_open_metrics_(cloud_open_metrics) {
   observed_task_id_ = -1;
@@ -153,9 +155,6 @@ void OneDriveUploadHandler::CheckReauthenticationAndStartIOTask(
     return;
   }
 
-  operation_type_ = GetUploadType(profile_, source_url_) == UploadType::kCopy
-                        ? file_manager::io_task::OperationType::kCopy
-                        : file_manager::io_task::OperationType::kMove;
   std::vector<FileSystemURL> source_urls{source_url_};
   std::unique_ptr<file_manager::io_task::IOTask> task =
       std::make_unique<file_manager::io_task::CopyOrMoveIOTask>(

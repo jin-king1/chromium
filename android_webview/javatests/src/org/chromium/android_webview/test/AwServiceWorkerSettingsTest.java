@@ -19,26 +19,22 @@ import org.junit.runners.Parameterized.UseParametersRunnerFactory;
 
 import org.chromium.android_webview.AwContents;
 import org.chromium.android_webview.AwServiceWorkerSettings;
-import org.chromium.android_webview.ManifestMetadataUtil;
 import org.chromium.base.Log;
-import org.chromium.base.test.util.Batch;
+import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Feature;
 import org.chromium.content_public.browser.test.util.TestCallbackHelperContainer;
 import org.chromium.net.test.util.TestWebServer;
 
-import java.util.Collections;
-import java.util.Set;
-
 /**
  * Test service worker settings APIs.
  *
- * These tests are functionally duplicates of the ones in {@link AwSettingsTest},
- * and serve to ensure that service worker settings are applied, even if no
- * {@link android.webkit.ServiceWorkerClient} is supplied.
+ * <p>These tests are functionally duplicates of the ones in {@link AwSettingsTest}, and serve to
+ * ensure that service worker settings are applied, even if no {@link
+ * android.webkit.ServiceWorkerClient} is supplied.
  */
 @RunWith(Parameterized.class)
 @UseParametersRunnerFactory(AwJUnit4ClassRunnerWithParameters.Factory.class)
-@Batch(Batch.PER_CLASS)
+@DoNotBatch(reason = "https://crbug.com/409388911")
 public class AwServiceWorkerSettingsTest extends AwParameterizedTest {
     public static final String TAG = "AwSWSettingsTest";
     @Rule public AwActivityTestRule mActivityTestRule;
@@ -249,38 +245,6 @@ public class AwServiceWorkerSettingsTest extends AwParameterizedTest {
                 "No requests should be made in cache-only mode",
                 0,
                 mWebServer.getRequestCount(FETCH_URL));
-    }
-
-    @Test
-    @SmallTest
-    @Feature({"AndroidWebView", "Preferences", "ServiceWorker"})
-    public void testGetUpdatedXrwAllowList() throws Throwable {
-        initAwServiceWorkerSettings();
-        final Set<String> allowList = Set.of("https://*.example.com", "https://*.google.com");
-
-        Assert.assertEquals(
-                Collections.emptySet(),
-                mAwServiceWorkerSettings.getRequestedWithHeaderOriginAllowList());
-
-        mAwServiceWorkerSettings.setRequestedWithHeaderOriginAllowList(allowList);
-
-        Assert.assertEquals(
-                allowList, mAwServiceWorkerSettings.getRequestedWithHeaderOriginAllowList());
-    }
-
-    @Test
-    @SmallTest
-    @Feature({"AndroidWebView", "Preferences", "ServiceWorker"})
-    public void testXRequestedWithAllowListSetByManifest() throws Throwable {
-        final Set<String> allowList = Set.of("https://*.example.com", "https://*.google.com");
-        try (var a = ManifestMetadataUtil.setXRequestedWithAllowListScopedForTesting(allowList)) {
-            // Only initialize once the manifest has been configured
-            initAwServiceWorkerSettings();
-
-            Set<String> changedList =
-                    mAwServiceWorkerSettings.getRequestedWithHeaderOriginAllowList();
-            Assert.assertEquals(allowList, changedList);
-        }
     }
 
     private String indexHtml(int fetches) {

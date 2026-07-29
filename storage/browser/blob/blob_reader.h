@@ -15,15 +15,14 @@
 
 #include "base/component_export.h"
 #include "base/functional/callback_forward.h"
-#include "base/functional/callback_helpers.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
-#include "components/file_access/scoped_file_access.h"
-#include "components/file_access/scoped_file_access_delegate.h"
+#include "base/types/expected.h"
 #include "mojo/public/cpp/base/big_buffer.h"
 #include "mojo/public/cpp/system/data_pipe.h"
 #include "net/base/completion_once_callback.h"
+#include "net/base/net_errors.h"
 #include "services/network/public/cpp/data_pipe_to_source_stream.h"
 #include "storage/browser/blob/blob_storage_constants.h"
 
@@ -207,7 +206,8 @@ class COMPONENT_EXPORT(STORAGE_BROWSER) BlobReader {
   bool ResolveFileItemLength(const BlobDataItem& item,
                              int64_t total_length,
                              uint64_t* output_length);
-  void DidGetFileItemLength(size_t index, int64_t result);
+  void DidGetFileItemLength(size_t index,
+                            base::expected<int64_t, net::Error> result);
   void DidCountSize();
 
   // For reading the blob.
@@ -220,11 +220,7 @@ class COMPONENT_EXPORT(STORAGE_BROWSER) BlobReader {
   void AdvanceItem();
   void AdvanceBytesRead(int result);
   void ReadBytesItem(const BlobDataItem& item, int bytes_to_read);
-  BlobReader::Status ReadFileItem(
-      FileStreamReader* reader,
-      int bytes_to_read,
-      file_access::ScopedFileAccessDelegate::RequestFilesAccessIOCallback
-          file_access);
+  BlobReader::Status ReadFileItem(FileStreamReader* reader, int bytes_to_read);
   void DidReadFile(int result);
   void DeleteItemReaders();
   Status ReadReadableDataHandle(const BlobDataItem& item, int bytes_to_read);

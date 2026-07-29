@@ -25,7 +25,7 @@ function createTestCollection(name: string): BackgroundCollection {
   const testCollection: BackgroundCollection = {
     id: `${name}_id`,
     label: name,
-    previewImageUrl: {url: `https://collection-${name}.jpg`},
+    previewImageUrl: `https://collection-${name}.jpg`,
     imageVerified: false,
   };
   return testCollection;
@@ -37,9 +37,9 @@ function createTestImages(length: number): CollectionImage[] {
     testImages.push({
       attribution1: `attribution1_${i}`,
       attribution2: `attribution2_${i}`,
-      attributionUrl: {url: `https://attribution_${i}.jpg`},
-      imageUrl: {url: `https://image_${i}.jpg`},
-      previewImageUrl: {url: `https://preview_${i}.jpg`},
+      attributionUrl: `https://attribution_${i}.jpg`,
+      imageUrl: `https://image_${i}.jpg`,
+      previewImageUrl: `https://preview_${i}.jpg`,
       collectionId: `collectionId_${i}`,
       imageVerified: false,
     });
@@ -101,7 +101,7 @@ suite('ThemesTest', () => {
     await setCollection('test1', numImages);
 
     let header = themesElement.$.heading;
-    assertEquals('test1', header.textContent!.trim());
+    assertEquals('test1', header.textContent.trim());
     let themes = themesElement.shadowRoot.querySelectorAll('.theme');
     assertEquals(themes.length, numImages);
     assertEquals(
@@ -118,7 +118,7 @@ suite('ThemesTest', () => {
     await setCollection('test2', numImages);
 
     header = themesElement.$.heading;
-    assertEquals('test2', header.textContent!.trim());
+    assertEquals('test2', header.textContent.trim());
     themes = themesElement.shadowRoot.querySelectorAll('.theme');
     assertEquals(themes.length, numImages);
     assertEquals(

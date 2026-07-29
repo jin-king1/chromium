@@ -51,23 +51,22 @@ class MEDIA_EXPORT DecoderBuffer
     virtual const base::span<const uint8_t> Span() const = 0;
   };
 
-  using DiscardPadding = DecoderBufferSideData::DiscardPadding;
+  // ExternalMemory implementation that wraps a span but does not own the
+  // underlying data. The caller must ensure the data remains valid for the
+  // lifetime of this object to avoid access violations or other errors. If
+  // the memory is not guaranteed to outlive the DecoderBuffer, use CopyFrom()
+  // instead.
+  class MEDIA_EXPORT UnownedExternalMemory : public ExternalMemory {
+   public:
+    explicit UnownedExternalMemory(base::span<const uint8_t> span);
+    ~UnownedExternalMemory() override = default;
+    const base::span<const uint8_t> Span() const override;
 
-  // TODO(crbug.com/365814210): Remove this structure. It's barely used outside
-  // of unit tests.
-  struct MEDIA_EXPORT TimeInfo {
-    // Presentation time of the frame.
-    base::TimeDelta timestamp;
-
-    // Presentation duration of the frame.
-    base::TimeDelta duration;
-
-    // Duration of (audio) samples from the beginning and end of this frame
-    // which should be discarded after decoding. A value of kInfiniteDuration
-    // for the first value indicates the entire frame should be discarded; the
-    // second value must be base::TimeDelta() in this case.
-    DiscardPadding discard_padding;
+   private:
+    base::raw_span<const uint8_t> span_;
   };
+
+  using DiscardPadding = DecoderBufferSideData::DiscardPadding;
 
   // Allocates buffer with |size| > 0. |is_key_frame_| will default to false.
   // If size is 0, no buffer will be allocated.
@@ -139,12 +138,6 @@ class MEDIA_EXPORT DecoderBuffer
   // Method to verify if subsamples of a DecoderBuffer match.
   static bool DoSubsamplesMatch(const DecoderBuffer& buffer);
 
-  // TODO(crbug.com/365814210): Remove this method.
-  TimeInfo time_info() const {
-    DCHECK(!end_of_stream());
-    return {timestamp_, duration_, discard_padding()};
-  }
-
   base::TimeDelta timestamp() const {
     DCHECK(!end_of_stream());
     return timestamp_;
@@ -165,16 +158,6 @@ class MEDIA_EXPORT DecoderBuffer
            (duration >= base::TimeDelta() && duration != kInfiniteDuration))
         << duration.InSecondsF();
     duration_ = duration;
-  }
-
-  // The pointer to the start of the buffer. Prefer to construct a span around
-  // the buffer, such as `base::span(decoder_buffer)`.
-  // TODO(crbug.com/365814210): Remove in favor of AsSpan().
-  const uint8_t* data() const {
-    DCHECK(!end_of_stream());
-    if (external_memory_)
-      return external_memory_->Span().data();
-    return data_.data();
   }
 
   // The number of bytes in the buffer.
@@ -221,10 +204,10 @@ class MEDIA_EXPORT DecoderBuffer
                             : data_.subspan(offset, count);
   }
 
-  // TODO(crbug.com/365814210): Change the return type to std::optional.
-  DiscardPadding discard_padding() const {
+  std::optional<DiscardPadding> discard_padding() const {
     DCHECK(!end_of_stream());
-    return side_data_ ? side_data_->discard_padding : DiscardPadding();
+    return side_data_ ? std::make_optional(side_data_->discard_padding)
+                      : std::nullopt;
   }
 
   // TODO(crbug.com/365814210): Remove this method and force callers to get it

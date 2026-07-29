@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/374320451): Fix and remove.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "chrome/utility/safe_browsing/mac/hfs.h"
 
@@ -436,6 +432,10 @@ bool HFSForkReadStream::Read(base::span<uint8_t> buf, size_t* bytes_read) {
         DLOG(ERROR) << "Failed to seek to block " << extent.startBlock;
         return false;
       }
+      if (extent_size.ValueOrDie() > current_extent_data_.max_size()) {
+        DLOG(ERROR) << "Extent size too large";
+        return false;
+      }
       current_extent_data_.resize(extent_size.ValueOrDie());
       if (!hfs_->stream()->ReadExact(current_extent_data_)) {
         DLOG(ERROR) << "Failed to read extent";
@@ -699,14 +699,20 @@ bool HFSBTreeIterator::Next() {
 }
 
 bool HFSBTreeIterator::SeekToNode(uint32_t node_id) {
-  if (node_id >= header_.totalNodes)
+  if (node_id >= header_.totalNodes) {
     return false;
-  size_t offset = node_id * header_.nodeSize;
-  if (stream_->Seek(offset, SEEK_SET) != -1) {
-    current_leaf_number_ = node_id;
-    return true;
   }
-  return false;
+
+  base::CheckedNumeric<off_t> safe_offset = node_id;
+  safe_offset *= header_.nodeSize;
+
+  if (off_t offset; !safe_offset.AssignIfValid(&offset) ||
+                    stream_->Seek(offset, SEEK_SET) == -1) {
+    return false;
+  }
+
+  current_leaf_number_ = node_id;
+  return true;
 }
 
 bool HFSBTreeIterator::ReadCurrentLeaf() {

@@ -7,7 +7,7 @@ found in the LICENSE file.
 
 <LinearLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
-    android:background="@drawable/touch_to_fill_credential_background_modern_rounded_all"
+    android:background="@drawable/card_with_corners_background"
     android:descendantFocusability="blocksDescendants"
     android:gravity="center_vertical"
     android:layout_height="wrap_content"
@@ -36,14 +36,40 @@ found in the LICENSE file.
             android:layout_height="wrap_content"
             android:layout_width="wrap_content"
             android:maxLines="1"
+            android:ellipsize="end"
             android:textAppearance="@style/TextAppearance.TextLarge.Primary" />
 
-        <TextView
-            android:id="@+id/bank_account_summary"
-            android:layout_height="wrap_content"
+        <LinearLayout
             android:layout_width="wrap_content"
-            android:maxLines="1"
-            android:textAppearance="@style/TextAppearance.TextMedium.Secondary" />
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <TextView
+            android:id="@+id/bank_account_payment_rail"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:maxLines="1"
+                android:layout_weight="0"
+                android:textAppearance="@style/TextAppearance.TextMedium.Secondary" />
+
+            <TextView
+                android:id="@+id/bank_account_type"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:maxLines="1"
+                android:ellipsize="end"
+                android:layout_weight="1"
+                android:textAppearance="@style/TextAppearance.TextMedium.Secondary" />
+
+            <TextView
+                android:id="@+id/bank_account_number"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="4dp"
+                android:maxLines="1"
+                android:layout_weight="0"
+                android:textAppearance="@style/TextAppearance.TextMedium.Secondary" />
+        </LinearLayout>
 
         <TextView
             android:id="@+id/bank_account_additional_info"

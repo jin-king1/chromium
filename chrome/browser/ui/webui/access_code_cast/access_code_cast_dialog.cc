@@ -19,6 +19,7 @@
 #include "content/public/browser/web_contents.h"
 #include "ui/display/display.h"
 #include "ui/display/screen.h"
+#include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/views/layout/layout_provider.h"
 #include "url/gurl.h"
 
@@ -78,7 +79,7 @@ void UpdateDialogPosition(views::Widget* widget,
     // with any display clamp its position to be fully on the nearest display.
     gfx::Rect display_rect = gfx::Rect(position, size);
     const display::Display display =
-        display::Screen::GetScreen()->GetDisplayNearestView(
+        display::Screen::Get()->GetDisplayNearestView(
             dialog_host->GetHostView());
     const gfx::Rect work_area = display.work_area();
 
@@ -197,7 +198,7 @@ views::Widget::InitParams AccessCodeCastDialog::CreateParams(
   // Otherwise, the widget will default to the correct value for browser
   // dialogs.
   if (dialog_mode == AccessCodeCastDialogMode::kSystem) {
-    params.corner_radius = kSystemDialogCornerRadiusDp;
+    params.rounded_corners = gfx::RoundedCornersF(kSystemDialogCornerRadiusDp);
   }
   params.type = views::Widget::InitParams::Type::TYPE_BUBBLE;
   // Make sure the dialog border is rendered correctly

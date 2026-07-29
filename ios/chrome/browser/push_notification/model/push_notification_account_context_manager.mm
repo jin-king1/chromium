@@ -11,8 +11,8 @@
 #import "components/prefs/pref_service.h"
 #import "components/prefs/scoped_user_pref_update.h"
 #import "google_apis/gaia/gaia_id.h"
+#import "ios/chrome/browser/push_notification/model/constants.h"
 #import "ios/chrome/browser/push_notification/model/push_notification_client_id.h"
-#import "ios/chrome/browser/push_notification/model/push_notification_client_manager.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/model/profile/profile_attributes_ios.h"
@@ -156,7 +156,7 @@ void AddAccountToManager(PushNotificationAccountContextManager* manager,
     return result;
   }
 
-  const base::Value::Dict& pref =
+  const base::DictValue& pref =
       profile->GetPrefs()->GetDict(prefs::kFeaturePushNotificationPermissions);
   for (const auto&& [key, value] : pref) {
     [result setObject:@(value.GetBool()) forKey:base::SysUTF8ToNSString(key)];
@@ -174,7 +174,7 @@ void AddAccountToManager(PushNotificationAccountContextManager* manager,
 }
 
 - (NSUInteger)registrationCountForAccount:(const GaiaId&)gaiaID {
-  DCHECK(base::Contains(_contextMap, gaiaID));
+  DCHECK(_contextMap.contains(gaiaID));
   return _contextMap[gaiaID];
 }
 
@@ -206,14 +206,14 @@ void AddAccountToManager(PushNotificationAccountContextManager* manager,
 // `gaiaID`. This can be either profile prefs or LocalState prefs.
 - (PermissionsPref)prefsForClient:(PushNotificationClientId)clientID
                           account:(const GaiaId&)gaiaID {
-  std::string clientKey =
-      PushNotificationClientManager::PushNotificationClientIdToString(clientID);
+  std::string clientKey = PushNotificationClientIdToString(clientID);
   switch (clientID) {
     case PushNotificationClientId::kCommerce:
     case PushNotificationClientId::kContent:
     case PushNotificationClientId::kSports:
     case PushNotificationClientId::kSendTab:
-    case PushNotificationClientId::kReminders: {
+    case PushNotificationClientId::kReminders:
+    case PushNotificationClientId::kCrossPlatformPromos: {
       ProfileIOS* profile = [self profileFrom:gaiaID];
       if (!profile) {
         // TODO:(crbug.com/1445551) Restore to DCHECK when signing into Chrome
@@ -240,7 +240,7 @@ void AddAccountToManager(PushNotificationAccountContextManager* manager,
     return;
   }
 
-  const base::Value::Dict& permissions =
+  const base::DictValue& permissions =
       prefs->GetDict(prefs::kFeaturePushNotificationPermissions);
   GetApplicationContext()
       ->GetProfileManager()
@@ -248,7 +248,7 @@ void AddAccountToManager(PushNotificationAccountContextManager* manager,
       ->UpdateAttributesForProfileWithName(
           profileName,
           base::BindOnce(
-              [](base::Value::Dict permissions, ProfileAttributesIOS& attr) {
+              [](base::DictValue permissions, ProfileAttributesIOS& attr) {
                 attr.SetNotificationPermissions(std::move(permissions));
               },
               permissions.Clone()));

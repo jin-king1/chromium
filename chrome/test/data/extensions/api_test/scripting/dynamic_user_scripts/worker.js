@@ -3,8 +3,11 @@
 // found in the LICENSE file.
 
 import {getInjectedElementIds, openTab} from '/_test_resources/test_util/tabs_util.js';
+import {waitForUserScriptsAPIAllowed} from '/_test_resources/test_util/user_script_test_util.js';
 
 chrome.test.runTests([
+  waitForUserScriptsAPIAllowed,
+
   // Test that unregisterContentScripts unregisters only content scripts and
   // not user scripts.
   async function unregisterScript_CannotUnregisterUserScripts() {
@@ -14,14 +17,14 @@ chrome.test.runTests([
       id: 'contentScript',
       matches: ['*://*/*'],
       js: ['content_script.js'],
-      runAt: 'document_end'
+      runAt: 'document_end',
     }];
 
     const userScripts = [{
       id: 'userScript',
       matches: ['*://*/*'],
       js: [{file: 'user_script.js'}],
-      runAt: 'document_end'
+      runAt: 'document_end',
     }];
 
 

@@ -5,20 +5,32 @@
 #import "ios/chrome/browser/metrics/model/ios_family_link_user_metrics_provider.h"
 
 #import "base/test/metrics/histogram_tester.h"
+#import "base/test/scoped_feature_list.h"
+#import "base/values.h"
+#import "components/prefs/pref_service.h"
+#import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/identity_manager/account_capabilities_test_mutator.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
 #import "components/signin/public/identity_manager/identity_test_utils.h"
+#import "components/supervised_user/core/browser/supervised_user_log_record.h"
 #import "components/supervised_user/core/browser/supervised_user_preferences.h"
 #import "components/supervised_user/core/browser/supervised_user_service.h"
+#import "components/supervised_user/core/browser/supervised_user_test_environment.h"
 #import "components/supervised_user/core/browser/supervised_user_utils.h"
+#import "components/supervised_user/core/common/features.h"
 #import "components/supervised_user/core/common/pref_names.h"
 #import "components/supervised_user/core/common/supervised_user_constants.h"
+#import "components/sync/test/test_sync_service.h"
+#import "components/sync_preferences/testing_pref_service_syncable.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_manager_ios.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
 #import "ios/chrome/browser/signin/model/identity_test_environment_browser_state_adaptor.h"
+#import "ios/chrome/browser/supervised_user/model/family_link_settings_service_factory.h"
 #import "ios/chrome/browser/supervised_user/model/supervised_user_service_factory.h"
+#import "ios/chrome/browser/sync/model/sync_service_factory.h"
+#import "ios/chrome/browser/sync/model/test_sync_service_utils.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/web/public/test/web_task_environment.h"
 #import "testing/platform_test.h"
@@ -53,7 +65,7 @@ class IOSFamilyLinkUserMetricsProviderTest : public PlatformTest {
         IdentityManagerFactory::GetForProfile(profile), email,
         signin::ConsentLevel::kSignin);
 
-    AccountCapabilitiesTestMutator mutator(&account.capabilities);
+    AccountCapabilitiesTestMutator mutator(&account);
     mutator.set_is_subject_to_parental_controls(
         is_subject_to_parental_controls);
     mutator.set_is_opted_in_to_parental_supervision(
@@ -62,6 +74,8 @@ class IOSFamilyLinkUserMetricsProviderTest : public PlatformTest {
         IdentityManagerFactory::GetForProfile(profile), account);
 
     if (is_subject_to_parental_controls) {
+      // This activates the settings service in its default state
+      // (WebFilterType::kTryToBlockMatureSites).
       supervised_user::EnableParentalControls(*profile->GetPrefs());
     }
   }
@@ -81,14 +95,17 @@ class IOSFamilyLinkUserMetricsProviderTest : public PlatformTest {
   }
 
   void RestrictAllSitesForSupervisedUser(ProfileIOS* profile) {
-    supervised_user::SupervisedUserService* supervised_user_service =
-        SupervisedUserServiceFactory::GetForProfile(profile);
-    supervised_user_service->GetURLFilter()->SetDefaultFilteringBehavior(
-        supervised_user::FilteringBehavior::kBlock);
+    supervised_user::SupervisedUserTestEnvironment::SetWebFilterType(
+        supervised_user::WebFilterType::kCertainSites,
+        *supervised_user::FamilyLinkSettingsServiceFactory::GetForProfile(
+            profile));
   }
 
   void AllowUnsafeSitesForSupervisedUser(ProfileIOS* profile) {
-    profile->GetPrefs()->SetBoolean(prefs::kSupervisedUserSafeSites, false);
+    supervised_user::SupervisedUserTestEnvironment::SetWebFilterType(
+        supervised_user::WebFilterType::kAllowAllSites,
+        *supervised_user::FamilyLinkSettingsServiceFactory::GetForProfile(
+            profile));
   }
 
   ProfileIOS* default_profile() { return default_profile_.get(); }
@@ -100,6 +117,8 @@ class IOSFamilyLinkUserMetricsProviderTest : public PlatformTest {
         IdentityManagerFactory::GetInstance(),
         base::BindRepeating(IdentityTestEnvironmentBrowserStateAdaptor::
                                 BuildIdentityManagerForTests));
+    builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
+                              base::BindRepeating(&CreateTestSyncService));
     if (!name.empty()) {
       builder.SetName(name);
     }
@@ -112,6 +131,8 @@ class IOSFamilyLinkUserMetricsProviderTest : public PlatformTest {
   raw_ptr<ProfileIOS> default_profile_;
 
   IOSFamilyLinkUserMetricsProvider metrics_provider_;
+  base::test::ScopedFeatureList scoped_feature_list_{
+      supervised_user::kSupervisedUserUseUrlFilteringService};
 };
 
 TEST_F(IOSFamilyLinkUserMetricsProviderTest,
@@ -143,8 +164,8 @@ TEST_F(IOSFamilyLinkUserMetricsProviderTest,
 
   histogram_tester.ExpectUniqueSample(
       supervised_user::kFamilyLinkUserLogSegmentHistogramName,
-      supervised_user::FamilyLinkUserLogRecord::Segment::
-          kSupervisionEnabledByPolicy,
+      supervised_user::SupervisedUserLogRecord::Segment::
+          kSupervisionEnabledByFamilyLinkPolicy,
       /*expected_bucket_count=*/1);
   histogram_tester.ExpectUniqueSample(
       supervised_user::kFamilyLinkUserLogSegmentWebFilterHistogramName,
@@ -164,8 +185,8 @@ TEST_F(IOSFamilyLinkUserMetricsProviderTest,
 
   histogram_tester.ExpectUniqueSample(
       supervised_user::kFamilyLinkUserLogSegmentHistogramName,
-      supervised_user::FamilyLinkUserLogRecord::Segment::
-          kSupervisionEnabledByUser,
+      supervised_user::SupervisedUserLogRecord::Segment::
+          kSupervisionEnabledByFamilyLinkUser,
       /*expected_bucket_count=*/1);
   histogram_tester.ExpectUniqueSample(
       supervised_user::kFamilyLinkUserLogSegmentWebFilterHistogramName,
@@ -185,7 +206,7 @@ TEST_F(IOSFamilyLinkUserMetricsProviderTest,
 
   histogram_tester.ExpectUniqueSample(
       supervised_user::kFamilyLinkUserLogSegmentHistogramName,
-      supervised_user::FamilyLinkUserLogRecord::Segment::kUnsupervised,
+      supervised_user::SupervisedUserLogRecord::Segment::kUnsupervised,
       /*expected_bucket_count=*/1);
   histogram_tester.ExpectTotalCount(
       supervised_user::kFamilyLinkUserLogSegmentWebFilterHistogramName,
@@ -209,7 +230,7 @@ TEST_F(
   metrics_provider()->OnDidCreateMetricsLog();
   histogram_tester.ExpectUniqueSample(
       supervised_user::kFamilyLinkUserLogSegmentHistogramName,
-      supervised_user::FamilyLinkUserLogRecord::Segment::kMixedProfile,
+      supervised_user::SupervisedUserLogRecord::Segment::kMixedProfile,
       /*expected_bucket_count=*/1);
   histogram_tester.ExpectUniqueSample(
       supervised_user::kFamilyLinkUserLogSegmentWebFilterHistogramName,
@@ -241,7 +262,7 @@ TEST_F(
   metrics_provider()->OnDidCreateMetricsLog();
   histogram_tester.ExpectUniqueSample(
       supervised_user::kFamilyLinkUserLogSegmentHistogramName,
-      supervised_user::FamilyLinkUserLogRecord::Segment::kMixedProfile,
+      supervised_user::SupervisedUserLogRecord::Segment::kMixedProfile,
       /*expected_bucket_count=*/1);
   histogram_tester.ExpectUniqueSample(
       supervised_user::kFamilyLinkUserLogSegmentWebFilterHistogramName,
@@ -255,7 +276,7 @@ TEST_F(IOSFamilyLinkUserMetricsProviderTest, NotSignedInLoggedAsUnsupervised) {
   metrics_provider()->OnDidCreateMetricsLog();
   histogram_tester.ExpectUniqueSample(
       supervised_user::kFamilyLinkUserLogSegmentHistogramName,
-      supervised_user::FamilyLinkUserLogRecord::Segment::kUnsupervised,
+      supervised_user::SupervisedUserLogRecord::Segment::kUnsupervised,
       /*expected_bucket_count=*/1);
   histogram_tester.ExpectTotalCount(
       supervised_user::kFamilyLinkUserLogSegmentWebFilterHistogramName,
@@ -275,8 +296,8 @@ TEST_F(IOSFamilyLinkUserMetricsProviderTest,
 
   histogram_tester.ExpectUniqueSample(
       supervised_user::kFamilyLinkUserLogSegmentHistogramName,
-      supervised_user::FamilyLinkUserLogRecord::Segment::
-          kSupervisionEnabledByUser,
+      supervised_user::SupervisedUserLogRecord::Segment::
+          kSupervisionEnabledByFamilyLinkUser,
       /*expected_bucket_count=*/1);
   histogram_tester.ExpectUniqueSample(
       supervised_user::kFamilyLinkUserLogSegmentWebFilterHistogramName,
@@ -297,8 +318,8 @@ TEST_F(IOSFamilyLinkUserMetricsProviderTest,
 
   histogram_tester.ExpectUniqueSample(
       supervised_user::kFamilyLinkUserLogSegmentHistogramName,
-      supervised_user::FamilyLinkUserLogRecord::Segment::
-          kSupervisionEnabledByUser,
+      supervised_user::SupervisedUserLogRecord::Segment::
+          kSupervisionEnabledByFamilyLinkUser,
       /*expected_bucket_count=*/1);
   histogram_tester.ExpectUniqueSample(
       supervised_user::kFamilyLinkUserLogSegmentWebFilterHistogramName,
@@ -328,7 +349,7 @@ TEST_F(IOSFamilyLinkUserMetricsProviderTest,
   metrics_provider()->OnDidCreateMetricsLog();
   histogram_tester.ExpectUniqueSample(
       supervised_user::kFamilyLinkUserLogSegmentHistogramName,
-      supervised_user::FamilyLinkUserLogRecord::Segment::kMixedProfile,
+      supervised_user::SupervisedUserLogRecord::Segment::kMixedProfile,
       /*expected_bucket_count=*/1);
   histogram_tester.ExpectUniqueSample(
       supervised_user::kFamilyLinkUserLogSegmentWebFilterHistogramName,

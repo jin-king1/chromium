@@ -20,9 +20,8 @@
 #include "device/vr/public/cpp/xr_frame_sink_client.h"
 #include "device/vr/vr_device_base.h"
 #include "gpu/ipc/common/surface_handle.h"
-#include "mojo/public/cpp/bindings/pending_remote.h"
 #include "ui/gfx/geometry/size_f.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 
 namespace ui {
 class WindowAndroid;
@@ -84,7 +83,7 @@ class COMPONENT_EXPORT(VR_ARCORE) ArCoreDevice : public VRDeviceBase {
 
   // Called once the GL thread is started. At this point, it doesn't
   // have a valid GL context yet.
-  void OnGlThreadReady(int render_process_id,
+  void OnGlThreadReady(network::RendererProcessId render_process_id,
                        int render_frame_id,
                        bool use_overlay);
 

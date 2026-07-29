@@ -19,23 +19,21 @@ import org.robolectric.annotation.Config;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features.DisableFeatures;
-import org.chromium.chrome.browser.payments.test_support.ShadowProfile;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.components.payments.InvalidPaymentRequest;
 import org.chromium.components.payments.PaymentFeatureList;
 import org.chromium.components.payments.test_support.DefaultPaymentFeatureConfig;
-import org.chromium.components.payments.test_support.ShadowWebContentsStatics;
+import org.chromium.content_public.browser.LifecycleState;
 import org.chromium.content_public.browser.PermissionsPolicyFeature;
 import org.chromium.content_public.browser.RenderFrameHost;
 import org.chromium.content_public.browser.WebContents;
+import org.chromium.content_public.browser.WebContentsStatics;
 
 import java.util.concurrent.atomic.AtomicInteger;
 
 /** A test for ChromePaymentRequestFactory. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(
-        manifest = Config.NONE,
-        shadows = {ShadowWebContentsStatics.class, ShadowProfile.class})
+@Config(manifest = Config.NONE)
 public class ChromePaymentRequestFactoryTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.LENIENT);
 
@@ -48,10 +46,12 @@ public class ChromePaymentRequestFactoryTest {
         DefaultPaymentFeatureConfig.setDefaultFlagConfigurationForTesting();
 
         setWebContentsDestroyed(false);
-        ShadowWebContentsStatics.setWebContents(mWebContents);
+        WebContentsStatics.setWebContentsForTesting(mWebContents);
 
         Mockito.doReturn(true).when(mProfile).isOffTheRecord();
-        ShadowProfile.setProfile(mProfile);
+        Profile.setProfileFromWebContentsForTesting(mProfile);
+
+        Mockito.when(mRenderFrameHost.getLifecycleState()).thenReturn(LifecycleState.ACTIVE);
 
         setPaymentPermissionsPolicy(true);
     }
@@ -97,6 +97,15 @@ public class ChromePaymentRequestFactoryTest {
 
     @Test
     @Feature({"Payments"})
+    public void testInactiveLifecycleStateCausesInvalidPaymentRequest() {
+        Mockito.when(mRenderFrameHost.getLifecycleState())
+                .thenReturn(LifecycleState.IN_BACK_FORWARD_CACHE);
+        Assert.assertTrue(
+                createFactory(mRenderFrameHost).createImpl() instanceof InvalidPaymentRequest);
+    }
+
+    @Test
+    @Feature({"Payments"})
     @DisableFeatures(PaymentFeatureList.WEB_PAYMENTS)
     public void testDisabledFeatureCausesInvalidPaymentRequest() {
         Assert.assertTrue(
@@ -106,7 +115,7 @@ public class ChromePaymentRequestFactoryTest {
     @Test
     @Feature({"Payments"})
     public void testNullWebContentsCausesInvalidPaymentRequest() {
-        ShadowWebContentsStatics.setWebContents(null);
+        WebContentsStatics.setWebContentsForTesting(null);
         Assert.assertTrue(
                 createFactory(mRenderFrameHost).createImpl() instanceof InvalidPaymentRequest);
     }

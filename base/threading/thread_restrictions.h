@@ -124,6 +124,7 @@
 
 class BrowserProcessImpl;
 class BrowserThemePack;
+class ChromeContentRendererClient;
 class ChromeNSSCryptoModuleDelegate;
 class DesktopNotificationBalloon;
 class FirefoxProfileLock;
@@ -135,6 +136,10 @@ class PartnerBookmarksReader;
 class Profile;
 class ProfileImpl;
 class ScopedAllowBlockingForProfile;
+#if BUILDFLAG(IS_WIN)
+class ProfileLoadTracker;
+class ScopedAllowBlockingForMediaFoundation;
+#endif
 class StartupTabProviderImpl;
 class WebEngineBrowserMainParts;
 struct StartupProfilePathInfo;
@@ -163,7 +168,8 @@ bool HasWaylandDisplay(base::Environment* env);
 
 namespace android_webview {
 class AwBrowserContext;
-class AwFormDatabaseService;
+class AwBrowserContextStore;
+class AwMetricsServiceClient;
 class CookieManager;
 class JsSandboxIsolate;
 class OverlayProcessorWebView;
@@ -220,6 +226,9 @@ bool IsCoreSchedulingAvailable();
 int NumberOfPhysicalCores();
 }  // namespace system
 }  // namespace chromeos
+namespace client_certificates {
+class KcerPrivateKey;
+}  // namespace client_certificates
 namespace content {
 class BrowserGpuChannelHostFactory;
 class BrowserMainLoop;
@@ -231,7 +240,6 @@ class ContentMainRunnerImpl;
 class DesktopCaptureDevice;
 class DWriteFontCollectionProxy;
 class DWriteFontProxyImpl;
-class EmergencyTraceFinalisationCoordinator;
 class InProcessUtilityThread;
 class NestedMessagePumpAndroid;
 class NetworkServiceInstancePrivate;
@@ -263,6 +271,9 @@ class ScopedAllowBlockingForNSS;
 namespace dbus {
 class Bus;
 }
+namespace dbus_xdg {
+class FileTransferPortal;
+}
 namespace drive {
 class FakeDriveService;
 }
@@ -281,15 +292,17 @@ namespace enterprise_connectors {
 class LinuxKeyRotationCommand;
 }  // namespace enterprise_connectors
 namespace extensions {
-// TODO(https://crbug.com/356905053): Remove DesktopAndroidExtensionSystem
-// from here once ExtensionService is enabled for desktop android.
-class DesktopAndroidExtensionSystem;
 class InstalledLoader;
 class UnpackedInstaller;
 }  // namespace extensions
 namespace font_service::internal {
 class MappedFontFile;
 }
+
+namespace gfx {
+class WUCBackdrop;
+}
+
 namespace gl {
 struct GLImplementationParts;
 namespace init {
@@ -297,8 +310,10 @@ bool InitializeStaticGLBindings(GLImplementationParts);
 }
 }  // namespace gl
 namespace gpu {
-class GpuMemoryBufferImplDXGI;
-}
+class MappableBufferAHB;
+class MappableBufferDXGI;
+class GpuPersistentCache;
+}  // namespace gpu
 namespace history_report {
 class HistoryReportJniBridge;
 }
@@ -332,6 +347,7 @@ template <class WorkerInterface,
 class CodecWorkerImpl;
 class FileVideoCaptureDeviceFactory;
 class GpuMojoMediaClientWin;
+class MailboxVideoFrameConverter;
 class MojoVideoEncodeAccelerator;
 class PaintCanvasVideoRenderer;
 class V4L2DevicePoller;  // TODO(crbug.com/41486289): remove this.
@@ -339,11 +355,10 @@ class V4L2DevicePoller;  // TODO(crbug.com/41486289): remove this.
 namespace memory_instrumentation {
 class OSMetrics;
 }
-namespace memory_pressure {
+namespace content {
 class UserLevelMemoryPressureSignalGenerator;
 }
 namespace metrics {
-class AndroidMetricsServiceClient;
 class CleanExitBeacon;
 }  // namespace metrics
 namespace midi {
@@ -361,6 +376,9 @@ class MojoTrap;
 }
 }  // namespace core
 }  // namespace mojo
+namespace mojo_legacy::core {
+class ScopedIPCSupport;
+}  // namespace mojo_legacy
 namespace net {
 class GSSAPISharedLibrary;
 class MultiThreadedCertVerifierScopedAllowBaseSyncPrimitives;
@@ -379,9 +397,12 @@ class LocalPrinterHandlerDefault;
 #if BUILDFLAG(IS_MAC)
 class PrintBackendServiceImpl;
 #endif
+class MetafilePlayer;
 class PrintBackendServiceManager;
 class PrintPreviewUIUntrusted;
 class PrinterQuery;
+void DumpMetafileIfDebugEnabled(const std::u16string&, const MetafilePlayer*);
+base::FilePath GetAbsoluteSystemDestinationLocation(const base::FilePath&);
 }  // namespace printing
 namespace proxy_resolver {
 class ScopedAllowThreadJoinForProxyResolverV8Tracing;
@@ -418,6 +439,7 @@ class GetLocalChangesRequest;
 class HttpBridge;
 }  // namespace syncer
 namespace tracing {
+class EmergencyTraceFinalisationCoordinator;
 class FuchsiaPerfettoProducerConnector;
 }
 namespace ui {
@@ -431,8 +453,6 @@ namespace updater {
 class SystemctlLauncherScopedAllowBaseSyncPrimitives;
 }
 namespace viz {
-class HostGpuMemoryBufferManager;
-class ClientGpuMemoryBufferManager;
 class DisplayCompositorMemoryAndTaskController;
 class SkiaOutputSurfaceImpl;
 class SharedImageInterfaceProvider;
@@ -440,15 +460,12 @@ class SharedImageInterfaceProvider;
 namespace vr {
 class VrShell;
 }
+namespace webnn {
+class WebNNTensorImpl;
+}
 namespace web {
 class WebMainLoop;
 }  // namespace web
-namespace weblayer {
-class BrowserContextImpl;
-class ContentBrowserClientImpl;
-class ProfileImpl;
-class WebLayerPathProvider;
-}  // namespace weblayer
 // NOTE: Please do not append entries here. Put them in the list above and keep
 // the list sorted.
 
@@ -504,7 +521,7 @@ class Thread;
 
 // NaCL doesn't support stack capture.
 // Android can hang in stack capture (crbug.com/959139).
-#if BUILDFLAG(IS_NACL) || BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(IS_ANDROID)
 #define CAPTURE_THREAD_RESTRICTIONS_STACK_TRACES() false
 #else
 // Stack capture is slow. Only enable it in developer builds, to avoid user
@@ -571,14 +588,22 @@ class BASE_EXPORT ScopedAllowBlocking {
   // Sorted by class name (with namespace), #if blocks at the bottom.
   friend class ::BrowserProcessImpl;
   friend class ::BrowserThemePack;  // http://crbug.com/80206
+  friend class ::ChromeContentRendererClient;
   friend class ::DesktopNotificationBalloon;
   friend class ::FirefoxProfileLock;
   friend class ::GaiaConfig;
   friend class ::ProfileImpl;
   friend class ::ScopedAllowBlockingForProfile;
+#if BUILDFLAG(IS_WIN)
+  friend class ::ProfileLoadTracker;
+  friend class ::ScopedAllowBlockingForMediaFoundation;
+#endif
   friend class ::StartupTabProviderImpl;
   friend class ::WebEngineBrowserMainParts;
   friend class android_webview::AwBrowserContext;
+  friend class android_webview::AwBrowserContextStore;
+  friend class android_webview::AwMetricsServiceClient;
+  friend class android_webview::CookieManager;
   friend class android_webview::ScopedAllowInitGLBindings;
   friend class ash::LoginEventRecorder;
   friend class ash::StartupCustomizationDocument;  // http://crosbug.com/11103
@@ -607,12 +632,12 @@ class BASE_EXPORT ScopedAllowBlocking {
   friend class content::
       ScopedAllowBlockingForViewAura;  // http://crbug.com/332579
   friend class content::ShellPathProvider;
+  friend class content::UserLevelMemoryPressureSignalGenerator;
   friend class content::WebContentsViewMac;
   friend class cronet::CronetContext;
   friend class cronet::CronetPrefsManager;
   friend class crypto::ScopedAllowBlockingForNSS;  // http://crbug.com/59847
   friend class drive::FakeDriveService;
-  friend class extensions::DesktopAndroidExtensionSystem;
   friend class extensions::InstalledLoader;
   friend class extensions::UnpackedInstaller;
   friend class font_service::internal::MappedFontFile;
@@ -620,8 +645,6 @@ class BASE_EXPORT ScopedAllowBlocking {
   friend class io_thread::IOSIOThread;
   friend class media::FileVideoCaptureDeviceFactory;
   friend class memory_instrumentation::OSMetrics;
-  friend class memory_pressure::UserLevelMemoryPressureSignalGenerator;
-  friend class metrics::AndroidMetricsServiceClient;
   friend class metrics::CleanExitBeacon;
   friend class module_installer::ScopedAllowModulePakLoad;
   friend class net::GSSAPISharedLibrary;    // http://crbug.com/66702
@@ -642,10 +665,6 @@ class BASE_EXPORT ScopedAllowBlocking {
   friend class ui::DrmDisplayHostManager;
   friend class ui::ScopedAllowBlockingForGbmSurface;
   friend class ui::SelectFileDialogLinux;
-  friend class weblayer::BrowserContextImpl;
-  friend class weblayer::ContentBrowserClientImpl;
-  friend class weblayer::ProfileImpl;
-  friend class weblayer::WebLayerPathProvider;
 #if BUILDFLAG(IS_MAC)
   friend class printing::PrintBackendServiceImpl;
 #endif
@@ -653,6 +672,7 @@ class BASE_EXPORT ScopedAllowBlocking {
   friend class base::win::OSInfo;
   friend class content::SlowWebPreferenceCache;  // http://crbug.com/1262162
   friend class media::GpuMojoMediaClientWin;     // https://crbug.com/360642944
+  friend class gfx::WUCBackdrop;
 #endif
 #if BUILDFLAG(IS_IOS)
   friend class ::BrowserStateDirectoryBuilder;
@@ -681,6 +701,11 @@ class BASE_EXPORT ScopedAllowBlocking {
       base::FilePath* file_path);  // http://crbug.com/110709
   friend bool disk_cache::CleanupDirectorySync(const base::FilePath&);
   friend bool gl::init::InitializeStaticGLBindings(gl::GLImplementationParts);
+  friend void printing::DumpMetafileIfDebugEnabled(
+      const std::u16string&,
+      const printing::MetafilePlayer*);
+  friend base::FilePath printing::GetAbsoluteSystemDestinationLocation(
+      const base::FilePath&);
 
   ScopedAllowBlocking(const Location& from_here = Location::Current());
   ~ScopedAllowBlocking();
@@ -750,6 +775,7 @@ class BASE_EXPORT ScopedAllowBaseSyncPrimitives {
   friend class blink::WorkerThread;
   friend class blink::scheduler::NonMainThreadImpl;
   friend class cc::CategorizedWorkerPoolJob;
+  friend class client_certificates::KcerPrivateKey;
   friend class content::BrowserMainLoop;
   friend class content::BrowserProcessIOThread;
   friend class content::DWriteFontCollectionProxy;
@@ -757,6 +783,7 @@ class BASE_EXPORT ScopedAllowBaseSyncPrimitives {
   friend class content::ServiceWorkerContextClient;
   friend class device::UsbContext;
   friend class enterprise_connectors::LinuxKeyRotationCommand;
+  friend class gpu::GpuPersistentCache;
   friend class history_report::HistoryReportJniBridge;
   friend class internal::TaskTracker;
   friend class leveldb::port::CondVar;
@@ -777,6 +804,7 @@ class BASE_EXPORT ScopedAllowBaseSyncPrimitives {
   friend class media::CodecWorkerImpl;
   friend class media::MojoVideoEncodeAccelerator;
   friend class mojo::core::ScopedIPCSupport;
+  friend class mojo_legacy::core::ScopedIPCSupport;
   friend class net::MultiThreadedCertVerifierScopedAllowBaseSyncPrimitives;
   friend class rlz_lib::FinancialPing;
   friend class shell_integration_linux::
@@ -785,6 +813,7 @@ class BASE_EXPORT ScopedAllowBaseSyncPrimitives {
   friend class syncer::HttpBridge;
   friend class syncer::GetLocalChangesRequest;
   friend class updater::SystemctlLauncherScopedAllowBaseSyncPrimitives;
+  friend class webnn::WebNNTensorImpl;
 
   // Usage that should be fixed:
   // Sorted by class name (with namespace).
@@ -825,11 +854,10 @@ class BASE_EXPORT
   // Allowed usage:
   // Sorted by class name (with namespace).
   friend class ::BrowserProcessImpl;  // http://crbug.com/125207
+  friend class ::ChromeContentRendererClient;
   friend class ::KeyStorageLinux;
   friend class ::NativeDesktopMediaList;
   friend class android::JavaHandlerThread;
-  friend class android_webview::
-      AwFormDatabaseService;  // http://crbug.com/904431
   friend class android_webview::CookieManager;
   friend class android_webview::VizCompositorThreadRunnerWebView;
   friend class audio::OutputDevice;
@@ -848,7 +876,6 @@ class BASE_EXPORT
   friend class cc::CategorizedWorkerPool;
   friend class cc::TileTaskManagerImpl;
   friend class content::DesktopCaptureDevice;
-  friend class content::EmergencyTraceFinalisationCoordinator;
   friend class content::InProcessUtilityThread;
   friend class content::RenderProcessHost;
   friend class content::SandboxHostLinux;
@@ -856,18 +883,19 @@ class BASE_EXPORT
   friend class content::SynchronousCompositor;
   friend class content::SynchronousCompositorHost;
   friend class content::SynchronousCompositorSyncCallBridge;
-  friend class gpu::GpuMemoryBufferImplDXGI;
+  friend class gpu::MappableBufferAHB;
+  friend class gpu::MappableBufferDXGI;
   friend class media::AudioInputDevice;
   friend class media::AudioOutputDevice;
+  friend class media::MailboxVideoFrameConverter;
   friend class media::PaintCanvasVideoRenderer;
   friend class media::V4L2DevicePoller;  // TODO(crbug.com/41486289): remove
                                          // this.
   friend class mojo::SyncCallRestrictions;
   friend class mojo::core::ipcz_driver::MojoTrap;
   friend class net::NetworkConfigWatcherAppleThread;
+  friend class ::tracing::EmergencyTraceFinalisationCoordinator;
   friend class ui::DrmThreadProxy;
-  friend class viz::ClientGpuMemoryBufferManager;
-  friend class viz::HostGpuMemoryBufferManager;
   friend class vr::VrShell;
 
   // Usage that should be fixed:
@@ -876,9 +904,10 @@ class BASE_EXPORT
   friend class base::Thread;                      // http://crbug.com/918039
   friend class cc::CompletionEvent;               // http://crbug.com/902653
   friend class content::
-      BrowserGpuChannelHostFactory;          // http://crbug.com/125248
-  friend class content::TextInputClientMac;  // http://crbug.com/121917
-  friend class dbus::Bus;                    // http://crbug.com/125222
+      BrowserGpuChannelHostFactory;           // http://crbug.com/125248
+  friend class content::TextInputClientMac;   // http://crbug.com/121917
+  friend class dbus::Bus;                     // http://crbug.com/125222
+  friend class dbus_xdg::FileTransferPortal;  // https://crbug.com/40398800
   friend class discardable_memory::
       ClientDiscardableSharedMemoryManager;  // http://crbug.com/1396355
   friend class disk_cache::BackendImpl;      // http://crbug.com/74623

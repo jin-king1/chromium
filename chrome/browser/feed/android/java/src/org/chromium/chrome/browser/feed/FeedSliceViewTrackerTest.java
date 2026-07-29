@@ -34,15 +34,16 @@ import androidx.test.filters.SmallTest;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.Mockito;
-import org.mockito.MockitoAnnotations;
 import org.mockito.invocation.InvocationOnMock;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.mockito.stubbing.Answer;
 import org.robolectric.annotation.Config;
-import org.robolectric.shadows.ShadowLog;
 import org.robolectric.shadows.ShadowSystemClock;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -58,6 +59,7 @@ import java.util.concurrent.TimeUnit;
         shadows = {ShadowSystemClock.class})
 public class FeedSliceViewTrackerTest {
     // Mocking dependencies that are always present, but using a real FeedListContentManager.
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock RecyclerView mParentView;
     @Mock FeedSliceViewTracker.Observer mObserver;
     @Mock LinearLayoutManager mLayoutManager;
@@ -82,8 +84,6 @@ public class FeedSliceViewTrackerTest {
 
     @Before
     public void setUp() {
-        ShadowLog.stream = System.out;
-        MockitoAnnotations.initMocks(this);
         mContentManager = new FeedListContentManager();
         doReturn(mLayoutManager).when(mParentView).getLayoutManager();
         doReturn(mViewTreeObserver).when(mParentView).getViewTreeObserver();
@@ -360,11 +360,11 @@ public class FeedSliceViewTrackerTest {
                 });
 
         // Associates 2 observers with another content key.
-        Runnable mChildBVisibleRunnable1 =
+        Runnable childBVisibleRunnable1 =
                 () -> {
                     mChildBVisibleRunnable1Called = true;
                 };
-        mTracker.watchForFirstVisible("c/key2", 0.6f, mChildBVisibleRunnable1);
+        mTracker.watchForFirstVisible("c/key2", 0.6f, childBVisibleRunnable1);
         mTracker.watchForFirstVisible(
                 "c/key2",
                 0.7f,
@@ -395,7 +395,7 @@ public class FeedSliceViewTrackerTest {
         assertFalse(mChildBVisibleRunnable2Called);
 
         // Stops watching an observer. Expects that this observe will not get notified.
-        mTracker.stopWatchingForFirstVisible("c/key2", mChildBVisibleRunnable1);
+        mTracker.stopWatchingForFirstVisible("c/key2", childBVisibleRunnable1);
         doReturn(true).when(mTracker).isViewVisible(eq(mChildB), leq(0.7f));
         clearVisibleRunnableCalledStates();
         mTracker.onPreDraw();

@@ -8,7 +8,8 @@
 #include "base/strings/to_string.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/tabs/tab_model.h"
 #include "chrome/browser/ui/webui/favicon_source.h"
 #include "chrome/browser/ui/webui/plural_string_handler.h"
@@ -50,7 +51,7 @@ GetSampleData() {
 // Sample/debugging implementation that closes the browser tab regardless of the
 // item map.
 void CloseBrowserTabOnCompletionSample(
-    Browser* browser,
+    BrowserWindowInterface* browser,
     const std::map<syncer::DataType,
                    std::vector<syncer::LocalDataItemModel::DataId>>& items) {
   browser->GetTabStripModel()->GetActiveTab()->Close();
@@ -62,11 +63,11 @@ BatchUploadUI::BatchUploadUI(content::WebUI* web_ui)
     : ui::MojoWebUIController(web_ui, true) {
   Profile* profile = Profile::FromWebUI(web_ui);
   // Set up the chrome://batch-upload source.
-  web_ui_source_ = content::WebUIDataSource::CreateAndAdd(
+  content::WebUIDataSource* source = content::WebUIDataSource::CreateAndAdd(
       profile, chrome::kChromeUIBatchUploadHost);
 
   // Add required resources.
-  webui::SetupWebUIDataSource(web_ui_source_, kBatchUploadResources,
+  webui::SetupWebUIDataSource(source, kBatchUploadResources,
                               IDR_BATCH_UPLOAD_BATCH_UPLOAD_HTML);
 
   static constexpr webui::LocalizedString kLocalizedStrings[] = {
@@ -78,12 +79,32 @@ BatchUploadUI::BatchUploadUI(content::WebUI* web_ui)
       {"itemCountSelectedScreenReader",
        IDS_BATCH_UPLOAD_SCREEN_READER_ITEM_COUNT_SELECTED},
       {"selectAllScreenReader", IDS_BATCH_UPLOAD_SCREEN_READER_SELECT_ALL},
-      {"selectNoneScreenReader", IDS_BATCH_UPLOAD_SCREEN_READER_SELECT_NONE},
   };
-  web_ui_source_->AddLocalizedStrings(kLocalizedStrings);
+  source->AddLocalizedStrings(kLocalizedStrings);
 
-  web_ui_source_->UseStringsJs();
-  web_ui_source_->EnableReplaceI18nInJS();
+  source->UseStringsJs();
+  source->EnableReplaceI18nInJS();
+
+  std::unique_ptr<PluralStringHandler> plural_string_handler =
+      std::make_unique<PluralStringHandler>();
+  // Add the section titles variables for all eligible types in the dialog.
+  // These will be updated based on the number of selected items in each
+  // sections.
+  for (syncer::DataType data_type : BatchUploadService::AvailableTypesOrder()) {
+    int section_title_id = BatchUploadHandler::GetTypeSectionTitleId(data_type);
+    // For Themes add the resource in the main webui source since themes has a
+    // special way to display its title that requires a non plural localized
+    // string with a variable. Also add the resource in the
+    // `plural_string_handler` to simplify initialization of the view.
+    if (data_type == syncer::DataType::THEMES) {
+      source->AddLocalizedString(base::ToString(section_title_id),
+                                 section_title_id);
+    }
+
+    plural_string_handler->AddLocalizedString(base::ToString(section_title_id),
+                                              section_title_id);
+  }
+  web_ui->AddMessageHandler(std::move(plural_string_handler));
 
   content::URLDataSource::Add(
       profile, std::make_unique<FaviconSource>(
@@ -101,29 +122,6 @@ void BatchUploadUI::Initialize(
     base::RepeatingCallback<void(int)> update_view_height_callback,
     base::RepeatingCallback<void(bool)> allow_web_view_input_callback,
     BatchUploadSelectedDataTypeItemsCallback completion_callback) {
-  std::unique_ptr<PluralStringHandler> plural_string_handler =
-      std::make_unique<PluralStringHandler>();
-  // Add the section titles variables. These will be updated based on the number
-  // of selected items in each sections.
-  std::set<std::string> section_title_ids;
-  for (const syncer::LocalDataDescription& local_data_description :
-       local_data_description_list) {
-    int section_title_id =
-        BatchUploadHandler::GetTypeSectionTitleId(local_data_description.type);
-    // For Themes add the resource in the main `web_ui_source_` since themes has
-    // a special way to display it's title that requires a non plural localized
-    // string with a variable. Also add the resource in the
-    // `plural_string_handler` to simplify initialization of the view.
-    if (local_data_description.type == syncer::DataType::THEMES) {
-      web_ui_source_->AddLocalizedString(base::ToString(section_title_id),
-                                         section_title_id);
-    }
-
-    plural_string_handler->AddLocalizedString(base::ToString(section_title_id),
-                                              section_title_id);
-  }
-  web_ui()->AddMessageHandler(std::move(plural_string_handler));
-
   initialize_handler_callback_ = base::BindOnce(
       &BatchUploadUI::OnMojoHandlersReady, base::Unretained(this), account_info,
       browser, std::move(local_data_description_list),
@@ -133,7 +131,6 @@ void BatchUploadUI::Initialize(
 
 void BatchUploadUI::Clear() {
   handler_.reset();
-  web_ui_source_ = nullptr;
 }
 
 void BatchUploadUI::BindInterface(
@@ -150,11 +147,13 @@ void BatchUploadUI::CreateBatchUploadHandler(
   // Chrome for debugging purposes - fill it with sample data.
   if (!initialize_handler_callback_) {
     auto [account_info, descriptions] = GetSampleData();
-    Browser* browser = chrome::FindLastActive();
+    BrowserWindowInterface* browser =
+        GlobalBrowserCollection::GetInstance()->GetLastActiveBrowser();
+    CHECK(browser);
     BatchUploadSelectedDataTypeItemsCallback sample_completion_callback =
         base::BindOnce(&CloseBrowserTabOnCompletionSample, browser);
-    Initialize(account_info, browser, std::move(descriptions),
-               base::DoNothing(), base::DoNothing(),
+    Initialize(account_info, browser->GetBrowserForMigrationOnly(),
+               std::move(descriptions), base::DoNothing(), base::DoNothing(),
                std::move(sample_completion_callback));
   }
 

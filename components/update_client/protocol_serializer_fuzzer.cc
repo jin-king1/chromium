@@ -22,7 +22,13 @@
 #include "components/update_client/protocol_handler.h"
 
 struct Environment {
-  Environment() { CHECK(base::CommandLine::Init(0, nullptr)); }
+  Environment() {
+    // Avoid crashing if CommandLine is already initialized, which can happen on
+    // Android.
+    if (!base::CommandLine::InitializedForCurrentProcess()) {
+      CHECK(base::CommandLine::Init(0, nullptr));
+    }
+  }
 };
 
 namespace update_client {
@@ -54,7 +60,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
   std::string request_serialized = serializer->Serialize(request);
 
   // Any request we serialize should be valid JSON.
-  CHECK(base::JSONReader::Read(request_serialized));
+  CHECK(base::JSONReader::Read(request_serialized,
+                               base::JSON_PARSE_CHROMIUM_EXTENSIONS));
   return 0;
 }
 }  // namespace update_client

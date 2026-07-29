@@ -15,7 +15,7 @@ CSSFunctionRule::CSSFunctionRule(StyleRuleFunction* function_rule,
     : CSSGroupingRule(function_rule, parent) {}
 
 String CSSFunctionRule::name() const {
-  return To<StyleRuleFunction>(*group_rule_).GetName();
+  return To<StyleRuleFunction>(*group_rule_).Name();
 }
 
 HeapVector<Member<FunctionParameter>> CSSFunctionRule::getParameters() const {
@@ -39,8 +39,6 @@ String CSSFunctionRule::returnType() const {
   return To<StyleRuleFunction>(*group_rule_).GetReturnType().ToString();
 }
 
-namespace {
-
 // <css-type> = <syntax-component> | <type()>
 // https://drafts.csswg.org/css-mixins-1/#typedef-css-type
 void AppendCSSType(const CSSSyntaxDefinition& syntax, StringBuilder& builder) {
@@ -55,14 +53,12 @@ void AppendCSSType(const CSSSyntaxDefinition& syntax, StringBuilder& builder) {
   }
 }
 
-}  // namespace
-
 String CSSFunctionRule::cssText() const {
   const auto& rule = To<StyleRuleFunction>(*group_rule_);
 
   StringBuilder builder;
   builder.Append("@function ");
-  SerializeIdentifier(rule.GetName(), builder);
+  SerializeIdentifier(rule.Name(), builder);
   builder.Append("(");
 
   bool first_param = true;

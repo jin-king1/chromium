@@ -4,7 +4,9 @@
 
 #include "third_party/blink/renderer/platform/loader/fetch/url_loader/worker_main_script_loader.h"
 
+#include "base/byte_size.h"
 #include "base/containers/span.h"
+#include "base/numerics/safe_conversions.h"
 #include "services/network/public/cpp/header_util.h"
 #include "services/network/public/cpp/record_ontransfersizeupdate_utils.h"
 #include "services/network/public/mojom/early_hints.mojom.h"
@@ -99,17 +101,16 @@ void WorkerMainScriptLoader::Start(
     return;
   }
 
-  script_encoding_ =
-      resource_response_.TextEncodingName().empty()
-          ? UTF8Encoding()
-          : WTF::TextEncoding(resource_response_.TextEncodingName());
+  script_encoding_ = resource_response_.TextEncodingName().empty()
+                         ? Utf8Encoding()
+                         : TextEncoding(resource_response_.TextEncodingName());
 
   url_loader_remote_.Bind(std::move(
       worker_main_script_load_params->url_loader_client_endpoints->url_loader));
   receiver_.Bind(
       std::move(worker_main_script_load_params->url_loader_client_endpoints
                     ->url_loader_client));
-  receiver_.set_disconnect_handler(WTF::BindOnce(
+  receiver_.set_disconnect_handler(BindOnce(
       &WorkerMainScriptLoader::OnConnectionClosed, WrapWeakPersistent(this)));
   data_pipe_ = std::move(worker_main_script_load_params->response_body);
 
@@ -168,8 +169,9 @@ void WorkerMainScriptLoader::OnComplete(
     has_seen_end_of_data_ = true;
 
   // Reports resource timing info for the worker main script.
-  resource_response_.SetEncodedBodyLength(status.encoded_body_length);
-  resource_response_.SetDecodedBodyLength(status.decoded_body_length);
+  resource_response_.SetEncodedBodyLength(status.encoded_body_length.InBytes());
+  resource_response_.SetDecodedBodyLength(
+      base::checked_cast<int64_t>(status.decoded_body_length.InBytes()));
   resource_response_.SetCurrentRequestUrl(last_request_url_);
 
   // https://fetch.spec.whatwg.org/#fetch-finale
@@ -177,7 +179,7 @@ void WorkerMainScriptLoader::OnComplete(
   // scheme, then return.
   //
   // i.e. call `AddResourceTiming()` only if the URL's scheme is HTTP(S).
-  if (initial_request_url_.ProtocolIsInHTTPFamily()) {
+  if (initial_request_url_.ProtocolIsInHttpFamily()) {
     mojom::blink::ResourceTimingInfoPtr timing_info = CreateResourceTimingInfo(
         start_time_, initial_request_url_, &resource_response_);
     timing_info->response_end = status.completion_time;
@@ -192,8 +194,8 @@ void WorkerMainScriptLoader::OnComplete(
 
 CachedMetadataHandler* WorkerMainScriptLoader::CreateCachedMetadataHandler() {
   // Currently we support the metadata caching only for HTTP family.
-  if (!initial_request_url_.ProtocolIsInHTTPFamily() ||
-      !resource_response_.CurrentRequestUrl().ProtocolIsInHTTPFamily()) {
+  if (!initial_request_url_.ProtocolIsInHttpFamily() ||
+      !resource_response_.CurrentRequestUrl().ProtocolIsInHttpFamily()) {
     return nullptr;
   }
 
@@ -221,8 +223,8 @@ void WorkerMainScriptLoader::StartLoadingBody() {
       FROM_HERE, mojo::SimpleWatcher::ArmingPolicy::MANUAL);
   MojoResult rv =
       watcher_->Watch(data_pipe_.get(), MOJO_HANDLE_SIGNAL_READABLE,
-                      WTF::BindRepeating(&WorkerMainScriptLoader::OnReadable,
-                                         WrapWeakPersistent(this)));
+                      BindRepeating(&WorkerMainScriptLoader::OnReadable,
+                                    WrapWeakPersistent(this)));
   DCHECK_EQ(MOJO_RESULT_OK, rv);
   watcher_->ArmOrNotify();
 }

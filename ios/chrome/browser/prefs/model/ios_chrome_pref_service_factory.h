@@ -8,7 +8,7 @@
 #include <memory>
 
 #include "base/files/file_path.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 
 class PrefRegistry;
 class PrefService;
@@ -53,7 +53,7 @@ std::unique_ptr<sync_preferences::PrefServiceSyncable> CreateProfilePrefs(
     const scoped_refptr<user_prefs::PrefRegistrySyncable>& pref_registry,
     policy::PolicyService* policy_service,
     policy::BrowserPolicyConnector* policy_connector,
-    const scoped_refptr<PrefStore>& supervised_user_prefs,
+    scoped_refptr<PrefStore> supervised_user_prefs,
     bool async);
 
 // Creates an incognito copy of `pref_service` that shares most prefs but uses

@@ -15,6 +15,7 @@
 #include <limits>
 #include <string>
 
+#include "base/compiler_specific.h"
 #include "build/build_config.h"
 #include "sandbox/mac/sandbox_crash_message.h"
 
@@ -70,7 +71,7 @@ void SendOsLog(Level level, const char* message) {
     }
   }(level);
 
-  os_log_with_type(log.get(), os_log_type, "%{public}s", message);
+  UNSAFE_TODO(os_log_with_type(log.get(), os_log_type, "%{public}s", message));
 
   if (level == Level::ERR) {
     sandbox::crash_message::SetCrashMessage(message);
@@ -88,7 +89,7 @@ void DoLogging(Level level,
                va_list args,
                const std::string* error) {
   char message[4096];
-  int ret = vsnprintf(message, sizeof(message), fmt, args);
+  int ret = UNSAFE_TODO(vsnprintf(message, sizeof(message), fmt, args));
 
   if (ret < 0) {
     SendOsLog(level, "warning: log message could not be formatted");

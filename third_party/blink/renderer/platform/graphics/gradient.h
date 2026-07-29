@@ -29,16 +29,15 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_GRAPHICS_GRADIENT_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_GRAPHICS_GRADIENT_H_
 
-#include "base/memory/scoped_refptr.h"
+#include <memory>
+
 #include "cc/paint/paint_flags.h"
 #include "third_party/blink/renderer/platform/graphics/color.h"
 #include "third_party/blink/renderer/platform/graphics/paint/paint_shader.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
-#include "third_party/blink/renderer/platform/wtf/ref_counted.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 #include "third_party/skia/include/core/SkRefCnt.h"
-#include "third_party/skia/include/effects/SkGradientShader.h"
 
 class SkMatrix;
 
@@ -51,36 +50,36 @@ namespace blink {
 struct ImageDrawOptions;
 class DarkModeFilter;
 
-class PLATFORM_EXPORT Gradient : public RefCounted<Gradient> {
+class PLATFORM_EXPORT Gradient {
   USING_FAST_MALLOC(Gradient);
 
  public:
-  enum class Type { kLinear, kRadial, kConic };
+  enum class Type : uint8_t { kLinear, kRadial, kConic };
 
   enum class PremultipliedAlpha {
-    kPremultiplied,
     kUnpremultiplied,
+    kPremultiplied,
   };
 
   enum class DegenerateHandling {
-    kAllow,
     kDisallow,
+    kAllow,
   };
 
-  enum class SpreadMethod {
+  enum class SpreadMethod : uint8_t {
     kPad,
     kReflect,
     kRepeat,
   };
 
-  static scoped_refptr<Gradient> CreateLinear(
+  static std::unique_ptr<Gradient> CreateLinear(
       const gfx::PointF& p0,
       const gfx::PointF& p1,
       SpreadMethod = SpreadMethod::kPad,
       PremultipliedAlpha = PremultipliedAlpha::kUnpremultiplied,
       DegenerateHandling = DegenerateHandling::kAllow);
 
-  static scoped_refptr<Gradient> CreateRadial(
+  static std::unique_ptr<Gradient> CreateRadial(
       const gfx::PointF& p0,
       float r0,
       const gfx::PointF& p1,
@@ -90,7 +89,7 @@ class PLATFORM_EXPORT Gradient : public RefCounted<Gradient> {
       PremultipliedAlpha = PremultipliedAlpha::kUnpremultiplied,
       DegenerateHandling = DegenerateHandling::kAllow);
 
-  static scoped_refptr<Gradient> CreateConic(
+  static std::unique_ptr<Gradient> CreateConic(
       const gfx::PointF& position,
       float rotation,
       float start_angle,
@@ -107,15 +106,13 @@ class PLATFORM_EXPORT Gradient : public RefCounted<Gradient> {
 
   struct ColorStop {
     DISALLOW_NEW();
-    double stop;
+    float stop;
     Color color;
 
-    ColorStop(double s, const Color& c) : stop(s), color(c) {}
+    ColorStop(float s, const Color& c) : stop(s), color(c) {}
   };
   void AddColorStop(const ColorStop&);
-  void AddColorStop(double value, const Color& color) {
-    AddColorStop(ColorStop(value, color));
-  }
+  void AddColorStop(double value, const Color& color);
   void AddColorStops(const Vector<Gradient::ColorStop>&);
 
   void ApplyToFlags(cc::PaintFlags&,
@@ -134,13 +131,10 @@ class PLATFORM_EXPORT Gradient : public RefCounted<Gradient> {
   }
 
   void SetPremultipliedAlphaForInterpolation(bool premultiplied_alpha) {
-    PremultipliedAlpha color_interpolation =
-        premultiplied_alpha ? PremultipliedAlpha::kPremultiplied
-                            : PremultipliedAlpha::kUnpremultiplied;
-    if (color_interpolation == premultiplied_alpha_) {
+    if (premultiplied_alpha == premultiplied_alpha_) {
       return;
     }
-    premultiplied_alpha_ = color_interpolation;
+    premultiplied_alpha_ = premultiplied_alpha;
     cached_shader_.reset();
   }
 
@@ -150,43 +144,43 @@ class PLATFORM_EXPORT Gradient : public RefCounted<Gradient> {
   Gradient(Type, SpreadMethod, PremultipliedAlpha, DegenerateHandling);
 
   using ColorBuffer = Vector<SkColor4f, 8>;
-  using OffsetBuffer = Vector<SkScalar, 8>;
+  using OffsetBuffer = Vector<float, 8>;
   virtual sk_sp<PaintShader> CreateShader(const ColorBuffer&,
                                           const OffsetBuffer&,
                                           SkTileMode,
-                                          SkGradientShader::Interpolation,
+                                          SkGradient::Interpolation,
                                           const SkMatrix&,
                                           SkColor4f) const = 0;
 
   DegenerateHandling GetDegenerateHandling() const {
-    return degenerate_handling_;
+    return allow_degenerate_ ? DegenerateHandling::kAllow
+                             : DegenerateHandling::kDisallow;
   }
 
  private:
   sk_sp<PaintShader> CreateShaderInternal(const SkMatrix& local_matrix);
-  SkGradientShader::Interpolation ResolveSkInterpolation() const;
+  SkGradient::Interpolation ResolveSkInterpolation() const;
 
   void SortStopsIfNecessary() const;
   void FillSkiaStops(ColorBuffer&, OffsetBuffer&) const;
   bool HasNonLegacyColor() const;
 
-  const Type type_;
-  const SpreadMethod spread_method_;
-  PremultipliedAlpha premultiplied_alpha_ =
-      PremultipliedAlpha::kUnpremultiplied;
-  const DegenerateHandling degenerate_handling_;
-
-  mutable Vector<ColorStop, 2> stops_;
-  mutable bool stops_sorted_;
-  bool is_dark_mode_enabled_ = false;
-  std::unique_ptr<DarkModeFilter> dark_mode_filter_;
-
   mutable sk_sp<PaintShader> cached_shader_;
   mutable sk_sp<cc::ColorFilter> color_filter_;
+  std::unique_ptr<DarkModeFilter> dark_mode_filter_;
+  mutable Vector<ColorStop, 2> stops_;
 
+  const Type type_;
+  const SpreadMethod spread_method_;
   Color::ColorSpace color_space_interpolation_space_ = Color::ColorSpace::kNone;
   Color::HueInterpolationMethod hue_interpolation_method_ =
       Color::HueInterpolationMethod::kShorter;
+
+  bool premultiplied_alpha_ = false;
+  const bool allow_degenerate_;
+
+  mutable bool stops_sorted_ = true;
+  bool is_dark_mode_enabled_ = false;
 };
 
 }  // namespace blink

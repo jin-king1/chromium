@@ -5,9 +5,11 @@
 #include "extensions/common/manifest_handlers/automation.h"
 
 #include "base/command_line.h"
+#include "base/test/scoped_command_line.h"
 #include "chrome/common/extensions/manifest_tests/chrome_manifest_test.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/version_info/version_info.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/error_utils.h"
 #include "extensions/common/features/feature_channel.h"
 #include "extensions/common/manifest_constants.h"
@@ -17,26 +19,24 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/l10n/l10n_util.h"
 
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
+
 namespace extensions {
 
 class AutomationManifestTest : public ChromeManifestTest {
  public:
   AutomationManifestTest() : channel_(version_info::Channel::UNKNOWN) {}
 
- protected:
-  AutomationInfo* GetAutomationInfo(scoped_refptr<Extension> extension) {
-    return static_cast<AutomationInfo*>(
-        extension->GetManifestData(manifest_keys::kAutomation));
-  }
-
  private:
   void SetUp() override {
-    auto* command_line = base::CommandLine::ForCurrentProcess();
+    auto* command_line = scoped_command_line_.GetProcessCommandLine();
+    command_line->RemoveSwitch(extensions::switches::kAllowlistedExtensionID);
     command_line->AppendSwitchASCII(
         extensions::switches::kAllowlistedExtensionID,
         "ddchlicdkolnonkihahngkmmmjnjlkkf");
   }
 
+  base::test::ScopedCommandLine scoped_command_line_;
   ScopedCurrentChannel channel_;
 };
 

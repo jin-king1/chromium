@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "chrome/browser/ui/ash/login/oobe_ui_dialog_delegate.h"
 
@@ -46,6 +42,7 @@
 #include "ui/views/controls/webview/web_dialog_view.h"
 #include "ui/views/focus/focus_manager.h"
 #include "ui/views/metadata/type_conversion.h"
+#include "ui/views/property_effects.h"
 #include "ui/views/view.h"
 #include "ui/views/view_shadow.h"
 #include "ui/views/widget/widget.h"
@@ -198,7 +195,7 @@ class LayoutWidgetDelegateView : public views::WidgetDelegateView {
       return;
     }
     fullscreen_ = value;
-    OnPropertyChanged(&fullscreen_, views::kPropertyEffectsLayout);
+    OnPropertyChanged(&fullscreen_, views::PropertyEffects::kLayout);
   }
   bool GetFullscreen() const { return fullscreen_; }
 
@@ -207,7 +204,7 @@ class LayoutWidgetDelegateView : public views::WidgetDelegateView {
       return;
     }
     has_shelf_ = value;
-    OnPropertyChanged(&has_shelf_, views::kPropertyEffectsLayout);
+    OnPropertyChanged(&has_shelf_, views::PropertyEffects::kLayout);
   }
   bool GetHasShelf() const { return has_shelf_; }
 
@@ -225,7 +222,7 @@ class LayoutWidgetDelegateView : public views::WidgetDelegateView {
     gfx::Rect bounds;
     const int shelf_height = has_shelf_ ? ShelfConfig::Get()->shelf_size() : 0;
     const gfx::Size display_size =
-        display::Screen::GetScreen()->GetPrimaryDisplay().size();
+        display::Screen::Get()->GetPrimaryDisplay().size();
     const bool is_horizontal = display_size.width() > display_size.height();
     CalculateOobeDialogBounds(GetContentsBounds(), shelf_height, is_horizontal,
                               &bounds);
@@ -382,7 +379,7 @@ void OobeUIDialogDelegate::Close() {
 
   // We do not call LoginScreen::NotifyOobeDialogVisibility here, because this
   // would cause the LoginShelfView to update its button visibility even though
-  // the login screen is about to be destroyed. See http://crbug/836172
+  // the login screen is about to be destroyed. See http://crbug.com/40573223
   widget_->Close();
 }
 
@@ -495,7 +492,8 @@ void OobeUIDialogDelegate::OnFocusLeavingSystemTray(bool reverse) {
 }
 
 web_modal::WebContentsModalDialogHost*
-OobeUIDialogDelegate::GetWebContentsModalDialogHost() {
+OobeUIDialogDelegate::GetWebContentsModalDialogHost(
+    content::WebContents* web_contents) {
   return this;
 }
 

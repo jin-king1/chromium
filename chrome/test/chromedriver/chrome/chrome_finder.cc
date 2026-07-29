@@ -6,6 +6,7 @@
 
 #include <stddef.h>
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -19,7 +20,6 @@
 #include "base/path_service.h"
 #include "base/strings/string_split.h"
 #include "base/strings/utf_string_conversions.h"
-#include "build/branding_buildflags.h"
 #include "build/build_config.h"
 #include "chrome/common/chrome_constants.h"
 #include "chrome/test/chromedriver/constants/version.h"
@@ -81,18 +81,18 @@ void GetApplicationDirs(std::vector<base::FilePath>* locations) {
 void GetPathsFromEnvironment(std::vector<base::FilePath>* paths) {
   base::FilePath::StringType delimiter;
   base::FilePath::StringType common_path;
-  std::string path;
   std::unique_ptr<base::Environment> env(base::Environment::Create());
 
-  if (!env->GetVar("PATH", &path)) {
+  std::optional<std::string> path = env->GetVar("PATH");
+  if (!path.has_value()) {
     return;
   }
 
 #if BUILDFLAG(IS_WIN)
-  common_path = base::UTF8ToWide(path);
+  common_path = base::UTF8ToWide(path.value());
   delimiter = L";";
 #else
-  common_path = path;
+  common_path = path.value();
   delimiter = ":";
 #endif
 

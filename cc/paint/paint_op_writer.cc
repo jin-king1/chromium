@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "cc/paint/paint_op_writer.h"
 
 #include <memory>
@@ -14,7 +9,9 @@
 #include <vector>
 
 #include "base/bits.h"
+#include "base/compiler_specific.h"
 #include "base/containers/heap_array.h"
+#include "base/containers/span.h"
 #include "base/notreached.h"
 #include "cc/paint/color_filter.h"
 #include "cc/paint/draw_image.h"
@@ -65,9 +62,12 @@ SkIRect MakeSrcRect(const PaintImage& image) {
   return SkIRect::MakeWH(image.width(), image.height());
 }
 
-void WriteHeader(void* memory, uint8_t type, size_t serialized_size) {
+void WriteHeader(base::span<uint8_t> memory,
+                 uint8_t type,
+                 size_t serialized_size) {
   DCHECK_LT(serialized_size, PaintOpWriter::kMaxSerializedSize);
-  static_cast<uint32_t*>(memory)[0] = type | serialized_size << 8;
+  CHECK(memory.size() >= sizeof(uint32_t));
+  reinterpret_cast<uint32_t*>(memory.data())[0] = type | serialized_size << 8;
 }
 
 template <typename ValueType>
@@ -251,13 +251,12 @@ size_t PaintOpWriter::FinishOp(uint8_t type) {
   }
 
   // Write type and skip into the header bytes.
-  WriteHeader(memory_ - written, type, aligned_written);
-
-  memory_ += padding;
+  WriteHeader(buffer_, type, aligned_written);
+  remaining_.take_first(padding);
   return aligned_written;
 }
 
-void PaintOpWriter::WriteHeaderForTesting(void* memory,
+void PaintOpWriter::WriteHeaderForTesting(base::span<uint8_t> memory,
                                           uint8_t type,
                                           size_t serialized_size) {
   WriteHeader(memory, type, serialized_size);
@@ -268,31 +267,31 @@ void PaintOpWriter::WriteSize(size_t size) {
   if (!valid_) {
     return;
   }
-  WriteSizeAt(memory_, size);
+  WriteSizeAt(remaining_, size);
   DidWrite(SerializedSize<size_t>());
 }
 
-void* PaintOpWriter::SkipSize() {
-  auto* memory = memory_;
+base::span<uint8_t> PaintOpWriter::SkipSize() {
+  auto memory = remaining_;
   WriteSize(0u);
   return memory;
 }
 
-void PaintOpWriter::WriteSizeAt(void* memory, size_t size) {
+void PaintOpWriter::WriteSizeAt(base::span<uint8_t> memory, size_t size) {
   // size_t is always serialized as uint32_ts to make the serialized result
   // portable between 32bit and 64bit processes, and to meet the 4-byte
   // minimum alignment requirement of PaintOpWriter (https://crbug.com/1429994
   // and https://crbug.com/1440013).
-  uint32_t* memory_32 = static_cast<uint32_t*>(memory);
+  CHECK(memory.size() >= sizeof(uint32_t) * 2);
+  uint32_t* memory_32 = reinterpret_cast<uint32_t*>(memory.data());
   memory_32[0] = static_cast<uint32_t>(size);
-  memory_32[1] = static_cast<uint32_t>(static_cast<uint64_t>(size) >> 32);
+  UNSAFE_TODO(memory_32[1]) =
+      static_cast<uint32_t>(static_cast<uint64_t>(size) >> 32);
 }
 
 void PaintOpWriter::Write(const SkPath& path, UsePaintCache use_paint_cache) {
   auto id = path.getGenerationID();
-  if (!options_.for_identifiability_study) {
-    Write(id);
-  }
+  Write(id);
 
   DCHECK(use_paint_cache == UsePaintCache::kEnabled ||
          !options_.paint_cache->Get(PaintCacheDataType::kPath, id));
@@ -314,7 +313,7 @@ void PaintOpWriter::Write(const SkPath& path, UsePaintCache use_paint_cache) {
   } else {
     Write(static_cast<uint32_t>(PaintCacheEntryState::kInlinedDoNotCache));
   }
-  void* bytes_to_skip = SkipSize();
+  auto bytes_to_skip = SkipSize();
   if (!valid_) {
     return;
   }
@@ -323,7 +322,7 @@ void PaintOpWriter::Write(const SkPath& path, UsePaintCache use_paint_cache) {
     valid_ = false;
     return;
   }
-  size_t bytes_written = path.writeToMemory(memory_);
+  size_t bytes_written = path.writeToMemory(remaining_.data());
   DCHECK_EQ(bytes_written, bytes_required);
   if (use_paint_cache == UsePaintCache::kEnabled) {
     options_.paint_cache->Put(PaintCacheDataType::kPath, id, bytes_written);
@@ -340,6 +339,7 @@ void PaintOpWriter::Write(const PaintFlags& flags, const SkM44& current_ctm) {
     // NOTE: size_t is written as two 32-bit zeros (see WriteSize()).
     WriteSimpleMultiple(
         flags.color_, flags.width_, flags.miter_limit_, flags.bitfields_uint_,
+        flags.targeted_hdr_headroom_,
         // flags.path_effect_.
         base::checked_cast<uint8_t>(PathEffect::Type::kNull),
         // flags.color_filter_.
@@ -357,6 +357,7 @@ void PaintOpWriter::Write(const PaintFlags& flags, const SkM44& current_ctm) {
   Write(flags.width_);
   Write(flags.miter_limit_);
   WriteSimple(flags.bitfields_uint_);
+  WriteSimple(flags.targeted_hdr_headroom_);
 
   Write(flags.path_effect_.get());
   Write(flags.color_filter_.get());
@@ -407,8 +408,8 @@ void PaintOpWriter::Write(const DrawImage& draw_image,
     Write(pixmap.height());
     size_t pixmap_size = pixmap.computeByteSize();
     WriteSize(pixmap_size);
-    WriteData(base::span<const uint8_t>(
-        static_cast<const uint8_t*>(pixmap.addr()), pixmap_size));
+    WriteData(UNSAFE_TODO(base::span<const uint8_t>(
+        static_cast<const uint8_t*>(pixmap.addr()), pixmap_size)));
     return;
   }
 
@@ -422,14 +423,15 @@ void PaintOpWriter::Write(const DrawImage& draw_image,
 
   *scale_adjustment = decoded_draw_image.scale_adjustment();
 
-  WriteImage(decoded_draw_image, paint_image.GetReinterpretAsSRGB());
+  WriteImage(decoded_draw_image, paint_image.GetHDRMetadata(),
+             paint_image.GetReinterpretAsSRGB());
 }
 
 void PaintOpWriter::Write(scoped_refptr<SkottieWrapper> skottie) {
   uint32_t id = skottie->id();
   Write(id);
 
-  void* bytes_to_skip = SkipSize();
+  auto bytes_to_skip = SkipSize();
   if (!valid_) {
     return;
   }
@@ -441,7 +443,7 @@ void PaintOpWriter::Write(scoped_refptr<SkottieWrapper> skottie) {
   size_t bytes_written = 0u;
   if (!locked) {
     bytes_written = options_.transfer_cache->CreateEntry(
-        ClientSkottieTransferCacheEntry(skottie), memory_);
+        ClientSkottieTransferCacheEntry(skottie), remaining_);
     options_.transfer_cache->AssertLocked(TransferCacheEntryType::kSkottie, id);
   }
 
@@ -451,20 +453,23 @@ void PaintOpWriter::Write(scoped_refptr<SkottieWrapper> skottie) {
 }
 
 void PaintOpWriter::WriteImage(const DecodedDrawImage& decoded_draw_image,
+                               const gfx::HDRMetadata& hdr_metadata,
                                bool reinterpret_as_srgb) {
   if (!decoded_draw_image.mailbox().IsZero()) {
-    WriteImage(decoded_draw_image.mailbox(), reinterpret_as_srgb);
+    WriteImage(decoded_draw_image.mailbox(), hdr_metadata, reinterpret_as_srgb);
     return;
   }
 
   std::optional<uint32_t> id = decoded_draw_image.transfer_cache_entry_id();
   // In the case of a decode failure, id may not be set. Send an invalid ID.
   WriteImage(id.value_or(kInvalidImageTransferCacheEntryId),
-             decoded_draw_image.transfer_cache_entry_needs_mips());
+             decoded_draw_image.transfer_cache_entry_needs_mips(),
+             hdr_metadata);
 }
 
 void PaintOpWriter::WriteImage(uint32_t transfer_cache_entry_id,
-                               bool needs_mips) {
+                               bool needs_mips,
+                               const gfx::HDRMetadata& hdr_metadata) {
   if (transfer_cache_entry_id == kInvalidImageTransferCacheEntryId) {
     Write(static_cast<uint8_t>(PaintOp::SerializedImageType::kNoImage));
     return;
@@ -472,22 +477,25 @@ void PaintOpWriter::WriteImage(uint32_t transfer_cache_entry_id,
 
   Write(
       static_cast<uint8_t>(PaintOp::SerializedImageType::kTransferCacheEntry));
+  Write(hdr_metadata);
   Write(transfer_cache_entry_id);
   Write(needs_mips);
 }
 
 void PaintOpWriter::WriteImage(const gpu::Mailbox& mailbox,
+                               const gfx::HDRMetadata& hdr_metadata,
                                bool reinterpret_as_srgb) {
   DCHECK(!mailbox.IsZero());
 
   Write(static_cast<uint8_t>(PaintOp::SerializedImageType::kMailbox));
+  Write(hdr_metadata);
 
   EnsureBytes(sizeof(mailbox.name));
   if (!valid_) {
     return;
   }
 
-  memcpy(memory_, mailbox.name, sizeof(mailbox.name));
+  remaining_.copy_prefix_from(base::as_byte_span(mailbox.name));
   DidWrite(sizeof(mailbox.name));
   Write(reinterpret_as_srgb);
 }
@@ -522,7 +530,7 @@ void PaintOpWriter::Write(const SkSamplingOptions& sampling) {
 }
 
 void PaintOpWriter::Write(
-    const SkGradientShader::Interpolation& interpolation) {
+    const SkGradient::Interpolation& interpolation) {
   WriteEnum(interpolation.fInPremul);
   WriteEnum(interpolation.fColorSpace);
   WriteEnum(interpolation.fHueMethod);
@@ -541,7 +549,7 @@ void PaintOpWriter::Write(const SkColorSpace* color_space) {
     return;
   }
 
-  size_t written = color_space->writeToMemory(memory_);
+  size_t written = color_space->writeToMemory(remaining_.data());
   CHECK_EQ(written, size);
   DidWrite(written);
 }
@@ -554,10 +562,8 @@ void PaintOpWriter::Write(const gfx::HDRMetadata& hdr_metadata) {
 }
 
 void PaintOpWriter::Write(const SkString& sk_string) {
-  size_t num_bytes = sk_string.size();
-  WriteSize(num_bytes);
-  WriteData(base::span<const uint8_t>(
-      reinterpret_cast<const uint8_t*>(sk_string.data()), num_bytes));
+  WriteSize(sk_string.size());
+  WriteData(base::as_byte_span(sk_string));
 }
 
 void PaintOpWriter::Write(
@@ -640,7 +646,7 @@ void PaintOpWriter::Write(const sk_sp<sktext::gpu::Slug>& slug) {
   }
 
   AssertFieldAlignment();
-  void* size_memory = SkipSize();
+  auto size_memory = SkipSize();
   if (!valid_) {
     return;
   }
@@ -650,7 +656,8 @@ void PaintOpWriter::Write(const sk_sp<sktext::gpu::Slug>& slug) {
     // TODO(penghuang): should we use a unique id to avoid sending the same
     // slug?
     bytes_written = slug->serialize(
-        memory_, base::bits::AlignDown(remaining_bytes(), kDefaultAlignment));
+        remaining_.data(),
+        base::bits::AlignDown(remaining_bytes(), kDefaultAlignment));
     if (bytes_written == 0u) {
       valid_ = false;
       return;
@@ -765,18 +772,18 @@ void PaintOpWriter::Write(const PaintShader* shader,
     DCHECK_EQ(scale_adjustment.height(), 1.f);
   } else {
     if (!mailbox.IsZero()) {
-      WriteImage(mailbox, shader->image_.GetReinterpretAsSRGB());
+      WriteImage(mailbox, shader->image_.GetHDRMetadata(),
+                 shader->image_.GetReinterpretAsSRGB());
     } else {
-      WriteImage(paint_image_transfer_cache_id, paint_image_needs_mips);
+      WriteImage(paint_image_transfer_cache_id, paint_image_needs_mips,
+                 shader->image_.GetHDRMetadata());
     }
   }
 
   if (shader->record_) {
     Write(true);
     DCHECK_NE(shader->id_, PaintShader::kInvalidRecordShaderId);
-    if (!options_.for_identifiability_study) {
-      Write(shader->id_);
-    }
+    Write(shader->id_);
     const gfx::Rect playback_rect(
         gfx::ToEnclosingRect(gfx::SkRectToRectF(shader->tile())));
 
@@ -791,7 +798,31 @@ void PaintOpWriter::Write(const PaintShader* shader,
   // Explicitly don't write the cached_shader_ because that can be regenerated
   // using other fields.
 
-  Write(shader->sksl_command_);
+  uint32_t effect_id = shader->sk_runtime_effect_id_;
+  WriteSimple(effect_id);
+  auto* cache = options_.paint_cache;
+  CHECK(cache);
+  auto entry_state = PaintCacheEntryState::kEmpty;
+  if (effect_id != 0u) {
+    auto cache_id = static_cast<PaintCacheId>(effect_id);
+    if (cache->Get(PaintCacheDataType::kSkRuntimeEffect, cache_id)) {
+      // Cached.
+      entry_state = PaintCacheEntryState::kCached;
+    } else {
+      // Tell the service to cache.
+      // Use the size of the string as an estimation to the SkRuntimeEffect.
+      // This is intentional as only browser UI is submitting the shader
+      // commands, and there is no cache budget contention on the browser
+      // UI side.
+      size_t effect_size = SerializedSize(shader->sksl_command_);
+      cache->Put(PaintCacheDataType::kSkRuntimeEffect, cache_id, effect_size);
+      entry_state = PaintCacheEntryState::kInlined;
+    }
+  }
+  Write(static_cast<uint32_t>(entry_state));
+  if (entry_state == PaintCacheEntryState::kInlined) {
+    Write(shader->sksl_command_);
+  }
   Write(shader->scalar_uniforms_);
   Write(shader->float2_uniforms_);
   Write(shader->float4_uniforms_);
@@ -823,7 +854,7 @@ void PaintOpWriter::WriteData(base::span<const uint8_t> data) {
     return;
   }
 
-  memcpy(memory_, data.data(), data.size());
+  remaining_.first(data.size()).copy_from(data);
   DidWrite(data.size());
 }
 
@@ -832,14 +863,15 @@ void PaintOpWriter::AlignMemory(size_t alignment) {
   DCHECK_LE(alignment, BufferAlignment());
   // base::bits::AlignUp() below will check if alignment is a power of two.
 
-  uintptr_t memory = reinterpret_cast<uintptr_t>(memory_);
-  size_t padding = base::bits::AlignUp(memory, alignment) - memory;
+  size_t current_offset = buffer_.size() - remaining_.size();
+  size_t aligned_offset = base::bits::AlignUp(current_offset, alignment);
+  size_t padding = aligned_offset - current_offset;
   EnsureBytes(padding);
   if (!valid_) {
     return;
   }
 
-  memory_ += padding;
+  remaining_.take_first(padding);
 }
 
 void PaintOpWriter::Write(const ColorFilter* filter) {
@@ -1198,7 +1230,7 @@ void PaintOpWriter::Write(const PaintRecord& record,
   // We need to record how many bytes we will serialize, but we don't know this
   // information until we do the serialization. So, write 0 as the size first,
   // and amend it after writing.
-  void* size_memory = SkipSize();
+  auto size_memory = SkipSize();
   if (!valid_) {
     return;
   }
@@ -1216,8 +1248,7 @@ void PaintOpWriter::Write(const PaintRecord& record,
   // does not support lcd text, so reflect that in the serialization options.
   PaintOp::SerializeOptions lcd_disabled_options = options_;
   lcd_disabled_options.can_use_lcd_text = false;
-  SimpleBufferSerializer serializer(memory_, remaining_bytes(),
-                                    lcd_disabled_options);
+  SimpleBufferSerializer serializer(remaining_, lcd_disabled_options);
   serializer.Serialize(record.buffer(), playback_rect, post_scale);
 
   if (!serializer.valid()) {

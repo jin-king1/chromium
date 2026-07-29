@@ -5,13 +5,13 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_PAYMENTS_PAYMENTS_WINDOW_MANAGER_UTIL_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_PAYMENTS_PAYMENTS_WINDOW_MANAGER_UTIL_H_
 
-#include "base/functional/callback_forward.h"
 #include "base/types/expected.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
 #include "components/autofill/core/browser/payments/card_unmask_challenge_option.h"
 #include "components/autofill/core/browser/payments/payments_autofill_client.h"
 #include "components/autofill/core/browser/payments/payments_request_details.h"
 #include "components/autofill/core/browser/payments/payments_window_manager.h"
+#include "url/gurl.h"
 
 namespace autofill {
 
@@ -55,6 +55,13 @@ CreateVcn3dsAuthenticationResponseFromServerResult(
     PaymentsAutofillClient::PaymentsRpcResult result,
     const UnmaskResponseDetails& response_details,
     CreditCard card);
+
+// Triggered when a tab is destroyed, and the `flow_type` is kBnpl. Handles the
+// completion of the BNPL popup flow. This function invokes the
+// `completion_callback` with the final `result` and logs the popup window's
+// result and latency metrics.
+void TriggerCompletionCallbackAndLogMetricsForBnpl(
+    PaymentsWindowManager::FlowState&& flow_state);
 
 }  // namespace payments
 

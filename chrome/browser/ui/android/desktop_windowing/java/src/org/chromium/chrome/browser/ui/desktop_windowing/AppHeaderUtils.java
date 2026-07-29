@@ -4,9 +4,14 @@
 
 package org.chromium.chrome.browser.ui.desktop_windowing;
 
-import android.app.Activity;
+import static android.os.Build.VERSION.SDK_INT;
+
+import android.content.Context;
+import android.os.Build;
+import android.os.Build.VERSION_CODES;
 
 import androidx.annotation.IntDef;
+import androidx.core.graphics.Insets;
 
 import org.chromium.base.ResettersForTesting;
 import org.chromium.base.metrics.RecordHistogram;
@@ -15,11 +20,30 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher.ActivityState;
 import org.chromium.components.browser_ui.desktop_windowing.DesktopWindowStateManager;
+import org.chromium.ui.display.DisplayUtil;
+import org.chromium.ui.insets.InsetsRectProvider;
+
+import java.util.HashSet;
+import java.util.Locale;
+import java.util.Set;
 
 /** Utility class for the desktop windowing feature implementation. */
 // TODO (crbug/328055199): Rename this to DesktopWindowUtils.
 @NullMarked
 public class AppHeaderUtils {
+    // External OEMs for which app header customization will be disabled on external displays.
+    private static final Set<String> EXTERNAL_DISPLAY_OEM_DENYLIST = new HashSet<>();
+
+    static {
+        // Samsung added a bugfix in Android 16 that is required for Chrome app header customization
+        // to work correctly on external displays. Prior to this version, we disallow the feature
+        // for Chrome running on external displays connected to all Samsung devices. See
+        // crbug.com/455925279 for details.
+        if (SDK_INT < VERSION_CODES.BAKLAVA) {
+            EXTERNAL_DISPLAY_OEM_DENYLIST.add("samsung");
+        }
+    }
+
     // These values are persisted to logs. Entries should not be renumbered and
     // numeric values should never be reused.
     @IntDef({
@@ -28,6 +52,8 @@ public class AppHeaderUtils {
         DesktopWindowHeuristicResult.CAPTION_BAR_TOP_INSETS_ABSENT,
         DesktopWindowHeuristicResult.CAPTION_BAR_BOUNDING_RECT_INVALID_HEIGHT,
         DesktopWindowHeuristicResult.WIDEST_UNOCCLUDED_RECT_EMPTY,
+        DesktopWindowHeuristicResult.DISALLOWED_ON_EXTERNAL_DISPLAY,
+        DesktopWindowHeuristicResult.COMPLEX_UNOCCLUDED_REGION,
         DesktopWindowHeuristicResult.NUM_ENTRIES,
     })
     public @interface DesktopWindowHeuristicResult {
@@ -36,9 +62,11 @@ public class AppHeaderUtils {
         int CAPTION_BAR_TOP_INSETS_ABSENT = 2;
         int CAPTION_BAR_BOUNDING_RECT_INVALID_HEIGHT = 3;
         int WIDEST_UNOCCLUDED_RECT_EMPTY = 4;
+        int DISALLOWED_ON_EXTERNAL_DISPLAY = 5;
+        int COMPLEX_UNOCCLUDED_REGION = 6;
 
         // Be sure to also update enums.xml when updating these values.
-        int NUM_ENTRIES = 5;
+        int NUM_ENTRIES = 7;
     }
 
     // These values are persisted to logs. Entries should not be renumbered and
@@ -57,26 +85,7 @@ public class AppHeaderUtils {
         int NUM_ENTRIES = 3;
     }
 
-    // These values are persisted to logs. Entries should not be renumbered and
-    // numeric values should never be reused.
-    @IntDef({
-        WindowingMode.UNKNOWN,
-        WindowingMode.FULLSCREEN,
-        WindowingMode.PICTURE_IN_PICTURE,
-        WindowingMode.DESKTOP_WINDOW,
-        WindowingMode.MULTI_WINDOW,
-    })
-    public @interface WindowingMode {
-        int UNKNOWN = 0;
-        int FULLSCREEN = 1;
-        int PICTURE_IN_PICTURE = 2;
-        int DESKTOP_WINDOW = 3;
-        int MULTI_WINDOW = 4;
-
-        // Be sure to also update enums.xml when updating these values.
-        int NUM_ENTRIES = 5;
-    }
-
+    private static @Nullable Boolean sHeaderCustomizationDisallowedOnExternalDisplayForOem;
     private static @Nullable Boolean sIsAppInDesktopWindowForTesting;
 
     /**
@@ -119,7 +128,7 @@ public class AppHeaderUtils {
             @DesktopWindowHeuristicResult int result) {
         assert result != DesktopWindowHeuristicResult.UNKNOWN;
         RecordHistogram.recordEnumeratedHistogram(
-                "Android.DesktopWindowHeuristicResult",
+                "Android.DesktopWindowHeuristicResult4",
                 result,
                 DesktopWindowHeuristicResult.NUM_ENTRIES);
     }
@@ -148,31 +157,57 @@ public class AppHeaderUtils {
     }
 
     /**
-     * Returns the {@link WindowingMode} in which the app is running.
+     * Check if the desktop windowing mode is enabled by checking all the criteria:
      *
-     * @param activity The {@link Activity} that is running in the window.
-     * @param isInDesktopWindow Whether the app is running in a desktop window.
-     * @param currentMode The current {@link WindowingMode}.
+     * <ol type=1>
+     *   <li>Caption bar has insets.top > 0;
+     *   <li>Widest unoccluded rect in caption bar has space available to draw the tab strip;
+     *   <li>Widest unoccluded rect in captionBar insets is connected to the bottom;
+     *   <li>Header customization is not disallowed;
+     *   <li>Unoccluded space in the caption bar is complex;
+     * </ol>
      */
-    public static int getWindowingMode(
-            Activity activity, boolean isInDesktopWindow, int currentMode) {
-        @WindowingMode int newMode;
-        if (isInDesktopWindow) {
-            newMode = WindowingMode.DESKTOP_WINDOW;
-        } else if (activity.isInPictureInPictureMode()) {
-            newMode = WindowingMode.PICTURE_IN_PICTURE;
+    static @DesktopWindowHeuristicResult int checkIsInDesktopWindow(
+            InsetsRectProvider insetsRectProvider, Context context) {
+        @DesktopWindowHeuristicResult int newResult;
+
+        boolean isOnExternalDisplay = !DisplayUtil.isContextInDefaultDisplay(context);
+
+        Insets captionBarInset = insetsRectProvider.getCachedInset();
+        boolean allowHeaderCustomization =
+                AppHeaderUtils.shouldAllowHeaderCustomizationOnNonDefaultDisplay()
+                        || !isOnExternalDisplay;
+
+        if (insetsRectProvider.getWidestUnoccludedRect().isEmpty()) {
+            newResult = DesktopWindowHeuristicResult.WIDEST_UNOCCLUDED_RECT_EMPTY;
+        } else if (captionBarInset.top == 0) {
+            newResult = DesktopWindowHeuristicResult.CAPTION_BAR_TOP_INSETS_ABSENT;
+        } else if (insetsRectProvider.getWidestUnoccludedRect().bottom != captionBarInset.top) {
+            newResult = DesktopWindowHeuristicResult.CAPTION_BAR_BOUNDING_RECT_INVALID_HEIGHT;
+        } else if (!allowHeaderCustomization) {
+            newResult = DesktopWindowHeuristicResult.DISALLOWED_ON_EXTERNAL_DISPLAY;
+        } else if (insetsRectProvider.isUnoccludedRegionComplex()) {
+            newResult = DesktopWindowHeuristicResult.COMPLEX_UNOCCLUDED_REGION;
         } else {
-            newMode =
-                    activity.isInMultiWindowMode()
-                            ? WindowingMode.MULTI_WINDOW
-                            : WindowingMode.FULLSCREEN;
+            newResult = DesktopWindowHeuristicResult.IN_DESKTOP_WINDOW;
         }
-        if (newMode != currentMode) {
-            // Record histogram only when the windowing mode changes.
-            RecordHistogram.recordEnumeratedHistogram(
-                    "Android.MultiWindowMode.Configuration", newMode, WindowingMode.NUM_ENTRIES);
+        return newResult;
+    }
+
+    /**
+     * @return {@code true} if app header customization should be allowed on an external display,
+     *     {@code false} otherwise.
+     */
+    public static boolean shouldAllowHeaderCustomizationOnNonDefaultDisplay() {
+        // Determine if app header customization will be ignored on the external display on specific
+        // OEMs.
+        if (sHeaderCustomizationDisallowedOnExternalDisplayForOem == null) {
+            sHeaderCustomizationDisallowedOnExternalDisplayForOem =
+                    !EXTERNAL_DISPLAY_OEM_DENYLIST.isEmpty()
+                            && EXTERNAL_DISPLAY_OEM_DENYLIST.contains(
+                                    Build.MANUFACTURER.toLowerCase(Locale.US));
         }
-        return newMode;
+        return !sHeaderCustomizationDisallowedOnExternalDisplayForOem;
     }
 
     /**
@@ -183,5 +218,10 @@ public class AppHeaderUtils {
     public static void setAppInDesktopWindowForTesting(boolean isAppInDesktopWindow) {
         sIsAppInDesktopWindowForTesting = isAppInDesktopWindow;
         ResettersForTesting.register(() -> sIsAppInDesktopWindowForTesting = null);
+    }
+
+    /** Resets |sHeaderCustomizationDisallowedOnExternalDisplayForOem| in tests. */
+    public static void resetHeaderCustomizationDisallowedOnExternalDisplayForOemForTesting() {
+        sHeaderCustomizationDisallowedOnExternalDisplayForOem = null;
     }
 }

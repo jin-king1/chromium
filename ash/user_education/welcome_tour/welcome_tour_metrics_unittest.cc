@@ -30,7 +30,7 @@ using TestVariantsParam = std::tuple<
 // Constants -------------------------------------------------------------------
 
 static constexpr auto kAllStepsSet =
-    base::EnumSet<Step, Step::kMinValue, Step::kMaxValue>::All();
+    base::EnumSet<Step>::All();
 
 // Helpers ---------------------------------------------------------------------
 
@@ -115,9 +115,8 @@ TEST_P(WelcomeTourChangedExperimentalArmMetricTest,
 
   // Add a primary user session for an existing user. This should *not* trigger
   // the Welcome Tour to start.
-  auto* const session_controller_client = GetSessionControllerClient();
-  const auto primary_account_id =
-      session_controller_client->AddUserSession({"primary@test"});
+  const auto primary_account_id = SimulateUserLogin(
+      {.display_email = "primary@test", .activate_session = false});
 
   const std::optional<ExperimentalArm> pref_value = GetPrefValue();
   if (pref_value) {
@@ -128,7 +127,7 @@ TEST_P(WelcomeTourChangedExperimentalArmMetricTest,
                      static_cast<int>(pref_value.value()));
   }
 
-  session_controller_client->SetSessionState(
+  GetSessionControllerClient()->SetSessionState(
       session_manager::SessionState::ACTIVE);
 
   // If there is change between the pref value and the enabled experimental
@@ -368,8 +367,7 @@ TEST_F(WelcomeTourMetricsEnumTest, AllExperimentalArms) {
   // If a value in `ExperimentalArm` is added or deprecated, the below switch
   // statement must be modified accordingly. It should be a canonical list of
   // what values are considered valid.
-  for (auto arm : base::EnumSet<ExperimentalArm, ExperimentalArm::kMinValue,
-                                ExperimentalArm::kMaxValue>::All()) {
+  for (auto arm : base::EnumSet<ExperimentalArm>::All()) {
     bool should_exist_in_all_set = false;
 
     switch (arm) {
@@ -387,8 +385,7 @@ TEST_F(WelcomeTourMetricsEnumTest, AllInteractions) {
   // If a value in `Interactions` is added or deprecated, the below switch
   // statement must be modified accordingly. It should be a canonical list of
   // what values are considered valid.
-  for (auto interaction : base::EnumSet<Interaction, Interaction::kMinValue,
-                                        Interaction::kMaxValue>::All()) {
+  for (auto interaction : base::EnumSet<Interaction>::All()) {
     bool should_exist_in_all_set = false;
 
     switch (interaction) {
@@ -409,8 +406,7 @@ TEST_F(WelcomeTourMetricsEnumTest, AllPreventedReasons) {
   // If a value in `PreventedReason` is added or deprecated, the below switch
   // statement must be modified accordingly. It should be a canonical list of
   // what values are considered valid.
-  for (auto reason : base::EnumSet<PreventedReason, PreventedReason::kMinValue,
-                                   PreventedReason::kMaxValue>::All()) {
+  for (auto reason : base::EnumSet<PreventedReason>::All()) {
     bool should_exist_in_all_set = false;
 
     switch (reason) {
@@ -440,7 +436,7 @@ class WelcomeTourMetricsTest : public UserEducationAshTestBase {
   template <typename E>
   static void TestEnumHistogram(
       const std::string& metric_name,
-      base::EnumSet<E, E::kMinValue, E::kMaxValue> valid_enum_set,
+      base::EnumSet<E> valid_enum_set,
       base::FunctionRef<void(E)> record_function) {
     static_assert(std::is_enum<E>::value);
 
@@ -495,9 +491,7 @@ TEST_F(WelcomeTourMetricsTest, RecordStepShown) {
 // Verifies that all valid values of the `AbortedReason` enum can be
 // successfully recorded by the `RecordTourAborted()` utility function.
 TEST_F(WelcomeTourMetricsTest, RecordTourAborted) {
-  using AbortedReasonSetType =
-      base::EnumSet<AbortedReason, AbortedReason::kMinValue,
-                    AbortedReason::kMaxValue>;
+  using AbortedReasonSetType = base::EnumSet<AbortedReason>;
 
   TestEnumHistogram<AbortedReason>("Ash.WelcomeTour.Aborted.Reason",
                                    AbortedReasonSetType::All(),

@@ -9,6 +9,7 @@
 #include <string>
 
 #include "base/i18n/message_formatter.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/web_applications/web_app_dialogs.h"
@@ -19,6 +20,8 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
+#include "ui/base/ui_base_features.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/gfx/text_elider.h"
 #include "ui/views/controls/image_view.h"
 #include "ui/views/controls/label.h"
@@ -113,7 +116,9 @@ FileHandlerLaunchDialogView::CreateBelowAppInfoView() {
   constexpr int kIconSize = 16;
   auto* icon = files_view->AddChildView(
       std::make_unique<views::ImageView>(ui::ImageModel::FromVectorIcon(
-          vector_icons::kDescriptionIcon, ui::kColorIcon, kIconSize)));
+          features::IsRoundedIconsEnabled() ? vector_icons::kDescriptionIcon
+                                            : vector_icons::kDescriptionOldIcon,
+          ui::kColorIcon, kIconSize)));
   const int icon_margin = views::LayoutProvider::Get()->GetDistanceMetric(
       views::DISTANCE_RELATED_LABEL_HORIZONTAL);
   icon->SetProperty(views::kMarginsKey,
@@ -175,8 +180,8 @@ void ShowWebAppFileLaunchDialog(const std::vector<base::FilePath>& file_paths,
       file_paths, profile, app_id, std::move(close_callback));
   view->Init();
   views::DialogDelegate::CreateDialogWidget(std::move(view),
-                                            /*context=*/nullptr,
-                                            /*parent=*/nullptr)
+                                            /*context=*/gfx::NativeWindow(),
+                                            /*parent=*/gfx::NativeView())
       ->Show();
 }
 

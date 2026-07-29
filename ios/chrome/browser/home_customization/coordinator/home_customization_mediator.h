@@ -9,20 +9,32 @@
 
 #import "ios/chrome/browser/home_customization/ui/home_customization_mutator.h"
 
+class DiscoverFeedVisibilityBrowserAgent;
 @protocol HomeCustomizationDiscoverConsumer;
 @protocol HomeCustomizationMagicStackConsumer;
 @protocol HomeCustomizationMainConsumer;
 @protocol HomeCustomizationNavigationDelegate;
 class PrefService;
 
+namespace commerce {
+class ShoppingService;
+}  // namespace commerce
+
 // The mediator for the Home surface's customization menu.
 @interface HomeCustomizationMediator : NSObject <HomeCustomizationMutator>
 
-// Initializes this mediator with a pref service.
+// Initializes this mediator with all dependencies.
 - (instancetype)initWithPrefService:(PrefService*)prefService
+    discoverFeedVisibilityBrowserAgent:
+        (DiscoverFeedVisibilityBrowserAgent*)discoverFeedVisibilityBrowserAgent
+                       shoppingService:
+                           (commerce::ShoppingService*)shoppingService
     NS_DESIGNATED_INITIALIZER;
 
 - (instancetype)init NS_UNAVAILABLE;
+
+// Disconnects the mediator and clears its dependencies.
+- (void)disconnect;
 
 // A consumer representing the main page's view controller.
 @property(nonatomic, weak) id<HomeCustomizationMainConsumer> mainPageConsumer;

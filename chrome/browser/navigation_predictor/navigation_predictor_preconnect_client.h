@@ -15,6 +15,8 @@
 #include "content/public/browser/web_contents_user_data.h"
 #include "url/origin.h"
 
+class SearchEnginePreconnector;
+
 namespace content {
 class BrowserContext;
 class RenderFrameHost;
@@ -50,6 +52,7 @@ class NavigationPredictorPreconnectClient
       content::WebContents* web_contents);
 
   NavigationPredictorKeyedService* GetNavigationPredictorKeyedService() const;
+  SearchEnginePreconnector* GetSearchEnginePreconnector();
 
   // content::WebContentsObserver:
   void OnVisibilityChanged(content::Visibility visibility) override;

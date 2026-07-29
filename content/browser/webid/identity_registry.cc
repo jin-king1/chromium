@@ -7,15 +7,16 @@
 #include "content/browser/webid/identity_registry_delegate.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_user_data.h"
+#include "third_party/blink/public/mojom/webid/federated_request.mojom.h"
 #include "url/origin.h"
 
-namespace content {
+namespace content::webid {
 
 IdentityRegistry::IdentityRegistry(
-    content::WebContents* web_contents,
+    WebContents* web_contents,
     base::WeakPtr<IdentityRegistryDelegate> delegate,
     const GURL& idp_config_url)
-    : content::WebContentsUserData<IdentityRegistry>(*web_contents),
+    : WebContentsUserData<IdentityRegistry>(*web_contents),
       delegate_(delegate),
       idp_config_url_(idp_config_url) {}
 
@@ -24,6 +25,10 @@ IdentityRegistry::~IdentityRegistry() = default;
 void IdentityRegistry::NotifyClose(const url::Origin& notifier_origin) {
   url::Origin idp_origin(url::Origin::Create(idp_config_url_));
   if (!idp_origin.IsSameOriginWith(notifier_origin) || !delegate_) {
+    if (delegate_) {
+      delegate_->OnOriginMismatch(IdentityRegistryDelegate::Method::kClose,
+                                  idp_origin, notifier_origin);
+    }
     return;
   }
 
@@ -33,15 +38,19 @@ void IdentityRegistry::NotifyClose(const url::Origin& notifier_origin) {
 bool IdentityRegistry::NotifyResolve(
     const url::Origin& notifier_origin,
     const std::optional<std::string>& account_id,
-    const std::string& token) {
+    blink::mojom::ResolveTokenParamsPtr params) {
   url::Origin idp_origin(url::Origin::Create(idp_config_url_));
   if (!idp_origin.IsSameOriginWith(notifier_origin) || !delegate_) {
+    if (delegate_) {
+      delegate_->OnOriginMismatch(IdentityRegistryDelegate::Method::kClose,
+                                  idp_origin, notifier_origin);
+    }
     return false;
   }
 
-  return delegate_->OnResolve(idp_config_url_, account_id, token);
+  return delegate_->OnResolve(idp_config_url_, account_id, std::move(params));
 }
 
 WEB_CONTENTS_USER_DATA_KEY_IMPL(IdentityRegistry);
 
-}  // namespace content
+}  // namespace content::webid

@@ -31,13 +31,13 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_BINDINGS_CORE_V8_SCRIPT_PROMISE_H_
 #define THIRD_PARTY_BLINK_RENDERER_BINDINGS_CORE_V8_SCRIPT_PROMISE_H_
 
-#include "base/memory/scoped_refptr.h"
 #include "base/memory/stack_allocated.h"
 #include "third_party/blink/renderer/bindings/core/v8/idl_types.h"
 #include "third_party/blink/renderer/bindings/core/v8/native_value_traits_impl.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_function.h"
 #include "third_party/blink/renderer/bindings/core/v8/to_v8_traits.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_microtasks_scope.h"
 #include "third_party/blink/renderer/bindings/core/v8/world_safe_v8_reference.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/dom/dom_exception.h"
@@ -168,7 +168,9 @@ class CORE_EXPORT ThenCallable : public ScriptFunction {
     // Finally: apply exception context and rethrow if needed, and return the
     // result.
     if (try_catch.HasCaught()) [[unlikely]] {
-      ApplyContextToException(script_state, try_catch.Exception(), context_);
+      ApplyContextToException(script_state, try_catch.Exception(),
+                              context_.GetType(), context_.GetClassName(),
+                              context_.GetPropertyName());
       try_catch.ReThrow();
     }
     return return_value;
@@ -219,9 +221,7 @@ class ScriptPromise {
     }
 
     v8::Local<v8::Context> context = script_state->GetContext();
-    v8::MicrotasksScope microtasks_scope(
-        isolate, ToMicrotaskQueue(script_state),
-        v8::MicrotasksScope::kDoNotRunMicrotasks);
+    V8DoNotRunMicrotasksScope microtasks_scope(script_state);
     auto resolver = v8::Promise::Resolver::New(context).ToLocalChecked();
     std::ignore = resolver->Resolve(context, value);
     return ScriptPromise<IDLResolvedType>(isolate, resolver->GetPromise());
@@ -245,9 +245,7 @@ class ScriptPromise {
     }
     v8::Isolate* isolate = script_state->GetIsolate();
     v8::Local<v8::Context> context = script_state->GetContext();
-    v8::MicrotasksScope microtasks_scope(
-        isolate, ToMicrotaskQueue(script_state),
-        v8::MicrotasksScope::kDoNotRunMicrotasks);
+    V8DoNotRunMicrotasksScope microtasks_scope(script_state);
     auto resolver = v8::Promise::Resolver::New(context).ToLocalChecked();
     std::ignore = resolver->Reject(context, value);
     return ScriptPromise<IDLResolvedType>(isolate, resolver->GetPromise());
@@ -271,10 +269,6 @@ class ScriptPromise {
 
   bool operator==(const ScriptPromise<IDLResolvedType>& value) const {
     return promise_ == value.promise_;
-  }
-
-  bool operator!=(const ScriptPromise<IDLResolvedType>& value) const {
-    return !operator==(value);
   }
 
   template <typename ResolveReactType,
@@ -348,14 +342,15 @@ class MemberScriptPromise {
  public:
   MemberScriptPromise() = default;
   MemberScriptPromise(v8::Isolate* isolate, v8::Local<v8::Promise> promise)
-      : isolate_(isolate), promise_(isolate, promise) {}
+      : promise_(isolate, promise) {}
 
   ScriptPromise<IDLResolvedType> Unwrap() const {
     if (IsEmpty()) {
       return ScriptPromise<IDLResolvedType>();
     }
+    v8::Isolate* isolate = promise_.GetIsolate();
     return ScriptPromise<IDLResolvedType>::FromV8Promise(
-        isolate_, promise_.Get(ScriptState::ForCurrentRealm(isolate_)));
+        isolate, promise_.Get(ScriptState::ForCurrentRealm(isolate)));
   }
 
   // NOLINTNEXTLINE(google-explicit-constructor)
@@ -366,7 +361,6 @@ class MemberScriptPromise {
   void Trace(Visitor* visitor) const { visitor->Trace(promise_); }
 
  private:
-  v8::Isolate* isolate_;
   WorldSafeV8Reference<v8::Promise> promise_;
 };
 
@@ -412,17 +406,13 @@ class EmptyPromise {
   }
 };
 
-}  // namespace blink
-
-namespace WTF {
-
 template <typename T>
-struct VectorTraits<blink::MemberScriptPromise<T>>
-    : VectorTraitsBase<blink::MemberScriptPromise<T>> {
+struct VectorTraits<MemberScriptPromise<T>>
+    : VectorTraitsBase<MemberScriptPromise<T>> {
   STATIC_ONLY(VectorTraits);
   static constexpr bool kCanClearUnusedSlotsWithMemset = true;
 };
 
-}  // namespace WTF
+}  // namespace blink
 
 #endif  // THIRD_PARTY_BLINK_RENDERER_BINDINGS_CORE_V8_SCRIPT_PROMISE_H_

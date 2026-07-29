@@ -51,7 +51,8 @@ class QuickSettingsHeaderTest : public NoSessionAshTestBase {
     // Install a test delegate to allow overriding channel version.
     auto delegate = std::make_unique<TestShellDelegate>();
     test_shell_delegate_ = delegate.get();
-    NoSessionAshTestBase::SetUp(std::move(delegate));
+    set_shell_delegate(std::move(delegate));
+    NoSessionAshTestBase::SetUp();
 
     model_ = base::MakeRefCounted<UnifiedSystemTrayModel>(nullptr);
     controller_ = std::make_unique<UnifiedSystemTrayController>(model_.get());
@@ -62,6 +63,7 @@ class QuickSettingsHeaderTest : public NoSessionAshTestBase {
     widget_.reset();
     controller_.reset();
     model_.reset();
+    test_shell_delegate_ = nullptr;
     NoSessionAshTestBase::TearDown();
   }
 
@@ -94,7 +96,7 @@ class QuickSettingsHeaderTest : public NoSessionAshTestBase {
     return header_->GetSupervisedButtonLabelForTest();
   }
 
-  raw_ptr<TestShellDelegate, DanglingUntriaged> test_shell_delegate_ = nullptr;
+  raw_ptr<TestShellDelegate> test_shell_delegate_ = nullptr;
   scoped_refptr<UnifiedSystemTrayModel> model_;
   std::unique_ptr<UnifiedSystemTrayController> controller_;
   std::unique_ptr<views::Widget> widget_;
@@ -355,10 +357,8 @@ TEST_F(QuickSettingsHeaderTest, ChildVisible) {
 
   // Simulate supervised user logging in.
   SessionControllerImpl* session = Shell::Get()->session_controller();
-  TestSessionControllerClient* client = GetSessionControllerClient();
-  client->Reset();
-  client->AddUserSession({"child@test.com", user_manager::UserType::kChild});
-  client->SetSessionState(session_manager::SessionState::ACTIVE);
+  ClearLogin();
+  SimulateUserLogin({"child@test.com", user_manager::UserType::kChild});
   UserSession user_session = *session->GetUserSession(0);
   user_session.custodian_email = "parent@test.com";
   session->UpdateUserSession(std::move(user_session));
@@ -384,9 +384,9 @@ TEST_F(QuickSettingsHeaderTest, ShowManagementDisclosure) {
       AuthEventsRecorder::CreateForTesting();
 
   // Setup to lock screen.
+  ClearLogin();
   TestSessionControllerClient* client = GetSessionControllerClient();
-  client->Reset();
-  GetSessionControllerClient()->set_show_lock_screen_views(true);
+  client->set_show_lock_screen_views(true);
   client->LockScreen();
   client->SetSessionState(session_manager::SessionState::LOCKED);
 
@@ -408,9 +408,9 @@ TEST_F(QuickSettingsHeaderTest, DoNotShowManagementDisclosure) {
       AuthEventsRecorder::CreateForTesting();
 
   // Setup to lock screen.
+  ClearLogin();
   TestSessionControllerClient* client = GetSessionControllerClient();
-  client->Reset();
-  GetSessionControllerClient()->set_show_lock_screen_views(true);
+  client->set_show_lock_screen_views(true);
   client->LockScreen();
   client->SetSessionState(session_manager::SessionState::LOCKED);
 

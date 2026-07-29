@@ -9,10 +9,16 @@
 #import "ios/chrome/browser/reading_list/ui_bundled/reading_list_toolbar_button_commands.h"
 #import "ios/chrome/browser/shared/coordinator/alert/action_sheet_coordinator.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
+#import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ui/base/l10n/l10n_util_mac.h"
+
 namespace {
+
+// Size of the delete symbol.
+const CGFloat kSymbolSize = 22;
+
 // Returns the title to use for the "Mark" button for `state`.
 NSString* GetMarkButtonTitleForSelectionState(ReadingListSelectionState state) {
   switch (state) {
@@ -26,53 +32,72 @@ NSString* GetMarkButtonTitleForSelectionState(ReadingListSelectionState state) {
       return l10n_util::GetNSString(IDS_IOS_READING_LIST_MARK_BUTTON);
   }
 }
+
 }  // namespace
 
-@interface ReadingListToolbarButtonManager () {
-  // The button items corresponding to the current state.
-  NSMutableArray<UIBarButtonItem*>* _buttonItems;
-}
+@interface ReadingListToolbarButtonManager ()
 
 // The possible button items that may be returned by the `-buttonItems`.
-@property(nonatomic, strong, readonly) UIBarButtonItem* editButton;
+@property(nonatomic, strong, readonly) UIBarButtonItem* selectButton;
 @property(nonatomic, strong, readonly) UIBarButtonItem* deleteButton;
 @property(nonatomic, strong, readonly) UIBarButtonItem* deleteAllReadButton;
-@property(nonatomic, strong, readonly) UIBarButtonItem* cancelButton;
+@property(nonatomic, strong, readonly) UIBarButtonItem* exitEditButton;
 @property(nonatomic, strong, readonly) UIBarButtonItem* markButton;
+@property(nonatomic, strong, readonly) UIBarButtonItem* closeButton;
+@property(nonatomic, strong, readonly) UIBarButtonItem* selectAllButton;
+@property(nonatomic, strong, readonly) UIBarButtonItem* deselectAllButton;
 
 // Whether the corresponding button items should be returned in `-buttonItems`.
-@property(nonatomic, readonly) BOOL shouldShowEditButton;
+@property(nonatomic, readonly) BOOL shouldShowSelectButton;
 @property(nonatomic, readonly) BOOL shouldShowDeleteButton;
 @property(nonatomic, readonly) BOOL shouldShowDeleteAllReadButton;
-@property(nonatomic, readonly) BOOL shouldShowCancelButton;
+@property(nonatomic, readonly) BOOL shouldShowExitEditButton;
 @property(nonatomic, readonly) BOOL shouldShowMarkButton;
+@property(nonatomic, readonly) BOOL shouldShowCloseButton;
+@property(nonatomic, readonly) BOOL shouldShowDeselectAllButton;
 
 @end
 
-@implementation ReadingListToolbarButtonManager
-@synthesize selectionState = _selectionState;
-@synthesize hasReadItems = _hasReadItems;
-@synthesize editing = _editing;
-@synthesize commandHandler = _commandHandler;
-@synthesize editButton = _editButton;
-@synthesize deleteButton = _deleteButton;
-@synthesize deleteAllReadButton = _deleteAllReadButton;
-@synthesize cancelButton = _cancelButton;
-@synthesize markButton = _markButton;
+@implementation ReadingListToolbarButtonManager {
+  // The button items corresponding to the current state.
+  NSMutableArray<UIBarButtonItem*>* _buttonItems;
+  NSMutableArray<NSLayoutConstraint*>* _allButtonWidthConstraints;
+}
 
 - (instancetype)init {
   if ((self = [super init])) {
+    _allButtonWidthConstraints = [NSMutableArray array];
+
     _selectionState = ReadingListSelectionState::NONE;
 
-    _editButton = [[UIBarButtonItem alloc]
-        initWithTitle:l10n_util::GetNSString(IDS_IOS_READING_LIST_EDIT_BUTTON)
+    _selectButton = [[UIBarButtonItem alloc]
+        initWithTitle:l10n_util::GetNSString(IDS_IOS_READING_LIST_SELECT_BUTTON)
                 style:UIBarButtonItemStylePlain
                target:nil
                action:@selector(enterReadingListEditMode)];
-    _editButton.accessibilityIdentifier = kReadingListToolbarEditButtonID;
+    _selectButton.accessibilityIdentifier =
+        kReadingListNavigationBarSelectButtonID;
+
+    _selectAllButton = [[UIBarButtonItem alloc]
+        initWithTitle:l10n_util::GetNSString(
+                          IDS_IOS_READING_LIST_SELECT_ALL_BUTTON)
+                style:UIBarButtonItemStylePlain
+               target:nil
+               action:@selector(selectAllReadingListItems)];
+    _selectAllButton.accessibilityIdentifier =
+        kReadingListNavigationBarSelectAllButtonID;
+
+    _deselectAllButton = [[UIBarButtonItem alloc]
+        initWithTitle:l10n_util::GetNSString(
+                          IDS_IOS_READING_LIST_DESELECT_ALL_BUTTON)
+                style:UIBarButtonItemStylePlain
+               target:nil
+               action:@selector(deselectAllReadingListItems)];
+    _deselectAllButton.accessibilityIdentifier =
+        kReadingListNavigationBarDeselectAllButtonID;
 
     _deleteButton = [[UIBarButtonItem alloc]
-        initWithTitle:l10n_util::GetNSString(IDS_IOS_READING_LIST_DELETE_BUTTON)
+        initWithImage:SymbolWithPointSize(SymbolDeleteAction, kSymbolSize)
                 style:UIBarButtonItemStylePlain
                target:nil
                action:@selector(deleteSelectedReadingListItems)];
@@ -89,12 +114,12 @@ NSString* GetMarkButtonTitleForSelectionState(ReadingListSelectionState state) {
         kReadingListToolbarDeleteAllReadButtonID;
     _deleteAllReadButton.tintColor = [UIColor colorNamed:kRedColor];
 
-    _cancelButton = [[UIBarButtonItem alloc]
-        initWithTitle:l10n_util::GetNSString(IDS_IOS_READING_LIST_CANCEL_BUTTON)
-                style:UIBarButtonItemStyleDone
-               target:nil
-               action:@selector(exitReadingListEditMode)];
-    _cancelButton.accessibilityIdentifier = kReadingListToolbarCancelButtonID;
+    _exitEditButton = [[UIBarButtonItem alloc]
+        initWithBarButtonSystemItem:UIBarButtonSystemItemDone
+                             target:nil
+                             action:@selector(exitReadingListEditMode)];
+    _exitEditButton.accessibilityIdentifier =
+        kReadingListNavigationBarExitEditButtonID;
 
     _markButton = [[UIBarButtonItem alloc]
         initWithTitle:GetMarkButtonTitleForSelectionState(self.selectionState)
@@ -102,6 +127,14 @@ NSString* GetMarkButtonTitleForSelectionState(ReadingListSelectionState state) {
                target:self
                action:@selector(markButtonWasTapped)];
     _markButton.accessibilityIdentifier = kReadingListToolbarMarkButtonID;
+
+    _closeButton =
+        [[UIBarButtonItem alloc] initWithImage:DefaultCloseButtonForToolbar()
+                                         style:UIBarButtonItemStylePlain
+                                        target:nil
+                                        action:@selector(dismissButtonTapped)];
+    _closeButton.accessibilityIdentifier =
+        kReadingListNavigationBarCloseButtonID;
   }
   return self;
 }
@@ -151,7 +184,7 @@ NSString* GetMarkButtonTitleForSelectionState(ReadingListSelectionState state) {
   if (!_editing) {
     return;
   }
-  _markButton.title = GetMarkButtonTitleForSelectionState(_selectionState);
+  self.markButton.title = GetMarkButtonTitleForSelectionState(_selectionState);
 }
 
 - (BOOL)buttonItemsUpdated {
@@ -166,10 +199,10 @@ NSString* GetMarkButtonTitleForSelectionState(ReadingListSelectionState state) {
     return;
   }
   _commandHandler = commandHandler;
-  self.editButton.target = _commandHandler;
+  self.selectButton.target = _commandHandler;
   self.deleteButton.target = _commandHandler;
   self.deleteAllReadButton.target = _commandHandler;
-  self.cancelButton.target = _commandHandler;
+  self.exitEditButton.target = _commandHandler;
 }
 
 - (BOOL)shouldShowEditButton {
@@ -193,12 +226,20 @@ NSString* GetMarkButtonTitleForSelectionState(ReadingListSelectionState state) {
   return showDeleteAllReadButton;
 }
 
-- (BOOL)shouldShowCancelButton {
+- (BOOL)shouldShowExitEditButton {
   return self.editing;
 }
 
 - (BOOL)shouldShowMarkButton {
   return self.editing;
+}
+
+- (BOOL)shouldShowCloseButton {
+  return !self.editing;
+}
+
+- (BOOL)shouldShowDeselectAllButton {
+  return self.allSelected;
 }
 
 #pragma mark - Public
@@ -208,9 +249,6 @@ NSString* GetMarkButtonTitleForSelectionState(ReadingListSelectionState state) {
     return _buttonItems;
   }
   _buttonItems = [[NSMutableArray alloc] init];
-  if (self.shouldShowEditButton) {
-    [_buttonItems addObject:self.editButton];
-  }
   if (self.shouldShowDeleteButton) {
     [_buttonItems addObject:self.deleteButton];
   }
@@ -220,11 +258,30 @@ NSString* GetMarkButtonTitleForSelectionState(ReadingListSelectionState state) {
   if (self.shouldShowMarkButton) {
     [_buttonItems addObject:self.markButton];
   }
-  if (self.shouldShowCancelButton) {
-    [_buttonItems addObject:self.cancelButton];
-  }
-  [self addSpacersToItems:_buttonItems];
+  _buttonItems = [self itemsWithSpacer:_buttonItems];
   return _buttonItems;
+}
+
+- (UIBarButtonItem*)buttonTopRight {
+  if (self.shouldShowCloseButton) {
+    return self.closeButton;
+  } else {
+    return self.exitEditButton;
+  }
+}
+
+- (UIBarButtonItem*)buttonTopLeft {
+  if (!self.hasItems) {
+    return nil;
+  }
+  if (self.shouldShowEditButton) {
+    return self.selectButton;
+  } else {
+    if (self.shouldShowDeselectAllButton) {
+      return self.deselectAllButton;
+    }
+    return self.selectAllButton;
+  }
 }
 
 - (ActionSheetCoordinator*)
@@ -237,6 +294,14 @@ NSString* GetMarkButtonTitleForSelectionState(ReadingListSelectionState state) {
                            title:nil
                          message:nil
                    barButtonItem:self.markButton];
+}
+
+- (void)updateForReadingListWidth:(CGFloat)readingListWidth {
+  for (NSLayoutConstraint* constraint in _allButtonWidthConstraints) {
+    // Ensures that each button isn't taking more than a third of the space, as
+    // there is often 3 buttons displayed.
+    constraint.constant = readingListWidth / 3;
+  }
 }
 
 #pragma mark - Private
@@ -259,25 +324,29 @@ NSString* GetMarkButtonTitleForSelectionState(ReadingListSelectionState state) {
   }
 }
 
-// Inserts spacer button items between the items in `items`, right aligning the
-// buttons if they appear alone.
-- (void)addSpacersToItems:(NSMutableArray<UIBarButtonItem*>*)items {
-  NSMutableArray<UIBarButtonItem*>* spacers = [NSMutableArray array];
-  NSMutableIndexSet* indexes = [NSMutableIndexSet indexSet];
+// Returns a new array which inserts spacer button items between the items in
+// `items`, right aligning the buttons if they appear alone.
+- (NSMutableArray<UIBarButtonItem*>*)itemsWithSpacer:
+    (NSMutableArray<UIBarButtonItem*>*)items {
   NSUInteger itemCount = items.count;
+  if (itemCount == 0) {
+    return items;
+  }
+  NSMutableArray* finalArray = [NSMutableArray array];
   // If there's a single item, add the spacer at index 0 to right-align the
   // button.  Otherwise, add the first spacer at index 1 to add space between
   // the first and second buttons.
-  NSUInteger firstIndex = itemCount == 1 ? 0 : 1;
-  for (NSUInteger i = 0; i < itemCount - firstIndex; ++i) {
-    [spacers addObject:[[UIBarButtonItem alloc]
-                           initWithBarButtonSystemItem:
-                               UIBarButtonSystemItemFlexibleSpace
-                                                target:nil
-                                                action:nil]];
-    [indexes addIndex:firstIndex + 2 * i];
+  if (itemCount == 1) {
+    [finalArray addObject:[UIBarButtonItem flexibleSpaceItem]];
+    [finalArray addObject:items[0]];
+    return finalArray;
   }
-  [items insertObjects:spacers atIndexes:indexes];
+  for (NSUInteger i = 0; i < itemCount - 1; ++i) {
+    [finalArray addObject:items[i]];
+    [finalArray addObject:[UIBarButtonItem flexibleSpaceItem]];
+  }
+  [finalArray addObject:items[itemCount - 1]];
+  return finalArray;
 }
 
 @end

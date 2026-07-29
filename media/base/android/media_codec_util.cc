@@ -8,12 +8,12 @@
 
 #include <vector>
 
-#include "base/android/build_info.h"
+#include "base/android/android_info.h"
 #include "base/android/jni_android.h"
 #include "base/android/jni_array.h"
 #include "base/android/jni_string.h"
-#include "base/containers/contains.h"
 #include "base/logging.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/system/sys_info.h"
 #include "media/base/android/media_codec_bridge.h"
@@ -26,38 +26,34 @@
 #include "media/base/android/media_jni_headers/MediaCodecUtil_jni.h"
 
 using base::android::AttachCurrentThread;
-using base::android::ConvertJavaStringToUTF8;
 using base::android::ConvertUTF8ToJavaString;
-using base::android::JavaIntArrayToIntVector;
-using base::android::JavaRef;
 using base::android::ScopedJavaLocalRef;
-using base::android::SDK_VERSION_P;
 
 namespace media {
 
 namespace {
-const char kMp3MimeType[] = "audio/mpeg";
-const char kAacMimeType[] = "audio/mp4a-latm";
-const char kOpusMimeType[] = "audio/opus";
-const char kVorbisMimeType[] = "audio/vorbis";
-const char kFLACMimeType[] = "audio/flac";
-const char kAc3MimeType[] = "audio/ac3";
-const char kEac3MimeType[] = "audio/eac3";
-const char kBitstreamAudioMimeType[] = "audio/raw";
-const char kAvcMimeType[] = "video/avc";
-const char kDolbyVisionMimeType[] = "video/dolby-vision";
-const char kHevcMimeType[] = "video/hevc";
-const char kVp8MimeType[] = "video/x-vnd.on2.vp8";
-const char kVp9MimeType[] = "video/x-vnd.on2.vp9";
-const char kAv1MimeType[] = "video/av01";
-const char kDtsMimeType[] = "audio/vnd.dts";
-const char kDtseMimeType[] = "audio/vnd.dts;profile=lbr";
-const char kDtsxP2MimeType[] = "audio/vnd.dts.uhd;profile=p2";
+constexpr char kMp3MimeType[] = "audio/mpeg";
+constexpr char kAacMimeType[] = "audio/mp4a-latm";
+constexpr char kOpusMimeType[] = "audio/opus";
+constexpr char kVorbisMimeType[] = "audio/vorbis";
+constexpr char kFLACMimeType[] = "audio/flac";
+constexpr char kAc3MimeType[] = "audio/ac3";
+constexpr char kEac3MimeType[] = "audio/eac3";
+constexpr char kBitstreamAudioMimeType[] = "audio/raw";
+constexpr char kAvcMimeType[] = "video/avc";
+constexpr char kDolbyVisionMimeType[] = "video/dolby-vision";
+constexpr char kHevcMimeType[] = "video/hevc";
+constexpr char kVp8MimeType[] = "video/x-vnd.on2.vp8";
+constexpr char kVp9MimeType[] = "video/x-vnd.on2.vp9";
+constexpr char kAv1MimeType[] = "video/av01";
+constexpr char kDtsMimeType[] = "audio/vnd.dts";
+constexpr char kDtseMimeType[] = "audio/vnd.dts;profile=lbr";
+constexpr char kDtsxP2MimeType[] = "audio/vnd.dts.uhd;profile=p2";
 }  // namespace
 
 static CodecProfileLevel MediaCodecProfileLevelToChromiumProfileLevel(
     JNIEnv* env,
-    const JavaRef<jobject>& j_codec_profile_level) {
+    const base::android::JavaRef<jobject>& j_codec_profile_level) {
   VideoCodec codec = static_cast<VideoCodec>(
       Java_CodecProfileLevelAdapter_getCodec(env, j_codec_profile_level));
   VideoCodecProfile profile = static_cast<VideoCodecProfile>(
@@ -67,51 +63,51 @@ static CodecProfileLevel MediaCodecProfileLevelToChromiumProfileLevel(
   return {codec, profile, level};
 }
 
-static bool IsDecoderSupportedByDevice(const std::string& android_mime_type) {
+static bool IsDecoderSupportedByDevice(std::string_view android_mime_type) {
   if (android_mime_type == kVp8MimeType) {
-    std::string hardware = base::SysInfo::GetAndroidBuildID();
-    // MediaTek decoders do not work properly on vp8. See
+    std::string hardware = base::SysInfo::GetAndroidHardware();
+    // MediaTek decoders do not work properly on vp8 until Android T. See
     // http://crbug.com/446974 and http://crbug.com/597836.
-    if (hardware.starts_with("mt")) {
-      if (base::android::BuildInfo::GetInstance()->sdk_int() <
-          base::android::SDK_VERSION_P) {
-        return false;
-      }
-      // MediaTek chipsets after 'Android T' are compatible with vp8.
-      if (base::android::BuildInfo::GetInstance()->sdk_int() <
-          base::android::SDK_VERSION_T) {
-        // The following chipsets have been confirmed by MediaTek to work on P+
-        return hardware.starts_with("mt5599") ||
-               hardware.starts_with("mt5895") ||
-               hardware.starts_with("mt8768") ||
-               hardware.starts_with("mt8696") || hardware.starts_with("mt5887");
-      }
-    }
-  } else if (android_mime_type == kVp9MimeType) {
-    // Nexus Player VP9 decoder performs poorly at >= 1080p resolution.
-    if (base::SysInfo::HardwareModelName() == "Nexus Player") {
-      return false;
-    }
-  } else if (android_mime_type == kAv1MimeType) {
-    if (base::android::BuildInfo::GetInstance()->sdk_int() <
-        base::android::SDK_VERSION_Q) {
-      return false;
+    if (hardware.starts_with("mt") &&
+        base::android::android_info::sdk_int() <
+            base::android::android_info::SDK_VERSION_T) {
+      // The following chipsets have been confirmed by MediaTek to work on P+
+      return hardware.starts_with("mt5599") || hardware.starts_with("mt5895") ||
+             hardware.starts_with("mt8768") || hardware.starts_with("mt8696") ||
+             hardware.starts_with("mt5887");
     }
   }
   return true;
 }
 
-static jboolean JNI_MediaCodecUtil_IsDecoderSupportedForDevice(
+static bool JNI_MediaCodecUtil_IsDecoderSupportedForDevice(
     JNIEnv* env,
-    std::string& mime_type) {
+    const std::string& mime_type) {
   return IsDecoderSupportedByDevice(mime_type);
 }
 
-static bool IsEncoderSupportedByDevice(const std::string& android_mime_type) {
-  JNIEnv* env = AttachCurrentThread();
-  ScopedJavaLocalRef<jstring> j_mime =
-      ConvertUTF8ToJavaString(env, android_mime_type);
-  return Java_MediaCodecUtil_isEncoderSupportedByDevice(env, j_mime);
+static int32_t JNI_MediaCodecUtil_EstimateVideoMaxInputSize(
+    JNIEnv* env,
+    const std::string& mime_type,
+    int32_t width,
+    int32_t height) {
+  VideoCodec codec = VideoCodec::kUnknown;
+  if (mime_type == kAvcMimeType) {
+    codec = VideoCodec::kH264;
+  } else if (mime_type == kHevcMimeType) {
+    codec = VideoCodec::kHEVC;
+  } else if (mime_type == kVp8MimeType) {
+    codec = VideoCodec::kVP8;
+  } else if (mime_type == kVp9MimeType) {
+    codec = VideoCodec::kVP9;
+  } else if (mime_type == kAv1MimeType) {
+    codec = VideoCodec::kAV1;
+  } else if (mime_type == kDolbyVisionMimeType) {
+    codec = VideoCodec::kDolbyVision;
+  }
+
+  return base::checked_cast<int32_t>(
+      MediaCodecUtil::EstimateVideoBufferSize(codec, width, height));
 }
 
 static bool CanDecodeInternal(const std::string& mime, bool is_secure) {
@@ -121,15 +117,6 @@ static bool CanDecodeInternal(const std::string& mime, bool is_secure) {
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jstring> j_mime = ConvertUTF8ToJavaString(env, mime);
   return Java_MediaCodecUtil_canDecode(env, j_mime, is_secure);
-}
-
-static bool HasVp9Profile23Decoder() {
-  // Support for VP9.2, VP9.3 was added in Nougat but it requires hardware
-  // support which we can't check from the renderer process. Since Android P+
-  // has a software decoder available for VP9.2, VP9.3 content and usage is nil
-  // on Android, just gate support on P+.
-  return base::android::BuildInfo::GetInstance()->sdk_int() >=
-         base::android::SDK_VERSION_P;
 }
 
 // static
@@ -195,105 +182,43 @@ std::string MediaCodecUtil::CodecToAndroidMimeType(VideoCodec codec) {
 }
 
 // static
-std::set<int> MediaCodecUtil::GetEncoderColorFormats(
-    const std::string& mime_type) {
-  std::set<int> color_formats;
-
-  JNIEnv* env = AttachCurrentThread();
-  ScopedJavaLocalRef<jstring> j_mime = ConvertUTF8ToJavaString(env, mime_type);
-  ScopedJavaLocalRef<jintArray> j_color_format_array =
-      Java_MediaCodecUtil_getEncoderColorFormatsForMime(env, j_mime);
-
-  if (!j_color_format_array.is_null()) {
-    std::vector<int> formats;
-    JavaIntArrayToIntVector(env, j_color_format_array, &formats);
-    color_formats = std::set<int>(formats.begin(), formats.end());
-  }
-
-  return color_formats;
-}
-
-// static
 bool MediaCodecUtil::IsVp8DecoderAvailable() {
   return IsDecoderSupportedByDevice(kVp8MimeType);
 }
 
 // static
-bool MediaCodecUtil::IsVp8EncoderAvailable() {
-  // Currently the vp8 encoder and decoder blocklists cover the same devices,
-  // but we have a second method for clarity in future issues.
-  return IsVp8DecoderAvailable();
-}
+size_t MediaCodecUtil::EstimateVideoBufferSize(VideoCodec codec,
+                                               int width,
+                                               int height) {
+  size_t max_pixels = 0;
+  size_t min_compression_ratio = 1;
 
-// static
-bool MediaCodecUtil::IsVp9DecoderAvailable() {
-  return IsDecoderSupportedByDevice(kVp9MimeType);
-}
-
-// static
-bool MediaCodecUtil::IsVp9Profile2DecoderAvailable() {
-  return IsVp9DecoderAvailable() && HasVp9Profile23Decoder();
-}
-
-// static
-bool MediaCodecUtil::IsVp9Profile3DecoderAvailable() {
-  return IsVp9DecoderAvailable() && HasVp9Profile23Decoder();
-}
-
-// static
-bool MediaCodecUtil::IsOpusDecoderAvailable() {
-  return IsDecoderSupportedByDevice(kOpusMimeType);
-}
-
-// static
-bool MediaCodecUtil::IsAv1DecoderAvailable() {
-  return IsDecoderSupportedByDevice(kAv1MimeType);
-}
-
-#if BUILDFLAG(ENABLE_PLATFORM_HEVC)
-// static
-bool MediaCodecUtil::IsHEVCDecoderAvailable() {
-  return IsDecoderSupportedByDevice(kHevcMimeType);
-}
-#endif
-
-// static
-bool MediaCodecUtil::IsAACEncoderAvailable() {
-  // We only support AAC encoding on android Q+, due to our use of the NDK.
-  return base::android::BuildInfo::GetInstance()->sdk_int() >=
-         base::android::SDK_VERSION_Q;
-}
-
-// static
-bool MediaCodecUtil::IsSurfaceViewOutputSupported() {
-  // Disable SurfaceView output for the Samsung Galaxy S3; it does not work
-  // well enough for even 360p24 H264 playback.  http://crbug.com/602870.
-  //
-  // Notably this is codec agnostic at present, so any devices added to the
-  // disabled list will avoid trying to play any codecs on SurfaceView.  If
-  // needed in the future this can be expanded to be codec specific.
-  constexpr const char* kDisabledModels[] = {// Exynos 4 (Mali-400)
-                                             "GT-I9300", "GT-I9305", "SHV-E210",
-                                             // Snapdragon S4 (Adreno-225)
-                                             "SCH-I535", "SCH-J201", "SCH-R530",
-                                             "SCH-I960", "SCH-S968", "SGH-T999",
-                                             "SGH-I747", "SGH-N064"};
-
-  std::string model(base::android::BuildInfo::GetInstance()->model());
-  for (auto* disabled_model : kDisabledModels) {
-    if (base::StartsWith(model, disabled_model,
-                         base::CompareCase::INSENSITIVE_ASCII)) {
-      return false;
-    }
+  switch (codec) {
+    case VideoCodec::kH264:
+      // Round up width/height to an integer number of macroblocks.
+      max_pixels = ((width + 15) / 16) * ((height + 15) / 16) * 16 * 16;
+      min_compression_ratio = 2;
+      break;
+    case VideoCodec::kVP8:
+      max_pixels = width * height;
+      min_compression_ratio = 2;
+      break;
+    case VideoCodec::kHEVC:
+    case VideoCodec::kVP9:
+    case VideoCodec::kAV1:
+    case VideoCodec::kDolbyVision:
+      max_pixels = width * height;
+      min_compression_ratio = 4;
+      break;
+    default:
+      // Leave the default max input size if codec is unknown or unsupported
+      // by this heuristic.
+      return 0;
   }
 
-  return true;
-}
-
-// static
-bool MediaCodecUtil::IsSetOutputSurfaceSupported() {
-  JNIEnv* env = AttachCurrentThread();
-  return Java_MediaCodecUtil_isSetOutputSurfaceSupported(env);
+  // Estimate the maximum input size assuming three channel 4:2:0 subsampled
+  // input frames.
+  return (max_pixels * 3) / (2 * min_compression_ratio);
 }
 
 // static
@@ -316,12 +241,12 @@ std::optional<gfx::Size> MediaCodecUtil::LookupCodedSizeAlignment(
   struct CodecAlignment {
     const char* name_regex;
     gfx::Size alignment;
-    int sdk_int = base::android::SDK_VERSION_NOUGAT;
+    int sdk_int = base::android::android_info::SDK_VERSION_Q;
   };
-  using base::android::SDK_VERSION_Q;
-  using base::android::SDK_VERSION_R;
-  using base::android::SDK_VERSION_Sv2;
-  using base::android::SDK_VERSION_U;
+  using base::android::android_info::SDK_VERSION_Q;
+  using base::android::android_info::SDK_VERSION_R;
+  using base::android::android_info::SDK_VERSION_Sv2;
+  using base::android::android_info::SDK_VERSION_U;
   constexpr CodecAlignment kCodecAlignmentMap[] = {
       // Codec2 software decoders.
       {"c2.android.avc", gfx::Size(128, 2), SDK_VERSION_Sv2},
@@ -342,10 +267,8 @@ std::optional<gfx::Size> MediaCodecUtil::LookupCodedSizeAlignment(
       // Qualcomm
       {"c2.qti.(avc|vp8)", gfx::Size(16, 16)},
       {"c2.qti.(hevc|vp9)", gfx::Size(8, 8)},
-      {"omx.qcom.video.decoder.avc", gfx::Size(16, 16), SDK_VERSION_Q},
-      {"omx.qcom.video.decoder.avc", gfx::Size(1, 1)},
-      {"omx.qcom.video.decoder.hevc", gfx::Size(8, 8), SDK_VERSION_Q},
-      {"omx.qcom.video.decoder.hevc", gfx::Size(1, 1)},
+      {"omx.qcom.video.decoder.avc", gfx::Size(16, 16)},
+      {"omx.qcom.video.decoder.hevc", gfx::Size(8, 8)},
       {"omx.qcom.video.decoder.vp8", gfx::Size(16, 16), SDK_VERSION_R},
       {"omx.qcom.video.decoder.vp8", gfx::Size(1, 1)},
       {"omx.qcom.video.decoder.vp9", gfx::Size(8, 8), SDK_VERSION_R},
@@ -364,7 +287,7 @@ std::optional<gfx::Size> MediaCodecUtil::LookupCodedSizeAlignment(
   const auto lower_name = base::ToLowerASCII(name);
 
   const auto sdk_int =
-      host_sdk_int.value_or(base::android::BuildInfo::GetInstance()->sdk_int());
+      host_sdk_int.value_or(base::android::android_info::sdk_int());
   for (const auto& entry : kCodecAlignmentMap) {
     if (sdk_int >= entry.sdk_int &&
         RE2::PartialMatch(lower_name, entry.name_regex)) {
@@ -386,19 +309,13 @@ bool MediaCodecUtil::CanDecode(AudioCodec codec) {
 }
 
 // static
-bool MediaCodecUtil::IsH264EncoderAvailable() {
-  return IsEncoderSupportedByDevice(kAvcMimeType);
-}
-
-// static
 void MediaCodecUtil::AddSupportedCodecProfileLevels(
     std::vector<CodecProfileLevel>* result) {
   DCHECK(result);
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jobjectArray> j_codec_profile_levels(
       Java_MediaCodecUtil_getSupportedCodecProfileLevels(env));
-  for (auto java_codec_profile_level :
-       j_codec_profile_levels.ReadElements<jobject>()) {
+  for (auto java_codec_profile_level : j_codec_profile_levels.CreateView(env)) {
     result->push_back(MediaCodecProfileLevelToChromiumProfileLevel(
         env, java_codec_profile_level));
   }
@@ -411,24 +328,17 @@ bool MediaCodecUtil::IsKnownUnaccelerated(VideoCodec codec,
   auto j_mime = ConvertUTF8ToJavaString(env, CodecToAndroidMimeType(codec));
   auto j_codec_name = Java_MediaCodecUtil_getDefaultCodecName(
       env, j_mime, static_cast<int>(direction), /*requireSoftwareCodec=*/false,
-      /*requireHardwareCodec=*/true);
+      /*requireHardwareCodec=*/true, /*requireSecure=*/false);
 
-  auto codec_name = ConvertJavaStringToUTF8(env, j_codec_name.obj());
+  auto codec_name =
+      base::android::ConvertJavaStringToUTF8(env, j_codec_name.obj());
   DVLOG(1) << __func__ << "Default hardware codec for " << GetCodecName(codec)
            << " : " << codec_name
            << ", direction: " << static_cast<int>(direction);
-  if (codec_name.empty())
-    return true;
-
-  // MediaTek hardware vp8 is known slower than the software implementation.
-  if (base::StartsWith(codec_name, "OMX.MTK.") && codec == VideoCodec::kVP8) {
-    // We may still reject VP8 hardware decoding later on certain chipsets,
-    // see IsDecoderSupportedByDevice(). We don't have the the chipset ID
-    // here to check now though.
-    return base::android::BuildInfo::GetInstance()->sdk_int() < SDK_VERSION_P;
-  }
-
-  return false;
+  return codec_name.empty();
 }
 
 }  // namespace media
+
+DEFINE_JNI(CodecProfileLevelList)
+DEFINE_JNI(MediaCodecUtil)

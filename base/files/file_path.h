@@ -110,6 +110,7 @@
 
 #include "base/base_export.h"
 #include "base/compiler_specific.h"
+#include "base/containers/span_forward_internal.h"
 #include "base/trace_event/base_tracing_forward.h"
 #include "build/build_config.h"
 
@@ -195,6 +196,9 @@ class BASE_EXPORT FilePath {
 
   // The character used to identify a file extension.
   static constexpr CharType kExtensionSeparator = FILE_PATH_LITERAL('.');
+
+  // Initializes features for this class. See `base::features::Init()`.
+  static void InitializeFeatures();
 
   FilePath();
   FilePath(const FilePath& that);
@@ -399,7 +403,7 @@ class BASE_EXPORT FilePath {
   // separators. See class documentation for 'Alternate root'.
   bool IsNetwork() const;
 
-  // Returns true if the patch ends with a path separator character.
+  // Returns true if the path ends with a path separator character.
   [[nodiscard]] bool EndsWithSeparator() const;
 
   // Returns a copy of this FilePath that ends with a trailing separator. If
@@ -466,9 +470,10 @@ class BASE_EXPORT FilePath {
   // (if FILE_PATH_USES_WIN_SEPARATORS is true), or do nothing on POSIX systems.
   [[nodiscard]] FilePath NormalizePathSeparators() const;
 
-  // Normalize all path separattors to given type on Windows
+  // Normalize all path separators to given type on Windows
   // (if FILE_PATH_USES_WIN_SEPARATORS is true), or do nothing on POSIX systems.
-  [[nodiscard]] FilePath NormalizePathSeparatorsTo(CharType separator) const;
+  [[nodiscard]] FilePath NormalizePathSeparatorsTo(
+      CharType normalized_separator) const;
 
   // Compare two strings in the same way the file system does.
   // Note that these always ignore case, even on file systems that are case-
@@ -515,6 +520,14 @@ class BASE_EXPORT FilePath {
   // to access it.
   // Returns true if the path is a content uri, or false otherwise.
   bool IsContentUri() const;
+
+  // Checks whether this path looks like a virtual document path. It is a quick
+  // check by a string matching, meaning that returning true does not guarantee
+  // that resolving it to a content URI will succeed. A virtual document path is
+  // a //base abstraction to transparently represent files and directories
+  // managed by Android's Storage Access Framework (SAF). See
+  // //base/android/virtual_document_path.h for details.
+  bool IsVirtualDocumentPath() const;
 #endif
 
   // NOTE: When adding a new public method, consider adding it to
@@ -527,6 +540,12 @@ class BASE_EXPORT FilePath {
   // separators is never stripped, to support alternate roots.  This is used to
   // support UNC paths on Windows.
   void StripTrailingSeparatorsInternal();
+
+  // Returns `kSeparators` as a `span` (without the terminating NUL character).
+  static span<const CharType> SeparatorsAsSpan();
+
+  bool IsParentFast(const FilePath& child) const;
+  bool IsParentSlow(const FilePath& child) const;
 
   StringType path_;
 };

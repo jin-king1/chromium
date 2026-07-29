@@ -4,14 +4,19 @@
 
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
 
+#import <set>
+#import <string>
+
 #import "base/apple/foundation_util.h"
 #import "base/functional/bind.h"
+#import "base/functional/callback_helpers.h"
 #import "base/i18n/time_formatting.h"
 #import "base/run_loop.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/task/sequenced_task_runner.h"
 #import "base/time/time.h"
 #import "google_apis/gaia/gaia_auth_util.h"
+#import "ios/chrome/browser/signin/model/constants.h"
 #import "ios/chrome/browser/signin/model/fake_account_details_view_controller.h"
 #import "ios/chrome/browser/signin/model/fake_refresh_access_token_error.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
@@ -32,8 +37,9 @@ constexpr base::TimeDelta kAccessTokenExpiration = base::Minutes(5);
 
 // Returns a hosted domain for identity.
 NSString* FakeGetHostedDomainForIdentity(id<SystemIdentity> identity) {
-  return base::SysUTF8ToNSString(
+  NSString* domain = base::SysUTF8ToNSString(
       gaia::ExtractDomainName(base::SysNSStringToUTF8(identity.userEmail)));
+  return [domain isEqualToString:@"gmail.com"] ? @"" : domain;
 }
 
 // Stores a pointer to the last created FakeSystemIdentityManager*. Used to
@@ -47,21 +53,21 @@ FakeSystemIdentityManager::FakeSystemIdentityManager()
 
 FakeSystemIdentityManager::FakeSystemIdentityManager(
     NSArray<FakeSystemIdentity*>* fake_identities)
-    : storage_([[FakeSystemIdentityManagerStorage alloc] init]),
-      gaia_ids_removed_by_user_([NSMutableSet set]) {
+    : storage_([[FakeSystemIdentityManagerStorage alloc] init]) {
   DCHECK(!gFakeSystemIdentityManager);
   gFakeSystemIdentityManager = this;
 
   for (FakeSystemIdentity* fake_identity in fake_identities) {
     [storage_ addFakeIdentity:fake_identity];
-    // Set up capabilities to remove the delay while displaying the history sync
-    // opt-in screen for testing.
+    // Set up capabilities to remove fetch delays during the authentication
+    // flow.
     // TODO(b/327221052): verify if this should be replaced by a handler for
     // default capabilities.
     AccountCapabilitiesTestMutator* mutator =
         GetPendingCapabilitiesMutator(fake_identity);
     mutator->set_can_show_history_sync_opt_ins_without_minor_mode_restrictions(
         true);
+    mutator->set_can_sign_in_to_chrome(true);
   }
 }
 
@@ -80,30 +86,29 @@ FakeSystemIdentityManager* FakeSystemIdentityManager::FromSystemIdentityManager(
 
 void FakeSystemIdentityManager::AddIdentity(id<SystemIdentity> identity) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  NSString* gaiaID = identity.gaiaID;
+  GaiaId gaiaID = identity.gaiaId;
   DCHECK(![storage_ containsIdentityWithGaiaID:gaiaID]);
-  [gaia_ids_removed_by_user_ removeObject:gaiaID];
+  gaia_ids_removed_by_user_.erase(gaiaID);
   FakeSystemIdentity* fake_identity =
       base::apple::ObjCCast<FakeSystemIdentity>(identity);
   [storage_ addFakeIdentity:fake_identity];
   FireIdentityListChanged();
 
-  // Set up capabilities to remove the delay while displaying the history sync
-  // opt-in screen for testing.
+  // Set up capabilities to remove fetch delays during the authentication flow.
   // TODO(b/327221052): verify if this should be replaced by a handler for
   // default capabilities.
   AccountCapabilitiesTestMutator* mutator =
       GetPendingCapabilitiesMutator(identity);
   mutator->set_can_show_history_sync_opt_ins_without_minor_mode_restrictions(
       true);
+  mutator->set_can_sign_in_to_chrome(true);
 }
 
 void FakeSystemIdentityManager::AddIdentityWithUnknownCapabilities(
     id<SystemIdentity> identity) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  NSString* gaiaID = identity.gaiaID;
-  DCHECK(![storage_ containsIdentityWithGaiaID:gaiaID]);
-  [gaia_ids_removed_by_user_ removeObject:gaiaID];
+  DCHECK(![storage_ containsIdentityWithGaiaID:identity.gaiaId]);
+  gaia_ids_removed_by_user_.erase(identity.gaiaId);
   FakeSystemIdentity* fake_identity =
       base::apple::ObjCCast<FakeSystemIdentity>(identity);
   [storage_ addFakeIdentity:fake_identity];
@@ -114,9 +119,8 @@ void FakeSystemIdentityManager::AddIdentityWithCapabilities(
     id<SystemIdentity> identity,
     NSDictionary<NSString*, NSNumber*>* capabilities) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  NSString* gaiaID = identity.gaiaID;
-  DCHECK(![storage_ containsIdentityWithGaiaID:gaiaID]);
-  [gaia_ids_removed_by_user_ removeObject:gaiaID];
+  DCHECK(![storage_ containsIdentityWithGaiaID:identity.gaiaId]);
+  gaia_ids_removed_by_user_.erase(identity.gaiaId);
   FakeSystemIdentity* fake_identity =
       base::apple::ObjCCast<FakeSystemIdentity>(identity);
   [storage_ addFakeIdentity:fake_identity];
@@ -133,30 +137,42 @@ void FakeSystemIdentityManager::AddIdentityWithCapabilities(
 void FakeSystemIdentityManager::ForgetIdentityFromOtherApplication(
     id<SystemIdentity> identity) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (![storage_ containsIdentityWithGaiaID:identity.gaiaID]) {
+  if (![storage_ containsIdentityWithGaiaID:identity.gaiaId]) {
     return;
   }
 
   ForgetIdentityAsync(identity, base::DoNothing(), /*removed_by_user=*/false);
 }
 
+void FakeSystemIdentityManager::UpdateSystemIdentityAvatar(
+    const GaiaId& gaia_id,
+    UIImage* avatar,
+    bool send_notification) {
+  FakeSystemIdentityDetails* details = [storage_ detailsForGaiaID:gaia_id];
+  details.cachedAvatar = avatar;
+  details.avatarUpdatedFromLastFetch = YES;
+  if (send_notification) {
+    FireIdentityUpdated(details.fakeIdentity);
+  }
+}
+
 AccountCapabilitiesTestMutator*
 FakeSystemIdentityManager::GetPendingCapabilitiesMutator(
     id<SystemIdentity> identity) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK([storage_ containsIdentityWithGaiaID:identity.gaiaID]);
+  DCHECK([storage_ containsIdentityWithGaiaID:identity.gaiaId]);
   FakeSystemIdentityDetails* details =
-      [storage_ detailsForGaiaID:identity.gaiaID];
+      [storage_ detailsForGaiaID:identity.gaiaId];
   return details.pendingCapabilitiesMutator;
 }
 
 AccountCapabilities FakeSystemIdentityManager::GetVisibleCapabilities(
     id<SystemIdentity> identity) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK([storage_ containsIdentityWithGaiaID:identity.gaiaID]);
+  DCHECK([storage_ containsIdentityWithGaiaID:identity.gaiaId]);
   FakeSystemIdentityDetails* details =
-      [storage_ detailsForGaiaID:identity.gaiaID];
-  return details.visibleCapabilities;
+      [storage_ detailsForGaiaID:identity.gaiaId];
+  return AccountCapabilities(details.visibleCapabilities);
 }
 
 void FakeSystemIdentityManager::SetInstantlyFillHostedDomainCache(
@@ -201,7 +217,73 @@ void FakeSystemIdentityManager::WaitForServiceCallbacksToComplete() {
 }
 
 bool FakeSystemIdentityManager::ContainsIdentity(id<SystemIdentity> identity) {
-  return [storage_ containsIdentityWithGaiaID:identity.gaiaID];
+  return [storage_ containsIdentityWithGaiaID:identity.gaiaId];
+}
+
+void FakeSystemIdentityManager::SetPersistentAuthErrorForAccount(
+    const CoreAccountId& accountId) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  GaiaId gaia_id(accountId.ToString());
+  CHECK([storage_ containsIdentityWithGaiaID:gaia_id]);
+  FakeSystemIdentityDetails* details = [storage_ detailsForGaiaID:gaia_id];
+  // TODO(crbug.com/502126003): Remove when AccessTokenCallback is removed.
+  details.getAccessTokenCallback = base::BindRepeating(
+      [](AccessTokenCallback callback) -> id<RefreshAccessTokenError> {
+        NSInteger integer_error_code = static_cast<NSInteger>(
+            SystemIdentityManagerErrorCode::kInvalidTokenIdentity);
+        NSError* error =
+            [NSError errorWithDomain:kSystemIdentityManagerErrorDomain
+                                code:integer_error_code
+                            userInfo:nil];
+        std::move(callback).Run(std::nullopt, error);
+        return nil;
+      });
+  details.getAccessTokenRequestCallback =
+      base::BindRepeating([](AccessTokenRequestCallback callback) {
+        std::move(callback).Run(base::unexpected(
+            GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+                GoogleServiceAuthError::InvalidGaiaCredentialsReason::
+                    UNKNOWN)));
+      });
+  FakeSystemIdentity* identity = details.fakeIdentity;
+  identity.hasValidAuth = NO;
+  FireIdentityRefreshTokenUpdated(identity);
+}
+
+void FakeSystemIdentityManager::ClearPersistentAuthErrorForAccount(
+    const CoreAccountId& accountId) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  GaiaId gaia_id(accountId.ToString());
+  CHECK([storage_ containsIdentityWithGaiaID:gaia_id]);
+  FakeSystemIdentityDetails* details = [storage_ detailsForGaiaID:gaia_id];
+
+  // Reset the custom callback to revert back to the default behavior.
+  // TODO(crbug.com/502126003): Remove when AccessTokenCallback is removed.
+  details.getAccessTokenCallback.Reset();
+  details.getAccessTokenRequestCallback.Reset();
+  FakeSystemIdentity* identity = details.fakeIdentity;
+  identity.hasValidAuth = YES;
+  FireIdentityRefreshTokenUpdated(identity);
+}
+
+void FakeSystemIdentityManager::SetGetAccessTokenCallback(
+    const CoreAccountId& accountId,
+    GetAccessTokenCallback callback) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  GaiaId gaia_id(accountId.ToString());
+  CHECK([storage_ containsIdentityWithGaiaID:gaia_id]);
+  FakeSystemIdentityDetails* details = [storage_ detailsForGaiaID:gaia_id];
+  details.getAccessTokenCallback = std::move(callback);
+}
+
+void FakeSystemIdentityManager::SetGetAccessTokenCallback(
+    const CoreAccountId& accountId,
+    GetAccessTokenRequestCallback callback) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  GaiaId gaia_id(accountId.ToString());
+  CHECK([storage_ containsIdentityWithGaiaID:gaia_id]);
+  FakeSystemIdentityDetails* details = [storage_ detailsForGaiaID:gaia_id];
+  details.getAccessTokenRequestCallback = std::move(callback);
 }
 
 id<RefreshAccessTokenError>
@@ -209,11 +291,13 @@ FakeSystemIdentityManager::CreateRefreshAccessTokenFailure(
     id<SystemIdentity> identity,
     HandleMDMNotificationCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK([storage_ containsIdentityWithGaiaID:identity.gaiaID]);
+  DCHECK([storage_ containsIdentityWithGaiaID:identity.gaiaId]);
   FakeSystemIdentityDetails* details =
-      [storage_ detailsForGaiaID:identity.gaiaID];
+      [storage_ detailsForGaiaID:identity.gaiaId];
   details.error = [[FakeRefreshAccessTokenError alloc]
-      initWithCallback:std::move(callback)];
+         initWithIdentity:identity
+      isScopeLimitedError:NO
+                 callback:std::move(callback)];
   return details.error;
 }
 
@@ -276,9 +360,17 @@ FakeSystemIdentityManager::PresentLinkedServicesSettingsDetailsController(
   return base::DoNothing();
 }
 
+void FakeSystemIdentityManager::SetInteractionManagerFactory(
+    base::RepeatingCallback<id<SystemIdentityInteractionManager>()> factory) {
+  interaction_manager_factory_ = factory;
+}
+
 id<SystemIdentityInteractionManager>
 FakeSystemIdentityManager::CreateInteractionManager() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (interaction_manager_factory_) {
+    return interaction_manager_factory_.Run();
+  }
   return [[FakeSystemIdentityInteractionManager alloc]
       initWithManager:GetWeakPtr()];
 }
@@ -298,7 +390,7 @@ void FakeSystemIdentityManager::ForgetIdentity(
     id<SystemIdentity> identity,
     ForgetIdentityCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK([storage_ containsIdentityWithGaiaID:identity.gaiaID]);
+  DCHECK([storage_ containsIdentityWithGaiaID:identity.gaiaId]);
   // Forgetting an identity is an asynchronous operation (as it requires some
   // network calls).
   PostClosure(FROM_HERE,
@@ -307,8 +399,8 @@ void FakeSystemIdentityManager::ForgetIdentity(
                              /*removed_by_user=*/true));
 }
 
-bool FakeSystemIdentityManager::IdentityRemovedByUser(NSString* gaia_id) {
-  return [gaia_ids_removed_by_user_ containsObject:gaia_id];
+bool FakeSystemIdentityManager::IdentityRemovedByUser(const GaiaId& gaia_id) {
+  return gaia_ids_removed_by_user_.contains(gaia_id);
 }
 
 void FakeSystemIdentityManager::GetAccessToken(
@@ -325,7 +417,30 @@ void FakeSystemIdentityManager::GetAccessToken(
     const std::set<std::string>& scopes,
     AccessTokenCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK([storage_ containsIdentityWithGaiaID:identity.gaiaID]);
+  DCHECK([storage_ containsIdentityWithGaiaID:identity.gaiaId]);
+  // Fetching the access token is an asynchronous operation (as it requires
+  // some network calls).
+  PostClosure(
+      FROM_HERE,
+      base::BindOnce(&FakeSystemIdentityManager::GetAccessTokenAsyncLegacy,
+                     GetWeakPtr(), identity, std::move(callback)));
+}
+
+void FakeSystemIdentityManager::GetAccessToken(
+    id<SystemIdentity> identity,
+    const std::set<std::string>& scopes,
+    AccessTokenRequestCallback callback) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  GetAccessToken(identity, /*client_id*/ {}, scopes, std::move(callback));
+}
+
+void FakeSystemIdentityManager::GetAccessToken(
+    id<SystemIdentity> identity,
+    const std::string& client_id,
+    const std::set<std::string>& scopes,
+    AccessTokenRequestCallback callback) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  DCHECK([storage_ containsIdentityWithGaiaID:identity.gaiaId]);
   // Fetching the access token is an asynchronous operation (as it requires
   // some network calls).
   PostClosure(FROM_HERE,
@@ -338,9 +453,17 @@ void FakeSystemIdentityManager::FetchAvatarForIdentity(
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   // Fetching the avatar is an asynchronous operation (as it requires some
   // network calls).
-  if (![storage_ containsIdentityWithGaiaID:identity.gaiaID]) {
+  if (![storage_ containsIdentityWithGaiaID:identity.gaiaId]) {
     // The identity was removed before async method was called. There is
     // nothing to do.
+    return;
+  }
+  FakeSystemIdentityDetails* details =
+      [storage_ detailsForGaiaID:identity.gaiaId];
+  if (!details.avatarUpdatedFromLastFetch) {
+    // If the avatar was not updated, async fetch should not be triggered. This
+    // will avoid to call FireIdentityUpdated() for no reason, and simulate the
+    // real behavior.
     return;
   }
   PostClosure(
@@ -352,20 +475,20 @@ void FakeSystemIdentityManager::FetchAvatarForIdentity(
 UIImage* FakeSystemIdentityManager::GetCachedAvatarForIdentity(
     id<SystemIdentity> identity) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (![storage_ containsIdentityWithGaiaID:identity.gaiaID]) {
+  if (![storage_ containsIdentityWithGaiaID:identity.gaiaId]) {
     // The identity was removed before async method was called. There is
     // nothing to do.
     return nil;
   }
   FakeSystemIdentityDetails* details =
-      [storage_ detailsForGaiaID:identity.gaiaID];
+      [storage_ detailsForGaiaID:identity.gaiaId];
   return details.cachedAvatar;
 }
 
 void FakeSystemIdentityManager::GetHostedDomain(id<SystemIdentity> identity,
                                                 HostedDomainCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK([storage_ containsIdentityWithGaiaID:identity.gaiaID]);
+  DCHECK([storage_ containsIdentityWithGaiaID:identity.gaiaId]);
   // Fetching the hosted domain is an asynchronous operation (as it requires
   // some network calls).
   PostClosure(FROM_HERE,
@@ -376,10 +499,10 @@ void FakeSystemIdentityManager::GetHostedDomain(id<SystemIdentity> identity,
 NSString* FakeSystemIdentityManager::GetCachedHostedDomainForIdentity(
     id<SystemIdentity> identity) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  CHECK(identity);
   if (instantly_fill_hosted_domain_cache_ ||
       [hosted_domain_cache_ containsObject:identity]) {
-    NSString* domain = FakeGetHostedDomainForIdentity(identity);
-    return [domain isEqualToString:@"gmail.com"] ? @"" : domain;
+    return FakeGetHostedDomainForIdentity(identity);
   }
   return nil;
 }
@@ -389,7 +512,7 @@ void FakeSystemIdentityManager::FetchCapabilities(
     const std::vector<std::string>& names,
     FetchCapabilitiesCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK([storage_ containsIdentityWithGaiaID:identity.gaiaID]);
+  DCHECK([storage_ containsIdentityWithGaiaID:identity.gaiaId]);
   // Fetching the hosted domain is an asynchronous operation (as it requires
   // some network calls).
   PostClosure(
@@ -398,24 +521,75 @@ void FakeSystemIdentityManager::FetchCapabilities(
                      GetWeakPtr(), identity, names, std::move(callback)));
 }
 
+void FakeSystemIdentityManager::FetchCapabilitiesWithPartial(
+    id<SystemIdentity> identity,
+    const std::vector<std::string>& names,
+    FetchCapabilitiesCompletion completion,
+    FetchPartialCapabilitiesCallback partial_callback) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  DCHECK([storage_ containsIdentityWithGaiaID:identity.gaiaId]);
+  // Fetching the hosted domain is an asynchronous operation (as it requires
+  // some network calls).
+  PostClosure(FROM_HERE,
+              base::BindOnce(
+                  &FakeSystemIdentityManager::FetchCapabilitiesWithPartialAsync,
+                  GetWeakPtr(), identity, names, std::move(completion),
+                  std::move(partial_callback)));
+}
+
+void FakeSystemIdentityManager::RegisterExternalPrivacyContextProvider(
+    id<ExternalPrivacyContextUIProvider> provider) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  // Do nothing.
+}
+
+void FakeSystemIdentityManager::UnregisterExternalPrivacyContextProvider(
+    id<ExternalPrivacyContextUIProvider> provider) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  // Do nothing.
+}
+
+void FakeSystemIdentityManager::ExternalPrivacyContextProviderReady(
+    id<ExternalPrivacyContextUIProvider> provider) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  // Do nothing.
+}
+
 bool FakeSystemIdentityManager::HandleMDMNotification(
     id<SystemIdentity> identity,
     NSArray<id<SystemIdentity>>* active_identities,
     id<RefreshAccessTokenError> error,
     HandleMDMCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK([storage_ containsIdentityWithGaiaID:identity.gaiaID]);
-  FakeSystemIdentityDetails* details =
-      [storage_ detailsForGaiaID:identity.gaiaID];
-  if (![details.error isEqualToError:error]) {
+  DCHECK([storage_ containsIdentityWithGaiaID:identity.gaiaId]);
+  FakeRefreshAccessTokenError* fake_refresh_access_token_error =
+      base::apple::ObjCCast<FakeRefreshAccessTokenError>(error);
+  if (![fake_refresh_access_token_error.identity isEqual:identity]) {
     return false;
   }
-
   // Handling MDM error is asynchronous operation (as it requires some
   // network calls).
   PostClosure(FROM_HERE,
-              base::BindOnce(details.error.callback, std::move(callback)));
+              base::BindOnce(fake_refresh_access_token_error.callback,
+                             std::move(callback)));
   return true;
+}
+
+bool FakeSystemIdentityManager::DisplayMDMNotification(
+    id<SystemIdentity> identity,
+    const GoogleServiceAuthError& error,
+    HandleMDMCallback callback) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  DCHECK([storage_ containsIdentityWithGaiaID:identity.gaiaId]);
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, base::BindOnce(std::move(callback), false));
+  return false;
+}
+
+bool FakeSystemIdentityManager::IsScopeLimitedError(
+    id<RefreshAccessTokenError> error) {
+  return base::apple::ObjCCastStrict<FakeRefreshAccessTokenError>(error)
+      .isScopeLimitedError;
 }
 
 bool FakeSystemIdentityManager::IsMDMError(id<SystemIdentity> identity,
@@ -443,40 +617,41 @@ void FakeSystemIdentityManager::ForgetIdentityAsync(
     ForgetIdentityCallback callback,
     bool removed_by_user) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (![storage_ containsIdentityWithGaiaID:identity.gaiaID]) {
+  if (![storage_ containsIdentityWithGaiaID:identity.gaiaId]) {
     // The identity was removed before async method was called. There is
     // nothing to do.
     return;
   }
-  NSString* gaiaID = identity.gaiaID;
+  GaiaId gaiaID = identity.gaiaId;
   if (removed_by_user) {
-    [gaia_ids_removed_by_user_ addObject:gaiaID];
+    gaia_ids_removed_by_user_.insert(gaiaID);
   }
-  [storage_ removeIdentityWithGaiaID:identity.gaiaID];
+  [storage_ removeIdentityWithGaiaID:identity.gaiaId];
 
   FireIdentityListChanged();
 
   std::move(callback).Run(/*error*/ nil);
 }
 
-void FakeSystemIdentityManager::GetAccessTokenAsync(
+void FakeSystemIdentityManager::GetAccessTokenAsyncLegacy(
     id<SystemIdentity> identity,
     AccessTokenCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (![storage_ containsIdentityWithGaiaID:identity.gaiaID]) {
+  if (![storage_ containsIdentityWithGaiaID:identity.gaiaId]) {
     // The identity was removed before async method was called. There is
     // nothing to do.
     return;
   }
   FakeSystemIdentityDetails* details =
-      [storage_ detailsForGaiaID:identity.gaiaID];
-  if (details.error) {
-    NSError* error = [NSError errorWithDomain:@"com.google.HTTPStatus"
-                                         code:-1
-                                     userInfo:nil];
-
-    FireIdentityAccessTokenRefreshFailed(identity, details.error);
-    std::move(callback).Run(std::nullopt, error);
+      [storage_ detailsForGaiaID:identity.gaiaId];
+  if (details.getAccessTokenCallback) {
+    id<RefreshAccessTokenError> error =
+        details.getAccessTokenCallback.Run(std::move(callback));
+    if (error) {
+      FireIdentityAccessTokenRefreshFailed(identity, error,
+                                           std::set<std::string>());
+    }
+    return;
   } else {
     const base::Time valid_until = base::Time::Now() + kAccessTokenExpiration;
     AccessTokenInfo info{TimeFormatHTTP(valid_until), valid_until};
@@ -484,19 +659,41 @@ void FakeSystemIdentityManager::GetAccessTokenAsync(
   }
 }
 
-void FakeSystemIdentityManager::FetchAvatarForIdentityAsync(
-    id<SystemIdentity> identity) {
+void FakeSystemIdentityManager::GetAccessTokenAsync(
+    id<SystemIdentity> identity,
+    AccessTokenRequestCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (![storage_ containsIdentityWithGaiaID:identity.gaiaID]) {
+  if (![storage_ containsIdentityWithGaiaID:identity.gaiaId]) {
     // The identity was removed before async method was called. There is
     // nothing to do.
     return;
   }
   FakeSystemIdentityDetails* details =
-      [storage_ detailsForGaiaID:identity.gaiaID];
+      [storage_ detailsForGaiaID:identity.gaiaId];
+  if (details.getAccessTokenRequestCallback) {
+    details.getAccessTokenRequestCallback.Run(std::move(callback));
+    return;
+  } else {
+    const base::Time valid_until = base::Time::Now() + kAccessTokenExpiration;
+    AccessTokenInfo info{TimeFormatHTTP(valid_until), valid_until};
+    std::move(callback).Run(std::move(info));
+  }
+}
+
+void FakeSystemIdentityManager::FetchAvatarForIdentityAsync(
+    id<SystemIdentity> identity) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (![storage_ containsIdentityWithGaiaID:identity.gaiaId]) {
+    // The identity was removed before async method was called. There is
+    // nothing to do.
+    return;
+  }
+  FakeSystemIdentityDetails* details =
+      [storage_ detailsForGaiaID:identity.gaiaId];
   if (!details.cachedAvatar) {
     details.cachedAvatar = ios::provider::GetSigninDefaultAvatar();
   }
+  details.avatarUpdatedFromLastFetch = NO;
 
   FireIdentityUpdated(identity);
 }
@@ -505,7 +702,7 @@ void FakeSystemIdentityManager::GetHostedDomainAsync(
     id<SystemIdentity> identity,
     HostedDomainCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (![storage_ containsIdentityWithGaiaID:identity.gaiaID]) {
+  if (![storage_ containsIdentityWithGaiaID:identity.gaiaId]) {
     // The identity was removed before the async method was called. There is
     // nothing to do.
     return;
@@ -527,13 +724,13 @@ void FakeSystemIdentityManager::FetchCapabilitiesAsync(
     const std::vector<std::string>& names,
     FetchCapabilitiesCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (![storage_ containsIdentityWithGaiaID:identity.gaiaID]) {
+  if (![storage_ containsIdentityWithGaiaID:identity.gaiaId]) {
     // The identity was removed before async method was called. There is
     // nothing to do.
     return;
   }
   FakeSystemIdentityDetails* details =
-      [storage_ detailsForGaiaID:identity.gaiaID];
+      [storage_ detailsForGaiaID:identity.gaiaId];
 
   // Simulates the action to refresh the internal capability state with
   // the pending changes fetched from the server.
@@ -553,6 +750,25 @@ void FakeSystemIdentityManager::FetchCapabilitiesAsync(
   }
 
   std::move(callback).Run(result);
+}
+
+void FakeSystemIdentityManager::FetchCapabilitiesWithPartialAsync(
+    id<SystemIdentity> identity,
+    const std::vector<std::string>& names,
+    FetchCapabilitiesCompletion completion,
+    FetchPartialCapabilitiesCallback partial_callback) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  auto callback = base::BindOnce(
+      [](FetchPartialCapabilitiesCallback partial_callback,
+         FetchCapabilitiesCompletion completion,
+         std::map<std::string, CapabilityResult> result) {
+        partial_callback.Run(result);
+        std::move(completion).Run();
+      },
+      std::move(partial_callback), std::move(completion));
+
+  FetchCapabilitiesAsync(identity, names, std::move(callback));
 }
 
 void FakeSystemIdentityManager::PostClosure(base::Location from_here,

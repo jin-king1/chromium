@@ -8,9 +8,11 @@
 #include <vector>
 
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
 #include "base/containers/flat_set.h"
 #include "base/no_destructor.h"
 #include "base/strings/string_util.h"
+#include "base/trace_event/trace_event.h"
 #include "device/vr/openxr/openxr_extension_helper.h"
 #include "device/vr/openxr/openxr_hand_utils.h"
 #include "device/vr/openxr/openxr_interaction_profiles.h"
@@ -67,13 +69,18 @@ OpenXrHandTracker::OpenXrHandTracker(
   locations_.jointCount = joint_locations_buffer_.size();
   locations_.jointLocations = joint_locations_buffer_.data();
 
-  // This is only used if mesh_scale_enabled_ is true, but it doesn't hurt to
-  // initialize it anyway.
-  // Setting `overrideHandScale` to true and `overrideValueInput` to 1 will
-  // scale the hands to the size of the "standard" hand mesh per:
-  // https://registry.khronos.org/OpenXR/specs/1.1/html/xrspec.html#XrHandTrackingScaleFB
-  mesh_scale_.overrideHandScale = true;
-  mesh_scale_.overrideValueInput = 1.0f;
+  XrNextChainBuilder next_chain(&locations_);
+  if (mesh_scale_enabled_ && UseRuntimeAnonymization()) {
+    // Setting `overrideHandScale` to true and `overrideValueInput` to 1 will
+    // scale the hands to the size of the "standard" hand mesh per:
+    // https://registry.khronos.org/OpenXR/specs/1.1/html/xrspec.html#XrHandTrackingScaleFB
+    mesh_scale_.overrideHandScale = true;
+    mesh_scale_.overrideValueInput = 1.0f;
+
+    next_chain.Add(&mesh_scale_);
+  }
+
+  ExtendLocationsNextChain(next_chain);
 }
 
 OpenXrHandTracker::~OpenXrHandTracker() {
@@ -105,14 +112,6 @@ XrResult OpenXrHandTracker::Update(XrSpace base_space,
   locate_info.baseSpace = base_space;
   locate_info.time = predicted_display_time;
 
-  void** next = &locations_.next;
-  if (mesh_scale_enabled_ && UseRuntimeAnonymization()) {
-    *next = &mesh_scale_;
-    next = &mesh_scale_.next;
-  }
-
-  ExtendHandTrackingNextChain(next);
-
   XrResult result = extension_helper_->ExtensionMethods().xrLocateHandJointsEXT(
       hand_tracker_, &locate_info, &locations_);
   if (XR_FAILED(result)) {
@@ -134,6 +133,7 @@ mojom::XRHandTrackingDataPtr OpenXrHandTracker::GetHandTrackingData() const {
       !mesh_scale_enabled_) {
     return nullptr;
   }
+  TRACE_EVENT1("xr", "GetHandTrackingData", "XrHandedness", type_);
 
   mojom::XRHandTrackingDataPtr hand_tracking_data =
       device::mojom::XRHandTrackingData::New();
@@ -167,6 +167,17 @@ mojom::XRHandTrackingDataPtr OpenXrHandTracker::GetHandTrackingData() const {
   }
 
   return hand_tracking_data;
+}
+
+std::optional<gfx::Transform> OpenXrHandTracker::GetMojoFromJoint(
+    XrHandJointEXT joint) const {
+  if (!IsDataValid()) {
+    return std::nullopt;
+  }
+
+  CHECK(joint < XR_HAND_JOINT_COUNT_EXT);
+
+  return XrPoseToGfxTransform(joint_locations_buffer_[joint].pose);
 }
 
 const OpenXrHandController* OpenXrHandTracker::controller() const {
@@ -210,35 +221,39 @@ OpenXrHandTrackerFactory::GetRequestedExtensions() const {
 }
 
 std::set<device::mojom::XRSessionFeature>
-OpenXrHandTrackerFactory::GetSupportedFeatures(
-    const OpenXrExtensionEnumeration* extension_enum) const {
-  if (!IsEnabled(extension_enum)) {
+OpenXrHandTrackerFactory::GetSupportedFeatures() const {
+  if (!IsEnabled()) {
     return {};
   }
 
   return {device::mojom::XRSessionFeature::HAND_INPUT};
 }
 
-bool OpenXrHandTrackerFactory::IsEnabled(
-    const OpenXrExtensionEnumeration* extension_enum) const {
-  // We can support the hand tracker if the basic hand tracking extension is
-  // supported and at least one of our other required extensions is supported.
-  return extension_enum->ExtensionSupported(
-             XR_EXT_HAND_TRACKING_EXTENSION_NAME) &&
-         std::ranges::any_of(
-             GetRequestedExtensions(),
-             [&extension_enum](std::string_view extension) {
-               return strcmp(extension.data(),
-                             XR_EXT_HAND_TRACKING_EXTENSION_NAME) != 0 &&
-                      extension_enum->ExtensionSupported(extension.data());
-             });
+void OpenXrHandTrackerFactory::CheckAndUpdateEnabledState(
+    const OpenXrExtensionEnumeration* extension_enum,
+    XrInstance instance,
+    XrSystemId system) {
+  // Our list of requested extensions is a "base" extension that provides
+  // the default hand joint data and a set of "targeting" extensions that give
+  // the rest of the data that let us represent the hand as a controller. We
+  // need both the "base" and at least one "targeting" extension to be supported
+  // in order to support the hand tracker.
+  bool base_extension_supported =
+      extension_enum->ExtensionSupported(XR_EXT_HAND_TRACKING_EXTENSION_NAME);
+  bool targeting_extension_supported = std::ranges::any_of(
+      GetRequestedExtensions(), [&extension_enum](std::string_view extension) {
+        return extension !=
+                   std::string_view(XR_EXT_HAND_TRACKING_EXTENSION_NAME) &&
+               extension_enum->ExtensionSupported(extension.data());
+      });
+  SetEnabled(base_extension_supported && targeting_extension_supported);
 }
 
 std::unique_ptr<OpenXrHandTracker> OpenXrHandTrackerFactory::CreateHandTracker(
     const OpenXrExtensionHelper& extension_helper,
     XrSession session,
     OpenXrHandednessType type) const {
-  bool is_supported = IsEnabled(extension_helper.ExtensionEnumeration());
+  bool is_supported = IsEnabled();
   DVLOG(2) << __func__ << " is_supported=" << is_supported;
   if (is_supported) {
     return std::make_unique<OpenXrHandTracker>(extension_helper, session, type);

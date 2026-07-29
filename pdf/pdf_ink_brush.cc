@@ -5,10 +5,12 @@
 #include "pdf/pdf_ink_brush.h"
 
 #include <optional>
+#include <vector>
 
 #include "base/check_op.h"
 #include "base/notreached.h"
 #include "third_party/ink/src/ink/brush/brush.h"
+#include "third_party/ink/src/ink/brush/brush_behavior.h"
 #include "third_party/ink/src/ink/brush/brush_family.h"
 #include "third_party/ink/src/ink/brush/brush_paint.h"
 #include "third_party/ink/src/ink/brush/brush_tip.h"
@@ -16,6 +18,7 @@
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/geometry/rect_conversions.h"
+#include "ui/gfx/geometry/rect_f.h"
 
 namespace chrome_pdf {
 
@@ -54,17 +57,65 @@ ink::Color GetInkColorFromSkColor(SkColor color) {
       /*alpha=*/SkColorGetA(color));
 }
 
-ink::Brush CreateInkBrush(PdfInkBrush::Type type, SkColor color, float size) {
-  CHECK(PdfInkBrush::IsToolSizeInRange(size));
+std::vector<ink::BrushBehavior> GetTipBehaviors(PdfInkBrush::Type type) {
+  switch (type) {
+    case PdfInkBrush::Type::kHighlighter:
+      return {};
+    case PdfInkBrush::Type::kPen:
+      return {
+          ink::BrushBehavior{{
+              ink::BrushBehavior::SourceNode{
+                  .source = ink::BrushBehavior::Source::kNormalizedPressure,
+                  .source_value_range = {0.8, 1},
+              },
+              ink::BrushBehavior::ToolTypeFilterNode{{.stylus = true}},
+              ink::BrushBehavior::DampingNode{
+                  .damping_source =
+                      ink::BrushBehavior::ProgressDomain::kTimeInSeconds,
+                  .damping_gap = 0.025,
+              },
+              ink::BrushBehavior::TargetNode{
+                  .target = ink::BrushBehavior::Target::kSizeMultiplier,
+                  .target_modifier_range = {1, 1.5},
+              },
+          }},
+          ink::BrushBehavior{{
+              ink::BrushBehavior::SourceNode{
+                  .source = ink::BrushBehavior::Source::kTimeOfInputInSeconds,
+                  .source_value_range = {0, 0.024},
+              },
+              ink::BrushBehavior::SourceNode{
+                  .source = ink::BrushBehavior::Source::
+                      kPredictedDistanceTraveledInMultiplesOfBrushSize,
+                  .source_value_range = {1.5, 2},
+              },
+              ink::BrushBehavior::ResponseNode{
+                  .response_curve =
+                      {ink::EasingFunction::Predefined::kEaseInOut},
+              },
+              ink::BrushBehavior::BinaryOpNode{
+                  .operation = ink::BrushBehavior::BinaryOp::kProduct,
+              },
+              ink::BrushBehavior::TargetNode{
+                  .target = ink::BrushBehavior::Target::kOpacityMultiplier,
+                  .target_modifier_range = {1, 0.3},
+              },
+          }}};
+  }
+  NOTREACHED();
+}
 
-  // TODO(crbug.com/353942923): Use real values here.
+ink::Brush CreateInkBrush(PdfInkBrush::Type type, SkColor color, float size) {
   ink::BrushTip tip;
   tip.corner_rounding = GetCornerRounding(type);
-  tip.opacity_multiplier = GetOpacity(type);
+  tip.behaviors = GetTipBehaviors(type);
 
-  // TODO(crbug.com/353942923): Use real `uri_string` here.
-  auto family = ink::BrushFamily::Create(tip, ink::BrushPaint(),
-                                         /*uri_string=*/"");
+  ink::BrushPaint paint;
+  paint.color_functions.emplace_back(
+      ink::ColorFunction::OpacityMultiplier{.multiplier = GetOpacity(type)});
+
+  absl::StatusOr<ink::BrushFamily> family = ink::BrushFamily::Create(
+      tip, paint, ink::BrushFamily::SlidingWindowModel{});
   CHECK(family.ok());
 
   auto brush = ink::Brush::Create(*family,
@@ -122,6 +173,20 @@ PdfInkBrush::PdfInkBrush(Type brush_type, SkColor color, float size)
 
 PdfInkBrush::~PdfInkBrush() = default;
 
+std::optional<ink::Brush> PdfInkBrush::CloneToPassthroughModelWithSize(
+    float size) const {
+  ink::Brush cloned_brush = ink_brush();
+  if (!cloned_brush.SetSize(size).ok()) {
+    return std::nullopt;
+  }
+
+  absl::StatusOr<ink::BrushFamily> family = ink::BrushFamily::Create(
+      cloned_brush.GetCoats(), ink::BrushFamily::PassthroughModel{});
+  CHECK(family.ok());
+  cloned_brush.SetFamily(family.value());
+  return cloned_brush;
+}
+
 gfx::Rect PdfInkBrush::GetInvalidateArea(const gfx::PointF& center1,
                                          const gfx::PointF& center2) const {
   // For a line connecting `center1` to `center2`, the invalidate
@@ -138,7 +203,7 @@ void PdfInkBrush::SetColor(SkColor color) {
 }
 
 void PdfInkBrush::SetSize(float size) {
-  auto size_result = ink_brush_.SetSize(std::move(size));
+  auto size_result = ink_brush_.SetSize(size);
   CHECK(size_result.ok());
 }
 

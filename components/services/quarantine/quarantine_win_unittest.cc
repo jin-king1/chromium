@@ -126,9 +126,9 @@ bool AddInternetZoneIdentifierDirectly(const base::FilePath& file_path) {
                          kMotwForInternetZone);
 }
 
-void CheckQuarantineResult(QuarantineFileResult result,
-                           QuarantineFileResult expected_result) {
-  EXPECT_EQ(expected_result, result);
+void CheckQuarantineResult(QuarantineFileResult expected,
+                           QuarantineFileResult actual) {
+  EXPECT_EQ(expected, actual);
 }
 
 }  // namespace
@@ -290,7 +290,8 @@ TEST_F(QuarantineWinTest, UnsafeReferrer_DependsOnLocalConfig) {
 
 // An empty source URL should result in a file that's treated the same as one
 // downloaded from the internet.
-TEST_F(QuarantineWinTest, EmptySource_DependsOnLocalConfig) {
+// TODO(crbug.com/423622358): Re-enable this test
+TEST_F(QuarantineWinTest, DISABLED_EmptySource_DependsOnLocalConfig) {
   base::FilePath test_file = GetTempDir().AppendASCII("foo.exe");
   ASSERT_TRUE(CreateFile(test_file));
 
@@ -415,7 +416,8 @@ TEST_F(QuarantineWinTest, RestrictedSite) {
   EXPECT_FALSE(GetZoneIdentifierStreamContents(test_file, &zone_identifier));
 }
 
-TEST_F(QuarantineWinTest, TrustedSite_AlreadyQuarantined) {
+// TODO(crbug.com/454567187): Enabled after fixing
+TEST_F(QuarantineWinTest, DISABLED_TrustedSite_AlreadyQuarantined) {
   // Test file path and source URL.
   base::FilePath test_file = GetTempDir().AppendASCII("good.exe");
   GURL source_url(
@@ -481,7 +483,8 @@ TEST_F(QuarantineWinTest, MetaData_ApplyMOTW_Directly) {
   EXPECT_TRUE(IsFileQuarantined(test_file, host_url_clean, referrer_url_clean));
 }
 
-TEST_F(QuarantineWinTest, MetaData_InvokeAS) {
+// TODO(crbug.com/433487891): Re-enable this flaky test
+TEST_F(QuarantineWinTest, DISABLED_MetaData_InvokeAS) {
   base::FilePath test_file = GetTempDir().AppendASCII("foo.exe");
   ASSERT_TRUE(CreateFile(test_file));
 
@@ -503,7 +506,8 @@ TEST_F(QuarantineWinTest, MetaData_InvokeAS) {
   EXPECT_TRUE(IsFileQuarantined(test_file, host_url_clean, referrer_url_clean));
 }
 
-TEST_F(QuarantineWinTest, RequestInitiatorReplacesSourceUrl) {
+// TODO(crbug.com/423622358): Re-enable this test
+TEST_F(QuarantineWinTest, DISABLED_RequestInitiatorReplacesSourceUrl) {
   base::FilePath test_file = GetTempDir().AppendASCII("foo.exe");
   ASSERT_TRUE(CreateFile(test_file));
 

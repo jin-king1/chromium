@@ -18,7 +18,6 @@
 #include "third_party/blink/public/mojom/page_state/page_state.mojom.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/point_f.h"
-#include "url/gurl.h"
 #include "url/origin.h"
 
 namespace blink {
@@ -96,6 +95,13 @@ BLINK_COMMON_EXPORT void LegacyEncodePageStateForTesting(
     const ExplodedPageState& exploded,
     int version,
     std::string* encoded);
+
+// Recursively verifies that all FilePaths within the given PageState's frame
+// tree are correctly listed within its list of referenced files.
+BLINK_COMMON_EXPORT bool VerifyReferencedFilesInPageState(
+    const std::string& encoded);
+BLINK_COMMON_EXPORT bool VerifyReferencedFilesInPageState(
+    const ExplodedPageState& exploded);
 
 #if BUILDFLAG(IS_ANDROID)
 BLINK_COMMON_EXPORT bool DecodePageStateWithDeviceScaleFactorForTesting(

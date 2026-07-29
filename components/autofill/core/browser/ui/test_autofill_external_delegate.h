@@ -8,8 +8,9 @@
 #include <vector>
 
 #include "base/run_loop.h"
-#include "components/autofill/core/browser/ui/autofill_external_delegate.h"
 #include "components/autofill/core/browser/metrics/suggestions_list_metrics.h"
+#include "components/autofill/core/browser/suggestions/suggestion_hiding_reason.h"
+#include "components/autofill/core/browser/ui/autofill_external_delegate.h"
 
 namespace gfx {
 class Rect;
@@ -20,8 +21,7 @@ namespace autofill {
 class TestAutofillExternalDelegate : public AutofillExternalDelegate {
  public:
   explicit TestAutofillExternalDelegate(
-      BrowserAutofillManager* autofill_manager,
-      bool call_parent_methods);
+      BrowserAutofillManager* autofill_manager);
 
   TestAutofillExternalDelegate(const TestAutofillExternalDelegate&) = delete;
   TestAutofillExternalDelegate& operator=(const TestAutofillExternalDelegate&) =
@@ -30,19 +30,17 @@ class TestAutofillExternalDelegate : public AutofillExternalDelegate {
   ~TestAutofillExternalDelegate() override;
 
   // AutofillExternalDelegate overrides.
-  void OnSuggestionsShown(base::span<const Suggestion> suggestions) override;
-  void OnSuggestionsHidden() override;
+  void OnSuggestionsShown(base::span<const Suggestion> suggestions,
+                          base::optional_ref<const SuggestionMetadata>
+                              parent_suggestion_metadata) override;
+  void OnSuggestionsHidden(SuggestionHidingReason reason) override;
   void OnQuery(const FormData& form,
                const FormFieldData& field,
                const gfx::Rect& caret_bounds,
-               AutofillSuggestionTriggerSource trigger_source,
-               bool update_datalist) override;
+               AutofillSuggestionTriggerSource trigger_source) override;
   void OnSuggestionsReturned(
-      FieldGlobalId field_id,
-      const std::vector<Suggestion>& suggestions,
-      std::optional<autofill_metrics::SuggestionRankingContext>
-          suggestion_ranking_context =
-              autofill_metrics::SuggestionRankingContext()) override;
+      const FormFieldData& trigger_field,
+      const std::vector<Suggestion>& suggestions) override;
   bool HasActiveScreenReader() const override;
   void OnAutofillAvailabilityEvent(
       mojom::AutofillSuggestionAvailability suggestion_availability) override;
@@ -83,10 +81,6 @@ class TestAutofillExternalDelegate : public AutofillExternalDelegate {
   bool has_suggestions_available_on_field_focus() const;
 
  private:
-  // If true, calls AutofillExternalDelegate::OnQuery and
-  // AutofillExternalDelegate::OnSuggestionsReturned.
-  bool call_parent_methods_;
-
   // Records if OnQuery has been called yet.
   bool on_query_seen_ = false;
 
@@ -103,11 +97,6 @@ class TestAutofillExternalDelegate : public AutofillExternalDelegate {
 
   // The results returned by the most recent Autofill query.
   std::vector<Suggestion> suggestions_;
-
-  // Contains information on the ranking of suggestions using the new and old
-  // ranking algorithm. Used for metrics logging.
-  std::optional<autofill_metrics::SuggestionRankingContext>
-      suggestion_ranking_context_;
 
   // |true| if the popup is hidden, |false| if the popup is shown.
   bool popup_hidden_ = true;

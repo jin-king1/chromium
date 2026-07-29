@@ -16,8 +16,9 @@ blink::mojom::blink::PushSubscriptionOptionsPtr
 TypeConverter<blink::mojom::blink::PushSubscriptionOptionsPtr,
               blink::PushSubscriptionOptions*>::
     Convert(const blink::PushSubscriptionOptions* input) {
-  Vector<uint8_t> application_server_key;
-  application_server_key.AppendSpan(input->applicationServerKey()->ByteSpan());
+  blink::Vector<uint8_t> application_server_key;
+  application_server_key.append_range(
+      input->applicationServerKey()->ByteSpan());
   return blink::mojom::blink::PushSubscriptionOptions::New(
       input->userVisibleOnly(), std::move(application_server_key));
 }

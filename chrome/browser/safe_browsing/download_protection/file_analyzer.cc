@@ -7,15 +7,17 @@
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
+#include "base/time/time.h"
 #include "build/build_config.h"
 #include "chrome/browser/file_util_service.h"
 #include "chrome/browser/safe_browsing/download_protection/download_protection_util.h"
 #include "chrome/common/safe_browsing/archive_analyzer_results.h"
 #include "chrome/common/safe_browsing/download_type_util.h"
+#include "components/enterprise/obfuscation/core/utils.h"
 #include "components/safe_browsing/content/common/file_type_policies.h"
+#include "components/safe_browsing/content/common/proto/download_file_types.pb.h"
 #include "components/safe_browsing/core/common/features.h"
 #include "content/public/browser/browser_thread.h"
 #include "url/gurl.h"
@@ -48,8 +50,12 @@ FileAnalyzer::Results::~Results() = default;
 FileAnalyzer::Results::Results(const FileAnalyzer::Results& other) = default;
 
 FileAnalyzer::FileAnalyzer(
-    scoped_refptr<BinaryFeatureExtractor> binary_feature_extractor)
+    scoped_refptr<BinaryFeatureExtractor> binary_feature_extractor,
+    bool is_obfuscated)
     : binary_feature_extractor_(binary_feature_extractor) {
+#if !BUILDFLAG(IS_ANDROID)
+  is_obfuscated_ = is_obfuscated;
+#endif
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 }
 
@@ -126,6 +132,7 @@ void FileAnalyzer::StartExtractFileFeatures() {
 void FileAnalyzer::OnFileAnalysisFinished(FileAnalyzer::Results results) {
   LogAnalysisDurationWithAndWithoutSuffix("Executable");
   results.type = download_type_util::GetDownloadType(target_file_name_);
+  results.inspection_performed = DownloadFileType::NONE;
   std::move(callback_).Run(results);
 }
 
@@ -133,12 +140,18 @@ void FileAnalyzer::OnFileAnalysisFinished(FileAnalyzer::Results results) {
 void FileAnalyzer::StartExtractZipFeatures() {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 
+  auto callback = base::BindOnce(&FileAnalyzer::OnZipAnalysisFinished,
+                                 weakptr_factory_.GetWeakPtr());
   // We give the zip analyzer a weak pointer to this object.
-  zip_analyzer_ = SandboxedZipAnalyzer::CreateAnalyzer(
-      tmp_path_, password_,
-      base::BindOnce(&FileAnalyzer::OnZipAnalysisFinished,
-                     weakptr_factory_.GetWeakPtr()),
-      LaunchFileUtilService());
+  if (is_obfuscated_ &&
+      base::FeatureList::IsEnabled(
+          enterprise_obfuscation::kEnterpriseFileObfuscationArchiveAnalyzer)) {
+    zip_analyzer_ = SandboxedZipAnalyzer::CreateObfuscatedAnalyzer(
+        tmp_path_, password_, std::move(callback), LaunchFileUtilService());
+  } else {
+    zip_analyzer_ = SandboxedZipAnalyzer::CreateAnalyzer(
+        tmp_path_, password_, std::move(callback), LaunchFileUtilService());
+  }
   zip_analyzer_->Start();
 }
 
@@ -191,19 +204,26 @@ void FileAnalyzer::OnZipAnalysisFinished(
       archive_results.encryption_info.is_encrypted);
   results_.encryption_info = archive_results.encryption_info;
 
+  results_.inspection_performed = DownloadFileType::ZIP;
   std::move(callback_).Run(std::move(results_));
 }
 
 void FileAnalyzer::StartExtractRarFeatures() {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 
+  auto callback = base::BindOnce(&FileAnalyzer::OnRarAnalysisFinished,
+                                 weakptr_factory_.GetWeakPtr());
   // We give the rar analyzer a weak pointer to this object. Since the
   // analyzer is refcounted, it might outlive the request.
-  rar_analyzer_ = SandboxedRarAnalyzer::CreateAnalyzer(
-      tmp_path_, password_,
-      base::BindOnce(&FileAnalyzer::OnRarAnalysisFinished,
-                     weakptr_factory_.GetWeakPtr()),
-      LaunchFileUtilService());
+  if (is_obfuscated_ &&
+      base::FeatureList::IsEnabled(
+          enterprise_obfuscation::kEnterpriseFileObfuscationArchiveAnalyzer)) {
+    rar_analyzer_ = SandboxedRarAnalyzer::CreateObfuscatedAnalyzer(
+        tmp_path_, password_, std::move(callback), LaunchFileUtilService());
+  } else {
+    rar_analyzer_ = SandboxedRarAnalyzer::CreateAnalyzer(
+        tmp_path_, password_, std::move(callback), LaunchFileUtilService());
+  }
   rar_analyzer_->Start();
 }
 
@@ -249,6 +269,7 @@ void FileAnalyzer::OnRarAnalysisFinished(
       archive_results.encryption_info.is_encrypted);
   results_.encryption_info = archive_results.encryption_info;
 
+  results_.inspection_performed = DownloadFileType::RAR;
   std::move(callback_).Run(std::move(results_));
 }
 #endif  // !BUILDFLAG(IS_ANDROID)
@@ -325,6 +346,7 @@ void FileAnalyzer::OnDmgAnalysisFinished(
       archive_results.encryption_info.is_encrypted);
   results_.encryption_info = archive_results.encryption_info;
 
+  results_.inspection_performed = DownloadFileType::DMG;
   std::move(callback_).Run(std::move(results_));
 }
 #endif  // BUILDFLAG(IS_MAC)
@@ -388,6 +410,7 @@ void FileAnalyzer::OnSevenZipAnalysisFinished(
       archive_results.encryption_info.is_encrypted);
   results_.encryption_info = archive_results.encryption_info;
 
+  results_.inspection_performed = DownloadFileType::SEVEN_ZIP;
   std::move(callback_).Run(std::move(results_));
 }
 #endif  // !BUILDFLAG(IS_ANDROID)

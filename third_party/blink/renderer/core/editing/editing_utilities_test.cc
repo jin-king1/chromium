@@ -4,21 +4,28 @@
 
 #include "third_party/blink/renderer/core/editing/editing_utilities.h"
 
+#include "skia/ext/codec_utils.h"
 #include "third_party/blink/renderer/core/dom/static_node_list.h"
 #include "third_party/blink/renderer/core/dom/text.h"
 #include "third_party/blink/renderer/core/editing/position_with_affinity.h"
 #include "third_party/blink/renderer/core/editing/testing/editing_test_base.h"
 #include "third_party/blink/renderer/core/editing/visible_position.h"
 #include "third_party/blink/renderer/core/html/forms/html_input_element.h"
-#include "third_party/blink/renderer/core/layout/geometry/physical_offset.h"
 #include "third_party/blink/renderer/core/layout/hit_test_location.h"
 #include "third_party/blink/renderer/core/layout/hit_test_result.h"
 #include "third_party/blink/renderer/core/layout/layout_view.h"
 #include "third_party/blink/renderer/core/testing/core_unit_test_helper.h"
+#include "third_party/blink/renderer/platform/geometry/physical_offset.h"
 
 namespace blink {
 
-class EditingUtilitiesTest : public EditingTestBase {};
+class EditingUtilitiesTest : public EditingTestBase {
+  void SetUp() override {
+    EditingTestBase::SetUp();
+    // Skia's Fontations backend needs a PNG decoder registered.
+    skia::EnsurePNGDecoderRegistered();
+  }
+};
 
 TEST_F(EditingUtilitiesTest, ComputePositionForNodeRemovalAfterChildren) {
   SetBodyContent("<div id=a><p id=b><img id=c></p></div>");
@@ -177,7 +184,7 @@ TEST_F(EditingUtilitiesTest, isEditablePositionWithTable) {
   // element. So, we build DOM tree manually.
   // Note: This is unusual HTML taken from http://crbug.com/574230
   Element* table = GetDocument().CreateRawElement(html_names::kTableTag);
-  table->setInnerHTML("<caption>foo</caption>");
+  table->SetInnerHTMLWithoutTrustedTypes("<caption>foo</caption>");
   while (GetDocument().firstChild())
     GetDocument().firstChild()->remove();
   GetDocument().AppendChild(table);
@@ -199,8 +206,7 @@ TEST_F(EditingUtilitiesTest,
       "345</div>");
   const auto& sample = *GetElementById("sample");
   const auto& text_012 = *To<Text>(sample.firstChild());
-  const auto& input =
-      ToTextControl(*GetDocument().QuerySelector(AtomicString("input")));
+  const auto& input = ToTextControl(*QuerySelector("input"));
   const auto& inner_editor = *input.InnerEditorElement();
   const auto& text_abc = *To<Text>(inner_editor.firstChild());
 
@@ -233,8 +239,7 @@ TEST_F(EditingUtilitiesTest,
       "345</div>");
   const auto& sample = *GetElementById("sample");
   const auto& text_012 = *To<Text>(sample.firstChild());
-  const auto& input =
-      ToTextControl(*GetDocument().QuerySelector(AtomicString("input")));
+  const auto& input = ToTextControl(*QuerySelector("input"));
   const auto& inner_editor = *input.InnerEditorElement();
   const auto& text_abc = *To<Text>(inner_editor.firstChild());
 
@@ -268,8 +273,7 @@ TEST_F(EditingUtilitiesTest,
       "345</div>");
   const auto& sample = *GetElementById("sample");
   const auto& text_012 = *To<Text>(sample.firstChild());
-  const auto& input =
-      ToTextControl(*GetDocument().QuerySelector(AtomicString("input")));
+  const auto& input = ToTextControl(*QuerySelector("input"));
   const auto& inner_editor = *input.InnerEditorElement();
   const auto& text_abc = *To<Text>(inner_editor.firstChild());
 
@@ -313,6 +317,79 @@ TEST_F(EditingUtilitiesTest,
   EXPECT_EQ(
       PositionWithAffinity(Position(text_abc, 1)),
       PositionRespectingEditingBoundary(Position(text_abc, 2), hit_result));
+}
+
+// Ensures that when the hit target is not selectable and lives in an
+// out-of-flow subtree that is different from the anchor's, we return a
+// null PositionWithAffinity.
+TEST_F(EditingUtilitiesTest,
+       PositionRespectingEditingBoundaryWithNonSelectableOutOfFlow) {
+  LoadAhem();
+  InsertStyleElement("body { font: 10px/15px Ahem; margin: 0px; }");
+  SetBodyContent(
+      "<div id=sample>012<span id=anchor></span>345</div>"
+      "<div id=abs style='position:absolute;left:0;top:20;'>"
+      "<span id=target style='user-select:none;'>abc</span></div>");
+  UpdateAllLifecyclePhasesForTest();
+
+  const auto& sample = *GetElementById("sample");
+  const auto& text_012 = *To<Text>(sample.firstChild());
+  Element* target_el = GetElementById("target");
+  ASSERT_NE(nullptr, target_el);
+  Text* target_text = To<Text>(target_el->firstChild());
+  ASSERT_NE(nullptr, target_text);
+
+  const HitTestRequest hit_request(HitTestRequest::kActive);
+  const HitTestLocation hit_location(PhysicalOffset(5, 25));
+  HitTestResult hit_result(hit_request, hit_location);
+  ASSERT_TRUE(
+      GetDocument().View()->GetLayoutView()->HitTest(hit_location, hit_result));
+  ASSERT_EQ(target_text, hit_result.GetPosition().GetPosition().AnchorNode());
+
+  // The position we pass is inside the sample text (normal-flow). The
+  // hit target is inert (non-selectable) and lives inside an absolutely
+  // positioned container (out-of-flow). Since their nearest out-of-flow
+  // ancestors differ, PositionRespectingEditingBoundary should return a
+  // null PositionWithAffinity.
+  EXPECT_EQ(PositionWithAffinity(), PositionRespectingEditingBoundary(
+                                        Position(text_012, 1), hit_result));
+}
+
+// Ensures that when the hit target is not selectable but in the
+// same flow as the anchor's, we return the target position.
+TEST_F(EditingUtilitiesTest,
+       PositionRespectingEditingBoundaryWithNonSelectableInSameFlow) {
+  LoadAhem();
+  InsertStyleElement("body { font: 10px/15px Ahem; margin: 0px; }");
+  SetBodyContent(
+      "<div id=abs style='position:absolute;'>"
+      "<div><span id=target style='user-select:none;'>abc</span></div>"
+      "<div id=sample style='width:100px;height:20px;'>012<span "
+      "id=anchor></span>345</div>"
+      "</div>");
+  UpdateAllLifecyclePhasesForTest();
+
+  const auto& sample = *GetElementById("sample");
+  const auto& text_345 = *To<Text>(sample.lastChild());
+  Element* target_el = GetElementById("target");
+  ASSERT_NE(nullptr, target_el);
+  Text* target_text = To<Text>(target_el->firstChild());
+  ASSERT_NE(nullptr, target_text);
+
+  const HitTestRequest hit_request(HitTestRequest::kActive);
+  const HitTestLocation hit_location(PhysicalOffset(0, 5));
+  HitTestResult hit_result(hit_request, hit_location);
+  ASSERT_TRUE(
+      GetDocument().View()->GetLayoutView()->HitTest(hit_location, hit_result));
+  ASSERT_EQ(target_text, hit_result.GetPosition().GetPosition().AnchorNode());
+
+  // The position we pass is inside the sample text (normal-flow). The
+  // hit target is inert (non-selectable) and is not out-of-flow of anchor.
+  // Since their nearest out-of-flow ancestor is same,
+  // PositionRespectingEditingBoundary should return the target position.
+  EXPECT_EQ(
+      PositionWithAffinity(Position(target_text, 0)),
+      PositionRespectingEditingBoundary(Position(text_345, 1), hit_result));
 }
 
 TEST_F(EditingUtilitiesTest, RepeatString) {
@@ -989,10 +1066,10 @@ TEST_F(EditingUtilitiesTest, previousPositionOf_Backspace_TextTransform) {
                                PositionMoveType::kBackwardDeletion));
 }
 
-TEST_F(EditingUtilitiesTest, IsTabHTMLSpanElementOnDisplayNone) {
+TEST_F(EditingUtilitiesTest, IsTabHtmlSpanElementOnDisplayNone) {
   SetBodyContent("<span style=\"display:none\">\t</span>");
-  const Node* const node = GetDocument().QuerySelector(AtomicString("span"));
-  EXPECT_EQ(false, IsTabHTMLSpanElement(node));
+  const Node* const node = QuerySelector("span");
+  EXPECT_EQ(false, IsTabSpanElement(node));
 }
 
 TEST_F(EditingUtilitiesTest, previousPositionOf_Backspace_SurrogatePairs) {

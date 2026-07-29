@@ -5,6 +5,9 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_DATA_MODEL_TRANSLITERATOR_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_DATA_MODEL_TRANSLITERATOR_H_
 
+#include <string>
+#include <string_view>
+
 #include "components/autofill/core/browser/country_type.h"
 
 namespace autofill {
@@ -28,6 +31,11 @@ std::u16string RemoveDiacriticsAndConvertToLowerCase(
 std::u16string TransliterateAlternativeName(
     std::u16string_view value,
     bool inverse_transliteration = false);
+
+#if defined(UNIT_TEST)
+// Clears the stored transliterators, should be only used for testing puproses.
+void ClearCachedTransliterators();
+#endif
 
 }  // namespace autofill
 

@@ -59,6 +59,8 @@ enum AuthenticatorStatus {
   // credentials are found for a `get()` request.
   IMMEDIATE_NOT_FOUND,
 
+  CROSS_DEVICE_FALLBACK,
+
   UNKNOWN_ERROR,
 };
 
@@ -107,9 +109,10 @@ struct UvmEntry {
   uint16 matcher_protection_type;
 };
 
-// The output for the `supplementalPubKeys` extension.
-struct SupplementalPubKeysResponse {
-  array<array<uint8>> signatures;
+// The output for the CMTG key extension.
+struct CmtgKeyResponse {
+  array<uint8> cmtg_key;
+  array<uint8> signature;
 };
 
 // The `payment` extension response.
@@ -175,10 +178,11 @@ struct MakeCredentialAuthenticatorResponse {
   bool echo_large_blob;
   bool supports_large_blob;
 
-  SupplementalPubKeysResponse? supplemental_pub_keys;
-
   // The response for the payment extension.
   AuthenticationExtensionsPaymentResponse? payment;
+
+  // The response for the Credential Manager Trust Group key extension.
+  CmtgKeyResponse? cmtg_key;
 };
 
 struct GetAssertionAuthenticatorResponse {
@@ -214,6 +218,7 @@ struct AuthenticationExtensionsClientOutputs {
   // If so, |user_verification_methods| contains the actual value.
   [EnableIf=is_android]
   bool echo_user_verification_methods;
+
   [EnableIf=is_android]
   array<UvmEntry>? user_verification_methods;
 
@@ -243,10 +248,15 @@ struct AuthenticationExtensionsClientOutputs {
   // null if none.
   array<uint8>? get_cred_blob;
 
-  SupplementalPubKeysResponse? supplemental_pub_keys;
-
   // The response for the payment extension.
   AuthenticationExtensionsPaymentResponse? payment;
+
+  // The response for the Credential Manager Trust Group key extension.
+  CmtgKeyResponse? cmtg_key;
+
+  // The value of the `crossDeviceFallbackUrl` extension output, or null if
+  // none.
+  bool? cross_device_fallback_url;
 };
 
 // Information about the relying party. These fields take arbitrary input.
@@ -287,35 +297,6 @@ enum UserVerificationRequirement {
   DISCOURAGED,
 };
 
-// Cloud-assisted BLE extension data for getAssertion.
-struct CableAuthentication {
-  // The caBLE version requested.
-  uint8 version;
-
-  // A 16-byte ephemeral identifier that the browser will advertise.
-  // (Present iff version == 1.)
-  array<uint8, 16>? client_eid;
-
-  // A 16-byte ephemeral identifier that the browser expects to receive from a
-  // responding authenticator.
-  // (Present iff version == 1.)
-  array<uint8, 16>? authenticator_eid;
-
-  // A 32-byte pre-key used to compute a session key to encrypt messages between
-  // a paired client and authenticator following a successful discovery.
-  // (Present iff version == 1.)
-  array<uint8, 32>? session_pre_key;
-
-  // caBLEv2 server-link data, used to find and communicate with a caBLEv2
-  // device.
-  // (Present iff version == 2.)
-  array<uint8>? server_link_data;
-
-  // caBLEv2 experiment numbers.
-  // (Present iff version == 2.)
-  array<uint8>? experiments;
-};
-
 // See https://w3c.github.io/webauthn/#dictdef-authenticationextensionsprfvalues
 struct PRFValues {
   // In the Javascript-to-native direction, id is the credential ID for these
@@ -337,6 +318,7 @@ struct PaymentOptions {
   PaymentCredentialInstrument instrument;
   string? payee_name;
   url.mojom.Origin? payee_origin;
+  array<ShownPaymentEntityLogo>? payment_entities_logos;
   array<uint8>? browser_bound_public_key;
 };
 
@@ -352,21 +334,37 @@ struct PaymentCredentialInstrument {
 
   // Whether the icon is required to be shown in the UI.
   bool iconMustBeShown;
+
+  // An additional detail string for displaying this instrument to the user.
+  // For example, "**** 1234 | 01/29" (for a credit card instrument). The
+  // browser validates this to be valid UTF8 and at most 4K characters.
+  string? details;
 };
 
+// TODO(https://crbug.com/40193778): Convert to a non-mojo struct when
+// PaymentOptions is converted to a non-mojo struct.
+struct ShownPaymentEntityLogo {
+  url.mojom.Url url;
+  string label;
+};
+
+// RemoteDesktopClientOverride allows an allowlisted origin to perform WebAuthn
+// operations on behalf of another origin. This enables remote desktop clients
+// to proxy WebAuthn requests from a remote machine.
+//
+// SECURITY: This field comes from the renderer process and MUST NOT be trusted
+// without validation. The browser process will only honor this override if the
+// "caller origin" is explicitly allowlisted via an enterprise policy.
+//
 // https://github.com/w3c/webauthn/wiki/Explainer:-WebAuthn-Remote-Desktop-Support
 struct RemoteDesktopClientOverride {
   url.mojom.Origin origin;
   bool same_origin_with_ancestors;
 };
 
-struct SupplementalPubKeysRequest {
-  bool device_scope_requested;
-  bool provider_scope_requested;
-  AttestationConveyancePreference attestation;
-  array<string> attestation_formats;
-};
-
+// TODO(https://crbug.com/459517287): With `IMMEDIATE` reflecting `uiMode`,
+// this no longer maps to the `mediation` field of `CredentialRequestOptions`,
+// and should be renamed to avoid confusion.
 enum Mediation {
   MODAL,
   // Indicates that this request should prioritize showing a UI only if
@@ -377,24 +375,16 @@ enum Mediation {
   // no discoverable credentials available. Otherwise it should handle the
   // request like a `MODAL` request.
   IMMEDIATE,
+  // Indicates that this is a non-modal 'ambient' request, which is similar to
+  // CONDITIONAL but does not use autofill UI.
+  AMBIENT,
 };
 
 // Parameters passed into calls to GetAssertion.
 struct PublicKeyCredentialRequestOptions {
-  Mediation mediation = Mediation.MODAL;
-
-  // Aflag word corresponding to the flags in credential_type_flags.mojom,
-  // representing the types of credentials that were indicated in the request.
-  int32 requested_credential_type_flags;
-
   // An indefinite-length blob passed from the relying party server,
   // to be sent to an authenticator for signing.
-  // This value is exclusive with `challenge_url`.
-  array<uint8>? challenge;
-
-  // A URL from which the challenge can be fetched.
-  // This value is exclusive with `challenge`.
-  url.mojom.Url? challenge_url;
+  array<uint8> challenge;
 
   // Time to wait for an authenticator to complete an operation provided by the
   // relying party.
@@ -422,14 +412,6 @@ struct AuthenticationExtensionsClientInputs {
   // The contents of the appid extension, if any. See
   // https://w3c.github.io/webauthn/#sctn-appid-extension
   string? appid;
-
-  // The contents of the cloud assisted BLE extension for getAssertion
-  // requests, if any. This extension permits browsers and authenticator
-  // devices to establish a pairingless BLE connection.
-  // TODO(crbug.com/842371): Add link to spec when available.
-  // There may be multiple sets if multiple caBLE credentials have been
-  // registered with the relying party.
-  array<CableAuthentication> cable_authentication_data;
 
   // Only supported by fido2 devices on android, will eventually supported by
   // other platform.
@@ -463,13 +445,30 @@ struct AuthenticationExtensionsClientInputs {
   // behalf of another origin.
   RemoteDesktopClientOverride? remote_desktop_client_override;
 
-  // If present, reflects the contents of the "supplementalPubKeys" extension.
-  // https://github.com/w3c/webauthn/pull/1663
-  SupplementalPubKeysRequest? supplemental_pub_keys;
-
   // Parameters defining the type of browser bound keys that the relying party
   // would accept.
   array<PublicKeyCredentialParameters>? payment_browser_bound_key_parameters;
+
+  // `cmtg_key` is true if the request contained a Credential Manager Trust
+  // Group key extension.
+  // https://github.com/w3c/webauthn/pull/2377
+  bool cmtg_key = false;
+
+  // The cross-device fallback URL extension, if present.
+  // https://github.com/w3c/webauthn/pull/2380
+  url.mojom.Url? cross_device_fallback_url;
+};
+
+struct GetCredentialOptions {
+  Mediation mediation;
+
+  // Null for password-only requests. If present, the
+  // response can be a public-key credential assertion.
+  PublicKeyCredentialRequestOptions? public_key;
+
+  // false for public-key only requests. If true, the response can be a password
+  // credential.
+  bool password = false;
 };
 
 // https://w3c.github.io/webauthn/#enum-residentKeyRequirement
@@ -594,10 +593,6 @@ struct PublicKeyCredentialCreationOptions {
   // behalf of another origin.
   RemoteDesktopClientOverride? remote_desktop_client_override;
 
-  // If present, reflects the contents of the "supplementalPubKeys" extension.
-  // https://github.com/w3c/webauthn/pull/1663
-  SupplementalPubKeysRequest? supplemental_pub_keys;
-
   // Parameters defining the type of browser bound keys that the relying party
   // would accept.
   array<PublicKeyCredentialParameters>? payment_browser_bound_key_parameters;
@@ -606,6 +601,11 @@ struct PublicKeyCredentialCreationOptions {
   array<string> attestation_formats;
 
   bool is_conditional = false;
+
+  // `cmtg_key` is true if the request contained a Credential Manager Trust
+  // Group key extension.
+  // https://github.com/w3c/webauthn/pull/2377
+  bool cmtg_key = false;
 };
 
 // See https://w3c.github.io/webauthn/#enumdef-attestationconveyancepreference
@@ -698,11 +698,10 @@ interface Authenticator {
           WebAuthnDOMExceptionDetails? dom_exception_details);
 
   // Uses an existing credential to produce a response for the given
-  // `PublicKeyCredentialRequestOptions`. If the
-  // `requested_credential_type_flags` has the password bit set, the response
+  // `GetCredentialOptions`. If the `password` field is true, the response
   // can be a `CredentialInfo` or `GetAssertionResponse`. Otherwise it will be
   // always `GetAssertionResponse`.
-  GetCredential(PublicKeyCredentialRequestOptions options)
+  GetCredential(GetCredentialOptions options)
       => (GetCredentialResponse response);
 
   // Returns true if the user platform provides an authenticator. Relying

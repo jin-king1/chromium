@@ -11,7 +11,9 @@
 #include "third_party/blink/renderer/core/accessibility/ax_context.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
 #include "third_party/blink/renderer/core/html/html_element.h"
+#include "third_party/blink/renderer/core/loader/empty_clients.h"
 #include "third_party/blink/renderer/core/testing/dummy_page_holder.h"
+#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 #include "third_party/blink/renderer/platform/testing/task_environment.h"
 #include "third_party/inspector_protocol/crdtp/json.h"
 #include "third_party/inspector_protocol/crdtp/span.h"
@@ -36,6 +38,28 @@ void AssertValueEqualsJSON(const std::unique_ptr<protocol::Value>& actual_value,
   EXPECT_THAT(parsed_json_actual, Eq(ByRef(parsed_json_expected)));
 }
 
+std::string SerializeToJson(const protocol::Serializable& value) {
+  std::string json;
+  auto status_to_json =
+      crdtp::json::ConvertCBORToJSON(crdtp::SpanFrom(value.Serialize()), &json);
+  EXPECT_TRUE(status_to_json.ok());
+  return json;
+}
+
+class ScaledChromeClient final : public EmptyChromeClient {
+ public:
+  explicit ScaledChromeClient(float window_to_viewport_scale)
+      : window_to_viewport_scale_(window_to_viewport_scale) {}
+
+  float WindowToViewportScalar(LocalFrame*,
+                               const float scalar_value) const override {
+    return scalar_value * window_to_viewport_scale_;
+  }
+
+ private:
+  const float window_to_viewport_scale_;
+};
+
 }  // namespace
 
 class InspectorHighlightTest : public testing::Test {
@@ -55,7 +79,7 @@ void InspectorHighlightTest::SetUp() {
 }
 
 TEST_F(InspectorHighlightTest, BuildSnapContainerInfoNoSnapAreas) {
-  GetDocument().body()->setInnerHTML(R"HTML(
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <div id="target">test</div>
   )HTML");
   GetDocument().View()->UpdateAllLifecyclePhasesForTest();
@@ -64,7 +88,7 @@ TEST_F(InspectorHighlightTest, BuildSnapContainerInfoNoSnapAreas) {
 }
 
 TEST_F(InspectorHighlightTest, BuildSnapContainerInfoSnapAreas) {
-  GetDocument().body()->setInnerHTML(R"HTML(
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <style>
       #snap {
         background-color: white;
@@ -115,7 +139,7 @@ TEST_F(InspectorHighlightTest, BuildSnapContainerInfoSnapAreas) {
 }
 
 TEST_F(InspectorHighlightTest, BuildSnapContainerInfoTopLevelSnapAreas) {
-  GetDocument().body()->setInnerHTML(R"HTML(
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <style>
       :root {
         scroll-snap-type: y mandatory;
@@ -159,7 +183,7 @@ TEST_F(InspectorHighlightTest, BuildSnapContainerInfoTopLevelSnapAreas) {
 
 TEST_F(InspectorHighlightTest,
        BuildContainerQueryContainerInfoWithoutDescendants) {
-  GetDocument().body()->setInnerHTML(R"HTML(
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <style>
       #container {
         width: 400px;
@@ -189,7 +213,7 @@ TEST_F(InspectorHighlightTest,
 
 TEST_F(InspectorHighlightTest,
        BuildContainerQueryContainerInfoWithDescendants) {
-  GetDocument().body()->setInnerHTML(R"HTML(
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <style>
       #container {
         width: 400px;
@@ -238,7 +262,7 @@ TEST_F(InspectorHighlightTest,
 }
 
 TEST_F(InspectorHighlightTest, BuildIsolatedElementInfo) {
-  GetDocument().body()->setInnerHTML(R"HTML(
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <style>
       #element {
         width: 400px;
@@ -292,7 +316,7 @@ static std::string GetBackgroundColorFromElementInfo(Element* element) {
   auto status_to_json = crdtp::json::ConvertCBORToJSON(
       crdtp::SpanFrom(actual_value->Serialize()), &json_actual);
   EXPECT_TRUE(status_to_json.ok());
-  base::Value::Dict parsed_json_actual = ParseJson(json_actual).TakeDict();
+  base::DictValue parsed_json_actual = ParseJson(json_actual).TakeDict();
   auto* style = parsed_json_actual.FindDict("style");
   EXPECT_TRUE(style);
   auto* background_color = style->FindString("background-color-css-text");
@@ -304,7 +328,7 @@ static std::string GetBackgroundColorFromElementInfo(Element* element) {
 }
 
 TEST_F(InspectorHighlightTest, BuildElementInfo_Colors) {
-  GetDocument().body()->setInnerHTML(R"HTML(
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <style>
       div {
         width: 400px;
@@ -354,7 +378,7 @@ TEST_F(InspectorHighlightTest, BuildElementInfo_Colors) {
 }
 
 TEST_F(InspectorHighlightTest, GridLineNames) {
-  GetDocument().body()->setInnerHTML(R"HTML(
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <style>
     #grid {
       display: grid;
@@ -396,7 +420,7 @@ TEST_F(InspectorHighlightTest, GridLineNames) {
       protocol::DictionaryValue* current_value =
           static_cast<protocol::DictionaryValue*>(row_or_column_list->at(i));
 
-      WTF::String string_value;
+      String string_value;
       EXPECT_TRUE(current_value->getString("name", &string_value));
       ret.push_back(string_value);
     }
@@ -410,7 +434,7 @@ TEST_F(InspectorHighlightTest, GridLineNames) {
 }
 
 TEST_F(InspectorHighlightTest, GridAreaNames) {
-  GetDocument().body()->setInnerHTML(R"HTML(
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <style>
     #grid {
       display: grid;
@@ -450,8 +474,8 @@ TEST_F(InspectorHighlightTest, GridAreaNames) {
   GetDocument().View()->UpdateAllLifecyclePhasesForTest();
 
   auto CompareAreaNames = [](protocol::DictionaryValue* area_names,
-                             WTF::Vector<WTF::String>& expected_names) -> void {
-    for (WTF::String& name : expected_names) {
+                             Vector<String>& expected_names) -> void {
+    for (String& name : expected_names) {
       EXPECT_TRUE(area_names->get(name));
     }
   };
@@ -465,7 +489,7 @@ TEST_F(InspectorHighlightTest, GridAreaNames) {
       grid_info->getObject("areaNames");
   EXPECT_EQ(grid_area_names->size(), 3u);
 
-  WTF::Vector<WTF::String> expected_grid_area_names = {"a", "b", "c"};
+  Vector<String> expected_grid_area_names = {"a", "b", "c"};
   CompareAreaNames(grid_area_names, expected_grid_area_names);
 
   Node* subgrid = GetDocument().getElementById(AtomicString("subgrid"));
@@ -478,9 +502,257 @@ TEST_F(InspectorHighlightTest, GridAreaNames) {
       subgrid_info->getObject("areaNames");
   EXPECT_EQ(subgrid_area_names->size(), 6u);
 
-  WTF::Vector<WTF::String> expected_subgrid_area_names = {"a", "b", "c",
-                                                          "d", "e", "f"};
+  Vector<String> expected_subgrid_area_names = {"a", "b", "c", "d", "e", "f"};
   CompareAreaNames(subgrid_area_names, expected_subgrid_area_names);
+}
+
+TEST_F(InspectorHighlightTest, FieldsetGrid) {
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <style>
+    #grid {
+      display: grid;
+      width: 200px;
+      height: 200px;
+      grid-template-columns: 1fr 1fr;
+      grid-template-rows: 1fr 1fr;
+    }
+    </style>
+    <fieldset id="grid">
+      <legend>legend</legend>
+      <div></div>
+      <div></div>
+      <div></div>
+      <div></div>
+    </fieldset>
+  )HTML");
+  GetDocument().View()->UpdateAllLifecyclePhasesForTest();
+  Node* grid = GetDocument().getElementById(AtomicString("grid"));
+  EXPECT_TRUE(grid);
+  auto info =
+      InspectorGridHighlight(grid, InspectorHighlight::DefaultGridConfig());
+  EXPECT_TRUE(info);
+  EXPECT_TRUE(info->get("gridBorder"));
+  EXPECT_EQ(2u, info->getArray("rowTrackSizes")->size());
+  EXPECT_EQ(2u, info->getArray("columnTrackSizes")->size());
+}
+
+TEST_F(InspectorHighlightTest, GridTrackSizesIgnoreDeviceScaleFactor) {
+  auto* chrome_client = MakeGarbageCollected<ScaledChromeClient>(2.f);
+  auto page_holder =
+      std::make_unique<DummyPageHolder>(gfx::Size(800, 600), chrome_client);
+  Document& document = page_holder->GetDocument();
+
+  document.body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <style>
+    #grid {
+      display: grid;
+      width: 200px;
+      height: 200px;
+      grid-template-columns: 100px 100px;
+      grid-template-rows: 100px 100px;
+    }
+    </style>
+    <div id="grid">
+      <div></div>
+      <div></div>
+      <div></div>
+      <div></div>
+    </div>
+  )HTML");
+  document.View()->UpdateAllLifecyclePhasesForTest();
+  Node* grid = document.getElementById(AtomicString("grid"));
+  EXPECT_TRUE(grid);
+  auto info =
+      InspectorGridHighlight(grid, InspectorHighlight::DefaultGridConfig());
+  EXPECT_TRUE(info);
+
+  auto ExpectComputedSizes = [](protocol::ListValue* track_sizes,
+                                double expected_size) {
+    ASSERT_TRUE(track_sizes);
+    for (wtf_size_t i = 0; i < track_sizes->size(); ++i) {
+      protocol::DictionaryValue* track_size =
+          static_cast<protocol::DictionaryValue*>(track_sizes->at(i));
+      double computed_size = 0;
+      EXPECT_TRUE(track_size->getDouble("computedSize", &computed_size));
+      EXPECT_DOUBLE_EQ(expected_size, computed_size);
+    }
+  };
+
+  ExpectComputedSizes(info->getArray("rowTrackSizes"), 100);
+  ExpectComputedSizes(info->getArray("columnTrackSizes"), 100);
+}
+
+TEST_F(InspectorHighlightTest, FieldsetFlex) {
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <style>
+    #flex {
+      display: flex;
+      width: 200px;
+      height: 200px;
+    }
+    </style>
+    <fieldset id="flex">
+      <legend>legend</legend>
+      <div></div>
+      <div></div>
+    </fieldset>
+  )HTML");
+  GetDocument().View()->UpdateAllLifecyclePhasesForTest();
+  Element* flex = GetDocument().getElementById(AtomicString("flex"));
+  EXPECT_TRUE(flex);
+  auto info = InspectorFlexContainerHighlight(
+      flex, InspectorHighlight::DefaultFlexContainerConfig());
+  EXPECT_TRUE(info);
+  EXPECT_TRUE(info->get("containerBorder"));
+  EXPECT_EQ(1u, info->getArray("lines")->size());
+}
+
+TEST_F(InspectorHighlightTest, OffsetPathHighlight) {
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+      }
+      div {
+        width: 50px;
+        height: 50px;
+        offset-rotate: 0deg;
+        offset-path: circle(100px at 150px 150px);
+        offset-distance: 0;
+        position: relative;
+        left: 50px;
+        box-sizing: border-box;
+      }
+    </style>
+    <div>test</div>
+  )HTML");
+  GetDocument().View()->UpdateAllLifecyclePhasesForTest();
+  Element* element = GetDocument().QuerySelector(AtomicString("div"));
+  EXPECT_TRUE(element);
+
+  std::unique_ptr<protocol::DOM::BoxModel> model;
+  EXPECT_TRUE(InspectorHighlight::GetBoxModel(element, &model, false));
+
+  const auto& content_quad = *model->getContent();
+  EXPECT_NEAR(225, content_quad[0], 0.1);
+  EXPECT_NEAR(125, content_quad[1], 0.1);
+  EXPECT_NEAR(275, content_quad[2], 0.1);
+  EXPECT_NEAR(125, content_quad[3], 0.1);
+  EXPECT_NEAR(275, content_quad[4], 0.1);
+  EXPECT_NEAR(175, content_quad[5], 0.1);
+  EXPECT_NEAR(225, content_quad[6], 0.1);
+  EXPECT_NEAR(175, content_quad[7], 0.1);
+}
+
+TEST_F(InspectorHighlightTest, ShapeOutsidePathHighlightUsesPath) {
+  ScopedCSSShapeOutsidePathAndShapeSupportForTest enable_path_and_shape(true);
+
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <style>
+      body {
+        margin: 0;
+      }
+      #target {
+        float: left;
+        width: 100px;
+        height: 100px;
+        shape-outside: path("M 0 0 C 20 40 80 40 100 0 L 100 100 L 0 100 Z");
+      }
+    </style>
+    <div id="target"></div>
+    <p>text</p>
+  )HTML");
+  GetDocument().View()->UpdateAllLifecyclePhasesForTest();
+  Element* target = GetDocument().getElementById(AtomicString("target"));
+  EXPECT_TRUE(target);
+
+  std::unique_ptr<protocol::DOM::BoxModel> model;
+  ASSERT_TRUE(InspectorHighlight::GetBoxModel(target, &model, false));
+
+  const std::string json = SerializeToJson(*model);
+  EXPECT_THAT(json, testing::HasSubstr("\"shapeOutside\""));
+  EXPECT_THAT(json, testing::HasSubstr("\"C\""));
+  EXPECT_THAT(
+      json, testing::HasSubstr("\"shape\":[\"M\",0,0,\"C\",20,40,80,40,100,0"));
+}
+
+TEST_F(InspectorHighlightTest, ShapeOutsidePathHighlightIsNotMirroredInRtl) {
+  ScopedCSSShapeOutsidePathAndShapeSupportForTest enable_path_and_shape(true);
+
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <style>
+      body {
+        margin: 0;
+      }
+      #container {
+        direction: rtl;
+        width: 300px;
+      }
+      #target {
+        float: right;
+        width: 100px;
+        height: 100px;
+        shape-outside: path("M 0 0 L 100 0 L 100 100 Z");
+      }
+    </style>
+    <div id="container">
+      <div id="target"></div>
+      <p>text</p>
+    </div>
+  )HTML");
+  GetDocument().View()->UpdateAllLifecyclePhasesForTest();
+  Element* target = GetDocument().getElementById(AtomicString("target"));
+  EXPECT_TRUE(target);
+
+  InspectorHighlightConfig config = InspectorHighlight::DefaultConfig();
+  InspectorHighlightContrastInfo contrast_info;
+  InspectorHighlight highlight(target, config, contrast_info,
+                               /*append_element_info=*/false,
+                               /*append_distance_info=*/false,
+                               NodeContentVisibilityState::kNone);
+
+  const std::string json = SerializeToJson(*highlight.AsProtocolValue());
+  EXPECT_THAT(json, testing::HasSubstr(
+                        "\"path\":[\"M\",200,0,\"L\",300,0,\"L\",300,100"));
+}
+
+TEST_F(InspectorHighlightTest, ShapeOutsideHighlightScalesAfterTranslation) {
+  ScopedCSSShapeOutsidePathAndShapeSupportForTest enable_path_and_shape(true);
+
+  auto* chrome_client = MakeGarbageCollected<ScaledChromeClient>(2.f);
+  auto page_holder =
+      std::make_unique<DummyPageHolder>(gfx::Size(800, 600), chrome_client);
+  Document& document = page_holder->GetDocument();
+
+  document.body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <style>
+      body {
+        margin: 10px;
+      }
+      #target {
+        float: left;
+        width: 100px;
+        height: 100px;
+        shape-outside: path("M 0 0 L 100 0 L 100 100 Z");
+      }
+    </style>
+    <div id="target"></div>
+    <p>text</p>
+  )HTML");
+  document.View()->UpdateAllLifecyclePhasesForTest();
+  Element* target = document.getElementById(AtomicString("target"));
+  EXPECT_TRUE(target);
+
+  InspectorHighlightConfig config = InspectorHighlight::DefaultConfig();
+  InspectorHighlightContrastInfo contrast_info;
+  InspectorHighlight highlight(target, config, contrast_info,
+                               /*append_element_info=*/false,
+                               /*append_distance_info=*/false,
+                               NodeContentVisibilityState::kNone);
+
+  const std::string json = SerializeToJson(*highlight.AsProtocolValue());
+  EXPECT_THAT(json, testing::HasSubstr("\"path\":[\"M\",5,5"));
 }
 
 }  // namespace blink

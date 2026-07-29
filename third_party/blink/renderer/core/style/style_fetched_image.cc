@@ -28,8 +28,8 @@
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
 #include "third_party/blink/renderer/core/loader/resource/image_resource_content.h"
-#include "third_party/blink/renderer/core/paint/timing/image_element_timing.h"
 #include "third_party/blink/renderer/core/paint/timing/paint_timing.h"
+#include "third_party/blink/renderer/core/paint/timing/paint_timing_detector.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
 #include "third_party/blink/renderer/core/svg/graphics/svg_image_for_container.h"
 #include "third_party/blink/renderer/platform/graphics/bitmap_image.h"
@@ -37,19 +37,15 @@
 namespace blink {
 
 StyleFetchedImage::StyleFetchedImage(ImageResourceContent* image,
-                                     const Document& document,
-                                     bool is_lazyload_possibly_deferred,
-                                     bool origin_clean,
-                                     bool is_ad_related,
+                                     const CSSUrlData& url_data,
+                                     Document& document,
                                      const KURL& url,
                                      const float override_image_resolution)
-    : document_(document),
+    : url_data_(url_data),
+      document_(document),
       url_(url),
-      override_image_resolution_(override_image_resolution),
-      origin_clean_(origin_clean),
-      is_ad_related_(is_ad_related) {
+      override_image_resolution_(override_image_resolution) {
   is_image_resource_ = true;
-  is_lazyload_possibly_deferred_ = is_lazyload_possibly_deferred;
 
   image_ = image;
   image_->AddObserver(this);
@@ -71,10 +67,8 @@ bool StyleFetchedImage::IsEqual(const StyleImage& other) const {
   if (!other.IsImageResource()) {
     return false;
   }
-
   const auto& other_image = To<StyleFetchedImage>(other);
-
-  return image_ == other_image.image_ && url_ == other_image.url_ &&
+  return image_ == other_image.image_ && *url_data_ == *other_image.url_data_ &&
          EqualResolutions(override_image_resolution_,
                           other_image.override_image_resolution_);
 }
@@ -101,10 +95,7 @@ ImageResourceContent* StyleFetchedImage::CachedImage() const {
 
 CSSValue* StyleFetchedImage::CssValue() const {
   return MakeGarbageCollected<CSSImageValue>(
-      CSSUrlData(AtomicString(url_.GetString()), url_, Referrer(),
-                 origin_clean_ ? OriginClean::kTrue : OriginClean::kFalse,
-                 is_ad_related_),
-      const_cast<StyleFetchedImage*>(this));
+      *url_data_->MakeComputed(), const_cast<StyleFetchedImage*>(this));
 }
 
 CSSValue* StyleFetchedImage::ComputedCSSValue(const ComputedStyle&,
@@ -129,13 +120,12 @@ bool StyleFetchedImage::ErrorOccurred() const {
   return image_->ErrorOccurred();
 }
 
-bool StyleFetchedImage::IsAccessAllowed(String& failing_url) const {
-  DCHECK(image_->IsLoaded());
-  if (image_->IsAccessAllowed()) {
-    return true;
+bool StyleFetchedImage::IsCorsSameOrigin() const {
+  if (!image_->IsLoaded() && image_->GetImage() &&
+      image_->GetImage()->IsSVGImage()) {
+    return false;
   }
-  failing_url = image_->Url().ElidedString();
-  return false;
+  return image_->IsCorsSameOrigin();
 }
 
 float StyleFetchedImage::ApplyImageResolution(float multiplier) const {
@@ -224,14 +214,14 @@ void StyleFetchedImage::ImageNotifyFinished(ImageResourceContent*) {
       // Check that the SVGImage has completed loading (i.e the 'load' event
       // has been dispatched in the SVG document).
       svg_image->CheckLoaded();
-      svg_image->UpdateUseCounters(*document_);
+      svg_image->UpdateUseCountersAfterLoad(*document_);
       svg_image->MaybeRecordSvgImageProcessingTime(*document_);
     }
     image_->RecordDecodedImageType(document_->GetExecutionContext());
   }
 
-  if (LocalDOMWindow* window = document_->domWindow()) {
-    ImageElementTiming::From(*window).NotifyBackgroundImageFinished(this);
+  if (document_->domWindow()) {
+    PaintTimingDetector::From(*document_).NotifyBackgroundImageFinished(this);
   }
 
   // Oilpan: do not prolong the Document's lifetime.
@@ -240,7 +230,7 @@ void StyleFetchedImage::ImageNotifyFinished(ImageResourceContent*) {
 
 scoped_refptr<Image> StyleFetchedImage::GetImage(
     const ImageResourceObserver&,
-    const Document& document,
+    const Node& node,
     const ComputedStyle& style,
     const gfx::SizeF& target_size) const {
   Image* image = image_->GetImage();
@@ -252,34 +242,13 @@ scoped_refptr<Image> StyleFetchedImage::GetImage(
       SVGImageForContainer::CreateViewInfo(*svg_image, url_);
   return SVGImageForContainer::Create(
       *svg_image, target_size, style.EffectiveZoom(), view_info,
-      document.GetStyleEngine().ResolveColorSchemeForEmbedding(&style));
+      node.GetDocument().GetStyleEngine().ResolveColorSchemeForEmbedding(
+          &style));
 }
 
 bool StyleFetchedImage::KnownToBeOpaque(const Document&,
                                         const ComputedStyle&) const {
-  return image_->GetImage()->CurrentFrameKnownToBeOpaque();
-}
-
-void StyleFetchedImage::LoadDeferredImage(const Document& document) {
-  DCHECK(is_lazyload_possibly_deferred_);
-  is_lazyload_possibly_deferred_ = false;
-  document_ = &document;
-  image_->LoadDeferredImage(document_->Fetcher());
-}
-
-RespectImageOrientationEnum StyleFetchedImage::ForceOrientationIfNecessary(
-    RespectImageOrientationEnum default_orientation) const {
-  // SVG Images don't have orientation and assert on loading when
-  // IsAccessAllowed is called.
-  if (image_->GetImage()->IsSVGImage()) {
-    return default_orientation;
-  }
-  // Cross-origin images must always respect orientation to prevent
-  // potentially private data leakage.
-  if (!image_->IsAccessAllowed()) {
-    return kRespectImageOrientation;
-  }
-  return default_orientation;
+  return image_->GetImage()->IsOpaque();
 }
 
 bool StyleFetchedImage::GetImageAnimationPolicy(
@@ -297,6 +266,7 @@ bool StyleFetchedImage::CanBeSpeculativelyDecoded() const {
 
 void StyleFetchedImage::Trace(Visitor* visitor) const {
   visitor->Trace(image_);
+  visitor->Trace(url_data_);
   visitor->Trace(document_);
   StyleImage::Trace(visitor);
   ImageResourceObserver::Trace(visitor);

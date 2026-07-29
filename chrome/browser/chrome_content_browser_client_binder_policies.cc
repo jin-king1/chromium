@@ -6,14 +6,12 @@
 
 #include "chrome/browser/ui/webui/bluetooth_internals/bluetooth_internals.mojom.h"
 #include "components/autofill/content/common/mojom/autofill_driver.mojom.h"
-#include "components/fingerprinting_protection_filter/common/fingerprinting_protection_filter_features.h"
-#include "components/fingerprinting_protection_filter/mojom/fingerprinting_protection_filter.mojom.h"
 #include "components/page_load_metrics/common/page_load_metrics.mojom.h"
 #include "components/subresource_filter/content/mojom/subresource_filter.mojom.h"
 #include "extensions/buildflags/buildflags.h"
 #include "third_party/blink/public/common/features.h"
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 #include "extensions/common/mojom/event_router.mojom.h"
 #include "extensions/common/mojom/frame.mojom.h"
 #include "extensions/common/mojom/renderer_host.mojom.h"
@@ -40,13 +38,7 @@ void RegisterPoliciesForChannelAssociatedInterfaces(
   policy_map
       .SetAssociatedPolicy<subresource_filter::mojom::SubresourceFilterHost>(
           content::MojoBinderAssociatedPolicy::kGrant);
-  if (fingerprinting_protection_filter::features::
-          IsFingerprintingProtectionFeatureEnabled()) {
-    policy_map.SetAssociatedPolicy<
-        fingerprinting_protection_filter::mojom::FingerprintingProtectionHost>(
-        content::MojoBinderAssociatedPolicy::kGrant);
-  }
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   // LocalFrameHost supports content scripts related APIs, which are
   // RequestScriptInjectionPermission, GetInstallState, SendRequestIPC, and
   // notifying CSS selector updates. These APIs are used by Chrome Extensions
@@ -70,12 +62,6 @@ void RegisterPoliciesForChannelAssociatedInterfaces(
 }  // namespace
 
 void RegisterChromeMojoBinderPoliciesForSameOriginPrerendering(
-    content::MojoBinderPolicyMap& policy_map) {
-  RegisterPoliciesForNonAssociatedInterfaces(policy_map);
-  RegisterPoliciesForChannelAssociatedInterfaces(policy_map);
-}
-
-void RegisterChromeMojoBinderPoliciesForPreview(
     content::MojoBinderPolicyMap& policy_map) {
   RegisterPoliciesForNonAssociatedInterfaces(policy_map);
   RegisterPoliciesForChannelAssociatedInterfaces(policy_map);

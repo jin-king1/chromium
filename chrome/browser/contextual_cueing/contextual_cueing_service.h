@@ -1,99 +1,120 @@
-// Copyright 2025 The Chromium Authors
+// Copyright 2026 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
 #ifndef CHROME_BROWSER_CONTEXTUAL_CUEING_CONTEXTUAL_CUEING_SERVICE_H_
 #define CHROME_BROWSER_CONTEXTUAL_CUEING_CONTEXTUAL_CUEING_SERVICE_H_
 
-#include <vector>
+#include <optional>
+#include <string>
 
+#include "base/containers/circular_deque.h"
 #include "base/containers/lru_cache.h"
-#include "base/containers/queue.h"
-#include "base/memory/weak_ptr.h"
+#include "base/memory/raw_ptr.h"
+#include "base/sequence_checker.h"
 #include "base/time/time.h"
-#include "chrome/browser/contextual_cueing/contextual_cueing_enums.h"
+#include "build/build_config.h"
+#include "chrome/browser/contextual_cueing/cue_target.h"
 #include "chrome/browser/contextual_cueing/nudge_cap_tracker.h"
-#include "chrome/browser/page_content_annotations/page_content_extraction_service.h"
 #include "components/keyed_service/core/keyed_service.h"
-#include "services/metrics/public/cpp/ukm_source_id.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
+#include "url/gurl.h"
 #include "url/origin.h"
 
-class GURL;
+#if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/contextual_cueing/internals/contextual_cueing_internals.mojom.h"
+#endif
 
-namespace tabs {
-enum class GlicNudgeActivity;
-}  // namespace tabs
+class PrefService;
 
 namespace contextual_cueing {
 
-class ContextualCueingService
-    : public KeyedService,
-      page_content_annotations::PageContentExtractionService::Observer {
+enum class ContextualCueingDecision;
+
+class ContextualCueingService : public KeyedService {
  public:
-  explicit ContextualCueingService(
-      page_content_annotations::PageContentExtractionService*
-          page_content_extraction_service);
+  static constexpr size_t kMaxShownCues = 20;
+
+  explicit ContextualCueingService(PrefService* pref_service);
   ~ContextualCueingService() override;
 
-  // Reports a page load happened to `url`, and is used to keep track of quiet
+  // Reports a page load occurred. This is used to keep track of quiet
   // page loads requirement after a cueing UI is shown.
   void ReportPageLoad();
 
-  // Called when cueing nudge activity happens.
-  void OnNudgeActivity(const GURL& url,
-                       ukm::SourceId source_id,
-                       base::TimeTicks document_available_time,
-                       tabs::GlicNudgeActivity activity);
+  // Called when the user clicks the cue action button.
+  void OnCueClicked(CueTargetType type);
 
-  // Should be called when the cueing UI is shown for the tab with `url`.
-  void CueingNudgeShown(const GURL& url);
+  // Called when the user dismisses the cue.
+  void OnCueDismissed(CueTargetType type);
 
-  // Should be called when the cueing UI is dismissed by the user.
-  void CueingNudgeDismissed();
+  // Called when the cue is shown to the user.
+  void OnCueShown(const GURL& url, CueTargetType type);
 
-  // Should be called when the nudge is clicked on by the user.
-  void CueingNudgeClicked();
+  // Returns true if a nudge can be shown.
+  ContextualCueingDecision CanShowCue(const GURL& url) const;
 
-  // Returns if a nudge should be shown and is not blocked by feature
-  // engagement constraints for navigation to `url`, and if not, why.
-  NudgeDecision CanShowNudge(const GURL& url);
+  // Returns the UCB score for the given target, incorporating per-target
+  // interaction stats and UCB hyperparameters from Finch.
+  double GetUcbScore(CueTargetType type) const;
 
-  base::WeakPtr<ContextualCueingService> GetWeakPtr() {
-    return weak_ptr_factory_.GetWeakPtr();
+  // Returns the per-target interaction stats for the given target.
+  const TargetStats& GetStatsForTarget(CueTargetType type) const;
+
+  // Returns the total number of impressions across all targets.
+  int GetTotalImpressions() const;
+
+#if !BUILDFLAG(IS_ANDROID)
+  using CueLogPtr = contextual_cueing_internals::mojom::CueLogPtr;
+
+  // Logs metadata for a cue shown to the user for WebUI debugging.
+  void LogCueShownMetadata(CueLogPtr cue_log);
+
+  // Returns the list of shown cues for WebUI debugging.
+  const base::circular_deque<CueLogPtr>& shown_cues() const {
+    return shown_cues_;
   }
+#endif
 
  private:
-  // page_content_annotations::PageContentExtractionService::Observer:
-  void OnPageContentExtracted(
-      content::Page& page,
-      const optimization_guide::proto::AnnotatedPageContent& page_content)
-      override;
-
-  // Returns true if nudge should not be shown due to the backoff rule.
-  bool IsNudgeBlockedByBackoffRule() const;
-
-  // Tracker to limit the number of nudges shown over a certain duration.
-  NudgeCapTracker recent_nudge_tracker_;
-
-  // Number of times the cueing nudge has been dismissed (i.e. closed by the
-  // user). This count resets to 0 if nudge is clicked on by the user.
-  int dismiss_count_ = 0;
-
-  // The last time the cueing nudge was dismissed.
-  std::optional<base::Time> backoff_end_time_;
-
   // A counter for how many subsequent page load events will be prevented from
   // showing a nudge. This is to limit the frequency at which consecutive page
   // loads can trigger nudges.
   size_t remaining_quiet_loads_ = 0;
 
+  // The end of the backoff period triggered by the last shown nudge.
+  std::optional<base::TimeTicks> shown_backoff_end_time_;
+
+  // Number of times the cueing nudge has been dismissed (i.e. closed by the
+  // user). This count resets to 0 if nudge is clicked on by the user.
+  int dismiss_count_ = 0;
+
+  // The end of the backoff period triggered by the last dismissed nudge.
+  std::optional<base::TimeTicks> dismiss_backoff_end_time_;
+
+  // The end of the backoff period triggered by the last clicked nudge.
+  std::optional<base::TimeTicks> click_backoff_end_time_;
+
+  // Tracker to limit the number of nudges shown over a certain duration.
+  NudgeCapTracker recent_nudge_tracker_;
+
   // Maintains the recently visited origins along with their nudge cap tracking.
   base::LRUCache<url::Origin, NudgeCapTracker> recent_visited_origins_;
 
-  raw_ptr<page_content_annotations::PageContentExtractionService>
-      page_content_extraction_service_ = nullptr;
+  // Per-target interaction stats used by the UCB scorer.
+  absl::flat_hash_map<CueTargetType, TargetStats> target_stats_;
 
-  base::WeakPtrFactory<ContextualCueingService> weak_ptr_factory_{this};
+  // Writes the stats for `type` to the profile prefs.
+  void WriteStatsToPref(CueTargetType type);
+
+  // Not owned. Guaranteed to outlive this service (profile lifetime).
+  const raw_ptr<PrefService> profile_prefs_;
+
+  SEQUENCE_CHECKER(sequence_checker_);
+
+#if !BUILDFLAG(IS_ANDROID)
+  base::circular_deque<CueLogPtr> shown_cues_;
+#endif
 };
 
 }  // namespace contextual_cueing

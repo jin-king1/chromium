@@ -5,6 +5,7 @@
 #include "third_party/blink/renderer/core/editing/finder/find_buffer.h"
 
 #include "build/build_config.h"
+#include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/text.h"
 #include "third_party/blink/renderer/core/editing/ephemeral_range.h"
 #include "third_party/blink/renderer/core/editing/finder/find_results.h"
@@ -76,7 +77,7 @@ TEST_P(FindBufferParamTest, FindInline) {
   EXPECT_TRUE(buffer.PositionAfterBlock().IsNull());
   FindResults results = buffer.FindMatches("abce", kCaseInsensitive);
   EXPECT_EQ(1u, results.CountForTesting());
-  MatchResultICU match = *results.begin();
+  MatchResultIcu match = *results.begin();
   EXPECT_EQ(0u, match.start);
   EXPECT_EQ(4u, match.length);
   EXPECT_EQ(
@@ -683,7 +684,7 @@ TEST_P(FindBufferParamTest, DisplayInline) {
   FindBuffer buffer(WholeDocumentRange(), GetParam());
   const auto results = buffer.FindMatches("find", FindOptions());
   ASSERT_EQ(1u, results.CountForTesting());
-  EXPECT_EQ(MatchResultICU({0, 4}), results.front());
+  EXPECT_EQ(MatchResultIcu({0, 4}), results.front());
 }
 
 TEST_P(FindBufferParamTest, DisplayBlock) {
@@ -699,7 +700,7 @@ TEST_P(FindBufferParamTest, DisplayContents) {
   FindBuffer buffer(WholeDocumentRange(), GetParam());
   const auto results = buffer.FindMatches("find", FindOptions());
   ASSERT_EQ(1u, results.CountForTesting());
-  EXPECT_EQ(MatchResultICU({0, 4}), results.front());
+  EXPECT_EQ(MatchResultIcu({0, 4}), results.front());
 }
 
 TEST_P(FindBufferParamTest, WBRTest) {
@@ -719,23 +720,15 @@ TEST_P(FindBufferParamTest, InputTest) {
 }
 
 TEST_P(FindBufferParamTest, SelectMultipleTest) {
-  SetBodyContent("<select multiple><option>find me</option></select>");
+  SetBodyContent("<select multiple size=4><option>find me</option></select>");
   {
     FindBuffer buffer(WholeDocumentRange(), GetParam());
-#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
-    EXPECT_EQ(0u, buffer.FindMatches("find", FindOptions()).CountForTesting());
-#else
     EXPECT_EQ(1u, buffer.FindMatches("find", FindOptions()).CountForTesting());
-#endif  // BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
   }
   SetBodyContent("<select size=2><option>find me</option></select>");
   {
     FindBuffer buffer(WholeDocumentRange(), GetParam());
-#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
-    EXPECT_EQ(0u, buffer.FindMatches("find", FindOptions()).CountForTesting());
-#else
     EXPECT_EQ(1u, buffer.FindMatches("find", FindOptions()).CountForTesting());
-#endif  // BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
   }
   SetBodyContent("<select size=1><option>find me</option></select>");
   {
@@ -1104,6 +1097,15 @@ TEST_F(FindBufferTest, FindRubyNested) {
     FindBuffer buffer(WholeDocumentRange(), RubySupport::kEnabledIfNecessary);
     EXPECT_EQ(1u, CaseInsensitiveMatchCount(buffer, u"のRAIL"));
   }
+
+  // crbug.com/408309951
+  SetBodyContent(
+      "<p><ruby>科学<rt>かがく</ruby>の"
+      "<ruby><ruby>超電磁砲<rt>レールガン</ruby><rt>railgun</ruby></p>");
+  {
+    FindBuffer buffer(WholeDocumentRange(), RubySupport::kEnabledIfNecessary);
+    EXPECT_EQ(1u, CaseInsensitiveMatchCount(buffer, u"rail"));
+  }
 }
 
 TEST_F(FindBufferTest, FindRubyOnAnnotation) {
@@ -1132,6 +1134,44 @@ TEST_P(FindBufferParamTest, PositionAfterBlock) {
   EXPECT_EQ(PositionInFlatTree::FirstPositionInNode(
                 *GetDocument().body()->lastChild()),
             buffer.PositionAfterBlock());
+}
+
+// crbug.com/401444931
+TEST_P(FindBufferParamTest, IgnorableElementAtAnnotationLastCrash) {
+  SetBodyContent("<p><ruby><rt><br></rt>\n</ruby></p>");
+  FindBuffer buffer(WholeDocumentRange(), GetParam());
+  FindResults results = buffer.FindMatches("aaa", kCaseInsensitive);
+  // Pass if no crash.
+}
+
+// crbug.com/409358630
+TEST_F(FindBufferTest, OrphanRubyTextCrash) {
+  SetBodyContent("abc<h1 style='display:ruby-text' id='h'>TEXT</h1>def");
+  FindBuffer buffer(EphemeralRangeInFlatTree(PositionFromParentId("h", 0),
+                                             LastPositionInDocument()),
+                    RubySupport::kEnabledForcefully);
+  EXPECT_EQ(1u, CaseInsensitiveMatchCount(buffer, u"textd"));
+}
+
+TEST_F(FindBufferTest, TextareaMultilines) {
+  SetBodyContent("<textarea>line1\nline2\n</textarea>");
+  FindBuffer buffer(WholeDocumentRange(), RubySupport::kEnabledIfNecessary);
+  EXPECT_EQ(0u, CaseInsensitiveMatchCount(buffer, u"ne1 li"));
+  EXPECT_EQ(1u, CaseInsensitiveMatchCount(buffer, u"ne1\nli"));
+}
+
+// crbug.com/453125750
+TEST_F(FindBufferTest, IsInSameUninterruptedBlockNoCrash) {
+  SetBodyContent(
+      "<option id='target'>ABC</option>"
+      "<style>* { display:-webkit-box; }</style>");
+  GetDocument().documentElement()->insertBefore(GetElementById("target"),
+                                                GetDocument().body());
+  UpdateAllLifecyclePhasesForTest();
+  FindBuffer buffer(WholeDocumentRange(), RubySupport::kEnabledIfNecessary);
+  EXPECT_EQ(1u, CaseInsensitiveMatchCount(buffer, u"ABC"));
+  // The test confirms GetInlineFormattingContext() doesn't crash.
+  // The match count result isn't important.
 }
 
 }  // namespace blink

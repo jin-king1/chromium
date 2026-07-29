@@ -9,17 +9,22 @@
 #include <map>
 #include <memory>
 #include <string_view>
+#include <vector>
 
+#include "base/containers/span.h"
+#include "base/containers/span_reader.h"
+#include "base/containers/to_vector.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/notreached.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
+#include "base/strings/string_view_util.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
+#include "crypto/hash.h"
+#include "crypto/keypair.h"
 #include "crypto/openssl_util.h"
-#include "crypto/rsa_private_key.h"
-#include "crypto/sha2.h"
 #include "net/base/hash_value.h"
 #include "net/cert/asn1_util.h"
 #include "net/cert/time_conversions.h"
@@ -90,6 +95,32 @@ const EVP_MD* ToEVP(DigestAlgorithm alg) {
       return EVP_sha256();
   }
   return nullptr;
+}
+
+// Given a DER-encoded OID component, returns the value as an integer. Returns
+// nullopt if parsing failed or if the component cannot fit an a uint64.
+std::optional<uint64_t> ParseOidComponent(
+    base::span<const uint8_t> oid_component) {
+  if (oid_component.empty() || oid_component[0] == 0x80) {
+    return std::nullopt;
+  }
+  uint64_t out = 0;
+  while (!oid_component.empty()) {
+    uint8_t b = oid_component.take_first_elem();
+    // The continuation bit must be set exactly when there are more bytes to
+    // read.
+    bool continuation_bit = (b & 0x80) != 0;
+    if (continuation_bit == oid_component.empty()) {
+      return std::nullopt;
+    }
+    if (out >= (1llu << 57)) {
+      // Ensure we don't overflow |out|.
+      return std::nullopt;
+    }
+    out <<= 7;
+    out |= b & 0x7f;
+  }
+  return out;
 }
 
 }  // namespace
@@ -279,31 +310,16 @@ bool GetTLSServerEndPointChannelBinding(const X509Certificate& certificate,
   return true;
 }
 
-// RSA keys created by CreateKeyAndSelfSignedCert will be of this length.
-static const uint16_t kRSAKeyLength = 1024;
+std::vector<uint8_t> CreateUnusableCert(std::string_view subject) {
+  const uint32_t kSerial = 1;
+  const base::Time not_valid_before = base::Time::Now() - base::Minutes(5);
+  const base::Time not_valid_after = base::Time::Now() + base::Hours(1);
+  auto key = crypto::keypair::PrivateKey::GenerateEcP256();
+  std::string der_cert;
+  CHECK(CreateSelfSignedCert(key.key(), DIGEST_SHA256, subject, kSerial,
+                             not_valid_before, not_valid_after, {}, &der_cert));
 
-// Certificates made by CreateKeyAndSelfSignedCert will be signed using this
-// digest algorithm.
-static const DigestAlgorithm kSignatureDigestAlgorithm = DIGEST_SHA256;
-
-bool CreateKeyAndSelfSignedCert(std::string_view subject,
-                                uint32_t serial_number,
-                                base::Time not_valid_before,
-                                base::Time not_valid_after,
-                                std::unique_ptr<crypto::RSAPrivateKey>* key,
-                                std::string* der_cert) {
-  std::unique_ptr<crypto::RSAPrivateKey> new_key(
-      crypto::RSAPrivateKey::Create(kRSAKeyLength));
-  if (!new_key)
-    return false;
-
-  bool success = CreateSelfSignedCert(new_key->key(), kSignatureDigestAlgorithm,
-                                      subject, serial_number, not_valid_before,
-                                      not_valid_after, {}, der_cert);
-  if (success)
-    *key = std::move(new_key);
-
-  return success;
+  return base::ToVector(base::as_byte_span(der_cert));
 }
 
 Extension::Extension(base::span<const uint8_t> in_oid,
@@ -445,6 +461,15 @@ bssl::UniquePtr<CRYPTO_BUFFER> CreateCryptoBufferFromStaticDataUnsafe(
                                                 GetBufferPool()));
 }
 
+std::vector<bssl::UniquePtr<CRYPTO_BUFFER>> DupCryptoBuffers(
+    base::span<const bssl::UniquePtr<CRYPTO_BUFFER>> buffers) {
+  std::vector<bssl::UniquePtr<CRYPTO_BUFFER>> result;
+  for (auto& buf : buffers) {
+    result.push_back(bssl::UpRef(buf));
+  }
+  return result;
+}
+
 bool CryptoBufferEqual(const CRYPTO_BUFFER* a, const CRYPTO_BUFFER* b) {
   DCHECK(a && b);
   if (a == b)
@@ -508,14 +533,10 @@ bssl::ParseCertificateOptions DefaultParseCertificateOptions() {
   return options;
 }
 
-bool CalculateSha256SpkiHash(const CRYPTO_BUFFER* buffer, HashValue* hash) {
+SHA256HashValue CalculateSha256SpkiHash(const CRYPTO_BUFFER* buffer) {
   std::string_view spki;
-  if (!asn1::ExtractSPKIFromDERCert(CryptoBufferAsStringPiece(buffer), &spki)) {
-    return false;
-  }
-  *hash = HashValue(HASH_VALUE_SHA256);
-  crypto::SHA256HashString(spki, hash->data(), hash->size());
-  return true;
+  CHECK(asn1::ExtractSPKIFromDERCert(CryptoBufferAsStringPiece(buffer), &spki));
+  return crypto::hash::Sha256(base::as_byte_span(spki));
 }
 
 bool SignatureVerifierInitWithCertificate(
@@ -572,6 +593,96 @@ bool HasRsaPkcs1Sha1Signature(const CRYPTO_BUFFER* cert_buffer) {
 
   return signature_algorithm &&
          *signature_algorithm == bssl::SignatureAlgorithm::kRsaPkcs1Sha1;
+}
+
+std::vector<uint8_t> AppendOidComponent(base::span<const uint8_t> oid,
+                                        uint64_t component) {
+  constexpr size_t kMaxBase128Uint64Size = 10;
+  bssl::ScopedCBB cbb;
+  CHECK(CBB_init(cbb.get(),
+                 /*initial_capacity=*/oid.size() + kMaxBase128Uint64Size) &&
+        CBB_add_bytes(cbb.get(), oid.data(), oid.size()) &&
+        CBB_add_asn1_oid_component(cbb.get(), component) &&
+        CBB_flush(cbb.get()));
+
+  // SAFETY: CBB_data(cbb) returns a pointer to the written data with length
+  // CBB_len(cbb).
+  return base::ToVector(UNSAFE_BUFFERS(
+      base::span<const uint8_t>(CBB_data(cbb.get()), CBB_len(cbb.get()))));
+}
+
+std::optional<uint64_t> LastOidComponentFromBase(
+    base::span<const uint8_t> oid,
+    base::span<const uint8_t> base) {
+  if (base.size() >= oid.size()) {
+    return std::nullopt;
+  }
+  auto [oid_base, rest] = oid.split_at(base.size());
+  if (oid_base != base) {
+    return std::nullopt;
+  }
+  return ParseOidComponent(rest);
+}
+
+std::optional<BaseOidAndComponent> SplitLastOidComponent(
+    base::span<const uint8_t> oid) {
+  if (oid.size() == 0) {
+    return std::nullopt;
+  }
+  // Iterate in reverse over the OID starting from the second to last byte,
+  // looking for a byte without the continuation bit.
+  size_t last_component_size = 1;
+  for (; last_component_size < oid.size(); ++last_component_size) {
+    uint8_t b = oid[oid.size() - last_component_size - 1];
+    bool continuation_bit = (b & 0x80) != 0;
+    if (!continuation_bit) {
+      // Found the last byte of the next-to-last component in `oid`.
+      break;
+    }
+  }
+  std::optional<uint64_t> last_component =
+      ParseOidComponent(oid.last(last_component_size));
+  if (!last_component) {
+    return std::nullopt;
+  }
+  return BaseOidAndComponent(oid.first(oid.size() - last_component_size),
+                             *last_component);
+}
+
+std::string RelativeOidToString(base::span<const uint8_t> relative_oid) {
+  CBS cbs;
+  CBS_init(&cbs, relative_oid.data(), relative_oid.size());
+  bssl::UniquePtr<char> text(CBS_asn1_relative_oid_to_text(&cbs));
+  if (text) {
+    return std::string(text.get());
+  }
+  return std::string();
+}
+
+std::vector<std::vector<uint8_t>> ParseTlsTrustAnchorIDs(
+    base::span<const uint8_t> wire_ids) {
+  std::vector<std::vector<uint8_t>> parsed_ids;
+  base::SpanReader wire_id_reader(wire_ids);
+  while (wire_id_reader.remaining() > 0) {
+    uint8_t id_len;
+    base::span<const uint8_t> id;
+    if (!wire_id_reader.ReadU8BigEndian(id_len) || id_len == 0 ||
+        !wire_id_reader.ReadInto(id_len, id)) {
+      return {};
+    }
+    parsed_ids.emplace_back(base::ToVector(id));
+  }
+  return parsed_ids;
+}
+
+std::string TrustAnchorIDsToString(
+    const std::vector<std::vector<uint8_t>>& trust_anchor_ids) {
+  std::vector<std::string> oid_strings;
+  oid_strings.reserve(trust_anchor_ids.size());
+  for (const auto& id : trust_anchor_ids) {
+    oid_strings.emplace_back(RelativeOidToString(id));
+  }
+  return base::JoinString(oid_strings, ", ");
 }
 
 }  // namespace net::x509_util

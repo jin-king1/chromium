@@ -14,6 +14,7 @@
 #include "base/run_loop.h"
 #include "base/strings/string_util.h"
 #include "base/threading/thread_restrictions.h"
+#include "base/unguessable_token.h"
 #include "build/build_config.h"
 #include "content/browser/webui/web_ui_controller_factory_registry.h"
 #include "content/browser/webui/web_ui_impl.h"
@@ -115,8 +116,10 @@ class WebUITsMojoTestCacheImpl : public mojom::WebUITsMojoTestCache {
         dict_ptr ? dict_ptr->Clone() : nullptr);
   }
 
-  void EchoTypemaps(base::Time time, EchoTypemapsCallback cb) override {
-    std::move(cb).Run(time);
+  void EchoTypemaps(base::Time time,
+                    const base::UnguessableToken& token,
+                    EchoTypemapsCallback cb) override {
+    std::move(cb).Run(time, token);
   }
 
   void EchoOptionalTypemaps(mojom::OptionalTypemapPtr container,
@@ -142,10 +145,19 @@ class WebUITsMojoTestCacheImpl : public mojom::WebUITsMojoTestCache {
     std::move(cb).Run(std::move(string_wrapper_list));
   }
 
+  void GetAssociatedReceiver(GetAssociatedReceiverCallback cb) override {
+    CHECK(!test_client_.is_bound()) << "This method can only be called once";
+    std::move(cb).Run(test_client_.BindNewEndpointAndPassReceiver());
+    test_client_->BlockUntilBound();
+  }
+
+  void Ping(PingCallback cb) override { std::move(cb).Run("ping"); }
+
  private:
   mojo::Receiver<mojom::WebUITsMojoTestCache> receiver_;
   std::map<GURL, std::string> cache_;
   std::vector<mojo::Remote<mojom::StringWrapper>> string_wrapper_list_;
+  mojo::AssociatedRemote<mojom::TestAssociatedClient> test_client_;
 };
 
 // WebUIController that sets up mojo bindings.
@@ -164,7 +176,7 @@ class TestWebUIController : public WebUIController {
           "script-src chrome://resources 'self' 'unsafe-eval';");
       data_source->DisableTrustedTypesCSP();
       data_source->AddResourcePaths(kWebUiMojoTestResources);
-      data_source->AddResourcePath("", IDR_WEB_UI_MOJO_TS_HTML);
+      data_source->SetDefaultResource(IDR_WEB_UI_MOJO_TS_HTML);
     }
     {
       WebUIDataSource* data_source = WebUIDataSource::CreateAndAdd(
@@ -229,7 +241,7 @@ class TestWebUIControllerFactory : public WebUIControllerFactory {
     if (!web_ui_enabled_ || !url.SchemeIs(kChromeUIScheme))
       return nullptr;
 
-    auto it = registered_controllers_.find(url.query());
+    auto it = registered_controllers_.find(url.GetQuery());
     if (it != registered_controllers_.end())
       return it->second.Run(web_ui);
 
@@ -313,7 +325,7 @@ class TestWebUIContentBrowserClient
                                            CacheTestWebUIController>(map);
 
     map->Add<content::mojom::StringWrapper>(
-        base::BindRepeating(&TestWebUIContentBrowserClient::BindStringWrapper));
+        &TestWebUIContentBrowserClient::BindStringWrapper);
   }
 
   static void BindStringWrapper(
@@ -467,7 +479,14 @@ IN_PROC_BROWSER_TEST_F(WebUIMojoTest, MAYBE_ChromeSendAvailable) {
   EXPECT_FALSE(RunBoolFunction("isChromeSendAvailable()"));
 }
 
-IN_PROC_BROWSER_TEST_F(WebUIMojoTest, ChromeSendAvailable_AfterCrash) {
+// TODO(crbug.com/440535492): Flaky on Win dbg. Re-enable this test.
+#if BUILDFLAG(IS_WIN) && !defined(NDEBUG)
+#define MAYBE_ChromeSendAvailable_AfterCrash \
+  DISABLED_ChromeSendAvailable_AfterCrash
+#else
+#define MAYBE_ChromeSendAvailable_AfterCrash ChromeSendAvailable_AfterCrash
+#endif
+IN_PROC_BROWSER_TEST_F(WebUIMojoTest, MAYBE_ChromeSendAvailable_AfterCrash) {
   GURL test_url(GetWebUIURL(GetMojoWebUiHost() +
                             "/web_ui_mojo_native.html?webui_bindings"));
 

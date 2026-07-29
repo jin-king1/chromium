@@ -37,7 +37,6 @@
 <translation id="2311842470354187719">salto de página</translation>
 <translation id="2335594187091864976">selector de fecha y hora</translation>
 <translation id="2393030564806080191">Valor hexadecimal de color</translation>
-<translation id="2398813069815436052">Se abrió el diálogo.</translation>
 <translation id="245932805758469625">cantidad de segundos restantes del video</translation>
 <translation id="248395913932153421">Día</translation>
 <translation id="2508569020611168319">lista de pestañas</translation>
@@ -223,6 +222,7 @@
 <translation id="8634971699417195529">Mostrar el selector de meses</translation>
 <translation id="8711688047404765493">salida</translation>
 <translation id="8808573423886751634">capítulo</translation>
+<translation id="8826423933757944500">leyenda</translation>
 <translation id="8851136666856101339">ppal</translation>
 <translation id="8861621546968757188">botón de diálogo emergente</translation>
 <translation id="8889402386540077796">Tono</translation>
@@ -238,7 +238,6 @@
 <translation id="9138385573473225930">alerta</translation>
 <translation id="9155987714137265666"><ph name="WEEK" />, a partir del <ph name="WEEK_START_DATE" /></translation>
 <translation id="9168329111483466115">nota a pie de página</translation>
-<translation id="945780513535800434">Se marcó parcialmente</translation>
 <translation id="954003015749068518">ingresar al modo de pantalla en pantalla</translation>
 <translation id="966787709310836684">menú</translation>
 </translationbundle>

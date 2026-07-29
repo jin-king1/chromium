@@ -13,6 +13,7 @@
 #include "base/memory/raw_ptr_exclusion.h"
 #include "base/memory/stack_allocated.h"
 #include "base/synchronization/lock_subtle.h"
+#include "base/synchronization/synchronization_buildflags.h"
 #include "base/thread_annotations.h"
 #include "build/build_config.h"
 
@@ -43,6 +44,11 @@ class BASE_EXPORT LockImpl {
  public:
   LockImpl(const LockImpl&) = delete;
   LockImpl& operator=(const LockImpl&) = delete;
+
+#if BUILDFLAG(IS_POSIX)
+  // Sets the maximum number of yields before blocking in the kernel.
+  static void SetTrySpinCount(int spin_count);
+#endif
 
  private:
   friend class base::Lock;
@@ -78,6 +84,13 @@ class BASE_EXPORT LockImpl {
 #if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
   // Whether this lock will attempt to use priority inheritance.
   static bool PriorityInheritanceAvailable();
+#endif
+
+#if BUILDFLAG(IS_POSIX)
+  // Repeatedly attempts to acquire the lock, yielding the processor between
+  // attempts. Returns true if the lock was acquired, false if the maximum
+  // number of yields was reached.
+  bool TrySpin();
 #endif
 
   void LockInternal();
@@ -133,7 +146,7 @@ void LockImpl::Unlock() {
 
 // This is an implementation used for AutoLock templated on the lock type.
 template <class LockType>
-class SCOPED_LOCKABLE BasicAutoLock {
+class [[nodiscard]] SCOPED_LOCKABLE BasicAutoLock {
   STACK_ALLOCATED();
 
  public:
@@ -168,7 +181,7 @@ class SCOPED_LOCKABLE BasicAutoLock {
 // This is an implementation used for MovableAutoLock templated on the lock
 // type.
 template <class LockType>
-class SCOPED_LOCKABLE BasicMovableAutoLock {
+class [[nodiscard]] SCOPED_LOCKABLE BasicMovableAutoLock {
  public:
   explicit BasicMovableAutoLock(
       LockType& lock,
@@ -199,7 +212,7 @@ class SCOPED_LOCKABLE BasicMovableAutoLock {
 
 // This is an implementation used for AutoTryLock templated on the lock type.
 template <class LockType>
-class SCOPED_LOCKABLE BasicAutoTryLock {
+class [[nodiscard]] SCOPED_LOCKABLE BasicAutoTryLock {
   STACK_ALLOCATED();
 
  public:
@@ -236,7 +249,7 @@ class SCOPED_LOCKABLE BasicAutoTryLock {
 
 // This is an implementation used for AutoUnlock templated on the lock type.
 template <class LockType>
-class BasicAutoUnlock {
+class [[nodiscard]] BasicAutoUnlock {
   STACK_ALLOCATED();
 
  public:
@@ -257,7 +270,7 @@ class BasicAutoUnlock {
 
 // This is an implementation used for AutoLockMaybe templated on the lock type.
 template <class LockType>
-class SCOPED_LOCKABLE BasicAutoLockMaybe {
+class [[nodiscard]] SCOPED_LOCKABLE BasicAutoLockMaybe {
   STACK_ALLOCATED();
 
  public:
@@ -288,7 +301,7 @@ class SCOPED_LOCKABLE BasicAutoLockMaybe {
 // This is an implementation used for ReleasableAutoLock templated on the lock
 // type.
 template <class LockType>
-class SCOPED_LOCKABLE BasicReleasableAutoLock {
+class [[nodiscard]] SCOPED_LOCKABLE BasicReleasableAutoLock {
   STACK_ALLOCATED();
 
  public:
@@ -323,6 +336,11 @@ class SCOPED_LOCKABLE BasicReleasableAutoLock {
 };
 
 }  // namespace internal
+
+// Check to see whether the current kernel supports priority inheritance
+// properly by adjusting process priorities to boost the futex owner.
+BASE_EXPORT bool KernelSupportsPriorityInheritanceFutex();
+
 }  // namespace base
 
 #endif  // BASE_SYNCHRONIZATION_LOCK_IMPL_H_

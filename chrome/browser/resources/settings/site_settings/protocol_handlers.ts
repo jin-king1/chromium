@@ -16,15 +16,20 @@ import 'chrome://resources/cr_elements/cr_link_row/cr_link_row.js';
 import 'chrome://resources/cr_elements/cr_toggle/cr_toggle.js';
 import 'chrome://resources/cr_elements/cr_shared_style.css.js';
 import 'chrome://resources/cr_elements/icons.html.js';
+import '../controls/collapse_radio_button.js';
+import '../controls/settings_radio_group.js';
 import '../controls/settings_toggle_button.js';
 import '../privacy_icons.html.js';
-import '../privacy_page/collapse_radio_button.js';
+import '../settings_page/settings_subpage.js';
 import '../settings_shared.css.js';
 import '../site_favicon.js';
 
 import {WebUiListenerMixin} from 'chrome://resources/cr_elements/web_ui_listener_mixin.js';
+import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import type {DomRepeatEvent} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+
+import {SettingsViewMixin} from '../settings_page/settings_view_mixin.js';
 
 import {getTemplate} from './protocol_handlers.html.js';
 import {SiteSettingsMixin} from './site_settings_mixin.js';
@@ -65,7 +70,7 @@ export interface ProtocolHandlersElement {
 }
 
 const ProtocolHandlersElementBase =
-    WebUiListenerMixin(SiteSettingsMixin(PolymerElement));
+    SettingsViewMixin(WebUiListenerMixin(SiteSettingsMixin(PolymerElement)));
 
 export class ProtocolHandlersElement extends ProtocolHandlersElementBase {
   static get is() {
@@ -138,15 +143,16 @@ export class ProtocolHandlersElement extends ProtocolHandlersElementBase {
     };
   }
 
-  protocols: ProtocolEntry[];
-  appAllowedProtocols: AppProtocolEntry[];
-  appDisallowedProtocols: AppProtocolEntry[];
-  private showAppsProtocolHandlersTitle_: boolean;
-  private actionMenuModel_: HandlerEntry|null;
-  toggleOffLabel: string;
-  toggleOnLabel: string;
-  ignoredProtocols: HandlerEntry[];
-  private handlersEnabledPref_: chrome.settingsPrivate.PrefObject<boolean>;
+  declare protocols: ProtocolEntry[];
+  declare appAllowedProtocols: AppProtocolEntry[];
+  declare appDisallowedProtocols: AppProtocolEntry[];
+  declare private showAppsProtocolHandlersTitle_: boolean;
+  declare private actionMenuModel_: HandlerEntry|null;
+  declare toggleOffLabel: string;
+  declare toggleOnLabel: string;
+  declare ignoredProtocols: HandlerEntry[];
+  declare private handlersEnabledPref_:
+      chrome.settingsPrivate.PrefObject<boolean>;
 
   override ready() {
     super.ready();
@@ -249,7 +255,7 @@ export class ProtocolHandlersElement extends ProtocolHandlersElementBase {
    */
   private onToggleChange_() {
     this.browserProxy.setProtocolHandlerDefault(
-        !!this.handlersEnabledPref_.value);
+        this.handlersEnabledPref_.value);
   }
 
   /**
@@ -313,6 +319,23 @@ export class ProtocolHandlersElement extends ProtocolHandlersElementBase {
 
   private getNameText_(item: AppHandlerEntry): string {
     return item.app_name || item.host;
+  }
+
+  // SettingsViewMixin implementation.
+  override focusBackButton() {
+    this.shadowRoot!.querySelector('settings-subpage')!.focusBackButton();
+  }
+
+  protected getProtocolHandlerIcon_(): string {
+    return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
+        'privacy:protocol-handler' :
+        'privacy:protocol-handler-old';
+  }
+
+  protected getProtocolHandlerOffIcon_(): string {
+    return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
+        'privacy:protocol-handler-off' :
+        'privacy:protocol-handler-off-old';
   }
 }
 

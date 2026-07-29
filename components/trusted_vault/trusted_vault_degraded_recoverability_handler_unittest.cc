@@ -9,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/functional/callback_helpers.h"
 #include "base/run_loop.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/mock_callback.h"
@@ -18,7 +19,7 @@
 #include "components/trusted_vault/proto/local_trusted_vault.pb.h"
 #include "components/trusted_vault/proto_time_conversion.h"
 #include "components/trusted_vault/securebox.h"
-#include "components/trusted_vault/test/mock_trusted_vault_connection.h"
+#include "components/trusted_vault/test/mock_trusted_vault_throttling_connection.h"
 #include "components/trusted_vault/trusted_vault_connection.h"
 #include "google_apis/gaia/gaia_id.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -86,7 +87,7 @@ class TrustedVaultDegradedRecoverabilityHandlerTest : public ::testing::Test {
 TEST_F(TrustedVaultDegradedRecoverabilityHandlerTest,
        ShouldRecordTheDegradedRecoverabilityValueOnStart) {
   base::HistogramTester histogram_tester;
-  testing::NiceMock<MockTrustedVaultConnection> connection;
+  testing::NiceMock<MockTrustedVaultThrottlingConnection> connection;
   testing::NiceMock<MockDelegate> delegate;
   trusted_vault_pb::LocalTrustedVaultDegradedRecoverabilityState
       degraded_recoverability_state;
@@ -112,7 +113,7 @@ TEST_F(TrustedVaultDegradedRecoverabilityHandlerTest,
 
 TEST_F(TrustedVaultDegradedRecoverabilityHandlerTest,
        ShouldPendTheCallbackUntilTheFirstRefreshIsCalled) {
-  testing::NiceMock<MockTrustedVaultConnection> connection;
+  testing::NiceMock<MockTrustedVaultThrottlingConnection> connection;
   testing::NiceMock<MockDelegate> delegate;
 
   // Passing empty LocalDegradedRecoverability state indicates that this is the
@@ -126,8 +127,8 @@ TEST_F(TrustedVaultDegradedRecoverabilityHandlerTest,
   EXPECT_CALL(connection, DownloadIsRecoverabilityDegraded(
                               Eq(MakeAccountInfoWithGaiaId("user")), _))
       .WillOnce([&](const CoreAccountInfo&,
-                    MockTrustedVaultConnection::IsRecoverabilityDegradedCallback
-                        callback) {
+                    MockTrustedVaultThrottlingConnection::
+                        IsRecoverabilityDegradedCallback callback) {
         std::move(callback).Run(TrustedVaultRecoverabilityStatus::kDegraded);
         return std::make_unique<TrustedVaultConnection::Request>();
       });
@@ -140,7 +141,7 @@ TEST_F(TrustedVaultDegradedRecoverabilityHandlerTest,
        ShouldInvokeTheCallbackImmediatelyWhenTheFirstRefreshIsAlreadyCalled) {
   // Note: The first Refresh() could already be happened on a previous handler
   // instance.
-  testing::NiceMock<MockTrustedVaultConnection> connection;
+  testing::NiceMock<MockTrustedVaultThrottlingConnection> connection;
   testing::NiceMock<MockDelegate> delegate;
   trusted_vault_pb::LocalTrustedVaultDegradedRecoverabilityState
       degraded_recoverability_state;
@@ -163,17 +164,15 @@ TEST_F(TrustedVaultDegradedRecoverabilityHandlerTest,
 TEST_F(TrustedVaultDegradedRecoverabilityHandlerTest,
        ShouldRefreshImmediatelyAndRecordTheReason) {
   base::HistogramTester histogram_tester;
-  testing::NiceMock<MockTrustedVaultConnection> connection;
+  testing::NiceMock<MockTrustedVaultThrottlingConnection> connection;
   ON_CALL(connection, DownloadIsRecoverabilityDegraded(
                           Eq(MakeAccountInfoWithGaiaId("user")), _))
-      .WillByDefault(
-          [&](const CoreAccountInfo&,
-              MockTrustedVaultConnection::IsRecoverabilityDegradedCallback
-                  callback) {
-            std::move(callback).Run(
-                TrustedVaultRecoverabilityStatus::kNotDegraded);
-            return std::make_unique<TrustedVaultConnection::Request>();
-          });
+      .WillByDefault([&](const CoreAccountInfo&,
+                         MockTrustedVaultThrottlingConnection::
+                             IsRecoverabilityDegradedCallback callback) {
+        std::move(callback).Run(TrustedVaultRecoverabilityStatus::kNotDegraded);
+        return std::make_unique<TrustedVaultConnection::Request>();
+      });
   testing::NiceMock<MockDelegate> delegate;
 
   // Passing empty LocalDegradedRecoverability state indicates that this is the
@@ -202,7 +201,7 @@ TEST_F(TrustedVaultDegradedRecoverabilityHandlerTest,
 
 TEST_F(TrustedVaultDegradedRecoverabilityHandlerTest,
        ShouldRefreshOncePerShortPeriod) {
-  testing::NiceMock<MockTrustedVaultConnection> connection;
+  testing::NiceMock<MockTrustedVaultThrottlingConnection> connection;
   testing::NiceMock<MockDelegate> delegate;
   trusted_vault_pb::LocalTrustedVaultDegradedRecoverabilityState
       degraded_recoverability_state;
@@ -226,7 +225,7 @@ TEST_F(TrustedVaultDegradedRecoverabilityHandlerTest,
 
 TEST_F(TrustedVaultDegradedRecoverabilityHandlerTest,
        ShouldRefreshOncePerLongPeriod) {
-  testing::NiceMock<MockTrustedVaultConnection> connection;
+  testing::NiceMock<MockTrustedVaultThrottlingConnection> connection;
   testing::NiceMock<MockDelegate> delegate;
   trusted_vault_pb::LocalTrustedVaultDegradedRecoverabilityState
       degraded_recoverability_state;
@@ -255,7 +254,7 @@ TEST_F(TrustedVaultDegradedRecoverabilityHandlerTest,
 
 TEST_F(TrustedVaultDegradedRecoverabilityHandlerTest,
        ShouldSwitchToShortPeriod) {
-  testing::NiceMock<MockTrustedVaultConnection> connection;
+  testing::NiceMock<MockTrustedVaultThrottlingConnection> connection;
   testing::NiceMock<MockDelegate> delegate;
 
   // Passing empty LocalDegradedRecoverability state indicates that this is the
@@ -269,8 +268,8 @@ TEST_F(TrustedVaultDegradedRecoverabilityHandlerTest,
   EXPECT_CALL(connection, DownloadIsRecoverabilityDegraded(
                               Eq(MakeAccountInfoWithGaiaId("user")), _))
       .WillOnce([&](const CoreAccountInfo&,
-                    MockTrustedVaultConnection::IsRecoverabilityDegradedCallback
-                        callback) {
+                    MockTrustedVaultThrottlingConnection::
+                        IsRecoverabilityDegradedCallback callback) {
         std::move(callback).Run(TrustedVaultRecoverabilityStatus::kDegraded);
         return std::make_unique<TrustedVaultConnection::Request>();
       });
@@ -289,7 +288,7 @@ TEST_F(TrustedVaultDegradedRecoverabilityHandlerTest,
 
 TEST_F(TrustedVaultDegradedRecoverabilityHandlerTest,
        ShouldSwitchToLongPeriod) {
-  testing::NiceMock<MockTrustedVaultConnection> connection;
+  testing::NiceMock<MockTrustedVaultThrottlingConnection> connection;
   testing::NiceMock<MockDelegate> delegate;
   trusted_vault_pb::LocalTrustedVaultDegradedRecoverabilityState
       degraded_recoverability_state;
@@ -309,8 +308,8 @@ TEST_F(TrustedVaultDegradedRecoverabilityHandlerTest,
   EXPECT_CALL(connection, DownloadIsRecoverabilityDegraded(
                               Eq(MakeAccountInfoWithGaiaId("user")), _))
       .WillOnce([&](const CoreAccountInfo&,
-                    MockTrustedVaultConnection::IsRecoverabilityDegradedCallback
-                        callback) {
+                    MockTrustedVaultThrottlingConnection::
+                        IsRecoverabilityDegradedCallback callback) {
         std::move(callback).Run(TrustedVaultRecoverabilityStatus::kNotDegraded);
         return std::make_unique<TrustedVaultConnection::Request>();
       });
@@ -336,17 +335,15 @@ TEST_F(TrustedVaultDegradedRecoverabilityHandlerTest,
 
 TEST_F(TrustedVaultDegradedRecoverabilityHandlerTest,
        ShouldWriteTheStateImmediatelyWithRecoverabilityDegradedAndCurrentTime) {
-  testing::NiceMock<MockTrustedVaultConnection> connection;
+  testing::NiceMock<MockTrustedVaultThrottlingConnection> connection;
   ON_CALL(connection, DownloadIsRecoverabilityDegraded(
                           Eq(MakeAccountInfoWithGaiaId("user")), _))
-      .WillByDefault(
-          [&](const CoreAccountInfo&,
-              MockTrustedVaultConnection::IsRecoverabilityDegradedCallback
-                  callback) {
-            std::move(callback).Run(
-                TrustedVaultRecoverabilityStatus::kNotDegraded);
-            return std::make_unique<TrustedVaultConnection::Request>();
-          });
+      .WillByDefault([&](const CoreAccountInfo&,
+                         MockTrustedVaultThrottlingConnection::
+                             IsRecoverabilityDegradedCallback callback) {
+        std::move(callback).Run(TrustedVaultRecoverabilityStatus::kNotDegraded);
+        return std::make_unique<TrustedVaultConnection::Request>();
+      });
   testing::NiceMock<MockDelegate> delegate;
 
   // Passing empty LocalDegradedRecoverability state indicates that this is the
@@ -373,8 +370,8 @@ TEST_F(TrustedVaultDegradedRecoverabilityHandlerTest,
   EXPECT_CALL(connection, DownloadIsRecoverabilityDegraded(
                               Eq(MakeAccountInfoWithGaiaId("user")), _))
       .WillOnce([&](const CoreAccountInfo&,
-                    MockTrustedVaultConnection::IsRecoverabilityDegradedCallback
-                        callback) {
+                    MockTrustedVaultThrottlingConnection::
+                        IsRecoverabilityDegradedCallback callback) {
         std::move(callback).Run(TrustedVaultRecoverabilityStatus::kDegraded);
         return std::make_unique<TrustedVaultConnection::Request>();
       });
@@ -388,17 +385,15 @@ TEST_F(TrustedVaultDegradedRecoverabilityHandlerTest,
 TEST_F(
     TrustedVaultDegradedRecoverabilityHandlerTest,
     ShouldWriteTheStateImmediatelyWithRecoverabilityNotDegradedAndCurrentTime) {
-  testing::NiceMock<MockTrustedVaultConnection> connection;
+  testing::NiceMock<MockTrustedVaultThrottlingConnection> connection;
   ON_CALL(connection, DownloadIsRecoverabilityDegraded(
                           Eq(MakeAccountInfoWithGaiaId("user")), _))
-      .WillByDefault(
-          [&](const CoreAccountInfo&,
-              MockTrustedVaultConnection::IsRecoverabilityDegradedCallback
-                  callback) {
-            std::move(callback).Run(
-                TrustedVaultRecoverabilityStatus::kDegraded);
-            return std::make_unique<TrustedVaultConnection::Request>();
-          });
+      .WillByDefault([&](const CoreAccountInfo&,
+                         MockTrustedVaultThrottlingConnection::
+                             IsRecoverabilityDegradedCallback callback) {
+        std::move(callback).Run(TrustedVaultRecoverabilityStatus::kDegraded);
+        return std::make_unique<TrustedVaultConnection::Request>();
+      });
   testing::NiceMock<MockDelegate> delegate;
 
   // Passing empty LocalDegradedRecoverability state indicates that this is the
@@ -425,8 +420,8 @@ TEST_F(
   EXPECT_CALL(connection, DownloadIsRecoverabilityDegraded(
                               Eq(MakeAccountInfoWithGaiaId("user")), _))
       .WillOnce([&](const CoreAccountInfo&,
-                    MockTrustedVaultConnection::IsRecoverabilityDegradedCallback
-                        callback) {
+                    MockTrustedVaultThrottlingConnection::
+                        IsRecoverabilityDegradedCallback callback) {
         std::move(callback).Run(TrustedVaultRecoverabilityStatus::kNotDegraded);
         return std::make_unique<TrustedVaultConnection::Request>();
       });
@@ -439,7 +434,7 @@ TEST_F(
 
 TEST_F(TrustedVaultDegradedRecoverabilityHandlerTest,
        ShouldComputeTheNextRefreshTimeBasedOnTheStoredState) {
-  testing::NiceMock<MockTrustedVaultConnection> connection;
+  testing::NiceMock<MockTrustedVaultThrottlingConnection> connection;
   testing::NiceMock<MockDelegate> delegate;
   trusted_vault_pb::LocalTrustedVaultDegradedRecoverabilityState
       degraded_recoverability_state;
@@ -460,7 +455,7 @@ TEST_F(TrustedVaultDegradedRecoverabilityHandlerTest,
 
 TEST_F(TrustedVaultDegradedRecoverabilityHandlerTest,
        ShouldRecordDegradedRecoverabilityStatusOnRequestCompletion) {
-  testing::NiceMock<MockTrustedVaultConnection> connection;
+  testing::NiceMock<MockTrustedVaultThrottlingConnection> connection;
   testing::NiceMock<MockDelegate> delegate;
 
   // Start the handler, this will trigger the first request.
@@ -473,15 +468,14 @@ TEST_F(TrustedVaultDegradedRecoverabilityHandlerTest,
     base::RunLoop run_loop;
     ON_CALL(connection, DownloadIsRecoverabilityDegraded(
                             Eq(MakeAccountInfoWithGaiaId("user")), _))
-        .WillByDefault(
-            [&](const CoreAccountInfo&,
-                MockTrustedVaultConnection::IsRecoverabilityDegradedCallback
-                    callback) {
-              std::move(callback).Run(
-                  TrustedVaultRecoverabilityStatus::kNotDegraded);
-              run_loop.Quit();
-              return std::make_unique<TrustedVaultConnection::Request>();
-            });
+        .WillByDefault([&](const CoreAccountInfo&,
+                           MockTrustedVaultThrottlingConnection::
+                               IsRecoverabilityDegradedCallback callback) {
+          std::move(callback).Run(
+              TrustedVaultRecoverabilityStatus::kNotDegraded);
+          run_loop.Quit();
+          return std::make_unique<TrustedVaultConnection::Request>();
+        });
 
     base::HistogramTester histogram_tester;
     // This will start the handler and trigger the first request.
@@ -499,15 +493,13 @@ TEST_F(TrustedVaultDegradedRecoverabilityHandlerTest,
     base::RunLoop run_loop;
     ON_CALL(connection, DownloadIsRecoverabilityDegraded(
                             Eq(MakeAccountInfoWithGaiaId("user")), _))
-        .WillByDefault(
-            [&](const CoreAccountInfo&,
-                MockTrustedVaultConnection::IsRecoverabilityDegradedCallback
-                    callback) {
-              std::move(callback).Run(
-                  TrustedVaultRecoverabilityStatus::kDegraded);
-              run_loop.Quit();
-              return std::make_unique<TrustedVaultConnection::Request>();
-            });
+        .WillByDefault([&](const CoreAccountInfo&,
+                           MockTrustedVaultThrottlingConnection::
+                               IsRecoverabilityDegradedCallback callback) {
+          std::move(callback).Run(TrustedVaultRecoverabilityStatus::kDegraded);
+          run_loop.Quit();
+          return std::make_unique<TrustedVaultConnection::Request>();
+        });
 
     base::HistogramTester histogram_tester;
     // This will force a request.
@@ -525,14 +517,13 @@ TEST_F(TrustedVaultDegradedRecoverabilityHandlerTest,
     base::RunLoop run_loop;
     ON_CALL(connection, DownloadIsRecoverabilityDegraded(
                             Eq(MakeAccountInfoWithGaiaId("user")), _))
-        .WillByDefault(
-            [&](const CoreAccountInfo&,
-                MockTrustedVaultConnection::IsRecoverabilityDegradedCallback
-                    callback) {
-              std::move(callback).Run(TrustedVaultRecoverabilityStatus::kError);
-              run_loop.Quit();
-              return std::make_unique<TrustedVaultConnection::Request>();
-            });
+        .WillByDefault([&](const CoreAccountInfo&,
+                           MockTrustedVaultThrottlingConnection::
+                               IsRecoverabilityDegradedCallback callback) {
+          std::move(callback).Run(TrustedVaultRecoverabilityStatus::kError);
+          run_loop.Quit();
+          return std::make_unique<TrustedVaultConnection::Request>();
+        });
 
     base::HistogramTester histogram_tester;
     // This will force a request.

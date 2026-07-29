@@ -6,6 +6,8 @@
 
 #include "base/metrics/histogram_functions.h"
 #include "services/network/public/mojom/referrer_policy.mojom-blink.h"
+#include "third_party/blink/public/mojom/favicon/favicon_url.mojom-blink.h"
+#include "third_party/blink/renderer/core/css/style_engine.h"
 #include "third_party/blink/renderer/core/css/style_sheet_contents.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
@@ -71,7 +73,7 @@ void LinkStyle::NotifyFinished(Resource* resource) {
   auto* cached_style_sheet = To<CSSStyleSheetResource>(resource);
   if ((!cached_style_sheet->ErrorOccurred() &&
        !owner_->FastGetAttribute(html_names::kIntegrityAttr).empty() &&
-       !cached_style_sheet->IntegrityMetadata().empty()) ||
+       !cached_style_sheet->GetIntegrityMetadata().empty()) ||
       resource->ForceIntegrityChecks()) {
     cached_style_sheet->IntegrityReport().SendReports(GetExecutionContext());
 
@@ -151,8 +153,10 @@ bool LinkStyle::SheetLoaded() {
 
 void LinkStyle::NotifyLoadedSheetAndAllCriticalSubresources(
     Node::LoadedSheetErrorStatus error_status) {
-  if (fired_load_)
+  if (fired_load_ &&
+      !RuntimeEnabledFeatures::HTMLLinkElementAttributeValueChangesEnabled()) {
     return;
+  }
   loaded_sheet_ = (error_status == Node::kNoErrorLoadingSubresource);
   if (owner_)
     owner_->ScheduleEvent();
@@ -254,7 +258,7 @@ void LinkStyle::SetDisabledState(bool disabled) {
 
 LinkStyle::LoadReturnValue LinkStyle::LoadStylesheetIfNeeded(
     const LinkLoadParameters& params,
-    const WTF::TextEncoding& charset) {
+    const TextEncoding& charset) {
   if (disabled_state_ == kDisabled || !owner_->RelAttribute().IsStyleSheet() ||
       !StyleSheetTypeIsSupported(params.type) || !ShouldLoadResource() ||
       !params.href.IsValid())
@@ -322,21 +326,30 @@ LinkStyle::LoadReturnValue LinkStyle::LoadStylesheetIfNeeded(
 
 void LinkStyle::Process(LinkLoadParameters::Reason reason) {
   DCHECK(owner_->ShouldProcessStyle());
+
+  // A media change is not a reason to re-process the stylesheet.
+  // See https://html.spec.whatwg.org/multipage/links.html#link-type-stylesheet
+  if (sheet_ && reason == LinkLoadParameters::Reason::kMediaChange) {
+    sheet_->SetMediaQueries(
+        MediaQuerySet::Create(owner_->Media(), GetExecutionContext()));
+    GetDocument().GetStyleEngine().ModifiedStyleSheetCandidateNode(*owner_);
+    return;
+  }
+
   const LinkLoadParameters params(
       owner_->RelAttribute(),
       GetCrossOriginAttributeValue(
           owner_->FastGetAttribute(html_names::kCrossoriginAttr)),
-      owner_->TypeValue().DeprecatedLower(),
-      owner_->AsValue().DeprecatedLower(), owner_->Media().DeprecatedLower(),
+      owner_->TypeValue(), owner_->AsValue().ToAsciiLower(), owner_->Media(),
       owner_->nonce(), owner_->IntegrityValue(),
-      owner_->FetchPriorityHintValue().LowerASCII(),
+      owner_->FetchPriorityHintValue().ToAsciiLower(),
       owner_->GetReferrerPolicy(),
       owner_->GetNonEmptyURLAttribute(html_names::kHrefAttr),
       owner_->FastGetAttribute(html_names::kImagesrcsetAttr),
       owner_->FastGetAttribute(html_names::kImagesizesAttr),
       owner_->FastGetAttribute(html_names::kBlockingAttr), reason);
 
-  WTF::TextEncoding charset = GetCharset();
+  TextEncoding charset = GetCharset();
 
   if (owner_->RelAttribute().GetIconType() !=
           mojom::blink::FaviconIconType::kInvalid &&
@@ -353,8 +366,10 @@ void LinkStyle::Process(LinkLoadParameters::Reason reason) {
                                     RedirectStatus::kNoRedirect)) {
       return;
     }
-    if (GetDocument().GetFrame())
-      GetDocument().GetFrame()->UpdateFaviconURL();
+    if (GetDocument().GetFrame()) {
+      GetDocument().GetFrame()->UpdateFaviconURL(
+          mojom::blink::FaviconUpdateReason::kLinkElementChange);
+    }
   }
 
   if (!sheet_ && !owner_->LoadLink(params))

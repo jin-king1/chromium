@@ -4,11 +4,14 @@
 
 #include "third_party/blink/renderer/platform/mediastream/media_stream_audio_source.h"
 
+#include <inttypes.h>
+
 #include <memory>
 #include <utility>
 
 #include "base/functional/bind.h"
 #include "base/logging.h"
+#include "base/notimplemented.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/to_string.h"
 #include "base/task/single_thread_task_runner.h"
@@ -103,9 +106,8 @@ bool MediaStreamAudioSource::ConnectToInitializedTrack(
   if (is_stopped_)
     return false;
 
-  track->Start(WTF::BindOnce(&MediaStreamAudioSource::StopAudioDeliveryTo,
-                             weak_factory_.GetWeakPtr(),
-                             WTF::Unretained(track)));
+  track->Start(blink::BindOnce(&MediaStreamAudioSource::StopAudioDeliveryTo,
+                               weak_factory_.GetWeakPtr(), Unretained(track)));
   deliverer_.AddConsumer(track);
   LogMessage(
       base::StringPrintf("%s => (added new MediaStreamAudioTrack as consumer, "
@@ -152,6 +154,12 @@ bool MediaStreamAudioSource::HasSameNonReconfigurableSettings(
     return false;
 
   return this_properties->HasSameNonReconfigurableSettings(*others_properties);
+}
+
+std::optional<media::AudioCapturerSource::ErrorCode>
+MediaStreamAudioSource::ErrorCode() {
+  DCHECK(GetTaskRunner()->BelongsToCurrentThread());
+  return error_code_;
 }
 
 void MediaStreamAudioSource::DoChangeSource(
@@ -255,8 +263,8 @@ void MediaStreamAudioSource::SetMutedState(bool muted_state) {
                                 base::ToString(muted_state).c_str()));
   PostCrossThreadTask(
       *GetTaskRunner(), FROM_HERE,
-      WTF::CrossThreadBindOnce(&WebPlatformMediaStreamSource::SetSourceMuted,
-                               GetWeakPtr(), muted_state));
+      CrossThreadBindOnce(&WebPlatformMediaStreamSource::SetSourceMuted,
+                          GetWeakPtr(), muted_state));
 }
 
 int MediaStreamAudioSource::NumPreferredChannels() const {
@@ -270,10 +278,23 @@ size_t MediaStreamAudioSource::NumTracks() const {
   return static_cast<int>(audio_tracks.size());
 }
 
+Vector<MediaStreamAudioTrack*> MediaStreamAudioSource::GetTracks() const {
+  DCHECK(GetTaskRunner()->BelongsToCurrentThread());
+  Vector<MediaStreamAudioTrack*> audio_tracks;
+  deliverer_.GetConsumerList(&audio_tracks);
+  return audio_tracks;
+}
+
 void MediaStreamAudioSource::LogMessage(const std::string& message) {
   blink::WebRtcLogMessage(
       base::StringPrintf("MSAS::%s [this=0x%" PRIXPTR "]", message.c_str(),
                          reinterpret_cast<uintptr_t>(this)));
+}
+
+void MediaStreamAudioSource::SetErrorCode(
+    media::AudioCapturerSource::ErrorCode code) {
+  DCHECK(GetTaskRunner()->BelongsToCurrentThread());
+  error_code_ = code;
 }
 
 }  // namespace blink

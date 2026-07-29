@@ -5,26 +5,32 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_PAYMENTS_PAYMENT_HANDLER_WEB_FLOW_VIEW_CONTROLLER_H_
 #define CHROME_BROWSER_UI_VIEWS_PAYMENTS_PAYMENT_HANDLER_WEB_FLOW_VIEW_CONTROLLER_H_
 
+#include "base/memory/weak_ptr.h"
 #include "base/memory/raw_ptr.h"
 #include "chrome/browser/ui/views/payments/payment_handler_modal_dialog_manager_delegate.h"
 #include "chrome/browser/ui/views/payments/payment_request_sheet_controller.h"
-#include "components/payments/content/developer_console_logger.h"
 #include "components/payments/content/payment_request_display_manager.h"
 #include "content/public/browser/web_contents_delegate.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "ui/base/window_open_disposition.h"
-#include "ui/gfx/geometry/rect.h"
 #include "ui/views/controls/webview/unhandled_keyboard_event_handler.h"
 #include "url/gurl.h"
 
 class Profile;
 
+namespace blink {
+class WebInputEvent;
+}
+
 namespace views {
-class ProgressBar;
+class View;
 }
 
 namespace payments {
 
+class PaymentHandlerCloseButton;
+class PaymentHandlerOriginLabel;
+class PaymentHandlerProgressBar;
 class PaymentRequestDialogView;
 class PaymentRequestSpec;
 class PaymentRequestState;
@@ -67,6 +73,7 @@ class PaymentHandlerWebFlowViewController
   bool ShouldShowPrimaryButton() override;
   bool ShouldShowSecondaryButton() override;
   void PopulateSheetHeaderView(views::View* view) override;
+  views::View* GetFirstFocusedView() override;
   bool GetSheetId(DialogViewID* sheet_id) override;
   bool DisplayDynamicBorderForHiddenContents() override;
   bool CanContentViewBeScrollable() override;
@@ -84,25 +91,31 @@ class PaymentHandlerWebFlowViewController
       bool* was_blocked) override;
   bool HandleKeyboardEvent(content::WebContents* source,
                            const input::NativeWebKeyboardEvent& event) override;
+  void CloseContents(content::WebContents* source) override;
+  void RequestMediaAccessPermission(
+      content::WebContents* web_contents,
+      const content::MediaStreamRequest& request,
+      content::MediaResponseCallback callback) override;
+  bool CheckMediaAccessPermission(content::RenderFrameHost* render_frame_host,
+                                  const url::Origin& security_origin,
+                                  blink::mojom::MediaStreamType type) override;
 
   // content::WebContentsObserver:
   void DidFinishNavigation(
       content::NavigationHandle* navigation_handle) override;
   void LoadProgressChanged(double progress) override;
   void TitleWasSet(content::NavigationEntry* entry) override;
+  void DidGetUserInteraction(const blink::WebInputEvent& event) override;
+  void DidStopLoading() override;
 
   void AbortPayment();
+  void SetHeaderColorsAndOriginLabelText();
 
-  // Calculates the header background based on the web contents theme, if any,
-  // otherwise the Chrome theme.
-  std::unique_ptr<views::Background> GetHeaderBackground(
-      views::View* header_view);
-
-  DeveloperConsoleLogger log_;
   raw_ptr<Profile> profile_;
   GURL target_;
-  raw_ptr<views::ProgressBar, DanglingUntriaged> progress_bar_ = nullptr;
-  raw_ptr<views::View, DanglingUntriaged> separator_ = nullptr;
+  base::WeakPtr<PaymentHandlerProgressBar> progress_bar_;
+  base::WeakPtr<PaymentHandlerOriginLabel> origin_label_;
+  base::WeakPtr<PaymentHandlerCloseButton> close_button_;
   PaymentHandlerOpenWindowCallback first_navigation_complete_callback_;
   // Used to present modal dialog triggered from the payment handler web view,
   // e.g. an authenticator dialog.

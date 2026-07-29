@@ -7,6 +7,7 @@
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/network_profile_bubble.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/toolbar/app_menu_control.h"
 #include "chrome/browser/ui/views/toolbar/browser_app_menu_button.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/common/pref_names.h"
@@ -24,13 +25,11 @@
 #include "ui/views/controls/link.h"
 #include "ui/views/layout/fill_layout.h"
 
-namespace {
-
 class NetworkProfileBubbleView : public views::BubbleDialogDelegateView {
   METADATA_HEADER(NetworkProfileBubbleView, views::BubbleDialogDelegateView)
 
  public:
-  NetworkProfileBubbleView(views::View* anchor,
+  NetworkProfileBubbleView(views::BubbleAnchor anchor,
                            content::PageNavigator* navigator,
                            Profile* profile);
   NetworkProfileBubbleView(const NetworkProfileBubbleView&) = delete;
@@ -54,7 +53,7 @@ class NetworkProfileBubbleView : public views::BubbleDialogDelegateView {
 // NetworkProfileBubbleView, public:
 
 NetworkProfileBubbleView::NetworkProfileBubbleView(
-    views::View* anchor,
+    views::BubbleAnchor anchor,
     content::PageNavigator* navigator,
     Profile* profile)
     : BubbleDialogDelegateView(anchor, views::BubbleBorder::TOP_RIGHT),
@@ -112,24 +111,24 @@ void NetworkProfileBubbleView::LinkClicked(const ui::Event& event) {
 BEGIN_METADATA(NetworkProfileBubbleView)
 END_METADATA
 
-}  // namespace
-
 // static
-void NetworkProfileBubble::ShowNotification(Browser* browser) {
-  views::View* anchor = NULL;
+void NetworkProfileBubble::ShowNotification(BrowserWindowInterface* browser) {
+  views::BubbleAnchor anchor;
   BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser);
   if (browser_view && browser_view->toolbar()) {
-    anchor = browser_view->toolbar_button_provider()->GetAppMenuButton();
+    auto* control =
+        browser_view->toolbar_button_provider()->GetAppMenuControl();
+    anchor = control ? control->GetAnchor() : views::BubbleAnchor();
   }
   NetworkProfileBubbleView* bubble =
-      new NetworkProfileBubbleView(anchor, browser, browser->profile());
+      new NetworkProfileBubbleView(anchor, browser, browser->GetProfile());
   views::BubbleDialogDelegateView::CreateBubble(bubble)->Show();
 
   NetworkProfileBubble::SetNotificationShown(true);
 
   // Mark the time of the last bubble and reduce the number of warnings left
   // before the next silence period starts.
-  PrefService* prefs = browser->profile()->GetPrefs();
+  PrefService* prefs = browser->GetProfile()->GetPrefs();
   prefs->SetInt64(prefs::kNetworkProfileLastWarningTime,
                   base::Time::Now().ToTimeT());
   int left_warnings = prefs->GetInteger(prefs::kNetworkProfileWarningsLeft);

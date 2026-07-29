@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <fcntl.h>
 #include <stddef.h>
 #include <stdlib.h>
 
@@ -10,28 +11,37 @@
 #include <utility>
 
 #include "base/allocator/partition_alloc_support.h"
+#include "base/byte_size.h"
 #include "base/check.h"
 #include "base/command_line.h"
 #include "base/feature_list.h"
+#include "base/files/scoped_file.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/message_loop/message_pump_type.h"
-#include "base/metrics/histogram_macros.h"
+#include "base/message_loop/message_pump_wakeup_counter.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/numerics/clamped_math.h"
 #include "base/process/current_process.h"
 #include "base/process/process_metrics.h"
 #include "base/rand_util.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/synchronization/lock_metrics_recorder.h"
 #include "base/system/sys_info.h"
 #include "base/task/current_thread.h"
 #include "base/task/single_thread_task_executor.h"
 #include "base/task/thread_pool/thread_pool_instance.h"
+#include "base/threading/hang_watcher.h"
 #include "base/threading/platform_thread.h"
+#include "base/threading/platform_thread_metrics.h"
+#include "base/threading/thread.h"
 #include "base/time/time.h"
 #include "base/timer/hi_res_timer_manager.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
+#include "components/viz/common/features.h"
+#include "components/viz/service/gl/gpu_log_message_manager.h"
 #include "components/viz/service/main/viz_main_impl.h"
 #include "content/child/child_process.h"
 #include "content/common/content_constants_internal.h"
@@ -44,21 +54,24 @@
 #include "content/public/common/content_switches.h"
 #include "content/public/common/main_function_params.h"
 #include "content/public/common/result_codes.h"
+#include "content/public/common/zygote/zygote_buildflags.h"
 #include "content/public/gpu/content_gpu_client.h"
 #include "gpu/command_buffer/service/gpu_switches.h"
 #include "gpu/config/gpu_driver_bug_list.h"
+#include "gpu/config/gpu_driver_bug_workarounds.h"
 #include "gpu/config/gpu_finch_features.h"
 #include "gpu/config/gpu_info_collector.h"
 #include "gpu/config/gpu_preferences.h"
 #include "gpu/config/gpu_switches.h"
 #include "gpu/config/gpu_util.h"
-#include "gpu/ipc/common/gpu_memory_buffer_support.h"
 #include "gpu/ipc/service/gpu_config.h"
 #include "gpu/ipc/service/gpu_init.h"
 #include "gpu/ipc/service/gpu_watchdog_thread.h"
 #include "media/gpu/buildflags.h"
+#include "mojo/public/cpp/bindings/direct_receiver.h"
 #include "mojo/public/cpp/bindings/interface_endpoint_client.h"
 #include "mojo/public/cpp/bindings/sync_call_restrictions.h"
+#include "services/tracing/public/cpp/perfetto/perfetto_traced_process.h"
 #include "services/tracing/public/cpp/trace_startup.h"
 #include "services/tracing/public/cpp/trace_startup_config.h"
 #include "third_party/angle/src/gpu_info_util/SystemInfo.h"
@@ -72,7 +85,6 @@
 #include "ui/gl/gl_switches.h"
 #include "ui/gl/gpu_switching_manager.h"
 #include "ui/gl/init/gl_factory.h"
-#include "ui/gl/startup_trace.h"
 
 #if BUILDFLAG(IS_WIN)
 #include <windows.h>
@@ -82,8 +94,13 @@
 
 #if BUILDFLAG(IS_ANDROID)
 #include "base/android/meminfo_dump_provider.h"
+#include "base/posix/eintr_wrapper.h"
 #include "base/trace_event/memory_dump_manager.h"
 #include "components/tracing/common/graphics_memory_dump_provider_android.h"
+#include "sandbox/linux/services/thread_helpers.h"  // nogncheck
+#include "sandbox/policy/features.h"
+#include "sandbox/policy/linux/landlock_gpu_policy_android.h"
+#include "sandbox/policy/sandbox_type.h"
 #endif
 
 #if BUILDFLAG(IS_WIN)
@@ -93,6 +110,10 @@
 #include "media/base/win/mf_initializer.h"
 #include "sandbox/policy/win/sandbox_warmup.h"
 #include "sandbox/win/src/sandbox.h"
+#endif
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
+#include "services/webnn/public/cpp/webnn_sandbox_init.h"
 #endif
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
@@ -105,7 +126,6 @@
 #if BUILDFLAG(IS_MAC)
 #include "base/message_loop/message_pump_apple.h"
 #include "components/metal_util/device_removal.h"
-#include "gpu/ipc/service/built_in_shader_cache_loader.h"
 #include "sandbox/mac/seatbelt.h"
 #endif
 
@@ -121,6 +141,8 @@ namespace {
 bool StartSandboxLinux(gpu::GpuWatchdogThread*,
                        const gpu::GPUInfo*,
                        const gpu::GpuPreferences&);
+#elif BUILDFLAG(IS_ANDROID)
+bool StartSandboxAndroid(gpu::GpuWatchdogThread*);
 #elif BUILDFLAG(IS_WIN)
 bool StartSandboxWindows(const sandbox::SandboxInterfaceInfo*);
 #endif
@@ -142,8 +164,10 @@ class ContentSandboxHelper : public gpu::GpuSandboxHelper {
 
  private:
   // SandboxHelper:
-  void PreSandboxStartup(const gpu::GpuPreferences& gpu_prefs) override {
-    GPU_STARTUP_TRACE_EVENT("gpu_main::PreSandboxStartup");
+  void PreSandboxStartup(const gpu::GpuPreferences& gpu_prefs,
+                         const gpu::GpuDriverBugWorkarounds& workarounds,
+                         const gpu::GPUInfo* gpu_info) override {
+    TRACE_EVENT("gpu,startup", "gpu_main::PreSandboxStartup");
     // Warm up resources that don't need access to GPUInfo.
     {
       TRACE_EVENT0("gpu", "Warm up rand");
@@ -158,31 +182,43 @@ class ContentSandboxHelper : public gpu::GpuSandboxHelper {
 
 #if BUILDFLAG(USE_VAAPI)
 #if BUILDFLAG(IS_CHROMEOS)
-    media::VaapiWrapper::PreSandboxInitialization();
+    media::VaapiWrapper::PreSandboxInitialization(
+        /*allow_disabling_global_lock=*/false, &workarounds, gpu_info);
 #else  // For Linux with VA-API support.
-    if (!gpu_prefs.disable_accelerated_video_decode)
-      media::VaapiWrapper::PreSandboxInitialization();
+    if (!gpu_prefs.disable_accelerated_video_decode) {
+      media::VaapiWrapper::PreSandboxInitialization(
+          /*allow_disabling_global_lock=*/false, &workarounds, gpu_info);
+    }
 #endif
 #endif  // BUILDFLAG(USE_VAAPI)
 #if BUILDFLAG(IS_WIN)
     media::PreSandboxMediaFoundationInitialization();
 #endif
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
+    webnn::PreSandboxWebNNInitialization();
+#endif
 
     // On Linux, reading system memory doesn't work through the GPU sandbox.
     // This value is cached, so access it here to populate the cache.
-    base::SysInfo::AmountOfPhysicalMemory();
+    base::SysInfo::AmountOfTotalPhysicalMemory();
   }
 
   bool EnsureSandboxInitialized(gpu::GpuWatchdogThread* watchdog_thread,
                                 const gpu::GPUInfo* gpu_info,
                                 const gpu::GpuPreferences& gpu_prefs) override {
-    GPU_STARTUP_TRACE_EVENT("gpu_main::EnsureSandboxInitialized");
+    TRACE_EVENT("gpu,startup", "gpu_main::EnsureSandboxInitialized");
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
     return StartSandboxLinux(watchdog_thread, gpu_info, gpu_prefs);
 #elif BUILDFLAG(IS_WIN)
     return StartSandboxWindows(sandbox_info_);
 #elif BUILDFLAG(IS_MAC)
     return sandbox::Seatbelt::IsSandboxed();
+#elif BUILDFLAG(IS_ANDROID)
+    if (base::FeatureList::IsEnabled(
+            sandbox::policy::features::kAndroidGpuSandbox)) {
+      return StartSandboxAndroid(watchdog_thread);
+    }
+    return false;
 #else
     return false;
 #endif
@@ -193,32 +229,16 @@ class ContentSandboxHelper : public gpu::GpuSandboxHelper {
 #endif
 };
 
-void LoadMetalShaderCacheIfNecessary() {
-#if BUILDFLAG(IS_MAC)
-  GPU_STARTUP_TRACE_EVENT("gpu_main::LoadMetalShaderCacheIfNecessary");
-  if (base::FeatureList::IsEnabled(features::kUseBuiltInMetalShaderCache)) {
-    gpu::BuiltInShaderCacheLoader::StartLoading();
-  }
-#endif
-}
-
 }  // namespace
 
 // Main function for starting the Gpu process.
 int GpuMain(MainFunctionParams parameters) {
-  if (tracing::TraceStartupConfig::GetInstance().IsEnabled()) {
-    gl::StartupTrace::Startup();
-  }
+  TRACE_EVENT("gpu,startup", "GpuMain");
 
-  TRACE_EVENT0("gpu", "GpuMain");
   base::CurrentProcess::GetInstance().SetProcessType(
       base::CurrentProcessType::PROCESS_GPU);
 
   const base::CommandLine& command_line = *parameters.command_line;
-
-  // Start this early on as it reads from a file (in the background) and full
-  // startup is gated by this completing.
-  LoadMetalShaderCacheIfNecessary();
 
   gpu::GpuPreferences gpu_preferences;
   if (command_line.HasSwitch(switches::kGpuPreferences)) {
@@ -266,7 +286,7 @@ int GpuMain(MainFunctionParams parameters) {
 
   // Installs a base::LogMessageHandlerFunction which ensures messages are sent
   // to the GpuProcessHost once the GpuServiceImpl has started.
-  viz::GpuServiceImpl::InstallPreInitializeLogHandler();
+  viz::GpuLogMessageManager::GetInstance()->InstallPreInitializeLogHandler();
 
   // We are experiencing what appear to be memory-stomp issues in the GPU
   // process. These issues seem to be impacting the task executor and listeners
@@ -281,12 +301,12 @@ int GpuMain(MainFunctionParams parameters) {
     // CADisplayLink (Mac HW VSync) callback only works with NS_RUNLOOP.
     main_thread_task_executor =
         std::make_unique<base::SingleThreadTaskExecutor>(
-            base::MessagePumpType::NS_RUNLOOP);
+            base::MessagePumpType::NS_RUNLOOP, /*is_main_thread=*/true);
     main_thread_task_executor->SetWorkBatchSize(2);
 #else
     main_thread_task_executor =
         std::make_unique<base::SingleThreadTaskExecutor>(
-            base::MessagePumpType::DEFAULT);
+            base::MessagePumpType::DEFAULT, /*is_main_thread=*/true);
 #endif
   } else {
 #if BUILDFLAG(IS_WIN)
@@ -294,14 +314,14 @@ int GpuMain(MainFunctionParams parameters) {
     // is expected to run on this thread.
     main_thread_task_executor =
         std::make_unique<base::SingleThreadTaskExecutor>(
-            base::MessagePumpType::DEFAULT);
+            base::MessagePumpType::DEFAULT, /*is_main_thread=*/true);
 #elif BUILDFLAG(IS_OZONE)
     // The MessagePump type required depends on the Ozone platform selected at
     // runtime.
     if (!main_thread_task_executor) {
       main_thread_task_executor =
           std::make_unique<base::SingleThreadTaskExecutor>(
-              gpu_preferences.message_pump_type);
+              gpu_preferences.message_pump_type, /*is_main_thread=*/true);
     }
 #elif BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 #error "Unsupported Linux platform."
@@ -313,7 +333,7 @@ int GpuMain(MainFunctionParams parameters) {
     // type does not support NSObject.
     main_thread_task_executor =
         std::make_unique<base::SingleThreadTaskExecutor>(
-            base::MessagePumpType::NS_RUNLOOP);
+            base::MessagePumpType::NS_RUNLOOP, /*is_main_thread=*/true);
     // As part of the migration to DoWork(), this policy is required to keep
     // previous behavior and avoid regressions.
     // TODO(crbug.com/40668161): Consider updating the policy.
@@ -321,13 +341,14 @@ int GpuMain(MainFunctionParams parameters) {
 #else
     main_thread_task_executor =
         std::make_unique<base::SingleThreadTaskExecutor>(
-            base::MessagePumpType::DEFAULT);
+            base::MessagePumpType::DEFAULT, /*is_main_thread=*/true);
 #endif
   }
-  gl::StartupTrace::GetInstance()->BindToCurrentThread();
 
   base::PlatformThread::SetName("CrGpuMain");
   mojo::InterfaceEndpointClient::SetThreadNameSuffixForMetrics("GpuMain");
+  base::MessagePumpWakeupCounter::InitializeForCurrentThread("GpuMain");
+  base::LockMetricsRecorder::EnableRecordingOnCurrentThread("CrGpuMain");
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
   // Thread type delegate of the process should be registered before
@@ -339,8 +360,7 @@ int GpuMain(MainFunctionParams parameters) {
   SandboxedProcessThreadTypeHandler::Create();
 #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 
-  base::PlatformThread::SetCurrentThreadType(
-      base::ThreadType::kDisplayCritical);
+  base::PlatformThread::SetDefaultThreadType(base::ThreadType::kPresentation);
 
   auto gpu_init = std::make_unique<gpu::GpuInit>();
   ContentSandboxHelper sandbox_helper;
@@ -353,7 +373,7 @@ int GpuMain(MainFunctionParams parameters) {
   // Since GPU initialization calls into skia, it's important to initialize skia
   // before it.
   {
-    GPU_STARTUP_TRACE_EVENT("gpu_main::InitializeSkia");
+    TRACE_EVENT("gpu,startup", "gpu_main::InitializeSkia");
     InitializeSkia();
   }
 
@@ -383,9 +403,37 @@ int GpuMain(MainFunctionParams parameters) {
     client->PostSandboxInitialized();
   }
 
+  // Start the HangWatcher now that the sandbox is engaged, if it hasn't already
+  // been started.
+  if (base::HangWatcher::IsEnabled() &&
+      !base::HangWatcher::GetInstance()->IsStarted()) {
+    DCHECK(parameters.hang_watcher_not_started_time.has_value());
+    base::TimeDelta uncovered_hang_watcher_time =
+        base::TimeTicks::Now() -
+        parameters.hang_watcher_not_started_time.value();
+    base::UmaHistogramTimes("HangWatcher.GpuProcess.UncoveredStartupTime",
+                            uncovered_hang_watcher_time);
+    base::HangWatcher::GetInstance()->Start();
+  }
+
+#if BUILDFLAG(IS_ANDROID)
+  base::PlatformThreadPriorityMonitor::Get().RegisterCurrentThread("GpuMain");
+  base::PlatformThreadPriorityMonitor::Get().Start();
+#endif  // BUILDFLAG(IS_ANDROID)
+
+  // Startup tracing creates a tracing thread, which is incompatible on
+  // platforms that require single-threaded sandbox initialization. In these
+  // cases, startup tracing is either initialized right after sandbox
+  // initialization, or we restart the tracing thread during sandbox
+  // initialization.
+  if (parameters.needs_startup_tracing_after_sandbox_init) {
+    tracing::InitTracingPostFeatureList(/*enable_consumer=*/false,
+                                        /*will_trace_thread_restart=*/false);
+  }
+
   GetContentClient()->SetGpuInfo(gpu_init->gpu_info());
 
-  base::ThreadType io_thread_type = base::ThreadType::kDisplayCritical;
+  base::ThreadType io_thread_type = base::ThreadType::kPresentation;
   // ChildProcess will start the ThreadPoolInstance now that the sandbox is
   // initialized.
   ChildProcess gpu_process(io_thread_type);
@@ -401,13 +449,6 @@ int GpuMain(MainFunctionParams parameters) {
   child_thread->Init(start_time);
 
   gpu_process.set_main_thread(child_thread);
-
-  // Mojo IPC support is brought up by GpuChildThread, so startup tracing is
-  // enabled here if it needs to start after mojo init (normally so the mojo
-  // broker can bypass the sandbox to allocate startup tracing's SMB).
-  if (parameters.needs_startup_tracing_after_mojo_init) {
-    tracing::EnableStartupTracingIfNeeded();
-  }
 
 #if BUILDFLAG(IS_MAC)
   // A GPUEjectPolicy of 'wait' is set in the Info.plist of the browser
@@ -450,7 +491,6 @@ int GpuMain(MainFunctionParams parameters) {
   }
 
   DCHECK(tracing::IsTracingInitialized());
-  gl::StartupTrace::StarupDone();
 
   {
     TRACE_EVENT0("gpu", "Run Message Loop");
@@ -466,12 +506,20 @@ namespace {
 bool StartSandboxLinux(gpu::GpuWatchdogThread* watchdog_thread,
                        const gpu::GPUInfo* gpu_info,
                        const gpu::GpuPreferences& gpu_prefs) {
-  GPU_STARTUP_TRACE_EVENT("Initialize sandbox");
+  TRACE_EVENT("gpu,startup", "Initialize sandbox");
 
   if (watchdog_thread) {
     // SandboxLinux needs to be able to ensure that the thread
     // has really been stopped.
     sandbox::policy::SandboxLinux::GetInstance()->StopThread(watchdog_thread);
+  }
+
+  base::Thread* trace_thread =
+      tracing::IsTracingInitialized()
+          ? tracing::PerfettoTracedProcess::GetTraceThread()
+          : nullptr;
+  if (trace_thread) {
+    sandbox::policy::SandboxLinux::GetInstance()->StopThread(trace_thread);
   }
 
   // SandboxLinux::InitializeSandbox() must always be called
@@ -506,9 +554,11 @@ bool StartSandboxLinux(gpu::GpuWatchdogThread* watchdog_thread,
   // Video decoding of many video streams can use thousands of FDs as well as
   // Exo clients.
   // See https://crbug.com/1417237
+  // With MappableSI the number of active GMBs has doubled.
+  // See https://crbug.com/404365358
   const auto current_max_fds =
       base::saturated_cast<unsigned int>(base::GetMaxFds());
-  constexpr unsigned int kMaxFDsDelta = 1u << 13;
+  constexpr unsigned int kMaxFDsDelta = 1u << 14;
   const auto new_max_fds =
       static_cast<unsigned int>(base::ClampMax(current_max_fds, kMaxFDsDelta));
   base::IncreaseFdLimitTo(new_max_fds);
@@ -523,14 +573,50 @@ bool StartSandboxLinux(gpu::GpuWatchdogThread* watchdog_thread,
     watchdog_thread->Start();
   }
 
+  if (trace_thread) {
+    tracing::PerfettoTracedProcess::Get().RestartThreadInSandbox();
+  }
+
   return res;
 }
 #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 
+#if BUILDFLAG(IS_ANDROID)
+bool StartSandboxAndroid(gpu::GpuWatchdogThread* watchdog_thread) {
+  if (watchdog_thread) {
+    // Stop the watchdog thread temporarily.
+    base::ScopedFD proc_fd(
+        HANDLE_EINTR(open("/proc", O_DIRECTORY | O_RDONLY | O_CLOEXEC)));
+
+    sandbox::ThreadHelpers::StopThreadAndWatchProcFS(proc_fd.get(),
+                                                     watchdog_thread);
+  }
+
+  bool res = sandbox::landlock::ApplyLandlock(
+      sandbox::policy::SandboxTypeFromCommandLine(
+          *base::CommandLine::ForCurrentProcess()));
+
+  if (watchdog_thread) {
+    watchdog_thread->Start();
+  }
+
+  return res;
+}
+#endif  // BUILDFLAG(IS_ANDROID)
+
 #if BUILDFLAG(IS_WIN)
 bool StartSandboxWindows(const sandbox::SandboxInterfaceInfo* sandbox_info) {
-  GPU_STARTUP_TRACE_EVENT("Lower token");
+  TRACE_EVENT("gpu,startup", "Lower token");
 
+  // Set up DirectReceiver before the sandbox is enabled.
+  const bool should_init_transport =
+      features::IsVizDirectCompositorThreadIpcNonRootEnabled() ||
+      features::IsVizDirectCompositorThreadIpcFrameSinkManagerEnabled();
+  if (should_init_transport) {
+    // This pre-initializes a transport to be used for direct receiver since a
+    // feature that will use it is enabled.
+    mojo::CreateDirectReceiverTransportBeforeSandbox();
+  }
   // For Windows, if the target_services interface is not zero, the process
   // is sandboxed and we must call LowerToken() before rendering untrusted
   // content.

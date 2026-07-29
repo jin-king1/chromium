@@ -8,6 +8,7 @@
 #import "base/strings/sys_string_conversions.h"
 #import "base/test/scoped_feature_list.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/test/app/uikit_test_util.h"
 #import "testing/gtest/include/gtest/gtest.h"
 #import "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
@@ -68,7 +69,8 @@ TEST_F(UIKitUIUtilTest, ViewHierarchyRootForView) {
   [view1 addSubview:view2];
   EXPECT_EQ(ViewHierarchyRootForView(view2), view1);
 
-  UIWindow* window = [[UIWindow alloc] init];
+  UIWindow* window = [[UIWindow alloc]
+      initWithWindowScene:chrome_test_util::GetAnyWindowScene()];
   [window addSubview:view1];
 
   EXPECT_EQ(ViewHierarchyRootForView(view1), window);
@@ -83,28 +85,39 @@ TEST_F(UIKitUIUtilTest, ViewHierarchyRootForView) {
 // is not the returned value when the `kTraitCollectionDidChangeRefactor`
 // feature flag is disabled.
 TEST_F(UIKitUIUtilTest, UITraitArrayIsReturnedWhenKillswitchIsEnabled) {
-  if (@available(iOS 17, *)) {
-    base::test::ScopedFeatureList scoped_feature_list;
-    scoped_feature_list.InitAndDisableFeature(
-        kEnableTraitCollectionRegistration);
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(kEnableTraitCollectionRegistration);
 
-    NSArray<UITrait>* traits = @[ UITraitForceTouchCapability.class ];
-    EXPECT_NE([TraitCollectionSetForTraits(traits) count], [traits count]);
-  }
+  NSArray<UITrait>* traits = @[ UITraitForceTouchCapability.class ];
+  EXPECT_NE([TraitCollectionSetForTraits(traits) count], [traits count]);
 }
 
 // Tests that the NSArray of UITraits passed into `TraitCollectionSetForTraits`
 // is the returned value when the `kTraitCollectionDidChangeRefactor` feature
 // flag is enabled.
 TEST_F(UIKitUIUtilTest, UITraitArrayIsReturnedWhenKillswitchIsDisabled) {
-  if (@available(iOS 17, *)) {
-    base::test::ScopedFeatureList scoped_feature_list;
-    scoped_feature_list.InitAndEnableFeature(
-        kEnableTraitCollectionRegistration);
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(kEnableTraitCollectionRegistration);
 
-    NSArray<UITrait>* traits = @[ UITraitForceTouchCapability.class ];
-    EXPECT_EQ([TraitCollectionSetForTraits(traits) count], [traits count]);
-  }
+  NSArray<UITrait>* traits = @[ UITraitForceTouchCapability.class ];
+  EXPECT_EQ([TraitCollectionSetForTraits(traits) count], [traits count]);
+}
+
+// Tests that the memory footprint of an image is calculated correctly.
+TEST_F(UIKitUIUtilTest, MemoryFootprintForImage) {
+  const CGSize kSize = CGSizeMake(100, 100);
+  UIGraphicsImageRendererFormat* format =
+      [UIGraphicsImageRendererFormat preferredFormat];
+  format.scale = 0;
+  format.opaque = NO;
+  UIGraphicsImageRenderer* renderer =
+      [[UIGraphicsImageRenderer alloc] initWithSize:kSize format:format];
+  UIImage* image =
+      [renderer imageWithActions:^(UIGraphicsImageRendererContext* context){
+      }];
+  size_t image_size_in_kb = CGImageGetBytesPerRow([image CGImage]) *
+                            CGImageGetHeight([image CGImage]) / 1024;
+  EXPECT_EQ(MemoryFootprintForImage(image), image_size_in_kb);
 }
 
 }  // namespace

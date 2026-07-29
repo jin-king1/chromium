@@ -7,19 +7,22 @@ package org.chromium.chrome.browser.readaloud.player.expanded;
 import android.content.res.Resources;
 import android.view.View;
 
-import androidx.annotation.Nullable;
 import androidx.annotation.StringRes;
 
 import org.chromium.base.Log;
-import org.chromium.base.supplier.ObservableSupplierImpl;
+import org.chromium.base.supplier.NonNullObservableSupplier;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.readaloud.player.R;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 
 /** Base class for menu bottom sheets. */
+@NullMarked
 abstract class MenuSheetContent implements BottomSheetContent {
     private static final String TAG = "ReadAloudMenu";
-    private final BottomSheetController mBottomSheetController;
+    protected final BottomSheetController mBottomSheetController;
     protected final BottomSheetContent mParent;
     private boolean mOpeningSubmenu;
 
@@ -90,12 +93,6 @@ abstract class MenuSheetContent implements BottomSheetContent {
     }
 
     @Override
-    public int getPeekHeight() {
-        // Only full height mode enabled.
-        return HeightMode.DISABLED;
-    }
-
-    @Override
     public float getHalfHeightRatio() {
         // Only full height mode enabled.
         return HeightMode.DISABLED;
@@ -113,10 +110,8 @@ abstract class MenuSheetContent implements BottomSheetContent {
     }
 
     @Override
-    public ObservableSupplierImpl<Boolean> getBackPressStateChangedSupplier() {
-        ObservableSupplierImpl<Boolean> supplier = new ObservableSupplierImpl<>();
-        supplier.set(true);
-        return supplier;
+    public NonNullObservableSupplier<Boolean> getBackPressStateChangedSupplier() {
+        return ObservableSuppliers.alwaysTrue();
     }
 
     @Override
@@ -146,8 +141,8 @@ abstract class MenuSheetContent implements BottomSheetContent {
     }
 
     @Override
-    public boolean canSuppressInAnyState() {
+    public boolean canBeSuppressed(BottomSheetContent nextContent) {
         // Always immediately hide if a higher-priority sheet content wants to show.
-        return true;
+        return nextContent.getPriority() <= ContentPriority.HIGH;
     }
 }

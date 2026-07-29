@@ -19,18 +19,17 @@
 #include "base/types/optional_ref.h"
 #include "chrome/browser/profiles/keep_alive/scoped_profile_keep_alive.h"
 #include "chrome/browser/web_applications/commands/web_app_command.h"
-#include "chrome/browser/web_applications/isolated_web_apps/commands/isolated_web_app_install_command_helper.h"
-#include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_install_source.h"
-#include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_integrity_block_data.h"
-#include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_storage_location.h"
+#include "chrome/browser/web_applications/isolated_web_apps/install/isolated_web_app_install_source.h"
 #include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_url_info.h"
 #include "chrome/browser/web_applications/isolated_web_apps/jobs/prepare_install_info_job.h"
+#include "chrome/browser/web_applications/isolated_web_apps/update/version_change_validator.h"
 #include "chrome/browser/web_applications/locks/app_lock.h"
+#include "chrome/browser/web_applications/model/integrity_block_data.h"
 #include "chrome/browser/web_applications/web_app.h"
 #include "chrome/browser/web_applications/web_app_install_info.h"
 #include "components/keep_alive_registry/scoped_keep_alive.h"
 #include "components/webapps/common/web_app_id.h"
-#include "third_party/blink/public/mojom/manifest/manifest.mojom-forward.h"
+#include "components/webapps/isolated_web_apps/types/storage_location.h"
 
 class Profile;
 
@@ -44,15 +43,16 @@ class WebContents;
 
 namespace web_app {
 
+// Represents a successful preparation and storage of a pending IWA update.
 struct IsolatedWebAppUpdatePrepareAndStoreCommandSuccess {
   IsolatedWebAppUpdatePrepareAndStoreCommandSuccess(
-      base::Version update_version,
+      IwaVersion update_version,
       IsolatedWebAppStorageLocation destination_location);
   IsolatedWebAppUpdatePrepareAndStoreCommandSuccess(
       const IsolatedWebAppUpdatePrepareAndStoreCommandSuccess& other);
   ~IsolatedWebAppUpdatePrepareAndStoreCommandSuccess();
 
-  base::Version update_version;
+  IwaVersion update_version;
   IsolatedWebAppStorageLocation location;
 };
 
@@ -60,6 +60,8 @@ std::ostream& operator<<(
     std::ostream& os,
     const IsolatedWebAppUpdatePrepareAndStoreCommandSuccess& success);
 
+// Represents an error during the preparation and storage of a pending IWA
+// update.
 struct IsolatedWebAppUpdatePrepareAndStoreCommandError {
   std::string message;
 };
@@ -72,7 +74,7 @@ class IsolatedWebAppUpdatePrepareAndStoreCommandUpdateInfo {
  public:
   IsolatedWebAppUpdatePrepareAndStoreCommandUpdateInfo(
       IwaSourceWithModeAndFileOp source,
-      std::optional<base::Version> expected_version,
+      std::optional<IwaVersion> expected_version,
       bool allow_downgrades = false);
   ~IsolatedWebAppUpdatePrepareAndStoreCommandUpdateInfo();
 
@@ -84,14 +86,14 @@ class IsolatedWebAppUpdatePrepareAndStoreCommandUpdateInfo {
   base::Value AsDebugValue() const;
 
   const IwaSourceWithModeAndFileOp& source() const { return source_; }
-  const std::optional<base::Version>& expected_version() const {
+  const std::optional<IwaVersion>& expected_version() const {
     return expected_version_;
   }
   bool allow_downgrades() const { return allow_downgrades_; }
 
  private:
   IwaSourceWithModeAndFileOp source_;
-  std::optional<base::Version> expected_version_;
+  std::optional<IwaVersion> expected_version_;
   bool allow_downgrades_;
 };
 
@@ -116,12 +118,11 @@ class IsolatedWebAppUpdatePrepareAndStoreCommand
   IsolatedWebAppUpdatePrepareAndStoreCommand(
       UpdateInfo update_info,
       IsolatedWebAppUrlInfo url_info,
-      std::unique_ptr<content::WebContents> web_contents,
+      Profile& profile,
       std::unique_ptr<ScopedKeepAlive> optional_keep_alive,
       std::unique_ptr<ScopedProfileKeepAlive> optional_profile_keep_alive,
       base::OnceCallback<void(IsolatedWebAppUpdatePrepareAndStoreCommandResult)>
-          callback,
-      std::unique_ptr<IsolatedWebAppInstallCommandHelper> command_helper);
+          callback);
 
   IsolatedWebAppUpdatePrepareAndStoreCommand(
       const IsolatedWebAppUpdatePrepareAndStoreCommand&) = delete;
@@ -145,9 +146,13 @@ class IsolatedWebAppUpdatePrepareAndStoreCommand
                      std::string>;
 
   void ReportFailure(std::string_view message);
-  void ReportSuccess(const base::Version& update_version);
+  void ReportSuccess(const IwaVersion& update_version);
 
   Profile& profile();
+
+  void ReportVersionValidationFailure(
+      VersionChangeValidationResult validation_result,
+      const IwaVersion& expected_version);
 
   void CheckIfUpdateIsStillApplicable(base::OnceClosure next_step_callback);
 
@@ -170,27 +175,26 @@ class IsolatedWebAppUpdatePrepareAndStoreCommand
 
   void SetPendingUpdateInfo(PrepareInstallInfoJob::InstallInfoOrFailure result);
 
-  void OnFinalized(const base::Version& update_version, bool success);
+  void OnFinalized(const IwaVersion& update_version, bool success);
 
   std::unique_ptr<AppLock> lock_;
 
-  const std::unique_ptr<IsolatedWebAppInstallCommandHelper> command_helper_;
 
   const IsolatedWebAppUrlInfo url_info_;
-  const std::optional<base::Version> expected_version_;
+  const std::optional<IwaVersion> expected_version_;
   bool allow_downgrades_;
 
   // The inferred integrity block data of the update bundle being processed.
-  std::optional<IsolatedWebAppIntegrityBlockData> integrity_block_data_;
+  std::optional<IntegrityBlockData> integrity_block_data_;
 
   bool same_version_update_allowed_by_key_rotation_ = false;
 
   std::optional<IwaSourceWithModeAndFileOp> update_source_;
   std::optional<IwaSourceWithMode> destination_location_;
   std::optional<IsolatedWebAppStorageLocation> destination_storage_location_;
-  std::optional<base::Version> installed_version_;
+  std::optional<IwaVersion> installed_version_;
 
-  std::unique_ptr<content::WebContents> web_contents_;
+  const raw_ref<Profile> profile_;
 
   const std::unique_ptr<ScopedKeepAlive> optional_keep_alive_;
   const std::unique_ptr<ScopedProfileKeepAlive> optional_profile_keep_alive_;

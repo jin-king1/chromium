@@ -67,6 +67,8 @@ class IntentHelperHost;
 class IntentHelperInstance;
 class KeymasterHost;
 class KeymasterInstance;
+class KioskHost;
+class KioskInstance;
 class MediaSessionInstance;
 class MemoryInstance;
 class MetricsHost;
@@ -101,8 +103,6 @@ class SharesheetInstance;
 class SystemStateHost;
 class SystemStateInstance;
 class SystemUiInstance;
-class TimerHost;
-class TimerInstance;
 class TracingInstance;
 class TtsHost;
 class TtsInstance;
@@ -257,6 +257,9 @@ class ArcBridgeService {
   keymint() {
     return &keymint_;
   }
+  ConnectionHolder<mojom::KioskInstance, mojom::KioskHost>* kiosk() {
+    return &kiosk_;
+  }
   ConnectionHolder<mojom::MediaSessionInstance>* media_session() {
     return &media_session_;
   }
@@ -317,9 +320,6 @@ class ArcBridgeService {
     return &system_state_;
   }
   ConnectionHolder<mojom::SystemUiInstance>* system_ui() { return &system_ui_; }
-  ConnectionHolder<mojom::TimerInstance, mojom::TimerHost>* timer() {
-    return &timer_;
-  }
   ConnectionHolder<mojom::TracingInstance>* tracing() { return &tracing_; }
   ConnectionHolder<mojom::TtsInstance, mojom::TtsHost>* tts() { return &tts_; }
   ConnectionHolder<mojom::UsbHostInstance, mojom::UsbHostHost>* usb_host() {
@@ -386,6 +386,7 @@ class ArcBridgeService {
   ConnectionHolder<mojom::KeymasterInstance, mojom::KeymasterHost> keymaster_;
   ConnectionHolder<mojom::keymint::KeyMintInstance, mojom::keymint::KeyMintHost>
       keymint_;
+  ConnectionHolder<mojom::KioskInstance, mojom::KioskHost> kiosk_;
   ConnectionHolder<mojom::MediaSessionInstance> media_session_;
   ConnectionHolder<mojom::MemoryInstance> memory_;
   ConnectionHolder<mojom::MetricsInstance, mojom::MetricsHost> metrics_;
@@ -414,7 +415,6 @@ class ArcBridgeService {
   ConnectionHolder<mojom::SystemStateInstance, mojom::SystemStateHost>
       system_state_;
   ConnectionHolder<mojom::SystemUiInstance> system_ui_;
-  ConnectionHolder<mojom::TimerInstance, mojom::TimerHost> timer_;
   ConnectionHolder<mojom::TracingInstance> tracing_;
   ConnectionHolder<mojom::TtsInstance, mojom::TtsHost> tts_;
   ConnectionHolder<mojom::UsbHostInstance, mojom::UsbHostHost> usb_host_;

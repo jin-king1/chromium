@@ -9,7 +9,6 @@
 
 #include "ash/keyboard/ui/keyboard_ui_controller.h"
 #include "ash/public/cpp/shelf_types.h"
-#include "ash/resources/vector_icons/vector_icons.h"
 #include "ash/shelf/shelf.h"
 #include "ash/shelf/shelf_observer.h"
 #include "ash/shell.h"
@@ -77,9 +76,9 @@ LoginShelfButton::LoginShelfButton(PressedCallback callback,
   SetFocusPainter(nullptr);
 
   views::InkDrop::Get(this)->SetMode(views::InkDropHost::InkDropMode::OFF);
-  SetBorder(views::CreateThemedRoundedRectBorder(
-      kButtonHighlightWidthDp, kButtonHighlightRadiusDp,
-      ui::kColorCrosSystemHighlight));
+  SetBorder(views::CreateRoundedRectBorder(kButtonHighlightWidthDp,
+                                           kButtonHighlightRadiusDp,
+                                           ui::kColorCrosSystemHighlight));
   // PillButton has some custom tooltip logic that runs, but we don't want here.
   SetUseLabelAsDefaultTooltip(false);
   UpdateTooltipText(label());
@@ -121,9 +120,9 @@ void LoginShelfButton::OnBackgroundTypeChanged(
 }
 
 void LoginShelfButton::OnActiveChanged() {
-  SetBackgroundColorId(GetBackgroundColorId(is_active_, background_type_));
+  SetBackgroundColor(GetBackgroundColorId(is_active_, background_type_));
   SetEnabledTextColors(GetEnabledTextColorId(is_active_));
-  SetIconColorId(GetIconColorId(is_active_));
+  SetIconColor(GetIconColorId(is_active_));
 }
 
 void LoginShelfButton::SetIsActive(bool is_active) {

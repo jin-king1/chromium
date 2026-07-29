@@ -7,8 +7,8 @@
 #include "base/functional/bind.h"
 #include "base/memory/ptr_util.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/time/time.h"
 #include "base/timer/elapsed_timer.h"
 #include "components/language/core/browser/url_language_histogram.h"
 #include "components/language/ios/browser/language_detection_java_script_feature.h"
@@ -281,7 +281,5 @@ void IOSLanguageDetectionTabHelper::ExtractContentLanguageHeader(
   if (comma_index != std::string::npos)
     content_language_header_.resize(comma_index);
 }
-
-WEB_STATE_USER_DATA_KEY_IMPL(IOSLanguageDetectionTabHelper)
 
 }  // namespace language

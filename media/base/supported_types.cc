@@ -13,6 +13,7 @@
 #include "media/base/media.h"
 #include "media/base/media_client.h"
 #include "media/base/media_switches.h"
+#include "media/base/media_util.h"
 #include "media/media_buildflags.h"
 #include "media/mojo/buildflags.h"
 #include "ui/gfx/hdr_metadata.h"
@@ -25,7 +26,6 @@
 #endif
 
 #if BUILDFLAG(IS_ANDROID)
-#include "base/android/build_info.h"
 
 // TODO(dalecurtis): This include is not allowed by media/base since
 // media/base/android is technically a different component. We should move
@@ -83,7 +83,7 @@ bool IsDecoderSupportedHdrMetadata(const VideoType& type) {
     case gfx::HdrMetadataType::kSmpteSt2086:
       // HDR metadata is currently only used with the PQ transfer function.
       // See gfx::ColorTransform for more details.
-      return type.color_space.transfer ==
+      return type.color_space.transfer() ==
              VideoColorSpace::TransferID::SMPTEST2084;
 
     // 2094-10 SEI metadata is not the same as Dolby Vision RPU metadata, Dolby
@@ -94,8 +94,8 @@ bool IsDecoderSupportedHdrMetadata(const VideoType& type) {
   }
 }
 
-bool IsDecoderColorSpaceSupported(const VideoColorSpace& color_space) {
-  switch (color_space.primaries) {
+bool IsColorSpaceSupported(const VideoColorSpace& color_space) {
+  switch (color_space.primaries()) {
     // Transfers supported before color management.
     case VideoColorSpace::PrimaryID::BT709:
     case VideoColorSpace::PrimaryID::UNSPECIFIED:
@@ -114,12 +114,11 @@ bool IsDecoderColorSpaceSupported(const VideoColorSpace& color_space) {
     case VideoColorSpace::PrimaryID::EBU_3213_E:
       break;
 
-    // Never supported.
     case VideoColorSpace::PrimaryID::INVALID:
       return false;
   }
 
-  switch (color_space.transfer) {
+  switch (color_space.transfer()) {
     // Transfers supported before color management.
     case VideoColorSpace::TransferID::UNSPECIFIED:
     case VideoColorSpace::TransferID::GAMMA22:
@@ -148,7 +147,7 @@ bool IsDecoderColorSpaceSupported(const VideoColorSpace& color_space) {
       return false;
   }
 
-  switch (color_space.matrix) {
+  switch (color_space.matrix()) {
     // Supported before color management.
     case VideoColorSpace::MatrixID::BT709:
     case VideoColorSpace::MatrixID::UNSPECIFIED:
@@ -171,8 +170,9 @@ bool IsDecoderColorSpaceSupported(const VideoColorSpace& color_space) {
       return false;
   }
 
-  if (color_space.range == gfx::ColorSpace::RangeID::INVALID)
+  if (color_space.range() == gfx::ColorSpace::RangeID::INVALID) {
     return false;
+  }
 
   return true;
 }
@@ -229,7 +229,7 @@ bool IsAudioCodecProprietary(AudioCodec codec) {
 #endif  // !BUILDFLAG(USE_PROPRIETARY_CODECS)
 
 bool IsDecoderHevcProfileSupported(const VideoType& type) {
-  if (!IsDecoderColorSpaceSupported(type.color_space)) {
+  if (!IsColorSpaceSupported(type.color_space)) {
     return false;
   }
 
@@ -251,13 +251,16 @@ bool IsDecoderHevcProfileSupported(const VideoType& type) {
 }
 
 bool IsDecoderVp9ProfileSupported(const VideoType& type) {
-#if BUILDFLAG(ENABLE_LIBVPX)
+#if BUILDFLAG(IS_ANDROID)
+  // After Q, all VP9 profiles are required by Android
+  return IsColorSpaceSupported(type.color_space);
+#elif BUILDFLAG(ENABLE_LIBVPX)
   // High bit depth capabilities may be toggled via LibVPX config flags.
   static const bool vpx_supports_hbd = (vpx_codec_get_caps(vpx_codec_vp9_dx()) &
                                         VPX_CODEC_CAP_HIGHBITDEPTH) != 0;
 
   // Color management required for HDR to not look terrible.
-  if (!IsDecoderColorSpaceSupported(type.color_space)) {
+  if (!IsColorSpaceSupported(type.color_space)) {
     return false;
   }
 
@@ -266,18 +269,9 @@ bool IsDecoderVp9ProfileSupported(const VideoType& type) {
     case VP9PROFILE_PROFILE0:
     case VP9PROFILE_PROFILE1:
       return true;
-#if BUILDFLAG(IS_ANDROID)
-    case VP9PROFILE_PROFILE2:
-      return vpx_supports_hbd ||
-             MediaCodecUtil::IsVp9Profile2DecoderAvailable();
-    case VP9PROFILE_PROFILE3:
-      return vpx_supports_hbd ||
-             MediaCodecUtil::IsVp9Profile3DecoderAvailable();
-#else
     case VP9PROFILE_PROFILE2:
     case VP9PROFILE_PROFILE3:
       return vpx_supports_hbd;
-#endif  // BUILDFLAG(IS_ANDROID)
     default:
       NOTREACHED();
   }
@@ -289,11 +283,11 @@ bool IsDecoderVp9ProfileSupported(const VideoType& type) {
 bool IsDecoderAV1Supported(const VideoType& type) {
   // If the AV1 decoder is enabled, or if we're on Q or later, yes.
 #if BUILDFLAG(ENABLE_AV1_DECODER)
-  return IsDecoderColorSpaceSupported(type.color_space);
+  return IsColorSpaceSupported(type.color_space);
 #elif BUILDFLAG(IS_ANDROID)
-  return base::android::BuildInfo::GetInstance()->sdk_int() >=
-             base::android::SDK_VERSION_Q &&
-         IsDecoderColorSpaceSupported(type.color_space);
+  return base::android::android_info::sdk_int() >=
+             base::android::android_info::SDK_VERSION_Q &&
+         IsColorSpaceSupported(type.color_space);
 #else
   return false;
 #endif
@@ -348,7 +342,10 @@ bool IsDecoderDolbyAc4Supported(const AudioType& type) {
 }
 
 bool IsEncoderH264BuiltInVideoType(const VideoType& type) {
-#if BUILDFLAG(ENABLE_OPENH264) && BUILDFLAG(USE_PROPRIETARY_CODECS)
+  if (!IsOpenH264SoftwareEncoderEnabled()) {
+    return false;
+  }
+
   switch (type.profile) {
     case H264PROFILE_BASELINE:
     case H264PROFILE_MAIN:
@@ -368,9 +365,6 @@ bool IsEncoderH264BuiltInVideoType(const VideoType& type) {
     default:
       NOTREACHED();
   }
-#else
-  return false;
-#endif  // BUILDFLAG(ENABLE_OPENH264) && BUILDFLAG(USE_PROPRIETARY_CODECS)
 }
 
 bool IsEncoderVp8BuiltInVideoType(const VideoType& type) {
@@ -414,6 +408,14 @@ bool IsEncoderAv1BuiltInVideoType(const VideoType& type) {
 #else
   return false;
 #endif  // BUILDFLAG(ENABLE_LIBAOM)
+}
+
+constexpr bool IsDecoderIamfBuiltInAudioType() {
+#if BUILDFLAG(ENABLE_IAMF_AUDIO)
+  return true;
+#else
+  return false;
+#endif  // BUILDFLAG(ENABLE_IAMF_AUDIO)
 }
 
 }  // namespace
@@ -502,9 +504,10 @@ bool IsDefaultDecoderSupportedAudioType(const AudioType& type) {
     case AudioCodec::kGSM_MS:
     case AudioCodec::kALAC:
     case AudioCodec::kMpegHAudio:
-    case AudioCodec::kIAMF:
     case AudioCodec::kUnknown:
       return false;
+    case AudioCodec::kIAMF:
+      return IsDecoderIamfBuiltInAudioType();
     case AudioCodec::kDTS:
     case AudioCodec::kDTSXP2:
     case AudioCodec::kDTSE:
@@ -562,18 +565,17 @@ bool IsEncoderOptionalVideoType(const media::VideoType& type) {
     return false;
   }
   switch (type.codec) {
-    case media::VideoCodec::kH264:
-      // Android and iOS won't bundle OpenH264.
-      return BUILDFLAG(USE_PROPRIETARY_CODECS) && !BUILDFLAG(ENABLE_OPENH264);
-    case media::VideoCodec::kAV1:
-      // Android won't bundle libaom.
-      return !BUILDFLAG(ENABLE_LIBAOM);
     case media::VideoCodec::kHEVC:
       // HEVC only has platform encoder support.
       return BUILDFLAG(PLATFORM_HAS_OPTIONAL_HEVC_ENCODE_SUPPORT);
+    case media::VideoCodec::kH264:
+    case media::VideoCodec::kAV1:
     case media::VideoCodec::kVP8:
     case media::VideoCodec::kVP9:
-      return !BUILDFLAG(ENABLE_LIBVPX);
+      // Check the optional video type when the requested encoding profile does
+      // not match the built‑in type, or when the built‑in encoder is not
+      // available.
+      return true;
     case media::VideoCodec::kTheora:
     case media::VideoCodec::kDolbyVision:
     case media::VideoCodec::kUnknown:
@@ -606,7 +608,7 @@ bool IsDecoderBuiltInVideoCodec(VideoCodec codec) {
 bool MayHaveAndAllowSelectOSSoftwareEncoder(VideoCodec codec) {
   // Allow OS software encoding when we don't have an equivalent
   // software encoder.
-  constexpr bool kHasBundledH264Encoder = BUILDFLAG(ENABLE_OPENH264);
+  const bool kHasBundledH264Encoder = IsOpenH264SoftwareEncoderEnabled();
   constexpr bool kHasOSSoftwareH264Encoder =
       BUILDFLAG(IS_MAC) || BUILDFLAG(IS_ANDROID);
   constexpr bool kHasOSSoftwareHEVCEncoder =

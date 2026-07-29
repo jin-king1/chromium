@@ -8,6 +8,7 @@
 #include "android_webview/browser/aw_contents.h"
 #include "android_webview/browser/aw_cookie_access_policy.h"
 #include "base/notreached.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/values.h"
 #include "components/embedder_support/user_agent_utils.h"
 #include "components/version_info/version_info.h"
@@ -41,9 +42,6 @@ AwClientHintsControllerDelegate::~AwClientHintsControllerDelegate() = default;
 blink::UserAgentMetadata
 AwClientHintsControllerDelegate::GetUserAgentMetadataOverrideBrand(
     bool only_low_entropy_ch) {
-  // embedder_support::GetUserAgentMetadata() can accept a browser local_state
-  // PrefService argument, but doesn't need one. Either way, it shouldn't be the
-  // context_pref_service_ that this class holds.
   auto metadata = embedder_support::GetUserAgentMetadata(only_low_entropy_ch);
   std::string major_version = version_info::GetMajorVersionNumber();
 
@@ -155,12 +153,12 @@ void AwClientHintsControllerDelegate::PersistClientHints(
 
   // Assemble and store the list if no issues.
   const auto& persistence_started = base::TimeTicks::Now();
-  base::Value::List client_hints_list;
+  base::ListValue client_hints_list;
   client_hints_list.reserve(client_hints.size());
   for (const auto& entry : client_hints) {
     client_hints_list.Append(static_cast<int>(entry));
   }
-  base::Value::Dict ch_per_origin;
+  base::DictValue ch_per_origin;
   if (context_pref_service_->HasPrefPath(
           prefs::kClientHintsCachedPerOriginMap)) {
     ch_per_origin =

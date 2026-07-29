@@ -12,6 +12,7 @@
 #include <string>
 
 #include "base/auto_reset.h"
+#include "base/memory/memory_pressure_level.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
@@ -24,15 +25,9 @@
 #include "content/common/child_process.mojom.h"
 #include "content/public/child/child_thread.h"
 #include "ipc/ipc.mojom.h"
-#include "ipc/ipc_buildflags.h"  // For BUILDFLAG(IPC_MESSAGE_LOG_ENABLED).
-#include "ipc/ipc_platform_file.h"
-#include "ipc/message_router.h"
-#include "mojo/public/cpp/bindings/associated_receiver.h"
+#include "ipc/ipc_listener.h"
 #include "mojo/public/cpp/bindings/associated_receiver_set.h"
-#include "mojo/public/cpp/bindings/associated_remote.h"
-#include "mojo/public/cpp/bindings/binder_map.h"
 #include "mojo/public/cpp/bindings/generic_pending_receiver.h"
-#include "mojo/public/cpp/bindings/pending_associated_receiver.h"
 #include "mojo/public/cpp/bindings/shared_remote.h"
 #include "mojo/public/cpp/system/message_pipe.h"
 #include "services/tracing/public/mojom/background_tracing_agent.mojom.h"
@@ -45,12 +40,12 @@
 
 namespace IPC {
 class SyncChannel;
-class SyncMessageFilter;
 class UrgentMessageObserver;
 }  // namespace IPC
 
 namespace mojo {
 class OutgoingInvitation;
+class BinderMap;
 namespace core {
 class ScopedIPCSupport;
 }  // namespace core
@@ -63,6 +58,7 @@ class BackgroundTracingAgentProviderImpl;
 namespace content {
 
 class ChildPerformanceCoordinator;
+class HostReceiverBatcher;
 class InProcessChildThreadParams;
 
 // The main thread of a child process derives from this class.
@@ -89,11 +85,6 @@ class ChildThreadImpl : public IPC::Listener, virtual public ChildThread {
   // Returns true if the thread should be destroyed.
   virtual bool ShouldBeDestroyed();
 
-#if BUILDFLAG(CONTENT_ENABLE_LEGACY_IPC)
-  // IPC::Sender implementation:
-  bool Send(IPC::Message* msg) override;
-#endif
-
   // ChildThread implementation:
 #if BUILDFLAG(IS_WIN)
   void PreCacheFont(const LOGFONT& log_font) override;
@@ -102,19 +93,23 @@ class ChildThreadImpl : public IPC::Listener, virtual public ChildThread {
   void RecordAction(const base::UserMetricsAction& action) override;
   void RecordComputedAction(const std::string& action) override;
   void BindHostReceiver(mojo::GenericPendingReceiver receiver) override;
+
+  // Like BindHostReceiver(), but the bind request may be coalesced with other
+  // batched requests and sent to the browser as a single IPC on a later task,
+  // reducing per-startup IPC volume.
+  //
+  // IMPORTANT: only use this for receivers whose interface is used
+  // ASYNCHRONOUSLY. Because the bind is deferred, making a SYNCHRONOUS mojo
+  // call on the resulting interface before the batch is flushed would hang (the
+  // browser has not bound it yet). Such callers must use BindHostReceiver(),
+  // which sends immediately.
+  void BindHostReceiverBatched(mojo::GenericPendingReceiver receiver);
+
   scoped_refptr<base::SingleThreadTaskRunner> GetIOTaskRunner() override;
   void SetFieldTrialGroup(const std::string& trial_name,
                           const std::string& group_name) override;
 
   IPC::SyncChannel* channel() { return channel_.get(); }
-
-#if BUILDFLAG(CONTENT_ENABLE_LEGACY_IPC)
-  IPC::MessageRouter* GetRouter();
-#endif
-
-  IPC::SyncMessageFilter* sync_message_filter() const {
-    return sync_message_filter_.get();
-  }
 
   scoped_refptr<base::SingleThreadTaskRunner> main_thread_runner() const {
     return main_thread_runner_;
@@ -156,12 +151,7 @@ class ChildThreadImpl : public IPC::Listener, virtual public ChildThread {
   // available to handle incoming interface requests from the browser.
   void ExposeInterfacesToBrowser(mojo::BinderMap binders);
 
-#if BUILDFLAG(CONTENT_ENABLE_LEGACY_IPC)
-  virtual bool OnControlMessageReceived(const IPC::Message& msg);
-#endif
-
   // IPC::Listener implementation:
-  bool OnMessageReceived(const IPC::Message& msg) override;
   void OnAssociatedInterfaceRequest(
       const std::string& interface_name,
       mojo::ScopedInterfaceEndpointHandle handle) override;
@@ -171,35 +161,26 @@ class ChildThreadImpl : public IPC::Listener, virtual public ChildThread {
 
   bool IsInBrowserProcess() const;
 
-#if BUILDFLAG(IS_ANDROID)
   // Received memory pressure signal sent by the browser process.
   virtual void OnMemoryPressureFromBrowserReceived(
-      base::MemoryPressureListener::MemoryPressureLevel level);
-#endif
+      base::MemoryPressureLevel level);
+
+  mojo::ScopedMessagePipeHandle TakeInitialGPUChannel() {
+    return std::move(initial_gpu_channel_);
+  }
 
  private:
   class IOThreadState;
-
-#if BUILDFLAG(CONTENT_ENABLE_LEGACY_IPC)
-  class ChildThreadMessageRouter : public IPC::MessageRouter {
-   public:
-    // |sender| must outlive this object.
-    explicit ChildThreadMessageRouter(IPC::Sender* sender);
-    bool Send(IPC::Message* msg) override;
-
-    // MessageRouter overrides.
-    bool RouteMessage(const IPC::Message& msg) override;
-
-   private:
-    const raw_ptr<IPC::Sender> sender_;
-  };
-#endif
 
   void Init(const Options& options);
 
   // IPC message handlers.
 
-  void EnsureConnected();
+  void EnsureConnected(int connection_timeout);
+
+  // Sends a coalesced batch of host-receiver bind requests to the browser (the
+  // flush target of `host_receiver_batcher_`). Runs on the main thread.
+  void SendHostReceivers(std::vector<mojo::GenericPendingReceiver> receivers);
 
 #if BUILDFLAG(IS_WIN)
   const mojo::Remote<mojom::FontCacheWin>& GetFontCacheWin();
@@ -214,15 +195,6 @@ class ChildThreadImpl : public IPC::Listener, virtual public ChildThread {
 #endif
 
   std::unique_ptr<IPC::SyncChannel> channel_;
-
-  // Allows threads other than the main thread to send sync messages.
-  scoped_refptr<IPC::SyncMessageFilter> sync_message_filter_;
-
-#if BUILDFLAG(CONTENT_ENABLE_LEGACY_IPC)
-  // Implements message routing functionality to the consumers of
-  // ChildThreadImpl.
-  ChildThreadMessageRouter router_;
-#endif
 
   // The OnChannelError() callback was invoked - the channel is dead, don't
   // attempt to communicate.
@@ -251,11 +223,17 @@ class ChildThreadImpl : public IPC::Listener, virtual public ChildThread {
   // An interface to the browser's process host object.
   mojo::SharedRemote<mojom::ChildProcessHost> child_process_host_;
 
+  // Coalesces BindHostReceiverBatched() requests into batched IPCs. Created in
+  // Init(); flushes on the main thread via SendHostReceivers().
+  std::unique_ptr<HostReceiverBatcher> host_receiver_batcher_;
+
   // ChildThreadImpl state which lives on the IO thread, including its
   // implementation of the mojom ChildProcess interface.
   scoped_refptr<IOThreadState> io_thread_state_;
 
   std::unique_ptr<ChildPerformanceCoordinator> performance_coordinator_;
+
+  mojo::ScopedMessagePipeHandle initial_gpu_channel_;
 
   base::WeakPtrFactory<ChildThreadImpl> weak_factory_{this};
 };

@@ -24,7 +24,7 @@ class IncognitoGridMediatorTest : public GridMediatorTestClass {
 
   void SetUp() override {
     GridMediatorTestClass::SetUp();
-    mode_holder_ = [[TabGridModeHolder alloc] init];
+    mode_holder_ = [[TabGridModeHolder alloc] initWithTabGridState:nil];
     mediator_ = [[IncognitoGridMediator alloc] initWithModeHolder:mode_holder_];
     mediator_.consumer = consumer_;
     mediator_.browser = browser_.get();
@@ -52,6 +52,21 @@ TEST_F(IncognitoGridMediatorTest, CloseAllItemsCommand) {
   [mediator_ closeAllItems];
   EXPECT_EQ(0, browser_->GetWebStateList()->count());
   EXPECT_EQ(0UL, consumer_.items.size());
+}
+
+// Tests that the WebStateList is correctly updated when
+// `-closeOtherTabsButtonTapped` is called.
+TEST_F(IncognitoGridMediatorTest, CloseOtherTabsButtonTapped) {
+  // Setup: 3 tabs default.
+  // Activate index 1.
+  browser_->GetWebStateList()->ActivateWebStateAt(1);
+
+  // Call closeOtherTabsButtonTapped.
+  [mediator_ closeOtherTabsButtonTapped:nil];
+
+  // Expect: Index 1 (active) remains. Others closed.
+  EXPECT_EQ(1, browser_->GetWebStateList()->count());
+  EXPECT_EQ(0, browser_->GetWebStateList()->active_index());
 }
 
 // Checks that opening a new regular tab from the toolbar is done when allowed.
@@ -112,13 +127,13 @@ TEST_F(IncognitoGridMediatorTest, TestToolbarsNormalModeWithoutWebstates) {
   EXPECT_TRUE(fake_toolbars_mediator_.configuration.searchButton);
 
   EXPECT_FALSE(fake_toolbars_mediator_.configuration.closeAllButton);
-  EXPECT_FALSE(fake_toolbars_mediator_.configuration.doneButton);
+  EXPECT_FALSE(fake_toolbars_mediator_.configuration.exitTabGridButton);
   EXPECT_FALSE(fake_toolbars_mediator_.configuration.selectTabsButton);
-  EXPECT_FALSE(fake_toolbars_mediator_.configuration.undoButton);
   EXPECT_FALSE(fake_toolbars_mediator_.configuration.deselectAllButton);
   EXPECT_FALSE(fake_toolbars_mediator_.configuration.selectAllButton);
   EXPECT_FALSE(fake_toolbars_mediator_.configuration.addToButton);
   EXPECT_FALSE(fake_toolbars_mediator_.configuration.closeSelectedTabsButton);
+  EXPECT_FALSE(fake_toolbars_mediator_.configuration.closeOtherTabsButton);
   EXPECT_FALSE(fake_toolbars_mediator_.configuration.shareButton);
   EXPECT_FALSE(fake_toolbars_mediator_.configuration.cancelSearchButton);
 }

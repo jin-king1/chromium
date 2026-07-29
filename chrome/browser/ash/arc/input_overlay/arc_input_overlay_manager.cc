@@ -15,7 +15,7 @@
 #include "base/functional/bind.h"
 #include "base/json/json_reader.h"
 #include "base/logging.h"
-#include "base/memory/singleton.h"
+#include "base/no_destructor.h"
 #include "base/task/thread_pool.h"
 #include "base/threading/scoped_blocking_call.h"
 #include "chrome/browser/ash/app_list/arc/arc_app_list_prefs.h"
@@ -55,11 +55,12 @@ class ArcInputOverlayManagerFactory
   static constexpr const char* kName = "ArcInputOverlayManagerFactory";
 
   static ArcInputOverlayManagerFactory* GetInstance() {
-    return base::Singleton<ArcInputOverlayManagerFactory>::get();
+    static base::NoDestructor<ArcInputOverlayManagerFactory> instance;
+    return instance.get();
   }
 
  private:
-  friend struct base::DefaultSingletonTraits<ArcInputOverlayManagerFactory>;
+  friend base::NoDestructor<ArcInputOverlayManagerFactory>;
   ArcInputOverlayManagerFactory() = default;
   ~ArcInputOverlayManagerFactory() override = default;
 };
@@ -253,8 +254,11 @@ void ArcInputOverlayManager::OnWindowDestroying(aura::Window* window) {
 }
 
 void ArcInputOverlayManager::OnWindowAddedToRootWindow(aura::Window* window) {
-  if (!window ||
-      ash::window_util::GetFocusedWindow()->GetToplevelWindow() != window) {
+  if (!window) {
+    return;
+  }
+  aura::Window* focused_window = ash::window_util::GetFocusedWindow();
+  if (!focused_window || focused_window->GetToplevelWindow() != window) {
     return;
   }
   RegisterWindow(window);
@@ -296,7 +300,7 @@ void ArcInputOverlayManager::OnWindowFocused(aura::Window* gained_focus,
                                              aura::Window* lost_focus) {
   // No need to register window if it is tablet mode and there is no game
   // window.
-  if (display::Screen::GetScreen()->InTabletMode() ||
+  if (display::Screen::Get()->InTabletMode() ||
       input_overlay_enabled_windows_.empty()) {
     return;
   }
@@ -384,7 +388,8 @@ std::unique_ptr<TouchInjector> ArcInputOverlayManager::ReadDefaultData(
     LOG(WARNING) << "No content for: " << package_name;
     return touch_injector;
   }
-  const auto result = base::JSONReader::ReadAndReturnValueWithError(json_file);
+  const auto result = base::JSONReader::ReadAndReturnValueWithError(
+      json_file, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   DCHECK(result.has_value())
       << "Could not load input overlay data file: " << result.error().message;
   if (!result.has_value() || !result->is_dict()) {
@@ -630,7 +635,7 @@ void ArcInputOverlayManager::UnRegisterWindow(aura::Window* window) {
 void ArcInputOverlayManager::RegisterFocusedWindow() {
   // Register window if it is not in tablet mode.
   if (auto* focused_window = ash::window_util::GetFocusedWindow();
-      focused_window && !display::Screen::GetScreen()->InTabletMode()) {
+      focused_window && !display::Screen::Get()->InTabletMode()) {
     RegisterWindow(GetAnchorWindow(focused_window->GetToplevelWindow()));
   }
 }

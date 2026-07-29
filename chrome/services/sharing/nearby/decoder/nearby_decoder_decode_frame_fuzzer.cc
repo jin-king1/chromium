@@ -2,26 +2,24 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
-#include "chrome/services/sharing/nearby/decoder/nearby_decoder.h"
-
 #include <stddef.h>
 #include <stdint.h>
+
 #include <memory>
 #include <vector>
 
+#include "base/containers/span.h"
+#include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/no_destructor.h"
 #include "base/run_loop.h"
 #include "base/task/single_thread_task_executor.h"
+#include "chrome/services/sharing/nearby/decoder/nearby_decoder.h"
 #include "chromeos/ash/services/nearby/public/mojom/nearby_decoder.mojom.h"
 #include "chromeos/ash/services/nearby/public/mojom/nearby_decoder_types.mojom.h"
 #include "mojo/core/embedder/embedder.h"
 #include "mojo/public/cpp/bindings/remote.h"
+#include "testing/libfuzzer/libfuzzer_base_wrappers.h"
 
 struct Environment {
   Environment() {
@@ -41,10 +39,10 @@ struct Environment {
   std::unique_ptr<sharing::NearbySharingDecoder> decoder;
 };
 
-extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
+DEFINE_LLVM_FUZZER_TEST_ONE_INPUT_SPAN(base::span<const uint8_t> data) {
   static base::NoDestructor<Environment> environment;
 
-  std::vector<uint8_t> buffer(data, data + size);
+  std::vector<uint8_t> buffer(data.begin(), data.end());
   base::RunLoop run_loop;
   environment->decoder->DecodeFrame(
       buffer,

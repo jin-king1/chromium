@@ -4,6 +4,7 @@
 
 #include "chrome/browser/android/metrics/uma_session_stats.h"
 
+#include "base/android/application_status_listener.h"
 #include "base/android/jni_array.h"
 #include "base/android/jni_string.h"
 #include "base/command_line.h"
@@ -23,8 +24,10 @@
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/installer/util/google_update_settings.h"
+#include "components/activity_reporter/activity_reporter.h"
 #include "components/metrics/metrics_pref_names.h"
 #include "components/metrics/metrics_service.h"
+#include "components/metrics/private_metrics/puma_histogram_functions.h"
 #include "components/metrics_services_manager/metrics_services_manager.h"
 #include "components/prefs/pref_service.h"
 #include "components/ukm/ukm_service.h"
@@ -34,9 +37,9 @@
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "chrome/android/chrome_jni_headers/UmaSessionStats_jni.h"
 
-using base::android::ConvertJavaStringToUTF8;
-using base::android::JavaParamRef;
 using base::UserMetricsAction;
+using base::android::ConvertJavaStringToUTF8;
+using base::android::JavaRef;
 
 namespace {
 // Used to keep the state of whether we should consider metric consent enabled.
@@ -71,8 +74,23 @@ enum class ChromeActivityCounter : int32_t {
 };
 }  // namespace
 
-void UmaSessionStats::UmaResumeSession(JNIEnv* env,
-                                       const JavaParamRef<jobject>& obj) {
+// Provides access control to the RegisterExternalExperiments() API via a pass
+// key. Note: This is intentionally not exposed in the header since it should
+// only be used by JNI_UmaSessionStats_RegisterExternalExperiment().
+class UmaSessionStatsExternalExperimentRegistrar {
+ public:
+  static void RegisterExternalExperiments(
+      const std::vector<int>& experiment_ids,
+      variations::SyntheticTrialRegistry::OverrideMode override_mode) {
+    g_browser_process->metrics_service()
+        ->GetSyntheticTrialRegistry()
+        ->RegisterExternalExperiments(
+            base::PassKey<UmaSessionStatsExternalExperimentRegistrar>(),
+            experiment_ids, override_mode);
+  }
+};
+
+void UmaSessionStats::UmaResumeSession(JNIEnv* env) {
   DCHECK(g_browser_process);
   if (++active_session_count_ == 1) {
     const bool had_background_session =
@@ -95,20 +113,21 @@ void UmaSessionStats::UmaResumeSession(JNIEnv* env,
 
     ukm::UkmService* ukm_service =
         g_browser_process->GetMetricsServicesManager()->GetUkmService();
-    if (ukm_service)
+    if (ukm_service) {
       ukm_service->OnAppEnterForeground();
+    }
 
     AndroidSessionDurationsServiceFactory::OnAppEnterForeground(
         session_time_tracker_.session_start_time());
   }
 }
 
-void UmaSessionStats::UmaEndSession(JNIEnv* env,
-                                    const JavaParamRef<jobject>& obj) {
-  --active_session_count_;
-  DCHECK_GE(active_session_count_, 0);
-
-  if (active_session_count_ == 0) {
+void UmaSessionStats::UmaEndSession(JNIEnv* env) {
+  // Only close the record if this is the last session.
+  if (active_session_count_ == 1) {
+    // closing_active_session_ maintains the previous (incorrect) behavior of
+    // Session.IsActive.
+    base::AutoReset<bool> auto_reset(&closing_active_session_, true);
     const base::TimeDelta duration =
         session_time_tracker_.EndForegroundSession();
 
@@ -122,8 +141,9 @@ void UmaSessionStats::UmaEndSession(JNIEnv* env,
     }
     ukm::UkmService* ukm_service =
         g_browser_process->GetMetricsServicesManager()->GetUkmService();
-    if (ukm_service)
+    if (ukm_service) {
       ukm_service->OnAppEnterBackground();
+    }
 
     AndroidSessionDurationsServiceFactory::OnAppEnterBackground(duration);
 
@@ -132,10 +152,31 @@ void UmaSessionStats::UmaEndSession(JNIEnv* env,
     // background session time toward the previous log.
     session_time_tracker_.BeginBackgroundSession();
   }
+
+  // This function closes the UMA log, which in turn calls
+  // ProvideCurrentSessionData() on all metrics providers, where we record
+  // Session.IsActive.
+  // Decrement session count after collecting session metrics or
+  // Session.IsActive will be wrong.
+  --active_session_count_;
+  DCHECK_GE(active_session_count_, 0);
 }
 
 void UmaSessionStats::ProvideCurrentSessionData() {
-  base::UmaHistogramBoolean("Session.IsActive", active_session_count_ != 0);
+  // Session.IsActive historically gave the wrong value when closing an active
+  // session as we decremented the session count before closing the session.
+  // Maintain the incorrect logic for the old version of the histogram.
+  // TODO(https://crbug.com/464285583): Deprecate Session.IsActive on all
+  // platforms and replace it with Session.IsActive2 after we measure any
+  // metrics shifts.
+  base::UmaHistogramBoolean(
+      "Session.IsActive",
+      active_session_count_ > (closing_active_session_ ? 1 : 0));
+  const bool is_active = active_session_count_ != 0;
+  base::UmaHistogramBoolean("Session.IsActive2", is_active);
+  if (is_active) {
+    g_browser_process->activity_reporter()->ReportActive();
+  }
 
   // We record Session.Background.TotalDuration here to ensure each UMA log
   // containing a background session contains this histogram.
@@ -151,8 +192,7 @@ UmaSessionStats* UmaSessionStats::GetInstance() {
 
 // static
 bool UmaSessionStats::HasVisibleActivity() {
-  return Java_UmaSessionStats_hasVisibleActivity(
-      base::android::AttachCurrentThread());
+  return base::android::ApplicationStatusListener::HasVisibleActivities();
 }
 
 // Called on startup. If there is an activity, do nothing because a foreground
@@ -199,8 +239,9 @@ void UmaSessionStats::EmitAndResetCounters() {
 void UmaSessionStats::SessionTimeTracker::AccumulateBackgroundSessionTime() {
   // No time spent in background since the last call to
   // |AccumulateBackgroundSessionTime()|.
-  if (background_session_start_time_.is_null())
+  if (background_session_start_time_.is_null()) {
     return;
+  }
 
   base::TimeTicks now = base::TimeTicks::Now();
   base::TimeDelta duration = now - background_session_start_time_;
@@ -210,8 +251,9 @@ void UmaSessionStats::SessionTimeTracker::AccumulateBackgroundSessionTime() {
 }
 
 void UmaSessionStats::SessionTimeTracker::ReportBackgroundSessionTime() {
-  if (background_session_accumulated_time_.is_zero())
+  if (background_session_accumulated_time_.is_zero()) {
     return;
+  }
 
   // This histogram is used in analysis to determine if an uploaded log
   // represents background activity. For this reason, this histogram may be
@@ -241,6 +283,13 @@ base::TimeDelta UmaSessionStats::SessionTimeTracker::EndForegroundSession() {
   UMA_HISTOGRAM_LONG_TIMES("Session.TotalDuration", duration);
   UMA_HISTOGRAM_CUSTOM_TIMES("Session.TotalDurationMax1Day", duration,
                              base::Milliseconds(1), base::Hours(24), 50);
+
+  // Records true each time Session.TotalDuration is supposed to be recorded
+  // in a PUMA histogram. Allowing for the count to be collected.
+  metrics::private_metrics::PumaHistogramBoolean(
+      metrics::private_metrics::PumaType::kRc,
+      "PUMA.RegionalCapabilities.Session.TotalDuration.Recorded", true);
+  g_browser_process->activity_reporter()->ReportActive();
   return duration;
 }
 
@@ -251,14 +300,15 @@ void UmaSessionStats::SessionTimeTracker::BeginBackgroundSession() {
 // Updates metrics reporting state managed by native code. This should only be
 // called when consent is changing, and UpdateMetricsServiceState() should be
 // called immediately after for metrics services to be started or stopped as
-// needed. This is enforced by UmaSessionStats.changeMetricsReportingConsent on
+// needed. This is enforced by UmaSessionStats.changeMetricsReportingState on
 // the Java side.
-static void JNI_UmaSessionStats_ChangeMetricsReportingConsent(
+static void JNI_UmaSessionStats_ChangeMetricsReportingState(
     JNIEnv*,
-    jboolean consent,
-    jint called_from) {
-  UpdateMetricsPrefsOnPermissionChange(
-      consent, static_cast<ChangeMetricsReportingStateCalledFrom>(called_from));
+    bool enabled,
+    int32_t called_from) {
+  metrics::UpdateMetricsPrefsOnPermissionChange(
+      enabled,
+      static_cast<metrics::ChangeMetricsReportingStateCalledFrom>(called_from));
 
   // This function ensures a consent file in the data directory is either
   // created, or deleted, depending on consent. Starting up metrics services
@@ -268,7 +318,7 @@ static void JNI_UmaSessionStats_ChangeMetricsReportingConsent(
       FROM_HERE,
       base::BindOnce(
           base::IgnoreResult(GoogleUpdateSettings::SetCollectStatsConsent),
-          consent));
+          enabled));
 }
 
 // Initialize the local consent bool variable to false. Used only for testing.
@@ -296,11 +346,11 @@ static void JNI_UmaSessionStats_UnsetMetricsAndCrashReportingForTesting(
 // repeatedly. Used only for testing.
 static void JNI_UmaSessionStats_UpdateMetricsAndCrashReportingForTesting(
     JNIEnv*,
-    jboolean consent) {
+    bool consent) {
   DCHECK(g_browser_process);
 
   g_metrics_consent_for_testing = consent;
-  g_browser_process->GetMetricsServicesManager()->UpdateUploadPermissions(true);
+  g_browser_process->GetMetricsServicesManager()->UpdateUploadPermissions();
 }
 
 // Starts/stops the MetricsService based on existing consent and upload
@@ -315,10 +365,9 @@ static void JNI_UmaSessionStats_UpdateMetricsAndCrashReportingForTesting(
 //
 // This can be called at any time when consent hasn't changed, such as
 // connection type change, or start up. If consent has changed, then
-// ChangeMetricsReportingConsent() should be called first.
-static void JNI_UmaSessionStats_UpdateMetricsServiceState(
-    JNIEnv*,
-    jboolean may_upload) {
+// ChangeMetricsReportingState() should be called first.
+static void JNI_UmaSessionStats_UpdateMetricsServiceState(JNIEnv*,
+                                                          bool may_upload) {
   // This will also apply the consent state, taken from Chrome Local State
   // prefs.
   g_browser_process->GetMetricsServicesManager()->UpdateUploadPermissions(
@@ -327,8 +376,8 @@ static void JNI_UmaSessionStats_UpdateMetricsServiceState(
 
 static void JNI_UmaSessionStats_RegisterExternalExperiment(
     JNIEnv* env,
-    const JavaParamRef<jintArray>& jexperiment_ids,
-    jboolean override_existing_ids) {
+    const JavaRef<jintArray>& jexperiment_ids,
+    bool override_existing_ids) {
   std::vector<int> experiment_ids;
   // A null |jexperiment_ids| is the same as an empty list.
   if (jexperiment_ids) {
@@ -341,31 +390,28 @@ static void JNI_UmaSessionStats_RegisterExternalExperiment(
           ? variations::SyntheticTrialRegistry::kOverrideExistingIds
           : variations::SyntheticTrialRegistry::kDoNotOverrideExistingIds;
 
-  g_browser_process->metrics_service()
-      ->GetSyntheticTrialRegistry()
-      ->RegisterExternalExperiments(experiment_ids, override_mode);
+  UmaSessionStatsExternalExperimentRegistrar::RegisterExternalExperiments(
+      experiment_ids, override_mode);
 }
 
 static void JNI_UmaSessionStats_RegisterSyntheticFieldTrial(
     JNIEnv* env,
-    std::string& trial_name,
-    std::string& group_name,
+    const std::string& trial_name,
+    const std::string& group_name,
     int annotation_mode) {
   UmaSessionStats::RegisterSyntheticFieldTrial(
       trial_name, group_name,
       static_cast<variations::SyntheticTrialAnnotationMode>(annotation_mode));
 }
 
-static void JNI_UmaSessionStats_RecordTabCountPerLoad(
-    JNIEnv*,
-    jint num_tabs) {
+static void JNI_UmaSessionStats_RecordTabCountPerLoad(JNIEnv*,
+                                                      int32_t num_tabs) {
   // Record how many tabs total are open.
   UMA_HISTOGRAM_CUSTOM_COUNTS("Tabs.TabCountPerLoad", num_tabs, 1, 200, 50);
 }
 
-static void JNI_UmaSessionStats_RecordPageLoaded(
-    JNIEnv*,
-    jboolean is_desktop_user_agent) {
+static void JNI_UmaSessionStats_RecordPageLoaded(JNIEnv*,
+                                                 bool is_desktop_user_agent) {
   // Should be called whenever a page has been loaded.
   base::RecordAction(UserMetricsAction("MobilePageLoaded"));
   if (is_desktop_user_agent) {
@@ -389,7 +435,9 @@ static void JNI_UmaSessionStats_RecordPageLoadedWithToEdge(JNIEnv*) {
   base::RecordAction(UserMetricsAction("MobilePageLoadedWithToEdge"));
 }
 
-static jlong JNI_UmaSessionStats_Init(JNIEnv* env) {
+static int64_t JNI_UmaSessionStats_Init(JNIEnv* env) {
   // We should have only one UmaSessionStats instance.
   return reinterpret_cast<intptr_t>(UmaSessionStats::GetInstance());
 }
+
+DEFINE_JNI(UmaSessionStats)

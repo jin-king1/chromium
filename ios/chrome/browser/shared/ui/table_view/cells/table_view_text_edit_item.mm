@@ -8,12 +8,13 @@
 #import "ios/chrome/browser/shared/ui/elements/extended_touch_target_button.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_text_edit_item_delegate.h"
-#import "ios/chrome/browser/shared/ui/table_view/legacy_chrome_table_view_styler.h"
 #import "ios/chrome/browser/shared/ui/util/rtl_geometry.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/table_view/table_view_cells_constants.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
+#import "ios/chrome/grit/ios_strings.h"
+#import "ui/base/l10n/l10n_util_mac.h"
 
 namespace {
 
@@ -51,9 +52,8 @@ const CGFloat kSymbolSize = 15;
 
 #pragma mark TableViewItem
 
-- (void)configureCell:(TableViewTextEditCell*)cell
-           withStyler:(ChromeTableViewStyler*)styler {
-  [super configureCell:cell withStyler:styler];
+- (void)configureCell:(TableViewTextEditCell*)cell {
+  [super configureCell:cell];
 
   NSString* textLabelFormat = self.required ? @"%@*" : @"%@";
   cell.textLabel.text =
@@ -76,15 +76,24 @@ const CGFloat kSymbolSize = 15;
         [NSString stringWithFormat:@"%@_textField", self.fieldNameLabelText];
   }
 
+  if (self.fieldNameLabelText.length) {
+    cell.textField.accessibilityLabel =
+        self.required
+            ? [NSString stringWithFormat:
+                            @"%@, %@", self.fieldNameLabelText,
+                            l10n_util::GetNSString(
+                                IDS_IOS_FIELD_REQUIRED_ACCESSIBILITY_LABEL)]
+            : self.fieldNameLabelText;
+  }
+
   if (self.textFieldBackgroundColor) {
     cell.textLabel.backgroundColor = self.textFieldBackgroundColor;
     cell.textField.backgroundColor = self.textFieldBackgroundColor;
-  } else if (styler.cellBackgroundColor) {
-    cell.textLabel.backgroundColor = styler.cellBackgroundColor;
-    cell.textField.backgroundColor = styler.cellBackgroundColor;
   } else {
-    cell.textLabel.backgroundColor = styler.tableViewBackgroundColor;
-    cell.textField.backgroundColor = styler.tableViewBackgroundColor;
+    cell.textLabel.backgroundColor =
+        [UIColor colorNamed:kGroupedSecondaryBackgroundColor];
+    cell.textField.backgroundColor =
+        [UIColor colorNamed:kGroupedSecondaryBackgroundColor];
   }
 
   cell.textField.enabled = self.textFieldEnabled;
@@ -129,12 +138,15 @@ const CGFloat kSymbolSize = 15;
   cell.textField.returnKeyType = self.returnKeyType;
   cell.textField.keyboardType = self.keyboardType;
   cell.textField.autocapitalizationType = self.autoCapitalizationType;
+  cell.textField.delegate = self.textFieldDelegate;
 
   [cell setIdentifyingIcon:self.identifyingIcon];
   cell.identifyingIconButton.enabled = self.identifyingIconEnabled;
   if ([self.identifyingIconAccessibilityLabel length]) {
     cell.identifyingIconButton.accessibilityLabel =
         self.identifyingIconAccessibilityLabel;
+  } else if (!self.identifyingIconEnabled) {
+    cell.identifyingIconButton.isAccessibilityElement = NO;
   }
 
   if ([self.cellAccessibilityLabel length]) {
@@ -151,8 +163,7 @@ const CGFloat kSymbolSize = 15;
 #pragma mark Actions
 
 - (void)textFieldChanged:(UITextField*)textField {
-  self.textFieldValue = textField.text;
-  [self.delegate tableViewItemDidChange:self];
+  [self updateTextFieldValue:textField.text];
 }
 
 - (void)textFieldBeginEditing:(UITextField*)textField {
@@ -170,6 +181,15 @@ const CGFloat kSymbolSize = 15;
     return;
   }
   _hasValidText = hasValidText;
+}
+
+- (void)updateTextFieldValue:(NSString*)textFieldValue {
+  if ((_textFieldValue == nil && textFieldValue == nil) ||
+      [_textFieldValue isEqualToString:textFieldValue]) {
+    return;
+  }
+  _textFieldValue = textFieldValue;
+  [self.delegate tableViewItemDidChange:self];
 }
 
 @end
@@ -237,6 +257,7 @@ const CGFloat kSymbolSize = 15;
 
     // Edit icon.
     _iconView = [[UIImageView alloc] initWithImage:[self editImage]];
+    _iconView.contentMode = UIViewContentModeScaleAspectFit;
     _iconView.tintColor = [UIColor colorNamed:kGrey400Color];
     _iconView.translatesAutoresizingMaskIntoConstraints = NO;
     [contentView addSubview:_iconView];
@@ -304,16 +325,13 @@ const CGFloat kSymbolSize = 15;
               UIContentSizeCategoryIsAccessibilityCategory(
                   self.traitCollection.preferredContentSizeCategory)];
 
-    if (@available(iOS 17, *)) {
-      NSArray<UITrait>* traits = TraitCollectionSetForTraits(
-          @[ UITraitPreferredContentSizeCategory.class ]);
-      __weak __typeof(self) weakSelf = self;
-      UITraitChangeHandler handler = ^(id<UITraitEnvironment> traitEnvironment,
-                                       UITraitCollection* previousCollection) {
-        [weakSelf updateUIOnTraitChange:previousCollection];
-      };
-      [self registerForTraitChanges:traits withHandler:handler];
-    }
+    __weak __typeof(self) weakSelf = self;
+    UITraitChangeHandler handler = ^(id<UITraitEnvironment> traitEnvironment,
+                                     UITraitCollection* previousCollection) {
+      [weakSelf updateUIOnTraitChange:previousCollection];
+    };
+    [self registerForTraitChanges:@[ UITraitPreferredContentSizeCategory.class ]
+                      withHandler:handler];
   }
   return self;
 }
@@ -374,16 +392,6 @@ const CGFloat kSymbolSize = 15;
   }
 }
 
-#if !defined(__IPHONE_17_0) || __IPHONE_OS_VERSION_MIN_REQUIRED < __IPHONE_17_0
-- (void)traitCollectionDidChange:(UITraitCollection*)previousTraitCollection {
-  [super traitCollectionDidChange:previousTraitCollection];
-  if (@available(iOS 17, *)) {
-    return;
-  }
-  [self updateUIOnTraitChange:previousTraitCollection];
-}
-#endif
-
 #pragma mark - UITableViewCell
 
 - (void)prepareForReuse {
@@ -398,6 +406,7 @@ const CGFloat kSymbolSize = 15;
   self.textField.clearButtonMode = UITextFieldViewModeWhileEditing;
   self.isAccessibilityElement = YES;
   self.textField.accessibilityIdentifier = nil;
+  self.textField.accessibilityLabel = nil;
   self.textField.enabled = NO;
   self.textField.delegate = nil;
   self.textField.secureTextEntry = NO;
@@ -406,12 +415,13 @@ const CGFloat kSymbolSize = 15;
               forControlEvents:UIControlEventAllEvents];
   [self setIdentifyingIcon:nil];
   self.identifyingIconButton.enabled = NO;
+  self.identifyingIconButton.isAccessibilityElement = YES;
   [self.identifyingIconButton removeTarget:nil
                                     action:nil
                           forControlEvents:UIControlEventAllEvents];
 }
 
-#pragma mark Accessibility
+#pragma mark - UIAccessibility
 
 - (NSString*)accessibilityLabel {
   if ([self.accessibilityLabelValue length]) {
@@ -448,12 +458,12 @@ const CGFloat kSymbolSize = 15;
 
 // Returns the edit icon image.
 - (UIImage*)editImage {
-  return DefaultSymbolWithPointSize(kEditActionSymbol, kSymbolSize);
+  return SymbolWithPointSize(SymbolEditAction, kSymbolSize);
 }
 
 // Returns the error icon image.
 - (UIImage*)errorImage {
-  return DefaultSymbolWithPointSize(kErrorCircleFillSymbol, kSymbolSize);
+  return SymbolWithPointSize(SymbolErrorCircleFill, kSymbolSize);
 }
 
 // Updates the view's accessiblity properties when the device's

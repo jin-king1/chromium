@@ -8,18 +8,21 @@ import androidx.annotation.IntDef;
 import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.metrics.RecordHistogram;
+import org.chromium.build.annotations.NullMarked;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.util.BitSet;
 
 /** Records a histogram that tracks usage of all the CCT features of interest. */
+@NullMarked
 public class CustomTabsFeatureUsage {
     @VisibleForTesting
     public static final String CUSTOM_TABS_FEATURE_USAGE_HISTOGRAM = "CustomTabs.FeatureUsage";
 
     // NOTE: This must be kept in sync with the definition |CustomTabsFeatureUsed|
-    // in tools/metrics/histograms/enums.xml.
+    // in tools/metrics/histograms/metadata/custom_tabs/enums.xml.
+    // LINT.IfChange(CustomTabsFeature)
     @IntDef({
         CustomTabsFeature.CTF_SESSIONS,
         CustomTabsFeature.EXTRA_ACTION_BUTTON_BUNDLE,
@@ -64,7 +67,6 @@ public class CustomTabsFeatureUsage {
         CustomTabsFeature.EXTRA_ADDITIONAL_TRUSTED_ORIGINS,
         CustomTabsFeature.EXTRA_ENABLE_URLBAR_HIDING,
         CustomTabsFeature.EXTRA_AUTO_TRANSLATE_LANGUAGE,
-        CustomTabsFeature.EXTRA_INTENT_FEATURE_OVERRIDES,
         CustomTabsFeature.CTF_PARTIAL_SIDE_SHEET,
         CustomTabsFeature.EXTRA_ACTIVITY_SIDE_SHEET_BREAKPOINT_DP,
         CustomTabsFeature.EXTRA_INITIAL_ACTIVITY_WIDTH_PX,
@@ -83,6 +85,12 @@ public class CustomTabsFeatureUsage {
         CustomTabsFeature.EXTRA_REDIRECT_SCHEME,
         CustomTabsFeature.EXTRA_HTTPS_REDIRECT_HOST,
         CustomTabsFeature.EXTRA_HTTPS_REDIRECT_PATH,
+        CustomTabsFeature.EXTRA_OPEN_IN_BROWSER_STATE,
+        CustomTabsFeature.EXTRA_LAUNCH_HANDLER,
+        CustomTabsFeature.EXTRA_FILE_HANDLERS,
+        CustomTabsFeature.EXTRA_CUSTOM_CONTENT_ACTIONS,
+        CustomTabsFeature.EXTRA_TIMEOUT_MINUTES,
+        CustomTabsFeature.EXTRA_TIMEOUT_PENDING_INTENT,
         CustomTabsFeature.COUNT
     })
     @Retention(RetentionPolicy.SOURCE)
@@ -132,7 +140,7 @@ public class CustomTabsFeatureUsage {
         int EXTRA_ADDITIONAL_TRUSTED_ORIGINS = 40;
         int EXTRA_ENABLE_URLBAR_HIDING = 41;
         int EXTRA_AUTO_TRANSLATE_LANGUAGE = 42;
-        int EXTRA_INTENT_FEATURE_OVERRIDES = 43;
+        // int EXTRA_INTENT_FEATURE_OVERRIDES = 43; Deprecated.
         int CTF_PARTIAL_SIDE_SHEET = 44;
         int EXTRA_ACTIVITY_SIDE_SHEET_BREAKPOINT_DP = 45;
         int EXTRA_INITIAL_ACTIVITY_WIDTH_PX = 46;
@@ -151,13 +159,22 @@ public class CustomTabsFeatureUsage {
         int EXTRA_REDIRECT_SCHEME = 60;
         int EXTRA_HTTPS_REDIRECT_HOST = 61;
         int EXTRA_HTTPS_REDIRECT_PATH = 62;
+        int EXTRA_OPEN_IN_BROWSER_STATE = 63;
+        int EXTRA_LAUNCH_HANDLER = 64;
+        int EXTRA_FILE_HANDLERS = 65;
+        int EXTRA_CUSTOM_CONTENT_ACTIONS = 66;
+        int EXTRA_TIMEOUT_MINUTES = 67;
+        // int EXTRA_TIMEOUT_MINUTES_ALLOWED = 68; Deprecated.
+        int EXTRA_TIMEOUT_PENDING_INTENT = 69;
 
         /** Total count of entries. */
-        int COUNT = 63;
+        int COUNT = 70;
     }
 
+    // LINT.ThenChange(/tools/metrics/histograms/metadata/custom_tabs/enums.xml:CustomTabsFeatureUsed)
+
     /** Tracks whether we have written each enum or not. */
-    private BitSet mUsed = new BitSet(CustomTabsFeature.COUNT);
+    private final BitSet mUsed = new BitSet(CustomTabsFeature.COUNT);
 
     /** Logs the usage of the given feature, if enabled. */
     void log(@CustomTabsFeature int feature) {

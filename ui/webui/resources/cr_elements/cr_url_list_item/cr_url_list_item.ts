@@ -28,8 +28,8 @@ export interface CrUrlListItemElement {
     badges: HTMLSlotElement,
     button: HTMLElement,
     content: HTMLSlotElement,
-    description: HTMLSlotElement,
     metadata: HTMLElement,
+    customIcon: HTMLSlotElement,
   };
 }
 
@@ -121,32 +121,29 @@ export class CrUrlListItemElement extends CrUrlListItemElementBase {
     };
   }
 
-  alwaysShowSuffix: boolean = false;
-  asAnchor: boolean = false;
-  asAnchorTarget: string = '_self';
-  itemAriaLabel?: string;
-  itemAriaDescription?: string;
-  count?: number;
-  description?: string;
-  reverseElideDescription: boolean = false;
-  hasBadges: boolean = false;
-  protected hasDescriptions_: boolean = false;
-  protected hasSlottedContent_: boolean = false;
-  protected isFolder_: boolean = false;
-  size: CrUrlListItemSize = CrUrlListItemSize.MEDIUM;
-  override title: string = '';
-  url?: string;
-  imageUrls: string[] = [];
-  protected firstImageLoaded_: boolean = false;
-  forceHover: boolean = false;
-  descriptionMeta: string = '';
+  accessor alwaysShowSuffix: boolean = false;
+  accessor asAnchor: boolean = false;
+  accessor asAnchorTarget: string = '_self';
+  accessor itemAriaLabel: string|undefined;
+  accessor itemAriaDescription: string|undefined;
+  accessor count: number|undefined;
+  accessor description: string|undefined;
+  accessor reverseElideDescription: boolean = false;
+  accessor hasBadges: boolean = false;
+  protected accessor hasDescriptions_: boolean = false;
+  protected accessor hasSlottedContent_: boolean = false;
+  protected accessor isFolder_: boolean = false;
+  accessor size: CrUrlListItemSize = CrUrlListItemSize.MEDIUM;
+  override accessor title: string = '';
+  accessor url: string|undefined;
+  accessor imageUrls: string[] = [];
+  protected accessor firstImageLoaded_: boolean = false;
+  accessor forceHover: boolean = false;
+  accessor descriptionMeta: string = '';
 
-  override firstUpdated(changedProperties: PropertyValues<this>) {
-    super.firstUpdated(changedProperties);
-    FocusOutlineManager.forDocument(document);
-    this.addEventListener('pointerdown', () => this.setActiveState_(true));
-    this.addEventListener('pointerup', () => this.setActiveState_(false));
-    this.addEventListener('pointerleave', () => this.setActiveState_(false));
+  override connectedCallback() {
+    super.connectedCallback();
+    this.resetFirstImageLoaded_();
   }
 
   override willUpdate(changedProperties: PropertyValues<this>) {
@@ -166,17 +163,20 @@ export class CrUrlListItemElement extends CrUrlListItemElementBase {
     }
   }
 
+  override firstUpdated(changedProperties: PropertyValues<this>) {
+    super.firstUpdated(changedProperties);
+    FocusOutlineManager.forDocument(document);
+    this.addEventListener('pointerdown', () => this.setActiveState_(true));
+    this.addEventListener('pointerup', () => this.setActiveState_(false));
+    this.addEventListener('pointerleave', () => this.setActiveState_(false));
+  }
+
   override updated(changedProperties: PropertyValues<this>) {
     super.updated(changedProperties);
 
     if (changedProperties.has('imageUrls')) {
       this.resetFirstImageLoaded_();
     }
-  }
-
-  override connectedCallback() {
-    super.connectedCallback();
-    this.resetFirstImageLoaded_();
   }
 
   override focus() {
@@ -233,11 +233,11 @@ export class CrUrlListItemElement extends CrUrlListItemElementBase {
     return index <= 1;
   }
 
-  protected onBadgesSlotChange_() {
+  protected onBadgesSlotchange_() {
     this.hasBadges = this.$.badges.assignedElements({flatten: true}).length > 0;
   }
 
-  protected onContentSlotChange_() {
+  protected onContentSlotchange_() {
     this.hasSlottedContent_ =
         this.$.content.assignedElements({flatten: true}).length > 0;
   }

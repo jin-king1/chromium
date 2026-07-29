@@ -22,6 +22,14 @@
 #include "third_party/blink/renderer/platform/heap/thread_state.h"
 #include "third_party/blink/renderer/platform/testing/task_environment.h"
 #include "third_party/blink/renderer/platform/testing/unit_test_helpers.h"
+#include "third_party/skia/include/core/SkBitmap.h"
+#include "third_party/skia/include/core/SkCanvas.h"
+#include "third_party/skia/include/core/SkColor.h"
+#include "third_party/skia/include/core/SkData.h"
+#include "third_party/skia/include/core/SkImage.h"
+#include "third_party/skia/include/core/SkImageInfo.h"
+#include "third_party/skia/include/core/SkRefCnt.h"
+#include "third_party/skia/include/encode/SkJpegEncoder.h"
 
 namespace blink {
 
@@ -59,7 +67,7 @@ Vector<unsigned char> JpegImage() {
       0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
       0x00, 0x00, 0x00, 0x00, 0x03, 0xff, 0xd9};
 
-  jpeg.AppendSpan(base::span(kData));
+  jpeg.append_range(kData);
   return jpeg;
 }
 
@@ -82,15 +90,30 @@ Vector<unsigned char> AnimatedWebpImage() {
       0x40, 0x0c, 0x00, 0x07, 0xd0, 0xbf, 0x88, 0xfe, 0x07, 0x80, 0x84, 0xf0,
       0x7f, 0xbd, 0x18, 0xd1, 0xff, 0x94, 0x0b, 0x00};
 
-  animated_webp.AppendSpan(base::span(kData));
+  animated_webp.append_range(kData);
   return animated_webp;
+}
+
+Vector<char> CreateJpegImageData(int width, int height) {
+  SkBitmap bitmap;
+  bitmap.allocPixels(SkImageInfo::MakeN32(width, height, kOpaque_SkAlphaType));
+  SkCanvas canvas(bitmap);
+  canvas.clear(SK_ColorWHITE);
+  sk_sp<SkImage> image = SkImages::RasterFromBitmap(bitmap);
+
+  Vector<char> result;
+  SkJpegEncoder::Options options;
+  sk_sp<SkData> data = SkJpegEncoder::Encode(nullptr, image.get(), options);
+  if (data) {
+    result.append_range(data->byteSpan());
+  }
+  return result;
 }
 }  // namespace
 
 class WindowToViewportScalingChromeClient : public EmptyChromeClient {
  public:
-  WindowToViewportScalingChromeClient()
-      : EmptyChromeClient(), scale_factor_(1.f) {}
+  WindowToViewportScalingChromeClient() = default;
 
   void SetScalingFactor(float s) { scale_factor_ = s; }
   float WindowToViewportScalar(LocalFrame*, const float s) const override {
@@ -98,7 +121,7 @@ class WindowToViewportScalingChromeClient : public EmptyChromeClient {
   }
 
  private:
-  float scale_factor_;
+  float scale_factor_ = 1.f;
 };
 
 class ImageDocumentTest : public testing::Test {
@@ -154,8 +177,7 @@ void ImageDocumentTest::CreateDocumentWithoutLoadingImage(int view_width,
   params->url = is_animated ? KURL("http://www.example.com/image.webp")
                             : KURL("http://www.example.com/image.jpg");
 
-  const Vector<unsigned char>& data =
-      is_animated ? AnimatedWebpImage() : JpegImage();
+  Vector<unsigned char> data = is_animated ? AnimatedWebpImage() : JpegImage();
   WebNavigationParams::FillStaticResponse(
       params.get(), is_animated ? "image/webp" : "image/jpeg", "UTF-8",
       base::as_chars(base::span(data)));
@@ -282,14 +304,14 @@ TEST_F(ImageDocumentTest, ImageStyleContainsTransitionForNonAnimatedImage) {
   CreateDocument(50, 50);
   auto& style =
       GetDocument().ImageElement()->getAttribute(html_names::kStyleAttr);
-  EXPECT_NE(style.Find("transition:"), kNotFound);
+  EXPECT_TRUE(style.contains("transition:"));
 }
 
 TEST_F(ImageDocumentTest, ImageStyleDoesNotContainTransitionForAnimatedImage) {
   CreateDocument(50, 50, /*is_animated*/ true);
   auto& style =
       GetDocument().ImageElement()->getAttribute(html_names::kStyleAttr);
-  EXPECT_EQ(style.Find("transition:"), kNotFound);
+  EXPECT_FALSE(style.contains("transition:"));
 }
 
 #if BUILDFLAG(IS_ANDROID)
@@ -363,7 +385,7 @@ TEST_F(ImageDocumentViewportTest, HidingURLBarDoesntChangeImageLocation) {
   LoadURL("https://example.com/test.jpg");
 
   Vector<char> data;
-  data.AppendVector(JpegImage());
+  data.append_range(JpegImage());
   request.Complete(data);
 
   Compositor().BeginFrame();
@@ -400,14 +422,14 @@ TEST_F(ImageDocumentViewportTest, ScaleImage) {
   LoadURL("https://example.com/test.jpg");
 
   Vector<char> data;
-  data.AppendVector(JpegImage());
+  data.append_range(JpegImage());
   request.Complete(data);
 
   HTMLImageElement* img = GetDocument().ImageElement();
 
   // no zoom
   WebView().MainFrameWidget()->Resize(gfx::Size(100, 100));
-  WebView().SetZoomFactorForDeviceScaleFactor(1.f);
+  WebView().SetZoomFactorForDeviceScaleFactor(1.f, 1.0f);
   Compositor().BeginFrame();
   EXPECT_EQ(50u, img->width());
   EXPECT_EQ(50u, img->height());
@@ -421,7 +443,7 @@ TEST_F(ImageDocumentViewportTest, ScaleImage) {
   // This simulates running on two phones with different screen densities but
   // same (physical) screen size, image document should displayed the same.
   WebView().MainFrameWidget()->Resize(gfx::Size(400, 400));
-  WebView().SetZoomFactorForDeviceScaleFactor(4.f);
+  WebView().SetZoomFactorForDeviceScaleFactor(4.f, 1.0f);
   Compositor().BeginFrame();
   EXPECT_EQ(50u, img->width());
   EXPECT_EQ(50u, img->height());
@@ -440,12 +462,12 @@ TEST_F(ImageDocumentViewportTest, DivWidth) {
   LoadURL("https://example.com/test.jpg");
 
   Vector<char> data;
-  data.AppendVector(JpegImage());
+  data.append_range(JpegImage());
   request.Complete(data);
 
   HTMLImageElement* img = GetDocument().ImageElement();
 
-  WebView().SetZoomFactorForDeviceScaleFactor(2.f);
+  WebView().SetZoomFactorForDeviceScaleFactor(2.f, 1.0f);
 
   // Image smaller then webview size, visual viewport is not zoomed, and image
   // will be centered in the viewport.
@@ -485,6 +507,91 @@ TEST_F(ImageDocumentViewportTest, DivWidth) {
   rect = img->GetBoundingClientRect();
   EXPECT_EQ(0, rect->x());
   EXPECT_EQ(40, rect->y());
+}
+
+// Tests that image is correctly centered when viewport meta is disabled on
+// mobile.
+TEST_F(ImageDocumentViewportTest, DivWidthOnMobileWithDisabledViewportMeta) {
+  v8::HandleScope handle_scope(
+      WebView().GetPage()->GetAgentGroupScheduler().Isolate());
+  WebView().GetSettings()->SetViewportMetaEnabled(false);
+  WebView().GetSettings()->SetViewportStyle(
+      mojom::blink::ViewportStyle::kMobile);
+  SimRequest request("https://example.com/test.jpg", "image/jpeg");
+  LoadURL("https://example.com/test.jpg");
+  Vector<char> data;
+  data.append_range(JpegImage());
+  request.Complete(data);
+  HTMLImageElement* img = GetDocument().ImageElement();
+  WebView().SetZoomFactorForDeviceScaleFactor(1.f, 1.0f);
+  WebView().MainFrameWidget()->Resize(gfx::Size(200, 200));
+  Compositor().BeginFrame();
+  EXPECT_EQ(50u, img->width());
+  EXPECT_EQ(50u, img->height());
+  EXPECT_EQ(980, GetDocument().CalculateDivWidth());
+  EXPECT_EQ(1.f, GetVisualViewport().Scale());
+  EXPECT_EQ(200, GetVisualViewport().Width());
+  EXPECT_EQ(200, GetVisualViewport().Height());
+  DOMRect* rect = img->GetBoundingClientRect();
+  // 465 = (980 - 50) / 2, so the image is centered.
+  EXPECT_EQ(465, rect->x());
+  EXPECT_EQ(465, rect->y());
+}
+
+// Tests that a very wide image is correctly centered when viewport meta is
+// disabled on mobile.
+TEST_F(ImageDocumentViewportTest,
+       DivWidthOnMobileWithDisabledViewportMetaWideImage) {
+  v8::HandleScope handle_scope(
+      WebView().GetPage()->GetAgentGroupScheduler().Isolate());
+  WebView().GetSettings()->SetViewportMetaEnabled(false);
+  WebView().GetSettings()->SetViewportStyle(
+      mojom::blink::ViewportStyle::kMobile);
+  SimRequest request("https://example.com/test.jpg", "image/jpeg");
+  LoadURL("https://example.com/test.jpg");
+  request.Complete(CreateJpegImageData(10000, 100));
+  HTMLImageElement* img = GetDocument().ImageElement();
+  WebView().SetZoomFactorForDeviceScaleFactor(1.f, 1.0f);
+  WebView().MainFrameWidget()->Resize(gfx::Size(200, 200));
+  Compositor().BeginFrame();
+  EXPECT_EQ(9800u, img->width());
+  EXPECT_EQ(98u, img->height());
+  EXPECT_EQ(9800, GetDocument().CalculateDivWidth());
+  EXPECT_EQ(1.f, GetVisualViewport().Scale());
+  EXPECT_EQ(200, GetVisualViewport().Width());
+  EXPECT_EQ(200, GetVisualViewport().Height());
+  DOMRect* rect = img->GetBoundingClientRect();
+  EXPECT_EQ(0, rect->x());
+  // 4851 = (9800 - 98) / 2, so the image is centered.
+  EXPECT_EQ(4851, rect->y());
+}
+
+// Tests that a very tall image is correctly centered when viewport meta is
+// disabled on mobile.
+TEST_F(ImageDocumentViewportTest,
+       DivWidthOnMobileWithDisabledViewportMetaTallImage) {
+  v8::HandleScope handle_scope(
+      WebView().GetPage()->GetAgentGroupScheduler().Isolate());
+  WebView().GetSettings()->SetViewportMetaEnabled(false);
+  WebView().GetSettings()->SetViewportStyle(
+      mojom::blink::ViewportStyle::kMobile);
+  SimRequest request("https://example.com/test.jpg", "image/jpeg");
+  LoadURL("https://example.com/test.jpg");
+  request.Complete(CreateJpegImageData(100, 10000));
+  HTMLImageElement* img = GetDocument().ImageElement();
+  WebView().SetZoomFactorForDeviceScaleFactor(1.f, 1.0f);
+  WebView().MainFrameWidget()->Resize(gfx::Size(200, 200));
+  Compositor().BeginFrame();
+  EXPECT_EQ(100u, img->width());
+  EXPECT_EQ(10000u, img->height());
+  EXPECT_EQ(980, GetDocument().CalculateDivWidth());
+  EXPECT_EQ(1.f, GetVisualViewport().Scale());
+  EXPECT_EQ(200, GetVisualViewport().Width());
+  EXPECT_EQ(200, GetVisualViewport().Height());
+  DOMRect* rect = img->GetBoundingClientRect();
+  // 440 = (980 - 100) / 2, so the image is centered.
+  EXPECT_EQ(440, rect->x());
+  EXPECT_EQ(0, rect->y());
 }
 
 #undef MAYBE

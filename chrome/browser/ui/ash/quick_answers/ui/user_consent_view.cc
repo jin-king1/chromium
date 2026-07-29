@@ -5,6 +5,7 @@
 #include "chrome/browser/ui/ash/quick_answers/ui/user_consent_view.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "base/command_line.h"
@@ -49,7 +50,6 @@
 #include "ui/views/layout/layout_provider.h"
 #include "ui/views/layout/layout_types.h"
 #include "ui/views/metadata/view_factory.h"
-#include "ui/views/metadata/view_factory_internal.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/widget/tooltip_manager.h"
 #include "ui/views/widget/widget.h"
@@ -62,12 +62,10 @@ namespace {
 // Main view (or common) specs.
 constexpr int kLineHeightDip = 20;
 constexpr int kContentSpacingDip = 8;
-constexpr auto kMainViewInsets = gfx::Insets::TLBR(16, 12, 16, 16);
 constexpr auto kContentInsets = gfx::Insets::TLBR(0, 12, 0, 0);
 constexpr auto kContentInsetsRefresh = gfx::Insets::TLBR(0, 16, 0, 0);
 
 // Icon.
-constexpr int kGoogleIconSizeDip = 16;
 constexpr int kIntentIconSizeDip = 20;
 constexpr int kIconBackgroundCornerRadiusDip = 12;
 constexpr gfx::Insets kIntentIconInsets = gfx::Insets(8);
@@ -441,6 +439,10 @@ UserConsentView::UserConsentView(
 }
 
 UserConsentView::~UserConsentView() = default;
+
+std::optional<int> UserConsentView::GetMinWidth() const {
+  return kMinWidth;
+}
 
 void UserConsentView::OnFocus() {
   // Unless screen-reader mode is enabled, transfer the focus to an actionable

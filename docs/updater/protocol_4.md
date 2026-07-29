@@ -702,8 +702,8 @@ A pipeline object has the following members:
  *  `pipeline_id`: A string describing the pipeline strategy. This string is
     echoed back to the server in `event` objects to help the server attribute
     events to a particular pipeline. Pipeline IDs are not necessarily globally
-    unique; for example, a server might use an ID of "h1 -> h2 via zucchini" to
-    identify a pipeline that updates an application from h1 to h2, using a
+    unique; for example, a server might use an ID of "zucc:h1sha256->h2sha256"
+    to identify a pipeline that updates an application from h1 to h2, using a
     zucchini patch, and reuse that ID across many update check responses.
  *  `operations`: A list of `operation` objects.
 
@@ -711,45 +711,65 @@ A pipeline object has the following members:
 A operation object describes one of many operations to be performed in order to
 produce, process, and eventually install a update.
 
-It has
-the following members:
+It has the following members:
  *  `type`: The type of operation to execute, represented as a string. This can
     be any of the operations provided by `acceptformat` to the
     [Request Object](#request-object-update-check-request).
 
 For `type == "download"`: Download a payload.
  *  `size`: The size in bytes of the payload requested for download.
+    This field is required and must be a value greater than 0.
  *  `out`: A `hash` object containing the expected hash of the downloaded
-    bytes.
+    bytes. This field is required.
  *  `urls`: The ordered list of `url` objects from which this payload may be
     obtained. Clients must attempt to download from each URL of the appropriate
     type in the specified order, falling back to the next URL if a TCP or HTTP
     error is encountered. A 4xx or 5xx HTTP response qualifies as an error that
     justifies a fallback. A successful download of a file that fails to hash to
     the provided `outhash_sha256` or has an unexpected size also qualifies.
-    Other network errors may also qualify.
+    Other network errors may also qualify. This field is required to be set and
+    contain at least one url for the operation to be processed properly.
 
-For `type == "decompress_lzma"`: Decompress a file produced by the previous
-    operation. The file is compressed using
-    [LZMA](https://en.wikipedia.org/wiki/Lempel%E2%80%93Ziv%E2%80%93Markov_chain_algorithm).
+For `type == "xz"`: Decompress an xz file produced by the previous operation.
+    The file is compressed using the
+    [XZ File Format](https://tukaani.org/xz/xz-file-format.txt).
 
 For `type == "zucc"`: Apply a differential Zucchini patch produced by a
     previous operation to a cached payload. The patch is generated using
     [Zucchini](https://chromium.googlesource.com/chromium/src.git/+/main/components/zucchini/README.md).
  *  `previous`: A `hash` object representing the file to apply this patch to.
+    This field is required.
+ *  `out`: A `hash` object representing the file produced from this patch. This
+    field is required.
 
 For `type == "puff"`: Apply a differential Puffin patch produced by a previous
     operation to a payload stored in the cache. The patch is generated using
     [Puffin](https://chromium.googlesource.com/chromium/src.git/+/main/third_party/puffin/README.md).
  *  `previous`: A `hash` object representing the file to apply this patch to.
+    This field is required.
+ *  `out`: A `hash` object representing the file produced from this patch. This
+    field is required.
 
 For `type == "crx3"`: Decompress a CRX3 package produced by the previous
-    operation and install it.
+    operation and install it. The precise handling of the installation varies
+    depending on the updater and the operating system.
  *  `in`: A `hash` object containing the expected hash of the CRX3 to be
-    installed.
- *  `path`: The path to a payload or directory, relative to the root of the CRX
-    archive. This may be left blank in cases where execution after install is
-    not necessary.
+    installed. This field is required.
+ *  `size`: The size in bytes of the CRX3 package. This field is optional.
+ *  `path`: The path to the installer executable(s), relative to the root of the
+    CRX. Clients that install content without running an embedded executable
+    (such as the Chrome extension updater) should ignore this value. Otherwise,
+    on Windows this value indicates a single executable that the updater should
+    run to complete the installation. On macOS, this value indicates a directory
+    where install executables (`.preinstall`, `.install`, `.postinstall`, and
+    their [Keystone equivalents](installer_api_mac.md)) are located.
+    Additionally, some values have special handling on macOS:
+     *  A value in the form `path/to/basename.dmg` indicates a disk image file
+        whose root directory contains the install executables.
+     *  A value in the form `path/to/basename.app` indicates a application
+        bundle that shares a parent directory with the install executables.
+     *  Since 138.0.7182.0, any other values that have no file extension,
+        including `.`, indicate a directory containing the install executables.
  *  `arguments`: A string indicating command-line arguments that should be
     passed to the identified binary to execute.
 
@@ -832,10 +852,11 @@ attmpted as part of this update session. All events have the following members:
      *   3: An update session.
      *   4: An uninstall session.
      *   14: A `download` operation.
-     *   60: A `decompress_lzma` operation.
-     *   61: A `zucchini` patch application operation.
-     *   62: A `puffin` patch application operation.
+     *   60: An `xz` operation.
+     *   61: A `zucc` patch application operation.
+     *   62: A `puff` patch application operation.
      *   63: A `crx3` package installation operation.
+     *   64: An unknown operation.
      *   41: An app command completion event.
      *   42: A `run` operation.
  *   `eventresult`: The outcome of the operation. Default: 0. Known values:
@@ -875,23 +896,22 @@ For `eventtype == 3` events:
 
 For `eventtype == 14` events:
  *   `download_time_ms`: The time elapsed between the start of the download and
-     the end of the download, in milliseconds. -1 if unavailable.
-     Default: -1.
- *   `downloaded_bytes`: The number of bytes successfully received from the
-     download server. Default: 0.
+     the end of the download, in milliseconds. -1 if unavailable. Default: -1.
+ *   `downloaded`: The number of bytes successfully received from the download
+     server. Default: 0.
  *   `downloader`: A string identifying the download algorithm / stack. Known
      values:
      *   "" (empty string): Unknown downloader.
      *   "nsurlsession_background": MacOS background NSURLSession.
      *   "bits": Microsoft BITS.
      *   "direct": The Chromium network stack.
- *   `expected_bytes`: The number of bytes expected to be downloaded. Default:
-     0.
+ *   `total`: The size in bytes of the payload provided in the given url.
+     Default: 0.
  *   `pipeline_id`: The `pipeline_id` set in the request for this operation's
      pipeline.
  *   `url`: The URL from which the download was attempted.
 
-For `eventtype` == 60, 61, 62, or 63 events:
+For `eventtype == 60, 61, 62, 63, or 64` events:
  *   All the members of `eventtype == 3` events.
  *   `pipeline_id`: The `pipeline_id` set in the request for this operation's
      pipeline.

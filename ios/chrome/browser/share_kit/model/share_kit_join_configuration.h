@@ -7,9 +7,10 @@
 
 #import <UIKit/UIKit.h>
 
+#import "base/ios/block_types.h"
 #import "components/data_sharing/public/group_data.h"
 
-@protocol ApplicationCommands;
+@protocol SceneCommands;
 enum class ShareKitFlowOutcome;
 @class ShareKitPreviewItem;
 
@@ -19,8 +20,8 @@ enum class ShareKitFlowOutcome;
 // The base view controller on which the join flow will be presented.
 @property(nonatomic, weak) UIViewController* baseViewController;
 
-// Application commands handler.
-@property(nonatomic, weak) id<ApplicationCommands> applicationHandler;
+// Scene commands handler.
+@property(nonatomic, weak) id<SceneCommands> sceneHandler;
 
 // The token used to join the group, containing the collab ID and the secret.
 @property(nonatomic, assign) data_sharing::GroupToken token;
@@ -36,6 +37,11 @@ enum class ShareKitFlowOutcome;
 
 // The preview items to show in the preview screen.
 @property(nonatomic, copy) NSArray<ShareKitPreviewItem*>* previewItems;
+
+// Callback to be called when the collaboration group has been successfully
+// joined. The callback parameter is to be called to dismiss the screen.
+@property(nonatomic, copy) void (^joinCollaborationGroupSuccessBlock)
+    (ProceduralBlock);
 
 @end
 

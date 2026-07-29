@@ -19,9 +19,13 @@ void AddFluentUiColorMixer(ColorProvider* provider,
   if (key.contrast_mode == ColorProviderKey::ContrastMode::kNormal) {
     const bool dark_mode = key.color_mode == ColorProviderKey::ColorMode::kDark;
 
+    mixer[kColorWebNativeControlScrollbarArrowBackgroundDisabled] = {
+        kColorWebNativeControlScrollbarCorner};
     mixer[kColorWebNativeControlScrollbarArrowForeground] = {
         dark_mode ? SkColorSetRGB(0x9F, 0x9F, 0x9F)
                   : SkColorSetRGB(0x8B, 0x8B, 0x8B)};
+    mixer[kColorWebNativeControlScrollbarArrowForegroundDisabled] = {
+        kColorWebNativeControlScrollbarArrowForeground};
     mixer[kColorWebNativeControlScrollbarArrowForegroundPressed] = {
         dark_mode ? SkColorSetRGB(0xD1, 0xD1, 0xD1)
                   : SkColorSetRGB(0x63, 0x63, 0x63)};
@@ -29,7 +33,7 @@ void AddFluentUiColorMixer(ColorProvider* provider,
         dark_mode ? SkColorSetRGB(0x2C, 0x2C, 0x2C)
                   : SkColorSetRGB(0xFC, 0xFC, 0xFC)};
   }
-  CompleteScrollbarColorsDefinition(mixer);
+  CompleteFluentScrollbarColorsDefinition(mixer);
 }
 
 }  // namespace ui

@@ -13,6 +13,7 @@
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ash/policy/core/user_cloud_policy_manager_ash.h"
 #else
+#include "components/policy/core/common/cloud/profile_cloud_policy_manager.h"
 #include "components/policy/core/common/cloud/user_cloud_policy_manager.h"
 #endif
 
@@ -41,6 +42,13 @@ UserCloudPolicyInvalidatorFactory::UserCloudPolicyInvalidatorFactory()
   DependsOn(UserFmRegistrationTokenUploaderFactory::GetInstance());
 }
 
+// static
+UserCloudPolicyInvalidator* UserCloudPolicyInvalidatorFactory::GetForProfile(
+    Profile* profile) {
+  return static_cast<UserCloudPolicyInvalidator*>(
+      GetInstance()->GetServiceForBrowserContext(profile, true));
+}
+
 UserCloudPolicyInvalidatorFactory::~UserCloudPolicyInvalidatorFactory() =
     default;
 
@@ -48,11 +56,8 @@ std::unique_ptr<KeyedService>
 UserCloudPolicyInvalidatorFactory::BuildServiceInstanceForBrowserContext(
     content::BrowserContext* context) const {
   Profile* profile = static_cast<Profile*>(context);
-#if BUILDFLAG(IS_CHROMEOS)
-  CloudPolicyManager* policy_manager = profile->GetUserCloudPolicyManagerAsh();
-#else
-  CloudPolicyManager* policy_manager = profile->GetUserCloudPolicyManager();
-#endif
+  policy::CloudPolicyManager* policy_manager = profile->GetCloudPolicyManager();
+
   if (!policy_manager)
     return nullptr;
 

@@ -5,26 +5,26 @@
 #include "chrome/browser/ui/views/passwords/password_change/successful_password_change_view.h"
 
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/passwords/bubble_controllers/password_change/successful_password_change_bubble_controller.h"
 #include "chrome/browser/ui/passwords/passwords_model_delegate.h"
+#include "chrome/browser/ui/passwords/ui_utils.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/controls/rich_hover_button.h"
-#include "chrome/browser/ui/views/passwords/manage_passwords_view_ids.h"
-#include "chrome/browser/ui/views/passwords/views_utils.h"
-#include "chrome/grit/branded_strings.h"
+#include "chrome/grit/browser_resources.h"
 #include "chrome/grit/generated_resources.h"
-#include "chrome/grit/theme_resources.h"
 #include "components/vector_icons/vector_icons.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/gfx/favicon_size.h"
+#include "ui/gfx/image/image.h"
 #include "ui/views/controls/button/image_button.h"
 #include "ui/views/controls/button/image_button_factory.h"
+#include "ui/views/controls/image_view.h"
 #include "ui/views/controls/separator.h"
-#include "ui/views/controls/styled_label.h"
+#include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/fill_layout.h"
 #include "ui/views/layout/flex_layout.h"
 #include "ui/views/vector_icons.h"
@@ -37,16 +37,6 @@ gfx::Insets ComputeRowMargins() {
   gfx::Insets margins = layout_provider->GetInsetsMetric(views::INSETS_DIALOG);
   margins.set_top_bottom(0, 0);
   return margins;
-}
-
-std::unique_ptr<views::Label> CreateBodyText(const std::u16string& domain) {
-  auto body_text = std::make_unique<views::Label>();
-  body_text->SetText(domain);
-  body_text->SetMultiLine(false);
-  body_text->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-  body_text->SetBorder(views::CreateEmptyBorder(ComputeRowMargins()));
-  body_text->SetID(SuccessfulPasswordChangeView::kBodyTextLabelId);
-  return body_text;
 }
 
 std::unique_ptr<views::View> CreateUsernameLabel(
@@ -96,13 +86,21 @@ std::unique_ptr<views::View> CreateUsernamePasswordWithEyeIcon(
   parent_view->SetBetweenChildSpacing(icon_label_spacing);
 
   // Add favicon.
-  auto* favicon =
+  views::ImageView* favicon_view =
       parent_view->AddChildView(std::make_unique<views::ImageView>());
-  const int icon_size = GetLayoutConstant(PAGE_INFO_ICON_SIZE);
-  favicon->SetImageSize({icon_size, icon_size});
-  // TODO(crbug.com/381054978): Display proper favicon.
-  favicon->SetImage(ui::ImageModel::FromVectorIcon(
-      vector_icons::kGlobeIcon, ui::kColorIcon, gfx::kFaviconSize));
+  const int icon_size = GetLayoutConstant(LayoutConstant::kPageInfoIconSize);
+  favicon_view->SetImageSize({icon_size, icon_size});
+  favicon_view->SetImage(ui::ImageModel::FromVectorIcon(
+      features::IsRoundedIconsEnabled() ? vector_icons::kGlobeIcon
+                                        : vector_icons::kGlobeOldIcon,
+      ui::kColorIcon, gfx::kFaviconSize));
+  controller->RequestFavicon(base::BindOnce(
+      [](views::ImageView* favicon_view, const gfx::Image& favicon) {
+        if (!favicon.IsEmpty()) {
+          favicon_view->SetImage(ui::ImageModel::FromImage(favicon));
+        }
+      },
+      favicon_view));
 
   // Add username/password labels.
   auto* username_password_view =
@@ -122,10 +120,16 @@ std::unique_ptr<views::View> CreateUsernamePasswordWithEyeIcon(
   eye_icon->SetToggledTooltipText(
       l10n_util::GetStringUTF16(IDS_MANAGE_PASSWORDS_HIDE_PASSWORD));
   eye_icon->SetImageVerticalAlignment(views::ImageButton::ALIGN_MIDDLE);
-  views::SetImageFromVectorIconWithColorId(eye_icon, views::kEyeIcon,
-                                           ui::kColorIcon, ui::kColorIcon);
-  views::SetToggledImageFromVectorIconWithColorId(
-      eye_icon, views::kEyeCrossedIcon, ui::kColorIcon, ui::kColorIcon);
+  views::SetImageFromVectorIconWithColor(eye_icon,
+                                         features::IsRoundedIconsEnabled()
+                                             ? views::kVisibilityFilledIcon
+                                             : views::kEyeOldIcon,
+                                         {ui::kColorIcon, ui::kColorIcon});
+  views::SetToggledImageFromVectorIconWithColor(
+      eye_icon,
+      features::IsRoundedIconsEnabled() ? views::kVisibilityOffFilledIcon
+                                        : views::kEyeCrossedOldIcon,
+      {ui::kColorIcon, ui::kColorIcon});
 
   base::RepeatingCallback<void(bool)> auth_result_callback =
       base::BindRepeating(
@@ -164,15 +168,21 @@ std::unique_ptr<views::View> CreateManagePasswordsView(
   auto manage_passwords_button = std::make_unique<RichHoverButton>(
       std::move(open_password_manager_closure),
       /*main_image_icon=*/
-      ui::ImageModel::FromVectorIcon(vector_icons::kSettingsIcon,
+      ui::ImageModel::FromVectorIcon(features::IsRoundedIconsEnabled()
+                                         ? vector_icons::kSettingsFilledIcon
+                                         : vector_icons::kSettingsOldIcon,
                                      ui::kColorIcon),
       /*title_text=*/
       l10n_util::GetStringUTF16(IDS_PASSWORD_MANAGER_MANAGE_PASSWORDS_BUTTON),
       /*subtitle_text=*/std::u16string(),
       /*action_image_icon=*/
-      ui::ImageModel::FromVectorIcon(vector_icons::kLaunchIcon,
-                                     ui::kColorIconSecondary,
-                                     GetLayoutConstant(PAGE_INFO_ICON_SIZE)));
+      ui::ImageModel::FromVectorIcon(
+          features::IsRoundedIconsEnabled() ? views::kOpenInNewIcon
+          : features::IsRoundedIconsEnabled()
+              ? vector_icons::kOpenInNewFlippableIcon
+              : vector_icons::kLaunchOldIcon,
+          ui::kColorIconSecondary,
+          GetLayoutConstant(LayoutConstant::kPageInfoIconSize)));
   manage_passwords_button->SetID(
       SuccessfulPasswordChangeView::kManagePasswordsButtonId);
   manage_passwords_button->SetTooltipText(
@@ -184,7 +194,7 @@ std::unique_ptr<views::View> CreateManagePasswordsView(
 
 SuccessfulPasswordChangeView::SuccessfulPasswordChangeView(
     content::WebContents* web_contents,
-    views::View* anchor_view)
+    views::BubbleAnchor anchor_view)
     : PasswordBubbleViewBase(web_contents,
                              anchor_view,
                              /*easily_dismissable=*/false),
@@ -201,21 +211,22 @@ SuccessfulPasswordChangeView::SuccessfulPasswordChangeView(
   box_layout->set_cross_axis_alignment(views::LayoutAlignment::kStretch);
   box_layout->SetCollapseMarginsSpacing(true);
   box_layout->set_between_child_spacing(spacing);
-  box_layout->set_inside_border_insets(gfx::Insets::TLBR(0, 0, spacing, 0));
+  box_layout->set_inside_border_insets(
+      gfx::Insets::TLBR(spacing, 0, spacing, 0));
   // Set the margins to 0 such that the `root_view` fills the whole page bubble
   // width.
   set_margins(gfx::Insets());
 
-  root_view->AddChildView(CreateBodyText(controller_->GetDisplayOrigin()));
-  root_view->AddChildView(CreateUsernamePasswordWithEyeIcon(controller_.get()));
+  views::View* username_password_row = root_view->AddChildView(
+      CreateUsernamePasswordWithEyeIcon(controller_.get()));
   root_view->AddChildView(std::make_unique<views::Separator>());
   root_view->AddChildView(CreateManagePasswordsView(base::BindRepeating(
       &SuccessfulPasswordChangeBubbleController::OpenPasswordManager,
       controller_->GetWeakPtr())));
 
+  SetShowIcon(true);
+  SetInitiallyFocusedView(username_password_row->GetViewByID(kEyeIconButtonId));
   SetButtons(static_cast<int>(ui::mojom::DialogButton::kNone));
-  SetFootnoteView(CreateFooterView());
-
   SetCloseCallback(base::BindRepeating(
       [](SuccessfulPasswordChangeView* view) {
         // When dialog is closed explicitly finish password change flow to
@@ -226,19 +237,6 @@ SuccessfulPasswordChangeView::SuccessfulPasswordChangeView(
         }
       },
       this));
-}
-
-std::unique_ptr<views::View> SuccessfulPasswordChangeView::CreateFooterView() {
-  base::RepeatingClosure navigate_to_settings =
-      base::BindRepeating(&SuccessfulPasswordChangeBubbleController::
-                              NavigateToPasswordChangeSettings,
-                          base::Unretained(controller_.get()));
-  return CreateGooglePasswordManagerLabel(
-      /*text_message_id=*/
-      IDS_PASSWORD_MANAGER_UI_PASSWORD_CHANGE_FOOTER,
-      /*link_message_id=*/
-      IDS_PASSWORD_MANAGER_UI_PASSWORD_CHANGE_SETTINGS_LINK,
-      navigate_to_settings);
 }
 
 SuccessfulPasswordChangeView::~SuccessfulPasswordChangeView() = default;
@@ -252,9 +250,13 @@ SuccessfulPasswordChangeView::GetController() const {
   return controller_.get();
 }
 
+ui::ImageModel SuccessfulPasswordChangeView::GetWindowIcon() {
+  return ui::ImageModel::FromVectorIcon(GooglePasswordManagerVectorIcon(),
+                                        ui::kColorIcon);
+}
+
 void SuccessfulPasswordChangeView::AddedToWidget() {
-  SetBubbleHeader(IDR_PASSWORD_CHANGE_SUCCESS,
-                  IDR_PASSWORD_CHANGE_SUCCESS_DARK);
+  SetBubbleHeaderLottie(IDR_PASSWORD_CHANGE_SUCCESS_LOTTIE);
 }
 
 BEGIN_METADATA(SuccessfulPasswordChangeView)

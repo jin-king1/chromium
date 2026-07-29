@@ -7,11 +7,13 @@
 #include <string_view>
 
 #include "base/test/scoped_feature_list.h"
+#include "chrome/browser/global_features.h"
 #include "chrome/browser/ui/ash/editor_menu/editor_menu_chip_view.h"
 #include "chrome/browser/ui/ash/editor_menu/editor_menu_strings.h"
 #include "chrome/browser/ui/ash/editor_menu/editor_menu_textfield_view.h"
 #include "chrome/browser/ui/ash/editor_menu/editor_menu_view.h"
 #include "chrome/browser/ui/ash/editor_menu/editor_menu_view_delegate.h"
+#include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/views/chrome_views_test_base.h"
 #include "chromeos/ash/components/editor_menu/public/cpp/preset_text_query.h"
 #include "chromeos/constants/chromeos_features.h"
@@ -59,7 +61,10 @@ class MockEditorMenuViewDelegate : public EditorMenuViewDelegate {
               OnPromoCardWidgetClosed,
               (views::Widget::ClosedReason closed_reason),
               (override));
-  MOCK_METHOD(void, OnEditorMenuVisibilityChanged, (bool visible), (override));
+  MOCK_METHOD(void,
+              OnEditorMenuVisibilityChanged,
+              (bool visible, bool destroy_session),
+              (override));
   MOCK_METHOD(void, OnTabSelected, (int index), (override));
 };
 
@@ -81,7 +86,10 @@ TEST_F(EditorMenuViewTest, CreatesChips) {
       PresetTextQuery("ID2", u"Elaborate", PresetQueryCategory::kElaborate)};
 
   std::unique_ptr<views::Widget> editor_menu_widget =
-      EditorMenuView::CreateWidget(TextAndImageMode::kEditorRewriteOnly,
+      EditorMenuView::CreateWidget(TestingBrowserProcess::GetGlobal()
+                                       ->GetFeatures()
+                                       ->application_locale_storage(),
+                                   TextAndImageMode::kEditorRewriteOnly,
                                    queries, gfx::Rect(200, 300, 400, 200),
                                    &delegate);
   auto* editor_menu_view =
@@ -107,7 +115,10 @@ TEST_F(EditorMenuViewTest, CreatesChipsInMultipleRows) {
       PresetTextQuery("ID5", u"Formalize", PresetQueryCategory::kFormalize)};
 
   std::unique_ptr<views::Widget> editor_menu_widget =
-      EditorMenuView::CreateWidget(TextAndImageMode::kEditorRewriteOnly,
+      EditorMenuView::CreateWidget(TestingBrowserProcess::GetGlobal()
+                                       ->GetFeatures()
+                                       ->application_locale_storage(),
+                                   TextAndImageMode::kEditorRewriteOnly,
                                    queries, gfx::Rect(200, 300, 400, 200),
                                    &delegate);
   auto* editor_menu_view =
@@ -131,7 +142,10 @@ TEST_F(EditorMenuViewTest, TabKeyMovesFocus) {
 
   // Create and focus the editor menu.
   std::unique_ptr<views::Widget> editor_menu_widget =
-      EditorMenuView::CreateWidget(TextAndImageMode::kEditorRewriteOnly,
+      EditorMenuView::CreateWidget(TestingBrowserProcess::GetGlobal()
+                                       ->GetFeatures()
+                                       ->application_locale_storage(),
+                                   TextAndImageMode::kEditorRewriteOnly,
                                    queries, gfx::Rect(200, 300, 400, 200),
                                    &delegate);
   editor_menu_widget->Show();
@@ -173,7 +187,10 @@ TEST_F(EditorMenuViewTest, EnterKeySubmitsPresetQuery) {
 
   // Create and show the editor menu.
   std::unique_ptr<views::Widget> editor_menu_widget =
-      EditorMenuView::CreateWidget(TextAndImageMode::kEditorRewriteOnly,
+      EditorMenuView::CreateWidget(TestingBrowserProcess::GetGlobal()
+                                       ->GetFeatures()
+                                       ->application_locale_storage(),
+                                   TextAndImageMode::kEditorRewriteOnly,
                                    queries, gfx::Rect(200, 300, 400, 200),
                                    &delegate);
   editor_menu_widget->Show();
@@ -200,7 +217,10 @@ TEST_F(EditorMenuViewTest, EnterKeySubmitsFreeformQuery) {
 
   // Create and show the editor menu.
   std::unique_ptr<views::Widget> editor_menu_widget =
-      EditorMenuView::CreateWidget(TextAndImageMode::kEditorRewriteOnly,
+      EditorMenuView::CreateWidget(TestingBrowserProcess::GetGlobal()
+                                       ->GetFeatures()
+                                       ->application_locale_storage(),
+                                   TextAndImageMode::kEditorRewriteOnly,
                                    PresetTextQueries(),
                                    gfx::Rect(200, 300, 400, 200), &delegate);
   editor_menu_widget->Show();
@@ -230,7 +250,10 @@ TEST_F(EditorMenuViewTest, DisablesMenu) {
       PresetTextQuery("ID2", u"Emojify", PresetQueryCategory::kEmojify)};
 
   std::unique_ptr<views::Widget> editor_menu_widget =
-      EditorMenuView::CreateWidget(TextAndImageMode::kEditorRewriteOnly,
+      EditorMenuView::CreateWidget(TestingBrowserProcess::GetGlobal()
+                                       ->GetFeatures()
+                                       ->application_locale_storage(),
+                                   TextAndImageMode::kEditorRewriteOnly,
                                    queries, gfx::Rect(200, 300, 400, 200),
                                    &delegate);
   editor_menu_widget->Show();
@@ -257,7 +280,10 @@ TEST_F(EditorMenuViewTest, UpdatesFreeformPlaceholderWhenSwitchingCardTab) {
       PresetTextQuery("ID2", u"Emojify", PresetQueryCategory::kEmojify)};
 
   std::unique_ptr<views::Widget> editor_menu_widget =
-      EditorMenuView::CreateWidget(TextAndImageMode::kEditorWriteAndLobster,
+      EditorMenuView::CreateWidget(TestingBrowserProcess::GetGlobal()
+                                       ->GetFeatures()
+                                       ->application_locale_storage(),
+                                   TextAndImageMode::kEditorWriteAndLobster,
                                    queries, gfx::Rect(200, 300, 400, 200),
                                    &delegate);
   editor_menu_widget->Show();
@@ -285,7 +311,10 @@ TEST_F(EditorMenuViewTest, AccessibleProperties) {
 
   // Rewrite Editor Mode
   std::unique_ptr<views::Widget> editor_menu_widget =
-      EditorMenuView::CreateWidget(TextAndImageMode::kEditorRewriteOnly,
+      EditorMenuView::CreateWidget(TestingBrowserProcess::GetGlobal()
+                                       ->GetFeatures()
+                                       ->application_locale_storage(),
+                                   TextAndImageMode::kEditorRewriteOnly,
                                    queries, gfx::Rect(200, 300, 400, 200),
                                    &delegate);
   editor_menu_widget->Show();
@@ -300,7 +329,10 @@ TEST_F(EditorMenuViewTest, AccessibleProperties) {
 
   // Write Editor Mode
   editor_menu_widget =
-      EditorMenuView::CreateWidget(TextAndImageMode::kEditorWriteOnly, queries,
+      EditorMenuView::CreateWidget(TestingBrowserProcess::GetGlobal()
+                                       ->GetFeatures()
+                                       ->application_locale_storage(),
+                                   TextAndImageMode::kEditorWriteOnly, queries,
                                    gfx::Rect(200, 300, 400, 200), &delegate);
   editor_menu_widget->Show();
   editor_menu_view =
@@ -321,7 +353,10 @@ TEST_F(EditorMenuViewI18nEnabledTest, AccessibleProperties) {
 
   // Rewrite Editor Mode
   std::unique_ptr<views::Widget> editor_menu_widget =
-      EditorMenuView::CreateWidget(TextAndImageMode::kEditorRewriteOnly,
+      EditorMenuView::CreateWidget(TestingBrowserProcess::GetGlobal()
+                                       ->GetFeatures()
+                                       ->application_locale_storage(),
+                                   TextAndImageMode::kEditorRewriteOnly,
                                    queries, gfx::Rect(200, 300, 400, 200),
                                    &delegate);
   editor_menu_widget->Show();
@@ -336,7 +371,10 @@ TEST_F(EditorMenuViewI18nEnabledTest, AccessibleProperties) {
 
   // Write Editor Mode
   editor_menu_widget =
-      EditorMenuView::CreateWidget(TextAndImageMode::kEditorWriteOnly, queries,
+      EditorMenuView::CreateWidget(TestingBrowserProcess::GetGlobal()
+                                       ->GetFeatures()
+                                       ->application_locale_storage(),
+                                   TextAndImageMode::kEditorWriteOnly, queries,
                                    gfx::Rect(200, 300, 400, 200), &delegate);
   editor_menu_widget->Show();
   editor_menu_view =

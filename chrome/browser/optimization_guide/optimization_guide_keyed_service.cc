@@ -7,13 +7,16 @@
 #include <memory>
 #include <optional>
 
+#include "base/feature_list.h"
 #include "base/files/file_path.h"
-#include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
+#include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/path_service.h"
+#include "base/strings/strcat.h"
 #include "base/system/sys_info.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/task_traits.h"
@@ -23,12 +26,12 @@
 #include "build/chromeos_buildflags.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/component_updater/optimization_guide_on_device_model_installer.h"
-#include "chrome/browser/download/background_download_service_factory.h"
+#include "chrome/browser/enterprise/browser_management/management_service_factory.h"
+#include "chrome/browser/global_features.h"
 #include "chrome/browser/metrics/chrome_metrics_service_accessor.h"
 #include "chrome/browser/optimization_guide/chrome_hints_manager.h"
 #include "chrome/browser/optimization_guide/chrome_model_quality_logs_uploader_service.h"
-#include "chrome/browser/optimization_guide/chrome_prediction_model_store.h"
-#include "chrome/browser/optimization_guide/model_execution/chrome_on_device_model_service_controller.h"
+#include "chrome/browser/optimization_guide/model_execution/optimization_guide_global_state.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_key.h"
@@ -43,38 +46,43 @@
 #include "components/metrics/metrics_log.h"
 #include "components/metrics/version_utils.h"
 #include "components/metrics_services_manager/metrics_services_manager.h"
-#include "components/optimization_guide/core/command_line_top_host_provider.h"
-#include "components/optimization_guide/core/hints_processing_util.h"
+#include "components/optimization_guide/core/delivery/model_util.h"
+#include "components/optimization_guide/core/delivery/prediction_manager.h"
+#include "components/optimization_guide/core/hints/command_line_top_host_provider.h"
+#include "components/optimization_guide/core/hints/hints_processing_util.h"
+#include "components/optimization_guide/core/hints/optimization_guide_navigation_data.h"
+#include "components/optimization_guide/core/hints/optimization_guide_store.h"
+#include "components/optimization_guide/core/hints/tab_url_provider.h"
+#include "components/optimization_guide/core/hints/top_host_provider.h"
 #include "components/optimization_guide/core/model_execution/feature_keys.h"
+#include "components/optimization_guide/core/model_execution/model_broker_client.h"
 #include "components/optimization_guide/core/model_execution/model_execution_features.h"
 #include "components/optimization_guide/core/model_execution/model_execution_features_controller.h"
+#include "components/optimization_guide/core/model_execution/model_execution_fetcher.h"
 #include "components/optimization_guide/core/model_execution/model_execution_manager.h"
 #include "components/optimization_guide/core/model_execution/on_device_asset_manager.h"
 #include "components/optimization_guide/core/model_execution/on_device_model_component.h"
 #include "components/optimization_guide/core/model_execution/on_device_model_service_controller.h"
 #include "components/optimization_guide/core/model_execution/performance_class.h"
+#include "components/optimization_guide/core/model_execution/remote_model_executor.h"
 #include "components/optimization_guide/core/model_quality/model_quality_log_entry.h"
 #include "components/optimization_guide/core/model_quality/model_quality_logs_uploader_service.h"
 #include "components/optimization_guide/core/model_quality/model_quality_util.h"
-#include "components/optimization_guide/core/model_util.h"
-#include "components/optimization_guide/core/optimization_guide_constants.h"
+#include "components/optimization_guide/core/optimization_guide_common.mojom-shared.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/optimization_guide/core/optimization_guide_logger.h"
-#include "components/optimization_guide/core/optimization_guide_model_executor.h"
-#include "components/optimization_guide/core/optimization_guide_navigation_data.h"
 #include "components/optimization_guide/core/optimization_guide_prefs.h"
-#include "components/optimization_guide/core/optimization_guide_store.h"
 #include "components/optimization_guide/core/optimization_guide_switches.h"
 #include "components/optimization_guide/core/optimization_guide_util.h"
-#include "components/optimization_guide/core/prediction_manager.h"
-#include "components/optimization_guide/core/tab_url_provider.h"
-#include "components/optimization_guide/core/top_host_provider.h"
+#include "components/optimization_guide/optimization_guide_buildflags.h"
 #include "components/optimization_guide/proto/hints.pb.h"
 #include "components/optimization_guide/proto/models.pb.h"
+#include "components/optimization_guide/public/mojom/model_broker.mojom.h"
 #include "components/prefs/pref_service.h"
 #include "components/user_prefs/user_prefs.h"
 #include "components/variations/service/variations_service.h"
 #include "components/variations/synthetic_trials.h"
+#include "components/version_info/version_info.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/network_service_instance.h"
@@ -83,18 +91,30 @@
 
 #if BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/commerce/price_tracking/android/price_tracking_notification_bridge.h"
+#include "chrome/browser/optimization_guide/android/jni_headers/OptimizationGuideBridge_shared_jni.h"
 #include "chrome/browser/optimization_guide/android/optimization_guide_bridge.h"
 #include "chrome/browser/optimization_guide/android/optimization_guide_tab_url_provider_android.h"
 #else
 #include "chrome/browser/optimization_guide/optimization_guide_tab_url_provider.h"
 #endif
 
+#include "chrome/browser/private_ai/private_ai_service_factory.h"
+#include "components/optimization_guide/core/model_execution/private_ai_model_execution_fetcher.h"
+#include "components/private_ai/client.h"    // nogncheck
+#include "components/private_ai/features.h"  // nogncheck
+#include "components/private_ai/private_ai_service.h"
+
 namespace {
 
+using ::optimization_guide::ModelBasedCapabilityKey;
 using ::optimization_guide::ModelExecutionFeaturesController;
+using ::optimization_guide::ModelExecutionManager;
 using ::optimization_guide::OnDeviceModelComponentStateManager;
 using ::optimization_guide::OnDeviceModelPerformanceClass;
 using ::optimization_guide::OnDeviceModelServiceController;
+
+// Used to override the value of `version_info::IsOfficialBuild()` for tests.
+std::optional<bool> g_is_official_build_for_testing;
 
 // Returns the profile to use for when setting up the keyed service when the
 // profile is Off-The-Record. For guest profiles, returns a loaded profile if
@@ -118,66 +138,61 @@ Profile* GetProfileForOTROptimizationGuide(Profile* profile) {
   return profile->GetOriginalProfile();
 }
 
-scoped_refptr<optimization_guide::OnDeviceModelServiceController>
-GetOnDeviceModelServiceController(
-    base::WeakPtr<optimization_guide::OnDeviceModelComponentStateManager>
-        on_device_component_manager) {
-  scoped_refptr<optimization_guide::OnDeviceModelServiceController>
-      service_controller = optimization_guide::
-          ChromeOnDeviceModelServiceController::GetSingleInstanceMayBeNull();
-  if (!service_controller) {
-    service_controller = base::MakeRefCounted<
-        optimization_guide::ChromeOnDeviceModelServiceController>(
-        std::move(on_device_component_manager));
-    service_controller->Init();
-  }
-  return service_controller;
-}
-
-class OnDeviceModelComponentStateManagerDelegate
-    : public OnDeviceModelComponentStateManager::Delegate {
+class FetcherDelegate : public ModelExecutionManager::Delegate {
  public:
-  ~OnDeviceModelComponentStateManagerDelegate() override = default;
+  ~FetcherDelegate() override = default;
 
-  base::FilePath GetInstallDirectory() override {
-    base::FilePath local_install_path;
-    base::PathService::Get(component_updater::DIR_COMPONENT_USER,
-                           &local_install_path);
-    return local_install_path;
+  // Takes a BrowserContext instead of a private_ai::Client directly to avoid a
+  // dangling pointer. The KeyedService dependency (DependsOn) ensures that
+  // the PrivateAiService outlives this service during normal shutdown. However,
+  // in tests, the PrivateAiService can be replaced with a test factory after
+  // this service has been created, immediately destroying the original
+  // PrivateAiService and its Client. Holding a BrowserContext allows for
+  // fetching the correct, current PrivateAiService instance at execution time.
+  explicit FetcherDelegate(content::BrowserContext* browser_context)
+      : browser_context_(browser_context) {
+    CHECK(browser_context_);
   }
 
-  void GetFreeDiskSpace(const base::FilePath& path,
-                        base::OnceCallback<void(int64_t)> callback) override {
-    base::TaskTraits traits = {base::MayBlock(),
-                               base::TaskPriority::BEST_EFFORT};
-    if (optimization_guide::switches::
-            ShouldGetFreeDiskSpaceWithUserVisiblePriorityTask()) {
-      traits.UpdatePriority(base::TaskPriority::USER_VISIBLE);
+  std::unique_ptr<optimization_guide::ModelExecutionFetcher>
+  CreatePrivateAiFetcher() override {
+    private_ai::PrivateAiService* private_ai_service =
+        private_ai::PrivateAiServiceFactory::GetForProfile(
+            Profile::FromBrowserContext(browser_context_));
+    if (!private_ai_service) {
+      return nullptr;
     }
-
-    base::ThreadPool::PostTaskAndReplyWithResult(
-        FROM_HERE, traits,
-        base::BindOnce(&base::SysInfo::AmountOfFreeDiskSpace, path),
-        std::move(callback));
+    private_ai::Client* client = private_ai_service->GetClient();
+    return std::make_unique<optimization_guide::PrivateAiModelExecutionFetcher>(
+        client);
   }
 
-  void RegisterInstaller(
-      scoped_refptr<OnDeviceModelComponentStateManager> state_manager,
-      bool is_already_installing) override {
-    if (!g_browser_process) {
-      return;
-    }
-    component_updater::RegisterOptimizationGuideOnDeviceModelComponent(
-        g_browser_process->component_updater(), state_manager->GetWeakPtr(),
-        is_already_installing);
-  }
-
-  void Uninstall(scoped_refptr<OnDeviceModelComponentStateManager>
-                     state_manager) override {
-    component_updater::UninstallOptimizationGuideOnDeviceModelComponent(
-        state_manager->GetWeakPtr());
-  }
+ private:
+  raw_ptr<content::BrowserContext> browser_context_;
 };
+
+ModelExecutionFeaturesController::SettingsVisibilityResult
+ShouldHideHistorySearch(PrefService* local_state) {
+  using SettingsVisibilityResult =
+      ModelExecutionFeaturesController::SettingsVisibilityResult;
+#if BUILDFLAG(BUILD_WITH_MODEL_EXECUTION)
+  // Component updates policy check.
+  if (!local_state->GetBoolean(::prefs::kComponentUpdatesEnabled)) {
+    return SettingsVisibilityResult::kNotVisibleEnterprisePolicy;
+  }
+
+  // Performance class check.
+  if (!IsPerformanceClassCompatible(
+          optimization_guide::features::internal::
+              kPerformanceClassListForHistorySearch.Get(),
+          optimization_guide::PerformanceClassFromPref(*local_state))) {
+    return SettingsVisibilityResult::kNotVisibleHardwareUnsupported;
+  }
+  return SettingsVisibilityResult::kUnknown;
+#else
+  return SettingsVisibilityResult::kNotVisibleHardwareUnsupported;
+#endif  // BUILDFLAG(BUILD_WITH_MODEL_EXECUTION)
+}
 
 }  // namespace
 
@@ -198,32 +213,9 @@ OptimizationGuideKeyedService::MaybeCreatePushNotificationManager(
 }
 
 // static
-void OptimizationGuideKeyedService::DeterminePerformanceClass(
-    base::WeakPtr<OnDeviceModelComponentStateManager>
-        on_device_component_state_manager) {
-  OnDeviceModelServiceController::GetEstimatedPerformanceClass(
-      GetOnDeviceModelServiceController(on_device_component_state_manager),
-      base::BindOnce([](OnDeviceModelPerformanceClass perf_class) {
-        base::UmaHistogramEnumeration(
-            "OptimizationGuide.ModelExecution.OnDeviceModelPerformanceClass",
-            perf_class);
-        RegisterPerformanceClassSyntheticTrial(perf_class);
-        return perf_class;
-      })
-          .Then(base::BindOnce(&OnDeviceModelComponentStateManager::
-                                   DevicePerformanceClassChanged,
-                               on_device_component_state_manager)));
-}
-
-// static
-void OptimizationGuideKeyedService::RegisterPerformanceClassSyntheticTrial(
-    OnDeviceModelPerformanceClass perf_class) {
-  if (perf_class != OnDeviceModelPerformanceClass::kUnknown) {
-    ChromeMetricsServiceAccessor::RegisterSyntheticFieldTrial(
-        "SyntheticOnDeviceModelPerformanceClass",
-        SyntheticTrialGroupForPerformanceClass(perf_class),
-        variations::SyntheticTrialAnnotationMode::kCurrentLog);
-  }
+void OptimizationGuideKeyedService::SetIsOfficialBuildForTesting(
+    bool is_official_build) {
+  g_is_official_build_for_testing = is_official_build;
 }
 
 OptimizationGuideKeyedService::OptimizationGuideKeyedService(
@@ -239,8 +231,35 @@ OptimizationGuideKeyedService::~OptimizationGuideKeyedService() {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 }
 
+void OptimizationGuideKeyedService::BindModelBroker(
+    mojo::PendingReceiver<optimization_guide::mojom::ModelBroker> receiver) {
+  if (!base::FeatureList::IsEnabled(
+          optimization_guide::features::
+              kBrokerModelSessionsForUntrustedProcesses)) {
+    return;
+  }
+  if (!base::FeatureList::IsEnabled(
+          optimization_guide::features::kOptimizationGuideModelExecution)) {
+    return;
+  }
+  if (!base::FeatureList::IsEnabled(
+          optimization_guide::features::kOptimizationGuideOnDeviceModel)) {
+    return;
+  }
+  GetGlobalState().on_device_capability().BindModelBroker(std::move(receiver));
+}
+
+std::unique_ptr<optimization_guide::ModelBrokerClient>
+OptimizationGuideKeyedService::CreateModelBrokerClient() {
+  mojo::PendingRemote<optimization_guide::mojom::ModelBroker> remote;
+  GetGlobalState().on_device_capability().BindModelBroker(
+      remote.InitWithNewPipeAndPassReceiver());
+  return std::make_unique<optimization_guide::ModelBrokerClient>(
+      std::move(remote), optimization_guide_logger_->GetWeakPtr());
+}
+
 #if BUILDFLAG(IS_ANDROID)
-base::android::ScopedJavaLocalRef<jobject>
+base::android::ScopedJavaLocalRef<JOptimizationGuideBridge>
 OptimizationGuideKeyedService::GetJavaObject() {
   if (!android_bridge_) {
     android_bridge_ =
@@ -250,17 +269,6 @@ OptimizationGuideKeyedService::GetJavaObject() {
   return android_bridge_->GetJavaObject();
 }
 #endif
-
-download::BackgroundDownloadService*
-OptimizationGuideKeyedService::BackgroundDownloadServiceProvider() {
-  Profile* profile = Profile::FromBrowserContext(browser_context_);
-  return BackgroundDownloadServiceFactory::GetForKey(profile->GetProfileKey());
-}
-
-bool OptimizationGuideKeyedService::ComponentUpdatesEnabledProvider() const {
-  return g_browser_process->local_state()->GetBoolean(
-      ::prefs::kComponentUpdatesEnabled);
-}
 
 void OptimizationGuideKeyedService::Initialize() {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
@@ -274,7 +282,6 @@ void OptimizationGuideKeyedService::Initialize() {
   // profile's store and do not fetch any new hints or models.
   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory;
   base::WeakPtr<optimization_guide::OptimizationGuideStore> hint_store;
-  base::FilePath model_downloads_dir;
   if (profile->IsOffTheRecord()) {
     OptimizationGuideKeyedService* original_ogks =
         OptimizationGuideKeyedServiceFactory::GetForProfile(
@@ -319,8 +326,7 @@ void OptimizationGuideKeyedService::Initialize() {
                   profile_path.Append(
                       optimization_guide::kOptimizationGuideHintStore),
                   base::ThreadPool::CreateSequencedTaskRunner(
-                      {base::MayBlock(), base::TaskPriority::BEST_EFFORT}),
-                  profile->GetPrefs())
+                      {base::MayBlock(), base::TaskPriority::BEST_EFFORT}))
             : nullptr;
     hint_store = hint_store_ ? hint_store_->AsWeakPtr() : nullptr;
   }
@@ -333,22 +339,6 @@ void OptimizationGuideKeyedService::Initialize() {
       MaybeCreatePushNotificationManager(profile),
       IdentityManagerFactory::GetForProfile(profile),
       optimization_guide_logger_.get());
-
-  prediction_manager_ = std::make_unique<optimization_guide::PredictionManager>(
-      optimization_guide::ChromePredictionModelStore::GetInstance(),
-      url_loader_factory, profile->GetPrefs(), profile->IsOffTheRecord(),
-      g_browser_process->GetApplicationLocale(), model_downloads_dir,
-      optimization_guide_logger_.get(),
-      base::BindOnce(
-          &OptimizationGuideKeyedService::BackgroundDownloadServiceProvider,
-          // It's safe to use |base::Unretained(this)| here because
-          // |this| owns |prediction_manager_|.
-          base::Unretained(this)),
-      base::BindRepeating(
-          &OptimizationGuideKeyedService::ComponentUpdatesEnabledProvider,
-          // It's safe to use |base::Unretained(this)| here because
-          // |this| owns |prediction_manager_|.
-          base::Unretained(this)));
 
   InitializeModelExecution(profile);
 
@@ -374,43 +364,21 @@ void OptimizationGuideKeyedService::InitializeModelExecution(Profile* profile) {
   auto url_loader_factory = profile->GetDefaultStoragePartition()
                                 ->GetURLLoaderFactoryForBrowserProcess();
 
-  on_device_component_manager_ =
-      optimization_guide::OnDeviceModelComponentStateManager::CreateOrGet(
-          g_browser_process->local_state(),
-          std::make_unique<OnDeviceModelComponentStateManagerDelegate>());
-  on_device_component_manager_->OnStartup();
-
   if (!profile->IsOffTheRecord() && !profile->IsGuestSession()) {
-    // With multiple profiles we only want to fetch the performance class
-    // once. This bool helps avoid fetching multiple times.
-    static bool performance_class_fetched = false;
-    if (!performance_class_fetched &&
-        (base::FeatureList::IsEnabled(
-             optimization_guide::features::kLogOnDeviceMetricsOnStartup) ||
-         optimization_guide::features::IsOnDeviceExecutionEnabled()) &&
-        on_device_component_manager_->NeedsPerformanceClassUpdate()) {
-      performance_class_fetched = true;
-      base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
-          FROM_HERE,
-          base::BindOnce(
-              &OptimizationGuideKeyedService::DeterminePerformanceClass,
-              on_device_component_manager_->GetWeakPtr()),
-          optimization_guide::features::GetOnDeviceStartupMetricDelay());
-    }
-    // If the perf class was previously determined, register that.
-    RegisterPerformanceClassSyntheticTrial(
-        optimization_guide::PerformanceClassFromPref(
-            *g_browser_process->local_state()));
-
     auto* variations_service = g_browser_process->variations_service();
     auto dogfood_status =
         variations_service && variations_service->IsLikelyDogfoodClient()
             ? ModelExecutionFeaturesController::DogfoodStatus::DOGFOOD
             : ModelExecutionFeaturesController::DogfoodStatus::NON_DOGFOOD;
+    bool is_official_build = g_is_official_build_for_testing.value_or(
+        version_info::IsOfficialBuild());
     model_execution_features_controller_ =
         std::make_unique<optimization_guide::ModelExecutionFeaturesController>(
             profile->GetPrefs(), IdentityManagerFactory::GetForProfile(profile),
-            g_browser_process->local_state(), dogfood_status);
+            policy::ManagementServiceFactory::GetForProfile(profile),
+            dogfood_status, is_official_build,
+            base::BindRepeating(&ShouldHideHistorySearch,
+                                g_browser_process->local_state()));
 
     // Don't create logs uploader service when feature is disabled. All the
     // logs upload get route through this service which exists one per
@@ -429,25 +397,18 @@ void OptimizationGuideKeyedService::InitializeModelExecution(Profile* profile) {
         "HistorySearch");
   }
 
-  scoped_refptr<optimization_guide::OnDeviceModelServiceController>
-      service_controller;
-  if (base::FeatureList::IsEnabled(
-          optimization_guide::features::kOptimizationGuideOnDeviceModel)) {
-    service_controller = GetOnDeviceModelServiceController(
-        on_device_component_manager_->GetWeakPtr());
-    on_device_asset_manager_ =
-        std::make_unique<optimization_guide::OnDeviceAssetManager>(
-            g_browser_process->local_state(), service_controller->GetWeakPtr(),
-            on_device_component_manager_->GetWeakPtr(), this);
+  std::unique_ptr<ModelExecutionManager::Delegate> delegate;
+
+  if (base::FeatureList::IsEnabled(private_ai::kPrivateAi)) {
+    delegate = std::make_unique<FetcherDelegate>(browser_context_);
   }
 
-  model_execution_manager_ =
-      std::make_unique<optimization_guide::ModelExecutionManager>(
-          url_loader_factory, IdentityManagerFactory::GetForProfile(profile),
-          std::move(service_controller), optimization_guide_logger_.get(),
-          model_quality_logs_uploader_service_
-              ? model_quality_logs_uploader_service_->GetWeakPtr()
-              : nullptr);
+  model_execution_manager_ = std::make_unique<ModelExecutionManager>(
+      url_loader_factory, IdentityManagerFactory::GetForProfile(profile),
+      std::move(delegate), optimization_guide_logger_.get(),
+      model_quality_logs_uploader_service_
+          ? model_quality_logs_uploader_service_->GetWeakPtr()
+          : nullptr);
 }
 
 optimization_guide::ChromeHintsManager*
@@ -470,8 +431,6 @@ void OptimizationGuideKeyedService::OnNavigationStartOrRedirect(
   if (navigation_data) {
     navigation_data->set_registered_optimization_types(
         hints_manager_->registered_optimization_types());
-    navigation_data->set_registered_optimization_targets(
-        prediction_manager_->GetRegisteredOptimizationTargets());
   }
 }
 
@@ -485,15 +444,16 @@ void OptimizationGuideKeyedService::OnNavigationFinish(
 void OptimizationGuideKeyedService::AddObserverForOptimizationTargetModel(
     optimization_guide::proto::OptimizationTarget optimization_target,
     const std::optional<optimization_guide::proto::Any>& model_metadata,
+    scoped_refptr<base::SequencedTaskRunner> model_task_runner,
     optimization_guide::OptimizationTargetModelObserver* observer) {
-  prediction_manager_->AddObserverForOptimizationTargetModel(
-      optimization_target, model_metadata, observer);
+  GetGlobalState().model_provider().AddObserverForOptimizationTargetModel(
+      optimization_target, model_metadata, model_task_runner, observer);
 }
 
 void OptimizationGuideKeyedService::RemoveObserverForOptimizationTargetModel(
     optimization_guide::proto::OptimizationTarget optimization_target,
     optimization_guide::OptimizationTargetModelObserver* observer) {
-  prediction_manager_->RemoveObserverForOptimizationTargetModel(
+  GetGlobalState().model_provider().RemoveObserverForOptimizationTargetModel(
       optimization_target, observer);
 }
 
@@ -514,9 +474,9 @@ OptimizationGuideKeyedService::CanApplyOptimization(
       hints_manager_->CanApplyOptimization(url, optimization_type,
                                            optimization_metadata);
   base::UmaHistogramEnumeration(
-      "OptimizationGuide.ApplyDecision." +
-          optimization_guide::GetStringNameForOptimizationType(
-              optimization_type),
+      base::StrCat({"OptimizationGuide.ApplyDecision.",
+                    optimization_guide::GetStringNameForOptimizationType(
+                        optimization_type)}),
       optimization_type_decision);
   return optimization_guide::ChromeHintsManager::
       GetOptimizationGuideDecisionFromOptimizationTypeDecision(
@@ -549,21 +509,19 @@ void OptimizationGuideKeyedService::CanApplyOptimizationOnDemand(
                                                request_context_metadata);
 }
 
-std::unique_ptr<optimization_guide::OptimizationGuideModelExecutor::Session>
+std::unique_ptr<optimization_guide::OnDeviceSession>
 OptimizationGuideKeyedService::StartSession(
-    optimization_guide::ModelBasedCapabilityKey feature,
-    const std::optional<optimization_guide::SessionConfigParams>&
-        config_params) {
-  if (!model_execution_manager_) {
-    return nullptr;
-  }
-  return model_execution_manager_->StartSession(feature, config_params);
+    optimization_guide::mojom::OnDeviceFeature feature,
+    const optimization_guide::SessionConfigParams& config_params,
+    base::WeakPtr<OptimizationGuideLogger> logger) {
+  return GetGlobalState().on_device_capability().StartSession(
+      feature, config_params, logger);
 }
 
 void OptimizationGuideKeyedService::ExecuteModel(
     optimization_guide::ModelBasedCapabilityKey feature,
     const google::protobuf::MessageLite& request_metadata,
-    const std::optional<base::TimeDelta>& execution_timeout,
+    const optimization_guide::ModelExecutionOptions& options,
     optimization_guide::OptimizationGuideModelExecutionResultCallback
         callback) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
@@ -581,50 +539,32 @@ void OptimizationGuideKeyedService::ExecuteModel(
     return;
   }
   model_execution_manager_->ExecuteModel(
-      feature, request_metadata, execution_timeout,
-      /*log_ai_data_request=*/nullptr, std::move(callback));
+      feature, request_metadata, options.execution_timeout,
+      /*log_ai_data_request=*/nullptr, options.service_type,
+      std::move(callback));
 }
 
 void OptimizationGuideKeyedService::AddOnDeviceModelAvailabilityChangeObserver(
-    optimization_guide::ModelBasedCapabilityKey feature,
+    optimization_guide::mojom::OnDeviceFeature feature,
     optimization_guide::OnDeviceModelAvailabilityObserver* observer) {
-  if (!on_device_component_manager_) {
-    return;
-  }
-  auto service_controller = GetOnDeviceModelServiceController(
-      on_device_component_manager_->GetWeakPtr());
-  if (service_controller) {
-    service_controller->AddOnDeviceModelAvailabilityChangeObserver(feature,
-                                                                   observer);
-  }
+  GetGlobalState()
+      .on_device_capability()
+      .AddOnDeviceModelAvailabilityChangeObserver(feature, observer);
 }
 
 void OptimizationGuideKeyedService::
     RemoveOnDeviceModelAvailabilityChangeObserver(
-        optimization_guide::ModelBasedCapabilityKey feature,
+        optimization_guide::mojom::OnDeviceFeature feature,
         optimization_guide::OnDeviceModelAvailabilityObserver* observer) {
-  if (!on_device_component_manager_) {
-    return;
-  }
-  auto service_controller = GetOnDeviceModelServiceController(
-      on_device_component_manager_->GetWeakPtr());
-  if (service_controller) {
-    service_controller->RemoveOnDeviceModelAvailabilityChangeObserver(feature,
-                                                                      observer);
-  }
+  GetGlobalState()
+      .on_device_capability()
+      .RemoveOnDeviceModelAvailabilityChangeObserver(feature, observer);
 }
 
 void OptimizationGuideKeyedService::OnProfileInitializationComplete(
     Profile* profile) {
   DCHECK(profile_observation_.IsObservingSource(profile));
   profile_observation_.Reset();
-
-  if (profile->IsOffTheRecord()) {
-    return;
-  }
-
-  GetPredictionManager()->MaybeInitializeModelDownloads(
-      BackgroundDownloadServiceProvider());
 }
 
 void OptimizationGuideKeyedService::AddHintForTesting(
@@ -632,6 +572,39 @@ void OptimizationGuideKeyedService::AddHintForTesting(
     optimization_guide::proto::OptimizationType optimization_type,
     const std::optional<optimization_guide::OptimizationMetadata>& metadata) {
   hints_manager_->AddHintForTesting(url, optimization_type, metadata);
+}
+
+void OptimizationGuideKeyedService::AddHintWithMultipleOptimizationsForTesting(
+    const GURL& url,
+    const std::vector<optimization_guide::proto::OptimizationType>&
+        optimization_types) {
+  hints_manager_->AddHintWithMultipleOptimizationsForTesting(  // IN-TEST
+      url, optimization_types);
+}
+
+void OptimizationGuideKeyedService::AddHintWithMultipleOptimizationsForTesting(
+    const GURL& url,
+    const std::vector<
+        std::pair<optimization_guide::proto::OptimizationType,
+                  std::optional<optimization_guide::OptimizationMetadata>>>&
+        optimization_types_and_metadata) {
+  hints_manager_->AddHintWithMultipleOptimizationsForTesting(  // IN-TEST
+      url, optimization_types_and_metadata);
+}
+
+void OptimizationGuideKeyedService::AddOnDemandHintForTesting(
+    const GURL& url,
+    optimization_guide::proto::OptimizationType optimization_type,
+    const optimization_guide::OptimizationGuideDecisionWithMetadata& decision) {
+  hints_manager_->AddOnDemandHintForTesting(url, optimization_type,  // IN-TEST
+                                            decision);
+}
+
+void OptimizationGuideKeyedService::AddExecutionResultForTesting(
+    optimization_guide::ModelBasedCapabilityKey feature,
+    optimization_guide::OptimizationGuideModelExecutionResult result) {
+  model_execution_manager_->AddExecutionResultForTesting(feature,  // IN-TEST
+                                                         std::move(result));
 }
 
 void OptimizationGuideKeyedService::ClearData() {
@@ -647,8 +620,8 @@ void OptimizationGuideKeyedService::Shutdown() {
 
 void OptimizationGuideKeyedService::OverrideTargetModelForTesting(
     optimization_guide::proto::OptimizationTarget optimization_target,
-    std::unique_ptr<optimization_guide::ModelInfo> model_info) {
-  prediction_manager_->OverrideTargetModelForTesting(  // IN-TEST
+    std::optional<optimization_guide::ModelInfo> model_info) {
+  GetPredictionManager()->OverrideTargetModelForTesting(  // IN-TEST
       optimization_target, std::move(model_info));
 }
 
@@ -666,7 +639,8 @@ OptimizationGuideKeyedService::GetModelExecutionFeaturesController() {
 
 void OptimizationGuideKeyedService::AllowUnsignedUserForTesting(
     optimization_guide::UserVisibleFeatureKey feature) {
-  model_execution_features_controller_->AllowUnsignedUserForTesting(feature);  // IN-TEST
+  model_execution_features_controller_->AllowUnsignedUserForTesting(
+      feature);  // IN-TEST
 }
 
 bool OptimizationGuideKeyedService::ShouldFeatureBeCurrentlyEnabledForUser(
@@ -725,40 +699,26 @@ bool OptimizationGuideKeyedService::IsSettingVisible(
   }
 
 #if !BUILDFLAG(IS_ANDROID)
-  if (optimization_guide::features::kShowAiSettingsForTesting.Get()) {
+  if (base::FeatureList::IsEnabled(
+          optimization_guide::features::kAiSettingsPageForceAvailable)) {
     return true;
   }
 #endif
 
-  return model_execution_features_controller_->IsSettingVisible(feature);
-}
+  using SettingsVisibilityResult =
+      ModelExecutionFeaturesController::SettingsVisibilityResult;
+  const SettingsVisibilityResult visibility =
+      model_execution_features_controller_->GetSettingsVisibility(feature);
 
-bool OptimizationGuideKeyedService::ShouldShowExperimentalAIPromo() const {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  if (!model_execution_features_controller_) {
-    return false;
-  }
-  if (!base::FeatureList::IsEnabled(optimization_guide::features::internal::
-                                        kExperimentalAIIPHPromoRampUp)) {
-    return false;
-  }
-  // At least one of the two features should be visible to user in settings, and
-  // not currently enabled.
-  if (model_execution_features_controller_->IsSettingVisible(
-          optimization_guide::UserVisibleFeatureKey::kTabOrganization) &&
-      !model_execution_features_controller_
-           ->ShouldFeatureBeCurrentlyEnabledForUser(
-               optimization_guide::UserVisibleFeatureKey::kTabOrganization)) {
-    return true;
-  }
-  if (model_execution_features_controller_->IsSettingVisible(
-          optimization_guide::UserVisibleFeatureKey::kWallpaperSearch) &&
-      !model_execution_features_controller_
-           ->ShouldFeatureBeCurrentlyEnabledForUser(
-               optimization_guide::UserVisibleFeatureKey::kWallpaperSearch)) {
-    return true;
-  }
-  return false;
+  base::UmaHistogramEnumeration(
+      base::StrCat(
+          {"OptimizationGuide.ModelExecution.SettingsVisibilityResult.",
+           GetStringNameForModelExecutionFeature(feature)}),
+      visibility);
+
+  return visibility ==
+             SettingsVisibilityResult::kVisibleFeatureAlreadyEnabled ||
+         visibility == SettingsVisibilityResult::kVisibleFieldTrialEnabled;
 }
 
 void OptimizationGuideKeyedService::AddModelExecutionSettingsEnabledObserver(
@@ -791,31 +751,16 @@ void OptimizationGuideKeyedService::
 
 optimization_guide::OnDeviceModelEligibilityReason
 OptimizationGuideKeyedService::GetOnDeviceModelEligibility(
-    optimization_guide::ModelBasedCapabilityKey feature) {
-  if (!model_execution_manager_) {
-    return optimization_guide::OnDeviceModelEligibilityReason::
-        kFeatureNotEnabled;
-  }
-
-  return model_execution_manager_->GetOnDeviceModelEligibility(feature);
+    optimization_guide::mojom::OnDeviceFeature feature) {
+  return GetGlobalState().on_device_capability().GetOnDeviceModelEligibility(
+      feature);
 }
 
-std::optional<optimization_guide::SamplingParamsConfig>
-OptimizationGuideKeyedService::GetSamplingParamsConfig(
-    optimization_guide::ModelBasedCapabilityKey feature) {
-  if (!model_execution_manager_) {
-    return std::nullopt;
-  }
-
-  return model_execution_manager_->GetSamplingParamsConfig(feature);
-}
-
-std::optional<const optimization_guide::proto::Any>
-OptimizationGuideKeyedService::GetFeatureMetadata(
-    optimization_guide::ModelBasedCapabilityKey feature) {
-  if (!model_execution_manager_) {
-    return std::nullopt;
-  }
-
-  return model_execution_manager_->GetFeatureMetadata(feature);
+void OptimizationGuideKeyedService::GetOnDeviceModelEligibilityAsync(
+    optimization_guide::mojom::OnDeviceFeature feature,
+    const on_device_model::Capabilities& capabilities,
+    base::OnceCallback<void(optimization_guide::OnDeviceModelEligibilityReason)>
+        callback) {
+  GetGlobalState().on_device_capability().GetOnDeviceModelEligibilityAsync(
+      feature, capabilities, std::move(callback));
 }

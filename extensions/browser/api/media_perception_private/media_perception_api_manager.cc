@@ -10,8 +10,8 @@
 
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
-#include "base/lazy_instance.h"
 #include "base/memory/raw_ptr.h"
+#include "base/no_destructor.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "chromeos/ash/components/dbus/dbus_thread_manager.h"
@@ -125,22 +125,20 @@ MediaPerceptionAPIManager* MediaPerceptionAPIManager::Get(
   return GetFactoryInstance()->Get(context);
 }
 
-static base::LazyInstance<
-    BrowserContextKeyedAPIFactory<MediaPerceptionAPIManager>>::Leaky g_factory =
-    LAZY_INSTANCE_INITIALIZER;
-
 // static
 BrowserContextKeyedAPIFactory<MediaPerceptionAPIManager>*
 MediaPerceptionAPIManager::GetFactoryInstance() {
-  return g_factory.Pointer();
+  static base::NoDestructor<
+      BrowserContextKeyedAPIFactory<MediaPerceptionAPIManager>>
+      instance;
+  return instance.get();
 }
 
 MediaPerceptionAPIManager::MediaPerceptionAPIManager(
     content::BrowserContext* context)
     : browser_context_(context),
       analytics_process_state_(AnalyticsProcessState::IDLE) {
-  // `MediaAnalyticsClient` can be null in tests (browser_tests or
-  // extensions_browsertests).
+  // `MediaAnalyticsClient` can be null in tests (e.g. browser_tests).
   if (auto* client = ash::MediaAnalyticsClient::Get()) {
     scoped_observation_.Observe(client);
   }
@@ -148,8 +146,7 @@ MediaPerceptionAPIManager::MediaPerceptionAPIManager(
 
 MediaPerceptionAPIManager::~MediaPerceptionAPIManager() {
   // Stop the separate media analytics process.
-  // `UpstartClient` can be null in tests (browser_tests or
-  // extensions_browsertests).
+  // `UpstartClient` can be null in tests (e.g. browser_tests).
   if (auto* client = ash::UpstartClient::Get()) {
     client->StopMediaAnalytics();
   }
@@ -596,11 +593,11 @@ void MediaPerceptionAPIManager::OnDetectionSignal(
   extensions::api::media_perception_private::MediaPerception media_perception =
       extensions::api::media_perception_private::MediaPerceptionProtoToIdl(
           media_perception_proto);
-  std::unique_ptr<Event> event(new Event(
+  auto event = std::make_unique<Event>(
       events::MEDIA_PERCEPTION_PRIVATE_ON_MEDIA_PERCEPTION,
       extensions::api::media_perception_private::OnMediaPerception::kEventName,
       extensions::api::media_perception_private::OnMediaPerception::Create(
-          media_perception)));
+          media_perception));
   router->BroadcastEvent(std::move(event));
 }
 

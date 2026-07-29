@@ -8,7 +8,10 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -18,15 +21,16 @@ import android.view.ViewStructure;
 import android.view.autofill.AutofillValue;
 
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
-import org.mockito.Mockito;
-import org.mockito.MockitoAnnotations;
-import org.robolectric.annotation.LooperMode;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 
-import org.chromium.base.supplier.ObservableSupplierImpl;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableNonNullObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
@@ -34,16 +38,16 @@ import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.components.embedder_support.view.ContentView;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.common.ContentFeatures;
-import org.chromium.ui.base.ApplicationViewportInsetSupplier;
+import org.chromium.ui.base.ApplicationViewportInsetTracker;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.mojom.VirtualKeyboardMode;
 
 /** Unit tests for the TabViewAndroidDelegate. */
 @RunWith(BaseRobolectricTestRunner.class)
-@LooperMode(LooperMode.Mode.LEGACY)
 @EnableFeatures(ContentFeatures.TOUCH_DRAG_AND_CONTEXT_MENU)
 @DisableFeatures(ChromeFeatureList.ANIMATED_IMAGE_DRAG_SHADOW)
 public class TabViewAndroidDelegateTest {
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     private final ArgumentCaptor<TabObserver> mTabObserverCaptor =
             ArgumentCaptor.forClass(TabObserver.class);
 
@@ -55,25 +59,23 @@ public class TabViewAndroidDelegateTest {
 
     @Mock private ContentView mContentView;
 
-    private ApplicationViewportInsetSupplier mApplicationInsetSupplier;
-    private ObservableSupplierImpl<Integer> mVisualViewportInsetSupplier;
+    private final ApplicationViewportInsetTracker mApplicationInsetSupplier =
+            ApplicationViewportInsetTracker.createForTests();
+    private SettableNonNullObservableSupplier<Integer> mVisualViewportInsetSupplier;
     private TabViewAndroidDelegate mViewAndroidDelegate;
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
 
-        mVisualViewportInsetSupplier = new ObservableSupplierImpl<>();
-
-        mApplicationInsetSupplier = ApplicationViewportInsetSupplier.createForTests();
+        mVisualViewportInsetSupplier = ObservableSuppliers.createNonNull(0);
 
         // The the keyboard only insets the visual viewport while in RESIZES_VISUAL mode.
         mApplicationInsetSupplier.setVirtualKeyboardMode(VirtualKeyboardMode.RESIZES_VISUAL);
         mApplicationInsetSupplier.setKeyboardInsetSupplier(mVisualViewportInsetSupplier);
 
-        when(mWindowAndroid.getApplicationBottomInsetSupplier())
+        when(mWindowAndroid.getApplicationBottomInsetTracker())
                 .thenReturn(mApplicationInsetSupplier);
-        when(mTab.getWindowAndroid()).thenReturn(mWindowAndroid);
+        when(mTab.getWindowAndroidChecked()).thenReturn(mWindowAndroid);
         when(mTab.getWebContents()).thenReturn(mWebContents);
 
         mViewAndroidDelegate = new TabViewAndroidDelegate(mTab, mContentView);
@@ -118,7 +120,7 @@ public class TabViewAndroidDelegateTest {
                 0,
                 mViewAndroidDelegate.getViewportInsetBottom());
 
-        WindowAndroid window = Mockito.mock(WindowAndroid.class);
+        WindowAndroid window = mock(WindowAndroid.class);
         mTabObserverCaptor.getValue().onActivityAttachmentChanged(mTab, window);
         assertEquals(
                 "The bottom inset for the tab should be non-zero.",
@@ -149,8 +151,19 @@ public class TabViewAndroidDelegateTest {
                 .onProvideAutofillVirtualStructure(
                         structure, View.AUTOFILL_FLAG_INCLUDE_NOT_IMPORTANT_VIEWS);
 
-        SparseArray<AutofillValue> values = new SparseArray();
+        SparseArray<AutofillValue> values = new SparseArray<>();
         mViewAndroidDelegate.autofill(values);
         verify(mTab).autofill(values);
+    }
+
+    @Test
+    public void testDestroy_unregistersObserverAndClearsTab() {
+        mViewAndroidDelegate.destroy();
+        verify(mTab).removeObserver(mTabObserverCaptor.getValue());
+
+        mViewAndroidDelegate.onBackgroundColorChanged(0);
+        mViewAndroidDelegate.autofill(new SparseArray<>());
+        verify(mTab, never()).changeWebContentBackgroundColor(anyInt());
+        verify(mTab, never()).autofill(any());
     }
 }

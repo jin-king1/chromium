@@ -21,6 +21,7 @@
 #include "base/time/time.h"
 #include "base/unguessable_token.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
+#include "net/base/net_errors.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "services/network/public/cpp/features.h"
 #include "services/network/public/cpp/header_util.h"
@@ -45,6 +46,7 @@
 #include "third_party/blink/renderer/core/dom/abort_signal.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/dom_exception.h"
+#include "third_party/blink/renderer/core/dom/quota_exceeded_error.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/fetch/body.h"
 #include "third_party/blink/renderer/core/fetch/body_stream_buffer.h"
@@ -100,7 +102,6 @@
 #include "third_party/blink/renderer/platform/loader/fetch/url_loader/request_conversion.h"
 #include "third_party/blink/renderer/platform/loader/integrity_report.h"
 #include "third_party/blink/renderer/platform/loader/subresource_integrity.h"
-#include "third_party/blink/renderer/platform/loader/unencoded_digest.h"
 #include "third_party/blink/renderer/platform/mojo/heap_mojo_associated_remote.h"
 #include "third_party/blink/renderer/platform/network/http_names.h"
 #include "third_party/blink/renderer/platform/network/network_utils.h"
@@ -175,6 +176,11 @@ enum class FetchLaterRendererMetricType {
 
 void LogFetchLaterMetric(const FetchLaterRendererMetricType& type) {
   base::UmaHistogramEnumeration("FetchLater.Renderer.Metrics", type);
+}
+
+void RecordBlobFetchNetErrorCode(int net_error_code) {
+  base::UmaHistogramSparse("Net.BlobFetch.ResponseNetErrorCode",
+                           net_error_code);
 }
 
 // Tells whether the FetchLater request should use BackgroundSync permission to
@@ -379,7 +385,7 @@ class FetchLoaderBase : public GarbageCollectedMixin {
         world_(std::move(&script_state->World())),
         signal_(signal),
         abort_handle_(signal->AddAlgorithm(
-            WTF::BindOnce(&FetchLoaderBase::Abort, WrapWeakPersistent(this)))) {
+            BindOnce(&FetchLoaderBase::Abort, WrapWeakPersistent(this)))) {
     CHECK(world_);
   }
 
@@ -478,26 +484,24 @@ class FetchManager::Loader final
   class IntegrityVerifier final : public GarbageCollected<IntegrityVerifier>,
                                   public BytesConsumer::Client {
    public:
-    IntegrityVerifier(BytesConsumer* body,
-                      PlaceHolderBytesConsumer* updater,
-                      Response* response,
-                      FetchManager::Loader* loader,
-                      String integrity_metadata,
-                      std::optional<UnencodedDigest> unencoded_digest,
-                      const KURL& url)
+    IntegrityVerifier(
+        BytesConsumer* body,
+        PlaceHolderBytesConsumer* updater,
+        Response* response,
+        FetchManager::Loader* loader,
+        String integrity_metadata,
+        const Vector<network::IntegrityMetadata>& unencoded_digests,
+        const KURL& url)
         : body_(body),
           updater_(updater),
           response_(response),
           loader_(loader),
           integrity_metadata_(integrity_metadata),
-          unencoded_digest_(unencoded_digest),
+          unencoded_digests_(unencoded_digests),
           url_(url) {
       // We need to have some kind of integrity metadata to check: either SRI
       // metadata, or an `Unencoded-Digest` header.
-      DCHECK(!integrity_metadata.empty() ||
-             (unencoded_digest.has_value() &&
-              RuntimeEnabledFeatures::UnencodedDigestEnabled(
-                  loader_->GetExecutionContext())));
+      DCHECK(!integrity_metadata.empty() || !unencoded_digests_.empty());
       body_->SetClient(this);
 
       OnStateChange();
@@ -523,12 +527,17 @@ class FetchManager::Loader final
           return;
       }
 
+      String error_message;
       finished_ = true;
       if (result == Result::kDone) {
         bool integrity_failed = false;
-        if (unencoded_digest_.has_value() &&
-            !unencoded_digest_->DoesMatch(&buffer_)) {
+
+        if (!SubresourceIntegrity::CheckUnencodedDigests(unencoded_digests_,
+                                                         &buffer_)) {
           integrity_failed = true;
+          error_message =
+              "The resource's `unencoded-digest` header asserted "
+              "a digest which does not match the resource's body.";
         }
         if (!integrity_failed && !integrity_metadata_.empty()) {
           IntegrityReport integrity_report;
@@ -546,6 +555,7 @@ class FetchManager::Loader final
               metadata_set, &buffer_, url_, type, raw_headers,
               loader_->GetExecutionContext(), integrity_report);
           integrity_report.SendReports(loader_->GetExecutionContext());
+          error_message = "SRI's integrity checks failed.";
         }
         if (!integrity_failed) {
           updater_->Update(
@@ -555,8 +565,6 @@ class FetchManager::Loader final
           return;
         }
       }
-      String error_message =
-          "Unknown error occurred while trying to verify integrity.";
       if (updater_) {
         updater_->Update(
             BytesConsumer::CreateErrored(BytesConsumer::Error(error_message)));
@@ -581,7 +589,7 @@ class FetchManager::Loader final
     Member<Response> response_;
     Member<FetchManager::Loader> loader_;
     String integrity_metadata_;
-    std::optional<UnencodedDigest> unencoded_digest_;
+    const Vector<network::IntegrityMetadata> unencoded_digests_;
     KURL url_;
     SegmentedBuffer buffer_;
     bool finished_ = false;
@@ -689,6 +697,12 @@ bool FetchManager::Loader::WillFollowRedirect(
 void FetchManager::Loader::DidReceiveResponse(
     uint64_t,
     const ResourceResponse& response) {
+  // Record the blob fetch request status.
+  if (GetFetchRequestData() &&
+      GetFetchRequestData()->Url().ProtocolIs("blob")) {
+    RecordBlobFetchNetErrorCode(net::OK);
+  }
+
   // Verify that we're dealing with the URL we expect (which could be an
   // HTTPS-upgraded variant of `url_list_.back()`.
   DCHECK(
@@ -709,13 +723,13 @@ void FetchManager::Loader::DidReceiveResponse(
   response_http_status_code_ = response.HttpStatusCode();
 
   if (response.MimeType() == "application/wasm" &&
-      (response.CurrentRequestUrl().ProtocolIsInHTTPFamily() ||
+      (response.CurrentRequestUrl().ProtocolIsInHttpFamily() ||
        CommonSchemeRegistry::IsExtensionScheme(
            response.CurrentRequestUrl().Protocol().Ascii()))) {
     // We create a ScriptCachedMetadataHandler for WASM modules.
     cached_metadata_handler_ =
         MakeGarbageCollected<ScriptCachedMetadataHandler>(
-            WTF::TextEncoding(),
+            TextEncoding(),
             CachedMetadataSender::Create(
                 response, mojom::blink::CodeCacheType::kWebAssembly,
                 GetExecutionContext()->GetSecurityOrigin()));
@@ -778,10 +792,8 @@ void FetchManager::Loader::DidReceiveResponse(
   Response* r = Response::Create(response_resolver_->GetExecutionContext(),
                                  tainted_response);
   r->headers()->SetGuard(Headers::kImmutableGuard);
-  std::optional<UnencodedDigest> unencoded_digest =
-      response.UnencodedDigest(GetExecutionContext());
   if (GetFetchRequestData()->Integrity().empty() &&
-      !unencoded_digest.has_value()) {
+      response.GetUnencodedDigests().empty()) {
     response_resolver_->Resolve(r);
     response_resolver_.Clear();
   } else {
@@ -793,7 +805,7 @@ void FetchManager::Loader::DidReceiveResponse(
 
     integrity_verifier_ = MakeGarbageCollected<IntegrityVerifier>(
         underlying, verified, r, this, GetFetchRequestData()->Integrity(),
-        unencoded_digest, response.CurrentRequestUrl());
+        response.GetUnencodedDigests(), response.CurrentRequestUrl());
   }
 }
 
@@ -839,6 +851,17 @@ void FetchManager::Loader::DidFinishLoading(uint64_t) {
 
 void FetchManager::Loader::DidFail(uint64_t identifier,
                                    const ResourceError& error) {
+  if (GetExecutionContext()) {
+    GetExecutionContext()->MaybeRecordFetchError(error.ErrorCode(),
+                                                 GetFetchRequestData());
+  }
+
+  // Record the failures for blob fetch request.
+  if (GetFetchRequestData() &&
+      GetFetchRequestData()->Url().ProtocolIs("blob")) {
+    RecordBlobFetchNetErrorCode(-error.ErrorCode());
+  }
+
   if (GetFetchRequestData() && GetFetchRequestData()->TrustTokenParams()) {
     HistogramNetErrorForTrustTokensOperation(
         GetFetchRequestData()->TrustTokenParams()->operation,
@@ -1043,21 +1066,21 @@ void FetchLoaderBase::FileIssueAndPerformNetworkError(
                                    fetch_request_data_->Origin()->ToString(),
                                    fetch_request_data_->Url().Protocol(),
                                    issue_id);
-      PerformNetworkError("URL scheme \"" +
-                              fetch_request_data_->Url().Protocol() +
-                              "\" is not supported.",
-                          issue_id);
+      PerformNetworkError(
+          StrCat({"URL scheme \"", fetch_request_data_->Url().Protocol(),
+                  "\" is not supported."}),
+          issue_id);
       break;
     }
     case RendererCorsIssueCode::kDisallowedByMode: {
       AuditsIssue::ReportCorsIssue(execution_context_, network_error,
                                    fetch_request_data_->Url().GetString(),
                                    fetch_request_data_->Origin()->ToString(),
-                                   WTF::g_empty_string, issue_id);
+                                   g_empty_string, issue_id);
       PerformNetworkError(
-          "Request mode is \"same-origin\" but the URL\'s "
-          "origin is not same as the request origin " +
-              fetch_request_data_->Origin()->ToString() + ".",
+          StrCat({"Request mode is \"same-origin\" but the URL\'s origin is "
+                  "not same as the request origin ",
+                  fetch_request_data_->Origin()->ToString(), "."}),
           issue_id);
 
       break;
@@ -1066,7 +1089,7 @@ void FetchLoaderBase::FileIssueAndPerformNetworkError(
       AuditsIssue::ReportCorsIssue(execution_context_, network_error,
                                    fetch_request_data_->Url().GetString(),
                                    fetch_request_data_->Origin()->ToString(),
-                                   WTF::g_empty_string, issue_id);
+                                   g_empty_string, issue_id);
       PerformNetworkError(
           "Request mode is \"no-cors\" but the redirect mode "
           "is not \"follow\".",
@@ -1079,9 +1102,10 @@ void FetchLoaderBase::FileIssueAndPerformNetworkError(
 void FetchLoaderBase::PerformNetworkError(
     const String& issue_summary,
     std::optional<base::UnguessableToken> issue_id) {
-  Failed("Fetch API cannot load " + fetch_request_data_->Url().ElidedString() +
-             ". " + issue_summary,
-         nullptr, std::nullopt, issue_id, issue_summary);
+  Failed(
+      StrCat({"Fetch API cannot load ",
+              fetch_request_data_->Url().ElidedString(), ". ", issue_summary}),
+      nullptr, std::nullopt, issue_id, issue_summary);
 }
 
 void FetchLoaderBase::PerformHTTPFetch(ExceptionState& exception_state) {
@@ -1156,14 +1180,9 @@ void FetchLoaderBase::PerformHTTPFetch(ExceptionState& exception_state) {
     UseCounter::Count(execution_context_, mojom::WebFeature::kFetchKeepalive);
   }
 
-  request.SetBrowsingTopics(fetch_request_data_->BrowsingTopics());
-  request.SetAdAuctionHeaders(fetch_request_data_->AdAuctionHeaders());
-  request.SetAttributionReportingEligibility(
-      fetch_request_data_->AttributionReportingEligibility());
-  request.SetAttributionReportingSupport(
-      fetch_request_data_->AttributionSupport());
-  request.SetSharedStorageWritableOptedIn(
-      fetch_request_data_->SharedStorageWritable());
+  if (fetch_request_data_->HasRetryOptions()) {
+    request.SetFetchRetryOptions(fetch_request_data_->RetryOptions().value());
+  }
 
   request.SetOriginalDestination(fetch_request_data_->OriginalDestination());
 
@@ -1508,8 +1527,8 @@ class FetchLaterManager::DeferredLoader final
         net::MutableNetworkTrafficAnnotationTag(
             kFetchLaterTrafficAnnotationTag));
     CHECK(loader_.is_bound());
-    loader_.set_disconnect_handler(WTF::BindOnce(
-        &DeferredLoader::NotifyFinished, WrapWeakPersistent(this)));
+    loader_.set_disconnect_handler(
+        BindOnce(&DeferredLoader::NotifyFinished, WrapWeakPersistent(this)));
 
     // https://whatpr.org/fetch/1647.html#queue-a-deferred-fetch
     // Continued with "queue a deferred fetch"
@@ -1649,10 +1668,11 @@ FetchLaterResult* FetchLaterManager::FetchLater(
     return nullptr;
   }
 
-  // 8. If request’s URL’s scheme is not an HTTPS scheme, then throw a
+  // 8. If request’s URL’s scheme is not an HTTP(S) scheme, then throw a
   // TypeError.
-  if (!request->Url().ProtocolIs(WTF::g_https_atom)) {
-    exception_state.ThrowTypeError("fetchLater is only supported over HTTPS.");
+  if (!request->Url().ProtocolIsInHttpFamily()) {
+    exception_state.ThrowTypeError(
+        "fetchLater is only supported over HTTP(S).");
     return nullptr;
   }
   // 9. If request’s URL is not a potentially trustworthy url, then throw a
@@ -1683,8 +1703,8 @@ FetchLaterResult* FetchLaterManager::FetchLater(
   if (available_quota < total_request_length) {
     UseCounter::Count(GetExecutionContext(),
                       WebFeature::kFetchLaterErrorQuotaExceeded);
-    exception_state.ThrowDOMException(
-        DOMExceptionCode::kQuotaExceededError,
+    QuotaExceededError::Throw(
+        exception_state,
         String::Format(
             "fetchLater exceeds its quota for the origin: got %" PRIu64 " "
             "bytes, expected less than %" PRIu64 " bytes.",
@@ -1767,9 +1787,11 @@ FetchLaterManager::FetchLaterManager(ExecutionContext* ec)
     // not have enough time to wait for response.
     auto descriptor = mojom::blink::PermissionDescriptor::New();
     descriptor->name = mojom::blink::PermissionName::BACKGROUND_SYNC;
-    permission_service->AddPermissionObserver(std::move(descriptor),
-                                              background_sync_permission_,
-                                              std::move(observer));
+    permission_service->AddPermissionObserver(
+        std::move(descriptor),
+        mojom::blink::PermissionStatusWithDetails::New(
+            background_sync_permission_, nullptr),
+        std::move(observer));
   }
 }
 
@@ -1827,8 +1849,8 @@ bool FetchLaterManager::IsBackgroundSyncGranted() const {
 }
 
 void FetchLaterManager::OnPermissionStatusChange(
-    mojom::blink::PermissionStatus status) {
-  background_sync_permission_ = status;
+    mojom::blink::PermissionStatusWithDetailsPtr status) {
+  background_sync_permission_ = status->status;
 }
 
 size_t FetchLaterManager::NumLoadersForTesting() const {
@@ -1863,7 +1885,7 @@ FetchLaterManager::PrepareNetworkRequest(
 
   FetchManagerResourceRequestContext resource_request_context;
   if (PrepareResourceRequestForCacheAccess(
-          kFetchLaterResourceType, fetch_client_settings_object, KURL(),
+          kFetchLaterResourceType, fetch_client_settings_object, NullUrl(),
           resource_request_context, fetcher->Context(),
           params) != std::nullopt) {
     return nullptr;
@@ -1878,6 +1900,8 @@ FetchLaterManager::PrepareNetworkRequest(
   PopulateResourceRequest(
       params.GetResourceRequest(),
       std::move(params.MutableResourceRequest().MutableBody()),
+      network_resource_request.get());
+  fetcher->PopulateResourceRequestPermissionsPolicy(
       network_resource_request.get());
   return network_resource_request;
 }

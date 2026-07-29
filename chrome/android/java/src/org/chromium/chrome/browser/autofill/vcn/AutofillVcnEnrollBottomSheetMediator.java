@@ -8,12 +8,16 @@ import androidx.annotation.IntDef;
 import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.metrics.RecordHistogram;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.chrome.browser.autofill.AutofillSheetUiController;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
-import org.chromium.components.browser_ui.bottomsheet.BottomSheetControllerProvider;
-import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.modelutil.PropertyModel;
 
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+
 /** The mediator controller for the virtual card number (VCN) enrollment bottom sheet. */
+@NullMarked
 /*package*/ class AutofillVcnEnrollBottomSheetMediator {
     @VisibleForTesting
     static final String LOADING_SHOWN_HISTOGRAM = "Autofill.VirtualCardEnrollBubble.LoadingShown";
@@ -23,9 +27,10 @@ import org.chromium.ui.modelutil.PropertyModel;
 
     private final AutofillVcnEnrollBottomSheetContent mContent;
     private final AutofillVcnEnrollBottomSheetLifecycle mLifecycle;
-    private BottomSheetController mBottomSheetController;
+    private final AutofillSheetUiController mUiController;
     private final PropertyModel mModel;
     private @VirtualCardEnrollmentBubbleResult int mLoadingResult;
+    private boolean mDidShow;
 
     // These values are persisted to logs. Entries should not be renumbered and
     // numeric values should never be reused.
@@ -39,6 +44,7 @@ import org.chromium.ui.modelutil.PropertyModel;
         VirtualCardEnrollmentBubbleResult.CANCELLED,
         VirtualCardEnrollmentBubbleResult.COUNT
     })
+    @Retention(RetentionPolicy.SOURCE)
     @VisibleForTesting
     @interface VirtualCardEnrollmentBubbleResult {
         int UNKNOWN = 0;
@@ -59,29 +65,27 @@ import org.chromium.ui.modelutil.PropertyModel;
     AutofillVcnEnrollBottomSheetMediator(
             AutofillVcnEnrollBottomSheetContent content,
             AutofillVcnEnrollBottomSheetLifecycle lifecycle,
+            AutofillSheetUiController uiController,
             PropertyModel model) {
         mContent = content;
         mLifecycle = lifecycle;
+        mUiController = uiController;
         mModel = model;
     }
 
     /**
      * Requests to show the bottom sheet.
      *
-     * @param window The window where the bottom sheet should be shown.
      * @return True if shown.
      */
-    boolean requestShowContent(WindowAndroid window) {
+    boolean requestShowContent() {
         if (!mLifecycle.canBegin()) return false;
 
-        mBottomSheetController = BottomSheetControllerProvider.from(window);
-        if (mBottomSheetController == null) return false;
+        mDidShow = mUiController.requestShowContent(mContent, /* animate= */ true);
 
-        boolean didShow = mBottomSheetController.requestShowContent(mContent, /* animate= */ true);
+        if (mDidShow) mLifecycle.begin(/* onEndOfLifecycle= */ this::hide);
 
-        if (didShow) mLifecycle.begin(/* onEndOfLifecycle= */ this::hide);
-
-        return didShow;
+        return mDidShow;
     }
 
     /** Callback for when the user hits the [accept] button. */
@@ -102,8 +106,8 @@ import org.chromium.ui.modelutil.PropertyModel;
     /** Hides the bottom sheet, if present. */
     void hide() {
         if (mLifecycle.hasBegun()) mLifecycle.end();
-        if (mBottomSheetController != null) {
-            mBottomSheetController.hideContent(
+        if (mDidShow) {
+            mUiController.hideContent(
                     mContent,
                     /* animate= */ true,
                     BottomSheetController.StateChangeReason.INTERACTION_COMPLETE);

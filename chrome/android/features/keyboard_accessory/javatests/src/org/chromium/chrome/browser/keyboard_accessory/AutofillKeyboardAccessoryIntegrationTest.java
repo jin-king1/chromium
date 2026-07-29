@@ -20,7 +20,7 @@ import static org.junit.Assert.assertTrue;
 import static org.chromium.base.test.util.ViewActionOnDescendant.performOnRecyclerViewNthItem;
 import static org.chromium.chrome.browser.autofill.AutofillTestHelper.createClickActionWithFlags;
 import static org.chromium.chrome.browser.autofill.AutofillTestHelper.singleMouseClickView;
-import static org.chromium.chrome.browser.keyboard_accessory.ManualFillingTestHelper.selectTabAtPosition;
+import static org.chromium.chrome.browser.keyboard_accessory.ManualFillingTestHelper.selectTabWithDescription;
 import static org.chromium.chrome.browser.keyboard_accessory.ManualFillingTestHelper.waitToBeHidden;
 import static org.chromium.chrome.browser.keyboard_accessory.ManualFillingTestHelper.whenDisplayed;
 
@@ -37,10 +37,11 @@ import org.junit.runner.RunWith;
 
 import org.chromium.autofill.mojom.FocusedFieldType;
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.supplier.Supplier;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
+import org.chromium.base.test.util.DisableIf;
+import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
@@ -51,29 +52,32 @@ import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.keyboard_accessory.button_group_component.KeyboardAccessoryButtonGroupView;
 import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.content_public.browser.test.util.DOMUtils;
 import org.chromium.ui.base.DeviceFormFactor;
 
 import java.lang.ref.WeakReference;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
+import java.util.function.Supplier;
 
 /** Integration tests for autofill keyboard accessory. */
+// TODO(crbug.com/447076444): Enable Keyboard Accessory revamp flag
+// TODO(crbug.com/462636368): Turn on the dynamic positioning flag after blink bug is fixed.
 @RunWith(ChromeJUnit4ClassRunner.class)
 @Batch(Batch.PER_CLASS)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
-@DisableFeatures({
-    ChromeFeatureList.EDGE_TO_EDGE_BOTTOM_CHIN,
-    ChromeFeatureList.EDGE_TO_EDGE_WEB_OPT_IN
-})
+@DisableFeatures(ChromeFeatureList.AUTOFILL_ANDROID_KEYBOARD_ACCESSORY_DYNAMIC_POSITIONING)
+@DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM) // crbug.com/511284601
 public class AutofillKeyboardAccessoryIntegrationTest {
     @Rule
-    public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
+    public FreshCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.freshChromeTabbedActivityRule();
 
     private static final String TEST_PAGE = "/chrome/test/data/autofill/autofill_test_form.html";
 
-    private ManualFillingTestHelper mHelper = new ManualFillingTestHelper(mActivityTestRule);
+    private final ManualFillingTestHelper mHelper = new ManualFillingTestHelper(mActivityTestRule);
 
     /**
      * This FakeKeyboard triggers as a regular keyboard but has no measurable height. This simulates
@@ -92,18 +96,22 @@ public class AutofillKeyboardAccessoryIntegrationTest {
         }
     }
 
-    private void loadTestPage(ChromeWindow.KeyboardVisibilityDelegateFactory keyboardDelegate)
+    private WebPageStation startAtTestPage(
+            ChromeWindow.KeyboardVisibilityDelegateFactory keyboardDelegate)
             throws TimeoutException {
-        mHelper.loadTestPage(TEST_PAGE, false, false, keyboardDelegate);
+        WebPageStation page =
+                mHelper.startAtTestPage(
+                        TEST_PAGE, /* isRtl= */ false, /* waitForNode= */ false, keyboardDelegate);
         ManualFillingTestHelper.createAutofillTestProfiles();
         DOMUtils.waitForNonZeroNodeBounds(mHelper.getWebContents(), "NAME_FIRST");
+        return page;
     }
 
     /** Autofocused fields should not show a keyboard accessory. */
     @Test
     @MediumTest
     public void testAutofocusedFieldDoesNotShowKeyboardAccessory() throws TimeoutException {
-        loadTestPage(FakeKeyboard::new);
+        startAtTestPage(FakeKeyboard::new);
         CriteriaHelper.pollUiThread(
                 () -> {
                     View accessory =
@@ -116,7 +124,7 @@ public class AutofillKeyboardAccessoryIntegrationTest {
     @Test
     @MediumTest
     public void testTapInputFieldShowsKeyboardAccessory() throws TimeoutException {
-        loadTestPage(FakeKeyboard::new);
+        startAtTestPage(FakeKeyboard::new);
         mHelper.clickNodeAndShowKeyboard("NAME_FIRST", 1);
         mHelper.waitForKeyboardAccessoryToBeShown();
     }
@@ -124,16 +132,15 @@ public class AutofillKeyboardAccessoryIntegrationTest {
     /** Switching fields should re-scroll the keyboard accessory to the left. */
     @Test
     @MediumTest
+    @DisabledTest(message = "crbug.com/377939398, crbug.com/453679696, crbug.com/481444791")
     public void testSwitchFieldsRescrollsKeyboardAccessory() throws TimeoutException {
-        loadTestPage(FakeKeyboard::new);
+        startAtTestPage(FakeKeyboard::new);
         mHelper.clickNodeAndShowKeyboard("EMAIL_ADDRESS", 8);
         mHelper.waitForKeyboardAccessoryToBeShown(true);
 
-        // Scroll to the second position and check it actually happened.
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    mHelper.getAccessoryBarView().scrollToPosition(2);
-                });
+        // Scroll to the tab switcher and check that the scroll offset is greater than zero.
+        whenDisplayed(withId(R.id.bar_items_view))
+                .perform(scrollTo(isAssignableFrom(KeyboardAccessoryButtonGroupView.class)));
         CriteriaHelper.pollUiThread(
                 () -> {
                     return mHelper.getAccessoryBarView().computeHorizontalScrollOffset() > 0;
@@ -156,10 +163,10 @@ public class AutofillKeyboardAccessoryIntegrationTest {
      */
     @Test
     @MediumTest
-    @Restriction(DeviceFormFactor.TABLET)
-    public void testSelectSuggestionHidesKeyboardAccessory()
-            throws ExecutionException, TimeoutException {
-        loadTestPage(FakeKeyboard::new);
+    @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
+    @DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/481444791
+    public void testSelectSuggestionHidesKeyboardAccessory() throws TimeoutException {
+        startAtTestPage(FakeKeyboard::new);
         HistogramWatcher histogramExpectation =
                 HistogramWatcher.newSingleRecordWatcher(
                         "KeyboardAccessory.TouchEventFiltered", false);
@@ -173,10 +180,9 @@ public class AutofillKeyboardAccessoryIntegrationTest {
 
     @Test
     @MediumTest
-    public void testSuggestionsCloseAccessoryWhenClicked()
-            throws ExecutionException, TimeoutException {
+    public void testSuggestionsCloseAccessoryWhenClicked() throws TimeoutException {
         MultiWindowUtils.getInstance().setIsInMultiWindowModeForTesting(true);
-        loadTestPage(MultiWindowKeyboard::new);
+        startAtTestPage(MultiWindowKeyboard::new);
         mHelper.clickNode("NAME_FIRST", 1, FocusedFieldType.FILLABLE_NON_SEARCH_FIELD);
         mHelper.waitForKeyboardAccessoryToBeShown(true);
 
@@ -187,10 +193,9 @@ public class AutofillKeyboardAccessoryIntegrationTest {
     @Test
     @MediumTest
     @DisableFeatures({ChromeFeatureList.AUTOFILL_ENABLE_SECURITY_TOUCH_EVENT_FILTERING_ANDROID})
-    public void testClicksThroughOtherSurfaceAreAreProcessed()
-            throws ExecutionException, TimeoutException, InterruptedException {
+    public void testClicksThroughOtherSurfaceAreAreProcessed() throws TimeoutException {
         MultiWindowUtils.getInstance().setIsInMultiWindowModeForTesting(true);
-        loadTestPage(MultiWindowKeyboard::new);
+        startAtTestPage(MultiWindowKeyboard::new);
         HistogramWatcher histogramExpectation =
                 HistogramWatcher.newSingleRecordWatcher(
                         "KeyboardAccessory.TouchEventFiltered", true);
@@ -209,10 +214,9 @@ public class AutofillKeyboardAccessoryIntegrationTest {
     @Test
     @MediumTest
     @EnableFeatures({ChromeFeatureList.AUTOFILL_ENABLE_SECURITY_TOUCH_EVENT_FILTERING_ANDROID})
-    public void testClicksThroughOtherSurfaceAreIgnored()
-            throws ExecutionException, TimeoutException, InterruptedException {
+    public void testClicksThroughOtherSurfaceAreIgnored() throws TimeoutException {
         MultiWindowUtils.getInstance().setIsInMultiWindowModeForTesting(true);
-        loadTestPage(MultiWindowKeyboard::new);
+        startAtTestPage(MultiWindowKeyboard::new);
         // The metric logs potentially filtered events as well, so it doesn't depend on the feature
         // flag being turned on of off.
         HistogramWatcher histogramExpectation =
@@ -221,30 +225,27 @@ public class AutofillKeyboardAccessoryIntegrationTest {
         mHelper.clickNode("NAME_FIRST", 1, FocusedFieldType.FILLABLE_NON_SEARCH_FIELD);
         mHelper.waitForKeyboardAccessoryToBeShown(true);
 
-        for (int i = 0; i < mHelper.getAccessoryBarView().getAdapter().getItemCount(); i++) {
-            performOnRecyclerViewNthItem(
-                    withId(R.id.bar_items_view),
-                    i,
-                    createClickActionWithFlags(MotionEvent.FLAG_WINDOW_IS_OBSCURED));
-            onView(withId(R.id.keyboard_accessory)).check(matches(isDisplayed()));
-            performOnRecyclerViewNthItem(
-                    withId(R.id.bar_items_view),
-                    i,
-                    createClickActionWithFlags(MotionEvent.FLAG_WINDOW_IS_PARTIALLY_OBSCURED));
-            onView(withId(R.id.keyboard_accessory)).check(matches(isDisplayed()));
-        }
+        performOnRecyclerViewNthItem(
+                withId(R.id.bar_items_view),
+                0,
+                createClickActionWithFlags(MotionEvent.FLAG_WINDOW_IS_OBSCURED, false));
+        onView(withId(R.id.keyboard_accessory)).check(matches(isDisplayed()));
+        performOnRecyclerViewNthItem(
+                withId(R.id.bar_items_view),
+                0,
+                createClickActionWithFlags(MotionEvent.FLAG_WINDOW_IS_PARTIALLY_OBSCURED, false));
+        onView(withId(R.id.keyboard_accessory)).check(matches(isDisplayed()));
 
         // Close the accessory by clicking on one of the suggestions.
-        onView(isAssignableFrom(KeyboardAccessoryButtonGroupView.class)).perform(click());
+        onView(withId(R.id.bar_items_view)).perform(actionOnItemAtPosition(0, click()));
         mHelper.waitForKeyboardAccessoryToDisappear();
         histogramExpectation.assertExpected();
     }
 
     @Test
     @MediumTest
-    public void testMouseClicksConsumedByAccessoryBar()
-            throws ExecutionException, TimeoutException, InterruptedException {
-        mHelper.loadTestPage(false);
+    public void testMouseClicksConsumedByAccessoryBar() throws TimeoutException {
+        mHelper.startAtTestPage(/* isRtl= */ false);
         mHelper.registerSheetDataProvider(AccessoryTabType.CREDIT_CARDS);
         // Register a sheet data provider so that sheet is available when needed.
 
@@ -258,9 +259,10 @@ public class AutofillKeyboardAccessoryIntegrationTest {
 
     @Test
     @SmallTest
+    @DisableFeatures({ChromeFeatureList.AUTOFILL_ANDROID_DESKTOP_KEYBOARD_ACCESSORY_REVAMP})
     public void testPressingBackButtonHidesAccessoryWithAutofillSuggestions()
-            throws TimeoutException, ExecutionException {
-        loadTestPage(MultiWindowKeyboard::new);
+            throws TimeoutException {
+        startAtTestPage(MultiWindowKeyboard::new);
         mHelper.clickNodeAndShowKeyboard("NAME_FIRST", 1);
         mHelper.waitForKeyboardAccessoryToBeShown(true);
 
@@ -269,11 +271,12 @@ public class AutofillKeyboardAccessoryIntegrationTest {
                 .perform(
                         actionOnItem(
                                 isAssignableFrom(KeyboardAccessoryButtonGroupView.class),
-                                selectTabAtPosition(0)));
+                                selectTabWithDescription(
+                                        R.string.address_accessory_sheet_toggle)));
 
         whenDisplayed(withChild(withId(R.id.keyboard_accessory_sheet_frame)));
 
-        whenDisplayed(withId(R.id.keyboard_accessory_sheet_frame))
+        whenDisplayed(withId(R.id.keyboard_accessory_sheet_frame), /* atLeast= */ 51)
                 .check((v, e) -> assertTrue("Catch click to stay open!", singleMouseClickView(v)));
 
         assertTrue(
@@ -291,9 +294,10 @@ public class AutofillKeyboardAccessoryIntegrationTest {
 
     @Test
     @MediumTest
+    @DisableFeatures({ChromeFeatureList.AUTOFILL_ANDROID_DESKTOP_KEYBOARD_ACCESSORY_REVAMP})
     public void testSheetHasMinimumSizeWhenTriggeredBySuggestion() throws TimeoutException {
         MultiWindowUtils.getInstance().setIsInMultiWindowModeForTesting(true);
-        loadTestPage(MultiWindowKeyboard::new);
+        startAtTestPage(MultiWindowKeyboard::new);
         mHelper.clickNode("NAME_FIRST", 1, FocusedFieldType.FILLABLE_NON_SEARCH_FIELD);
         mHelper.waitForKeyboardAccessoryToBeShown(true);
 
@@ -302,9 +306,10 @@ public class AutofillKeyboardAccessoryIntegrationTest {
                         scrollTo(isAssignableFrom(KeyboardAccessoryButtonGroupView.class)),
                         actionOnItem(
                                 isAssignableFrom(KeyboardAccessoryButtonGroupView.class),
-                                selectTabAtPosition(0)));
+                                selectTabWithDescription(
+                                        R.string.address_accessory_sheet_toggle)));
 
-        whenDisplayed(withId(R.id.keyboard_accessory_sheet_frame))
+        whenDisplayed(withId(R.id.keyboard_accessory_sheet_frame), /* atLeast= */ 51)
                 .check(
                         (sheetView, exception) -> {
                             assertTrue(sheetView.isShown() && sheetView.getHeight() > 0);

@@ -6,6 +6,7 @@
 
 #include "base/base_paths.h"
 #include "base/files/file.h"
+#include "base/logging.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/no_destructor.h"
 #include "base/notreached.h"
@@ -19,7 +20,6 @@ namespace language_detection {
 // TODO(https://crbug.com/354069716): Move this to the model service in the
 // browser.
 BASE_FEATURE(kLanguageDetectionModelForTesting,
-             "LanguageDetectionModelForTesting",
              base::FEATURE_DISABLED_BY_DEFAULT);
 const base::FeatureParam<std::string> kLanguageDetectionModelForTestingPath{
     &kLanguageDetectionModelForTesting, "path",

@@ -12,16 +12,22 @@
 
 #include "base/functional/callback_forward.h"
 #include "base/observer_list_types.h"
+#include "base/scoped_observation_traits.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/values.h"
 #include "content/common/content_export.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/console_message.h"
 #include "content/public/browser/service_worker_external_request_result.h"
 #include "content/public/browser/service_worker_external_request_timeout_type.h"
+#include "content/public/browser/service_worker_registration_information.h"
 #include "content/public/browser/service_worker_running_info.h"
+#include "content/public/common/child_process_id.h"
 #include "services/service_manager/public/cpp/interface_provider.h"
 #include "third_party/blink/public/common/messaging/transferable_message.h"
 #include "third_party/blink/public/common/service_worker/extended_service_worker_status_code.h"
 #include "third_party/blink/public/common/service_worker/service_worker_status_code.h"
+#include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_registration.mojom-forward.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_registration_options.mojom-forward.h"
 
@@ -46,8 +52,10 @@ class GURL;
 
 namespace content {
 
+class ServiceWorkerContext;
 class ServiceWorkerContextObserver;
 
+struct GlobalRenderFrameHostId;
 struct ServiceWorkerRunningInfo;
 struct StorageUsageInfo;
 
@@ -92,16 +100,44 @@ using ServiceWorkerScriptExecutionCallback =
 // synchronously with changes in //content.
 class ServiceWorkerContextObserverSynchronous : public base::CheckedObserver {
  public:
-  // Called when the service worker with id `version_id` will be stopped.
-  virtual void OnStopping(int64_t version_id,
-                          const ServiceWorkerRunningInfo& worker_info) {}
-  // Called when the service worker with id `version_id` has stopped running.
-  virtual void OnStopped(int64_t version_id,
-                         const ServiceWorkerRunningInfo& worker_info) {}
+  // Called after a service worker registration is persisted to storage with
+  // registration ID `registration_id` and scope `scope`.
+  virtual void OnRegistrationStoredSync(int64_t registration_id,
+                                        const GURL& scope) {}
 
-  // TODO(crbug.com/334940006): Add the rest of the extensions methods
-  // (OnRegistrationStored(), OnReportConsoleMessage(), OnDestruct()) and adapt
-  // `ServiceWorkerTaskQueue` to use this observer exclusively.
+  // Called after a service worker registration with `registration_id` and
+  // `scope` is deleted (e.g., due to unregistration).
+  virtual void OnRegistrationDeletedSync(int64_t registration_id,
+                                         const GURL& scope) {}
+
+  // Called after the message to start the service worker has been sent.
+  virtual void OnStartWorkerMessageSentSync(int64_t version_id,
+                                            const GURL& scope) {}
+
+  // Called when a console message is reported for the service worker with id
+  // |version_id|.
+  virtual void OnReportConsoleMessageSync(ChildProcessId render_process_id,
+                                          int64_t version_id,
+                                          const GURL& scope,
+                                          const ConsoleMessage& message) {}
+
+  // Called when the service worker with id `version_id` will be stopped.
+  virtual void OnStoppingSync(
+      int64_t version_id,
+      const GURL& scope,
+      const blink::ServiceWorkerToken& service_worker_token) {}
+  // Called when the service worker with id `version_id` has stopped running.
+  virtual void OnStoppedSync(
+      int64_t version_id,
+      const GURL& scope,
+      const blink::ServiceWorkerToken& service_worker_token) {}
+
+  // Called when `context` is destroyed. Observers must no longer use |context|.
+  virtual void OnDestructSync(ServiceWorkerContext* context) {}
+
+  // Called before the URLLoaderFactory used to fetch the worker script is
+  // constructed.
+  virtual void OnWillCreateURLLoaderFactorySync(const GURL& scope) {}
 };
 
 // Represents the per-StoragePartition service worker data.
@@ -113,6 +149,10 @@ class ServiceWorkerContextObserverSynchronous : public base::CheckedObserver {
 // All methods must be called on the UI thread.
 class CONTENT_EXPORT ServiceWorkerContext {
  public:
+  // The delay from navigation to starting an update of a service
+  // worker's script.
+  static constexpr base::TimeDelta kUpdateDelay = base::Milliseconds(1000);
+
   using ResultCallback = base::OnceCallback<void(bool success)>;
 
   using GetInstalledRegistrationOriginsCallback =
@@ -135,8 +175,11 @@ class CONTENT_EXPORT ServiceWorkerContext {
 
   using WarmUpServiceWorkerCallback = base::OnceClosure;
 
-  using StartWorkerCallback = base::OnceCallback<
-      void(int64_t version_id, int process_id, int thread_id)>;
+  using StartWorkerCallback =
+      base::OnceCallback<void(int64_t version_id,
+                              ChildProcessId process_id,
+                              int thread_id,
+                              const blink::ServiceWorkerToken& token)>;
 
   // Returns true if |url| is within the service worker |scope|.
   static bool ScopeMatches(const GURL& scope, const GURL& url);
@@ -147,10 +190,6 @@ class CONTENT_EXPORT ServiceWorkerContext {
                       const base::Location& from_here,
                       ServiceWorkerContext* service_worker_context,
                       base::OnceClosure task);
-
-  // Returns the delay from navigation to starting an update of a service
-  // worker's script.
-  static base::TimeDelta GetUpdateDelay();
 
   // Add/remove an observer that is asynchronously notified.
   virtual void AddObserver(ServiceWorkerContextObserver* observer) = 0;
@@ -174,6 +213,7 @@ class CONTENT_EXPORT ServiceWorkerContext {
       const GURL& script_url,
       const blink::StorageKey& key,
       const blink::mojom::ServiceWorkerRegistrationOptions& options,
+      GlobalRenderFrameHostId requesting_frame_id,
       StatusCodeCallback callback) = 0;
 
   // Equivalent to calling ServiceWorkerRegistration#unregister on the
@@ -318,6 +358,15 @@ class CONTENT_EXPORT ServiceWorkerContext {
   virtual bool IsLiveRunningServiceWorker(
       int64_t service_worker_version_id) = 0;
 
+  // Returns true if the ServiceWorkerVersion for `service_worker_version_id` is
+  // live (starting or running, but NOT stopping) and its associated worker
+  // instance matches the `token`. This can be used to ensure that IPC messages
+  // are not from a stale worker instance that has already been stopped, or is
+  // already stopping.
+  virtual bool IsLiveServiceWorkerWithToken(
+      int64_t service_worker_version_id,
+      const blink::ServiceWorkerToken& token) = 0;
+
   // Returns the InterfaceProvider for the worker specified by
   // `service_worker_version_id`. The caller can use InterfaceProvider to bind
   // interfaces exposed by the Service Worker. CHECKs if
@@ -337,11 +386,49 @@ class CONTENT_EXPORT ServiceWorkerContext {
   virtual void SetForceUpdateOnPageLoadForTesting(
       bool force_update_on_page_load) = 0;
 
+  // Adds `message` to a service worker's DevTools console.
+  virtual void AddMessageToConsole(int64_t service_worker_version_id,
+                                   blink::mojom::ConsoleMessageLevel level,
+                                   const std::string& message) = 0;
+
  protected:
   ServiceWorkerContext() {}
   virtual ~ServiceWorkerContext() {}
 };
 
 }  // namespace content
+
+namespace base {
+
+template <>
+struct ScopedObservationTraits<content::ServiceWorkerContext,
+                               content::ServiceWorkerContextObserver> {
+  static void AddObserver(content::ServiceWorkerContext* source,
+                          content::ServiceWorkerContextObserver* observer) {
+    source->AddObserver(observer);
+  }
+  static void RemoveObserver(content::ServiceWorkerContext* source,
+                             content::ServiceWorkerContextObserver* observer) {
+    source->RemoveObserver(observer);
+  }
+};
+
+template <>
+struct ScopedObservationTraits<
+    content::ServiceWorkerContext,
+    content::ServiceWorkerContextObserverSynchronous> {
+  static void AddObserver(
+      content::ServiceWorkerContext* source,
+      content::ServiceWorkerContextObserverSynchronous* observer) {
+    source->AddSyncObserver(observer);
+  }
+  static void RemoveObserver(
+      content::ServiceWorkerContext* source,
+      content::ServiceWorkerContextObserverSynchronous* observer) {
+    source->RemoveSyncObserver(observer);
+  }
+};
+
+}  // namespace base
 
 #endif  // CONTENT_PUBLIC_BROWSER_SERVICE_WORKER_CONTEXT_H_

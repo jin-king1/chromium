@@ -58,6 +58,7 @@ class SystemMediaControlsMac
   void SetAlbum(const std::u16string& album) override;
   void SetThumbnail(const SkBitmap& bitmap) override;
   void SetPosition(const media_session::MediaPosition& position) override;
+  void ClearPosition() override;
   void ClearThumbnail() override {}
   void ClearMetadata() override;
   void UpdateDisplay() override {}
@@ -112,10 +113,6 @@ class SystemMediaControlsMac
   // MediaKeysListenerManagerImpl mainly.
   base::ObserverList<system_media_controls::SystemMediaControlsObserver>
       observers_;
-
-  // True if we've received OnApplicationHostDestroying. Prevents a crash
-  // when you cmd+Q quit a PWA.
-  bool is_app_shim_closing_ = false;
 
   // Notifies tests upon successful creation of a SystemMediaControlsBridge.
   base::RepeatingCallback<void()> on_bridge_created_callback_for_testing_;

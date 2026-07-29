@@ -6,6 +6,7 @@
 
 #include "base/functional/callback_helpers.h"
 #include "base/json/json_reader.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "components/autofill/core/browser/payments/payments_requests/create_bnpl_payment_instrument_request_test_api.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -32,7 +33,7 @@ class CreateBnplPaymentInstrumentRequestTest : public testing::Test {
 
   CreateBnplPaymentInstrumentRequest* GetRequest() { return request_.get(); }
 
-  void ParseResponse(const base::Value::Dict& response) {
+  void ParseResponse(const base::DictValue& response) {
     request_->ParseResponse(response);
   }
 
@@ -76,20 +77,20 @@ TEST_F(CreateBnplPaymentInstrumentRequestTest,
 
 TEST_F(CreateBnplPaymentInstrumentRequestTest,
        ParseResponse_ResponseIsComplete) {
-  base::Value::Dict response = base::Value::Dict().Set(
+  base::DictValue response = base::DictValue().Set(
       "buy_now_pay_later_info",
-      base::Value::Dict().Set("instrument_id",
-                              base::Value(u"some instrument id")));
+      base::DictValue().Set("instrument_id",
+                            base::Value("some instrument id")));
 
   ParseResponse(response);
 
-  EXPECT_EQ(test_api(*GetRequest()).get_instrument_id(), u"some instrument id");
+  EXPECT_EQ(test_api(*GetRequest()).get_instrument_id(), "some instrument id");
   EXPECT_TRUE(IsResponseComplete());
 }
 
 TEST_F(CreateBnplPaymentInstrumentRequestTest,
        ParseResponse_MissingInstrumentId) {
-  base::Value::Dict response = base::Value::Dict();
+  base::DictValue response = base::DictValue();
 
   ParseResponse(response);
 

@@ -13,10 +13,11 @@
 #include "base/check.h"
 #include "base/memory/raw_ptr.h"
 #include "components/viz/common/resources/shared_image_format.h"
+#include "components/viz/common/resources/transferable_resource.h"
 #include "components/viz/service/viz_service_export.h"
 #include "gpu/command_buffer/common/mailbox.h"
 #include "gpu/command_buffer/common/sync_token.h"
-#include "gpu/ipc/common/vulkan_ycbcr_info.h"
+#include "gpu/vulkan/vulkan_ycbcr_info.h"
 #include "third_party/skia/include/core/SkImage.h"
 #include "third_party/skia/include/core/SkImageInfo.h"
 #include "third_party/skia/include/core/SkRefCnt.h"
@@ -41,12 +42,11 @@ class VIZ_SERVICE_EXPORT ExternalUseClient {
   class VIZ_SERVICE_EXPORT ImageContext {
    public:
     ImageContext(const gpu::Mailbox& mailbox,
-                 const gpu::SyncToken& sync_token,
-                 uint32_t texture_target,
                  const gfx::Size& size,
                  SharedImageFormat format,
-                 const std::optional<gpu::VulkanYCbCrInfo>& ycbcr_info,
-                 sk_sp<SkColorSpace> color_space);
+                 const gfx::ColorSpace& color_space);
+
+    explicit ImageContext(const TransferableResource& resource);
 
     ImageContext(const ImageContext&) = delete;
     ImageContext& operator=(const ImageContext&) = delete;
@@ -66,7 +66,9 @@ class VIZ_SERVICE_EXPORT ExternalUseClient {
     gpu::SyncToken* mutable_sync_token() { return &sync_token_; }
     const gfx::Size& size() const { return size_; }
     SharedImageFormat format() const { return format_; }
-    sk_sp<SkColorSpace> color_space() const;
+    const gfx::ColorSpace& color_space() { return color_space_; }
+
+    sk_sp<SkColorSpace> GetSkColorSpace() const;
 
     SkAlphaType alpha_type() const { return alpha_type_; }
     void set_alpha_type(SkAlphaType alpha_type) {
@@ -75,9 +77,8 @@ class VIZ_SERVICE_EXPORT ExternalUseClient {
     }
 
     GrSurfaceOrigin origin() const { return origin_; }
-    void set_origin(GrSurfaceOrigin origin) {
-      DCHECK(!image_);
-      origin_ = origin;
+    TransferableResource::ResourceSource resource_source() const {
+      return resource_source_;
     }
 
     std::optional<gpu::VulkanYCbCrInfo> ycbcr_info() { return ycbcr_info_; }
@@ -114,10 +115,12 @@ class VIZ_SERVICE_EXPORT ExternalUseClient {
 
     const gfx::Size size_;
     const SharedImageFormat format_;
-    const sk_sp<SkColorSpace> color_space_;
+    const gfx::ColorSpace color_space_;
+    const GrSurfaceOrigin origin_;
+    const TransferableResource::ResourceSource resource_source_ =
+        TransferableResource::ResourceSource::kUnknown;
 
     SkAlphaType alpha_type_ = kPremul_SkAlphaType;
-    GrSurfaceOrigin origin_ = kTopLeft_GrSurfaceOrigin;
 
     // Sampler conversion information which is used in vulkan context for
     // android video.
@@ -134,15 +137,10 @@ class VIZ_SERVICE_EXPORT ExternalUseClient {
   // If |maybe_concurrent_reads| is true then there can be concurrent reads to
   // the texture that modify GL texture parameters.
   virtual std::unique_ptr<ImageContext> CreateImageContext(
-      const gpu::Mailbox& mailbox,
-      const gpu::SyncToken& sync_token,
-      uint32_t texture_target,
-      const gfx::Size& size,
-      SharedImageFormat format,
+      const TransferableResource& resource,
       bool maybe_concurrent_reads,
-      const std::optional<gpu::VulkanYCbCrInfo>& ycbcr_info,
-      sk_sp<SkColorSpace> color_space,
-      bool raw_draw_if_possible) = 0;
+      bool raw_draw_if_possible,
+      uint32_t client_id) = 0;
 
   virtual gpu::SyncToken ReleaseImageContexts(
       std::vector<std::unique_ptr<ImageContext>> image_contexts) = 0;

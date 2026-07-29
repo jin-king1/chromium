@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_NEW_TAB_PAGE_MODULES_V2_CALENDAR_OUTLOOK_CALENDAR_PAGE_HANDLER_H_
 #define CHROME_BROWSER_NEW_TAB_PAGE_MODULES_V2_CALENDAR_OUTLOOK_CALENDAR_PAGE_HANDLER_H_
 
+#include <optional>
 #include <string>
 
 #include "base/memory/raw_ptr.h"
@@ -15,9 +16,12 @@
 #include "components/prefs/pref_service.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/receiver.h"
-#include "services/data_decoder/public/cpp/data_decoder.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/simple_url_loader.h"
+
+namespace base {
+class DictValue;
+}
 
 class MicrosoftAuthService;
 class PrefRegistrySimple;
@@ -57,9 +61,9 @@ class OutlookCalendarPageHandler
  private:
   void MakeRequest(GetEventsCallback callback);
   void OnJsonReceived(GetEventsCallback callback,
-                      std::unique_ptr<std::string> response_body);
-  void OnJsonParsed(GetEventsCallback callback,
-                    data_decoder::DataDecoder::ValueOrError result);
+                      std::optional<std::string> response_body);
+  void ProcessResponse(GetEventsCallback callback,
+                       std::optional<base::DictValue> response_dict);
   void MakeAttachmentUrlRequest(
       GetEventsCallback callback,
       std::vector<::ntp::calendar::mojom::CalendarEventPtr> events,

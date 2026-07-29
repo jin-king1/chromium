@@ -35,9 +35,11 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.ClassRule;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.BaseActivityTestRule;
@@ -69,6 +71,7 @@ public class StatusViewTest {
 
     private static Activity sActivity;
 
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     private StatusView mStatusView;
     private PropertyModel mStatusModel;
     private PropertyModelChangeProcessor mStatusMCP;
@@ -80,8 +83,6 @@ public class StatusViewTest {
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
-
         runOnUiThreadBlocking(
                 () -> {
                     ViewGroup view = new LinearLayout(sActivity);
@@ -176,7 +177,7 @@ public class StatusViewTest {
                 () -> {
                     mStatusModel.set(
                             StatusProperties.STATUS_ICON_RESOURCE,
-                            new StatusIconResource(R.drawable.ic_search, 0));
+                            new StatusIconResource(R.drawable.ic_search_24dp, 0));
                 });
         onView(withId(R.id.location_bar_status_icon))
                 .check((view, e) -> assertNotNull(mStatusView.getTouchDelegateForTesting()));
@@ -192,9 +193,9 @@ public class StatusViewTest {
                 () -> {
                     mStatusModel.set(
                             StatusProperties.STATUS_ICON_RESOURCE,
-                            new StatusIconResource(R.drawable.ic_search, 0));
+                            new StatusIconResource(R.drawable.ic_search_24dp, 0));
                 });
-        onView(withId(R.id.location_bar_status_icon_frame))
+        onView(withId(R.id.location_bar_status_icon))
                 .check(
                         (view, e) -> {
                             assertEquals(View.VISIBLE, view.getVisibility());
@@ -215,7 +216,7 @@ public class StatusViewTest {
                 () -> {
                     mStatusModel.set(StatusProperties.STATUS_ICON_RESOURCE, null);
                 });
-        onView(withId(R.id.location_bar_status_icon_frame))
+        onView(withId(R.id.location_bar_status_icon))
                 .check(
                         (view, e) -> {
                             assertEquals(View.GONE, view.getVisibility());
@@ -252,28 +253,11 @@ public class StatusViewTest {
     @Test
     @MediumTest
     @Feature({"Omnibox"})
-    public void testStatusViewAnimationStatusResetOnHide() {
-        runOnUiThreadBlocking(
-                () -> {
-                    mStatusModel.set(StatusProperties.SHOW_STATUS_ICON, true);
-                    mStatusModel.set(
-                            StatusProperties.STATUS_ICON_RESOURCE,
-                            new StatusIconResource(R.drawable.ic_logo_googleg_24dp, 0));
-                    assertTrue(mStatusView.isStatusIconAnimating());
-                    mStatusModel.set(StatusProperties.SHOW_STATUS_ICON, false);
-                    assertFalse(mStatusView.isStatusIconAnimating());
-                });
-    }
-
-    @Test
-    @MediumTest
-    @Feature({"Omnibox"})
     public void testStatusView_iconTransparencyShouldBeReset() {
         StatusIconResource statusIconResource =
                 new StatusIconResource(R.drawable.ic_logo_googleg_24dp, 0);
         runOnUiThreadBlocking(
                 () -> {
-                    mStatusModel.set(StatusProperties.SHOW_STATUS_ICON, true);
                     mStatusModel.set(StatusProperties.STATUS_ICON_RESOURCE, statusIconResource);
                 });
 
@@ -284,7 +268,7 @@ public class StatusViewTest {
         runOnUiThreadBlocking(
                 () -> mStatusModel.set(StatusProperties.STATUS_ICON_RESOURCE, statusIconResource));
 
-        onView(withId(R.id.location_bar_status_icon_frame))
+        onView(withId(R.id.location_bar_status_icon))
                 .check(
                         (view, e) -> {
                             assertEquals(View.VISIBLE, view.getVisibility());
@@ -300,7 +284,6 @@ public class StatusViewTest {
         runOnUiThreadBlocking(
                 () -> {
                     mStatusView.setIconAnimationDurationForTesting(50);
-                    mStatusModel.set(StatusProperties.SHOW_STATUS_ICON, true);
                     mStatusModel.set(StatusProperties.ANIMATIONS_ENABLED, true);
                     mStatusModel.set(
                             StatusProperties.STATUS_ICON_RESOURCE,
@@ -323,7 +306,6 @@ public class StatusViewTest {
         runOnUiThreadBlocking(
                 () -> {
                     mStatusView.setIconAnimationDurationForTesting(100);
-                    mStatusModel.set(StatusProperties.SHOW_STATUS_ICON, true);
                     mStatusModel.set(StatusProperties.ANIMATIONS_ENABLED, true);
                     mStatusModel.set(
                             StatusProperties.STATUS_ICON_RESOURCE,
@@ -344,7 +326,7 @@ public class StatusViewTest {
                     mStatusView.setIconAnimationDurationForTesting(0);
                     mStatusModel.set(
                             StatusProperties.STATUS_ICON_RESOURCE,
-                            new StatusIconResource(R.drawable.ic_search, 0));
+                            new StatusIconResource(R.drawable.ic_search_24dp, 0));
 
                     assertFalse(
                             "Initial transition drawable should have stopped animating",
@@ -384,7 +366,6 @@ public class StatusViewTest {
                 () -> {
                     mStatusModel.set(StatusProperties.SHOW_STATUS_VIEW, false);
                     assertEquals(View.GONE, mStatusView.getVisibility());
-                    mStatusModel.set(StatusProperties.SHOW_STATUS_ICON, true);
                     assertEquals(View.GONE, mStatusView.getVisibility());
                 });
     }

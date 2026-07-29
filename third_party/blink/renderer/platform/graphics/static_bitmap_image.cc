@@ -31,10 +31,11 @@ scoped_refptr<StaticBitmapImage> StaticBitmapImage::Create(
 scoped_refptr<StaticBitmapImage> StaticBitmapImage::Create(
     sk_sp<SkData> data,
     const SkImageInfo& info,
+    const gfx::HDRMetadata& hdr_metadata,
     ImageOrientation orientation) {
   return UnacceleratedStaticBitmapImage::Create(
       SkImages::RasterFromData(info, std::move(data), info.minRowBytes()),
-      orientation);
+      orientation, hdr_metadata);
 }
 
 gfx::Size StaticBitmapImage::SizeWithConfig(SizeConfig config) const {
@@ -66,9 +67,9 @@ Vector<uint8_t> StaticBitmapImage::CopyImageData(const SkImageInfo& info,
 
   // Orient the data, and re-read the pixels.
   if (apply_orientation && !HasDefaultOrientation()) {
-    paint_image = Image::ResizeAndOrientImage(
-        paint_image, CurrentFrameOrientation(), gfx::Vector2dF(1, 1), 1,
-        kInterpolationNone);
+    paint_image = Image::ResizeAndOrientImage(paint_image, Orientation(),
+                                              gfx::Vector2dF(1, 1), 1,
+                                              kInterpolationNone);
     read_pixels_successful = paint_image.readPixels(info, dst_buffer.data(),
                                                     info.minRowBytes(), 0, 0);
     DCHECK(read_pixels_successful);
@@ -108,11 +109,10 @@ void StaticBitmapImage::DrawHelper(cc::PaintCanvas* canvas,
       adjusted_dst_rect.set_size(gfx::TransposeSize(adjusted_dst_rect.size()));
   }
 
-  canvas->drawImageRect(
-      image, gfx::RectFToSkRect(adjusted_src_rect),
-      gfx::RectFToSkRect(adjusted_dst_rect), draw_options.sampling_options,
-      &flags,
-      WebCoreClampingModeToSkiaRectConstraint(draw_options.clamping_mode));
+  canvas->drawImageRect(image, gfx::RectFToSkRect(adjusted_src_rect),
+                        gfx::RectFToSkRect(adjusted_dst_rect),
+                        draw_options.sampling_options, &flags,
+                        ToSkiaRectConstraint(draw_options.clamping_mode));
 }
 
 }  // namespace blink

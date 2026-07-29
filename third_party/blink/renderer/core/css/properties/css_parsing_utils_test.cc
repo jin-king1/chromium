@@ -7,9 +7,12 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/core/css/css_math_function_value.h"
 #include "third_party/blink/renderer/core/css/css_progress_value.h"
+#include "third_party/blink/renderer/core/css/css_revert_rule_value.h"
 #include "third_party/blink/renderer/core/css/css_scroll_value.h"
+#include "third_party/blink/renderer/core/css/css_to_length_conversion_data.h"
 #include "third_party/blink/renderer/core/css/css_view_value.h"
 #include "third_party/blink/renderer/core/css/parser/css_parser_context.h"
+#include "third_party/blink/renderer/core/css/parser/css_parser_local_context.h"
 #include "third_party/blink/renderer/core/css/parser/css_parser_token_stream.h"
 #include "third_party/blink/renderer/core/css/parser/css_tokenizer.h"
 #include "third_party/blink/renderer/core/dom/document.h"
@@ -17,6 +20,7 @@
 #include "third_party/blink/renderer/core/html/html_html_element.h"
 #include "third_party/blink/renderer/core/testing/dummy_page_holder.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
+#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 #include "third_party/blink/renderer/platform/testing/task_environment.h"
 
 namespace blink {
@@ -24,6 +28,7 @@ namespace {
 
 using css_parsing_utils::AtDelimiter;
 using css_parsing_utils::AtIdent;
+using css_parsing_utils::ConsumeAbsoluteColor;
 using css_parsing_utils::ConsumeAngle;
 using css_parsing_utils::ConsumeIfDelimiter;
 using css_parsing_utils::ConsumeIfIdent;
@@ -41,9 +46,48 @@ TEST(CSSParsingUtilsTest, BasicShapeUseCount) {
   Document& document = dummy_page_holder->GetDocument();
   WebFeature feature = WebFeature::kCSSBasicShape;
   EXPECT_FALSE(document.IsUseCounted(feature));
-  document.documentElement()->setInnerHTML(
+  document.documentElement()->SetInnerHTMLWithoutTrustedTypes(
       "<style>span { shape-outside: circle(); }</style>");
   EXPECT_TRUE(document.IsUseCounted(feature));
+}
+
+TEST(CSSParsingUtilsTest, OverflowClipUseCount) {
+  test::TaskEnvironment task_environment;
+  auto dummy_page_holder =
+      std::make_unique<DummyPageHolder>(gfx::Size(800, 600));
+  Page::InsertOrdinaryPageForTesting(&dummy_page_holder->GetPage());
+  Document& document = dummy_page_holder->GetDocument();
+  WebDXFeature feature = WebDXFeature::kOverflowClip;
+  EXPECT_FALSE(document.IsWebDXFeatureCounted(feature));
+  document.documentElement()->SetInnerHTMLWithoutTrustedTypes(
+      "<style>span { overflow: clip; }</style>");
+  EXPECT_TRUE(document.IsWebDXFeatureCounted(feature));
+}
+
+TEST(CSSParsingUtilsTest, FontFamilyMathUseCount) {
+  test::TaskEnvironment task_environment;
+  auto dummy_page_holder =
+      std::make_unique<DummyPageHolder>(gfx::Size(800, 600));
+  Page::InsertOrdinaryPageForTesting(&dummy_page_holder->GetPage());
+  Document& document = dummy_page_holder->GetDocument();
+  WebDXFeature feature = WebDXFeature::kFontFamilyMath;
+  EXPECT_FALSE(document.IsWebDXFeatureCounted(feature));
+  document.documentElement()->SetInnerHTMLWithoutTrustedTypes(
+      "<style>.equation { font-family: math; }</style>");
+  EXPECT_TRUE(document.IsWebDXFeatureCounted(feature));
+}
+
+TEST(CSSParsingUtilsTest, ContrastColorUseCount) {
+  test::TaskEnvironment task_environment;
+  auto dummy_page_holder =
+      std::make_unique<DummyPageHolder>(gfx::Size(800, 600));
+  Page::InsertOrdinaryPageForTesting(&dummy_page_holder->GetPage());
+  Document& document = dummy_page_holder->GetDocument();
+  WebDXFeature feature = WebDXFeature::kContrastColor;
+  EXPECT_FALSE(document.IsWebDXFeatureCounted(feature));
+  document.documentElement()->SetInnerHTMLWithoutTrustedTypes(
+      "<style>span { background-color: contrast-color(blue); }</style>");
+  EXPECT_TRUE(document.IsWebDXFeatureCounted(feature));
 }
 
 TEST(CSSParsingUtilsTest, Revert) {
@@ -53,13 +97,13 @@ TEST(CSSParsingUtilsTest, Revert) {
 
 double ConsumeAngleValue(String target) {
   CSSParserTokenStream stream(target);
-  return ConsumeAngle(stream, *MakeContext(), std::nullopt)->ComputeDegrees();
-}
-
-double ConsumeAngleValue(String target, double min, double max) {
-  CSSParserTokenStream stream(target);
-  return ConsumeAngle(stream, *MakeContext(), std::nullopt, min, max)
-      ->ComputeDegrees();
+  // This function only works on calc() expressions that can be resolved at
+  // parse time.
+  CSSToLengthConversionData conversion_data(/*element=*/nullptr);
+  CSSParserLocalContext local_context =
+      CSSParserLocalContext::CreateWithoutPropertyForTest();
+  return ConsumeAngle(stream, *MakeContext(), local_context, std::nullopt)
+      ->ComputeDegrees(conversion_data);
 }
 
 TEST(CSSParsingUtilsTest, ConsumeAngles) {
@@ -72,11 +116,6 @@ TEST(CSSParsingUtilsTest, ConsumeAngles) {
   EXPECT_EQ(kMaxDegreeValue, ConsumeAngleValue("calc(infinity * 1deg)"));
   EXPECT_EQ(-kMaxDegreeValue, ConsumeAngleValue("calc(-infinity * 1deg)"));
   EXPECT_EQ(0, ConsumeAngleValue("calc(NaN * 1deg)"));
-
-  // Math function with min and max ranges
-
-  EXPECT_EQ(-100, ConsumeAngleValue("calc(-3.40282e+38deg)", -100, 100));
-  EXPECT_EQ(100, ConsumeAngleValue("calc(3.40282e+38deg)", -100, 100));
 }
 
 TEST(CSSParsingUtilsTest, AtIdent) {
@@ -183,10 +222,20 @@ TEST(CSSParsingUtilsTest, DashedIdent) {
 }
 
 TEST(CSSParsingUtilsTest, ConsumeAbsoluteColor) {
-  auto ConsumeColorForTest = [](String css_text, auto func) {
+  auto ConsumeColorForTest = [](String css_text) {
     CSSParserTokenStream stream(css_text);
     CSSParserContext* context = MakeContext();
-    return func(stream, *context);
+    CSSParserLocalContext local_context =
+        CSSParserLocalContext::CreateWithoutPropertyForTest();
+    return ConsumeColor(stream, *context, local_context,
+                        css_parsing_utils::ColorParserContext());
+  };
+  auto ConsumeAbsoluteColorForTest = [](String css_text) {
+    CSSParserTokenStream stream(css_text);
+    CSSParserContext* context = MakeContext();
+    CSSParserLocalContext local_context =
+        CSSParserLocalContext::CreateWithoutPropertyForTest();
+    return ConsumeAbsoluteColor(stream, *context, local_context);
   };
 
   struct {
@@ -212,11 +261,9 @@ TEST(CSSParsingUtilsTest, ConsumeAbsoluteColor) {
        nullptr},
   };
   for (auto& expectation : expectations) {
-    EXPECT_EQ(ConsumeColorForTest(expectation.css_text,
-                                  css_parsing_utils::ConsumeColor),
+    EXPECT_EQ(ConsumeColorForTest(expectation.css_text),
               expectation.consume_color_expectation);
-    EXPECT_EQ(ConsumeColorForTest(expectation.css_text,
-                                  css_parsing_utils::ConsumeAbsoluteColor),
+    EXPECT_EQ(ConsumeAbsoluteColorForTest(expectation.css_text),
               expectation.consume_absolute_color_expectation);
   }
 }
@@ -224,7 +271,10 @@ TEST(CSSParsingUtilsTest, ConsumeAbsoluteColor) {
 TEST(CSSParsingUtilsTest, InternalColorsOnlyAllowedInUaMode) {
   auto ConsumeColorForTest = [](String css_text, CSSParserMode mode) {
     CSSParserTokenStream stream(css_text);
-    return css_parsing_utils::ConsumeColor(stream, *MakeContext(mode));
+    CSSParserLocalContext local_context =
+        CSSParserLocalContext::CreateWithoutPropertyForTest();
+    return css_parsing_utils::ConsumeColor(stream, *MakeContext(mode),
+                                           local_context);
   };
 
   struct {
@@ -270,13 +320,16 @@ TEST(CSSParsingUtilsTest, InternalColorsOnlyAllowedInUaMode) {
 TEST(CSSParsingUtilsTest, ConsumeColorRangePreservation) {
   const char* tests[] = {
       "color-mix(42deg)",
-      "color-contrast(42deg)",
+      "contrast-color(42deg)",
   };
   for (const char*& test : tests) {
     String input(test);
     SCOPED_TRACE(input);
     CSSParserTokenStream stream(input);
-    EXPECT_EQ(nullptr, css_parsing_utils::ConsumeColor(stream, *MakeContext()));
+    CSSParserLocalContext local_context =
+        CSSParserLocalContext::CreateWithoutPropertyForTest();
+    EXPECT_EQ(nullptr, css_parsing_utils::ConsumeColor(stream, *MakeContext(),
+                                                       local_context));
     EXPECT_EQ(test, stream.RemainingText());
   }
 }
@@ -285,8 +338,10 @@ TEST(CSSParsingUtilsTest, InternalPositionTryFallbacksInUAMode) {
   auto ConsumePositionTryFallbackForTest = [](String css_text,
                                               CSSParserMode mode) {
     CSSParserTokenStream stream(css_text);
+    CSSParserLocalContext local_context =
+        CSSParserLocalContext::CreateWithoutPropertyForTest();
     return css_parsing_utils::ConsumeSinglePositionTryFallback(
-        stream, *MakeContext(mode));
+        stream, *MakeContext(mode), local_context);
   };
 
   struct {
@@ -318,8 +373,10 @@ TEST(CSSParsingUtilsTest, InternalPositionTryFallbacksInUAMode) {
 TEST(CSSParsingUtilsTest, ConsumePositionTryFallbacksInUAMode) {
   String css_text = "block-start span-inline-end";
   CSSParserTokenStream stream(css_text);
+  CSSParserLocalContext local_context =
+      CSSParserLocalContext::CreateWithoutPropertyForTest();
   CSSValue* value = css_parsing_utils::ConsumePositionTryFallbacks(
-      stream, *MakeContext(kUASheetMode));
+      stream, *MakeContext(kUASheetMode), local_context);
   ASSERT_TRUE(value);
   EXPECT_EQ("block-start span-inline-end", value->CssText());
 }
@@ -384,13 +441,130 @@ TEST(CSSParsingUtilsTest, ConsumeProgressType) {
   };
   for (auto& expectation : expectations) {
     CSSParserTokenStream stream(expectation.input);
-    CSSValue* progress =
-        css_parsing_utils::ConsumeProgressType(stream, *MakeContext());
+    CSSParserLocalContext local_context =
+        CSSParserLocalContext::CreateWithoutPropertyForTest();
+    CSSValue* progress = css_parsing_utils::ConsumeProgressType(
+        stream, *MakeContext(), local_context);
     if (!expectation.output) {
       EXPECT_FALSE(progress);
     } else {
       EXPECT_TRUE(*progress == *expectation.output);
     }
+  }
+}
+
+
+TEST(CSSParsingUtilsTest, ConsumeRevertRuleUnderFlags) {
+  test::TaskEnvironment task_environment;
+
+  // Disabled feature, kHTMLStandardMode.
+  {
+    ScopedCSSRevertRuleForTest scoped_feature(false);
+    const CSSParserContext* context = MakeContext(kHTMLStandardMode);
+    String text = "revert-rule";
+    CSSParserTokenStream stream(text);
+    EXPECT_FALSE(css_parsing_utils::ConsumeCSSWideKeyword(stream, *context));
+  }
+
+  // Disabled feature, kUASheetMode.
+  {
+    ScopedCSSRevertRuleForTest scoped_feature(false);
+    const CSSParserContext* context = MakeContext(kUASheetMode);
+    String text = "revert-rule";
+    CSSParserTokenStream stream(text);
+    EXPECT_TRUE(IsA<cssvalue::CSSRevertRuleValue>(
+        css_parsing_utils::ConsumeCSSWideKeyword(stream, *context)));
+  }
+
+  // Enabled feature, kHTMLStandardMode.
+  {
+    ScopedCSSRevertRuleForTest scoped_feature(true);
+    const CSSParserContext* context = MakeContext(kHTMLStandardMode);
+    String text = "revert-rule";
+    CSSParserTokenStream stream(text);
+    EXPECT_TRUE(IsA<cssvalue::CSSRevertRuleValue>(
+        css_parsing_utils::ConsumeCSSWideKeyword(stream, *context)));
+  }
+
+  // Enabled feature, kUASheetMode.
+  {
+    ScopedCSSRevertRuleForTest scoped_feature(true);
+    const CSSParserContext* context = MakeContext(kUASheetMode);
+    String text = "revert-rule";
+    CSSParserTokenStream stream(text);
+    EXPECT_TRUE(IsA<cssvalue::CSSRevertRuleValue>(
+        css_parsing_utils::ConsumeCSSWideKeyword(stream, *context)));
+  }
+}
+
+TEST(CSSParsingUtilsTest, ConsumeUrlPattern) {
+  using css_parsing_utils::ConsumeUrlPattern;
+
+  const CSSParserContext* context = MakeContext(kHTMLStandardMode);
+
+  // Basic valid case.
+  {
+    String text = "url-pattern(\"foo\")";
+    CSSParserTokenStream stream(text);
+    EXPECT_TRUE(ConsumeUrlPattern(stream, *context));
+    EXPECT_TRUE(stream.AtEnd());
+  }
+
+  // Whitespace around argument.
+  {
+    String text = "url-pattern( \"foo\" )";
+    CSSParserTokenStream stream(text);
+    EXPECT_TRUE(ConsumeUrlPattern(stream, *context));
+    EXPECT_TRUE(stream.AtEnd());
+  }
+
+  // Clean up whitespace after block.
+  {
+    String text = "url-pattern(\"foo\")   ";
+    CSSParserTokenStream stream(text);
+    EXPECT_TRUE(ConsumeUrlPattern(stream, *context));
+    EXPECT_TRUE(stream.AtEnd());
+  }
+
+  // Invalid cases:
+
+  {
+    String text = "url-pattern()";
+    CSSParserTokenStream stream(text);
+    EXPECT_FALSE(ConsumeUrlPattern(stream, *context));
+  }
+
+  {
+    String text = "url-pattern(0)";  // As seen in crbug.com/485056787.
+    CSSParserTokenStream stream(text);
+    EXPECT_FALSE(ConsumeUrlPattern(stream, *context));
+  }
+
+  {
+    String text = "url-pattern(ident)";
+    CSSParserTokenStream stream(text);
+    EXPECT_FALSE(ConsumeUrlPattern(stream, *context));
+  }
+
+  {
+    String text = "url-pattern(!)";
+    CSSParserTokenStream stream(text);
+    EXPECT_FALSE(ConsumeUrlPattern(stream, *context));
+  }
+
+  {
+    String text = "url-pattern(ident())";
+    CSSParserTokenStream stream(text);
+    EXPECT_FALSE(ConsumeUrlPattern(stream, *context));
+  }
+
+  {
+    String text = "url-pattern(\"foo\" junk)";
+    CSSParserTokenStream stream(text);
+    EXPECT_FALSE(ConsumeUrlPattern(stream, *context));
+    // On failure, ConsumeUrlPattern should return the stream
+    // in its origin state:
+    EXPECT_EQ(CSSValueID::kUrlPattern, stream.Peek().FunctionId());
   }
 }
 

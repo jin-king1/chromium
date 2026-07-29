@@ -5,7 +5,7 @@
 #ifndef COMPONENTS_SAFE_BROWSING_CONTENT_BROWSER_NOTIFICATION_CONTENT_DETECTION_TEST_MODEL_OBSERVER_TRACKER_H_
 #define COMPONENTS_SAFE_BROWSING_CONTENT_BROWSER_NOTIFICATION_CONTENT_DETECTION_TEST_MODEL_OBSERVER_TRACKER_H_
 
-#include "components/optimization_guide/core/test_optimization_guide_model_provider.h"
+#include "components/optimization_guide/core/delivery/test_optimization_guide_model_provider.h"
 
 namespace safe_browsing {
 
@@ -19,6 +19,7 @@ class TestModelObserverTracker
   void AddObserverForOptimizationTargetModel(
       optimization_guide::proto::OptimizationTarget target,
       const std::optional<optimization_guide::proto::Any>& model_metadata,
+      scoped_refptr<base::SequencedTaskRunner> model_task_runner,
       optimization_guide::OptimizationTargetModelObserver* observer) override;
 
   bool DidRegisterForTarget(

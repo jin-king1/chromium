@@ -18,6 +18,7 @@
 #include "components/prefs/persistent_pref_store.h"
 #include "components/prefs/value_map_pref_store.h"
 #include "components/sync/base/data_type.h"
+#include "components/sync/base/user_selectable_type.h"
 #include "components/sync/service/sync_service_observer.h"
 
 namespace syncer {
@@ -50,6 +51,7 @@ class DualLayerUserPrefStore : public PersistentPrefStore,
 
   // Marks `data_type` as enabled for account storage. This should be called
   // when a data type starts syncing.
+  // TODO(crbug.com/464008640): Rename this to `MarkTypeActive` or similar.
   void EnableType(syncer::DataType data_type);
   // Unmarks `data_type` as enabled for account storage and removes all
   // corresponding preference entries(belonging to this type) from account
@@ -80,7 +82,7 @@ class DualLayerUserPrefStore : public PersistentPrefStore,
   bool IsInitializationComplete() const override;
   bool GetValue(std::string_view key,
                 const base::Value** result) const override;
-  base::Value::Dict GetValues() const override;
+  base::DictValue GetValues() const override;
 
   // WriteablePrefStore implementation.
   void SetValue(std::string_view key,
@@ -116,6 +118,15 @@ class DualLayerUserPrefStore : public PersistentPrefStore,
 
   bool IsHistorySyncEnabledForTest() const;
   void SetIsHistorySyncEnabledForTest(bool is_history_sync_enabled);
+  syncer::UserSelectableTypeSet GetUserSelectedTypesForTest() const;
+  void SetUserSelectedTypesForTest(
+      syncer::UserSelectableTypeSet user_selected_types);
+
+#if BUILDFLAG(IS_CHROMEOS)
+  syncer::UserSelectableOsTypeSet GetUserSelectedOsTypesForTest() const;
+  void SetUserSelectedOsTypesForTest(
+      syncer::UserSelectableOsTypeSet user_selected_types);
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
  protected:
   ~DualLayerUserPrefStore() override;
@@ -146,6 +157,14 @@ class DualLayerUserPrefStore : public PersistentPrefStore,
     bool initialization_succeeded_ = true;
   };
 
+  // Sets the value for `key` in the appropriate store(s). `notify` controls
+  // whether observers of the underlying pref stores are notified of the
+  // change (i.e. whether SetValue() or SetValueSilently() is called).
+  void DoSetValue(std::string_view key,
+                  base::Value value,
+                  uint32_t flags,
+                  bool notify);
+
   bool IsInitializationSuccessful() const;
 
   // Returns whether the pref with the given `key` should be inserted into the
@@ -156,6 +175,13 @@ class DualLayerUserPrefStore : public PersistentPrefStore,
   // account pref store. Note that the account store keeps in sync with the
   // account.
   bool ShouldGetValueFromAccountStore(std::string_view key) const;
+
+  // Returns whether the pref with the given `key` should be inserted into the
+  // local pref store.
+  bool ShouldSetValueInLocalStore(std::string_view key) const;
+  // Returns whether the pref with the given `key` should be queried from the
+  // local pref store.
+  bool ShouldGetValueFromLocalStore(std::string_view key) const;
 
   // Returns whether the pref with the given `key` is mergeable.
   bool IsPrefKeyMergeable(std::string_view key) const;
@@ -171,22 +197,49 @@ class DualLayerUserPrefStore : public PersistentPrefStore,
                           base::Value& local_value,
                           base::Value& account_value);
 
+  // Updates the merged pref cache for `key` if it is mergeable and exists in
+  // both stores. Returns true if the merged value changed.
+  bool UpdateMergedPrefCacheIfMergeable(std::string_view key) const;
+
   // Unmerges `value` and returns the new local value and the account value (in
   // that order).
   std::pair<base::Value, base::Value> UnmergeValue(std::string_view pref_name,
                                                    base::Value value,
                                                    uint32_t flags) const;
 
-  // Get all prefs currently present in the account store.
+  // Get all syncable prefs currently present in `store`.
   // Note that this will also return prefs which can not be queried from the
-  // account store. For example, this method will return prefs requiring history
+  // `store`. For example, this method will return prefs requiring history
   // opt-in even if history sync is disabled. A GetValue() call for such a pref
   // will not query the account store. Thus it is the role of the callers to
   // check the history opt-in.
-  std::vector<std::string> GetPrefNamesInAccountStore() const;
+  std::vector<std::string> GetSyncablePrefNamesInStore(
+      const PersistentPrefStore* store) const;
 
   // Returns whether the user has history sync turned on.
   bool IsHistorySyncEnabled() const;
+
+  // Returns the subset of user selected types that are of relevance in
+  // determining whether an account pref should be exposed. This is stored in
+  // the local pref store for early availability.
+  syncer::UserSelectableTypeSet GetInterestingUserSelectedTypes() const;
+  // Sets the subset of user selected types that are of relevance in determining
+  // whether an account pref should be exposed. These are set when the sync
+  // service is initialized and/or when sync service state changes.
+  void SetInterestingUserSelectedTypes(
+      syncer::UserSelectableTypeSet user_selected_types);
+
+#if BUILDFLAG(IS_CHROMEOS)
+  // Returns the subset of user selected OS types that are of relevance in
+  // determining whether an account pref should be exposed. This is stored in
+  // the local pref store for early availability.
+  syncer::UserSelectableOsTypeSet GetInterestingUserSelectedOsTypes() const;
+  // Sets the subset of user selected OS types that are of relevance in
+  // determining whether an account pref should be exposed. These are set when
+  // the sync service is initialized and/or when sync service state changes.
+  void SetInterestingUserSelectedOsTypes(
+      syncer::UserSelectableOsTypeSet user_selected_types);
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
   // The two underlying pref stores, scoped to this device/profile and to the
   // user's signed-in account, respectively.
@@ -216,8 +269,6 @@ class DualLayerUserPrefStore : public PersistentPrefStore,
   // Set to true while this store is setting prefs in the underlying stores.
   // Used to avoid self-notifications.
   bool is_setting_prefs_ = false;
-
-  bool is_history_sync_enabled_ = false;
 
   base::ObserverList<PrefStore::Observer, true> observers_;
 

@@ -6,8 +6,10 @@
 
 #import "base/functional/bind.h"
 #import "base/test/ios/wait_util.h"
+#import "components/policy/core/common/policy_pref_names.h"
 #import "ios/chrome/browser/download/model/download_test_util.h"
 #import "ios/chrome/browser/shared/model/utils/mime_type_util.h"
+#import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
 #import "ios/chrome/test/earl_grey/chrome_test_case.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
@@ -29,7 +31,7 @@ std::unique_ptr<net::test_server::HttpResponse> GetResponse(
   auto result = std::make_unique<net::test_server::BasicHttpResponse>();
   result->set_code(net::HTTP_OK);
 
-  if (request.GetURL().path() == "/") {
+  if (request.GetURL().GetPath() == "/") {
     result->set_content(
         "<html><head><script>"
         "document.addEventListener('visibilitychange', "
@@ -48,15 +50,15 @@ std::unique_ptr<net::test_server::HttpResponse> GetResponse(
     return result;
   }
 
-  if (request.GetURL().path() == "/forbidden") {
+  if (request.GetURL().GetPath() == "/forbidden") {
     result->set_code(net::HTTP_FORBIDDEN);
-  } else if (request.GetURL().path() == "/unauthorized") {
+  } else if (request.GetURL().GetPath() == "/unauthorized") {
     result->set_code(net::HTTP_UNAUTHORIZED);
-  } else if (request.GetURL().path() == "/changing-mime-type") {
+  } else if (request.GetURL().GetPath() == "/changing-mime-type") {
     result->set_code(net::HTTP_OK);
     result->AddCustomHeader("Content-Type", "unknown");
     result->set_content(testing::GetTestFileContents(testing::kUsdzFilePath));
-  } else if (request.GetURL().path() == "/good") {
+  } else if (request.GetURL().GetPath() == "/good") {
     result->set_code(net::HTTP_OK);
     result->AddCustomHeader("Content-Type", kUsdzMimeType);
     result->set_content(testing::GetTestFileContents(testing::kUsdzFilePath));
@@ -123,6 +125,27 @@ std::unique_ptr<net::test_server::HttpResponse> GetResponse(
   [[EarlGrey
       selectElementWithMatcher:grey_accessibilityID(@"QLPreviewControllerView")]
       assertWithMatcher:grey_nil()];
+}
+
+// Tests that when downloads are restricted by enterprise policy, USDZ download
+// is blocked and a restriction snackbar is presented.
+- (void)testDownloadUsdzRestricted {
+  [ChromeEarlGrey setIntegerValue:3 /* ALL_FILES */
+                      forUserPref:policy::policy_prefs::kDownloadRestrictions];
+
+  [ChromeEarlGrey loadURL:self.testServer->GetURL("/")];
+  [ChromeEarlGrey waitForWebStateContainingText:"Good"];
+  [ChromeEarlGrey tapWebStateElementWithID:@"good"];
+
+  // Verify QLPreviewControllerView is not presented.
+  [[EarlGrey
+      selectElementWithMatcher:grey_accessibilityID(@"QLPreviewControllerView")]
+      assertWithMatcher:grey_nil()];
+
+  // Verify that the restriction snackbar is presented.
+  [ChromeEarlGrey waitForSufficientlyVisibleElementWithMatcher:
+                      grey_text(l10n_util::GetNSString(
+                          IDS_IOS_DOWNLOAD_RESTRICTION_SNACKBAR_TEXT))];
 }
 
 @end

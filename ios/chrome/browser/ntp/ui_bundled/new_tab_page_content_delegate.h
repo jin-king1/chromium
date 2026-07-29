@@ -23,11 +23,16 @@
 // Refreshes NTP content, such as content suggestions and feed.
 - (void)refreshNTPContent;
 
-// Updates the NTP for the selected feed.
-- (void)updateForSelectedFeed:(FeedType)selectedFeed;
-
 // Updates the NTP for changes in module visibility.
 - (void)updateModuleVisibility;
+
+// Signals to the receiver that the NTP has been scrolled while the Feed is
+// visible.
+- (void)feedDidScroll;
+
+// Signals to the receiver that the tablet omnibox scroll progress should be
+// updated.
+- (void)didUpdateNTPTabOmniboxScrollProgress:(CGFloat)progress;
 
 @end
 

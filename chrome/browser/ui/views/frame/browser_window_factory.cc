@@ -5,12 +5,13 @@
 #include <memory>
 
 #include "build/build_config.h"
-#include "chrome/browser/ui/views/frame/browser_frame.h"
+#include "chrome/browser/ui/browser_window_deleter.h"
+#include "chrome/browser/ui/fullscreen/browser_window_fullscreen_controller.h"
+#include "chrome/browser/ui/views/frame/browser_native_widget_factory.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/browser/ui/views/frame/native_browser_frame_factory.h"
-#include "chrome/grit/branded_strings.h"
-#include "components/safe_browsing/core/browser/password_protection/metrics_util.h"
-#include "ui/base/l10n/l10n_util.h"
+#include "chrome/browser/ui/views/frame/browser_widget.h"
+#include "chrome/browser/ui/webui_browser/webui_browser.h"
+#include "chrome/browser/ui/webui_browser/webui_browser_window.h"
 #include "ui/views/widget/widget.h"
 
 #if defined(USE_AURA)
@@ -21,50 +22,46 @@
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ui/views/frame/browser_view_ash.h"
-#include "chrome/browser/ui/views/frame/custom_tab_browser_frame.h"
 #include "chromeos/components/kiosk/kiosk_utils.h"
 #endif
 
-#if BUILDFLAG(IS_MAC)
-#include "chrome/common/chrome_features.h"
-#endif
-
 // static
-BrowserWindow* BrowserWindow::CreateBrowserWindow(
-    std::unique_ptr<Browser> browser,
-    bool user_gesture,
-    bool in_tab_dragging) {
+std::unique_ptr<BrowserWindow, BrowserWindowDeleter>
+BrowserWindow::CreateBrowserWindow(Browser* browser,
+                                   bool user_gesture,
+                                   bool in_tab_dragging) {
+  if (webui_browser::IsWebUIBrowserEnabled() && browser->is_type_normal()) {
+    return std::unique_ptr<BrowserWindow, BrowserWindowDeleter>(
+        new WebUIBrowserWindow(browser));
+  }
+
 #if defined(USE_AURA)
   // Avoid generating too many occlusion tracking calculation events before this
   // function returns. The occlusion status will be computed only once once this
   // function returns.
-  // See crbug.com/1183894#c4
+  // See crbug.com/40171404#comment5
   aura::WindowOcclusionTracker::ScopedPause pause_occlusion;
 #endif
   // Create the view and the frame. The frame will attach itself via the view
   // so we don't need to do anything with the pointer.
   BrowserView* view = nullptr;
-  BrowserFrame* browser_frame = nullptr;
 #if BUILDFLAG(IS_CHROMEOS)
-  view = new BrowserViewAsh(std::move(browser));
-  if (view->browser()->is_type_custom_tab()) {
-    browser_frame = new CustomTabBrowserFrame(view);
-  }
+  view = new BrowserViewAsh(browser);
 #else
-  view = new BrowserView(std::move(browser));
+  view = new BrowserView(browser);
 #endif
-  if (!browser_frame) {
-    browser_frame = new BrowserFrame(view);
-  }
+  auto browser_widget = std::make_unique<BrowserWidget>(view);
+  view->set_browser_widget(std::move(browser_widget));
   if (in_tab_dragging) {
-    browser_frame->SetTabDragKind(TabDragKind::kAllTabs);
+    view->browser_widget()->SetTabDragKind(TabDragKind::kAllTabs);
   }
-  browser_frame->InitBrowserFrame();
+  view->browser_widget()->InitBrowserWidget();
 
 #if BUILDFLAG(IS_MAC)
-  if (view->UsesImmersiveFullscreenMode()) {
-    // This needs to happen after BrowserFrame has been initialized. It creates
-    // a new Widget that copies the theme from BrowserFrame.
+  if (WindowFeatureController::From(view->browser())
+          ->UsesImmersiveFullscreenMode()) {
+    // This needs to happen after BrowserWidget has been initialized. It creates
+    // a new Widget that copies the theme from BrowserWidget.
     view->CreateMacOverlayView();
   }
 #endif  // IS_MAC
@@ -77,9 +74,44 @@ BrowserWindow* BrowserWindow::CreateBrowserWindow(
 #endif
 #if BUILDFLAG(IS_CHROMEOS)
   if (chromeos::IsKioskSession()) {
-    view->SetForceFullscreen(true);
+    BrowserWindowFullscreenController::From(browser)->SetForceFullscreen(true);
   }
 #endif
 
-  return view;
+  return std::unique_ptr<BrowserWindow, BrowserWindowDeleter>(view);
+}
+
+// static
+const BrowserWindow* BrowserWindow::FromBrowser(
+    const BrowserWindowInterface* browser) {
+  // See https://crbug.com/496674143 for the umbrella effort to remove
+  // Browser::window() in favor of this helper.
+  if (!browser) {
+    return nullptr;
+  }
+  // The two production subclasses (BrowserView, WebUIBrowserWindow) each
+  // register themselves under the BrowserWidget's NativeWindow properties, so
+  // for any given Browser at most one of these lookups will succeed.
+  if (auto* view = BrowserView::GetBrowserViewForBrowser(browser)) {
+    return view;
+  }
+  if (auto* webui = WebUIBrowserWindow::FromBrowser(browser)) {
+    return webui;
+  }
+  // Fallback for BrowserWindow implementations that are not reachable through
+  // the NativeWindow property table (notably TestBrowserWindow in unit tests,
+  // and during window teardown, when the NativeWindow lookups above no longer
+  // resolve but callers may still need the window - e.g. to save workspace
+  // state or update commands as tabs close). The window returned by
+  // GetWindow() is always a BrowserWindow, so the downcast is safe.
+  return static_cast<const BrowserWindow*>(browser->GetWindow());
+}
+
+// static
+BrowserWindow* BrowserWindow::FromBrowser(BrowserWindowInterface* browser) {
+  // Implement the non-const overload in terms of the const one and cast the
+  // constness back off. Safe because the caller supplied a non-const browser.
+  // See //styleguide/c++/const.md#classes-of-const-in_correctness.
+  return const_cast<BrowserWindow*>(
+      FromBrowser(static_cast<const BrowserWindowInterface*>(browser)));
 }

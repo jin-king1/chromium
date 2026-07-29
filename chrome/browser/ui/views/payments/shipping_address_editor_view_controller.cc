@@ -10,12 +10,14 @@
 #include "base/functional/callback.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/single_thread_task_runner.h"
+#include "chrome/browser/browser_process.h"
+#include "chrome/browser/payments/chrome_payment_request_delegate.h"
 #include "chrome/browser/ui/views/payments/payment_request_dialog_view.h"
 #include "chrome/browser/ui/views/payments/payment_request_dialog_view_ids.h"
 #include "chrome/browser/ui/views/payments/validating_combobox.h"
 #include "chrome/browser/ui/views/payments/validating_textfield.h"
-#include "chrome/grit/generated_resources.h"
 #include "components/autofill/core/browser/autofill_type.h"
+#include "components/autofill/core/browser/country_type.h"
 #include "components/autofill/core/browser/data_manager/addresses/address_data_manager.h"
 #include "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #include "components/autofill/core/browser/data_quality/addresses/address_normalizer.h"
@@ -32,6 +34,7 @@
 #include "components/payments/core/payment_request_data_util.h"
 #include "components/payments/core/payments_profile_comparator.h"
 #include "components/strings/grit/components_strings.h"
+#include "components/variations/service/variations_service.h"
 #include "third_party/libaddressinput/messages.h"
 #include "third_party/libaddressinput/src/cpp/include/libaddressinput/address_data.h"
 #include "third_party/libaddressinput/src/cpp/include/libaddressinput/address_formatter.h"
@@ -45,6 +48,23 @@ namespace {
 // as is done for std::string::npos.
 // http://www.cplusplus.com/reference/string/string/npos
 const size_t kInvalidCountryIndex = static_cast<size_t>(-1);
+
+autofill::RegionDataLoader* GetRegionDataLoader(
+    base::WeakPtr<ContentPaymentRequestDelegate> delegate) {
+  if (!delegate) {
+    return nullptr;
+  }
+
+  // Safe downcast since ShippingAddressEditorViewController is only
+  // instantiated on Desktop, where the delegate is always a
+  // ChromePaymentRequestDelegate. This downcast is required until
+  // ShippingAddressEditorViewController has a better mechanism for
+  // injecting dependencies in tests.
+  auto* chrome_delegate =
+      static_cast<ChromePaymentRequestDelegate*>(delegate.get());
+  CHECK(chrome_delegate);
+  return chrome_delegate->GetRegionDataLoader();
+}
 
 }  // namespace
 
@@ -140,9 +160,12 @@ ShippingAddressEditorViewController::GetComboboxModelForType(
   switch (type) {
     case autofill::ADDRESS_HOME_COUNTRY: {
       auto model = std::make_unique<autofill::CountryComboboxModel>();
+      const variations::VariationsService* variations_service =
+          g_browser_process->variations_service();
       model->SetCountries(
-          state()->GetPersonalDataManager()->address_data_manager(),
-          base::RepeatingCallback<bool(const std::string&)>(),
+          autofill::GeoIpCountryCode(
+              variations_service ? variations_service->GetLatestCountry()
+                                 : std::string()),
           state()->GetApplicationLocale());
       if (model->countries().size() != countries_.size()) {
         UpdateCountries(model.get());
@@ -152,9 +175,11 @@ ShippingAddressEditorViewController::GetComboboxModelForType(
     case autofill::ADDRESS_HOME_STATE: {
       auto model = std::make_unique<autofill::RegionComboboxModel>();
       region_model_ = model.get();
-      if (chosen_country_index_ < countries_.size()) {
+      autofill::RegionDataLoader* region_data_loader =
+          GetRegionDataLoader(state()->GetPaymentRequestDelegate());
+      if (chosen_country_index_ < countries_.size() && region_data_loader) {
         model->LoadRegionData(countries_[chosen_country_index_].first,
-                              state()->GetRegionDataLoader());
+                              region_data_loader);
         if (!model->IsPendingRegionDataLoad()) {
           // If the data was already pre-loaded, the observer won't get notified
           // so we have to check for failure here.
@@ -393,9 +418,12 @@ void ShippingAddressEditorViewController::UpdateCountries(
     autofill::CountryComboboxModel* model) {
   autofill::CountryComboboxModel local_model;
   if (!model) {
+    const variations::VariationsService* variations_service =
+        g_browser_process->variations_service();
     local_model.SetCountries(
-        state()->GetPersonalDataManager()->address_data_manager(),
-        base::RepeatingCallback<bool(const std::string&)>(),
+        autofill::GeoIpCountryCode(variations_service
+                                       ? variations_service->GetLatestCountry()
+                                       : std::string()),
         state()->GetApplicationLocale());
     model = &local_model;
   }
@@ -537,8 +565,8 @@ bool ShippingAddressEditorViewController::SaveFieldsToProfile(
   for (const auto& field : text_fields()) {
     // ValidatingTextfield* is the key, EditorField is the value.
     if (field.first->IsValid()) {
-      success = profile->SetInfo(
-          field.second.type, std::u16string(field.first->GetText()), locale);
+      success =
+          profile->SetInfo(field.second.type, field.first->GetText(), locale);
     } else {
       success = false;
     }

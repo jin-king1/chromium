@@ -7,7 +7,7 @@
 
 #include <memory>
 
-#include "base/compiler_specific.h"
+#include "components/autofill/core/browser/form_parsing/field_candidates.h"
 #include "components/autofill/core/browser/form_parsing/form_field_parser.h"
 
 namespace autofill {
@@ -16,7 +16,7 @@ namespace autofill {
 class LoyaltyFieldParser : public FormFieldParser {
  public:
   static std::unique_ptr<FormFieldParser> Parse(ParsingContext& context,
-                                                AutofillScanner* scanner);
+                                                AutofillScanner& scanner);
   explicit LoyaltyFieldParser(FieldAndMatchInfo match);
 
   LoyaltyFieldParser(const LoyaltyFieldParser&) = delete;

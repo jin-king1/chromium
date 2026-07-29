@@ -18,6 +18,7 @@
 #include "url/gurl.h"
 
 class Browser;
+class BrowserWindowInterface;
 class Profile;
 class StartupBrowserCreator;
 class StartupTabProvider;
@@ -50,18 +51,18 @@ class StartupBrowserCreatorImpl {
   StartupBrowserCreatorImpl(const StartupBrowserCreatorImpl&) = delete;
   StartupBrowserCreatorImpl& operator=(const StartupBrowserCreatorImpl&) =
       delete;
-  ~StartupBrowserCreatorImpl() = default;
+  ~StartupBrowserCreatorImpl();
 
   // If command line specifies kiosk mode, or full screen mode, switch
   // to full screen.
-  static void MaybeToggleFullscreen(Browser* browser);
+  static void MaybeToggleFullscreen(BrowserWindowInterface* browser);
 
   // Creates the necessary windows for startup. |process_startup| indicates
   // whether Chrome is just starting up or already running and the user wants to
   // launch another instance. `restore_tabbed_browser` should only be
   // flipped false by Ash full restore code path, suppressing restoring a normal
   // browser when there were only PWAs open in previous session. See
-  // crbug.com/1463906.
+  // crbug.com/40275406.
   void Launch(Profile* profile,
               chrome::startup::IsProcessStartup process_startup,
               bool restore_tabbed_browser);
@@ -72,10 +73,17 @@ class StartupBrowserCreatorImpl {
                              chrome::startup::IsProcessStartup process_startup,
                              const std::vector<GURL>& urls);
 
+  void SetCurrentChromeVersionStringForTesting(
+      const std::optional<std::string>& version) {
+    current_chrome_version_string_for_testing_ = version;
+  }
+
  private:
   FRIEND_TEST_ALL_PREFIXES(BrowserTest, RestorePinnedTabs);
   FRIEND_TEST_ALL_PREFIXES(BrowserTest, AppIdSwitch);
   FRIEND_TEST_ALL_PREFIXES(StartupBrowserCreatorImplTest, DetermineStartupTabs);
+  FRIEND_TEST_ALL_PREFIXES(StartupBrowserCreatorImplTest,
+                           DetermineStartupTabs_DeduplicatePinnedTabs);
   FRIEND_TEST_ALL_PREFIXES(StartupBrowserCreatorImplTest,
                            DetermineStartupTabs_Incognito);
   FRIEND_TEST_ALL_PREFIXES(StartupBrowserCreatorImplTest,
@@ -84,8 +92,6 @@ class StartupBrowserCreatorImpl {
                            DetermineStartupTabs_InitialPrefs);
   FRIEND_TEST_ALL_PREFIXES(StartupBrowserCreatorImplTest,
                            DetermineStartupTabs_CommandLine);
-  FRIEND_TEST_ALL_PREFIXES(StartupBrowserCreatorImplTest,
-                           DetermineStartupTabs_Crosapi);
   FRIEND_TEST_ALL_PREFIXES(StartupBrowserCreatorImplTest,
                            DetermineStartupTabs_NewTabPage);
   FRIEND_TEST_ALL_PREFIXES(StartupBrowserCreatorImplTest,
@@ -101,7 +107,7 @@ class StartupBrowserCreatorImpl {
   FRIEND_TEST_ALL_PREFIXES(StartupBrowserCreatorImplTest,
                            DetermineStartupTabs_NewFeaturesPage);
   FRIEND_TEST_ALL_PREFIXES(StartupBrowserCreatorImplTest,
-                           DetermineStartupTabs_PrivacySandbox);
+                           DetermineNonMilestoneUpdate);
 
   enum class LaunchResult {
     kNormally,
@@ -118,17 +124,13 @@ class StartupBrowserCreatorImpl {
     LaunchResult launch_result;
   };
 
-  enum class WelcomeRunType {
-    NONE,                // Do not inject the welcome page for this run.
-    FIRST_TAB,           // Inject the welcome page as the first tab.
-    FIRST_RUN_LAST_TAB,  // Inject the welcome page as the last first-run tab.
-  };
-
   // Window behaviors possible when opening Chrome.
   enum class BrowserOpenBehavior {
     NEW,                  // Open in a new browser.
     SYNCHRONOUS_RESTORE,  // Attempt a synchronous session restore.
     USE_EXISTING,         // Attempt to add to an existing tabbed browser.
+    USE_EXISTING_AND_OVERWRITE_ACTIVE_TAB,  // Attempt to replace the contents
+                                            // of the active tab
   };
 
   // Boolean flags used to indicate state for DetermineBrowserOpenBehavior.
@@ -137,6 +139,12 @@ class StartupBrowserCreatorImpl {
     IS_POST_CRASH_LAUNCH = (1 << 1),
     HAS_NEW_WINDOW_SWITCH = (1 << 2),
     HAS_CMD_LINE_TABS = (1 << 3),
+    HAS_SAME_TAB_SWITCH = (1 << 4)
+  };
+
+  enum class TabOverWrite {
+    kYes,  // If the tab needs to be overwritten
+    kNo,   // Default behavior
   };
 
   using BrowserOpenBehaviorOptions = uint32_t;
@@ -148,14 +156,15 @@ class StartupBrowserCreatorImpl {
   // browser, or nullptr if browser could not be created.
   Browser* OpenTabsInBrowser(Browser* browser,
                              chrome::startup::IsProcessStartup process_startup,
-                             const StartupTabs& tabs);
+                             const StartupTabs& tabs,
+                             TabOverWrite is_active_tab_overwrite);
 
   // Determines the URLs to be shown at startup by way of various policies
   // (welcome, pinned tabs, etc.), determines whether a session restore
   // is necessary, and opens the URLs in a new or restored browser accordingly.
   // `restore_tabbed_browser` should only be flipped false by Ash full
   // restore code path, suppressing restoring a normal browser when there were
-  // only PWAs open in previous session. See crbug.com/1463906.
+  // only PWAs open in previous session. See crbug.com/40275406.
   void DetermineURLsAndLaunch(chrome::startup::IsProcessStartup process_startup,
                               bool restore_tabbed_browser);
 
@@ -169,10 +178,8 @@ class StartupBrowserCreatorImpl {
       chrome::startup::IsProcessStartup process_startup,
       bool is_ephemeral_profile,
       bool is_post_crash_launch,
-      bool has_incompatible_applications,
       bool promotional_tabs_enabled,
-      bool whats_new_enabled,
-      bool privacy_sandbox_confirmation_required);
+      bool whats_new_enabled);
 
   // Begins an asynchronous session restore if current state allows it (e.g.,
   // this is not process startup) and SessionService indicates that one is
@@ -201,12 +208,23 @@ class StartupBrowserCreatorImpl {
   // Returns the relevant bitmask options which must be passed when restoring a
   // session. `restore_tabbed_browser` should only be flipped false by Ash
   // full restore code path, suppressing restoring a normal browser when there
-  // were only PWAs open in previous session. See crbug.com/1463906.
+  // were only PWAs open in previous session. See crbug.com/40275406.
   static SessionRestore::BehaviorBitmask DetermineSynchronousRestoreOptions(
       bool has_create_browser_default,
       bool has_create_browser_switch,
       bool was_mac_login_or_resume,
       bool restore_tabbed_browser);
+
+  // Show a toast if a non milestone update is detected.
+  static void MaybeShowNonMilestoneUpdateToast(
+      Browser* browser,
+      const std::string& current_version_string);
+
+  // Return whether the current version update is non milestone update.
+  // e.g, from 140.0.7297.0 to 140.0.7297.3 should return true.
+  // from 140.0.7297.0 to 141.0.7327.0 should return false.
+  static bool IsNonMilestoneUpdate(const std::string& last_version_string,
+                                   const std::string& current_version_string);
 
   // Returns whether `switches::kKioskMode` is set on the command line of
   // the current process. This is a static method to avoid accidentally reading
@@ -218,6 +236,8 @@ class StartupBrowserCreatorImpl {
   raw_ptr<Profile> profile_ = nullptr;
   raw_ptr<StartupBrowserCreator> browser_creator_;
   chrome::startup::IsFirstRun is_first_run_;
+
+  std::optional<std::string> current_chrome_version_string_for_testing_;
 };
 
 #endif  // CHROME_BROWSER_UI_STARTUP_STARTUP_BROWSER_CREATOR_IMPL_H_

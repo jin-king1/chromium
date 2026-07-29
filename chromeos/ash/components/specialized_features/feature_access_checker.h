@@ -40,9 +40,7 @@ enum class COMPONENT_EXPORT(CHROMEOS_ASH_COMPONENTS_SPECIALIZED_FEATURES)
     };
 
 // EnumSet containing FeatureAccessFailures.
-using FeatureAccessFailureSet = base::EnumSet<FeatureAccessFailure,
-                                              FeatureAccessFailure::kMinValue,
-                                              FeatureAccessFailure::kMaxValue>;
+using FeatureAccessFailureSet = base::EnumSet<FeatureAccessFailure>;
 
 // Represents a secret key used to allow users to access a feature.
 struct COMPONENT_EXPORT(
@@ -50,7 +48,7 @@ struct COMPONENT_EXPORT(
   // Name of the flag.
   std::string flag;
   // The hashed value of the key.
-  std::string sha1_hashed_key_value;
+  std::string sha256_hashed_key_value;
 };
 
 // This configures the FeatureAccessChecker for different types of common

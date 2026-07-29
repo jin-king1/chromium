@@ -62,7 +62,7 @@ class IOSSecurityInterstitialPage {
 
   // Populates the strings used to generate the HTML from the template.
   virtual void PopulateInterstitialStrings(
-      base::Value::Dict& load_time_data) const = 0;
+      base::DictValue& load_time_data) const = 0;
 
   // Returns the formatted host name for the request url.
   std::u16string GetFormattedHostName() const;
@@ -79,7 +79,8 @@ class IOSSecurityInterstitialPage {
 
   // Used to interact with the embedder. Unowned pointer; must outlive `this`
   // instance.
-  const raw_ptr<IOSBlockingPageControllerClient> client_ = nullptr;
+  const raw_ptr<IOSBlockingPageControllerClient, DanglingUntriaged> client_ =
+      nullptr;
 };
 
 }  // namespace security_interstitials

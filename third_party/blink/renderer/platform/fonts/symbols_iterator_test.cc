@@ -8,8 +8,6 @@
 
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/platform/fonts/font_variant_emoji.h"
-#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
-#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
@@ -34,14 +32,12 @@ const bool FontVariantEmojiFlagValues[] = {true, false};
 
 class SymbolsIteratorTest : public testing::Test {
  protected:
-  void SetUp() override { ScopedFontVariantEmojiForTest scoped_feature(true); }
-
   void CheckRuns(const Vector<FallbackTestRun>& runs) {
     StringBuilder text;
     text.Ensure16Bit();
     Vector<FallbackExpectedRun> expect;
     for (auto& run : runs) {
-      text.Append(String::FromUTF8(run.text.c_str()));
+      text.Append(String::FromUtf8(run.text));
       expect.push_back(
           FallbackExpectedRun(text.length(), run.font_fallback_priority));
     }
@@ -53,7 +49,7 @@ class SymbolsIteratorTest : public testing::Test {
                   const Vector<FallbackExpectedRun>& expect) {
     unsigned limit;
     FontFallbackPriority font_fallback_priority;
-    size_t run_count = 0;
+    wtf_size_t run_count = 0;
     while (symbols_iterator->Consume(&limit, &font_fallback_priority)) {
       ASSERT_LT(run_count, expect.size());
       ASSERT_EQ(expect[run_count].limit, limit);
@@ -68,9 +64,6 @@ class SymbolsIteratorTest : public testing::Test {
 class SymbolsIteratorWithFontVariantEmojiParamTest
     : public SymbolsIteratorTest,
       public testing::WithParamInterface<bool> {
-  void SetUp() override {
-    ScopedFontVariantEmojiForTest scoped_feature(GetParam());
-  }
 };
 
 INSTANTIATE_TEST_SUITE_P(SymbolsIteratorTest,
@@ -468,8 +461,8 @@ TEST_P(SymbolsIteratorWithFontVariantEmojiParamTest, EmojiSubdivisionFlags) {
              {"\U000E0067\U000E0062", FontFallbackPriority::kText}});
 }
 
-// Extracted from http://unicode.org/emoji/charts/emoji-released.html for Emoji
-// v11, removed U+265F Chess Pawn and U+267E as they do not have default emoji
+// Extracted from https://unicode.org/emoji/charts-11.0/emoji-released.html,
+// removed U+265F Chess Pawn and U+267E as they do not have default emoji
 // presentation.
 TEST_P(SymbolsIteratorWithFontVariantEmojiParamTest, Emoji11Additions) {
   CheckRuns(
@@ -542,6 +535,30 @@ TEST_P(SymbolsIteratorWithFontVariantEmojiParamTest, Emoji11Additions) {
         "\U0001F9EB\U0001F9EC\U0001F9F4\U0001F9F7\U0001F9F9\U0001F9FA"
         "\U0001F9FB\U0001F9FC\U0001F9FD\U0001F9EF\U0001F3F4\U0000200D"
         "\U00002620\U0000FE0F",
+        FontFallbackPriority::kEmojiEmoji}});
+}
+
+// Extracted from https://unicode.org/emoji/charts-17.0/emoji-released.html
+TEST_P(SymbolsIteratorWithFontVariantEmojiParamTest, Emoji17Additions) {
+  CheckRuns(
+      {{"\U0001FAEA\U0001FAEF\U0001FAC8\U0001F9D1\U0000200D\U0001FA70"
+        "\U0001F46F\U0001F93C\U0001FACD\U0001F6D8\U0001FA8A\U0001FA8E",
+        FontFallbackPriority::kEmojiEmoji}});
+}
+
+// https://emojipedia.org/men-with-bunny-ears-light-skin-tone-dark-skin-tone
+TEST_P(SymbolsIteratorWithFontVariantEmojiParamTest, Emoji17BunnyEars) {
+  CheckRuns(
+      {{"\U0001F468\U0001F3FB\U0000200D\U0001F430\U0000200D\U0001F468"
+        "\U0001F3FF",
+        FontFallbackPriority::kEmojiEmoji}});
+}
+
+// https://emojipedia.org/women-wrestling-dark-skin-tone-light-skin-tone
+TEST_P(SymbolsIteratorWithFontVariantEmojiParamTest, Emoji17Wrestling) {
+  CheckRuns(
+      {{"\U0001F469\U0001F3FF\U0000200D\U0001FAEF\U0000200D\U0001F469"
+        "\U0001F3FB",
         FontFallbackPriority::kEmojiEmoji}});
 }
 

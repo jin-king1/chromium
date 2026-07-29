@@ -6,6 +6,7 @@
 
 #include "base/check_is_test.h"
 #include "base/check_op.h"
+#include "base/functional/callback_helpers.h"
 #include "base/task/sequenced_task_runner.h"
 #include "components/segmentation_platform/internal/database/ukm_database_impl.h"
 #include "components/segmentation_platform/internal/signals/ukm_config.h"
@@ -24,6 +25,9 @@ const base::TimeDelta kDatabaseCleanupDelayNormal = base::Days(1);
 
 // Number of days to keep UKM metrics in database.
 constexpr base::TimeDelta kUkmEntriesTTL = base::Days(30);
+
+// Number of days to keep UMA metrics in database.
+constexpr base::TimeDelta kUmaEntriesTTL = base::Days(365);
 
 }  // namespace
 
@@ -50,6 +54,14 @@ void UkmDataManagerImpl::InitializeForTesting(
 void UkmDataManagerImpl::Initialize(const base::FilePath& database_path,
                                     bool in_memory) {
   InitiailizeImpl(std::make_unique<UkmDatabaseImpl>(database_path, in_memory));
+}
+
+void UkmDataManagerImpl::BeginShutdown() {
+  shutting_down_ = true;
+  if (ref_count_ == 0) {
+    url_signal_handler_.reset();
+    ukm_database_.reset();
+  }
 }
 
 void UkmDataManagerImpl::StartObservation(UkmObserver* ukm_observer) {
@@ -143,12 +155,16 @@ void UkmDataManagerImpl::AddRef() {
 void UkmDataManagerImpl::RemoveRef() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_check_);
   DCHECK_GT(ref_count_, 0);
-  ref_count_--;
+  if (--ref_count_ == 0 && shutting_down_) {
+    url_signal_handler_.reset();
+    ukm_database_.reset();
+  }
 }
 
 void UkmDataManagerImpl::RunCleanupTask() {
   DCHECK(ukm_database_);
-  ukm_database_->DeleteEntriesOlderThan(base::Time::Now() - kUkmEntriesTTL);
+  base::Time now = base::Time::Now();
+  ukm_database_->CleanupOldEntries(now - kUkmEntriesTTL, now - kUmaEntriesTTL);
 
   // Consider waiting for the above task to finish successfully before posting
   // the next one.

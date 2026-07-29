@@ -34,6 +34,7 @@
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "mojo/public/cpp/bindings/associated_remote.h"
+#include "services/viz/public/mojom/compositing/compositor_frame_sink.mojom-blink.h"
 #include "third_party/blink/public/mojom/input/pointer_lock_context.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/input/pointer_lock_result.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/page/widget.mojom-blink.h"
@@ -108,6 +109,7 @@ class CORE_EXPORT WebPagePopupImpl final : public WebPagePopup,
 
   // WebPagePopup implementation.
   WebDocument GetDocument() override;
+  Handle GetHandle() const override;
 
   // PagePopup implementation.
   void PostMessageToPopup(const String& message) override;
@@ -134,6 +136,11 @@ class CORE_EXPORT WebPagePopupImpl final : public WebPagePopup,
       const display::ScreenInfos& screen_infos,
       PagePopupClient*);
 
+  void ExecuteEditCommand(const String& command, const String& value);
+
+  // The element which created this popup.
+  Element& OwnerElement();
+
  private:
   // WidgetBaseClient overrides:
   void OnCommitRequested() override;
@@ -150,7 +157,7 @@ class CORE_EXPORT WebPagePopupImpl final : public WebPagePopup,
       bool event_processed) override;
   bool SupportsBufferedTouchEvents() override { return true; }
   void FocusChanged(mojom::blink::FocusState focus_state) override;
-  void ScheduleAnimation() override;
+  void ScheduleAnimation(cc::BeginMainFrameReason, bool urgent) override;
   void UpdateVisualProperties(
       const VisualProperties& visual_properties) override;
   gfx::Rect ViewportVisibleRect() override;
@@ -174,9 +181,19 @@ class CORE_EXPORT WebPagePopupImpl final : public WebPagePopup,
   WebInputEventResult HandleInputEvent(const WebCoalescedInputEvent&) override;
   void SetFocus(bool) override;
   bool HasFocus() override;
-  WebHitTestResult HitTestResultAt(const gfx::PointF&) override { return {}; }
-  void InitializeCompositing(const display::ScreenInfos& screen_infos,
-                             const cc::LayerTreeSettings* settings) override;
+  WebHitTestResult HitTestResultAt(const gfx::PointF&) override;
+  void InitializeCompositing(
+      const display::ScreenInfos& screen_infos,
+      const cc::LayerTreeSettings* settings,
+      CrossVariantMojoRemote<
+          viz::mojom::blink::CompositorFrameSinkInterfaceBase>
+          initial_frame_sink,
+      CrossVariantMojoReceiver<
+          viz::mojom::blink::CompositorFrameSinkClientInterfaceBase>
+          initial_frame_sink_client,
+      CrossVariantMojoReceiver<
+          mojom::blink::RenderInputRouterClientInterfaceBase>
+          initial_viz_rir_client) override;
   void SetCursor(const ui::Cursor& cursor) override;
   bool HandlingInputEvent() override;
   void SetHandlingInputEvent(bool handling) override;
@@ -188,7 +205,7 @@ class CORE_EXPORT WebPagePopupImpl final : public WebPagePopup,
   void UpdateSelectionBounds() override;
   void ShowVirtualKeyboard() override;
   void FlushInputProcessedCallback() override;
-  void CancelCompositionForPepper() override;
+  void CancelComposition() override;
   void ApplyVisualProperties(
       const VisualProperties& visual_properties) override;
   const display::ScreenInfo& GetScreenInfo() override;
@@ -265,7 +282,7 @@ class CORE_EXPORT WebPagePopupImpl final : public WebPagePopup,
   // main LocalFrame with a corresponding non-null LocalFrameView and non-null
   // Document.
   Persistent<Page> page_;
-  PagePopupClient* popup_client_;
+  Persistent<PagePopupClient> popup_client_;
   bool closing_ = false;
 
   scoped_refptr<cc::Layer> root_layer_;
@@ -299,6 +316,8 @@ class CORE_EXPORT WebPagePopupImpl final : public WebPagePopup,
   // Only used for Scroll Unification.
   // Will be set in GestureScrollBegin
   WeakPersistent<Node> scrollable_node_;
+
+  Handle handle_;
 
   friend class WebPagePopup;
   friend class PagePopupChromeClient;

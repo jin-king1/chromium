@@ -5,14 +5,15 @@
 #include "components/no_state_prefetch/common/no_state_prefetch_origin.h"
 
 #include <array>
+#include <iterator>
 
-#include "base/metrics/histogram_macros.h"
+#include "base/check.h"
 
 namespace prerender {
 
 namespace {
 
-auto kOriginNames = std::to_array<const char*>({
+constexpr auto kOriginNames = std::to_array<const char*>({
     "[Deprecated] Link Rel Prerender (original)",
     "[Deprecated] Omnibox (original)",
     "GWS Prerender",

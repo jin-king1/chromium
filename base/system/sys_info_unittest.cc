@@ -6,14 +6,17 @@
 
 #include <stdint.h>
 
+#include <algorithm>
 #include <optional>
 #include <string_view>
 #include <utility>
 #include <vector>
 
+#include "base/byte_size.h"
 #include "base/environment.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
+#include "base/logging.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/process/process_metrics.h"
 #include "base/run_loop.h"
@@ -23,6 +26,8 @@
 #include "base/strings/string_util.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/gmock_expected_support.h"
+#include "base/test/scoped_amount_of_physical_memory_override.h"
 #include "base/test/scoped_chromeos_version_info.h"
 #include "base/test/scoped_running_on_chromeos.h"
 #include "base/test/task_environment.h"
@@ -53,7 +58,7 @@ namespace base {
 // Some Android (Cast) test devices have a large portion of physical memory
 // reserved. During investigation, around 115-150 MB were seen reserved, so we
 // track this here with a factory of safety of 2.
-static constexpr int kReservedPhysicalMemory = 300 * 1024;  // In _K_bytes.
+static constexpr ByteSize kReservedPhysicalMemory = MiBU(300);
 #endif  // BUILDFLAG(IS_ANDROID)
 
 using SysInfoTest = PlatformTest;
@@ -89,10 +94,9 @@ TEST_F(SysInfoTest, NumProcsWithSecurityMitigationEnabled) {
 
 TEST_F(SysInfoTest, AmountOfMem) {
   // We aren't actually testing that it's correct, just that it's sane.
-  EXPECT_GT(SysInfo::AmountOfPhysicalMemory(), 0u);
-  EXPECT_GT(SysInfo::AmountOfPhysicalMemoryMB(), 0);
+  EXPECT_GT(SysInfo::AmountOfTotalPhysicalMemory(), ByteSize(0));
   // The maxmimal amount of virtual memory can be zero which means unlimited.
-  EXPECT_GE(SysInfo::AmountOfVirtualMemory(), 0u);
+  EXPECT_GE(SysInfo::AmountOfVirtualMemory(), ByteSize(0));
 }
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
@@ -103,34 +107,34 @@ TEST_F(SysInfoTest, AmountOfMem) {
 #define MAYBE_AmountOfAvailablePhysicalMemory AmountOfAvailablePhysicalMemory
 #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 TEST_F(SysInfoTest, MAYBE_AmountOfAvailablePhysicalMemory) {
-  // Note: info is in _K_bytes.
-  SystemMemoryInfoKB info;
+  SystemMemoryInfo info;
   ASSERT_TRUE(GetSystemMemoryInfo(&info));
-  EXPECT_GT(info.free, 0);
-  if (info.available != 0) {
+  EXPECT_GT(info.free, ByteSize(0));
+  if (!info.available.is_zero()) {
     // If there is MemAvailable from kernel.
     EXPECT_LT(info.available, info.total);
-    const uint64_t amount = SysInfo::AmountOfAvailablePhysicalMemory(info);
+    const ByteSize amount = SysInfo::AmountOfAvailablePhysicalMemory(info);
     // We aren't actually testing that it's correct, just that it's sane.
     // Available memory is |free - reserved + reclaimable (inactive, non-free)|.
     // On some android platforms, reserved is a substantial portion.
-    const int available =
+    const ByteSize available =
 #if BUILDFLAG(IS_ANDROID)
-        std::max(info.free - kReservedPhysicalMemory, 0);
+        std::max(info.free - kReservedPhysicalMemory, ByteSizeDelta(0))
+            .AsByteSize();
 #else
         info.free;
 #endif  // BUILDFLAG(IS_ANDROID)
-    EXPECT_GT(amount, checked_cast<uint64_t>(available) * 1024);
-    EXPECT_LT(amount / 1024, checked_cast<uint64_t>(info.available));
+    EXPECT_GT(amount, available);
+    EXPECT_LT(amount, info.available);
     // Simulate as if there is no MemAvailable.
-    info.available = 0;
+    info.available = ByteSize(0);
   }
 
   // There is no MemAvailable. Check the fallback logic.
-  const uint64_t amount = SysInfo::AmountOfAvailablePhysicalMemory(info);
+  const ByteSize amount = SysInfo::AmountOfAvailablePhysicalMemory(info);
   // We aren't actually testing that it's correct, just that it's sane.
-  EXPECT_GT(amount, checked_cast<uint64_t>(info.free) * 1024);
-  EXPECT_LT(amount / 1024, checked_cast<uint64_t>(info.total));
+  EXPECT_GT(amount, info.free);
+  EXPECT_LT(amount, info.total);
 }
 #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) ||
         // BUILDFLAG(IS_ANDROID)
@@ -147,6 +151,17 @@ TEST_F(SysInfoTest, AmountOfTotalDiskSpace) {
   FilePath tmp_path;
   ASSERT_TRUE(GetTempDir(&tmp_path));
   EXPECT_GT(SysInfo::AmountOfTotalDiskSpace(tmp_path), 0) << tmp_path;
+}
+
+TEST_F(SysInfoTest, AmountOfDiskSpace) {
+  // We aren't actually testing that it's correct, just that it's sane.
+  FilePath tmp_path;
+  ASSERT_TRUE(GetTempDir(&tmp_path));
+  ASSERT_OK_AND_ASSIGN(SysInfo::DiskSpaceInfo disk_space,
+                       SysInfo::AmountOfDiskSpace(tmp_path));
+  EXPECT_TRUE(disk_space.total.is_positive()) << tmp_path;
+  EXPECT_GE(disk_space.available, ByteSize()) << tmp_path;
+  EXPECT_GE(disk_space.total, disk_space.available) << tmp_path;
 }
 
 #if BUILDFLAG(IS_FUCHSIA)
@@ -170,6 +185,33 @@ TEST_F(SysInfoTest, NestedVolumesAmountOfTotalDiskSpace) {
   SysInfo::SetAmountOfTotalDiskSpace(subdirectory_path, -1);
   EXPECT_EQ(SysInfo::AmountOfTotalDiskSpace(subdirectory_path),
             kOuterVolumeQuota);
+}
+
+// Verify that AmountOfDiskSpace returns the correct total for nested
+// directories, matching the deepest-nested quota.
+TEST_F(SysInfoTest, NestedVolumesAmountOfDiskSpace) {
+  constexpr int64_t kOuterVolumeQuota = 1024;
+  constexpr int64_t kInnerVolumeQuota = kOuterVolumeQuota / 2;
+
+  FilePath tmp_path;
+  ASSERT_TRUE(GetTempDir(&tmp_path));
+  SysInfo::SetAmountOfTotalDiskSpace(tmp_path, kOuterVolumeQuota);
+  const FilePath subdirectory_path = tmp_path.Append("subdirectory");
+  SysInfo::SetAmountOfTotalDiskSpace(subdirectory_path, kInnerVolumeQuota);
+
+  ASSERT_OK_AND_ASSIGN(SysInfo::DiskSpaceInfo outer_disk_space,
+                       SysInfo::AmountOfDiskSpace(tmp_path));
+  EXPECT_EQ(outer_disk_space.total, ByteSize(uint64_t{kOuterVolumeQuota}));
+
+  ASSERT_OK_AND_ASSIGN(SysInfo::DiskSpaceInfo inner_disk_space,
+                       SysInfo::AmountOfDiskSpace(subdirectory_path));
+  EXPECT_EQ(inner_disk_space.total, ByteSize(uint64_t{kInnerVolumeQuota}));
+
+  // Remove the inner directory quota setting and check again.
+  SysInfo::SetAmountOfTotalDiskSpace(subdirectory_path, -1);
+  ASSERT_OK_AND_ASSIGN(SysInfo::DiskSpaceInfo fallback_disk_space,
+                       SysInfo::AmountOfDiskSpace(subdirectory_path));
+  EXPECT_EQ(fallback_disk_space.total, ByteSize(uint64_t{kOuterVolumeQuota}));
 }
 #endif  // BUILDFLAG(IS_FUCHSIA)
 
@@ -273,6 +315,22 @@ TEST_F(SysInfoTest, GetHardwareInfo) {
   EXPECT_EQ(hardware_info->manufacturer.empty(), empty_result_expected);
   EXPECT_EQ(hardware_info->model.empty(), empty_result_expected);
 }
+
+#if BUILDFLAG(IS_ANDROID)
+TEST_F(SysInfoTest, HardwareManufacturer) {
+  std::string manufacturer = SysInfo::HardwareManufacturer();
+  EXPECT_TRUE(IsStringUTF8(manufacturer));
+  EXPECT_FALSE(manufacturer.empty());
+}
+
+TEST_F(SysInfoTest, GetAndroidBuildFingerprint) {
+  std::string fingerprint = SysInfo::GetAndroidBuildFingerprint();
+  EXPECT_TRUE(IsStringUTF8(fingerprint));
+  EXPECT_FALSE(fingerprint.empty());
+  // Speculative regression test for https://crbug.com/532132431.
+  EXPECT_EQ(fingerprint.find("Must use"), std::string::npos);
+}
+#endif
 
 #if BUILDFLAG(IS_WIN)
 TEST_F(SysInfoTest, GetHardwareInfoWMIMatchRegistry) {
@@ -461,5 +519,103 @@ TEST_F(SysInfoTest, ScopedRunningOnChromeOS) {
 }
 
 #endif  // BUILDFLAG(IS_CHROMEOS)
+
+#if BUILDFLAG(IS_POSIX)
+TEST_F(SysInfoTest, KernelVersionNumber) {
+  auto current_kernel_version = SysInfo::KernelVersionNumber::Current();
+
+  EXPECT_GT(current_kernel_version, SysInfo::KernelVersionNumber());
+  // Chromium will realistically never run on a kernel as old as 2.1.11
+  EXPECT_GT(current_kernel_version, SysInfo::KernelVersionNumber(2, 1, 11));
+
+  SysInfo::KernelVersionNumber next_major_kernel_version(
+      current_kernel_version.major + 1);
+  EXPECT_LT(current_kernel_version, next_major_kernel_version);
+
+  SysInfo::KernelVersionNumber next_minor_kernel_version(
+      current_kernel_version.major, current_kernel_version.minor + 1);
+  EXPECT_LT(current_kernel_version, next_minor_kernel_version);
+
+  SysInfo::KernelVersionNumber next_bugfix_kernel_version(
+      current_kernel_version.major, current_kernel_version.minor,
+      current_kernel_version.bugfix + 1);
+  EXPECT_LT(current_kernel_version, next_bugfix_kernel_version);
+}
+#endif  // BUILDFLAG(IS_POSIX)
+
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
+TEST_F(SysInfoTest, NumberOfEfficientProcessors) {
+  std::vector<uint64_t> frequencies = SysInfo::MaxFrequencyPerProcessor();
+  if (frequencies.empty()) {
+    GTEST_SKIP() << "Cannot test, not able to detect max core frequency. "
+                 << "This is expected on VMs for instance";
+  }
+
+  EXPECT_EQ(static_cast<int>(frequencies.size()),
+            SysInfo::NumberOfProcessors());
+  // Can be 0, if this is not a big.LITTLE architecture.
+  EXPECT_LE(static_cast<int>(SysInfo::NumberOfEfficientProcessors()),
+            SysInfo::NumberOfProcessors());
+  uint64_t min_frequency = *std::ranges::min_element(frequencies);
+  size_t expected_count = SysInfo::NumberOfEfficientProcessors() == 0
+                              ? frequencies.size()
+                              : SysInfo::NumberOfEfficientProcessors();
+  EXPECT_EQ(std::ranges::count_if(frequencies,
+                                  [min_frequency](uint64_t freq) {
+                                    return freq == min_frequency;
+                                  }),
+            expected_count);
+}
+
+TEST_F(SysInfoTest, MaxFrequencyPerProcessor) {
+  std::vector<uint64_t> frequencies = SysInfo::MaxFrequencyPerProcessor();
+  if (frequencies.empty()) {
+    GTEST_SKIP() << "Cannot test, not able to detect max core frequency. "
+                 << "This is expected on VMs for instance";
+  }
+
+  EXPECT_EQ(static_cast<int>(frequencies.size()),
+            SysInfo::NumberOfProcessors());
+  // Make sure that the frequency is correctly parsed. We could perhaps assert
+  // that it's somewhat realistic, but this might fail in e.g. VM environments.
+  EXPECT_TRUE(
+      std::ranges::all_of(frequencies, [](uint64_t freq) { return freq > 0; }));
+}
+#endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) ||
+        // BUILDFLAG(IS_ANDROID)
+
+TEST_F(SysInfoTest, MemoryOverride_LowEndDevice) {
+  {
+    test::ScopedAmountOfPhysicalMemoryOverride memory_override(MiBU(512));
+    EXPECT_TRUE(SysInfo::IsLowEndDevice());
+  }
+  {
+    test::ScopedAmountOfPhysicalMemoryOverride memory_override(GiBU(4));
+    EXPECT_FALSE(SysInfo::IsLowEndDevice());
+  }
+}
+
+#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_CHROMEOS)
+TEST_F(SysInfoTest, MemoryOverride_IsNGbDevice) {
+  {
+    test::ScopedAmountOfPhysicalMemoryOverride memory_override(GiBU(3));
+    EXPECT_TRUE(SysInfo::Is3GbDevice());
+    EXPECT_FALSE(SysInfo::Is4GbDevice());
+    EXPECT_FALSE(SysInfo::Is6GbDevice());
+  }
+  {
+    test::ScopedAmountOfPhysicalMemoryOverride memory_override(GiBU(4));
+    EXPECT_FALSE(SysInfo::Is3GbDevice());
+    EXPECT_TRUE(SysInfo::Is4GbDevice());
+    EXPECT_FALSE(SysInfo::Is6GbDevice());
+  }
+  {
+    test::ScopedAmountOfPhysicalMemoryOverride memory_override(GiBU(6));
+    EXPECT_FALSE(SysInfo::Is3GbDevice());
+    EXPECT_FALSE(SysInfo::Is4GbDevice());
+    EXPECT_TRUE(SysInfo::Is6GbDevice());
+  }
+}
+#endif  // BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_CHROMEOS)
 
 }  // namespace base

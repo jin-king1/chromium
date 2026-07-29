@@ -9,18 +9,18 @@
 #include <vector>
 
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
 #include "base/memory/ptr_util.h"
 #include "base/no_destructor.h"
 #include "chrome/browser/ash/file_manager/volume_manager.h"
 #include "chrome/browser/enterprise/connectors/analysis/files_request_handler.h"
 #include "chrome/browser/enterprise/connectors/analysis/source_destination_matcher_ash.h"
+#include "chrome/browser/enterprise/connectors/common.h"
 #include "chrome/browser/enterprise/connectors/connectors_service.h"
-#include "chrome/browser/extensions/api/safe_browsing_private/safe_browsing_private_event_router.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/safe_browsing/cloud_content_scanning/binary_upload_service.h"
 #include "chrome/browser/safe_browsing/cloud_content_scanning/deep_scanning_utils.h"
+#include "chrome/browser/signin/identity_manager_factory.h"
 #include "components/enterprise/connectors/core/analysis_settings.h"
+#include "components/enterprise/connectors/core/cloud_content_scanning/binary_upload_service.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "storage/browser/file_system/file_system_context.h"
@@ -28,8 +28,6 @@
 #include "storage/browser/file_system/file_system_operation_runner.h"
 #include "storage/browser/file_system/file_system_url.h"
 #include "storage/browser/file_system/recursive_operation_delegate.h"
-
-using safe_browsing::BinaryUploadService;
 
 namespace {
 
@@ -226,7 +224,7 @@ bool FileTransferAnalysisDelegate::FileTransferAnalysisResult::IsUnknown()
 // static
 std::unique_ptr<FileTransferAnalysisDelegate>
 FileTransferAnalysisDelegate::Create(
-    safe_browsing::DeepScanAccessPoint access_point,
+    DeepScanAccessPoint access_point,
     storage::FileSystemURL source_url,
     storage::FileSystemURL destination_url,
     Profile* profile,
@@ -250,7 +248,7 @@ FileTransferAnalysisDelegate::Create(
 }
 
 // static
-void FileTransferAnalysisDelegate::SetFactorForTesting(
+void FileTransferAnalysisDelegate::SetFactoryForTesting(
     FileTransferAnalysisDelegateFactory factory) {
   GetFactoryStorage() = factory;
 }
@@ -346,7 +344,7 @@ void FileTransferAnalysisDelegate::UploadData(
 }
 
 FileTransferAnalysisDelegate::FileTransferAnalysisDelegate(
-    safe_browsing::DeepScanAccessPoint access_point,
+    DeepScanAccessPoint access_point,
     storage::FileSystemURL source_url,
     storage::FileSystemURL destination_url,
     Profile* profile,
@@ -420,13 +418,17 @@ bool FileTransferAnalysisDelegate::BypassRequiresJustification(
   return it->second.requires_justification;
 }
 
-FilesRequestHandler*
+FilesRequestHandlerBase*
 FileTransferAnalysisDelegate::GetFilesRequestHandlerForTesting() {
   return request_handler_.get();
 }
 
 const AnalysisSettings& FileTransferAnalysisDelegate::settings() const {
   return settings_;
+}
+
+signin::IdentityManager* FileTransferAnalysisDelegate::identity_manager() const {
+  return IdentityManagerFactory::GetForProfile(profile_);
 }
 
 int FileTransferAnalysisDelegate::user_action_requests_count() const {
@@ -445,8 +447,8 @@ std::string FileTransferAnalysisDelegate::email() const {
   return GetProfileEmail(profile_);
 }
 
-std::string FileTransferAnalysisDelegate::url() const {
-  return "";
+const GURL& FileTransferAnalysisDelegate::url() const {
+  return GURL::EmptyGURL();
 }
 
 const GURL& FileTransferAnalysisDelegate::tab_url() const {
@@ -455,6 +457,21 @@ const GURL& FileTransferAnalysisDelegate::tab_url() const {
 
 ContentAnalysisRequest::Reason FileTransferAnalysisDelegate::reason() const {
   return ContentAnalysisRequest::UNKNOWN;
+}
+
+google::protobuf::RepeatedPtrField<::safe_browsing::ReferrerChainEntry>
+FileTransferAnalysisDelegate::referrer_chain() const {
+  return google::protobuf::RepeatedPtrField<
+      ::safe_browsing::ReferrerChainEntry>();
+}
+
+google::protobuf::RepeatedPtrField<std::string>
+FileTransferAnalysisDelegate::frame_url_chain() const {
+  return {};
+}
+
+content::WebContents* FileTransferAnalysisDelegate::web_contents() const {
+  return nullptr;
 }
 
 void FileTransferAnalysisDelegate::OnGotFileURLs(
@@ -473,9 +490,8 @@ void FileTransferAnalysisDelegate::OnGotFileURLs(
   }
 
   request_handler_ = FilesRequestHandler::Create(
-      this,
-      safe_browsing::BinaryUploadService::GetForProfile(profile_, settings_),
-      profile_, GURL{},
+      this, GetBinaryUploadServiceForConnector(profile_, settings_), profile_,
+      GURL{},
       SourceDestinationMatcherAsh::GetVolumeDescriptionFromPath(
           profile_, source_url_.path()),
       SourceDestinationMatcherAsh::GetVolumeDescriptionFromPath(

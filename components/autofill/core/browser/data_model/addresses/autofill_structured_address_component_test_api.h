@@ -49,12 +49,19 @@ class AddressComponentTestApi {
   void SetMergeMode(int merge_mode) { component_->merge_mode_ = merge_mode; }
 
   // Returns the value used for comparison for testing purposes.
-  std::u16string GetValueForComparison(const AddressComponent& other) const {
+  std::u16string GetValueForComparison(const AddressCountryCode& other) const {
     return component_->GetValueForComparison(other);
   }
 
   AddressComponent* GetNodeForType(FieldType field_type) {
     return component_->GetNodeForType(field_type);
+  }
+
+  // Return the int representation of the merge mode for the component.
+  int GetMergeMode() const { return component_->merge_mode_; }
+
+  bool IsValueCompatibleWithAncestors(const std::u16string& value) const {
+    return component_->IsValueCompatibleWithAncestors(value);
   }
 
  private:

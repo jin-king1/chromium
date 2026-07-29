@@ -6,10 +6,14 @@
 
 #import "base/check.h"
 #import "base/path_service.h"
+#import "components/metrics/metrics_features.h"
 #import "components/metrics/persistent_histograms.h"
 #import "ios/chrome/app/tests_hook.h"
+#import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/paths/paths.h"
+#import "ios/chrome/browser/shared/model/utils/first_run_util.h"
 #import "ios/chrome/browser/variations/model/ios_chrome_variations_seed_store.h"
+#import "ios/chrome/common/channel_info.h"
 
 void IOSChromeFieldTrials::OnVariationsSetupComplete() {
   // Persistent histograms must be enabled ASAP, but depends on Features.
@@ -35,4 +39,9 @@ void IOSChromeFieldTrials::SetUpClientSideFieldTrials(
   if (tests_hook::DisableClientSideFieldTrials()) {
     return;
   }
+}
+
+void IOSChromeFieldTrials::EnableRuntimeMutableFeatures(
+    base::FeatureList* feature_list) {
+  // Add calls to enable runtime-mutable features here.
 }

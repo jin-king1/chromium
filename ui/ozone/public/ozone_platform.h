@@ -15,15 +15,19 @@
 #include "base/message_loop/message_pump_type.h"
 #include "base/task/single_thread_task_runner.h"
 #include "build/build_config.h"
-#include "mojo/public/cpp/bindings/binder_map.h"
+#include "components/viz/common/resources/shared_image_format.h"
 #include "ui/gfx/buffer_types.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/platform_window/platform_window.h"
 #include "ui/platform_window/platform_window_delegate.h"
 
 namespace display {
 class NativeDisplayDelegate;
 }
+
+namespace mojo {
+class BinderMap;
+}  // namespace mojo
 
 namespace ui {
 enum class DomCode : uint32_t;
@@ -43,6 +47,7 @@ class PlatformGlobalShortcutListenerDelegate;
 class PlatformKeyboardHook;
 class PlatformMenuUtils;
 class PlatformScreen;
+class PlatformSessionManager;
 class PlatformUserInputMonitor;
 class PlatformUtils;
 class SurfaceFactoryOzone;
@@ -92,13 +97,6 @@ class COMPONENT_EXPORT(OZONE) OzonePlatform {
     // TODO(fangzhoug): Some Chrome OS boards still use the legacy video
     // decoder. Remove this once ChromeOSVideoDecoder is on everywhere.
     bool allow_sync_and_real_buffer_page_flip_testing = false;
-
-    // TODO(b/331237773): Unfortunately, the kHandleOverlaysSwapFailure feature
-    // cannot be checked by the overlay manager in ozone/drm directly as it
-    // creates a circular dependency that gn complains about. That's why this
-    // control bool is here. Remove this once kHandleOverlaysSwapFailure is
-    // removed and DrmOverlayManager is always handling swap failures.
-    bool handle_overlays_swap_failure = false;
   };
 
   // Struct used to indicate platform properties.
@@ -107,6 +105,13 @@ class COMPONENT_EXPORT(OZONE) OzonePlatform {
     PlatformProperties(const PlatformProperties& other) = delete;
     PlatformProperties& operator=(const PlatformProperties& other) = delete;
     ~PlatformProperties();
+
+    // Values to override the value of a property in tests.
+    enum class SupportsForTest {
+      kNotSet,  // The property is not overridden.
+      kYes,     // The platform should return true.
+      kNo,      // The platform should return false.
+    };
 
     // Determines whether we should default to native decorations or the custom
     // frame based on the currently-running window manager.
@@ -132,28 +137,28 @@ class COMPONENT_EXPORT(OZONE) OzonePlatform {
     // should be given parents explicitly.
     bool set_parent_for_non_top_level_windows = false;
 
+    // Allows overriding whether `set_parent_for_non_top_level_windows` is
+    // enabled in tests. This value must be reset at the end of each test to
+    // avoid affecting subsequent tests.
+    static SupportsForTest
+        override_set_parent_for_non_top_level_windows_for_test;
+
     // If true, the platform shows and updates the drag image.
     bool platform_shows_drag_image = true;
-
-    // Linux only, but see a TODO in BrowserDesktopWindowTreeHostLinux.
-    // Determines whether the platform supports the global application menu.
-    bool supports_global_application_menus = false;
 
     // Determines if the application modal dialogs should use the event blocker
     // to allow the only browser window receiving UI events.
     bool app_modal_dialogs_use_event_blocker = false;
 
-    // Determines whether buffer formats should be fetched on GPU and passed
-    // back via gpu extra info.
-    bool fetch_buffer_formats_for_gmb_on_gpu = false;
-
     // Indicates that the platform allows client applications to manipulate
     // global screen coordinates. Wayland, for example, disallow it by design.
     bool supports_global_screen_coordinates = true;
 
-    // Whether the platform supports system/shell integrated color picker
-    // dialog. An example is XDG Desktop Portal provided PickColor dialog.
-    bool supports_color_picker_dialog = true;
+    // Indicates that the platform exposes webgpu via interop gl interop with
+    // vulkan.
+    // TODO(https://crbug.com/500609035): Remove when active gpu device info is
+    // passed to media.
+    bool webgpu_on_vulkan_via_gl_interop = false;
   };
 
   // Groups platform properties that can only be known at run time.
@@ -164,7 +169,7 @@ class COMPONENT_EXPORT(OZONE) OzonePlatform {
     enum class SupportsForTest {
       kNotSet,  // The property is not overridden.
       kYes,     // The platform should return true.
-      kNo,      // The plafrorm should return false.
+      kNo,      // The platform should return false.
     };
 
     // Whether the underlying platform supports deferring compositing of buffers
@@ -208,25 +213,33 @@ class COMPONENT_EXPORT(OZONE) OzonePlatform {
 
     // Allows overriding whether per window scaling is enabled in tests.
     static SupportsForTest override_supports_per_window_scaling_for_test;
+
+    // Whether windowing system level session management is supported. If set,
+    // GetSessionManager method must return a valid object.
+    bool supports_session_management = false;
+
+    // Linux only, but see a TODO in BrowserDesktopWindowTreeHostLinux.
+    // Determines whether the platform supports the global application menu.
+    bool supports_global_application_menus = false;
   };
 
   // Corresponds to chrome_browser_main_extra_parts.h.
   //
   // The browser process' initialization involves several steps -
-  // PreEarlyInitialization, PostCreateMainMessageLoop, PostMainMessageLoopRun,
-  // etc. In order to be consistent with that and allow platform specific
-  // initialization steps, the OzonePlatform has three methods - one static
-  // PreEarlyInitialization that is expected to do some early non-ui
-  // initialization (like error handlers that X11 sets), and two non-static
-  // methods - PostMainmessageLoopStart and PostMainMessageLoopRun. The latter
-  // two are supposed to be called on a post start and a post-run of the
-  // MessageLoop. Please note that this methods must be run on the browser' UI
-  // thread.
+  // PreSandboxStartup, PostCreateMainMessageLoop, PostMainMessageLoopRun, etc.
+  // In order to be consistent with that and allow platform specific
+  // initialization steps, the OzonePlatform has three methods
+  // - one static PreSandboxStartup that is expected to do some early
+  // non-ui initialization (like error handlers that X11 sets), and two
+  // non-static methods - PostMainmessageLoopStart and PostMainMessageLoopRun.
+  // The latter two are supposed to be called on a post start and a post-run of
+  // the MessageLoop. Please note that this methods must be run on the browser'
+  // UI thread.
   //
-  // Creates OzonePlatform and does pre-early initialization (internally, sets
+  // Creates OzonePlatform and does PreSandboxStartup (internally, sets
   // error handlers if supported so that we can print errors during the browser
   // process' start up).
-  static void PreEarlyInitialization();
+  static void PreSandboxStartup();
   // Sets error handlers if supported for the browser process, and provides a
   // task_runner suitable for handling user input after the message loop
   // started. It's required to call this so that we can exit cleanly if the
@@ -259,6 +272,8 @@ class COMPONENT_EXPORT(OZONE) OzonePlatform {
   // Returns the current ozone platform name.
   // Some tests may skip based on the platform name.
   static std::string GetPlatformNameForTest();
+  static bool RunningOnWaylandForTest();
+  static bool RunningOnX11ForTest();
 
   // Factory getters to override in subclasses. The returned objects will be
   // injected into the appropriate layer at startup. Subclasses should not
@@ -301,9 +316,12 @@ class COMPONENT_EXPORT(OZONE) OzonePlatform {
       base::RepeatingCallback<void(KeyEvent* event)> callback,
       std::optional<base::flat_set<DomCode>> dom_codes,
       gfx::AcceleratedWidget accelerated_widget);
+  // Returns the PlatformSessionManager instance, if platform-level session
+  // management is supported, null otherwise.
+  virtual PlatformSessionManager* GetSessionManager();
 
-  // Returns true if the specified buffer format is supported.
-  virtual bool IsNativePixmapConfigSupported(gfx::BufferFormat format,
+  // Returns true if the specified format is supported.
+  virtual bool IsNativePixmapConfigSupported(viz::SharedImageFormat format,
                                              gfx::BufferUsage usage) const;
 
   // Whether the platform supports compositing windows with transparency.
@@ -375,9 +393,11 @@ class COMPONENT_EXPORT(OZONE) OzonePlatform {
   // See https://crbug.com/1280138.
   static void SetFailInitializeUIForTest(bool fail);
 
-  // Optional method for pre-early initialization. In case of X11, sets X11
-  // error handlers so that errors can be caught if early initialization fails.
-  virtual void PreEarlyInitialize();
+  // Optional method for pre-sandbox startup. It is called before entering the
+  // sandbox and threads have not been created at the moment. It is useful for
+  // setting up things that must be done before creating threads and entering
+  // the sandbox.
+  virtual void OnPreSandboxStartup();
 
   // Initialises the platform in the UI process.  Returns whether that completed
   // successfully, i. e., the startup process may proceed further.
@@ -389,7 +409,7 @@ class COMPONENT_EXPORT(OZONE) OzonePlatform {
 
   bool initialized_ui_ = false;
   bool initialized_gpu_ = false;
-  bool prearly_initialized_ = false;
+  bool presandboxstartup_initialized_ = false;
 
   // This value is checked on multiple threads. Declaring it volatile makes
   // modifications to |single_process_| visible by other threads. Mutex is not

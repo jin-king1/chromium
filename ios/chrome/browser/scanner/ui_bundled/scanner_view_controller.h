@@ -22,7 +22,9 @@ enum DismissalReason {
 };
 }  // namespace scannerViewController
 
+@protocol BrowserCoordinatorCommands;
 @protocol ScannerPresenting;
+@protocol ScannerMutator;
 
 // View controller for a generic scanner. This is an abstract class that creates
 // the view and camera controller, required for a QR code or Credit Card
@@ -38,14 +40,20 @@ enum DismissalReason {
 @property(nonatomic, readwrite) ScannerView* scannerView;
 
 // The scanned result.
-@property(nonatomic, strong) NSString* result;
+@property(nonatomic, copy) NSString* result;
 
 // Whether the scanned result should be immediately loaded.
 @property(nonatomic, assign) bool loadResultImmediately;
 
 // Stores the presentation provider.
-@property(nonatomic, readwrite, weak) id<ScannerPresenting>
-    presentationProvider;
+@property(nonatomic, weak) id<ScannerPresenting> presentationProvider;
+
+// Mutator for the scanner.
+@property(nonatomic, weak) id<ScannerMutator> mutator;
+
+// Handler for the browser coordinator commands.
+@property(nonatomic, weak) id<BrowserCoordinatorCommands>
+    browserCoordinatorHandler;
 
 - (instancetype)initWithPresentationProvider:
     (id<ScannerPresenting>)presentationProvider NS_DESIGNATED_INITIALIZER;

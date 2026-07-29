@@ -4,13 +4,13 @@
 
 #include "ui/display/screen.h"
 
+#include <algorithm>
 #include <optional>
 #include <utility>
 
 #include "base/check.h"
-#include "base/containers/contains.h"
 #include "base/memory/ptr_util.h"
-#include "base/notreached.h"
+#include "base/notimplemented.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "ui/display/display.h"
@@ -32,11 +32,7 @@ Screen::Screen() : display_id_for_new_windows_(kInvalidDisplayId) {}
 Screen::~Screen() = default;
 
 // static
-Screen* Screen::GetScreen() {
-#if BUILDFLAG(IS_IOS)
-  if (!g_screen)
-    g_screen = CreateNativeScreen();
-#endif
+Screen* Screen::Get() {
   return g_screen;
 }
 
@@ -139,9 +135,9 @@ std::string Screen::GetCurrentWorkspace() {
   return {};
 }
 
-base::Value::List Screen::GetGpuExtraInfo(
+base::ListValue Screen::GetGpuExtraInfo(
     const gfx::GpuExtraInfo& gpu_extra_info) {
-  return base::Value::List();
+  return base::ListValue();
 }
 
 // TODO(nickdiego): GetDisplayNearestWindow is supposed to always return a valid
@@ -159,6 +155,10 @@ std::optional<float> Screen::GetPreferredScaleFactorForWindow(
 std::optional<float> Screen::GetPreferredScaleFactorForView(
     gfx::NativeView view) const {
   return GetPreferredScaleFactorForWindow(GetWindowForView(view));
+}
+
+bool Screen::IsHeadless() const {
+  return false;
 }
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -206,8 +206,10 @@ ScreenInfos Screen::GetScreenInfosNearestDisplay(int64_t nearest_id) const {
   // counterpart exists in `displays`. Otherwise, use `display[0]` for both.
   int64_t primary_id = primary.id();
   int64_t current_id = nearest_id;
-  const bool has_primary = base::Contains(displays, primary_id, &Display::id);
-  const bool has_nearest = base::Contains(displays, nearest_id, &Display::id);
+  const bool has_primary =
+      std::ranges::contains(displays, primary_id, &Display::id);
+  const bool has_nearest =
+      std::ranges::contains(displays, nearest_id, &Display::id);
   if (!has_primary)
     primary_id = has_nearest ? nearest_id : displays[0].id();
   if (!has_nearest)
@@ -245,18 +247,14 @@ ScreenInfos Screen::GetScreenInfosNearestDisplay(int64_t nearest_id) const {
 
 ScopedNativeScreen::ScopedNativeScreen(const base::Location& location) {
   if (!Screen::HasScreen()) {
-#if BUILDFLAG(IS_IOS)
-    Screen::GetScreen();
-#else
     screen_ = base::WrapUnique(CreateNativeScreen());
     Screen::SetScreenInstance(screen_.get(), location);
-#endif
   }
 }
 
 ScopedNativeScreen::~ScopedNativeScreen() {
   if (screen_) {
-    DCHECK_EQ(screen_.get(), Screen::GetScreen());
+    DCHECK_EQ(screen_.get(), Screen::Get());
     Screen::SetScreenInstance(nullptr);
     screen_.reset();
   }

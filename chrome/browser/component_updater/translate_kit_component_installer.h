@@ -9,6 +9,7 @@
 
 #include "base/functional/callback_forward.h"
 #include "base/gtest_prod_util.h"
+#include "base/memory/raw_ptr.h"
 #include "base/values.h"
 #include "components/component_updater/component_installer.h"
 #include "components/prefs/pref_service.h"
@@ -16,10 +17,14 @@
 
 namespace component_updater {
 
+class ComponentUpdateService;
+
 // The installer policy for the TranslateKit Component.
 class TranslateKitComponentInstallerPolicy : public ComponentInstallerPolicy {
  public:
-  explicit TranslateKitComponentInstallerPolicy(PrefService* pref_service);
+  explicit TranslateKitComponentInstallerPolicy(
+      PrefService* pref_service,
+      base::RepeatingClosure on_ready_callback);
   ~TranslateKitComponentInstallerPolicy() override;
 
   // Not Copyable.
@@ -29,30 +34,39 @@ class TranslateKitComponentInstallerPolicy : public ComponentInstallerPolicy {
       const TranslateKitComponentInstallerPolicy&) = delete;
 
   // Requests to update the component.
-  static void UpdateComponentOnDemand();
+  static void UpdateComponentOnDemand(ComponentUpdateService* cus);
+
+  static const std::string GetExtensionId();
 
  private:
   FRIEND_TEST_ALL_PREFIXES(RegisterTranslateKitComponentTest,
                            VerifyInstallationDefaultEmpty);
 
   // `ComponentInstallerPolicy` overrides:
-  bool VerifyInstallation(const base::Value::Dict& manifest,
+  bool VerifyInstallation(const base::DictValue& manifest,
                           const base::FilePath& install_dir) const override;
   bool SupportsGroupPolicyEnabledComponentUpdates() const override;
   bool RequiresNetworkEncryption() const override;
   update_client::CrxInstaller::Result OnCustomInstall(
-      const base::Value::Dict& manifest,
+      const base::DictValue& manifest,
       const base::FilePath& install_dir) override;
   void OnCustomUninstall() override;
   void ComponentReady(const base::Version& version,
                       const base::FilePath& install_dir,
-                      base::Value::Dict manifest) override;
+                      base::DictValue manifest) override;
   base::FilePath GetRelativeInstallDir() const override;
   void GetHash(std::vector<uint8_t>* hash) const override;
   std::string GetName() const override;
   update_client::InstallerAttributes GetInstallerAttributes() const override;
 
+#if BUILDFLAG(IS_CHROMEOS)
+  void OnImageLoaderComponentLoaded(std::optional<base::FilePath> mount_path);
+#endif  // BUILDFLAG(IS_CHROMEOS)
+
   raw_ptr<PrefService> pref_service_;
+  base::RepeatingClosure on_ready_callback_;
+  base::WeakPtrFactory<TranslateKitComponentInstallerPolicy> weak_factory_{
+      this};
 };
 
 // Call once during startup to make the component update service aware of
@@ -60,7 +74,8 @@ class TranslateKitComponentInstallerPolicy : public ComponentInstallerPolicy {
 void RegisterTranslateKitComponent(ComponentUpdateService* cus,
                                    PrefService* pref_service,
                                    bool force_install,
-                                   base::OnceClosure registered_callback);
+                                   base::OnceClosure registered_callback,
+                                   base::RepeatingClosure on_ready_callback);
 
 }  // namespace component_updater
 

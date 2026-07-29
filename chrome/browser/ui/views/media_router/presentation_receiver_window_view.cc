@@ -8,11 +8,9 @@
 
 #include "base/check.h"
 #include "base/functional/bind.h"
-#include "base/not_fatal_until.h"
 #include "base/notreached.h"
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/content_settings/mixed_content_settings_tab_helper.h"
 #include "chrome/browser/content_settings/page_specific_content_settings_delegate.h"
 #include "chrome/browser/password_manager/chrome_password_manager_client.h"
@@ -20,28 +18,25 @@
 #include "chrome/browser/ssl/chrome_security_state_tab_helper.h"
 #include "chrome/browser/subresource_filter/chrome_content_subresource_filter_web_contents_helper_factory.h"
 #include "chrome/browser/translate/chrome_translate_client.h"
+#include "chrome/browser/ui/accelerator_table.h"
 #include "chrome/browser/ui/autofill/chrome_autofill_client.h"
 #include "chrome/browser/ui/blocked_content/framebust_block_tab_helper.h"
 #include "chrome/browser/ui/media_router/presentation_receiver_window_delegate.h"
 #include "chrome/browser/ui/passwords/manage_passwords_ui_controller.h"
 #include "chrome/browser/ui/search/search_tab_helper.h"
 #include "chrome/browser/ui/tab_dialogs.h"
-#include "chrome/browser/ui/views/accelerator_table.h"
-#include "chrome/browser/ui/views/exclusive_access_bubble_views.h"
+#include "chrome/browser/ui/views/exclusive_access/exclusive_access_bubble_views.h"
 #include "chrome/browser/ui/views/media_router/presentation_receiver_window_frame.h"
-#include "components/autofill/content/browser/content_autofill_client.h"
-#include "components/autofill/content/browser/content_autofill_driver_factory.h"
-#include "components/autofill/core/browser/foundations/browser_autofill_manager.h"
 #include "components/blocked_content/popup_blocker_tab_helper.h"
 #include "components/content_settings/browser/page_specific_content_settings.h"
 #include "components/infobars/content/content_infobar_manager.h"
 #include "components/omnibox/browser/location_bar_model_impl.h"
 #include "components/safe_browsing/buildflags.h"
+#include "components/web_modal/web_contents_modal_dialog_manager.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_constants.h"
 #include "ui/base/accelerators/accelerator_manager.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
-#include "ui/base/mojom/window_show_state.mojom.h"
 #include "ui/views/controls/webview/webview.h"
 #include "ui/views/focus/focus_manager.h"
 #include "ui/views/layout/box_layout.h"
@@ -58,7 +53,7 @@
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_observer.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 #endif
 
 #if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
@@ -126,23 +121,35 @@ PresentationReceiverWindowView::PresentationReceiverWindowView(
       exclusive_access_manager_(this) {
   SetHasWindowSizeControls(true);
 
-  // TODO(pbos): See if this can retain SetOwnedByWidget(true) and get deleted
-  // through WidgetDelegate::DeleteDelegate(). This requires confirming that
-  // delegate_->WindowClosed() is safe to call before this deletes.
-  SetOwnedByWidget(false);
-  RegisterDeleteDelegateCallback(base::BindOnce(
-      [](PresentationReceiverWindowView* dialog) {
-        auto* const delegate = dialog->delegate_.get();
-        delete dialog;
-        delegate->WindowClosed();
-      },
-      this));
+  RegisterDeleteDelegateCallback(
+      RegisterDeleteCallbackPassKey(),
+      base::BindOnce(
+          [](PresentationReceiverWindowView* dialog) {
+            auto* const delegate = dialog->delegate_.get();
+            delete dialog;
+            delegate->WindowClosed();
+          },
+          this));
 
   DCHECK(frame);
   DCHECK(delegate);
 }
 
-PresentationReceiverWindowView::~PresentationReceiverWindowView() = default;
+PresentationReceiverWindowView::~PresentationReceiverWindowView() {
+  for (web_modal::ModalDialogHostObserver& observer : observer_list_) {
+    observer.OnHostDestroying();
+  }
+
+  if (content::WebContents* web_contents = GetWebContents()) {
+    if (auto* manager =
+            web_modal::WebContentsModalDialogManager::FromWebContents(
+                web_contents)) {
+      if (manager->delegate() == this) {
+        manager->SetDelegate(nullptr);
+      }
+    }
+  }
+}
 
 void PresentationReceiverWindowView::Init() {
 #if BUILDFLAG(IS_MAC)
@@ -155,8 +162,7 @@ void PresentationReceiverWindowView::Init() {
   const auto accelerators = GetAcceleratorList();
   const auto fullscreen_accelerator = std::ranges::find(
       accelerators, IDC_FULLSCREEN, &AcceleratorMapping::command_id);
-  CHECK(fullscreen_accelerator != accelerators.end(),
-        base::NotFatalUntil::M130);
+  CHECK(fullscreen_accelerator != accelerators.end());
   fullscreen_accelerator_ = ui::Accelerator(fullscreen_accelerator->keycode,
                                             fullscreen_accelerator->modifiers);
 #endif
@@ -190,23 +196,27 @@ void PresentationReceiverWindowView::Init() {
       web_contents,
       std::make_unique<PageSpecificContentSettingsDelegate>(web_contents));
 
+  web_modal::WebContentsModalDialogManager::CreateForWebContents(web_contents);
+  web_modal::WebContentsModalDialogManager::FromWebContents(web_contents)
+      ->SetDelegate(this);
+
   auto* profile =
       Profile::FromBrowserContext(web_contents->GetBrowserContext());
-  auto* web_view = new views::WebView(profile);
-  web_view->SetWebContents(web_contents);
-  web_view->set_allow_accelerators(true);
-  location_bar_view_ =
-      new LocationBarView(nullptr, profile, &command_updater_, this, true);
 
   auto box_owner = std::make_unique<views::BoxLayout>(
       views::BoxLayout::Orientation::kVertical);
   box_owner->set_cross_axis_alignment(
       views::BoxLayout::CrossAxisAlignment::kStretch);
   auto* box = SetLayoutManager(std::move(box_owner));
-  AddChildViewRaw(location_bar_view_.get());
+
+  location_bar_view_ = AddChildView(std::make_unique<LocationBarView>(
+      nullptr, profile, &command_updater_, this, true));
   box->SetFlexForView(location_bar_view_, 0);
-  AddChildViewRaw(web_view);
-  box->SetFlexForView(web_view, 1);
+
+  web_view_ = AddChildView(std::make_unique<views::WebView>(profile));
+  web_view_->SetWebContents(web_contents);
+  web_view_->set_allow_accelerators(true);
+  box->SetFlexForView(web_view_, 1);
 
   location_bar_view_->Init();
 
@@ -267,9 +277,10 @@ PresentationReceiverWindowView::GetContentSettingBubbleModelDelegate() {
   NOTREACHED();
 }
 
-void PresentationReceiverWindowView::ExecuteCommandWithDisposition(
+void PresentationReceiverWindowView::HandleCommandWithDisposition(
     int id,
-    WindowOpenDisposition disposition) {
+    WindowOpenDisposition disposition,
+    base::TimeTicks time_stamp) {
   NOTREACHED();
 }
 
@@ -298,14 +309,14 @@ bool PresentationReceiverWindowView::IsFullscreen() const {
 }
 
 void PresentationReceiverWindowView::EnterFullscreen(
-    const GURL& url,
+    const url::Origin& origin,
     ExclusiveAccessBubbleType bubble_type,
-    const int64_t display_id) {
+    FullscreenTabParams fullscreen_tab_params) {
   frame_->SetFullscreen(true);
 #if !BUILDFLAG(IS_CHROMEOS)
   OnFullscreenChanged();
 #endif
-  UpdateExclusiveAccessBubble({.url = url, .type = bubble_type},
+  UpdateExclusiveAccessBubble({.origin = origin, .type = bubble_type},
                               base::NullCallback());
 }
 
@@ -319,18 +330,21 @@ void PresentationReceiverWindowView::ExitFullscreen() {
 void PresentationReceiverWindowView::UpdateExclusiveAccessBubble(
     const ExclusiveAccessBubbleParams& params,
     ExclusiveAccessBubbleHideCallback first_hide_callback) {
+  bool should_hide_bubble =
+      !params.has_download && params.type == EXCLUSIVE_ACCESS_BUBBLE_TYPE_NONE;
+
 #if BUILDFLAG(IS_CHROMEOS)
   // On Chrome OS, we will not show the toast for the normal browser fullscreen
   // mode.  The 'F11' text is confusing since how to access F11 on a Chromebook
   // is not common knowledge and there is also a dedicated fullscreen toggle
   // button available.
-  if ((!params.has_download &&
-       params.type == EXCLUSIVE_ACCESS_BUBBLE_TYPE_NONE) ||
-      params.url.is_empty()) {
-#else
-  if (!params.has_download &&
-      params.type == EXCLUSIVE_ACCESS_BUBBLE_TYPE_NONE) {
+  if (params.type ==
+      EXCLUSIVE_ACCESS_BUBBLE_TYPE_BROWSER_FULLSCREEN_EXIT_INSTRUCTION) {
+    should_hide_bubble = true;
+  }
 #endif
+
+  if (should_hide_bubble) {
     // |exclusive_access_bubble_.reset()| will trigger callback for current
     // bubble with |ExclusiveAccessBubbleHideReason::kInterrupted| if available.
     exclusive_access_bubble_.reset();
@@ -418,6 +432,84 @@ void PresentationReceiverWindowView::OnFullscreenChanged() {
   location_bar_view_->SetVisible(!fullscreen);
   if (fullscreen == (location_bar_view_->height() > 0)) {
     DeprecatedLayoutImmediately();
+  }
+  NotifyPositionRequiresUpdate();
+}
+
+void PresentationReceiverWindowView::OnBoundsChanged(
+    const gfx::Rect& previous_bounds) {
+  views::WidgetDelegateView::OnBoundsChanged(previous_bounds);
+  NotifyPositionRequiresUpdate();
+}
+
+void PresentationReceiverWindowView::AddedToWidget() {
+  views::WidgetDelegateView::AddedToWidget();
+  widget_observation_.Observe(GetWidget());
+}
+
+void PresentationReceiverWindowView::RemovedFromWidget() {
+  widget_observation_.Reset();
+  views::WidgetDelegateView::RemovedFromWidget();
+}
+
+void PresentationReceiverWindowView::OnWidgetBoundsChanged(
+    views::Widget* widget,
+    const gfx::Rect& new_bounds) {
+  NotifyPositionRequiresUpdate();
+}
+
+void PresentationReceiverWindowView::OnWidgetDestroying(views::Widget* widget) {
+  widget_observation_.Reset();
+}
+
+web_modal::WebContentsModalDialogHost*
+PresentationReceiverWindowView::GetWebContentsModalDialogHost(
+    content::WebContents* web_contents) {
+  DCHECK_EQ(GetWebContents(), web_contents);
+  return this;
+}
+
+bool PresentationReceiverWindowView::IsWebContentsVisible(
+    content::WebContents* web_contents) {
+  DCHECK_EQ(GetWebContents(), web_contents);
+  return web_view_ && web_view_->IsDrawn();
+}
+
+gfx::NativeView PresentationReceiverWindowView::GetHostView() const {
+  return GetWidget() ? GetWidget()->GetNativeView() : gfx::NativeView();
+}
+
+gfx::Point PresentationReceiverWindowView::GetDialogPosition(
+    const gfx::Size& size) {
+  views::View* view = web_view_ ? static_cast<views::View*>(web_view_) : this;
+  if (!GetWidget()) {
+    return gfx::Point();
+  }
+  gfx::Rect bounds = view->ConvertRectToWidget(view->GetLocalBounds());
+  int middle_x = bounds.x() + bounds.width() / 2;
+  int dialog_x = middle_x - size.width() / 2;
+  int max_x = bounds.right() - size.width();
+  dialog_x = std::clamp(dialog_x, bounds.x(), std::max(bounds.x(), max_x));
+  return gfx::Point(dialog_x, bounds.y());
+}
+
+gfx::Size PresentationReceiverWindowView::GetMaximumDialogSize() {
+  return web_view_ ? web_view_->size() : size();
+}
+
+void PresentationReceiverWindowView::AddObserver(
+    web_modal::ModalDialogHostObserver* observer) {
+  observer_list_.AddObserver(observer);
+}
+
+void PresentationReceiverWindowView::RemoveObserver(
+    web_modal::ModalDialogHostObserver* observer) {
+  observer_list_.RemoveObserver(observer);
+}
+
+void PresentationReceiverWindowView::NotifyPositionRequiresUpdate() {
+  for (web_modal::ModalDialogHostObserver& observer : observer_list_) {
+    observer.OnPositionRequiresUpdate();
   }
 }
 

@@ -7,10 +7,10 @@
 #include <algorithm>
 #include <vector>
 
-#include "base/containers/contains.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
+#include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool.h"
@@ -18,8 +18,10 @@
 #include "base/time/default_tick_clock.h"
 #include "components/affiliations/core/browser/affiliation_backend.h"
 #include "components/affiliations/core/browser/affiliation_fetcher_interface.h"
+#include "components/affiliations/core/browser/affiliation_utils.h"
 #include "services/network/public/cpp/network_connection_tracker.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "third_party/re2/src/re2/re2.h"
 #include "url/gurl.h"
 
 namespace affiliations {
@@ -40,23 +42,15 @@ CreateFacetUriToChangePasswordUrlMap(
     const std::vector<GroupedFacets>& groupings) {
   std::map<FacetURI, AffiliationServiceImpl::ChangePasswordUrlMatch> uri_to_url;
   for (const auto& grouped_facets : groupings) {
-    std::vector<FacetURI> uris_without_urls;
-    GURL fallback_url;
     for (const auto& facet : grouped_facets.facets) {
-      if (!facet.change_password_url.is_valid()) {
-        uris_without_urls.push_back(facet.uri);
+      // Affiliation server didn't generate it. Such facets can be skipped.
+      if (facet.is_facet_synthesized) {
         continue;
       }
-      uri_to_url[facet.uri] = AffiliationServiceImpl::ChangePasswordUrlMatch{
-          .change_password_url = facet.change_password_url,
-          .group_url_override = false};
-      fallback_url = facet.change_password_url;
-    }
-    if (fallback_url.is_valid()) {
-      for (const auto& uri : uris_without_urls) {
-        uri_to_url[uri] = AffiliationServiceImpl::ChangePasswordUrlMatch{
-            .change_password_url = fallback_url, .group_url_override = true};
-      }
+      AffiliationServiceImpl::ChangePasswordUrlMatch match;
+      match.change_password_url = facet.change_password_url;
+      match.patterns = facet.change_password_patterns;
+      uri_to_url[facet.uri] = std::move(match);
     }
   }
   return uri_to_url;
@@ -71,25 +65,33 @@ FacetURI ConvertGURLToFacet(const GURL& url) {
   }
 }
 
-// Returns FacetURI corresponding to the top level domain of the `facet`. Empty
-// if `facet` is android app, eTLD+1 can't be extracted, or `facet` is already
-// top level domain.
-FacetURI GetFacetForTopLevelDomain(FacetURI facet) {
+// Returns FacetURI corresponding to the top level domain of the `facet`.
+// If `kFetchChangePasswordPatterns` is enabled, returns `facet` as a fallback
+// when `facet` is an Android app, eTLD+1 can't be extracted, or `facet` is
+// already a top level domain. Otherwise, returns an empty FacetURI in these
+// cases.
+FacetURI GetFacetForTopLevelDomain(
+    FacetURI facet,
+    const base::flat_set<std::string>& psl_extension_list) {
+  FacetURI fallback = base::FeatureList::IsEnabled(kFetchChangePasswordPatterns)
+                          ? facet
+                          : FacetURI();
+
   if (!facet.IsValidWebFacetURI()) {
-    return FacetURI();
+    return fallback;
   }
 
-  std::string top_domain =
-      GetExtendedTopLevelDomain(GURL(facet.canonical_spec()), {});
+  std::string top_domain = GetExtendedTopLevelDomain(
+      GURL(facet.canonical_spec()), psl_extension_list);
   if (top_domain.empty()) {
-    return FacetURI();
+    return fallback;
   }
 
   FacetURI result =
       FacetURI::FromPotentiallyInvalidSpec("https://" + top_domain);
 
   if (!result.is_valid() || result == facet) {
-    return FacetURI();
+    return fallback;
   }
 
   return result;
@@ -97,9 +99,7 @@ FacetURI GetFacetForTopLevelDomain(FacetURI facet) {
 
 void LogChangePasswordURLTypeUsed(
     const AffiliationServiceImpl::ChangePasswordUrlMatch& match) {
-  if (match.group_url_override) {
-    LogFetchResult(GetChangePasswordUrlMetric::kGroupUrlOverrideUsed);
-  } else if (match.main_domain_override) {
+  if (match.main_domain_override) {
     LogFetchResult(GetChangePasswordUrlMetric::kMainDomainUsed);
   } else {
     LogFetchResult(GetChangePasswordUrlMetric::kUrlOverrideUsed);
@@ -108,44 +108,60 @@ void LogChangePasswordURLTypeUsed(
 
 }  // namespace
 
+BASE_FEATURE(kCachePSLExtensions, base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kFetchChangePasswordPatterns, base::FEATURE_ENABLED_BY_DEFAULT);
+
 const char kGetChangePasswordURLMetricName[] =
     "PasswordManager.AffiliationService.GetChangePasswordUsage";
 
 struct AffiliationServiceImpl::FetchInfo {
-  FetchInfo(std::unique_ptr<AffiliationFetcherInterface> pending_fetcher,
-            FacetURI facet,
-            FacetURI main_domain_facet,
-            base::OnceClosure result_callback)
-      : fetcher(std::move(pending_fetcher)),
-        requested_facet(std::move(facet)),
-        top_level_domain(std::move(main_domain_facet)),
-        callback(std::move(result_callback)) {
-    std::vector<FacetURI> facets_to_request;
-    facets_to_request.push_back(requested_facet);
-
-    if (top_level_domain.is_valid()) {
-      facets_to_request.push_back(top_level_domain);
-    }
-
-    fetcher->StartRequest(facets_to_request, kChangePasswordUrlRequestInfo);
-  }
+  FetchInfo(const GURL& url,
+            const base::flat_set<std::string>& psl_extension_list,
+            base::OnceCallback<void(GURL)> result_callback)
+      : requested_url(url),
+        requested_facet(ConvertGURLToFacet(url)),
+        top_level_domain(
+            GetFacetForTopLevelDomain(requested_facet, psl_extension_list)),
+        callback(std::move(result_callback)) {}
 
   FetchInfo(FetchInfo&& other) = default;
 
   FetchInfo& operator=(FetchInfo&& other) = default;
 
   ~FetchInfo() {
-    // The check is essential here, because emplace_back calls move constructor
-    // and destructor, respectively. Therefore, the check is necessary to
-    // prevent accessing already moved object.
-    if (callback)
-      std::move(callback).Run();
+    // Check if the callback is still there. |FetchInfo| is moved into a
+    // callback, so it can be gone by the time the destructor is called.
+    if (callback) {
+      // If a fetch is not possible, |AffiliationFetcherManager::Fetch| can
+      // invoke its callback immediately. Posting a task here instead or
+      // directly running it will prevent the caller of
+      // |FetchChangePasswordURL| from unexpectedly receiving the result of
+      // the callback during the execution of |FetchChangePasswordURL|.
+      base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+          FROM_HERE, base::BindOnce(std::move(callback), GURL()));
+    }
   }
 
   ChangePasswordUrlMatch GetChangePasswordURL(
-      std::unique_ptr<AffiliationFetcherDelegate::Result> result) {
+      const AffiliationFetcherInterface::ParsedFetchResponse& result) const {
     std::map<FacetURI, AffiliationServiceImpl::ChangePasswordUrlMatch>
-        uri_to_url = CreateFacetUriToChangePasswordUrlMap(result->groupings);
+        uri_to_url = CreateFacetUriToChangePasswordUrlMap(result.groupings);
+
+    // If pattern matching is enabled, try to match the requested URL against
+    // patterns defined for the top level domain.
+    if (base::FeatureList::IsEnabled(kFetchChangePasswordPatterns)) {
+      auto it = uri_to_url.find(top_level_domain);
+      if (it != uri_to_url.end()) {
+        for (const auto& pattern : it->second.patterns) {
+          if (RE2::FullMatch(requested_url.spec(), pattern.url_pattern_re2)) {
+            ChangePasswordUrlMatch match;
+            match.change_password_url = pattern.change_password_url;
+            return match;
+          }
+        }
+      }
+      return ChangePasswordUrlMatch();
+    }
 
     auto it = uri_to_url.find(requested_facet);
     if (it != uri_to_url.end()) {
@@ -162,13 +178,40 @@ struct AffiliationServiceImpl::FetchInfo {
     return ChangePasswordUrlMatch();
   }
 
-  std::unique_ptr<AffiliationFetcherInterface> fetcher;
+  std::vector<FacetURI> FacetsToRequest() const {
+    // Patterns are available only for the top level domain.
+    if (base::FeatureList::IsEnabled(kFetchChangePasswordPatterns)) {
+      return {top_level_domain};
+    }
+
+    if (top_level_domain.is_valid() && top_level_domain != requested_facet) {
+      return {requested_facet, top_level_domain};
+    }
+    return {requested_facet};
+  }
+
+  GURL requested_url;
   FacetURI requested_facet;
   FacetURI top_level_domain;
-  // Callback is passed in PrefetchChangePasswordURLs and is run to indicate the
-  // prefetch has finished or got canceled.
-  base::OnceClosure callback;
+  // Callback is passed in FetchChangePasswordURL and is run to indicate the
+  // fetch has finished or got canceled.
+  base::OnceCallback<void(GURL)> callback;
 };
+
+AffiliationServiceImpl::ChangePasswordUrlMatch::ChangePasswordUrlMatch() =
+    default;
+AffiliationServiceImpl::ChangePasswordUrlMatch::ChangePasswordUrlMatch(
+    const ChangePasswordUrlMatch&) = default;
+AffiliationServiceImpl::ChangePasswordUrlMatch::ChangePasswordUrlMatch(
+    ChangePasswordUrlMatch&&) = default;
+AffiliationServiceImpl::ChangePasswordUrlMatch&
+AffiliationServiceImpl::ChangePasswordUrlMatch::operator=(
+    const ChangePasswordUrlMatch&) = default;
+AffiliationServiceImpl::ChangePasswordUrlMatch&
+AffiliationServiceImpl::ChangePasswordUrlMatch::operator=(
+    ChangePasswordUrlMatch&&) = default;
+AffiliationServiceImpl::ChangePasswordUrlMatch::~ChangePasswordUrlMatch() =
+    default;
 
 // TODO(crbug.com/40789139): Create the backend task runner in Init and stop
 // passing it in the constructor.
@@ -176,7 +219,6 @@ AffiliationServiceImpl::AffiliationServiceImpl(
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
     scoped_refptr<base::SequencedTaskRunner> backend_task_runner)
     : url_loader_factory_(std::move(url_loader_factory)),
-      fetcher_factory_(std::make_unique<AffiliationFetcherFactoryImpl>()),
       backend_task_runner_(std::move(backend_task_runner)) {}
 
 AffiliationServiceImpl::~AffiliationServiceImpl() = default;
@@ -185,6 +227,8 @@ void AffiliationServiceImpl::Init(
     network::NetworkConnectionTracker* network_connection_tracker,
     const base::FilePath& db_path) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  fetcher_manager_ =
+      std::make_unique<AffiliationFetcherManager>(url_loader_factory_);
   backend_ = std::make_unique<AffiliationBackend>(
       backend_task_runner_, base::DefaultClock::GetInstance(),
       base::DefaultTickClock::GetInstance());
@@ -200,38 +244,41 @@ void AffiliationServiceImpl::Shutdown() {
   }
 }
 
-void AffiliationServiceImpl::PrefetchChangePasswordURL(
+void AffiliationServiceImpl::FetchChangePasswordURL(
     const GURL& url,
-    base::OnceClosure callback) {
+    base::OnceCallback<void(GURL)> callback) {
   FacetURI facet_uri = ConvertGURLToFacet(url);
-
-  if (facet_uri.is_valid() &&
-      !base::Contains(change_password_urls_, facet_uri)) {
-    auto fetcher = fetcher_factory_->CreateInstance(url_loader_factory_, this);
-    if (fetcher) {
-      pending_fetches_.emplace_back(std::move(fetcher), std::move(facet_uri),
-                                    GetFacetForTopLevelDomain(facet_uri),
-                                    std::move(callback));
-      return;
-    }
+  if (!facet_uri.is_valid()) {
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindOnce(std::move(callback), GURL()));
+    return;
   }
 
-  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(FROM_HERE,
-                                                           std::move(callback));
+  FetchInfo fetch_info(url, psl_extension_list_, std::move(callback));
+  auto facets_to_request = fetch_info.FacetsToRequest();
+
+  AffiliationFetcherInterface::RequestInfo request_info =
+      kChangePasswordUrlRequestInfo;
+  request_info.fetch_patterns =
+      base::FeatureList::IsEnabled(kFetchChangePasswordPatterns);
+
+  fetcher_manager_->Fetch(
+      facets_to_request, request_info,
+      base::BindOnce(&AffiliationServiceImpl::OnFetchFinished,
+                     weak_ptr_factory_.GetWeakPtr(), std::move(fetch_info)));
 }
 
 GURL AffiliationServiceImpl::GetChangePasswordURL(const GURL& url) const {
   FacetURI uri = ConvertGURLToFacet(url);
 
   auto it = change_password_urls_.find(uri);
-  if (it != change_password_urls_.end()) {
+  if (it != change_password_urls_.end() &&
+      it->second.change_password_url.is_valid()) {
     LogChangePasswordURLTypeUsed(it->second);
     return it->second.change_password_url;
   }
-
-  if (std::ranges::any_of(pending_fetches_, [&uri](const auto& info) {
-        return uri == info.requested_facet;
-      })) {
+  auto requested_facet_uris = fetcher_manager_->GetRequestedFacetURIs();
+  if (std::ranges::contains(requested_facet_uris, uri)) {
     LogFetchResult(GetChangePasswordUrlMetric::kNotFetchedYet);
   } else {
     LogFetchResult(GetChangePasswordUrlMetric::kNoUrlOverrideAvailable);
@@ -239,40 +286,33 @@ GURL AffiliationServiceImpl::GetChangePasswordURL(const GURL& url) const {
   return GURL();
 }
 
-void AffiliationServiceImpl::OnFetchSucceeded(
-    AffiliationFetcherInterface* fetcher,
-    std::unique_ptr<AffiliationFetcherDelegate::Result> result) {
-  auto processed_fetch =
-      std::ranges::find(pending_fetches_, fetcher,
-                        [](const auto& info) { return info.fetcher.get(); });
-  if (processed_fetch == pending_fetches_.end())
-    return;
+void AffiliationServiceImpl::OnFetchFinished(
+    FetchInfo fetch_info,
+    AffiliationFetcherInterface::FetchResult fetch_result) {
+  GURL change_password_url;
+  if (fetch_result.IsSuccessful()) {
+    ChangePasswordUrlMatch match =
+        fetch_info.GetChangePasswordURL(fetch_result.data.value());
+    change_password_url = match.change_password_url;
 
-  change_password_urls_[processed_fetch->requested_facet] =
-      processed_fetch->GetChangePasswordURL(std::move(result));
+    // Only cache the result if pattern matching is disabled. When patterns
+    // are enabled, the result is specific to the requested URL's path and
+    // should not be cached at the facet level.
+    if (!base::FeatureList::IsEnabled(kFetchChangePasswordPatterns)) {
+      change_password_urls_[fetch_info.requested_facet] = match;
+    }
+  }
 
-  pending_fetches_.erase(processed_fetch);
-}
-
-void AffiliationServiceImpl::OnFetchFailed(
-    AffiliationFetcherInterface* fetcher) {
-  std::erase_if(pending_fetches_, [fetcher](const auto& info) {
-    return info.fetcher.get() == fetcher;
-  });
-}
-
-void AffiliationServiceImpl::OnMalformedResponse(
-    AffiliationFetcherInterface* fetcher) {
-  std::erase_if(pending_fetches_, [fetcher](const auto& info) {
-    return info.fetcher.get() == fetcher;
-  });
+  if (fetch_info.callback) {
+    std::move(fetch_info.callback).Run(change_password_url);
+  }
 }
 
 void AffiliationServiceImpl::GetAffiliationsAndBranding(
     const FacetURI& facet_uri,
     ResultCallback result_callback) {
   PostToBackend(&AffiliationBackend::GetAffiliationsAndBranding, facet_uri,
-                StrategyOnCacheMiss::FAIL, std::move(result_callback),
+                std::move(result_callback),
                 base::SequencedTaskRunner::GetCurrentDefault());
 }
 
@@ -314,11 +354,19 @@ void AffiliationServiceImpl::GetGroupingInfo(std::vector<FacetURI> facet_uris,
 }
 
 void AffiliationServiceImpl::GetPSLExtensions(
-    base::OnceCallback<void(std::vector<std::string>)> callback) const {
+    base::OnceCallback<void(std::vector<std::string>)> callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
   // If `backend` is destroyed there is nothing to do.
   if (!backend_) {
     return;
+  }
+
+  if (psl_extension_list_.empty() &&
+      base::FeatureList::IsEnabled(kCachePSLExtensions)) {
+    callback =
+        base::BindOnce(&AffiliationServiceImpl::OnPSLExtensionsLoaded,
+                       weak_ptr_factory_.GetWeakPtr(), std::move(callback));
   }
 
   backend_task_runner_->PostTaskAndReplyWithResult(
@@ -347,6 +395,17 @@ void AffiliationServiceImpl::UpdateAffiliationsAndBranding(
 void AffiliationServiceImpl::RegisterSource(
     std::unique_ptr<AffiliationSource> source) {
   prefetcher_.RegisterSource(std::move(source));
+}
+
+void AffiliationServiceImpl::OnPSLExtensionsLoaded(
+    base::OnceCallback<void(std::vector<std::string>)> callback,
+    std::vector<std::string> psl_extensions) {
+  psl_extension_list_ = base::flat_set<std::string>(psl_extensions);
+  std::move(callback).Run(std::move(psl_extensions));
+}
+
+base::WeakPtr<AffiliationService> AffiliationServiceImpl::AsWeakPtr() {
+  return weak_ptr_factory_.GetWeakPtr();
 }
 
 }  // namespace affiliations

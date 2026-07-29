@@ -10,6 +10,7 @@
 #include <utility>
 #include <vector>
 
+#include "ash/constants/ash_pref_names.h"
 #include "base/test/test_future.h"
 #include "base/values.h"
 #include "chrome/browser/ash/login/test/device_state_mixin.h"
@@ -21,14 +22,13 @@
 #include "chrome/browser/ash/platform_keys/platform_keys_service_factory.h"
 #include "chrome/browser/ash/platform_keys/platform_keys_service_test_util.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/chromeos/platform_keys/platform_keys.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/common/pref_names.h"
 #include "chrome/test/base/ash/scoped_test_system_nss_key_slot_mixin.h"
 #include "chrome/test/base/mixin_based_in_process_browser_test.h"
 #include "chromeos/ash/components/kcer/key_permissions.pb.h"
 #include "chromeos/ash/components/login/auth/public/user_context.h"
+#include "chromeos/ash/components/platform_keys/platform_keys.h"
 #include "components/prefs/pref_test_utils.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
 #include "content/public/test/browser_test.h"
@@ -195,7 +195,7 @@ class SystemTokenKeyPermissionsManagerBrowserTest
  protected:
   void WaitForOneTimeMigrationToFinish() override {
     WaitForPrefValue(g_browser_process->local_state(),
-                     prefs::kKeyPermissionsOneTimeMigrationDone,
+                     ash::prefs::kKeyPermissionsOneTimeMigrationDone,
                      base::Value(true));
   }
 
@@ -391,7 +391,7 @@ class UserTokenKeyPermissionsManagerBrowserTest
 
   void WaitForOneTimeMigrationToFinish() override {
     WaitForPrefValue(ProfileManager::GetActiveUserProfile()->GetPrefs(),
-                     prefs::kKeyPermissionsOneTimeMigrationDone,
+                     ash::prefs::kKeyPermissionsOneTimeMigrationDone,
                      base::Value(true));
   }
 

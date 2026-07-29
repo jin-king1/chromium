@@ -16,8 +16,10 @@ import org.chromium.base.FileProviderUtils;
 import org.chromium.base.StrictModeContext;
 import org.chromium.base.library_loader.LibraryLoader;
 import org.chromium.base.library_loader.LibraryProcessType;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.content_public.browser.BrowserStartupController;
 import org.chromium.content_public.browser.BrowserStartupController.StartupCallback;
+import org.chromium.content_public.browser.BrowserStartupController.StartupMetrics;
 import org.chromium.content_shell.ShellManager;
 import org.chromium.native_test.NativeBrowserTest;
 import org.chromium.native_test.NativeBrowserTestActivity;
@@ -68,7 +70,7 @@ public abstract class ContentShellBrowserTestActivity extends NativeBrowserTestA
                         /* listenToActivityState= */ true,
                         intentRequestTracker,
                         /* insetObserver= */ null,
-                        /* trackOcclusion= */ true);
+                        /* occlusionTrackingAllowed= */ true);
         mShellManager.setWindow(mWindowAndroid);
 
         Window wind = this.getWindow();
@@ -89,9 +91,10 @@ public abstract class ContentShellBrowserTestActivity extends NativeBrowserTestA
                         LibraryProcessType.PROCESS_BROWSER,
                         false,
                         false,
+                        false,
                         new StartupCallback() {
                             @Override
-                            public void onSuccess() {
+                            public void onSuccess(@Nullable StartupMetrics metrics) {
                                 // The C++ test harness is running thanks to runTests() above, but
                                 // it waits for Java initialization to complete. This tells C++
                                 // that it may continue now to finish running the tests.
@@ -108,9 +111,7 @@ public abstract class ContentShellBrowserTestActivity extends NativeBrowserTestA
 
     /**
      * Ensure that the user data directory gets overridden to getPrivateDataDirectory() (which is
-     * cleared at the start of every run); the directory that ANDROID_APP_DATA_DIR is set to in the
-     * context of Java browsertests is not cleared as it also holds persistent state, which causes
-     * test failures due to state bleedthrough. See crbug.com/617734 for details.
+     * cleared at the start of every run);
      */
     @Override
     protected String getUserDataDirectoryCommandLineSwitch() {

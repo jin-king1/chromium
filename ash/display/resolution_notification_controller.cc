@@ -6,14 +6,13 @@
 
 #include <utility>
 
+#include "ash/display/cros_display_config.h"
 #include "ash/display/display_change_dialog.h"
 #include "ash/display/display_util.h"
 #include "ash/public/cpp/notification_utils.h"
-#include "ash/resources/vector_icons/vector_icons.h"
 #include "ash/session/session_controller_impl.h"
 #include "ash/shell.h"
 #include "ash/strings/grit/ash_strings.h"
-#include "ash/system/screen_layout_observer.h"
 #include "base/functional/bind.h"
 #include "base/strings/utf_string_conversions.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -77,13 +76,11 @@ bool ResolutionNotificationController::PrepareNotificationAndSetDisplayMode(
     int64_t display_id,
     const display::ManagedDisplayMode& old_resolution,
     const display::ManagedDisplayMode& new_resolution,
-    crosapi::mojom::DisplayConfigSource source,
+    DisplayConfigSource source,
     base::OnceClosure accept_callback) {
-  Shell::Get()->screen_layout_observer()->SetDisplayChangedFromSettingsUI(
-      display_id);
   display::DisplayManager* const display_manager =
       Shell::Get()->display_manager();
-  if (source == crosapi::mojom::DisplayConfigSource::kPolicy ||
+  if (source == DisplayConfigSource::kPolicy ||
       display::IsInternalDisplayId(display_id)) {
     // We don't show notifications to confirm/revert the resolution change in
     // the case of an internal display or policy-forced changes.
@@ -154,45 +151,32 @@ void ResolutionNotificationController::CreateOrReplaceModalDialog() {
   constexpr char16_t kTimeoutPlaceHolder[] = u"$1";
 
   std::u16string timeout_message_with_placeholder;
-  if (display::features::IsListAllDisplayModesEnabled()) {
-    const std::u16string actual_refresh_rate = ConvertRefreshRateToString16(
-        change_info_->current_resolution.refresh_rate());
-    const std::u16string requested_refresh_rate = ConvertRefreshRateToString16(
-        change_info_->new_resolution.refresh_rate());
+  const std::u16string actual_refresh_rate = ConvertRefreshRateToString16(
+      change_info_->current_resolution.refresh_rate());
+  const std::u16string requested_refresh_rate =
+      ConvertRefreshRateToString16(change_info_->new_resolution.refresh_rate());
 
-    const bool no_fallback = actual_display_size == requested_display_size &&
-                             actual_refresh_rate == requested_refresh_rate;
+  const bool no_fallback = actual_display_size == requested_display_size &&
+                           actual_refresh_rate == requested_refresh_rate;
 
-    dialog_title =
-        no_fallback
-            ? l10n_util::GetStringUTF16(
-                  IDS_ASH_RESOLUTION_REFRESH_CHANGE_DIALOG_TITLE_SUCCESS)
-            : l10n_util::GetStringUTF16(
-                  IDS_ASH_RESOLUTION_REFRESH_CHANGE_DIALOG_TITLE_FALLBACK);
+  dialog_title =
+      no_fallback
+          ? l10n_util::GetStringUTF16(
+                IDS_ASH_RESOLUTION_REFRESH_CHANGE_DIALOG_TITLE_SUCCESS)
+          : l10n_util::GetStringUTF16(
+                IDS_ASH_RESOLUTION_REFRESH_CHANGE_DIALOG_TITLE_FALLBACK);
 
-    timeout_message_with_placeholder =
-        no_fallback ? l10n_util::GetStringFUTF16(
-                          IDS_ASH_RESOLUTION_REFRESH_CHANGE_DIALOG_CHANGED_NEW,
-                          display_name, actual_display_size,
-                          actual_refresh_rate, kTimeoutPlaceHolder)
-                    : l10n_util::GetStringFUTF16(
-                          IDS_ASH_RESOLUTION_REFRESH_CHANGE_DIALOG_FALLBACK_NEW,
-                          {display_name, actual_display_size,
-                           actual_refresh_rate, requested_display_size,
-                           requested_refresh_rate, kTimeoutPlaceHolder},
-                          /*offsets=*/nullptr);
-
-  } else {
-    timeout_message_with_placeholder =
-        actual_display_size == requested_display_size
-            ? l10n_util::GetStringFUTF16(
-                  IDS_ASH_RESOLUTION_CHANGE_DIALOG_CHANGED, display_name,
-                  actual_display_size, kTimeoutPlaceHolder)
-            : l10n_util::GetStringFUTF16(
-                  IDS_ASH_RESOLUTION_CHANGE_DIALOG_FALLBACK, display_name,
-                  requested_display_size, actual_display_size,
-                  kTimeoutPlaceHolder);
-  }
+  timeout_message_with_placeholder =
+      no_fallback ? l10n_util::GetStringFUTF16(
+                        IDS_ASH_RESOLUTION_REFRESH_CHANGE_DIALOG_CHANGED_NEW,
+                        display_name, actual_display_size, actual_refresh_rate,
+                        kTimeoutPlaceHolder)
+                  : l10n_util::GetStringFUTF16(
+                        IDS_ASH_RESOLUTION_REFRESH_CHANGE_DIALOG_FALLBACK_NEW,
+                        {display_name, actual_display_size, actual_refresh_rate,
+                         requested_display_size, requested_refresh_rate,
+                         kTimeoutPlaceHolder},
+                        /*offsets=*/nullptr);
 
   DisplayChangeDialog* dialog = new DisplayChangeDialog(
       std::move(dialog_title), std::move(timeout_message_with_placeholder),
@@ -220,8 +204,6 @@ void ResolutionNotificationController::RevertResolutionChange(
   const int64_t display_id = change_info_->display_id;
   display::ManagedDisplayMode old_resolution = change_info_->old_resolution;
   change_info_.reset();
-  Shell::Get()->screen_layout_observer()->SetDisplayChangedFromSettingsUI(
-      display_id);
   if (display_was_removed) {
     // If display was removed then we are inside the stack of
     // DisplayManager::UpdateDisplaysWith(), and we need to update the selected

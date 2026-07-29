@@ -5,6 +5,7 @@
 import '/strings.m.js';
 
 import {assert} from 'chrome://resources/js/assert.js';
+import {stripDiacritics} from 'chrome://resources/js/search_highlight_utils.js';
 
 import {NativeLayerCrosImpl} from '../native_layer_cros.js';
 
@@ -33,11 +34,9 @@ export enum DestinationOrigin {
  * Must match PrinterType in printing/mojom/print.mojom
  */
 export enum PrinterType {
-  PRIVET_PRINTER_DEPRECATED = 0,
-  EXTENSION_PRINTER = 1,
-  PDF_PRINTER = 2,
-  LOCAL_PRINTER = 3,
-  CLOUD_PRINTER_DEPRECATED = 4
+  EXTENSION_PRINTER = 0,
+  PDF_PRINTER = 1,
+  LOCAL_PRINTER = 2,
 }
 
 /**
@@ -163,6 +162,12 @@ const COLOR_TYPES: string[] = ['STANDARD_COLOR', 'CUSTOM_COLOR'];
  * List of capability types considered monochrome.
  */
 const MONOCHROME_TYPES: string[] = ['STANDARD_MONOCHROME', 'CUSTOM_MONOCHROME'];
+
+
+function matchWithDiacritics(candidate: string, query: RegExp): boolean {
+  const strippedCandidate = stripDiacritics(candidate);
+  return !!strippedCandidate.match(query);
+}
 
 
 /**
@@ -678,9 +683,10 @@ export class Destination {
    * @return Whether the query matches this destination.
    */
   matches(query: RegExp): boolean {
-    return !!this.displayName_.match(query) ||
-        !!this.extensionName_.match(query) || !!this.location_.match(query) ||
-        !!this.description_.match(query);
+    return matchWithDiacritics(this.displayName_, query) ||
+        matchWithDiacritics(this.extensionName_, query) ||
+        matchWithDiacritics(this.location_, query) ||
+        matchWithDiacritics(this.description_, query);
   }
 
   /**

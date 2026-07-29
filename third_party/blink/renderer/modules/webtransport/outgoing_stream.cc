@@ -55,9 +55,7 @@ class SendStreamAbortAlgorithm final : public AbortSignal::Algorithm {
 };
 
 struct CachedDataBufferDeleter {
-  void operator()(void* buffer) {
-    WTF::Partitions::BufferPartition()->Free(buffer);
-  }
+  void operator()(void* buffer) { Partitions::BufferPartition()->Free(buffer); }
 };
 
 }  // namespace
@@ -163,9 +161,9 @@ class OutgoingStream::CachedDataBuffer {
     // BufferPartition() will ever not be able to provide big enough
     // allocations, e.g. because bigger ArrayBuffers get supported, then we
     // have to switch to another allocator, e.g. the ArrayBuffer allocator.
-    void* memory_buffer = WTF::Partitions::BufferPartition()->Alloc(
-        data.size(), "OutgoingStream");
-    // SAFETY: WTF::Partitions::BufferPartition()->Alloc() returns a valid
+    void* memory_buffer =
+        Partitions::BufferPartition()->Alloc(data.size(), "OutgoingStream");
+    // SAFETY: Partitions::BufferPartition()->Alloc() returns a valid
     // pointer to at least data.size() bytes.
     buffer_ = UNSAFE_BUFFERS(HeapBuffer::FromOwningPointer(
         reinterpret_cast<uint8_t*>(memory_buffer), data.size()));
@@ -200,21 +198,21 @@ OutgoingStream::~OutgoingStream() = default;
 
 void OutgoingStream::Init(ExceptionState& exception_state) {
   DVLOG(1) << "OutgoingStream::Init() this=" << this;
-  auto* stream = MakeGarbageCollected<WritableStream>();
+  auto* stream = MakeGarbageCollected<WritableStream>(script_state_);
   InitWithExistingWritableStream(stream, exception_state);
 }
 
 void OutgoingStream::InitWithExistingWritableStream(
     WritableStream* stream,
     ExceptionState& exception_state) {
-  write_watcher_.Watch(data_pipe_.get(), MOJO_HANDLE_SIGNAL_WRITABLE,
-                       MOJO_TRIGGER_CONDITION_SIGNALS_SATISFIED,
-                       WTF::BindRepeating(&OutgoingStream::OnHandleReady,
-                                          WrapWeakPersistent(this)));
-  close_watcher_.Watch(data_pipe_.get(), MOJO_HANDLE_SIGNAL_PEER_CLOSED,
-                       MOJO_TRIGGER_CONDITION_SIGNALS_SATISFIED,
-                       WTF::BindRepeating(&OutgoingStream::OnPeerClosed,
-                                          WrapWeakPersistent(this)));
+  write_watcher_.Watch(
+      data_pipe_.get(), MOJO_HANDLE_SIGNAL_WRITABLE,
+      MOJO_TRIGGER_CONDITION_SIGNALS_SATISFIED,
+      BindRepeating(&OutgoingStream::OnHandleReady, WrapWeakPersistent(this)));
+  close_watcher_.Watch(
+      data_pipe_.get(), MOJO_HANDLE_SIGNAL_PEER_CLOSED,
+      MOJO_TRIGGER_CONDITION_SIGNALS_SATISFIED,
+      BindRepeating(&OutgoingStream::OnPeerClosed, WrapWeakPersistent(this)));
 
   writable_ = stream;
   stream->InitWithCountQueueingStrategy(
@@ -464,9 +462,9 @@ ScriptValue OutgoingStream::CreateAbortException(IsLocalAbort is_local_abort) {
 
   DOMExceptionCode code = is_local_abort ? DOMExceptionCode::kAbortError
                                          : DOMExceptionCode::kNetworkError;
-  String message =
+  String message = UNSAFE_TODO(
       String::Format("The stream was aborted %s",
-                     is_local_abort ? "locally" : "by the remote server");
+                     is_local_abort ? "locally" : "by the remote server"));
 
   return ScriptValue(script_state_->GetIsolate(),
                      V8ThrowDOMException::CreateOrEmpty(

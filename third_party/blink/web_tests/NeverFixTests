@@ -1,4 +1,4 @@
-# tags: [ Android Fuchsia Linux Mac Mac11 Mac11-arm64 Mac12 Mac12-arm64 Mac13 Mac13-arm64 Mac14 Mac14-arm64 Mac15 Mac15-arm64 Win Win10.20h2 Win11 Win11-arm64 iOS17-simulator ]
+# tags: [ Android Fuchsia Linux Mac Mac13 Mac13-arm64 Mac14 Mac14-arm64 Mac15 Mac15-arm64 Mac26 Mac26-arm64 Win Win10.20h2 Win11 Win11-arm64 iOS26-simulator ]
 # tags: [ Release Debug ]
 # results: [ Skip Pass ]
 
@@ -34,19 +34,19 @@
 # Chrome Win/Linux/iOS doesn't support emacs key-bindings.
 [ Win ] editing/pasteboard/emacs-cntl-y-001.html [ Skip ]
 [ Linux ] editing/pasteboard/emacs-cntl-y-001.html [ Skip ]
-[ iOS17-simulator ] editing/pasteboard/emacs-cntl-y-001.html [ Skip ]
+[ iOS26-simulator ] editing/pasteboard/emacs-cntl-y-001.html [ Skip ]
 [ Win ] editing/pasteboard/emacs-ctrl-a-k-y.html [ Skip ]
 [ Linux ] editing/pasteboard/emacs-ctrl-a-k-y.html [ Skip ]
-[ iOS17-simulator ] editing/pasteboard/emacs-ctrl-a-k-y.html [ Skip ]
+[ iOS26-simulator ] editing/pasteboard/emacs-ctrl-a-k-y.html [ Skip ]
 [ Win ] editing/pasteboard/emacs-ctrl-k-with-move.html [ Skip ]
 [ Linux ] editing/pasteboard/emacs-ctrl-k-with-move.html [ Skip ]
-[ iOS17-simulator ] editing/pasteboard/emacs-ctrl-k-with-move.html [ Skip ]
+[ iOS26-simulator ] editing/pasteboard/emacs-ctrl-k-with-move.html [ Skip ]
 [ Win ] editing/pasteboard/emacs-ctrl-k-y-001.html [ Skip ]
 [ Linux ] editing/pasteboard/emacs-ctrl-k-y-001.html [ Skip ]
-[ iOS17-simulator ] editing/pasteboard/emacs-ctrl-k-y-001.html [ Skip ]
+[ iOS26-simulator ] editing/pasteboard/emacs-ctrl-k-y-001.html [ Skip ]
 [ Win ] editing/input/emacs-ctrl-o.html [ Skip ]
 [ Linux ] editing/input/emacs-ctrl-o.html [ Skip ]
-[ iOS17-simulator ] editing/input/emacs-ctrl-o.html [ Skip ]
+[ iOS26-simulator ] editing/input/emacs-ctrl-o.html [ Skip ]
 [ Win ] fast/events/inputevents/inputevent-yank.html [ Skip ]
 [ Linux ] fast/events/inputevents/inputevent-yank.html [ Skip ]
 
@@ -100,7 +100,7 @@
 [ Mac ] dark-mode/colors/select-popup.html [ Skip ]
 
 # IOS's popup behavior is different.
-[ iOS17-simulator ] fast/forms/select-popup/* [ Skip ]
+[ iOS26-simulator ] fast/forms/select-popup/* [ Skip ]
 
 # These tests are specific to Windows and Linux.
 [ Mac ] fast/forms/calendar-picker/date-open-picker-with-f4-key.html [ Skip ]
@@ -113,24 +113,51 @@
 [ Mac ] fast/events/context-menu-key-shift-f10-modifiers.html [ Skip ]
 [ Mac ] fast/events/context-menu-key-shift-f10-prevent-default.html [ Skip ]
 [ Mac ] fast/events/contextmenu-follows-focus.html [ Skip ]
+[ Mac ] fast/events/contextmenu-prevent-use-counter.html [ Skip ]
 [ Mac ] fast/events/menu-key-context-menu-document.html [ Skip ]
 [ Mac ] fast/events/menu-key-context-menu-position.html [ Skip ]
 [ Mac ] fast/events/menu-key-context-menu-reveal-focus.html [ Skip ]
 [ Mac ] fast/events/menu-key-context-menu.html [ Skip ]
 
 # Mac does not support touch, so all touch-related tests are skipped there.
-crbug.com/613672 [ Mac ] compositing/gestures/gesture-tapHighlight-lines-and-float-in-multicol.html [ Skip ]
-crbug.com/613672 [ Mac ] external/wpt/pointerevents/coalesced_events_attributes_under_load.https.optional.html?touch [ Skip ]
-crbug.com/613672 [ Mac ] external/wpt/pointerevents/pointerevent_after_target_appended.html?touch [ Skip ]
-crbug.com/613672 [ Mac ] external/wpt/pointerevents/pointerevent_after_target_removed.html?touch [ Skip ]
-crbug.com/613672 [ Mac ] external/wpt/pointerevents/pointerevent_contextmenu_is_a_pointerevent.html?touch [ Skip ]
-crbug.com/613672 [ Mac ] external/wpt/pointerevents/touch-action-with-swipe-dir-change.html?touch [ Skip ]
-crbug.com/613672 [ Mac ] fast/events/pointerevents/multi-pointer-event-in-slop-region.html [ Skip ]
-crbug.com/613672 [ Mac ] fast/events/pointerevents/pointer-event-in-slop-region.html [ Skip ]
-crbug.com/613672 [ Mac ] fast/events/touch/gesture/* [ Skip ]
-crbug.com/613672 [ Mac ] fast/scrolling/resize-corner-tracking-touch.html [ Skip ]
-crbug.com/613672 [ Mac ] fast/scrolling/scrollbars/touch-scrolling-on-root-scrollbar.html [ Skip ]
-crbug.com/613672 [ Mac ] virtual/threaded/synthetic_gestures/synthetic-pinch-zoom-gesture-touchscreen.html [ Skip ]
+crbug.com/41254976 [ Mac ] compositing/gestures/gesture-tapHighlight-lines-and-float-in-multicol.html [ Skip ]
+crbug.com/41254976 [ Mac ] external/wpt/pointerevents/capturing_boundary_event_handler_at_ua_shadowdom.html?touch [ Skip ]
+crbug.com/41254976 [ Mac ] external/wpt/pointerevents/coalesced_events_attributes.https.html?touch [ Skip ]
+crbug.com/41254976 [ Mac ] external/wpt/pointerevents/coalesced_events_attributes_on_redispatch.https.html?touch [ Skip ]
+crbug.com/41254976 [ Mac ] external/wpt/pointerevents/coalesced_events_attributes_under_load.https.optional.html?touch [ Skip ]
+crbug.com/41254976 [ Mac ] external/wpt/pointerevents/pointerevent_after_target_appended.html?touch [ Skip ]
+crbug.com/41254976 [ Mac ] external/wpt/pointerevents/pointerevent_after_target_appended_interleaved.tentative.html?touch [ Skip ]
+crbug.com/41254976 [ Mac ] external/wpt/pointerevents/pointerevent_after_target_removed.html?touch [ Skip ]
+crbug.com/41254976 [ Mac ] external/wpt/pointerevents/pointerevent_after_target_removed_interleaved.tentative.html?touch [ Skip ]
+crbug.com/41254976 [ Mac ] external/wpt/pointerevents/pointerevent_attributes.html?touch [ Skip ]
+crbug.com/41254976 [ Mac ] external/wpt/pointerevents/pointerevent_attributes.optional.html?touch [ Skip ]
+crbug.com/41254976 [ Mac ] external/wpt/pointerevents/pointerevent_boundary_events_in_capturing.html?touch [ Skip ]
+crbug.com/41254976 [ Mac ] external/wpt/pointerevents/pointerevent_click_is_a_pointerevent.html?touch [ Skip ]
+crbug.com/41254976 [ Mac ] external/wpt/pointerevents/pointerevent_click_is_a_pointerevent_multiple_clicks.html?touch [ Skip ]
+crbug.com/41254976 [ Mac ] external/wpt/pointerevents/pointerevent_contextmenu_is_a_pointerevent.html?touch [ Skip ]
+crbug.com/41254976 [ Mac ] external/wpt/pointerevents/pointerevent_disabled_form_control.html?touch [ Skip ]
+crbug.com/41254976 [ Mac ] external/wpt/pointerevents/pointerevent_element_haspointercapture.html?touch [ Skip ]
+crbug.com/41254976 [ Mac ] external/wpt/pointerevents/pointerevent_element_haspointercapture_release_pending_capture.html?touch [ Skip ]
+crbug.com/41254976 [ Mac ] external/wpt/pointerevents/pointerevent_fractional_coordinates.html?touch [ Skip ]
+crbug.com/41254976 [ Mac ] external/wpt/pointerevents/pointerevent_movementxy.html?touch [ Skip ]
+crbug.com/41254976 [ Mac ] external/wpt/pointerevents/pointerevent_pointercapture_in_frame.html?touch [ Skip ]
+crbug.com/41254976 [ Mac ] external/wpt/pointerevents/pointerevent_pointermove_isprimary_same_as_pointerdown.html?touch [ Skip ]
+crbug.com/41254976 [ Mac ] external/wpt/pointerevents/pointerevent_range_input.html?touch [ Skip ]
+crbug.com/41254976 [ Mac ] external/wpt/pointerevents/pointerevent_releasepointercapture_events_to_original_target.html?touch [ Skip ]
+crbug.com/41254976 [ Mac ] external/wpt/pointerevents/pointerevent_releasepointercapture_release_right_after_capture.html?touch [ Skip ]
+crbug.com/41254976 [ Mac ] external/wpt/pointerevents/pointerevent_sequence_at_implicit_release_on_click.html?touch [ Skip ]
+crbug.com/41254976 [ Mac ] external/wpt/pointerevents/pointerevent_setpointercapture_override_pending_capture_element.html?touch [ Skip ]
+crbug.com/41254976 [ Mac ] external/wpt/pointerevents/pointerevent_setpointercapture_to_same_element_twice.html?touch [ Skip ]
+crbug.com/41254976 [ Mac ] external/wpt/pointerevents/pointerevent_to_slotted_target.html?touch [ Skip ]
+crbug.com/41254976 [ Mac ] external/wpt/pointerevents/pointerup_after_pointerdown_target_removed.html?touch [ Skip ]
+crbug.com/41254976 [ Mac ] external/wpt/pointerevents/predicted_events_attributes.html?touch [ Skip ]
+crbug.com/41254976 [ Mac ] external/wpt/pointerevents/touch-action-with-swipe-dir-change.html?touch [ Skip ]
+crbug.com/41254976 [ Mac ] fast/events/pointerevents/multi-pointer-event-in-slop-region.html [ Skip ]
+crbug.com/41254976 [ Mac ] fast/events/pointerevents/pointer-event-in-slop-region.html [ Skip ]
+crbug.com/41254976 [ Mac ] fast/events/touch/gesture/* [ Skip ]
+crbug.com/41254976 [ Mac ] fast/scrolling/resize-corner-tracking-touch.html [ Skip ]
+crbug.com/41254976 [ Mac ] fast/scrolling/scrollbars/touch-scrolling-on-root-scrollbar.html [ Skip ]
+crbug.com/41254976 [ Mac ] virtual/threaded/synthetic_gestures/synthetic-pinch-zoom-gesture-touchscreen.html [ Skip ]
 
 # Thumb snapping is not supported on Linux and Mac.
 [ Linux ] fast/scrolling/scrollbars/scrollbar-thumb-snapping.html [ Skip ]
@@ -207,9 +234,6 @@ virtual/threaded/printing/width-overflow.html [ Skip ]
 # We don't allow to access external hosts in layout tests.
 external/wpt/html/the-xhtml-syntax/parsing-xhtml-documents/support/xhtml-mathml-dtd-entity.htm [ Skip ]
 
-# Failing WPT using ch unit in vertical orientation
-crbug.com/759914 external/wpt/css/css-values/ch-unit-002.html [ Skip ]
-
 # CSS2 tests that rely on undefined behaviors (height of line-height: normal).
 external/wpt/css/CSS2/linebox/inline-formatting-context-002.xht [ Skip ]
 [ Linux ] external/wpt/css/CSS2/linebox/inline-formatting-context-003.xht [ Skip ]
@@ -246,16 +270,6 @@ external/wpt/css/CSS2/linebox/line-height-126.xht [ Skip ]
 [ Mac ] external/wpt/css/CSS2/linebox/vertical-align-118a.xht [ Skip ]
 [ Mac ] external/wpt/css/CSS2/linebox/vertical-align-baseline-004a.xht [ Skip ]
 [ Mac ] external/wpt/css/CSS2/linebox/vertical-align-baseline-005a.xht [ Skip ]
-
-# Ref tests that pass but causes 1px diff on images at direction boundaries.
-[ Win ] external/wpt/html/dom/elements/requirements-relating-to-bidirectional-algorithm-formatting-characters/dir-isolation-002c.html [ Skip ]
-[ Mac ] external/wpt/html/dom/elements/requirements-relating-to-bidirectional-algorithm-formatting-characters/dir-isolation-006a.html [ Skip ]
-[ Mac ] external/wpt/html/dom/elements/requirements-relating-to-bidirectional-algorithm-formatting-characters/dir-isolation-006b.html [ Skip ]
-[ Mac ] external/wpt/html/dom/elements/requirements-relating-to-bidirectional-algorithm-formatting-characters/dir-isolation-006c.html [ Skip ]
-[ Win ] external/wpt/html/dom/elements/requirements-relating-to-bidirectional-algorithm-formatting-characters/dir-isolation-006c.html [ Skip ]
-[ Mac ] external/wpt/html/dom/elements/requirements-relating-to-bidirectional-algorithm-formatting-characters/dir-isolation-009a.html [ Skip ]
-[ Mac ] external/wpt/html/dom/elements/requirements-relating-to-bidirectional-algorithm-formatting-characters/dir-isolation-009b.html [ Skip ]
-[ Mac ] external/wpt/html/dom/elements/requirements-relating-to-bidirectional-algorithm-formatting-characters/dir-isolation-009c.html [ Skip ]
 
 # On Linux bold emoji are already supported.
 crbug.com/551843 [ Linux ] virtual/text-antialias/fallback-traits-fixup.html [ Skip ]
@@ -308,14 +322,6 @@ external/wpt/encrypted-media/drm-invalid-license.https.html [ Skip ]
 external/wpt/encrypted-media/drm-keystatuses.https.html [ Skip ]
 external/wpt/encrypted-media/drm-keystatuses-multiple-sessions.https.html [ Skip ]
 external/wpt/encrypted-media/drm-mp4-onencrypted.https.html [ Skip ]
-external/wpt/encrypted-media/drm-mp4-playback-destroy-persistent-license.https.html [ Skip ]
-external/wpt/encrypted-media/drm-mp4-playback-persistent-license-events.https.html [ Skip ]
-external/wpt/encrypted-media/drm-mp4-playback-persistent-license.https.html [ Skip ]
-external/wpt/encrypted-media/drm-mp4-playback-persistent-usage-record-events.https.html [ Skip ]
-external/wpt/encrypted-media/drm-mp4-playback-persistent-usage-record.https.html [ Skip ]
-external/wpt/encrypted-media/drm-mp4-playback-retrieve-destroy-persistent-license.https.html [ Skip ]
-external/wpt/encrypted-media/drm-mp4-playback-retrieve-persistent-license.https.html [ Skip ]
-external/wpt/encrypted-media/drm-mp4-playback-retrieve-persistent-usage-record.https.html [ Skip ]
 external/wpt/encrypted-media/drm-mp4-playback-temporary-clear-encrypted.https.html [ Skip ]
 external/wpt/encrypted-media/drm-mp4-playback-temporary-encrypted-clear.https.html [ Skip ]
 external/wpt/encrypted-media/drm-mp4-playback-temporary-encrypted-clear-sources.https.html [ Skip ]
@@ -326,8 +332,8 @@ external/wpt/encrypted-media/drm-mp4-playback-temporary-multikey.https.html [ Sk
 external/wpt/encrypted-media/drm-mp4-playback-temporary-multikey-sequential.https.html [ Skip ]
 external/wpt/encrypted-media/drm-mp4-playback-temporary-multikey-sequential-readyState.https.html [ Skip ]
 external/wpt/encrypted-media/drm-mp4-playback-temporary-multisession.https.html [ Skip ]
-external/wpt/encrypted-media/drm-mp4-playback-temporary-playduration-keystatus.html [ Skip ]
-external/wpt/encrypted-media/drm-mp4-playback-temporary-playduration.html [ Skip ]
+external/wpt/encrypted-media/drm-mp4-playback-temporary-playduration-keystatus.https.html [ Skip ]
+external/wpt/encrypted-media/drm-mp4-playback-temporary-playduration.https.html [ Skip ]
 external/wpt/encrypted-media/drm-mp4-playback-temporary-setMediaKeys-after-src.https.html [ Skip ]
 external/wpt/encrypted-media/drm-mp4-playback-temporary-setMediaKeys-after-update.https.html [ Skip ]
 external/wpt/encrypted-media/drm-mp4-playback-temporary-setMediaKeys-immediately.https.html [ Skip ]
@@ -351,22 +357,11 @@ external/wpt/encrypted-media/drm-mp4-waiting-for-a-key.https.html [ Skip ]
 external/wpt/encrypted-media/drm-not-callable-after-createsession.https.html [ Skip ]
 external/wpt/encrypted-media/drm-temporary-license-type.https.html [ Skip ]
 
-# Chromium's implementation of ClearKey doesn't support persistent licenses.
-external/wpt/encrypted-media/clearkey-mp4-playback-destroy-persistent-license.https.html [ Skip ]
-external/wpt/encrypted-media/clearkey-mp4-playback-persistent-license-events.https.html [ Skip ]
-external/wpt/encrypted-media/clearkey-mp4-playback-persistent-license.https.html [ Skip ]
-external/wpt/encrypted-media/clearkey-mp4-playback-persistent-usage-record-events.https.html [ Skip ]
-external/wpt/encrypted-media/clearkey-mp4-playback-persistent-usage-record.https.html [ Skip ]
-external/wpt/encrypted-media/clearkey-mp4-playback-retrieve-destroy-persistent-license.https.html [ Skip ]
-external/wpt/encrypted-media/clearkey-mp4-playback-retrieve-persistent-license.https.html [ Skip ]
-external/wpt/encrypted-media/clearkey-mp4-playback-retrieve-persistent-usage-record.https.html [ Skip ]
-
 # content_shell doesn't support MP4 files by default.
 external/wpt/encrypted-media/clearkey-mp4-playback-temporary-clear-encrypted-segmented.https.html [ Skip ]
 external/wpt/encrypted-media/clearkey-mp4-playback-temporary-clear-encrypted.https.html [ Skip ]
 external/wpt/encrypted-media/clearkey-mp4-playback-temporary-encrypted-clear-sources.https.html [ Skip ]
 external/wpt/encrypted-media/clearkey-mp4-playback-temporary-encrypted-clear.https.html [ Skip ]
-external/wpt/encrypted-media/clearkey-mp4-playback-temporary-events.https.html [ Skip ]
 external/wpt/encrypted-media/clearkey-mp4-playback-temporary.https.html [ Skip ]
 external/wpt/encrypted-media/clearkey-mp4-playback-temporary-multikey.https.html [ Skip ]
 external/wpt/encrypted-media/clearkey-mp4-playback-temporary-multikey-sequential.https.html [ Skip ]
@@ -409,29 +404,11 @@ external/wpt/css/css-text/letter-spacing/letter-spacing-bidi-004.xht [ Skip ]
 external/wpt/css/css-text/letter-spacing/letter-spacing-bidi-005.xht [ Skip ]
 external/wpt/css/css-text/letter-spacing/letter-spacing-nesting-003.xht [ Skip ]
 
-# No active plans to implement the line breaker spec change for out-of-flow objects.
-crbug.com/1024331 external/wpt/css/CSS2/text/white-space-processing-049.xht [ Skip ]
-crbug.com/1024331 external/wpt/css/CSS2/text/white-space-processing-048.xht [ Skip ]
-crbug.com/1024331 external/wpt/css/css-text/line-breaking/line-breaking-016.html [ Skip ]
-crbug.com/1024331 external/wpt/css/css-text/line-breaking/line-breaking-017.html [ Skip ]
-crbug.com/1024331 external/wpt/css/css-text/line-breaking/line-breaking-018.html [ Skip ]
-crbug.com/1024331 external/wpt/css/css-text/line-breaking/line-breaking-019.html [ Skip ]
-
 # CSS Text features that are not planned to implement.
-external/wpt/css/css-text/text-justify/text-justify-006.html [ Skip ]
 external/wpt/css/css-text/text-spacing-trim/text-spacing-trim-trim-all-001.html?class=chws,htb [ Skip ]
 external/wpt/css/css-text/text-spacing-trim/text-spacing-trim-trim-all-001.html?class=chws,vrl [ Skip ]
 external/wpt/css/css-text/text-spacing-trim/text-spacing-trim-trim-all-001.html?class=halt,htb [ Skip ]
 external/wpt/css/css-text/text-spacing-trim/text-spacing-trim-trim-all-001.html?class=halt,vrl [ Skip ]
-external/wpt/css/css-text/text-transform/text-transform-full-size-kana-001.html [ Skip ]
-external/wpt/css/css-text/text-transform/text-transform-full-size-kana-002.html [ Skip ]
-external/wpt/css/css-text/text-transform/text-transform-full-size-kana-003.html [ Skip ]
-external/wpt/css/css-text/text-transform/text-transform-full-size-kana-004.html [ Skip ]
-external/wpt/css/css-text/text-transform/text-transform-full-size-kana-005.html [ Skip ]
-external/wpt/css/css-text/text-transform/text-transform-full-size-kana-006.html [ Skip ]
-external/wpt/css/css-text/text-transform/text-transform-full-size-kana-007.html [ Skip ]
-external/wpt/css/css-text/text-transform/text-transform-fullwidth-008.html [ Skip ]
-external/wpt/css/css-text/text-transform/text-transform-fullwidth-009.html [ Skip ]
 external/wpt/css/css-text/word-boundary/* [ Skip ]
 external/wpt/css/css-text/writing-system/writing-system-line-break-001.html [ Skip ]
 external/wpt/css/css-text/writing-system/writing-system-line-break-002.html [ Skip ]
@@ -544,37 +521,20 @@ external/wpt/css/css-flexbox/interactive/flexbox_interactive_order-transitions-2
 external/wpt/css/css-flexbox/interactive/flexbox_interactive_order-transitions.html [ Skip ]
 external/wpt/css/css-flexbox/interactive/flexbox_interactive_paged-overflow-2.html [ Skip ]
 external/wpt/css/css-flexbox/interactive/flexbox_interactive_paged-overflow.html [ Skip ]
-external/wpt/css/css-fonts/font-family-name-000.xht [ Skip ]
-external/wpt/css/css-fonts/font-family-name-001.xht [ Skip ]
-external/wpt/css/css-fonts/font-family-name-002.xht [ Skip ]
-external/wpt/css/css-fonts/font-family-name-003.xht [ Skip ]
-external/wpt/css/css-fonts/font-family-name-004.xht [ Skip ]
-external/wpt/css/css-fonts/font-family-name-005.xht [ Skip ]
-external/wpt/css/css-fonts/font-family-name-006.xht [ Skip ]
-external/wpt/css/css-fonts/font-family-name-007.xht [ Skip ]
-external/wpt/css/css-fonts/font-family-name-008.xht [ Skip ]
-external/wpt/css/css-fonts/font-family-name-009.xht [ Skip ]
-external/wpt/css/css-fonts/font-family-name-010.xht [ Skip ]
-external/wpt/css/css-fonts/font-family-name-011.xht [ Skip ]
-external/wpt/css/css-fonts/font-family-name-012.xht [ Skip ]
-external/wpt/css/css-fonts/font-family-name-013.xht [ Skip ]
-external/wpt/css/css-fonts/font-family-name-014.xht [ Skip ]
-external/wpt/css/css-fonts/font-family-name-015.xht [ Skip ]
-external/wpt/css/css-fonts/font-family-name-016.xht [ Skip ]
-external/wpt/css/css-fonts/font-family-name-017.xht [ Skip ]
-external/wpt/css/css-fonts/font-family-name-018.xht [ Skip ]
-external/wpt/css/css-fonts/font-family-name-019.xht [ Skip ]
-external/wpt/css/css-fonts/font-family-name-020.xht [ Skip ]
-external/wpt/css/css-fonts/font-family-name-021.xht [ Skip ]
-external/wpt/css/css-fonts/font-family-name-022.xht [ Skip ]
-external/wpt/css/css-fonts/font-family-name-023.xht [ Skip ]
-external/wpt/css/css-fonts/font-family-name-024.xht [ Skip ]
+
+# Tests that require the CSSTest fonts to be installed, which we're not likely
+# to be able to install on Mac and Windows test bots.
+[ Mac ] external/wpt/css/css-fonts/font-family-name-* [ Skip ]
+[ Mac ] external/wpt/css/css-fonts/test-synthetic-bold.html [ Skip ]
+[ Mac ] external/wpt/css/css-fonts/test-synthetic-italic.html [ Skip ]
+[ Win ] external/wpt/css/css-fonts/font-family-name-* [ Skip ]
+[ Win ] external/wpt/css/css-fonts/test-synthetic-bold.html [ Skip ]
+[ Win ] external/wpt/css/css-fonts/test-synthetic-italic.html [ Skip ]
+
 external/wpt/css/css-fonts/font-size-adjust-003.xht [ Skip ]
 external/wpt/css/css-fonts/font-weight-bolder-001.xht [ Skip ]
 external/wpt/css/css-fonts/font-weight-lighter-001.xht [ Skip ]
 external/wpt/css/css-fonts/font-weight-normal-001.xht [ Skip ]
-external/wpt/css/css-fonts/test-synthetic-bold.xht [ Skip ]
-external/wpt/css/css-fonts/test-synthetic-italic.xht [ Skip ]
 external/wpt/css/css-text-decor/text-decoration-line-014.xht [ Skip ]
 external/wpt/css/css-ui/canvas-cursor-001.html [ Skip ]
 external/wpt/css/css-ui/canvas-cursor-002.html [ Skip ]
@@ -838,91 +798,13 @@ external/wpt/css/css-backgrounds/background-attachment-local/attachment-local-po
 external/wpt/css/css-backgrounds/background-repeat/background-repeat-round-roundup.xht [ Skip ]
 external/wpt/css/css-backgrounds/background-repeat/background-repeat-round.xht [ Skip ]
 external/wpt/css/css-backgrounds/background-size/background-size-contain.xht [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/background-size-vector-003.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/background-size-vector-005.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/background-size-vector-007.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/background-size-vector-009.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/background-size-vector-011.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/background-size-vector-013.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/background-size-vector-015.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/background-size-vector-017.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/background-size-vector-021.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/background-size-vector-023.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/background-size-vector-025.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/background-size-vector-027.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/background-size-vector-029.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/tall--auto--percent-width-nonpercent-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/tall--auto--percent-width-omitted-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/tall--auto--percent-width-percent-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/tall--auto-32px--nonpercent-width-omitted-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/tall--auto-32px--nonpercent-width-percent-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/tall--auto-32px--omitted-width-nonpercent-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/tall--auto-32px--omitted-width-omitted-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/tall--auto-32px--omitted-width-percent-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/tall--auto-32px--percent-width-nonpercent-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/tall--auto-32px--percent-width-omitted-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/tall--auto-32px--percent-width-percent-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/tall--contain--height.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/tall--contain--nonpercent-width-omitted-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/tall--contain--nonpercent-width-percent-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/tall--contain--omitted-width-nonpercent-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/tall--contain--omitted-width-omitted-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/tall--contain--omitted-width-percent-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/tall--contain--percent-width-nonpercent-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/tall--contain--percent-width-omitted-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/tall--contain--percent-width-percent-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/tall--contain--width.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/tall--cover--nonpercent-width-omitted-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/tall--cover--nonpercent-width-percent-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/tall--cover--omitted-width-nonpercent-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/tall--cover--omitted-width-omitted-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/tall--cover--omitted-width-percent-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/tall--cover--percent-width-nonpercent-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/tall--cover--percent-width-omitted-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/tall--cover--percent-width-percent-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--12px-auto--nonpercent-width-omitted-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--12px-auto--nonpercent-width-percent-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--12px-auto--omitted-width-nonpercent-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--12px-auto--omitted-width-omitted-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--12px-auto--omitted-width-percent-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--12px-auto--percent-width-nonpercent-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--12px-auto--percent-width-omitted-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--12px-auto--percent-width-percent-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--auto--nonpercent-width-omitted-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--auto--nonpercent-width-percent-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--auto--omitted-width-nonpercent-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--auto--omitted-width-omitted-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--auto--omitted-width-percent-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--auto--percent-width-nonpercent-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--auto--percent-width-omitted-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--auto--percent-width-percent-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--auto-32px--nonpercent-width-omitted-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--auto-32px--nonpercent-width-percent-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--auto-32px--omitted-width-nonpercent-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--auto-32px--omitted-width-omitted-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--auto-32px--omitted-width-percent-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--auto-32px--percent-width-nonpercent-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--auto-32px--percent-width-omitted-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--auto-32px--percent-width-percent-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--contain--height.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--contain--nonpercent-width-omitted-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--contain--nonpercent-width-percent-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--contain--omitted-width-nonpercent-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--contain--omitted-width-omitted-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--contain--omitted-width-percent-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--contain--percent-width-nonpercent-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--contain--percent-width-omitted-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--contain--percent-width-percent-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--contain--width.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--cover--nonpercent-width-omitted-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--cover--nonpercent-width-percent-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--cover--omitted-width-nonpercent-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--cover--omitted-width-omitted-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--cover--omitted-width-percent-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--cover--percent-width-nonpercent-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--cover--percent-width-omitted-height-viewbox.html [ Skip ]
-external/wpt/css/css-backgrounds/background-size/vector/wide--cover--percent-width-percent-height-viewbox.html [ Skip ]
 external/wpt/css/css-backgrounds/first-letter-space-not-selected.html [ Skip ]
+
+# These tests set extreme viewBox values and fail because of small differences.
+external/wpt/css/css-backgrounds/background-size/vector/tall--contain--height.html [ Skip ]
+external/wpt/css/css-backgrounds/background-size/vector/tall--contain--width.html [ Skip ]
+external/wpt/css/css-backgrounds/background-size/vector/wide--contain--height.html [ Skip ]
+external/wpt/css/css-backgrounds/background-size/vector/wide--contain--width.html [ Skip ]
 
 # Failures on the initial import of css-color. Test suite had many other bugs,
 # so these may also be incorrect tests, but probably some real issues too.
@@ -999,11 +881,7 @@ external/wpt/clipboard-apis/clipboard-file-manual.html [ Skip ]
 external/wpt/clipboard-apis/events/copy-event-manual.html [ Skip ]
 external/wpt/clipboard-apis/events/cut-event-manual.html [ Skip ]
 external/wpt/clipboard-apis/events/paste-event-manual.html [ Skip ]
-external/wpt/console/console-count-logging-manual.html [ Skip ]
-external/wpt/console/console-countReset-logging-manual.html [ Skip ]
-external/wpt/console/console-number-format-specifiers-symbol-manual.html [ Skip ]
 external/wpt/console/console-string-format-specifier-symbol-manual.html [ Skip ]
-external/wpt/console/console-timing-logging-manual.html [ Skip ]
 external/wpt/css/css-animations/animation-delay-001-manual.html [ Skip ]
 external/wpt/css/css-animations/animation-delay-002-manual.html [ Skip ]
 external/wpt/css/css-animations/animation-delay-003-manual.html [ Skip ]
@@ -1239,13 +1117,6 @@ external/wpt/html/editing/dnd/the-datatransfer-interface/protectedDragDataTransf
 external/wpt/html/editing/dnd/the-datatransfer-interface/protectedPasteDataTransfer-manual.html [ Skip ]
 external/wpt/html/editing/dnd/the-datatransfer-interface/setData-manual.html [ Skip ]
 external/wpt/html/editing/dnd/the-datatransfer-interface/types-manual.html [ Skip ]
-external/wpt/html/obsolete/requirements-for-implementations/the-marquee-element-0/marquee-direction-down-manual.html [ Skip ]
-external/wpt/html/obsolete/requirements-for-implementations/the-marquee-element-0/marquee-direction-left-manual.html [ Skip ]
-external/wpt/html/obsolete/requirements-for-implementations/the-marquee-element-0/marquee-direction-right-manual.html [ Skip ]
-external/wpt/html/obsolete/requirements-for-implementations/the-marquee-element-0/marquee-direction-up-manual.html [ Skip ]
-external/wpt/html/obsolete/requirements-for-implementations/the-marquee-element-0/marquee-scrollamount-effect-manual.html [ Skip ]
-external/wpt/html/obsolete/requirements-for-implementations/the-marquee-element-0/marquee-start-manual.html [ Skip ]
-external/wpt/html/obsolete/requirements-for-implementations/the-marquee-element-0/marquee-stop-manual.html [ Skip ]
 external/wpt/html/semantics/embedded-content/media-elements/audio_controls_present-manual.html [ Skip ]
 external/wpt/html/semantics/embedded-content/media-elements/audio_muted_overriding_volume-manual.html [ Skip ]
 external/wpt/html/semantics/embedded-content/media-elements/audio_muted_present-manual.html [ Skip ]
@@ -1565,7 +1436,6 @@ crbug.com/1035708 external/wpt/css/css-pseudo/spelling-error-002-manual.html [ S
 crbug.com/1035708 external/wpt/css/css-pseudo/spelling-error-003-manual.html [ Skip ]
 
 crbug.com/626703 external/wpt/html/browsers/windows/restore-window-name-manual.https.html [ Skip ]
-crbug.com/626703 external/wpt/pointerevents/html/pointerevent_drag_interaction-manual.html [ Skip ]
 crbug.com/626703 external/wpt/pointerevents/pointerevent_multiple_primary_pointers_boundary_events-manual.html [ Skip ]
 crbug.com/626703 external/wpt/uievents/order-of-events/focus-events/legacy-manual.html [ Skip ]
 
@@ -1573,7 +1443,7 @@ crbug.com/626703 external/wpt/uievents/order-of-events/focus-events/legacy-manua
 # Tests that require support for <meta name="viewport">
 crbug.com/1343368 external/wpt/css/mediaqueries/viewport-script-dynamic.html [ Skip ]
 
-# Tests that require the text autosizing setting.
+# Tests that require the textSizeAdjust Setting.
 crbug.com/340389272 wpt_internal/css/css-size-adjust/* [ Skip ]
 
 # Predefined counter styles that we support a larger range than the spec.
@@ -1662,7 +1532,6 @@ crbug.com/509989 [ Linux ] virtual/text-antialias/font-synthesis-style-local-win
 crbug.com/509989 [ Mac ] virtual/text-antialias/font-synthesis-style-local-win.html [ Skip ]
 crbug.com/509989 [ Fuchsia ] virtual/text-antialias/font-synthesis-style-local-win.html [ Skip ]
 crbug.com/509989 [ Android ] virtual/text-antialias/font-synthesis-style-local-win.html [ Skip ]
-crbug.com/626703 [ Mac11 ] virtual/fsa-incognito/external/wpt/file-system-access/local_FileSystemBaseHandle-postMessage-windows-manual.https.html [ Skip ]
 
 # This test requires a special browser flag and seems not suitable for a wpt test, see bug.
 crbug.com/691944 external/wpt/service-workers/service-worker/update-after-oneday.https.html [ Skip ]
@@ -1670,9 +1539,6 @@ crbug.com/691944 external/wpt/service-workers/service-worker/update-after-oneday
 # Cross-origin WebAssembly module sharing is getting deprecated.
 crbug.com/1224804 virtual/not-site-per-process/external/wpt/wasm/serialization/module/window-similar-but-cross-origin-success.sub.html [ Skip ]
 crbug.com/1224804 virtual/not-site-per-process/external/wpt/wasm/serialization/module/window-domain-success.sub.html [ Skip ]
-
-# Since enabling the multi IDP flag affects existing tests, we only enable the flag in the virtual multi IDP test suite
-crbug.com/1373766 external/wpt/credential-management/fedcm-multi-idp/* [ Skip ]
 
 # This test is run in its own content_shell invocation via a VirtualTestSuite to
 # isolate it from other tests, because it makes a huge memory allocation that
@@ -1693,8 +1559,6 @@ crbug.com/1267606 [ Linux ] wpt_internal/css/css-fonts/font-glyph-synthesis-mac.
 crbug.com/1267606 [ Win ] wpt_internal/css/css-fonts/font-glyph-synthesis-mac.html [ Skip ]
 crbug.com/1267606 [ Fuchsia ] wpt_internal/css/css-fonts/font-glyph-synthesis-mac.html [ Skip ]
 crbug.com/1267606 [ Android ] wpt_internal/css/css-fonts/font-glyph-synthesis-mac.html [ Skip ]
-crbug.com/1267606 [ Mac11 ] wpt_internal/css/css-fonts/font-glyph-synthesis-mac.html [ Skip ]
-crbug.com/1267606 [ Mac11-arm64 ] wpt_internal/css/css-fonts/font-glyph-synthesis-mac.html [ Skip ]
 
 # The AnimationWorklet feature is not enabled for tests
 animations/animationworklet/* [ Skip ]
@@ -1739,6 +1603,8 @@ external/wpt/worklets/animation-worklet-service-worker-interception.https.html [
 # Chrome for Testing specific tests that only run on Linux due to requiring FlagSpecific overrides.
 crbug.com/1446931 [ Android ] inspector-protocol/heap-profiler/heap-snapshot-exposes-cpp-internals.js [ Skip ]
 crbug.com/1446931 [ Fuchsia ] inspector-protocol/heap-profiler/heap-snapshot-exposes-cpp-internals.js [ Skip ]
+# Disable temporarily to switch behavior in V8 commit.
+crbug.com/1446931 [ Linux ] inspector-protocol/heap-profiler/heap-snapshot-exposes-cpp-internals.js [ Skip ]
 crbug.com/1446931 [ Mac ] inspector-protocol/heap-profiler/heap-snapshot-exposes-cpp-internals.js [ Skip ]
 crbug.com/1446931 [ Win ] inspector-protocol/heap-profiler/heap-snapshot-exposes-cpp-internals.js [ Skip ]
 
@@ -1792,15 +1658,14 @@ crbug.com/1197087 [ Debug ] external/wpt/web-animations/interfaces/Animation/fin
 [ Mac ] external/wpt/webdriver/tests/* [ Skip ]
 [ Win ] external/wpt/webdriver/tests/* [ Skip ]
 
-# WebNN GPU backend is only supported on Win11/Intel by default.
+# WebNN DirectML GPU backend is only supported on Win11/Intel by default.
 crbug.com/40288082 [ Win10.20h2 ] virtual/webnn-service-with-gpu/* [ Skip ]
 crbug.com/323752584 [ Win11-arm64 ] virtual/webnn-service-with-gpu/* [ Skip ]
 
+# WebNN TFLite GPU backend is only supported on official builds.
+[ Linux ] virtual/webnn-service-with-gpu/* [ Skip ]
+
 # WebNN is only supported on macOS 14 and newer versions.
-[ Mac11 ] external/wpt/webnn/* [ Skip ]
-[ Mac11-arm64 ] external/wpt/webnn/* [ Skip ]
-[ Mac12 ] external/wpt/webnn/* [ Skip ]
-[ Mac12-arm64 ] external/wpt/webnn/* [ Skip ]
 [ Mac13 ] external/wpt/webnn/* [ Skip ]
 [ Mac13-arm64 ] external/wpt/webnn/* [ Skip ]
 
@@ -1819,7 +1684,6 @@ crbug.com/1488371 external/wpt/fetch/metadata/unload.https.sub.html [ Skip ]
 crbug.com/1488371 external/wpt/html/browsers/the-window-object/open-close/close_unload.html [ Skip ]
 crbug.com/1488371 external/wpt/html/browsers/browsing-the-web/unloading-documents/unload/009.html [ Skip ]
 crbug.com/1488371 external/wpt/html/browsers/history/the-history-interface/traverse_the_history_unload_1.html [ Skip ]
-crbug.com/1488371 external/wpt/navigation-api/navigate-event/replaceState-in-unload-then-remove-iframe.html [ Skip ]
 # Also tests timing, so cannot be moved to pagehide.
 crbug.com/1488371 external/wpt/navigation-timing/nested-unload-timing.html [ Skip ]
 crbug.com/1488371 external/wpt/screen-details/getScreenDetails.tentative.https.window.html [ Skip ]
@@ -1839,10 +1703,18 @@ crbug.com/1430215 [ Mac ] external/wpt/dom/events/scrolling/overscroll-deltas.ht
 
 ######## End Unload Deprecation
 
+# Internal VT tests are not compatible with mpa serialization.
+crbug.com/40241779 virtual/view-transition-mpa-serialization/wpt_internal/view-transition/* [ Skip ]
 # View transitions cross document tests naturally exercise mpa serialization.
 crbug.com/40241779 virtual/view-transition-mpa-serialization/external/wpt/css/css-view-transitions/navigation/* [ Skip ]
 # View transitions cross document tests don't need to test wide gamut, since that's covered by same doc tests.
 crbug.com/40241779 virtual/view-transition-wide-gamut/external/wpt/css/css-view-transitions/navigation/* [ Skip ]
+# Scoped view transitions are incompatible with mpa serialization.
+crbug.com/40267386 virtual/view-transition-mpa-serialization/external/wpt/css/css-view-transitions/scoped/* [ Skip ]
+
+# waitUntil() should be tested separately for the navigation serialization.
+crbug.com/346976175 virtual/view-transition-mpa-serialization/external/wpt/css/css-view-transitions/view-transition-waituntil-animation-manipulation.html [ Skip ]
+crbug.com/346976175 virtual/view-transition-mpa-serialization/external/wpt/css/css-view-transitions/view-transition-waituntil-finished-promise.html [ Skip ]
 
 # This test requests a screenshot capture inside the updateDOMCallback assuming
 # this will end the test. The ViewTransition API suppresses rendering while this
@@ -1923,7 +1795,7 @@ external/wpt/infrastructure/* [ Skip ]
 # Web Bluetooth Emulation is not supported on Android, Fuchsia and iOS due to binary size constraints.
 crbug.com/342191615 [ Android ] inspector-protocol/bluetooth/* [ Skip ]
 crbug.com/342191615 [ Fuchsia ] inspector-protocol/bluetooth/* [ Skip ]
-crbug.com/342191615 [ iOS17-simulator ] inspector-protocol/bluetooth/* [ Skip ]
+crbug.com/342191615 [ iOS26-simulator ] inspector-protocol/bluetooth/* [ Skip ]
 
 # These html5lib parser tests always time out.
 html5lib/generated/run-foreign-fragment-data.html [ Skip ]
@@ -1939,3 +1811,58 @@ virtual/view-transition-mpa-serialization/external/wpt/css/css-view-transitions/
 virtual/view-transition-mpa-serialization/external/wpt/css/css-view-transitions/auto-name-from-id-shadow.html [ Skip ]
 virtual/view-transition-mpa-serialization/external/wpt/css/css-view-transitions/match-element-name.html [ Skip ]
 virtual/view-transition-mpa-serialization/external/wpt/css/css-view-transitions/auto-name-get-animations.html [ Skip ]
+
+# Servo browser specific
+external/wpt/html/webappapis/animation-frames/spurious-frame-callbacks-optimization.html [ Skip ]
+
+# Clipboardchange is not yet supported on these platforms.
+crbug.com/41442253 [ Fuchsia ] external/wpt/clipboard-apis/async-navigator-clipboard-change-event.tentative.https.html [ Skip ]
+crbug.com/41442253 [ Mac ] external/wpt/clipboard-apis/async-navigator-clipboard-change-event.tentative.https.html [ Skip ]
+crbug.com/41442253 [ iOS26-simulator ] external/wpt/clipboard-apis/async-navigator-clipboard-change-event.tentative.https.html [ Skip ]
+
+# These tests are run exclusively in the prefetch-proxy VirtualTestSuite.
+external/wpt/speculation-rules/prefetch/anonymous-client.https.html [ Skip ]
+external/wpt/speculation-rules/prefetch/cross-origin-cookies-anonymous-client-ip-duplicate.https.html [ Skip ]
+
+# These tests test origin trial behavior that is only enabled on windows.
+[ Mac ] http/tests/origin_trials/webexposed/incoming-call-notifications-origin-trial-interfaces.html [ Skip ]
+[ Linux ] http/tests/origin_trials/webexposed/incoming-call-notifications-origin-trial-interfaces.html [ Skip ]
+
+# restrictOwnAudio is supported only on recent versions of Windows and Mac.
+[ Linux ] external/wpt/screen-capture/getdisplaymedia-restrictOwnAudio.https.html [ Skip ]
+[ Win10.20h2 ] external/wpt/screen-capture/getdisplaymedia-restrictOwnAudio.https.html [ Skip ]
+[ Mac13 ] external/wpt/screen-capture/getdisplaymedia-restrictOwnAudio.https.html [ Skip ]
+[ Android ] external/wpt/screen-capture/getdisplaymedia-restrictOwnAudio.https.html [ Skip ]
+[ Fuchsia ] external/wpt/screen-capture/getdisplaymedia-restrictOwnAudio.https.html [ Skip ]
+
+# EchoCancellation mode "all" is not supported on Linux
+[ Linux ] external/wpt/mediacapture-streams/GUM-echoCancellation-all.https.html [ Skip ]
+
+# Tests below expects SVG1.1 <use> cascade behavior, which is different from SVG2
+crbug.com/40550039 svg/css/use-replicates-changes-class.html [ Skip ]
+crbug.com/40550039 svg/css/use-replicates-changes-pseudo.html [ Skip ]
+crbug.com/40550039 svg/W3C-SVG-1.1-SE/struct-use-11-f.svg [ Skip ]
+
+# SwiftShader cannot be used on ARM and is required by these tests
+# See crbug.com/40061476 for more information.
+[ Mac15-arm64 ] external/wpt/webxr/* [ Skip ]
+[ Mac14-arm64 ] external/wpt/webxr/* [ Skip ]
+[ Mac13-arm64 ] external/wpt/webxr/* [ Skip ]
+[ Win11-arm64 ] external/wpt/webxr/* [ Skip ]
+
+# Expected failures for virtual/prefetch-force-off-the-main-thread:
+# (See also `TestExpectations`)
+# ServiceWorkers are not supported in off-the-main-thread prefetch.
+crbug.com/452389538 virtual/prefetch-force-off-the-main-thread/external/wpt/speculation-rules/prefetch/tentative/service-worker/* [ Skip ]
+
+# Device Bound Session Credentials is not supported on Android.
+[ Android ] external/wpt/device-bound-session-credentials/* [ Skip ]
+
+# see issues.chromium.org/issues/481087619 - Windows-specific word navigation behavior test.
+[ Linux ] editing/selection/move-by-word-win-punctuation-newline.html [ Skip ]
+[ Mac ] editing/selection/move-by-word-win-punctuation-newline.html [ Skip ]
+[ Android ] editing/selection/move-by-word-win-punctuation-newline.html [ Skip ]
+[ Fuchsia ] editing/selection/move-by-word-win-punctuation-newline.html [ Skip ]
+
+# OOM crash on Windows, marked as WontFix
+crbug.com/379516106 [ Win ] external/wpt/css/css-overflow/scrollbar-large-scale-in-iframe.html [ Skip ]

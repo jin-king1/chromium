@@ -145,7 +145,7 @@ void OverlayProcessorAndroid::OverlayPresentationComplete() {
 }
 
 void OverlayProcessorAndroid::CheckOverlaySupportImpl(
-    const OverlayProcessorInterface::OutputSurfaceOverlayPlane* primary_plane,
+    const std::optional<OverlayCandidate>& primary_plane,
     OverlayCandidateList* candidates) {
   // For pre-SurfaceControl Android we should not have output surface as overlay
   // plane.
@@ -190,6 +190,17 @@ gfx::Rect OverlayProcessorAndroid::GetOverlayDamageRectForOutputSurface(
   return ToEnclosedRect(overlay.display_rect);
 }
 
+void OverlayProcessorAndroid::InsertPrimaryPlane(
+    OverlayCandidate primary_plane,
+    OverlayCandidateList& candidates) {
+  // `OverlayProcessorAndroid` will never have a primary plane.
+  NOTREACHED();
+}
+
+bool OverlayProcessorAndroid::ShouldCreatePrimaryPlane() const {
+  return false;
+}
+
 void OverlayProcessorAndroid::TakeOverlayCandidates(
     OverlayCandidateList* candidate_list) {
   overlay_candidates_.swap(*candidate_list);
@@ -215,8 +226,6 @@ void OverlayProcessorAndroid::NotifyOverlayPromotion(
     if (quad->material != DrawQuad::Material::kTextureContent)
       continue;
     const TextureDrawQuad* texture_quad = TextureDrawQuad::MaterialCast(quad);
-    if (!texture_quad->is_stream_video)
-      continue;
     ResourceId id = texture_quad->resource_id;
     if (!resource_provider->DoesResourceWantPromotionHint(id))
       continue;

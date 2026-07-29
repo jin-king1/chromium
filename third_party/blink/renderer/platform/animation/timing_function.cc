@@ -5,7 +5,9 @@
 #include "third_party/blink/renderer/platform/animation/timing_function.h"
 
 #include <algorithm>
+
 #include "base/notreached.h"
+#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 #include "ui/gfx/animation/keyframe/timing_function.h"
 
@@ -15,15 +17,15 @@ String LinearTimingFunction::ToString() const {
   if (linear_->IsTrivial()) {
     return "linear";
   }
-  WTF::StringBuilder builder;
+  StringBuilder builder;
   builder.Append("linear(");
   for (wtf_size_t i = 0; i < linear_->Points().size(); ++i) {
     if (i != 0) {
       builder.Append(", ");
     }
-    builder.Append(String::NumberToStringECMAScript(linear_->Point(i).output));
+    builder.Append(String::NumberToStringEcmaScript(linear_->Point(i).output));
     builder.Append(" ");
-    builder.Append(String::NumberToStringECMAScript(linear_->Point(i).input));
+    builder.Append(String::NumberToStringEcmaScript(linear_->Point(i).input));
     builder.Append("%");
   }
   builder.Append(")");
@@ -118,10 +120,10 @@ String CubicBezierTimingFunction::ToString() const {
     case CubicBezierTimingFunction::EaseType::EASE_IN_OUT:
       return "ease-in-out";
     case CubicBezierTimingFunction::EaseType::CUSTOM:
-      return "cubic-bezier(" + String::NumberToStringECMAScript(X1()) + ", " +
-             String::NumberToStringECMAScript(Y1()) + ", " +
-             String::NumberToStringECMAScript(X2()) + ", " +
-             String::NumberToStringECMAScript(Y2()) + ")";
+      return StrCat({"cubic-bezier(", String::NumberToStringEcmaScript(X1()),
+                     ", ", String::NumberToStringEcmaScript(Y1()), ", ",
+                     String::NumberToStringEcmaScript(X2()), ", ",
+                     String::NumberToStringEcmaScript(Y2()), ")"});
     default:
       NOTREACHED();
   }
@@ -185,7 +187,7 @@ String StepsTimingFunction::ToString() const {
 
   StringBuilder builder;
   builder.Append("steps(");
-  builder.Append(String::NumberToStringECMAScript(NumberOfSteps()));
+  builder.Append(String::NumberToStringEcmaScript(NumberOfSteps()));
   if (position_string) {
     builder.Append(", ");
     builder.Append(position_string);
@@ -299,11 +301,6 @@ bool operator==(const TimingFunction& lhs, const TimingFunction& rhs) {
     default:
       NOTREACHED();
   }
-}
-
-// No need to define specific operator!= as they can all come via this function.
-bool operator!=(const TimingFunction& lhs, const TimingFunction& rhs) {
-  return !(lhs == rhs);
 }
 
 }  // namespace blink

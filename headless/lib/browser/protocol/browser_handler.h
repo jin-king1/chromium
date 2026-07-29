@@ -6,7 +6,6 @@
 #define HEADLESS_LIB_BROWSER_PROTOCOL_BROWSER_HANDLER_H_
 
 #include "base/memory/raw_ptr.h"
-#include "base/memory/weak_ptr.h"
 #include "headless/lib/browser/protocol/browser.h"
 #include "headless/lib/browser/protocol/domain_handler.h"
 
@@ -38,7 +37,10 @@ class BrowserHandler : public DomainHandler, public Browser::Backend {
   Response Close() override;
   Response SetWindowBounds(
       int window_id,
-      std::unique_ptr<Browser::Bounds> out_bounds) override;
+      std::unique_ptr<Browser::Bounds> window_bounds) override;
+  Response SetContentsSize(int window_id,
+                           std::optional<int> width,
+                           std::optional<int> height) override;
   Response SetDockTile(std::optional<std::string> label,
                        std::optional<Binary> image) override;
 

@@ -54,8 +54,9 @@ void DesktopSessionDurationObserver::UnregisterInputEventObserver(
 
 void DesktopSessionDurationObserver::OnInputEvent(
     const content::RenderWidgetHost& widget,
-    const blink::WebInputEvent& event) {
-  service_->OnUserEvent();
+    const blink::WebInputEvent& event,
+    input::InputEventSource source) {
+  service_->OnUserEvent(event.GetTypeAsUiEventType());
 }
 
 void DesktopSessionDurationObserver::RenderFrameHostChanged(

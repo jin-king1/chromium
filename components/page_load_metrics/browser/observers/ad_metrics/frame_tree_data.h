@@ -2,20 +2,19 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #ifndef COMPONENTS_PAGE_LOAD_METRICS_BROWSER_OBSERVERS_AD_METRICS_FRAME_TREE_DATA_H_
 #define COMPONENTS_PAGE_LOAD_METRICS_BROWSER_OBSERVERS_AD_METRICS_FRAME_TREE_DATA_H_
 
 #include <stdint.h>
 
+#include <array>
 #include <optional>
 
+#include "base/byte_size.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
+#include "base/unguessable_token.h"
 #include "components/page_load_metrics/browser/observers/ad_metrics/frame_data_utils.h"
 #include "components/page_load_metrics/browser/page_load_metrics_observer.h"
 #include "components/page_load_metrics/common/page_load_metrics.mojom-forward.h"
@@ -33,16 +32,16 @@ namespace heavy_ad_thresholds {
 // PageLoad.Clients.Ads.Bytes.AdFrames.PerFrame.Network histogram on mobile and
 // desktop. Additive noise is added to this threshold, see
 // AdsPageLoadMetricsObserver::HeavyAdThresholdNoiseProvider.
-const int kMaxNetworkBytes = 4.0 * 1024 * 1024;
+inline constexpr base::ByteSize kMaxNetworkBytes = base::MiBU(4);
 
 // CPU thresholds are selected from AdFrameLoad UKM, and are intended to target
 // 1 in 1000 ad iframes combined, with each threshold responsible for roughly
 // half of those intervention. Maximum number of milliseconds of CPU use allowed
 // to be used by a frame.
-const int kMaxCpuTime = 60 * 1000;
+inline constexpr int kMaxCpuTime = 60 * 1000;
 
 // Maximum percentage of CPU utilization over a 30 second window allowed.
-const int kMaxPeakWindowedPercent = 50;
+inline constexpr int kMaxPeakWindowedPercent = 50;
 
 }  // namespace heavy_ad_thresholds
 
@@ -132,7 +131,7 @@ class FrameTreeData final {
   // |root_frame_tree_node_id| is the root frame of the subtree that
   // FrameTreeData stores information for.
   explicit FrameTreeData(content::FrameTreeNodeId root_frame_tree_node_id,
-                         int heavy_ad_network_threshold_noise);
+                         base::ByteSize heavy_ad_network_threshold_noise);
   ~FrameTreeData();
 
   // Processes a resource load in frame, calling ResourceLoadAggregator.
@@ -142,7 +141,8 @@ class FrameTreeData final {
 
   // Adjusts ad bytes after call to ProcessResourceLoadInFrame, calling
   // ResourceLoadAggregator.
-  void AdjustAdBytes(int64_t unaccounted_ad_bytes, ResourceMimeType mime_type);
+  void AdjustAdBytes(base::ByteSize unaccounted_ad_bytes,
+                     ResourceMimeType mime_type);
 
   // Updates the cpu usage of this frame.
   void UpdateCpuUsage(base::TimeTicks update_time, base::TimeDelta update);
@@ -162,9 +162,6 @@ class FrameTreeData final {
   // Updates the max frame depth of this frames tree given the newly seen child
   // frame.
   void MaybeUpdateFrameDepth(content::RenderFrameHost* render_frame_host);
-
-  // Updates the recorded bytes of memory used.
-  void UpdateMemoryUsage(int64_t delta_bytes);
 
   // Returns whether the frame should be recorded for UKMs and UMA histograms.
   // A frame should be recorded if it has non-zero bytes or non-zero CPU usage
@@ -187,6 +184,8 @@ class FrameTreeData final {
   content::FrameTreeNodeId root_frame_tree_node_id() const {
     return root_frame_tree_node_id_;
   }
+
+  const url::Origin& initial_origin() const { return initial_origin_; }
 
   OriginStatus origin_status() const { return origin_status_; }
 
@@ -267,6 +266,10 @@ class FrameTreeData final {
     return peak_cpu_.peak_windowed_percent();
   }
 
+  const base::UnguessableToken& devtools_frame_token() const {
+    return devtools_frame_token_;
+  }
+
   base::WeakPtr<FrameTreeData> AsWeakPtr() {
     return weak_ptr_factory_.GetWeakPtr();
   }
@@ -297,6 +300,9 @@ class FrameTreeData final {
 
   // The max depth of this frames frame tree.
   unsigned int frame_depth_ = 0;
+
+  // The initial origin of the ad frame.
+  url::Origin initial_origin_;
 
   // The origin status of the ad frame for the creative.
   OriginStatus origin_status_ = OriginStatus::kUnknown;
@@ -347,15 +353,16 @@ class FrameTreeData final {
   HeavyAdAction heavy_ad_action_ = HeavyAdAction::kNone;
 
   // Number of bytes of noise that should be added to the network threshold.
-  const int heavy_ad_network_threshold_noise_;
+  const base::ByteSize heavy_ad_network_threshold_noise_;
 
   // Whether or not the frame has been activated (clicked on).
   UserActivationStatus user_activation_status_ =
       UserActivationStatus::kNoActivation;
 
   // The cpu usage for both the activated and unactivated time periods.
-  base::TimeDelta
-      cpu_usage_[static_cast<size_t>(UserActivationStatus::kMaxValue) + 1];
+  std::array<base::TimeDelta,
+             static_cast<size_t>(UserActivationStatus::kMaxValue) + 1>
+      cpu_usage_;
 
   // The resource data for this frame tree.
   ResourceLoadAggregator resource_data_;
@@ -363,8 +370,9 @@ class FrameTreeData final {
   // The peak cpu usage for this frame tree.
   PeakCpuAggregator peak_cpu_;
 
-  // Memory usage by v8 in this ad frame tree.
-  MemoryUsageAggregator memory_usage_;
+  // The DevTools frame token for the root ad frame. This is used to uniquely
+  // identify the frame in the DevTools Ads domain.
+  base::UnguessableToken devtools_frame_token_;
 
   // Owns weak pointers to the instance.
   base::WeakPtrFactory<FrameTreeData> weak_ptr_factory_{this};

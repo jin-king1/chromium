@@ -5,12 +5,12 @@
 #include "chrome/browser/sync/test/integration/sync_test_utils_android.h"
 
 #include <memory>
+#include <optional>
 
 #include "base/android/jni_android.h"
 #include "base/android/jni_string.h"
 #include "base/android/token_android.h"
 #include "base/functional/callback.h"
-#include "base/functional/callback_forward.h"
 #include "base/logging.h"
 #include "base/notreached.h"
 #include "base/run_loop.h"
@@ -22,6 +22,12 @@
 #include "chrome/browser/ui/android/tab_model/tab_model_list.h"
 #include "components/saved_tab_groups/public/android/tab_group_sync_conversions_bridge.h"
 #include "components/saved_tab_groups/public/types.h"
+#include "components/signin/public/identity_manager/account_capabilities_test_mutator.h"
+#include "components/signin/public/identity_manager/account_info.h"
+#include "components/signin/public/identity_manager/identity_test_utils.h"
+#include "components/signin/public/identity_manager/signin_constants.h"
+#include "google_apis/gaia/core_account_id.h"
+#include "google_apis/gaia/gaia_id.h"
 #include "url/android/gurl_android.h"
 #include "url/gurl.h"
 
@@ -31,23 +37,44 @@
 
 namespace sync_test_utils_android {
 
-void SetUpAccountAndSignInForTesting() {
+namespace {
+
+AccountInfo GetFakeAccountInfo(
+    const std::string& username,
+    const std::optional<std::string>& hosted_domain) {
+  AccountInfo::Builder builder(signin::GetTestGaiaIdForEmail(username),
+                               username);
+  builder.SetAccountId(
+      CoreAccountId::FromGaiaId(signin::GetTestGaiaIdForEmail(username)));
+  AccountInfo account_info =
+      signin::WithGeneratedUserInfo(builder.Build(), /*given_name=*/"Fake");
+  // `signin::WithGeneratedUserInfo()` resets hosted domain, so it needs to be
+  // set below.
+  if (hosted_domain.has_value()) {
+    account_info = AccountInfo::Builder(account_info)
+                       .SetHostedDomain(*hosted_domain)
+                       .Build();
+  }
+  bool managed = hosted_domain.has_value() && !hosted_domain->empty() &&
+                 hosted_domain != signin::constants::kNoHostedDomainFound;
+  AccountCapabilitiesTestMutator(&account_info)
+      .set_is_subject_to_enterprise_features(managed);
+  return account_info;
+}
+
+}  // namespace
+
+void SetUpFakeAccountAndSignInForTesting(
+    const std::string& username,
+    const std::optional<std::string>& hosted_domain,
+    signin::ConsentLevel consent_level) {
   base::RunLoop run_loop;
   base::ThreadPool::PostTask(
       FROM_HERE, {base::MayBlock()}, base::BindLambdaForTesting([&]() {
         Java_SyncTestSigninUtils_setUpAccountAndSignInForTesting(
-            base::android::AttachCurrentThread());
-        run_loop.Quit();
-      }));
-  run_loop.Run();
-}
-
-void SetUpAccountAndSignInAndEnableSyncForTesting() {
-  base::RunLoop run_loop;
-  base::ThreadPool::PostTask(
-      FROM_HERE, {base::MayBlock()}, base::BindLambdaForTesting([&]() {
-        Java_SyncTestSigninUtils_setUpAccountAndSignInAndEnableSyncForTesting(
-            base::android::AttachCurrentThread());
+            base::android::AttachCurrentThread(),
+            GetFakeAccountInfo(username, hosted_domain),
+            /*withSyncConsent=*/consent_level == signin::ConsentLevel::kSync);
         run_loop.Quit();
       }));
   run_loop.Run();
@@ -66,7 +93,7 @@ void SignOutForTesting() {
 
 void SetUpFakeAuthForTesting() {
   Java_SyncTestSigninUtils_setUpFakeAuthForTesting(
-      base::android::AttachCurrentThread());
+      base::android::AttachCurrentThread(), /*isNativeTest=*/true);
 }
 
 void TearDownFakeAuthForTesting() {
@@ -81,27 +108,15 @@ void TearDownFakeAuthForTesting() {
 }
 
 void SetUpLiveAccountAndSignInForTesting(const std::string& username,
-                                         const std::string& password) {
+                                         const std::string& password,
+                                         signin::ConsentLevel consent_level) {
   base::RunLoop run_loop;
   base::ThreadPool::PostTask(
       FROM_HERE, {base::MayBlock()}, base::BindLambdaForTesting([&]() {
         JNIEnv* env = base::android::AttachCurrentThread();
         Java_SyncTestSigninUtils_setUpLiveAccountAndSignInForTesting(
-            env, username, password);
-        run_loop.Quit();
-      }));
-  run_loop.Run();
-}
-
-void SetUpLiveAccountAndSignInAndEnableSyncForTesting(
-    const std::string& username,
-    const std::string& password) {
-  base::RunLoop run_loop;
-  base::ThreadPool::PostTask(
-      FROM_HERE, {base::MayBlock()}, base::BindLambdaForTesting([&]() {
-        JNIEnv* env = base::android::AttachCurrentThread();
-        Java_SyncTestSigninUtils_setUpLiveAccountAndSignInAndEnableSyncForTesting(
-            env, username, password);
+            env, username, password, /*withSyncConsent=*/
+            consent_level == signin::ConsentLevel::kSync);
         run_loop.Quit();
       }));
   run_loop.Run();
@@ -146,16 +161,19 @@ void UpdateTabGroupVisualData(TabAndroid* tab,
   CHECK(tab);
   JNIEnv* env = base::android::AttachCurrentThread();
   auto j_title = base::android::ConvertUTF8ToJavaString(env, title);
-  jint j_color = static_cast<jint>(color);
+  int32_t j_color = static_cast<int32_t>(color);
   Java_SyncTestTabGroupHelpers_updateGroupVisualData(env, tab->GetJavaObject(),
                                                      j_title, j_color);
 }
 
-void JNI_SyncTestSigninUtils_OnShutdownComplete(JNIEnv* env,
-                                                jlong callbackPtr) {
+static void JNI_SyncTestSigninUtils_OnShutdownComplete(JNIEnv* env,
+                                                       int64_t callbackPtr) {
   std::unique_ptr<base::OnceClosure> heap_callback(
       reinterpret_cast<base::OnceClosure*>(callbackPtr));
   std::move(*heap_callback).Run();
 }
 
 }  // namespace sync_test_utils_android
+
+DEFINE_JNI(SyncTestSigninUtils)
+DEFINE_JNI(SyncTestTabGroupHelpers)

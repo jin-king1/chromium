@@ -68,8 +68,17 @@ class ModelTest(unittest.TestCase):
     self.function_platform_win_linux = self.model.namespaces.get(
         'function_platform_win_linux')
 
+    self.enum_value_nodoc_json = CachedLoad('test/enum_value_nodoc.json')
+    self.model.AddNamespace(self.enum_value_nodoc_json[0],
+                            'path/to/enum_value_nodoc.json')
+    self.enum_value_nodoc = self.model.namespaces.get('enum_value_nodoc')
+
+    self.idl_basics_idl = Load('test/idl_basics.idl')
+    self.model.AddNamespace(self.idl_basics_idl[0], 'path/to/idl_basics.idl')
+    self.idl_basics = self.model.namespaces.get('idl_basics')
+
   def testNamespaces(self):
-    self.assertEqual(12, len(self.model.namespaces))
+    self.assertEqual(14, len(self.model.namespaces))
     self.assertTrue(self.permissions)
 
   def testHasFunctions(self):
@@ -77,19 +86,27 @@ class ModelTest(unittest.TestCase):
                      sorted(self.permissions.functions.keys()))
 
   def testHasTypes(self):
-    self.assertEqual(['Tab'], list(self.tabs.types.keys()))
+    self.assertEqual([
+        'TabStatus', 'MutedInfoReason', 'MutedInfo', 'Tab', 'ZoomSettingsMode',
+        'ZoomSettingsScope', 'ZoomSettings', 'WindowType'
+    ], list(self.tabs.types.keys()))
     self.assertEqual(['Permissions'], list(self.permissions.types.keys()))
-    self.assertEqual(['Window'], list(self.windows.types.keys()))
+    self.assertEqual(
+        ['WindowType', 'WindowState', 'Window', 'CreateType', 'QueryOptions'],
+        list(self.windows.types.keys()))
 
   def testHasProperties(self):
     self.assertEqual([
-        "active", "favIconUrl", "highlighted", "id", "incognito", "index",
-        "pinned", "selected", "status", "title", "url", "windowId"
+        "active", "audible", "autoDiscardable", "discarded", "favIconUrl",
+        "frozen", "groupId", "height", "highlighted", "id", "incognito",
+        "index", "lastAccessed", "mutedInfo", "openerTabId", "pendingUrl",
+        "pinned", "selected", "sessionId", "splitViewId", "status", "title",
+        "url", "width", "windowId"
     ], sorted(self.tabs.types['Tab'].properties.keys()))
 
   def testProperties(self):
     string_prop = self.tabs.types['Tab'].properties['status']
-    self.assertEqual(model.PropertyType.STRING, string_prop.type_.property_type)
+    self.assertEqual(model.PropertyType.REF, string_prop.type_.property_type)
     integer_prop = self.tabs.types['Tab'].properties['id']
     self.assertEqual(model.PropertyType.INTEGER,
                      integer_prop.type_.property_type)
@@ -101,7 +118,9 @@ class ModelTest(unittest.TestCase):
     object_prop = self.tabs.functions['query'].params[0]
     self.assertEqual(model.PropertyType.OBJECT, object_prop.type_.property_type)
     self.assertEqual([
-        "active", "highlighted", "pinned", "status", "title", "url", "windowId",
+        "active", "audible", "autoDiscardable", "currentWindow", "discarded",
+        "frozen", "groupId", "highlighted", "index", "lastFocusedWindow",
+        "muted", "pinned", "splitViewId", "status", "title", "url", "windowId",
         "windowType"
     ], sorted(object_prop.type_.properties.keys()))
 
@@ -119,11 +138,11 @@ class ModelTest(unittest.TestCase):
     test_json = CachedLoad('test/redundant_default_attribute.json')
     self.assertRaisesRegex(
         model.ParseException,
-        'Model parse exception at:\nredundantDefaultAttribute\noptionalFalse\n'
-        '  in path/to/redundant_default_attribute.json\n'
-        'The attribute "optional" is specified as "False", but this is the '
-        'default value if the attribute is not included\. It should be '
-        'removed\.', self.model.AddNamespace, test_json[0],
+        r'Model parse exception at:\nredundantDefaultAttribute\noptionalFalse\n'
+        r'  in path/to/redundant_default_attribute.json\n'
+        r'The attribute "optional" is specified as "False", but this is the '
+        r'default value if the attribute is not included\. It should be '
+        r'removed\.', self.model.AddNamespace, test_json[0],
         'path/to/redundant_default_attribute.json')
 
   def testReturnsAsyncMissingParametersKey(self):
@@ -134,6 +153,23 @@ class ModelTest(unittest.TestCase):
         'path/to/returns_async_missing_parameters_key.json',
         self.model.AddNamespace, test_json[0],
         'path/to/returns_async_missing_parameters_key.json')
+
+  def testNodocSpecifiedAsStringException(self):
+    # Note: there are checks for this on all the valid places nodoc can be used,
+    # but this test only verifies it for a property on a type.
+    test_json = CachedLoad('test/nodoc_specified_as_string.json')
+    self.assertRaisesRegex(
+        model.ParseException,
+        'Model parse exception at:\nnodocException\nSomeType\nNodocProperty\n'
+        '  in path/to/nodoc_specified_as_string.json\n'
+        'The attribute "nodoc" must be specified as <class \'bool\'>, but was '
+        'speficied as <class \'str\'>.', self.model.AddNamespace, test_json[0],
+        'path/to/nodoc_specified_as_string.json')
+
+  def testManifestKeyMissingOptional(self):
+    CachedLoad('test/manifest_key_missing_optional.json')
+    self.assertRaisesRegex(model.ParseException,
+                           'Manifest key "foo" must be optional.')
 
   def testDescription(self):
     self.assertFalse(
@@ -194,8 +230,8 @@ class ModelTest(unittest.TestCase):
     self.assertEqual([Platforms.CHROMEOS],
                      self.idl_namespace_chromeos.platforms)
     self.assertEqual([
-        Platforms.CHROMEOS, Platforms.FUCHSIA, Platforms.LINUX, Platforms.MAC,
-        Platforms.WIN
+        Platforms.CHROMEOS, Platforms.DESKTOP_ANDROID, Platforms.LINUX,
+        Platforms.MAC, Platforms.WIN
     ], self.idl_namespace_all_platforms.platforms)
     self.assertEqual(None, self.idl_namespace_non_specific_platforms.platforms)
 
@@ -224,9 +260,6 @@ class ModelTest(unittest.TestCase):
     function_cros = self.function_platforms.functions['function_cros']
     self.assertEqual([Platforms.CHROMEOS], function_cros.platforms)
 
-    function_fuchsia = self.function_platforms.functions['function_fuchsia']
-    self.assertEqual([Platforms.FUCHSIA], function_fuchsia.platforms)
-
   def testPlatformsOnFunctionsJSON(self):
     test_function = self.function_platform_win_linux.functions['test']
     self.assertEqual([Platforms.WIN, Platforms.LINUX], test_function.platforms)
@@ -251,6 +284,26 @@ class ModelTest(unittest.TestCase):
     self.assertTrue(self.nodoc.nodoc, 'Namespace should also be marked nodoc')
     nodoc_ValidType = self.nodoc.types['ValidType']
     self.assertFalse(nodoc_ValidType.nodoc)
+
+    window_state = self.windows.types['WindowState']
+    self.assertFalse(window_state.enum_values[0].nodoc)
+    self.assertTrue(window_state.enum_values[4].nodoc)
+
+  def testEnumValueHasNoDoc(self):
+    enum_type = self.enum_value_nodoc.types['EnumTypeWithNoDocValue']
+    self.assertFalse(enum_type.enum_values[0].nodoc)
+    self.assertTrue(enum_type.enum_values[1].nodoc)
+
+    mixed_enum_type = self.enum_value_nodoc.types['MixedEnumType']
+    self.assertEqual(3, len(mixed_enum_type.enum_values))
+    self.assertFalse(mixed_enum_type.enum_values[0].nodoc)
+    self.assertTrue(mixed_enum_type.enum_values[1].nodoc)
+    self.assertFalse(mixed_enum_type.enum_values[2].nodoc)
+
+    idl_enum_type = self.idl_basics.types['EnumTypeWithNoDocValue']
+    self.assertFalse(idl_enum_type.enum_values[0].nodoc)
+    self.assertTrue(idl_enum_type.enum_values[1].nodoc)
+    self.assertFalse(idl_enum_type.enum_values[2].nodoc)
 
   def testInvalidNamespacePlatform(self):
     invalid_namespace_platform = CachedLoad('test/invalid_empty_enum_key.json')

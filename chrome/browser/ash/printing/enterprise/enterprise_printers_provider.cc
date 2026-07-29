@@ -6,20 +6,20 @@
 
 #include <algorithm>
 #include <iterator>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
-#include "base/hash/md5.h"
+#include "ash/constants/ash_pref_names.h"
 #include "base/json/json_reader.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/strings/string_util.h"
 #include "chrome/browser/ash/printing/enterprise/bulk_printers_calculator.h"
 #include "chrome/browser/ash/printing/enterprise/bulk_printers_calculator_factory.h"
 #include "chrome/browser/ash/printing/enterprise/calculators_policies_binder.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/policy/profile_policy_connector.h"
-#include "chrome/common/pref_names.h"
 #include "chromeos/ash/components/settings/cros_settings.h"
 #include "chromeos/printing/printer_configuration.h"
 #include "chromeos/printing/printer_translator.h"
@@ -30,12 +30,20 @@
 #include "components/prefs/pref_change_registrar.h"
 #include "components/prefs/pref_service.h"
 #include "components/user_manager/user.h"
+#include "crypto/obsolete/md5.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 
 namespace ash {
 
+namespace printing {
+std::string PolicyPrinterId(const std::string& json) {
+  return base::HexEncodeLower(crypto::obsolete::Md5::Hash(json));
+}
+}  // namespace printing
+
 namespace {
 
-std::vector<std::string> ConvertToVector(const base::Value::List& list) {
+std::vector<std::string> ConvertToVector(const base::ListValue& list) {
   std::vector<std::string> string_list;
   for (const base::Value& value : list) {
     if (value.is_string()) {
@@ -86,7 +94,7 @@ class EnterprisePrintersProviderImpl : public EnterprisePrintersProvider,
     // Binds policy with recommended printers (deprecated). This method calls
     // indirectly RecalculateCurrentPrintersList() that prepares the first
     // version of final list of printers.
-    BindPref(prefs::kRecommendedPrinters,
+    BindPref(ash::prefs::kRecommendedPrinters,
              &EnterprisePrintersProviderImpl::UpdateUserRecommendedPrinters);
   }
 
@@ -129,7 +137,7 @@ class EnterprisePrintersProviderImpl : public EnterprisePrintersProvider,
   // printers. It is called when value of the policy changes.
   void UpdateUserRecommendedPrinters() {
     recommended_printers_.clear();
-    std::vector<std::string> data = FromPrefs(prefs::kRecommendedPrinters);
+    std::vector<std::string> data = FromPrefs(ash::prefs::kRecommendedPrinters);
     for (const auto& printer_json : data) {
       std::optional<base::Value> printer_value = base::JSONReader::Read(
           printer_json, base::JSON_ALLOW_TRAILING_COMMAS);
@@ -142,8 +150,8 @@ class EnterprisePrintersProviderImpl : public EnterprisePrintersProvider,
       // Policy printers don't have id's but the ids only need to be locally
       // unique so we'll hash the record.  This will not collide with the
       // UUIDs generated for user entries.
-      std::string id = base::MD5String(printer_json);
-      base::Value::Dict& printer_dictionary = printer_value.value().GetDict();
+      std::string id = printing::PolicyPrinterId(printer_json);
+      base::DictValue& printer_dictionary = printer_value.value().GetDict();
       printer_dictionary.Set(chromeos::kPrinterId, id);
 
       auto new_printer =
@@ -194,12 +202,12 @@ class EnterprisePrintersProviderImpl : public EnterprisePrintersProvider,
 
     // Enterprise printers from user policy, device policy, as well as printers
     // from the legacy `Printers` policy.
-    std::unordered_map<std::string, chromeos::Printer> all_printers =
+    absl::flat_hash_map<std::string, chromeos::Printer> all_printers =
         recommended_printers_;
 
     if (device_printers_) {
       complete_ = complete_ && device_printers_is_complete_;
-      std::unordered_map<std::string, chromeos::Printer> printers =
+      absl::flat_hash_map<std::string, chromeos::Printer> printers =
           device_printers_->GetPrinters();
       PRINTER_LOG(DEBUG)
           << "EnterprisePrintersProvider::RecalculateCurrentPrintersList()"
@@ -210,7 +218,7 @@ class EnterprisePrintersProviderImpl : public EnterprisePrintersProvider,
     }
     if (user_printers_) {
       complete_ = complete_ && user_printers_is_complete_;
-      std::unordered_map<std::string, chromeos::Printer> printers =
+      absl::flat_hash_map<std::string, chromeos::Printer> printers =
           user_printers_->GetPrinters();
       PRINTER_LOG(DEBUG)
           << "EnterprisePrintersProvider::RecalculateCurrentPrintersList()"
@@ -263,7 +271,7 @@ class EnterprisePrintersProviderImpl : public EnterprisePrintersProvider,
   }
 
   // current partial results
-  std::unordered_map<std::string, chromeos::Printer> recommended_printers_;
+  absl::flat_hash_map<std::string, chromeos::Printer> recommended_printers_;
   bool device_printers_is_complete_ = true;
   bool user_printers_is_complete_ = true;
 
@@ -294,7 +302,7 @@ class EnterprisePrintersProviderImpl : public EnterprisePrintersProvider,
 // static
 void EnterprisePrintersProvider::RegisterProfilePrefs(
     user_prefs::PrefRegistrySyncable* registry) {
-  registry->RegisterListPref(prefs::kRecommendedPrinters);
+  registry->RegisterListPref(ash::prefs::kRecommendedPrinters);
   CalculatorsPoliciesBinder::RegisterProfilePrefs(registry);
 }
 

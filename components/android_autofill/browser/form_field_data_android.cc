@@ -24,17 +24,17 @@ FormFieldDataAndroid::FieldTypes::FieldTypes() = default;
 FormFieldDataAndroid::FieldTypes::FieldTypes(FieldType type)
     : heuristic_type(type),
       server_type(type),
-      computed_type(FieldTypeToStringView(type)),
+      overall_type(FieldTypeToStringView(type)),
       server_predictions({type}) {}
 
 FormFieldDataAndroid::FieldTypes::FieldTypes(
     FieldType heuristic_type,
     FieldType server_type,
-    std::string_view computed_type,
+    std::string_view overall_type,
     std::vector<FieldType> server_predictions)
     : heuristic_type(heuristic_type),
       server_type(server_type),
-      computed_type(computed_type),
+      overall_type(overall_type),
       server_predictions(std::move(server_predictions)) {}
 
 FormFieldDataAndroid::FieldTypes::FieldTypes(FieldTypes&&) = default;
@@ -46,7 +46,7 @@ FormFieldDataAndroid::FieldTypes::~FieldTypes() = default;
 
 bool FormFieldDataAndroid::FieldTypes::operator==(FieldType type) const {
   return heuristic_type == type && server_type == type &&
-         computed_type == FieldTypeToStringView(type) &&
+         overall_type == FieldTypeToStringView(type) &&
          server_predictions.size() == 1 && server_predictions[0] == type;
 }
 
@@ -69,7 +69,7 @@ void FormFieldDataAndroid::UpdateFromJava() {
 
 void FormFieldDataAndroid::OnFormFieldDidChange(std::u16string_view value) {
   field_->set_value(std::u16string(value));
-  field_->set_is_autofilled(false);
+  field_->set_is_autofilled_according_to_renderer(false);
   bridge_->UpdateValue(value);
 }
 
@@ -77,8 +77,8 @@ void FormFieldDataAndroid::OnFormFieldVisibilityDidChange(
     const FormFieldData& field) {
   field_->set_is_focusable(field.is_focusable());
   field_->set_role(field.role());
-  CHECK_EQ(field_->IsFocusable(), field.IsFocusable());
-  bridge_->UpdateVisible(field_->IsFocusable());
+  CHECK_EQ(field_->is_focusable(), field.is_focusable());
+  bridge_->UpdateFocusable(field_->is_focusable());
 }
 
 bool FormFieldDataAndroid::SimilarFieldAs(const FormFieldData& field) const {

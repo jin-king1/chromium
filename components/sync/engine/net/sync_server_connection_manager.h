@@ -9,7 +9,6 @@
 #include <string>
 
 #include "base/compiler_specific.h"
-#include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "components/sync/engine/net/server_connection_manager.h"
 #include "url/gurl.h"
@@ -35,8 +34,8 @@ class SyncServerConnectionManager : public ServerConnectionManager {
 
   ~SyncServerConnectionManager() override;
 
+ protected:
   HttpResponse PostBuffer(const std::string& buffer_in,
-                          const std::string& access_token,
                           std::string* buffer_out) override;
 
  private:

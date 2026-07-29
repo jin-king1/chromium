@@ -5,7 +5,6 @@
 #import "ios/chrome/browser/web/model/annotations/annotations_tab_helper.h"
 
 #import "base/apple/foundation_util.h"
-#import "base/containers/contains.h"
 #import "base/metrics/histogram_functions.h"
 #import "base/metrics/user_metrics.h"
 #import "base/strings/string_util.h"
@@ -27,7 +26,6 @@
 #import "ios/web/common/features.h"
 #import "ios/web/common/url_scheme_util.h"
 #import "ios/web/public/annotations/annotations_text_manager.h"
-#import "ios/web/public/browser_state.h"
 #import "ios/web/public/js_messaging/web_frame.h"
 #import "ios/web/public/js_messaging/web_frames_manager.h"
 #import "ios/web/public/navigation/navigation_context.h"
@@ -91,7 +89,7 @@ void AnnotationsTabHelper::PageLoaded(
 void AnnotationsTabHelper::OnTextExtracted(web::WebState* web_state,
                                            const std::string& text,
                                            int seq_id,
-                                           const base::Value::Dict& metadata) {
+                                           const base::DictValue& metadata) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK_EQ(web_state_, web_state);
 
@@ -124,7 +122,7 @@ void AnnotationsTabHelper::OnTextExtracted(web::WebState* web_state,
   }
 
   // Keep latest copy.
-  metadata_ = std::make_unique<base::Value::Dict>(metadata.Clone());
+  metadata_ = std::make_unique<base::DictValue>(metadata.Clone());
 
   TextClassifierModelService* service =
       TextClassifierModelServiceFactory::GetForProfile(
@@ -148,7 +146,7 @@ void AnnotationsTabHelper::OnDecorated(web::WebState* web_state,
                                        int annotations,
                                        int successes,
                                        int failures,
-                                       const base::Value::List& cancelled) {
+                                       const base::ListValue& cancelled) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (annotations) {
     int percentage = (100 * successes) / annotations;
@@ -172,10 +170,6 @@ void AnnotationsTabHelper::OnClick(web::WebState* web_state,
     return;
   }
   NSTextCheckingResult* match = match_cache_.at(data);
-  auto* manager = web::AnnotationsTextManager::FromWebState(web_state_);
-  if (manager) {
-    manager->RemoveHighlight();
-  }
 
   NSString* ns_text = base::SysUTF8ToNSString(text);
   const BOOL success = ios::provider::HandleIntentTypesForOneTap(
@@ -195,7 +189,7 @@ void AnnotationsTabHelper::ApplyDeferredProcessing(
   DCHECK(manager);
 
   if (!deferred) {
-    base::Value::List decorations_list;
+    base::ListValue decorations_list;
     base::Value decorations(std::move(decorations_list));
     manager->DecorateAnnotations(web_state_, decorations, seq_id);
     return;
@@ -211,7 +205,7 @@ void AnnotationsTabHelper::ApplyDeferredProcessing(
     if (base::FeatureList::IsEnabled(web::features::kEnableMeasurements)) {
       ProcessAnnotations(annotations);
     }
-    base::Value::List decorations_list;
+    base::ListValue decorations_list;
     BuildCacheAndDecorations(annotations, decorations_list);
     base::Value decorations(std::move(decorations_list));
     manager->DecorateAnnotations(web_state_, decorations, seq_id);
@@ -220,7 +214,7 @@ void AnnotationsTabHelper::ApplyDeferredProcessing(
 
 void AnnotationsTabHelper::BuildCacheAndDecorations(
     std::vector<web::TextAnnotation>& annotations_list,
-    base::Value::List& decorations) {
+    base::ListValue& decorations) {
   for (web::TextAnnotation& data : annotations_list) {
     const std::string key = base::Uuid::GenerateRandomV4().AsLowercaseString();
     match_cache_[key] = data.second;
@@ -246,5 +240,3 @@ void AnnotationsTabHelper::ProcessAnnotations(
   base::UmaHistogramCounts100("IOS.UnitConversion.DetectedMeasurements",
                               detected_measurements);
 }
-
-WEB_STATE_USER_DATA_KEY_IMPL(AnnotationsTabHelper)

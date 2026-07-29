@@ -12,11 +12,14 @@
 #import "components/policy/core/browser/cloud/user_policy_signin_service_base.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
 
-class ProfileIOS;
+namespace enterprise {
+class ProfileIdService;
+}  // namespace enterprise
 
 namespace policy {
 
 class CloudPolicyClientRegistrationHelper;
+class EnterpriseGroupsProfileHandler;
 
 // A specialization of UserPolicySigninServiceBase for iOS.
 class UserPolicySigninService : public UserPolicySigninServiceBase,
@@ -26,9 +29,11 @@ class UserPolicySigninService : public UserPolicySigninServiceBase,
   UserPolicySigninService(
       PrefService* pref_service,
       PrefService* local_state,
+      enterprise::ProfileIdService* profile_id_service,
       DeviceManagementService* device_management_service,
       UserCloudPolicyManager* policy_manager,
       signin::IdentityManager* identity_manager,
+      EnterpriseGroupsProfileHandler* enterprise_groups_profile_handler,
       scoped_refptr<network::SharedURLLoaderFactory> system_url_loader_factory);
   UserPolicySigninService(const UserPolicySigninService&) = delete;
   UserPolicySigninService& operator=(const UserPolicySigninService&) = delete;
@@ -37,6 +42,9 @@ class UserPolicySigninService : public UserPolicySigninServiceBase,
   // signin::IdentityManager::Observer implementation:
   void OnPrimaryAccountChanged(
       const signin::PrimaryAccountChangeEvent& event) override;
+
+  // CloudPolicyClient::Observer implementation:
+  void OnPolicyFetched(CloudPolicyClient* client) override;
 
   // KeyedService implementation:
   void Shutdown() override;
@@ -47,11 +55,13 @@ class UserPolicySigninService : public UserPolicySigninServiceBase,
  private:
   // UserPolicySigninServiceBase implementation:
   base::TimeDelta GetTryRegistrationDelay() override;
-  void ProhibitSignoutIfNeeded() override;
   void UpdateLastPolicyCheckTime() override;
-  signin::ConsentLevel GetConsentLevelForRegistration() override;
   bool CanApplyPolicies(bool check_for_refresh_token) override;
   std::string GetProfileId() override;
+  void ShutdownCloudPolicyManager() override;
+  void InitializeCloudPolicyManager(
+      const AccountId& account_id,
+      std::unique_ptr<CloudPolicyClient> client) override;
 
   // Tries to initialize the service if a signed in account is available and
   // eligible for user policy.
@@ -60,8 +70,10 @@ class UserPolicySigninService : public UserPolicySigninServiceBase,
   // Helper used to register for user policy.
   std::unique_ptr<CloudPolicyClientRegistrationHelper> registration_helper_;
 
-  // The PrefService associated with the Profile.
+  // The PrefService and ProfileIdService associated with the Profile.
   raw_ptr<PrefService> pref_service_;
+  raw_ptr<enterprise::ProfileIdService> profile_id_service_;
+  raw_ptr<EnterpriseGroupsProfileHandler> enterprise_groups_profile_handler_;
 
   base::ScopedObservation<signin::IdentityManager,
                           signin::IdentityManager::Observer>

@@ -54,16 +54,16 @@ public class NfcTagHandler {
      * NdefFormatable and Ndef interfaces have different signatures for operating with NFC tags.
      * This interface provides generic methods.
      */
-    private interface TagTechnologyHandler {
-        public void write(NdefMessage message)
+    protected interface TagTechnologyHandler {
+        void write(NdefMessage message)
                 throws IOException, TagLostException, FormatException, IllegalStateException;
 
-        public boolean makeReadOnly() throws IOException, TagLostException;
+        boolean makeReadOnly() throws IOException, TagLostException;
 
-        public NdefMessage read()
+        NdefMessage read()
                 throws IOException, TagLostException, FormatException, IllegalStateException;
 
-        public boolean canAlwaysOverwrite()
+        boolean canAlwaysOverwrite()
                 throws IOException, TagLostException, FormatException, IllegalStateException;
     }
 

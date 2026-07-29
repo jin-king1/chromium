@@ -21,18 +21,13 @@ mojom("mojom") {
     "//media/capture/mojom:image_capture",
     "//media/capture/mojom:video_capture",
     "//media/mojo/mojom",
-    "//services/video_effects/public/mojom:mojom",
     "//ui/gfx/geometry/mojom",
   ]
 
-  public_deps = [
-    "//media/capture/mojom:video_effects_manager",
-    "//sandbox/policy/mojom",
-  ]
+  public_deps = [ "//sandbox/policy/mojom" ]
 
   if (is_chromeos) {
     deps += [
-      "//chromeos/crosapi/mojom:video_capture",
       "//components/chromeos_camera/common",
       "//media/capture/video/chromeos/mojom:cros_camera",
     ]

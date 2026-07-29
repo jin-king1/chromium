@@ -11,6 +11,8 @@ import android.text.TextUtils;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
 import org.chromium.base.ThreadUtils;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.browserservices.permissiondelegation.PermissionUpdater;
 import org.chromium.components.embedder_support.util.Origin;
 import org.chromium.components.embedder_support.util.UrlUtilities;
@@ -22,11 +24,9 @@ import java.util.Set;
  * Records in all the appropriate places that an installed webapp (TWA or WebAPK) has successfully
  * been verified.
  */
+@NullMarked
 public class InstalledWebappRegistrar {
     private static final String TAG = "WebappRegistrar";
-
-    // These origins have already been registered so we don't need to do so again.
-    private final Set<Origin> mRegisteredOrigins = new HashSet<>();
 
     /**
      * Cache so we don't send the same request multiple times. {@link #register} is called on each
@@ -35,7 +35,7 @@ public class InstalledWebappRegistrar {
      */
     private final Set<String> mCache = new HashSet<>();
 
-    private static InstalledWebappRegistrar sInstance;
+    private static @Nullable InstalledWebappRegistrar sInstance;
 
     public static InstalledWebappRegistrar getInstance() {
         if (sInstance == null) sInstance = new InstalledWebappRegistrar();
@@ -67,15 +67,13 @@ public class InstalledWebappRegistrar {
      */
     public void registerClient(String packageName, Origin origin, String pageUrl) {
         ThreadUtils.assertOnUiThread();
-        if (mRegisteredOrigins.contains(origin)) return;
+        if (!mCache.add(combine(packageName, origin))) return;
 
         // Register that we should wipe data for this origin when the client app is uninstalled.
         register(packageName, origin);
         // Register that we trust the client app to handle permission for this origin and update
         // Chrome's permission for the origin.
         PermissionUpdater.onOriginVerified(origin, pageUrl, packageName);
-
-        mRegisteredOrigins.add(origin);
     }
 
     /**
@@ -84,20 +82,14 @@ public class InstalledWebappRegistrar {
      * multiple requests with the same parameters. Requires native to be loaded.
      */
     private void register(String packageName, Origin origin) {
-        if (!mCache.add(combine(packageName, origin))) return;
 
         try {
             PackageManager pm = ContextUtils.getApplicationContext().getPackageManager();
             ApplicationInfo ai = pm.getApplicationInfo(packageName, 0);
             String appLabel = pm.getApplicationLabel(ai).toString();
 
-            if (TextUtils.isEmpty(appLabel) || ai.uid == -1) {
-                Log.e(
-                        TAG,
-                        "Invalid details for client package %s: %d, %s",
-                        packageName,
-                        ai.uid,
-                        appLabel);
+            if (TextUtils.isEmpty(appLabel)) {
+                Log.e(TAG, "Invalid details for client package %s: %s", packageName, appLabel);
                 return;
             }
 
@@ -105,9 +97,9 @@ public class InstalledWebappRegistrar {
                     UrlUtilities.getDomainAndRegistry(
                             origin.toString(), /* includePrivateRegistries= */ true);
 
-            Log.d(TAG, "Registering %d (%s) for %s", ai.uid, appLabel, origin);
+            Log.d(TAG, "Registering %s (%s) for %s", packageName, appLabel, origin);
             InstalledWebappDataRegister.registerPackageForOrigin(
-                    ai.uid, appLabel, packageName, domain, origin);
+                    appLabel, packageName, domain, origin);
         } catch (PackageManager.NameNotFoundException e) {
             Log.e(TAG, "Couldn't find name for client package %s", packageName);
         }

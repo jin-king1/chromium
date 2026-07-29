@@ -2,8 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/chromeos/ui_mode.gni")
-
 assert(is_chromeos)
 
 static_library("time_limits") {
@@ -27,11 +25,16 @@ static_library("time_limits") {
     "app_types.h",
     "persisted_app_info.cc",
     "persisted_app_info.h",
+    "web_time_activity_provider.cc",
+    "web_time_activity_provider.h",
+    "web_time_navigation_observer.cc",
+    "web_time_navigation_observer.h",
   ]
 
   public_deps = [
     "//base",
     "//chrome/browser:browser_public_dependencies",
+    "//chrome/browser/ash/browser_delegate",
     "//chromeos/ash/components/dbus/system_clock",
     "//chromeos/ash/components/settings",
     "//components/policy/proto",
@@ -41,12 +44,16 @@ static_library("time_limits") {
   deps = [
     "//ash/constants",
     "//ash/public/cpp",
+    "//ash/strings",
     "//chrome/browser/ash/app_list/arc",
     "//chrome/browser/ash/child_accounts/constants",
+    "//chrome/browser/notifications",
     "//chrome/browser/profiles:profile",
+    "//chrome/browser/ui/browser_window",
+    "//chrome/browser/ui/tabs:tab_strip",
+    "//chrome/browser/web_applications",
     "//chrome/common",
     "//chromeos/ash/experiences/arc:arc_app_constants",
-    "//chromeos/crosapi/mojom",
     "//chromeos/ui/vector_icons",
     "//components/app_constants",
     "//extensions/browser",
@@ -100,6 +107,10 @@ source_set("unit_tests") {
     "//testing/gtest",
     "//url",
   ]
+
+  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+  # enable the diagnostic by removing this line.
+  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 source_set("browser_tests") {
@@ -107,7 +118,10 @@ source_set("browser_tests") {
 
   defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
 
-  sources = [ "app_time_browsertest.cc" ]
+  sources = [
+    "app_time_browsertest.cc",
+    "web_time_calculation_browsertest.cc",
+  ]
 
   deps = [
     ":test_support",
@@ -122,6 +136,8 @@ source_set("browser_tests") {
     "//chrome/browser/ash/profiles",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/ui",
+    "//chrome/browser/ui/navigator",
+    "//chrome/browser/ui/tabs:tab_strip",
     "//chrome/common:chrome_features",
     "//chrome/test:test_support_ui",
     "//chromeos/ash/experiences/arc:arc_test_support",

@@ -18,17 +18,16 @@
  *
  */
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "third_party/blink/renderer/platform/image-decoders/image_decoder.h"
 
 #include <algorithm>
+#include <array>
 #include <memory>
+#include <string_view>
 
 #include "base/containers/heap_array.h"
+#include "base/containers/span.h"
+#include "base/feature_list.h"
 #include "base/logging.h"
 #include "base/numerics/byte_conversions.h"
 #include "base/numerics/safe_conversions.h"
@@ -39,20 +38,26 @@
 #include "third_party/blink/public/common/buildflags.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/platform/platform.h"
-#include "third_party/blink/renderer/platform/image-decoders/bmp/bmp_image_decoder.h"
+#include "third_party/blink/renderer/platform/image-decoders/bmp/bmp_decoder_factory.h"
 #include "third_party/blink/renderer/platform/image-decoders/fast_shared_buffer_reader.h"
 #include "third_party/blink/renderer/platform/image-decoders/gif/gif_image_decoder.h"
 #include "third_party/blink/renderer/platform/image-decoders/ico/ico_image_decoder.h"
 #include "third_party/blink/renderer/platform/image-decoders/jpeg/jpeg_image_decoder.h"
-#include "third_party/blink/renderer/platform/image-decoders/png/png_decoder_factory.h"
+#include "third_party/blink/renderer/platform/image-decoders/png/png_image_decoder.h"
 #include "third_party/blink/renderer/platform/image-decoders/webp/webp_image_decoder.h"
 #include "third_party/skia/include/core/SkColorSpace.h"
 #include "third_party/skia/include/private/SkExif.h"
+#include "third_party/skia/include/private/chromium/SkCodecsICCProfileChromium.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/geometry/size_conversions.h"
+#include "ui/gfx/skia_span_util.h"
 
-#if BUILDFLAG(ENABLE_AV1_DECODER)
-#include "third_party/blink/renderer/platform/image-decoders/avif/crabbyavif_image_decoder.h"
+#if BUILDFLAG(ENABLE_DAV1D_DECODER)
+#include "third_party/blink/renderer/platform/image-decoders/avif/avif_image_decoder.h"
+#endif
+
+#if BUILDFLAG(ENABLE_JXL_DECODER)
+#include "third_party/blink/renderer/platform/image-decoders/jxl/jxl_image_decoder.h"
 #endif
 
 namespace blink {
@@ -78,9 +83,15 @@ cc::ImageType FileExtensionToImageType(String image_extension) {
   if (image_extension == "bmp") {
     return cc::ImageType::kBMP;
   }
-#if BUILDFLAG(ENABLE_AV1_DECODER)
+#if BUILDFLAG(ENABLE_DAV1D_DECODER)
   if (image_extension == "avif") {
     return cc::ImageType::kAVIF;
+  }
+#endif
+#if BUILDFLAG(ENABLE_JXL_DECODER)
+  if (base::FeatureList::IsEnabled(features::kJXLImageFormat) &&
+      image_extension == "jxl") {
+    return cc::ImageType::kJXL;
   }
 #endif
   return cc::ImageType::kInvalid;
@@ -134,32 +145,43 @@ gfx::Size ExtractDensityCorrectedSize(const SkExif::Metadata& metadata,
   return physical_size;
 }
 
-inline bool MatchesJPEGSignature(const char* contents) {
-  return !memcmp(contents, "\xFF\xD8\xFF", 3);
+inline bool MatchesJPEGSignature(base::span<const uint8_t> contents) {
+  const auto sig = base::byte_span_from_cstring("\xFF\xD8\xFF");
+  return sig == contents.first(3u);
 }
 
-inline bool MatchesPNGSignature(const char* contents) {
-  return !memcmp(contents, "\x89PNG\r\n\x1A\n", 8);
+inline bool MatchesPNGSignature(base::span<const uint8_t> contents) {
+  const auto sig = base::byte_span_from_cstring("\x89PNG\r\n\x1A\n");
+  return sig == contents.first(8u);
 }
 
-inline bool MatchesGIFSignature(const char* contents) {
-  return !memcmp(contents, "GIF87a", 6) || !memcmp(contents, "GIF89a", 6);
+inline bool MatchesGIFSignature(base::span<const uint8_t> contents) {
+  const auto sig_1 = base::byte_span_from_cstring("GIF87a");
+  const auto sig_2 = base::byte_span_from_cstring("GIF89a");
+  const auto span = contents.first(6u);
+  return sig_1 == span || sig_2 == span;
 }
 
-inline bool MatchesWebPSignature(const char* contents) {
-  return !memcmp(contents, "RIFF", 4) && !memcmp(contents + 8, "WEBPVP", 6);
+inline bool MatchesWebPSignature(base::span<const uint8_t> contents) {
+  const auto sig_1 = base::byte_span_from_cstring("RIFF");
+  const auto sig_2 = base::byte_span_from_cstring("WEBPVP");
+  return sig_1 == contents.first(4u) && sig_2 == contents.subspan(8u, 6u);
 }
 
-inline bool MatchesICOSignature(const char* contents) {
-  return !memcmp(contents, "\x00\x00\x01\x00", 4);
+inline bool MatchesICOSignature(base::span<const uint8_t> contents) {
+  const auto sig = base::byte_span_from_cstring("\x00\x00\x01\x00");
+  return sig == contents.first(4u);
 }
 
-inline bool MatchesCURSignature(const char* contents) {
-  return !memcmp(contents, "\x00\x00\x02\x00", 4);
+inline bool MatchesCURSignature(base::span<const uint8_t> contents) {
+  const auto sig = base::byte_span_from_cstring("\x00\x00\x02\x00");
+  return sig == contents.first(4u);
 }
 
-inline bool MatchesBMPSignature(const char* contents) {
-  return !memcmp(contents, "BM", 2) || !memcmp(contents, "BA", 2);
+inline bool MatchesBMPSignature(base::span<const uint8_t> contents) {
+  const auto sig_1 = base::byte_span_from_cstring("BM");
+  const auto sig_2 = base::byte_span_from_cstring("BA");
+  return sig_1 == contents.first(2u) || sig_2 == contents.first(2u);
 }
 
 constexpr wtf_size_t kLongestSignatureLength = sizeof("RIFF????WEBPVP") - 1;
@@ -173,9 +195,9 @@ String SniffMimeTypeInternal(scoped_refptr<SegmentReader> reader) {
 
   // Access the first kLongestSignatureLength chars to sniff the signature.
   // (note: FastSharedBufferReader only makes a copy if the bytes are segmented)
-  char buffer[kLongestSignatureLength];
+  std::array<uint8_t, kLongestSignatureLength> buffer;
   const FastSharedBufferReader fast_reader(reader);
-  const char* contents =
+  base::span<const uint8_t> contents =
       fast_reader.GetConsecutiveData(0, kLongestSignatureLength, buffer);
 
   if (MatchesJPEGSignature(contents)) {
@@ -196,9 +218,15 @@ String SniffMimeTypeInternal(scoped_refptr<SegmentReader> reader) {
   if (MatchesBMPSignature(contents)) {
     return "image/bmp";
   }
-#if BUILDFLAG(ENABLE_AV1_DECODER)
-  if (CrabbyAVIFImageDecoder::MatchesAVIFSignature(fast_reader)) {
+#if BUILDFLAG(ENABLE_DAV1D_DECODER)
+  if (AVIFImageDecoder::MatchesAVIFSignature(fast_reader)) {
     return "image/avif";
+  }
+#endif
+#if BUILDFLAG(ENABLE_JXL_DECODER)
+  if (base::FeatureList::IsEnabled(features::kJXLImageFormat) &&
+      JXLImageDecoder::MatchesJXLSignature(fast_reader)) {
+    return "image/jxl";
   }
 #endif
 
@@ -209,21 +237,21 @@ String SniffMimeTypeInternal(scoped_refptr<SegmentReader> reader) {
 // size will be restricted via the 'lossy-images-max-bpp' document
 // policy. (JPEG)
 bool IsLossyImageMIMEType(const String& mime_type) {
-  return EqualIgnoringASCIICase(mime_type, "image/jpeg") ||
-         EqualIgnoringASCIICase(mime_type, "image/jpg") ||
-         EqualIgnoringASCIICase(mime_type, "image/pjpeg");
+  return EqualIgnoringAsciiCase(mime_type, "image/jpeg") ||
+         EqualIgnoringAsciiCase(mime_type, "image/jpg") ||
+         EqualIgnoringAsciiCase(mime_type, "image/pjpeg");
 }
 
 // Checks to see if a mime type is an image type with lossless (or no)
 // compression, whose size may be restricted via the
 // 'lossless-images-max-bpp' document policy. (BMP, GIF, PNG, WEBP)
 bool IsLosslessImageMIMEType(const String& mime_type) {
-  return EqualIgnoringASCIICase(mime_type, "image/bmp") ||
-         EqualIgnoringASCIICase(mime_type, "image/gif") ||
-         EqualIgnoringASCIICase(mime_type, "image/png") ||
-         EqualIgnoringASCIICase(mime_type, "image/webp") ||
-         EqualIgnoringASCIICase(mime_type, "image/x-xbitmap") ||
-         EqualIgnoringASCIICase(mime_type, "image/x-png");
+  return EqualIgnoringAsciiCase(mime_type, "image/bmp") ||
+         EqualIgnoringAsciiCase(mime_type, "image/gif") ||
+         EqualIgnoringAsciiCase(mime_type, "image/png") ||
+         EqualIgnoringAsciiCase(mime_type, "image/webp") ||
+         EqualIgnoringAsciiCase(mime_type, "image/x-xbitmap") ||
+         EqualIgnoringAsciiCase(mime_type, "image/x-png");
 }
 
 }  // namespace
@@ -282,16 +310,16 @@ std::unique_ptr<ImageDecoder> ImageDecoder::CreateByMimeType(
   // Note: The mime types below should match those supported by
   // MimeUtil::IsSupportedImageMimeType() (which forces lowercase).
   std::unique_ptr<ImageDecoder> decoder;
-  mime_type = mime_type.LowerASCII();
+  mime_type = mime_type.ToAsciiLower();
   if (mime_type == "image/jpeg" || mime_type == "image/pjpeg" ||
       mime_type == "image/jpg") {
     decoder = std::make_unique<JPEGImageDecoder>(alpha_option, color_behavior,
                                                  aux_image, max_decoded_bytes);
   } else if (mime_type == "image/png" || mime_type == "image/x-png" ||
              mime_type == "image/apng") {
-    decoder =
-        CreatePngImageDecoder(alpha_option, high_bit_depth_decoding_option,
-                              color_behavior, max_decoded_bytes);
+    decoder = std::make_unique<PngImageDecoder>(
+        alpha_option, color_behavior, max_decoded_bytes,
+        PngImageDecoder::kNoReadingOffset, high_bit_depth_decoding_option);
   } else if (mime_type == "image/gif") {
     decoder = std::make_unique<GIFImageDecoder>(alpha_option, color_behavior,
                                                 max_decoded_bytes);
@@ -303,11 +331,19 @@ std::unique_ptr<ImageDecoder> ImageDecoder::CreateByMimeType(
     decoder = std::make_unique<ICOImageDecoder>(alpha_option, color_behavior,
                                                 max_decoded_bytes);
   } else if (mime_type == "image/bmp" || mime_type == "image/x-xbitmap") {
-    decoder = std::make_unique<BMPImageDecoder>(alpha_option, color_behavior,
-                                                max_decoded_bytes);
-#if BUILDFLAG(ENABLE_AV1_DECODER)
+    decoder =
+        CreateBmpImageDecoder(alpha_option, high_bit_depth_decoding_option,
+                              color_behavior, max_decoded_bytes);
+#if BUILDFLAG(ENABLE_DAV1D_DECODER)
   } else if (mime_type == "image/avif") {
-    decoder = std::make_unique<CrabbyAVIFImageDecoder>(
+    decoder = std::make_unique<AVIFImageDecoder>(
+        alpha_option, high_bit_depth_decoding_option, color_behavior, aux_image,
+        max_decoded_bytes, animation_option);
+#endif
+#if BUILDFLAG(ENABLE_JXL_DECODER)
+  } else if (mime_type == "image/jxl" &&
+             base::FeatureList::IsEnabled(features::kJXLImageFormat)) {
+    decoder = std::make_unique<JXLImageDecoder>(
         alpha_option, high_bit_depth_decoding_option, color_behavior, aux_image,
         max_decoded_bytes, animation_option);
 #endif
@@ -334,7 +370,7 @@ bool ImageDecoder::HasSufficientDataToSniffMimeType(const SharedBuffer& data) {
     return false;
   }
 
-#if BUILDFLAG(ENABLE_AV1_DECODER)
+#if BUILDFLAG(ENABLE_DAV1D_DECODER)
   {
     // Check for an ISO BMFF File Type Box. Assume that 'largesize' is not used.
     // The first eight bytes would be a big-endian 32-bit unsigned integer
@@ -347,7 +383,7 @@ bool ImageDecoder::HasSufficientDataToSniffMimeType(const SharedBuffer& data) {
     static_assert(8 <= kLongestSignatureLength, "");
     bool ok = data.GetBytes(base::byte_span_from_ref(box));
     DCHECK(ok);
-    if (base::span(box.type) == base::span<const char>({'f', 't', 'y', 'p'})) {
+    if (std::string_view(box.type, 4) == "ftyp") {
       // Returns whether we have received the File Type Box in its entirety.
       return base::U32FromBigEndian(box.size) <= data.size();
     }
@@ -385,33 +421,32 @@ ImageDecoder::CompressionFormat ImageDecoder::GetCompressionFormat(
   // compression algorithm. Note: Will return kWebPAnimationFormat in the case
   // of an animated WebP image.
   size_t available_data = image_data ? image_data->size() : 0;
-  if (EqualIgnoringASCIICase(mime_type, "image/webp") && available_data >= 16) {
+  if (EqualIgnoringAsciiCase(mime_type, "image/webp") && available_data >= 16) {
     // Attempt to sniff only 8 bytes (the second half of the first 16). This
     // will be sufficient to determine lossy vs. lossless in most WebP images
     // (all but the extended format).
     const FastSharedBufferReader fast_reader(
         SegmentReader::CreateFromSharedBuffer(image_data));
-    char buffer[8];
-    const unsigned char* contents = reinterpret_cast<const unsigned char*>(
-        fast_reader.GetConsecutiveData(8, 8, buffer));
-    if (!memcmp(contents, "WEBPVP8 ", 8)) {
+    std::array<uint8_t, 8> buffer;
+    base::span<const uint8_t> contents =
+        fast_reader.GetConsecutiveData(8, 8, buffer);
+
+    if (base::byte_span_from_cstring("WEBPVP8 ") == contents) {
       // Simple lossy WebP format.
       return kLossyFormat;
     }
-    if (!memcmp(contents, "WEBPVP8L", 8)) {
+    if (base::byte_span_from_cstring("WEBPVP8L") == contents) {
       // Simple Lossless WebP format.
       return kLosslessFormat;
     }
-    if (!memcmp(contents, "WEBPVP8X", 8)) {
+    if (base::byte_span_from_cstring("WEBPVP8X") == contents) {
       // Extended WebP format; more content will need to be sniffed to make a
       // determination.
-      auto long_buffer = base::HeapArray<char>::Uninit(available_data);
-      contents =
-          reinterpret_cast<const unsigned char*>(fast_reader.GetConsecutiveData(
-              0, available_data, long_buffer.data()));
+      auto long_buffer = base::HeapArray<uint8_t>::Uninit(available_data);
+      contents = fast_reader.GetConsecutiveData(0, available_data, long_buffer);
       WebPBitstreamFeatures webp_features{};
       VP8StatusCode status =
-          WebPGetFeatures(contents, available_data, &webp_features);
+          WebPGetFeatures(contents.data(), contents.size(), &webp_features);
       // It is possible that there is not have enough image data available to
       // make a determination.
       if (status == VP8_STATUS_OK) {
@@ -428,12 +463,12 @@ ImageDecoder::CompressionFormat ImageDecoder::GetCompressionFormat(
     }
   }
 
-#if BUILDFLAG(ENABLE_AV1_DECODER)
+#if BUILDFLAG(ENABLE_DAV1D_DECODER)
   // Attempt to sniff whether an AVIF image is using a lossy or lossless
   // compression algorithm.
   // TODO(wtc): Implement this. Figure out whether to return kUndefinedFormat or
   // a new kAVIFAnimationFormat in the case of an animated AVIF image.
-  if (EqualIgnoringASCIICase(mime_type, "image/avif")) {
+  if (EqualIgnoringAsciiCase(mime_type, "image/avif")) {
     return kLossyFormat;
   }
 #endif
@@ -518,10 +553,6 @@ uint8_t ImageDecoder::GetYUVBitDepth() const {
   return 8;
 }
 
-std::optional<gfx::HDRMetadata> ImageDecoder::GetHDRMetadata() const {
-  return std::nullopt;
-}
-
 bool ImageDecoder::HasC2PAManifest() const {
   return false;
 }
@@ -536,7 +567,6 @@ cc::ImageHeaderMetadata ImageDecoder::MakeMetadataForDecodeAcceleration()
   cc::ImageHeaderMetadata image_metadata{};
   image_metadata.image_type = FileExtensionToImageType(FilenameExtension());
   image_metadata.yuv_subsampling = GetYUVSubsampling();
-  image_metadata.hdr_metadata = GetHDRMetadata();
   image_metadata.image_size = size_;
   image_metadata.has_embedded_color_profile = HasEmbeddedColorProfile();
   return image_metadata;
@@ -995,8 +1025,9 @@ ImagePlanes::ImagePlanes() {
 ImagePlanes::ImagePlanes(
     base::span<void*, cc::kNumYUVPlanes> planes,
     base::span<const wtf_size_t, cc::kNumYUVPlanes> row_bytes,
-    SkColorType color_type)
-    : color_type_(color_type) {
+    SkColorType color_type,
+    HighBitDepthOutputType hbd_output_type)
+    : color_type_(color_type), hbd_output_type_(hbd_output_type) {
   base::span(planes_).copy_from(planes);
   base::span(row_bytes_).copy_from(row_bytes);
 }
@@ -1009,22 +1040,24 @@ wtf_size_t ImagePlanes::RowBytes(cc::YUVIndex index) const {
   return row_bytes_[static_cast<wtf_size_t>(index)];
 }
 
-ColorProfile::ColorProfile(const skcms_ICCProfile& profile,
-                           base::HeapArray<uint8_t> buffer)
-    : profile_(profile), buffer_(std::move(buffer)) {}
+ColorProfile::ColorProfile(const skcms_ICCProfile& profile)
+    : profile_(profile) {}
+
+ColorProfile::ColorProfile(
+    std::unique_ptr<SkCodecs::ICCProfileChromium> skia_profile)
+    : profile_(skia_profile->GetProfile()),
+      skia_profile_(std::move(skia_profile)) {}
 
 ColorProfile::~ColorProfile() = default;
 
 std::unique_ptr<ColorProfile> ColorProfile::Create(
     base::span<const uint8_t> buffer) {
-  // After skcms_Parse, profile will have pointers into the passed buffer,
-  // so we need to copy first, then parse.
-  auto owned_buffer = base::HeapArray<uint8_t>::CopiedFrom(buffer);
-  skcms_ICCProfile profile;
-  if (skcms_Parse(owned_buffer.data(), owned_buffer.size(), &profile)) {
-    return std::make_unique<ColorProfile>(profile, std::move(owned_buffer));
+  auto owned_data = gfx::MakeSkDataFromSpanWithCopy(buffer);
+  auto skia_profile = SkCodecs::ICCProfileChromium::Make(std::move(owned_data));
+  if (!skia_profile) {
+    return nullptr;
   }
-  return nullptr;
+  return std::make_unique<ColorProfile>(std::move(skia_profile));
 }
 
 ColorProfileTransform::ColorProfileTransform(

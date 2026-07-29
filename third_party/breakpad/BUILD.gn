@@ -2,7 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/chromeos/ui_mode.gni")
 import("//build/config/rust.gni")
 import("//build/symlink.gni")
 import("//build/toolchain/toolchain.gni")
@@ -163,7 +162,7 @@ config("client_config") {
   if (is_android) {
     include_dirs += [ "breakpad/src/common/android/include" ]
   }
-  if (is_chromeos_ash) {
+  if (is_chromeos) {
     defines = [ "__CHROMEOS__" ]
   }
 }
@@ -497,8 +496,8 @@ if (is_mac) {
       # Rust demangle support.
       deps = [ "//third_party/rust/rustc_demangle_capi/v0_1:lib" ]
       defines += [ "HAVE_RUSTC_DEMANGLE" ]
-      include_dirs += [ "//third_party/rust/chromium_crates_io/vendor/rustc-demangle-capi-0.1.0/include" ]
-      sources += [ "//third_party/rust/chromium_crates_io/vendor/rustc-demangle-capi-0.1.0/include/rustc_demangle.h" ]
+      include_dirs += [ "//third_party/rust/chromium_crates_io/vendor/rustc-demangle-capi-v0_1/include" ]
+      sources += [ "//third_party/rust/chromium_crates_io/vendor/rustc-demangle-capi-v0_1/include/rustc_demangle.h" ]
     }
     test("breakpad_unittests") {
       sources = [ "breakpad/src/common/module_unittest.cc" ]
@@ -525,6 +524,10 @@ if (is_mac) {
       frameworks = [ "Foundation.framework" ]
 
       deps = [ ":common" ]
+
+      # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+      # enable the diagnostic by removing this line.
+      configs += [ "//build/config/compiler:no_exit_time_destructors" ]
     }
 
     executable("symupload") {
@@ -745,8 +748,8 @@ if (is_linux || is_chromeos || is_android) {
       # Rust demangle support.
       deps = [ "//third_party/rust/rustc_demangle_capi/v0_1:lib" ]
       defines += [ "HAVE_RUSTC_DEMANGLE" ]
-      include_dirs += [ "//third_party/rust/chromium_crates_io/vendor/rustc-demangle-capi-0.1.0/include" ]
-      sources += [ "//third_party/rust/chromium_crates_io/vendor/rustc-demangle-capi-0.1.0/include/rustc_demangle.h" ]
+      include_dirs += [ "//third_party/rust/chromium_crates_io/vendor/rustc-demangle-capi-v0_1/include" ]
+      sources += [ "//third_party/rust/chromium_crates_io/vendor/rustc-demangle-capi-v0_1/include/rustc_demangle.h" ]
 
       libs = [ "z" ]
     }
@@ -832,7 +835,7 @@ if (is_linux || is_chromeos || is_android) {
     configs += [ "//build/config/compiler:no_chromium_code" ]
     public_configs = [ ":client_config" ]
 
-    if (current_cpu == "arm" && is_chromeos_ash) {
+    if (current_cpu == "arm" && is_chromeos) {
       # Avoid running out of registers in
       # linux_syscall_support.h:sys_clone()'s inline assembly.
       cflags = [ "-marm" ]

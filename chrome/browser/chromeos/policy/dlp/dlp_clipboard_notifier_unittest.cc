@@ -9,6 +9,7 @@
 #include <string>
 
 #include "ash/constants/notifier_catalogs.h"
+#include "ash/strings/grit/ash_strings.h"
 #include "base/functional/callback_helpers.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/mock_callback.h"
@@ -383,7 +384,7 @@ TEST_P(ToastTestWithParam, BlockToast) {
 
   std::u16string expected_toast_str = l10n_util::GetStringFUTF16(
       IDS_POLICY_DLP_CLIPBOARD_BLOCKED_ON_COPY_VM,
-      base::UTF8ToUTF16(url.host()),
+      base::UTF8ToUTF16(url.GetHost()),
       l10n_util::GetStringUTF16(GetParam().expected_dst_name_id));
 
   EXPECT_CALL(

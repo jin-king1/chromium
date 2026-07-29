@@ -6,12 +6,16 @@
 
 #include <algorithm>
 
+#include "ash/constants/ash_extension_constants.h"
 #include "base/files/file_enumerator.h"
 #include "base/files/file_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/path_service.h"
+#include "base/strings/string_util.h"
 #include "base/strings/to_string.h"
 #include "base/test/bind.h"
+#include "base/test/run_until.h"
+#include "build/branding_buildflags.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_ash.h"
 #include "chrome/browser/ash/file_manager/file_tasks.h"
 #include "chrome/browser/ash/file_manager/fileapi_util.h"
@@ -27,10 +31,10 @@
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
 #include "chrome/browser/ui/webui/ash/cloud_upload/cloud_upload_util.h"
 #include "chrome/common/chrome_paths.h"
-#include "chrome/common/extensions/extension_constants.h"
 #include "components/services/app_service/public/cpp/intent_test_util.h"
 #include "extensions/browser/entry_info.h"
 #include "extensions/browser/extension_system.h"
+#include "extensions/common/constants.h"
 #include "net/base/mime_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -136,20 +140,25 @@ void AddDefaultComponentExtensionsOnMainThread(Profile* profile) {
   CHECK(profile);
 
   extensions::ComponentLoader::EnableBackgroundExtensionsForTesting();
-  extensions::ExtensionService* service =
-      extensions::ExtensionSystem::Get(profile)->extension_service();
-  service->component_loader()->AddDefaultComponentExtensions(false);
+  auto* component_loader = extensions::ComponentLoader::Get(profile);
+  component_loader->AddDefaultComponentExtensions(false);
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
   // QuickOffice loads from rootfs at /usr/share/chromeos-assets/quickoffce
-  // which does not exist on bots for tests, so load test version.
+  // which does not exist on bots for tests, so load test version after the
+  // pending load finishes (fail or not).
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return !component_loader->IsPendingAdd(
+        extension_misc::kQuickOfficeComponentExtensionId);
+  }));
+
   base::FilePath data_dir;
   CHECK(base::PathService::Get(chrome::DIR_TEST_DATA, &data_dir));
   base::RunLoop run_loop;
-  service->component_loader()->AddComponentFromDirWithManifestFilename(
+  component_loader->AddComponentFromDirWithManifestFilename(
       data_dir.Append("chromeos/file_manager/quickoffice"),
       extension_misc::kQuickOfficeComponentExtensionId,
       extensions::kManifestFilename, extensions::kManifestFilename,
-      run_loop.QuitClosure());
+      run_loop.QuitClosure(), {});
   run_loop.Run();
 #endif
   // AddDefaultComponentExtensions() is normally invoked during
@@ -157,6 +166,8 @@ void AddDefaultComponentExtensionsOnMainThread(Profile* profile) {
   // Invoke it here as well, otherwise migrated extensions will remain installed
   // for the duration of the test. Note this may result in immediately
   // uninstalling an extension just installed above.
+  extensions::ExtensionService* service =
+      extensions::ExtensionSystem::Get(profile)->extension_service();
   service->UninstallMigratedExtensionsForTest();
 }
 

@@ -7,8 +7,8 @@
 #include <algorithm>
 #include <string>
 
-#include "base/lazy_instance.h"
 #include "base/logging.h"
+#include "base/no_destructor.h"
 #include "base/strings/string_split.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/trace_event/trace_event.h"
@@ -48,8 +48,10 @@ const char kFallbackFontFamilyName[] = "sans";
 constexpr SkGlyphID kUnsupportedGlyph = 0;
 
 // The default font, used for the default constructor.
-base::LazyInstance<scoped_refptr<PlatformFontSkia>>::Leaky g_default_font =
-    LAZY_INSTANCE_INITIALIZER;
+scoped_refptr<PlatformFontSkia>& GetDefaultFont() {
+  static base::NoDestructor<scoped_refptr<PlatformFontSkia>> default_font;
+  return *default_font;
+}
 
 // Creates a SkTypeface for the passed-in Font::FontStyle and family. If a
 // fallback typeface is used instead of the requested family, |family| will be
@@ -99,7 +101,7 @@ std::string* PlatformFontSkia::default_font_description_ = NULL;
 
 PlatformFontSkia::PlatformFontSkia() {
   EnsuresDefaultFontIsInitialized();
-  InitFromPlatformFont(g_default_font.Get().get());
+  InitFromPlatformFont(GetDefaultFont().get());
 }
 
 PlatformFontSkia::PlatformFontSkia(const std::string& font_name,
@@ -146,8 +148,9 @@ PlatformFontSkia::PlatformFontSkia(
 
 // static
 void PlatformFontSkia::EnsuresDefaultFontIsInitialized() {
-  if (g_default_font.Get())
+  if (GetDefaultFont()) {
     return;
+  }
 
   std::string family = kFallbackFontFamilyName;
   int size_pixels = PlatformFont::kDefaultBaseFontSize;
@@ -216,14 +219,14 @@ void PlatformFontSkia::EnsuresDefaultFontIsInitialized() {
   // nothing we can do about it and Chrome won't be able to work.
   CHECK(typeface.get()) << "No typeface available";
 
-  g_default_font.Get() = new PlatformFontSkia(
-      std::move(typeface), family, size_pixels, style, weight, params);
+  GetDefaultFont() = new PlatformFontSkia(std::move(typeface), family,
+                                          size_pixels, style, weight, params);
 }
 
 // static
 void PlatformFontSkia::ReloadDefaultFont() {
   // Reset the scoped_refptr.
-  g_default_font.Get() = nullptr;
+  GetDefaultFont() = nullptr;
 }
 
 // static
@@ -305,6 +308,19 @@ std::string PlatformFontSkia::GetActualFontName() const {
   return family_name.c_str();
 }
 
+std::vector<std::string> PlatformFontSkia::GetActualFontNames() const {
+  std::vector<std::string> names;
+  names.push_back(GetActualFontName());
+
+  sk_sp<SkTypeface::LocalizedStrings> family_names(
+      typeface_->createFamilyNameIterator());
+  SkTypeface::LocalizedString family_name;
+  while (family_names->next(&family_name)) {
+    names.push_back(family_name.fString.c_str());
+  }
+  return names;
+}
+
 int PlatformFontSkia::GetFontSize() const {
   return font_size_pixels_;
 }
@@ -312,7 +328,16 @@ int PlatformFontSkia::GetFontSize() const {
 const FontRenderParams& PlatformFontSkia::GetFontRenderParams() {
   TRACE_EVENT0("fonts", "PlatformFontSkia::GetFontRenderParams");
   float current_scale_factor = GetFontRenderParamsDeviceScaleFactor();
-  if (current_scale_factor != device_scale_factor_) {
+  bool force_query = false;
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+  const bool current_subpixel_rendering_enabled =
+      gfx::GetFontRenderParamsSubpixelRenderingEnabled();
+  if (current_subpixel_rendering_enabled != subpixel_rendering_enabled_) {
+    force_query = true;
+  }
+#endif
+
+  if (current_scale_factor != device_scale_factor_ || force_query) {
     FontRenderParamsQuery query;
     query.families.push_back(font_family_);
     query.pixel_size = font_size_pixels_;
@@ -321,6 +346,9 @@ const FontRenderParams& PlatformFontSkia::GetFontRenderParams() {
     query.device_scale_factor = current_scale_factor;
     font_render_params_ = gfx::GetFontRenderParams(query, nullptr);
     device_scale_factor_ = current_scale_factor;
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+    subpixel_rendering_enabled_ = current_subpixel_rendering_enabled;
+#endif
   }
   return font_render_params_;
 }
@@ -362,25 +390,34 @@ void PlatformFontSkia::InitFromDetails(sk_sp<SkTypeface> typeface,
 
   if (!success) {
     EnsuresDefaultFontIsInitialized();
-    InitFromPlatformFont(g_default_font.Get().get());
+    InitFromPlatformFont(GetDefaultFont().get());
     return;
   }
 
+  set_typeface_unique_id(typeface_->uniqueID());
   font_size_pixels_ = font_size_pixels;
   style_ = style;
   weight_ = weight;
   device_scale_factor_ = GetFontRenderParamsDeviceScaleFactor();
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+  subpixel_rendering_enabled_ =
+      gfx::GetFontRenderParamsSubpixelRenderingEnabled();
+#endif
   font_render_params_ = render_params;
 }
 
 void PlatformFontSkia::InitFromPlatformFont(const PlatformFontSkia* other) {
   TRACE_EVENT0("fonts", "PlatformFontSkia::InitFromPlatformFont");
   typeface_ = other->typeface_;
+  set_typeface_unique_id(other->typeface_unique_id());
   font_family_ = other->font_family_;
   font_size_pixels_ = other->font_size_pixels_;
   style_ = other->style_;
   weight_ = other->weight_;
   device_scale_factor_ = other->device_scale_factor_;
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+  subpixel_rendering_enabled_ = other->subpixel_rendering_enabled_;
+#endif
   font_render_params_ = other->font_render_params_;
 
   if (!other->metrics_need_computation_) {
@@ -440,8 +477,7 @@ void PlatformFontSkia::ComputeMetricsIfNecessary() {
       // the letter 'x' when available, otherwise use the max character width.
       SkGlyphID glyph = typeface_->unicharToGlyph('x');
       if (glyph != kUnsupportedGlyph) {
-        SkScalar sk_width;
-        font.getWidths(&glyph, 1, &sk_width);
+        SkScalar sk_width = font.getWidth(glyph);
         average_width_pixels_ = SkScalarToDouble(sk_width);
       }
       if (!average_width_pixels_) {

@@ -2,14 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "media/gpu/chromeos/vulkan_overlay_adaptor.h"
 
 #include "base/bits.h"
+#include "base/compiler_specific.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/task/thread_pool.h"
@@ -20,7 +16,6 @@
 #include "media/gpu/chromeos/shaders/shaders.h"
 #include "media/gpu/macros.h"
 #include "ui/gfx/color_space.h"
-#include "ui/gfx/gpu_memory_buffer.h"
 
 namespace media {
 
@@ -679,7 +674,7 @@ VulkanOverlayAdaptor::VulkanTextureImage::Create(
       framebuffer_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
       framebuffer_info.renderPass = render_pass;
       framebuffer_info.attachmentCount = 1;
-      framebuffer_info.pAttachments = image_views.data() + i;
+      framebuffer_info.pAttachments = UNSAFE_TODO(image_views.data() + i);
       framebuffer_info.width = sizes[i].width();
       framebuffer_info.height = sizes[i].height();
       framebuffer_info.layers = 1;
@@ -893,7 +888,7 @@ std::unique_ptr<VulkanOverlayAdaptor> VulkanOverlayAdaptor::Create(
 
   VkFormat out_format =
       (format == kMT2T
-#if BUILDFLAG(IS_CHROMEOS) && BUILDFLAG(USE_CHROMEOS_MEDIA_ACCELERATION) && \
+#if BUILDFLAG(IS_CHROMEOS) && BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION) && \
     defined(ARCH_CPU_ARM_FAMILY)
        && base::FeatureList::IsEnabled(media::kEnableArmHwdrm10bitOverlays)
 #endif
@@ -1012,11 +1007,17 @@ std::unique_ptr<VulkanOverlayAdaptor> VulkanOverlayAdaptor::Create(
       VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
       is_protected ? VK_IMAGE_CREATE_PROTECTED_BIT : 0,
       VK_IMAGE_TILING_OPTIMAL);
+  if (!pivot_image) {
+    return nullptr;
+  }
   auto pivot_texture = VulkanTextureImage::Create(
       *pivot_image, {out_format}, {pivot_image->size()},
       {VK_IMAGE_ASPECT_COLOR_BIT},
       /*is_framebuffer=*/true, convert_render_pass->Get(),
       vulkan_device_queue->GetVulkanDevice());
+  if (!pivot_texture) {
+    return nullptr;
+  }
 
   return base::WrapUnique(new VulkanOverlayAdaptor(
       std::move(vulkan_implementation), std::move(vulkan_device_queue),
@@ -1178,7 +1179,7 @@ void VulkanOverlayAdaptor::Process(gpu::VulkanImage& in_image,
   descriptor_write[1].dstArrayElement = 0;
   descriptor_write[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
   descriptor_write[1].descriptorCount = 1;
-  descriptor_write[1].pImageInfo = image_info.data() + 1;
+  descriptor_write[1].pImageInfo = UNSAFE_TODO(image_info.data() + 1);
   descriptor_write[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
   descriptor_write[2].dstSet = transform_descriptor_pool_->Get()[0];
   descriptor_write[2].dstBinding = 0;
@@ -1186,7 +1187,7 @@ void VulkanOverlayAdaptor::Process(gpu::VulkanImage& in_image,
   descriptor_write[2].descriptorType =
       VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
   descriptor_write[2].descriptorCount = 1;
-  descriptor_write[2].pImageInfo = image_info.data() + 2;
+  descriptor_write[2].pImageInfo = UNSAFE_TODO(image_info.data() + 2);
 
   vkUpdateDescriptorSets(vulkan_device_queue_->GetVulkanDevice(),
                          descriptor_write.size(), descriptor_write.data(), 0,
@@ -1203,8 +1204,10 @@ void VulkanOverlayAdaptor::Process(gpu::VulkanImage& in_image,
     viewport.height = static_cast<float>(input_coded_size.height());
     viewport.minDepth = 0.0f;
     viewport.maxDepth = 1.0f;
-    CHECK(viewport.width <= 10000.0f && viewport.width >= 0.0f);
-    CHECK(viewport.height <= 10000.0f && viewport.height >= 0.0f);
+    CHECK(0.0f <= viewport.width &&
+          viewport.width <= static_cast<float>(pivot_image_->size().width()));
+    CHECK(0.0f <= viewport.height &&
+          viewport.height <= static_cast<float>(pivot_image_->size().height()));
     vkCmdSetViewport(record.handle(), 0, 1, &viewport);
 
     VkRect2D scissor{};

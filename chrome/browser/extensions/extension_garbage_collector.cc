@@ -23,20 +23,25 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "chrome/browser/extensions/extension_garbage_collector_factory.h"
-#include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/extension_util.h"
-#include "chrome/browser/extensions/install_tracker.h"
+#include "chrome/browser/extensions/install_tracker_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "components/crx_file/id_util.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
 #include "extensions/browser/extension_file_task_runner.h"
+#include "extensions/browser/extension_prefs.h"
+#include "extensions/browser/extension_registrar.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_system.h"
 #include "extensions/browser/extension_util.h"
+#include "extensions/browser/install_tracker.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_id.h"
 #include "extensions/common/file_util.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace extensions {
 
@@ -140,7 +145,7 @@ ExtensionGarbageCollector::ExtensionGarbageCollector(
                      weak_factory_.GetWeakPtr()),
       kGarbageCollectStartupDelay);
 
-  InstallTracker::Get(context_)->AddObserver(this);
+  InstallTrackerFactory::GetForBrowserContext(context_)->AddObserver(this);
 }
 
 ExtensionGarbageCollector::~ExtensionGarbageCollector() = default;
@@ -152,7 +157,7 @@ ExtensionGarbageCollector* ExtensionGarbageCollector::Get(
 }
 
 void ExtensionGarbageCollector::Shutdown() {
-  InstallTracker::Get(context_)->RemoveObserver(this);
+  InstallTrackerFactory::GetForBrowserContext(context_)->RemoveObserver(this);
 }
 
 void ExtensionGarbageCollector::GarbageCollectExtensionsForTest() {
@@ -211,7 +216,7 @@ void ExtensionGarbageCollector::GarbageCollectExtensions() {
   // containing the extension installs is not a direct subdir of the profile
   // directory whereas this is true in production. So we can't do a simple check
   // like that to ensure we're inside the profile directory.
-  ExtensionPrefs::ExtensionsInfo extensions_info =
+  ExtensionPrefs::InstallRecords extensions_info =
       extension_prefs->GetInstalledExtensionsInfo();
   std::multimap<ExtensionId, base::FilePath> extension_paths;
   for (const auto& info : extensions_info) {
@@ -225,18 +230,17 @@ void ExtensionGarbageCollector::GarbageCollectExtensions() {
         std::make_pair(info.extension_id, info.extension_path));
   }
 
-  ExtensionService* service =
-      ExtensionSystem::Get(context_)->extension_service();
+  ExtensionRegistrar* registrar = ExtensionRegistrar::Get(context_);
   if (!GetExtensionFileTaskRunner()->PostTask(
           FROM_HERE, base::BindOnce(&GarbageCollectExtensionsOnFileThread,
-                                    service->install_directory(),
+                                    registrar->install_directory(),
                                     extension_paths, /*unpacked=*/false))) {
     NOTREACHED();
   }
 
   if (!GetExtensionFileTaskRunner()->PostTask(
           FROM_HERE, base::BindOnce(&GarbageCollectExtensionsOnFileThread,
-                                    service->unpacked_install_directory(),
+                                    registrar->unpacked_install_directory(),
                                     extension_paths, /*unpacked=*/true))) {
     NOTREACHED();
   }

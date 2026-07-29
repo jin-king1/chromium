@@ -19,10 +19,12 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_tree_host.h"
-#include "ui/compositor/scoped_animation_duration_scale_mode.h"
 #include "ui/compositor/test/test_utils.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 
 namespace ash {
+
+using chromeos::AppType;
 
 class OverviewSessionMetricsRecorderTest : public AshTestBase {
  protected:
@@ -85,13 +87,15 @@ TEST_F(OverviewSessionMetricsRecorderTest, DeskBarVisibilityShownImmediately) {
 
 TEST_F(OverviewSessionMetricsRecorderTest,
        DeskBarVisibilityShownAfterFirstFrame) {
-  ui::ScopedAnimationDurationScaleMode non_zero(
-      ui::ScopedAnimationDurationScaleMode::SLOW_DURATION);
+  gfx::ScopedAnimationDurationScaleMode non_zero(
+      gfx::ScopedAnimationDurationScaleMode::SLOW_DURATION);
   // With 1 normal (not maximized) window, the desk bar should be rendered after
   // the overview enter animation completes.
   constexpr gfx::Rect kBounds(0, 0, 10, 10);
-  std::unique_ptr<aura::Window> window1(CreateAppWindow(kBounds));
-  std::unique_ptr<aura::Window> window2(CreateAppWindow(kBounds));
+  std::unique_ptr<aura::Window> window1 =
+      CreateWindowWithAppType(AppType::SYSTEM_APP, kBounds);
+  std::unique_ptr<aura::Window> window2 =
+      CreateWindowWithAppType(AppType::SYSTEM_APP, kBounds);
   ASSERT_FALSE(WindowState::Get(window1.get())->IsMaximized());
   ASSERT_FALSE(WindowState::Get(window2.get())->IsMaximized());
 

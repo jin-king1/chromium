@@ -11,6 +11,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import android.app.Activity;
 import android.content.Intent;
@@ -30,6 +31,7 @@ import org.chromium.base.Callback;
 import org.chromium.base.Token;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.browser.data_sharing.DataSharingTabManager;
+import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.settings.SettingsNavigationFactory;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
@@ -45,11 +47,15 @@ import org.chromium.components.collaboration.FlowType;
 import org.chromium.components.collaboration.Outcome;
 import org.chromium.components.collaboration.ServiceStatus;
 import org.chromium.components.collaboration.SigninStatus;
+import org.chromium.components.collaboration.error_info.Type;
 import org.chromium.components.data_sharing.GroupToken;
 import org.chromium.components.data_sharing.SharedTabGroupPreview;
 import org.chromium.components.data_sharing.configs.DataSharingCreateUiConfig;
 import org.chromium.components.data_sharing.configs.DataSharingJoinUiConfig;
+import org.chromium.components.data_sharing.configs.DataSharingManageUiConfig;
+import org.chromium.components.feature_engagement.Tracker;
 import org.chromium.components.signin.metrics.SigninAccessPoint;
+import org.chromium.components.sync.protocol.GroupData;
 import org.chromium.components.tab_group_sync.LocalTabGroupId;
 import org.chromium.components.tab_group_sync.SavedTabGroup;
 import org.chromium.components.tab_group_sync.TabGroupSyncService;
@@ -61,6 +67,7 @@ import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modaldialog.ModalDialogProperties;
 import org.chromium.ui.modaldialog.ModalDialogProperties.ButtonType;
 import org.chromium.ui.modelutil.PropertyModel;
+import org.chromium.ui.test.util.MockitoHelper;
 import org.chromium.url.GURL;
 
 /** Unit test for {@link CollaborationControllerDelegateImpl} */
@@ -86,6 +93,7 @@ public class CollaborationControllerDelegateImplUnitTest {
     @Mock private Callback<Runnable> mSwitchToTabSwitcherCallback;
     @Mock private Callback<Callback<Boolean>> mStartAccountRefreshCallback;
     @Mock private CollaborationService mCollaborationService;
+    @Mock private Tracker mMockTracker;
 
     @Mock
     private CollaborationControllerDelegateImpl.Natives
@@ -102,6 +110,7 @@ public class CollaborationControllerDelegateImplUnitTest {
         SettingsNavigationFactory.setInstanceForTesting(mSettingsNavigation);
         IdentityServicesProvider.setInstanceForTests(mIdentityServicesProvider);
         CollaborationServiceFactory.setForTesting(mCollaborationService);
+        TrackerFactory.setTrackerForTests(mMockTracker);
 
         doReturn(
                         new ServiceStatus(
@@ -112,9 +121,7 @@ public class CollaborationControllerDelegateImplUnitTest {
                 .getServiceStatus();
         doReturn(mSigninManager).when(mIdentityServicesProvider).getSigninManager(mProfile);
         doReturn(true).when(mSigninManager).isSigninAllowed();
-        doReturn((long) 0)
-                .when(mCollaborationControllerDelegateImplNativeMock)
-                .createNativeObject(any());
+        doReturn(0L).when(mCollaborationControllerDelegateImplNativeMock).createNativeObject(any());
         mActivityScenarioRule.getScenario().onActivity(this::onActivityCreated);
         doReturn(mProfile).when(mDataSharingTabManager).getProfile();
         doReturn(mWindowAndroid).when(mDataSharingTabManager).getWindowAndroid();
@@ -137,7 +144,7 @@ public class CollaborationControllerDelegateImplUnitTest {
                         mStartAccountRefreshCallback);
 
         if (type == FlowType.JOIN) {
-            verify(mLoadingFullscreenCoordinator).startLoading(any(), any());
+            verify(mLoadingFullscreenCoordinator).startLoading(any(), eq(false));
         }
     }
 
@@ -152,7 +159,7 @@ public class CollaborationControllerDelegateImplUnitTest {
                         mLoadingFullscreenCoordinator,
                         mSwitchToTabSwitcherCallback,
                         mStartAccountRefreshCallback);
-        verify(mLoadingFullscreenCoordinator).startLoading(any(), any());
+        verify(mLoadingFullscreenCoordinator).startLoading(any(), eq(false));
 
         long resultCallback = 1;
         long exitCallback = 2;
@@ -180,7 +187,7 @@ public class CollaborationControllerDelegateImplUnitTest {
                         eq(mActivity),
                         eq(mProfile),
                         any(FullscreenSigninAndHistorySyncConfig.class),
-                        eq(SigninAccessPoint.COLLABORATION_TAB_GROUP));
+                        eq(SigninAccessPoint.COLLABORATION_JOIN_TAB_GROUP));
 
         mCollaborationControllerDelegateImpl.showAuthenticationUi(resultCallback);
         ArgumentCaptor<IntentCallback> intentCallbackCaptor =
@@ -205,7 +212,7 @@ public class CollaborationControllerDelegateImplUnitTest {
         long resultCallback = 1;
         mCollaborationControllerDelegateImpl.showAuthenticationUi(resultCallback);
 
-        ArgumentCaptor<Callback<Boolean>> successCallback = ArgumentCaptor.forClass(Callback.class);
+        ArgumentCaptor<Callback<Boolean>> successCallback = MockitoHelper.callbackCaptor();
         verify(mStartAccountRefreshCallback).onResult(successCallback.capture());
 
         successCallback.getValue().onResult(true);
@@ -218,7 +225,13 @@ public class CollaborationControllerDelegateImplUnitTest {
         createDelegate(FlowType.JOIN);
         long resultCallback = 1;
 
-        doReturn(false).when(mSigninManager).isSigninAllowed();
+        doReturn(
+                        new ServiceStatus(
+                                SigninStatus.SIGNIN_DISABLED,
+                                /* syncStatus= */ 0,
+                                /* collaborationStatus= */ 0))
+                .when(mCollaborationService)
+                .getServiceStatus();
 
         mCollaborationControllerDelegateImpl.showAuthenticationUi(resultCallback);
         verify(mLoadingFullscreenCoordinator).closeLoadingScreen();
@@ -250,7 +263,7 @@ public class CollaborationControllerDelegateImplUnitTest {
                         eq(mActivity),
                         eq(mProfile),
                         any(BottomSheetSigninAndHistorySyncConfig.class),
-                        eq(SigninAccessPoint.COLLABORATION_TAB_GROUP));
+                        eq(SigninAccessPoint.COLLABORATION_SHARE_TAB_GROUP));
 
         mCollaborationControllerDelegateImpl.showAuthenticationUi(resultCallback);
         ArgumentCaptor<IntentCallback> intentCallbackCaptor =
@@ -277,7 +290,7 @@ public class CollaborationControllerDelegateImplUnitTest {
                         eq(mActivity),
                         eq(mProfile),
                         any(FullscreenSigninAndHistorySyncConfig.class),
-                        eq(SigninAccessPoint.COLLABORATION_TAB_GROUP));
+                        eq(SigninAccessPoint.COLLABORATION_JOIN_TAB_GROUP));
         doReturn(requestCode)
                 .when(mWindowAndroid)
                 .showCancelableIntent(eq(intent), any(IntentCallback.class), eq(null));
@@ -314,13 +327,36 @@ public class CollaborationControllerDelegateImplUnitTest {
     }
 
     @Test
+    public void testDestroyAfterFlowFinishedDoesNotRunExitCallback() {
+        createDelegate(FlowType.JOIN);
+        long prepareResultCallback = 1;
+        long exitCallback = 2;
+
+        mCollaborationControllerDelegateImpl.prepareFlowUI(exitCallback, prepareResultCallback);
+
+        // Simulate flow finished, which deletes exitCallback.
+        mCollaborationControllerDelegateImpl.onFlowFinished();
+
+        // Simulate subsequent destroy.
+        mCollaborationControllerDelegateImpl.destroy();
+
+        // Delete should have been called, but runExitCallback should never be called.
+        verify(mCollaborationControllerDelegateImplNativeMock).deleteExitCallback(eq(exitCallback));
+        verify(mCollaborationControllerDelegateImplNativeMock, never())
+                .runExitCallback(eq(exitCallback));
+    }
+
+    @Test
     public void testPromoteTabGroup() {
         createDelegate(FlowType.JOIN);
         long resultCallback = 1;
         String collaborationId = "collaboration";
+        when(mDataSharingTabManager.displayTabGroupAnywhere(
+                        collaborationId, /* isFromInviteFlow= */ true))
+                .thenReturn(true);
 
         mCollaborationControllerDelegateImpl.promoteTabGroup(collaborationId, resultCallback);
-        verify(mDataSharingTabManager).promoteTabGroup(collaborationId);
+
         verify(mCollaborationControllerDelegateImplNativeMock)
                 .runResultCallback(eq(Outcome.SUCCESS), anyLong());
     }
@@ -331,10 +367,7 @@ public class CollaborationControllerDelegateImplUnitTest {
         String collabId = "Collaboration";
         long resultCallback = 1;
         GroupToken token = new GroupToken(collabId, /* accessToken= */ "");
-        org.chromium.components.sync.protocol.GroupData groupData =
-                org.chromium.components.sync.protocol.GroupData.newBuilder()
-                        .setGroupId(collabId)
-                        .build();
+        GroupData groupData = GroupData.newBuilder().setGroupId(collabId).build();
         SharedTabGroupPreview previewData =
                 new SharedTabGroupPreview(/* title= */ "", /* tabs= */ null);
 
@@ -344,7 +377,11 @@ public class CollaborationControllerDelegateImplUnitTest {
                 ArgumentCaptor.forClass(DataSharingJoinUiConfig.JoinCallback.class);
         verify(mDataSharingTabManager)
                 .showJoinScreenWithPreview(
-                        eq(mActivity), eq(token), eq(previewData), joinCallbackCaptor.capture());
+                        eq(mActivity),
+                        eq(token),
+                        eq(previewData),
+                        anyLong(),
+                        joinCallbackCaptor.capture());
 
         joinCallbackCaptor.getValue().onGroupJoinedWithWait(groupData, null);
         verify(mCollaborationControllerDelegateImplNativeMock)
@@ -370,7 +407,11 @@ public class CollaborationControllerDelegateImplUnitTest {
                 ArgumentCaptor.forClass(DataSharingJoinUiConfig.JoinCallback.class);
         verify(mDataSharingTabManager)
                 .showJoinScreenWithPreview(
-                        eq(mActivity), eq(token), eq(previewData), joinCallbackCaptor.capture());
+                        eq(mActivity),
+                        eq(token),
+                        eq(previewData),
+                        anyLong(),
+                        joinCallbackCaptor.capture());
 
         joinCallbackCaptor.getValue().onSessionFinished();
         verify(mCollaborationControllerDelegateImplNativeMock)
@@ -390,12 +431,14 @@ public class CollaborationControllerDelegateImplUnitTest {
 
         doReturn(savedGroup).when(mDataSharingTabManager).getSavedTabGroupForEitherId(syncId, null);
         mCollaborationControllerDelegateImpl.showManageDialog(syncId, null, resultCallback);
-        ArgumentCaptor<Runnable> finishCallbackCaptor = ArgumentCaptor.forClass(Runnable.class);
+        ArgumentCaptor<DataSharingManageUiConfig.ManageCallback> manageCallbackCaptor =
+                ArgumentCaptor.forClass(DataSharingManageUiConfig.ManageCallback.class);
+
         verify(mDataSharingTabManager)
                 .showManageSharing(
-                        eq(mActivity), eq(collaborationId), finishCallbackCaptor.capture());
+                        eq(mActivity), eq(collaborationId), manageCallbackCaptor.capture());
 
-        finishCallbackCaptor.getValue().run();
+        manageCallbackCaptor.getValue().onSessionFinished();
         verify(mCollaborationControllerDelegateImplNativeMock)
                 .runResultCallback(eq(Outcome.SUCCESS), eq(resultCallback));
     }
@@ -406,6 +449,7 @@ public class CollaborationControllerDelegateImplUnitTest {
         long resultCallback = 1;
         LocalTabGroupId localId = new LocalTabGroupId(new Token(1L, 2L));
         String collaborationId = "collaborationId";
+        String sessionId = "sessionId";
         String accessToken = "accessToken";
         String title = "title";
         GURL url = new GURL("url");
@@ -418,15 +462,16 @@ public class CollaborationControllerDelegateImplUnitTest {
         doReturn(savedGroup)
                 .when(mDataSharingTabManager)
                 .getSavedTabGroupForEitherId(null, localId);
-        mCollaborationControllerDelegateImpl.showShareDialog(null, localId, resultCallback);
         ArgumentCaptor<DataSharingCreateUiConfig.CreateCallback> createCallbackCaptor =
                 ArgumentCaptor.forClass(DataSharingCreateUiConfig.CreateCallback.class);
-        verify(mDataSharingTabManager)
+        doReturn(sessionId)
+                .when(mDataSharingTabManager)
                 .showShareDialog(
                         eq(mActivity), eq(title), eq(savedGroup), createCallbackCaptor.capture());
 
-        org.chromium.components.sync.protocol.GroupData groupData =
-                org.chromium.components.sync.protocol.GroupData.newBuilder()
+        mCollaborationControllerDelegateImpl.showShareDialog(null, localId, resultCallback);
+        GroupData groupData =
+                GroupData.newBuilder()
                         .setGroupId(collaborationId)
                         .setAccessToken(accessToken)
                         .build();
@@ -439,13 +484,16 @@ public class CollaborationControllerDelegateImplUnitTest {
                         eq(accessToken),
                         eq(resultCallback));
 
-        ArgumentCaptor<Callback<Boolean>> onFinishCallback =
-                ArgumentCaptor.forClass(Callback.class);
+        ArgumentCaptor<Callback<Boolean>> onFinishCallback = MockitoHelper.callbackCaptor();
         mCollaborationControllerDelegateImpl.onUrlReadyToShare(
                 collaborationId, url, resultCallback);
         verify(mDataSharingTabManager)
                 .showShareSheet(
-                        eq(mActivity), eq(collaborationId), eq(url), onFinishCallback.capture());
+                        eq(mActivity),
+                        eq(collaborationId),
+                        eq(sessionId),
+                        eq(url),
+                        onFinishCallback.capture());
 
         onFinishCallback.getValue().onResult(true);
         verify(mCollaborationControllerDelegateImplNativeMock)
@@ -460,7 +508,8 @@ public class CollaborationControllerDelegateImplUnitTest {
         String title = "title";
         String message = "message";
 
-        mCollaborationControllerDelegateImpl.showError(title, message, resultCallback);
+        mCollaborationControllerDelegateImpl.showError(
+                Type.UNKNOWN, title, message, resultCallback);
         verify(mLoadingFullscreenCoordinator).closeLoadingScreen();
 
         ArgumentCaptor<PropertyModel> propertyModelCaptor =
@@ -473,6 +522,58 @@ public class CollaborationControllerDelegateImplUnitTest {
         verify(mModalDialogManager).dismissDialog(any(), anyInt());
 
         controller.onDismiss(propertyModelCaptor.getValue(), DialogDismissalCause.NAVIGATE);
+        verify(mCollaborationControllerDelegateImplNativeMock)
+                .runResultCallback(eq(Outcome.SUCCESS), eq(resultCallback));
+    }
+
+    @Test
+    public void testLeaveSharedTabGroup() {
+        createDelegate(FlowType.LEAVE_OR_DELETE);
+        long resultCallback = 1;
+        LocalTabGroupId localId = new LocalTabGroupId(new Token(1L, 2L));
+        String title = "title";
+
+        SavedTabGroup savedGroup = new SavedTabGroup();
+        savedGroup.localId = localId;
+        savedGroup.title = title;
+        doReturn(savedGroup)
+                .when(mDataSharingTabManager)
+                .getSavedTabGroupForEitherId(null, localId);
+
+        mCollaborationControllerDelegateImpl.showLeaveDialog(null, localId, resultCallback);
+        ArgumentCaptor<PropertyModel> propertyModelCaptor =
+                ArgumentCaptor.forClass(PropertyModel.class);
+        verify(mModalDialogManager).showDialog(propertyModelCaptor.capture(), anyInt());
+
+        ModalDialogProperties.Controller controller =
+                propertyModelCaptor.getValue().get(ModalDialogProperties.CONTROLLER);
+        controller.onClick(propertyModelCaptor.getValue(), ButtonType.NEGATIVE);
+        verify(mCollaborationControllerDelegateImplNativeMock)
+                .runResultCallback(eq(Outcome.CANCEL), eq(resultCallback));
+    }
+
+    @Test
+    public void testDeleteSharedTabGroup() {
+        createDelegate(FlowType.LEAVE_OR_DELETE);
+        long resultCallback = 1;
+        LocalTabGroupId localId = new LocalTabGroupId(new Token(1L, 2L));
+        String title = "title";
+
+        SavedTabGroup savedGroup = new SavedTabGroup();
+        savedGroup.localId = localId;
+        savedGroup.title = title;
+        doReturn(savedGroup)
+                .when(mDataSharingTabManager)
+                .getSavedTabGroupForEitherId(null, localId);
+
+        mCollaborationControllerDelegateImpl.showLeaveDialog(null, localId, resultCallback);
+        ArgumentCaptor<PropertyModel> propertyModelCaptor =
+                ArgumentCaptor.forClass(PropertyModel.class);
+        verify(mModalDialogManager).showDialog(propertyModelCaptor.capture(), anyInt());
+
+        ModalDialogProperties.Controller controller =
+                propertyModelCaptor.getValue().get(ModalDialogProperties.CONTROLLER);
+        controller.onClick(propertyModelCaptor.getValue(), ButtonType.POSITIVE);
         verify(mCollaborationControllerDelegateImplNativeMock)
                 .runResultCallback(eq(Outcome.SUCCESS), eq(resultCallback));
     }

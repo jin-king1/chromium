@@ -5,7 +5,10 @@
 #ifndef UI_GL_VSYNC_PROVIDER_WIN_DCOMP_H_
 #define UI_GL_VSYNC_PROVIDER_WIN_DCOMP_H_
 
-#include "ui/gl/vsync_provider_win.h"
+#include <dcomp.h>
+
+#include "ui/gfx/vsync_provider.h"
+#include "ui/gl/gl_export.h"
 
 namespace gl {
 // gfx::VSyncProvider implementation that utilizes the compositor clock to
@@ -26,6 +29,9 @@ class GL_EXPORT VSyncProviderWinDComp : public gfx::VSyncProvider {
                                      base::TimeDelta* interval) override;
   bool SupportGetVSyncParametersIfAvailable() const override;
   bool IsHWClock() const override;
+
+ private:
+  std::optional<COMPOSITION_FRAME_STATS> prev_frame_stats_;
 };
 
 }  // namespace gl

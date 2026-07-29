@@ -14,6 +14,7 @@
 #include "base/metrics/histogram_base.h"
 #include "base/path_service.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
@@ -23,16 +24,17 @@
 #include "chrome/browser/apps/app_service/app_registry_cache_waiter.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
+#include "chrome/browser/extensions/chrome_app_deprecation.h"
 #include "chrome/browser/extensions/extension_browsertest.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/external_provider_impl.h"
+#include "chrome/browser/extensions/external_provider_manager.h"
 #include "chrome/browser/extensions/external_testing_loader.h"
 #include "chrome/browser/extensions/launch_util.h"
 #include "chrome/browser/extensions/updater/extension_updater.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/web_applications/test/ssl_test_utils.h"
-#include "chrome/browser/web_applications/extension_status_utils.h"
 #include "chrome/browser/web_applications/mojom/user_display_mode.mojom.h"
 #include "chrome/browser/web_applications/preinstalled_app_install_features.h"
 #include "chrome/browser/web_applications/preinstalled_web_app_manager.h"
@@ -53,6 +55,7 @@
 #include "content/public/test/browser_test.h"
 #include "content/public/test/url_loader_interceptor.h"
 #include "extensions/browser/app_sorting.h"
+#include "extensions/browser/extension_registrar.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_system.h"
 #include "extensions/browser/test_extension_registry_observer.h"
@@ -99,7 +102,7 @@ class PreinstalledWebAppMigrationBrowserTest
             PreinstalledWebAppManager::
                 BypassOfflineManifestRequirementForTesting()) {
     disable_external_extensions_scope_ =
-        extensions::ExtensionService::DisableExternalUpdatesForTesting();
+        extensions::ExternalProviderManager::DisableExternalUpdatesForTesting();
   }
   ~PreinstalledWebAppMigrationBrowserTest() override = default;
 
@@ -137,7 +140,7 @@ class PreinstalledWebAppMigrationBrowserTest
     const WebAppRegistrar& registrar = provider->registrar_unsafe();
     std::vector<webapps::AppId> app_ids = registrar.GetAppIds();
     for (const auto& app_id : app_ids) {
-      if (!registrar.IsInRegistrar(app_id)) {
+      if (!registrar.GetInstallState(app_id).has_value()) {
         continue;
       }
       apps::AppReadinessWaiter(profile(), app_id).Await();
@@ -155,9 +158,13 @@ class PreinstalledWebAppMigrationBrowserTest
     extensions::ExtensionBrowserTest::TearDownOnMainThread();
   }
 
+  extensions::ExternalProviderManager* external_provider_manager() {
+    return extensions::ExternalProviderManager::Get(profile());
+  }
+
   std::unique_ptr<net::test_server::HttpResponse> RequestHandlerOverride(
       const net::test_server::HttpRequest& request) {
-    std::string request_path = request.GetURL().path();
+    std::string request_path = request.GetURL().GetPath();
     if (request_path == kExtensionUpdatePath) {
       auto response = std::make_unique<net::test_server::BasicHttpResponse>();
       response->set_code(net::HTTP_OK);
@@ -174,9 +181,9 @@ class PreinstalledWebAppMigrationBrowserTest
   }
 
   void SetUpExtensionTestExternalProvider() {
-    extension_service().ClearProvidersForTesting();
+    external_provider_manager()->ClearProvidersForTesting();
 
-    extension_service().updater()->SetExtensionCacheForTesting(
+    extensions::ExtensionUpdater::Get(profile())->SetExtensionCacheForTesting(
         test_extension_cache_.get());
 
     std::string external_extension_config = base::ReplaceStringPlaceholders(
@@ -191,9 +198,9 @@ class PreinstalledWebAppMigrationBrowserTest
          kMigrationFlag},
         nullptr);
 
-    extension_service().AddProviderForTesting(
+    external_provider_manager()->AddProviderForTesting(
         std::make_unique<extensions::ExternalProviderImpl>(
-            &extension_service(),
+            external_provider_manager(),
             base::MakeRefCounted<extensions::ExternalTestingLoader>(
                 external_extension_config,
                 base::FilePath(FILE_PATH_LITERAL("//absolute/path"))),
@@ -209,9 +216,10 @@ class PreinstalledWebAppMigrationBrowserTest
 
   void SyncExternalExtensions() {
     base::RunLoop run_loop;
-    extension_service().set_external_updates_finished_callback_for_test(
-        run_loop.QuitWhenIdleClosure());
-    extension_service().CheckForExternalUpdates();
+    external_provider_manager()
+        ->set_external_updates_finished_callback_for_test(
+            run_loop.QuitWhenIdleClosure());
+    external_provider_manager()->CheckForExternalUpdates();
     run_loop.Run();
   }
 
@@ -246,7 +254,7 @@ class PreinstalledWebAppMigrationBrowserTest
           run_loop.Quit();
         });
 
-    base::Value::List app_configs;
+    base::ListValue app_configs;
     if (pass_config) {
       std::string app_config_string = base::ReplaceStringPlaceholders(
           R"({
@@ -258,9 +266,10 @@ class PreinstalledWebAppMigrationBrowserTest
           })",
           {GetWebAppUrl().spec(), kMigrationFlag, uninstall_and_replace_},
           nullptr);
-      app_configs.Append(*base::JSONReader::Read(app_config_string));
+      app_configs.Append(*base::JSONReader::Read(
+          app_config_string, base::JSON_PARSE_CHROMIUM_EXTENSIONS));
     }
-    base::AutoReset<const base::Value::List*> configs_for_testing =
+    base::AutoReset<const base::ListValue*> configs_for_testing =
         PreinstalledWebAppManager::SetConfigsForTesting(&app_configs);
 
     WebAppProvider::GetForTest(profile())
@@ -441,7 +450,6 @@ IN_PROC_BROWSER_TEST_F(PreinstalledWebAppMigrationBrowserTest,
   // Set up pre-migration state.
   {
     ASSERT_FALSE(IsPreinstalledAppInstallFeatureEnabled(kMigrationFlag));
-
     SyncExternalExtensions();
     SyncExternalWebApps(/*expect_install=*/false);
 
@@ -595,10 +603,8 @@ IN_PROC_BROWSER_TEST_F(PreinstalledWebAppMigrationBrowserTest,
   {
     extensions::TestExtensionRegistryObserver uninstall_observer(
         extensions::ExtensionRegistry::Get(profile()), kExtensionId);
-    extensions::ExtensionSystem::Get(profile())
-        ->extension_service()
-        ->UninstallExtension(kExtensionId,
-                             extensions::UNINSTALL_REASON_FOR_TESTING, nullptr);
+    extensions::ExtensionRegistrar::Get(profile())->UninstallExtension(
+        kExtensionId, extensions::UNINSTALL_REASON_FOR_TESTING, nullptr);
     uninstall_observer.WaitForExtensionUninstalled();
     EXPECT_FALSE(IsWebAppInstalled());
     EXPECT_FALSE(IsExtensionAppInstalled());

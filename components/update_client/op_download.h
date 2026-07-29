@@ -35,13 +35,15 @@ class Configurator;
 // is started on.
 base::OnceClosure DownloadOperation(
     scoped_refptr<Configurator> config,
-    base::RepeatingCallback<int64_t(const base::FilePath&)> get_available_space,
+    const std::string& id,
     bool is_foreground,
     const std::vector<GURL>& urls,
     int64_t size,
     const std::string& hash,
-    base::RepeatingCallback<void(base::Value::Dict)> event_adder,
+    base::RepeatingCallback<void(base::DictValue)> event_adder,
+    base::RepeatingCallback<void(ComponentState)> state_tracker,
     CrxDownloader::ProgressCallback progress_callback,
+    const base::FilePath& file,
     base::OnceCallback<void(base::expected<base::FilePath, CategorizedError>)>
         callback);
 

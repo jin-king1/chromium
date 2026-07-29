@@ -17,16 +17,12 @@
     ]
   },
   {
-    "name": "devtools-tab-target",
-    "args": ["--content-shell-devtools-tab-target"]
+    "name": "content-extraction",
+    "args": ["--enable-blink-features=AIPageContentBuildOnLoadForTesting"]
   },
   {
     "name": "disable-site-isolation-trials",
     "args": ["--disable-site-isolation-trials"]
-  },
-  {
-    "name": "disable-third-party-cookie",
-    "args": ["--test-third-party-cookie-phaseout"]
   },
   {
     "name": "enable-blink-heap-concurrent-marking",
@@ -58,6 +54,23 @@
           "--disable-vulkan-fallback-to-gl-for-testing"
     ],
     "smoke_file": "TestLists/skia-vulkan-swiftshader"
+  },
+  {
+    "name": "trees-in-viz",
+    "args": [
+          "--enable-features=TreesInViz"
+    ],
+    "smoke_file": "TestLists/trees-in-viz"
+  },
+  {
+    "name": "surface-embed",
+    "args": [
+          "--enable-features=SurfaceEmbed,Webium"
+    ],
+    "comments": [
+          "Used for testing web capabilities when a web page is embedded using",
+          "SurfaceEmbed, which embeds tabs in a Top Chrome WebUI."
+    ]
   },
   {
     "name": "webgpu",

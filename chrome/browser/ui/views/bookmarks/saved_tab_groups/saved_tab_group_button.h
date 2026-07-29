@@ -11,6 +11,8 @@
 #include <string_view>
 #include <vector>
 
+#include "base/gtest_prod_util.h"
+#include "base/memory/raw_ptr.h"
 #include "chrome/browser/ui/views/event_utils.h"
 #include "components/saved_tab_groups/public/saved_tab_group.h"
 #include "components/tab_groups/tab_group_color.h"
@@ -63,6 +65,7 @@ class SavedTabGroupButton : public views::MenuButton,
 
   // views::View
   bool OnKeyPressed(const ui::KeyEvent& event) override;
+  gfx::Point GetKeyboardContextMenuLocation() override;
 
   // views::LabelButton
   bool IsTriggerableEvent(const ui::Event& e) override;
@@ -93,8 +96,9 @@ class SavedTabGroupButton : public views::MenuButton,
   const base::Uuid guid() const { return guid_; }
 
  private:
-  FRIEND_TEST_ALL_PREFIXES(SavedTabGroupBarUnitTest, AccessibleName);
-  FRIEND_TEST_ALL_PREFIXES(SavedTabGroupBarUnitTest, TooltipText);
+  FRIEND_TEST_ALL_PREFIXES(SavedTabGroupBarComponentBrowserTest,
+                           AccessibleName);
+  FRIEND_TEST_ALL_PREFIXES(SavedTabGroupBarComponentBrowserTest, TooltipText);
 
   std::u16string GetAccessibleNameForButton() const;
   void SetTextProperties(const SavedTabGroup& group);
@@ -119,10 +123,6 @@ class SavedTabGroupButton : public views::MenuButton,
 
   // The local guid used to identify the group in the tabstrip if it is open.
   std::optional<tab_groups::TabGroupId> local_group_id_;
-
-  // The tabs to be displayed in the context menu. Currently supports tab
-  // title, url, and favicon.
-  std::vector<SavedTabGroupTab> tabs_;
 
   // The command id that gets updated and assigned to the context menu
   // commands.

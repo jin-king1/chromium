@@ -46,9 +46,12 @@ def _GetTestingEnv(input_api):
   # Only common code will reside under /testing.
   gpu_test_path = input_api.os_path.join(input_api.PresubmitLocalPath(), '..',
                                          'content', 'test', 'gpu')
+  typ_path = input_api.os_path.join(input_api.PresubmitLocalPath(), '..',
+                                    'third_party', 'catapult', 'third_party',
+                                    'typ')
   testing_env.update({
       'PYTHONPATH':
-      input_api.os_path.pathsep.join([testing_path, gpu_test_path]),
+      input_api.os_path.pathsep.join([testing_path, gpu_test_path, typ_path]),
       'PYTHONDONTWRITEBYTECODE':
       '1',
   })
@@ -96,7 +99,7 @@ def CheckPylint(input_api, output_api):
       # TODO(crbug.com/355016915): Remove this directory-specific pylintrc
       # file as the default one gets its disable list cleaned up.
       pylintrc='pylintrc',
-      version='2.7')
+      version='3.2')
   return input_api.RunTests(pylint_checks)
 
 

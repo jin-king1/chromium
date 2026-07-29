@@ -4,19 +4,16 @@
 
 #include "content/renderer/media/media_permission_dispatcher.h"
 
+#include <utility>
+
 #include "base/functional/bind.h"
 #include "base/logging.h"
-#include "base/not_fatal_until.h"
 #include "base/notreached.h"
 #include "base/task/bind_post_task.h"
 #include "base/task/single_thread_task_runner.h"
-#include "base/types/cxx23_to_underlying.h"
+#include "third_party/blink/public/mojom/permissions/permission_status.mojom.h"
 #include "third_party/blink/public/web/web_local_frame.h"
 #include "url/gurl.h"
-
-#if BUILDFLAG(IS_WIN)
-#include "base/functional/callback_forward.h"
-#endif  // BUILDFLAG(IS_WIN)
 
 namespace {
 
@@ -37,7 +34,7 @@ blink::mojom::PermissionDescriptorPtr MediaPermissionTypeToPermissionDescriptor(
       descriptor->name = blink::mojom::PermissionName::VIDEO_CAPTURE;
       break;
     default:
-      NOTREACHED() << base::to_underlying(type);
+      NOTREACHED() << std::to_underlying(type);
   }
   return descriptor;
 }
@@ -82,7 +79,7 @@ void MediaPermissionDispatcher::HasPermission(
 
   DCHECK(task_runner_->RunsTasksInCurrentSequence());
 
-  int request_id = RegisterCallback(std::move(permission_status_cb));
+  uint32_t request_id = RegisterCallback(std::move(permission_status_cb));
   DVLOG(2) << __func__ << ": request ID " << request_id;
 
   GetPermissionService()->HasPermission(
@@ -110,7 +107,6 @@ void MediaPermissionDispatcher::RequestPermission(
 
   GetPermissionService()->RequestPermission(
       MediaPermissionTypeToPermissionDescriptor(type),
-      render_frame_->GetWebFrame()->HasTransientUserActivation(),
       base::BindOnce(&MediaPermissionDispatcher::OnPermissionStatus, weak_ptr_,
                      request_id));
 }
@@ -145,18 +141,18 @@ MediaPermissionDispatcher::GetPermissionService() {
 
 void MediaPermissionDispatcher::OnPermissionStatus(
     uint32_t request_id,
-    blink::mojom::PermissionStatus status) {
-  DVLOG(2) << __func__ << ": (" << request_id << ", " << status << ")";
+    blink::mojom::PermissionStatusWithDetailsPtr status) {
+  DVLOG(2) << __func__ << ": (" << request_id << ", " << status->status << ")";
   DCHECK(task_runner_->RunsTasksInCurrentSequence());
 
   auto iter = requests_.find(request_id);
-  CHECK(iter != requests_.end(), base::NotFatalUntil::M130);
+  CHECK(iter != requests_.end());
 
   PermissionStatusCB permission_status_cb = std::move(iter->second);
   requests_.erase(iter);
 
   std::move(permission_status_cb)
-      .Run(status == blink::mojom::PermissionStatus::GRANTED);
+      .Run(status->status == blink::mojom::PermissionStatus::GRANTED);
 }
 
 #if BUILDFLAG(IS_WIN)

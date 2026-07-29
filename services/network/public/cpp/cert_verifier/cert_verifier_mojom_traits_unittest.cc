@@ -3,11 +3,11 @@
 // found in the LICENSE file.
 
 #include "services/network/public/cpp/cert_verifier/cert_verifier_mojom_traits.h"
+
 #include <algorithm>
 #include <string>
 #include <tuple>
 
-#include "base/files/file_util.h"
 #include "mojo/public/cpp/test_support/test_utils.h"
 #include "net/base/hash_value.h"
 #include "net/cert/cert_verifier.h"
@@ -51,7 +51,6 @@ TEST(CertVerifierMojomTraitsTest, ConfigTrue) {
   net::CertVerifier::Config config;
   config.enable_rev_checking = true;
   config.require_rev_checking_local_anchors = true;
-  config.enable_sha1_local_anchors = true;
 
   net::CertVerifier::Config out_config;
 

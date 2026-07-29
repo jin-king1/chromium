@@ -19,15 +19,14 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/observer_list.h"
+#include "base/sequence_checker.h"
 #include "base/timer/elapsed_timer.h"
-#include "base/win/atl.h"
 #include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
 #include "third_party/iaccessible2/ia2_api_all.h"
 #include "ui/accessibility/ax_enums.mojom-forward.h"
 #include "ui/accessibility/platform/ax_platform_node_base.h"
 #include "ui/accessibility/platform/ax_platform_text_boundary.h"
 #include "ui/accessibility/platform/ichromeaccessible.h"
-#include "ui/accessibility/platform/sequence_affine_com_object_root_win.h"
 #include "ui/gfx/range/range.h"
 
 #include <uiautomation.h>
@@ -337,14 +336,14 @@ enum {
 // signals to the OS that the object is no longer valid and no further methods
 // should be called on it.
 //
-#define UIA_VALIDATE_CALL()               \
-  if (!AXPlatformNodeBase::GetDelegate()) \
+#define UIA_VALIDATE_CALL()              \
+  if (AXPlatformNodeBase::IsDestroyed()) \
     return UIA_E_ELEMENTNOTAVAILABLE;
-#define UIA_VALIDATE_CALL_1_ARG(arg)      \
-  if (!AXPlatformNodeBase::GetDelegate()) \
-    return UIA_E_ELEMENTNOTAVAILABLE;     \
-  if (!arg)                               \
-    return E_INVALIDARG;                  \
+#define UIA_VALIDATE_CALL_1_ARG(arg)     \
+  if (AXPlatformNodeBase::IsDestroyed()) \
+    return UIA_E_ELEMENTNOTAVAILABLE;    \
+  if (!arg)                              \
+    return E_INVALIDARG;                 \
   *arg = {};
 
 // A helper for tracing calls for functions implementing accessibility COM
@@ -360,33 +359,8 @@ class VariantVector;
 
 namespace ui {
 
+class AXFragmentRootWin;
 class AXPlatformNodeWin;
-
-// A simple interface for a class that wants to be notified when Windows
-// accessibility APIs are used by a client, a strong indication that full
-// accessibility support should be enabled.
-class COMPONENT_EXPORT(AX_PLATFORM) WinAccessibilityAPIUsageObserver {
- public:
-  WinAccessibilityAPIUsageObserver();
-  virtual ~WinAccessibilityAPIUsageObserver();
-  virtual void OnMSAAUsed() = 0;
-  virtual void OnBasicIAccessible2Used() = 0;
-  virtual void OnAdvancedIAccessible2Used() = 0;
-  virtual void OnScreenReaderHoneyPotQueried() = 0;
-  virtual void OnAccNameCalled() = 0;
-  virtual void OnBasicUIAutomationUsed() = 0;
-  virtual void OnAdvancedUIAutomationUsed() = 0;
-  virtual void OnProbableUIAutomationScreenReaderDetected() = 0;
-  virtual void OnTextPatternRequested() = 0;
-  virtual void StartFiringUIAEvents() = 0;
-  virtual void EndFiringUIAEvents() = 0;
-};
-
-// Get an observer list that allows modules across the codebase to
-// listen to when usage of Windows accessibility APIs is detected.
-extern COMPONENT_EXPORT(
-    AX_PLATFORM) base::ObserverList<WinAccessibilityAPIUsageObserver>::
-    Unchecked& GetWinAccessibilityAPIUsageObserverList();
 
 // Used to simplify calling StartFiringUIAEvents and EndFiringEvents
 class COMPONENT_EXPORT(AX_PLATFORM)
@@ -396,12 +370,9 @@ class COMPONENT_EXPORT(AX_PLATFORM)
   ~WinAccessibilityAPIUsageScopedUIAEventsNotifier();
 };
 
-class COMPONENT_EXPORT(AX_PLATFORM) __declspec(
-    uuid("26f5641a-246d-457b-a96d-07f3fae6acf2")) AXPlatformNodeWin
-    : public SequenceAffineComObjectRoot,
-      public IDispatchImpl<IAccessible2_4,
-                           &IID_IAccessible2_4,
-                           &LIBID_IAccessible2Lib>,
+class COMPONENT_EXPORT(AX_PLATFORM)
+    __declspec(uuid("26f5641a-246d-457b-a96d-07f3fae6acf2")) AXPlatformNodeWin
+    : public IAccessible2_4,
       public IAccessibleEx,
       public IAccessibleHypertext,
       public IAccessibleTable,
@@ -429,53 +400,37 @@ class COMPONENT_EXPORT(AX_PLATFORM) __declspec(
       public IWindowProvider,
       public IChromeAccessible,
       public AXPlatformNodeBase {
-  using IDispatchImpl::Invoke;
+ public:
+  // IUnknown:
+  IFACEMETHODIMP_(ULONG) AddRef() override;
+  IFACEMETHODIMP_(ULONG) Release() override;
+  IFACEMETHODIMP QueryInterface(REFIID iid, void** ppvObject) override;
+
+  // IDispatch:
+  IFACEMETHODIMP GetTypeInfoCount(UINT* pctinfo) override;
+  IFACEMETHODIMP GetTypeInfo(UINT iTInfo,
+                             LCID lcid,
+                             ITypeInfo** ppTInfo) override;
+  IFACEMETHODIMP GetIDsOfNames(REFIID riid,
+                               LPOLESTR* rgszNames,
+                               UINT cNames,
+                               LCID lcid,
+                               DISPID* rgDispId) override;
+  IFACEMETHODIMP Invoke(DISPID dispIdMember,
+                        REFIID riid,
+                        LCID lcid,
+                        WORD wFlags,
+                        DISPPARAMS* pDispParams,
+                        VARIANT* pVarResult,
+                        EXCEPINFO* pExcepInfo,
+                        UINT* puArgErr) override;
+
+ protected:
+  // Resolves interface pointers for QueryInterface. Subclasses can override
+  // to add their own interfaces and chain to this base implementation.
+  virtual HRESULT ResolveInterfaces(REFIID iid, void** ppvObject);
 
  public:
-  BEGIN_COM_MAP(AXPlatformNodeWin)
-    // TODO(nektar): Change the following to COM_INTERFACE_ENTRY(IDispatch).
-    COM_INTERFACE_ENTRY2(IDispatch, IAccessible2_2)
-    COM_INTERFACE_ENTRY2(IUnknown, IDispatchImpl)
-    // TODO(nektar): Find a way to remove the following entry because it's not
-    // an interface.
-    COM_INTERFACE_ENTRY(AXPlatformNodeWin)
-    COM_INTERFACE_ENTRY(IAccessible)
-    COM_INTERFACE_ENTRY(IAccessible2)
-    COM_INTERFACE_ENTRY(IAccessible2_2)
-    COM_INTERFACE_ENTRY(IAccessible2_3)
-    COM_INTERFACE_ENTRY(IAccessible2_4)
-    COM_INTERFACE_ENTRY(IAccessibleEx)
-    COM_INTERFACE_ENTRY(IAccessibleText)
-    COM_INTERFACE_ENTRY(IAccessibleHypertext)
-    COM_INTERFACE_ENTRY(IAccessibleTable)
-    COM_INTERFACE_ENTRY(IAccessibleTable2)
-    COM_INTERFACE_ENTRY(IAccessibleTableCell)
-    COM_INTERFACE_ENTRY(IAccessibleTextSelectionContainer)
-    COM_INTERFACE_ENTRY(IAccessibleValue)
-    COM_INTERFACE_ENTRY(IChromeAccessible)
-    COM_INTERFACE_ENTRY(IAnnotationProvider)
-    COM_INTERFACE_ENTRY(IExpandCollapseProvider)
-    COM_INTERFACE_ENTRY(IGridItemProvider)
-    COM_INTERFACE_ENTRY(IGridProvider)
-    COM_INTERFACE_ENTRY(IInvokeProvider)
-    COM_INTERFACE_ENTRY(IRangeValueProvider)
-    COM_INTERFACE_ENTRY(IRawElementProviderFragment)
-    COM_INTERFACE_ENTRY(IRawElementProviderSimple)
-    COM_INTERFACE_ENTRY(IRawElementProviderSimple2)
-    COM_INTERFACE_ENTRY(IScrollItemProvider)
-    COM_INTERFACE_ENTRY(IScrollProvider)
-    COM_INTERFACE_ENTRY(ISelectionItemProvider)
-    COM_INTERFACE_ENTRY(ISelectionProvider)
-    COM_INTERFACE_ENTRY(ITableItemProvider)
-    COM_INTERFACE_ENTRY(ITableProvider)
-    COM_INTERFACE_ENTRY(IToggleProvider)
-    COM_INTERFACE_ENTRY(IValueProvider)
-    COM_INTERFACE_ENTRY(IWindowProvider)
-    COM_INTERFACE_ENTRY(IServiceProvider)
-  END_COM_MAP()
-
-  ~AXPlatformNodeWin() override;
-
   // AXPlatformNode overrides.
   gfx::NativeViewAccessible GetNativeViewAccessible() override;
   void NotifyAccessibilityEvent(ax::mojom::Event event_type) override;
@@ -484,9 +439,11 @@ class COMPONENT_EXPORT(AX_PLATFORM) __declspec(
   void Destroy() override;
   bool IsPlatformCheckable() const override;
 
-  // CComObjectRootEx (non-virtual) overrides.
-  ULONG InternalAddRef();
-  ULONG InternalRelease();
+  // Returns the current reference count (for testing only).
+  ULONG ref_count_for_testing() const {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    return ref_count_;
+  }
 
   // Invoked when the instance is first referenced. This generally means that a
   // reference to an interface pointer is being handed out to an accessibility
@@ -565,9 +522,11 @@ class COMPONENT_EXPORT(AX_PLATFORM) __declspec(
   IFACEMETHODIMP get_accValue(VARIANT var_id, BSTR* value) override;
   IFACEMETHODIMP put_accValue(VARIANT var_id, BSTR new_value) override;
 
-  // IAccessible methods not implemented.
+  // Retrieve or set the selection.
   IFACEMETHODIMP get_accSelection(VARIANT* selected) override;
   IFACEMETHODIMP accSelect(LONG flags_sel, VARIANT var_id) override;
+
+  // IAccessible methods not implemented.
   IFACEMETHODIMP get_accHelpTopic(BSTR* help_file,
                                   VARIANT var_id,
                                   LONG* topic_id) override;
@@ -1148,16 +1107,6 @@ class COMPONENT_EXPORT(AX_PLATFORM) __declspec(
                               REFIID riid,
                               void** object) override;
 
-  //
-  // Methods used by the ATL COM map.
-  //
-
-  // Called by BEGIN_COM_MAP() / END_COM_MAP().
-  static STDMETHODIMP InternalQueryInterface(void* this_ptr,
-                                             const _ATL_INTMAP_ENTRY* entries,
-                                             REFIID riid,
-                                             void** object);
-
   // Support method for ITextRangeProvider::GetAttributeValue.
   // If either |start_offset| or |end_offset| are not provided then the
   // endpoint is treated as the start or end of the node respectively.
@@ -1196,12 +1145,21 @@ class COMPONENT_EXPORT(AX_PLATFORM) __declspec(
   // Returns the first ancestor node that is accessible for UIA.
   AXPlatformNodeWin* GetLowestAccessibleElementForUIA();
 
-  // Returns the first |IsTextOnlyObject| descendant using.
-  // depth-first pre-order traversal.
-  AXPlatformNodeWin* GetFirstTextOnlyDescendant();
+  void OnAriaNotificationIA2Fallback(
+      const std::string& announcement,
+      ax::mojom::AriaNotificationPriority priority);
 
   // Clear the computed hypertext.
   void ResetComputedHypertext();
+
+  bool AlwaysFireUIAEvent(EVENTID event_id);
+  bool HasEventListenerForEvent(EVENTID event_id);
+  bool HasEventListenerForProperty(PROPERTYID property_id);
+
+  // Firing a UIA event can cause UIA to call back into our APIs, don't
+  // consider this to be usage.
+  static void PauseAXModeChanges(bool pause) { pause_ax_mode_changes_ = pause; }
+  static bool AreAXModeChangesPaused() { return pause_ax_mode_changes_; }
 
   // Convert a mojo event to an MSAA event. Exposed for testing.
   static std::optional<DWORD> MojoEventToMSAAEvent(ax::mojom::Event event);
@@ -1213,20 +1171,53 @@ class COMPONENT_EXPORT(AX_PLATFORM) __declspec(
   static std::optional<PROPERTYID> MojoEventToUIAProperty(
       ax::mojom::Event event);
 
-  // Returns
-  // 1. The AXPlatformNodeBase instance count (expected to equal the dormant +
-  //    live counts).
-  // 2. The number of dormant platform nodes.
-  // 3. The number of live platform nodes.
-  // 4. The number of ghost platform nodes.
-  // See the comments in ax_platform_node_win.cc for descriptions of 2-4.
-  static std::tuple<size_t, size_t, size_t, size_t> GetCountsForTesting();
+  // Counts of AXPlatformNodeWin instances in various states.
+  struct Counts {
+    // The number of AXPlatformNodeBase instances (expected to equal the
+    // dormant + live counts).
+    size_t base_nodes;
+
+    // The number of dormant AXPlatformNodeWin instances; i.e., those that have
+    // been created by their delegate but are not actively referenced.
+    size_t dormant_nodes;
+
+    // The number of live AXPlatformNodeWin instances; i.e., those that are
+    // actively referenced and have not yet been destroyed by their owner.
+    size_t live_nodes;
+
+    // The number of ghost AXPlatformNodeWin instances; i.e., those that have
+    // been destroyed by their owner but are still actively referenced.
+    size_t ghost_nodes;
+
+    friend bool operator==(const Counts& lhs, const Counts& rhs) = default;
+  };
+
+  // Returns a snapshot of the current node counts.
+  static Counts GetCounts();
+
+  // Resets the global instance counts to zero and returns the previous counts;
+  // see above.
+  static Counts ResetCountsForTesting();
+
+  // Returns the size of the process-global alert targets set.
+  static size_t GetAlertTargetCountForTesting();
+
+  // Test-only wrapper around AddAlertTarget().
+  void AddAlertTargetForTesting();
+
+  bool IsUIAControl() const;
+
+  // Whether this node is a button that exposes the ExpandCollapse pattern
+  // instead of Toggle (e.g. menu buttons, expandable popup buttons). Such
+  // buttons suppress Toggle per the UIA button spec; see IsToggleSupported().
+  bool IsExpandCollapseButton() const;
 
  protected:
   AXPlatformNodeWin();
+  ~AXPlatformNodeWin() override;
 
   // AXPlatformNode overrides.
-  void Init(AXPlatformNodeDelegate* delegate) override;
+  void Init(AXPlatformNodeDelegate& delegate) override;
 
   // This is hard-coded; all products based on the Chromium engine will have the
   // same framework name, so that assistive technology can detect any
@@ -1250,8 +1241,6 @@ class COMPONENT_EXPORT(AX_PLATFORM) __declspec(
   bool CanHaveUIALabeledBy();
 
   bool IsNameExposed() const;
-
-  bool IsUIAControl() const;
 
   std::optional<LONG> ComputeUIALandmarkType() const;
 
@@ -1293,6 +1282,18 @@ class COMPONENT_EXPORT(AX_PLATFORM) __declspec(
   // It's okay for input to be the same as output.
   static void SanitizeStringAttributeForIA2(const std::string& input,
                                             std::string* output);
+
+  enum class WinApiType { kMsaa, kUia };
+
+  // Turn on AXMode::kWebContent if in web content, otherwise just kNativeAPIs.
+  void OnPropertiesUsed(WinApiType api) const;
+
+  // Turn on AXMode::kExtendedProperties if in web content.
+  void OnExtendedPropertiesUsed(WinApiType api) const;
+
+  // Turn on AXMode::kInlineTextBoxes if in web content.
+  void OnInlineTextBoxesUsed(WinApiType api) const;
+
   FRIEND_TEST_ALL_PREFIXES(AXPlatformNodeWinTest,
                            SanitizeStringAttributeForIA2);
 
@@ -1317,6 +1318,8 @@ class COMPONENT_EXPORT(AX_PLATFORM) __declspec(
     LONG control_type;
     const wchar_t* aria_role;
   };
+
+  AXFragmentRootWin* GetAXFragmentRootWin();
 
   AXPlatformNodeWin* GetParentPlatformNodeWin() const;
 
@@ -1488,6 +1491,11 @@ class COMPONENT_EXPORT(AX_PLATFORM) __declspec(
   // Convert mojom TextAlign to UIA HorizontalTextAlignment enumeration
   static std::optional<HorizontalTextAlignment>
   AXTextAlignToUIAHorizontalTextAlignment(ax::mojom::TextAlign text_align);
+  // Converts a heading role + IntAttribute::kHierarchicalLevel to UIA
+  // HeadingLevel enumeration. Returns HeadingLevel_None for non-heading roles
+  // or heading levels outside the valid 1-9 range.
+  static LONG AXHierarchicalLevelToUIAHeadingLevel(ax::mojom::Role role,
+                                                   int32_t hierarchical_level);
   // Converts IntAttribute::kHierarchicalLevel to UIA StyleId enumeration
   static LONG AXHierarchicalLevelToUIAStyleId(int32_t hierarchical_level);
   // Converts a ListStyle to UIA StyleId enumeration
@@ -1504,6 +1512,14 @@ class COMPONENT_EXPORT(AX_PLATFORM) __declspec(
       int offset_ranges_amount,
       std::vector<std::pair<int, int>>* ranges,
       const std::optional<ax::mojom::HighlightType>& highlight_type);
+
+  // Returns the text-only (`IsText`) descendants of this node in depth-first
+  // pre-order by walking the internal accessibility tree. Traversal stops at
+  // each text-only node (its own text children are not collected). Unlike a
+  // platform-tree walk, this reaches the internal static-text descendants of
+  // an atomic text field (e.g. <input>, <textarea>), which are hidden from the
+  // platform tree because the field is exposed as a leaf.
+  std::vector<AXPlatformNodeWin*> CollectTextOnlyDescendants();
 
   enum class MarkerTypeRangeResult {
     // The MarkerType does not overlap the range.
@@ -1550,17 +1566,9 @@ class COMPONENT_EXPORT(AX_PLATFORM) __declspec(
 
   // Fires UIA text edit event about composition (active or committed)
   void FireUiaTextEditTextChangedEvent(
-      const gfx::Range& range,
       const std::wstring& active_composition_text,
       bool is_composition_committed);
 
-  // Notifies observers that basic MSAA usage was detected. Only some of the
-  // APIs were chosen to avoid accessibility being enabled unnecessarily or
-  // unexpectedly in a test environment, while still ensuring that clients that
-  // only use MSAA/IAccessible have a way to turn on accessibility.
-  void NotifyObserverForMSAAUsage() const;
-
-  void NotifyAddAXModeFlagsForIA2(const uint32_t ax_modes) const;
   void NotifyAPIObserverForPatternRequest(PATTERNID pattern_id) const;
   void NotifyAPIObserverForPropertyRequest(PROPERTYID property_id) const;
 
@@ -1578,11 +1586,24 @@ class COMPONENT_EXPORT(AX_PLATFORM) __declspec(
 
   bool IsInvokeSupported() const;
 
+  // Cached type info for IDispatch implementation.
+  HRESULT EnsureDispatchTypeInfo(LCID lcid, ITypeInfo** ppTInfo);
+
+  friend AXPlatformNode::Pointer AXPlatformNode::Create(
+      AXPlatformNodeDelegate& delegate);
+
   // Start and end offsets of an active composition
   gfx::Range active_composition_range_;
 
-  friend AXPlatformNode::Pointer AXPlatformNode::Create(
-      AXPlatformNodeDelegate* delegate);
+  static bool pause_ax_mode_changes_;
+
+  // Reference count starts at 1 (the self-reference held by the delegate).
+  // When acquiring the initial ComPtr<>, use ComPtr::Attach() rather than
+  // the constructor to avoid an extra AddRef.
+  ULONG ref_count_ GUARDED_BY_CONTEXT(sequence_checker_) = 1;
+  SEQUENCE_CHECKER(sequence_checker_);
+  Microsoft::WRL::ComPtr<ITypeInfo> dispatch_type_info_
+      GUARDED_BY_CONTEXT(sequence_checker_);
 };
 
 }  // namespace ui

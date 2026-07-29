@@ -9,9 +9,8 @@
 #include <utility>
 
 #include "base/android/jni_string.h"
-#include "base/notreached.h"
+#include "base/notimplemented.h"
 #include "base/task/single_thread_task_runner.h"
-
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "components/feature_engagement/public/jni_headers/CppWrappedTestTracker_jni.h"
 
@@ -121,7 +120,7 @@ void WrappingTestTracker::AddOnInitializedCallback(
       FROM_HERE, base::BindOnce(std::move(callback), IsInitialized()));
 }
 
-const Configuration* WrappingTestTracker::GetConfigurationForTesting() const {
+const Configuration* WrappingTestTracker::GetConfiguration() const {
   NOTIMPLEMENTED();
   return nullptr;
 }
@@ -131,4 +130,10 @@ void WrappingTestTracker::SetClockForTesting(const base::Clock& clock,
   NOTIMPLEMENTED();
 }
 
+bool WrappingTestTracker::IsInFeatureTestMode() const {
+  return false;
+}
+
 }  // namespace feature_engagement
+
+DEFINE_JNI(CppWrappedTestTracker)

@@ -98,10 +98,11 @@ class FakeDownloadItem : public download::DownloadItem {
   download::DownloadItemRenameHandler* GetRenameHandler() override;
 #if BUILDFLAG(IS_ANDROID)
   bool IsFromExternalApp() override;
-  bool IsMustDownload() override;
+  bool AllowAutoOpenAfterCompletion() override;
 #endif  // BUILDFLAG(IS_ANDROID)
   bool IsDangerous() const override;
   bool IsInsecure() const override;
+  bool IsUserConfirmed() const override;
   download::DownloadDangerType GetDangerType() const override;
   download::DownloadItem::InsecureDownloadStatus GetInsecureDownloadStatus()
       const override;
@@ -131,6 +132,7 @@ class FakeDownloadItem : public download::DownloadItem {
       download::DownloadInterruptReason reason) override;
   void ValidateDangerousDownload() override;
   void ValidateInsecureDownload() override;
+  void ConfirmNonDangerousDownload() override;
   void CopyDownload(AcquireFileCallback callback) override;
   void Rename(const base::FilePath& name,
               RenameDownloadCallback callback) override;

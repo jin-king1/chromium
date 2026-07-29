@@ -8,12 +8,10 @@
 
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/layout_constants.h"
-#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "components/content_settings/browser/ui/cookie_controls_util.h"
 #include "components/content_settings/core/common/cookie_controls_enforcement.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
-#include "ui/base/ui_base_features.h"
 #include "ui/views/controls/image_view.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/controls/styled_label.h"
@@ -25,7 +23,7 @@ namespace {
 
 using Util = ::content_settings::CookieControlsUtil;
 
-// TODO(crbug.com/40064612): Consider moving this method to a Factory class
+// TODO(crbug.com/436861952): Consider moving this method to a Factory class
 // and refactor PageInfoViewFactory::CreateLabelWrapper.
 std::unique_ptr<views::View> CreateLabelWrapper() {
   const int icon_label_spacing = ChromeLayoutProvider::Get()->GetDistanceMetric(
@@ -54,7 +52,7 @@ RichControlsContainerView::RichControlsContainerView() {
   SetInteriorMargin(button_insets);
 
   icon_ = AddChildView(std::make_unique<views::ImageView>());
-  const int icon_size = GetLayoutConstant(PAGE_INFO_ICON_SIZE);
+  const int icon_size = GetLayoutConstant(LayoutConstant::kPageInfoIconSize);
   icon_->SetImageSize({icon_size, icon_size});
   icon_->SetProperty(views::kElementIdentifierKey, kIcon);
 
@@ -66,7 +64,7 @@ RichControlsContainerView::RichControlsContainerView() {
 
   // Calculate difference between label height and icon size to align icons
   // and label in the first row.
-  // TODO(crbug.com/40064612): Refactor the view and use a TableLayout instead.
+  // TODO(crbug.com/436861952): Refactor the view and use a TableLayout instead.
   const int label_height =
       title_->GetPreferredSize(views::SizeBounds(title_->width(), {})).height();
   const int margin = (label_height - icon_size) / 2;
@@ -85,7 +83,7 @@ void RichControlsContainerView::SetEnforcedIcon(
   enforced_icon_->SetProperty(views::kElementIdentifierKey, kEnforcedIcon);
   enforced_icon_->SetImage(ui::ImageModel::FromVectorIcon(
       Util::GetEnforcedIcon(enforcement), ui::kColorIcon,
-      GetLayoutConstant(PAGE_INFO_ICON_SIZE)));
+      GetLayoutConstant(LayoutConstant::kPageInfoIconSize)));
   enforced_icon_->SetTooltipText(Util::GetEnforcedTooltip(enforcement));
 }
 
@@ -95,6 +93,13 @@ void RichControlsContainerView::SetTitle(std::u16string title) {
 
 int RichControlsContainerView::GetFirstLineHeight() {
   return title_->GetLineHeight();
+}
+
+void RichControlsContainerView::SetIconImageSizeAndMargins(
+    gfx::Size image_size,
+    gfx::Insets margin_insets) {
+  icon_->SetProperty(views::kMarginsKey, margin_insets);
+  icon_->SetImageSize(image_size);
 }
 
 views::Label* RichControlsContainerView::AddSecondaryLabel(

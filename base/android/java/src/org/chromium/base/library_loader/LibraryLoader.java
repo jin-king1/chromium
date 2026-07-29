@@ -6,7 +6,6 @@ package org.chromium.base.library_loader;
 
 import android.annotation.SuppressLint;
 import android.content.Context;
-import android.content.SharedPreferences;
 import android.content.pm.ApplicationInfo;
 import android.os.Build;
 import android.os.Bundle;
@@ -16,15 +15,14 @@ import androidx.annotation.IntDef;
 import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
-import org.chromium.base.BaseSwitches;
 import org.chromium.base.Callback;
 import org.chromium.base.CommandLine;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
 import org.chromium.base.ResettersForTesting;
-import org.chromium.base.StrictModeContext;
 import org.chromium.base.TimeUtils.CurrentThreadTimeMillisTimer;
 import org.chromium.base.TimeUtils.UptimeMillisTimer;
 import org.chromium.base.TraceEvent;
@@ -60,9 +58,6 @@ public class LibraryLoader {
     // Constant guarding debug logging in this class.
     static final boolean DEBUG = false;
 
-    // Shared preferences key for the background thread pool setting.
-    private static final String BACKGROUND_THREAD_POOL_KEY = "background_thread_pool_enabled";
-
     // The singleton instance of LibraryLoader. Never null (not final for tests).
     private static LibraryLoader sInstance = new LibraryLoader();
 
@@ -88,6 +83,7 @@ public class LibraryLoader {
     @Retention(RetentionPolicy.SOURCE)
     private @interface LoadState {
         int NOT_LOADED = 0;
+        // TODO(crbug.com/404880581): Make this a boolean.
         int MAIN_DEX_LOADED = 1;
         int LOADED = 2;
     }
@@ -132,11 +128,6 @@ public class LibraryLoader {
     // This is exposed to clients.
     @GuardedBy("mLock")
     private boolean mLoadedByZygote;
-
-    // One-way switch becomes true when the Java command line is switched to
-    // native.
-    @GuardedBy("mLock")
-    private boolean mCommandLineSwitched;
 
     // Enumeration telling which init* methods were used, and therefore
     // which process the library is loaded in.
@@ -357,24 +348,27 @@ public class LibraryLoader {
         /**
          * Optionally extracts RELRO and saves it for replacing the RELRO section in this process.
          * Can be invoked before initialization.
-         * @param bundle Where to deserialize from.
+         *
+         * @param relros Where to deserialize from.
          */
-        public void takeSharedRelrosFromBundle(Bundle bundle) {
+        public void takeSharedRelrosFromAidl(IRelroLibInfo relros) {
             if (useChromiumLinker()) {
-                getLinker().takeSharedRelrosFromBundle(bundle);
+                getLinker().takeSharedRelrosFromAidl(relros);
             }
         }
 
         /**
          * Optionally puts the RELRO section information so that it can be memory-mapped in another
          * process reading the bundle.
+         *
          * @param bundle Where to serialize.
          */
-        public void putSharedRelrosToBundle(Bundle bundle) {
+        public @Nullable IRelroLibInfo getSharedRelrosAidl() {
             assert mInitDone;
             if (useChromiumLinker()) {
-                getLinker().putSharedRelrosToBundle(bundle);
+                return getLinker().getSharedRelrosAidl();
             }
+            return null;
         }
 
         private String creationAsString() {
@@ -439,13 +433,17 @@ public class LibraryLoader {
         mLibraryProcessType = type;
     }
 
+    public @LibraryProcessType int getLibraryProcessType() {
+        return mLibraryProcessType;
+    }
+
     /**
-     * Set native library preloader. If set and the Chromium linker is not used, the
-     * {@link NativeLibraryPreloader#loadLibrary(String)} ()} will be invoked before calling
+     * Set native library preloader. If set and the Chromium linker is not used, the {@link
+     * NativeLibraryPreloader#loadLibrary(String)} ()} will be invoked before calling
      * System.loadLibrary().
      *
-     * @param loader the NativeLibraryPreloader, it shall only be set once and before the
-     *               native library is loaded.
+     * @param loader the NativeLibraryPreloader, it shall only be set once and before the native
+     *     library is loaded.
      */
     public void setNativeLibraryPreloader(NativeLibraryPreloader loader) {
         synchronized (mLock) {
@@ -484,11 +482,7 @@ public class LibraryLoader {
     /**
      * Returns the singleton Linker instance.
      *
-     * On N, O and P Monochrome is selected by Play Store. With Monochrome this code is not used,
-     * instead Chrome asks the WebView to provide the library (and the shared RELRO). If the WebView
-     * fails to provide the library, the system linker is used as a fallback.
-     *
-     * More: docs/android_native_libraries.md
+     * <p>More: docs/android_native_libraries.md.
      *
      * @return the Linker implementation instance.
      */
@@ -572,7 +566,7 @@ public class LibraryLoader {
      * Checks whether the native library is fully loaded.
      *
      * @deprecated please avoid using in new code:
-     *     https://crsrc.org/c/base/android/jni_generator/README.md#testing-for-readiness-use-get
+     *     https://chromium.googlesource.com/chromium/src/+/main/third_party/jni_zero/README.md#chrome_specific-guidance
      */
     @Deprecated
     @VisibleForTesting
@@ -590,7 +584,7 @@ public class LibraryLoader {
      * Checks whether the native library is fully loaded and initialized.
      *
      * @deprecated please avoid using in new code:
-     *     https://chromium.googlesource.com/chromium/src/+/main/base/android/jni_generator/README.md#testing-for-readiness_use
+     *     https://chromium.googlesource.com/chromium/src/+/main/third_party/jni_zero/README.md#chrome_specific-guidance
      */
     @Deprecated
     public boolean isInitialized() {
@@ -651,33 +645,6 @@ public class LibraryLoader {
         }
     }
 
-    /**
-     * Enables the background priority thread pool group. The value comes from the
-     * "BackgroundThreadPool" finch experiment, and is pushed on every run, to take effect on the
-     * subsequent run. I.e. the effect of the finch experiment lags by one run, which is the best we
-     * can do considering that the thread pool has to be configured before finch is initialized.
-     * Note that since LibraryLoader is in //base, it can't depend on ChromeFeatureList, and has to
-     * rely on external code pushing the value.
-     *
-     * @param enabled whether to enable the background priority thread pool group.
-     */
-    public static void setBackgroundThreadPoolEnabledOnNextRuns(boolean enabled) {
-        SharedPreferences.Editor editor = ContextUtils.getAppSharedPreferences().edit();
-        editor.putBoolean(BACKGROUND_THREAD_POOL_KEY, enabled).apply();
-    }
-
-    /**
-     * @return whether the background priority thread pool group should be enabled. (see
-     *         setBackgroundThreadPoolEnabledOnNextRuns()).
-     */
-    @VisibleForTesting
-    public static boolean isBackgroundThreadPoolEnabled() {
-        try (StrictModeContext ignored = StrictModeContext.allowDiskReads()) {
-            return ContextUtils.getAppSharedPreferences()
-                    .getBoolean(BACKGROUND_THREAD_POOL_KEY, false);
-        }
-    }
-
     private void loadWithChromiumLinker(ApplicationInfo appInfo, String library) {
         Linker linker = getLinker();
         String sourceDir = appInfo.sourceDir;
@@ -700,13 +667,19 @@ public class LibraryLoader {
     @GuardedBy("mLock")
     @VisibleForTesting
     protected void loadMainDexAlreadyLocked(ApplicationInfo appInfo, boolean inZygote) {
-        if (mLoadState >= LoadState.MAIN_DEX_LOADED) {
-            if (sEnableStateForTesting && mLoadStateForTesting == LoadState.NOT_LOADED) {
-                mLoadStateForTesting = LoadState.MAIN_DEX_LOADED;
-            }
-            return;
-        }
         try (TraceEvent te = TraceEvent.scoped("LibraryLoader.loadMainDexAlreadyLocked")) {
+            if (mLoadState >= LoadState.MAIN_DEX_LOADED) {
+                if (sEnableStateForTesting) {
+                    if (sOverrideNativeLibraryCannotBeLoadedForTesting) {
+                        throw new UnsatisfiedLinkError();
+                    }
+                    if (mLoadStateForTesting == LoadState.NOT_LOADED) {
+                        mLoadStateForTesting = LoadState.MAIN_DEX_LOADED;
+                    }
+                }
+                return;
+            }
+
             assert !mInitialized;
             assert mLibraryProcessType != LibraryProcessType.PROCESS_UNINITIALIZED || inZygote;
 
@@ -763,22 +736,18 @@ public class LibraryLoader {
     // initialization is done. This is okay in the WebView's case since the
     // JNI is already loaded by this point.
     public void switchCommandLineForWebView() {
-        synchronized (mLock) {
-            ensureCommandLineSwitchedAlreadyLocked();
-        }
+        ensureCommandLineSwitched();
     }
 
     // Switch the CommandLine over from Java to native if it hasn't already been done.
-    // This must happen after the code is loaded and after JNI is ready (since after the
-    // switch the Java CommandLine will delegate all calls the native CommandLine).
-    @GuardedBy("mLock")
-    private void ensureCommandLineSwitchedAlreadyLocked() {
+    // Must happen as soon as native is loaded to ensure flags are available when queried.
+    private void ensureCommandLineSwitched() {
         assert isMainDexLoaded();
-        if (mCommandLineSwitched) {
-            return;
+        // TODO(agrieve): We should fail rather than silently initialize here.
+        if (!CommandLine.isInitialized()) {
+            CommandLine.init(null);
         }
-        CommandLine.enableNativeProxy();
-        mCommandLineSwitched = true;
+        CommandLine.getInstance().switchToNativeImpl();
     }
 
     /**
@@ -800,15 +769,7 @@ public class LibraryLoader {
         }
         assert mLibraryProcessType != LibraryProcessType.PROCESS_UNINITIALIZED;
 
-        if (mLibraryProcessType == LibraryProcessType.PROCESS_BROWSER) {
-            // Append a switch to enable the background thread pool group if the cached
-            // preference indicates it should be enabled.
-            if (isBackgroundThreadPoolEnabled()) {
-                CommandLine.getInstance().appendSwitch(BaseSwitches.ENABLE_BACKGROUND_THREAD_POOL);
-            }
-        }
-
-        ensureCommandLineSwitchedAlreadyLocked();
+        ensureCommandLineSwitched();
 
         // Invoke content::LibraryLoaded() in //content/app/android/library_loader_hooks.cc
         // via a hook stored in //base/android/library_loader/library_loader_hooks.cc.
@@ -840,7 +801,7 @@ public class LibraryLoader {
      * Overrides the library loader (normally with a mock) for testing.
      *
      * @deprecated please avoid using in new code:
-     *     https://chromium.googlesource.com/chromium/src/+/main/base/android/jni_generator/README.md#testing-for-readiness_use
+     *     https://chromium.googlesource.com/chromium/src/+/main/third_party/jni_zero/README.md#chrome_specific-guidance
      * @param loader the mock library loader.
      */
     @Deprecated
@@ -877,9 +838,8 @@ public class LibraryLoader {
      * be used by clients like NativeTests which manually load their native libraries without using
      * the LibraryLoader.
      *
-     * Don't use in new code. Tests that require this call should be migrated to
-     * NativeUnitTest.
-     * https://chromium.googlesource.com/chromium/src/+/main/base/android/jni_generator/README.md#testing-for-readiness_use
+     * <p>Don't use in new code. Tests that require this call should be migrated to NativeUnitTest.
+     * https://chromium.googlesource.com/chromium/src/+/main/third_party/jni_zero/README.md#chrome_specific-guidance
      */
     protected static void setLibrariesLoadedForNativeTests() {
         LibraryLoader self = getInstance();
@@ -914,6 +874,6 @@ public class LibraryLoader {
     interface Natives {
         // Performs auxiliary initialization useful right after the native library load. Returns
         // true on success and false on failure.
-        boolean libraryLoaded(@LibraryProcessType int processType);
+        boolean libraryLoaded(@LibraryProcessType @JniType("LibraryProcessType") int processType);
     }
 }

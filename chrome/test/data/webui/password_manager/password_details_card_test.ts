@@ -8,8 +8,10 @@ import type {EditPasswordDialogElement, PasswordDetailsCardElement} from 'chrome
 import {Page, PasswordManagerImpl, PasswordViewPageInteractions, Router, SyncBrowserProxyImpl} from 'chrome://password-manager/password_manager.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import type {MetricsTracker} from 'chrome://webui-test/metrics_test_support.js';
+import {fakeMetricsPrivate} from 'chrome://webui-test/metrics_test_support.js';
 import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
-import {eventToPromise, isVisible} from 'chrome://webui-test/test_util.js';
+import {eventToPromise, isChildVisible, isVisible} from 'chrome://webui-test/test_util.js';
 
 import {TestPasswordManagerProxy} from './test_password_manager_proxy.js';
 import {TestSyncBrowserProxy} from './test_sync_browser_proxy.js';
@@ -34,6 +36,7 @@ async function createCardElement(
 suite('PasswordDetailsCardTest', function() {
   let passwordManager: TestPasswordManagerProxy;
   let syncProxy: TestSyncBrowserProxy;
+  let metrics: MetricsTracker;
 
   setup(function() {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
@@ -41,6 +44,7 @@ suite('PasswordDetailsCardTest', function() {
     PasswordManagerImpl.setInstance(passwordManager);
     syncProxy = new TestSyncBrowserProxy();
     SyncBrowserProxyImpl.setInstance(syncProxy);
+    metrics = fakeMetricsPrivate();
     Router.getInstance().navigateTo(Page.PASSWORDS);
     return flushTasks();
   });
@@ -122,7 +126,7 @@ suite('PasswordDetailsCardTest', function() {
       const listItemElement = listItemElements[i];
 
       assertTrue(!!listItemElement);
-      assertEquals(expectedDomain.name, listItemElement.textContent!.trim());
+      assertEquals(expectedDomain.name, listItemElement.textContent.trim());
       assertEquals(expectedDomain.url, listItemElement.href);
     });
   });
@@ -304,7 +308,7 @@ suite('PasswordDetailsCardTest', function() {
     const card = await createCardElement(password);
 
     assertEquals(
-        card.$.domainLabel.textContent!.trim(),
+        card.$.domainLabel.textContent.trim(),
         loadTimeData.getString('sitesLabel'));
   });
 
@@ -322,7 +326,7 @@ suite('PasswordDetailsCardTest', function() {
     const card = await createCardElement(password);
 
     assertEquals(
-        card.$.domainLabel.textContent!.trim(),
+        card.$.domainLabel.textContent.trim(),
         loadTimeData.getString('appsLabel'));
   });
 
@@ -345,21 +349,25 @@ suite('PasswordDetailsCardTest', function() {
     const card = await createCardElement(password);
 
     assertEquals(
-        card.$.domainLabel.textContent!.trim(),
+        card.$.domainLabel.textContent.trim(),
         loadTimeData.getString('sitesAndAppsLabel'));
   });
 
   // <if expr="_google_chrome">
   test('share button available when sync enabled', async function() {
     syncProxy.syncInfo = {
-      isEligibleForAccountStorage: false,
       isSyncingPasswords: true,
     };
 
     const card = await createCardElement();
 
     assertTrue(isVisible(card.$.shareButton));
-    assertEquals(card.$.shareButton.textContent!.trim(), card.i18n('share'));
+    assertEquals(card.$.shareButton.textContent.trim(), card.i18n('share'));
+    assertEquals(
+        card.i18n(
+            'passwordDetailsCardShareButtonAriaLabel',
+            card.i18n('passwordLabel'), 'vik'),
+        card.$.shareButton.getAttribute('aria-label'));
 
     assertFalse(!!card.shadowRoot!.querySelector('share-password-flow'));
 
@@ -374,32 +382,31 @@ suite('PasswordDetailsCardTest', function() {
 
   test('share button available for account store users', async function() {
     syncProxy.syncInfo = {
-      isEligibleForAccountStorage: true,
       isSyncingPasswords: false,
     };
 
-    passwordManager.data.isAccountStorageEnabled = true;
+    passwordManager.data.isAccountStorageActive = true;
 
     const card = await createCardElement();
 
     assertFalse(card.$.shareButton.hidden);
     assertTrue(isVisible(card.$.shareButton));
     assertFalse(card.$.shareButton.disabled);
-    assertEquals(card.$.shareButton.textContent!.trim(), card.i18n('share'));
+    assertEquals(card.$.shareButton.textContent.trim(), card.i18n('share'));
   });
 
   test('sharing disabled by policy', async function() {
     syncProxy.syncInfo = {
-      isEligibleForAccountStorage: false,
       isSyncingPasswords: true,
     };
 
     const card = document.createElement('password-details-card');
     card.password = createPasswordEntry();
     card.prefs = makePasswordManagerPrefs();
-    card.prefs.password_manager.password_sharing_enabled.value = false;
-    card.prefs.password_manager.password_sharing_enabled.enforcement =
-        chrome.settingsPrivate.Enforcement.ENFORCED;
+    const prefObject =
+        card.getPref<boolean>('password_manager.password_sharing_enabled');
+    prefObject.value = false;
+    prefObject.enforcement = chrome.settingsPrivate.Enforcement.ENFORCED;
     document.body.appendChild(card);
     await flushTasks();
 
@@ -409,7 +416,6 @@ suite('PasswordDetailsCardTest', function() {
 
   test('sharing unavailable for federated credentials', async function() {
     syncProxy.syncInfo = {
-      isEligibleForAccountStorage: false,
       isSyncingPasswords: true,
     };
 
@@ -425,7 +431,6 @@ suite('PasswordDetailsCardTest', function() {
 
   test('share button unavailable when sync disabled', async function() {
     syncProxy.syncInfo = {
-      isEligibleForAccountStorage: false,
       isSyncingPasswords: false,
     };
 
@@ -438,34 +443,6 @@ suite('PasswordDetailsCardTest', function() {
     assertFalse(!!sharePasswordFlow);
   });
   // </if>
-
-  test(
-      'clicking save password in account opens move password dialog',
-      async function() {
-        passwordManager.data.isAccountStorageEnabled = true;
-        syncProxy.syncInfo = {
-          isEligibleForAccountStorage: true,
-          isSyncingPasswords: false,
-        };
-
-        const card = await createCardElement();
-        card.isUsingAccountStore = true;
-        await flushTasks();
-
-        const movePasswordLabel = card.shadowRoot!.querySelector<HTMLElement>(
-            '.move-password-container div');
-        assertTrue(!!movePasswordLabel);
-        assertTrue(isVisible(movePasswordLabel));
-
-        movePasswordLabel.click();
-        await flushTasks();
-
-        const moveDialog =
-            card.shadowRoot!.querySelector('move-single-password-dialog');
-        assertTrue(!!moveDialog);
-        const dialog = moveDialog.shadowRoot!.querySelector('#dialog');
-        assertTrue(!!dialog);
-      });
 
   test('Password value is hidden if object was changed', async function() {
     const password1 = createPasswordEntry(
@@ -482,4 +459,43 @@ suite('PasswordDetailsCardTest', function() {
     card.password = password2;
     assertFalse(card.isPasswordVisible);
   });
+
+  test('Move password container content displayed properly', async function() {
+    const card = await createCardElement();
+    card.isUsingAccountStore = true;
+    await flushTasks();
+
+    assertTrue(isChildVisible(card, '.move-password-container'));
+    assertTrue(isChildVisible(card, '#uploadSinglePasswordIcon'));
+    assertTrue(isChildVisible(card, '#uploadPasswordButton'));
+  });
+
+  test(
+      'clicking save password in account moves password directly',
+      async function() {
+        passwordManager.data.isAccountStorageActive = true;
+        syncProxy.syncInfo = {
+          isSyncingPasswords: false,
+        };
+
+        const card = await createCardElement();
+        card.isUsingAccountStore = true;
+        await flushTasks();
+
+        const movePasswordButton = card.shadowRoot!.querySelector<HTMLElement>(
+            '#uploadPasswordButton');
+        assertTrue(!!movePasswordButton);
+        movePasswordButton.click();
+        await flushTasks();
+
+        const movedIds =
+            await passwordManager.whenCalled('movePasswordsToAccount');
+        assertEquals(1, movedIds.length);
+
+        assertEquals(
+            1,
+            metrics.count(
+                'PasswordManager.AccountStorage.' +
+                'MoveToAccountStoreFlowAccepted2'));
+      });
 });

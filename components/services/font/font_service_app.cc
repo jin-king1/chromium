@@ -4,13 +4,19 @@
 
 #include "components/services/font/font_service_app.h"
 
+#include <fontconfig/fontconfig.h>
+
+#include <set>
 #include <utility>
+#include <vector>
 
 #include "base/command_line.h"
+#include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "base/files/file.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
+#include "base/logging.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
 #include "components/services/font/fontconfig_matching.h"

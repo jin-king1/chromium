@@ -10,6 +10,7 @@
 #include <string_view>
 #include <utility>
 
+#include "base/strings/string_number_conversions.h"
 #include "base/types/expected.h"
 #include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_url_info.h"
 #include "chrome/browser/web_applications/isolated_web_apps/test/isolated_web_app_builder.h"
@@ -67,7 +68,8 @@ void ControlledFrameTestBase::ConfigureEnvironment() {
   // IsolatedWebAppBrowserTestHarness enables features::kIsolatedWebApps and
   // features::kIsolatedWebAppDevMode.
   std::vector<base::test::FeatureRef> enabled_features = {
-      blink::features::kIsolateSandboxedIframes};
+      blink::features::kIsolateSandboxedIframes,
+      blink::features::kControlledFrameWebRequestSecurityInfo};
   std::vector<base::test::FeatureRef> disabled_features = {};
   switch (feature_setting()) {
     case FeatureSetting::UNINITIALIZED:
@@ -82,13 +84,6 @@ void ControlledFrameTestBase::ConfigureEnvironment() {
       break;
   }
   scoped_feature_list_.InitWithFeatures(enabled_features, disabled_features);
-}
-
-void ControlledFrameTestBase::StartContentServer(
-    std::string_view chrome_test_data_relative_dir) {
-  embedded_https_test_server().ServeFilesFromSourceDirectory(
-      GetChromeTestDataDir().AppendASCII(chrome_test_data_relative_dir));
-  ASSERT_TRUE(embedded_https_test_server().Start());
 }
 
 web_app::IsolatedWebAppUrlInfo

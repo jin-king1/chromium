@@ -33,6 +33,7 @@
 #include "third_party/blink/renderer/core/editing/forward.h"
 #include "third_party/blink/renderer/core/editing/serializers/create_markup_options.h"
 #include "third_party/blink/renderer/core/editing/serializers/html_interchange.h"
+#include "third_party/blink/renderer/core/trustedtypes/trusted_types_names.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_set.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/wtf/forward.h"
@@ -42,7 +43,6 @@ namespace blink {
 class ContainerNode;
 class Document;
 class DocumentFragment;
-class Element;
 class ExceptionState;
 class Node;
 class CSSPropertyValueSet;
@@ -62,12 +62,8 @@ struct ShadowRootInclusion final {
     // Include any shadow root (open or closed) marked `serializable`. Also
     // include any shadow root in the include_shadow_roots list.
     kIncludeAnySerializableShadowRoots,
-    // TODO(crbug.com/1519972): This value is only used for the deprecated
-    // version of getInnerHTML() and can be removed once that is removed.
-    // This includes any *open* shadow root, regardless of whether it is
-    // serializable. Also include any shadow root in the
-    // include_shadow_roots list.
-    kIncludeAllOpenShadowRoots,
+    // Include all shadow roots for requests by the inspector.
+    kIncludeAllShadowRootsForInspector,
   };
 
   ShadowRootInclusion() = default;
@@ -91,21 +87,10 @@ DocumentFragment* CreateFragmentFromMarkupWithContext(Document&,
                                                       unsigned fragment_end,
                                                       const String& base_url,
                                                       ParserContentPolicy);
-DocumentFragment* CreateFragmentForInnerOuterHTML(
-    const String&,
-    Element*,
-    ParserContentPolicy,
-    Element::ParseDeclarativeShadowRoots parse_declarative_shadows,
-    Element::ForceHtml force_html,
-    ExceptionState&);
 DocumentFragment* CreateFragmentForTransformToFragment(
     const String&,
     const String& source_mime_type,
     Document& output_doc);
-DocumentFragment* CreateContextualFragment(const String&,
-                                           Element*,
-                                           ParserContentPolicy,
-                                           ExceptionState&);
 
 bool IsPlainTextMarkup(Node*);
 
@@ -119,7 +104,7 @@ void ReplaceChildrenWithText(ContainerNode*, const String&, ExceptionState&);
 CORE_EXPORT String
 CreateMarkup(const Node*,
              ChildrenOnly = kIncludeNode,
-             AbsoluteURLs = kDoNotResolveURLs,
+             ResolveUrls = ResolveUrls::kNone,
              const ShadowRootInclusion& = ShadowRootInclusion());
 
 CORE_EXPORT String
@@ -157,7 +142,7 @@ CORE_EXPORT String CreateStrictlyProcessedMarkupWithContext(
     unsigned fragment_end,
     const String& base_url,
     ChildrenOnly = kIncludeNode,
-    AbsoluteURLs = kDoNotResolveURLs,
+    ResolveUrls = ResolveUrls::kNone,
     const ShadowRootInclusion& = ShadowRootInclusion());
 
 void MergeWithNextTextNode(Text*, ExceptionState&);

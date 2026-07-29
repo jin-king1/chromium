@@ -6,24 +6,28 @@
 
 #include <objbase.h>
 
+#include <winternl.h>
+
 #include <ntstatus.h>
 
+#include <algorithm>
 #include <string_view>
+#include <utility>
 
-#include "base/containers/contains.h"
 #include "base/files/file_path.h"
 #include "base/process/process.h"
 #include "base/process/process_handle.h"
 #include "base/scoped_environment_variable_override.h"
 #include "base/scoped_native_library.h"
+#include "base/strings/cstring_view.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/gmock_expected_support.h"
-#include "base/test/gtest_util.h"
+#include "base/threading/platform_thread.h"
 #include "base/win/registry.h"
 #include "base/win/scoped_co_mem.h"
 #include "base/win/scoped_com_initializer.h"
-#include "base/win/scoped_handle.h"
+#include "base/win/windows_handle_util.h"
 #include "base/win/windows_version.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -50,6 +54,25 @@ class ThreadLocaleSaver {
 auto* csm_false = static_cast<bool (*)()>([]() -> bool { return false; });
 
 auto* csm_true = static_cast<bool (*)()>([]() -> bool { return true; });
+
+void TestUnicodeStringToView(wcstring_view test) {
+  UNICODE_STRING teststr = {};
+  ::RtlInitUnicodeString(&teststr, test.c_str());
+  std::wstring_view view = UnicodeStringToView(teststr);
+  EXPECT_EQ(view, test);
+  // Pointer comparison.
+  EXPECT_EQ(view.data(), test.data());
+  EXPECT_EQ(std::size(view), std::size(test));
+}
+
+void TestViewToUnicodeString(std::wstring_view view) {
+  UNICODE_STRING str;
+  EXPECT_TRUE(ViewToUnicodeString(view, str));
+  // Pointer comparison.
+  EXPECT_EQ(str.Buffer, view.data());
+  EXPECT_EQ(str.Length, view.size() * sizeof(WCHAR));
+  EXPECT_EQ(str.Length, str.MaximumLength);
+}
 
 }  // namespace
 
@@ -82,7 +105,7 @@ TEST(BaseWinUtilTest, TestGetLoadedModulesSnapshot) {
   ASSERT_NE(static_cast<HMODULE>(nullptr), new_dll.get());
   ASSERT_TRUE(GetLoadedModulesSnapshot(::GetCurrentProcess(), &snapshot));
   ASSERT_GT(snapshot.size(), original_snapshot_size);
-  ASSERT_TRUE(Contains(snapshot, new_dll.get()));
+  ASSERT_TRUE(std::ranges::contains(snapshot, new_dll.get()));
 }
 
 TEST(BaseWinUtilTest, TestUint32ToInvalidHandle) {
@@ -90,6 +113,12 @@ TEST(BaseWinUtilTest, TestUint32ToInvalidHandle) {
   // and back on 64-bit platforms.
   uint32_t invalid_handle = HandleToUint32(INVALID_HANDLE_VALUE);
   EXPECT_EQ(INVALID_HANDLE_VALUE, Uint32ToHandle(invalid_handle));
+}
+
+TEST(BaseWinUtilTest, PseudoHandles) {
+  EXPECT_TRUE(IsPseudoHandle(::GetCurrentProcess()));
+  EXPECT_TRUE(IsPseudoHandle(::GetCurrentThread()));
+  EXPECT_FALSE(IsPseudoHandle(nullptr));
 }
 
 TEST(BaseWinUtilTest, WStringFromGUID) {
@@ -128,10 +157,8 @@ TEST(BaseWinUtilTest, IsRunningUnderDesktopName) {
   std::wstring desktop_name = GetWindowObjectName(thread_desktop);
 
   EXPECT_TRUE(IsRunningUnderDesktopName(desktop_name));
-  EXPECT_TRUE(IsRunningUnderDesktopName(
-      AsWString(ToLowerASCII(AsStringPiece16(desktop_name)))));
-  EXPECT_TRUE(IsRunningUnderDesktopName(
-      AsWString(ToUpperASCII(AsStringPiece16(desktop_name)))));
+  EXPECT_TRUE(IsRunningUnderDesktopName(ToLowerASCII(desktop_name)));
+  EXPECT_TRUE(IsRunningUnderDesktopName(ToUpperASCII(desktop_name)));
   EXPECT_FALSE(
       IsRunningUnderDesktopName(desktop_name + L"_non_existent_desktop_name"));
 }
@@ -268,10 +295,10 @@ TEST(GetObjectTypeNameTest, CurrentProcess) {
   ASSERT_EQ(name_or_error.error(), STATUS_INVALID_HANDLE);
 }
 
-TEST(GetObjectTypeNameTest, CrazyHandle) {
-  auto name_or_error = GetObjectTypeName(Uint32ToHandle(0x12345678U));
-  ASSERT_FALSE(name_or_error.has_value());
-  ASSERT_EQ(name_or_error.error(), STATUS_INVALID_HANDLE);
+TEST(GetObjectTypeNameDeathTest, CrazyHandle) {
+  EXPECT_DEATH_IF_SUPPORTED(
+      std::ignore = GetObjectTypeName(Uint32ToHandle(0x12345678U)),
+      "Received fatal exception 0xc0000008");
 }
 
 TEST(GetObjectTypeNameTest, ProcessHandle) {
@@ -279,45 +306,6 @@ TEST(GetObjectTypeNameTest, ProcessHandle) {
   ASSERT_OK_AND_ASSIGN(std::wstring type_name,
                        GetObjectTypeName(this_process.Handle()));
   ASSERT_EQ(type_name, L"Process");
-}
-
-TEST(TakeHandleOfTypeTest, NullHandle) {
-  auto handle_or_error = TakeHandleOfType(kNullProcessHandle, L"Process");
-  ASSERT_FALSE(handle_or_error.has_value());
-  ASSERT_EQ(handle_or_error.error(), STATUS_INVALID_HANDLE);
-}
-
-TEST(TakeHandleOfTypeTest, InvalidHandle) {
-  auto handle_or_error = TakeHandleOfType(INVALID_HANDLE_VALUE, L"Process");
-  ASSERT_FALSE(handle_or_error.has_value());
-  ASSERT_EQ(handle_or_error.error(), STATUS_INVALID_HANDLE);
-}
-
-TEST(TakeHandleOfTypeTest, CurrentProcess) {
-  auto handle_or_error = TakeHandleOfType(::GetCurrentProcess(), L"Process");
-  ASSERT_FALSE(handle_or_error.has_value());
-  ASSERT_EQ(handle_or_error.error(), STATUS_INVALID_HANDLE);
-}
-
-TEST(TakeHandleOfTypeTest, CrazyHandle) {
-  auto handle_or_error =
-      TakeHandleOfType(Uint32ToHandle(0x12345678U), L"Process");
-  ASSERT_FALSE(handle_or_error.has_value());
-  ASSERT_EQ(handle_or_error.error(), STATUS_INVALID_HANDLE);
-}
-
-TEST(TakeHandleOfTypeTest, ValidTypeMatch) {
-  Process this_process = Process::Open(GetCurrentProcId());
-  HANDLE process_handle = this_process.Handle();
-  ASSERT_OK_AND_ASSIGN(ScopedHandle process,
-                       TakeHandleOfType(this_process.Release(), L"Process"));
-  ASSERT_TRUE(process.is_valid());
-  ASSERT_EQ(process.get(), process_handle);
-}
-
-TEST(TakeHandleOfTypeDeathTest, ValidTypeMismatch) {
-  EXPECT_CHECK_DEATH((void)TakeHandleOfType(
-      Process::Open(GetCurrentProcId()).Release(), L"Section"));
 }
 
 TEST(DeviceConvertibilityTest, None) {
@@ -429,6 +417,42 @@ TEST(DeviceConvertibilityTest, DeviceFormAndChassisConvertible) {
   ScopedCOMInitializer com_initializer;
   ASSERT_TRUE(com_initializer.Succeeded());
   EXPECT_FALSE(IsDeviceFormConvertible() || IsChassisConvertible());
+}
+
+TEST(BaseWinUtilTest, GetSerialNumber) {
+  ScopedCOMInitializer com_initializer;
+  ASSERT_OK_AND_ASSIGN(std::wstring serial_number, GetSerialNumber());
+  EXPECT_FALSE(serial_number.empty());
+}
+
+TEST(BaseWinUtilTest, UnicodeStringToView) {
+  UNICODE_STRING nullstr = {};
+  EXPECT_TRUE(UnicodeStringToView(nullstr).empty());
+  TestUnicodeStringToView(L"");
+  TestUnicodeStringToView(L"ThisIsATestString");
+  TestUnicodeStringToView(std::wstring((UINT16_MAX / sizeof(WCHAR)) - 1, L'A'));
+}
+
+TEST(BaseWinUtilTest, ViewToUnicodeString) {
+  TestViewToUnicodeString({});
+  TestViewToUnicodeString(L"");
+  TestViewToUnicodeString(L"ThisIsATestString");
+  std::wstring long_str(UINT16_MAX / sizeof(WCHAR), L'A');
+  TestViewToUnicodeString(long_str);
+  long_str += L"A";
+  UNICODE_STRING invalid = {};
+  EXPECT_FALSE(ViewToUnicodeString(long_str, invalid));
+}
+
+// This policy is set in `TestSuite::Initialize` for all tests so this test
+// checks that it takes effect here.
+TEST(BaseWinUtilTest, StrictHandleChecks) {
+  PROCESS_MITIGATION_STRICT_HANDLE_CHECK_POLICY policy = {};
+  ASSERT_TRUE(::GetProcessMitigationPolicy(::GetCurrentProcess(),
+                                           ProcessStrictHandleCheckPolicy,
+                                           &policy, sizeof(policy)));
+  EXPECT_TRUE(policy.HandleExceptionsPermanentlyEnabled);
+  EXPECT_TRUE(policy.RaiseExceptionOnInvalidHandleReference);
 }
 
 }  // namespace win

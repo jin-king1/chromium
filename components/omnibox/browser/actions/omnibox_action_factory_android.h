@@ -12,6 +12,12 @@
 #include "components/omnibox/browser/actions/omnibox_action.h"
 #include "components/omnibox/browser/actions/omnibox_pedal_concepts.h"
 
+base::android::ScopedJavaGlobalRef<jobject> BuildCrossDeviceTabAction(
+    JNIEnv* env,
+    intptr_t instance,
+    const std::u16string& hint,
+    const std::u16string& accessibility_hint);
+
 base::android::ScopedJavaGlobalRef<jobject> BuildOmniboxPedal(
     JNIEnv* env,
     intptr_t instance,
@@ -26,15 +32,25 @@ base::android::ScopedJavaGlobalRef<jobject> BuildHistoryClustersAction(
     const std::u16string& accessibility_hint,
     const std::string& query);
 
+base::android::ScopedJavaGlobalRef<jobject> BuildSiteSearchAction(
+    JNIEnv* env,
+    intptr_t instance,
+    const std::u16string& hint,
+    const std::u16string& accessibility_hint,
+    const std::u16string& keyword,
+    int starter_pack_id);
+
 base::android::ScopedJavaGlobalRef<jobject> BuildOmniboxActionInSuggest(
     JNIEnv* env,
     intptr_t instance,
     const std::u16string& hint,
     const std::u16string& accessibility_hint,
     int action_type,
-    const std::string& action_uri);
+    const std::string& action_uri,
+    int tab_id,
+    ActionPresentationMode presentation_mode);
 
-base::android::ScopedJavaGlobalRef<jobject> BuildOmniboxAnswerAction(
+base::android::ScopedJavaGlobalRef<jobject> BuildOmniboxLensOverlayAction(
     JNIEnv* env,
     intptr_t instance,
     const std::u16string& hint,

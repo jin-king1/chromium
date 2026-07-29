@@ -17,15 +17,12 @@ import org.junit.runners.Parameterized.UseParametersRunnerFactory;
 
 import org.chromium.android_webview.AwContents;
 import org.chromium.android_webview.AwGeolocationPermissions;
-import org.chromium.android_webview.common.AwFeatures;
 import org.chromium.android_webview.test.TestWebMessageListener.Data;
 import org.chromium.android_webview.test.util.CommonResources;
 import org.chromium.base.ResettersForTesting;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.Feature;
-import org.chromium.base.test.util.Features;
-import org.chromium.content_public.common.ContentFeatures;
 import org.chromium.device.geolocation.LocationProviderOverrider;
 import org.chromium.device.geolocation.MockLocationProvider;
 import org.chromium.net.test.util.TestWebServer;
@@ -40,7 +37,6 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 @RunWith(Parameterized.class)
 @UseParametersRunnerFactory(AwJUnit4ClassRunnerWithParameters.Factory.class)
-@Features.EnableFeatures({ContentFeatures.WEB_PERMISSIONS_API, AwFeatures.WEBVIEW_AUTO_SAA})
 @Batch(Batch.PER_CLASS)
 public class AwPermissionQueryApiTest extends AwParameterizedTest {
 
@@ -48,23 +44,24 @@ public class AwPermissionQueryApiTest extends AwParameterizedTest {
     @SuppressWarnings("InlineFormatString")
     private static final String QUERY_API_PERMISSION =
             """
-          <html>
-          <script>
-          navigator.permissions.query(%s).then((result) => {
-            resultListener.postMessage(result.state);
-          }).catch(e => {
-            if (e instanceof TypeError && e.message.includes("is not enabled")) {
-                resultListener.postMessage("not_enabled");
-            }
-            else if (e instanceof TypeError && e.message.includes("isn't available on Android")) {
-                resultListener.postMessage("not_available");
-            }
-            else {
-                resultListener.postMessage("" + e);
-            }
-          });
-          </script>
-      """;
+                <html>
+                <script>
+                navigator.permissions.query(%s).then((result) => {
+                  resultListener.postMessage(result.state);
+                }).catch(e => {
+                  if (e instanceof TypeError && e.message.includes("is not enabled")) {
+                      resultListener.postMessage("not_enabled");
+                  }
+                  else if (e instanceof TypeError &&
+                           e.message.includes("isn't available on this platform")) {
+                      resultListener.postMessage("not_available");
+                  }
+                  else {
+                      resultListener.postMessage("" + e);
+                  }
+                });
+                </script>
+            """;
 
     /**
      * A page that queries geolocation, asks for a position, and then queries the permission state
@@ -72,32 +69,33 @@ public class AwPermissionQueryApiTest extends AwParameterizedTest {
      */
     private static final String GEOLOCATION_PAGE_HTML =
             """
-        <!DOCTYPE html>
-        <html>
-          <head>
-            <title>Geolocation</title>
-            <script>
-              function gotPos(position) {
-                resultListener.postMessage("position");
-                navigator.permissions.query({"name": "geolocation"}).then((result) => {
+            <!DOCTYPE html>
+            <html>
+              <head>
+                <title>Geolocation</title>
+                <script>
+                  function gotPos(position) {
+                    resultListener.postMessage("position");
+                    navigator.permissions.query({"name": "geolocation"}).then((result) => {
+                        resultListener.postMessage(result.state);
+                    }).catch(e => resultListener.postMessage("" + e));
+                  }
+                  function errorCallback(error){
+                    resultListener.postMessage("" + error);
+                  }
+                  function initiate_getCurrentPosition() {
+                    navigator.geolocation.getCurrentPosition(gotPos, errorCallback, { });
+                  }
+                  navigator.permissions.query({"name": "geolocation"}).then((result) => {
                     resultListener.postMessage(result.state);
-                }).catch(e => resultListener.postMessage("" + e));
-              }
-              function errorCallback(error){
-                resultListener.postMessage("" + error);
-              }
-              function initiate_getCurrentPosition() {
-                navigator.geolocation.getCurrentPosition(gotPos, errorCallback, { });
-              }
-              navigator.permissions.query({"name": "geolocation"}).then((result) => {
-                resultListener.postMessage(result.state);
-                initiate_getCurrentPosition();
-              }).catch(e => resultListener.postMessage("" + e));
-            </script>
-          </head>
-          <body>
-          </body>
-        </html>""";
+                    initiate_getCurrentPosition();
+                  }).catch(e => resultListener.postMessage("" + e));
+                </script>
+              </head>
+              <body>
+              </body>
+            </html>
+            """;
 
     @Rule public AwActivityTestRule mActivityTestRule;
 
@@ -191,12 +189,6 @@ public class AwPermissionQueryApiTest extends AwParameterizedTest {
         runTestCase("geolocation", "prompt");
         runTestCase("microphone", "prompt");
         runTestCase("midi-sysex", "prompt", "{\"name\": \"midi\", \"sysex\": true}");
-        runTestCase("storage-access", "prompt");
-        runTestCase(
-                "top-level-storage-access",
-                "prompt",
-                "{\"name\": \"top-level-storage-access\", \"requestedOrigin\":"
-                        + " \"https://example.com\"}");
     }
 
     @Test
@@ -222,6 +214,12 @@ public class AwPermissionQueryApiTest extends AwParameterizedTest {
                 "fullscreen",
                 "denied",
                 "{\"name\": \"fullscreen\", \"allowWithoutGesture\": true}");
+        runTestCase("storage-access", "denied");
+        runTestCase(
+                "top-level-storage-access",
+                "denied",
+                "{\"name\": \"top-level-storage-access\", \"requestedOrigin\":"
+                        + " \"https://example.com\"}");
     }
 
     @Test

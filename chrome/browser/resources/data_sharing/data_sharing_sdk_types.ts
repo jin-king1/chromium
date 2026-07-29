@@ -128,6 +128,7 @@ export const enum StaticMessageKey {
   GROUP_FULL_TITLE,
   GROUP_FULL_CONTENT,
   YOUR_GROUP_IS_FULL_DESCRIPTION,
+  SHARING_DISABLED_DESCRIPTION,
   ACTIVITY_LOGS,
 
   CLOSE_FLOW_HEADER,
@@ -175,6 +176,7 @@ export declare interface DataSharingSdkGroupData {
   displayName?: string;
   accessToken?: string;
   consistencyToken?: string;
+  serializedCollaborationGroupMetadata?: string;
 }
 export declare type DataSharingMemberRole =
     | 'unknown' | 'member' | 'owner' | 'invitee' | 'former_member';
@@ -192,9 +194,12 @@ export declare interface DataSharingSdkGroupMember {
   role: DataSharingMemberRole;
   avatarUrl: string;
   givenName: string;
+  createdAtTimeMs: number;
+  lastUpdatedAtTimeMs: number;
 }
 export declare interface CreateGroupParams {
   displayName: string;
+  serializedCollaborationGroupMetadata?: string;
 }
 export declare interface CreateGroupResult {
   groupData: DataSharingSdkGroupData;
@@ -202,6 +207,12 @@ export declare interface CreateGroupResult {
 export declare interface ReadGroupParams {
   groupId: string;
   consistencyToken?: string;
+}
+export declare interface ReadGroupOptions {
+  accessToken?: string;
+}
+export declare interface ReadGroupResult {
+  groupData: DataSharingSdkGroupData;
 }
 export declare interface ReadGroupsParams {
   params: ReadGroupParams[];
@@ -242,6 +253,7 @@ export const enum LoggingIntent {
   ACCEPT_JOIN_AND_OPEN = 13,
   ABANDON_JOIN = 14,
   KEEP_GROUP = 15,
+  DELETE_GROUP = 16,
 }
 export const enum Progress {
   UNKNOWN = 0,
@@ -262,7 +274,7 @@ export declare interface RunJoinFlowParams extends DataSharingSdkGroupId {
   parent: HTMLElement;
   translatedMessages: TranslationMap;
   learnMoreUrlMap: {[type in LearnMoreUrlType]?: () => string};
-  onJoinSuccessful: () => void;
+  onJoinSuccessful: () => void | Promise<void>;
   fetchPreviewData: () => Promise<DataSharingSdkSitePreview[]>;
   logger?: Logger;
 }
@@ -273,6 +285,7 @@ export declare interface RunInviteFlowParams {
   translatedMessages: TranslationMap;
   learnMoreUrlMap: {[type in LearnMoreUrlType]?: () => string};
   logger?: Logger;
+  serializedCollaborationGroupMetadata?: string;
 }
 export declare interface RunManageFlowParams extends DataSharingSdkGroupId {
   parent: HTMLElement;
@@ -282,6 +295,7 @@ export declare interface RunManageFlowParams extends DataSharingSdkGroupId {
   activityLogCallback?: () => void;
   logger?: Logger;
   showLeaveDialogAtStartup?: boolean;
+  isSharingDisabled?: boolean;
 }
 export declare interface RunCloseFlowParams extends DataSharingSdkGroupId {
   parent: HTMLElement;
@@ -297,6 +311,10 @@ export declare interface DataSharingSdk {
   createGroup(
       params: CreateGroupParams,
       ): Promise<{result?: CreateGroupResult; status: Code}>;
+  readGroup(
+      params: ReadGroupParams,
+      options?: ReadGroupOptions,
+      ): Promise<{result?: ReadGroupResult; status: Code}>;
   readGroups(
       params: ReadGroupsParams,
       ): Promise<{result?: ReadGroupsResult; status: Code}>;
@@ -313,6 +331,10 @@ export declare interface DataSharingSdk {
   runDeleteFlow(params: RunDeleteFlowParams): Promise<DataSharingSdkResponse>;
   setOauthAccessToken(params: {accessToken: string}): void;
   updateClearcut(params: {enabled: boolean}): void;
+  setClientVersionAndResetPeopleStore(
+      versionString: string,
+      baselineCl: number,
+      ): void;
 }
 declare global {
   interface Window {

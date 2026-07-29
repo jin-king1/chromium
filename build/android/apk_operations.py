@@ -21,6 +21,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import zipfile
 
 import adb_command_line
@@ -53,13 +54,22 @@ with devil_env.SysPath(
     os.path.join(_DIR_SOURCE_ROOT, 'build', 'android', 'gyp')):
   import bundletool
 
+with devil_env.SysPath(os.path.join(_DIR_SOURCE_ROOT, 'build', 'util')):
+  import android_chrome_version
+
 BASE_MODULE = 'base'
+
+# These need to be in order of low to high.
+LOGCAT_LEVELS = "VDIWEF"
+
+
+def _IsTrichrome():
+  calling_script_name = os.path.basename(sys.argv[0])
+  return 'trichrome' in calling_script_name
 
 
 def _Colorize(text, style=''):
-  return (style
-      + text
-      + colorama.Style.RESET_ALL)
+  return style + text + colorama.Style.RESET_ALL
 
 
 def _InstallApk(devices, apk, install_dict):
@@ -190,7 +200,11 @@ def _NormalizeProcessName(debug_process_name, package_name):
   return debug_process_name
 
 
-def _ResolveActivity(device, package_name, category, action):
+def _ResolveActivity(device,
+                     package_name,
+                     category,
+                     action,
+                     preferred_activity=None):
   # E.g.:
   # Activity Resolver Table:
   #   Schemes:
@@ -219,7 +233,7 @@ def _ResolveActivity(device, package_name, category, action):
     raise Exception('No Activity Resolver Table in:\n' + '\n'.join(lines))
   line_count = next(i for i, l in enumerate(lines[start_idx + 1:])
                     if l and not l[0].isspace())
-  data = '\n'.join(lines[start_idx:start_idx + line_count])
+  data = '\n'.join(lines[start_idx:start_idx + 1 + line_count])
 
   # Split on each Activity entry.
   entries = re.split(r'^        [0-9a-f]+ ', data, flags=re.MULTILINE)
@@ -242,7 +256,7 @@ def _ResolveActivity(device, package_name, category, action):
     raise Exception(f'Did not find {category_text}, {action_text} in\n{data}')
   if len(matched_entries) > 1:
     # When there are multiple matches, look for the one marked as default.
-    # Necessary for Monochrome, which also has MonochromeLauncherActivity.
+    # Added for Monochrome.
     default_entries = [
         e for e in matched_entries if 'android.intent.category.DEFAULT' in e
     ]
@@ -252,6 +266,22 @@ def _ResolveActivity(device, package_name, category, action):
   activity_names = {activity_name_from_entry(e) for e in matched_entries}
 
   if len(activity_names) > 1:
+    # If a preferred activity is specified, try to use it
+    if preferred_activity and preferred_activity in activity_names:
+      return preferred_activity
+
+    # If no preferred activity is specified, try to find the main activity
+    main_activity = None
+    for activity in activity_names:
+      # Look for the activity that ends with exactly ".Main"
+      # (not ".Main1", ".Main2", etc.)
+      if activity.endswith('.Main'):
+        main_activity = activity
+        break
+
+    if main_activity:
+      return main_activity
+
     raise Exception('Found multiple launcher activities:\n * ' +
                     '\n * '.join(sorted(activity_names)))
   return next(iter(activity_names))
@@ -307,7 +337,8 @@ def _LaunchUrl(devices,
                url=None,
                wait_for_java_debugger=False,
                debug_process_name=None,
-               nokill=None):
+               nokill=None,
+               preferred_activity=None):
   if argv and command_line_flags_file is None:
     raise Exception('This apk does not support any flags.')
 
@@ -321,7 +352,8 @@ def _LaunchUrl(devices,
     action = 'android.intent.action.VIEW'
 
   def launch(device):
-    activity = _ResolveActivity(device, package_name, category, action)
+    activity = _ResolveActivity(device, package_name, category, action,
+                                preferred_activity)
     # --persistent is required to have Settings.Global.DEBUG_APP be set, which
     # we currently use to allow reading of flags. https://crbug.com/784947
     if not nokill:
@@ -446,6 +478,68 @@ def _PrintPerDeviceOutput(devices, results, single_line=False):
     yield result
 
 
+def _ParseMeminfo(usage):
+  """Parses dumpsys meminfo output.
+
+  Returns:
+    A dict containing parsed PSS, USS, and individual App Summary metrics,
+    or None if parsing failed.
+  """
+  match = re.search(r'^\s+TOTAL\s+(\d+)\s+(\d+)\s+(\d+)', usage, re.MULTILINE)
+  if not match:
+    return None
+
+  pss = int(match.group(1))
+  dirty = int(match.group(2))
+  clean = int(match.group(3))
+  uss = dirty + clean
+
+  metrics = {
+      'Java Heap': 0,
+      'Native Heap': 0,
+      'Code': 0,
+      'Stack': 0,
+      'Graphics': 0,
+      'Private Other': 0,
+      'System': 0,
+  }
+  for metric in metrics:
+    match_metric = re.search(r'^\s+' + metric + r':\s+(\d+)', usage,
+                             re.MULTILINE)
+    if match_metric:
+      metrics[metric] = int(match_metric.group(1))
+
+  return {
+      'pss': pss,
+      'uss': uss,
+      'metrics': metrics,
+  }
+
+
+def _PrintMemUsageSummary(num_processes, total_pss, total_uss, summary_metrics):
+  print(_Colorize('==== MEMORY USAGE SUMMARY ====', colorama.Fore.YELLOW))
+  print('Number of processes: %d' % num_processes)
+  print('Total PSS: %d KB (%.1f MB)' % (total_pss, total_pss / 1024.0))
+  print('Total USS (private clean+dirty): %d KB (%.1f MB)' %
+        (total_uss, total_uss / 1024.0))
+  print('\nApp Summary Totals (PSS):')
+
+  mmap_val = summary_metrics.get('Code', 0) + summary_metrics.get('System', 0)
+
+  # The App Summary's "Code" value actually only reports private memory
+  # for code/resources, and the "System" bucket was capturing PSS of
+  # shared code.
+  # Combining Code & System in the final summary makes more sense, since
+  # this is the "memory from mmap'ed files".
+  for metric, value in summary_metrics.items():
+    if metric in ('Code', 'System'):
+      continue
+    print('  %-20s: %d KB (%.1f MB)' % (metric, value, value / 1024.0))
+
+  print('  %-20s: %d KB (%.1f MB)' %
+        ('mmap (Code+System)', mmap_val, mmap_val / 1024.0))
+
+
 def _RunMemUsage(devices, package_name, query_app=False):
   cmd_args = ['dumpsys', 'meminfo']
   if not query_app:
@@ -455,7 +549,7 @@ def _RunMemUsage(devices, package_name, query_app=False):
     ret = []
     for process in sorted(_GetPackageProcesses(d, package_name)):
       meminfo = d.RunShellCommand(cmd_args + [str(process.pid)])
-      ret.append((process.name, '\n'.join(meminfo)))
+      ret.append((process.name, process.pid, '\n'.join(meminfo)))
     return ret
 
   parallel_devices = device_utils.DeviceUtils.parallel(devices)
@@ -464,10 +558,39 @@ def _RunMemUsage(devices, package_name, query_app=False):
     if not result:
       print('No processes found.')
     else:
-      for name, usage in sorted(result):
+      total_pss = 0
+      total_uss = 0
+      num_processes = 0
+      summary_metrics = {
+          'Java Heap': 0,
+          'Native Heap': 0,
+          'Code': 0,
+          'Stack': 0,
+          'Graphics': 0,
+          'Private Other': 0,
+          'System': 0,
+      }
+      for name, pid, usage in sorted(result):
         print(_Colorize('==== Output of "dumpsys meminfo %s" ====' % name,
                         colorama.Fore.GREEN))
+        if 'MEMINFO in pid' not in usage:
+          # dumpsys meminfo prints the pids for java processes, but not for
+          # native ones. Add it in since it can be helpful.
+          print('Native Process PID=%d' % pid)
         print(usage)
+        parsed = _ParseMeminfo(usage)
+        if parsed:
+          total_pss += parsed['pss']
+          total_uss += parsed['uss']
+          num_processes += 1
+          for metric in summary_metrics:
+            summary_metrics[metric] += parsed['metrics'][metric]
+        else:
+          logging.warning('Could not parse memory usage for %s', name)
+
+      if num_processes > 0:
+        _PrintMemUsageSummary(num_processes, total_pss, total_uss,
+                              summary_metrics)
 
 
 def _DuHelper(device, path_spec, run_as=None):
@@ -682,10 +805,11 @@ class _LogcatProcessor:
     # E.g.: #01 pc 00180c8d  /data/data/.../lib/libbase.cr.so
     _STACK_PATTERN = re.compile(r'\s*#\d+\s+(?:pc )?(0x)?[0-9a-f]{8,16}\s')
 
-    def __init__(self, stack_script_context, print_func):
+    def __init__(self, stack_script_context, print_func, on_stack_func):
       # To symbolize native stacks, we need to pass all lines at once.
       self._stack_script_context = stack_script_context
       self._print_func = print_func
+      self._on_stack_func = on_stack_func
       self._crash_lines_buffer = None
 
     def _FlushLines(self):
@@ -708,6 +832,7 @@ class _LogcatProcessor:
         d['message'] = line
         parsed_line = _LogcatProcessor.ParsedLine(**d)
         self._print_func(parsed_line, dim)
+      self._on_stack_func()
 
     def AddLine(self, parsed_line, dim):
       # Assume all lines from DEBUG are stacks.
@@ -736,6 +861,7 @@ class _LogcatProcessor:
       'AndroidRuntime',  # Java crash dumps
       'AppZygoteInit',  # Android's native application zygote support.
       'DEBUG',  # Native crash dump.
+      'cr_wrap.sh',  # Logs from wrap.sh scripts embedded in apks.
   }
 
   # Matches messages only on pre-L (Dalvik) that are spammy and unimportant.
@@ -760,6 +886,8 @@ class _LogcatProcessor:
                deobfuscate=None,
                verbose=False,
                exit_on_match=None,
+               filter_regex=None,
+               log_level="V",
                extra_package_names=None):
     self._device = device
     self._package_name = package_name
@@ -771,15 +899,20 @@ class _LogcatProcessor:
     else:
       self._exit_on_match = None
     self._found_exit_match = False
+    self._filter = re.compile(filter_regex) if filter_regex else None
+    self._log_level_idx = LOGCAT_LEVELS.find(log_level)
     if stack_script_context:
       self._print_func = _LogcatProcessor.NativeStackSymbolizer(
-          stack_script_context, self._PrintParsedLine).AddLine
+          stack_script_context, self._PrintParsedLine,
+          self._UpdateStackSeenTime).AddLine
     else:
       self._print_func = self._PrintParsedLine
     # Process ID for the app's main process (with no :name suffix).
     self._primary_pid = None
-    # Set of all Process IDs that belong to the app.
+    # Set of Process IDs that have ever belonged to the app.
     self._my_pids = set()
+    # Subset of _my_pids that are still alive.
+    self._active_pids = set()
     # Set of all Process IDs that we've parsed at some point.
     self._seen_pids = set()
     # Start proc 22953:com.google.chromeremotedesktop/
@@ -792,11 +925,12 @@ class _LogcatProcessor:
     self.nonce = 'Chromium apk_operations.py nonce={}'.format(random.random())
     # Holds lines buffered on start-up, before we find our nonce message.
     self._initial_buffered_lines = []
-    self._UpdateMyPids()
+    self.UpdateMyPids()
     # Give preference to PID reported by "ps" over those found from
     # _start_pattern. There can be multiple "Start proc" messages from prior
     # runs of the app.
     self._found_initial_pid = self._primary_pid is not None
+    self.last_stack_seen_time = None
     # Retrieve any additional patterns that are relevant for the User.
     self._user_defined_highlight = None
     user_regex = os.environ.get('CHROMIUM_LOGCAT_HIGHLIGHT')
@@ -807,11 +941,21 @@ class _LogcatProcessor:
             'Rejecting invalid regular expression: {}'.format(user_regex),
             colorama.Fore.RED + colorama.Style.BRIGHT))
 
-  def _UpdateMyPids(self):
+  def FoundNonce(self):
+    return self.nonce is None
+
+  def HasOwnedPids(self):
+    return bool(self._my_pids)
+
+  def HasActivePids(self):
+    return bool(self._active_pids)
+
+  def UpdateMyPids(self):
     # We intentionally do not clear self._my_pids to make sure that the
     # ProcessLine method below also includes lines from processes which may
     # have already exited.
     self._primary_pid = None
+    current_pids = set()
     for package_name in [self._package_name] + self._extra_package_names:
       for process in _GetPackageProcesses(self._device, package_name):
         # We take only the first "main" process found in order to account for
@@ -819,6 +963,11 @@ class _LogcatProcessor:
         if ':' not in process.name and self._primary_pid is None:
           self._primary_pid = process.pid
         self._my_pids.add(process.pid)
+        current_pids.add(process.pid)
+    self._active_pids = current_pids
+
+  def _UpdateStackSeenTime(self):
+    self.last_stack_seen_time = time.time()
 
   def _GetPidStyle(self, pid, dim=False):
     if pid == self._primary_pid:
@@ -846,7 +995,7 @@ class _LogcatProcessor:
     return style
 
   def _ParseLine(self, line):
-    tokens = line.split(None, 6)
+    tokens = line.split(None, 5)
 
     def consume_token_or_default(default):
       return tokens.pop(0) if len(tokens) > 0 else default
@@ -865,22 +1014,30 @@ class _LogcatProcessor:
     pid = consume_integer_token_or_default(-1)
     tid = consume_integer_token_or_default(-1)
     priority = consume_token_or_default('')
-    tag = consume_token_or_default('')
-    original_message = consume_token_or_default('')
+    tag_and_message = consume_token_or_default('')
 
     # Example:
     #   09-19 06:35:51.113  9060  9154 W GCoreFlp: No location...
     #   09-19 06:01:26.174  9060 10617 I Auth    : [ReflectiveChannelBinder]...
     # Parsing "GCoreFlp:" vs "Auth    :", we only want tag to contain the word,
     # and we don't want to keep the colon for the message.
-    if tag and tag[-1] == ':':
-      tag = tag[:-1]
-    elif len(original_message) > 2:
-      original_message = original_message[2:]
+    colon_index = tag_and_message.find(':')
+    if colon_index != -1:
+      tag = tag_and_message[:colon_index].strip()
+      original_message = tag_and_message[colon_index + 1:].strip()
+    else:
+      tag = tag_and_message.strip()
+      original_message = ''
+
     return self.ParsedLine(
         date, invokation_time, pid, tid, priority, tag, original_message)
 
   def _PrintParsedLine(self, parsed_line, dim=False):
+    if LOGCAT_LEVELS.find(parsed_line.priority) < self._log_level_idx:
+      return
+    if self._filter and not (self._filter.search(parsed_line.tag)
+                             or self._filter.search(parsed_line.message)):
+      return
     if self._exit_on_match and self._exit_on_match.search(parsed_line.message):
       self._found_exit_match = True
 
@@ -904,7 +1061,9 @@ class _LogcatProcessor:
                          self._GetPriorityStyle(parsed_line.priority))
     messages = [parsed_line.message]
     if self._deobfuscator:
-      messages = self._deobfuscator.TransformLines(messages)
+      new_messages = self._deobfuscator.TransformLines(messages)
+      if new_messages != messages:
+        self._UpdateStackSeenTime()
     for message in messages:
       message = _Colorize(message, msg_style)
       sys.stdout.write('{} {} {} {} {} {}: {}\n'.format(
@@ -927,17 +1086,18 @@ class _LogcatProcessor:
     if not line or line.startswith('------'):
       return
 
-    if self.nonce and self.nonce in line:
+    nonce_found = self.FoundNonce()
+    if not nonce_found and self.nonce in line:
+      nonce_found = True
       self._TriggerNonceFound()
 
-    nonce_found = self.nonce is None
 
     log = self._ParseLine(line)
     if log.pid not in self._seen_pids:
       self._seen_pids.add(log.pid)
       if nonce_found:
         # Update list of owned PIDs each time a new PID is encountered.
-        self._UpdateMyPids()
+        self.UpdateMyPids()
 
     # Search for "Start proc $pid:$package_name/" message.
     if not nonce_found:
@@ -963,6 +1123,10 @@ class _LogcatProcessor:
       if self._DALVIK_IGNORE_PATTERN.match(log.message):
         return
 
+    if log.tag == 'ActivityManager' and 'has died' in log.message:
+      if m := re.search(r'\(pid (\d+)\)', log.message):
+        self._active_pids.discard(int(m.group(1)))
+
     if owned_pid or self._verbose or (log.priority == 'F' or  # Java crash dump
                                       log.tag in self._ALLOWLISTED_TAGS):
       if nonce_found:
@@ -977,25 +1141,60 @@ def _RunLogcat(device,
                deobfuscate,
                verbose,
                exit_on_match=None,
-               extra_package_names=None):
+               filter_regex=None,
+               log_level="V",
+               extra_package_names=None,
+               forever=False,
+               timeout=None):
   logcat_processor = _LogcatProcessor(device,
                                       package_name,
                                       stack_script_context,
                                       deobfuscate,
                                       verbose,
+                                      filter_regex=filter_regex,
+                                      log_level=log_level,
                                       exit_on_match=exit_on_match,
                                       extra_package_names=extra_package_names)
   device.RunShellCommand(['log', logcat_processor.nonce])
-  for line in device.adb.Logcat(logcat_format='threadtime'):
+
+  dead_since = None
+  last_pid_refresh = None
+  start_time = time.time()
+
+  for line in device.adb.Logcat(logcat_format='threadtime', iter_timeout=1):
     try:
-      logcat_processor.ProcessLine(line)
-      if logcat_processor.FoundExitMatch():
+      now = time.time()
+      if timeout is not None and now - start_time >= timeout:
+        print(f'Stopping logcat because timeout of {timeout}s was reached.')
         return
+
+      if line is not None:
+        logcat_processor.ProcessLine(line)
+        if logcat_processor.FoundExitMatch():
+          return
+
+      if logcat_processor.FoundNonce():
+        if last_pid_refresh is None:
+          last_pid_refresh = now
+        elif now - last_pid_refresh > 1.0:
+          logcat_processor.UpdateMyPids()
+          last_pid_refresh = now
+
+        if logcat_processor.HasActivePids():
+          dead_since = None
+        elif not forever and logcat_processor.HasOwnedPids():
+          if dead_since is None:
+            dead_since = time.time()
+          elif now - max(dead_since, logcat_processor.last_stack_seen_time
+                         or 0) >= 1.0:
+            print('Stopping logcat because the process stopped.'
+                  ' Use --forever to prevent this.')
+            return
     except:
-      sys.stderr.write('Failed to process line: ' + line + '\n')
+      sys.stderr.write(f'Failed to process line: {line}\n')
       # Skip stack trace for the common case of the adb server being
       # restarted.
-      if 'unexpected EOF' in line:
+      if line is not None and 'unexpected EOF' in line:
         sys.exit(1)
       raise
 
@@ -1291,8 +1490,25 @@ class _Command:
       # Adding this argument to the subparser would override the set_defaults()
       # value set by on the parent parser (even if None).
       if not self._from_wrapper_script and not self.is_bundle:
+        path_group = group.add_mutually_exclusive_group(
+            required=self.needs_apk_helper)
+        path_group.add_argument('--apk-path', help='Path to .apk')
+        path_group.add_argument('--bundle-path', help='Path to .aab')
+        group.add_argument('--keystore-path',
+                           default=os.path.join(_DIR_SOURCE_ROOT, 'build',
+                                                'android',
+                                                'chromium-debug.keystore'),
+                           help='Path to keystore for signing bundles.')
+        group.add_argument('--keystore-password',
+                           default='android',
+                           help='Password for the keystore.')
+        group.add_argument('--keystore-alias',
+                           default='androiddebugkey',
+                           help='Alias for the key in the keystore.')
         group.add_argument(
-            '--apk-path', required=self.needs_apk_helper, help='Path to .apk')
+            '--aapt2-path',
+            help=
+            'Path to aapt2 executable. If not specified, will try to find it.')
 
     if self.supports_incremental:
       group.add_argument('--incremental',
@@ -1327,6 +1543,19 @@ class _Command:
     if self.apk_helper is None:
       if args.apk_path:
         self.apk_helper = apk_helper.ToHelper(args.apk_path)
+      elif getattr(args, 'bundle_path', None):
+        aapt2_path = args.aapt2_path or build_tools.GetPath('aapt2')
+        bundle_apks_path = os.path.splitext(args.bundle_path)[0] + '.apks'
+        self.bundle_generation_info = BundleGenerationInfo(
+            bundle_path=args.bundle_path,
+            bundle_apks_path=bundle_apks_path,
+            aapt2_path=aapt2_path,
+            keystore_path=args.keystore_path,
+            keystore_password=args.keystore_password,
+            keystore_alias=args.keystore_alias,
+            system_image_locales=None)
+        _GenerateBundleApks(self.bundle_generation_info)
+        self.apk_helper = apk_helper.ToHelper(bundle_apks_path)
       elif incremental_apk_path:
         self.install_dict = install_dict
         self.apk_helper = apk_helper.ToHelper(incremental_apk_path)
@@ -1344,8 +1573,7 @@ class _Command:
   def _FindSupportedDevices(self, devices):
     """Returns supported devices and reasons for each not supported one."""
     app_abis = self.apk_helper.GetAbis()
-    calling_script_name = os.path.basename(sys.argv[0])
-    is_webview = 'webview' in calling_script_name
+    is_webview = _IsWebViewProvider(self.apk_helper)
     requires_32_bit = self.apk_helper.Get32BitAbiOverride() == '0xffffffff'
     logging.debug('App supports (requires 32bit: %r, is webview: %r): %r',
                   requires_32_bit, is_webview, app_abis)
@@ -1374,6 +1602,21 @@ class _Command:
 
       if any(abi in app_abis for abi in device_abis):
         fully_supported.append(device)
+        if is_webview:
+          # Just ignore the "armeabi" arch if present in abis supported by the
+          # device. WebView do not support "armeabi".
+          missing_app_abis = [
+              abi for abi in device_abis
+              if abi not in app_abis and abi != 'armeabi'
+          ]
+          if missing_app_abis:
+            logging.warning(
+                'WARNING: Using a webview that supports only %s on a device '
+                'that supports %s.\nYou may need to use a build target '
+                'supporting multiple abis (e.g. trichrome_webview_64_32_apk) '
+                'and set GN arg:\n\n'
+                '    enable_android_secondary_abi=true\n', ','.join(app_abis),
+                ','.join(device_abis))
       else:  # No common supported ABIs between the device and app.
         if device_primary_abi == 'x86':
           target_cpu = 'x86'
@@ -1401,6 +1644,11 @@ class _Command:
     # always added when not using wrapper scripts.
     args.__dict__.setdefault('apk_path', None)
     args.__dict__.setdefault('incremental_json', None)
+    args.__dict__.setdefault('bundle_path', None)
+    args.__dict__.setdefault('keystore_path', None)
+    args.__dict__.setdefault('keystore_password', None)
+    args.__dict__.setdefault('keystore_alias', None)
+    args.__dict__.setdefault('aapt2_path', None)
 
     self.incremental_apk_path = None
     install_dict = None
@@ -1522,6 +1770,20 @@ class _PackageInfoCommand(_Command):
     print('targetSdkVersion: %s' % self.apk_helper.GetTargetSdkVersion())
     print('Supported ABIs: %r' % self.apk_helper.GetAbis())
 
+    if len(str(self.apk_helper.GetVersionCode())) == 9:
+      # android_chrome_version expects Trichrome to be is_webview=False, even if
+      # this is TrichromeWebView.
+      is_webview = (_IsWebViewProvider(self.apk_helper) and not _IsTrichrome())
+      x = android_chrome_version.TranslateVersionCode(
+          str(self.apk_helper.GetVersionCode()), is_webview)
+      print(f'Decoded versionCode: build_number={x.build_number} '
+            f'patch_number={x.patch_number} sku={x.package_name} abi={x.abi}')
+    else:
+      # This does not follow the chromium versionCode scheme. This might be a
+      # test APK, a utiltiy APK (like WebView shell browser), or it could just
+      # be any other non-chromium APK.
+      print('Decoded versionCode: N/A')
+
 
 class _InstallCommand(_Command):
   name = 'install'
@@ -1618,11 +1880,18 @@ class _LaunchCommand(_Command):
                        help='Do not set the debug-app, nor set command-line '
                             'flags. Useful to load a URL without having the '
                              'app restart.')
+    group.add_argument('--preferred-activity',
+                       help='Preferred activity to launch when multiple '
+                            'launcher activities are available.')
     group.add_argument('url', nargs='?', help='A URL to launch with.')
 
   def Run(self):
     if self.is_test_apk:
       raise Exception('Use the bin/run_* scripts to run test apks.')
+    if self.args.wait_for_java_debugger:
+      if self.apk_helper and not self.apk_helper.GetIsDebuggable():
+        raise Exception('Passed --wait-for-java-debugger flag but did not set '
+                        'debuggable_apks = true in GN args')
     _LaunchUrl(self.devices,
                self.args.package_name,
                argv=self.args.args,
@@ -1630,7 +1899,8 @@ class _LaunchCommand(_Command):
                url=self.args.url,
                wait_for_java_debugger=self.args.wait_for_java_debugger,
                debug_process_name=self.args.debug_process_name,
-               nokill=self.args.nokill)
+               nokill=self.args.nokill,
+               preferred_activity=self.args.preferred_activity)
 
 
 class _StopCommand(_Command):
@@ -1808,14 +2078,30 @@ To disable filtering, (but keep coloring), use --verbose.
       for additional_apk_helper in self.additional_apk_helpers:
         extra_package_names.append(additional_apk_helper.GetPackageName())
 
+    exit_on_match = self.args.exit_on_match
+    if self.args.exit_on_crash:
+      if exit_on_match:
+        exit_on_match += '|'
+      else:
+        exit_on_match = ''
+
+      all_packages_names = [self.args.package_name] + extra_package_names
+      pkg = '(?:' + '|'.join(re.escape(n) for n in all_packages_names) + ')'
+      exit_on_match += (f'Fatal signal.*{pkg}|'
+                        f'App crashed.*{pkg}|'
+                        f'Force stopping.*{pkg}')
     try:
       _RunLogcat(self.devices[0],
                  self.args.package_name,
                  stack_script_context,
                  deobfuscate,
                  bool(self.args.verbose_count),
-                 self.args.exit_on_match,
-                 extra_package_names=extra_package_names)
+                 exit_on_match=exit_on_match,
+                 filter_regex=self.args.filter,
+                 log_level=self.args.log_level,
+                 extra_package_names=extra_package_names,
+                 forever=self.args.forever,
+                 timeout=self.args.timeout)
     except KeyboardInterrupt:
       pass  # Don't show stack trace upon Ctrl-C
     finally:
@@ -1834,6 +2120,20 @@ To disable filtering, (but keep coloring), use --verbose.
           help='Path to ProGuard map (enables deobfuscation)')
     group.add_argument('--exit-on-match',
                        help='Exits logcat when a message matches this regex.')
+    group.add_argument('--forever',
+                       action='store_true',
+                       help='Do not exit when the process stops.')
+    group.add_argument('--timeout',
+                       type=float,
+                       help='Exit logcat after this many seconds.')
+    group.add_argument('--exit-on-crash',
+                       action='store_true',
+                       help='Exit logcat after any owned processes crash.')
+    group.add_argument("--log-level",
+                       choices=list(LOGCAT_LEVELS),
+                       default="V",
+                       help="Minimum log level.")
+    group.add_argument("--filter", help="Regex to filter logcat output.")
 
 
 class _PsCommand(_Command):

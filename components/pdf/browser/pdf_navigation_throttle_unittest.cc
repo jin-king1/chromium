@@ -10,12 +10,15 @@
 #include "base/location.h"
 #include "base/run_loop.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/test/scoped_feature_list.h"
 #include "components/pdf/browser/fake_pdf_stream_delegate.h"
 #include "components/pdf/browser/pdf_stream_delegate.h"
 #include "content/public/browser/navigation_throttle.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/common/content_features.h"
 #include "content/public/test/mock_navigation_handle.h"
+#include "content/public/test/mock_navigation_throttle_registry.h"
 #include "content/public/test/mock_web_contents_observer.h"
 #include "content/public/test/navigation_simulator.h"
 #include "content/public/test/test_renderer_host.h"
@@ -41,8 +44,9 @@ class PdfNavigationThrottleTest : public content::RenderViewHostTestHarness {
         ->AppendChild("subframe");
   }
 
-  void InitializeNavigationHandle(const GURL& url,
-                                  content::RenderFrameHost* render_frame_host) {
+  void InitializeNavigationHandleAndRegistry(
+      const GURL& url,
+      content::RenderFrameHost* render_frame_host) {
     navigation_handle_ =
         std::make_unique<NiceMock<content::MockNavigationHandle>>(
             url, render_frame_host);
@@ -50,13 +54,18 @@ class PdfNavigationThrottleTest : public content::RenderViewHostTestHarness {
         render_frame_host->GetLastCommittedOrigin());
     navigation_handle_->set_source_site_instance(
         render_frame_host->GetSiteInstance());
+
+    navigation_registry_ =
+        std::make_unique<NiceMock<content::MockNavigationThrottleRegistry>>(
+            navigation_handle_.get(),
+            content::MockNavigationThrottleRegistry::RegistrationMode::kHold);
   }
 
   std::unique_ptr<PdfNavigationThrottle> CreateNavigationThrottle(
       const GURL& url,
       content::RenderFrameHost* frame) {
-    InitializeNavigationHandle(url, frame);
-    return std::make_unique<PdfNavigationThrottle>(navigation_handle_.get(),
+    InitializeNavigationHandleAndRegistry(url, frame);
+    return std::make_unique<PdfNavigationThrottle>(*navigation_registry_.get(),
                                                    std::move(stream_delegate_));
   }
 
@@ -72,6 +81,8 @@ class PdfNavigationThrottleTest : public content::RenderViewHostTestHarness {
       std::make_unique<FakePdfStreamDelegate>();
 
   std::unique_ptr<NiceMock<content::MockNavigationHandle>> navigation_handle_;
+  std::unique_ptr<NiceMock<content::MockNavigationThrottleRegistry>>
+      navigation_registry_;
 };
 
 }  // namespace
@@ -142,11 +153,21 @@ TEST_F(PdfNavigationThrottleTest,
             navigation_throttle->WillStartRequest().action());
 }
 
+TEST_F(PdfNavigationThrottleTest,
+       WillStartRequestShouldAllowPdfExtensionFrameNavigationFalse) {
+  stream_delegate_->clear_stream_info();
+  stream_delegate_->set_should_allow_pdf_extension_frame_navigation(false);
+  auto navigation_throttle = CreateNavigationThrottle(stream_url(), main_rfh());
+  EXPECT_EQ(content::NavigationThrottle::BLOCK_REQUEST,
+            navigation_throttle->WillStartRequest().action());
+}
+
 TEST_F(PdfNavigationThrottleTest, WillStartRequestOtherUrl) {
   auto navigation_throttle = CreateNavigationThrottle(
       GURL("https://example.test"), CreateChildFrame());
   EXPECT_EQ(content::NavigationThrottle::PROCEED,
             navigation_throttle->WillStartRequest().action());
 }
+
 
 }  // namespace pdf

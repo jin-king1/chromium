@@ -55,10 +55,12 @@ ChromeSpeechRecognitionClient::ChromeSpeechRecognitionClient(
 ChromeSpeechRecognitionClient::~ChromeSpeechRecognitionClient() = default;
 
 void ChromeSpeechRecognitionClient::AddAudio(
-    scoped_refptr<media::AudioBuffer> buffer) {
+    scoped_refptr<media::AudioBuffer> buffer,
+    std::optional<base::TimeDelta> media_start_pts) {
   DCHECK(buffer);
   send_audio_callback_.Run(
-      ConvertToAudioDataS16(std::move(buffer), is_multichannel_supported_));
+      ConvertToAudioDataS16(std::move(buffer), is_multichannel_supported_),
+      std::move(media_start_pts));
 }
 
 void ChromeSpeechRecognitionClient::AddAudio(const media::AudioBus& audio_bus) {
@@ -100,11 +102,20 @@ bool ChromeSpeechRecognitionClient::IsSpeechRecognitionAvailable() {
 // existing callback.
 void ChromeSpeechRecognitionClient::SetOnReadyCallback(
     SpeechRecognitionClient::OnReadyCallback callback) {
-  on_ready_callback_ = std::move(callback);
+  SpeechRecognitionClient::OnReadyCallback callback_to_run;
+  {
+    base::AutoLock auto_lock(is_recognizer_bound_lock_);
+    on_ready_callback_ = std::move(callback);
 
-  // Immediately run the callback if speech recognition is already available.
-  if (IsSpeechRecognitionAvailable() && on_ready_callback_)
-    std::move(on_ready_callback_).Run();
+    // Immediately run the callback if speech recognition is already available.
+    if (is_recognizer_bound_ && on_ready_callback_) {
+      callback_to_run = std::move(on_ready_callback_);
+    }
+  }
+
+  if (callback_to_run) {
+    std::move(callback_to_run).Run();
+  }
 }
 
 void ChromeSpeechRecognitionClient::Reconfigure(
@@ -116,15 +127,17 @@ void ChromeSpeechRecognitionClient::Reconfigure(
 
 void ChromeSpeechRecognitionClient::OnRecognizerBound(
     bool is_multichannel_supported) {
+  SpeechRecognitionClient::OnReadyCallback callback_to_run;
   {
     base::AutoLock auto_lock(is_recognizer_bound_lock_);
     is_recognizer_bound_ = true;
+    is_multichannel_supported_ = is_multichannel_supported;
+    callback_to_run = std::move(on_ready_callback_);
   }
 
-  is_multichannel_supported_ = is_multichannel_supported;
-
-  if (on_ready_callback_)
-    std::move(on_ready_callback_).Run();
+  if (callback_to_run) {
+    std::move(callback_to_run).Run();
+  }
 }
 
 void ChromeSpeechRecognitionClient::SpeechRecognitionAvailabilityChanged(
@@ -215,21 +228,23 @@ void ChromeSpeechRecognitionClient::AddAudioBusOnMainSequence(
     media::ChannelLayout channel_layout) {
   DCHECK(audio_bus);
   DCHECK_CALLED_ON_VALID_SEQUENCE(main_sequence_checker_);
-  send_audio_callback_.Run(ConvertToAudioDataS16(*audio_bus.get(), sample_rate,
-                                                 channel_layout,
-                                                 is_multichannel_supported_));
+  send_audio_callback_.Run(
+      ConvertToAudioDataS16(*audio_bus.get(), sample_rate, channel_layout,
+                            is_multichannel_supported_),
+      std::nullopt);
 
   if (audio_bus_pool_) {
     audio_bus_pool_->InsertAudioBus(std::move(audio_bus));
   }
 }
 void ChromeSpeechRecognitionClient::SendAudioToSpeechRecognitionService(
-    media::mojom::AudioDataS16Ptr audio_data) {
+    media::mojom::AudioDataS16Ptr audio_data,
+    std::optional<base::TimeDelta> media_start_pts) {
   DCHECK(audio_data);
   if (speech_recognition_recognizer_.is_bound() &&
       IsSpeechRecognitionAvailable()) {
     speech_recognition_recognizer_->SendAudioToSpeechRecognitionService(
-        std::move(audio_data));
+        std::move(audio_data), std::move(media_start_pts));
   }
 }
 

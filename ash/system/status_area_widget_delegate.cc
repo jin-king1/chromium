@@ -14,6 +14,7 @@
 #include "ash/public/cpp/shell_window_ids.h"
 #include "ash/root_window_controller.h"
 #include "ash/session/session_controller_impl.h"
+#include "ash/shelf/login_shelf_widget.h"
 #include "ash/shelf/shelf.h"
 #include "ash/shelf/shelf_layout_manager.h"
 #include "ash/shelf/shelf_widget.h"
@@ -111,9 +112,9 @@ int PaddingBetweenTrayItems(const bool is_in_primary_tray_set) {
 }  // namespace
 
 StatusAreaWidgetDelegate::StatusAreaWidgetDelegate(Shelf* shelf)
-    : shelf_(shelf), focus_cycler_for_testing_(nullptr) {
+    : shelf_(shelf) {
   DCHECK(shelf_);
-  SetOwnedByWidget(true);
+  SetOwnedByWidget(OwnedByWidgetPassKey());
 
   // Allow the launcher to surrender the focus to another window upon
   // navigation completion by the user.
@@ -123,11 +124,6 @@ StatusAreaWidgetDelegate::StatusAreaWidgetDelegate(Shelf* shelf)
 }
 
 StatusAreaWidgetDelegate::~StatusAreaWidgetDelegate() = default;
-
-void StatusAreaWidgetDelegate::SetFocusCyclerForTesting(
-    const FocusCycler* focus_cycler) {
-  focus_cycler_for_testing_ = focus_cycler;
-}
 
 bool StatusAreaWidgetDelegate::ShouldFocusOut(bool reverse) {
   views::View* focused_view = GetFocusManager()->GetFocusedView();
@@ -160,20 +156,22 @@ void StatusAreaWidgetDelegate::UpdateAccessiblePreviousAndNextFocus() {
     return;
   }
 
+  Shelf* shelf = Shelf::ForWindow(GetWidget()->GetNativeWindow());
   // If OOBE dialog is visible it should be the next accessible widget,
   // otherwise it should be LockScreen.
   if (!!LoginScreen::Get()->GetLoginWindowWidget() &&
       LoginScreen::Get()->GetLoginWindowWidget()->IsVisible()) {
     GetViewAccessibility().SetNextFocus(
         LoginScreen::Get()->GetLoginWindowWidget());
+    GetViewAccessibility().SetPreviousFocus(shelf->login_shelf_widget());
   } else if (LockScreen::HasInstance()) {
     GetViewAccessibility().SetNextFocus(LockScreen::Get()->widget());
+    GetViewAccessibility().SetPreviousFocus(shelf->login_shelf_widget());
   } else {
     GetViewAccessibility().SetNextFocus(nullptr);
+    GetViewAccessibility().SetPreviousFocus(shelf->shelf_widget());
   }
 
-  Shelf* shelf = Shelf::ForWindow(GetWidget()->GetNativeWindow());
-  GetViewAccessibility().SetPreviousFocus(shelf->shelf_widget());
 }
 
 views::View* StatusAreaWidgetDelegate::GetDefaultFocusableChild() {
@@ -210,9 +208,7 @@ void StatusAreaWidgetDelegate::OnGestureEvent(ui::GestureEvent* event) {
 bool StatusAreaWidgetDelegate::CanActivate() const {
   // We don't want mouse clicks to activate us, but we need to allow
   // activation when the user is using the keyboard (FocusCycler).
-  const FocusCycler* focus_cycler = focus_cycler_for_testing_
-                                        ? focus_cycler_for_testing_.get()
-                                        : Shell::Get()->focus_cycler();
+  const FocusCycler* focus_cycler = Shell::Get()->focus_cycler();
   return focus_cycler->widget_activating() == GetWidget();
 }
 

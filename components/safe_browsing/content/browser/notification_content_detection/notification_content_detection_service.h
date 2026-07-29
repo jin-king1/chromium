@@ -5,6 +5,7 @@
 #ifndef COMPONENTS_SAFE_BROWSING_CONTENT_BROWSER_NOTIFICATION_CONTENT_DETECTION_NOTIFICATION_CONTENT_DETECTION_SERVICE_H_
 #define COMPONENTS_SAFE_BROWSING_CONTENT_BROWSER_NOTIFICATION_CONTENT_DETECTION_NOTIFICATION_CONTENT_DETECTION_SERVICE_H_
 
+#include "base/sequence_checker.h"
 #include "base/task/sequenced_task_runner.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/safe_browsing/content/browser/notification_content_detection/notification_content_detection_model.h"
@@ -23,7 +24,9 @@ namespace safe_browsing {
 class NotificationContentDetectionService : public KeyedService {
  public:
   // The callback for displaying a persistent notification.
-  using ModelVerdictCallback = base::OnceCallback<void(bool is_suspicious)>;
+  using ModelVerdictCallback = base::OnceCallback<void(
+      bool is_suspicious,
+      std::optional<std::string> serialized_content_detection_metadata)>;
 
   NotificationContentDetectionService(
       optimization_guide::OptimizationGuideModelProvider* model_provider,

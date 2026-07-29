@@ -26,6 +26,12 @@
 #include "third_party/blink/public/mojom/devtools/console_message.mojom.h"
 #include "v8/include/v8-forward.h"
 
+class GURL;
+
+namespace blink {
+class ExtensionScriptStreamer;
+}
+
 namespace extensions {
 
 class Dispatcher;
@@ -47,8 +53,8 @@ class ExtensionFrameHelper
   ~ExtensionFrameHelper() override;
 
   // Returns a list of extension RenderFrames that match the given filter
-  // criteria. A |browser_window_id| of extension_misc::kUnknownWindowId
-  // specifies "all", as does a |view_type| of mojom::ViewType::kInvalid.
+  // criteria. A `browser_window_id` of extension_misc::kUnknownWindowId
+  // specifies "all", as does a `view_type` of mojom::ViewType::kInvalid.
   static std::vector<content::RenderFrame*> GetExtensionFrames(
       const ExtensionId& extension_id,
       int browser_window_id,
@@ -56,7 +62,7 @@ class ExtensionFrameHelper
       mojom::ViewType view_type);
   // Same as above, but returns a v8::Array of the v8 global objects for those
   // frames, and only includes outermost main frames. Note: This only returns
-  // contexts that are accessible by |context|, and |context| must be the
+  // contexts that are accessible by `context`, and `context` must be the
   // current context.
   // Returns an empty v8::Array if no frames are found.
   static v8::Local<v8::Array> GetV8MainFrames(v8::Local<v8::Context> context,
@@ -78,10 +84,10 @@ class ExtensionFrameHelper
       const ExtensionId& extension_id);
 
   // Finds a neighboring extension frame with the same extension as the one
-  // owning |relative_to_frame| (if |relative_to_frame| is not an extension
+  // owning `relative_to_frame` (if `relative_to_frame` is not an extension
   // frame, returns nullptr). Pierces the browsing instance boundary because
   // certain extensions rely on this behavior.
-  // TODO(devlin, lukasza): https://crbug.com/786411: Remove this behavior, and
+  // TODO(devlin, lukasza): crbug.com/40550544: Remove this behavior, and
   // make extensions follow the web standard for finding frames or use an
   // explicit API.
   static content::RenderFrame* FindFrame(
@@ -94,7 +100,7 @@ class ExtensionFrameHelper
       v8::Isolate* isolate,
       v8::Local<v8::Value> v8_frame_token_string);
 
-  // Returns true if the given |context| is for any frame in the extension's
+  // Returns true if the given `context` is for any frame in the extension's
   // event page.
   // TODO(devlin): This isn't really used properly, and should probably be
   // deleted.
@@ -116,7 +122,7 @@ class ExtensionFrameHelper
   void MessageInvoke(const ExtensionId& extension_id,
                      const std::string& module_name,
                      const std::string& function_name,
-                     base::Value::List args) override;
+                     base::ListValue args) override;
   void ExecuteCode(mojom::ExecuteCodeParamsPtr param,
                    ExecuteCodeCallback callback) override;
   void ExecuteDeclarativeScript(int32_t tab_id,
@@ -176,6 +182,9 @@ class ExtensionFrameHelper
   mojom::RendererHost* GetRendererHost();
   mojom::EventRouter* GetEventRouter();
   mojom::RendererAutomationRegistry* GetRendererAutomationRegistry();
+
+  std::map<GURL, std::optional<blink::ExtensionScriptStreamer>>&
+  GetScriptStreamersMap();
 
  private:
   void BindLocalFrame(
@@ -245,6 +254,9 @@ class ExtensionFrameHelper
       renderer_automation_registry_remote_;
 
   mojo::AssociatedReceiver<mojom::LocalFrame> local_frame_receiver_{this};
+
+  std::map<GURL, std::optional<blink::ExtensionScriptStreamer>>
+      extension_script_streamers_;
 
   base::WeakPtrFactory<ExtensionFrameHelper> weak_ptr_factory_{this};
 };

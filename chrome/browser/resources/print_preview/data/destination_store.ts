@@ -216,8 +216,7 @@ export class DestinationStore extends EventTarget {
    *     DestinationStore constructor.
    */
   constructor(
-      addListenerCallback:
-          (eventName: string, listener: (p1: any, p2?: any) => void) => void) {
+      addListenerCallback: (eventName: string, listener: Function) => void) {
     super();
 
     this.destinationSearchStatus_ = new Map([
@@ -561,7 +560,7 @@ export class DestinationStore extends EventTarget {
     // Try selecting the first destination if there is at least one
     // destination already loaded.
     if (this.destinations_.length > 0) {
-      this.selectDestination(this.destinations_[0]);
+      this.selectDestination(this.destinations_[0]!);
       return true;
     }
 

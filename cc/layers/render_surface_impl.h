@@ -38,7 +38,6 @@ class FilterOperations;
 class Occlusion;
 class LayerImpl;
 class LayerTreeImpl;
-class PictureLayerImpl;
 
 struct RenderSurfacePropertyChangedFlags {
  public:
@@ -227,7 +226,7 @@ class CC_EXPORT RenderSurfaceImpl {
 
   const FilterOperations& Filters() const;
   const FilterOperations& BackdropFilters() const;
-  std::optional<gfx::RRectF> BackdropFilterBounds() const;
+  std::optional<SkPath> BackdropFilterBounds() const;
   LayerImpl* BackdropMaskLayer() const;
   gfx::Transform SurfaceScale() const;
 
@@ -274,9 +273,6 @@ class CC_EXPORT RenderSurfaceImpl {
   CreateViewTransitionCaptureRenderPass(
       const base::flat_set<blink::ViewTransitionToken>&
           capture_view_transition_tokens = {});
-  viz::ResourceId GetMaskResourceFromLayer(PictureLayerImpl* mask_layer,
-                                           gfx::Size* mask_texture_size,
-                                           gfx::RectF* mask_uv_rect) const;
   void AppendQuads(const AppendQuadsContext& context,
                    viz::CompositorRenderPass* render_pass,
                    AppendQuadsData* append_quads_data);
@@ -293,11 +289,23 @@ class CC_EXPORT RenderSurfaceImpl {
   // Returns true if the owning effect node has a view transition resource.
   bool IsViewTransitionElement() const;
 
+  // Returns true if this render surface is for an unbounded element.
+  bool IsUnbounded() const;
+
   // Returns the view transition element resource id for this render surface.
   // This may be invalid, if this render surface is not a view transition
   // element.
   const viz::ViewTransitionElementResourceId& ViewTransitionElementResourceId()
       const;
+
+  // Identifies whether this render surface may have a view transition render
+  // pass contribution.
+  bool has_view_transition_capture_contributions() const {
+    return has_view_transition_capture_contributions_;
+  }
+  void set_has_view_transition_capture_contributions(bool flag) {
+    has_view_transition_capture_contributions_ = flag;
+  }
 
  private:
   void SetContentRect(const gfx::Rect& content_rect);
@@ -319,9 +327,10 @@ class CC_EXPORT RenderSurfaceImpl {
   ElementId id_;
   int effect_tree_index_;
 
-  // A unique id in the same namespace as `Layer::layer_id_`, so viz can
-  // identify `RenderPassDrawQuads` across the frame, similarly to other quads.
-  uint32_t layer_id_ = 0;
+  // A unique id in the same namespace as
+  // `LayerImpl::stable_id_for_shared_quad_state`, so viz can identify
+  // `RenderPassDrawQuads` across the frame, similarly to other quads.
+  const int stable_id_for_shared_quad_state_ = 0;
 
   // Container for properties that render surfaces need to compute before they
   // can be drawn.
@@ -393,9 +402,11 @@ class CC_EXPORT RenderSurfaceImpl {
   // A ViewTransitionContentLayer only knows its final visible drawable rect
   // once its originating surface's content rect has been computed. So we defer
   // adding this contribution until that is complete.
-  std::vector<LayerImpl*> deferred_contributing_layers_;
+  std::vector<raw_ptr<LayerImpl>> deferred_contributing_layers_;
 
   gfx::Rect view_transition_capture_content_rect_;
+
+  bool has_view_transition_capture_contributions_ = false;
 };
 
 }  // namespace cc

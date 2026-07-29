@@ -4,9 +4,7 @@
 
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_FRAME_DOM_WINDOW_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_FRAME_DOM_WINDOW_H_
-
 #include "base/memory/scoped_refptr.h"
-#include "base/rand_util.h"
 #include "services/network/public/mojom/cross_origin_opener_policy.mojom-blink.h"
 #include "third_party/blink/public/common/messaging/message_port_channel.h"
 #include "third_party/blink/public/common/tokens/tokens.h"
@@ -17,6 +15,7 @@
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/frame/frame.h"
 #include "third_party/blink/renderer/core/frame/window_properties.h"
+#include "third_party/blink/renderer/core/url/dom_origin_utils.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/mojo/heap_mojo_remote.h"
@@ -47,13 +46,16 @@ struct BlinkTransferableMessage;
 // TODO(tkent): Rename DOMWindow to Window. The class was named as 'DOMWindow'
 // because WebKit already had KJS::Window.  We have no reasons to avoid
 // blink::Window now.
-class CORE_EXPORT DOMWindow : public WindowProperties {
+class CORE_EXPORT DOMWindow : public WindowProperties, public DOMOriginUtils {
   DEFINE_WRAPPERTYPEINFO();
 
  public:
   enum class CrossDocumentAccessPolicy { kAllowed, kDisallowed };
 
   ~DOMWindow() override;
+
+  // DOMOriginUtils overrides:
+  DOMOrigin* GetDOMOrigin(LocalDOMWindow* accessing_window) const override;
 
   Frame* GetFrame() const {
     // A Frame is typically reused for navigations. If |frame_| is not null,
@@ -158,8 +160,7 @@ class CORE_EXPORT DOMWindow : public WindowProperties {
   void InstallCoopAccessMonitor(
       LocalFrame* accessing_frame,
       network::mojom::blink::CrossOriginOpenerPolicyReporterParamsPtr
-          coop_reporter_params,
-      bool is_in_same_virtual_coop_related_group);
+          coop_reporter_params);
   // Whenever we detect that the enforcement of a report-only COOP policy would
   // have resulted in preventing access to this window, a report is potentially
   // sent when calling this function.
@@ -171,14 +172,6 @@ class CORE_EXPORT DOMWindow : public WindowProperties {
   // Records metrics for access to the cross-origin WindowProxy properties.
   void RecordWindowProxyAccessMetrics(
       mojom::blink::WindowProxyAccessType access_type) const;
-
-  // We need to check proxy access to see if it's blocked, and if so whether
-  // it's for COOP-RP issues or Partitioned Popin issues.
-  enum class ProxyAccessBlockedReason { kCoopRp, kPartitionedPopins };
-  std::optional<ProxyAccessBlockedReason> GetProxyAccessBlockedReason(
-      v8::Isolate* isolate) const;
-  static String GetProxyAccessBlockedExceptionMessage(
-      ProxyAccessBlockedReason reason);
 
  protected:
   explicit DOMWindow(Frame&);
@@ -240,12 +233,9 @@ class CORE_EXPORT DOMWindow : public WindowProperties {
     HeapMojoRemote<network::mojom::blink::CrossOriginOpenerPolicyReporter>
         reporter;
     bool endpoint_defined;
-    WTF::String reported_window_url;
-    bool is_in_same_virtual_coop_related_group = false;
+    String reported_window_url;
   };
   HeapVector<Member<CoopAccessMonitor>> coop_access_monitor_;
-  // Mutable: only used to downsample metrics, no change to observable state.
-  mutable base::MetricsSubSampler metrics_sub_sampler_;
 };
 
 }  // namespace blink

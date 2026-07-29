@@ -7,6 +7,7 @@
 #include <memory>
 #include <optional>
 
+#include "ash/strings/grit/ash_strings.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
 #include "base/json/json_writer.h"
@@ -23,8 +24,6 @@
 #include "chrome/browser/ash/login/test/oobe_screen_waiter.h"
 #include "chrome/browser/ash/login/version_updater/version_updater.h"
 #include "chrome/browser/ash/login/wizard_controller.h"
-#include "chrome/browser/ash/net/network_portal_detector_test_impl.h"
-#include "chrome/browser/ash/policy/core/device_policy_builder.h"
 #include "chrome/browser/ash/policy/core/device_policy_cros_browser_test.h"
 #include "chrome/browser/ash/policy/handlers/minimum_version_policy_test_helpers.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
@@ -32,11 +31,10 @@
 #include "chrome/browser/ui/webui/ash/login/gaia_screen_handler.h"
 #include "chrome/browser/ui/webui/ash/login/oobe_ui.h"
 #include "chrome/browser/ui/webui/ash/login/update_required_screen_handler.h"
-#include "chrome/grit/branded_strings.h"
-#include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/components/dbus/dbus_thread_manager.h"
 #include "chromeos/ash/components/dbus/update_engine/fake_update_engine_client.h"
 #include "chromeos/ash/components/network/network_state_test_helper.h"
+#include "chromeos/ash/components/policy/device_policy/device_policy_builder.h"
 #include "chromeos/ash/components/settings/cros_settings_names.h"
 #include "chromeos/dbus/constants/dbus_switches.h"
 #include "components/user_manager/user_manager.h"
@@ -217,10 +215,6 @@ IN_PROC_BROWSER_TEST_F(UpdateRequiredScreenTest, TestCaptivePortal) {
   std::string wifi_path =
       network_state_test_helper_->ConfigureWiFi(shill::kStateRedirectFound);
 
-  network_portal_detector::InitializeForTesting(
-      new NetworkPortalDetectorTestImpl());
-  network_portal_detector::GetInstance()->Enable();
-
   static_cast<UpdateRequiredScreen*>(
       WizardController::default_controller()->current_screen())
       ->SetErrorMessageDelayForTesting(base::Milliseconds(10));
@@ -255,7 +249,6 @@ IN_PROC_BROWSER_TEST_F(UpdateRequiredScreenTest, TestCaptivePortal) {
 
   test::OobeJS().ExpectVisiblePath(kUpdateRequiredScreen);
   test::OobeJS().ExpectVisiblePath(kUpdateProcessStep);
-  network_portal_detector::Shutdown();
 }
 
 IN_PROC_BROWSER_TEST_F(UpdateRequiredScreenTest, TestEolReached) {
@@ -550,7 +543,7 @@ class UpdateRequiredScreenPolicyPresentTest : public OobeBaseTest {
         base::DefaultClock::GetInstance()->Now() - base::Days(1));
   }
 
-  void SetAndRefreshMinimumChromeVersionPolicy(base::Value::Dict value) {
+  void SetAndRefreshMinimumChromeVersionPolicy(base::DictValue value) {
     policy::DevicePolicyBuilder* const device_policy(
         policy_helper_.device_policy());
     em::ChromeDeviceSettingsProto& proto(device_policy->payload());

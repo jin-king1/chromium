@@ -6,8 +6,6 @@
 
 #include <algorithm>
 
-#include "base/containers/contains.h"
-#include "base/not_fatal_until.h"
 #include "build/build_config.h"
 
 namespace task_manager {
@@ -18,14 +16,14 @@ MockWebContentsTaskManager::~MockWebContentsTaskManager() = default;
 
 void MockWebContentsTaskManager::TaskAdded(Task* task) {
   DCHECK(task);
-  DCHECK(!base::Contains(tasks_, task));
+  DCHECK(!std::ranges::contains(tasks_, task));
   tasks_.push_back(task);
 }
 
 void MockWebContentsTaskManager::TaskRemoved(Task* task) {
   DCHECK(task);
   const auto it = std::ranges::find(tasks_, task);
-  CHECK(it != tasks_.end(), base::NotFatalUntil::M130);
+  CHECK(it != tasks_.end());
   tasks_.erase(it);
 }
 

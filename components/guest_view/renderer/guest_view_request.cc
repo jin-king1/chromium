@@ -9,7 +9,6 @@
 
 #include "components/guest_view/renderer/guest_view_container.h"
 #include "content/public/renderer/render_frame.h"
-#include "ipc/ipc_sync_channel.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
 #include "v8/include/v8-context.h"
 #include "v8/include/v8-function.h"
@@ -21,7 +20,7 @@ GuestViewAttachRequest::GuestViewAttachRequest(
     guest_view::GuestViewContainer* container,
     content::RenderFrame* render_frame,
     int guest_instance_id,
-    base::Value::Dict params,
+    base::DictValue params,
     v8::Local<v8::Function> callback,
     v8::Isolate* isolate)
     : container_(container),

@@ -8,28 +8,28 @@
 #include <string>
 
 #include "base/memory/raw_ptr.h"
-#include "chrome/browser/extensions/permissions/site_permissions_helper.h"
 #include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
+#include "chrome/browser/ui/extensions/extensions_menu_handler.h"
+#include "chrome/browser/ui/extensions/extensions_menu_view_model.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/controls/hover_button.h"
-#include "chrome/browser/ui/views/extensions/extensions_dialogs_utils.h"
-#include "chrome/browser/ui/views/extensions/extensions_menu_handler.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/vector_icons/vector_icons.h"
-#include "content/public/browser/web_contents.h"
 #include "extensions/browser/permissions_manager.h"
-#include "extensions/common/extension.h"
 #include "extensions/common/extension_id.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/models/image_model.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/border.h"
 #include "ui/views/bubble/bubble_frame_view.h"
+#include "ui/views/cascading_property.h"
 #include "ui/views/controls/button/button.h"
 #include "ui/views/controls/button/image_button.h"
 #include "ui/views/controls/button/image_button_factory.h"
@@ -44,7 +44,7 @@
 #include "ui/views/layout/flex_layout_view.h"
 #include "ui/views/layout/layout_provider.h"
 #include "ui/views/layout/layout_types.h"
-#include "ui/views/metadata/view_factory_internal.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/style/typography.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/view_utils.h"
@@ -76,33 +76,7 @@ std::vector<views::RadioButton*> GetSiteAccessButtons(views::View* page) {
   return site_access_buttons;
 }
 
-std::u16string GetShowRequestsToggleAccessibleName(bool is_toggle_on) {
-  int label_id =
-      is_toggle_on
-          ? IDS_EXTENSIONS_MENU_SITE_PERMISSIONS_PAGE_SHOW_REQUESTS_TOGGLE_ON
-          : IDS_EXTENSIONS_MENU_SITE_PERMISSIONS_PAGE_SHOW_REQUESTS_TOGGLE_OFF;
-  return l10n_util::GetStringUTF16(label_id);
-}
 
-// Returns the radio button text for `site_access` option.
-std::u16string GetSiteAccessRadioButtonText(
-    PermissionsManager::UserSiteAccess site_access,
-    std::u16string current_site = std::u16string()) {
-  switch (site_access) {
-    case PermissionsManager::UserSiteAccess::kOnClick:
-      return l10n_util::GetStringUTF16(
-          IDS_EXTENSIONS_MENU_SITE_PERMISSIONS_PAGE_SITE_ACCESS_ON_CLICK_TEXT);
-    case PermissionsManager::UserSiteAccess::kOnSite:
-      return l10n_util::GetStringFUTF16(
-          IDS_EXTENSIONS_MENU_SITE_PERMISSIONS_PAGE_SITE_ACCESS_ON_SITE_TEXT,
-          current_site);
-    case PermissionsManager::UserSiteAccess::kOnAllSites:
-      return l10n_util::GetStringUTF16(
-          IDS_EXTENSIONS_MENU_SITE_PERMISSIONS_PAGE_SITE_ACCESS_ON_ALL_SITES_TEXT);
-    default:
-      NOTREACHED();
-  }
-}
 
 // Returns the radio button description for `site_access` option.
 std::u16string GetSiteAccessRadioButtonDescription(
@@ -137,17 +111,20 @@ int GetSiteAccessButtonIndex(PermissionsManager::UserSiteAccess site_access) {
 // Returns the icon for the setting button.
 std::unique_ptr<views::ImageView> GetSettingsButtonIcon(int icon_size) {
   return std::make_unique<views::ImageView>(ui::ImageModel::FromVectorIcon(
-      vector_icons::kSubmenuArrowChromeRefreshIcon, ui::kColorIconSecondary,
-      icon_size));
+      features::IsRoundedIconsEnabled()
+          ? vector_icons::kKeyboardArrowRightFlippableIcon
+          : vector_icons::kSubmenuArrowChromeRefreshOldIcon,
+      ui::kColorIconSecondary, icon_size));
 }
 
 }  // namespace
 
 ExtensionsMenuSitePermissionsPageView::ExtensionsMenuSitePermissionsPageView(
-    Browser* browser,
+    BrowserWindowInterface* browser,
     extensions::ExtensionId extension_id,
     ExtensionsMenuHandler* menu_handler)
     : browser_(browser), extension_id_(extension_id) {
+  views::SetCascadingRadioGroupView(this, views::kCascadingRadioGroupView);
   // TODO(crbug.com/40879945): Same stretch specification as
   // ExtensionsMenuMainPageView. Move to a shared file.
   views::FlexSpecification stretch_specification =
@@ -175,7 +152,7 @@ ExtensionsMenuSitePermissionsPageView::ExtensionsMenuSitePermissionsPageView(
   // This value must be the same as the `HoverButton` vertical margin.
   const int hover_button_vertical_spacing =
       chrome_layout_provider->GetDistanceMetric(
-          DISTANCE_CONTROL_LIST_VERTICAL) /
+          views::DISTANCE_CONTROL_LIST_VERTICAL) /
       2;
 
   // Views that need configuration after construction (e.g access size after a
@@ -198,7 +175,7 @@ ExtensionsMenuSitePermissionsPageView::ExtensionsMenuSitePermissionsPageView(
       };
 
   const auto create_radio_button_builder =
-      [=](PermissionsManager::UserSiteAccess site_access) {
+      [=, this](PermissionsManager::UserSiteAccess site_access) {
         return views::Builder<views::BoxLayoutView>()
             .SetOrientation(views::BoxLayout::Orientation::kVertical)
             // Add dialog horizontal margins, and top margin to separate the
@@ -209,7 +186,7 @@ ExtensionsMenuSitePermissionsPageView::ExtensionsMenuSitePermissionsPageView(
                                   dialog_insets.right()))
             .AddChildren(
                 views::Builder<views::RadioButton>()
-                    .SetText(GetSiteAccessRadioButtonText(site_access))
+                    // Text is set during the update.
                     .SetLabelStyle(views::style::STYLE_BODY_3)
                     .SetEnabledTextColors(kColorExtensionsMenuText)
                     .SetGroup(kSiteAccessButtonsId)
@@ -224,9 +201,17 @@ ExtensionsMenuSitePermissionsPageView::ExtensionsMenuSitePermissionsPageView(
                     // between the radio button icon and label.
                     .SetImageLabelSpacing(back_button_border.right() +
                                           horizontal_spacing)
+                    // To ensure we use the right origin when the callback is
+                    // called, we pass `this` to access the current origin,
+                    // rather than binding a copy of the origin.
                     .SetCallback(base::BindRepeating(
-                        &ExtensionsMenuHandler::OnSiteAccessSelected,
-                        base::Unretained(menu_handler), extension_id,
+                        [](ExtensionsMenuSitePermissionsPageView* view,
+                           ExtensionsMenuHandler* handler,
+                           PermissionsManager::UserSiteAccess access) {
+                          handler->OnSiteAccessSelected(view->extension_id(),
+                                                        view->origin(), access);
+                        },
+                        base::Unretained(this), base::Unretained(menu_handler),
                         site_access)),
                 views::Builder<views::Label>()
                     .SetText(GetSiteAccessRadioButtonDescription(site_access))
@@ -259,7 +244,10 @@ ExtensionsMenuSitePermissionsPageView::ExtensionsMenuSitePermissionsPageView(
                           base::BindRepeating(
                               &ExtensionsMenuHandler::OpenMainPage,
                               base::Unretained(menu_handler)),
-                          vector_icons::kArrowBackIcon, icon_size))
+                          features::IsRoundedIconsEnabled()
+                              ? vector_icons::kArrowBackIcon
+                              : vector_icons::kArrowBackOldIcon,
+                          icon_size))
                       .SetTooltipText(
                           l10n_util::GetStringUTF16(IDS_ACCNAME_BACK))
                       .SetAccessibleName(
@@ -287,7 +275,10 @@ ExtensionsMenuSitePermissionsPageView::ExtensionsMenuSitePermissionsPageView(
                                   kColorExtensionsMenuSecondaryText)
                               .SetProperty(views::kMarginsKey,
                                            gfx::Insets::TLBR(
-                                               0, horizontal_spacing, 0, 0))),
+                                               0, horizontal_spacing, 0, 0))
+                              .SetElideBehavior(gfx::ELIDE_TAIL)
+                              .SetProperty(views::kFlexBehaviorKey,
+                                           stretch_specification)),
                   // Close button.
                   views::Builder<views::Button>(
                       views::BubbleFrameView::CreateCloseButton(
@@ -358,7 +349,7 @@ ExtensionsMenuSitePermissionsPageView::ExtensionsMenuSitePermissionsPageView(
                   views::Builder<HoverButton>(
                       std::make_unique<HoverButton>(
                           base::BindRepeating(
-                              [](Browser* browser,
+                              [](BrowserWindowInterface* browser,
                                  extensions::ExtensionId extension_id) {
                                 chrome::ShowExtensions(browser, extension_id);
                               },
@@ -396,43 +387,46 @@ ExtensionsMenuSitePermissionsPageView::ExtensionsMenuSitePermissionsPageView(
 }
 
 void ExtensionsMenuSitePermissionsPageView::Update(
-    const std::u16string& extension_name,
-    const ui::ImageModel& extension_icon,
-    const std::u16string& current_site,
-    PermissionsManager::UserSiteAccess user_site_access,
-    bool is_show_requests_toggle_on,
-    bool is_on_site_enabled,
-    bool is_on_all_sites_enabled) {
-  extension_icon_->SetImage(extension_icon);
-  extension_name_->SetText(extension_name);
+    ExtensionsMenuViewModel::ExtensionSitePermissionsState
+        site_permissions_state) {
+  origin_ = site_permissions_state.origin;
+  extension_icon_->SetImage(site_permissions_state.extension_icon);
+  extension_name_->SetText(site_permissions_state.extension_name);
 
-  // Update the site access buttons with new `user_site_access` and
-  // `current_site`.
-  int new_selected_index = GetSiteAccessButtonIndex(user_site_access);
   std::vector<views::RadioButton*> site_access_buttons =
       GetSiteAccessButtons(this);
-  for (int i = 0; i < static_cast<int>(site_access_buttons.size()); ++i) {
-    site_access_buttons[i]->SetChecked(i == new_selected_index);
-    if (i == kOnSiteButtonIndex) {
-      site_access_buttons[i]->SetText(GetSiteAccessRadioButtonText(
-          PermissionsManager::UserSiteAccess::kOnSite, current_site));
-    }
-  }
+  site_access_buttons[kOnClickButtonIndex]->SetChecked(
+      site_permissions_state.on_click_option.is_on);
+  site_access_buttons[kOnSiteButtonIndex]->SetChecked(
+      site_permissions_state.on_site_option.is_on);
+  site_access_buttons[kOnAllSitesButtonIndex]->SetChecked(
+      site_permissions_state.on_all_sites_option.is_on);
 
-  // Enable the site access buttons accordingly. The extension is guaranteed to
-  // at least have "on click" enabled when this page is opened.
-  site_access_buttons[kOnSiteButtonIndex]->SetEnabled(is_on_site_enabled);
+  site_access_buttons[kOnClickButtonIndex]->SetEnabled(
+      site_permissions_state.on_click_option.status ==
+      ExtensionsMenuViewModel::ControlState::Status::kEnabled);
+  site_access_buttons[kOnSiteButtonIndex]->SetEnabled(
+      site_permissions_state.on_site_option.status ==
+      ExtensionsMenuViewModel::ControlState::Status::kEnabled);
   site_access_buttons[kOnAllSitesButtonIndex]->SetEnabled(
-      is_on_all_sites_enabled);
+      site_permissions_state.on_all_sites_option.status ==
+      ExtensionsMenuViewModel::ControlState::Status::kEnabled);
 
-  UpdateShowRequestsToggle(is_show_requests_toggle_on);
+  site_access_buttons[kOnClickButtonIndex]->SetText(
+      site_permissions_state.on_click_option.text);
+  site_access_buttons[kOnSiteButtonIndex]->SetText(
+      site_permissions_state.on_site_option.text);
+  site_access_buttons[kOnAllSitesButtonIndex]->SetText(
+      site_permissions_state.on_all_sites_option.text);
+
+  UpdateShowRequestsToggle(site_permissions_state.show_requests_toggle);
 }
 
 void ExtensionsMenuSitePermissionsPageView::UpdateShowRequestsToggle(
-    bool is_on) {
-  show_requests_toggle_->SetIsOn(is_on);
+    ExtensionsMenuViewModel::ControlState show_requests_toggle) {
+  show_requests_toggle_->SetIsOn(show_requests_toggle.is_on);
   show_requests_toggle_->GetViewAccessibility().SetName(
-      GetShowRequestsToggleAccessibleName(is_on));
+      show_requests_toggle.accessible_name);
 }
 
 views::RadioButton*
@@ -441,6 +435,11 @@ ExtensionsMenuSitePermissionsPageView::GetSiteAccessButtonForTesting(
   std::vector<views::RadioButton*> site_access_buttons =
       GetSiteAccessButtons(this);
   return site_access_buttons[GetSiteAccessButtonIndex(site_access)];
+}
+
+views::Label*
+ExtensionsMenuSitePermissionsPageView::GetExtensionNameForTesting() {
+  return extension_name_;
 }
 
 BEGIN_METADATA(ExtensionsMenuSitePermissionsPageView)

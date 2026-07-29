@@ -23,7 +23,8 @@
 
 namespace qt {
 
-class QtNativeTheme;
+class NativeThemeQt;
+class OsSettingsProviderQt;
 
 // Interface to QT desktop features.
 class QtUi : public ui::LinuxUiAndTheme, QtInterface::Delegate {
@@ -38,13 +39,12 @@ class QtUi : public ui::LinuxUiAndTheme, QtInterface::Delegate {
   // ui::LinuxUi:
   bool Initialize() override;
   void InitializeFontSettings() override;
-  base::TimeDelta GetCursorBlinkInterval() const override;
   gfx::Image GetIconForContentType(const std::string& content_type,
                                    int size,
                                    float scale) const override;
   base::flat_map<std::string, std::string> GetKeyboardLayoutMap() override;
 #if BUILDFLAG(ENABLE_PRINTING)
-  printing::PrintDialogLinuxInterface* CreatePrintDialog(
+  std::unique_ptr<printing::PrintDialogLinuxInterface> CreatePrintDialog(
       printing::PrintingContextLinux* context) override;
   gfx::Size GetPdfPaperSize(printing::PrintingContextLinux* context) override;
 #endif
@@ -65,6 +65,9 @@ class QtUi : public ui::LinuxUiAndTheme, QtInterface::Delegate {
       ui::WindowButtonOrderObserver* observer) override;
   WindowFrameAction GetWindowFrameAction(
       WindowFrameActionSource source) override;
+  bool PrimaryPasteEnabled() const override;
+  int GetWindowDragThresholdPx() const override;
+  std::vector<std::string> GetCmdLineFlagsForCopy() const override;
 
   // ui::LinuxUiTheme:
   ui::NativeTheme* GetNativeTheme() const override;
@@ -78,8 +81,10 @@ class QtUi : public ui::LinuxUiAndTheme, QtInterface::Delegate {
   bool PreferDarkTheme() const override;
   void SetDarkTheme(bool dark) override;
   void SetAccentColor(std::optional<SkColor>) override;
-  std::unique_ptr<ui::NavButtonProvider> CreateNavButtonProvider() override;
-  ui::WindowFrameProvider* GetWindowFrameProvider(bool solid_frame,
+  std::unique_ptr<ui::NavButtonProvider> CreateNavButtonProvider(
+      ui::FrameType type) override;
+  ui::WindowFrameProvider* GetWindowFrameProvider(ui::FrameType type,
+                                                  bool solid_frame,
                                                   bool tiled,
                                                   bool maximized) override;
 
@@ -110,7 +115,8 @@ class QtUi : public ui::LinuxUiAndTheme, QtInterface::Delegate {
   std::optional<gfx::FontRenderParams> font_params_;
   std::unique_ptr<QtInterface> shim_;
 
-  std::unique_ptr<QtNativeTheme> native_theme_;
+  std::unique_ptr<OsSettingsProviderQt> os_settings_provider_;
+  std::unique_ptr<NativeThemeQt> native_theme_;
 
   std::optional<SkColor> accent_color_;
 

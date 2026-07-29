@@ -19,8 +19,6 @@
 #include "chrome/browser/google/did_run_updater_win.h"
 #endif
 
-class PlatformAuthPolicyObserver;
-
 namespace base {
 class CommandLine;
 }
@@ -40,6 +38,7 @@ class ChromeBrowserMainPartsWin : public ChromeBrowserMainParts {
   ~ChromeBrowserMainPartsWin() override;
 
   // BrowserParts overrides.
+  int PreEarlyInitialization() override;
   void ToolkitInitialized() override;
   void PreCreateMainMessageLoop() override;
   int PreCreateThreads() override;
@@ -80,6 +79,11 @@ class ChromeBrowserMainPartsWin : public ChromeBrowserMainParts {
   static base::CommandLine GetRestartCommandLine(
       const base::CommandLine& command_line);
 
+  // Check if running elevated, and attempt to automatically de-elevate. Returns
+  // an exit code if browser should exit due to a restart, or std::nullopt if
+  // startup should continue.
+  std::optional<int> MaybeAutoDeElevate();
+
  private:
   void OnModuleEvent(const ModuleWatcher::ModuleEvent& event);
   void SetupModuleDatabase(std::unique_ptr<ModuleWatcher>* module_watcher);
@@ -91,9 +95,6 @@ class ChromeBrowserMainPartsWin : public ChromeBrowserMainParts {
 
   // Watches module load events and forwards them to the ModuleDatabase.
   std::unique_ptr<ModuleWatcher> module_watcher_;
-
-  // Applies enterprise policies for platform auth SSO.
-  std::unique_ptr<PlatformAuthPolicyObserver> platform_auth_policy_observer_;
 };
 
 #endif  // CHROME_BROWSER_CHROME_BROWSER_MAIN_WIN_H_

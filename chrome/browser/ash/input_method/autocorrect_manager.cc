@@ -5,6 +5,7 @@
 #include "chrome/browser/ash/input_method/autocorrect_manager.h"
 
 #include "ash/constants/ash_features.h"
+#include "ash/strings/grit/ash_strings.h"
 #include "base/feature_list.h"
 #include "base/functional/callback_helpers.h"
 #include "base/i18n/case_conversion.h"
@@ -23,9 +24,6 @@
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/metrics/chrome_metrics_service_accessor.h"
 #include "chrome/browser/ui/ash/keyboard/chrome_keyboard_controller_client.h"
-#include "chrome/common/pref_names.h"
-#include "chrome/grit/generated_resources.h"
-#include "chromeos/ash/services/federated/public/mojom/tables.mojom.h"
 #include "chromeos/components/kiosk/kiosk_utils.h"
 #include "components/strings/grit/components_strings.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
@@ -426,16 +424,6 @@ void AutocorrectManager::ProcessSetAutocorrectRangeDone(
 
   LogAssistiveAutocorrectAction(AutocorrectActions::kUnderlined);
   RecordAssistiveCoverage(AssistiveType::kAutocorrectUnderlined);
-
-  if (ChromeMetricsServiceAccessor::IsMetricsAndCrashReportingEnabled() &&
-      base::FeatureList::IsEnabled(features::kAutocorrectFederatedPhh)) {
-    // Report `original_text` to the Federated Service.
-    federated_manager_.ReportSingleString(
-        /*table_id*/ chromeos::federated::mojom::FederatedExampleTableId::
-            INPUT_AUTOCORRECT,
-        /*example_feature_name*/ "original_text",
-        /*example_str*/ base::UTF16ToUTF8(original_text));
-  }
 }
 
 void AutocorrectManager::RecordPendingMetricsAwaitingKeyPress() {
@@ -1174,15 +1162,12 @@ bool AutocorrectManager::DisabledByInvalidExperimentContext() {
   }
 
   // If the user is in the autocorrect by default bucket, and the en840 model is
-  // not available or the updated parameter list is not enabled, then disable
-  // autocorrect.
-  return !(
-      suggestion_provider_ &&
-      (suggestion_provider_ ==
-           ime::AutocorrectSuggestionProvider::kUsEnglish840 ||
-       suggestion_provider_ ==
-           ime::AutocorrectSuggestionProvider::kUsEnglish840V2) &&
-      base::FeatureList::IsEnabled(ash::features::kImeFstDecoderParamsUpdate));
+  // not available, then disable autocorrect.
+  return !(suggestion_provider_ &&
+           (suggestion_provider_ ==
+                ime::AutocorrectSuggestionProvider::kUsEnglish840 ||
+            suggestion_provider_ ==
+                ime::AutocorrectSuggestionProvider::kUsEnglish840V2));
 }
 
 AutocorrectManager::PendingAutocorrectState::PendingAutocorrectState(

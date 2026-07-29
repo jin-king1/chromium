@@ -17,4 +17,12 @@ const char kPdfUseSkiaRendererEnabled[] = "pdf.enable_skia";
 const char kPdfViewerOutOfProcessIframeEnabled[] =
     "pdf.enable_out_of_process_iframe_viewer";
 
+// Boolean pref to control whether to enable support for XFA forms in PDF
+// viewer.
+const char kPdfXfaFormsEnabled[] = "pdf.xfa_forms_enabled";
+
+// Pattern for accounts allowed to save PDF files to Google Drive.
+const char kRestrictPdfSaveToGoogleDriveAccountsToPattern[] =
+    "pdf.restrict_save_to_drive_accounts_to_pattern";
+
 }  // namespace prefs

@@ -13,13 +13,13 @@
 #include <vector>
 
 #include "base/functional/bind.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/task_runner.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "build/chromeos_buildflags.h"
+#include "components/user_prefs/user_prefs.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/color_chooser.h"
@@ -48,7 +48,6 @@
 #include "extensions/common/manifest_handlers/icons_handler.h"
 #include "extensions/common/mojom/view_type.mojom.h"
 #include "extensions/common/permissions/permissions_data.h"
-#include "ipc/ipc_message_macros.h"
 #include "third_party/blink/public/common/mediastream/media_stream_request.h"
 #include "third_party/blink/public/mojom/page/draggable_region.mojom.h"
 #include "third_party/skia/include/core/SkBitmap.h"
@@ -80,7 +79,7 @@ const int kDefaultHeight = 384;
 
 void SetConstraintProperty(const std::string& name,
                            int value,
-                           base::Value::Dict* bounds_properties) {
+                           base::DictValue* bounds_properties) {
   DCHECK(bounds_properties);
   if (value != SizeConstraints::kUnboundedSize)
     bounds_properties->Set(name, value);
@@ -92,9 +91,9 @@ void SetBoundsProperties(const gfx::Rect& bounds,
                          const gfx::Size& min_size,
                          const gfx::Size& max_size,
                          const std::string& bounds_name,
-                         base::Value::Dict* window_properties) {
+                         base::DictValue* window_properties) {
   DCHECK(window_properties);
-  base::Value::Dict bounds_properties;
+  base::DictValue bounds_properties;
 
   bounds_properties.Set("left", bounds.x());
   bounds_properties.Set("top", bounds.y());
@@ -302,6 +301,7 @@ void AppWindow::Init(const GURL& url,
   WebContentsModalDialogManager::CreateForWebContents(web_contents());
 
   web_contents()->SetDelegate(this);
+  web_contents()->SetIgnoreZoomGestures(true);
   WebContentsModalDialogManager::FromWebContents(web_contents())
       ->SetDelegate(this);
 
@@ -460,11 +460,6 @@ void AppWindow::RequestPointerLock(WebContents* web_contents,
   helper_->RequestPointerLock();
 }
 
-bool AppWindow::PreHandleGestureEvent(WebContents* source,
-                                      const blink::WebGestureEvent& event) {
-  return AppWebContentsHelper::ShouldSuppressGestureEvent(event);
-}
-
 content::PictureInPictureResult AppWindow::EnterPictureInPicture(
     content::WebContents* web_contents) {
   return app_delegate_->EnterPictureInPicture(web_contents);
@@ -609,7 +604,7 @@ void AppWindow::SetAppIconUrl(const GURL& url) {
   app_icon_url_ = url;
 
   // Don't start custom app icon loading in the case window is not ready yet.
-  // see crbug.com/788531.
+  // see crbug.com/41357416.
   if (!window_ready_)
     return;
 
@@ -648,11 +643,9 @@ void AppWindow::SetFullscreen(FullscreenType type, bool enable) {
 #if !BUILDFLAG(IS_MAC)
     // Do not enter fullscreen mode if disallowed by pref.
     // TODO(bartfab): Add a test once it becomes possible to simulate a user
-    // gesture. http://crbug.com/174178
+    // gesture. http://crbug.com/40300937
     if (type != FULLSCREEN_TYPE_FORCED) {
-      PrefService* prefs =
-          ExtensionsBrowserClient::Get()->GetPrefServiceForContext(
-              browser_context());
+      PrefService* prefs = user_prefs::UserPrefs::Get(browser_context());
       if (!prefs->GetBoolean(pref_names::kAppFullscreenAllowed))
         return;
     }
@@ -779,7 +772,7 @@ void AppWindow::RestoreAlwaysOnTop() {
     UpdateNativeAlwaysOnTop();
 }
 
-void AppWindow::GetSerializedState(base::Value::Dict* properties) const {
+void AppWindow::GetSerializedState(base::DictValue* properties) const {
   DCHECK(properties);
 
   properties->Set("fullscreen", native_app_window_->IsFullscreenOrPending());
@@ -860,14 +853,21 @@ void AppWindow::DidDownloadFavicon(
 }
 
 void AppWindow::SetNativeWindowFullscreen() {
+  // `SetFullscreen()` can trigger window closure (e.g. on macOS when spinning a
+  // nested run loop), destroying `this`. Use a WeakPtr to avoid Use-After-Free
+  // when calling RestoreAlwaysOnTop(). See crbug.com/516948486.
+  base::WeakPtr<AppWindow> weak_this = weak_ptr_factory_.GetWeakPtr();
   native_app_window_->SetFullscreen(fullscreen_types_);
+  if (!weak_this) {
+    return;
+  }
 
   RestoreAlwaysOnTop();
 }
 
 bool AppWindow::IntersectsWithTaskbar() const {
 #if BUILDFLAG(IS_WIN)
-  display::Screen* screen = display::Screen::GetScreen();
+  display::Screen* screen = display::Screen::Get();
   gfx::Rect window_bounds = native_app_window_->GetRestoredBounds();
   std::vector<display::Display> displays = screen->GetAllDisplays();
 
@@ -980,12 +980,8 @@ blink::mojom::DisplayMode AppWindow::GetDisplayMode(
                         : blink::mojom::DisplayMode::kStandalone;
 }
 
-WindowController* AppWindow::GetExtensionWindowController() const {
+WindowController* AppWindow::GetExtensionWindowController() {
   return app_window_contents_->GetWindowController();
-}
-
-content::WebContents* AppWindow::GetAssociatedWebContents() const {
-  return web_contents();
 }
 
 void AppWindow::OnExtensionUnloaded(BrowserContext* browser_context,
@@ -1004,7 +1000,8 @@ bool AppWindow::IsWebContentsVisible(content::WebContents* web_contents) {
   return app_delegate_->IsWebContentsVisible(web_contents);
 }
 
-WebContentsModalDialogHost* AppWindow::GetWebContentsModalDialogHost() {
+WebContentsModalDialogHost* AppWindow::GetWebContentsModalDialogHost(
+    content::WebContents* web_contents) {
   return native_app_window_.get();
 }
 
@@ -1018,7 +1015,7 @@ void AppWindow::SaveWindowPosition() {
 
   gfx::Rect bounds = native_app_window_->GetRestoredBounds();
   gfx::Rect screen_bounds =
-      display::Screen::GetScreen()->GetDisplayMatching(bounds).work_area();
+      display::Screen::Get()->GetDisplayMatching(bounds).work_area();
   ui::mojom::WindowShowState window_state =
       native_app_window_->GetRestoredState();
   cache->SaveGeometry(extension_id(), window_key_, bounds, screen_bounds,
@@ -1081,7 +1078,7 @@ AppWindow::CreateParams AppWindow::LoadDefaults(CreateParams params) const {
                            &cached_screen_bounds, &cached_state)) {
       // App window has cached screen bounds, make sure it fits on screen in
       // case the screen resolution changed.
-      display::Screen* screen = display::Screen::GetScreen();
+      display::Screen* screen = display::Screen::Get();
       display::Display display = screen->GetDisplayMatching(cached_bounds);
       gfx::Rect current_screen_bounds = display.work_area();
       SizeConstraints constraints(

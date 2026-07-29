@@ -23,6 +23,7 @@
 #include "chrome/browser/ash/app_list/search/test/search_results_changed_waiter.h"
 #include "chrome/browser/ash/drive/drive_integration_service.h"
 #include "chrome/browser/ash/drive/drive_integration_service_browser_test_base.h"
+#include "chrome/browser/ash/drive/drive_integration_service_factory.h"
 #include "chrome/browser/ash/drive/drivefs_test_support.h"
 #include "chrome/browser/ash/file_manager/file_tasks_observer.h"
 #include "chrome/browser/ash/file_manager/path_util.h"
@@ -31,6 +32,7 @@
 #include "chrome/browser/ash/file_suggest/file_suggest_test_util.h"
 #include "chrome/browser/ash/file_suggest/local_file_suggestion_provider.h"
 #include "chrome/browser/ash/system_web_apps/system_web_app_manager.h"
+#include "chrome/browser/browser_process.h"
 #include "chrome/browser/platform_util.h"
 #include "chrome/browser/ui/browser.h"
 #include "chromeos/ash/components/drivefs/fake_drivefs.h"
@@ -149,7 +151,7 @@ class LauncherContinueSectionTest
 
     ash::ShellTestApi().SetTabletModeEnabledForTest(IsTabletMode());
 
-    Profile* const profile = browser()->profile();
+    Profile* const profile = browser()->GetProfile();
 
     ash::SystemWebAppManager::GetForTest(profile)
         ->InstallSystemAppsForTesting();
@@ -167,7 +169,8 @@ class LauncherContinueSectionTest
                                   const base::Time& last_access_time,
                                   const base::Time& last_modified_time) {
     const base::FilePath mount_path =
-        file_manager::util::GetDownloadsFolderForProfile(browser()->profile());
+        file_manager::util::GetDownloadsFolderForProfile(
+            browser()->GetProfile());
     base::FilePath absolute_path = mount_path.AppendASCII(file_name);
     {
       base::ScopedAllowBlockingForTesting allow_blocking;
@@ -188,7 +191,7 @@ class LauncherContinueSectionTest
     open_events.push_back(std::move(e));
 
     ash::FileSuggestKeyedServiceFactory::GetInstance()
-        ->GetService(browser()->profile())
+        ->GetService(browser()->GetProfile())
         ->local_file_suggestion_provider_for_test()
         ->OnFilesOpened(open_events);
 
@@ -201,7 +204,7 @@ class LauncherContinueSectionTest
 
     drive::DriveIntegrationService* drive_service =
         drive::DriveIntegrationServiceFactory::FindForProfile(
-            browser()->profile());
+            browser()->GetProfile());
     EXPECT_TRUE(drive_service->IsMounted());
     base::FilePath mount_path = drive_service->GetMountPointPath();
 
@@ -216,7 +219,7 @@ class LauncherContinueSectionTest
     metadata.alternate_url = alternate_url;
 
     drivefs::FakeDriveFs* drive_fs =
-        GetFakeDriveFsForProfile(browser()->profile());
+        GetFakeDriveFsForProfile(browser()->GetProfile());
     drive_fs->SetMetadata(std::move(metadata));
 
     std::vector<drivefs::mojom::FileChangePtr> changes;
@@ -298,7 +301,7 @@ class LauncherContinueSectionTest
     fake_drivefs_helpers_[profile] =
         std::make_unique<drive::FakeDriveFsHelper>(profile, mount_path);
     auto* integration_service = new drive::DriveIntegrationService(
-        profile, std::string(), mount_path,
+        g_browser_process->local_state(), profile, std::string(), mount_path,
         fake_drivefs_helpers_[profile]->CreateFakeDriveFsListenerFactory());
     return integration_service;
   }
@@ -331,7 +334,7 @@ IN_PROC_BROWSER_TEST_P(LauncherContinueSectionTest, ShowDriveFiles) {
   base::FilePath file_4 =
       AddTestDriveFile("Test File 4.gdoc", "http://fake/test_file_4");
 
-  auto* fake_drivefs = GetFakeDriveFsForProfile(browser()->profile());
+  auto* fake_drivefs = GetFakeDriveFsForProfile(browser()->GetProfile());
   EXPECT_CALL(
       *fake_drivefs,
       StartSearchQuery(
@@ -427,7 +430,7 @@ IN_PROC_BROWSER_TEST_P(LauncherContinueSectionTest, ShowDriveAndLocalFiles) {
       "Test Local File.txt", GetReferenceTime() - base::Days(4),
       GetReferenceTime() - base::Days(5));
 
-  auto* fake_drivefs = GetFakeDriveFsForProfile(browser()->profile());
+  auto* fake_drivefs = GetFakeDriveFsForProfile(browser()->GetProfile());
   EXPECT_CALL(
       *fake_drivefs,
       StartSearchQuery(

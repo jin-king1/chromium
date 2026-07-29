@@ -4,15 +4,15 @@
 
 #include "components/segmentation_platform/internal/data_collection/training_data_collector_impl.h"
 
+#include <algorithm>
 #include <cstdint>
 
-#include "base/containers/contains.h"
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/metrics/metrics_hashes.h"
 #include "base/metrics/user_metrics.h"
-#include "base/notreached.h"
+#include "base/notimplemented.h"
 #include "base/rand_util.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/clock.h"
@@ -261,7 +261,7 @@ void TrainingDataCollectorImpl::OnHistogramSignalUpdated(
       // Process both enum histograms with their corresponding accepted enum ids
       // and value histograms with no enum ids.
       if (accepted_enum_ids.empty() ||
-          base::Contains(accepted_enum_ids, sample)) {
+          std::ranges::contains(accepted_enum_ids, sample)) {
         const SegmentInfo* info = segment_info_database_->GetCachedSegmentInfo(
             segment_id, model_source);
         OnUmaUpdatedReportForSegmentInfo(param, info);

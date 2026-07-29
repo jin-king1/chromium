@@ -2,19 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/browser/enterprise/reporting/extension_request/extension_request_observer.h"
 
 #include "base/metrics/histogram_functions.h"
+#include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/common/pref_names.h"
+#include "components/enterprise/browser/reporting/common_pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
+#include "extensions/browser/managed_installation_mode.h"
 #include "extensions/common/extension_urls.h"
 
 namespace enterprise_reporting {
@@ -37,7 +34,7 @@ ExtensionRequestObserver::ExtensionRequestObserver(Profile* profile)
   OnExtensionManagementSettingsChanged();
   pref_change_registrar_.Init(profile_->GetPrefs());
   pref_change_registrar_.Add(
-      prefs::kCloudExtensionRequestIds,
+      enterprise_reporting::kCloudExtensionRequestIds,
       base::BindRepeating(&ExtensionRequestObserver::OnPendingListChanged,
                           weak_factory_.GetWeakPtr()));
 }
@@ -89,7 +86,8 @@ void ExtensionRequestObserver::OnPendingListChanged() {
 }
 
 void ExtensionRequestObserver::ShowAllNotifications() {
-  if (!profile_->GetPrefs()->GetBoolean(prefs::kCloudExtensionRequestEnabled)) {
+  if (!profile_->GetPrefs()->GetBoolean(
+          enterprise_reporting::kCloudExtensionRequestEnabled)) {
     CloseAllNotifications();
     return;
   }
@@ -101,8 +99,8 @@ void ExtensionRequestObserver::ShowAllNotifications() {
 
 void ExtensionRequestObserver::ShowNotification(
     ExtensionRequestNotification::NotifyType type) {
-  const base::Value::Dict& pending_requests =
-      profile_->GetPrefs()->GetDict(prefs::kCloudExtensionRequestIds);
+  const base::DictValue& pending_requests = profile_->GetPrefs()->GetDict(
+      enterprise_reporting::kCloudExtensionRequestIds);
 
   ExtensionRequestNotification::ExtensionIds filtered_extension_ids;
   extensions::ExtensionManagement* extension_management =
@@ -112,13 +110,13 @@ void ExtensionRequestObserver::ShowNotification(
 
   for (auto request : pending_requests) {
     const std::string& id = request.first;
-    extensions::ExtensionManagement::InstallationMode mode =
+    extensions::ManagedInstallationMode mode =
         extension_management->GetInstallationMode(id, web_store_update_url);
     if ((type == ExtensionRequestNotification::kApproved &&
-         mode == extensions::ExtensionManagement::INSTALLATION_ALLOWED) ||
+         mode == extensions::ManagedInstallationMode::kAllowed) ||
         (type == ExtensionRequestNotification::kForceInstalled &&
-         (mode == extensions::ExtensionManagement::INSTALLATION_FORCED ||
-          mode == extensions::ExtensionManagement::INSTALLATION_RECOMMENDED)) ||
+         (mode == extensions::ManagedInstallationMode::kForced ||
+          mode == extensions::ManagedInstallationMode::kRecommended)) ||
         (type == ExtensionRequestNotification::kRejected &&
          extension_management->IsInstallationExplicitlyBlocked(id))) {
       filtered_extension_ids.push_back(id);
@@ -134,6 +132,12 @@ void ExtensionRequestObserver::ShowNotification(
     return;
   }
 
+#if BUILDFLAG(IS_ANDROID)
+  // TODO(crbug.com/486965804): Support extension request notifications on
+  // Android. On Android, transient notifications are unsupported. Clean up
+  // resolved requests from the pending list directly when policy changes.
+  RemoveExtensionsFromPendingList(filtered_extension_ids);
+#else
   // Open a new notification, notification with same type will be replaced if
   // exists.
   notifications_[type] = std::make_unique<ExtensionRequestNotification>(
@@ -141,6 +145,7 @@ void ExtensionRequestObserver::ShowNotification(
   notifications_[type]->Show(base::BindOnce(
       &ExtensionRequestObserver::OnNotificationClosed,
       weak_factory_.GetWeakPtr(), std::move(filtered_extension_ids)));
+#endif
 }
 
 void ExtensionRequestObserver::CloseAllNotifications() {
@@ -152,6 +157,7 @@ void ExtensionRequestObserver::CloseAllNotifications() {
   }
 }
 
+#if !BUILDFLAG(IS_ANDROID)
 void ExtensionRequestObserver::OnNotificationClosed(
     std::vector<std::string>&& extension_ids,
     bool by_user) {
@@ -160,12 +166,13 @@ void ExtensionRequestObserver::OnNotificationClosed(
 
   RemoveExtensionsFromPendingList(extension_ids);
 }
+#endif
 
 void ExtensionRequestObserver::RemoveExtensionsFromPendingList(
     const std::vector<std::string>& extension_ids) {
   ScopedDictPrefUpdate pending_requests_update(
       Profile::FromBrowserContext(profile_)->GetPrefs(),
-      prefs::kCloudExtensionRequestIds);
+      enterprise_reporting::kCloudExtensionRequestIds);
   for (auto& id : extension_ids)
     pending_requests_update->Remove(id);
 

@@ -8,15 +8,15 @@
 #include <sys/statfs.h>
 
 #include <map>
-#include <optional>
 #include <set>
 #include <string>
 #include <utility>
 
 #include "ash/constants/ash_features.h"
+#include "ash/constants/ash_pref_names.h"
 #include "ash/constants/ash_switches.h"
+#include "ash/strings/grit/ash_strings.h"
 #include "base/files/file_path.h"
-#include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/lazy_instance.h"
@@ -49,8 +49,8 @@
 #include "chrome/browser/ui/ash/login/login_display_host.h"
 #include "chrome/browser/ui/ash/shelf/chrome_shelf_controller.h"
 #include "chrome/browser/ui/simple_message_box.h"
-#include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
+#include "chromeos/ash/components/demo_mode/utils/demo_session_utils.h"
 #include "chromeos/ash/components/install_attributes/install_attributes.h"
 #include "chromeos/ash/components/settings/cros_settings.h"
 #include "chromeos/ash/experiences/arc/arc_features.h"
@@ -139,19 +139,7 @@ bool g_disallow_for_testing = false;
 // during test runs. Doesn't affect public session.
 bool g_arc_blocked_due_to_incompatible_filesystem_for_testing = false;
 
-// Indicates whether the ARCVM DLC image is available on the device with the
-// arcvm_dlc USE flag. This value must be updated before calling
-// IsArcAllowedForProfile() to maintain consistency.
-//
-// 1. Regular login: The check is performed in UserSessionManager when the user
-// logs in.
-// 2. Chrome restart: On ash-chrome restart, the session bypasses
-// UserSessionManager. In this case, the check is done in
-// ArcServiceLauncher, blocking the main thread to ensure the check
-// completes before calling IsArcAllowedForProfile().
-std::optional<bool> g_is_arcvm_dlc_image_available;
-
-// TODO(kinaba): Temporary workaround for crbug.com/729034.
+// TODO(kinaba): Temporary workaround for crbug.com/41322910.
 //
 // Some type of accounts don't have user prefs. As a short-term workaround,
 // store the compatibility info from them on memory, ignoring the defect that
@@ -226,26 +214,6 @@ void StoreCompatibilityCheckResult(const AccountId& account_id,
   std::move(callback).Run();
 }
 
-// Returns whether the ARCVM DLC image is already installed on the reven device.
-// This function performs a blocking IO operation and should only be called on
-// threads that allow blocking IO, such as worker threads or IO threads. It
-// must not be called on the UI thread.
-bool IsArcVmDlcImageExist() {
-  DCHECK(!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI));
-  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
-                                                base::BlockingType::MAY_BLOCK);
-  const char arc_vm_dlc_image_path[] = "/opt/google/vms/android/system.raw.img";
-  return base::PathExists(base::FilePath(arc_vm_dlc_image_path));
-}
-
-// Stores the result of IsArcVmDlcImageExist posted back from the blocking
-// task runner.
-void StoreArcVmDlcImageCheckResult(base::OnceClosure callback,
-                                   bool is_available) {
-  g_is_arcvm_dlc_image_available = is_available;
-  std::move(callback).Run();
-}
-
 bool IsUnaffiliatedArcAllowed() {
   bool arc_allowed;
   ArcSessionManager* arc_session_manager = ArcSessionManager::Get();
@@ -286,25 +254,9 @@ ArcStatus GetArcStatusForProfile(const Profile* profile,
   }
 
   if (ash::switches::IsRevenBranding()) {
-    CHECK(g_is_arcvm_dlc_image_available.has_value());
-
-    if (ash::features::ShouldIgnoreDeviceFlexArcEnabledPolicy()) {
-      VLOG_IF(1, should_report_reason)
-          << "ARC unavailable on reven board due to the VPN app enabling "
-             "policy was ignored.";
-      return ArcStatus::kNotAvailable;
-    }
-
-    if (!g_is_arcvm_dlc_image_available.value()) {
-      VLOG_IF(1, should_report_reason)
-          << "ARC unavailable on reven board due to no arcvm dlc images.";
-      return ArcStatus::kNotAvailable;
-    }
-
-    if (!policy_util::IsAccountManaged(profile) ||
-        !ash::InstallAttributes::Get()->IsEnterpriseManaged()) {
+    if (!policy_util::IsAccountManaged(profile)) {
       VLOG_IF(1, should_report_reason) << "ARC unavailable on reven board due "
-                                          "to unmanaged device or account.";
+                                          "to unmanaged account.";
       return ArcStatus::kNotAvailable;
     }
   }
@@ -325,7 +277,7 @@ ArcStatus GetArcStatusForProfile(const Profile* profile,
   // Play Store requires an appropriate application install mechanism. Normal
   // users do this through GAIA, but Kiosk users use a different application
   // install mechanism. ARC is not allowed otherwise (e.g. in public sessions,
-  // as described in crbug.com/605545).
+  // as described in crbug.com/40466164).
   const user_manager::User* user =
       ash::ProfileHelper::Get()->GetUserByProfile(profile);
   if (!IsArcAllowedForUser(user)) {
@@ -369,7 +321,7 @@ bool IsArcAllowedForProfileInternal(const Profile* profile,
 }
 
 void ShowContactAdminDialog() {
-  chrome::ShowWarningMessageBox(
+  chrome::ShowWarningMessageBoxAsync(
       nullptr, l10n_util::GetStringUTF16(IDS_ARC_OPT_IN_CONTACT_ADMIN_TITLE),
       l10n_util::GetStringUTF16(IDS_ARC_OPT_IN_CONTACT_ADMIN_CONTEXT));
 }
@@ -495,10 +447,15 @@ bool IsArcBlockedDueToIncompatibleFileSystem(const Profile* profile) {
   const user_manager::User* user =
       ash::ProfileHelper::Get()->GetUserByProfile(profile);
 
-  // Do not block ARC for public accounts as they only have ext4.
-  // Without this check it fails to start after browser crash as compatibility
-  // info is stored in RAM.
-  if (user && user->GetType() == user_manager::UserType::kPublicAccount) {
+  // Unblock Arc for public accounts as they only have ext4 and
+  // for ARC kiosk as migration to ext4 should always be triggered.
+  // Without this check it fails to start after browser crash as
+  // compatibility info is stored in RAM.
+  // In the other kiosk types we do not/should not start ARCVM or allow android
+  // apps to run hence this method should evaluate the actual file system and
+  // not be bypassed here.
+  if (user && (user->GetType() == user_manager::UserType::kPublicAccount ||
+               user->GetType() == user_manager::UserType::kKioskArcvmApp)) {
     return false;
   }
 
@@ -514,10 +471,6 @@ bool IsArcBlockedDueToIncompatibleFileSystem(const Profile* profile) {
 
 void SetArcBlockedDueToIncompatibleFileSystemForTesting(bool block) {
   g_arc_blocked_due_to_incompatible_filesystem_for_testing = block;
-}
-
-void SetArcvmDlcImageStatusForTesting(std::optional<bool> availability) {
-  g_is_arcvm_dlc_image_available = availability;
 }
 
 bool IsArcCompatibleFileSystemUsedForUser(const user_manager::User* user) {
@@ -609,7 +562,8 @@ bool AreArcAllOptInPreferencesIgnorableForProfile(const Profile* profile) {
   if (ash::features::IsCrosPrivacyHubLocationEnabled()) {
     // When PH is enabled, location toggle is no longer ARC specific (applies to
     // entire ChromeOS);
-    return prefs->IsManagedPreference(prefs::kArcBackupRestoreEnabled);
+    return prefs->IsManagedPreference(prefs::kArcBackupRestoreEnabled) &&
+           prefs->IsManagedPreference(ash::prefs::kUserGeolocationAccessLevel);
   } else {
     return prefs->IsManagedPreference(prefs::kArcBackupRestoreEnabled) &&
            prefs->IsManagedPreference(prefs::kArcLocationServiceEnabled);
@@ -623,8 +577,6 @@ bool IsArcOobeOptInActive() {
   }
 
   // Check if Chrome OS OOBE flow is currently showing.
-  // TODO(b/65861628): Redesign the OptIn flow since there is no longer reason
-  // to have two different OptIn flows.
   if (!ash::LoginDisplayHost::default_host()) {
     return false;
   }
@@ -664,7 +616,7 @@ bool IsArcOobeOptInConfigurationBased() {
 bool IsArcTermsOfServiceNegotiationNeeded(const Profile* profile) {
   DCHECK(profile);
   // Don't show in session ARC OptIn dialog for managed user.
-  // For more info see crbug/950013.
+  // For more info see crbug.com/40621882.
   // Skip to show UI asking users to set up ARC OptIn preferences, if all of
   // them are managed by the admin policy. Note that the ToS agreement is anyway
   // not shown in the case of the managed ARC.
@@ -757,7 +709,7 @@ void UpdateArcFileSystemCompatibilityPrefIfNeeded(
   // old devices without ARC. We can always safely remove the following 4 lines
   // without changing any functionality when, say, the code clarity becomes
   // more important in the future.
-  if (!IsArcAvailable()) {
+  if (!IsArcAvailable() && !IsArcvmKioskAvailable()) {
     std::move(callback).Run();
     return;
   }
@@ -776,24 +728,6 @@ void UpdateArcFileSystemCompatibilityPrefIfNeeded(
       base::BindOnce(&IsArcCompatibleFilesystem, profile_path),
       base::BindOnce(&StoreCompatibilityCheckResult, account_id,
                      std::move(callback)));
-}
-
-void CheckArcVmDlcImageExist(base::OnceClosure callback) {
-  if (!arc::IsArcVmDlcEnabled()) {
-    std::move(callback).Run();
-    return;
-  }
-
-  base::ThreadPool::PostTaskAndReplyWithResult(
-      FROM_HERE,
-      {base::MayBlock(), base::TaskPriority::USER_BLOCKING,
-       base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},
-      base::BindOnce(&IsArcVmDlcImageExist),
-      base::BindOnce(&StoreArcVmDlcImageCheckResult, std::move(callback)));
-}
-
-void SetArcvmDlcImageStatus(bool availability) {
-  g_is_arcvm_dlc_image_available = availability;
 }
 
 ArcManagementTransition GetManagementTransition(const Profile* profile) {
@@ -816,7 +750,7 @@ bool IsPlayStoreAvailable() {
   }
 
   // Demo Mode is the only public session scenario that can launch Play.
-  return ash::DemoSession::IsDeviceInDemoMode();
+  return ash::demo_mode::IsDeviceInDemoMode();
 }
 
 bool ShouldStartArcSilentlyForManagedProfile(const Profile* profile) {
@@ -857,8 +791,7 @@ std::unique_ptr<content::WebContents> CreateArcCustomTabWebContents(
       embedder_support::BuildUserAgentFromOSAndProduct(kOsOverrideForTabletSite,
                                                        product);
 
-  ua_override.ua_metadata_override =
-      embedder_support::GetUserAgentMetadata(g_browser_process->local_state());
+  ua_override.ua_metadata_override = embedder_support::GetUserAgentMetadata();
   ua_override.ua_metadata_override->platform = "Android";
   ua_override.ua_metadata_override->platform_version = "9";
   ua_override.ua_metadata_override->model = "Chrome tablet";

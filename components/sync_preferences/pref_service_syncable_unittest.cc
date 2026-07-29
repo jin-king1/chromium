@@ -23,13 +23,13 @@
 #include "components/signin/public/base/signin_switches.h"
 #include "components/sync/base/client_tag_hash.h"
 #include "components/sync/base/data_type.h"
-#include "components/sync/base/features.h"
 #include "components/sync/model/sync_change.h"
 #include "components/sync/model/sync_change_processor.h"
 #include "components/sync/model/sync_data.h"
 #include "components/sync/model/syncable_service.h"
 #include "components/sync/protocol/entity_specifics.pb.h"
 #include "components/sync/protocol/preference_specifics.pb.h"
+#include "components/sync/test/test_sync_service.h"
 #include "components/sync_preferences/pref_model_associator.h"
 #include "components/sync_preferences/pref_model_associator_client.h"
 #include "components/sync_preferences/pref_service_syncable_factory.h"
@@ -74,6 +74,7 @@ const char kNonDefaultCharsetValue[] = "foo";
 const char kDefaultCharsetValue[] = "utf-8";
 const char kBrowserPrefName[] = "browser_pref";
 const char kBrowserPriorityPrefName[] = "browser_priority_pref";
+const char kAlwaysSyncingPriorityPrefName[] = "always_syncing_priority_pref";
 #if BUILDFLAG(IS_CHROMEOS)
 const char kOsPrefName[] = "os_pref";
 const char kOsPriorityPrefName[] = "os_priority_pref";
@@ -108,6 +109,10 @@ const TestSyncablePrefsDatabase::PrefsMap kSyncablePrefsDatabase = {
      {10, syncer::OS_PRIORITY_PREFERENCES, PrefSensitivity::kNone,
       MergeBehavior::kNone}},
 #endif
+    {kAlwaysSyncingPriorityPrefName,
+     {11, syncer::PRIORITY_PREFERENCES,
+      PrefSensitivity::kExemptFromUserControlWhileSignedIn,
+      MergeBehavior::kNone}},
 };
 
 // Searches for a preference matching `name` and, if specified,`change_type`,
@@ -123,7 +128,8 @@ std::optional<base::Value> FindValue(
         change.sync_data().GetClientTagHash() ==
             syncer::ClientTagHash::FromUnhashed(syncer::PREFERENCES, name)) {
       return base::JSONReader::Read(
-          change.sync_data().GetSpecifics().preference().value());
+          change.sync_data().GetSpecifics().preference().value(),
+          base::JSON_PARSE_CHROMIUM_EXTENSIONS);
     }
   }
   return std::nullopt;
@@ -153,7 +159,8 @@ class TestSyncProcessorStub : public syncer::SyncChangeProcessor {
     }
     if (fail_next_) {
       fail_next_ = false;
-      return syncer::ModelError(FROM_HERE, "Error");
+      return syncer::ModelError(FROM_HERE,
+                                syncer::ModelError::Type::kGenericTestError);
     }
     return std::nullopt;
   }
@@ -175,7 +182,8 @@ class TestSyncedPrefObserver : public SyncedPrefObserver {
     changed_count_++;
   }
 
-  void OnStartedSyncing(std::string_view path) override {
+  void OnStartedSyncing(std::string_view path,
+                        const base::Value& value) override {
     synced_pref_ = std::string(path);
     sync_started_count_++;
   }
@@ -322,7 +330,8 @@ TEST_F(PrefServiceSyncableTest, CreatePrefSyncData) {
       sync_data.GetSpecifics().preference());
   EXPECT_EQ(std::string(kStringPrefName), specifics.name());
 
-  std::optional<base::Value> value = base::JSONReader::Read(specifics.value());
+  std::optional<base::Value> value = base::JSONReader::Read(
+      specifics.value(), base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   EXPECT_EQ(*pref->GetValue(), *value);
 }
 
@@ -365,7 +374,7 @@ TEST_F(PrefServiceSyncableTest, ModelAssociationCloudHasData) {
   syncer::SyncDataList in;
   syncer::SyncChangeList out;
   AddToRemoteDataList(kStringPrefName, base::Value(kExampleUrl1), &in);
-  auto urls_to_restore = base::Value::List().Append(kExampleUrl1);
+  auto urls_to_restore = base::ListValue().Append(kExampleUrl1);
   AddToRemoteDataList(kListPrefName, urls_to_restore, &in);
   AddToRemoteDataList(kDefaultCharsetPrefName,
                       base::Value(kNonDefaultCharsetValue), &in);
@@ -378,7 +387,7 @@ TEST_F(PrefServiceSyncableTest, ModelAssociationCloudHasData) {
 
   // No associator client is registered, so lists and dictionaries should not
   // get merged (remote write wins).
-  auto expected_urls = base::Value::List().Append(kExampleUrl1);
+  auto expected_urls = base::ListValue().Append(kExampleUrl1);
   EXPECT_FALSE(FindValue(kListPrefName, out));
   EXPECT_EQ(GetPreferenceValue(kListPrefName), expected_urls);
   EXPECT_EQ(kNonDefaultCharsetValue, prefs_.GetString(kDefaultCharsetPrefName));
@@ -428,21 +437,21 @@ class TestPrefModelAssociatorClient : public PrefModelAssociatorClient {
 class PrefServiceSyncableMergeTest : public testing::Test {
  public:
   PrefServiceSyncableMergeTest()
-      : prefs_(
-            std::unique_ptr<PrefNotifierImpl>(pref_notifier_),
-            std::make_unique<PrefValueStore>(managed_prefs_.get(),
-                                             new TestingPrefStore,
-                                             new TestingPrefStore,
-                                             new TestingPrefStore,
-                                             new TestingPrefStore,
-                                             user_prefs_.get(),
-                                             pref_registry_->defaults().get(),
-                                             pref_notifier_),
-            user_prefs_,
-            pref_registry_,
-            client_,
-            /*read_error_callback=*/base::DoNothing(),
-            /*async=*/false) {}
+      : prefs_(std::unique_ptr<PrefNotifierImpl>(pref_notifier_),
+               std::make_unique<PrefValueStore>(
+                   managed_prefs_,
+                   base::MakeRefCounted<TestingPrefStore>(),
+                   base::MakeRefCounted<TestingPrefStore>(),
+                   base::MakeRefCounted<TestingPrefStore>(),
+                   base::MakeRefCounted<TestingPrefStore>(),
+                   user_prefs_,
+                   pref_registry_->defaults(),
+                   pref_notifier_),
+               user_prefs_,
+               pref_registry_,
+               client_,
+               /*read_error_callback=*/base::DoNothing(),
+               /*async=*/false) {}
 
   void SetUp() override {
     pref_registry_->RegisterStringPref(kUnsyncedPreferenceName,
@@ -534,14 +543,14 @@ TEST_F(PrefServiceSyncableMergeTest, ShouldMergeSelectedListValues) {
   }
 
   auto urls_to_restore =
-      base::Value::List().Append(kExampleUrl1).Append(kExampleUrl2);
+      base::ListValue().Append(kExampleUrl1).Append(kExampleUrl2);
   syncer::SyncDataList in;
   AddToRemoteDataList(kMergeableListPrefName, urls_to_restore, &in);
 
   syncer::SyncChangeList out;
   InitWithSyncDataTakeOutput(in, &out);
 
-  auto expected_urls = base::Value::List()
+  auto expected_urls = base::ListValue()
                            .Append(kExampleUrl1)
                            .Append(kExampleUrl2)
                            .Append(kExampleUrl0);
@@ -557,7 +566,7 @@ TEST_F(PrefServiceSyncableMergeTest, ShouldMergeSelectedListValues) {
 TEST_F(PrefServiceSyncableMergeTest, ManagedListPreferences) {
   // Make the list of urls to restore on startup managed.
   auto managed_value =
-      base::Value::List().Append(kExampleUrl0).Append(kExampleUrl1);
+      base::ListValue().Append(kExampleUrl0).Append(kExampleUrl1);
   managed_prefs_->SetValue(kMergeableListPrefName,
                            base::Value(managed_value.Clone()),
                            WriteablePrefStore::DEFAULT_PREF_WRITE_FLAGS);
@@ -565,7 +574,7 @@ TEST_F(PrefServiceSyncableMergeTest, ManagedListPreferences) {
   // Set a cloud version.
   syncer::SyncDataList in;
   auto urls_to_restore =
-      base::Value::List().Append(kExampleUrl1).Append(kExampleUrl2);
+      base::ListValue().Append(kExampleUrl1).Append(kExampleUrl2);
   AddToRemoteDataList(kMergeableListPrefName, urls_to_restore, &in);
 
   syncer::SyncChangeList out;
@@ -575,7 +584,7 @@ TEST_F(PrefServiceSyncableMergeTest, ManagedListPreferences) {
   EXPECT_FALSE(FindValue(kMergeableListPrefName, out));
 
   // Changing the user-controlled value should sync as usual.
-  auto user_value = base::Value::List().Append("http://chromium.org");
+  auto user_value = base::ListValue().Append("http://chromium.org");
   prefs_.SetList(kMergeableListPrefName, user_value.Clone());
   std::optional<base::Value> actual = FindValue(kMergeableListPrefName, out);
   ASSERT_TRUE(actual);
@@ -584,7 +593,7 @@ TEST_F(PrefServiceSyncableMergeTest, ManagedListPreferences) {
 
   // An incoming sync transaction should change the user value, not the managed
   // value.
-  auto sync_value = base::Value::List().Append("http://crbug.com");
+  auto sync_value = base::ListValue().Append("http://crbug.com");
   syncer::SyncChangeList list;
   list.push_back(MakeRemoteChange(kMergeableListPrefName, sync_value,
                                   SyncChange::ACTION_UPDATE));
@@ -608,14 +617,14 @@ TEST_F(PrefServiceSyncableMergeTest, ShouldMergeSelectedDictionaryValues) {
   }
 
   auto remote_update =
-      base::Value::Dict().Set("my_key2", base::Value("my_value2"));
+      base::DictValue().Set("my_key2", base::Value("my_value2"));
   syncer::SyncDataList in;
   AddToRemoteDataList(kMergeableDictPrefName, remote_update, &in);
 
   syncer::SyncChangeList out;
   InitWithSyncDataTakeOutput(in, &out);
 
-  auto expected_dict = base::Value::Dict()
+  auto expected_dict = base::DictValue()
                            .Set("my_key1", base::Value("my_value1"))
                            .Set("my_key2", base::Value("my_value2"))
                            .Set("my_key3", base::Value("my_value3"));
@@ -1024,10 +1033,9 @@ class PrefServiceSyncableChromeOsTest : public testing::Test {
     prefs_ = std::make_unique<PrefServiceSyncable>(
         std::unique_ptr<PrefNotifierImpl>(pref_notifier_),
         std::make_unique<PrefValueStore>(
-            managed_prefs_.get(), supervised_user_prefs_.get(),
-            extension_prefs_.get(), command_line_prefs_.get(),
-            user_prefs_.get(), recommended_prefs_.get(),
-            pref_registry_->defaults().get(), pref_notifier_),
+            managed_prefs_, supervised_user_prefs_, extension_prefs_,
+            command_line_prefs_, user_prefs_, recommended_prefs_,
+            pref_registry_->defaults(), pref_notifier_),
         user_prefs_, pref_registry_, client_,
         /*read_error_callback=*/base::DoNothing(),
         /*async=*/false);
@@ -1402,6 +1410,96 @@ TEST_F(PrefServiceSyncableFactoryTest,
           pref_service->GetSyncableService(syncer::OS_PRIORITY_PREFERENCES))
           ->IsUsingDualLayerUserPrefStoreForTesting());
 #endif
+}
+
+class PrefServiceSyncableFactoryTestWithAlwaysSyncingPrefs
+    : public PrefServiceSyncableFactoryTest {
+ public:
+  PrefServiceSyncableFactoryTestWithAlwaysSyncingPrefs() {
+    feature_list_.InitWithFeatures({switches::kEnablePreferencesAccountStorage},
+                                   /*disabled_features=*/{});
+    pref_service_syncable_factory_.SetPrefModelAssociatorClient(client_);
+
+    // Register test prefs.
+    prefs_.registry()->RegisterStringPref(
+        kBrowserPrefName, std::string(),
+        user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
+    prefs_.registry()->RegisterStringPref(
+        kBrowserPriorityPrefName, std::string(),
+        user_prefs::PrefRegistrySyncable::SYNCABLE_PRIORITY_PREF);
+    prefs_.registry()->RegisterStringPref(
+        kAlwaysSyncingPriorityPrefName, std::string(),
+        user_prefs::PrefRegistrySyncable::SYNCABLE_PRIORITY_PREF);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+  scoped_refptr<TestPrefModelAssociatorClient> client_ =
+      base::MakeRefCounted<TestPrefModelAssociatorClient>();
+};
+
+TEST_F(PrefServiceSyncableFactoryTestWithAlwaysSyncingPrefs,
+       ShouldReadPriorityPrefsFromAccountStoreRightAway) {
+  account_prefs_->SetValue(kBrowserPrefName, base::Value("pref"),
+                           /*flags=*/0);
+  account_prefs_->SetValue(kBrowserPriorityPrefName,
+                           base::Value("priority_pref"),
+                           /*flags=*/0);
+  account_prefs_->SetValue(kAlwaysSyncingPriorityPrefName,
+                           base::Value("always_syncing_priority_pref"),
+                           /*flags=*/0);
+  // Simulate sync enabled in previous run.
+  {
+    std::unique_ptr<PrefServiceSyncable> pref_service =
+        pref_service_syncable_factory_.CreateSyncable(prefs_.registry());
+    syncer::TestSyncService sync_service;
+    sync_service.GetUserSettings()->SetSelectedTypes(
+        /*sync_everything=*/false, {syncer::UserSelectableType::kPreferences});
+    pref_service->OnSyncServiceInitialized(&sync_service);
+    sync_service.Shutdown();
+  }
+
+  // New browser run.
+  std::unique_ptr<PrefServiceSyncable> pref_service =
+      pref_service_syncable_factory_.CreateSyncable(prefs_.registry());
+
+  // No OnSyncServiceInitialized() has been called yet. However, all the account
+  // pref values should be available immediately, even though the user selected
+  // types can't be queried from the SyncService yet.
+  EXPECT_THAT(pref_service->GetUserPrefValue(kBrowserPrefName),
+              testing::Pointee(testing::Eq("pref")));
+  EXPECT_THAT(pref_service->GetUserPrefValue(kBrowserPriorityPrefName),
+              testing::Pointee(testing::Eq("priority_pref")));
+  EXPECT_THAT(pref_service->GetUserPrefValue(kAlwaysSyncingPriorityPrefName),
+              testing::Pointee(testing::Eq("always_syncing_priority_pref")));
+}
+
+// This is not a real-life scenario since account values cannot exist prior to
+// sync being enabled before.
+TEST_F(PrefServiceSyncableFactoryTestWithAlwaysSyncingPrefs,
+       ShouldReadPrefsAndAlwaysSyncingPriorityPrefsFromAccountStoreRightAway) {
+  // Fresh browser run.
+  account_prefs_->SetValue(kBrowserPrefName, base::Value("pref"),
+                           /*flags=*/0);
+  account_prefs_->SetValue(kBrowserPriorityPrefName,
+                           base::Value("priority_pref"),
+                           /*flags=*/0);
+  account_prefs_->SetValue(kAlwaysSyncingPriorityPrefName,
+                           base::Value("always_syncing_priority_pref"),
+                           /*flags=*/0);
+  std::unique_ptr<PrefServiceSyncable> pref_service =
+      pref_service_syncable_factory_.CreateSyncable(prefs_.registry());
+
+  // No OnSyncServiceInitialized() has been called yet. Given that this is a
+  // fresh run, user selected types are not available till it can be queried
+  // from the SyncService. In such case, only regular priority prefs account
+  // values are not returned. Account values of non-priority prefs and the
+  // always syncing priority prefs are available right away.
+  EXPECT_THAT(pref_service->GetUserPrefValue(kBrowserPrefName),
+              testing::Pointee(testing::Eq("pref")));
+  EXPECT_THAT(pref_service->GetUserPrefValue(kAlwaysSyncingPriorityPrefName),
+              testing::Pointee(testing::Eq("always_syncing_priority_pref")));
+  EXPECT_FALSE(pref_service->GetUserPrefValue(kBrowserPriorityPrefName));
 }
 
 }  // namespace

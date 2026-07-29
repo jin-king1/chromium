@@ -4,8 +4,10 @@
 
 #import "components/password_manager/ios/password_suggestion_helper.h"
 
+#import <algorithm>
+#import <utility>
+
 #import "base/feature_list.h"
-#import "base/not_fatal_until.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/time/time.h"
 #import "components/autofill/core/common/form_data.h"
@@ -14,10 +16,12 @@
 #import "components/autofill/ios/browser/autofill_driver_ios.h"
 #import "components/autofill/ios/browser/form_suggestion.h"
 #import "components/password_manager/core/browser/features/password_features.h"
+#import "components/password_manager/core/browser/password_form.h"
+#import "components/password_manager/core/browser/password_form_cache.h"
 #import "components/password_manager/core/browser/password_manager_interface.h"
 #import "components/password_manager/core/browser/password_ui_utils.h"
-#import "components/password_manager/core/common/password_manager_features.h"
 #import "components/password_manager/ios/account_select_fill_data.h"
+#import "components/password_manager/ios/features.h"
 #import "components/password_manager/ios/ios_password_manager_driver_factory.h"
 #import "components/password_manager/ios/password_manager_ios_util.h"
 #import "components/password_manager/ios/password_manager_java_script_feature.h"
@@ -60,6 +64,46 @@ base::TimeDelta GetFormExtractionTimeoutMs() {
 // that originally triggered the cleanup task has the time to expire.
 base::TimeDelta GetCleanupTaskPeriodMs() {
   return GetFormExtractionTimeoutMs() + base::Milliseconds(50);
+}
+
+// Determines if the form should be automatically submitted.
+// The heuristic deems a form submittable if:
+// 1. It has valid username and password fields.
+// 2. There are no focusable fields (excluding checkboxes) between the
+//    username and the password.
+// 3. There are no focusable fields (excluding checkboxes) after the
+//    password.
+// 4. It does not likely contain a CAPTCHA.
+// Note: Empty fields found before the username do not prevent submission.
+bool ShouldTriggerSubmission(
+    password_manager::PasswordManagerInterface* password_manager,
+    password_manager::PasswordManagerDriver* driver,
+    autofill::FormRendererId form_renderer_id) {
+  if (!driver || !password_manager ||
+      !base::FeatureList::IsEnabled(
+          password_manager::features::kIOSPasswordAutoSubmission)) {
+    return false;
+  }
+  const password_manager::PasswordForm* form =
+      password_manager->GetPasswordFormCache()->GetPasswordForm(
+          driver, form_renderer_id);
+  if (!form) {
+    return false;
+  }
+  autofill::FieldGlobalId username_field_id;
+  autofill::FieldGlobalId password_field_id;
+  for (const autofill::FormFieldData& field : form->form_data.fields()) {
+    if (field.renderer_id() == form->username_element_renderer_id) {
+      username_field_id = field.global_id();
+    }
+    if (field.renderer_id() == form->password_element_renderer_id) {
+      password_field_id = field.global_id();
+    }
+  }
+  password_manager::SubmissionReadinessState readiness =
+      password_manager::CalculateSubmissionReadiness(
+          form->form_data, username_field_id, password_field_id);
+  return password_manager::CalculateTriggerSubmission(readiness);
 }
 
 }  // namespace
@@ -165,7 +209,8 @@ base::TimeDelta GetCleanupTaskPeriodMs() {
   BOOL _cleanupScheduled;
 
   // Password Manager tied to the same web state as this helper.
-  raw_ptr<password_manager::PasswordManagerInterface> _passwordManager;
+  raw_ptr<password_manager::PasswordManagerInterface, DanglingUntriaged>
+      _passwordManager;
 }
 
 #pragma mark - Initialization
@@ -188,7 +233,7 @@ base::TimeDelta GetCleanupTaskPeriodMs() {
 - (NSArray<FormSuggestion*>*)retrieveSuggestionsWithForm:
     (FormSuggestionProviderQuery*)formQuery {
   const std::string frameId = SysNSStringToUTF8(formQuery.frameID);
-  AccountSelectFillData* fillData = [self fillDataForFrameId:frameId];
+  AccountSelectFillData* fillData = [self fillDataForFrameId:frameId].first;
 
   BOOL isPasswordField =
       [self isPasswordFieldOnForm:formQuery
@@ -199,10 +244,13 @@ base::TimeDelta GetCleanupTaskPeriodMs() {
   if (fillData->IsSuggestionsAvailable(formQuery.formRendererID,
                                        formQuery.fieldRendererID,
                                        isPasswordField)) {
-    const password_manager::FormInfo* formInfo = fillData->GetFormInfo(
-        formQuery.formRendererID, formQuery.fieldRendererID, isPasswordField);
-    bool is_single_username_form = formInfo && formInfo->username_element_id &&
-                                   !formInfo->password_element_id;
+    password_manager::FormInfoRetrievalResult formInfoResult =
+        fillData->GetFormInfo(formQuery.formRendererID,
+                              formQuery.fieldRendererID, isPasswordField);
+    bool is_single_username_form =
+        formInfoResult.has_value() &&
+        formInfoResult.value()->username_element_id &&
+        !formInfoResult.value()->password_element_id;
 
     std::vector<password_manager::UsernameAndRealm> usernameAndRealms =
         fillData->RetrieveSuggestions(formQuery.formRendererID,
@@ -217,20 +265,32 @@ base::TimeDelta GetCleanupTaskPeriodMs() {
         realm = SysUTF8ToNSString(password_manager::GetShownOrigin(origin));
       }
 
+      autofill::SuggestionType suggestionType =
+          usernameAndRealm.is_backup_credential
+              ? autofill::SuggestionType::kBackupPasswordEntry
+              : autofill::SuggestionType::kPasswordEntry;
+
+      IOSPasswordManagerDriver* driver =
+          IOSPasswordManagerDriverFactory::FromWebStateAndWebFrame(
+              _webState.get(), [self frameWithId:frameId]);
+      bool should_trigger_submission = ShouldTriggerSubmission(
+          _passwordManager, driver, formQuery.formRendererID);
+
       FormSuggestionMetadata metadata;
       metadata.is_single_username_form = is_single_username_form;
+      metadata.likely_from_real_password_field = isPasswordField;
+      metadata.should_trigger_submission = should_trigger_submission;
+
       [results
-          addObject:
-              [FormSuggestion
-                         suggestionWithValue:username
-                          displayDescription:realm
-                                        icon:nil
-                                        type:autofill::SuggestionType::
-                                                 kPasswordEntry
-                                     payload:autofill::Suggestion::Payload()
-                              requiresReauth:YES
-                  acceptanceA11yAnnouncement:nil
-                                    metadata:std::move(metadata)]];
+          addObject:[FormSuggestion suggestionWithValue:username
+                                     displayDescription:realm
+                                                   icon:nil
+                                                   type:suggestionType
+                                                payload:autofill::Suggestion::
+                                                            Payload()
+                                         requiresReauth:YES
+                             acceptanceA11yAnnouncement:nil
+                                               metadata:std::move(metadata)]];
     }
   }
 
@@ -267,7 +327,7 @@ base::TimeDelta GetCleanupTaskPeriodMs() {
                              fillDataProvider:self
                               isPasswordField:isPasswordField];
 
-  AccountSelectFillData* fillData = [self fillDataForFrameId:frame_id];
+  AccountSelectFillData* fillData = [self fillDataForFrameId:frame_id].first;
 
   if (![formQuery hasFocusType] || !fillData->Empty() ||
       _framesFormExtractionStatus[frame_id] ==
@@ -306,11 +366,44 @@ base::TimeDelta GetCleanupTaskPeriodMs() {
   _framesFormExtractionStatus[frame_id] = FormExtractionStatus::kRequested;
 }
 
-- (std::unique_ptr<password_manager::FillData>)
+- (password_manager::FillDataRetrievalResult)
     passwordFillDataForUsername:(NSString*)username
+             isBackupCredential:(BOOL)isBackupCredential
+        likelyRealPasswordField:(bool)passwordField
+                 formIdentifier:(autofill::FormRendererId)formId
+                fieldIdentifier:(autofill::FieldRendererId)fieldId
+                        frameId:(const std::string&)frameId {
+  auto [fill_data, is_new] = [self fillDataForFrameId:frameId];
+  if (is_new) {
+    // If the AccountSelectFillData was freshly created, there is no way there
+    // is going to be FillData matching the query. Return an error as the result
+    // with the exact reason why the FillData wasn't available. This would
+    // ultimately lead not being to match the form for FillData but we wouldn't
+    // know exactly why.
+    return base::unexpected(
+        password_manager::FillDataRetrievalStatus::kNoFrame);
+  }
+  return fill_data->GetFillData(SysNSStringToUTF16(username),
+                                isBackupCredential, formId, fieldId,
+                                passwordField);
+}
+
+- (password_manager::FillDataRetrievalResult)
+    passwordFillDataForUsername:(NSString*)username
+             isBackupCredential:(BOOL)isBackupCredential
                      forFrameId:(const std::string&)frameId {
-  return [self fillDataForFrameId:frameId]->GetFillData(
-      SysNSStringToUTF16(username));
+  auto [fill_data, is_new] = [self fillDataForFrameId:frameId];
+  if (is_new) {
+    // If the AccountSelectFillData was freshly created, there is no way there
+    // is going to be FillData matching the query. Return an error as the result
+    // with the exact reason why the FillData wasn't available. This would
+    // ultimately lead not being to match the form for FillData but we wouldn't
+    // know exactly why.
+    return base::unexpected(
+        password_manager::FillDataRetrievalStatus::kNoFrame);
+  }
+  return fill_data->GetFillData(SysNSStringToUTF16(username),
+                                isBackupCredential);
 }
 
 - (void)resetForNewPage {
@@ -319,12 +412,31 @@ base::TimeDelta GetCleanupTaskPeriodMs() {
   _framesFormExtractionStatus.clear();
 }
 
+- (void)cleanupForFrameId:(const std::string&)frameId {
+  _fillDataMap.erase(frameId);
+  _framesFormExtractionStatus.erase(frameId);
+
+  NSString* nsFrameId = SysUTF8ToNSString(frameId);
+  NSMutableArray<PendingFormQuery*>* remainingQueries = [NSMutableArray array];
+  for (PendingFormQuery* query in _pendingFormQueries) {
+    if ([query.frameId isEqualToString:nsFrameId]) {
+      // Complete the query even if the frame is gone so any task waiting on
+      // this can be completed. Worst case: the task will be completed with
+      // no suggestions available.
+      [query runCompletion];
+    } else {
+      [remainingQueries addObject:query];
+    }
+  }
+  _pendingFormQueries = remainingQueries;
+}
+
 - (void)processWithPasswordFormFillData:(const PasswordFormFillData&)formData
                              forFrameId:(const std::string&)frameId
                             isMainFrame:(BOOL)isMainFrame
                       forSecurityOrigin:(const url::Origin&)origin {
   DCHECK(_webState.get());
-  [self fillDataForFrameId:frameId]->Add(
+  [self fillDataForFrameId:frameId].first->Add(
       formData, [self shouldAlwaysPopulateRealmForFrame:frameId
                                             isMainFrame:isMainFrame
                                       forSecurityOrigin:origin]);
@@ -333,7 +445,7 @@ base::TimeDelta GetCleanupTaskPeriodMs() {
   // to fields which must trigger a specific behavior. In this case,
   // the username and password fields' renderer ids are sent through
   // "attachListenersForBottomSheet" so that they may trigger the
-  // password bottom sheet on focus events for these specific fields.
+  // credential bottom sheet on focus events for these specific fields.
   std::vector<autofill::FieldRendererId> rendererIds(2);
   rendererIds[0] = formData.username_element_renderer_id;
   rendererIds[1] = formData.password_element_renderer_id;
@@ -348,7 +460,7 @@ base::TimeDelta GetCleanupTaskPeriodMs() {
 
 - (BOOL)isPasswordFieldOnForm:(FormSuggestionProviderQuery*)formQuery
                      webFrame:(web::WebFrame*)webFrame {
-  if (![formQuery.fieldType isEqual:kObfuscatedFieldType]) {
+  if (![formQuery.fieldType isEqualToString:kObfuscatedFieldType]) {
     return NO;
   }
 
@@ -358,15 +470,11 @@ base::TimeDelta GetCleanupTaskPeriodMs() {
     return YES;
   }
 
-  bool useNewDetection = base::FeatureList::IsEnabled(
-      password_manager::features::kIOSImprovePasswordFieldDetectionForFilling);
-
   // If the new approach to detect password fields is enabled, first
   // check if the Password Manager thinks it is a password field, then fallback
   // to using Autofill if the Password Manager verdict is negative.
-  return (useNewDetection &&
-          [self isPasswordFieldFromPasswordManagerPerspective:formQuery
-                                                     webFrame:webFrame]) ||
+  return [self isPasswordFieldFromPasswordManagerPerspective:formQuery
+                                                    webFrame:webFrame] ||
          [self isPasswordFieldFromAutofillPerspective:formQuery
                                              webFrame:webFrame];
 }
@@ -385,7 +493,7 @@ base::TimeDelta GetCleanupTaskPeriodMs() {
     return YES;
   }
 
-  autofill::FormStructure* form_structure =
+  const autofill::FormStructure* form_structure =
       driver->GetAutofillManager().FindCachedFormById(
           {driver->GetFrameToken(), formQuery.formRendererID});
   if (!form_structure) {
@@ -401,25 +509,33 @@ base::TimeDelta GetCleanupTaskPeriodMs() {
     return YES;
   }
 
-  autofill::FieldType fieldType = (*it)->Type().GetStorableType();
-  switch (GroupTypeOfFieldType(fieldType)) {
-    case autofill::FieldTypeGroup::kPasswordField:
-    case autofill::FieldTypeGroup::kNoGroup:
-      return YES;  // May be a password field.
-    case autofill::FieldTypeGroup::kName:
-    case autofill::FieldTypeGroup::kEmail:
-    case autofill::FieldTypeGroup::kCompany:
-    case autofill::FieldTypeGroup::kAddress:
-    case autofill::FieldTypeGroup::kPhone:
-    case autofill::FieldTypeGroup::kCreditCard:
-    case autofill::FieldTypeGroup::kTransaction:
-    case autofill::FieldTypeGroup::kUsernameField:
-    case autofill::FieldTypeGroup::kUnfillable:
-    case autofill::FieldTypeGroup::kIban:
-    case autofill::FieldTypeGroup::kStandaloneCvcField:
-    case autofill::FieldTypeGroup::kAutofillAi:
-      return NO;
-  }
+  return std::ranges::any_of(
+             (*it)->Type().GetTypes(),
+             [](autofill::FieldType fieldType) {
+               switch (GroupTypeOfFieldType(fieldType)) {
+                 case autofill::FieldTypeGroup::kPasswordField:
+                 case autofill::FieldTypeGroup::kNoGroup:
+                   return true;  // May be a password field.
+                 case autofill::FieldTypeGroup::kName:
+                 case autofill::FieldTypeGroup::kEmail:
+                 case autofill::FieldTypeGroup::kCompany:
+                 case autofill::FieldTypeGroup::kAddress:
+                 case autofill::FieldTypeGroup::kPhone:
+                 case autofill::FieldTypeGroup::kCreditCard:
+                 case autofill::FieldTypeGroup::kTransaction:
+                 case autofill::FieldTypeGroup::kUsernameField:
+                 case autofill::FieldTypeGroup::kUnfillable:
+                 case autofill::FieldTypeGroup::kIban:
+                 case autofill::FieldTypeGroup::kStandaloneCvcField:
+                 case autofill::FieldTypeGroup::kAutofillAi:
+                 case autofill::FieldTypeGroup::kLoyaltyCard:
+                 case autofill::FieldTypeGroup::kOneTimePassword:
+                   return false;
+               }
+               NOTREACHED();
+             })
+             ? YES
+             : NO;
 }
 
 #pragma mark - FillDataProvider
@@ -430,8 +546,8 @@ base::TimeDelta GetCleanupTaskPeriodMs() {
                       fieldRendererId:(autofill::FieldRendererId)fieldRendererId
                       isPasswordField:(bool)isPasswordField {
   return [self fillDataForFrameId:SysNSStringToUTF8(frameId)]
-      ->IsSuggestionsAvailable(formRendererId, fieldRendererId,
-                               isPasswordField);
+      .first->IsSuggestionsAvailable(formRendererId, fieldRendererId,
+                                     isPasswordField);
 }
 
 #pragma mark - Private
@@ -491,12 +607,16 @@ base::TimeDelta GetCleanupTaskPeriodMs() {
   }
 }
 
-- (AccountSelectFillData*)fillDataForFrameId:(const std::string&)frameId {
+// Returns a pair where the first element is the AccountSelectFillData for the
+// corresponding `frameId` and the second element a bool that is true if the
+// AccountSelectFillData had to be lazily created (i.e. didn't exist before).
+- (std::pair<AccountSelectFillData*, bool>)fillDataForFrameId:
+    (const std::string&)frameId {
   // Create empty AccountSelectFillData for the frame if it doesn't exist.
-  return _fillDataMap
-      .insert(
-          std::make_pair(frameId, std::make_unique<AccountSelectFillData>()))
-      .first->second.get();
+  auto insert_result = _fillDataMap.insert(
+      std::make_pair(frameId, std::make_unique<AccountSelectFillData>()));
+  return std::make_pair(insert_result.first->second.get(),
+                        insert_result.second);
 }
 
 // Completes, if needed, frame extraction for `frameId`.

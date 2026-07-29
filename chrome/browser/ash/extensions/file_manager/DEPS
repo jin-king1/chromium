@@ -1,11 +1,5 @@
 include_rules = [
-  # ChromeOS should not depend on //chrome. See //docs/chromeos/code.md for
-  # details.
-  "-chrome",
-
-  # This directory is in //chrome, which violates the rule above. Allow this
-  # directory to #include its own files.
-  "+chrome/browser/ash/extensions/file_manager",
+  "+third_party/ced",
 
   # Existing dependencies within //chrome. There is an active effort to
   # refactor //chrome/browser/ash to break these dependencies; see b/332804822.
@@ -14,7 +8,6 @@ include_rules = [
   # Files residing in certain directories (e.g., //chrome/browser) are listed
   # individually. Other dependencies within //chrome are listed on a per-
   # directory basis. See //tools/chromeos/gen_deps.sh for details.
-  "+chrome/app/vector_icons",
   "+chrome/browser/app_mode",
   "+chrome/browser/apps/app_service",
   "+chrome/browser/apps/platform_apps/api/media_galleries",
@@ -46,8 +39,6 @@ include_rules = [
   "+chrome/browser/extensions/extension_service.h",
   "+chrome/browser/extensions/extension_util.h",
   "+chrome/browser/feedback/show_feedback_page.h",
-  "+chrome/browser/lifetime",
-  "+chrome/browser/metrics",
   "+chrome/browser/net",
   "+chrome/browser/notifications",
   "+chrome/browser/pdf",
@@ -60,17 +51,14 @@ include_rules = [
   "+chrome/browser/ui/ash/multi_user",
   "+chrome/browser/ui/ash/system_web_apps",
   "+chrome/browser/ui/browser.h",
-  "+chrome/browser/ui/browser_list.h",
   "+chrome/browser/ui/browser_window.h",
   "+chrome/browser/ui/chrome_pages.h",
-  "+chrome/browser/ui/settings_window_manager_chromeos.h",
   "+chrome/browser/ui/webui/ash/cloud_upload",
   "+chrome/browser/ui/webui/ash/manage_mirrorsync",
   "+chrome/common/chrome_features.h",
   "+chrome/common/chrome_paths.h",
   "+chrome/common/chrome_switches.h",
   "+chrome/common/extensions",
-  "+chrome/common/pref_names.h",
   "+chrome/grit",
   "+chrome/services/media_gallery_util/public/cpp",
   "+chrome/services/media_gallery_util/public/mojom",
@@ -79,7 +67,11 @@ include_rules = [
 ]
 
 specific_include_rules = {
-  "private_api_dialog.cc" : [
+  "private_api_dialog\\.cc" : [
     "+chrome/browser/ui/views/select_file_dialog_extension/select_file_dialog_extension.h",
   ],
+
+  "system_notification_manager_unittest\\.cc": [
+    "+chrome/browser/ui/settings_window_manager_chromeos.h",
+  ]
 }

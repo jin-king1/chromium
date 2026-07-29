@@ -7,6 +7,7 @@
 
 #include "base/feature_list.h"
 #include "base/metrics/field_trial_params.h"
+#include "build/build_config.h"
 
 namespace features {
 
@@ -46,6 +47,7 @@ extern const base::FeatureParam<DevToolsFreestylerExecutionMode>
     kDevToolsFreestylerExecutionMode;
 extern const base::FeatureParam<bool> kDevToolsFreestylerPatching;
 extern const base::FeatureParam<bool> kDevToolsFreestylerMultimodal;
+extern const base::FeatureParam<bool> kDevToolsFreestylerMultimodalUploadInput;
 extern const base::FeatureParam<bool> kDevToolsFreestylerFunctionCalling;
 
 BASE_DECLARE_FEATURE(kDevToolsAiAssistanceNetworkAgent);
@@ -74,22 +76,74 @@ extern const base::FeatureParam<double>
 extern const base::FeatureParam<DevToolsFreestylerUserTier>
     kDevToolsAiAssistanceFileAgentUserTier;
 
+BASE_DECLARE_FEATURE(kDevToolsAiAssistanceAccessibilityAgent);
+
+BASE_DECLARE_FEATURE(kDevToolsAiAssistanceStorageAgent);
+
+BASE_DECLARE_FEATURE(kDevToolsAiCodeCompletion);
+extern const base::FeatureParam<std::string> kDevToolsAiCodeCompletionModelId;
+extern const base::FeatureParam<double> kDevToolsAiCodeCompletionTemperature;
+extern const base::FeatureParam<DevToolsFreestylerUserTier>
+    kDevToolsAiCodeCompletionUserTier;
+
+BASE_DECLARE_FEATURE(kDevToolsAiCodeGeneration);
+extern const base::FeatureParam<std::string> kDevToolsAiCodeGenerationModelId;
+extern const base::FeatureParam<double> kDevToolsAiCodeGenerationTemperature;
+extern const base::FeatureParam<DevToolsFreestylerUserTier>
+    kDevToolsAiCodeGenerationUserTier;
+
+BASE_DECLARE_FEATURE(kDevToolsAiCodeCompletionStyles);
+extern const base::FeatureParam<std::string> kDevToolsAiCodeCompletionStylesModelId;
+extern const base::FeatureParam<double> kDevToolsAiCodeCompletionStylesTemperature;
+extern const base::FeatureParam<DevToolsFreestylerUserTier>
+    kDevToolsAiCodeCompletionStylesUserTier;
+
 BASE_DECLARE_FEATURE(kDevToolsSharedProcessInfobar);
-BASE_DECLARE_FEATURE(kDevToolsVeLogging);
-extern const base::FeatureParam<bool> kDevToolsVeLoggingTesting;
 
 BASE_DECLARE_FEATURE(kDevToolsAnimationStylesInStylesTab);
 
-BASE_DECLARE_FEATURE(kDevToolsAutomaticFileSystems);
-
-BASE_DECLARE_FEATURE(kDevToolsImprovedWorkspaces);
-
 BASE_DECLARE_FEATURE(kDevToolsWellKnown);
-
-BASE_DECLARE_FEATURE(kDevToolsCssValueTracing);
 
 BASE_DECLARE_FEATURE(kDevToolsAiGeneratedTimelineLabels);
 
+BASE_DECLARE_FEATURE(kDevToolsNewPermissionDialog);
+
+BASE_DECLARE_FEATURE(kDevToolsVerticalDrawer);
+
+BASE_DECLARE_FEATURE(kDevToolsGlobalAiButton);
+extern const base::FeatureParam<bool> kDevToolsGlobalAiButtonPromotionEnabled;
+
+BASE_DECLARE_FEATURE(kDevToolsGdpProfiles);
+extern const base::FeatureParam<bool> kDevToolsGdpProfilesBadgesEnabled;
+extern const base::FeatureParam<bool> kDevToolsGdpProfilesStarterBadgeEnabled;
+
+BASE_DECLARE_FEATURE(kDevToolsEnableDurableMessages);
+
+BASE_DECLARE_FEATURE(kDevToolsAcceptDebuggingConnections);
+
+BASE_DECLARE_FEATURE(kDevToolsShowPolicyDialog);
+
+BASE_DECLARE_FEATURE(kDevToolsAiAssistanceContextSelectionAgent);
+
+BASE_DECLARE_FEATURE(kDevToolsConsoleInsightsTeasers);
+extern const base::FeatureParam<bool>
+    kDevToolsConsoleInsightsTeasersAllowWithoutGpu;
+
+BASE_DECLARE_FEATURE(kDevToolsAiAssistanceV2);
+
+BASE_DECLARE_FEATURE(kDevToolsAiV2Architecture);
+
+BASE_DECLARE_FEATURE(kDevToolsProtocolMonitor);
+
+BASE_DECLARE_FEATURE(kDevToolsGeminiRebranding);
+
+BASE_DECLARE_FEATURE(kDevToolsAiOriginTrialsApis);
+
+BASE_DECLARE_FEATURE(kDevToolsUseGcaApi);
+
+BASE_DECLARE_FEATURE(kDevToolsPlusButton);
+
+BASE_DECLARE_FEATURE(kDevToolsInstrumentationBreakpoints);
 }  // namespace features
 
 #endif  // CHROME_BROWSER_DEVTOOLS_FEATURES_H_

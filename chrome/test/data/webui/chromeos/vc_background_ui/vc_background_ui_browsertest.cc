@@ -7,8 +7,10 @@
 #include "ash/constants/ash_features.h"
 #include "ash/webui/vc_background_ui/url_constants.h"
 #include "base/test/scoped_feature_list.h"
+#include "chrome/browser/browser_process.h"
 #include "chrome/test/base/web_ui_mocha_browser_test.h"
-#include "components/manta/features.h"
+#include "components/prefs/pref_service.h"
+#include "components/variations/pref_names.h"
 #include "content/public/test/browser_test.h"
 
 namespace ash::vc_background_ui {
@@ -17,10 +19,16 @@ class VcBackgroundUIBrowserTest : public WebUIMochaBrowserTest {
  protected:
   VcBackgroundUIBrowserTest() {
     scoped_feature_list_.InitWithFeatures(
-        {features::kVcBackgroundReplace, manta::features::kMantaService,
+        {features::kVcBackgroundReplace,
          features::kFeatureManagementVideoConference},
         {});
     set_test_loader_host(std::string(kChromeUIVcBackgroundHost));
+  }
+
+  void SetUpOnMainThread() override {
+    PrefService* local_state = g_browser_process->local_state();
+    local_state->SetString(variations::prefs::kVariationsCountry, "us");
+    WebUIMochaBrowserTest::SetUpOnMainThread();
   }
 
   base::test::ScopedFeatureList scoped_feature_list_;

@@ -58,9 +58,6 @@ class FencedFrameTestHelper {
   void CreateFencedFrameAsync(RenderFrameHost* fenced_frame_parent_rfh,
                               const GURL& url);
 
-  void NavigateFencedFrameUsingFledge(RenderFrameHost* fenced_frame_parent,
-                                      const GURL& url,
-                                      const std::string fenced_frame_id);
 
   // This method provides a way to navigate frames within a fenced frame's tree,
   // and synchronously wait for the load to finish. This method returns the
@@ -111,13 +108,6 @@ GURL AddAndVerifyFencedFrameURL(
     FencedFrameURLMapping* fenced_frame_url_mapping,
     const GURL& https_url,
     scoped_refptr<FencedFrameReporter> fenced_frame_reporter = nullptr);
-
-// Revoke the fenced frame untrusted network access.
-bool RevokeFencedFrameUntrustedNetwork(RenderFrameHost* rfh);
-
-// Exempt the `urls` from fenced frame untrusted network revocation.
-void ExemptUrlsFromFencedFrameNetworkRevocation(RenderFrameHost* rfh,
-                                                const std::vector<GURL>& urls);
 
 // Create and set fenced frame config to map to the given URL.
 void SetFencedFrameConfig(RenderFrameHost* rfh, const GURL& url);

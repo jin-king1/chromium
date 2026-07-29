@@ -5,19 +5,25 @@
 #ifndef NET_DNS_HOST_RESOLVER_SYSTEM_TASK_H_
 #define NET_DNS_HOST_RESOLVER_SYSTEM_TASK_H_
 
+#include <memory>
 #include <optional>
+#include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/functional/callback.h"
-#include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ref.h"
+#include "base/sequence_checker.h"
 #include "base/task/task_runner.h"
+#include "base/time/time.h"
 #include "net/base/address_list.h"
 #include "net/base/ip_endpoint.h"
 #include "net/base/net_export.h"
 #include "net/base/network_anonymization_key.h"
 #include "net/base/network_handle.h"
+#include "net/base/request_priority.h"
+#include "net/dns/host_resolver_internal_result.h"
 #include "net/dns/host_resolver_proc.h"
 #include "net/dns/public/dns_query_type.h"
 #include "net/log/net_log_with_source.h"
@@ -97,7 +103,8 @@ class NET_EXPORT HostResolverSystemTask {
 
   struct CacheParams {
     CacheParams(HostResolverCache& cache,
-                NetworkAnonymizationKey network_anonymization_key);
+                NetworkAnonymizationKey network_anonymization_key,
+                handles::NetworkHandle network);
     CacheParams(const CacheParams&);
     CacheParams& operator=(const CacheParams&) = default;
     CacheParams(CacheParams&&);
@@ -106,12 +113,14 @@ class NET_EXPORT HostResolverSystemTask {
 
     base::raw_ref<HostResolverCache> cache;
     NetworkAnonymizationKey network_anonymization_key;
+    handles::NetworkHandle target_network = handles::kInvalidNetworkHandle;
   };
 
   static std::unique_ptr<HostResolverSystemTask> Create(
       std::string hostname,
       AddressFamily address_family,
       HostResolverFlags flags,
+      RequestPriority priority,
       const Params& params = Params(nullptr, 0),
       const NetLogWithSource& job_net_log = NetLogWithSource(),
       handles::NetworkHandle network = handles::kInvalidNetworkHandle,
@@ -124,7 +133,20 @@ class NET_EXPORT HostResolverSystemTask {
       HostResolverFlags flags,
       const Params& params = Params(nullptr, 0),
       const NetLogWithSource& job_net_log = NetLogWithSource(),
-      handles::NetworkHandle network = handles::kInvalidNetworkHandle);
+      handles::NetworkHandle network = handles::kInvalidNetworkHandle,
+      // TODO(crbug.com/450428442): Eliminate this default priority argument
+      // once all external callers are updated under a follow-up CL.
+      RequestPriority priority = RequestPriority::DEFAULT_PRIORITY);
+
+  // Caching time used for entries cached by the task and for creation of
+  // results in ConvertSystemResults().
+  //
+  // System resolver results give no TTL, so an arbitrary caching time is
+  // needed. Pick 1 minute to match the minimum cache time for built-in resolver
+  // results because this is only serving as a secondary cache to the caching
+  // done by the system. Additionally, this matches the long-standing historical
+  // behavior from previous implementations of HostResolver caching.
+  constexpr static base::TimeDelta kTtl = base::Minutes(1);
 
   // If `hostname` is std::nullopt, resolves the result of GetHostName().
   // Prefer using the above 2 static functions for constructing a
@@ -136,7 +158,10 @@ class NET_EXPORT HostResolverSystemTask {
       const Params& params = Params(nullptr, 0),
       const NetLogWithSource& job_net_log = NetLogWithSource(),
       handles::NetworkHandle network = handles::kInvalidNetworkHandle,
-      std::optional<CacheParams> cache_params = std::nullopt);
+      std::optional<CacheParams> cache_params = std::nullopt,
+      // TODO(crbug.com/450428442): Eliminate this default priority argument
+      // once all external callers are updated under a follow-up CL.
+      RequestPriority priority = RequestPriority::DEFAULT_PRIORITY);
 
   HostResolverSystemTask(const HostResolverSystemTask&) = delete;
   HostResolverSystemTask& operator=(const HostResolverSystemTask&) = delete;
@@ -156,6 +181,15 @@ class NET_EXPORT HostResolverSystemTask {
     return results_cb_.is_null();
   }
 
+  // Helper to convert AddressList results as produced by HostResolverSystemTask
+  // into a HostResolverInternalResult set.
+  static std::set<std::unique_ptr<HostResolverInternalResult>>
+  ConvertSystemResults(std::string_view domain_name,
+                       DnsQueryTypeSet query_types,
+                       const AddressList& address_list,
+                       base::Time now,
+                       base::TimeTicks now_ticks);
+
  private:
   void StartLookupAttempt();
 
@@ -166,12 +200,7 @@ class NET_EXPORT HostResolverSystemTask {
                         int error);
 
   void MaybeCacheResults(const AddressList& address_list);
-  void CacheEndpoints(std::string domain_name,
-                      std::vector<IPEndPoint> endpoints,
-                      DnsQueryType query_type);
-  void CacheAlias(std::string domain_name,
-                  DnsQueryType query_type,
-                  std::string target_name);
+  void CacheResult(std::unique_ptr<HostResolverInternalResult> result);
 
   // If `hostname_` is std::nullopt, this class should resolve the result of
   // net::GetHostName() (the machine's own hostname).
@@ -199,6 +228,9 @@ class NET_EXPORT HostResolverSystemTask {
   const handles::NetworkHandle network_;
 
   std::optional<CacheParams> cache_params_;
+
+  // The priority of the task.
+  const RequestPriority priority_;
 
   SEQUENCE_CHECKER(sequence_checker_);
 

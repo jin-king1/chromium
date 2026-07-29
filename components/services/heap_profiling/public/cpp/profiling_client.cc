@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "components/services/heap_profiling/public/cpp/profiling_client.h"
 
 #include <string>
@@ -14,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/compiler_specific.h"
 #include "base/debug/stack_trace.h"
 #include "base/no_destructor.h"
 #include "base/notreached.h"
@@ -64,8 +60,9 @@ void ShimNewMallocZonesAndReschedule(base::Time end_time,
 
 void ProfilingClient::StartProfiling(mojom::ProfilingParamsPtr params,
                                      StartProfilingCallback callback) {
-  if (started_profiling_)
+  if (started_profiling_) {
     return;
+  }
   started_profiling_ = true;
 
 #if BUILDFLAG(IS_APPLE) && !PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC) && \
@@ -83,6 +80,17 @@ void ProfilingClient::StartProfiling(mojom::ProfilingParamsPtr params,
         // && PA_BUILDFLAG(USE_ALLOCATOR_SHIM)
 
   StartProfilingInternal(std::move(params), std::move(callback));
+}
+
+void ProfilingClient::StopProfiling(StopProfilingCallback callback) {
+  if (!started_profiling_) {
+    std::move(callback).Run();
+    return;
+  }
+
+  base::SamplingHeapProfiler::Get()->Stop();
+  started_profiling_ = false;
+  std::move(callback).Run();
 }
 
 namespace {
@@ -111,8 +119,12 @@ void InitAllocationRecorder(mojom::ProfilingParamsPtr params) {
   using base::trace_event::AllocationContextTracker;
   using CaptureMode = base::trace_event::AllocationContextTracker::CaptureMode;
 
-  // Must be done before hooking any functions that make stack traces.
+#if !BUILDFLAG(IS_WIN) || !defined(OFFICIAL_BUILD)
+  // Must be done before hooking any functions that make stack traces. Windows
+  // release builds crash if symbols are requested after sandbox lockdown, but
+  // will still produce address-only stacks if this function not called.
   base::debug::EnableInProcessStackDumping();
+#endif
 
   if (params->stack_mode == mojom::StackMode::NATIVE_WITH_THREAD_NAMES) {
     g_include_thread_names = true;
@@ -132,8 +144,9 @@ void InitAllocationRecorder(mojom::ProfilingParamsPtr params) {
 void AllocatorHooksHaveBeenInitialized() {
   base::AutoLock lock(GetOnInitAllocatorShimLock());
   g_initialized_ = true;
-  if (!GetOnInitAllocatorShimCallback())
+  if (!GetOnInitAllocatorShimCallback()) {
     return;
+  }
   GetOnInitAllocatorShimTaskRunner()->PostTask(
       FROM_HERE, std::move(GetOnInitAllocatorShimCallback()));
 }
@@ -159,8 +172,9 @@ bool SetOnInitAllocatorShimCallbackForTesting(
     base::OnceClosure callback,
     scoped_refptr<base::TaskRunner> task_runner) {
   base::AutoLock lock(GetOnInitAllocatorShimLock());
-  if (g_initialized_)
+  if (g_initialized_) {
     return true;
+  }
   GetOnInitAllocatorShimCallback() = std::move(callback);
   GetOnInitAllocatorShimTaskRunner() = task_runner;
   return false;
@@ -199,8 +213,8 @@ void ProfilingClient::RetrieveHeapProfile(
     mojo_sample->stack.insert(
         mojo_sample->stack.end(),
         reinterpret_cast<const uintptr_t*>(sample.stack.data()),
-        reinterpret_cast<const uintptr_t*>(sample.stack.data() +
-                                           sample.stack.size()));
+        reinterpret_cast<const uintptr_t*>(
+            UNSAFE_TODO(sample.stack.data() + sample.stack.size())));
     if (g_include_thread_names) {
       static const char* kUnknownThreadName = "<unknown>";
       const char* thread_name =
@@ -211,10 +225,12 @@ void ProfilingClient::RetrieveHeapProfile(
     profile->samples.push_back(std::move(mojo_sample));
   }
   profile->strings.reserve(strings.size() + thread_names.size());
-  for (const char* string : strings)
+  for (const char* string : strings) {
     profile->strings.emplace(reinterpret_cast<uintptr_t>(string), string);
-  for (const char* string : thread_names)
+  }
+  for (const char* string : thread_names) {
     profile->strings.emplace(reinterpret_cast<uintptr_t>(string), string);
+  }
 
   std::move(callback).Run(std::move(profile));
 }

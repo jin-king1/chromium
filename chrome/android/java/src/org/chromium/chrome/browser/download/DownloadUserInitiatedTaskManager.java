@@ -13,8 +13,12 @@ import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.Log;
 import org.chromium.base.metrics.RecordHistogram;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.components.background_task_scheduler.BackgroundTask.TaskFinishedCallback;
 
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -24,6 +28,7 @@ import java.util.Map;
  * attaching the notification to the job life cycle. Starting and stopping of jobs is
  * handled in AutoResumptionHandler in native. Only active for Android versions >= U.
  */
+@NullMarked
 public class DownloadUserInitiatedTaskManager extends DownloadContinuityManager {
     private static final String TAG = "DownloadUitm";
 
@@ -35,14 +40,17 @@ public class DownloadUserInitiatedTaskManager extends DownloadContinuityManager 
     @IntDef({
         NotificationAttachEvent.ATTACHED_ON_JOB_START,
         NotificationAttachEvent.ATTACHED_AFTER_JOB_START,
-        NotificationAttachEvent.NEVER_ATTACHED_BEFORE_JOB_COMPLETE
+        NotificationAttachEvent.NEVER_ATTACHED_BEFORE_JOB_COMPLETE,
+        NotificationAttachEvent.RESUMPTION_JOB_STARTED,
     })
+    @Retention(RetentionPolicy.SOURCE)
     public @interface NotificationAttachEvent {
         int ATTACHED_ON_JOB_START = 0;
         int ATTACHED_AFTER_JOB_START = 1;
         int NEVER_ATTACHED_BEFORE_JOB_COMPLETE = 2;
+        int RESUMPTION_JOB_STARTED = 3;
 
-        int COUNT = 3;
+        int COUNT = 4;
     }
 
     /**
@@ -58,7 +66,7 @@ public class DownloadUserInitiatedTaskManager extends DownloadContinuityManager 
      * maintaining a boolean {@code mHasUnseenCallbacks} which is set when a new callback is
      * received.
      */
-    private Map<Integer, TaskFinishedCallback> mTaskNotificationCallbacks = new HashMap<>();
+    private final Map<Integer, TaskFinishedCallback> mTaskNotificationCallbacks = new HashMap<>();
 
     /**
      * Accounts for callbacks for jobs started that haven't yet been attached with a notification.
@@ -82,7 +90,7 @@ public class DownloadUserInitiatedTaskManager extends DownloadContinuityManager 
      * @param taskNotificationCallback The callback to be invoked to attach notification.
      */
     public void setTaskNotificationCallback(
-            int taskId, TaskFinishedCallback taskNotificationCallback) {
+            int taskId, @Nullable TaskFinishedCallback taskNotificationCallback) {
         if (taskNotificationCallback == null) {
             mTaskNotificationCallbacks.remove(taskId);
             if (mHasUnseenCallbacks) {
@@ -164,7 +172,7 @@ public class DownloadUserInitiatedTaskManager extends DownloadContinuityManager 
         mPinnedNotificationId = notificationId;
     }
 
-    private static void recordNotificationAttachEevent(@NotificationAttachEvent int event) {
+    public static void recordNotificationAttachEevent(@NotificationAttachEvent int event) {
         RecordHistogram.recordEnumeratedHistogram(
                 "Download.Android.NotificationAttachEvent", event, NotificationAttachEvent.COUNT);
     }

@@ -13,6 +13,9 @@
 #include "extensions/browser/extension_registry_factory.h"
 #include "extensions/browser/extensions_browser_client.h"
 #include "extensions/browser/process_map_factory.h"
+#include "extensions/buildflags/buildflags.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 using content::BrowserContext;
 
@@ -27,7 +30,8 @@ WebRequestEventRouter* WebRequestEventRouterFactory::GetForBrowserContext(
 
 // static
 WebRequestEventRouterFactory* WebRequestEventRouterFactory::GetInstance() {
-  return base::Singleton<WebRequestEventRouterFactory>::get();
+  static base::NoDestructor<WebRequestEventRouterFactory> instance;
+  return instance.get();
 }
 
 WebRequestEventRouterFactory::WebRequestEventRouterFactory()

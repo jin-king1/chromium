@@ -115,9 +115,7 @@ std::unique_ptr<em::PolicyFetchResponse> AssembleAndSignPolicy(
 
 }  // namespace
 
-BASE_FEATURE(kOwnerSettingsWithSha256,
-             "OwnerSettingsWithSha256",
-             base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kOwnerSettingsWithSha256, base::FEATURE_ENABLED_BY_DEFAULT);
 
 OwnerSettingsService::OwnerSettingsService(
     const scoped_refptr<ownership::OwnerKeyUtil>& owner_key_util)
@@ -198,6 +196,12 @@ void OwnerSettingsService::RunPendingIsOwnerCallbacksForTesting(bool is_owner) {
   is_owner_callbacks.swap(pending_is_owner_callbacks_);
   for (auto& callback : is_owner_callbacks)
     std::move(callback).Run(is_owner);
+}
+
+void OwnerSettingsService::Shutdown() {
+  for (auto& observer : observers_) {
+    observer.OnServiceShutdown();
+  }
 }
 
 bool OwnerSettingsService::SetString(const std::string& setting,

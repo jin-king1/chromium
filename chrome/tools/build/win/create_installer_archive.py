@@ -189,6 +189,14 @@ def CopySectionFilesToStagingDir(config, section, staging_dir, src_dir,
         if option.endswith('dir'):
             continue
 
+        if options.use_static_angle == 'True' and option.lower() in [
+                'libegl.dll', 'libglesv2.dll'
+        ]:
+            if verbose:
+                print('Skipping ANGLE library in static build: {}'.format(
+                    option))
+            continue
+
         src_subdir = option.replace('\\', os.sep)
         dst_dir = os.path.join(staging_dir, config.get(section, option))
         dst_dir = dst_dir.replace('\\', os.sep)
@@ -429,29 +437,28 @@ def PrepareSetupExec(options, current_version, prev_version):
         setup_file_path = os.path.join(options.build_dir, SETUP_EXEC)
         # The mtime of the setup file gets baked into makecab's output,
         # so if build_time is specified, then apply it here too.
-        original_mtimestamp = None
+        mtimestamp = os.path.getmtime(setup_file_path)
         if options.build_time:
-            original_mtimestamp = os.path.getmtime(setup_file_path)
             mtimestamp = int(options.build_time)
-            os.utime(setup_file_path, (mtimestamp, mtimestamp))
-        # Use makecab.py instead of makecab.exe so that this works when building
-        # on non-Windows hosts too.
+        # Use makecab.py instead of makecab.exe so that this works when
+        # building on non-Windows hosts too. makecab.py is a Python scripts
+        # that acts like Microsoft makecab.exe, and use InputMtime as
+        # a custom option that we invented to make the output of makcab.py
+        # deterministic, which is not supported by makecab.exe.
         makecab_py = os.path.join(os.path.dirname(__file__), 'makecab.py')
         cmd = [
             sys.executable,
             makecab_py,
             '/D',
             'CompressionType=LZX',
+            '/D',
+            'InputMtime=%d' % mtimestamp,
             '/V1',
             '/L',
             options.output_dir,
             setup_file_path,
         ]
         RunSystemCommand(cmd, options.verbose)
-        if original_mtimestamp:
-            # Restore the original mtime, for Ninja's benefit.
-            os.utime(setup_file_path,
-                     (original_mtimestamp, original_mtimestamp))
         setup_file = SETUP_EXEC[:-1] + "_"
     return setup_file
 
@@ -728,6 +735,9 @@ def _ParseOptions():
     parser.add_option('--enable_hidpi',
                       default='0',
                       help='Whether to include HiDPI resource files.')
+    parser.add_option('--use_static_angle',
+                      default="False",
+                      help='Whether ANGLE is statically linked.')
     parser.add_option('--include_snapshotblob',
                       default='0',
                       help='Whether to include the V8 snapshot blob.')

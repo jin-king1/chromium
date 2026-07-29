@@ -9,28 +9,35 @@ import android.os.Handler;
 import android.os.Looper;
 import android.view.View;
 
-import androidx.annotation.Nullable;
+import androidx.annotation.IntDef;
 import androidx.annotation.VisibleForTesting;
 
-import org.chromium.base.supplier.ObservableSupplier;
-import org.chromium.base.supplier.Supplier;
+import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.base.supplier.NullableObservableSupplier;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.ui.appmenu.AppMenuHandler;
 import org.chromium.chrome.browser.user_education.IphCommandBuilder;
 import org.chromium.chrome.browser.user_education.UserEducationHelper;
+import org.chromium.chrome.modules.readaloud.PlaybackArgs.PlaybackMode;
 import org.chromium.components.feature_engagement.FeatureConstants;
+
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 
 /**
  * Controller to manage when and how we show ReadAloud in-product-help messages to users in the app
  * menu and the CCT app menu.
  */
+@NullMarked
 public class ReadAloudIphController {
     private final UserEducationHelper mUserEducationHelper;
     private final AppMenuHandler mAppMenuHandler;
     private final View mToolbarMenuButton;
-    private final ObservableSupplier<ReadAloudController> mReadAloudControllerSupplier;
-    private final Supplier<Tab> mCurrentTabSupplier;
+    private final MonotonicObservableSupplier<ReadAloudController> mReadAloudControllerSupplier;
+    private final NullableObservableSupplier<Tab> mCurrentTabSupplier;
     private boolean mShowAppMenuTextBubble;
     private final Runnable mReadabilityUpdateListener = this::maybeShowReadAloudAppMenuIph;
 
@@ -51,8 +58,8 @@ public class ReadAloudIphController {
             Profile profile,
             View toolbarMenuButton,
             AppMenuHandler appMenuHandler,
-            ObservableSupplier<Tab> tabSupplier,
-            ObservableSupplier<ReadAloudController> readAloudControllerSupplier,
+            NullableObservableSupplier<Tab> tabSupplier,
+            MonotonicObservableSupplier<ReadAloudController> readAloudControllerSupplier,
             boolean showAppMenuTextBubble) {
         this(
                 activity,
@@ -69,15 +76,16 @@ public class ReadAloudIphController {
             View toolbarMenuButton,
             AppMenuHandler appMenuHandler,
             UserEducationHelper userEducationHelper,
-            ObservableSupplier<Tab> tabSupplier,
-            ObservableSupplier<ReadAloudController> readAloudControllerSupplier,
+            NullableObservableSupplier<Tab> tabSupplier,
+            MonotonicObservableSupplier<ReadAloudController> readAloudControllerSupplier,
             boolean showAppMenuTextBubble) {
         mToolbarMenuButton = toolbarMenuButton;
         mAppMenuHandler = appMenuHandler;
         mUserEducationHelper = userEducationHelper;
         mCurrentTabSupplier = tabSupplier;
         mReadAloudControllerSupplier = readAloudControllerSupplier;
-        mReadAloudControllerSupplier.addObserver(this::readAloudControllerReady);
+        mReadAloudControllerSupplier.addSyncObserverAndPostIfNonNull(
+                this::readAloudControllerReady);
         mShowAppMenuTextBubble = showAppMenuTextBubble;
     }
 
@@ -90,26 +98,28 @@ public class ReadAloudIphController {
      * @param url URL the readability check returns
      */
     public void maybeShowReadAloudAppMenuIph() {
-        if (shouldShowIph()) {
-            boolean isHighlightEnabled =
-                    mShowAppMenuTextBubble
-                            ? true
-                            : ReadAloudFeatures.isIPHMenuButtonHighlightCctEnabled();
-            mUserEducationHelper.requestShowIph(
-                    new IphCommandBuilder(
-                                    mToolbarMenuButton.getContext().getResources(),
-                                    FeatureConstants.READ_ALOUD_APP_MENU_FEATURE,
-                                    R.string.menu_listen_to_this_page_iph,
-                                    R.string.menu_listen_to_this_page_iph)
-                            .setAnchorView(mToolbarMenuButton)
-                            .setShowTextBubble(mShowAppMenuTextBubble)
-                            .setOnShowCallback(
-                                    () ->
-                                            turnOnHighlightForMenuItem(
-                                                    R.id.readaloud_menu_id, isHighlightEnabled))
-                            .setOnDismissCallback(this::turnOffHighlightForMenuItem)
-                            .build());
+        @AppMenuIphAvailability int appMenuIphAvailability = shouldShowIph();
+        if (appMenuIphAvailability == AppMenuIphAvailability.NO_IPH) {
+            return;
         }
+        boolean isHighlightEnabled =
+                mShowAppMenuTextBubble
+                        ? true
+                        : ReadAloudFeatures.isIPHMenuButtonHighlightCctEnabled();
+      mUserEducationHelper.requestShowIph(
+              new IphCommandBuilder(
+                              mToolbarMenuButton.getContext().getResources(),
+                              FeatureConstants.READ_ALOUD_APP_MENU_FEATURE,
+                              getIphStringResId(appMenuIphAvailability),
+                              getIphStringResId(appMenuIphAvailability))
+                      .setAnchorView(mToolbarMenuButton)
+                      .setShowTextBubble(mShowAppMenuTextBubble)
+                      .setOnShowCallback(
+                              () ->
+                                      turnOnHighlightForMenuItem(
+                                              R.id.readaloud_menu_id, isHighlightEnabled))
+                      .setOnDismissCallback(this::turnOffHighlightForMenuItem)
+                      .build());
     }
 
     private void turnOnHighlightForMenuItem(int highlightMenuItemId, boolean highlightMenuButton) {
@@ -120,13 +130,32 @@ public class ReadAloudIphController {
         mAppMenuHandler.clearMenuHighlight();
     }
 
-    private boolean shouldShowIph() {
+    private @AppMenuIphAvailability int shouldShowIph() {
         if (mCurrentTabSupplier.get() == null
                 || !mCurrentTabSupplier.get().getUrl().isValid()
                 || mReadAloudControllerSupplier.get() == null) {
-            return false;
+            return AppMenuIphAvailability.NO_IPH;
         }
-        return mReadAloudControllerSupplier.get().isReadable(mCurrentTabSupplier.get());
+        PlaybackMode modeToPlay = mReadAloudControllerSupplier.get().getModeToPlay(mCurrentTabSupplier.get());
+        switch (modeToPlay) {
+          case CLASSIC:
+            return AppMenuIphAvailability.STANDARD_IPH;
+          case OVERVIEW:
+            return AppMenuIphAvailability.AI_IPH;
+          default:
+            return AppMenuIphAvailability.NO_IPH;
+        }
+    }
+
+    private int getIphStringResId(@AppMenuIphAvailability int appMenuIphAvailability) {
+        switch (appMenuIphAvailability) {
+            case AppMenuIphAvailability.STANDARD_IPH:
+                return R.string.menu_listen_to_this_page_iph;
+            case AppMenuIphAvailability.AI_IPH:
+                return R.string.menu_listen_to_this_page_with_ai_iph;
+            default:
+                return 0;
+        }
     }
 
     void readAloudControllerReady(@Nullable ReadAloudController readAloudController) {
@@ -146,5 +175,17 @@ public class ReadAloudIphController {
     @VisibleForTesting(otherwise = VisibleForTesting.PACKAGE_PRIVATE)
     void setShowAppMenuTextBubble(boolean showAppMenuTextBubble) {
         mShowAppMenuTextBubble = showAppMenuTextBubble;
+    }
+
+    @IntDef({
+        AppMenuIphAvailability.NO_IPH,
+        AppMenuIphAvailability.STANDARD_IPH,
+        AppMenuIphAvailability.AI_IPH
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    private @interface AppMenuIphAvailability {
+        int NO_IPH = 0;
+        int STANDARD_IPH = 1;
+        int AI_IPH = 2;
     }
 }

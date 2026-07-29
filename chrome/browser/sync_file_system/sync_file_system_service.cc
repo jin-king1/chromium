@@ -20,13 +20,11 @@
 #include "base/memory/ref_counted.h"
 #include "base/observer_list.h"
 #include "base/task/single_thread_task_runner.h"
-#include "chrome/browser/apps/platform_apps/api/deprecation_features.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/sync_file_system/local/local_file_sync_service.h"
 #include "chrome/browser/sync_file_system/logger.h"
 #include "chrome/browser/sync_file_system/sync_direction.h"
-#include "chrome/browser/sync_file_system/sync_event_observer.h"
 #include "chrome/browser/sync_file_system/sync_file_metadata.h"
 #include "chrome/browser/sync_file_system/sync_file_status.h"
 #include "chrome/browser/sync_file_system/sync_process_runner.h"
@@ -152,10 +150,10 @@ class LocalSyncRunner : public SyncProcessRunner,
   void DidProcessLocalChange(SyncStatusCallback callback,
                              SyncStatusCode status,
                              const FileSystemURL& url) {
-    util::Log(logging::LOGGING_VERBOSE, FROM_HERE,
-              "ProcessLocalChange finished with status=%d (%s) for url=%s",
-              status, SyncStatusCodeToString(status),
-              url.DebugString().c_str());
+    UNSAFE_TODO(util::Log(
+        logging::LOGGING_VERBOSE, FROM_HERE,
+        "ProcessLocalChange finished with status=%d (%s) for url=%s", status,
+        SyncStatusCodeToString(status), url.DebugString().c_str()));
     std::move(callback).Run(status);
   }
 
@@ -210,10 +208,10 @@ class RemoteSyncRunner : public SyncProcessRunner,
   void DidProcessRemoteChange(SyncStatusCallback callback,
                               SyncStatusCode status,
                               const FileSystemURL& url) {
-    util::Log(logging::LOGGING_VERBOSE, FROM_HERE,
-              "ProcessRemoteChange finished with status=%d (%s) for url=%s",
-              status, SyncStatusCodeToString(status),
-              url.DebugString().c_str());
+    UNSAFE_TODO(util::Log(
+        logging::LOGGING_VERBOSE, FROM_HERE,
+        "ProcessRemoteChange finished with status=%d (%s) for url=%s", status,
+        SyncStatusCodeToString(status), url.DebugString().c_str()));
 
     if (status == SYNC_STATUS_FILE_BUSY) {
       GetSyncService()->local_service_->RegisterURLForWaitingSync(
@@ -292,15 +290,6 @@ void SyncFileSystemService::GetFileSyncStatus(const FileSystemURL& url,
   local_service_->HasPendingLocalChanges(
       url, base::BindOnce(&SyncFileSystemService::DidGetLocalChangeStatus,
                           weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
-}
-
-void SyncFileSystemService::AddSyncEventObserver(SyncEventObserver* observer) {
-  observers_.AddObserver(observer);
-}
-
-void SyncFileSystemService::RemoveSyncEventObserver(
-    SyncEventObserver* observer) {
-  observers_.RemoveObserver(observer);
 }
 
 LocalChangeProcessor* SyncFileSystemService::GetLocalChangeProcessor(
@@ -412,7 +401,6 @@ void SyncFileSystemService::Initialize(
       &GetLocalChangeProcessorAdapter, weak_ptr_factory_.GetWeakPtr()));
 
   remote_service_->AddServiceObserver(remote_syncer.get());
-  remote_service_->AddFileStatusObserver(this);
   remote_service_->SetRemoteChangeProcessor(local_service_.get());
 
   local_sync_runners_.push_back(std::move(local_syncer));
@@ -459,9 +447,10 @@ void SyncFileSystemService::DidInitializeFileSystem(const GURL& app_origin,
 void SyncFileSystemService::DidRegisterOrigin(const GURL& app_origin,
                                               SyncStatusCallback callback,
                                               SyncStatusCode status) {
-  util::Log(logging::LOGGING_VERBOSE, FROM_HERE,
-            "DidInitializeForApp (registered the origin): %s: %s",
-            app_origin.spec().c_str(), SyncStatusCodeToString(status));
+  UNSAFE_TODO(util::Log(logging::LOGGING_VERBOSE, FROM_HERE,
+                        "DidInitializeForApp (registered the origin): %s: %s",
+                        app_origin.spec().c_str(),
+                        SyncStatusCodeToString(status)));
 
   if (!remote_service_) {
     std::move(callback).Run(SYNC_STATUS_ABORT);
@@ -505,11 +494,7 @@ void SyncFileSystemService::OnRemoteServiceStateUpdated(
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   util::Log(logging::LOGGING_VERBOSE, FROM_HERE,
             "OnRemoteServiceStateChanged: %d %s", state, description.c_str());
-
-  for (auto& observer : observers_) {
-    observer.OnSyncStateUpdated(GURL(), RemoteStateToSyncServiceState(state),
-                                description);
-  }
+  // TODO(crbug.com/396460818): Cleanup, file syncing is deprecated.
 
   RunForEachSyncRunners(&SyncProcessRunner::Schedule);
 }
@@ -589,14 +574,9 @@ void SyncFileSystemService::OnStateChanged(syncer::SyncService* sync) {
   UpdateSyncEnabledStatus(sync);
 }
 
-void SyncFileSystemService::OnFileStatusChanged(
-    const FileSystemURL& url,
-    SyncFileType file_type,
-    SyncFileStatus sync_status,
-    SyncAction action_taken,
-    SyncDirection direction) {
-  for (auto& observer : observers_)
-    observer.OnFileSynced(url, file_type, sync_status, action_taken, direction);
+void SyncFileSystemService::OnSyncShutdown(syncer::SyncService*) {
+  // Unreachable, since this service is Shutdown() before the SyncService.
+  NOTREACHED();
 }
 
 void SyncFileSystemService::UpdateSyncEnabledStatus(

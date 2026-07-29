@@ -9,6 +9,7 @@
 #include <array>
 #include <queue>
 
+#include "chrome/grit/chrome_unscaled_resources.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkCanvas.h"
 #include "third_party/skia/include/core/SkPaint.h"
@@ -18,9 +19,11 @@
 #include "third_party/skia/include/effects/SkImageFilters.h"
 #include "third_party/skia/src/core/SkBitmapDevice.h"
 #include "third_party/skia/src/core/SkDraw.h"
+#include "ui/base/resource/resource_bundle.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/image/image.h"
+#include "ui/gfx/image/image_skia.h"
 #include "ui/gfx/skia_util.h"
 
 namespace {
@@ -115,11 +118,9 @@ IconGridParameters GetIconGridParameters(int base_size) {
 
 SkPath CreateMaskingIconGridBoundingBoxPath(int base_size,
                                             const IconGridParameters& params) {
-  SkPath path;
   SkRect rect = SkRect::MakeIWH(base_size, base_size)
                     .makeInset(params.inset, params.inset);
-  path.addRoundRect(rect, params.corner_radius, params.corner_radius);
-  return path;
+  return SkPath::RRect(rect, params.corner_radius, params.corner_radius);
 }
 
 // Scales the given icon down to fit appropriately within the masked area.
@@ -251,6 +252,16 @@ gfx::Image CreateAppleMaskedAppIconWithPath(
 
 namespace web_app {
 
+namespace testing {
+namespace {
+bool g_disable_icon_masking_for_testing = false;
+}  // namespace
+
+base::AutoReset<bool> SetDisableIconMaskingForTesting(bool disabled) {
+  return base::AutoReset<bool>(&g_disable_icon_masking_for_testing, disabled);
+}
+}  // namespace testing
+
 gfx::Image CreateAppleMaskedAppIcon(const gfx::Image& base_icon) {
   int base_size = base_icon.Width();
   IconGridParameters params = GetIconGridParameters(base_size);
@@ -303,6 +314,10 @@ NSImageRep* OverlayImageRep(NSImage* background, NSImageRep* overlay) {
 }
 
 gfx::Image MaskDiyAppIcon(const gfx::Image& icon) {
+  if (testing::g_disable_icon_masking_for_testing) {
+    return icon;
+  }
+
   // If the alpha value of the color is less than this value then it is ignored
   constexpr uint8_t kMinAlpha = 1;
   // Maximum allowed deviation between RGB components of colors outside the mask
@@ -318,6 +333,24 @@ gfx::Image MaskDiyAppIcon(const gfx::Image& icon) {
     gfx::Image scaled_icon = ScaleDownInsideMask(icon, grid_params);
     return CreateAppleMaskedAppIconWithPath(scaled_icon, mask);
   }
+}
+
+gfx::Image GetMacAppsFolderImage(int size) {
+  NSImage* base_image = [NSImage imageNamed:NSImageNameFolder];
+  ui::ResourceBundle& resource_bundle = ui::ResourceBundle::GetSharedInstance();
+  NSImage* folder_icon_image = [[NSImage alloc] init];
+  [folder_icon_image setSize:NSMakeSize(size, size)];
+  for (int id : {IDR_APPS_FOLDER_OVERLAY_128, IDR_APPS_FOLDER_OVERLAY_512}) {
+    gfx::Image overlay_image = resource_bundle.GetNativeImageNamed(id);
+    NSArray* image_reps = overlay_image.AsNSImage().representations;
+    DCHECK_EQ(1u, image_reps.count);
+    NSImageRep* overlay_rep = image_reps[0];
+    NSImageRep* with_overlay = OverlayImageRep(base_image, overlay_rep);
+    if (with_overlay) {
+      [folder_icon_image addRepresentation:with_overlay];
+    }
+  }
+  return gfx::Image(folder_icon_image);
 }
 
 }  // namespace web_app

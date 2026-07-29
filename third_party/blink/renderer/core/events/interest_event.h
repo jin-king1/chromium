@@ -23,12 +23,14 @@ class InterestEvent final : public Event {
     return MakeGarbageCollected<InterestEvent>(type, initializer);
   }
 
-  static InterestEvent* Create(const AtomicString& type, Element* source) {
-    return MakeGarbageCollected<InterestEvent>(type, source);
+  static InterestEvent* Create(const AtomicString& type,
+                               Element* source,
+                               Event::Cancelable cancelable) {
+    return MakeGarbageCollected<InterestEvent>(type, source, cancelable);
   }
 
-  InterestEvent(const AtomicString& type, const InterestEventInit* initializer);
-  InterestEvent(const AtomicString& type, Element* source);
+  InterestEvent(const AtomicString&, const InterestEventInit*);
+  InterestEvent(const AtomicString&, Element*, Event::Cancelable);
 
   const AtomicString& InterfaceName() const override {
     return event_interface_names::kInterestEvent;
@@ -37,10 +39,20 @@ class InterestEvent final : public Event {
   void Trace(Visitor*) const override;
 
   Element* source() const;
-  void SetSource(Element* source) { source_ = source; }
+
+  EventTarget* relatedTarget() const override { return related_target_.Get(); }
+  void SetRelatedTarget(EventTarget* related_target) override {
+    related_target_ = related_target;
+  }
+
+  DispatchEventResult DispatchEvent(EventDispatcher&) override;
 
  private:
+  // crbug.com/346835896: When ShadowRootReferenceTargetEnabled ships, the
+  // event's source will be managed by `related_target_` instead of `source_`.
+  // When the flag is cleaned up the `source_` member will be removed.
   Member<Element> source_;
+  Member<EventTarget> related_target_;
 };
 
 }  // namespace blink

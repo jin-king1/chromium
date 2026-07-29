@@ -7,7 +7,10 @@
 #include <windows.h>
 
 #include <tlhelp32.h>
+#include <wincrypt.h>
+#include <wintrust.h>
 
+#include <cstdint>
 #include <limits>
 #include <memory>
 #include <string>
@@ -20,13 +23,12 @@
 #include "base/logging.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/scoped_generic.h"
+#include "base/strings/strcat.h"
 #include "base/strings/strcat_win.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/win/pe_image_reader.h"
 #include "base/win/scoped_handle.h"
-#include "base/win/wincrypt_shim.h"
-#include "base/win/wintrust_shim.h"
 #include "crypto/scoped_capi_types.h"
 
 // This must be after wincrypt and wintrust.
@@ -57,13 +59,15 @@ std::u16string GetSubjectNameInFile(const base::FilePath& filename) {
   }
 
   // Allocate enough space to hold the signer info.
-  std::unique_ptr<BYTE[]> signer_info_buffer(new BYTE[signer_info_size]);
+  base::HeapArray<uint8_t> signer_info_buffer =
+      base::HeapArray<uint8_t>::Uninit(signer_info_size);
   CMSG_SIGNER_INFO* signer_info =
-      reinterpret_cast<CMSG_SIGNER_INFO*>(signer_info_buffer.get());
+      reinterpret_cast<CMSG_SIGNER_INFO*>(signer_info_buffer.data());
 
   // Obtain the signer info.
-  if (!CryptMsgGetParam(message.get(), CMSG_SIGNER_INFO_PARAM, 0, signer_info,
-                        &signer_info_size)) {
+  // SAFETY: `signer_info_buffer.size()` is the size of the allocation.
+  if (!UNSAFE_BUFFERS(CryptMsgGetParam(message.get(), CMSG_SIGNER_INFO_PARAM, 0,
+                                       signer_info, &signer_info_size))) {
     return std::u16string();
   }
 
@@ -162,19 +166,20 @@ void GetCatalogCertificateInfo(const base::FilePath& filename,
       CreateFileW(filename.value().c_str(), GENERIC_READ,
                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                   nullptr, OPEN_EXISTING, 0, nullptr));
-  if (!file_handle.IsValid())
+  if (!file_handle.is_valid()) {
     return;
+  }
 
   // Get the size we need for our hash.
   DWORD hash_size = 0;
-  CryptCATAdminCalcHashFromFileHandle(file_handle.Get(), &hash_size, nullptr,
+  CryptCATAdminCalcHashFromFileHandle(file_handle.get(), &hash_size, nullptr,
                                       0);
   if (hash_size == 0)
     return;
 
   // Calculate the hash. If this fails then bail.
   std::vector<BYTE> buffer(hash_size);
-  if (!CryptCATAdminCalcHashFromFileHandle(file_handle.Get(), &hash_size,
+  if (!CryptCATAdminCalcHashFromFileHandle(file_handle.get(), &hash_size,
                                            buffer.data(), 0)) {
     return;
   }
@@ -250,11 +255,13 @@ StringMapping GetEnvironmentVariablesMapping(
 
   StringMapping string_mapping;
   for (const std::wstring& variable : environment_variables) {
-    std::string value;
-    if (environment->GetVar(base::WideToASCII(variable).c_str(), &value)) {
-      value = std::string(base::TrimString(value, "\\", base::TRIM_TRAILING));
+    std::optional<std::string> value =
+        environment->GetVar(base::WideToASCII(variable));
+    if (value.has_value()) {
+      std::string_view trimmed_value =
+          base::TrimString(value.value(), "\\", base::TRIM_TRAILING);
       string_mapping.push_back(std::make_pair(
-          base::i18n::ToLower(base::UTF8ToUTF16(value)),
+          base::i18n::ToLower(base::UTF8ToUTF16(trimmed_value)),
           u"%" + base::i18n::ToLower(base::AsString16(variable)) + u"%"));
     }
   }

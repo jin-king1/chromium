@@ -157,6 +157,9 @@ class FacetURI {
 // The branding information for a given facet. Corresponds to the |BrandingInfo|
 // message in affiliation_api.proto.
 struct FacetBrandingInfo {
+  friend bool operator==(const FacetBrandingInfo&,
+                         const FacetBrandingInfo&) = default;
+
   // Human readable name of this facet, or empty if this information is not
   // available.
   //
@@ -175,6 +178,15 @@ struct FacetBrandingInfo {
   GURL icon_url;
 };
 
+// Corresponds to the |ChangePasswordPattern| message in affiliation_api.proto.
+struct ChangePasswordPattern {
+  std::string url_pattern_re2;
+  GURL change_password_url;
+
+  friend bool operator==(const ChangePasswordPattern&,
+                         const ChangePasswordPattern&) = default;
+};
+
 // Facet struct, corresponds to the |Facet| message in affiliation_api.proto.
 struct Facet {
   explicit Facet(FacetURI uri,
@@ -189,10 +201,16 @@ struct Facet {
   Facet& operator=(const Facet& other);
   Facet& operator=(Facet&& other);
 
+  friend bool operator==(const Facet&, const Facet&) = default;
+
   FacetURI uri;
   FacetBrandingInfo branding_info;
   GURL change_password_url;
+  std::vector<ChangePasswordPattern> change_password_patterns;
   std::string main_domain;
+  // Whether the facet was synthesized during affiliation response parsing. True
+  // means affiliation service didn't actually include it in the response.
+  bool is_facet_synthesized = false;
 };
 
 // A collection of facets affiliated with each other, i.e. an equivalence class.
@@ -272,12 +290,7 @@ bool IsExtendedPublicSuffixDomainMatch(
 std::ostream& operator<<(std::ostream& os, const FacetURI& facet_uri);
 
 // Needed for testing.
-bool operator==(const FacetBrandingInfo& lhs, const FacetBrandingInfo& rhs);
-bool operator!=(const FacetBrandingInfo& lhs, const FacetBrandingInfo& rhs);
-bool operator==(const Facet& lhs, const Facet& rhs);
-bool operator!=(const Facet& lhs, const Facet& rhs);
 bool operator==(const GroupedFacets& lhs, const GroupedFacets& rhs);
-bool operator!=(const GroupedFacets& lhs, const GroupedFacets& rhs);
 
 struct FacetURIHash {
   size_t operator()(const FacetURI& facet_uri) const {

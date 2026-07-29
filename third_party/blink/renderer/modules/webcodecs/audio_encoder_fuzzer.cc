@@ -64,8 +64,8 @@ class TestInterfaceFactory : public media::mojom::InterfaceFactory {
 
     // Each AudioEncoder instance will try to open a connection to this
     // factory, so we must clean up after each one is destroyed.
-    receiver_.set_disconnect_handler(WTF::BindOnce(
-        &TestInterfaceFactory::OnConnectionError, base::Unretained(this)));
+    receiver_.set_disconnect_handler(BindOnce(
+        &TestInterfaceFactory::OnConnectionError, blink::Unretained(this)));
   }
 
   void OnConnectionError() { receiver_.reset(); }
@@ -94,8 +94,8 @@ class TestInterfaceFactory : public media::mojom::InterfaceFactory {
   // Stub out other mojom::InterfaceFactory interfaces.
   void CreateVideoDecoder(
       mojo::PendingReceiver<media::mojom::VideoDecoder> receiver,
-      mojo::PendingRemote<media::stable::mojom::StableVideoDecoder>
-          dst_video_decoder) override {}
+      mojo::PendingRemote<media::mojom::VideoDecoder> dst_video_decoder)
+      override {}
   void CreateAudioDecoder(
       mojo::PendingReceiver<media::mojom::AudioDecoder> receiver) override {}
   void CreateDefaultRenderer(
@@ -107,12 +107,6 @@ class TestInterfaceFactory : public media::mojom::InterfaceFactory {
       mojo::PendingReceiver<media::mojom::Renderer> receiver) override {}
 #endif
 #if BUILDFLAG(IS_ANDROID)
-  void CreateMediaPlayerRenderer(
-      mojo::PendingRemote<media::mojom::MediaPlayerRendererClientExtension>
-          client_extension_remote,
-      mojo::PendingReceiver<media::mojom::Renderer> receiver,
-      mojo::PendingReceiver<media::mojom::MediaPlayerRendererExtension>
-          renderer_extension_receiver) override {}
   void CreateFlingingRenderer(
       const std::string& presentation_id,
       mojo::PendingRemote<media::mojom::FlingingRendererClientExtension>
@@ -130,10 +124,7 @@ class TestInterfaceFactory : public media::mojom::InterfaceFactory {
       mojo::PendingRemote<media::mojom::MediaLog> media_log_remote,
       mojo::PendingReceiver<media::mojom::Renderer> receiver,
       mojo::PendingReceiver<media::mojom::MediaFoundationRendererExtension>
-          renderer_extension_receiver,
-      mojo::PendingRemote<
-          ::media::mojom::MediaFoundationRendererClientExtension>
-          client_extension_remote) override {}
+          renderer_extension_receiver) override {}
 #endif  // BUILDFLAG(IS_WIN)
  private:
 #if BUILDFLAG(IS_WIN)
@@ -151,6 +142,10 @@ namespace blink {
 
 DEFINE_TEXT_PROTO_FUZZER(
     const wc_fuzzer::AudioEncoderApiInvocationSequence& proto) {
+  if (proto.invocations().size() > kMaxFuzzerProtoLength) {
+    return;
+  }
+
   static BlinkFuzzerTestSupport test_support = BlinkFuzzerTestSupport();
   test::TaskEnvironment task_environment;
   auto page_holder = std::make_unique<DummyPageHolder>();
@@ -164,8 +159,8 @@ DEFINE_TEXT_PROTO_FUZZER(
         ->GetBrowserInterfaceBroker()
         ->SetBinderForTesting(
             media::mojom::InterfaceFactory::Name_,
-            WTF::BindRepeating(&TestInterfaceFactory::BindRequest,
-                               base::Owned(std::move(interface_factory))));
+            BindRepeating(&TestInterfaceFactory::BindRequest,
+                          base::Owned(std::move(interface_factory))));
   }();
   CHECK(kSetTestBinder) << "Failed to register media interface binder.";
 #endif

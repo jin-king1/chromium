@@ -32,14 +32,11 @@ struct TimelineOffset {
   NamedRange name = NamedRange::kNone;
   Length offset = Length::Fixed();
   std::optional<String> style_dependent_offset;
+  std::optional<float> zoom;
 
   bool operator==(const TimelineOffset& other) const {
     return name == other.name && offset == other.offset &&
            style_dependent_offset == other.style_dependent_offset;
-  }
-
-  bool operator!=(const TimelineOffset& other) const {
-    return !(*this == other);
   }
 
   static String TimelineRangeNameToString(NamedRange range_name);
@@ -65,6 +62,31 @@ struct TimelineOffset {
   static Length ResolveLength(Element* element, const CSSValue* value);
 
   String ToString() const;
+};
+
+struct TimelineOffsetOrAuto {
+  TimelineOffsetOrAuto() : is_auto(true), timeline_offset(std::nullopt) {}
+  explicit TimelineOffsetOrAuto(std::optional<TimelineOffset> offset)
+      : is_auto(false), timeline_offset(offset) {}
+  bool IsAuto() const { return is_auto; }
+  std::optional<TimelineOffset> GetTimelineOffset() const {
+    return timeline_offset;
+  }
+
+  bool operator==(const TimelineOffsetOrAuto& other) const {
+    return (IsAuto() && other.IsAuto()) ||
+           GetTimelineOffset() == other.GetTimelineOffset();
+  }
+
+  static TimelineOffsetOrAuto Create(
+      Element* element,
+      const V8UnionStringOrTimelineRangeOffset* range_offset,
+      double default_percent,
+      ExceptionState& exception_state);
+
+ private:
+  bool is_auto;
+  std::optional<TimelineOffset> timeline_offset;
 };
 
 }  // namespace blink

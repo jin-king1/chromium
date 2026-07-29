@@ -23,6 +23,40 @@
         }
       },
       {
+        "id": "KeyboardEvent",
+        "type": "object",
+        "description": "An object that resembles a web KeyboardEvent object, with the addition of a unique ID property.",
+        "properties": {
+          "id": {
+            "type": "number"
+          },
+          "altKey": {
+            "type": "boolean"
+          },
+          "code": {
+            "type": "string"
+          },
+          "ctrlKey": {
+            "type": "boolean"
+          },
+          "key": {
+            "type": "string"
+          },
+          "keyCode": {
+            "type": "number"
+          },
+          "metaKey": {
+            "type": "boolean"
+          },
+          "repeat": {
+            "type": "boolean"
+          },
+          "shiftKey": {
+            "type": "boolean"
+          }
+        }
+      },
+      {
         "id": "ScreenRect",
         "type": "object",
         "description": "Bounding rectangle in global screen coordinates.",
@@ -260,7 +294,7 @@
       {
         "id": "AccessibilityFeature",
         "type": "string",
-        "enum": ["dictationContextChecking", "faceGaze", "googleTtsHighQualityVoices", "captionsOnBrailleDisplay"],
+        "enum": ["dictationContextChecking", "googleTtsHighQualityVoices", "captionsOnBrailleDisplay"],
         "description": "Subset of accessibility features."
       },
       {
@@ -449,6 +483,20 @@
         "description": "The four directions for scrolling."
       },
       {
+        "id": "TenjiData",
+        "type": "object",
+        "properties": {
+          "wasm": {
+            "type": "binary",
+            "description": "The contents of the tenji_wasm_wrapper.wasm file as a Uint8Array."
+          },
+          "wrapperJs": {
+            "type": "binary",
+            "description": "The contents of the tenji_wasm_wrapper.js file as a Uint8Array."
+          }
+        }
+      },
+      {
         "id": "FacialGesture",
         "type": "string",
         "description": "The facial gestures supported by FaceGaze. Keep this in sync with facial_gestures.ts, FacialGesturesToMediapipeGestures in facegaze/gesture_detector.ts, and ConvertFacialGestureType in accessibility_extension_api_ash.cc.",
@@ -522,7 +570,7 @@
         "parameters": [],
         "returns_async": {
           "name": "callback",
-          "description": "Returns battery description as a string.",
+          "description": "Resolves with battery description as a string.",
           "parameters": [
             {
               "name": "batteryDescription",
@@ -538,7 +586,7 @@
         "parameters": [],
         "returns_async": {
           "name": "callback",
-          "description": "Runs when Pumpkin download finishes.",
+          "description": "Resolves when Pumpkin download finishes.",
           "parameters": [
             {
               "name": "data",
@@ -554,11 +602,27 @@
         "parameters": [],
         "returns_async": {
           "name": "callback",
-          "description": "Runs when the DLC download finishes.",
+          "description": "Resolves when the DLC download finishes.",
           "parameters": [
             {
               "name": "assets",
               "$ref": "FaceGazeAssets"
+            }
+          ]
+        }
+      },
+      {
+        "name": "installTenji",
+        "type": "function",
+        "description": "Installs the Tenji Braille DLC",
+        "parameters": [],
+        "returns_async": {
+          "name": "callback",
+          "description": "Resolves when Tenji download finishes.",
+          "parameters": [
+            {
+              "name": "data",
+              "$ref": "TenjiData"
             }
           ]
         }
@@ -730,7 +794,7 @@
         ],
         "returns_async": {
           "name": "callback",
-          "description": "Callback function.",
+          "description": "Resolves with the response.",
           "parameters": [
             {
               "name": "response",
@@ -913,7 +977,7 @@
         ],
         "returns_async": {
           "name": "callback",
-          "description": "Returns whether feature is enabled.",
+          "description": "Resolves with whether the feature is enabled.",
           "parameters": [
             {
               "name": "featureEnabled",
@@ -976,7 +1040,7 @@
         ],
         "returns_async": {
           "name": "callback",
-          "description": "Called when the dialog is confirmed or cancelled.",
+          "description": "Resolves when the dialog is confirmed or cancelled.",
           "parameters": [
             {
               "type": "boolean",
@@ -998,7 +1062,7 @@
         ],
         "returns_async": {
           "name": "callback",
-          "description": "Called with the resulting Dom key string.",
+          "description": "Resolves with the resulting Dom key string.",
           "parameters": [
             {
               "type": "string",
@@ -1039,7 +1103,7 @@
         ],
         "returns_async": {
           "name": "callback",
-          "description": "A callback that is run when the contents are returned.",
+          "description": "A promise that resolves when the contents are returned.",
           "parameters": [
             {
               "name": "contents",
@@ -1067,7 +1131,7 @@
         ],
         "returns_async": {
           "name": "callback",
-          "description": "A callback that is run when the contents are returned.",
+          "description": "A promise that resolves when the contents are returned.",
           "parameters": [
             {
               "name": "contents",
@@ -1084,7 +1148,7 @@
         "parameters": [],
         "returns_async": {
           "name": "callback",
-          "description": "A callback that is run when the result is returned.",
+          "description": "A promise that resolves when the result is returned.",
           "parameters": [
             {
               "type": "array",
@@ -1162,6 +1226,40 @@
             "description": "Whether or not the DragEventRewriter should be enabled."
           }
         ]
+      },
+      {
+        "name": "enableSpokenFeedbackMv3KeyHandling",
+        "type": "function",
+        "description": "Used by the ChromeVox extension to enable key handling for the Manifest V3 version of the extension.",
+        "parameters": [
+          {
+            "name": "sessionId",
+            "type": "number",
+            "description": "The session ID of the ChromeVox instance."
+          }
+        ]
+      },
+      {
+        "name": "processPendingSpokenFeedbackEvent",
+        "type": "function",
+        "description": "Used by the ChromeVox extension to process a pending spoken feedback event.",
+        "parameters": [
+          {
+            "name": "id",
+            "type": "integer",
+            "description": "The ID of the key event."
+          },
+          {
+            "name": "propagate",
+            "type": "boolean",
+            "description": "Whether or not to propagate the key."
+          },
+          {
+            "name": "sessionId",
+            "type": "number",
+            "description": "The session ID of the ChromeVox instance."
+          }
+        ]
       }
     ],
     "events": [
@@ -1200,6 +1298,18 @@
             "type": "integer"
           }
         ]
+      },
+      {
+        "name": "onTwoFingerTouchStart",
+        "type": "function",
+        "description": "Fired when we first detect two fingers are held down, which can be used to toggle spoken feedback on some touch-only devices.",
+        "parameters": []
+      },
+      {
+        "name": "onTwoFingerTouchStop",
+        "type": "function",
+        "description": "Fired when the user is no longer holding down two fingers (including releasing one, holding down three, or moving them).",
+        "parameters": []
       },
       {
         "name": "onSelectToSpeakContextMenuClicked",
@@ -1390,6 +1500,28 @@
             "name": "enabled",
             "type": "boolean",
             "description": "True if FaceGaze should start sending gesture detection information, false if FaceGaze should stop."
+          }
+        ]
+      },
+      {
+        "name": "onKeyDown",
+        "type": "function",
+        "description": "Fired when a key is pressed.",
+        "parameters": [
+          {
+            "name": "event",
+            "$ref": "KeyboardEvent"
+          }
+        ]
+      },
+      {
+        "name": "onKeyUp",
+        "type": "function",
+        "description": "Fired when a key is released.",
+        "parameters": [
+          {
+            "name": "event",
+            "$ref": "KeyboardEvent"
           }
         ]
       }

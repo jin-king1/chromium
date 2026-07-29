@@ -4,11 +4,12 @@
 
 #include "components/commerce/core/shopping_service_test_base.h"
 
+#include <algorithm>
 #include <optional>
 
 #include "base/command_line.h"
-#include "base/containers/contains.h"
 #include "base/containers/flat_map.h"
+#include "base/memory/ptr_util.h"
 #include "base/memory/ref_counted.h"
 #include "base/notreached.h"
 #include "base/run_loop.h"
@@ -17,6 +18,7 @@
 #include "components/bookmarks/test/test_bookmark_client.h"
 #include "components/commerce/core/commerce_feature_list.h"
 #include "components/commerce/core/mock_account_checker.h"
+#include "components/commerce/core/mock_discount_infos_storage.h"
 #include "components/commerce/core/pref_names.h"
 #include "components/commerce/core/proto/discounts.pb.h"
 #include "components/commerce/core/proto/merchant_trust.pb.h"
@@ -320,7 +322,8 @@ OptimizationMetadata MockOptGuideDecider::BuildDiscountsResponse(
 
   std::vector<DiscountClusterType> checked_cluster_types;
   for (const auto& info_to_check : infos) {
-    if (base::Contains(checked_cluster_types, info_to_check.cluster_type)) {
+    if (std::ranges::contains(checked_cluster_types,
+                              info_to_check.cluster_type)) {
       continue;
     }
     checked_cluster_types.push_back(info_to_check.cluster_type);
@@ -348,6 +351,9 @@ OptimizationMetadata MockOptGuideDecider::BuildDiscountsResponse(
       if (info.type == DiscountType::kFreeListingWithCode) {
         type = Discount_Type_FREE_LISTING_WITH_CODE;
       }
+      if (info.type == DiscountType::kCrawledPromotion) {
+        type = Discount_Type_CRAWLED_PROMOTION;
+      }
       discount->set_type(type);
 
       Discount_Description* description = discount->mutable_description();
@@ -358,7 +364,9 @@ OptimizationMetadata MockOptGuideDecider::BuildDiscountsResponse(
             info.terms_and_conditions.value());
       }
       description->set_value_text(info.value_in_text);
-      discount->set_expiry_time_sec(info.expiry_time_sec);
+      if (info.expiry_time_sec.has_value()) {
+        discount->set_expiry_time_sec(info.expiry_time_sec.value());
+      }
       discount->set_is_merchant_wide(info.is_merchant_wide);
       if (info.discount_code.has_value()) {
         discount->set_discount_code(info.discount_code.value());
@@ -439,21 +447,6 @@ MockWebExtractor::MockWebExtractor() {
 
 MockWebExtractor::~MockWebExtractor() = default;
 
-MockProductSpecificationsServerProxy::MockProductSpecificationsServerProxy()
-    : ProductSpecificationsServerProxy(nullptr, nullptr, nullptr) {}
-MockProductSpecificationsServerProxy::~MockProductSpecificationsServerProxy() =
-    default;
-
-void MockProductSpecificationsServerProxy::
-    SetGetProductSpecificationsForClusterIdsResponse(
-        std::optional<ProductSpecifications> specs) {
-  ON_CALL(*this, GetProductSpecificationsForClusterIds)
-      .WillByDefault([specs](std::vector<uint64_t> cluster_ids,
-                             ProductSpecificationsCallback callback) {
-        std::move(callback).Run(std::move(cluster_ids), std::move(specs));
-      });
-}
-
 ShoppingServiceTestBase::ShoppingServiceTestBase()
     : bookmark_model_(bookmarks::TestBookmarkClient::CreateModel()),
       opt_guide_(std::make_unique<testing::NiceMock<MockOptGuideDecider>>()),
@@ -462,9 +455,6 @@ ShoppingServiceTestBase::ShoppingServiceTestBase()
       sync_service_(std::make_unique<syncer::TestSyncService>()),
       test_url_loader_factory_(
           std::make_unique<network::TestURLLoaderFactory>()),
-      product_spec_service_(
-          std::make_unique<
-              testing::NiceMock<MockProductSpecificationsService>>()),
       tab_restore_service_(
           std::make_unique<testing::NiceMock<MockTabRestoreService>>()) {
   base::CommandLine::ForCurrentProcess()->AppendSwitch(
@@ -483,14 +473,20 @@ void ShoppingServiceTestBase::SetUp() {
       sync_service_.get(),
       base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(
           test_url_loader_factory_.get()),
-      nullptr, nullptr, product_spec_service_.get(), nullptr, nullptr, nullptr,
-      nullptr, std::make_unique<testing::NiceMock<MockWebExtractor>>(),
+      nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+      std::make_unique<testing::NiceMock<MockWebExtractor>>(),
       tab_restore_service_.get());
+
+  auto discounts_storage =
+      std::make_unique<testing::NiceMock<MockDiscountInfosStorage>>();
+  discount_infos_storage_ = discounts_storage.get();
+  shopping_service_->discount_infos_storage_ = std::move(discounts_storage);
 }
 
 void ShoppingServiceTestBase::TestBody() {}
 
 void ShoppingServiceTestBase::TearDown() {
+  discount_infos_storage_ = nullptr;
   // Reset the enabled/disabled features after each test.
   test_features_.Reset();
 }
@@ -533,7 +529,7 @@ void ShoppingServiceTestBase::OnWebWrapperSwitched(WebWrapper* web) {
 
 void ShoppingServiceTestBase::MergeProductInfoData(
     ProductInfo* info,
-    const base::Value::Dict& on_page_data_map) {
+    const base::DictValue& on_page_data_map) {
   ShoppingService::MergeProductInfoData(info, on_page_data_map);
 }
 
@@ -552,16 +548,6 @@ CommerceInfoCache& ShoppingServiceTestBase::GetCache() {
 
 MockOptGuideDecider* ShoppingServiceTestBase::GetMockOptGuideDecider() {
   return opt_guide_.get();
-}
-
-ProductSpecificationsSet::Observer*
-ShoppingServiceTestBase::GetProductSpecServiceUrlRefObserver() {
-  return shopping_service_->prod_spec_url_ref_observer_.get();
-}
-
-void ShoppingServiceTestBase::SetProductSpecificationsServerProxy(
-    std::unique_ptr<ProductSpecificationsServerProxy> proxy_ptr) {
-  shopping_service_->product_specs_server_proxy_ = std::move(proxy_ptr);
 }
 
 MockTabRestoreService* ShoppingServiceTestBase::GetMockTabRestoreService() {

@@ -12,6 +12,7 @@
 namespace blink {
 
 class WebSharedWorkerImpl;
+struct JavaScriptFrameworkDetectionResult;
 
 // An implementation of WorkerReportingProxy for SharedWorker. This is created
 // and owned by WebSharedWorkerImpl on the main thread, accessed from a worker
@@ -28,16 +29,18 @@ class SharedWorkerReportingProxy final
 
   // WorkerReportingProxy methods:
   void CountFeature(WebFeature) override;
-  void ReportException(const WTF::String&,
-                       std::unique_ptr<SourceLocation>,
+  void ReportException(const String&,
+                       const SourceLocation*,
                        int exception_id) override;
   void ReportConsoleMessage(mojom::ConsoleMessageSource,
                             mojom::ConsoleMessageLevel,
                             const String& message,
-                            SourceLocation*) override;
+                            const SourceLocation*) override;
   void DidFailToFetchClassicScript() override;
   void DidFailToFetchModuleScript() override;
-  void DidEvaluateTopLevelScript(bool success) override;
+  void DidEvaluateTopLevelScript(
+      bool success,
+      const JavaScriptFrameworkDetectionResult& result) override;
   void DidCloseWorkerGlobalScope() override;
   void WillDestroyWorkerGlobalScope() override {}
   void DidTerminateWorkerThread() override;
@@ -49,6 +52,7 @@ class SharedWorkerReportingProxy final
   WebSharedWorkerImpl* worker_;
 
   scoped_refptr<base::SingleThreadTaskRunner> main_thread_task_runner_;
+  bool script_evaluated_ = false;
 };
 
 }  // namespace blink

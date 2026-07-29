@@ -10,12 +10,15 @@
 #include "base/files/scoped_temp_dir.h"
 #include "base/i18n/time_formatting.h"
 #include "base/rand_util.h"
+#include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/test/gmock_callback_support.h"
 #include "base/test/mock_callback.h"
 #include "base/test/test_future.h"
 #include "chrome/browser/ash/file_manager/path_util.h"
 #include "chrome/browser/ash/file_manager/trash_io_task.h"
 #include "chrome/browser/ash/file_manager/trash_unittest_base.h"
+#include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "content/public/test/browser_task_environment.h"
 #include "storage/browser/file_system/external_mount_points.h"
@@ -36,7 +39,8 @@ class TrashAutoCleanupTest : public file_manager::io_task::TrashBaseTest {
 
   void SetUp() override {
     file_manager::io_task::TrashBaseTest::SetUp();
-    trash_auto_cleanup_ = base::WrapUnique(new TrashAutoCleanup(profile()));
+    trash_auto_cleanup_ = base::WrapUnique(new TrashAutoCleanup(
+        TestingBrowserProcess::GetGlobal()->local_state(), profile()));
   }
 
   void TearDown() override {

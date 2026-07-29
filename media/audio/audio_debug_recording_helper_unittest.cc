@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "media/audio/audio_debug_recording_helper.h"
 
@@ -19,7 +15,6 @@
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
-#include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
 #include "base/task/sequenced_task_runner.h"
@@ -64,7 +59,7 @@ class MockAudioDebugFileWriter : public AudioDebugFileWriter {
     EXPECT_EQ(reference_data_->channels(), data.channels());
     EXPECT_EQ(reference_data_->frames(), data.frames());
     for (int ch = 0; ch < data.channels(); ++ch) {
-      EXPECT_EQ(data.channel_span(ch), reference_data_->channel_span(ch));
+      EXPECT_EQ(data.channel(ch), reference_data_->channel(ch));
     }
     DoWrite(data);
   }
@@ -255,8 +250,7 @@ TEST_F(AudioDebugRecordingHelperTest, OnData) {
     source_data[i] = i * step;
   }
   std::unique_ptr<AudioBus> audio_bus = AudioBus::Create(params);
-  audio_bus->FromInterleaved<Float32SampleTypeTraits>(source_data.data(),
-                                                      number_of_frames);
+  audio_bus->FromInterleaved<Float32SampleTypeTraits>(source_data);
 
   std::unique_ptr<AudioDebugRecordingHelper> recording_helper =
       CreateRecordingHelper(params, base::OnceClosure());

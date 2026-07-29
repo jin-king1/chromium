@@ -10,6 +10,7 @@
 #include <string>
 #include <utility>
 
+#include "ash/constants/ash_pref_names.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
@@ -17,7 +18,6 @@
 #include "chrome/browser/notifications/notification_display_service_tester.h"
 #include "chrome/browser/notifications/system_notification_helper.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/common/pref_names.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile_manager.h"
 #include "chromeos/ash/components/dbus/shill/shill_device_client.h"
@@ -27,6 +27,7 @@
 #include "chromeos/ash/components/network/network_handler_test_helper.h"
 #include "chromeos/ash/components/network/network_state_handler.h"
 #include "components/prefs/pref_service.h"
+#include "components/session_manager/core/fake_session_manager_delegate.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/session_manager/session_manager_types.h"
 #include "components/user_manager/scoped_user_manager.h"
@@ -128,7 +129,7 @@ class MobileDataNotificationsTest : public testing::Test {
     device_test->ClearDevices();
     device_test->AddDevice(kCellularDevicePath, shill::kTypeCellular,
                            "stub_cellular_device1");
-    base::Value::Dict home_provider;
+    base::DictValue home_provider;
     home_provider.Set("name", "Cellular1_Provider");
     home_provider.Set("country", "us");
     device_test->SetDeviceProperty(kCellularDevicePath,
@@ -166,7 +167,8 @@ class MobileDataNotificationsTest : public testing::Test {
 
   content::BrowserTaskEnvironment task_environment_;
   ash::NetworkHandlerTestHelper network_handler_test_helper_;
-  session_manager::SessionManager session_manager_;
+  session_manager::SessionManager session_manager_{
+      std::make_unique<session_manager::FakeSessionManagerDelegate>()};
   std::unique_ptr<MobileDataNotifications> mobile_data_notifications_;
   std::unique_ptr<NetworkConnectTestDelegate> network_connect_delegate_;
   std::unique_ptr<user_manager::ScopedUserManager> user_manager_enabler_;
@@ -178,14 +180,14 @@ class MobileDataNotificationsTest : public testing::Test {
 
 // Verify that basic network setup does not trigger notification.
 TEST_F(MobileDataNotificationsTest, SimpleSetup) {
-  pref_service()->SetBoolean(prefs::kShowMobileDataNotification, true);
+  pref_service()->SetBoolean(ash::prefs::kShowMobileDataNotification, true);
   EXPECT_FALSE(display_service_->GetNotification(kNotificationId));
 }
 
 // Verify that switching to cellular whiile pref is false does not display a
 // notification.
 TEST_F(MobileDataNotificationsTest, NotificationAlreadyShown) {
-  pref_service()->SetBoolean(prefs::kShowMobileDataNotification, false);
+  pref_service()->SetBoolean(ash::prefs::kShowMobileDataNotification, false);
 
   ash::NetworkConnect::Get()->ConnectToNetworkId(kCellularGuid);
   // Wait for async ConnectToNetworkId to take effect.
@@ -196,7 +198,7 @@ TEST_F(MobileDataNotificationsTest, NotificationAlreadyShown) {
 
 // Verify that switching to cellular while pref is true displays notification.
 TEST_F(MobileDataNotificationsTest, DisplayNotification) {
-  pref_service()->SetBoolean(prefs::kShowMobileDataNotification, true);
+  pref_service()->SetBoolean(ash::prefs::kShowMobileDataNotification, true);
 
   ash::NetworkConnect::Get()->ConnectToNetworkId(kCellularGuid);
   // Wait for async ConnectToNetworkId to take effect.
@@ -207,13 +209,14 @@ TEST_F(MobileDataNotificationsTest, DisplayNotification) {
 
 // Verify that displaying the notification toggles the profile pref.
 TEST_F(MobileDataNotificationsTest, TogglesPref) {
-  pref_service()->SetBoolean(prefs::kShowMobileDataNotification, true);
+  pref_service()->SetBoolean(ash::prefs::kShowMobileDataNotification, true);
 
   ash::NetworkConnect::Get()->ConnectToNetworkId(kCellularGuid);
   // Wait for async ConnectToNetworkId to take effect.
   base::RunLoop().RunUntilIdle();
 
-  EXPECT_FALSE(pref_service()->GetBoolean(prefs::kShowMobileDataNotification));
+  EXPECT_FALSE(
+      pref_service()->GetBoolean(ash::prefs::kShowMobileDataNotification));
 }
 
 // Verify that session changes display the notification if cellular is
@@ -221,11 +224,12 @@ TEST_F(MobileDataNotificationsTest, TogglesPref) {
 TEST_F(MobileDataNotificationsTest, SessionUpdateDisplayNotification) {
   // Set up cellular network, don't trigger notification.
   ash::NetworkConnect::Get()->ConnectToNetworkId(kCellularGuid);
-  pref_service()->SetBoolean(prefs::kShowMobileDataNotification, false);
+  pref_service()->SetBoolean(ash::prefs::kShowMobileDataNotification, false);
   // Process network observer update.
   base::RunLoop().RunUntilIdle();
   // Make sure notification hasn't been triggered.
-  EXPECT_FALSE(pref_service()->GetBoolean(prefs::kShowMobileDataNotification));
+  EXPECT_FALSE(
+      pref_service()->GetBoolean(ash::prefs::kShowMobileDataNotification));
 
   AddUserAndSetActive("other-user@example.com");
 
@@ -235,7 +239,7 @@ TEST_F(MobileDataNotificationsTest, SessionUpdateDisplayNotification) {
 // Verify that session changes does not dispalay the notification if celluar is
 // not connected.
 TEST_F(MobileDataNotificationsTest, SessionUpdateNoNotification) {
-  pref_service()->SetBoolean(prefs::kShowMobileDataNotification, true);
+  pref_service()->SetBoolean(ash::prefs::kShowMobileDataNotification, true);
 
   AddUserAndSetActive("other-user@example.com");
 

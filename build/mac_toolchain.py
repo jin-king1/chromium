@@ -33,28 +33,29 @@ def LoadPList(path):
     return plistlib.load(f)
 
 
-# This contains binaries from Xcode 16.2 (16C5032) along with
-# the macOS SDK 15.2 (24C94). To build these packages, see comments in
-# build/xcode_binaries.yaml.
-# To update the version numbers, open Xcode's "About Xcode" or run
-# `xcodebuild -version` for the Xcode version, and run
-# `xcrun --show-sdk-version` and `xcrun --show-sdk-build-version`for
-# the SDK version. To update the _TAG, use the output of the
-# `cipd create` command mentioned in xcode_binaries.yaml;
-# it's the part after the colon.
-
+# This contains binaries from Xcode 26.6 (17F113) along with the macOS 26.5 SDK
+# (25F70, which is like macOS 26.5 25F71) and the Metal toolchain (17F109). To
+# build these packages, see comments in build/xcode_binaries.yaml.
+#
+# To update the version numbers, open Xcode's "About Xcode" or run `xcodebuild
+# -version` for the Xcode version, and run `xcrun --show-sdk-version` and `xcrun
+# --show-sdk-build-version` for the SDK version. To update the _TAG, use the
+# output of the `cipd create` command mentioned in xcode_binaries.yaml; it's the
+# part after the colon. Or check the CIPD site
+# (https://chrome-infra-packages.appspot.com/) at the path given in
+# MAC_BINARIES_LABEL.
 MAC_BINARIES_LABEL = 'infra_internal/ios/xcode/xcode_binaries/mac-amd64'
-MAC_BINARIES_TAG = 'o5KxJtacGXzkEoORkVUIOEPgGnL2okJzM4Km91eod9EC'
+MAC_BINARIES_TAG = 'c5txl4HTukDs4xiCybqz3zK9jxr4N4PwzHRNOhjBDOQC'
 
 # The toolchain will not be downloaded if the minimum OS version is not met. 19
-# is the major version number for macOS 10.15. Xcode 15.0 only runs on macOS
-# 13.5 and newer, but some bots are still running older OS versions. macOS
-# 10.15.4, the OS minimum through Xcode 12.4, still seems to work.
+# is the Darwin major version number for macOS 10.15. Xcode 26.4 17E192 only
+# runs on macOS 26.2 and newer, but some bots are still running older OS
+# versions. macOS 10.15.4, the OS minimum through Xcode 12.4, still seems to
+# work.
 MAC_MINIMUM_OS_VERSION = [19, 4]
 
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 TOOLCHAIN_ROOT = os.path.join(BASE_DIR, 'mac_files')
-TOOLCHAIN_BUILD_DIR = os.path.join(TOOLCHAIN_ROOT, 'Xcode.app')
 
 # Always integrity-check the entire SDK. Mac SDK packages are complex and often
 # hit edge cases in cipd (eg https://crbug.com/1033987,

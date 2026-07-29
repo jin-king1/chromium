@@ -5,11 +5,11 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_STYLE_STYLE_SHAPE_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_STYLE_STYLE_SHAPE_H_
 
+#include <array>
 #include <cstddef>
 #include <optional>
 #include <variant>
 
-#include "base/memory/scoped_refptr.h"
 #include "third_party/blink/renderer/core/style/basic_shapes.h"
 #include "third_party/blink/renderer/core/svg/svg_path_data.h"
 #include "third_party/blink/renderer/platform/geometry/length_point.h"
@@ -103,10 +103,12 @@ class StyleShape final : public BasicShape {
   struct ArcSegment : public SegmentWithTargetPoint<Type> {
     double angle;
     LengthSize radius;
+    Length direction_agnostic_radius;
     bool large;
     bool sweep;
     bool operator==(const ArcSegment& other) const = default;
   };
+
   struct ArcToSegment : public ArcSegment<SVGPathSegType::kPathSegArcAbs> {};
   struct ArcBySegment : public ArcSegment<SVGPathSegType::kPathSegArcRel> {};
 
@@ -130,17 +132,14 @@ class StyleShape final : public BasicShape {
                                ArcBySegment,
                                CloseSegment>;
 
-  static scoped_refptr<StyleShape> Create(WindRule wind_rule,
-                                          const LengthPoint& origin,
-                                          Vector<Segment> segments) {
-    return base::AdoptRef(
-        new StyleShape(wind_rule, origin, std::move(segments)));
-  }
+  StyleShape(WindRule wind_rule,
+             const LengthPoint& origin,
+             Vector<Segment> segments);
 
   ShapeType GetType() const override { return kStyleShapeType; }
-  void GetPath(Path&,
-               const gfx::RectF& bounding_box,
-               float zoom) const override;
+  Path GetPath(const gfx::RectF& bounding_box,
+               float zoom,
+               float path_scale) const override;
 
   WindRule GetWindRule() const { return wind_rule_; }
   const LengthPoint& GetOrigin() const { return origin_; }
@@ -150,10 +149,6 @@ class StyleShape final : public BasicShape {
   bool IsEqualAssumingSameType(const BasicShape&) const override;
 
  private:
-  StyleShape(WindRule wind_rule,
-             const LengthPoint& origin,
-             Vector<Segment> segments);
-
   WindRule wind_rule_;
   LengthPoint origin_;
   Vector<Segment> segments_;

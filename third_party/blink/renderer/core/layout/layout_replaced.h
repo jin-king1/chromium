@@ -61,7 +61,6 @@ class CORE_EXPORT LayoutReplaced : public LayoutBox {
   // or underflow the final content box by 1px.
   static PhysicalRect PreSnappedRectForPersistentSizing(const PhysicalRect&);
 
-  void AddVisualEffectOverflow();
   void RecalcVisualOverflow() override;
 
   // These values are specified to be 300 and 150 pixels in the CSS 2.1 spec.
@@ -88,6 +87,11 @@ class CORE_EXPORT LayoutReplaced : public LayoutBox {
     return StyleRef().GetObjectFit() !=
            ComputedStyleInitialValues::InitialObjectFit();
   }
+
+  bool NodeAtPoint(HitTestResult&,
+                   const HitTestLocation&,
+                   const PhysicalOffset& accumulated_offset,
+                   HitTestPhase) override;
 
   void Paint(const PaintInfo&) const override;
 
@@ -124,6 +128,14 @@ class CORE_EXPORT LayoutReplaced : public LayoutBox {
     return true;
   }
 
+  virtual bool HitTestChildren(HitTestResult&,
+                               const HitTestLocation&,
+                               const PhysicalOffset& accumulated_offset,
+                               HitTestPhase) const;
+  bool HitTestClippedOutByBorder(
+      const HitTestLocation&,
+      const PhysicalOffset& border_box_location) const;
+
   bool IsInSelfHitTestingPhase(HitTestPhase phase) const override {
     NOT_DESTROYED();
     if (LayoutBox::IsInSelfHitTestingPhase(phase))
@@ -134,8 +146,6 @@ class CORE_EXPORT LayoutReplaced : public LayoutBox {
            phase == HitTestPhase::kSelfBlockBackground;
   }
 
-  void WillBeDestroyed() override;
-
   // This function calculates the placement of the replaced contents. It takes
   // natural dimensions of the replaced contents, stretch to fit CSS content
   // box according to object-fit, object-position and object-view-box.
@@ -143,11 +153,18 @@ class CORE_EXPORT LayoutReplaced : public LayoutBox {
       const PhysicalRect& base_content_rect,
       const PhysicalNaturalSizingInfo& sizing_info) const;
 
-  void StyleDidChange(StyleDifference, const ComputedStyle* old_style) override;
+  void StyleDidChange(StyleDifference,
+                      const ComputedStyle* old_style,
+                      const StyleChangeContext&) override;
 
   PositionWithAffinity PositionForPoint(const PhysicalOffset&) const override;
 
   bool IsLayoutReplaced() const final {
+    NOT_DESTROYED();
+    return true;
+  }
+
+  bool IsMonolithic() const final {
     NOT_DESTROYED();
     return true;
   }
@@ -159,9 +176,12 @@ class CORE_EXPORT LayoutReplaced : public LayoutBox {
   }
 
   // ImageResourceObserver
-  gfx::Size GetSpeculativeDecodeSize() const override;
+  gfx::Size ComputeSpeculativeDecodeSize() const override;
 
  private:
+  void AddVisualEffectOverflow();
+  PhysicalBoxStrut ComputeVisualEffectOverflowOutsets();
+
   // Computes a rect, relative to the element's content's natural size, that
   // should be used as the content source when rendering this element. This
   // value is used as the input for object-fit/object-position during painting.

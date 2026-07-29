@@ -8,14 +8,13 @@
 #include <optional>
 #include <set>
 #include <utility>
+#include <variant>
 #include <vector>
 
-#include "base/containers/contains.h"
 #include "base/memory/raw_ptr.h"
 #include "base/scoped_observation.h"
 #include "components/services/app_service/public/cpp/app_types.h"
 #include "components/services/app_service/public/cpp/app_update.h"
-#include "components/services/app_service/public/cpp/features.h"
 #include "components/services/app_service/public/cpp/types_util.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -373,9 +372,8 @@ class AppRegistryCacheTest : public testing::Test,
     EXPECT_EQ(readiness, cache.states_[app_id]->readiness);
     auto& icon_key = cache.states_[app_id]->icon_key;
     ASSERT_TRUE(icon_key.has_value());
-    ASSERT_TRUE(absl::holds_alternative<int32_t>(icon_key->update_version));
-    EXPECT_EQ(icon_update_version,
-              absl::get<int32_t>(icon_key->update_version));
+    ASSERT_TRUE(std::holds_alternative<int32_t>(icon_key->update_version));
+    EXPECT_EQ(icon_update_version, std::get<int32_t>(icon_key->update_version));
   }
 
   int AppCount(const AppRegistryCache& cache) { return cache.states_.size(); }
@@ -528,7 +526,7 @@ TEST_F(AppRegistryCacheTest, Removed) {
 
   // We should see one call informing us that the app was uninstalled.
   EXPECT_CALL(observer, OnAppUpdate(HasAppId("app")))
-      .WillOnce(testing::Invoke([&observer, &cache](const AppUpdate& update) {
+      .WillOnce([&observer, &cache](const AppUpdate& update) {
         EXPECT_EQ(Readiness::kUninstalledByUser, update.Readiness());
         // Even though we have queued the removal, checking the cache now
         // shows the app is still present.
@@ -536,7 +534,7 @@ TEST_F(AppRegistryCacheTest, Removed) {
         cache.ForEachApp([&observer](const AppUpdate& update) {
           observer.OnAppUpdate(update);
         });
-      }));
+      });
 
   OnApps(cache, std::move(apps), AppType::kUnknown,
          false /* should_notify_initialized */);
@@ -864,7 +862,7 @@ TEST_F(AppRegistryCacheTest, OnAppTypeInitializedWithUpdateFirst) {
          true /* should_notify_initialized */);
 
   // Verify OnAppTypeInitialized is called when the Apps are added.
-  EXPECT_TRUE(base::Contains(observer1.app_types(), AppType::kArc));
+  EXPECT_TRUE(observer1.app_types().contains(AppType::kArc));
   EXPECT_EQ(1, observer1.initialized_app_type_count());
   EXPECT_EQ(2, observer1.app_count_at_initialization());
   EXPECT_EQ(1u, cache.InitializedAppTypes().size());
@@ -877,7 +875,7 @@ TEST_F(AppRegistryCacheTest, OnAppTypeInitializedWithUpdateFirst) {
 
   // Verify OnAppTypeInitialized is not called when more Apps are
   // added.
-  EXPECT_TRUE(base::Contains(observer1.app_types(), AppType::kArc));
+  EXPECT_TRUE(observer1.app_types().contains(AppType::kArc));
   EXPECT_EQ(1, observer1.initialized_app_type_count());
   EXPECT_EQ(2, observer1.app_count_at_initialization());
   EXPECT_EQ(1u, cache.InitializedAppTypes().size());
@@ -903,8 +901,8 @@ TEST_F(AppRegistryCacheTest, OnAppTypeInitializedWithMultipleAppTypes) {
 
   // Verify OnAppTypeInitialized is called when the Apps are added.
   EXPECT_EQ(1u, observer1.app_types().size());
-  EXPECT_TRUE(base::Contains(observer1.app_types(), AppType::kArc));
-  EXPECT_FALSE(base::Contains(observer1.app_types(), AppType::kChromeApp));
+  EXPECT_TRUE(observer1.app_types().contains(AppType::kArc));
+  EXPECT_FALSE(observer1.app_types().contains(AppType::kChromeApp));
   EXPECT_EQ(1, observer1.initialized_app_type_count());
   EXPECT_EQ(2, observer1.app_count_at_initialization());
   EXPECT_EQ(1u, cache.InitializedAppTypes().size());
@@ -917,7 +915,7 @@ TEST_F(AppRegistryCacheTest, OnAppTypeInitializedWithMultipleAppTypes) {
 
   // Verify OnAppTypeInitialized is called when the Apps are added.
   EXPECT_EQ(2u, observer1.app_types().size());
-  EXPECT_TRUE(base::Contains(observer1.app_types(), AppType::kChromeApp));
+  EXPECT_TRUE(observer1.app_types().contains(AppType::kChromeApp));
   EXPECT_EQ(2, observer1.initialized_app_type_count());
   EXPECT_EQ(5, observer1.app_count_at_initialization());
   EXPECT_EQ(2u, cache.InitializedAppTypes().size());
@@ -941,7 +939,7 @@ TEST_F(AppRegistryCacheTest, OnAppTypeInitializedWithEmptyUpdate) {
          true /* should_notify_initialized */);
 
   // Verify OnAppTypeInitialized is called when the Apps are initialized.
-  EXPECT_TRUE(base::Contains(observer1.app_types(), AppType::kChromeApp));
+  EXPECT_TRUE(observer1.app_types().contains(AppType::kChromeApp));
   EXPECT_EQ(1, observer1.initialized_app_type_count());
   EXPECT_EQ(0, observer1.app_count_at_initialization());
   EXPECT_EQ(1u, cache.InitializedAppTypes().size());
@@ -965,7 +963,7 @@ TEST_F(AppRegistryCacheTest, OnAppTypeInitializedWithEmptyUpdate) {
 
   // Verify OnAppTypeInitialized is called when both the Apps are initialized.
   EXPECT_EQ(2u, observer1.app_types().size());
-  EXPECT_TRUE(base::Contains(observer1.app_types(), AppType::kRemote));
+  EXPECT_TRUE(observer1.app_types().contains(AppType::kRemote));
   EXPECT_EQ(2, observer1.initialized_app_type_count());
   EXPECT_EQ(2u, cache.InitializedAppTypes().size());
   EXPECT_TRUE(cache.IsAppTypeInitialized(AppType::kRemote));

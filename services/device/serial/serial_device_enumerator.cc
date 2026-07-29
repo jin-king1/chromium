@@ -6,7 +6,6 @@
 
 #include <utility>
 
-#include "base/not_fatal_until.h"
 #include "base/observer_list.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/unguessable_token.h"
@@ -35,7 +34,9 @@ std::unique_ptr<SerialDeviceEnumerator> SerialDeviceEnumerator::Create(
 #elif BUILDFLAG(IS_WIN)
   return std::make_unique<SerialDeviceEnumeratorWin>(std::move(ui_task_runner));
 #elif BUILDFLAG(IS_ANDROID)
-  return std::make_unique<SerialDeviceEnumeratorAndroid>();
+  auto instance = std::make_unique<SerialDeviceEnumeratorAndroid>();
+  instance->Initialize();
+  return instance;
 #else
 #error "No implementation of SerialDeviceEnumerator on this platform."
 #endif
@@ -97,7 +98,7 @@ void SerialDeviceEnumerator::RemovePort(base::UnguessableToken token) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   auto it = ports_.find(token);
-  CHECK(it != ports_.end(), base::NotFatalUntil::M130);
+  CHECK(it != ports_.end());
   mojom::SerialPortInfoPtr port = std::move(it->second);
 
   SERIAL_LOG(EVENT) << "Serial device removed: path=" << port->path;
@@ -115,7 +116,7 @@ void SerialDeviceEnumerator::UpdatePortConnectedState(
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   auto it = ports_.find(token);
-  CHECK(it != ports_.end(), base::NotFatalUntil::M130);
+  CHECK(it != ports_.end());
   auto& port = it->second;
   if (port->connected == is_connected) {
     return;
@@ -128,6 +129,12 @@ void SerialDeviceEnumerator::UpdatePortConnectedState(
   for (auto& observer : observer_list_) {
     observer.OnPortConnectedStateChanged(*port);
   }
+}
+
+scoped_refptr<SerialIoHandler> SerialDeviceEnumerator::CreateIoHandler(
+    const base::FilePath& path,
+    scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner) {
+  return SerialIoHandler::Create(path, std::move(ui_task_runner));
 }
 
 }  // namespace device

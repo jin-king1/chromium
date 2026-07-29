@@ -3,6 +3,12 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+""" Unittest on process_perf_results.py
+
+Example usage:
+  vpython3 process_perf_results_unittest.py
+"""
+
 from __future__ import absolute_import
 import json
 import os
@@ -11,12 +17,11 @@ import tempfile
 import unittest
 from unittest import mock
 
-import six
-
 from core import path_util
-path_util.AddAndroidPylibToPath()
 
-from pylib.utils import google_storage_helper  # pylint: disable=import-error
+path_util.AddBuildUtilToPath()
+
+from lib.common import google_storage_helper  # pylint: disable=import-error
 
 path_util.AddTelemetryToPath()
 
@@ -26,8 +31,6 @@ import process_perf_results as ppr_module
 import json_util
 
 UUID_SIZE = 36
-
-BUILTIN_MODULE = '__builtin__' if six.PY2 else 'builtins'
 
 
 class _FakeLogdogStream(object):
@@ -48,22 +51,21 @@ class DataFormatParsingUnitTest(unittest.TestCase):
     ppr_module._data_format_cache = {}
 
   def testGtest(self):
-    with mock.patch(BUILTIN_MODULE + '.open', mock.mock_open(read_data='{}')):
+    with mock.patch('builtins.open', mock.mock_open(read_data='{}')):
       self.assertTrue(ppr_module._is_gtest('test.json'))
       self.assertFalse(ppr_module._is_histogram('test.json'))
     self.assertTrue(ppr_module._is_gtest('test.json'))
     self.assertFalse(ppr_module._is_histogram('test.json'))
 
   def testChartJSON(self):
-    with mock.patch(BUILTIN_MODULE + '.open',
-                    mock.mock_open(read_data='{"charts": 1}')):
+    with mock.patch('builtins.open', mock.mock_open(read_data='{"charts": 1}')):
       self.assertFalse(ppr_module._is_gtest('test.json'))
       self.assertFalse(ppr_module._is_histogram('test.json'))
     self.assertFalse(ppr_module._is_gtest('test.json'))
     self.assertFalse(ppr_module._is_histogram('test.json'))
 
   def testHistogram(self):
-    with mock.patch(BUILTIN_MODULE + '.open', mock.mock_open(read_data='[]')):
+    with mock.patch('builtins.open', mock.mock_open(read_data='[]')):
       self.assertTrue(ppr_module._is_histogram('test.json'))
       self.assertFalse(ppr_module._is_gtest('test.json'))
     self.assertTrue(ppr_module._is_histogram('test.json'))
@@ -265,12 +267,53 @@ class ProcessPerfResults_HardenedUnittest(unittest.TestCase):
     finally:
       shutil.rmtree(temp_parent_dir)
 
+  def test_chartjson_results(self):
+    json_dict = {
+        "benchmark_name": "sizes",
+        "charts": {
+            "chrome.dll": {
+                "chrome.dll": {
+                    "value": 294921216,
+                    "units": "bytes"
+                }
+            },
+            "chrome.dll.pdb": {
+                "chrome.dll.pdb": {
+                    "value": 2131410944,
+                    "units": "bytes"
+                }
+            }
+        }
+    }
+    expected = {
+        'benchmark_name': 'sizes',
+        'charts': {
+            'chrome.dll': {
+                'chrome.dll': {
+                    'value': 294921216,
+                    'units': 'bytes'
+                }
+            },
+            'chrome.dll.pdb': {
+                'chrome.dll.pdb': {
+                    'value': 2131410944,
+                    'units': 'bytes'
+                }
+            }
+        }
+    }
+    merged_results = {'charts': {}}
+    ppr_module._chartjson_results(merged_results, json_dict)
+    self.assertEqual(merged_results, expected)
+
   @decorators.Disabled('chromeos')  # crbug.com/956178
   def test_merge_perf_results_IOError(self):
     results_filename = None
     directories = ['directory_that_does_not_exist']
-    ppr_module._merge_perf_results('benchmark.example', results_filename,
-                                   directories)
+    success, _, _ = ppr_module._merge_perf_results('benchmark.example',
+                                                   results_filename,
+                                                   directories)
+    self.assertFalse(success, 'Expected failure for non-existent directory')
 
   @decorators.Disabled('chromeos')  # crbug.com/956178
   def test_handle_perf_logs_no_log(self):
@@ -295,6 +338,7 @@ class ProcessPerfResults_HardenedUnittest(unittest.TestCase):
 class ProcessPerfResults_PerfSkiaJsonUnittest(unittest.TestCase):
   @mock.patch.object(json_util, 'gcs_buckets_from_builder_name', autospec=True,
                      return_value=['chrome-perf-dashboard-test'])
+  @mock.patch.object(json_util, 'is_empty', autospec=True, return_value=False)
   @mock.patch('builtins.open', new_callable=mock.mock_open)
   @mock.patch.object(json, 'dump', autospec=True)
   @mock.patch.object(ppr_module, '_process_skia_json', autospec=True)
@@ -302,15 +346,9 @@ class ProcessPerfResults_PerfSkiaJsonUnittest(unittest.TestCase):
   @mock.patch.object(google_storage_helper, 'upload', autospec=True,
                      return_value='')
   @mock.patch.object(google_storage_helper, 'unique_name', autospec=True)
-  def test_upload_skia_json(
-      self,
-      mock_unique_name,
-      mock_upload,
-      mock_get_gcs_prefix_path,
-      mock_process_skia_json,
-      mock_dump,
-      mock_file_open,
-      _):
+  def test_upload_skia_json(self, mock_unique_name, mock_upload,
+                            mock_get_gcs_prefix_path, mock_process_skia_json,
+                            mock_dump, mock_file_open, mock_is_empty, _):
     key = {
         'improvement_direction': 'down',
         'unit': 'ms_smallerIsBetter',
@@ -416,7 +454,8 @@ class ProcessPerfResults_PerfSkiaJsonUnittest(unittest.TestCase):
     self.assertEqual(got, 0)
     mock_process_skia_json.assert_called_once_with(
         results_filename=results_filename,
-        builder_details=builder_details)
+        builder_details=builder_details,
+        benchmark_name=benchmark_name)
     mock_get_gcs_prefix_path.assert_called_once_with(
         build_properties=build_properties,
         builder_details=builder_details,
@@ -424,17 +463,200 @@ class ProcessPerfResults_PerfSkiaJsonUnittest(unittest.TestCase):
         given_datetime=None,
         filename=('skia_results_benchmark.example_'
                   'win-11-perf_9719_2024_08_25_T00_39_41-UTC.json'))
+    skia_results_filepath = os.path.join('tmpfile_dir', 'skia_results.json')
     mock_upload.assert_called_once_with(
         name=('ingest/2024/08/29/ChromiumPerf/win-11-perf/9719/'
               'benchmark.example/skia_results.json'),
-        filepath='tmpfile_dir/skia_results.json',
+        filepath=skia_results_filepath,
         bucket='chrome-perf-dashboard-test',
         content_type='application/json',
-        authenticated_link=True
-    )
+        authenticated_link=True)
     mock_dump.assert_called_once_with(skia_json, mock.ANY)
-    mock_file_open.assert_called_once_with(
-        'tmpfile_dir/skia_results.json', 'w')
+    mock_file_open.assert_called_once_with(skia_results_filepath, 'w')
+    mock_is_empty.assert_called_once_with(skia_json)
+
+
+class TestUploadIndividual(unittest.TestCase):
+
+  def setUp(self):
+    # Mock external functions and modules
+    self.mock_tempfile_mkdtemp = mock.patch(
+        'tempfile.mkdtemp', return_value='/mock/tmp/dir').start()
+    self.mock_os_makedirs = mock.patch('os.makedirs').start()
+    self.mock_os_path_exists = mock.patch('os.path.exists',
+                                          return_value=False).start()
+    self.mock_os_path_getsize = mock.patch('os.path.getsize',
+                                           return_value=1024 *
+                                           1024).start()  # 1 MiB
+    self.mock_time_time = mock.patch('time.time',
+                                     side_effect=[100.0, 101.0, 102.0,
+                                                  103.0]).start()
+    self.mock_shutil_rmtree = mock.patch('shutil.rmtree').start()
+    self.mock_logging_info = mock.patch('logging.info').start()
+
+    self.mock_merge_perf_results = mock.patch(
+        'process_perf_results._merge_perf_results').start()
+    self.mock_upload_perf_results = mock.patch(
+        'process_perf_results._upload_perf_results').start()
+    self.mock_print_duration = mock.patch(
+        'process_perf_results.print_duration').start()
+    self.mock_upload_skia_json = mock.patch(
+        'process_perf_results._upload_skia_json').start()
+
+    # Common test data
+    self.benchmark_name = 'test_benchmark'
+    self.directories = ['/path/to/dir1', '/path/to/dir2']
+    self.configuration_name = 'test_config'
+    self.build_properties = {
+        'buildername': 'test_builder',
+        'buildnumber': 123,
+        'got_revision_cp': 'abc',
+        'got_v8_revision': 'def',
+        'got_webrtc_revision': 'ghi',
+        'perf_dashboard_machine_group': 'test_group'
+    }
+    self.output_json_file = '/path/to/output.json'
+    self.upload_skia_json_flag = False
+
+  def tearDown(self):
+    mock.patch.stopall()
+
+  def test_successful_upload_no_skia(self):
+    self.mock_merge_perf_results.return_value = (
+        True, 0, 1)  # success, 0 charts, 1 histogram
+    self.mock_upload_perf_results.return_value = 0  # success
+    self.upload_skia_json_flag = False
+
+    benchmark_name, success, logdog_dict = ppr_module._upload_individual(
+        self.benchmark_name, self.directories, self.configuration_name,
+        self.build_properties, self.output_json_file,
+        self.upload_skia_json_flag)
+
+    self.assertEqual(benchmark_name, self.benchmark_name)
+    self.assertTrue(success)
+    self.assertEqual(logdog_dict[self.benchmark_name]['upload_failed'], 'False')
+    self.mock_merge_perf_results.assert_called_once_with(
+        self.benchmark_name,
+        os.path.join('/mock/tmp/dir', self.benchmark_name, 'perf_results.json'),
+        self.directories)
+    self.mock_upload_perf_results.assert_called_once_with(
+        os.path.join('/mock/tmp/dir', self.benchmark_name,
+                     'perf_results.json'), self.benchmark_name,
+        self.configuration_name, self.build_properties, self.output_json_file)
+    self.mock_upload_skia_json.assert_not_called()
+    self.mock_shutil_rmtree.assert_called_once_with('/mock/tmp/dir')
+
+  def test_successful_upload_with_skia(self):
+    self.mock_merge_perf_results.return_value = (
+        True, 0, 1)  # success, 0 charts, 1 histogram
+    self.mock_upload_perf_results.return_value = 0  # success
+    self.mock_upload_skia_json.return_value = 0  # skia upload success
+    self.upload_skia_json_flag = True
+
+    benchmark_name, success, logdog_dict = ppr_module._upload_individual(
+        self.benchmark_name, self.directories, self.configuration_name,
+        self.build_properties, self.output_json_file,
+        self.upload_skia_json_flag)
+
+    self.assertEqual(benchmark_name, self.benchmark_name)
+    self.assertTrue(success)
+    self.assertEqual(logdog_dict[self.benchmark_name]['upload_failed'], 'False')
+    self.mock_upload_skia_json.assert_called_once_with(
+        self.benchmark_name, self.configuration_name,
+        os.path.join('/mock/tmp/dir', self.benchmark_name,
+                     'perf_results.json'), '/mock/tmp/dir',
+        self.build_properties, logdog_dict[self.benchmark_name])
+    self.mock_shutil_rmtree.assert_called_once_with('/mock/tmp/dir')
+
+  def test_merge_failed(self):
+    self.mock_merge_perf_results.return_value = (False, 0, 0)  # merge failure
+
+    benchmark_name, success, _ = ppr_module._upload_individual(
+        self.benchmark_name, self.directories, self.configuration_name,
+        self.build_properties, self.output_json_file,
+        self.upload_skia_json_flag)
+
+    self.assertEqual(benchmark_name, self.benchmark_name)
+    self.assertFalse(success)
+    self.mock_merge_perf_results.assert_called_once()
+    self.mock_upload_perf_results.assert_not_called()
+    self.mock_upload_skia_json.assert_not_called()
+    self.mock_shutil_rmtree.assert_called_once_with('/mock/tmp/dir')
+
+  def test_perf_upload_failed(self):
+    self.mock_merge_perf_results.return_value = (True, 0, 1)
+    self.mock_upload_perf_results.return_value = 1  # perf upload failure
+
+    benchmark_name, success, logdog_dict = ppr_module._upload_individual(
+        self.benchmark_name, self.directories, self.configuration_name,
+        self.build_properties, self.output_json_file,
+        self.upload_skia_json_flag)
+
+    self.assertEqual(benchmark_name, self.benchmark_name)
+    self.assertFalse(success)
+    self.assertEqual(logdog_dict[self.benchmark_name]['upload_failed'], 'True')
+    self.mock_upload_perf_results.assert_called_once()
+    # Skia upload should not be attempted if perf upload fails and
+    # upload_skia_json_flag is False
+    self.mock_upload_skia_json.assert_not_called()
+    self.mock_shutil_rmtree.assert_called_once_with('/mock/tmp/dir')
+
+  def test_skia_upload_failed(self):
+    self.mock_merge_perf_results.return_value = (True, 0, 1)
+    self.mock_upload_perf_results.return_value = 0
+    self.mock_upload_skia_json.return_value = 1  # Simulate failure
+    self.upload_skia_json_flag = True
+
+    benchmark_name, success, logdog_dict = ppr_module._upload_individual(
+        self.benchmark_name, self.directories, self.configuration_name,
+        self.build_properties, self.output_json_file,
+        self.upload_skia_json_flag)
+
+    self.assertEqual(benchmark_name, self.benchmark_name)
+    self.assertFalse(
+        success)  # Overall success should be False due to skia upload failure
+    self.assertEqual(logdog_dict[self.benchmark_name]['upload_failed'],
+                     'False')  # Perf upload was successful
+    self.mock_upload_skia_json.assert_called_once()
+    self.mock_shutil_rmtree.assert_called_once_with('/mock/tmp/dir')
+
+  def test_skia_upload_skipped_charts_count(self):
+    self.mock_merge_perf_results.return_value = (
+        True, 1, 0)  # success, 1 chart, 0 histograms
+    self.mock_upload_perf_results.return_value = 0
+    self.upload_skia_json_flag = True
+
+    benchmark_name, success, _ = ppr_module._upload_individual(
+        self.benchmark_name, self.directories, self.configuration_name,
+        self.build_properties, self.output_json_file,
+        self.upload_skia_json_flag)
+
+    self.assertEqual(benchmark_name, self.benchmark_name)
+    self.assertTrue(success)
+    self.mock_upload_skia_json.assert_not_called(
+    )  # Should not be called because charts_count is not 0
+    self.mock_shutil_rmtree.assert_called_once_with('/mock/tmp/dir')
+
+  def test_cleanup_on_success(self):
+    self.mock_merge_perf_results.return_value = (True, 0, 1)
+    self.mock_upload_perf_results.return_value = 0
+
+    ppr_module._upload_individual(self.benchmark_name, self.directories,
+                                  self.configuration_name,
+                                  self.build_properties, self.output_json_file,
+                                  self.upload_skia_json_flag)
+
+    self.mock_shutil_rmtree.assert_called_once_with('/mock/tmp/dir')
+
+  def test_cleanup_on_failure(self):
+    self.mock_merge_perf_results.return_value = (False, 0, 0)  # merge failure
+
+    ppr_module._upload_individual(self.benchmark_name, self.directories,
+                                  self.configuration_name,
+                                  self.build_properties, self.output_json_file,
+                                  self.upload_skia_json_flag)
+
+    self.mock_shutil_rmtree.assert_called_once_with('/mock/tmp/dir')
 
 
 if __name__ == '__main__':

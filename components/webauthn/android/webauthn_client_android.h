@@ -22,6 +22,25 @@ class DiscoverableCredentialMetadata;
 
 namespace webauthn {
 
+// The type of mediation that is being used for a WebAuthn GetAssertion request.
+// GENERATED_JAVA_ENUM_PACKAGE: org.chromium.components.webauthn
+// GENERATED_JAVA_PREFIX_TO_STRIP: k
+enum class AssertionMediationType {
+  kModal = 0,
+  kConditional = 1,
+  kImmediatePasskeysOnly = 3,
+  kImmediateWithPasswords = 4,
+};
+
+// Reason codes for non-credential completion of the request.
+// GENERATED_JAVA_ENUM_PACKAGE: org.chromium.components.webauthn
+// GENERATED_JAVA_PREFIX_TO_STRIP: k
+enum class NonCredentialReturnReason {
+  kImmediateNoCredentials = 0,
+  kUserDismissed = 1,
+  kError = 2,
+};
+
 class WebAuthnClientAndroid {
  public:
   virtual ~WebAuthnClientAndroid();
@@ -32,20 +51,37 @@ class WebAuthnClientAndroid {
   // Accessor for the client that has been set by the embedder.
   static WebAuthnClientAndroid* GetClient();
 
+  // Accessor that checks whether a client was initialized by the embedder.
+  static bool HasClient();
+
+  // Set the static instance of this client to nullptr. Only use in tests.
+  static void ClearClientForTesting();
+
   // Called when a Web Authentication request is received that can be handled
-  // by the browser. This provides the callback that will complete the request
-  // if and when a user selects a credential from a selection dialog.
+  // by the browser. This provides callbacks that will complete the request if
+  // and when a user selects a credential from a selection dialog.
   virtual void OnWebAuthnRequestPending(
       content::RenderFrameHost* frame_host,
-      const std::vector<device::DiscoverableCredentialMetadata>& credentials,
-      bool is_conditional_request,
+      std::vector<device::DiscoverableCredentialMetadata> credentials,
+      AssertionMediationType mediation_type,
       base::RepeatingCallback<void(const std::vector<uint8_t>& id)>
-          getAssertionCallback,
-      base::RepeatingCallback<void()> hybridCallback) = 0;
+          passkey_callback,
+      base::RepeatingCallback<void(std::u16string_view, std::u16string_view)>
+          password_callback,
+      base::RepeatingClosure hybrid_closure,
+      base::RepeatingCallback<void(NonCredentialReturnReason)>
+          non_credential_callback) = 0;
 
   // Closes an outstanding conditional UI request, so passkeys will no longer be
   // displayed through autofill.
   virtual void CleanupWebAuthnRequest(content::RenderFrameHost* frame_host) = 0;
+
+  // Returns true if the credential request should be disallowed by the
+  // embedder. This is used on Android to block WebAuthn requests when the
+  // embedder detects that a user-facing actor (e.g. implemented in chrome/) is
+  // already active on the tab, preventing overlapping UI sheets.
+  virtual bool ShouldDisallowCredentialRequest(
+      content::RenderFrameHost* render_frame_host) = 0;
 
   // Called when a pendingGetCredential call is completed. The provided closure
   // can be used to trigger CredMan UI flows. Android U+ only.

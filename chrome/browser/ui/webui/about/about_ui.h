@@ -29,18 +29,6 @@ class AboutUIConfigBase : public content::DefaultWebUIConfig<AboutUI> {
   explicit AboutUIConfigBase(std::string_view host);
 };
 
-// chrome://chrome-urls. Note that HandleChromeAboutAndChromeSyncRewrite()
-// rewrites chrome://about -> chrome://chrome-urls.
-class ChromeURLsUIConfig : public content::WebUIConfig {
- public:
-  ChromeURLsUIConfig();
-
-  // content::WebUIConfig:
-  std::unique_ptr<content::WebUIController> CreateWebUIController(
-      content::WebUI* web_ui,
-      const GURL& url) override;
-};
-
 // chrome://credits.
 class CreditsUIConfig : public AboutUIConfigBase {
  public:
@@ -68,12 +56,6 @@ class LinuxProxyConfigUI : public AboutUIConfigBase {
 class OSCreditsUI : public AboutUIConfigBase {
  public:
   OSCreditsUI();
-};
-
-// chrome://borealis-credits
-class BorealisCreditsUI : public AboutUIConfigBase {
- public:
-  BorealisCreditsUI();
 };
 
 // chrome://crostini-credits

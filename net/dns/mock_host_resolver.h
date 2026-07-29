@@ -15,9 +15,12 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
+#include "base/memory/ref_counted.h"
+#include "base/memory/safe_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "base/synchronization/lock.h"
 #include "base/synchronization/waitable_event.h"
@@ -35,9 +38,9 @@
 #include "net/dns/public/host_resolver_results.h"
 #include "net/dns/public/host_resolver_source.h"
 #include "net/dns/public/mdns_listener_update_type.h"
+#include "net/dns/public/resolution_details.h"
 #include "net/dns/public/secure_dns_policy.h"
 #include "net/log/net_log_with_source.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 #include "url/scheme_host_port.h"
 
 namespace base {
@@ -48,6 +51,7 @@ namespace net {
 
 class HostCache;
 class IPEndPoint;
+class ResolveContext;
 class URLRequestContext;
 
 // Fills `ip_endpoints` with a socket address for `host_list` which should be a
@@ -99,8 +103,8 @@ class MockHostResolverBase : public HostResolver {
   class RuleResolver {
    public:
     struct RuleKey {
-      struct WildcardScheme : absl::monostate {};
-      struct NoScheme : absl::monostate {};
+      struct WildcardScheme : std::monostate {};
+      struct NoScheme : std::monostate {};
       using Scheme = std::string;
 
       RuleKey();
@@ -125,7 +129,7 @@ class MockHostResolverBase : public HostResolver {
       // queries will only match if made using HostPortPair. Else, queries will
       // only match if made using url::SchemeHostPort with matching scheme
       // value.
-      absl::variant<WildcardScheme, NoScheme, Scheme> scheme = WildcardScheme();
+      std::variant<WildcardScheme, NoScheme, Scheme> scheme = WildcardScheme();
 
       // Pattern matched via `base::MatchPattern()`.
       std::string hostname_pattern = "*";
@@ -154,7 +158,7 @@ class MockHostResolverBase : public HostResolver {
     };
 
     using ErrorResult = Error;
-    using RuleResultOrError = absl::variant<RuleResult, ErrorResult>;
+    using RuleResultOrError = std::variant<RuleResult, ErrorResult>;
 
     // If `default_result` is nullopt, every resolve must match an added rule.
     explicit RuleResolver(
@@ -280,16 +284,19 @@ class MockHostResolverBase : public HostResolver {
   std::unique_ptr<ResolveHostRequest> CreateRequest(
       url::SchemeHostPort host,
       NetworkAnonymizationKey network_anonymization_key,
+      handles::NetworkHandle target_network,
       NetLogWithSource net_log,
       std::optional<ResolveHostParameters> optional_parameters) override;
   std::unique_ptr<ResolveHostRequest> CreateRequest(
       const HostPortPair& host,
       const NetworkAnonymizationKey& network_anonymization_key,
+      handles::NetworkHandle target_network,
       const NetLogWithSource& net_log,
       const std::optional<ResolveHostParameters>& optional_parameters) override;
   std::unique_ptr<ServiceEndpointRequest> CreateServiceEndpointRequest(
       Host host,
       NetworkAnonymizationKey network_anonymization_key,
+      handles::NetworkHandle target_network,
       NetLogWithSource net_log,
       ResolveHostParameters parameters) override;
   std::unique_ptr<ProbeRequest> CreateDohProbeRequest() override;
@@ -298,11 +305,12 @@ class MockHostResolverBase : public HostResolver {
       DnsQueryType query_type) override;
   HostCache* GetHostCache() override;
   void SetRequestContext(URLRequestContext* request_context) override {}
+  bool IsHappyEyeballsV3Enabled() const override;
 
   // Preloads the cache with what would currently be the result of a request
   // with the given parameters. Returns the net error of the cached result.
   int LoadIntoCache(
-      absl::variant<url::SchemeHostPort, HostPortPair> endpoint,
+      std::variant<url::SchemeHostPort, HostPortPair> endpoint,
       const NetworkAnonymizationKey& network_anonymization_key,
       const std::optional<ResolveHostParameters>& optional_parameters);
   int LoadIntoCache(
@@ -335,6 +343,9 @@ class MockHostResolverBase : public HostResolver {
 
   // Returns the hostname of the request with the given id.
   std::string_view request_host(size_t id);
+
+  // Returns the detailed host object for the request with the given id.
+  const HostResolver::Host& request_full_host(size_t id);
 
   // Returns the priority of the request with the given id.
   RequestPriority request_priority(size_t id);
@@ -372,6 +383,14 @@ class MockHostResolverBase : public HostResolver {
     return last_request_network_anonymization_key_;
   }
 
+  // Last observed Host, if any. Unlike `request_full_host(last_id())`, can be
+  // used to get information about resolutions that completed synchronously.
+  // Updated on call to either CreateRequest() or
+  // CreateServiceEndpointRequest().
+  const std::optional<Host>& last_observed_host() const {
+    return last_observed_host_;
+  }
+
   // Returns the SecureDnsPolicy of the last call to Resolve() (or
   // std::nullopt if Resolve() hasn't been called yet).
   SecureDnsPolicy last_secure_dns_policy() const {
@@ -398,6 +417,23 @@ class MockHostResolverBase : public HostResolver {
 
   void set_tick_clock(const base::TickClock* tick_clock) {
     tick_clock_ = tick_clock;
+  }
+
+  base::SafeRef<MockHostResolverBase> AsSafeRef() {
+    return weak_ptr_factory_.GetSafeRef();
+  }
+
+  void SetResolveContextForTesting(ResolveContext* resolve_context) {
+    resolve_context_ = resolve_context;
+  }
+
+  void set_default_resolution_details(
+      std::optional<ResolutionDetails> details) {
+    default_resolution_details_ = std::move(details);
+  }
+
+  void set_is_stale_while_refreshing(bool is_stale_while_refreshing) {
+    is_stale_while_refreshing_ = is_stale_while_refreshing;
   }
 
  private:
@@ -445,6 +481,9 @@ class MockHostResolverBase : public HostResolver {
   RuleResolver rule_resolver_;
   std::unique_ptr<HostCache> cache_;
 
+  // Most recently resolved host, if any.
+  std::optional<Host> last_observed_host_;
+
   const int initial_cache_invalidation_num_;
   std::map<HostCache::Key, int> cache_invalidation_nums_;
 
@@ -454,7 +493,13 @@ class MockHostResolverBase : public HostResolver {
 
   raw_ptr<const base::TickClock> tick_clock_;
 
+  raw_ptr<ResolveContext> resolve_context_;
+
   scoped_refptr<State> state_;
+
+  std::optional<ResolutionDetails> default_resolution_details_;
+
+  bool is_stale_while_refreshing_ = false;
 
   THREAD_CHECKER(thread_checker_);
 
@@ -512,12 +557,14 @@ class MockHostResolverFactory : public HostResolver::Factory {
   std::unique_ptr<HostResolver> CreateResolver(
       HostResolverManager* manager,
       std::string_view host_mapping_rules,
-      bool enable_caching) override;
+      bool enable_caching,
+      bool enable_stale) override;
   std::unique_ptr<HostResolver> CreateStandaloneResolver(
       NetLog* net_log,
       const HostResolver::ManagerOptions& options,
       std::string_view host_mapping_rules,
-      bool enable_caching) override;
+      bool enable_caching,
+      bool enable_stale) override;
 
  private:
   const MockHostResolverBase::RuleResolver rules_;
@@ -697,22 +744,27 @@ class HangingHostResolver : public HostResolver {
   std::unique_ptr<ResolveHostRequest> CreateRequest(
       url::SchemeHostPort host,
       NetworkAnonymizationKey network_anonymization_key,
+      handles::NetworkHandle target_network,
       NetLogWithSource net_log,
       std::optional<ResolveHostParameters> optional_parameters) override;
   std::unique_ptr<ResolveHostRequest> CreateRequest(
       const HostPortPair& host,
       const NetworkAnonymizationKey& network_anonymization_key,
+      handles::NetworkHandle target_network,
       const NetLogWithSource& net_log,
       const std::optional<ResolveHostParameters>& optional_parameters) override;
   std::unique_ptr<ServiceEndpointRequest> CreateServiceEndpointRequest(
       Host host,
       NetworkAnonymizationKey network_anonymization_key,
+      handles::NetworkHandle target_network,
       NetLogWithSource net_log,
       ResolveHostParameters parameters) override;
 
   std::unique_ptr<ProbeRequest> CreateDohProbeRequest() override;
 
   void SetRequestContext(URLRequestContext* url_request_context) override;
+
+  bool IsHappyEyeballsV3Enabled() const override;
 
   // Use to detect cancellations since there's otherwise no externally-visible
   // differentiation between a cancelled and a hung task.
@@ -729,6 +781,7 @@ class HangingHostResolver : public HostResolver {
 
  private:
   class RequestImpl;
+  class ServiceEndpointRequestImpl;
   class ProbeRequestImpl;
 
   HostPortPair last_host_;

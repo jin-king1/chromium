@@ -5,6 +5,7 @@
 #include "chrome/browser/chromeos/policy/dlp/data_transfer_dlp_controller.h"
 
 #include <string>
+#include <variant>
 
 #include "ash/webui/file_manager/url_constants.h"
 #include "base/check_op.h"
@@ -61,11 +62,11 @@ bool IsFilesApp(base::optional_ref<const ui::DataTransferEndpoint> data_dst) {
   // TODO(b/207576430): Once Files Extension is removed, remove this condition.
   bool is_files_extension =
       url.has_scheme() && url.SchemeIs(extensions::kExtensionScheme) &&
-      url.has_host() && url.host() == extension_misc::kFilesManagerAppId;
-  bool is_files_swa = url.has_scheme() &&
-                      url.SchemeIs(content::kChromeUIScheme) &&
-                      url.has_host() &&
-                      url.host() == ash::file_manager::kChromeUIFileManagerHost;
+      url.has_host() && url.GetHost() == extension_misc::kFilesManagerAppId;
+  bool is_files_swa =
+      url.has_scheme() && url.SchemeIs(content::kChromeUIScheme) &&
+      url.has_host() &&
+      url.GetHost() == ash::file_manager::kChromeUIFileManagerHost;
 
   return is_files_extension || is_files_swa;
 }
@@ -179,7 +180,7 @@ DlpRulesManager::Level IsDataTransferAllowed(
 // `should_proceed`. It is used as a callback in `PasteIfAllowed` to handle
 // warning proceeded clipboard events.
 void MaybeReportWarningProceededEventAndPaste(
-    base::OnceCallback<void(void)> reporting_cb,
+    base::OnceClosure reporting_cb,
     base::OnceCallback<void(bool)> paste_cb,
     bool should_proceed) {
   if (should_proceed) {
@@ -295,7 +296,7 @@ bool DataTransferDlpController::IsClipboardReadAllowed(
 void DataTransferDlpController::PasteIfAllowed(
     base::optional_ref<const ui::DataTransferEndpoint> data_src,
     base::optional_ref<const ui::DataTransferEndpoint> data_dst,
-    absl::variant<size_t, std::vector<base::FilePath>> pasted_content,
+    std::variant<size_t, std::vector<base::FilePath>> pasted_content,
     content::RenderFrameHost* rfh,
     base::OnceCallback<void(bool)> paste_cb) {
   // To simplify logic that would have to check OTR in every sub-call of DLP
@@ -308,22 +309,22 @@ void DataTransferDlpController::PasteIfAllowed(
       data_dst.has_value() && !data_dst->off_the_record() ? data_dst
                                                           : std::nullopt;
 
-  if (absl::holds_alternative<std::vector<base::FilePath>>(pasted_content) &&
-      !IsFilesApp(destination)) {
+  if (std::holds_alternative<std::vector<base::FilePath>>(pasted_content) &&
+      !IsFilesApp(destination) && destination.has_value()) {
     auto pasted_files =
-        std::move(absl::get<std::vector<base::FilePath>>(pasted_content));
+        std::move(std::get<std::vector<base::FilePath>>(pasted_content));
     auto* files_controller = dlp_rules_manager_->GetDlpFilesController();
     if (files_controller) {
       files_controller->CheckIfPasteOrDropIsAllowed(
           pasted_files, destination.as_ptr(), std::move(paste_cb));
+      return;
     }
-    return;
   }
 
-  if (absl::holds_alternative<size_t>(pasted_content) &&
-      absl::get<size_t>(pasted_content) > 0) {
+  if (std::holds_alternative<size_t>(pasted_content) &&
+      std::get<size_t>(pasted_content) > 0) {
     ContinuePasteIfClipboardRestrictionsAllow(source, destination,
-                                              absl::get<size_t>(pasted_content),
+                                              std::get<size_t>(pasted_content),
                                               rfh, std::move(paste_cb));
     return;
   }
@@ -347,7 +348,7 @@ void DataTransferDlpController::DropIfAllowed(
                                                           : std::nullopt;
 
   if (filenames.has_value() && !filenames->empty() &&
-      !IsFilesApp(destination)) {
+      !IsFilesApp(destination) && destination.has_value()) {
     auto* files_controller = dlp_rules_manager_->GetDlpFilesController();
     if (files_controller) {
       CHECK(destination.has_value());
@@ -621,9 +622,6 @@ void DataTransferDlpController::ContinuePasteIfClipboardRestrictionsAllow(
     size_t size,
     content::RenderFrameHost* rfh,
     base::OnceCallback<void(bool)> paste_cb) {
-  DCHECK(data_dst.has_value());
-  DCHECK(data_dst->IsUrlType());
-
   auto* web_contents = content::WebContents::FromRenderFrameHost(rfh);
   if (!web_contents) {
     std::move(paste_cb).Run(false);

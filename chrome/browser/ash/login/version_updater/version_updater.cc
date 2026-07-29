@@ -9,6 +9,7 @@
 #include <string>
 #include <utility>
 
+#include "ash/login/resources/grit/ash_login_strings.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
@@ -16,11 +17,9 @@
 #include "base/time/time.h"
 #include "chrome/browser/ash/login/version_updater/update_time_estimator.h"
 #include "chrome/grit/branded_strings.h"
-#include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/components/dbus/update_engine/update_engine_client.h"
 #include "chromeos/ash/components/network/network_handler.h"
 #include "chromeos/ash/components/network/network_state_handler.h"
-#include "chromeos/ash/components/network/portal_detector/network_portal_detector.h"
 #include "ui/base/l10n/l10n_util.h"
 
 namespace ash {
@@ -96,26 +95,23 @@ void VersionUpdater::Init() {
 }
 
 void VersionUpdater::StartNetworkCheck() {
-  // If portal detector is enabled and portal detection before AU is
-  // allowed, initiate network state check. Otherwise, directly
-  // proceed to update.
-  if (!network_portal_detector::GetInstance()->IsEnabled()) {
+  // If network state is available, initiate network state check. Otherwise,
+  // directly proceed to update.
+  if (!NetworkHandler::IsInitialized()) {
     StartUpdateCheck();
     return;
   }
 
   delegate_->UpdateInfoChanged(update_info_);
 
-  if (NetworkHandler::IsInitialized()) {
-    NetworkStateHandler* handler =
-        NetworkHandler::Get()->network_state_handler();
-    if (!handler->HasObserver(this))
-      handler->AddObserver(this);
-    const NetworkState* default_network = handler->DefaultNetwork();
-    PortalStateChanged(default_network,
-                       default_network ? default_network->portal_state()
-                                       : NetworkState::PortalState::kUnknown);
+  NetworkStateHandler* handler = NetworkHandler::Get()->network_state_handler();
+  if (!handler->HasObserver(this)) {
+    handler->AddObserver(this);
   }
+  const NetworkState* default_network = handler->DefaultNetwork();
+  PortalStateChanged(default_network,
+                     default_network ? default_network->portal_state()
+                                     : NetworkState::PortalState::kUnknown);
 }
 
 void VersionUpdater::StartUpdateCheck() {
@@ -160,6 +156,7 @@ void VersionUpdater::RebootAfterUpdate() {
 
 void VersionUpdater::StartExitUpdate(Result result) {
   UpdateEngineClient::Get()->RemoveObserver(this);
+  retry_check_timer_.Stop();
   if (NetworkHandler::IsInitialized())
     NetworkHandler::Get()->network_state_handler()->RemoveObserver(this);
   delegate_->FinishExitUpdate(result);

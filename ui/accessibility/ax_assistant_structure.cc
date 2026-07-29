@@ -5,9 +5,11 @@
 #include "ui/accessibility/ax_assistant_structure.h"
 
 #include <optional>
+#include <string_view>
 #include <utility>
 
 #include "base/logging.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "ui/accessibility/ax_enums.mojom.h"
@@ -49,6 +51,7 @@ bool IsLeaf(const AXNode* node) {
 
   switch (node->GetRole()) {
     case ax::mojom::Role::kImage:
+    case ax::mojom::Role::kMenuItemSeparator:
     case ax::mojom::Role::kMeter:
     case ax::mojom::Role::kScrollBar:
     case ax::mojom::Role::kSlider:
@@ -68,16 +71,17 @@ std::u16string GetInnerText(const AXNode* node) {
     return node->GetString16Attribute(ax::mojom::StringAttribute::kName);
   }
   std::u16string text;
-  for (auto iter = node->UnignoredChildrenBegin();
-       iter != node->UnignoredChildrenEnd(); ++iter) {
+  for (auto iter = node->UnignoredChildrenBegin(),
+            end = node->UnignoredChildrenEnd();
+       iter != end; ++iter) {
     text += GetInnerText(iter.get());
   }
   return text;
 }
 
 std::u16string GetValue(const AXNode* node) {
-  std::u16string value =
-      node->GetString16Attribute(ax::mojom::StringAttribute::kValue);
+  std::u16string value = base::UTF8ToUTF16(
+      node->GetAriaValueTextOrValue().value_or(std::string()));
 
   if (value.empty() && (IsTextField(node) || IsRichTextEditable(node)) &&
       !IsAtomicTextField(node)) {
@@ -151,8 +155,9 @@ std::u16string GetText(const AXNode* node) {
   }
 
   if (text.empty() && IsLeaf(node)) {
-    for (auto iter = node->UnignoredChildrenBegin();
-         iter != node->UnignoredChildrenEnd(); ++iter) {
+    for (auto iter = node->UnignoredChildrenBegin(),
+              end = node->UnignoredChildrenEnd();
+         iter != end; ++iter) {
       text += GetInnerText(iter.get());
     }
   }
@@ -325,8 +330,9 @@ void WalkAXTreeDepthFirst(const AXNode* node,
   if (!class_name.empty())
     result->html_attributes.emplace_back("class", class_name);
 
-  for (auto iter = node->UnignoredChildrenBegin();
-       iter != node->UnignoredChildrenEnd(); ++iter) {
+  for (auto iter = node->UnignoredChildrenBegin(),
+            end = node->UnignoredChildrenEnd();
+       iter != end; ++iter) {
     auto* n = AddChild(assistant_tree);
     result->children_indices.push_back(assistant_tree->nodes.size() - 1);
     WalkAXTreeDepthFirst(iter.get(), absolute_clipped_rect,
@@ -367,7 +373,7 @@ std::unique_ptr<AssistantTree> CreateAssistantTree(const AXTreeUpdate& update) {
   return assistant_tree;
 }
 
-std::u16string AXUrlBaseText(std::u16string url) {
+std::u16string AXUrlBaseText(std::u16string_view url) {
   // Given a url like http://foo.com/bar/baz.png, just return the
   // base text, e.g., "baz".
   int trailing_slashes = 0;
@@ -383,7 +389,7 @@ std::u16string AXUrlBaseText(std::u16string url) {
   size_t dot_index = url.rfind('.');
   if (dot_index != std::string::npos)
     url = url.substr(0, dot_index);
-  return url;
+  return std::u16string(url);
 }
 
 const char* AXRoleToAndroidClassName(ax::mojom::Role role, bool has_parent) {
@@ -397,10 +403,12 @@ const char* AXRoleToAndroidClassName(ax::mojom::Role role, bool has_parent) {
       return kAXSeekBarClassname;
     case ax::mojom::Role::kColorWell:
     case ax::mojom::Role::kComboBoxMenuButton:
-    case ax::mojom::Role::kDate:
     case ax::mojom::Role::kDateTime:
-    case ax::mojom::Role::kInputTime:
       return kAXSpinnerClassname;
+    case ax::mojom::Role::kInputTime:
+      return kAXTimePickerClassname;
+    case ax::mojom::Role::kDate:
+      return kAXDatePickerClassname;
     case ax::mojom::Role::kButton:
     case ax::mojom::Role::kPopUpButton:
     case ax::mojom::Role::kPdfActionableHighlight:
@@ -412,6 +420,7 @@ const char* AXRoleToAndroidClassName(ax::mojom::Role role, bool has_parent) {
     case ax::mojom::Role::kRadioGroup:
       return kAXRadioGroupClassname;
     case ax::mojom::Role::kSwitch:
+      return kAXSwitchClassname;
     case ax::mojom::Role::kToggleButton:
       return kAXToggleButtonClassname;
     case ax::mojom::Role::kCanvas:
@@ -422,7 +431,11 @@ const char* AXRoleToAndroidClassName(ax::mojom::Role role, bool has_parent) {
     case ax::mojom::Role::kProgressIndicator:
       return kAXProgressBarClassname;
     case ax::mojom::Role::kTabList:
-      return kAXTabWidgetClassname;
+      // TODO(crbug.com/474135469): Investigate mapping kTabList to a more
+      // specific class (e.g., TabLayout). Currently, mapping to TabWidget
+      // causes TalkBack to suppress CollectionInfo metadata, losing the "X of
+      // N" announcement.
+      return kAXViewGroupClassname;
     case ax::mojom::Role::kGrid:
     case ax::mojom::Role::kTreeGrid:
     case ax::mojom::Role::kTable:
@@ -431,19 +444,26 @@ const char* AXRoleToAndroidClassName(ax::mojom::Role role, bool has_parent) {
     case ax::mojom::Role::kListBox:
     case ax::mojom::Role::kDescriptionList:
       return kAXListViewClassname;
+    // An Android dialog is just a generic window, so both `kDialog` and
+    // `kAlertDialog` Chrome roles are mapped to Android's `kAXAlertDialog`.
     case ax::mojom::Role::kDialog:
-      return kAXDialogClassname;
+    case ax::mojom::Role::kAlertDialog:
+      return kAXAlertDialogClassname;
     case ax::mojom::Role::kRootWebArea:
       return has_parent ? kAXViewClassname : kAXWebViewClassname;
     case ax::mojom::Role::kMenuItem:
     case ax::mojom::Role::kMenuItemCheckBox:
     case ax::mojom::Role::kMenuItemRadio:
       return kAXMenuItemClassname;
+    case ax::mojom::Role::kNavigation:
+      return kAXNavigationViewClassname;
     case ax::mojom::Role::kStaticText:
       return kAXTextViewClassname;
     case ax::mojom::Role::kDirectoryDeprecated:
     case ax::mojom::Role::kPreDeprecated:
       NOTREACHED();
+    case ax::mojom::Role::kSearch:
+      return kAXSearchViewClassname;
     default:
       return kAXViewClassname;
   }

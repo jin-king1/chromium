@@ -25,7 +25,7 @@
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/events/event.h"
 #include "ui/gfx/geometry/rect.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/views/bubble/bubble_border.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/bubble/bubble_frame_view.h"
@@ -119,7 +119,7 @@ AnchoredNudge::AnchoredNudge(
       click_callback_(std::move(nudge_data.click_callback)),
       dismiss_callback_(std::move(nudge_data.dismiss_callback)) {
   SetButtons(static_cast<int>(ui::mojom::DialogButton::kNone));
-  set_background_color(SK_ColorTRANSPARENT);
+  SetBackgroundColor(SK_ColorTRANSPARENT);
   set_margins(gfx::Insets());
   set_close_on_deactivate(false);
   set_highlight_button_when_shown(nudge_data.highlight_anchor_button);
@@ -139,6 +139,9 @@ AnchoredNudge::AnchoredNudge(
   if (!nudge_data.announce_chromevox) {
     SetAccessibleWindowRole(ax::mojom::Role::kNone);
   }
+
+  // Do not attempt fitting the bubble inside the anchor view window.
+  SetUseAnchorWindowBounds(false);
 }
 
 AnchoredNudge::~AnchoredNudge() {
@@ -200,8 +203,8 @@ void AnchoredNudge::OnBeforeBubbleWidgetInit(views::Widget::InitParams* params,
       kShellWindowId_SettingBubbleContainer);
 }
 
-std::unique_ptr<views::NonClientFrameView>
-AnchoredNudge::CreateNonClientFrameView(views::Widget* widget) {
+std::unique_ptr<views::FrameView> AnchoredNudge::CreateFrameView(
+    views::Widget* widget) {
   // Create the customized bubble border.
   std::unique_ptr<views::BubbleBorder> bubble_border =
       std::make_unique<views::BubbleBorder>(arrow(),
@@ -209,16 +212,13 @@ AnchoredNudge::CreateNonClientFrameView(views::Widget* widget) {
   bubble_border->set_avoid_shadow_overlap(true);
   bubble_border->set_insets(kBubbleBorderInsets);
 
-  auto frame = BubbleDialogDelegateView::CreateNonClientFrameView(widget);
+  auto frame = BubbleDialogDelegateView::CreateFrameView(widget);
   static_cast<views::BubbleFrameView*>(frame.get())
       ->SetBubbleBorder(std::move(bubble_border));
   return frame;
 }
 
 void AnchoredNudge::AddedToWidget() {
-  // Do not attempt fitting the bubble inside the anchor view window.
-  GetBubbleFrameView()->set_use_anchor_window_bounds(false);
-
   // Remove accelerator so the nudge won't be closed when pressing the Esc key.
   GetDialogClientView()->RemoveAccelerator(
       ui::Accelerator(ui::VKEY_ESCAPE, ui::EF_NONE));

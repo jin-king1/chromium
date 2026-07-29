@@ -15,6 +15,7 @@ import './passwords_shared.css.js';
 import './screen_reader_only.css.js';
 
 import {I18nMixin} from '//resources/cr_elements/i18n_mixin.js';
+import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
 import {getTemplate} from './iban_list_entry.html.js';
@@ -52,10 +53,30 @@ export class SettingsIbanListEntryElement extends
     return {
       /** A saved IBAN. */
       iban: Object,
+
+      autofillEnableWalletBrandingEnabled_: {
+        type: Boolean,
+        value() {
+          return loadTimeData.getBoolean('autofillEnableWalletBranding');
+        },
+        readOnly: true,
+      },
+
+      autofillEnableGradientGoogleLogosEnabled_: {
+        type: Boolean,
+        value() {
+          return loadTimeData.getBoolean('autofillEnableGradientGoogleLogos');
+        },
+        readOnly: true,
+      },
     };
   }
 
-  iban: chrome.autofillPrivate.IbanEntry;
+  declare iban: chrome.autofillPrivate.IbanEntry;
+
+  declare private autofillEnableWalletBrandingEnabled_: boolean;
+
+  declare private autofillEnableGradientGoogleLogosEnabled_: boolean;
 
   get dotsMenu(): HTMLElement|null {
     return this.shadowRoot!.getElementById('ibanMenu');
@@ -68,11 +89,27 @@ export class SettingsIbanListEntryElement extends
     return !!this.iban.metadata!.isLocal;
   }
 
+  private shouldShowOutlinkWithWalletBranding_(): boolean {
+    return !this.showDotsMenu_() && this.autofillEnableWalletBrandingEnabled_;
+  }
+
+  private shouldShowOutlinkWithoutWalletBranding_(): boolean {
+    return !this.showDotsMenu_() && !this.autofillEnableWalletBrandingEnabled_;
+  }
+
   /**
    * The Google Payments icon should be shown if the IBAN is a server IBAN.
    */
   private shouldShowGooglePaymentsIndicator_(): boolean {
     return !this.iban.metadata!.isLocal;
+  }
+
+  /**
+   * This function returns a string that can be used in a srcset to scale
+   * the provided `url` based on the user's screen resolution.
+   */
+  private getScaledSrcSet_(url: string): string {
+    return `${url} 1x, ${url}@2x 2x`;
   }
 
   /**
@@ -111,6 +148,20 @@ export class SettingsIbanListEntryElement extends
     return this.i18n('a11yIbanDescription', lastFourDigits);
   }
 
+  private getLabel_(iban: chrome.autofillPrivate.IbanEntry): string {
+    if (iban.nickname) {
+      return iban.nickname;
+    }
+    return iban.metadata!.summaryLabel;
+  }
+
+  private getSubLabel_(iban: chrome.autofillPrivate.IbanEntry): string {
+    if (iban.nickname) {
+      return iban.metadata!.summaryLabel;
+    }
+    return iban.nickname || '';
+  }
+
   /**
    * @return the title for the More Actions button corresponding to the IBAN
    *     which is described by the nickname or last 4 digits of the IBAN's
@@ -120,6 +171,22 @@ export class SettingsIbanListEntryElement extends
     return this.i18n(
         'moreActionsForIban',
         iban.nickname || this.getA11yIbanDescription_(iban));
+  }
+
+  private getGooglePayLightModeLogoSrcSet_(
+      isGradientGoogleLogosEnabled: boolean): string {
+    const logoId = isGradientGoogleLogosEnabled ?
+        'chrome://theme/IDR_AUTOFILL_GOOGLE_PAY_WITH_GRADIENT_SMALL' :
+        'chrome://theme/IDR_AUTOFILL_GOOGLE_PAY_SMALL';
+    return this.getScaledSrcSet_(logoId);
+  }
+
+  private getGooglePayDarkModeLogoSrcSet_(
+      isGradientGoogleLogosEnabled: boolean): string {
+    const logoId = isGradientGoogleLogosEnabled ?
+        'chrome://theme/IDR_AUTOFILL_GOOGLE_PAY_WITH_GRADIENT_DARK_SMALL' :
+        'chrome://theme/IDR_AUTOFILL_GOOGLE_PAY_DARK_SMALL';
+    return this.getScaledSrcSet_(logoId);
   }
 }
 

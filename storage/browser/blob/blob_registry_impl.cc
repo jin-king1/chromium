@@ -11,7 +11,6 @@
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
-#include "base/not_fatal_until.h"
 #include "base/task/sequenced_task_runner.h"
 #include "storage/browser/blob/blob_builder_from_stream.h"
 #include "storage/browser/blob/blob_data_builder.h"
@@ -386,8 +385,7 @@ void BlobRegistryImpl::BlobUnderConstruction::ResolvedAllBlobDependencies() {
                            f->expected_modification_time.value_or(base::Time()),
                            base::NullCallback());
     } else if (element->is_blob()) {
-      CHECK(blob_uuid_it != referenced_blob_uuids_.end(),
-            base::NotFatalUntil::M130);
+      CHECK(blob_uuid_it != referenced_blob_uuids_.end());
       const std::string& blob_uuid = *blob_uuid_it++;
       builder_->AppendBlob(blob_uuid, element->get_blob()->offset,
                            element->get_blob()->length, context()->registry());
@@ -524,7 +522,7 @@ void BlobRegistryImpl::Register(
   }
 
   if (uuid.empty() || context_->registry().HasEntry(uuid) ||
-      base::Contains(blobs_under_construction_, uuid)) {
+      blobs_under_construction_.contains(uuid)) {
     receivers_.ReportBadMessage(
         "Invalid UUID passed to BlobRegistry::Register");
     return;
@@ -537,13 +535,23 @@ void BlobRegistryImpl::Register(
   for (auto& element : elements) {
     BlobUnderConstruction::ElementEntry entry(std::move(element));
     if (entry.element->is_file()) {
-      if (!delegate->CanReadFile(entry.element->get_file()->path)) {
+      const blink::mojom::DataElementFilePtr& file = entry.element->get_file();
+      if (!delegate->CanReadFile(file->path)) {
         std::unique_ptr<BlobDataHandle> handle = context_->AddBrokenBlob(
             uuid, content_type, content_disposition,
             BlobStatus::ERR_REFERENCED_FILE_UNAVAILABLE);
         BlobImpl::Create(std::move(handle), std::move(blob));
         std::move(callback).Run();
         return;
+      }
+      if (file->length == std::numeric_limits<uint64_t>::max()) {
+        // A blob can have at most one file element with unknown length, in
+        // which case it must have an offset of 0 and be the only element.
+        if (file->offset != 0 || elements.size() > 1) {
+          receivers_.ReportBadMessage(
+              "Invalid blob passed to BlobRegistry::Register");
+          return;
+        }
       }
     }
     element_entries.push_back(std::move(entry));

@@ -8,12 +8,12 @@
 
 #include <memory>
 
+#include "base/win/windows_version.h"
 #include "chrome/browser/ui/frame/window_frame_util.h"
 #include "chrome/browser/ui/views/frame/browser_frame_view_win.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/windows_caption_button.h"
 #include "chrome/browser/win/titlebar_config.h"
-#include "chrome/grit/generated_resources.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/strings/grit/ui_strings.h"
@@ -45,26 +45,26 @@ BrowserCaptionButtonContainer::BrowserCaptionButtonContainer(
     BrowserFrameViewWin* frame_view)
     : frame_view_(frame_view),
       minimize_button_(AddChildView(CreateCaptionButton(
-          base::BindRepeating(&BrowserFrame::Minimize,
-                              base::Unretained(frame_view_->frame())),
+          base::BindRepeating(&BrowserWidget::Minimize,
+                              base::Unretained(frame_view_->browser_widget())),
           frame_view_,
           VIEW_ID_MINIMIZE_BUTTON,
           IDS_APP_ACCNAME_MINIMIZE))),
       maximize_button_(AddChildView(CreateCaptionButton(
-          base::BindRepeating(&BrowserFrame::Maximize,
-                              base::Unretained(frame_view_->frame())),
+          base::BindRepeating(&BrowserWidget::Maximize,
+                              base::Unretained(frame_view_->browser_widget())),
           frame_view_,
           VIEW_ID_MAXIMIZE_BUTTON,
           IDS_APP_ACCNAME_MAXIMIZE))),
       restore_button_(AddChildView(CreateCaptionButton(
-          base::BindRepeating(&BrowserFrame::Restore,
-                              base::Unretained(frame_view_->frame())),
+          base::BindRepeating(&BrowserWidget::Restore,
+                              base::Unretained(frame_view_->browser_widget())),
           frame_view_,
           VIEW_ID_RESTORE_BUTTON,
           IDS_APP_ACCNAME_RESTORE))),
       close_button_(AddChildView(CreateCaptionButton(
-          base::BindRepeating(&BrowserFrame::CloseWithReason,
-                              base::Unretained(frame_view_->frame()),
+          base::BindRepeating(&BrowserWidget::CloseWithReason,
+                              base::Unretained(frame_view_->browser_widget()),
                               views::Widget::ClosedReason::kCloseButtonClicked),
           frame_view_,
           VIEW_ID_CLOSE_BUTTON,
@@ -83,7 +83,7 @@ BrowserCaptionButtonContainer::BrowserCaptionButtonContainer(
                                    /* adjust_width_for_height */ false,
                                    views::MinimumFlexSizeRule::kScaleToZero));
 
-  if (frame_view_->browser_view()->AppUsesWindowControlsOverlay()) {
+  if (frame_view_->GetBrowserView()->AppUsesWindowControlsOverlay()) {
     UpdateButtonToolTipsForWindowControlsOverlay();
   }
 }
@@ -94,34 +94,49 @@ int BrowserCaptionButtonContainer::NonClientHitTest(
     const gfx::Point& point) const {
   DCHECK(HitTestPoint(point))
       << "should only be called with a point inside this view's bounds";
+
+  // | WCO | Win11 | Caption Button    | Output                |
+  // |-----+-------+-------------------+-----------------------|
+  // | No  | -     | All               | Original mapped value |
+  // | Yes | No    | All               | HTCLIENT              |
+  // | Yes | Yes   | Minimize, Close   | HTCLIENT              |
+  // | Yes | Yes   | Maximize, Restore | HTMAXBUTTON           |
+
+  // For views without Window Controls Overlay (WCO) enabled, the original hit
+  // test result is returned as-is.
+
   // BrowserView covers the frame view when Window Controls Overlay is enabled.
   // The native window that encompasses Web Contents gets the mouse events meant
-  // for the caption buttons, so returning HTClient allows these buttons to be
-  // highlighted on hover.
-  if (frame_view_->browser_view()->IsWindowControlsOverlayEnabled() &&
-      (HitTestCaptionButton(minimize_button_, point) ||
-       HitTestCaptionButton(maximize_button_, point) ||
-       HitTestCaptionButton(restore_button_, point) ||
-       HitTestCaptionButton(close_button_, point))) {
-    return HTCLIENT;
-  }
+  // for the caption buttons, so returning HTCLIENT allows these buttons to be
+  // highlighted on hover. However, on Windows 11 the maximize and restore
+  // buttons must return HTMAXBUTTON so that Windows can show the Snap Layouts
+  // popup when the user hovers over the maximize/restore button.
+
+  int hit_test_result = HTCAPTION;
   if (HitTestCaptionButton(minimize_button_, point)) {
-    return HTMINBUTTON;
+    hit_test_result = HTMINBUTTON;
+  } else if (HitTestCaptionButton(maximize_button_, point) ||
+             HitTestCaptionButton(restore_button_, point)) {
+    hit_test_result = HTMAXBUTTON;
+  } else if (HitTestCaptionButton(close_button_, point)) {
+    hit_test_result = HTCLOSE;
   }
-  if (HitTestCaptionButton(maximize_button_, point)) {
-    return HTMAXBUTTON;
+
+  // Return the base component if no button was hit or WCO is disabled.
+  if (hit_test_result == HTCAPTION ||
+      !frame_view_->GetBrowserView()->IsWindowControlsOverlayEnabled()) {
+    return hit_test_result;
   }
-  if (HitTestCaptionButton(restore_button_, point)) {
-    return HTMAXBUTTON;
-  }
-  if (HitTestCaptionButton(close_button_, point)) {
-    return HTCLOSE;
-  }
-  return HTCAPTION;
+
+  const bool is_win11_maximize =
+      (hit_test_result == HTMAXBUTTON) &&
+      (base::win::GetVersion() >= base::win::Version::WIN11);
+
+  return is_win11_maximize ? HTMAXBUTTON : HTCLIENT;
 }
 
 void BrowserCaptionButtonContainer::OnWindowControlsOverlayEnabledChanged() {
-  if (frame_view_->browser_view()->IsWindowControlsOverlayEnabled()) {
+  if (frame_view_->GetBrowserView()->IsWindowControlsOverlayEnabled()) {
     SetBackground(
         views::CreateSolidBackground(frame_view_->GetTitlebarColor()));
 
@@ -136,7 +151,7 @@ void BrowserCaptionButtonContainer::OnWindowControlsOverlayEnabledChanged() {
 }
 
 void BrowserCaptionButtonContainer::OnThemeChanged() {
-  if (frame_view_->browser_view()->IsWindowControlsOverlayEnabled()) {
+  if (frame_view_->GetBrowserView()->IsWindowControlsOverlayEnabled()) {
     SetBackground(
         views::CreateSolidBackground(frame_view_->GetTitlebarColor()));
   }
@@ -159,7 +174,7 @@ void BrowserCaptionButtonContainer::AddedToWidget() {
 
   UpdateButtons();
 
-  if (frame_view_->browser_view()->IsWindowControlsOverlayEnabled()) {
+  if (frame_view_->GetBrowserView()->IsWindowControlsOverlayEnabled()) {
     SetBackground(
         views::CreateSolidBackground(frame_view_->GetTitlebarColor()));
     // BrowserView paints to a layer, so this must do the same to ensure that it
@@ -180,7 +195,7 @@ void BrowserCaptionButtonContainer::OnWidgetBoundsChanged(
 }
 
 void BrowserCaptionButtonContainer::UpdateButtons() {
-  if (!ShouldBrowserCustomDrawTitlebar(frame_view_->browser_view())) {
+  if (!ShouldBrowserCustomDrawTitlebar(frame_view_->GetBrowserView())) {
     minimize_button_->SetVisible(false);
     maximize_button_->SetVisible(false);
     restore_button_->SetVisible(false);
@@ -188,10 +203,10 @@ void BrowserCaptionButtonContainer::UpdateButtons() {
     return;
   }
 
-  minimize_button_->SetVisible(frame_view_->browser_view()->CanMinimize());
+  minimize_button_->SetVisible(frame_view_->GetBrowserView()->CanMinimize());
 
   const bool is_maximized = frame_view_->IsMaximized();
-  const bool can_maximize = frame_view_->browser_view()->CanMaximize();
+  const bool can_maximize = frame_view_->GetBrowserView()->CanMaximize();
   restore_button_->SetVisible(is_maximized && can_maximize);
   maximize_button_->SetVisible(!is_maximized && can_maximize);
 
@@ -207,15 +222,25 @@ void BrowserCaptionButtonContainer::UpdateButtons() {
 
 void BrowserCaptionButtonContainer::
     UpdateButtonToolTipsForWindowControlsOverlay() {
-  if (frame_view_->browser_view()->IsWindowControlsOverlayEnabled()) {
+  if (frame_view_->GetBrowserView()->IsWindowControlsOverlayEnabled()) {
     minimize_button_->SetTooltipText(
         minimize_button_->GetViewAccessibility().GetCachedName());
-    maximize_button_->SetTooltipText(
-        maximize_button_->GetViewAccessibility().GetCachedName());
-    restore_button_->SetTooltipText(
-        restore_button_->GetViewAccessibility().GetCachedName());
     close_button_->SetTooltipText(
         close_button_->GetViewAccessibility().GetCachedName());
+    // Windows 11 displays the Snap Layouts popup when hovering over maximize/
+    // restore buttons, making tooltips redundant and potentially interfering
+    // with the Snap Layouts UI. On older Windows versions, tooltips provide
+    // necessary accessibility information since Snap Layouts are not available.
+    const bool is_win11_or_greater =
+        base::win::GetVersion() >= base::win::Version::WIN11;
+    maximize_button_->SetTooltipText(
+        is_win11_or_greater
+            ? u""
+            : maximize_button_->GetViewAccessibility().GetCachedName());
+    restore_button_->SetTooltipText(
+        is_win11_or_greater
+            ? u""
+            : restore_button_->GetViewAccessibility().GetCachedName());
   } else {
     minimize_button_->SetTooltipText(u"");
     maximize_button_->SetTooltipText(u"");

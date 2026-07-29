@@ -5,6 +5,7 @@
 #include "cc/debug/debug_colors.h"
 
 #include "base/check_op.h"
+#include "base/containers/span.h"
 #include "base/notreached.h"
 
 namespace cc {
@@ -73,27 +74,19 @@ int DebugColors::HighResTileBorderWidth(float device_scale_factor) {
   return Scale(1, device_scale_factor);
 }
 
-// Low-res tile borders are purple.
-SkColor4f DebugColors::LowResTileBorderColor() {
-  return {212.0f / 255.0f, 83.0f / 255.0f, 0.75f, 100.0f / 255.0f};
-}
-int DebugColors::LowResTileBorderWidth(float device_scale_factor) {
-  return Scale(2, device_scale_factor);
-}
-
-// Other high-resolution tile borders are yellow.
-SkColor4f DebugColors::ExtraHighResTileBorderColor() {
+// Above high-res tile borders are yellow.
+SkColor4f DebugColors::AboveHighResTileBorderColor() {
   return {239.0f / 255.0f, 231.0f / 255.0f, 20.0f / 255.0f, 100.0f / 255.0f};
 }
-int DebugColors::ExtraHighResTileBorderWidth(float device_scale_factor) {
+int DebugColors::AboveHighResTileBorderWidth(float device_scale_factor) {
   return Scale(2, device_scale_factor);
 }
 
-// Other low-resolution tile borders are green.
-SkColor4f DebugColors::ExtraLowResTileBorderColor() {
+// Below high-res tile borders are green.
+SkColor4f DebugColors::BelowHighResTileBorderColor() {
   return {93.0f / 255.0f, 186.0f / 255.0f, 18.0f / 255.0f, 100.0f / 255.0f};
 }
-int DebugColors::ExtraLowResTileBorderWidth(float device_scale_factor) {
+int DebugColors::BelowHighResTileBorderWidth(float device_scale_factor) {
   return Scale(2, device_scale_factor);
 }
 
@@ -179,6 +172,14 @@ static SkColor4f FadedGreen(int initial_value, int step) {
   int value = step * initial_value / DebugColors::kFadeSteps;
   return {0.0f, 195.0f / 255.0f, 0.0f, static_cast<float>(value) / 255.0f};
 }
+
+static SkColor4f FadedOrange(int initial_value, int step) {
+  DCHECK_GE(step, 0);
+  DCHECK_LE(step, DebugColors::kFadeSteps);
+  int value = step * initial_value / DebugColors::kFadeSteps;
+  return {1.0f, 140.0f / 255.0f, 0.0f, static_cast<float>(value) / 255.0f};
+}
+
 // Paint rects in green.
 SkColor4f DebugColors::PaintRectBorderColor(int step) {
   return FadedGreen(255, step);
@@ -194,9 +195,9 @@ static SkColor4f FadedBlue(int initial_value, int step) {
   int value = step * initial_value / DebugColors::kFadeSteps;
   return {0.0f, 0.0f, 1.0f, static_cast<float>(value) / 255.0f};
 }
-/// Layout Shift rects in blue.
-SkColor4f DebugColors::LayoutShiftRectBorderColor() {
-  return {0.0f, 0.0f, 1.0f, 0.0f};
+
+SkColor4f DebugColors::LayoutShiftRectBorderColor(int step) {
+  return FadedBlue(255, step);
 }
 int DebugColors::LayoutShiftRectBorderWidth() {
   // We don't want any border showing for the layout shift debug rects so we set
@@ -205,6 +206,26 @@ int DebugColors::LayoutShiftRectBorderWidth() {
 }
 SkColor4f DebugColors::LayoutShiftRectFillColor(int step) {
   return FadedBlue(60, step);
+}
+
+SkColor4f DebugColors::InteractionContentfulPaintRectBorderColor(int step) {
+  return FadedOrange(255, step);
+}
+int DebugColors::InteractionContentfulPaintRectBorderWidth() {
+  return 2;
+}
+SkColor4f DebugColors::InteractionContentfulPaintRectFillColor(int step) {
+  return FadedOrange(60, step);
+}
+
+SkColor4f DebugColors::NavigationContentfulPaintRectBorderColor(int step) {
+  return FadedGreen(255, step);
+}
+int DebugColors::NavigationContentfulPaintRectBorderWidth() {
+  return 2;
+}
+SkColor4f DebugColors::NavigationContentfulPaintRectFillColor(int step) {
+  return FadedGreen(60, step);
 }
 
 // Property-changed rects in blue.
@@ -351,32 +372,6 @@ SkColor4f DebugColors::MemoryDisplayTextColor() {
 // Paint time display in green (similar to paint times in the WebInspector)
 SkColor4f DebugColors::PaintTimeDisplayTextAndGraphColor() {
   return {75.0f / 255.0f, 155.0f / 255.0f, 55.0f / 255.0f, 1.0f};
-}
-
-SkColor4f DebugColors::NonLCDTextHighlightColor(
-    LCDTextDisallowedReason reason) {
-  switch (reason) {
-    case LCDTextDisallowedReason::kNone:
-    case LCDTextDisallowedReason::kNoText:
-      return SkColors::kTransparent;
-    case LCDTextDisallowedReason::kSetting:
-      return {0.5f, 1.0f, 0.0f, 96.0f / 255.0f};
-    case LCDTextDisallowedReason::kBackgroundColorNotOpaque:
-      return {0.5f, 0.5f, 0.0f, 96.0f / 255.0f};
-    case LCDTextDisallowedReason::kContentsNotOpaque:
-      return {1.0f, 0.0f, 0.0f, 96.0f / 255.0f};
-    case LCDTextDisallowedReason::kNonIntegralTranslation:
-      return {1.0f, 0.5f, 0.0f, 96.0f / 255.0f};
-    case LCDTextDisallowedReason::kNonIntegralXOffset:
-    case LCDTextDisallowedReason::kNonIntegralYOffset:
-      return {1.0f, 0.0f, 0.5f, 96.0f / 255.0f};
-    case LCDTextDisallowedReason::kWillChangeTransform:
-    case LCDTextDisallowedReason::kTransformAnimation:
-      return {0.5f, 0.0f, 1.0f, 96.0f / 255.0f};
-    case LCDTextDisallowedReason::kPixelOrColorEffect:
-      return {0.0f, 0.5f, 0.0f, 96.0f / 255.0f};
-  }
-  NOTREACHED();
 }
 
 }  // namespace cc

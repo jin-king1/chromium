@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "ui/ozone/demo/skia/skia_surfaceless_gl_renderer.h"
 
@@ -18,6 +14,7 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/trace_event/trace_event.h"
+#include "components/viz/common/resources/shared_image_format_utils.h"
 #include "third_party/skia/include/core/SkCanvas.h"
 #include "third_party/skia/include/core/SkTypeface.h"
 #include "third_party/skia/include/gpu/ganesh/GrBackendSurface.h"
@@ -120,18 +117,20 @@ bool SurfacelessSkiaGlRenderer::BufferWrapper::Initialize(
     const gfx::Size& size) {
   glGenTextures(1, &gl_tex_);
 
-  gfx::BufferFormat format = display::DisplaySnapshot::PrimaryFormat();
-
+  auto format = display::DisplaySnapshot::PrimaryFormat();
   pixmap_ = OzonePlatform::GetInstance()
                 ->GetSurfaceFactoryOzone()
                 ->CreateNativePixmap(widget, nullptr, size, format,
                                      gfx::BufferUsage::SCANOUT);
 
+  // The imported pixmap can be externally sampled i.e. does not provide
+  // per-plane textures but provides a unified single texture object.
   pixmap_gl_binding_ =
       OzonePlatform::GetInstance()
           ->GetSurfaceFactoryOzone()
           ->GetCurrentGLOzone()
-          ->ImportNativePixmap(pixmap_, format, gfx::BufferPlane::DEFAULT, size,
+          ->ImportNativePixmap(pixmap_, format,
+                               /*plane_index=*/std::nullopt, size,
                                gfx::ColorSpace(), GL_TEXTURE_2D, gl_tex_);
 
   if (!pixmap_gl_binding_) {
@@ -310,7 +309,6 @@ void SurfacelessSkiaGlRenderer::PostRenderFrameTask(
       break;
     case gfx::SwapResult::SWAP_SKIPPED:
     case gfx::SwapResult::SWAP_FAILED:
-    case gfx::SwapResult::SWAP_NON_SIMPLE_OVERLAYS_FAILED:
       LOG(FATAL) << "Failed to swap buffers";
   }
 }

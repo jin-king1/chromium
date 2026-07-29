@@ -2,22 +2,20 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chromecast/base/metrics/grouped_histogram.h"
 
 #include <stddef.h>
 #include <stdint.h>
 
+#include <array>
 #include <string_view>
 
 #include "base/check_op.h"
 #include "base/metrics/histogram.h"
+#include "base/metrics/metrics_hashes.h"
 #include "base/metrics/statistics_recorder.h"
 #include "base/no_destructor.h"
+#include "base/strings/strcat.h"
 #include "base/strings/stringprintf.h"
 #include "base/synchronization/lock.h"
 #include "base/time/time.h"
@@ -64,37 +62,15 @@ struct HistogramArgs {
 //
 // When adding more Histograms to this list, find the source of the
 // Histogram and look for the construction arguments it uses to add it in.
-const HistogramArgs kHistogramsToGroup[] = {
-  {
-    "DNS.TotalTime",
-    1,
-    1000 * 60 * 60,
-    100,
-  },
-  {
-    "Net.DNS_Resolution_And_TCP_Connection_Latency2",
-    1,
-    1000 * 60 * 10,
-    100,
-  },
-  {
-    "Net.SSL_Connection_Latency2",
-    1,
-    1000 * 60,
-    100,
-  },
-  {
-    "Net.TCP_Connection_Latency",
-    1,
-    1000 * 60 * 10,
-    100,
-  },
-  {
-    "Net.HttpJob.TotalTime",
-    1,
-    1000 * 10,
-    50,
-  },
+const std::array kHistogramsToGroup = {
+    HistogramArgs("DNS.TotalTime", 1, 1000 * 60 * 60, 100),
+    HistogramArgs("Net.DNS_Resolution_And_TCP_Connection_Latency2",
+                  1,
+                  1000 * 60 * 10,
+                  100),
+    HistogramArgs("Net.SSL_Connection_Latency2", 1, 1000 * 60, 100),
+    HistogramArgs("Net.TCP_Connection_Latency", 1, 1000 * 60 * 10, 100),
+    HistogramArgs("Net.HttpJob.TotalTime", 1, 1000 * 10, 50),
 };
 
 // This class is used to override a Histogram to generate per-app metrics.
@@ -105,10 +81,11 @@ class GroupedHistogram : public base::Histogram {
   // TODO(crbug.com/40824087): min/max parameters are redundant with "ranges"
   // and can probably be removed.
   GroupedHistogram(base::DurableStringView metric_to_override,
+                   uint64_t name_hash,
                    Sample32 minimum,
                    Sample32 maximum,
                    const base::BucketRanges* ranges)
-      : Histogram(metric_to_override, ranges),
+      : Histogram(metric_to_override, name_hash, ranges),
         minimum_(minimum),
         maximum_(maximum),
         bucket_count_(ranges->bucket_count()) {}
@@ -154,9 +131,11 @@ void PreregisterHistogram(base::DurableStringView durable_name,
                           GroupedHistogram::Sample32 maximum,
                           size_t bucket_count,
                           int32_t flags) {
+  uint64_t name_hash = base::HashMetricName(*durable_name);
   DCHECK(base::Histogram::InspectConstructionArguments(
-      *durable_name, &minimum, &maximum, &bucket_count));
-  DCHECK(!base::StatisticsRecorder::FindHistogram(*durable_name))
+             *durable_name, name_hash, &minimum, &maximum, &bucket_count) ==
+         base::Histogram::kOK);
+  DCHECK(!base::StatisticsRecorder::FindHistogram(name_hash, *durable_name))
       << "Failed to preregister " << *durable_name
       << ", Histogram already exists.";
 
@@ -166,8 +145,8 @@ void PreregisterHistogram(base::DurableStringView durable_name,
   const base::BucketRanges* registered_ranges =
       base::StatisticsRecorder::RegisterOrDeleteDuplicateRanges(ranges);
 
-  GroupedHistogram* tentative_histogram =
-      new GroupedHistogram(durable_name, minimum, maximum, registered_ranges);
+  GroupedHistogram* tentative_histogram = new GroupedHistogram(
+      durable_name, name_hash, minimum, maximum, registered_ranges);
 
   tentative_histogram->SetFlags(flags);
   base::HistogramBase* histogram =
@@ -178,14 +157,13 @@ void PreregisterHistogram(base::DurableStringView durable_name,
   DCHECK(histogram->HasConstructionArguments(minimum, maximum, bucket_count));
 }
 
-} // namespace
+}  // namespace
 
 void PreregisterAllGroupedHistograms() {
-  for (size_t i = 0; i < std::size(kHistogramsToGroup); ++i) {
-    PreregisterHistogram(
-        kHistogramsToGroup[i].durable_name, kHistogramsToGroup[i].minimum,
-        kHistogramsToGroup[i].maximum, kHistogramsToGroup[i].bucket_count,
-        base::HistogramBase::kUmaTargetedHistogramFlag);
+  for (const auto& histogram : kHistogramsToGroup) {
+    PreregisterHistogram(histogram.durable_name, histogram.minimum,
+                         histogram.maximum, histogram.bucket_count,
+                         base::HistogramBase::kUmaTargetedHistogramFlag);
   }
 }
 
@@ -194,5 +172,5 @@ void TagAppStartForGroupedHistograms(const std::string& app_name) {
   GetCurrentApp().app_name = app_name;
 }
 
-} // namespace metrics
-} // namespace chromecast
+}  // namespace metrics
+}  // namespace chromecast

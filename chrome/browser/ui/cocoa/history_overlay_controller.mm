@@ -12,6 +12,7 @@
 #include "base/check.h"
 #include "chrome/grit/theme_resources.h"
 #include "ui/base/resource/resource_bundle.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/gfx/image/image.h"
 
 // Constants ///////////////////////////////////////////////////////////////////
@@ -109,16 +110,24 @@ const CGFloat kShieldHeightCompletionAdjust = 10;
 }
 
 - (void)loadView {
+  int resourceId = 0;
+  if (features::IsRoundedIconsEnabled()) {
+    resourceId = (_mode == kHistoryOverlayModeBack) ? IDR_ARROW_BACKWARD
+                                                    : IDR_ARROW_FORWARD;
+  } else {
+    resourceId =
+        (_mode == kHistoryOverlayModeBack) ? IDR_SWIPE_BACK : IDR_SWIPE_FORWARD;
+  }
+
   const gfx::Image& image =
-      ui::ResourceBundle::GetSharedInstance().GetNativeImageNamed(
-          _mode == kHistoryOverlayModeBack ? IDR_SWIPE_BACK
-                                           : IDR_SWIPE_FORWARD);
+      ui::ResourceBundle::GetSharedInstance().GetNativeImageNamed(resourceId);
   _contentView = [[HistoryOverlayView alloc] initWithMode:_mode
                                                     image:image.ToNSImage()];
   self.view = _contentView;
 }
 
 - (void)setProgress:(CGFloat)gestureAmount finished:(BOOL)finished {
+  DCHECK(self.view.superview);
   NSRect parentFrame = self.view.superview.frame;
   // When tracking the gesture, the height is constant and the alpha value
   // changes from [0.25, 0.65].
@@ -151,8 +160,10 @@ const CGFloat kShieldHeightCompletionAdjust = 10;
 }
 
 - (void)showPanelForView:(NSView*)view {
-  [self setProgress:0 finished:NO];  // Set initial view position.
+  // The self.view should be added to the hierarchy before its initial position
+  // can be set, because setProgress:finished: depends on the superview's frame.
   [view addSubview:self.view];
+  [self setProgress:0 finished:NO];  // Set initial view position.
 }
 
 - (void)dismiss {

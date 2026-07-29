@@ -7,6 +7,8 @@
 #include <memory>
 #include <optional>
 
+#include "ash/constants/ash_features.h"
+#include "base/check_deref.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
 #include "base/json/json_writer.h"
@@ -20,28 +22,25 @@
 #include "chrome/browser/ash/login/startup_utils.h"
 #include "chrome/browser/ash/login/test/device_state_mixin.h"
 #include "chrome/browser/ash/login/test/js_checker.h"
-#include "chrome/browser/ash/login/test/local_state_mixin.h"
 #include "chrome/browser/ash/login/test/login_manager_mixin.h"
 #include "chrome/browser/ash/login/test/network_portal_detector_mixin.h"
 #include "chrome/browser/ash/login/test/oobe_base_test.h"
 #include "chrome/browser/ash/login/test/oobe_screen_waiter.h"
 #include "chrome/browser/ash/login/version_updater/version_updater.h"
 #include "chrome/browser/ash/login/wizard_controller.h"
-#include "chrome/browser/ash/net/network_portal_detector_test_impl.h"
-#include "chrome/browser/ash/policy/core/device_policy_builder.h"
 #include "chrome/browser/ash/policy/core/device_policy_cros_browser_test.h"
 #include "chrome/browser/ash/policy/handlers/minimum_version_policy_test_helpers.h"
+#include "chrome/browser/browser_process.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
 #include "chrome/browser/ui/webui/ash/login/consumer_update_screen_handler.h"
 #include "chrome/browser/ui/webui/ash/login/error_screen_handler.h"
 #include "chrome/browser/ui/webui/ash/login/gaia_info_screen_handler.h"
 #include "chrome/browser/ui/webui/ash/login/gaia_screen_handler.h"
 #include "chrome/browser/ui/webui/ash/login/oobe_ui.h"
-#include "chrome/grit/branded_strings.h"
-#include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/components/dbus/dbus_thread_manager.h"
 #include "chromeos/ash/components/dbus/update_engine/fake_update_engine_client.h"
 #include "chromeos/ash/components/network/network_state_test_helper.h"
+#include "chromeos/ash/components/policy/device_policy/device_policy_builder.h"
 #include "chromeos/ash/components/settings/cros_settings_names.h"
 #include "chromeos/dbus/constants/dbus_switches.h"
 #include "chromeos/dbus/power/fake_power_manager_client.h"
@@ -137,9 +136,14 @@ class ConsumerUpdateScreenTest : public OobeBaseTest {
     // this local state is set in OnUserCreationScreenExit and in the test we
     // advance directly to the consumerUpdate Screen.
     StartupUtils::SaveScreenAfterConsumerUpdate(
-        ash::features::IsOobeGaiaInfoScreenEnabled()
-            ? GaiaInfoScreenView::kScreenId.name
-            : GaiaScreenHandler::kScreenId.name);
+        CHECK_DEREF(g_browser_process->local_state()),
+        GaiaInfoScreenView::kScreenId.name);
+
+    if (ash::features::IsOobeAutoEnrollmentCheckForcedEnabled()) {
+      // Showing the GAIA screen requires OOBE to be marked complete.
+      StartupUtils::MarkOobeCompleted(
+          CHECK_DEREF(g_browser_process->local_state()));
+    }
 
     LoginDisplayHost::default_host()
         ->GetWizardContextForTesting()
@@ -147,7 +151,8 @@ class ConsumerUpdateScreenTest : public OobeBaseTest {
   }
 
   void SaveScreenAfterConsumerUpdate(const std::string& screen_name) {
-    StartupUtils::SaveScreenAfterConsumerUpdate(screen_name);
+    StartupUtils::SaveScreenAfterConsumerUpdate(
+        CHECK_DEREF(g_browser_process->local_state()), screen_name);
   }
 
   void TearDownOnMainThread() override {
@@ -494,25 +499,7 @@ IN_PROC_BROWSER_TEST_F(ConsumerUpdateScreenTest, ResumeFlowWithGaia) {
   OobeScreenWaiter(GaiaView::kScreenId).Wait();
 }
 
-class ConsumerUpdateScreenGaiaInfoExpirementTest
-    : public ConsumerUpdateScreenTest,
-      public ::testing::WithParamInterface<bool> {
- public:
-  ConsumerUpdateScreenGaiaInfoExpirementTest() : ConsumerUpdateScreenTest() {
-    gaia_info_disabled_ = GetParam();
-    if (gaia_info_disabled_) {
-      feature_list_.InitWithFeatures({}, {ash::features::kOobeGaiaInfoScreen});
-    } else {
-      feature_list_.InitWithFeatures({ash::features::kOobeGaiaInfoScreen}, {});
-    }
-  }
-
- protected:
-  bool gaia_info_disabled_ = false;
-  base::test::ScopedFeatureList feature_list_;
-};
-
-IN_PROC_BROWSER_TEST_P(ConsumerUpdateScreenGaiaInfoExpirementTest,
+IN_PROC_BROWSER_TEST_F(ConsumerUpdateScreenTest,
                        ResumeFlowWithGaiaInfoExpirement) {
   SaveScreenAfterConsumerUpdate("gaia-info");
   ShowConsumerUpdateScreen();
@@ -523,16 +510,8 @@ IN_PROC_BROWSER_TEST_P(ConsumerUpdateScreenGaiaInfoExpirementTest,
   ConsumerUpdateScreen::Result result = WaitForScreenExitResult();
   EXPECT_EQ(result, ConsumerUpdateScreen::Result::UPDATE_NOT_REQUIRED);
 
-  if (gaia_info_disabled_) {
-    OobeScreenWaiter(GaiaView::kScreenId).Wait();
-  } else {
-    OobeScreenWaiter(GaiaInfoScreenView::kScreenId).Wait();
-  }
+  OobeScreenWaiter(GaiaInfoScreenView::kScreenId).Wait();
 }
-
-INSTANTIATE_TEST_SUITE_P(All,
-                         ConsumerUpdateScreenGaiaInfoExpirementTest,
-                         testing::Bool());
 
 }  // namespace
 }  // namespace ash

@@ -6,53 +6,68 @@
 
 #include <algorithm>
 #include <iterator>
+#include <optional>
+#include <string>
 
 #include "base/at_exit.h"
 #include "base/check.h"
 #include "base/command_line.h"
 #include "base/files/file_path.h"
+#include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
+#include "base/message_loop/message_pump_type.h"
 #include "base/process/memory.h"
 #include "base/process/process_handle.h"
-#include "base/strings/stringprintf.h"
 #include "base/system/sys_info.h"
 #include "base/task/single_thread_task_executor.h"
 #include "base/task/thread_pool/thread_pool_instance.h"
 #include "base/threading/platform_thread.h"
+#include "base/time/time.h"
 #include "build/build_config.h"
 #include "chrome/updater/app/app.h"
 #include "chrome/updater/app/app_install.h"
 #include "chrome/updater/app/app_net_worker.h"
+#include "chrome/updater/app/app_patch_worker.h"
 #include "chrome/updater/app/app_recover.h"
 #include "chrome/updater/app/app_server.h"
 #include "chrome/updater/app/app_uninstall.h"
 #include "chrome/updater/app/app_uninstall_self.h"
+#include "chrome/updater/app/app_unzip_worker.h"
 #include "chrome/updater/app/app_update.h"
+#include "chrome/updater/app/app_update_apps.h"
 #include "chrome/updater/app/app_wake.h"
 #include "chrome/updater/app/app_wakeall.h"
 #include "chrome/updater/configurator.h"
 #include "chrome/updater/constants.h"
 #include "chrome/updater/crash_client.h"
 #include "chrome/updater/crash_reporter.h"
+#include "chrome/updater/event_history.h"
+#include "chrome/updater/get_updater_scope.h"
 #include "chrome/updater/ipc/ipc_support.h"
-#include "chrome/updater/update_usage_stats_task.h"
-#include "chrome/updater/updater_scope.h"
+#include "chrome/updater/updater_branding.h"
 #include "chrome/updater/updater_version.h"
+#include "chrome/updater/usage_stats_permissions.h"
+#include "chrome/updater/util/path_util.h"
 #include "chrome/updater/util/util.h"
 #include "components/crash/core/common/crash_key.h"
 #include "components/crash/core/common/crash_keys.h"
+#include "third_party/abseil-cpp/absl/strings/str_format.h"
 #include "third_party/crashpad/crashpad/client/crash_report_database.h"
 #include "third_party/crashpad/crashpad/client/settings.h"
 
 #if BUILDFLAG(IS_WIN)
 #include "base/debug/alias.h"
+#include "base/strings/sys_string_conversions.h"
 #include "base/win/process_startup_helper.h"
 #include "base/win/scoped_com_initializer.h"
 #include "base/win/windows_version.h"
 #include "chrome/updater/app/server/win/updater_service_delegate.h"
 #include "chrome/updater/util/win_util.h"
+#include "partition_alloc/page_allocator.h"
+#elif BUILDFLAG(IS_MAC)
+#include "base/apple/foundation_util.h"
 #endif
 
 // Instructions For Windows.
@@ -111,11 +126,6 @@ int HandleUpdaterCommands(UpdaterScope updater_scope,
 
   InitializeCrashReporting(updater_scope);
 
-  // Make the process more resilient to memory allocation issues.
-  base::EnableTerminationOnHeapCorruption();
-  base::EnableTerminationOnOutOfMemory();
-  logging::RegisterAbslAbortHook();
-
   InitializeThreadPool("updater");
   const base::ScopedClosureRunner shutdown_thread_pool(base::BindOnce([] {
     // For the updater, it is important to join all threads before `UpdaterMain`
@@ -123,7 +133,7 @@ int HandleUpdaterCommands(UpdaterScope updater_scope,
     // in the pool can still run after shutdown to handle CONTINUE_ON_SHUTDOWN
     // tasks, for example. In Chrome, the thread pool is leaked for this reason
     // and there is no way to join its threads in production code. The updater
-    // has no such requirements (crbug.com/1484776).
+    // has no such requirements (crbug.com/40282367).
     base::ThreadPoolInstance* thread_pool = base::ThreadPoolInstance::Get();
     thread_pool->Shutdown();
     thread_pool->JoinForTesting();  // IN-TEST
@@ -143,6 +153,8 @@ int HandleUpdaterCommands(UpdaterScope updater_scope,
       << "Failed to disable COM exception handling.";
   base::win::RegisterInvalidParamHandler();
   VLOG(1) << GetUACState();
+#elif BUILDFLAG(IS_MAC)
+  base::apple::SetBaseBundleIDOverride(MAC_BUNDLE_IDENTIFIER_STRING);
 #endif
 
   // Records a backtrace in the log, crashes the program, saves a crash dump,
@@ -155,7 +167,17 @@ int HandleUpdaterCommands(UpdaterScope updater_scope,
   ScopedIPCSupportWrapper ipc_support;
 
   // Only tasks and timers are supported on the main sequence.
-  base::SingleThreadTaskExecutor main_task_executor;
+  base::SingleThreadTaskExecutor main_task_executor(
+      base::MessagePumpType::DEFAULT, true);
+
+  if (command_line->HasSwitch(kForceInstallSwitch)) {
+    const int recover_result = MakeAppRecover()->Run();
+    return recover_result == kErrorOk &&
+                   (command_line->HasSwitch(kInstallSwitch) ||
+                    command_line->HasSwitch(kHandoffSwitch))
+               ? MakeAppInstall(command_line->HasSwitch(kSilentSwitch))->Run()
+               : recover_result;
+  }
 
   if (command_line->HasSwitch(kInstallSwitch) ||
       command_line->HasSwitch(kHandoffSwitch)) {
@@ -168,6 +190,10 @@ int HandleUpdaterCommands(UpdaterScope updater_scope,
 
   if (command_line->HasSwitch(kUpdateSwitch)) {
     return MakeAppUpdate()->Run();
+  }
+
+  if (command_line->HasSwitch(kUpdateAppsSwitch)) {
+    return MakeAppUpdateApps()->Run();
   }
 
 #if BUILDFLAG(IS_WIN)
@@ -202,6 +228,14 @@ int HandleUpdaterCommands(UpdaterScope updater_scope,
     return MakeAppWakeAll()->Run();
   }
 
+  if (command_line->HasSwitch(kPatchWorkerSwitch)) {
+    return MakeAppPatchWorker()->Run();
+  }
+
+  if (command_line->HasSwitch(kUnzipWorkerSwitch)) {
+    return MakeAppUnzipWorker()->Run();
+  }
+
 #if BUILDFLAG(IS_MAC)
   if (command_line->HasSwitch(kNetWorkerSwitch)) {
     return MakeAppNetWorker()->Run();
@@ -233,6 +267,8 @@ const char* GetUpdaterCommand(const base::CommandLine* command_line) {
       kHealthCheckSwitch,
       kHandoffSwitch,
       kNetWorkerSwitch,
+      kUnzipWorkerSwitch,
+      kPatchWorkerSwitch,
   };
   const auto it = std::ranges::find_if(commands, [command_line](auto cmd) {
     return command_line->HasSwitch(cmd);
@@ -253,27 +289,16 @@ constexpr const char* BuildFlavor() {
 #endif
 }
 
-constexpr const char* BuildArch() {
-#if defined(ARCH_CPU_ARM64)
-  return "64 bit (ARM)";
-#elif defined(ARCH_CPU_X86_64)
-  return "64 bit (x64)";
-#elif defined(ARCH_CPU_X86)
-  return "32 bit (x86)";
-#else
-#error CPU architecture is unknown.
-#endif
-}
-
 std::string OperatingSystemVersion() {
 #if BUILDFLAG(IS_WIN)
   const base::win::OSInfo::VersionNumber v =
       base::win::OSInfo::GetInstance()->version_number();
-  return base::StringPrintf("%u.%u.%u.%u", v.major, v.minor, v.build, v.patch);
+  return absl::StrFormat("%u.%u.%u.%u", v.major, v.minor, v.build, v.patch);
 #else
   return base::SysInfo().OperatingSystemVersion();
 #endif
 }
+
 
 base::CommandLine::StringType GetCommandLineString() {
 #if BUILDFLAG(IS_WIN)
@@ -302,8 +327,16 @@ void EnableLoggingByDefault() {
 int UpdaterMain(int argc, const char* const* argv) {
 #if BUILDFLAG(IS_WIN)
   CHECK(EnableSecureDllLoading());
-  EnableProcessHeapMetadataProtection();
 #endif
+
+  // Make the process more resilient to memory allocation issues.
+#if BUILDFLAG(IS_WIN)
+  EnableProcessHeapMetadataProtection();
+  partition_alloc::SetRetryOnCommitFailure(true);
+#endif
+  base::EnableTerminationOnHeapCorruption();
+  base::EnableTerminationOnOutOfMemory();
+  logging::RegisterAbslAbortHook();
 
   base::PlatformThread::SetName("UpdaterMain");
   base::AtExitManager exit_manager;
@@ -316,13 +349,61 @@ int UpdaterMain(int argc, const char* const* argv) {
   EnableLoggingByDefault();
   const UpdaterScope updater_scope = GetUpdaterScope();
   InitLogging(updater_scope);
+  InitHistoryLogging(updater_scope);
+  const base::ProcessId parent_pid =
+      base::GetParentProcessId(base::GetCurrentProcessHandle());
+  const std::optional<base::FilePath> install_dir =
+      GetInstallDirectory(updater_scope);
+  const std::optional<base::FilePath> temp_dir = GetUpdaterTempDir();
+  const std::optional<base::SysInfo::DiskSpaceInfo> install_dir_space =
+      install_dir.and_then(base::SysInfo::AmountOfDiskSpace);
+  const std::optional<base::SysInfo::DiskSpaceInfo> temp_dir_space =
+      temp_dir.and_then(base::SysInfo::AmountOfDiskSpace);
   VLOG(1) << "Version: " << kUpdaterVersion << ", " << BuildFlavor() << ", "
-          << BuildArch() << ", command line: " << GetCommandLineString();
+          << base::SysInfo::ProcessCPUArchitecture()
+          << ", command line: " << GetCommandLineString();
   VLOG(1) << "OS version: " << OperatingSystemVersion()
+          << ", arch: " << base::SysInfo::OperatingSystemArchitecture()
           << ", System uptime (seconds): "
-          << base::SysInfo::Uptime().InSeconds() << ", parent pid: "
-          << base::GetParentProcessId(base::GetCurrentProcessHandle());
+          << base::SysInfo::Uptime().InSeconds()
+          << ", parent pid: " << parent_pid;
+  VLOG_IF(1, install_dir_space)
+      << "Available disk space in install directory (" << install_dir
+      << "): " << install_dir_space->available << " / "
+      << install_dir_space->total;
+  VLOG_IF(1, temp_dir_space)
+      << "Available disk space in temporary directory (" << temp_dir
+      << "): " << temp_dir_space->available << " / " << temp_dir_space->total;
+
+#if BUILDFLAG(IS_WIN)
+  const HResultOr<std::wstring> cmd_line = GetCommandLineForPid(parent_pid);
+  if (cmd_line.has_value()) {
+    VLOG(1) << "Parent process command line: " << *cmd_line;
+  }
+  EnsureEnoughMemory();
+  RecordCpuFeaturesForCrash();  // TODO(crbug.com/441591130): remove when fixed.
+#endif                          // IS_WIN
+
+  const std::string event_id = GenerateEventId();
+#if BUILDFLAG(IS_WIN)
+  const std::string command_line_string =
+      base::SysWideToUTF8(GetCommandLineString());
+#else
+  const std::string command_line_string = GetCommandLineString();
+#endif
+  UpdaterProcessStartEvent()
+      .SetEventId(event_id)
+      .SetCommandLine(command_line_string)
+      .SetTimestamp(base::Time::Now())
+      .SetUpdaterVersion(kUpdaterVersion)
+      .SetScope(updater_scope)
+      .SetOsPlatform(base::SysInfo::OperatingSystemName())
+      .SetOsArchitecture(base::SysInfo::OperatingSystemArchitecture())
+      .SetUpdaterArchitecture(base::SysInfo::ProcessCPUArchitecture())
+      .SetParentPid(parent_pid)
+      .Write();
   const int exit_code = HandleUpdaterCommands(updater_scope, command_line);
+  UpdaterProcessEndEvent().SetEventId(event_id).SetExitCode(exit_code).Write();
   VLOG(1) << __func__ << " (--" << GetUpdaterCommand(command_line) << ")"
           << " returned " << exit_code << ".";
 

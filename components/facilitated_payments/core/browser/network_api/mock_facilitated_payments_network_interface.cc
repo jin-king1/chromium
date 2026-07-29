@@ -9,10 +9,14 @@
 namespace payments::facilitated {
 
 MockFacilitatedPaymentsNetworkInterface::
-    MockFacilitatedPaymentsNetworkInterface()
-    : FacilitatedPaymentsNetworkInterface(/*url_loader_factory=*/nullptr,
-                                          /*identity_manager=*/nullptr,
-                                          /*account_info_getter=*/nullptr) {}
+    MockFacilitatedPaymentsNetworkInterface(
+        signin::IdentityManager& identity_manager,
+        autofill::AccountInfoGetter& account_info_getter)
+    : FacilitatedPaymentsNetworkInterface(
+          /*url_loader_factory=*/nullptr,
+          /*identity_manager=*/identity_manager,
+          /*account_info_getter=*/account_info_getter,
+          /*is_off_the_record=*/false) {}
 
 MockFacilitatedPaymentsNetworkInterface::
     ~MockFacilitatedPaymentsNetworkInterface() = default;

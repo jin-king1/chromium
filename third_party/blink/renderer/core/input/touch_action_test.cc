@@ -113,7 +113,7 @@ class TouchActionTest : public testing::Test {
  public:
   TouchActionTest()
       : base_url_("http://www.test.com/"),
-        web_view_helper_(WTF::BindRepeating(
+        web_view_helper_(blink::BindRepeating(
             &frame_test_helpers::WebViewHelper::CreateTestWebFrameWidget<
                 TouchActionTrackingWebFrameWidget>)) {
     // TODO(crbug.com/751425): We should use the mock functionality
@@ -235,7 +235,8 @@ WebViewImpl* TouchActionTest::SetupTest(String file) {
   Document* document =
       static_cast<Document*>(web_view->MainFrameImpl()->GetDocument());
   document->GetFrame()->View()->LayoutViewport()->SetScrollOffset(
-      ScrollOffset(0, kScrollOffset), mojom::blink::ScrollType::kProgrammatic);
+      ScrollOffset(0, kScrollOffset), mojom::blink::ScrollType::kProgrammatic,
+      cc::ScrollSourceType::kNone);
 
   return web_view;
 }
@@ -317,7 +318,7 @@ void TouchActionTest::RunTestOnTree(ContainerNode* root, WebView* web_view) {
               frame_point);
       context_stream << "=" << window_point.x() << "," << window_point.y()
                      << ").";
-      String failure_context_pos = String::FromUTF8(context_stream.str());
+      String failure_context_pos = String::FromUtf8(context_stream.str());
 
       LocalFrame* main_frame =
           To<LocalFrame>(WebFrame::ToCoreFrame(*web_view->MainFrame()));
@@ -341,9 +342,9 @@ void TouchActionTest::RunTestOnTree(ContainerNode* root, WebView* web_view) {
           << "Unexpected hit test result " << failure_context_pos
           << "  Got element: \""
           << result.InnerElement()
-                 ->outerHTML()
+                 ->GetOuterHTMLString()
                  .StripWhiteSpace()
-                 .Left(80)
+                 .substr(0, 80)
                  .Ascii()
                  .data()
           << "\"" << std::endl

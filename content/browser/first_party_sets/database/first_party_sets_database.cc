@@ -18,6 +18,7 @@
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/sequence_checker.h"
+#include "base/types/expected_macros.h"
 #include "base/version.h"
 #include "content/browser/first_party_sets/first_party_set_parser.h"
 #include "net/base/schemeful_site.h"
@@ -124,10 +125,6 @@ const char kRunCountKey[] = "run_count";
     return false;
 
   return true;
-}
-
-void RecordInitializationStatus(FirstPartySetsDatabase::InitStatus status) {
-  base::UmaHistogramEnumeration("FirstPartySets.Database.InitStatus", status);
 }
 
 }  // namespace
@@ -434,11 +431,11 @@ std::optional<net::GlobalFirstPartySets> FirstPartySetsDatabase::GetGlobalSets(
     while (statement.Step()) {
       std::optional<net::SchemefulSite> site =
           FirstPartySetParser::CanonicalizeRegisteredDomain(
-              statement.ColumnString(0), /*emit_errors=*/false);
+              statement.ColumnStringView(0), /*emit_errors=*/false);
 
       std::optional<net::SchemefulSite> primary =
           FirstPartySetParser::CanonicalizeRegisteredDomain(
-              statement.ColumnString(1), /*emit_errors=*/false);
+              statement.ColumnStringView(1), /*emit_errors=*/false);
 
       std::optional<net::SiteType> site_type =
           net::FirstPartySetEntry::DeserializeSiteType(statement.ColumnInt(2));
@@ -448,8 +445,7 @@ std::optional<net::GlobalFirstPartySets> FirstPartySetsDatabase::GetGlobalSets(
       if (site.has_value() && primary.has_value() && site_type.has_value()) {
         entries.emplace_back(
             site.value(),
-            net::FirstPartySetEntry(primary.value(), site_type.value(),
-                                    /*site_index=*/std::nullopt));
+            net::FirstPartySetEntry(primary.value(), site_type.value()));
         validator.Update(site.value(), primary.value());
       }
     }
@@ -475,8 +471,11 @@ std::optional<net::GlobalFirstPartySets> FirstPartySetsDatabase::GetGlobalSets(
 
   // Aliases are merged with entries inside of the public sets table so it is
   // sufficient to declare the global sets object with only the entries field.
-  net::GlobalFirstPartySets global_sets(base::Version(version), sets,
-                                        /*aliases=*/{});
+  ASSIGN_OR_RETURN(net::FirstPartySetsContextConfig public_config,
+                   net::FirstPartySetsContextConfig::Create(sets, {}));
+
+  net::GlobalFirstPartySets global_sets(base::Version(version),
+                                        std::move(public_config));
 
   // Query & apply manual configuration. Safe because this config and this
   // public sets data were written during the same run of Chrome, and the config
@@ -558,7 +557,7 @@ FirstPartySetsDatabase::FetchSitesToClear(
   while (statement.Step()) {
     std::optional<net::SchemefulSite> site =
         FirstPartySetParser::CanonicalizeRegisteredDomain(
-            statement.ColumnString(0), /*emit_errors=*/false);
+            statement.ColumnStringView(0), /*emit_errors=*/false);
     // TODO(crbug.com/40221249): Invalid sites should be rare case but possible.
     // Consider deleting them from DB.
     if (site.has_value()) {
@@ -593,7 +592,7 @@ FirstPartySetsDatabase::FetchAllSitesToClearFilter(
   while (statement.Step()) {
     std::optional<net::SchemefulSite> site =
         FirstPartySetParser::CanonicalizeRegisteredDomain(
-            statement.ColumnString(0), /*emit_errors=*/false);
+            statement.ColumnStringView(0), /*emit_errors=*/false);
     // TODO(crbug.com/40221249): Invalid sites should be rare case but possible.
     // Consider deleting them from DB.
     if (site.has_value()) {
@@ -629,10 +628,10 @@ FirstPartySetsDatabase::FetchPolicyConfigurations(
   while (statement.Step()) {
     std::optional<net::SchemefulSite> site =
         FirstPartySetParser::CanonicalizeRegisteredDomain(
-            statement.ColumnString(0), /*emit_errors=*/false);
+            statement.ColumnStringView(0), /*emit_errors=*/false);
 
     std::optional<net::SchemefulSite> maybe_primary_site;
-    if (std::string primary_site = statement.ColumnString(1);
+    if (std::string_view primary_site = statement.ColumnStringView(1);
         !primary_site.empty()) {
       maybe_primary_site = FirstPartySetParser::CanonicalizeRegisteredDomain(
           primary_site, /*emit_errors=*/false);
@@ -646,11 +645,10 @@ FirstPartySetsDatabase::FetchPolicyConfigurations(
         entry_override =
             net::FirstPartySetEntryOverride(net::FirstPartySetEntry(
                 maybe_primary_site.value(),
-                // TODO(crbug.com/40186153): May change to use the
-                // real site_type and site_index in the future, depending on
-                // the design details. Use kAssociated as default site type
-                // and null site index for now.
-                net::SiteType::kAssociated, std::nullopt));
+                // TODO(crbug.com/40186153): May change to use the real
+                // site_type in the future, depending on the design details. Use
+                // kAssociated as default site type for now.
+                net::SiteType::kAssociated));
       }
       results.emplace_back(std::move(site).value(), std::move(entry_override));
     }
@@ -703,13 +701,13 @@ FirstPartySetsDatabase::FetchManualConfiguration(
   while (statement.Step()) {
     std::optional<net::SchemefulSite> site =
         FirstPartySetParser::CanonicalizeRegisteredDomain(
-            statement.ColumnString(0), /*emit_errors=*/false);
+            statement.ColumnStringView(0), /*emit_errors=*/false);
 
     std::optional<net::SchemefulSite> maybe_primary_site;
     std::optional<net::SiteType> maybe_site_type;
     // DB entry for "deleted"  site will have null `primary_site` and
     // `site_type`.
-    if (std::string primary_site = statement.ColumnString(1);
+    if (std::string_view primary_site = statement.ColumnStringView(1);
         !primary_site.empty()) {
       maybe_primary_site = FirstPartySetParser::CanonicalizeRegisteredDomain(
           primary_site, /*emit_errors=*/false);
@@ -725,11 +723,7 @@ FirstPartySetsDatabase::FetchManualConfiguration(
       if (maybe_primary_site.has_value() && maybe_site_type.has_value()) {
         entry_override =
             net::FirstPartySetEntryOverride(net::FirstPartySetEntry(
-                maybe_primary_site.value(),
-                // TODO(crbug.com/40186153): May change to use the
-                // real site_index in the future, depending on the design
-                // details. Use null site index for now.
-                maybe_site_type.value(), std::nullopt));
+                maybe_primary_site.value(), maybe_site_type.value()));
       }
       results.emplace_back(std::move(site).value(), std::move(entry_override));
     }
@@ -749,10 +743,9 @@ bool FirstPartySetsDatabase::LazyInit() {
     return db_status_ == InitStatus::kSuccess;
 
   CHECK_EQ(db_.get(), nullptr);
-  db_ = std::make_unique<sql::Database>(
-      sql::DatabaseOptions().set_page_size(4096).set_cache_size(32).set_preload(
-          base::FeatureList::IsEnabled(sql::features::kPreOpenPreloadDatabase)),
-      sql::Database::Tag("FirstPartySets"));
+  db_ =
+      std::make_unique<sql::Database>(sql::DatabaseOptions().set_cache_size(32),
+                                      sql::Database::Tag("FirstPartySets"));
   // base::Unretained is safe here because this FirstPartySetsDatabase owns
   // the sql::Database instance that stores and uses the callback. So,
   // `this` is guaranteed to outlive the callback.
@@ -767,19 +760,12 @@ bool FirstPartySetsDatabase::LazyInit() {
     IncreaseRunCount();
   }
 
-  RecordInitializationStatus(db_status_);
   return db_status_ == InitStatus::kSuccess;
 }
 
 bool FirstPartySetsDatabase::OpenDatabase() {
   CHECK(db_);
-  if (db_->is_open() || db_->Open(db_path_)) {
-    if (!base::FeatureList::IsEnabled(sql::features::kPreOpenPreloadDatabase)) {
-      db_->Preload();
-    }
-    return true;
-  }
-  return false;
+  return db_->is_open() || db_->Open(db_path_);
 }
 
 void FirstPartySetsDatabase::DatabaseErrorCallback(int extended_error,
@@ -962,12 +948,7 @@ bool FirstPartySetsDatabase::Destroy() {
 
 bool FirstPartySetsDatabase::TransactionFailed() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  bool failed =
-      !db_->HasActiveTransactions() || db_status_ != InitStatus::kSuccess;
-
-  base::UmaHistogramBoolean("FirstPartySets.Database.TransactionFailed",
-                            failed);
-  return failed;
+  return !db_->HasActiveTransactions() || db_status_ != InitStatus::kSuccess;
 }
 
 }  // namespace content

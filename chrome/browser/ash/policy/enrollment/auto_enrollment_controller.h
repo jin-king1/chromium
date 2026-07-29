@@ -11,6 +11,7 @@
 #include "base/callback_list.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "base/timer/timer.h"
 #include "chrome/browser/ash/policy/enrollment/auto_enrollment_state.h"
@@ -19,6 +20,8 @@
 #include "chrome/browser/ash/settings/device_settings_service.h"
 #include "chromeos/ash/components/dbus/device_management/device_management_interface.pb.h"
 #include "chromeos/ash/components/network/network_state_handler_observer.h"
+
+class PrefService;
 
 namespace ash {
 class NetworkStateHandler;
@@ -41,8 +44,15 @@ class AutoEnrollmentController : public ash::NetworkStateHandlerObserver {
   using RlweClientFactory =
       policy::psm::RlweDmserverClientImpl::RlweClientFactory;
 
-  explicit AutoEnrollmentController(
-      scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory);
+  // `local_state` must be non-null and must outlive `this`.
+  // `shared_url_loader_factory` must be non-null.
+  // `device_management_service` and `state_keys_broker` may be null in tests.
+  // If they are non-null, they must outlive `this`.
+  AutoEnrollmentController(
+      PrefService* local_state,
+      scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
+      DeviceManagementService* device_management_service,
+      ServerBackedStateKeysBroker* state_keys_broker);
 
   AutoEnrollmentController(const AutoEnrollmentController&) = delete;
   AutoEnrollmentController& operator=(const AutoEnrollmentController&) = delete;
@@ -52,9 +62,6 @@ class AutoEnrollmentController : public ash::NetworkStateHandlerObserver {
   // Starts the auto-enrollment check.  Safe to call multiple times: aborts in
   // case a check is currently running or a decision has already been made.
   void Start();
-
-  // Retry checking.
-  void Retry();
 
   // Returns true if auto-enrollment check is running.
   bool IsInProgress() const;
@@ -93,14 +100,19 @@ class AutoEnrollmentController : public ash::NetworkStateHandlerObserver {
 
  protected:
   // Complete constructor which can be used to inject testing modules.
+  // `local_state` must be non-null and must outlive `this`.
+  // `shared_url_loader_factory` must be non-null.
+  // `device_management_service` and `state_keys_broker` may be null in tests.
+  // If they are non-null, they must outlive `this`.
   AutoEnrollmentController(
+      PrefService* local_state,
+      scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
       ash::DeviceSettingsService* device_settings_service,
       DeviceManagementService* device_management_service,
       ServerBackedStateKeysBroker* state_keys_broker,
       ash::NetworkStateHandler* network_state_handler,
       RlweClientFactory psm_rlwe_client_factory,
-      EnrollmentStateFetcher::Factory enrollment_state_fetcher_factory,
-      scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory);
+      EnrollmentStateFetcher::Factory enrollment_state_fetcher_factory);
 
  private:
   // Sets `state_` and notifies `progress_callbacks_`.
@@ -109,8 +121,8 @@ class AutoEnrollmentController : public ash::NetworkStateHandlerObserver {
   // Clears everything that needs to be cleared at OOBE if
   // the device gets the response that forced re-enrollment is not required.
   // This currently removes firmware management parameters and sets
-  // block_devmode=0 and check_enrollment=0 in RW_VPD by making asynchronous
-  // calls to the respective D-Bus services.
+  // block_devmode=0 in RW_VPD by making asynchronous calls to the respective
+  // D-Bus services.
   // The notifications have to be sent only after the FWMP and VPD is cleared,
   // because the user might try to switch to devmode. In this case, if
   // block_devmode is in FWMP and the clear operation didn't finish, the switch
@@ -123,8 +135,6 @@ class AutoEnrollmentController : public ash::NetworkStateHandlerObserver {
   // `progress_callbacks_` in case cryptohome does not become available and the
   // timer is still running.
   // `service_is_ready` indicates if the cryptohome D-Bus service is ready.
-  // TODO(crbug.com/400446862) Analyze and (likely) remove this and related
-  // functions.
   void StartRemoveFirmwareManagementParameters(bool service_is_ready);
 
   // Callback for RemoveFirmwareManagementParameters(). If an error is received
@@ -135,32 +145,35 @@ class AutoEnrollmentController : public ash::NetworkStateHandlerObserver {
       std::optional<device_management::RemoveFirmwareManagementParametersReply>
           reply);
 
-  // Makes a D-Bus call to session_manager to set block_devmode=0 and
-  // check_enrollment=0 in RW_VPD. Stops the `safeguard_timer_` and notifies the
-  // `progress_callbacks_` in case session manager does not become available
-  // and the timer is still running.
+  // Makes a D-Bus call to session_manager to set block_devmode=0 in RW_VPD.
+  // Stops the `safeguard_timer_` and notifies the `progress_callbacks_` in case
+  // session manager does not become available and the timer is still running.
   // `service_is_ready` indicates if the session manager D-Bus service is ready.
-  // TODO(crbug.com/400446862) Analyze and (likely) remove this and related
-  // functions.
-  void StartClearForcedReEnrollmentVpd(bool service_is_ready);
+  void StartClearBlockDevmodeVpd(bool service_is_ready);
 
-  // Callback for ClearForcedReEnrollmentVpd(). If an error is received
-  // here, it is logged only, without changing the flow after that.
+  // Callback for `StartClearBlockDevmodeVpd`. If clearing block_devmode did
+  // not succeed, it is logged only, without changing the flow after that.
   // This also notifies the `progress_callbacks_` since the forced re-enrollment
   // cleanup is finished at this point.
-  void OnForcedReEnrollmentVpdCleared(bool reply);
+  void OnBlockDevmodeClearedVpd(bool succeeded);
 
   // Handles timeout of the safeguard timer and stops waiting for a result.
   void Timeout();
 
+  const raw_ref<PrefService> local_state_;
+
+  // Shared factory for outgoing network requests.
+  const scoped_refptr<network::SharedURLLoaderFactory>
+      shared_url_loader_factory_;
+
   // Used for checking ownership.
-  raw_ptr<ash::DeviceSettingsService> device_settings_service_;
+  const raw_ptr<ash::DeviceSettingsService> device_settings_service_;
 
   // Used for communication with management service.
-  raw_ptr<DeviceManagementService> device_management_service_;
+  const raw_ptr<DeviceManagementService> device_management_service_;
 
   // Used for retrieving device state keys.
-  raw_ptr<ServerBackedStateKeysBroker> state_keys_broker_;
+  const raw_ptr<ServerBackedStateKeysBroker> state_keys_broker_;
 
   std::optional<AutoEnrollmentState> state_;
   ProgressCallbackList progress_callbacks_;
@@ -177,7 +190,7 @@ class AutoEnrollmentController : public ash::NetworkStateHandlerObserver {
   // - just too many moving pieces to be confident there are no bugs. If
   // something goes wrong, the timer will ensure that a decision gets made
   // eventually, which is crucial to not block OOBE forever. See
-  // http://crbug.com/433634 for background.
+  // http://crbug.com/41143154 for background.
   // The timer is expected to run during the state determination. The controller
   // is considered idle and can be restarted when the timer is not running.
   base::OneShotTimer safeguard_timer_;
@@ -190,10 +203,7 @@ class AutoEnrollmentController : public ash::NetworkStateHandlerObserver {
   // `SetEnrollmentStateFetcherFactoryForTesting`.
   EnrollmentStateFetcher::Factory enrollment_state_fetcher_factory_;
 
-  // Shared factory for outgoing network requests.
-  scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory_;
-
-  raw_ptr<ash::NetworkStateHandler> network_state_handler_;
+  const raw_ptr<ash::NetworkStateHandler> network_state_handler_;
   // Observes network state and calls `PortalStateChanged` when it changes from
   // the start until the auto-enrollment state is resolved. Triggers a retry
   // when the device goes online.

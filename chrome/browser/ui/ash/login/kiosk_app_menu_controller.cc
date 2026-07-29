@@ -7,17 +7,21 @@
 #include <string>
 #include <vector>
 
+#include "ash/constants/ash_features.h"
 #include "ash/public/cpp/kiosk_app_menu.h"
 #include "ash/public/cpp/login_screen.h"
 #include "base/check.h"
+#include "base/check_deref.h"
 #include "base/functional/bind.h"
 #include "base/strings/utf_string_conversions.h"
+#include "chrome/browser/ash/app_mode/arcvm_app/kiosk_arcvm_app_manager.h"
+#include "chrome/browser/ash/app_mode/isolated_web_app/kiosk_iwa_manager.h"
 #include "chrome/browser/ash/app_mode/kiosk_app.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_launch_error.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_types.h"
 #include "chrome/browser/ash/app_mode/kiosk_chrome_app_manager.h"
 #include "chrome/browser/ash/app_mode/kiosk_controller.h"
-#include "chrome/browser/ash/app_mode/web_app/web_kiosk_app_manager.h"
+#include "chrome/browser/ash/app_mode/web_app/kiosk_web_app_manager.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
 #include "chrome/browser/ui/ash/login/login_screen_client_impl.h"
 #include "extensions/grit/extensions_browser_resources.h"
@@ -38,6 +42,8 @@ KioskAppId ToKioskAppId(const KioskAppMenuEntry& menu_entry) {
                                       menu_entry.account_id);
     case KioskAppMenuEntry::AppType::kIsolatedWebApp:
       return KioskAppId::ForIsolatedWebApp(menu_entry.account_id);
+    case KioskAppMenuEntry::AppType::kArcvmApp:
+      return KioskAppId::ForArcvmApp(menu_entry.account_id);
   }
 }
 
@@ -49,6 +55,8 @@ KioskAppMenuEntry::AppType ToMenuEntryType(KioskAppType type) {
       return KioskAppMenuEntry::AppType::kChromeApp;
     case KioskAppType::kIsolatedWebApp:
       return KioskAppMenuEntry::AppType::kIsolatedWebApp;
+    case KioskAppType::kArcvmApp:
+      return KioskAppMenuEntry::AppType::kArcvmApp;
   }
 }
 
@@ -69,6 +77,7 @@ std::string GetMenuItemName(const KioskApp& app) {
   switch (app.id().type) {
     case KioskAppType::kChromeApp:
     case KioskAppType::kIsolatedWebApp:
+    case KioskAppType::kArcvmApp:
       return app.id().app_id.value();
     case KioskAppType::kWebApp:
       return app.url()->spec();
@@ -91,10 +100,14 @@ std::vector<KioskAppMenuEntry> BuildKioskAppMenuEntries() {
 
 }  // namespace
 
-KioskAppMenuController::KioskAppMenuController() {
+KioskAppMenuController::KioskAppMenuController(PrefService* local_state)
+    : local_state_(CHECK_DEREF(local_state)) {
   kiosk_observations_.AddObservation(KioskChromeAppManager::Get());
-  kiosk_observations_.AddObservation(WebKioskAppManager::Get());
-  // TODO(crbug.com/372847595): Add IWA manager
+  kiosk_observations_.AddObservation(KioskWebAppManager::Get());
+  kiosk_observations_.AddObservation(KioskIwaManager::Get());
+  if (ash::features::IsHeliumArcvmKioskEnabled()) {
+    kiosk_observations_.AddObservation(KioskArcvmAppManager::Get());
+  }
 }
 
 KioskAppMenuController::~KioskAppMenuController() = default;
@@ -119,13 +132,14 @@ void KioskAppMenuController::SendKioskApps() {
   }
 
   KioskAppMenu::Get()->SetKioskApps(BuildKioskAppMenuEntries());
-  KioskAppLaunchError::Error error = KioskAppLaunchError::Get();
+  KioskAppLaunchError::Error error =
+      KioskAppLaunchError::Get(local_state_.get());
   if (error == KioskAppLaunchError::Error::kNone) {
     return;
   }
 
   // Clear any old pending Kiosk launch errors
-  KioskAppLaunchError::RecordMetricAndClear();
+  KioskAppLaunchError::RecordMetricAndClear(local_state_.get());
 
   LoginScreen::Get()->ShowKioskAppError(
       KioskAppLaunchError::GetErrorMessage(error));
@@ -146,7 +160,7 @@ void KioskAppMenuController::LaunchApp(const KioskAppMenuEntry& menu_entry) {
 
 void KioskAppMenuController::OnMenuWillShow() {
   // Web app based kiosk app will want to load their icons.
-  WebKioskAppManager::Get()->LoadIcons();
+  KioskWebAppManager::Get()->LoadIcons();
 }
 
 }  // namespace ash

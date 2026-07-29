@@ -7,9 +7,10 @@
 
 #include <memory>
 
-#include "chrome/browser/ui/browser_user_data.h"
+#include "base/memory/raw_ptr.h"
+#include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 
-class Browser;
+class BrowserWindowInterface;
 class SidePanelEntryScope;
 class SidePanelRegistry;
 
@@ -19,21 +20,24 @@ class View;
 
 // BookmarksSidePanelCoordinator handles the creation and registration of the
 // bookmarks SidePanelEntry.
-class BookmarksSidePanelCoordinator
-    : public BrowserUserData<BookmarksSidePanelCoordinator> {
+class BookmarksSidePanelCoordinator {
  public:
-  explicit BookmarksSidePanelCoordinator(Browser* browser);
-  ~BookmarksSidePanelCoordinator() override;
+  explicit BookmarksSidePanelCoordinator(
+      BrowserWindowInterface& browser_window_interface);
+  ~BookmarksSidePanelCoordinator();
+
+  static BookmarksSidePanelCoordinator* From(BrowserWindowInterface* browser);
+
+  DECLARE_USER_DATA(BookmarksSidePanelCoordinator);
 
   void CreateAndRegisterEntry(SidePanelRegistry* global_registry);
 
  private:
-  friend class BrowserUserData<BookmarksSidePanelCoordinator>;
-
   std::unique_ptr<views::View> CreateBookmarksWebView(
       SidePanelEntryScope& scope);
 
-  BROWSER_USER_DATA_KEY_DECL();
+  ui::ScopedUnownedUserData<BookmarksSidePanelCoordinator>
+      scoped_unowned_user_data_;
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_SIDE_PANEL_BOOKMARKS_BOOKMARKS_SIDE_PANEL_COORDINATOR_H_

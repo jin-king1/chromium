@@ -161,6 +161,7 @@ TEST_F(ArcBridgeHostImplTest, TestOnInstanceReady) {
     MAKE_INSTANCE_READY(IntentHelper);
     MAKE_INSTANCE_READY(Keymaster);
     MAKE_INSTANCE_READY_WITH_NAMESPACE(mojom::keymint, KeyMint);
+    MAKE_INSTANCE_READY(Kiosk);
     MAKE_INSTANCE_READY(MediaSession);
     MAKE_INSTANCE_READY(Metrics);
     MAKE_INSTANCE_READY(Midis);
@@ -180,7 +181,6 @@ TEST_F(ArcBridgeHostImplTest, TestOnInstanceReady) {
     MAKE_INSTANCE_READY(Process);
     MAKE_INSTANCE_READY(ScreenCapture);
     MAKE_INSTANCE_READY(Sharesheet);
-    MAKE_INSTANCE_READY(Timer);
     MAKE_INSTANCE_READY(Tracing);
     MAKE_INSTANCE_READY(Tts);
     MAKE_INSTANCE_READY(UsbHost);

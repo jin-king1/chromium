@@ -8,10 +8,10 @@
 #include "extensions/common/manifest_constants.h"
 #include "extensions/common/manifest_handlers/webview_info.h"
 
-using extensions::ErrorUtils;
-using extensions::Extension;
-using extensions::WebviewInfo;
-namespace errors = extensions::manifest_errors;
+namespace extensions {
+namespace {
+
+namespace errors = manifest_errors;
 
 using WebviewAccessibleResourcesManifestTest = ChromeManifestTest;
 
@@ -86,7 +86,7 @@ TEST_F(WebviewAccessibleResourcesManifestTest, InvalidManifest) {
     // Specifying non-relative paths as accessible resources should fail. We
     // raise a warning rather than a hard-error because existing apps do this
     // and we don't want to break them for all existing users.
-    // https://crbug.com/856948.
+    // https://crbug.com/40582582.
     scoped_refptr<const Extension> extension = LoadAndExpectWarning(
         "webview_accessible_resources_non_relative_path.json",
         ErrorUtils::FormatErrorMessage(
@@ -96,3 +96,6 @@ TEST_F(WebviewAccessibleResourcesManifestTest, InvalidManifest) {
         extension.get(), "nonrelative", "a.html"));
   }
 }
+
+}  // namespace
+}  // namespace extensions

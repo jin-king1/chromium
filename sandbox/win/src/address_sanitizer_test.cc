@@ -2,15 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
-#include <stdio.h>
+#include <windows.h>
 
 #include <memory>
+#include <optional>
 
+#include "base/compiler_specific.h"
 #include "base/environment.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
@@ -27,28 +24,29 @@ class AddressSanitizerTests : public ::testing::Test {
  public:
   void SetUp() override {
     env_ = base::Environment::Create();
-    had_asan_options_ = env_->GetVar("ASAN_OPTIONS", &old_asan_options_);
+    old_asan_options_ = env_->GetVar("ASAN_OPTIONS");
   }
 
   void TearDown() override {
-    if (had_asan_options_)
-      ASSERT_TRUE(env_->SetVar("ASAN_OPTIONS", old_asan_options_));
-    else
+    if (old_asan_options_.has_value()) {
+      ASSERT_TRUE(env_->SetVar("ASAN_OPTIONS", *old_asan_options_));
+    } else {
       env_->UnSetVar("ASAN_OPTIONS");
+    }
   }
 
  protected:
   std::unique_ptr<base::Environment> env_;
-  bool had_asan_options_;
-  std::string old_asan_options_;
+  std::optional<std::string> old_asan_options_;
 };
 
-SBOX_TESTS_COMMAND int AddressSanitizerTests_Report(int argc, wchar_t** argv) {
+SBOX_TEST_COMMAND(AddressSanitizerTests_Report) {
   // AddressSanitizer should detect an out of bounds write (heap buffer
   // overflow) in this code.
   volatile int idx = 42;
   int* volatile blah = new int[42];
-  blah[idx] = 42;
+  // SAFETY: This is intentionally unsafe in order to trigger ASAN.
+  UNSAFE_BUFFERS(blah[idx]) = 42;
   delete[] blah;
   return SBOX_TEST_FAILED;
 }
@@ -79,7 +77,7 @@ TEST_F(AddressSanitizerTests, TestAddressSanitizer) {
                  OPEN_EXISTING, 0, nullptr));
   EXPECT_TRUE(tmp_handle.is_valid());
 
-  TestRunner runner;
+  AddressSanitizerTests_ReportTestRunner runner;
   ASSERT_EQ(SBOX_ALL_OK, runner.GetPolicy()->SetStderrHandle(tmp_handle.get()));
 
   base::FilePath exe;
@@ -90,23 +88,22 @@ TEST_F(AddressSanitizerTests, TestAddressSanitizer) {
 
   env_->SetVar("ASAN_OPTIONS", "exitcode=123");
   if (asan_build) {
-    int result = runner.RunTest(L"AddressSanitizerTests_Report");
+    int result = runner.RunTest();
     EXPECT_EQ(123, result);
 
     std::string data;
     ASSERT_TRUE(base::ReadFileToString(base::FilePath(temp_file_name), &data));
     // Redirection uses a feature that was added in Windows Vista.
-    ASSERT_TRUE(
-        strstr(data.c_str(), "ERROR: AddressSanitizer: heap-buffer-overflow"))
+    ASSERT_TRUE(data.contains("ERROR: AddressSanitizer: heap-buffer-overflow"))
         << "There doesn't seem to be an ASan report:\n"
         << data;
-    ASSERT_TRUE(strstr(data.c_str(), "AddressSanitizerTests_Report"))
+    ASSERT_TRUE(data.contains("AddressSanitizerTests_Report"))
         << "The ASan report doesn't appear to be symbolized:\n"
         << data;
     std::string source_file_basename(__FILE__);
     size_t last_slash = source_file_basename.find_last_of("/\\");
     last_slash = last_slash == std::string::npos ? 0 : last_slash + 1;
-    ASSERT_TRUE(strstr(data.c_str(), &source_file_basename[last_slash]))
+    ASSERT_TRUE(data.contains(&source_file_basename[last_slash]))
         << "The stack trace doesn't have a correct filename:\n"
         << data;
   } else {

@@ -5,7 +5,7 @@
 #include "components/language_detection/core/browser/language_detection_model_service.h"
 
 #include "components/language_detection/core/browser/language_detection_model_provider.h"
-#include "components/optimization_guide/core/optimization_guide_model_provider.h"
+#include "components/optimization_guide/core/delivery/optimization_guide_model_provider.h"
 #include "components/optimization_guide/proto/models.pb.h"
 
 namespace language_detection {
@@ -17,7 +17,7 @@ LanguageDetectionModelService::LanguageDetectionModelService(
       opt_guide_(opt_guide) {
   opt_guide_->AddObserverForOptimizationTargetModel(
       optimization_guide::proto::OPTIMIZATION_TARGET_LANGUAGE_DETECTION,
-      /*model_metadata=*/std::nullopt, this);
+      /*model_metadata=*/std::nullopt, background_task_runner, this);
 }
 
 LanguageDetectionModelService::~LanguageDetectionModelService() {
@@ -46,7 +46,7 @@ void LanguageDetectionModelService::OnModelUpdated(
     UnloadModelFile();
     return;
   }
-  ReplaceModelFile(model_info->GetModelFilePath());
+  ReplaceModelFile(model_info->model_file_path);
 }
 
 }  // namespace language_detection

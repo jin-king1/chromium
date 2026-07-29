@@ -11,27 +11,28 @@
 #include "ash/system/media/media_notification_provider_observer.h"
 #include "ash/system/media/media_tray.h"
 #include "ash/system/status_area_widget.h"
-#include "base/functional/callback_forward.h"
 #include "base/metrics/histogram_functions.h"
-#include "chrome/browser/ash/crosapi/crosapi_ash.h"
-#include "chrome/browser/ash/crosapi/crosapi_manager.h"
-#include "chrome/browser/ash/crosapi/media_ui_ash.h"
+#include "chrome/browser/browser_process.h"
 #include "chrome/browser/media/router/media_router_feature.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/ash/global_media_controls/cast_media_notification_producer_keyed_service.h"
 #include "chrome/browser/ui/ash/global_media_controls/cast_media_notification_producer_keyed_service_factory.h"
-#include "chrome/browser/ui/global_media_controls/supplemental_device_picker_producer.h"
+#include "chrome/browser/ui/global_media_controls/media_notification_service.h"
+#include "chrome/browser/ui/global_media_controls/media_notification_service_factory.h"
 #include "chrome/browser/ui/views/global_media_controls/media_item_ui_device_selector_view.h"
 #include "chrome/browser/ui/views/global_media_controls/media_item_ui_helper.h"
 #include "components/global_media_controls/public/media_item_manager.h"
 #include "components/global_media_controls/public/media_session_item_producer.h"
 #include "components/global_media_controls/public/mojom/device_service.mojom.h"
+#include "components/global_media_controls/public/supplemental_device_picker_producer.h"
 #include "components/global_media_controls/public/views/media_item_ui_detailed_view.h"
 #include "components/global_media_controls/public/views/media_item_ui_list_view.h"
 #include "components/global_media_controls/public/views/media_item_ui_view.h"
+#include "content/public/browser/media_session.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "services/media_session/public/cpp/media_session_service.h"
 #include "ui/views/view.h"
+#include "url/origin.h"
 
 namespace ash {
 
@@ -70,17 +71,12 @@ MediaNotificationProviderImpl::MediaNotificationProviderImpl(
 
 MediaNotificationProviderImpl::~MediaNotificationProviderImpl() {
   CHECK_EQ(this, MediaNotificationProvider::Get());
+  observers_.Notify(&MediaNotificationProviderObserver::
+                        OnMediaNotificationProviderWillBeDestroyed);
   MediaNotificationProvider::Set(nullptr);
 
   RemoveMediaItemManagerFromCastService(item_manager_.get());
   item_manager_->RemoveObserver(this);
-
-  if (crosapi::CrosapiManager::IsInitialized()) {
-    crosapi::CrosapiManager::Get()
-        ->crosapi_ash()
-        ->media_ui_ash()
-        ->RemoveObserver(this);
-  }
 }
 
 void MediaNotificationProviderImpl::AddObserver(
@@ -114,11 +110,8 @@ MediaNotificationProviderImpl::GetMediaNotificationListView(
     global_media_controls::GlobalMediaControlsEntryPoint entry_point,
     const std::string& show_devices_for_item_id) {
   CHECK(item_manager_);
-  CHECK(color_theme_);
   auto media_item_ui_list_view =
       std::make_unique<global_media_controls::MediaItemUIListView>(
-          global_media_controls::MediaItemUIListView::SeparatorStyle(
-              color_theme_->separator_color, separator_thickness),
           should_clip_height);
   media_item_ui_list_view_ = media_item_ui_list_view->GetWeakPtr();
   entry_point_ = entry_point;
@@ -131,11 +124,6 @@ MediaNotificationProviderImpl::GetMediaNotificationListView(
 
 void MediaNotificationProviderImpl::OnBubbleClosing() {
   item_manager_->SetDialogDelegate(nullptr);
-}
-
-void MediaNotificationProviderImpl::SetColorTheme(
-    const media_message_center::NotificationTheme& color_theme) {
-  color_theme_ = color_theme;
 }
 
 global_media_controls::MediaItemManager*
@@ -151,21 +139,6 @@ void MediaNotificationProviderImpl::OnPrimaryUserSessionStarted() {
       CastMediaNotificationProducerKeyedServiceFactory::GetForProfile(
           GetProfile());
   AddMediaItemManagerToCastService(item_manager_.get());
-
-  if (!crosapi::CrosapiManager::IsInitialized()) {
-    return;
-  }
-  supplemental_device_picker_producer_ =
-      std::make_unique<SupplementalDevicePickerProducer>(item_manager_.get());
-  item_manager_->AddItemProducer(supplemental_device_picker_producer_.get());
-  crosapi::MediaUIAsh* media_ui =
-      crosapi::CrosapiManager::Get()->crosapi_ash()->media_ui_ash();
-  media_ui->AddObserver(this);
-
-  for (const auto& device_service : media_ui->device_services()) {
-    device_service.second->SetDevicePickerProvider(
-        supplemental_device_picker_producer_->PassRemote());
-  }
 }
 
 void MediaNotificationProviderImpl::AddMediaItemManagerToCastService(
@@ -208,7 +181,7 @@ MediaNotificationProviderImpl::BuildDeviceSelectorView(
 
   return BuildDeviceSelector(id, item, GetDeviceService(item),
                              &device_selector_delegate_, GetProfile(),
-                             entry_point, show_devices, media_color_theme_);
+                             entry_point, media_color_theme_, show_devices);
 }
 
 std::unique_ptr<global_media_controls::MediaItemUIFooter>
@@ -216,6 +189,14 @@ MediaNotificationProviderImpl::BuildFooterView(
     const std::string& id,
     base::WeakPtr<media_message_center::MediaNotificationItem> item) {
   return BuildFooter(id, item, GetProfile(), media_color_theme_);
+}
+
+void MediaNotificationProviderImpl::UpdateMediaItemSourceOrigin(
+    const std::string& id,
+    const std::optional<url::Origin>& origin) {
+  if (media_session_item_producer_) {
+    media_session_item_producer_->UpdateMediaItemSourceOrigin(id, origin);
+  }
 }
 
 global_media_controls::MediaItemUI*
@@ -236,7 +217,7 @@ MediaNotificationProviderImpl::ShowMediaItem(
   auto item_ui = std::make_unique<global_media_controls::MediaItemUIView>(
       id, item, BuildFooterView(id, item),
       BuildDeviceSelectorView(id, item, entry_point_, show_devices),
-      color_theme_, media_color_theme_, media_display_page);
+      media_color_theme_, media_display_page);
   auto* item_ui_ptr = item_ui.get();
   item_ui_observer_set_.Observe(id, item_ui_ptr);
 
@@ -294,12 +275,6 @@ void MediaNotificationProviderImpl::OnMediaItemUISizeChanged() {
   }
 }
 
-void MediaNotificationProviderImpl::OnDeviceServiceRegistered(
-    global_media_controls::mojom::DeviceService* device_service) {
-  device_service->SetDevicePickerProvider(
-      supplemental_device_picker_producer_->PassRemote());
-}
-
 global_media_controls::mojom::DeviceService*
 MediaNotificationProviderImpl::GetDeviceService(
     base::WeakPtr<media_message_center::MediaNotificationItem> item) const {
@@ -309,10 +284,17 @@ MediaNotificationProviderImpl::GetDeviceService(
   if (device_service_for_testing_) {
     return device_service_for_testing_;
   }
-  return crosapi::CrosapiManager::Get()
-      ->crosapi_ash()
-      ->media_ui_ash()
-      ->GetDeviceService(*item->GetSourceId());
+
+  // TODO(crbug.com/354842935): Consider to share the found profile with the one
+  // for GetProfile(). Or, move the code out from this class.
+  for (Profile* profile :
+       g_browser_process->profile_manager()->GetLoadedProfiles()) {
+    const auto* source_id = content::MediaSession::MaybeGetSourceId(profile);
+    if (source_id && *source_id == *item->GetSourceId()) {
+      return MediaNotificationServiceFactory::GetForProfile(profile);
+    }
+  }
+  return nullptr;
 }
 
 Profile* MediaNotificationProviderImpl::GetProfile() {

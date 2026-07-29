@@ -9,12 +9,12 @@
 #import "ios/chrome/browser/shared/public/commands/browser_commands.h"
 #import "ios/chrome/browser/shared/public/commands/browser_coordinator_commands.h"
 
-@protocol ApplicationCommands;
 class Browser;
 @protocol CountryCodePickerCommands;
 @protocol DriveFilePickerCommands;
 @class MainController;
 class ProfileIOS;
+@protocol SceneCommands;
 @class SceneController;
 @class SceneState;
 @class UIViewController;
@@ -40,6 +40,9 @@ ProfileIOS* GetOriginalProfile();
 // Returns the current incognito Profile
 ProfileIOS* GetCurrentIncognitoProfile();
 
+// Sets a browser that will override the one from the SceneState.
+void SetMainBrowserOverride(Browser* browser);
+
 // Returns the browser for the main interface.
 Browser* GetMainBrowser();
 
@@ -52,7 +55,7 @@ Browser* GetCurrentBrowser();
 UIViewController* GetActiveViewController();
 
 // Returns the dispatcher for the active Browser.
-id<ApplicationCommands,
+id<SceneCommands,
    BrowserCommands,
    BrowserCoordinatorCommands,
    UnitConversionCommands,
@@ -81,6 +84,11 @@ void SetBooleanUserPref(ProfileIOS* profile, const char* pref_name, bool value);
 // Sets the value of an integer user pref in the given profile.
 void SetIntegerUserPref(ProfileIOS* profile, const char* pref_name, int value);
 
+// Sets the value of a double user pref in the given profile.
+void SetDoubleUserPref(ProfileIOS* profile,
+                       const char* pref_name,
+                       double value);
+
 // Checks whether metrics recording is enabled or not.
 bool IsMetricsRecordingEnabled();
 
@@ -92,10 +100,6 @@ bool IsCrashpadEnabled();
 
 // Checks whether crashpad reporting is enabled or not.
 bool IsCrashpadReportingEnabled();
-
-// Simulates launching Chrome from another application.
-void OpenChromeFromExternalApp(const GURL& url);
-
 // Purges cached web view page, so the next time back navigation will not use
 // cached page. Browsers don't have to use fresh version for back forward
 // navigation for HTTP pages and may serve version from the cache even if

@@ -45,7 +45,7 @@ class NearbyShareDataUsageDialogElement extends
   static get properties() {
     return {
       /** Mirroring the enum to allow usage in Polymer HTML bindings. */
-      NearbyShareDataUsage: {
+      NearbyShareDataUsageEnum_: {
         type: Object,
         value: NearbyShareDataUsage,
       },
@@ -57,9 +57,7 @@ class NearbyShareDataUsageDialogElement extends
     };
   }
 
-  settings: NearbySettings;
-  // eslint-disable-next-line @typescript-eslint/naming-convention
-  NearbyShareDataUsage: NearbyShareDataUsage;
+  declare settings: NearbySettings;
 
   override connectedCallback(): void {
     super.connectedCallback();

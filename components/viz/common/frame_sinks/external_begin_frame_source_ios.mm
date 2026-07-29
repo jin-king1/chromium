@@ -7,6 +7,8 @@
 #import <Foundation/Foundation.h>
 #import <QuartzCore/QuartzCore.h>
 
+#include <algorithm>
+
 #include "base/apple/mach_logging.h"
 #include "base/logging.h"
 #include "base/numerics/checked_math.h"
@@ -138,16 +140,12 @@ uint64_t GetMachTimeFromSeconds(CFTimeInterval seconds) {
     // part can result in exceeding the maximum rate because of the division
     // operation.
     _preferredRefreshRate =
-        refresh_rate > _maximumRefreshRate ? _maximumRefreshRate : refresh_rate;
-    if (@available(iOS 15, *)) {
-      [_displayLink
-          setPreferredFrameRateRange:CAFrameRateRange{
-                                         .minimum = kMinimumRefreshRate,
-                                         .maximum = _maximumRefreshRate,
-                                         .preferred = _preferredRefreshRate}];
-    } else if (@available(iOS 10, *)) {
-      [_displayLink setPreferredFramesPerSecond:_preferredRefreshRate];
-    }
+        std::clamp(refresh_rate, kMinimumRefreshRate, _maximumRefreshRate);
+    [_displayLink
+        setPreferredFrameRateRange:CAFrameRateRange{
+                                       .minimum = kMinimumRefreshRate,
+                                       .maximum = _maximumRefreshRate,
+                                       .preferred = _preferredRefreshRate}];
 
     // _displayLink.frameInterval is used on iOS 3-10. However, these are pretty
     // old iOS versions, which we are not targeting.
@@ -157,9 +155,15 @@ uint64_t GetMachTimeFromSeconds(CFTimeInterval seconds) {
 - (void)displayLinkDidFire:(CADisplayLink*)displayLink {
   DCHECK(_client);
 
-  // Get the previous vsync time.
-  const base::TimeTicks vsync_time = base::TimeTicks::FromMachAbsoluteTime(
-      GetMachTimeFromSeconds(displayLink.timestamp));
+  // Get the previous vsync time - clamp to `Now()`. Although CADisplayLink's
+  // `timestamp` is derived from mach_absolute_time, there's precision loss when
+  // converting from the uint64_t mach time to the CFTimeInterval double.
+  // Converting back from the CFTimeInterval to uint64_t can cause it to be in
+  // the future with respect to `Now()`.
+  const base::TimeTicks vsync_time =
+      std::min(base::TimeTicks::Now(),
+               base::TimeTicks::FromMachAbsoluteTime(
+                   GetMachTimeFromSeconds(displayLink.timestamp)));
 
   // Get the next vsync time.
   const base::TimeTicks next_vsync_time = base::TimeTicks::FromMachAbsoluteTime(
@@ -226,7 +230,8 @@ void ExternalBeginFrameSourceIOS::OnVSync(base::TimeTicks vsync_time,
                                           base::TimeTicks next_vsync_time,
                                           base::TimeDelta vsync_interval) {
   OnBeginFrame(begin_frame_args_generator_.GenerateBeginFrameArgs(
-      source_id(), vsync_time, next_vsync_time, vsync_interval));
+      source_id(), vsync_time, next_vsync_time, vsync_interval,
+      GetMinimumFrameInterval()));
 }
 
 void ExternalBeginFrameSourceIOS::OnNeedsBeginFrames(bool needs_begin_frames) {

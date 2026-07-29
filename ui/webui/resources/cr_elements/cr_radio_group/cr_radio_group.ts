@@ -50,27 +50,18 @@ export class CrRadioGroupElement extends CrLitElement {
     };
   }
 
-  disabled: boolean = false;
-  selected?: string;
-  selectableElements: string =
+  accessor disabled: boolean = false;
+  accessor selected: string|undefined;
+  accessor selectableElements: string =
       'cr-radio-button, cr-card-radio-button, controlled-radio-button';
-  nestedSelectable: boolean = false;
-  private selectableRegExp_: RegExp = new RegExp('');
+  accessor nestedSelectable: boolean = false;
+  private accessor selectableRegExp_: RegExp = new RegExp('');
 
   private buttons_: CrRadioButtonElement[]|null = null;
   private buttonEventTracker_: EventTracker = new EventTracker();
   private deltaKeyMap_: Map<string, number>|null = null;
   private isRtl_: boolean = false;
   private populateBound_: (() => void)|null = null;
-
-  override firstUpdated() {
-    this.addEventListener('keydown', e => this.onKeyDown_(e));
-    this.addEventListener('click', e => this.onClick_(e));
-
-    if (!this.hasAttribute('role')) {
-      this.setAttribute('role', 'radiogroup');
-    }
-  }
 
   override connectedCallback() {
     super.connectedCallback();
@@ -106,6 +97,15 @@ export class CrRadioGroupElement extends CrLitElement {
     if (changedProperties.has('selectableElements')) {
       const tags = this.selectableElements.split(', ').join('|');
       this.selectableRegExp_ = new RegExp(`^(${tags})$`, 'i');
+    }
+  }
+
+  override firstUpdated() {
+    this.addEventListener('keydown', e => this.onKeyDown_(e));
+    this.addEventListener('click', e => this.onClick_(e));
+
+    if (!this.hasAttribute('role')) {
+      this.setAttribute('role', 'radiogroup');
     }
   }
 

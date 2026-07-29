@@ -5,14 +5,13 @@
 #include "ui/views/controls/button/button.h"
 
 #include <utility>
+#include <variant>
 
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
-#include "base/functional/callback_forward.h"
-#include "base/functional/overloaded.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
+#include "third_party/abseil-cpp/absl/functional/overload.h"
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/accessibility/ax_node_data.h"
 #include "ui/actions/actions.h"
@@ -42,8 +41,10 @@
 #include "ui/views/controls/focus_ring.h"
 #include "ui/views/interaction/element_tracker_views.h"
 #include "ui/views/painter.h"
+#include "ui/views/property_effects.h"
 #include "ui/views/style/platform_style.h"
 #include "ui/views/view_class_properties.h"
+#include "ui/views/widget/widget.h"
 
 #if defined(USE_AURA)
 #include "ui/aura/client/capture_client.h"
@@ -124,13 +125,13 @@ Button::PressedCallback& Button::PressedCallback::operator=(PressedCallback&&) =
 Button::PressedCallback::~PressedCallback() = default;
 
 Button::PressedCallback::operator bool() const {
-  return absl::visit([](const auto& callback) { return !callback.is_null(); },
-                     callback_);
+  return std::visit([](const auto& callback) { return !callback.is_null(); },
+                    callback_);
 }
 
 void Button::PressedCallback::Run(const ui::Event& event) {
-  return absl::visit(
-      base::Overloaded{
+  return std::visit(
+      absl::Overload{
           [](base::OnceClosure& closure) { std::move(closure).Run(); },
           [](const base::RepeatingClosure& closure) { closure.Run(); },
           [&](const Callback& callback) { callback.Run(event); },
@@ -261,7 +262,7 @@ void Button::SetState(ButtonState state) {
   GetViewAccessibility().SetIsHovered(state_ == STATE_HOVERED);
   UpdateAccessibleCheckedState();
   StateChanged(old_state);
-  OnPropertyChanged(&state_, kPropertyEffectsPaint);
+  OnPropertyChanged(&state_, PropertyEffects::kPaint);
 }
 
 int Button::GetTag() const {
@@ -273,7 +274,7 @@ void Button::SetTag(int tag) {
     return;
   }
   tag_ = tag;
-  OnPropertyChanged(&tag_, kPropertyEffectsNone);
+  OnPropertyChanged(&tag_, PropertyEffects::kNone);
 }
 
 void Button::SetAnimationDuration(base::TimeDelta duration) {
@@ -285,7 +286,7 @@ void Button::SetTriggerableEventFlags(int triggerable_event_flags) {
     return;
   }
   triggerable_event_flags_ = triggerable_event_flags;
-  OnPropertyChanged(&triggerable_event_flags_, kPropertyEffectsNone);
+  OnPropertyChanged(&triggerable_event_flags_, PropertyEffects::kNone);
 }
 
 int Button::GetTriggerableEventFlags() const {
@@ -300,7 +301,7 @@ void Button::SetRequestFocusOnPress(bool value) {
     return;
   }
   request_focus_on_press_ = value;
-  OnPropertyChanged(&request_focus_on_press_, kPropertyEffectsNone);
+  OnPropertyChanged(&request_focus_on_press_, PropertyEffects::kNone);
 #endif
 }
 
@@ -313,7 +314,7 @@ void Button::SetAnimateOnStateChange(bool value) {
     return;
   }
   animate_on_state_change_ = value;
-  OnPropertyChanged(&animate_on_state_change_, kPropertyEffectsNone);
+  OnPropertyChanged(&animate_on_state_change_, PropertyEffects::kNone);
 }
 
 bool Button::GetAnimateOnStateChange() const {
@@ -326,7 +327,7 @@ void Button::SetHideInkDropWhenShowingContextMenu(bool value) {
   }
   hide_ink_drop_when_showing_context_menu_ = value;
   OnPropertyChanged(&hide_ink_drop_when_showing_context_menu_,
-                    kPropertyEffectsNone);
+                    PropertyEffects::kNone);
 }
 
 bool Button::GetHideInkDropWhenShowingContextMenu() const {
@@ -338,7 +339,7 @@ void Button::SetShowInkDropWhenHotTracked(bool value) {
     return;
   }
   show_ink_drop_when_hot_tracked_ = value;
-  OnPropertyChanged(&show_ink_drop_when_hot_tracked_, kPropertyEffectsNone);
+  OnPropertyChanged(&show_ink_drop_when_hot_tracked_, PropertyEffects::kNone);
 }
 
 bool Button::GetShowInkDropWhenHotTracked() const {
@@ -350,7 +351,7 @@ void Button::SetHasInkDropActionOnClick(bool value) {
     return;
   }
   has_ink_drop_action_on_click_ = value;
-  OnPropertyChanged(&has_ink_drop_action_on_click_, kPropertyEffectsNone);
+  OnPropertyChanged(&has_ink_drop_action_on_click_, PropertyEffects::kNone);
 }
 
 bool Button::GetHasInkDropActionOnClick() const {
@@ -749,7 +750,7 @@ bool Button::ShouldEnterPushedState(const ui::Event& event) {
 void Button::PaintButtonContents(gfx::Canvas* canvas) {}
 
 bool Button::ShouldEnterHoveredState() {
-  if (!GetVisible()) {
+  if (!GetVisible() || GetVisibleBounds().IsEmpty()) {
     return false;
   }
 
@@ -778,11 +779,12 @@ base::WeakPtr<Button> Button::GetWeakPtr() {
 }
 
 void Button::OnEnabledChanged() {
-  if (GetEnabled() ? (state_ != STATE_DISABLED) : (state_ == STATE_DISABLED)) {
+  if (GetEnabledInViewsSubtree() ? (state_ != STATE_DISABLED)
+                                 : (state_ == STATE_DISABLED)) {
     return;
   }
 
-  if (GetEnabled()) {
+  if (GetEnabledInViewsSubtree()) {
     bool should_enter_hover_state = ShouldEnterHoveredState();
     SetState(should_enter_hover_state ? STATE_HOVERED : STATE_NORMAL);
     InkDrop::Get(ink_drop_view_)
@@ -818,7 +820,7 @@ void Button::SetDefaultActionVerb(ax::mojom::DefaultActionVerb verb) {
 }
 
 void Button::UpdateAccessibleDefaultActionVerb() {
-  if (GetEnabled()) {
+  if (GetEnabledInViewsSubtree()) {
     GetViewAccessibility().SetDefaultActionVerb(default_action_verb_);
   } else {
     GetViewAccessibility().RemoveDefaultActionVerb();

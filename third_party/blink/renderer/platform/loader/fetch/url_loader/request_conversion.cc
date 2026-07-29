@@ -21,9 +21,11 @@
 #include "services/network/public/mojom/chunked_data_pipe_getter.mojom-blink.h"
 #include "services/network/public/mojom/data_pipe_getter.mojom-blink.h"
 #include "services/network/public/mojom/data_pipe_getter.mojom.h"
+#include "services/network/public/mojom/fetch_retry_options.mojom-shared.h"
 #include "services/network/public/mojom/trust_tokens.mojom-blink.h"
 #include "services/network/public/mojom/trust_tokens.mojom.h"
 #include "third_party/blink/public/common/loader/network_utils.h"
+#include "third_party/blink/public/common/navigation/preloading_headers.h"
 #include "third_party/blink/public/mojom/blob/blob.mojom-blink.h"
 #include "third_party/blink/public/mojom/blob/blob.mojom.h"
 #include "third_party/blink/public/mojom/fetch/fetch_api_request.mojom-blink.h"
@@ -44,7 +46,6 @@ namespace {
 
 // TODO(yhirano): Unify these with variables in
 // content/public/common/content_constants.h.
-constexpr char kCorsExemptPurposeHeaderName[] = "Purpose";
 constexpr char kCorsExemptRequestedWithHeaderName[] = "X-Requested-With";
 
 // TODO(yhirano) Dedupe this and the same-name function in
@@ -95,7 +96,6 @@ mojom::ResourceType RequestContextToResourceType(
       return mojom::ResourceType::kObject;
 
     // Ping
-    case mojom::blink::RequestContextType::ATTRIBUTION_SRC:
     case mojom::blink::RequestContextType::BEACON:
     case mojom::blink::RequestContextType::PING:
       return mojom::ResourceType::kPing;
@@ -123,6 +123,7 @@ mojom::ResourceType RequestContextToResourceType(
     case mojom::blink::RequestContextType::SPECULATION_RULES:
     case mojom::blink::RequestContextType::SUBRESOURCE:
     case mojom::blink::RequestContextType::SUBRESOURCE_WEBBUNDLE:
+    case mojom::blink::RequestContextType::TEXT:
       return mojom::ResourceType::kSubResource;
 
     // TextTrack
@@ -171,12 +172,12 @@ void PopulateResourceRequestBody(const EncodedFormData& src,
       case FormDataElement::kEncodedFile:
         if (element.file_length_ == -1) {
           dest->AppendFileRange(
-              WebStringToFilePath(element.filename_), 0,
+              StringToFilePath(element.filename_), 0,
               std::numeric_limits<uint64_t>::max(),
               element.expected_file_modification_time_.value_or(base::Time()));
         } else {
           dest->AppendFileRange(
-              WebStringToFilePath(element.filename_),
+              StringToFilePath(element.filename_),
               static_cast<uint64_t>(element.file_start_),
               static_cast<uint64_t>(element.file_length_),
               element.expected_file_modification_time_.value_or(base::Time()));
@@ -305,11 +306,14 @@ void PopulateResourceRequest(const ResourceRequestHead& src,
     dest->cors_exempt_headers.SetHeader(kCorsExemptRequestedWithHeaderName,
                                         src.GetRequestedWithHeader().Utf8());
   }
-  // Set Purpose header to cors_exempt_headers rather than headers to be
-  // exempted from CORS checks.
-  if (!src.GetPurposeHeader().empty()) {
-    dest->cors_exempt_headers.SetHeader(kCorsExemptPurposeHeaderName,
-                                        src.GetPurposeHeader().Utf8());
+  // Set Last-Event-ID header to cors_exempt_headers for EventSource.
+  // HTTP headers are Latin-1 byte strings, but the Last-Event-ID header is
+  // encoded as UTF-8.
+  // TODO(davidben): This should be captured in the type of
+  // setHTTPHeaderField's arguments.
+  if (!src.GetEventSourceLastEventId().empty()) {
+    dest->cors_exempt_headers.SetHeader("Last-Event-ID",
+                                        src.GetEventSourceLastEventId().Utf8());
   }
 
   // TODO(yhirano): Remove this WrappedResourceRequest.
@@ -325,9 +329,10 @@ void PopulateResourceRequest(const ResourceRequestHead& src,
   dest->credentials_mode = src.GetCredentialsMode();
   dest->redirect_mode = src.GetRedirectMode();
   dest->fetch_integrity = src.GetFetchIntegrity().Utf8();
-  dest->expected_signatures.reserve(src.GetExpectedSignatures().size());
-  for (const String& signature : src.GetExpectedSignatures()) {
-    dest->expected_signatures.push_back(signature.Utf8());
+  dest->expected_public_keys.reserve(src.GetExpectedPublicKeys().size());
+  for (const auto& public_key : src.GetExpectedPublicKeys()) {
+    dest->expected_public_keys.emplace_back(public_key.begin(),
+                                            public_key.end());
   }
   if (src.GetWebBundleTokenParams().has_value()) {
     dest->web_bundle_token_params =
@@ -352,16 +357,15 @@ void PopulateResourceRequest(const ResourceRequestHead& src,
   }
 
   dest->keepalive = src.GetKeepalive();
-  dest->browsing_topics = src.GetBrowsingTopics();
-  dest->ad_auction_headers = src.GetAdAuctionHeaders();
-  dest->shared_storage_writable_eligible =
-      src.GetSharedStorageWritableEligible();
   dest->has_user_gesture = src.HasUserGesture();
   dest->enable_load_timing = true;
   dest->enable_upload_progress = src.ReportUploadProgress();
-  dest->throttling_profile_id = src.GetDevToolsToken();
+  dest->throttling_profile_id = src.GetDevToolsThrottlingToken();
   dest->trust_token_params = ConvertTrustTokenParams(src.TrustTokenParams());
   dest->required_ip_address_space = src.GetTargetAddressSpace();
+  if (src.HasFetchRetryOptions()) {
+    dest->fetch_retry_options = src.FetchRetryOptions();
+  }
 
   if (base::UnguessableToken window_id = src.GetFetchWindowId())
     dest->fetch_window_id = std::make_optional(window_id);
@@ -412,13 +416,6 @@ void PopulateResourceRequest(const ResourceRequestHead& src,
   }
 
   dest->storage_access_api_status = src.GetStorageAccessApiStatus();
-
-  dest->attribution_reporting_support = src.GetAttributionReportingSupport();
-
-  dest->attribution_reporting_eligibility =
-      src.GetAttributionReportingEligibility();
-
-  dest->attribution_reporting_src_token = src.GetAttributionSrcToken();
 
   dest->keepalive_token = src.GetKeepaliveToken();
 

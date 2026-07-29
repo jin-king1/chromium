@@ -19,32 +19,47 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
+#include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/logging.h"
-#include "base/memory/scoped_refptr.h"
+#include "base/memory/ref_counted.h"
 #include "base/message_loop/message_pump_type.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
+#include "base/task/bind_post_task.h"
 #include "base/task/single_thread_task_executor.h"
+#include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
 #include "base/task/thread_pool/thread_pool_instance.h"
+#include "build/build_config.h"
 #include "chrome/enterprise_companion/device_management_storage/dm_storage.h"
 #include "chrome/updater/app/app.h"
-#include "chrome/updater/configurator.h"
 #include "chrome/updater/constants.h"
-#include "chrome/updater/device_management/dm_message.h"
-#include "chrome/updater/device_management/dm_response_validator.h"
-#include "chrome/updater/external_constants_default.h"
 #include "chrome/updater/ipc/ipc_support.h"
 #include "chrome/updater/policy/service.h"
-#include "chrome/updater/prefs.h"
 #include "chrome/updater/protos/omaha_settings.pb.h"
 #include "chrome/updater/service_proxy_factory.h"
 #include "chrome/updater/update_service.h"
+#include "components/crx_file/crx_verifier.h"
 #include "components/policy/proto/device_management_backend.pb.h"
+#include "components/update_client/unpacker.h"
+#include "components/update_client/unzip/in_process_unzipper.h"
+#include "third_party/zlib/google/zip.h"
 
 namespace updater::tools {
+
+namespace {
+
+#if BUILDFLAG(IS_POSIX)
+constexpr zip::UnzipSymlinkOption kSymlinkOption =
+    zip::UnzipSymlinkOption::PRESERVE;
+#else
+constexpr zip::UnzipSymlinkOption kSymlinkOption =
+    zip::UnzipSymlinkOption::DONT_PRESERVE;
+#endif
+
+}  // namespace
 
 constexpr char kProductSwitch[] = "product";
 constexpr char kBackgroundSwitch[] = "background";
@@ -55,13 +70,14 @@ constexpr char kListCBCMPoliciesSwitch[] = "list-cbcm-policies";
 constexpr char kCBCMPolicyPathSwitch[] = "policy-path";
 constexpr char kJSONFormatSwitch[] = "json";
 constexpr char kUpdateSwitch[] = "update";
+constexpr char kUnpackSwitch[] = "unpack";
 
 namespace updater_policy {
 
 namespace edm = ::wireless_android_enterprise_devicemanagement;
 
 std::ostream& operator<<(std::ostream& os, edm::UpdateValue value) {
-  os << base::to_underlying(value) << " ";
+  os << std::to_underlying(value) << " ";
   switch (value) {
     case edm::UPDATES_DISABLED:
       return os << "(Disabled)";
@@ -76,7 +92,7 @@ std::ostream& operator<<(std::ostream& os, edm::UpdateValue value) {
 }
 
 std::ostream& operator<<(std::ostream& os, edm::InstallDefaultValue value) {
-  os << base::to_underlying(value) << " ";
+  os << std::to_underlying(value) << " ";
   switch (value) {
     case edm::INSTALL_DEFAULT_DISABLED:
       return os << "(Disabled)";
@@ -89,7 +105,7 @@ std::ostream& operator<<(std::ostream& os, edm::InstallDefaultValue value) {
 }
 
 std::ostream& operator<<(std::ostream& os, edm::InstallValue value) {
-  os << base::to_underlying(value) << " ";
+  os << std::to_underlying(value) << " ";
   switch (value) {
     case edm::INSTALL_DISABLED:
       return os << "(Disabled)";
@@ -100,49 +116,6 @@ std::ostream& operator<<(std::ostream& os, edm::InstallValue value) {
     case edm::INSTALL_ENABLED:
     default:
       return os << "(Enabled)";
-  }
-}
-
-std::ostream& operator<<(std::ostream& os,
-                         PolicyValidationResult::Status status) {
-  const std::string error_notes =
-      base::CommandLine::ForCurrentProcess()->HasSwitch(kCBCMPolicyPathSwitch)
-          ? ", expected"
-          : "";
-  os << base::to_underlying(status) << " ";
-  switch (status) {
-    case PolicyValidationResult::Status::kValidationOK:
-      return os << "(OK)";
-    case PolicyValidationResult::Status::kValidationBadInitialSignature:
-      return os << "(Bad Initial Signature)";
-    case PolicyValidationResult::Status::kValidationBadSignature:
-      return os << "(Bad Signature)";
-    case PolicyValidationResult::Status::kValidationErrorCodePresent:
-      return os << "(Error Code Present)";
-    case PolicyValidationResult::Status::kValidationPayloadParseError:
-      return os << "(Payload Parse Error)";
-    case PolicyValidationResult::Status::kValidationWrongPolicyType:
-      return os << "(Wrong Policy Type)";
-    case PolicyValidationResult::Status::kValidationWrongSettingsEntityID:
-      return os << "(Wrong Settings Entity ID)";
-    case PolicyValidationResult::Status::kValidationBadTimestamp:
-      return os << "(Bad Timestamp" << error_notes << ")";
-    case PolicyValidationResult::Status::kValidationBadDMToken:
-      return os << "(Bad DMToken" << error_notes << ")";
-    case PolicyValidationResult::Status::kValidationBadDeviceID:
-      return os << "(Bad Device ID" << error_notes << ")";
-    case PolicyValidationResult::Status::kValidationBadUser:
-      return os << "(Bad User)";
-    case PolicyValidationResult::Status::kValidationPolicyParseError:
-      return os << "(Policy Parse Error)";
-    case PolicyValidationResult::Status::kValidationBadKeyVerificationSignature:
-      return os << "(Bad Key Verification Signature)";
-    case PolicyValidationResult::Status::kValidationValueWarning:
-      return os << "(Value Warning)";
-    case PolicyValidationResult::Status::kValidationValueError:
-      return os << "(Value Error)";
-    default:
-      return os << "(Unknown error)";
   }
 }
 
@@ -171,7 +144,7 @@ GetCachedPolicyInfo(
 
 std::unique_ptr<edm::OmahaSettingsClientProto> GetOmahaPolicySettings() {
   std::string encoded_omaha_policy_type =
-      base::Base64Encode(kGoogleUpdatePolicyType);
+      base::Base64Encode("google/machine-level-omaha");
 
   base::FilePath omaha_policy_file = GetDMStorage()
                                          ->policy_cache_folder()
@@ -207,40 +180,16 @@ void PrintCachedPolicy(const base::FilePath& policy_path) {
   auto omaha_settings = std::make_unique<edm::OmahaSettingsClientProto>();
   if (!base::ReadFileToString(policy_file, &response_data) ||
       response_data.empty() || !response.ParseFromString(response_data)) {
-    std::cout << "  [" << policy_type << "] <not parseable>";
+    std::cout << "  [" << policy_type << "] <not parsable>";
     return;
   }
 
-  scoped_refptr<device_management_storage::DMStorage> storage = GetDMStorage();
-  PolicyValidationResult status;
-  DMResponseValidator validator(*GetCachedPolicyInfo(storage),
-                                storage->GetDmToken(), storage->GetDeviceID());
-  if (validator.ValidatePolicyResponse(response, status)) {
-    std::cout << "  [" << policy_type << "]: satisfies all validation check."
-              << std::endl;
-    return;
-  }
-
-  std::cout << "  [" << policy_type << "] validation failed: " << std::endl;
-  std::cout << "    Policy type: " << status.policy_type << std::endl;
-  std::cout << "    Policy token: " << status.policy_token << std::endl;
-  std::cout << "    Validation status: " << status.status << std::endl;
-  if (!status.issues.empty()) {
-    std::cout << "    Issues: " << std::endl;
-    for (const auto& issue : status.issues) {
-      std::cout << "      [" << issue.policy_name << "]: " << issue.severity
-                << ":" << issue.message << std::endl;
-    }
-  }
-
-  std::cout << "    Policy data check: "
-            << (validator.ValidatePolicyData(response) ? "OK" : "failed")
-            << std::endl;
+  std::cout << "  [" << policy_type << "]: validation skipped." << std::endl;
 }
 
 void PrintCachedPolicyInfo(
     const device_management_storage::CachedPolicyInfo& cached_info) {
-  constexpr size_t kPrintWidth = 16;
+  static constexpr size_t kPrintWidth = 16;
 
   std::cout << "Cached policy info:" << std::endl;
   std::cout << "  Key version: " << cached_info.key_version() << std::endl;
@@ -419,9 +368,8 @@ bool OutputInJSONFormat() {
   return base::CommandLine::ForCurrentProcess()->HasSwitch(kJSONFormatSwitch);
 }
 
-std::string ValueToJSONString(const base::Value& value) {
-  std::string value_string;
-  return base::JSONWriter::Write(value, &value_string) ? value_string : "";
+std::string DictToJSONString(const base::DictValue& dict) {
+  return base::WriteJson(dict).value_or("");
 }
 
 void OnAppStateChanged(const UpdateService::UpdateState& update_state) {
@@ -442,6 +390,16 @@ void OnAppStateChanged(const UpdateService::UpdateState& update_state) {
                 << ": downloading update, downloaded bytes: "
                 << update_state.downloaded_bytes
                 << ", total: " << update_state.total_bytes << std::endl;
+      break;
+
+    case UpdateService::UpdateState::State::kDecompressing:
+      std::cout << Quoted(update_state.app_id) << ": decompressing files"
+                << std::endl;
+      break;
+
+    case UpdateService::UpdateState::State::kPatching:
+      std::cout << Quoted(update_state.app_id) << ": applying patches"
+                << std::endl;
       break;
 
     case UpdateService::UpdateState::State::kInstalling:
@@ -511,7 +469,15 @@ class AppState : public base::RefCountedThreadSafe<AppState> {
 
 class UpdaterUtilApp : public App {
  public:
-  UpdaterUtilApp() : service_proxy_(CreateUpdateServiceProxy(Scope())) {}
+  UpdaterUtilApp()
+      : service_proxy_(
+#if BUILDFLAG(IS_WIN)
+            CreateUpdateServiceProxyMojo(Scope())
+#else   // BUILDFLAG(IS_WIN)
+            CreateUpdateServiceProxy(Scope())
+#endif  // BUILDFLAG(IS_WIN)
+        ) {
+  }
 
  private:
   ~UpdaterUtilApp() override = default;
@@ -523,6 +489,7 @@ class UpdaterUtilApp : public App {
   void Update();
   void ListPolicies();
   void ListCBCMPolicies();
+  void UnpackCRX();
 
   void FindApp(const std::string& app_id,
                base::OnceCallback<void(scoped_refptr<AppState>)> callback);
@@ -547,6 +514,7 @@ void UpdaterUtilApp::PrintUsage(const std::string& error_message) {
         --list-update         List update for an app (skip update install).
         --list-policies       List all currently effective enterprise policies.
         --list-cbcm-policies  List downloaded CBCM policies.
+        --unpack=[file]       Verify and unpack a CRX file.
     Action parameters:
         --background          Use background priority.
         --product             ProductID.
@@ -562,18 +530,16 @@ void UpdaterUtilApp::ListApps() {
       [](base::OnceCallback<void(int)> cb,
          const std::vector<updater::UpdateService::AppState>& states) {
         if (OutputInJSONFormat()) {
-          base::Value::Dict apps;
+          base::DictValue apps;
           for (updater::UpdateService::AppState app : states) {
-            apps.Set(app.app_id, base::Value::Dict().Set(
-                                     "version", app.version.GetString()));
+            apps.Set(app.app_id, base::DictValue().Set("version", app.version));
           }
-          std::cout << ValueToJSONString(base::Value(std::move(apps)))
-                    << std::endl;
+          std::cout << DictToJSONString(std::move(apps)) << std::endl;
         } else {
           std::cout << "Registered apps : {" << std::endl;
           for (updater::UpdateService::AppState app : states) {
             std::cout << "\t" << Quoted(app.app_id) << " = "
-                      << Quoted(app.version.GetString()) << ';' << std::endl;
+                      << Quoted(app.version) << ';' << std::endl;
           }
           std::cout << '}' << std::endl;
         }
@@ -595,10 +561,10 @@ void UpdaterUtilApp::FindApp(
             });
         LOG_IF(ERROR, it == std::end(states))
             << Quoted(app_id) << " is not a registered app.";
-        std::move(callback).Run(it == std::end(states)
-                                    ? nullptr
-                                    : base::MakeRefCounted<AppState>(
-                                          app_id, it->version.GetString()));
+        std::move(callback).Run(
+            it == std::end(states)
+                ? nullptr
+                : base::MakeRefCounted<AppState>(app_id, it->version));
       },
       app_id, std::move(callback)));
 }
@@ -630,8 +596,7 @@ void UpdaterUtilApp::DoListUpdate(scoped_refptr<AppState> app_state) {
              const UpdateService::UpdateState& update_state) {
             if (update_state.state ==
                 UpdateService::UpdateState::State::kUpdateAvailable) {
-              app_state->set_next_version(
-                  update_state.next_version.GetString());
+              app_state->set_next_version(update_state.next_version);
             }
           },
           app_state),
@@ -640,13 +605,12 @@ void UpdaterUtilApp::DoListUpdate(scoped_refptr<AppState> app_state) {
              base::OnceCallback<void(int)> cb, UpdateService::Result result) {
             if (result == UpdateService::Result::kSuccess) {
               if (OutputInJSONFormat()) {
-                base::Value::Dict app;
+                base::DictValue app;
                 app.Set(app_state->app_id(),
-                        base::Value::Dict()
+                        base::DictValue()
                             .Set("CurrentVersion", app_state->current_version())
                             .Set("NextVersion", app_state->next_version()));
-                std::cout << ValueToJSONString(base::Value(std::move(app)))
-                          << std::endl;
+                std::cout << DictToJSONString(std::move(app)) << std::endl;
               } else {
                 std::cout << Quoted(app_state->app_id()) << " : {" << std::endl
                           << "\tCurrent Version = "
@@ -698,23 +662,23 @@ void UpdaterUtilApp::DoUpdateApp(scoped_refptr<AppState> app_state) {
 }
 
 void UpdaterUtilApp::ListPolicies() {
-  base::ThreadPool::PostTaskAndReply(
-      FROM_HERE, {base::MayBlock(), base::WithBaseSyncPrimitives()},
-      base::BindOnce([] {
-        auto configurator = base::MakeRefCounted<Configurator>(
-            CreateGlobalPrefs(Scope()), CreateDefaultExternalConstants());
+  service_proxy_->GetPoliciesJson(
+      base::BindOnce([&](const std::string& result) {
         if (OutputInJSONFormat()) {
-          std::cout << ValueToJSONString(
-                           configurator->GetPolicyService()->GetAllPolicies())
-                    << std::endl;
-        } else {
-          std::cout
-              << "Updater policies: "
-              << configurator->GetPolicyService()->GetAllPoliciesAsString()
-              << std::endl;
+          std::cout << result << std::endl;
+          return;
         }
-      }),
-      base::BindOnce(&UpdaterUtilApp::Shutdown, this, 0));
+        if (const auto root = base::JSONReader::Read(
+                result, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
+            root && root->is_dict()) {
+          std::cout << "Updater policies: "
+                    << base::WriteJsonWithOptions(
+                           root->GetDict(),
+                           base::JSONWriter::OPTIONS_PRETTY_PRINT)
+                           .value_or({})
+                    << std::endl;
+        }
+      }).Then(base::BindOnce(&UpdaterUtilApp::Shutdown, this, 0)));
 }
 
 void UpdaterUtilApp::ListCBCMPolicies() {
@@ -724,13 +688,43 @@ void UpdaterUtilApp::ListCBCMPolicies() {
       base::BindOnce(&UpdaterUtilApp::Shutdown, this, 0));
 }
 
+void UpdaterUtilApp::UnpackCRX() {
+  base::ThreadPool::CreateSequencedTaskRunner({base::MayBlock()})
+      ->PostTask(
+          FROM_HERE,
+          base::BindOnce(
+              &update_client::Unpacker::Unpack,
+              /*app_id=*/"",
+              /*prod_id=*/"UpdaterUtil", std::vector<uint8_t>(),
+              base::CommandLine::ForCurrentProcess()->GetSwitchValuePath(
+                  kUnpackSwitch),
+              base::MakeRefCounted<update_client::InProcessUnzipperFactory>(
+                  kSymlinkOption)
+                  ->Create(),
+              crx_file::VerifierFormat::CRX3,
+              /*is_foreground=*/true,
+              base::BindOnce([](const update_client::Unpacker::Result& result) {
+                if (result.error == update_client::UnpackerError::kNone) {
+                  LOG(INFO) << "Unpacked to " << result.unpack_path
+                            << " with public key " << result.public_key;
+                } else {
+                  LOG(ERROR) << "Unpacking failed: "
+                             << std::to_underlying(result.error) << ": "
+                             << result.extended_error;
+                }
+              })
+                  .Then(base::BindPostTaskToCurrentDefault(
+                      base::BindOnce(&UpdaterUtilApp::Shutdown, this, 0)))));
+}
+
 void UpdaterUtilApp::FirstTaskRun() {
   const std::map<std::string, void (UpdaterUtilApp::*)()> commands = {
       {kListAppsSwitch, &UpdaterUtilApp::ListApps},
       {kListUpdateSwitch, &UpdaterUtilApp::ListUpdate},
       {kUpdateSwitch, &UpdaterUtilApp::Update},
       {kListPoliciesSwitch, &UpdaterUtilApp::ListPolicies},
-      {kListCBCMPoliciesSwitch, &UpdaterUtilApp::ListCBCMPolicies}};
+      {kListCBCMPoliciesSwitch, &UpdaterUtilApp::ListCBCMPolicies},
+      {kUnpackSwitch, &UpdaterUtilApp::UnpackCRX}};
 
   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
   for (const auto& [switch_name, func] : commands) {
@@ -750,7 +744,8 @@ int UpdaterUtilMain(int argc, char** argv) {
   InitializeThreadPool("updater-util");
   const base::ScopedClosureRunner shutdown_thread_pool(
       base::BindOnce([] { base::ThreadPoolInstance::Get()->Shutdown(); }));
-  base::SingleThreadTaskExecutor main_task_executor(base::MessagePumpType::UI);
+  base::SingleThreadTaskExecutor main_task_executor(
+      base::MessagePumpType::DEFAULT, true);
   return base::MakeRefCounted<UpdaterUtilApp>()->Run();
 }
 

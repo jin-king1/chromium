@@ -8,14 +8,19 @@
 #include <memory>
 #include <string>
 
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/icons/extension_icon_variant.h"
 #include "extensions/common/icons/extension_icon_variants.h"
 #include "extensions/common/manifest_handler.h"
 
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
+
 namespace extensions {
 
 struct IconVariantsInfo : public Extension::ManifestData {
+  static const char* kManifestDataKey;
+
   IconVariantsInfo();
   ~IconVariantsInfo() override;
 
@@ -23,12 +28,17 @@ struct IconVariantsInfo : public Extension::ManifestData {
   static bool HasIconVariants(const Extension* extension);
 
   // Get IconVariants for the given `extension`, if they exist.
-  static const IconVariantsInfo* GetIconVariants(const Extension* extension);
+  static const IconVariantsInfo* GetIconVariants(const Extension& extension);
+
+  // Available e.g. when the extension feature enabled.
+  static bool SupportsIconVariants(const Extension& extension);
 
   // Retrieve a matching ExtensionIconSet.
+  const ExtensionIconSet& Get() const {
+    return Get(ExtensionIconVariant::ColorScheme::kLight);
+  }
   const ExtensionIconSet& Get(
-      std::optional<ExtensionIconVariant::ColorScheme> color_scheme =
-          ExtensionIconVariant::ColorScheme::kLight) const;
+      std::optional<ExtensionIconVariant::ColorScheme> color_scheme) const;
 
   // Data structure for `icon_variants`, based on icon_variants.idl.
   std::optional<ExtensionIconVariants> icon_variants;
@@ -49,7 +59,7 @@ class IconVariantsHandler : public ManifestHandler {
   ~IconVariantsHandler() override;
 
   bool Parse(Extension* extension, std::u16string* error) override;
-  bool Validate(const Extension* extension,
+  bool Validate(const Extension& extension,
                 std::string* error,
                 std::vector<InstallWarning>* warnings) const override;
 

@@ -54,9 +54,10 @@ void RecordAccessibilityModeHistograms(AXHistogramPrefix prefix,
           AXMode::ModeFlagHistogramValue::UMA_AX_MODE_INLINE_TEXT_BOXES);
     }
 
-    if (new_mode_flags & AXMode::kScreenReader) {
-      RecordModeFlag(prefix,
-                     AXMode::ModeFlagHistogramValue::UMA_AX_MODE_SCREEN_READER);
+    if (new_mode_flags & AXMode::kExtendedProperties) {
+      RecordModeFlag(
+          prefix,
+          AXMode::ModeFlagHistogramValue::UMA_AX_MODE_EXTENDED_PROPERTIES);
     }
 
     if (new_mode_flags & AXMode::kHTML) {
@@ -82,21 +83,19 @@ void RecordAccessibilityModeHistograms(AXHistogramPrefix prefix,
           prefix,
           AXMode::ModeFlagHistogramValue::UMA_AX_MODE_ANNOTATE_MAIN_NODE);
     }
-  }
 
-  // Record forms control flag transitioning from unset to set.
-  int new_experimental_mode_flags =
-      mode.experimental_flags() & (~previous_mode.experimental_flags());
-  if (new_experimental_mode_flags & AXMode::kExperimentalFormControls) {
-    switch (prefix) {
-      case AXHistogramPrefix::kNone:
-        base::UmaHistogramBoolean(
-            "Accessibility.ExperimentalModeFlag.FormControls", true);
-        break;
+    // ui::AXMode::kFromPlatform is unconditionally filtered out and is
+    // therefore never present in `mode`.
+    CHECK(!mode.has_mode(ui::AXMode::kFromPlatform));
 
-      case AXHistogramPrefix::kBlink:
-        base::UmaHistogramBoolean(
-            "Blink.Accessibility.ExperimentalModeFlag.FormControls", true);
+    if (new_mode_flags & AXMode::kScreenReader) {
+      RecordModeFlag(prefix,
+                     AXMode::ModeFlagHistogramValue::UMA_AX_MODE_SCREEN_READER);
+    }
+
+    if (new_mode_flags & AXMode::kNativeAdaptedWebContents) {
+      RecordModeFlag(prefix, AXMode::ModeFlagHistogramValue::
+                                 UMA_AX_MODE_NATIVE_ADAPTED_WEB_CONTENTS);
     }
   }
 

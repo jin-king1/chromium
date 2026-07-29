@@ -26,6 +26,7 @@
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/permission_controller.h"
+#include "content/public/browser/permission_descriptor_util.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "third_party/blink/public/common/mediastream/media_stream_request.h"
@@ -90,19 +91,12 @@ void UpdatePageSpecificContentSettings(
     }
   }
 
-  // We should always use `GetLastCommittedURL` if web_contents represent NTP.
-  // Otherwise, the Microphone permission request on NTP will be gated for
-  // incorrect origin.
-  GURL embedding_origin;
-  if (permissions::PermissionsClient::Get()->DoURLsMatchNewTabPage(
-          request.security_origin,
-          web_contents->GetLastCommittedURL().DeprecatedGetOriginAsURL())) {
-    embedding_origin =
-        web_contents->GetLastCommittedURL().DeprecatedGetOriginAsURL();
-  } else {
-    embedding_origin = permissions::PermissionUtil::GetLastCommittedOriginAsURL(
-        render_frame_host->GetMainFrame());
-  }
+  GURL embedding_origin =
+      permissions::PermissionsClient::Get()
+          ->GetEmbeddingOriginOverride(request.security_origin,
+                                       render_frame_host)
+          .value_or(permissions::PermissionUtil::GetLastCommittedOriginAsURL(
+              render_frame_host->GetMainFrame()));
 
   content_settings->OnMediaStreamPermissionSet(
       permissions::PermissionUtil::GetCanonicalOrigin(
@@ -159,9 +153,11 @@ bool PermissionBubbleMediaAccessHandler::CheckMediaAccessPermission(
   // instead.
   return render_frame_host->GetBrowserContext()
              ->GetPermissionController()
-             ->GetPermissionStatusForCurrentDocument(permission_type,
-                                                     render_frame_host) ==
-         blink::mojom::PermissionStatus::GRANTED;
+             ->GetPermissionStatusForCurrentDocument(
+                 content::PermissionDescriptorUtil::
+                     CreatePermissionDescriptorForPermissionType(
+                         permission_type),
+                 render_frame_host) == blink::mojom::PermissionStatus::GRANTED;
 }
 
 void PermissionBubbleMediaAccessHandler::HandleRequest(
@@ -327,6 +323,40 @@ void PermissionBubbleMediaAccessHandler::OnAccessRequestResponse(
   if (request_it == requests_map.end())
     return;
 
+  // If the current request failed (denied or dismissed), automatically fail any
+  // other pending requests in the queue that are from the same origin and
+  // request the same media device types (e.g. microphone/camera). This avoids
+  // duplicate permission prompts when WebUI pages (like voice search) generate
+  // concurrent media access and stream generation requests. One case is when
+  // `SpeechRecognitionManagerImpl` requests permission when speech API is used,
+  // but the usual mojo microphone is requested when the browser uses the
+  // microphone (for the speech API), causing duplicate permission prompts if
+  // not handled.
+  if (result != blink::mojom::MediaStreamRequestResult::OK) {
+    for (auto it = requests_map.begin(); it != requests_map.end();) {
+      if (it->first != request_id &&
+          it->second.request.security_origin ==
+              request_it->second.request.security_origin) {
+        bool audio_match = request_it->second.request.audio_type !=
+                               blink::mojom::MediaStreamType::NO_SERVICE &&
+                           it->second.request.audio_type !=
+                               blink::mojom::MediaStreamType::NO_SERVICE;
+        bool video_match = request_it->second.request.video_type !=
+                               blink::mojom::MediaStreamType::NO_SERVICE &&
+                           it->second.request.video_type !=
+                               blink::mojom::MediaStreamType::NO_SERVICE;
+        if (audio_match || video_match) {
+          MediaResponseCallback callback = std::move(it->second.callback);
+          it = requests_map.erase(it);
+          std::move(callback).Run(blink::mojom::StreamDevicesSet(), result,
+                                  nullptr);
+          continue;
+        }
+      }
+      ++it;
+    }
+  }
+
   blink::mojom::MediaStreamRequestResult final_result = result;
 
 #if BUILDFLAG(IS_MAC)
@@ -355,7 +385,7 @@ void PermissionBubbleMediaAccessHandler::OnAccessRequestResponse(
                  system_audio_permission == SystemPermission::kDenied) {
         content_settings::UpdateLocationBarUiForWebContents(web_contents);
         final_result =
-            blink::mojom::MediaStreamRequestResult::SYSTEM_PERMISSION_DENIED;
+            blink::mojom::MediaStreamRequestResult::PERMISSION_DENIED_BY_SYSTEM;
         system_media_permissions::SystemAudioCapturePermissionBlocked();
       } else {
         DCHECK_EQ(system_audio_permission, SystemPermission::kAllowed);
@@ -383,7 +413,7 @@ void PermissionBubbleMediaAccessHandler::OnAccessRequestResponse(
                  system_video_permission == SystemPermission::kDenied) {
         content_settings::UpdateLocationBarUiForWebContents(web_contents);
         final_result =
-            blink::mojom::MediaStreamRequestResult::SYSTEM_PERMISSION_DENIED;
+            blink::mojom::MediaStreamRequestResult::PERMISSION_DENIED_BY_SYSTEM;
         system_media_permissions::SystemVideoCapturePermissionBlocked();
       } else {
         DCHECK_EQ(system_video_permission, SystemPermission::kAllowed);

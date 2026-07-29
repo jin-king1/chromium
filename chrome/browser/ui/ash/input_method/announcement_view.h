@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_UI_ASH_INPUT_METHOD_ANNOUNCEMENT_VIEW_H_
 #define CHROME_BROWSER_UI_ASH_INPUT_METHOD_ANNOUNCEMENT_VIEW_H_
 
+#include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/time/time.h"
 #include "chrome/browser/ui/ash/input_method/announcement_label.h"
@@ -38,6 +39,8 @@ class UI_CHROMEOS_EXPORT AnnouncementView
 
  private:
   FRIEND_TEST_ALL_PREFIXES(AnnouncementViewTest, HeaderAccessibilityProperties);
+  FRIEND_TEST_ALL_PREFIXES(AnnouncementViewTest,
+                           LiveRegionAttributesSetOnConstruction);
   raw_ptr<AnnouncementLabel> announcement_label_ = nullptr;
 };
 

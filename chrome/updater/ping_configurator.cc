@@ -15,11 +15,16 @@
 #include "base/sequence_checker.h"
 #include "base/time/time.h"
 #include "base/version.h"
+#include "build/branding_buildflags.h"
+#include "chrome/updater/branded_constants.h"
+#include "chrome/updater/constants.h"
 #include "chrome/updater/external_constants.h"
+#include "chrome/updater/get_updater_scope.h"
 #include "chrome/updater/net/network.h"
 #include "chrome/updater/ping_persisted_data.h"
 #include "chrome/updater/util/util.h"
 #include "components/prefs/pref_service.h"
+#include "components/update_client/crx_cache.h"
 #include "components/update_client/network.h"
 #include "components/update_client/patcher.h"
 #include "components/update_client/protocol_handler.h"
@@ -67,7 +72,10 @@ class PingConfigurator : public update_client::Configurator {
   GetProtocolHandlerFactory() const override;
   std::optional<bool> IsMachineExternallyManaged() const override;
   update_client::UpdaterStateProvider GetUpdaterStateProvider() const override;
-  std::optional<base::FilePath> GetCrxCachePath() const override;
+  scoped_refptr<update_client::CrxCache> GetCrxCache() const override;
+#if BUILDFLAG(CHROME_FOR_TESTING)
+  std::vector<std::string> GetRequiredComponents() const override;
+#endif
   bool IsConnectionMetered() const override;
 
  private:
@@ -119,7 +127,7 @@ std::vector<GURL> PingConfigurator::PingUrl() const {
 
 std::string PingConfigurator::GetProdId() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  return "updater";
+  return kProdId;
 }
 
 base::Version PingConfigurator::GetBrowserVersion() const {
@@ -157,8 +165,9 @@ scoped_refptr<update_client::NetworkFetcherFactory>
 PingConfigurator::GetNetworkFetcherFactory() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (!network_fetcher_factory_) {
-    network_fetcher_factory_ =
-        base::MakeRefCounted<NetworkFetcherFactory>(std::nullopt);
+    network_fetcher_factory_ = base::MakeRefCounted<NetworkFetcherFactory>(
+        /*policy_service_proxy_configuration=*/std::nullopt,
+        /*event_logger=*/nullptr);
   }
   return network_fetcher_factory_;
 }
@@ -223,10 +232,17 @@ update_client::UpdaterStateProvider PingConfigurator::GetUpdaterStateProvider()
   NOTREACHED();
 }
 
-std::optional<base::FilePath> PingConfigurator::GetCrxCachePath() const {
+scoped_refptr<update_client::CrxCache> PingConfigurator::GetCrxCache() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  return {};
+  NOTREACHED();
 }
+
+#if BUILDFLAG(CHROME_FOR_TESTING)
+std::vector<std::string> PingConfigurator::GetRequiredComponents() const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  NOTREACHED();
+}
+#endif
 
 bool PingConfigurator::IsConnectionMetered() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);

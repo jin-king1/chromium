@@ -8,6 +8,7 @@
 #include <memory>
 #include <utility>
 
+#include "base/functional/callback.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "third_party/skia/include/core/SkColor.h"
@@ -22,7 +23,7 @@
 #include "ui/views/input_event_activation_protector.h"
 #include "ui/views/layout/box_layout_view.h"
 #include "ui/views/style/typography.h"
-#include "ui/views/window/non_client_view.h"
+#include "ui/views/window/frame_view.h"
 
 namespace gfx {
 class RoundedCornersF;
@@ -58,13 +59,16 @@ class ImageView;
 // and the minimize buttons will be positioned at the end of the
 // title row. Otherwise, they will be positioned closer to the frame
 // edge.
-class VIEWS_EXPORT BubbleFrameView : public NonClientFrameView {
-  METADATA_HEADER(BubbleFrameView, NonClientFrameView)
+class VIEWS_EXPORT BubbleFrameView : public FrameView {
+  METADATA_HEADER(BubbleFrameView, FrameView)
 
  public:
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kMinimizeButtonElementId);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kCloseButtonElementId);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kProgressIndicatorElementId);
+
+  using GetAvailableScreenBoundsCallback =
+      base::RepeatingCallback<gfx::Rect(const gfx::Rect&)>;
 
   enum class PreferredArrowAdjustment { kMirror, kOffset };
 
@@ -85,7 +89,7 @@ class VIEWS_EXPORT BubbleFrameView : public NonClientFrameView {
   static std::unique_ptr<Button> CreateMinimizeButton(
       Button::PressedCallback callback);
 
-  // NonClientFrameView:
+  // FrameView:
   gfx::Rect GetBoundsForClientView() const override;
   gfx::Rect GetWindowBoundsForClientBounds(
       const gfx::Rect& client_bounds) const override;
@@ -95,8 +99,8 @@ class VIEWS_EXPORT BubbleFrameView : public NonClientFrameView {
   void ResetWindowControls() override;
   void UpdateWindowIcon() override;
   void UpdateWindowTitle() override;
-  void SizeConstraintsChanged() override;
   void InsertClientView(ClientView* client_view) override;
+  gfx::Rect GetNonDecoratedClientAreaBoundsInScreen() const override;
   void UpdateWindowRoundedCorners() override;
   bool HasWindowTitle() const override;
   bool IsWindowTitleVisible() const override;
@@ -180,9 +184,19 @@ class VIEWS_EXPORT BubbleFrameView : public NonClientFrameView {
     use_anchor_window_bounds_ = use_anchor_window_bounds;
   }
 
+  gfx::Rect GetDefaultAvailableScreenBounds(const gfx::Rect& rect) const;
+  void set_available_screen_bounds_callback(
+      GetAvailableScreenBoundsCallback callback) {
+    available_screen_bounds_callback_ = std::move(callback);
+  }
+  const GetAvailableScreenBoundsCallback& available_screen_bounds_callback()
+      const {
+    return available_screen_bounds_callback_;
+  }
+
   // Set the corner radius of the bubble border.
-  void SetCornerRadius(int radius);
-  int GetCornerRadius() const;
+  void SetRoundedCorners(const gfx::RoundedCornersF& radii);
+  gfx::RoundedCornersF GetRoundedCorners() const;
 
   // Set the arrow of the bubble border.
   void SetArrow(BubbleBorder::Arrow arrow);
@@ -196,7 +210,7 @@ class VIEWS_EXPORT BubbleFrameView : public NonClientFrameView {
   void SetBackgroundColor(ui::ColorVariant color);
   ui::ColorVariant background_color() const { return bubble_border_->color(); }
 
-  // For masking reasons, the ClientView may be painted to a textured layer. To
+  // For masking reasons, the ClientView is painted to a textured layer. To
   // ensure bubbles that rely on the frame background color continue to work as
   // expected, we must set the background of the ClientView to match that of the
   // BubbleFrameView.
@@ -229,11 +243,6 @@ class VIEWS_EXPORT BubbleFrameView : public NonClientFrameView {
 
   // Returns the client_view insets from the frame view.
   gfx::Insets GetClientViewInsets() const;
-
-  using HitTestCallback = base::RepeatingCallback<int(const gfx::Point& point)>;
-  void set_non_client_hit_test_cb(HitTestCallback non_client_hit_test_cb) {
-    non_client_hit_test_cb_ = std::move(non_client_hit_test_cb);
-  }
 
  protected:
   // Returns the available screen bounds if the frame were to show in |rect|.
@@ -309,9 +318,6 @@ class VIEWS_EXPORT BubbleFrameView : public NonClientFrameView {
 
   // Returns the positioning options for the buttons.
   ButtonsPositioning GetButtonsPositioning() const;
-
-  // Returns true if there're buttons in the title row.
-  bool TitleRowHasButtons() const;
 
   // The insets of the text portion of the title, based on |title_margins_| and
   // whether there is an icon and/or close button. Note there may be no title,
@@ -403,12 +409,9 @@ class VIEWS_EXPORT BubbleFrameView : public NonClientFrameView {
   // `GetAvailableAnchorWindowBounds`.
   bool use_anchor_window_bounds_ = true;
 
-  // Set by bubble clients to compose additional non-client hit test rules for
-  // their host bubble. HTNOWHERE should be returned to tell the caller to do
-  // further processing to determine where in the non-client area the tested
-  // point is (if present at all). See NonClientFrameView::NonClientHitTest()
-  // for details.
-  HitTestCallback non_client_hit_test_cb_;
+  // Optional callback to override the default calculation of available screen
+  // bounds.
+  GetAvailableScreenBoundsCallback available_screen_bounds_callback_;
 
   InputEventActivationProtector input_protector_;
 };

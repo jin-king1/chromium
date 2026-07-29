@@ -43,7 +43,7 @@
 #include "ui/accessibility/ax_tree_serializer.h"
 #include "ui/accessibility/ax_tree_source.h"
 #include "ui/accessibility/ax_tree_update.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 
 class SkBitmap;
 
@@ -65,6 +65,7 @@ namespace ui {
 struct AXActionData;
 class AXNode;
 struct AXUpdatesAndEvents;
+class NativeWindowTracker;
 class RectF;
 
 }  // namespace ui
@@ -112,10 +113,8 @@ class AXMediaAppUntrustedService
 
   void OnOCRServiceInitialized(bool is_successful);
 
-#if BUILDFLAG(IS_CHROMEOS)
   void OnAshAccessibilityModeChanged(
       const ash::AccessibilityStatusEventDetails& details);
-#endif
 
   // ui::AXActionHandlerBase:
   void PerformAction(const ui::AXActionData& action_data) override;
@@ -135,7 +134,7 @@ class AXMediaAppUntrustedService
  protected:
   virtual bool IsOcrServiceEnabled() const;
   void PushDirtyPage(const std::string& dirty_page_id);
-  std::string PopDirtyPage();
+  std::optional<std::string> PopDirtyPage();
   virtual void OcrNextDirtyPageIfAny();
 
   size_t min_pages_per_batch_ = 2u;
@@ -192,13 +191,12 @@ class AXMediaAppUntrustedService
                       ui::AXNode& starting_node) const;
   std::unique_ptr<gfx::Transform> MakeTransformFromOffsetAndScale() const;
 
-#if BUILDFLAG(IS_CHROMEOS)
   // Observes whether spoken feedback is enabled in Ash.
   base::CallbackListSubscription accessibility_status_subscription_;
-#endif  // BUILDFLAG(IS_CHROMEOS)
   // This `BrowserContext` will always outlive the WebUI, so this is safe.
   raw_ref<content::BrowserContext> browser_context_;
   gfx::NativeWindow native_window_;
+  std::unique_ptr<ui::NativeWindowTracker> native_window_tracker_;
   mojo::Remote<media_app_ui::mojom::OcrUntrustedPage> media_app_page_;
   gfx::RectF viewport_box_;
   float scale_factor_ = 0.0f;

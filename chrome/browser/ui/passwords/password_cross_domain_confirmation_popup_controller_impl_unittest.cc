@@ -9,6 +9,7 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/weak_ptr.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "chrome/browser/ui/autofill/chrome_autofill_client.h"
 #include "chrome/browser/ui/passwords/password_cross_domain_confirmation_popup_view.h"
@@ -272,7 +273,7 @@ TEST_F(PasswordCrossDomainConfirmationPopupControllerImplTest,
   EXPECT_EQ(controller().GetBodyText(),
             l10n_util::GetStringFUTF16(
                 IDS_PASSWORD_CROSS_DOMAIN_FILLING_WARNING_DESCRIPTION,
-                password_hostname, base::UTF8ToUTF16(domain.host())));
+                password_hostname, base::UTF8ToUTF16(domain.GetHost())));
 }
 
 }  // namespace password_manager

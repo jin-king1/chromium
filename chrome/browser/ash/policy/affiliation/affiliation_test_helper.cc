@@ -11,8 +11,9 @@
 #include <string_view>
 
 #include "ash/constants/ash_switches.h"
+#include "base/check_deref.h"
 #include "base/command_line.h"
-#include "base/containers/contains.h"
+#include "base/containers/span.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/numerics/safe_conversions.h"
@@ -21,7 +22,6 @@
 #include "chrome/browser/ash/login/session/user_session_manager_test_api.h"
 #include "chrome/browser/ash/login/startup_utils.h"
 #include "chrome/browser/ash/login/test/session_manager_state_waiter.h"
-#include "chrome/browser/ash/policy/core/device_policy_builder.h"
 #include "chrome/browser/ash/policy/core/device_policy_cros_browser_test.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/common/chrome_paths.h"
@@ -31,6 +31,7 @@
 #include "chromeos/ash/components/dbus/userdataauth/userdataauth_client.h"
 #include "chromeos/ash/components/login/auth/public/key.h"
 #include "chromeos/ash/components/login/auth/public/user_context.h"
+#include "chromeos/ash/components/policy/device_policy/device_policy_builder.h"
 #include "chromeos/dbus/constants/dbus_paths.h"
 #include "components/account_id/account_id.h"
 #include "components/policy/core/common/cloud/cloud_policy_core.h"
@@ -40,7 +41,6 @@
 #include "components/prefs/scoped_user_pref_update.h"
 #include "components/user_manager/known_user.h"
 #include "components/user_manager/user_manager.h"
-#include "crypto/rsa_private_key.h"
 #include "google_apis/gaia/gaia_id.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -135,22 +135,23 @@ void AffiliationTestHelper::SetUserAffiliationIDs(
 
   fake_session_manager_client_->set_user_policy(
       cryptohome::CreateAccountIdentifierFromAccountId(user_account_id),
-      user_policy->GetBlob());
+      login_manager::POLICY_DOMAIN_CHROME, user_policy->GetBlob());
 }
 
 // static
 void AffiliationTestHelper::PreLoginUser(const AccountId& account_id) {
   ScopedListPrefUpdate users_pref(g_browser_process->local_state(),
                                   "LoggedInUsers");
-  base::Value email_value(account_id.GetUserEmail());
-  if (!base::Contains(users_pref.Get(), email_value)) {
-    users_pref->Append(std::move(email_value));
+  std::string email_value(account_id.GetUserEmail());
+  if (!users_pref.Get().contains(email_value)) {
+    users_pref->Append(email_value);
   }
 
   user_manager::KnownUser(g_browser_process->local_state())
       .SaveKnownUser(account_id);
 
-  ash::StartupUtils::MarkOobeCompleted();
+  ash::StartupUtils::MarkOobeCompleted(
+      CHECK_DEREF(g_browser_process->local_state()));
 }
 
 // static

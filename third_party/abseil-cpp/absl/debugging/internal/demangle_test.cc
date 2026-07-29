@@ -14,7 +14,9 @@
 
 #include "absl/debugging/internal/demangle.h"
 
+#include <array>
 #include <cstdlib>
+#include <memory>
 #include <string>
 
 #include "gmock/gmock.h"
@@ -29,6 +31,7 @@ ABSL_NAMESPACE_BEGIN
 namespace debugging_internal {
 namespace {
 
+using ::testing::Contains;
 using ::testing::ContainsRegex;
 
 TEST(Demangle, FunctionTemplate) {
@@ -556,14 +559,15 @@ TEST(Demangle, Clones) {
   EXPECT_TRUE(Demangle("_ZL3Foov.part.9.165493.constprop.775.31805", tmp,
                        sizeof(tmp)));
   EXPECT_STREQ("Foo()", tmp);
-  // Invalid (. without anything else), should not demangle.
-  EXPECT_FALSE(Demangle("_ZL3Foov.", tmp, sizeof(tmp)));
-  // Invalid (. with mix of alpha and digits), should not demangle.
-  EXPECT_FALSE(Demangle("_ZL3Foov.abc123", tmp, sizeof(tmp)));
-  // Invalid (.clone. not followed by number), should not demangle.
-  EXPECT_FALSE(Demangle("_ZL3Foov.clone.", tmp, sizeof(tmp)));
-  // Invalid (.constprop. not followed by number), should not demangle.
-  EXPECT_FALSE(Demangle("_ZL3Foov.isra.2.constprop.", tmp, sizeof(tmp)));
+  // Other suffixes should demangle too.
+  EXPECT_TRUE(Demangle("_ZL3Foov.", tmp, sizeof(tmp)));
+  EXPECT_STREQ("Foo()", tmp);
+  EXPECT_TRUE(Demangle("_ZL3Foov.abc123", tmp, sizeof(tmp)));
+  EXPECT_STREQ("Foo()", tmp);
+  EXPECT_TRUE(Demangle("_ZL3Foov.clone.", tmp, sizeof(tmp)));
+  EXPECT_STREQ("Foo()", tmp);
+  EXPECT_TRUE(Demangle("_ZL3Foov.isra.2.constprop.", tmp, sizeof(tmp)));
+  EXPECT_STREQ("Foo()", tmp);
 }
 
 TEST(Demangle, Discriminators) {
@@ -1906,6 +1910,13 @@ TEST(Demangle, DelegatesToDemangleRustSymbolEncoding) {
   EXPECT_STREQ("my_crate::my_func", tmp);
 }
 
+TEST(Demangle, DemanglingNulTerminatesOnParsingFailure) {
+  std::array buf = {'\xAA', '\xAA', '\xAA', '\xAA'};
+  EXPECT_FALSE(Demangle("_ZN1xBE", std::data(buf), std::size(buf)));
+  // Ensure string is properly NUL-terminated despite parsing failure.
+  EXPECT_THAT(buf, Contains('\0'));
+}
+
 // Tests that verify that Demangle footprint is within some limit.
 // They are not to be run under sanitizers as the sanitizers increase
 // stack consumption by about 4x.
@@ -1935,11 +1946,11 @@ static const char *DemangleStackConsumption(const char *mangled,
   return g_demangle_result;
 }
 
-// Demangle stack consumption should be within 8kB for simple mangled names
+// Demangle stack consumption should be within 9kB for simple mangled names
 // with some level of nesting. With alternate signal stack we have 64K,
 // but some signal handlers run on thread stack, and could have arbitrarily
 // little space left (so we don't want to make this number too large).
-const int kStackConsumptionUpperLimit = 8192;
+const int kStackConsumptionUpperLimit = 9670;
 
 // Returns a mangled name nested to the given depth.
 static std::string NestedMangledName(int depth) {
@@ -1999,7 +2010,7 @@ TEST(Demangle, DemangleStackConsumption) {
 
 static void TestOnInput(const char* input) {
   static const int kOutSize = 1048576;
-  auto out = absl::make_unique<char[]>(kOutSize);
+  auto out = std::make_unique<char[]>(kOutSize);
   Demangle(input, out.get(), kOutSize);
 }
 
@@ -2015,6 +2026,13 @@ TEST(DemangleRegression, DeeplyNestedArrayType) {
     data += "A1_";
   }
   TestOnInput(data.c_str());
+}
+
+TEST(DemangleRegression, ShortOutputBuffer) {
+  // This should not crash.
+  char buffer[1];
+  EXPECT_FALSE(
+      absl::debugging_internal::Demangle("_ZZ2wwE", buffer, sizeof(buffer)));
 }
 
 struct Base {

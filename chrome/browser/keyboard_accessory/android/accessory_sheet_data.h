@@ -134,12 +134,20 @@ class AccessorySheetField::Builder final {
 class UserInfo final {
  public:
   using IsExactMatch = base::StrongAlias<class IsExactMatchTag, bool>;
+  using IsBackupCredential =
+      base::StrongAlias<class IsBackupCredentialTag, bool>;
 
   UserInfo();
   explicit UserInfo(std::string origin);
   UserInfo(std::string origin, IsExactMatch is_exact_match);
+  UserInfo(std::string origin,
+           IsExactMatch is_exact_match,
+           IsBackupCredential is_backup_credential);
   UserInfo(std::string origin, GURL icon_url);
-  UserInfo(std::string origin, IsExactMatch is_exact_match, GURL icon_url);
+  UserInfo(std::string origin,
+           IsExactMatch is_exact_match,
+           GURL icon_url,
+           IsBackupCredential is_backup_credential);
 
   UserInfo(const UserInfo&);
   UserInfo& operator=(const UserInfo&);
@@ -156,6 +164,9 @@ class UserInfo final {
   const std::string& origin() const { return origin_; }
   IsExactMatch is_exact_match() const { return is_exact_match_; }
   const GURL& icon_url() const { return icon_url_; }
+  IsBackupCredential is_backup_credential() const {
+    return is_backup_credential_;
+  }
 
   bool operator==(const UserInfo&) const = default;
 
@@ -165,6 +176,7 @@ class UserInfo final {
   IsExactMatch is_exact_match_{true};
   std::vector<AccessorySheetField> fields_;
   GURL icon_url_;
+  IsBackupCredential is_backup_credential_{false};
 };
 
 std::ostream& operator<<(std::ostream& out, const AccessorySheetField& field);
@@ -201,58 +213,6 @@ class UserInfoSection final {
 };
 
 std::ostream& operator<<(std::ostream& os, const UserInfoSection& field);
-
-class PlusAddressInfo final {
- public:
-  PlusAddressInfo(std::string origin, std::u16string plus_address);
-
-  PlusAddressInfo(const PlusAddressInfo&);
-  PlusAddressInfo& operator=(const PlusAddressInfo&);
-  PlusAddressInfo(PlusAddressInfo&&);
-  PlusAddressInfo& operator=(PlusAddressInfo&&);
-
-  ~PlusAddressInfo();
-
-  const std::string& origin() const { return origin_; }
-  const AccessorySheetField& plus_address() const { return plus_address_; }
-
-  bool operator==(const PlusAddressInfo&) const = default;
-
- private:
-  std::string origin_;
-  AccessorySheetField plus_address_;
-};
-
-std::ostream& operator<<(std::ostream& out, const PlusAddressInfo& field);
-
-class PlusAddressSection final {
- public:
-  explicit PlusAddressSection(std::u16string title);
-
-  PlusAddressSection(const PlusAddressSection&);
-  PlusAddressSection& operator=(const PlusAddressSection&);
-  PlusAddressSection(PlusAddressSection&&);
-  PlusAddressSection& operator=(PlusAddressSection&&);
-
-  ~PlusAddressSection();
-
-  const std::u16string& title() const { return title_; }
-  const std::vector<PlusAddressInfo>& plus_address_info_list() const {
-    return plus_address_info_list_;
-  }
-
-  void add_plus_address_info(PlusAddressInfo info) {
-    plus_address_info_list_.emplace_back(std::move(info));
-  }
-
-  bool operator==(const PlusAddressSection&) const = default;
-
- private:
-  std::u16string title_;
-  std::vector<PlusAddressInfo> plus_address_info_list_;
-};
-
-std::ostream& operator<<(std::ostream& out, const PlusAddressSection& field);
 
 // Represents a passkey entry shown in the password accessory.
 class PasskeySection final {
@@ -330,6 +290,38 @@ class IbanInfo final {
 
 std::ostream& operator<<(std::ostream& out, const IbanInfo& iban);
 
+// Represents data pertaining to Google Wallet loyalty cards to be shown on the
+// Payments methods tab of manual fallback UI.
+class LoyaltyCardInfo final {
+ public:
+  LoyaltyCardInfo(std::string merchant_name,
+                  GURL program_logo_url,
+                  std::u16string loyalty_card_number);
+
+  LoyaltyCardInfo(const LoyaltyCardInfo&);
+  LoyaltyCardInfo& operator=(const LoyaltyCardInfo&);
+  LoyaltyCardInfo(LoyaltyCardInfo&&);
+  LoyaltyCardInfo& operator=(LoyaltyCardInfo&&);
+
+  ~LoyaltyCardInfo();
+
+  const std::string& merchant_name() const { return merchant_name_; }
+
+  const GURL& program_logo_url() const { return program_logo_url_; }
+
+  const AccessorySheetField& value() const { return value_; }
+
+  bool operator==(const LoyaltyCardInfo&) const = default;
+
+ private:
+  std::string merchant_name_;
+  GURL program_logo_url_;
+  AccessorySheetField value_;
+};
+
+std::ostream& operator<<(std::ostream& out,
+                         const LoyaltyCardInfo& loyalty_card);
+
 // Represents a command below the suggestions, such as "Manage password...".
 class FooterCommand final {
  public:
@@ -393,11 +385,9 @@ class AccessorySheetData final {
   class Builder;
 
   AccessorySheetData(AccessoryTabType sheet_type,
-                     std::u16string user_info_title,
-                     std::u16string plus_address_title);
+                     std::u16string user_info_title);
   AccessorySheetData(AccessoryTabType sheet_type,
                      std::u16string user_info_title,
-                     std::u16string plus_address_title,
                      std::u16string warning);
 
   AccessorySheetData(const AccessorySheetData&);
@@ -426,10 +416,6 @@ class AccessorySheetData final {
     user_info_section_.add_user_info(std::move(user_info));
   }
 
-  void add_plus_address_info(PlusAddressInfo plus_address_info) {
-    plus_address_section_.add_plus_address_info(std::move(plus_address_info));
-  }
-
   void add_passkey_section(PasskeySection passkey_section) {
     passkey_section_list_.emplace_back(std::move(passkey_section));
   }
@@ -440,18 +426,6 @@ class AccessorySheetData final {
 
   const std::vector<UserInfo>& user_info_list() const {
     return user_info_section_.user_info_list();
-  }
-
-  const PlusAddressSection& plus_address_section() const {
-    return plus_address_section_;
-  }
-
-  const std::u16string plus_address_title() const {
-    return plus_address_section_.title();
-  }
-
-  const std::vector<PlusAddressInfo>& plus_address_info_list() const {
-    return plus_address_section_.plus_address_info_list();
   }
 
   const std::vector<PasskeySection>& passkey_section_list() const {
@@ -478,6 +452,14 @@ class AccessorySheetData final {
     return iban_info_list_;
   }
 
+  void add_loyalty_card_info(LoyaltyCardInfo loyalty_card_info) {
+    loyalty_card_info_list_.emplace_back(std::move(loyalty_card_info));
+  }
+
+  const std::vector<LoyaltyCardInfo>& loyalty_card_info_list() const {
+    return loyalty_card_info_list_;
+  }
+
   void add_footer_command(FooterCommand footer_command) {
     footer_commands_.emplace_back(std::move(footer_command));
   }
@@ -492,11 +474,12 @@ class AccessorySheetData final {
   AccessoryTabType sheet_type_;
   std::u16string warning_;
   std::optional<OptionToggle> option_toggle_;
-  PlusAddressSection plus_address_section_;
+
   std::vector<PasskeySection> passkey_section_list_;
   UserInfoSection user_info_section_;
   std::vector<PromoCodeInfo> promo_code_info_list_;
   std::vector<IbanInfo> iban_info_list_;
+  std::vector<LoyaltyCardInfo> loyalty_card_info_list_;
   std::vector<FooterCommand> footer_commands_;
 };
 
@@ -517,9 +500,7 @@ std::ostream& operator<<(std::ostream& out, const AccessorySheetData& data);
 //       .Build();
 class AccessorySheetData::Builder final {
  public:
-  Builder(AccessoryTabType type,
-          std::u16string user_info_title,
-          std::u16string plus_address_title);
+  Builder(AccessoryTabType type, std::u16string user_info_title);
   ~Builder();
 
   // Adds a warning string to the accessory sheet.
@@ -538,11 +519,15 @@ class AccessorySheetData::Builder final {
   Builder&& AddUserInfo(
       std::string origin = std::string(),
       UserInfo::IsExactMatch is_exact_match = UserInfo::IsExactMatch(true),
-      GURL icon_url = GURL()) &&;
+      GURL icon_url = GURL(),
+      UserInfo::IsBackupCredential is_backup_credential =
+          UserInfo::IsBackupCredential(false)) &&;
   Builder& AddUserInfo(
       std::string origin = std::string(),
       UserInfo::IsExactMatch is_exact_match = UserInfo::IsExactMatch(true),
-      GURL icon_url = GURL()) &;
+      GURL icon_url = GURL(),
+      UserInfo::IsBackupCredential is_backup_credential =
+          UserInfo::IsBackupCredential(false)) &;
 
   // Appends a selectable, non-obfuscated field to the last UserInfo object.
   Builder&& AppendSimpleField(AccessorySuggestionType suggestion_type,
@@ -587,12 +572,6 @@ class AccessorySheetData::Builder final {
                         bool is_obfuscated,
                         bool selectable) &&;
 
-  // Adds a new PlusAddressInfo `accessory_sheet_data_`.
-  Builder&& AddPlusAddressInfo(std::string origin,
-                               std::u16string plus_address) &&;
-  Builder& AddPlusAddressInfo(std::string origin,
-                              std::u16string plus_address) &;
-
   // Adds a new PasskeySection `accessory_sheet_data_`.
   Builder&& AddPasskeySection(std::string username,
                               std::vector<uint8_t> credential_id) &&;
@@ -611,6 +590,13 @@ class AccessorySheetData::Builder final {
   Builder& AddIbanInfo(std::u16string value,
                        std::u16string text_to_fill,
                        std::string id) &;
+
+  Builder&& AddLoyaltyCardInfo(std::string merchant_name,
+                               GURL program_logo_url,
+                               std::u16string loyalty_card_number) &&;
+  Builder& AddLoyaltyCardInfo(std::string merchant_name,
+                              GURL program_logo_url,
+                              std::u16string loyalty_card_number) &;
 
   // Appends a new footer command to |accessory_sheet_data_|.
   Builder&& AppendFooterCommand(std::u16string display_text,

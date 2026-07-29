@@ -17,13 +17,10 @@
 #include "base/test/test_future.h"
 #include "base/types/expected.h"
 #include "chrome/browser/ui/web_applications/test/isolated_web_app_test_utils.h"
-#include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_source.h"
-#include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_storage_location.h"
 #include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_trust_checker.h"
 #include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_url_info.h"
-#include "chrome/browser/web_applications/isolated_web_apps/isolation_data.h"
 #include "chrome/browser/web_applications/isolated_web_apps/test/isolated_web_app_builder.h"
-#include "chrome/browser/web_applications/isolated_web_apps/test/test_signed_web_bundle_builder.h"
+#include "chrome/browser/web_applications/model/isolation_data.h"
 #include "chrome/browser/web_applications/test/fake_web_contents_manager.h"
 #include "chrome/browser/web_applications/test/web_app_icon_test_utils.h"
 #include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
@@ -33,13 +30,16 @@
 #include "chrome/browser/web_applications/web_app_command_manager.h"
 #include "chrome/browser/web_applications/web_app_command_scheduler.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
+#include "chrome/browser/web_applications/web_app_registrar.h"
 #include "chrome/browser/web_applications/web_app_registry_update.h"
-#include "chrome/browser/web_applications/web_app_sync_bridge.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/url_constants.h"
 #include "components/web_package/signed_web_bundles/signed_web_bundle_id.h"
 #include "components/webapps/browser/install_result_code.h"
 #include "components/webapps/browser/web_contents/web_app_url_loader.h"
+#include "components/webapps/isolated_web_apps/test_support/signing_keys.h"
+#include "components/webapps/isolated_web_apps/types/source.h"
+#include "components/webapps/isolated_web_apps/types/storage_location.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_features.h"
 #include "services/data_decoder/public/cpp/test_support/in_process_data_decoder.h"
@@ -87,7 +87,7 @@ class IsolatedWebAppUpdatePrepareAndStoreCommandTest : public WebAppTest {
   }
 
   std::unique_ptr<BundledIsolatedWebApp> WriteUpdateBundleToDisk(
-      std::optional<base::Version> version = std::nullopt) {
+      std::optional<IwaVersion> version = std::nullopt) {
     return IsolatedWebAppBuilder(
                ManifestBuilder().SetVersion(
                    version.value_or(update_version_).GetString()))
@@ -169,11 +169,11 @@ class IsolatedWebAppUpdatePrepareAndStoreCommandTest : public WebAppTest {
   }
 
   data_decoder::test::InProcessDataDecoder in_process_data_decoder_;
-  base::Version installed_version_ = base::Version("1.0.0");
-  base::Version update_version_ = base::Version("2.0.0");
+  IwaVersion installed_version_ = *IwaVersion::Create("1.0.0");
+  IwaVersion update_version_ = *IwaVersion::Create("2.0.0");
   base::test::ScopedFeatureList scoped_feature_list_;
 
-  base::Version downgrade_version_ = base::Version("0.7.0");
+  IwaVersion downgrade_version_ = *IwaVersion::Create("0.7.0");
 };
 
 TEST_F(IsolatedWebAppUpdatePrepareAndStoreCommandTest, Succeeds) {
@@ -285,8 +285,7 @@ TEST_F(IsolatedWebAppUpdatePrepareAndStoreCommandTest,
   update_bundle->TrustSigningKey();
 
   auto result = PrepareAndStoreUpdateInfo(url_info, *update_bundle);
-  EXPECT_THAT(result,
-              IsErrorWithMessage(HasSubstr("App is no longer installed")));
+  EXPECT_THAT(result, IsErrorWithMessage(_));
 
   const WebApp* web_app =
       provider()->registrar_unsafe().GetAppById(url_info.app_id());
@@ -305,7 +304,7 @@ TEST_F(IsolatedWebAppUpdatePrepareAndStoreCommandTest,
   update_bundle->TrustSigningKey();
 
   auto result = PrepareAndStoreUpdateInfo(url_info, *update_bundle);
-  EXPECT_THAT(result, IsErrorWithMessage(HasSubstr("not an Isolated Web App")));
+  EXPECT_THAT(result, IsErrorWithMessage(_));
 
   const WebApp* web_app =
       provider()->registrar_unsafe().GetAppById(url_info.app_id());
@@ -315,8 +314,8 @@ TEST_F(IsolatedWebAppUpdatePrepareAndStoreCommandTest,
 
 TEST_F(IsolatedWebAppUpdatePrepareAndStoreCommandTest,
        FailsIfInstalledAppIsOnHigherVersion) {
-  installed_version_ = base::Version("3.0.0");
-  EXPECT_THAT(update_version_, Eq(base::Version("2.0.0")));
+  installed_version_ = *IwaVersion::Create("3.0.0");
+  EXPECT_THAT(update_version_, Eq(*IwaVersion::Create("2.0.0")));
   auto url_info = InstallIwa();
   auto update_bundle = WriteUpdateBundleToDisk();
   update_bundle->FakeInstallPageState(profile());
@@ -325,8 +324,10 @@ TEST_F(IsolatedWebAppUpdatePrepareAndStoreCommandTest,
   const base::flat_set<base::FilePath> existing_dirs = GetIwaDirContent();
 
   auto result = PrepareAndStoreUpdateInfo(url_info, *update_bundle);
-  EXPECT_THAT(result, IsErrorWithMessage(
-                          HasSubstr("Installed app is already on version")));
+  EXPECT_THAT(result, IsErrorWithMessage(HasSubstr(
+                          "Version downgrades are not allowed. Installed app "
+                          "version 3.0.0 is newer than the candidate "
+                          "version 2.0.0.")));
 
   const WebApp* web_app =
       provider()->registrar_unsafe().GetAppById(url_info.app_id());
@@ -342,8 +343,8 @@ TEST_F(IsolatedWebAppUpdatePrepareAndStoreCommandTest,
 
 TEST_F(IsolatedWebAppUpdatePrepareAndStoreCommandTest,
        FailsIfInstalledAppIsOnHigherVersionAndNoExpectedVersionIsSpecified) {
-  installed_version_ = base::Version("3.0.0");
-  EXPECT_THAT(update_version_, Eq(base::Version("2.0.0")));
+  installed_version_ = *IwaVersion::Create("3.0.0");
+  EXPECT_THAT(update_version_, Eq(*IwaVersion::Create("2.0.0")));
   auto url_info = InstallIwa();
   auto update_bundle = WriteUpdateBundleToDisk();
   update_bundle->FakeInstallPageState(profile());
@@ -352,8 +353,10 @@ TEST_F(IsolatedWebAppUpdatePrepareAndStoreCommandTest,
   const base::flat_set<base::FilePath> existing_dirs = GetIwaDirContent();
 
   auto result = PrepareAndStoreUpdateInfo(url_info, *update_bundle);
-  EXPECT_THAT(result, IsErrorWithMessage(
-                          HasSubstr("Installed app is already on version")));
+  EXPECT_THAT(result, IsErrorWithMessage(HasSubstr(
+                          "Version downgrades are not allowed. Installed app "
+                          "version 3.0.0 is newer than the candidate "
+                          "version 2.0.0.")));
 
   const WebApp* web_app =
       provider()->registrar_unsafe().GetAppById(url_info.app_id());
@@ -403,8 +406,7 @@ TEST_F(IsolatedWebAppUpdatePrepareAndStoreCommandTest, FailsIfAppNotTrusted) {
   SetTrustedWebBundleIdsForTesting({});
 
   auto result = PrepareAndStoreUpdateInfo(url_info, *update_bundle.get());
-  EXPECT_THAT(result, IsErrorWithMessage(
-                          HasSubstr("The public key(s) are not trusted")));
+  EXPECT_THAT(result, IsErrorWithMessage(_));
 
   const WebApp* web_app =
       provider()->registrar_unsafe().GetAppById(url_info.app_id());

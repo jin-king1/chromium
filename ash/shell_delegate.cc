@@ -14,10 +14,6 @@ bool ShellDelegate::ShouldWaitForTouchPressAck(gfx::NativeWindow window) {
   return false;
 }
 
-bool ShellDelegate::IsTabDrag(const ui::OSExchangeData& drop_data) {
-  return false;
-}
-
 media_session::MediaSessionService* ShellDelegate::GetMediaSessionService() {
   return nullptr;
 }
@@ -33,15 +29,6 @@ int ShellDelegate::GetUiDevToolsPort() const {
 const GURL& ShellDelegate::GetLastCommittedURLForWindowIfAny(
     aura::Window* window) {
   return GURL::EmptyGURL();
-}
-
-void ShellDelegate::ShouldExitFullscreenBeforeLock(
-    ShellDelegate::ShouldExitFullscreenCallback callback) {
-  std::move(callback).Run(false);
-}
-
-DeskProfilesDelegate* ShellDelegate::GetDeskProfilesDelegate() {
-  return nullptr;
 }
 
 bool ShellDelegate::IsNoFirstRunSwitchOn() const {

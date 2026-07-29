@@ -13,9 +13,10 @@ import androidx.annotation.VisibleForTesting;
 import org.chromium.base.Log;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.supplier.OneshotSupplierImpl;
-import org.chromium.chrome.browser.enterprise.util.EnterpriseInfo;
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.policy.PolicyServiceFactory;
 import org.chromium.chrome.browser.signin.AppRestrictionSupplier;
+import org.chromium.components.policy.EnterpriseInfo;
 import org.chromium.components.policy.PolicyService;
 
 /**
@@ -26,11 +27,11 @@ import org.chromium.components.policy.PolicyService;
  * avoided when this pref is true. This class checks if the enterprise policy is ever reset such
  * that the FRE should be run, and will clear the shared pref.
  */
+@NullMarked
 public class TosDialogBehaviorSharedPrefInvalidator {
     private static final String TAG = "TosPolicyStatus";
 
     private final SkipTosDialogPolicyListener mPolicyListener;
-    private final AppRestrictionSupplier mAppRestrictionInfo;
     private final long mTimeObjectCreated;
 
     /**
@@ -41,25 +42,22 @@ public class TosDialogBehaviorSharedPrefInvalidator {
         ThreadUtils.assertOnUiThread();
         if (!FirstRunStatus.isFirstRunSkippedByPolicy()) return;
 
-        AppRestrictionSupplier appRestrictionInfo = AppRestrictionSupplier.takeMaybeInitialized();
         OneshotSupplierImpl<PolicyService> policyServiceSupplier = new OneshotSupplierImpl<>();
         policyServiceSupplier.set(PolicyServiceFactory.getGlobalPolicyService());
         SkipTosDialogPolicyListener policyListener =
                 new SkipTosDialogPolicyListener(
-                        appRestrictionInfo,
+                        new AppRestrictionSupplier(),
                         policyServiceSupplier,
                         EnterpriseInfo.getInstance(),
                         null);
 
-        new TosDialogBehaviorSharedPrefInvalidator(policyListener, appRestrictionInfo);
+        new TosDialogBehaviorSharedPrefInvalidator(policyListener);
     }
 
     @VisibleForTesting
-    TosDialogBehaviorSharedPrefInvalidator(
-            SkipTosDialogPolicyListener listener, AppRestrictionSupplier appRestrictionInfo) {
+    TosDialogBehaviorSharedPrefInvalidator(SkipTosDialogPolicyListener listener) {
         mTimeObjectCreated = SystemClock.elapsedRealtime();
 
-        mAppRestrictionInfo = appRestrictionInfo;
         mPolicyListener = listener;
         mPolicyListener.onAvailable(this::onPolicyAvailable);
     }
@@ -72,12 +70,11 @@ public class TosDialogBehaviorSharedPrefInvalidator {
         // Run cleanup in a separate task, otherwise the CallbackController inside
         // SkipTosDialogPolicyListener will deadlock. It currently holds a read lock because it is
         // what invoked us. Calling destroy requires a write lock, so the post allows the read lock
-        // to be released first. See https://crbug.com/1201279 for more details.
+        // to be released first. See https://crbug.com/40178618 for more details.
         new Handler(Looper.getMainLooper()).post(this::destroy);
     }
 
     private void destroy() {
-        mAppRestrictionInfo.destroy();
         mPolicyListener.destroy();
     }
 }

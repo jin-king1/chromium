@@ -122,7 +122,7 @@ LayoutSVGResourceClipper::~LayoutSVGResourceClipper() = default;
 void LayoutSVGResourceClipper::RemoveAllClientsFromCache() {
   NOT_DESTROYED();
   clip_content_path_validity_ = kClipContentPathUnknown;
-  clip_content_path_.Clear();
+  clip_content_path_ = Path();
   cached_paint_record_ = std::nullopt;
   local_clip_bounds_ = gfx::RectF();
   MarkAllClientsForInvalidation(kClipCacheInvalidation | kPaintInvalidation);
@@ -137,10 +137,6 @@ std::optional<Path> LayoutSVGResourceClipper::AsPath() {
   DCHECK_EQ(clip_content_path_validity_, kClipContentPathUnknown);
 
   clip_content_path_validity_ = kClipContentPathInvalid;
-  // If the current clip-path gets clipped itself, we have to fallback to
-  // masking.
-  if (StyleRef().HasClipPath())
-    return std::nullopt;
 
   unsigned op_count = 0;
   std::optional<SkOpBuilder> clip_path_builder;
@@ -179,9 +175,14 @@ std::optional<Path> LayoutSVGResourceClipper::AsPath() {
   return std::optional<Path>(clip_content_path_);
 }
 
-PaintRecord LayoutSVGResourceClipper::CreatePaintRecord() {
+PaintRecord LayoutSVGResourceClipper::CreatePaintRecord(
+    PaintFlags paint_flags) {
   NOT_DESTROYED();
   DCHECK(GetFrame());
+  if (cached_paint_record_ && cached_paint_flags_ != paint_flags) {
+    cached_paint_record_ = std::nullopt;
+  }
+
   if (cached_paint_record_)
     return *cached_paint_record_;
 
@@ -192,10 +193,10 @@ PaintRecord LayoutSVGResourceClipper::CreatePaintRecord() {
   // - masker/filter not applied when laying out the children
   // - fill is set to the initial fill paint server (solid, black)
   // - stroke is set to the initial stroke paint server (none)
-  PaintInfo info(
-      builder.Context(), CullRect::Infinite(), PaintPhase::kForeground,
-      ChildPaintBlockedByDisplayLock(),
-      PaintFlag::kPaintingClipPathAsMask | PaintFlag::kPaintingResourceSubtree);
+  PaintInfo info(builder.Context(), CullRect::Infinite(),
+                 PaintPhase::kForeground, ChildPaintBlockedByDisplayLock(),
+                 PaintFlag::kPaintingClipPathAsMask |
+                     PaintFlag::kPaintingResourceSubtree | paint_flags);
 
   for (const SVGElement& child_element :
        Traversal<SVGElement>::ChildrenOf(*GetElement())) {
@@ -208,6 +209,7 @@ PaintRecord LayoutSVGResourceClipper::CreatePaintRecord() {
   }
 
   cached_paint_record_ = builder.EndRecording();
+  cached_paint_flags_ = paint_flags;
   return *cached_paint_record_;
 }
 
@@ -304,12 +306,16 @@ bool LayoutSVGResourceClipper::FindCycleFromSelf() const {
   return LayoutSVGResourceContainer::FindCycleFromSelf();
 }
 
-void LayoutSVGResourceClipper::StyleDidChange(StyleDifference diff,
-                                              const ComputedStyle* old_style) {
+void LayoutSVGResourceClipper::StyleDidChange(
+    StyleDifference diff,
+    const ComputedStyle* old_style,
+    const StyleChangeContext& style_change_context) {
   NOT_DESTROYED();
-  LayoutSVGResourceContainer::StyleDidChange(diff, old_style);
-  if (diff.TransformChanged())
+  LayoutSVGResourceContainer::StyleDidChange(diff, old_style,
+                                             style_change_context);
+  if (diff.transform_changed) {
     MarkAllClientsForInvalidation(kClipCacheInvalidation | kPaintInvalidation);
+  }
 }
 
 }  // namespace blink

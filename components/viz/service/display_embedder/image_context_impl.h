@@ -11,14 +11,14 @@
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "components/viz/common/quads/aggregated_render_pass.h"
 #include "components/viz/common/resources/shared_image_format.h"
 #include "components/viz/service/display/external_use_client.h"
 #include "gpu/command_buffer/common/mailbox.h"
 #include "gpu/command_buffer/common/sync_token.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_representation.h"
-#include "gpu/ipc/common/vulkan_ycbcr_info.h"
+#include "gpu/vulkan/vulkan_ycbcr_info.h"
 #include "third_party/skia/include/core/SkImageInfo.h"
 #include "third_party/skia/include/core/SkRefCnt.h"
 #include "third_party/skia/include/gpu/ganesh/GrBackendSurface.h"
@@ -26,8 +26,6 @@
 #include "third_party/skia/include/gpu/graphite/BackendTexture.h"
 #include "third_party/skia/include/private/chromium/GrPromiseImageTexture.h"
 #include "ui/gfx/geometry/size.h"
-
-class SkColorSpace;
 
 namespace gpu {
 class SharedContextState;
@@ -46,16 +44,16 @@ namespace viz {
 // SkiaOutputSurfaceImplOnGpu. {Begin,End}Access is called from the GPU thread.
 class ImageContextImpl final : public ExternalUseClient::ImageContext {
  public:
+  ImageContextImpl(const TransferableResource& resource,
+                   bool maybe_concurrent_reads,
+                   bool raw_draw_if_possible,
+                   uint32_t client_id);
+
+  // Used only for creating promise image from RenderPass.
   ImageContextImpl(const gpu::Mailbox& mailbox,
-                   const gpu::SyncToken& sync_token,
-                   uint32_t texture_target,
                    const gfx::Size& size,
                    SharedImageFormat format,
-                   bool maybe_concurrent_reads,
-                   const std::optional<gpu::VulkanYCbCrInfo>& ycbcr_info,
-                   sk_sp<SkColorSpace> color_space,
-                   bool is_for_render_pass,
-                   bool raw_draw_if_possible = false);
+                   const gfx::ColorSpace& color_space);
 
   ImageContextImpl(const ImageContextImpl&) = delete;
   ImageContextImpl& operator=(const ImageContextImpl&) = delete;

@@ -20,7 +20,6 @@
 #include "ash/system/mahi/test/mock_mahi_manager.h"
 #include "ash/system/mahi/test/mock_mahi_ui_controller_delegate.h"
 #include "ash/test/ash_test_base.h"
-#include "base/functional/callback_forward.h"
 #include "base/task/current_thread.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/test/metrics/histogram_tester.h"
@@ -79,8 +78,7 @@ class MahiUiControllerTest : public AshTestBase {
   // AshTestBase:
   void SetUp() override {
     scoped_feature_list_.InitWithFeatures(
-        /*enabled_features=*/{chromeos::features::kMahi,
-                              chromeos::features::kFeatureManagementMahi},
+        /*enabled_features=*/{chromeos::features::kFeatureManagementMahi},
         /*disabled_features=*/{});
 
     ON_CALL(mock_mahi_manager_, IsEnabled).WillByDefault(Return(true));
@@ -217,9 +215,11 @@ TEST_F(MahiUiControllerTest, RefreshContents) {
 // Checks `MahiUiController::Delegate` when the contents get refreshed and the
 // panel is for elucidation purpose.
 TEST_F(MahiUiControllerTest, RefreshContentsForElucidation) {
-  // Calls `OpenMahiPanel` to set `elucidation_in_use_` to false.
+  // Calls `OpenMahiPanel` to set `elucidation_in_use_` to true.
   // This creates a panel widget and implicitly triggers `RefreshContents`
   // and `PanelBoundsChanged` calls, hence the first sequence.
+  // Because `kMahiPanelResizable` is enabled by default, there are two
+  // `PanelBoundsChanged` calls.
   {
     InSequence s;
     EXPECT_CALL(
@@ -232,14 +232,15 @@ TEST_F(MahiUiControllerTest, RefreshContentsForElucidation) {
                                 Eq(MahiUiUpdateType::kElucidationRequested))));
     EXPECT_CALL(delegate(),
                 OnUpdated(Property(&MahiUiUpdate::type,
-                                   Eq(MahiUiUpdateType::kPanelBoundsChanged))));
+                                   Eq(MahiUiUpdateType::kPanelBoundsChanged))))
+        .Times(2);
   }
 
   ui_controller().OpenMahiPanel(GetPrimaryDisplay().id(), gfx::Rect(),
                                 /*elucidation_in_use=*/true);
   Mock::VerifyAndClearExpectations(&delegate());
 
-  // Manually calls `RefreshContents` with `elucidation_in_use_` = false, it
+  // Manually calls `RefreshContents` with `elucidation_in_use_` = true, it
   // causes the sequence again.
   {
     InSequence s;
@@ -548,8 +549,7 @@ class MahiUiControllerWithSessionTest : public AshTestBase {
   void SetUp() override {
     AshTestBase::SetUp();
     scoped_feature_list_.InitWithFeatures(
-        {chromeos::features::kMahi, chromeos::features::kFeatureManagementMahi},
-        {});
+        {chromeos::features::kFeatureManagementMahi}, {});
     ui_controller_ = std::make_unique<NiceMock<MahiUiController>>();
     delegate_ = std::make_unique<NiceMock<MockMahiUiControllerDelegate>>(
         ui_controller_.get());

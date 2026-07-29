@@ -12,9 +12,11 @@
 #include <utility>
 
 #include "base/check.h"
+#include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/process/process.h"
 #include "base/process/process_handle.h"
 #include "base/sequence_checker.h"
 #include "base/synchronization/waitable_event.h"
@@ -91,17 +93,31 @@ NamedMojoServerEndpointConnectorWin::NamedMojoServerEndpointConnectorWin(
 
 NamedMojoServerEndpointConnectorWin::~NamedMojoServerEndpointConnectorWin() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (pending_named_pipe_handle_.is_valid()) {
+    CancelIoEx(pending_named_pipe_handle_.Get(), &connect_overlapped_);
+
+    // `CancelIoEx` is asynchronous, so the following code blocks the
+    // destruction of `NamedMojoServerEndpointConnectorWin` on the kernel
+    // writing the final status into `connect_overlapped_` to avoid a
+    // use-after-free.
+    DWORD bytes = 0;
+    GetOverlappedResult(pending_named_pipe_handle_.Get(), &connect_overlapped_,
+                        &bytes, TRUE);
+  }
 }
 
 void NamedMojoServerEndpointConnectorWin::Connect() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(!pending_named_pipe_handle_.IsValid());
+  DCHECK(!pending_named_pipe_handle_.is_valid());
 
   mojo::NamedPlatformChannel::Options options;
   options.server_name = options_.server_name;
   options.security_descriptor = options_.security_descriptor;
-  // Must be set to false to allow multiple clients to connect.
+
+  // Allow multiple clients to connect.
   options.enforce_uniqueness = false;
+  options.max_clients = PIPE_UNLIMITED_INSTANCES;
+
   mojo::PlatformChannelServerEndpoint server_endpoint =
       mojo::NamedPlatformChannel(options).TakeServerEndpoint();
   if (!server_endpoint.is_valid()) {
@@ -116,7 +132,7 @@ void NamedMojoServerEndpointConnectorWin::Connect() {
   // The |lpOverlapped| argument of ConnectNamedPipe() has the annotation of
   // [in, out, optional], so we reset the content before passing it in, just to
   // be safe.
-  memset(&connect_overlapped_, 0, sizeof(connect_overlapped_));
+  UNSAFE_TODO(memset(&connect_overlapped_, 0, sizeof(connect_overlapped_)));
   connect_overlapped_.hEvent = client_connected_event_.handle();
   BOOL ok =
       ConnectNamedPipe(pending_named_pipe_handle_.Get(), &connect_overlapped_);
@@ -164,6 +180,31 @@ void NamedMojoServerEndpointConnectorWin::OnReady() {
     PLOG(ERROR) << "Failed to get peer PID";
     OnError();
     return;
+  }
+  // GetNamedPipeClientSessionId is not available on all Windows SKUs (e.g.
+  // Xbox), so load it dynamically to avoid a static import that would prevent
+  // the DLL from loading on those platforms.
+  using GetNamedPipeClientSessionIdFn = BOOL(WINAPI*)(HANDLE, PULONG);
+  static const auto get_session_id =
+      reinterpret_cast<GetNamedPipeClientSessionIdFn>(::GetProcAddress(
+          ::GetModuleHandle(L"kernel32.dll"), "GetNamedPipeClientSessionId"));
+  if (get_session_id) {
+    ULONG peer_session_id;
+    if (!get_session_id(pending_named_pipe_handle_.Get(), &peer_session_id)) {
+      PLOG(ERROR) << "Failed to get peer session ID";
+      OnError();
+      return;
+    }
+    info->session_id = peer_session_id;
+  }
+  if (options_.include_peer_process_info) {
+    info->process = base::Process::OpenWithAccess(
+        info->pid, PROCESS_QUERY_LIMITED_INFORMATION);
+    if (!info->process.IsValid()) {
+      PLOG(ERROR) << "Failed to open peer process " << info->pid;
+      OnError();
+      return;
+    }
   }
   mojo::PlatformChannelEndpoint endpoint(
       mojo::PlatformHandle(std::move(pending_named_pipe_handle_)));

@@ -13,27 +13,19 @@
 #include "base/time/time.h"
 #include "components/cast/message_port/message_port.h"
 #include "components/cast_receiver/browser/public/streaming_config_manager.h"
-#include "components/cast_streaming/browser/public/network_context_getter.h"
 #include "components/cast_streaming/browser/public/receiver_session.h"
-#include "services/network/public/mojom/network_context.mojom.h"
+#include "components/cast_streaming/browser/public/socket_factory_getter.h"
+#include "mojo/public/cpp/bindings/remote.h"
+#include "services/network/public/cpp/network_context_getter.h"
+#include "services/network/public/mojom/socket_factory.mojom.h"
 
 namespace base {
 class SequencedTaskRunner;
 }  // namespace base
 
-namespace gfx {
-class Rect;
-}  // namespace gfx
-
 namespace content {
 class WebContents;
 }  // namespace content
-
-namespace media {
-class AudioDecoderConfig;
-class VideoDecoderConfig;
-struct VideoTransformation;
-}  // namespace media
 
 namespace cast_receiver {
 
@@ -60,11 +52,6 @@ class StreamingReceiverSessionClient
     // associated StreamingReceiverSessionClient instance will be placed in an
     // undefined state.
     virtual void OnError() = 0;
-
-    // Called when the resolution as reported to the media pipeline changes.
-    virtual void OnResolutionChanged(
-        const gfx::Rect& size,
-        const ::media::VideoTransformation& transformation) = 0;
   };
 
   // Max time for which streaming may wait for AV Settings receipt before being
@@ -172,10 +159,6 @@ class StreamingReceiverSessionClient
   void TriggerError();
 
   // cast_streaming::ReceiverSession::Client overrides.
-  void OnAudioConfigUpdated(
-      const ::media::AudioDecoderConfig& audio_config) override;
-  void OnVideoConfigUpdated(
-      const ::media::VideoDecoderConfig& video_config) override;
   void OnStreamingSessionEnded() override;
 
   // cast_receiver::StreamingConfigManager::ConfigObserver overrides.
@@ -205,6 +188,8 @@ class StreamingReceiverSessionClient
   // Tracks if this session should be initiated as audio or video only.
   bool supports_audio_ = true;
   bool supports_video_ = true;
+
+  mojo::Remote<network::mojom::SocketFactory> socket_factory_;
 
   base::WeakPtrFactory<StreamingReceiverSessionClient> weak_factory_;
 };

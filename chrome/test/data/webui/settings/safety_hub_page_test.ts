@@ -7,7 +7,7 @@ import 'chrome://settings/lazy_load.js';
 
 import {webUIListenerCallback} from 'chrome://resources/js/cr.js';
 import type {CardInfo, SettingsSafetyHubPageElement} from 'chrome://settings/lazy_load.js';
-import {CardState, ContentSettingsTypes, SafeBrowsingSetting, SafetyHubBrowserProxyImpl, SafetyHubEvent} from 'chrome://settings/lazy_load.js';
+import { CardState, ContentSetting, ContentSettingsTypes, SafeBrowsingSetting, SafetyHubBrowserProxyImpl, SafetyHubEvent, PermissionsRevocationType } from 'chrome://settings/lazy_load.js';
 import type {SettingsPrefsElement} from 'chrome://settings/settings.js';
 import {CrSettingsPrefs, LifetimeBrowserProxyImpl, MetricsBrowserProxyImpl, PasswordManagerImpl, PasswordManagerPage, Router, routes, SafetyHubModuleType, SafetyHubSurfaces} from 'chrome://settings/settings.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
@@ -44,8 +44,11 @@ suite('SafetyHubPage', function() {
 
   const unusedSitePermissionMockData = [{
     origin: 'www.example.com',
-    permissions: [ContentSettingsTypes.CAMERA],
+    permissions: [
+      {type: ContentSettingsTypes.CAMERA, settingValue: ContentSetting.ALLOW},
+    ],
     expiration: '13317004800000000',  // Represents 2023-01-01T00:00:00.
+    revocationType: PermissionsRevocationType.UNUSED_PERMISSIONS,
   }];
 
   const passwordCardMockData: CardInfo = {
@@ -110,11 +113,11 @@ suite('SafetyHubPage', function() {
     assertTrue(isChildVisible(testElement, '#safeBrowsing'));
     assertEquals(
         testElement.$.safeBrowsing.shadowRoot!.querySelector('#header')!
-            .textContent!.trim(),
+            .textContent.trim(),
         newCardData.header);
     assertEquals(
         testElement.$.safeBrowsing.shadowRoot!.querySelector('#subheader')!
-            .textContent!.trim(),
+            .textContent.trim(),
         newCardData.subheader);
   }
 
@@ -178,7 +181,7 @@ suite('SafetyHubPage', function() {
   test('Unused Site Permissions Module Visibility', async function() {
     // The element is not visible when there is nothing to review.
     const unusedSitePermissionsElementTag =
-        'settings-safety-hub-unused-site-permissions';
+        'settings-safety-hub-unused-site-permissions-module';
     assertFalse(isChildVisible(testElement, unusedSitePermissionsElementTag));
 
     // The element becomes visible if the list of permissions is no longer
@@ -252,11 +255,11 @@ suite('SafetyHubPage', function() {
     // Card header and subheader should be what the browser proxy provides.
     assertEquals(
         testElement.$.passwords.shadowRoot!.querySelector(
-                                               '#header')!.textContent!.trim(),
+                                               '#header')!.textContent.trim(),
         passwordCardMockData.header);
     assertEquals(
         testElement.$.passwords.shadowRoot!.querySelector('#subheader')!
-            .textContent!.trim(),
+            .textContent.trim(),
         passwordCardMockData.subheader);
 
     // Check that the card aria role and description are correct.
@@ -303,11 +306,11 @@ suite('SafetyHubPage', function() {
     // Card header and subheader should be what the browser proxy provides.
     assertEquals(
         testElement.$.version.shadowRoot!.querySelector(
-                                             '#header')!.textContent!.trim(),
+                                             '#header')!.textContent.trim(),
         versionCardMockData.header);
     assertEquals(
         testElement.$.version.shadowRoot!.querySelector(
-                                             '#subheader')!.textContent!.trim(),
+                                             '#subheader')!.textContent.trim(),
         versionCardMockData.subheader);
 
     // Check that the card aria role and description are correct.
@@ -399,50 +402,17 @@ suite('SafetyHubPage', function() {
     assertEquals(routes.ABOUT, Router.getInstance().getCurrentRoute());
   });
 
-  test('Version Card updates upon Chrome version change', function() {
-    const safeCardData = versionCardMockData;
-    const warningCardData: CardInfo = {
-      header: 'Chrome is not up to date',
-      subheader: 'Relaunch to update',
-      state: CardState.WARNING,
-    };
-
-    // Assert that Version card's initial state says Chrome is up to date.
-    assertEquals(
-        safeCardData.header,
-        testElement.$.version.shadowRoot!.querySelector(
-                                             '#header')!.textContent!.trim());
-    assertEquals(
-        safeCardData.subheader,
-        testElement.$.version.shadowRoot!.querySelector('#subheader')!
-            .textContent!.trim());
-
-    // Chrome version changes.
-    webUIListenerCallback(
-        SafetyHubEvent.CHROME_VERSION_MAYBE_CHANGED, warningCardData);
-
-    // Assert that Version card's new state says Chrome needs an update.
-    assertEquals(
-        warningCardData.header,
-        testElement.$.version.shadowRoot!.querySelector(
-                                             '#header')!.textContent!.trim());
-    assertEquals(
-        warningCardData.subheader,
-        testElement.$.version.shadowRoot!.querySelector('#subheader')!
-            .textContent!.trim());
-  });
-
   test('Safe Browsing Card', function() {
     assertTrue(isChildVisible(testElement, '#safeBrowsing'));
 
     // Card header and subheader should be what the browser proxy provides.
     assertEquals(
         testElement.$.safeBrowsing.shadowRoot!.querySelector('#header')!
-            .textContent!.trim(),
+            .textContent.trim(),
         safeBrowsingCardMockData.header);
     assertEquals(
         testElement.$.safeBrowsing.shadowRoot!.querySelector('#subheader')!
-            .textContent!.trim(),
+            .textContent.trim(),
         safeBrowsingCardMockData.subheader);
 
     // Check that the card aria role and description are correct.

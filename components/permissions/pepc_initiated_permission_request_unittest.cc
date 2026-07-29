@@ -3,13 +3,17 @@
 // found in the LICENSE file.
 
 #include <optional>
+#include <vector>
 
 #include "base/functional/bind.h"
 #include "base/run_loop.h"
 #include "base/test/scoped_feature_list.h"
 #include "components/content_settings/core/common/content_settings.h"
 #include "components/content_settings/core/common/content_settings_types.h"
-#include "components/permissions/permission_context_base.h"
+#include "components/content_settings/core/common/features.h"
+#include "components/permissions/content_setting_permission_context_base.h"
+#include "components/permissions/features.h"
+#include "components/permissions/permission_actions_history.h"
 #include "components/permissions/permissions_client.h"
 #include "components/permissions/test/mock_permission_prompt_factory.h"
 #include "components/permissions/test/mock_permission_request.h"
@@ -27,23 +31,32 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/mojom/permissions/permission.mojom.h"
+#include "third_party/blink/public/mojom/permissions/permission_status.mojom-forward.h"
 #include "url/gurl.h"
 
 namespace permissions {
 
 namespace {
+using blink::mojom::EmbeddedPermissionControlDescriptorExtension;
 using blink::mojom::EmbeddedPermissionRequestDescriptor;
 using blink::mojom::EmbeddedPermissionRequestDescriptorPtr;
+using blink::mojom::GeolocationEmbeddedPermissionRequestDescriptor;
 using blink::mojom::PermissionDescriptor;
 using blink::mojom::PermissionDescriptorPtr;
 using blink::mojom::PermissionName;
+using blink::mojom::UserMediaEmbeddedPermissionRequestDescriptor;
 }  // namespace
 
 class PEPCInitiatedPermissionRequestTest
     : public content::RenderViewHostTestHarness {
  public:
-  PEPCInitiatedPermissionRequestTest()
-      : scoped_feature_list_(blink::features::kPermissionElement) {}
+  PEPCInitiatedPermissionRequestTest() {
+    scoped_feature_list_.InitWithFeatures(
+        /* enabled_features */ {blink::features::kUserMediaElement,
+                                blink::features::kUserMediaElementLegacy,
+                                blink::features::kGeolocationElement},
+        /* disabled_features */ {});
+  }
   PEPCInitiatedPermissionRequestTest(
       const PEPCInitiatedPermissionRequestTest&) = delete;
   PEPCInitiatedPermissionRequestTest& operator=(
@@ -95,8 +108,9 @@ class PEPCInitiatedPermissionRequestTest
     return prompt_factory_.get();
   }
 
-  PermissionDescriptorPtr CreatePermissionDescriptorPtr(
+  std::vector<PermissionDescriptorPtr> CreatePermissionDescriptorPtrs(
       ContentSettingsType type) {
+    std::vector<PermissionDescriptorPtr> descriptors;
     PermissionDescriptorPtr permission_descriptor = PermissionDescriptor::New();
     switch (type) {
       case ContentSettingsType::MEDIASTREAM_CAMERA:
@@ -105,21 +119,37 @@ class PEPCInitiatedPermissionRequestTest
       case ContentSettingsType::MEDIASTREAM_MIC:
         permission_descriptor->name = PermissionName::AUDIO_CAPTURE;
         break;
+      case ContentSettingsType::GEOLOCATION:
+        permission_descriptor->name = PermissionName::GEOLOCATION;
+        break;
       default:
         NOTREACHED() << "Unsupported permission type in this test fixture";
     }
+    descriptors.push_back(std::move(permission_descriptor));
+    return descriptors;
+  }
 
+  EmbeddedPermissionRequestDescriptorPtr
+  CreateUserMediaEmbeddedPermissionRequestDescriptorPtr() {
+    EmbeddedPermissionRequestDescriptorPtr permission_descriptor =
+        EmbeddedPermissionRequestDescriptor::New();
+    permission_descriptor->detail =
+        EmbeddedPermissionControlDescriptorExtension::NewUserMedia(
+            UserMediaEmbeddedPermissionRequestDescriptor::New());
     return permission_descriptor;
   }
 
-  EmbeddedPermissionRequestDescriptorPtr CreatePEPCPermissionDescriptorPtr(
-      ContentSettingsType type) {
+  EmbeddedPermissionRequestDescriptorPtr
+  CreateGeolocationEmbeddedPermissionRequestDescriptorPtr(
+      bool autolocate = false) {
     EmbeddedPermissionRequestDescriptorPtr permission_descriptor =
         EmbeddedPermissionRequestDescriptor::New();
-
-    permission_descriptor->permissions.push_back(
-        CreatePermissionDescriptorPtr(type));
-
+    auto geolocation_descriptor =
+        GeolocationEmbeddedPermissionRequestDescriptor::New();
+    geolocation_descriptor->autolocate = autolocate;
+    permission_descriptor->detail =
+        EmbeddedPermissionControlDescriptorExtension::NewGeolocation(
+            std::move(geolocation_descriptor));
     return permission_descriptor;
   }
 
@@ -133,7 +163,8 @@ class PEPCInitiatedPermissionRequestTest
     permission_request_callback_loop_->Quit();
   }
 
-  void PermissionServiceCallback(blink::mojom::PermissionStatus result) {
+  void PermissionServiceCallback(
+      blink::mojom::PermissionStatusWithDetailsPtr result) {
     permission_request_callback_loop_->Quit();
   }
 
@@ -169,8 +200,9 @@ TEST_F(PEPCInitiatedPermissionRequestTest, PEPCRequestWhenSettingAllowed) {
   // A regular request will not reach the permission request manager, since the
   // permission is already granted.
   permission_service()->RequestPermission(
-      CreatePermissionDescriptorPtr(ContentSettingsType::MEDIASTREAM_CAMERA),
-      /* user_gesture= */ true,
+      CreatePermissionDescriptorPtrs(ContentSettingsType::MEDIASTREAM_CAMERA)
+          .front()
+          .Clone(),
       base::BindOnce(
           &PEPCInitiatedPermissionRequestTest::PermissionServiceCallback,
           base::Unretained(this)));
@@ -185,8 +217,8 @@ TEST_F(PEPCInitiatedPermissionRequestTest, PEPCRequestWhenSettingAllowed) {
   // A PEPC request is allowed through regardless of the state of the content
   // setting.
   permission_service()->RequestPageEmbeddedPermission(
-      CreatePEPCPermissionDescriptorPtr(
-          ContentSettingsType::MEDIASTREAM_CAMERA),
+      CreatePermissionDescriptorPtrs(ContentSettingsType::MEDIASTREAM_CAMERA),
+      CreateUserMediaEmbeddedPermissionRequestDescriptorPtr(),
       base::BindOnce(
           &PEPCInitiatedPermissionRequestTest::PermissionServiceCallbackPEPC,
           base::Unretained(this)));
@@ -210,8 +242,9 @@ TEST_F(PEPCInitiatedPermissionRequestTest, PEPCRequestWhenSettingBlocked) {
   // A regular request will not reach the permission request manager, since the
   // permission is blocked.
   permission_service()->RequestPermission(
-      CreatePermissionDescriptorPtr(ContentSettingsType::MEDIASTREAM_MIC),
-      /* user_gesture= */ true,
+      CreatePermissionDescriptorPtrs(ContentSettingsType::MEDIASTREAM_MIC)
+          .front()
+          .Clone(),
       base::BindOnce(
           &PEPCInitiatedPermissionRequestTest::PermissionServiceCallback,
           base::Unretained(this)));
@@ -226,7 +259,8 @@ TEST_F(PEPCInitiatedPermissionRequestTest, PEPCRequestWhenSettingBlocked) {
   // A PEPC request is allowed through regardless of the state of the content
   // setting.
   permission_service()->RequestPageEmbeddedPermission(
-      CreatePEPCPermissionDescriptorPtr(ContentSettingsType::MEDIASTREAM_MIC),
+      CreatePermissionDescriptorPtrs(ContentSettingsType::MEDIASTREAM_MIC),
+      CreateUserMediaEmbeddedPermissionRequestDescriptorPtr(),
       base::BindOnce(
           &PEPCInitiatedPermissionRequestTest::PermissionServiceCallbackPEPC,
           base::Unretained(this)));
@@ -252,7 +286,8 @@ TEST_F(PEPCInitiatedPermissionRequestTest, PEPCRequestBlockedInFencedFrame) {
 
   // A PEPC request is not allowed in a fenced frame.
   permission_service()->RequestPageEmbeddedPermission(
-      CreatePEPCPermissionDescriptorPtr(ContentSettingsType::MEDIASTREAM_MIC),
+      CreatePermissionDescriptorPtrs(ContentSettingsType::MEDIASTREAM_MIC),
+      CreateUserMediaEmbeddedPermissionRequestDescriptorPtr(),
       base::BindOnce(
           &PEPCInitiatedPermissionRequestTest::PermissionServiceCallbackPEPC,
           base::Unretained(this)));
@@ -286,7 +321,8 @@ TEST_F(PEPCInitiatedPermissionRequestTest,
 
   // A PEPC request is allowed through from a frame with a valid policy.
   permission_service()->RequestPageEmbeddedPermission(
-      CreatePEPCPermissionDescriptorPtr(ContentSettingsType::MEDIASTREAM_MIC),
+      CreatePermissionDescriptorPtrs(ContentSettingsType::MEDIASTREAM_MIC),
+      CreateUserMediaEmbeddedPermissionRequestDescriptorPtr(),
       base::BindOnce(
           &PEPCInitiatedPermissionRequestTest::PermissionServiceCallbackPEPC,
           base::Unretained(this)));
@@ -316,7 +352,8 @@ TEST_F(PEPCInitiatedPermissionRequestTest,
 
   // A PEPC request is not allowed through from a frame without a valid policy.
   permission_service()->RequestPageEmbeddedPermission(
-      CreatePEPCPermissionDescriptorPtr(ContentSettingsType::MEDIASTREAM_MIC),
+      CreatePermissionDescriptorPtrs(ContentSettingsType::MEDIASTREAM_MIC),
+      CreateUserMediaEmbeddedPermissionRequestDescriptorPtr(),
       base::BindOnce(
           &PEPCInitiatedPermissionRequestTest::PermissionServiceCallbackPEPC,
           base::Unretained(this)));
@@ -332,18 +369,20 @@ TEST_F(PEPCInitiatedPermissionRequestTest, PEPCRequestBlockedByKillSwitch) {
   std::map<std::string, std::string> params;
   params[permissions::PermissionUtil::GetPermissionString(
       ContentSettingsType::MEDIASTREAM_CAMERA)] =
-      PermissionContextBase::kPermissionsKillSwitchBlockedValue;
+      ContentSettingPermissionContextBase::kPermissionsKillSwitchBlockedValue;
   base::AssociateFieldTrialParams(
-      permissions::PermissionContextBase::kPermissionsKillSwitchFieldStudy,
+      permissions::ContentSettingPermissionContextBase::
+          kPermissionsKillSwitchFieldStudy,
       "TestGroup", params);
   base::FieldTrialList::CreateFieldTrial(
-      permissions::PermissionContextBase::kPermissionsKillSwitchFieldStudy,
+      permissions::ContentSettingPermissionContextBase::
+          kPermissionsKillSwitchFieldStudy,
       "TestGroup");
 
   // Attempt to make a PEPC request.
   permission_service()->RequestPageEmbeddedPermission(
-      CreatePEPCPermissionDescriptorPtr(
-          ContentSettingsType::MEDIASTREAM_CAMERA),
+      CreatePermissionDescriptorPtrs(ContentSettingsType::MEDIASTREAM_CAMERA),
+      CreateUserMediaEmbeddedPermissionRequestDescriptorPtr(),
       base::BindOnce(
           &PEPCInitiatedPermissionRequestTest::PermissionServiceCallbackPEPC,
           base::Unretained(this)));
@@ -361,8 +400,8 @@ TEST_F(PEPCInitiatedPermissionRequestTest, PEPCRequestBlockedOnInsecureOrigin) {
 
   // Attempt to make a PEPC request.
   permission_service()->RequestPageEmbeddedPermission(
-      CreatePEPCPermissionDescriptorPtr(
-          ContentSettingsType::MEDIASTREAM_CAMERA),
+      CreatePermissionDescriptorPtrs(ContentSettingsType::MEDIASTREAM_CAMERA),
+      CreateUserMediaEmbeddedPermissionRequestDescriptorPtr(),
       base::BindOnce(
           &PEPCInitiatedPermissionRequestTest::PermissionServiceCallbackPEPC,
           base::Unretained(this)));
@@ -372,5 +411,108 @@ TEST_F(PEPCInitiatedPermissionRequestTest, PEPCRequestBlockedOnInsecureOrigin) {
   // PEPC requests are not allowed from insecure origins.
   EXPECT_EQ(prompt_factory()->request_count(), 0);
 }
+
+class PEPCInitiatedPermissionRequestTestWithAutolocate
+    : public PEPCInitiatedPermissionRequestTest,
+      public ::testing::WithParamInterface<bool> {
+ public:
+  PEPCInitiatedPermissionRequestTestWithAutolocate() {
+    scoped_feature_list_.InitWithFeatures(
+        {blink::features::kGeolocationElement,
+         permissions::features::kPermissionHeuristicAutoGrant},
+        {content_settings::features::kApproximateGeolocationPermission});
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+TEST_P(PEPCInitiatedPermissionRequestTestWithAutolocate,
+       PEPCRequestHeuristicallyGrantedGeolocation) {
+  bool autolocate = GetParam();
+
+  auto* history =
+      PermissionsClient::Get()->GetPermissionActionsHistory(browser_context());
+  const int kHeuristicGrantThreshold = 3;
+
+  // Grant just below the threshold.
+  for (int i = 0; i < kHeuristicGrantThreshold; ++i) {
+    EXPECT_FALSE(history->RecordTemporaryGrant(
+        origin(), ContentSettingsType::GEOLOCATION));
+  }
+
+  // The next grant will trigger the auto-grant.
+  EXPECT_TRUE(history->RecordTemporaryGrant(origin(),
+                                            ContentSettingsType::GEOLOCATION));
+  EXPECT_TRUE(history->CheckHeuristicallyAutoGranted(
+      origin(), ContentSettingsType::GEOLOCATION, /*needs_update*/ false));
+
+  if (!autolocate) {
+    // A PEPC request should be auto-granted without a prompt because Autolocate
+    // is on.
+    permission_service()->RequestPageEmbeddedPermission(
+        CreatePermissionDescriptorPtrs(ContentSettingsType::GEOLOCATION),
+        CreateGeolocationEmbeddedPermissionRequestDescriptorPtr(),
+        base::BindOnce(
+            &PEPCInitiatedPermissionRequestTest::PermissionServiceCallbackPEPC,
+            base::Unretained(this)));
+
+    WaitForPermissionServiceCallback();
+    // TODO(crbug.com/448327619): verify content setting before and after.
+    EXPECT_EQ(prompt_factory()->request_count(), 0);
+
+    // The heuristic grant should not be reset because the user was not
+    // prompted.
+    EXPECT_TRUE(history->CheckHeuristicallyAutoGranted(
+        origin(), ContentSettingsType::GEOLOCATION, /*needs_update*/ false));
+    // Let's test dismissing the prompt resets the heuristic.
+    // Now, reset the heuristic grant and increase the count by 2.
+    history->ResetHeuristicData(origin(), ContentSettingsType::GEOLOCATION);
+    EXPECT_FALSE(history->RecordTemporaryGrant(
+        origin(), ContentSettingsType::GEOLOCATION));
+    EXPECT_FALSE(history->RecordTemporaryGrant(
+        origin(), ContentSettingsType::GEOLOCATION));
+    prompt_factory()->set_response_type(
+        PermissionRequestManager::AutoResponseType::DISMISS);
+
+    permission_service()->RequestPageEmbeddedPermission(
+        CreatePermissionDescriptorPtrs(ContentSettingsType::GEOLOCATION),
+        CreateGeolocationEmbeddedPermissionRequestDescriptorPtr(),
+        base::BindOnce(
+            &PEPCInitiatedPermissionRequestTest::PermissionServiceCallbackPEPC,
+            base::Unretained(this)));
+
+    WaitForPermissionServiceCallback();
+
+    // A second prompt was shown.
+    EXPECT_EQ(prompt_factory()->request_count(), 1);
+    EXPECT_EQ(history->GetTemporaryGrantCountForTesting(
+                  origin(), ContentSettingsType::GEOLOCATION),
+              0);
+  } else {
+    // A geolocation PEPC request should still show a prompt, even with a
+    // heuristic grant, if autolocate is true.
+    prompt_factory()->set_response_type(
+        PermissionRequestManager::AutoResponseType::ACCEPT_ALL);
+
+    permission_service()->RequestPageEmbeddedPermission(
+        CreatePermissionDescriptorPtrs(ContentSettingsType::GEOLOCATION),
+        CreateGeolocationEmbeddedPermissionRequestDescriptorPtr(autolocate),
+        base::BindOnce(
+            &PEPCInitiatedPermissionRequestTest::PermissionServiceCallbackPEPC,
+            base::Unretained(this)));
+
+    WaitForPermissionServiceCallback();
+
+    // A prompt should have been shown, and the setting updated to an ALLOW.
+    EXPECT_EQ(prompt_factory()->request_count(), 1);
+    EXPECT_EQ(CONTENT_SETTING_ALLOW,
+              GetContentSetting(ContentSettingsType::GEOLOCATION));
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         PEPCInitiatedPermissionRequestTestWithAutolocate,
+                         ::testing::Bool());
 
 }  // namespace permissions

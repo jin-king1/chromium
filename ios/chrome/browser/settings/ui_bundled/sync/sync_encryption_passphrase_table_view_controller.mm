@@ -7,22 +7,25 @@
 #import <memory>
 
 #import "base/apple/foundation_util.h"
+#import "base/feature_list.h"
 #import "base/i18n/time_formatting.h"
 #import "base/ios/ios_util.h"
 #import "base/metrics/user_metrics.h"
 #import "base/metrics/user_metrics_action.h"
 #import "base/strings/sys_string_conversions.h"
+#import "components/application_locale_storage/application_locale_storage.h"
 #import "components/google/core/common/google_util.h"
 #import "components/signin/public/identity_manager/objc/identity_manager_observer_bridge.h"
 #import "components/strings/grit/components_strings.h"
+#import "components/sync/base/features.h"
 #import "components/sync/service/sync_service.h"
 #import "components/sync/service/sync_user_settings.h"
 #import "ios/chrome/browser/net/model/crurl.h"
 #import "ios/chrome/browser/scoped_ui_blocker/ui_bundled/scoped_ui_blocker.h"
+#import "ios/chrome/browser/settings/google_services/public/google_services_settings_constants.h"
 #import "ios/chrome/browser/settings/model/sync/utils/sync_util.h"
 #import "ios/chrome/browser/settings/ui_bundled/cells/byo_textfield_item.h"
 #import "ios/chrome/browser/settings/ui_bundled/cells/passphrase_error_item.h"
-#import "ios/chrome/browser/settings/ui_bundled/google_services/google_services_settings_constants.h"
 #import "ios/chrome/browser/settings/ui_bundled/settings_navigation_controller.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
@@ -59,7 +62,7 @@ const CGFloat kSpinnerButtonPadding = 18;
 }  // namespace
 
 @interface SyncEncryptionPassphraseTableViewController () <
-    IdentityManagerObserverBridgeDelegate> {
+    IdentityManagerObserving> {
   // Whether the decryption progress is currently being shown.
   BOOL _isDecryptionProgressShown;
   NSString* _savedTitle;
@@ -106,10 +109,9 @@ const CGFloat kSpinnerButtonPadding = 18;
       service->GetUserSettings()->IsUsingExplicitPassphrase()) {
     base::Time passphraseTime =
         service->GetUserSettings()->GetExplicitPassphraseTime();
-    NSString* userEmail =
-        AuthenticationServiceFactory::GetForProfile(profile)
-            ->GetPrimaryIdentity(signin::ConsentLevel::kSignin)
-            .userEmail;
+    NSString* userEmail = AuthenticationServiceFactory::GetForProfile(profile)
+                              ->GetPrimaryIdentity()
+                              .userEmail;
     DCHECK(userEmail);
     _headerMessage =
         passphraseTime.is_null()
@@ -161,7 +163,7 @@ const CGFloat kSpinnerButtonPadding = 18;
   [self setLeftNavBarItem];
 
   SceneState* sceneState = self.browser->GetSceneState();
-  _uiBlocker = std::make_unique<ScopedUIBlocker>(sceneState);
+  _uiBlocker = ScopedUIBlocker::ProfileScoped(sceneState);
   self.view.accessibilityIdentifier =
       kSyncEncryptionPassphraseTableViewAccessibilityIdentifier;
 }
@@ -184,6 +186,8 @@ const CGFloat kSpinnerButtonPadding = 18;
     [self unregisterTextField:self.passphrase];
   }
   _uiBlocker.reset();
+  [self.presentationDelegate
+      syncEncryptionPassphraseTableViewControllerDidDisappear:self];
 }
 
 #pragma mark - SettingsRootTableViewController
@@ -264,8 +268,13 @@ const CGFloat kSpinnerButtonPadding = 18;
   footerItem.text = self.footerMessage;
   footerItem.urls = @[ [[CrURL alloc]
       initWithGURL:google_util::AppendGoogleLocaleParam(
-                       GURL(kSyncGoogleDashboardURL),
-                       GetApplicationContext()->GetApplicationLocale())] ];
+                       GURL(base::FeatureList::IsEnabled(
+                                syncer::kSyncEnableNewSyncDashboardUrl)
+                                ? kNewSyncGoogleDashboardURL
+                                : kLegacySyncGoogleDashboardURL),
+                       GetApplicationContext()
+                           ->GetApplicationLocaleStorage()
+                           ->Get())] ];
   return footerItem;
 }
 
@@ -299,10 +308,12 @@ const CGFloat kSpinnerButtonPadding = 18;
   return YES;
 }
 
-- (void)signInPressed {
+- (void)enterPressed {
   DCHECK(!_settingsAreDismissed);
   DCHECK([_passphrase text].length);
   ProfileIOS* profile = self.browser->GetProfile();
+  base::RecordAction(
+      base::UserMetricsAction("MobileSyncPassphraseSettingsEnter"));
 
   if (!_syncObserver.get()) {
     _syncObserver.reset(new SyncObserverBridge(
@@ -333,6 +344,12 @@ const CGFloat kSpinnerButtonPadding = 18;
                                    IDS_IOS_SYNC_INCORRECT_PASSPHRASE)];
       [self hideDecryptionProgress];
     }
+  } else if (service->GetUserSettings()->IsTrustedVaultKeyRequired() ||
+             service->GetUserSettings()->IsPassphraseRequired()) {
+    // Can't set the passphrase while keys are required for decryption. Hitting
+    // this line means that the state has changed while the user was setting
+    // the passphrase.
+    [self hideDecryptionProgress];
   } else {
     service->GetUserSettings()->SetEncryptionPassphrase(passphrase);
   }
@@ -341,6 +358,8 @@ const CGFloat kSpinnerButtonPadding = 18;
 
 - (void)cancelPressed {
   CHECK(self.presentModally);
+  base::RecordAction(
+      base::UserMetricsAction("MobileSyncPassphraseSettingsCancel"));
   [self.navigationController.presentingViewController
       dismissViewControllerAnimated:YES
                          completion:nil];
@@ -355,7 +374,7 @@ const CGFloat kSpinnerButtonPadding = 18;
         initWithTitle:l10n_util::GetNSString(IDS_IOS_SYNC_DECRYPT_BUTTON)
                 style:UIBarButtonItemStylePlain
                target:self
-               action:@selector(signInPressed)];
+               action:@selector(enterPressed)];
   }
   submitButtonItem.enabled = [self areAllFieldsFilled];
 
@@ -490,7 +509,7 @@ const CGFloat kSpinnerButtonPadding = 18;
 - (void)textFieldDidEndEditing:(id)sender {
   if (sender == self.passphrase) {
     if ([self areAllFieldsFilled]) {
-      [self signInPressed];
+      [self enterPressed];
     } else {
       [self clearFieldsOnError:l10n_util::GetNSString(
                                    IDS_SYNC_EMPTY_PASSPHRASE_ERROR)];
@@ -518,11 +537,6 @@ const CGFloat kSpinnerButtonPadding = 18;
     SettingsNavigationController* settingsNavigationController =
         base::apple::ObjCCast<SettingsNavigationController>(
             self.navigationController);
-    // During the sign-in flow it is possible for the Sync state to
-    // change when the user is in the Advanced Settings (e.g., if the user
-    // confirms a Sync passphrase). Because these navigation controllers are
-    // not directly related to Settings, we check the type before dismissal.
-    // TODO(crbug.com/40158230): Revisit with Advanced Sync Settings changes.
     if (settingsNavigationController) {
       [settingsNavigationController
           popViewControllerOrCloseSettingsAnimated:YES];
@@ -545,13 +559,13 @@ const CGFloat kSpinnerButtonPadding = 18;
   [self reloadData];
 }
 
-#pragma mark - IdentityManagerObserverBridgeDelegate
+#pragma mark - IdentityManagerObserving
 
-- (void)onEndBatchOfRefreshTokenStateChanges {
+- (void)batchOfRefreshTokenStateChangesDidEnd {
   DCHECK(!_settingsAreDismissed);
   ProfileIOS* profile = self.browser->GetProfile();
-  if (AuthenticationServiceFactory::GetForProfile(profile)->HasPrimaryIdentity(
-          signin::ConsentLevel::kSignin)) {
+  if (AuthenticationServiceFactory::GetForProfile(profile)
+          ->HasPrimaryIdentity()) {
     return;
   }
   if (!self.presentModally) {
@@ -574,12 +588,6 @@ const CGFloat kSpinnerButtonPadding = 18;
 }
 
 - (void)settingsWillBeDismissed {
-  if (_settingsAreDismissed) {
-    // This method can be called twice when the account is removed. Related to
-    // crbug.com/1480441.
-    return;
-  }
-
   // Remove observer bridges.
   _syncObserver.reset();
   _identityManagerObserver.reset();

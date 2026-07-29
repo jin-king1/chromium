@@ -22,6 +22,7 @@
 #include <stdint.h>
 
 #include <algorithm>
+#include <array>
 #include <utility>
 
 #include "base/check.h"
@@ -35,6 +36,8 @@ template <class Key,
           class KeyTraits = HashTraits<Key>,
           unsigned cache_size = 512>
 class FixedSizeCache {
+  DISALLOW_NEW();
+
   static_assert((cache_size & (cache_size - 1)) == 0,
                 "cache_size should be a power of two");
   static_assert(cache_size >= 2);
@@ -59,15 +62,15 @@ class FixedSizeCache {
     uint8_t prefilter_hash = GetPrefilterHash(hash);
 
     // Search, moving to front if we find a match.
-    if (UNSAFE_TODO(prefilter_[bucket_set]) == prefilter_hash &&
+    if (UNSAFE_BUFFERS(prefilter_[bucket_set]) == prefilter_hash &&
         cache_[bucket_set].first == key) {
       return &cache_[bucket_set].second;
     }
-    if (UNSAFE_TODO(prefilter_[bucket_set + 1]) == prefilter_hash &&
+    if (UNSAFE_BUFFERS(prefilter_[bucket_set + 1]) == prefilter_hash &&
         cache_[bucket_set + 1].first == key) {
       using std::swap;
-      swap(UNSAFE_TODO(prefilter_[bucket_set]),
-           UNSAFE_TODO(prefilter_[bucket_set + 1]));
+      swap(UNSAFE_BUFFERS(prefilter_[bucket_set]),
+           UNSAFE_BUFFERS(prefilter_[bucket_set + 1]));
       swap(cache_[bucket_set], cache_[bucket_set + 1]);
       return &cache_[bucket_set].second;
     }
@@ -89,10 +92,10 @@ class FixedSizeCache {
     DCHECK_NE(cache_[slot].first, key);
     DCHECK_NE(cache_[slot + 1].first, key);
 
-    if (UNSAFE_TODO(prefilter_[slot]) != 0) {  // Not empty.
+    if (UNSAFE_BUFFERS(prefilter_[slot]) != 0) {  // Not empty.
       ++slot;
     }
-    UNSAFE_TODO(prefilter_[slot]) = GetPrefilterHash(hash);
+    UNSAFE_BUFFERS(prefilter_[slot]) = GetPrefilterHash(hash);
     cache_[slot] = std::pair(key, value);
     return cache_[slot].second;
   }
@@ -111,7 +114,7 @@ class FixedSizeCache {
   // kept as a separate array.)
   //
   // The lower bit is always set to 1 for a non-empty value.
-  uint8_t prefilter_[cache_size]{0};
+  std::array<uint8_t, cache_size> prefilter_ = {0};
 
   HeapVector<std::pair<Key, Value>> cache_;
 };

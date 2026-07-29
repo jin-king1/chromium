@@ -11,7 +11,7 @@ source_set("web_app_shortcut_copier_lib") {
 
   deps = [
     "//base",
-    "//chrome/browser/apps/app_shim:app_shim",
+    "//chrome/browser/apps/app_shim",
     "//chrome/browser/web_applications/mojom:web_app_shortcut_copier_mojom",
     "//chrome/common:version_header",
     "//content/public/common:main_function_params",
@@ -28,8 +28,9 @@ executable("web_app_shortcut_copier") {
   ldflags = []
   if (is_component_build) {
     ldflags += [
-      # When run within Chromium, the helper is in Chromium.app/Contents/Frameworks/Chromium Framework.framework/Versions/X/Helpers
-      # so set rpath up to the base.
+      # When run within Chromium, the helper is in
+      # Chromium.app/Contents/Frameworks/Chromium
+      # Framework.framework/Versions/X/Helpers so set rpath up to the base.
       "-Wl,-rpath,@executable_path/../../../../../../..",
 
       # When run from test executables, Chromium.framework is in root of the

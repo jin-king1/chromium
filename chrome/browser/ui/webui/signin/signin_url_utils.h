@@ -16,6 +16,13 @@ enum class SyncConfirmationStyle {
   kWindow = 2
 };
 
+// Launch modes supported by the history sync optin screen.
+// Their choice also affects the style of the screen.
+enum class HistorySyncOptinLaunchContext : int {
+  kWindow = 0,
+  kModal = 1,
+};
+
 // Returns which style the sync confirmation page is using, as a default modal
 // dialog, the signin intercept modal dialog version or as a window.
 SyncConfirmationStyle GetSyncConfirmationStyle(const GURL& url);
@@ -45,14 +52,5 @@ ProfileCustomizationStyle GetProfileCustomizationStyle(const GURL& url);
 GURL AppendProfileCustomizationQueryParams(const GURL& url,
                                            ProfileCustomizationStyle style);
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
-
-// TODO(crbug.com/381231566): `AddFromProfilePickerURLParameter()` is not called
-// anymore and is now dead code, it should be removed in upcoming changes along
-// with calls to `HasFromProfilePickerURLParameter()` and the dependant code.
-//
-// Checks if the |url| is coming from the ProfilePicker.
-bool HasFromProfilePickerURLParameter(const GURL& url);
-// Adds the ProfilePicker tag to the |url|. Returns the appended URL.
-GURL AddFromProfilePickerURLParameter(const GURL& url);
 
 #endif  // CHROME_BROWSER_UI_WEBUI_SIGNIN_SIGNIN_URL_UTILS_H_

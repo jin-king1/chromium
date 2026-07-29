@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/browser/ash/app_mode/kiosk_chrome_app_manager.h"
 
 #include <stddef.h>
@@ -20,6 +15,7 @@
 #include "base/check.h"
 #include "base/check_deref.h"
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
@@ -46,18 +42,18 @@
 #include "chrome/browser/ash/settings/scoped_cros_settings_test_helper.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/browser_process_platform_part.h"
-#include "chrome/browser/extensions/webstore_data_fetcher.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "chromeos/ash/components/policy/device_local_account/device_local_account_type.h"
 #include "chromeos/ash/components/settings/cros_settings_names.h"
 #include "components/crx_file/crx_verifier.h"
 #include "components/policy/core/common/cloud/cloud_policy_constants.h"
-#include "components/policy/core/common/device_local_account_type.h"
 #include "components/prefs/scoped_user_pref_update.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/test_utils.h"
 #include "extensions/browser/sandboxed_unpacker.h"
+#include "extensions/browser/webstore_data_fetcher.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/mojom/manifest.mojom-shared.h"
 #include "net/dns/mock_host_resolver.h"
@@ -73,9 +69,9 @@ namespace {
 
 // An app to test local fs data persistence across app update. V1 app writes
 // data into local fs. V2 app reads and verifies the data.
-// Webstore data json is in
-//   chrome/test/data/chromeos/app_mode/webstore/inlineinstall/
-//       detail/abbjjkefakmllanciinhgjgjamdmlbdg
+// Webstore itemsnippet proto mock is in
+//   chrome/test/data/chromeos/app_mode/webstore/itemsnippet/
+//       abbjjkefakmllanciinhgjgjamdmlbdg.textproto
 // The version 1.0.0 installed is in
 //   chrome/test/data/chromeos/app_mode/webstore/downloads/
 //       abbjjkefakmllanciinhgjgjamdmlbdg.crx
@@ -90,22 +86,22 @@ scoped_refptr<extensions::Extension> MakeKioskApp(
     const std::string& version,
     const std::string& id,
     const std::string& required_platform_version) {
-  auto value = base::Value::Dict()
+  auto value = base::DictValue()
                    .Set("name", name)
                    .Set("version", version)
                    .SetByDottedPath("app.background.scripts",
-                                    base::Value::List().Append("main.js"))
+                                    base::ListValue().Append("main.js"))
                    .Set("kiosk_enabled", true);
   if (!required_platform_version.empty()) {
     value.SetByDottedPath("kiosk.required_platform_version",
                           required_platform_version);
   }
 
-  std::string err;
+  std::u16string err;
   scoped_refptr<extensions::Extension> app = extensions::Extension::Create(
       base::FilePath(), extensions::mojom::ManifestLocation::kInternal, value,
       extensions::Extension::WAS_INSTALLED_BY_DEFAULT, id, &err);
-  EXPECT_EQ(err, "");
+  EXPECT_EQ(err, u"");
   return app;
 }
 
@@ -185,12 +181,10 @@ class ChromeAppKioskAppManagerTest : public InProcessBrowserTest {
     embedded_test_server()->ServeFilesFromDirectory(test_data_dir);
 
     // Log the response code for WebstoreDataFetcher instance if it is not 200.
-    // TODO(crbug.com/325314721): Use a mock FetchItemSnippetResponse instead
-    // when the old item JSON API used for fetching webstore data is removed.
     extensions::WebstoreDataFetcher::SetLogResponseCodeForTesting(true);
 
     // Don't spin up the IO thread yet since no threads are allowed while
-    // spawning sandbox host process. See crbug.com/322732.
+    // spawning sandbox host process. See crbug.com/41076404.
     ASSERT_TRUE(embedded_test_server()->InitializeAndListen());
 
     ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
@@ -212,7 +206,7 @@ class ChromeAppKioskAppManagerTest : public InProcessBrowserTest {
 
     settings_helper_.ReplaceDeviceSettingsProviderWithStub();
     owner_settings_service_ =
-        settings_helper_.CreateOwnerSettingsService(browser()->profile());
+        settings_helper_.CreateOwnerSettingsService(browser()->GetProfile());
   }
 
   void TearDownOnMainThread() override {
@@ -264,15 +258,15 @@ class ChromeAppKioskAppManagerTest : public InProcessBrowserTest {
         local_state, KioskChromeAppManager::kKioskDictionaryName);
     dict_update->Set(
         KioskAppDataBase::kKeyApps,
-        base::Value::Dict()
+        base::DictValue()
             .SetByDottedPath(app_id + ".name", app_name)
             .SetByDottedPath(app_id + ".icon", icon_path.MaybeAsASCII())
             .SetByDottedPath(app_id + ".required_platform_version",
                              required_platform_version));
 
     // Make the app appear in device settings.
-    auto device_local_accounts = base::Value::List().Append(
-        base::Value::Dict()
+    auto device_local_accounts = base::ListValue().Append(
+        base::DictValue()
             // Fake an account id. Note this needs to match
             // GenerateKioskAppAccountId in kiosk_chrome_app_manager.cc to make
             // SetAutoLaunchApp work with the existing app entry created here.
@@ -310,7 +304,7 @@ class ChromeAppKioskAppManagerTest : public InProcessBrowserTest {
 
     // Check data is cached in local state correctly.
     PrefService* local_state = g_browser_process->local_state();
-    const base::Value::Dict& dict =
+    const base::DictValue& dict =
         local_state->GetDict(KioskChromeAppManager::kKioskDictionaryName);
 
     const std::string name_key = "apps." + app_id + ".name";
@@ -423,13 +417,12 @@ IN_PROC_BROWSER_TEST_F(ChromeAppKioskAppManagerTest, Basic) {
 
   // Make sure that if an app was auto launched with zero delay, it is reflected
   // in the app data.
-  KioskChromeAppManager::App app;
-  manager()->GetApp("fake_app_1", &app);
-  EXPECT_FALSE(app.was_auto_launched_with_zero_delay);
+  EXPECT_FALSE(
+      manager()->GetApp("fake_app_1")->was_auto_launched_with_zero_delay);
 
   manager()->SetAppWasAutoLaunchedWithZeroDelay("fake_app_1");
-  manager()->GetApp("fake_app_1", &app);
-  EXPECT_TRUE(app.was_auto_launched_with_zero_delay);
+  EXPECT_TRUE(
+      manager()->GetApp("fake_app_1")->was_auto_launched_with_zero_delay);
 
   // Clear the auto launch app.
   SetConsumerKioskAutoLaunchChromeAppForTesting(
@@ -438,8 +431,8 @@ IN_PROC_BROWSER_TEST_F(ChromeAppKioskAppManagerTest, Basic) {
 
   // App should still report it was auto launched with zero delay, even though
   // it is no longer set to auto launch in the future.
-  manager()->GetApp("fake_app_1", &app);
-  EXPECT_TRUE(app.was_auto_launched_with_zero_delay);
+  EXPECT_TRUE(
+      manager()->GetApp("fake_app_1")->was_auto_launched_with_zero_delay);
 
   // Set another auto launch app.
   SetConsumerKioskAutoLaunchChromeAppForTesting(
@@ -492,10 +485,9 @@ IN_PROC_BROWSER_TEST_F(ChromeAppKioskAppManagerTest, ClearAppData) {
   SetExistingApp("app_1", "Cached App1 Name", "red16x16.png", "");
 
   PrefService* local_state = g_browser_process->local_state();
-  const base::Value::Dict& dict =
+  const base::DictValue& dict =
       local_state->GetDict(KioskChromeAppManager::kKioskDictionaryName);
-  const base::Value::Dict* apps_dict =
-      dict.FindDict(KioskAppDataBase::kKeyApps);
+  const base::DictValue* apps_dict = dict.FindDict(KioskAppDataBase::kKeyApps);
   EXPECT_TRUE(apps_dict);
   EXPECT_TRUE(apps_dict->contains("app_1"));
 
@@ -517,7 +509,7 @@ IN_PROC_BROWSER_TEST_F(ChromeAppKioskAppManagerTest, UpdateAppDataFromProfile) {
 
   scoped_refptr<extensions::Extension> updated_app =
       MakeKioskApp("Updated App1 Name", "2.0", "app_1", "1234");
-  manager()->UpdateAppDataFromProfile("app_1", browser()->profile(),
+  manager()->UpdateAppDataFromProfile("app_1", browser()->GetProfile(),
                                       updated_app.get());
 
   waiter.Reset();
@@ -528,7 +520,7 @@ IN_PROC_BROWSER_TEST_F(ChromeAppKioskAppManagerTest, UpdateAppDataFromProfile) {
   CheckAppData("app_1", "Updated App1 Name", "1234");
 }
 
-// Flaky; https://crbug.com/783450
+// Flaky; https://crbug.com/41354525
 IN_PROC_BROWSER_TEST_F(ChromeAppKioskAppManagerTest, UpdateAppDataFromCrx) {
   const char kAppId[] = "iiigpodgfihagabpagjehoocpakbnclp";
   const char kAppName[] = "Test Kiosk App";
@@ -638,8 +630,8 @@ IN_PROC_BROWSER_TEST_F(ChromeAppKioskAppManagerTest, BadApp) {
 }
 
 IN_PROC_BROWSER_TEST_F(ChromeAppKioskAppManagerTest, GoodApp) {
-  // Webstore data json is in
-  //   chrome/test/data/chromeos/app_mode/webstore/inlineinstall/detail/app_1
+  // Mock Webstore itemsnippets proto is in
+  //   chrome/test/data/chromeos/app_mode/webstore/itemsnippet/app_1.textproto
   const char kAppId[] = "app_1";
   fake_cws()->SetNoUpdate(kAppId);
   AppDataLoadWaiter waiter(manager());
@@ -654,9 +646,9 @@ IN_PROC_BROWSER_TEST_F(ChromeAppKioskAppManagerTest, GoodApp) {
 
 IN_PROC_BROWSER_TEST_F(ChromeAppKioskAppManagerTest,
                        AppWithRequiredPlatformVersion) {
-  // Webstore data json is in
-  //   chrome/test/data/chromeos/app_mode/webstore/inlineinstall/detail/
-  //     app_with_required_platform_version
+  // Mock Webstore itemsnippets proto is in
+  //   chrome/test/data/chromeos/app_mode/webstore/itemsnippet/
+  //     app_with_required_platform_version.textproto
   const char kAppId[] = "app_with_required_platform_version";
   fake_cws()->SetNoUpdate(kAppId);
   AppDataLoadWaiter waiter(manager());
@@ -671,9 +663,9 @@ IN_PROC_BROWSER_TEST_F(ChromeAppKioskAppManagerTest,
 
 IN_PROC_BROWSER_TEST_F(ChromeAppKioskAppManagerTest,
                        AppWithBadRequiredPlatformVersion) {
-  // Webstore data json is in
-  //   chrome/test/data/chromeos/app_mode/webstore/inlineinstall/detail/
-  //     app_with_bad_required_platform_version
+  // Mock Webstore itemsnippets proto is in
+  //   chrome/test/data/chromeos/app_mode/webstore/itemsnippet/
+  //     app_with_bad_required_platform_version.textproto
   const char kAppId[] = "app_with_bad_required_platform_version";
   fake_cws()->SetNoUpdate(kAppId);
   AppDataLoadWaiter waiter(manager());
@@ -690,7 +682,7 @@ IN_PROC_BROWSER_TEST_F(ChromeAppKioskAppManagerTest, DownloadNewApp) {
   RunAddNewAppTest(kTestLocalFsKioskApp, "1.0.0", kTestLocalFsKioskAppName, "");
 }
 
-// Flaky https://crbug.com/1090937
+// Flaky https://crbug.com/40133955
 IN_PROC_BROWSER_TEST_F(ChromeAppKioskAppManagerTest, RemoveApp) {
   // Add a new app.
   RunAddNewAppTest(kTestLocalFsKioskApp, "1.0.0", kTestLocalFsKioskAppName, "");
@@ -904,12 +896,13 @@ IN_PROC_BROWSER_TEST_F(ChromeAppKioskAppManagerTest,
   };
 
   for (size_t i = 0; i < std::size(kTestCases); ++i) {
-    scoped_refptr<extensions::Extension> app = MakeKioskApp(
-        "App Name", "1.0", kAppId, kTestCases[i].required_platform_version);
-    EXPECT_EQ(kTestCases[i].expected_compliant,
-              manager()->IsPlatformCompliantWithApp(app.get()))
+    scoped_refptr<extensions::Extension> app =
+        MakeKioskApp("App Name", "1.0", kAppId,
+                     UNSAFE_TODO(kTestCases[i]).required_platform_version);
+    UNSAFE_TODO(EXPECT_EQ(kTestCases[i].expected_compliant,
+                          manager()->IsPlatformCompliantWithApp(app.get())))
         << "Test case: " << i << ", required_platform_version="
-        << kTestCases[i].required_platform_version;
+        << UNSAFE_TODO(kTestCases[i]).required_platform_version;
   }
 
   // If an app is not auto launched with zero delay, it is always compliant.
@@ -917,11 +910,11 @@ IN_PROC_BROWSER_TEST_F(ChromeAppKioskAppManagerTest,
   for (size_t i = 0; i < std::size(kTestCases); ++i) {
     scoped_refptr<extensions::Extension> app =
         MakeKioskApp("App Name", "1.0", kNoneAutoLaucnhedAppId,
-                     kTestCases[i].required_platform_version);
+                     UNSAFE_TODO(kTestCases[i]).required_platform_version);
     EXPECT_TRUE(manager()->IsPlatformCompliantWithApp(app.get()))
         << "Test case for non auto launch app: " << i
         << ", required_platform_version="
-        << kTestCases[i].required_platform_version;
+        << UNSAFE_TODO(kTestCases[i]).required_platform_version;
   }
 }
 

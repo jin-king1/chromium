@@ -7,6 +7,8 @@ package org.chromium.chrome.browser.tabpersistence;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 
+import static org.chromium.chrome.browser.url_constants.UrlConstantResolver.getOriginalNativeNtpUrl;
+
 import androidx.annotation.Nullable;
 
 import org.junit.Assert;
@@ -31,6 +33,7 @@ import org.chromium.chrome.browser.tab.flatbuffer.TabLaunchTypeAtCreation;
 import org.chromium.chrome.browser.tab.flatbuffer.UserAgentType;
 import org.chromium.chrome.browser.tabpersistence.FlatBufferTabStateSerializer.TabStateFlatBufferDeserializeResult;
 import org.chromium.chrome.test.util.ByteBufferTestUtils;
+import org.chromium.url.GURL;
 
 import java.io.DataOutputStream;
 import java.io.File;
@@ -59,6 +62,8 @@ public class TabStateFileManagerUnitTest {
             new Token(TAB_GROUP_ID_TOKEN_HIGH, TAB_GROUP_ID_TOKEN_LOW);
     private static final int LARGE_BYTE_BUFFER_SIZE = Integer.MAX_VALUE / 4;
     private static final boolean CONTENT_IS_SENSITIVE = true;
+    private static final boolean IS_PINNED = true;
+    private static final GURL URL = new GURL(getOriginalNativeNtpUrl());
 
     @Rule public TemporaryFolder temporaryFolder = new TemporaryFolder();
 
@@ -95,14 +100,31 @@ public class TabStateFileManagerUnitTest {
     }
 
     @Test
+    public void testRestoreTabStateInternal_NullCipherFactoryAndUnencrypted() throws IOException {
+        Token tabGroupId = null;
+        File file = createTestTabStateFile();
+        TabState state = createTabStateWithMappedByteBuffer(file, tabGroupId);
+        TabStateFileManager.saveStateInternal(file, state, false, mCipherFactory);
+
+        validateTestTabState(
+                TabStateFileManager.restoreTabStateInternal(file, false, null), tabGroupId);
+    }
+
+    @Test(expected = AssertionError.class)
+    public void testRestoreTabStateInternal_NullCipherFactoryAndEncrypted() throws IOException {
+        File file = createTestTabStateFile();
+        TabStateFileManager.restoreTabStateInternal(file, true, null);
+    }
+
+    @Test
     public void testLargeContentsState() throws IOException {
         File file = createTestTabStateFile();
         ByteBuffer buffer = ByteBuffer.allocateDirect(LARGE_BYTE_BUFFER_SIZE);
         for (int i = 0; i < LARGE_BYTE_BUFFER_SIZE; i++) {
             buffer.put((byte) (i % Byte.MAX_VALUE));
         }
-        WebContentsState contentsState = new WebContentsState(buffer);
-        contentsState.setVersion(WebContentsState.CONTENTS_STATE_CURRENT_VERSION);
+        WebContentsState contentsState =
+                new WebContentsState(buffer, WebContentsState.CONTENTS_STATE_CURRENT_VERSION);
         TabState state = createTabState(contentsState);
         TabStateFileManager.saveStateInternal(file, state, /* encrypted= */ false, mCipherFactory);
         validateTestTabState(
@@ -164,12 +186,20 @@ public class TabStateFileManagerUnitTest {
         Assert.assertEquals(24, TabLaunchTypeAtCreation.FROM_RECENT_TABS_FOREGROUND);
         Assert.assertEquals(25, TabLaunchTypeAtCreation.FROM_COLLABORATION_BACKGROUND_IN_GROUP);
         Assert.assertEquals(26, TabLaunchTypeAtCreation.FROM_BOOKMARK_BAR_BACKGROUND);
+        Assert.assertEquals(27, TabLaunchTypeAtCreation.FROM_REPARENTING_BACKGROUND);
+        Assert.assertEquals(28, TabLaunchTypeAtCreation.FROM_HISTORY_NAVIGATION_BACKGROUND);
+        Assert.assertEquals(29, TabLaunchTypeAtCreation.FROM_HISTORY_NAVIGATION_FOREGROUND);
+        Assert.assertEquals(30, TabLaunchTypeAtCreation.FROM_LONGPRESS_FOREGROUND_IN_GROUP);
+        Assert.assertEquals(31, TabLaunchTypeAtCreation.FROM_TAB_LIST_INTERFACE);
+        Assert.assertEquals(32, TabLaunchTypeAtCreation.FROM_LINK_CREATING_NEW_WINDOW);
+        Assert.assertEquals(33, TabLaunchTypeAtCreation.FROM_TIPS_NOTIFICATIONS);
+        Assert.assertEquals(34, TabLaunchTypeAtCreation.FROM_TAB_LIST_INTERFACE_BACKGROUND);
         // Note this should be the total number of TabLaunchTypeAtCreation values including
         // SIZE and UNKNOWN so it should be equal to the last value +3.
         Assert.assertEquals(
                 "Need to increment 1 to expected value each time a LaunchTypeAtCreation "
                         + "is added. Also need to add any new LaunchTypeAtCreation to this test.",
-                29,
+                37,
                 TabLaunchTypeAtCreation.names.length);
     }
 
@@ -180,7 +210,7 @@ public class TabStateFileManagerUnitTest {
                         + " FlatBufferTabStateSerializer#getLaunchTypeFromFlatBuffer,"
                         + " FlatBufferTabStateSerializer#getLaunchTypeToFlatBuffer"
                         + " and this test file.",
-                27,
+                35,
                 TabLaunchType.SIZE);
     }
 
@@ -315,6 +345,34 @@ public class TabStateFileManagerUnitTest {
                 FlatBufferTabStateSerializer.getLaunchTypeFromFlatBuffer(
                         TabLaunchTypeAtCreation.FROM_BOOKMARK_BAR_BACKGROUND));
         Assert.assertEquals(
+                TabLaunchType.FROM_REPARENTING_BACKGROUND,
+                FlatBufferTabStateSerializer.getLaunchTypeFromFlatBuffer(
+                        TabLaunchTypeAtCreation.FROM_REPARENTING_BACKGROUND));
+        Assert.assertEquals(
+                TabLaunchType.FROM_HISTORY_NAVIGATION_FOREGROUND,
+                FlatBufferTabStateSerializer.getLaunchTypeFromFlatBuffer(
+                        TabLaunchTypeAtCreation.FROM_HISTORY_NAVIGATION_FOREGROUND));
+        Assert.assertEquals(
+                TabLaunchType.FROM_HISTORY_NAVIGATION_FOREGROUND,
+                FlatBufferTabStateSerializer.getLaunchTypeFromFlatBuffer(
+                        TabLaunchTypeAtCreation.FROM_HISTORY_NAVIGATION_FOREGROUND));
+        Assert.assertEquals(
+                TabLaunchType.FROM_LONGPRESS_FOREGROUND_IN_GROUP,
+                FlatBufferTabStateSerializer.getLaunchTypeFromFlatBuffer(
+                        TabLaunchTypeAtCreation.FROM_LONGPRESS_FOREGROUND_IN_GROUP));
+        Assert.assertEquals(
+                TabLaunchType.FROM_TAB_LIST_INTERFACE,
+                FlatBufferTabStateSerializer.getLaunchTypeFromFlatBuffer(
+                        TabLaunchTypeAtCreation.FROM_TAB_LIST_INTERFACE));
+        Assert.assertEquals(
+                TabLaunchType.FROM_LINK_CREATING_NEW_WINDOW,
+                FlatBufferTabStateSerializer.getLaunchTypeFromFlatBuffer(
+                        TabLaunchTypeAtCreation.FROM_LINK_CREATING_NEW_WINDOW));
+        Assert.assertEquals(
+                TabLaunchType.FROM_TIPS_NOTIFICATIONS,
+                FlatBufferTabStateSerializer.getLaunchTypeFromFlatBuffer(
+                        TabLaunchTypeAtCreation.FROM_TIPS_NOTIFICATIONS));
+        Assert.assertEquals(
                 TabLaunchType.UNSET,
                 FlatBufferTabStateSerializer.getLaunchTypeFromFlatBuffer(
                         TabLaunchTypeAtCreation.UNKNOWN));
@@ -427,6 +485,34 @@ public class TabStateFileManagerUnitTest {
                 FlatBufferTabStateSerializer.getLaunchTypeToFlatBuffer(
                         TabLaunchType.FROM_BOOKMARK_BAR_BACKGROUND));
         Assert.assertEquals(
+                TabLaunchTypeAtCreation.FROM_REPARENTING_BACKGROUND,
+                FlatBufferTabStateSerializer.getLaunchTypeToFlatBuffer(
+                        TabLaunchType.FROM_REPARENTING_BACKGROUND));
+        Assert.assertEquals(
+                TabLaunchTypeAtCreation.FROM_HISTORY_NAVIGATION_BACKGROUND,
+                FlatBufferTabStateSerializer.getLaunchTypeToFlatBuffer(
+                        TabLaunchType.FROM_HISTORY_NAVIGATION_BACKGROUND));
+        Assert.assertEquals(
+                TabLaunchTypeAtCreation.FROM_HISTORY_NAVIGATION_FOREGROUND,
+                FlatBufferTabStateSerializer.getLaunchTypeToFlatBuffer(
+                        TabLaunchType.FROM_HISTORY_NAVIGATION_FOREGROUND));
+        Assert.assertEquals(
+                TabLaunchTypeAtCreation.FROM_LONGPRESS_FOREGROUND_IN_GROUP,
+                FlatBufferTabStateSerializer.getLaunchTypeToFlatBuffer(
+                        TabLaunchType.FROM_LONGPRESS_FOREGROUND_IN_GROUP));
+        Assert.assertEquals(
+                TabLaunchTypeAtCreation.FROM_TAB_LIST_INTERFACE,
+                FlatBufferTabStateSerializer.getLaunchTypeToFlatBuffer(
+                        TabLaunchType.FROM_TAB_LIST_INTERFACE));
+        Assert.assertEquals(
+                TabLaunchTypeAtCreation.FROM_LINK_CREATING_NEW_WINDOW,
+                FlatBufferTabStateSerializer.getLaunchTypeToFlatBuffer(
+                        TabLaunchType.FROM_LINK_CREATING_NEW_WINDOW));
+        Assert.assertEquals(
+                TabLaunchTypeAtCreation.FROM_TIPS_NOTIFICATIONS,
+                FlatBufferTabStateSerializer.getLaunchTypeToFlatBuffer(
+                        TabLaunchType.FROM_TIPS_NOTIFICATIONS));
+        Assert.assertEquals(
                 TabLaunchTypeAtCreation.UNSET,
                 FlatBufferTabStateSerializer.getLaunchTypeToFlatBuffer(TabLaunchType.UNSET));
         Assert.assertEquals(
@@ -511,7 +597,8 @@ public class TabStateFileManagerUnitTest {
                                     .map(
                                             FileChannel.MapMode.READ_ONLY,
                                             fileInputStream.getChannel().position(),
-                                            file.length())),
+                                            file.length()),
+                            VERSION),
                     tabGroupId);
         } finally {
             StreamUtil.closeQuietly(fileInputStream);
@@ -522,7 +609,6 @@ public class TabStateFileManagerUnitTest {
             WebContentsState contentsState, @Nullable Token tabGroupId) {
         TabState state = new TabState();
         state.contentsState = contentsState;
-        state.contentsState.setVersion(VERSION);
         state.timestampMillis = TIMESTAMP;
         state.parentId = PARENT_ID;
         state.themeColor = THEME_COLOR;
@@ -533,6 +619,8 @@ public class TabStateFileManagerUnitTest {
         state.lastNavigationCommittedTimestampMillis = TIMESTAMP;
         state.tabGroupId = tabGroupId;
         state.tabHasSensitiveContent = CONTENT_IS_SENSITIVE;
+        state.isPinned = IS_PINNED;
+        state.url = URL;
         return state;
     }
 
@@ -545,7 +633,7 @@ public class TabStateFileManagerUnitTest {
         for (int i = 0; i < CONTENTS_STATE_BYTES.length; i++) {
             byteBuffer.put(CONTENTS_STATE_BYTES[i]);
         }
-        validateTestTabState(state, tabGroupId, new WebContentsState(byteBuffer));
+        validateTestTabState(state, tabGroupId, new WebContentsState(byteBuffer, VERSION));
     }
 
     private static void validateTestTabState(TabState state, WebContentsState contentsState) {
@@ -558,12 +646,14 @@ public class TabStateFileManagerUnitTest {
         assertEquals(PARENT_ID, state.parentId);
         assertEquals(OPENER_APP_ID, state.openerAppId);
         assertEquals(VERSION, state.contentsState.version());
-        assertEquals(THEME_COLOR, state.getThemeColor());
+        assertEquals(THEME_COLOR, state.themeColor);
         assertEquals(LAUNCH_TYPE_AT_CREATION, state.tabLaunchTypeAtCreation);
         assertEquals(ROOT_ID, state.rootId);
         assertEquals(USER_AGENT, state.userAgent);
         assertEquals(TIMESTAMP, state.lastNavigationCommittedTimestampMillis);
         assertEquals(CONTENT_IS_SENSITIVE, state.tabHasSensitiveContent);
+        assertEquals(IS_PINNED, state.isPinned);
+        assertEquals(URL, state.url);
         if (tabGroupId == null) {
             assertNull(state.tabGroupId);
         } else {

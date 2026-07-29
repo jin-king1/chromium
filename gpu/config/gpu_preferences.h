@@ -6,11 +6,13 @@
 #define GPU_CONFIG_GPU_PREFERENCES_H_
 
 #include <stddef.h>
+
+#include "base/containers/circular_deque.h"
 #include <string>
 #include <vector>
 
 #include "build/build_config.h"
-#include "gpu/gpu_export.h"
+#include "gpu/config/gpu_config_export.h"
 #include "ui/gfx/buffer_types.h"
 
 #if BUILDFLAG(IS_OZONE)
@@ -27,7 +29,7 @@ const size_t kDefaultMaxProgramCacheMemoryBytes = 2 * 1024 * 1024;
 const size_t kLowEndMaxProgramCacheMemoryBytes = 128 * 1024;
 #endif
 
-GPU_EXPORT size_t GetDefaultGpuDiskCacheSize();
+GPU_CONFIG_EXPORT size_t GetDefaultGpuDiskCacheSize();
 
 enum class VulkanImplementationName : uint32_t {
   kNone = 0,
@@ -64,14 +66,14 @@ enum class GrContextType : uint32_t {
   kGL,      // Ganesh
   kVulkan,  // Ganesh
   kGraphiteDawn,
-  kGraphiteMetal,
 };
 
-GPU_EXPORT std::string GrContextTypeToString(GrContextType type);
+GPU_CONFIG_EXPORT std::string GrContextTypeToString(GrContextType type);
 
 // Used to represent the Skia backend that the GPU process has initialized.
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
+// LINT.IfChange(SkiaBackendType)
 enum class SkiaBackendType {
   kUnknown = 0,
   kNone = 1,
@@ -81,12 +83,13 @@ enum class SkiaBackendType {
   kGraphiteDawnMetal = 5,
   kGraphiteDawnD3D11 = 6,
   kGraphiteDawnD3D12 = 7,
-  // It's not clear what granularity of kGraphiteDawnGL* backend dawn will
-  // provided yet so those values are to be added later.
-  kMaxValue = kGraphiteDawnD3D12
+  //  kDeprecatedGraphiteMetal = 8,
+  kGraphiteDawnOpenGLES = 9,
+  kMaxValue = kGraphiteDawnOpenGLES
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/gpu/enums.xml:SkiaBackendType)
 
-GPU_EXPORT std::string SkiaBackendTypeToString(SkiaBackendType type);
+GPU_CONFIG_EXPORT std::string SkiaBackendTypeToString(SkiaBackendType type);
 
 enum class DawnBackendValidationLevel : uint32_t {
   kDisabled = 0,
@@ -98,7 +101,7 @@ enum class DawnBackendValidationLevel : uint32_t {
 // following two files to keep them in sync:
 //   src/gpu/ipc/common/gpu_preferences.mojom
 //   src/gpu/ipc/common/gpu_preferences_mojom_traits.h
-struct GPU_EXPORT GpuPreferences {
+struct GPU_CONFIG_EXPORT GpuPreferences {
  public:
   GpuPreferences();
 
@@ -179,9 +182,6 @@ struct GPU_EXPORT GpuPreferences {
   // Enforce GL minimums.
   bool enforce_gl_minimums = false;
 
-  // Sets the total amount of memory that may be allocated for GPU resources.
-  uint32_t force_gpu_mem_available_bytes = 0u;
-
   // Sets the maximum discardable cache size limit for GPU resources.
   uint32_t force_gpu_mem_discardable_limit_bytes = 0u;
 
@@ -205,8 +205,9 @@ struct GPU_EXPORT GpuPreferences {
   // ===================================
   // Settings from //gpu/config/gpu_switches.h
 
-  // Enables the use of SurfaceControl for overlays on Android.
-  bool enable_android_surface_control = false;
+  // An additional Graphite Precompilation control that only enables
+  // precompilation when not testing.
+  bool perform_graphite_precompilation = false;
 
   // ===================================
   // Settings from //ui/gl/gl_switches.h
@@ -221,11 +222,29 @@ struct GPU_EXPORT GpuPreferences {
   // tracking.
   bool use_passthrough_cmd_decoder = false;
 
+  // The Skia rendering backend to use. Set by the browser based on gpu_mode.
+  // The GPU process may downgrade this (e.g. from kGraphiteDawn to kGL) after
+  // consulting the blocklist.
+  GrContextType gr_context_type = GrContextType::kGL;
+
+  // Ordered fallback GrContextTypes for the GPU process to try if
+  // gr_context_type is unavailable. Stored in priority order
+  // (front() = next to try).
+  // TODO(crbug.com/511049071): Consider merging gr_context_type to this list,
+  // so that we have a list of gr_context_type to try starting from the default
+  // type. This would involve refactoring the consumers of this struct, which
+  // currently use gr_context_type in many places.
+  base::circular_deque<GrContextType> fallback_gr_context_types;
+
   // ===================================
   // Settings from //gpu/config/gpu_switches.h
 
-  // Ignores GPU blocklist.
+  // Ignores the entire GPU blocklist.
   bool ignore_gpu_blocklist = false;
+
+  // GPU blocklist entries to be ignored. If this is non-empty then
+  // ignore_gpu_blocklist will be false.
+  std::vector<uint32_t> ignored_gpu_blocklist_entries;
 
   // Start the watchdog suspended, as the app is already backgrounded and won't
   // send a background/suspend signal.
@@ -233,11 +252,13 @@ struct GPU_EXPORT GpuPreferences {
 
   // ===================================
   // Settings from //gpu/command_buffer/service/gpu_switches.h
-  // The type of the GrContext or Graphite Context.
-  GrContextType gr_context_type = GrContextType::kGL;
 
   // Use Vulkan for rasterization and display compositing.
   VulkanImplementationName use_vulkan = VulkanImplementationName::kNone;
+
+  // Enable WebGpu on vulkan via gl interop. Not serialized it is accessed only
+  // in the GPU process.
+  bool enable_webgpu_on_vk_via_gl_interop = false;
 
   // Enable using vulkan protected memory.
   bool enable_vulkan_protected_memory = false;

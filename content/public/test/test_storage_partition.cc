@@ -34,10 +34,6 @@ TestStoragePartition::GetCertVerifierServiceUpdater() {
   return nullptr;
 }
 
-storage::SharedStorageManager* TestStoragePartition::GetSharedStorageManager() {
-  return nullptr;
-}
-
 scoped_refptr<network::SharedURLLoaderFactory>
 TestStoragePartition::GetURLLoaderFactoryForBrowserProcess() {
   return test_url_loader_factory_->GetSafeWeakWrapper();
@@ -60,8 +56,8 @@ void TestStoragePartition::CreateTrustTokenQueryAnswerer(
 }
 
 mojo::PendingRemote<network::mojom::URLLoaderNetworkServiceObserver>
-TestStoragePartition::CreateURLLoaderNetworkObserverForFrame(int process_id,
-                                                             int routing_id) {
+TestStoragePartition::CreateURLLoaderNetworkObserverForFrame(
+    const content::GlobalRenderFrameHostId& frame_id) {
   return mojo::NullRemote();
 }
 
@@ -81,10 +77,6 @@ BackgroundSyncContext* TestStoragePartition::GetBackgroundSyncContext() {
 
 storage::FileSystemContext* TestStoragePartition::GetFileSystemContext() {
   return file_system_context_;
-}
-
-storage::DatabaseTracker* TestStoragePartition::GetDatabaseTracker() {
-  return database_tracker_;
 }
 
 DOMStorageContext* TestStoragePartition::GetDOMStorageContext() {
@@ -144,23 +136,6 @@ TestStoragePartition::GetPlatformNotificationContext() {
   return platform_notification_context_;
 }
 
-InterestGroupManager* TestStoragePartition::GetInterestGroupManager() {
-  return nullptr;
-}
-
-AttributionDataModel* TestStoragePartition::GetAttributionDataModel() {
-  return nullptr;
-}
-
-PrivateAggregationDataModel*
-TestStoragePartition::GetPrivateAggregationDataModel() {
-  return nullptr;
-}
-
-CookieDeprecationLabelManager*
-TestStoragePartition::GetCookieDeprecationLabelManager() {
-  return nullptr;
-}
 
 #if BUILDFLAG(ENABLE_LIBRARY_CDMS)
 CdmStorageDataModel* TestStoragePartition::GetCdmStorageDataModel() {
@@ -170,7 +145,7 @@ CdmStorageDataModel* TestStoragePartition::GetCdmStorageDataModel() {
 
 network::mojom::DeviceBoundSessionManager*
 TestStoragePartition::GetDeviceBoundSessionManager() {
-  return nullptr;
+  return device_bound_session_manager_;
 }
 
 BrowsingTopicsSiteDataManager*
@@ -214,7 +189,6 @@ ZoomLevelDelegate* TestStoragePartition::GetZoomLevelDelegate() {
 
 void TestStoragePartition::ClearDataForOrigin(
     uint32_t remove_mask,
-    uint32_t quota_storage_remove_mask,
     const GURL& storage_origin,
     base::OnceClosure callback) {}
 
@@ -224,7 +198,6 @@ void TestStoragePartition::ClearDataForBuckets(
     base::OnceClosure callback) {}
 
 void TestStoragePartition::ClearData(uint32_t remove_mask,
-                                     uint32_t quota_storage_remove_mask,
                                      const blink::StorageKey& storage_key,
                                      const base::Time begin,
                                      const base::Time end,
@@ -232,7 +205,6 @@ void TestStoragePartition::ClearData(uint32_t remove_mask,
 
 void TestStoragePartition::ClearData(
     uint32_t remove_mask,
-    uint32_t quota_storage_remove_mask,
     BrowsingDataFilterBuilder* filter_builder,
     StorageKeyPolicyMatcherFunction storage_key_policy_matcher,
     network::mojom::CookieDeletionFilterPtr cookie_deletion_filter,
@@ -270,8 +242,6 @@ void TestStoragePartition::FlushNetworkInterfaceForTesting() {}
 void TestStoragePartition::FlushCertVerifierInterfaceForTesting() {}
 
 void TestStoragePartition::WaitForDeletionTasksForTesting() {}
-
-void TestStoragePartition::WaitForCodeCacheShutdownForTesting() {}
 
 void TestStoragePartition::SetNetworkContextForTesting(
     mojo::PendingRemote<network::mojom::NetworkContext>

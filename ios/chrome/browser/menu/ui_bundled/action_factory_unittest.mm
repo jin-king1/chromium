@@ -6,7 +6,6 @@
 
 #import "base/apple/foundation_util.h"
 #import "base/test/metrics/histogram_tester.h"
-#import "base/test/scoped_feature_list.h"
 #import "base/test/task_environment.h"
 #import "components/tab_groups/tab_group_id.h"
 #import "components/tab_groups/tab_group_visual_data.h"
@@ -17,6 +16,7 @@
 #import "ios/chrome/browser/shared/model/web_state_list/tab_group.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
+#import "ios/chrome/grit/ios_branded_strings.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "testing/gmock/include/gmock/gmock.h"
 #import "testing/gtest/include/gtest/gtest.h"
@@ -46,7 +46,6 @@ class ActionFactoryTest : public PlatformTest {
         CGSizeMake(10, 10), [UIColor blueColor]);
   }
 
-  base::test::ScopedFeatureList feature_list_;
   base::test::TaskEnvironment task_environment_;
   base::HistogramTester histogram_tester_;
   NSString* test_title_;
@@ -75,8 +74,8 @@ TEST_F(ActionFactoryTest, BookmarkAction) {
   ActionFactory* factory =
       [[ActionFactory alloc] initWithScenario:kTestMenuScenario];
 
-  UIImage* expectedImage = DefaultSymbolWithPointSize(kAddBookmarkActionSymbol,
-                                                      kSymbolActionPointSize);
+  UIImage* expectedImage =
+      SymbolWithPointSize(SymbolAddBookmarkAction, kSymbolActionPointSize);
   NSString* expectedTitle =
       l10n_util::GetNSString(IDS_IOS_CONTENT_CONTEXT_ADDTOBOOKMARKS);
 
@@ -93,7 +92,7 @@ TEST_F(ActionFactoryTest, CloseRegularTabAction) {
       [[ActionFactory alloc] initWithScenario:kTestMenuScenario];
 
   UIImage* expectedImage =
-      DefaultSymbolWithPointSize(kXMarkSymbol, kSymbolActionPointSize);
+      SymbolWithPointSize(SymbolXMark, kSymbolActionPointSize);
   NSString* expectedTitle =
       l10n_util::GetNSString(IDS_IOS_CONTENT_CONTEXT_CLOSETAB);
 
@@ -110,7 +109,7 @@ TEST_F(ActionFactoryTest, ClosePinnedTabAction) {
       [[ActionFactory alloc] initWithScenario:kTestMenuScenario];
 
   UIImage* expectedImage =
-      DefaultSymbolWithPointSize(kXMarkSymbol, kSymbolActionPointSize);
+      SymbolWithPointSize(SymbolXMark, kSymbolActionPointSize);
   NSString* expectedTitle =
       l10n_util::GetNSString(IDS_IOS_CONTENT_CONTEXT_CLOSEPINNEDTAB);
 
@@ -126,7 +125,7 @@ TEST_F(ActionFactoryTest, CopyAction) {
   ActionFactory* factory =
       [[ActionFactory alloc] initWithScenario:kTestMenuScenario];
   UIImage* expectedImage =
-      DefaultSymbolWithPointSize(kLinkActionSymbol, kSymbolActionPointSize);
+      SymbolWithPointSize(SymbolLinkAction, kSymbolActionPointSize);
   NSString* expectedTitle =
       l10n_util::GetNSString(IDS_IOS_COPY_LINK_ACTION_TITLE);
 
@@ -143,7 +142,7 @@ TEST_F(ActionFactoryTest, ShareAction) {
       [[ActionFactory alloc] initWithScenario:kTestMenuScenario];
 
   UIImage* expectedImage =
-      DefaultSymbolWithPointSize(kShareSymbol, kSymbolActionPointSize);
+      SymbolWithPointSize(SymbolShare, kSymbolActionPointSize);
   NSString* expectedTitle = l10n_util::GetNSString(IDS_IOS_SHARE_BUTTON_LABEL);
 
   UIAction* action = [factory actionToShareWithBlock:^{
@@ -159,7 +158,7 @@ TEST_F(ActionFactoryTest, DeleteAction) {
       [[ActionFactory alloc] initWithScenario:kTestMenuScenario];
 
   UIImage* expectedImage =
-      DefaultSymbolWithPointSize(kDeleteActionSymbol, kSymbolActionPointSize);
+      SymbolWithPointSize(SymbolDeleteAction, kSymbolActionPointSize);
   NSString* expectedTitle = l10n_util::GetNSString(IDS_IOS_DELETE_ACTION_TITLE);
 
   UIAction* action = [factory actionToDeleteWithBlock:^{
@@ -175,8 +174,8 @@ TEST_F(ActionFactoryTest, ReadLaterAction) {
   ActionFactory* factory =
       [[ActionFactory alloc] initWithScenario:kTestMenuScenario];
 
-  UIImage* expectedImage = DefaultSymbolWithPointSize(kReadLaterActionSymbol,
-                                                      kSymbolActionPointSize);
+  UIImage* expectedImage =
+      SymbolWithPointSize(SymbolReadLaterAction, kSymbolActionPointSize);
   NSString* expectedTitle =
       l10n_util::GetNSString(IDS_IOS_CONTENT_CONTEXT_ADDTOREADINGLIST);
 
@@ -193,8 +192,9 @@ TEST_F(ActionFactoryTest, RemoveAction) {
       [[ActionFactory alloc] initWithScenario:kTestMenuScenario];
 
   UIImage* expectedImage =
-      DefaultSymbolWithPointSize(kHideActionSymbol, kSymbolActionPointSize);
-  NSString* expectedTitle = l10n_util::GetNSString(IDS_IOS_REMOVE_ACTION_TITLE);
+      SymbolWithPointSize(SymbolHideAction, kSymbolActionPointSize);
+  NSString* expectedTitle =
+      l10n_util::GetNSString(IDS_IOS_CONTENT_SUGGESTIONS_NEVER_SHOW_SITE);
 
   UIAction* action = [factory actionToRemoveWithBlock:^{
   }];
@@ -209,7 +209,7 @@ TEST_F(ActionFactoryTest, EditAction) {
       [[ActionFactory alloc] initWithScenario:kTestMenuScenario];
 
   UIImage* expectedImage =
-      DefaultSymbolWithPointSize(kEditActionSymbol, kSymbolActionPointSize);
+      SymbolWithPointSize(SymbolEditAction, kSymbolActionPointSize);
   NSString* expectedTitle = l10n_util::GetNSString(IDS_IOS_EDIT_ACTION_TITLE);
 
   UIAction* action = [factory actionToEditWithBlock:^{
@@ -225,7 +225,7 @@ TEST_F(ActionFactoryTest, openAllTabsAction) {
       [[ActionFactory alloc] initWithScenario:kTestMenuScenario];
 
   UIImage* expectedImage =
-      DefaultSymbolWithPointSize(kPlusSymbol, kSymbolActionPointSize);
+      SymbolWithPointSize(SymbolPlus, kSymbolActionPointSize);
   NSString* expectedTitle =
       l10n_util::GetNSString(IDS_IOS_CONTENT_CONTEXT_OPEN_ALL_LINKS);
 
@@ -242,7 +242,7 @@ TEST_F(ActionFactoryTest, hideAction) {
       [[ActionFactory alloc] initWithScenario:kTestMenuScenario];
 
   UIImage* expectedImage =
-      DefaultSymbolWithPointSize(kHideActionSymbol, kSymbolActionPointSize);
+      SymbolWithPointSize(SymbolHideAction, kSymbolActionPointSize);
   NSString* expectedTitle =
       l10n_util::GetNSString(IDS_IOS_RECENT_TABS_HIDE_MENU_OPTION);
 
@@ -259,7 +259,7 @@ TEST_F(ActionFactoryTest, MoveFolderAction) {
       [[ActionFactory alloc] initWithScenario:kTestMenuScenario];
 
   UIImage* expectedImage = MakeSymbolMulticolor(
-      CustomSymbolWithPointSize(kMoveFolderSymbol, kSymbolActionPointSize));
+      SymbolWithPointSize(SymbolMoveFolder, kSymbolActionPointSize));
 
   NSString* expectedTitle =
       l10n_util::GetNSString(IDS_IOS_BOOKMARK_CONTEXT_MENU_MOVE);
@@ -276,8 +276,8 @@ TEST_F(ActionFactoryTest, markAsReadAction) {
   ActionFactory* factory =
       [[ActionFactory alloc] initWithScenario:kTestMenuScenario];
 
-  UIImage* expectedImage = DefaultSymbolWithPointSize(kMarkAsReadActionSymbol,
-                                                      kSymbolActionPointSize);
+  UIImage* expectedImage =
+      SymbolWithPointSize(SymbolMarkAsReadAction, kSymbolActionPointSize);
 
   NSString* expectedTitle =
       l10n_util::GetNSString(IDS_IOS_READING_LIST_MARK_AS_READ_ACTION);
@@ -294,8 +294,8 @@ TEST_F(ActionFactoryTest, markAsUnreadAction) {
   ActionFactory* factory =
       [[ActionFactory alloc] initWithScenario:kTestMenuScenario];
 
-  UIImage* expectedImage = DefaultSymbolWithPointSize(kMarkAsUnreadActionSymbol,
-                                                      kSymbolActionPointSize);
+  UIImage* expectedImage =
+      SymbolWithPointSize(SymbolMarkAsUnreadAction, kSymbolActionPointSize);
 
   NSString* expectedTitle =
       l10n_util::GetNSString(IDS_IOS_READING_LIST_MARK_AS_UNREAD_ACTION);
@@ -313,8 +313,8 @@ TEST_F(ActionFactoryTest, viewOfflineVersion) {
   ActionFactory* factory =
       [[ActionFactory alloc] initWithScenario:kTestMenuScenario];
 
-  UIImage* expectedImage = DefaultSymbolWithPointSize(kCheckmarkCircleSymbol,
-                                                      kSymbolActionPointSize);
+  UIImage* expectedImage =
+      SymbolWithPointSize(SymbolCheckmarkCircle, kSymbolActionPointSize);
 
   NSString* expectedTitle =
       l10n_util::GetNSString(IDS_IOS_READING_LIST_OPEN_OFFLINE_BUTTON);
@@ -331,8 +331,8 @@ TEST_F(ActionFactoryTest, SaveImageAction) {
   ActionFactory* factory =
       [[ActionFactory alloc] initWithScenario:kTestMenuScenario];
 
-  UIImage* expectedImage = DefaultSymbolWithPointSize(kSaveImageActionSymbol,
-                                                      kSymbolActionPointSize);
+  UIImage* expectedImage =
+      SymbolWithPointSize(SymbolSaveImageAction, kSymbolActionPointSize);
   NSString* expectedTitle =
       l10n_util::GetNSString(IDS_IOS_CONTENT_CONTEXT_SAVEIMAGE);
 
@@ -349,7 +349,7 @@ TEST_F(ActionFactoryTest, CopyImageAction) {
       [[ActionFactory alloc] initWithScenario:kTestMenuScenario];
 
   UIImage* expectedImage =
-      DefaultSymbolWithPointSize(kCopyActionSymbol, kSymbolActionPointSize);
+      SymbolWithPointSize(SymbolCopyAction, kSymbolActionPointSize);
   NSString* expectedTitle =
       l10n_util::GetNSString(IDS_IOS_CONTENT_CONTEXT_COPYIMAGE);
 
@@ -366,12 +366,10 @@ TEST_F(ActionFactoryTest, CloseAllTabsAction) {
       [[ActionFactory alloc] initWithScenario:kTestMenuScenario];
 
   UIImage* expectedImage =
-      DefaultSymbolWithPointSize(kXMarkSymbol, kSymbolActionPointSize);
+      SymbolWithPointSize(SymbolXMark, kSymbolActionPointSize);
+
   NSString* expectedTitle =
-      IsTabGroupSyncEnabled()
-          ? l10n_util::GetNSString(
-                IDS_IOS_CONTENT_CONTEXT_CLOSEALLTABSANDGROUPS)
-          : l10n_util::GetNSString(IDS_IOS_CONTENT_CONTEXT_CLOSEALLTABS);
+      l10n_util::GetNSString(IDS_IOS_CONTENT_CONTEXT_CLOSEALLTABSANDGROUPS);
 
   UIAction* action = [factory actionToCloseAllTabsWithBlock:^{
   }];
@@ -385,8 +383,8 @@ TEST_F(ActionFactoryTest, SelectTabsAction) {
   ActionFactory* factory =
       [[ActionFactory alloc] initWithScenario:kTestMenuScenario];
 
-  UIImage* expectedImage = DefaultSymbolWithPointSize(kCheckmarkCircleSymbol,
-                                                      kSymbolActionPointSize);
+  UIImage* expectedImage =
+      SymbolWithPointSize(SymbolCheckmarkCircle, kSymbolActionPointSize);
   NSString* expectedTitle =
       l10n_util::GetNSString(IDS_IOS_CONTENT_CONTEXT_SELECTTABS);
 
@@ -400,16 +398,11 @@ TEST_F(ActionFactoryTest, SelectTabsAction) {
 // Tests that the add to new group action has the right title and image when in
 // a submenu.
 TEST_F(ActionFactoryTest, AddTabsToNewGroupInSubmenuAction) {
-  feature_list_.InitWithFeatures({kTabGroupsIPad, kModernTabStrip}, {});
-  if (!IsTabGroupInGridEnabled()) {
-    // Disabled on iPadOS 16.
-    return;
-  }
   ActionFactory* factory =
       [[ActionFactory alloc] initWithScenario:kTestMenuScenario];
 
-  UIImage* expectedImage = DefaultSymbolWithPointSize(kNewTabGroupActionSymbol,
-                                                      kSymbolActionPointSize);
+  UIImage* expectedImage =
+      SymbolWithPointSize(SymbolNewTabGroupAction, kSymbolActionPointSize);
   NSString* expectedTitle = l10n_util::GetNSString(
       IDS_IOS_CONTENT_CONTEXT_ADDTABTONEWTABGROUP_SUBMENU);
 
@@ -425,16 +418,11 @@ TEST_F(ActionFactoryTest, AddTabsToNewGroupInSubmenuAction) {
 // Tests that the add to new group action has the right title and image when
 // *not* in a submenu.
 TEST_F(ActionFactoryTest, AddTabsToNewGroupOutOfMenuAction) {
-  feature_list_.InitWithFeatures({kTabGroupsIPad, kModernTabStrip}, {});
-  if (!IsTabGroupInGridEnabled()) {
-    // Disabled on iPadOS 16.
-    return;
-  }
   ActionFactory* factory =
       [[ActionFactory alloc] initWithScenario:kTestMenuScenario];
 
-  UIImage* expectedImage = DefaultSymbolWithPointSize(kNewTabGroupActionSymbol,
-                                                      kSymbolActionPointSize);
+  UIImage* expectedImage =
+      SymbolWithPointSize(SymbolNewTabGroupAction, kSymbolActionPointSize);
   NSString* expectedTitle = l10n_util::GetPluralNSStringF(
       IDS_IOS_CONTENT_CONTEXT_ADDTABTONEWTABGROUP, 2);
 
@@ -450,11 +438,6 @@ TEST_F(ActionFactoryTest, AddTabsToNewGroupOutOfMenuAction) {
 // Tests the different sub elements of the menu when adding to a group with
 // different groups available.
 TEST_F(ActionFactoryTest, AddTabsToGroupSeveralGroups) {
-  feature_list_.InitWithFeatures({kTabGroupsIPad, kModernTabStrip}, {});
-  if (!IsTabGroupInGridEnabled()) {
-    // Disabled on iPadOS 16.
-    return;
-  }
   ActionFactory* factory =
       [[ActionFactory alloc] initWithScenario:kTestMenuScenario];
 
@@ -478,8 +461,8 @@ TEST_F(ActionFactoryTest, AddTabsToGroupSeveralGroups) {
   ASSERT_EQ(2u, menu.children.count);
 
   EXPECT_TRUE([menu.children[0] isKindOfClass:UIAction.class]);
-  UIImage* expectedImage = DefaultSymbolWithPointSize(kNewTabGroupActionSymbol,
-                                                      kSymbolActionPointSize);
+  UIImage* expectedImage =
+      SymbolWithPointSize(SymbolNewTabGroupAction, kSymbolActionPointSize);
   NSString* expectedTitle = l10n_util::GetNSString(
       IDS_IOS_CONTENT_CONTEXT_ADDTABTONEWTABGROUP_SUBMENU);
   EXPECT_NSEQ(expectedTitle, menu.children[0].title);
@@ -506,11 +489,6 @@ TEST_F(ActionFactoryTest, AddTabsToGroupSeveralGroups) {
 // Tests the different sub elements of the menu when adding to a group with no
 // group available.
 TEST_F(ActionFactoryTest, AddTabsToGroupNoGroups) {
-  feature_list_.InitWithFeatures({kTabGroupsIPad, kModernTabStrip}, {});
-  if (!IsTabGroupInGridEnabled()) {
-    // Disabled on iPadOS 16.
-    return;
-  }
   ActionFactory* factory =
       [[ActionFactory alloc] initWithScenario:kTestMenuScenario];
 
@@ -524,8 +502,8 @@ TEST_F(ActionFactoryTest, AddTabsToGroupNoGroups) {
 
   EXPECT_TRUE([menu_element isKindOfClass:UIAction.class]);
 
-  UIImage* expectedImage = DefaultSymbolWithPointSize(kNewTabGroupActionSymbol,
-                                                      kSymbolActionPointSize);
+  UIImage* expectedImage =
+      SymbolWithPointSize(SymbolNewTabGroupAction, kSymbolActionPointSize);
   NSString* expectedTitle = l10n_util::GetPluralNSStringF(
       IDS_IOS_CONTENT_CONTEXT_ADDTABTONEWTABGROUP, 2);
   EXPECT_NSEQ(expectedTitle, menu_element.title);
@@ -534,12 +512,6 @@ TEST_F(ActionFactoryTest, AddTabsToGroupNoGroups) {
 
 // Tests the different sub elements of the menu when moving a tab to a group.
 TEST_F(ActionFactoryTest, MoveTabFromGroup) {
-  feature_list_.InitWithFeatures(
-      {kTabGroupsIPad, kModernTabStrip, kTabGroupSync}, {});
-  if (!IsTabGroupInGridEnabled()) {
-    // Disabled on iPadOS 16.
-    return;
-  }
   ActionFactory* factory =
       [[ActionFactory alloc] initWithScenario:kTestMenuScenario];
 
@@ -565,8 +537,8 @@ TEST_F(ActionFactoryTest, MoveTabFromGroup) {
   ASSERT_EQ(2u, menu.children.count);
 
   EXPECT_TRUE([menu.children[0] isKindOfClass:UIAction.class]);
-  UIImage* expectedImage = DefaultSymbolWithPointSize(
-      kRemoveTabFromGroupActionSymbol, kSymbolActionPointSize);
+  UIImage* expectedImage = SymbolWithPointSize(SymbolRemoveTabFromGroupAction,
+                                               kSymbolActionPointSize);
   NSString* expectedTitle =
       l10n_util::GetNSString(IDS_IOS_CONTENT_CONTEXT_REMOVEFROMGROUP);
   EXPECT_NSEQ(expectedTitle, menu.children[0].title);
@@ -590,17 +562,11 @@ TEST_F(ActionFactoryTest, MoveTabFromGroup) {
 
 // Tests that the ungroup tab group action has the right title and image.
 TEST_F(ActionFactoryTest, UngroupTabGroup) {
-  feature_list_.InitWithFeatures(
-      {kTabGroupsIPad, kModernTabStrip, kTabGroupSync}, {});
-  if (!IsTabGroupInGridEnabled()) {
-    // Disabled on iPadOS 16.
-    return;
-  }
   ActionFactory* factory =
       [[ActionFactory alloc] initWithScenario:kTestMenuScenario];
 
-  UIImage* expectedImage = DefaultSymbolWithPointSize(kUngroupTabGroupSymbol,
-                                                      kSymbolActionPointSize);
+  UIImage* expectedImage =
+      SymbolWithPointSize(SymbolUngroupTabGroup, kSymbolActionPointSize);
   NSString* expectedTitle =
       l10n_util::GetNSString(IDS_IOS_CONTENT_CONTEXT_UNGROUP);
 
@@ -613,17 +579,11 @@ TEST_F(ActionFactoryTest, UngroupTabGroup) {
 
 // Tests that the delete tab group action has the right title and image.
 TEST_F(ActionFactoryTest, DeleteTabGroup) {
-  feature_list_.InitWithFeatures(
-      {kTabGroupsIPad, kModernTabStrip, kTabGroupSync}, {});
-  if (!IsTabGroupInGridEnabled()) {
-    // Disabled on iPadOS 16.
-    return;
-  }
   ActionFactory* factory =
       [[ActionFactory alloc] initWithScenario:kTestMenuScenario];
 
   UIImage* expectedImage =
-      DefaultSymbolWithPointSize(kDeleteActionSymbol, kSymbolActionPointSize);
+      SymbolWithPointSize(SymbolDeleteAction, kSymbolActionPointSize);
   NSString* expectedTitle =
       l10n_util::GetNSString(IDS_IOS_CONTENT_CONTEXT_DELETEGROUP);
 
@@ -637,17 +597,11 @@ TEST_F(ActionFactoryTest, DeleteTabGroup) {
 
 // Tests that the close tab group action has the right title and image.
 TEST_F(ActionFactoryTest, CloseTabGroup) {
-  feature_list_.InitWithFeatures(
-      {kTabGroupsIPad, kModernTabStrip, kTabGroupSync}, {});
-  if (!IsTabGroupInGridEnabled()) {
-    // Disabled on iPadOS 16.
-    return;
-  }
   ActionFactory* factory =
       [[ActionFactory alloc] initWithScenario:kTestMenuScenario];
 
   UIImage* expectedImage =
-      DefaultSymbolWithPointSize(kXMarkSymbol, kSymbolActionPointSize);
+      SymbolWithPointSize(SymbolXMark, kSymbolActionPointSize);
   NSString* expectedTitle =
       l10n_util::GetNSString(IDS_IOS_CONTENT_CONTEXT_CLOSEGROUP);
 
@@ -661,17 +615,11 @@ TEST_F(ActionFactoryTest, CloseTabGroup) {
 
 // Tests that the manage tab group action has the right title and image.
 TEST_F(ActionFactoryTest, ManageTabGroup) {
-  feature_list_.InitWithFeatures(
-      {kTabGroupsIPad, kModernTabStrip, kTabGroupSync}, {});
-  if (!IsTabGroupInGridEnabled()) {
-    // Disabled on iPadOS 16.
-    return;
-  }
   ActionFactory* factory =
       [[ActionFactory alloc] initWithScenario:kTestMenuScenario];
 
   UIImage* expectedImage =
-      DefaultSymbolWithPointSize(kPersonPlusSymbol, kSymbolActionPointSize);
+      SymbolWithPointSize(SymbolPersonPlus, kSymbolActionPointSize);
   NSString* expectedTitle =
       l10n_util::GetNSString(IDS_IOS_CONTENT_CONTEXT_MANAGESHAREDGROUP);
 
@@ -684,17 +632,11 @@ TEST_F(ActionFactoryTest, ManageTabGroup) {
 
 // Tests that the share tab group action has the right title and image.
 TEST_F(ActionFactoryTest, ShareTabGroup) {
-  feature_list_.InitWithFeatures(
-      {kTabGroupsIPad, kModernTabStrip, kTabGroupSync}, {});
-  if (!IsTabGroupInGridEnabled()) {
-    // Disabled on iPadOS 16.
-    return;
-  }
   ActionFactory* factory =
       [[ActionFactory alloc] initWithScenario:kTestMenuScenario];
 
   UIImage* expectedImage =
-      DefaultSymbolWithPointSize(kPersonPlusSymbol, kSymbolActionPointSize);
+      SymbolWithPointSize(SymbolPersonPlus, kSymbolActionPointSize);
   NSString* expectedTitle =
       l10n_util::GetNSString(IDS_IOS_CONTENT_CONTEXT_SHARELOCALGROUP);
 
@@ -707,17 +649,11 @@ TEST_F(ActionFactoryTest, ShareTabGroup) {
 
 // Tests that the leave shared tab group action has the right title and image.
 TEST_F(ActionFactoryTest, LeaveSharedTabGroup) {
-  feature_list_.InitWithFeatures(
-      {kTabGroupsIPad, kModernTabStrip, kTabGroupSync}, {});
-  if (!IsTabGroupInGridEnabled()) {
-    // Disabled on iPadOS 16.
-    return;
-  }
   ActionFactory* factory =
       [[ActionFactory alloc] initWithScenario:kTestMenuScenario];
 
   UIImage* expectedImage =
-      DefaultSymbolWithPointSize(kMinusInCircleSymbol, kSymbolActionPointSize);
+      SymbolWithPointSize(SymbolMinusInCircle, kSymbolActionPointSize);
   NSString* expectedTitle =
       l10n_util::GetNSString(IDS_IOS_CONTENT_CONTEXT_LEAVESHAREDGROUP);
 
@@ -731,17 +667,11 @@ TEST_F(ActionFactoryTest, LeaveSharedTabGroup) {
 
 // Tests that the delete shared tab group action has the right title and image.
 TEST_F(ActionFactoryTest, DeleteSharedTabGroup) {
-  feature_list_.InitWithFeatures(
-      {kTabGroupsIPad, kModernTabStrip, kTabGroupSync}, {});
-  if (!IsTabGroupInGridEnabled()) {
-    // Disabled on iPadOS 16.
-    return;
-  }
   ActionFactory* factory =
       [[ActionFactory alloc] initWithScenario:kTestMenuScenario];
 
   UIImage* expectedImage =
-      DefaultSymbolWithPointSize(kDeleteActionSymbol, kSymbolActionPointSize);
+      SymbolWithPointSize(SymbolDeleteAction, kSymbolActionPointSize);
   NSString* expectedTitle =
       l10n_util::GetNSString(IDS_IOS_CONTENT_CONTEXT_DELETESHAREDGROUP);
 
@@ -751,4 +681,18 @@ TEST_F(ActionFactoryTest, DeleteSharedTabGroup) {
   EXPECT_NSEQ(expectedTitle, action.title);
   EXPECT_EQ(expectedImage, action.image);
   EXPECT_EQ(UIMenuElementAttributesDestructive, action.attributes);
+}
+
+// Tests that the open image in Gemini action has the correct attributes.
+TEST_F(ActionFactoryTest, OpenImageInGemini) {
+  ActionFactory* factory =
+      [[ActionFactory alloc] initWithScenario:kTestMenuScenario];
+
+  NSString* expectedTitle =
+      l10n_util::GetNSString(IDS_IOS_GEMINI_IMAGE_CONTEXT_MENU_ENTRY_POINT);
+
+  UIAction* action = [factory actionToOpenImageInGeminiWithBlock:nil];
+
+  EXPECT_NSEQ(expectedTitle, action.title);
+  EXPECT_NE(nil, action.image);
 }

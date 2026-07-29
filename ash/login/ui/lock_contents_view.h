@@ -217,7 +217,6 @@ class ASH_EXPORT LockContentsView
   void HideMediaView();
   bool AreMediaControlsEnabled() const;
 
-  void OnWillChangeFocus(View* focused_before, View* focused_now) override;
   void OnDidChangeFocus(View* focused_before, View* focused_now) override;
 
  private:
@@ -436,7 +435,10 @@ class ASH_EXPORT LockContentsView
 
   display::ScopedDisplayObserver display_observer_{this};
 
-  base::ScopedObservation<EnterpriseDomainModel, EnterpriseDomainObserver>
+  // TODO(crbug.com/498580286): remove when the LockContentsView is
+  // no longer outliving the EnterpriseDomainModel it observes.
+  base::ScopedObservation<EnterpriseDomainModel,
+                          EnterpriseDomainObserver>::LeakedDanglingUntriaged
       enterprise_domain_model_observation_{this};
 
   // All error bubbles and the tooltip view are child views of LockContentsView,

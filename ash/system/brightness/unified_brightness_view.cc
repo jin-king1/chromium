@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "ash/system/brightness/unified_brightness_view.h"
 
 #include <memory>
@@ -25,6 +20,7 @@
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/models/image_model.h"
 #include "ui/chromeos/styles/cros_tokens_color_mappings.h"
+#include "ui/display/util/display_util.h"
 #include "ui/gfx/vector_icon_types.h"
 
 namespace ash {
@@ -40,7 +36,8 @@ UnifiedBrightnessView::UnifiedBrightnessView(
                         /*is_togglable=*/false),
       model_(model),
       night_light_controller_(Shell::Get()->night_light_controller()) {
-  model_->AddObserver(this);
+  unified_system_tray_model_observation_.Observe(model_.get());
+  UpdateBrightnessSlider();
 
   // This case applies to the brightness slider in the `DisplayDetailedView`. If
   // `detailed_button_callback` is not passed in, both the `night_light_button_`
@@ -96,22 +93,24 @@ UnifiedBrightnessView::UnifiedBrightnessView(
     // and the brightness slider popup is shown, do not allow the more_button to
     // open quick settings.
     auto* window = Shell::Get()->screen_pinning_controller()->pinned_window();
-    if (window && WindowState::Get(window)->IsTrustedPinned()) {
+    if (window && WindowState::Get(window)->IsLockedFullscreen()) {
       more_button_->SetEnabled(false);
     }
 
   OnDisplayBrightnessChanged(/*by_user=*/false);
 }
 
-UnifiedBrightnessView::~UnifiedBrightnessView() {
-  model_->RemoveObserver(this);
-}
+UnifiedBrightnessView::~UnifiedBrightnessView() = default;
 
 void UnifiedBrightnessView::OnDisplayBrightnessChanged(bool by_user) {
   float const level = model_->display_brightness();
   slider_button()->SetVectorIcon(GetBrightnessIconForLevel(level));
   slider_button()->SetIconColor(cros_tokens::kCrosSysSystemOnPrimaryContainer);
   SetSliderValue(level, by_user);
+}
+
+void UnifiedBrightnessView::OnLidStateChanged() {
+  UpdateBrightnessSlider();
 }
 
 const gfx::VectorIcon& UnifiedBrightnessView::GetBrightnessIconForLevel(
@@ -151,6 +150,19 @@ void UnifiedBrightnessView::VisibilityChanged(View* starting_from,
   if (night_light_button_) {
     UpdateNightLightButton();
   }
+}
+
+void UnifiedBrightnessView::UpdateBrightnessSlider() {
+  // For the case of ChromeBox and etc, when there is no internal display, the
+  // slider should be disabled.
+  if (!display::HasInternalDisplay()) {
+    slider()->SetEnabled(false);
+    return;
+  }
+
+  // When the lid is open, the brightness should be changeable.
+  chromeos::PowerManagerClient::LidState state = model_->lid_state();
+  slider()->SetEnabled(state == chromeos::PowerManagerClient::LidState::OPEN);
 }
 
 BEGIN_METADATA(UnifiedBrightnessView)

@@ -1,14 +1,16 @@
-
 // Copyright 2024 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
+
 #ifndef COMPONENTS_OPTIMIZATION_GUIDE_CORE_MODEL_EXECUTION_SAFETY_MODEL_INFO_H_
 #define COMPONENTS_OPTIMIZATION_GUIDE_CORE_MODEL_EXECUTION_SAFETY_MODEL_INFO_H_
 
 #include <memory>
 
+#include "base/containers/flat_map.h"
+#include "base/files/file_path.h"
 #include "base/types/optional_ref.h"
-#include "components/optimization_guide/core/model_info.h"
+#include "components/optimization_guide/core/delivery/model_info.h"
 #include "components/optimization_guide/proto/model_execution.pb.h"
 #include "components/optimization_guide/proto/text_safety_model_metadata.pb.h"
 
@@ -23,7 +25,6 @@ class SafetyModelInfo {
   std::optional<proto::FeatureTextSafetyConfiguration> GetConfig(
       proto::ModelExecutionFeature feature) const;
   base::FilePath GetDataPath() const;
-  base::FilePath GetSpModelPath() const;
   int64_t GetVersion() const;
   uint32_t num_output_categories() const { return num_output_categories_; }
 

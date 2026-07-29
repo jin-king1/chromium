@@ -12,7 +12,7 @@
 @protocol AccountPickerConfirmationScreenCoordinatorDelegate <NSObject>
 
 // Called when the user wants to skip the consistency promo.
-- (void)accountPickerConfirmationScreenCoordinatorCancel:
+- (void)accountPickerConfirmationScreenCoordinatorWantsToBeStopped:
     (AccountPickerConfirmationScreenCoordinator*)coordinator;
 
 // Called when the user wants to choose a different identity.
@@ -22,10 +22,6 @@
 
 // Called when the user wants to sign-in with the default identity.
 - (void)accountPickerConfirmationScreenCoordinatorSubmit:
-    (AccountPickerConfirmationScreenCoordinator*)coordinator;
-
-// Called when the user wants to sign in without an existing account.
-- (void)accountPickerConfirmationScreenCoordinatorOpenAddAccount:
     (AccountPickerConfirmationScreenCoordinator*)coordinator;
 
 @end

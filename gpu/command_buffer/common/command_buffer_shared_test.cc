@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 // This file contains the tests for the CommandBufferSharedState class.
 
 #include "gpu/command_buffer/common/command_buffer_shared.h"
@@ -15,6 +10,7 @@
 
 #include <memory>
 
+#include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/task/single_thread_task_runner.h"
@@ -47,7 +43,8 @@ TEST_F(CommandBufferSharedTest, TestBasic) {
 
 static const int kSize = 100000;
 
-void WriteToState(int32_t* buffer, CommandBufferSharedState* shared_state) {
+void WriteToState(base::span<int32_t, kSize> buffer,
+                  CommandBufferSharedState* shared_state) {
   CommandBuffer::State state;
   for (int i = 0; i < kSize; i++) {
     state.token = i - 1;
@@ -64,16 +61,13 @@ void WriteToState(int32_t* buffer, CommandBufferSharedState* shared_state) {
 }
 
 TEST_F(CommandBufferSharedTest, TestConsistency) {
-  std::unique_ptr<int32_t[]> buffer;
-  buffer.reset(new int32_t[kSize]);
+  std::array<int32_t, kSize> buffer{0};
   base::Thread consumer("Reader Thread");
-
-  memset(buffer.get(), 0, kSize * sizeof(int32_t));
 
   consumer.Start();
   consumer.task_runner()->PostTask(
       FROM_HERE,
-      base::BindOnce(&WriteToState, buffer.get(), shared_state_.get()));
+      base::BindOnce(&WriteToState, base::span(buffer), shared_state_.get()));
 
   CommandBuffer::State last_state;
   while (true) {

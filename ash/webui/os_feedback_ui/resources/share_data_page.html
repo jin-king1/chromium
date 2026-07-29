@@ -304,17 +304,10 @@
       <!-- System Information -->
       <div id="sysInfoContainer" class="checkbox-field-container">
         <cr-checkbox id="sysInfoCheckbox" aria-labelledby="sysInfoCheckboxLabel"
-            checked="[[checkSysInfoAndMetrics(feedbackContext.fromSettingsSearch)]]">
+            checked="[[checkSysInfoAndMetrics(
+                  feedbackContext.settingsSearchDoNotRecordMetrics)]]">
           <div id="sysInfoCheckboxLabel" inner-h-t-m-l="[[getSysInfoCheckboxLabel()]]"
               class="checkbox-label"></div>
-        </cr-checkbox>
-      </div>
-      <!-- Assistant Logs (Googler Internal Only) -->
-      <div id="assistantLogsContainer" class="checkbox-field-container"
-          hidden="[[!shouldShowAssistantCheckbox]]">
-        <cr-checkbox id="assiatantLogsCheckbox" aria-labelledby="assistantLogsLabel" checked>
-          <div id="assistantLogsLabel" class="checkbox-label"
-              inner-h-t-m-l="[[getAssistantLogsCheckboxLabel()]]"></div>
         </cr-checkbox>
       </div>
       <!-- Bluetooth Logs (Googler Internal Only) -->
@@ -332,14 +325,6 @@
             aria-labelledby="wifiDebugLogsInfoLabel" checked>
           <div id="wifiDebugLogsInfoLabel" class="checkbox-label"
               inner-h-t-m-l="[[getWifiDebugLogsCheckboxLabel()]]"></div>
-        </cr-checkbox>
-      </div>
-      <!-- Link Cross Device Doogfood Feedback (Googler Internal Only) -->
-      <div id="linkCrossDeviceDogfoodFeedbackCheckboxContainer" class="checkbox-field-container"
-          hidden="[[!shouldShowLinkCrossDeviceDogfoodFeedbackCheckbox]]">
-        <cr-checkbox id="linkCrossDeviceDogfoodFeedbackCheckbox" aria-labelledby="linkCrossDeviceDogfoodFeedbackInfoLabel" checked>
-          <div id="linkCrossDeviceDogfoodFeedbackInfoLabel" class="checkbox-label"
-              inner-h-t-m-l="[[getLinkCrossDeviceDogfoodFeedbackCheckboxLabel()]]"></div>
         </cr-checkbox>
       </div>
       <!-- Performance trace -->
@@ -412,28 +397,6 @@
   <div slot="button-container">
     <cr-button id="wifiDebugLogsDialogDoneButton" class="action-button"
         on-click="handleCloseWifiDebugLogsDialogClicked">
-      [[i18n('buttonDone')]]
-    </cr-button>
-  </div>
-</cr-dialog>
-<cr-dialog id="linkCrossDeviceDogfoodFeedbackDialog">
-  <div slot="body">
-    [[i18n('linkCrossDeviceDogfoodFeedbackMessage')]]
-  </div>
-  <div slot="button-container">
-    <cr-button id="linkCrossDeviceDogfoodFeedbackDialogDoneButton" class="action-button"
-        on-click="handleCloseLinkCrossDeviceDogfoodFeedbackDialogClicked">
-      [[i18n('buttonDone')]]
-    </cr-button>
-  </div>
-</cr-dialog>
-<cr-dialog id="assistantDialog">
-  <div slot="body">
-    [[i18n('assistantLogsMessage')]]
-  </div>
-  <div slot="button-container">
-    <cr-button id="assistantDialogDoneButton" class="action-button"
-        on-click="handleCloseAssistantDialogClicked">
       [[i18n('buttonDone')]]
     </cr-button>
   </div>

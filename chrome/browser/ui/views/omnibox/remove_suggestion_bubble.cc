@@ -7,7 +7,6 @@
 #include <memory>
 #include <utility>
 
-#include "base/strings/utf_string_conversions.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/omnibox/browser/autocomplete_match.h"
 #include "components/search_engines/template_url_service.h"
@@ -20,8 +19,6 @@
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/layout/box_layout.h"
-
-namespace {
 
 class RemoveSuggestionBubbleDialogDelegateView
     : public views::BubbleDialogDelegateView {
@@ -57,7 +54,7 @@ class RemoveSuggestionBubbleDialogDelegateView
     // Get the Search Provider name associated with this match.
     std::u16string search_provider_short_name;
     const TemplateURL* template_url =
-        match.GetTemplateURL(template_url_service, false);
+        match.GetTemplateURL(template_url_service);
     // If the match has no associated Search Provider, get the default one,
     // although this may still fail if it's forbidden by policy.
     if (!template_url) {
@@ -111,8 +108,6 @@ class RemoveSuggestionBubbleDialogDelegateView
 
 BEGIN_METADATA(RemoveSuggestionBubbleDialogDelegateView)
 END_METADATA
-
-}  // namespace
 
 void ShowRemoveSuggestion(TemplateURLService* template_url_service,
                           views::View* anchor_view,

@@ -4,13 +4,35 @@
 
 #include "components/autofill/core/browser/ui/payments/bnpl_tos_controller_impl.h"
 
-#include "base/functional/callback_helpers.h"
-#include "base/json/json_reader.h"  // TODO: crbug.com/391141123 - Remove when the controller is implemented.
+#include <stddef.h>
+
+#include <memory>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+#include "base/check_deref.h"
+#include "base/feature_list.h"
+#include "base/functional/callback.h"
+#include "base/functional/callback_forward.h"
+#include "base/memory/weak_ptr.h"
 #include "base/strings/utf_string_conversions.h"
+#include "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
+#include "components/autofill/core/browser/data_manager/personal_data_manager.h"
+#include "components/autofill/core/browser/data_model/payments/payment_instrument.h"
+#include "components/autofill/core/browser/foundations/autofill_client.h"
+#include "components/autofill/core/browser/metrics/payments/bnpl_metrics.h"
+#include "components/autofill/core/browser/payments/bnpl_util.h"
+#include "components/autofill/core/browser/payments/legal_message_line.h"
+#include "components/autofill/core/browser/ui/payments/bnpl_tos_controller.h"
 #include "components/autofill/core/browser/ui/payments/bnpl_tos_view.h"
+#include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/signin/public/identity_manager/account_info.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/strings/grit/components_strings.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/gfx/range/range.h"
 #include "url/gurl.h"
 
 using l10n_util::GetStringFUTF16;
@@ -18,19 +40,32 @@ using l10n_util::GetStringUTF16;
 using std::u16string;
 
 namespace autofill {
+using autofill_metrics::BnplTosDialogResult;
+using autofill_metrics::LogBnplTosDialogShown;
 
 namespace {
+// LINT.IfChange
 constexpr std::string_view kWalletLinkText = "wallet.google.com";
 constexpr std::string_view kWalletUrlString = "https://wallet.google.com/";
+// LINT.ThenChange(//chrome/browser/touch_to_fill/autofill/android/internal/java/src/org/chromium/chrome/browser/touch_to_fill/payments/TouchToFillPaymentMethodMediator.java)
 }  // namespace
 
-BnplTosControllerImpl::BnplTosControllerImpl() = default;
+BnplTosControllerImpl::BnplTosControllerImpl(AutofillClient* client)
+    : client_(CHECK_DEREF(client)) {}
 
 BnplTosControllerImpl::~BnplTosControllerImpl() = default;
 
-void BnplTosControllerImpl::OnViewClosing(bool user_accepted) {
-  // The view is being closed so set the pointer to nullptr.
-  view_.reset();
+void BnplTosControllerImpl::OnUserAccepted() {
+  std::move(accept_callback_).Run();
+  LogBnplTosDialogResult(BnplTosDialogResult::kAcceptButtonClicked,
+                         GetIssuerId());
+}
+
+void BnplTosControllerImpl::OnUserCancelled() {
+  Dismiss();
+  std::move(cancel_callback_).Run();
+  LogBnplTosDialogResult(BnplTosDialogResult::kCancelButtonClicked,
+                         GetIssuerId());
 }
 
 u16string BnplTosControllerImpl::GetOkButtonLabel() const {
@@ -42,23 +77,36 @@ u16string BnplTosControllerImpl::GetCancelButtonLabel() const {
 }
 
 u16string BnplTosControllerImpl::GetTitle() const {
-  return GetStringFUTF16(IDS_AUTOFILL_BNPL_TOS_TITLE, issuer_name_);
+  if (model_.issuer.payment_instrument() &&
+      model_.issuer.payment_instrument()->action_required().contains(
+          PaymentInstrument::ActionRequired::kAcceptTos)) {
+    return GetStringFUTF16(IDS_AUTOFILL_BNPL_TOS_LINKED_TITLE,
+                           model_.issuer.GetDisplayName());
+  }
+
+  return GetStringFUTF16(IDS_AUTOFILL_BNPL_TOS_UNLINKED_TITLE,
+                         model_.issuer.GetDisplayName());
 }
 
 u16string BnplTosControllerImpl::GetReviewText() const {
-  return GetStringFUTF16(IDS_AUTOFILL_BNPL_TOS_REVIEW_TEXT, issuer_name_);
+  return GetStringFUTF16(
+      base::FeatureList::IsEnabled(features::kAutofillEnableWalletBranding)
+          ? IDS_AUTOFILL_BNPL_TOS_REVIEW_TEXT_WALLET_BRANDING
+          : IDS_AUTOFILL_BNPL_TOS_REVIEW_TEXT,
+      model_.issuer.GetDisplayName());
 }
 
 u16string BnplTosControllerImpl::GetApproveText() const {
-  return GetStringFUTF16(IDS_AUTOFILL_BNPL_TOS_APPROVE_TEXT, issuer_name_);
+  return GetStringFUTF16(IDS_AUTOFILL_BNPL_TOS_APPROVE_TEXT,
+                         model_.issuer.GetDisplayName());
 }
 
-TextWithLink BnplTosControllerImpl::GetLinkText() const {
-  TextWithLink text_with_link;
+payments::TextWithLink BnplTosControllerImpl::GetLinkText() const {
+  payments::TextWithLink text_with_link;
   std::vector<size_t> offsets;
-  text_with_link.text =
-      GetStringFUTF16(IDS_AUTOFILL_BNPL_TOS_LINK_TEXT, issuer_name_,
-                      base::UTF8ToUTF16(kWalletLinkText), &offsets);
+  text_with_link.text = GetStringFUTF16(
+      IDS_AUTOFILL_BNPL_TOS_LINK_TEXT, model_.issuer.GetDisplayName(),
+      base::UTF8ToUTF16(kWalletLinkText), &offsets);
 
   // The link is the second replacement string making it the second offset.
   text_with_link.offset =
@@ -70,16 +118,23 @@ TextWithLink BnplTosControllerImpl::GetLinkText() const {
 }
 
 const LegalMessageLines& BnplTosControllerImpl::GetLegalMessageLines() const {
-  return legal_message_lines_;
+  return model_.legal_message_lines;
 }
 
 AccountInfo BnplTosControllerImpl::GetAccountInfo() const {
-  // TODO: crbug.com/391141123 - Actually get the account info when the
-  // controller is implemented.
-  AccountInfo account_info = AccountInfo();
-  account_info.email =
-      "somebody@example.test";  // Temporary email to verify the view.
-  return account_info;
+  signin::IdentityManager* identity_manager = client_->GetIdentityManager();
+  if (!identity_manager) {
+    return AccountInfo();
+  }
+
+  return identity_manager->FindExtendedAccountInfo(
+      client_->GetPersonalDataManager()
+          .payments_data_manager()
+          .GetAccountInfoForPaymentsServer());
+}
+
+BnplIssuer::IssuerId BnplTosControllerImpl::GetIssuerId() const {
+  return model_.issuer.issuer_id();
 }
 
 base::WeakPtr<BnplTosController> BnplTosControllerImpl::GetWeakPtr() {
@@ -88,34 +143,25 @@ base::WeakPtr<BnplTosController> BnplTosControllerImpl::GetWeakPtr() {
 
 void BnplTosControllerImpl::Show(
     base::OnceCallback<std::unique_ptr<BnplTosView>()>
-        create_and_show_view_callback) {
+        create_and_show_view_callback,
+    payments::BnplTosModel model,
+    base::OnceClosure accept_callback,
+    base::OnceClosure cancel_callback) {
   // If the view already exists, don't create and show a new view.
   if (view_) {
     return;
   }
 
-  // TODO: crbug.com/391141123 - Pass in the issuer name and legal lines from
-  // the controller when it is implemented.
-  issuer_name_ = u"Affirm";
-  std::string legal_lines_as_json_string =
-      "{ \"line\" : [ { \"template\": \"By continuing, you agree to the {0} "
-      "and that Google Pay may share or receive some data from Affirm, such as "
-      "transaction or account data, in order to provide this service. The {1} "
-      "describes how Google Pay handles your data. Eligibility and payment "
-      "plans are provided by Affirm, who processes your data in accordance "
-      "with their {2}.\", \"template_parameter\": [ { \"display_text\": "
-      "\"Google Pay Terms of Service\", \"url\": \"http://www.example.com/\" "
-      "}, { \"display_text\": "
-      "\"Google Pay Privacy Notice\", \"url\": \"http://www.example.com/\" }, "
-      "{ \"display_text\": "
-      "\"privacy notice\", \"url\": \"http://www.example.com/\" } "
-      "] }] }";
-  std::optional<base::Value> legal_lines_as_json(
-      (base::JSONReader::Read(legal_lines_as_json_string)));
-  LegalMessageLine::Parse(legal_lines_as_json->GetDict(), &legal_message_lines_,
-                          true);
+  model_ = std::move(model);
+  accept_callback_ = std::move(accept_callback);
+  cancel_callback_ = std::move(cancel_callback);
 
   view_ = std::move(create_and_show_view_callback).Run();
+  LogBnplTosDialogShown(GetIssuerId());
+}
+
+void BnplTosControllerImpl::Dismiss() {
+  view_.reset();
 }
 
 }  // namespace autofill

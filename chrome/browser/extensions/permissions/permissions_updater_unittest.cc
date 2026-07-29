@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "chrome/browser/extensions/permissions/permissions_updater.h"
+#include "extensions/browser/permissions/permissions_updater.h"
 
 #include <memory>
 #include <utility>
@@ -19,15 +19,18 @@
 #include "chrome/browser/extensions/chrome_test_extension_loader.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/extension_service_test_base.h"
-#include "chrome/browser/extensions/permissions/permissions_test_util.h"
-#include "chrome/browser/extensions/permissions/scripting_permissions_modifier.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/extensions/extension_test_util.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/crx_file/id_util.h"
 #include "extensions/browser/extension_prefs.h"
+#include "extensions/browser/extension_registrar.h"
+#include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_util.h"
+#include "extensions/browser/permissions/permissions_test_util.h"
+#include "extensions/browser/permissions/scripting_permissions_modifier.h"
 #include "extensions/browser/permissions_manager.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_builder.h"
 #include "extensions/common/extension_features.h"
@@ -37,6 +40,8 @@
 #include "extensions/test/test_extension_dir.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
+
 using extension_test_util::LoadManifest;
 using extensions::mojom::APIPermissionID;
 
@@ -45,13 +50,13 @@ namespace extensions {
 namespace {
 
 scoped_refptr<const Extension> CreateExtensionWithOptionalPermissions(
-    base::Value::List optional_permissions,
-    base::Value::List permissions,
+    base::ListValue optional_permissions,
+    base::ListValue permissions,
     const std::string& name) {
   return ExtensionBuilder()
       .SetLocation(mojom::ManifestLocation::kInternal)
       .SetManifest(
-          base::Value::Dict()
+          base::DictValue()
               .Set("name", name)
               .Set("description", "foo")
               .Set("manifest_version", 2)
@@ -103,7 +108,7 @@ TEST_F(PermissionsUpdaterTest, GrantAndRevokeOptionalPermissions) {
                                     ManifestPermissionSet(),
                                     std::move(default_hosts), URLPatternSet());
 
-  ExtensionPrefs* prefs = ExtensionPrefs::Get(profile_.get());
+  ExtensionPrefs* prefs = ExtensionPrefs::Get(profile());
   std::unique_ptr<const PermissionSet> active_permissions;
   std::unique_ptr<const PermissionSet> granted_permissions;
 
@@ -123,9 +128,9 @@ TEST_F(PermissionsUpdaterTest, GrantAndRevokeOptionalPermissions) {
     PermissionSet delta(apis.Clone(), ManifestPermissionSet(), hosts.Clone(),
                         URLPatternSet());
 
-    PermissionsManagerWaiter waiter(PermissionsManager::Get(profile_.get()));
-    PermissionsUpdater(profile_.get())
-        .GrantOptionalPermissions(*extension, delta, base::DoNothing());
+    PermissionsManagerWaiter waiter(PermissionsManager::Get(profile()));
+    PermissionsUpdater(profile()).GrantOptionalPermissions(*extension, delta,
+                                                           base::DoNothing());
     waiter.WaitForExtensionPermissionsUpdate(base::BindOnce(
         [](scoped_refptr<const Extension> extension, PermissionSet* delta,
            const Extension& actual_extension,
@@ -159,11 +164,10 @@ TEST_F(PermissionsUpdaterTest, GrantAndRevokeOptionalPermissions) {
     PermissionSet delta(apis.Clone(), ManifestPermissionSet(), hosts.Clone(),
                         URLPatternSet());
 
-    PermissionsManagerWaiter waiter(PermissionsManager::Get(profile_.get()));
-    PermissionsUpdater(profile_.get())
-        .RevokeOptionalPermissions(*extension, delta,
-                                   PermissionsUpdater::REMOVE_SOFT,
-                                   base::DoNothing());
+    PermissionsManagerWaiter waiter(PermissionsManager::Get(profile()));
+    PermissionsUpdater(profile()).RevokeOptionalPermissions(
+        *extension, delta, PermissionsUpdater::RemoveType::kSoft,
+        base::DoNothing());
     waiter.WaitForExtensionPermissionsUpdate(base::BindOnce(
         [](scoped_refptr<const Extension> extension, PermissionSet* delta,
            const Extension& actual_extension,
@@ -215,9 +219,8 @@ TEST_F(PermissionsUpdaterTest, RevokingPermissions) {
   {
     // Test revoking optional permissions.
     auto optional_permissions =
-        base::Value::List().Append("tabs").Append("cookies").Append(
-            "management");
-    base::Value::List required_permissions;
+        base::ListValue().Append("tabs").Append("cookies").Append("management");
+    base::ListValue required_permissions;
     required_permissions.Append("topSites");
     scoped_refptr<const Extension> extension =
         CreateExtensionWithOptionalPermissions(std::move(optional_permissions),
@@ -256,7 +259,7 @@ TEST_F(PermissionsUpdaterTest, RevokingPermissions) {
     // The extension should still have the "cookies" permission.
     permissions_test_util::RevokeOptionalPermissionsAndWaitForCompletion(
         profile(), *extension, *api_permission_set(APIPermissionID::kTab),
-        PermissionsUpdater::REMOVE_HARD);
+        PermissionsUpdater::RemoveType::kHard);
     EXPECT_FALSE(permissions->HasAPIPermission(APIPermissionID::kTab));
     granted_permissions = prefs->GetGrantedPermissions(extension->id());
     EXPECT_FALSE(granted_permissions->HasAPIPermission(APIPermissionID::kTab));
@@ -276,9 +279,9 @@ TEST_F(PermissionsUpdaterTest, RevokingPermissions) {
     URLPatternSet default_policy_allowed_hosts;
     URLPatternSet policy_blocked_hosts;
     URLPatternSet policy_allowed_hosts;
-    base::Value::List optional_permissions;
-    base::Value::List required_permissions =
-        base::Value::List().Append("tabs").Append("http://*/*");
+    base::ListValue optional_permissions;
+    base::ListValue required_permissions =
+        base::ListValue().Append("tabs").Append("http://*/*");
     scoped_refptr<const Extension> extension =
         CreateExtensionWithOptionalPermissions(std::move(optional_permissions),
                                                std::move(required_permissions),
@@ -402,18 +405,18 @@ TEST_F(PermissionsUpdaterTest,
   EXPECT_EQ(optional_permissions,
             *prefs->GetGrantedPermissions(extension->id()));
 
-  // Removing permissions with REMOVE_SOFT should not remove the permission
+  // Removing permissions with kSoft should not remove the permission
   // from runtime-granted permissions or granted permissions; this happens when
   // the extension opts into lower privilege.
   permissions_test_util::RevokeOptionalPermissionsAndWaitForCompletion(
       profile(), *extension, optional_permissions,
-      PermissionsUpdater::REMOVE_SOFT);
+      PermissionsUpdater::RemoveType::kSoft);
   EXPECT_EQ(optional_permissions,
             *prefs->GetRuntimeGrantedPermissions(extension->id()));
   EXPECT_EQ(optional_permissions,
             *prefs->GetGrantedPermissions(extension->id()));
 
-  // Removing permissions with REMOVE_HARD should remove the permission from
+  // Removing permissions with kHard should remove the permission from
   // runtime-granted and granted permissions; this happens when the user chooses
   // to revoke the permission.
   // Note: we need to add back the permission first, so it shows up as a
@@ -423,7 +426,7 @@ TEST_F(PermissionsUpdaterTest,
       profile(), *extension, optional_permissions);
   permissions_test_util::RevokeOptionalPermissionsAndWaitForCompletion(
       profile(), *extension, optional_permissions,
-      PermissionsUpdater::REMOVE_HARD);
+      PermissionsUpdater::RemoveType::kHard);
   EXPECT_TRUE(prefs->GetRuntimeGrantedPermissions(extension->id())->IsEmpty());
   EXPECT_TRUE(prefs->GetGrantedPermissions(extension->id())->IsEmpty());
 }
@@ -497,8 +500,8 @@ TEST_F(PermissionsUpdaterTest, RevokingPermissionsWithRuntimeHostPermissions) {
     SCOPED_TRACE(test_name);
     scoped_refptr<const Extension> extension =
         CreateExtensionWithOptionalPermissions(
-            base::Value::List(),
-            base::Value::List().Append(test_case.permission), test_name);
+            base::ListValue(), base::ListValue().Append(test_case.permission),
+            test_name);
     PermissionsUpdater updater(profile());
     updater.InitializePermissions(extension.get());
 
@@ -754,17 +757,16 @@ TEST_F(PermissionsUpdaterTest, GrantingBroadRuntimePermissions) {
 
 // Validates that we don't overwrite an extension's desired active permissions
 // based on its current active permissions during an optional permissions grant.
-// Regression test for https://crbug.com/1343643.
+// Regression test for https://crbug.com/40231457.
 TEST_F(PermissionsUpdaterTest,
        DontOverwriteDesiredActivePermissionsOnOptionalPermissionsGrant) {
   InitializeEmptyExtensionService();
 
   scoped_refptr<const Extension> extension =
       CreateExtensionWithOptionalPermissions(
-          /*optional_permissions=*/base::Value::List().Append("tabs"),
+          /*optional_permissions=*/base::ListValue().Append("tabs"),
           /*permissions=*/
-          base::Value::List().Append("https://example.com/*"),
-          "optional grant");
+          base::ListValue().Append("https://example.com/*"), "optional grant");
   ASSERT_TRUE(extension);
 
   {
@@ -809,7 +811,7 @@ TEST_F(PermissionsUpdaterTest,
 // Validates that we don't overwrite an extension's desired active permissions
 // based on its initial effective active permissions on load (which could be
 // different, in the case of withheld host permissions).
-// Regression test for https://crbug.com/1343643.
+// Regression test for https://crbug.com/40231457.
 TEST_F(PermissionsUpdaterTest,
        DontOverwriteDesiredActivePermissionsOnExtensionLoad) {
   InitializeEmptyExtensionService();
@@ -967,8 +969,8 @@ TEST_F(PermissionsUpdaterTestWithEnhancedHostControls,
   }
 
   // Note that the PermissionsManger requires the extension to be in the
-  // ExtensionRegistry, so add it through the ExtensionService.
-  service()->AddExtension(extension.get());
+  // ExtensionRegistry, so add it through the ExtensionRegistrar.
+  registrar()->AddExtension(extension);
 
   const GURL first_url("http://first.example");
   const GURL second_url("http://second.example");

@@ -20,6 +20,7 @@ class FileSystemAccessMetadata : public DeepScanningMetadata {
   ~FileSystemAccessMetadata() override;
 
   content::BrowserContext* GetBrowserContext() const override;
+  safe_browsing::ReferrerChain GetReferrerChain() const override;
   const base::FilePath& GetFullPath() const override;
   const base::FilePath& GetTargetFilePath() const override;
   const std::string& GetHash() const override;
@@ -30,18 +31,37 @@ class FileSystemAccessMetadata : public DeepScanningMetadata {
   bool HasUserGesture() const override;
   bool IsObfuscated() const override;
   bool IsTopLevelEncryptedArchive() const override;
+  bool IsForDownloadItem(download::DownloadItem* download) const override;
   download::DownloadDangerType GetDangerType() const override;
+  enterprise_connectors::EventResult GetPreScanEventResult(
+      download::DownloadDangerType danger_type) const override;
 
   std::unique_ptr<DownloadRequestMaker> CreateDownloadRequestFromMetadata(
       scoped_refptr<BinaryFeatureExtractor> binary_feature_extractor)
       const override;
 
+  std::unique_ptr<DownloadScopedObservation> GetDownloadObservation(
+      download::DownloadItem::Observer* observer) override;
+
+  void SetCallback(CheckDownloadCallback callback);
+  void ProcessScanResult(DownloadCheckResultReason reason,
+                         DownloadCheckResult deep_scan_result) override;
+  google::protobuf::RepeatedPtrField<std::string> CollectFrameUrls()
+      const override;
+  content::WebContents* web_contents() const override;
+  base::WeakPtr<FileSystemAccessMetadata> GetWeakPtr();
+
  private:
   std::unique_ptr<content::FileSystemAccessWriteItem> item_;
+  CheckDownloadCallback callback_;
 
   // Cache computed mime type.
   mutable std::string mime_type_;
   mutable bool mime_type_computed_ = false;
+
+  const GURL tab_url_;
+
+  base::WeakPtrFactory<FileSystemAccessMetadata> weakptr_factory_{this};
 };
 
 }  // namespace safe_browsing

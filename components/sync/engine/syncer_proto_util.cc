@@ -11,6 +11,7 @@
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/notimplemented.h"
 #include "base/notreached.h"
 #include "base/strings/stringprintf.h"
 #include "base/time/time.h"
@@ -201,13 +202,6 @@ void ProcessClientCommand(const sync_pb::ClientCommand& command,
     }
   }
 
-  if (command.has_gu_retry_delay_seconds()) {
-    // TODO(crbug.com/40252048): The server no longer supports retry GU this
-    // field. Clean up client-side code.
-    cycle->delegate()->OnReceivedGuRetryDelay(
-        base::Seconds(command.gu_retry_delay_seconds()));
-  }
-
   if (command.custom_nudge_delays_size() > 0) {
     std::map<DataType, base::TimeDelta> delay_map;
     for (int i = 0; i < command.custom_nudge_delays_size(); ++i) {
@@ -244,8 +238,10 @@ void ProcessClientCommand(const sync_pb::ClientCommand& command,
 }  // namespace
 
 DataTypeSet GetTypesToMigrate(const ClientToServerResponse& response) {
-  return GetDataTypeSetFromSpecificsFieldNumberList(
+  DataTypeSet types = GetDataTypeSetFromSpecificsFieldNumberList(
       response.migrated_data_type_id());
+  types.Remove(NIGORI);
+  return types;
 }
 
 SyncProtocolError ConvertErrorPBToSyncProtocolError(
@@ -570,9 +566,8 @@ std::string SyncerProtoUtil::SyncEntityDebugString(
       "name: %s, "
       "d, "
       "%s ",
-      entry.id_string().c_str(), entry.parent_id_string().c_str(),
-      entry.version(), entry.mtime(), mtime_str.c_str(), entry.ctime(),
-      ctime_str.c_str(), entry.name().c_str(),
+      entry.id_string(), entry.parent_id_string(), entry.version(),
+      entry.mtime(), mtime_str, entry.ctime(), ctime_str, entry.name(),
       entry.deleted() ? "deleted, " : "");
 }
 

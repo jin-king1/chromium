@@ -29,7 +29,7 @@ enum class SystemWebAppType;
 class SystemWebAppManager;
 
 class SystemWebAppBrowserTestBase
-    : public InteractiveBrowserTestT<MixinBasedInProcessBrowserTest> {
+    : public InteractiveBrowserTestMixin<MixinBasedInProcessBrowserTest> {
  public:
   // Subclasses should call |SetSystemWebAppInstallation| in their constructor
   // to specify a test system web app to install.
@@ -42,7 +42,7 @@ class SystemWebAppBrowserTestBase
 
   ~SystemWebAppBrowserTestBase() override;
 
-  // Returns the SystemWebAppManager for browser()->profile(). For incognito
+  // Returns the SystemWebAppManager for browser()->GetProfile(). For incognito
   // profiles, this will be the SystemWebAppManager of the original profile.
   SystemWebAppManager& GetManager();
 

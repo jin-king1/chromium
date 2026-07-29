@@ -6,11 +6,14 @@
 
 #include <utility>
 
+#include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "chrome/browser/sharing/sharing_service_factory.h"
-#include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/singleton_tabs.h"
+#include "chrome/browser/ui/views/sharing/sharing_window_controller.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/grit/branded_strings.h"
 #include "components/sharing_message/features.h"
@@ -24,15 +27,12 @@
 
 namespace {
 
-BrowserWindow* GetWindowFromWebContents(content::WebContents* web_contents) {
-  Browser* browser = chrome::FindBrowserWithTab(web_contents);
-  return browser ? browser->window() : nullptr;
-}
-
 content::WebContents* GetCurrentWebContents(
     content::WebContents* web_contents) {
-  Browser* browser = chrome::FindBrowserWithTab(web_contents);
-  return browser ? browser->tab_strip_model()->GetActiveWebContents() : nullptr;
+  BrowserWindowInterface* browser =
+      GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(web_contents);
+  return browser ? browser->GetTabStripModel()->GetActiveWebContents()
+                 : nullptr;
 }
 
 SharingDialogType GetSharingDialogType(bool has_devices, bool has_apps) {
@@ -112,7 +112,6 @@ void SharingUiController::OnDialogClosed(SharingDialog* dialog) {
     return;
 
   dialog_ = nullptr;
-  UpdateIcon();
 }
 
 void SharingUiController::OnDialogShown(bool has_devices, bool has_apps) {
@@ -186,7 +185,6 @@ base::OnceClosure SharingUiController::SendMessageToDevice(
   if (ShouldShowLoadingIcon()) {
     last_dialog_id_++;
     is_loading_ = true;
-    UpdateIcon();
   }
 
   SharingMessageSender::ResponseCallback response_callback = base::BindOnce(
@@ -195,14 +193,6 @@ base::OnceClosure SharingUiController::SendMessageToDevice(
   return sharing_service_->SendMessageToDevice(
       device, response_timeout.value_or(kSharingMessageTTL),
       std::move(sharing_message), std::move(response_callback));
-}
-
-void SharingUiController::UpdateIcon() {
-  BrowserWindow* window = GetWindowFromWebContents(web_contents_);
-  if (!window)
-    return;
-
-  window->UpdatePageActionIcon(GetIconType());
 }
 
 void SharingUiController::CloseDialog() {
@@ -222,13 +212,15 @@ void SharingUiController::CloseDialog() {
 
 void SharingUiController::ShowNewDialog(SharingDialogData dialog_data) {
   CloseDialog();
-  BrowserWindow* window = GetWindowFromWebContents(web_contents_);
-  if (!window)
+  BrowserWindowInterface* browser =
+      GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(web_contents_);
+  if (!browser) {
     return;
+  }
   bool has_devices = !dialog_data.devices.empty();
   bool has_apps = !dialog_data.apps.empty();
-  dialog_ = window->ShowSharingDialog(web_contents(), std::move(dialog_data));
-  UpdateIcon();
+  dialog_ = SharingWindowController::From(browser)->ShowSharingDialog(
+      web_contents(), std::move(dialog_data));
   OnDialogShown(has_devices, has_apps);
 }
 
@@ -249,7 +241,6 @@ void SharingUiController::OnResponse(
   send_result_ = result;
   if (ShouldShowLoadingIcon()) {
     is_loading_ = false;
-    UpdateIcon();
   }
 }
 

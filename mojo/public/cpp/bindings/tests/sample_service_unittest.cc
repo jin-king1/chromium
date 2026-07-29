@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include <stddef.h>
 #include <stdint.h>
 
@@ -16,6 +11,7 @@
 #include <string>
 #include <utility>
 
+#include "base/containers/span.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
@@ -60,8 +56,9 @@ FooPtr MakeFoo() {
   }
 
   std::vector<uint8_t> data(10);
-  for (size_t i = 0; i < data.size(); ++i)
+  for (size_t i = 0; i < data.size(); ++i) {
     data[i] = static_cast<uint8_t>(data.size() - i);
+  }
 
   std::vector<mojo::ScopedDataPipeConsumerHandle> input_streams(2);
   std::vector<mojo::ScopedDataPipeProducerHandle> output_streams(2);
@@ -81,8 +78,9 @@ FooPtr MakeFoo() {
   std::vector<std::vector<bool>> array_of_array_of_bools(2);
   for (size_t i = 0; i < 2; ++i) {
     std::vector<bool> array_of_bools(2);
-    for (size_t j = 0; j < 2; ++j)
+    for (size_t j = 0; j < 2; ++j) {
       array_of_bools[j] = j;
+    }
     array_of_array_of_bools[i] = std::move(array_of_bools);
   }
 
@@ -147,8 +145,9 @@ void CheckFoo(const Foo& foo) {
 }
 
 void PrintSpacer(int depth) {
-  for (int i = 0; i < depth; ++i)
+  for (int i = 0; i < depth; ++i) {
     std::cout << "   ";
+  }
 }
 
 void Print(int depth, const char* name, bool value) {
@@ -209,10 +208,11 @@ template <typename T>
 void Print(int depth,
            const char* name,
            const std::optional<std::vector<T>>& array) {
-  if (array)
+  if (array) {
     Print(depth, name, *array);
-  else
+  } else {
     Print(depth, name, std::vector<T>());
+  }
 }
 
 void Print(int depth, const char* name, const FooPtr& foo) {
@@ -237,20 +237,22 @@ void Print(int depth, const char* name, const FooPtr& foo) {
   }
 }
 
-void DumpHex(const uint8_t* bytes, size_t num_bytes) {
-  for (size_t i = 0; i < num_bytes; ++i) {
+void DumpHex(base::span<const uint8_t> bytes) {
+  for (size_t i = 0; i < bytes.size(); ++i) {
     std::cout << std::setw(2) << std::setfill('0') << std::hex
-              << uint32_t(bytes[i]);
+              << static_cast<uint32_t>(bytes[i]);
 
     if (i % 16 == 15) {
       std::cout << std::endl;
       continue;
     }
 
-    if (i % 2 == 1)
+    if (i % 2 == 1) {
       std::cout << " ";
-    if (i % 8 == 7)
+    }
+    if (i % 8 == 7) {
       std::cout << " ";
+    }
   }
 }
 
@@ -264,8 +266,9 @@ class ServiceImpl : public Service {
 
     // We mainly check that we're given the expected arguments.
     EXPECT_FALSE(foo.is_null());
-    if (!foo.is_null())
+    if (!foo.is_null()) {
       CheckFoo(*foo);
+    }
     EXPECT_EQ(BazOptions::EXTRA, baz);
 
     mojo::Remote<Port> port(std::move(pending_port));
@@ -297,8 +300,7 @@ class SimpleMessageReceiver : public mojo::MessageReceiverWithResponder {
     // Imagine some IPC happened here.
 
     if (g_dump_message_as_hex) {
-      DumpHex(reinterpret_cast<const uint8_t*>(message->data()),
-              message->data_num_bytes());
+      DumpHex(message->data_as_span());
     }
 
     // In the receiving process, an implementation of ServiceStub is known to

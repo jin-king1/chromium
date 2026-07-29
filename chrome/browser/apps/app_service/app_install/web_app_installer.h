@@ -7,6 +7,7 @@
 
 #include <memory>
 #include <optional>
+#include <string>
 
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
@@ -27,6 +28,7 @@ namespace apps {
 // The result of a call to WebAppInstaller::InstallApp. These values are
 // persisted to logs. Entries should not be renumbered and numeric values should
 // never be reused.
+// LINT.IfChange(WebAppInstallResult)
 enum class WebAppInstallResult {
   // Web app was successfully installed.
   kSuccess = 0,
@@ -42,8 +44,11 @@ enum class WebAppInstallResult {
   kManifestResponseEmpty = 4,
   // The web app installation command completed with an error.
   kWebAppInstallError = 5,
-  kMaxValue = kWebAppInstallError
+  // The manifest ID was invalid.
+  kInvalidManifestId = 6,
+  kMaxValue = kInvalidManifestId
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/apps/enums.xml:AppInstallServiceWebAppInstallResult)
 
 using WebAppInstalledCallback = base::OnceCallback<void(bool success)>;
 
@@ -68,7 +73,7 @@ class WebAppInstaller {
                            AppInstallData data,
                            WebAppInstalledCallback callback,
                            std::unique_ptr<network::SimpleURLLoader> url_loader,
-                           std::unique_ptr<std::string> response);
+                           std::optional<std::string> response);
 
   void OnAppInstalled(AppInstallSurface surface,
                       WebAppInstalledCallback callback,

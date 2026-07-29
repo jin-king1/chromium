@@ -11,15 +11,14 @@
 #include "base/test/test_future.h"
 #include "base/values.h"
 #include "chrome/browser/enterprise/connectors/device_trust/attestation/browser/attestation_switches.h"
-#include "chrome/browser/enterprise/connectors/device_trust/attestation/common/attestation_utils.h"
-#include "chrome/browser/enterprise/connectors/device_trust/attestation/common/proto/device_trust_attestation_ca.pb.h"
 #include "components/device_signals/core/common/signals_constants.h"
+#include "components/enterprise/device_trust/core/attestation/attestation_utils.h"
+#include "components/enterprise/device_trust/core/attestation/proto/device_trust_attestation_ca.pb.h"
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 using testing::_;
-using testing::Invoke;
 using testing::StrictMock;
 
 namespace enterprise_connectors {
@@ -134,33 +133,33 @@ class BrowserAttestationServiceTest : public testing::Test {
     attesters.push_back(std::move(mock_profile_attester));
     attesters.push_back(std::move(mock_device_attester));
 
-    attestation_service_ =
-        std::make_unique<BrowserAttestationService>(std::move(attesters));
+    attestation_service_ = std::make_unique<BrowserAttestationService>(
+        std::move(attesters), VerifiedAccessFlow::CBCM);
   }
 
-  base::Value::Dict CreateSignals() {
-    base::Value::Dict signals;
+  base::DictValue CreateSignals() {
+    base::DictValue signals;
     signals.Set(device_signals::names::kDisplayName, kDisplayName);
     return signals;
   }
 
   void MockDecorateKeyInfo() {
     EXPECT_CALL(*mock_device_attester_, DecorateKeyInfo(_, _, _))
-        .WillOnce(Invoke([](const std::set<DTCPolicyLevel>& levels,
-                            KeyInfo& key_info, base::OnceClosure done_closure) {
+        .WillOnce([](const std::set<DTCPolicyLevel>& levels, KeyInfo& key_info,
+                     base::OnceClosure done_closure) {
           std::move(done_closure).Run();
-        }));
+        });
 
     EXPECT_CALL(*mock_profile_attester_, DecorateKeyInfo(_, _, _))
-        .WillOnce(Invoke([](const std::set<DTCPolicyLevel>& levels,
-                            KeyInfo& key_info, base::OnceClosure done_closure) {
+        .WillOnce([](const std::set<DTCPolicyLevel>& levels, KeyInfo& key_info,
+                     base::OnceClosure done_closure) {
           std::move(done_closure).Run();
-        }));
+        });
   }
 
   void MockSignResponse(bool add_browser_signature = true) {
     EXPECT_CALL(*mock_device_attester_, SignResponse(_, _, _, _))
-        .WillOnce(Invoke(
+        .WillOnce(
             [add_browser_signature](const std::set<DTCPolicyLevel>& levels,
                                     const std::string& challenge_response,
                                     SignedData& signed_data,
@@ -171,16 +170,15 @@ class BrowserAttestationServiceTest : public testing::Test {
                 signed_data.set_signature(kFakeSignature);
               }
               std::move(done_closure).Run();
-            }));
+            });
 
     EXPECT_CALL(*mock_profile_attester_, SignResponse(_, _, _, _))
-        .WillOnce(
-            Invoke([](const std::set<DTCPolicyLevel>& levels,
-                      const std::string& challenge_response,
-                      SignedData& signed_data, base::OnceClosure done_closure) {
-              ASSERT_FALSE(challenge_response.empty());
-              std::move(done_closure).Run();
-            }));
+        .WillOnce([](const std::set<DTCPolicyLevel>& levels,
+                     const std::string& challenge_response,
+                     SignedData& signed_data, base::OnceClosure done_closure) {
+          ASSERT_FALSE(challenge_response.empty());
+          std::move(done_closure).Run();
+        });
   }
 
   void VerifyAttestationResponse(

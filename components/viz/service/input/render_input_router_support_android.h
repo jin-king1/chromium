@@ -45,12 +45,18 @@ class VIZ_SERVICE_EXPORT RenderInputRouterSupportAndroid
 
   ~RenderInputRouterSupportAndroid() override;
 
-  // |emit_histograms|: Whether to emit tool type and OS touch latency
-  // histograms, for the events forwarded from Browser we wouldn't want to emit
-  // histograms for them since Browser code would have already emitted them.
+  // RenderInputRouterSupportAndroidInterface implementation.
+  //  |emit_histograms|: Whether to emit tool type and OS touch latency
+  //  histograms, for the events forwarded from Browser we wouldn't want to emit
+  //  histograms for them since Browser code would have already emitted them.
   bool OnTouchEvent(const ui::MotionEventAndroid& event,
                     bool emit_histograms) override;
   bool ShouldRouteEvents() const;
+  void ResetGestureDetection();
+
+  // RenderInputRouterSupportBase implementation.
+  bool IsRenderInputRouterSupportChildFrame() const override;
+  void NotifySiteIsMobileOptimized(bool is_mobile_optimized) override;
 
   // ui::GestureProviderClient implementation.
   void OnGestureEvent(const ui::GestureEventData& gesture) override;
@@ -60,7 +66,6 @@ class VIZ_SERVICE_EXPORT RenderInputRouterSupportAndroid
   void ProcessAckedTouchEvent(
       const input::TouchEventWithLatencyInfo& touch,
       blink::mojom::InputEventResultState ack_result) override;
-  void DidOverscroll(const ui::DidOverscrollParams& params) override;
   FrameSinkId GetRootFrameSinkId() override;
   SurfaceId GetCurrentSurfaceId() const override;
   bool TransformPointToCoordSpaceForView(
@@ -76,7 +81,7 @@ class VIZ_SERVICE_EXPORT RenderInputRouterSupportAndroid
 
   // AndroidInputHelper::Delegate implementation.
   void SendGestureEvent(const blink::WebGestureEvent& event) override;
-  ui::FilteredGestureProvider& GetGestureProvider() override;
+  scoped_refptr<ui::FilteredGestureProvider> GetGestureProvider() override;
 
   base::WeakPtr<RenderInputRouterSupportAndroid> GetWeakPtr();
 
@@ -85,7 +90,7 @@ class VIZ_SERVICE_EXPORT RenderInputRouterSupportAndroid
 
   // Provides gesture synthesis given a stream of touch events (derived from
   // Android MotionEvent's) and touch event acks.
-  ui::FilteredGestureProvider gesture_provider_;
+  scoped_refptr<ui::FilteredGestureProvider> gesture_provider_;
 
   // FrameSinkManager owns InputManager which in turn owns
   // RenderInputRouterSupportAndroid. GpuServiceImpl is destroyed only after

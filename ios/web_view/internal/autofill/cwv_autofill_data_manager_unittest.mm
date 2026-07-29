@@ -15,6 +15,7 @@
 #import "components/autofill/core/browser/data_model/payments/credit_card.h"
 #import "components/autofill/core/browser/test_utils/autofill_test_utils.h"
 #import "components/password_manager/core/browser/password_form.h"
+#import "components/password_manager/core/browser/password_store/password_form_converters.h"
 #import "components/password_manager/core/browser/password_store/test_password_store.h"
 #import "ios/web/public/test/web_task_environment.h"
 #import "ios/web_view/internal/autofill/cwv_autofill_data_manager_internal.h"
@@ -29,6 +30,8 @@
 #import "third_party/ocmock/OCMock/OCMock.h"
 #import "ui/base/l10n/l10n_util_mac.h"
 #import "ui/base/resource/resource_bundle.h"
+#import "ui/gfx/image/image_unittest_util.h"
+#import "url/gurl.h"
 
 using base::test::ios::kWaitForActionTimeout;
 using base::test::ios::WaitUntilConditionOrTimeout;
@@ -60,12 +63,12 @@ class CWVAutofillDataManagerTest : public PlatformTest {
 
     password_store_ = new password_manager::TestPasswordStore(
         password_manager::IsAccountStore(true));
-    password_store_->Init(/*prefs=*/nullptr,
-                          /*affiliated_match_helper=*/nullptr);
+    password_store_->Init();
 
     autofill_data_manager_ = [[CWVAutofillDataManager alloc]
-        initWithPersonalDataManager:personal_data_manager_.get()
-                      passwordStore:password_store_.get()];
+         initWithPersonalDataManager:personal_data_manager_.get()
+                       passwordStore:password_store_.get()
+        isPasswordAffiliationEnabled:NO];
   }
 
   // Fetches profiles from |autofill_data_manager_| and returns them in
@@ -206,6 +209,44 @@ TEST_F(CWVAutofillDataManagerTest, UpdateProfile) {
   }));
 }
 
+// Tests fetching credit card icons.
+TEST_F(CWVAutofillDataManagerTest, FetchCreditCardIcon) {
+  // 1. Test fetching a custom card art image.
+  autofill::CreditCard card_with_art =
+      autofill::test::GetMaskedServerCardVisa();
+  GURL art_url("https://www.example.com/card.png");
+  card_with_art.set_card_art_url(art_url);
+  personal_data_manager_->payments_data_manager().AddCreditCard(card_with_art);
+
+  // Create a test image and add it to the PaymentsDataManager cache.
+  personal_data_manager_->test_payments_data_manager().CacheImage(
+      art_url, gfx::test::CreateImage(32, 32));
+
+  CWVCreditCard* cwv_card_with_art =
+      [[CWVCreditCard alloc] initWithCreditCard:card_with_art];
+  UIImage* fetched_art_image =
+      [autofill_data_manager_ fetchIconForCreditCard:cwv_card_with_art];
+
+  // Verify that the fetched image is not the card icon image.
+  EXPECT_FALSE(
+      gfx::test::AreImagesEqual(gfx::Image(fetched_art_image),
+                                gfx::Image(cwv_card_with_art.networkIcon)));
+
+  // 2. Test fallback to the default network icon.
+  autofill::CreditCard card_without_art =
+      autofill::test::GetMaskedServerCardVisa();
+  personal_data_manager_->payments_data_manager().AddCreditCard(
+      card_without_art);
+  CWVCreditCard* cwv_card_without_art =
+      [[CWVCreditCard alloc] initWithCreditCard:card_without_art];
+  UIImage* fetched_network_icon =
+      [autofill_data_manager_ fetchIconForCreditCard:cwv_card_without_art];
+
+  EXPECT_TRUE(
+      gfx::test::AreImagesEqual(gfx::Image(fetched_network_icon),
+                                gfx::Image(cwv_card_without_art.networkIcon)));
+}
+
 // Tests CWVAutofillDataManager properly returns credit cards.
 TEST_F(CWVAutofillDataManagerTest, ReturnCreditCard) {
   autofill::CreditCard credit_card = autofill::test::GetCreditCard();
@@ -222,7 +263,7 @@ TEST_F(CWVAutofillDataManagerTest, ReturnCreditCard) {
 // Tests CWVAutofillDataManager properly returns passwords.
 TEST_F(CWVAutofillDataManagerTest, ReturnPassword) {
   password_manager::PasswordForm test_password = GetTestPassword();
-  password_store_->AddLogin(test_password);
+  password_store_->AddLogin(password_manager::FromPasswordForm(test_password));
   NSArray<CWVPassword*>* fetched_passwords = FetchPasswords();
   EXPECT_EQ(1ul, fetched_passwords.count);
   EXPECT_THAT(test_password, password_manager::MatchesFormExceptStore(
@@ -231,15 +272,17 @@ TEST_F(CWVAutofillDataManagerTest, ReturnPassword) {
 
 // Tests CWVAutofillDataManager no ops when nil is passed to updatePassword.
 TEST_F(CWVAutofillDataManagerTest, UpdatePasswordNilArguments) {
-  password_store_->AddLogin(GetTestPassword());
+  password_store_->AddLogin(
+      password_manager::FromPasswordForm(GetTestPassword()));
 
   NSArray<CWVPassword*>* passwords = FetchPasswords();
   ASSERT_EQ(1ul, passwords.count);
   CWVPassword* old_password = passwords.firstObject;
-
+  NSDate* now = [NSDate date];
   [autofill_data_manager_ updatePassword:old_password
                              newUsername:nil
-                             newPassword:nil];
+                             newPassword:nil
+                               timestamp:now];
 
   passwords = FetchPasswords();
   ASSERT_EQ(1ul, passwords.count);
@@ -250,17 +293,19 @@ TEST_F(CWVAutofillDataManagerTest, UpdatePasswordNilArguments) {
 
 // Tests CWVAutofillDataManager properly updates just the username.
 TEST_F(CWVAutofillDataManagerTest, UpdateUsernameOnly) {
-  password_store_->AddLogin(GetTestPassword());
+  password_store_->AddLogin(
+      password_manager::FromPasswordForm(GetTestPassword()));
 
   NSArray<CWVPassword*>* passwords = FetchPasswords();
   ASSERT_EQ(1ul, passwords.count);
   CWVPassword* password = passwords.firstObject;
   NSString* old_password_value = password.password;
   EXPECT_NSNE(@"new-username", password.username);
-
+  NSDate* now = [NSDate date];
   [autofill_data_manager_ updatePassword:password
                              newUsername:@"new-username"
-                             newPassword:nil];
+                             newPassword:nil
+                               timestamp:now];
   EXPECT_NSEQ(@"new-username", password.username);
   EXPECT_NSEQ(old_password_value, password.password);
 
@@ -273,17 +318,20 @@ TEST_F(CWVAutofillDataManagerTest, UpdateUsernameOnly) {
 
 // Tests CWVAutofillDataManager properly updates just the password.
 TEST_F(CWVAutofillDataManagerTest, UpdatePasswordOnly) {
-  password_store_->AddLogin(GetTestPassword());
+  password_store_->AddLogin(
+      password_manager::FromPasswordForm(GetTestPassword()));
 
   NSArray<CWVPassword*>* passwords = FetchPasswords();
   ASSERT_EQ(1ul, passwords.count);
   CWVPassword* password = passwords.firstObject;
   NSString* old_username_value = password.username;
   EXPECT_NSNE(@"new-password", password.password);
+  NSDate* now = [NSDate date];
 
   [autofill_data_manager_ updatePassword:password
                              newUsername:nil
-                             newPassword:@"new-password"];
+                             newPassword:@"new-password"
+                               timestamp:now];
   EXPECT_NSEQ(old_username_value, password.username);
   EXPECT_NSEQ(@"new-password", password.password);
 
@@ -296,17 +344,20 @@ TEST_F(CWVAutofillDataManagerTest, UpdatePasswordOnly) {
 
 // Tests CWVAutofillDataManager properly updates both the username and password.
 TEST_F(CWVAutofillDataManagerTest, UpdateUsernameAndPassword) {
-  password_store_->AddLogin(GetTestPassword());
+  password_store_->AddLogin(
+      password_manager::FromPasswordForm(GetTestPassword()));
 
   NSArray<CWVPassword*>* passwords = FetchPasswords();
   ASSERT_EQ(1ul, passwords.count);
   CWVPassword* password = passwords.firstObject;
   EXPECT_NSNE(@"new-username", password.username);
   EXPECT_NSNE(@"new-password", password.password);
+  NSDate* now = [NSDate date];
 
   [autofill_data_manager_ updatePassword:password
                              newUsername:@"new-username"
-                             newPassword:@"new-password"];
+                             newPassword:@"new-password"
+                               timestamp:now];
   EXPECT_NSEQ(@"new-username", password.username);
   EXPECT_NSEQ(@"new-password", password.password);
 
@@ -319,7 +370,8 @@ TEST_F(CWVAutofillDataManagerTest, UpdateUsernameAndPassword) {
 
 // Tests CWVAutofillDataManager properly deletes passwords.
 TEST_F(CWVAutofillDataManagerTest, DeletePassword) {
-  password_store_->AddLogin(GetTestPassword());
+  password_store_->AddLogin(
+      password_manager::FromPasswordForm(GetTestPassword()));
   NSArray<CWVPassword*>* passwords = FetchPasswords();
   ASSERT_EQ(1ul, passwords.count);
   [autofill_data_manager_ deletePassword:passwords[0]];
@@ -331,11 +383,12 @@ TEST_F(CWVAutofillDataManagerTest, DeletePassword) {
 TEST_F(CWVAutofillDataManagerTest, AddNewPassword) {
   NSArray<CWVPassword*>* passwords = FetchPasswords();
   ASSERT_EQ(0ul, passwords.count);
+  NSDate* now = [NSDate date];
 
-  [autofill_data_manager_
-      addNewPasswordForUsername:@"new-username"
-                       password:@"new-password"
-                           site:@"https://www.chromium.org/"];
+  [autofill_data_manager_ addNewPasswordForUsername:@"new-username"
+                                           password:@"new-password"
+                                               site:@"https://www.chromium.org/"
+                                          timestamp:now];
   passwords = FetchPasswords();
   ASSERT_EQ(1ul, passwords.count);
 
@@ -350,15 +403,16 @@ TEST_F(CWVAutofillDataManagerTest, AddNewPassword) {
 TEST_F(CWVAutofillDataManagerTest, AddNewPasswordWithConflictingPrimaryKey) {
   NSArray<CWVPassword*>* passwords = FetchPasswords();
   ASSERT_EQ(0ul, passwords.count);
+  NSDate* now = [NSDate date];
 
-  [autofill_data_manager_
-      addNewPasswordForUsername:@"some-username"
-                       password:@"some-password"
-                           site:@"https://www.chromium.org/"];
-  [autofill_data_manager_
-      addNewPasswordForUsername:@"some-username"
-                       password:@"different-password"
-                           site:@"https://www.chromium.org/"];
+  [autofill_data_manager_ addNewPasswordForUsername:@"some-username"
+                                           password:@"some-password"
+                                               site:@"https://www.chromium.org/"
+                                          timestamp:now];
+  [autofill_data_manager_ addNewPasswordForUsername:@"some-username"
+                                           password:@"different-password"
+                                               site:@"https://www.chromium.org/"
+                                          timestamp:now];
   passwords = FetchPasswords();
   ASSERT_EQ(1ul, passwords.count);
 
@@ -390,7 +444,8 @@ TEST_F(CWVAutofillDataManagerTest, PasswordsDidChangeCallback) {
 
     // AddLogin is async, so the run loop needs to run until idle so the
     // callback will be invoked.
-    password_store_->AddLogin(test_password);
+    password_store_->AddLogin(
+        password_manager::FromPasswordForm(std::move(test_password)));
     base::RunLoop().RunUntilIdle();
 
     [observer verify];
@@ -405,9 +460,11 @@ TEST_F(CWVAutofillDataManagerTest,
   [CWVCredentialProviderExtensionUtils
       storePasswordForKeychainIdentifier:keychain_identifier
                                 password:@"testpassword"];
+  NSDate* now = [NSDate date];
   [autofill_data_manager_ addNewPasswordForUsername:@"testusername"
                                   serviceIdentifier:@"https://www.chromium.org/"
-                                 keychainIdentifier:keychain_identifier];
+                                 keychainIdentifier:keychain_identifier
+                                          timestamp:now];
 
   NSArray<CWVPassword*>* passwords = FetchPasswords();
   ASSERT_EQ(1ul, passwords.count);

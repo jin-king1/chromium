@@ -3,7 +3,7 @@
 # found in the LICENSE file.
 
 import("//build/config/chromebox_for_meetings/buildflags.gni")
-import("//build/config/chromeos/ui_mode.gni")
+import("//build/config/chromeos/args.gni")
 import("//build/config/sanitizers/sanitizers.gni")
 import("//extensions/buildflags/buildflags.gni")
 
@@ -14,18 +14,12 @@ source_set("unit_tests") {
   testonly = true
 
   sources = [
-    "../download/notification/multi_profile_download_notifier_unittest.cc",
-    "../extensions/api/enterprise_platform_keys/enterprise_platform_keys_api_unittest.cc",
-    "../extensions/api/enterprise_platform_keys_private/enterprise_platform_keys_private_api_unittest.cc",
     "../extensions/updater/local_extension_cache_unittest.cc",
-    "../memory/memory_kills_monitor_unittest.cc",
-    "../memory/oom_kills_monitor_unittest.cc",
     "../metrics/chromeos_system_profile_provider_unittest.cc",
     "../metrics/cros_healthd_metrics_provider_unittest.cc",
     "../metrics/perf/cpu_identity_unittest.cc",
     "../metrics/perf/random_selector_unittest.cc",
     "../policy/default_geolocation_policy_handler_unittest.cc",
-    "../ui/browser_finder_chromeos_unittest.cc",
     "../ui/webui/settings/about_handler_unittest.cc",
   ]
 
@@ -33,55 +27,40 @@ source_set("unit_tests") {
     "//ash",
     "//base/test:test_support",
     "//chrome/browser",
-    "//chrome/browser/ash/attestation:test_support",
     "//chrome/browser/ash/extended_updates",
     "//chrome/browser/ash/extended_updates/test:test_support",
     "//chrome/browser/ash/login/demo_mode",
     "//chrome/browser/ash/login/users:test_support",
     "//chrome/browser/ash/multidevice_setup",
-    "//chrome/browser/ash/platform_keys/key_permissions",
-    "//chrome/browser/ash/platform_keys/key_permissions:test_support",
     "//chrome/browser/ash/profiles",
     "//chrome/browser/ash/settings:test_support",
     "//chrome/browser/extensions",
-    "//chrome/browser/extensions/api/enterprise_platform_keys",
-    "//chrome/browser/extensions/api/enterprise_platform_keys_private",
+    "//chrome/browser/metrics",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/ui",
-    "//chrome/browser/ui/ash/multi_user",
+    "//chrome/browser/ui/webui/settings",
     "//chrome/test:test_support",
-    "//chromeos/ash/components/dbus/attestation:attestation_proto",
+    "//chrome/test:test_support_ui",
     "//chromeos/ash/components/dbus/concierge",
-    "//chromeos/ash/components/dbus/constants",
     "//chromeos/ash/components/dbus/update_engine",
     "//chromeos/ash/components/install_attributes:test_support",
     "//chromeos/ash/components/login/login_state",
     "//chromeos/ash/components/mojo_service_manager:test_support",
     "//chromeos/ash/components/multidevice:test_support",
-    "//chromeos/ash/components/network",
-    "//chromeos/ash/components/network:test_support",
     "//chromeos/ash/components/system",
     "//chromeos/ash/experiences/arc",
     "//chromeos/ash/services/cros_healthd/public/cpp:fakes",
     "//chromeos/ash/services/cros_healthd/public/mojom",
     "//chromeos/ash/services/multidevice_setup/public/cpp",
     "//chromeos/ash/services/multidevice_setup/public/cpp:test_support",
-    "//chromeos/components/onc",
     "//chromeos/dbus/power",
     "//chromeos/dbus/tpm_manager",
-    "//components/download/content/public",
-    "//components/download/public/common:test_support",
-    "//components/onc",
     "//components/policy/core/browser",
     "//components/policy/core/browser:test_support",
     "//components/prefs:test_support",
-    "//components/signin/public/identity_manager:test_support",
-    "//components/sync_preferences:test_support",
     "//content/test:test_support",
     "//extensions:test_support",
     "//extensions/browser",
-    "//net:test_support",
-    "//net/traffic_annotation:test_support",
     "//testing/gmock",
     "//testing/gtest",
 
@@ -89,20 +68,20 @@ source_set("unit_tests") {
     "//chrome/browser/ash/accessibility:unit_tests",
     "//chrome/browser/ash/account_manager:unit_tests",
     "//chrome/browser/ash/ambient:unit_tests",
-    "//chrome/browser/ash/android_sms:unit_tests",
     "//chrome/browser/ash/api/tasks:unit_tests",
     "//chrome/browser/ash/app_list:unit_tests",
     "//chrome/browser/ash/app_mode:unit_tests",
     "//chrome/browser/ash/app_restore:unit_tests",
     "//chrome/browser/ash/apps:unit_tests",
+    "//chrome/browser/ash/apps/webapk:unit_tests",
     "//chrome/browser/ash/arc:unit_tests",
-    "//chrome/browser/ash/assistant:unit_tests",
     "//chrome/browser/ash/attestation:unit_tests",
     "//chrome/browser/ash/audio:unit_tests",
     "//chrome/browser/ash/bluetooth:unit_tests",
     "//chrome/browser/ash/boca:unit_tests",
+    "//chrome/browser/ash/boca/babelorca:unit_tests",
     "//chrome/browser/ash/boca/on_task:unit_tests",
-    "//chrome/browser/ash/boca/spotlight:unit_tests",
+    "//chrome/browser/ash/boca/receiver:unit_tests",
     "//chrome/browser/ash/borealis:unit_tests",
     "//chrome/browser/ash/bruschetta:unit_tests",
     "//chrome/browser/ash/calendar:unit_tests",
@@ -112,13 +91,11 @@ source_set("unit_tests") {
     "//chrome/browser/ash/certs:unit_tests",
     "//chrome/browser/ash/child_accounts:unit_tests",
     "//chrome/browser/ash/concierge_helper:unit_tests",
-    "//chrome/browser/ash/crosapi:unit_tests",
     "//chrome/browser/ash/crostini:unit_tests",
     "//chrome/browser/ash/cryptauth:unit_tests",
     "//chrome/browser/ash/customization:unit_tests",
     "//chrome/browser/ash/dbus:unit_tests",
     "//chrome/browser/ash/dbus/vm:unit_tests",
-    "//chrome/browser/ash/device_name:unit_tests",
     "//chrome/browser/ash/diagnostics:unit_tests",
     "//chrome/browser/ash/drive:unit_tests",
     "//chrome/browser/ash/eche_app:unit_tests",
@@ -160,7 +137,6 @@ source_set("unit_tests") {
     "//chrome/browser/ash/notifications:unit_tests",
     "//chrome/browser/ash/os_feedback:unit_tests",
     "//chrome/browser/ash/ownership:unit_tests",
-    "//chrome/browser/ash/pcie_peripheral:unit_tests",
     "//chrome/browser/ash/phonehub:unit_tests",
     "//chrome/browser/ash/platform_keys:unit_tests",
     "//chrome/browser/ash/plugin_vm:unit_tests",
@@ -172,7 +148,6 @@ source_set("unit_tests") {
     "//chrome/browser/ash/policy/external_data:unit_tests",
     "//chrome/browser/ash/policy/external_data/handlers:unit_tests",
     "//chrome/browser/ash/policy/handlers:unit_tests",
-    "//chrome/browser/ash/policy/invalidation:unit_tests",
     "//chrome/browser/ash/policy/networking:unit_tests",
     "//chrome/browser/ash/policy/off_hours:unit_tests",
     "//chrome/browser/ash/policy/remote_commands:unit_tests",
@@ -183,9 +158,9 @@ source_set("unit_tests") {
     "//chrome/browser/ash/policy/reporting/metrics_reporting/apps:unit_tests",
     "//chrome/browser/ash/policy/reporting/metrics_reporting/audio:unit_tests",
     "//chrome/browser/ash/policy/reporting/metrics_reporting/device_activity:unit_tests",
+    "//chrome/browser/ash/policy/reporting/metrics_reporting/external_display:unit_tests",
     "//chrome/browser/ash/policy/reporting/metrics_reporting/fatal_crash:unit_tests",
     "//chrome/browser/ash/policy/reporting/metrics_reporting/kiosk_heartbeat:unit_tests",
-    "//chrome/browser/ash/policy/reporting/metrics_reporting/kiosk_vision:unit_tests",
     "//chrome/browser/ash/policy/reporting/metrics_reporting/network:unit_tests",
     "//chrome/browser/ash/policy/reporting/metrics_reporting/usb:unit_tests",
     "//chrome/browser/ash/policy/reporting/os_updates:unit_tests",
@@ -208,7 +183,6 @@ source_set("unit_tests") {
     "//chrome/browser/ash/printing/history:unit_tests",
     "//chrome/browser/ash/printing/oauth2:unit_tests",
     "//chrome/browser/ash/printing/print_management:unit_tests",
-    "//chrome/browser/ash/printing/print_preview:unit_tests",
     "//chrome/browser/ash/release_notes:unit_tests",
     "//chrome/browser/ash/remote_apps:unit_tests",
     "//chrome/browser/ash/report_controller_initializer:unit_tests",
@@ -230,7 +204,14 @@ source_set("unit_tests") {
     "//chrome/browser/ash/usb:unit_tests",
     "//chrome/browser/ash/video_conference:unit_tests",
     "//chrome/browser/ash/wallpaper_handlers:unit_tests",
+    "//chrome/browser/memory:unit_tests",
     "//chrome/browser/ui/views/select_file_dialog_extension:unit_tests",
+
+    # TODO(crbug.com/410983208): This is for FakeOwnerSettingsService.
+    # Split the target into two, one for the production modules and
+    # the other for test only modules, then let this target depend on
+    # the latter.
+    "//chrome/browser/ash/ownership",
   ]
 
   if (is_cfm) {
@@ -238,6 +219,10 @@ source_set("unit_tests") {
   }
 
   data = [ "//chromeos/test/data/" ]
+
+  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+  # enable the diagnostic by removing this line.
+  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 group("browser_tests") {
@@ -257,14 +242,15 @@ group("browser_tests") {
     "//chrome/browser/ash/app_mode:browser_tests",
     "//chrome/browser/ash/app_restore:browser_tests",
     "//chrome/browser/ash/apps:browser_tests",
+    "//chrome/browser/ash/apps/webapk:browser_tests",
     "//chrome/browser/ash/arc:browser_tests",
     "//chrome/browser/ash/audio:browser_tests",
     "//chrome/browser/ash/base:browser_tests",
     "//chrome/browser/ash/bluetooth:browser_tests",
     "//chrome/browser/ash/boca/on_task:browser_tests",
+    "//chrome/browser/ash/boca/spotlight:browser_tests",
     "//chrome/browser/ash/bruschetta:browser_tests",
     "//chrome/browser/ash/child_accounts:browser_tests",
-    "//chrome/browser/ash/crosapi:browser_tests",
     "//chrome/browser/ash/crostini:browser_tests",
     "//chrome/browser/ash/customization:browser_tests",
     "//chrome/browser/ash/dbus:browser_tests",
@@ -283,10 +269,12 @@ group("browser_tests") {
     "//chrome/browser/ash/file_system_provider:browser_tests",
     "//chrome/browser/ash/first_party_sets:browser_tests",
     "//chrome/browser/ash/floating_sso:browser_tests",
+    "//chrome/browser/ash/frozen_update:browser_tests",
     "//chrome/browser/ash/geolocation:browser_tests",
     "//chrome/browser/ash/guest_os:browser_tests",
     "//chrome/browser/ash/input_device_settings:browser_tests",
     "//chrome/browser/ash/input_method:browser_tests",
+    "//chrome/browser/ash/isolated_web_app:browser_tests",
     "//chrome/browser/ash/kcer:browser_tests",
     "//chrome/browser/ash/kerberos:browser_tests",
     "//chrome/browser/ash/locale:browser_tests",
@@ -317,21 +305,19 @@ group("browser_tests") {
     "//chrome/browser/ash/policy/reporting/metrics_reporting/apps:browser_tests",
     "//chrome/browser/ash/policy/reporting/metrics_reporting/audio:browser_tests",
     "//chrome/browser/ash/policy/reporting/metrics_reporting/device_activity:browser_tests",
+    "//chrome/browser/ash/policy/reporting/metrics_reporting/external_display:browser_tests",
     "//chrome/browser/ash/policy/reporting/metrics_reporting/fatal_crash:browser_tests",
     "//chrome/browser/ash/policy/reporting/metrics_reporting/kiosk_heartbeat:browser_tests",
-    "//chrome/browser/ash/policy/reporting/metrics_reporting/kiosk_vision:browser_tests",
     "//chrome/browser/ash/policy/reporting/metrics_reporting/network:browser_tests",
     "//chrome/browser/ash/policy/reporting/metrics_reporting/usb:browser_tests",
     "//chrome/browser/ash/policy/reporting/os_updates:browser_tests",
     "//chrome/browser/ash/policy/reporting/user_added_removed:browser_tests",
     "//chrome/browser/ash/policy/reporting/user_session_activity:browser_tests",
     "//chrome/browser/ash/policy/skyvault:browser_tests",
-    "//chrome/browser/ash/policy/status_collector:browser_tests",
     "//chrome/browser/ash/preferences:browser_tests",
     "//chrome/browser/ash/printing/print_management:browser_tests",
     "//chrome/browser/ash/privacy_hub:browser_tests",
     "//chrome/browser/ash/remote_apps:browser_tests",
-    "//chrome/browser/ash/scalable_iph:browser_tests",
     "//chrome/browser/ash/smb_client:browser_tests",
     "//chrome/browser/ash/system:browser_tests",
     "//chrome/browser/ash/system_web_apps:browser_tests",
@@ -347,7 +333,6 @@ if (is_chromeos_device) {
 
     deps = [
       "//chrome/browser/ash/accessibility:integration_tests",
-      "//chrome/browser/ash/assistant:integration_tests",
       "//chrome/browser/ash/bluetooth:integration_tests",
       "//chrome/browser/ash/child_accounts:integration_tests",
       "//chrome/browser/ash/external_metrics:integration_tests",

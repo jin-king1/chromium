@@ -5,10 +5,12 @@
 #include "chrome/browser/local_discovery/service_discovery_client_mac_util.h"
 
 #include "base/apple/foundation_util.h"
+#include "base/containers/span.h"
 #include "base/logging.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
+#include "base/strings/string_view_util.h"
 #include "base/strings/sys_string_conversions.h"
 #include "chrome/browser/local_discovery/service_discovery_client.h"
 #include "net/base/ip_endpoint.h"

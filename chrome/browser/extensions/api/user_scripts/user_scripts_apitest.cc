@@ -2,96 +2,148 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/extensions/api/user_scripts/user_scripts_apitest.h"
+
+#include "base/one_shot_event.h"
+#include "base/test/bind.h"
+#include "base/test/scoped_run_loop_timeout.h"
 #include "build/build_config.h"
 #include "chrome/browser/extensions/extension_apitest.h"
 #include "chrome/browser/extensions/extension_util.h"
+#include "chrome/browser/extensions/user_scripts_test_util.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/test/base/ui_test_utils.h"
+#include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
+#include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "extensions/browser/background_script_executor.h"
+#include "extensions/browser/extension_file_task_runner.h"
+#include "extensions/browser/extension_prefs.h"
+#include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_util.h"
-#include "extensions/browser/script_executor.h"
-#include "extensions/common/extension_features.h"
+#include "extensions/browser/renderer_startup_helper.h"
+#include "extensions/browser/script_injection_tracker.h"
+#include "extensions/browser/user_script_manager.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/features/feature_developer_mode_only.h"
+#include "extensions/common/user_scripts_allowed_state.h"
 #include "extensions/common/utils/content_script_utils.h"
 #include "extensions/test/extension_test_message_listener.h"
 #include "extensions/test/result_catcher.h"
 #include "extensions/test/test_extension_dir.h"
 #include "net/dns/mock_host_resolver.h"
+#include "testing/gtest/include/gtest/gtest.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace extensions {
 
-class UserScriptsAPITest : public ExtensionApiTest {
- public:
-  UserScriptsAPITest();
-  UserScriptsAPITest(const UserScriptsAPITest&) = delete;
-  const UserScriptsAPITest& operator=(const UserScriptsAPITest&) = delete;
-  ~UserScriptsAPITest() override = default;
+void UserScriptsAPITest::SetUpOnMainThread() {
+  ExtensionApiTest::SetUpOnMainThread();
 
-  void SetUpOnMainThread() override {
-    ExtensionApiTest::SetUpOnMainThread();
+  host_resolver()->AddRule("*", "127.0.0.1");
+  ASSERT_TRUE(StartEmbeddedTestServer());
+}
 
-    if (ShouldEnableDevMode()) {
-      util::SetDeveloperModeForProfile(profile(), true);
-    }
+void UserScriptsAPITest::OpenInCurrentTab(const GURL& url) {
+  content::WebContents* web_contents = GetActiveWebContents();
+  ASSERT_TRUE(web_contents);
 
-    host_resolver()->AddRule("*", "127.0.0.1");
-    ASSERT_TRUE(StartEmbeddedTestServer());
-  }
+  // NavigateToURL() waits for the load to stop and verifies the navigation
+  // succeeded.
+  ASSERT_TRUE(NavigateToURL(web_contents, url));
+  EXPECT_EQ(url, web_contents->GetLastCommittedURL());
+}
 
-  void OpenInCurrentTab(const GURL& url) {
-    content::WebContents* web_contents =
-        browser()->tab_strip_model()->GetActiveWebContents();
-    ASSERT_TRUE(web_contents);
+content::RenderFrameHost* UserScriptsAPITest::OpenInNewTab(const GURL& url) {
+  content::TestNavigationObserver nav_observer(url);
+  nav_observer.StartWatchingNewWebContents();
+  NavigateToURLInNewTab(url);
+  auto* web_contents = GetActiveWebContents();
+  EXPECT_TRUE(content::WaitForLoadStop(web_contents));
+  nav_observer.Wait();
 
-    content::TestNavigationObserver nav_observer(web_contents);
-    ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
-    nav_observer.Wait();
+  EXPECT_TRUE(nav_observer.last_navigation_succeeded());
+  EXPECT_EQ(url, web_contents->GetLastCommittedURL());
 
-    EXPECT_TRUE(nav_observer.last_navigation_succeeded());
-    EXPECT_EQ(url, web_contents->GetLastCommittedURL());
-  }
+  return web_contents->GetPrimaryMainFrame();
+}
 
-  content::RenderFrameHost* OpenInNewTab(const GURL& url) {
-    content::TestNavigationObserver nav_observer(url);
-    nav_observer.StartWatchingNewWebContents();
-    content::RenderFrameHost* tab = ui_test_utils::NavigateToURLWithDisposition(
-        browser(), url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
-        ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
-    nav_observer.Wait();
-
-    EXPECT_TRUE(nav_observer.last_navigation_succeeded());
-    EXPECT_EQ(url, browser()
-                       ->tab_strip_model()
-                       ->GetActiveWebContents()
-                       ->GetLastCommittedURL());
-
-    return tab;
-  }
-
-  content::EvalJsResult GetInjectedElements(content::RenderFrameHost* host) {
-    static constexpr char kGetInjectedScripts[] =
-        R"(const divs = document.body.getElementsByTagName('div');
+content::EvalJsResult UserScriptsAPITest::GetInjectedElements(
+    content::RenderFrameHost* host) {
+  static constexpr char kGetInjectedScripts[] =
+      R"(const divs = document.body.getElementsByTagName('div');
            JSON.stringify(Array.from(divs).map(div => div.id).sort());)";
-    return content::EvalJs(host, kGetInjectedScripts);
+  return content::EvalJs(host, kGetInjectedScripts);
+}
+
+  // Loads the extension and pauses in-between loading and running the tests to
+  // enable the userScripts API.
+testing::AssertionResult UserScriptsAPITest::RunUserScriptsExtensionTestImpl(
+    const base::FilePath& extension_path,
+    bool allow_api) {
+  // Load the extension.
+  ExtensionTestMessageListener test_ready_listener(
+      "ready",
+      allow_api ? ReplyBehavior::kWillReply : ReplyBehavior::kWontReply);
+  ResultCatcher catcher;
+  const Extension* extension = LoadExtension(extension_path);
+  if (!extension) {
+    return testing::AssertionFailure() << "Failed to load extension";
   }
 
- private:
-  // Whether to enable developer mode at the start of the test. We do this
-  // for most tests because the `userScripts` API is restricted to dev mode.
-  virtual bool ShouldEnableDevMode() { return true; }
+  if (allow_api) {
+    // Wait until extension tests are ready to run, then allow the
+    // userScripts API, then continue on with the API testing.
+    bool extension_ready = test_ready_listener.WaitUntilSatisfied();
+    if (!extension_ready) {
+      testing::AssertionFailure()
+          << "extension did not signal that it was ready after loading";
+    }
+    user_scripts_test_util::SetUserScriptsAPIAllowed(profile(), extension->id(),
+                                                     /*allowed=*/true);
+    test_ready_listener.Reply("");
+  }
 
-  // Some userScripts API methods are currently behind a feature restriction.
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
+  // Observe each test result.
+  {
+    base::test::ScopedRunLoopTimeout timeout(
+        FROM_HERE, std::nullopt,
+        base::BindRepeating(
+            [](const base::FilePath& extension_path) {
+              return "GetNextResult timeout while "
+                     "RunUserScriptsExtensionTest: " +
+                     extension_path.MaybeAsASCII();
+            },
+            extension_path));
+    if (!catcher.GetNextResult()) {
+      return testing::AssertionFailure() << catcher.message();
+    }
+  }
 
-UserScriptsAPITest::UserScriptsAPITest() {
-  scoped_feature_list_.InitWithFeatures(
-      /*enabled_features=*/{extensions_features::kApiUserScriptsMultipleWorlds,
-                            extensions_features::kApiUserScriptsExecute},
-      /*disabled_features=*/{});
+  return testing::AssertionSuccess();
+  ;
+}
+
+testing::AssertionResult UserScriptsAPITest::RunUserScriptsExtensionTest(
+    const char* extension_sub_path) {
+  const base::FilePath& root_path = test_data_dir_;
+  base::FilePath extension_path = root_path.AppendASCII(extension_sub_path);
+  return RunUserScriptsExtensionTestImpl(extension_path, /*allow_api=*/true);
+}
+
+testing::AssertionResult
+UserScriptsAPITest::RunUserScriptsExtensionTestNotAllowed(
+    const base::FilePath& extension_path) {
+  return RunUserScriptsExtensionTestImpl(extension_path, /*allow_api=*/false);
+}
+
+UserScriptsAPITest::UserScriptsAPITest() = default;
+UserScriptsAPITest::~UserScriptsAPITest() = default;
+
+IN_PROC_BROWSER_TEST_F(UserScriptsAPITest, GetUserScripts) {
+  ASSERT_TRUE(RunUserScriptsExtensionTest("user_scripts/get_scripts"))
+      << message_;
 }
 
 // TODO(crbug.com/40935741, crbug.com/335421977): Flaky on Linux debug and on
@@ -103,23 +155,20 @@ UserScriptsAPITest::UserScriptsAPITest() {
 #define MAYBE_RegisterUserScripts RegisterUserScripts
 #endif
 IN_PROC_BROWSER_TEST_F(UserScriptsAPITest, MAYBE_RegisterUserScripts) {
-  ASSERT_TRUE(RunExtensionTest("user_scripts/register")) << message_;
-}
-
-IN_PROC_BROWSER_TEST_F(UserScriptsAPITest, GetUserScripts) {
-  ASSERT_TRUE(RunExtensionTest("user_scripts/get_scripts")) << message_;
+  ASSERT_TRUE(RunUserScriptsExtensionTest("user_scripts/register")) << message_;
 }
 
 IN_PROC_BROWSER_TEST_F(UserScriptsAPITest, UnregisterUserScripts) {
-  ASSERT_TRUE(RunExtensionTest("user_scripts/unregister")) << message_;
+  ASSERT_TRUE(RunUserScriptsExtensionTest("user_scripts/unregister"))
+      << message_;
 }
 
 IN_PROC_BROWSER_TEST_F(UserScriptsAPITest, UpdateUserScripts) {
-  ASSERT_TRUE(RunExtensionTest("user_scripts/update")) << message_;
+  ASSERT_TRUE(RunUserScriptsExtensionTest("user_scripts/update")) << message_;
 }
 
 IN_PROC_BROWSER_TEST_F(UserScriptsAPITest, ExecuteUserScripts) {
-  ASSERT_TRUE(RunExtensionTest("user_scripts/execute")) << message_;
+  ASSERT_TRUE(RunUserScriptsExtensionTest("user_scripts/execute")) << message_;
 }
 
 IN_PROC_BROWSER_TEST_F(UserScriptsAPITest, ExecuteUserScripts_Subframes) {
@@ -130,14 +179,78 @@ IN_PROC_BROWSER_TEST_F(UserScriptsAPITest, ExecuteUserScripts_Subframes) {
   OpenInNewTab(
       embedded_test_server()->GetURL("d.com", "/iframe_cross_site.html"));
 
-  ASSERT_TRUE(RunExtensionTest("user_scripts/execute_with_subframes"))
+  ASSERT_TRUE(
+      RunUserScriptsExtensionTest("user_scripts/execute_with_subframes"))
       << message_;
 }
 
 IN_PROC_BROWSER_TEST_F(UserScriptsAPITest, ExecuteUserScripts_SizeLimit) {
   auto single_scripts_limit_reset =
       script_parsing::CreateScopedMaxScriptLengthForTesting(700u);
-  ASSERT_TRUE(RunExtensionTest("user_scripts/execute_size_limit")) << message_;
+  ASSERT_TRUE(RunUserScriptsExtensionTest("user_scripts/execute_size_limit"))
+      << message_;
+}
+
+// Tests that executing user scripts correctly handles a cross-document
+// navigation occurring during the asynchronous file loading phase, preventing
+// unauthorized script execution or improper marking of the new process.
+IN_PROC_BROWSER_TEST_F(UserScriptsAPITest,
+                       ExecuteUserScripts_CrossDocumentNavigationRace) {
+  ExtensionTestMessageListener ready_listener("ready",
+                                              ReplyBehavior::kWillReply);
+  ExtensionTestMessageListener tab_created_listener("tab_created",
+                                                    ReplyBehavior::kWillReply);
+  ExtensionTestMessageListener execute_called_listener(
+      "execute_called", ReplyBehavior::kWillReply);
+
+  ResultCatcher catcher;
+
+  const Extension* extension =
+      LoadExtension(test_data_dir_.AppendASCII("user_scripts/navigation_race"));
+  ASSERT_TRUE(extension);
+
+  user_scripts_test_util::SetUserScriptsAPIAllowed(profile(), extension->id(),
+                                                   /*allowed=*/true);
+
+  ASSERT_TRUE(ready_listener.WaitUntilSatisfied());
+  ready_listener.Reply(
+      embedded_test_server()->GetURL("a.com", "/empty.html").spec());
+
+  ASSERT_TRUE(tab_created_listener.WaitUntilSatisfied());
+
+  // Block the file task runner.
+  base::WaitableEvent block_file_task_runner;
+  GetExtensionFileTaskRunner()->PostTask(
+      FROM_HERE, base::BindLambdaForTesting([&]() {
+        base::ScopedAllowBaseSyncPrimitivesForTesting allow_blocking;
+        block_file_task_runner.Wait();
+      }));
+
+  tab_created_listener.Reply("");
+
+  ASSERT_TRUE(execute_called_listener.WaitUntilSatisfied());
+
+  // Now userScripts.execute() has been called. The file task is queued.
+  // Navigate the tab to c.com, which the extension does not have permission
+  // for.
+  content::WebContents* web_contents = GetActiveWebContents();
+  ASSERT_TRUE(NavigateToURL(
+      web_contents, embedded_test_server()->GetURL("c.com", "/empty.html")));
+
+  // Unblock file task runner
+  block_file_task_runner.Signal();
+
+  execute_called_listener.Reply("");
+
+  // Wait for the result from the extension. The execute should result in an
+  // expected error due to the script being blocked after the navigation.
+  EXPECT_TRUE(catcher.GetNextResult()) << catcher.message();
+
+  // Verify that the new document's process was not marked as having run user
+  // scripts.
+  content::RenderFrameHost* main_frame = web_contents->GetPrimaryMainFrame();
+  EXPECT_FALSE(ScriptInjectionTracker::DidProcessRunUserScriptFromExtension(
+      *main_frame->GetProcess(), extension->id()));
 }
 
 // TODO(crbug.com/335421977): Flaky on "Linux ChromiumOS MSan Tests".
@@ -147,26 +260,30 @@ IN_PROC_BROWSER_TEST_F(UserScriptsAPITest, ExecuteUserScripts_SizeLimit) {
 #define MAYBE_ConfigureWorld ConfigureWorld
 #endif
 IN_PROC_BROWSER_TEST_F(UserScriptsAPITest, MAYBE_ConfigureWorld) {
-  ASSERT_TRUE(RunExtensionTest("user_scripts/configure_world")) << message_;
-}
-
-IN_PROC_BROWSER_TEST_F(UserScriptsAPITest, GetAndRemoveWorlds) {
-  ASSERT_TRUE(RunExtensionTest("user_scripts/get_and_remove_worlds"))
+  ASSERT_TRUE(RunUserScriptsExtensionTest("user_scripts/configure_world"))
       << message_;
 }
 
 IN_PROC_BROWSER_TEST_F(UserScriptsAPITest,
                        UserScriptInjectionOrderIsAlphabetical) {
-  ASSERT_TRUE(RunExtensionTest("user_scripts/injection_order")) << message_;
+  ASSERT_TRUE(RunUserScriptsExtensionTest("user_scripts/injection_order"))
+      << message_;
 }
 
-// Tests that registered user scripts are disabled when dev mode is disabled and
-// are re-enabled if dev mode is turned back on.
+IN_PROC_BROWSER_TEST_F(UserScriptsAPITest, GetAndRemoveWorlds) {
+  ASSERT_TRUE(RunUserScriptsExtensionTest("user_scripts/get_and_remove_worlds"))
+      << message_;
+}
+
+// Tests that registered user scripts are disabled when the userScripts API is
+// not allowed and are re-enabled if when the API is allowed again.
 IN_PROC_BROWSER_TEST_F(UserScriptsAPITest,
-                       UserScriptsAreDisabledWhenDevModeIsDisabled) {
+                       UserScriptsAreDisabledWhenAPIIsNotAllowed) {
   const Extension* extension =
-      LoadExtension(test_data_dir_.AppendASCII("user_scripts/dev_mode_tests"));
+      LoadExtension(test_data_dir_.AppendASCII("user_scripts/allowed_tests"));
   ASSERT_TRUE(extension);
+  user_scripts_test_util::SetUserScriptsAPIAllowed(profile(), extension->id(),
+                                                   /*allowed=*/true);
 
   // Register a user script and a content script.
   EXPECT_EQ("success",
@@ -184,21 +301,21 @@ IN_PROC_BROWSER_TEST_F(UserScriptsAPITest,
   // Open a new tab.
   content::RenderFrameHost* new_tab = OpenInNewTab(url);
 
-  // Since dev mode is enabled (as part of this test suite's setup), both the
-  // user script and the content script should inject.
+  // Since the userScript API is available (as part of this test suite's setup),
+  // both the user script and the content script should inject.
   EXPECT_EQ(R"(["content-script","user-script-code","user-script-file"])",
             GetInjectedElements(new_tab));
 
-  // Disable dev mode.
-  util::SetDeveloperModeForProfile(profile(), false);
+  user_scripts_test_util::SetUserScriptsAPIAllowed(profile(), extension->id(),
+                                                   /*allowed=*/false);
 
   // Open a new tab. Now, user scripts should be disabled. However, content
   // scripts should still inject.
   new_tab = OpenInNewTab(url);
   EXPECT_EQ(R"(["content-script"])", GetInjectedElements(new_tab));
 
-  // Re-enable dev mode.
-  util::SetDeveloperModeForProfile(profile(), true);
+  user_scripts_test_util::SetUserScriptsAPIAllowed(profile(), extension->id(),
+                                                   /*allowed=*/true);
 
   // Open a new tab. The user script should inject again.
   new_tab = OpenInNewTab(url);
@@ -206,8 +323,16 @@ IN_PROC_BROWSER_TEST_F(UserScriptsAPITest,
             GetInjectedElements(new_tab));
 }
 
-// Base test fixture for tests spanning multiple sessions where a custom arg is
-// set before the test is run.
+// Tests that unregisterContentScripts unregisters only content scripts and
+// not user scripts.
+IN_PROC_BROWSER_TEST_F(UserScriptsAPITest,
+                       ScriptingAPIDoesNotAffectUserScripts) {
+  ASSERT_TRUE(RunUserScriptsExtensionTest("scripting/dynamic_user_scripts"))
+      << message_;
+}
+
+// Base test fixture for tests spanning multiple sessions where a custom arg
+// is set before the test is run.
 class PersistentUserScriptsAPITest : public UserScriptsAPITest {
  public:
   PersistentUserScriptsAPITest() = default;
@@ -251,6 +376,8 @@ IN_PROC_BROWSER_TEST_F(PersistentUserScriptsAPITest,
       test_data_dir_.AppendASCII("user_scripts/persistent_scripts"));
   ASSERT_TRUE(extension);
   ASSERT_TRUE(listener_->WaitUntilSatisfied());
+  user_scripts_test_util::SetUserScriptsAPIAllowed(profile(), extension->id(),
+                                                   /*allowed=*/true);
   listener_->Reply(
       testing::UnitTest::GetInstance()->current_test_info()->name());
   EXPECT_TRUE(result_catcher_.GetNextResult()) << result_catcher_.message();
@@ -278,6 +405,8 @@ IN_PROC_BROWSER_TEST_F(PersistentUserScriptsAPITest,
       test_data_dir_.AppendASCII("user_scripts/persistent_configure_world"));
   ASSERT_TRUE(extension);
   ASSERT_TRUE(listener_->WaitUntilSatisfied());
+  user_scripts_test_util::SetUserScriptsAPIAllowed(profile(), extension->id(),
+                                                   /*allowed=*/true);
   listener_->Reply(
       testing::UnitTest::GetInstance()->current_test_info()->name());
   EXPECT_TRUE(result_catcher_.GetNextResult()) << result_catcher_.message();
@@ -299,24 +428,35 @@ IN_PROC_BROWSER_TEST_F(PersistentUserScriptsAPITest,
   EXPECT_TRUE(result_catcher_.GetNextResult()) << result_catcher_.message();
 }
 
-// A test suite that runs without developer mode enabled.
-class UserScriptsAPITestWithoutDeveloperMode : public UserScriptsAPITest {
+class UserScriptsAPITestWithoutAPIAllowed : public UserScriptsAPITest {
  public:
-  UserScriptsAPITestWithoutDeveloperMode() = default;
-  UserScriptsAPITestWithoutDeveloperMode(
-      const UserScriptsAPITestWithoutDeveloperMode&) = delete;
-  UserScriptsAPITestWithoutDeveloperMode& operator=(
-      const UserScriptsAPITestWithoutDeveloperMode&) = delete;
-  ~UserScriptsAPITestWithoutDeveloperMode() override = default;
+  UserScriptsAPITestWithoutAPIAllowed() = default;
 
- private:
-  bool ShouldEnableDevMode() override { return false; }
+  // UserScriptsAPITest override.
+  void SetUp() override {
+    // Initialize the listener object here before calling SetUp. This avoids a
+    // race condition where the extension loads (as part of browser startup) and
+    // sends a message before a message listener in C++ has been initialized.
+    background_started_listener_ =
+        std::make_unique<ExtensionTestMessageListener>("started");
+
+    UserScriptsAPITest::SetUp();
+  }
+
+  // Reset listener before the browser gets torn down.
+  void TearDown() override {
+    background_started_listener_.reset();
+    UserScriptsAPITest::TearDown();
+  }
+
+ protected:
+  std::unique_ptr<ExtensionTestMessageListener> background_started_listener_;
 };
 
-// Verifies that the `chrome.userScripts` API is unavailable if the user doesn't
-// have dev mode turned on.
-IN_PROC_BROWSER_TEST_F(UserScriptsAPITestWithoutDeveloperMode,
-                       UserScriptsAPIIsUnavailableWithoutDeveloperMode) {
+// Verifies that the `chrome.userScripts` API is undefined if the API is not
+// allowed yet.
+IN_PROC_BROWSER_TEST_F(UserScriptsAPITestWithoutAPIAllowed,
+                       UserScriptsAPIIsUndefinedWithoutAPIAllowed) {
   static constexpr char kManifest[] =
       R"({
            "name": "user scripts",
@@ -327,19 +467,8 @@ IN_PROC_BROWSER_TEST_F(UserScriptsAPITestWithoutDeveloperMode,
          })";
   static constexpr char kBackgroundJs[] =
       R"(chrome.test.runTests([
-           function userScriptsIsUnavailable() {
-             let caught = false;
-             try {
-               chrome.userScripts;
-             } catch (e) {
-               caught = true;
-               const expectedError =
-                   `Failed to read the 'userScripts' property from 'Object': ` +
-                   `The 'userScripts' API is only available for ` +
-                   `users in developer mode.`;
-               chrome.test.assertEq(expectedError, e.message);
-             }
-             chrome.test.assertTrue(caught);
+           function userScriptsIsUndefined() {
+             chrome.test.assertTrue(chrome.userScripts === undefined);
              chrome.test.succeed();
            },
          ]);)";
@@ -347,19 +476,29 @@ IN_PROC_BROWSER_TEST_F(UserScriptsAPITestWithoutDeveloperMode,
   TestExtensionDir test_dir;
   test_dir.WriteManifest(kManifest);
   test_dir.WriteFile(FILE_PATH_LITERAL("background.js"), kBackgroundJs);
-
-  ASSERT_TRUE(RunExtensionTest(test_dir.UnpackedPath(), {}, {})) << message_;
+  ASSERT_TRUE(RunUserScriptsExtensionTestNotAllowed(test_dir.UnpackedPath()))
+      << message_;
 }
 
 // Tests that registered user scripts are properly ignored when loading
-// stored dynamic scripts if developer mode is disabled.
-IN_PROC_BROWSER_TEST_F(UserScriptsAPITestWithoutDeveloperMode,
-                       PRE_UserScriptsDisabledOnStartupIfDevModeOff) {
+// stored dynamic scripts if the API is not allowed.
+// TODO(crbug.com/441364550): Flaky on desktop Android.
+#if BUILDFLAG(IS_ANDROID)
+#define MAYBE_PRE_UserScriptsDisabledOnStartupIfAPINotAllowed \
+  DISABLED_PRE_UserScriptsDisabledOnStartupIfAPINotAllowed
+#else
+#define MAYBE_PRE_UserScriptsDisabledOnStartupIfAPINotAllowed \
+  PRE_UserScriptsDisabledOnStartupIfAPINotAllowed
+#endif
+IN_PROC_BROWSER_TEST_F(UserScriptsAPITestWithoutAPIAllowed,
+                       MAYBE_PRE_UserScriptsDisabledOnStartupIfAPINotAllowed) {
   // Load an extension and register user scripts and a dynamic content script.
-  util::SetDeveloperModeForProfile(profile(), true);
   const Extension* extension =
-      LoadExtension(test_data_dir_.AppendASCII("user_scripts/dev_mode_tests"));
+      LoadExtension(test_data_dir_.AppendASCII("user_scripts/allowed_tests"));
   ASSERT_TRUE(extension);
+  ASSERT_TRUE(background_started_listener_->WaitUntilSatisfied());
+  user_scripts_test_util::SetUserScriptsAPIAllowed(profile(), extension->id(),
+                                                   /*allowed=*/true);
 
   EXPECT_EQ("success",
             BackgroundScriptExecutor::ExecuteScript(
@@ -378,14 +517,38 @@ IN_PROC_BROWSER_TEST_F(UserScriptsAPITestWithoutDeveloperMode,
   EXPECT_EQ(R"(["content-script","user-script-code","user-script-file"])",
             GetInjectedElements(new_tab));
 
-  // Disable dev mode, and re-open the browser...
-  util::SetDeveloperModeForProfile(profile(), false);
+  // Disallow userScript API, and then re-open the browser...
+  user_scripts_test_util::SetUserScriptsAPIAllowed(profile(), extension->id(),
+                                                   /*allowed=*/false);
 }
 
-IN_PROC_BROWSER_TEST_F(UserScriptsAPITestWithoutDeveloperMode,
-                       UserScriptsDisabledOnStartupIfDevModeOff) {
-  // ... dev mode should remain disabled.
-  EXPECT_FALSE(GetCurrentDeveloperMode(util::GetBrowserContextId(profile())));
+// TODO(crbug.com/441364550): Flaky on desktop Android.
+#if BUILDFLAG(IS_ANDROID)
+#define MAYBE_UserScriptsDisabledOnStartupIfAPINotAllowed \
+  DISABLED_UserScriptsDisabledOnStartupIfAPINotAllowed
+#else
+#define MAYBE_UserScriptsDisabledOnStartupIfAPINotAllowed \
+  UserScriptsDisabledOnStartupIfAPINotAllowed
+#endif
+IN_PROC_BROWSER_TEST_F(UserScriptsAPITestWithoutAPIAllowed,
+                       MAYBE_UserScriptsDisabledOnStartupIfAPINotAllowed) {
+  // Wait until the extension loads so we can get it's ID.
+  ASSERT_TRUE(background_started_listener_->WaitUntilSatisfied());
+
+  // Find the extension's ID so we can make some assertions.
+  ExtensionId extension_id;
+  for (const auto& extension :
+       ExtensionRegistry::Get(profile())->enabled_extensions()) {
+    if (extension->name() == "Test") {
+      extension_id = extension->id();
+    }
+  }
+  ASSERT_TRUE(!extension_id.empty());
+
+  // userScripts should remain disallowed after browser restart.
+  EXPECT_FALSE(GetCurrentUserScriptAllowedState(
+                   util::GetBrowserContextId(profile()), extension_id)
+                   .value_or(false));
 
   const GURL url =
       embedded_test_server()->GetURL("example.com", "/simple.html");
@@ -394,21 +557,13 @@ IN_PROC_BROWSER_TEST_F(UserScriptsAPITestWithoutDeveloperMode,
   content::RenderFrameHost* new_tab = OpenInNewTab(url);
   EXPECT_EQ(R"(["content-script"])", GetInjectedElements(new_tab));
 
-  // Enable dev mode.
-  util::SetDeveloperModeForProfile(profile(), true);
+  user_scripts_test_util::SetUserScriptsAPIAllowed(profile(), extension_id,
+                                                   /*allowed=*/true);
 
   // All scripts should once again inject.
   new_tab = OpenInNewTab(url);
   EXPECT_EQ(R"(["content-script","user-script-code","user-script-file"])",
             GetInjectedElements(new_tab));
-}
-
-using ScriptingAndUserScriptsAPITest = UserScriptsAPITest;
-
-// Tests that the scripting API does not have control over the userScripts API.
-IN_PROC_BROWSER_TEST_F(ScriptingAndUserScriptsAPITest,
-                       ScriptingAPIDoesNotAffectUserScripts) {
-  ASSERT_TRUE(RunExtensionTest("scripting/dynamic_user_scripts")) << message_;
 }
 
 }  // namespace extensions

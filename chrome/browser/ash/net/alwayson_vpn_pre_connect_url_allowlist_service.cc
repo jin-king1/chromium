@@ -4,28 +4,29 @@
 
 #include "chrome/browser/ash/net/alwayson_vpn_pre_connect_url_allowlist_service.h"
 
+#include "base/check.h"
 #include "chrome/browser/ash/login/session/user_session_manager.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chromeos/ash/experiences/arc/arc_prefs.h"
 #include "chromeos/ash/experiences/arc/net/always_on_vpn_manager.h"
-#include "components/policy/content/policy_blocklist_service.h"
+#include "components/policy/core/browser/url_list/policy_blocklist_service.h"
 #include "components/policy/core/common/policy_pref_names.h"
 #include "components/prefs/pref_service.h"
-#include "components/user_prefs/user_prefs.h"
-#include "content/public/browser/browser_context.h"
 #include "third_party/cros_system_api/dbus/shill/dbus-constants.h"
 
 namespace ash {
 
 AlwaysOnVpnPreConnectUrlAllowlistService::
     AlwaysOnVpnPreConnectUrlAllowlistService(
-        content::BrowserContext* browser_context)
-    : browser_context_(browser_context) {
+        PrefService* pref_service,
+        PolicyBlocklistService* policy_blocklist_service)
+    : pref_service_(pref_service),
+      policy_blocklist_service_(policy_blocklist_service) {
+  // TODO(crbug.com/501330749): Remove this once the root cause is identified.
+  DUMP_WILL_BE_CHECK(ash::NetworkHandler::HasEverBeenInitialized());
+  DUMP_WILL_BE_CHECK(ash::NetworkHandler::IsInitialized());
+
   network_state_handler_observer_.Observe(
       ash::NetworkHandler::Get()->network_state_handler());
-
-  PrefService* pref_service =
-      user_prefs::UserPrefs::Get(browser_context_.get());
 
   profile_pref_change_registrar_.Init(pref_service);
   profile_pref_change_registrar_.Add(
@@ -77,7 +78,7 @@ void AlwaysOnVpnPreConnectUrlAllowlistService::
                               ash::NetworkState::NetworkTechnologyType::kVPN &&
                           network->connection_state() == shill::kStateOnline;
 
-  const base::Value::List& pre_vpn_connect_url_allowlist =
+  const base::ListValue& pre_vpn_connect_url_allowlist =
       profile_pref_change_registrar_.prefs()->GetList(
           policy::policy_prefs::kAlwaysOnVpnPreConnectUrlAllowlist);
 
@@ -99,9 +100,7 @@ void AlwaysOnVpnPreConnectUrlAllowlistService::
     always_on_vpn_manager_->SetDelayLockdownUntilVpnConnectedState(
         enforce_alwayson_pre_connect_url_allowlist_);
   }
-  PolicyBlocklistService* service =
-      PolicyBlocklistFactory::GetForBrowserContext(browser_context_.get());
-  service->SetAlwaysOnVpnPreConnectUrlAllowlistEnforced(
+  policy_blocklist_service_->SetAlwaysOnVpnPreConnectUrlAllowlistEnforced(
       enforce_alwayson_pre_connect_url_allowlist_);
 }
 

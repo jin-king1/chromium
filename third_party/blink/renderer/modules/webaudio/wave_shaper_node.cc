@@ -23,13 +23,10 @@
  * DAMAGE.
  */
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "third_party/blink/renderer/modules/webaudio/wave_shaper_node.h"
 
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_wave_shaper_options.h"
 #include "third_party/blink/renderer/modules/webaudio/audio_graph_tracer.h"
 #include "third_party/blink/renderer/modules/webaudio/base_audio_context.h"
@@ -44,7 +41,7 @@ WaveShaperNode::WaveShaperNode(BaseAudioContext& context) : AudioNode(context) {
 
 WaveShaperNode* WaveShaperNode::Create(BaseAudioContext& context,
                                        ExceptionState& exception_state) {
-  DCHECK(IsMainThread());
+  CHECK(IsMainThread());
 
   return MakeGarbageCollected<WaveShaperNode>(context);
 }
@@ -72,21 +69,20 @@ WaveShaperHandler& WaveShaperNode::GetWaveShaperHandler() const {
   return static_cast<WaveShaperHandler&>(Handler());
 }
 
-void WaveShaperNode::SetCurveImpl(const float* curve_data,
-                                  size_t curve_length,
+void WaveShaperNode::SetCurveImpl(base::span<const float> curve,
                                   ExceptionState& exception_state) {
-  DCHECK(IsMainThread());
+  CHECK(IsMainThread());
 
-  unsigned length = static_cast<unsigned>(curve_length);
+  unsigned length = static_cast<unsigned>(curve.size());
 
-  if (curve_data) {
-    if (!base::CheckedNumeric<unsigned>(curve_length).AssignIfValid(&length)) {
+  if (!curve.empty()) {
+    if (!base::CheckedNumeric<unsigned>(curve.size()).AssignIfValid(&length)) {
       exception_state.ThrowDOMException(
           DOMExceptionCode::kNotSupportedError,
           "The curve length exceeds the maximum supported length");
       return;
     }
-    if (length < 2) {
+    if (curve.size() < 2) {
       exception_state.ThrowDOMException(
           DOMExceptionCode::kInvalidAccessError,
           ExceptionMessages::IndexExceedsMinimumBound<unsigned>("curve length",
@@ -98,76 +94,55 @@ void WaveShaperNode::SetCurveImpl(const float* curve_data,
   // This is to synchronize with the changes made in
   // AudioBasicProcessorNode::CheckNumberOfChannelsForInput() where we can
   // Initialize() and Uninitialize(), changing the number of kernels.
-  DeferredTaskHandler::GraphAutoLocker context_locker(context());
+  DeferredTaskHandler::GraphAutoLocker locker(
+      context()->GetDeferredTaskHandler());
 
-  GetWaveShaperHandler().SetCurve(curve_data, length);
+  GetWaveShaperHandler().SetCurve(curve);
 }
 
 void WaveShaperNode::setCurve(NotShared<DOMFloat32Array> curve,
                               ExceptionState& exception_state) {
-  DCHECK(IsMainThread());
+  CHECK(IsMainThread());
 
   if (curve) {
-    SetCurveImpl(curve->Data(), curve->length(), exception_state);
+    SetCurveImpl(curve->AsSpan(), exception_state);
   } else {
-    SetCurveImpl(nullptr, 0, exception_state);
+    SetCurveImpl(base::span<const float>(), exception_state);
   }
 }
 
 void WaveShaperNode::setCurve(const Vector<float>& curve,
                               ExceptionState& exception_state) {
-  DCHECK(IsMainThread());
+  CHECK(IsMainThread());
 
-  SetCurveImpl(curve.data(), curve.size(), exception_state);
+  SetCurveImpl(base::span<const float>(curve), exception_state);
 }
 
-NotShared<DOMFloat32Array> WaveShaperNode::curve() {
-  Vector<float>* curve = GetWaveShaperHandler().Curve();
+NotShared<DOMFloat32Array> WaveShaperNode::curve() const {
+  const Vector<float>* curve = GetWaveShaperHandler().Curve();
   if (!curve) {
     return NotShared<DOMFloat32Array>(nullptr);
   }
 
-  unsigned size = curve->size();
-
-  NotShared<DOMFloat32Array> result(DOMFloat32Array::Create(size));
-  memcpy(result->Data(), curve->data(), sizeof(float) * size);
+  NotShared<DOMFloat32Array> result(DOMFloat32Array::Create(curve->size()));
+  result->AsSpan().copy_from(*curve);
 
   return result;
 }
 
 void WaveShaperNode::setOversample(const V8OverSampleType& type) {
-  DCHECK(IsMainThread());
+  CHECK(IsMainThread());
 
   // This is to synchronize with the changes made in
   // AudioBasicProcessorNode::checkNumberOfChannelsForInput() where we can
   // initialize() and uninitialize().
-  DeferredTaskHandler::GraphAutoLocker context_locker(context());
-
-  switch (type.AsEnum()) {
-    case V8OverSampleType::Enum::kNone:
-      GetWaveShaperHandler().SetOversample(WaveShaperHandler::kOverSampleNone);
-      return;
-    case V8OverSampleType::Enum::k2X:
-      GetWaveShaperHandler().SetOversample(WaveShaperHandler::kOverSample2x);
-      return;
-    case V8OverSampleType::Enum::k4X:
-      GetWaveShaperHandler().SetOversample(WaveShaperHandler::kOverSample4x);
-      return;
-  }
-  NOTREACHED();
+  DeferredTaskHandler::GraphAutoLocker locker(
+      context()->GetDeferredTaskHandler());
+  GetWaveShaperHandler().SetOversample(type.AsEnum());
 }
 
 V8OverSampleType WaveShaperNode::oversample() const {
-  switch (
-      const_cast<WaveShaperNode*>(this)->GetWaveShaperHandler().Oversample()) {
-    case WaveShaperHandler::kOverSampleNone:
-      return V8OverSampleType(V8OverSampleType::Enum::kNone);
-    case WaveShaperHandler::kOverSample2x:
-      return V8OverSampleType(V8OverSampleType::Enum::k2X);
-    case WaveShaperHandler::kOverSample4x:
-      return V8OverSampleType(V8OverSampleType::Enum::k4X);
-  }
-  NOTREACHED();
+  return V8OverSampleType(GetWaveShaperHandler().Oversample());
 }
 
 void WaveShaperNode::ReportDidCreate() {

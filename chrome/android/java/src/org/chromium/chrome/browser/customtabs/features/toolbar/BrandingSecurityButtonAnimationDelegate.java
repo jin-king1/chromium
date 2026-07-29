@@ -16,10 +16,10 @@ import android.view.View;
 import android.widget.ImageView;
 
 import androidx.annotation.DrawableRes;
-import androidx.annotation.NonNull;
 import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.ApiCompatibilityUtils;
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.ui.interpolators.Interpolators;
 
 /**
@@ -38,6 +38,7 @@ import org.chromium.ui.interpolators.Interpolators;
  * the same time opacity transitioning from 0% -> 100%. </div>
  */
 // TODO(crbug.com/40859231): Share more code with StatusView.java.
+@NullMarked
 class BrandingSecurityButtonAnimationDelegate {
     public static final int ICON_ANIMATION_DURATION_MS = 250;
     private static final int ICON_ROTATION_DEGREES = 180;
@@ -51,9 +52,10 @@ class BrandingSecurityButtonAnimationDelegate {
 
     /**
      * The animation delegate that will apply a rotation transition for image view.
+     *
      * @param imageView The image view that the animation will performed on.
      */
-    BrandingSecurityButtonAnimationDelegate(@NonNull ImageView imageView) {
+    BrandingSecurityButtonAnimationDelegate(ImageView imageView) {
         mImageView = imageView;
     }
 
@@ -66,7 +68,9 @@ class BrandingSecurityButtonAnimationDelegate {
         if (mCurrentDrawableResource == newResourceId) return;
         mCurrentDrawableResource = newResourceId;
 
-        if (mImageView.getVisibility() == View.VISIBLE && mImageView.getDrawable() != null) {
+        if (newResourceId != 0
+                && mImageView.getVisibility() == View.VISIBLE
+                && mImageView.getDrawable() != null) {
             updateWithTransitionalDrawable(newResourceId);
         } else {
             mImageView.setImageResource(newResourceId);
@@ -142,12 +146,12 @@ class BrandingSecurityButtonAnimationDelegate {
     }
 
     /**
-     * Add padding around the |drawable| until |targetWidth| and |targetHeight|, and convert it
-     * to a {@link BitmapDrawable}.
+     * Add padding around the |drawable| until |targetWidth| and |targetHeight|, and convert it to a
+     * {@link BitmapDrawable}.
      */
     @VisibleForTesting
     static BitmapDrawable resizeToBitmapDrawable(
-            Resources resource, @NonNull Drawable drawable, int targetWidth, int targetHeight)
+            Resources resource, Drawable drawable, int targetWidth, int targetHeight)
             throws IllegalArgumentException {
         int width = drawable.getIntrinsicWidth();
         int height = drawable.getIntrinsicHeight();

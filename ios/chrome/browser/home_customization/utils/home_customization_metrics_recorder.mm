@@ -6,6 +6,7 @@
 
 #import "base/metrics/user_metrics.h"
 #import "base/metrics/user_metrics_action.h"
+#import "components/commerce/core/commerce_feature_list.h"
 
 namespace {
 
@@ -18,16 +19,14 @@ const char kFeedToggledAction[] = "IOS.HomeCustomization.MainPage.Feed.Toggled";
 
 // User action names for toggling cells from the Magic Stack page in the
 // customization menu.
-const char kSetUpListToggledAction[] =
-    "IOS.HomeCustomization.MagicStackPage.SetUpList.Toggled";
 const char kSafetyCheckToggledAction[] =
     "IOS.HomeCustomization.MagicStackPage.SafetyCheck.Toggled";
 const char kTabResumptionToggledAction[] =
     "IOS.HomeCustomization.MagicStackPage.TabResumption.Toggled";
-const char kParcelTrackingToggledAction[] =
-    "IOS.HomeCustomization.MagicStackPage.ParcelTracking.Toggled";
 const char kTipsToggledAction[] =
     "IOS.HomeCustomization.MagicStackPage.Tips.Toggled";
+const char kShopCardPriceTrackingAction[] =
+    "IOS.HomeCustomization.MagicStackPage.ShopCardPriceTracking.Toggled";
 
 }  // namespace
 
@@ -47,20 +46,17 @@ const char kTipsToggledAction[] =
       return;
 
       // Magic Stack toggles.
-    case CustomizationToggleType::kSetUpList:
-      base::RecordAction(base::UserMetricsAction(kSetUpListToggledAction));
-      return;
     case CustomizationToggleType::kSafetyCheck:
       base::RecordAction(base::UserMetricsAction(kSafetyCheckToggledAction));
       return;
     case CustomizationToggleType::kTapResumption:
       base::RecordAction(base::UserMetricsAction(kTabResumptionToggledAction));
       return;
-    case CustomizationToggleType::kParcelTracking:
-      base::RecordAction(base::UserMetricsAction(kParcelTrackingToggledAction));
-      return;
     case CustomizationToggleType::kTips:
       base::RecordAction(base::UserMetricsAction(kTipsToggledAction));
+      return;
+    case CustomizationToggleType::kShopCard:
+      base::RecordAction(base::UserMetricsAction(kShopCardPriceTrackingAction));
       return;
   }
 }

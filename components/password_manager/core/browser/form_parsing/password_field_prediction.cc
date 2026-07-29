@@ -7,7 +7,7 @@
 #include "base/containers/flat_map.h"
 #include "base/feature_list.h"
 #include "build/build_config.h"
-#include "components/autofill/core/browser/autofill_type.h"
+#include "components/autofill/core/browser/autofill_server_prediction.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/common/form_data.h"
 #include "components/autofill/core/common/signatures.h"
@@ -15,7 +15,7 @@
 #include "components/password_manager/core/browser/features/password_features.h"
 #include "components/password_manager/core/common/password_manager_features.h"
 
-using autofill::AutofillType;
+using autofill::AutofillServerPrediction;
 using autofill::CalculateFieldSignatureForField;
 using autofill::CalculateFormSignature;
 using autofill::FieldGlobalId;
@@ -28,7 +28,7 @@ namespace password_manager {
 
 namespace {
 
-FieldType GetServerType(const AutofillType::ServerPrediction& prediction) {
+FieldType GetServerType(const AutofillServerPrediction& prediction) {
   // The main server predictions is in `field.server_type()` but the server can
   // send additional predictions in `field.server_predictions()`. This function
   // chooses the relevant one for Password Manager predictions.
@@ -58,19 +58,14 @@ CredentialFieldType DeriveFromFieldType(FieldType type) {
   if (GroupTypeOfFieldType(type) == autofill::FieldTypeGroup::kCreditCard) {
     return CredentialFieldType::kNonCredential;
   }
-  // TODO: crbug/40925827 - Move if statement under switch case after the
-  // feature is launched.
-  if (type == autofill::SINGLE_USERNAME_WITH_INTERMEDIATE_VALUES &&
-      base::FeatureList::IsEnabled(
-          features::kUsernameFirstFlowWithIntermediateValuesPredictions)) {
-    return CredentialFieldType::kSingleUsername;
-  }
+
   switch (type) {
     case autofill::USERNAME:
     case autofill::USERNAME_AND_EMAIL_ADDRESS:
       return CredentialFieldType::kUsername;
     case autofill::SINGLE_USERNAME:
     case autofill::SINGLE_USERNAME_FORGOT_PASSWORD:
+    case autofill::SINGLE_USERNAME_WITH_INTERMEDIATE_VALUES:
       return CredentialFieldType::kSingleUsername;
     case autofill::PASSWORD:
       return CredentialFieldType::kCurrentPassword;
@@ -92,12 +87,10 @@ PasswordFieldPrediction::PasswordFieldPrediction(
     autofill::FieldRendererId renderer_id,
     autofill::FieldSignature signature,
     autofill::FieldType type,
-    bool may_use_prefilled_placeholder,
     bool is_override)
     : renderer_id(renderer_id),
       signature(signature),
-      type(ToSafeFieldType(type, FieldType::NO_SERVER_DATA)),
-      may_use_prefilled_placeholder(may_use_prefilled_placeholder),
+      type(ToSafeFieldType(type).value_or(FieldType::NO_SERVER_DATA)),
       is_override(is_override) {}
 
 PasswordFieldPrediction::PasswordFieldPrediction(
@@ -118,9 +111,8 @@ FormPredictions& FormPredictions::operator=(FormPredictions&&) = default;
 FormPredictions::~FormPredictions() = default;
 
 FormPredictions ConvertToFormPredictions(
-    int driver_id,
     const autofill::FormData& form,
-    const base::flat_map<FieldGlobalId, AutofillType::ServerPrediction>&
+    const base::flat_map<FieldGlobalId, AutofillServerPrediction>&
         predictions) {
   // This is a mostly mechanical transformation, except for the following case:
   // If there is no explicit CONFIRMATION_PASSWORD field, and there are two
@@ -150,7 +142,7 @@ FormPredictions ConvertToFormPredictions(
   for (const auto& field : form.fields()) {
     auto it = predictions.find(field.global_id());
     CHECK(it != predictions.end());
-    const AutofillType::ServerPrediction& autofill_prediction = it->second;
+    const AutofillServerPrediction& autofill_prediction = it->second;
     FieldType server_type = GetServerType(autofill_prediction);
 
     FieldSignature current_signature = CalculateFieldSignatureForField(field);
@@ -167,13 +159,10 @@ FormPredictions ConvertToFormPredictions(
 
     field_predictions.emplace_back(
         field.renderer_id(), current_signature, server_type,
-        /*may_use_prefilled_placeholder=*/
-        autofill_prediction.may_use_prefilled_placeholder.value_or(false),
         /*is_override=*/autofill_prediction.is_override());
   }
 
   FormPredictions result;
-  result.driver_id = driver_id;
   result.form_signature = CalculateFormSignature(form);
   result.fields = std::move(field_predictions);
   return result;

@@ -7,6 +7,8 @@
 #include <AvailabilityMacros.h>
 #import <Foundation/Foundation.h>
 
+#include <utility>
+
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/mac/mac_util.h"
@@ -28,8 +30,8 @@ int MacOSVersion() {
 
 }  // namespace
 
-void InstallPlatformCandidate(UpdaterScope scope,
-                              base::OnceCallback<void(int)> callback) {
+void InstallCandidate(UpdaterScope scope,
+                      base::OnceCallback<void(int)> callback) {
   if (MacOSVersion() < MAC_OS_X_VERSION_MIN_REQUIRED) {
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE,

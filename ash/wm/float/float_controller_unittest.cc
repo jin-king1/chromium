@@ -4,12 +4,14 @@
 
 #include "ash/wm/float/float_controller.h"
 
+#include <algorithm>
+
 #include "ash/accelerators/accelerator_controller_impl.h"
 #include "ash/accessibility/magnifier/docked_magnifier_controller.h"
 #include "ash/app_list/app_list_controller_impl.h"
 #include "ash/constants/ash_features.h"
 #include "ash/display/screen_orientation_controller_test_api.h"
-#include "ash/frame/non_client_frame_view_ash.h"
+#include "ash/frame/frame_view_ash.h"
 #include "ash/public/cpp/shelf_config.h"
 #include "ash/public/cpp/test/shell_test_api.h"
 #include "ash/public/cpp/window_properties.h"
@@ -34,13 +36,12 @@
 #include "ash/wm/splitview/split_view_controller.h"
 #include "ash/wm/splitview/split_view_metrics_controller.h"
 #include "ash/wm/tablet_mode/tablet_mode_controller.h"
-#include "ash/wm/test/test_non_client_frame_view_ash.h"
+#include "ash/wm/test/test_frame_view_ash.h"
 #include "ash/wm/window_positioning_utils.h"
 #include "ash/wm/window_state.h"
 #include "ash/wm/window_util.h"
 #include "ash/wm/work_area_insets.h"
 #include "base/command_line.h"
-#include "base/containers/contains.h"
 #include "base/scoped_observation.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
@@ -60,11 +61,11 @@
 #include "ui/base/hit_test.h"
 #include "ui/compositor/layer.h"
 #include "ui/compositor/layer_animator.h"
-#include "ui/compositor/scoped_animation_duration_scale_mode.h"
 #include "ui/display/display_switches.h"
 #include "ui/display/test/display_manager_test_api.h"
 #include "ui/gfx/geometry/vector2d.h"
 #include "ui/gfx/geometry/vector2d_f.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/views/controls/button/label_button.h"
 #include "ui/views/test/test_widget_observer.h"
 #include "ui/views/test/views_test_utils.h"
@@ -72,6 +73,8 @@
 #include "ui/wm/core/window_util.h"
 
 namespace ash {
+
+using chromeos::AppType;
 
 namespace {
 
@@ -81,7 +84,7 @@ chromeos::HeaderView* GetHeaderView(aura::Window* window) {
   // like it does in production code. Here we force a layout, otherwise the
   // client view will remain the size of the widget, and dragging it will give
   // us HTCLIENT.
-  auto* frame = NonClientFrameViewAsh::Get(window);
+  auto* frame = FrameViewAsh::Get(window);
   DCHECK(frame);
   views::test::RunScheduledLayout(frame);
   return frame->GetHeaderView();
@@ -138,7 +141,8 @@ class WindowFloatTest : public AshTestBase {
 
   // Creates a floated application window.
   std::unique_ptr<aura::Window> CreateFloatedWindow() {
-    std::unique_ptr<aura::Window> floated_window = CreateAppWindow();
+    std::unique_ptr<aura::Window> floated_window =
+        CreateWindowWithAppType(AppType::SYSTEM_APP);
     PressAndReleaseKey(ui::VKEY_F, ui::EF_ALT_DOWN | ui::EF_COMMAND_DOWN);
     CHECK(WindowState::Get(floated_window.get())->IsFloated());
     return floated_window;
@@ -182,7 +186,8 @@ TEST_F(WindowFloatTest, DoubleClickOnCaption) {
 // Tests that a floated window animates to and from overview.
 TEST_F(WindowFloatTest, FloatWindowAnimatesInOverview) {
   std::unique_ptr<aura::Window> floated_window = CreateFloatedWindow();
-  std::unique_ptr<aura::Window> maximized_window = CreateAppWindow();
+  std::unique_ptr<aura::Window> maximized_window =
+      CreateWindowWithAppType(AppType::SYSTEM_APP);
 
   const WMEvent maximize_event(WM_EVENT_MAXIMIZE);
   WindowState::Get(maximized_window.get())->OnWMEvent(&maximize_event);
@@ -193,8 +198,8 @@ TEST_F(WindowFloatTest, FloatWindowAnimatesInOverview) {
 
   // Enter overview, both windows should animate when entering overview, since
   // both are visible to the user.
-  ui::ScopedAnimationDurationScaleMode test_duration_mode(
-      ui::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode test_duration_mode(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
   ToggleOverview();
   EXPECT_TRUE(floated_window->layer()->GetAnimator()->is_animating());
   EXPECT_TRUE(maximized_window->layer()->GetAnimator()->is_animating());
@@ -211,8 +216,8 @@ TEST_F(WindowFloatTest, FloatWindowAnimatesInOverview) {
 TEST_F(WindowFloatTest, FloatToMaximizeWindowAnimates) {
   std::unique_ptr<aura::Window> window = CreateFloatedWindow();
 
-  ui::ScopedAnimationDurationScaleMode test_duration_mode(
-      ui::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode test_duration_mode(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
   const WMEvent maximize_event(WM_EVENT_MAXIMIZE);
   WindowState::Get(window.get())->OnWMEvent(&maximize_event);
   // `WindowState::SetBoundsDirectCrossFade` still starts an animation if the
@@ -226,7 +231,8 @@ TEST_F(WindowFloatTest, FloatToMaximizeWindowAnimates) {
 // Test when float a window in clamshell mode, window will change to default
 // float bounds in certain conditions.
 TEST_F(WindowFloatTest, WindowFloatingResize) {
-  std::unique_ptr<aura::Window> window = CreateAppWindow(gfx::Rect(200, 200));
+  std::unique_ptr<aura::Window> window =
+      CreateWindowWithAppType(AppType::SYSTEM_APP, {200, 200});
 
   // Float maximized window.
   auto* window_state = WindowState::Get(window.get());
@@ -272,7 +278,8 @@ TEST_F(WindowFloatTest, WindowFloatingResize) {
 
   // Float Snapped window.
   // Create a snap enabled window.
-  auto window2 = CreateAppWindow(default_float_bounds);
+  auto window2 =
+      CreateWindowWithAppType(AppType::SYSTEM_APP, default_float_bounds);
   auto* window_state2 = WindowState::Get(window2.get());
   AcceleratorControllerImpl* acc_controller =
       Shell::Get()->accelerator_controller();
@@ -344,7 +351,7 @@ TEST_F(WindowFloatTest, RestoreResizeBounds) {
 // Test that the float acclerator does not work on a non-floatable window.
 TEST_F(WindowFloatTest, CantFloatAccelerator) {
   // Test window is NON_APP by default, which cannot be floated.
-  auto window = CreateTestWindow();
+  auto window = CreateWindowWithAppType();
   EXPECT_EQ(window.get(), window_util::GetActiveWindow());
   PressAndReleaseKey(ui::VKEY_F, ui::EF_ALT_DOWN | ui::EF_COMMAND_DOWN);
   EXPECT_FALSE(WindowState::Get(window.get())->IsFloated());
@@ -368,7 +375,7 @@ TEST_F(WindowFloatTest, DragToOtherDisplayThenMaximize) {
       header_view->GetBoundsInScreen().CenterPoint());
   const gfx::Point point(1600, 400);
   Shell::Get()->cursor_manager()->SetDisplay(
-      display::Screen::GetScreen()->GetDisplayNearestPoint(point));
+      display::Screen::Get()->GetDisplayNearestPoint(point));
   event_generator->DragMouseTo(point);
 
   // Tests that the floated window is on the secondary display and remained
@@ -390,7 +397,7 @@ TEST_F(WindowFloatTest, FloatOnOtherDisplay) {
 
   // Create a window on the secondary display.
   std::unique_ptr<aura::Window> window =
-      CreateAppWindow(gfx::Rect(1200, 0, 300, 300));
+      CreateWindowWithAppType(AppType::SYSTEM_APP, {1200, 0, 300, 300});
   ASSERT_EQ(Shell::GetAllRootWindows()[1], window->GetRootWindow());
 
   // After floating, the bounds of `window` should be full contained by the
@@ -412,7 +419,7 @@ TEST_F(WindowFloatTest, MoveFloatedWindowToOtherDisplay) {
   // automatically reposition to the bottom right corner. For this test, we want
   // to ensure the normal state size is different from the floated size; we do
   // this by initializing the window with a large size.
-  auto window = CreateAppWindow(gfx::Rect(1100, 700));
+  auto window = CreateWindowWithAppType(AppType::SYSTEM_APP, {1100, 700});
   PressAndReleaseKey(ui::VKEY_F, ui::EF_ALT_DOWN | ui::EF_COMMAND_DOWN);
   CHECK(WindowState::Get(window.get())->IsFloated());
   CHECK_NE(gfx::Size(1100, 700), window->bounds().size());
@@ -442,7 +449,7 @@ TEST_F(WindowFloatTest, FloatWindowBoundsWithZoomDisplay) {
   // Create a floated window and position it on the top-right edge of the
   // display.
   std::unique_ptr<aura::Window> window =
-      CreateAppWindow(gfx::Rect(1200, 0, 400, 300));
+      CreateWindowWithAppType(AppType::SYSTEM_APP, {1200, 0, 400, 300});
   PressAndReleaseKey(ui::VKEY_F, ui::EF_ALT_DOWN | ui::EF_COMMAND_DOWN);
 
   // Use the accelerator to zoom the display up (ctrl + shift + "+") a couple
@@ -612,14 +619,14 @@ TEST_F(WindowFloatTest, FloatWindowWithMRUWindowList) {
   EXPECT_FALSE(desk_2->is_active());
   auto active_only_list =
       Shell::Get()->mru_window_tracker()->BuildMruWindowList(kActiveDesk);
-  EXPECT_TRUE(base::Contains(active_only_list, window_1.get()));
-  EXPECT_FALSE(base::Contains(active_only_list, window_2.get()));
+  EXPECT_TRUE(std::ranges::contains(active_only_list, window_1.get()));
+  EXPECT_FALSE(std::ranges::contains(active_only_list, window_2.get()));
   // Calling MruWindowTracker::BuildMruWindowList(kAllDesks) should return a
   // list that contains all windows
   auto all_desks_mru_list =
       Shell::Get()->mru_window_tracker()->BuildMruWindowList(kAllDesks);
-  EXPECT_TRUE(base::Contains(all_desks_mru_list, window_1.get()));
-  EXPECT_TRUE(base::Contains(all_desks_mru_list, window_2.get()));
+  EXPECT_TRUE(std::ranges::contains(all_desks_mru_list, window_1.get()));
+  EXPECT_TRUE(std::ranges::contains(all_desks_mru_list, window_2.get()));
 }
 
 // Test moving floating window between desks.
@@ -725,7 +732,7 @@ TEST_F(WindowFloatTest, FloatWindowWorkAreaConsiderations) {
 
   // Create a window in the top right quadrant.
   std::unique_ptr<aura::Window> window =
-      CreateAppWindow(gfx::Rect(1000, 100, 300, 300));
+      CreateWindowWithAppType(AppType::SYSTEM_APP, {1000, 100, 300, 300});
 
   // We will use the docked magnifier to modify the work area in this test.
   DockedMagnifierController* docked_magnifier_controller =
@@ -756,7 +763,7 @@ TEST_F(WindowFloatTest, FloatWindowWorkAreaConsiderations) {
 // since been floated, unminimizing the window would not float it.
 TEST_F(WindowFloatTest, UnminimizeWithFloatedWindow) {
   // Create two windows and float the second one and then minimize it.
-  auto window1 = CreateAppWindow();
+  auto window1 = CreateWindowWithAppType(AppType::SYSTEM_APP);
   auto window2 = CreateFloatedWindow();
   WindowState::Get(window2.get())->Minimize();
 
@@ -836,7 +843,8 @@ TEST_F(WindowFloatTest, FloatWindowActivatesWhenChangingDesks) {
   NewDesk();
   ActivateDesk(desks_controller->desks()[1].get());
   std::unique_ptr<aura::Window> floated_window2 = CreateFloatedWindow();
-  std::unique_ptr<aura::Window> normal_window = CreateAppWindow();
+  std::unique_ptr<aura::Window> normal_window =
+      CreateWindowWithAppType(AppType::SYSTEM_APP);
   ASSERT_TRUE(WindowState::Get(normal_window.get())->IsActive());
 
   // Switch to desk 1, the first floated window should be active.
@@ -875,7 +883,8 @@ TEST_F(WindowFloatTest, PinnedWindow) {
   std::unique_ptr<aura::Window> floated_window = CreateFloatedWindow();
 
   // Create and pin a window. The floated window should be hidden.
-  std::unique_ptr<aura::Window> pinned_window = CreateAppWindow();
+  std::unique_ptr<aura::Window> pinned_window =
+      CreateWindowWithAppType(AppType::SYSTEM_APP);
   wm::ActivateWindow(pinned_window.get());
   window_util::PinWindow(pinned_window.get(), /*trusted=*/false);
   EXPECT_FALSE(floated_window->IsVisible());
@@ -901,7 +910,8 @@ TEST_F(WindowFloatTest, PinnedWindow) {
 // Tests that there is no crash when trying to float an always on top window.
 // Regression test for b/279366443.
 TEST_F(WindowFloatTest, AlwaysOnTopWindow) {
-  std::unique_ptr<aura::Window> always_on_top_window = CreateAppWindow();
+  std::unique_ptr<aura::Window> always_on_top_window =
+      CreateWindowWithAppType(AppType::SYSTEM_APP);
   always_on_top_window->SetProperty(aura::client::kZOrderingKey,
                                     ui::ZOrderLevel::kFloatingWindow);
 
@@ -912,7 +922,8 @@ TEST_F(WindowFloatTest, AlwaysOnTopWindow) {
 // Tests that for unresizable windows, floatability depends on its window state
 // type.
 TEST_F(WindowFloatTest, UnresizableFloatPerWindowState) {
-  std::unique_ptr<aura::Window> window = CreateAppWindow(gfx::Rect(600, 600));
+  std::unique_ptr<aura::Window> window =
+      CreateWindowWithAppType(AppType::SYSTEM_APP, {600, 600});
   window->SetProperty(aura::client::kResizeBehaviorKey,
                       aura::client::kResizeBehaviorNone);
   auto* const window_state = WindowState::Get(window.get());
@@ -952,7 +963,7 @@ TEST_F(WindowFloatTest, FloatAllDesksWindow) {
 
   // Create a floated window and a regular window on the first desk.
   auto first_floated_window = CreateFloatedWindow();
-  auto all_desks_window = CreateAppWindow();
+  auto all_desks_window = CreateWindowWithAppType(AppType::SYSTEM_APP);
 
   // Assign the regular window to all desks.
   views::Widget::GetWidgetForNativeWindow(all_desks_window.get())
@@ -1146,7 +1157,8 @@ TEST_F(WindowFloatMetricsTest, FloatWindowDuration) {
 
 // Test bounds for a floated unresizable window.
 TEST_F(WindowFloatTest, BoundsForUnresizableWindow) {
-  std::unique_ptr<aura::Window> window = CreateAppWindow(gfx::Rect(600, 600));
+  std::unique_ptr<aura::Window> window =
+      CreateWindowWithAppType(AppType::SYSTEM_APP, {600, 600});
   window->SetProperty(aura::client::kResizeBehaviorKey,
                       aura::client::kResizeBehaviorNone);
   const gfx::Size window_size = window->GetBoundsInScreen().size();
@@ -1156,7 +1168,7 @@ TEST_F(WindowFloatTest, BoundsForUnresizableWindow) {
   PressAndReleaseKey(ui::VKEY_F, ui::EF_ALT_DOWN | ui::EF_COMMAND_DOWN);
   ASSERT_TRUE(WindowState::Get(window.get())->IsFloated());
   const gfx::Rect work_area_bounds =
-      display::Screen::GetScreen()->GetPrimaryDisplay().work_area();
+      display::Screen::Get()->GetPrimaryDisplay().work_area();
   const gfx::Rect window_bounds = window->GetBoundsInScreen();
   EXPECT_EQ(window_size, window_bounds.size());
   EXPECT_NEAR(window_bounds.bottom(), work_area_bounds.bottom(), 10);
@@ -1329,7 +1341,7 @@ TEST_F(TabletWindowFloatTest, ClamshellToTabletMagnetism) {
 // Tests that the expected windows are animating duration a tablet <-> clamshell
 // transition.
 TEST_F(TabletWindowFloatTest, TabletClamshellTransitionAnimation) {
-  auto normal_window = CreateAppWindow();
+  auto normal_window = CreateWindowWithAppType(AppType::SYSTEM_APP);
   auto floated_window = CreateFloatedWindow();
 
   // Both windows are expected to animate, so we wait for them both. We don't
@@ -1345,8 +1357,8 @@ TEST_F(TabletWindowFloatTest, TabletClamshellTransitionAnimation) {
   // stacked on top and visible.
   wm::ActivateWindow(normal_window.get());
 
-  ui::ScopedAnimationDurationScaleMode test_duration_mode(
-      ui::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode test_duration_mode(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
 
   // Tests that on entering tablet mode, both windows are animating since both
   // are visible before and after the transition.
@@ -1382,11 +1394,11 @@ TEST_F(TabletWindowFloatTest, MinimumSizeChangeOnTablet) {
 
   // Create a window in clamshell mode without a minimum size, and larger than
   // its tablet minimum size.
-  auto window =
-      CreateAppWindow(gfx::Rect(500, 500), chromeos::AppType::SYSTEM_APP,
-                      kShellWindowId_DeskContainerA, new TestWidgetDelegateAsh);
-  auto* custom_frame = static_cast<TestNonClientFrameViewAsh*>(
-      NonClientFrameViewAsh::Get(window.get()));
+  auto window = CreateWindowWithAppType(AppType::SYSTEM_APP, {500, 500},
+                                        kShellWindowId_DeskContainerA,
+                                        new TestWidgetDelegateAsh);
+  auto* custom_frame =
+      static_cast<TestFrameViewAsh*>(FrameViewAsh::Get(window.get()));
   wm::ActivateWindow(window.get());
   PressAndReleaseKey(ui::VKEY_F, ui::EF_ALT_DOWN | ui::EF_COMMAND_DOWN);
   ASSERT_TRUE(WindowState::Get(window.get())->IsFloated());
@@ -1432,15 +1444,15 @@ TEST_F(TabletWindowFloatTest, CanBrowsersFloat) {
   Shell::Get()->tablet_mode_controller()->SetEnabledForTest(true);
 
   const int work_area_width =
-      display::Screen::GetScreen()->GetPrimaryDisplay().work_area().width();
+      display::Screen::Get()->GetPrimaryDisplay().work_area().width();
   const int maximum_float_width =
       (work_area_width - chromeos::wm::kSplitviewDividerShortSideLength) / 2 -
       chromeos::wm::kFloatedWindowPaddingDp * 2;
 
   aura::test::TestWindowDelegate window_delegate;
-  std::unique_ptr<aura::Window> window(CreateTestWindowInShellWithDelegate(
-      &window_delegate, /*id=*/-1, gfx::Rect(500, 500)));
-  window->SetProperty(chromeos::kAppTypeKey, chromeos::AppType::BROWSER);
+  std::unique_ptr<aura::Window> window(CreateTestWindowInShell(
+      {.delegate = &window_delegate, .bounds = {500, 500}}));
+  window->SetProperty(chromeos::kAppTypeKey, AppType::BROWSER);
   wm::ActivateWindow(window.get());
 
   // Browser windows whose minimum size is greater than the maximum allowed
@@ -1476,9 +1488,9 @@ TEST_F(TabletWindowFloatTest, TabletPositioningLandscape) {
   UpdateDisplay("800x600");
 
   aura::test::TestWindowDelegate window_delegate;
-  std::unique_ptr<aura::Window> window(CreateTestWindowInShellWithDelegate(
-      &window_delegate, /*id=*/-1, gfx::Rect(300, 300)));
-  window->SetProperty(chromeos::kAppTypeKey, chromeos::AppType::BROWSER);
+  std::unique_ptr<aura::Window> window(CreateTestWindowInShell(
+      {.delegate = &window_delegate, .bounds = {300, 300}}));
+  window->SetProperty(chromeos::kAppTypeKey, AppType::BROWSER);
   wm::ActivateWindow(window.get());
 
   Shell::Get()->tablet_mode_controller()->SetEnabledForTest(true);
@@ -1500,10 +1512,10 @@ TEST_F(TabletWindowFloatTest, FloatWindowUnfloatsEnterTablet) {
   UpdateDisplay("800x600");
 
   aura::test::TestWindowDelegate window_delegate;
-  std::unique_ptr<aura::Window> window(CreateTestWindowInShellWithDelegate(
-      &window_delegate, /*id=*/-1, gfx::Rect(850, 850)));
+  std::unique_ptr<aura::Window> window(CreateTestWindowInShell(
+      {.delegate = &window_delegate, .bounds = {850, 850}}));
   window_delegate.set_minimum_size(gfx::Size(500, 500));
-  window->SetProperty(chromeos::kAppTypeKey, chromeos::AppType::BROWSER);
+  window->SetProperty(chromeos::kAppTypeKey, AppType::BROWSER);
   wm::ActivateWindow(window.get());
 
   PressAndReleaseKey(ui::VKEY_F, ui::EF_ALT_DOWN | ui::EF_COMMAND_DOWN);
@@ -1519,10 +1531,10 @@ TEST_F(TabletWindowFloatTest, FloatWindowUnfloatsDisplayChange) {
   UpdateDisplay("1800x1000");
 
   aura::test::TestWindowDelegate window_delegate;
-  std::unique_ptr<aura::Window> window(CreateTestWindowInShellWithDelegate(
-      &window_delegate, /*id=*/-1, gfx::Rect(300, 300)));
+  std::unique_ptr<aura::Window> window(CreateTestWindowInShell(
+      {.delegate = &window_delegate, .bounds = {300, 300}}));
   window_delegate.set_minimum_size(gfx::Size(400, 400));
-  window->SetProperty(chromeos::kAppTypeKey, chromeos::AppType::BROWSER);
+  window->SetProperty(chromeos::kAppTypeKey, AppType::BROWSER);
   wm::ActivateWindow(window.get());
 
   // Enter tablet mode and float `window`.
@@ -1540,7 +1552,7 @@ TEST_F(TabletWindowFloatTest, FloatWindowUnfloatsDisplayChange) {
 // showing their title bars.
 TEST_F(TabletWindowFloatTest, ImmersiveMode) {
   // Create a test app window that has a header.
-  auto window = CreateAppWindow();
+  auto window = CreateWindowWithAppType(AppType::SYSTEM_APP);
   auto* immersive_controller = chromeos::ImmersiveFullscreenController::Get(
       views::Widget::GetWidgetForNativeView(window.get()));
 
@@ -1772,8 +1784,8 @@ TEST_F(TabletWindowFloatTest, TuckedWindowVisibility) {
   Shell::Get()->tablet_mode_controller()->SetEnabledForTest(true);
   std::unique_ptr<aura::Window> window = CreateFloatedWindow();
 
-  ui::ScopedAnimationDurationScaleMode test_duration_mode(
-      ui::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode test_duration_mode(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
 
   // Fling to tuck the window in the bottom right. Test that the window is
   // invisible once the animation is finished.
@@ -1802,8 +1814,8 @@ TEST_F(TabletWindowFloatTest, UntuckedWindowVisibility) {
   std::unique_ptr<aura::Window> window = CreateFloatedWindow();
 
   // Long duration for tuck animation, to allow it to be interrupted.
-  ui::ScopedAnimationDurationScaleMode test_duration(
-      ui::ScopedAnimationDurationScaleMode::SLOW_DURATION);
+  gfx::ScopedAnimationDurationScaleMode test_duration(
+      gfx::ScopedAnimationDurationScaleMode::SLOW_DURATION);
 
   // Fling to tuck the window. Press the untuck handle before the window
   // finishes the tuck animation. Test that the window is visible.
@@ -1835,7 +1847,8 @@ TEST_F(TabletWindowFloatTest, WindowActivationAfterTuckingUntucking) {
             window_util::GetActiveWindow());
 
   // Create another window and untuck the floated window.
-  std::unique_ptr<aura::Window> window2 = CreateAppWindow();
+  std::unique_ptr<aura::Window> window2 =
+      CreateWindowWithAppType(AppType::SYSTEM_APP);
   views::Widget* tuck_handle_widget =
       float_controller->GetTuckHandleWidget(float_window.get());
   ASSERT_TRUE(tuck_handle_widget);
@@ -2050,7 +2063,7 @@ TEST_F(TabletWindowFloatTest, TuckHandleTapTarget) {
 // Tests that the tuck handle is offscreen in overview mode.
 TEST_F(TabletWindowFloatTest, TuckHandleOffscreenInOverview) {
   const gfx::Rect display_bounds =
-      display::Screen::GetScreen()->GetPrimaryDisplay().bounds();
+      display::Screen::Get()->GetPrimaryDisplay().bounds();
 
   Shell::Get()->tablet_mode_controller()->SetEnabledForTest(true);
   std::unique_ptr<aura::Window> window = CreateFloatedWindow();
@@ -2137,7 +2150,8 @@ TEST_F(TabletWindowFloatTest, FlingVertical) {
 TEST_F(TabletWindowFloatTest, BasicTuckNudge) {
   Shell::Get()->tablet_mode_controller()->SetEnabledForTest(true);
 
-  std::unique_ptr<aura::Window> window = CreateAppWindow();
+  std::unique_ptr<aura::Window> window =
+      CreateWindowWithAppType(AppType::SYSTEM_APP);
 
   // Add observer to check that the tuck education nudge was created.
   views::NamedWidgetShownWaiter widget_waiter(
@@ -2170,7 +2184,8 @@ TEST_F(TabletWindowFloatTest, EducationPreferences) {
 
   // Float the nudge three times, count should increment each time.
   for (int i = 0; i < 3; i++) {
-    std::unique_ptr<aura::Window> window = CreateAppWindow();
+    std::unique_ptr<aura::Window> window =
+        CreateWindowWithAppType(AppType::SYSTEM_APP);
 
     // Float window using accelerator.
     PressAndReleaseKey(ui::VKEY_F, ui::EF_ALT_DOWN | ui::EF_COMMAND_DOWN);
@@ -2184,7 +2199,8 @@ TEST_F(TabletWindowFloatTest, EducationPreferences) {
   EXPECT_EQ(3, nudge_counter.nudge_count());
 
   // Float the window once more.
-  std::unique_ptr<aura::Window> window = CreateAppWindow();
+  std::unique_ptr<aura::Window> window =
+      CreateWindowWithAppType(AppType::SYSTEM_APP);
   PressAndReleaseKey(ui::VKEY_F, ui::EF_ALT_DOWN | ui::EF_COMMAND_DOWN);
   ASSERT_TRUE(WindowState::Get(window.get())->IsFloated());
   window.reset();
@@ -2203,11 +2219,11 @@ TEST_F(TabletWindowFloatSplitviewTest, BothSnappedToFloat) {
   Shell::Get()->tablet_mode_controller()->SetEnabledForTest(true);
 
   // Create two windows and snap one on each side.
-  auto left_window = CreateAppWindow();
+  auto left_window = CreateWindowWithAppType(AppType::SYSTEM_APP);
   const WindowSnapWMEvent snap_left(WM_EVENT_SNAP_PRIMARY);
   WindowState::Get(left_window.get())->OnWMEvent(&snap_left);
 
-  auto right_window = CreateAppWindow();
+  auto right_window = CreateWindowWithAppType(AppType::SYSTEM_APP);
   const WindowSnapWMEvent snap_right(WM_EVENT_SNAP_SECONDARY);
   WindowState::Get(right_window.get())->OnWMEvent(&snap_right);
 
@@ -2249,7 +2265,7 @@ TEST_F(TabletWindowFloatSplitviewTest, FloatToSnapped) {
   ASSERT_FALSE(split_view_controller->InSplitViewMode());
 
   // Create a second window.
-  auto other_window = CreateAppWindow();
+  auto other_window = CreateWindowWithAppType(AppType::SYSTEM_APP);
   wm::ActivateWindow(window.get());
 
   // Tests that when we snap `window` now, `other_window` will get snapped to
@@ -2297,8 +2313,10 @@ TEST_F(TabletWindowFloatSplitviewTest, ResetFloatToMaximize) {
   Shell::Get()->tablet_mode_controller()->SetEnabledForTest(true);
 
   // Create two windows and snap one on each side.
-  std::unique_ptr<aura::Window> window_1 = CreateAppWindow();
-  std::unique_ptr<aura::Window> window_2 = CreateAppWindow();
+  std::unique_ptr<aura::Window> window_1 =
+      CreateWindowWithAppType(AppType::SYSTEM_APP);
+  std::unique_ptr<aura::Window> window_2 =
+      CreateWindowWithAppType(AppType::SYSTEM_APP);
 
   auto* split_view_controller =
       SplitViewController::Get(Shell::GetPrimaryRootWindow());

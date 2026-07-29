@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_TYPED_ARRAYS_DOM_ARRAY_BUFFER_VIEW_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_TYPED_ARRAYS_DOM_ARRAY_BUFFER_VIEW_H_
 
@@ -107,8 +102,8 @@ class CORE_EXPORT DOMArrayBufferView : public ScriptWrappable {
 
   base::span<uint8_t> ByteSpan() const {
     // SAFETY: `byteLength()` returns the number of bytes at `BaseAddress()`.
-    return UNSAFE_BUFFERS(
-        base::span(static_cast<uint8_t*>(BaseAddress()), byteLength()));
+    return UNSAFE_BUFFERS(base::span(
+        base::unchecked, static_cast<uint8_t*>(BaseAddress()), byteLength()));
   }
 
   virtual unsigned TypeSize() const = 0;
@@ -121,7 +116,8 @@ class CORE_EXPORT DOMArrayBufferView : public ScriptWrappable {
   base::span<uint8_t> ByteSpanMaybeShared() const {
     // SAFETY: `byteLength()` returns the number of bytes at `BaseAddress()`.
     return UNSAFE_BUFFERS(base::span(
-        static_cast<uint8_t*>(BaseAddressMaybeShared()), byteLength()));
+        base::unchecked, static_cast<uint8_t*>(BaseAddressMaybeShared()),
+        byteLength()));
   }
 
   // ScriptWrappable overrides:
@@ -140,8 +136,10 @@ class CORE_EXPORT DOMArrayBufferView : public ScriptWrappable {
   DOMArrayBufferView(DOMArrayBufferBase* dom_array_buffer, size_t byte_offset)
       : raw_byte_offset_(byte_offset), dom_array_buffer_(dom_array_buffer) {
     DCHECK(dom_array_buffer_);
-    raw_base_address_ =
-        static_cast<char*>(dom_array_buffer_->DataMaybeShared()) + byte_offset;
+    // SAFETY: It is the subclasses' responsibility to ensure that the
+    // invariants here are maintained.
+    raw_base_address_ = UNSAFE_BUFFERS(
+        static_cast<char*>(dom_array_buffer_->DataMaybeShared()) + byte_offset);
   }
 
  private:

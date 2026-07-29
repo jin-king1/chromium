@@ -11,7 +11,12 @@
 #include "device/vr/public/mojom/vr_service.mojom-blink.h"
 #include "gpu/command_buffer/client/client_shared_image.h"
 #include "third_party/blink/renderer/modules/xr/average_timer.h"
+#include "third_party/blink/renderer/modules/xr/xr_id_hash_traits.h"
+#include "third_party/blink/renderer/modules/xr/xr_layer_shared_image_manager.h"
 #include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
+#include "third_party/blink/renderer/platform/graphics/gpu/xr_frame_transport.h"
+#include "third_party/blink/renderer/platform/graphics/gpu/xr_frame_transport_delegate.h"
+#include "third_party/blink/renderer/platform/graphics/gpu/xr_webgl_drawing_buffer.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_map.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_set.h"
 #include "third_party/blink/renderer/platform/heap/disallow_new_wrapper.h"
@@ -19,18 +24,17 @@
 #include "third_party/blink/renderer/platform/mojo/heap_mojo_remote.h"
 #include "third_party/blink/renderer/platform/mojo/heap_mojo_wrapper_mode.h"
 #include "third_party/blink/renderer/platform/wtf/forward.h"
-#include "ui/gfx/geometry/size.h"
 
 namespace blink {
 
 class LocalDOMWindow;
 class XRFrameTransport;
-class XRGPUProjectionLayer;
 class XRProjectionLayer;
 class XRSession;
 class XRSystem;
 class XRWebGLLayer;
-class XRWebGLLayerClient;
+class XrLayerClient;
+class XRFrameTransportDelegate;
 
 // This class manages requesting and dispatching frame updates, which includes
 // pose information for a given XRDevice.
@@ -62,13 +66,19 @@ class XRFrameProvider final : public GarbageCollected<XRFrameProvider> {
 
   void OnNonImmersiveVSync(double high_res_now_ms);
 
-  void SubmitWebGLLayer(XRWebGLLayerClient*, bool was_changed);
   void UpdateWebGLLayerViewports(XRWebGLLayer*);
-
-  void SubmitWebGPULayer(XRGPUProjectionLayer*, bool was_queried);
 
   // Used for both WebGPU and WebGL layers.
   void UpdateLayerViewports(XRProjectionLayer*);
+
+  // These methods manage the submission of layer data for a single frame. Call
+  // `ClearCachedLayersData()` to begin, then `SubmitLayer()` for each layer,
+  // and finally `SubmitFrame()` to send the cached data for the current frame.
+  void ClearCachedLayersData();
+  void SubmitLayer(device::LayerId layer_id, XrLayerClient*, bool was_changed);
+  void SubmitFrame(XRFrameTransportDelegate* transport_delegate,
+                   gpu::SharedImageExportResult camera_export_result =
+                       gpu::SharedImageExportResult());
 
   void Dispose();
   void OnFocusChanged();
@@ -77,13 +87,21 @@ class XRFrameProvider final : public GarbageCollected<XRFrameProvider> {
     return immersive_data_provider_.get();
   }
 
+  device::mojom::blink::XRLayerManager* layer_manager() {
+    // Layer manager is optional mojom api.
+    if (!layer_manager_) {
+      return nullptr;
+    }
+    return layer_manager_.get();
+  }
+
   // Adds an ImmersiveSessionObserver. Observers will be automatically removed
   // by Oilpan when they are destroyed, and their WeakMember becomes null.
   void AddImmersiveSessionObserver(ImmersiveSessionObserver*);
 
   bool DrawingIntoSharedBuffer() const;
 
-  virtual void Trace(Visitor*) const;
+  void Trace(Visitor*) const;
 
  private:
   enum class ScheduledFrameType {
@@ -114,6 +132,8 @@ class XRFrameProvider final : public GarbageCollected<XRFrameProvider> {
   // Sends the frame data to the requesting sessions for calculating
   // diagnostics.
   void SendFrameData();
+  void OnTransferComplete(bool succeeded,
+                          const Vector<device::LayerId>& layer_ids);
   void OnRenderComplete();
 
   void OnProviderConnectionError(XRSession* session);
@@ -172,14 +192,9 @@ class XRFrameProvider final : public GarbageCollected<XRFrameProvider> {
   bool pending_immersive_vsync_ = false;
   bool pending_non_immersive_vsync_ = false;
 
-  // TODO(crbug.com/1494911): Remove |buffer_sync_token_| and
-  // |camera_image_sync_token_| once the sync tokens are incorporated
-  // into |buffer_shared_image_| and |camera_image_shared_image_| respectively.
-  scoped_refptr<gpu::ClientSharedImage> buffer_shared_image_;
-  gpu::SyncToken buffer_sync_token_;
+  Vector<XRSharedImageData> shared_images_;
 
-  scoped_refptr<gpu::ClientSharedImage> camera_image_shared_image_;
-  gpu::SyncToken camera_image_sync_token_;
+  HeapMojoRemote<device::mojom::blink::XRLayerManager> layer_manager_;
 
   bool last_has_focus_ = false;
 
@@ -190,6 +205,13 @@ class XRFrameProvider final : public GarbageCollected<XRFrameProvider> {
 
   base::TimeTicks last_frame_statistics_sent_time_;
   base::RepeatingTimer repeating_timer_;
+
+  // Any layer has been changed since last frame.
+  bool any_layer_changed_ = false;
+
+  // Temporarily store the images and ids for the current frame during layer
+  // submitting. Will be empty after OnFrameEnd.
+  Vector<XRLayerUpdate> layers_;
 };
 
 }  // namespace blink

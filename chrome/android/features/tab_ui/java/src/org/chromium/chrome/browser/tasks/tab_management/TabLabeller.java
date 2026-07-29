@@ -11,13 +11,15 @@ import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
 
 import androidx.annotation.ColorInt;
-import androidx.annotation.Nullable;
 
 import org.chromium.base.Callback;
 import org.chromium.base.Token;
-import org.chromium.base.supplier.ObservableSupplier;
+import org.chromium.base.supplier.NullableObservableSupplier;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.tab_ui.R;
 import org.chromium.components.browser_ui.styles.SemanticColorUtils;
 import org.chromium.components.browser_ui.widget.async_image.AsyncImageView;
 import org.chromium.components.collaboration.messaging.CollaborationEvent;
@@ -34,20 +36,20 @@ import org.chromium.components.tab_group_sync.LocalTabGroupId;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
-import java.util.Optional;
 
 /** Pushes label updates to UI for tabs. */
+@NullMarked
 public class TabLabeller extends TabObjectLabeller {
     private final Context mContext;
     private final DataSharingUIDelegate mDataSharingUiDelegate;
-    private final ObservableSupplier<Token> mTabGroupIdSupplier;
+    private final NullableObservableSupplier<Token> mTabGroupIdSupplier;
 
     public TabLabeller(
             Profile profile,
             Context context,
             DataSharingUIDelegate dataSharingUiDelegate,
             TabListNotificationHandler tabListNotificationHandler,
-            ObservableSupplier<Token> tabGroupIdSupplier) {
+            NullableObservableSupplier<Token> tabGroupIdSupplier) {
         super(profile, tabListNotificationHandler);
         mContext = context;
         mDataSharingUiDelegate = dataSharingUiDelegate;
@@ -60,7 +62,7 @@ public class TabLabeller extends TabObjectLabeller {
         return mTabGroupIdSupplier.get() != null
                 && Objects.equals(
                         mTabGroupIdSupplier.get(), MessageUtils.extractTabGroupId(message))
-                && message.type == PersistentNotificationType.CHIP
+                && message.type == PersistentNotificationType.DIRTY_TAB
                 && getTabId(message) != Tab.INVALID_TAB_ID
                 && getTextRes(message) != Resources.ID_NULL;
     }
@@ -68,9 +70,9 @@ public class TabLabeller extends TabObjectLabeller {
     @Override
     protected int getTextRes(PersistentMessage message) {
         if (message.collaborationEvent == CollaborationEvent.TAB_ADDED) {
-            return org.chromium.chrome.tab_ui.R.string.tab_added_label;
+            return R.string.tab_added_label;
         } else if (message.collaborationEvent == CollaborationEvent.TAB_UPDATED) {
-            return org.chromium.chrome.tab_ui.R.string.tab_changed_label;
+            return R.string.tab_changed_label;
         } else {
             return Resources.ID_NULL;
         }
@@ -78,12 +80,12 @@ public class TabLabeller extends TabObjectLabeller {
 
     @Override
     protected List<PersistentMessage> getAllMessages() {
-        @Nullable Token tabGroupId = mTabGroupIdSupplier.get();
+        Token tabGroupId = mTabGroupIdSupplier.get();
         if (tabGroupId == null) return Collections.emptyList();
         LocalTabGroupId localTabGroupId = new LocalTabGroupId(tabGroupId);
         EitherGroupId eitherGroupId = EitherGroupId.createLocalId(localTabGroupId);
-        Optional<Integer> messageType = Optional.of(PersistentNotificationType.CHIP);
-        return mMessagingBackendService.getMessagesForGroup(eitherGroupId, messageType);
+        return mMessagingBackendService.getMessagesForGroup(
+                eitherGroupId, PersistentNotificationType.DIRTY_TAB);
     }
 
     @Override

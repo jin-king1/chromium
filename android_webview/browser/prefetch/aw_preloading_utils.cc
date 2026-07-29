@@ -4,9 +4,14 @@
 
 #include "android_webview/browser/prefetch/aw_preloading_utils.h"
 
+#include "android_webview/common/aw_features.h"
 #include "base/android/jni_array.h"
 #include "base/android/jni_string.h"
+#include "base/android/scoped_java_ref.h"
+#include "base/strings/string_util.h"
+#include "content/public/common/content_features.h"
 #include "net/http/http_no_vary_search_data.h"
+#include "third_party/jni_zero/common_apis.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "android_webview/browser_jni_headers/AwNoVarySearchData_jni.h"
@@ -75,4 +80,44 @@ bool GetIsJavaScriptEnabledFromPrefetchParameters(
   return Java_AwPrefetchParameters_getIsJavascriptEnabled(env, prefetch_params);
 }
 
+std::optional<int> GetVariationsIdFromPrefetchParameters(
+    JNIEnv* env,
+    const base::android::JavaRef<jobject>& prefetch_params) {
+  if (!prefetch_params) {
+    return std::nullopt;
+  }
+
+  base::android::ScopedJavaLocalRef<jobject> j_integer =
+      Java_AwPrefetchParameters_getVariationsId(env, prefetch_params);
+  if (!j_integer) {
+    return std::nullopt;
+  }
+
+  return jni_zero::FromJavaInteger(env, j_integer);
+}
+
+// TODO(crbug.com/455296998): Remove this code for M145.
+bool GetShouldBypassHttpCacheFromHeaders(net::HttpRequestHeaders& headers,
+                                         bool remove_header) {
+  std::optional<std::string> header_value =
+      headers.GetHeader(kDisableHttpCacheHeader);
+  if (header_value) {
+    bool should_bypass = (header_value.value() == "1");
+    if (remove_header) {
+      headers.RemoveHeader(kDisableHttpCacheHeader);
+    }
+    return should_bypass;
+  }
+  return false;
+}
+
+bool IsWebViewPrefetchOffTheMainThreadEnabled() {
+  return base::FeatureList::IsEnabled(
+             features::kWebViewPrefetchOffTheMainThread) &&
+         base::FeatureList::IsEnabled(::features::kPrefetchOffTheMainThread);
+}
+
 }  // namespace android_webview
+
+DEFINE_JNI(AwNoVarySearchData)
+DEFINE_JNI(AwPrefetchParameters)

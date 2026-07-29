@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/media_router/media_router_ui.h"
 
+#include <algorithm>
 #include <utility>
 #include <vector>
 
@@ -20,7 +21,6 @@
 #include "chrome/browser/media/router/media_router_feature.h"
 #include "chrome/browser/media/router/providers/wired_display/wired_display_media_route_provider.h"
 #include "chrome/browser/media/webrtc/desktop_media_picker_controller.h"
-#include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/media_router/media_sink_with_cast_modes.h"
 #include "chrome/browser/ui/media_router/ui_media_sink.h"
@@ -584,8 +584,8 @@ void MediaRouterUI::OnRoutesUpdated(const std::vector<MediaRoute>& routes) {
   }
 
   if (terminating_route_id_ &&
-      !base::Contains(routes, terminating_route_id_.value(),
-                      &MediaRoute::media_route_id)) {
+      !std::ranges::contains(routes, terminating_route_id_.value(),
+                             &MediaRoute::media_route_id)) {
     terminating_route_id_.reset();
   }
   UpdateSinks();
@@ -715,6 +715,10 @@ void MediaRouterUI::StopObservingMirroringMediaControllerHosts() {
 
 MediaRouter* MediaRouterUI::GetMediaRouter() const {
   return router_;
+}
+
+base::WeakPtr<MediaRouterUI> MediaRouterUI::GetWeakPtr() {
+  return weak_factory_.GetWeakPtr();
 }
 
 }  // namespace media_router

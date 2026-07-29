@@ -22,20 +22,31 @@
 #include "components/constrained_window/constrained_window_views.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
 #include "components/web_modal/web_contents_modal_dialog_manager_delegate.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/visibility.h"
+#include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
 #include "ui/base/ui_base_types.h"
+#include "ui/color/color_id.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/bubble/bubble_frame_view.h"
 #include "ui/views/controls/button/md_text_button.h"
+#include "ui/views/controls/throbber.h"
+#include "ui/views/layout/box_layout_view.h"
 #include "ui/views/layout/fill_layout.h"
+#include "ui/views/layout/layout_manager.h"
 #include "ui/views/layout/layout_provider.h"
 #include "ui/views/view.h"
 #include "ui/views/window/dialog_delegate.h"
+
+namespace {
+// View ID used to find the spinner container added to the accept button.
+constexpr int kAcceptButtonSpinnerContainerId = 1327;
+}  // namespace
 
 using Step = AuthenticatorRequestDialogModel::Step;
 
@@ -46,9 +57,8 @@ AuthenticatorRequestDialogView::AuthenticatorRequestDialogView(
       model_(model),
       web_contents_hidden_(web_contents->GetVisibility() ==
                            content::Visibility::HIDDEN) {
-  // TODO(crbug.com/338254375): Remove the following two lines once this is the
-  // default state for widgets and the delegates.
-  SetOwnedByWidget(false);  // Already owned-by-widget as the content view.
+  // TODO(crbug.com/338254375): Remove the following line once this is the
+  // default state for widgets.
   SetOwnershipOfNewWidget(views::Widget::InitParams::CLIENT_OWNS_WIDGET);
 
   SetShowTitle(false);
@@ -68,7 +78,7 @@ AuthenticatorRequestDialogView::~AuthenticatorRequestDialogView() = default;
 void AuthenticatorRequestDialogView::Show() {
   if (web_contents_hidden_) {
     // Calling Widget::Show() while the tab is not in foreground shows the
-    // dialog on the foreground tab (https://crbug.com/969153). Instead, wait
+    // dialog on the foreground tab (https://crbug.com/40630135). Instead, wait
     // for OnVisibilityChanged() to signal the tab going into foreground again,
     // and then show the widget.
     return;
@@ -82,7 +92,11 @@ void AuthenticatorRequestDialogView::ReplaceCurrentSheetWith(
   DCHECK(new_sheet);
 
   if (sheet_) {
-    RemoveChildViewT(sheet_);
+    auto* old_sheet = sheet_.get();
+    // RemoveChildViewT() will delete the old sheet, so we set `sheet_` to
+    // nullptr first to prevent dangling pointer.
+    sheet_ = nullptr;
+    RemoveChildViewT(old_sheet);
   }
   CHECK(children().empty());
 
@@ -97,8 +111,14 @@ void AuthenticatorRequestDialogView::UpdateUIForCurrentSheet() {
 
   sheet_->ReInitChildViews();
 
+  const AuthenticatorRequestSheetModel::AcceptButtonState accept_state =
+      sheet_->model()->GetAcceptButtonState();
+  const bool accept_button_visible =
+      accept_state !=
+      AuthenticatorRequestSheetModel::AcceptButtonState::kNotVisible;
+
   int buttons = static_cast<int>(ui::mojom::DialogButton::kNone);
-  if (sheet_->model()->IsAcceptButtonVisible()) {
+  if (accept_button_visible) {
     buttons |= static_cast<int>(ui::mojom::DialogButton::kOk);
   }
   if (sheet_->model()->IsCancelButtonVisible()) {
@@ -112,8 +132,8 @@ void AuthenticatorRequestDialogView::UpdateUIForCurrentSheet() {
                  sheet_->model()->GetAcceptButtonLabel());
   SetButtonLabel(ui::mojom::DialogButton::kCancel,
                  sheet_->model()->GetCancelButtonLabel());
-  if (model_->step() == Step::kTrustThisComputerAssertion ||
-      model_->step() == Step::kTrustThisComputerCreation ||
+  if (model_->step() == Step::kGPMTrustThisComputerAssertion ||
+      model_->step() == Step::kGPMTrustThisComputerCreation ||
       model_->step() == Step::kGPMCreatePasskey ||
       model_->step() == Step::kGPMEnterPin ||
       model_->step() == Step::kGPMEnterArbitraryPin ||
@@ -131,13 +151,13 @@ void AuthenticatorRequestDialogView::UpdateUIForCurrentSheet() {
             base::Unretained(this)),
         sheet_->model()->GetOtherMechanismButtonLabel()));
     other_mechanisms->SetEnabled(!model_->ui_disabled_);
-  } else if (sheet_->model()->IsManageDevicesButtonVisible()) {
-    auto* manage_devices = SetExtraView(std::make_unique<views::MdTextButton>(
+  } else if (sheet_->model()->IsGpmSettingsButtonVisible()) {
+    auto* gpm_settings = SetExtraView(std::make_unique<views::MdTextButton>(
         base::BindRepeating(
-            &AuthenticatorRequestDialogView::ManageDevicesButtonPressed,
+            &AuthenticatorRequestDialogView::OpenGpmSettingsButtonPressed,
             base::Unretained(this)),
-        l10n_util::GetStringUTF16(IDS_WEBAUTHN_MANAGE_DEVICES)));
-    manage_devices->SetEnabled(!model_->ui_disabled_);
+        l10n_util::GetStringUTF16(IDS_WEBAUTHN_GPM_SETTINGS)));
+    gpm_settings->SetEnabled(!model_->ui_disabled_);
   } else if (sheet_->model()->IsForgotGPMPinButtonVisible()) {
     auto forgot_pin_button = std::make_unique<views::MdTextButton>(
         base::BindRepeating(
@@ -171,18 +191,64 @@ void AuthenticatorRequestDialogView::UpdateUIForCurrentSheet() {
     return;
   }
 
-  auto* frame_view = GetBubbleFrameView();
-  if (model_->step() == Step::kGPMCreatePin ||
-      model_->step() == Step::kGPMCreateArbitraryPin ||
-      model_->step() == Step::kGPMChangePin ||
-      model_->step() == Step::kGPMChangeArbitraryPin ||
-      model_->step() == Step::kGPMEnterPin ||
-      model_->step() == Step::kGPMEnterArbitraryPin) {
-    frame_view->SetFootnoteView(
-        std::make_unique<AuthenticatorGpmAccountInfoView>(
-            static_cast<AuthenticatorGpmPinSheetModelBase*>(sheet_->model())));
-  } else {
-    frame_view->SetFootnoteView(nullptr);
+  views::MdTextButton* ok_button = GetOkButton();
+  if (ok_button) {
+    const bool show_spinner =
+        accept_state ==
+        AuthenticatorRequestSheetModel::AcceptButtonState::kDisabledWithSpinner;
+
+    views::View* existing_container =
+        ok_button->GetViewByID(kAcceptButtonSpinnerContainerId);
+
+    if (show_spinner && !existing_container) {
+      constexpr int kDialogButtonSpinnerSize = 16;
+      auto spinner = std::make_unique<views::Throbber>();
+      spinner->SetPreferredSize(
+          gfx::Size(kDialogButtonSpinnerSize, kDialogButtonSpinnerSize));
+      spinner->SetColorId(ui::kColorButtonForegroundProminent);
+      spinner->Start();
+
+      auto spinner_container = std::make_unique<views::BoxLayoutView>();
+      spinner_container->SetOrientation(
+          views::BoxLayout::Orientation::kHorizontal);
+      spinner_container->SetMainAxisAlignment(views::LayoutAlignment::kCenter);
+      spinner_container->SetCrossAxisAlignment(views::LayoutAlignment::kCenter);
+      spinner_container->AddChildView(std::move(spinner));
+      spinner_container->SetVisible(false);  // Initially hidden
+      spinner_container->SetID(kAcceptButtonSpinnerContainerId);
+
+      ok_button->SetUseDefaultFillLayout(true);
+      existing_container = ok_button->AddChildView(std::move(spinner_container));
+    }
+
+    if (show_spinner) {
+      // Show the spinner and hide the button text.
+      existing_container->SetVisible(true);
+      ok_button->SetBgColorIdOverride(ui::kColorButtonBackgroundProminent);
+      ok_button->SetTextColor(views::Button::ButtonState::STATE_DISABLED,
+                              ui::kColorButtonBackgroundProminent);
+    } else {
+      if (existing_container) {
+        existing_container->SetVisible(false);
+      }
+      ok_button->SetBgColorIdOverride(std::nullopt);
+    }
+  }
+
+  if (auto* frame_view = GetBubbleFrameView(); frame_view) {
+    if (model_->step() == Step::kGPMCreatePin ||
+        model_->step() == Step::kGPMCreateArbitraryPin ||
+        model_->step() == Step::kGPMChangePin ||
+        model_->step() == Step::kGPMChangeArbitraryPin ||
+        model_->step() == Step::kGPMEnterPin ||
+        model_->step() == Step::kGPMEnterArbitraryPin) {
+      frame_view->SetFootnoteView(
+          std::make_unique<AuthenticatorGpmAccountInfoView>(
+              static_cast<AuthenticatorGpmPinSheetModelBase*>(
+                  sheet_->model())));
+    } else {
+      frame_view->SetFootnoteView(nullptr);
+    }
   }
 
   // Force re-layout of the entire dialog client view, which includes the sheet
@@ -212,7 +278,9 @@ void AuthenticatorRequestDialogView::UpdateUIForCurrentSheet() {
   // Update the dialog size and position, as the preferred size of the sheet
   // might have changed.
   constrained_window::UpdateWebContentsModalDialogPosition(
-      GetWidget(), dialog_manager->delegate()->GetWebContentsModalDialogHost());
+      GetWidget(),
+      dialog_manager->delegate()->GetWebContentsModalDialogHost(
+          constrained_window::GetTopLevelWebContents(web_contents())));
 
   // Reset focus to the highest priority control on the new/updated sheet.
   if (GetInitiallyFocusedView()) {
@@ -247,7 +315,9 @@ bool AuthenticatorRequestDialogView::IsDialogButtonEnabled(
     case ui::mojom::DialogButton::kNone:
       break;
     case ui::mojom::DialogButton::kOk:
-      return sheet_ && sheet_->model()->IsAcceptButtonEnabled();
+      return sheet_ &&
+             sheet_->model()->GetAcceptButtonState() ==
+                 AuthenticatorRequestSheetModel::AcceptButtonState::kEnabled;
     case ui::mojom::DialogButton::kCancel:
       return true;  // Cancel is always enabled if visible.
   }
@@ -273,8 +343,8 @@ views::View* AuthenticatorRequestDialogView::GetInitiallyFocusedView() {
     return intially_focused_sheet_control;
   }
 
-  if (sheet_->model()->IsAcceptButtonVisible() &&
-      sheet_->model()->IsAcceptButtonEnabled()) {
+  if (sheet_->model()->GetAcceptButtonState() ==
+      AuthenticatorRequestSheetModel::AcceptButtonState::kEnabled) {
     return GetOkButton();
   }
 
@@ -311,8 +381,8 @@ void AuthenticatorRequestDialogView::OtherMechanismsButtonPressed() {
   sheet_->model()->OnBack();
 }
 
-void AuthenticatorRequestDialogView::ManageDevicesButtonPressed() {
-  sheet_->model()->OnManageDevices();
+void AuthenticatorRequestDialogView::OpenGpmSettingsButtonPressed() {
+  sheet_->model()->OnOpenGpmSettingsButtonPressed();
 }
 
 void AuthenticatorRequestDialogView::ForgotGPMPinPressed() {

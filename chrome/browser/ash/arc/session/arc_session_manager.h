@@ -12,6 +12,7 @@
 #include <utility>
 
 #include "base/memory/raw_ptr.h"
+#include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/time/time.h"
@@ -24,45 +25,38 @@
 #include "chrome/browser/ash/arc/session/arc_app_id_provider_impl.h"
 #include "chrome/browser/ash/arc/session/arc_requirement_checker.h"
 #include "chrome/browser/ash/arc/session/arc_session_manager_observer.h"
-#include "chrome/browser/ash/arc/session/arc_vm_data_migration_necessity_checker.h"
 #include "chrome/browser/ash/guest_os/public/guest_os_mount_provider_registry.h"
 #include "chrome/browser/ash/policy/arc/android_management_client.h"
 #include "chromeos/ash/components/dbus/concierge/concierge_client.h"
 #include "chromeos/ash/components/dbus/dlcservice/dlcservice_client.h"
 #include "chromeos/ash/components/dbus/session_manager/session_manager_client.h"
 #include "chromeos/ash/experiences/arc/arc_util.h"
-#include "chromeos/ash/experiences/arc/dlc_installer/arc_dlc_install_notification_manager.h"
+#include "chromeos/ash/experiences/arc/dlc_installer/arc_dlc_installer.h"
 #include "chromeos/ash/experiences/arc/session/arc_session_runner.h"
 #include "chromeos/ash/experiences/arc/session/arc_stop_reason.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/session_manager/core/session_manager_observer.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 
+class ApplicationLocaleStorage;
 class ArcAppLauncher;
+class PrefService;
 class Profile;
 
 namespace arc {
 
 // The file exists only when ARC container is in use.
-constexpr const char kGeneratedBuildPropertyFilePath[] =
+inline constexpr char kGeneratedBuildPropertyFilePath[] =
     "/run/arc/host_generated/build.prop";
 
 // The file exists only when ARCVM is in use.
-constexpr const char kGeneratedCombinedPropertyFilePathVm[] =
+inline constexpr char kGeneratedCombinedPropertyFilePathVm[] =
     "/run/arcvm/host_generated/combined.prop";
-
-// Maximum number of auto-resumes for ARCVM /data migration. When this number of
-// auto-resumes have been already attempted but the migration has not finished,
-// ARC is blocked and the user needs to manually trigger the resume by clicking
-// a notification.
-constexpr int kArcVmDataMigrationMaxAutoResumeCount = 3;
 
 class ArcDataRemover;
 class ArcFastAppReinstallStarter;
 class ArcPaiStarter;
 class ArcProvisioningResult;
 class ArcUiAvailabilityReporter;
-class ArcDlcInstallHardwareChecker;
 
 enum class ProvisioningStatus;
 enum class ArcStopReason;
@@ -146,9 +140,14 @@ class ArcSessionManager : public ArcSessionRunner::Observer,
   using ExpansionResult = std::pair<std::string /* salt on disk */,
                                     bool /* expansion successful */>;
 
-  ArcSessionManager(std::unique_ptr<ArcSessionRunner> arc_session_runner,
+  // `local_state` and `application_locale_storage` must be non-null and must
+  // outlive `this`.
+  ArcSessionManager(PrefService* local_state,
+                    const ApplicationLocaleStorage* application_locale_storage,
+                    std::unique_ptr<ArcSessionRunner> arc_session_runner,
                     std::unique_ptr<AdbSideloadingAvailabilityDelegateImpl>
-                        adb_sideloading_availability_delegate);
+                        adb_sideloading_availability_delegate,
+                    ArcDlcInstaller* arc_dlc_installer);
 
   ArcSessionManager(const ArcSessionManager&) = delete;
   ArcSessionManager& operator=(const ArcSessionManager&) = delete;
@@ -343,8 +342,6 @@ class ArcSessionManager : public ArcSessionRunner::Observer,
   void SetArcSessionRunnerForTesting(
       std::unique_ptr<ArcSessionRunner> arc_session_runner);
   ArcSessionRunner* GetArcSessionRunnerForTesting();
-  void SetAttemptUserExitCallbackForTesting(
-      const base::RepeatingClosure& callback);
   void SetAttemptRestartCallbackForTesting(
       const base::RepeatingClosure& callback);
   void SetAndroidManagementCheckerFactoryForTesting(
@@ -352,10 +349,6 @@ class ArcSessionManager : public ArcSessionRunner::Observer,
           android_management_checker_factory) {
     android_management_checker_factory_ = android_management_checker_factory;
   }
-
-  // Invoking OnEnableArcOnReven() only for testing
-  void OnEnableArcOnRevenForTesting(std::deque<JobDesc> jobs,
-                                    bool is_compatible);
 
   // Returns whether the Play Store app is requested to be launched by this
   // class. Should be used only for tests.
@@ -404,17 +397,10 @@ class ArcSessionManager : public ArcSessionRunner::Observer,
     return is_activation_delayed_.value_or(false);
   }
 
-  // The unit test will use a mock hardware checker for testing.
-  void SetHardwareCheckerForTesting(
-      std::unique_ptr<ArcDlcInstallHardwareChecker> hardware_checker);
-
-  // The unit test will inject an ArcDlcInstallNotificationManager for
-  // testing.
-  void SetArcDlcInstallNotificationManagerForTesting(
-      std::unique_ptr<ArcDlcInstallNotificationManager>
-          arc_dlc_install_notification_manager) {
-    arc_dlc_install_notification_manager_ =
-        std::move(arc_dlc_install_notification_manager);
+  // Sets a callback that is run when the provisioning timer is started.
+  void SetProvisioningTimerStartedCallbackForTesting(
+      base::OnceClosure callback) {
+    provisioning_timer_started_callback_for_testing_ = std::move(callback);
   }
 
  private:
@@ -432,21 +418,6 @@ class ArcSessionManager : public ArcSessionRunner::Observer,
 
   // Reports statuses of OptIn flow to UMA.
   class ScopedOptInFlowTracker;
-
-  // Sends out a pending notification for DLC installation when the user profile
-  // is set.
-  void MaybeShowDlcInstallNotification(NotificationType type);
-
-  // Handles the completion of the hardware compatibility check for ARC on a
-  // reven device. If the device is compatible with ARC, the DLC service client
-  // starts to install the Android DLC image.
-  void OnEnableArcOnReven(std::deque<JobDesc> jobs, bool is_compatible);
-
-  // Handles the completion of the arcvm DLC installation. If the installation
-  // succeeds, adds a job to mount the DLC directory to the arc root directory.
-  void OnDlcInstalled(
-      std::deque<JobDesc> jobs,
-      const ash::DlcserviceClient::InstallResult& install_result);
 
   // Requests to disable ARC session and allows to optionally remove ARC data.
   // If ARC is already disabled, no-op.
@@ -508,17 +479,9 @@ class ArcSessionManager : public ArcSessionRunner::Observer,
   // Starts to remove ARC data, if it is requested via RequestArcDataRemoval().
   // On completion, OnArcDataRemoved() is called.
   // If not requested, just skipping the data removal, and moves to
-  // MaybeReenableArc() or CheckArcVmDataMigrationNecessity() directly.
+  // MaybeReenableArc() directly.
   void MaybeStartArcDataRemoval();
   void OnArcDataRemoved(std::optional<bool> success);
-
-  // Checks whether /data migration is needed for enabling virtio-blk /data.
-  // On completion, OnArcVmDataMigrationNecessityChecked() is called.
-  // ArcSessionRunner::set_use_virtio_blk_data() should be called after the
-  // check is finished but before ARC is enabled in MaybeReenableArc().
-  void CheckArcVmDataMigrationNecessity(base::OnceClosure callback);
-  void OnArcVmDataMigrationNecessityChecked(base::OnceClosure callback,
-                                            std::optional<bool> result);
 
   // On ARC session stopped and/or data removal completion, this is called
   // so that, if necessary, ARC session is restarted.
@@ -555,18 +518,26 @@ class ArcSessionManager : public ArcSessionRunner::Observer,
   // will be no-op.
   void MaybeRecordFirstActivationDuringUserSessionStartUp(bool value);
 
+  // Called after the ARCVM DLC state has been checked. Starts the provisioning
+  // timer with the appropriate timeout.
+  void OnDlcCheckDoneForTimer(ArcDlcInstaller::DlcState state);
+
+  // Starts the ARC sign-in provisioning timer with the specified |timeout|.
+  void StartProvisioningTimerWithTimeout(base::TimeDelta timeout);
+
+  // Invoked after WaitForServiceToBeAvailable(). Proceeds to query DLC state
+  // if |available|, otherwise aborts ARC provisioning
+  void OnDlcServiceReady(bool available);
+
+  const raw_ref<PrefService> local_state_;
+  const raw_ref<const ApplicationLocaleStorage> application_locale_storage_;
+
   std::unique_ptr<ArcSessionRunner> arc_session_runner_;
   std::unique_ptr<AdbSideloadingAvailabilityDelegateImpl>
       adb_sideloading_availability_delegate_;
 
   // Unowned pointer. Keeps current profile.
   raw_ptr<Profile> profile_ = nullptr;
-
-  std::unique_ptr<ArcDlcInstallNotificationManager>
-      arc_dlc_install_notification_manager_;
-
-  // Stores any pending notifications for DLC installation.
-  std::vector<NotificationType> dlc_install_pending_notifications_;
 
   // Whether ArcSessionManager is requested to enable (starting to run ARC
   // instance) or not.
@@ -599,9 +570,6 @@ class ArcSessionManager : public ArcSessionRunner::Observer,
   std::unique_ptr<ArcSupportHost> support_host_;
   std::unique_ptr<ArcDataRemover> data_remover_;
 
-  std::unique_ptr<ArcVmDataMigrationNecessityChecker>
-      arc_vm_data_migration_necessity_checker_;
-
   ArcRequirementChecker::AndroidManagementCheckerFactory
       android_management_checker_factory_;
   std::unique_ptr<ArcRequirementChecker> requirement_checker_;
@@ -612,7 +580,7 @@ class ArcSessionManager : public ArcSessionRunner::Observer,
   std::unique_ptr<ArcPaiStarter> pai_starter_;
   std::unique_ptr<ArcFastAppReinstallStarter> fast_app_reinstall_starter_;
   std::unique_ptr<ArcUiAvailabilityReporter> arc_ui_availability_reporter_;
-  std::unique_ptr<ArcDlcInstallHardwareChecker> hardware_checker_;
+  const raw_ptr<ArcDlcInstaller> arc_dlc_installer_;
 
   // The time when the sign in process started.
   base::TimeTicks sign_in_start_time_;
@@ -631,8 +599,6 @@ class ArcSessionManager : public ArcSessionRunner::Observer,
   };
   std::optional<UserSessionStartUpTaskTimer> user_session_start_up_task_timer_;
 
-  base::RepeatingClosure attempt_user_exit_callback_;
-
   base::RepeatingClosure attempt_restart_callback_;
 
   ArcAppIdProviderImpl app_id_provider_;
@@ -648,6 +614,8 @@ class ArcSessionManager : public ArcSessionRunner::Observer,
   base::ScopedObservation<session_manager::SessionManager,
                           session_manager::SessionManagerObserver>
       session_manager_observation_{this};
+
+  base::OnceClosure provisioning_timer_started_callback_for_testing_;
 
   // Must be the last member.
   base::WeakPtrFactory<ArcSessionManager> weak_ptr_factory_{this};

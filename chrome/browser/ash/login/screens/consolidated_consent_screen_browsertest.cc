@@ -5,12 +5,13 @@
 #include "chrome/browser/ash/login/screens/consolidated_consent_screen.h"
 
 #include "ash/constants/ash_features.h"
+#include "ash/constants/ash_login_pref_names.h"
 #include "ash/constants/ash_switches.h"
-#include "base/hash/sha1.h"
+#include "ash/login/resources/grit/ash_login_strings.h"
+#include "base/strings/string_view_util.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/test_future.h"
 #include "chrome/browser/ash/arc/session/arc_service_launcher.h"
-#include "chrome/browser/ash/login/login_pref_names.h"
 #include "chrome/browser/ash/login/oobe_screen.h"
 #include "chrome/browser/ash/login/test/device_state_mixin.h"
 #include "chrome/browser/ash/login/test/fake_arc_tos_mixin.h"
@@ -31,10 +32,10 @@
 #include "chrome/browser/ui/ash/login/webui_login_view.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/webui/ash/login/consolidated_consent_screen_handler.h"
-#include "chrome/grit/generated_resources.h"
 #include "components/consent_auditor/fake_consent_auditor.h"
 #include "components/policy/proto/cloud_policy.pb.h"
 #include "content/public/test/browser_test.h"
+#include "crypto/obsolete/sha1.h"
 #include "google_apis/gaia/gaia_id.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
@@ -191,7 +192,8 @@ ArcPlayTermsOfServiceConsent BuildArcPlayTermsOfServiceConsent(
       IDS_CONSOLIDATED_CONSENT_ACCEPT_AND_CONTINUE);
   play_consent.set_consent_flow(ArcPlayTermsOfServiceConsent::SETUP);
   play_consent.set_play_terms_of_service_hash(
-      base::SHA1HashString(tos_content));
+      std::string(base::as_string_view(crypto::obsolete::Sha1::HashForTesting(
+          base::as_byte_span(tos_content)))));
   play_consent.set_play_terms_of_service_text_length(tos_content.length());
   return play_consent;
 }
@@ -651,11 +653,13 @@ class ConsolidatedConsentScreenArcEnabledParameterizedTest
     FakeConsentAuditor* auditor = static_cast<FakeConsentAuditor*>(
         ConsentAuditorFactory::GetForProfile(profile));
 
-    if (!accept_backup_restore_)
+    if (!accept_backup_restore_) {
       test::OobeJS().ClickOnPath(kBackupToggle);
+    }
 
-    if (!accept_location_service_)
+    if (!accept_location_service_) {
       test::OobeJS().ClickOnPath(kLocationToggle);
+    }
 
     EXPECT_CALL(*auditor, RecordArcPlayConsent(
                               testing::_,
@@ -804,34 +808,33 @@ class ConsolidatedConsentScreenManagedUserTest
 
   void CheckTogglesState(ArcManagedOptin backup_opt_in,
                          ArcManagedOptin location_opt_in) {
-    // Legacy handling.
-    // `IsPhEnabled() == true` is granularly tested below.
-    if (!IsPhEnabled()) {
-      test::OobeJS().ExpectVisiblePath(kBackup);
-      test::OobeJS().ExpectVisiblePath(kLocation);
+    // UI elements are hidden when *ALL* ARC-specific prefs are configured by
+    // the admin.
+    if (backup_opt_in != ArcManagedOptin::kNotManaged &&
+        location_opt_in != ArcManagedOptin::kNotManaged) {
+      if (!IsPhEnabled()) {
+        // Legacy handling: Both toggles are hidden.
+        test::OobeJS().ExpectHiddenPath(kBackup);
+        test::OobeJS().ExpectHiddenPath(kLocation);
+        return;
+      } else {
+        // Location toggle is always shown post Privacy Hub, only the Backup
+        // toggle is hidden. Check the toggle states below.
+        test::OobeJS().ExpectHiddenPath(kBackup);
+        test::OobeJS().ExpectVisiblePath(kLocation);
+      }
     }
 
     switch (backup_opt_in) {
       case ArcManagedOptin::kManagedDisabled:
-        if (IsPhEnabled()) {
-          test::OobeJS().ExpectHiddenPath(kBackup);
-        } else {
-          test::OobeJS().ExpectDisabledPath(kBackupToggle);
-          test::OobeJS().ExpectHasNoAttribute("checked", kBackupToggle);
-        }
+        test::OobeJS().ExpectDisabledPath(kBackupToggle);
+        test::OobeJS().ExpectHasNoAttribute("checked", kBackupToggle);
         break;
       case ArcManagedOptin::kManagedEnabled:
-        if (IsPhEnabled()) {
-          test::OobeJS().ExpectHiddenPath(kBackup);
-        } else {
-          test::OobeJS().ExpectDisabledPath(kBackupToggle);
-          test::OobeJS().ExpectHasAttribute("checked", kBackupToggle);
-        }
+        test::OobeJS().ExpectDisabledPath(kBackupToggle);
+        test::OobeJS().ExpectHasAttribute("checked", kBackupToggle);
         break;
       case ArcManagedOptin::kNotManaged:
-        if (IsPhEnabled()) {
-          test::OobeJS().ExpectVisiblePath(kBackup);
-        }
         test::OobeJS().ExpectEnabledPath(kBackupToggle);
         break;
     }
@@ -894,6 +897,16 @@ IN_PROC_BROWSER_TEST_P(ConsolidatedConsentScreenManagedUserTest,
   LoginManagedUser();
   CheckTogglesState(ArcManagedOptin::kNotManaged,
                     ArcManagedOptin::kManagedDisabled);
+}
+
+IN_PROC_BROWSER_TEST_P(ConsolidatedConsentScreenManagedUserTest,
+                       BothOptinsManaged) {
+  SetUpArcEnabledPolicy();
+  SetUpManagedArcOptIns(ArcManagedOptin::kManagedEnabled,
+                        ArcManagedOptin::kManagedEnabled);
+  LoginManagedUser();
+  CheckTogglesState(ArcManagedOptin::kManagedEnabled,
+                    ArcManagedOptin::kManagedEnabled);
 }
 
 INSTANTIATE_TEST_SUITE_P(EnableDisablePhLocation,

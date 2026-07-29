@@ -9,14 +9,18 @@
 #include <optional>
 #include <string>
 
+#include "base/byte_size.h"
 #include "base/containers/flat_set.h"
+#include "base/memory/raw_ptr.h"
 #include "base/observer_list_types.h"
 #include "base/time/time.h"
+#include "base/unguessable_token.h"
 #include "components/performance_manager/public/graph/node.h"
 #include "components/performance_manager/public/graph/node_set_view.h"
 #include "components/performance_manager/public/mojom/lifecycle.mojom.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
 #include "third_party/blink/public/common/permissions/permission_utils.h"
+#include "third_party/blink/public/mojom/favicon/favicon_url.mojom-forward.h"
 
 class GURL;
 
@@ -38,6 +42,8 @@ enum class PageType {
   kTab,
   // An extension background page.
   kExtension,
+  // A non-tab WebUI surface (e.g., Top Chrome WebUI, Side Panel).
+  kNonTabWebUI,
   // Anything else.
   kUnknown,
 };
@@ -46,23 +52,11 @@ enum class PageType {
 // These may correspond to normal tabs, WebViews, Chrome Apps or Extensions.
 class PageNode : public TypedNode<PageNode> {
  public:
-  using NodeSet = base::flat_set<const Node*>;
+  using NodeSet = base::flat_set<raw_ptr<const Node>>;
   template <class NodeViewPtr>
   using NodeSetView = NodeSetView<NodeSet, NodeViewPtr>;
 
   using LifecycleState = mojom::LifecycleState;
-
-  // Reasons for which a frame can become the embedder of a page.
-  enum class EmbeddingType {
-    // Returned if this node doesn't have an embedder.
-    kInvalid,
-    // This page is a guest view. This can be many things (<webview>, <appview>,
-    // etc) but is backed by the same inner/outer WebContents mechanism.
-    kGuestView
-  };
-
-  // Returns a string for a PageNode::EmbeddingType enumeration.
-  static const char* ToString(PageNode::EmbeddingType embedding_type);
 
   // Loading state of a page.
   enum class LoadingState {
@@ -99,7 +93,7 @@ class PageNode : public TypedNode<PageNode> {
   ~PageNode() override;
 
   // Returns the unique ID of the browser context that this page belongs to.
-  virtual const std::string& GetBrowserContextID() const = 0;
+  virtual const base::UnguessableToken& GetBrowserContextID() const = 0;
 
   // Returns the opener frame node, if there is one. This may change over the
   // lifetime of this page. See "OnOpenerFrameNodeChanged".
@@ -113,10 +107,6 @@ class PageNode : public TypedNode<PageNode> {
   // token will not be reused after the node is destroyed.
   virtual resource_attribution::PageContext GetResourceContext() const = 0;
 
-  // Returns the type of relationship this node has with its embedder, if it has
-  // an embedder.
-  virtual EmbeddingType GetEmbeddingType() const = 0;
-
   // Returns the type of the page.
   virtual PageType GetType() const = 0;
 
@@ -127,18 +117,18 @@ class PageNode : public TypedNode<PageNode> {
   // See PageNodeObserver::OnIsVisibleChanged.
   virtual bool IsVisible() const = 0;
 
-  // Returns the time since the last visibility change. It is always well
-  // defined as the visibility property is set at node creation.
-  virtual base::TimeDelta GetTimeSinceLastVisibilityChange() const = 0;
+  // Returns the time of the last visibility change. It is always well defined
+  // as the visibility property is set at node creation.
+  virtual base::TimeTicks GetLastVisibilityChangeTime() const = 0;
 
   // Returns true if this page is currently audible, false otherwise.
   // See PageNodeObserver::OnIsAudibleChanged.
   virtual bool IsAudible() const = 0;
 
   // Returns the time since the last audible change. Unlike
-  // GetTimeSinceLastVisibilityChange(), this returns nullopt for a node which
-  // has never been audible. If a node is audible when created, it is considered
-  // to change from inaudible to audible at that point.
+  // GetLastVisibilityChangeTime(), this returns nullopt for a node which has
+  // never been audible. If a node is audible when created, it is considered to
+  // change from inaudible to audible at that point.
   virtual std::optional<base::TimeDelta> GetTimeSinceLastAudibleChange()
       const = 0;
 
@@ -213,7 +203,7 @@ class PageNode : public TypedNode<PageNode> {
   // Returns the private memory footprint size of the main frame and its
   // children. This differs from EstimatePrivateFootprintSize which includes
   // all the frames under the page node.
-  virtual uint64_t EstimateMainFramePrivateFootprintSize() const = 0;
+  virtual base::ByteSize EstimateMainFramePrivateFootprintSize() const = 0;
 
   // Indicates if at least one of the frames in the page has received some form
   // interactions.
@@ -229,16 +219,18 @@ class PageNode : public TypedNode<PageNode> {
   // dereferenced on the UI thread.
   virtual base::WeakPtr<content::WebContents> GetWebContents() const = 0;
 
-  virtual uint64_t EstimateResidentSetSize() const = 0;
+  virtual base::ByteSize EstimateResidentSetSize() const = 0;
 
-  virtual uint64_t EstimatePrivateFootprintSize() const = 0;
+  virtual base::ByteSize EstimatePrivateFootprintSize() const = 0;
+
+  // Returns a weak pointer to this page node.
+  virtual base::WeakPtr<PageNode> GetWeakPtr() = 0;
+  virtual base::WeakPtr<const PageNode> GetWeakPtr() const = 0;
 };
 
 // Observer interface for page nodes.
 class PageNodeObserver : public base::CheckedObserver {
  public:
-  using EmbeddingType = PageNode::EmbeddingType;
-
   PageNodeObserver();
 
   PageNodeObserver(const PageNodeObserver&) = delete;
@@ -297,10 +289,8 @@ class PageNodeObserver : public base::CheckedObserver {
   // change, or had the embedder removed. This can happen if a page is opened
   // via webviews, guestviews etc, or when that relationship is subsequently
   // severed or reparented.
-  virtual void OnEmbedderFrameNodeChanged(
-      const PageNode* page_node,
-      const FrameNode* previous_embedder,
-      EmbeddingType previous_embedder_type) {}
+  virtual void OnEmbedderFrameNodeChanged(const PageNode* page_node,
+                                          const FrameNode* previous_embedder) {}
 
   // Invoked when the GetType property changes.
   virtual void OnTypeChanged(const PageNode* page_node,
@@ -311,7 +301,7 @@ class PageNodeObserver : public base::CheckedObserver {
 
   // Invoked when the IsVisible property changes.
   //
-  // GetTimeSinceLastVisibilityChange() will return the time since the previous
+  // GetLastVisibilityChangeTime() will return the time of the previous
   // IsVisible change. After all observers have fired it will return the time of
   // this property change.
   virtual void OnIsVisibleChanged(const PageNode* page_node) {}
@@ -337,7 +327,9 @@ class PageNodeObserver : public base::CheckedObserver {
   // Invoked when the UkmSourceId property changes.
   virtual void OnUkmSourceIdChanged(const PageNode* page_node) {}
 
-  // Invoked when the PageLifecycleState property changes.
+  // Invoked when the PageLifecycleState property changes. Note that if the
+  // property changes because a frame is added or removed from the page, this
+  // may be invoked before OnFrameNodeAdded or after OnBeforeFrameNodeRemoved.
   virtual void OnPageLifecycleStateChanged(const PageNode* page_node) {}
 
   // Invoked when the IsHoldingWebLock property changes.
@@ -377,7 +369,8 @@ class PageNodeObserver : public base::CheckedObserver {
 
   // Fired when the favicon associated with a page is updated. This property is
   // not directly reflected on the node.
-  virtual void OnFaviconUpdated(const PageNode* page_node) {}
+  virtual void OnFaviconUpdated(const PageNode* page_node,
+                                blink::mojom::FaviconUpdateReason reason) {}
 
   // Fired after `new_page_node` is created but before `page_node` is deleted
   // from being discarded. See the equivalent function on `WebContentsObserver`
@@ -385,11 +378,6 @@ class PageNodeObserver : public base::CheckedObserver {
   virtual void OnAboutToBeDiscarded(const PageNode* page_node,
                                     const PageNode* new_page_node) {}
 };
-
-// std::ostream support for PageNode::EmbeddingType.
-std::ostream& operator<<(
-    std::ostream& os,
-    performance_manager::PageNode::EmbeddingType embedding_type);
 
 }  // namespace performance_manager
 

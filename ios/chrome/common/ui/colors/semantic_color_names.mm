@@ -5,9 +5,16 @@
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 
 #pragma mark - Element Colors
+NSString* const kAimInputItemTopBackgroundColor =
+    @"aim_input_item_top_background_color";
+NSString* const kAimComposeboxButtonBackgroundColor =
+    @"aim_composebox_button_background_color";
+NSString* const kAppBarColor = @"app_bar";
+NSString* const kAppBarIncognitoColor = @"app_bar_incognito";
 NSString* const kBackgroundColor = @"background_color";
 NSString* const kCloseButtonColor = @"close_button_color";
 NSString* const kDisabledTintColor = @"disabled_tint_color";
+NSString* const kDestinationHighlightColor = @"destination_highlight_color";
 NSString* const kFaviconBackgroundColor = @"favicon_background_color";
 NSString* const kGroupedPrimaryBackgroundColor =
     @"grouped_primary_background_color";
@@ -18,15 +25,16 @@ NSString* const kMDCInkColor = @"mdc_ink_color";
 NSString* const kMDCSecondaryInkColor = @"mdc_secondary_ink_color";
 NSString* const kPlaceholderImageTintColor = @"placeholder_image_tint_color";
 NSString* const kPrimaryBackgroundColor = @"primary_background_color";
+NSString* const kInvertedPrimaryBackgroundColor =
+    @"inverted_primary_background_color";
 NSString* const kScrimBackgroundColor = @"scrim_background_color";
 NSString* const kDarkerScrimBackgroundColor = @"darker_scrim_background_color";
 NSString* const kSecondaryBackgroundColor = @"secondary_background_color";
 NSString* const kSeparatorColor = @"separator_color";
+NSString* const kBWGSeparatorColor = @"bwg_separator_color";
 NSString* const kSolidButtonTextColor = @"solid_button_text_color";
 NSString* const kTableViewRowHighlightColor = @"table_view_row_highlight_color";
 NSString* const kTertiaryBackgroundColor = @"tertiary_background_color";
-NSString* const kUpdatedTertiaryBackgroundColor =
-    @"updated_tertiary_background_color";
 NSString* const kTextPrimaryColor = @"text_primary_color";
 NSString* const kInvertedTextPrimaryColor = @"inverted_text_primary_color";
 NSString* const kTextSecondaryColor = @"text_secondary_color";
@@ -43,15 +51,21 @@ NSString* const kTextfieldHighlightBackgroundColor =
 NSString* const kTextfieldPlaceholderColor = @"textfield_placeholder_color";
 NSString* const kToolbarButtonColor = @"toolbar_button_color";
 NSString* const kToolbarShadowColor = @"toolbar_shadow_color";
+
+NSString* const kMiniFakeOmniboxBackgroundColor =
+    @"mini_fake_omnibox_background_color";
 NSString* const kOmniboxKeyboardButtonColor = @"omnibox_keyboard_button_color";
+NSString* const kOmniboxPopoutOverlayColor = @"omnibox_popout_overlay_color";
 NSString* const kOmniboxSuggestionRowSeparatorColor =
     @"omnibox_suggestion_row_separator_color";
+NSString* const kOmniboxSuggestionAnswerIconColor =
+    @"omnibox_suggestion_answer_icon_color";
+NSString* const kOmniboxSuggestionIconColor = @"omnibox_suggestion_icon_color";
 NSString* const kOmniboxPopoutSuggestionRowSeparatorColor =
     @"omnibox_popout_suggestion_row_separator_color";
+
 NSString* const kTabGroupFaviconBackgroundColor =
     @"tab_group_favicons_background_color";
-NSString* const kOmniboxPopoutOverlayColor = @"omnibox_popout_overlay_color";
-NSString* const kTabStripBackgroundColor = @"tab_strip_background_color";
 NSString* const kTabStripV3BackgroundColor = @"tab_strip_v3_background_color";
 NSString* const kTabStripNewTabButtonColor = @"tab_strip_new_tab_button_color";
 NSString* const kTabGroupPinkColor = @"tab_group_pink_color";
@@ -76,8 +90,10 @@ NSString* const kBlue400Color = @"blue_400_color";
 NSString* const kBlue500Color = @"blue_500_color";
 NSString* const kBlue600Color = @"blue_600_color";
 NSString* const kBlue700Color = @"blue_700_color";
+NSString* const kBlue900Color = @"blue_900_color";
 NSString* const kStaticBlueColor = @"static_blue_color";
 NSString* const kStaticBlue400Color = @"static_blue_400_color";
+NSString* const kStaticBlue600Color = @"static_blue_600_color";
 
 NSString* const kGreenColor = @"green_color";
 NSString* const kGreen100Color = @"green_100_color";
@@ -126,8 +142,11 @@ NSString* const kGrey600Color = @"grey_600_color";
 NSString* const kGrey700Color = @"grey_700_color";
 NSString* const kGrey800Color = @"grey_800_color";
 NSString* const kGrey900Color = @"grey_900_color";
+NSString* const kStaticGrey50Color = @"static_grey_50_color";
 NSString* const kStaticGrey300Color = @"static_grey_300_color";
+NSString* const kStaticGrey400Color = @"static_grey_400_color";
 NSString* const kStaticGrey600Color = @"static_grey_600_color";
+NSString* const kStaticGrey700Color = @"static_grey_700_color";
 NSString* const kStaticGrey900Color = @"static_grey_900_color";
 
 #pragma mark - Light only colors

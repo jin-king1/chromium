@@ -18,7 +18,7 @@
 #include "base/memory/raw_ref.h"
 #include "base/notreached.h"
 #include "base/synchronization/lock_impl.h"
-#include "base/trace_event/base_tracing.h"
+#include "base/trace_event/trace_event.h"
 #include "base/win/base_win_buildflags.h"
 #include "base/win/current_module.h"
 #include "base/win/scoped_handle.h"
@@ -228,7 +228,7 @@ NOINLINE void ScopedHandleVerifier::StartTrackingImpl(HANDLE handle,
                                                       const void* pc1,
                                                       const void* pc2) {
   // Grab the thread id before the lock.
-  DWORD thread_id = GetCurrentThreadId();
+  DWORD thread_id = ::GetCurrentThreadId();
 
   // Grab the thread stacktrace before the lock.
   auto stacktrace = std::make_unique<debug::StackTrace>();

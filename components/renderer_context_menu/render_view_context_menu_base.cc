@@ -12,6 +12,7 @@
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/observer_list.h"
+#include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "components/vector_icons/vector_icons.h"
 #include "content/public/browser/global_routing_id.h"
@@ -20,10 +21,11 @@
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
-#include "ppapi/buildflags/buildflags.h"
+#include "content/public/common/buildflags.h"
 #include "third_party/blink/public/mojom/context_menu/context_menu.mojom.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/models/image_model.h"
+#include "ui/base/ui_base_features.h"
 #include "url/origin.h"
 
 using content::BrowserContext;
@@ -76,7 +78,9 @@ bool IsCustomItemCheckedInternal(
 const size_t kMaxCustomMenuDepth = 5;
 const size_t kMaxCustomMenuTotalItems = 1000;
 
-void AddCustomItemsToMenu(
+}  // namespace
+
+void RenderViewContextMenuBase::AddCustomItemsToMenu(
     const std::vector<blink::mojom::CustomContextMenuItemPtr>& items,
     size_t depth,
     size_t* total_items,
@@ -106,9 +110,16 @@ void AddCustomItemsToMenu(
                 item->action),
             item->label);
         if (item->is_experimental_feature) {
-          menu_model->SetMinorIcon(
+          menu_model->SetMinorIcon(menu_model->GetItemCount() - 1,
+                                   ui::ImageModel::FromVectorIcon(
+                                       features::IsRoundedIconsEnabled()
+                                           ? vector_icons::kScienceIcon
+                                           : vector_icons::kScienceOldIcon));
+        }
+        if (!item->feature_name.empty()) {
+          menu_model->SetIsNewFeatureAt(
               menu_model->GetItemCount() - 1,
-              ui::ImageModel::FromVectorIcon(vector_icons::kScienceIcon));
+              GetIsNewFeatureAtValue(base::UTF16ToUTF8(item->feature_name)));
         }
         if (item->accelerator) {
           menu_model->SetAcceleratorAt(
@@ -128,9 +139,11 @@ void AddCustomItemsToMenu(
                 item->action),
             item->label);
         if (item->is_experimental_feature) {
-          menu_model->SetMinorIcon(
-              menu_model->GetItemCount() - 1,
-              ui::ImageModel::FromVectorIcon(vector_icons::kScienceIcon));
+          menu_model->SetMinorIcon(menu_model->GetItemCount() - 1,
+                                   ui::ImageModel::FromVectorIcon(
+                                       features::IsRoundedIconsEnabled()
+                                           ? vector_icons::kScienceIcon
+                                           : vector_icons::kScienceOldIcon));
         }
         break;
       }
@@ -149,6 +162,11 @@ void AddCustomItemsToMenu(
             RenderViewContextMenuBase::ConvertToContentCustomCommandId(
                 item->action),
             item->label, submenu);
+        if (!item->feature_name.empty()) {
+          menu_model->SetIsNewFeatureAt(
+              menu_model->GetItemCount() - 1,
+              GetIsNewFeatureAtValue(base::UTF16ToUTF8(item->feature_name)));
+        }
         break;
       }
       default:
@@ -156,8 +174,6 @@ void AddCustomItemsToMenu(
     }
   }
 }
-
-}  // namespace
 
 // static
 void RenderViewContextMenuBase::SetContentCustomCommandIdRange(
@@ -262,6 +278,11 @@ void RenderViewContextMenuBase::AddSubMenuWithStringIdAndIcon(
     const ui::ImageModel& icon) {
   menu_model_.AddSubMenuWithStringIdAndIcon(command_id, message_id, model,
                                             icon);
+}
+
+ui::IsNewFeatureAtValue RenderViewContextMenuBase::GetIsNewFeatureAtValue(
+    const std::string& feature_name) const {
+  return ui::IsNewFeatureAtValue();
 }
 
 void RenderViewContextMenuBase::UpdateMenuItem(int command_id,
@@ -448,8 +469,7 @@ void RenderViewContextMenuBase::MenuClosed(ui::SimpleMenuModel* source) {
     return;
 
   source_web_contents_->SetShowingContextMenu(false);
-  source_web_contents_->NotifyContextMenuClosed(params_.link_followed,
-                                                params_.impression);
+  source_web_contents_->NotifyContextMenuClosed(params_.link_followed);
   for (auto& observer : observers_) {
     observer.OnMenuClosed();
   }
@@ -524,9 +544,6 @@ RenderViewContextMenuBase::GetOpenURLParamsWithExtraHeaders(
   open_url_params.initiator_origin = initiator;
 
   open_url_params.source_site_instance = site_instance_;
-
-  if (disposition != WindowOpenDisposition::OFF_THE_RECORD)
-    open_url_params.impression = params_.impression;
 
   return open_url_params;
 }

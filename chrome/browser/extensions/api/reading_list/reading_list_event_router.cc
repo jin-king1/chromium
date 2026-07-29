@@ -60,20 +60,10 @@ void ReadingListEventRouter::ReadingListDidUpdateEntry(
                 api::reading_list::OnEntryUpdated::kEventName, std::move(args));
 }
 
-void ReadingListEventRouter::ReadingListDidMoveEntry(
-    const ReadingListModel* model,
-    const GURL& url) {
-  auto args(api::reading_list::OnEntryUpdated::Create(
-      reading_list_util::ParseEntry(*model->GetEntryByURL(url))));
-
-  DispatchEvent(events::READING_LIST_ON_ENTRY_UPDATED,
-                api::reading_list::OnEntryUpdated::kEventName, std::move(args));
-}
-
 void ReadingListEventRouter::DispatchEvent(
     events::HistogramValue histogram_value,
     const std::string& event_name,
-    base::Value::List args) {
+    base::ListValue args) {
   event_router_->BroadcastEvent(std::make_unique<Event>(
       histogram_value, event_name, std::move(args), profile_));
 }

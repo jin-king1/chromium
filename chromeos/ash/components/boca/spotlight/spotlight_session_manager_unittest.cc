@@ -7,7 +7,7 @@
 #include <memory>
 
 #include "ash/constants/ash_features.h"
-#include "base/functional/callback_forward.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
@@ -27,7 +27,6 @@
 #include "ui/message_center/public/cpp/notification.h"
 
 using ::testing::_;
-using ::testing::Invoke;
 using ::testing::NiceMock;
 using ::testing::Return;
 using ::testing::StrictMock;
@@ -36,14 +35,18 @@ using ::testing::WithArg;
 namespace ash::boca {
 namespace {
 using InitiateSpotlightSessionCallback =
-    base::OnceCallback<void(std::optional<std::string>)>;
+    base::OnceCallback<void(const std::string&)>;
 
 constexpr char kDeviceId[] = "device-id";
 constexpr char kGaiaId[] = "123";
+constexpr char kRobotEmail[] = "robot@gmail.com";
 constexpr char kSessionId[] = "session-id";
 constexpr char kSpotlightConnectionCode[] = "456";
 constexpr char kUserEmail[] = "cat@gmail.com";
+constexpr char kUserFullName[] = "Best Teacher";
 constexpr char kTestBaseUrl[] = "https://test";
+constexpr char kOnRegisterScreenRequestSentErrorCodeUmaPath[] =
+    "Ash.Boca.Spotlight.RegisterScreen.ErrorCode";
 // Length of the notification duration and one extra interval for the
 // notification to start.
 constexpr base::TimeDelta kTestNotificationDuration =
@@ -67,6 +70,7 @@ class MockSessionManager : public BocaSessionManager {
   explicit MockSessionManager(SessionClientImpl* session_client_impl)
       : BocaSessionManager(
             session_client_impl,
+            /*pref_service=*/nullptr,
             AccountId::FromUserEmailGaiaId(kUserEmail, GaiaId(kGaiaId)),
             /*=is_producer*/ false) {}
   MOCK_METHOD(void,
@@ -93,15 +97,18 @@ class MockSpotlightService : public SpotlightService {
 
 class MockSpotlightCrdManager : public SpotlightCrdManager {
  public:
-  MOCK_METHOD(void,
-              OnSessionStarted,
-              (const std::string& teacher_email),
-              (override));
   MOCK_METHOD(void, OnSessionEnded, (), (override));
   MOCK_METHOD(void,
               InitiateSpotlightSession,
-              (InitiateSpotlightSessionCallback callback),
+              (InitiateSpotlightSessionCallback callback,
+               bool is_student_to_receiver,
+               const std::string& requester_email),
               (override));
+  MOCK_METHOD(void,
+              ShowPersistentNotification,
+              (const std::string& teacher_name),
+              (override));
+  MOCK_METHOD(void, HidePersistentNotification, (), (override));
 };
 
 class FakeSpotlightNotificationHandlerDelegate
@@ -120,8 +127,10 @@ class SpotlightSessionManagerTest : public testing::Test {
  public:
   SpotlightSessionManagerTest() = default;
   void SetUp() override {
-    scoped_feature_list_.InitWithFeatures({ash::features::kBocaSpotlight},
-                                          /*disabled_features=*/{});
+    scoped_feature_list_.InitWithFeatures(
+        {ash::features::kBocaSpotlight,
+         ash::features::kBocaSpotlightRobotRequester},
+        /*disabled_features=*/{});
 
     // Set up global BocaAppClient's mock.
     boca_app_client_ = std::make_unique<NiceMock<MockBocaAppClient>>();
@@ -155,6 +164,9 @@ class SpotlightSessionManagerTest : public testing::Test {
  protected:
   base::test::SingleThreadTaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
+  base::test::ScopedFeatureList& scoped_feature_list() {
+    return scoped_feature_list_;
+  }
   MockSessionManager* session_manager() { return session_manager_.get(); }
   MockSpotlightService* spotlight_service() { return spotlight_service_; }
   MockSpotlightCrdManager* spotlight_crd_manager() {
@@ -174,7 +186,6 @@ class SpotlightSessionManagerTest : public testing::Test {
 TEST_F(SpotlightSessionManagerTest, OnSessionStarted) {
   ::boca::UserIdentity producer;
   producer.set_email(kUserEmail);
-  EXPECT_CALL(*spotlight_crd_manager(), OnSessionStarted).Times(1);
   spotlight_session_manager_->OnSessionStarted(kSessionId, producer);
 }
 
@@ -183,7 +194,15 @@ TEST_F(SpotlightSessionManagerTest, OnSessionEnded) {
   spotlight_session_manager_->OnSessionEnded(kSessionId);
 }
 
-TEST_F(SpotlightSessionManagerTest, OnConsumerActivityUpdated) {
+TEST_F(
+    SpotlightSessionManagerTest,
+    InitiatesSpotlightSessionWithTeacherEmailWhenBocaSpotlightRobotRequesterDisabled) {
+  scoped_feature_list().Reset();
+  scoped_feature_list().InitWithFeatures(
+      {ash::features::kBocaSpotlight},
+      /*disabled_features=*/{ash::features::kBocaSpotlightRobotRequester});
+  base::HistogramTester histograms;
+
   ::boca::StudentDevice device;
   device.mutable_view_screen_config()->set_view_screen_state(
       ::boca::ViewScreenConfig::REQUESTED);
@@ -193,25 +212,118 @@ TEST_F(SpotlightSessionManagerTest, OnConsumerActivityUpdated) {
   std::map<std::string, ::boca::StudentStatus> activities;
   activities.emplace(kGaiaId, status);
 
-  EXPECT_CALL(*spotlight_crd_manager(), InitiateSpotlightSession)
-      .WillOnce(WithArg<0>(Invoke([&](auto callback) {
+  // Expect CRD to return an connection code.
+  EXPECT_CALL(*spotlight_crd_manager(),
+              InitiateSpotlightSession(_, _, kUserEmail))
+      .WillOnce(WithArg<0>([&](auto callback) {
         std::move(callback).Run(kSpotlightConnectionCode);
-      })));
+      }));
+  // Expect sending the code to server.
   EXPECT_CALL(*spotlight_service(),
               RegisterScreen(kSpotlightConnectionCode, kTestBaseUrl, _))
-      .WillOnce(WithArg<2>(Invoke(
-          [&](auto callback) { std::move(callback).Run(base::ok(true)); })));
+      .WillOnce(WithArg<2>(
+          [&](auto callback) { std::move(callback).Run(base::ok(true)); }));
+  // Expect persistent notification to show after countdown.
+  EXPECT_CALL(*spotlight_crd_manager(),
+              ShowPersistentNotification(kUserFullName))
+      .Times(1);
   EXPECT_CALL(*session_manager(), LoadCurrentSession(false)).Times(1);
 
   ::boca::UserIdentity producer;
   producer.set_email(kUserEmail);
+  producer.set_full_name(kUserFullName);
   spotlight_session_manager_->OnSessionStarted(kSessionId, producer);
   spotlight_session_manager_->OnConsumerActivityUpdated(activities);
   task_environment_.FastForwardBy(kTestNotificationDuration);
+
+  histograms.ExpectTotalCount(kOnRegisterScreenRequestSentErrorCodeUmaPath, 0);
 }
 
 TEST_F(SpotlightSessionManagerTest,
-       OnConsumerActivityUpdatedWithInactiveSession) {
+       InitiatesSpotlightSessionWithServiceAccountWhenProvided) {
+  base::HistogramTester histograms;
+
+  ::boca::StudentDevice device;
+  device.mutable_view_screen_config()->set_view_screen_state(
+      ::boca::ViewScreenConfig::REQUESTED);
+  device.mutable_view_screen_config()
+      ->mutable_view_screen_requester()
+      ->mutable_service_account()
+      ->set_email(kRobotEmail);
+  ::boca::StudentStatus status;
+  status.mutable_devices()->emplace(kDeviceId, device);
+
+  std::map<std::string, ::boca::StudentStatus> activities;
+  activities.emplace(kGaiaId, status);
+
+  // Expect CRD to return an connection code.
+  EXPECT_CALL(*spotlight_crd_manager(),
+              InitiateSpotlightSession(_, _, kRobotEmail))
+      .WillOnce(WithArg<0>([&](auto callback) {
+        std::move(callback).Run(kSpotlightConnectionCode);
+      }));
+  // Expect sending the code to server.
+  EXPECT_CALL(*spotlight_service(),
+              RegisterScreen(kSpotlightConnectionCode, kTestBaseUrl, _))
+      .WillOnce(WithArg<2>(
+          [&](auto callback) { std::move(callback).Run(base::ok(true)); }));
+  // Expect persistent notification to show after countdown.
+  EXPECT_CALL(*spotlight_crd_manager(),
+              ShowPersistentNotification(kUserFullName))
+      .Times(1);
+  EXPECT_CALL(*session_manager(), LoadCurrentSession(false)).Times(1);
+
+  ::boca::UserIdentity producer;
+  producer.set_email(kUserEmail);
+  producer.set_full_name(kUserFullName);
+  spotlight_session_manager_->OnSessionStarted(kSessionId, producer);
+  spotlight_session_manager_->OnConsumerActivityUpdated(activities);
+  task_environment_.FastForwardBy(kTestNotificationDuration);
+
+  histograms.ExpectTotalCount(kOnRegisterScreenRequestSentErrorCodeUmaPath, 0);
+}
+
+TEST_F(SpotlightSessionManagerTest,
+       InitiatesSpotlightSessionUsesTeacherEmailWhenServiceAccountIsEmpty) {
+  base::HistogramTester histograms;
+
+  ::boca::StudentDevice device;
+  device.mutable_view_screen_config()->set_view_screen_state(
+      ::boca::ViewScreenConfig::REQUESTED);
+  ::boca::StudentStatus status;
+  status.mutable_devices()->emplace(kDeviceId, device);
+
+  std::map<std::string, ::boca::StudentStatus> activities;
+  activities.emplace(kGaiaId, status);
+
+  // Expect CRD to return an connection code.
+  EXPECT_CALL(*spotlight_crd_manager(),
+              InitiateSpotlightSession(_, _, kUserEmail))
+      .WillOnce(WithArg<0>([&](auto callback) {
+        std::move(callback).Run(kSpotlightConnectionCode);
+      }));
+  // Expect sending the code to server.
+  EXPECT_CALL(*spotlight_service(),
+              RegisterScreen(kSpotlightConnectionCode, kTestBaseUrl, _))
+      .WillOnce(WithArg<2>(
+          [&](auto callback) { std::move(callback).Run(base::ok(true)); }));
+  // Expect persistent notification to show after countdown.
+  EXPECT_CALL(*spotlight_crd_manager(),
+              ShowPersistentNotification(kUserFullName))
+      .Times(1);
+  EXPECT_CALL(*session_manager(), LoadCurrentSession(false)).Times(1);
+
+  ::boca::UserIdentity producer;
+  producer.set_email(kUserEmail);
+  producer.set_full_name(kUserFullName);
+  spotlight_session_manager_->OnSessionStarted(kSessionId, producer);
+  spotlight_session_manager_->OnConsumerActivityUpdated(activities);
+  task_environment_.FastForwardBy(kTestNotificationDuration);
+
+  histograms.ExpectTotalCount(kOnRegisterScreenRequestSentErrorCodeUmaPath, 0);
+}
+
+TEST_F(SpotlightSessionManagerTest, DoesNotStartSpotlightWithInactiveSession) {
   ::boca::StudentDevice device;
   device.mutable_view_screen_config()->set_view_screen_state(
       ::boca::ViewScreenConfig::REQUESTED);
@@ -225,8 +337,7 @@ TEST_F(SpotlightSessionManagerTest,
   spotlight_session_manager_->OnConsumerActivityUpdated(activities);
 }
 
-TEST_F(SpotlightSessionManagerTest,
-       OnConsumerActivityUpdatedWithNoStudentStatus) {
+TEST_F(SpotlightSessionManagerTest, DoesNotStartSpotlightWithNoStudentStatus) {
   std::map<std::string, ::boca::StudentStatus> activities;
   EXPECT_CALL(*spotlight_crd_manager(), InitiateSpotlightSession).Times(0);
 
@@ -236,7 +347,7 @@ TEST_F(SpotlightSessionManagerTest,
   spotlight_session_manager_->OnConsumerActivityUpdated(activities);
 }
 
-TEST_F(SpotlightSessionManagerTest, OnConsumerActivityUpdatedWithNoDevice) {
+TEST_F(SpotlightSessionManagerTest, DoesNotStartSpotlightWithNoDevice) {
   ::boca::StudentStatus status;
   std::map<std::string, ::boca::StudentStatus> activities;
   activities.emplace(kGaiaId, status);
@@ -249,8 +360,7 @@ TEST_F(SpotlightSessionManagerTest, OnConsumerActivityUpdatedWithNoDevice) {
   spotlight_session_manager_->OnConsumerActivityUpdated(activities);
 }
 
-TEST_F(SpotlightSessionManagerTest,
-       OnConsumerActivityUpdatedWhenViewScreenNotRequested) {
+TEST_F(SpotlightSessionManagerTest, DoesNotStartSpotlightIfNotRequested) {
   ::boca::StudentDevice device;
   device.mutable_view_screen_config()->set_view_screen_state(
       ::boca::ViewScreenConfig::INACTIVE);
@@ -268,8 +378,9 @@ TEST_F(SpotlightSessionManagerTest,
   spotlight_session_manager_->OnConsumerActivityUpdated(activities);
 }
 
-TEST_F(SpotlightSessionManagerTest,
-       OnConsumerActivityUpdatedOnlyProcessesOneRequestAtATime) {
+TEST_F(SpotlightSessionManagerTest, OnlyProcessesOneRequestAtATime) {
+  base::HistogramTester histograms;
+
   ::boca::StudentDevice device;
   device.mutable_view_screen_config()->set_view_screen_state(
       ::boca::ViewScreenConfig::REQUESTED);
@@ -280,9 +391,9 @@ TEST_F(SpotlightSessionManagerTest,
   activities.emplace(kGaiaId, status);
 
   EXPECT_CALL(*spotlight_crd_manager(), InitiateSpotlightSession)
-      .WillRepeatedly(WithArg<0>(Invoke([&](auto callback) {
+      .WillRepeatedly(WithArg<0>([&](auto callback) {
         std::move(callback).Run(kSpotlightConnectionCode);
-      })));
+      }));
   EXPECT_CALL(*spotlight_service(),
               RegisterScreen(kSpotlightConnectionCode, kTestBaseUrl, _))
       .Times(1);
@@ -291,7 +402,6 @@ TEST_F(SpotlightSessionManagerTest,
   producer.set_email(kUserEmail);
   spotlight_session_manager_->OnSessionStarted(kSessionId, producer);
   spotlight_session_manager_->OnConsumerActivityUpdated(activities);
-  task_environment_.FastForwardBy(kTestNotificationDuration);
   spotlight_session_manager_->OnConsumerActivityUpdated(activities);
 
   EXPECT_CALL(*spotlight_service(),
@@ -300,7 +410,137 @@ TEST_F(SpotlightSessionManagerTest,
   spotlight_session_manager_->OnSessionEnded(kSessionId);
   spotlight_session_manager_->OnSessionStarted(kSessionId, producer);
   spotlight_session_manager_->OnConsumerActivityUpdated(activities);
+
+  histograms.ExpectTotalCount(kOnRegisterScreenRequestSentErrorCodeUmaPath, 0);
+}
+
+TEST_F(SpotlightSessionManagerTest,
+       InitiatesSpotlightSessionWithStudentToReceiverEnabled) {
+  scoped_feature_list().Reset();
+  scoped_feature_list().InitWithFeatures(
+      {ash::features::kBocaSpotlight,
+       ash::features::kBocaSpotlightRobotRequester},
+      /*disabled_features=*/{});
+
+  base::HistogramTester histograms;
+
+  ::boca::StudentDevice device;
+  device.mutable_view_screen_config()->set_view_screen_state(
+      ::boca::ViewScreenConfig::REQUESTED);
+  device.mutable_view_screen_config()
+      ->mutable_view_screen_requester()
+      ->mutable_user()
+      ->set_email("test@chrome-enterprise-devices.gserviceaccount.com");
+  device.mutable_view_screen_config()
+      ->mutable_view_screen_requester()
+      ->mutable_service_account()
+      ->set_email(kRobotEmail);
+  ::boca::StudentStatus status;
+  status.mutable_devices()->emplace(kDeviceId, device);
+
+  std::map<std::string, ::boca::StudentStatus> activities;
+  activities.emplace(kGaiaId, status);
+
+  // Expect CRD to return a connection code and is_student_to_receiver to be
+  // true.
+  EXPECT_CALL(*spotlight_crd_manager(),
+              InitiateSpotlightSession(_, true, kRobotEmail))
+      .WillOnce(WithArg<0>([&](auto callback) {
+        std::move(callback).Run(kSpotlightConnectionCode);
+      }));
+  // Expect sending the code to server.
+  EXPECT_CALL(*spotlight_service(),
+              RegisterScreen(kSpotlightConnectionCode, kTestBaseUrl, _))
+      .WillOnce(WithArg<2>(
+          [&](auto callback) { std::move(callback).Run(base::ok(true)); }));
+  // Expect persistent notification to show after countdown.
+  EXPECT_CALL(*spotlight_crd_manager(),
+              ShowPersistentNotification(kUserFullName))
+      .Times(1);
+  EXPECT_CALL(*session_manager(), LoadCurrentSession(false)).Times(1);
+
+  ::boca::UserIdentity producer;
+  producer.set_email(kUserEmail);
+  producer.set_full_name(kUserFullName);
+  spotlight_session_manager_->OnSessionStarted(kSessionId, producer);
+  spotlight_session_manager_->OnConsumerActivityUpdated(activities);
   task_environment_.FastForwardBy(kTestNotificationDuration);
+
+  histograms.ExpectTotalCount(kOnRegisterScreenRequestSentErrorCodeUmaPath, 0);
+}
+
+TEST_F(SpotlightSessionManagerTest,
+       InitiatesSpotlightSessionWithStudentToReceiverEnabledWrongEmail) {
+  scoped_feature_list().Reset();
+  scoped_feature_list().InitWithFeatures(
+      {ash::features::kBocaSpotlight,
+       ash::features::kBocaSpotlightRobotRequester},
+      /*disabled_features=*/{});
+
+  base::HistogramTester histograms;
+
+  ::boca::StudentDevice device;
+  device.mutable_view_screen_config()->set_view_screen_state(
+      ::boca::ViewScreenConfig::REQUESTED);
+  device.mutable_view_screen_config()
+      ->mutable_view_screen_requester()
+      ->mutable_user()
+      ->set_email("test@not-enterprise.com");
+  device.mutable_view_screen_config()
+      ->mutable_view_screen_requester()
+      ->mutable_service_account()
+      ->set_email(kRobotEmail);
+  ::boca::StudentStatus status;
+  status.mutable_devices()->emplace(kDeviceId, device);
+
+  std::map<std::string, ::boca::StudentStatus> activities;
+  activities.emplace(kGaiaId, status);
+
+  // Expect CRD to return a connection code and is_student_to_receiver to be
+  // false, as the email is incorrect.
+  EXPECT_CALL(*spotlight_crd_manager(),
+              InitiateSpotlightSession(_, false, kRobotEmail))
+      .WillOnce(WithArg<0>([&](auto callback) {
+        std::move(callback).Run(kSpotlightConnectionCode);
+      }));
+  // Expect sending the code to server.
+  EXPECT_CALL(*spotlight_service(),
+              RegisterScreen(kSpotlightConnectionCode, kTestBaseUrl, _))
+      .WillOnce(WithArg<2>(
+          [&](auto callback) { std::move(callback).Run(base::ok(true)); }));
+  // Expect persistent notification to show after countdown.
+  EXPECT_CALL(*spotlight_crd_manager(),
+              ShowPersistentNotification(kUserFullName))
+      .Times(1);
+  EXPECT_CALL(*session_manager(), LoadCurrentSession(false)).Times(1);
+
+  ::boca::UserIdentity producer;
+  producer.set_email(kUserEmail);
+  producer.set_full_name(kUserFullName);
+  spotlight_session_manager_->OnSessionStarted(kSessionId, producer);
+  spotlight_session_manager_->OnConsumerActivityUpdated(activities);
+  task_environment_.FastForwardBy(kTestNotificationDuration);
+
+  histograms.ExpectTotalCount(kOnRegisterScreenRequestSentErrorCodeUmaPath, 0);
+}
+
+TEST_F(SpotlightSessionManagerTest,
+       TerminatesSpotlightSessionWhenStateInactive) {
+  ::boca::StudentDevice device;
+  device.mutable_view_screen_config()->set_view_screen_state(
+      ::boca::ViewScreenConfig::INACTIVE);
+  ::boca::StudentStatus status;
+  status.mutable_devices()->emplace(kDeviceId, device);
+
+  std::map<std::string, ::boca::StudentStatus> activities;
+  activities.emplace(kGaiaId, status);
+
+  EXPECT_CALL(*spotlight_crd_manager(), OnSessionEnded).Times(1);
+
+  ::boca::UserIdentity producer;
+  producer.set_email(kUserEmail);
+  spotlight_session_manager_->OnSessionStarted(kSessionId, producer);
+  spotlight_session_manager_->OnConsumerActivityUpdated(activities);
 }
 
 }  // namespace

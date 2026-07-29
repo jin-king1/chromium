@@ -11,23 +11,22 @@
 #include <utility>
 #include <vector>
 
+#include "ash/constants/webui_url_constants.h"
 #include "base/check.h"
 #include "base/containers/flat_map.h"
-#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
-#include "base/hash/md5.h"
+#include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_view_util.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/browser_process_platform_part.h"
 #include "chrome/browser/component_updater/cros_component_installer_chromeos.h"
-#include "chrome/common/webui_url_constants.h"
-#include "chromeos/ash/components/dbus/debug_daemon/debug_daemon_client.h"
 #include "chromeos/ash/components/dbus/dlcservice/dlcservice_client.h"
 #include "chromeos/ash/components/dbus/printscanmgr/printscanmgr_client.h"
 #include "chromeos/dbus/common/dbus_library_error.h"
@@ -36,10 +35,17 @@
 #include "chromeos/printing/printer_configuration.h"
 #include "components/device_event_log/device_event_log.h"
 #include "content/public/browser/browser_thread.h"
-#include "printing/printing_features.h"
+#include "crypto/obsolete/md5.h"
 #include "third_party/cros_system_api/dbus/debugd/dbus-constants.h"
 
 namespace ash {
+
+namespace printing {
+// Not placed in namespace {} so it can be friended from //crypto.
+crypto::obsolete::Md5 MakeMd5HasherForPrinterConfigurer() {
+  return {};
+}
+}  // namespace printing
 
 namespace {
 
@@ -47,71 +53,6 @@ using ::chromeos::PpdProvider;
 using ::chromeos::Printer;
 
 const char kEbuildWithHplipPlugins[] = "hplip-plugin";
-
-PrinterSetupResult PrinterSetupResultFromDbusResultCode(const Printer& printer,
-                                                        int result_code) {
-  DCHECK_GE(result_code, 0);
-  const std::string prefix =
-      printer.id() + ": " + printer.make_and_model() + " setup result: ";
-  switch (result_code) {
-    case debugd::CupsResult::CUPS_SUCCESS:
-      PRINTER_LOG(EVENT) << prefix << "Printer setup successful";
-      return PrinterSetupResult::kSuccess;
-    case debugd::CupsResult::CUPS_INVALID_PPD:
-      PRINTER_LOG(EVENT) << prefix << "PPD Invalid";
-      return PrinterSetupResult::kInvalidPpd;
-    case debugd::CupsResult::CUPS_LPADMIN_FAILURE:
-      PRINTER_LOG(ERROR) << prefix << "lpadmin-manual failed";
-      return PrinterSetupResult::kFatalError;
-    case debugd::CupsResult::CUPS_AUTOCONF_FAILURE:
-      PRINTER_LOG(ERROR) << prefix << "lpadmin-autoconf failed";
-      return PrinterSetupResult::kFatalError;
-    case debugd::CupsResult::CUPS_BAD_URI:
-      PRINTER_LOG(EVENT) << prefix << "Bad URI";
-      return PrinterSetupResult::kBadUri;
-    case debugd::CupsResult::CUPS_IO_ERROR:
-      PRINTER_LOG(ERROR) << prefix << "I/O error";
-      return PrinterSetupResult::kIoError;
-    case debugd::CupsResult::CUPS_MEMORY_ALLOC_ERROR:
-      PRINTER_LOG(EVENT) << prefix << "Memory allocation error";
-      return PrinterSetupResult::kMemoryAllocationError;
-    case debugd::CupsResult::CUPS_PRINTER_UNREACHABLE:
-      PRINTER_LOG(EVENT) << prefix << "Printer is unreachable";
-      return PrinterSetupResult::kPrinterUnreachable;
-    case debugd::CupsResult::CUPS_PRINTER_WRONG_RESPONSE:
-      PRINTER_LOG(EVENT) << prefix << "Unexpected response from printer";
-      return PrinterSetupResult::kPrinterSentWrongResponse;
-    case debugd::CupsResult::CUPS_PRINTER_NOT_AUTOCONF:
-      PRINTER_LOG(EVENT) << prefix << "Printer is not autoconfigurable";
-      return PrinterSetupResult::kPrinterIsNotAutoconfigurable;
-    case debugd::CupsResult::CUPS_FATAL:
-    default:
-      // We have no idea.  It must be fatal.
-      PRINTER_LOG(ERROR) << prefix << "Unrecognized error: " << result_code;
-      return PrinterSetupResult::kFatalError;
-  }
-}
-
-// Map D-Bus errors from the debug daemon client to D-Bus errors enumerated
-// in PrinterSetupResult.
-PrinterSetupResult PrinterSetupResultFromDbusErrorCode(
-    const Printer& printer,
-    chromeos::DBusLibraryError dbus_error) {
-  DCHECK_LT(dbus_error, 0);
-  const std::string prefix =
-      printer.id() + ": " + printer.make_and_model() + " setup result: ";
-  switch (dbus_error) {
-    case chromeos::DBusLibraryError::kNoReply:
-      PRINTER_LOG(ERROR) << prefix << "D-Bus error - no reply";
-      return PrinterSetupResult::kDebugdDbusNoReply;
-    case chromeos::DBusLibraryError::kTimeout:
-      PRINTER_LOG(ERROR) << prefix << "D-Bus error - timeout";
-      return PrinterSetupResult::kDbusTimeout;
-    default:
-      PRINTER_LOG(ERROR) << prefix << "Unknown D-Bus error";
-      return PrinterSetupResult::kDbusError;
-  }
-}
 
 PrinterSetupResult PrinterSetupResultFromAddPrinterResult(
     const Printer& printer,
@@ -217,6 +158,7 @@ class PrinterConfigurerImpl : public PrinterConfigurer {
     DCHECK(printer.HasUri());
     PRINTER_LOG(USER) << printer.id() << ": Printer setup requested for "
                       << printer.make_and_model();
+    ppd_filename_.clear();
 
     if (!printer.IsIppEverywhere()) {
       if (!printer.ppd_reference().user_supplied_ppd_url.empty()) {
@@ -238,26 +180,16 @@ class PrinterConfigurerImpl : public PrinterConfigurer {
     PRINTER_LOG(DEBUG) << printer.id() << ": Attempting driverless setup at "
                        << printer.uri().GetNormalized(
                               /*always_print_port=*/true);
-    if (base::FeatureList::IsEnabled(
-            printing::features::kAddPrinterViaPrintscanmgr)) {
-      printscanmgr::CupsAddAutoConfiguredPrinterRequest request;
-      request.set_name(printer.id());
-      request.set_uri(printer.uri().GetNormalized(/*always_print_port=*/true));
-      request.set_language(g_browser_process->GetApplicationLocale());
-      PrintscanmgrClient::Get()->CupsAddAutoConfiguredPrinter(
-          std::move(request),
-          base::BindOnce(
-              &PrinterConfigurerImpl::OnAddedPrinter<
-                  printscanmgr::CupsAddAutoConfiguredPrinterResponse>,
-              weak_factory_.GetWeakPtr(), printer, std::move(callback)));
-    } else {
-      DebugDaemonClient::Get()->CupsAddAutoConfiguredPrinter(
-          printer.id(), printer.uri().GetNormalized(true /*always_print_port*/),
-          g_browser_process->GetApplicationLocale(),
-          base::BindOnce(&PrinterConfigurerImpl::OnAddedPrinterDebugd,
-                         weak_factory_.GetWeakPtr(), printer,
-                         std::move(callback)));
-    }
+    printscanmgr::CupsAddAutoConfiguredPrinterRequest request;
+    request.set_name(printer.id());
+    request.set_uri(printer.uri().GetNormalized(/*always_print_port=*/true));
+    request.set_language(g_browser_process->GetApplicationLocale());
+    PrintscanmgrClient::Get()->CupsAddAutoConfiguredPrinter(
+        std::move(request),
+        base::BindOnce(&PrinterConfigurerImpl::OnAddedPrinter<
+                           printscanmgr::CupsAddAutoConfiguredPrinterResponse>,
+                       weak_factory_.GetWeakPtr(), printer,
+                       std::move(callback)));
   }
 
  private:
@@ -282,62 +214,43 @@ class PrinterConfigurerImpl : public PrinterConfigurer {
     std::move(cb).Run(setup_result);
   }
 
-  // Receive the callback from the debug daemon client once we attempt to
-  // add the printer.
-  void OnAddedPrinterDebugd(const Printer& printer,
-                            PrinterSetupCallback cb,
-                            int32_t result_code) {
-    // It's expected that debug daemon posts callbacks on the UI thread.
-    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-
-    PrinterSetupResult setup_result =
-        result_code < 0
-            ? PrinterSetupResultFromDbusErrorCode(
-                  printer, static_cast<chromeos::DBusLibraryError>(result_code))
-            : PrinterSetupResultFromDbusResultCode(printer, result_code);
-    std::move(cb).Run(setup_result);
-  }
-
   void AddPrinter(const Printer& printer,
                   const std::string& ppd_contents,
                   PrinterSetupCallback cb) {
     PRINTER_LOG(EVENT) << printer.id() << ": Attempting setup with PPD at "
                        << printer.uri().GetNormalized(
                               /*always_print_port=*/true);
-    if (base::FeatureList::IsEnabled(
-            printing::features::kAddPrinterViaPrintscanmgr)) {
-      printscanmgr::CupsAddManuallyConfiguredPrinterRequest request;
-      request.set_name(printer.id());
-      request.set_uri(printer.uri().GetNormalized(/*always_print_port=*/true));
-      request.set_ppd_contents(ppd_contents);
-      request.set_language(g_browser_process->GetApplicationLocale());
-      PrintscanmgrClient::Get()->CupsAddManuallyConfiguredPrinter(
-          std::move(request),
-          base::BindOnce(
-              &PrinterConfigurerImpl::OnAddedPrinter<
-                  printscanmgr::CupsAddManuallyConfiguredPrinterResponse>,
-              weak_factory_.GetWeakPtr(), printer, std::move(cb)));
-    } else {
-      DebugDaemonClient::Get()->CupsAddManuallyConfiguredPrinter(
-          printer.id(), printer.uri().GetNormalized(true /*always_print_port*/),
-          g_browser_process->GetApplicationLocale(), ppd_contents,
-          base::BindOnce(&PrinterConfigurerImpl::OnAddedPrinterDebugd,
-                         weak_factory_.GetWeakPtr(), printer, std::move(cb)));
-    }
+    printscanmgr::CupsAddManuallyConfiguredPrinterRequest request;
+    request.set_name(printer.id());
+    request.set_uri(printer.uri().GetNormalized(/*always_print_port=*/true));
+    request.set_ppd_contents(ppd_contents);
+    request.set_language(g_browser_process->GetApplicationLocale());
+    PrintscanmgrClient::Get()->CupsAddManuallyConfiguredPrinter(
+        std::move(request),
+        base::BindOnce(
+            &PrinterConfigurerImpl::OnAddedPrinter<
+                printscanmgr::CupsAddManuallyConfiguredPrinterResponse>,
+            weak_factory_.GetWeakPtr(), printer, std::move(cb)));
   }
 
   void ResolvePpdDone(const Printer& printer,
                       const std::string& hplip_plugin_path,
                       PrinterSetupCallback cb,
                       PpdProvider::CallbackResultCode result,
-                      const std::string& ppd_contents) {
+                      const std::string& ppd_contents,
+                      const std::string& ppd_filename) {
     DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+
+    ppd_filename_ = ppd_filename;
+
     PRINTER_LOG(EVENT) << printer.id() << " PPD Resolution Result: "
                        << PpdProvider::CallbackResultCodeName(result);
     switch (result) {
       case PpdProvider::SUCCESS:
         DCHECK(!ppd_contents.empty());
         {
+          PRINTER_LOG(DEBUG)
+              << printer.id() << " PPD filename: " << ppd_filename;
           // Use PpdLineReader to ungzip the content (if gzipped).
           auto reader = chromeos::PpdLineReader::Create(ppd_contents);
           std::string ppd = reader->RemainingContent();
@@ -438,8 +351,11 @@ class PrinterConfigurerImpl : public PrinterConfigurer {
     }
   }
 
+  std::string GetLastPpdBasename() const override { return ppd_filename_; }
+
   scoped_refptr<PpdProvider> ppd_provider_;
   raw_ptr<DlcserviceClient> dlc_service_client_;
+  std::string ppd_filename_;
   base::WeakPtrFactory<PrinterConfigurerImpl> weak_factory_{this};
 };
 
@@ -447,17 +363,14 @@ class PrinterConfigurerImpl : public PrinterConfigurer {
 
 // static
 std::string PrinterConfigurer::SetupFingerprint(const Printer& printer) {
-  base::MD5Context ctx;
-  base::MD5Init(&ctx);
-  base::MD5Update(&ctx, printer.id());
-  base::MD5Update(&ctx, printer.uri().GetNormalized(false));
-  base::MD5Update(&ctx, printer.ppd_reference().user_supplied_ppd_url);
-  base::MD5Update(&ctx, printer.ppd_reference().effective_make_and_model);
+  auto md5 = ash::printing::MakeMd5HasherForPrinterConfigurer();
+  md5.Update(printer.id());
+  md5.Update(printer.uri().GetNormalized(false));
+  md5.Update(printer.ppd_reference().user_supplied_ppd_url);
+  md5.Update(printer.ppd_reference().effective_make_and_model);
   char autoconf = printer.ppd_reference().autoconf ? 1 : 0;
-  base::MD5Update(&ctx, std::string(&autoconf, sizeof(autoconf)));
-  base::MD5Digest digest;
-  base::MD5Final(&digest, &ctx);
-  return std::string(reinterpret_cast<char*>(&digest.a[0]), sizeof(digest.a));
+  md5.Update(base::byte_span_from_ref(autoconf));
+  return std::string(base::as_string_view(md5.Finish()));
 }
 
 // static
@@ -476,7 +389,7 @@ std::unique_ptr<PrinterConfigurer> PrinterConfigurer::Create(
 
 // static
 GURL PrinterConfigurer::GeneratePrinterEulaUrl(const std::string& license) {
-  GURL eula_url(chrome::kChromeUIOSCreditsURL);
+  GURL eula_url(ash::kChromeUIOSCreditsURL);
   // Construct the URL with proper reference fragment.
   GURL::Replacements replacements;
   replacements.SetRefStr(license);

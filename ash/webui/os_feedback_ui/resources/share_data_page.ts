@@ -55,22 +55,16 @@ export class ShareDataPageElement extends ShareDataPageElementBase {
       screenshotUrl: {type: String, readOnly: false, notify: true},
       shouldShowBluetoothCheckbox:
           {type: Boolean, readOnly: false, notify: true},
-      shouldShowLinkCrossDeviceDogfoodFeedbackCheckbox:
-          {type: Boolean, readOnly: false, notify: true},
-      shouldShowAssistantCheckbox:
-          {type: Boolean, readOnly: false, notify: true},
       shouldShowAutofillCheckbox:
           {type: Boolean, readOnly: false, notify: true},
     };
   }
 
-  feedbackContext: FeedbackContext;
-  screenshotUrl: string;
-  shouldShowBluetoothCheckbox: boolean;
+  declare feedbackContext: FeedbackContext;
+  declare screenshotUrl: string;
+  declare shouldShowBluetoothCheckbox: boolean;
   shouldShowWifiDebugLogsCheckbox: boolean;
-  shouldShowLinkCrossDeviceDogfoodFeedbackCheckbox: boolean;
-  shouldShowAssistantCheckbox: boolean;
-  shouldShowAutofillCheckbox: boolean;
+  declare shouldShowAutofillCheckbox: boolean;
   private feedbackServiceProvider: FeedbackServiceProviderInterface;
 
   constructor() {
@@ -83,10 +77,8 @@ export class ShareDataPageElement extends ShareDataPageElementBase {
     super.ready();
     this.setLinksInPrivacyNote();
     this.setSysInfoCheckboxAttributes();
-    this.setAssistantLogsAttributes();
     this.setBluetoothLogsAttributes();
     this.setWifiDebugLogsAttributes();
-    this.setLinkCrossDeviceDogfoodFeedbackAttributes();
     this.setAutofillAttributes();
     // Set the aria description works the best for screen reader.
     // It reads the description when the checkbox is focused, and when it is
@@ -112,14 +104,15 @@ export class ShareDataPageElement extends ShareDataPageElementBase {
   }
 
   /**
-   * If feedback app has been requested from settings search, we do not need to
-   * collect system info and metrics data by default.
+   * If feedback app has been requested from Settings Search and the search
+   * query is not "fingerprint", we do not need to collect system info and
+   * metrics data by default. See crbug.com/285618656 for more information.
    */
   protected checkSysInfoAndMetrics(): boolean {
     if (!this.feedbackContext) {
       return true;
     }
-    return !this.feedbackContext.fromSettingsSearch;
+    return !this.feedbackContext.settingsSearchDoNotRecordMetrics;
   }
 
   shouldShowPerformanceTraceCheckbox(): boolean {
@@ -237,47 +230,6 @@ export class ShareDataPageElement extends ShareDataPageElementBase {
         .close();
   }
 
-  protected handleOpenLinkCrossDeviceDogfoodFeedbackInfoDialog(e: Event): void {
-    // The default behavior of clicking on an anchor tag
-    // with href="#" is a scroll to the top of the page.
-    // This link opens a dialog, so we want to prevent
-    // this default behavior.
-    e.preventDefault();
-
-    strictQuery(
-        '#linkCrossDeviceDogfoodFeedbackDialog', this.shadowRoot,
-        CrDialogElement)
-        .showModal();
-    strictQuery(
-        '#linkCrossDeviceDogfoodFeedbackDialogDoneButton', this.shadowRoot,
-        CrButtonElement)
-        .focus();
-  }
-
-  protected handleCloseLinkCrossDeviceDogfoodFeedbackDialogClicked(): void {
-    strictQuery(
-        '#linkCrossDeviceDogfoodFeedbackDialog', this.shadowRoot,
-        CrDialogElement)
-        .close();
-  }
-
-  protected handleOpenAssistantLogsDialog(e: Event): void {
-    // The default behavior of clicking on an anchor tag
-    // with href="#" is a scroll to the top of the page.
-    // This link opens a dialog, so we want to prevent
-    // this default behavior.
-    e.preventDefault();
-
-    strictQuery('#assistantDialog', this.shadowRoot, CrDialogElement)
-        .showModal();
-    strictQuery('#assistantDialogDoneButton', this.shadowRoot, CrButtonElement)
-        .focus();
-  }
-
-  protected handleCloseAssistantDialogClicked(): void {
-    strictQuery('#assistantDialog', this.shadowRoot, CrDialogElement).close();
-  }
-
   protected handleBackButtonClicked(e: Event): void {
     e.stopPropagation();
 
@@ -306,21 +258,18 @@ export class ShareDataPageElement extends ShareDataPageElementBase {
   private async createReport(): Promise<Report> {
     const report: Report = ({
       feedbackContext: {
-        assistantDebugInfoAllowed: false,
-        fromSettingsSearch: false,
+        settingsSearchDoNotRecordMetrics: false,
         isInternalAccount: false,
         wifiDebugLogsAllowed: false,
         traceId: 0,
         pageUrl: null,
-        fromAssistant: false,
         fromAutofill: false,
         autofillMetadata: '{}',
-        hasLinkedCrossDevicePhone: false,
         categoryTag: '',
         email: '',
         extraDiagnostics: '',
       },
-      description: {data: []},
+      description: '',
       attachedFile: null,
       sendBluetoothLogs: false,
       sendWifiDebugLogs: false,
@@ -360,10 +309,9 @@ export class ShareDataPageElement extends ShareDataPageElementBase {
 
     if (strictQuery('#pageUrlCheckbox', this.shadowRoot, CrCheckboxElement)
             .checked) {
-      report.feedbackContext.pageUrl = {
-        url: strictQuery('#pageUrlText', this.shadowRoot, HTMLElement)
-                 .textContent!.trim(),
-      };
+      report.feedbackContext.pageUrl =
+          strictQuery('#pageUrlText', this.shadowRoot, HTMLElement)
+              .textContent.trim();
     }
 
     if (this.feedbackContext.extraDiagnostics &&
@@ -377,34 +325,17 @@ export class ShareDataPageElement extends ShareDataPageElementBase {
       report.feedbackContext.categoryTag = this.feedbackContext.categoryTag;
     }
 
-    const isLinkCrossDeviceIssue =
-        !strictQuery(
-             '#linkCrossDeviceDogfoodFeedbackCheckboxContainer',
-             this.shadowRoot, HTMLElement)
-             .hidden &&
-        strictQuery(
-            '#linkCrossDeviceDogfoodFeedbackCheckbox', this.shadowRoot,
-            CrCheckboxElement)
-            .checked;
-
     if (!strictQuery(
              '#bluetoothCheckboxContainer', this.shadowRoot, HTMLElement)
              .hidden &&
         strictQuery(
             '#bluetoothLogsCheckbox', this.shadowRoot, CrCheckboxElement)
             .checked) {
-      report.feedbackContext.categoryTag = isLinkCrossDeviceIssue ?
-          'linkCrossDeviceDogfoodFeedbackWithBluetoothLogs' :
-          'BluetoothReportWithLogs';
+      report.feedbackContext.categoryTag = 'BluetoothReportWithLogs';
       report.sendBluetoothLogs = true;
     } else {
-      if (isLinkCrossDeviceIssue) {
-        report.feedbackContext.categoryTag =
-            'linkCrossDeviceDogfoodFeedbackWithoutBluetoothLogs';
-      }
       report.sendBluetoothLogs = false;
     }
-
     if (this.feedbackContext.fromAutofill &&
         !strictQuery('#autofillCheckboxContainer', this.shadowRoot, HTMLElement)
              .hidden &&
@@ -430,16 +361,6 @@ export class ShareDataPageElement extends ShareDataPageElementBase {
     } else {
       report.feedbackContext.traceId = 0;
     }
-
-    report.feedbackContext.fromAssistant = this.feedbackContext.fromAssistant;
-
-    report.feedbackContext.assistantDebugInfoAllowed =
-        this.feedbackContext.fromAssistant &&
-        !strictQuery('#assistantLogsContainer', this.shadowRoot, HTMLElement)
-             .hidden &&
-        strictQuery(
-            '#assiatantLogsCheckbox', this.shadowRoot, CrCheckboxElement)
-            .checked;
 
     return report;
   }
@@ -487,11 +408,6 @@ export class ShareDataPageElement extends ShareDataPageElementBase {
         'includePerformanceTraceCheckboxLabel', {attrs: ['id']});
   }
 
-  protected getAssistantLogsCheckboxLabel(): TrustedHTML {
-    return this.i18nAdvanced(
-        'includeAssistantLogsCheckboxLabel', {attrs: ['id']});
-  }
-
   protected getAutofillCheckboxLabel(): TrustedHTML {
     return this.i18nAdvanced('includeAutofillCheckboxLabel', {attrs: ['id']});
   }
@@ -502,11 +418,6 @@ export class ShareDataPageElement extends ShareDataPageElementBase {
 
   protected getWifiDebugLogsCheckboxLabel(): TrustedHTML {
     return this.i18nAdvanced('wifiDebugLogsInfo', {attrs: ['id']});
-  }
-
-  protected getLinkCrossDeviceDogfoodFeedbackCheckboxLabel(): TrustedHTML {
-    return this.i18nAdvanced(
-        'linkCrossDeviceDogfoodFeedbackInfo', {attrs: ['id']});
   }
 
   protected getPrivacyNote(): TrustedHTML {
@@ -563,15 +474,6 @@ export class ShareDataPageElement extends ShareDataPageElementBase {
     });
   }
 
-  private setAssistantLogsAttributes(): void {
-    const assistantLogsLink =
-        strictQuery('#assistantLogsLink', this.shadowRoot, HTMLAnchorElement);
-    // Setting href causes <a> tag to display as link.
-    assistantLogsLink.setAttribute('href', '#');
-    assistantLogsLink.addEventListener(
-        'click', (e: Event) => void this.handleOpenAssistantLogsDialog(e));
-  }
-
   private setBluetoothLogsAttributes(): void {
     const bluetoothLogsLink = strictQuery(
         '#bluetoothLogsInfoLink', this.shadowRoot, HTMLAnchorElement);
@@ -588,18 +490,6 @@ export class ShareDataPageElement extends ShareDataPageElementBase {
     wifiDebugLogsLink.setAttribute('href', '#');
     wifiDebugLogsLink.addEventListener(
         'click', (e: Event) => void this.handleOpenWifiDebugLogsInfoDialog(e));
-  }
-
-  private setLinkCrossDeviceDogfoodFeedbackAttributes(): void {
-    const linkCrossDeviceDogfoodFeedbackLink = strictQuery(
-        '#linkCrossDeviceDogfoodFeedbackInfoLink', this.shadowRoot,
-        HTMLAnchorElement);
-    // Setting href causes <a> tag to display as link.
-    linkCrossDeviceDogfoodFeedbackLink.setAttribute('href', '#');
-    linkCrossDeviceDogfoodFeedbackLink.addEventListener(
-        'click',
-        (e: Event) =>
-            void this.handleOpenLinkCrossDeviceDogfoodFeedbackInfoDialog(e));
   }
 
   private onFeedbackContextChanged(): void {

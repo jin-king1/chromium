@@ -67,25 +67,20 @@ export class ResetSettingsCardElement extends ResetSettingsCardElementBase {
         },
         readOnly: true,
       },
-
-      /**
-       * Used by DeepLinkingMixin to focus this page's deep links.
-       */
-      supportedSettingIds: {
-        type: Object,
-        value: () => new Set<Setting>([
-          Setting.kPowerwash,
-          Setting.kSanitizeCrosSettings,
-        ]),
-      },
     };
   }
 
+  // DeepLinkingMixin override
+  override supportedSettingIds = new Set<Setting>([
+    Setting.kPowerwash,
+    Setting.kSanitizeCrosSettings,
+  ]);
+
   private osResetBrowserProxy_: OsResetBrowserProxy;
-  private installedESimProfiles_: ESimProfileRemote[];
-  private readonly isSanitizeAllowed_: boolean;
+  declare private installedESimProfiles_: ESimProfileRemote[];
+  declare private readonly isSanitizeAllowed_: boolean;
   private route_: Route;
-  private showPowerwashDialog_: boolean;
+  declare private showPowerwashDialog_: boolean;
 
   constructor() {
     super();

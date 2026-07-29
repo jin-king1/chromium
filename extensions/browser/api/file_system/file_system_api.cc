@@ -6,6 +6,7 @@
 
 #include <stddef.h>
 
+#include <algorithm>
 #include <array>
 #include <memory>
 #include <set>
@@ -14,7 +15,6 @@
 #include <vector>
 
 #include "base/auto_reset.h"
-#include "base/containers/contains.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
@@ -22,6 +22,7 @@
 #include "base/json/values_util.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
+#include "base/notimplemented.h"
 #include "base/path_service.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
@@ -48,6 +49,7 @@
 #include "extensions/browser/app_window/app_window_registry.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_util.h"
+#include "extensions/browser/extensions_browser_client.h"
 #include "extensions/browser/granted_file_entry.h"
 #include "extensions/browser/path_util.h"
 #include "extensions/common/api/file_system.h"
@@ -316,28 +318,28 @@ void FileSystemEntryFunction::RegisterFileSystemsAndSendResponse(
   if (!render_frame_host())
     return;
 
-  base::Value::Dict result = CreateResult();
+  base::DictValue result = CreateResult();
   for (const auto& path : paths)
     AddEntryToResult(path, std::string(), result);
   Respond(WithArguments(std::move(result)));
 }
 
-base::Value::Dict FileSystemEntryFunction::CreateResult() {
-  base::Value::Dict result;
-  result.Set("entries", base::Value::List());
+base::DictValue FileSystemEntryFunction::CreateResult() {
+  base::DictValue result;
+  result.Set("entries", base::ListValue());
   result.Set("multiple", multiple_);
   return result;
 }
 
 void FileSystemEntryFunction::AddEntryToResult(const base::FilePath& path,
                                                const std::string& id_override,
-                                               base::Value::Dict& result) {
+                                               base::DictValue& result) {
   GrantedFileEntry file_entry = app_file_handler_util::CreateFileEntry(
       browser_context(), extension(), source_process_id(), path, is_directory_);
-  base::Value::List* entries = result.FindList("entries");
+  base::ListValue* entries = result.FindList("entries");
   DCHECK(entries);
 
-  base::Value::Dict entry;
+  base::DictValue entry;
   entry.Set("fileSystemId", file_entry.filesystem_id);
   entry.Set("baseName", file_entry.registered_name);
   if (id_override.empty()) {
@@ -647,7 +649,8 @@ void FileSystemChooseEntryFunction::BuildFileTypeInfo(
 
       // If we still need to find suggested_extension, hunt for it inside the
       // extensions returned from GetFileTypesFromAcceptOption.
-      if (need_suggestion && base::Contains(extensions, suggested_extension)) {
+      if (need_suggestion &&
+          std::ranges::contains(extensions, suggested_extension)) {
         need_suggestion = false;
       }
     }
@@ -763,6 +766,10 @@ ExtensionFunction::ResponseAction FileSystemChooseEntryFunction::Run() {
 
     BuildFileTypeInfo(&file_type_info, suggested_extension, options.accepts,
                       options.accepts_all_types);
+
+    if (picker_type != ui::SelectFileDialog::SELECT_SAVEAS_FILE) {
+      suggested_name.clear();
+    }
   }
 
   file_type_info.allowed_paths = ui::SelectFileDialog::FileTypeInfo::ANY_PATH;
@@ -974,7 +981,7 @@ ExtensionFunction::ResponseAction FileSystemRestoreEntryFunction::Run() {
   // |entry_id|.
   if (needs_new_entry) {
     is_directory_ = file->is_directory;
-    base::Value::Dict result = CreateResult();
+    base::DictValue result = CreateResult();
     AddEntryToResult(file->path, file->id, result);
     return RespondNow(WithArguments(std::move(result)));
   }
@@ -1020,7 +1027,7 @@ ExtensionFunction::ResponseAction FileSystemRequestFileSystemFunction::Run() {
 void FileSystemRequestFileSystemFunction::OnGotFileSystem(
     const std::string& id,
     const std::string& path) {
-  base::Value::Dict dict;
+  base::DictValue dict;
   dict.Set("file_system_id", id);
   dict.Set("file_system_path", path);
   Respond(WithArguments(std::move(dict)));

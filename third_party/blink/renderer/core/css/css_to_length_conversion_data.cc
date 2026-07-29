@@ -40,6 +40,7 @@
 #include "third_party/blink/renderer/core/layout/layout_view.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
 #include "third_party/blink/renderer/core/style/font_size_style.h"
+#include "third_party/blink/renderer/platform/wtf/text/character_names.h"
 
 namespace blink {
 
@@ -56,7 +57,8 @@ std::optional<double> FindSizeForContainerAxis(
   const TreeScope* tree_scope = nullptr;
   if (container_name) {
     selector = ContainerSelector(container_name->GetName(), requested_axis,
-                                 kLogicalAxesNone, /* scroll_state */ false);
+                                 kLogicalAxesNone, /*scroll_state=*/false,
+                                 /*anchored_query=*/false);
     tree_scope = container_name->GetTreeScope();
   } else {
     selector = ContainerSelector(requested_axis);
@@ -120,7 +122,7 @@ float CSSToLengthConversionData::FontSizes::Rex(float zoom) const {
 
 float CSSToLengthConversionData::FontSizes::Ch(float zoom) const {
   DCHECK(font_);
-  const SimpleFontData* font_data = font_->PrimaryFont();
+  const SimpleFontData* font_data = font_->PrimaryFontWithDigitZero();
   if (!font_data) {
     return 0;
   }
@@ -131,7 +133,7 @@ float CSSToLengthConversionData::FontSizes::Ch(float zoom) const {
 
 float CSSToLengthConversionData::FontSizes::Rch(float zoom) const {
   DCHECK(root_font_);
-  const SimpleFontData* font_data = root_font_->PrimaryFont();
+  const SimpleFontData* font_data = root_font_->PrimaryFontWithDigitZero();
   if (!font_data) {
     return 0;
   }
@@ -142,7 +144,7 @@ float CSSToLengthConversionData::FontSizes::Rch(float zoom) const {
 
 float CSSToLengthConversionData::FontSizes::Ic(float zoom) const {
   DCHECK(font_);
-  const SimpleFontData* font_data = font_->PrimaryFont();
+  const SimpleFontData* font_data = font_->PrimaryFontWithCjkWater();
   std::optional<float> full_width;
   if (font_data) {
     full_width = font_data->IdeographicInlineSize();
@@ -157,7 +159,7 @@ float CSSToLengthConversionData::FontSizes::Ic(float zoom) const {
 
 float CSSToLengthConversionData::FontSizes::Ric(float zoom) const {
   DCHECK(root_font_);
-  const SimpleFontData* font_data = root_font_->PrimaryFont();
+  const SimpleFontData* font_data = root_font_->PrimaryFontWithCjkWater();
   std::optional<float> full_width;
   if (font_data) {
     full_width = font_data->IdeographicInlineSize();
@@ -196,9 +198,8 @@ CSSToLengthConversionData::LineHeightSize::LineHeightSize(
     const FontSizeStyle& style,
     const ComputedStyle* root_style)
     : LineHeightSize(
-          style.SpecifiedLineHeight(),
-          root_style ? root_style->SpecifiedLineHeight()
-                     : style.SpecifiedLineHeight(),
+          style.LineHeight(),
+          root_style ? root_style->LineHeight() : style.LineHeight(),
           style.GetFont(),
           root_style ? root_style->GetFont() : style.GetFont(),
           style.EffectiveZoom(),
@@ -305,10 +306,10 @@ std::optional<double> CSSToLengthConversionData::ContainerSizes::FindNamedSize(
 
 CSSToLengthConversionData::AnchorData::AnchorData(
     AnchorEvaluator* evaluator,
-    const ScopedCSSName* position_anchor,
+    const DefaultAnchorData& default_anchor_data,
     const std::optional<PositionAreaOffsets>& position_area_offsets)
     : evaluator_(evaluator),
-      position_anchor_(position_anchor),
+      default_anchor_data_(default_anchor_data),
       position_area_offsets_(position_area_offsets) {}
 
 CSSToLengthConversionData::CSSToLengthConversionData(
@@ -575,6 +576,10 @@ void CSSToLengthConversionData::ReferenceAnchor() const {
 
 void CSSToLengthConversionData::ReferenceSibling() const {
   SetFlag(Flag::kSiblingRelative);
+}
+
+void CSSToLengthConversionData::ReferenceElementDependentRandom() const {
+  SetFlag(Flag::kElementDependentRandom);
 }
 
 }  // namespace blink

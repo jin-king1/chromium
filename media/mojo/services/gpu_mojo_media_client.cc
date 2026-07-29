@@ -11,6 +11,7 @@
 #include "base/functional/bind.h"
 #include "base/memory/ptr_util.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/notimplemented.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
 #include "build/build_config.h"
@@ -50,16 +51,19 @@ gpu::CommandBufferStub* GetCommandBufferStub(
   if (!stub)
     return nullptr;
 
-#if !BUILDFLAG(IS_ANDROID)
-  // Only allow stubs that have a ContextGroup, that is, the GLES2 ones. Later
-  // code assumes the ContextGroup is valid. ContextGroup is used only by the
-  // legacy VDA implementation, which is not supported on Android.
-  if (!stub->decoder_context()->GetContextGroup()) {
-    return nullptr;
-  }
-#endif
-
   return stub;
+}
+
+bool IsAcceleratedDecodingDisabled(
+    const gpu::GpuPreferences& gpu_preferences,
+    const gpu::GpuFeatureInfo& gpu_feature_info) {
+  return gpu_preferences.disable_accelerated_video_decode ||
+         gpu_feature_info.status_values
+                 [gpu::GPU_FEATURE_TYPE_ACCELERATED_VIDEO_DECODE] !=
+             gpu::kGpuFeatureStatusEnabled ||
+         // For some reason the GpuPreferences and GpuFeatureInfo may not be
+         // up to date in this case.
+         gl::GetGLImplementation() == gl::kGLImplementationDisabled;
 }
 
 }  // namespace
@@ -77,7 +81,7 @@ VideoDecoderTraits::VideoDecoderTraits(
     const gfx::ColorSpace* target_color_space,
     GetConfigCacheCB get_cached_configs_cb,
     GetCommandBufferStubCB get_command_buffer_stub_cb,
-    mojo::PendingRemote<stable::mojom::StableVideoDecoder> oop_video_decoder)
+    mojo::PendingRemote<mojom::VideoDecoder> oop_video_decoder)
     : task_runner(std::move(task_runner)),
       media_log(std::move(media_log)),
       request_overlay_info_cb(request_overlay_info_cb),
@@ -110,9 +114,6 @@ std::unique_ptr<GpuMojoMediaClient> GpuMojoMediaClient::Create(
 
   auto client = CreateGpuMediaService(traits);
   DCHECK(client);
-
-  base::UmaHistogramEnumeration("Media.GPU.VideoDecoderType",
-                                client->GetDecoderImplementationType());
   return client;
 }
 
@@ -155,10 +156,7 @@ GpuMojoMediaClient::GetSupportedVideoDecoderConfigs() {
   if (!supported_config_cache_) {
     // Only bother to query if accelerated video decoding is enabled.
     // (RenderMediaClient does not know about GPU features before it asks.)
-    if (gpu_preferences_.disable_accelerated_video_decode ||
-        (gpu_feature_info_
-             .status_values[gpu::GPU_FEATURE_TYPE_ACCELERATED_VIDEO_DECODE] !=
-         gpu::kGpuFeatureStatusEnabled)) {
+    if (IsAcceleratedDecodingDisabled(gpu_preferences_, gpu_feature_info_)) {
       supported_config_cache_ = SupportedVideoDecoderConfigs();
     } else {
       supported_config_cache_ = GetPlatformSupportedVideoDecoderConfigs();
@@ -204,20 +202,9 @@ GpuMojoMediaClient::GetSupportedVideoDecoderConfigs() {
 
 #if BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
 void GpuMojoMediaClient::NotifyDecoderSupportKnown(
-    mojo::PendingRemote<stable::mojom::StableVideoDecoder> oop_video_decoder,
-    base::OnceCallback<
-        void(mojo::PendingRemote<stable::mojom::StableVideoDecoder>)> cb) {
-#if BUILDFLAG(USE_VAAPI) || BUILDFLAG(USE_V4L2_CODEC)
-  // TODO(b/195769334): this call should ideally be guarded only by
-  // BUILDFLAG(ALLOW_OOP_VIDEO_DECODER) because eventually, the GPU process
-  // should not need to know what video acceleration API is used. Until then, we
-  // must guard this with (USE_VAAPI || USE_V4L2_CODEC) to be able to compile
-  // Linux/CrOS builds that don't use either API (e.g., linux-x64-castos).
+    mojo::PendingRemote<mojom::VideoDecoder> oop_video_decoder,
+    base::OnceCallback<void(mojo::PendingRemote<mojom::VideoDecoder>)> cb) {
   NotifyPlatformDecoderSupport(std::move(oop_video_decoder), std::move(cb));
-#else
-  DCHECK(!oop_video_decoder);
-  std::move(cb).Run(std::move(oop_video_decoder));
-#endif  // BUILDFLAG(USE_VAAPI) || BUILDFLAG(USE_V4L2_CODEC)
 }
 #endif  // BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
 
@@ -227,12 +214,8 @@ std::unique_ptr<VideoDecoder> GpuMojoMediaClient::CreateVideoDecoder(
     mojom::CommandBufferIdPtr command_buffer_id,
     RequestOverlayInfoCB request_overlay_info_cb,
     const gfx::ColorSpace& target_color_space,
-    mojo::PendingRemote<stable::mojom::StableVideoDecoder> oop_video_decoder) {
-  // Always respect GPU features.
-  if (gpu_preferences_.disable_accelerated_video_decode ||
-      (gpu_feature_info_
-           .status_values[gpu::GPU_FEATURE_TYPE_ACCELERATED_VIDEO_DECODE] !=
-       gpu::kGpuFeatureStatusEnabled)) {
+    mojo::PendingRemote<mojom::VideoDecoder> oop_video_decoder) {
+  if (IsAcceleratedDecodingDisabled(gpu_preferences_, gpu_feature_info_)) {
     return nullptr;
   }
   // All implementations require a command buffer.

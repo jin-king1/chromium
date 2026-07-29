@@ -4,6 +4,7 @@
 
 #include "chrome/browser/permissions/permission_revocation_request.h"
 
+#include "base/metrics/histogram_functions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/default_clock.h"
 #include "chrome/browser/browser_process.h"
@@ -11,17 +12,23 @@
 #include "chrome/browser/permissions/notifications_permission_revocation_config.h"
 #include "chrome/browser/permissions/permission_manager_factory.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/safety_hub/abusive_notification_permissions_manager.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "components/permissions/constants.h"
 #include "components/permissions/permission_manager.h"
 #include "components/permissions/permission_uma_util.h"
 #include "components/permissions/permissions_client.h"
 #include "components/prefs/pref_service.h"
-#include "components/safe_browsing/core/browser/db/database_manager.h"
-#include "components/safe_browsing/core/common/safe_browsing_prefs.h"
+#include "components/safe_browsing/buildflags.h"
 
 #if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 #include "chrome/browser/safe_browsing/safe_browsing_service.h"
+#include "chrome/browser/safe_browsing/v5_get_hash_protocol_manager_factory.h"
+#include "components/safe_browsing/core/browser/db/database_manager.h"
+#include "components/safe_browsing/core/browser/db/v5_get_hash_protocol_manager.h"
+#include "components/safe_browsing/core/browser/safe_browsing_metrics_collector.h"
+#include "components/safe_browsing/core/common/features.h"
+#include "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #endif
 
 namespace {
@@ -33,20 +40,17 @@ struct OriginStatus {
   bool has_been_previously_revoked = false;
 };
 
-OriginStatus GetOriginStatus(Profile* profile, const GURL& origin) {
-  const base::Value stored_value =
-      permissions::PermissionsClient::Get()
-          ->GetSettingsMap(profile)
-          ->GetWebsiteSetting(
-              origin, GURL(),
-              ContentSettingsType::PERMISSION_AUTOREVOCATION_DATA);
+OriginStatus GetOriginStatusFromSettingsMap(HostContentSettingsMap* hcsm,
+                                            const GURL& origin) {
+  const base::Value stored_value = hcsm->GetWebsiteSetting(
+      origin, GURL(), ContentSettingsType::PERMISSION_AUTOREVOCATION_DATA);
 
   OriginStatus status;
 
   if (!stored_value.is_dict())
     return status;
 
-  const base::Value::Dict* dict =
+  const base::DictValue* dict =
       stored_value.GetDict().FindDict(kPermissionName);
   if (!dict)
     return status;
@@ -63,30 +67,51 @@ OriginStatus GetOriginStatus(Profile* profile, const GURL& origin) {
   return status;
 }
 
-void SetOriginStatus(Profile* profile,
-                     const GURL& origin,
-                     const OriginStatus& status) {
-  base::Value::Dict dict;
-  base::Value::Dict permission_dict;
+OriginStatus GetOriginStatus(Profile* profile, const GURL& origin) {
+  return GetOriginStatusFromSettingsMap(
+      permissions::PermissionsClient::Get()->GetSettingsMap(profile), origin);
+}
+
+void SetOriginStatusFromHostContentSettingsMap(HostContentSettingsMap* hcsm,
+                                               const GURL& origin,
+                                               const OriginStatus& status) {
+  base::DictValue dict;
+  base::DictValue permission_dict;
   permission_dict.Set(kExcludedKey, status.is_exempt_from_future_revocations);
   permission_dict.Set(permissions::kRevokedKey,
                       status.has_been_previously_revoked);
   dict.Set(kPermissionName, std::move(permission_dict));
 
-  permissions::PermissionsClient::Get()
-      ->GetSettingsMap(profile)
-      ->SetWebsiteSettingDefaultScope(
-          origin, GURL(), ContentSettingsType::PERMISSION_AUTOREVOCATION_DATA,
-          base::Value(std::move(dict)));
+  hcsm->SetWebsiteSettingDefaultScope(
+      origin, GURL(), ContentSettingsType::PERMISSION_AUTOREVOCATION_DATA,
+      base::Value(std::move(dict)));
 }
 
 #if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
+void SetOriginStatus(Profile* profile,
+                     const GURL& origin,
+                     const OriginStatus& status) {
+  SetOriginStatusFromHostContentSettingsMap(
+      permissions::PermissionsClient::Get()->GetSettingsMap(profile), origin,
+      status);
+}
+
 void RevokePermission(const GURL& origin, Profile* profile) {
-  permissions::PermissionsClient::Get()
-      ->GetSettingsMap(profile)
-      ->SetContentSettingDefaultScope(origin, GURL(),
-                                      ContentSettingsType::NOTIFICATIONS,
-                                      ContentSetting::CONTENT_SETTING_DEFAULT);
+  if (base::FeatureList::IsEnabled(
+          safe_browsing::kShowManualNotificationRevocationsSafetyHub)) {
+    AbusiveNotificationPermissionsManager::
+        ExecuteAbusiveNotificationAutoRevocation(
+            HostContentSettingsMapFactory::GetForProfile(profile), origin,
+            safe_browsing::NotificationRevocationSource::
+                kSafeBrowsingUnwantedRevocation,
+            base::DefaultClock::GetInstance());
+  } else {
+    permissions::PermissionsClient::Get()
+        ->GetSettingsMap(profile)
+        ->SetContentSettingDefaultScope(
+            origin, GURL(), ContentSettingsType::NOTIFICATIONS,
+            ContentSetting::CONTENT_SETTING_DEFAULT);
+  }
 
   OriginStatus status = GetOriginStatus(profile, origin);
   status.has_been_previously_revoked = true;
@@ -116,9 +141,26 @@ PermissionRevocationRequest::~PermissionRevocationRequest() = default;
 void PermissionRevocationRequest::ExemptOriginFromFutureRevocations(
     Profile* profile,
     const GURL& origin) {
-  OriginStatus status = GetOriginStatus(profile, origin);
+  ExemptOriginFromFutureRevocations(
+      permissions::PermissionsClient::Get()->GetSettingsMap(profile), origin);
+}
+
+// static
+void PermissionRevocationRequest::ExemptOriginFromFutureRevocations(
+    HostContentSettingsMap* hcsm,
+    const GURL& origin) {
+  OriginStatus status = GetOriginStatusFromSettingsMap(hcsm, origin);
   status.is_exempt_from_future_revocations = true;
-  SetOriginStatus(profile, origin, status);
+  SetOriginStatusFromHostContentSettingsMap(hcsm, origin, status);
+}
+
+// static
+void PermissionRevocationRequest::UndoExemptOriginFromFutureRevocations(
+    HostContentSettingsMap* hcsm,
+    const GURL& origin) {
+  OriginStatus status = GetOriginStatusFromSettingsMap(hcsm, origin);
+  status.is_exempt_from_future_revocations = false;
+  SetOriginStatusFromHostContentSettingsMap(hcsm, origin, status);
 }
 
 // static
@@ -189,8 +231,12 @@ void PermissionRevocationRequest::OnSiteReputationReady(
     DCHECK(g_browser_process->safe_browsing_service());
     if (should_revoke_permission &&
         g_browser_process->safe_browsing_service()) {
+      safe_browsing::V5GetHashProtocolManager* v5_manager =
+          safe_browsing::V5GetHashProtocolManagerFactory::GetForProfile(
+              profile_);
       safe_browsing_request_.emplace(
           g_browser_process->safe_browsing_service()->database_manager(),
+          v5_manager ? v5_manager->GetWeakPtr() : nullptr,
           base::DefaultClock::GetInstance(), url::Origin::Create(origin_),
           base::BindOnce(
               &PermissionRevocationRequest::OnSafeBrowsingVerdictReceived,
@@ -219,6 +265,11 @@ void PermissionRevocationRequest::OnSafeBrowsingVerdictReceived(
                CrowdDenyPreloadData::SiteReputation::DISRUPTIVE_BEHAVIOR) {
       NotifyCallback(Outcome::PERMISSION_REVOKED_DUE_TO_DISRUPTIVE_BEHAVIOR);
     }
+
+    safe_browsing::SafeBrowsingMetricsCollector::
+        LogSafeBrowsingNotificationRevocationSourceHistogram(
+            safe_browsing::NotificationRevocationSource::
+                kSafeBrowsingUnwantedRevocation);
   } else {
     NotifyCallback(Outcome::PERMISSION_NOT_REVOKED);
   }

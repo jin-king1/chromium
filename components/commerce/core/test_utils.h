@@ -61,7 +61,8 @@ const bookmarks::BookmarkNode* AddProductBookmark(
     bool is_price_tracked = false,
     const int64_t price_micros = 0L,
     const std::string& currency_code = "usd",
-    const std::optional<int64_t>& last_subscription_change_time = std::nullopt);
+    const std::optional<int64_t>& last_subscription_change_time = std::nullopt,
+    const std::optional<int64_t>& previous_price_micros = std::nullopt);
 
 // Add product information to an existing bookmark node.
 void AddProductInfoToExistingBookmark(
@@ -72,7 +73,8 @@ void AddProductInfoToExistingBookmark(
     bool is_price_tracked = false,
     const int64_t price_micros = 0L,
     const std::string& currency_code = "usd",
-    const std::optional<int64_t>& last_subscription_change_time = std::nullopt);
+    const std::optional<int64_t>& last_subscription_change_time = std::nullopt,
+    const std::optional<int64_t>& previous_price_micros = std::nullopt);
 
 // Sets the state of the enterprise policy for the shopping list feature for
 // testing.
@@ -111,7 +113,7 @@ DiscountInfo CreateValidDiscountInfo(
     const std::string& discount_code,
     int64_t id,
     bool is_merchant_wide,
-    double expiry_time_sec,
+    std::optional<double> expiry_time_sec,
     DiscountClusterType cluster_type = DiscountClusterType::kOfferLevel);
 
 // Set up `account_checker` and `prefs` so that product specification data

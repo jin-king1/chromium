@@ -12,8 +12,10 @@
 #import "base/values.h"
 #import "components/policy/core/common/cloud/affiliation.h"
 #import "components/policy/proto/device_management_backend.pb.h"
+#import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/identity_manager/account_info.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
+#import "ios/chrome/browser/enterprise/identifiers/profile_id_service_factory_ios.h"
 
 namespace {
 
@@ -30,7 +32,7 @@ std::optional<std::string> ExtractDomainName(std::string_view username) {
 
 // Sets the domain based on the username if there is a username set and the
 // username is in the correct format.
-void SetDomainExtractedFromUsername(base::Value::Dict* status_dict) {
+void SetDomainExtractedFromUsername(base::DictValue* status_dict) {
   const std::string* username = status_dict->FindString(policy::kUsernameKey);
   if (!username) {
     return;
@@ -49,6 +51,7 @@ UserCloudPolicyStatusProvider::UserCloudPolicyStatusProvider(
     : delegate_(delegate),
       user_level_policy_core_(user_level_policy_core),
       identity_manager_(identity_manager) {
+  CHECK(delegate_);
   CHECK(user_level_policy_core_);
 
   core_observation_.Observe(user_level_policy_core_);
@@ -58,7 +61,7 @@ UserCloudPolicyStatusProvider::UserCloudPolicyStatusProvider(
   }
 }
 
-base::Value::Dict UserCloudPolicyStatusProvider::GetStatus() {
+base::DictValue UserCloudPolicyStatusProvider::GetStatus() {
   // Determine if need to show flex org warning.
   AccountInfo account_info = identity_manager_->FindExtendedAccountInfo(
       identity_manager_->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin));
@@ -78,11 +81,14 @@ base::Value::Dict UserCloudPolicyStatusProvider::GetStatus() {
   // information).
 
   // Set the status payload.
-  // TODO(b/310636701): Set the Profile ID once it is used on iOS.
-  base::Value::Dict dict =
+  base::DictValue dict =
       policy::PolicyStatusProvider::GetStatusFromCore(user_level_policy_core_);
   SetDomainExtractedFromUsername(&dict);
   dict.Set("isAffiliated", IsAffiliated());
+  std::optional<std::string> profile_id = delegate_->GetProfileId();
+  if (profile_id) {
+    dict.Set("profileId", *profile_id);
+  }
   dict.Set(policy::kFlexOrgWarningKey, show_flex_org_warning);
   dict.Set(policy::kPolicyDescriptionKey, "statusUser");
   return dict;

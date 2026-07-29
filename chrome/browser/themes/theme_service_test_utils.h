@@ -8,7 +8,6 @@
 #include <ostream>
 #include <string>
 
-#include "base/containers/fixed_flat_map.h"
 #include "base/memory/scoped_refptr.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "components/sync/model/sync_change.h"
@@ -20,8 +19,8 @@ namespace theme_service::test {
 
 // Struct to distinguish SkColor (aliased to uint32_t) for printing.
 struct PrintableSkColor {
-  bool operator==(const PrintableSkColor& other) const;
-  bool operator!=(const PrintableSkColor& other) const;
+  friend constexpr bool operator==(const PrintableSkColor&,
+                                   const PrintableSkColor&) = default;
 
   const SkColor color;
 };

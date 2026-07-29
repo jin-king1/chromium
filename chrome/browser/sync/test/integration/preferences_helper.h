@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/values.h"
 #include "chrome/browser/sync/test/integration/fake_server_match_status_checker.h"
@@ -61,7 +62,7 @@ void ClearPref(int index, const char* pref_name);
 // profile with index |index| to |new_value|.
 void ChangeListPref(int index,
                     const char* pref_name,
-                    const base::Value::List& new_value);
+                    const base::ListValue& new_value);
 
 // Used to verify that the boolean preference with name |pref_name| has the
 // same value across all profiles.

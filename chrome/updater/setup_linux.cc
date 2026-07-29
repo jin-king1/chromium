@@ -4,17 +4,19 @@
 
 #include "chrome/updater/setup.h"
 
+#include <utility>
+
+#include "base/functional/bind.h"
 #include "base/functional/callback.h"
-#include "base/logging.h"
-#include "base/notreached.h"
+#include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
 #include "chrome/updater/posix/setup.h"
 #include "chrome/updater/updater_scope.h"
 
 namespace updater {
 
-void InstallPlatformCandidate(UpdaterScope scope,
-                              base::OnceCallback<void(int)> callback) {
+void InstallCandidate(UpdaterScope scope,
+                      base::OnceCallback<void(int)> callback) {
   base::ThreadPool::PostTaskAndReplyWithResult(FROM_HERE, {base::MayBlock()},
                                                base::BindOnce(&Setup, scope),
                                                std::move(callback));

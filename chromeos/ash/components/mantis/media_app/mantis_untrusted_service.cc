@@ -6,7 +6,6 @@
 
 #include <utility>
 
-#include "base/functional/callback_forward.h"
 #include "chromeos/ash/components/mantis/mojom/mantis_processor.mojom.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
@@ -66,6 +65,13 @@ void MantisUntrustedService::ClassifyImageSafety(
     ClassifyImageSafetyCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   processor_->ClassifyImageSafety(image, std::move(callback));
+}
+
+void MantisUntrustedService::InferSegmentationMode(
+    std::vector<mantis::mojom::TouchPointPtr> gesture,
+    InferSegmentationModeCallback callback) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  processor_->InferSegmentationMode(std::move(gesture), std::move(callback));
 }
 
 }  // namespace ash

@@ -5,6 +5,7 @@
 #include "third_party/blink/renderer/core/resize_observer/resize_observer.h"
 
 #include "third_party/blink/public/web/web_heap.h"
+#include "third_party/blink/renderer/bindings/core/v8/frozen_array.h"
 #include "third_party/blink/renderer/bindings/core/v8/sanitize_script_errors.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_gc_controller.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_resize_observer_options.h"
@@ -199,7 +200,7 @@ TEST_F(ResizeObserverUnitTest, TestBoxOverwrite) {
   main_resource.Finish();
 
   ResizeObserverOptions* border_box_option = ResizeObserverOptions::Create();
-  border_box_option->setBox("border-box");
+  border_box_option->setBox(V8ResizeObserverBoxOptions::Enum::kBorderBox);
 
   ResizeObserver::Delegate* delegate =
       MakeGarbageCollected<TestResizeObserverDelegate>(Window());
@@ -230,7 +231,7 @@ TEST_F(ResizeObserverUnitTest, TestNonBoxTarget) {
   main_resource.Finish();
 
   ResizeObserverOptions* border_box_option = ResizeObserverOptions::Create();
-  border_box_option->setBox("border-box");
+  border_box_option->setBox(V8ResizeObserverBoxOptions::Enum::kBorderBox);
 
   Element* dom_target = GetDocument().getElementById(AtomicString("domTarget"));
 

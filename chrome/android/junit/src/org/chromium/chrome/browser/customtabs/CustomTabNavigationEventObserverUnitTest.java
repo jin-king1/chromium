@@ -13,10 +13,12 @@ import static org.mockito.Mockito.verify;
 import androidx.browser.customtabs.CustomTabsCallback;
 
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Batch;
@@ -27,18 +29,16 @@ import org.chromium.chrome.browser.browserservices.intents.SessionHolder;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.net.NetError;
 
-import java.util.Optional;
-
-/** Tests for some parts of {@link CustomTabsConnection}. */
+/** Tests for some parts of {@link CustomTabNavigationEventObserver}. */
 @RunWith(BaseRobolectricTestRunner.class)
 @Batch(Batch.UNIT_TESTS)
 public class CustomTabNavigationEventObserverUnitTest {
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock private CustomTabsConnection mConnection;
     @Mock private SessionHolder<?> mSessionHolder;
 
     @Before
     public void setup() {
-        MockitoAnnotations.initMocks(this);
         CustomTabsConnection.setInstanceForTesting(mConnection);
     }
 
@@ -71,8 +71,7 @@ public class CustomTabNavigationEventObserverUnitTest {
         histogramWatcher = buildHistogramWatcher(err);
         observer.onPageLoadFailed(null, err);
         verify(mConnection)
-                .notifyNavigationEvent(
-                        any(), eq(CustomTabsCallback.NAVIGATION_FAILED), eq(Optional.empty()));
+                .notifyNavigationEvent(any(), eq(CustomTabsCallback.NAVIGATION_FAILED), eq(null));
         histogramWatcher.assertExpected();
     }
 
@@ -112,8 +111,6 @@ public class CustomTabNavigationEventObserverUnitTest {
         int reportError = CustomTabNavigationEventObserver.getReportErrorCode(err);
         verify(mConnection)
                 .notifyNavigationEvent(
-                        any(),
-                        eq(CustomTabsCallback.NAVIGATION_FAILED),
-                        eq(Optional.of(reportError)));
+                        any(), eq(CustomTabsCallback.NAVIGATION_FAILED), eq(reportError));
     }
 }

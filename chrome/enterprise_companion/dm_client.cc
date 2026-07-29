@@ -8,28 +8,35 @@
 #include <cstdint>
 #include <memory>
 #include <ostream>
+#include <queue>
 #include <string>
 #include <utility>
 
 #include "base/check.h"
+#include "base/files/file_path.h"
+#include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
-#include "base/strings/stringprintf.h"
 #include "base/system/sys_info.h"
+#include "base/task/sequenced_task_runner.h"
+#include "base/time/time.h"
+#include "base/timer/timer.h"
+#include "chrome/enterprise_companion/constants.h"
 #include "chrome/enterprise_companion/device_management_storage/dm_storage.h"
 #include "chrome/enterprise_companion/enterprise_companion_branding.h"
 #include "chrome/enterprise_companion/enterprise_companion_status.h"
 #include "chrome/enterprise_companion/enterprise_companion_version.h"
 #include "chrome/enterprise_companion/event_logger.h"
 #include "chrome/enterprise_companion/global_constants.h"
+#include "chrome/enterprise_companion/installer_paths.h"
 #include "chrome/enterprise_companion/proto/enterprise_companion_event.pb.h"
-#include "chrome/enterprise_companion/telemetry_logger/telemetry_logger.h"
 #include "components/policy/core/common/cloud/client_data_delegate.h"
 #include "components/policy/core/common/cloud/cloud_policy_client.h"
 #include "components/policy/core/common/cloud/cloud_policy_constants.h"
@@ -40,11 +47,50 @@
 #include "components/policy/core/common/policy_types.h"
 #include "components/policy/proto/device_management_backend.pb.h"
 #include "net/base/net_errors.h"
+#include "net/http/http_util.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "third_party/abseil-cpp/absl/strings/str_format.h"
 
 namespace enterprise_companion {
 
 namespace {
+
+class FailedEnrollmentTokenServiceImpl : public FailedEnrollmentTokenService {
+ public:
+  FailedEnrollmentTokenServiceImpl()
+      : failed_enrollment_token_path_(GetFailedEnrollmentTokenPath()) {}
+  ~FailedEnrollmentTokenServiceImpl() override = default;
+
+  bool StoreFailedEnrollmentToken(const std::string& token) override {
+    return !failed_enrollment_token_path_.empty() &&
+           device_management_storage::WriteContentToGlobalReadableFile(
+               failed_enrollment_token_path_, token);
+  }
+
+  bool DeleteFailedEnrollmentToken() override {
+    return !failed_enrollment_token_path_.empty() &&
+           base::DeleteFile(failed_enrollment_token_path_);
+  }
+
+  std::string GetFailedEnrollmentToken() const override {
+    std::string token;
+    if (failed_enrollment_token_path_.empty() ||
+        !base::ReadFileToString(failed_enrollment_token_path_, &token)) {
+      return {};
+    }
+    return std::string(base::TrimWhitespaceASCII(token, base::TRIM_ALL));
+  }
+
+ private:
+  static base::FilePath GetFailedEnrollmentTokenPath() {
+    std::optional<base::FilePath> install_dir = GetInstallDirectory();
+    return install_dir ? install_dir->Append(FILE_PATH_LITERAL(
+                             "CloudManagementFailedEnrollmentToken"))
+                       : base::FilePath();
+  }
+
+  const base::FilePath failed_enrollment_token_path_;
+};
 
 std::ostream& operator<<(std::ostream& os,
                          const policy::CloudPolicyClient::Result& result) {
@@ -69,9 +115,10 @@ device_management_storage::DMPolicyMap ToDMPolicyMap(
   device_management_storage::DMPolicyMap out;
   std::ranges::transform(
       in, std::inserter(out, out.end()),
-      [](const std::pair<std::pair<std::string, std::string>,
-                         enterprise_management::PolicyFetchResponse> response) {
-        return std::make_pair(response.first.first,
+      [](const std::pair<policy::PolicyTypeToFetch,
+                         enterprise_management::PolicyFetchResponse>&
+             response) {
+        return std::make_pair(response.first.policy_type(),
                               response.second.SerializeAsString());
       });
   return out;
@@ -91,10 +138,9 @@ class DMConfiguration : public policy::DeviceManagementService::Configuration {
     int32_t minor = 0;
     int32_t bugfix = 0;
     base::SysInfo::OperatingSystemVersionNumbers(&major, &minor, &bugfix);
-    return base::StringPrintf(
-        "%s|%s|%d.%d.%d", base::SysInfo::OperatingSystemName().c_str(),
-        base::SysInfo::OperatingSystemArchitecture().c_str(), major, minor,
-        bugfix);
+    return absl::StrFormat(
+        "%s|%s|%d.%d.%d", base::SysInfo::OperatingSystemName(),
+        base::SysInfo::OperatingSystemArchitecture(), major, minor, bugfix);
   }
   std::string GetRealtimeReportingServerUrl() const override {
     return GetGlobalConstants()->DeviceManagementRealtimeReportingURL().spec();
@@ -109,7 +155,6 @@ class ClientDataDelegate : public policy::ClientDataDelegate {
   void FillRegisterBrowserRequest(
       enterprise_management::RegisterBrowserRequest* request,
       base::OnceClosure callback) const override {
-    request->set_machine_name(policy::GetMachineName());
     request->set_os_platform(policy::GetOSPlatform());
     request->set_os_version(policy::GetOSVersion());
     request->set_allocated_browser_device_identifier(
@@ -144,6 +189,97 @@ class FetchedPolicyValidator final : public policy::CloudPolicyValidatorBase {
   }
 };
 
+// `BufferedDMClient` sequences calls to another DMClient ensuring that no
+// operations overlap. This is useful as the CloudPolicyClient backing
+// DMClientImpl does not provide any means to discriminate the origin of
+// overlapping calls nor does it make any guarantees of the behavior of such
+// calls.
+class BufferedDMClient : public DMClient {
+ public:
+  explicit BufferedDMClient(std::unique_ptr<DMClient> client)
+      : client_(std::move(client)) {}
+
+  ~BufferedDMClient() override {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    VLOG_IF(1, !tasks_.empty())
+        << "BufferedDMClient destroyed while " << tasks_.size()
+        << " tasks were pending. Callbacks will be dropped.";
+    VLOG_IF(1, task_running_) << "BufferedDMClient destroyed while a task was "
+                                 "in-flight; its callback will be dropped.";
+  }
+
+  void RegisterPolicyAgent(scoped_refptr<EnterpriseCompanionEventLogger> logger,
+                           StatusCallback callback) override {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    Enqueue(base::BindOnce(&BufferedDMClient::DoRegisterPolicyAgent,
+                           weak_ptr_factory_.GetWeakPtr(), logger,
+                           std::move(callback)));
+  }
+
+  void FetchPolicies(policy::PolicyFetchReason reason,
+                     scoped_refptr<EnterpriseCompanionEventLogger> logger,
+                     StatusCallback callback) override {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    Enqueue(base::BindOnce(&BufferedDMClient::DoFetchPolicies,
+                           weak_ptr_factory_.GetWeakPtr(), reason, logger,
+                           std::move(callback)));
+  }
+
+ private:
+  void DoRegisterPolicyAgent(
+      scoped_refptr<EnterpriseCompanionEventLogger> logger,
+      StatusCallback callback) {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    client_->RegisterPolicyAgent(
+        logger, base::BindOnce(&BufferedDMClient::OnTaskComplete,
+                               base::Unretained(this), std::move(callback)));
+  }
+
+  void DoFetchPolicies(policy::PolicyFetchReason reason,
+                       scoped_refptr<EnterpriseCompanionEventLogger> logger,
+                       StatusCallback callback) {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    client_->FetchPolicies(
+        reason, logger,
+        base::BindOnce(&BufferedDMClient::OnTaskComplete,
+                       base::Unretained(this), std::move(callback)));
+  }
+
+  void OnTaskComplete(StatusCallback callback,
+                      const EnterpriseCompanionStatus& status) {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindOnce(std::move(callback), status));
+    task_running_ = false;
+    ScheduleNextTask();
+  }
+
+  // Adds a task to the queue. Tasks should reference the BufferedDMClient by
+  // weak_ptr as they are posted.
+  void Enqueue(base::OnceClosure task) {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    tasks_.push(std::move(task));
+    ScheduleNextTask();
+  }
+
+  void ScheduleNextTask() {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    if (task_running_ || tasks_.empty()) {
+      return;
+    }
+    task_running_ = true;
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, std::move(tasks_.front()));
+    tasks_.pop();
+  }
+
+  SEQUENCE_CHECKER(sequence_checker_);
+  std::unique_ptr<DMClient> client_;
+  std::queue<base::OnceClosure> tasks_;
+  bool task_running_ = false;
+  base::WeakPtrFactory<BufferedDMClient> weak_ptr_factory_{this};
+};
+
 // Interface to a CloudPolicyClient which interacts with the device management
 // server. May perform blocking IO.
 class DMClientImpl : public DMClient, policy::CloudPolicyClient::Observer {
@@ -152,42 +288,76 @@ class DMClientImpl : public DMClient, policy::CloudPolicyClient::Observer {
       std::unique_ptr<policy::DeviceManagementService::Configuration> config,
       CloudPolicyClientProvider cloud_policy_client_provider,
       scoped_refptr<device_management_storage::DMStorage> dm_storage,
-      PolicyFetchResponseValidator policy_fetch_response_validator)
-      : dm_service_(std::move(config)),
+      PolicyFetchResponseValidator policy_fetch_response_validator,
+      base::TimeDelta task_timeout,
+      std::unique_ptr<FailedEnrollmentTokenService>
+          failed_enrollment_token_service)
+      : task_timeout_(task_timeout),
+        dm_service_(std::move(config)),
         cloud_policy_client_(
             std::move(cloud_policy_client_provider).Run(&dm_service_)),
         dm_storage_(dm_storage),
-        policy_fetch_response_validator_(policy_fetch_response_validator) {
+        policy_fetch_response_validator_(policy_fetch_response_validator),
+        failed_enrollment_token_service_(
+            std::move(failed_enrollment_token_service)) {
     dm_service_.ScheduleInitialization(0);
     cloud_policy_client_->AddObserver(this);
     cloud_policy_client_->AddPolicyTypeToFetch(
         policy::dm_protocol::kGoogleUpdateMachineLevelAppsPolicyType,
         /*settings_entity_id=*/"");
     if (!dm_storage->GetDmToken().empty()) {
-      cloud_policy_client_->SetupRegistration(dm_storage_->GetDmToken(),
-                                              dm_storage_->GetDeviceID(),
-                                              /*user_affiliation_ids=*/{});
+      if (net::HttpUtil::IsValidHeaderValue(dm_storage->GetDmToken())) {
+        cloud_policy_client_->SetupRegistration(dm_storage_->GetDmToken(),
+                                                dm_storage_->GetDeviceID(),
+                                                /*user_affiliation_ids=*/{});
+      } else {
+        VLOG(1) << "The stored DM token is malformed. The device will be "
+                   "considered not registered.";
+      }
     }
     UpdateCachedPolicyInfo();
   }
-  ~DMClientImpl() override { cloud_policy_client_->RemoveObserver(this); }
+
+  ~DMClientImpl() override {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    cloud_policy_client_->RemoveObserver(this);
+    VLOG_IF(1, pending_callback_)
+        << "DMClient destroyed while task in-flight. Callback will be dropped";
+  }
 
   // Overrides for DMClient.
   void RegisterPolicyAgent(
       scoped_refptr<EnterpriseCompanionEventLogger> event_logger,
       StatusCallback callback) override {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-    CHECK(!pending_callback_);
+    CHECK(!pending_callback_) << "DMClientImpl calls may not overlap";
 
     if (ShouldSkipRegistration()) {
       std::move(callback).Run(EnterpriseCompanionStatus::Success());
       return;
     }
 
-    dm_storage_->RemoveAllPolicies();
-    pending_callback_ = base::BindPostTaskToCurrentDefault(base::BindOnce(
+    if (IsEnrollmentBlocked()) {
+      std::move(callback).Run(
+          EnterpriseCompanionStatus(ApplicationError::kEnrollmentBlocked));
+      return;
+    }
+
+    // Wrap the callback with event logging to ensure that precondition errors
+    // are logged.
+    callback = base::BindPostTaskToCurrentDefault(base::BindOnce(
         &EnterpriseCompanionEventLogger::LogRegisterPolicyAgentEvent,
         event_logger, base::Time::Now(), std::move(callback)));
+
+    if (!net::HttpUtil::IsValidHeaderValue(dm_storage_->GetEnrollmentToken())) {
+      VLOG(1) << "The stored enrollment token is malformed.";
+      std::move(callback).Run(
+          EnterpriseCompanionStatus(ApplicationError::kInvalidEnrollmentToken));
+      return;
+    }
+
+    dm_storage_->RemoveAllPolicies();
+    SetPendingCallback(std::move(callback));
     cloud_policy_client_->RegisterPolicyAgentWithEnrollmentToken(
         dm_storage_->GetEnrollmentToken(), dm_storage_->GetDeviceID(),
         client_data_delegate_);
@@ -197,7 +367,7 @@ class DMClientImpl : public DMClient, policy::CloudPolicyClient::Observer {
                      scoped_refptr<EnterpriseCompanionEventLogger> event_logger,
                      StatusCallback callback) override {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-    CHECK(!pending_callback_);
+    CHECK(!pending_callback_) << "DMClientImpl calls may not overlap";
     // Wrap the callback with event logging early to ensure that precondition
     // errors are logged.
     callback = base::BindPostTaskToCurrentDefault(
@@ -218,7 +388,7 @@ class DMClientImpl : public DMClient, policy::CloudPolicyClient::Observer {
       return;
     }
 
-    pending_callback_ = std::move(callback);
+    SetPendingCallback(std::move(callback));
     UpdateCachedPolicyInfo();
     cloud_policy_client_->FetchPolicy(reason);
   }
@@ -244,6 +414,8 @@ class DMClientImpl : public DMClient, policy::CloudPolicyClient::Observer {
     FetchedPolicyValidator::ValidationResult validation_result =
         ValidatePolicyFetchResponses(responses);
     if (validation_result.status != FetchedPolicyValidator::VALIDATION_OK) {
+      VLOG(1) << "Clearing policy cache due to fetched policy validation error";
+      dm_storage_->RemoveAllPolicies();
       cloud_policy_client_->UploadPolicyValidationReport(
           validation_result.status, validation_result.value_validation_issues,
           policy::ValidationAction::kStore,
@@ -276,6 +448,10 @@ class DMClientImpl : public DMClient, policy::CloudPolicyClient::Observer {
     VLOG(1) << __func__;
     if (cloud_policy_client_->is_registered()) {
       dm_storage_->StoreDmToken(cloud_policy_client_->dm_token());
+      const bool failed_enrollment_token_deleted =
+          failed_enrollment_token_service_->DeleteFailedEnrollmentToken();
+      LOG_IF(ERROR, !failed_enrollment_token_deleted)
+          << "Failed to delete the rejected enrollment token.";
     }
     if (pending_callback_) {
       std::move(pending_callback_)
@@ -297,6 +473,19 @@ class DMClientImpl : public DMClient, policy::CloudPolicyClient::Observer {
       VLOG(1) << "DMServer requests deregister via DMToken invalidation.";
       LOG_IF(ERROR, !dm_storage_->InvalidateDMToken())
           << "Could not deregister: Failed to invalidate the DMToken.";
+    } else if (!dm_storage_->IsValidDMToken() &&
+               cloud_policy_client_->last_dm_status() ==
+                   policy::DM_STATUS_SERVICE_MANAGEMENT_TOKEN_INVALID) {
+      VLOG(1) << "DMServer rejected the enrollment token as invalid. "
+                 "Blocking future registration attempts that reuse this token.";
+      std::string failed_token = dm_storage_->GetEnrollmentToken();
+      if (!failed_token.empty()) {
+        const bool failed_enrollment_token_stored =
+            failed_enrollment_token_service_->StoreFailedEnrollmentToken(
+                failed_token);
+        LOG_IF(ERROR, !failed_enrollment_token_stored)
+            << "Failed to store the rejected enrollment token.";
+      }
     }
     if (pending_callback_) {
       std::move(pending_callback_)
@@ -306,17 +495,6 @@ class DMClientImpl : public DMClient, policy::CloudPolicyClient::Observer {
   }
 
  private:
-  SEQUENCE_CHECKER(sequence_checker_);
-
-  policy::DeviceManagementService dm_service_;
-  std::unique_ptr<policy::CloudPolicyClient> cloud_policy_client_;
-  scoped_refptr<device_management_storage::DMStorage> dm_storage_;
-  PolicyFetchResponseValidator policy_fetch_response_validator_;
-  ClientDataDelegate client_data_delegate_;
-  StatusCallback pending_callback_;
-  std::unique_ptr<device_management_storage::CachedPolicyInfo>
-      cached_policy_info_;
-
   bool ShouldSkipRegistration() {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     if (dm_storage_->GetEnrollmentToken().empty()) {
@@ -327,6 +505,22 @@ class DMClientImpl : public DMClient, policy::CloudPolicyClient::Observer {
       return true;
     }
     return false;
+  }
+
+  bool IsEnrollmentBlocked() const {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    std::string failed_token =
+        failed_enrollment_token_service_->GetFailedEnrollmentToken();
+    if (failed_token.empty()) {
+      return false;
+    }
+    std::string current_token = dm_storage_->GetEnrollmentToken();
+    if (current_token.empty() || current_token != failed_token) {
+      return false;
+    }
+    VLOG(1) << "Registration attempt blocked. The active enrollment token has "
+               "previously failed verification.";
+    return true;
   }
 
   // Validates all of the fetched policies.
@@ -340,7 +534,8 @@ class DMClientImpl : public DMClient, policy::CloudPolicyClient::Observer {
               cached_policy_info_->timestamp(), response);
       CHECK(validation_result) << "Policy validation result cannot be null";
       if (validation_result->status != FetchedPolicyValidator::VALIDATION_OK) {
-        VLOG(1) << "Policy validation failed for " << key.first << " response: "
+        VLOG(1) << "Policy validation failed for " << key.policy_type()
+                << " response: "
                 << FetchedPolicyValidator::StatusToString(
                        validation_result->status);
         return *validation_result;
@@ -358,6 +553,39 @@ class DMClientImpl : public DMClient, policy::CloudPolicyClient::Observer {
           cached_policy_info_->key_version());
     }
   }
+
+  void HandleTaskTimeout() {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    // If the callback has already been responded to, the task did not time out.
+    if (pending_callback_) {
+      VLOG(1) << "DMClient task timed out before CloudPolicyClient response";
+      std::move(pending_callback_)
+          .Run(EnterpriseCompanionStatus(
+              ApplicationError::kCloudPolicyClientTimeout));
+    }
+  }
+
+  void SetPendingCallback(StatusCallback callback) {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    task_timer_.Start(FROM_HERE, task_timeout_,
+                      base::BindOnce(&DMClientImpl::HandleTaskTimeout,
+                                     base::Unretained(this)));
+    pending_callback_ = std::move(callback);
+  }
+
+  SEQUENCE_CHECKER(sequence_checker_);
+  const base::TimeDelta task_timeout_;
+  policy::DeviceManagementService dm_service_;
+  std::unique_ptr<policy::CloudPolicyClient> cloud_policy_client_;
+  scoped_refptr<device_management_storage::DMStorage> dm_storage_;
+  PolicyFetchResponseValidator policy_fetch_response_validator_;
+  ClientDataDelegate client_data_delegate_;
+  StatusCallback pending_callback_;
+  base::OneShotTimer task_timer_;
+  std::unique_ptr<device_management_storage::CachedPolicyInfo>
+      cached_policy_info_;
+  std::unique_ptr<FailedEnrollmentTokenService>
+      failed_enrollment_token_service_;
 };
 
 }  // namespace
@@ -408,14 +636,23 @@ CreateDeviceManagementServiceConfig() {
   return std::make_unique<DMConfiguration>();
 }
 
+std::unique_ptr<FailedEnrollmentTokenService>
+GetDefaultFailedEnrollmentTokenService() {
+  return std::make_unique<FailedEnrollmentTokenServiceImpl>();
+}
+
 std::unique_ptr<DMClient> CreateDMClient(
     CloudPolicyClientProvider cloud_policy_client_provider,
     scoped_refptr<device_management_storage::DMStorage> dm_storage,
     PolicyFetchResponseValidator policy_fetch_response_validator,
-    std::unique_ptr<policy::DeviceManagementService::Configuration> config) {
-  return std::make_unique<DMClientImpl>(
+    std::unique_ptr<policy::DeviceManagementService::Configuration> config,
+    base::TimeDelta task_timeout,
+    std::unique_ptr<FailedEnrollmentTokenService>
+        failed_enrollment_token_service) {
+  return std::make_unique<BufferedDMClient>(std::make_unique<DMClientImpl>(
       std::move(config), std::move(cloud_policy_client_provider), dm_storage,
-      policy_fetch_response_validator);
+      policy_fetch_response_validator, task_timeout,
+      std::move(failed_enrollment_token_service)));
 }
 
 }  // namespace enterprise_companion

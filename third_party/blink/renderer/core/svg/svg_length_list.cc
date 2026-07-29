@@ -20,7 +20,6 @@
 
 #include "third_party/blink/renderer/core/svg/svg_length_list.h"
 
-#include "base/compiler_specific.h"
 #include "third_party/blink/renderer/core/svg/svg_parser_utilities.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/wtf/text/character_visitor.h"
@@ -37,34 +36,24 @@ SVGLengthList* SVGLengthList::Clone() const {
   return ret;
 }
 
-SVGPropertyBase* SVGLengthList::CloneForAnimation(const String& value) const {
-  auto* ret = MakeGarbageCollected<SVGLengthList>(mode_);
-  ret->SetValueAsString(value);
-  return ret;
-}
-
 template <typename CharType>
-SVGParsingError SVGLengthList::ParseInternal(const CharType* ptr,
-                                             const CharType* end) {
-  const CharType* list_start = ptr;
-  while (ptr < end) {
-    const CharType* start = ptr;
+SVGParsingError SVGLengthList::ParseInternal(
+    const base::span<const CharType> chars) {
+  for (size_t position = 0; position < chars.size();
+       position = SkipOptionalSVGSpacesOrDelimiter(chars, position)) {
     // TODO(shanmuga.m): Enable calc for SVGLengthList
-    while (ptr < end && *ptr != ',' && !IsHTMLSpace<CharType>(*ptr))
-      UNSAFE_TODO(ptr++);
-    if (ptr == start)
+    auto token = TokenUntilSvgSpaceOrDelimiter(chars, position, ',');
+    if (token.empty()) {
       break;
-    String value_string(UNSAFE_TODO(base::span(start, ptr)));
-    if (value_string.empty())
-      break;
+    }
 
     auto* length = MakeGarbageCollected<SVGLength>(mode_);
     SVGParsingError length_parse_status =
-        length->SetValueAsString(value_string);
+        length->SetValueAsString(String(token));
     if (length_parse_status != SVGParseStatus::kNoError)
-      return length_parse_status.OffsetWith(start - list_start);
+      return length_parse_status.OffsetWith(position);
+    position += token.size();
     Append(length);
-    SkipOptionalSVGSpacesOrDelimiter(ptr, end);
   }
   return SVGParseStatus::kNoError;
 }
@@ -75,18 +64,22 @@ SVGParsingError SVGLengthList::SetValueAsString(const String& value) {
   if (value.empty())
     return SVGParseStatus::kNoError;
 
-  return WTF::VisitCharacters(value, [&](auto chars) {
-    return ParseInternal(chars.data(), chars.data() + chars.size());
-  });
+  SVGParsingError status =
+      VisitCharacters(value, [&](auto chars) { return ParseInternal(chars); });
+  if (status != SVGParseStatus::kNoError) {
+    Clear();
+  }
+  return status;
 }
 
-void SVGLengthList::Add(const SVGPropertyBase* other,
+bool SVGLengthList::Add(const SVGPropertyBase* other,
                         const SVGElement* context_element) {
   auto* other_list = To<SVGLengthList>(other);
   if (length() != other_list->length())
-    return;
+    return true;
   for (uint32_t i = 0; i < length(); ++i)
     at(i)->Add(other_list->at(i), context_element);
+  return true;
 }
 
 SVGLength* SVGLengthList::CreatePaddingItem() const {

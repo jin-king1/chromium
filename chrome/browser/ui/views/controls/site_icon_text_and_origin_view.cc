@@ -8,9 +8,9 @@
 #include <string>
 
 #include "base/functional/callback_helpers.h"
+#include "base/strings/string_util.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/web_apps/web_app_views_utils.h"
-#include "chrome/grit/generated_resources.h"
 #include "components/constrained_window/constrained_window_views.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
 #include "components/web_modal/web_contents_modal_dialog_manager_delegate.h"
@@ -25,6 +25,7 @@
 #include "ui/views/layout/layout_provider.h"
 #include "ui/views/layout/layout_types.h"
 #include "ui/views/layout/table_layout.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/view.h"
 #include "ui/views/view_class_properties.h"
 #include "url/gurl.h"
@@ -101,7 +102,7 @@ SiteIconTextAndOriginView::SiteIconTextAndOriginView(
   AddChildView(views::Builder<views::View>().Build());
 
   // TODO(dibyapal): Modify to support full urls for Create Shortcut dialog.
-  AddChildView(
+  AddChildViewRaw(
       web_app::CreateOriginLabelFromStartUrl(url, /*is_primary_text=*/false)
           .release());
   title_field_->SelectAll(true);
@@ -112,6 +113,13 @@ SiteIconTextAndOriginView::~SiteIconTextAndOriginView() = default;
 void SiteIconTextAndOriginView::ContentsChanged(
     views::Textfield* sender,
     const std::u16string& new_contents) {
+  // This view is reused in places where there is no web_contents. Since the
+  // below bug is marked as fixed, simply ignore these cases for now, and if we
+  // can, remove the code here in general.
+  if (!web_contents_) {
+    return;
+  }
+
   CHECK_EQ(sender, title_field_);
   text_tracker_callback_.Run(GetTrimmedTitle(new_contents));
 
@@ -130,7 +138,8 @@ void SiteIconTextAndOriginView::ContentsChanged(
   }
 
   auto* const modal_dialog_host =
-      modal_dialog_manager->delegate()->GetWebContentsModalDialogHost();
+      modal_dialog_manager->delegate()->GetWebContentsModalDialogHost(
+          web_contents_);
   if (!modal_dialog_host) {
     return;
   }

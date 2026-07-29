@@ -14,24 +14,22 @@
 #import "base/functional/callback_helpers.h"
 #import "base/logging.h"
 #import "base/strings/sys_string_conversions.h"
+#import "base/strings/utf_string_conversions.h"
 #import "base/task/sequenced_task_runner.h"
 #import "base/test/gmock_callback_support.h"
 #import "base/test/ios/wait_util.h"
+#import "base/trace_event/named_trigger.h"
 #import "components/sessions/core/session_id.h"
 #import "ios/web/common/uikit_ui_util.h"
 #import "ios/web/js_messaging/web_frames_manager_impl.h"
 #import "ios/web/navigation/navigation_context_impl.h"
 #import "ios/web/navigation/navigation_item_impl.h"
-#import "ios/web/navigation/serializable_user_data_manager_impl.h"
 #import "ios/web/navigation/wk_navigation_util.h"
 #import "ios/web/public/navigation/navigation_item.h"
 #import "ios/web/public/navigation/navigation_util.h"
 #import "ios/web/public/navigation/web_state_policy_decider.h"
-#import "ios/web/public/session/crw_navigation_item_storage.h"
-#import "ios/web/public/session/crw_session_storage.h"
 #import "ios/web/public/session/proto/proto_util.h"
 #import "ios/web/public/session/proto/storage.pb.h"
-#import "ios/web/public/session/serializable_user_data_manager.h"
 #import "ios/web/public/test/fakes/async_web_state_policy_decider.h"
 #import "ios/web/public/test/fakes/fake_java_script_dialog_presenter.h"
 #import "ios/web/public/test/fakes/fake_navigation_context.h"
@@ -54,6 +52,7 @@
 #import "testing/gtest/include/gtest/gtest.h"
 #import "testing/gtest_mac.h"
 #import "url/gurl.h"
+#import "url/origin.h"
 
 using base::test::RunOnceCallback;
 using base::test::ios::kWaitForPageLoadTimeout;
@@ -313,13 +312,6 @@ TEST_F(WebStateImplTest, ObserverTest) {
   ASSERT_TRUE(observer->title_was_set_info());
   EXPECT_EQ(web_state.get(), observer->title_was_set_info()->web_state);
 
-  // Test that UnderPageBackgroundColorChanged() is called.
-  ASSERT_FALSE(observer->under_page_background_color_changed_info());
-  web_state->OnUnderPageBackgroundColorChanged();
-  ASSERT_TRUE(observer->under_page_background_color_changed_info());
-  EXPECT_EQ(web_state.get(),
-            observer->under_page_background_color_changed_info()->web_state);
-
   // Test that WebStateDestroyed() is called.
   EXPECT_FALSE(observer->web_state_destroyed_info());
   web_state.reset();
@@ -413,7 +405,7 @@ TEST_F(WebStateImplTest, DelegateTest) {
   EXPECT_FALSE(presenter->cancel_dialogs_called());
 
   __block bool callback_called = false;
-  web_state.RunJavaScriptAlertDialog(GURL(), @"", base::BindOnce(^() {
+  web_state.RunJavaScriptAlertDialog(url::Origin(), @"", base::BindOnce(^() {
                                        callback_called = true;
                                      }));
 
@@ -425,17 +417,37 @@ TEST_F(WebStateImplTest, DelegateTest) {
   web_state.CancelDialogs();
   EXPECT_TRUE(presenter->cancel_dialogs_called());
 
-  // Test that OnAuthRequired() is called.
+  // Test that OnAuthRequired() for HTTP authentication method is called.
   EXPECT_FALSE(delegate.last_authentication_request());
   NSURLProtectionSpace* protection_space = [[NSURLProtectionSpace alloc] init];
   NSURLCredential* credential = [[NSURLCredential alloc] init];
-  WebStateDelegate::AuthCallback callback;
-  web_state.OnAuthRequired(protection_space, credential, std::move(callback));
+  WebStateDelegate::HTTPAuthCallback http_callback = base::DoNothing();
+  web_state.OnAuthRequired(protection_space, credential,
+                           std::move(http_callback));
   ASSERT_TRUE(delegate.last_authentication_request());
   EXPECT_EQ(delegate.last_authentication_request()->web_state, &web_state);
   EXPECT_EQ(delegate.last_authentication_request()->protection_space,
             protection_space);
   EXPECT_EQ(delegate.last_authentication_request()->credential, credential);
+  ASSERT_TRUE(delegate.last_authentication_request()->http_auth_callback);
+  ASSERT_FALSE(
+      delegate.last_authentication_request()->client_cert_auth_callback);
+
+  delegate.ClearLastAuthenticationRequest();
+
+  // Test that OnAuthRequired() for Client Cert authentication method is called.
+  EXPECT_FALSE(delegate.last_authentication_request());
+  WebStateDelegate::ClientCertAuthCallback client_cert_callback =
+      base::DoNothing();
+  web_state.OnAuthRequired(protection_space, std::move(client_cert_callback));
+  ASSERT_TRUE(delegate.last_authentication_request());
+  EXPECT_EQ(delegate.last_authentication_request()->web_state, &web_state);
+  EXPECT_EQ(delegate.last_authentication_request()->protection_space,
+            protection_space);
+  EXPECT_EQ(delegate.last_authentication_request()->credential, nullptr);
+  ASSERT_TRUE(
+      delegate.last_authentication_request()->client_cert_auth_callback);
+  ASSERT_FALSE(delegate.last_authentication_request()->http_auth_callback);
 }
 
 // Verifies that GlobalWebStateObservers are called when expected.
@@ -797,62 +809,10 @@ TEST_F(WebStateImplTest, FaviconUpdateForSameDocumentNavigations) {
   EXPECT_FALSE(observer->update_favicon_url_candidates_info());
 }
 
-// Tests that BuildSessionStorage() and GetTitle() return information about the
-// most recently restored session if no navigation item has been committed. Also
-// tests that re-restoring that session includes updated userData.
-TEST_F(WebStateImplTest, UncommittedRestoreSession) {
-  GURL url("http://test.com");
-  CRWSessionStorage* session_storage = [[CRWSessionStorage alloc] init];
-  session_storage.stableIdentifier = [[NSUUID UUID] UUIDString];
-  session_storage.uniqueIdentifier = web::WebStateID::NewUnique();
-  session_storage.lastCommittedItemIndex = 0;
-  CRWNavigationItemStorage* item_storage =
-      [[CRWNavigationItemStorage alloc] init];
-  item_storage.title = base::SysNSStringToUTF16(@"Title");
-  item_storage.virtualURL = url;
-  session_storage.itemStorages = @[ item_storage ];
-
-  WebStateImpl web_state =
-      WebStateImpl(WebState::CreateParams(GetBrowserState()), session_storage,
-                   base::ReturnValueOnce<NSData*>(nil));
-
-  // After restoring `web_state` change the uncommitted state's user data.
-  web::SerializableUserDataManager* user_data_manager =
-      web::SerializableUserDataManager::FromWebState(&web_state);
-  user_data_manager->AddSerializableData(@(1), @"user_data_key");
-
-  CRWSessionStorage* extracted_session_storage =
-      web_state.BuildSessionStorage();
-  EXPECT_EQ(0, extracted_session_storage.lastCommittedItemIndex);
-  EXPECT_EQ(1U, extracted_session_storage.itemStorages.count);
-  ASSERT_FALSE(web_state.IsRealized());
-  EXPECT_EQ(u"Title", web_state.GetTitle());
-  EXPECT_EQ(url, web_state.GetVisibleURL());
-
-  // Check that even if the WebState becomes realized, then GetTitle() and
-  // GetVisibleURL() are correct during the navigation history restoration.
-  web_state.SetWebUsageEnabled(false);
-  web_state.ForceRealized();
-
-  ASSERT_TRUE(web_state.IsRealized());
-  EXPECT_EQ(u"Title", web_state.GetTitle());
-  EXPECT_EQ(url, web_state.GetVisibleURL());
-
-  WebStateImpl restored_web_state(WebState::CreateParams(GetBrowserState()),
-                                  extracted_session_storage,
-                                  base::ReturnValueOnce<NSData*>(nil));
-  web::SerializableUserDataManager* restored_user_data_manager =
-      web::SerializableUserDataManager::FromWebState(&restored_web_state);
-  NSNumber* user_data_value = base::apple::ObjCCast<NSNumber>(
-      restored_user_data_manager->GetValueForSerializationKey(
-          @"user_data_key"));
-  EXPECT_EQ(@(1), user_data_value);
-}
-
 // Tests that SerializeToProto() and GetTitle() return information about the
 // most recently restored session if no navigation item has been committed. Also
 // tests that re-restoring that session includes updated userData.
-TEST_F(WebStateImplTest, UncommittedRestoreSessionOptimisedStorage) {
+TEST_F(WebStateImplTest, UncommittedRestoreSession) {
   GURL url("http://test.com");
   proto::WebStateStorage storage;
   proto::NavigationStorage* navigation_storage = storage.mutable_navigation();
@@ -868,10 +828,10 @@ TEST_F(WebStateImplTest, UncommittedRestoreSessionOptimisedStorage) {
   active_page->set_page_title("Title");
   active_page->set_page_url(url.spec());
 
-  WebStateImpl web_state =
-      WebStateImpl(GetBrowserState(), web::WebStateID::NewUnique(), metadata,
-                   base::ReturnValueOnce(std::move(storage)),
-                   base::ReturnValueOnce<NSData*>(nil));
+  WebStateImpl web_state = WebStateImpl(
+      GetBrowserState(), web::WebStateID::NewUnique(), metadata,
+      base::ReturnValueOnce(std::make_optional(std::move(storage))),
+      base::ReturnValueOnce<NSData*>(nil));
 
   // Check that the title and url are correct.
   ASSERT_FALSE(web_state.IsRealized());
@@ -891,19 +851,6 @@ TEST_F(WebStateImplTest, UncommittedRestoreSessionOptimisedStorage) {
 // Test that lastCommittedItemIndex is end-of-list when there's no defined
 // index, such as during a restore.
 TEST_F(WebStateImplTest, NoUncommittedRestoreSession) {
-  WebStateImpl web_state =
-      WebStateImpl(WebState::CreateParams(GetBrowserState()));
-
-  CRWSessionStorage* session_storage = web_state.BuildSessionStorage();
-  EXPECT_EQ(-1, session_storage.lastCommittedItemIndex);
-  EXPECT_NSEQ(@[], session_storage.itemStorages);
-  EXPECT_TRUE(web_state.GetTitle().empty());
-  EXPECT_EQ(GURL(), web_state.GetVisibleURL());
-}
-
-// Test that lastCommittedItemIndex is end-of-list when there's no defined
-// index, such as during a restore.
-TEST_F(WebStateImplTest, NoUncommittedRestoreSessionOptimisedStorage) {
   WebStateImpl web_state =
       WebStateImpl(WebState::CreateParams(GetBrowserState()));
 
@@ -931,7 +878,8 @@ TEST_F(WebStateImplTest, DisallowSnapshotsDuringDialogPresentation) {
   // presented.
   delegate.GetFakeJavaScriptDialogPresenter()->set_callback_execution_paused(
       true);
-  web_state.RunJavaScriptAlertDialog(GURL(), @"message", base::DoNothing());
+  web_state.RunJavaScriptAlertDialog(url::Origin(), @"message",
+                                     base::DoNothing());
 
   // Verify that CanTakeSnapshot() returns no while the dialog is presented.
   EXPECT_FALSE(web_state.CanTakeSnapshot());
@@ -957,7 +905,8 @@ TEST_F(WebStateImplTest, VerifyDialogRunningBoolean) {
   // presented.
   delegate.GetFakeJavaScriptDialogPresenter()->set_callback_execution_paused(
       true);
-  web_state.RunJavaScriptAlertDialog(GURL(), @"message", base::DoNothing());
+  web_state.RunJavaScriptAlertDialog(url::Origin(), @"message",
+                                     base::DoNothing());
 
   // Verify that IsJavaScriptDialogRunning() returns true while the dialog is
   // presented.
@@ -992,7 +941,8 @@ TEST_F(WebStateImplTest, CreateFullPagePdfJavaScriptDialog) {
   // presented.
   delegate.GetFakeJavaScriptDialogPresenter()->set_callback_execution_paused(
       true);
-  web_state.RunJavaScriptAlertDialog(GURL(), @"message", base::DoNothing());
+  web_state.RunJavaScriptAlertDialog(url::Origin(), @"message",
+                                     base::DoNothing());
 
   // Attempt to create a PDF for this page and validate that it return nil.
   __block NSData* callback_data_when_dialog = nil;
@@ -1184,10 +1134,10 @@ TEST_F(WebStateImplTest, SerializeMetadataToProto) {
   original_metadata.Swap(storage.mutable_metadata());
 
   // Create an unrealized WebState.
-  web::WebStateImpl web_state =
-      WebStateImpl(GetBrowserState(), WebStateID::NewUnique(),
-                   original_metadata, base::ReturnValueOnce(std::move(storage)),
-                   base::ReturnValueOnce<NSData*>(nil));
+  web::WebStateImpl web_state = WebStateImpl(
+      GetBrowserState(), WebStateID::NewUnique(), original_metadata,
+      base::ReturnValueOnce(std::make_optional(std::move(storage))),
+      base::ReturnValueOnce<NSData*>(nil));
 
   // Check that the metadata can be fetched from the unrealized WebState.
   {
@@ -1220,6 +1170,72 @@ TEST_F(WebStateImplTest, SerializeMetadataToProto) {
     EXPECT_EQ(metadata.active_page().page_title(), base::UTF16ToUTF8(title));
     EXPECT_EQ(metadata.active_page().page_url(), visible_url.spec());
   }
+}
+
+TEST_F(WebStateImplTest, TestIsCustomOpenPanelSupported) {
+  // Test realized state created via CreateParams.
+  WebStateImpl web_state =
+      WebStateImpl(WebState::CreateParams(GetBrowserState()));
+
+  EXPECT_FALSE(web_state.IsCustomOpenPanelSupported());
+
+  web_state.SetCustomOpenPanelSupported(true);
+  EXPECT_TRUE(web_state.IsCustomOpenPanelSupported());
+
+  web_state.SetCustomOpenPanelSupported(false);
+  EXPECT_FALSE(web_state.IsCustomOpenPanelSupported());
+
+  // Test unrealized state.
+  proto::WebStateStorage storage;
+  proto::WebStateMetadataStorage metadata;
+  WebStateImpl unrealized_web_state = WebStateImpl(
+      GetBrowserState(), web::WebStateID::NewUnique(), metadata,
+      base::ReturnValueOnce(std::make_optional(std::move(storage))),
+      base::ReturnValueOnce<NSData*>(nil));
+
+  ASSERT_FALSE(unrealized_web_state.IsRealized());
+  EXPECT_FALSE(unrealized_web_state.IsCustomOpenPanelSupported());
+}
+
+class TestNamedTriggerManager : public base::trace_event::NamedTriggerManager {
+ public:
+  TestNamedTriggerManager() {
+    base::trace_event::NamedTriggerManager::SetInstance(this);
+  }
+  ~TestNamedTriggerManager() override {
+    base::trace_event::NamedTriggerManager::SetInstance(nullptr);
+  }
+
+  bool DoEmitNamedTrigger(const std::string& trigger_name,
+                          std::optional<int32_t> value,
+                          uint64_t flow_id) override {
+    last_trigger_name_ = trigger_name;
+    return true;
+  }
+
+  const std::string& last_trigger_name() const { return last_trigger_name_; }
+
+ private:
+  std::string last_trigger_name_;
+};
+
+// Verifies that "navigation-start" trigger is emitted when navigation starts.
+TEST_F(WebStateImplTest, NavigationStartTrigger) {
+  TestNamedTriggerManager trigger_manager;
+
+  std::unique_ptr<WebStateImpl> web_state =
+      std::make_unique<WebStateImpl>(WebState::CreateParams(GetBrowserState()));
+
+  EXPECT_TRUE(trigger_manager.last_trigger_name().empty());
+
+  std::unique_ptr<NavigationContextImpl> context =
+      NavigationContextImpl::CreateNavigationContext(
+          web_state.get(), GURL(), /*has_user_gesture=*/true,
+          ui::PageTransition::PAGE_TRANSITION_AUTO_BOOKMARK,
+          /*is_renderer_initiated=*/true);
+  web_state->OnNavigationStarted(context.get());
+
+  EXPECT_EQ(trigger_manager.last_trigger_name(), "navigation-start");
 }
 
 }  // namespace web

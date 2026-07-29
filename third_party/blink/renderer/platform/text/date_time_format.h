@@ -28,11 +28,7 @@
 
 #include "third_party/blink/renderer/platform/platform_export.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
-
-namespace WTF {
-class String;
-class StringBuilder;
-}  // namespace WTF
+#include "third_party/blink/renderer/platform/wtf/forward.h"
 
 namespace blink {
 
@@ -104,7 +100,7 @@ class PLATFORM_EXPORT DateTimeFormat {
     kFieldTypeZoneLocalized = 'O',
     kFieldTypeNonLocationZone = 'v',
     kFieldTypeZoneId = 'V',
-    kFieldTypeRFC822Zone = 'Z',
+    kFieldTypeRfc822Zone = 'Z',
     kFieldTypeZoneIso8601Z = 'X',
     kFieldTypeZoneIso8601 = 'x',
   };
@@ -118,12 +114,12 @@ class PLATFORM_EXPORT DateTimeFormat {
     TokenHandler& operator=(const TokenHandler&) = delete;
     virtual ~TokenHandler() = default;
     virtual void VisitField(FieldType, int number_of_pattern_characters) = 0;
-    virtual void VisitLiteral(const WTF::String&) = 0;
+    virtual void VisitLiteral(const String&) = 0;
   };
 
   // Returns true if succeeded, false if failed.
-  static bool Parse(const WTF::String&, TokenHandler&);
-  static void QuoteAndappend(const WTF::String&, WTF::StringBuilder&);
+  static bool Parse(const String&, TokenHandler&);
+  static void QuoteAndAppend(const StringView&, StringBuilder&);
 };
 
 }  // namespace blink

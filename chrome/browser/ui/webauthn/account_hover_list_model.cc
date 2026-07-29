@@ -17,6 +17,7 @@
 #include "device/fido/discoverable_credential_metadata.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/image_model.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/color/color_id.h"
 
 constexpr size_t kIconSize = 20;
@@ -38,13 +39,13 @@ AccountHoverListModel::AccountHoverListModel(
        dialog_model->creds) {
     items_.emplace_back(
         NameTokenForDisplay(cred.user.name.value_or("")),
-        AuthenticatorRequestDialogModel::GetMechanismDescription(
-            cred, dialog_model->priority_phone_name),
-        ui::ImageModel::FromVectorIcon(vector_icons::kPasskeyIcon,
-                                       dialog_model->ui_disabled_
-                                           ? ui::kColorIconDisabled
-                                           : ui::kColorIcon,
-                                       kIconSize),
+        AuthenticatorRequestDialogModel::GetMechanismDescription(cred),
+        ui::ImageModel::FromVectorIcon(
+            features::IsRoundedIconsEnabled() ? vector_icons::kPasskeyIcon
+                                              : vector_icons::kPasskeyOldIcon,
+            dialog_model->ui_disabled_ ? ui::kColorIconDisabled
+                                       : ui::kColorIcon,
+            kIconSize),
         !dialog_model->ui_disabled_);
   }
 }

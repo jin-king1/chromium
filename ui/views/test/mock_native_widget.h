@@ -12,6 +12,7 @@
 #include "base/memory/weak_ptr.h"
 #include "build/build_config.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#include "ui/base/dragdrop/os_exchange_data.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
 #include "ui/base/mojom/window_show_state.mojom-forward.h"
 #include "ui/color/color_provider_key.h"
@@ -29,10 +30,7 @@ class MockNativeWidget : public internal::NativeWidgetPrivate {
 
   MOCK_METHOD(void, ReparentNativeViewImpl, (gfx::NativeView), (override));
 
-  MOCK_METHOD(std::unique_ptr<NonClientFrameView>,
-              CreateNonClientFrameView,
-              (),
-              (override));
+  MOCK_METHOD(std::unique_ptr<FrameView>, CreateFrameView, (), (override));
 
   MOCK_METHOD(bool, ShouldUseNativeFrame, (), (const override));
   MOCK_METHOD(bool, ShouldWindowContentsBeTransparent, (), (const override));
@@ -46,6 +44,7 @@ class MockNativeWidget : public internal::NativeWidgetPrivate {
   MOCK_METHOD(const ui::Layer*, GetLayer, (), (const override));
   MOCK_METHOD(void, ReorderNativeViews, (), (override));
   MOCK_METHOD(void, ViewRemoved, (View * view), (override));
+  MOCK_METHOD(void, ClientDestroyedWidget, (), (override));
   MOCK_METHOD(void,
               SetNativeWindowProperty,
               (const char* name, void* value),
@@ -74,10 +73,7 @@ class MockNativeWidget : public internal::NativeWidgetPrivate {
               InitModalType,
               (ui::mojom::ModalType modal_type),
               (override));
-  MOCK_METHOD(void,
-              SetColorMode,
-              (ui::ColorProviderKey::ColorMode),
-              (override));
+  MOCK_METHOD(void, SetBackgroundColor, (SkColor background_color), (override));
   MOCK_METHOD(gfx::Rect, GetWindowBoundsInScreen, (), (const override));
   MOCK_METHOD(gfx::Rect, GetClientAreaBoundsInScreen, (), (const override));
   MOCK_METHOD(gfx::Rect, GetRestoredBounds, (), (const override));
@@ -104,6 +100,7 @@ class MockNativeWidget : public internal::NativeWidgetPrivate {
               (override));
   MOCK_METHOD(void, Hide, (), (override));
   MOCK_METHOD(bool, IsVisible, (), (const override));
+  MOCK_METHOD(bool, IsVisibleOnScreen, (), (const override));
   MOCK_METHOD(void, Activate, (), (override));
   MOCK_METHOD(void, Deactivate, (), (override));
   MOCK_METHOD(bool, IsActive, (), (const override));
@@ -117,6 +114,9 @@ class MockNativeWidget : public internal::NativeWidgetPrivate {
               (bool always_visible),
               (override));
   MOCK_METHOD(bool, IsVisibleOnAllWorkspaces, (), (const override));
+#if BUILDFLAG(IS_MAC)
+  MOCK_METHOD(void, MoveToActiveFullscreenSpace, (), (override));
+#endif  // BUILDFLAG(IS_MAC)
   MOCK_METHOD(void, Maximize, (), (override));
   MOCK_METHOD(void, Minimize, (), (override));
   MOCK_METHOD(bool, IsMaximized, (), (const override));
@@ -139,13 +139,13 @@ class MockNativeWidget : public internal::NativeWidgetPrivate {
               (override));
   MOCK_METHOD(void, FlashFrame, (bool flash), (override));
   MOCK_METHOD(void,
-              RunShellDrag,
+              RunDragDropLoop,
               (std::unique_ptr<ui::OSExchangeData> data,
                const gfx::Point& location,
                int operation,
                ui::mojom::DragEventSource source),
               (override));
-  MOCK_METHOD(void, CancelShellDrag, (View * view), (override));
+  MOCK_METHOD(void, CancelDragDropLoop, (View * view), (override));
   MOCK_METHOD(void, SchedulePaintInRect, (const gfx::Rect& rect), (override));
   MOCK_METHOD(void, ScheduleLayout, (), (override));
   MOCK_METHOD(void, SetCursor, (const ui::Cursor& cursor), (override));
@@ -179,14 +179,18 @@ class MockNativeWidget : public internal::NativeWidgetPrivate {
   MOCK_METHOD(void, OnSizeConstraintsChanged, (), (override));
   MOCK_METHOD(void, OnNativeViewHierarchyWillChange, (), (override));
   MOCK_METHOD(void, OnNativeViewHierarchyChanged, (), (override));
+#if BUILDFLAG(IS_WIN)
+  MOCK_METHOD(void, SetExcludeFromScreenCapture, (bool exclude), (override));
+#endif
   MOCK_METHOD(bool, SetAllowScreenshots, (bool allow), (override));
   MOCK_METHOD(bool, AreScreenshotsAllowed, (), (override));
   MOCK_METHOD(std::string, GetName, (), (const override));
+  MOCK_METHOD(bool, IsDesktopNativeWidget, (), (const override));
 
   base::WeakPtr<NativeWidgetPrivate> GetWeakPtr() override;
 
  private:
-  raw_ptr<Widget> widget_;
+  base::WeakPtr<Widget> widget_;
   base::WeakPtrFactory<MockNativeWidget> weak_factory_{this};
 };
 

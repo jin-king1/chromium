@@ -42,7 +42,7 @@ class RestrictAccountsPolicyHandlerTest
 
   // Returns a List of valid patterns.
   base::Value ValidPatterns() {
-    base::Value::List value;
+    base::ListValue value;
     value.Append("*@example.com");
     value.Append("user@managedchrome.com");
     return base::Value(std::move(value));
@@ -50,7 +50,7 @@ class RestrictAccountsPolicyHandlerTest
 
   // Returns a List of invalid patterns.
   base::Value InvalidPatterns() {
-    base::Value::List value;
+    base::ListValue value;
     value.Append("*@example.com");
     value.Append("invalidPattern\\");
     value.Append("user@managedchrome.com");
@@ -136,7 +136,8 @@ TEST_F(RestrictAccountsPolicyHandlerTest, CheckPolicySettings) {
 
   // Empty patterns.
   policy.Set(key::kRestrictAccountsToPatterns, POLICY_LEVEL_MANDATORY,
-             POLICY_SCOPE_USER, POLICY_SOURCE_CLOUD, base::JSONReader::Read(""),
+             POLICY_SCOPE_USER, POLICY_SOURCE_CLOUD,
+             base::JSONReader::Read("", base::JSON_PARSE_CHROMIUM_EXTENSIONS),
              nullptr);
 
   EXPECT_TRUE(handler.CheckPolicySettings(policy, &errors));

@@ -12,7 +12,6 @@
 #include "base/test/scoped_command_line.h"
 #include "base/test/task_environment.h"
 #include "services/network/public/cpp/network_switches.h"
-#include "services/network/public/mojom/trust_tokens.mojom-forward.h"
 #include "services/network/public/mojom/trust_tokens.mojom.h"
 #include "services/network/trust_tokens/suitable_trust_token_origin.h"
 #include "services/network/trust_tokens/trust_token_parameterization.h"
@@ -147,8 +146,8 @@ TEST(TrustTokenKeyCommitments, MultipleOrigins) {
 TEST(TrustTokenKeyCommitments, ParseAndSet) {
   TrustTokenKeyCommitments commitments;
   commitments.ParseAndSet(
-      R"( { "https://issuer.example": { "PrivateStateTokenV3PMB": {
-      "protocol_version": "PrivateStateTokenV3PMB", "id": 1,
+      R"( { "https://issuer.example": { "PrivateStateTokenV1VOPRF": {
+      "protocol_version": "PrivateStateTokenV1VOPRF", "id": 1,
       "batchsize": 5 } } } )");
 
   EXPECT_TRUE(GetCommitmentForOrigin(
@@ -160,8 +159,8 @@ TEST(TrustTokenKeyCommitments, KeysFromCommandLine) {
   base::test::ScopedCommandLine command_line;
   command_line.GetProcessCommandLine()->AppendSwitchASCII(
       switches::kAdditionalTrustTokenKeyCommitments,
-      R"( { "https://issuer.example": { "PrivateStateTokenV3PMB": {
-      "protocol_version": "PrivateStateTokenV3PMB", "id": 1,
+      R"( { "https://issuer.example": { "PrivateStateTokenV1VOPRF": {
+      "protocol_version": "PrivateStateTokenV1VOPRF", "id": 1,
       "batchsize": 5 } }} )");
 
   TrustTokenKeyCommitments commitments;
@@ -171,8 +170,8 @@ TEST(TrustTokenKeyCommitments, KeysFromCommandLine) {
       *SuitableTrustTokenOrigin::Create(GURL("https://issuer.example"))));
 
   commitments.ParseAndSet(
-      R"( { "https://issuer.example": { "PrivateStateTokenV3PMB": {
-      "protocol_version": "PrivateStateTokenV3PMB", "id": 1,
+      R"( { "https://issuer.example": { "PrivateStateTokenV1VOPRF": {
+      "protocol_version": "PrivateStateTokenV1VOPRF", "id": 1,
       "batchsize": 10 } }} )");
 
   auto result = GetCommitmentForOrigin(
@@ -180,7 +179,7 @@ TEST(TrustTokenKeyCommitments, KeysFromCommandLine) {
       *SuitableTrustTokenOrigin::Create(GURL("https://issuer.example")));
   ASSERT_TRUE(result);
   EXPECT_EQ(result->protocol_version,
-            mojom::TrustTokenProtocolVersion::kTrustTokenV3Pmb);
+            mojom::TrustTokenProtocolVersion::kPrivateStateTokenV1Voprf);
   EXPECT_EQ(result->id, 1);
   EXPECT_EQ(result->batch_size, 5);
 }

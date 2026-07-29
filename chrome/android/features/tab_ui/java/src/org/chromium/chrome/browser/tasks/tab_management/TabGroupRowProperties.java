@@ -4,11 +4,12 @@
 
 package org.chromium.chrome.browser.tasks.tab_management;
 
-import androidx.core.util.Pair;
-
 import org.chromium.base.lifetime.Destroyable;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.data_sharing.ui.shared_image_tiles.SharedImageTilesView;
 import org.chromium.chrome.browser.tasks.tab_management.TabGroupFaviconCluster.ClusterData;
+import org.chromium.chrome.browser.tasks.tab_management.TabGroupRowView.TabGroupRowViewTitleData;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.ReadableIntPropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.ReadableObjectPropertyKey;
@@ -16,9 +17,10 @@ import org.chromium.ui.modelutil.PropertyModel.WritableBooleanPropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.WritableObjectPropertyKey;
 
 /** Properties for displaying a single tab group row. */
+@NullMarked
 public class TabGroupRowProperties {
-    public static final ReadableObjectPropertyKey<ClusterData> CLUSTER_DATA =
-            new WritableObjectPropertyKey();
+    public static final ReadableObjectPropertyKey<@Nullable ClusterData> CLUSTER_DATA =
+            new WritableObjectPropertyKey<>();
 
     // Data Sharing properties.
     public static final WritableBooleanPropertyKey DISPLAY_AS_SHARED =
@@ -26,7 +28,7 @@ public class TabGroupRowProperties {
 
     public static final ReadableIntPropertyKey COLOR_INDEX = new ReadableIntPropertyKey();
     // First is the user title, second is the number of tabs.
-    public static final ReadableObjectPropertyKey<Pair<String, Integer>> TITLE_DATA =
+    public static final ReadableObjectPropertyKey<TabGroupRowViewTitleData> TITLE_DATA =
             new ReadableObjectPropertyKey<>();
     public static final ReadableObjectPropertyKey<TabGroupTimeAgo> TIMESTAMP_EVENT =
             new ReadableObjectPropertyKey<>();

@@ -4,6 +4,8 @@
 
 package org.chromium.chrome.browser.omnibox.suggestions.base;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.graphics.Rect;
 import android.view.View;
 
@@ -12,9 +14,12 @@ import androidx.annotation.VisibleForTesting;
 import androidx.recyclerview.widget.RecyclerView;
 import androidx.recyclerview.widget.RecyclerView.ItemDecoration;
 
+import org.chromium.build.annotations.NullMarked;
+
 /**
  * Configures space before the first element of the recycler view, and between each of the elements.
  */
+@NullMarked
 public class SpacingRecyclerViewItemDecoration extends ItemDecoration {
     private final @Px int mLeadInSpace;
     private @Px int mElementSpace;
@@ -32,9 +37,11 @@ public class SpacingRecyclerViewItemDecoration extends ItemDecoration {
     @Override
     public void getItemOffsets(
             Rect outRect, View view, RecyclerView parent, RecyclerView.State state) {
-        outRect.left = outRect.right = mElementSpace / 2;
+        int space = mElementSpace / 2;
+        outRect.left = space;
+        outRect.right = space;
 
-        int childCount = parent.getAdapter().getItemCount();
+        int childCount = assumeNonNull(parent.getAdapter()).getItemCount();
         int itemPosition = parent.getChildAdapterPosition(view);
         if (itemPosition != 0 && itemPosition != (childCount - 1)) return;
 

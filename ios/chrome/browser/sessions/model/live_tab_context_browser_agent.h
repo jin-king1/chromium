@@ -14,6 +14,7 @@
 #import "components/keyed_service/core/keyed_service.h"
 #import "components/sessions/core/live_tab_context.h"
 #include "components/sessions/core/tab_restore_types.h"
+#include "components/split_tabs/split_tab_id.h"
 #import "ios/chrome/browser/shared/model/browser/browser_observer.h"
 #import "ios/chrome/browser/shared/model/browser/browser_user_data.h"
 #include "ui/base/mojom/window_show_state.mojom-forward.h"
@@ -51,10 +52,16 @@ class LiveTabContextBrowserAgent
   std::map<std::string, std::string> GetExtraDataForWindow() const override;
   std::optional<tab_groups::TabGroupId> GetTabGroupForTab(
       int index) const override;
+  std::optional<split_tabs::SplitTabId> GetSplitForTab(
+      int index) const override;
   const tab_groups::TabGroupVisualData* GetVisualDataForGroup(
       const tab_groups::TabGroupId& group) const override;
+  const split_tabs::SplitTabVisualData* GetVisualDataForSplit(
+      const split_tabs::SplitTabId& split_id) const override;
   const std::optional<base::Uuid> GetSavedTabGroupIdForGroup(
       const tab_groups::TabGroupId& group) const override;
+  const std::optional<tab_groups::TabGroupId> GetGroupIdForSavedGroup(
+      const base::Uuid& saved) const override;
   bool IsTabPinned(int index) const override;
   void SetVisualDataForGroup(
       const tab_groups::TabGroupId& group,
@@ -66,14 +73,19 @@ class LiveTabContextBrowserAgent
       const sessions::tab_restore::Tab& tab,
       int tab_index,
       bool select,
+      bool is_restoring_group_or_window,
       sessions::tab_restore::Type original_session_type) override;
   sessions::LiveTab* ReplaceRestoredTab(
       const sessions::tab_restore::Tab& tab) override;
+  void ReconstructSplit(
+      sessions::LiveTab* leading_tab,
+      sessions::LiveTab* trailing_tab,
+      split_tabs::SplitTabId split_id,
+      const split_tabs::SplitTabVisualData& visual_data) override;
   void CloseTab() override;
 
  private:
   friend class BrowserUserData<LiveTabContextBrowserAgent>;
-  BROWSER_USER_DATA_KEY_DECL();
 
   explicit LiveTabContextBrowserAgent(Browser* browser);
 

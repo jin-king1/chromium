@@ -10,7 +10,6 @@
 #include <memory>
 
 #include "third_party/blink/renderer/platform/fonts/utf16_ragel_iterator.h"
-#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/text/character.h"
 
 namespace blink {
@@ -63,10 +62,9 @@ bool SymbolsIterator::Consume(unsigned* symbols_limit,
                                      &next_token_emoji_, &next_token_has_vs_) -
                                  buffer_iterator_);
   } while (current_token_emoji == next_token_emoji_ &&
-           (!RuntimeEnabledFeatures::FontVariantEmojiEnabled() ||
-            curr_has_vs == next_token_has_vs_));
+           (curr_has_vs == next_token_has_vs_));
 
-  if (RuntimeEnabledFeatures::FontVariantEmojiEnabled() && curr_has_vs) {
+  if (curr_has_vs) {
     *font_fallback_priority = current_token_emoji
                                   ? FontFallbackPriority::kEmojiEmojiWithVS
                                   : FontFallbackPriority::kEmojiTextWithVS;

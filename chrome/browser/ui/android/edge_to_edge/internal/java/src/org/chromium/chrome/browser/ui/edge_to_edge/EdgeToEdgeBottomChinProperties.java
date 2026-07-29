@@ -3,12 +3,14 @@
 // found in the LICENSE file.
 package org.chromium.chrome.browser.ui.edge_to_edge;
 
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.cc.input.OffsetTag;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.WritableBooleanPropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.WritableIntPropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.WritableObjectPropertyKey;
 
+@NullMarked
 class EdgeToEdgeBottomChinProperties {
     /** The Y offset of the layer in px. */
     static final WritableIntPropertyKey Y_OFFSET = new WritableIntPropertyKey();
@@ -32,8 +34,18 @@ class EdgeToEdgeBottomChinProperties {
     /** Whether there are constraint added for the bottom chin to disable its scrolling. */
     static final WritableBooleanPropertyKey HAS_CONSTRAINT = new WritableBooleanPropertyKey();
 
+    /** Whether the bottom chin component is visually visible on screen (not scrolled off). */
+    static final WritableBooleanPropertyKey IS_VISIBLE = new WritableBooleanPropertyKey();
+
     static final PropertyKey[] ALL_KEYS =
             new PropertyKey[] {
-                Y_OFFSET, HEIGHT, CAN_SHOW, COLOR, DIVIDER_COLOR, OFFSET_TAG, HAS_CONSTRAINT
+                Y_OFFSET,
+                HEIGHT,
+                CAN_SHOW,
+                COLOR,
+                DIVIDER_COLOR,
+                OFFSET_TAG,
+                HAS_CONSTRAINT,
+                IS_VISIBLE
             };
 }

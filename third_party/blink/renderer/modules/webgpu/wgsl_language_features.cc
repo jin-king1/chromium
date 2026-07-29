@@ -17,15 +17,11 @@ WGSLLanguageFeatures::WGSLLanguageFeatures(
   }
 }
 
-bool WGSLLanguageFeatures::has(const String& feature) const {
-  return features_.Contains(feature);
-}
-
 bool WGSLLanguageFeatures::hasForBinding(
     ScriptState* script_state,
     const String& feature,
     ExceptionState& exception_state) const {
-  return has(feature);
+  return features_.Contains(feature);
 }
 
 WGSLLanguageFeatures::IterationSource::IterationSource(
@@ -39,8 +35,7 @@ WGSLLanguageFeatures::IterationSource::IterationSource(
 
 bool WGSLLanguageFeatures::IterationSource::FetchNextItem(
     ScriptState* script_state,
-    String& value,
-    ExceptionState& exception_state) {
+    String& value) {
   if (iter_ == features_.end()) {
     return false;
   }

@@ -43,11 +43,9 @@ class CC_EXPORT NinePatchThumbScrollbarLayer : public ScrollbarLayerBase {
   explicit NinePatchThumbScrollbarLayer(scoped_refptr<Scrollbar> scrollbar);
   ~NinePatchThumbScrollbarLayer() override;
 
-  void PushDirtyPropertiesTo(
-      LayerImpl* layer,
-      uint8_t dirty_flag,
-      const CommitState& commit_state,
-      const ThreadUnsafeCommitState& unsafe_state) override;
+  void PushDirtyPropertiesTo(LayerImpl* layer,
+                             uint8_t dirty_flag,
+                             CommitState& commit_state) override;
 
  private:
   template <typename T>
@@ -64,7 +62,8 @@ class CC_EXPORT NinePatchThumbScrollbarLayer : public ScrollbarLayerBase {
 
   ProtectedSequenceForbidden<scoped_refptr<Scrollbar>> scrollbar_;
 
-  ProtectedSequenceReadable<gfx::Size> thumb_size_;
+  ProtectedSequenceReadable<int32_t> minimum_thumb_length_;
+  ProtectedSequenceReadable<int32_t> thumb_thickness_;
   ProtectedSequenceReadable<gfx::Rect> track_rect_;
   ProtectedSequenceReadable<gfx::Rect> aperture_;
 

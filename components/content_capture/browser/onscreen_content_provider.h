@@ -63,6 +63,11 @@ class OnscreenContentProvider
   void DidUpdateTitle(ContentCaptureReceiver* content_capture_receiver);
   void DidUpdateFavicon(ContentCaptureReceiver* content_capture_receiver);
 
+  // The methods called by metadata providers.
+  void DidUpdateSensitivityScore(float sensitivity_score);
+  void DidUpdateLanguageDetails(const std::string& detected_language,
+                                float language_confidence);
+  void ClearContentCaptureMetadata();
   // content::WebContentsObserver:
   void RenderFrameCreated(content::RenderFrameHost* render_frame_host) override;
   void RenderFrameDeleted(content::RenderFrameHost* render_frame_host) override;
@@ -71,7 +76,10 @@ class OnscreenContentProvider
   void TitleWasSet(content::NavigationEntry* entry) override;
   void DidUpdateFaviconURL(
       content::RenderFrameHost* render_frame_host,
-      const std::vector<blink::mojom::FaviconURLPtr>& candidates) override;
+      const std::vector<blink::mojom::FaviconURLPtr>& candidates,
+      blink::mojom::FaviconUpdateReason reason) override;
+  void DidFinishNavigation(
+      content::NavigationHandle* navigation_handle) override;
 
   size_t GetFrameMapSizeForTesting() const { return frame_map_.size(); }
 

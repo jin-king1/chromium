@@ -4,7 +4,9 @@
 
 #include "ios/chrome/browser/web/model/browser_about_rewriter.h"
 
+#include <array>
 #include <string>
+#include <string_view>
 
 #include "base/check.h"
 #include "base/feature_list.h"
@@ -15,12 +17,20 @@
 
 namespace {
 
-const struct HostReplacement {
-  const char* old_host_name;
-  const char* new_host_name;
-} kHostReplacements[] = {
-    {"about", kChromeUIChromeURLsHost},
-    {"sync", kChromeUISyncInternalsHost},
+struct HostReplacement {
+  std::string_view old_host_name;
+  std::string_view new_host_name;
+};
+
+constexpr std::array<HostReplacement, 2> kHostReplacements = {
+    HostReplacement{
+        .old_host_name = "about",
+        .new_host_name = kChromeUIChromeURLsHost,
+    },
+    HostReplacement{
+        .old_host_name = "sync",
+        .new_host_name = kChromeUISyncInternalsHost,
+    },
 };
 
 }  // namespace
@@ -32,7 +42,7 @@ bool WillHandleWebBrowserAboutURL(GURL* url, web::BrowserState* browser_state) {
   // phase that determines the virtual URL, by including it in an initial
   // URLHandler.  This prevents minor changes from producing a virtual URL,
   // which could lead to a URL spoof.
-  *url = url_formatter::FixupURL(url->possibly_invalid_spec(), std::string());
+  *url = url_formatter::FixupURL(url->possibly_invalid_spec());
 
   // Check that about: URLs are fixed up to chrome: by url_formatter::FixupURL.
   // 'about:blank' and 'about:srcdoc' are special-cased in various places in the
@@ -57,18 +67,18 @@ bool WillHandleWebBrowserAboutURL(GURL* url, web::BrowserState* browser_state) {
     return *url != original_url;
   }
 
-  std::string host(url->host());
-  for (size_t i = 0; i < std::size(kHostReplacements); ++i) {
-    if (host != kHostReplacements[i].old_host_name) {
+  std::string new_host(url->host());
+  for (const auto& replacement : kHostReplacements) {
+    if (new_host != replacement.old_host_name) {
       continue;
     }
 
-    host.assign(kHostReplacements[i].new_host_name);
+    new_host.assign(replacement.new_host_name);
     break;
   }
 
   GURL::Replacements replacements;
-  replacements.SetHostStr(host);
+  replacements.SetHostStr(new_host);
   *url = url->ReplaceComponents(replacements);
 
   // Having re-written the URL, make the chrome: handler process it.

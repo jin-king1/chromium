@@ -10,18 +10,19 @@
 #include "base/android/jni_string.h"
 #include "base/android/scoped_java_ref.h"
 #include "base/uuid.h"
+#include "components/saved_tab_groups/public/android/tab_group_sync_conversions_bridge.h"
 #include "components/saved_tab_groups/public/types.h"
 
 using base::android::ConvertJavaStringToUTF8;
 using base::android::ConvertUTF8ToJavaString;
-using base::android::JavaParamRef;
+using base::android::JavaRef;
 using base::android::ScopedJavaLocalRef;
 
 namespace tab_groups {
 namespace {
 
 // Invalid IDs are represented as -1 in the JNI bridge.
-int kInvalidTabId = -1;
+constexpr int kInvalidTabId = -1;
 
 }  // namespace
 
@@ -29,7 +30,7 @@ LocalTabID FromJavaTabId(int tab_id) {
   return tab_id;
 }
 
-jint ToJavaTabId(const std::optional<LocalTabID>& tab_id) {
+int32_t ToJavaTabId(const std::optional<LocalTabID>& tab_id) {
   return tab_id.value_or(kInvalidTabId);
 }
 
@@ -38,8 +39,22 @@ ScopedJavaLocalRef<jstring> UuidToJavaString(JNIEnv* env,
   return ConvertUTF8ToJavaString(env, uuid.AsLowercaseString());
 }
 
-base::Uuid JavaStringToUuid(JNIEnv* env, const JavaParamRef<jstring>& j_uuid) {
+base::Uuid JavaStringToUuid(JNIEnv* env, const JavaRef<jstring>& j_uuid) {
   return base::Uuid::ParseLowercase(ConvertJavaStringToUTF8(env, j_uuid));
+}
+
+EitherGroupID JavaSyncOrLocalGroupIdToEitherGroupId(
+    JNIEnv* env,
+    const std::string& sync_group_id,
+    const JavaRef<jobject>& j_local_group_id) {
+  if (j_local_group_id.is_null()) {
+    return base::Uuid::ParseLowercase(sync_group_id);
+  } else {
+    LocalTabGroupID local_group_id =
+        TabGroupSyncConversionsBridge::FromJavaTabGroupId(env,
+                                                          j_local_group_id);
+    return local_group_id;
+  }
 }
 
 }  // namespace tab_groups

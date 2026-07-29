@@ -12,7 +12,6 @@
 #include "base/barrier_closure.h"
 #include "base/containers/circular_deque.h"
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/notreached.h"
@@ -254,6 +253,15 @@ class MockUDPSocket : public net::DatagramClientSocket {
     ADD_FAILURE() << "Called SetMulticastInterface()";
     return net::ERR_UNEXPECTED;
   }
+  base::expected<net::DatagramsMetadata, net::Error> ReadMultiple(
+      net::IOBuffer* buf,
+      size_t buf_len,
+      size_t max_message_size,
+      base::OnceCallback<void(base::expected<net::DatagramsMetadata,
+                                             net::Error>)> callback) override {
+    ADD_FAILURE() << "Called ReadMultiple()";
+    return base::unexpected(net::ERR_UNEXPECTED);
+  }
 
   // When ConnectAsync() is called, it should return ERR_IO_PENDING and store
   // the callback in `*connect_callback_`. This callback can be run later by
@@ -316,8 +324,11 @@ class MockSocketFactory : public net::ClientSocketFactory {
   // net::ClientSocketFactory
   std::unique_ptr<net::DatagramClientSocket> CreateDatagramClientSocket(
       net::DatagramSocket::BindType bind_type,
+      net::handles::NetworkHandle target_network,
       net::NetLog* net_log,
       const net::NetLogSource& source) override {
+    // This is used only for testing in scenarios that do not involve multiple
+    // networks. With that in mind, it's safe to ignore `target_network`.
     if (udp_sockets_.empty()) {
       // If we don't have a result for this one, return a socket that never
       // connects (because it is set to connect aysnchronously and isn't added
@@ -335,10 +346,13 @@ class MockSocketFactory : public net::ClientSocketFactory {
   }
   std::unique_ptr<net::TransportClientSocket> CreateTransportClientSocket(
       const net::AddressList& addresses,
+      net::handles::NetworkHandle target_network,
       std::unique_ptr<net::SocketPerformanceWatcher> socket_performance_watcher,
       net::NetworkQualityEstimator* network_quality_estimator,
       net::NetLog* net_log,
       const net::NetLogSource& source) override {
+    // This is used only for testing in scenarios that do not involve multiple
+    // networks. With that in mind, it's safe to ignore `target_network`.
     ADD_FAILURE() << "Called CreateTransportClientSocket()";
     return nullptr;
   }
@@ -453,14 +467,26 @@ class PacLibraryTest : public testing::Test {
 
 // Tests for actual PacMyIpAddress() and PacMyIpAddressEx() (real socket
 // connections and DNS results rather than mocks)
-TEST_F(PacLibraryTest, ActualPacMyIpAddress) {
+// https://crbug.com/407547495
+#if BUILDFLAG(IS_ANDROID)
+#define MAYBE_ActualPacMyIpAddress DISABLED_ActualPacMyIpAddress
+#else
+#define MAYBE_ActualPacMyIpAddress ActualPacMyIpAddress
+#endif
+TEST_F(PacLibraryTest, MAYBE_ActualPacMyIpAddress) {
   SetRealTest();
   auto my_ip_addresses = PacMyIpAddressForTest();
 
   VerifyActualMyIpAddresses(my_ip_addresses);
 }
 
-TEST_F(PacLibraryTest, ActualPacMyIpAddressEx) {
+// https://crbug.com/407547495
+#if BUILDFLAG(IS_ANDROID)
+#define MAYBE_ActualPacMyIpAddressEx DISABLED_ActualPacMyIpAddressEx
+#else
+#define MAYBE_ActualPacMyIpAddressEx ActualPacMyIpAddressEx
+#endif
+TEST_F(PacLibraryTest, MAYBE_ActualPacMyIpAddressEx) {
   SetRealTest();
   auto my_ip_addresses = PacMyIpAddressExForTest();
 

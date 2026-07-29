@@ -56,7 +56,10 @@ class RealtimeReportingClient : public RealtimeReportingClientBase {
 
   // RealtimeReportingClientBase overrides:
   std::string GetProfileUserName() override;
+  std::string GetProfileIdentifier() override;
+  std::string GetContentAreaAccountEmail(const GURL& url) override;
   base::WeakPtr<RealtimeReportingClientBase> AsWeakPtr() override;
+  std::optional<ReportingSettings> GetReportingSettings() override;
 
   base::WeakPtr<RealtimeReportingClient> AsWeakPtrImpl() {
     return weak_ptr_factory_.GetWeakPtr();
@@ -72,45 +75,43 @@ class RealtimeReportingClient : public RealtimeReportingClientBase {
   // policy::CloudPolicyClient::Observer overrides:
   void OnClientError(policy::CloudPolicyClient* client) override;
 
-  // Determines if the real-time reporting feature is enabled.
-  // Obtain settings to apply to a reporting event from ConnectorsService.
-  // std::nullopt represents that reporting should not be done.
-  // Declared virtual for tests.
-  std::optional<ReportingSettings> virtual GetReportingSettings();
-
   // Report safe browsing event through real-time reporting channel, if enabled.
   // Declared as virtual for tests.
   virtual void ReportRealtimeEvent(const std::string& name,
                                    const ReportingSettings& settings,
-                                   base::Value::Dict event);
+                                   base::DictValue event);
+
+  base::DictValue ReportErrorDetails(
+      const policy::CloudPolicyClient::Result& upload_result);
 
   // Report safe browsing events that have occurred in the past but has not yet
   // been reported. This is currently used for browser crash events, which are
   // polled at a fixed time interval. Declared as virtual for tests.
   virtual void ReportPastEvent(const std::string& name,
                                const ReportingSettings& settings,
-                               base::Value::Dict event,
+                               base::DictValue event,
                                const base::Time& time);
 
  private:
   // RealtimeReportingClientBase overrides (all overrides below):
-  std::string GetProfileIdentifier() override;
   std::string GetBrowserClientId() override;
-  base::Value::Dict GetContext() override;
+  base::DictValue GetContext() override;
   ::chrome::cros::reporting::proto::UploadEventsRequest
   CreateUploadEventsRequest() override;
   bool ShouldIncludeDeviceInfo(bool per_profile) override;
   void UploadCallbackDeprecated(
-      base::Value::Dict event_wrapper,
+      base::DictValue event_wrapper,
       bool per_profile,
       policy::CloudPolicyClient* client,
-      EnterpriseReportingEventType eventType,
+      EnterpriseReportingEventType event_type,
+      base::TimeTicks upload_started_at,
       policy::CloudPolicyClient::Result upload_result) override;
   void UploadCallback(
       ::chrome::cros::reporting::proto::UploadEventsRequest request,
       bool per_profile,
       policy::CloudPolicyClient* client,
-      EnterpriseReportingEventType eventType,
+      EnterpriseReportingEventType event_type,
+      base::TimeTicks upload_started_at,
       policy::CloudPolicyClient::Result upload_result) override;
 
 #if !BUILDFLAG(IS_CHROMEOS)
@@ -121,7 +122,7 @@ class RealtimeReportingClient : public RealtimeReportingClientBase {
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
   // DEPRECATED: Use MaybeCollectDeviceSignalsAndReportEvent(Event, ...).
   void MaybeCollectDeviceSignalsAndReportEventDeprecated(
-      base::Value::Dict event,
+      base::DictValue event,
       policy::CloudPolicyClient* client,
       std::string name,
       const ReportingSettings& settings,
@@ -130,7 +131,7 @@ class RealtimeReportingClient : public RealtimeReportingClientBase {
   // Add Crowdstrike signals to event report and upload it.
   // DEPRECATED: Use PopulateSignalsAndReportEvent(Event, ...) instead.
   void PopulateSignalsAndReportEventDeprecated(
-      base::Value::Dict event,
+      base::DictValue event,
       policy::CloudPolicyClient* client,
       std::string name,
       ReportingSettings settings,
@@ -183,7 +184,10 @@ class RealtimeReportingClient : public RealtimeReportingClientBase {
 // These must match proto specified in
 // chrome/cros/reporting/api/proto/browser_events.proto
 void AddCrowdstrikeSignalsToEvent(
-    base::Value::Dict& event,
+    base::DictValue& event,
+    const device_signals::SignalsAggregationResponse& response);
+void AddCrowdstrikeSignalsToEvent(
+    ::chrome::cros::reporting::proto::Event& event,
     const device_signals::SignalsAggregationResponse& response);
 #endif
 

@@ -9,6 +9,7 @@
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
+#include "chrome/browser/web_applications/test/fake_web_app_ui_manager.h"
 #include "chrome/browser/web_applications/test/os_integration_test_override_impl.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "chrome/test/base/testing_browser_process.h"
@@ -20,6 +21,8 @@
 
 namespace web_app {
 class FakeWebAppProvider;
+class WebAppProvider;
+class FakeWebContentsManager;
 }
 
 // Consider to implement web app specific test harness independent of
@@ -30,10 +33,9 @@ class FakeWebAppProvider;
 class WebAppTest : public content::RenderViewHostTestHarness {
  public:
   struct WithTestUrlLoaderFactory {};
-  struct ValidTraits {
-    explicit ValidTraits(base::test::TaskEnvironment::ValidTraits);
-    explicit ValidTraits(WithTestUrlLoaderFactory);
-  };
+  using ValidTraits =
+      base::ConcatParameterPacks<base::test::TaskEnvironment::ValidTraits,
+                                 base::ParameterPack<WithTestUrlLoaderFactory>>;
 
   template <typename... WebAppTestTraits>
     requires base::trait_helpers::AreValidTraits<ValidTraits,
@@ -67,9 +69,17 @@ class WebAppTest : public content::RenderViewHostTestHarness {
     return test_url_loader_factory_;
   }
 
+  web_app::WebAppProvider& provider() const;
+
   web_app::FakeWebAppProvider& fake_provider() const;
 
+  // If the test sets the web contents manager to be 'real', then this will
+  // check-fail.
+  web_app::FakeWebContentsManager& fake_web_contents_manager() const;
+
   web_app::OsIntegrationTestOverrideImpl& fake_os_integration() const;
+
+  web_app::FakeWebAppUiManager& fake_ui_manager() const;
 
  protected:
   // content::RenderViewHostTestHarness.
@@ -90,7 +100,7 @@ class WebAppTest : public content::RenderViewHostTestHarness {
 
   TestingProfileManager testing_profile_manager_{
       TestingBrowserProcess::GetGlobal()};
-  raw_ptr<TestingProfile, DanglingUntriaged> profile_ = nullptr;
+  raw_ptr<TestingProfile> profile_ = nullptr;
 };
 
 #endif  // CHROME_BROWSER_WEB_APPLICATIONS_TEST_WEB_APP_TEST_H_

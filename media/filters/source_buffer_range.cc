@@ -2,17 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "media/filters/source_buffer_range.h"
 
 #include <algorithm>
 #include <sstream>
 #include <string>
 
+#include "base/compiler_specific.h"
 #include "base/logging.h"
 #include "base/not_fatal_until.h"
 #include "media/base/stream_parser_buffer.h"
@@ -265,7 +261,8 @@ std::unique_ptr<SourceBufferRange> SourceBufferRange::SplitRange(
       new_beginning_keyframe->second - keyframe_map_index_base_;
   CHECK_LT(keyframe_index, static_cast<int>(buffers_.size()));
   BufferQueue::iterator starting_point = buffers_.begin() + keyframe_index;
-  BufferQueue removed_buffers(starting_point, buffers_.end());
+  BufferQueue removed_buffers =
+      UNSAFE_TODO(BufferQueue(starting_point, buffers_.end()));
 
   base::TimeDelta new_range_start_pts =
       std::max(timestamp, GetStartTimestamp());
@@ -322,7 +319,7 @@ size_t SourceBufferRange::DeleteGOPFromFront(BufferQueue* deleted_buffers) {
   size_t total_bytes_deleted = 0;
 
   KeyframeMap::const_iterator front = keyframe_map_.begin();
-  CHECK(front != keyframe_map_.end(), base::NotFatalUntil::M130);
+  CHECK(front != keyframe_map_.end());
 
   // Delete the keyframe at the start of |keyframe_map_|.
   keyframe_map_.erase(front);
@@ -580,7 +577,7 @@ base::TimeDelta SourceBufferRange::FindHighestBufferedTimestampAtOrBefore(
   }
 
   auto key_iter = GetFirstKeyframeAtOrBefore(timestamp);
-  CHECK(key_iter != keyframe_map_.end(), base::NotFatalUntil::M130)
+  CHECK(key_iter != keyframe_map_.end())
       << "BelongsToRange() semantics failed.";
   DCHECK(key_iter->first <= timestamp);
 
@@ -894,8 +891,8 @@ bool SourceBufferRange::TruncateAt(const size_t starting_point,
   if (HasNextBufferPosition()) {
     if (static_cast<size_t>(next_buffer_index_) >= starting_point) {
       if (HasNextBuffer() && deleted_buffers) {
-        BufferQueue saved(buffers_.begin() + next_buffer_index_,
-                          buffers_.end());
+        BufferQueue saved = UNSAFE_TODO(
+            BufferQueue(buffers_.begin() + next_buffer_index_, buffers_.end()));
         deleted_buffers->swap(saved);
       }
       ResetNextBufferPosition();

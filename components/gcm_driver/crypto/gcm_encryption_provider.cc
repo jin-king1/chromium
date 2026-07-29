@@ -10,9 +10,9 @@
 #include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
-#include "base/not_fatal_until.h"
 #include "base/numerics/byte_conversions.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_view_util.h"
 #include "base/task/sequenced_task_runner.h"
 #include "components/gcm_driver/common/gcm_message.h"
 #include "components/gcm_driver/crypto/encryption_header_parsers.h"
@@ -23,7 +23,8 @@
 #include "components/gcm_driver/crypto/message_payload_parser.h"
 #include "components/gcm_driver/crypto/p256_key_util.h"
 #include "components/gcm_driver/crypto/proto/gcm_encryption_data.pb.h"
-#include "crypto/ec_private_key.h"
+#include "components/gcm_driver/crypto/rfc8291_util.h"
+#include "crypto/keypair.h"
 #include "crypto/random.h"
 
 namespace gcm {
@@ -90,7 +91,7 @@ void GCMEncryptionProvider::DidGetEncryptionInfo(
     const std::string& app_id,
     const std::string& authorized_entity,
     EncryptionInfoCallback callback,
-    std::unique_ptr<crypto::ECPrivateKey> key,
+    std::optional<crypto::keypair::PrivateKey> key,
     const std::string& auth_secret) {
   if (!key) {
     key_store_->CreateKeys(
@@ -100,10 +101,9 @@ void GCMEncryptionProvider::DidGetEncryptionInfo(
     return;
   }
 
-  std::string public_key;
-  const bool success = GetRawPublicKey(*key, &public_key);
-  DCHECK(success);
-  std::move(callback).Run(public_key, auth_secret);
+  std::string uncompressed(
+      base::as_string_view(key->ToUncompressedX962Point()));
+  std::move(callback).Run(std::move(uncompressed), auth_secret);
 }
 
 void GCMEncryptionProvider::RemoveEncryptionInfo(
@@ -178,10 +178,10 @@ void GCMEncryptionProvider::DecryptMessage(const std::string& app_id,
     // the Encryption and Crypto-Key header values to derive the values.
 
     const auto& encryption_header = message.data.find(kEncryptionProperty);
-    CHECK(encryption_header != message.data.end(), base::NotFatalUntil::M130);
+    CHECK(encryption_header != message.data.end());
 
     const auto& crypto_key_header = message.data.find(kCryptoKeyProperty);
-    CHECK(crypto_key_header != message.data.end(), base::NotFatalUntil::M130);
+    CHECK(crypto_key_header != message.data.end());
 
     EncryptionHeaderIterator encryption_header_iterator(
         encryption_header->second.begin(), encryption_header->second.end());
@@ -274,7 +274,7 @@ void GCMEncryptionProvider::EncryptMessage(const std::string& app_id,
 
 void GCMEncryptionProvider::DidCreateEncryptionInfo(
     EncryptionInfoCallback callback,
-    std::unique_ptr<crypto::ECPrivateKey> key,
+    std::optional<crypto::keypair::PrivateKey> key,
     const std::string& auth_secret) {
   if (!key) {
     std::move(callback).Run(std::string() /* p256dh */,
@@ -282,10 +282,9 @@ void GCMEncryptionProvider::DidCreateEncryptionInfo(
     return;
   }
 
-  std::string public_key;
-  const bool success = GetRawPublicKey(*key, &public_key);
-  DCHECK(success);
-  std::move(callback).Run(public_key, auth_secret);
+  std::string uncompressed(
+      base::as_string_view(key->ToUncompressedX962Point()));
+  std::move(callback).Run(std::move(uncompressed), auth_secret);
 }
 
 void GCMEncryptionProvider::DecryptMessageWithKey(
@@ -298,7 +297,7 @@ void GCMEncryptionProvider::DecryptMessageWithKey(
     const std::string& ciphertext,
     GCMMessageCryptographer::Version version,
     DecryptMessageCallback callback,
-    std::unique_ptr<crypto::ECPrivateKey> key,
+    std::optional<crypto::keypair::PrivateKey> key,
     const std::string& auth_secret) {
   if (!key) {
     DLOG(ERROR) << "Unable to retrieve the keys for the incoming message.";
@@ -319,9 +318,8 @@ void GCMEncryptionProvider::DecryptMessageWithKey(
 
   GCMMessageCryptographer cryptographer(version);
 
-  std::string exported_public_key;
-  const bool success = GetRawPublicKey(*key, &exported_public_key);
-  DCHECK(success);
+  std::string exported_public_key(
+      base::as_string_view(key->ToUncompressedX962Point()));
   if (!cryptographer.Decrypt(exported_public_key, public_key, shared_secret,
                              auth_secret, salt, ciphertext, record_size,
                              &plaintext)) {
@@ -355,7 +353,7 @@ void GCMEncryptionProvider::EncryptMessageWithKey(
     const std::string& auth_secret,
     const std::string& message,
     EncryptMessageCallback callback,
-    std::unique_ptr<crypto::ECPrivateKey> key,
+    std::optional<crypto::keypair::PrivateKey> key,
     const std::string& sender_auth_secret) {
   if (!key) {
     DLOG(ERROR) << "Unable to retrieve the keys for the outgoing message.";
@@ -363,51 +361,22 @@ void GCMEncryptionProvider::EncryptMessageWithKey(
     return;
   }
 
-  // Creates a cryptographically secure salt of |salt_size| octets in size,
-  // and calculate the shared secret for the message.
-  std::string salt(16, '\0');
-  crypto::RandBytes(base::as_writable_byte_span(salt));
+  base::expected<std::string, Rfc8291EncryptionError> encrypted =
+      EncryptPayloadWithRfc8291(message, p256dh, auth_secret, *key);
 
-  std::string shared_secret;
-  if (!ComputeSharedP256Secret(*key, p256dh, &shared_secret)) {
-    DLOG(ERROR) << "Unable to calculate the shared secret.";
-    std::move(callback).Run(GCMEncryptionResult::INVALID_SHARED_SECRET,
-                            std::string());
+  if (!encrypted.has_value()) {
+    DLOG(ERROR) << "Unable to encrypt the outgoing GCM message: "
+                << static_cast<int>(encrypted.error());
+    GCMEncryptionResult error_result = GCMEncryptionResult::ENCRYPTION_FAILED;
+    if (encrypted.error() == Rfc8291EncryptionError::kKeyDerivationFailed) {
+      error_result = GCMEncryptionResult::INVALID_SHARED_SECRET;
+    }
+    std::move(callback).Run(error_result, std::string());
     return;
   }
 
-  size_t record_size;
-  std::string ciphertext;
-
-  GCMMessageCryptographer cryptographer(
-      GCMMessageCryptographer::Version::DRAFT_08);
-
-  std::string sender_public_key;
-  bool success = GetRawPublicKey(*key, &sender_public_key);
-  DCHECK(success);
-  if (!cryptographer.Encrypt(p256dh, sender_public_key, shared_secret,
-                             auth_secret, salt, message, &record_size,
-                             &ciphertext)) {
-    DLOG(ERROR) << "Unable to encrypt the incoming data.";
-    std::move(callback).Run(GCMEncryptionResult::ENCRYPTION_FAILED,
-                            std::string());
-    return;
-  }
-
-  // Construct encryption header.
-  uint32_t rs = record_size;
-  std::string rs_str(sizeof(rs), 0u);
-  base::as_writable_byte_span(rs_str).copy_from(base::U32ToBigEndian(rs));
-
-  uint8_t key_length = sender_public_key.size();
-  std::string key_length_str(sizeof(key_length), 0u);
-  base::as_writable_byte_span(key_length_str)
-      .copy_from(base::U8ToBigEndian(key_length));
-
-  std::string payload = base::StrCat(
-      {salt, rs_str, key_length_str, sender_public_key, ciphertext});
   std::move(callback).Run(GCMEncryptionResult::ENCRYPTED_DRAFT_08,
-                          std::move(payload));
+                          std::move(encrypted.value()));
 }
 
 }  // namespace gcm

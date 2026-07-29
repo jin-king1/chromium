@@ -17,30 +17,30 @@
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/supervised_user/supervised_user_browser_utils.h"
 #include "chrome/browser/supervised_user/supervised_user_service_factory.h"
-#include "chrome/browser/ui/supervised_user/parent_permission_dialog.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/chrome_typography.h"
 #include "chrome/browser/ui/views/extensions/extension_permissions_view.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/constrained_window/constrained_window_views.h"
+#include "components/signin/public/base/oauth_consumer_id.h"
 #include "components/signin/public/identity_manager/access_token_fetcher.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
-#include "components/signin/public/identity_manager/scope_set.h"
 #include "components/supervised_user/core/browser/supervised_user_service.h"
 #include "components/supervised_user/core/common/features.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
-#include "extensions/browser/extension_util.h"
 #include "extensions/browser/supervised_user_extensions_delegate.h"
+#include "extensions/browser/ui_util.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/icons/extension_icon_set.h"
 #include "extensions/common/manifest.h"
 #include "extensions/common/manifest_constants.h"
 #include "extensions/common/permissions/permission_set.h"
+#include "extensions/strings/grit/extensions_strings.h"
+#include "google_apis/gaia/gaia_auth_fetcher.h"
 #include "google_apis/gaia/gaia_constants.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
-#include "ui/accessibility/ax_enums.mojom-shared.h"
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/accessibility/ax_node_data.h"
 #include "ui/base/interaction/element_identifier.h"
@@ -54,6 +54,7 @@
 #include "ui/gfx/color_palette.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/image/image_skia.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/border.h"
 #include "ui/views/bubble/bubble_frame_view.h"
@@ -66,6 +67,7 @@
 #include "ui/views/layout/box_layout_view.h"
 #include "ui/views/layout/table_layout_view.h"
 #include "ui/views/metadata/view_factory.h"
+#include "ui/views/property_effects.h"
 #include "ui/views/view.h"
 #include "ui/views/view_class_properties.h"
 
@@ -158,11 +160,7 @@ class ParentPermissionInputSection : public views::TextfieldController {
 
     bool has_more_than_one_parent =
         parent_permission_email_addresses.size() > 1;
-    if (is_extension_permission_dialog &&
-        supervised_user::
-            IsSupervisedUserSkipParentApprovalToInstallExtensionsEnabled() &&
-        base::FeatureList::IsEnabled(
-            supervised_user::kUpdatedSupervisedUserExtensionApprovalStrings)) {
+    if (is_extension_permission_dialog) {
       AddExtensionParentPermissionLabels(
           view.get(), is_extension_permission_dialog, child_name);
     } else {
@@ -295,11 +293,7 @@ class ParentPermissionInputSection : public views::TextfieldController {
   void AddExtensionParentPermissionLabels(views::View* view,
                                           bool is_extension_permission_dialog,
                                           const std::string& child_name) {
-    CHECK(is_extension_permission_dialog &&
-          supervised_user::
-              IsSupervisedUserSkipParentApprovalToInstallExtensionsEnabled() &&
-          base::FeatureList::IsEnabled(
-              supervised_user::kUpdatedSupervisedUserExtensionApprovalStrings));
+    CHECK(is_extension_permission_dialog);
 
     auto parent_account_label = std::make_unique<views::Label>(
         l10n_util::GetStringUTF16(
@@ -353,10 +347,6 @@ struct ParentPermissionDialogView::Params {
 
   // The message to show. Ignored if extension is set.
   std::u16string message;
-
-  // Entry point leading to the creation of the dialog.
-  SupervisedUserExtensionParentApprovalEntryPoint
-      extension_approval_entry_point;
 
   // An optional extension whose permissions should be displayed
   raw_ptr<const extensions::Extension, AcrossTasksDanglingUntriaged> extension =
@@ -424,7 +414,7 @@ void ParentPermissionDialogView::SetRepromptAfterIncorrectCredential(
   }
   reprompt_after_incorrect_credential_ = reprompt;
   OnPropertyChanged(&reprompt_after_incorrect_credential_,
-                    views::kPropertyEffectsNone);
+                    views::PropertyEffects::kNone);
 }
 
 bool ParentPermissionDialogView::GetRepromptAfterIncorrectCredential() const {
@@ -557,8 +547,8 @@ void ParentPermissionDialogView::CreateContents() {
     AddChildViewRaw(permissions_header);
 
     // Create permissions view.
-    auto permissions_view = std::make_unique<ExtensionPermissionsView>();
-    permissions_view->AddPermissions(prompt_permissions_);
+    auto permissions_view =
+        std::make_unique<ExtensionPermissionsView>(prompt_permissions_);
 
     // Add to the section container, so the permissions can scroll, since they
     // can be arbitrarily long.
@@ -627,10 +617,6 @@ void ParentPermissionDialogView::ShowDialog() {
           kOpened);
   if (params_->extension) {
     InitializeExtensionData(params_->extension.get());
-
-    SupervisedUserExtensionsMetricsRecorder::
-        RecordExtensionParentApprovalDialogEntryPointUmaMetrics(
-            params_->extension_approval_entry_point);
   } else {
     ShowDialogInternal();
   }
@@ -651,7 +637,7 @@ void ParentPermissionDialogView::SetSelectedParentPermissionEmail(
   }
   selected_parent_permission_email_ = email_address;
   OnPropertyChanged(&selected_parent_permission_email_,
-                    views::kPropertyEffectsNone);
+                    views::PropertyEffects::kNone);
 }
 
 std::u16string ParentPermissionDialogView::GetSelectedParentPermissionEmail()
@@ -666,7 +652,7 @@ void ParentPermissionDialogView::SetParentPermissionCredential(
   }
   parent_permission_credential_ = credential;
   OnPropertyChanged(&parent_permission_credential_,
-                    views::kPropertyEffectsNone);
+                    views::PropertyEffects::kNone);
 }
 
 std::u16string ParentPermissionDialogView::GetParentPermissionCredential()
@@ -684,10 +670,10 @@ void ParentPermissionDialogView::ShowDialogInternal() {
   // from an extension.
   CreateContents();
   views::Widget* widget =
-      params_->window
-          ? constrained_window::CreateBrowserModalDialogViews(this,
-                                                              params_->window)
-          : views::DialogDelegate::CreateDialogWidget(this, nullptr, nullptr);
+      params_->window ? constrained_window::CreateBrowserModalDialogViews(
+                            this, params_->window)
+                      : views::DialogDelegate::CreateDialogWidget(
+                            this, gfx::NativeWindow(), gfx::NativeView());
   widget->Show();
 
   if (test_view_observer) {
@@ -697,18 +683,16 @@ void ParentPermissionDialogView::ShowDialogInternal() {
 
 void ParentPermissionDialogView::LoadParentEmailAddresses() {
   supervised_user::SupervisedUserService* service =
-      SupervisedUserServiceFactory::GetForProfile(params_->profile);
+      supervised_user::SupervisedUserServiceFactory::GetForProfile(params_->profile);
 
-  std::u16string primary_parent_email =
-      base::UTF8ToUTF16(service->GetCustodianEmailAddress());
-  if (!primary_parent_email.empty()) {
-    parent_permission_email_addresses_.push_back(primary_parent_email);
+  if (service->GetCustodian()) {
+    parent_permission_email_addresses_.push_back(
+        base::UTF8ToUTF16(service->GetCustodian()->GetEmailAddress()));
   }
 
-  std::u16string secondary_parent_email =
-      base::UTF8ToUTF16(service->GetSecondCustodianEmailAddress());
-  if (!secondary_parent_email.empty()) {
-    parent_permission_email_addresses_.push_back(secondary_parent_email);
+  if (service->GetSecondCustodian()) {
+    parent_permission_email_addresses_.push_back(
+        base::UTF8ToUTF16(service->GetSecondCustodian()->GetEmailAddress()));
   }
 }
 
@@ -726,16 +710,18 @@ void ParentPermissionDialogView::CloseWithReason(
 GaiaId ParentPermissionDialogView::GetParentObfuscatedGaiaID(
     const std::u16string& parent_email) const {
   supervised_user::SupervisedUserService* service =
-      SupervisedUserServiceFactory::GetForProfile(params_->profile);
+      supervised_user::SupervisedUserServiceFactory::GetForProfile(params_->profile);
 
-  if (service->GetCustodianEmailAddress() == base::UTF16ToUTF8(parent_email)) {
-    return service->GetCustodianObfuscatedGaiaId();
+  if (service->GetCustodian() && service->GetCustodian()->GetEmailAddress() ==
+                                     base::UTF16ToUTF8(parent_email)) {
+    return service->GetCustodian()->GetObfuscatedGaiaId();
   }
 
-  CHECK_EQ(service->GetSecondCustodianEmailAddress(),
-           base::UTF16ToUTF8(parent_email))
+  CHECK(service->GetSecondCustodian() &&
+        service->GetSecondCustodian()->GetEmailAddress() ==
+            base::UTF16ToUTF8(parent_email))
       << "Tried to get obfuscated gaia id for a non-custodian email address";
-  return service->GetSecondCustodianObfuscatedGaiaId();
+  return service->GetSecondCustodian()->GetObfuscatedGaiaId();
 }
 
 void ParentPermissionDialogView::StartReauthAccessTokenFetch(
@@ -743,12 +729,10 @@ void ParentPermissionDialogView::StartReauthAccessTokenFetch(
     const std::string& parent_credential) {
   // The first step of Reauth is to fetch an OAuth2 access token for the
   // Reauth API scope.
-  signin::ScopeSet scopes;
-  scopes.insert(GaiaConstants::kAccountsReauthOAuth2Scope);
   oauth2_access_token_fetcher_ =
       identity_manager_->CreateAccessTokenFetcherForAccount(
           identity_manager_->GetPrimaryAccountId(signin::ConsentLevel::kSignin),
-          "chrome_webstore_private_api", scopes,
+          signin::OAuthConsumerId::kParentPermissionDialog,
           base::BindOnce(
               &ParentPermissionDialogView::OnAccessTokenFetchComplete,
               weak_factory_.GetWeakPtr(), parent_obfuscated_gaia_id,
@@ -860,7 +844,8 @@ void ParentPermissionDialogView::InitializeExtensionData(
   // Create the dialog's message using the extension's name.
   params_->message = l10n_util::GetStringFUTF16(
       IDS_PARENT_PERMISSION_PROMPT_GO_GET_A_PARENT_FOR_EXTENSION_LABEL,
-      extensions::util::GetFixupExtensionNameForUIDisplay(extension->name()));
+      extensions::ui_util::GetFixupExtensionNameForUIDisplay(
+          extension->name()));
 
   ShowDialogInternal();
 }
@@ -946,12 +931,9 @@ ParentPermissionDialog::CreateParentPermissionDialogForExtension(
     gfx::NativeWindow window,
     const gfx::ImageSkia& icon,
     const extensions::Extension* extension,
-    SupervisedUserExtensionParentApprovalEntryPoint
-        extension_approval_entry_point,
     ParentPermissionDialog::DoneCallback done_callback) {
   auto params = std::make_unique<ParentPermissionDialogView::Params>();
   params->extension = extension;
-  params->extension_approval_entry_point = extension_approval_entry_point;
   params->icon = icon;
   params->profile = profile;
   params->window = window;

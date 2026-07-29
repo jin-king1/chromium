@@ -114,6 +114,36 @@ class PortTest(LoggingTestCase):
         port = self.make_port()
         self.assertEqual(port.get_option('foo', 'bar'), 'bar')
 
+    def test_allowed_suffixes_legacy(self):
+        port = self.make_port(with_tests=True)
+        # Depending on the `testRunner` call, any kind can be dumped.
+        self.assertEqual(port.allowed_suffixes('failures/expected/text.html'),
+                         {'txt', 'png', 'wav'})
+
+    def test_allowed_suffixes_legacy_reftest(self):
+        port = self.make_port(with_tests=True)
+        self.assertEqual(
+            port.allowed_suffixes('failures/expected/reftest.html'),
+            {'txt', 'wav'})
+
+    def test_allowed_suffixes_wpt_testharness(self):
+        port = self.make_port(with_tests=True)
+        add_manifest_to_mock_filesystem(port)
+        self.assertEqual(
+            port.allowed_suffixes(
+                'external/wpt/dom/ranges/Range-attributes.html'), {'txt'})
+
+    def test_allowed_suffixes_wpt_reftest(self):
+        port = self.make_port(with_tests=True)
+        add_manifest_to_mock_filesystem(port)
+        self.assertEqual(
+            port.allowed_suffixes('external/wpt/html/dom/elements/'
+                                  'global-attributes/dir_auto-EN-L.html'),
+            set())
+        self.assertEqual(
+            port.allowed_suffixes('external/wpt/foo/bar/test-print.html'),
+            set())
+
     def test_output_filename(self):
         port = self.make_port()
 
@@ -1535,8 +1565,6 @@ class PortTest(LoggingTestCase):
     def test_http_server_supports_ipv6(self):
         port = self.make_port()
         self.assertTrue(port.http_server_supports_ipv6())
-        port.host.platform.os_name = 'win'
-        self.assertFalse(port.http_server_supports_ipv6())
 
     def test_http_server_requires_http_protocol_options_unsafe(self):
         port = self.make_port(
@@ -1918,31 +1946,6 @@ class PortTest(LoggingTestCase):
         self.assertTrue("virtual/v2/test/test.html" in port.tests())
         self.assertTrue("virtual/v3/test/test.html" in port.tests())
 
-    def test_virtual_test_disabled(self):
-        port = self.make_port()
-        fs = port.host.filesystem
-        web_tests_dir = port.web_tests_dir()
-        fs.write_text_file(
-            fs.join(web_tests_dir, 'VirtualTestSuites'), '['
-            '{"prefix": "v1", "platforms": ["Linux"], "bases": ["test"],'
-            ' "args": ["-a"], "disabled": false},'
-            '{"prefix": "v2", "platforms": ["Linux"], "bases": ["test"],'
-            ' "args": ["-b"], "disabled": true},'
-            '{"prefix": "v3", "platforms": ["Linux"], "bases": ["test"],'
-            ' "args": ["-c"]}'
-            ']')
-        fs.write_text_file(fs.join(web_tests_dir, 'test', 'test.html'), '')
-
-        self.assertFalse(
-            port.virtual_test_skipped_due_to_disabled(
-                "virtual/v1/test/test.html"))
-        self.assertTrue(
-            port.virtual_test_skipped_due_to_disabled(
-                "virtual/v2/test/test.html"))
-        self.assertFalse(
-            port.virtual_test_skipped_due_to_disabled(
-                "virtual/v3/test/test.html"))
-
     def test_virtual_exclusive_tests(self):
         port = self.make_port()
         fs = port.host.filesystem
@@ -2181,56 +2184,6 @@ class PortTest(LoggingTestCase):
             port.skipped_due_to_exclusive_virtual_tests(
                 'virtual/v2/external/wpt/console/b2.any.worker.html'))
 
-    def test_virtual_skip_base_tests(self):
-        port = self.make_port()
-        fs = port.host.filesystem
-        web_tests_dir = port.web_tests_dir()
-        fs.write_text_file(
-            fs.join(web_tests_dir, 'VirtualTestSuites'), '['
-            '{"prefix": "v1", "platforms": ["Linux"], "bases": ["b1", "b2"],'
-            '"args": ["-a"], "expires": "never"},'
-            '{"prefix": "v2", "platforms": ["Linux"], "bases": ["b1"],'
-            '"skip_base_tests": "ALL",'
-            '"args": ["-a"], "expires": "never"}'
-            ']')
-        fs.write_text_file(fs.join(web_tests_dir, 'b1', 'test1.html'), '')
-        fs.write_text_file(fs.join(web_tests_dir, 'b2', 'test2.html'), '')
-
-        self.assertTrue(port.skipped_due_to_skip_base_tests('b1/test.html'))
-        self.assertFalse(
-            port.skipped_due_to_skip_base_tests('virtual/v1/b1/test1.html'))
-        self.assertFalse(port.skipped_due_to_skip_base_tests('b2/test2.html'))
-        self.assertFalse(
-            port.skipped_due_to_skip_base_tests('virtual/v1/b2/test2.html'))
-
-    # test.any.js shows up on the filesystem as one file but it effectively becomes two test files:
-    # test.any.html and test.any.worker.html. We should support skipping test.any.js.
-    def test_virtual_skip_base_tests_with_generated_tests(self):
-        port = self.make_port()
-        fs = port.host.filesystem
-        web_tests_dir = port.web_tests_dir()
-        fs.write_text_file(
-            fs.join(web_tests_dir, 'VirtualTestSuites'), '['
-            '{"prefix": "v", "platforms": ["Linux"], "bases": ["external/wpt/console/test.any.js"],'
-            '"skip_base_tests": "ALL",'
-            '"args": ["-a"], "expires": "never"}'
-            ']')
-        fs.write_text_file(
-            fs.join(web_tests_dir, 'external/wpt/console', 'test.any.js'), '')
-
-        self.assertTrue(
-            port.skipped_due_to_skip_base_tests(
-                'external/wpt/console/test.any.html'))
-        self.assertTrue(
-            port.skipped_due_to_skip_base_tests(
-                'external/wpt/console/test.any.worker.html'))
-        self.assertFalse(
-            port.skipped_due_to_skip_base_tests(
-                'virtual/v/external/wpt/console/test.any.html'))
-        self.assertFalse(
-            port.skipped_due_to_skip_base_tests(
-                'virtual/v/external/wpt/console/test.any.worker.html'))
-
     def test_default_results_directory(self):
         port = self.make_port(
             options=optparse.Values({
@@ -2307,10 +2260,8 @@ class PortTest(LoggingTestCase):
             port._apache_config_file_name_for_platform(),  # pylint: disable=protected-access
             config_file)
 
-    def _assert_config_file_for_linux_distribution(self, port, distribution,
-                                                   config_file):
-        port.host.platform = MockPlatformInfo(
-            os_name='linux', linux_distribution=distribution)
+    def _assert_config_file_for_linux(self, port, config_file):
+        port.host.platform = MockPlatformInfo(os_name='linux')
         self.assertEqual(
             port._apache_config_file_name_for_platform(),  # pylint: disable=protected-access
             config_file)
@@ -2320,8 +2271,7 @@ class PortTest(LoggingTestCase):
         port._apache_version = lambda: '2.4'  # pylint: disable=protected-access
         self._assert_config_file_for_platform(port, 'linux',
                                               'apache2-httpd-2.4-php7.conf')
-        self._assert_config_file_for_linux_distribution(
-            port, 'arch', 'apache2-httpd-2.4-php7.conf')
+        self._assert_config_file_for_linux(port, 'apache2-httpd-2.4-php7.conf')
 
         self._assert_config_file_for_platform(port, 'mac',
                                               'apache2-httpd-2.4-php7.conf')
@@ -2336,6 +2286,25 @@ class PortTest(LoggingTestCase):
         port.host.filesystem.write_text_file(port.path_to_smoke_tests_file(),
                                              'passes/text.html\n')
         self.assertTrue(port.skips_test('failures/expected/image.html'))
+
+    def test_skips_test_expands_smoke_tests_file(self):
+        port = self.make_port(with_tests=True)
+        add_manifest_to_mock_filesystem(port)
+        port.default_smoke_test_only = lambda: True
+        port.host.filesystem.write_text_file(
+            port.path_to_smoke_tests_file(),
+            'virtual/virtual_failures/failures/expected/\n'
+            'external/wpt/console/console-is-a-namespace.any.js\n')
+        self.assertTrue(port.skips_test('failures/expected/image.html'))
+        self.assertFalse(
+            port.skips_test(
+                'virtual/virtual_failures/failures/expected/image.html'))
+        self.assertFalse(
+            port.skips_test(
+                'external/wpt/console/console-is-a-namespace.any.html'))
+        self.assertFalse(
+            port.skips_test(
+                'external/wpt/console/console-is-a-namespace.any.worker.html'))
 
     def test_skips_test_no_skip_smoke_tests_file(self):
         port = self.make_port(with_tests=True)

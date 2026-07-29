@@ -22,17 +22,19 @@ import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
+import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Restriction;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.layouts.LayoutTestUtils;
 import org.chromium.chrome.browser.layouts.LayoutType;
 import org.chromium.chrome.browser.ui.appmenu.AppMenuTestSupport;
 import org.chromium.chrome.browser.ui.appmenu.TestAppMenuObserver;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
-import org.chromium.chrome.test.R;
-import org.chromium.components.embedder_support.util.UrlConstants;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
+import org.chromium.chrome.test.transit.ntp.RegularNewTabPageStation;
 import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.test.util.DeviceRestriction;
 
@@ -43,13 +45,15 @@ import java.util.concurrent.TimeoutException;
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE, "enable_update_menu_item"})
 public class UpdateMenuItemHelperTest {
     @Rule
-    public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
+    public FreshCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.freshChromeTabbedActivityRule();
 
     private static final String TEST_MARKET_URL =
             "https://play.google.com/store/apps/details?id=com.android.chrome";
 
     private static final long MS_TIMEOUT = 2000;
     private static final long MS_INTERVAL = 500;
+    private RegularNewTabPageStation mNtp;
 
     /** Reports versions that we want back to OmahaClient. */
     private static class MockVersionNumberGetter extends VersionNumberGetter {
@@ -129,7 +133,7 @@ public class UpdateMenuItemHelperTest {
         MarketURLGetter.setInstanceForTests(mMockMarketURLGetter);
 
         // Start up main.
-        mActivityTestRule.startMainActivityWithURL(UrlConstants.NTP_URL);
+        mNtp = mActivityTestRule.startOnNtp();
         mMenuObserver = new TestAppMenuObserver();
         mActivityTestRule.getAppMenuCoordinator().getAppMenuHandler().addObserver(mMenuObserver);
 
@@ -223,7 +227,7 @@ public class UpdateMenuItemHelperTest {
 
         // Enter the tab switcher.
         LayoutTestUtils.startShowingAndWaitForLayout(
-                mActivityTestRule.getActivity().getLayoutManager(), LayoutType.TAB_SWITCHER, false);
+                mActivityTestRule.getActivity().getLayoutManager(), LayoutType.HUB, false);
 
         // Make sure the item is not shown in tab switcher app menu.
         showAppMenuAndAssertMenuShown();
@@ -237,6 +241,7 @@ public class UpdateMenuItemHelperTest {
     @MediumTest
     @Feature({"Omaha"})
     @Restriction(DeviceRestriction.RESTRICTION_TYPE_NON_AUTO)
+    @DisabledTest(message = "crbug.com/414568101")
     public void testClickUpdateMenuItem() throws Exception {
         checkUpdateMenuItemIsShowing("0.0.0.0", "1.2.3.4");
 
@@ -249,7 +254,7 @@ public class UpdateMenuItemHelperTest {
                         AppMenuTestSupport.callOnItemClick(
                                 mActivityTestRule.getAppMenuCoordinator(), R.id.update_menu_id));
 
-        Intents.intended(Matchers.allOf(IntentMatchers.hasData(TEST_MARKET_URL)));
+        Intents.intended(IntentMatchers.hasData(TEST_MARKET_URL));
 
         mMenuObserver.menuHiddenCallback.waitForCallback(0);
         waitForAppMenuDimissedRunnable();
@@ -276,15 +281,28 @@ public class UpdateMenuItemHelperTest {
                             mActivityTestRule.getAppMenuCoordinator(), null, false);
                 });
         mMenuObserver.menuShownCallback.waitForCallback(currentCallCount);
+        // Make sure the app menu is showing.
+        CriteriaHelper.pollUiThread(
+                () ->
+                        mActivityTestRule
+                                .getAppMenuCoordinator()
+                                .getAppMenuHandler()
+                                .isAppMenuShowing());
+        ThreadUtils.runOnUiThreadBlocking(
+                () ->
+                        AppMenuTestSupport.finishAnimationsForTests(
+                                mActivityTestRule.getAppMenuCoordinator()));
     }
 
     private void hideAppMenuAndAssertMenuShown() throws TimeoutException {
-        int currentCallCount = mMenuObserver.menuHiddenCallback.getCallCount();
-
         ThreadUtils.runOnUiThreadBlocking(
                 () -> mActivityTestRule.getAppMenuCoordinator().getAppMenuHandler().hideAppMenu());
-
-        mMenuObserver.menuHiddenCallback.waitForCallback(currentCallCount);
+        CriteriaHelper.pollUiThread(
+                () ->
+                        !mActivityTestRule
+                                .getAppMenuCoordinator()
+                                .getAppMenuHandler()
+                                .isAppMenuShowing());
     }
 
     private void waitForAppMenuDimissedRunnable() {

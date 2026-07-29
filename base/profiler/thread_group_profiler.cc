@@ -8,6 +8,7 @@
 
 #include "base/check.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/ptr_util.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/profiler/periodic_sampling_scheduler.h"
@@ -155,7 +156,7 @@ void ThreadGroupProfiler::OnWorkerThreadExiting(
   // During shutdown profiling_has_stopped may not get a chance to signal as
   // task runner is stopped, profiler_shutdown event will signal instead
   // indicating that clean up has finished and worker thread may safely exit.
-  WaitableEvent::WaitMany(event_array, std::size(event_array));
+  WaitableEvent::WaitMany(event_array);
 }
 
 // Production implementation that wraps an actual StackSamplingProfiler.
@@ -341,11 +342,9 @@ void ThreadGroupProfiler::OnWorkerThreadStartedTask(
     internal::WorkerThread* worker_thread,
     SamplingProfilerThreadToken token) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(task_runner_sequence_checker_);
-  const bool inserted =
-      worker_thread_context_set_
-          .emplace(worker_thread, WorkerThreadContext{token,
-                                                      /*is_idle=*/true})
-          .second;
+  const bool inserted = worker_thread_context_set_
+                            .try_emplace(worker_thread, token, /*is_idle=*/true)
+                            .second;
   // Worker thread should not be present before this call.
   DCHECK(inserted);
 }

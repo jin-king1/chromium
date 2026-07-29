@@ -12,6 +12,7 @@
 #include "ash/public/cpp/login_screen_test_api.h"
 #include "ash/public/cpp/test/shell_test_api.h"
 #include "ash/shell.h"
+#include "base/check_deref.h"
 #include "base/command_line.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/ash/login/app_mode/test/kiosk_apps_mixin.h"
@@ -21,7 +22,6 @@
 #include "chrome/browser/ash/login/startup_utils.h"
 #include "chrome/browser/ash/login/test/device_state_mixin.h"
 #include "chrome/browser/ash/login/test/js_checker.h"
-#include "chrome/browser/ash/login/test/local_state_mixin.h"
 #include "chrome/browser/ash/login/test/logged_in_user_mixin.h"
 #include "chrome/browser/ash/login/test/login_manager_mixin.h"
 #include "chrome/browser/ash/login/test/oobe_base_test.h"
@@ -38,11 +38,11 @@
 #include "chrome/browser/ui/webui/ash/login/gaia_screen_handler.h"
 #include "chrome/browser/ui/webui/ash/login/welcome_screen_handler.h"
 #include "chrome/browser/ui/webui/ash/system_web_dialog/system_web_dialog_delegate.h"
-#include "chrome/common/pref_names.h"
 #include "chromeos/ash/components/dbus/dbus_thread_manager.h"
 #include "chromeos/ash/components/dbus/debug_daemon/fake_debug_daemon_client.h"
 #include "chromeos/ash/components/dbus/session_manager/fake_session_manager_client.h"
 #include "chromeos/ash/components/settings/cros_settings_names.h"
+#include "chromeos/ash/components/settings/device_settings_cache_test_support.h"
 #include "components/policy/core/common/cloud/cloud_policy_constants.h"
 #include "components/prefs/pref_service.h"
 #include "components/user_manager/known_user.h"
@@ -55,23 +55,22 @@
 #include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/events/test/event_generator.h"
 
+namespace em = enterprise_management;
+
 namespace ash {
 
-class InterruptedAutoStartEnrollmentTest : public OobeBaseTest,
-                                           public LocalStateMixin::Delegate {
+class InterruptedAutoStartEnrollmentTest : public OobeBaseTest {
  public:
   InterruptedAutoStartEnrollmentTest() = default;
   ~InterruptedAutoStartEnrollmentTest() override = default;
 
-  void SetUpLocalState() override {
-    StartupUtils::MarkOobeCompleted();
-    PrefService* prefs = g_browser_process->local_state();
-    prefs->SetBoolean(::prefs::kDeviceEnrollmentAutoStart, true);
-    prefs->SetBoolean(::prefs::kDeviceEnrollmentCanExit, false);
-  }
+  void SetUpLocalStatePrefService(PrefService* local_state) override {
+    OobeBaseTest::SetUpLocalStatePrefService(local_state);
 
- private:
-  LocalStateMixin local_state_mixin_{&mixin_host_, this};
+    StartupUtils::MarkOobeCompleted(CHECK_DEREF(local_state));
+    local_state->SetBoolean(ash::prefs::kDeviceEnrollmentAutoStart, true);
+    local_state->SetBoolean(ash::prefs::kDeviceEnrollmentCanExit, false);
+  }
 };
 
 // Tests that the default first screen is the welcome screen after OOBE
@@ -130,17 +129,26 @@ class LoginUIConsumerTest : public LoginUITestBase {
   LoginUIConsumerTest() = default;
   ~LoginUIConsumerTest() override = default;
 
-  void SetUpOnMainThread() override {
-    scoped_testing_cros_settings_.device_settings()->Set(
-        kDeviceOwner, base::Value(owner_.account_id.GetUserEmail()));
-    LoginUITestBase::SetUpOnMainThread();
+  void SetUpLocalStatePrefService(PrefService* local_state) override {
+    LoginUITestBase::SetUpLocalStatePrefService(local_state);
+
+    ash::device_settings_cache::Update(
+        local_state, [&](em::PolicyData& policy) {
+          policy.set_username(owner_.account_id.GetUserEmail());
+        });
+
+    policy_helper_.device_policy()->policy_data().set_username(
+        owner_.account_id.GetUserEmail());
+    policy_helper_.device_policy()->policy_data().set_management_mode(
+        em::PolicyData::LOCAL_OWNER);
+    policy_helper_.RefreshDevicePolicy();
   }
 
  protected:
   LoginManagerMixin::TestUserInfo owner_{login_manager_mixin_.users()[3]};
   DeviceStateMixin device_state_{
       &mixin_host_, DeviceStateMixin::State::OOBE_COMPLETED_CONSUMER_OWNED};
-  ScopedTestingCrosSettings scoped_testing_cros_settings_;
+  policy::DevicePolicyCrosTestHelper policy_helper_;
 };
 
 // Verifies basic login UI properties.

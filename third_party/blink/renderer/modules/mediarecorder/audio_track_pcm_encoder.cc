@@ -27,7 +27,7 @@ void AudioTrackPcmEncoder::OnSetFormat(
 
   if (!input_params.IsValid()) {
     DLOG(ERROR) << "Invalid params: " << input_params.AsHumanReadableString();
-    if (!on_encoded_audio_error_cb_.is_null()) {
+    if (on_encoded_audio_error_cb_) {
       std::move(on_encoded_audio_error_cb_)
           .Run(media::EncoderStatus::Codes::kEncoderUnsupportedConfig);
     }
@@ -50,8 +50,7 @@ void AudioTrackPcmEncoder::EncodeAudio(
   auto encoded_data = base::HeapArray<uint8_t>::Uninit(
       input_bus->frames() * input_bus->channels() * sizeof(float));
 
-  input_bus->ToInterleaved<media::Float32SampleTypeTraits>(
-      input_bus->frames(), reinterpret_cast<float*>(encoded_data.data()));
+  input_bus->ToInterleavedBytes<media::Float32SampleTypeTraits>(encoded_data);
 
   const base::TimeTicks capture_time_of_first_sample =
       capture_time - media::AudioTimestampHelper::FramesToTime(

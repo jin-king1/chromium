@@ -3,31 +3,41 @@
 # found in the LICENSE file.
 """Definitions of builders in the tryserver.chromium.win builder group."""
 
-load("//lib/branches.star", "branches")
-load("//lib/builder_config.star", "builder_config")
-load("//lib/builders.star", "os", "siso")
-load("//lib/consoles.star", "consoles")
-load("//lib/gn_args.star", "gn_args")
-load("//lib/targets.star", "targets")
-load("//lib/try.star", "try_")
+load("@chromium-luci//branches.star", "branches")
+load("@chromium-luci//builder_config.star", "builder_config")
+load("@chromium-luci//builders.star", "builders", "os")
+load("@chromium-luci//consoles.star", "consoles")
+load("@chromium-luci//gn_args.star", "gn_args")
+load("@chromium-luci//targets.star", "targets")
+load("@chromium-luci//try.star", "try_")
+load("//lib/gpu.star", "gpu")
+load("//lib/siso.star", "siso")
+load("//lib/try_constants.star", "try_constants")
 load("//project.star", "settings")
 
 try_.defaults.set(
-    executable = try_.DEFAULT_EXECUTABLE,
+    executable = try_constants.DEFAULT_EXECUTABLE,
     builder_group = "tryserver.chromium.win",
-    pool = try_.DEFAULT_POOL,
+    pool = try_constants.DEFAULT_POOL,
     builderless = True,
     cores = 8,
     os = os.WINDOWS_DEFAULT,
     compilator_cores = 16,
-    execution_timeout = try_.DEFAULT_EXECUTION_TIMEOUT,
+    execution_timeout = try_constants.DEFAULT_EXECUTION_TIMEOUT,
+    experiments = {
+        "chromium_tests.resultdb_module": 100,
+    },
     orchestrator_cores = 2,
     orchestrator_siso_remote_jobs = siso.remote_jobs.HIGH_JOBS_FOR_CQ,
-    reclient_enabled = False,
-    service_account = try_.DEFAULT_SERVICE_ACCOUNT,
-    siso_enabled = True,
+    service_account = try_constants.DEFAULT_SERVICE_ACCOUNT,
+    siso_keep_going = siso.KEEP_GOING,
+    # Downloading with "minimum" strategy doesn't work
+    # well for the win builder because some steps are missing inputs.
+    # e.g. mini_installer.exe
+    siso_output_local_strategy = "greedy",
     siso_project = siso.project.DEFAULT_UNTRUSTED,
     siso_remote_jobs = siso.remote_jobs.LOW_JOBS_FOR_CQ,
+    siso_remote_linking = True,
 )
 
 targets.builder_defaults.set(
@@ -80,6 +90,18 @@ try_.builder(
         ],
     ),
     contact_team_email = "chrome-desktop-engprod@google.com",
+    properties = {
+        # The format of these properties is defined at archive/properties.proto
+        "$build/archive": {
+            "source_side_spec_path": [
+                "src",
+                "infra",
+                "archive_config",
+                "win-arm64-archive-rel.json",
+            ],
+            "verify_paths_only": True,
+        },
+    },
 )
 
 try_.builder(
@@ -107,6 +129,18 @@ try_.builder(
         ],
     ),
     contact_team_email = "chrome-desktop-engprod@google.com",
+    properties = {
+        # The format of these properties is defined at archive/properties.proto
+        "$build/archive": {
+            "source_side_spec_path": [
+                "src",
+                "infra",
+                "archive_config",
+                "win-archive-rel.json",
+            ],
+            "verify_paths_only": True,
+        },
+    },
 )
 
 try_.builder(
@@ -124,13 +158,30 @@ try_.builder(
     ),
     builderless = False,
     os = os.WINDOWS_ANY,
+    cq_settings = try_.cq_settings(
+        on_default_cq = True,
+    ),
     experiments = {
         # crbug/940930
         "chromium.enable_cleandead": 100,
+        # go/rts-project-proposal
+        "chromium_rts.filter_file_analysis": 100,
     },
     main_list_view = "try",
     siso_remote_jobs = siso.remote_jobs.HIGH_JOBS_FOR_CQ,
-    tryjob = try_.job(),
+)
+
+try_.builder(
+    name = "win-no-safe-browsing-rel",
+    mirrors = ["ci/win-no-safe-browsing-rel"],
+    gn_args = gn_args.config(
+        configs = [
+            "ci/win-no-safe-browsing-rel",
+            "dcheck_always_on",
+            "no_symbols",
+        ],
+    ),
+    contact_team_email = "chrome-counter-abuse-core@google.com",
 )
 
 try_.orchestrator_builder(
@@ -150,23 +201,27 @@ try_.orchestrator_builder(
             "use_clang_coverage",
             "partial_code_coverage_instrumentation",
             "enable_dangling_raw_ptr_feature_flag",
+            "enable_rust_clippy",
         ],
     ),
     compilator = "win-rel-compilator",
     coverage_test_types = ["unit", "overall"],
+    # TODO (crbug.com/1372179): Use orchestrator pool once overloaded test pools
+    # are addressed
+    #use_orchestrator_pool = True,
+    cq_settings = try_.cq_settings(
+        on_default_cq = True,
+    ),
     experiments = {
         # go/nplus1shardsproposal
         "chromium.add_one_test_shard": 5,
         # crbug/940930
         "chromium.enable_cleandead": 100,
-        # b/346598710
-        "chromium.luci_analysis_v2": 100,
+        # go/rts-project-proposal
+        "chromium_rts.filter_file_analysis": 100,
+        "luci.buildbucket.run_in_turboci": 100,
     },
     main_list_view = "try",
-    # TODO (crbug.com/1372179): Use orchestrator pool once overloaded test pools
-    # are addressed
-    #use_orchestrator_pool = True,
-    tryjob = try_.job(),
     use_clang_coverage = True,
 )
 
@@ -191,6 +246,18 @@ try_.builder(
         ],
     ),
     contact_team_email = "chrome-desktop-engprod@google.com",
+    properties = {
+        # The format of these properties is defined at archive/properties.proto
+        "$build/archive": {
+            "source_side_spec_path": [
+                "src",
+                "infra",
+                "archive_config",
+                "win32-archive-rel.json",
+            ],
+            "verify_paths_only": True,
+        },
+    },
 )
 
 try_.builder(
@@ -210,14 +277,19 @@ try_.builder(
     ),
     builderless = False,
     cores = 16,
+    os = os.WINDOWS_ANY,
     ssd = True,
-    main_list_view = "try",
-    siso_remote_jobs = siso.remote_jobs.HIGH_JOBS_FOR_CQ,
-    tryjob = try_.job(
+    cq_settings = try_.cq_settings(
         # TODO(crbug.com/40847153) Remove once cancelling doesn't wipe
         # out builder cache
         cancel_stale = False,
+        on_default_cq = True,
     ),
+    experiments = {
+        "luci.buildbucket.run_in_turboci": 50,
+    },
+    main_list_view = "try",
+    siso_remote_jobs = siso.remote_jobs.HIGH_JOBS_FOR_CQ,
 )
 
 try_.builder(
@@ -305,14 +377,14 @@ try_.builder(
     os = os.WINDOWS_10,
     contact_team_email = "chrome-desktop-engprod@google.com",
     coverage_test_types = ["unit", "overall"],
-    # The size of the testing pool is limited.
-    max_concurrent_builds = 3,
-    tryjob = try_.job(
+    cq_settings = try_.cq_settings(
         location_filters = [
             "sandbox/win/.+",
             "sandbox/policy/win/.+",
         ],
     ),
+    # The size of the testing pool is limited.
+    max_concurrent_builds = 3,
     use_clang_coverage = True,
 )
 
@@ -331,29 +403,25 @@ try_.builder(
             "ci/win-arm64-rel",
             "release_try_builder",
             "no_resource_allowlisting",
-            "use_clang_coverage",
-            "partial_code_coverage_instrumentation",
             "enable_dangling_raw_ptr_feature_flag",
         ],
     ),
     builderless = True,
     os = os.WINDOWS_10,
     contact_team_email = "chrome-desktop-engprod@google.com",
-    coverage_test_types = ["unit", "overall"],
-    main_list_view = "try",
-    # The size of the testing pool is limited.
-    max_concurrent_builds = 4,
-    siso_remote_jobs = siso.remote_jobs.HIGH_JOBS_FOR_CQ,
     # TODO (crbug.com/1372179): Use orchestrator pool once overloaded test pools
     # are addressed
     #use_orchestrator_pool = True,
-    tryjob = try_.job(
+    cq_settings = try_.cq_settings(
         location_filters = [
             "sandbox/win/.+",
             "sandbox/policy/win/.+",
         ],
     ),
-    use_clang_coverage = True,
+    main_list_view = "try",
+    # The size of the testing pool is limited.
+    max_concurrent_builds = 4,
+    siso_remote_jobs = siso.remote_jobs.HIGH_JOBS_FOR_CQ,
 )
 
 try_.builder(
@@ -375,15 +443,19 @@ try_.builder(
     ),
     builderless = False,
     cores = None,
-    os = os.WINDOWS_10,
+    os = os.WINDOWS_ANY,
     contact_team_email = "chrome-desktop-engprod@google.com",
-    main_list_view = "try",
-    siso_remote_jobs = siso.remote_jobs.HIGH_JOBS_FOR_CQ,
-    tryjob = try_.job(
+    cq_settings = try_.cq_settings(
         # TODO(crbug.com/40847153) Remove once cancelling doesn't wipe
         # out builder cache
         cancel_stale = False,
+        on_default_cq = True,
     ),
+    experiments = {
+        "luci.buildbucket.run_in_turboci": 50,
+    },
+    main_list_view = "try",
+    siso_remote_jobs = siso.remote_jobs.HIGH_JOBS_FOR_CQ,
 )
 
 try_.builder(
@@ -435,10 +507,34 @@ try_.builder(
     name = "win10-code-coverage",
     mirrors = ["ci/win10-code-coverage"],
     gn_args = "ci/win10-code-coverage",
-    execution_timeout = 20 * time.hour,
+    execution_timeout = 10 * time.hour,
 )
 
-try_.gpu.optional_tests_builder(
+try_.builder(
+    name = "win-treesinviz-disabled-rel",
+    mirrors = [
+        "ci/win-treesinviz-disabled-rel",
+    ],
+    gn_args = "ci/win-treesinviz-disabled-rel",
+    contact_team_email = "chrome-gpu-team@google.com",
+)
+
+try_.builder(
+    name = "windows-no-initial-webui-rel",
+    mirrors = [
+        "ci/Win x64 Builder",
+        "ci/windows-no-initial-webui-rel",
+    ],
+    gn_args = gn_args.config(
+        configs = [
+            "ci/Win x64 Builder",
+            "release_try_builder",
+        ],
+    ),
+    contact_team_email = "chrome-webium-product-eng@google.com",
+)
+
+gpu.try_.optional_tests_builder(
     name = "win_optional_gpu_tests_rel",
     branch_selector = branches.selector.WINDOWS_BRANCHES,
     description_html = ("Runs GPU tests on Windows 10 machines with NVIDIA GTX 1660 and Intel UHD 630 GPUs. " +
@@ -456,7 +552,6 @@ try_.gpu.optional_tests_builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.WIN,
         ),
-        build_gs_bucket = "chromium-gpu-fyi-archive",
     ),
     builder_config_settings = builder_config.try_settings(
         retry_failed_shards = False,
@@ -516,47 +611,58 @@ try_.gpu.optional_tests_builder(
         browser_config = targets.browser_config.RELEASE_X64,
         os_type = targets.os_type.WINDOWS,
     ),
+    pool = "luci.chromium.gpu.try",
+    builderless = True,
     os = os.WINDOWS_DEFAULT,
+    ssd = builders.with_expiration(True, expiration = 5 * time.minute),
+    free_space = None,
+    alerts_enabled = False,
     contact_team_email = "chrome-gpu-infra@google.com",
+    cq_settings = try_.cq_settings(
+        location_filters = gpu.try_.optional_trybot_location_filters.WINDOWS,
+    ),
     # default is 6 in _gpu_optional_tests_builder()
     execution_timeout = 5 * time.hour,
     main_list_view = "try",
+    # This is higher than the default of 7 for optional GPU builders
+    # because Windows builds take longer than other platforms even
+    # when using SSDs. Increasing the max concurrent builds a bit
+    # allows us to avoid long pending times without risk of
+    # overloading the testing hardware.
+    max_concurrent_builds = 9,
     siso_remote_jobs = siso.remote_jobs.HIGH_JOBS_FOR_CQ,
-    tryjob = try_.job(
-        location_filters = [
-            # Inclusion filters.
-            cq.location_filter(path_regexp = "chrome/browser/media/.+"),
-            cq.location_filter(path_regexp = "chrome/browser/vr/.+"),
-            cq.location_filter(path_regexp = "components/cdm/renderer/.+"),
-            cq.location_filter(path_regexp = "content/browser/xr/.+"),
-            cq.location_filter(path_regexp = "content/test/data/gpu/.+"),
-            cq.location_filter(path_regexp = "content/test/gpu/.+"),
-            cq.location_filter(path_regexp = "device/vr/.+"),
-            cq.location_filter(path_regexp = "gpu/.+"),
-            cq.location_filter(path_regexp = "media/audio/.+"),
-            cq.location_filter(path_regexp = "media/base/.+"),
-            cq.location_filter(path_regexp = "media/capture/.+"),
-            cq.location_filter(path_regexp = "media/cdm/.+"),
-            cq.location_filter(path_regexp = "media/filters/.+"),
-            cq.location_filter(path_regexp = "media/gpu/.+"),
-            cq.location_filter(path_regexp = "media/mojo/.+"),
-            cq.location_filter(path_regexp = "media/renderers/.+"),
-            cq.location_filter(path_regexp = "media/video/.+"),
-            cq.location_filter(path_regexp = "services/webnn/.+"),
-            cq.location_filter(path_regexp = "testing/buildbot/tryserver.chromium.win.json"),
-            cq.location_filter(path_regexp = "testing/trigger_scripts/.+"),
-            cq.location_filter(path_regexp = "third_party/blink/renderer/modules/vr/.+"),
-            cq.location_filter(path_regexp = "third_party/blink/renderer/modules/mediastream/.+"),
-            cq.location_filter(path_regexp = "third_party/blink/renderer/modules/webcodecs/.+"),
-            cq.location_filter(path_regexp = "third_party/blink/renderer/modules/webgl/.+"),
-            cq.location_filter(path_regexp = "third_party/blink/renderer/modules/webgpu/.+"),
-            cq.location_filter(path_regexp = "third_party/blink/renderer/modules/xr/.+"),
-            cq.location_filter(path_regexp = "third_party/blink/renderer/platform/graphics/gpu/.+"),
-            cq.location_filter(path_regexp = "tools/clang/scripts/update.py"),
-            cq.location_filter(path_regexp = "ui/gl/.+"),
+)
 
-            # Exclusion filters.
-            cq.location_filter(exclude = True, path_regexp = ".*\\.md"),
-        ],
+gpu.try_.optional_tests_builder(
+    name = "gpu-fyi-cq-win-arm64",
+    branch_selector = branches.selector.WINDOWS_BRANCHES,
+    description_html = "Runs GPU tests on Windows/ARM64 configs. Only automatically added to CLs that touch GPU-related files.",
+    mirrors = [
+        "ci/GPU FYI Win arm64 Builder",
+        "ci/Win11 FYI arm64 Release (Qualcomm Snapdragon X Elite)",
+    ],
+    builder_config_settings = builder_config.try_settings(
+        retry_failed_shards = False,
     ),
+    gn_args = "ci/GPU FYI Win arm64 Builder",
+    pool = "luci.chromium.gpu.try",
+    builderless = True,
+    os = os.WINDOWS_DEFAULT,
+    ssd = builders.with_expiration(True, expiration = 5 * time.minute),
+    free_space = None,
+    alerts_enabled = False,
+    contact_team_email = "chrome-gpu-infra@google.com",
+    cq_settings = try_.cq_settings(
+        location_filters = gpu.try_.optional_trybot_location_filters.WINDOWS,
+    ),
+    # default is 6 in _gpu_optional_tests_builder()
+    execution_timeout = 5 * time.hour,
+    main_list_view = "try",
+    # This is higher than the default of 7 for optional GPU builders
+    # because Windows builds take longer than other platforms even
+    # when using SSDs. Increasing the max concurrent builds a bit
+    # allows us to avoid long pending times without risk of
+    # overloading the testing hardware.
+    max_concurrent_builds = 9,
+    siso_remote_jobs = siso.remote_jobs.HIGH_JOBS_FOR_CQ,
 )

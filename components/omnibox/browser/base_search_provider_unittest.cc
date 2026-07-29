@@ -9,14 +9,12 @@
 #include <string>
 #include <utility>
 
-#include "base/containers/contains.h"
 #include "base/functional/callback.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "components/omnibox/browser/actions/omnibox_action_in_suggest.h"
-#include "components/omnibox/browser/actions/omnibox_answer_action.h"
 #include "components/omnibox/browser/autocomplete_match.h"
 #include "components/omnibox/browser/autocomplete_match_type.h"
 #include "components/omnibox/browser/autocomplete_scheme_classifier.h"
@@ -206,10 +204,6 @@ TEST_F(BaseSearchProviderTest, PreserveAnswersWhenDeduplicating) {
 }
 
 TEST_F(BaseSearchProviderTest, PreserveImageWhenDeduplicating) {
-  // Ensure categorical suggestions are enabled.
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(omnibox::kCategoricalSuggestions);
-
   TemplateURLData data;
   data.SetURL("http://foo.com/url?bar={searchTerms}");
   auto template_url = std::make_unique<TemplateURL>(data);
@@ -296,11 +290,6 @@ TEST_F(BaseSearchProviderTest, PreserveImageWhenDeduplicating) {
 }
 
 TEST_F(BaseSearchProviderTest, PreserveSubtypesWhenDeduplicating) {
-  // Ensure categorical suggestions and merging subtypes are enabled.
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitWithFeatures(
-      {omnibox::kCategoricalSuggestions, omnibox::kMergeSubtypes}, {});
-
   TemplateURLData data;
   data.SetURL("http://foo.com/url?bar={searchTerms}");
   auto template_url = std::make_unique<TemplateURL>(data);
@@ -337,8 +326,8 @@ TEST_F(BaseSearchProviderTest, PreserveSubtypesWhenDeduplicating) {
   EXPECT_EQ(AutocompleteMatchType::SEARCH_HISTORY, match.type);
   EXPECT_EQ(omnibox::TYPE_NATIVE_CHROME, match.suggest_type);
   ASSERT_EQ(2U, match.subtypes.size());
-  EXPECT_TRUE(base::Contains(match.subtypes, omnibox::SUBTYPE_PERSONAL));
-  EXPECT_TRUE(base::Contains(match.subtypes, omnibox::SUBTYPE_TRENDS));
+  EXPECT_TRUE(match.subtypes.contains(omnibox::SUBTYPE_PERSONAL));
+  EXPECT_TRUE(match.subtypes.contains(omnibox::SUBTYPE_TRENDS));
   EXPECT_EQ(1300, match.relevance);
 
   ASSERT_EQ(1U, match.duplicate_matches.size());
@@ -346,7 +335,7 @@ TEST_F(BaseSearchProviderTest, PreserveSubtypesWhenDeduplicating) {
   EXPECT_EQ(AutocompleteMatchType::SEARCH_SUGGEST_ENTITY, duplicate.type);
   EXPECT_EQ(omnibox::TYPE_CATEGORICAL_QUERY, duplicate.suggest_type);
   ASSERT_EQ(1U, duplicate.subtypes.size());
-  EXPECT_TRUE(base::Contains(duplicate.subtypes, omnibox::SUBTYPE_TRENDS));
+  EXPECT_TRUE(duplicate.subtypes.contains(omnibox::SUBTYPE_TRENDS));
   EXPECT_EQ(850, duplicate.relevance);
 }
 
@@ -650,7 +639,7 @@ TEST_P(BaseSearchProviderOnDeviceSuggestionTest,
 }
 
 TEST_F(BaseSearchProviderTest, CreateActionInSuggest_BuildActionURL) {
-  using omnibox::ActionInfo;
+  using TemplateAction = omnibox::SuggestTemplateInfo::TemplateAction;
   // Correlation between ActionType and UMA-recorded bucket.
   struct {
     const char* test_name;
@@ -666,12 +655,12 @@ TEST_F(BaseSearchProviderTest, CreateActionInSuggest_BuildActionURL) {
     // Cases explicitly not meant to produce any changes.
     { "no change: no supplied url, no search params",
       "https://www.google.com",
-      // ActionInfo action_uri and search_params:
+      // TemplateAction action_uri and search_params:
       "", {}, {}},
 
     { "no change: supplied url, no search params",
       "https://www.google.com",
-      // ActionInfo action_uri and search_params:
+      // TemplateAction action_uri and search_params:
       "https://maps.google.com", {}, {}},
 
     // Cases meant to generate new URL:
@@ -679,22 +668,22 @@ TEST_F(BaseSearchProviderTest, CreateActionInSuggest_BuildActionURL) {
     // - search_params have to be non-empty.
     { "generate: single query param",
       "https://g.co",
-      // ActionInfo action_uri and search_params:
+      // TemplateAction action_uri and search_params:
       "", {{"a", "3"}}, {"a=3"}},
 
     { "generate: multiple query params",
       "https://g.co:119/search?q=a#f",
-      // ActionInfo action_uri and search_params:
+      // TemplateAction action_uri and search_params:
       "", {{"a", "3"}, {"A", "7"}},
         {"A=7&a=3", "a=3&A=7"}},
       // clang-format on
   };
 
   for (const auto& test_case : test_cases) {
-    ActionInfo action_info;
-    action_info.set_action_uri(test_case.action_url);
+    TemplateAction template_action;
+    template_action.set_action_uri(test_case.action_url);
     for (const auto& param : test_case.search_params) {
-      action_info.mutable_search_parameters()->insert(
+      template_action.mutable_search_parameters()->insert(
           {param.first, param.second});
     }
 
@@ -706,7 +695,7 @@ TEST_F(BaseSearchProviderTest, CreateActionInSuggest_BuildActionURL) {
     auto template_url = std::make_unique<TemplateURL>(template_url_data);
 
     auto action = BaseSearchProvider::CreateActionInSuggest(
-        std::move(action_info), template_url->url_ref(), search_terms_args,
+        std::move(template_action), template_url->url_ref(), search_terms_args,
         search_terms_data);
 
     auto* action_in_suggest = OmniboxActionInSuggest::FromAction(action.get());
@@ -729,56 +718,103 @@ TEST_F(BaseSearchProviderTest, CreateActionInSuggest_BuildActionURL) {
         << "while evaluating case `" << test_case.test_name << '`';
   }
 }
+TEST_F(BaseSearchProviderTest, CreateActionInSuggest_SchemeValidation) {
+  using TemplateAction = omnibox::SuggestTemplateInfo::TemplateAction;
 
-TEST_F(BaseSearchProviderTest, CreateAnswerAction) {
   struct {
-    std::string query;
-    std::vector<std::pair<std::string, std::string>> query_cgi_params;
-    std::vector<std::string> possible_param_variations;
+    const char* test_name;
+    TemplateAction::ActionType action_type;
+    const char* action_url;
+    bool expect_valid;
   } test_cases[]{
-      // No additional params.
-      {/*query=*/"Alphabet Inc Class C compare", /*query_cgi_params=*/{},
-       /*possible_param_variations=*/{}},
-      // One additional param.
-      {/*query=*/"Alphabet Inc Class C financials",
-       /*query_cgi_params=*/{{"name", "value"}},
-       /*possible_param_variations=*/{"name=value"}},
-      // Multiple additional params.
-      {/*query=*/"About Alphabet Inc Class C",
-       /*query_cgi_params=*/{{"name1", "value1"}, {"name2", "value2"}},
-       /*possible_param_variations=*/
-       {"name1=value1&name2=value2", "name2=value2&name1=value1"}},
+      {"CALL: tel scheme is valid", TemplateAction::CALL, "tel:123456", true},
+      {"CALL: HTTP scheme is invalid", TemplateAction::CALL,
+       "http://example.com", false},
+      {"CALL: HTTPS scheme is invalid", TemplateAction::CALL,
+       "https://example.com", false},
+      {"CALL: chrome scheme is invalid", TemplateAction::CALL,
+       "chrome://settings", false},
+      {"DIRECTIONS: HTTP scheme is valid", TemplateAction::DIRECTIONS,
+       "http://example.com", true},
+      {"DIRECTIONS: HTTPS scheme is valid", TemplateAction::DIRECTIONS,
+       "https://example.com", true},
+      {"DIRECTIONS: tel scheme is invalid", TemplateAction::DIRECTIONS,
+       "tel:123456", false},
+      {"DIRECTIONS: chrome scheme is invalid", TemplateAction::DIRECTIONS,
+       "chrome://settings", false},
+      {"REVIEWS: HTTP scheme is valid", TemplateAction::REVIEWS,
+       "http://example.com", true},
+      {"REVIEWS: HTTPS scheme is valid", TemplateAction::REVIEWS,
+       "https://example.com", true},
+      {"REVIEWS: tel scheme is invalid", TemplateAction::REVIEWS, "tel:123456",
+       false},
+      {"REVIEWS: chrome scheme is invalid", TemplateAction::REVIEWS,
+       "chrome://settings", false},
   };
-  omnibox::RichAnswerTemplate answer_template;
+
   for (const auto& test_case : test_cases) {
-    omnibox::SuggestionEnhancement* enhancement =
-        answer_template.mutable_enhancements()->add_enhancements();
-    enhancement->set_query(test_case.query);
-    for (const auto& param : test_case.query_cgi_params) {
-      enhancement->mutable_query_cgi_params()->insert(
-          {param.first, param.second});
-    }
+    TemplateAction template_action;
+    template_action.set_action_type(test_case.action_type);
+    template_action.set_action_uri(test_case.action_url);
+
     TemplateURLRef::SearchTermsArgs search_terms_args;
     SearchTermsData search_terms_data;
     TemplateURLData template_url_data;
-    template_url_data.SetURL("https://www.google.com/search?q={searchTerms}");
+    template_url_data.SetURL("https://www.google.com");
     auto template_url = std::make_unique<TemplateURL>(template_url_data);
 
-    auto action = BaseSearchProvider::CreateAnswerAction(
-        std::move(*enhancement), search_terms_args,
-        omnibox::ANSWER_TYPE_FINANCE);
+    auto action = BaseSearchProvider::CreateActionInSuggest(
+        std::move(template_action), template_url->url_ref(), search_terms_args,
+        search_terms_data);
 
-    auto* answer_action = OmniboxAnswerAction::FromAction(action.get());
-    // Ensure search terms additional params match. Checking the exact value is
-    // not easily possible as param order is not guaranteed.
-    bool found_matching_param_sequence =
-        test_case.possible_param_variations.empty();
-    for (const std::string& param_sequence :
-         test_case.possible_param_variations) {
-      found_matching_param_sequence |=
-          answer_action->search_terms_args.additional_query_params ==
-          param_sequence;
-    }
-    EXPECT_TRUE(found_matching_param_sequence);
+    EXPECT_EQ(action != nullptr, test_case.expect_valid)
+        << "while evaluating case `" << test_case.test_name << "`";
   }
+}
+
+TEST_F(BaseSearchProviderTest, SuggestTemplateInfoPopulatesMatch) {
+  TemplateURLData data;
+  data.SetURL("http://foo.com/url?bar={searchTerms}");
+  auto template_url = std::make_unique<TemplateURL>(data);
+
+  TestBaseSearchProvider::MatchMap map;
+  std::u16string query = u"Washington Wizards";
+
+  // TODO(crbug.com/417745802): Update to check if actions get populated
+  // correctly.
+  omnibox::SuggestTemplateInfo suggest_template_info;
+  suggest_template_info.set_style(omnibox::SuggestTemplateInfo::DEFAULT);
+  suggest_template_info.set_type_icon(
+      omnibox::SuggestTemplateInfo_IconType_SEARCH_LOOP_WITH_SPARKLE);
+  suggest_template_info.mutable_primary_text()->set_text("Washington Wizards");
+  suggest_template_info.mutable_secondary_text()->set_text("MIA");
+  omnibox::SuggestTemplateInfo::Image* image =
+      suggest_template_info.mutable_image();
+  image->set_url("http://example.com/a.png");
+  image->set_dominant_color("#233875");
+  image->set_type(omnibox::SuggestTemplateInfo::Image::TYPE_LARGE);
+  (*suggest_template_info.mutable_default_search_parameters())["gs_ssp"] =
+      "abc";
+
+  SearchSuggestionParser::SuggestResult result(
+      query, AutocompleteMatchType::SEARCH_SUGGEST, omnibox::TYPE_NATIVE_CHROME,
+      /*subtypes=*/{}, /*from_keyword=*/false,
+      /*navigational_intent=*/omnibox::NAV_INTENT_NONE,
+      /*relevance=*/1300, /*relevance_from_server=*/true,
+      /*input_text=*/query);
+  result.SetSuggestTemplateInfo(suggest_template_info);
+  provider_->AddMatchToMap(
+      result, AutocompleteInput(), template_url.get(),
+      client_->GetTemplateURLService()->search_terms_data(),
+      TemplateURLRef::NO_SUGGESTION_CHOSEN, false, false, &map);
+
+  // Match should be populated using the SuggestTemplateInfo instead of the
+  // empty EntityInfo proto. Match fields like contents (primary text) and
+  // description (secondary text) are updated in `SearchSuggestionParser` so
+  // will not be shown as updated here.
+  ASSERT_EQ(1U, map.size());
+  AutocompleteMatch match = map.begin()->second;
+  EXPECT_EQ(suggest_template_info.image().dominant_color(),
+            match.image_dominant_color);
+  EXPECT_EQ("gs_ssp=abc", match.search_terms_args->additional_query_params);
 }

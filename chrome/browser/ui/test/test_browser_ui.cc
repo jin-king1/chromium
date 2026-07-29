@@ -4,6 +4,8 @@
 
 #include "chrome/browser/ui/test/test_browser_ui.h"
 
+#include <optional>
+
 #include "base/command_line.h"
 #include "base/test/gtest_util.h"
 #include "base/test/test_switches.h"
@@ -39,16 +41,6 @@
 
 namespace {
 
-// Extracts the |name| argument for ShowUi() from the current test case name.
-// E.g. for InvokeUi_name (or DISABLED_InvokeUi_name) returns "name".
-std::string NameFromTestCase() {
-  const std::string name = base::TestNameWithoutDisabledPrefix(
-      testing::UnitTest::GetInstance()->current_test_info()->name());
-  size_t underscore = name.find('_');
-  return underscore == std::string::npos ? std::string()
-                                         : name.substr(underscore + 1);
-}
-
 #if defined(USE_AURA)
 class ScopedMouseDisabler {
  public:
@@ -57,7 +49,7 @@ class ScopedMouseDisabler {
             view->GetWidget()->GetNativeWindow()->GetRootWindow())) {
     // Generate a mouse move event to remove any effects caused by mouse enter
     // (e.g. hover). This is necessary as hiding cursor may not emit mouse exit
-    // event. (crbug.com/723535).
+    // event. (crbug.com/40521214).
     ui::test::EventGenerator generator(
         view->GetWidget()->GetNativeWindow()->GetRootWindow());
     generator.MoveMouseTo({0, 0});
@@ -91,8 +83,6 @@ class ScopedMouseDisabler {
 }  // namespace
 
 TestBrowserUi::TestBrowserUi() {
-// TODO(crbug.com/40118868): Revisit the macro expression once build flag switch
-// of lacros-chrome is complete.
 #if BUILDFLAG(IS_WIN) && defined(ARCH_CPU_ARM64)
   // TODO(crbug.com/40262522): Make these pass with x64 win magic numbers.
   SetPixelMatchAlgorithm(
@@ -120,6 +110,14 @@ ui::test::ActionResult TestBrowserUi::VerifyPixelUi(
     views::View* view,
     const std::string& screenshot_prefix,
     const std::string& screenshot_name) {
+  return VerifyPixelUi(view, {}, screenshot_prefix, screenshot_name);
+}
+
+ui::test::ActionResult TestBrowserUi::VerifyPixelUi(
+    views::View* view,
+    const ScreenshotOptions& options,
+    const std::string& screenshot_prefix,
+    const std::string& screenshot_name) {
 #ifdef SUPPORTS_PIXEL_TEST
   if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
           switches::kVerifyPixels)) {
@@ -135,6 +133,7 @@ ui::test::ActionResult TestBrowserUi::VerifyPixelUi(
   // do this unless necessary, since it will close transient UI like menus,
   // which interferes with tests attempting to verify such UI.
   if (auto* const focus_manager = view->GetWidget()->GetFocusManager();
+      options.focus == ScreenshotFocusMode::kClearFocus &&
       focus_manager->GetFocusedView()) {
     focus_manager->ClearFocus();
   }
@@ -147,8 +146,34 @@ ui::test::ActionResult TestBrowserUi::VerifyPixelUi(
   ui::DrawWaiterForTest::WaitForCompositingEnded(compositor);
 
   views::ViewSkiaGoldPixelDiff pixel_diff(screenshot_prefix);
-  bool success = pixel_diff.CompareViewScreenshot(screenshot_name, view,
-                                                  GetPixelMatchAlgorithm());
+
+  // Calculate the snapshot bounds in the widget's coordinates.
+  gfx::Rect window_rect = view->GetBoundsInScreen();
+  const views::Widget* widget = view->GetWidget();
+  gfx::Rect bounds_in_screen = widget->GetRootView()->GetBoundsInScreen();
+  gfx::Rect bounds = widget->GetRootView()->bounds();
+  window_rect.Offset(bounds.x() - bounds_in_screen.x(),
+                     bounds.y() - bounds_in_screen.y());
+
+  if (options.region) {
+    const gfx::Rect& region = options.region.value();
+    // Further narrow the rectangle to the targeted region.
+    auto region_rect = window_rect;
+    region_rect.Offset(region.OffsetFromOrigin());
+    region_rect.set_size(region.size());
+    region_rect.Intersect(window_rect);
+    if (region_rect.IsEmpty()) {
+      LOG(ERROR) << "Specified screenshot region (" << region.ToString()
+                 << ") is outside targeted view size ("
+                 << window_rect.size().ToString() << ")";
+      return ui::test::ActionResult::kFailed;
+    }
+    window_rect = region_rect;
+  }
+
+  const bool success = pixel_diff.CompareNativeWindowScreenshot(
+      screenshot_name, widget->GetNativeWindow(), window_rect,
+      GetPixelMatchAlgorithm());
   return success ? ui::test::ActionResult::kSucceeded
                  : ui::test::ActionResult::kFailed;
 #else
@@ -169,7 +194,8 @@ void TestBrowserUi::ShowAndVerifyUi() {
   if (!IsInteractiveUi() &&
       !base::CommandLine::ForCurrentProcess()->HasSwitch(
           switches::kForceDarkMode) &&
-      ui::NativeTheme::GetInstanceForNativeUi()->ShouldUseDarkColors()) {
+      ui::NativeTheme::GetInstanceForNativeUi()->preferred_color_scheme() ==
+          ui::NativeTheme::PreferredColorScheme::kDark) {
     GTEST_SKIP() << "Host is in dark mode; skipping test";
   }
 #endif  // BUILDFLAG(IS_WIN)
@@ -185,4 +211,19 @@ void TestBrowserUi::ShowAndVerifyUi() {
 bool TestBrowserUi::IsInteractiveUi() const {
   return base::CommandLine::ForCurrentProcess()->HasSwitch(
       switches::kTestLauncherInteractive);
+}
+
+std::string TestBrowserUi::NameFromTestCase() {
+  const std::string name = base::TestNameWithoutDisabledPrefix(
+      testing::UnitTest::GetInstance()->current_test_info()->name());
+  size_t underscore = name.find('_');
+  size_t slash = name.find('/');
+
+  if (underscore == std::string::npos) {
+    return std::string();
+  }
+  if (slash == std::string::npos) {
+    return name.substr(underscore + 1);
+  }
+  return name.substr(underscore + 1, slash - underscore - 1);
 }

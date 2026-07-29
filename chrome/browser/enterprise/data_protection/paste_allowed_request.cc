@@ -8,6 +8,7 @@
 #include "content/public/browser/global_routing_id.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
+#include "ui/base/clipboard/clipboard_metadata.h"
 
 namespace enterprise_data_protection {
 
@@ -46,7 +47,7 @@ constexpr base::TimeDelta PasteAllowedRequest::kIsPasteAllowedRequestTooOld =
 void PasteAllowedRequest::StartPasteAllowedRequest(
     const content::ClipboardEndpoint& source,
     const content::ClipboardEndpoint& destination,
-    const content::ClipboardMetadata& metadata,
+    const ui::ClipboardMetadata& metadata,
     content::ClipboardPasteData clipboard_paste_data,
     IsClipboardPasteAllowedCallback callback) {
   DCHECK(destination.web_contents());
@@ -55,8 +56,11 @@ void PasteAllowedRequest::StartPasteAllowedRequest(
   CleanupObsoleteRequests();
 
   ui::ClipboardSequenceNumberToken seqno = metadata.seqno;
+  content::RenderFrameHost* destination_rfh = destination.render_frame_host();
   content::GlobalRenderFrameHostId rfh_id =
-      destination.web_contents()->GetPrimaryMainFrame()->GetGlobalId();
+      destination_rfh
+          ? destination_rfh->GetGlobalId()
+          : destination.web_contents()->GetPrimaryMainFrame()->GetGlobalId();
 
   // Add |callback| to the callbacks associated to the sequence number, adding
   // an entry to the map if one does not exist.

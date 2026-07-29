@@ -2,8 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/chromeos/ui_mode.gni")
-
 assert(is_chromeos)
 
 static_library("enterprise") {
@@ -15,6 +13,7 @@ static_library("enterprise") {
   deps = [
     "//base",
     "//chrome/browser/ash/arc:arc_util",
+    "//chrome/browser/ash/arc/session",
     "//chromeos/ash/experiences/arc",
   ]
 }
@@ -37,6 +36,7 @@ source_set("unit_tests") {
     "//chromeos/ash/experiences/arc",
     "//chromeos/ash/experiences/arc:arc_test_support",
     "//components/session_manager/core",
+    "//components/session_manager/core:test_support",
     "//components/user_manager",
     "//content/test:test_support",
     "//testing/gtest",

@@ -71,7 +71,7 @@ public class PwaUniversalInstallBottomSheetCoordinator {
     private @AppType @Nullable Integer mAppType;
 
     // Whether we are showing the dialog for the root of the domain (path == '/') or a leaf page.
-    private boolean mIsRoot;
+    private final boolean mIsRoot;
 
     // Whether we are yet to show this dialog (the dialog is shown after a brief delay, possibly
     // with a toast while we wait for it to appear).
@@ -81,7 +81,7 @@ public class PwaUniversalInstallBottomSheetCoordinator {
     private @Nullable Toast mToast;
 
     // Tracks when the fetch application data starts.
-    private long mFetchStartTime;
+    private final long mFetchStartTime;
 
     private final Runnable mInstallCallback;
     private final Runnable mAddShortcutCallback;
@@ -158,6 +158,7 @@ public class PwaUniversalInstallBottomSheetCoordinator {
             switch (mAppType) {
                 case AppType.WEBAPK:
                 case AppType.WEBAPK_DIY:
+                case AppType.TWA:
                     mInstallCallback.run();
                     break;
                 case AppType.SHORTCUT:
@@ -233,13 +234,15 @@ public class PwaUniversalInstallBottomSheetCoordinator {
     }
 
     public void fetchAppData(WebContents webContents) {
-        PwaUniversalInstallBottomSheetCoordinatorJni.get()
-                .fetchAppData(PwaUniversalInstallBottomSheetCoordinator.this, webContents);
+        PwaUniversalInstallBottomSheetCoordinatorJni.get().fetchAppData(this, webContents);
     }
 
     private void logFetchTimeMetrics(@AppType int appType, long fetchDuration) {
         switch (appType) {
             case AppType.WEBAPK:
+            case AppType.TWA:
+                // Since the install criteria of these two app types are the same, logging to the
+                // same histogram.
                 RecordHistogram.recordLongTimesHistogram(
                         "WebApk.UniversalInstall.WebApk.AppDataFetchTime", fetchDuration);
                 break;
@@ -275,7 +278,7 @@ public class PwaUniversalInstallBottomSheetCoordinator {
                     .getModel()
                     .set(
                             PwaUniversalInstallProperties.VIEW_STATE,
-                            (appType == AppType.WEBAPK || appType == AppType.WEBAPK_DIY)
+                            isInstallable(appType)
                                     ? PwaUniversalInstallProperties.ViewState.APP_IS_INSTALLABLE
                                     : PwaUniversalInstallProperties.ViewState
                                             .APP_IS_NOT_INSTALLABLE);
@@ -297,8 +300,7 @@ public class PwaUniversalInstallBottomSheetCoordinator {
 
         // We haven't shown the dialog yet, so there's an opportunity to skip this dialog and
         // redirect straight to the Install App/Create Shortcut dialog.
-        if (mAppType == AppType.SHORTCUT
-                || (mIsRoot && (mAppType == AppType.WEBAPK || mAppType == AppType.WEBAPK_DIY))) {
+        if (mAppType == AppType.SHORTCUT || (mIsRoot && isInstallable(mAppType))) {
             switch (mAppType) {
                 case AppType.SHORTCUT:
                     mAddShortcutCallback.run();
@@ -308,6 +310,7 @@ public class PwaUniversalInstallBottomSheetCoordinator {
                             DIALOG_RESULT_COUNT);
                     break;
                 case AppType.WEBAPK:
+                case AppType.TWA:
                     mInstallCallback.run();
                     RecordHistogram.recordEnumeratedHistogram(
                             "WebApk.UniversalInstall.DialogAction",
@@ -333,9 +336,19 @@ public class PwaUniversalInstallBottomSheetCoordinator {
         show(/* wasTimeout= */ false);
     }
 
+    private static boolean isInstallable(@AppType int appType) {
+        switch (appType) {
+            case AppType.WEBAPK:
+            case AppType.WEBAPK_DIY:
+            case AppType.TWA:
+                return true;
+            default:
+                return false;
+        }
+    }
+
     @NativeMethods
     interface Natives {
-        public void fetchAppData(
-                PwaUniversalInstallBottomSheetCoordinator caller, WebContents webContents);
+        void fetchAppData(PwaUniversalInstallBottomSheetCoordinator self, WebContents webContents);
     }
 }

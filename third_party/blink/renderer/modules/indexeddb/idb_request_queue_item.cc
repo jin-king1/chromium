@@ -12,11 +12,13 @@
 #include "base/memory/scoped_refptr.h"
 #include "mojo/public/cpp/bindings/associated_receiver.h"
 #include "third_party/blink/renderer/core/dom/dom_exception.h"
+#include "third_party/blink/renderer/core/dom/quota_exceeded_error.h"
 #include "third_party/blink/renderer/modules/indexeddb/idb_key.h"
 #include "third_party/blink/renderer/modules/indexeddb/idb_request.h"
 #include "third_party/blink/renderer/modules/indexeddb/idb_request_loader.h"
 #include "third_party/blink/renderer/modules/indexeddb/idb_value.h"
 #include "third_party/blink/renderer/modules/indexeddb/idb_value_wrapping.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 
 namespace blink {
@@ -29,15 +31,17 @@ class IDBDatabaseGetAllResultSinkImpl
           receiver,
       IDBRequestQueueItem* owner,
       mojom::blink::IDBGetAllResultType get_all_result_type)
-      : receiver_(this, std::move(receiver)),
-        owner_(owner),
-        get_all_result_type_(get_all_result_type) {}
+      : owner_(owner), get_all_result_type_(get_all_result_type) {
+    if (receiver.is_valid()) {
+      receiver_.Bind(std::move(receiver));
+    }
+  }
 
   ~IDBDatabaseGetAllResultSinkImpl() override = default;
 
   bool IsWaiting() const { return active_; }
 
-  void ReceiveResults(WTF::Vector<mojom::blink::IDBRecordPtr> results,
+  void ReceiveResults(Vector<mojom::blink::IDBRecordPtr> results,
                       bool done) override {
     CHECK(active_);
     CHECK_LE(results.size(),
@@ -76,6 +80,13 @@ class IDBDatabaseGetAllResultSinkImpl
     owner_->response_type_ = GetResponseType();
     owner_->records_ = std::move(records_);
 
+    // `receiver_` being null indicates that the results were available
+    // synchronously.
+    if (!receiver_) {
+      owner_->MaybeCreateLoader();
+      return;
+    }
+
     if (owner_->MaybeCreateLoader()) {
       if (owner_->started_loading_) {
         // Try again now that the values exist.
@@ -88,9 +99,18 @@ class IDBDatabaseGetAllResultSinkImpl
 
   void OnError(mojom::blink::IDBErrorPtr error) override {
     DCHECK(active_);
+    DOMException* dom_exception;
+    if (error->error_code == mojom::blink::IDBException::kQuotaError &&
+        RuntimeEnabledFeatures::QuotaExceededErrorUpdateEnabled()) {
+      dom_exception =
+          MakeGarbageCollected<QuotaExceededError>(error->error_message);
+    } else {
+      dom_exception = MakeGarbageCollected<DOMException>(
+          static_cast<DOMExceptionCode>(error->error_code),
+          error->error_message);
+    }
     owner_->response_type_ = IDBRequestQueueItem::kError;
-    owner_->error_ = MakeGarbageCollected<DOMException>(
-        static_cast<DOMExceptionCode>(error->error_code), error->error_message);
+    owner_->error_ = dom_exception;
     active_ = false;
     owner_->OnResultReady();
   }
@@ -110,7 +130,8 @@ class IDBDatabaseGetAllResultSinkImpl
     NOTREACHED();
   }
 
-  mojo::AssociatedReceiver<mojom::blink::IDBDatabaseGetAllResultSink> receiver_;
+  mojo::AssociatedReceiver<mojom::blink::IDBDatabaseGetAllResultSink> receiver_{
+      this};
   raw_ptr<IDBRequestQueueItem> owner_;
   mojom::blink::IDBGetAllResultType get_all_result_type_;
 
@@ -224,14 +245,19 @@ IDBRequestQueueItem::IDBRequestQueueItem(
 IDBRequestQueueItem::IDBRequestQueueItem(
     IDBRequest* request,
     mojom::blink::IDBGetAllResultType get_all_result_type,
+    Vector<mojom::blink::IDBRecordPtr> initial_records,
     mojo::PendingAssociatedReceiver<mojom::blink::IDBDatabaseGetAllResultSink>
         receiver,
     base::OnceClosure on_result_ready)
     : request_(request), on_result_ready_(std::move(on_result_ready)) {
   DCHECK_EQ(request->queue_item_, nullptr);
   request_->queue_item_ = this;
+
+  bool has_more_results = receiver.is_valid();
   get_all_sink_ = std::make_unique<IDBDatabaseGetAllResultSinkImpl>(
       std::move(receiver), this, get_all_result_type);
+  get_all_sink_->ReceiveResults(std::move(initial_records),
+                                /*done=*/!has_more_results);
 }
 
 IDBRequestQueueItem::~IDBRequestQueueItem() {
@@ -253,8 +279,8 @@ bool IDBRequestQueueItem::MaybeCreateLoader() {
   if (IDBValueUnwrapper::IsWrapped(records_.values)) {
     loader_ = MakeGarbageCollected<IDBRequestLoader>(
         std::move(records_.values), request_->GetExecutionContext(),
-        WTF::BindOnce(&IDBRequestQueueItem::OnLoadComplete,
-                      weak_factory_.GetWeakPtr()));
+        blink::BindOnce(&IDBRequestQueueItem::OnLoadComplete,
+                        weak_factory_.GetWeakPtr()));
     return true;
   }
   return false;

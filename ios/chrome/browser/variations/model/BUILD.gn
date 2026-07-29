@@ -2,8 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//components/variations/service/generate_ui_string_overrider.gni")
-
 source_set("model") {
   sources = [
     "ios_chrome_variations_service_client.h",
@@ -16,8 +14,10 @@ source_set("model") {
     "//components/variations/service",
     "//components/version_info",
     "//ios/chrome/browser/metrics/model:accessor",
+    "//ios/chrome/browser/policy/model",
     "//ios/chrome/browser/shared/model/application_context",
     "//ios/chrome/browser/shared/model/paths",
+    "//ios/chrome/browser/shared/model/profile",
     "//ios/chrome/common",
     "//ios/web/public",
   ]
@@ -36,7 +36,7 @@ source_set("fetcher") {
     "//base",
     "//build:branding_buildflags",
     "//components/variations",
-    "//components/version_info:version_info",
+    "//components/version_info",
     "//ios/chrome/common",
     "//net",
   ]
@@ -71,26 +71,6 @@ source_set("constants") {
   sources = [ "constants.h" ]
 }
 
-generate_ui_string_overrider("ios_chrome_ui_string_overrider_factory") {
-  inputs = [
-    "$root_gen_dir/components/strings/grit/components_branded_strings.h",
-    "$root_gen_dir/components/strings/grit/components_locale_settings.h",
-    "$root_gen_dir/components/strings/grit/components_strings.h",
-    "$root_gen_dir/ios/chrome/grit/ios_branded_strings.h",
-    "$root_gen_dir/ios/chrome/grit/ios_strings.h",
-  ]
-  deps = [
-    "//components/strings:components_branded_strings",
-    "//components/strings:components_locale_settings",
-    "//components/strings:components_strings",
-    "//ios/chrome/app/strings:ios_branded_strings",
-    "//ios/chrome/app/strings:ios_strings",
-  ]
-  namespace = ""  # Put the functions in the global namespace on iOS.
-  header_filename = "ios_ui_string_overrider_factory.h"
-  source_filename = "ios_ui_string_overrider_factory.cc"
-}
-
 source_set("eg_app_support+eg2") {
   configs += [ "//build/config/ios:xctest_config" ]
   testonly = true
@@ -105,6 +85,7 @@ source_set("eg_app_support+eg2") {
     "//components/prefs",
     "//components/variations",
     "//components/variations:test_support",
+    "//components/variations/service",
     "//ios/chrome/browser/shared/model/application_context",
     "//ios/chrome/test/app:test_support",
   ]
@@ -129,6 +110,7 @@ source_set("eg2_tests") {
   sources = [
     "variations_safe_mode_egtest.mm",
     "variations_safe_mode_end_to_end_egtest.mm",
+    "variations_safe_mode_seedfile_egtest.mm",
   ]
   deps = [
     ":eg_test_support+eg2",
@@ -137,13 +119,17 @@ source_set("eg2_tests") {
     "//build:branding_buildflags",
     "//components/metrics",
     "//components/prefs",
+    "//components/variations",
     "//components/variations:test_support",
-    "//components/variations:variations",
-    "//components/variations/service:service",
+    "//components/variations/service",
     "//ios/chrome/test/earl_grey:eg_test_support+eg2",
     "//ios/testing/earl_grey:eg_test_support+eg2",
   ]
   frameworks = [ "UIKit.framework" ]
+
+  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+  # enable the diagnostic by removing this line.
+  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 source_set("unit_tests") {
@@ -166,7 +152,7 @@ source_set("unit_tests") {
     "//components/variations",
     "//components/variations:test_support",
     "//components/variations/service",
-    "//components/version_info:version_info",
+    "//components/version_info",
     "//ios/chrome/browser/flags:client_side",
     "//ios/chrome/browser/shared/model/application_context",
     "//ios/chrome/test:test_support",

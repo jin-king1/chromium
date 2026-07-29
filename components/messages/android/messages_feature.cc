@@ -6,7 +6,6 @@
 
 #include "base/android/feature_map.h"
 #include "base/feature_list.h"
-#include "base/metrics/field_trial_params.h"
 #include "base/no_destructor.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
@@ -17,9 +16,8 @@ namespace messages {
 namespace {
 
 const base::Feature* const kFeaturesExposedToJava[] = {
-    &kMessagesForAndroidFullyVisibleCallback,
-    &kMessagesAndroidExtraHistograms,
-};
+    &kMessagesForAndroidFullyVisibleCallback, &kMessagesAndroidExtraHistograms,
+    &kMessagesCloseButton, &kDismissNavigationMessagesOnPrimaryPageChanged};
 
 // static
 base::android::FeatureMap* GetFeatureMap() {
@@ -30,18 +28,21 @@ base::android::FeatureMap* GetFeatureMap() {
 
 }  // namespace
 
-
 BASE_FEATURE(kMessagesForAndroidFullyVisibleCallback,
-             "MessagesForAndroidFullyVisibleCallback",
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Feature that enables extra histogram recordings.
-BASE_FEATURE(kMessagesAndroidExtraHistograms,
-             "MessagesAndroidExtraHistograms",
+BASE_FEATURE(kMessagesAndroidExtraHistograms, base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kMessagesCloseButton, base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kDismissNavigationMessagesOnPrimaryPageChanged,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
-static jlong JNI_MessageFeatureMap_GetNativeMap(JNIEnv* env) {
-  return reinterpret_cast<jlong>(GetFeatureMap());
+static int64_t JNI_MessageFeatureMap_GetNativeMap(JNIEnv* env) {
+  return reinterpret_cast<int64_t>(GetFeatureMap());
 }
 
 }  // namespace messages
+
+DEFINE_JNI(MessageFeatureMap)

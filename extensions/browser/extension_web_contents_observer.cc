@@ -5,12 +5,14 @@
 #include "extensions/browser/extension_web_contents_observer.h"
 
 #include "base/check.h"
+#include "base/feature_list.h"
 #include "components/sessions/content/session_tab_helper.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/child_process_security_policy.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
+#include "content/public/browser/site_instance.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/url_constants.h"
 #include "extensions/browser/extension_api_frame_id_map.h"
@@ -27,10 +29,10 @@
 #include "extensions/browser/view_type_utils.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/extension.h"
-#include "extensions/common/extension_features.h"
 #include "extensions/common/extension_id.h"
 #include "extensions/common/mojom/view_type.mojom.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
+#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/mojom/autoplay/autoplay.mojom.h"
 #include "url/origin.h"
 
@@ -117,17 +119,9 @@ ExtensionWebContentsObserver::ExtensionWebContentsObserver(
     : content::WebContentsObserver(web_contents),
       browser_context_(web_contents->GetBrowserContext()),
       dispatcher_(browser_context_),
-      initialized_(false) {
-  dispatcher_.set_delegate(this);
-}
+      initialized_(false) {}
 
 ExtensionWebContentsObserver::~ExtensionWebContentsObserver() {
-}
-
-content::WebContents* ExtensionWebContentsObserver::GetAssociatedWebContents()
-    const {
-  DCHECK(initialized_);
-  return web_contents();
 }
 
 void ExtensionWebContentsObserver::InitializeRenderFrame(
@@ -184,10 +178,10 @@ void ExtensionWebContentsObserver::SetUpRenderFrameHost(
   //
   // Note: Keep this logic in sync with related logic in
   // ChromeContentBrowserClient::RegisterNonNetworkSubresourceURLLoaderFactories.
-  if (type == Manifest::TYPE_EXTENSION ||
-      type == Manifest::TYPE_LEGACY_PACKAGED_APP) {
+  if (type == Manifest::Type::kExtension ||
+      type == Manifest::Type::kLegacyPackagedApp) {
     util::InitializeFileSchemeAccessForExtension(
-        render_frame_host->GetProcess()->GetDeprecatedID(), extension->id(),
+        render_frame_host->GetProcess()->GetID(), extension->id(),
         browser_context_);
   }
 
@@ -203,19 +197,10 @@ void ExtensionWebContentsObserver::SetUpRenderFrameHost(
       ->ActivateExtensionInProcess(*extension, render_frame_host->GetProcess());
 }
 
-void ExtensionWebContentsObserver::RenderFrameCreated(
-    content::RenderFrameHost* render_frame_host) {
-  if (base::FeatureList::IsEnabled(
-          extensions_features::kRemoveCoreSiteInstance)) {
-    // If the primordial SiteInstance in ProcessManager is not used, we need
-    // to wait until `ReadyToCommitNavigation()` to set up the render frame.
-    return;
-  }
-  SetUpRenderFrameHost(render_frame_host);
-}
 void ExtensionWebContentsObserver::RenderFrameDeleted(
     content::RenderFrameHost* render_frame_host) {
   DCHECK(initialized_);
+  extension_frame_host_->RenderFrameDeleted(render_frame_host);
   local_frame_map_.erase(render_frame_host);
   ProcessManager::Get(browser_context_)
       ->UnregisterRenderFrameHost(render_frame_host);
@@ -224,10 +209,23 @@ void ExtensionWebContentsObserver::RenderFrameDeleted(
 
 void ExtensionWebContentsObserver::ReadyToCommitNavigation(
     content::NavigationHandle* navigation_handle) {
-  if (base::FeatureList::IsEnabled(
-          extensions_features::kRemoveCoreSiteInstance)) {
-    SetUpRenderFrameHost(navigation_handle->GetRenderFrameHost());
+#if !BUILDFLAG(IS_ANDROID)
+  // If the navigation is for the TopChrome WebUI, we can skip extension
+  // initialization for optimization. Otherwise, we ensure the renderer process
+  // is initialized including the non-TopChrome WebUI navigation.
+  content::RenderProcessHost* process =
+      navigation_handle->GetRenderFrameHost()->GetProcess();
+  if (process->IsForTopChromeWebUI() &&
+      base::FeatureList::IsEnabled(
+          blink::features::kInitialWebUIWithoutExtensions)) {
+    if (!navigation_handle->IsInitialWebUINavigation()) {
+      RendererStartupHelperFactory::GetForBrowserContext(browser_context_)
+          ->InitializeProcess(process);
+    }
   }
+#endif  // !BUILDFLAG(IS_ANDROID)
+
+  SetUpRenderFrameHost(navigation_handle->GetRenderFrameHost());
 
   ScriptInjectionTracker::ReadyToCommitNavigation(PassKey(), navigation_handle);
 
@@ -322,36 +320,6 @@ void ExtensionWebContentsObserver::MediaPictureInPictureChanged(
     } else {
       process_manager->DecrementLazyKeepaliveCount(extension, Activity::MEDIA,
                                                    Activity::kPictureInPicture);
-    }
-  }
-}
-
-void ExtensionWebContentsObserver::PepperInstanceCreated() {
-  DCHECK(initialized_);
-  if (GetViewType(web_contents()) ==
-      mojom::ViewType::kExtensionBackgroundPage) {
-    ProcessManager* const process_manager =
-        ProcessManager::Get(browser_context_);
-    const Extension* const extension =
-        process_manager->GetExtensionForWebContents(web_contents());
-    if (extension) {
-      process_manager->IncrementLazyKeepaliveCount(
-          extension, Activity::PEPPER_API, std::string());
-    }
-  }
-}
-
-void ExtensionWebContentsObserver::PepperInstanceDeleted() {
-  DCHECK(initialized_);
-  if (GetViewType(web_contents()) ==
-      mojom::ViewType::kExtensionBackgroundPage) {
-    ProcessManager* const process_manager =
-        ProcessManager::Get(browser_context_);
-    const Extension* const extension =
-        process_manager->GetExtensionForWebContents(web_contents());
-    if (extension) {
-      process_manager->DecrementLazyKeepaliveCount(
-          extension, Activity::PEPPER_API, std::string());
     }
   }
 }

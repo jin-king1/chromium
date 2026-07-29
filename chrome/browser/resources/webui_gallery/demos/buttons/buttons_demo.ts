@@ -33,10 +33,16 @@ export class ButtonsDemoElement extends CrLitElement {
     };
   }
 
-  protected expanded_: boolean = false;
+  protected accessor expanded_: boolean = false;
 
   protected onExpandedChanged_(e: CustomEvent<{value: boolean}>) {
     this.expanded_ = e.detail.value;
+  }
+}
+
+declare global {
+  interface HTMLElementTagNameMap {
+    'buttons-demo': ButtonsDemoElement;
   }
 }
 

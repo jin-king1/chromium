@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #ifndef DEVICE_GAMEPAD_PUBLIC_CPP_GAMEPAD_MOJOM_TRAITS_H_
 #define DEVICE_GAMEPAD_PUBLIC_CPP_GAMEPAD_MOJOM_TRAITS_H_
 
@@ -49,10 +44,22 @@ struct COMPONENT_EXPORT(GAMEPAD_SHARED_TRAITS)
 
 template <>
 struct COMPONENT_EXPORT(GAMEPAD_SHARED_TRAITS)
+    EnumTraits<device::mojom::GamepadButtonType, device::GamepadButtonType> {
+  static device::mojom::GamepadButtonType ToMojom(
+      device::GamepadButtonType input);
+  static device::GamepadButtonType FromMojom(
+      device::mojom::GamepadButtonType input);
+};
+
+template <>
+struct COMPONENT_EXPORT(GAMEPAD_SHARED_TRAITS)
     StructTraits<device::mojom::GamepadButtonDataView, device::GamepadButton> {
   static bool pressed(const device::GamepadButton& r) { return r.pressed; }
   static bool touched(const device::GamepadButton& r) { return r.touched; }
   static double value(const device::GamepadButton& r) { return r.value; }
+  static device::GamepadButtonType type(const device::GamepadButton& r) {
+    return r.type;
+  }
   static bool Read(device::mojom::GamepadButtonDataView data,
                    device::GamepadButton* out);
 };
@@ -63,8 +70,8 @@ struct COMPONENT_EXPORT(GAMEPAD_SHARED_TRAITS)
                device::GamepadHapticActuatorType> {
   static device::mojom::GamepadHapticActuatorType ToMojom(
       device::GamepadHapticActuatorType input);
-  static bool FromMojom(device::mojom::GamepadHapticActuatorType input,
-                        device::GamepadHapticActuatorType* output);
+  static device::GamepadHapticActuatorType FromMojom(
+      device::mojom::GamepadHapticActuatorType input);
 };
 
 template <>
@@ -119,8 +126,7 @@ template <>
 struct COMPONENT_EXPORT(GAMEPAD_SHARED_TRAITS)
     EnumTraits<device::mojom::GamepadMapping, device::GamepadMapping> {
   static device::mojom::GamepadMapping ToMojom(device::GamepadMapping input);
-  static bool FromMojom(device::mojom::GamepadMapping input,
-                        device::GamepadMapping* output);
+  static device::GamepadMapping FromMojom(device::mojom::GamepadMapping input);
 };
 
 template <>
@@ -152,8 +158,7 @@ template <>
 struct COMPONENT_EXPORT(GAMEPAD_SHARED_TRAITS)
     EnumTraits<device::mojom::GamepadHand, device::GamepadHand> {
   static device::mojom::GamepadHand ToMojom(device::GamepadHand input);
-  static bool FromMojom(device::mojom::GamepadHand input,
-                        device::GamepadHand* output);
+  static device::GamepadHand FromMojom(device::mojom::GamepadHand input);
 };
 
 template <>
@@ -162,11 +167,11 @@ struct COMPONENT_EXPORT(GAMEPAD_SHARED_TRAITS)
   static bool connected(const device::Gamepad& r) { return r.connected; }
   static int64_t timestamp(const device::Gamepad& r) { return r.timestamp; }
   static base::span<const double> axes(const device::Gamepad& r) {
-    return base::span(r.axes, r.axes_length);
+    return base::span(r.axes).first(r.axes_length);
   }
   static base::span<const device::GamepadButton> buttons(
       const device::Gamepad& r) {
-    return base::span(r.buttons, r.buttons_length);
+    return base::span(r.buttons).first(r.buttons_length);
   }
   static const device::GamepadHapticActuator& vibration_actuator(
       const device::Gamepad& r) {
@@ -177,7 +182,7 @@ struct COMPONENT_EXPORT(GAMEPAD_SHARED_TRAITS)
   }
   static base::span<const device::GamepadTouch> touch_events(
       const device::Gamepad& r) {
-    return base::span(r.touch_events, r.touch_events_length);
+    return base::span(r.touch_events).first(r.touch_events_length);
   }
   static const device::GamepadHand& hand(const device::Gamepad& r) {
     return r.hand;

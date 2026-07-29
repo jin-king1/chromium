@@ -28,18 +28,8 @@ bool VisitedLink::IsValid() const {
          !frame_origin.opaque();
 }
 
-bool operator==(const VisitedLink& lhs, const VisitedLink& rhs) {
-  return std::tie(lhs.link_url, lhs.top_level_site, lhs.frame_origin) ==
-         std::tie(rhs.link_url, rhs.top_level_site, rhs.frame_origin);
-}
-
-bool operator!=(const VisitedLink& lhs, const VisitedLink& rhs) {
-  return !(lhs == rhs);
-}
-
-bool operator<(const VisitedLink& lhs, const VisitedLink& rhs) {
-  return std::tie(lhs.link_url, lhs.top_level_site, lhs.frame_origin) <
-         std::tie(rhs.link_url, rhs.top_level_site, rhs.frame_origin);
+VisitedLink CreatePseudoPartitionedLink(const GURL& url) {
+  return VisitedLink(url, net::SchemefulSite(url), url::Origin::Create(url));
 }
 
 }  // namespace visitedlink

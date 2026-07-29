@@ -2,14 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "third_party/blink/renderer/core/css/parser/css_parser_token.h"
 
 #include <limits.h>
+
+#include <string_view>
+
+#include "base/compiler_specific.h"
+#include "base/strings/string_view_util.h"
 #include "third_party/blink/renderer/core/css/css_markup.h"
 #include "third_party/blink/renderer/core/css/css_primitive_value.h"
 #include "third_party/blink/renderer/core/css/parser/css_property_parser.h"
@@ -225,13 +225,15 @@ void CSSParserToken::Serialize(StringBuilder& builder) const {
       if (numeric_value_type_ == kIntegerValueType) {
         return builder.AppendNumber(ClampTo<int64_t>(NumericValue()));
       } else {
-        NumberToStringBuffer buffer;
-        const char* str = NumberToString(NumericValue(), buffer);
+        DoubleToStringConverter converter;
+        base::span<const LChar> str = converter.ToString(NumericValue());
         builder.Append(str);
         // This wasn't parsed as an integer, so when we serialize it back,
         // it cannot be an integer. Otherwise, we would round-trip e.g.
         // “2.0” to “2”, which could make an invalid value suddenly valid.
-        if (strchr(str, '.') == nullptr && strchr(str, 'e') == nullptr) {
+        auto str_view = base::as_string_view(str);
+        if (str_view.find('.') == std::string_view::npos &&
+            str_view.find('e') == std::string_view::npos) {
           builder.Append(".0");
         }
         return;
@@ -241,9 +243,8 @@ void CSSParserToken::Serialize(StringBuilder& builder) const {
       return builder.Append('%');
     case kDimensionToken: {
       // This will incorrectly serialize e.g. 4e3e2 as 4000e2
-      NumberToStringBuffer buffer;
-      const char* str = NumberToString(NumericValue(), buffer);
-      builder.Append(str);
+      DoubleToStringConverter converter;
+      builder.Append(converter.ToString(NumericValue()));
       // NOTE: We don't need the same “.0” treatment as we did for
       // kNumberToken, as there are no situations where e.g. 2deg
       // would be valid but 2.0deg not.

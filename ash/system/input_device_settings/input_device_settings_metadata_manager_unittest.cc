@@ -20,11 +20,6 @@ namespace ash {
 namespace {
 
 const std::string test_device_key = "0000:0001";
-// Based on the default ImageSkia produced by `TestImageDownloader`.
-constexpr char kExpectedDataUri[] =
-    "data:image/"
-    "png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAUCAIAAAA7jDsBAAAAF0lEQVQokWNk+M+"
-    "ABzDhkxyVHpUmRRoAmpABJ+eiyP8AAAAASUVORK5CYII=";
 
 const AccountId account_1 =
     AccountId::FromUserEmailGaiaId("user@example.com", GaiaId("123"));
@@ -79,6 +74,13 @@ TEST_F(InputDeviceSettingsMetadataManagerTest, DeviceImageForSettingsIsCached) {
   base::RunLoop().RunUntilIdle();
   const auto data_url = manager()->GetCachedDeviceImageDataUri(test_device_key);
   EXPECT_TRUE(data_url.has_value());
+
+  // Based on the default ImageSkia produced by `TestImageDownloader`.
+  const char* kExpectedDataUri =
+      "data:image/png;base64,"
+      "iVBORw0KGgoAAAANSUhEUgAAAAoAAAAUCAIAAAA7jDsBAAAAIElEQVR4nOzJ"
+      "sQ0AAAzCsKjq/y/DB0yMePUjgoP1utMGAAD//xhbx+MAAAAGSURBVAMAodQB"
+      "KguVcHUAAAAASUVORK5CYII=";
   EXPECT_EQ(kExpectedDataUri, data_url.value());
 }
 
@@ -105,14 +107,14 @@ TEST_F(InputDeviceSettingsMetadataManagerTest, GenerateImageRequestKey) {
   manager()->GetDeviceImage(test_device_key, account_1,
                             DeviceImageDestination::kNotification,
                             base::DoNothing());
-  EXPECT_TRUE((base::Contains(manager()->GetDeviceCallbackMapForTesting(),
-                              "0000:0001_0")));
+  EXPECT_TRUE(
+      (manager()->GetDeviceCallbackMapForTesting().contains("0000:0001_0")));
   base::RunLoop().RunUntilIdle();
   manager()->GetDeviceImage(test_device_key, account_1,
                             DeviceImageDestination::kSettings,
                             base::DoNothing());
-  EXPECT_TRUE((base::Contains(manager()->GetDeviceCallbackMapForTesting(),
-                              "0000:0001_1")));
+  EXPECT_TRUE(
+      (manager()->GetDeviceCallbackMapForTesting().contains("0000:0001_1")));
   base::RunLoop().RunUntilIdle();
 }
 

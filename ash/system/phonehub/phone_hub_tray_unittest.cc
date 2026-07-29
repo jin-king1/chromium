@@ -34,10 +34,10 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/compositor/layer_animator.h"
-#include "ui/compositor/scoped_animation_duration_scale_mode.h"
 #include "ui/events/base_event_utils.h"
 #include "ui/events/event.h"
 #include "ui/events/keycodes/keyboard_codes_posix.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/controls/button/button.h"
 #include "ui/views/controls/menu/menu_controller.h"
@@ -78,18 +78,15 @@ class PhoneHubTrayTest : public AshTestBase {
   // AshTestBase:
   void SetUp() override {
     feature_list_.InitWithFeatures(
-        /*enabled_features=*/{features::kPhoneHub,
-                              features::kPhoneHubCameraRoll,
-                              features::kEcheLauncher, features::kEcheSWA,
-                              features::kEcheNetworkConnectionState},
+        /*enabled_features=*/{features::kPhoneHub, features::kEcheSWA},
         /*disabled_features=*/{});
     AshTestBase::SetUp();
 
     phone_hub_tray_ =
         StatusAreaWidgetTestHelper::GetStatusAreaWidget()->phone_hub_tray();
     // Disable pulse animation so the tests will not hang.
-    ui::ScopedAnimationDurationScaleMode duration_mode(
-        ui::ScopedAnimationDurationScaleMode::ZERO_DURATION);
+    gfx::ScopedAnimationDurationScaleMode duration_mode(
+        gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION);
 
     GetFeatureStatusProvider()->SetStatus(
         phonehub::FeatureStatus::kEnabledAndConnected);
@@ -103,6 +100,7 @@ class PhoneHubTrayTest : public AshTestBase {
   }
 
   void TearDown() override {
+    phone_hub_tray_ = nullptr;
     AshTestBase::TearDown();
   }
 
@@ -186,7 +184,7 @@ class PhoneHubTrayTest : public AshTestBase {
   }
 
  protected:
-  raw_ptr<PhoneHubTray, DanglingUntriaged> phone_hub_tray_ = nullptr;
+  raw_ptr<PhoneHubTray> phone_hub_tray_ = nullptr;
   phonehub::FakePhoneHubManager phone_hub_manager_;
   base::test::ScopedFeatureList feature_list_;
   MockNewWindowDelegate new_window_delegate_;
@@ -664,8 +662,8 @@ TEST_F(PhoneHubTrayTest, CloseBubbleWhileShowingSameView) {
 }
 
 TEST_F(PhoneHubTrayTest, OnSessionChanged) {
-  ui::ScopedAnimationDurationScaleMode test_duration_mode(
-      ui::ScopedAnimationDurationScaleMode::NORMAL_DURATION);
+  gfx::ScopedAnimationDurationScaleMode test_duration_mode(
+      gfx::ScopedAnimationDurationScaleMode::NORMAL_DURATION);
 
   // Disable the tray first.
   GetFeatureStatusProvider()->SetStatus(

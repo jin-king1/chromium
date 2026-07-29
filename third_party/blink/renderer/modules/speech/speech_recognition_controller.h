@@ -33,8 +33,8 @@
 #include "media/mojo/mojom/speech_recognizer.mojom-blink.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_observable_array_speech_recognition_phrase.h"
 #include "third_party/blink/renderer/modules/modules_export.h"
-#include "third_party/blink/renderer/modules/speech/speech_recognition_context.h"
 #include "third_party/blink/renderer/platform/mojo/heap_mojo_remote.h"
 #include "third_party/blink/renderer/platform/mojo/heap_mojo_wrapper_mode.h"
 #include "third_party/blink/renderer/platform/scheduler/public/frame_or_worker_scheduler.h"
@@ -52,7 +52,7 @@ class MODULES_EXPORT SpeechRecognitionController final
   static const char kSupplementName[];
 
   explicit SpeechRecognitionController(LocalDOMWindow&);
-  virtual ~SpeechRecognitionController();
+  ~SpeechRecognitionController();
 
   // Builds the speech recognition request params. If `audio_forwarder` and
   // `audio_parameters` are not defined, speech recognition will use audio from
@@ -67,13 +67,15 @@ class MODULES_EXPORT SpeechRecognitionController final
       mojo::PendingRemote<media::mojom::blink::SpeechRecognitionSessionClient>
           session_client,
       const SpeechGrammarList& grammars,
-      const SpeechRecognitionContext* context,
+      const V8ObservableArraySpeechRecognitionPhrase* phrases,
       const String& lang,
       bool continuous,
       bool interim_results,
       uint32_t max_alternatives,
+      bool unspoken_punctuation,
       bool on_device,
       bool allow_cloud_fallback,
+      media::mojom::blink::SpeechRecognitionQuality quality,
       mojo::PendingReceiver<
           media::mojom::blink::SpeechRecognitionAudioForwarder>
           audio_forwarder = mojo::NullReceiver(),
@@ -83,11 +85,14 @@ class MODULES_EXPORT SpeechRecognitionController final
   void Start(
       media::mojom::blink::StartSpeechRecognitionRequestParamsPtr params);
 
-  void OnDeviceWebSpeechAvailable(const String& language,
-                                  base::OnceCallback<void(bool)> callback);
-  void InstallOnDeviceSpeechRecognition(
-      const String& language,
-      base::OnceCallback<void(bool)> callback);
+  void AvailableOnDevice(
+      const Vector<String>& languages,
+      media::mojom::blink::SpeechRecognitionQuality quality,
+      base::OnceCallback<void(media::mojom::blink::AvailabilityStatus)>
+          callback);
+  void Install(const Vector<String>& languages,
+               media::mojom::blink::SpeechRecognitionQuality quality,
+               base::OnceCallback<void(bool)> callback);
 
   static SpeechRecognitionController* From(LocalDOMWindow&);
 

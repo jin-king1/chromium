@@ -142,34 +142,30 @@ TEST_F(HomeMetricsTest, TestTabResumptionFreshnessSignalPresent) {
               kIosMagicStackSegmentationTabResumptionImpressionsSinceFreshness));
 }
 
-// Verifies Parcel Tracking module doesn't update local state impression count
-// when no freshness signal exists
-TEST_F(HomeMetricsTest, TestParcelTrackingNoFreshnessSignal) {
+// Verifies Level Up module doesn't update impression count when no freshness
+// signal exists.
+TEST_F(HomeMetricsTest, TestLevelUpNoFreshnessSignal) {
   EXPECT_EQ(
       -1,
-      local_state()->GetInteger(
-          prefs::
-              kIosMagicStackSegmentationParcelTrackingImpressionsSinceFreshness));
-  LogTopModuleImpressionForType(ContentSuggestionsModuleType::kParcelTracking,
+      pref_service_.GetInteger(
+          prefs::kIosMagicStackSegmentationLevelUpImpressionsSinceFreshness));
+  LogTopModuleImpressionForType(ContentSuggestionsModuleType::kLevelUp,
                                 &pref_service_);
   EXPECT_EQ(
       -1,
-      local_state()->GetInteger(
-          prefs::
-              kIosMagicStackSegmentationParcelTrackingImpressionsSinceFreshness));
+      pref_service_.GetInteger(
+          prefs::kIosMagicStackSegmentationLevelUpImpressionsSinceFreshness));
 }
 
-// Verifies Parcel Tracking module increments local state impression count when
-// freshness signal exists
-TEST_F(HomeMetricsTest, TestParcelTrackingFreshnessSignalPresent) {
-  local_state()->SetInteger(
-      prefs::kIosMagicStackSegmentationParcelTrackingImpressionsSinceFreshness,
-      15);
-  LogTopModuleImpressionForType(ContentSuggestionsModuleType::kParcelTracking,
+// Verifies Level Up module increments impression count when freshness signal
+// exists.
+TEST_F(HomeMetricsTest, TestLevelUpFreshnessSignalPresent) {
+  pref_service_.SetInteger(
+      prefs::kIosMagicStackSegmentationLevelUpImpressionsSinceFreshness, 7);
+  LogTopModuleImpressionForType(ContentSuggestionsModuleType::kLevelUp,
                                 &pref_service_);
   EXPECT_EQ(
-      16,
-      local_state()->GetInteger(
-          prefs::
-              kIosMagicStackSegmentationParcelTrackingImpressionsSinceFreshness));
+      8,
+      pref_service_.GetInteger(
+          prefs::kIosMagicStackSegmentationLevelUpImpressionsSinceFreshness));
 }

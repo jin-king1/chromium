@@ -25,7 +25,6 @@
 #include "storage/browser/file_system/file_stream_writer.h"
 #include "storage/browser/file_system/file_system_context.h"
 #include "storage/browser/file_system/file_system_operation.h"
-#include "storage/browser/file_system/file_system_util.h"
 #include "storage/common/file_system/file_system_util.h"
 
 using content::BrowserThread;
@@ -53,8 +52,7 @@ SyncFileSystemBackend::SyncFileSystemBackend(Profile* profile)
 
 SyncFileSystemBackend::~SyncFileSystemBackend() {
   if (change_tracker_) {
-    GetDelegate()->file_task_runner()->DeleteSoon(
-        FROM_HERE, change_tracker_.release());
+    change_tracker_->Disable();
   }
 }
 
@@ -211,7 +209,7 @@ SyncFileSystemBackend* SyncFileSystemBackend::GetBackend(
 }
 
 void SyncFileSystemBackend::SetLocalFileChangeTracker(
-    std::unique_ptr<LocalFileChangeTracker> tracker) {
+    scoped_refptr<LocalFileChangeTracker> tracker) {
   DCHECK(!change_tracker_);
   DCHECK(tracker);
   change_tracker_ = std::move(tracker);

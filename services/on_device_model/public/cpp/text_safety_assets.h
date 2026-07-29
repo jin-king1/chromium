@@ -8,8 +8,6 @@
 #include "base/component_export.h"
 #include "base/files/file.h"
 #include "base/files/file_path.h"
-#include "mojo/public/cpp/bindings/receiver.h"
-#include "mojo/public/cpp/bindings/remote.h"
 #include "services/on_device_model/public/mojom/on_device_model.mojom.h"
 #include "services/on_device_model/public/mojom/on_device_model_service.mojom.h"
 
@@ -21,8 +19,7 @@ struct COMPONENT_EXPORT(ON_DEVICE_MODEL_CPP) TextSafetyAssetPaths {
   TextSafetyAssetPaths(const TextSafetyAssetPaths&);
   ~TextSafetyAssetPaths();
 
-  base::FilePath data;
-  base::FilePath sp_model;
+  base::FilePath model;
 };
 
 // A bundle of file paths to use for loading an adaptation.

@@ -11,6 +11,7 @@
 #include "base/json/json_writer.h"
 #include "base/json/values_util.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
 #include "components/browsing_topics/common/common_types.h"
@@ -332,15 +333,15 @@ BrowsingTopicsState::GetSerializedDataProducerForBackgroundSequence() {
       base::Value(ToDictValue()));
 }
 
-base::Value::Dict BrowsingTopicsState::ToDictValue() const {
+base::DictValue BrowsingTopicsState::ToDictValue() const {
   DCHECK(loaded_);
 
-  base::Value::List epochs_list;
+  base::ListValue epochs_list;
   for (const EpochTopics& epoch : epochs_) {
     epochs_list.Append(epoch.ToDictValue());
   }
 
-  base::Value::Dict result_dict;
+  base::DictValue result_dict;
   result_dict.Set(kEpochsNameKey, std::move(epochs_list));
 
   result_dict.Set(kNextScheduledCalculationTimeNameKey,
@@ -401,7 +402,7 @@ BrowsingTopicsState::ParseResult BrowsingTopicsState::ParseValue(
     const base::Value& value) {
   DCHECK(!loaded_);
 
-  const base::Value::Dict* dict_value = value.GetIfDict();
+  const base::DictValue* dict_value = value.GetIfDict();
   if (!dict_value) {
     return ParseResult{.success = false, .should_save_state_to_file = true};
   }
@@ -419,13 +420,13 @@ BrowsingTopicsState::ParseResult BrowsingTopicsState::ParseValue(
     return ParseResult{.success = false, .should_save_state_to_file = true};
   }
 
-  const base::Value::List* epochs_value = dict_value->FindList(kEpochsNameKey);
+  const base::ListValue* epochs_value = dict_value->FindList(kEpochsNameKey);
   if (!epochs_value) {
     return ParseResult{.success = false, .should_save_state_to_file = true};
   }
 
   for (const base::Value& epoch_value : *epochs_value) {
-    const base::Value::Dict* epoch_dict_value = epoch_value.GetIfDict();
+    const base::DictValue* epoch_dict_value = epoch_value.GetIfDict();
     if (!epoch_dict_value) {
       return ParseResult{.success = false, .should_save_state_to_file = true};
     }

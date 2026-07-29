@@ -39,6 +39,11 @@ class SettingsDriveConfirmationDialogElement extends PolymerElement {
     };
   }
 
+  declare actionButtonText: string;
+  declare bodyText: string;
+  declare cancelButtonText: string;
+  declare titleText: string;
+
   /**
    * Keeps track of whether the user accepts the action of the dialog.
    */

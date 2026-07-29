@@ -75,6 +75,9 @@ class LogMessage;
 // Class used for raising a check error upon destruction.
 class BASE_EXPORT CheckError {
  public:
+  // Takes ownership of `log_message`.
+  explicit CheckError(LogMessage* log_message);
+
   // All instances that take a base::Location should use
   // base::Location::CurrentWithoutFunctionName() by default since we
   // immediately pass file_name() and line_number() to LogMessage's constructor
@@ -84,25 +87,27 @@ class BASE_EXPORT CheckError {
   // developer builds and official+DCHECK where all CHECK failures generate
   // logs.
 
+  // TODO(pbos): Make all static methods that currently return some version of
+  // CheckError return LogMessage*.
   static CheckError Check(const char* condition,
                           base::NotFatalUntil fatal_milestone,
                           const base::Location& location =
                               base::Location::CurrentWithoutFunctionName());
   // Takes ownership over (free()s after using) `log_message_str`, for use with
   // CHECK_op macros.
-  static CheckError CheckOp(char* log_message_str,
-                            base::NotFatalUntil fatal_milestone,
-                            const base::Location& location =
-                                base::Location::CurrentWithoutFunctionName());
+  static LogMessage* CheckOp(char* log_message_str,
+                             base::NotFatalUntil fatal_milestone,
+                             const base::Location& location =
+                                 base::Location::CurrentWithoutFunctionName());
 
   static CheckError DCheck(const char* condition,
                            const base::Location& location =
                                base::Location::CurrentWithoutFunctionName());
   // Takes ownership over (free()s after using) `log_message_str`, for use with
   // DCHECK_op macros.
-  static CheckError DCheckOp(char* log_message_str,
-                             const base::Location& location =
-                                 base::Location::CurrentWithoutFunctionName());
+  static LogMessage* DCheckOp(char* log_message_str,
+                              const base::Location& location =
+                                  base::Location::CurrentWithoutFunctionName());
 
   static CheckError DumpWillBeCheck(
       const char* condition,
@@ -110,7 +115,7 @@ class BASE_EXPORT CheckError {
           base::Location::CurrentWithoutFunctionName());
   // Takes ownership over (free()s after using) `log_message_str`, for use with
   // DUMP_WILL_BE_CHECK_op macros.
-  static CheckError DumpWillBeCheckOp(
+  static LogMessage* DumpWillBeCheckOp(
       char* log_message_str,
       const base::Location& location =
           base::Location::CurrentWithoutFunctionName());
@@ -135,14 +140,12 @@ class BASE_EXPORT CheckError {
   CheckError& operator=(const CheckError&) = delete;
 
   template <typename T>
-  std::ostream& operator<<(T&& streamed_type) {
-    return stream() << streamed_type;
+  CheckError& operator<<(T&& streamed_type) {
+    stream() << streamed_type;
+    return *this;
   }
 
  protected:
-  // Takes ownership of `log_message`.
-  explicit CheckError(LogMessage* log_message);
-
   std::unique_ptr<LogMessage> log_message_;
 };
 
@@ -157,10 +160,9 @@ class BASE_EXPORT CheckNoreturnError : public CheckError {
           base::Location::CurrentWithoutFunctionName());
   // Takes ownership over (free()s after using) `log_message_str`, for use with
   // CHECK_op macros.
-  static CheckNoreturnError CheckOp(
-      char* log_message_str,
-      const base::Location& location =
-          base::Location::CurrentWithoutFunctionName());
+  static LogMessage* CheckOp(char* log_message_str,
+                             const base::Location& location =
+                                 base::Location::CurrentWithoutFunctionName());
 
   static CheckNoreturnError PCheck(
       const char* condition,
@@ -302,13 +304,16 @@ class BASE_EXPORT NotReachedNoreturnError : public CheckError {
 #endif  // DCHECK_IS_ON()
 
 // The DUMP_WILL_BE_CHECK() macro provides a convenient way to non-fatally dump
-// in official builds if a condition is false. This is used to more cautiously
-// roll out a new CHECK() (or upgrade a DCHECK) where the caller isn't entirely
-// sure that something holds true in practice (but asserts that it should). This
-// is especially useful for platforms that have a low pre-stable population and
-// code areas that are rarely exercised.
+// in official builds if a condition is false. This is used to
+// more cautiously roll out a new CHECK() (or upgrade a DCHECK) where the caller
+// isn't entirely sure that something holds true in practice (but asserts that
+// it should). This is especially useful for platforms that have a low
+// pre-stable population and code areas that are rarely exercised.
 //
-// On DCHECK builds this macro matches DCHECK behavior.
+// In non-official builds (developer builds) and in official builds with DCHECKs
+// enabled (unless configured to be non-fatal at runtime), this macro is fatal
+// (crashes). It only behaves non-fatally (by dumping without crashing) in
+// official builds.
 //
 // This macro isn't optimized (preserves filename, line number and log messages
 // in official builds), as they are expected to be in product temporarily. When
@@ -338,5 +343,12 @@ class BASE_EXPORT NotReachedNoreturnError : public CheckError {
   } while (0)
 
 }  // namespace logging
+
+#if ENABLE_CHECK_ELISION_WARNING()
+namespace base {
+[[noreturn]] __attribute__((warning("check not elided"))) void
+check_not_elided();
+}  // namespace base
+#endif  // ENABLE_CHECK_ELISION_WARNING()
 
 #endif  // BASE_CHECK_H_

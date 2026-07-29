@@ -5,20 +5,16 @@
 #include "extensions/common/permissions/permissions_info.h"
 
 #include "base/check.h"
-#include "base/containers/contains.h"
-#include "base/lazy_instance.h"
 #include "base/memory/ptr_util.h"
 #include "base/strings/string_util.h"
 #include "extensions/common/alias.h"
 
 namespace extensions {
 
-static base::LazyInstance<PermissionsInfo>::Leaky g_permissions_info =
-    LAZY_INSTANCE_INITIALIZER;
-
 // static
 PermissionsInfo* PermissionsInfo::GetInstance() {
-  return g_permissions_info.Pointer();
+  static base::NoDestructor<PermissionsInfo> instance;
+  return instance.get();
 }
 
 void PermissionsInfo::RegisterPermissions(
@@ -76,15 +72,16 @@ PermissionsInfo::~PermissionsInfo() {
 }
 
 void PermissionsInfo::RegisterAlias(const Alias& alias) {
-  DCHECK(base::Contains(name_map_, alias.real_name));
-  DCHECK(!base::Contains(name_map_, alias.name));
-  name_map_[alias.name] = name_map_[alias.real_name];
+  auto it = name_map_.find(alias.real_name);
+  DCHECK(it != name_map_.end());
+  auto emplace = name_map_.emplace(alias.name, it->second);
+  DCHECK(emplace.second);
 }
 
 void PermissionsInfo::RegisterPermission(
     std::unique_ptr<APIPermissionInfo> permission) {
-  DCHECK(!base::Contains(id_map_, permission->id()));
-  DCHECK(!base::Contains(name_map_, permission->name()));
+  DCHECK(!id_map_.contains(permission->id()));
+  DCHECK(!name_map_.contains(permission->name()));
 
   name_map_[permission->name()] = permission.get();
   id_map_[permission->id()] = std::move(permission);

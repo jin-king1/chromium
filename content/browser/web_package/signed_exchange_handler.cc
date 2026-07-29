@@ -4,18 +4,18 @@
 
 #include "content/browser/web_package/signed_exchange_handler.h"
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/342213636): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include <memory>
+#include <optional>
 #include <string_view>
 #include <utility>
 
+#include "base/byte_size.h"
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/numerics/safe_conversions.h"
+#include "base/strings/string_util.h"
+#include "base/strings/string_view_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
@@ -40,7 +40,8 @@
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_features.h"
-#include "crypto/sha2.h"
+#include "crypto/hash.h"
+#include "ipc/constants.mojom.h"
 #include "mojo/public/cpp/bindings/callback_helpers.h"
 #include "net/base/host_port_pair.h"
 #include "net/base/io_buffer.h"
@@ -52,6 +53,7 @@
 #include "net/cert/x509_util.h"
 #include "net/cookies/cookie_setting_override.h"
 #include "net/filter/source_stream.h"
+#include "net/net_buildflags.h"
 #include "net/ssl/ssl_info.h"
 #include "net/storage_access_api/status.h"
 #include "services/network/public/cpp/features.h"
@@ -69,8 +71,6 @@ namespace {
 constexpr char kDigestHeader[] = "digest";
 constexpr char kHistogramSignatureVerificationResult[] =
     "SignedExchange.SignatureVerificationResult";
-constexpr char kHistogramCertVerificationResult[] =
-    "SignedExchange.CertVerificationResult";
 constexpr char kHistogramCTVerificationResult[] =
     "SignedExchange.CTVerificationResult";
 constexpr char kHistogramOCSPResponseStatus[] =
@@ -96,7 +96,7 @@ using VerifyCallback =
 
 void VerifyCert(const scoped_refptr<net::X509Certificate>& certificate,
                 const GURL& url,
-                const std::string& ocsp_result,
+                const std::string& ocsp_response,
                 const std::string& sct_list,
                 FrameTreeNodeId frame_tree_node_id,
                 VerifyCallback callback) {
@@ -116,9 +116,9 @@ void VerifyCert(const scoped_refptr<net::X509Certificate>& certificate,
                           ->GetNetworkContext();
   }
 
-  network_context->VerifyCert(certificate, net::HostPortPair::FromURL(url),
-                              ocsp_result, sct_list,
-                              std::move(wrapped_callback));
+  network_context->VerifyCertForSignedExchange(
+      certificate, net::HostPortPair::FromURL(url), ocsp_response, sct_list,
+      std::move(wrapped_callback));
 }
 
 std::string OCSPErrorToString(const bssl::OCSPVerifyResult& ocsp_result) {
@@ -303,7 +303,7 @@ void SignedExchangeHandler::DidReadHeader(bool completed_syncly,
   }
 
   header_read_buf_->DidConsume(read_result);
-  exchange_header_length_ += read_result;
+  exchange_header_length_ += base::ByteSize(base::as_unsigned(read_result));
   if (header_read_buf_->BytesRemaining() == 0) {
     SignedExchangeLoadResult result = SignedExchangeLoadResult::kSuccess;
     switch (state_) {
@@ -348,8 +348,7 @@ SignedExchangeHandler::ParsePrologueBeforeFallbackUrl() {
 
   prologue_before_fallback_url_ =
       signed_exchange_prologue::BeforeFallbackUrl::Parse(
-          base::span(
-              header_buf_->bytes(),
+          header_buf_->first(
               signed_exchange_prologue::BeforeFallbackUrl::kEncodedSizeInBytes),
           devtools_proxy_.get());
 
@@ -370,8 +369,7 @@ SignedExchangeHandler::ParsePrologueFallbackUrlAndAfter() {
 
   prologue_fallback_url_and_after_ =
       signed_exchange_prologue::FallbackUrlAndAfter::Parse(
-          base::span(
-              header_buf_->bytes(),
+          header_buf_->first(
               prologue_before_fallback_url_.ComputeFallbackUrlAndAfterLength()),
           prologue_before_fallback_url_, devtools_proxy_.get());
 
@@ -607,8 +605,6 @@ void SignedExchangeHandler::OnVerifyCert(int32_t error_code,
                                          bool pkp_bypassed) {
   TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("loading"),
                "SignedExchangeHandler::OnCertVerifyComplete");
-  // net::Error codes are negative, so we put - in front of it.
-  base::UmaHistogramSparse(kHistogramCertVerificationResult, -error_code);
   UMA_HISTOGRAM_ENUMERATION(kHistogramCTVerificationResult,
                             cv_result.policy_compliance,
                             net::ct::CTPolicyCompliance::CT_POLICY_COUNT);
@@ -672,10 +668,12 @@ void SignedExchangeHandler::OnVerifyCert(int32_t error_code,
   ssl_info.is_issued_by_known_root = cv_result.is_issued_by_known_root;
   ssl_info.pkp_bypassed = pkp_bypassed;
   ssl_info.public_key_hashes = cv_result.public_key_hashes;
-  ssl_info.ocsp_result = cv_result.ocsp_result;
   ssl_info.is_fatal_cert_error = net::IsCertStatusError(ssl_info.cert_status);
   ssl_info.signed_certificate_timestamps = cv_result.scts;
   ssl_info.ct_policy_compliance = cv_result.policy_compliance;
+#if BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
+  ssl_info.crs_root_id = cv_result.crs_root_id;
+#endif
   response_head->ssl_info = std::move(ssl_info);
 
   if (!request_matcher_->MatchRequest(envelope_->response_headers())) {
@@ -723,13 +721,14 @@ void SignedExchangeHandler::CheckAbsenceOfCookies(base::OnceClosure callback) {
           render_frame_host ? render_frame_host->GetProcess()->GetDeprecatedID()
                             : -1,
           render_frame_host ? render_frame_host->GetRoutingID()
-                            : MSG_ROUTING_NONE,
+                            : IPC::mojom::kRoutingIdNone,
           /*cookie_setting_overrides=*/
           render_frame_host ? render_frame_host->GetCookieSettingOverrides()
                             : net::CookieSettingOverrides(),
           /*devtools_cookie_setting_overrides=*/net::CookieSettingOverrides(),
           cookie_manager_.BindNewPipeAndPassReceiver(),
-          render_frame_host ? render_frame_host->CreateCookieAccessObserver()
+          render_frame_host ? render_frame_host->CreateCookieAccessObserver(
+                                  CookieAccessDetails::Source::kNonNavigation)
                             : mojo::NullRemote());
 
   CHECK(isolation_info.top_frame_origin().has_value());
@@ -773,7 +772,10 @@ void SignedExchangeHandler::CreateResponse(
   response_head->load_timing.send_start = now;
   response_head->load_timing.send_end = now;
   response_head->load_timing.receive_headers_end = now;
-  response_head->content_length = response_head->headers->GetContentLength();
+  std::optional<base::ByteSize> content_length =
+      response_head->headers->GetContentLength();
+  response_head->content_length =
+      content_length ? content_length->InBytes() : -1;
   response_head->remote_endpoint = remote_endpoint_;
 
   auto body_stream = CreateResponseBodyStream();

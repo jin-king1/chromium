@@ -2,11 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#import "base/test/ios/wait_util.h"
 #import "base/time/time.h"
 #import "components/metrics/demographics/demographic_metrics_provider.h"
 #import "components/ukm/ukm_service.h"
-#import "ios/chrome/browser/authentication/ui_bundled/signin_earl_grey.h"
-#import "ios/chrome/browser/authentication/ui_bundled/signin_earl_grey_ui_test_util.h"
+#import "ios/chrome/browser/authentication/test/signin_earl_grey.h"
+#import "ios/chrome/browser/authentication/test/signin_earl_grey_ui_test_util.h"
 #import "ios/chrome/browser/metrics/model/metrics_app_interface.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
@@ -84,6 +85,10 @@ const metrics::UserDemographicsProto::Gender kTestGender =
                    (testUMADemographicsReportingWithFeatureDisabled)]) {
     config.features_disabled.push_back(metrics::kDemographicMetricsReporting);
   }
+  // Note: Can't use the actual feature definition, because its build target
+  // depends on a bunch of stuff that mustn't make it into the EG test target.
+  config.additional_args.push_back(
+      "--enable-features=ManualLogUploadsInTheFRE");
   return config;
 }
 
@@ -151,7 +156,7 @@ const metrics::UserDemographicsProto::Gender kTestGender =
                      @"Client ID should be non-zero.");
 }
 
-// Adds dummy data,  stores it in the UKM service's UnsentLogStore, and verifies
+// Adds dummy data, stores it in the UKM service's UnsentLogStore, and verifies
 // that the UnsentLogStore has an unsent log.
 - (void)buildAndStoreUKMLog {
   // Record a source in the UKM service so that there is data with which to
@@ -219,6 +224,20 @@ const metrics::UserDemographicsProto::Gender kTestGender =
   GREYAssertTrue([ChromeEarlGrey isDemographicMetricsReportingEnabled],
                  @"Failed to enable kDemographicMetricsReporting.");
 
+  const int success =
+      static_cast<int>(metrics::UserDemographicsStatus::kSuccess);
+  ConditionBlock condition = ^{
+    NSError* error = [MetricsAppInterface
+        expectUniqueSampleWithCount:1
+                          forBucket:success
+                       forHistogram:@"UMA.UserDemographics.Status"];
+    return error == nil;
+  };
+
+  GREYAssert(base::test::ios::WaitUntilConditionOrTimeout(
+                 base::test::ios::kWaitForActionTimeout, condition),
+             @"iOS First Run failed to upload metric");
+
   [MetricsAppInterface buildAndStoreUMALog];
   GREYAssertTrue([MetricsAppInterface hasUnsentUMALogs],
                  @"The UKM service should have unsent logs.");
@@ -227,13 +246,13 @@ const metrics::UserDemographicsProto::Gender kTestGender =
                                                   gender:kTestGender],
                  @"The report should contain the specified user demographics");
 
-  const int success =
-      static_cast<int>(metrics::UserDemographicsStatus::kSuccess);
-  GREYAssertNil([MetricsAppInterface
-                    expectUniqueSampleWithCount:1
-                                      forBucket:success
-                                   forHistogram:@"UMA.UserDemographics.Status"],
-                @"Unexpected histogram contents");
+  // Expect 2 counts because in the iOS First Run, the MetricsService is started
+  // quicker, which causes two metrics log uploads to happen by this point.
+  NSError* error = [MetricsAppInterface
+      expectUniqueSampleWithCount:2
+                        forBucket:success
+                     forHistogram:@"UMA.UserDemographics.Status"];
+  chrome_test_util::GREYAssertErrorNil(error);
 }
 // LINT.ThenChange(/chrome/browser/metrics/metrics_service_user_demographics_browsertest.cc:AddSyncedUserBirthYearAndGenderToProtoData)
 

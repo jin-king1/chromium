@@ -4,11 +4,14 @@
 
 package org.chromium.chrome.browser.bookmarks;
 
+import android.content.res.Resources;
+
 import androidx.annotation.DimenRes;
 import androidx.annotation.IntDef;
-import androidx.annotation.Nullable;
 import androidx.annotation.StringRes;
 
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.bookmarks.BookmarkUiPrefs.BookmarkRowDisplayPref;
 import org.chromium.components.bookmarks.BookmarkItem;
 import org.chromium.components.power_bookmarks.PowerBookmarkMeta;
@@ -19,6 +22,7 @@ import java.lang.annotation.RetentionPolicy;
 import javax.annotation.Nonnull;
 
 /** Represents different type of views in the bookmark UI. */
+@NullMarked
 public final class BookmarkListEntry {
     /** Specifies the view types that the bookmark delegate screen can contain. */
     @Retention(RetentionPolicy.SOURCE)
@@ -57,19 +61,36 @@ public final class BookmarkListEntry {
     }
 
     private final @ViewType int mViewType;
-    @Nullable private final BookmarkItem mBookmarkItem;
-    @Nullable private final SectionHeaderData mSectionHeaderData;
-    @Nullable private final PowerBookmarkMeta mPowerBookmarkMeta;
+    private final @Nullable BookmarkItem mBookmarkItem;
+    private final @Nullable SectionHeaderData mSectionHeaderData;
+    private final @Nullable PowerBookmarkMeta mPowerBookmarkMeta;
 
-    private BookmarkListEntry(
-            int viewType,
-            @Nullable BookmarkItem bookmarkItem,
-            @Nullable SectionHeaderData sectionHeaderData,
-            @Nullable PowerBookmarkMeta meta) {
-        mViewType = viewType;
-        mBookmarkItem = bookmarkItem;
-        mSectionHeaderData = sectionHeaderData;
-        mPowerBookmarkMeta = meta;
+    /** Returns the view type used in the bookmark list UI. */
+    @ViewType
+    public int getViewType() {
+        return mViewType;
+    }
+
+    /**
+     * Returns the view type used in the bookmark list UI. Can be null for non bookmark view types.
+     */
+    public @Nullable BookmarkItem getBookmarkItem() {
+        return mBookmarkItem;
+    }
+
+    /**
+     * Returns title for this BookmarkListEntry. Works for both bookmarks and section headers.
+     *
+     * @param resources The resources object to get the string.
+     * @return The title for the given entry.
+     */
+    public @Nullable String getTitle(Resources resources) {
+        if (mBookmarkItem != null) {
+            return mBookmarkItem.getTitle();
+        } else if (mSectionHeaderData != null) {
+            return resources.getString(mSectionHeaderData.titleRes);
+        }
+        return null;
     }
 
     /**
@@ -115,15 +136,6 @@ public final class BookmarkListEntry {
                 /* meta= */ null);
     }
 
-    /** Creates a divider to separate sections in the bookmark list. */
-    static BookmarkListEntry createDivider() {
-        return new BookmarkListEntry(
-                ViewType.DIVIDER,
-                /* bookmarkItem= */ null,
-                /* sectionHeaderData= */ null,
-                /* meta= */ null);
-    }
-
     /**
      * Create an entry representing the reading list read/unread section header.
      *
@@ -137,31 +149,26 @@ public final class BookmarkListEntry {
                 ViewType.SECTION_HEADER, null, sectionHeaderData, /* meta= */ null);
     }
 
-    /** Returns the view type used in the bookmark list UI. */
-    @ViewType
-    int getViewType() {
-        return mViewType;
-    }
-
-    /**
-     * Returns the view type used in the bookmark list UI. Can be null for non bookmark view types.
-     */
-    @Nullable
-    BookmarkItem getBookmarkItem() {
-        return mBookmarkItem;
-    }
-
     /**
      * @return The {@link SectionHeaderData}. Could be null if this entry is not a section header.
      */
-    @Nullable
-    SectionHeaderData getSectionHeaderData() {
+    @Nullable SectionHeaderData getSectionHeaderData() {
         return mSectionHeaderData;
     }
 
     /** Returns the PowerBookmarkMeta for this list entry. */
-    @Nullable
-    PowerBookmarkMeta getPowerBookmarkMeta() {
+    @Nullable PowerBookmarkMeta getPowerBookmarkMeta() {
         return mPowerBookmarkMeta;
+    }
+
+    private BookmarkListEntry(
+            int viewType,
+            @Nullable BookmarkItem bookmarkItem,
+            @Nullable SectionHeaderData sectionHeaderData,
+            @Nullable PowerBookmarkMeta meta) {
+        mViewType = viewType;
+        mBookmarkItem = bookmarkItem;
+        mSectionHeaderData = sectionHeaderData;
+        mPowerBookmarkMeta = meta;
     }
 }

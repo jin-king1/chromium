@@ -19,6 +19,7 @@
 #include "chrome/common/url_constants.h"
 #include "components/permissions/permission_request_manager.h"
 #include "components/security_state/content/security_state_tab_helper.h"
+#include "content/public/browser/editable_level.h"
 #include "content/public/browser/focused_node_details.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
@@ -36,8 +37,22 @@
 #include "ui/display/screen.h"
 #include "ui/display/tablet_state.h"
 #include "ui/views/controls/native/native_view_host.h"
+#include "ui/views/widget/widget.h"
 
 namespace {
+
+// Handles the case where the layer may be in a transitional state during
+// layout. See crbug.com/470873053.
+void MaybeSetMasksToBounds(views::Widget* widget, bool masks_to_bounds) {
+  if (!widget) {
+    return;
+  }
+  ui::Layer* layer = widget->GetLayer();
+  if (!layer || !layer->GetCompositor()) {
+    return;
+  }
+  layer->SetMasksToBounds(masks_to_bounds);
+}
 
 bool IsSpokenFeedbackEnabled() {
   auto* accessibility_manager = ash::AccessibilityManager::Get();
@@ -55,10 +70,9 @@ cc::BrowserControlsState GetBrowserControlsStateConstraints(
     content::WebContents* contents) {
   DCHECK(contents);
 
-  if (!display::Screen::GetScreen()->InTabletMode() ||
-      contents->IsFullscreen() || contents->IsFocusedElementEditable() ||
-      contents->IsBeingDestroyed() || contents->IsCrashed() ||
-      IsSpokenFeedbackEnabled()) {
+  if (!display::Screen::Get()->InTabletMode() || contents->IsFullscreen() ||
+      contents->IsFocusedElementEditable() || contents->IsBeingDestroyed() ||
+      contents->IsCrashed() || IsSpokenFeedbackEnabled()) {
     return cc::BrowserControlsState::kShown;
   }
 
@@ -96,7 +110,7 @@ cc::BrowserControlsState GetBrowserControlsStateConstraints(
   // Keep top-chrome visible while a permission bubble is visible.
   auto* permission_manager =
       permissions::PermissionRequestManager::FromWebContents(contents);
-  if (permission_manager && permission_manager->IsRequestInProgress()) {
+  if (permission_manager && permission_manager->GetCurrentPrompt()) {
     return cc::BrowserControlsState::kShown;
   }
 
@@ -219,11 +233,13 @@ class TopControlsSlideTabObserver
     UpdateBrowserControlsStateShown(/*animate=*/true);
   }
 
-  void OnFocusChangedInPage(content::FocusedNodeDetails* details) override {
+  void OnFocusChangedInPage(
+      const content::FocusedNodeDetails& details) override {
     // Even if a non-editable node gets focused, if top-chrome is fully shown,
     // we should also update the browser controls state constraints so that
     // top-chrome is able to be hidden again.
-    if (details->is_editable_node || shown_ratio_ == 1.f) {
+    if (details.editable_level != content::EditableLevel::kNotEditable ||
+        shown_ratio_ == 1.f) {
       UpdateBrowserControlsStateShown(/*animate=*/true);
     }
   }
@@ -271,7 +287,7 @@ class TopControlsSlideTabObserver
   // sliding is in progress. It is updated only once right before sliding begins
   // and remains unchanged until sliding ends, at which point it is updated
   // right before the final layout of the BrowserView.
-  // https://crbug.com/885223.
+  // https://crbug.com/41414489.
   bool shrink_renderer_size_ = true;
 };
 
@@ -282,15 +298,19 @@ TopControlsSlideControllerChromeOS::TopControlsSlideControllerChromeOS(
     BrowserView* browser_view)
     : browser_view_(browser_view) {
   DCHECK(browser_view);
-  DCHECK(browser_view->frame());
+  DCHECK(browser_view->browser_widget());
   DCHECK(browser_view->browser());
   DCHECK(browser_view->GetIsNormalType());
   DCHECK(browser_view->browser()->tab_strip_model());
-  DCHECK(browser_view->GetLocationBarView());
-  DCHECK(browser_view->GetLocationBarView()->omnibox_view());
 
-  observed_omni_box_ = browser_view->GetLocationBarView()->omnibox_view();
-  observed_omni_box_->AddObserver(this);
+  // TODO(crbug.com/474059135): If WebUILocationBar ship on ChromeOS,
+  // this will need adjustment.
+  if (browser_view->GetLocationBarView()) {
+    DCHECK(browser_view->GetLocationBarView()->omnibox_view());
+
+    observed_omni_box_ = browser_view->GetLocationBarView()->omnibox_view();
+    observed_omni_box_->AddObserver(this);
+  }
 
   browser_view_->browser()->tab_strip_model()->AddObserver(this);
 
@@ -510,10 +530,13 @@ void TopControlsSlideControllerChromeOS::OnTabStripModelChanged(
   UpdateBrowserControlsStateShown(new_active_contents, /*animate=*/true);
 }
 
-void TopControlsSlideControllerChromeOS::SetTabNeedsAttentionAt(
+void TopControlsSlideControllerChromeOS::OnTabChangedAt(
+    tabs::TabInterface* tab,
     int index,
-    bool attention) {
-  UpdateBrowserControlsStateShown(/*web_contents=*/nullptr, /*animate=*/true);
+    TabChangeType change_type) {
+  if (change_type == TabChangeType::kAttentionOnly) {
+    UpdateBrowserControlsStateShown(/*web_contents=*/nullptr, /*animate=*/true);
+  }
 }
 
 void TopControlsSlideControllerChromeOS::OnDisplayMetricsChanged(
@@ -611,7 +634,7 @@ void TopControlsSlideControllerChromeOS::UpdateBrowserControlsStateShown(
 
 bool TopControlsSlideControllerChromeOS::CanEnable(
     std::optional<bool> fullscreen_state) const {
-  return display::Screen::GetScreen()->InTabletMode() &&
+  return display::Screen::Get()->InTabletMode() &&
          !(fullscreen_state.value_or(browser_view_->IsFullscreen()));
 }
 
@@ -644,7 +667,7 @@ void TopControlsSlideControllerChromeOS::OnEnabledStateChanged(bool new_state) {
     // we get called by the renderer to set the shown ratio to 1.f. Otherwise
     // we will layout the page to a smaller height before the renderer gets
     // to know that it needs to update the shown ratio to 1.f.
-    // https://crbug.com/884453.
+    // https://crbug.com/40593842.
     is_enabled_ = true;
     defer_disabling_ = true;
   } else {
@@ -689,7 +712,8 @@ void TopControlsSlideControllerChromeOS::Refresh() {
   gfx::Transform trans;
   trans.Translate(0, y_translation);
 
-  ui::Layer* root_layer = browser_view_->frame()->GetRootView()->layer();
+  ui::Layer* root_layer =
+      browser_view_->browser_widget()->GetRootView()->layer();
   std::vector<ui::Layer*> layers = {root_layer};
   // We need to transform all the native views' containers of all the attached
   // NativeViewHosts to this BrowserView, rather than the NativeViewHosts
@@ -732,8 +756,8 @@ void TopControlsSlideControllerChromeOS::OnBeginSliding() {
 
   is_sliding_in_progress_ = true;
 
-  BrowserFrame* browser_frame = browser_view_->frame();
-  views::View* root_view = browser_frame->GetRootView();
+  BrowserWidget* browser_widget = browser_view_->browser_widget();
+  views::View* root_view = browser_widget->GetRootView();
   // We paint to layer to be able to efficiently translate the browser
   // top-controls without having to adjust the bounds of the views which trigger
   // re-layouts and re-paints, which makes scrolling feel laggy.
@@ -748,9 +772,7 @@ void TopControlsSlideControllerChromeOS::OnBeginSliding() {
   // We need to fix the order of the layers after making the root view paint to
   // layer. Otherwise, the root view's layer will show on top of the contents'
   // native view's layer and cover it.
-  browser_frame->ReorderNativeViews();
-
-  ui::Layer* widget_layer = browser_frame->GetLayer();
+  browser_widget->ReorderNativeViews();
 
   // OnBeginSliding() means we are in a transient state (i.e. the top controls
   // didn't reach its final state of either fully shown or fully hidden). During
@@ -763,7 +785,8 @@ void TopControlsSlideControllerChromeOS::OnBeginSliding() {
   // but not in-between. Layers transforms handles the in-between.
   gfx::Rect root_bounds = root_view->bounds();
   const int top_container_height = browser_view_->top_container()->height();
-  const int new_height = widget_layer->bounds().height() + top_container_height;
+  const int new_height =
+      browser_widget->GetLayer()->bounds().height() + top_container_height;
   root_bounds.set_height(new_height);
   root_view->SetBoundsRect(root_bounds);
   // Changing the bounds will have triggered an InvalidateLayout() on
@@ -778,7 +801,7 @@ void TopControlsSlideControllerChromeOS::OnBeginSliding() {
   root_view->GetWidget()->LayoutRootViewIfNecessary();
 
   // We don't want anything to show outside the browser window's bounds.
-  widget_layer->SetMasksToBounds(true);
+  MaybeSetMasksToBounds(browser_widget, true);
 }
 
 void TopControlsSlideControllerChromeOS::OnEndSliding() {
@@ -811,11 +834,9 @@ void TopControlsSlideControllerChromeOS::OnEndSliding() {
         identity_transform);
   }
 
-  BrowserFrame* browser_frame = browser_view_->frame();
-  views::View* root_view = browser_frame->GetRootView();
+  BrowserWidget* browser_widget = browser_view_->browser_widget();
+  views::View* root_view = browser_widget->GetRootView();
   root_view->DestroyLayer();
-
-  ui::Layer* widget_layer = browser_frame->GetLayer();
 
   // Note the difference between the below root view resize, and the
   // corresponding one in OnBeginSliding() above. Here we have reached a steady
@@ -825,7 +846,7 @@ void TopControlsSlideControllerChromeOS::OnEndSliding() {
   // but not in-between. Layers transforms handles the in-between.
   auto root_bounds = root_view->bounds();
   const int original_height = root_bounds.height();
-  const int new_height = widget_layer->bounds().height();
+  const int new_height = browser_widget->GetLayer()->bounds().height();
 
   // This must be updated here **before** the browser is laid out, since the
   // renderer (as a result of the layout) may query this value, and hence it
@@ -847,7 +868,7 @@ void TopControlsSlideControllerChromeOS::OnEndSliding() {
   // If the top controls are fully hidden, then the top container is laid out
   // such that its bounds are outside the window. The window should continue to
   // mask anything outside its bounds.
-  widget_layer->SetMasksToBounds(shown_ratio_ < 1.f);
+  MaybeSetMasksToBounds(browser_widget, shown_ratio_ < 1.f);
 }
 
 void TopControlsSlideControllerChromeOS::

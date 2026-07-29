@@ -2,20 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "storage/browser/file_system/sandbox_file_system_backend.h"
 
 #include <stddef.h>
 
+#include <array>
 #include <memory>
 #include <set>
 #include <vector>
 
-#include "base/containers/contains.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/functional/bind.h"
@@ -53,11 +49,12 @@ namespace storage {
 
 namespace {
 
-const struct RootPathTest {
+struct RootPathTest {
   FileSystemType type;
   const char* origin_url;
   const char* expected_path;
-} kRootPathTestCases[] = {
+};
+const auto kRootPathTestCases = std::to_array<RootPathTest>({
     {kFileSystemTypeTemporary, "http://foo:1/", "000" PS "t"},
     {kFileSystemTypePersistent, "http://foo:1/", "000" PS "p"},
     {kFileSystemTypeTemporary, "http://bar.com/", "001" PS "t"},
@@ -66,23 +63,26 @@ const struct RootPathTest {
     {kFileSystemTypePersistent, "https://foo:2/", "002" PS "p"},
     {kFileSystemTypeTemporary, "https://bar.com/", "003" PS "t"},
     {kFileSystemTypePersistent, "https://bar.com/", "003" PS "p"},
+});
+
+struct RootPathFileURITest {
+  FileSystemType type;
+  const char* origin_url;
+  const char* expected_path;
 };
+const auto kRootPathFileURITestCases = std::to_array<RootPathFileURITest>(
+    {{kFileSystemTypeTemporary, "file:///", "000" PS "t"},
+     {kFileSystemTypePersistent, "file:///", "000" PS "p"}});
 
-const struct RootPathFileURITest {
+struct RootPathFileURINonDefaulBucketTest {
   FileSystemType type;
   const char* origin_url;
   const char* expected_path;
-} kRootPathFileURITestCases[] = {
-    {kFileSystemTypeTemporary, "file:///", "000" PS "t"},
-    {kFileSystemTypePersistent, "file:///", "000" PS "p"}};
-
-const struct RootPathFileURINonDefaulBucketTest {
-  FileSystemType type;
-  const char* origin_url;
-  const char* expected_path;
-} kRootPathFileURIAndBucketTestCases[] = {
-    {kFileSystemTypeTemporary, "file:///", "1" PS "FileSystem" PS "t"},
-    {kFileSystemTypePersistent, "file:///", "1" PS "FileSystem" PS "p"}};
+};
+const auto kRootPathFileURIAndBucketTestCases =
+    std::to_array<RootPathFileURINonDefaulBucketTest>(
+        {{kFileSystemTypeTemporary, "file:///", "1" PS "FileSystem" PS "t"},
+         {kFileSystemTypePersistent, "file:///", "1" PS "FileSystem" PS "p"}});
 
 void DidOpenFileSystem(base::File::Error* error_out,
                        const GURL& origin_url,
@@ -227,16 +227,18 @@ TEST_F(SandboxFileSystemBackendTest, Empty) {
 
 TEST_F(SandboxFileSystemBackendTest, EnumerateOrigins) {
   SetUpNewBackend(CreateAllowFileAccessOptions());
-  const char* temporary_origins[] = {
-      "http://www.bar.com/",       "http://www.foo.com/",
-      "http://www.foo.com:1/",     "http://www.example.com:8080/",
+  auto temporary_origins = std::to_array<const char*>({
+      "http://www.bar.com/",
+      "http://www.foo.com/",
+      "http://www.foo.com:1/",
+      "http://www.example.com:8080/",
       "http://www.google.com:80/",
-  };
-  const char* persistent_origins[] = {
+  });
+  auto persistent_origins = std::to_array<const char*>({
       "http://www.bar.com/",
       "http://www.foo.com:8080/",
       "http://www.foo.com:80/",
-  };
+  });
   size_t temporary_size = std::size(temporary_origins);
   size_t persistent_size = std::size(persistent_origins);
   std::set<blink::StorageKey> temporary_set, persistent_set;
@@ -261,11 +263,11 @@ TEST_F(SandboxFileSystemBackendTest, EnumerateOrigins) {
     SCOPED_TRACE(testing::Message()
                  << "EnumerateOrigin " << current->origin().Serialize());
     if (enumerator->HasFileSystemType(kFileSystemTypeTemporary)) {
-      EXPECT_TRUE(base::Contains(temporary_set, current.value()));
+      EXPECT_TRUE(temporary_set.contains(current.value()));
       ++temporary_actual_size;
     }
     if (enumerator->HasFileSystemType(kFileSystemTypePersistent)) {
-      EXPECT_TRUE(base::Contains(persistent_set, current.value()));
+      EXPECT_TRUE(persistent_set.contains(current.value()));
       ++persistent_actual_size;
     }
   }

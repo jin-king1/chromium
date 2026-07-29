@@ -8,11 +8,13 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//base:base_unittests",
+        "module_scheme": "gtest",
         "name": "base_unittests",
         "swarming": {
           "dimensions": {
             "cpu": "x86-64",
-            "os": "Mac-14"
+            "os": "Mac-15"
           },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
@@ -23,37 +25,18 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//third_party/highway:highway_tests",
+        "module_scheme": "gtest",
         "name": "highway_tests",
         "swarming": {
           "dimensions": {
             "cpu": "x86-64",
-            "os": "Mac-14"
+            "os": "Mac-15"
           },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "highway_tests",
         "test_id_prefix": "ninja://third_party/highway:highway_tests/"
-      }
-    ],
-    "isolated_scripts": [
-      {
-        "merge": {
-          "script": "//tools/perf/process_perf_results.py"
-        },
-        "name": "chrome_sizes",
-        "resultdb": {
-          "enable": true,
-          "has_native_resultdb_integration": true
-        },
-        "swarming": {
-          "dimensions": {
-            "cpu": "x86-64",
-            "os": "Mac-14"
-          },
-          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
-        },
-        "test": "chrome_sizes",
-        "test_id_prefix": "ninja://chrome/test:chrome_sizes/"
       }
     ]
   }

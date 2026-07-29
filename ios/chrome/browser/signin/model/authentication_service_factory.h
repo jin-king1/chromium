@@ -24,11 +24,6 @@ class AuthenticationServiceDelegate;
 // the associated `AuthenticationService`.
 class AuthenticationServiceFactory : public ProfileKeyedServiceFactoryIOS {
  public:
-  // Factory for AuthenticationServiceDelegate.
-  using AuthenticationServiceDelegateFactory =
-      base::OnceCallback<std::unique_ptr<AuthenticationServiceDelegate>(
-          ProfileIOS*)>;
-
   static AuthenticationService* GetForProfile(ProfileIOS* profile);
   static AuthenticationServiceFactory* GetInstance();
 
@@ -37,21 +32,16 @@ class AuthenticationServiceFactory : public ProfileKeyedServiceFactoryIOS {
   static TestingFactory GetFactoryWithDelegate(
       std::unique_ptr<AuthenticationServiceDelegate> delegate);
 
-  // Returns a factory that builds an AuthenticationService using a custom
-  // delegate factory.
-  static TestingFactory GetFactoryWithDelegateFactory(
-      AuthenticationServiceDelegateFactory delegate_factory);
-
  private:
   friend class base::NoDestructor<AuthenticationServiceFactory>;
 
   AuthenticationServiceFactory();
   ~AuthenticationServiceFactory() override;
 
-  // BrowserStateKeyedServiceFactory implementation.
+  // ProfileKeyedServiceFactoryIOS implementation.
   std::unique_ptr<KeyedService> BuildServiceInstanceFor(
-      web::BrowserState* context) const override;
-  void RegisterBrowserStatePrefs(
+      ProfileIOS* profile) const override;
+  void RegisterProfilePrefs(
       user_prefs::PrefRegistrySyncable* registry) override;
 };
 

@@ -11,6 +11,7 @@
 #include <limits>
 
 #include "partition_alloc/address_pool_manager_types.h"
+#include "partition_alloc/bucket_lookup.h"
 #include "partition_alloc/build_config.h"
 #include "partition_alloc/buildflags.h"
 #include "partition_alloc/flags.h"
@@ -50,7 +51,9 @@ enum class AllocFlags {
   kFastPathOrReturnNull = 1 << 5,  // Internal.
   // An allocation override hook should tag the allocated memory for MTE.
   kMemoryShouldBeTaggedForMte = 1 << 6,  // Internal.
-  kMaxValue = kMemoryShouldBeTaggedForMte,
+  // An explicitly aligned allocation.
+  kAlignedAlloc = 1 << 7,  // Internal.
+  kMaxValue = kAlignedAlloc,
 };
 PA_DEFINE_OPERATORS_FOR_FLAGS(AllocFlags);
 
@@ -63,7 +66,17 @@ enum class FreeFlags {
   kNoHooks = 1 << 1,  // Internal.
   // Quarantine for a while to ensure no UaF from on-stack pointers.
   kSchedulerLoopQuarantine = 1 << 2,
-  kMaxValue = kSchedulerLoopQuarantine,
+  // Quarantine for a while to ensure no UaF from on-stack pointers.
+  kSchedulerLoopQuarantineForAdvancedMemorySafetyChecks = 1 << 3,
+  // `kWith[A-Za-z]+Hint` shows whether `FreeHint`'s member is available or not.
+  kWithSizeHint = 1 << 4,       // `FreeHint::size` is available.
+  kWithAlignmentHint = 1 << 5,  // `FreeHint::alignment` is available.
+  kWithTypeIdHint = 1 << 6,     // `FreeHint::type_id` is available.
+  // Only used when MEMORY_TOOL_REPLACES_ALLOCATOR is defined, we will attempt
+  // to use an aligned free function.
+  kAlignedFreeForMemoryTool = 1 << 7,  // Internal.
+  kIntendedLeak = 1 << 8,              // Internal.
+  kMaxValue = kIntendedLeak,
 };
 PA_DEFINE_OPERATORS_FOR_FLAGS(FreeFlags);
 }  // namespace internal
@@ -74,13 +87,20 @@ using internal::FreeFlags;
 namespace internal {
 
 // Size of a cache line. Not all CPUs in the world have a 64 bytes cache line
-// size, but as of 2021, most do. This is in particular the case for almost all
-// x86_64 and almost all ARM CPUs supported by Chromium. As this is used for
-// static alignment, we cannot query the CPU at runtime to determine the actual
-// alignment, so use 64 bytes everywhere. Since this is only used to avoid false
-// sharing, getting this wrong only results in lower performance, not incorrect
-// code.
-constexpr size_t kPartitionCachelineSize = 64;
+// size, but as of 2026, most do. This is in particular the case for almost all
+// x86_64. Arm64 chips used by Mac and iOS (all M Series and modern A Series)
+// have a 128 byte CacheLine (see section 5.6.5 Memory Cache of Apple Silicon
+// CPU Optimization Guide Version 4).
+//
+// As this is used for static alignment, we cannot query the CPU at runtime to
+// determine the actual alignment, so use 64 or 128 bytes everywhere. Since this
+// is only used to avoid false sharing, getting this wrong only results in lower
+// performance, not incorrect code.
+#if PA_BUILDFLAG(IS_APPLE) && PA_BUILDFLAG(PA_ARCH_CPU_ARM64)
+inline constexpr size_t kPartitionCachelineSize = 128;
+#else
+inline constexpr size_t kPartitionCachelineSize = 64;
+#endif
 
 // Underlying partition storage pages (`PartitionPage`s) are a power-of-2 size.
 // It is typical for a `PartitionPage` to be based on multiple system pages.
@@ -104,7 +124,7 @@ PA_ALWAYS_INLINE PAGE_ALLOCATOR_CONSTANTS_DECLARE_CONSTEXPR size_t
 PartitionPageShift() {
   return PageAllocationGranularityShift() + 2;
 }
-#elif defined(_MIPS_ARCH_LOONGSON) || PA_BUILDFLAG(PA_ARCH_CPU_LOONGARCH64)
+#elif defined(_MIPS_ARCH_LOONGSON)
 PA_ALWAYS_INLINE PAGE_ALLOCATOR_CONSTANTS_DECLARE_CONSTEXPR size_t
 PartitionPageShift() {
   return 16;  // 64 KiB
@@ -164,21 +184,6 @@ MaxRegularSlotSpanSize() {
   return kMaxPartitionPagesPerRegularSlotSpan << PartitionPageShift();
 }
 
-// The maximum size that is used in an alternate bucket distribution. After this
-// threshold, we only have 1 slot per slot-span, so external fragmentation
-// doesn't matter. So, using the alternate bucket distribution after this
-// threshold has no benefit, and only increases internal fragmentation.
-//
-// We would like this to be |MaxRegularSlotSpanSize()| on all platforms, but
-// this is not constexpr on all platforms, so on other platforms we hardcode it,
-// even though this may be too low, e.g. on systems with a page size >4KiB.
-constexpr size_t kHighThresholdForAlternateDistribution =
-#if PAGE_ALLOCATOR_CONSTANTS_ARE_CONSTEXPR
-    MaxRegularSlotSpanSize();
-#else
-    1 << 16;
-#endif
-
 // We reserve virtual address space in 2 MiB chunks (aligned to 2 MiB as well).
 // These chunks are called *super pages*. We do this so that we can store
 // metadata in the first few pages of each 2 MiB-aligned section. This makes
@@ -196,17 +201,12 @@ constexpr size_t kHighThresholdForAlternateDistribution =
 //     | Guard page (4 KiB)    |
 //     | Metadata page (4 KiB) |
 //     | Guard pages (8 KiB)   |
-//     | Free Slot Bitmap      |
-//     | *Scan State Bitmap    |
 //     | Slot span             |
 //     | Slot span             |
 //     | ...                   |
 //     | Slot span             |
 //     | Guard pages (16 KiB)  |
 //     +-----------------------+
-//
-// Free Slot Bitmap is only present when USE_FREESLOT_BITMAP is true. State
-// Bitmap is inserted for partitions that may have quarantine enabled.
 //
 // If ENABLE_BACKUP_REF_PTR_SUPPORT is on, InSlotMetadataTable(4KiB) is inserted
 // after the Metadata page, which hosts what normally would be in-slot metadata,
@@ -389,42 +389,9 @@ DirectMapAllocationGranularityOffsetMask() {
   return DirectMapAllocationGranularity() - 1;
 }
 
-// The "order" of an allocation is closely related to the power-of-1 size of the
-// allocation. More precisely, the order is the bit index of the
-// most-significant-bit in the allocation size, where the bit numbers starts at
-// index 1 for the least-significant-bit.
-//
-// In terms of allocation sizes, order 0 covers 0, order 1 covers 1, order 2
-// covers 2->3, order 3 covers 4->7, order 4 covers 8->15.
-
-// PartitionAlloc should return memory properly aligned for any type, to behave
-// properly as a generic allocator. This is not strictly required as long as
-// types are explicitly allocated with PartitionAlloc, but is to use it as a
-// malloc() implementation, and generally to match malloc()'s behavior.
-//
-// In practice, this means 8 bytes alignment on 32 bit architectures, and 16
-// bytes on 64 bit ones.
-//
-// Keep in sync with //tools/memory/partition_allocator/objects_per_size_py.
-constexpr size_t kMinBucketedOrder =
-    kAlignment == 16 ? 5 : 4;  // 2^(order - 1), that is 16 or 8.
-// The largest bucketed order is 1 << (20 - 1), storing [512 KiB, 1 MiB):
-constexpr size_t kMaxBucketedOrder = 20;
-constexpr size_t kNumBucketedOrders =
-    (kMaxBucketedOrder - kMinBucketedOrder) + 1;
-// 8 buckets per order (for the higher orders).
-// Note: this is not what is used by default, but the maximum amount of buckets
-// per order. By default, only 4 are used.
-constexpr size_t kNumBucketsPerOrderBits = 3;
-constexpr size_t kNumBucketsPerOrder = 1 << kNumBucketsPerOrderBits;
-constexpr size_t kNumBuckets = kNumBucketedOrders * kNumBucketsPerOrder;
-constexpr size_t kSmallestBucket = 1 << (kMinBucketedOrder - 1);
-constexpr size_t kMaxBucketSpacing =
-    1 << ((kMaxBucketedOrder - 1) - kNumBucketsPerOrderBits);
-constexpr size_t kMaxBucketed = (1 << (kMaxBucketedOrder - 1)) +
-                                ((kNumBucketsPerOrder - 1) * kMaxBucketSpacing);
 // Limit when downsizing a direct mapping using `realloc`:
-constexpr size_t kMinDirectMappedDownsize = kMaxBucketed + 1;
+constexpr size_t kMinDirectMappedDownsize =
+    BucketIndexLookup::kMaxBucketSize + 1;
 // Intentionally set to less than 2GiB to make sure that a 2GiB allocation
 // fails. This is a security choice in Chrome, to help making size_t vs int bugs
 // harder to exploit.
@@ -445,57 +412,29 @@ PA_ALWAYS_INLINE constexpr size_t MaxDirectMapped() {
 // where a normal slot span will be large enough to contain multiple items,
 // but the address will go over the final partition page after being aligned.
 #if PA_BUILDFLAG(IS_LINUX) && PA_BUILDFLAG(PA_ARCH_CPU_ARM64)
-constexpr size_t kMaxSupportedAlignment = kSuperPageSize / 4;
+inline constexpr size_t kMaxSupportedAlignment = kSuperPageSize / 4;
 #else
-constexpr size_t kMaxSupportedAlignment = kSuperPageSize / 2;
+inline constexpr size_t kMaxSupportedAlignment = kSuperPageSize / 2;
 #endif
 
-constexpr size_t kBitsPerSizeT = sizeof(void*) * CHAR_BIT;
+enum SlotSpanRingMaxSize : int16_t {
+  kSmall = 1 << 4,
+  kMedium = 1 << 7,
+  kLarge = 1 << 10,
+};
 
-// When a SlotSpan becomes empty, the allocator tries to avoid re-using it
-// immediately, to help with fragmentation. At this point, it becomes dirty
-// committed memory, which we want to minimize. This could be decommitted
-// immediately, but that would imply doing a lot of system calls. In particular,
-// for single-slot SlotSpans, a malloc() / free() loop would cause a *lot* of
-// system calls.
-//
-// As an intermediate step, empty SlotSpans are placed into a per-partition
-// global ring buffer, giving the newly-empty SlotSpan a chance to be re-used
-// before getting decommitted. A new entry (i.e. a newly empty SlotSpan) taking
-// the place used by a previous one will lead the previous SlotSpan to be
-// decommitted immediately, provided that it is still empty.
-//
-// Increasing the ring size means giving more time for reuse to happen, at the
-// cost of possibly increasing peak committed memory usage (and increasing the
-// size of PartitionRoot a bit, since the ring buffer is there). Note that the
-// ring buffer doesn't necessarily contain an empty SlotSpan, as SlotSpans are
-// *not* removed from it when re-used. So the ring buffer really is a buffer of
-// *possibly* empty SlotSpans.
-//
-// In all cases, PartitionRoot::PurgeMemory() with the
-// PurgeFlags::kDecommitEmptySlotSpans flag will eagerly decommit all entries
-// in the ring buffer, so with periodic purge enabled, this typically happens
-// every few seconds.
-//
-// The constants below define the empty ring size:
+// The constants below define the default empty ring size:
 // - In foreground mode (see `PartitionRoot::AdjustForForeground`).
-constexpr size_t kForegroundEmptySlotSpanRingSize =
-#if PA_BUILDFLAG(USE_LARGE_EMPTY_SLOT_SPAN_RING)
-    1 << 10;
-#else
-    1 << 7;
-#endif
-// - In background mode or large empty slot span ring mode (see
-//   `PartitionRoot::AdjustForBackground` and
-//   `PartitionRoot::EnableLargeEmptySlotSpanRing`).
-constexpr size_t kBackgroundEmptySlotSpanRingSize = 1 << 7;
-// - By default.
-constexpr size_t kDefaultEmptySlotSpanRingSize = 16;
+inline constexpr size_t kDefaultEmptySlotSpanRingSize =
+    SlotSpanRingMaxSize::kSmall;
 
 // This is the maximum ring size supported across all modes:
-constexpr size_t kMaxEmptySlotSpanRingSize = kForegroundEmptySlotSpanRingSize;
-static_assert(kMaxEmptySlotSpanRingSize >= kForegroundEmptySlotSpanRingSize);
-static_assert(kMaxEmptySlotSpanRingSize >= kBackgroundEmptySlotSpanRingSize);
+inline constexpr size_t kMaxEmptySlotSpanRingSize =
+#if PA_BUILDFLAG(USE_LARGE_EMPTY_SLOT_SPAN_RING)
+    SlotSpanRingMaxSize::kLarge;
+#else
+    SlotSpanRingMaxSize::kMedium;
+#endif
 static_assert(kMaxEmptySlotSpanRingSize >= kDefaultEmptySlotSpanRingSize);
 
 // If the total size in bytes of allocated but not committed pages exceeds this
@@ -503,23 +442,24 @@ static_assert(kMaxEmptySlotSpanRingSize >= kDefaultEmptySlotSpanRingSize);
 // crash stack trace is generated at
 // `PartitionOutOfMemoryWithLotsOfUncommitedPages`. This is to distinguish "out
 // of virtual address space" from "out of physical memory" in crash reports.
-constexpr size_t kReasonableSizeOfUnusedPages = 1024 * 1024 * 1024;  // 1 GiB
+inline constexpr size_t kReasonableSizeOfUnusedPages =
+    1024 * 1024 * 1024;  // 1 GiB
 
 // These byte values match tcmalloc.
-constexpr unsigned char kUninitializedByte = 0xAB;
-constexpr unsigned char kFreedByte = 0xCD;
+inline constexpr unsigned char kUninitializedByte = 0xAB;
+inline constexpr unsigned char kFreedByte = 0xCD;
 
-constexpr unsigned char kQuarantinedByte = 0xEF;
+inline constexpr unsigned char kQuarantinedByte = 0xEF;
 
-// 1 is smaller than anything we can use, as it is not properly aligned. Not
-// using a large size, since PartitionBucket::slot_size is a uint32_t, and
-// static_cast<uint32_t>(-1) is too close to a "real" size.
-constexpr size_t kInvalidBucketSize = 1;
-
-#if PA_CONFIG(MAYBE_ENABLE_MAC11_MALLOC_SIZE_HACK)
-// Requested size that requires the hack.
-constexpr size_t kMac11MallocSizeHackRequestedSize = 32;
-#endif
+// Each IntendedLeaked memory region: [0...slot_size) will be filled by:
+// [0     ... 8):         |EB B0 00 "typeid (32bit)" "unused(8bit)"|
+//   ...
+// [8(n-1)... 8n):        |EB B0 00 "typeid (32bit)" "unused(8bit)"|
+// [8n    ... slot_size): |EB EB ... EB| (remainder)
+// (*) n = slot_size / sizeof(uint64_t)
+inline constexpr uint64_t kIntendedLeakQuarantineMarker = 0xEBB0000000000000u;
+inline constexpr uint64_t kIntendedLeakQuarantineMask = 0xFFFFFF0000000000u;
+inline constexpr uint8_t kIntendedLeakQuarantineRemainder = 0xEB;
 
 }  // namespace internal
 
@@ -536,13 +476,17 @@ static_assert(kThreadCacheLargeSizeThreshold <=
 
 // These constants are used outside PartitionAlloc itself, so we provide
 // non-internal aliases here.
-using ::partition_alloc::internal::kInvalidBucketSize;
 using ::partition_alloc::internal::kMaxSuperPagesInPool;
 using ::partition_alloc::internal::kMaxSupportedAlignment;
-using ::partition_alloc::internal::kNumBuckets;
 using ::partition_alloc::internal::kSuperPageSize;
 using ::partition_alloc::internal::MaxDirectMapped;
 using ::partition_alloc::internal::PartitionPageSize;
+
+#if PA_BUILDFLAG(ENABLE_AUTO_PARTITIONING)
+inline constexpr size_t kNumPartitions = 2;
+#else
+inline constexpr size_t kNumPartitions = 1;
+#endif
 
 }  // namespace partition_alloc
 

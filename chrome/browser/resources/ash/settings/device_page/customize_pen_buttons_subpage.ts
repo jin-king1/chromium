@@ -8,7 +8,6 @@
  * the graphics tablets, and allow users to configure the pen buttons for
  * each graphics tablet.
  */
-import '../icons.html.js';
 import '../settings_shared.css.js';
 import './input_device_settings_shared.css.js';
 
@@ -57,20 +56,25 @@ export class SettingsCustomizePenButtonsSubpageElement extends
     };
   }
 
+  constructor() {
+    super();
+    this.metaKey_ = MetaKey.kSearch;
+  }
+
   static get observers(): string[] {
     return [
       'onGraphicsTabletListUpdated(graphicsTablets.*)',
     ];
   }
 
-  selectedTablet: GraphicsTablet;
-  graphicsTablets: GraphicsTablet[];
+  declare selectedTablet: GraphicsTablet;
+  declare graphicsTablets: GraphicsTablet[];
   private buttonActionList_: ActionChoice[];
   private inputDeviceSettingsProvider_: InputDeviceSettingsProviderInterface =
       getInputDeviceSettingsProvider();
   private previousRoute_: Route|null = null;
   private isInitialized_: boolean = false;
-  private metaKey_: MetaKey = MetaKey.kSearch;
+  declare private metaKey_: MetaKey;
 
   override async connectedCallback(): Promise<void> {
     super.connectedCallback();

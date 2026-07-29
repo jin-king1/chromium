@@ -27,9 +27,11 @@
 #include "third_party/blink/renderer/core/svg_names.h"
 #include "third_party/blink/renderer/core/testing/core_unit_test_helper.h"
 #include "third_party/blink/renderer/core/testing/mock_hyphenation.h"
+#include "third_party/blink/renderer/platform/fonts/shaping/ng_shape_cache.h"
 #include "third_party/blink/renderer/platform/fonts/shaping/shape_result_spacing.h"
 #include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 #include "third_party/blink/renderer/platform/testing/unit_test_helpers.h"
+#include "third_party/blink/renderer/platform/wtf/text/string_builder_stream.h"
 
 namespace blink {
 
@@ -45,16 +47,9 @@ class InlineNodeForTest : public InlineNode {
   using InlineNode::InlineNode;
 
   std::string Text() const { return Data().text_content.Utf8(); }
+  const String& TextContent() const { return Data().text_content; }
   InlineItems& Items() { return MutableData()->items; }
   static InlineItems& Items(InlineNodeData& data) { return data.items; }
-  bool IsNGShapeCacheAllowed(const String& text_content,
-                             const Font* override_font,
-                             const InlineItems& items,
-                             ShapeResultSpacing<String>& spacing) const {
-    return InlineNode::IsNGShapeCacheAllowed(text_content, override_font, items,
-                                             spacing);
-  }
-
   void Append(const String& text, LayoutObject* layout_object) {
     InlineNodeData* data = MutableData();
     unsigned start = data->text_content.length();
@@ -176,7 +171,6 @@ class InlineNodeTest : public RenderingTest {
 
   Persistent<LayoutBlockFlow> layout_block_flow_;
   Persistent<LayoutObject> layout_object_;
-  FontCachePurgePreventer purge_preventer_;
 };
 
 #define TEST_ITEM_TYPE_OFFSET(item, type, start, end) \
@@ -222,6 +216,71 @@ TEST_F(InlineNodeTest, CollectInlinesBR) {
   EXPECT_EQ(3u, items.size());
 }
 
+namespace {
+
+constexpr wtf_size_t kLargeSharedTextLength = 1024;
+
+String MakeLargeMultilineText() {
+  StringBuilder builder;
+  while (builder.length() < kLargeSharedTextLength) {
+    if (!builder.empty()) {
+      builder.Append("\n");
+    }
+    builder.Append("abcdefghijklmnopqrstuvwxyz0123456789");
+  }
+  return builder.ToString();
+}
+
+String WrapInDiv(const StringView& style, const StringView& content) {
+  StringBuilder html;
+  html << "<div id=t";
+  if (!style.empty()) {
+    html << " style='" << style << "'";
+  }
+  html << ">" << content << "</div>";
+  return html.ToString();
+}
+}  // namespace
+
+TEST_F(InlineNodeTest, ShareInlineTextContentSingleSource) {
+  String content = MakeLargeMultilineText();
+  SetupHtml("t", WrapInDiv("white-space:pre", content));
+  InlineNodeForTest node = CreateInlineNode();
+  node.CollectInlines();
+  const auto* layout_text = To<LayoutText>(layout_object_.Get());
+  EXPECT_EQ(content, node.TextContent());
+  EXPECT_EQ(node.TextContent().Impl(), layout_text->TransformedText().Impl());
+}
+
+// Large text whose whitespace collapsing changes the length is not shared.
+TEST_F(InlineNodeTest, ShareInlineTextContentLargeNotSharedWhenCollapsed) {
+  StringBuilder builder;
+  while (builder.length() < kLargeSharedTextLength) {
+    if (!builder.empty()) {
+      builder.Append("  ");  // Two spaces collapse to one.
+    }
+    builder.Append("word");
+  }
+  String content = builder.ToString();
+  SetupHtml("t", WrapInDiv(/*style=*/"", content));
+  InlineNodeForTest node = CreateInlineNode();
+  node.CollectInlines();
+  const auto* layout_text = To<LayoutText>(layout_object_.Get());
+  EXPECT_NE(node.TextContent().Impl(), layout_text->TransformedText().Impl());
+}
+
+// Large text whose collapsing keeps the length but changes bytes (each '\n'
+// becomes a space) is not shared.
+TEST_F(InlineNodeTest, ShareInlineTextContentLargeNotSharedSameLength) {
+  String content = MakeLargeMultilineText();
+  SetupHtml("t", WrapInDiv(/*style=*/"", content));
+  InlineNodeForTest node = CreateInlineNode();
+  node.CollectInlines();
+  const auto* layout_text = To<LayoutText>(layout_object_.Get());
+  ASSERT_EQ(content.length(), node.TextContent().length());
+  EXPECT_NE(node.TextContent().Impl(), layout_text->TransformedText().Impl());
+}
+
 TEST_F(InlineNodeTest, CollectInlinesFloat) {
   SetupHtml("t",
             "<div id=t>"
@@ -233,15 +292,15 @@ TEST_F(InlineNodeTest, CollectInlinesFloat) {
             "</div>");
   InlineNodeForTest node = CreateInlineNode();
   node.CollectInlines();
-  EXPECT_EQ("abc\uFFFCghi\uFFFCmno", node.Text())
+  EXPECT_EQ("abcghimno", node.Text())
       << "floats are appeared as an object replacement character";
   InlineItems& items = node.Items();
   ASSERT_EQ(5u, items.size());
   TEST_ITEM_TYPE_OFFSET(items[0], kText, 0u, 3u);
-  TEST_ITEM_TYPE_OFFSET(items[1], kFloating, 3u, 4u);
-  TEST_ITEM_TYPE_OFFSET(items[2], kText, 4u, 7u);
-  TEST_ITEM_TYPE_OFFSET(items[3], kFloating, 7u, 8u);
-  TEST_ITEM_TYPE_OFFSET(items[4], kText, 8u, 11u);
+  TEST_ITEM_TYPE_OFFSET(items[1], kFloating, 3u, 3u);
+  TEST_ITEM_TYPE_OFFSET(items[2], kText, 3u, 6u);
+  TEST_ITEM_TYPE_OFFSET(items[3], kFloating, 6u, 6u);
+  TEST_ITEM_TYPE_OFFSET(items[4], kText, 6u, 9u);
 }
 
 TEST_F(InlineNodeTest, CollectInlinesInlineBlock) {
@@ -359,7 +418,7 @@ TEST_F(InlineNodeTest, CollectInlinesTextCombineBR) {
 TEST_F(InlineNodeTest, CollectInlinesTextCombineListItemMarker) {
   InsertStyleElement(
       "#t { text-combine-upright: all; writing-mode: vertical-rl; }");
-  SetupHtml("t", u"<li id=t>ab</li>");
+  SetupHtml("t", u"<ul><li id=t>ab</li></ul>");
   // LayoutListItem {LI}
   //   LayoutOutsideListMarker {::marker}
   //      LayoutTextCombine (anonymous)
@@ -369,10 +428,10 @@ TEST_F(InlineNodeTest, CollectInlinesTextCombineListItemMarker) {
   InlineNodeForTest node =
       CreateInlineNode(To<LayoutTextCombine>(layout_object_->SlowFirstChild()));
   node.CollectInlines();
-  EXPECT_EQ("\u2022", node.Text());
+  EXPECT_EQ("\u2022 ", node.Text());
   InlineItems& items = node.Items();
   ASSERT_EQ(1u, items.size());
-  TEST_ITEM_TYPE_OFFSET(items[0], kText, 0u, 1u);
+  TEST_ITEM_TYPE_OFFSET(items[0], kText, 0u, 2u);
   EXPECT_TRUE(items[0]->IsSymbolMarker());
 }
 
@@ -452,9 +511,9 @@ TEST_F(InlineNodeTest, SegmentSplit3To4) {
 TEST_F(InlineNodeTest, SegmentBidiOverride) {
   InlineNodeForTest node = CreateInlineNode();
   node.Append("Hello ", layout_object_);
-  node.Append(kRightToLeftOverrideCharacter);
+  node.Append(uchar::kRightToLeftOverride);
   node.Append("ABC", layout_object_);
-  node.Append(kPopDirectionalFormattingCharacter);
+  node.Append(uchar::kPopDirectionalFormatting);
   node.SegmentText();
   InlineItems& items = node.Items();
   ASSERT_EQ(4u, items.size());
@@ -467,13 +526,13 @@ TEST_F(InlineNodeTest, SegmentBidiOverride) {
 static InlineNodeForTest CreateBidiIsolateNode(InlineNodeForTest node,
                                                LayoutObject* layout_object) {
   node.Append("Hello ", layout_object);
-  node.Append(kRightToLeftIsolateCharacter);
+  node.Append(uchar::kRightToLeftIsolate);
   node.Append(u"\u05E2\u05D1\u05E8\u05D9\u05EA ", layout_object);
-  node.Append(kLeftToRightIsolateCharacter);
+  node.Append(uchar::kLeftToRightIsolate);
   node.Append("A", layout_object);
-  node.Append(kPopDirectionalIsolateCharacter);
+  node.Append(uchar::kPopDirectionalIsolate);
   node.Append(u"\u05E2\u05D1\u05E8\u05D9\u05EA", layout_object);
-  node.Append(kPopDirectionalIsolateCharacter);
+  node.Append(uchar::kPopDirectionalIsolate);
   node.Append(" World", layout_object);
   node.SegmentText();
   return node;
@@ -507,6 +566,22 @@ struct MinMaxData {
     {"A B<span>C D</span>", {20, 60}},
     // A close tag after a forced break.
     {"<span>12<br></span>", {80, 80}, "", "span { border: 30px solid blue; }"},
+    // crbug.com/41462717: Symmetric `border` keeps this stable in LTR/RTL.
+    {"<span>a</span><span> a</span>",
+     {13, 34},
+     "",
+     "span { border: 1px solid }"},
+    // Same, with a nested open tag wrapping the inner span.
+    {"<span>a</span><b><span> a</span></b>",
+     {13, 34},
+     "",
+     "span { border: 1px solid }"},
+    // `dir` attribute introduces a `kBidiControl` item between the close tag
+    // and the open tag; it must not bypass the suppression.
+    {"<span>a</span><span dir=\"rtl\"> a</span>",
+     {13, 34},
+     "",
+     "span { border: 1px solid }"},
     // `pre-wrap` with trailing spaces.
     {"12345 6789 ", {50, 110}, "white-space: pre-wrap;"},
     // `word-break: break-word` can break a space run.
@@ -518,6 +593,13 @@ struct MinMaxData {
     {"&#9;&#9;<span>X</span>",
      {10, 170},
      "white-space: pre-wrap; word-break: break-word;"},
+    // Tabulation inside a ruby base.
+    {"X<ruby>&#9;Y<rt>z</rt></ruby>", {90, 90}, "white-space: pre;"},
+    {"<ruby>X&#9;Y<rt>z</rt></ruby>", {90, 90}, "white-space: pre;"},
+    // Tabulation inside a nested ruby base.
+    {"A<ruby>B<ruby>&#9;X<rt>y</rt></ruby><rt>z</rt></ruby>",
+     {90, 90},
+     "white-space: pre;"},
     // Soft Hyphens.
     {"abcd&shy;ef xx", {50, 90}},
     {"abcd&shy;ef xx", {60, 90}, "hyphens: none;"},
@@ -568,21 +650,20 @@ TEST_P(MinMaxTest, Data) {
   const MinMaxData& data = GetParam();
   LoadAhem();
   StringBuilder html;
-  html.AppendFormat(R"HTML("
+  html << R"HTML(
     <!DOCTYPE html>
     <style>
-    #target { font: 10px Ahem;%s }
-    %s
+    #target { font: 10px Ahem;)HTML"
+       << data.target_style << " }\n    " << data.style << R"HTML(
     </style>
-    <div id="target")HTML",
-                    data.target_style, data.style);
+    <div id="target")HTML";
   if (data.lang) {
-    html.AppendFormat(" lang='%s'", data.lang);
+    html << " lang='" << data.lang << "'";
     LayoutLocale::SetHyphenationForTesting(AtomicString(data.lang),
                                            MockHyphenation::Create());
   }
-  html.AppendFormat(">%s</div>", data.content);
-  SetupHtml("target", html.ToString());
+  html << ">" << data.content << "</div>";
+  SetupHtml("target", html.ReleaseString());
   InlineNodeForTest node = CreateInlineNode();
   const MinMaxSizes actual_sizes = ComputeMinMaxSizes(node);
   const MinMaxSizes expected_sizezs{LayoutUnit(data.min_max[0]),
@@ -1182,7 +1263,7 @@ TEST_F(InlineNodeTest, RemoveInlineNodeDataIfBlockBecomesEmpty2) {
   SetupHtml("container", "<div id=container><b><i>foo</i></b></div>");
   ASSERT_TRUE(layout_block_flow_->GetInlineNodeData());
 
-  GetElementById("container")->setInnerHTML("");
+  GetElementById("container")->SetInnerHTMLWithoutTrustedTypes("");
   UpdateAllLifecyclePhasesForTest();
 
   EXPECT_FALSE(layout_block_flow_->GetInlineNodeData());
@@ -1288,9 +1369,7 @@ TEST_F(InlineNodeTest, PreservedNewlineWithRemovedBidiAndRelayout) {
             "<pre id=container>foo<span dir=rtl>\nbar</span></pre>");
   EXPECT_EQ(String(u"foo\u2067\u2069\n\u2067bar\u2069"), GetText());
 
-  GetDocument()
-      .QuerySelector(AtomicString("span"))
-      ->removeAttribute(html_names::kDirAttr);
+  QuerySelector("span")->removeAttribute(html_names::kDirAttr);
   UpdateAllLifecyclePhasesForTest();
 
   // The bidi control characters around '\n' should not preserve
@@ -1302,9 +1381,7 @@ TEST_F(InlineNodeTest, PreservedNewlineWithRemovedLtrDirAndRelayout) {
             "<pre id=container>foo<span dir=ltr>\nbar</span></pre>");
   EXPECT_EQ(String(u"foo\u2066\u2069\n\u2066bar\u2069"), GetText());
 
-  GetDocument()
-      .QuerySelector(AtomicString("span"))
-      ->removeAttribute(html_names::kDirAttr);
+  QuerySelector("span")->removeAttribute(html_names::kDirAttr);
   UpdateAllLifecyclePhasesForTest();
 
   // The bidi control characters around '\n' should not preserve
@@ -1329,9 +1406,7 @@ TEST_F(InlineNodeTest, CollapsibleSpaceFollowingBRWithNoWrapStyle) {
   SetupHtml("t", "<div id=t><span style=white-space:pre><br></span> </div>");
   EXPECT_EQ("\n", GetText());
 
-  GetDocument()
-      .QuerySelector(AtomicString("span"))
-      ->removeAttribute(html_names::kStyleAttr);
+  QuerySelector("span")->removeAttribute(html_names::kStyleAttr);
   UpdateAllLifecyclePhasesForTest();
   EXPECT_EQ("\n", GetText());
 }
@@ -1340,9 +1415,7 @@ TEST_F(InlineNodeTest, CollapsibleSpaceFollowingNewlineWithPreStyle) {
   SetupHtml("t", "<div id=t><span style=white-space:pre>\n</span> </div>");
   EXPECT_EQ("\n", GetText());
 
-  GetDocument()
-      .QuerySelector(AtomicString("span"))
-      ->removeAttribute(html_names::kStyleAttr);
+  QuerySelector("span")->removeAttribute(html_names::kStyleAttr);
   UpdateAllLifecyclePhasesForTest();
   EXPECT_EQ("", GetText());
 }
@@ -1392,7 +1465,7 @@ TEST_F(InlineNodeTest, SegmentRanges) {
 
   InlineItemsData* items_data = layout_block_flow_->GetInlineNodeData();
   ASSERT_TRUE(items_data);
-  InlineItemSegments* segments = items_data->segments.get();
+  InlineItemSegments* segments = items_data->segments.Get();
   ASSERT_TRUE(segments);
 
   // Test EndOffset for the full text. All segment boundaries including the end
@@ -1484,7 +1557,7 @@ TEST_F(InlineNodeTest, ReusingWithCollapsed) {
             "</div>");
   GetElementById("remove")->remove();
   UpdateAllLifecyclePhasesForTest();
-  EXPECT_EQ(String(u"abc \uFFFCx"), GetText());
+  EXPECT_EQ(String(u"abc x"), GetText());
 }
 
 // https://crbug.com/109654
@@ -1710,102 +1783,13 @@ TEST_F(InlineNodeTest, FindSvgTextChunksCrash3) {
   // Pass if no CHECK() failures in FindSvgTextChunks().
 }
 
-TEST_F(InlineNodeTest, FontFeaturesInitial) {
-  SetBodyInnerHTML(R"HTML(
-    <div id="initial"></div>
-    <div id="no-kern" style="font-kerning: none"></div>
-  )HTML");
-  const auto is_initial = [this](const char* id) {
-    const auto* layout_object = GetLayoutObjectByElementId(id);
-    Vector<FontFeatureRange, FontFeatureRange::kInitialSize> features;
-    FontFeatureRange::FromFontDescription(
-        layout_object->StyleRef().GetFont()->GetFontDescription(), features);
-    if (FontFeatureRange::IsInitial(features)) {
-      EXPECT_EQ(features.size(), FontFeatureRange::kInitialSize);
-      return true;
-    }
-    return false;
-  };
-  EXPECT_TRUE(is_initial("initial"));
-  EXPECT_FALSE(is_initial("no-kern"));
-}
-
-TEST_F(InlineNodeTest, ShapeCacheDisabled) {
-  ScopedLayoutNGShapeCacheForTest scoped_feature(false);
-
-  SetupHtml("t",
-            "<style>div { font-family: serif; }</style>"
-            "<div id=t>abc</div>");
-  InlineNodeForTest node = CreateInlineNode();
-  node.CollectInlines();
-  EXPECT_EQ("abc", node.Text());
-
-  const String& text_content(node.Text().c_str());
-  InlineItems& items = node.Items();
-  ShapeResultSpacing<String> spacing(text_content, node.IsSvgText());
-
-  EXPECT_FALSE(
-      node.IsNGShapeCacheAllowed(text_content, nullptr, items, spacing));
-}
-
-TEST_F(InlineNodeTest, ShapeCacheLongString) {
-  ScopedLayoutNGShapeCacheForTest scoped_feature(true);
-
-  for (const unsigned text_length :
-       {NGShapeCache::kMaxTextLengthOfEntries - 1,
-        NGShapeCache::kMaxTextLengthOfEntries,
-        NGShapeCache::kMaxTextLengthOfEntries + 1}) {
-    StringBuilder builder;
-    builder.Append("<div id=t>");
-    for (unsigned i = 0; i < text_length; ++i) {
-      builder.Append(static_cast<LChar>((i % 10) + '0'));
-    }
-    builder.Append("</div>");
-
-    SetupHtml("t", builder.ToString());
-    InlineNodeForTest node = CreateInlineNode();
-    node.CollectInlines();
-
-    const String& text_content(node.Text().c_str());
-    InlineItems& items = node.Items();
-    ShapeResultSpacing<String> spacing(text_content, node.IsSvgText());
-
-    EXPECT_EQ(node.IsNGShapeCacheAllowed(text_content, nullptr, items, spacing),
-              text_length <= NGShapeCache::kMaxTextLengthOfEntries);
-  }
-}
-
-TEST_F(InlineNodeTest, ShapeCacheMultiItems) {
-  ScopedLayoutNGShapeCacheForTest scoped_feature(true);
-
-  SetupHtml("t", "<div id=t>abc<span>def</span>ghi</div>");
-  InlineNodeForTest node = CreateInlineNode();
-  node.CollectInlines();
-
-  const String& text_content(node.Text().c_str());
-  InlineItems& items = node.Items();
-  EXPECT_EQ(5u, items.size());
-  ShapeResultSpacing<String> spacing(text_content, node.IsSvgText());
-
-  EXPECT_FALSE(
-      node.IsNGShapeCacheAllowed(text_content, nullptr, items, spacing));
-}
-
-TEST_F(InlineNodeTest, ShapeCacheSpacingRequired) {
-  ScopedLayoutNGShapeCacheForTest scoped_feature(true);
-
-  SetupHtml("t",
-            "<style>div { letter-spacing: 5px; }</style>"
-            "<div id=t>abc</div>");
-  InlineNodeForTest node = CreateInlineNode();
-  node.CollectInlines();
-
-  const String& text_content(node.Text().c_str());
-  InlineItems& items = node.Items();
-  ShapeResultSpacing<String> spacing(text_content, node.IsSvgText());
-
-  EXPECT_FALSE(
-      node.IsNGShapeCacheAllowed(text_content, nullptr, items, spacing));
+// crbug.com/437612643
+TEST_F(InlineNodeTest, NestedRubyMinMaxCrash) {
+  SetBodyInnerHTML(R"HTML(<div style="display: inline-block;">foo
+<ruby><ruby><span style="display:inline-block">ib</span><rt>test</rt></ruby>
+<rt>test</rt></ruby>bar</div>)HTML");
+  UpdateAllLifecyclePhasesForTest();
+  // Pass if no crash in ComputeContentSize().
 }
 
 }  // namespace blink

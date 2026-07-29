@@ -4,30 +4,23 @@
 
 #include "chrome/browser/ui/views/page_action/page_action_icon_view.h"
 
-#include <utility>
-
 #include "chrome/browser/command_updater.h"
-#include "chrome/browser/ui/color/chrome_color_id.h"
+#include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/omnibox/omnibox_theme.h"
 #include "chrome/browser/ui/views/location_bar/icon_label_bubble_view.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_bubble_delegate_view.h"
-#include "chrome/browser/ui/views/location_bar/location_bar_util.h"
 #include "chrome/browser/ui/views/page_action/page_action_icon_loading_indicator_view.h"
 #include "chrome/browser/ui/views/page_action/page_action_icon_view_observer.h"
 #include "page_action_icon_view.h"
 #include "ui/accessibility/ax_enums.mojom.h"
-#include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/models/image_model.h"
 #include "ui/events/event.h"
-#include "ui/gfx/color_utils.h"
 #include "ui/gfx/paint_vector_icon.h"
 #include "ui/gfx/vector_icon_types.h"
-#include "ui/native_theme/native_theme.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/animation/flood_fill_ink_drop_ripple.h"
 #include "ui/views/animation/ink_drop.h"
-#include "ui/views/animation/ink_drop_highlight.h"
 #include "ui/views/animation/ink_drop_host.h"
 #include "ui/views/animation/ink_drop_impl.h"
 #include "ui/views/animation/ink_drop_ripple.h"
@@ -35,7 +28,7 @@
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/cascading_property.h"
 #include "ui/views/controls/button/button_controller.h"
-#include "ui/views/controls/focus_ring.h"
+#include "ui/views/property_effects.h"
 #include "ui/views/style/platform_style.h"
 
 float PageActionIconView::Delegate::GetPageActionInkDropVisibleOpacity() const {
@@ -43,7 +36,7 @@ float PageActionIconView::Delegate::GetPageActionInkDropVisibleOpacity() const {
 }
 
 int PageActionIconView::Delegate::GetPageActionIconSize() const {
-  return GetLayoutConstant(LOCATION_BAR_TRAILING_ICON_SIZE);
+  return GetLayoutConstant(LayoutConstant::kLocationBarTrailingIconSize);
 }
 
 gfx::Insets PageActionIconView::Delegate::GetPageActionIconInsets(
@@ -56,7 +49,7 @@ bool PageActionIconView::Delegate::ShouldHidePageActionIcons() const {
 }
 
 bool PageActionIconView::Delegate::ShouldHidePageActionIcon(
-    PageActionIconView* icon_view) const {
+    const PageActionIconView* icon_view) const {
   return false;
 }
 
@@ -87,6 +80,7 @@ PageActionIconView::PageActionIconView(
   // Only shows bubble after mouse is released.
   button_controller()->set_notify_action(
       views::ButtonController::NotifyAction::kOnRelease);
+  SetExpandedLabelAdditionalInsets(views::Inset1D(4, 8));
   UpdateBorder();
 
   name_changed_subscription_ =
@@ -97,6 +91,21 @@ PageActionIconView::PageActionIconView(
 }
 
 PageActionIconView::~PageActionIconView() = default;
+
+views::BubbleAnchor PageActionIconView::GetBubbleAnchor() {
+  return views::BubbleAnchor(this);
+}
+
+std::u16string PageActionIconView::GetTooltipText() const {
+  return IconLabelBubbleView::GetTooltipText();
+}
+
+std::u16string PageActionIconView::GetAccessibleName() const {
+  return IconLabelBubbleView::GetAccessibleName();
+}
+IconLabelBubbleView* PageActionIconView::GetIconLabelBubbleViewNotMigrated() {
+  return this;
+}
 
 void PageActionIconView::AddPageIconViewObserver(
     PageActionIconViewObserver* observer) {
@@ -232,7 +241,7 @@ void PageActionIconView::SetIconColor(SkColor icon_color) {
   }
   icon_color_ = icon_color;
   UpdateIconImage();
-  OnPropertyChanged(&icon_color_, views::kPropertyEffectsNone);
+  OnPropertyChanged(&icon_color_, views::PropertyEffects::kNone);
 }
 
 SkColor PageActionIconView::GetIconColor() const {
@@ -245,9 +254,10 @@ void PageActionIconView::SetActive(bool active) {
   }
   active_ = active;
   UpdateIconImage();
-  OnPropertyChanged(&active_, views::kPropertyEffectsNone);
+  OnPropertyChanged(&active_, views::PropertyEffects::kNone);
   // For StarView
   UpdateTooltipText();
+  OnActiveStateChanged();
 }
 
 bool PageActionIconView::GetActive() const {
@@ -255,9 +265,13 @@ bool PageActionIconView::GetActive() const {
 }
 
 void PageActionIconView::Update() {
-  // Currently no page action icon should be visible during user input.
-  // A future subclass may need a hook here if that changes.
-  if (delegate_->ShouldHidePageActionIcons()) {
+  // In general, no page action icon should be visible during user input.
+  // However, the AIM page action is an exception to this rule since it has
+  // special visibility criteria.
+  // TODO(crbug.com/432744091): Roll the AIM button edge-case logic into the
+  // implementation of `ShouldHidePageActionIcons()`.
+  if (delegate_->ShouldHidePageActionIcons() &&
+      this->action_id_ != kActionAiMode) {
     ResetSlideAnimation(/*show=*/false);
     SetVisible(false);
   } else {
@@ -292,11 +306,14 @@ void PageActionIconView::UpdateIconImage() {
   if (IconColorShouldMatchForeground()) {
     icon_color = GetForegroundColor();
   }
-  const gfx::ImageSkia image = gfx::CreateVectorIconWithBadge(
-      GetVectorIcon(), icon_size, icon_color, GetVectorIconBadge());
-  if (!image.isNull()) {
-    SetImageModel(ui::ImageModel::FromImageSkia(image));
-  }
+
+  const gfx::VectorIcon& badge = GetVectorIconBadge();
+  // Bypass IconLabelBubbleView::SetImageModel to preserve the VectorIconModel
+  // for High Contrast correctness.
+  SetImageModel(
+      views::Button::STATE_NORMAL,
+      ui::ImageModel::FromVectorIcon(GetVectorIcon(), icon_color, icon_size,
+                                     badge.is_empty() ? nullptr : &badge));
 }
 
 void PageActionIconView::SetIsLoading(bool is_loading) {
@@ -311,12 +328,6 @@ content::WebContents* PageActionIconView::GetWebContents() const {
 
 void PageActionIconView::UpdateBorder() {
   gfx::Insets new_insets = delegate_->GetPageActionIconInsets(this);
-  if (ShouldShowLabel()) {
-    // TODO(crbug.com/40913366): Figure out what these values should be. For
-    // bonus point also try to move parts of this into the parent class. This is
-    // too bespoke.
-    new_insets += gfx::Insets::TLBR(0, 4, 0, 8);
-  }
   if (new_insets != GetInsets()) {
     SetBorder(views::CreateEmptyBorder(new_insets));
   }

@@ -22,9 +22,8 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_SVG_SVG_SVG_ELEMENT_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_SVG_SVG_SVG_ELEMENT_H_
 
-#include "third_party/blink/renderer/core/svg/svg_fit_to_view_box.h"
-#include "third_party/blink/renderer/core/svg/svg_graphics_element.h"
 #include "third_party/blink/renderer/core/svg/svg_point.h"
+#include "third_party/blink/renderer/core/svg/svg_viewport_container_element.h"
 #include "third_party/blink/renderer/core/svg/svg_zoom_and_pan.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "ui/gfx/geometry/vector2d_f.h"
@@ -42,8 +41,7 @@ class SVGRect;
 class SVGTransformTearOff;
 class SVGViewSpec;
 
-class SVGSVGElement final : public SVGGraphicsElement,
-                            public SVGFitToViewBox,
+class SVGSVGElement final : public SVGViewportContainerElement,
                             public SVGZoomAndPan {
   DEFINE_WRAPPERTYPEINFO();
 
@@ -51,24 +49,27 @@ class SVGSVGElement final : public SVGGraphicsElement,
   explicit SVGSVGElement(Document&);
   ~SVGSVGElement() override;
 
+  ElementType GetElementType() const final {
+    return ElementType::kSVGSVGElement;
+  }
+
   std::optional<float> IntrinsicWidth() const;
   std::optional<float> IntrinsicHeight() const;
-  const SVGRect& CurrentViewBox() const;
+  const SVGRect& CurrentViewBox() const override;
   // This method, as opposed to the one above, also includes the synthesized
   // viewBox if one is active. Because of that it shouldn't be used for sizing
   // calculations.
-  gfx::RectF CurrentViewBoxRect() const;
-  bool HasEmptyViewBox() const;
-  const SVGPreserveAspectRatio* CurrentPreserveAspectRatio() const;
+  gfx::RectF CurrentViewBoxRect(float zoom) const override;
+  const SVGPreserveAspectRatio* CurrentPreserveAspectRatio() const override;
 
   float currentScale() const;
   void setCurrentScale(float scale);
 
-  gfx::Vector2dF CurrentTranslate() {
-    return translation_->Value().OffsetFromOrigin();
-  }
+  gfx::Vector2dF CurrentTranslate() const;
   void SetCurrentTranslate(const gfx::Vector2dF&);
-  SVGPointTearOff* currentTranslateFromJavascript();
+  SVGPointTearOff* currentTranslateFromJavascript() {
+    return EnsureCurrentTranslate();
+  }
 
   SMILTimeContainer* TimeContainer() const { return time_container_.Get(); }
 
@@ -103,7 +104,8 @@ class SVGSVGElement final : public SVGGraphicsElement,
   static SVGTransformTearOff* createSVGTransform();
   static SVGTransformTearOff* createSVGTransformFromMatrix(SVGMatrixTearOff*);
 
-  AffineTransform ViewBoxToViewTransform(const gfx::SizeF& viewport_size) const;
+  AffineTransform ViewBoxToViewTransform(const gfx::SizeF& viewport_size,
+                                         float zoom) const override;
 
   const SVGViewSpec* ParseViewSpec(const String& fragment_identifier,
                                    Element* anchor_node) const;
@@ -137,30 +139,18 @@ class SVGSVGElement final : public SVGGraphicsElement,
 
   void DidMoveToNewDocument(Document& old_document) override;
 
-  bool SelfHasRelativeLengths() const override;
-
   bool ShouldSynthesizeViewBox() const;
+  SVGPointTearOff* EnsureCurrentTranslate();
   void UpdateUserTransform();
 
   void FinishParsingChildren() override;
 
   bool CheckEnclosure(const SVGElement&, const gfx::RectF&) const;
 
-  SVGAnimatedPropertyBase* PropertyFromAttribute(
-      const QualifiedName& attribute_name) const override;
-  void SynchronizeAllSVGAttributes() const override;
-  void CollectExtraStyleForPresentationAttribute(
-      HeapVector<CSSPropertyValue, 8>& style) override;
-
-  Member<SVGAnimatedLength> x_;
-  Member<SVGAnimatedLength> y_;
-  Member<SVGAnimatedLength> width_;
-  Member<SVGAnimatedLength> height_;
-
   AffineTransform LocalCoordinateSpaceTransform(CTMScope) const override;
 
   Member<SMILTimeContainer> time_container_;
-  Member<SVGPoint> translation_;
+  Member<SVGPointTearOff> translation_;
   Member<const SVGViewSpec> view_spec_;
   float current_scale_;
 

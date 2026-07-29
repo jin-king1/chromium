@@ -5,8 +5,8 @@
 #import "ios/chrome/app/profile/profile_state.h"
 
 #import <optional>
+#import <utility>
 
-#import "base/test/task_environment.h"
 #import "ios/chrome/app/application_delegate/app_state.h"
 #import "ios/chrome/app/application_delegate/fake_startup_information.h"
 #import "ios/chrome/app/profile/profile_init_stage.h"
@@ -16,6 +16,7 @@
 #import "ios/chrome/browser/shared/coordinator/scene/scene_activation_level.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
+#import "ios/web/public/test/web_task_environment.h"
 #import "testing/gtest/include/gtest/gtest.h"
 #import "testing/gtest_mac.h"
 #import "testing/platform_test.h"
@@ -35,7 +36,7 @@
 - (void)profileState:(ProfileState*)profileState
     didTransitionToInitStage:(ProfileInitStage)nextStage
                fromInitStage:(ProfileInitStage)fromStage {
-  CHECK_EQ(base::to_underlying(fromStage) + 1, base::to_underlying(nextStage));
+  CHECK_EQ(std::to_underlying(fromStage) + 1, std::to_underlying(nextStage));
   _lastStage = nextStage;
 }
 
@@ -49,29 +50,13 @@ TEST_F(ProfileStateTest, initializer) {
   EXPECT_EQ(state.profile, nullptr);
 }
 
-// Tests that -profile uses a weak pointer.
-TEST_F(ProfileStateTest, profile) {
-  base::test::TaskEnvironment task_environment;
-  std::unique_ptr<TestProfileIOS> profile = TestProfileIOS::Builder().Build();
-
-  ProfileState* state = [[ProfileState alloc] initWithAppState:nil];
-  EXPECT_EQ(state.profile, nullptr);
-
-  state.profile = profile.get();
-  EXPECT_EQ(state.profile, profile.get());
-
-  // Destroy the profile and check that the property becomes null.
-  profile.reset();
-  EXPECT_EQ(state.profile, nullptr);
-}
-
 // Tests that initStage can be set and get correctly.
 TEST_F(ProfileStateTest, initStages) {
   ProfileState* state = [[ProfileState alloc] initWithAppState:nil];
   state.initStage = ProfileInitStage::kStart;
   while (state.initStage != ProfileInitStage::kFinal) {
     const ProfileInitStage nextStage =
-        static_cast<ProfileInitStage>(base::to_underlying(state.initStage) + 1);
+        static_cast<ProfileInitStage>(std::to_underlying(state.initStage) + 1);
 
     EXPECT_NE(state.initStage, nextStage);
     state.initStage = nextStage;
@@ -130,11 +115,11 @@ TEST_F(ProfileStateTest, connectedSceneStates) {
   ASSERT_NSEQ(state.connectedScenes, @[]);
 
   // Check that scenes are immediately visible in -connectedScenes.
-  SceneState* scene1 = [[SceneState alloc] initWithAppState:nil];
+  SceneState* scene1 = [[SceneState alloc] init];
   [state sceneStateConnected:scene1];
   EXPECT_NSEQ(state.connectedScenes, @[ scene1 ]);
 
-  SceneState* scene2 = [[SceneState alloc] initWithAppState:nil];
+  SceneState* scene2 = [[SceneState alloc] init];
   [state sceneStateConnected:scene2];
   EXPECT_NSEQ(state.connectedScenes, (@[ scene1, scene2 ]));
 }
@@ -146,7 +131,7 @@ TEST_F(ProfileStateTest, connectedSceneStates_scenesRemovedWhenDisconnected) {
   ASSERT_NSEQ(state.connectedScenes, @[]);
 
   // Connect a scene. It should be returned by -connectedScenes.
-  SceneState* scene1 = [[SceneState alloc] initWithAppState:nil];
+  SceneState* scene1 = [[SceneState alloc] init];
   [state sceneStateConnected:scene1];
   EXPECT_NSEQ(state.connectedScenes, @[ scene1 ]);
 
@@ -163,11 +148,11 @@ TEST_F(ProfileStateTest, foregroundActiveScene) {
 
   // Connect two scenes, one that is in foreground and active. The foreground
   // active scene should be returned by -foregroundActiveScene.
-  SceneState* scene1 = [[SceneState alloc] initWithAppState:nil];
+  SceneState* scene1 = [[SceneState alloc] init];
   [state sceneStateConnected:scene1];
   EXPECT_NSEQ(state.foregroundActiveScene, nil);
 
-  SceneState* scene2 = [[SceneState alloc] initWithAppState:nil];
+  SceneState* scene2 = [[SceneState alloc] init];
   scene2.activationLevel = SceneActivationLevelForegroundActive;
   [state sceneStateConnected:scene2];
   EXPECT_NSEQ(state.foregroundActiveScene, scene2);
@@ -188,16 +173,16 @@ TEST_F(ProfileStateTest, foregroundScenes) {
   // Connect three scenes, one that is in the foreground and active, one that
   // is in foreground but inactive, and one that is in the background. Only
   // the foreground ones should be returned in -foregroundScenes.
-  SceneState* scene1 = [[SceneState alloc] initWithAppState:nil];
+  SceneState* scene1 = [[SceneState alloc] init];
   [state sceneStateConnected:scene1];
   EXPECT_NSEQ(state.foregroundScenes, @[]);
 
-  SceneState* scene2 = [[SceneState alloc] initWithAppState:nil];
+  SceneState* scene2 = [[SceneState alloc] init];
   scene2.activationLevel = SceneActivationLevelForegroundActive;
   [state sceneStateConnected:scene2];
   EXPECT_NSEQ(state.foregroundScenes, @[ scene2 ]);
 
-  SceneState* scene3 = [[SceneState alloc] initWithAppState:nil];
+  SceneState* scene3 = [[SceneState alloc] init];
   scene3.activationLevel = SceneActivationLevelForegroundInactive;
   [state sceneStateConnected:scene3];
   EXPECT_NSEQ(state.foregroundScenes, (@[ scene2, scene3 ]));
@@ -223,11 +208,11 @@ TEST_F(ProfileStateTest, firstSceneHasInitializedUI) {
   ASSERT_FALSE(state.firstSceneHasInitializedUI);
 
   // Connect two scenes, in the foreground and active.
-  SceneState* scene1 = [[SceneState alloc] initWithAppState:nil];
+  SceneState* scene1 = [[SceneState alloc] init];
   scene1.activationLevel = SceneActivationLevelForegroundActive;
   [state sceneStateConnected:scene1];
 
-  SceneState* scene2 = [[SceneState alloc] initWithAppState:nil];
+  SceneState* scene2 = [[SceneState alloc] init];
   scene2.activationLevel = SceneActivationLevelForegroundActive;
   [state sceneStateConnected:scene2];
 

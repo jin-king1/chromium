@@ -5,18 +5,23 @@
 #include "base/memory/raw_ptr.h"
 #include "base/test/bind.h"
 #include "base/test/gtest_util.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
-#include "chrome/browser/ui/browser_navigator.h"
-#include "chrome/browser/ui/browser_navigator_params.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/interaction/browser_elements.h"
+#include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
+#include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/toolbar/app_menu_model.h"
 #include "chrome/browser/ui/views/bubble/webui_bubble_dialog_view.h"
+#include "chrome/common/pref_names.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/interaction/interaction_test_util_browser.h"
 #include "chrome/test/interaction/tracked_element_webcontents.h"
 #include "chrome/test/interaction/webcontents_interaction_test_util.h"
+#include "components/prefs/pref_service.h"
 #include "content/public/test/browser_test.h"
 #include "net/dns/mock_host_resolver.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -24,6 +29,7 @@
 #include "ui/base/interaction/element_tracker.h"
 #include "ui/base/interaction/expect_call_in_scope.h"
 #include "ui/base/interaction/interaction_sequence.h"
+#include "ui/base/interaction/interaction_test_util.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/base/test/ui_controls.h"
 #include "ui/display/display.h"
@@ -32,6 +38,7 @@
 #include "ui/gfx/geometry/rect.h"
 #include "ui/views/controls/webview/webview.h"
 #include "ui/views/interaction/element_tracker_views.h"
+#include "ui/views/interaction/interaction_test_util_views.h"
 #include "ui/views/view_utils.h"
 #include "url/gurl.h"
 
@@ -45,7 +52,11 @@ constexpr char kDocumentWithIframe[] = "/iframe_elements.html";
 class WebContentsInteractionTestUtilInteractiveUiTest
     : public InProcessBrowserTest {
  public:
-  WebContentsInteractionTestUtilInteractiveUiTest() = default;
+  WebContentsInteractionTestUtilInteractiveUiTest() {
+    InteractionTestUtilBrowser::PopulateSimulators(test_util_);
+    test_util_.AddSimulator(
+        std::make_unique<views::test::InteractionTestUtilSimulatorViews>());
+  }
   ~WebContentsInteractionTestUtilInteractiveUiTest() override = default;
 
   void SetUp() override {
@@ -56,16 +67,20 @@ class WebContentsInteractionTestUtilInteractiveUiTest
 
   void SetUpOnMainThread() override {
     InProcessBrowserTest::SetUpOnMainThread();
+    browser()->GetProfile()->GetPrefs()->SetBoolean(
+        prefs::kTabSearchPinnedToTabstrip, true);
     embedded_test_server()->StartAcceptingConnections();
   }
 
   void TearDownOnMainThread() override {
+    browser()->GetProfile()->GetPrefs()->ClearPref(
+        prefs::kTabSearchPinnedToTabstrip);
     EXPECT_TRUE(embedded_test_server()->ShutdownAndWaitUntilComplete());
     InProcessBrowserTest::TearDownOnMainThread();
   }
 
  protected:
-  InteractionTestUtilBrowser test_util_;
+  ui::test::InteractionTestUtil test_util_;
 };
 
 
@@ -76,7 +91,7 @@ IN_PROC_BROWSER_TEST_F(WebContentsInteractionTestUtilInteractiveUiTest,
   UNCALLED_MOCK_CALLBACK(ui::InteractionSequence::AbortedCallback, aborted);
 
   std::unique_ptr<WebContentsInteractionTestUtil> tab_search_page;
-  const ui::ElementContext context = browser()->window()->GetElementContext();
+  const auto context = BrowserElements::From(browser())->GetContext();
 
   // Poke into the doc to find something that's not at the top level, just to
   // verify we can.
@@ -129,7 +144,7 @@ IN_PROC_BROWSER_TEST_F(WebContentsInteractionTestUtilInteractiveUiTest,
   UNCALLED_MOCK_CALLBACK(ui::InteractionSequence::AbortedCallback, aborted);
 
   std::unique_ptr<WebContentsInteractionTestUtil> tab_search_page;
-  const ui::ElementContext context = browser()->window()->GetElementContext();
+  const auto context = BrowserElements::From(browser())->GetContext();
   raw_ptr<WebUIBubbleDialogView> bubble_view = nullptr;
 
   auto sequence =
@@ -216,7 +231,7 @@ IN_PROC_BROWSER_TEST_F(WebContentsInteractionTestUtilInteractiveUiTest,
       ui::InteractionSequence::Builder()
           .SetCompletedCallback(completed.Get())
           .SetAbortedCallback(aborted.Get())
-          .SetContext(browser()->window()->GetElementContext())
+          .SetContext(BrowserElements::From(browser())->GetContext())
           // Navigate to the test page.
           .AddStep(
               ui::InteractionSequence::StepBuilder()
@@ -246,7 +261,7 @@ IN_PROC_BROWSER_TEST_F(WebContentsInteractionTestUtilInteractiveUiTest,
                             owner->GetElementBoundsInScreen(kButtonQuery);
                         EXPECT_FALSE(element_rect.IsEmpty());
                         const gfx::Rect window_rect =
-                            browser()->window()->GetBounds();
+                            browser()->GetWindow()->GetBounds();
                         EXPECT_TRUE(window_rect.Contains(element_rect))
                             << "Expected window rect " << window_rect.ToString()
                             << " to contain element rect "
@@ -284,7 +299,7 @@ IN_PROC_BROWSER_TEST_F(WebContentsInteractionTestUtilInteractiveUiTest,
       ui::InteractionSequence::Builder()
           .SetCompletedCallback(completed.Get())
           .SetAbortedCallback(aborted.Get())
-          .SetContext(browser()->window()->GetElementContext())
+          .SetContext(BrowserElements::From(browser())->GetContext())
           // Navigate to the test page.
           .AddStep(
               ui::InteractionSequence::StepBuilder()
@@ -308,7 +323,7 @@ IN_PROC_BROWSER_TEST_F(WebContentsInteractionTestUtilInteractiveUiTest,
                         auto* const owner =
                             element->AsA<TrackedElementWebContents>()->owner();
                         const gfx::Rect window_rect =
-                            browser()->window()->GetBounds();
+                            browser()->GetWindow()->GetBounds();
                         const gfx::Rect container_rect =
                             owner->GetElementBoundsInScreen(kContainerQuery);
 
@@ -347,147 +362,6 @@ IN_PROC_BROWSER_TEST_F(WebContentsInteractionTestUtilInteractiveUiTest,
                             << top_element_rect.ToString();
                       }))
                   .Build())
-          .Build();
-
-  EXPECT_CALL_IN_SCOPE(completed, Run, sequence->RunSynchronouslyForTesting());
-}
-
-// TODO(https://crbug.com/372873264): Re-enable on chrome linux and win
-// builders.
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
-#define MAYBE_UseElementBoundsInScreenToSendInput \
-  DISABLED_UseElementBoundsInScreenToSendInput
-#else
-#define MAYBE_UseElementBoundsInScreenToSendInput \
-  UseElementBoundsInScreenToSendInput
-#endif
-IN_PROC_BROWSER_TEST_F(WebContentsInteractionTestUtilInteractiveUiTest,
-                       MAYBE_UseElementBoundsInScreenToSendInput) {
-  UNCALLED_MOCK_CALLBACK(ui::InteractionSequence::CompletedCallback, completed);
-  UNCALLED_MOCK_CALLBACK(ui::InteractionSequence::AbortedCallback, aborted);
-  DEFINE_LOCAL_CUSTOM_ELEMENT_EVENT_TYPE(kMouseMoveCustomEvent);
-  DEFINE_LOCAL_CUSTOM_ELEMENT_EVENT_TYPE(kMouseDownCustomEvent);
-  DEFINE_LOCAL_CUSTOM_ELEMENT_EVENT_TYPE(kMouseUpCustomEvent);
-  DEFINE_LOCAL_CUSTOM_ELEMENT_EVENT_TYPE(kTextVisibleCustomEvent);
-
-  const GURL url = embedded_test_server()->GetURL(kDocumentWithButtonURL);
-  auto page = WebContentsInteractionTestUtil::ForExistingTabInBrowser(
-      browser(), kWebContentsElementId);
-  const WebContentsInteractionTestUtil::DeepQuery kButtonQuery = {"#button"};
-  const WebContentsInteractionTestUtil::DeepQuery kTextQuery = {"#text"};
-
-  // This is just a convenience function for a common task in a couple of steps.
-  auto send_custom_event = [this](ui::CustomElementEventType event_type) {
-    auto* const target =
-        ui::ElementTracker::GetElementTracker()->GetUniqueElement(
-            kWebContentsElementId, browser()->window()->GetElementContext());
-    ASSERT_NE(nullptr, target);
-    ui::ElementTracker::GetFrameworkDelegate()->NotifyCustomEvent(target,
-                                                                  event_type);
-  };
-
-  auto sequence =
-      ui::InteractionSequence::Builder()
-          .SetCompletedCallback(completed.Get())
-          .SetAbortedCallback(aborted.Get())
-          .SetContext(browser()->window()->GetElementContext())
-          .AddStep(ui::InteractionSequence::StepBuilder()
-                       .SetElementID(kWebContentsElementId)
-                       .SetStartCallback(base::BindLambdaForTesting(
-                           [this, url](ui::InteractionSequence*,
-                                       ui::TrackedElement*) {
-                             NavigateParams params(browser(), url,
-                                                   ui::PAGE_TRANSITION_LINK);
-                             Navigate(&params);
-                           }))
-                       .Build())
-          // Wait to navigate to the test page and mouse over the button.
-          .AddStep(
-              ui::InteractionSequence::StepBuilder()
-                  .SetElementID(kWebContentsElementId)
-                  .SetTransitionOnlyOnEvent(true)
-                  .SetStartCallback(base::BindLambdaForTesting(
-                      [&](ui::InteractionSequence*,
-                          ui::TrackedElement* element) {
-                        auto* const owner =
-                            element->AsA<TrackedElementWebContents>()->owner();
-                        ASSERT_EQ(url, owner->web_contents()->GetURL());
-                        const gfx::Rect element_rect =
-                            owner->GetElementBoundsInScreen(kButtonQuery);
-                        EXPECT_FALSE(element_rect.IsEmpty());
-                        const gfx::Point target = element_rect.CenterPoint();
-
-                        display::Screen* const screen =
-                            display::Screen::GetScreen();
-                        display::Display display =
-                            screen->GetDisplayNearestPoint(target);
-
-                        // Move mouse to the location we calculated for the
-                        // button on screen.
-                        EXPECT_TRUE(ui_controls::SendMouseMoveNotifyWhenDone(
-                            target.x(), target.y(),
-                            base::BindLambdaForTesting([&]() {
-                              send_custom_event(kMouseMoveCustomEvent);
-                            })));
-                      }))
-                  .Build())
-          // Once the mouse has moved, press the left mouse button.
-          .AddStep(ui::InteractionSequence::StepBuilder()
-                       .SetType(ui::InteractionSequence::StepType::kCustomEvent,
-                                kMouseMoveCustomEvent)
-                       .SetElementID(kWebContentsElementId)
-                       .SetStartCallback(base::BindLambdaForTesting(
-                           [&](ui::InteractionSequence*,
-                               ui::TrackedElement* element) {
-                             EXPECT_TRUE(
-                                 ui_controls::SendMouseEventsNotifyWhenDone(
-                                     ui_controls::LEFT, ui_controls::DOWN,
-                                     base::BindLambdaForTesting([&]() {
-                                       send_custom_event(kMouseDownCustomEvent);
-                                     })));
-                           }))
-                       .Build())
-          // Release the left mouse button.
-          .AddStep(ui::InteractionSequence::StepBuilder()
-                       .SetType(ui::InteractionSequence::StepType::kCustomEvent,
-                                kMouseDownCustomEvent)
-                       .SetElementID(kWebContentsElementId)
-                       .SetStartCallback(base::BindLambdaForTesting(
-                           [&](ui::InteractionSequence*,
-                               ui::TrackedElement* element) {
-                             EXPECT_TRUE(
-                                 ui_controls::SendMouseEventsNotifyWhenDone(
-                                     ui_controls::LEFT, ui_controls::UP,
-                                     base::BindLambdaForTesting([&]() {
-                                       send_custom_event(kMouseUpCustomEvent);
-                                     })));
-                           }))
-                       .Build())
-          // Once the left mouse button has been released, the text field should
-          // become visible, so wait for it.
-          .AddStep(ui::InteractionSequence::StepBuilder()
-                       .SetType(ui::InteractionSequence::StepType::kCustomEvent,
-                                kMouseUpCustomEvent)
-                       .SetElementID(kWebContentsElementId)
-                       .SetStartCallback(base::BindLambdaForTesting(
-                           [&](ui::InteractionSequence*,
-                               ui::TrackedElement* element) {
-                             WebContentsInteractionTestUtil::StateChange change;
-                             change.where = kTextQuery;
-                             change.event = kTextVisibleCustomEvent;
-                             change.test_function =
-                                 "el => el.getBoundingClientRect().width > 0";
-                             element->AsA<TrackedElementWebContents>()
-                                 ->owner()
-                                 ->SendEventOnStateChange(change);
-                           }))
-                       .Build())
-          // If the text appears as expected, the test is complete.
-          .AddStep(ui::InteractionSequence::StepBuilder()
-                       .SetType(ui::InteractionSequence::StepType::kCustomEvent,
-                                kTextVisibleCustomEvent)
-                       .SetElementID(kWebContentsElementId)
-                       .Build())
           .Build();
 
   EXPECT_CALL_IN_SCOPE(completed, Run, sequence->RunSynchronouslyForTesting());

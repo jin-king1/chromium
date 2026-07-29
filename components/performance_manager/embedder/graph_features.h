@@ -7,8 +7,8 @@
 
 #include <cstdint>
 
-#include "base/feature_list.h"
 #include "components/performance_manager/public/features.h"
+#include "ui/base/device_form_factor.h"
 
 namespace performance_manager {
 
@@ -57,6 +57,7 @@ class GraphFeatures {
       bool site_data_recorder : 1;
       bool tab_page_decorator : 1;
       bool v8_context_tracker : 1;
+      bool tracing_observers : 1;
     };
   };
 
@@ -121,8 +122,6 @@ class GraphFeatures {
     return *this;
   }
 
-  // This is a nop on the Android platform, as the feature isn't available
-  // there.
   constexpr GraphFeatures& EnableSiteDataRecorder() {
     flags_.site_data_recorder = true;
     return *this;
@@ -138,6 +137,11 @@ class GraphFeatures {
     return *this;
   }
 
+  constexpr GraphFeatures& EnableTracingObservers() {
+    flags_.tracing_observers = true;
+    return *this;
+  }
+
   // Helper to enable the minimal set of features required for a content_shell
   // browser to work.
   constexpr GraphFeatures& EnableMinimal() {
@@ -147,7 +151,7 @@ class GraphFeatures {
 
   // Helper to enable the default set of features. This is only intended for use
   // from production code.
-  constexpr GraphFeatures& EnableDefault() {
+  GraphFeatures& EnableDefault() {
     EnableFrameVisibilityDecorator();
     EnableFrozenFrameAggregator();
     EnableImportantFrameDecorator();
@@ -159,9 +163,14 @@ class GraphFeatures {
     EnablePriorityTracking();
     EnableProcessHostedContentTypesAggregator();
     EnableResourceAttributionScheduler();
-    EnableSiteDataRecorder();
     EnableTabPageDecorator();
     EnableV8ContextTracker();
+    EnableTracingObservers();
+
+    if (ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_DESKTOP) {
+      EnableSiteDataRecorder();
+    }
+
     return *this;
   }
 

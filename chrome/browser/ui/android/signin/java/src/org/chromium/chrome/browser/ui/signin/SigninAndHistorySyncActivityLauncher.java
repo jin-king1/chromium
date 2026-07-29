@@ -4,21 +4,32 @@
 
 package org.chromium.chrome.browser.ui.signin;
 
+import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
 
 import androidx.annotation.IntDef;
 import androidx.annotation.MainThread;
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 
+import org.chromium.base.supplier.OneshotSupplier;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
+import org.chromium.components.browser_ui.device_lock.DeviceLockActivityLauncher;
 import org.chromium.components.signin.metrics.SigninAccessPoint;
+import org.chromium.ui.base.ActivityResultTracker;
+import org.chromium.ui.base.WindowAndroid;
+import org.chromium.ui.modaldialog.ModalDialogManager;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.util.function.Supplier;
 
 /** Allows for launching {@link SigninAndHistorySyncActivity} in modularized code. */
+// TODO(https://crbug.com/472425310): Rename this class to SigninCoordinatorFactory.
+@NullMarked
 public interface SigninAndHistorySyncActivityLauncher {
     /** Sign-in access points that are eligible to the sign-in and history opt-in flow. */
     @IntDef({
@@ -34,7 +45,14 @@ public interface SigninAndHistorySyncActivityLauncher {
         SigninAccessPoint.NTP_FEED_CARD_MENU_PROMO,
         SigninAccessPoint.SEND_TAB_TO_SELF_PROMO,
         SigninAccessPoint.CCT_ACCOUNT_MISMATCH_NOTIFICATION,
-        SigninAccessPoint.COLLABORATION_TAB_GROUP,
+        SigninAccessPoint.COLLABORATION_JOIN_TAB_GROUP,
+        SigninAccessPoint.COLLABORATION_SHARE_TAB_GROUP,
+        SigninAccessPoint.COLLABORATION_LEAVE_OR_DELETE_TAB_GROUP,
+        SigninAccessPoint.HISTORY_SYNC_EDUCATIONAL_TIP,
+        SigninAccessPoint.SET_UP_LIST,
+        SigninAccessPoint.GLIC_LAUNCH_BUTTON,
+        SigninAccessPoint.SETTINGS_AUTOFILL_AND_PASSWORDS,
+        SigninAccessPoint.DEEP_LINK_DEFAULT,
     })
     @Retention(RetentionPolicy.SOURCE)
     @interface AccessPoint {}
@@ -48,12 +66,46 @@ public interface SigninAndHistorySyncActivityLauncher {
      * @param accessPoint The access point from which the sign-in was triggered.
      */
     @MainThread
-    @Nullable
-    Intent createBottomSheetSigninIntentOrShowError(
+    @Nullable Intent createBottomSheetSigninIntentOrShowError(
             Context context,
             Profile profile,
-            @NonNull BottomSheetSigninAndHistorySyncConfig config,
+            BottomSheetSigninAndHistorySyncConfig config,
             @AccessPoint int accessPoint);
+
+    /**
+     * Creates a coordinator for the bottom-sheet sign-in and history sync flow and registers it to
+     * receive activity results using {@link ActivityResultTracker}. Should be called **early** in
+     * the embedding UI's creation (e.g. activity onCreate) so the coordinator can receive and
+     * handle in-flight activity result if the activity holding the coordinator is killed by the OS.
+     * See {@link ActivityResultTracker} for more details.
+     *
+     * @param windowAndroid The {@link WindowAndroid} for the current window.
+     * @param activity The hosting {@link Activity}.
+     * @param activityResultTracker The {@link ActivityResultTracker} for launching new activities
+     *     and watching for their result.
+     * @param delegate The {@link BottomSheetSigninAndHistorySyncCoordinator.Delegate} to be
+     *     notified of flow completion for instance.
+     * @param deviceLockActivityLauncher The launcher for the device lock challenge.
+     * @param profileSupplier The supplier of the {@link Profile}.
+     * @param bottomSheetController The {@link BottomSheetController} to show the sign-in bottom
+     *     sheet.
+     * @param modalDialogManagerSupplier The supplier of the {@link ModalDialogManager}.
+     * @param snackbarManager The {@link SnackbarManager} to show sign-in/sign-out snackbars.
+     * @param signinAccessPoint The entry point for the sign-in flow.
+     */
+    @MainThread
+    BottomSheetSigninAndHistorySyncCoordinator
+            createBottomSheetSigninCoordinatorAndObserveAddAccountResult(
+                    WindowAndroid windowAndroid,
+                    Activity activity,
+                    ActivityResultTracker activityResultTracker,
+                    BottomSheetSigninAndHistorySyncCoordinator.Delegate delegate,
+                    DeviceLockActivityLauncher deviceLockActivityLauncher,
+                    OneshotSupplier<Profile> profileSupplier,
+                    Supplier<BottomSheetController> bottomSheetController,
+                    ModalDialogManager modalDialogManager,
+                    @Nullable SnackbarManager snackbarManager,
+                    @SigninAccessPoint int signinAccessPoint);
 
     /**
      * Create {@Intent} for the fullscreen flavor of the {@link SigninAndHistorySyncActivity} if
@@ -64,8 +116,7 @@ public interface SigninAndHistorySyncActivityLauncher {
      * @param accessPoint The access point from which the sign-in was triggered.
      */
     @MainThread
-    @Nullable
-    Intent createFullscreenSigninIntent(
+    @Nullable Intent createFullscreenSigninIntent(
             Context context,
             Profile profile,
             FullscreenSigninAndHistorySyncConfig config,

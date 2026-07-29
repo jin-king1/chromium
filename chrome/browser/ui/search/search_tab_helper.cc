@@ -8,7 +8,6 @@
 
 #include "base/containers/flat_map.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/metrics/user_metrics.h"
 #include "base/metrics/user_metrics_action.h"
 #include "base/strings/string_util.h"
@@ -23,9 +22,7 @@
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/bookmarks/bookmark_stats.h"
-#include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_window.h"
-#include "chrome/browser/ui/chrome_select_file_policy.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/location_bar/location_bar.h"
 #include "chrome/browser/ui/search/omnibox_utils.h"
@@ -33,13 +30,8 @@
 #include "chrome/browser/ui/tab_contents/core_tab_helper.h"
 #include "chrome/browser/ui/tab_modal_confirm_dialog.h"
 #include "chrome/browser/ui/tab_modal_confirm_dialog_delegate.h"
-#include "chrome/browser/ui/tabs/public/tab_interface.h"
-#include "chrome/browser/ui/user_education/browser_user_education_interface.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/common/url_constants.h"
-#include "chrome/grit/generated_resources.h"
 #include "components/bookmarks/browser/bookmark_model.h"
-#include "components/feature_engagement/public/feature_constants.h"
 #include "components/google/core/common/google_util.h"
 #include "components/navigation_metrics/navigation_metrics.h"
 #include "components/profile_metrics/browser_profile_type.h"
@@ -52,7 +44,6 @@
 #include "components/sync/base/user_selectable_type.h"
 #include "components/sync/service/sync_service.h"
 #include "components/sync/service/sync_user_settings.h"
-#include "components/vector_icons/vector_icons.h"
 #include "content/public/browser/navigation_details.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/navigation_handle.h"
@@ -111,7 +102,7 @@ void RecordNewTabLoadTime(content::WebContents* contents) {
 void RecordConcreteNtp(content::NavigationHandle* navigation_handle) {
   NewTabPageConcretePage concrete_page = NewTabPageConcretePage::kOther;
   if (navigation_handle->GetURL().DeprecatedGetOriginAsURL() ==
-      GURL(chrome::kChromeUINewTabPageURL).DeprecatedGetOriginAsURL()) {
+      chrome::ChromeUINewTabPageURLAsGURL().DeprecatedGetOriginAsURL()) {
     concrete_page = NewTabPageConcretePage::k1PWebUiNtp;
   } else if (navigation_handle->GetURL().DeprecatedGetOriginAsURL() ==
              GURL(chrome::kChromeUINewTabPageThirdPartyURL)
@@ -126,7 +117,7 @@ void RecordConcreteNtp(content::NavigationHandle* navigation_handle) {
                  navigation_handle->GetWebContents()->GetBrowserContext())
                  ->IsOffTheRecord() &&
              navigation_handle->GetURL().DeprecatedGetOriginAsURL() ==
-                 GURL(chrome::kChromeUINewTabURL).DeprecatedGetOriginAsURL()) {
+                 chrome::ChromeUINewTabURLAsGURL().DeprecatedGetOriginAsURL()) {
     concrete_page = NewTabPageConcretePage::kOffTheRecordNtp;
   }
   base::UmaHistogramEnumeration("NewTabPage.ConcretePage", concrete_page);
@@ -148,7 +139,7 @@ SearchTabHelper::SearchTabHelper(content::WebContents* web_contents)
     instant_service_->AddObserver(this);
   }
 
-  OmniboxTabHelper::CreateForWebContents(web_contents);
+  OmniboxTabHelper::CreateForWebContents(web_contents, profile());
   OmniboxTabHelper::FromWebContents(web_contents)->AddObserver(this);
 }
 
@@ -182,8 +173,6 @@ void SearchTabHelper::OnTabActivated() {
   if (search::IsInstantNTP(web_contents()) && instant_service_) {
     instant_service_->OnNewTabPageOpened();
   }
-
-  CloseNTPCustomizeChromeFeaturePromo();
 }
 
 void SearchTabHelper::OnTabDeactivated() {
@@ -201,7 +190,7 @@ void SearchTabHelper::DidStartNavigation(
   }
 
   if (web_contents()->GetVisibleURL().DeprecatedGetOriginAsURL() ==
-      GURL(chrome::kChromeUINewTabURL).DeprecatedGetOriginAsURL()) {
+      chrome::ChromeUINewTabURLAsGURL().DeprecatedGetOriginAsURL()) {
     RecordConcreteNtp(navigation_handle);
   }
 
@@ -215,8 +204,6 @@ void SearchTabHelper::DidStartNavigation(
           entry, l10n_util::GetStringUTF16(IDS_NEW_TAB_TITLE));
     }
   }
-
-  CloseNTPCustomizeChromeFeaturePromo();
 }
 
 void SearchTabHelper::TitleWasSet(content::NavigationEntry* entry) {
@@ -326,24 +313,6 @@ Profile* SearchTabHelper::profile() const {
 
 bool SearchTabHelper::IsInputInProgress() const {
   return search::IsOmniboxInputInProgress(web_contents());
-}
-
-void SearchTabHelper::CloseNTPCustomizeChromeFeaturePromo() {
-  const base::Feature& customize_chrome_feature =
-      feature_engagement::kIPHDesktopCustomizeChromeRefreshFeature;
-  if (web_contents()->GetController().GetVisibleEntry()->GetURL() ==
-      GURL(chrome::kChromeUINewTabPageURL)) {
-    return;
-  }
-  auto* const tab = tabs::TabInterface::MaybeGetFromContents(web_contents());
-  if (!tab || !tab->IsActivated()) {
-    return;
-  }
-  if (auto* const interface =
-          BrowserUserEducationInterface::MaybeGetForWebContentsInTab(
-              web_contents())) {
-    interface->AbortFeaturePromo(customize_chrome_feature);
-  }
 }
 
 WEB_CONTENTS_USER_DATA_KEY_IMPL(SearchTabHelper);

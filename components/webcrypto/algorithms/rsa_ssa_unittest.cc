@@ -10,6 +10,7 @@
 
 #include "base/check_op.h"
 #include "base/containers/span.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/values.h"
 #include "components/webcrypto/algorithm_dispatch.h"
@@ -26,8 +27,8 @@ namespace {
 
 // Helper for ImportJwkRsaFailures. Restores the JWK JSON
 // dictionary to a good state
-base::Value::Dict BuildTestJwkPublicKey() {
-  base::Value::Dict jwk;
+base::DictValue BuildTestJwkPublicKey() {
+  base::DictValue jwk;
   jwk.Set("kty", "RSA");
   jwk.Set("alg", "RS256");
   jwk.Set("use", "sig");
@@ -41,8 +42,8 @@ base::Value::Dict BuildTestJwkPublicKey() {
   return jwk;
 }
 
-base::Value::Dict BuildTestJwkPrivateKey() {
-  base::Value::Dict jwk;
+base::DictValue BuildTestJwkPrivateKey() {
+  base::DictValue jwk;
   jwk.Set("kty", "RSA");
   jwk.Set("d",
           "ZmJJJ3PBfirgPEOb844fI_1_zXn3A09X9fkk-65xeTNo3JeigTPpuB54FC_"
@@ -59,7 +60,7 @@ base::Value::Dict BuildTestJwkPrivateKey() {
   return jwk;
 }
 
-void SwapDictMembers(base::Value::Dict& d, const char* a, const char* b) {
+void SwapDictMembers(base::DictValue& d, const char* a, const char* b) {
   auto va = d.Extract(a);
   auto vb = d.Extract(b);
   CHECK(va);
@@ -90,7 +91,7 @@ blink::WebCryptoKey ImportJwkRS256OrDie(std::string_view jwk) {
   return key;
 }
 
-blink::WebCryptoKey ImportJwkRS256OrDie(const base::Value::Dict& jwk) {
+blink::WebCryptoKey ImportJwkRS256OrDie(const base::DictValue& jwk) {
   blink::WebCryptoKey key;
   Status status = ImportKeyJwkFromDict(jwk, RS256Algorithm(), false,
                                        blink::kWebCryptoKeyUsageSign, &key);
@@ -108,7 +109,7 @@ Status ImportJwkRS256MustFail(std::string_view jwk) {
   return status;
 }
 
-Status ImportJwkRS256MustFail(const base::Value::Dict& jwk) {
+Status ImportJwkRS256MustFail(const base::DictValue& jwk) {
   blink::WebCryptoKey key;
   return ImportKeyJwkFromDict(jwk, RS256Algorithm(), false,
                               blink::kWebCryptoKeyUsageSign, &key);
@@ -548,7 +549,7 @@ TEST_F(WebCryptoRsaSsaTest, GenerateKeyPairRsaBadModulusLength) {
       257,         // Not a multiple of 8.
       1023,        // Not a multiple of 8.
       0xFFFFFFFF,  // Too big.
-      16384 + 8,   // 16384 is the maxmimum length that NSS succeeds for.
+      8192 + 8,    // 8192 is the maximum length that is allowed in BoringSSL.
   };
 
   const std::vector<uint8_t> public_exponent = HexStringToBytes("010001");
@@ -733,7 +734,7 @@ TEST_F(WebCryptoRsaSsaTest, ImportRsaSsaPublicKeyBadUsage_JWK) {
       blink::kWebCryptoKeyUsageEncrypt | blink::kWebCryptoKeyUsageDecrypt,
   };
 
-  base::Value::Dict jwk = BuildTestJwkPublicKey();
+  base::DictValue jwk = BuildTestJwkPublicKey();
   jwk.Remove("use");
 
   for (auto usage : kBadUsages) {
@@ -956,7 +957,7 @@ TEST_F(WebCryptoRsaSsaTest, ImportJwkRsaFailures) {
 
   // Fail if either "n" or "e" is not present or malformed.
   for (auto* const param : {"n", "e"}) {
-    base::Value::Dict jwk = BuildTestJwkPublicKey();
+    base::DictValue jwk = BuildTestJwkPublicKey();
 
     // Fail on missing parameter.
     jwk.Remove(param);

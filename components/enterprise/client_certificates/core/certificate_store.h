@@ -8,16 +8,13 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "base/functional/callback_forward.h"
 #include "base/memory/scoped_refptr.h"
 #include "components/enterprise/client_certificates/core/client_identity.h"
 #include "components/enterprise/client_certificates/core/store_error.h"
 #include "components/keyed_service/core/keyed_service.h"
-
-namespace client_certificates_pb {
-class ClientIdentity;
-}
 
 namespace net {
 class X509Certificate;
@@ -72,6 +69,13 @@ class CertificateStore : public KeyedService {
       const std::string& identity_name,
       base::OnceCallback<void(StoreErrorOr<std::optional<ClientIdentity>>)>
           callback) = 0;
+
+  // Will delete the identities with the given `identity_names`. Will invoke
+  // `callback` with std::nullopt on success, or with an error if something
+  // went wrong.
+  virtual void DeleteIdentities(
+      const std::vector<std::string>& identity_names,
+      base::OnceCallback<void(std::optional<StoreError>)> callback) = 0;
 };
 
 }  // namespace client_certificates

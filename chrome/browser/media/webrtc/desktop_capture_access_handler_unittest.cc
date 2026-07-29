@@ -12,6 +12,7 @@
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
+#include "base/types/expected.h"
 #include "build/build_config.h"
 #include "chrome/browser/media/webrtc/fake_desktop_media_picker_factory.h"
 #include "chrome/common/chrome_switches.h"
@@ -28,7 +29,6 @@
 #include "extensions/common/extension_builder.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/mediastream/media_stream_request.h"
-#include "third_party/blink/public/mojom/mediastream/media_stream.mojom-shared.h"
 #include "third_party/blink/public/mojom/mediastream/media_stream.mojom.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -50,6 +50,7 @@ class DesktopCaptureAccessHandlerTest : public ChromeRenderViewHostTestHarness {
 
   void SetUp() override {
     ChromeRenderViewHostTestHarness::SetUp();
+    NavigateAndCommit(GURL(kOrigin));
     auto picker_factory = std::make_unique<FakeDesktopMediaPickerFactory>();
     picker_factory_ = picker_factory.get();
     access_handler_ = std::make_unique<DesktopCaptureAccessHandler>(
@@ -108,22 +109,28 @@ class DesktopCaptureAccessHandlerTest : public ChromeRenderViewHostTestHarness {
   }
 
   void ProcessDeviceUpdateRequest(
-      const content::DesktopMediaID& fake_desktop_media_id_response,
+      const base::expected<content::DesktopMediaID,
+                           blink::mojom::MediaStreamRequestResult>& response,
       blink::mojom::MediaStreamRequestResult* request_result,
       blink::mojom::StreamDevices* stream_devices_result,
       blink::MediaStreamRequestType request_type,
       bool request_audio) {
     FakeDesktopMediaPickerFactory::TestFlags test_flags[] = {
-        {false /* expect_screens */, false /* expect_windows*/,
-         true /* expect_tabs */, false /* expect_current_tab */,
-         request_audio /* expect_audio */,
-         fake_desktop_media_id_response /* selected_source */}};
-    picker_factory_->SetTestFlags(test_flags, std::size(test_flags));
+        {.expect_screens = false,
+         .expect_windows = false,
+         .expect_tabs = true,
+         .expect_current_tab = false,
+         .expect_audio = request_audio,
+         .picker_result = response}};
+    picker_factory_->SetTestFlags(test_flags);
     blink::mojom::MediaStreamType audio_type =
         request_audio ? blink::mojom::MediaStreamType::GUM_DESKTOP_AUDIO_CAPTURE
                       : blink::mojom::MediaStreamType::NO_SERVICE;
     content::MediaStreamRequest request(
-        0, 0, 0, url::Origin::Create(GURL(kOrigin)), false, request_type,
+        web_contents()->GetPrimaryMainFrame()->GetProcess()->GetDeprecatedID(),
+        web_contents()->GetPrimaryMainFrame()->GetRoutingID(),
+        /*page_request_id=*/0, url::Origin::Create(GURL(kOrigin)), false,
+        request_type,
         /*requested_audio_device_ids=*/{},
         /*requested_video_device_ids=*/{}, audio_type,
         blink::mojom::MediaStreamType::GUM_DESKTOP_VIDEO_CAPTURE,
@@ -212,17 +219,22 @@ TEST_F(DesktopCaptureAccessHandlerTest,
 TEST_F(DesktopCaptureAccessHandlerTest, ChangeSourcePermissionDenied) {
   blink::mojom::MediaStreamRequestResult result;
   blink::mojom::StreamDevices stream_devices;
-  ProcessDeviceUpdateRequest(content::DesktopMediaID(), &result,
-                             &stream_devices, blink::MEDIA_DEVICE_UPDATE,
-                             false /*request audio*/);
-  EXPECT_EQ(blink::mojom::MediaStreamRequestResult::PERMISSION_DENIED, result);
+  ProcessDeviceUpdateRequest(
+      base::unexpected(
+          blink::mojom::MediaStreamRequestResult::DLP_PERMISSION_DENIED),
+      &result, &stream_devices, blink::MEDIA_DEVICE_UPDATE,
+      false /*request audio*/);
+  EXPECT_EQ(blink::mojom::MediaStreamRequestResult::DLP_PERMISSION_DENIED,
+            result);
   EXPECT_EQ(0u, blink::CountDevices(stream_devices));
 }
 
 TEST_F(DesktopCaptureAccessHandlerTest,
        ChangeSourceUpdateMediaRequestStateWithClosing) {
-  const int render_process_id = 0;
-  const int render_frame_id = 0;
+  const int render_process_id =
+      web_contents()->GetPrimaryMainFrame()->GetProcess()->GetDeprecatedID();
+  const int render_frame_id =
+      web_contents()->GetPrimaryMainFrame()->GetRoutingID();
   const int page_request_id = 0;
   const blink::mojom::MediaStreamType stream_type =
       blink::mojom::MediaStreamType::GUM_DESKTOP_VIDEO_CAPTURE;
@@ -231,7 +243,7 @@ TEST_F(DesktopCaptureAccessHandlerTest,
        true /* expect_tabs */, false /* expect_current_tab */,
        false /* expect_audio */, content::DesktopMediaID(),
        true /* cancelled */}};
-  picker_factory_->SetTestFlags(test_flags, std::size(test_flags));
+  picker_factory_->SetTestFlags(test_flags);
   content::MediaStreamRequest request(
       render_process_id, render_frame_id, page_request_id,
       url::Origin::Create(GURL(kOrigin)), false, blink::MEDIA_DEVICE_UPDATE,
@@ -265,9 +277,11 @@ TEST_F(DesktopCaptureAccessHandlerTest, ChangeSourceWebContentsDestroyed) {
        true /* expect_tabs */, false /* expect_current_tab */,
        false /* expect_audio */, content::DesktopMediaID(),
        true /* cancelled */}};
-  picker_factory_->SetTestFlags(test_flags, std::size(test_flags));
+  picker_factory_->SetTestFlags(test_flags);
   content::MediaStreamRequest request(
-      0, 0, 0, url::Origin::Create(GURL(kOrigin)), false,
+      web_contents()->GetPrimaryMainFrame()->GetProcess()->GetDeprecatedID(),
+      web_contents()->GetPrimaryMainFrame()->GetRoutingID(),
+      /*page_request_id=*/0, url::Origin::Create(GURL(kOrigin)), false,
       blink::MEDIA_DEVICE_UPDATE, /*requested_audio_device_ids=*/{},
       /*requested_video_device_ids=*/{},
       blink::mojom::MediaStreamType::NO_SERVICE,
@@ -303,14 +317,16 @@ TEST_F(DesktopCaptureAccessHandlerTest, ChangeSourceMultipleRequests) {
            content::DesktopMediaID::TYPE_WINDOW,
            content::DesktopMediaID::kNullId) /* selected_source */}};
   const size_t kTestFlagCount = 2;
-  picker_factory_->SetTestFlags(test_flags, kTestFlagCount);
+  picker_factory_->SetTestFlags(test_flags);
 
   blink::mojom::MediaStreamRequestResult result;
   blink::MediaStreamDevices devices;
   base::RunLoop wait_loop[kTestFlagCount];
   for (base::RunLoop& loop : wait_loop) {
     content::MediaStreamRequest request(
-        0, 0, 0, url::Origin::Create(GURL(kOrigin)), false,
+        web_contents()->GetPrimaryMainFrame()->GetProcess()->GetDeprecatedID(),
+        web_contents()->GetPrimaryMainFrame()->GetRoutingID(),
+        /*page_request_id=*/0, url::Origin::Create(GURL(kOrigin)), false,
         blink::MEDIA_DEVICE_UPDATE, /*requested_audio_device_ids=*/{},
         /*requested_video_device_ids=*/{},
         blink::mojom::MediaStreamType::NO_SERVICE,
@@ -437,7 +453,8 @@ TEST_F(DesktopCaptureAccessHandlerTest, ScreenCaptureAccessDlpRestricted) {
                                extensionBuilder.Build().get(), &result,
                                &devices);
 
-  EXPECT_EQ(blink::mojom::MediaStreamRequestResult::PERMISSION_DENIED, result);
+  EXPECT_EQ(blink::mojom::MediaStreamRequestResult::DLP_PERMISSION_DENIED,
+            result);
   EXPECT_FALSE(devices.video_device.has_value());
 }
 
@@ -543,7 +560,8 @@ TEST_F(DesktopCaptureAccessHandlerTest, GenerateStreamDlpRestricted) {
   ProcessGenerateStreamRequest({id}, GURL(kOrigin), /*extension=*/nullptr,
                                &result, &devices);
 
-  EXPECT_EQ(blink::mojom::MediaStreamRequestResult::PERMISSION_DENIED, result);
+  EXPECT_EQ(blink::mojom::MediaStreamRequestResult::DLP_PERMISSION_DENIED,
+            result);
   EXPECT_FALSE(devices.video_device.has_value());
 }
 
@@ -603,7 +621,8 @@ TEST_F(DesktopCaptureAccessHandlerTest, ChangeSourceDlpRestricted) {
                               content::DesktopMediaID::kFakeId),
       &result, &stream_devices, blink::MEDIA_DEVICE_UPDATE,
       /*request audio=*/false);
-  EXPECT_EQ(blink::mojom::MediaStreamRequestResult::PERMISSION_DENIED, result);
+  EXPECT_EQ(blink::mojom::MediaStreamRequestResult::DLP_PERMISSION_DENIED,
+            result);
   EXPECT_EQ(0u, blink::CountDevices(stream_devices));
 }
 

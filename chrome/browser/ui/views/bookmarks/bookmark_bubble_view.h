@@ -5,7 +5,9 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_BOOKMARKS_BOOKMARK_BUBBLE_VIEW_H_
 #define CHROME_BROWSER_UI_VIEWS_BOOKMARKS_BOOKMARK_BUBBLE_VIEW_H_
 
+#include "chrome/browser/ui/views/page_action/page_action_view_interface.h"
 #include "ui/base/interaction/element_identifier.h"
+#include "ui/views/bubble/bubble_anchor.h"
 
 class GURL;
 class Browser;
@@ -25,14 +27,13 @@ struct RequestMetadata;
 
 namespace views {
 class BubbleDialogDelegate;
-class Button;
-class View;
 }  // namespace views
 
 DECLARE_ELEMENT_IDENTIFIER_VALUE(kBookmarkBubbleOkButtonId);
 DECLARE_ELEMENT_IDENTIFIER_VALUE(kBookmarkFolderFieldId);
 DECLARE_ELEMENT_IDENTIFIER_VALUE(kBookmarkNameFieldId);
 DECLARE_ELEMENT_IDENTIFIER_VALUE(kBookmarkSecondaryButtonId);
+DECLARE_ELEMENT_IDENTIFIER_VALUE(kBookmarkBubbleFrameViewId);
 
 // BookmarkBubbleView provides a dialog for unstarring and editing the bookmark
 // it is created with. The dialog is created using the static ShowBubble method.
@@ -41,12 +42,13 @@ class BookmarkBubbleView {
   BookmarkBubbleView(const BookmarkBubbleView&) = delete;
   BookmarkBubbleView& operator=(const BookmarkBubbleView&) = delete;
 
-  static void ShowBubble(views::View* anchor_view,
-                         content::WebContents* web_contents,
-                         views::Button* highlighted_button,
-                         Browser* browser,
-                         const GURL& url,
-                         bool already_bookmarked);
+  static void ShowBubble(
+      views::BubbleAnchor bubble_anchor,
+      content::WebContents* web_contents,
+      page_actions::PageActionViewInterface* highlighted_button,
+      Browser* browser,
+      const GURL& url,
+      bool already_bookmarked);
 
   static void Hide();
 

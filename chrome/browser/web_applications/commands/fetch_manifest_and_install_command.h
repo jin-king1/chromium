@@ -16,6 +16,7 @@
 #include "base/memory/weak_ptr.h"
 #include "base/values.h"
 #include "chrome/browser/web_applications/commands/web_app_command.h"
+#include "chrome/browser/web_applications/jobs/manifest_to_web_app_install_info_job.h"
 #include "chrome/browser/web_applications/locks/noop_lock.h"
 #include "chrome/browser/web_applications/web_app_install_manager.h"
 #include "chrome/browser/web_applications/web_app_install_params.h"
@@ -40,6 +41,7 @@ class NavigationHandle;
 namespace web_app {
 
 class AppLock;
+class FinalizeInstallJob;
 class WebAppDataRetriever;
 
 using ScreenshotInfo = std::tuple<SkBitmap, std::optional<std::u16string>>;
@@ -109,22 +111,33 @@ class FetchManifestAndInstallCommand
   void CheckForPlayStoreIntentOrGetIcons();
 
   // Called when the asynchronous check for whether an intent to the Play Store
-  // should be made returns.
+  // should be made returns, and a `WebAppInstallInfo` instance creation job is
+  // started from the manifest.
   void OnDidCheckForIntentToPlayStore(const std::string& intent,
                                       bool should_intent_to_store);
 
-  void OnIconsRetrievedShowDialog(
+  // A populated `WebAppInstallInfo` instance is obtained from the
+  // `opt_manifest_`, and is merged with the `web_app_info_` if needed.
+  void OnInstallInfoObtainedMergeAndShowDialog(
+      std::unique_ptr<WebAppInstallInfo> install_info);
+
+  // Called when icons are downloaded for the
+  // `kUseFallbackInfoWhenNotInstallable` mode.
+  void OnIconsDownloadedForFallbackInfoShowDialog(
       IconsDownloadedResult result,
       IconsMap icons_map,
       DownloadedIconsHttpResults icons_http_results);
-  void OnDialogCompleted(bool user_accepted,
-                         std::unique_ptr<WebAppInstallInfo> web_app_info);
+
+  void ShowInstallDialog();
+
+  void OnDialogCompleted(
+      bool user_accepted,
+      std::unique_ptr<WebAppInstallInfo> web_app_info,
+      WebAppInstallationAcceptanceResultCallback result_callback);
   void OnInstallFinalizedMaybeReparentTab(const webapps::AppId& app_id,
                                           webapps::InstallResultCode code);
 
-  void OnInstallCompleted(const webapps::AppId& app_id,
-                          webapps::InstallResultCode code);
-  void MeasureUserInstalledAppHistogram(webapps::InstallResultCode code);
+  void MeasureUserInstalledAppHistograms(webapps::InstallResultCode code);
 
   // Start downloading screenshots if the manifest has them, so that the
   // detailed install dialog can show them.
@@ -142,6 +155,7 @@ class FetchManifestAndInstallCommand
   const webapps::WebappInstallSource install_surface_;
   const base::WeakPtr<content::WebContents> web_contents_;
   WebAppInstallDialogCallback dialog_callback_;
+  WebAppInstallationAcceptanceResultCallback acceptance_result_callback_;
   const FallbackBehavior fallback_behavior_;
   const base::WeakPtr<WebAppUiManager> ui_manager_;
 
@@ -149,10 +163,9 @@ class FetchManifestAndInstallCommand
   std::unique_ptr<AppLock> app_lock_;
 
   std::unique_ptr<WebAppDataRetriever> data_retriever_;
+  std::unique_ptr<ManifestToWebAppInstallInfoJob> manifest_to_install_info_job_;
 
   bool did_navigation_occur_before_start_ = false;
-
-  InstallErrorLogEntry install_error_log_entry_;
 
   std::unique_ptr<WebAppInstallInfo> web_app_info_;
   blink::mojom::ManifestPtr opt_manifest_;
@@ -166,6 +179,8 @@ class FetchManifestAndInstallCommand
       int,
       base::OnceCallback<void(SkBitmap, std::optional<std::u16string>)>>
       pending_screenshot_callbacks_;
+
+  std::unique_ptr<FinalizeInstallJob> install_job_;
 
   base::WeakPtrFactory<FetchManifestAndInstallCommand> weak_ptr_factory_{this};
 };

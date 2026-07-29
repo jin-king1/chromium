@@ -6,6 +6,7 @@ package org.chromium.content_public.browser;
 
 import android.content.Context;
 import android.os.ResultReceiver;
+import android.view.KeyEvent;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 
@@ -20,14 +21,14 @@ import org.chromium.ui.base.WindowAndroid;
 @NullMarked
 public interface ImeAdapter {
     /** Composition key code sent when user either hit a key or hit a selection. */
-    static final int COMPOSITION_KEY_CODE = 229;
+    int COMPOSITION_KEY_CODE = 229;
 
     /**
      * @param webContents {@link WebContents} object.
-     * @return {@link ImeAdapter} object used for the give WebContents.
-     *         {@code null} if not available.
+     * @return {@link ImeAdapter} object used for the given WebContents. {@code null} if not
+     *     available.
      */
-    static ImeAdapter fromWebContents(WebContents webContents) {
+    static @Nullable ImeAdapter fromWebContents(WebContents webContents) {
         return ImeAdapterImpl.fromWebContents(webContents);
     }
 
@@ -38,7 +39,7 @@ public interface ImeAdapter {
     static InputMethodManagerWrapper createDefaultInputMethodManagerWrapper(
             Context context,
             WindowAndroid windowAndroid,
-            InputMethodManagerWrapper.Delegate delegate) {
+            InputMethodManagerWrapper.@Nullable Delegate delegate) {
         return ImeAdapterImpl.createDefaultInputMethodManagerWrapper(
                 context, windowAndroid, delegate);
     }
@@ -70,6 +71,11 @@ public interface ImeAdapter {
      * @see View#onCheckIsTextEditor()
      */
     boolean onCheckIsTextEditor();
+
+    /**
+     * @see View#onKeyPreIme(int, KeyEvent)
+     */
+    void onKeyPreIme(int keyCode, KeyEvent event);
 
     /** Whether the focused node is editable or not. */
     boolean focusedNodeEditable();
@@ -109,8 +115,32 @@ public interface ImeAdapter {
 
     /**
      * Call this when we get result from ResultReceiver passed in calling showSoftInput().
+     *
      * @param resultCode The result of showSoftInput() as defined in InputMethodManager.
      */
     @VisibleForTesting
     void onShowKeyboardReceiveResult(int resultCode);
+
+    /** Resets IME adapter and hides the keyboard. This will unblock input connection. */
+    void resetAndHideKeyboard();
+
+    /**
+     * Sets whether to allow fullscreen IME when space is limited.
+     *
+     * @param allow True to allow, false to prevent.
+     */
+    void setAllowFullscreenIme(boolean allow);
+
+    /**
+     * Sets whether the soft keyboard should be suppressed. When suppressed, calls to show the soft
+     * keyboard will be blocked, and any active keyboard will be immediately hidden.
+     *
+     * @param suppressed True to suppress the soft keyboard, false to allow it.
+     */
+    void setKeyboardSuppressed(boolean suppressed);
+
+    /**
+     * @return the active {@link InputMethodManagerWrapper} that the ImeAdapter uses.
+     */
+    InputMethodManagerWrapper getInputMethodManagerWrapper();
 }

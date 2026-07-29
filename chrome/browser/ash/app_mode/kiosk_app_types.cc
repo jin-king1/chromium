@@ -24,6 +24,8 @@ std::string ToString(KioskAppType type) {
       return "WebKiosk";
     case KioskAppType::kIsolatedWebApp:
       return "IsolatedWebAppKiosk";
+    case KioskAppType::kArcvmApp:
+      return "ArcvmKiosk";
   }
 }
 
@@ -48,6 +50,12 @@ KioskAppId KioskAppId::ForWebApp(const AccountId& account_id) {
 KioskAppId KioskAppId::ForIsolatedWebApp(const AccountId& account_id) {
   DUMP_WILL_BE_CHECK(account_id.is_valid());
   return {KioskAppType::kIsolatedWebApp, account_id};
+}
+
+// static
+KioskAppId KioskAppId::ForArcvmApp(const AccountId& account_id) {
+  CHECK(account_id.is_valid());
+  return {KioskAppType::kArcvmApp, account_id};
 }
 
 KioskAppId::KioskAppId() = default;
@@ -80,5 +88,28 @@ bool operator==(const KioskAppId& first, const KioskAppId& second) {
   return (first.type == second.type) && (first.app_id == second.app_id) &&
          (first.account_id == second.account_id);
 }
+
+KioskAppInstallParams::KioskAppInstallParams(std::string id,
+                                             std::string crx_file_location,
+                                             std::string version,
+                                             bool is_store_app)
+    : id(std::move(id)),
+      crx_file_location(std::move(crx_file_location)),
+      version(std::move(version)),
+      is_store_app(is_store_app) {}
+
+KioskAppInstallParams::KioskAppInstallParams(
+    const KioskAppInstallParams& other) = default;
+
+KioskAppInstallParams::KioskAppInstallParams(
+    KioskAppInstallParams&& other) noexcept = default;
+
+KioskAppInstallParams& KioskAppInstallParams::operator=(
+    const KioskAppInstallParams& other) = default;
+
+KioskAppInstallParams& KioskAppInstallParams::operator=(
+    KioskAppInstallParams&& other) noexcept = default;
+
+KioskAppInstallParams::~KioskAppInstallParams() = default;
 
 }  // namespace ash

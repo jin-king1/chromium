@@ -11,13 +11,14 @@
 
 #include "base/containers/span.h"
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
 #include "base/location.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
+#include "base/strings/strcat.h"
+#include "base/strings/string_view_util.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
+#include "base/trace_event/named_trigger.h"
 #include "base/trace_event/trace_event.h"
 #include "chrome/browser/preloading/prefetch/search_prefetch/field_trial_settings.h"
 #include "chrome/browser/preloading/prerender/prerender_utils.h"
@@ -39,10 +40,10 @@
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "url/gurl.h"
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
-#include "extensions/browser/api/web_request/web_request_api.h"
-#include "extensions/browser/browser_context_keyed_api_factory.h"
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+#include "extensions/browser/api/web_request/web_request_api.h"    // nogncheck
+#include "extensions/browser/browser_context_keyed_api_factory.h"  // nogncheck
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
 namespace {
 
@@ -260,9 +261,7 @@ void StreamingSearchPrefetchURLLoader::ResponseReader::ReleaseSelfReference() {
 }
 
 void StreamingSearchPrefetchURLLoader::ResponseReader::FollowRedirect(
-    const std::vector<std::string>& removed_headers,
-    const net::HttpRequestHeaders& modified_headers,
-    const net::HttpRequestHeaders& modified_cors_exempt_headers,
+    network::HttpRequestHeadersUpdateParams headers_update_params,
     const std::optional<GURL>& new_url) {}
 void StreamingSearchPrefetchURLLoader::ResponseReader::SetPriority(
     net::RequestPriority priority,
@@ -285,7 +284,7 @@ StreamingSearchPrefetchURLLoader::StreamingSearchPrefetchURLLoader(
   // that extensions can be informed of any prefetches.
   network::URLLoaderFactoryBuilder factory_builder;
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   auto* web_request_api =
       extensions::BrowserContextKeyedAPIFactory<extensions::WebRequestAPI>::Get(
           profile);
@@ -298,7 +297,7 @@ StreamingSearchPrefetchURLLoader::StreamingSearchPrefetchURLLoader(
         /*navigation_response_task_runner=*/nullptr,
         /*request_initiator=*/url::Origin());
   }
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
   url_loader_factory_ =
       std::move(factory_builder)
@@ -321,6 +320,9 @@ StreamingSearchPrefetchURLLoader::StreamingSearchPrefetchURLLoader(
 }
 
 StreamingSearchPrefetchURLLoader::~StreamingSearchPrefetchURLLoader() {
+  TRACE_EVENT0(
+      "loading",
+      "StreamingSearchPrefetchURLLoader::~StreamingSearchPrefetchURLLoader");
   network_url_loader_.reset();
   url_loader_receiver_.reset();
 
@@ -333,6 +335,12 @@ StreamingSearchPrefetchURLLoader::~StreamingSearchPrefetchURLLoader() {
       /* exclusive_max= */ bucket_size, bucket_size);
   if (on_destruction_callback_for_testing_) {
     std::move(on_destruction_callback_for_testing_).Run();
+  }
+
+  if (should_be_serving_to_activation_navigation_ &&
+      forwarding_result_ == ForwardingResult::kNotServed) {
+    base::trace_event::EmitNamedTrigger(
+        "search-prefetch-destroyed-unexpectedly");
   }
 }
 
@@ -351,6 +359,7 @@ StreamingSearchPrefetchURLLoader::GetServingResponseHandler(
     scoped_refptr<StreamingSearchPrefetchURLLoader> loader) {
   DCHECK(!loader->streaming_prefetch_request_);
   DCHECK(!loader->forwarding_client_);
+  loader->should_be_serving_to_activation_navigation_ = true;
   loader->RecordInterceptionTime();
   return base::BindOnce(
       &StreamingSearchPrefetchURLLoader::SetUpForwardingClient,
@@ -370,7 +379,11 @@ void StreamingSearchPrefetchURLLoader::SetUpForwardingClient(
     const network::ResourceRequest& resource_request,
     mojo::PendingReceiver<network::mojom::URLLoader> receiver,
     mojo::PendingRemote<network::mojom::URLLoaderClient> forwarding_client) {
+  TRACE_EVENT0(
+      "loading",
+      "StreamingSearchPrefetchURLLoader::SetUpForwardingClient");
   CHECK(!streaming_prefetch_request_);
+  CHECK(should_be_serving_to_activation_navigation_);
   // Bind to the content/ navigation code.
   CHECK(!receiver_.is_bound());
 
@@ -462,7 +475,8 @@ void StreamingSearchPrefetchURLLoader::OnReceiveResponse(
     mojo::ScopedDataPipeConsumerHandle body,
     std::optional<mojo_base::BigBuffer> cached_metadata) {
   bool can_be_served = CanServePrefetchRequest(head->headers.get(), body);
-
+  TRACE_EVENT1("loading", "StreamingSearchPrefetchURLLoader::OnReceiveResponse",
+               "can_be_served", can_be_served);
   if (is_activated_) {
     std::string histogram_name =
         "Omnibox.SearchPrefetch.ReceivedServableResponse2.";
@@ -470,6 +484,26 @@ void StreamingSearchPrefetchURLLoader::OnReceiveResponse(
     histogram_name.append(
         (navigation_prefetch_ ? "NavigationPrefetch" : "SuggestionPrefetch"));
     base::UmaHistogramBoolean(histogram_name, can_be_served);
+  }
+
+  if (can_be_served) {
+    std::optional<std::string> nvs_header =
+        head->headers ? head->headers->GetNormalizedHeader("No-Vary-Search")
+                      : std::nullopt;
+    base::UmaHistogramBoolean(
+        base::StrCat({"Omnibox.SearchPrefetch.HasNoVarySearchHeader2",
+                      is_in_fallback_ ? ".Fallback" : ".Initial",
+                      navigation_prefetch_ ? ".NavigationPrefetch"
+                                           : ".SuggestionPrefetch"}),
+        nvs_header.has_value());
+    if (nvs_header.has_value()) {
+      base::UmaHistogramSparse(
+          base::StrCat({"Omnibox.SearchPrefetch.NoVarySearchHeaderLength",
+                        is_in_fallback_ ? ".Fallback" : ".Initial",
+                        navigation_prefetch_ ? ".NavigationPrefetch"
+                                             : ".SuggestionPrefetch"}),
+          nvs_header->length());
+    }
   }
 
   // Cached metadata is not supported for navigation loader.
@@ -509,6 +543,10 @@ void StreamingSearchPrefetchURLLoader::OnReceiveResponse(
     // Not safe to do anything after this point
   }
 
+  head->was_in_prefetch_cache = true;
+  head->navigation_delivery_type =
+      network::mojom::NavigationDeliveryType::kNavigationalPrefetch;
+
   if (forwarding_client_) {
     forwarding_client_->OnReceiveResponse(std::move(head), std::move(body),
                                           std::nullopt);
@@ -541,6 +579,9 @@ void StreamingSearchPrefetchURLLoader::OnReceiveResponse(
 void StreamingSearchPrefetchURLLoader::OnReceiveRedirect(
     const net::RedirectInfo& redirect_info,
     network::mojom::URLResponseHeadPtr head) {
+  bool is_serving = bool(streaming_prefetch_request_);
+  TRACE_EVENT1("loading", "StreamingSearchPrefetchURLLoader::OnReceiveRedirect",
+               "is_serving", is_serving);
   if (is_in_fallback_) {
     DCHECK(forwarding_client_);
     forwarding_client_->OnReceiveRedirect(redirect_info, std::move(head));
@@ -761,14 +802,12 @@ void StreamingSearchPrefetchURLLoader::RunEventQueue() {
 }
 
 void StreamingSearchPrefetchURLLoader::FollowRedirect(
-    const std::vector<std::string>& removed_headers,
-    const net::HttpRequestHeaders& modified_headers,
-    const net::HttpRequestHeaders& modified_cors_exempt_headers,
+    network::HttpRequestHeadersUpdateParams headers_update_params,
     const std::optional<GURL>& new_url) {
   if (is_in_fallback_) {
     DCHECK(network_url_loader_);
-    network_url_loader_->FollowRedirect(removed_headers, modified_headers,
-                                        modified_cors_exempt_headers, new_url);
+    network_url_loader_->FollowRedirect(std::move(headers_update_params),
+                                        new_url);
     return;
   }
   // This should never be called for a non-network service URLLoader.
@@ -840,6 +879,7 @@ void StreamingSearchPrefetchURLLoader::PostTaskToReleaseOwnership() {
 }
 
 void StreamingSearchPrefetchURLLoader::Fallback() {
+  TRACE_EVENT0("loading", "StreamingSearchPrefetchURLLoader::Fallback");
   is_scheduled_to_fallback_ = false;
 
   CHECK(!is_in_fallback_);

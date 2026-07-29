@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40284755): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "net/spdy/spdy_http_utils.h"
 
@@ -18,6 +14,7 @@
 #include "base/strings/strcat.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
+#include "base/strings/string_view_util.h"
 #include "base/types/expected.h"
 #include "base/types/expected_macros.h"
 #include "net/base/features.h"
@@ -85,8 +82,8 @@ SpdyHeadersToHttpResponseHeadersUsingRawString(
 
   const auto status = it->second;
 
-  std::string raw_headers =
-      base::StrCat({"HTTP/1.1 ", status, std::string_view("\0", 1)});
+  std::string raw_headers = base::StrCat(
+      {"HTTP/1.1 ", status, base::MakeStringViewWithNulChars("\0")});
   raw_headers.reserve(kExpectedRawHeaderSize);
   for (const auto& [name, value] : headers) {
     DCHECK_GT(name.size(), 0u);
@@ -113,8 +110,8 @@ SpdyHeadersToHttpResponseHeadersUsingRawString(
       } else {
         tval = value.substr(start);
       }
-      base::StrAppend(&raw_headers,
-                      {name, ":", tval, std::string_view("\0", 1)});
+      base::StrAppend(&raw_headers, {name, ":", tval,
+                                     base::MakeStringViewWithNulChars("\0")});
       start = end + 1;
     } while (end != value.npos);
   }
@@ -127,6 +124,10 @@ SpdyHeadersToHttpResponseHeadersUsingRawString(
   if (HttpUtil::HeadersContainMultipleCopiesOfField(*response_headers,
                                                     "location")) {
     return base::unexpected(ERR_RESPONSE_HEADERS_MULTIPLE_LOCATION);
+  }
+  if (HttpUtil::HeadersContainMultipleCopiesOfField(*response_headers,
+                                                    "content-disposition")) {
+    return base::unexpected(ERR_RESPONSE_HEADERS_MULTIPLE_CONTENT_DISPOSITION);
   }
 
   return response_headers;
@@ -166,36 +167,33 @@ SpdyHeadersToHttpResponseHeadersUsingBuilder(
     //    Set-Cookie: bar\0
     size_t start = 0;
     size_t end = 0;
-    std::optional<std::string_view> location_value;
     do {
       end = value.find('\0', start);
       std::string_view tval;
       if (end != value.npos) {
         tval = value.substr(start, (end - start));
-
-        // TODO(ricea): Make this comparison case-sensitive when we are no
-        // longer maintaining compatibility with the old version of the
-        // function.
-        if (base::EqualsCaseInsensitiveASCII(name, "location") &&
-            !location_value.has_value()) {
-          location_value = HttpUtil::TrimLWS(tval);
-        }
       } else {
         tval = value.substr(start);
-      }
-      if (location_value.has_value() && start > 0) {
-        DCHECK(base::EqualsCaseInsensitiveASCII(name, "location"));
-        std::string_view trimmed_value = HttpUtil::TrimLWS(tval);
-        if (trimmed_value != location_value.value()) {
-          return base::unexpected(ERR_RESPONSE_HEADERS_MULTIPLE_LOCATION);
-        }
       }
       builder.AddHeader(name, tval);
       start = end + 1;
     } while (end != value.npos);
   }
 
-  return builder.Build();
+  auto response_headers = builder.Build();
+
+  // When there are multiple location headers the response is a potential
+  // response smuggling attack.
+  if (HttpUtil::HeadersContainMultipleCopiesOfField(*response_headers,
+                                                    "location")) {
+    return base::unexpected(ERR_RESPONSE_HEADERS_MULTIPLE_LOCATION);
+  }
+  if (HttpUtil::HeadersContainMultipleCopiesOfField(*response_headers,
+                                                    "content-disposition")) {
+    return base::unexpected(ERR_RESPONSE_HEADERS_MULTIPLE_CONTENT_DISPOSITION);
+  }
+
+  return response_headers;
 }
 
 void CreateSpdyHeadersFromHttpRequest(const HttpRequestInfo& info,
@@ -208,7 +206,7 @@ void CreateSpdyHeadersFromHttpRequest(const HttpRequestInfo& info,
   } else {
     headers->insert(
         {spdy::kHttp2AuthorityHeader, GetHostAndOptionalPort(info.url)});
-    headers->insert({spdy::kHttp2SchemeHeader, info.url.scheme()});
+    headers->insert({spdy::kHttp2SchemeHeader, info.url.GetScheme()});
     headers->insert({spdy::kHttp2PathHeader, info.url.PathForRequest()});
   }
 
@@ -249,7 +247,7 @@ void CreateSpdyHeadersFromHttpRequestForExtendedConnect(
 
   // Extended CONNECT, unlike CONNECT, requires scheme and path, and uses the
   // default port in the authority header.
-  headers->insert({spdy::kHttp2SchemeHeader, info.url.scheme()});
+  headers->insert({spdy::kHttp2SchemeHeader, info.url.GetScheme()});
   headers->insert({spdy::kHttp2PathHeader, info.url.PathForRequest()});
   headers->insert({spdy::kHttp2ProtocolHeader, ext_connect_protocol});
 
@@ -302,22 +300,6 @@ ConvertSpdyPriorityToRequestPriority(spdy::SpdyPriority priority) {
              ? IDLE
              : static_cast<RequestPriority>(
                    MAXIMUM_PRIORITY - (priority - spdy::kV3HighestPriority));
-}
-
-NET_EXPORT_PRIVATE void ConvertHeaderBlockToHttpRequestHeaders(
-    const quiche::HttpHeaderBlock& spdy_headers,
-    HttpRequestHeaders* http_headers) {
-  for (const auto& it : spdy_headers) {
-    std::string_view key = it.first;
-    if (key[0] == ':') {
-      key.remove_prefix(1);
-    }
-    std::vector<std::string_view> values = base::SplitStringPiece(
-        it.second, "\0", base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL);
-    for (const auto& value : values) {
-      http_headers->SetHeader(key, value);
-    }
-  }
 }
 
 }  // namespace net

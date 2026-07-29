@@ -4,5 +4,16 @@
 
 #include "chrome/browser/ui/browser_window/test/mock_browser_window_interface.h"
 
-MockBrowserWindowInterface::MockBrowserWindowInterface() = default;
+#include "ui/base/unowned_user_data/unowned_user_data_host.h"
+
+MockBrowserWindowInterface::MockBrowserWindowInterface() {
+  ON_CALL(*this, GetUnownedUserDataHost())
+      .WillByDefault(testing::ReturnRef(unowned_user_data_host_));
+}
 MockBrowserWindowInterface::~MockBrowserWindowInterface() = default;
+
+ui::UnownedUserDataHost& MockBrowserWindowInterface::GetUnownedUserDataHost() {
+  return const_cast<ui::UnownedUserDataHost&>(
+      const_cast<const MockBrowserWindowInterface*>(this)
+          ->GetUnownedUserDataHost());
+}

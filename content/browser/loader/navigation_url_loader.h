@@ -18,9 +18,9 @@
 #include "services/network/public/mojom/trust_token_access_observer.mojom-forward.h"
 #include "services/network/public/mojom/url_loader_network_service_observer.mojom.h"
 
-namespace net {
-class HttpRequestHeaders;
-}
+namespace network {
+struct HttpRequestHeadersUpdateParams;
+}  // namespace network
 
 namespace content {
 
@@ -48,6 +48,9 @@ class CONTENT_EXPORT NavigationURLLoader {
 
     // Creates a noop NavigationURLLoader for Prerender activation.
     kNoopForPrerender,
+
+    // Creates a noop NavigationURLLoader for initial WebUI navigation.
+    kNoopForInitialWebUI,
   };
 
   // Creates a NavigationURLLoader. The caller is responsible for ensuring that
@@ -83,9 +86,7 @@ class CONTENT_EXPORT NavigationURLLoader {
       mojo::PendingRemote<network::mojom::DevToolsObserver> devtools_observer,
       mojo::PendingRemote<network::mojom::DeviceBoundSessionAccessObserver>
           device_bound_session_observer,
-      network::mojom::URLResponseHeadPtr cached_response_head = nullptr,
-      std::vector<std::unique_ptr<NavigationLoaderInterceptor>>
-          initial_interceptors = {});
+      network::mojom::URLResponseHeadPtr cached_response_head = nullptr);
 
   // For testing purposes; sets the factory for use in testing. The factory is
   // not used for prerendered page activation as it needs to run a specific
@@ -106,9 +107,7 @@ class CONTENT_EXPORT NavigationURLLoader {
   // Called in response to OnRequestRedirected to continue processing the
   // request.
   virtual void FollowRedirect(
-      const std::vector<std::string>& removed_headers,
-      const net::HttpRequestHeaders& modified_headers,
-      const net::HttpRequestHeaders& modified_cors_exempt_headers) = 0;
+      network::HttpRequestHeadersUpdateParams headers_update_params) = 0;
 
   // Sets an overall request timeout for this navigation, which will cause the
   // navigation to fail if it expires before the navigation commits. This is

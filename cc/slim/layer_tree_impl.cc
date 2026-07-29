@@ -10,7 +10,14 @@
 
 #include "base/auto_reset.h"
 #include "base/containers/adapters.h"
+#include "base/logging.h"
 #include "base/metrics/histogram.h"
+#include "base/metrics/histogram_functions.h"
+#include "base/metrics/histogram_macros.h"
+#include "base/rand_util.h"
+#include "base/strings/stringprintf.h"
+#include "base/task/sequenced_task_runner.h"
+#include "base/timer/elapsed_timer.h"
 #include "base/trace_event/trace_event.h"
 #include "base/trace_event/typed_macros.h"
 #include "cc/base/histograms.h"
@@ -64,6 +71,16 @@ class LayerTreeImplScopedKeepSurfaceAlive
   const viz::SurfaceRange range_;
 };
 
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// This enum is used for the "Compositing.Slim.BeginFrameResult" histogram.
+enum class SlimBeginFrameResult {
+  kEarlyOutNoDraw = 0,
+  kEarlyOutProcessed = 1,
+  kFrameProduced = 2,
+  kMaxValue = kFrameProduced,
+};
+
 }  // namespace
 
 LayerTreeImpl::PresentationCallbackInfo::PresentationCallbackInfo(
@@ -90,6 +107,7 @@ LayerTreeImpl::LayerTreeImpl(LayerTreeClient* client,
 
 LayerTreeImpl::~LayerTreeImpl() {
   SetRoot(nullptr);
+  FlushBeginFrameResults();
 }
 
 cc::UIResourceManager* LayerTreeImpl::GetUIResourceManager() {
@@ -240,6 +258,7 @@ void LayerTreeImpl::SetFrameSink(std::unique_ptr<FrameSink> sink) {
 
 void LayerTreeImpl::ReleaseLayerTreeFrameSink() {
   DCHECK(!IsVisible());
+  MaybeReleaseResources();
   frame_sink_.reset();
   damage_from_previous_frame_.clear();
 }
@@ -267,10 +286,18 @@ bool LayerTreeImpl::BeginFrame(
     viz::CompositorFrame& out_frame,
     base::flat_set<viz::ResourceId>& out_resource_ids,
     viz::HitTestRegionList& out_hit_test_region_list) {
+  base::ElapsedTimer timer;
+  if (begin_frame_not_needed_count_ + begin_frame_processed_count_ +
+          begin_frame_produced_count_ >=
+      100) {
+    FlushBeginFrameResults();
+  }
+
   // Skip any delayed BeginFrame messages that arrive even after we no longer
   // need it.
   if (!NeedsDraw()) {
-    TRACE_EVENT_INSTANT0("cc", "EarlyOut_NotNeeded", TRACE_EVENT_SCOPE_THREAD);
+    TRACE_EVENT_INSTANT("cc", "EarlyOut_NotNeeded");
+    ++begin_frame_not_needed_count_;
     num_begin_frames_with_no_draw_++;
     frame_sink_->SetNeedsBeginFrame(NeedsBeginFrames());
     return false;
@@ -291,6 +318,7 @@ bool LayerTreeImpl::BeginFrame(
   needs_draw_ = false;
 
   if (!root_ || device_viewport_rect_.IsEmpty()) {
+    ++begin_frame_processed_count_;
     UpdateNeedsBeginFrame();
     return false;
   }
@@ -298,6 +326,13 @@ bool LayerTreeImpl::BeginFrame(
   GenerateCompositorFrame(args, out_frame, out_resource_ids,
                           out_hit_test_region_list);
   UpdateNeedsBeginFrame();
+
+  ++begin_frame_produced_count_;
+  if (base::ShouldRecordSubsampledMetric(0.01)) {
+    UMA_HISTOGRAM_CUSTOM_MICROSECONDS_TIMES(
+        "Compositing.Browser.BeginFrame.Produced.Duration.Subsampled",
+        timer.Elapsed(), base::Microseconds(1), base::Milliseconds(30), 50);
+  }
   return true;
 }
 
@@ -315,7 +350,7 @@ void LayerTreeImpl::DidPresentCompositorFrame(
   const bool success = !details.presentation_feedback.failed();
   for (auto itr = pending_presentation_callbacks_.begin();
        itr != pending_presentation_callbacks_.end();) {
-    if (viz::FrameTokenGT(itr->frame_token, frame_token)) {
+    if (itr->frame_token > frame_token) {
       break;
     }
     for (auto& callback : itr->presentation_callbacks) {
@@ -342,7 +377,7 @@ void LayerTreeImpl::DidPresentCompositorFrame(
 
 void LayerTreeImpl::DidLoseLayerTreeFrameSink() {
   client_->DidLoseLayerTreeFrameSink();
-  frame_sink_.reset();
+  MaybeReleaseResources();
   MaybeRequestFrameSink();
 }
 
@@ -441,6 +476,45 @@ bool LayerTreeImpl::NeedsDraw() const {
     return false;
   }
   return client_needs_one_begin_frame_ || needs_draw_;
+}
+
+void LayerTreeImpl::FlushBeginFrameResults() {
+  if (begin_frame_not_needed_count_ == 0 && begin_frame_processed_count_ == 0 &&
+      begin_frame_produced_count_ == 0) {
+    return;
+  }
+
+  // The UMA_HISTOGRAM_ENUMERATION macro is not suitable for adding a count > 1.
+  // Instead, we get the histogram pointer and use AddCount(). For performance,
+  // the pointer is cached in a static variable.
+  static base::HistogramBase* histogram = nullptr;
+  if (!histogram) {
+    constexpr char kHistogramName[] = "Compositing.Slim.BeginFrameResult";
+    // For enums, the max value is one higher than the max enumerator value.
+    constexpr int kBoundary =
+        static_cast<int>(SlimBeginFrameResult::kMaxValue) + 1;
+    // The number of buckets is boundary + 1 to include the overflow bucket.
+    histogram = base::LinearHistogram::FactoryGet(
+        kHistogramName, 1, kBoundary, kBoundary + 1,
+        base::HistogramBase::kUmaTargetedHistogramFlag);
+  }
+
+  if (begin_frame_not_needed_count_ > 0) {
+    histogram->AddCount(static_cast<int>(SlimBeginFrameResult::kEarlyOutNoDraw),
+                        begin_frame_not_needed_count_);
+    begin_frame_not_needed_count_ = 0;
+  }
+  if (begin_frame_processed_count_ > 0) {
+    histogram->AddCount(
+        static_cast<int>(SlimBeginFrameResult::kEarlyOutProcessed),
+        begin_frame_processed_count_);
+    begin_frame_processed_count_ = 0;
+  }
+  if (begin_frame_produced_count_ > 0) {
+    histogram->AddCount(static_cast<int>(SlimBeginFrameResult::kFrameProduced),
+                        begin_frame_produced_count_);
+    begin_frame_produced_count_ = 0;
+  }
 }
 
 bool LayerTreeImpl::NeedsBeginFrames() const {
@@ -837,14 +911,13 @@ void LayerTreeImpl::Draw(Layer& layer,
   auto* quad =
       parent_pass.CreateAndAppendDrawQuad<viz::CompositorRenderPassDrawQuad>();
 
-  gfx::RectF tex_coord_rect(gfx::Rect(content_rect.size()));
   quad->SetAll(shared_quad_state, content_rect, content_rect,
                /*needs_blending=*/true, new_pass->id,
                /*mask_resource_id=*/viz::kInvalidResourceId,
                /*mask_uv_rect=*/gfx::RectF(),
                /*mask_texture_size=*/gfx::Size(),
                /*filters_scale=*/scale_to_new_pass,
-               /*filters_origin=*/gfx::PointF(), tex_coord_rect,
+               /*filters_origin=*/gfx::PointF(),
                /*force_anti_aliasing_off=*/false,
                /*backdrop_filter_quality=*/1.f,
                /*intersects_damage_under=*/true);
@@ -1051,6 +1124,19 @@ void LayerTreeImpl::ProcessDamageForRenderPass(
   render_pass.damage_rect = damage;
   render_pass.has_damage_from_contributing_content =
       !render_pass.damage_rect.IsEmpty();
+}
+
+void LayerTreeImpl::MaybeReleaseResources() {
+  if (frame_sink_ && root_) {
+    ReleaseResourcesFromLayerAndChildren(root_.get());
+  }
+}
+
+void LayerTreeImpl::ReleaseResourcesFromLayerAndChildren(Layer* layer) {
+  layer->ReleaseResources();
+  for (auto& child : layer->children()) {
+    ReleaseResourcesFromLayerAndChildren(child.get());
+  }
 }
 
 }  // namespace cc::slim

@@ -6,15 +6,14 @@
 #define CHROME_BROWSER_UI_PROFILES_PROFILE_PICKER_H_
 
 #include <optional>
+#include <variant>
 
-#include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_forward.h"
 #include "base/time/time.h"
 #include "build/buildflag.h"
 #include "components/signin/public/base/signin_buildflags.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "url/gurl.h"
 
@@ -26,7 +25,7 @@ class View;
 class WebView;
 }  // namespace views
 
-enum class StartupProfileModeReason;
+enum class StartupProfileMode;
 class ForceSigninUIError;
 
 class ProfilePicker {
@@ -100,7 +99,14 @@ class ProfilePicker {
     // Opens the Glic version of the Profile Picker
     kGlicManager = 16,
 
-    kMaxValue = kGlicManager,
+    // Opens the profile picker on startup, and creates a profile with an email
+    // address.
+    kOnStartupCreateProfileWithEmail = 17,
+
+    // Opens the Omnibox Everywhere version of the Profile Picker.
+    kOmniboxEverywhere = 18,
+
+    kMaxValue = kOmniboxEverywhere,
   };
   // LINT.ThenChange(/tools/metrics/histograms/metadata/profile/enums.xml:ProfilePickerEntryPoint)
 
@@ -119,6 +125,10 @@ class ProfilePicker {
     // are available (e.g. `ForBackgroundManager()`).
     static Params FromEntryPoint(EntryPoint entry_point);
 
+    // Builds parameter with the `kOnStartupCreateProfileWithEmail` entry point.
+    // Allows specifying the email address used to pre-fill the email field.
+    static Params FromStartupWithEmail(const std::string& email);
+
     // Builds parameter with the `kBackgroundModeManager` entry point. Allows
     // specifying extra parameters.
     static Params ForBackgroundManager(
@@ -134,7 +144,11 @@ class ProfilePicker {
       return on_select_profile_target_url_;
     }
 
-    // Builds parameter with the `kFirstRun` (on Dice) entry point.
+    // The email address to pre-fill the email field when creating a new
+    // signed in profile.
+    const std::string& initial_email() const { return initial_email_; }
+
+    // Builds parameter with the `kFirstRun` entry point.
     //
     // `profile_path` is the profile for which to open the FRE.
     // `first_run_exited_callback` is called when the first run experience is
@@ -150,6 +164,15 @@ class ProfilePicker {
     // nullptr profile).
     static Params ForGlicManager(
         base::OnceCallback<void(Profile*)> picked_profile_callback);
+
+    // Builds parameter for the `kOmniboxEverywhere` entry point.
+    static Params ForOmniboxEverywhere(
+        base::OnceCallback<void(Profile*)> picked_profile_callback);
+
+    // Builds parameters for testing purposes, allowing any entry point and
+    // profile path to be specified.
+    static Params ForTesting(EntryPoint entry_point,
+                             const base::FilePath& profile_path);
 
     // Calls `first_run_exited_callback_`, forwarding `exit_status`.See
     // `ForFirstRun()` for more details.
@@ -175,6 +198,7 @@ class ProfilePicker {
     explicit Params(EntryPoint entry_point, const base::FilePath& profile_path);
 
     EntryPoint entry_point_ = EntryPoint::kOnStartup;
+    std::string initial_email_;
     GURL on_select_profile_target_url_;
     base::FilePath profile_path_;
     FirstRunExitedCallback first_run_exited_callback_;
@@ -199,13 +223,12 @@ class ProfilePicker {
   // re-activation). When reactivated, the displayed page is not updated.
   static void Show(Params&& params);
 
-#if BUILDFLAG(ENABLE_DICE_SUPPORT)
   // Helper struct to allow passing different profile information for sign in:
   // - An optional color for a new profile.
   // - A file path for an existing profile.
-  using ProfileInfo = absl::variant<std::optional<SkColor>, base::FilePath>;
+  using ProfileInfo = std::variant<std::optional<SkColor>, base::FilePath>;
 
-  // Starts the Dice sign-in flow. The layout of the window gets updated for the
+  // Starts the sign-in flow. The layout of the window gets updated for the
   // sign-in flow while the profiles are created/loaded.
   // The sign in flow can be triggered for a new or existing profile.
   // For new profiles, the expected color is expected to be given as the
@@ -218,7 +241,7 @@ class ProfilePicker {
   // rendered with the profile.
   // `switch_finished_callback` gets informed whether the creation of the new
   // profile succeeded and the sign-in page gets displayed.
-  static void SwitchToDiceSignIn(
+  static void SwitchToSignIn(
       ProfileInfo profile_info,
       base::OnceCallback<void(bool)> switch_finished_callback);
 
@@ -231,18 +254,20 @@ class ProfilePicker {
   // the `profile` will be opened. On unsuccessful reauth, the user will be
   // redirected to the profile picker main page, with a popup error dialog
   // displayed through `on_error_callback`.
+  // `switch_finished_callback` will be called once the step was switched (or
+  // failed to switch to), the bool parameter indicating the success of the
+  // switch.
   static void SwitchToReauth(
       Profile* profile,
+      base::OnceCallback<void(bool)> switch_finished_callback,
       base::OnceCallback<void(const ForceSigninUIError&)> on_error_callback);
-#endif
 
   // Switch to the flow that comes when the user decides to create a profile
   // without signing in.
   // `profile_color` is the profile's color. It is undefined for the default
   // theme.
   static void SwitchToSignedOutPostIdentityFlow(
-      std::optional<SkColor> profile_color,
-      base::OnceCallback<void(bool)> switch_finished_callback);
+      std::optional<SkColor> profile_color);
 
   struct ProfilePickingArgs {
     // Opens the settings page of the profile once it is first picked.
@@ -250,24 +275,27 @@ class ProfilePicker {
     // Whether we are recording timing metrics about loading the profile and
     // opening the first web content.
     bool should_record_startup_metrics = false;
+    // Whether to exit the flow after the profile is picked.
+    bool exit_flow_after_profile_picked = true;
   };
 
   // Picks the profile with `profile_path`.
-  static void PickProfile(const base::FilePath& profile_path,
-                          ProfilePickingArgs args);
+  // `pick_profile_complete_callback` will be called when a browser is opened
+  // with the profile associated with `profile_path`, the boolean parameter
+  // returning whether a browser was successfully opened or not.
+  static void PickProfile(
+      const base::FilePath& profile_path,
+      ProfilePickingArgs args,
+      base::OnceCallback<void(bool)> pick_profile_complete_callback);
 
-  // Cancel the signed-in flow and returns back to the main picker screen (if
+  // Cancel the sign-in flow and returns back to the main picker screen (if
   // the original EntryPoint was to open the picker). Must only be called from
-  // within the signed-in flow. This will delete the profile previously created
+  // within the sign-in flow. This will delete the profile previously created
   // for the signed-in flow.
-  static void CancelSignedInFlow();
+  static void CancelSignInFlow();
 
   // Returns the path of the default profile used for rendering the picker.
   static base::FilePath GetPickerProfilePath();
-
-  // Getter of the path of profile which is displayed on the profile switch
-  // screen.
-  static base::FilePath GetSwitchProfilePath();
 
   // Hides the profile picker.
   static void Hide();
@@ -302,7 +330,11 @@ class ProfilePicker {
   // Returns whether to show profile picker at launch. This can be called on
   // startup or when Chrome is re-opened, e.g. when clicking on the dock icon on
   // MacOS when there are no windows, or from Windows tray icon.
-  static StartupProfileModeReason GetStartupModeReason();
+  static StartupProfileMode GetStartupMode();
+
+  // Opens the command line urls in the next profile that is opened.
+  static void SetOpenCommandLineUrlsInNextProfileOpened(bool value);
+  static bool GetOpenCommandLineUrlsInNextProfileOpened();
 };
 
 #endif  // CHROME_BROWSER_UI_PROFILES_PROFILE_PICKER_H_

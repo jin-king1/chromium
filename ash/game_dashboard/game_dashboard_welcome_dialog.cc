@@ -63,7 +63,7 @@ GameDashboardWelcomeDialog::GameDashboardWelcomeDialog() {
       gfx::Insets::VH(kPrimaryLayoutInsideBorder, kPrimaryLayoutInsideBorder));
   SetBackground(views::CreateRoundedRectBackground(
       cros_tokens::kCrosSysSystemBaseElevatedOpaque, kDialogCornerRadius));
-  SetBorder(views::CreateThemedRoundedRectBorder(
+  SetBorder(views::CreateRoundedRectBorder(
       game_dashboard::kWelcomeDialogBorderThickness, kDialogCornerRadius,
       ui::ColorIds::kColorHighlightBorderHighlight1));
   shadow_ = SystemShadow::CreateShadowOnNinePatchLayerForView(
@@ -147,8 +147,6 @@ void GameDashboardWelcomeDialog::AddTitleAndIconRow() {
       l10n_util::GetStringUTF16(
           IDS_ASH_GAME_DASHBOARD_WELCOME_DIALOG_SUB_LABEL),
       cros_tokens::kCrosSysOnSurfaceVariant));
-  // TODO(b/316138331): Investigate why multi-line support isn't working
-  // properly.
   sub_label->SetMultiLine(true);
   sub_label->SizeToFit(kTitleTextMaxWidth);
   sub_label->SetHorizontalAlignment(gfx::ALIGN_LEFT);

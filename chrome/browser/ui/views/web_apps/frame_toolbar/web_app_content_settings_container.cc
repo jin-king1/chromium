@@ -11,7 +11,7 @@
 #include "ui/compositor/scoped_layer_animation_settings.h"
 #include "ui/views/border.h"
 #include "ui/views/layout/box_layout.h"
-#include "ui/views/window/custom_frame_view.h"
+#include "ui/views/style/typography_provider.h"
 #include "ui/views/window/hit_test_utils.h"
 
 namespace {
@@ -24,7 +24,7 @@ constexpr base::TimeDelta kContentSettingsFadeInDuration =
 WebAppContentSettingsContainer::WebAppContentSettingsContainer(
     Browser* browser,
     IconLabelBubbleView::Delegate* icon_label_bubble_delegate,
-    ContentSettingImageView::Delegate* content_setting_image_delegate) {
+    ContentSettingImageViewDelegate* content_setting_image_delegate) {
   views::BoxLayout& layout =
       *SetLayoutManager(std::make_unique<views::BoxLayout>(
           views::BoxLayout::Orientation::kHorizontal, gfx::Insets(),
@@ -39,7 +39,7 @@ WebAppContentSettingsContainer::WebAppContentSettingsContainer(
     auto image_view = std::make_unique<ContentSettingImageView>(
         std::move(model), icon_label_bubble_delegate,
         content_setting_image_delegate, browser,
-        views::CustomFrameView::GetWindowTitleFontList());
+        views::TypographyProvider::Get().GetWindowTitleFontList());
     // Padding around content setting icons.
     constexpr auto kContentSettingIconInteriorPadding = gfx::Insets(4);
     image_view->SetBorder(

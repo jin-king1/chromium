@@ -6,21 +6,18 @@
 
 #include <string_view>
 
-#include "base/metrics/histogram_functions.h"
 #include "chrome/browser/download/bubble/download_bubble_prefs.h"
 #include "chrome/browser/download/bubble/download_bubble_ui_controller.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
+#include "chrome/browser/ui/views/download/bubble/download_bubble_navigation_handler.h"
 #include "chrome/browser/ui/views/download/bubble/download_bubble_row_list_view.h"
-#include "chrome/browser/ui/views/download/bubble/download_toolbar_button_view.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/generated_resources.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
-#include "ui/compositor/compositor.h"
-#include "ui/gfx/color_palette.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/border.h"
@@ -90,7 +87,7 @@ class SuppressBubbleSettingRow : public views::View,
     checkbox_->GetViewAccessibility().SetName(
         l10n_util::GetStringUTF16(IDS_DOWNLOAD_BUBBLE_SUPPRESS_PARTIAL_VIEW));
     checkbox_->SetChecked(
-        !download::IsDownloadBubblePartialViewEnabled(browser_->profile()));
+        !download::IsDownloadBubblePartialViewEnabled(browser_->GetProfile()));
     auto targeter = std::make_unique<CheckboxTargeter>();
     checkbox_->SetEventTargeter(
         std::make_unique<views::ViewTargeter>(std::move(targeter)));
@@ -151,7 +148,7 @@ class SuppressBubbleSettingRow : public views::View,
  private:
   void CheckboxClicked() {
     if (navigation_handler_) {
-      download::SetDownloadBubblePartialViewEnabled(browser_->profile(),
+      download::SetDownloadBubblePartialViewEnabled(browser_->GetProfile(),
                                                     !checkbox_->GetChecked());
       settings_text_->SetVisible(true);
     }
@@ -175,9 +172,6 @@ BEGIN_METADATA(SuppressBubbleSettingRow)
 END_METADATA
 
 bool ShouldShowSuppressSetting(Profile* profile, int impressions) {
-  if (!download::IsDownloadBubblePartialViewControlledByPref()) {
-    return false;
-  }
   // Impressions have been incremented by this point, so the first
   // impression is 1.
   return download::IsDownloadBubblePartialViewEnabledDefaultPrefValue(
@@ -210,7 +204,7 @@ DownloadBubblePartialView::DownloadBubblePartialView(
     : on_interacted_closure_(std::move(on_interacted_closure)) {
   MaybeAddOtrInfoRow(browser.get());
 
-  Profile* profile = browser->profile();
+  Profile* profile = browser->GetProfile();
   const int impressions =
       download::DownloadBubblePartialViewImpressions(profile) + 1;
   int preferred_width = DefaultPreferredWidth();
@@ -222,8 +216,6 @@ DownloadBubblePartialView::DownloadBubblePartialView(
     preferred_width =
         std::max(preferred_width, setting_row->GetPreferredSize().width());
   }
-
-  last_download_completed_time_ = info.last_completed_time();
 
   BuildAndAddScrollView(std::move(browser), std::move(bubble_controller),
                         std::move(navigation_handler), info, preferred_width);
@@ -251,21 +243,6 @@ void DownloadBubblePartialView::AddedToWidget() {
   if (focus_manager) {
     focus_manager->AddFocusChangeListener(this);
   }
-
-  if (last_download_completed_time_.has_value()) {
-    GetWidget()->GetCompositor()->RequestSuccessfulPresentationTimeForNextFrame(
-        base::BindOnce(
-            [](base::Time download_completed_time_,
-               const viz::FrameTimingDetails& frame_timing_details) {
-              base::TimeTicks presentation_time =
-                  frame_timing_details.presentation_feedback.timestamp;
-              UmaHistogramTimes(
-                  "Download.Bubble.DownloadCompletionToPartialViewShownLatency",
-                  (presentation_time - base::TimeTicks::UnixEpoch()) -
-                      (download_completed_time_ - base::Time::UnixEpoch()));
-            },
-            *last_download_completed_time_));
-  }
 }
 
 void DownloadBubblePartialView::RemovedFromWidget() {
@@ -283,6 +260,11 @@ void DownloadBubblePartialView::OnInteracted() {
 
 void DownloadBubblePartialView::OnWillChangeFocus(views::View* before,
                                                   views::View* now) {
+  // Check 'before' to make sure this is not the first focus change.
+  // This will happen when the bubble is first shown inside Mac PWA.
+  if (!before) {
+    return;
+  }
   if (now && Contains(now)) {
     OnInteracted();
   }

@@ -10,7 +10,6 @@
 #include <string_view>
 #include <utility>
 
-#include "base/files/file_util.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/notreached.h"
@@ -77,7 +76,7 @@ ValueStore::ReadResult LeveldbValueStore::GetKeys() {
     return ReadResult(std::move(status));
   }
 
-  base::Value::Dict settings;
+  base::DictValue settings;
 
   std::unique_ptr<leveldb::Iterator> it(db()->NewIterator(read_options()));
   for (it->SeekToFirst(); it->Valid(); it->Next()) {
@@ -99,7 +98,7 @@ ValueStore::ReadResult LeveldbValueStore::Get(
   if (!status.ok())
     return ReadResult(std::move(status));
 
-  base::Value::Dict settings;
+  base::DictValue settings;
 
   for (const std::string& key : keys) {
     std::optional<base::Value> setting;
@@ -118,13 +117,14 @@ ValueStore::ReadResult LeveldbValueStore::Get() {
   if (!status.ok())
     return ReadResult(std::move(status));
 
-  base::Value::Dict settings;
+  base::DictValue settings;
 
   std::unique_ptr<leveldb::Iterator> it(db()->NewIterator(read_options()));
   for (it->SeekToFirst(); it->Valid(); it->Next()) {
     std::string key = it->key().ToString();
     std::optional<base::Value> value = base::JSONReader::Read(
-        std::string_view(it->value().data(), it->value().size()));
+        std::string_view(it->value().data(), it->value().size()),
+        base::JSON_PARSE_CHROMIUM_EXTENSIONS);
     if (!value) {
       return ReadResult(Status(CORRUPTION,
                                Delete(key).ok() ? VALUE_RESTORE_DELETE_SUCCESS
@@ -162,7 +162,7 @@ ValueStore::WriteResult LeveldbValueStore::Set(WriteOptions options,
 
 ValueStore::WriteResult LeveldbValueStore::Set(
     WriteOptions options,
-    const base::Value::Dict& settings) {
+    const base::DictValue& settings) {
   Status status = EnsureDbIsOpen();
   if (!status.ok())
     return WriteResult(std::move(status));
@@ -222,7 +222,7 @@ ValueStore::WriteResult LeveldbValueStore::Clear() {
   if (!read_result.status().ok())
     return WriteResult(read_result.PassStatus());
 
-  base::Value::Dict& whole_db = read_result.settings();
+  base::DictValue& whole_db = read_result.settings();
   while (!whole_db.empty()) {
     std::string next_key = whole_db.begin()->first;
     std::optional<base::Value> next_value = whole_db.Extract(next_key);

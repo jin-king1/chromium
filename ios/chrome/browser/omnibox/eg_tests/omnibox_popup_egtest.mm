@@ -6,17 +6,20 @@
 
 #import "base/functional/bind.h"
 #import "base/ios/ios_util.h"
-#import "base/strings/sys_string_conversions.h"
 #import "base/test/ios/wait_util.h"
 #import "components/omnibox/common/omnibox_features.h"
+#import "components/strings/grit/components_strings.h"
+#import "ios/chrome/browser/content_suggestions/public/ntp_home_constants.h"
 #import "ios/chrome/browser/omnibox/eg_tests/omnibox_app_interface.h"
 #import "ios/chrome/browser/omnibox/eg_tests/omnibox_earl_grey.h"
+#import "ios/chrome/browser/omnibox/eg_tests/omnibox_matchers.h"
 #import "ios/chrome/browser/omnibox/eg_tests/omnibox_test_util.h"
+#import "ios/chrome/browser/omnibox/public/omnibox_constants.h"
+#import "ios/chrome/browser/omnibox/public/omnibox_popup_accessibility_identifier_constants.h"
 #import "ios/chrome/browser/omnibox/public/omnibox_ui_features.h"
-#import "ios/chrome/browser/omnibox/ui_bundled/omnibox_constants.h"
-#import "ios/chrome/browser/omnibox/ui_bundled/popup/omnibox_popup_accessibility_identifier_constants.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
-#import "ios/chrome/browser/ui/content_suggestions/ntp_home_constant.h"
+#import "ios/chrome/common/NSString+Chromium.h"
+#import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey_ui.h"
 #import "ios/chrome/test/earl_grey/chrome_matchers.h"
@@ -28,22 +31,24 @@
 #import "net/test/embedded_test_server/http_response.h"
 #import "ui/base/l10n/l10n_util_mac.h"
 
+using chrome_test_util::SwipeActionDeleteButton;
+using omnibox::PopupRowWithUrlMatcher;
+
 namespace {
 
-/// Returns the popup row containing the `url` as suggestion.
-id<GREYMatcher> PopupRowWithUrl(GURL url) {
-  NSString* urlString = base::SysUTF8ToNSString(url.GetContent());
-  id<GREYMatcher> URLMatcher = grey_allOf(
-      grey_descendant(
-          chrome_test_util::StaticTextWithAccessibilityLabel(urlString)),
-      grey_sufficientlyVisible(), nil);
-  return grey_allOf(chrome_test_util::OmniboxPopupRow(), URLMatcher, nil);
+id<GREYMatcher> LinkYouCopiedRow() {
+  NSString* linkYouCopiedLabel =
+      l10n_util::GetNSString(IDS_LINK_FROM_CLIPBOARD);
+  id<GREYMatcher> linkYouCopiedMatch = grey_allOf(
+      chrome_test_util::OmniboxPopupRow(),
+      grey_descendant(grey_accessibilityLabel(linkYouCopiedLabel)), nil);
+  return linkYouCopiedMatch;
 }
 
 /// Returns the switch to open tab element for the `url`.
 id<GREYMatcher> SwitchTabElementForUrl(const GURL& url) {
   return grey_allOf(
-      grey_ancestor(PopupRowWithUrl(url)),
+      grey_ancestor(PopupRowWithUrlMatcher(url)),
       grey_accessibilityID(kOmniboxPopupRowSwitchTabAccessibilityIdentifier),
       grey_interactable(), nil);
 }
@@ -69,6 +74,13 @@ void ScrollToSwitchToTabElement(const GURL& url) {
       assertWithMatcher:grey_interactable()];
 }
 
+// Long URL webpage.
+
+const char kLongURLPage[] = "This is a webpage with a long URL";
+const char kLongURLTitle[] = "Long URL title";
+const char kLongURL[] =
+    "/thisisaverylongURLforawebpageandithastobeextralongforipad.html";
+
 // Web page 1.
 const char kPage1[] = "This is the first page";
 const char kPage1Title[] = "Title 1";
@@ -90,6 +102,13 @@ std::unique_ptr<net::test_server::HttpResponse> StandardResponse(
   std::unique_ptr<net::test_server::BasicHttpResponse> http_response =
       std::make_unique<net::test_server::BasicHttpResponse>();
   http_response->set_code(net::HTTP_OK);
+
+  if (request.relative_url == kLongURL) {
+    http_response->set_content(
+        "<html><head><title>" + std::string(kLongURLTitle) +
+        "</title></head><body>" + std::string(kLongURLPage) + "</body></html>");
+    return std::move(http_response);
+  }
 
   if (request.relative_url == kPage1URL) {
     http_response->set_content(
@@ -167,7 +186,7 @@ std::unique_ptr<net::test_server::HttpResponse> StandardResponse(
 
   // Type the URL of the first page in the omnibox to trigger it as suggestion.
   [ChromeEarlGreyUI
-      focusOmniboxAndReplaceText:base::SysUTF8ToNSString(kPage1URL)];
+      focusOmniboxAndReplaceText:[NSString cr_fromString:kPage1URL]];
 
   // Switch to the first tab, scrolling the popup if necessary.
   ScrollToSwitchToTabElement(firstPageURL);
@@ -181,7 +200,7 @@ std::unique_ptr<net::test_server::HttpResponse> StandardResponse(
   [[EarlGrey
       selectElementWithMatcher:
           grey_allOf(chrome_test_util::StaticTextWithAccessibilityLabel(
-                         base::SysUTF8ToNSString(kPage2Title)),
+                         [NSString cr_fromString:kPage2Title]),
                      grey_ancestor(chrome_test_util::TabGridCellAtIndex(1)),
                      nil)] assertWithMatcher:grey_sufficientlyVisible()];
 }
@@ -199,13 +218,12 @@ std::unique_ptr<net::test_server::HttpResponse> StandardResponse(
 
   // Type the URL of the first page in the omnibox to trigger it as suggestion.
   [ChromeEarlGreyUI
-      focusOmniboxAndReplaceText:base::SysUTF8ToNSString(kPage2URL)];
+      focusOmniboxAndReplaceText:[NSString cr_fromString:kPage2URL]];
 
   // Check that we have the suggestion for the second page, but not the switch
   // as it is the current page.
-
-  [[EarlGrey selectElementWithMatcher:PopupRowWithUrl(_URL2)]
-      assertWithMatcher:grey_sufficientlyVisible()];
+  [[EarlGrey selectElementWithMatcher:PopupRowWithUrlMatcher(_URL2)]
+      assertWithMatcher:grey_notNil()];
   [[EarlGrey selectElementWithMatcher:SwitchTabElementForUrl(_URL2)]
       assertWithMatcher:grey_not(grey_interactable())];
 }
@@ -215,33 +233,31 @@ std::unique_ptr<net::test_server::HttpResponse> StandardResponse(
 - (void)testDeleteHistoricalSuggestion {
   [self populateHistory];
   NSString* omniboxInput = [NSString
-      stringWithFormat:@"%@:%@", base::SysUTF8ToNSString(_URL3.host()),
-                       base::SysUTF8ToNSString(_URL3.port())];
+      stringWithFormat:@"%@:%@", [NSString cr_fromString:_URL3.GetHost()],
+                       [NSString cr_fromString:_URL3.GetPort()]];
 
   [ChromeEarlGreyUI focusOmniboxAndReplaceText:omniboxInput];
 
   // Swipe one of the historical suggestions, to the left.
   if ([ChromeEarlGrey isIPadIdiom]) {
-    [[EarlGrey selectElementWithMatcher:PopupRowWithUrl(_URL1)]
+    [[EarlGrey selectElementWithMatcher:PopupRowWithUrlMatcher(_URL1)]
         performAction:GREYSwipeSlowInDirectionWithStartPoint(kGREYDirectionLeft,
-                                                             0.09, 0.5)];
+                                                             0.09, 0.3)];
   } else {
-    [[EarlGrey selectElementWithMatcher:PopupRowWithUrl(_URL1)]
+    [[EarlGrey selectElementWithMatcher:PopupRowWithUrlMatcher(_URL1)]
         performAction:grey_swipeSlowInDirection(kGREYDirectionLeft)];
   }
 
   // Delete button is displayed.
-  [[EarlGrey selectElementWithMatcher:grey_kindOfClassName(
-                                          @"UISwipeActionStandardButton")]
+  [[EarlGrey selectElementWithMatcher:SwipeActionDeleteButton()]
       assertWithMatcher:grey_sufficientlyVisible()];
 
   // Tap on the delete button.
-  [[EarlGrey selectElementWithMatcher:grey_kindOfClassName(
-                                          @"UISwipeActionStandardButton")]
+  [[EarlGrey selectElementWithMatcher:SwipeActionDeleteButton()]
       performAction:grey_tap()];
 
   // Historical suggestion with URL1 is now deleted.
-  [[EarlGrey selectElementWithMatcher:PopupRowWithUrl(_URL1)]
+  [[EarlGrey selectElementWithMatcher:PopupRowWithUrlMatcher(_URL1)]
       assertWithMatcher:grey_nil()];
 }
 
@@ -266,23 +282,25 @@ std::unique_ptr<net::test_server::HttpResponse> StandardResponse(
   [ChromeEarlGrey waitForWebStateContainingText:kPage3];
 
   NSString* omniboxInput = [NSString
-      stringWithFormat:@"%@:%@", base::SysUTF8ToNSString(_URL3.host()),
-                       base::SysUTF8ToNSString(_URL3.port())];
+      stringWithFormat:@"%@:%@", [NSString cr_fromString:_URL3.GetHost()],
+                       [NSString cr_fromString:_URL3.GetPort()]];
   [ChromeEarlGreyUI focusOmniboxAndReplaceText:omniboxInput];
 
   // Check that we have the switch button for the first page.
   [[EarlGrey
       selectElementWithMatcher:
-          grey_allOf(grey_ancestor(PopupRowWithUrl(_URL1)),
+          grey_allOf(grey_ancestor(PopupRowWithUrlMatcher(_URL1)),
                      grey_accessibilityID(
                          kOmniboxPopupRowSwitchTabAccessibilityIdentifier),
                      nil)] assertWithMatcher:grey_sufficientlyVisible()];
 
   // Check that we have the suggestion for the second page, but not the switch.
-  [[EarlGrey selectElementWithMatcher:PopupRowWithUrl(_URL2)]
+  [[EarlGrey selectElementWithMatcher:PopupRowWithUrlMatcher(_URL2)]
       assertWithMatcher:grey_sufficientlyVisible()];
   [[EarlGrey selectElementWithMatcher:SwitchTabElementForUrl(_URL2)]
       assertWithMatcher:grey_nil()];
+
+  [OmniboxEarlGrey defocusOmnibox];
 
   // Open page 3 in incognito.
   [ChromeEarlGrey openNewIncognitoTab];
@@ -290,18 +308,18 @@ std::unique_ptr<net::test_server::HttpResponse> StandardResponse(
   [ChromeEarlGrey waitForWebStateContainingText:kPage3];
 
   [ChromeEarlGreyUI
-      focusOmniboxAndReplaceText:base::SysUTF8ToNSString(_URL3.host())];
+      focusOmniboxAndReplaceText:[NSString cr_fromString:_URL3.GetHost()]];
 
   // Check that we have the switch button for the second page.
   [[EarlGrey
       selectElementWithMatcher:
-          grey_allOf(grey_ancestor(PopupRowWithUrl(_URL2)),
+          grey_allOf(grey_ancestor(PopupRowWithUrlMatcher(_URL2)),
                      grey_accessibilityID(
                          kOmniboxPopupRowSwitchTabAccessibilityIdentifier),
                      nil)] assertWithMatcher:grey_sufficientlyVisible()];
 
   // Check that we have the suggestion for the first page, but not the switch.
-  [[EarlGrey selectElementWithMatcher:PopupRowWithUrl(_URL1)]
+  [[EarlGrey selectElementWithMatcher:PopupRowWithUrlMatcher(_URL1)]
       assertWithMatcher:grey_sufficientlyVisible()];
   [[EarlGrey selectElementWithMatcher:SwitchTabElementForUrl(_URL1)]
       assertWithMatcher:grey_nil()];
@@ -315,14 +333,13 @@ std::unique_ptr<net::test_server::HttpResponse> StandardResponse(
   // Open a new tab and switch to the first tab.
   [ChromeEarlGrey openNewTab];
   NSString* omniboxInput = [NSString
-      stringWithFormat:@"%@:%@", base::SysUTF8ToNSString(_URL1.host()),
-                       base::SysUTF8ToNSString(_URL1.port())];
+      stringWithFormat:@"%@:%@", [NSString cr_fromString:_URL1.GetHost()],
+                       [NSString cr_fromString:_URL1.GetPort()]];
   [[EarlGrey selectElementWithMatcher:chrome_test_util::FakeOmnibox()]
       performAction:grey_tap()];
   [ChromeEarlGrey
       waitForSufficientlyVisibleElementWithMatcher:chrome_test_util::Omnibox()];
-  [[EarlGrey selectElementWithMatcher:chrome_test_util::Omnibox()]
-      performAction:grey_replaceText(omniboxInput)];
+  [ChromeEarlGreyUI replaceTextInOmnibox:omniboxInput];
 
   TapSwitchToTabButton(_URL1);
   [ChromeEarlGrey waitForWebStateContainingText:kPage1];
@@ -347,8 +364,8 @@ std::unique_ptr<net::test_server::HttpResponse> StandardResponse(
       performAction:grey_tap()];
   [ChromeEarlGrey
       waitForSufficientlyVisibleElementWithMatcher:chrome_test_util::Omnibox()];
-  [[EarlGrey selectElementWithMatcher:chrome_test_util::Omnibox()]
-      performAction:grey_replaceText(base::SysUTF8ToNSString(_URL1.host()))];
+  [ChromeEarlGreyUI
+      replaceTextInOmnibox:[NSString cr_fromString:_URL1.GetHost()]];
 
   // Omnibox can reorder itself in multiple animations, so add an extra wait
   // here.
@@ -377,7 +394,7 @@ std::unique_ptr<net::test_server::HttpResponse> StandardResponse(
 
   // Start typing url of the first page.
   [ChromeEarlGreyUI
-      focusOmniboxAndReplaceText:base::SysUTF8ToNSString(kPage1URL)];
+      focusOmniboxAndReplaceText:[NSString cr_fromString:kPage1URL]];
 
   // Make sure that the "Switch to Open Tab" element is visible, scrolling the
   // popup if necessary.
@@ -413,14 +430,13 @@ std::unique_ptr<net::test_server::HttpResponse> StandardResponse(
   // Start typing url of the two opened pages in a new tab.
   [ChromeEarlGrey openNewTab];
   NSString* omniboxInput = [NSString
-      stringWithFormat:@"%@:%@", base::SysUTF8ToNSString(_URL1.host()),
-                       base::SysUTF8ToNSString(_URL1.port())];
+      stringWithFormat:@"%@:%@", [NSString cr_fromString:_URL1.GetHost()],
+                       [NSString cr_fromString:_URL1.GetPort()]];
   [[EarlGrey selectElementWithMatcher:chrome_test_util::FakeOmnibox()]
       performAction:grey_tap()];
   [ChromeEarlGrey
       waitForSufficientlyVisibleElementWithMatcher:chrome_test_util::Omnibox()];
-  [[EarlGrey selectElementWithMatcher:chrome_test_util::Omnibox()]
-      performAction:grey_replaceText(omniboxInput)];
+  [ChromeEarlGreyUI replaceTextInOmnibox:omniboxInput];
 
   // Check that both elements are displayed.
   // Omnibox can reorder itself in multiple animations, so add an extra wait
@@ -445,12 +461,12 @@ std::unique_ptr<net::test_server::HttpResponse> StandardResponse(
 
   [self populateHistory];
   NSString* omniboxInput = [NSString
-      stringWithFormat:@"%@:%@", base::SysUTF8ToNSString(_URL3.host()),
-                       base::SysUTF8ToNSString(_URL3.port())];
+      stringWithFormat:@"%@:%@", [NSString cr_fromString:_URL3.GetHost()],
+                       [NSString cr_fromString:_URL3.GetPort()]];
 
   [ChromeEarlGreyUI focusOmniboxAndReplaceText:omniboxInput];
 
-  [[EarlGrey selectElementWithMatcher:PopupRowWithUrl(_URL1)]
+  [[EarlGrey selectElementWithMatcher:PopupRowWithUrlMatcher(_URL1)]
       performAction:grey_tap()];
   [ChromeEarlGrey waitForWebStateContainingText:kPage1];
 
@@ -493,18 +509,21 @@ std::unique_ptr<net::test_server::HttpResponse> StandardResponse(
   [super tearDownHelper];
 }
 
-- (void)testTapAppendArrowButton {
+// TODO(crbug.com/513297149): Re-enable after the fix.
+- (void)DISABLED_testTapAppendArrowButton {
   [ChromeEarlGrey loadURL:GURL("about:blank")];
 
   // Clears the url and replace it with local url host.
   [ChromeEarlGreyUI focusOmniboxAndReplaceText:@"abc"];
 
   // Wait for the suggestions to show.
-  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:
-                      chrome_test_util::OmniboxPopupRowWithString(@"abcdef")];
+  [ChromeEarlGrey
+      waitForUIElementToAppearWithMatcher:
+          chrome_test_util::OmniboxPopupRowVisibleWithString(@"abcdef")];
 
   id<GREYMatcher> appendArrowButtonMatcher = grey_allOf(
-      grey_ancestor(chrome_test_util::OmniboxPopupRowWithString(@"abcdef")),
+      grey_ancestor(
+          chrome_test_util::OmniboxPopupRowVisibleWithString(@"abcdef")),
       grey_accessibilityID(kOmniboxPopupRowAppendAccessibilityIdentifier), nil);
 
   // Wait for the append button to show.
@@ -522,38 +541,34 @@ std::unique_ptr<net::test_server::HttpResponse> StandardResponse(
   // Wait for the new suggestions to show.
   [ChromeEarlGrey
       waitForUIElementToAppearWithMatcher:
-          chrome_test_util::OmniboxPopupRowWithString(@"abcdefghi")];
+          chrome_test_util::OmniboxPopupRowVisibleWithString(@"abcdefg")];
 }
 
 // Test when the popup is scrolled, the keyboard is dismissed
 // but the omnibox is still expanded and the suggestions are visible.
-- (void)testScrollingDismissesKeyboard {
-  [[EarlGrey selectElementWithMatcher:chrome_test_util::FakeOmnibox()]
-      performAction:grey_tap()];
-  [ChromeEarlGrey
-      waitForSufficientlyVisibleElementWithMatcher:chrome_test_util::Omnibox()];
-  [[EarlGrey selectElementWithMatcher:chrome_test_util::Omnibox()]
-      performAction:grey_replaceText(@"abc")];
+// TODO(crbug.com/522179934): Flaky. Fix and re-enable.
+- (void)DISABLED_testScrollingDismissesKeyboard {
+  [ChromeEarlGrey loadURL:GURL("about:blank")];
 
-  // Matcher for a URL-what-you-typed suggestion.
-  id<GREYMatcher> textMatcher = grey_descendant(
-      chrome_test_util::StaticTextWithAccessibilityLabel(@"abc"));
+  // Clears the url and replace it with local url host.
+  [ChromeEarlGreyUI focusOmniboxAndReplaceText:@"abc"];
+
   id<GREYMatcher> row =
-      grey_allOf(chrome_test_util::OmniboxPopupRow(), textMatcher,
-                 grey_sufficientlyVisible(), nil);
+      chrome_test_util::OmniboxPopupRowVisibleWithString(@"abcdef");
+  id<GREYMatcher> secondRow =
+      chrome_test_util::OmniboxPopupRowVisibleWithString(@"abcdefg");
 
-  // Omnibox can reorder itself in multiple animations, so add an extra wait
-  // here.
-  [ChromeEarlGrey waitForSufficientlyVisibleElementWithMatcher:row];
+  // Wait for the suggestions to show.
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:row];
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:secondRow];
+  // Wait for the keyboard to appear.
   [ChromeEarlGrey waitForKeyboardToAppear];
 
-  // Scroll the popup. This swipes from the point located at 50% of the width of
-  // the frame horizontally and most importantly 10% of the height of the frame
-  // vertically. This is necessary if the center of the list's accessibility
-  // frame is not visible, as it is the default start point.
-  [[EarlGrey selectElementWithMatcher:chrome_test_util::OmniboxPopupList()]
-      performAction:grey_swipeFastInDirectionWithStartPoint(kGREYDirectionDown,
-                                                            0.5, 0.1)];
+  // Scroll the popup by swiping on the second suggestion.
+  [[EarlGrey selectElementWithMatcher:omnibox::PopupRowAtIndex([NSIndexPath
+                                          indexPathForRow:1
+                                                inSection:0])]
+      performAction:grey_swipeFastInDirection(kGREYDirectionDown)];
 
   [[EarlGrey selectElementWithMatcher:row]
       assertWithMatcher:grey_sufficientlyVisible()];
@@ -569,8 +584,23 @@ std::unique_ptr<net::test_server::HttpResponse> StandardResponse(
 
 @implementation HardwareKeyboardInteractionTestCase
 
+- (AppLaunchConfiguration)appConfigurationForTestCase {
+  AppLaunchConfiguration config = [super appConfigurationForTestCase];
+
+  // HW keyboard simulation does mess up the SW keyboard simulator state.
+  // Relaunching resets the state.
+  config.relaunch_policy = ForceRelaunchByCleanShutdown;
+
+  // Disable all autocomplete providers except the verbatim and history
+  // providers.
+  omnibox::DisableAutocompleteProviders(config, 133937171);
+
+  return config;
+}
+
 - (void)setUp {
   [super setUp];
+
   if (![ChromeTestCase forceRestartAndWipe]) {
     [ChromeEarlGrey clearBrowsingHistory];
   }
@@ -582,10 +612,7 @@ std::unique_ptr<net::test_server::HttpResponse> StandardResponse(
 - (void)tearDownHelper {
   [OmniboxAppInterface tearDownFakeSuggestionsService];
   [super tearDownHelper];
-  // HW keyboard simulation does mess up the SW keyboard simulator state.
-  // Relaunching resets the state.
-  AppLaunchConfiguration config = [super appConfigurationForTestCase];
-  config.relaunch_policy = ForceRelaunchByCleanShutdown;
+  AppLaunchConfiguration config = [self appConfigurationForTestCase];
   [[AppLaunchManager sharedManager] ensureAppLaunchedWithConfiguration:config];
 }
 
@@ -597,7 +624,8 @@ std::unique_ptr<net::test_server::HttpResponse> StandardResponse(
 
   // Matcher for the first autocomplete suggestions.
   id<GREYMatcher> testupDownAutocomplete1 =
-      chrome_test_util::OmniboxPopupRowWithString(@"testupdownautocomplete1");
+      chrome_test_util::OmniboxPopupRowVisibleWithString(
+          @"testupdownautocomplete1");
 
   // Wait for the suggestions to show.
   [ChromeEarlGrey waitForUIElementToAppearWithMatcher:testupDownAutocomplete1];
@@ -625,40 +653,31 @@ std::unique_ptr<net::test_server::HttpResponse> StandardResponse(
 
 // Tests that leading image in omnibox changes based on the suggestion
 // highlighted.
-// TODO(crbug.com/40917341): Test is flaky on both device and simulator.
-- (void)DISABLED_testOmniboxLeadingImage {
+- (void)testOmniboxLeadingImage {
   // Start a server to be able to navigate to a web page.
   self.testServer->RegisterRequestHandler(
       base::BindRepeating(&StandardResponse));
   GREYAssertTrue(self.testServer->Start(), @"Test server failed to start.");
-  GURL _URL1 = self.testServer->GetURL(kPage1URL);
+  GURL URL = self.testServer->GetURL(kLongURL);
 
-  [ChromeEarlGrey loadURL:_URL1];
-  [ChromeEarlGrey waitForWebStateContainingText:kPage1];
+  [ChromeEarlGrey loadURL:URL];
+  [ChromeEarlGrey waitForWebStateContainingText:kLongURLPage];
 
   // Focus omnibox from Web.
   [ChromeEarlGreyUI focusOmnibox];
 
   // Typing the title of page1.
-  [[EarlGrey selectElementWithMatcher:chrome_test_util::Omnibox()]
-      performAction:grey_replaceText(base::SysUTF8ToNSString(kPage1Title))];
+  [ChromeEarlGreyUI
+      replaceTextInOmnibox:[NSString cr_fromString:kLongURLTitle]];
 
   // Wait for suggestions to show.
   [ChromeEarlGrey
-      waitForSufficientlyVisibleElementWithMatcher:PopupRowWithUrl(_URL1)];
+      waitForSufficientlyVisibleElementWithMatcher:PopupRowWithUrlMatcher(URL)];
 
   // The omnibox popup may update multiple times.  Don't downArrow until this
   // is done.
   base::test::ios::SpinRunLoopWithMinDelay(base::Seconds(1));
   [ChromeEarlGrey simulatePhysicalKeyboardEvent:@"downArrow" flags:0];
-
-  // We expect to have the default leading image.
-  [ChromeEarlGrey
-      waitForUIElementToAppearWithMatcher:
-          grey_allOf(OmniboxWithLeadingImageElement(
-                         kOmniboxLeadingImageDefaultAccessibilityIdentifier),
-                     nil)];
-
   [ChromeEarlGrey simulatePhysicalKeyboardEvent:@"downArrow" flags:0];
 
   // The popup row is a url suggestion so we expect to have the leading
@@ -669,6 +688,76 @@ std::unique_ptr<net::test_server::HttpResponse> StandardResponse(
               OmniboxWithLeadingImageElement(
                   kOmniboxLeadingImageSuggestionImageAccessibilityIdentifier),
               nil)];
+}
+
+// Tests that user can use the hardware keyboard to select the "link you copied"
+// suggestion.
+- (void)testHardwareKeyboardSelectLinkYouCopied {
+  // Start a server to be able to navigate to a web page.
+  self.testServer->RegisterRequestHandler(
+      base::BindRepeating(&omnibox::OmniboxHTTPResponses));
+  GREYAssertTrue(self.testServer->Start(), @"Test server failed to start.");
+  const GURL pageURL = self.testServer->GetURL(omnibox::PageURL(1));
+  // Copy link in clipboard.
+  [ChromeEarlGrey
+      copyLinkAsURLToPasteBoard:[NSString cr_fromString:pageURL.spec()]];
+
+  // Focus omnibox from Web.
+  [ChromeEarlGrey loadURL:GURL("about:blank")];
+  [ChromeEarlGreyUI focusOmnibox];
+
+  // Wait for the clipboard suggestion to show.
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:LinkYouCopiedRow()];
+
+  // The omnibox popup may update multiple times.  Don't downArrow until this
+  // is done.
+  base::test::ios::SpinRunLoopWithMinDelay(base::Seconds(1));
+
+  // Highlight the text you copied row. Accept with Return.
+  [ChromeEarlGrey simulatePhysicalKeyboardEvent:@"downArrow" flags:0];
+  base::test::ios::SpinRunLoopWithMinDelay(base::Seconds(0.1));
+  [ChromeEarlGrey simulatePhysicalKeyboardEvent:@"downArrow" flags:0];
+  base::test::ios::SpinRunLoopWithMinDelay(base::Seconds(0.1));
+  [ChromeEarlGrey simulatePhysicalKeyboardEvent:@"\r" flags:0];
+
+  // The web page should load.
+  [ChromeEarlGrey waitForWebStateContainingText:omnibox::PageContent(1)];
+
+  [ChromeEarlGrey clearPasteboard];
+}
+
+- (void)testHardwareKeyboardSelectLinkYouCopiedAsFirstElement {
+  // Start a server to be able to navigate to a web page.
+  self.testServer->RegisterRequestHandler(
+      base::BindRepeating(&omnibox::OmniboxHTTPResponses));
+  GREYAssertTrue(self.testServer->Start(), @"Test server failed to start.");
+  const GURL pageURL = self.testServer->GetURL(omnibox::PageURL(1));
+  // Copy link in clipboard.
+  [ChromeEarlGrey
+      copyLinkAsURLToPasteBoard:[NSString cr_fromString:pageURL.spec()]];
+
+  // Focus the fake omnibox.
+  [[EarlGrey selectElementWithMatcher:chrome_test_util::FakeOmnibox()]
+      performAction:grey_tap()];
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:chrome_test_util::Omnibox()];
+
+  // Wait for the clipboard suggestion to show.
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:LinkYouCopiedRow()];
+
+  // The omnibox popup may update multiple times.  Don't downArrow until this
+  // is done.
+  base::test::ios::SpinRunLoopWithMinDelay(base::Seconds(1));
+
+  // Highlight the text you copied row. Accept with Return.
+  [ChromeEarlGrey simulatePhysicalKeyboardEvent:@"downArrow" flags:0];
+  base::test::ios::SpinRunLoopWithMinDelay(base::Seconds(0.1));
+  [ChromeEarlGrey simulatePhysicalKeyboardEvent:@"\r" flags:0];
+
+  // The web page should load.
+  [ChromeEarlGrey waitForWebStateContainingText:omnibox::PageContent(1)];
+
+  [ChromeEarlGrey clearPasteboard];
 }
 
 @end

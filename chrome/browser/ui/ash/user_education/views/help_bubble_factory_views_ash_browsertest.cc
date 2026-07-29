@@ -19,7 +19,7 @@
 #include "components/user_education/common/help_bubble/help_bubble.h"
 #include "components/user_education/common/help_bubble/help_bubble_factory_registry.h"
 #include "components/user_education/common/help_bubble/help_bubble_params.h"
-#include "components/user_education/views/help_bubble_factory_views.h"
+#include "components/user_education/views/help_bubble_view.h"
 #include "components/user_education/views/help_bubble_views.h"
 #include "content/public/test/browser_test.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -33,11 +33,9 @@ namespace {
 // Aliases.
 using ::ash::HelpBubbleContext;
 using ::ash::HelpBubbleViewAsh;
-using ::ash::HelpBubbleViewsAsh;
 using ::ash::kHelpBubbleContextKey;
 using ::user_education::HelpBubbleParams;
 using ::user_education::HelpBubbleView;
-using ::user_education::HelpBubbleViews;
 
 // Helpers ---------------------------------------------------------------------
 
@@ -66,7 +64,7 @@ class HelpBubbleFactoryViewsAshBrowserTest
   // Returns the help bubble factory registry for the active browser profile.
   user_education::HelpBubbleFactoryRegistry& GetHelpBubbleFactoryRegistry() {
     return UserEducationServiceFactory::GetForBrowserContext(
-               browser()->profile())
+               browser()->GetProfile())
         ->help_bubble_factory_registry();
   }
 };
@@ -111,6 +109,5 @@ IN_PROC_BROWSER_TEST_P(HelpBubbleFactoryViewsAshBrowserTest, CreateBubble) {
 
   // The help `bubble` should be Ash-specific depending on `context`.
   bool is_ash_context = context == HelpBubbleContext::kAsh;
-  ASSERT_EQ(bubble->IsA<HelpBubbleViewsAsh>(), is_ash_context);
-  ASSERT_NE(bubble->IsA<HelpBubbleViews>(), is_ash_context);
+  ASSERT_EQ(bubble->IsA<ash::HelpBubbleViewsAsh>(), is_ash_context);
 }

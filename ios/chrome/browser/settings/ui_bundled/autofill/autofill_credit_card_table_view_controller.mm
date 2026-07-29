@@ -6,14 +6,13 @@
 
 #import "base/apple/foundation_util.h"
 #import "base/check.h"
-#import "base/feature_list.h"
 #import "base/memory/raw_ptr.h"
 #import "base/metrics/user_metrics.h"
 #import "base/strings/sys_string_conversions.h"
+#import "components/application_locale_storage/application_locale_storage.h"
 #import "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
 #import "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #import "components/autofill/core/browser/metrics/payments/mandatory_reauth_metrics.h"
-#import "components/autofill/core/common/autofill_payments_features.h"
 #import "components/autofill/core/common/autofill_prefs.h"
 #import "components/autofill/ios/browser/credit_card_util.h"
 #import "components/autofill/ios/browser/personal_data_manager_observer_bridge.h"
@@ -21,11 +20,17 @@
 #import "components/prefs/pref_service.h"
 #import "components/strings/grit/components_strings.h"
 #import "ios/chrome/browser/autofill/model/personal_data_manager_factory.h"
-#import "ios/chrome/browser/autofill/ui_bundled/scoped_autofill_payment_reauth_module_override.h"
+#import "ios/chrome/browser/bubble/ui_bundled/bubble_constants.h"
+#import "ios/chrome/browser/bubble/ui_bundled/bubble_view_controller_presenter.h"
+#import "ios/chrome/browser/device_reauth/model/reauthentication_service.h"
+#import "ios/chrome/browser/device_reauth/model/reauthentication_service_factory.h"
 #import "ios/chrome/browser/net/model/crurl.h"
 #import "ios/chrome/browser/settings/ui_bundled/autofill/autofill_add_credit_card_coordinator.h"
 #import "ios/chrome/browser/settings/ui_bundled/autofill/autofill_add_credit_card_coordinator_delegate.h"
 #import "ios/chrome/browser/settings/ui_bundled/autofill/autofill_credit_card_edit_table_view_controller.h"
+#import "ios/chrome/browser/settings/ui_bundled/autofill/autofill_cvc_storage_view_controller.h"
+#import "ios/chrome/browser/settings/ui_bundled/autofill/autofill_cvc_storage_view_coordinator.h"
+#import "ios/chrome/browser/settings/ui_bundled/autofill/autofill_cvc_storage_view_coordinator_delegate.h"
 #import "ios/chrome/browser/settings/ui_bundled/autofill/autofill_settings_constants.h"
 #import "ios/chrome/browser/settings/ui_bundled/autofill/cells/autofill_card_item.h"
 #import "ios/chrome/browser/settings/ui_bundled/elements/enterprise_info_popover_view_controller.h"
@@ -34,12 +39,11 @@
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
-#import "ios/chrome/browser/shared/ui/table_view/cells/table_view_info_button_cell.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_info_button_item.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_link_header_footer_item.h"
-#import "ios/chrome/browser/shared/ui/table_view/cells/table_view_switch_cell.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_switch_item.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_text_header_footer_item.h"
+#import "ios/chrome/browser/shared/ui/table_view/cells/table_view_text_item.h"
 #import "ios/chrome/browser/shared/ui/table_view/table_view_utils.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
@@ -58,6 +62,8 @@ enum SectionIdentifier : NSInteger {
   SectionIdentifierAutofillCardSwitch = kSectionIdentifierEnumZero,
   SectionIdentifierMandatoryReauthSwitch,
   SectionIdentifierCards,
+  SectionIdentifierCVCStorage,
+  SectionIdentifierPayOverTime,
 };
 
 enum ItemType : NSInteger {
@@ -68,6 +74,9 @@ enum ItemType : NSInteger {
   ItemTypeHeader,
   ItemTypeMandatoryReauthSwitch,
   ItemTypeMandatoryReauthSwitchSubtitle,
+  ItemTypeCVCStorageButton,
+  ItemTypeCVCStorageButtonSubtitle,
+  ItemTypePayOverTimeButton,
 };
 
 }  // namespace
@@ -81,9 +90,9 @@ using autofill::autofill_metrics::MandatoryReauthOptInOrOutSource;
 
 @interface AutofillCreditCardTableViewController () <
     AutofillAddCreditCardCoordinatorDelegate,
+    AutofillCvcStorageViewCoordinatorDelegate,
     PersonalDataManagerObserver,
-    PopoverLabelViewControllerDelegate,
-    SuccessfulReauthTimeAccessor> {
+    PopoverLabelViewControllerDelegate> {
   raw_ptr<autofill::PersonalDataManager> _personalDataManager;
 
   raw_ptr<Browser> _browser;
@@ -92,11 +101,11 @@ using autofill::autofill_metrics::MandatoryReauthOptInOrOutSource;
   // Whether Settings have been dismissed.
   BOOL _settingsAreDismissed;
 
-  // Timestamp for last successful reauth attempt by the ReauthenticationModule.
-  NSDate* _lastSuccessfulReauthTime;
-
   // Coordinator to add new credit card.
   AutofillAddCreditCardCoordinator* _addCreditCardCoordinator;
+
+  // Coordinator for the CVC storage subpage.
+  AutofillCvcStorageViewCoordinator* _cvcStorageCoordinator;
 
   // Add button for the toolbar.
   UIBarButtonItem* _addButtonInToolbar;
@@ -117,7 +126,10 @@ using autofill::autofill_metrics::MandatoryReauthOptInOrOutSource;
 
 @end
 
-@implementation AutofillCreditCardTableViewController
+@implementation AutofillCreditCardTableViewController {
+  // Presenter for the Level Up Payment Methods walkthrough IPH.
+  BubbleViewControllerPresenter* _levelUpPaymentMethodsWalkthroughIPHPresenter;
+}
 
 #pragma mark - ViewController Life Cycle.
 
@@ -126,34 +138,36 @@ using autofill::autofill_metrics::MandatoryReauthOptInOrOutSource;
 
   self = [super initWithStyle:ChromeTableViewStyle()];
   if (self) {
-    self.title = l10n_util::GetNSString(IDS_AUTOFILL_PAYMENT_METHODS);
+    self.title = l10n_util::GetNSString(IsYourSavedInfoSettingsPageIosEnabled()
+                                            ? IDS_AUTOFILL_PAYMENTS_TITLE
+                                            : IDS_AUTOFILL_PAYMENT_METHODS);
     self.shouldDisableDoneButtonOnEdit = YES;
     _browser = browser;
     _personalDataManager = autofill::PersonalDataManagerFactory::GetForProfile(
         _browser->GetProfile());
-    _observer.reset(new autofill::PersonalDataManagerObserverBridge(self));
-    _personalDataManager->AddObserver(_observer.get());
+    _observer = std::make_unique<autofill::PersonalDataManagerObserverBridge>(
+        _personalDataManager, self);
+    _reauthenticationModule =
+        ReauthenticationServiceFactory::GetForProfile(_browser->GetProfile())
+            ->GetReauthModule();
   }
   return self;
 }
 
-#pragma mark - properties
+#pragma mark - UIViewController
 
-- (ReauthenticationModule*)reauthenticationModule {
-  id<ReauthenticationProtocol> overrideModule =
-      ScopedAutofillPaymentReauthModuleOverride::Get();
-  if (overrideModule) {
-    return overrideModule;
+- (void)didMoveToParentViewController:(UIViewController*)parent {
+  [super didMoveToParentViewController:parent];
+  if (!parent) {
+    [_levelUpPaymentMethodsWalkthroughIPHPresenter dismissAnimated:NO];
+    _levelUpPaymentMethodsWalkthroughIPHPresenter = nil;
   }
-
-  if (!_reauthenticationModule) {
-    _reauthenticationModule = [[ReauthenticationModule alloc]
-        initWithSuccessfulReauthTimeAccessor:self];
-  }
-  return _reauthenticationModule;
 }
 
-#pragma mark - UIViewController
+- (void)viewDidAppear:(BOOL)animated {
+  [super viewDidAppear:animated];
+  [self maybeShowLevelUpWalkthroughIPH];
+}
 
 - (void)viewDidLoad {
   [super viewDidLoad];
@@ -216,6 +230,18 @@ using autofill::autofill_metrics::MandatoryReauthOptInOrOutSource;
   [model setFooter:[self mandatoryReauthSwitchFooter]
       forSectionWithIdentifier:SectionIdentifierMandatoryReauthSwitch];
 
+  [model addSectionWithIdentifier:SectionIdentifierCVCStorage];
+  [model addItem:[self cvcStorageItem]
+      toSectionWithIdentifier:SectionIdentifierCVCStorage];
+  [model setFooter:[self cvcStorageFooter]
+      forSectionWithIdentifier:SectionIdentifierCVCStorage];
+
+  if (_personalDataManager->payments_data_manager().ShouldShowBnplSettings()) {
+    [model addSectionWithIdentifier:SectionIdentifierPayOverTime];
+    [model addItem:[self payOverTimeItem]
+        toSectionWithIdentifier:SectionIdentifierPayOverTime];
+  }
+
   [self populateCardSection];
 }
 
@@ -247,6 +273,8 @@ using autofill::autofill_metrics::MandatoryReauthOptInOrOutSource;
       [[TableViewSwitchItem alloc] initWithType:ItemTypeAutofillCardSwitch];
   switchItem.text =
       l10n_util::GetNSString(IDS_AUTOFILL_ENABLE_CREDIT_CARDS_TOGGLE_LABEL);
+  switchItem.target = self;
+  switchItem.selector = @selector(autofillCardSwitchChanged:);
   switchItem.on = [self isAutofillCreditCardEnabled];
   switchItem.accessibilityIdentifier = kAutofillCreditCardSwitchViewId;
   return switchItem;
@@ -261,6 +289,8 @@ using autofill::autofill_metrics::MandatoryReauthOptInOrOutSource;
   cardManagedItem.statusText = l10n_util::GetNSString(IDS_IOS_SETTING_OFF);
   cardManagedItem.accessibilityHint =
       l10n_util::GetNSString(IDS_IOS_TOGGLE_SETTING_MANAGED_ACCESSIBILITY_HINT);
+  cardManagedItem.target = self;
+  cardManagedItem.selector = @selector(didTapManagedUIInfoButton:);
   cardManagedItem.accessibilityIdentifier = kAutofillCreditCardManagedViewId;
   return cardManagedItem;
 }
@@ -279,7 +309,9 @@ using autofill::autofill_metrics::MandatoryReauthOptInOrOutSource;
   switchItem.text = l10n_util::GetNSString(
       IDS_PAYMENTS_AUTOFILL_ENABLE_MANDATORY_REAUTH_TOGGLE_LABEL);
   switchItem.accessibilityIdentifier = kAutofillMandatoryReauthSwitchViewId;
-  BOOL canAttemptReauth = [self.reauthenticationModule canAttemptReauth];
+  switchItem.target = self;
+  switchItem.selector = @selector(mandatoryReauthSwitchChanged:);
+  BOOL canAttemptReauth = [_reauthenticationModule canAttemptReauth];
   switchItem.enabled = canAttemptReauth;
   switchItem.on =
       canAttemptReauth && _personalDataManager->payments_data_manager()
@@ -295,6 +327,34 @@ using autofill::autofill_metrics::MandatoryReauthOptInOrOutSource;
   return footer;
 }
 
+- (TableViewItem*)cvcStorageItem {
+  TableViewTextItem* cvcStorageItem =
+      [[TableViewTextItem alloc] initWithType:ItemTypeCVCStorageButton];
+
+  cvcStorageItem.text = l10n_util::GetNSString(
+      IDS_PAYMENTS_AUTOFILL_ENABLE_SAVE_SECURITY_CODES_LABEL);
+  cvcStorageItem.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+  return cvcStorageItem;
+}
+
+- (TableViewHeaderFooterItem*)cvcStorageFooter {
+  TableViewLinkHeaderFooterItem* footer = [[TableViewLinkHeaderFooterItem alloc]
+      initWithType:ItemTypeCVCStorageButtonSubtitle];
+  footer.text = l10n_util::GetNSString(
+      IDS_PAYMENTS_AUTOFILL_ENABLE_SAVE_SECURITY_CODES_SUBLABEL);
+  return footer;
+}
+
+- (TableViewItem*)payOverTimeItem {
+  TableViewTextItem* payOverTimeItem =
+      [[TableViewTextItem alloc] initWithType:ItemTypePayOverTimeButton];
+  payOverTimeItem.text = l10n_util::GetNSString(IDS_IOS_SETTINGS_PAY_OVER_TIME);
+  payOverTimeItem.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+  payOverTimeItem.accessibilityIdentifier = kAutofillPayOverTimeCellId;
+  payOverTimeItem.accessibilityTraits = UIAccessibilityTraitButton;
+  return payOverTimeItem;
+}
+
 - (TableViewHeaderFooterItem*)cardSectionHeader {
   TableViewTextHeaderFooterItem* header =
       [[TableViewTextHeaderFooterItem alloc] initWithType:ItemTypeHeader];
@@ -306,12 +366,21 @@ using autofill::autofill_metrics::MandatoryReauthOptInOrOutSource;
 - (TableViewItem*)itemForCreditCard:(const autofill::CreditCard&)creditCard {
   std::string guid(creditCard.guid());
   NSString* creditCardName = autofill::GetCreditCardName(
-      creditCard, GetApplicationContext()->GetApplicationLocale());
+      creditCard,
+      GetApplicationContext()->GetApplicationLocaleStorage()->Get());
 
   AutofillCardItem* item = [[AutofillCardItem alloc] initWithType:ItemTypeCard];
   item.text = creditCardName;
-  item.leadingDetailText =
+  NSString* cardLeadingDetailText =
       autofill::GetCreditCardNameAndLastFourDigits(creditCard);
+  NSString* cardCvcIndicator = @"";
+  if (!creditCard.cvc().empty()) {
+    cardCvcIndicator = l10n_util::GetNSString(
+        IDS_AUTOFILL_SETTINGS_PAGE_CVC_TAG_FOR_CREDIT_CARD_LIST_ENTRY);
+    cardLeadingDetailText = [cardLeadingDetailText
+        stringByAppendingFormat:@" | %@", cardCvcIndicator];
+  }
+  item.leadingDetailText = cardLeadingDetailText;
   item.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
   item.accessibilityIdentifier = creditCardName;
   item.deletable = autofill::IsCreditCardLocal(creditCard);
@@ -334,17 +403,21 @@ using autofill::autofill_metrics::MandatoryReauthOptInOrOutSource;
 
 - (void)reportDismissalUserAction {
   base::RecordAction(base::UserMetricsAction("MobileCreditCardSettingsClose"));
+  base::RecordAction(
+      base::UserMetricsAction("MobileCreditCardSettingsCompleted"));
 }
 
 - (void)reportBackUserAction {
   base::RecordAction(base::UserMetricsAction("MobileCreditCardSettingsBack"));
+  base::RecordAction(
+      base::UserMetricsAction("MobileCreditCardSettingsCompleted"));
 }
 
 - (void)settingsWillBeDismissed {
   DCHECK(!_settingsAreDismissed);
 
-  _personalDataManager->RemoveObserver(_observer.get());
   [self stopAutofillAddCreditCardCoordinator];
+  [self stopCvcStorageCoordinator];
 
   // Remove observer bridges.
   _observer.reset();
@@ -353,6 +426,8 @@ using autofill::autofill_metrics::MandatoryReauthOptInOrOutSource;
   _personalDataManager = nullptr;
   _browser = nullptr;
 
+  [_levelUpPaymentMethodsWalkthroughIPHPresenter dismissAnimated:NO];
+  _levelUpPaymentMethodsWalkthroughIPHPresenter = nil;
   _settingsAreDismissed = YES;
 }
 
@@ -370,7 +445,7 @@ using autofill::autofill_metrics::MandatoryReauthOptInOrOutSource;
   // early and do nothing.
   if (_personalDataManager->payments_data_manager()
           .IsPaymentMethodsMandatoryReauthEnabled() &&
-      [self.reauthenticationModule canAttemptReauth]) {
+      [_reauthenticationModule canAttemptReauth]) {
     LogMandatoryReauthSettingsPageDeleteCardEvent(
         MandatoryReauthAuthenticationFlowEvent::kFlowStarted);
 
@@ -392,7 +467,7 @@ using autofill::autofill_metrics::MandatoryReauthOptInOrOutSource;
           break;
       }
     };
-    [self.reauthenticationModule
+    [_reauthenticationModule
         attemptReauthWithLocalizedReason:
             l10n_util::GetNSString(
                 IDS_PAYMENTS_AUTOFILL_SETTINGS_EDIT_MANDATORY_REAUTH)
@@ -457,50 +532,6 @@ using autofill::autofill_metrics::MandatoryReauthOptInOrOutSource;
       UIPopoverArrowDirectionAny;
 }
 
-#pragma mark - UITableViewDataSource
-
-- (UITableViewCell*)tableView:(UITableView*)tableView
-        cellForRowAtIndexPath:(NSIndexPath*)indexPath {
-  UITableViewCell* cell = [super tableView:tableView
-                     cellForRowAtIndexPath:indexPath];
-
-  switch (static_cast<ItemType>(
-      [self.tableViewModel itemTypeForIndexPath:indexPath])) {
-    case ItemTypeAutofillCardSwitchSubtitle:
-    case ItemTypeCard:
-    case ItemTypeHeader:
-    case ItemTypeMandatoryReauthSwitchSubtitle:
-      break;
-    case ItemTypeMandatoryReauthSwitch: {
-      TableViewSwitchCell* switchCell =
-          base::apple::ObjCCastStrict<TableViewSwitchCell>(cell);
-      [switchCell.switchView addTarget:self
-                                action:@selector(mandatoryReauthSwitchChanged:)
-                      forControlEvents:UIControlEventValueChanged];
-      break;
-    }
-    case ItemTypeAutofillCardSwitch: {
-      TableViewSwitchCell* switchCell =
-          base::apple::ObjCCastStrict<TableViewSwitchCell>(cell);
-      [switchCell.switchView addTarget:self
-                                action:@selector(autofillCardSwitchChanged:)
-                      forControlEvents:UIControlEventValueChanged];
-      break;
-    }
-    case ItemTypeAutofillCardManaged: {
-      TableViewInfoButtonCell* managedCell =
-          base::apple::ObjCCastStrict<TableViewInfoButtonCell>(cell);
-      [managedCell.trailingButton
-                 addTarget:self
-                    action:@selector(didTapManagedUIInfoButton:)
-          forControlEvents:UIControlEventTouchUpInside];
-      break;
-    }
-  }
-
-  return cell;
-}
-
 #pragma mark - Switch Callbacks
 
 - (void)autofillCardSwitchChanged:(UISwitch*)switchView {
@@ -524,7 +555,7 @@ using autofill::autofill_metrics::MandatoryReauthOptInOrOutSource;
 }
 
 - (void)mandatoryReauthSwitchChanged:(UISwitch*)switchView {
-  if ([self.reauthenticationModule canAttemptReauth]) {
+  if ([_reauthenticationModule canAttemptReauth]) {
     // Get the original value.
     BOOL mandatoryReauthEnabled = _personalDataManager->payments_data_manager()
                                       .IsPaymentMethodsMandatoryReauthEnabled();
@@ -534,7 +565,7 @@ using autofill::autofill_metrics::MandatoryReauthOptInOrOutSource;
         MandatoryReauthAuthenticationFlowEvent::kFlowStarted);
 
     __weak __typeof(self) weakSelf = self;
-    [self.reauthenticationModule
+    [_reauthenticationModule
         attemptReauthWithLocalizedReason:
             l10n_util::GetNSString(
                 IDS_PAYMENTS_AUTOFILL_SETTINGS_TOGGLE_MANDATORY_REAUTH)
@@ -613,6 +644,16 @@ using autofill::autofill_metrics::MandatoryReauthOptInOrOutSource;
   [tableView deselectRowAtIndexPath:indexPath animated:YES];
   TableViewModel* model = self.tableViewModel;
   NSInteger type = [model itemTypeForIndexPath:indexPath];
+  if (type == ItemTypeCVCStorageButton) {
+    [self openCvcStorageCoordinator];
+    return;
+  }
+
+  if (type == ItemTypePayOverTimeButton) {
+    [self openPayOverTimeSettings];
+    return;
+  }
+
   if (type != ItemTypeCard) {
     return;
   }
@@ -623,7 +664,7 @@ using autofill::autofill_metrics::MandatoryReauthOptInOrOutSource;
   if (autofill::IsCreditCardLocal(selectedCard) &&
       _personalDataManager->payments_data_manager()
           .IsPaymentMethodsMandatoryReauthEnabled() &&
-      [self.reauthenticationModule canAttemptReauth]) {
+      [_reauthenticationModule canAttemptReauth]) {
     [self attemptReauthenticationForEditCard:selectedCard];
   } else {
     [self openCreditCardDetails:selectedCard];
@@ -645,12 +686,26 @@ using autofill::autofill_metrics::MandatoryReauthOptInOrOutSource;
       [self openCreditCardDetails:selectedCard];
     }
   };
-  [self.reauthenticationModule
+  [_reauthenticationModule
       attemptReauthWithLocalizedReason:
           l10n_util::GetNSString(
               IDS_PAYMENTS_AUTOFILL_SETTINGS_EDIT_MANDATORY_REAUTH)
                   canReusePreviousAuth:YES
                                handler:completionHandler];
+}
+
+- (void)openCvcStorageCoordinator {
+  [self stopCvcStorageCoordinator];
+  _cvcStorageCoordinator = [[AutofillCvcStorageViewCoordinator alloc]
+      initWithBaseViewController:self.navigationController
+                         browser:_browser];
+  _cvcStorageCoordinator.delegate = self;
+  [_cvcStorageCoordinator start];
+}
+
+- (void)openPayOverTimeSettings {
+  // TODO(crbug.com/517646489): Implement coordinator routing for Pay Over Time
+  // subpage.
 }
 
 - (void)openCreditCardDetails:(autofill::CreditCard)creditCard {
@@ -699,7 +754,40 @@ using autofill::autofill_metrics::MandatoryReauthOptInOrOutSource;
       editingStyle != UITableViewCellEditingStyleDelete) {
     return;
   }
-  [self deleteItemAtIndexPaths:@[ indexPath ]];
+
+  if (_personalDataManager->payments_data_manager()
+          .IsPaymentMethodsMandatoryReauthEnabled() &&
+      [_reauthenticationModule canAttemptReauth]) {
+    LogMandatoryReauthSettingsPageDeleteCardEvent(
+        MandatoryReauthAuthenticationFlowEvent::kFlowStarted);
+
+    auto completionHandler = ^(ReauthenticationResult result) {
+      switch (result) {
+        case ReauthenticationResult::kSuccess:
+          LogMandatoryReauthSettingsPageDeleteCardEvent(
+              MandatoryReauthAuthenticationFlowEvent::kFlowSucceeded);
+          [self deleteItemAtIndexPaths:@[ indexPath ]];
+          break;
+        case ReauthenticationResult::kSkipped:
+          LogMandatoryReauthSettingsPageDeleteCardEvent(
+              MandatoryReauthAuthenticationFlowEvent::kFlowSkipped);
+          [self deleteItemAtIndexPaths:@[ indexPath ]];
+          break;
+        case ReauthenticationResult::kFailure:
+          LogMandatoryReauthSettingsPageDeleteCardEvent(
+              MandatoryReauthAuthenticationFlowEvent::kFlowFailed);
+          break;
+      }
+    };
+    [_reauthenticationModule
+        attemptReauthWithLocalizedReason:
+            l10n_util::GetNSString(
+                IDS_PAYMENTS_AUTOFILL_SETTINGS_EDIT_MANDATORY_REAUTH)
+                    canReusePreviousAuth:YES
+                                 handler:completionHandler];
+  } else {
+    [self deleteItemAtIndexPaths:@[ indexPath ]];
+  }
 }
 
 #pragma mark - helper methods
@@ -713,6 +801,13 @@ using autofill::autofill_metrics::MandatoryReauthOptInOrOutSource;
   for (NSIndexPath* indexPath in indexPaths) {
     AutofillCardItem* item = base::apple::ObjCCastStrict<AutofillCardItem>(
         [self.tableViewModel itemAtIndexPath:indexPath]);
+    const autofill::CreditCard* credit_card =
+        _personalDataManager->payments_data_manager().GetCreditCardByGUID(
+            item.GUID);
+    if (credit_card && !credit_card->cvc().empty()) {
+      base::RecordAction(
+          base::UserMetricsAction("AutofillCreditCardDeletedAndHadCvc"));
+    }
     _personalDataManager->payments_data_manager().RemoveByGUID(item.GUID);
   }
 
@@ -762,7 +857,7 @@ using autofill::autofill_metrics::MandatoryReauthOptInOrOutSource;
 // Opens new view controller `AutofillAddCreditCardViewController` for fillig
 // credit card details.
 - (void)handleAddPayment {
-  if (_settingsAreDismissed) {
+  if (_settingsAreDismissed || _addCreditCardCoordinator) {
     return;
   }
 
@@ -790,16 +885,6 @@ using autofill::autofill_metrics::MandatoryReauthOptInOrOutSource;
 
   [self updateUIForEditState];
   [self reloadData];
-}
-
-#pragma mark - SuccessfulReauthTimeAccessor
-
-- (void)updateSuccessfulReauthTime {
-  _lastSuccessfulReauthTime = [[NSDate alloc] init];
-}
-
-- (NSDate*)lastSuccessfulReauthTime {
-  return _lastSuccessfulReauthTime;
 }
 
 #pragma mark - Getters and Setter
@@ -842,9 +927,19 @@ using autofill::autofill_metrics::MandatoryReauthOptInOrOutSource;
   _addCreditCardCoordinator = nil;
 }
 
+- (void)stopCvcStorageCoordinator {
+  [_cvcStorageCoordinator stop];
+  _cvcStorageCoordinator = nil;
+}
+
 // Function that is invoked when the reauth is finished, and handles the reauth
 // result.
 - (void)handleReauthenticationResult:(ReauthenticationResult)result {
+  // If the settings have been dismissed, return early to avoid a crash.
+  if (_settingsAreDismissed || !_personalDataManager) {
+    return;
+  }
+
   // Get the original value.
   BOOL mandatoryReauthEnabled = _personalDataManager->payments_data_manager()
                                     .IsPaymentMethodsMandatoryReauthEnabled();
@@ -884,6 +979,76 @@ using autofill::autofill_metrics::MandatoryReauthOptInOrOutSource;
     (AutofillAddCreditCardCoordinator*)coordinator {
   CHECK_EQ(coordinator, _addCreditCardCoordinator);
   [self stopAutofillAddCreditCardCoordinator];
+}
+
+#pragma mark - AutofillCvcStorageViewCoordinatorDelegate
+
+- (void)autofillCvcStorageCoordinatorWantsToBeStopped:
+    (AutofillCvcStorageViewCoordinator*)coordinator {
+  DCHECK_EQ(coordinator, _cvcStorageCoordinator);
+  [self stopCvcStorageCoordinator];
+}
+
+#pragma mark - Private
+
+// Presents the Level Up Payment Methods walkthrough IPH if needed.
+- (void)maybeShowLevelUpWalkthroughIPH {
+  if (!self.shouldShowLevelUpPaymentMethodsWalkthroughIPH ||
+      _settingsAreDismissed) {
+    return;
+  }
+
+  UIView* targetView = self.view;
+  CHECK(targetView.window);
+
+  CGPoint anchorPoint = CGPointZero;
+  BubbleArrowDirection arrowDirection = BubbleArrowDirectionDown;
+
+  if (self.tableView.visibleCells.count > 0) {
+    UITableViewCell* cell = self.tableView.visibleCells.firstObject;
+    if (cell.window) {
+      CGPoint anchorPointInCell =
+          CGPointMake(CGRectGetMidX(cell.bounds), CGRectGetMaxY(cell.bounds));
+      anchorPoint = [cell convertPoint:anchorPointInCell toView:cell.window];
+      arrowDirection = BubbleArrowDirectionUp;
+    }
+  } else {
+    anchorPoint = CGPointMake(0.5 * CGRectGetWidth(targetView.bounds),
+                              0.5 * CGRectGetHeight(targetView.bounds));
+  }
+
+  NSString* text =
+      l10n_util::GetNSString(IDS_IOS_LEVEL_UP_WALKTHROUGH_OPEN_PAYMENT_METHODS);
+
+  __weak __typeof(self) weakSelf = self;
+  CallbackWithIPHDismissalReasonType dismissalCallback =
+      ^(IPHDismissalReasonType reason) {
+        [weakSelf dismissLevelUpPaymentMethodsWalkthroughIPH];
+      };
+
+  BubbleViewControllerPresenter* presenter =
+      [[BubbleViewControllerPresenter alloc]
+                   initWithText:text
+                          title:nil
+                 arrowDirection:arrowDirection
+                      alignment:BubbleAlignmentBottomOrTrailing
+                     bubbleType:BubbleViewTypeRichWithNext
+                pageControlPage:BubblePageControlPageFourth
+          totalPageControlPages:4
+          customNextButtonTitle:l10n_util::GetNSString(IDS_IOS_IPH_BUBBLE_NEXT)
+              dismissalCallback:dismissalCallback];
+  presenter.dismissalTimerDisabled = YES;
+
+  if ([presenter canPresentInView:targetView anchorPoint:anchorPoint]) {
+    self.shouldShowLevelUpPaymentMethodsWalkthroughIPH = NO;
+    _levelUpPaymentMethodsWalkthroughIPHPresenter = presenter;
+    [presenter presentInViewController:self anchorPoint:anchorPoint];
+  }
+}
+
+// Handles dismissal of the Level Up Payment Methods walkthrough IPH.
+- (void)dismissLevelUpPaymentMethodsWalkthroughIPH {
+  _levelUpPaymentMethodsWalkthroughIPHPresenter = nil;
 }
 
 @end

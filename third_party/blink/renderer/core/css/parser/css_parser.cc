@@ -19,12 +19,14 @@
 #include "third_party/blink/renderer/core/css/properties/css_parsing_utils.h"
 #include "third_party/blink/renderer/core/css/style_color.h"
 #include "third_party/blink/renderer/core/css/style_rule.h"
+#include "third_party/blink/renderer/core/css/style_rule_keyframe.h"
 #include "third_party/blink/renderer/core/css/style_sheet_contents.h"
 #include "third_party/blink/renderer/core/execution_context/security_context.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/layout/layout_theme.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/heap/thread_state.h"
+#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 
 namespace blink {
 
@@ -95,6 +97,9 @@ StyleRuleBase* CSSParser::ParseRule(const CSSParserContext* context,
                                     const String& rule) {
   AllowedRules allowed_rules = CSSParserImpl::kTopLevelRules;
   allowed_rules.Remove(CSSAtRuleID::kCSSAtRuleCharset);
+  if (parent_rule_for_nesting) {
+    allowed_rules = allowed_rules | CSSParserImpl::kNestedGroupRules;
+  }
   return CSSParserImpl::ParseRule(rule, context, nesting_type,
                                   parent_rule_for_nesting, style_sheet,
                                   allowed_rules);
@@ -131,35 +136,45 @@ MutableCSSPropertyValueSet::SetResult CSSParser::ParseValue(
       static_cast<StyleSheetContents*>(nullptr), execution_context);
 }
 
-static inline const CSSParserContext* GetParserContext(
-    SecureContextMode secure_context_mode,
-    StyleSheetContents* style_sheet,
-    const ExecutionContext* execution_context,
-    CSSParserMode parser_mode) {
-  if (style_sheet) {
-    if (style_sheet->ParserContext()->GetMode() == parser_mode) {
-      // We can reuse this, to save on the construction.
-      return style_sheet->ParserContext();
-    } else {
-      // This can happen when parsing e.g. SVG attributes in the context of
-      // an HTML document.
-      CSSParserContext* mutable_context =
-          MakeGarbageCollected<CSSParserContext>(style_sheet->ParserContext());
+namespace {
+
+// Prepares a CSSParserContext based on the specified parameters.
+class LocalCSSParserContext {
+  STACK_ALLOCATED();
+
+ public:
+  LocalCSSParserContext(SecureContextMode secure_context_mode,
+                        StyleSheetContents* style_sheet,
+                        const ExecutionContext* execution_context,
+                        CSSParserMode parser_mode) {
+    if (style_sheet) {
+      context_ = style_sheet->ParserContext();
+      if (context_->GetMode() != parser_mode) {
+        // This can happen when parsing e.g. SVG attributes in the context of
+        // an HTML document.
+        overriding_scope_.emplace(*context_, parser_mode);
+      }
+    } else if (auto* window = DynamicTo<LocalDOMWindow>(execution_context)) {
+      // Create a parser context using document if it exists so it can check
+      // for origin trial enabled property/value.
+      auto* mutable_context =
+          MakeGarbageCollected<CSSParserContext>(*window->document());
       mutable_context->SetMode(parser_mode);
-      return mutable_context;
+      context_ = mutable_context;
+    } else {
+      context_ = MakeGarbageCollected<CSSParserContext>(parser_mode,
+                                                        secure_context_mode);
     }
-  } else if (IsA<LocalDOMWindow>(execution_context)) {
-    // Create parser context using document if it exists so it can check for
-    // origin trial enabled property/value.
-    CSSParserContext* mutable_context = MakeGarbageCollected<CSSParserContext>(
-        *To<LocalDOMWindow>(execution_context)->document());
-    mutable_context->SetMode(parser_mode);
-    return mutable_context;
-  } else {
-    return MakeGarbageCollected<CSSParserContext>(parser_mode,
-                                                  secure_context_mode);
   }
-}
+
+  const CSSParserContext* GetParserContext() const { return context_; }
+
+ private:
+  std::optional<CSSParserContext::ParserModeOverridingScope> overriding_scope_;
+  const CSSParserContext* context_;
+};
+
+}  // namespace
 
 MutableCSSPropertyValueSet::SetResult CSSParser::ParseValue(
     MutableCSSPropertyValueSet* declaration,
@@ -174,15 +189,18 @@ MutableCSSPropertyValueSet::SetResult CSSParser::ParseValue(
     return MutableCSSPropertyValueSet::kParseError;
   }
 
-  CSSPropertyID resolved_property = ResolveCSSPropertyID(unresolved_property);
   CSSParserMode parser_mode = declaration->CssParserMode();
-  const CSSParserContext* context = GetParserContext(
+  const LocalCSSParserContext local_parser_context(
       secure_context_mode, style_sheet, execution_context, parser_mode);
+  const CSSParserContext* context = local_parser_context.GetParserContext();
+
+  CSSPropertyID resolved_property = ResolveCSSPropertyID(unresolved_property);
 
   // See if this property has a specific fast-path parser.
   const CSSValue* value =
       CSSParserFastPaths::MaybeParseValue(resolved_property, string, context);
   if (value) {
+    context->Count(unresolved_property);
     return declaration->SetLonghandProperty(CSSPropertyValue(
         CSSPropertyName(resolved_property), *value, important));
   }
@@ -199,9 +217,10 @@ MutableCSSPropertyValueSet::SetResult CSSParser::ParseValue(
   if (parser_mode == kHTMLStandardMode && property.IsProperty() &&
       !property.IsShorthand()) {
     CSSParserTokenStream stream(string);
-    value =
-        CSSPropertyParser::ParseSingleValue(resolved_property, stream, context);
+    value = CSSPropertyParser::ParseSingleValue(unresolved_property, stream,
+                                                context);
     if (value != nullptr) {
+      context->Count(unresolved_property);
       return declaration->SetLonghandProperty(CSSPropertyValue(
           CSSPropertyName(resolved_property), *value, important));
     }
@@ -213,7 +232,7 @@ MutableCSSPropertyValueSet::SetResult CSSParser::ParseValue(
 }
 
 // NOTE: This follows pretty much the exact same structure as ParseValue(),
-// above.ParseValue(), above.ParseValue(), above.ParseValue(), above.
+// above.
 unsigned CSSParser::ParseForPresentationStyle(
     HeapVector<CSSPropertyValue, 8>& result,
     CSSPropertyID resolved_property,
@@ -229,8 +248,10 @@ unsigned CSSParser::ParseForPresentationStyle(
   SecureContextMode secure_context_mode =
       execution_context ? execution_context->GetSecureContextMode()
                         : SecureContextMode::kInsecureContext;
-  const CSSParserContext* context = GetParserContext(
+
+  const LocalCSSParserContext local_parser_context(
       secure_context_mode, context_sheet, execution_context, parser_mode);
+  const CSSParserContext* context = local_parser_context.GetParserContext();
 
   // Fast-path parser.
   const CSSValue* value =
@@ -298,19 +319,20 @@ MutableCSSPropertyValueSet::SetResult CSSParser::ParseValue(
                                    important, context);
 }
 
-const CSSValue* CSSParser::ParseSingleValue(CSSPropertyID property_id,
+const CSSValue* CSSParser::ParseSingleValue(CSSPropertyID unresolved_property,
                                             const String& string,
                                             const CSSParserContext* context) {
   DCHECK(ThreadState::Current()->IsAllocationAllowed());
   if (string.empty()) {
     return nullptr;
   }
-  if (CSSValue* value =
-          CSSParserFastPaths::MaybeParseValue(property_id, string, context)) {
+  if (CSSValue* value = CSSParserFastPaths::MaybeParseValue(unresolved_property,
+                                                            string, context)) {
     return value;
   }
   CSSParserTokenStream stream(string);
-  return CSSPropertyParser::ParseSingleValue(property_id, stream, context);
+  return CSSPropertyParser::ParseSingleValue(unresolved_property, stream,
+                                             context);
 }
 
 ImmutableCSSPropertyValueSet* CSSParser::ParseInlineStyleDeclaration(
@@ -350,7 +372,7 @@ bool CSSParser::ParseSupportsCondition(
     const String& condition,
     const ExecutionContext* execution_context) {
   // window.CSS.supports requires to parse as-if it was wrapped in parenthesis.
-  String wrapped_condition = "(" + condition + ")";
+  String wrapped_condition = StrCat({"(", condition, ")"});
   CSSParserTokenStream stream(wrapped_condition);
   DCHECK(execution_context);
   // Create parser context using document so it can check for origin trial
@@ -415,14 +437,14 @@ bool CSSParser::ParseSystemColor(Color& color,
                                  const String& color_string,
                                  mojom::blink::ColorScheme color_scheme,
                                  const ui::ColorProvider* color_provider,
-                                 bool is_in_web_app_scope) {
+                                 bool can_expose_accent_color) {
   CSSValueID id = CssValueKeywordID(color_string);
   if (!StyleColor::IsSystemColorIncludingDeprecated(id)) {
     return false;
   }
 
   color = LayoutTheme::GetTheme().SystemColor(id, color_scheme, color_provider,
-                                              is_in_web_app_scope);
+                                              can_expose_accent_color);
   return true;
 }
 
@@ -441,6 +463,7 @@ const CSSValue* CSSParser::ParseFontFaceDescriptor(
 CSSPrimitiveValue* CSSParser::ParseLengthPercentage(
     const String& string,
     const CSSParserContext* context,
+    CSSParserLocalContext& local_context,
     CSSPrimitiveValue::ValueRange value_range) {
   if (string.empty() || !context) {
     return nullptr;
@@ -449,8 +472,8 @@ CSSPrimitiveValue* CSSParser::ParseLengthPercentage(
   // Trim whitespace from the string. It's only necessary to consume leading
   // whitespaces, since ConsumeLengthOrPercent always consumes trailing ones.
   stream.ConsumeWhitespace();
-  CSSPrimitiveValue* parsed_value =
-      css_parsing_utils::ConsumeLengthOrPercent(stream, *context, value_range);
+  CSSPrimitiveValue* parsed_value = css_parsing_utils::ConsumeLengthOrPercent(
+      stream, *context, local_context, value_range);
   return stream.AtEnd() ? parsed_value : nullptr;
 }
 

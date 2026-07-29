@@ -4,25 +4,54 @@
 
 #include "third_party/blink/renderer/modules/accessibility/ax_inline_text_box.h"
 
+#include "base/feature_list.h"
+#include "base/test/scoped_feature_list.h"
+#include "testing/gtest/include/gtest/gtest-param-test.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/renderer/core/dom/abstract_range.h"
+#include "third_party/blink/renderer/core/dom/range.h"
+#include "third_party/blink/renderer/core/dom/text.h"
 #include "third_party/blink/renderer/core/editing/ephemeral_range.h"
 #include "third_party/blink/renderer/core/editing/markers/document_marker.h"
 #include "third_party/blink/renderer/core/editing/markers/document_marker_controller.h"
 #include "third_party/blink/renderer/core/editing/position.h"
+#include "third_party/blink/renderer/core/highlight/highlight.h"
+#include "third_party/blink/renderer/core/highlight/highlight_registry.h"
 #include "third_party/blink/renderer/modules/accessibility/ax_block_flow_iterator.h"
 #include "third_party/blink/renderer/modules/accessibility/ax_object_cache_impl.h"
 #include "third_party/blink/renderer/modules/accessibility/ax_range.h"
 #include "third_party/blink/renderer/modules/accessibility/testing/accessibility_test.h"
 #include "third_party/blink/renderer/platform/testing/unit_test_helpers.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
+#include "ui/accessibility/accessibility_features.h"
 
 using AXIntListAttribute = ax::mojom::blink::IntListAttribute;
 using AXMarkerType = ax::mojom::blink::MarkerType;
+using AXHighlightType = ax::mojom::blink::HighlightType;
 
 namespace blink {
 namespace test {
 
-TEST_F(AccessibilityTest, GetWordBoundaries) {
+class AXInlineTextBoxTest : public AccessibilityTest,
+                            public testing::WithParamInterface<bool> {
+ public:
+  void SetUp() override {
+    AccessibilityTest::SetUp();
+    bool feature_on = GetParam();
+    if (feature_on) {
+      list.InitWithFeatures({::features::kAccessibilityBlockFlowIterator}, {});
+    } else {
+      list.InitWithFeatures({}, {::features::kAccessibilityBlockFlowIterator});
+    }
+  }
+
+ protected:
+  base::test::ScopedFeatureList list;
+};
+
+INSTANTIATE_TEST_SUITE_P(BoolSequence, AXInlineTextBoxTest, testing::Bool());
+
+TEST_P(AXInlineTextBoxTest, GetWordBoundaries) {
   // &#9728; is the sun emoji symbol.
   // &#2460; is circled digit one.
   // Full string: "This, ☀ জ is ... a---+++test. <p>word</p>"
@@ -41,17 +70,17 @@ TEST_F(AccessibilityTest, GetWordBoundaries) {
   ASSERT_NE(nullptr, ax_inline_text_box);
   ASSERT_EQ(ax::mojom::Role::kInlineTextBox, ax_inline_text_box->RoleValue());
 
-  VectorOf<int> expected_word_starts{0,  1,  5,  7,  9,  11, 14, 18, 19, 22, 23,
-                                     24, 25, 29, 31, 32, 33, 34, 38, 40, 41};
-  VectorOf<int> expected_word_ends{1,  5,  6,  8,  10, 13, 17, 19, 22, 23, 24,
-                                   25, 29, 30, 32, 33, 34, 38, 40, 41, 43};
+  VectorOf<int> expected_word_starts{0,  1,  5,  7,  9,  11, 14, 18, 19,
+                                     25, 29, 31, 32, 33, 34, 38, 40, 41};
+  VectorOf<int> expected_word_ends{1,  5,  6,  8,  10, 13, 17, 19, 25,
+                                   29, 30, 32, 33, 34, 38, 40, 41, 43};
   VectorOf<int> word_starts, word_ends;
   ax_inline_text_box->GetWordBoundaries(word_starts, word_ends);
   EXPECT_EQ(expected_word_starts, word_starts);
   EXPECT_EQ(expected_word_ends, word_ends);
 }
 
-TEST_F(AccessibilityTest, GetDocumentMarkers) {
+TEST_P(AXInlineTextBoxTest, GetDocumentMarkers) {
   // There should be four inline text boxes in the following paragraph.
   SetBodyInnerHTML(R"HTML(
       <style>* { font-size: 10px; }</style>
@@ -152,7 +181,116 @@ TEST_F(AccessibilityTest, GetDocumentMarkers) {
   }
 }
 
-TEST_F(AccessibilityTest, TextOffsetInContainerWithASpan) {
+TEST_P(AXInlineTextBoxTest, AriaInvalidAndHighlightMarkers) {
+  // There should be four inline text boxes in the following paragraph.
+  SetBodyInnerHTML(
+      R"HTML(<p id="paragraph"><span aria-invalid="spelling" id="span1">Misspelled</span> text with a <span aria-invalid="grammar" id="span2">grammar error</span>.</p>)HTML");
+
+  Node* paragraph = GetElementById("paragraph");
+  ASSERT_NE(nullptr, paragraph);
+  Node* text = GetElementById("span1")->firstChild();
+  ASSERT_NE(nullptr, text);
+  ASSERT_TRUE(text->IsTextNode());
+
+  auto* dom_window = GetDocument().domWindow();
+  HighlightRegistry* registry = HighlightRegistry::From(*dom_window);
+  HeapVector<Member<AbstractRange>> range_vector;
+  auto* range1 = MakeGarbageCollected<Range>(GetDocument(), text, 0, text, 10);
+  range_vector.push_back(range1);
+
+  text = GetElementById("span2")->firstChild();
+  ASSERT_NE(nullptr, text);
+  ASSERT_TRUE(text->IsTextNode());
+  auto* range2 = MakeGarbageCollected<Range>(GetDocument(), text, 0, text, 13);
+  range_vector.push_back(range2);
+
+  Highlight* highlight = Highlight::Create(range_vector);
+  AtomicString name("highlight-name");
+  registry->SetForTesting(name, highlight);
+  registry->ScheduleRepaint();
+  registry->ValidateHighlightMarkers();
+
+  AXObject* ax_paragraph = GetAXObjectByElementId("paragraph");
+  ASSERT_NE(nullptr, ax_paragraph);
+  ASSERT_EQ(ax::mojom::Role::kParagraph, ax_paragraph->RoleValue());
+  ax_paragraph->LoadInlineTextBoxes();
+
+  AXObject* ax_container = ax_paragraph->ChildAtIncludingIgnored(0);
+  AXObject* ax_text = ax_container->FirstChildIncludingIgnored();
+  ASSERT_NE(nullptr, ax_text);
+  ASSERT_EQ(ax::mojom::Role::kStaticText, ax_text->RoleValue());
+  ASSERT_EQ(1, ax_text->ChildCountIncludingIgnored());
+
+  // For each inline text box, angle brackets indicate where the marker starts
+  // and ends respectively.
+  // kInlineTextBox: "<Misspelled>".
+  AXObject* ax_inline_text_box = ax_text->FirstChildIncludingIgnored();
+  ASSERT_NE(nullptr, ax_inline_text_box);
+  {
+    ScopedFreezeAXCache freeze(ax_inline_text_box->AXObjectCache());
+    ui::AXNodeData node_data;
+    ax_inline_text_box->Serialize(&node_data, ui::kAXModeComplete);
+    EXPECT_EQ(std::vector<int32_t>({int32_t(AXMarkerType::kSpelling),
+                                    int32_t(AXMarkerType::kHighlight)}),
+              node_data.GetIntListAttribute(AXIntListAttribute::kMarkerTypes));
+    EXPECT_EQ(
+        std::vector<int32_t>({int32_t(AXHighlightType::kNone),
+                              int32_t(AXHighlightType::kHighlight)}),
+        node_data.GetIntListAttribute(AXIntListAttribute::kHighlightTypes));
+    EXPECT_EQ(std::vector<int32_t>({0, 0}),
+              node_data.GetIntListAttribute(AXIntListAttribute::kMarkerStarts));
+    EXPECT_EQ(std::vector<int32_t>({10, 10}),
+              node_data.GetIntListAttribute(AXIntListAttribute::kMarkerEnds));
+  }
+
+  // kInlineTextBox: " text with a ".
+  ax_text = ax_paragraph->ChildAtIncludingIgnored(1);
+  ASSERT_NE(nullptr, ax_text);
+  ASSERT_EQ(ax::mojom::Role::kStaticText, ax_text->RoleValue());
+  ASSERT_EQ(1, ax_text->ChildCountIncludingIgnored());
+  ax_inline_text_box = ax_text->FirstChildIncludingIgnored();
+  ASSERT_NE(nullptr, ax_inline_text_box);
+  {
+    ScopedFreezeAXCache freeze(ax_inline_text_box->AXObjectCache());
+    ui::AXNodeData node_data;
+    ax_inline_text_box->Serialize(&node_data, ui::kAXModeComplete);
+    EXPECT_EQ(std::vector<int32_t>(),
+              node_data.GetIntListAttribute(AXIntListAttribute::kMarkerTypes));
+    EXPECT_EQ(std::vector<int32_t>(), node_data.GetIntListAttribute(
+                                          AXIntListAttribute::kHighlightTypes));
+    EXPECT_EQ(std::vector<int32_t>(),
+              node_data.GetIntListAttribute(AXIntListAttribute::kMarkerStarts));
+    EXPECT_EQ(std::vector<int32_t>(),
+              node_data.GetIntListAttribute(AXIntListAttribute::kMarkerEnds));
+  }
+
+  // kInlineTextBox: "<grammar error>".
+  ax_container = ax_paragraph->ChildAtIncludingIgnored(2);
+  ax_text = ax_container->FirstChildIncludingIgnored();
+  ASSERT_NE(nullptr, ax_text);
+  ASSERT_EQ(ax::mojom::Role::kStaticText, ax_text->RoleValue());
+  ASSERT_EQ(1, ax_text->ChildCountIncludingIgnored());
+  ax_inline_text_box = ax_text->FirstChildIncludingIgnored();
+  ASSERT_NE(nullptr, ax_inline_text_box);
+  {
+    ScopedFreezeAXCache freeze(ax_inline_text_box->AXObjectCache());
+    ui::AXNodeData node_data;
+    ax_inline_text_box->Serialize(&node_data, ui::kAXModeComplete);
+    EXPECT_EQ(std::vector<int32_t>({int32_t(AXMarkerType::kGrammar),
+                                    int32_t(AXMarkerType::kHighlight)}),
+              node_data.GetIntListAttribute(AXIntListAttribute::kMarkerTypes));
+    EXPECT_EQ(
+        std::vector<int32_t>({int32_t(AXHighlightType::kNone),
+                              int32_t(AXHighlightType::kHighlight)}),
+        node_data.GetIntListAttribute(AXIntListAttribute::kHighlightTypes));
+    EXPECT_EQ(std::vector<int32_t>({0, 0}),
+              node_data.GetIntListAttribute(AXIntListAttribute::kMarkerStarts));
+    EXPECT_EQ(std::vector<int32_t>({13, 13}),
+              node_data.GetIntListAttribute(AXIntListAttribute::kMarkerEnds));
+  }
+}
+
+TEST_P(AXInlineTextBoxTest, TextOffsetInContainerWithASpan) {
   // There should be three inline text boxes in the following paragraph. The
   // span should reset the text start offset of all of them to 0.
   SetBodyInnerHTML(R"HTML(
@@ -190,7 +328,7 @@ TEST_F(AccessibilityTest, TextOffsetInContainerWithASpan) {
   ASSERT_EQ(nullptr, ax_inline_text_box->NextInPreOrderIncludingIgnored());
 }
 
-TEST_F(AccessibilityTest, TextOffsetInContainerWithMultipleInlineTextBoxes) {
+TEST_P(AXInlineTextBoxTest, TextOffsetInContainerWithMultipleInlineTextBoxes) {
   // There should be four inline text boxes in the following paragraph. The span
   // should not affect the text start offset of the text outside the span.
   SetBodyInnerHTML(R"HTML(
@@ -233,7 +371,7 @@ TEST_F(AccessibilityTest, TextOffsetInContainerWithMultipleInlineTextBoxes) {
   ASSERT_EQ(nullptr, ax_inline_text_box->NextInPreOrderIncludingIgnored());
 }
 
-TEST_F(AccessibilityTest, TextOffsetInContainerWithLineBreak) {
+TEST_P(AXInlineTextBoxTest, TextOffsetInContainerWithLineBreak) {
   // There should be three inline text boxes in the following paragraph. The
   // line break should reset the text start offset to 0 of both the inline text
   // box inside the line break, as well as the text start ofset of the second
@@ -273,7 +411,7 @@ TEST_F(AccessibilityTest, TextOffsetInContainerWithLineBreak) {
   ASSERT_EQ(nullptr, ax_inline_text_box->NextInPreOrderIncludingIgnored());
 }
 
-TEST_F(AccessibilityTest, TextOffsetInContainerWithBreakWord) {
+TEST_P(AXInlineTextBoxTest, TextOffsetInContainerWithBreakWord) {
   // There should be three inline text boxes in the following paragraph because
   // of the narrow width and the long word, coupled with the CSS "break-word"
   // property. Each inline text box should have a different offset in container.
@@ -323,7 +461,7 @@ TEST_F(AccessibilityTest, TextOffsetInContainerWithBreakWord) {
   ASSERT_EQ(nullptr, ax_inline_text_box->NextSiblingIncludingIgnored());
 }
 
-TEST_F(AccessibilityTest, GetTextDirection) {
+TEST_P(AXInlineTextBoxTest, GetTextDirection) {
   using WritingDirection = ax::mojom::blink::WritingDirection;
   SetBodyInnerHTML(R"HTML(
       <p id="paragraph" style="writing-mode:sideways-lr;">
@@ -344,7 +482,7 @@ TEST_F(AccessibilityTest, GetTextDirection) {
   EXPECT_EQ(WritingDirection::kBtt, ax_static_text->GetTextDirection());
 }
 
-TEST_F(AccessibilityTest, AXBlockFlowIteratorAPI_Simple) {
+TEST_P(AXInlineTextBoxTest, AXBlockFlowIteratorAPI_Simple) {
   SetBodyInnerHTML(R"HTML(
       <p id="paragraph">Hello <em>World</em></p>)HTML");
 
@@ -380,7 +518,7 @@ TEST_F(AccessibilityTest, AXBlockFlowIteratorAPI_Simple) {
   ASSERT_FALSE(it.Next());
 }
 
-TEST_F(AccessibilityTest, AXBlockFlowIteratorAPI_SoftLinebreak) {
+TEST_P(AXInlineTextBoxTest, AXBlockFlowIteratorAPI_SoftLinebreak) {
   LoadAhem();
   SetBodyInnerHTML(R"HTML(
     <style>
@@ -494,7 +632,7 @@ TEST_F(AccessibilityTest, AXBlockFlowIteratorAPI_SoftLinebreak) {
   // testing soft-line-breaking.
 }
 
-TEST_F(AccessibilityTest, AXBlockFlowIteratorAPI_HardtLinebreak) {
+TEST_P(AXInlineTextBoxTest, AXBlockFlowIteratorAPI_HardtLinebreak) {
   SetBodyInnerHTML(R"HTML(
     <p id="paragraph">Hello <br>World!</p>)HTML");
 
@@ -531,7 +669,7 @@ TEST_F(AccessibilityTest, AXBlockFlowIteratorAPI_HardtLinebreak) {
   ASSERT_FALSE(it.Next());
 }
 
-TEST_F(AccessibilityTest, AXBlockFlowIteratorAPI_Ellipsis) {
+TEST_P(AXInlineTextBoxTest, AXBlockFlowIteratorAPI_Ellipsis) {
   LoadAhem();
   SetBodyInnerHTML(R"HTML(
     <style>
@@ -598,7 +736,7 @@ TEST_F(AccessibilityTest, AXBlockFlowIteratorAPI_Ellipsis) {
   ASSERT_FALSE(it.Next());
 }
 
-TEST_F(AccessibilityTest, AXBlockFlowIteratorAPI_Ruby) {
+TEST_P(AXInlineTextBoxTest, AXBlockFlowIteratorAPI_Ruby) {
   SetBodyInnerHTML(R"HTML(
     <ruby id="ruby">Ruby base<rt>ruby text</rt></ruby>)HTML");
 
@@ -628,7 +766,7 @@ TEST_F(AccessibilityTest, AXBlockFlowIteratorAPI_Ruby) {
   ASSERT_FALSE(it.Next());
 }
 
-TEST_F(AccessibilityTest, AXBlockFlowIteratorAPI_Ruby2) {
+TEST_P(AXInlineTextBoxTest, AXBlockFlowIteratorAPI_Ruby2) {
   SetBodyInnerHTML(R"HTML(
     <p style="font-family:monospace; width:5ch;">
       <ruby id="ruby">ruby base<rt>ruby text</rt></ruby>
@@ -664,7 +802,7 @@ TEST_F(AccessibilityTest, AXBlockFlowIteratorAPI_Ruby2) {
   ASSERT_FALSE(it.Next());
 }
 
-TEST_F(AccessibilityTest, AXBlockFlowIteratorAPI_CharacterOffsets) {
+TEST_P(AXInlineTextBoxTest, AXBlockFlowIteratorAPI_CharacterOffsets) {
   // Then Ahem font has consistent font metrics across platforms.
   LoadAhem();
 
@@ -692,17 +830,21 @@ TEST_F(AccessibilityTest, AXBlockFlowIteratorAPI_CharacterOffsets) {
   // The trailing whitespace in "Hello " is not part of the actual text fragment
   // since not rendered. When extracting the glyphs, the length of the vector
   // padded to include the trailing space a zero-width glyph.
-  std::vector<int> expected_character_offsets = {16, 32, 48, 64, 80, 80};
-  ASSERT_EQ(expected_character_offsets, it.GetCharacterLayoutPixelOffsets());
+  Vector<int> expected_character_offsets = {16, 32, 48, 64, 80, 80};
+  Vector<int> result;
+  it.GetCharacterLayoutPixelOffsets(result);
+  ASSERT_EQ(expected_character_offsets, result);
 
   ASSERT_TRUE(it.Next());
   ASSERT_EQ("world!", it.GetText());
   expected_character_offsets = {16, 32, 48, 64, 80, 96};
+  it.GetCharacterLayoutPixelOffsets(result);
+  ASSERT_EQ(expected_character_offsets, result);
 
   ASSERT_FALSE(it.Next());
 }
 
-TEST_F(AccessibilityTest, AXBlockFlowIteratorAPI_CharacterOffsets_Ligature) {
+TEST_P(AXInlineTextBoxTest, AXBlockFlowIteratorAPI_CharacterWidths_Ligature) {
   // Google Sans supports ligatures (e.g. "fi" being rendered as a single glyph.
   LoadFontFromFile(GetFrame(), test::CoreTestDataPath("GoogleSans-Regular.ttf"),
                    AtomicString("Google Sans"));
@@ -726,12 +868,9 @@ TEST_F(AccessibilityTest, AXBlockFlowIteratorAPI_CharacterOffsets_Ligature) {
   AXBlockFlowIterator it(ax_static_text);
   ASSERT_TRUE(it.Next());
   ASSERT_EQ("f", it.GetText());
-  // The offset will be for the "fi" ligature and not for "f" since the
-  // "Google Sans" font uses ligatures. Metrics are not platform agnostic, so we
-  // cannot assert the actual reported offsets unless we have expectations on a
-  // per-platform basis. The important thing is how "i" is handled at the start
-  // of the next fragment.
-  ASSERT_EQ(1u, it.GetCharacterLayoutPixelOffsets().size());
+  Vector<int> result;
+  it.GetCharacterLayoutPixelOffsets(result);
+  ASSERT_EQ(1u, result.size());
 
   ASSERT_TRUE(it.NextOnLine().has_value());
   ASSERT_FALSE(it.Next());
@@ -743,15 +882,87 @@ TEST_F(AccessibilityTest, AXBlockFlowIteratorAPI_CharacterOffsets_Ligature) {
   ASSERT_TRUE(it.Next());
   ASSERT_EQ("ire", it.GetText());
 
-  const std::vector<int> offsets = it.GetCharacterLayoutPixelOffsets();
-  ASSERT_EQ(3u, offsets.size());
+  it.GetCharacterLayoutPixelOffsets(result);
+  ASSERT_EQ(3u, result.size());
   // "i"  was rendered as part of the "fi" ligature and is a reported as a
   // zero width glyph, to preserve character alignment.
-  ASSERT_EQ(0, offsets[0]);
+  ASSERT_EQ(0, result[0]);
 
   ASSERT_FALSE(it.Next());
 }
 
+TEST_P(AXInlineTextBoxTest, FirstLineTextTransformCrash) {
+  InsertStyleElement(
+      "#root { white-space: pre-wrap; word-break: break-all; width: 3ch; "
+      "font-family: monospace; }"
+      "#root::first-line { text-transform: uppercase; }");
+  SetBodyInnerHTML(
+      "<div id=\"root\">"
+      "<span>&szlig;</span><span>&szlig;</span><span>&szlig;</span>"
+      "</div>");
+
+  AXObject* ax_root = GetAXObjectByElementId("root");
+  ASSERT_NE(nullptr, ax_root);
+}
+
+TEST_P(AXInlineTextBoxTest, InlineBoxFragmentDoesNotJoinWrappedLines) {
+  // An outline gives the link a box fragment of its own on each line it wraps
+  // across. Those box fragments must not hide the line boundary: the link
+  // still wraps, so "Rowland" still starts a line and has nothing before it
+  // on that line.
+  LoadAhem();
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      p { width: 34ch; font: 16px/16px Ahem; }
+      a { outline: 2px solid red; }
+    </style>
+    <p id="para">The group included star <a id="split"
+    href="#member">Kelly Rowland</a> plus others here.</p>)HTML");
+
+  AXObject* ax_link = GetAXObjectByElementId("split");
+  ASSERT_NE(nullptr, ax_link);
+  ASSERT_EQ(ax::mojom::Role::kLink, ax_link->RoleValue());
+  ax_link->LoadInlineTextBoxes();
+
+  const AXObject* ax_static_text = ax_link->FirstChildIncludingIgnored();
+  ASSERT_NE(nullptr, ax_static_text);
+  ASSERT_EQ(2, ax_static_text->ChildCountIncludingIgnored());
+
+  AXObject* first_box = ax_static_text->ChildAtIncludingIgnored(0);
+  AXObject* second_box = ax_static_text->ChildAtIncludingIgnored(1);
+  ASSERT_EQ("Kelly ", first_box->ComputedName());
+  ASSERT_EQ("Rowland", second_box->ComputedName());
+
+  ScopedFreezeAXCache freeze(ax_link->AXObjectCache());
+  EXPECT_EQ("The group included star ",
+            first_box->PreviousOnLine()->ComputedName());
+  EXPECT_EQ(nullptr, first_box->NextOnLine());
+  EXPECT_EQ(nullptr, second_box->PreviousOnLine());
+  EXPECT_EQ(" plus others here.", second_box->NextOnLine()->ComputedName());
+}
+
 }  // namespace test
+
+TEST_F(AccessibilityTest, LoadInlineTextBoxesCrashsOnAndroid) {
+  SetBodyInnerHTML(R"HTML(
+    <p id="paragraph"></p>
+      )HTML");
+
+  AXObject* ax_paragraph = GetAXObjectByElementId("paragraph");
+  ASSERT_NE(nullptr, ax_paragraph);
+
+  // In lieu of a repro snippet, we force this paragraph, which has a
+  // LayoutBlock, to be a static text role.
+  ax_paragraph->role_ = ax::mojom::Role::kStaticText;
+
+  // Then, force a life cycle change.
+  ax_paragraph->AXObjectCache().CommitAXUpdates(*(ax_paragraph->GetDocument()),
+                                                true);
+
+  // Finally, this enables us to request a load of inline text boxes and trigger
+  // the CHECK for the node to be a LayoutText. This once crashed because
+  // Android had a slightly different codepath.
+  ax_paragraph->LoadInlineTextBoxes();
+}
 
 }  // namespace blink

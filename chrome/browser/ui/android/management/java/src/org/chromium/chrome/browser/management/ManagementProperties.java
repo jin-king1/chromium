@@ -7,10 +7,12 @@ package org.chromium.chrome.browser.management;
 import android.text.SpannableString;
 import android.text.SpannableStringBuilder;
 
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel;
 
 /** Associated properties for ManagementPage's view. */
+@NullMarked
 class ManagementProperties {
     public static final PropertyModel.WritableObjectPropertyKey<String> TITLE =
             new PropertyModel.WritableObjectPropertyKey<>();
@@ -57,6 +59,16 @@ class ManagementProperties {
     public static final PropertyModel.ReadableObjectPropertyKey<SpannableStringBuilder>
             URL_FILTERING_DESCRIPTION_TEXT = new PropertyModel.WritableObjectPropertyKey<>();
 
+    public static final PropertyModel.ReadableBooleanPropertyKey DOWNLOAD_ENTERPRISE_SCAN_ENABLED =
+            new PropertyModel.ReadableBooleanPropertyKey();
+
+    public static final PropertyModel.ReadableObjectPropertyKey<SpannableStringBuilder>
+            DOWNLOAD_ENTERPRISE_SCAN_TEXT = new PropertyModel.WritableObjectPropertyKey<>();
+
+    public static final PropertyModel.ReadableObjectPropertyKey<SpannableStringBuilder>
+            DOWNLOAD_ENTERPRISE_SCAN_DESCRIPTION_TEXT =
+                    new PropertyModel.WritableObjectPropertyKey<>();
+
     public static final PropertyKey[] ALL_KEYS = {
         TITLE,
         BROWSER_IS_MANAGED,
@@ -73,5 +85,8 @@ class ManagementProperties {
         URL_FILTERING_ENABLED,
         URL_FILTERING_TEXT,
         URL_FILTERING_DESCRIPTION_TEXT,
+        DOWNLOAD_ENTERPRISE_SCAN_ENABLED,
+        DOWNLOAD_ENTERPRISE_SCAN_TEXT,
+        DOWNLOAD_ENTERPRISE_SCAN_DESCRIPTION_TEXT,
     };
 }

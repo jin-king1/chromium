@@ -49,6 +49,9 @@ const char kOptimizationGuideServiceGetModelsURL[] =
 const char kOptimizationGuideServiceModelExecutionURL[] =
     "optimization-guide-service-model-execution-url";
 
+const char kOptimizationGuideServiceModelExecutionDefaultURL[] =
+    "https://chromemodelexecution-pa.googleapis.com/v1:Execute";
+
 // Overrides the Optimization Guide Service API Key for remote requests to be
 // made.
 const char kOptimizationGuideServiceAPIKey[] =
@@ -247,12 +250,12 @@ bool ShouldValidateModelExecution() {
   return command_line->HasSwitch(kModelExecutionValidate);
 }
 
-std::optional<std::string> GetOnDeviceModelExecutionOverride() {
+std::optional<base::FilePath> GetOnDeviceModelExecutionOverride() {
   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
   if (!command_line->HasSwitch(kOnDeviceModelExecutionOverride)) {
     return std::nullopt;
   }
-  return command_line->GetSwitchValueASCII(kOnDeviceModelExecutionOverride);
+  return command_line->GetSwitchValuePath(kOnDeviceModelExecutionOverride);
 }
 
 std::optional<base::FilePath> GetOnDeviceValidationRequestOverride() {
@@ -279,6 +282,16 @@ bool ShouldGetFreeDiskSpaceWithUserVisiblePriorityTask() {
 bool ShouldSkipGoogleApiKeyConfigurationCheck() {
   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
   return command_line->HasSwitch(kGoogleApiKeyConfigurationCheckOverride);
+}
+
+GURL GetModelExecutionServiceURL() {
+  base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
+  if (command_line->HasSwitch(
+          switches::kOptimizationGuideServiceModelExecutionURL)) {
+    return GURL(command_line->GetSwitchValueASCII(
+        switches::kOptimizationGuideServiceModelExecutionURL));
+  }
+  return GURL(kOptimizationGuideServiceModelExecutionDefaultURL);
 }
 
 }  // namespace switches

@@ -4,16 +4,16 @@
 
 #include "device/bluetooth/adapter.h"
 
+#include <algorithm>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
+#include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/not_fatal_until.h"
 #include "build/build_config.h"
 #include "device/bluetooth/advertisement.h"
 #include "device/bluetooth/bluetooth_local_gatt_service.h"
@@ -26,6 +26,7 @@
 #include "device/bluetooth/public/mojom/connect_result_type_converter.h"
 #include "device/bluetooth/server_socket.h"
 #include "device/bluetooth/socket.h"
+#include "mojo/public/cpp/bindings/message.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
@@ -139,6 +140,13 @@ void Adapter::RegisterAdvertisement(const device::BluetoothUUID& service_uuid,
                                     bool use_scan_response,
                                     bool connectable,
                                     RegisterAdvertisementCallback callback) {
+  if (!allowed_uuids_.contains(service_uuid)) {
+    mojo::ReportBadMessage(
+        "RegisterAdvertisement called with unauthorized UUID.");
+    std::move(callback).Run(/*advertisement=*/mojo::NullRemote());
+    return;
+  }
+
   auto advertisement_data =
       std::make_unique<device::BluetoothAdvertisement::Data>(
           connectable
@@ -231,7 +239,9 @@ void Adapter::ConnectToServiceInsecurely(
     const device::BluetoothUUID& service_uuid,
     bool should_unbond_on_error,
     ConnectToServiceInsecurelyCallback callback) {
-  if (!base::Contains(allowed_uuids_, service_uuid)) {
+  if (!allowed_uuids_.contains(service_uuid)) {
+    mojo::ReportBadMessage(
+        "ConnectToServiceInsecurely called with unauthorized UUID.");
     std::move(callback).Run(/*result=*/nullptr);
     return;
   }
@@ -267,7 +277,9 @@ void Adapter::CreateRfcommServiceInsecurely(
     const std::string& service_name,
     const device::BluetoothUUID& service_uuid,
     CreateRfcommServiceInsecurelyCallback callback) {
-  if (!base::Contains(allowed_uuids_, service_uuid)) {
+  if (!allowed_uuids_.contains(service_uuid)) {
+    mojo::ReportBadMessage(
+        "CreateRfcommServiceInsecurely called with unauthorized UUID.");
     std::move(callback).Run(/*server_socket=*/mojo::NullRemote());
     return;
   }
@@ -291,11 +303,18 @@ void Adapter::CreateLocalGattService(
     const device::BluetoothUUID& service_id,
     mojo::PendingRemote<mojom::GattServiceObserver> observer,
     CreateLocalGattServiceCallback callback) {
+  if (!allowed_uuids_.contains(service_id)) {
+    mojo::ReportBadMessage(
+        "CreateLocalGattService called with unauthorized UUID.");
+    std::move(callback).Run(/*gatt_service=*/mojo::NullRemote());
+    return;
+  }
+
   // It is expected that callers of `CreateLocalGattService()` only call this
   // method when creating a new GATT service that corresponds to |service_id|.
   // See more details in //device/bluetooth/public/mojom/adapter.mojom method
   // documentation.
-  CHECK(!base::Contains(uuid_to_local_gatt_service_map_, service_id));
+  CHECK(!uuid_to_local_gatt_service_map_.contains(service_id));
 
   mojo::PendingReceiver<mojom::GattService> pending_gatt_service_receiver;
   mojo::PendingRemote<mojom::GattService> pending_gatt_service_remote =
@@ -315,7 +334,7 @@ void Adapter::CreateLocalGattService(
 void Adapter::IsLeScatternetDualRoleSupported(
     IsLeScatternetDualRoleSupportedCallback callback) {
 #if BUILDFLAG(IS_CHROMEOS)
-  std::move(callback).Run(base::Contains(
+  std::move(callback).Run(std::ranges::contains(
       adapter_->GetSupportedRoles(),
       device::BluetoothAdapter::BluetoothRole::kCentralPeripheral));
 #else
@@ -461,8 +480,7 @@ void Adapter::ProcessPendingInsecureServiceConnectionRequest(
   auto it = connect_to_service_requests_pending_discovery_.begin();
   while (it != connect_to_service_requests_pending_discovery_.end()) {
     auto request_it = connect_to_service_request_map_.find(*it);
-    CHECK(request_it != connect_to_service_request_map_.end(),
-          base::NotFatalUntil::M130);
+    CHECK(request_it != connect_to_service_request_map_.end());
     if (address == request_it->second->address) {
       ProcessDeviceForInsecureServiceConnection(*it, device, disconnected);
       it = connect_to_service_requests_pending_discovery_.erase(it);

@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/browser/ash/platform_keys/platform_keys_service.h"
 
 #include <memory>
@@ -17,6 +12,7 @@
 #include <vector>
 
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
@@ -35,7 +31,6 @@
 #include "chrome/browser/ash/platform_keys/platform_keys_service_factory.h"
 #include "chrome/browser/ash/platform_keys/platform_keys_service_test_util.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
-#include "chrome/browser/chromeos/platform_keys/platform_keys.h"
 #include "chrome/browser/net/nss_service.h"
 #include "chrome/browser/net/nss_service_factory.h"
 #include "chrome/browser/policy/policy_test_utils.h"
@@ -47,6 +42,7 @@
 #include "chrome/test/base/testing_profile.h"
 #include "chromeos/ash/components/chaps_util/test_util.h"
 #include "chromeos/ash/components/login/auth/public/user_context.h"
+#include "chromeos/ash/components/platform_keys/platform_keys.h"
 #include "components/policy/core/common/policy_switches.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
 #include "content/public/browser/browser_task_traits.h"
@@ -252,9 +248,9 @@ class PlatformKeysServiceBrowserTestBase
     CERTCertificate* cert = out_cert->get();
     ASSERT_TRUE(cert);
     ASSERT_GT(cert->derPublicKey.len, 0U);
-    *out_spki_der =
-        std::vector<uint8_t>(cert->derPublicKey.data,
-                             cert->derPublicKey.data + cert->derPublicKey.len);
+    *out_spki_der = std::vector<uint8_t>(
+        cert->derPublicKey.data,
+        UNSAFE_TODO(cert->derPublicKey.data + cert->derPublicKey.len));
   }
 
  private:

@@ -4,7 +4,6 @@
 # found in the LICENSE file.
 """Siso configuration for proto/linux."""
 
-load("@builtin//path.star", "path")
 load("@builtin//struct.star", "module")
 load("./config.star", "config")
 
@@ -12,7 +11,7 @@ def __filegroups(ctx):
     return {}
 
 def __step_config(ctx, step_config):
-    remote_run = True  # Turn this to False when you do file access trace.
+    remote_run = config.get(ctx, "googlechrome")  # Turn this to False when you do file access trace.
     step_config["rules"].extend([
         {
             "name": "proto/protoc_wrapper",

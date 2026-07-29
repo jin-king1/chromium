@@ -185,7 +185,7 @@ IN_PROC_BROWSER_TEST_F(NetErrorTabHelperWithPrerenderingTest,
   prerender_helper().AddPrerenderAsync(prerender_url);
   registry_observer.WaitForTrigger(prerender_url);
 
-  content::FrameTreeNodeId host_id =
+  content::PrerenderHostId host_id =
       prerender_helper().GetHostForUrl(prerender_url);
   EXPECT_TRUE(host_id);
   test::PrerenderHostObserver host_observer(*GetWebContents(), host_id);
@@ -233,7 +233,7 @@ IN_PROC_BROWSER_TEST_F(NetErrorTabHelperWithFencedFrameTest,
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), initial_url));
   EvalJsResult result = EvalJs(GetWebContents()->GetPrimaryMainFrame(),
                                kSearchingForDiagnosisScript);
-  ASSERT_TRUE(result.error.empty());
+  ASSERT_TRUE(result.is_ok());
   EXPECT_EQ(WebContentsCanShowDiagnosticsTool(
                 GetWebContents()->GetPrimaryMainFrame()),
             result.ExtractString());
@@ -249,7 +249,7 @@ IN_PROC_BROWSER_TEST_F(NetErrorTabHelperWithFencedFrameTest,
           net::ERR_NAME_NOT_RESOLVED);
   EvalJsResult result =
       EvalJs(inner_fenced_frame_rfh, kSearchingForDiagnosisScript);
-  ASSERT_TRUE(result.error.empty());
+  ASSERT_TRUE(result.is_ok());
 #if BUILDFLAG(IS_CHROMEOS)
   // ChromeOS has its own diagnostics extension, which doesn't rely on a
   // browser-initiated dialog.

@@ -51,7 +51,7 @@ class SaveAddressProfileInfobarModalOverlayRequestCallbackInstaller
 
   // The handler for received responses.
   raw_ptr<SaveAddressProfileInfobarModalInteractionHandler>
-      interaction_handler_ = nullptr;
+      interaction_handler_;
 
   base::WeakPtrFactory<
       SaveAddressProfileInfobarModalOverlayRequestCallbackInstaller>

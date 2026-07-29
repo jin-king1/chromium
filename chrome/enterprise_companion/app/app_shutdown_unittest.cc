@@ -9,6 +9,7 @@
 #include "base/functional/callback.h"
 #include "base/run_loop.h"
 #include "base/strings/strcat.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/test/multiprocess_test.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_file_util.h"
@@ -84,9 +85,9 @@ class AppShutdownTest : public ::testing::Test {
                          ".service"});
 #elif BUILDFLAG(IS_LINUX)
     return base::GetTempDirForTesting()
-        .AppendASCII(base::StrCat({"ChromeEnterpriseCompanionTest",
-                                   base::UnguessableToken::Create().ToString(),
-                                   ".service.sk"}))
+        .AppendUTF8(base::StrCat({"ChromeEnterpriseCompanionTest",
+                                  base::UnguessableToken::Create().ToString(),
+                                  ".service.sk"}))
         .AsUTF8Unsafe();
 #elif BUILDFLAG(IS_WIN)
     return base::UTF8ToWide(

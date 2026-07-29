@@ -38,7 +38,6 @@ class MockCanvasAsyncBlobCreator : public CanvasAsyncBlobCreator {
             nullptr,
             base::TimeTicks(),
             document->GetExecutionContext(),
-            0,
             nullptr) {
     if (fail_encoder_initialization)
       fail_encoder_initialization_for_test_ = true;
@@ -113,7 +112,7 @@ class MockCanvasAsyncBlobCreatorWithoutComplete
   void ScheduleInitiateEncoding(double quality) override {
     PostDelayedTaskToCurrentThread(
         FROM_HERE,
-        WTF::BindOnce(
+        blink::BindOnce(
             &MockCanvasAsyncBlobCreatorWithoutComplete::InitiateEncoding,
             WrapPersistent(this), quality, base::TimeTicks::Max()),
         /*delay_ms=*/0);

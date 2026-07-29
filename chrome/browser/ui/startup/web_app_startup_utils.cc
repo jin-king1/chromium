@@ -13,7 +13,6 @@
 #include "base/check.h"
 #include "base/check_is_test.h"
 #include "base/command_line.h"
-#include "base/containers/contains.h"
 #include "base/containers/fixed_flat_map.h"
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
@@ -34,6 +33,7 @@
 #include "chrome/browser/profiles/keep_alive/scoped_profile_keep_alive.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/startup/infobar_utils.h"
 #include "chrome/browser/ui/startup/startup_browser_creator.h"
 #include "chrome/browser/ui/startup/startup_browser_creator_impl.h"
@@ -47,16 +47,12 @@
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/web_applications/web_app_registrar.h"
 #include "chrome/browser/web_applications/web_app_registry_update.h"
-#include "chrome/browser/web_applications/web_app_sync_bridge.h"
 #include "chrome/browser/web_applications/web_app_utils.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_switches.h"
 #include "components/keep_alive_registry/keep_alive_registry.h"
 #include "components/keep_alive_registry/keep_alive_types.h"
 #include "components/keep_alive_registry/scoped_keep_alive.h"
 #include "components/webapps/common/web_app_id.h"
-#include "third_party/blink/public/common/custom_handlers/protocol_handler_utils.h"
-#include "third_party/blink/public/common/security/protocol_handler_security_level.h"
 #include "url/gurl.h"
 
 namespace web_app::startup {
@@ -144,7 +140,7 @@ class StartupWebAppCreator
         subscription_(browser_shutdown::AddAppTerminatingCallback(
             base::BindOnce(&StartupWebAppCreator::OnBrowserShutdown,
                            base::Unretained(this)))) {
-    DCHECK(provider_);
+    CHECK(provider_);
   }
 
   ~StartupWebAppCreator() {
@@ -180,9 +176,8 @@ class StartupWebAppCreator
       if (!protocol_url_.is_empty()) {
         protocol = protocol_url_;
       }
-      provider_->scheduler().LaunchApp(
-          app_id_, command_line_, cur_dir_,
-          /*url_handler_launch_url=*/std::nullopt, protocol,
+      provider_->scheduler().LaunchAppFromCommandLine(
+          app_id_, command_line_, cur_dir_, protocol,
           /*file_launch_url=*/std::nullopt, /*launch_files=*/{},
           base::BindOnce(&StartupWebAppCreator::OnAppLaunched,
                          base::WrapRefCounted(this)));
@@ -190,9 +185,8 @@ class StartupWebAppCreator
     }
 
     for (const auto& [url, paths] : file_launch_infos_) {
-      provider_->scheduler().LaunchApp(
+      provider_->scheduler().LaunchAppFromCommandLine(
           app_id_, command_line_, cur_dir_,
-          /*url_handler_launch_url=*/std::nullopt,
           /*protocol_handler_launch_url=*/std::nullopt,
           /*file_launch_url=*/url, /*launch_files=*/paths,
           base::BindOnce(&StartupWebAppCreator::OnAppLaunched,
@@ -205,44 +199,33 @@ class StartupWebAppCreator
   LaunchResult MaybeLaunchProtocolHandler() {
     GURL protocol_url;
     base::CommandLine::StringVector args = command_line_.GetArgs();
+
+    CHECK(provider_->on_registry_ready().is_signaled());
+    WebAppRegistrar& registrar = provider_->registrar_unsafe();
     for (const auto& arg : args) {
 #if BUILDFLAG(IS_WIN)
       GURL potential_protocol(base::AsStringPiece16(arg));
 #else
       GURL potential_protocol(arg);
 #endif  // BUILDFLAG(IS_WIN)
-      // protocol_url is checked for validity later with getting the provider
-      // and consulting the os_integration_manager. However because that process
-      // has a wait for "on_registry_ready()", `potential_protocol` checks for
-      // blink::IsValidCustomHandlerScheme() here to avoid loading the
-      // WebAppProvider with a false positive.
       if (potential_protocol.is_valid() &&
-          blink::IsValidCustomHandlerScheme(
-              potential_protocol.scheme(),
-              blink::ProtocolHandlerSecurityLevel::kStrict)) {
+          registrar.IsRegisteredLaunchProtocol(
+              app_id_, potential_protocol.GetScheme())) {
         protocol_url = std::move(potential_protocol);
         break;
       }
     }
+
     if (protocol_url.is_empty()) {
       return LaunchResult::kNotHandled;
     }
 
     // Check if the user has already disallowed this app to launch the protocol.
-    // This check takes priority over checking if the protocol is handled
-    // by the application.
-    WebAppProvider* const provider = WebAppProvider::GetForWebApps(profile_);
-    DCHECK(provider->on_registry_ready().is_signaled());
-    WebAppRegistrar& registrar = provider->registrar_unsafe();
-    if (registrar.IsDisallowedLaunchProtocol(app_id_, protocol_url.scheme())) {
+    if (registrar.IsDisallowedLaunchProtocol(app_id_,
+                                             protocol_url.GetScheme())) {
       // If disallowed, return `kHandled` to signal that the launch is spoken
       // for, but do not launch a browser or app window. `this` will be deleted.
       return LaunchResult::kHandled;
-    }
-
-    // Check if this app has registered as a handler for the protocol.
-    if (!registrar.IsRegisteredLaunchProtocol(app_id_, protocol_url.scheme())) {
-      return LaunchResult::kNotHandled;
     }
 
     protocol_url_ = protocol_url;
@@ -253,7 +236,7 @@ class StartupWebAppCreator
                        base::WrapRefCounted(this));
 
     // Check if we have permission to launch the app directly.
-    if (registrar.IsAllowedLaunchProtocol(app_id_, protocol_url_.scheme())) {
+    if (registrar.IsAllowedLaunchProtocol(app_id_, protocol_url_.GetScheme())) {
       std::move(launch_callback)
           .Run(/*allowed=*/true, /*remember_user_choice=*/false);
     } else {
@@ -323,7 +306,7 @@ class StartupWebAppCreator
                                               ? ApiApprovalState::kAllowed
                                               : ApiApprovalState::kDisallowed;
         provider_->scheduler().UpdateProtocolHandlerUserApproval(
-            app_id_, protocol_url_.scheme(), approval_state,
+            app_id_, protocol_url_.GetScheme(), approval_state,
             std::move(persist_callback));
       } else {
         DCHECK(!file_launch_infos_.empty());
@@ -335,7 +318,7 @@ class StartupWebAppCreator
     }
   }
 
-  void OnAppLaunched(base::WeakPtr<Browser> browser,
+  void OnAppLaunched(base::WeakPtr<BrowserWindowInterface> browser,
                      base::WeakPtr<content::WebContents> web_contents,
                      apps::LaunchContainer container) {
     // The finalization step should only occur for the first app launch.
@@ -405,7 +388,7 @@ bool MaybeHandleWebAppLaunch(const base::CommandLine& command_line,
 void FinalizeWebAppLaunch(std::optional<OpenMode> app_open_mode,
                           const base::CommandLine& command_line,
                           chrome::startup::IsFirstRun is_first_run,
-                          Browser* browser,
+                          BrowserWindowInterface* browser,
                           apps::LaunchContainer container) {
   if (!browser) {
     return;
@@ -415,17 +398,17 @@ void FinalizeWebAppLaunch(std::optional<OpenMode> app_open_mode,
 
   switch (container) {
     case apps::LaunchContainer::kLaunchContainerWindow:
-      DCHECK(browser->is_type_app());
+      DCHECK(browser->GetType() == BrowserWindowInterface::TYPE_APP);
       mode = app_open_mode.value_or(OpenMode::kInWindowOther);
       break;
     case apps::LaunchContainer::kLaunchContainerTab:
-      DCHECK(!browser->is_type_app());
+      DCHECK(browser->GetType() != BrowserWindowInterface::TYPE_APP);
       mode = OpenMode::kInTab;
       break;
     case apps::LaunchContainer::kLaunchContainerPanelDeprecated:
       NOTREACHED();
     case apps::LaunchContainer::kLaunchContainerNone:
-      DCHECK(!browser->is_type_app());
+      DCHECK(browser->GetType() != BrowserWindowInterface::TYPE_APP);
       break;
   }
 
@@ -433,9 +416,10 @@ void FinalizeWebAppLaunch(std::optional<OpenMode> app_open_mode,
   // OpenMode enum for the values of the buckets.
   base::UmaHistogramEnumeration("WebApp.OpenMode", mode);
 
-  AddInfoBarsIfNecessary(browser, browser->profile(), command_line,
-                         is_first_run,
-                         /*is_web_app=*/true);
+  AddInfoBarsIfNecessary(
+      browser, browser->GetProfile(), command_line, is_first_run,
+      /*is_web_app=*/true, HasPendingUncleanExit(browser->GetProfile()),
+      StartupBrowserCreator::WasRestarted());
 
   StartupBrowserCreatorImpl::MaybeToggleFullscreen(browser);
 }

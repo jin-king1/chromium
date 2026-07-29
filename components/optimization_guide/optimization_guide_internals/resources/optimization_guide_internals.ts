@@ -8,7 +8,7 @@ import {assert} from 'chrome://resources/js/assert.js';
 import {$, getRequiredElement} from 'chrome://resources/js/util.js';
 import type {Time} from 'chrome://resources/mojo/mojo/public/mojom/base/time.mojom-webui.js';
 
-import type {DownloadedModelInfo, LoggedClientIds} from './optimization_guide_internals.mojom-webui.js';
+import type {DownloadedModelInfo, LoggedClientIds, MqlsLog} from './optimization_guide_internals.mojom-webui.js';
 import {PageHandlerFactory} from './optimization_guide_internals.mojom-webui.js';
 import {OptimizationGuideInternalsBrowserProxy} from './optimization_guide_internals_browser_proxy.js';
 
@@ -220,7 +220,7 @@ function convertMojoTimeToJS(mojoTime: Time) {
   // conversion from microseconds to milliseconds.
   const windowsEpoch = Date.UTC(1601, 0, 1, 0, 0, 0, 0);
   const unixEpoch = Date.UTC(1970, 0, 1, 0, 0, 0, 0);
-  // |epochDeltaInMs| equals to base::Time::kTimeTToMicrosecondsOffset.
+  // |epochDeltaInMs| equals to base::Time::kMicrosecondsFromWindowsToUnixEpoch.
   const epochDeltaInMs = unixEpoch - windowsEpoch;
   const timeInMs = Number(mojoTime.internalValue) / 1000;
 
@@ -234,7 +234,7 @@ function convertMojoTimeToJS(mojoTime: Time) {
  * @param targetElement The element to which source link should be created.
  */
 function createChromiumSourceLink(
-    sourceFile: string, sourceLine: number, targetElement: Element) {
+    sourceFile: string, sourceLine: bigint, targetElement: Element) {
   // Valid source file starts with ../../
   if (!sourceFile.startsWith('../../')) {
     targetElement.textContent = `${sourceFile}(${sourceLine})`;
@@ -285,7 +285,7 @@ function getLogSource(logSource: number) {
     return 'NTP_MODULE';
   }
   if (logSource === 8) {
-    return 'BUILT_IN_AI';
+    return 'CONTEXTUAL_TASKS_CONTEXT';
   }
   return logSource.toString();
 }
@@ -362,6 +362,27 @@ async function onClientIDsPageOpen() {
   }
 }
 
+async function onMqlsLogsPageOpen() {
+  const mqlsLogsContainer =
+      getRequiredElement<HTMLTableElement>('mqls-logs-container');
+  try {
+    const response: {mqlsLogs: MqlsLog[]} =
+        await PageHandlerFactory.getRemote().requestMqlsLogs();
+    const mqlsLogs = response.mqlsLogs;
+    for (const {feature, proto, status} of mqlsLogs) {
+      const row = mqlsLogsContainer.insertRow();
+      const featureStr = feature;
+      const protoStr = proto;
+      const statusStr = status;
+      appendTD(row, featureStr, 'mqls-logs-feature');
+      appendTD(row, protoStr, 'mqls-logs-proto');
+      appendTD(row, statusStr, 'mqls-logs-status');
+    }
+  } catch (err) {
+    throw new Error(`Error resolving promise from requestMqlsLogs, ${err}`);
+  }
+}
+
 /**
  * Appends a new TD element to the specified |parent| element, and returns the
  * newly created element.
@@ -402,9 +423,11 @@ function initialize() {
   getRequiredElement('log-messages-dump')
       .addEventListener('click', onLogMessagesDump);
 
+  getRequiredElement('mqls-logs-refresh')
+      .addEventListener('click', onMqlsLogsPageOpen);
+
   getProxy().getCallbackRouter().onLogMessageAdded.addListener(
-      (eventTime: Time, logSource: number, sourceFile: string,
-       sourceLine: number, message: string) => {
+      (eventTime, logSource, sourceFile, sourceLine, message) => {
         const eventTimeStr = convertMojoTimeToJS(eventTime).toISOString();
         const logSourceStr = getLogSource(logSource);
         logMessages.push({
@@ -454,6 +477,8 @@ function initialize() {
       onModelsPageOpen();
     } else if (hash === 'client-ids') {
       onClientIDsPageOpen();
+    } else if (hash === 'mqls-logs') {
+      onMqlsLogsPageOpen();
     }
   };
 

@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "remoting/host/file_transfer/file_chooser.h"
 
 #include <windows.h>
@@ -15,9 +10,12 @@
 
 #include <cstdlib>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/path_service.h"
@@ -118,7 +116,7 @@ class FileChooserWindows : public FileChooser,
   void OnObjectSignaled(HANDLE object) override;
 
  private:
-  FileTransferResult<absl::monostate> LaunchChooserProcess();
+  FileTransferResult<std::monostate> LaunchChooserProcess();
 
   ResultCallback callback_;
   base::Process process_;
@@ -132,7 +130,7 @@ FileChooserWindows::FileChooserWindows(
     : callback_(std::move(callback)) {}
 
 void FileChooserWindows::Show() {
-  FileTransferResult<absl::monostate> result = LaunchChooserProcess();
+  FileTransferResult<std::monostate> result = LaunchChooserProcess();
 
   if (!result) {
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
@@ -173,9 +171,8 @@ void FileChooserWindows::OnObjectSignaled(HANDLE object) {
     return;
   }
 
-  mojo::Message serialized_message(
-      base::span<uint8_t>(response_bytes.begin(), bytes_read),
-      base::span<mojo::ScopedHandle>());
+  mojo::Message serialized_message(base::span(response_bytes).first(bytes_read),
+                                   base::span<mojo::ScopedHandle>());
 
   FileChooser::Result result;
   if (!mojom::FileChooserResult::DeserializeFromMessage(
@@ -189,7 +186,7 @@ void FileChooserWindows::OnObjectSignaled(HANDLE object) {
   std::move(callback_).Run(std::move(result));
 }
 
-FileTransferResult<absl::monostate> FileChooserWindows::LaunchChooserProcess() {
+FileTransferResult<std::monostate> FileChooserWindows::LaunchChooserProcess() {
   base::LaunchOptions launch_options;
 
   FileTransferResult<ScopedHandle> current_user =

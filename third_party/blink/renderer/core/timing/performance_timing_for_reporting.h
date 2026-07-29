@@ -5,6 +5,8 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_TIMING_PERFORMANCE_TIMING_FOR_REPORTING_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_TIMING_PERFORMANCE_TIMING_FOR_REPORTING_H_
 
+#include <array>
+
 #include "base/time/time.h"
 #include "third_party/blink/public/common/performance/largest_contentful_paint_type.h"
 #include "third_party/blink/public/web/web_performance_metrics_for_reporting.h"
@@ -24,7 +26,12 @@ class InteractiveDetector;
 class PaintTiming;
 struct LargestContentfulPaintDetails;
 
-// This class is only used for non-web-exposed reporting purposes (e.g. UKM).
+// This class serves as a bridge between blink and non-blink code for reading
+// performance data for non-web-exposed reporting purposes (e.g. UKM). This
+// class typically proxies reads to various parts of blink, e.g. getting data
+// from `PaintTiming` or `InteractiveDetector`, but some values are pushed and
+// cached here. See WebPerformanceMetricsForReporting for usage outside of
+// blink.
 class CORE_EXPORT PerformanceTimingForReporting final
     : public GarbageCollected<PerformanceTimingForReporting>,
       public ExecutionContextClient {
@@ -39,8 +46,7 @@ class CORE_EXPORT PerformanceTimingForReporting final
     std::optional<base::TimeDelta> first_input_delay;
   };
 
-  using BackForwardCacheRestoreTimings =
-      WTF::Vector<BackForwardCacheRestoreTiming>;
+  using BackForwardCacheRestoreTimings = Vector<BackForwardCacheRestoreTiming>;
 
   explicit PerformanceTimingForReporting(ExecutionContext*);
 
@@ -61,6 +67,9 @@ class CORE_EXPORT PerformanceTimingForReporting final
   // The time the first paint operation was performed.
   uint64_t FirstPaintForMetrics() const;
 
+  // The first paint as full-resolution monotonic time.
+  base::TimeTicks FirstPaintAsMonotonicTimeForMetrics() const;
+
   // The time the first paint operation for image was performed.
   uint64_t FirstImagePaint() const;
 
@@ -74,7 +83,7 @@ class CORE_EXPORT PerformanceTimingForReporting final
 
   // The time of the first 'contentful' paint. A contentful paint is a paint
   // that includes content of some kind (for example, text or image content).
-  uint64_t FirstContentfulPaintIgnoringSoftNavigations() const;
+  uint64_t FirstContentfulPaint() const;
 
   // The first 'contentful' paint as full-resolution monotonic time. Intended to
   // be used for correlation with other events internal to blink.
@@ -93,10 +102,14 @@ class CORE_EXPORT PerformanceTimingForReporting final
   uint64_t FirstMeaningfulPaintCandidate() const;
 
   LargestContentfulPaintDetailsForReporting
-  LargestContentfulPaintDetailsForMetrics() const;
-
-  LargestContentfulPaintDetailsForReporting
-  SoftNavigationLargestContentfulPaintDetailsForMetrics() const;
+  LargestContentfulPaintDetailsForMetrics() const {
+    return largest_contentful_paint_details_for_metrics_;
+  }
+  void SetLargestContentfulPaintDetailsForMetrics(
+      const LargestContentfulPaintDetails& details) {
+    largest_contentful_paint_details_for_metrics_ =
+        PopulateLargestContentfulPaintDetailsForReporting(details);
+  }
 
   // The time at which the frame is first eligible for painting due to not
   // being throttled. A zero value indicates throttling.
@@ -104,7 +117,10 @@ class CORE_EXPORT PerformanceTimingForReporting final
 
   // The time at which we are notified of the first input or scroll event which
   // causes the largest contentful paint algorithm to stop.
-  uint64_t FirstInputOrScrollNotifiedTimestamp() const;
+  uint64_t FirstInputOrScrollNotifiedTimestamp() const {
+    return first_input_or_scroll_notified_timestamp_;
+  }
+  void SetFirstInputOrScrollNotifiedTimestamp(base::TimeTicks);
 
   // The duration between the hardware timestamp and being queued on the main
   // thread for the first click, tap, key press, cancellable touchstart, or
@@ -168,27 +184,39 @@ class CORE_EXPORT PerformanceTimingForReporting final
   // The start time of the prerender activation navigation.
   std::optional<base::TimeDelta> PrerenderActivationStart() const;
 
+  base::TimeDelta SystemFallbackFontTime() const;
+  uint32_t SystemFallbackFontCount() const;
+  base::TimeDelta SystemFallbackFontInitialDuration() const;
+  uint32_t ShapeCacheHitCount() const;
+  uint32_t ShapeCacheMissCount() const;
+
+  std::vector<ScriptFontFallbackDetailsForReporting>
+  GetScriptFontFallbackDetails() const;
+
   void Trace(Visitor*) const override;
 
   uint64_t MonotonicTimeToIntegerMilliseconds(base::TimeTicks) const;
 
   std::unique_ptr<TracedValue> GetNavigationTracingData();
 
+  LargestContentfulPaintDetailsForReporting
+  PopulateLargestContentfulPaintDetailsForReporting(
+      const LargestContentfulPaintDetails& timing) const;
+
  private:
   const DocumentTiming* GetDocumentTiming() const;
   const DocumentParserTiming* GetDocumentParserTiming() const;
   const PaintTiming* GetPaintTiming() const;
-  PaintTimingDetector* GetPaintTimingDetector() const;
   DocumentLoader* GetDocumentLoader() const;
   DocumentLoadTiming* GetDocumentLoadTiming() const;
   InteractiveDetector* GetInteractiveDetector() const;
   std::optional<base::TimeDelta> MonotonicTimeToPseudoWallTime(
       const std::optional<base::TimeTicks>&) const;
-  LargestContentfulPaintDetailsForReporting
-  PopulateLargestContentfulPaintDetailsForReporting(
-      const LargestContentfulPaintDetails& timing) const;
 
   bool cross_origin_isolated_capability_;
+  LargestContentfulPaintDetailsForReporting
+      largest_contentful_paint_details_for_metrics_;
+  uint64_t first_input_or_scroll_notified_timestamp_ = 0;
 };
 
 }  // namespace blink

@@ -23,10 +23,12 @@ import {RouteObserverMixin} from '../common/route_observer_mixin.js';
 import type {PrefsState} from '../common/types.js';
 import {recordSettingChange} from '../metrics_recorder.js';
 import {Setting} from '../mojom-webui/setting.mojom-webui.js';
-import {type Route, routes} from '../router.js';
+import {routes} from '../router.js';
+import type {Route} from '../router.js';
 
 import type {NoteAppInfo} from './device_page_browser_proxy.js';
-import {type DevicePageBrowserProxy, DevicePageBrowserProxyImpl} from './device_page_browser_proxy.js';
+import {DevicePageBrowserProxyImpl} from './device_page_browser_proxy.js';
+import type {DevicePageBrowserProxy} from './device_page_browser_proxy.js';
 import {getTemplate} from './stylus.html.js';
 
 export interface SettingsStylusElement {
@@ -94,26 +96,22 @@ export class SettingsStylusElement extends SettingsStylusElementBase {
         type: Boolean,
         value: false,
       },
-
-      /**
-       * Used by DeepLinkingMixin to focus this page's deep links.
-       */
-      supportedSettingIds: {
-        type: Object,
-        value: () => new Set<Setting>([
-          Setting.kStylusToolsInShelf,
-          Setting.kStylusNoteTakingApp,
-        ]),
-      },
-
     };
   }
 
-  prefs: PrefsState;
-  private appChoices_: NoteAppInfo[];
+  declare prefs: PrefsState;
+
+  // DeepLinkingMixin override
+  override supportedSettingIds = new Set<Setting>([
+    Setting.kStylusToolsInShelf,
+    Setting.kStylusNoteTakingApp,
+  ]);
+
+  declare private appChoices_: NoteAppInfo[];
   private browserProxy_: DevicePageBrowserProxy;
-  private selectedApp_: NoteAppInfo|null;
-  private waitingForAndroid_: boolean;
+  declare private readonly hasInternalStylus_: boolean;
+  declare private selectedApp_: NoteAppInfo|null;
+  declare private waitingForAndroid_: boolean;
 
   constructor() {
     super();

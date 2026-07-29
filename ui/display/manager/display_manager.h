@@ -20,7 +20,6 @@
 #include "base/cancelable_callback.h"
 #include "base/check_op.h"
 #include "base/functional/callback.h"
-#include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
@@ -274,7 +273,7 @@ class DISPLAY_MANAGER_EXPORT DisplayManager
   // Called when display configuration has changed. The new display
   // configurations is passed as a vector of Display object, which contains each
   // display's new information.
-  void OnNativeDisplaysChanged(
+  bool OnNativeDisplaysChanged(
       const std::vector<ManagedDisplayInfo>& display_info_list);
 
   // Updates current displays using current |display_info_|.
@@ -289,11 +288,11 @@ class DISPLAY_MANAGER_EXPORT DisplayManager
   // This is called by ScreenAsh when the primary display is requested, but
   // there is no valid display. It provides a display that
   // - has a non-empty screen rect
-  // - has a valid gfx::BufferFormat
+  // - has a valid format
   // This exists to enable buggy observers assume that the primary display
-  // will always have non-zero size and a valid gfx::BufferFormat. The right
-  // solution to this problem is to fix those observers.
-  // https://crbug.com/866714, https://crbug.com/1057501
+  // will always have non-zero size and a valid format. The right solution to
+  // this problem is to fix those observers. https://crbug.com/866714,
+  // https://crbug.com/1057501
   static const Display& GetFakePrimaryDisplay();
 
   // Returns the logical number of displays. This returns 1 when displays are
@@ -314,12 +313,18 @@ class DISPLAY_MANAGER_EXPORT DisplayManager
   // Returns true if the display specified by |display_id| is currently
   // connected and active. (mirroring display isn't active, for example).
   bool IsActiveDisplayId(int64_t display_id) const;
+  // Returns true if the display specified by |display_id| is currently
+  // connected. Mirroring display is connected but not active.
+  bool IsConnectedDisplayId(int64_t display_id) const;
 
   // Returns the number of connected displays. For example, this returns 2 in
   // mirror mode with one external display.
   size_t num_connected_displays() const {
     return connected_display_id_list_.size();
   }
+
+  // Return the number of external displays that's currently connected.
+  size_t GetNumExternalDisplays() const;
 
   // Returns true if either software or hardware mirror mode is active.
   bool IsInMirrorMode() const;
@@ -423,10 +428,7 @@ class DISPLAY_MANAGER_EXPORT DisplayManager
   std::string GetDisplayNameForId(int64_t id) const;
 
   // Returns true if mirror mode should be set on for the specified displays.
-  // If |should_check_hardware_mirroring| is true, the state of
-  // IsInHardwareMirroringMode() will also be taken into account.
-  bool ShouldSetMirrorModeOn(const DisplayIdList& id_list,
-                             bool should_check_hardware_mirroring);
+  bool ShouldSetMirrorModeOn(const DisplayIdList& id_list);
 
   // Change the mirror mode. |mixed_params| will be ignored if mirror mode is
   // off or normal. When mirror mode is off, display mode will be set to default
@@ -477,6 +479,7 @@ class DISPLAY_MANAGER_EXPORT DisplayManager
 
   // Sets multi display mode.
   void SetMultiDisplayMode(MultiDisplayMode mode);
+  MultiDisplayMode multi_display_mode() const { return multi_display_mode_; }
 
   // Reconfigure display configuration using the same physical display.
   // TODO(oshima): Refactor and move this impl to |SetDefaultMultiDisplayMode|.
@@ -487,7 +490,7 @@ class DISPLAY_MANAGER_EXPORT DisplayManager
 
   // Creates mirror window asynchronously if the software mirror mode is
   // enabled.
-  void CreateMirrorWindowAsyncIfAny();
+  bool CreateMirrorWindowAsyncIfAny();
 
   // A unit test may change the internal display id (which never happens on a
   // real device). This will update the mode list for internal display for this
@@ -589,7 +592,7 @@ class DISPLAY_MANAGER_EXPORT DisplayManager
 
   // Updates the internal display data using `updated_display_info_list` and
   // notifies observers about the changes.
-  void UpdateDisplaysWith(
+  bool UpdateDisplaysWith(
       const std::vector<ManagedDisplayInfo>& updated_display_info_list);
 
   // Creates software mirroring display related information. The display used to
@@ -728,12 +731,6 @@ class DISPLAY_MANAGER_EXPORT DisplayManager
   // 2. when unified mode is enabled this is the set of physical displays.
   Displays software_mirroring_display_list_;
 
-  // There's no source and destination display in hardware mirroring, so we
-  // treat the first mirroring display as source and store its id in
-  // |mirroring_source_id_| and treat the rest of mirroring displays as
-  // destination and store their ids in this list.
-  DisplayIdList hardware_mirroring_display_id_list_;
-
   // Stores external displays that were in mirror mode before.
   // These are display ids without output index.
   std::set<int64_t> external_display_mirror_info_;
@@ -767,10 +764,20 @@ class DISPLAY_MANAGER_EXPORT DisplayManager
   // time.
   base::OnceClosure created_mirror_window_;
 
-  // TODO(oshima): Make this non reentrant.
-  base::ObserverList<DisplayObserver> display_observers_;
+  // TODO(crbug.com/484371187): Investigate if reentrancy can be removed.
+  base::ObserverList<
+      DisplayObserver,
+      /*check_empty=*/false,
+      /*reentrancy=*/
+      base::ObserverListReentrancyPolicy::kAllowReentrancyUntriaged>
+      display_observers_;
 
-  base::ObserverList<DisplayManagerObserver> manager_observers_;
+  // TODO(crbug.com/484371187): Investigate if this can be non reentrant.
+  base::ObserverList<
+      DisplayManagerObserver,
+      /*check_empty=*/false,
+      base::ObserverListReentrancyPolicy::kAllowReentrancyUntriaged>
+      manager_observers_;
 
   // Not empty if mixed mirror mode should be turned on (the specified source
   // display is mirrored to the specified destination displays). Empty if mixed

@@ -19,7 +19,6 @@ import org.chromium.chrome.browser.profiles.Profile;
 
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Optional;
 
 /**
  * Java equivalent of C++ survey::SurveyConfig. All member variable are kept package protected, as
@@ -59,12 +58,11 @@ public class SurveyConfig {
     /** Product Specific String Data fields which are sent with the survey response. */
     final String[] mPsdStringDataFields;
 
-    /**
-     * Optional parameter which overrides the default survey cooldown period, see {@link
-     * SurveyThrottler#MIN_DAYS_BETWEEN_ANY_PROMPT_DISPLAYED}. This value is set only if the survey
-     * feature launched for a specific list of users defined by some Google group.
-     */
-    final Optional<Integer> mCooldownPeriodOverride;
+    /** Requested browser type decides where the survey can be shown. */
+    final @RequestedBrowserType int mRequestedBrowserType;
+
+    /** Profile age requirement. */
+    final @ProfileAgeRequirement int mProfileAgeRequirement;
 
     /** Not generated from java. */
     @VisibleForTesting
@@ -75,14 +73,16 @@ public class SurveyConfig {
             boolean userPrompted,
             String[] psdBitDataFields,
             String[] psdStringDataFields,
-            Optional<Integer> cooldownPeriodOverride) {
+            @RequestedBrowserType int requestedBrowserType,
+            @ProfileAgeRequirement int profileAgeRequirement) {
         mTrigger = trigger;
         mTriggerId = triggerId;
         mProbability = probability;
         mUserPrompted = userPrompted;
         mPsdBitDataFields = psdBitDataFields;
         mPsdStringDataFields = psdStringDataFields;
-        mCooldownPeriodOverride = cooldownPeriodOverride;
+        mRequestedBrowserType = requestedBrowserType;
+        mProfileAgeRequirement = profileAgeRequirement;
     }
 
     /**
@@ -119,7 +119,7 @@ public class SurveyConfig {
     }
 
     /** Return the dump of input Survey config for debugging purposes. */
-    public static String toString(SurveyConfig config) {
+    public static String toString(@Nullable SurveyConfig config) {
         if (config == null) return "";
 
         StringBuilder sb = new StringBuilder();
@@ -130,7 +130,11 @@ public class SurveyConfig {
                 .append(" Probability=")
                 .append(config.mProbability)
                 .append(" UserPrompted=")
-                .append(config.mUserPrompted);
+                .append(config.mUserPrompted)
+                .append(" RequestedBrowserType=")
+                .append(config.mRequestedBrowserType)
+                .append(" ProfileAgeRequirement=")
+                .append(config.mProfileAgeRequirement);
 
         sb.append(" PsdBitFields=");
         for (String field : config.mPsdBitDataFields) {
@@ -170,7 +174,8 @@ public class SurveyConfig {
                     config.mUserPrompted,
                     config.mPsdBitDataFields,
                     config.mPsdStringDataFields,
-                    config.mCooldownPeriodOverride);
+                    config.mRequestedBrowserType,
+                    config.mProfileAgeRequirement);
         }
         return config;
     }
@@ -184,7 +189,8 @@ public class SurveyConfig {
             boolean userPrompted,
             String[] psdBitDataFields,
             String[] psdStringDataFields,
-            int cooldownPeriodOverride) {
+            @RequestedBrowserType int requestedBrowserType,
+            @ProfileAgeRequirement int profileAgeRequirement) {
         holder.mTriggers.put(
                 trigger,
                 new SurveyConfig(
@@ -194,9 +200,8 @@ public class SurveyConfig {
                         userPrompted,
                         psdBitDataFields,
                         psdStringDataFields,
-                        cooldownPeriodOverride == 0
-                                ? Optional.empty()
-                                : Optional.of(cooldownPeriodOverride)));
+                        requestedBrowserType,
+                        profileAgeRequirement));
     }
 
     /** Holder that stores all the active surveys for Android. */

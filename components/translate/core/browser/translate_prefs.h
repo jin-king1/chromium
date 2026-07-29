@@ -20,7 +20,6 @@
 #include "build/build_config.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
-#include "url/gurl.h"
 
 class PrefService;
 
@@ -34,13 +33,19 @@ class LanguagePrefs;
 
 namespace translate {
 
+// LINT.IfChange(DataRegion)
+// Enum representing the data region for translation.
+// Must match the integer values of prefs::kTranslateDataRegionSetting.
+enum class DataRegion {
+  kNoPreference = 0,
+  kUnitedStates = 1,
+  kEurope = 2,
+};
+// LINT.ThenChange(//components/translate/core/browser/translate_pref_names.h:DataRegion)
+
 // Enables or disables using the most recent target language as the default
 // target language option.
 BASE_DECLARE_FEATURE(kTranslateRecentTarget);
-
-// This allows the user to disable translate by using the
-// `--disable-features=Translate` command-line flag.
-BASE_DECLARE_FEATURE(kTranslate);
 
 // Whether to migrate the obsolete always-translate languages pref to the new
 // pref during object construction as a fix for crbug/1291356, which had
@@ -151,7 +156,7 @@ class TranslatePrefs {
   // preference names cannot be renamed since values are saved client side.
   // Map these to inclusive alternatives to reduce references to those names in
   // the rest of the code.
-  static std::string MapPreferenceName(const std::string& pref_name);
+  static std::string MapPreferenceName(std::string_view pref_name);
 
   // Returns true if the "offer translate" pref is enabled (i.e. allowing for
   // automatic Full Page Translate bubbles).
@@ -162,7 +167,7 @@ class TranslatePrefs {
 
   // Sets the country that the application is run in. Determined by the
   // VariationsService, can be left empty. Used by the TranslateRanker.
-  void SetCountry(const std::string& country);
+  void SetCountry(std::string_view country);
   std::string GetCountry() const;
 
   // Resets the blocked languages list, the never-translate site list, the
@@ -178,8 +183,8 @@ class TranslatePrefs {
   void BlockLanguage(std::string_view source_language);
   void UnblockLanguage(std::string_view source_language);
   // Returns the languages that should be blocked by default as a
-  // base::Value::List.
-  static base::Value::List GetDefaultBlockedLanguages();
+  // base::ListValue.
+  static base::ListValue GetDefaultBlockedLanguages();
   void ResetBlockedLanguagesToDefault();
   // Prevent empty blocked languages by resetting them to the default value.
   // (crbug.com/902354)
@@ -325,9 +330,10 @@ class TranslatePrefs {
   // Stores and retrieves the last-observed translate target language. Used to
   // determine which target language to offer in future. The translate target
   // is converted to a translate synonym before it is set.
-  void SetRecentTargetLanguage(const std::string& target_language);
+  void SetRecentTargetLanguage(std::string_view target_language);
   void ResetRecentTargetLanguage();
   std::string GetRecentTargetLanguage() const;
+  std::vector<std::string> GetRecentTargetLanguages() const;
 
   // Gets the value for the pref that represents how often the
   // force English in India feature made translate trigger on an

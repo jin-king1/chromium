@@ -64,12 +64,22 @@ extern __typeof (FcConfigSetRescanInterval) IA__FcConfigSetRescanInterval FC_ATT
 #define FcConfigSetRescanInterval IA__FcConfigSetRescanInterval
 extern __typeof (FcConfigGetFonts) IA__FcConfigGetFonts FC_ATTRIBUTE_VISIBILITY_HIDDEN;
 #define FcConfigGetFonts IA__FcConfigGetFonts
+extern __typeof (FcConfigAcceptFont) IA__FcConfigAcceptFont FC_ATTRIBUTE_VISIBILITY_HIDDEN;
+#define FcConfigAcceptFont IA__FcConfigAcceptFont
+extern __typeof (FcConfigAcceptFilter) IA__FcConfigAcceptFilter FC_ATTRIBUTE_VISIBILITY_HIDDEN;
+#define FcConfigAcceptFilter IA__FcConfigAcceptFilter
 extern __typeof (FcConfigAppFontAddFile) IA__FcConfigAppFontAddFile FC_ATTRIBUTE_VISIBILITY_HIDDEN;
 #define FcConfigAppFontAddFile IA__FcConfigAppFontAddFile
 extern __typeof (FcConfigAppFontAddDir) IA__FcConfigAppFontAddDir FC_ATTRIBUTE_VISIBILITY_HIDDEN;
 #define FcConfigAppFontAddDir IA__FcConfigAppFontAddDir
 extern __typeof (FcConfigAppFontClear) IA__FcConfigAppFontClear FC_ATTRIBUTE_VISIBILITY_HIDDEN;
 #define FcConfigAppFontClear IA__FcConfigAppFontClear
+extern __typeof (FcConfigPreferAppFont) IA__FcConfigPreferAppFont FC_ATTRIBUTE_VISIBILITY_HIDDEN;
+#define FcConfigPreferAppFont IA__FcConfigPreferAppFont
+extern __typeof (FcConfigSetWarningFlags) IA__FcConfigSetWarningFlags FC_ATTRIBUTE_VISIBILITY_HIDDEN;
+#define FcConfigSetWarningFlags IA__FcConfigSetWarningFlags
+extern __typeof (FcConfigGetWarningFlags) IA__FcConfigGetWarningFlags FC_ATTRIBUTE_VISIBILITY_HIDDEN;
+#define FcConfigGetWarningFlags IA__FcConfigGetWarningFlags
 extern __typeof (FcConfigSubstituteWithPat) IA__FcConfigSubstituteWithPat FC_ATTRIBUTE_VISIBILITY_HIDDEN;
 #define FcConfigSubstituteWithPat IA__FcConfigSubstituteWithPat
 extern __typeof (FcConfigSubstitute) IA__FcConfigSubstitute FC_ATTRIBUTE_VISIBILITY_HIDDEN;
@@ -78,6 +88,8 @@ extern __typeof (FcConfigGetSysRoot) IA__FcConfigGetSysRoot FC_ATTRIBUTE_VISIBIL
 #define FcConfigGetSysRoot IA__FcConfigGetSysRoot
 extern __typeof (FcConfigSetSysRoot) IA__FcConfigSetSysRoot FC_ATTRIBUTE_VISIBILITY_HIDDEN;
 #define FcConfigSetSysRoot IA__FcConfigSetSysRoot
+extern __typeof (FcConfigSetFontSetFilter) IA__FcConfigSetFontSetFilter FC_ATTRIBUTE_VISIBILITY_HIDDEN;
+#define FcConfigSetFontSetFilter IA__FcConfigSetFontSetFilter
 extern __typeof (FcConfigFileInfoIterInit) IA__FcConfigFileInfoIterInit FC_ATTRIBUTE_VISIBILITY_HIDDEN;
 #define FcConfigFileInfoIterInit IA__FcConfigFileInfoIterInit
 extern __typeof (FcConfigFileInfoIterNext) IA__FcConfigFileInfoIterNext FC_ATTRIBUTE_VISIBILITY_HIDDEN;
@@ -128,8 +140,12 @@ extern __typeof (FcPatternPrint) IA__FcPatternPrint FC_ATTRIBUTE_VISIBILITY_HIDD
 #define FcPatternPrint IA__FcPatternPrint
 extern __typeof (FcFontSetPrint) IA__FcFontSetPrint FC_ATTRIBUTE_VISIBILITY_HIDDEN;
 #define FcFontSetPrint IA__FcFontSetPrint
+extern __typeof (FcConfigGetDefaultLangs) IA__FcConfigGetDefaultLangs FC_ATTRIBUTE_VISIBILITY_HIDDEN;
+#define FcConfigGetDefaultLangs IA__FcConfigGetDefaultLangs
 extern __typeof (FcGetDefaultLangs) IA__FcGetDefaultLangs FC_ATTRIBUTE_VISIBILITY_HIDDEN;
 #define FcGetDefaultLangs IA__FcGetDefaultLangs
+extern __typeof (FcConfigSetDefaultSubstitute) IA__FcConfigSetDefaultSubstitute FC_ATTRIBUTE_VISIBILITY_HIDDEN;
+#define FcConfigSetDefaultSubstitute IA__FcConfigSetDefaultSubstitute
 extern __typeof (FcDefaultSubstitute) IA__FcDefaultSubstitute FC_ATTRIBUTE_VISIBILITY_HIDDEN;
 #define FcDefaultSubstitute IA__FcDefaultSubstitute
 extern __typeof (FcFileIsDir) IA__FcFileIsDir FC_ATTRIBUTE_VISIBILITY_HIDDEN;
@@ -150,10 +166,6 @@ extern __typeof (FcDirCacheLoadFile) IA__FcDirCacheLoadFile FC_ATTRIBUTE_VISIBIL
 #define FcDirCacheLoadFile IA__FcDirCacheLoadFile
 extern __typeof (FcDirCacheUnload) IA__FcDirCacheUnload FC_ATTRIBUTE_VISIBILITY_HIDDEN;
 #define FcDirCacheUnload IA__FcDirCacheUnload
-extern __typeof (FcFreeTypeQuery) IA__FcFreeTypeQuery FC_ATTRIBUTE_VISIBILITY_HIDDEN;
-#define FcFreeTypeQuery IA__FcFreeTypeQuery
-extern __typeof (FcFreeTypeQueryAll) IA__FcFreeTypeQueryAll FC_ATTRIBUTE_VISIBILITY_HIDDEN;
-#define FcFreeTypeQueryAll IA__FcFreeTypeQueryAll
 extern __typeof (FcFontSetCreate) IA__FcFontSetCreate FC_ATTRIBUTE_VISIBILITY_HIDDEN;
 #define FcFontSetCreate IA__FcFontSetCreate
 extern __typeof (FcFontSetDestroy) IA__FcFontSetDestroy FC_ATTRIBUTE_VISIBILITY_HIDDEN;
@@ -276,6 +288,8 @@ extern __typeof (FcNameGetConstantFor) IA__FcNameGetConstantFor FC_ATTRIBUTE_VIS
 #define FcNameGetConstantFor IA__FcNameGetConstantFor
 extern __typeof (FcNameConstant) IA__FcNameConstant FC_ATTRIBUTE_VISIBILITY_HIDDEN;
 #define FcNameConstant IA__FcNameConstant
+extern __typeof (FcNameGetConstantNameFrom) IA__FcNameGetConstantNameFrom FC_ATTRIBUTE_VISIBILITY_HIDDEN;
+#define FcNameGetConstantNameFrom IA__FcNameGetConstantNameFrom
 extern __typeof (FcNameParse) IA__FcNameParse FC_ATTRIBUTE_VISIBILITY_HIDDEN;
 #define FcNameParse IA__FcNameParse
 extern __typeof (FcNameUnparse) IA__FcNameUnparse FC_ATTRIBUTE_VISIBILITY_HIDDEN;
@@ -448,6 +462,8 @@ extern __typeof (FcConfigParseAndLoad) IA__FcConfigParseAndLoad FC_ATTRIBUTE_VIS
 #define FcConfigParseAndLoad IA__FcConfigParseAndLoad
 extern __typeof (FcConfigParseAndLoadFromMemory) IA__FcConfigParseAndLoadFromMemory FC_ATTRIBUTE_VISIBILITY_HIDDEN;
 #define FcConfigParseAndLoadFromMemory IA__FcConfigParseAndLoadFromMemory
+extern __typeof (FcConfigFileGenerate) IA__FcConfigFileGenerate FC_ATTRIBUTE_VISIBILITY_HIDDEN;
+#define FcConfigFileGenerate IA__FcConfigFileGenerate
 extern __typeof (FcConfigGetRescanInverval) IA__FcConfigGetRescanInverval FC_ATTRIBUTE_VISIBILITY_HIDDEN;
 #define FcConfigGetRescanInverval IA__FcConfigGetRescanInverval
 extern __typeof (FcConfigSetRescanInverval) IA__FcConfigSetRescanInverval FC_ATTRIBUTE_VISIBILITY_HIDDEN;

@@ -10,10 +10,13 @@
 #include <iterator>
 #include <optional>
 
+#include "ash/constants/ash_features.h"
 #include "ash/quick_pair/common/fast_pair/fast_pair_service_data_creator.h"
+#include "base/no_destructor.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/test/bind.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "chromeos/ash/services/quick_pair/public/cpp/decrypted_passkey.h"
 #include "chromeos/ash/services/quick_pair/public/cpp/decrypted_response.h"
@@ -32,9 +35,6 @@ constexpr int kAccountKeyFilterNoNotificationHeader = 0b01100010;
 constexpr int kSaltHeader = 0b00010001;
 constexpr int kSaltHeader2Bytes = 0b00100001;
 constexpr int kSaltHeader3Bytes = 0b00110001;
-const std::vector<uint8_t> kSaltBytes = {0x01};
-const std::vector<uint8_t> kLargeSaltBytes = {0xC7, 0xC8};
-const std::vector<uint8_t> kDeviceAddressBytes = {17, 18, 19, 20, 21, 22};
 constexpr int kBatteryHeader = 0b00110011;
 constexpr int kBatterHeaderNoNotification = 0b00110100;
 
@@ -46,13 +46,33 @@ const std::string kInvalidSalt = "C7C8C9";
 const std::string kBattery = "01048F";
 const std::string kDeviceAddress = "11:12:13:14:15:16";
 
-std::vector<uint8_t> aes_key_bytes = {0xA0, 0xBA, 0xF0, 0xBB, 0x95, 0x1F,
-                                      0xF7, 0xB6, 0xCF, 0x5E, 0x3F, 0x45,
-                                      0x61, 0xC3, 0x32, 0x1D};
+const std::vector<uint8_t>& GetSaltBytes() {
+  static const base::NoDestructor<std::vector<uint8_t>> bytes({0x01});
+  return *bytes;
+}
+
+const std::vector<uint8_t>& GetLargeSaltBytes() {
+  static const base::NoDestructor<std::vector<uint8_t>> bytes({0xC7, 0xC8});
+  return *bytes;
+}
+
+const std::vector<uint8_t>& GetDeviceAddressBytes() {
+  static const base::NoDestructor<std::vector<uint8_t>> bytes(
+      std::vector<uint8_t>{17, 18, 19, 20, 21, 22});
+  return *bytes;
+}
+
+const std::vector<uint8_t>& GetAesKeyBytes() {
+  static const base::NoDestructor<std::vector<uint8_t>> bytes(
+      std::vector<uint8_t>{0xA0, 0xBA, 0xF0, 0xBB, 0x95, 0x1F, 0xF7, 0xB6, 0xCF,
+                           0x5E, 0x3F, 0x45, 0x61, 0xC3, 0x32, 0x1D});
+  return *bytes;
+}
 
 std::vector<uint8_t> EncryptBytes(const std::vector<uint8_t>& bytes) {
   AES_KEY aes_key;
-  AES_set_encrypt_key(aes_key_bytes.data(), aes_key_bytes.size() * 8, &aes_key);
+  AES_set_encrypt_key(GetAesKeyBytes().data(), GetAesKeyBytes().size() * 8,
+                      &aes_key);
   uint8_t encrypted_bytes[16];
   AES_encrypt(bytes.data(), encrypted_bytes, &aes_key);
   return std::vector<uint8_t>(std::begin(encrypted_bytes),
@@ -78,6 +98,11 @@ class FastPairDataParserTest : public testing::Test {
 };
 
 TEST_F(FastPairDataParserTest, DecryptResponseUnsuccessfully) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      /*enabled_features=*/{},
+      /*disabled_features=*/{features::kFastPairKeyboards});
+
   std::vector<uint8_t> response_bytes = {/*message_type=*/0x02,
                                          /*address_bytes=*/0x02,
                                          0x03,
@@ -103,7 +128,7 @@ TEST_F(FastPairDataParserTest, DecryptResponseUnsuccessfully) {
         run_loop.Quit();
       });
 
-  data_parser_->ParseDecryptedResponse(aes_key_bytes, encrypted_bytes,
+  data_parser_->ParseDecryptedResponse(GetAesKeyBytes(), encrypted_bytes,
                                        std::move(callback));
   run_loop.Run();
 }
@@ -138,7 +163,61 @@ TEST_F(FastPairDataParserTest, DecryptResponseSuccessfully) {
         run_loop.Quit();
       });
 
-  data_parser_->ParseDecryptedResponse(aes_key_bytes, encrypted_bytes,
+  data_parser_->ParseDecryptedResponse(GetAesKeyBytes(), encrypted_bytes,
+                                       std::move(callback));
+  run_loop.Run();
+}
+
+TEST_F(FastPairDataParserTest, DecryptExtendedResponseSuccessfully) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      /*enabled_features=*/{features::kFastPairKeyboards},
+      /*disabled_features=*/{});
+
+  std::vector<uint8_t> response_bytes;
+
+  // Message type.
+  response_bytes.push_back(0x02);
+
+  // Flags.
+  uint8_t flags = 0x01;
+  response_bytes.push_back(flags);
+
+  // Num Addresses.
+  uint8_t num_addresses = 0x01;
+  response_bytes.push_back(num_addresses);
+
+  // Address bytes.
+  std::array<uint8_t, 6> address_bytes = {0x04, 0x05, 0x06, 0x07, 0x08, 0x09};
+  std::ranges::copy(address_bytes, std::back_inserter(response_bytes));
+
+  // Random salt
+  std::array<uint8_t, 7> salt = {0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x00};
+  std::array<uint8_t, 9> expected_salt;
+  expected_salt.fill(0);
+  std::copy(salt.begin(), salt.end(), expected_salt.begin());
+  std::ranges::copy(salt, std::back_inserter(response_bytes));
+
+  std::vector<uint8_t> encrypted_bytes = EncryptBytes(response_bytes);
+
+  base::RunLoop run_loop;
+  auto callback = base::BindLambdaForTesting(
+      [&run_loop, &flags, &num_addresses, &address_bytes,
+       &expected_salt](const std::optional<DecryptedResponse>& response) {
+        EXPECT_TRUE(response.has_value());
+        EXPECT_EQ(response->message_type,
+                  FastPairMessageType::kKeyBasedPairingExtendedResponse);
+        EXPECT_TRUE(response->flags.has_value());
+        EXPECT_EQ(response->flags.value(), flags);
+        EXPECT_TRUE(response->num_addresses.has_value());
+        EXPECT_EQ(response->num_addresses.value(), num_addresses);
+        EXPECT_EQ(response->address_bytes, address_bytes);
+        EXPECT_FALSE(response->secondary_address_bytes);
+        EXPECT_EQ(response->salt, expected_salt);
+        run_loop.Quit();
+      });
+
+  data_parser_->ParseDecryptedResponse(GetAesKeyBytes(), encrypted_bytes,
                                        std::move(callback));
   run_loop.Run();
 }
@@ -169,7 +248,7 @@ TEST_F(FastPairDataParserTest, DecryptPasskeyUnsuccessfully) {
         run_loop.Quit();
       });
 
-  data_parser_->ParseDecryptedPasskey(aes_key_bytes, encrypted_bytes,
+  data_parser_->ParseDecryptedPasskey(GetAesKeyBytes(), encrypted_bytes,
                                       std::move(callback));
   run_loop.Run();
 }
@@ -205,7 +284,7 @@ TEST_F(FastPairDataParserTest, DecryptSeekerPasskeySuccessfully) {
         run_loop.Quit();
       });
 
-  data_parser_->ParseDecryptedPasskey(aes_key_bytes, encrypted_bytes,
+  data_parser_->ParseDecryptedPasskey(GetAesKeyBytes(), encrypted_bytes,
                                       std::move(callback));
   run_loop.Run();
 }
@@ -241,7 +320,7 @@ TEST_F(FastPairDataParserTest, DecryptProviderPasskeySuccessfully) {
         run_loop.Quit();
       });
 
-  data_parser_->ParseDecryptedPasskey(aes_key_bytes, encrypted_bytes,
+  data_parser_->ParseDecryptedPasskey(GetAesKeyBytes(), encrypted_bytes,
                                       std::move(callback));
   run_loop.Run();
 }
@@ -299,7 +378,7 @@ TEST_F(FastPairDataParserTest,
         EXPECT_TRUE(advertisement.has_value());
         EXPECT_EQ(kAccountKeyFilter,
                   base::HexEncode(advertisement->account_key_filter));
-        EXPECT_EQ(kSaltBytes, advertisement->salt);
+        EXPECT_EQ(GetSaltBytes(), advertisement->salt);
         EXPECT_TRUE(advertisement->show_ui);
         EXPECT_FALSE(advertisement->battery_notification.has_value());
         run_loop.Quit();
@@ -330,7 +409,7 @@ TEST_F(FastPairDataParserTest,
         EXPECT_TRUE(advertisement.has_value());
         EXPECT_EQ(kAccountKeyFilter,
                   base::HexEncode(advertisement->account_key_filter));
-        EXPECT_EQ(kSaltBytes, advertisement->salt);
+        EXPECT_EQ(GetSaltBytes(), advertisement->salt);
         EXPECT_FALSE(advertisement->show_ui);
         EXPECT_FALSE(advertisement->battery_notification.has_value());
         run_loop.Quit();
@@ -427,7 +506,7 @@ TEST_F(FastPairDataParserTest, ParseNotDiscoverableAdvertisement_SaltTwoBytes) {
         EXPECT_TRUE(advertisement.has_value());
         EXPECT_EQ(kAccountKeyFilter,
                   base::HexEncode(advertisement->account_key_filter));
-        EXPECT_EQ(kLargeSaltBytes, advertisement->salt);
+        EXPECT_EQ(GetLargeSaltBytes(), advertisement->salt);
         run_loop.Quit();
       });
 
@@ -480,7 +559,7 @@ TEST_F(FastPairDataParserTest, ParseNotDiscoverableAdvertisement_Battery) {
         EXPECT_TRUE(advertisement.has_value());
         EXPECT_EQ(kAccountKeyFilter,
                   base::HexEncode(advertisement->account_key_filter));
-        EXPECT_EQ(kSaltBytes, advertisement->salt);
+        EXPECT_EQ(GetSaltBytes(), advertisement->salt);
         EXPECT_TRUE(advertisement->show_ui);
         EXPECT_TRUE(advertisement->battery_notification.has_value());
         EXPECT_TRUE(advertisement->battery_notification->show_ui);
@@ -521,7 +600,7 @@ TEST_F(FastPairDataParserTest, ParseNotDiscoverableAdvertisement_MissingSalt) {
         EXPECT_TRUE(advertisement.has_value());
         EXPECT_EQ(kAccountKeyFilter,
                   base::HexEncode(advertisement->account_key_filter));
-        EXPECT_EQ(kDeviceAddressBytes, advertisement->salt);
+        EXPECT_EQ(GetDeviceAddressBytes(), advertisement->salt);
         EXPECT_TRUE(advertisement->show_ui);
         EXPECT_TRUE(advertisement->battery_notification.has_value());
         EXPECT_TRUE(advertisement->battery_notification->show_ui);
@@ -565,7 +644,7 @@ TEST_F(FastPairDataParserTest, ParseNotDiscoverableAdvertisement_BatteryNoUi) {
         EXPECT_TRUE(advertisement.has_value());
         EXPECT_EQ(kAccountKeyFilter,
                   base::HexEncode(advertisement->account_key_filter));
-        EXPECT_EQ(kSaltBytes, advertisement->salt);
+        EXPECT_EQ(GetSaltBytes(), advertisement->salt);
         EXPECT_TRUE(advertisement->show_ui);
         EXPECT_TRUE(advertisement->battery_notification.has_value());
         EXPECT_FALSE(advertisement->battery_notification->show_ui);
@@ -598,7 +677,7 @@ TEST_F(FastPairDataParserTest, ParseMessageStreamMessage_EnableSilenceMode) {
   base::RunLoop run_loop;
   auto callback = base::BindLambdaForTesting(
       [&run_loop](std::vector<mojom::MessageStreamMessagePtr> messages) {
-        EXPECT_EQ(static_cast<int>(messages.size()), 1);
+        EXPECT_EQ(messages.size(), 1u);
         EXPECT_TRUE(messages[0]->is_enable_silence_mode());
         EXPECT_TRUE(messages[0]->get_enable_silence_mode());
         run_loop.Quit();
@@ -620,7 +699,7 @@ TEST_F(FastPairDataParserTest,
   base::RunLoop run_loop;
   auto callback = base::BindLambdaForTesting(
       [&run_loop](std::vector<mojom::MessageStreamMessagePtr> messages) {
-        EXPECT_EQ(static_cast<int>(messages.size()), 0);
+        EXPECT_EQ(messages.size(), 0u);
         run_loop.Quit();
       });
 
@@ -637,7 +716,7 @@ TEST_F(FastPairDataParserTest, ParseMessageStreamMessage_DisableSilenceMode) {
   base::RunLoop run_loop;
   auto callback = base::BindLambdaForTesting(
       [&run_loop](std::vector<mojom::MessageStreamMessagePtr> messages) {
-        EXPECT_EQ(static_cast<int>(messages.size()), 1);
+        EXPECT_EQ(messages.size(), 1u);
         EXPECT_TRUE(messages[0]->is_enable_silence_mode());
         EXPECT_FALSE(messages[0]->get_enable_silence_mode());
         run_loop.Quit();
@@ -657,7 +736,7 @@ TEST_F(FastPairDataParserTest,
   base::RunLoop run_loop;
   auto callback = base::BindLambdaForTesting(
       [&run_loop](std::vector<mojom::MessageStreamMessagePtr> messages) {
-        EXPECT_EQ(static_cast<int>(messages.size()), 0);
+        EXPECT_EQ(messages.size(), 0u);
         run_loop.Quit();
       });
 
@@ -675,7 +754,7 @@ TEST_F(FastPairDataParserTest,
   base::RunLoop run_loop;
   auto callback = base::BindLambdaForTesting(
       [&run_loop](std::vector<mojom::MessageStreamMessagePtr> messages) {
-        EXPECT_EQ(static_cast<int>(messages.size()), 1);
+        EXPECT_EQ(messages.size(), 1u);
         EXPECT_TRUE(messages[0]->is_companion_app_log_buffer_full());
         EXPECT_TRUE(messages[0]->get_companion_app_log_buffer_full());
         run_loop.Quit();
@@ -695,7 +774,7 @@ TEST_F(FastPairDataParserTest,
   base::RunLoop run_loop;
   auto callback = base::BindLambdaForTesting(
       [&run_loop](std::vector<mojom::MessageStreamMessagePtr> messages) {
-        EXPECT_EQ(static_cast<int>(messages.size()), 0);
+        EXPECT_EQ(messages.size(), 0u);
         run_loop.Quit();
       });
 
@@ -715,7 +794,7 @@ TEST_F(FastPairDataParserTest,
   base::RunLoop run_loop;
   auto callback = base::BindLambdaForTesting(
       [&run_loop](std::vector<mojom::MessageStreamMessagePtr> messages) {
-        EXPECT_EQ(static_cast<int>(messages.size()), 0);
+        EXPECT_EQ(messages.size(), 0u);
         run_loop.Quit();
       });
 
@@ -734,7 +813,7 @@ TEST_F(FastPairDataParserTest, ParseMessageStreamMessage_ModelId) {
   base::RunLoop run_loop;
   auto callback = base::BindLambdaForTesting(
       [&run_loop](std::vector<mojom::MessageStreamMessagePtr> messages) {
-        EXPECT_EQ(static_cast<int>(messages.size()), 1);
+        EXPECT_EQ(messages.size(), 1u);
         EXPECT_TRUE(messages[0]->is_model_id());
         EXPECT_EQ(messages[0]->get_model_id(), "AABBCC");
         run_loop.Quit();
@@ -756,7 +835,7 @@ TEST_F(FastPairDataParserTest, ParseMessageStreamMessage_BleAddress) {
   base::RunLoop run_loop;
   auto callback = base::BindLambdaForTesting(
       [&run_loop](std::vector<mojom::MessageStreamMessagePtr> messages) {
-        EXPECT_EQ(static_cast<int>(messages.size()), 1);
+        EXPECT_EQ(messages.size(), 1u);
         EXPECT_TRUE(messages[0]->is_ble_address_update());
         EXPECT_EQ(messages[0]->get_ble_address_update(), "AA:BB:CC:DD:EE:FF");
         run_loop.Quit();
@@ -779,7 +858,7 @@ TEST_F(FastPairDataParserTest,
   base::RunLoop run_loop;
   auto callback = base::BindLambdaForTesting(
       [&run_loop](std::vector<mojom::MessageStreamMessagePtr> messages) {
-        EXPECT_EQ(static_cast<int>(messages.size()), 0);
+        EXPECT_EQ(messages.size(), 0u);
         run_loop.Quit();
       });
 
@@ -798,7 +877,7 @@ TEST_F(FastPairDataParserTest, ParseMessageStreamMessage_BatteryNotification) {
   base::RunLoop run_loop;
   auto callback = base::BindLambdaForTesting(
       [&run_loop](std::vector<mojom::MessageStreamMessagePtr> messages) {
-        EXPECT_EQ(static_cast<int>(messages.size()), 1);
+        EXPECT_EQ(messages.size(), 1u);
         EXPECT_TRUE(messages[0]->is_battery_update());
         EXPECT_EQ(messages[0]->get_battery_update()->left_bud_info->percentage,
                   87);
@@ -823,7 +902,7 @@ TEST_F(FastPairDataParserTest, ParseMessageStreamMessage_RemainingBatteryTime) {
   base::RunLoop run_loop;
   auto callback = base::BindLambdaForTesting(
       [&run_loop](std::vector<mojom::MessageStreamMessagePtr> messages) {
-        EXPECT_EQ(static_cast<int>(messages.size()), 1);
+        EXPECT_EQ(messages.size(), 1u);
         EXPECT_TRUE(messages[0]->is_remaining_battery_time());
         EXPECT_EQ(messages[0]->get_remaining_battery_time(), 240);
         run_loop.Quit();
@@ -845,7 +924,7 @@ TEST_F(FastPairDataParserTest,
   base::RunLoop run_loop;
   auto callback = base::BindLambdaForTesting(
       [&run_loop](std::vector<mojom::MessageStreamMessagePtr> messages) {
-        EXPECT_EQ(static_cast<int>(messages.size()), 1);
+        EXPECT_EQ(messages.size(), 1u);
         EXPECT_TRUE(messages[0]->is_remaining_battery_time());
         EXPECT_EQ(messages[0]->get_remaining_battery_time(), 271);
         run_loop.Quit();
@@ -865,7 +944,7 @@ TEST_F(FastPairDataParserTest,
   base::RunLoop run_loop;
   auto callback = base::BindLambdaForTesting(
       [&run_loop](std::vector<mojom::MessageStreamMessagePtr> messages) {
-        EXPECT_EQ(static_cast<int>(messages.size()), 0);
+        EXPECT_EQ(messages.size(), 0u);
         run_loop.Quit();
       });
 
@@ -883,7 +962,7 @@ TEST_F(FastPairDataParserTest, ParseMessageStreamMessage_ModelIdInvalidLength) {
   base::RunLoop run_loop;
   auto callback = base::BindLambdaForTesting(
       [&run_loop](std::vector<mojom::MessageStreamMessagePtr> messages) {
-        EXPECT_EQ(static_cast<int>(messages.size()), 0);
+        EXPECT_EQ(messages.size(), 0u);
         run_loop.Quit();
       });
 
@@ -902,7 +981,7 @@ TEST_F(FastPairDataParserTest,
   base::RunLoop run_loop;
   auto callback = base::BindLambdaForTesting(
       [&run_loop](std::vector<mojom::MessageStreamMessagePtr> messages) {
-        EXPECT_EQ(static_cast<int>(messages.size()), 0);
+        EXPECT_EQ(messages.size(), 0u);
         run_loop.Quit();
       });
 
@@ -921,7 +1000,7 @@ TEST_F(FastPairDataParserTest,
   base::RunLoop run_loop;
   auto callback = base::BindLambdaForTesting(
       [&run_loop](std::vector<mojom::MessageStreamMessagePtr> messages) {
-        EXPECT_EQ(static_cast<int>(messages.size()), 0);
+        EXPECT_EQ(messages.size(), 0u);
         run_loop.Quit();
       });
 
@@ -940,7 +1019,7 @@ TEST_F(FastPairDataParserTest,
   base::RunLoop run_loop;
   auto callback = base::BindLambdaForTesting(
       [&run_loop](std::vector<mojom::MessageStreamMessagePtr> messages) {
-        EXPECT_EQ(static_cast<int>(messages.size()), 0);
+        EXPECT_EQ(messages.size(), 0u);
         run_loop.Quit();
       });
 
@@ -958,7 +1037,7 @@ TEST_F(FastPairDataParserTest,
   base::RunLoop run_loop;
   auto callback = base::BindLambdaForTesting(
       [&run_loop](std::vector<mojom::MessageStreamMessagePtr> messages) {
-        EXPECT_EQ(static_cast<int>(messages.size()), 0);
+        EXPECT_EQ(messages.size(), 0u);
         run_loop.Quit();
       });
 
@@ -976,7 +1055,7 @@ TEST_F(FastPairDataParserTest, ParseMessageStreamMessage_ActiveComponents) {
   base::RunLoop run_loop;
   auto callback = base::BindLambdaForTesting(
       [&run_loop](std::vector<mojom::MessageStreamMessagePtr> messages) {
-        EXPECT_EQ(static_cast<int>(messages.size()), 1);
+        EXPECT_EQ(messages.size(), 1u);
         EXPECT_TRUE(messages[0]->is_active_components_byte());
         EXPECT_EQ(messages[0]->get_active_components_byte(), 0x03);
         run_loop.Quit();
@@ -996,7 +1075,7 @@ TEST_F(FastPairDataParserTest, ParseMessageStreamMessage_AndroidPlatform) {
   base::RunLoop run_loop;
   auto callback = base::BindLambdaForTesting(
       [&run_loop](std::vector<mojom::MessageStreamMessagePtr> messages) {
-        EXPECT_EQ(static_cast<int>(messages.size()), 1);
+        EXPECT_EQ(messages.size(), 1u);
         EXPECT_TRUE(messages[0]->is_sdk_version());
         EXPECT_EQ(messages[0]->get_sdk_version(), 28);
         run_loop.Quit();
@@ -1016,7 +1095,7 @@ TEST_F(FastPairDataParserTest,
   base::RunLoop run_loop;
   auto callback = base::BindLambdaForTesting(
       [&run_loop](std::vector<mojom::MessageStreamMessagePtr> messages) {
-        EXPECT_EQ(static_cast<int>(messages.size()), 0);
+        EXPECT_EQ(messages.size(), 0u);
         run_loop.Quit();
       });
 
@@ -1035,7 +1114,7 @@ TEST_F(FastPairDataParserTest, ParseMessageStreamMessage_InvalidPlatform) {
   base::RunLoop run_loop;
   auto callback = base::BindLambdaForTesting(
       [&run_loop](std::vector<mojom::MessageStreamMessagePtr> messages) {
-        EXPECT_EQ(static_cast<int>(messages.size()), 0);
+        EXPECT_EQ(messages.size(), 0u);
         run_loop.Quit();
       });
 
@@ -1053,7 +1132,7 @@ TEST_F(FastPairDataParserTest, ParseMessageStreamMessage_RingDeviceNoTimeout) {
   base::RunLoop run_loop;
   auto callback = base::BindLambdaForTesting(
       [&run_loop](std::vector<mojom::MessageStreamMessagePtr> messages) {
-        EXPECT_EQ(static_cast<int>(messages.size()), 1);
+        EXPECT_EQ(messages.size(), 1u);
         EXPECT_TRUE(messages[0]->is_ring_device_event());
         EXPECT_EQ(messages[0]->get_ring_device_event()->ring_device_byte, 0x01);
         EXPECT_EQ(messages[0]->get_ring_device_event()->timeout_in_seconds, -1);
@@ -1074,7 +1153,7 @@ TEST_F(FastPairDataParserTest, ParseMessageStreamMessage_RingDeviceTimeout) {
   base::RunLoop run_loop;
   auto callback = base::BindLambdaForTesting(
       [&run_loop](std::vector<mojom::MessageStreamMessagePtr> messages) {
-        EXPECT_EQ(static_cast<int>(messages.size()), 1);
+        EXPECT_EQ(messages.size(), 1u);
         EXPECT_TRUE(messages[0]->is_ring_device_event());
         EXPECT_EQ(messages[0]->get_ring_device_event()->ring_device_byte, 0x01);
         EXPECT_EQ(messages[0]->get_ring_device_event()->timeout_in_seconds, 60);
@@ -1095,7 +1174,7 @@ TEST_F(FastPairDataParserTest, ParseMessageStreamMessage_RingInvalidLength) {
   base::RunLoop run_loop;
   auto callback = base::BindLambdaForTesting(
       [&run_loop](std::vector<mojom::MessageStreamMessagePtr> messages) {
-        EXPECT_EQ(static_cast<int>(messages.size()), 0);
+        EXPECT_EQ(messages.size(), 0u);
         run_loop.Quit();
       });
 
@@ -1114,7 +1193,7 @@ TEST_F(FastPairDataParserTest,
   base::RunLoop run_loop;
   auto callback = base::BindLambdaForTesting(
       [&run_loop](std::vector<mojom::MessageStreamMessagePtr> messages) {
-        EXPECT_EQ(static_cast<int>(messages.size()), 0);
+        EXPECT_EQ(messages.size(), 0u);
         run_loop.Quit();
       });
 
@@ -1132,7 +1211,7 @@ TEST_F(FastPairDataParserTest, ParseMessageStreamMessage_Ack) {
   base::RunLoop run_loop;
   auto callback = base::BindLambdaForTesting(
       [&run_loop](std::vector<mojom::MessageStreamMessagePtr> messages) {
-        EXPECT_EQ(static_cast<int>(messages.size()), 1);
+        EXPECT_EQ(messages.size(), 1u);
         EXPECT_TRUE(messages[0]->is_acknowledgement());
         EXPECT_EQ(messages[0]->get_acknowledgement()->action_message_code,
                   0x01);
@@ -1157,7 +1236,7 @@ TEST_F(FastPairDataParserTest, ParseMessageStreamMessage_Nak) {
   base::RunLoop run_loop;
   auto callback = base::BindLambdaForTesting(
       [&run_loop](std::vector<mojom::MessageStreamMessagePtr> messages) {
-        EXPECT_EQ(static_cast<int>(messages.size()), 1);
+        EXPECT_EQ(messages.size(), 1u);
         EXPECT_TRUE(messages[0]->is_acknowledgement());
         EXPECT_EQ(messages[0]->get_acknowledgement()->action_message_code,
                   0x01);
@@ -1183,7 +1262,7 @@ TEST_F(FastPairDataParserTest,
   base::RunLoop run_loop;
   auto callback = base::BindLambdaForTesting(
       [&run_loop](std::vector<mojom::MessageStreamMessagePtr> messages) {
-        EXPECT_EQ(static_cast<int>(messages.size()), 0);
+        EXPECT_EQ(messages.size(), 0u);
         run_loop.Quit();
       });
 
@@ -1203,7 +1282,7 @@ TEST_F(FastPairDataParserTest, ParseMessageStreamMessage_AckInvalidLength) {
   base::RunLoop run_loop;
   auto callback = base::BindLambdaForTesting(
       [&run_loop](std::vector<mojom::MessageStreamMessagePtr> messages) {
-        EXPECT_EQ(static_cast<int>(messages.size()), 0);
+        EXPECT_EQ(messages.size(), 0u);
         run_loop.Quit();
       });
 
@@ -1221,7 +1300,7 @@ TEST_F(FastPairDataParserTest, ParseMessageStreamMessage_NakInvalidLength) {
   base::RunLoop run_loop;
   auto callback = base::BindLambdaForTesting(
       [&run_loop](std::vector<mojom::MessageStreamMessagePtr> messages) {
-        EXPECT_EQ(static_cast<int>(messages.size()), 0);
+        EXPECT_EQ(messages.size(), 0u);
         run_loop.Quit();
       });
 
@@ -1234,7 +1313,7 @@ TEST_F(FastPairDataParserTest, ParseMessageStreamMessage_NotEnoughBytes) {
   base::RunLoop run_loop;
   auto callback = base::BindLambdaForTesting(
       [&run_loop](std::vector<mojom::MessageStreamMessagePtr> messages) {
-        EXPECT_EQ(static_cast<int>(messages.size()), 0);
+        EXPECT_EQ(messages.size(), 0u);
         run_loop.Quit();
       });
 
@@ -1260,7 +1339,7 @@ TEST_F(FastPairDataParserTest,
   base::RunLoop run_loop;
   auto callback = base::BindLambdaForTesting(
       [&run_loop](std::vector<mojom::MessageStreamMessagePtr> messages) {
-        EXPECT_EQ(static_cast<int>(messages.size()), 2);
+        EXPECT_EQ(messages.size(), 2u);
         EXPECT_TRUE(messages[0]->is_ring_device_event());
         EXPECT_EQ(messages[0]->get_ring_device_event()->ring_device_byte, 0x01);
         EXPECT_EQ(messages[0]->get_ring_device_event()->timeout_in_seconds, -1);
@@ -1291,7 +1370,7 @@ TEST_F(FastPairDataParserTest,
   base::RunLoop run_loop;
   auto callback = base::BindLambdaForTesting(
       [&run_loop](std::vector<mojom::MessageStreamMessagePtr> messages) {
-        EXPECT_EQ(static_cast<int>(messages.size()), 1);
+        EXPECT_EQ(messages.size(), 1u);
         EXPECT_TRUE(messages[0]->is_ring_device_event());
         EXPECT_EQ(messages[0]->get_ring_device_event()->ring_device_byte, 0x01);
         EXPECT_EQ(messages[0]->get_ring_device_event()->timeout_in_seconds, -1);
@@ -1319,7 +1398,7 @@ TEST_F(FastPairDataParserTest,
   base::RunLoop run_loop;
   auto callback = base::BindLambdaForTesting(
       [&run_loop](std::vector<mojom::MessageStreamMessagePtr> messages) {
-        EXPECT_EQ(static_cast<int>(messages.size()), 0);
+        EXPECT_EQ(messages.size(), 0u);
         run_loop.Quit();
       });
 
@@ -1347,7 +1426,7 @@ TEST_F(FastPairDataParserTest,
   base::RunLoop run_loop;
   auto callback = base::BindLambdaForTesting(
       [&run_loop](std::vector<mojom::MessageStreamMessagePtr> messages) {
-        EXPECT_EQ(static_cast<int>(messages.size()), 1);
+        EXPECT_EQ(messages.size(), 1u);
         EXPECT_TRUE(messages[0]->is_battery_update());
         EXPECT_EQ(87,
                   messages[0]->get_battery_update()->left_bud_info->percentage);
@@ -1381,7 +1460,7 @@ TEST_F(FastPairDataParserTest,
   base::RunLoop run_loop;
   auto callback = base::BindLambdaForTesting(
       [&run_loop](std::vector<mojom::MessageStreamMessagePtr> messages) {
-        EXPECT_EQ(static_cast<int>(messages.size()), 1);
+        EXPECT_EQ(messages.size(), 1u);
         EXPECT_TRUE(messages[0]->is_battery_update());
         EXPECT_EQ(87,
                   messages[0]->get_battery_update()->left_bud_info->percentage);

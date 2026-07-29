@@ -11,9 +11,12 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.util.Log;
 
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.webapk.lib.common.WebApkConstants;
 
 /** Contains methods for launching host browser. */
+@NullMarked
 public class HostBrowserLauncher {
     private static final String TAG = "cr_HostBrowserLauncher";
 
@@ -34,7 +37,7 @@ public class HostBrowserLauncher {
     public static void launchBrowserInWebApkModeIfSupported(
             Activity activity,
             HostBrowserLauncherParams params,
-            Bundle extraExtras,
+            @Nullable Bundle extraExtras,
             int flags,
             boolean expectResult) {
         ManageDataLauncherActivity.updateSiteSettingsShortcut(
@@ -75,7 +78,7 @@ public class HostBrowserLauncher {
         // Only pass on the start time if:
         // - The WebAPK is not already running.
         // - No user action was required between launching the webapk and chrome starting up.
-        //   See https://crbug.com/842023
+        //   See https://crbug.com/40575903
         if (!params.wasDialogShown() && params.getLaunchTimeMs() >= 0) {
             intent.putExtra(WebApkConstants.EXTRA_WEBAPK_LAUNCH_TIME, params.getLaunchTimeMs());
         }

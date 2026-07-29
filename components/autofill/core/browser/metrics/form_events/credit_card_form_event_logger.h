@@ -5,29 +5,38 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_METRICS_FORM_EVENTS_CREDIT_CARD_FORM_EVENT_LOGGER_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_METRICS_FORM_EVENTS_CREDIT_CARD_FORM_EVENT_LOGGER_H_
 
-#include <string>
+#include <stddef.h>
 
+#include <optional>
+#include <vector>
+
+#include "base/containers/flat_set.h"
+#include "base/containers/span.h"
 #include "base/memory/raw_ptr.h"
 #include "components/autofill/core/browser/autofill_field.h"
 #include "components/autofill/core/browser/autofill_trigger_source.h"
 #include "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
 #include "components/autofill/core/browser/form_structure.h"
+#include "components/autofill/core/browser/form_types.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
 #include "components/autofill/core/browser/metrics/autofill_metrics.h"
 #include "components/autofill/core/browser/metrics/form_events/form_event_logger_base.h"
 #include "components/autofill/core/browser/metrics/form_events/form_events.h"
 #include "components/autofill/core/browser/metrics/payments/card_metadata_metrics.h"
+#include "components/autofill/core/browser/payments/unmask_auth_flow_type.h"
+#include "components/autofill/core/browser/suggestions/payments/payments_suggestion_generator_util.h"
+#include "components/autofill/core/browser/suggestions/suggestion_util.h"
+#include "components/autofill/core/common/dense_set.h"
 #include "components/autofill/core/common/signatures.h"
+#include "components/autofill/core/common/unique_ids.h"
 
-namespace autofill {
-
-enum class UnmaskAuthFlowType;
-
-namespace autofill_metrics {
+namespace autofill::autofill_metrics {
 
 class CreditCardFormEventLogger : public FormEventLoggerBase {
  public:
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
   enum class UnmaskAuthFlowEvent {
     // Authentication prompt is shown.
     kPromptShown = 0,
@@ -50,22 +59,32 @@ class CreditCardFormEventLogger : public FormEventLoggerBase {
     local_record_type_count_ = local_record_type_count;
   }
 
+  // Called by BnplManager after its suggestion update barrier callback is
+  // triggered and a BNPL suggestion is shown.
+  virtual void OnBnplSuggestionShown();
+
   // Invoked when `suggestions` are successfully fetched.
-  // `with_offer` indicates whether an offer is attached to any of the
-  // suggestion in the list.
   // `with_cvc` indicates whether CVC is saved in any of the suggestion in
   // the list.
   // `with_card_info_retrieval_enrolled` indicates whether at least one of the
   // suggestions contains card info retrieval enrolled card.
+  // `with_pay_later_tab_suggestion` indicates that whether at least one of the
+  // suggestions is for the Pay Later tab.
+  // `with_externally_saved_card` indicates whether at least one of the
+  // suggestions was added through other Google services outside of Chrome.
+  // `with_never_used_card` indicates whether at least one of the suggestions
+  // contains a card that has not been used before.
   // `is_virtual_card_standalone_cvc_field` indicates whether the `suggestions`
   // are fetched for a virtual card standalone CVC field.
   // `metadata_logging_context` contains information about whether any card has
   // a non-empty product description or art image, and whether they are shown.
   void OnDidFetchSuggestion(
       const std::vector<Suggestion>& suggestions,
-      bool with_offer,
       bool with_cvc,
       bool with_card_info_retrieval_enrolled,
+      bool with_pay_later_tab_suggestion,
+      bool with_externally_saved_card,
+      bool with_never_used_card,
       bool is_virtual_card_standalone_cvc_field,
       CardMetadataLoggingContext metadata_logging_context);
 
@@ -75,7 +94,8 @@ class CreditCardFormEventLogger : public FormEventLoggerBase {
   void OnDidShowSuggestions(const FormStructure& form,
                             const AutofillField& field,
                             base::TimeTicks form_parsed_timestamp,
-                            bool off_the_record) override;
+                            bool off_the_record,
+                            base::span<const Suggestion> suggestions) override;
 
   void OnDidSelectCardSuggestion(
       const CreditCard& credit_card,
@@ -130,9 +150,41 @@ class CreditCardFormEventLogger : public FormEventLoggerBase {
     signin_state_for_metrics_ = state;
   }
 
+  // Logging when the user decided to use BNPL (for example, accepting a BNPL
+  // suggestion chip if present). `suggestions_shown` is used to log extra
+  // metadata around user decisions to use BNPL, for example the number of
+  // credit card suggestions shown when a user clicks the BNPL suggestion.
+  void OnUserDecisionToUseBnpl(base::span<const Suggestion> suggestions_shown);
+
+  // Logging when the user decided to switch from the Pay Later tab to the Pay
+  // Now tab.
+  void OnUserDecisionToUsePayNowTab();
+
+  // Called by BrowserAutofillManager after the Save and Fill suggestion is
+  // shown.
+  void OnSaveAndFillSuggestionShown();
+
+  // Called by AutofillExternalDelegate after the Save and Fill suggestion is
+  // accepted.
+  void OnDidAcceptSaveAndFillSuggestion();
+
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+  // Called by OmniboxAutofillDelegate after the Omnibox Autofill chip is shown.
+  void OnOmniboxAutofillChipShown();
+  // Called by OmniboxAutofillDelegate after the Omnibox Autofill chip is
+  // clicked.
+  void OnOmniboxAutofillChipClicked();
+  // Called by OmniboxAutofillDelegate after an Omnibox Autofill suggestion is
+  // accepted.
+  void OnOmniboxAutofillSuggestionAccepted();
+#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+
+  std::optional<CreditCard> GetFilledCreditCardForTesting();
+
+  CreditCardSuggestionSummary GetCreditCardSuggestionSummaryForTesting() const;
+
  protected:
   // FormEventLoggerBase pure-virtual overrides.
-  void RecordPollSuggestions() override;
   void RecordParseForm() override;
   void RecordShowSuggestions() override;
 
@@ -142,29 +194,28 @@ class CreditCardFormEventLogger : public FormEventLoggerBase {
   void LogUkmInteractedWithForm(FormSignature form_signature) override;
   void OnSuggestionsShownOnce(const FormStructure& form) override;
   void OnSuggestionsShownSubmittedOnce(const FormStructure& form) override;
-  void OnLog(const std::string& name,
-             FormEvent event,
-             const FormStructure& form) const override;
   bool HasLoggedDataToFillAvailable() const override;
   DenseSet<FormTypeNameForLogging> GetSupportedFormTypeNamesForLogging()
       const override;
   DenseSet<FormTypeNameForLogging> GetFormTypesForLogging(
-      const FormStructure& form) const override;
+      const FormStructure& form,
+      AutocompleteUnrecognizedBehavior ac_unrecognized_behavior) const override;
 
   // Bringing base class' Log function into scope to allow overloading.
   using FormEventLoggerBase::Log;
 
  private:
+  friend class CreditCardFormEventLoggerTestApi;
+
   FormEvent GetCardNumberStatusFormEvent(const CreditCard& credit_card);
   void RecordCardUnmaskFlowEvent(UnmaskAuthFlowType flow,
                                  UnmaskAuthFlowEvent event);
-  bool DoesCardHaveOffer(const CreditCard& credit_card);
   // Returns whether the shown suggestions included a virtual credit card.
   bool DoSuggestionsIncludeVirtualCard();
 
   size_t server_record_type_count_ = 0;
   size_t local_record_type_count_ = 0;
-  UnmaskAuthFlowType current_authentication_flow_;
+  UnmaskAuthFlowType current_authentication_flow_ = UnmaskAuthFlowType::kNone;
   bool has_logged_suggestion_with_metadata_shown_ = false;
   bool has_logged_suggestion_with_metadata_selected_ = false;
   bool has_logged_local_card_suggestion_selected_ = false;
@@ -195,8 +246,6 @@ class CreditCardFormEventLogger : public FormEventLoggerBase {
   // was a masked server card. False for all other card types.
   bool latest_filled_card_was_masked_server_card_ = false;
   std::vector<Suggestion> suggestions_;
-  bool has_eligible_offer_ = false;
-  bool card_selected_has_offer_ = false;
   // If true, the selected server card was filled and it had an equivalent local
   // version on file.
   bool server_card_with_local_duplicate_filled_ = false;
@@ -208,8 +257,69 @@ class CreditCardFormEventLogger : public FormEventLoggerBase {
   // If true, one of the cards in the suggestions fetched card info retrieval
   // enrolled.
   bool suggestion_contains_card_info_retrieval_enrolled_card_ = false;
+  // If true, one of the suggestions will be shown in the Pay Later tab.
+  bool suggestion_contains_pay_later_tab_entry_ = false;
+  // If true, the suggestions shown on BNPL eligible merchant is logged and
+  // should not be logged again.
+  bool has_logged_suggestions_shown_on_bnpl_eligible_merchant_ = false;
+  // If true, the BNPL suggestion being shown was already logged and should not
+  // be logged again.
+  bool has_logged_bnpl_suggestion_shown_ = false;
+  // If true, the metrics for users decided to use BNPL was already logged and
+  // should not be logged again.
+  bool has_logged_user_decision_to_use_bnpl_ = false;
+  // If true, the metrics for users switch from the Pay Later tab to the Pay
+  // Now tab was already logged and should not be logged again.
+  bool has_logged_user_decision_to_use_pay_now_tab_ = false;
+  // If true, the metrics for a form filled with a BNPL issuer VCN were already
+  // logged and should not log again.
+  bool has_logged_form_filled_with_bnpl_vcn_ = false;
+  // If true, the metrics for a form submitted with a BNPL issuer VCN were
+  // already logged and should not log again.
+  bool has_logged_form_submitted_with_bnpl_vcn_ = false;
+  // If true, the Save and Fill suggestion has already been logged as shown and
+  // should not be logged again.
+  bool has_logged_save_and_fill_suggestion_shown_ = false;
+  // If true, the Save and Fill suggestion has already been logged as accepted
+  // and should not be logged again.
+  bool has_logged_save_and_fill_suggestion_accepted_ = false;
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+  // If true, the Omnibox Autofill chip has already been logged as shown and
+  // should not be logged again.
+  bool has_logged_omnibox_autofill_chip_shown_ = false;
+  // If true, the Omnibox Autofill chip has already been logged as clicked and
+  // should not be logged again.
+  bool has_logged_omnibox_autofill_chip_clicked_ = false;
+  // If true, an Omnibox Autofill suggestion has already been logged as accepted
+  // and should not be logged again.
+  bool has_logged_omnibox_autofill_suggestion_accepted_ = false;
+  // If true, the metrics for a form filled from Omnibox Autofill were already
+  // logged and should not be logged again.
+  bool has_logged_form_filled_from_omnibox_autofill_ = false;
+#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+  // If true, one of the cards in the suggestions fetched is externally-saved.
+  bool suggestion_contains_externally_saved_card_ = false;
+  // If true, an externally-saved card suggestion shown is logged and should not
+  // be logged again.
+  bool has_logged_suggestion_for_externally_saved_card_shown_ = false;
+  // If true, an externally-saved card suggestion selected is logged and should
+  // not be logged again.
+  bool has_logged_suggestion_for_externally_saved_card_selected_ = false;
+  // If true, one of the cards in the suggestions fetched has never been used.
+  bool suggestion_contains_never_used_card_ = false;
+  // If true, a never used card suggestion shown is logged and should not be
+  // logged again.
+  bool has_logged_suggestion_for_never_used_card_shown_ = false;
+  // If true, a never used card suggestion selected is logged and should not be
+  // logged again.
+  bool has_logged_suggestion_for_never_used_card_selected_ = false;
 
   CardMetadataLoggingContext metadata_logging_context_;
+  // Captures the `metadata_logging_context_` at the time of form filling. Used
+  // when logging submission metrics since `metadata_logging_context_` could get
+  // overwritten anytime a new suggestion fetch is triggered, e.g. a user
+  // focuses a CVC field after autofilling a card with benefits.
+  CardMetadataLoggingContext metadata_logging_context_at_fill_;
 
   // Set when a list of suggestion is shown.
   base::TimeTicks suggestion_shown_timestamp_;
@@ -217,12 +327,15 @@ class CreditCardFormEventLogger : public FormEventLoggerBase {
   AutofillMetrics::PaymentsSigninState signin_state_for_metrics_ =
       AutofillMetrics::PaymentsSigninState::kUnknown;
 
+  AutofillTriggerSource trigger_source_ = AutofillTriggerSource::kNone;
+
   // Weak references.
   raw_ptr<PersonalDataManager> personal_data_manager_;
+
+  // Present only if a form was filled with a card.
+  std::optional<CreditCard> filled_credit_card_;
 };
 
-}  // namespace autofill_metrics
-
-}  // namespace autofill
+}  // namespace autofill::autofill_metrics
 
 #endif  // COMPONENTS_AUTOFILL_CORE_BROWSER_METRICS_FORM_EVENTS_CREDIT_CARD_FORM_EVENT_LOGGER_H_

@@ -175,14 +175,28 @@ SharingMessageBridgeImpl::GetAllDataForDebugging() {
 }
 
 std::string SharingMessageBridgeImpl::GetClientTag(
-    const syncer::EntityData& entity_data) {
+    const syncer::EntityData& entity_data) const {
   return GetStorageKey(entity_data);
 }
 
 std::string SharingMessageBridgeImpl::GetStorageKey(
-    const syncer::EntityData& entity_data) {
+    const syncer::EntityData& entity_data) const {
   DCHECK(entity_data.specifics.has_sharing_message());
   return entity_data.specifics.sharing_message().message_id();
+}
+
+sync_pb::EntitySpecifics
+SharingMessageBridgeImpl::TrimAllSupportedFieldsFromRemoteSpecifics(
+    const sync_pb::EntitySpecifics& entity_specifics) const {
+  // Clears all fields by default to avoid the memory and I/O overhead of an
+  // additional copy of the data.
+  return sync_pb::EntitySpecifics();
+}
+
+bool SharingMessageBridgeImpl::IsEntityDataValid(
+    const syncer::EntityData& entity_data) const {
+  // SHARING_MESSAGE is a commit only data type so this method is not called.
+  NOTREACHED();
 }
 
 void SharingMessageBridgeImpl::OnCommitAttemptErrors(

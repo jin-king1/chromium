@@ -9,13 +9,11 @@ import static androidx.browser.customtabs.CustomTabsIntent.EXTRA_ENABLE_EPHEMERA
 import android.content.Context;
 import android.content.Intent;
 
-import androidx.annotation.Nullable;
-
 import org.chromium.base.IntentUtils;
-import org.chromium.chrome.browser.IntentHandler;
-import org.chromium.chrome.browser.IntentHandler.IncognitoCctCallerId;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.browserservices.intents.CustomButtonParams;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.flags.CustomTabProfileType;
 
 import java.util.Collections;
 import java.util.List;
@@ -28,6 +26,7 @@ import java.util.List;
  * re-created when color scheme changes, which happens automatically since color scheme change leads
  * to activity re-creation.
  */
+@NullMarked
 public class EphemeralCustomTabIntentDataProvider extends CustomTabIntentDataProvider {
     /** Constructs an {@link EphemeralCustomTabIntentDataProvider}. */
     public EphemeralCustomTabIntentDataProvider(Intent intent, Context context, int colorScheme) {
@@ -51,16 +50,21 @@ public class EphemeralCustomTabIntentDataProvider extends CustomTabIntentDataPro
     }
 
     private static boolean isEphemeralTabRequested(Intent intent) {
-        if (!ChromeFeatureList.sCctEphemeralMode.isEnabled()) return false;
         return IntentUtils.safeGetBooleanExtra(intent, EXTRA_ENABLE_EPHEMERAL_BROWSING, false);
     }
 
-    public @IntentHandler.IncognitoCctCallerId int getFeatureIdForMetricsCollection() {
+    @Override
+    public @IncognitoCctCallerId int getFeatureIdForMetricsCollection() {
         return IncognitoCctCallerId.EPHEMERAL_TAB;
     }
 
     public static boolean isValidEphemeralTabIntent(Intent intent) {
         return isEphemeralTabRequested(intent);
+    }
+
+    @Override
+    public boolean isOptionalButtonSupported() {
+        return false;
     }
 
     @Override

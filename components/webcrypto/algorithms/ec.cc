@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "components/webcrypto/algorithms/ec.h"
 
 #include <stddef.h>
@@ -14,6 +9,7 @@
 #include <string_view>
 #include <utility>
 
+#include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "components/webcrypto/algorithms/asymmetric_key_util.h"
 #include "components/webcrypto/algorithms/util.h"
@@ -21,6 +17,7 @@
 #include "components/webcrypto/generate_key_result.h"
 #include "components/webcrypto/jwk.h"
 #include "components/webcrypto/status.h"
+#include "crypto/evp.h"
 #include "crypto/openssl_util.h"
 #include "third_party/blink/public/platform/web_crypto_algorithm_params.h"
 #include "third_party/blink/public/platform/web_crypto_key_algorithm.h"
@@ -198,9 +195,9 @@ int GetGroupDegreeInBytes(EC_KEY* ec) {
 }
 
 // Extracts the public key as affine coordinates (x,y).
-Status GetPublicKey(EC_KEY* ec,
-                    bssl::UniquePtr<BIGNUM>* x,
-                    bssl::UniquePtr<BIGNUM>* y) {
+Status GetEcPublicKeyAffineCoordinates(EC_KEY* ec,
+                                       bssl::UniquePtr<BIGNUM>* x,
+                                       bssl::UniquePtr<BIGNUM>* y) {
   const EC_GROUP* group = EC_KEY_get0_group(ec);
   const EC_POINT* point = EC_KEY_get0_public_key(ec);
 
@@ -305,6 +302,7 @@ Status EcAlgorithm::ImportKey(blink::WebCryptoKeyFormat format,
                               blink::WebCryptoKey* key) const {
   switch (format) {
     case blink::kWebCryptoKeyFormatRaw:
+    case blink::kWebCryptoKeyFormatRawPublic:
       return ImportKeyRaw(key_data, algorithm, extractable, usages, key);
     case blink::kWebCryptoKeyFormatPkcs8:
       return ImportKeyPkcs8(key_data, algorithm, extractable, usages, key);
@@ -322,6 +320,7 @@ Status EcAlgorithm::ExportKey(blink::WebCryptoKeyFormat format,
                               std::vector<uint8_t>* buffer) const {
   switch (format) {
     case blink::kWebCryptoKeyFormatRaw:
+    case blink::kWebCryptoKeyFormatRawPublic:
       return ExportKeyRaw(key, buffer);
     case blink::kWebCryptoKeyFormatPkcs8:
       return ExportKeyPkcs8(key, buffer);
@@ -332,6 +331,23 @@ Status EcAlgorithm::ExportKey(blink::WebCryptoKeyFormat format,
     default:
       return Status::ErrorUnsupportedExportKeyFormat();
   }
+}
+
+Status EcAlgorithm::GetPublicKey(const blink::WebCryptoKey& key,
+                                 blink::WebCryptoKeyUsageMask usages,
+                                 blink::WebCryptoKey* public_key) const {
+  Status status = CheckKeyCreationUsages(all_public_key_usages_, usages);
+  if (status.IsError()) {
+    return status;
+  }
+
+  bssl::UniquePtr<EVP_PKEY> pub_pkey(EVP_PKEY_copy_public(GetEVP_PKEY(key)));
+  if (!pub_pkey) {
+    return Status::OperationError();
+  }
+
+  return CreateWebCryptoPublicKey(std::move(pub_pkey), key.Algorithm(), true,
+                                  usages, public_key);
 }
 
 Status EcAlgorithm::ImportKeyRaw(base::span<const uint8_t> key_data,
@@ -574,7 +590,7 @@ Status EcAlgorithm::ExportKeyRaw(const blink::WebCryptoKey& key,
       !CBB_finish(cbb.get(), &raw, &raw_len)) {
     return Status::OperationError();
   }
-  buffer->assign(raw, raw + raw_len);
+  buffer->assign(raw, UNSAFE_TODO(raw + raw_len));
   OPENSSL_free(raw);
 
   return Status::Success();
@@ -584,14 +600,16 @@ Status EcAlgorithm::ExportKeyPkcs8(const blink::WebCryptoKey& key,
                                    std::vector<uint8_t>* buffer) const {
   if (key.GetType() != blink::kWebCryptoKeyTypePrivate)
     return Status::ErrorUnexpectedKeyType();
-  return ExportPKeyPkcs8(GetEVP_PKEY(key), buffer);
+  *buffer = crypto::evp::PrivateKeyToBytes(GetEVP_PKEY(key));
+  return Status::Success();
 }
 
 Status EcAlgorithm::ExportKeySpki(const blink::WebCryptoKey& key,
                                   std::vector<uint8_t>* buffer) const {
   if (key.GetType() != blink::kWebCryptoKeyTypePublic)
     return Status::ErrorUnexpectedKeyType();
-  return ExportPKeySpki(GetEVP_PKEY(key), buffer);
+  *buffer = crypto::evp::PublicKeyToBytes(GetEVP_PKEY(key));
+  return Status::Success();
 }
 
 // The format for JWK EC keys is given by:
@@ -622,7 +640,7 @@ Status EcAlgorithm::ExportKeyJwk(const blink::WebCryptoKey& key,
 
   bssl::UniquePtr<BIGNUM> x;
   bssl::UniquePtr<BIGNUM> y;
-  status = GetPublicKey(ec, &x, &y);
+  status = GetEcPublicKeyAffineCoordinates(ec, &x, &y);
   if (status.IsError())
     return status;
 
@@ -643,6 +661,14 @@ Status EcAlgorithm::ExportKeyJwk(const blink::WebCryptoKey& key,
 
   jwk.ToJson(buffer);
   return Status::Success();
+}
+
+bool EcAlgorithm::Supports(blink::WebCryptoOperation op,
+                           const blink::WebCryptoAlgorithm& algorithm,
+                           std::optional<unsigned int> length_bits) const {
+  // For all operations with parameters, only parameter to check is the
+  // namedCurve and that is checked at algorithm parse time.
+  return true;
 }
 
 // TODO(eroman): Defer import to the crypto thread. http://crbug.com/430763

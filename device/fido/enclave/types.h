@@ -13,8 +13,8 @@
 
 #include "base/component_export.h"
 #include "base/functional/callback.h"
-#include "crypto/sha2.h"
-#include "device/fido/fido_constants.h"
+#include "crypto/hash.h"
+#include "device/fido/public/fido_constants.h"
 #include "url/gurl.h"
 
 namespace sync_pb {
@@ -74,7 +74,7 @@ struct COMPONENT_EXPORT(DEVICE_FIDO) ClientSignature {
 };
 
 // Message format that can be signed by SignedCallback.
-using SignedMessage = std::array<uint8_t, 2 * crypto::kSHA256Length>;
+using SignedMessage = std::array<uint8_t, 2 * crypto::hash::kSha256Size>;
 
 // A SigningCallback is used to sign an encoded array of enclave requests.
 using SigningCallback = base::OnceCallback<void(
@@ -166,6 +166,9 @@ struct COMPONENT_EXPORT(DEVICE_FIDO) CredentialRequest {
   // bits is enclave-supplied.
   UserPresentAndVerifiedBits up_and_uv_bits =
       UserPresentAndVerifiedBits::kPresentOnly;
+  // The list of CMTG device keys fetched from Cryptauth. If this is null, then
+  // CMTG keys will not be requested.
+  std::optional<std::vector<std::vector<uint8_t>>> cmtg_device_keys;
 };
 
 }  // namespace device::enclave

@@ -11,7 +11,6 @@
 #include "components/media_device_salt/media_device_salt_service.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/media_device_id.h"
-#include "content/public/browser/resource_context.h"
 #include "extensions/browser/api/serial/serial_port_manager.h"
 #include "extensions/browser/api/webcam_private/ip_webcam.h"
 #include "extensions/browser/api/webcam_private/v4l2_webcam.h"
@@ -21,6 +20,7 @@
 #include "extensions/browser/process_manager_factory.h"
 #include "extensions/common/extension_id.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 #include "url/origin.h"
 
 namespace webcam_private = extensions::api::webcam_private;
@@ -252,7 +252,7 @@ WebcamResource* WebcamPrivateAPI::FindWebcamResource(
     const std::string& webcam_id) const {
   DCHECK(webcam_resource_manager_);
 
-  std::unordered_set<int>* connection_ids =
+  absl::flat_hash_set<int>* connection_ids =
       webcam_resource_manager_->GetResourceIds(extension_id);
   if (!connection_ids)
     return nullptr;
@@ -271,7 +271,7 @@ bool WebcamPrivateAPI::RemoveWebcamResource(const ExtensionId& extension_id,
                                             const std::string& webcam_id) {
   DCHECK(webcam_resource_manager_);
 
-  std::unordered_set<int>* connection_ids =
+  absl::flat_hash_set<int>* connection_ids =
       webcam_resource_manager_->GetResourceIds(extension_id);
   if (!connection_ids)
     return false;

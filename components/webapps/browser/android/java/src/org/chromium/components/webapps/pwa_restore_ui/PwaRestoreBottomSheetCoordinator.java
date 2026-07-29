@@ -33,26 +33,23 @@ public class PwaRestoreBottomSheetCoordinator {
             String[] appIds,
             String[] appNames,
             List<Bitmap> appIcons,
-            int[] lastUsedInDays,
             Activity activity,
             BottomSheetController bottomSheetController,
             int backArrowId) {
         mController = bottomSheetController;
 
-        ArrayList<PwaRestoreProperties.AppInfo> apps = new ArrayList();
+        ArrayList<PwaRestoreProperties.AppInfo> apps = new ArrayList<>();
 
         assert appIds.length == appNames.length;
-        assert appIds.length == lastUsedInDays.length;
         assert appIds.length == appIcons.size();
         for (int i = 0; i < appIds.length; i++) {
-            apps.add(
-                    new PwaRestoreProperties.AppInfo(
-                            appIds[i], appNames[i], appIcons.get(i), lastUsedInDays[i]));
+            apps.add(new PwaRestoreProperties.AppInfo(appIds[i], appNames[i], appIcons.get(i)));
         }
 
         mView = new PwaRestoreBottomSheetView(activity);
         mView.initialize(backArrowId);
-        mContent = new PwaRestoreBottomSheetContent(mView, this::onOsBackButtonClicked);
+        mContent =
+                new PwaRestoreBottomSheetContent(mView, this::onOsBackButtonClicked, this::destroy);
         mMediator =
                 new PwaRestoreBottomSheetMediator(
                         apps,
@@ -72,6 +69,10 @@ public class PwaRestoreBottomSheetCoordinator {
      */
     public boolean show() {
         return mController.requestShowContent(mContent, true);
+    }
+
+    public void destroy() {
+        mMediator.destroy();
     }
 
     private void hideBottomSheet() {

@@ -14,7 +14,6 @@
 #import "base/memory/weak_ptr.h"
 #import "components/gcm_driver/instance_id/instance_id.h"
 #import "components/sharing_message/sharing_device_registration.h"
-#import "components/sync/protocol/device_info_specifics.pb.h"
 #import "components/sync_device_info/device_info.h"
 
 class PrefService;
@@ -29,7 +28,6 @@ class SyncService;
 
 enum class SharingDeviceRegistrationResult;
 class SharingSyncPreference;
-class VapidKeyManager;
 
 // Responsible for registering and unregistering device with
 // SharingSyncPreference.
@@ -44,7 +42,6 @@ class IOSSharingDeviceRegistrationImpl : public SharingDeviceRegistration {
   IOSSharingDeviceRegistrationImpl(
       PrefService* pref_service,
       SharingSyncPreference* prefs,
-      VapidKeyManager* vapid_key_manager,
       instance_id::InstanceIDDriver* instance_id_driver,
       syncer::SyncService* sync_service);
 
@@ -58,24 +55,24 @@ class IOSSharingDeviceRegistrationImpl : public SharingDeviceRegistration {
   // SharingDeviceRegistration:
   void RegisterDevice(RegistrationCallback callback) override;
   void UnregisterDevice(RegistrationCallback callback) override;
-  bool IsClickToCallSupported() const override;
   bool IsSharedClipboardSupported() const override;
   bool IsSmsFetcherSupported() const override;
   bool IsRemoteCopySupported() const override;
   bool IsOptimizationGuidePushNotificationSupported() const override;
+  bool IsOneTimeTokenBackendNotificationSupported() const override;
+  bool IsGlicExperimentalTriggeringSupported() const override;
   void SetEnabledFeaturesForTesting(
-      std::set<sync_pb::SharingSpecificFields_EnabledFeatures> enabled_features)
-      override;
+      std::set<syncer::DeviceInfo::SharingFeature> enabled_features) override;
 
  private:
   FRIEND_TEST_ALL_PREFIXES(IOSSharingDeviceRegistrationImplTest,
                            RegisterDeviceTest_Success);
 
-  void RetrieveTargetInfo(const std::string& authorized_entity,
+  void RetrieveTargetInfo(const std::string& sender_id,
                           TargetInfoCallback callback);
 
   void OnFCMTokenReceived(TargetInfoCallback callback,
-                          const std::string& authorized_entity,
+                          const std::string& sender_id,
                           const std::string& fcm_token,
                           instance_id::InstanceID::Result result);
 
@@ -84,44 +81,25 @@ class IOSSharingDeviceRegistrationImpl : public SharingDeviceRegistration {
                                 std::string p256dh,
                                 std::string auth_secret);
 
-  void OnVapidTargetInfoRetrieved(
-      RegistrationCallback callback,
-      std::optional<std::string> authorized_entity,
-      SharingDeviceRegistrationResult result,
-      std::optional<syncer::DeviceInfo::SharingTargetInfo> vapid_target_info);
-
   void OnSharingTargetInfoRetrieved(
       RegistrationCallback callback,
-      std::optional<std::string> authorized_entity,
-      std::optional<syncer::DeviceInfo::SharingTargetInfo> vapid_target_info,
       SharingDeviceRegistrationResult result,
       std::optional<syncer::DeviceInfo::SharingTargetInfo> sharing_target_info);
 
-  void OnVapidFCMTokenDeleted(RegistrationCallback callback,
-                              SharingDeviceRegistrationResult result);
-
-  void DeleteFCMToken(const std::string& authorized_entity,
+  void DeleteFCMToken(const std::string& sender_id,
                       RegistrationCallback callback);
 
   void OnFCMTokenDeleted(RegistrationCallback callback,
                          instance_id::InstanceID::Result result);
 
-  // Returns the authorization entity for FCM registration.
-  std::optional<std::string> GetAuthorizationEntity() const;
-
   // Computes and returns a set of all enabled features on the device.
-  // `supports_vapid`: If set to true, then enabled features with VAPID suffix
-  // will be returned, meaning old clients can send VAPID message to this device
-  // for those features.
-  std::set<sync_pb::SharingSpecificFields_EnabledFeatures> GetEnabledFeatures(
-      bool supports_vapid) const;
+  std::set<syncer::DeviceInfo::SharingFeature> GetEnabledFeatures() const;
 
   raw_ptr<PrefService> pref_service_;
   raw_ptr<SharingSyncPreference> sharing_sync_preference_;
-  raw_ptr<VapidKeyManager> vapid_key_manager_;
   raw_ptr<instance_id::InstanceIDDriver> instance_id_driver_;
   raw_ptr<syncer::SyncService> sync_service_;
-  std::optional<std::set<sync_pb::SharingSpecificFields_EnabledFeatures>>
+  std::optional<std::set<syncer::DeviceInfo::SharingFeature>>
       enabled_features_testing_value_;
 
   base::WeakPtrFactory<IOSSharingDeviceRegistrationImpl> weak_ptr_factory_{

@@ -7,21 +7,23 @@
 #import "base/check.h"
 #import "base/check_op.h"
 #import "ios/chrome/browser/shared/ui/elements/top_aligned_image_view.h"
+#import "ios/chrome/browser/shared/ui/util/color_palette/tab_group_color_palette.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/grid_constants.h"
+#import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_groups/grid_empty_thumbnail_view.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
-#import "ios/chrome/common/ui/elements/gradient_view.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
+#import "ui/base/device_form_factor.h"
 
 namespace {
 
-const CGFloat kFaviconViewScaleFactor = 0.5;
+const CGFloat kFaviconViewWidth = 18;
 const NSInteger kTabGridButtonFontSize = 14;
-const CGFloat kBottomFaviconViewWidthAndHeightAnchor = 24;
-const CGFloat kBottomFaviconBottomTrailingOffset = 4;
 const CGFloat kBottomFaviconViewScaleFactor = 0.75;
+const CGFloat kFaviconViewWidthAndHeightAnchor = 24;
+const CGFloat kFaviconOffset = 8;
 const CGFloat kFaviconSpacing = 2.0;
-const CGFloat kTabViewCornerRadius = 12;
+const CGFloat kTabViewCornerRadius = 16;
 const CGFloat kFaviconCornerRadius = 8;
 
 }  // namespace
@@ -36,6 +38,9 @@ const CGFloat kFaviconCornerRadius = 8;
 
   // The view that holds the favicon image.
   UIImageView* _snapshotFaviconImageView;
+
+  // Empty thumbnail view when there is no snapshot.
+  GridEmptyThumbnailView* _emptyView;
 
   // The label to display the number of remaining tabs.
   UILabel* _bottomTrailingLabel;
@@ -59,14 +64,12 @@ const CGFloat kFaviconCornerRadius = 8;
     _snapshotView = [[TopAlignedImageView alloc] init];
     _snapshotView.translatesAutoresizingMaskIntoConstraints = NO;
 
-    GradientView* gradientView = [[GradientView alloc]
-        initWithTopColor:[[UIColor blackColor] colorWithAlphaComponent:0]
-             bottomColor:[[UIColor blackColor] colorWithAlphaComponent:0.14]];
-    gradientView.translatesAutoresizingMaskIntoConstraints = NO;
-    [_snapshotView addSubview:gradientView];
+    _emptyView = [[GridEmptyThumbnailView alloc]
+        initWithType:EmptyThumbnailTypeGroupCell];
+    _emptyView.translatesAutoresizingMaskIntoConstraints = NO;
+    [_snapshotView addSubview:_emptyView];
 
     _snapshotFaviconView = [[UIView alloc] init];
-    _snapshotFaviconView.backgroundColor = [UIColor whiteColor];
     _snapshotFaviconView.layer.cornerRadius = kFaviconCornerRadius;
     _snapshotFaviconView.layer.masksToBounds = YES;
     _snapshotFaviconView.translatesAutoresizingMaskIntoConstraints = NO;
@@ -119,18 +122,21 @@ const CGFloat kFaviconCornerRadius = 8;
     [self addSubview:bottomTrailingFaviconView];
 
     AddSameConstraints(self, _snapshotView);
-    AddSameConstraints(_snapshotView, gradientView);
+    AddSameConstraints(_snapshotView, _emptyView);
+
+    [NSLayoutConstraint activateConstraints:@[
+      [_snapshotFaviconView.topAnchor
+          constraintEqualToAnchor:_snapshotView.topAnchor
+                         constant:kFaviconOffset],
+      [_snapshotFaviconView.leadingAnchor
+          constraintEqualToAnchor:_snapshotView.leadingAnchor
+                         constant:kFaviconOffset]
+    ]];
     NSArray* constraints = @[
       [_snapshotFaviconView.widthAnchor
-          constraintEqualToConstant:kBottomFaviconViewWidthAndHeightAnchor],
+          constraintEqualToConstant:kFaviconViewWidthAndHeightAnchor],
       [_snapshotFaviconView.heightAnchor
-          constraintEqualToConstant:kBottomFaviconViewWidthAndHeightAnchor],
-      [_snapshotFaviconView.bottomAnchor
-          constraintEqualToAnchor:_snapshotView.bottomAnchor
-                         constant:-kBottomFaviconBottomTrailingOffset],
-      [_snapshotFaviconView.trailingAnchor
-          constraintEqualToAnchor:_snapshotView.trailingAnchor
-                         constant:-kBottomFaviconBottomTrailingOffset],
+          constraintEqualToAnchor:_snapshotFaviconView.widthAnchor],
 
       [_snapshotFaviconImageView.widthAnchor
           constraintEqualToAnchor:_snapshotFaviconView.widthAnchor
@@ -187,36 +193,49 @@ const CGFloat kFaviconCornerRadius = 8;
           constraintEqualToAnchor:topTrailingFaviconView.heightAnchor],
     ];
     [NSLayoutConstraint activateConstraints:constraints];
+    NSNotificationCenter* center = [NSNotificationCenter defaultCenter];
+    [center addObserver:self
+               selector:@selector(updateFaviconBackground)
+                   name:UIDeviceOrientationDidChangeNotification
+                 object:nil];
   }
 
   return self;
 }
 
+- (void)didMoveToWindow {
+  [self updateFaviconBackground];
+  [super didMoveToWindow];
+}
+
 - (void)configureWithSnapshot:(UIImage*)snapshot favicon:(UIImage*)favicon {
   [self hideAllAttributes];
   _snapshotView.image = snapshot;
+  _snapshotView.hidden = NO;
+  if (snapshot) {
+    _emptyView.hidden = YES;
+  }
+  [self updateFaviconBackground];
   if (favicon && !CGSizeEqualToSize(favicon.size, CGSizeZero)) {
     _snapshotFaviconImageView.image = favicon;
     _snapshotFaviconView.hidden = NO;
   }
-  _snapshotView.hidden = NO;
 }
 
-- (void)configureWithFavicons:(NSArray<UIImage*>*)favicons {
-  [self hideAllAttributes];
-  CHECK_LE([favicons count], [_viewList count]);
-
-  for (NSUInteger i = 0; i < [favicons count]; ++i) {
-    _viewList[i].hidden = NO;
-    _imageViewList[i].hidden = NO;
-    _imageViewList[i].image = favicons[i];
-  }
+- (void)configureWithFavicon:(UIImage*)favicon
+                faviconIndex:(NSInteger)faviconIndex {
+  _viewList[faviconIndex].hidden = NO;
+  _imageViewList[faviconIndex].hidden = NO;
+  _imageViewList[faviconIndex].image = favicon;
 }
 
-- (void)configureWithFavicons:(NSArray<UIImage*>*)favicons
-          remainingTabsNumber:(NSInteger)remainingTabsNumber {
-  [self configureWithFavicons:favicons];
-  _viewList[3].hidden = NO;
+- (void)configureWithFavicon:(UIImage*)favicon
+                faviconIndex:(NSInteger)faviconIndex
+         remainingTabsNumber:(NSInteger)remainingTabsNumber {
+  CHECK_LT(faviconIndex, 3)
+      << "The last favicon slot is reserved for the '+N' indicator.";
+  [self configureWithFavicon:favicon faviconIndex:faviconIndex];
+  _viewList.lastObject.hidden = NO;
   _bottomTrailingLabel.hidden = NO;
   _bottomTrailingLabel.attributedText = TextForTabGroupCount(
       static_cast<int>(remainingTabsNumber), kTabGridButtonFontSize);
@@ -225,6 +244,7 @@ const CGFloat kFaviconCornerRadius = 8;
 - (void)hideAllAttributes {
   _snapshotView.hidden = YES;
   _snapshotView.image = nil;
+  _emptyView.hidden = NO;
   _snapshotFaviconView.hidden = YES;
   _snapshotFaviconImageView.image = nil;
 
@@ -235,6 +255,23 @@ const CGFloat kFaviconCornerRadius = 8;
   _bottomTrailingLabel.hidden = YES;
   _bottomTrailingLabel.attributedText = nil;
   self.hidden = NO;
+}
+
+- (void)setLayoutType:(EmptyThumbnailLayoutType)layoutType {
+  _layoutType = layoutType;
+  _emptyView.layoutType = layoutType;
+}
+
+- (void)setTabGroupColorPalette:(TabGroupColorPalette*)tabGroupColorPalette {
+  _tabGroupColorPalette = tabGroupColorPalette;
+  for (UIView* view in _viewList) {
+    view.backgroundColor = _tabGroupColorPalette.snapshotBackgroundColor;
+  }
+  _emptyView.backgroundColor = _tabGroupColorPalette.snapshotBackgroundColor;
+  // This setting refreshes the bars' empty thumbnail if the color is
+  // different.
+  _emptyView.barColor = _tabGroupColorPalette.barColor;
+  [self updateFaviconBackground];
 }
 
 #pragma mark - Private
@@ -264,12 +301,21 @@ const CGFloat kFaviconCornerRadius = 8;
 
     [NSLayoutConstraint activateConstraints:@[
       [_imageViewList[i].widthAnchor
-          constraintEqualToAnchor:_viewList[i].widthAnchor
-                       multiplier:kFaviconViewScaleFactor],
+          constraintEqualToConstant:kFaviconViewWidth],
       [_imageViewList[i].heightAnchor
           constraintEqualToAnchor:_imageViewList[i].widthAnchor],
     ]];
   }
+}
+
+// Updates the favicon background based on whether the empty thumbnail is
+// showing.
+- (void)updateFaviconBackground {
+  if (!_emptyView.hidden) {
+    _snapshotFaviconView.backgroundColor = _tabGroupColorPalette.barColor;
+    return;
+  }
+  _snapshotFaviconView.backgroundColor = [UIColor whiteColor];
 }
 
 @end

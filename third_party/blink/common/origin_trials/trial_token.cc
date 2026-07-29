@@ -14,6 +14,7 @@
 #include "base/memory/ptr_util.h"
 #include "base/numerics/byte_conversions.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_view_util.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "third_party/blink/public/common/origin_trials/origin_trials.h"
@@ -192,8 +193,8 @@ std::unique_ptr<TrialToken> TrialToken::Parse(const std::string& token_payload,
     return nullptr;
   }
 
-  std::optional<base::Value::Dict> data =
-      base::JSONReader::ReadDict(token_payload);
+  std::optional<base::DictValue> data = base::JSONReader::ReadDict(
+      token_payload, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   if (!data) {
     return nullptr;
   }

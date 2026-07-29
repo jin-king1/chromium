@@ -14,6 +14,7 @@
 #include "base/containers/fixed_flat_set.h"
 #include "base/no_destructor.h"
 #include "base/notreached.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_tokenizer.h"
@@ -25,6 +26,7 @@
 #include "base/time/time_delta_from_string.h"
 #include "components/url_formatter/url_fixer.h"
 #include "third_party/skia/include/core/SkScalar.h"
+#include "ui/color/color_variant.h"
 #include "ui/gfx/color_utils.h"
 #include "ui/gfx/geometry/rect.h"
 
@@ -60,6 +62,11 @@ std::u16string TypeConverter<const char*>::ToString(const char* source_value) {
 std::u16string TypeConverter<std::string_view>::ToString(
     std::string_view source_value) {
   return base::UTF8ToUTF16(source_value);
+}
+
+std::u16string TypeConverter<std::u16string_view>::ToString(
+    std::u16string_view source_value) {
+  return std::u16string(source_value);
 }
 
 std::u16string TypeConverter<GURL>::ToString(const GURL& source_value) {
@@ -135,8 +142,13 @@ std::u16string TypeConverter<std::string>::ToString(
 }
 
 std::u16string TypeConverter<std::u16string>::ToString(
-    const std::u16string& source_value) {
-  return source_value;
+    std::u16string_view source_value) {
+  return std::u16string(source_value);
+}
+
+std::u16string TypeConverter<ui::ColorVariant>::ToString(
+    const ui::ColorVariant& source_value) {
+  return base::ASCIIToUTF16(source_value.ToString());
 }
 
 std::u16string TypeConverter<url::Component>::ToString(
@@ -240,8 +252,7 @@ std::optional<double> TypeConverter<double>::FromString(
 
 std::optional<GURL> ui::metadata::TypeConverter<GURL>::FromString(
     const std::u16string& source_value) {
-  const GURL url =
-      url_formatter::FixupURL(base::UTF16ToUTF8(source_value), std::string());
+  const GURL url = url_formatter::FixupURL(base::UTF16ToUTF8(source_value));
   return url.is_valid() ? std::make_optional(url) : std::nullopt;
 }
 
@@ -400,6 +411,11 @@ std::optional<gfx::SizeF> TypeConverter<gfx::SizeF>::FromString(
 std::optional<std::string> TypeConverter<std::string>::FromString(
     const std::u16string& source_value) {
   return base::UTF16ToUTF8(source_value);
+}
+
+std::optional<ui::ColorVariant> TypeConverter<ui::ColorVariant>::FromString(
+    const std::u16string& source_value) {
+  return std::nullopt;
 }
 
 std::optional<url::Component> TypeConverter<url::Component>::FromString(

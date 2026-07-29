@@ -4,23 +4,27 @@
 
 #include "chrome/browser/ui/android/tab_model/tab_model.h"
 
+#include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/notimplemented.h"
+#include "build/android_buildflags.h"
 #include "chrome/browser/android/tab_android.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/flags/android/chrome_feature_list.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sync/glue/synced_window_delegate_android.h"
 #include "chrome/browser/sync/session_sync_service_factory.h"
 #include "chrome/browser/sync/sessions/sync_sessions_web_contents_router.h"
 #include "chrome/browser/sync/sessions/sync_sessions_web_contents_router_factory.h"
+#include "chrome/browser/ui/android/tab_model/tab_model_list.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "components/omnibox/browser/location_bar_model_impl.h"
+#include "components/sessions/core/session_id.h"
 #include "components/sync_sessions/open_tabs_ui_delegate.h"
 #include "components/sync_sessions/session_sync_service.h"
+#include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 
 using chrome::android::ActivityType;
-
-// Keep this in sync with
-// chrome/android/java/src/org/chromium/chrome/browser/tabmodel/TabList.java
-static int INVALID_TAB_INDEX = -1;
 
 namespace {
 sync_sessions::OpenTabsUIDelegate* GetOpenTabsUIDelegate(Profile* profile) {
@@ -29,20 +33,31 @@ sync_sessions::OpenTabsUIDelegate* GetOpenTabsUIDelegate(Profile* profile) {
 
   return service->GetOpenTabsUIDelegate();
 }
+
 }  // namespace
 
-TabModel::TabModel(Profile* profile, ActivityType activity_type)
+TabModel::TabModel(Profile* profile,
+                   ActivityType activity_type,
+                   std::optional<chrome::android::CustomTabProfileType>
+                       custom_tab_profile_type,
+                   TabModelType tab_model_type)
     : profile_(profile),
       activity_type_(activity_type),
+      custom_tab_profile_type_(custom_tab_profile_type),
+      tab_model_type_(tab_model_type),
       live_tab_context_(new AndroidLiveTabContext(this)),
       synced_window_delegate_(new browser_sync::SyncedWindowDelegateAndroid(
           this,
           activity_type == ActivityType::kTabbed)),
-      session_id_(SessionID::NewUnique()) {}
+      session_id_(SessionID::InvalidValue()) {}
 
 TabModel::~TabModel() = default;
 
-Profile* TabModel::GetProfile() const {
+Profile* TabModel::GetProfile() {
+  return profile_;
+}
+
+const Profile* TabModel::GetProfile() const {
   return profile_;
 }
 
@@ -64,7 +79,7 @@ sessions::LiveTabContext* TabModel::GetLiveTabContext() const {
 
 content::WebContents* TabModel::GetActiveWebContents() const {
   int active_index = GetActiveIndex();
-  if (active_index == INVALID_TAB_INDEX) {
+  if (active_index == kInvalidIndex) {
     return nullptr;
   }
   return GetWebContentsAt(active_index);
@@ -126,4 +141,34 @@ void TabModel::RecordActualSyncedTabsHistogram() {
   int percent_synced = synced_tabs_count * 100 / eligible_tabs_count;
   base::UmaHistogramPercentage("Android.Sync.ActualSyncedTabCountPercentage",
                                percent_synced);
+}
+
+void TabModel::SetSessionId(SessionID session_id) {
+  session_id_ = session_id;
+}
+
+bool TabModel::IsEmptyRegularModelForEphemeralOrIncognitoCct() const {
+  return !IsOffTheRecord() && custom_tab_profile_type_.has_value() &&
+         (custom_tab_profile_type_.value() ==
+              chrome::android::CustomTabProfileType::kEphemeral ||
+          custom_tab_profile_type_.value() ==
+              chrome::android::CustomTabProfileType::kIncognito);
+}
+
+// static
+// From //chrome/browser/tab_list/tab_list_interface.h
+bool TabListInterface::CanEditTabList(Profile& profile) {
+  for (TabModel* model : TabModelList::models()) {
+    if (model->GetProfile() != &profile ||
+        model->GetTabModelType() != TabModel::TabModelType::kStandard ||
+        model->IsEmptyRegularModelForEphemeralOrIncognitoCct()) {
+      continue;
+    }
+
+    if (!model->IsThisTabListEditable()) {
+      return false;
+    }
+  }
+
+  return true;
 }

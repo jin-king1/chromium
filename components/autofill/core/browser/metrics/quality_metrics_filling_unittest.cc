@@ -7,6 +7,7 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "components/autofill/core/browser/autofill_field.h"
 #include "components/autofill/core/browser/field_types.h"
+#include "components/autofill/core/browser/form_parsing/determine_regex_types.h"
 #include "components/autofill/core/browser/test_utils/autofill_form_test_utils.h"
 #include "components/autofill/core/common/autofill_test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -21,7 +22,12 @@ std::unique_ptr<FormStructure> GetFormStructure(
     const test::FormDescription& form_description) {
   auto form_structure =
       std::make_unique<FormStructure>(test::GetFormData(form_description));
-  form_structure->DetermineHeuristicTypes(GeoIpCountryCode(""), nullptr);
+  const RegexPredictions regex_predictions = DetermineRegexTypes(
+      GeoIpCountryCode(""), LanguageCode(""), form_structure->ToFormData(),
+      nullptr, /*ignore_small_forms=*/true);
+  regex_predictions.ApplyTo(form_structure->fields());
+  form_structure->RationalizeAndAssignSections(GeoIpCountryCode(""),
+                                               LanguageCode(""), nullptr);
   return form_structure;
 }
 
@@ -36,12 +42,14 @@ class QualityMetricsFillingTest : public testing::Test {
 // fields because it's not possible to calculate a filling rate if the
 // denominator is 0.
 TEST_F(QualityMetricsFillingTest, AutomationRateNotEmittedForEmptyForm) {
-  test::FormDescription form_description = {
-      .fields = {{.role = NAME_FIRST},
-                 {.role = NAME_LAST},
-                 {.role = ADDRESS_HOME_LINE1}}};
+  std::unique_ptr<FormStructure> form_structure =
+      GetFormStructure({.fields = {{.role = NAME_FIRST},
+                                   {.role = NAME_LAST},
+                                   {.role = ADDRESS_HOME_LINE1}}});
 
-  LogFillingQualityMetrics(*GetFormStructure(form_description));
+  LogFillingQualityMetrics(
+      *form_structure,
+      AutocompleteUnrecognizedBehavior::kSuggestionsSuppressed);
 
   EXPECT_TRUE(histogram_tester_.GetAllSamples(kUmaAutomationRate).empty());
 }
@@ -49,12 +57,17 @@ TEST_F(QualityMetricsFillingTest, AutomationRateNotEmittedForEmptyForm) {
 // Tests that Autofill.AutomationRate.Address is reported as 0 if all
 // input was generated via manual typing.
 TEST_F(QualityMetricsFillingTest, AutomationRate0EmittedForManuallyFilledForm) {
-  test::FormDescription form_description = {
-      .fields = {{.role = NAME_FIRST, .value = u"Jane"},
-                 {.role = NAME_LAST, .value = u"Doe"},
-                 {.role = ADDRESS_HOME_LINE1}}};
+  std::unique_ptr<FormStructure> form_structure =
+      GetFormStructure({.fields = {{.role = NAME_FIRST},
+                                   {.role = NAME_LAST},
+                                   {.role = ADDRESS_HOME_LINE1}}});
 
-  LogFillingQualityMetrics(*GetFormStructure(form_description));
+  form_structure->fields()[0]->set_value(u"Jane");
+  form_structure->fields()[1]->set_value(u"Doe");
+
+  LogFillingQualityMetrics(
+      *form_structure,
+      AutocompleteUnrecognizedBehavior::kSuggestionsSuppressed);
 
   histogram_tester_.ExpectUniqueSample(kUmaAutomationRate, 0, 1);
 }
@@ -62,18 +75,22 @@ TEST_F(QualityMetricsFillingTest, AutomationRate0EmittedForManuallyFilledForm) {
 // Tests that Autofill.AutomationRate.Address is reported as 100% if all
 // input was generated via autofilling typing.
 TEST_F(QualityMetricsFillingTest, AutomationRate100EmittedForAutofilledForm) {
-  test::FormDescription form_description = {
-      .fields = {{.role = NAME_FIRST,
-                  .heuristic_type = NAME_FIRST,
-                  .value = u"Jane",
-                  .is_autofilled = true},
-                 {.role = NAME_LAST,
-                  .heuristic_type = NAME_LAST,
-                  .value = u"Doe",
-                  .is_autofilled = true},
-                 {.role = ADDRESS_HOME_LINE1}}};
+  std::unique_ptr<FormStructure> form_structure = GetFormStructure(
+      {.fields = {{.role = NAME_FIRST, .heuristic_type = NAME_FIRST},
+                  {
+                      .role = NAME_LAST,
+                      .heuristic_type = NAME_LAST,
+                  },
+                  {.role = ADDRESS_HOME_LINE1}}});
 
-  LogFillingQualityMetrics(*GetFormStructure(form_description));
+  form_structure->fields()[0]->set_value(u"Jane");
+  form_structure->fields()[1]->set_value(u"Doe");
+  form_structure->fields()[0]->AddFieldModifier(FieldModifier::kAutofill);
+  form_structure->fields()[1]->AddFieldModifier(FieldModifier::kAutofill);
+
+  LogFillingQualityMetrics(
+      *form_structure,
+      AutocompleteUnrecognizedBehavior::kSuggestionsSuppressed);
 
   histogram_tester_.ExpectUniqueSample(kUmaAutomationRate, 100, 1);
 }
@@ -82,15 +99,18 @@ TEST_F(QualityMetricsFillingTest, AutomationRate100EmittedForAutofilledForm) {
 // 4 out of 7 submitted characters are are autofilled.
 TEST_F(QualityMetricsFillingTest,
        AutomationRateEmittedWithCorrectCalculationForPartiallyAutofilledForm) {
-  test::FormDescription form_description = {
-      .fields = {{.role = NAME_FIRST,
-                  .heuristic_type = NAME_FIRST,
-                  .value = u"Jane",
-                  .is_autofilled = true},
-                 {.role = NAME_LAST, .value = u"Doe"},
-                 {.role = ADDRESS_HOME_LINE1}}};
+  std::unique_ptr<FormStructure> form_structure = GetFormStructure(
+      {.fields = {{.role = NAME_FIRST, .heuristic_type = NAME_FIRST},
+                  {.role = NAME_LAST},
+                  {.role = ADDRESS_HOME_LINE1}}});
 
-  LogFillingQualityMetrics(*GetFormStructure(form_description));
+  form_structure->fields()[0]->set_value(u"Jane");
+  form_structure->fields()[1]->set_value(u"Doe");
+  form_structure->fields()[0]->AddFieldModifier(FieldModifier::kAutofill);
+
+  LogFillingQualityMetrics(
+      *form_structure,
+      AutocompleteUnrecognizedBehavior::kSuggestionsSuppressed);
 
   histogram_tester_.ExpectUniqueSample(kUmaAutomationRate, 57, 1);
 }
@@ -99,20 +119,21 @@ TEST_F(QualityMetricsFillingTest,
 // Autofill.AutomationRate.Address. This is to prevent outliers in
 // metrics where a user types a long essay in a single field.
 TEST_F(QualityMetricsFillingTest, AutomationRateEmittedIgnoringLongValues) {
-  test::FormDescription form_description = {
-      .fields = {
-          {.role = NAME_FIRST,
-           .heuristic_type = NAME_FIRST,
-           .value = u"Jane",
-           .is_autofilled = true},
-          {.role = NAME_LAST,
-           .heuristic_type = NAME_LAST,
-           .value = u"Very very very very very very very very very very very "
-                    u"very very very very very very very very very very very "
-                    u"very very very very very very very long text"},
-          {.role = ADDRESS_HOME_LINE1}}};
+  std::unique_ptr<FormStructure> form_structure = GetFormStructure(
+      {.fields = {{.role = NAME_FIRST, .heuristic_type = NAME_FIRST},
+                  {.role = NAME_LAST, .heuristic_type = NAME_LAST},
+                  {.role = ADDRESS_HOME_LINE1}}});
 
-  LogFillingQualityMetrics(*GetFormStructure(form_description));
+  form_structure->fields()[0]->set_value(u"Jane");
+  form_structure->fields()[1]->set_value(
+      u"Very very very very very very very very very very very "
+      u"very very very very very very very very very very very "
+      u"very very very very very very very long text");
+  form_structure->fields()[0]->AddFieldModifier(FieldModifier::kAutofill);
+
+  LogFillingQualityMetrics(
+      *form_structure,
+      AutocompleteUnrecognizedBehavior::kSuggestionsSuppressed);
 
   histogram_tester_.ExpectUniqueSample(kUmaAutomationRate, 100, 1);
 }
@@ -122,15 +143,17 @@ TEST_F(QualityMetricsFillingTest, AutomationRateEmittedIgnoringLongValues) {
 // Autofill.AutomationRate.Address.
 TEST_F(QualityMetricsFillingTest,
        AutomationRateEmittedIgnoringUnchangedPreFilledValues) {
-  test::FormDescription form_description = {
-      .fields = {{.role = NAME_FIRST, .value = u"Jane"},
-                 {.role = NAME_LAST, .value = u"Doe", .is_autofilled = true},
-                 {.role = ADDRESS_HOME_LINE1}}};
   std::unique_ptr<FormStructure> form_structure =
-      GetFormStructure(form_description);
-  ASSERT_EQ(form_structure->fields().size(), form_description.fields.size());
-  form_structure->field(0)->set_initial_value_changed(false);
-  LogFillingQualityMetrics(*form_structure);
+      GetFormStructure({.fields = {{.role = NAME_FIRST, .value = u"Jane"},
+                                   {.role = NAME_LAST, .value = u"Fonda"},
+                                   {.role = ADDRESS_HOME_LINE1}}});
+
+  form_structure->fields()[1]->set_value(u"Doe");
+  form_structure->fields()[1]->AddFieldModifier(FieldModifier::kAutofill);
+
+  LogFillingQualityMetrics(
+      *form_structure,
+      AutocompleteUnrecognizedBehavior::kSuggestionsSuppressed);
 
   histogram_tester_.ExpectUniqueSample(kUmaAutomationRate, 100, 1);
 }
@@ -142,7 +165,9 @@ TEST_F(QualityMetricsFillingTest, DataUtilizationNotEmittedForUnknownType) {
       GetFormStructure({.fields = {{}}});
   form_structure->field(0)->set_possible_types({UNKNOWN_TYPE});
 
-  LogFillingQualityMetrics(*form_structure);
+  LogFillingQualityMetrics(
+      *form_structure,
+      AutocompleteUnrecognizedBehavior::kSuggestionsSuppressed);
 
   // Autofill.DataUtilization.AllFieldTypes.Aggregate is always recorded if any
   // data utilization metric is recorded so it suffices to check that it's not
@@ -160,7 +185,9 @@ TEST_F(QualityMetricsFillingTest, DataUtilizationNotEmittedForEmptyType) {
       GetFormStructure({.fields = {{}}});
   form_structure->field(0)->set_possible_types({EMPTY_TYPE});
 
-  LogFillingQualityMetrics(*form_structure);
+  LogFillingQualityMetrics(
+      *form_structure,
+      AutocompleteUnrecognizedBehavior::kSuggestionsSuppressed);
 
   // Autofill.DataUtilization.AllFieldTypes.Aggregate is always recorded if any
   // data utilization metric is recorded so it suffices to check that it's not
@@ -176,11 +203,12 @@ TEST_F(QualityMetricsFillingTest, DataUtilizationNotEmittedForEmptyType) {
 TEST_F(QualityMetricsFillingTest,
        DataUtilizationNotEmittedForUnchangedPreFilledFields) {
   std::unique_ptr<FormStructure> form_structure =
-      GetFormStructure({.fields = {{}}});
+      GetFormStructure({.fields = {{.value = u"initial value"}}});
   form_structure->field(0)->set_possible_types({NAME_FIRST});
-  form_structure->field(0)->set_initial_value_changed(false);
 
-  LogFillingQualityMetrics(*form_structure);
+  LogFillingQualityMetrics(
+      *form_structure,
+      AutocompleteUnrecognizedBehavior::kSuggestionsSuppressed);
 
   // Autofill.DataUtilization.AllFieldTypes.Aggregate is always recorded if any
   // data utilization metric is recorded so it suffices to check that it's not
@@ -197,11 +225,14 @@ TEST_F(QualityMetricsFillingTest,
 TEST_F(QualityMetricsFillingTest,
        DataUtilizationEmittedWithVariantsGarbageAndNoPrediction) {
   std::unique_ptr<FormStructure> form_structure =
-      GetFormStructure({.fields = {{.autocomplete_attribute = "garbage"}}});
+      GetFormStructure({.fields = {{.value = u"initial value",
+                                    .autocomplete_attribute = "garbage"}}});
   form_structure->field(0)->set_possible_types({NAME_FIRST});
-  form_structure->field(0)->set_initial_value_changed(true);
+  form_structure->field(0)->set_value(u"later value");
 
-  LogFillingQualityMetrics(*form_structure);
+  LogFillingQualityMetrics(
+      *form_structure,
+      AutocompleteUnrecognizedBehavior::kSuggestionsSuppressed);
 
   histogram_tester_.ExpectUniqueSample(
       "Autofill.DataUtilization.AllFieldTypes.Aggregate",
@@ -264,11 +295,14 @@ TEST_F(QualityMetricsFillingTest,
 TEST_F(QualityMetricsFillingTest,
        DataUtilizationEmittedWithVariantsAutocompleteOffAndNoPrediction) {
   std::unique_ptr<FormStructure> form_structure =
-      GetFormStructure({.fields = {{.autocomplete_attribute = "off"}}});
+      GetFormStructure({.fields = {{.value = u"initial value",
+                                    .autocomplete_attribute = "off"}}});
   form_structure->field(0)->set_possible_types({NAME_FIRST});
-  form_structure->field(0)->set_initial_value_changed(true);
+  form_structure->field(0)->set_value(u"later value");
 
-  LogFillingQualityMetrics(*form_structure);
+  LogFillingQualityMetrics(
+      *form_structure,
+      AutocompleteUnrecognizedBehavior::kSuggestionsSuppressed);
 
   histogram_tester_.ExpectUniqueSample(
       "Autofill.DataUtilization.NoPrediction.ByPossibleType",
@@ -288,12 +322,17 @@ TEST_F(QualityMetricsFillingTest,
 TEST_F(QualityMetricsFillingTest,
        DataUtilizationEmittedWithVariantHasPrediction) {
   std::unique_ptr<FormStructure> form_structure =
-      GetFormStructure({.fields = {{.is_autofilled = true}}});
+      GetFormStructure({.fields = {{}}});
+
+  form_structure->field(0)->set_value(u"Foo");
+  form_structure->field(0)->AddFieldModifier(FieldModifier::kAutofill);
   form_structure->field(0)->set_possible_types({NAME_FIRST});
   form_structure->field(0)->SetTypeTo(AutofillType(NAME_FIRST),
                                       AutofillPredictionSource::kHeuristics);
 
-  LogFillingQualityMetrics(*form_structure);
+  LogFillingQualityMetrics(
+      *form_structure,
+      AutocompleteUnrecognizedBehavior::kSuggestionsSuppressed);
 
   histogram_tester_.ExpectUniqueSample(
       "Autofill.DataUtilization.AllFieldTypes.Aggregate",
@@ -353,9 +392,12 @@ TEST_F(QualityMetricsFillingTest,
        DataUtilizationEmittedForAllFieldTypesVariantOnlyWhenTypeIsNumeric) {
   std::unique_ptr<FormStructure> form_structure =
       GetFormStructure({.fields = {{}}});
+  form_structure->field(0)->set_value(u"05");
   form_structure->field(0)->set_possible_types({CREDIT_CARD_EXP_MONTH});
 
-  LogFillingQualityMetrics(*form_structure);
+  LogFillingQualityMetrics(
+      *form_structure,
+      AutocompleteUnrecognizedBehavior::kSuggestionsSuppressed);
 
   histogram_tester_.ExpectUniqueSample(
       "Autofill.DataUtilization.AllFieldTypes.Aggregate",
@@ -420,11 +462,14 @@ TEST_F(QualityMetricsFillingTest,
        DataUtilizationEmittedWithVariantGarbageHadPrediction) {
   std::unique_ptr<FormStructure> form_structure =
       GetFormStructure({.fields = {{.autocomplete_attribute = "garbage"}}});
+  form_structure->field(0)->set_value(u"Jane");
   form_structure->field(0)->set_possible_types({NAME_FIRST});
   form_structure->field(0)->SetTypeTo(AutofillType(NAME_FIRST),
                                       AutofillPredictionSource::kHeuristics);
 
-  LogFillingQualityMetrics(*form_structure);
+  LogFillingQualityMetrics(
+      *form_structure,
+      AutocompleteUnrecognizedBehavior::kSuggestionsSuppressed);
 
   histogram_tester_.ExpectUniqueSample(
       "Autofill.DataUtilization.AllFieldTypes.Aggregate",

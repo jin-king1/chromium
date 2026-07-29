@@ -20,6 +20,8 @@
 #include "third_party/blink/renderer/core/svg/svg_fe_diffuse_lighting_element.h"
 
 #include "third_party/blink/renderer/core/css/properties/longhands.h"
+#include "third_party/blink/renderer/core/dom/document.h"
+#include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
 #include "third_party/blink/renderer/core/svg/graphics/filters/svg_filter_builder.h"
 #include "third_party/blink/renderer/core/svg/svg_animated_number.h"
@@ -30,6 +32,7 @@
 #include "third_party/blink/renderer/platform/graphics/filters/filter.h"
 #include "third_party/blink/renderer/platform/graphics/filters/light_source.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 
 namespace blink {
 
@@ -124,6 +127,7 @@ void SVGFEDiffuseLightingElement::LightElementAttributeChanged(
 FilterEffect* SVGFEDiffuseLightingElement::Build(
     SVGFilterBuilder* filter_builder,
     Filter* filter) {
+  UseCounter::Count(GetDocument(), WebFeature::kSVGFEDiffuseLightingElement);
   FilterEffect* input1 = filter_builder->GetEffectById(
       AtomicString(in1_->CurrentValue()->Value()));
   DCHECK(input1);
@@ -151,7 +155,7 @@ bool SVGFEDiffuseLightingElement::TaintsOrigin() const {
   // TaintsOrigin() is only called after a successful call to Build()
   // (see above), so we should have a ComputedStyle here.
   DCHECK(style);
-  return style->LightingColor().IsCurrentColor();
+  return style->LightingColor().DependsOnCurrentColor();
 }
 
 SVGAnimatedPropertyBase* SVGFEDiffuseLightingElement::PropertyFromAttribute(

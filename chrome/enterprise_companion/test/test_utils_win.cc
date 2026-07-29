@@ -12,14 +12,16 @@
 #include <string>
 
 #include "base/files/file_path.h"
-#include "base/files/file_util.h"
 #include "base/logging.h"
 #include "base/no_destructor.h"
 #include "base/path_service.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/version.h"
 #include "base/win/registry.h"
 #include "base/win/windows_types.h"
+#include "build/branding_buildflags.h"
+#include "build/build_config.h"
 #include "chrome/enterprise_companion/enterprise_companion_branding.h"
 #include "chrome/enterprise_companion/enterprise_companion_version.h"
 #include "chrome/enterprise_companion/installer.h"
@@ -33,14 +35,14 @@ namespace enterprise_companion {
 
 namespace {
 
-constexpr char kTestExe[] = "enterprise_companion_test.exe";
+constexpr wchar_t kTestExe[] = L"enterprise_companion_test.exe";
 constexpr wchar_t kRegKeyCompanyCloudManagement[] =
     L"Software\\Policies\\" COMPANY_SHORTNAME_STRING "\\CloudManagement\\";
 
 class TestMethodsWin : public TestMethods {
  public:
   base::FilePath GetTestExePath() override {
-    return base::PathService::CheckedGet(base::DIR_EXE).AppendASCII(kTestExe);
+    return base::PathService::CheckedGet(base::DIR_EXE).Append(kTestExe);
   }
 
   void ExpectInstalled() override {
@@ -72,6 +74,24 @@ class TestMethodsWin : public TestMethods {
                            KEY_QUERY_VALUE | KEY_WOW64_32KEY),
               ERROR_SUCCESS);
   }
+
+#if BUILDFLAG(CHROMIUM_BRANDING)
+  base::FilePath GetOlderVersionExePath() override {
+    return base::PathService::CheckedGet(base::DIR_EXE)
+        .Append(L"old_enterprise_companion")
+#if defined(ARCH_CPU_X86_64)
+        .Append(L"chromium_win_x86_64")
+#elif defined(ARCH_CPU_X86)
+        .Append(L"chromium_win_x86")
+#elif defined(ARCH_CPU_ARM64)
+        .Append(L"chromium_win_x86_64")
+#else
+#error Unsupported architecture
+#endif
+        .Append(L"cipd")
+        .Append(L"enterprise_companion_test.exe");
+  }
+#endif
 };
 
 }  // namespace
@@ -82,7 +102,7 @@ void ExpectUpdaterRegistration() {
 
   std::wstring pv;
   ASSERT_EQ(app_key.ReadValue(kRegValuePV, &pv), ERROR_SUCCESS);
-  EXPECT_EQ(pv, base::ASCIIToWide(kEnterpriseCompanionVersion));
+  EXPECT_TRUE(base::Version(base::SysWideToUTF8(pv)).IsValid());
 
   std::wstring name;
   ASSERT_EQ(app_key.ReadValue(kRegValueName, &name), ERROR_SUCCESS);

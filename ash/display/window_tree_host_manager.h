@@ -103,11 +103,6 @@ class ASH_EXPORT WindowTreeHostManager
   // mode, this return a RootWindowController for the primary root window only.
   std::vector<RootWindowController*> GetAllRootWindowControllers();
 
-  // Gets/Sets/Clears the overscan insets for the specified |display_id|. See
-  // display_manager.h for the details.
-  gfx::Insets GetOverscanInsets(int64_t display_id) const;
-  void SetOverscanInsets(int64_t display_id, const gfx::Insets& insets_in_dip);
-
   // Checks if the mouse pointer is on one of displays, and moves to
   // the center of the nearest display if it's outside of all displays.
   void UpdateMouseLocationAfterDisplayChange();
@@ -225,6 +220,8 @@ class ASH_EXPORT WindowTreeHostManager
 
   // Pause occlusion tracking during display configuration updates.
   std::unique_ptr<aura::WindowOcclusionTracker::ScopedPause> scoped_pause_;
+
+  bool subpixel_rendering_enabled_ = true;
 
   base::WeakPtrFactory<WindowTreeHostManager> weak_ptr_factory_{this};
 };

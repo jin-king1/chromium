@@ -2,18 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "extensions/browser/api/socket/udp_socket.h"
 
 #include <algorithm>
 #include <utility>
 #include <vector>
 
-#include "base/containers/contains.h"
+#include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/lazy_instance.h"
 #include "extensions/browser/api/api_resource.h"
@@ -134,7 +129,7 @@ int UDPSocket::WriteImpl(net::IOBuffer* io_buffer,
     return net::ERR_SOCKET_NOT_CONNECTED;
   }
   base::span<const uint8_t> data =
-      io_buffer->span().first(static_cast<size_t>(io_buffer_size));
+      io_buffer->first(static_cast<size_t>(io_buffer_size));
   socket_->Send(
       data,
       net::MutableNetworkTrafficAnnotationTag(
@@ -181,7 +176,7 @@ void UDPSocket::SendTo(scoped_refptr<net::IOBuffer> io_buffer,
   }
 
   base::span<const uint8_t> data =
-      io_buffer->span().first(static_cast<size_t>(byte_count));
+      io_buffer->first(static_cast<size_t>(byte_count));
   socket_->SendTo(
       address, data,
       net::MutableNetworkTrafficAnnotationTag(
@@ -238,7 +233,8 @@ void UDPSocket::OnReceived(int32_t result,
 
   auto io_buffer =
       base::MakeRefCounted<net::IOBufferWithSize>(data.value().size());
-  memcpy(io_buffer->data(), data.value().data(), data.value().size());
+  UNSAFE_TODO(
+      memcpy(io_buffer->data(), data.value().data(), data.value().size()));
 
   if (!read_callback_.is_null()) {
     std::move(read_callback_)
@@ -327,13 +323,13 @@ void UDPSocket::JoinGroup(const std::string& address,
   }
 
   std::string normalized_address = ip.ToString();
-  if (base::Contains(multicast_groups_, normalized_address)) {
+  if (std::ranges::contains(multicast_groups_, normalized_address)) {
     std::move(callback).Run(net::ERR_ADDRESS_INVALID);
     return;
   }
 
   socket_->JoinGroup(
-      ip,
+      ip, std::nullopt,
       base::BindOnce(&UDPSocket::OnJoinGroupCompleted, base::Unretained(this),
                      std::move(callback), normalized_address));
 }
@@ -347,13 +343,13 @@ void UDPSocket::LeaveGroup(const std::string& address,
   }
 
   std::string normalized_address = ip.ToString();
-  if (!base::Contains(multicast_groups_, normalized_address)) {
+  if (!std::ranges::contains(multicast_groups_, normalized_address)) {
     std::move(callback).Run(net::ERR_ADDRESS_INVALID);
     return;
   }
 
   socket_->LeaveGroup(
-      ip,
+      ip, std::nullopt,
       base::BindOnce(&UDPSocket::OnLeaveGroupCompleted, base::Unretained(this),
                      std::move(callback), normalized_address));
 }

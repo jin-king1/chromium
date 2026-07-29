@@ -7,11 +7,13 @@
 #include "base/json/values_util.h"
 #include "base/notreached.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/time/time.h"
 #include "components/optimization_guide/core/feature_registry/enterprise_policy_registry.h"
 #include "components/optimization_guide/core/feature_registry/feature_registration.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
+#include "components/optimization_guide/core/model_execution/on_device_features.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
+#include "components/optimization_guide/public/mojom/model_broker.mojom.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
 #include "services/preferences/public/cpp/dictionary_value_update.h"
@@ -21,33 +23,13 @@ namespace optimization_guide::model_execution::prefs {
 
 namespace {
 
-struct LegacyUsagePref {
-  const char* path;
-  ModelBasedCapabilityKey feature;
-};
-
-constexpr LegacyUsagePref kLegacyUsagePrefs[] = {
-    {"optimization_guide.last_time_on_device_eligible_feature_used",
-     ModelBasedCapabilityKey::kCompose},
-    {"optimization_guide.model_execution.last_time_prompt_api_used",
-     ModelBasedCapabilityKey::kPromptApi},
-    {"optimization_guide.model_execution.last_time_summarize_api_used",
-     ModelBasedCapabilityKey::kSummarize},
-    {"optimization_guide.model_execution.last_time_test_used",
-     ModelBasedCapabilityKey::kTest},
-    {"optimization_guide.model_execution.last_time_history_search_used",
-     ModelBasedCapabilityKey::kHistorySearch},
-    {"optimization_guide.model_execution.last_time_history_query_intent_used",
-     ModelBasedCapabilityKey::kHistoryQueryIntent},
-};
-
-std::string PrefKey(ModelBasedCapabilityKey key) {
+std::string PrefKey(mojom::OnDeviceFeature feature) {
   return base::NumberToString(
-      (static_cast<uint64_t>(ToModelExecutionFeatureProto(key))));
+      (static_cast<uint64_t>(ToModelExecutionFeatureProto(feature))));
 }
 
 void SetLastUsage(PrefService* local_state,
-                  ModelBasedCapabilityKey feature,
+                  mojom::OnDeviceFeature feature,
                   base::Time time) {
   ::prefs::ScopedDictionaryPrefUpdate update(local_state,
                                              localstate::kLastUsageByFeature);
@@ -96,6 +78,9 @@ const char kOnDevicePerformanceClass[] =
 const char kOnDevicePerformanceClassVersion[] =
     "optimization_guide.on_device.performance_class_version";
 
+// Stores the device VRAM in MB.
+const char kOnDeviceVramMb[] = "optimization_guide.on_device.vram_mb";
+
 // Timestamps for the last time each features was used while on-device eligible.
 // Used to decide which models are worth fetching.
 const char kLastUsageByFeature[] =
@@ -114,6 +99,19 @@ const char kModelQualityLoggingClientId[] =
 const char kGenAILocalFoundationalModelEnterprisePolicySettings[] =
     "optimization_guide.gen_ai_local_foundational_model_settings";
 
+// A boolean pref for the on-device GenAI foundational model user settings.
+const char kOnDeviceAiUserSettingsEnabled[] =
+    "optimization_guide.on_device_foundational_model_user_settings";
+
+// Boolean pref indicating whether the AI embeddings model is eligible for
+// download.
+const char kEmbeddingApiModelDownloadEligible[] =
+    "optimization_guide.on_device.embedding_api_model_download_eligible";
+
+// A dictionary pref that tracks the state of assets managed by the manifest.
+const char kManifestAssetLedger[] =
+    "optimization_guide.model_execution.manifest_asset_ledger";
+
 }  // namespace localstate
 
 void RegisterLocalStatePrefs(PrefRegistrySimple* registry) {
@@ -123,6 +121,7 @@ void RegisterLocalStatePrefs(PrefRegistrySimple* registry) {
   registry->RegisterIntegerPref(localstate::kOnDevicePerformanceClass, 0);
   registry->RegisterStringPref(localstate::kOnDevicePerformanceClassVersion,
                                std::string());
+  registry->RegisterUint64Pref(localstate::kOnDeviceVramMb, 0);
   registry->RegisterTimePref(
       localstate::kLastTimeEligibleForOnDeviceModelDownload, base::Time::Min());
   registry->RegisterDictionaryPref(localstate::kOnDeviceModelValidationResult);
@@ -131,23 +130,11 @@ void RegisterLocalStatePrefs(PrefRegistrySimple* registry) {
                               PrefRegistry::LOSSY_PREF);
   registry->RegisterIntegerPref(
       localstate::kGenAILocalFoundationalModelEnterprisePolicySettings, 0);
-}
-
-void RegisterLegacyUsagePrefsForMigration(PrefRegistrySimple* registry) {
-  for (auto& pref : kLegacyUsagePrefs) {
-    registry->RegisterTimePref(pref.path, base::Time::Min());
-  }
-}
-
-void MigrateLegacyUsagePrefs(PrefService* local_state) {
-  for (auto& pref : kLegacyUsagePrefs) {
-    if (local_state->HasPrefPath(pref.path)) {
-      DCHECK(!local_state->GetDict(localstate::kLastUsageByFeature)
-                  .Find(PrefKey(pref.feature)));
-      SetLastUsage(local_state, pref.feature, local_state->GetTime(pref.path));
-      local_state->ClearPref(pref.path);
-    }
-  }
+  registry->RegisterBooleanPref(localstate::kOnDeviceAiUserSettingsEnabled,
+                                true);
+  registry->RegisterBooleanPref(localstate::kEmbeddingApiModelDownloadEligible,
+                                false);
+  registry->RegisterDictionaryPref(localstate::kManifestAssetLedger);
 }
 
 void PruneOldUsagePrefs(PrefService* local_state) {
@@ -165,18 +152,64 @@ void PruneOldUsagePrefs(PrefService* local_state) {
 }
 
 void RecordFeatureUsage(PrefService* local_state,
-                        ModelBasedCapabilityKey feature) {
+                        mojom::OnDeviceFeature feature) {
   SetLastUsage(local_state, feature, base::Time::Now());
 }
 
 bool WasFeatureRecentlyUsed(const PrefService* local_state,
-                            ModelBasedCapabilityKey feature) {
+                            mojom::OnDeviceFeature feature) {
   const auto* value = local_state->GetDict(localstate::kLastUsageByFeature)
                           .Find(PrefKey(feature));
   if (!value) {
     return false;
   }
   return IsUseRecent(base::ValueToTime(*value));
+}
+
+void RecordUseCaseUsage(PrefService* local_state,
+                        const std::string& use_case_name) {
+  ::prefs::ScopedDictionaryPrefUpdate update(local_state,
+                                             localstate::kLastUsageByFeature);
+  update->Set(use_case_name, base::TimeToValue(base::Time::Now()));
+}
+
+void ClearUseCaseUsage(PrefService* local_state,
+                       const std::string& use_case_name) {
+  ::prefs::ScopedDictionaryPrefUpdate update(local_state,
+                                             localstate::kLastUsageByFeature);
+  update->Remove(use_case_name);
+  // TODO(crbug.com/489511499): Remove this fallback once all features have
+  // migrated to using RecordUseCaseUsage with string names.
+  if (std::optional<mojom::OnDeviceFeature> feature =
+          GetFeatureForUseCase(use_case_name)) {
+    update->Remove(PrefKey(*feature));
+  }
+}
+
+void ClearAllUseCaseUsages(PrefService* local_state) {
+  local_state->ClearPref(localstate::kLastUsageByFeature);
+}
+
+bool WasUseCaseRecentlyUsed(const PrefService* local_state,
+                            const std::string& use_case_name) {
+  const auto& dict = local_state->GetDict(localstate::kLastUsageByFeature);
+
+  const auto* value = dict.Find(use_case_name);
+  if (value && IsUseRecent(base::ValueToTime(*value))) {
+    return true;
+  }
+
+  // Fallback to legacy integer keys mapped to this use case.
+  // TODO(crbug.com/489511499): Remove this fallback once all features have
+  // migrated to using RecordUseCaseUsage with string names.
+  if (std::optional<mojom::OnDeviceFeature> feature =
+          GetFeatureForUseCase(use_case_name)) {
+    value = dict.Find(PrefKey(*feature));
+    if (value && IsUseRecent(base::ValueToTime(*value))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 }  // namespace optimization_guide::model_execution::prefs

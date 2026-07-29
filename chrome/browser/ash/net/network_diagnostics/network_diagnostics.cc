@@ -17,6 +17,7 @@
 #include "chrome/browser/ash/net/network_diagnostics/dns_resolution_routine.h"
 #include "chrome/browser/ash/net/network_diagnostics/dns_resolver_present_routine.h"
 #include "chrome/browser/ash/net/network_diagnostics/gateway_can_be_pinged_routine.h"
+#include "chrome/browser/ash/net/network_diagnostics/google_services_connectivity_routine.h"
 #include "chrome/browser/ash/net/network_diagnostics/has_secure_wifi_connection_routine.h"
 #include "chrome/browser/ash/net/network_diagnostics/http_firewall_routine.h"
 #include "chrome/browser/ash/net/network_diagnostics/https_firewall_routine.h"
@@ -25,6 +26,7 @@
 #include "chrome/browser/ash/net/network_diagnostics/signal_strength_routine.h"
 #include "chrome/browser/ash/net/network_diagnostics/video_conferencing_routine.h"
 #include "chromeos/ash/components/dbus/debug_daemon/debug_daemon_client.h"
+#include "chromeos/ash/components/dbus/shill/shill_manager_client.h"
 #include "chromeos/ash/components/mojo_service_manager/connection.h"
 #include "components/device_event_log/device_event_log.h"
 #include "third_party/cros_system_api/mojo/service_constants.h"
@@ -57,8 +59,8 @@ void NetworkDiagnostics::BindReceiver(
 void NetworkDiagnostics::GetResult(mojom::RoutineType type,
                                    GetResultCallback callback) {
   mojom::RoutineResultPtr result;
-  if (results_.count(type)) {
-    result = results_[type].Clone();
+  if (auto it = results_.find(type); it != results_.end()) {
+    result = it->second.Clone();
   }
   std::move(callback).Run(std::move(result));
 }
@@ -255,6 +257,19 @@ void NetworkDiagnostics::RunArcPing(
     src = source.value();
   }
   auto routine = std::make_unique<ArcPingRoutine>(src);
+  RunRoutine(std::move(routine), std::move(callback));
+}
+
+void NetworkDiagnostics::RunGoogleServicesConnectivity(
+    std::optional<chromeos::network_diagnostics::mojom::RoutineCallSource>
+        source,
+    RunGoogleServicesConnectivityCallback callback) {
+  mojom::RoutineCallSource src = mojom::RoutineCallSource::kUnknown;
+  if (source.has_value()) {
+    src = source.value();
+  }
+  auto routine = std::make_unique<GoogleServicesConnectivityRoutine>(
+      src, ShillManagerClient::Get());
   RunRoutine(std::move(routine), std::move(callback));
 }
 

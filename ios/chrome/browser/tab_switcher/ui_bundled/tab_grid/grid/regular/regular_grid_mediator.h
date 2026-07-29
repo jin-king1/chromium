@@ -5,11 +5,7 @@
 #ifndef IOS_CHROME_BROWSER_TAB_SWITCHER_UI_BUNDLED_TAB_GRID_GRID_REGULAR_REGULAR_GRID_MEDIATOR_H_
 #define IOS_CHROME_BROWSER_TAB_SWITCHER_UI_BUNDLED_TAB_GRID_GRID_REGULAR_REGULAR_GRID_MEDIATOR_H_
 
-#import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/base_grid_mediator.h"
-
-namespace collaboration {
-class CollaborationService;
-}  // namespace collaboration
+#import "ios/chrome/browser/tab_switcher/tab_grid/base_grid/coordinator/base_grid_mediator.h"
 
 namespace collaboration::messaging {
 class MessagingBackendService;
@@ -19,7 +15,9 @@ namespace tab_groups {
 class TabGroupSyncService;
 }  // namespace tab_groups
 
+@protocol RegularGridMediatorDelegate;
 class ShareKitService;
+@protocol QuickDeleteCommands;
 
 // Mediates between model layer and regular grid UI layer.
 @interface RegularGridMediator : BaseGridMediator
@@ -30,16 +28,19 @@ class ShareKitService;
 // TODO(crbug.com/40273478): Refactor these to be a mutator.
 @property(nonatomic, weak) id<GridCommands> inactiveTabsGridCommands;
 
+// Regular delegate.
+@property(nonatomic, weak) id<RegularGridMediatorDelegate> regularDelegate;
+
+@property(nonatomic, weak) id<QuickDeleteCommands> quickDeleteCommandHandler;
+
 // Designated initialized. `tabGroupSyncService`, `shareKitService` and
-// `messagingService` can be nullptr.
+// `messagingService`: can be `nullptr`.
 - (instancetype)
-      initWithModeHolder:(TabGridModeHolder*)modeHolder
-     tabGroupSyncService:(tab_groups::TabGroupSyncService*)tabGroupSyncService
-         shareKitService:(ShareKitService*)shareKitService
-    collaborationService:
-        (collaboration::CollaborationService*)collaborationService
-        messagingService:
-            (collaboration::messaging::MessagingBackendService*)messagingService
+     initWithModeHolder:(TabGridModeHolder*)modeHolder
+    tabGroupSyncService:(tab_groups::TabGroupSyncService*)tabGroupSyncService
+        shareKitService:(ShareKitService*)shareKitService
+       messagingService:
+           (collaboration::messaging::MessagingBackendService*)messagingService
     NS_DESIGNATED_INITIALIZER;
 - (instancetype)initWithModeHolder:(TabGridModeHolder*)modeHolder
     NS_UNAVAILABLE;

@@ -7,6 +7,7 @@
 #include <fractional-scale-v1-server-protocol.h>
 
 #include "base/check.h"
+#include "base/functional/callback_helpers.h"
 #include "ui/ozone/platform/wayland/test/mock_surface.h"
 
 namespace wl {
@@ -28,11 +29,12 @@ void GetFractionalScale(struct wl_client* client,
         "fractional scale exists");
     return;
   }
-
   wl_resource* fractional_scale_resource =
       CreateResourceWithImpl<::testing::NiceMock<TestFractionalScale>>(
           client, &wp_fractional_scale_v1_interface,
           wl_resource_get_version(resource), &kTestFractionalScaleImpl, id,
+          base::BindOnce(&MockSurface::set_fractional_scale,
+                         mock_surface->GetWeakPtr(), nullptr),
           surface);
   CHECK(fractional_scale_resource);
   mock_surface->set_fractional_scale(

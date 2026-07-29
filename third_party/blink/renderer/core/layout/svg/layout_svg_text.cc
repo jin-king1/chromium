@@ -49,13 +49,15 @@ LayoutSVGText::LayoutSVGText(Element* element)
   DCHECK(IsA<SVGTextElement>(element));
 }
 
-void LayoutSVGText::StyleDidChange(StyleDifference diff,
-                                   const ComputedStyle* old_style) {
+void LayoutSVGText::StyleDidChange(
+    StyleDifference diff,
+    const ComputedStyle* old_style,
+    const StyleChangeContext& style_change_context) {
   NOT_DESTROYED();
   if (needs_text_metrics_update_ && diff.HasDifference() && old_style) {
     diff.SetNeedsFullLayout();
   }
-  LayoutSVGBlock::StyleDidChange(diff, old_style);
+  LayoutSVGBlock::StyleDidChange(diff, old_style, style_change_context);
   SVGResources::UpdatePaints(*this, old_style, StyleRef());
 
   if (old_style) {
@@ -146,9 +148,6 @@ void LayoutSVGText::SubtreeStructureChanged(
   if (BeingDestroyed() || !EverHadLayout()) {
     return;
   }
-  if (DocumentBeingDestroyed()) {
-    return;
-  }
 
   SetNeedsTextMetricsUpdate();
   LayoutSVGResourceContainer::MarkForLayoutAndParentResourceInvalidation(*this);
@@ -217,6 +216,11 @@ void LayoutSVGText::Paint(const PaintInfo& paint_info) const {
 SVGLayoutResult LayoutSVGText::UpdateSVGLayout(
     const SVGLayoutInfo& layout_info) {
   NOT_DESTROYED();
+  // If the screen scaling factor changed we need to update the text
+  // metrics. Ditto for a viewport change (see below).
+  if (layout_info.scale_factor_changed || layout_info.viewport_changed) {
+    SetNeedsTextMetricsUpdate();
+  }
 
   // If the root layout size changed (eg. window size changes), or the screen
   // scale factor has changed, then recompute the on-screen font size. Since
@@ -239,16 +243,14 @@ SVGLayoutResult LayoutSVGText::UpdateSVGLayout(
   const gfx::RectF old_boundaries = ObjectBoundingBox();
 
   const ComputedStyle& style = StyleRef();
-  ConstraintSpaceBuilder builder(
-      style.GetWritingMode(), style.GetWritingDirection(),
-      /* is_new_fc */ true, /* adjust_inline_size_if_needed */ false);
+  ConstraintSpaceBuilder builder(style.GetWritingMode(),
+                                 style.GetWritingDirection(),
+                                 /* is_new_fc */ true);
   builder.SetAvailableSize(LogicalSize());
   BlockNode(this).Layout(builder.ToConstraintSpace());
 
   needs_update_bounding_box_ = true;
-  if (RuntimeEnabledFeatures::SvgTspanBboxCacheEnabled()) {
-    InvalidateDescendantObjectBoundingBoxes();
-  }
+  InvalidateDescendantObjectBoundingBoxes();
 
   const gfx::RectF boundaries = ObjectBoundingBox();
   bool bounds_changed = old_boundaries != boundaries;
@@ -340,7 +342,8 @@ void LayoutSVGText::QuadsInAncestorInternal(
       LocalToAncestorQuad(gfx::QuadF(DecoratedBoundingBox()), ancestor, mode));
 }
 
-gfx::RectF LayoutSVGText::LocalBoundingBoxRectForAccessibility() const {
+gfx::RectF LayoutSVGText::LocalBoundingBoxRectForAccessibility(
+    IncludeDescendants include_descendants) const {
   NOT_DESTROYED();
   return DecoratedBoundingBox();
 }

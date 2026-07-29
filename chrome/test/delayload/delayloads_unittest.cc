@@ -74,7 +74,7 @@ class DelayloadsTest : public testing::Test {
     CHECK(module_mmap.Initialize(module_path));
 
     base::win::PEImageAsData pe_image_data(
-        reinterpret_cast<HMODULE>(const_cast<uint8_t*>(module_mmap.data())));
+        reinterpret_cast<HMODULE>(module_mmap.mutable_bytes().data()));
     pe_image_data.EnumImportChunks(DelayloadsTest::ImportsCallback, &imports,
                                    nullptr);
     return imports;
@@ -163,7 +163,7 @@ class MinimumWindowsSupportTest : public DelayloadsTest {
 
     CHECK(module_mmap.Initialize(module_path));
     base::win::PEImageAsData pe_image_data(
-        reinterpret_cast<HMODULE>(const_cast<uint8_t*>(module_mmap.data())));
+        reinterpret_cast<HMODULE>(module_mmap.mutable_bytes().data()));
     pe_image_data.EnumAllImports(
         MinimumWindowsSupportTest::DetailedImportsCallback, &imports, nullptr);
     return imports;
@@ -209,8 +209,9 @@ class MinimumWindowsSupportTest : public DelayloadsTest {
 
 // Run this test only in Release builds.
 //
-// These tests make sure that chrome.dll, chrome_child.dll, and chrome.exe
-// have only certain types of imports.
+// These tests make sure that chrome.dll, and chrome.exe have only certain types
+// of imports.
+//
 // In particular, we explicitly want to ensure user32.dll and its many related
 // dlls are delayloaded and not automatically brought in via some other
 // dependent dll. The primary reason for this is that the sandbox for the
@@ -241,23 +242,12 @@ TEST_F(DelayloadsTest, ChromeDllDelayloadsCheck) {
          "target was built, instead of delayloads_unittests.exe";
 
   static const char* const kValidFilePatterns[] = {
-      "KERNEL32.dll",
       "chrome_elf.dll",
-      "DWrite.dll",
-      "ADVAPI32.dll",
       "CRYPT32.dll",
-      "dbghelp.dll",
-      "dhcpcsvc.DLL",
-      "IPHLPAPI.DLL",
+      "DWrite.dll",
+      "KERNEL32.dll",
       "ntdll.dll",
-      "OLEAUT32.dll",
-      "Secur32.dll",
-      "UIAutomationCore.DLL",
-      "USERENV.dll",
-      "WINHTTP.dll",
       "WINMM.dll",
-      "WINSPOOL.DRV",
-      "WINTRUST.dll",
       "WS2_32.dll",
       // On 64 bit the Version API's like VerQueryValue come from VERSION.dll.
       // It depends on kernel32, advapi32 and api-ms-win-crt*.dll. This should
@@ -281,7 +271,7 @@ TEST_F(DelayloadsTest, ChromeDllDelayloadsCheck) {
   }
 }
 
-// Flaking on ASAN: https://crbug.com/1047723
+// Flaking on ASAN: https://crbug.com/40671543
 #if defined(ADDRESS_SANITIZER)
 #define MAYBE_ChromeDllLoadSanityTest DISABLED_ChromeDllLoadSanityTest
 #else
@@ -442,7 +432,7 @@ TEST_F(DelayloadsTest, ChromeExeDelayloadsCheck) {
       "VERSION.dll",
 #if defined(ADDRESS_SANITIZER)
       "clang_rt.asan_dynamic-x86_64.dll",
-      // The ASan runtime uses the synchapi (see crbug.com/1236586).
+      // The ASan runtime uses the synchapi (see crbug.com/40192760).
       "api-ms-win-core-synch-l1-2-0.dll",
 #endif
   };
@@ -504,7 +494,7 @@ TEST_F(MinimumWindowsSupportTest, ChromeExtraDlls) {
       // These are not yet supported for Arm64.
       L"dxcompiler.dll", L"dxil.dll",
 #endif  // !defined(ARCH_CPU_ARM64
-      L"libEGL.dll", L"libGLESv2.dll", L"vk_swiftshader.dll", L"vulkan-1.dll"};
+      L"vk_swiftshader.dll", L"vulkan-1.dll"};
   for (const auto& dll : extra_dlls) {
     Validate(dll);
   }
@@ -540,7 +530,7 @@ TEST_F(MinimumWindowsSupportTest, ValidateImportChecker) {
   // These may need to be updated if the checked-in apiset file is updated.
   DetailedImports expected_ok = {{"ntdll.dll", {"DbgPrint"}}};
   AreImportsOk(expected_ok, {});
-  // Tests exist to catch a repeat of crbug.com/1482250.
+  // Tests exist to catch a repeat of crbug.com/40072176.
   DetailedImports expected_missing = {
       {"kernel32.dll", {"IsEnclaveTypeSupported"}}};
   EXPECT_NONFATAL_FAILURE(AreImportsOk(expected_missing, {}), "");

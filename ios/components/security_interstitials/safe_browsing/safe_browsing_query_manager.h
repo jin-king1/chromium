@@ -91,13 +91,13 @@ class SafeBrowsingQueryManager
     ~QueryData();
 
     // The SafeBrowsingQueryManager related to the query.
-    raw_ptr<SafeBrowsingQueryManager> manager;
+    raw_ptr<SafeBrowsingQueryManager, DanglingUntriaged> manager;
     // The underlying query.
     raw_ref<const SafeBrowsingQueryManager::Query> query;
     // The type of query.
     const QueryType type;
     // The result of the query.
-    raw_ref<const SafeBrowsingQueryManager::Result> result;
+    raw_ref<const SafeBrowsingQueryManager::Result, DanglingUntriaged> result;
     // The PerformedCheck for a query.
     safe_browsing::SafeBrowsingUrlCheckerImpl::PerformedCheck performed_check;
   };
@@ -225,8 +225,6 @@ class SafeBrowsingQueryManager
   base::ObserverList<Observer, /*check_empty=*/true> observers_;
   // The weak pointer factory.
   base::WeakPtrFactory<SafeBrowsingQueryManager> weak_factory_{this};
-
-  WEB_STATE_USER_DATA_KEY_DECL();
 };
 
 #endif  // IOS_COMPONENTS_SECURITY_INTERSTITIALS_SAFE_BROWSING_SAFE_BROWSING_QUERY_MANAGER_H_

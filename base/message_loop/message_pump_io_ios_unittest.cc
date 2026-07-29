@@ -6,6 +6,8 @@
 
 #include <unistd.h>
 
+#include <memory>
+
 #include "base/logging.h"
 #include "base/message_loop/message_pump_for_io.h"
 #include "base/posix/eintr_wrapper.h"
@@ -67,7 +69,7 @@ class BaseWatcher : public MessagePumpIOSForIO::FdWatcher {
   void OnFileCanWriteWithoutBlocking(int /* fd */) override { NOTREACHED(); }
 
  protected:
-  MessagePumpIOSForIO::FdWatchController* controller_;
+  raw_ptr<MessagePumpIOSForIO::FdWatchController> controller_;
 };
 
 class DeleteWatcher : public BaseWatcher {
@@ -79,13 +81,12 @@ class DeleteWatcher : public BaseWatcher {
 
   void OnFileCanWriteWithoutBlocking(int /* fd */) override {
     DCHECK(controller_);
-    delete controller_;
-    controller_ = NULL;
+    controller_.ClearAndDelete();
   }
 };
 
 TEST_F(MessagePumpIOSForIOTest, DeleteWatcher) {
-  std::unique_ptr<MessagePumpIOSForIO> pump(new MessagePumpIOSForIO);
+  auto pump = std::make_unique<MessagePumpIOSForIO>();
   MessagePumpIOSForIO::FdWatchController* watcher =
       new MessagePumpIOSForIO::FdWatchController(FROM_HERE);
   DeleteWatcher delegate(watcher);
@@ -118,12 +119,12 @@ class StopWatcher : public BaseWatcher {
   }
 
  private:
-  MessagePumpIOSForIO* pump_;
+  raw_ptr<MessagePumpIOSForIO> pump_;
   int fd_to_start_watching_;
 };
 
 TEST_F(MessagePumpIOSForIOTest, StopWatcher) {
-  std::unique_ptr<MessagePumpIOSForIO> pump(new MessagePumpIOSForIO);
+  auto pump = std::make_unique<MessagePumpIOSForIO>();
   MessagePumpIOSForIO::FdWatchController watcher(FROM_HERE);
   StopWatcher delegate(&watcher, pump.get());
   pump->WatchFileDescriptor(pipefds_[1], false,
@@ -135,7 +136,7 @@ TEST_F(MessagePumpIOSForIOTest, StopWatcher) {
 }
 
 TEST_F(MessagePumpIOSForIOTest, StopWatcherAndWatchSomethingElse) {
-  std::unique_ptr<MessagePumpIOSForIO> pump(new MessagePumpIOSForIO);
+  auto pump = std::make_unique<MessagePumpIOSForIO>();
   MessagePumpIOSForIO::FdWatchController watcher(FROM_HERE);
   StopWatcher delegate(&watcher, pump.get(), alternate_pipefds_[1]);
   pump->WatchFileDescriptor(pipefds_[1], false,

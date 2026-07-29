@@ -6,6 +6,8 @@
 
 #include <utility>
 
+#include "ash/constants/ash_features.h"
+#include "ash/constants/ash_paths.h"
 #include "ash/constants/ash_switches.h"
 #include "base/files/file_util.h"
 #include "base/files/important_file_writer.h"
@@ -19,9 +21,8 @@
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
 #include "base/values.h"
+#include "chrome/browser/ash/policy/enrollment/auto_enrollment_type_checker.h"
 #include "chrome/browser/ash/settings/scoped_cros_settings_test_helper.h"
-#include "chrome/common/chrome_features.h"
-#include "chrome/common/chrome_paths.h"
 #include "chromeos/ash/components/install_attributes/stub_install_attributes.h"
 #include "chromeos/ash/components/settings/cros_settings_names.h"
 #include "chromeos/ash/components/system/fake_statistics_provider.h"
@@ -64,18 +65,18 @@ class TPMFirmwareUpdateTest : public testing::Test {
 
   TPMFirmwareUpdateTest() {
     feature_list_ = std::make_unique<base::test::ScopedFeatureList>();
-    feature_list_->InitAndEnableFeature(features::kTPMFirmwareUpdate);
+    feature_list_->InitAndEnableFeature(ash::features::kTPMFirmwareUpdate);
     CHECK(temp_dir_.CreateUniqueTempDir());
     base::FilePath update_location_path =
         temp_dir_.GetPath().AppendASCII("tpm_firmware_update_location");
     path_override_location_ = std::make_unique<base::ScopedPathOverride>(
-        chrome::FILE_CHROME_OS_TPM_FIRMWARE_UPDATE_LOCATION,
-        update_location_path, update_location_path.IsAbsolute(), false);
+        ash::FILE_TPM_FIRMWARE_UPDATE_LOCATION, update_location_path,
+        update_location_path.IsAbsolute(), false);
     base::FilePath srk_vulnerable_roca_path = temp_dir_.GetPath().AppendASCII(
         "tpm_firmware_update_srk_vulnerable_roca");
     path_override_srk_vulnerable_roca_ =
         std::make_unique<base::ScopedPathOverride>(
-            chrome::FILE_CHROME_OS_TPM_FIRMWARE_UPDATE_SRK_VULNERABLE_ROCA,
+            ash::FILE_TPM_FIRMWARE_UPDATE_SRK_VULNERABLE_ROCA,
             srk_vulnerable_roca_path, srk_vulnerable_roca_path.IsAbsolute(),
             false);
     cros_settings_test_helper_.ReplaceDeviceSettingsProviderWithStub();
@@ -85,7 +86,7 @@ class TPMFirmwareUpdateTest : public testing::Test {
   void SetUpdateAvailability(Availability availability) {
     base::FilePath srk_vulnerable_roca_path;
     ASSERT_TRUE(base::PathService::Get(
-        chrome::FILE_CHROME_OS_TPM_FIRMWARE_UPDATE_SRK_VULNERABLE_ROCA,
+        ash::FILE_TPM_FIRMWARE_UPDATE_SRK_VULNERABLE_ROCA,
         &srk_vulnerable_roca_path));
     switch (availability) {
       case Availability::kPending:
@@ -100,9 +101,8 @@ class TPMFirmwareUpdateTest : public testing::Test {
     }
 
     base::FilePath update_location_path;
-    ASSERT_TRUE(base::PathService::Get(
-        chrome::FILE_CHROME_OS_TPM_FIRMWARE_UPDATE_LOCATION,
-        &update_location_path));
+    ASSERT_TRUE(base::PathService::Get(ash::FILE_TPM_FIRMWARE_UPDATE_LOCATION,
+                                       &update_location_path));
     switch (availability) {
       case Availability::kPending:
         base::DeleteFile(update_location_path);
@@ -127,6 +127,8 @@ class TPMFirmwareUpdateTest : public testing::Test {
   base::test::TaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
   ScopedCrosSettingsTestHelper cros_settings_test_helper_;
+  // We need a fake statistics provider as
+  // `AutoEnrollmentTypeChecker::IsEnabled` needs it.
   system::ScopedFakeStatisticsProvider statistics_provider_;
 };
 
@@ -135,12 +137,7 @@ class TPMFirmwareUpdateModesTest : public TPMFirmwareUpdateTest {
   TPMFirmwareUpdateModesTest() {
     callback_ = base::BindOnce(&TPMFirmwareUpdateModesTest::RecordResponse,
                                base::Unretained(this));
-    statistics_provider_.SetVpdStatus(
-        system::StatisticsProvider::VpdStatus::kValid);
     cros_settings_test_helper_.InstallAttributes()->set_device_locked(false);
-    // TODO(b/353731379): Remove when removing legacy state determination code.
-    command_line_.GetProcessCommandLine()->AppendSwitchASCII(
-        ash::switches::kEnterpriseEnableUnifiedStateDetermination, "never");
   }
 
   void RecordResponse(const std::set<Mode>& modes) {
@@ -164,28 +161,10 @@ class TPMFirmwareUpdateModesTest : public TPMFirmwareUpdateTest {
 TEST_F(TPMFirmwareUpdateModesTest, FeatureDisabled) {
   feature_list_.reset();
   feature_list_ = std::make_unique<base::test::ScopedFeatureList>();
-  feature_list_->InitAndDisableFeature(features::kTPMFirmwareUpdate);
+  feature_list_->InitAndDisableFeature(ash::features::kTPMFirmwareUpdate);
   GetAvailableUpdateModes(std::move(callback_), base::TimeDelta());
   EXPECT_TRUE(callback_received_);
   EXPECT_TRUE(callback_modes_.empty());
-}
-
-TEST_F(TPMFirmwareUpdateModesTest, FRERequired) {
-  statistics_provider_.SetMachineStatistic(system::kCheckEnrollmentKey, "1");
-  GetAvailableUpdateModes(std::move(callback_), base::TimeDelta());
-  EXPECT_TRUE(callback_received_);
-  EXPECT_TRUE(callback_modes_.empty());
-}
-
-TEST_F(TPMFirmwareUpdateModesTest, FRERequiredDueToInvalidRwVpdStatus) {
-  statistics_provider_.SetVpdStatus(
-      system::StatisticsProvider::VpdStatus::kRwInvalid);
-  base::test::TestFuture<std::set<Mode>> future;
-  GetAvailableUpdateModes(future.GetCallback<const std::set<Mode>&>(),
-                          base::TimeDelta());
-
-  const auto& modes = future.Get();
-  EXPECT_TRUE(modes.empty());
 }
 
 TEST_F(TPMFirmwareUpdateModesTest, Pending) {
@@ -198,44 +177,41 @@ TEST_F(TPMFirmwareUpdateModesTest, Pending) {
 
 TEST_F(TPMFirmwareUpdateModesTest, ConsumerOwned) {
   SetConsumerOwned();
-  statistics_provider_.SetVpdStatus(
-      system::StatisticsProvider::VpdStatus::kInvalid);
   GetAvailableUpdateModes(std::move(callback_), base::TimeDelta());
   task_environment_.RunUntilIdle();
   EXPECT_TRUE(callback_received_);
   EXPECT_EQ(kAllModes, callback_modes_);
+}
+
+TEST_F(TPMFirmwareUpdateModesTest, NotAvailable) {
+  // On device, Unified State Determination is enabled by default.
+  // For ChromeOS on Chrome, it is turned off by default.
+  // Enabling it here by command line to have a unified test setup.
+  command_line_.GetProcessCommandLine()->AppendSwitchASCII(
+      ash::switches::kEnterpriseEnableUnifiedStateDetermination,
+      policy::AutoEnrollmentTypeChecker::kUnifiedStateDeterminationAlways);
+
+  GetAvailableUpdateModes(std::move(callback_), base::TimeDelta());
+  task_environment_.RunUntilIdle();
+  EXPECT_TRUE(callback_received_);
+  EXPECT_TRUE(callback_modes_.empty());
 }
 
 TEST_F(TPMFirmwareUpdateModesTest, Available) {
+  command_line_.GetProcessCommandLine()->AppendSwitchASCII(
+      ash::switches::kEnterpriseEnableUnifiedStateDetermination,
+      policy::AutoEnrollmentTypeChecker::kUnifiedStateDeterminationNever);
   GetAvailableUpdateModes(std::move(callback_), base::TimeDelta());
   task_environment_.RunUntilIdle();
   EXPECT_TRUE(callback_received_);
   EXPECT_EQ(kAllModes, callback_modes_);
 }
 
-TEST_F(TPMFirmwareUpdateModesTest, AvailableWithInvalidVpdStatus) {
-  statistics_provider_.SetVpdStatus(
-      system::StatisticsProvider::VpdStatus::kInvalid);
-  base::test::TestFuture<std::set<Mode>> future;
-  GetAvailableUpdateModes(future.GetCallback<const std::set<Mode>&>(),
-                          base::TimeDelta());
-
-  const auto& modes = future.Get();
-  EXPECT_EQ(kAllModes, modes);
-}
-
-TEST_F(TPMFirmwareUpdateModesTest, AvailableWithInvalidRoVpdStatus) {
-  statistics_provider_.SetVpdStatus(
-      system::StatisticsProvider::VpdStatus::kRoInvalid);
-  base::test::TestFuture<std::set<Mode>> future;
-  GetAvailableUpdateModes(future.GetCallback<const std::set<Mode>&>(),
-                          base::TimeDelta());
-
-  const auto& modes = future.Get();
-  EXPECT_EQ(kAllModes, modes);
-}
-
 TEST_F(TPMFirmwareUpdateModesTest, AvailableAfterWaiting) {
+  command_line_.GetProcessCommandLine()->AppendSwitchASCII(
+      ash::switches::kEnterpriseEnableUnifiedStateDetermination,
+      policy::AutoEnrollmentTypeChecker::kUnifiedStateDeterminationNever);
+
   SetUpdateAvailability(Availability::kPending);
   GetAvailableUpdateModes(std::move(callback_), base::Seconds(5));
   task_environment_.RunUntilIdle();
@@ -263,6 +239,10 @@ TEST_F(TPMFirmwareUpdateModesTest, AvailableAfterWaiting) {
 }
 
 TEST_F(TPMFirmwareUpdateModesTest, NoUpdateVulnerableSRK) {
+  command_line_.GetProcessCommandLine()->AppendSwitchASCII(
+      ash::switches::kEnterpriseEnableUnifiedStateDetermination,
+      policy::AutoEnrollmentTypeChecker::kUnifiedStateDeterminationNever);
+
   SetUpdateAvailability(Availability::kUnavailableROCAVulnerable);
   GetAvailableUpdateModes(std::move(callback_), base::TimeDelta());
   task_environment_.RunUntilIdle();
@@ -279,6 +259,10 @@ TEST_F(TPMFirmwareUpdateModesTest, NoUpdateNonVulnerableSRK) {
 }
 
 TEST_F(TPMFirmwareUpdateModesTest, Timeout) {
+  command_line_.GetProcessCommandLine()->AppendSwitchASCII(
+      ash::switches::kEnterpriseEnableUnifiedStateDetermination,
+      policy::AutoEnrollmentTypeChecker::kUnifiedStateDeterminationNever);
+
   SetUpdateAvailability(Availability::kPending);
   GetAvailableUpdateModes(std::move(callback_), base::Seconds(5));
   task_environment_.RunUntilIdle();
@@ -299,7 +283,7 @@ class TPMFirmwareUpdateModesEnterpriseTest : public TPMFirmwareUpdateModesTest {
   }
 
   void SetPolicy(const std::set<Mode>& modes) {
-    base::Value::Dict dict;
+    base::DictValue dict;
     dict.Set(kSettingsKeyAllowPowerwash, modes.count(Mode::kPowerwash) > 0);
     dict.Set(kSettingsKeyAllowPreserveDeviceState,
              modes.count(Mode::kPreserveDeviceState) > 0);

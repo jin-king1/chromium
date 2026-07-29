@@ -65,7 +65,7 @@ CSSStyleSheetResource* CSSStyleSheetResource::Fetch(FetchParameters& params,
 
 CSSStyleSheetResource* CSSStyleSheetResource::CreateForTest(
     const KURL& url,
-    const WTF::TextEncoding& encoding) {
+    const TextEncoding& encoding) {
   ResourceRequest request(url);
   request.SetCredentialsMode(network::mojom::CredentialsMode::kOmit);
   ResourceLoaderOptions options(nullptr /* world */);
@@ -107,11 +107,11 @@ void CSSStyleSheetResource::OnMemoryDump(
     WebMemoryDumpLevelOfDetail level_of_detail,
     WebProcessMemoryDump* memory_dump) const {
   Resource::OnMemoryDump(level_of_detail, memory_dump);
-  const String name = GetMemoryDumpName() + "/style_sheets";
+  const String name = StrCat({GetMemoryDumpName(), "/style_sheets"});
   auto* dump = memory_dump->CreateMemoryAllocatorDump(name);
   dump->AddScalar("size", "bytes", decoded_sheet_text_.CharactersSizeInBytes());
-  memory_dump->AddSuballocation(
-      dump->Guid(), String(WTF::Partitions::kAllocatedObjectPoolName));
+  memory_dump->AddSuballocation(dump->Guid(),
+                                String(Partitions::kAllocatedObjectPoolName));
 }
 
 network::mojom::ReferrerPolicy CSSStyleSheetResource::GetReferrerPolicy()
@@ -190,16 +190,16 @@ bool CSSStyleSheetResource::CanUseSheet(const CSSParserContext* parser_context,
     if (parser_context) {
       parser_context->Count(WebFeature::kLocalCSSFile);
     }
+    String mime_type;
     // Grab |sheet_url|'s filename's extension (if present), and check whether
     // or not it maps to a `text/css` MIME type:
-    String extension;
-    String last_path_component = sheet_url.LastPathComponent().ToString();
-    int last_dot = last_path_component.ReverseFind('.');
-    if (last_dot != -1) {
-      extension = last_path_component.Substring(last_dot + 1);
+    StringView last_path_component = sheet_url.LastPathComponent();
+    wtf_size_t last_dot = last_path_component.rfind('.');
+    if (last_dot != kNotFound) {
+      StringView extension = last_path_component.substr(last_dot + 1);
+      mime_type = MIMETypeRegistry::GetMIMETypeForExtension(extension);
     }
-    if (!EqualIgnoringASCIICase(
-            MIMETypeRegistry::GetMIMETypeForExtension(extension), "text/css")) {
+    if (!EqualIgnoringAsciiCase(mime_type, "text/css")) {
       if (parser_context) {
         parser_context->CountDeprecation(
             WebFeature::kLocalCSSFileExtensionRejected);
@@ -219,8 +219,8 @@ bool CSSStyleSheetResource::CanUseSheet(const CSSParserContext* parser_context,
     return true;
   AtomicString content_type = HttpContentType();
   return content_type.empty() ||
-         EqualIgnoringASCIICase(content_type, "text/css") ||
-         EqualIgnoringASCIICase(content_type,
+         EqualIgnoringAsciiCase(content_type, "text/css") ||
+         EqualIgnoringAsciiCase(content_type,
                                 "application/x-unknown-content-type");
 }
 
@@ -253,6 +253,8 @@ StyleSheetContents* CSSStyleSheetResource::CreateParsedStyleSheetFromCache(
   // This should not be problematic as the case of continuously modifying,
   // adding, or removing stylesheets, while at the same time have different
   // media query evaluations in the different documents should be quite rare.
+
+  parsed_style_sheet_cache_->SetIsUsedFromResourceCache();
 
   DCHECK(!parsed_style_sheet_cache_->IsLoading());
   return parsed_style_sheet_cache_.Get();

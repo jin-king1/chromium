@@ -173,41 +173,6 @@ function waitForScrollendEvent(eventTarget, timeoutMs = 2000) {
   return waitForEvent(eventTarget, 'scrollend', timeoutMs);
 }
 
-// Event driven scroll promise. This method has the advantage over timing
-// methods, as it is more forgiving to delays in event dispatch or between
-// chained smooth scrolls. It has an additional advantage of completing sooner
-// once the end condition is reached.
-// The promise is resolved when the result of calling getValue matches the
-// target value. The timeout timer starts once the first event has been
-// received.
-function waitForScrollEnd(eventTarget, getValue, targetValue, errorMessage) {
-  // Give up if the animation still isn't done after this many milliseconds from
-  // the time of the first scroll event.
-  const TIMEOUT_MS = 1000;
-
-  return new Promise((resolve, reject) => {
-    let timeout = undefined;
-    const scrollListener = () => {
-      if (!timeout)
-        timeout = setTimeout(() => {
-          reject(errorMessage || 'Timeout waiting for scroll end');
-        }, TIMEOUT_MS);
-
-      if (getValue() == targetValue) {
-        clearTimeout(timeout);
-        eventTarget.removeEventListener('scroll', scrollListener);
-        // Wait for a commit to allow the scroll to propagate through the
-        // compositor before resolving.
-        return waitForCompositorCommit().then(() => { resolve(); });
-      }
-    };
-    if (getValue() == targetValue)
-      resolve();
-    else
-      eventTarget.addEventListener('scroll', scrollListener);
-  });
-}
-
 // Enums for gesture_source_type parameters in gpuBenchmarking synthetic
 // gesture methods. Must match C++ side enums in synthetic_gesture_params.h
 const GestureSourceType = (function() {
@@ -778,6 +743,19 @@ function raf() {
   });
 }
 
+
+// If the condition doesn't hold, the tests should be skipped.
+// The test harness requires at least one subtest to be added, so
+// a placeholder test is added to report a [Pass] on the condition
+// check.
+function shouldSkipTests(condition, message) {
+  if (condition) {
+    test(() => {}, message);
+    return true;
+  }
+  return false;
+}
+
 // Resets the scroll position to (x,y). If a scroll is required, then the
 // promise is not resolved until the scrollend event is received.
 async function waitForScrollReset(scroller = document.scrollingElement,
@@ -1128,6 +1106,60 @@ function touchLongPressElement(target, options) {
       .pointerUp()
       .send();
   return actionPromise.then(pointerPromise);
+}
+
+// Long press on the target element and drag to move. This function will check
+// the dragstart event. The options are of the form:
+// {
+//    x: horizontal offset of longpress from midpoint of the target element (default 0)
+//    y: vertical offset of longpress from the midpoint of the target element (default 0)
+//    dragDeltaX: horizontal distance to drag (default 100)
+//    dragDeltaY: vertical distance to drag (default 0)
+//    duration: duration of the press in milliseconds (default 800)
+// }
+//
+// Be sure to call preventContextMenu during test setup to avoid a memory leak
+// before calling this method. If event handling is permitted to transfer to the
+// browser process, we are unable to fully tear down the test resulting in a
+// leak.
+function touchLongPressAndDragElement(target, options) {
+  // Conservative long-press duration based on the default duration for a long
+  // press gesture, defined in: ui/events/gesture_detection/gesture_detector.h
+  // Some long-press operations require longer.
+  const LONG_PRESS_DURATION = 800;
+  const x = (options && options.x) ? options.x : 0;
+  const y = (options && options.y) ? options.y : 0;
+  const duration = (options && options.duration !== undefined)
+    ? options.duration
+    : LONG_PRESS_DURATION;
+  const dragDeltaX = (options && options.dragDeltaX) ? options.dragDeltaX : 100;
+  const dragDeltaY = (options && options.dragDeltaY) ? options.dragDeltaY : 0;
+  verifyTestDriverLoaded();
+
+  return new Promise((resolve, reject) => {
+    let dragStarted = false;
+    const dragStartListener = () => {
+      dragStarted = true;
+      target.removeEventListener('dragstart', dragStartListener);
+      resolve('dragstart');
+    };
+    target.addEventListener('dragstart', dragStartListener);
+
+    new test_driver.Actions()
+      .addPointer('pointer1', 'touch')
+      .pointerMove(x, y, {origin: target})
+      .pointerDown()
+      .pause(duration)
+      .pointerMove(x + dragDeltaX, y + dragDeltaY, {origin: target})
+      .pointerUp()
+      .send()
+      .then(() => {
+        if (!dragStarted) {
+          target.removeEventListener('dragstart', dragStartListener);
+          reject('No dragstart event detected');
+        }
+      });
+  });
 }
 
 function preventContextMenu(test) {

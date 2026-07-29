@@ -60,6 +60,7 @@ from blinkpy.web_tests.models.test_expectations import TestExpectations
 from blinkpy.web_tests.models.test_run_results import convert_to_hierarchical_view
 from blinkpy.web_tests.models.typ_types import (
     Artifacts,
+    ModuleScheme,
     Result,
     ResultSinkReporter,
     ResultType,
@@ -155,6 +156,7 @@ class WPTResult(Result):
                  test_type: Optional[str] = None,
                  baseline: Optional[List[TestharnessLine]] = None,
                  no_expectations: bool = False,
+                 sanitizer_mode: bool = False,
                  **kwargs):
         super().__init__(*args, **kwargs)
         self.testharness_results = []
@@ -162,8 +164,11 @@ class WPTResult(Result):
         self._baseline = baseline or []
         self.image_diff_stats = None
         self.no_expectations = no_expectations
+        # Do not compare baseline when run with sanitizer enabled
+        self.sanitizer_mode = sanitizer_mode
         # TODO(crbug.com/41494889): Populate `self.failure_reason` like
         # `run_web_tests.py` does to help LUCI cluster failures.
+        self.bcd_counters = collections.Counter()
 
     @property
     def has_stderr(self) -> bool:
@@ -171,7 +176,9 @@ class WPTResult(Result):
 
     @functools.cached_property
     def can_have_subtests(self) -> bool:
-        return self.test_type in {'testharness', 'wdspec'}
+        return not self.sanitizer_mode and self.test_type in {
+            'testharness', 'wdspec'
+        }
 
     def _maybe_add_testharness_result(self,
                                       status: str,
@@ -212,7 +219,7 @@ class WPTResult(Result):
                 self.actual = ResultType.Failure
         # When run with --no-expectations, all results are expected
         if self.no_expectations:
-            self.expected = self.actual
+            self.expected = [self.actual]
         self.unexpected = self.actual not in self.expected
         self.is_regression = self.actual != ResultType.Pass and self.unexpected
 
@@ -316,6 +323,73 @@ class WPTResult(Result):
                 summary += f'<p><text-artifact artifact-id="{name}"/></p>'
         return summary
 
+    def count_bcd_features(self, raw_trace):
+        binding_names = [
+            event['name'] for event in raw_trace
+            if event.get('cat') == 'blink.bindings'
+        ]
+        assert all(isinstance(name, str)
+                   for name in binding_names), binding_names
+        self.bcd_counters.update(
+            map(binding_name_to_bcd_feature, binding_names))
+
+    @property
+    def properties(self):
+        if not self.bcd_counters:
+            return None
+        # Serialize as an array of records for easier querying:
+        # https://cloud.google.com/bigquery/docs/json-data#extract_arrays_from_json
+        #
+        # Save space with single letter keys.
+        bcd_counters = [{
+            'f': feature,
+            'c': count
+        } for feature, count in sorted(self.bcd_counters.items())]
+        return {'bcd_counters': bcd_counters}
+
+
+def binding_name_to_bcd_feature(binding: str, sep: str = '.') -> str:
+    """Convert a Blink binding name to a browser compat data (BCD) API feature.
+
+    This is a best-effort conversion according to the BCD guidelines [0, 1].
+    The conversion is likely imperfect because trace events don't provide
+    enough information to count certain kinds of features:
+      * `_static` members, which look identical to nonstatic members in trace
+        events. Interfaces usually don't have a prototype and static member
+        with the same name simultaneously, so removing the `_static` suffix
+        during analysis is often good enough.
+      * `_parameter` features (not recorded in trace events)
+      * `_permission` features
+      * `toString` features
+      * Special behavioral subfeatures:
+        * `returns_promise`
+        * `secure_context_required`
+        * `worker_support`
+
+    References:
+      [0]: https://github.com/mdn/browser-compat-data/blob/main/docs/data-guidelines/README.md
+      [1]: https://github.com/mdn/browser-compat-data/blob/main/docs/data-guidelines/api.md
+    """
+    parts = binding.split(sep)
+    if parts[-1] in {'get', 'set'}:
+        # BCD features don't distinguish getters from setters for attributes.
+        parts.pop()
+    elif parts[-1] == 'constructor':
+        if len(parts) < 2:
+            raise ValueError(f'constructor binding {binding!r} must have an '
+                             'associated interface')
+        # In BCD, constructors are named the same as the parent feature.
+        parts[-1] = parts[-2]
+    # We may need to blocklist more false positives that start with `on` but
+    # aren't actually DOM events.
+    if parts and parts[-1] != 'only':
+        if event_match := _DOM_EVENT_PATTERN.fullmatch(parts[-1]):
+            parts[-1] = f"{event_match['event']}_event"
+    return sep.join(parts)
+
+
+_DOM_EVENT_PATTERN = re.compile(r'on(?P<event>[a-z]+)')
+
 
 class Event(NamedTuple):
     action: str
@@ -394,7 +468,6 @@ class WPTResultsProcessor:
                  port: Port,
                  artifacts_dir: str = '',
                  sink: Optional[ResultSinkReporter] = None,
-                 test_name_prefix: str = '',
                  failure_threshold: Optional[int] = None,
                  crash_timeout_threshold: Optional[int] = None,
                  reset_results: bool = False,
@@ -403,12 +476,8 @@ class WPTResultsProcessor:
         self.fs = fs
         self.port = port
         self.artifacts_dir = artifacts_dir
-        self.sink = sink or ResultSinkReporter(host=port.typ_host())
-        # This prefix does not actually exist on disk and only affects how the
-        # results are reported.
-        if test_name_prefix and not test_name_prefix.endswith('/'):
-            test_name_prefix += '/'
-        self.test_name_prefix = test_name_prefix
+        self.sink = sink or ResultSinkReporter(
+            host=port.typ_host(), module_scheme=ModuleScheme.WEBTEST)
         self.path_finder = path_finder.PathFinder(self.fs)
         self._test_uri_mapper = TestURIMapper(self.port)
         # Provide placeholder properties until the `suite_start` events are
@@ -447,6 +516,7 @@ class WPTResultsProcessor:
         self._num_failures_by_status = collections.defaultdict(int)
         # Results includes retries, used for computing full_results.json
         self._results_by_name = collections.defaultdict(list)
+        self._bcd_totals = collections.Counter()
 
     @functools.cached_property
     def _expectations(self):
@@ -585,10 +655,6 @@ class WPTResultsProcessor:
         handler = self._event_handlers.get(event.action)
         if handler:
             handler(event, **raw_event)
-        elif event.action not in ['log', 'add_subsuite']:
-            _log.warning(
-                "%r event received, but not handled (event: %r, "
-                'extra: %r)', event.action, event, raw_event)
 
     def suite_start(self,
                     event: Event,
@@ -609,6 +675,19 @@ class WPTResultsProcessor:
 
     def suite_end(self, event: Event, **_):
         self._iteration += 1
+        if not self._bcd_totals:
+            return
+        # Upload shard-level totals for debugging, not for consumption by other
+        # systems.
+        artifact_path = self.fs.join(self.artifacts_dir, 'bcd-totals.json')
+        with self.fs.open_text_file_for_writing(
+                artifact_path) as artifact_file:
+            json.dump(self._bcd_totals, artifact_file, separators=(',', ':'))
+        self.sink.report_invocation_level_artifacts({
+            self.fs.basename(artifact_path): {
+                'filePath': artifact_path,
+            },
+        })
 
     def _get_chromium_test_name(self, test: str, subsuite: str) -> str:
         test = test[1:] if test.startswith('/') else test
@@ -638,7 +717,8 @@ class WPTResultsProcessor:
             test_type=self.get_test_type(test),
             expected=expected,
             baseline=baseline,
-            no_expectations=self.port.get_option('no_expectations'))
+            no_expectations=self.port.get_option('no_expectations'),
+            sanitizer_mode=self.port.get_option('enable_sanitizer'))
 
     def get_path_from_test_root(self, test: str) -> str:
         wpt_dir, url_from_wpt_dir = self.port.split_wpt_dir(test)
@@ -699,12 +779,13 @@ class WPTResultsProcessor:
             self._handle_unexpected_result(result)
         product = self.port.get_option('product', '(unknown)')
         self.sink.report_individual_test_result(
-            test_name_prefix=self.test_name_prefix,
             result=result,
             artifact_output_dir=self.fs.dirname(self.artifacts_dir),
             expectations=None,
             test_file_location=result.file_path,
-            html_summary=result.summarize(product))
+            html_summary=result.summarize(product),
+            additional_tags=self._tags(result),
+            properties=result.properties)
         _log.debug(
             'Reported result for %s, iteration %d (actual: %s, '
             'expected: %s, artifacts: %s)', result.name, self._iteration,
@@ -714,6 +795,21 @@ class WPTResultsProcessor:
         if self._iteration == 0:
             self._num_failures_by_status[result.actual] += 1
         self._results_by_name[test].append(result)
+
+    def _tags(self, result: WPTResult) -> List[Tuple[str, str]]:
+        # Add tags needed by the Blink Unexpected Pass Finder.
+        #
+        # TODO(crbug.com/406299273): Use the same logic to generate tags for all
+        # test results.
+        test_cls = wpttest.manifest_test_cls[result.test_type]
+        # Units are in seconds.
+        base_timeout = test_cls.default_timeout
+        base_timeout *= self.port.get_option('timeout_multiplier') or 1
+        tags = [('web_tests_base_timeout', str(base_timeout))]
+        for exp_file in self.port.used_expectations_files():
+            tags.append(('web_tests_used_expectation_file',
+                         self.port.relative_test_filename(exp_file)))
+        return tags
 
     def _handle_unexpected_result(self, result: WPTResult):
         if result.actual == ResultType.Failure:
@@ -1062,6 +1158,15 @@ class WPTResultsProcessor:
                             test_failures.FILENAME_SUFFIX_LEAK_LOG,
                             '\n'.join(leak_log) + '\n')
 
+        if trace := extra.get('trace'):
+            trace_subpath = self.port.output_filename(
+                result.name, test_failures.FILENAME_SUFFIX_TRACE, '.json')
+            # Serialize JSON compactly by trimming whitespace.
+            contents = json.dumps(trace, separators=(',', ':'))
+            artifacts.CreateArtifact('trace', trace_subpath, contents.encode())
+            result.count_bcd_features(trace)
+            self._bcd_totals += result.bcd_counters
+
         # If the browser process isn't restarted, it's possible for that process
         # to continue producing stdio that will be dumped into the log for the
         # next test that browser runs.
@@ -1115,5 +1220,16 @@ class WPTResultsProcessor:
         self.sink.report_invocation_level_artifacts({
             report_filename: {
                 'filePath': artifact_path,
+            },
+        })
+
+    def upload_wpt_screenshots(self, screenshots_path: str):
+        """Upload a `wptscreenshots.txt` file [0] for this shard.
+
+        [0]: https://github.com/web-platform-tests/wpt/blob/master/tools/wptrunner/wptrunner/formatters/wptscreenshot.py
+        """
+        self.sink.report_invocation_level_artifacts({
+            self.fs.basename(screenshots_path): {
+                'filePath': screenshots_path,
             },
         })

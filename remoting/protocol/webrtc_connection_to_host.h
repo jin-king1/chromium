@@ -22,7 +22,6 @@ namespace remoting::protocol {
 
 class ClientControlDispatcher;
 class ClientEventDispatcher;
-class SessionConfig;
 class WebrtcVideoRendererAdapter;
 class WebrtcAudioSinkAdapter;
 
@@ -50,7 +49,6 @@ class WebrtcConnectionToHost : public ConnectionToHost,
                HostEventCallback* event_callback) override;
   void Disconnect(ErrorCode error) override;
   void ApplyNetworkSettings(const NetworkSettings& settings) override;
-  const SessionConfig& config() override;
   ClipboardStub* clipboard_forwarder() override;
   HostStub* host_stub() override;
   InputStub* input_stub() override;
@@ -63,15 +61,17 @@ class WebrtcConnectionToHost : public ConnectionToHost,
   // WebrtcTransport::EventHandler interface.
   void OnWebrtcTransportConnecting() override;
   void OnWebrtcTransportConnected() override;
-  void OnWebrtcTransportError(ErrorCode error) override;
+  void OnWebrtcTransportError(ErrorCode error,
+                              std::string_view error_details,
+                              const base::Location& error_location) override;
   void OnWebrtcTransportProtocolChanged() override;
   void OnWebrtcTransportIncomingDataChannel(
       const std::string& name,
       std::unique_ptr<MessagePipe> pipe) override;
   void OnWebrtcTransportMediaStreamAdded(
-      rtc::scoped_refptr<webrtc::MediaStreamInterface> stream) override;
+      webrtc::scoped_refptr<webrtc::MediaStreamInterface> stream) override;
   void OnWebrtcTransportMediaStreamRemoved(
-      rtc::scoped_refptr<webrtc::MediaStreamInterface> stream) override;
+      webrtc::scoped_refptr<webrtc::MediaStreamInterface> stream) override;
   void OnWebrtcTransportRouteChanged(const TransportRoute& route) override;
 
   // ChannelDispatcherBase::EventHandler interface.
@@ -100,8 +100,10 @@ class WebrtcConnectionToHost : public ConnectionToHost,
   base::WeakPtr<AudioStub> audio_consumer_;
   raw_ptr<ClipboardStub> clipboard_stub_ = nullptr;
 
-  std::unique_ptr<Session> session_;
+  // `session_` holds a raw ptr to `transport_` so it should come after it to be
+  // destroyed first.
   std::unique_ptr<WebrtcTransport> transport_;
+  std::unique_ptr<Session> session_;
 
   std::unique_ptr<ClientControlDispatcher> control_dispatcher_;
   std::unique_ptr<ClientEventDispatcher> event_dispatcher_;

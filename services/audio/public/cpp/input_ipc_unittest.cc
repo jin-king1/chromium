@@ -19,7 +19,6 @@
 #include "services/audio/public/cpp/fake_stream_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/abseil-cpp/absl/utility/utility.h"
 
 using testing::_;
 using testing::StrictMock;
@@ -49,6 +48,7 @@ class TestStreamFactory : public audio::FakeStreamFactory {
       mojo::PendingRemote<media::mojom::AudioLog> log,
       const std::string& device_id,
       const media::AudioParameters& params,
+      const base::UnguessableToken& group_id,
       uint32_t shared_memory_count,
       bool enable_agc,
       media::mojom::AudioProcessingConfigPtr processing_config,

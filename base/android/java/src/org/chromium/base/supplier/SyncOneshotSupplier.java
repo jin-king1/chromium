@@ -8,6 +8,8 @@ import org.chromium.base.Callback;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 
+import java.util.function.Supplier;
+
 /**
  * SyncOneshotSupplier wraps an asynchronously provided, non-null object {@code T}, synchronously
  * notifying observers a single time when the dependency becomes available. Note that null is the
@@ -28,7 +30,7 @@ import org.chromium.build.annotations.Nullable;
  * @param <T> The type of the wrapped object.
  */
 @NullMarked
-public interface SyncOneshotSupplier<T> extends Supplier<T> {
+public interface SyncOneshotSupplier<T> extends Supplier<@Nullable T> {
     /**
      * Add a callback that's synchronously called when the object owned by this supplier is
      * available. If the object is already available, the callback will be called immediately.
@@ -36,6 +38,5 @@ public interface SyncOneshotSupplier<T> extends Supplier<T> {
      * @param callback The callback to be called.
      * @return The value for this supplier if already available. Null otherwise.
      */
-    @Nullable
-    T onAvailable(Callback<T> callback);
+    @Nullable T onAvailable(Callback<T> callback);
 }

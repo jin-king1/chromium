@@ -30,6 +30,7 @@
 
 #include "base/auto_reset.h"
 #include "base/format_macros.h"
+#include "base/not_fatal_until.h"
 #include "third_party/blink/public/mojom/indexeddb/indexeddb.mojom-blink.h"
 #include "third_party/blink/renderer/bindings/core/v8/active_script_wrappable_creation_key.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_idb_transaction_durability.h"
@@ -108,8 +109,8 @@ IDBTransaction::IDBTransaction(
   ExecutionContext::From(script_state)
       ->GetAgent()
       ->event_loop()
-      ->EnqueueEndOfMicrotaskCheckpointTask(WTF::BindOnce(
-          &IDBTransaction::SetActive, WrapPersistent(this), false));
+      ->EnqueueEndOfMicrotaskCheckpointTask(
+          BindOnce(&IDBTransaction::SetActive, WrapPersistent(this), false));
 
   database_->TransactionCreated(this);
 }
@@ -378,10 +379,10 @@ void IDBTransaction::commit(ExceptionState& exception_state) {
 }
 
 void IDBTransaction::RegisterRequest(IDBRequest* request) {
-  DCHECK(request);
-  DCHECK(!request_list_.Contains(request));
-  DCHECK_EQ(state_, kActive);
-  request_list_.insert(request);
+  CHECK(request, base::NotFatalUntil::M145);
+  CHECK_EQ(state_, kActive, base::NotFatalUntil::M145);
+  auto add_result = request_list_.insert(request);
+  CHECK(add_result.is_new_entry, base::NotFatalUntil::M145);
 }
 
 void IDBTransaction::UnregisterRequest(IDBRequest* request) {
@@ -541,12 +542,12 @@ void IDBTransaction::Put(int64_t object_store_id,
     }
   }
 
-  size_t arg_size =
-      value->DataSize() + primary_key->SizeEstimate() + index_keys_size;
+  size_t estimated_size =
+      value->Data().size() + primary_key->SizeEstimate() + index_keys_size;
 
   const size_t max_put_value_size = max_put_value_size_override_.value_or(
       mojom::blink::kIDBMaxMessageSize - mojom::blink::kIDBMaxMessageOverhead);
-  if (arg_size >= max_put_value_size) {
+  if (estimated_size >= max_put_value_size) {
     std::move(callback).Run(
         mojom::blink::IDBTransactionPutResult::NewErrorResult(
             mojom::blink::IDBError::New(
@@ -554,12 +555,23 @@ void IDBTransaction::Put(int64_t object_store_id,
                 String::Format("The serialized keys and/or value are too large"
                                " (size=%" PRIuS " bytes, max=%" PRIuS
                                " bytes).",
-                               arg_size, max_put_value_size))));
+                               estimated_size, max_put_value_size))));
     return;
   }
 
   remote_->Put(object_store_id, std::move(value), std::move(primary_key),
                put_mode, std::move(index_keys), std::move(callback));
+}
+
+void IDBTransaction::SetIndexKeys(int64_t object_store_id,
+                                  std::unique_ptr<IDBKey> primary_key,
+                                  IDBIndexKeys index_keys) {
+  remote_->SetIndexKeys(object_store_id, std::move(primary_key),
+                        std::move(index_keys));
+}
+
+void IDBTransaction::SetIndexReady(int64_t object_store_id) {
+  remote_->SetIndexKeysDone();
 }
 
 void IDBTransaction::FlushForTesting() {
@@ -675,7 +687,7 @@ DispatchEventResult IDBTransaction::DispatchEventInternal(Event& event) {
   DCHECK_NE(state_, kFinished);
   DCHECK(has_pending_activity_);
   DCHECK(GetExecutionContext());
-  DCHECK_EQ(event.target(), this);
+  DCHECK_EQ(event.RawTarget(), this);
   state_ = kFinished;
 
   DispatchEventResult dispatch_result =

@@ -13,6 +13,7 @@
 #include "base/run_loop.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "components/offline_pages/buildflags/buildflags.h"
 #include "content/browser/loader/response_head_update_params.h"
@@ -26,7 +27,8 @@
 #include "content/public/common/content_client.h"
 #include "content/public/common/content_features.h"
 #include "content/public/test/browser_task_environment.h"
-#include "content/test/test_content_browser_client.h"
+#include "content/public/test/test_content_browser_client.h"
+#include "net/base/network_handle.h"
 #include "net/cookies/site_for_cookies.h"
 #include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 #include "net/url_request/url_request_context.h"
@@ -81,7 +83,8 @@ class ServiceWorkerControlleeRequestHandlerTest : public testing::Test {
               url,
               net::DEFAULT_PRIORITY,
               &test->url_request_delegate_,
-              TRAFFIC_ANNOTATION_FOR_TESTS)),
+              TRAFFIC_ANNOTATION_FOR_TESTS,
+              net::handles::kInvalidNetworkHandle)),
           handler_(std::make_unique<ServiceWorkerControlleeRequestHandler>(
               test->context()->AsWeakPtr(),
               /*fetch_event_client_id=*/"",
@@ -194,8 +197,10 @@ class ServiceWorkerControlleeRequestHandlerTest : public testing::Test {
     version_ = new ServiceWorkerVersion(
         registration_.get(), script_url_, blink::mojom::ScriptType::kClassic,
         1L, mojo::PendingRemote<storage::mojom::ServiceWorkerLiveVersionRef>(),
-        context()->AsWeakPtr());
-    version_->set_policy_container_host(
+        context()->AsWeakPtr(),
+        /*creator_network_restrictions_id=*/std::nullopt,
+        /*network_restrictions_id=*/std::nullopt, PolicyContainerPolicies());
+    version_->SetPolicyContainerHost(
         base::MakeRefCounted<PolicyContainerHost>(PolicyContainerPolicies()));
 
     std::vector<storage::mojom::ServiceWorkerResourceRecordPtr> records;
@@ -239,13 +244,17 @@ class ServiceWorkerControlleeRequestHandlerTest : public testing::Test {
   std::vector<ScopedServiceWorkerClient> service_worker_clients_;
 };
 
-class ServiceWorkerTestContentBrowserClient : public TestContentBrowserClient {
+// A test ContentBrowserClient that unconditionally denies Service Worker access
+// to simulate the embedder blocking the Service Worker.
+class DisallowServiceWorkerContentBrowserClient
+    : public TestContentBrowserClient {
  public:
-  ServiceWorkerTestContentBrowserClient() = default;
+  DisallowServiceWorkerContentBrowserClient() = default;
   AllowServiceWorkerResult AllowServiceWorker(
       const GURL& scope,
       const net::SiteForCookies& site_for_cookies,
       const std::optional<url::Origin>& top_frame_origin,
+      const blink::StorageKey& storage_key,
       const GURL& script_url,
       content::BrowserContext* context) override {
     return AllowServiceWorkerResult::No();
@@ -260,7 +269,7 @@ TEST_F(ServiceWorkerControlleeRequestHandlerTest, Basic) {
   registration_->SetActiveVersion(version_);
   {
     base::RunLoop loop;
-    context()->registry()->StoreRegistration(
+    context()->registry().StoreRegistration(
         registration_.get(), version_.get(),
         base::BindOnce(
             [](base::OnceClosure closure,
@@ -306,7 +315,7 @@ TEST_F(ServiceWorkerControlleeRequestHandlerTest, DoesNotExist) {
 
 TEST_F(ServiceWorkerControlleeRequestHandlerTest, Error) {
   // Disabling the storage makes looking up the registration return an error.
-  context()->registry()->DisableStorageForTesting(base::DoNothing());
+  context()->registry().DisableStorageForTesting(base::DoNothing());
 
   // Conduct a main resource load.
   ServiceWorkerRequestTestResources test_resources(
@@ -323,7 +332,7 @@ TEST_F(ServiceWorkerControlleeRequestHandlerTest, Error) {
 }
 
 TEST_F(ServiceWorkerControlleeRequestHandlerTest, DisallowServiceWorker) {
-  ServiceWorkerTestContentBrowserClient test_browser_client;
+  DisallowServiceWorkerContentBrowserClient test_browser_client;
   ContentBrowserClient* old_browser_client =
       SetBrowserClientForTesting(&test_browser_client);
 
@@ -333,7 +342,7 @@ TEST_F(ServiceWorkerControlleeRequestHandlerTest, DisallowServiceWorker) {
   version_->SetStatus(ServiceWorkerVersion::ACTIVATED);
   registration_->SetActiveVersion(version_);
   base::RunLoop loop;
-  context()->registry()->StoreRegistration(
+  context()->registry().StoreRegistration(
       registration_.get(), version_.get(),
       base::BindLambdaForTesting(
           [&loop](blink::ServiceWorkerStatusCode status) { loop.Quit(); }));
@@ -355,6 +364,52 @@ TEST_F(ServiceWorkerControlleeRequestHandlerTest, DisallowServiceWorker) {
   SetBrowserClientForTesting(old_browser_client);
 }
 
+// When the embedder disallows the service worker, the registration loaded
+// from storage during navigation should not be associated with the client as
+// a matching registration. Otherwise navigator.serviceWorker.ready could
+// resolve for a client the embedder intended to block.
+TEST_F(ServiceWorkerControlleeRequestHandlerTest,
+       DisallowServiceWorkerDoesNotAddMatchingRegistration) {
+  DisallowServiceWorkerContentBrowserClient test_browser_client;
+  ContentBrowserClient* old_browser_client =
+      SetBrowserClientForTesting(&test_browser_client);
+
+  // Store an activated worker.
+  version_->set_fetch_handler_type(
+      ServiceWorkerVersion::FetchHandlerType::kNotSkippable);
+  version_->SetStatus(ServiceWorkerVersion::ACTIVATED);
+  registration_->SetActiveVersion(version_);
+  base::RunLoop loop;
+  context()->registry().StoreRegistration(
+      registration_.get(), version_.get(),
+      base::BindLambdaForTesting(
+          [&loop](blink::ServiceWorkerStatusCode status) { loop.Quit(); }));
+  loop.Run();
+  // Drop the live references so the registration must be loaded from storage
+  // by FindRegistrationForClientUrl rather than picked up via
+  // SyncMatchingRegistrations.
+  int64_t registration_id = registration_->id();
+  version_ = nullptr;
+  registration_ = nullptr;
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return !context()->GetLiveRegistration(registration_id); }));
+
+  // Conduct a main resource load.
+  ServiceWorkerRequestTestResources test_resources(
+      this, GURL("https://host/scope/doc"),
+      network::mojom::RequestDestination::kDocument);
+  test_resources.MaybeCreateLoader();
+  test_resources.WaitLoader();
+
+  // Verify we did not use the worker and did not expose the registration to
+  // the client.
+  EXPECT_FALSE(test_resources.loader());
+  EXPECT_FALSE(service_worker_client_->controller());
+  EXPECT_FALSE(service_worker_client_->MatchRegistration());
+
+  SetBrowserClientForTesting(old_browser_client);
+}
+
 TEST_F(ServiceWorkerControlleeRequestHandlerTest, InsecureContext) {
   // Reset the provider host as insecure.
   SetUpWithHelper(/*is_parent_frame_secure=*/false);
@@ -365,7 +420,7 @@ TEST_F(ServiceWorkerControlleeRequestHandlerTest, InsecureContext) {
   version_->SetStatus(ServiceWorkerVersion::ACTIVATED);
   registration_->SetActiveVersion(version_);
   base::RunLoop loop;
-  context()->registry()->StoreRegistration(
+  context()->registry().StoreRegistration(
       registration_.get(), version_.get(),
       base::BindLambdaForTesting(
           [&loop](blink::ServiceWorkerStatusCode status) { loop.Quit(); }));
@@ -392,7 +447,7 @@ TEST_F(ServiceWorkerControlleeRequestHandlerTest, ActivateWaitingVersion) {
   version_->SetStatus(ServiceWorkerVersion::INSTALLED);
   registration_->SetWaitingVersion(version_);
   base::RunLoop loop;
-  context()->registry()->StoreRegistration(
+  context()->registry().StoreRegistration(
       registration_.get(), version_.get(),
       base::BindLambdaForTesting(
           [&loop](blink::ServiceWorkerStatusCode status) { loop.Quit(); }));
@@ -422,7 +477,7 @@ TEST_F(ServiceWorkerControlleeRequestHandlerTest, InstallingRegistration) {
   version_->set_fetch_handler_type(
       ServiceWorkerVersion::FetchHandlerType::kNotSkippable);
   registration_->SetInstallingVersion(version_);
-  context()->registry()->NotifyInstallingRegistration(registration_.get());
+  context()->registry().NotifyInstallingRegistration(registration_.get());
 
   // Conduct a main resource load.
   ServiceWorkerRequestTestResources test_resources(
@@ -451,7 +506,7 @@ TEST_F(ServiceWorkerControlleeRequestHandlerTest, DeletedContainerHost) {
   version_->SetStatus(ServiceWorkerVersion::ACTIVATED);
   registration_->SetActiveVersion(version_);
   base::RunLoop loop;
-  context()->registry()->StoreRegistration(
+  context()->registry().StoreRegistration(
       registration_.get(), version_.get(),
       base::BindLambdaForTesting(
           [&loop](blink::ServiceWorkerStatusCode status) { loop.Quit(); }));
@@ -481,7 +536,7 @@ TEST_F(ServiceWorkerControlleeRequestHandlerTest, SkipServiceWorker) {
   version_->SetStatus(ServiceWorkerVersion::ACTIVATED);
   registration_->SetActiveVersion(version_);
   base::RunLoop loop;
-  context()->registry()->StoreRegistration(
+  context()->registry().StoreRegistration(
       registration_.get(), version_.get(),
       base::BindLambdaForTesting(
           [&loop](blink::ServiceWorkerStatusCode status) { loop.Quit(); }));
@@ -522,7 +577,7 @@ TEST_F(ServiceWorkerControlleeRequestHandlerTest, NullContext) {
   version_->SetStatus(ServiceWorkerVersion::ACTIVATED);
   registration_->SetActiveVersion(version_);
   base::RunLoop loop;
-  context()->registry()->StoreRegistration(
+  context()->registry().StoreRegistration(
       registration_.get(), version_.get(),
       base::BindLambdaForTesting(
           [&loop](blink::ServiceWorkerStatusCode status) { loop.Quit(); }));
@@ -568,7 +623,7 @@ TEST_F(ServiceWorkerControlleeRequestHandlerTest, FallbackWithOfflineHeader) {
   version_->SetStatus(ServiceWorkerVersion::ACTIVATED);
   registration_->SetActiveVersion(version_);
   base::RunLoop loop;
-  context()->registry()->StoreRegistration(
+  context()->registry().StoreRegistration(
       registration_.get(), version_.get(),
       base::BindLambdaForTesting(
           [&loop](blink::ServiceWorkerStatusCode status) { loop.Quit(); }));
@@ -593,7 +648,7 @@ TEST_F(ServiceWorkerControlleeRequestHandlerTest, FallbackWithNoOfflineHeader) {
   version_->SetStatus(ServiceWorkerVersion::ACTIVATED);
   registration_->SetActiveVersion(version_);
   base::RunLoop loop;
-  context()->registry()->StoreRegistration(
+  context()->registry().StoreRegistration(
       registration_.get(), version_.get(),
       base::BindLambdaForTesting(
           [&loop](blink::ServiceWorkerStatusCode status) { loop.Quit(); }));

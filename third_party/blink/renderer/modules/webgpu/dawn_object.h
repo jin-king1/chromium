@@ -30,6 +30,8 @@ class EventLoop;
 
 class GPUDevice;
 
+bool IsWebGPUMultithreadedWorker(ExecutionContext* execution_context);
+
 // This class allows objects to hold onto a DawnControlClientHolder.
 // The DawnControlClientHolder is used to hold the WebGPUInterface and keep
 // track of whether or not the client has been destroyed. If the client is
@@ -53,13 +55,15 @@ class DawnObjectBase {
   // Flush commands up until now on this object's parent device immediately.
   void FlushNow();
 
+  wgpu::Instance GetInstance() const;
+
   // GPUObjectBase mixin implementation
   const String& label() const { return label_; }
   void setLabel(const String& value);
 
-  virtual void setLabelImpl(const String& value) = 0;
-
  private:
+  virtual void SetLabelImpl(std::string_view value) = 0;
+
   scoped_refptr<DawnControlClientHolder> dawn_control_client_;
   String label_;
 };

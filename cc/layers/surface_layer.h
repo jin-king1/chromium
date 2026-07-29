@@ -61,8 +61,6 @@ class CC_EXPORT SurfaceLayer : public Layer {
 
   void SetOverrideChildPaintFlags(bool override_child_paint_flags);
 
-  void SetMayContainVideo(bool may_contain_video);
-
   // Layer overrides.
   std::unique_ptr<LayerImpl> CreateLayerImpl(
       LayerTreeImpl* tree_impl) const override;
@@ -86,11 +84,9 @@ class CC_EXPORT SurfaceLayer : public Layer {
   explicit SurfaceLayer(UpdateSubmissionStateCB);
   bool HasDrawableContent() const override;
 
-  void PushDirtyPropertiesTo(
-      LayerImpl* layer,
-      uint8_t dirty_flag,
-      const CommitState& commit_state,
-      const ThreadUnsafeCommitState& unsafe_state) override;
+  void PushDirtyPropertiesTo(LayerImpl* layer,
+                             uint8_t dirty_flag,
+                             CommitState& commit_state) override;
 
  private:
   ~SurfaceLayer() override;
@@ -98,7 +94,6 @@ class CC_EXPORT SurfaceLayer : public Layer {
   ProtectedSequenceWritable<UpdateSubmissionStateCB>
       update_submission_state_callback_;
 
-  ProtectedSequenceReadable<bool> may_contain_video_;
   ProtectedSequenceReadable<viz::SurfaceRange> surface_range_;
   ProtectedSequenceWritable<std::optional<uint32_t>> deadline_in_frames_;
 

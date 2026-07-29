@@ -19,43 +19,24 @@
 
 #if BUILDFLAG(ENABLE_PDF)
 #include "chrome/browser/pdf/pdf_extension_util.h"
-
-#if BUILDFLAG(IS_CHROMEOS)
-#include "chrome/browser/profiles/profile.h"
-#include "chrome/common/pref_names.h"
-#include "chromeos/ash/components/browser_context_helper/browser_context_types.h"
-#include "components/prefs/pref_service.h"
-#endif  // BUILDFLAG(IS_CHROMEOS)
 #endif  // BUILDFLAG(ENABLE_PDF)
 
 // To add a new component to this API, simply:
+//
 // 1. Add your component to the Component enum in
-//      chrome/common/extensions/api/resources_private.idl
-// 2. Create an AddStringsForMyComponent(base::Value::Dict * dict) method.
-// 3. Tie in that method to the switch statement in Run()
+//    chrome/common/extensions/api/resources_private.idl
+// 2. Create a `base::DictValue GetStringsForMyComponent()` method.
+// 3. Tie in that method to the switch statement in `Run()`.
 
 namespace extensions {
 
 namespace {
 
-void AddStringsForIdentity(base::Value::Dict* dict) {
-  dict->Set("window-title",
-            l10n_util::GetStringUTF16(IDS_EXTENSION_CONFIRM_PERMISSIONS));
+base::DictValue GetStringsForIdentity() {
+  return base::DictValue().Set(
+      "window-title",
+      l10n_util::GetStringUTF16(IDS_EXTENSION_CONFIRM_PERMISSIONS));
 }
-
-#if BUILDFLAG(ENABLE_PDF)
-bool IsPdfAnnotationsEnabled(content::BrowserContext* context) {
-#if BUILDFLAG(IS_CHROMEOS)
-  PrefService* prefs =
-      context ? Profile::FromBrowserContext(context)->GetPrefs() : nullptr;
-  if (prefs && prefs->IsManagedPreference(prefs::kPdfAnnotationsEnabled) &&
-      !prefs->GetBoolean(prefs::kPdfAnnotationsEnabled)) {
-    return false;
-  }
-#endif  // BUILDFLAG(IS_CHROMEOS)
-  return true;
-}
-#endif  // BUILDFLAG(ENABLE_PDF)
 
 }  // namespace
 
@@ -68,27 +49,18 @@ ResourcesPrivateGetStringsFunction::~ResourcesPrivateGetStringsFunction() =
     default;
 
 ExtensionFunction::ResponseAction ResourcesPrivateGetStringsFunction::Run() {
-  std::optional<get_strings::Params> params =
-      get_strings::Params::Create(args());
-  base::Value::Dict dict;
+  get_strings::Params params = get_strings::Params::Create(args()).value();
+  base::DictValue dict;
 
-  api::resources_private::Component component = params->component;
-
-  switch (component) {
+  switch (params.component) {
     case api::resources_private::Component::kIdentity:
-      AddStringsForIdentity(&dict);
+      dict = GetStringsForIdentity();
       break;
     case api::resources_private::Component::kPdf: {
 #if BUILDFLAG(ENABLE_PDF)
-      pdf_extension_util::AddStrings(pdf_extension_util::PdfViewerContext::kAll,
-                                     &dict);
-      bool enable_printing = true;
-#if BUILDFLAG(IS_CHROMEOS)
-      enable_printing = ash::IsUserBrowserContext(browser_context());
-#endif  // BUILDFLAG(IS_CHROMEOS)
-
-      pdf_extension_util::AddAdditionalData(
-          enable_printing, IsPdfAnnotationsEnabled(browser_context()), &dict);
+      dict = pdf_extension_util::GetStrings(
+          pdf_extension_util::PdfViewerContext::kAll);
+      dict.Merge(pdf_extension_util::GetAdditionalData(GetSenderWebContents()));
 #endif  // BUILDFLAG(ENABLE_PDF)
       break;
     }
@@ -96,10 +68,8 @@ ExtensionFunction::ResponseAction ResourcesPrivateGetStringsFunction::Run() {
       NOTREACHED();
   }
 
-  std::string app_locale =
-      ExtensionsBrowserClient::Get()->GetApplicationLocale();
-  webui::SetLoadTimeDataDefaults(app_locale, &dict);
-
+  webui::SetLoadTimeDataDefaults(
+      ExtensionsBrowserClient::Get()->GetApplicationLocale(), &dict);
   return RespondNow(WithArguments(std::move(dict)));
 }
 

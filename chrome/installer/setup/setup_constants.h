@@ -26,6 +26,8 @@ extern const wchar_t kMediaPlayerRegPath[];
 
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
 extern const wchar_t kOsUpdateHandlerExe[];
+// Switch that forces the installer to skip OS upgrade checks.
+extern const char kPEHForceInstall[];
 #endif
 
 inline constexpr std::wstring_view kElevatedTracingServiceExe =
@@ -42,6 +44,8 @@ inline constexpr std::string_view kDeveloper = "developer";
 
 extern const char kSetDisplayVersionProduct[];
 extern const char kSetDisplayVersionValue[];
+inline constexpr std::string_view kSetEstimatedSizeValue =
+    "set-estimated-size-value";
 extern const char kStartupEventHandle[];
 
 }  // namespace switches

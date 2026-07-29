@@ -18,10 +18,11 @@
 #include "base/containers/fixed_flat_set.h"
 #include "base/files/file_enumerator.h"
 #include "base/files/file_path.h"
+#include "base/strings/string_util.h"
 #include "base/system/sys_info.h"
 #include "chrome/browser/ash/drive/drive_integration_service.h"
+#include "chrome/browser/ash/drive/drive_integration_service_factory.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
-#include "chrome/browser/policy/profile_policy_connector.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/common/chrome_paths_internal.h"
@@ -227,8 +228,7 @@ bool IsOobeDrivePinningAvailable() {
 // DrivePinningScreen to the screen_manager when initializing the
 // wizardController.
 bool IsOobeDrivePinningScreenEnabled() {
-  return base::FeatureList::IsEnabled(ash::features::kOobeDrivePinning) &&
-         ash::features::IsOobeChoobeEnabled();
+  return ash::features::IsOobeChoobeEnabled();
 }
 
 bool IsDriveFsMirrorSyncAvailable(const Profile* const profile) {

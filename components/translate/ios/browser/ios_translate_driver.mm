@@ -78,7 +78,8 @@ void IOSTranslateDriver::Initialize(
       language::IOSLanguageDetectionTabHelper::FromWebState(web_state_));
 
   TranslateController::CreateForWebState(web_state_);
-  TranslateController::FromWebState(web_state_)->set_observer(this);
+  translate_controller_observation_.Observe(
+      TranslateController::FromWebState(web_state_));
 }
 
 IOSTranslateDriver::~IOSTranslateDriver() {
@@ -159,8 +160,8 @@ void IOSTranslateDriver::OnIsPageTranslatedChanged() {
 
 void IOSTranslateDriver::PrepareToTranslatePage(
     int page_seq_no,
-    const std::string& original_source_lang,
-    const std::string& target_lang,
+    std::string_view original_source_lang,
+    std::string_view target_lang,
     bool triggered_from_menu) {
   if (!IsPageValid(page_seq_no))
     return;  // The user navigated away.
@@ -178,15 +179,15 @@ void IOSTranslateDriver::PrepareToTranslatePage(
 }
 
 void IOSTranslateDriver::TranslatePage(int page_seq_no,
-                                       const std::string& translate_script,
-                                       const std::string& source_lang,
-                                       const std::string& target_lang) {
+                                       std::string_view translate_script,
+                                       std::string_view source_lang,
+                                       std::string_view target_lang) {
   if (!IsPageValid(pending_page_seq_no_))
     return;  // The user navigated away.
-  source_language_ = source_lang;
-  target_language_ = target_lang;
+  source_language_ = std::string(source_lang);
+  target_language_ = std::string(target_lang);
   TranslateController::FromWebState(web_state_)
-      ->InjectTranslateScript(translate_script);
+      ->InjectTranslateScript(std::string(translate_script));
 }
 
 void IOSTranslateDriver::OnTranslationTimeout(int page_seq_no) {
@@ -308,8 +309,14 @@ void IOSTranslateDriver::OnTranslateComplete(TranslateErrors error_type,
   timeout_timer_.Stop();
 }
 
+void IOSTranslateDriver::TranslateControllerWasDestroyed(
+    TranslateController* translate_controller) {
+  StopAllObservations();
+}
+
 void IOSTranslateDriver::StopAllObservations() {
   timeout_timer_.Stop();
+  translate_controller_observation_.Reset();
   language_detection_observation_.Reset();
   web_state_observation_.Reset();
   web_state_ = nullptr;

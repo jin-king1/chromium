@@ -4,10 +4,8 @@
 
 package org.chromium.chrome.test.transit.settings;
 
-import org.chromium.base.test.transit.Elements;
 import org.chromium.base.test.transit.FragmentElement;
 import org.chromium.base.test.transit.Station;
-import org.chromium.base.test.transit.Transition;
 import org.chromium.chrome.browser.settings.ChromeBaseSettingsFragment;
 import org.chromium.chrome.browser.settings.SettingsActivity;
 
@@ -18,30 +16,18 @@ import org.chromium.chrome.browser.settings.SettingsActivity;
  */
 public class SettingsStation<FragmentT extends ChromeBaseSettingsFragment>
         extends Station<SettingsActivity> {
-    private final Class<FragmentT> mFragmentClass;
-    private FragmentElement<FragmentT, SettingsActivity> mFragmentElement;
+    public final FragmentElement<FragmentT, SettingsActivity> fragmentElement;
 
     public SettingsStation(Class<FragmentT> fragmentClass) {
         super(SettingsActivity.class);
-        mFragmentClass = fragmentClass;
-    }
-
-    @Override
-    public void declareElements(Elements.Builder elements) {
-        super.declareElements(elements);
-        mFragmentElement =
-                elements.declareElement(new FragmentElement<>(mFragmentClass, mActivityElement));
+        fragmentElement = declareElement(new FragmentElement<>(fragmentClass, mActivityElement));
     }
 
     public PreferenceFacility scrollToPref(String prefKey) {
-        assertSuppliersCanBeUsed();
-        String title = mFragmentElement.get().findPreference(prefKey).getTitle().toString();
-        return enterFacilitySync(
-                new PreferenceFacility(title),
-                Transition.newOptions()
-                        .withPossiblyAlreadyFulfilled()
-                        .withRunTriggerOnUiThread()
-                        .build(),
-                () -> mFragmentElement.get().scrollToPreference(prefKey));
+        assertInPhase(Phase.ACTIVE);
+        String title = fragmentElement.value().findPreference(prefKey).getTitle().toString();
+        return runOnUiThreadTo(() -> fragmentElement.value().scrollToPreference(prefKey))
+                .withPossiblyAlreadyFulfilled()
+                .enterFacility(new PreferenceFacility(title));
     }
 }

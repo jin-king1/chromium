@@ -2,8 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/chromeos/ui_mode.gni")
-
 assert(is_chromeos)
 
 static_library("login_screen_ui") {
@@ -45,6 +43,7 @@ source_set("unit_tests") {
     "//chrome/test:test_support",
     "//chromeos/ash/components/install_attributes:test_support",
     "//components/session_manager/core",
+    "//components/session_manager/core:test_support",
     "//components/version_info",
     "//content/test:test_support",
     "//extensions/browser",
@@ -66,6 +65,7 @@ source_set("browser_tests") {
     "//ash/public/cpp",
     "//base",
     "//chrome/browser/ash/policy/login:test_support",
+    "//chrome/browser/chromeos/extensions/login_screen:test_support",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/ui",
     "//chrome/browser/ui/ash/login/login_screen_extension_ui",

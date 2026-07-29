@@ -5,10 +5,10 @@
 package org.chromium.chrome.browser.layouts;
 
 import org.chromium.base.Callback;
-import org.chromium.base.supplier.ObservableSupplier;
-import org.chromium.base.supplier.ObservableSupplierImpl;
+import org.chromium.base.supplier.NonNullObservableSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.layouts.scene_layer.SceneLayer;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel;
@@ -26,30 +26,15 @@ import java.util.Set;
  */
 @NullMarked
 public class CompositorModelChangeProcessor<V extends SceneLayer> {
-    /**
-     * A {@link ObservableSupplier} for the newly generated frame. In addition, this has ability to
-     * request another frame.
-     */
-    public static class FrameRequestSupplier extends ObservableSupplierImpl<Long> {
-        private final Runnable mRenderRequestRunnable;
-
-        public FrameRequestSupplier(Runnable renderRequestRunnable) {
-            mRenderRequestRunnable = renderRequestRunnable;
-        }
-
-        /** Request to generate a new frame. */
-        void request() {
-            mRenderRequestRunnable.run();
-        }
-    }
-
     private final V mView;
     private final PropertyModel mModel;
     private final ViewBinder<PropertyModel, V, @Nullable PropertyKey> mViewBinder;
-    private final FrameRequestSupplier mFrameSupplier;
+    private final NonNullObservableSupplier<Long> mFrameSupplier;
+    private final Runnable mRequestFrameRunnable;
     private final PropertyObservable.PropertyObserver<PropertyKey> mPropertyObserver;
     private final Callback<Long> mNewFrameCallback;
     private final @Nullable Set<PropertyKey> mExclusions;
+    private boolean mViewOutdated;
 
     /**
      * Construct a new CompositorModelChangeProcessor.
@@ -64,16 +49,21 @@ public class CompositorModelChangeProcessor<V extends SceneLayer> {
     private CompositorModelChangeProcessor(
             PropertyModel model,
             V view,
-            ViewBinder<PropertyModel, V, PropertyKey> viewBinder,
-            FrameRequestSupplier frameSupplier,
+            ViewBinder<PropertyModel, V, @Nullable PropertyKey> viewBinder,
+            NonNullObservableSupplier<Long> frameSupplier,
+            Runnable requestFrameRunnable,
             boolean performInitialBind,
             @Nullable Set<PropertyKey> exclusions) {
         mModel = model;
         mView = view;
         mViewBinder = viewBinder;
         mFrameSupplier = frameSupplier;
-        mNewFrameCallback = this::onNewFrame;
-        mFrameSupplier.addObserver(mNewFrameCallback);
+        mRequestFrameRunnable = requestFrameRunnable;
+        mNewFrameCallback =
+                ChromeFeatureList.sMvcUpdateViewWhenModelChanged.isEnabled()
+                        ? this::onNewFrameUpdateWhenOutdated
+                        : this::onNewFrame;
+        mFrameSupplier.addSyncObserverAndPostIfNonNull(mNewFrameCallback);
         mExclusions = exclusions;
 
         if (performInitialBind) {
@@ -99,12 +89,19 @@ public class CompositorModelChangeProcessor<V extends SceneLayer> {
     public static <V extends SceneLayer> CompositorModelChangeProcessor<V> create(
             PropertyModel model,
             V view,
-            ViewBinder<PropertyModel, V, PropertyKey> viewBinder,
-            FrameRequestSupplier frameSupplier,
+            ViewBinder<PropertyModel, V, @Nullable PropertyKey> viewBinder,
+            NonNullObservableSupplier<Long> frameSupplier,
+            Runnable requestFrameRunnable,
             boolean performInitialBind,
             @Nullable Set<PropertyKey> exclusions) {
-        return new CompositorModelChangeProcessor(
-                model, view, viewBinder, frameSupplier, performInitialBind, exclusions);
+        return new CompositorModelChangeProcessor<>(
+                model,
+                view,
+                viewBinder,
+                frameSupplier,
+                requestFrameRunnable,
+                performInitialBind,
+                exclusions);
     }
 
     /**
@@ -120,10 +117,18 @@ public class CompositorModelChangeProcessor<V extends SceneLayer> {
     public static <V extends SceneLayer> CompositorModelChangeProcessor<V> create(
             PropertyModel model,
             V view,
-            ViewBinder<PropertyModel, V, PropertyKey> viewBinder,
-            FrameRequestSupplier frameSupplier,
+            ViewBinder<PropertyModel, V, @Nullable PropertyKey> viewBinder,
+            NonNullObservableSupplier<Long> frameSupplier,
+            Runnable requestFrameRunnable,
             boolean performInitialBind) {
-        return create(model, view, viewBinder, frameSupplier, performInitialBind, null);
+        return create(
+                model,
+                view,
+                viewBinder,
+                frameSupplier,
+                requestFrameRunnable,
+                performInitialBind,
+                null);
     }
 
     /**
@@ -138,9 +143,10 @@ public class CompositorModelChangeProcessor<V extends SceneLayer> {
     public static <V extends SceneLayer> CompositorModelChangeProcessor<V> create(
             PropertyModel model,
             V view,
-            ViewBinder<PropertyModel, V, PropertyKey> viewBinder,
-            FrameRequestSupplier frameSupplier) {
-        return create(model, view, viewBinder, frameSupplier, true);
+            ViewBinder<PropertyModel, V, @Nullable PropertyKey> viewBinder,
+            NonNullObservableSupplier<Long> frameSupplier,
+            Runnable requestFrameRunnable) {
+        return create(model, view, viewBinder, frameSupplier, requestFrameRunnable, true);
     }
 
     /** Clean up members. */
@@ -153,6 +159,13 @@ public class CompositorModelChangeProcessor<V extends SceneLayer> {
         pushUpdate();
     }
 
+    private void onNewFrameUpdateWhenOutdated(Long time) {
+        if (mViewOutdated) {
+            pushUpdate();
+            mViewOutdated = false;
+        }
+    }
+
     private void pushUpdate() {
         mViewBinder.bind(mModel, mView, null);
     }
@@ -163,7 +176,8 @@ public class CompositorModelChangeProcessor<V extends SceneLayer> {
         if (mExclusions != null && mExclusions.contains(propertyKey)) {
             return;
         }
+        mViewOutdated = true;
 
-        mFrameSupplier.request();
+        mRequestFrameRunnable.run();
     }
 }

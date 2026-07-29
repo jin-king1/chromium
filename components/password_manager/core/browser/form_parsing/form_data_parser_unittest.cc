@@ -13,6 +13,7 @@
 #include <string_view>
 #include <utility>
 
+#include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
@@ -88,7 +89,6 @@ struct FieldDataDescription {
   autofill::FieldType server_predicted_type = autofill::MAX_VALID_FIELD_TYPE;
   bool is_server_override = false;
   autofill::FieldType model_predicted_type = autofill::MAX_VALID_FIELD_TYPE;
-  bool may_use_prefilled_placeholder = false;
   // If not -1, indicates on which rank among predicted usernames this should
   // be. Unused ranks will be padded with unique IDs (not found in any fields).
   int predicted_username = -1;
@@ -108,8 +108,6 @@ struct FormParsingTestCase {
   // null means no checking
   raw_ptr<const AlternativeElementVector> all_alternative_passwords = nullptr;
   raw_ptr<const AlternativeElementVector> all_alternative_usernames = nullptr;
-  bool server_side_classification_successful = true;
-  bool username_may_use_prefilled_placeholder = false;
   std::optional<FormDataParser::ReadonlyPasswordFields> readonly_status;
   std::optional<FormDataParser::ReadonlyPasswordFields>
       readonly_status_for_saving;
@@ -379,8 +377,6 @@ class FormParserTest : public testing::Test {
         server_predictions->fields.emplace_back(
             renderer_id, autofill::FieldSignature(123),
             field_description.server_predicted_type,
-            /*may_use_prefilled_placeholder=*/
-            field_description.may_use_prefilled_placeholder,
             field_description.is_server_override);
       }
       if (model_predictions && (field_description.model_predicted_type !=
@@ -448,12 +444,6 @@ class FormParserTest : public testing::Test {
           EXPECT_FALSE(parsing_result.password_form->blocked_by_user);
           EXPECT_EQ(PasswordForm::Type::kFormSubmission,
                     parsing_result.password_form->type);
-          EXPECT_EQ(test_case.server_side_classification_successful,
-                    parsing_result.password_form
-                        ->server_side_classification_successful);
-          EXPECT_EQ(test_case.username_may_use_prefilled_placeholder,
-                    parsing_result.password_form
-                        ->username_may_use_prefilled_placeholder);
           EXPECT_EQ(test_case.submission_event,
                     parsing_result.password_form->submission_event);
           if (test_case.is_new_password_reliable &&
@@ -1508,17 +1498,13 @@ TEST_F(FormParserTest, ServerHints) {
                   {.role = ElementRole::USERNAME,
                    .form_control_type = FormControlType::kInputText,
                    .server_predicted_type =
-                       autofill::USERNAME_AND_EMAIL_ADDRESS,
-                   .may_use_prefilled_placeholder = true},
+                       autofill::USERNAME_AND_EMAIL_ADDRESS},
                   {.form_control_type = FormControlType::kInputText},
                   {.form_control_type = FormControlType::kInputPassword},
                   {.role = ElementRole::CURRENT_PASSWORD,
                    .form_control_type = FormControlType::kInputPassword,
-                   .server_predicted_type = autofill::PASSWORD,
-                   .may_use_prefilled_placeholder = true},
+                   .server_predicted_type = autofill::PASSWORD},
               },
-          .server_side_classification_successful = true,
-          .username_may_use_prefilled_placeholder = true,
       },
       {
           .description_for_logging = "Longer server predictions work",
@@ -1554,23 +1540,6 @@ TEST_F(FormParserTest, ServerHints) {
                   {.role = ElementRole::CURRENT_PASSWORD,
                    .form_control_type = FormControlType::kInputPassword},
               },
-      },
-      {
-          .description_for_logging = "Username not a placeholder",
-          .fields =
-              {
-                  {.role = ElementRole::USERNAME,
-                   .form_control_type = FormControlType::kInputText,
-                   .server_predicted_type =
-                       autofill::USERNAME_AND_EMAIL_ADDRESS,
-                   .may_use_prefilled_placeholder = false},
-                  {.role = ElementRole::CURRENT_PASSWORD,
-                   .form_control_type = FormControlType::kInputPassword,
-                   .server_predicted_type = autofill::PASSWORD,
-                   .may_use_prefilled_placeholder = false},
-              },
-          .server_side_classification_successful = true,
-          .username_may_use_prefilled_placeholder = false,
       },
   });
 }
@@ -3807,7 +3776,6 @@ TEST_F(FormParserTest, PasswordFieldIsMaskedMetric_NotRecorded) {
 }
 
 TEST_F(FormParserTest, UnrelatedFieldsAnyFieldIsMaskedMetric_Recorded) {
-  base::HistogramTester histogram_tester;
   ukm::TestAutoSetUkmRecorder test_ukm_recorder;
   CheckTestData({{
       .fields =
@@ -3823,8 +3791,6 @@ TEST_F(FormParserTest, UnrelatedFieldsAnyFieldIsMaskedMetric_Recorded) {
                .model_predicted_type = autofill::UNKNOWN_TYPE},
           },
   }});
-  histogram_tester.ExpectUniqueSample(
-      "PasswordManager.Parsing.UnrelatedFields.AnyFieldIsMasked", true, 1);
 
   auto ukm_entries =
       test_ukm_recorder.GetEntriesByName("PasswordManager.Parsing");
@@ -3834,7 +3800,6 @@ TEST_F(FormParserTest, UnrelatedFieldsAnyFieldIsMaskedMetric_Recorded) {
 }
 
 TEST_F(FormParserTest, UnrelatedFieldsAnyFieldIsMaskedMetric_NotRecorded) {
-  base::HistogramTester histogram_tester;
   ukm::TestAutoSetUkmRecorder test_ukm_recorder;
   CheckTestData({{
       .fields =
@@ -3849,9 +3814,6 @@ TEST_F(FormParserTest, UnrelatedFieldsAnyFieldIsMaskedMetric_NotRecorded) {
                .model_predicted_type = autofill::PASSWORD},
           },
   }});
-  // No unrelated fields - no metric.
-  histogram_tester.ExpectTotalCount(
-      "PasswordManager.Parsing.UnrelatedFields.AnyFieldIsMasked", 0);
 
   auto ukm_entries =
       test_ukm_recorder.GetEntriesByName("PasswordManager.Parsing");
@@ -3925,6 +3887,134 @@ TEST_F(FormParserTest, ModelPredictionsAndManualOverrides) {
               },
       },
   });
+}
+
+TEST_F(FormParserTest, ModelPredictions_WebAuthnRationalization) {
+  CheckTestData({
+      {
+          .description_for_logging = "Mispredicted login form.",
+          .fields =
+              {
+                  {.role = ElementRole::USERNAME,
+                   .autocomplete_attribute = "username webauthn",
+                   .value = u"username",
+                   .form_control_type = FormControlType::kInputText,
+                   .model_predicted_type = autofill::UNKNOWN_TYPE},
+                  {.role = ElementRole::CURRENT_PASSWORD,
+                   .autocomplete_attribute = "current-password webauthn",
+                   .value = u"password",
+                   .form_control_type = FormControlType::kInputPassword,
+                   .model_predicted_type = autofill::UNKNOWN_TYPE},
+              },
+          .accepts_webauthn_credentials = true,
+      },
+      {
+          .description_for_logging =
+              "Single field tagged with autofill=\"webauthn\"",
+          .fields =
+              {
+                  {.role_filling = ElementRole::WEBAUTHN,
+                   .autocomplete_attribute = "webauthn",
+                   .value = u"rosalina",
+                   .name = u"username",
+                   .form_control_type = FormControlType::kInputText,
+                   .model_predicted_type = autofill::UNKNOWN_TYPE},
+              },
+          .accepts_webauthn_credentials = true,
+      },
+  });
+}
+
+TEST_F(FormParserTest, ConflictingUsernameAndPassword) {
+  CheckTestData({{
+      .description_for_logging =
+          "Conflicting model (USERNAME) and server (PASSWORD) predictions on "
+          "the same field.",
+      .fields =
+          {
+              {.role = ElementRole::CURRENT_PASSWORD,
+               .form_control_type = FormControlType::kInputPassword,
+               .server_predicted_type = autofill::PASSWORD,
+               .model_predicted_type = autofill::USERNAME},
+              {.role = ElementRole::NEW_PASSWORD,
+               .form_control_type = FormControlType::kInputPassword,
+               .server_predicted_type = autofill::PASSWORD,
+               .model_predicted_type = autofill::MAX_VALID_FIELD_TYPE},
+          },
+  }});
+}
+
+TEST_F(FormParserTest, ConflictingPasswordAndNewPasswordWithConfirmation) {
+  CheckTestData({{
+      .description_for_logging =
+          "Conflicting model (NEW_PASSWORD) and server (PASSWORD) predictions "
+          "on the same field, with confirmation present.",
+      .fields =
+          {
+              {.role = ElementRole::CURRENT_PASSWORD,
+               .form_control_type = FormControlType::kInputPassword,
+               .server_predicted_type = autofill::PASSWORD,
+               .model_predicted_type = autofill::ACCOUNT_CREATION_PASSWORD},
+              {.role = ElementRole::NEW_PASSWORD,
+               .form_control_type = FormControlType::kInputPassword,
+               .server_predicted_type = autofill::CONFIRMATION_PASSWORD,
+               .model_predicted_type = autofill::MAX_VALID_FIELD_TYPE},
+          },
+  }});
+}
+
+TEST_F(FormParserTest, ConflictingPasswordAndNewPasswordWithoutConfirmation) {
+  CheckTestData({{
+      .description_for_logging =
+          "Conflicting model (NEW_PASSWORD) and server (PASSWORD) predictions "
+          "on the same field, without confirmation.",
+      .fields =
+          {
+              {.role = ElementRole::CURRENT_PASSWORD,
+               .form_control_type = FormControlType::kInputPassword,
+               .server_predicted_type = autofill::PASSWORD,
+               .model_predicted_type = autofill::ACCOUNT_CREATION_PASSWORD},
+              {.role = ElementRole::NEW_PASSWORD,
+               .form_control_type = FormControlType::kInputPassword,
+               .server_predicted_type = autofill::UNKNOWN_TYPE,
+               .model_predicted_type = autofill::MAX_VALID_FIELD_TYPE},
+          },
+  }});
+}
+
+TEST_F(FormParserTest, ConflictingNewPasswordAndConfirmationPassword) {
+  CheckTestData({{
+      .description_for_logging =
+          "Conflicting model (NEW_PASSWORD) and server (CONFIRMATION_PASSWORD) "
+          "predictions on the same field.",
+      .fields =
+          {
+              {.role = ElementRole::CURRENT_PASSWORD,
+               .form_control_type = FormControlType::kInputPassword,
+               .server_predicted_type = autofill::CONFIRMATION_PASSWORD,
+               .model_predicted_type = autofill::ACCOUNT_CREATION_PASSWORD},
+              {.role = ElementRole::NEW_PASSWORD,
+               .form_control_type = FormControlType::kInputPassword,
+               .server_predicted_type = autofill::UNKNOWN_TYPE,
+               .model_predicted_type = autofill::MAX_VALID_FIELD_TYPE},
+          },
+  }});
+}
+
+TEST_F(FormParserTest, HeuristicsConflictSanitizesRole) {
+  CheckTestData({{
+      .description_for_logging =
+          "Conflicting heuristic prediction (PASSWORD) and HTML context "
+          "prediction (USERNAME) on the same field.",
+      .fields =
+          {
+              {.role = ElementRole::CURRENT_PASSWORD,
+               .form_control_type = FormControlType::kInputPassword,
+               .predicted_username = 0},
+              {.role = ElementRole::NEW_PASSWORD,
+               .form_control_type = FormControlType::kInputPassword},
+          },
+  }});
 }
 
 }  // namespace

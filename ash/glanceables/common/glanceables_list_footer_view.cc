@@ -7,21 +7,21 @@
 #include <algorithm>
 #include <memory>
 #include <string>
+#include <utility>
 
 #include "ash/constants/ash_features.h"
 #include "ash/glanceables/common/glanceables_view_id.h"
 #include "ash/strings/grit/ash_strings.h"
 #include "ash/style/typography.h"
 #include "base/check_op.h"
-#include "base/functional/callback_forward.h"
 #include "base/strings/string_number_conversions.h"
-#include "base/types/cxx23_to_underlying.h"
 #include "components/vector_icons/vector_icons.h"
 #include "ui/accessibility/ax_enums.mojom-shared.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/models/image_model.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/chromeos/styles/cros_tokens_color_mappings.h"
 #include "ui/gfx/text_constants.h"
 #include "ui/views/accessibility/view_accessibility.h"
@@ -31,7 +31,7 @@
 #include "ui/views/controls/label.h"
 #include "ui/views/layout/flex_layout_types.h"
 #include "ui/views/layout/layout_types.h"
-#include "ui/views/metadata/view_factory_internal.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/view.h"
 #include "ui/views/view_class_properties.h"
 
@@ -61,12 +61,14 @@ class SeeAllButton : public views::LabelButton {
     }
 
     SetCallback(std::move(on_see_all_pressed));
-    SetID(base::to_underlying(GlanceablesViewId::kListFooterSeeAllButton));
+    SetID(std::to_underlying(GlanceablesViewId::kListFooterSeeAllButton));
     SetHorizontalAlignment(gfx::HorizontalAlignment::ALIGN_RIGHT);
-    SetImageModel(
-        views::Button::STATE_NORMAL,
-        ui::ImageModel::FromVectorIcon(vector_icons::kLaunchIcon,
-                                       cros_tokens::kCrosSysOnSurface));
+    SetImageModel(views::Button::STATE_NORMAL,
+                  ui::ImageModel::FromVectorIcon(
+                      ::features::IsRoundedIconsEnabled()
+                          ? vector_icons::kOpenInNewFlippableIcon
+                          : vector_icons::kLaunchOldIcon,
+                      cros_tokens::kCrosSysOnSurface));
     SetImageLabelSpacing(kSeeAllIconLabelSpacing);
     SetTextColor(views::Button::STATE_NORMAL, cros_tokens::kCrosSysOnSurface);
     TypographyProvider::Get()->StyleLabel(TypographyToken::kCrosButton2,
@@ -91,7 +93,7 @@ GlanceablesListFooterView::GlanceablesListFooterView(
   const auto* const typography_provider = TypographyProvider::Get();
   title_label_ = AddChildView(
       views::Builder<views::Label>()
-          .SetID(base::to_underlying(GlanceablesViewId::kListFooterTitleLabel))
+          .SetID(std::to_underlying(GlanceablesViewId::kListFooterTitleLabel))
           .SetEnabledColor(cros_tokens::kCrosSysSecondary)
           .SetFontList(typography_provider->ResolveTypographyToken(
               TypographyToken::kCrosBody2))

@@ -34,6 +34,7 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/models/image_model.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/chromeos/styles/cros_tokens_color_mappings.h"
 #include "ui/compositor/layer.h"
 #include "ui/gfx/canvas.h"
@@ -50,6 +51,7 @@
 #include "ui/views/layout/fill_layout.h"
 #include "ui/views/layout/layout_provider.h"
 #include "ui/views/layout/layout_types.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/mouse_constants.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/view_targeter.h"
@@ -307,7 +309,9 @@ class MonitoringWarningView : public NonAccessibleView {
                 .CopyAddressTo(&image_)
                 .SetVisible(false)
                 .SetImage(ui::ImageModel::FromVectorIcon(
-                    vector_icons::kWarningIcon,
+                    ::features::IsRoundedIconsEnabled()
+                        ? vector_icons::kWarningFilledIcon
+                        : vector_icons::kWarningOldIcon,
                     static_cast<ui::ColorId>(cros_tokens::kCrosSysOnSurface),
                     kMonitoringWarningIconSizeDp)),
             views::Builder<views::View>()
@@ -565,8 +569,8 @@ class RightPaneView : public NonAccessibleView {
     }
 
     if (language_menu_view_) {
-      advanced_view_->RemoveChildViewT(language_menu_view_.get());
-      language_menu_view_ = nullptr;
+      advanced_view_->RemoveChildViewT(
+          std::exchange(language_menu_view_, nullptr));
     }
     auto language_menu_view = std::make_unique<PublicAccountMenuView>(
         language_items_, selected_language_index,
@@ -600,8 +604,8 @@ class RightPaneView : public NonAccessibleView {
     }
 
     if (keyboard_menu_view_) {
-      advanced_view_->RemoveChildViewT(keyboard_menu_view_.get());
-      keyboard_menu_view_ = nullptr;
+      advanced_view_->RemoveChildViewT(
+          std::exchange(keyboard_menu_view_, nullptr));
     }
     auto keyboard_menu_view = std::make_unique<PublicAccountMenuView>(
         keyboard_items_, selected_keyboard_index,
@@ -628,9 +632,6 @@ class RightPaneView : public NonAccessibleView {
   }
 
   void Login() {
-    // TODO(crbug.com/40636049) change to LaunchSamlPublicSession which would
-    // take |selected_language_item_value_| and |selected_keyboard_item_value_|
-    // too.
     if (current_user_.public_account_info->using_saml) {
       // TODO(b/333882432): Remove this log after the bug fixed.
       LOG(WARNING) << "b/333882432: RightPaneView::Login";
@@ -659,10 +660,8 @@ class RightPaneView : public NonAccessibleView {
   raw_ptr<views::View> keyboard_title_ = nullptr;
   raw_ptr<views::StyledLabel> learn_more_label_ = nullptr;
 
-  raw_ptr<PublicAccountMenuView, DanglingUntriaged> language_menu_view_ =
-      nullptr;
-  raw_ptr<PublicAccountMenuView, DanglingUntriaged> keyboard_menu_view_ =
-      nullptr;
+  raw_ptr<PublicAccountMenuView> language_menu_view_ = nullptr;
+  raw_ptr<PublicAccountMenuView> keyboard_menu_view_ = nullptr;
 
   std::string selected_language_item_value_;
   std::string selected_keyboard_item_value_;

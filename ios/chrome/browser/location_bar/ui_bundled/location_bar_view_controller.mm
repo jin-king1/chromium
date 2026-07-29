@@ -4,7 +4,6 @@
 
 #import "ios/chrome/browser/location_bar/ui_bundled/location_bar_view_controller.h"
 
-#import "base/containers/contains.h"
 #import "base/functional/bind.h"
 #import "base/ios/ios_util.h"
 #import "base/metrics/histogram_functions.h"
@@ -14,37 +13,55 @@
 #import "components/feature_engagement/public/tracker.h"
 #import "components/lens/lens_overlay_metrics.h"
 #import "components/omnibox/browser/omnibox_field_trial.h"
+#import "components/omnibox/browser/omnibox_pref_names.h"
+#import "components/omnibox/common/omnibox_features.h"
 #import "components/open_from_clipboard/clipboard_recent_content.h"
 #import "components/prefs/pref_service.h"
 #import "components/strings/grit/components_strings.h"
+#import "ios/chrome/browser/cobrowse/model/cobrowse_context.h"
 #import "ios/chrome/browser/fullscreen/ui_bundled/fullscreen_animator.h"
+#import "ios/chrome/browser/intelligence/bwg/metrics/gemini_metrics.h"
+#import "ios/chrome/browser/intelligence/bwg/utils/gemini_constants.h"
+#import "ios/chrome/browser/intelligence/features/features.h"
+#import "ios/chrome/browser/intelligence/page_action_menu/ui/page_action_menu_entrypoint_view.h"
 #import "ios/chrome/browser/lens/ui_bundled/lens_entrypoint.h"
-#import "ios/chrome/browser/lens_overlay/coordinator/lens_overlay_availability.h"
+#import "ios/chrome/browser/lens_overlay/model/lens_overlay_presentation_type.h"
+#import "ios/chrome/browser/lens_overlay/public/lens_overlay_availability.h"
 #import "ios/chrome/browser/lens_overlay/ui/lens_overlay_entrypoint_view.h"
 #import "ios/chrome/browser/location_bar/ui_bundled/badges_container_view.h"
 #import "ios/chrome/browser/location_bar/ui_bundled/fakebox_buttons_snapshot_provider.h"
+#import "ios/chrome/browser/location_bar/ui_bundled/highlight_utils.h"
 #import "ios/chrome/browser/location_bar/ui_bundled/location_bar_constants.h"
 #import "ios/chrome/browser/location_bar/ui_bundled/location_bar_metrics.h"
+#import "ios/chrome/browser/location_bar/ui_bundled/location_bar_mutator.h"
+#import "ios/chrome/browser/location_bar/ui_bundled/location_bar_placeholder_type.h"
 #import "ios/chrome/browser/location_bar/ui_bundled/location_bar_steady_view.h"
-#import "ios/chrome/browser/omnibox/ui_bundled/omnibox_constants.h"
-#import "ios/chrome/browser/omnibox/ui_bundled/text_field_view_containing.h"
+#import "ios/chrome/browser/menu/ui_bundled/action_factory.h"
+#import "ios/chrome/browser/menu/ui_bundled/menu_histograms.h"
+#import "ios/chrome/browser/omnibox/public/omnibox_constants.h"
+#import "ios/chrome/browser/omnibox/ui/text_field_view_containing.h"
 #import "ios/chrome/browser/orchestrator/ui_bundled/location_bar_offset_provider.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/public/commands/activity_service_commands.h"
-#import "ios/chrome/browser/shared/public/commands/application_commands.h"
 #import "ios/chrome/browser/shared/public/commands/browser_coordinator_commands.h"
+#import "ios/chrome/browser/shared/public/commands/gemini_commands.h"
 #import "ios/chrome/browser/shared/public/commands/help_commands.h"
 #import "ios/chrome/browser/shared/public/commands/lens_commands.h"
 #import "ios/chrome/browser/shared/public/commands/lens_overlay_commands.h"
-#import "ios/chrome/browser/shared/public/commands/load_query_commands.h"
 #import "ios/chrome/browser/shared/public/commands/open_lens_input_selection_command.h"
+#import "ios/chrome/browser/shared/public/commands/page_action_menu_commands.h"
+#import "ios/chrome/browser/shared/public/commands/page_action_menu_entry_point_commands.h"
+#import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/browser/shared/ui/util/layout_guide_names.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/browser/shared/ui/util/util_swift.h"
-#import "ios/chrome/browser/toolbar/ui_bundled/public/toolbar_type.h"
+#import "ios/chrome/browser/sharing/ui_bundled/sharing_metrics.h"
+#import "ios/chrome/browser/toolbar/legacy/ui_bundled/public/toolbar_type.h"
+#import "ios/chrome/common/NSString+Chromium.h"
+#import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
 #import "ios/chrome/common/ui/util/pointer_interaction_util.h"
 #import "ios/chrome/grit/ios_strings.h"
@@ -61,6 +78,12 @@ typedef NS_ENUM(int, TrailingButtonState) {
   kVoiceSearchButton,
 };
 
+// The scale factor of the steady view in fullscreen.
+const CGFloat kFullscreenScaleFactor = 0.87;
+
+// Spacing between the custom leading view (Gemini Live icon) and the URL label.
+const CGFloat kGeminiLiveIconToLabelSpacing = 8.0;
+
 // The size of the symbol image.
 const CGFloat kSymbolImagePointSize = 18.;
 
@@ -72,7 +95,27 @@ const NSString* kScribbleOmniboxElementId = @"omnibox";
 // the white space on top.
 const CGFloat kShareIconBalancingHeightPadding = 1;
 
+// The minimum width of the plus button.
+const CGFloat kPlusButtonMinimumWidth = 44.0;
+
+// The point size of the Gemini Live symbol.
+const CGFloat kGeminiLiveSymbolPointSize = 10.0;
+
+// The size of the Gemini Live circle container.
+const CGFloat kGeminiLiveCircleSize = 20.0;
 }  // namespace
+
+// Helper view to maintain a round background.
+@interface RoundGeminiLiveView : UIView
+@end
+
+@implementation RoundGeminiLiveView
+- (void)layoutSubviews {
+  [super layoutSubviews];
+  self.layer.cornerRadius = self.bounds.size.height / 2.0;
+  self.clipsToBounds = YES;
+}
+@end
 
 @interface LocationBarViewController () <UIContextMenuInteractionDelegate,
                                          UIIndirectScribbleInteractionDelegate>
@@ -82,11 +125,17 @@ const CGFloat kShareIconBalancingHeightPadding = 1;
 // The injected text field.
 @property(nonatomic, weak) UIView* textField;
 
+// The injected incognito badge view.
+@property(nonatomic, strong) UIView* incognitoBadgeView;
+
 // The injected badge view.
 @property(nonatomic, strong) UIView* badgeView;
 
 // The injected Contextual Panel entrypoint view;
 @property(nonatomic, strong) UIView* contextualPanelEntrypointView;
+
+// The injected reader mode chip view.
+@property(nonatomic, strong) UIView* readerModeChipView;
 
 // The injected placeholder view;
 @property(nonatomic, strong) UIView* placeholderView;
@@ -114,8 +163,14 @@ const CGFloat kShareIconBalancingHeightPadding = 1;
 // edit menu option to do an image search.
 @property(nonatomic, assign) BOOL lensImageEnabled;
 
+// Placeholder text.
+@property(nonatomic, copy) NSString* placeholderText;
+
 // Type of the current placeholder view.
 @property(nonatomic, assign) LocationBarPlaceholderType placeholderType;
+
+// The icon for the default search engine.
+@property(nonatomic, strong) UIImage* placeholderDefaultSearchEngineIcon;
 
 // Starts voice search, updating the layout guide to be constrained to the
 // trailing button.
@@ -125,12 +180,23 @@ const CGFloat kShareIconBalancingHeightPadding = 1;
 
 @implementation LocationBarViewController {
   BOOL _isNTP;
+  BOOL _active;
   // Stores a snapshot of the fakebox buttons that is overlaid on the Location
   // Bar and anchored to the trailing edge during focus transitions (when it is
   // faded out) and defocus transitions (when it is faded in).
   UIView* _fakeboxButtonsSnapshot;
 
+  // The AIM plus button.
+  ExtendedTouchTargetButton* _plusButton;
+
+  // The location bar button to access Lens.
   LensOverlayEntrypointButton* _lensOverlayPlaceholderView;
+
+  // The location bar button to access the page action menu.
+  PageActionMenuEntrypointView* _pageActionMenuEntrypointView;
+
+  // The placeholder view that holds the DSE icon.
+  UIImageView* _defaultSearchEngineIconView;
 }
 
 #pragma mark - public
@@ -154,14 +220,23 @@ const CGFloat kShareIconBalancingHeightPadding = 1;
   _badgeView = badgeView;
 }
 
+- (void)setIncognitoBadgeView:(UIView*)incognitoBadgeView {
+  CHECK(!self.incognitoBadgeView);
+  _incognitoBadgeView = incognitoBadgeView;
+}
+
 - (void)setContextualPanelEntrypointView:
     (UIView*)contextualPanelEntrypointView {
   DCHECK(!self.contextualPanelEntrypointView);
   _contextualPanelEntrypointView = contextualPanelEntrypointView;
 }
 
+- (void)setReaderModeChipView:(UIView*)readerModeChipView {
+  DCHECK(!self.readerModeChipView);
+  _readerModeChipView = readerModeChipView;
+}
+
 - (void)setPlaceholderType:(LocationBarPlaceholderType)placeholderType {
-  CHECK(IsLensOverlayAvailable(_profilePrefs));
   if (placeholderType == _placeholderType) {
     return;
   }
@@ -176,8 +251,13 @@ const CGFloat kShareIconBalancingHeightPadding = 1;
   self.locationBarSteadyView.hidden = editing;
 }
 
+- (id<PageActionMenuEntryPointCommands>)pageActionMenuEntryPointHandler {
+  return _pageActionMenuEntrypointView;
+}
+
 - (void)setIncognito:(BOOL)incognito {
   _incognito = incognito;
+  self.locationBarSteadyView.incognito = incognito;
   self.locationBarSteadyView.colorScheme =
       [LocationBarSteadyViewColorScheme standardScheme];
 }
@@ -217,6 +297,15 @@ const CGFloat kShareIconBalancingHeightPadding = 1;
   return self.locationBarSteadyView.badgeViewVisibilityDelegate;
 }
 
+- (id<ReaderModeChipVisibilityDelegate>)readerModeChipVisibilityDelegate {
+  return self.locationBarSteadyView.readerModeChipVisibilityDelegate;
+}
+
+- (id<IncognitoBadgeViewVisibilityDelegate>)
+    incognitoBadgeViewVisibilityDelegate {
+  return self.locationBarSteadyView.incognitoBadgeViewVisibilityDelegate;
+}
+
 - (void)setHelpCommandsHandler:(id<HelpCommands>)helpCommandsHandler {
   _helpCommandsHandler = helpCommandsHandler;
 }
@@ -235,27 +324,35 @@ const CGFloat kShareIconBalancingHeightPadding = 1;
         setContextualPanelEntrypointView:self.contextualPanelEntrypointView];
   }
 
+  if (self.incognitoBadgeView) {
+    [self.locationBarSteadyView setIncognitoBadgeView:self.incognitoBadgeView];
+  }
+
   DCHECK(self.badgeView) << "The badge view must be set at this point";
   [self.locationBarSteadyView setBadgeView:self.badgeView];
+  if (self.readerModeChipView) {
+    [self.locationBarSteadyView setReaderModeChipView:self.readerModeChipView];
+  }
 
-  if (IsLensOverlayAvailable(_profilePrefs)) {
+  if (IsPageActionMenuEnabled()) {
+    _pageActionMenuEntrypointView = [[PageActionMenuEntrypointView alloc] init];
+    [_pageActionMenuEntrypointView
+               addTarget:self
+                  action:@selector(handlePageActionMenuEntrypointTapped)
+        forControlEvents:UIControlEventTouchUpInside];
+  }
+
+  if (IsLensOverlayAllowedByPolicy(_profilePrefs)) {
     _lensOverlayPlaceholderView = [[LensOverlayEntrypointButton alloc]
         initWithProfilePrefs:_profilePrefs];
-    [self.layoutGuideCenter referenceView:_lensOverlayPlaceholderView
-                                underName:kLensOverlayEntrypointGuide];
 
-    BOOL showSpeedbumpMenu = GetLensOverlayOnboardingTreatment() ==
-                             LensOverlayOnboardingTreatment::kSpeedbumpMenu;
-    if (showSpeedbumpMenu) {
-      _lensOverlayPlaceholderView.menu = [self createSpeedbumpMenu];
-      _lensOverlayPlaceholderView.showsMenuAsPrimaryAction = YES;
-    } else {
-      [_lensOverlayPlaceholderView
-                 addTarget:self
-                    action:@selector(handleLensEntrypointPressed)
-          forControlEvents:UIControlEventTouchUpInside];
-    }
+    [_lensOverlayPlaceholderView
+               addTarget:self
+                  action:@selector(handleLensEntrypointPressed)
+        forControlEvents:UIControlEventTouchUpInside];
   }
+
+  [self createAIMPlusButton];
 
   [_locationBarSteadyView.locationButton
              addTarget:self
@@ -269,60 +366,123 @@ const CGFloat kShareIconBalancingHeightPadding = 1;
       [[UIIndirectScribbleInteraction alloc] initWithDelegate:self];
   [_locationBarSteadyView addInteraction:scribbleInteraction];
 
-  DCHECK(self.editView) << "The edit view must be set at this point";
+  if (!IsComposeboxIOSEnabled()) {
+    DCHECK(self.editView) << "The edit view must be set at this point";
 
-  [self.view addSubview:self.editView];
-  self.editView.translatesAutoresizingMaskIntoConstraints = NO;
-  AddSameConstraints(self.editView, self.view);
+    [self.view addSubview:self.editView];
+    self.editView.translatesAutoresizingMaskIntoConstraints = NO;
+    AddSameConstraints(self.editView, self.view);
+  }
 
   [self.view addSubview:self.locationBarSteadyView];
   self.locationBarSteadyView.translatesAutoresizingMaskIntoConstraints = NO;
   AddSameConstraints(self.locationBarSteadyView, self.view);
 
+  if (IsGeminiLiveEnabled()) {
+    // Use the Gemini Live symbol.
+#if BUILDFLAG(IOS_USE_BRANDED_ASSETS)
+    UIImage* image =
+        SymbolWithPointSize(SymbolGeminiLiveLogo, kGeminiLiveSymbolPointSize);
+#else
+    UIImage* image =
+        SymbolWithPointSize(SymbolWaveform, kGeminiLiveSymbolPointSize);
+#endif
+
+    // Create the round container view.
+    RoundGeminiLiveView* geminiBadgeContainer =
+        [[RoundGeminiLiveView alloc] init];
+    geminiBadgeContainer.translatesAutoresizingMaskIntoConstraints = NO;
+    geminiBadgeContainer.hidden = YES;
+
+    UIImageView* iconView = [[UIImageView alloc] initWithImage:image];
+    iconView.translatesAutoresizingMaskIntoConstraints = NO;
+
+    if (IsChromeNextIaEnabled()) {
+      UIView* gradientView = CreateIPHGradientView();
+      gradientView.translatesAutoresizingMaskIntoConstraints = NO;
+      [geminiBadgeContainer addSubview:gradientView];
+      AddSameConstraints(gradientView, geminiBadgeContainer);
+      ConfigureIPHImageStyleForImageView(iconView);
+    } else {
+      geminiBadgeContainer.backgroundColor =
+          [UIColor colorNamed:kStaticBlueColor];
+      iconView.tintColor = [UIColor whiteColor];
+    }
+
+    [geminiBadgeContainer addSubview:iconView];
+
+    // Force width to match height to keep it square/round.
+    [NSLayoutConstraint activateConstraints:@[
+      [geminiBadgeContainer.widthAnchor
+          constraintEqualToConstant:kGeminiLiveCircleSize],
+      [geminiBadgeContainer.heightAnchor
+          constraintEqualToConstant:kGeminiLiveCircleSize],
+      [iconView.centerXAnchor
+          constraintEqualToAnchor:geminiBadgeContainer.centerXAnchor],
+      [iconView.centerYAnchor
+          constraintEqualToAnchor:geminiBadgeContainer.centerYAnchor],
+    ]];
+
+    // Inject it directly next to the location label.
+    [self.locationBarSteadyView
+        addCustomLeadingView:geminiBadgeContainer
+                 targetWidth:kGeminiLiveCircleSize
+                     spacing:kGeminiLiveIconToLabelSpacing];
+  }
+
   [self updatePlaceholderView];
   [self updateTrailingButtonState];
   [self switchToEditing:NO];
 
-  if (@available(iOS 17, *)) {
-    NSArray<UITrait>* traits = TraitCollectionSetForTraits(
-        @[ UITraitHorizontalSizeClass.class, UITraitVerticalSizeClass.class ]);
-    [self registerForTraitChanges:traits
-                       withAction:@selector(updateTrailingButtonState)];
+  [self
+      registerForTraitChanges:
+          @[ UITraitHorizontalSizeClass.class, UITraitVerticalSizeClass.class ]
+                   withAction:@selector(updateTrailingButtonState)];
+
+  [self registerForTraitChanges:@[ UITraitHorizontalSizeClass.class ]
+                     withAction:@selector(sizeClassDidChange)];
+
+  _defaultSearchEngineIconView = [[UIImageView alloc] init];
+  _defaultSearchEngineIconView.translatesAutoresizingMaskIntoConstraints = NO;
+  _defaultSearchEngineIconView.contentMode = UIViewContentModeCenter;
+  _defaultSearchEngineIconView.image = self.placeholderDefaultSearchEngineIcon;
+  if (self.placeholderDefaultSearchEngineIcon) {
+    _defaultSearchEngineIconView.accessibilityIdentifier = @"DSEIconNonEmpty";
   }
+  AddSizeConstraints(
+      _defaultSearchEngineIconView,
+      CGSizeMake(kOmniboxLeadingImageSize + 12.0f, kOmniboxLeadingImageSize));
+
+  if (IsProactiveSuggestionsFrameworkEnabled()) {
+    _locationBarSteadyView.pageActionMenuHandler = self.pageActionMenuHandler;
+  }
+
+  [self updateLayoutGuides];
 }
 
-- (void)viewWillDisappear:(BOOL)animated {
-  [super viewWillDisappear:animated];
-
-  [NSNotificationCenter.defaultCenter
-      removeObserver:self
-                name:UIPasteboardChangedNotification
-              object:nil];
-
-  [NSNotificationCenter.defaultCenter
-      removeObserver:self
-                name:UIApplicationDidBecomeActiveNotification
-              object:nil];
-}
-
-#if !defined(__IPHONE_17_0) || __IPHONE_OS_VERSION_MIN_REQUIRED < __IPHONE_17_0
-- (void)traitCollectionDidChange:(UITraitCollection*)previousTraitCollection {
-  [super traitCollectionDidChange:previousTraitCollection];
-  if (@available(iOS 17, *)) {
+- (void)setActive:(BOOL)active {
+  if (_active == active) {
     return;
   }
-  [self updateTrailingButtonState];
+  _active = active;
+  [self updateLayoutGuides];
 }
-#endif
 
 #pragma mark - FullscreenUIElement
 
 - (void)updateForFullscreenProgress:(CGFloat)progress {
   CGFloat alphaValue = fmax((progress - 0.85) / 0.15, 0);
-  CGFloat scaleValue = 0.79 + 0.21 * progress;
+  CGFloat scaleValue =
+      IsChromeNextIaEnabled()
+          ? kFullscreenScaleFactor + (1 - kFullscreenScaleFactor) * progress
+          : 0.79 + 0.21 * progress;
   self.locationBarSteadyView.trailingButton.alpha = alphaValue;
   self.locationBarSteadyView.badgesContainerView.placeholderView.alpha =
       alphaValue;
+  if (IsProactiveSuggestionsFrameworkEnabled() &&
+      (!self.incognito || IsChromeNextIaEnabled())) {
+    self.locationBarSteadyView.badgesContainerView.alpha = alphaValue;
+  }
   BOOL badgeViewShouldCollapse = progress <= kFullscreenProgressThreshold;
   [self.locationBarSteadyView
       setFullScreenCollapsedMode:badgeViewShouldCollapse];
@@ -346,15 +506,35 @@ const CGFloat kShareIconBalancingHeightPadding = 1;
 #pragma mark - LocationBarConsumer
 
 - (void)defocusOmnibox {
-  [self.dispatcher cancelOmniboxEdit];
+  [self.dispatcher hideComposebox];
+}
+
+- (void)setPlaceholderText:(NSString*)placeholderText {
+  if ([_placeholderText isEqualToString:placeholderText]) {
+    return;
+  }
+  _placeholderText = [placeholderText copy];
+  if (_isNTP) {
+    [self updatePlaceholder];
+  }
+}
+
+- (void)setPlaceholderDefaultSearchEngineIcon:(UIImage*)icon {
+  _placeholderDefaultSearchEngineIcon = icon;
+  if (_defaultSearchEngineIconView) {
+    _defaultSearchEngineIconView.image = icon;
+    if (icon) {
+      _defaultSearchEngineIconView.accessibilityIdentifier = @"DSEIconNonEmpty";
+    } else {
+      _defaultSearchEngineIconView.accessibilityIdentifier = nil;
+    }
+  }
 }
 
 #pragma mark - LocationBarSteadyViewConsumer
 
 - (void)updateLocationText:(NSString*)string clipTail:(BOOL)clipTail {
-  [self.locationBarSteadyView setLocationLabelText:string];
-  self.locationBarSteadyView.locationLabel.lineBreakMode =
-      clipTail ? NSLineBreakByTruncatingTail : NSLineBreakByTruncatingHead;
+  [self.locationBarSteadyView setLocationLabelText:string clipTail:clipTail];
 }
 
 - (void)updateLocationIcon:(UIImage*)icon
@@ -369,11 +549,7 @@ const CGFloat kShareIconBalancingHeightPadding = 1;
 - (void)updateForNTP:(BOOL)isNTP {
   _isNTP = isNTP;
   if (isNTP) {
-    // Display a fake "placeholder".
-    NSString* placeholderString =
-        l10n_util::GetNSString(IDS_OMNIBOX_EMPTY_HINT);
-    [self.locationBarSteadyView
-        setLocationLabelPlaceholderText:placeholderString];
+    [self updatePlaceholder];
   }
   [self.locationBarSteadyView setCentered:(!isNTP || self.incognito)];
   self.hideShareButtonWhileOnIncognitoNTP = isNTP;
@@ -393,7 +569,7 @@ const CGFloat kShareIconBalancingHeightPadding = 1;
 }
 
 - (BOOL)canShowLargeContextualPanelEntrypoint {
-  // TODO(crbug.com/330701617): Add actual checks when implementing badge view
+  // TODO(crbug.com/445786272): Add actual checks when implementing badge view
   // loud moment blocking (check might need to be in the actual view).
   return !self.locationBarSteadyView.hidden;
 }
@@ -404,7 +580,8 @@ const CGFloat kShareIconBalancingHeightPadding = 1;
 }
 
 - (void)attemptShowingLensOverlayIPH {
-  if (IsLensOverlayAvailable(_profilePrefs) &&
+  if (IsLensOverlayAllowedByPolicy(_profilePrefs) &&
+      !IsPageActionMenuEnabled() &&
       !self.locationBarSteadyView.badgesContainerView.placeholderView.hidden) {
     [self.helpCommandsHandler
         presentInProductHelpWithType:InProductHelpType::kLensOverlayEntrypoint];
@@ -416,6 +593,11 @@ const CGFloat kShareIconBalancingHeightPadding = 1;
   if (_placeholderType == LocationBarPlaceholderType::kLensOverlay) {
     RecordLensEntrypointAvailable();
   }
+}
+
+- (void)focusSteadyViewForVoiceOver {
+  UIAccessibilityPostNotification(UIAccessibilityScreenChangedNotification,
+                                  self.locationBarSteadyView);
 }
 
 #pragma mark - LocationBarAnimatee
@@ -595,7 +777,7 @@ const CGFloat kShareIconBalancingHeightPadding = 1;
           removeTarget:nil
                 action:nil
       forControlEvents:UIControlEventAllEvents];
-  self.locationBarSteadyView.trailingButton.hidden = NO;
+  [self.locationBarSteadyView setTrailingButtonHidden:NO];
 
   TrailingButtonState state = self.trailingButtonState;
   if (state == kShareButton && self.hideShareButtonWhileOnIncognitoNTP) {
@@ -604,13 +786,13 @@ const CGFloat kShareIconBalancingHeightPadding = 1;
 
   switch (state) {
     case kNoButton: {
-      self.locationBarSteadyView.trailingButton.hidden = YES;
+      [self.locationBarSteadyView setTrailingButtonHidden:YES];
       break;
     };
     case kShareButton: {
       [self.locationBarSteadyView.trailingButton
                  addTarget:self.dispatcher
-                    action:@selector(showShareSheet)
+                    action:@selector(showShareSheetFromShareButton:)
           forControlEvents:UIControlEventTouchUpInside];
 
       // Add self as a target to collect the metrics.
@@ -622,15 +804,22 @@ const CGFloat kShareIconBalancingHeightPadding = 1;
       // The system share image has uneven vertical padding. Add a small bottom
       // padding to balance it.
       UIImage* shareImage =
-          DefaultSymbolWithPointSize(kShareSymbol, kSymbolImagePointSize);
-      UIGraphicsBeginImageContextWithOptions(
-          CGSizeMake(shareImage.size.width,
-                     shareImage.size.height + kShareIconBalancingHeightPadding),
-          NO, 0.0);
-      [shareImage drawInRect:CGRectMake(0, 0, shareImage.size.width,
-                                        shareImage.size.height)];
-      UIImage* paddedShareImage = UIGraphicsGetImageFromCurrentImageContext();
-      UIGraphicsEndImageContext();
+          SymbolWithPointSize(SymbolShare, kSymbolImagePointSize);
+
+      UIGraphicsImageRendererFormat* format =
+          [UIGraphicsImageRendererFormat preferredFormat];
+      format.scale = 0.0;
+      format.opaque = NO;
+      UIGraphicsImageRenderer* renderer = [[UIGraphicsImageRenderer alloc]
+          initWithSize:CGSizeMake(shareImage.size.width,
+                                  shareImage.size.height +
+                                      kShareIconBalancingHeightPadding)
+                format:format];
+      UIImage* paddedShareImage = [renderer
+          imageWithActions:^(UIGraphicsImageRendererContext* context) {
+            [shareImage drawInRect:CGRectMake(0, 0, shareImage.size.width,
+                                              shareImage.size.height)];
+          }];
 
       [self.locationBarSteadyView.trailingButton setImage:paddedShareImage
                                                  forState:UIControlStateNormal];
@@ -658,7 +847,7 @@ const CGFloat kShareIconBalancingHeightPadding = 1;
           forControlEvents:UIControlEventTouchUpInside];
 
       UIImage* micImage =
-          DefaultSymbolWithPointSize(kMicrophoneSymbol, kSymbolImagePointSize);
+          SymbolWithPointSize(SymbolMicrophone, kSymbolImagePointSize);
       [self.locationBarSteadyView.trailingButton setImage:micImage
                                                  forState:UIControlStateNormal];
       self.locationBarSteadyView.trailingButton.accessibilityLabel =
@@ -675,10 +864,27 @@ const CGFloat kShareIconBalancingHeightPadding = 1;
 }
 
 - (void)setTrailingButtonState:(TrailingButtonState)state {
+  // This is dirty, but this is experiment-only and will be removed in one
+  // milestone.
+  if (base::FeatureList::IsEnabled(kDisableShareButton) &&
+      state == kShareButton) {
+    state = kNoButton;
+  }
+
+  if (IsChromeNextIaEnabled() && !IsChromeNextIaShareIconVisible() &&
+      state == kShareButton) {
+    state = kNoButton;
+  }
+
   if (_trailingButtonState == state) {
     return;
   }
   _trailingButtonState = state;
+
+  if (state == kShareButton) {
+    base::UmaHistogramEnumeration("Mobile.ShareThisPage.Shown",
+                                  ShareThisPageLocation::kLocationBar);
+  }
 
   [self updateTrailingButton];
 }
@@ -696,6 +902,8 @@ const CGFloat kShareIconBalancingHeightPadding = 1;
 // here.
 - (void)shareButtonPressed {
   RecordAction(UserMetricsAction("MobileToolbarShareMenu"));
+  base::UmaHistogramEnumeration("Mobile.ShareThisPage.Used",
+                                ShareThisPageLocation::kLocationBar);
   [self.delegate recordShareButtonPressed];
 }
 
@@ -705,54 +913,122 @@ const CGFloat kShareIconBalancingHeightPadding = 1;
          self.lensImageEnabled;
 }
 
-// Creates a new menu to use as the "speedbump" menu for the lens overlay
-// entrypoint. Only used in LensOverlayOnboardingTreatment::kSpeedbumpMenu.
-- (UIMenu*)createSpeedbumpMenu {
-  DCHECK(GetLensOverlayOnboardingTreatment() ==
-         LensOverlayOnboardingTreatment::kSpeedbumpMenu);
+// Updates placeholder in the steady view.
+- (void)updatePlaceholder {
+  [self.locationBarSteadyView
+      setLocationLabelPlaceholderText:self.placeholderText];
+}
 
-  NSString* lensOverlayTitle =
-      l10n_util::GetNSString(IDS_IOS_LENS_OVERLAY_SPEEDBUMP_MENU_SCREEN);
-  __weak __typeof__(self) weakSelf = self;
-  UIAction* lensOverlayAction =
-      [UIAction actionWithTitle:lensOverlayTitle
-                          image:nil
-                     identifier:nil
-                        handler:^(UIAction* /* action */) {
-                          [weakSelf handleLensSpeedbumpMenuOpenLensOverlay];
-                        }];
+- (void)createAIMPlusButton {
+  _plusButton = [ExtendedTouchTargetButton buttonWithType:UIButtonTypeSystem];
+  [_plusButton setImage:SymbolWithPointSize(SymbolPlus, kSymbolActionPointSize)
+               forState:UIControlStateNormal];
+  _plusButton.translatesAutoresizingMaskIntoConstraints = NO;
+  _plusButton.imageView.contentMode = UIViewContentModeScaleAspectFit;
+  _plusButton.tintColor = [UIColor colorNamed:kToolbarButtonColor];
+  _plusButton.accessibilityLabel = l10n_util::GetNSString(
+      IDS_IOS_COMPOSEBOX_ADD_ATTACHMENT_BUTTON_ACCESSIBILITY_LABEL);
+  [NSLayoutConstraint activateConstraints:@[
+    [_plusButton.widthAnchor
+        constraintGreaterThanOrEqualToConstant:kPlusButtonMinimumWidth]
+  ]];
 
-  NSString* cameraTitle =
-      l10n_util::GetNSString(IDS_IOS_LENS_OVERLAY_SPEEDBUMP_MENU_CAMERA);
-  UIAction* viewfinderAction =
-      [UIAction actionWithTitle:cameraTitle
-                          image:nil
-                     identifier:nil
-                        handler:^(UIAction* /* action */) {
-                          [weakSelf handleLensSpeedbumpMenuOpenLensViewFinder];
-                        }];
-  NSString* menuTitle = l10n_util::GetNSString(IDS_IOS_LENS_PRODUCT_NAME);
-  return [UIMenu menuWithTitle:menuTitle
-                      children:@[ lensOverlayAction, viewfinderAction ]];
+  [_plusButton addTarget:self
+                  action:@selector(handlePlusButtonPressed)
+        forControlEvents:UIControlEventTouchUpInside];
+}
+
+// Updates the layout guides to point to the entrypoints in this toolbar.
+- (void)updateLayoutGuides {
+  if (!self.isViewLoaded) {
+    return;
+  }
+  if (_active) {
+    if (self.readerModeChipView) {
+      [self.layoutGuideCenter referenceView:self.readerModeChipView
+                                  underName:kReaderModeOptionsEntrypointGuide];
+    }
+    if (_pageActionMenuEntrypointView) {
+      [self.layoutGuideCenter referenceView:_pageActionMenuEntrypointView
+                                  underName:kPageActionMenuEntrypointGuide];
+    }
+    if (IsLensOverlayAllowedByPolicy(_profilePrefs)) {
+      [self.layoutGuideCenter referenceView:_lensOverlayPlaceholderView
+                                  underName:kLensOverlayEntrypointGuide];
+    }
+  } else {
+    if (self.readerModeChipView &&
+        [self.layoutGuideCenter
+            referencedViewUnderName:kReaderModeOptionsEntrypointGuide] ==
+            self.readerModeChipView) {
+      [self.layoutGuideCenter referenceView:nil
+                                  underName:kReaderModeOptionsEntrypointGuide];
+    }
+    if (_pageActionMenuEntrypointView &&
+        [self.layoutGuideCenter
+            referencedViewUnderName:kPageActionMenuEntrypointGuide] ==
+            _pageActionMenuEntrypointView) {
+      [self.layoutGuideCenter referenceView:nil
+                                  underName:kPageActionMenuEntrypointGuide];
+    }
+    if (IsLensOverlayAllowedByPolicy(_profilePrefs) &&
+        [self.layoutGuideCenter
+            referencedViewUnderName:kLensOverlayEntrypointGuide] ==
+            _lensOverlayPlaceholderView) {
+      [self.layoutGuideCenter referenceView:nil
+                                  underName:kLensOverlayEntrypointGuide];
+    }
+  }
 }
 
 #pragma mark - UIContextMenuInteractionDelegate
 
 - (UIMenu*)contextMenuUIMenu:(NSArray<UIMenuElement*>*)suggestedActions {
   NSMutableArray<UIMenuElement*>* menuElements = [[NSMutableArray alloc] init];
-
   __weak __typeof__(self) weakSelf = self;
+
+  if ((base::FeatureList::IsEnabled(kShareInOmniboxLongPress) ||
+       (IsChromeNextIaEnabled() && !IsChromeNextIaShareIconVisible())) &&
+      self.shareButtonEnabled) {
+    base::UmaHistogramEnumeration("Mobile.ShareThisPage.Shown",
+                                  ShareThisPageLocation::kOmniboxLongPress);
+    UIImage* image = SymbolWithPointSize(SymbolShare, kSymbolImagePointSize);
+
+    UIAction* shareThisPageAction =
+        [UIAction actionWithTitle:l10n_util::GetNSString(
+                                      IDS_IOS_TOOLS_MENU_SHARE_THIS_PAGE)
+                            image:image
+                       identifier:nil
+                          handler:^(UIAction* action) {
+                            [weakSelf shareThisPage];
+                          }];
+
+    UIMenu* divider = [UIMenu menuWithTitle:@""
+                                      image:nil
+                                 identifier:nil
+                                    options:UIMenuOptionsDisplayInline
+                                   children:@[ shareThisPageAction ]];
+    [menuElements addObject:divider];
+  }
+
   UIImage* pasteImage = nil;
   if (IsBottomOmniboxAvailable()) {
-    pasteImage =
-        DefaultSymbolWithPointSize(kPasteActionSymbol, kSymbolActionPointSize);
+    pasteImage = SymbolWithPointSize(SymbolPasteAction, kSymbolActionPointSize);
 
     // Copy link action.
-    if (!self.locationBarSteadyView.hidden) {
+    BOOL canShowCopyLinkAction = NO;
+    if (IsChromeNextIaEnabled()) {
+      canShowCopyLinkAction =
+          !self.locationBarSteadyView.isHidden && !(_isNTP && self.incognito);
+    } else {
+      canShowCopyLinkAction = !self.locationBarSteadyView.isHidden;
+    }
+
+    if (canShowCopyLinkAction) {
       UIAction* copyAction = [UIAction
           actionWithTitle:l10n_util::GetNSString(IDS_IOS_COPY_LINK_ACTION_TITLE)
-                    image:DefaultSymbolWithPointSize(kCopyActionSymbol,
-                                                     kSymbolActionPointSize)
+                    image:SymbolWithPointSize(SymbolCopyAction,
+                                              kSymbolActionPointSize)
                identifier:nil
                   handler:^(UIAction* action) {
                     [weakSelf.delegate locationBarCopyTapped];
@@ -764,14 +1040,24 @@ const CGFloat kShareIconBalancingHeightPadding = 1;
     [menuElements addObjectsFromArray:suggestedActions];
   }
 
+  if ([self.delegate locationBarCanSendTabToSelf]) {
+    ActionFactory* actionFactory = [[ActionFactory alloc]
+        initWithScenario:kMenuScenarioHistogramToolbarMenu];
+    UIAction* sendTabAction = [actionFactory actionToSendTabToSelfWithBlock:^{
+      dispatch_async(dispatch_get_main_queue(), ^{
+        [weakSelf.delegate locationBarSendTabToSelfTapped];
+      });
+    }];
+    [menuElements addObject:sendTabAction];
+  }
+
   std::optional<std::set<ClipboardContentType>> clipboard_content_types =
       ClipboardRecentContent::GetInstance()->GetCachedClipboardContentTypes();
 
   if (clipboard_content_types.has_value()) {
     std::set<ClipboardContentType> clipboard_content_types_values =
         clipboard_content_types.value();
-    if (base::Contains(clipboard_content_types_values,
-                       ClipboardContentType::Image)) {
+    if (clipboard_content_types_values.contains(ClipboardContentType::Image)) {
       // Either add an option to search the copied image with Lens, or via the
       // default search engine's reverse image search functionality.
       if (self.shouldUseLensInLongPressMenu) {
@@ -797,8 +1083,8 @@ const CGFloat kShareIconBalancingHeightPadding = 1;
                               handler:searchCopiedImageHandler];
         [menuElements addObject:searchCopiedImageAction];
       }
-    } else if (base::Contains(clipboard_content_types_values,
-                              ClipboardContentType::URL)) {
+    } else if (clipboard_content_types_values.contains(
+                   ClipboardContentType::URL)) {
       id visitCopiedLinkHandler = ^(UIAction* action) {
         [self visitCopiedLink:nil];
       };
@@ -808,8 +1094,8 @@ const CGFloat kShareIconBalancingHeightPadding = 1;
                identifier:nil
                   handler:visitCopiedLinkHandler];
       [menuElements addObject:visitCopiedLinkAction];
-    } else if (base::Contains(clipboard_content_types_values,
-                              ClipboardContentType::Text)) {
+    } else if (clipboard_content_types_values.contains(
+                   ClipboardContentType::Text)) {
       id searchCopiedTextHandler = ^(UIAction* action) {
         [self searchCopiedText:nil];
       };
@@ -822,31 +1108,42 @@ const CGFloat kShareIconBalancingHeightPadding = 1;
     }
   }
 
+  // Used to easily trigger the Assistant sheet during development.
+  if (IsAssistantContainerDebugEnabled()) {
+    UIAction* assistantAction = [UIAction
+        actionWithTitle:l10n_util::GetNSString(IDS_IOS_APP_BAR_ASK_GEMINI)
+                  image:SymbolWithPointSize(SymbolMagicStack,
+                                            kSymbolActionPointSize)
+             identifier:nil
+                handler:^(UIAction* action) {
+                  [weakSelf.dispatcher showAssistant];
+                }];
+    [menuElements addObject:assistantAction];
+  }
+
   // Show Top or Bottom Address Bar action.
-  if (IsBottomOmniboxAvailable() && IsSplitToolbarMode(self)) {
+  BOOL canShowMoveAddressBarAction = NO;
+  if (IsChromeNextIaEnabled()) {
+    canShowMoveAddressBarAction = IsBottomOmniboxAvailable();
+  } else {
+    canShowMoveAddressBarAction =
+        IsBottomOmniboxAvailable() && IsSplitToolbarMode(self);
+  }
+
+  if (canShowMoveAddressBarAction) {
     NSString* title = nil;
     UIImage* image = nil;
     ToolbarType targetToolbarType;
     if (GetApplicationContext()->GetLocalState()->GetBoolean(
-            prefs::kBottomOmnibox)) {
+            omnibox::kIsOmniboxInBottomPosition)) {
       title = l10n_util::GetNSString(IDS_IOS_TOOLBAR_MENU_TOP_OMNIBOX);
-      if (@available(iOS 15.1, *)) {
-        image = DefaultSymbolWithPointSize(kMovePlatterToTopPhoneSymbol,
-                                           kSymbolActionPointSize);
-      } else {
-        image = CustomSymbolWithPointSize(kCustomMovePlatterToTopPhoneSymbol,
-                                          kSymbolActionPointSize);
-      }
+      image = SymbolWithPointSize(SymbolMovePlatterToTopPhone,
+                                  kSymbolActionPointSize);
       targetToolbarType = ToolbarType::kPrimary;
     } else {
       title = l10n_util::GetNSString(IDS_IOS_TOOLBAR_MENU_BOTTOM_OMNIBOX);
-      if (@available(iOS 15.1, *)) {
-        image = DefaultSymbolWithPointSize(kMovePlatterToBottomPhoneSymbol,
-                                           kSymbolActionPointSize);
-      } else {
-        image = CustomSymbolWithPointSize(kCustomMovePlatterToBottomPhoneSymbol,
-                                          kSymbolActionPointSize);
-      }
+      image = SymbolWithPointSize(SymbolMovePlatterToBottomPhone,
+                                  kSymbolActionPointSize);
       targetToolbarType = ToolbarType::kSecondary;
     }
     UIAction* moveAddressBarAction = [UIAction
@@ -865,6 +1162,26 @@ const CGFloat kShareIconBalancingHeightPadding = 1;
     [menuElements addObject:divider];
   }
 
+  if (IsHideToolbarEnabled()) {
+    UIImage* image = SymbolWithPointSize(SymbolExpand, kSymbolActionPointSize);
+
+    UIAction* hideAddressBarAction =
+        [UIAction actionWithTitle:l10n_util::GetNSString(
+                                      IDS_IOS_OVERFLOW_MENU_HIDE_TOOLBARS)
+                            image:image
+                       identifier:nil
+                          handler:^(UIAction* action) {
+                            [weakSelf hideToolbars];
+                          }];
+
+    UIMenu* divider = [UIMenu menuWithTitle:@""
+                                      image:nil
+                                 identifier:nil
+                                    options:UIMenuOptionsDisplayInline
+                                   children:@[ hideAddressBarAction ]];
+    [menuElements addObject:divider];
+  }
+
   return [UIMenu menuWithTitle:@"" children:menuElements];
 }
 
@@ -874,9 +1191,10 @@ const CGFloat kShareIconBalancingHeightPadding = 1;
         (UIContextMenuConfiguration*)configuration {
   // Use the location bar's container view because that's the view that has the
   // background color and corner radius.
-  return [[UITargetedPreview alloc]
-      initWithView:self.view.superview
-        parameters:[[UIPreviewParameters alloc] init]];
+  UIPreviewParameters* previewParameters = [[UIPreviewParameters alloc] init];
+  previewParameters.backgroundColor = self.view.superview.backgroundColor;
+  return [[UITargetedPreview alloc] initWithView:self.view.superview
+                                      parameters:previewParameters];
 }
 
 - (UIContextMenuConfiguration*)contextMenuInteraction:
@@ -897,6 +1215,37 @@ const CGFloat kShareIconBalancingHeightPadding = 1;
         UIContextMenuConfigurationElementOrderPriority;
   }
   return configuration;
+}
+
+- (void)contextMenuInteraction:(UIContextMenuInteraction*)interaction
+    willDisplayMenuForConfiguration:(UIContextMenuConfiguration*)configuration
+                           animator:
+                               (id<UIContextMenuInteractionAnimating>)animator {
+  if (IsPageActionMenuEnabled()) {
+    [self.geminiHandler
+        hideFloatyIfInvokedAnimated:YES
+                         fromSource:gemini::FloatyUpdateSource::ContextMenu];
+  }
+}
+
+- (void)contextMenuInteraction:(UIContextMenuInteraction*)interaction
+       willEndForConfiguration:(UIContextMenuConfiguration*)configuration
+                      animator:(id<UIContextMenuInteractionAnimating>)animator {
+  self.activeContextMenuAnimator = animator;
+  __weak LocationBarViewController* weakSelf = self;
+
+  if (IsPageActionMenuEnabled()) {
+    [animator addAnimations:^{
+      [weakSelf.geminiHandler
+          updateFloatyVisibilityIfEligibleAnimated:NO
+                                        fromSource:gemini::FloatyUpdateSource::
+                                                       ContextMenu];
+    }];
+  }
+
+  [animator addCompletion:^{
+    weakSelf.activeContextMenuAnimator = nil;
+  }];
 }
 
 - (BOOL)canPerformAction:(SEL)action withSender:(id)sender {
@@ -935,8 +1284,8 @@ const CGFloat kShareIconBalancingHeightPadding = 1;
         }
         NSString* url = base::SysUTF8ToNSString(optionalURL.value().spec());
         dispatch_async(dispatch_get_main_queue(), ^{
-          [self.dispatcher loadQuery:url immediately:YES];
-          [self.dispatcher cancelOmniboxEdit];
+          [self.mutator loadQuery:url];
+          [self.dispatcher hideComposebox];
         });
       }));
 }
@@ -953,16 +1302,24 @@ const CGFloat kShareIconBalancingHeightPadding = 1;
         }
         NSString* query = base::SysUTF16ToNSString(optionalText.value());
         dispatch_async(dispatch_get_main_queue(), ^{
-          [self.dispatcher loadQuery:query immediately:YES];
-          [self.dispatcher cancelOmniboxEdit];
+          [self.mutator loadQuery:query];
+          [self.dispatcher hideComposebox];
         });
       }));
+}
+
+/// Shows the Share this page sheet.
+- (void)shareThisPage {
+  base::UmaHistogramEnumeration("Mobile.ShareThisPage.Used",
+                                ShareThisPageLocation::kOmniboxLongPress);
+  [self.dispatcher showShareSheetFromShareButton:_locationBarSteadyView];
 }
 
 /// Set the preferred omnibox position to `toolbarType`.
 - (void)moveOmniboxToToolbarType:(ToolbarType)toolbarType {
   GetApplicationContext()->GetLocalState()->SetBoolean(
-      prefs::kBottomOmnibox, toolbarType == ToolbarType::kSecondary);
+      omnibox::kIsOmniboxInBottomPosition,
+      toolbarType == ToolbarType::kSecondary);
 
   if (toolbarType == ToolbarType::kPrimary) {
     RecordAction(
@@ -973,27 +1330,46 @@ const CGFloat kShareIconBalancingHeightPadding = 1;
   }
 }
 
-- (void)handleLensSpeedbumpMenuOpenLensViewFinder {
-  RecordAction(UserMetricsAction("MobileToolbarLensOverlayTap"));
-
-  base::UmaHistogramEnumeration(
-      "Lens.Overlay.SpeedbumpMenu",
-      lens::LensOverlaySpeedbumpMenuSelection::kSearchWithCamera);
-  [self openLensViewFinder];
+- (void)hideToolbars {
+  [self.delegate locationBarHideToolbarTapped];
 }
 
-- (void)handleLensSpeedbumpMenuOpenLensOverlay {
-  RecordAction(UserMetricsAction("MobileToolbarLensOverlayTap"));
-
-  base::UmaHistogramEnumeration(
-      "Lens.Overlay.SpeedbumpMenu",
-      lens::LensOverlaySpeedbumpMenuSelection::kSearchYourScreen);
-  [self openLensOverlay];
+- (void)handlePlusButtonPressed {
+  RecordAction(UserMetricsAction("MobileToolbarPlusButtonTap"));
+  TriggerHapticFeedbackForSelectionChange();
+  [self.dispatcher showMultimodalActionsMenu];
 }
 
 - (void)handleLensEntrypointPressed {
   RecordAction(UserMetricsAction("MobileToolbarLensOverlayTap"));
-  [self openLensOverlay];
+  if (self.lensOverlayVisible) {
+    [self destroyLensOverlay];
+  } else {
+    [self openLensOverlay];
+  }
+}
+
+- (void)handlePageActionMenuEntrypointTapped {
+  if (_pageActionMenuEntrypointView.newBadgeVisible) {
+    RecordAIHubNewBadgeTapped();
+    [self.delegate locationBarDidTapAIHubNewBadge];
+    _pageActionMenuEntrypointView.newBadgeVisible = NO;
+  }
+  if (IsDirectBWGEntryPoint()) {
+    [self.geminiHandler
+        startGeminiFlowWithStartupState:
+            [[GeminiStartupState alloc]
+                initWithEntryPoint:gemini::EntryPoint::DirectOmniboxBadge]];
+  } else {
+    RecordAIHubIconTapped();
+    [self.pageActionMenuHandler showPageActionMenu];
+  }
+}
+
+- (void)updateAIHubNewBadgeVisibility {
+  if (_placeholderType == LocationBarPlaceholderType::kPageActionMenu) {
+    [self updatePlaceholderView];
+  }
 }
 
 // Creates and shows the LVF input selection UI.
@@ -1009,6 +1385,7 @@ const CGFloat kShareIconBalancingHeightPadding = 1;
 
 // Creates and shows the lens overlay UI.
 - (void)openLensOverlay {
+  // TODO(crbug.com/427478234): This event should be fired by the mediator.
   if (self.tracker) {
     self.tracker->NotifyEvent(
         feature_engagement::events::kLensOverlayEntrypointUsed);
@@ -1019,15 +1396,85 @@ const CGFloat kShareIconBalancingHeightPadding = 1;
                             completion:nil];
 }
 
+// Creates and shows the lens overlay UI.
+- (void)destroyLensOverlay {
+  TriggerHapticFeedbackForSelectionChange();
+  [self.dispatcher destroyLensUI:YES
+                          reason:lens::LensOverlayDismissalSource::kToolbar];
+}
+
 - (void)updatePlaceholderView {
   switch (_placeholderType) {
     case LocationBarPlaceholderType::kNone:
-      self.locationBarSteadyView.placeholderView = nil;
+      [self.locationBarSteadyView setPlaceholderView:nil type:_placeholderType];
+      break;
+    case LocationBarPlaceholderType::kPlusButton:
+      [self.locationBarSteadyView setPlaceholderView:_plusButton
+                                                type:_placeholderType];
       break;
     case LocationBarPlaceholderType::kLensOverlay:
-      self.locationBarSteadyView.placeholderView = _lensOverlayPlaceholderView;
+      [self.locationBarSteadyView setPlaceholderView:_lensOverlayPlaceholderView
+                                                type:_placeholderType];
+      break;
+    case LocationBarPlaceholderType::kPageActionMenu:
+      CHECK(IsPageActionMenuEnabled());
+      [self.locationBarSteadyView
+          setPlaceholderView:_pageActionMenuEntrypointView
+                        type:_placeholderType];
+      if (!_pageActionMenuEntrypointView.newBadgeVisible) {
+        _pageActionMenuEntrypointView.newBadgeVisible =
+            [self.delegate shouldShowAIHubNewFeatureBadge];
+      }
+      break;
+    case LocationBarPlaceholderType::kDefaultSearchEngineIcon:
+      [self.locationBarSteadyView
+          setPlaceholderView:_defaultSearchEngineIconView
+                        type:_placeholderType];
       break;
   }
+}
+
+- (void)sizeClassDidChange {
+  [self updateLensVisibilityIndicationIfNeeded];
+}
+
+- (void)setLensOverlayVisible:(BOOL)lensOverlayVisible {
+  if (lensOverlayVisible == _lensOverlayVisible) {
+    return;
+  }
+
+  _lensOverlayVisible = lensOverlayVisible;
+  [self updateLensVisibilityIndicationIfNeeded];
+}
+
+- (void)updateLensVisibilityIndicationIfNeeded {
+  // Only indicate Lens Overlay in use when the presentation does not cover the
+  // location bar.
+  BOOL shouldIndicateLensInUse =
+      lens::ContainerPresentationFor(self) !=
+      lens::ContainerPresentationType::kFullscreenCover;
+  [_lensOverlayPlaceholderView
+      setLensOverlayActive:shouldIndicateLensInUse && _lensOverlayVisible];
+}
+
+- (UIView*)locationBarSteadyViewVisualCopy {
+  LocationBarSteadyView* copyView = [[LocationBarSteadyView alloc] init];
+  copyView.locationLabel.text = self.locationBarSteadyView.locationLabel.text;
+  copyView.locationLabel.textColor =
+      self.locationBarSteadyView.locationLabel.textColor;
+  UIImage* trailingButtonImage =
+      self.locationBarSteadyView.trailingButton.currentImage;
+  [copyView.trailingButton setImage:trailingButtonImage
+                           forState:UIControlStateNormal];
+  copyView.colorScheme = self.locationBarSteadyView.colorScheme;
+  copyView.frame = self.locationBarSteadyView.frame;
+
+  return copyView;
+}
+
+- (void)setCustomLeadingViewVisible:(BOOL)visible animated:(BOOL)animated {
+  [self.locationBarSteadyView updateCustomLeadingViewVisibility:visible
+                                                       animated:animated];
 }
 
 @end

@@ -6,18 +6,19 @@
 
 #import "base/ios/ios_util.h"
 #import "base/strings/string_number_conversions.h"
-#import "base/strings/sys_string_conversions.h"
 #import "components/omnibox/common/omnibox_features.h"
 #import "ios/chrome/browser/omnibox/eg_tests/omnibox_app_interface.h"
 #import "ios/chrome/browser/omnibox/eg_tests/omnibox_test_util.h"
+#import "ios/chrome/browser/omnibox/public/omnibox_popup_accessibility_identifier_constants.h"
 #import "ios/chrome/browser/omnibox/public/omnibox_ui_features.h"
-#import "ios/chrome/browser/omnibox/ui_bundled/popup/omnibox_popup_accessibility_identifier_constants.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/common/NSString+Chromium.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey_ui.h"
 #import "ios/chrome/test/earl_grey/chrome_matchers.h"
 #import "ios/chrome/test/earl_grey/chrome_test_case.h"
+#import "ios/chrome/test/scoped_eg_synchronization_disabler.h"
 #import "ios/testing/earl_grey/app_launch_manager.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
 #import "net/test/embedded_test_server/embedded_test_server.h"
@@ -42,7 +43,7 @@ const NSUInteger kCarouselCapacity = 10;
 /// Returns the matcher for tile with `title`.
 id<GREYMatcher> TileWithTitle(const std::string& title) {
   return grey_allOf(
-      grey_accessibilityLabel(base::SysUTF8ToNSString(title)),
+      grey_accessibilityLabel([NSString cr_fromString:title]),
       grey_accessibilityID(kOmniboxCarouselControlLabelAccessibilityIdentifier),
       grey_interactable(), nil);
 }
@@ -64,7 +65,6 @@ id<GREYMatcher> CarouselMatcher() {
 
 - (AppLaunchConfiguration)appConfigurationForTestCase {
   AppLaunchConfiguration config = [super appConfigurationForTestCase];
-
   // Disable AutocompleteProvider types: TYPE_SEARCH and TYPE_ON_DEVICE_HEAD.
   omnibox::DisableAutocompleteProviders(config, 1056);
 
@@ -84,7 +84,7 @@ id<GREYMatcher> CarouselMatcher() {
   // Block page 0 from top sites so it won't appear in most visited sites. Page
   // zero is used to navigate to the omnibox in `focusOmniboxFromWebPageZero`.
   GURL pageZeroURL = self.testServer->GetURL(PageURL(0));
-  NSString* pageZeroURLSpec = base::SysUTF8ToNSString(pageZeroURL.spec());
+  NSString* pageZeroURLSpec = [NSString cr_fromString:pageZeroURL.spec()];
   [OmniboxAppInterface blockURLFromTopSites:pageZeroURLSpec];
 }
 
@@ -102,7 +102,8 @@ id<GREYMatcher> CarouselMatcher() {
 }
 
 // Tests tapping the first tile and scroll to tap the last tile.
-- (void)testTappingAndScrollingMostVisitedTiles {
+// TODO(crbug.com/440575187): This test is flaky.
+- (void)FLAKY_testTappingAndScrollingMostVisitedTiles {
   [self addNumberOfMostVisitedTiles:kCarouselCapacity];
 
   // Test tapping the first tile.
@@ -124,7 +125,8 @@ id<GREYMatcher> CarouselMatcher() {
 #pragma mark - Context Menu
 
 // Tests deleting most visited tiles from context menu.
-- (void)testDeleteMostVisitedTiles {
+// TODO(crbug.com/440566014): This test is flaky.
+- (void)FLAKY_testDeleteMostVisitedTiles {
   // Visit page 1 and 2 multiple times.
   [self addNumberOfMostVisitedTiles:2];
   id<GREYMatcher> tile1 = TileWithTitle(PageTitle(Page(1)));
@@ -186,6 +188,7 @@ id<GREYMatcher> CarouselMatcher() {
 
 // Tests the "Copy URL" action of carousel context menu.
 - (void)testMostVisitedTileCopyURL {
+
   [self addNumberOfMostVisitedTiles:1];
   Page page1 = Page(1);
   id<GREYMatcher> tile1 = TileWithTitle(PageTitle(page1));
@@ -194,12 +197,13 @@ id<GREYMatcher> CarouselMatcher() {
   [self longPressMostVisitedTile:tile1];
 
   GURL page1ServerURL = self.testServer->GetURL(PageURL(page1));
-  NSString* page1URLStr = base::SysUTF8ToNSString(page1ServerURL.spec());
+  NSString* page1URLStr = [NSString cr_fromString:page1ServerURL.spec()];
   [ChromeEarlGrey verifyCopyLinkActionWithText:page1URLStr];
 }
 
 // Tests the "Share" action of the carousel context menu.
 - (void)testMostVisitedShare {
+
   [self addNumberOfMostVisitedTiles:1];
   Page page1 = Page(1);
   id<GREYMatcher> tile1 = TileWithTitle(PageTitle(page1));
@@ -208,7 +212,7 @@ id<GREYMatcher> CarouselMatcher() {
   [self longPressMostVisitedTile:tile1];
 
   GURL page1ServerURL = self.testServer->GetURL(PageURL(page1));
-  NSString* page1Title = base::SysUTF8ToNSString(PageTitle(page1));
+  NSString* page1Title = [NSString cr_fromString:PageTitle(page1)];
   [ChromeEarlGrey verifyShareActionWithURL:page1ServerURL pageTitle:page1Title];
 }
 
@@ -222,7 +226,7 @@ id<GREYMatcher> CarouselMatcher() {
   [self focusOmniboxFromWebPageZero];
   [self longPressMostVisitedTile:tile1];
 
-  [ChromeEarlGrey verifyOpenInNewTabActionWithURL:page1ServerURL.GetContent()];
+  [ChromeEarlGrey verifyOpenInNewTabActionWithURL:page1ServerURL];
 }
 
 // Tests the "Open in New Incognito Tab" action of the carousel context menu.
@@ -235,8 +239,7 @@ id<GREYMatcher> CarouselMatcher() {
   [self focusOmniboxFromWebPageZero];
   [self longPressMostVisitedTile:tile1];
 
-  [ChromeEarlGrey
-      verifyOpenInIncognitoActionWithURL:page1ServerURL.GetContent()];
+  [ChromeEarlGrey verifyOpenInIncognitoActionWithURL:page1ServerURL];
 }
 
 #pragma mark - Helpers
@@ -282,10 +285,15 @@ id<GREYMatcher> CarouselMatcher() {
 /// Long press on `tile` and select delete in the context menu.
 - (void)deleteMostVisitedTile:(id<GREYMatcher>)tile {
   [self longPressMostVisitedTile:tile];
+
+#if TARGET_OS_SIMULATOR
+  // Synchronization off due to an infinite spinner.
+  ScopedSynchronizationDisabler disabler;
+#endif
   // Tap on remove.
   [[EarlGrey selectElementWithMatcher:
                  chrome_test_util::ContextMenuItemWithAccessibilityLabelId(
-                     IDS_IOS_CONTENT_SUGGESTIONS_REMOVE)]
+                     IDS_IOS_CONTENT_SUGGESTIONS_NEVER_SHOW_SITE)]
       performAction:grey_tap()];
   // Check tile is removed.
   [[EarlGrey selectElementWithMatcher:tile] assertWithMatcher:grey_nil()];

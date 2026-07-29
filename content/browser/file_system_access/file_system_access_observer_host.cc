@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <variant>
 
 #include "base/files/file_util.h"
 #include "base/metrics/histogram_functions.h"
@@ -74,7 +75,8 @@ void FileSystemAccessObserverHost::DidResolveTransferTokenToObserve(
     FileSystemAccessTransferTokenImpl* resolved_token) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  if (!resolved_token) {
+  if (!resolved_token ||
+      resolved_token->origin() != binding_context_.storage_key.origin()) {
     std::move(callback).Run(
         file_system_access_error::FromStatus(
             blink::mojom::FileSystemAccessStatus::kInvalidArgument),
@@ -93,8 +95,8 @@ void FileSystemAccessObserverHost::DidResolveTransferTokenToObserve(
 
   FileSystemAccessPermissionContext::HandleType handle_type =
       resolved_token->type();
-  absl::variant<std::unique_ptr<FileSystemAccessDirectoryHandleImpl>,
-                std::unique_ptr<FileSystemAccessFileHandleImpl>>
+  std::variant<std::unique_ptr<FileSystemAccessDirectoryHandleImpl>,
+               std::unique_ptr<FileSystemAccessFileHandleImpl>>
       handle;
   switch (handle_type) {
     case FileSystemAccessPermissionContext::HandleType::kDirectory:
@@ -143,8 +145,8 @@ void FileSystemAccessObserverHost::DidResolveTransferTokenToObserve(
 }
 
 void FileSystemAccessObserverHost::DidCheckIfSymlinkOrJunction(
-    absl::variant<std::unique_ptr<FileSystemAccessDirectoryHandleImpl>,
-                  std::unique_ptr<FileSystemAccessFileHandleImpl>> handle,
+    std::variant<std::unique_ptr<FileSystemAccessDirectoryHandleImpl>,
+                 std::unique_ptr<FileSystemAccessFileHandleImpl>> handle,
     ObserveCallback callback,
     storage::FileSystemURL url,
     bool is_recursive,
@@ -182,8 +184,8 @@ void FileSystemAccessObserverHost::DidCheckIfSymlinkOrJunction(
 }
 
 void FileSystemAccessObserverHost::DidCheckItemExists(
-    absl::variant<std::unique_ptr<FileSystemAccessDirectoryHandleImpl>,
-                  std::unique_ptr<FileSystemAccessFileHandleImpl>> handle,
+    std::variant<std::unique_ptr<FileSystemAccessDirectoryHandleImpl>,
+                 std::unique_ptr<FileSystemAccessFileHandleImpl>> handle,
     ObserveCallback callback,
     storage::FileSystemURL url,
     bool is_recursive,
@@ -251,8 +253,8 @@ void FileSystemAccessObserverHost::DidResolveTransferTokenToUnobserve(
 }
 
 void FileSystemAccessObserverHost::GotObservation(
-    absl::variant<std::unique_ptr<FileSystemAccessDirectoryHandleImpl>,
-                  std::unique_ptr<FileSystemAccessFileHandleImpl>> handle,
+    std::variant<std::unique_ptr<FileSystemAccessDirectoryHandleImpl>,
+                 std::unique_ptr<FileSystemAccessFileHandleImpl>> handle,
     ObserveCallback callback,
     base::expected<std::unique_ptr<FileSystemAccessObservationGroup::Observer>,
                    blink::mojom::FileSystemAccessErrorPtr>

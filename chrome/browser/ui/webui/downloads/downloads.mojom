@@ -29,13 +29,14 @@ enum DangerType {
   kDeepScannedSafe,
   kDeepScannedOpenedDangerous,
   kBlockedScanFailed,
+  kForcedSaveToGdrive,
+  kForcedSaveToOnedrive,
 };
 
 // This corresponds to DownloadUIModel::TailoredWarningType.
 enum TailoredWarningType {
   kNoApplicableTailoredWarningType,
   kCookieTheft,
-  kCookieTheftWithAccountInfo,
   kSuspiciousArchive,
 };
 
@@ -85,8 +86,6 @@ struct Data {
   string file_name;
   string file_path;
   string file_url;
-  // Used to display tailored warnings with account information.
-  string account_email;
   string id;
   string last_reason_text;
   string progress_status_text;
@@ -98,20 +97,16 @@ struct Data {
   // confirmation, the state will indicate the download is in progress, complete
   // or cancelled.
   State state;
-  // The referrer URL of the download item. Present if this field is populated
-  // with the referrer URL. Omitted if the URL is unknown.
-  url.mojom.Url? referrer_url;
-  // The display string for the referrer URL in the UI. May be truncated/elided
-  // from the original URL, and IDN domains may be converted to Unicode.
-  mojo_base.mojom.String16 display_referrer_url;
+  // The display string for the initiator origin of the download request in the
+  // UI. This is an empty string unless the download had an initiator origin,
+  // and the download was initiated by user gesture. IDN domains may be
+  // converted to Unicode.
+  mojo_base.mojom.String16 display_initiator_origin;
 
   // The URL of the download item. Present if this field is populated with the
   // original URL. Omitted if the URL should not be clickable on the downloads
   // page, due to URL size limits requiring truncation.
   url.mojom.Url? url;
-  // The display string for the URL in the UI. May be truncated/elided from the
-  // original URL, and IDN domains may be converted to Unicode.
-  mojo_base.mojom.String16 display_url;
   // Safe Browsing protection level of the profile in which the item was
   // downloaded. Used to determine whether to show a special warning message.
   SafeBrowsingState safe_browsing_state;

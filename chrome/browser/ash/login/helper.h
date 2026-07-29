@@ -10,12 +10,13 @@
 #include <string>
 
 #include "ash/public/cpp/login_screen_model.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "chromeos/ash/components/login/auth/public/session_auth_factors.h"
 #include "chromeos/ash/components/network/network_handler_callbacks.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/views/view.h"
 
+class PrefService;
 class Profile;
 class UserContext;
 
@@ -55,7 +56,7 @@ namespace login {
 
 // Maximum size of user image, in which it should be saved to be properly
 // displayed under all possible DPI values.
-const int kMaxUserImageSize = 512;
+inline constexpr int kMaxUserImageSize = 512;
 
 // Returns true if lock/login should scroll user pods into view itself when
 // virtual keyboard is shown and disable vk overscroll.
@@ -133,6 +134,7 @@ base::TimeDelta TimeToOnlineSignIn(base::Time last_online_signin,
 // managed and any risky extensions or network certificates are forced
 // through the policies.
 bool IsFullManagementDisclosureNeeded(
+    const PrefService& local_state,
     policy::DeviceLocalAccountPolicyBroker* broker);
 
 // Sets the available auth factors for the user on the login & lock screen.

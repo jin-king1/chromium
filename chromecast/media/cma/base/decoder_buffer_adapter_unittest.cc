@@ -4,6 +4,7 @@
 
 #include "chromecast/media/cma/base/decoder_buffer_adapter.h"
 
+#include "base/compiler_specific.h"
 #include "base/memory/scoped_refptr.h"
 #include "chromecast/public/media/cast_decrypt_config.h"
 #include "media/base/decoder_buffer.h"
@@ -37,7 +38,8 @@ TEST(DecoderBufferAdapterTest, Default) {
 
   EXPECT_EQ(kPrimary, buffer_adapter->stream_id());
   EXPECT_EQ(kBufferTimestampUs, buffer_adapter->timestamp());
-  EXPECT_EQ(0, memcmp(buffer_adapter->data(), kBufferData, kBufferDataSize));
+  EXPECT_EQ(0, UNSAFE_TODO(memcmp(buffer_adapter->data(), kBufferData,
+                                  kBufferDataSize)));
   EXPECT_EQ(kBufferDataSize, buffer_adapter->data_size());
   EXPECT_EQ(nullptr, buffer_adapter->decrypt_config());
   EXPECT_FALSE(buffer_adapter->end_of_stream());
@@ -62,14 +64,16 @@ TEST(DecoderBufferAdapterTest, Timestamp) {
 TEST(DecoderBufferAdapterTest, Data) {
   scoped_refptr<DecoderBufferAdapter> buffer_adapter(
       new DecoderBufferAdapter(MakeDecoderBuffer()));
-  EXPECT_EQ(0, memcmp(buffer_adapter->data(), kBufferData, kBufferDataSize));
+  EXPECT_EQ(0, UNSAFE_TODO(memcmp(buffer_adapter->data(), kBufferData,
+                                  kBufferDataSize)));
   EXPECT_EQ(kBufferDataSize, buffer_adapter->data_size());
 
   const uint8_t kTestBufferData[] = "world";
   const size_t kTestBufferDataSize = std::size(kTestBufferData);
-  memcpy(buffer_adapter->writable_data(), kTestBufferData, kTestBufferDataSize);
-  EXPECT_EQ(
-      0, memcmp(buffer_adapter->data(), kTestBufferData, kTestBufferDataSize));
+  UNSAFE_TODO(memcpy(buffer_adapter->writable_data(), kTestBufferData,
+                     kTestBufferDataSize));
+  EXPECT_EQ(0, UNSAFE_TODO(memcmp(buffer_adapter->data(), kTestBufferData,
+                                  kTestBufferDataSize)));
   EXPECT_EQ(kTestBufferDataSize, buffer_adapter->data_size());
 }
 
@@ -121,7 +125,10 @@ TEST(DecoderBufferAdapterTest, DecryptConfig) {
         ::media::DecryptConfig::CreateCencConfig(kKeyId, kIV, subsamples);
     EXPECT_TRUE(decrypt_config);
 
-    scoped_refptr<::media::DecoderBuffer> buffer = MakeDecoderBuffer();
+    // Make a buffer that matches the subsamples size
+    std::vector<uint8_t> dummy_data(37, 0);
+    scoped_refptr<::media::DecoderBuffer> buffer =
+        ::media::DecoderBuffer::CopyFrom(dummy_data);
     buffer->set_decrypt_config(std::move(decrypt_config));
     scoped_refptr<DecoderBufferAdapter> buffer_adapter(
         new DecoderBufferAdapter(buffer));
@@ -146,6 +153,29 @@ TEST(DecoderBufferAdapterTest, EndOfStream) {
       new DecoderBufferAdapter(::media::DecoderBuffer::CreateEOSBuffer()));
   EXPECT_TRUE(buffer_adapter->end_of_stream());
   EXPECT_EQ(nullptr, buffer_adapter->decrypt_config());
+}
+
+TEST(DecoderBufferAdapterTest, RejectInvalidDecryptConfig) {
+  uint32_t kClearBytes[] = {10, 15};
+  uint32_t kCypherBytes[] = {5, 7};
+  std::vector<::media::SubsampleEntry> subsamples;
+  subsamples.emplace_back(kClearBytes[0], kCypherBytes[0]);
+  subsamples.emplace_back(kClearBytes[1], kCypherBytes[1]);
+
+  // Make a buffer that is too small for these subsamples
+  scoped_refptr<::media::DecoderBuffer> buffer =
+      ::media::DecoderBuffer::CopyFrom(
+          UNSAFE_BUFFERS(base::span<const uint8_t>(kBufferData, 5u)));
+
+  std::unique_ptr<::media::DecryptConfig> decrypt_config =
+      ::media::DecryptConfig::CreateCencConfig("key-id", kIv, subsamples);
+  buffer->set_decrypt_config(std::move(decrypt_config));
+
+  scoped_refptr<DecoderBufferAdapter> buffer_adapter(
+      new DecoderBufferAdapter(buffer));
+
+  // Should be converted to an EOS buffer
+  EXPECT_TRUE(buffer_adapter->end_of_stream());
 }
 
 TEST(DecoderBufferAdapterTest, SetsEncryptionSchemeOfCencDecryptConfig) {

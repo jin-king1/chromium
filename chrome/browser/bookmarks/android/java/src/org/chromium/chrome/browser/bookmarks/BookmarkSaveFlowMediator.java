@@ -4,28 +4,30 @@
 
 package org.chromium.chrome.browser.bookmarks;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.content.Context;
 import android.graphics.drawable.Drawable;
-import android.os.Build;
 import android.text.SpannableString;
 import android.text.Spanned;
 import android.text.style.ForegroundColorSpan;
 import android.view.View;
 import android.widget.CompoundButton;
 
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 import androidx.annotation.StringRes;
 import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.Callback;
 import org.chromium.base.CallbackController;
 import org.chromium.base.metrics.RecordUserAction;
+import org.chromium.build.annotations.Initializer;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.bookmarks.BookmarkUiPrefs.BookmarkRowDisplayPref;
 import org.chromium.chrome.browser.bookmarks.ImprovedBookmarkSaveFlowProperties.FolderText;
 import org.chromium.chrome.browser.bookmarks.PowerBookmarkMetrics.PriceTrackingState;
 import org.chromium.chrome.browser.commerce.PriceTrackingUtils;
-import org.chromium.chrome.browser.price_tracking.PriceDropNotificationManagerFactory;
+import org.chromium.chrome.browser.price_tracking.PriceDropNotificationManager;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.components.bookmarks.BookmarkId;
 import org.chromium.components.bookmarks.BookmarkItem;
@@ -34,11 +36,12 @@ import org.chromium.components.commerce.core.CommerceSubscription;
 import org.chromium.components.commerce.core.ShoppingService;
 import org.chromium.components.commerce.core.SubscriptionsObserver;
 import org.chromium.components.power_bookmarks.PowerBookmarkMeta;
-import org.chromium.components.signin.identitymanager.ConsentLevel;
 import org.chromium.components.signin.identitymanager.IdentityManager;
+import org.chromium.ui.base.LocalizationUtils;
 import org.chromium.ui.modelutil.PropertyModel;
 
 /** Controls the bookmarks save-flow. */
+@NullMarked
 public class BookmarkSaveFlowMediator extends BookmarkModelObserver
         implements SubscriptionsObserver {
     private static final String FOLDER_TEXT_TOKEN = "%1$s";
@@ -52,13 +55,14 @@ public class BookmarkSaveFlowMediator extends BookmarkModelObserver
     private final Profile mProfile;
     private final IdentityManager mIdentityManager;
     private final BookmarkManagerOpener mBookmarkManagerOpener;
+    private final PriceDropNotificationManager mPriceDropNotificationManager;
 
     private BookmarkId mBookmarkId;
-    private PowerBookmarkMeta mPowerBookmarkMeta;
+    private @Nullable PowerBookmarkMeta mPowerBookmarkMeta;
     private boolean mWasBookmarkMoved;
     private boolean mIsNewBookmark;
-    private CommerceSubscription mSubscription;
-    private Callback<Boolean> mSubscriptionsManagerCallback;
+    private @Nullable CommerceSubscription mSubscription;
+    private @Nullable Callback<Boolean> mSubscriptionsManagerCallback;
     private String mFolderName;
 
     /**
@@ -68,21 +72,24 @@ public class BookmarkSaveFlowMediator extends BookmarkModelObserver
      * @param context The {@link Context} associated with this mediator.
      * @param closeRunnable A {@link Runnable} which closes the bookmark save flow.
      * @param shoppingService Used to manage the price-tracking subscriptions.
-     * @param bookmarkImageFetcher Used to fetch images/favicons for bookmarks.
+     * @param bookmarkImageFetcher Used to fetch images/favicons for bookmarks. This class takes
+     *     ownership of it (will call destroy() on it).
      * @param profile The current chrome profile.
      * @param identityManager The {@link IdentityManager} which supplies the account data.
      * @param bookmarkManagerOpener The BookmarkManagerOpener used to open bookmark activites.
+     * @param priceDropNotificationManager Manages price drop notifications.
      */
     public BookmarkSaveFlowMediator(
-            @NonNull BookmarkModel bookmarkModel,
-            @NonNull PropertyModel propertyModel,
-            @NonNull Context context,
-            @NonNull Runnable closeRunnable,
-            @NonNull ShoppingService shoppingService,
-            @NonNull BookmarkImageFetcher bookmarkImageFetcher,
-            @NonNull Profile profile,
-            @NonNull IdentityManager identityManager,
-            @NonNull BookmarkManagerOpener bookmarkManagerOpener) {
+            BookmarkModel bookmarkModel,
+            PropertyModel propertyModel,
+            Context context,
+            Runnable closeRunnable,
+            ShoppingService shoppingService,
+            BookmarkImageFetcher bookmarkImageFetcher,
+            Profile profile,
+            IdentityManager identityManager,
+            BookmarkManagerOpener bookmarkManagerOpener,
+            PriceDropNotificationManager priceDropNotificationManager) {
         mBookmarkModel = bookmarkModel;
         mBookmarkModel.addObserver(this);
 
@@ -91,14 +98,13 @@ public class BookmarkSaveFlowMediator extends BookmarkModelObserver
         mCloseRunnable = closeRunnable;
 
         mShoppingService = shoppingService;
-        if (mShoppingService != null) {
-            mShoppingService.addSubscriptionsObserver(this);
-        }
+        mShoppingService.addSubscriptionsObserver(this);
 
         mBookmarkImageFetcher = bookmarkImageFetcher;
         mProfile = profile;
         mIdentityManager = identityManager;
         mBookmarkManagerOpener = bookmarkManagerOpener;
+        mPriceDropNotificationManager = priceDropNotificationManager;
     }
 
     /**
@@ -113,6 +119,7 @@ public class BookmarkSaveFlowMediator extends BookmarkModelObserver
      * @param wasBookmarkMoved Whether the save flow is shown as a result of a moved bookmark.
      * @param isNewBookmark Whether the bookmark is newly created.
      */
+    @Initializer
     public void show(
             BookmarkId bookmarkId,
             @Nullable PowerBookmarkMeta meta,
@@ -147,18 +154,24 @@ public class BookmarkSaveFlowMediator extends BookmarkModelObserver
         }
 
         BookmarkItem item = mBookmarkModel.getBookmarkById(bookmarkId);
+        assumeNonNull(item);
+
         bindBookmarkProperties(item, mWasBookmarkMoved);
         bindPowerBookmarkProperties(mPowerBookmarkMeta);
-        bindImage(item, meta);
+        bindImage(item);
     }
 
     private void bindBookmarkProperties(BookmarkItem item, boolean wasBookmarkMoved) {
         mFolderName = mBookmarkModel.getBookmarkTitle(item.getParentId());
+        boolean isAccountBookmark = item.isAccountBookmark();
 
         mPropertyModel.set(ImprovedBookmarkSaveFlowProperties.TITLE, createTitleCharSequence());
         mPropertyModel.set(
                 ImprovedBookmarkSaveFlowProperties.SUBTITLE,
-                createSubTitleCharSequnce(wasBookmarkMoved));
+                createSubTitleCharSequence(wasBookmarkMoved, isAccountBookmark));
+        mPropertyModel.set(
+                ImprovedBookmarkSaveFlowProperties.ADJUST_SUBTITLE_LAYOUT_DIRECTION,
+                determineMisalignedSubTitleLayoutDirection(isAccountBookmark));
     }
 
     private CharSequence createTitleCharSequence() {
@@ -176,11 +189,11 @@ public class BookmarkSaveFlowMediator extends BookmarkModelObserver
         }
     }
 
-    private CharSequence createSubTitleCharSequnce(boolean wasBookmarkMoved) {
+    private CharSequence createSubTitleCharSequence(
+            boolean wasBookmarkMoved, boolean isAccountBookmark) {
         if (mBookmarkModel.areAccountBookmarkFoldersActive()) {
-            BookmarkItem bookmarkItem = mBookmarkModel.getBookmarkById(mBookmarkId);
-            return bookmarkItem.isAccountBookmark()
-                    ? mIdentityManager.getPrimaryAccountInfo(ConsentLevel.SIGNIN).getEmail()
+            return isAccountBookmark
+                    ? assumeNonNull(mIdentityManager.getPrimaryAccountInfo()).getEmail()
                     : mContext.getString(R.string.account_bookmark_save_flow_subtitle_local);
         } else {
             String folderDisplayTextRaw = getFolderDisplayTextRaw(wasBookmarkMoved);
@@ -192,6 +205,10 @@ public class BookmarkSaveFlowMediator extends BookmarkModelObserver
                             folderDisplayTextRaw.indexOf(FOLDER_TEXT_TOKEN),
                             mFolderName.length()));
         }
+    }
+
+    private boolean determineMisalignedSubTitleLayoutDirection(boolean isAccountBookmark) {
+        return isAccountBookmark && LocalizationUtils.isLayoutRtl();
     }
 
     @VisibleForTesting
@@ -232,7 +249,7 @@ public class BookmarkSaveFlowMediator extends BookmarkModelObserver
         }
     }
 
-    void bindImage(BookmarkItem item, @Nullable PowerBookmarkMeta meta) {
+    private void bindImage(BookmarkItem item) {
         Callback<Drawable> callback =
                 drawable -> {
                     mPropertyModel.set(
@@ -241,7 +258,7 @@ public class BookmarkSaveFlowMediator extends BookmarkModelObserver
 
         mBookmarkImageFetcher.fetchImageForBookmarkWithFaviconFallback(
                 item,
-                BookmarkUtils.getImageIconSize(
+                BookmarkViewUtils.getImageIconSize(
                         mContext.getResources(), BookmarkRowDisplayPref.VISUAL),
                 callback);
     }
@@ -275,17 +292,15 @@ public class BookmarkSaveFlowMediator extends BookmarkModelObserver
         mPropertyModel.set(ImprovedBookmarkSaveFlowProperties.PRICE_TRACKING_ENABLED, enabled);
     }
 
+    @SuppressWarnings("NullAway")
     void destroy() {
         mBookmarkModel.removeObserver(this);
-        if (mShoppingService != null) {
-            mShoppingService.removeSubscriptionsObserver(this);
-        }
+        mShoppingService.removeSubscriptionsObserver(this);
 
         mBookmarkId = null;
 
-        if (mCallbackController != null) {
-            mCallbackController.destroy();
-        }
+        mCallbackController.destroy();
+        mBookmarkImageFetcher.destroy();
     }
 
     @VisibleForTesting
@@ -313,7 +328,7 @@ public class BookmarkSaveFlowMediator extends BookmarkModelObserver
         }
 
         BookmarkItem item = mBookmarkModel.getBookmarkById(mBookmarkId);
-        bindBookmarkProperties(item, mWasBookmarkMoved);
+        bindBookmarkProperties(assumeNonNull(item), mWasBookmarkMoved);
     }
 
     // SubscriptionsObserver implementation
@@ -324,9 +339,7 @@ public class BookmarkSaveFlowMediator extends BookmarkModelObserver
         setPriceTrackingToggleVisualsOnly(true);
 
         // Make sure the notification channel is initialized when the user tracks the product.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            PriceDropNotificationManagerFactory.create(mProfile).createNotificationChannel();
-        }
+        mPriceDropNotificationManager.createNotificationChannel();
     }
 
     @Override
@@ -365,7 +378,6 @@ public class BookmarkSaveFlowMediator extends BookmarkModelObserver
         mCloseRunnable.run();
     }
 
-    @NonNull
     String getFolderName() {
         return mFolderName;
     }

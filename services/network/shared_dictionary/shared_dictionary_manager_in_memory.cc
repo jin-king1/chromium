@@ -8,6 +8,7 @@
 
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
+#include "base/memory_coordinator/traits.h"
 #include "base/notreached.h"
 #include "services/network/shared_dictionary/shared_dictionary_storage_in_memory.h"
 
@@ -78,18 +79,29 @@ class EvictionCandidate {
   std::set<mojom::RequestDestination> match_dest_;
 };
 
+constexpr base::MemoryConsumerTraits kInMemoryTraits(
+    base::MemoryConsumerTraits::EstimatedMemoryUsage::kMedium,
+    base::MemoryConsumerTraits::ReleaseMemoryCost::kRequiresTraversal,
+    base::MemoryConsumerTraits::InformationRetention::kLossless,
+    base::MemoryConsumerTraits::ExecutionType::kAsynchronous,
+    base::MemoryConsumerTraits::IsStateful::kYes);
+
 }  // namespace
 
 SharedDictionaryManagerInMemory::SharedDictionaryManagerInMemory(
     uint64_t cache_max_size,
     uint64_t cache_max_count)
-    : cache_max_size_(cache_max_size), cache_max_count_(cache_max_count) {}
+    : SharedDictionaryManager("SharedDictionaryManagerInMemory",
+                              kInMemoryTraits),
+      cache_max_size_(cache_max_size),
+      cache_max_count_(cache_max_count) {}
 
 SharedDictionaryManagerInMemory::~SharedDictionaryManagerInMemory() = default;
 
 scoped_refptr<SharedDictionaryStorage>
 SharedDictionaryManagerInMemory::CreateStorage(
-    const net::SharedDictionaryIsolationKey& isolation_key) {
+    const net::SharedDictionaryIsolationKey& isolation_key,
+    SharedDictionaryStorageEvictionReason previous_eviction_reason) {
   return base::MakeRefCounted<SharedDictionaryStorageInMemory>(
       weak_factory_.GetWeakPtr(), isolation_key,
       base::ScopedClosureRunner(

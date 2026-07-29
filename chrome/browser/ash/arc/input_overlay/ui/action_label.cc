@@ -2,24 +2,21 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/browser/ash/arc/input_overlay/ui/action_label.h"
 
 #include <set>
 
+#include "ash/resources/vector_icons/vector_icons.h"
 #include "ash/style/style_util.h"
-#include "chrome/app/vector_icons/vector_icons.h"
+#include "base/compiler_specific.h"
+#include "base/notimplemented.h"
+#include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/ash/arc/input_overlay/actions/action.h"
 #include "chrome/browser/ash/arc/input_overlay/constants.h"
 #include "chrome/browser/ash/arc/input_overlay/ui/action_view.h"
 #include "chrome/browser/ash/arc/input_overlay/ui/touch_point.h"
 #include "chrome/browser/ash/arc/input_overlay/ui/ui_utils.h"
 #include "chrome/browser/ash/arc/input_overlay/util.h"
-#include "chrome/grit/generated_resources.h"
 #include "chromeos/strings/grit/chromeos_strings.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/accessibility/ax_enums.mojom.h"
@@ -206,9 +203,9 @@ class ActionLabelMove : public ActionLabel {
     auto center = touch_point_size_.width() / 2;
     int offset_to_center =
         touch_point_size_.width() / 2 - kCrossPadding - label_size.height() / 2;
-    int x = center + kDirection[index_][0] * offset_to_center -
+    int x = center + UNSAFE_TODO(kDirection[index_])[0] * offset_to_center -
             label_size.width() / 2;
-    int y = center + kDirection[index_][1] * offset_to_center -
+    int y = center + UNSAFE_TODO(kDirection[index_])[1] * offset_to_center -
             label_size.height() / 2;
     SetPosition(gfx::Point(x, y));
     GetParent()->SetTouchPointCenter(gfx::Point(center, center));
@@ -367,11 +364,11 @@ void ActionLabel::SetToViewMode() {
   if (mouse_action_ != MouseAction::NONE) {
     if (mouse_action_ == MouseAction::PRIMARY_CLICK) {
       auto left_click_icon = ui::ImageModel::FromVectorIcon(
-          kMouseLeftClickViewIcon, gfx::kPlaceholderColor, kIconSize);
+          ash::kMouseLeftClickViewIcon, gfx::kPlaceholderColor, kIconSize);
       SetImageModel(views::Button::STATE_NORMAL, left_click_icon);
     } else {
       auto right_click_icon = ui::ImageModel::FromVectorIcon(
-          kMouseRightClickViewIcon, gfx::kPlaceholderColor, kIconSize);
+          ash::kMouseRightClickViewIcon, gfx::kPlaceholderColor, kIconSize);
       SetImageModel(views::Button::STATE_NORMAL, right_click_icon);
     }
   }

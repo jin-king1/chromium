@@ -6,14 +6,12 @@
 
 #include <algorithm>
 
-#include "ash/constants/ash_features.h"
 #include "ash/public/cpp/holding_space/holding_space_constants.h"
 #include "ash/public/cpp/holding_space/holding_space_file.h"
 #include "ash/public/cpp/holding_space/holding_space_image.h"
 #include "ash/public/cpp/holding_space/holding_space_item.h"
 #include "ash/public/cpp/holding_space/holding_space_progress.h"
 #include "ash/public/cpp/holding_space/holding_space_util.h"
-#include "base/containers/contains.h"
 #include "chrome/browser/ash/file_manager/path_util.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/profiles/profile.h"
@@ -90,7 +88,8 @@ void HoldingSpacePersistenceDelegate::OnHoldingSpaceItemsRemoved(
   update->EraseIf([&items](const base::Value& persisted_item) {
     const std::string& persisted_item_id =
         HoldingSpaceItem::DeserializeId(persisted_item.GetDict());
-    return base::Contains(items, persisted_item_id, &HoldingSpaceItem::id);
+    return std::ranges::contains(items, persisted_item_id,
+                                 &HoldingSpaceItem::id);
   });
 }
 
@@ -108,7 +107,7 @@ void HoldingSpacePersistenceDelegate::OnHoldingSpaceItemUpdated(
 
   // Attempt to find the finalized `item` in persistent storage.
   ScopedListPrefUpdate update(profile()->GetPrefs(), kPersistencePath);
-  base::Value::List& list = update.Get();
+  base::ListValue& list = update.Get();
   auto item_it = std::ranges::find(
       list, item->id(), [](const base::Value& persisted_item) {
         return HoldingSpaceItem::DeserializeId(persisted_item.GetDict());
@@ -144,7 +143,7 @@ void HoldingSpacePersistenceDelegate::RestoreModelFromPersistence() {
   // in-memory holding space model.
   MaybeRemoveItemsFromPersistence();
 
-  const base::Value::List& persisted_holding_space_items =
+  const base::ListValue& persisted_holding_space_items =
       profile()->GetPrefs()->GetList(kPersistencePath);
 
   // If persistent storage is empty we can immediately notify the callback of
@@ -177,24 +176,11 @@ void HoldingSpacePersistenceDelegate::MaybeRemoveItemsFromPersistence() {
 
   const auto known_types = holding_space_util::GetAllItemTypes();
 
-  const bool remove_suggestion_items =
-      !features::IsHoldingSpaceSuggestionsEnabled();
-
+  // Remove items associated with unknown types.
   ScopedListPrefUpdate update(profile()->GetPrefs(), kPersistencePath);
   update->EraseIf([&](const base::Value& persisted_item) {
     auto type = HoldingSpaceItem::DeserializeType(persisted_item.GetDict());
-
-    // Remove items associated with unknown `type`s.
-    if (!base::Contains(known_types, type)) {
-      return true;
-    }
-
-    // Remove items associated with disabled features.
-    if (remove_suggestion_items && HoldingSpaceItem::IsSuggestionType(type)) {
-      return true;
-    }
-
-    return false;
+    return !known_types.contains(type);
   });
 }
 

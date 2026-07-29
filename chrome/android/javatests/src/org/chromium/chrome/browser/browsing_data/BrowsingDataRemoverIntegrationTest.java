@@ -15,6 +15,7 @@ import org.junit.runner.RunWith;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider;
 import org.chromium.chrome.browser.browserservices.verification.ChromeVerificationResultStore;
 import org.chromium.chrome.browser.browsing_data.BrowsingDataBridge.OnClearBrowsingDataListener;
@@ -22,10 +23,12 @@ import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.webapps.TestFetchStorageCallback;
 import org.chromium.chrome.browser.webapps.WebappRegistry;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
 import org.chromium.chrome.test.util.browser.webapps.WebappTestHelper;
 import org.chromium.components.embedder_support.util.UrlUtilities;
 import org.chromium.net.test.EmbeddedTestServer;
+import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.url.GURL;
 
 import java.util.Arrays;
@@ -48,11 +51,12 @@ public class BrowsingDataRemoverIntegrationTest {
     private static final String TEST_PATH = "/chrome/test/data/android/about.html";
 
     @Rule
-    public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
+    public FreshCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.freshChromeTabbedActivityRule();
 
     @Before
     public void setUp() throws InterruptedException {
-        mActivityTestRule.startMainActivityOnBlankPage();
+        mActivityTestRule.startOnBlankPage();
     }
 
     private void registerWebapp(final String webappId, final String webappUrl) throws Exception {
@@ -74,7 +78,7 @@ public class BrowsingDataRemoverIntegrationTest {
     @MediumTest
     public void testUnregisteringWebapps() throws Exception {
         // Register three web apps.
-        final HashMap<String, String> apps = new HashMap<String, String>();
+        final HashMap<String, String> apps = new HashMap<>();
         apps.put("webapp1", "https://www.google.com/index.html");
         apps.put("webapp2", "https://www.chrome.com/foo/bar");
         apps.put("webapp3", "http://example.com/");
@@ -99,15 +103,13 @@ public class BrowsingDataRemoverIntegrationTest {
                                     new int[] {BrowsingDataType.SITE_DATA},
                                     TimePeriod.ALL_TIME,
                                     new String[] {"google.com"},
-                                    new int[] {1},
-                                    new String[0],
-                                    new int[0]);
+                                    new String[0]);
                 });
         dataClearedExcludingDomainHelper.waitForOnly();
 
         // The last two webapps should have been unregistered.
         Assert.assertEquals(
-                new HashSet<String>(Arrays.asList("webapp1")),
+                new HashSet<>(Arrays.asList("webapp1")),
                 WebappRegistry.getRegisteredWebappIdsForTesting());
 
         CallbackHelper dataClearedNoUrlFilterHelper = new CallbackHelper();
@@ -140,12 +142,11 @@ public class BrowsingDataRemoverIntegrationTest {
         Set<String> savedLinks = new HashSet<>();
         savedLinks.add(relationship);
 
-        ChromeVerificationResultStore mStore =
-                ChromeVerificationResultStore.getInstanceForTesting();
+        ChromeVerificationResultStore store = ChromeVerificationResultStore.getInstanceForTesting();
 
-        mStore.setRelationships(savedLinks);
+        store.setRelationships(savedLinks);
 
-        Assert.assertTrue(mStore.getRelationships().contains(relationship));
+        Assert.assertTrue(store.getRelationships().contains(relationship));
 
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
@@ -157,11 +158,12 @@ public class BrowsingDataRemoverIntegrationTest {
                 });
 
         callbackHelper.waitForCallback(0);
-        Assert.assertTrue(mStore.getRelationships().isEmpty());
+        Assert.assertTrue(store.getRelationships().isEmpty());
     }
 
     @Test
     @MediumTest
+    @Restriction(DeviceFormFactor.PHONE)
     public void testClearingTabs() throws TimeoutException {
         EmbeddedTestServer testServer = mActivityTestRule.getTestServer();
         String testUrl = testServer.getURL(TEST_PATH);
@@ -189,14 +191,16 @@ public class BrowsingDataRemoverIntegrationTest {
 
         Assert.assertTrue(
                 UrlUtilities.isNtpUrl(mActivityTestRule.getWebContents().getVisibleUrl()));
-        Assert.assertEquals(
-                new GURL(testUrl),
-                mActivityTestRule
-                        .getActivity()
-                        .getTabModelSelectorSupplier()
-                        .get()
-                        .getModel(/* incognito= */ true)
-                        .getTabAt(0)
-                        .getUrl());
+        GURL url =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () ->
+                                mActivityTestRule
+                                        .getActivity()
+                                        .getTabModelSelectorSupplier()
+                                        .get()
+                                        .getModel(/* incognito= */ true)
+                                        .getTabAt(0)
+                                        .getUrl());
+        Assert.assertEquals(new GURL(testUrl), url);
     }
 }

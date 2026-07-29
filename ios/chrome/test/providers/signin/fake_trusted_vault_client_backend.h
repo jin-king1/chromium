@@ -5,7 +5,7 @@
 #ifndef IOS_CHROME_TEST_PROVIDERS_SIGNIN_FAKE_TRUSTED_VAULT_CLIENT_BACKEND_H_
 #define IOS_CHROME_TEST_PROVIDERS_SIGNIN_FAKE_TRUSTED_VAULT_CLIENT_BACKEND_H_
 
-#include "ios/chrome/browser/signin/model/trusted_vault_client_backend.h"
+#include "ios/chrome/browser/signin/model/trusted_vault/trusted_vault_client_backend.h"
 
 @class FakeTrustedVaultClientBackendViewController;
 
@@ -16,8 +16,6 @@ class FakeTrustedVaultClientBackend final : public TrustedVaultClientBackend {
   ~FakeTrustedVaultClientBackend() final;
 
   // TrustedVaultClientBackend implementation.
-  void SetDeviceRegistrationPublicKeyVerifierForUMA(
-      VerifierCallback verifier) final;
   void FetchKeys(id<SystemIdentity> identity,
                  trusted_vault::SecurityDomainId security_domain_id,
                  KeysFetchedCallback completion) final;
@@ -31,6 +29,7 @@ class FakeTrustedVaultClientBackend final : public TrustedVaultClientBackend {
   CancelDialogCallback Reauthentication(
       id<SystemIdentity> identity,
       trusted_vault::SecurityDomainId security_domain_id,
+      trusted_vault::TrustedVaultUserActionTriggerForUMA trigger,
       UIViewController* presenting_view_controller,
       CompletionBlock completion) final;
   CancelDialogCallback FixDegradedRecoverability(

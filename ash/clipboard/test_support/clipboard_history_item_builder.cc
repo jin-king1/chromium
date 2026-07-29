@@ -2,12 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "ash/clipboard/test_support/clipboard_history_item_builder.h"
+
+#include <string_view>
 #include <vector>
 
 #include "ash/clipboard/clipboard_history_item.h"
@@ -182,7 +179,8 @@ ClipboardHistoryItemBuilder& ClipboardHistoryItemBuilder::ClearBookmarkTitle() {
 
 ClipboardHistoryItemBuilder& ClipboardHistoryItemBuilder::SetPng(
     const scoped_refptr<base::RefCountedMemory>& png) {
-  std::vector<uint8_t> data(png->data(), png->data() + png->size());
+  std::vector<uint8_t> data;
+  data.assign(png->begin(), png->end());
   return SetPng(std::move(data));
 }
 
@@ -199,7 +197,7 @@ ClipboardHistoryItemBuilder& ClipboardHistoryItemBuilder::ClearPng() {
 
 ClipboardHistoryItemBuilder& ClipboardHistoryItemBuilder::SetCustomData(
     const ui::ClipboardFormatType& custom_format,
-    const std::string& custom_data) {
+    std::string_view custom_data) {
   custom_format_ = custom_format;
   custom_data_ = custom_data;
   return *this;
@@ -221,9 +219,8 @@ ClipboardHistoryItemBuilder& ClipboardHistoryItemBuilder::SetFileSystemData(
           {{kFileSystemSourcesType, base::JoinString(source_list, u"\n")}}),
       &custom_data);
 
-  return SetCustomData(
-      ui::ClipboardFormatType::DataTransferCustomType(),
-      std::string(custom_data.data_as_char(), custom_data.size()));
+  return SetCustomData(ui::ClipboardFormatType::DataTransferCustomType(),
+                       custom_data.AsStringView());
 }
 
 ClipboardHistoryItemBuilder& ClipboardHistoryItemBuilder::SetWebSmartPaste(

@@ -24,6 +24,7 @@
 
 #include "third_party/blink/renderer/core/html/forms/listed_element.h"
 
+#include "base/auto_reset.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/renderer/core/dom/element_traversal.h"
 #include "third_party/blink/renderer/core/dom/events/event.h"
@@ -51,21 +52,23 @@
 #include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/core/page/validation_message_client.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/text/bidi_paragraph.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
+#include "third_party/blink/renderer/platform/wtf/text/line_ending.h"
 
 namespace blink {
 
 namespace {
 
-void InvalidateShadowIncludingAncestorForms(ContainerNode& insertion_point) {
+void InvalidateAncestorFormsForAutofill(ContainerNode& insertion_point) {
   // Let any forms in the shadow including ancestors know that this
   // ListedElement has changed.
   ContainerNode* starting_node = &insertion_point;
   for (ContainerNode* parent = starting_node; parent;
        parent = parent->ParentOrShadowHostNode()) {
     if (HTMLFormElement* form = DynamicTo<HTMLFormElement>(parent)) {
-      form->InvalidateListedElementsIncludingShadowTrees();
+      form->InvalidateListedElementsForAutofill();
     }
   }
 }
@@ -124,8 +127,9 @@ void ListedElement::InsertedInto(ContainerNode& insertion_point) {
 
   if (!form_was_set_by_parser_ || !form_ ||
       NodeTraversal::HighestAncestorOrSelf(insertion_point) !=
-          NodeTraversal::HighestAncestorOrSelf(*form_.Get()))
+          NodeTraversal::HighestAncestorOrSelf(*form_.Get())) {
     ResetFormOwner();
+  }
 
   HTMLElement& element = ToHTMLElement();
   if (insertion_point.isConnected()) {
@@ -150,7 +154,7 @@ void ListedElement::InsertedInto(ContainerNode& insertion_point) {
         &element, WebFormRelatedChangeType::kAdd);
   }
 
-  InvalidateShadowIncludingAncestorForms(insertion_point);
+  InvalidateAncestorFormsForAutofill(insertion_point);
 }
 
 void ListedElement::RemovedFrom(ContainerNode& insertion_point) {
@@ -203,7 +207,7 @@ void ListedElement::RemovedFrom(ContainerNode& insertion_point) {
         .InvalidateStatefulFormControlList();
   }
 
-  InvalidateShadowIncludingAncestorForms(insertion_point);
+  InvalidateAncestorFormsForAutofill(insertion_point);
 
   if (insertion_point.isConnected()) {
     // We don't insist on form_ being non-null as the form does not take care of
@@ -292,6 +296,20 @@ void ListedElement::FieldSetAncestorsSetNeedsValidityCheck(
       (field_set = Traversal<HTMLFieldSetElement>::FirstAncestor(*field_set)));
 }
 
+HTMLElement* ListedElement::RetargetedForm() const {
+  auto* form = Form();
+  if (!form) {
+    return nullptr;
+  }
+  const HTMLElement& element = ToHTMLElement();
+  if (RuntimeEnabledFeatures::ShadowRootReferenceTargetEnabled(
+          element.GetDocument().GetExecutionContext())) {
+    // Retarget to avoid exposing reference target elements.
+    return DynamicTo<HTMLElement>(&element.GetTreeScope().Retarget(*form));
+  }
+  return form;
+}
+
 // https://html.spec.whatwg.org/multipage/C#reset-the-form-owner
 void ListedElement::ResetFormOwner() {
   // 1. Unset element's parser inserted flag.
@@ -321,6 +339,14 @@ void ListedElement::ResetFormOwner() {
     Element* new_form_candidate =
         element.GetTreeScope().getElementById(form_id);
     new_form = DynamicTo<HTMLFormElement>(new_form_candidate);
+
+    if (RuntimeEnabledFeatures::ShadowRootReferenceTargetEnabled(
+            element.GetDocument().GetExecutionContext()) &&
+        new_form_candidate) {
+      new_form = DynamicTo<HTMLFormElement>(
+          new_form_candidate->GetShadowReferenceTargetOrSelf(
+              html_names::kFormAttr));
+    }
   } else {
     // 5. Otherwise, if element has an ancestor form element, then associate
     //    element with the nearest such ancestor form element.
@@ -347,7 +373,11 @@ bool ListedElement::RecalcWillValidate() const {
   }
   return data_list_ancestor_state_ ==
              DataListAncestorState::kNotInsideDataList &&
-         !element.IsDisabledFormControl() && !is_readonly_;
+         !element.IsDisabledFormControl() &&
+         (!is_readonly_ ||
+          (RuntimeEnabledFeatures::
+               ElementSpecificReadOnlyConstraintValidationEnabled() &&
+           !ReadOnlyPreventsConstraintValidation()));
 }
 
 bool ListedElement::WillValidate() const {
@@ -457,7 +487,9 @@ String ListedElement::CustomValidationMessage() const {
 }
 
 void ListedElement::SetCustomValidationMessage(const String& message) {
-  custom_validation_message_ = message;
+  // \r\n and \r should be replaced with \n:
+  // https://github.com/whatwg/html/pull/10350.
+  custom_validation_message_ = NormalizeLineEndingsToLf(message);
 }
 
 String ListedElement::validationMessage() const {
@@ -482,7 +514,7 @@ void ListedElement::FindCustomValidationMessageTextDirection(
     TextDirection& sub_message_dir) {
   message_dir = BidiParagraph::BaseDirectionForStringOrLtr(message);
   if (!sub_message.empty()) {
-    sub_message_dir = ToHTMLElement().GetLayoutObject()->Style()->Direction();
+    sub_message_dir = ToHTMLElement().GetLayoutObject()->StyleRef().Direction();
   }
 }
 
@@ -545,9 +577,7 @@ Element& ListedElement::GetHostOrFocusDelegate() const {
   const HTMLElement& host = ToHTMLElement();
   // If host is a shadow host with delegatesFocus, then the element to get
   // focus should be its focusable area.
-  if (RuntimeEnabledFeatures::
-          FormValidationCustomElementsDelegatesFocusFixEnabled() &&
-      host.IsShadowHostWithDelegatesFocus()) {
+  if (host.IsShadowHostWithDelegatesFocus()) {
     if (Element* focusable_area =
             host.GetFocusableArea(/*in_descendant_traversal=*/true)) {
       return *focusable_area;
@@ -641,12 +671,12 @@ void ListedElement::SetNeedsValidityCheck() {
     element.GetDocument()
         .GetTaskRunner(TaskType::kDOMManipulation)
         ->PostTask(FROM_HERE,
-                   WTF::BindOnce(&ListedElement::UpdateVisibleValidationMessage,
-                                 WrapPersistent(this)));
+                   BindOnce(&ListedElement::UpdateVisibleValidationMessage,
+                            WrapPersistent(this)));
   }
 }
 
-void ListedElement::DisabledAttributeChanged() {
+void ListedElement::DisabledAttributeChanged(DisabledChangedReason reason) {
   HTMLElement& element = ToHTMLElement();
   is_element_disabled_ = element.FastHasAttribute(html_names::kDisabledAttr);
   UpdateWillValidateCache();
@@ -690,9 +720,10 @@ void ListedElement::UpdateAncestorDisabledState() const {
   }
 }
 
-void ListedElement::AncestorDisabledStateWasChanged() {
+void ListedElement::AncestorDisabledStateWasChanged(
+    DisabledChangedReason reason) {
   ancestor_disabled_state_ = AncestorDisabledState::kUnknown;
-  DisabledAttributeChanged();
+  DisabledAttributeChanged(reason);
 }
 
 bool ListedElement::IsActuallyDisabled() const {

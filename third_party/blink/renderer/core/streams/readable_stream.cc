@@ -4,10 +4,12 @@
 
 #include "third_party/blink/renderer/core/streams/readable_stream.h"
 
+#include "base/containers/span.h"
 #include "third_party/blink/renderer/bindings/core/v8/native_value_traits_impl.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_function.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
 #include "third_party/blink/renderer/bindings/core/v8/to_v8_traits.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_microtasks_scope.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_readable_stream.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_readable_stream_get_reader_options.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_readable_writable_pair.h"
@@ -37,6 +39,7 @@
 #include "third_party/blink/renderer/core/streams/writable_stream_default_controller.h"
 #include "third_party/blink/renderer/core/streams/writable_stream_default_writer.h"
 #include "third_party/blink/renderer/core/streams/writable_stream_transferring_optimizer.h"
+#include "third_party/blink/renderer/platform/bindings/dom_wrapper_world.h"
 #include "third_party/blink/renderer/platform/bindings/exception_code.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
@@ -59,10 +62,10 @@ class ReadableStream::PullAlgorithm final : public StreamAlgorithm {
   explicit PullAlgorithm(UnderlyingByteSourceBase* underlying_byte_source)
       : underlying_byte_source_(underlying_byte_source) {}
 
-  ScriptPromise<IDLUndefined> Run(ScriptState* script_state,
-                                  int argc,
-                                  v8::Local<v8::Value> argv[]) override {
-    DCHECK_EQ(argc, 0);
+  ScriptPromise<IDLUndefined> Run(
+      ScriptState* script_state,
+      base::span<v8::Local<v8::Value>> argv) override {
+    DCHECK_EQ(argv.size(), 0u);
     DCHECK(controller_);
     ScriptPromise<IDLUndefined> promise;
     if (script_state->ContextIsValid()) {
@@ -109,10 +112,10 @@ class ReadableStream::CancelAlgorithm final : public StreamAlgorithm {
   explicit CancelAlgorithm(UnderlyingByteSourceBase* underlying_byte_source)
       : underlying_byte_source_(underlying_byte_source) {}
 
-  ScriptPromise<IDLUndefined> Run(ScriptState* script_state,
-                                  int argc,
-                                  v8::Local<v8::Value> argv[]) override {
-    DCHECK_EQ(argc, 1);
+  ScriptPromise<IDLUndefined> Run(
+      ScriptState* script_state,
+      base::span<v8::Local<v8::Value>> argv) override {
+    DCHECK_EQ(argv.size(), 1u);
     ScriptPromise<IDLUndefined> promise;
     if (script_state->ContextIsValid()) {
       v8::TryCatch try_catch(script_state->GetIsolate());
@@ -285,7 +288,7 @@ ReadableStream* ReadableStream::Create(ScriptState* script_state,
                                        ScriptValue underlying_source,
                                        ScriptValue strategy,
                                        ExceptionState& exception_state) {
-  auto* stream = MakeGarbageCollected<ReadableStream>();
+  auto* stream = MakeGarbageCollected<ReadableStream>(script_state);
   stream->InitInternal(script_state, underlying_source, strategy, false,
                        exception_state);
   if (exception_state.HadException()) {
@@ -311,12 +314,9 @@ ReadableStream* ReadableStream::CreateWithCountQueueingStrategy(
     size_t high_water_mark,
     AllowPerChunkTransferring allow_per_chunk_transferring,
     std::unique_ptr<ReadableStreamTransferringOptimizer> optimizer) {
-  auto* isolate = script_state->GetIsolate();
-  v8::MicrotasksScope microtasks_scope(
-      isolate, ToMicrotaskQueue(script_state),
-      v8::MicrotasksScope::kDoNotRunMicrotasks);
+  V8DoNotRunMicrotasksScope microtasks_scope(script_state);
 
-  auto* stream = MakeGarbageCollected<ReadableStream>();
+  auto* stream = MakeGarbageCollected<ReadableStream>(script_state);
   stream->InitWithCountQueueingStrategy(
       script_state, underlying_source, high_water_mark,
       allow_per_chunk_transferring, std::move(optimizer), IGNORE_EXCEPTION);
@@ -363,7 +363,7 @@ ReadableStream* ReadableStream::Create(ScriptState* script_state,
   DCHECK_GE(high_water_mark, 0);
 
   // 4. Let stream be a new ReadableStream.
-  auto* stream = MakeGarbageCollected<ReadableStream>();
+  auto* stream = MakeGarbageCollected<ReadableStream>(script_state);
 
   // 5. Perform ! InitializeReadableStream(stream).
   Initialize(stream);
@@ -394,7 +394,7 @@ ReadableStream* ReadableStream::CreateByteStream(
     ExceptionState& exception_state) {
   // https://streams.spec.whatwg.org/#abstract-opdef-createreadablebytestream
   // 1. Let stream be a new ReadableStream.
-  auto* stream = MakeGarbageCollected<ReadableStream>();
+  auto* stream = MakeGarbageCollected<ReadableStream>(script_state);
 
   // 2. Perform ! InitializeReadableStream(stream).
   Initialize(stream);
@@ -421,7 +421,7 @@ ReadableStream* ReadableStream::CreateByteStream(
     UnderlyingByteSourceBase* underlying_byte_source) {
   // https://streams.spec.whatwg.org/#abstract-opdef-createreadablebytestream
   // 1. Let stream be a new ReadableStream.
-  auto* stream = MakeGarbageCollected<ReadableStream>();
+  auto* stream = MakeGarbageCollected<ReadableStream>(script_state);
 
   // Construction of the byte stream cannot fail because the trivial start
   // algorithm will not throw.
@@ -437,6 +437,7 @@ void ReadableStream::InitByteStream(
     ReadableStream* stream,
     UnderlyingByteSourceBase* underlying_byte_source,
     ExceptionState& exception_state) {
+  CHECK(stream);
   auto* pull_algorithm =
       MakeGarbageCollected<PullAlgorithm>(underlying_byte_source);
   auto* cancel_algorithm =
@@ -462,6 +463,7 @@ void ReadableStream::InitByteStream(ScriptState* script_state,
                                     StreamAlgorithm* pull_algorithm,
                                     StreamAlgorithm* cancel_algorithm,
                                     ExceptionState& exception_state) {
+  CHECK(stream);
   // Step 2 and 4 of
   // https://streams.spec.whatwg.org/#abstract-opdef-createreadablebytestream
   // 2. Perform ! InitializeReadableStream(stream).
@@ -477,7 +479,8 @@ void ReadableStream::InitByteStream(ScriptState* script_state,
   }
 }
 
-ReadableStream::ReadableStream() = default;
+ReadableStream::ReadableStream(ScriptState* script_state)
+    : wrapper_world_id_(script_state->World().GetWorldId()) {}
 
 ReadableStream::~ReadableStream() = default;
 
@@ -490,6 +493,7 @@ bool ReadableStream::locked() const {
 ScriptPromise<IDLUndefined> ReadableStream::cancel(
     ScriptState* script_state,
     ExceptionState& exception_state) {
+  CHECK_EQ(wrapper_world_id_, script_state->World().GetWorldId());
   return cancel(script_state,
                 ScriptValue(script_state->GetIsolate(),
                             v8::Undefined(script_state->GetIsolate())),
@@ -500,6 +504,7 @@ ScriptPromise<IDLUndefined> ReadableStream::cancel(
     ScriptState* script_state,
     ScriptValue reason,
     ExceptionState& exception_state) {
+  CHECK_EQ(wrapper_world_id_, script_state->World().GetWorldId());
   // https://streams.spec.whatwg.org/#rs-cancel
   // 2. If ! IsReadableStreamLocked(this) is true, return a promise rejected
   //    with a TypeError exception.
@@ -515,6 +520,7 @@ ScriptPromise<IDLUndefined> ReadableStream::cancel(
 V8ReadableStreamReader* ReadableStream::getReader(
     ScriptState* script_state,
     ExceptionState& exception_state) {
+  CHECK_EQ(wrapper_world_id_, script_state->World().GetWorldId());
   // https://streams.spec.whatwg.org/#rs-get-reader
   // 1. If options["mode"] does not exist, return ?
   // AcquireReadableStreamDefaultReader(this).
@@ -529,9 +535,10 @@ V8ReadableStreamReader* ReadableStream::getReader(
     ScriptState* script_state,
     const ReadableStreamGetReaderOptions* options,
     ExceptionState& exception_state) {
+  CHECK_EQ(wrapper_world_id_, script_state->World().GetWorldId());
   // https://streams.spec.whatwg.org/#rs-get-reader
   if (options->hasMode()) {
-    DCHECK_EQ(options->mode(), "byob");
+    DCHECK_EQ(options->mode(), V8ReadableStreamReaderMode::Enum::kByob);
 
     UseCounter::Count(ExecutionContext::From(script_state),
                       WebFeature::kReadableStreamBYOBReader);
@@ -549,6 +556,7 @@ V8ReadableStreamReader* ReadableStream::getReader(
 ReadableStreamDefaultReader* ReadableStream::GetDefaultReaderForTesting(
     ScriptState* script_state,
     ExceptionState& exception_state) {
+  CHECK_EQ(wrapper_world_id_, script_state->World().GetWorldId());
   auto* result = getReader(script_state, exception_state);
   if (!result)
     return nullptr;
@@ -558,8 +566,9 @@ ReadableStreamDefaultReader* ReadableStream::GetDefaultReaderForTesting(
 ReadableStreamBYOBReader* ReadableStream::GetBYOBReaderForTesting(
     ScriptState* script_state,
     ExceptionState& exception_state) {
+  CHECK_EQ(wrapper_world_id_, script_state->World().GetWorldId());
   auto* options = ReadableStreamGetReaderOptions::Create();
-  options->setMode("byob");
+  options->setMode(V8ReadableStreamReaderMode::Enum::kByob);
   auto* result = getReader(script_state, options, exception_state);
   if (!result)
     return nullptr;
@@ -569,6 +578,7 @@ ReadableStreamBYOBReader* ReadableStream::GetBYOBReaderForTesting(
 ReadableStream* ReadableStream::pipeThrough(ScriptState* script_state,
                                             ReadableWritablePair* transform,
                                             ExceptionState& exception_state) {
+  CHECK_EQ(wrapper_world_id_, script_state->World().GetWorldId());
   return pipeThrough(script_state, transform, StreamPipeOptions::Create(),
                      exception_state);
 }
@@ -578,12 +588,17 @@ ReadableStream* ReadableStream::pipeThrough(ScriptState* script_state,
                                             ReadableWritablePair* transform,
                                             const StreamPipeOptions* options,
                                             ExceptionState& exception_state) {
+  CHECK_EQ(wrapper_world_id_, script_state->World().GetWorldId());
   // https://streams.spec.whatwg.org/#rs-pipe-through
-  DCHECK(transform->hasReadable());
+  CHECK(transform->hasReadable());
   ReadableStream* readable_stream = transform->readable();
 
-  DCHECK(transform->hasWritable());
+  CHECK(transform->hasWritable());
   WritableStream* writable_stream = transform->writable();
+  CHECK_EQ(writable_stream->GetWrapperWorldId(),
+           script_state->World().GetWorldId());
+  CHECK_EQ(readable_stream->wrapper_world_id_,
+           script_state->World().GetWorldId());
 
   // 1. If ! IsReadableStreamLocked(this) is true, throw a TypeError exception.
   if (IsLocked(this)) {
@@ -618,6 +633,7 @@ ScriptPromise<IDLUndefined> ReadableStream::pipeTo(
     ScriptState* script_state,
     WritableStream* destination,
     ExceptionState& exception_state) {
+  CHECK_EQ(wrapper_world_id_, script_state->World().GetWorldId());
   return pipeTo(script_state, destination, StreamPipeOptions::Create(),
                 exception_state);
 }
@@ -627,6 +643,7 @@ ScriptPromise<IDLUndefined> ReadableStream::pipeTo(
     WritableStream* destination,
     const StreamPipeOptions* options,
     ExceptionState& exception_state) {
+  CHECK_EQ(wrapper_world_id_, script_state->World().GetWorldId());
   // https://streams.spec.whatwg.org/#rs-pipe-to
   // 1. If ! IsReadableStreamLocked(this) is true, return a promise rejected
   //    with a TypeError exception.
@@ -654,6 +671,7 @@ ScriptPromise<IDLUndefined> ReadableStream::pipeTo(
 HeapVector<Member<ReadableStream>> ReadableStream::tee(
     ScriptState* script_state,
     ExceptionState& exception_state) {
+  CHECK_EQ(wrapper_world_id_, script_state->World().GetWorldId());
   return CallTeeAndReturnBranchArray(script_state, this, false,
                                      exception_state);
 }
@@ -779,6 +797,8 @@ ReadableStreamDefaultReader* ReadableStream::AcquireDefaultReader(
     ScriptState* script_state,
     ReadableStream* stream,
     ExceptionState& exception_state) {
+  CHECK(stream);
+  CHECK_EQ(stream->wrapper_world_id_, script_state->World().GetWorldId());
   // https://streams.spec.whatwg.org/#acquire-readable-stream-reader
   // 1. Let reader by a new ReadableStreamDefaultReader.
   // 2. Perform ? SetUpReadableStreamReader(reader, stream).
@@ -796,6 +816,8 @@ ReadableStreamBYOBReader* ReadableStream::AcquireBYOBReader(
     ScriptState* script_state,
     ReadableStream* stream,
     ExceptionState& exception_state) {
+  CHECK(stream);
+  CHECK_EQ(stream->wrapper_world_id_, script_state->World().GetWorldId());
   // https://streams.spec.whatwg.org/#acquire-readable-stream-byob-reader
   // 1. Let reader be a new ReadableStreamBYOBReader.
   // 2. Perform ? SetUpBYOBReader(reader, stream).
@@ -827,6 +849,7 @@ void ReadableStream::Tee(ScriptState* script_state,
                          ReadableStream** branch2,
                          bool clone_for_branch2,
                          ExceptionState& exception_state) {
+  CHECK_EQ(wrapper_world_id_, script_state->World().GetWorldId());
   auto* engine = MakeGarbageCollected<TeeEngine>();
   engine->Start(script_state, this, clone_for_branch2, exception_state);
   if (exception_state.HadException()) {
@@ -843,6 +866,7 @@ void ReadableStream::ByteStreamTee(ScriptState* script_state,
                                    ReadableStream** branch1,
                                    ReadableStream** branch2,
                                    ExceptionState& exception_state) {
+  CHECK_EQ(wrapper_world_id_, script_state->World().GetWorldId());
   auto* engine = MakeGarbageCollected<ByteStreamTeeEngine>();
   engine->Start(script_state, this, exception_state);
   if (exception_state.HadException()) {
@@ -856,6 +880,7 @@ void ReadableStream::ByteStreamTee(ScriptState* script_state,
 }
 
 void ReadableStream::LockAndDisturb(ScriptState* script_state) {
+  CHECK_EQ(wrapper_world_id_, script_state->World().GetWorldId());
   if (reader_) {
     return;
   }
@@ -872,6 +897,7 @@ void ReadableStream::LockAndDisturb(ScriptState* script_state) {
 
 void ReadableStream::CloseStream(ScriptState* script_state,
                                  ExceptionState& exception_state) {
+  CHECK_EQ(wrapper_world_id_, script_state->World().GetWorldId());
   // https://streams.spec.whatwg.org/#readablestream-close
   // 1. If stream.[[controller]] implements ReadableByteStreamController,
   if (auto* readable_byte_stream_controller =
@@ -909,6 +935,7 @@ void ReadableStream::CloseStream(ScriptState* script_state,
 void ReadableStream::Serialize(ScriptState* script_state,
                                MessagePort* port,
                                ExceptionState& exception_state) {
+  CHECK_EQ(wrapper_world_id_, script_state->World().GetWorldId());
   // https://streams.spec.whatwg.org/#rs-transfer
   // 1. If ! IsReadableStreamLocked(value) is true, throw a "DataCloneError"
   //    DOMException.
@@ -978,6 +1005,11 @@ ScriptPromise<IDLUndefined> ReadableStream::PipeTo(
     WritableStream* destination,
     PipeOptions* pipe_options,
     ExceptionState& exception_state) {
+  CHECK_EQ(readable->wrapper_world_id_, script_state->World().GetWorldId());
+  CHECK(destination);
+  CHECK_EQ(destination->GetWrapperWorldId(),
+           script_state->World().GetWorldId());
+
   auto* engine = MakeGarbageCollected<PipeToEngine>(script_state, pipe_options);
   return engine->Start(readable, destination, exception_state);
 }
@@ -1006,6 +1038,7 @@ void ReadableStream::Trace(Visitor* visitor) const {
 void ReadableStream::AddReadIntoRequest(ScriptState* script_state,
                                         ReadableStream* stream,
                                         ReadIntoRequest* readRequest) {
+  CHECK(stream);
   // https://streams.spec.whatwg.org/#readable-stream-add-read-into-request
   // 1. Assert: stream.[[reader]] implements ReadableStreamBYOBReader.
   DCHECK(stream->reader_->IsBYOBReader());
@@ -1020,6 +1053,7 @@ void ReadableStream::AddReadIntoRequest(ScriptState* script_state,
 void ReadableStream::AddReadRequest(ScriptState* script_state,
                                     ReadableStream* stream,
                                     ReadRequest* read_request) {
+  CHECK(stream);
   // https://streams.spec.whatwg.org/#readable-stream-add-read-request
   // 1. Assert: ! IsReadableStreamDefaultReader(stream.[[reader]]) is true.
   DCHECK(stream->reader_->IsDefaultReader());
@@ -1038,6 +1072,8 @@ ScriptPromise<IDLUndefined> ReadableStream::Cancel(
     ScriptState* script_state,
     ReadableStream* stream,
     v8::Local<v8::Value> reason) {
+  CHECK(stream);
+  CHECK_EQ(stream->wrapper_world_id_, script_state->World().GetWorldId());
   // https://streams.spec.whatwg.org/#readable-stream-cancel
   // 1. Set stream.[[disturbed]] to true.
   stream->is_disturbed_ = true;
@@ -1100,6 +1136,7 @@ ScriptPromise<IDLUndefined> ReadableStream::Cancel(
 }
 
 void ReadableStream::Close(ScriptState* script_state, ReadableStream* stream) {
+  CHECK(stream);
   // https://streams.spec.whatwg.org/#readable-stream-close
   // 1. Assert: stream.[[state]] is "readable".
   CHECK_EQ(stream->state_, kReadable);
@@ -1141,6 +1178,7 @@ void ReadableStream::Close(ScriptState* script_state, ReadableStream* stream) {
 void ReadableStream::Error(ScriptState* script_state,
                            ReadableStream* stream,
                            v8::Local<v8::Value> e) {
+  CHECK(stream);
   // https://streams.spec.whatwg.org/#readable-stream-error
   // 1. Assert: stream.[[state]] is "readable".
   CHECK_EQ(stream->state_, kReadable);
@@ -1190,6 +1228,7 @@ void ReadableStream::FulfillReadIntoRequest(ScriptState* script_state,
                                             DOMArrayBufferView* chunk,
                                             bool done,
                                             ExceptionState& exception_state) {
+  CHECK(stream);
   // https://streams.spec.whatwg.org/#readable-stream-fulfill-read-into-request
   // 1. Assert: ! ReadableStreamHasBYOBReader(stream) is true.
   DCHECK(HasBYOBReader(stream));
@@ -1216,6 +1255,7 @@ void ReadableStream::FulfillReadRequest(ScriptState* script_state,
                                         v8::Local<v8::Value> chunk,
                                         bool done,
                                         ExceptionState& exception_state) {
+  CHECK(stream);
   // https://streams.spec.whatwg.org/#readable-stream-fulfill-read-request
   // 1. Assert: ! ReadableStreamHasDefaultReader(stream) is true.
   DCHECK(HasDefaultReader(stream));

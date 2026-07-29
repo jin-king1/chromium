@@ -16,12 +16,6 @@ export function isDlpEnabled() {
   return isFlagEnabled('DLP_ENABLED');
 }
 
-/**
- * Returns true if FuseBoxDebug flag is enabled.
- */
-export function isFuseBoxDebugEnabled() {
-  return isFlagEnabled('FUSEBOX_DEBUG');
-}
 
 /**
  * Returns true if GuestOsFiles flag is enabled.
@@ -74,13 +68,6 @@ export function isArcVmEnabled() {
  */
 export function isPluginVmEnabled() {
   return isFlagEnabled('PLUGIN_VM_ENABLED');
-}
-
-/**
- * Returns true if FilesMaterializedViews flag is enabled.
- */
-export function isMaterializedViewsEnabled() {
-  return isFlagEnabled('MATERIALIZED_VIEWS');
 }
 
 /**

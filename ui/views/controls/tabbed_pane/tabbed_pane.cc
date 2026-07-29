@@ -13,6 +13,7 @@
 #include "build/build_config.h"
 #include "cc/paint/paint_flags.h"
 #include "third_party/skia/include/core/SkPath.h"
+#include "third_party/skia/include/core/SkRRect.h"
 #include "ui/accessibility/ax_action_data.h"
 #include "ui/base/default_style.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -345,13 +346,13 @@ void TabbedPaneTab::OnPaint(gfx::Canvas* canvas) {
     return;
   }
   constexpr SkScalar kRadius = SkIntToScalar(32);
-  constexpr SkScalar kLTRRadii[8] = {0,       0,       kRadius, kRadius,
-                                     kRadius, kRadius, 0,       0};
-  constexpr SkScalar kRTLRadii[8] = {kRadius, kRadius, 0,       0,
-                                     0,       0,       kRadius, kRadius};
-  SkPath path;
-  path.addRoundRect(gfx::RectToSkRect(GetLocalBounds()),
-                    base::i18n::IsRTL() ? kRTLRadii : kLTRRadii);
+  constexpr SkVector kLTRRadii[4] = {
+      {0, 0}, {kRadius, kRadius}, {kRadius, kRadius}, {0, 0}};
+  constexpr SkVector kRTLRadii[4] = {
+      {kRadius, kRadius}, {0, 0}, {0, 0}, {kRadius, kRadius}};
+  const SkPath path = SkPath::RRect(
+      SkRRect::MakeRectRadii(gfx::RectToSkRect(GetLocalBounds()),
+                             base::i18n::IsRTL() ? kRTLRadii : kLTRRadii));
 
   cc::PaintFlags fill_flags;
   fill_flags.setAntiAlias(true);
@@ -459,10 +460,6 @@ TabbedPaneTabStrip::TabbedPaneTabStrip(TabbedPane::Orientation orientation,
   // See |selectionBar.expand| and |selectionBar.contract|.
   expand_animation_->SetDuration(base::Milliseconds(150));
   contract_animation_->SetDuration(base::Milliseconds(180));
-
-  // Callback when the enabled state changes.
-  enabled_changed_subscription_ = AddEnabledChangedCallback(base::BindRepeating(
-      &TabbedPaneTabStrip::OnEnableChanged, base::Unretained(this)));
 }
 
 TabbedPaneTabStrip::~TabbedPaneTabStrip() = default;
@@ -498,16 +495,6 @@ void TabbedPaneTabStrip::AnimationEnded(const gfx::Animation* animation) {
   }
 }
 
-void TabbedPaneTabStrip::OnEnableChanged() {
-  const bool enabled = GetEnabled();
-
-  for (size_t i = 0; i < GetTabCount(); ++i) {
-    auto* tab = GetTabAtIndex(i);
-    tab->SetEnabled(enabled);
-    tab->UpdateEnabledColor(enabled);
-  }
-}
-
 // Computes the starting and ending points of the selection slider for a given
 // tab from the origin.
 //
@@ -533,7 +520,8 @@ TabbedPaneTabStrip::Coordinates TabbedPaneTabStrip::GetIconLabelStartEndingX(
 bool TabbedPaneTabStrip::AcceleratorPressed(
     const ui::Accelerator& accelerator) {
   // Handle Ctrl+Tab and Ctrl+Shift+Tab navigation of pages.
-  DCHECK(accelerator.key_code() == ui::VKEY_TAB && accelerator.IsCtrlDown());
+  DCHECK_EQ(accelerator.key_code(), ui::VKEY_TAB);
+  DCHECK(accelerator.IsCtrlDown());
   return MoveSelectionBy(accelerator.IsShiftDown() ? -1 : 1);
 }
 
@@ -594,9 +582,6 @@ bool TabbedPaneTabStrip::SelectTab(TabbedPaneTab* new_selected_tab,
     old_selected_tab->SetSelected(false);
     MaybeUpdateTabContentVisibility(GetIndexForTab(old_selected_tab), false);
     OnSelectedTabChanged(old_selected_tab, new_selected_tab, animate);
-
-    NotifyNewAccessibilityEvent(ax::mojom::Event::kSelectedChildrenChanged,
-                                true);
   }
 
   UpdateAccessibleName();

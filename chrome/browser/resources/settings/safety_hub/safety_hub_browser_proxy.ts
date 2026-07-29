@@ -25,7 +25,6 @@ export enum SafetyHubEvent {
   NOTIFICATION_PERMISSIONS_MAYBE_CHANGED =
       'notification-permission-review-list-maybe-changed',
   EXTENSIONS_CHANGED = 'extensions-review-list-maybe-changed',
-  CHROME_VERSION_MAYBE_CHANGED = 'chrome-version-maybe-changed',
 }
 
 // The notification permission information passed from safety_hub_handler.cc.
@@ -34,11 +33,29 @@ export interface NotificationPermission {
   notificationInfoString: string;
 }
 
+// LINT.IfChange(PermissionsRevocationType)
+export enum PermissionsRevocationType {
+  UNUSED_PERMISSIONS,
+  ABUSIVE_NOTIFICATION_PERMISSIONS,
+  DISRUPTIVE_NOTIFICATION_PERMISSIONS,
+  UNUSED_PERMISSIONS_AND_ABUSIVE_NOTIFICATIONS,
+  UNUSED_PERMISSIONS_AND_DISRUPTIVE_NOTIFICATIONS,
+  SUSPICIOUS_NOTIFICATION_PERMISSIONS,
+  UNUSED_PERMISSIONS_AND_SUSPICIOUS_NOTIFICATIONS
+}
+// LINT.ThenChange(//chrome/browser/ui/safety_hub/revoked_permissions_result.h:PermissionsRevocationType)
+
+export interface UnusedSitePermission {
+  type: ContentSettingsTypes;
+  settingValue: unknown;
+}
+
 // The unused site permission information passed from safety_hub_handler.cc.
 export interface UnusedSitePermissions {
   origin: string;
-  permissions: ContentSettingsTypes[];
+  permissions: UnusedSitePermission[];
   expiration: string;
+  revocationType: PermissionsRevocationType;
 }
 
 // The information for top cards in Safety Hub page.
@@ -162,7 +179,8 @@ export class SafetyHubBrowserProxyImpl implements SafetyHubBrowserProxy {
   }
 
   getRevokedUnusedSitePermissionsList() {
-    return sendWithPromise('getRevokedUnusedSitePermissionsList');
+    return sendWithPromise<UnusedSitePermissions[]>(
+        'getRevokedUnusedSitePermissionsList');
   }
 
   undoAcknowledgeRevokedUnusedSitePermissionsList(unusedSitePermissionsList:
@@ -179,7 +197,8 @@ export class SafetyHubBrowserProxyImpl implements SafetyHubBrowserProxy {
   }
 
   getNotificationPermissionReview() {
-    return sendWithPromise('getNotificationPermissionReview');
+    return sendWithPromise<NotificationPermission[]>(
+        'getNotificationPermissionReview');
   }
 
   blockNotificationPermissionForOrigins(origins: string[]) {
@@ -207,31 +226,31 @@ export class SafetyHubBrowserProxyImpl implements SafetyHubBrowserProxy {
   }
 
   getPasswordCardData() {
-    return sendWithPromise('getPasswordCardData');
+    return sendWithPromise<CardInfo>('getPasswordCardData');
   }
 
   getSafeBrowsingCardData() {
-    return sendWithPromise('getSafeBrowsingCardData');
+    return sendWithPromise<CardInfo>('getSafeBrowsingCardData');
   }
 
   getVersionCardData() {
-    return sendWithPromise('getVersionCardData');
+    return sendWithPromise<CardInfo>('getVersionCardData');
   }
 
   getNumberOfExtensionsThatNeedReview() {
-    return sendWithPromise('getNumberOfExtensionsThatNeedReview');
+    return sendWithPromise<number>('getNumberOfExtensionsThatNeedReview');
   }
 
   getSafetyHubEntryPointData() {
-    return sendWithPromise('getSafetyHubEntryPointData');
+    return sendWithPromise<EntryPointInfo>('getSafetyHubEntryPointData');
   }
 
   recordSafetyHubPageVisit() {
-    return sendWithPromise('recordSafetyHubPageVisit');
+    return sendWithPromise<void>('recordSafetyHubPageVisit');
   }
 
   recordSafetyHubInteraction() {
-    return sendWithPromise('recordSafetyHubInteraction');
+    return sendWithPromise<void>('recordSafetyHubInteraction');
   }
 
   static getInstance(): SafetyHubBrowserProxy {

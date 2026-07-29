@@ -19,6 +19,7 @@
 #import "components/keyed_service/core/service_access_type.h"
 #import "components/password_manager/core/browser/password_form.h"
 #import "components/password_manager/core/browser/password_manager_test_utils.h"
+#import "components/password_manager/core/browser/password_store/password_form_converters.h"
 #import "components/password_manager/core/browser/password_store/test_password_store.h"
 #import "components/password_manager/core/browser/ui/password_check_referrer.h"
 #import "components/prefs/pref_service.h"
@@ -77,11 +78,11 @@ using password_manager::InsecureType;
 using password_manager::TestPasswordStore;
 
 // The size of trailing symbol icons.
-NSInteger kTrailingSymbolImagePointSize = 22;
+constexpr NSInteger kTrailingSymbolImagePointSize = 22;
 
 // Registers account preference that will be used for Safe Browsing.
-PrefService* SetPrefService() {
-  TestingPrefServiceSimple* prefs = new TestingPrefServiceSimple();
+std::unique_ptr<TestingPrefServiceSimple> SetPrefService() {
+  auto prefs = std::make_unique<TestingPrefServiceSimple>();
   PrefRegistrySimple* registry = prefs->registry();
   registry->RegisterBooleanPref(prefs::kSafeBrowsingEnabled, true);
   registry->RegisterBooleanPref(prefs::kSafeBrowsingEnhanced, true);
@@ -90,14 +91,14 @@ PrefService* SetPrefService() {
 
 // The image when the state is safe.
 UIImage* SafeImage() {
-  return DefaultSymbolTemplateWithPointSize(kCheckmarkCircleFillSymbol,
-                                            kTrailingSymbolImagePointSize);
+  return SymbolTemplateWithPointSize(SymbolCheckmarkCircleFill,
+                                     kTrailingSymbolImagePointSize);
 }
 
 // The image when the state is unsafe.
 UIImage* UnsafeImage() {
-  return DefaultSymbolTemplateWithPointSize(kErrorCircleFillSymbol,
-                                            kTrailingSymbolImagePointSize);
+  return SymbolTemplateWithPointSize(SymbolErrorCircleFill,
+                                     kTrailingSymbolImagePointSize);
 }
 
 // The color when the state is safe.
@@ -122,21 +123,20 @@ class SafetyCheckMediatorTest : public PlatformTest {
             std::make_unique<FakeAuthenticationServiceDelegate>()));
     builder.AddTestingFactory(
         SyncServiceFactory::GetInstance(),
-        base::BindRepeating(
-            [](web::BrowserState*) -> std::unique_ptr<KeyedService> {
+        base::BindOnce(
+            [](ProfileIOS* profile) -> std::unique_ptr<KeyedService> {
               return std::make_unique<syncer::MockSyncService>();
             }));
     builder.AddTestingFactory(
         IOSChromeProfilePasswordStoreFactory::GetInstance(),
-        base::BindRepeating(
-            &password_manager::BuildPasswordStore<web::BrowserState,
+        base::BindOnce(
+            &password_manager::BuildPasswordStore<ProfileIOS,
                                                   TestPasswordStore>));
     builder.AddTestingFactory(
         IOSChromeAffiliationServiceFactory::GetInstance(),
-        base::BindRepeating(base::BindLambdaForTesting([](web::BrowserState*) {
-          return std::unique_ptr<KeyedService>(
-              std::make_unique<affiliations::FakeAffiliationService>());
-        })));
+        base::BindOnce([](ProfileIOS*) -> std::unique_ptr<KeyedService> {
+          return std::make_unique<affiliations::FakeAffiliationService>();
+        }));
 
     profile_ = profile_manager_.AddProfileWithBuilder(std::move(builder));
 
@@ -156,13 +156,19 @@ class SafetyCheckMediatorTest : public PlatformTest {
         TestingApplicationContext::GetGlobal()->GetLocalState();
 
     mediator_ = [[SafetyCheckMediator alloc]
-        initWithUserPrefService:pref_service_
+        initWithUserPrefService:pref_service_.get()
                localPrefService:local_pref_service_
            passwordCheckManager:password_check_
                     authService:auth_service_
                     syncService:syncService()
                        referrer:password_manager::PasswordCheckReferrer::
                                     kSafetyCheck];
+  }
+
+  void TearDown() override {
+    [mediator_ disconnect];
+    mediator_ = nil;
+    PlatformTest::TearDown();
   }
 
   syncer::SyncService* syncService() {
@@ -172,7 +178,7 @@ class SafetyCheckMediatorTest : public PlatformTest {
   void RunUntilIdle() { environment_.RunUntilIdle(); }
 
   void AddPasswordForm(std::unique_ptr<password_manager::PasswordForm> form) {
-    GetTestStore().AddLogin(*form);
+    GetTestStore().AddLogin(password_manager::FromPasswordForm(*form));
     RunUntilIdle();
   }
 
@@ -252,15 +258,16 @@ class SafetyCheckMediatorTest : public PlatformTest {
 
  protected:
   base::test::ScopedFeatureList feature_list_;
-  web::WebTaskEnvironment environment_;
+  web::WebTaskEnvironment environment_{
+      web::WebTaskEnvironment::TimeSource::MOCK_TIME};
   IOSChromeScopedTestingLocalState scoped_testing_local_state_;
+  TestProfileManagerIOS profile_manager_;
   raw_ptr<ProfileIOS> profile_;
   scoped_refptr<TestPasswordStore> store_;
   raw_ptr<AuthenticationService> auth_service_;
   scoped_refptr<IOSChromePasswordCheckManager> password_check_;
-  TestProfileManagerIOS profile_manager_;
   SafetyCheckMediator* mediator_;
-  raw_ptr<PrefService> pref_service_;
+  std::unique_ptr<TestingPrefServiceSimple> pref_service_;
   raw_ptr<PrefService> local_pref_service_;
   PrefBackedBoolean* safe_browsing_preference_;
 };
@@ -814,10 +821,9 @@ TEST_F(SafetyCheckMediatorTest, CheckNowClickableAll) {
 // Tests that the notifications opt-in button correctly displays the "Turn Off"
 // notifications prompt when notifications are currently enabled.
 TEST_F(SafetyCheckMediatorTest, NotificationsOptInButtonPromptsTurnOff) {
-  feature_list_.InitWithFeatures({kSafetyCheckNotifications}, {});
-
+  [mediator_ disconnect];
   mediator_ = [[SafetyCheckMediator alloc]
-      initWithUserPrefService:pref_service_
+      initWithUserPrefService:pref_service_.get()
              localPrefService:local_pref_service_
          passwordCheckManager:password_check_
                   authService:auth_service_
@@ -836,10 +842,9 @@ TEST_F(SafetyCheckMediatorTest, NotificationsOptInButtonPromptsTurnOff) {
 // Tests that the notifications opt-in button correctly displays the "Turn On"
 // notifications prompt when notifications are currently disabled.
 TEST_F(SafetyCheckMediatorTest, NotificationsOptInButtonPromptsTurnOn) {
-  feature_list_.InitWithFeatures({kSafetyCheckNotifications}, {});
-
+  [mediator_ disconnect];
   mediator_ = [[SafetyCheckMediator alloc]
-      initWithUserPrefService:pref_service_
+      initWithUserPrefService:pref_service_.get()
              localPrefService:local_pref_service_
          passwordCheckManager:password_check_
                   authService:auth_service_
@@ -857,8 +862,6 @@ TEST_F(SafetyCheckMediatorTest, NotificationsOptInButtonPromptsTurnOn) {
 
 // Tests that the histogram is correctly fired for opting in to notifications.
 TEST_F(SafetyCheckMediatorTest, NotificationsHistogramFiresForOptIn) {
-  feature_list_.InitWithFeatures({kSafetyCheckNotifications}, {});
-
   UpdateSafetyCheckNotificationsPermission(NO);
 
   TableViewItem* opt_in_item =
@@ -878,8 +881,6 @@ TEST_F(SafetyCheckMediatorTest, NotificationsHistogramFiresForOptIn) {
 
 // Tests that the histogram is correctly fired for opting out of notifications.
 TEST_F(SafetyCheckMediatorTest, NotificationsHistogramFiresForOptOut) {
-  feature_list_.InitWithFeatures({kSafetyCheckNotifications}, {});
-
   UpdateSafetyCheckNotificationsPermission(YES);
 
   TableViewItem* opt_in_item =
@@ -895,4 +896,24 @@ TEST_F(SafetyCheckMediatorTest, NotificationsHistogramFiresForOptOut) {
       static_cast<int>(
           SafetyCheckNotificationsOptInSource::kSafetyCheckPageOptOut),
       1);
+}
+
+// Tests that delayed tasks (like Omaha timeout or UI updates) do not crash
+// if they execute after the mediator has been disconnected and its C++
+// pointers have been nullified.
+TEST_F(SafetyCheckMediatorTest, DoesNotCrashOnDelayedTasksAfterDisconnect) {
+  // Trigger the safety check (this will post several delayed tasks).
+  TableViewItem* start =
+      [[TableViewItem alloc] initWithType:CheckStartItemType];
+  [mediator_ didSelectItem:start];
+
+  // Verify the checks have started.
+  EXPECT_EQ(mediator_.updateCheckRowState, UpdateCheckRowStateRunning);
+
+  [mediator_ disconnect];
+
+  // Fast-forward time to force all delayed tasks to execute immediately.
+  environment_.FastForwardUntilNoTasksRemain();
+
+  // If the test reaches this point without a seg fault, it passes.
 }

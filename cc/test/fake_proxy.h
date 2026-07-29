@@ -31,9 +31,9 @@ class FakeProxy : public Proxy {
   void ReleaseLayerTreeFrameSink() override {}
   void SetShouldWarmUp() override {}
   void SetVisible(bool visible) override {}
-  void SetNeedsAnimate(bool urgent) override {}
+  void SetNeedsAnimate(BeginMainFrameReason, bool urgent) override {}
   void SetNeedsUpdateLayers() override {}
-  void SetNeedsCommit() override {}
+  void SetNeedsCommit(bool urgent) override {}
   void SetNeedsRedraw(const gfx::Rect& damage_rect) override {}
   void SetTargetLocalSurfaceId(
       const viz::LocalSurfaceId& target_local_surface_id) override {}
@@ -42,12 +42,14 @@ class FakeProxy : public Proxy {
   void SetDeferMainFrameUpdate(bool defer_main_frame_update) override {}
   bool StartDeferringCommits(base::TimeDelta timeout,
                              PaintHoldingReason reason) override;
-  void StopDeferringCommits(PaintHoldingCommitTrigger) override {}
+  void StopDeferringCommits() override {}
   bool IsDeferringCommits() const override;
   bool CommitRequested() const override;
   void Start() override {}
   void Stop() override {}
-  void QueueImageDecode(int request_id, const DrawImage& image) override;
+  void QueueImageDecode(int request_id,
+                        const DrawImage& image,
+                        bool speculative) override;
   void SetMutator(std::unique_ptr<LayerTreeMutator> mutator) override;
   void SetPaintWorkletLayerPainter(
       std::unique_ptr<PaintWorkletLayerPainter> painter) override;
@@ -60,18 +62,17 @@ class FakeProxy : public Proxy {
           offset_tag_modifications) override {}
   void RequestBeginMainFrameNotExpected(bool new_state) override {}
   void SetSourceURL(ukm::SourceId source_id, const GURL& url) override {}
-  void SetUkmSmoothnessDestination(
-      base::WritableSharedMemoryMapping ukm_smoothness_data) override {}
-  void SetUkmDroppedFramesDestination(
-      base::WritableSharedMemoryMapping ukm_dropped_frames_data) override {}
   void SetRenderFrameObserver(
       std::unique_ptr<RenderFrameMetadataObserver> observer) override {}
   void CompositeImmediatelyForTest(base::TimeTicks frame_begin_time,
                                    bool raster,
                                    base::OnceClosure callback) override {}
-  double GetPercentDroppedFrames() const override;
-  void SetPauseRendering(bool pause_rendering) override {}
+  double GetAverageThroughput() const override;
+  void SetPauseRendering(bool pause_rendering,
+                         bool delay_until_visibility_change) override {}
   void SetInputResponsePending() override {}
+  bool IsRenderingPaused() const override;
+  void NotifyNewLocalSurfaceIdExpectedWhilePaused() override {}
 
  private:
   raw_ptr<LayerTreeHost> layer_tree_host_;

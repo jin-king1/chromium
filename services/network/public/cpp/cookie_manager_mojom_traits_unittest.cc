@@ -7,12 +7,16 @@
 #include <vector>
 
 #include "base/test/gtest_util.h"
+#include "base/unguessable_token.h"
 #include "mojo/public/cpp/base/time_mojom_traits.h"
 #include "mojo/public/cpp/test_support/test_utils.h"
 #include "net/cookies/cookie_constants.h"
+#include "net/cookies/cookie_partition_key.h"
+#include "net/cookies/cookie_partition_key_collection.h"
 #include "services/network/public/cpp/cookie_manager_mojom_traits.h"
 #include "services/network/public/mojom/cookie_manager.mojom-shared.h"
 #include "services/network/public/mojom/cookie_manager.mojom.h"
+#include "services/network/public/mojom/cookie_partition_key.mojom.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/third_party/mozilla/url_parse.h"
@@ -24,8 +28,8 @@ TEST(CookieManagerTraitsTest, Roundtrips_CanonicalCookie) {
   auto original = net::CanonicalCookie::CreateUnsafeCookieForTesting(
       "A", "B", "x.y", "/path", base::Time(), base::Time(), base::Time(),
       base::Time(), false, false, net::CookieSameSite::NO_RESTRICTION,
-      net::COOKIE_PRIORITY_LOW, std::nullopt, net::CookieSourceScheme::kSecure,
-      8433);
+      net::COOKIE_PRIORITY_LOW, net::CookieSourceType::kOther, std::nullopt,
+      net::CookieSourceScheme::kSecure, 8433);
 
   net::CanonicalCookie copied;
 
@@ -54,7 +58,7 @@ TEST(CookieManagerTraitsTest, Roundtrips_CanonicalCookie) {
       net::CanonicalCookie::CreateUnsafeCookieForTesting(
           "A", "B", "x.y", "/path", base::Time(), base::Time(), base::Time(),
           base::Time(), false, false, net::CookieSameSite::NO_RESTRICTION,
-          net::COOKIE_PRIORITY_LOW, std::nullopt,
+          net::COOKIE_PRIORITY_LOW, net::CookieSourceType::kOther, std::nullopt,
           net::CookieSourceScheme::kSecure, url::PORT_UNSPECIFIED);
   net::CanonicalCookie copied_unspecified;
 
@@ -68,8 +72,8 @@ TEST(CookieManagerTraitsTest, Roundtrips_CanonicalCookie) {
   auto original_invalid = net::CanonicalCookie::CreateUnsafeCookieForTesting(
       "A", "B", "x.y", "/path", base::Time(), base::Time(), base::Time(),
       base::Time(), false, false, net::CookieSameSite::NO_RESTRICTION,
-      net::COOKIE_PRIORITY_LOW, std::nullopt, net::CookieSourceScheme::kSecure,
-      url::PORT_INVALID);
+      net::COOKIE_PRIORITY_LOW, net::CookieSourceType::kOther, std::nullopt,
+      net::CookieSourceScheme::kSecure, url::PORT_INVALID);
   net::CanonicalCookie copied_invalid;
 
   EXPECT_TRUE(mojo::test::SerializeAndDeserialize<mojom::CanonicalCookie>(
@@ -83,7 +87,7 @@ TEST(CookieManagerTraitsTest, Roundtrips_CanonicalCookie) {
   original = net::CanonicalCookie::CreateUnsafeCookieForTesting(
       "A\n", "B", "x.y", "/path", base::Time(), base::Time(), base::Time(),
       base::Time(), false, false, net::CookieSameSite::NO_RESTRICTION,
-      net::COOKIE_PRIORITY_LOW);
+      net::COOKIE_PRIORITY_LOW, net::CookieSourceType::kOther);
 
   EXPECT_FALSE(mojo::test::SerializeAndDeserialize<mojom::CanonicalCookie>(
       *original, copied));
@@ -115,12 +119,12 @@ TEST(CookieManagerTraitsTest, Roundtrips_CookieAccessResult) {
             copied.is_allowed_to_access_secure_cookies);
 }
 
-TEST(CookieManagerTraitsTest, Rountrips_CookieWithAccessResult) {
+TEST(CookieManagerTraitsTest, Roundtrips_CookieWithAccessResult) {
   auto original_cookie = net::CanonicalCookie::CreateUnsafeCookieForTesting(
       "A", "B", "x.y", "/path", base::Time(), base::Time(), base::Time(),
       base::Time(),
       /*secure=*/true, /*httponly=*/false, net::CookieSameSite::NO_RESTRICTION,
-      net::COOKIE_PRIORITY_LOW);
+      net::COOKIE_PRIORITY_LOW, net::CookieSourceType::kOther);
 
   net::CookieWithAccessResult original = {*original_cookie,
                                           net::CookieAccessResult()};
@@ -153,7 +157,7 @@ TEST(CookieManagerTraitsTest, Roundtrips_CookieAndLineWithAccessResult) {
       "A", "B", "x.y", "/path", base::Time(), base::Time(), base::Time(),
       base::Time(),
       /*secure=*/true, /*httponly=*/false, net::CookieSameSite::NO_RESTRICTION,
-      net::COOKIE_PRIORITY_LOW);
+      net::COOKIE_PRIORITY_LOW, net::CookieSourceType::kOther);
 
   net::CookieAndLineWithAccessResult original(*original_cookie, "cookie-string",
                                               net::CookieAccessResult());
@@ -250,7 +254,9 @@ TEST(CookieManagerTraitsTest, Roundtrips_CookieChangeCause) {
         net::CookieChangeCause::UNKNOWN_DELETION,
         net::CookieChangeCause::OVERWRITE, net::CookieChangeCause::EXPIRED,
         net::CookieChangeCause::EVICTED,
-        net::CookieChangeCause::EXPIRED_OVERWRITE}) {
+        net::CookieChangeCause::EXPIRED_OVERWRITE,
+        net::CookieChangeCause::INSERTED_NO_CHANGE_OVERWRITE,
+        net::CookieChangeCause::INSERTED_NO_VALUE_CHANGE_OVERWRITE}) {
     net::CookieChangeCause roundtrip;
     ASSERT_TRUE(mojo::test::SerializeAndDeserialize<mojom::CookieChangeCause>(
         change_cause, roundtrip));
@@ -366,30 +372,27 @@ TEST(CookieManagerTraitsTest, Roundtrips_CookieSameSiteContext) {
   }
 }
 
-TEST(CookieManagerTraitsTest, Roundtrips_PartitionKey) {
-  auto original = net::CanonicalCookie::CreateUnsafeCookieForTesting(
-      "__Host-A", "B", "x.y", "/", base::Time(), base::Time(), base::Time(),
-      base::Time(), true, false, net::CookieSameSite::NO_RESTRICTION,
-      net::COOKIE_PRIORITY_LOW,
-      net::CookiePartitionKey::FromURLForTesting(
-          GURL("https://toplevelsite.com")),
-      net::CookieSourceScheme::kSecure, 8433);
+TEST(CookieManagerTraitsTest, Roundtrips_CookiePartitionKey) {
+  using enum net::CookiePartitionKey::AncestorChainBit;
+  const GURL url("https://toplevelsite.com");
+  const auto nonce = base::UnguessableToken::Create();
+  for (const auto& original : {
+           net::CookiePartitionKey::FromURLForTesting(url),
+           net::CookiePartitionKey::FromURLForTesting(url, kSameSite),
+           net::CookiePartitionKey::FromURLForTesting(url, kCrossSite),
+           net::CookiePartitionKey::FromURLForTesting(url, kSameSite, nonce),
+           net::CookiePartitionKey::FromURLForTesting(url, kCrossSite, nonce),
+       }) {
+    // `copied` is about to be overwritten so it doesn't matter what it is,
+    // but CookiePartitionKey doesn't provide a default ctor, so we have to
+    // initialize it to *some* value.
+    net::CookiePartitionKey copied =
+        net::CookiePartitionKey::FromURLForTesting(GURL());
 
-  net::CanonicalCookie copied;
-
-  EXPECT_TRUE(mojo::test::SerializeAndDeserialize<mojom::CanonicalCookie>(
-      *original, copied));
-  EXPECT_EQ(original->PartitionKey(), copied.PartitionKey());
-  EXPECT_FALSE(copied.PartitionKey()->from_script());
-
-  original = net::CanonicalCookie::CreateUnsafeCookieForTesting(
-      "__Host-A", "B", "x.y", "/", base::Time(), base::Time(), base::Time(),
-      base::Time(), true, false, net::CookieSameSite::NO_RESTRICTION,
-      net::COOKIE_PRIORITY_LOW, net::CookiePartitionKey::FromScript(),
-      net::CookieSourceScheme::kSecure, 8433);
-  EXPECT_TRUE(mojo::test::SerializeAndDeserialize<mojom::CanonicalCookie>(
-      *original, copied));
-  EXPECT_TRUE(copied.PartitionKey()->from_script());
+    EXPECT_TRUE(mojo::test::SerializeAndDeserialize<mojom::CookiePartitionKey>(
+        original, copied));
+    EXPECT_EQ(original, copied);
+  }
 }
 
 TEST(CookieManagerTraitsTest, Roundtrips_AncestorChainBit) {
@@ -510,7 +513,7 @@ TEST(CookieManagerTraitsTest, Roundtrips_CookieChangeInfo) {
       "A", "B", "x.y", "/path", base::Time(), base::Time(), base::Time(),
       base::Time(),
       /*secure=*/false, /*httponly =*/false, net::CookieSameSite::UNSPECIFIED,
-      net::COOKIE_PRIORITY_LOW);
+      net::COOKIE_PRIORITY_LOW, net::CookieSourceType::kOther);
 
   net::CookieChangeInfo original(
       *original_cookie,

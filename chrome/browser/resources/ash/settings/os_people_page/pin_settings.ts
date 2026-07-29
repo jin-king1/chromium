@@ -65,11 +65,11 @@ export class SettingsPinSettingsElement extends SettingsPinSettingsElementBase {
     };
   }
 
-  authToken: string|null;
-  private hasPin_: boolean;
-  private showSetPinDialog_: boolean;
-  private showPinAutosubmitDialog_: boolean;
-  private quickUnlockDisabledByPolicy_: boolean;
+  declare authToken: string|null;
+  declare private hasPin_: boolean;
+  declare private showSetPinDialog_: boolean;
+  declare private showPinAutosubmitDialog_: boolean;
+  declare private quickUnlockDisabledByPolicy_: boolean;
   private hasPassword_: boolean;
 
   override ready(): void {
@@ -95,7 +95,7 @@ export class SettingsPinSettingsElement extends SettingsPinSettingsElementBase {
     chrome.send('RequestQuickUnlockDisabledByPolicy');
   }
 
-  onFactorChanged(factor: AuthFactor): void {
+  onFactorChanged(factor: AuthFactor, _result: ConfigureResult): void {
     switch (factor) {
       case AuthFactor.kPrefBasedPin:
       case AuthFactor.kCryptohomePin:
@@ -246,6 +246,8 @@ export class SettingsPinSettingsElement extends SettingsPinSettingsElementBase {
         break;
       case ConfigureResult.kFatalError:
         console.error('Error removing PIN');
+        break;
+      default:
         break;
     }
 

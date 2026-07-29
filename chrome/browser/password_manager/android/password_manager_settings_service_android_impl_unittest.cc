@@ -82,7 +82,6 @@ class PasswordManagerSettingsServiceAndroidImplTest : public testing::Test {
 
  private:
   void RegisterPrefs();
-  base::test::ScopedFeatureList scoped_feature_list_;
   TestingPrefServiceSimple test_pref_service_;
   std::unique_ptr<PasswordManagerSettingsServiceAndroidImpl> settings_service_;
   syncer::TestSyncService test_sync_service_;
@@ -96,10 +95,8 @@ PasswordManagerSettingsServiceAndroidImplTest::
   RegisterPrefs();
   CoreAccountInfo sync_account_info;
   sync_account_info.email = kTestAccount;
-  test_sync_service_.SetSignedIn(signin::ConsentLevel::kSync,
+  test_sync_service_.SetSignedIn(signin::ConsentLevel::kSignin,
                                  sync_account_info);
-  scoped_feature_list_.InitAndEnableFeature(
-      password_manager::features::kLoginDbDeprecationAndroid);
 }
 
 void PasswordManagerSettingsServiceAndroidImplTest::InitializeSettingsService(

@@ -5,7 +5,7 @@
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/inactive_tabs/inactive_tabs_grid_view_controller.h"
 
 #import "base/apple/foundation_util.h"
-#import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/base_grid_view_controller+subclassing.h"
+#import "ios/chrome/browser/tab_switcher/tab_grid/base_grid/ui/base_grid_view_controller+subclassing.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/grid_item_identifier.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/inactive_tabs/inactive_tabs_preamble_header.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_switcher_item.h"
@@ -30,7 +30,6 @@
 
 - (UICollectionReusableView*)headerForSectionAtIndexPath:
     (NSIndexPath*)indexPath {
-  CHECK(IsInactiveTabsAvailable());
   // The Inactive Tabs grid has a header to inform about the feature and a
   // link to its settings.
   return [self.collectionView
@@ -103,7 +102,8 @@
     [weakSelf didTapInactiveTabsSettingsLink];
   };
   header.daysThreshold = _inactiveTabsDaysThreshold;
-  header.hidden = !IsInactiveTabsEnabled(_inactiveTabsDaysThreshold);
+  header.hidden =
+      IsInactiveTabsExplicitlyDisabledByUser(_inactiveTabsDaysThreshold);
 }
 
 // Called when the Inactive Tabs settings link is tapped.

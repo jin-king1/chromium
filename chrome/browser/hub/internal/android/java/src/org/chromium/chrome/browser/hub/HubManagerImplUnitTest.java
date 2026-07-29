@@ -29,33 +29,44 @@ import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.supplier.LazyOneshotSupplier;
-import org.chromium.base.supplier.ObservableSupplier;
-import org.chromium.base.supplier.ObservableSupplierImpl;
+import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.base.supplier.NonNullObservableSupplier;
+import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.OneshotSupplierImpl;
+import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
+import org.chromium.base.supplier.SettableNullableObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.back_press.BackPressManager;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileProvider;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.toolbar.menu_button.MenuButtonCoordinator;
+import org.chromium.chrome.browser.ui.actions.button.DisplayButtonData;
+import org.chromium.chrome.browser.ui.actions.button.FullButtonData;
+import org.chromium.chrome.browser.ui.bottombar.BottomBarHostManager;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
+import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager.ParentOverrideSlot;
 import org.chromium.chrome.browser.ui.searchactivityutils.SearchActivityClient;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.widget.MenuOrKeyboardActionController;
 import org.chromium.components.browser_ui.widget.MenuOrKeyboardActionController.MenuOrKeyboardActionHandler;
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandler;
 import org.chromium.components.feature_engagement.Tracker;
-import org.chromium.components.omnibox.OmniboxFeatureList;
 import org.chromium.ui.base.TestActivity;
 
-/** Unit tests for {@link PaneManagerImpl}. */
+/** Unit tests for {@link HubManagerImpl}. */
 @RunWith(BaseRobolectricTestRunner.class)
 public class HubManagerImplUnitTest {
     private static final int TAB_ID = 8;
@@ -75,7 +86,6 @@ public class HubManagerImplUnitTest {
     @Mock private ViewGroup mIncognitoTabSwitcherPaneView;
     @Mock private MenuOrKeyboardActionHandler mIncognitoTabSwitcherMenuOrKeyboardActionHandler;
     @Mock private HubLayoutController mHubLayoutController;
-    @Mock private ObservableSupplier<Integer> mPreviousLayoutTypeSupplier;
     @Mock private MenuOrKeyboardActionController mMenuOrKeyboardActionController;
     @Mock private SnackbarManager mSnackbarManager;
     @Mock private MenuButtonCoordinator mMenuButtonCoordinator;
@@ -85,17 +95,22 @@ public class HubManagerImplUnitTest {
     @Mock private Profile mProfile;
     @Mock private Tracker mTracker;
     @Mock private SearchActivityClient mSearchActivityClient;
+    @Mock private BottomBarHostManager mBottomBarHostManager;
+    @Mock private BottomSheetController mBottomSheetController;
 
-    private final ObservableSupplierImpl<Tab> mTabSupplier = new ObservableSupplierImpl<>();
-    private final ObservableSupplierImpl<DisplayButtonData> mReferenceButtonDataSupplier =
-            new ObservableSupplierImpl<>();
-    private final ObservableSupplierImpl<FullButtonData> mActionButtonDataSupplier =
-            new ObservableSupplierImpl<>();
+    @Captor private ArgumentCaptor<NonNullObservableSupplier<Integer>> mMarginSupplierCaptor;
+
+    private final MonotonicObservableSupplier<Integer> mPreviousLayoutTypeSupplier =
+            ObservableSuppliers.alwaysNull();
+    private final SettableNullableObservableSupplier<Tab> mTabSupplier =
+            ObservableSuppliers.createNullable();
+    private SettableMonotonicObservableSupplier<DisplayButtonData> mReferenceButtonDataSupplier;
+    private final SettableMonotonicObservableSupplier<FullButtonData> mActionButtonDataSupplier =
+            ObservableSuppliers.createMonotonic();
     private final OneshotSupplierImpl<ProfileProvider> mProfileProviderSupplier =
             new OneshotSupplierImpl<>();
-    private final ObservableSupplierImpl<EdgeToEdgeController> mEdgeToEdgeSupplier =
-            new ObservableSupplierImpl<>();
-    private final int mSnackbarOverrideToken = 1;
+    private final MonotonicObservableSupplier<EdgeToEdgeController> mEdgeToEdgeSupplier =
+            ObservableSuppliers.alwaysNull();
 
     private Activity mActivity;
     private FrameLayout mRootView;
@@ -103,34 +118,41 @@ public class HubManagerImplUnitTest {
     @Before
     public void setUp() {
         TrackerFactory.setTrackerForTests(mTracker);
-        mReferenceButtonDataSupplier.set(mReferenceButtonData);
+        mReferenceButtonDataSupplier = ObservableSuppliers.createMonotonic(mReferenceButtonData);
         mProfileProviderSupplier.set(mProfileProvider);
         when(mTabSwitcherPane.getPaneId()).thenReturn(PaneId.TAB_SWITCHER);
         when(mTabSwitcherPane.getColorScheme()).thenReturn(HubColorScheme.DEFAULT);
         when(mTabSwitcherPane.getReferenceButtonDataSupplier())
                 .thenReturn(mReferenceButtonDataSupplier);
+        when(mTabSwitcherPane.getHubSearchEnabledStateSupplier())
+                .thenReturn(ObservableSuppliers.alwaysTrue());
         when(mTabSwitcherPane.getActionButtonDataSupplier()).thenReturn(mActionButtonDataSupplier);
         when(mTabSwitcherPane.getRootView()).thenReturn(mTabSwitcherPaneView);
         when(mTabSwitcherPane.getMenuOrKeyboardActionHandler())
                 .thenReturn(mTabSwitcherMenuOrKeyboardActionHandler);
-
+        when(mTabSwitcherPane.getHubSearchBoxVisibilitySupplier())
+                .thenReturn(ObservableSuppliers.alwaysTrue());
         when(mIncognitoTabSwitcherPane.getPaneId()).thenReturn(PaneId.INCOGNITO_TAB_SWITCHER);
         when(mIncognitoTabSwitcherPane.getColorScheme()).thenReturn(HubColorScheme.INCOGNITO);
         when(mIncognitoTabSwitcherPane.getReferenceButtonDataSupplier())
                 .thenReturn(mReferenceButtonDataSupplier);
+        when(mIncognitoTabSwitcherPane.getHubSearchEnabledStateSupplier())
+                .thenReturn(ObservableSuppliers.alwaysTrue());
         when(mIncognitoTabSwitcherPane.getActionButtonDataSupplier())
                 .thenReturn(mActionButtonDataSupplier);
         when(mIncognitoTabSwitcherPane.getRootView()).thenReturn(mIncognitoTabSwitcherPaneView);
         when(mIncognitoTabSwitcherPane.getMenuOrKeyboardActionHandler())
                 .thenReturn(mIncognitoTabSwitcherMenuOrKeyboardActionHandler);
+        when(mIncognitoTabSwitcherPane.getHubSearchBoxVisibilitySupplier())
+                .thenReturn(ObservableSuppliers.alwaysTrue());
 
         when(mHubLayoutController.getPreviousLayoutTypeSupplier())
                 .thenReturn(mPreviousLayoutTypeSupplier);
+        when(mHubLayoutController.getIsAnimatingSupplier())
+                .thenReturn(ObservableSuppliers.alwaysFalse());
+
         when(mTab.getId()).thenReturn(TAB_ID);
         when(mProfileProvider.getOriginalProfile()).thenReturn(mProfile);
-
-        when(mSnackbarManager.pushParentViewToOverrideStack(any()))
-                .thenReturn(mSnackbarOverrideToken);
 
         mActivityScenarioRule
                 .getScenario()
@@ -140,6 +162,137 @@ public class HubManagerImplUnitTest {
                             mRootView = new FrameLayout(mActivity);
                             mActivity.setContentView(mRootView);
                         });
+    }
+
+    @Test
+    @SmallTest
+    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testSnackbarBottomMargin_WithBottomToolbar() {
+        ChromeFeatureList.sAndroidBottomBarShowBottomBarOnGts.setForTesting(true);
+
+        PaneListBuilder builder =
+                new PaneListBuilder(new DefaultPaneOrderController())
+                        .registerPane(
+                                PaneId.TAB_SWITCHER,
+                                LazyOneshotSupplier.fromValue(mTabSwitcherPane))
+                        .registerPane(
+                                PaneId.INCOGNITO_TAB_SWITCHER,
+                                LazyOneshotSupplier.fromValue(mIncognitoTabSwitcherPane));
+        HubManagerImpl hubManager =
+                new HubManagerImpl(
+                        mActivity,
+                        mProfileProviderSupplier,
+                        builder,
+                        mBackPressManager,
+                        mMenuOrKeyboardActionController,
+                        mSnackbarManager,
+                        mBottomSheetController,
+                        mBottomBarHostManager,
+                        mTabSupplier,
+                        mMenuButtonCoordinator,
+                        mHubShowPaneHelper,
+                        mEdgeToEdgeSupplier,
+                        mSearchActivityClient,
+                        /* xrSpaceModeObservableSupplier= */ null,
+                        /* defaultPaneId= */ PaneId.TAB_SWITCHER);
+        hubManager.getPaneManager().focusPane(PaneId.TAB_SWITCHER);
+
+        HubController hubController = hubManager.getHubController();
+        hubController.setHubLayoutController(mHubLayoutController);
+
+        hubController.onHubLayoutShow();
+
+        verify(mSnackbarManager)
+                .pushParentViewOverride(
+                        eq(ParentOverrideSlot.HUB), any(), mMarginSupplierCaptor.capture());
+
+        assertNotNull(mMarginSupplierCaptor.getValue());
+        assertEquals(Integer.valueOf(0), mMarginSupplierCaptor.getValue().get());
+    }
+
+    @Test
+    @SmallTest
+    @DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testSnackbarBottomMargin_WithoutBottomToolbar() {
+        ChromeFeatureList.sAndroidBottomBarShowBottomBarOnGts.setForTesting(false);
+
+        PaneListBuilder builder =
+                new PaneListBuilder(new DefaultPaneOrderController())
+                        .registerPane(
+                                PaneId.TAB_SWITCHER,
+                                LazyOneshotSupplier.fromValue(mTabSwitcherPane))
+                        .registerPane(
+                                PaneId.INCOGNITO_TAB_SWITCHER,
+                                LazyOneshotSupplier.fromValue(mIncognitoTabSwitcherPane));
+        HubManagerImpl hubManager =
+                new HubManagerImpl(
+                        mActivity,
+                        mProfileProviderSupplier,
+                        builder,
+                        mBackPressManager,
+                        mMenuOrKeyboardActionController,
+                        mSnackbarManager,
+                        mBottomSheetController,
+                        mBottomBarHostManager,
+                        mTabSupplier,
+                        mMenuButtonCoordinator,
+                        mHubShowPaneHelper,
+                        mEdgeToEdgeSupplier,
+                        mSearchActivityClient,
+                        /* xrSpaceModeObservableSupplier= */ null,
+                        /* defaultPaneId= */ PaneId.TAB_SWITCHER);
+        hubManager.getPaneManager().focusPane(PaneId.TAB_SWITCHER);
+
+        HubController hubController = hubManager.getHubController();
+        hubController.setHubLayoutController(mHubLayoutController);
+
+        hubController.onHubLayoutShow();
+
+        verify(mSnackbarManager)
+                .pushParentViewOverride(
+                        eq(ParentOverrideSlot.HUB), any(), org.mockito.ArgumentMatchers.isNull());
+    }
+
+    @Test
+    @SmallTest
+    public void testHubControllerWithBottomBarHostManager() {
+        ChromeFeatureList.sAndroidBottomBarShowBottomBarOnGts.setForTesting(true);
+
+        PaneListBuilder builder =
+                new PaneListBuilder(new DefaultPaneOrderController())
+                        .registerPane(
+                                PaneId.TAB_SWITCHER,
+                                LazyOneshotSupplier.fromValue(mTabSwitcherPane))
+                        .registerPane(
+                                PaneId.INCOGNITO_TAB_SWITCHER,
+                                LazyOneshotSupplier.fromValue(mIncognitoTabSwitcherPane));
+        HubManagerImpl hubManager =
+                new HubManagerImpl(
+                        mActivity,
+                        mProfileProviderSupplier,
+                        builder,
+                        mBackPressManager,
+                        mMenuOrKeyboardActionController,
+                        mSnackbarManager,
+                        mBottomSheetController,
+                        mBottomBarHostManager,
+                        mTabSupplier,
+                        mMenuButtonCoordinator,
+                        mHubShowPaneHelper,
+                        mEdgeToEdgeSupplier,
+                        mSearchActivityClient,
+                        /* xrSpaceModeObservableSupplier= */ null,
+                        /* defaultPaneId= */ PaneId.TAB_SWITCHER);
+        hubManager.getPaneManager().focusPane(PaneId.TAB_SWITCHER);
+
+        HubController hubController = hubManager.getHubController();
+        hubController.setHubLayoutController(mHubLayoutController);
+
+        hubController.onHubLayoutShow();
+        verify(mBottomBarHostManager).takeOwnership(eq(BottomBarHostManager.Host.HUB), any());
+
+        hubController.onHubLayoutDoneHiding();
+        verify(mBottomBarHostManager).resetOwnership();
     }
 
     @Test
@@ -161,11 +314,15 @@ public class HubManagerImplUnitTest {
                         mBackPressManager,
                         mMenuOrKeyboardActionController,
                         mSnackbarManager,
+                        mBottomSheetController,
+                        mBottomBarHostManager,
                         mTabSupplier,
                         mMenuButtonCoordinator,
                         mHubShowPaneHelper,
                         mEdgeToEdgeSupplier,
-                        mSearchActivityClient);
+                        mSearchActivityClient,
+                        /* xrSpaceModeObservableSupplier= */ null,
+                        /* defaultPaneId= */ PaneId.TAB_SWITCHER);
 
         PaneManager paneManager = hubManager.getPaneManager();
         assertNotNull(paneManager);
@@ -193,11 +350,15 @@ public class HubManagerImplUnitTest {
                         mBackPressManager,
                         mMenuOrKeyboardActionController,
                         mSnackbarManager,
+                        mBottomSheetController,
+                        mBottomBarHostManager,
                         mTabSupplier,
                         mMenuButtonCoordinator,
                         mHubShowPaneHelper,
                         mEdgeToEdgeSupplier,
-                        mSearchActivityClient);
+                        mSearchActivityClient,
+                        /* xrSpaceModeObservableSupplier= */ null,
+                        /* defaultPaneId= */ PaneId.TAB_SWITCHER);
         hubManager.getPaneManager().focusPane(PaneId.TAB_SWITCHER);
 
         HubController hubController = hubManager.getHubController();
@@ -214,7 +375,7 @@ public class HubManagerImplUnitTest {
 
         FrameLayout containerView = hubController.getContainerView();
         assertNotNull(containerView);
-        verify(mSnackbarManager).pushParentViewToOverrideStack(any());
+        verify(mSnackbarManager).pushParentViewOverride(eq(ParentOverrideSlot.HUB), any(), any());
 
         // Attach the container to the parent view.
         mRootView.addView(containerView);
@@ -222,11 +383,12 @@ public class HubManagerImplUnitTest {
 
         hubManager.getPaneManager().focusPane(PaneId.INCOGNITO_TAB_SWITCHER);
         verify(mTabSwitcherPane).setPaneHubController(null);
-        verify(mSnackbarManager).popParentViewFromOverrideStack(mSnackbarOverrideToken);
+        verify(mSnackbarManager).popParentViewOverride(ParentOverrideSlot.HUB);
         verify(mMenuOrKeyboardActionController)
                 .unregisterMenuOrKeyboardActionHandler(mTabSwitcherMenuOrKeyboardActionHandler);
         verify(mIncognitoTabSwitcherPane).setPaneHubController(coordinator);
-        verify(mSnackbarManager, times(2)).pushParentViewToOverrideStack(any());
+        verify(mSnackbarManager, times(2))
+                .pushParentViewOverride(eq(ParentOverrideSlot.HUB), any(), any());
         verify(mMenuOrKeyboardActionController)
                 .registerMenuOrKeyboardActionHandler(
                         mIncognitoTabSwitcherMenuOrKeyboardActionHandler);
@@ -235,10 +397,7 @@ public class HubManagerImplUnitTest {
         assertNull(hubManager.getHubCoordinatorForTesting());
         verify(mBackPressManager).removeHandler(eq(coordinator));
         verify(mIncognitoTabSwitcherPane).setPaneHubController(null);
-        verify(mSnackbarManager, times(2)).popParentViewFromOverrideStack(mSnackbarOverrideToken);
-        verify(mMenuOrKeyboardActionController)
-                .unregisterMenuOrKeyboardActionHandler(
-                        mIncognitoTabSwitcherMenuOrKeyboardActionHandler);
+        verify(mSnackbarManager, times(2)).popParentViewOverride(ParentOverrideSlot.HUB);
 
         // Container is still attached and will be removed separately.
         assertEquals(mRootView, containerView.getParent());
@@ -246,7 +405,6 @@ public class HubManagerImplUnitTest {
 
     @Test
     @SmallTest
-    @DisableFeatures(OmniboxFeatureList.ANDROID_HUB_SEARCH)
     public void testBackNavigation() {
         PaneListBuilder builder = new PaneListBuilder(new DefaultPaneOrderController());
         HubManagerImpl hubManager =
@@ -257,11 +415,15 @@ public class HubManagerImplUnitTest {
                         mBackPressManager,
                         mMenuOrKeyboardActionController,
                         mSnackbarManager,
+                        mBottomSheetController,
+                        mBottomBarHostManager,
                         mTabSupplier,
                         mMenuButtonCoordinator,
                         mHubShowPaneHelper,
                         mEdgeToEdgeSupplier,
-                        mSearchActivityClient);
+                        mSearchActivityClient,
+                        /* xrSpaceModeObservableSupplier= */ null,
+                        /* defaultPaneId= */ PaneId.TAB_SWITCHER);
         HubController hubController = hubManager.getHubController();
         hubController.setHubLayoutController(mHubLayoutController);
 
@@ -296,11 +458,15 @@ public class HubManagerImplUnitTest {
                         mBackPressManager,
                         mMenuOrKeyboardActionController,
                         mSnackbarManager,
+                        mBottomSheetController,
+                        mBottomBarHostManager,
                         mTabSupplier,
                         mMenuButtonCoordinator,
                         mHubShowPaneHelper,
                         mEdgeToEdgeSupplier,
-                        mSearchActivityClient);
+                        mSearchActivityClient,
+                        /* xrSpaceModeObservableSupplier= */ null,
+                        /* defaultPaneId= */ PaneId.TAB_SWITCHER);
         hubManager.getPaneManager().focusPane(PaneId.TAB_SWITCHER);
 
         HubController hubController = hubManager.getHubController();
@@ -339,11 +505,15 @@ public class HubManagerImplUnitTest {
                         mBackPressManager,
                         mMenuOrKeyboardActionController,
                         mSnackbarManager,
+                        mBottomSheetController,
+                        mBottomBarHostManager,
                         mTabSupplier,
                         mMenuButtonCoordinator,
                         mHubShowPaneHelper,
                         mEdgeToEdgeSupplier,
-                        mSearchActivityClient);
+                        mSearchActivityClient,
+                        /* xrSpaceModeObservableSupplier= */ null,
+                        /* defaultPaneId= */ PaneId.TAB_SWITCHER);
         hubManager.getPaneManager().focusPane(PaneId.TAB_SWITCHER);
 
         HubController hubController = hubManager.getHubController();
@@ -389,11 +559,15 @@ public class HubManagerImplUnitTest {
                         mBackPressManager,
                         mMenuOrKeyboardActionController,
                         mSnackbarManager,
+                        mBottomSheetController,
+                        mBottomBarHostManager,
                         mTabSupplier,
                         mMenuButtonCoordinator,
                         mHubShowPaneHelper,
                         mEdgeToEdgeSupplier,
-                        mSearchActivityClient);
+                        mSearchActivityClient,
+                        /* xrSpaceModeObservableSupplier= */ null,
+                        /* defaultPaneId= */ PaneId.TAB_SWITCHER);
         hubManager.getPaneManager().focusPane(PaneId.TAB_SWITCHER);
 
         HubController hubController = hubManager.getHubController();

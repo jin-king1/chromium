@@ -9,12 +9,15 @@
 #include <utility>
 
 #include "base/base64.h"
-#include "base/debug/dump_without_crashing.h"
+#include "base/functional/callback.h"
 #include "base/logging.h"
+#include "base/memory/scoped_refptr.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/no_destructor.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "components/os_crypt/sync/os_crypt.h"
+#include "components/os_crypt/async/browser/os_crypt_async.h"
+#include "components/os_crypt/async/common/encryptor.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
@@ -22,6 +25,22 @@
 #include "crypto/random.h"
 
 namespace {
+
+void LogGetHmacKeyResult(AppShimRegistry::GetHmacKeyResult result) {
+  base::UmaHistogramEnumeration("Apps.AppShimRegistry.HmacKeyStore.LoadResult",
+                                result);
+}
+
+void LogSaveHmacKeyResult(AppShimRegistry::SaveHmacKeyResult result) {
+  base::UmaHistogramEnumeration("Apps.AppShimRegistry.HmacKeyStore.SaveResult",
+                                result);
+}
+
+void LogVerifyCdHashResult(AppShimRegistry::VerifyCdHashResult result) {
+  base::UmaHistogramEnumeration("Apps.AppShimRegistry.VerifyCdHashResult",
+                                result);
+}
+
 const char kAppShims[] = "app_shims";
 const char kAppShimsCdHashHmacKey[] = "app_shims_cdhash_hmac_key";
 const char kInstalledProfiles[] = "installed_profiles";
@@ -33,15 +52,15 @@ const char kProtocolHandlers[] = "protocols";
 const char kCdHashHmac[] = "cdhash_hmac";
 const char kNotificationPermissionStatus[] = "notification_permission";
 
-base::Value::List SetToValueList(const std::set<std::string>& values) {
-  base::Value::List result;
+base::ListValue SetToValueList(const std::set<std::string>& values) {
+  base::ListValue result;
   for (const auto& s : values) {
     result.Append(s);
   }
   return result;
 }
 
-std::set<std::string> ValueListToSet(const base::Value::List* list) {
+std::set<std::string> ValueListToSet(const base::ListValue* list) {
   std::set<std::string> result;
   if (list) {
     for (const auto& v : *list) {
@@ -112,11 +131,11 @@ void AppShimRegistry::GetProfilesSetForApp(
     std::set<base::FilePath>* profiles) const {
   PrefService* pref_service = GetPrefService();
   CHECK(pref_service);
-  const base::Value::Dict& cache = pref_service->GetDict(kAppShims);
-  const base::Value::Dict* app_info = cache.FindDict(app_id);
+  const base::DictValue& cache = pref_service->GetDict(kAppShims);
+  const base::DictValue* app_info = cache.FindDict(app_id);
   if (!app_info)
     return;
-  const base::Value::List* profile_values = app_info->FindList(profiles_key);
+  const base::ListValue* profile_values = app_info->FindList(profiles_key);
   if (!profile_values)
     return;
   for (const auto& profile_path_value : *profile_values) {
@@ -129,9 +148,10 @@ void AppShimRegistry::OnAppInstalledForProfile(const std::string& app_id,
                                                const base::FilePath& profile) {
   std::set<base::FilePath> installed_profiles =
       GetInstalledProfilesForApp(app_id);
-  if (installed_profiles.count(profile))
+  bool inserted = installed_profiles.insert(profile).second;
+  if (!inserted) {
     return;
-  installed_profiles.insert(profile);
+  }
   // Also add the profile to the last active profiles. This way the next time
   // the app is launched, it will at least launch in the most recently
   // installed profile.
@@ -168,9 +188,9 @@ void AppShimRegistry::SaveLastActiveProfilesForApp(
 std::set<std::string> AppShimRegistry::GetInstalledAppsForProfile(
     const base::FilePath& profile) const {
   std::set<std::string> result;
-  const base::Value::Dict& app_shims = GetPrefService()->GetDict(kAppShims);
+  const base::DictValue& app_shims = GetPrefService()->GetDict(kAppShims);
   for (const auto iter_app : app_shims) {
-    const base::Value::List* installed_profiles_list =
+    const base::ListValue* installed_profiles_list =
         iter_app.second.GetDict().FindList(kInstalledProfiles);
     if (!installed_profiles_list)
       continue;
@@ -192,9 +212,9 @@ std::set<std::string> AppShimRegistry::GetAppsInstalledInMultipleProfiles()
   if (!GetPrefService()) {
     return result;
   }
-  const base::Value::Dict& app_shims = GetPrefService()->GetDict(kAppShims);
+  const base::DictValue& app_shims = GetPrefService()->GetDict(kAppShims);
   for (const auto iter_app : app_shims) {
-    const base::Value::List* installed_profiles_list =
+    const base::ListValue* installed_profiles_list =
         iter_app.second.GetDict().FindList(kInstalledProfiles);
     if (!installed_profiles_list || installed_profiles_list->size() <= 1) {
       continue;
@@ -238,16 +258,16 @@ void AppShimRegistry::SaveProtocolHandlersForAppAndProfile(
 
 std::map<base::FilePath, AppShimRegistry::HandlerInfo>
 AppShimRegistry::GetHandlersForApp(const std::string& app_id) {
-  const base::Value::Dict& cache = GetPrefService()->GetDict(kAppShims);
-  const base::Value::Dict* app_info = cache.FindDict(app_id);
+  const base::DictValue& cache = GetPrefService()->GetDict(kAppShims);
+  const base::DictValue* app_info = cache.FindDict(app_id);
   if (!app_info)
     return {};
-  const base::Value::Dict* handlers = app_info->FindDict(kHandlers);
+  const base::DictValue* handlers = app_info->FindDict(kHandlers);
   if (!handlers)
     return {};
   std::map<base::FilePath, HandlerInfo> result;
   for (auto profile_handler : *handlers) {
-    const base::Value::Dict* dict = profile_handler.second.GetIfDict();
+    const base::DictValue* dict = profile_handler.second.GetIfDict();
     if (!dict)
       continue;
     HandlerInfo info;
@@ -266,9 +286,11 @@ bool AppShimRegistry::HasSavedAnyCdHashes() const {
 }
 
 std::optional<AppShimRegistry::HmacKey>
-AppShimRegistry::GetExistingCdHashHmacKey() {
+AppShimRegistry::GetExistingCdHashHmacKey(
+    const os_crypt_async::Encryptor& encryptor) {
   std::string key_base64 = GetPrefService()->GetString(kAppShimsCdHashHmacKey);
   if (key_base64.empty()) {
+    LogGetHmacKeyResult(GetHmacKeyResult::kNotFound);
     return std::nullopt;
   }
 
@@ -276,41 +298,65 @@ AppShimRegistry::GetExistingCdHashHmacKey() {
   // base64-encoded before being stored in prefs. Do the inverse operations here
   // to load the key.
   std::string encrypted_key;
-  if (base::Base64Decode(key_base64, &encrypted_key)) {
-    std::string key;
-    if (OSCrypt::DecryptString(encrypted_key, &key)) {
-      if (key.length() == kHmacKeySize) {
-        return std::make_optional<HmacKey>(key.begin(), key.end());
-      }
-    }
+  if (!base::Base64Decode(key_base64, &encrypted_key)) {
+    LogGetHmacKeyResult(GetHmacKeyResult::kBase64DecodeFailed);
+    return std::nullopt;
   }
 
-  // The stored key was either invalid base64, could not be decrypted by
-  // OSCrypt, or the wrong length. We rely on the caller to generate a new key
-  // and re-create the app shims.
-  LOG(WARNING) << "Key retrieved from preferences was not valid. Discarding.";
-  return std::nullopt;
+  os_crypt_async::Encryptor::DecryptFlags flags;
+  std::string key;
+  if (!encryptor.DecryptString(encrypted_key, &key, &flags)) {
+    if (flags.temporarily_unavailable) {
+      LogGetHmacKeyResult(GetHmacKeyResult::kDecryptFailed_Temporary);
+    } else {
+      LogGetHmacKeyResult(GetHmacKeyResult::kDecryptFailed_Permanent);
+    }
+    return std::nullopt;
+  }
+
+  if (key.length() != kHmacKeySize) {
+    LogGetHmacKeyResult(GetHmacKeyResult::kInvalidLength);
+    return std::nullopt;
+  }
+  LogGetHmacKeyResult(GetHmacKeyResult::kSuccess);
+  return std::make_optional<HmacKey>(key.begin(), key.end());
 }
 
 // Encrypt the key using OSCrypt and base64-encode the encrypted data before
 // storing it in prefs.
-void AppShimRegistry::SaveCdHashHmacKey(const HmacKey& key) {
+bool AppShimRegistry::SaveCdHashHmacKey(
+    const os_crypt_async::Encryptor& encryptor,
+    const HmacKey& key) {
   std::string key_str(key.begin(), key.end());
-  std::string encrypted_key_str;
-  bool result = OSCrypt::EncryptString(key_str, &encrypted_key_str);
-  if (!result) {
-    base::debug::DumpWithoutCrashing();
-    return;
+  std::optional<std::vector<uint8_t>> encrypted_key =
+      encryptor.EncryptString(key_str);
+  if (!encrypted_key.has_value()) {
+    LogSaveHmacKeyResult(SaveHmacKeyResult::kEncryptionFailed);
+    return false;
   }
 
-  HmacKey encrypted_key(encrypted_key_str.begin(), encrypted_key_str.end());
   GetPrefService()->SetString(kAppShimsCdHashHmacKey,
-                              base::Base64Encode(encrypted_key));
+                              base::Base64Encode(*encrypted_key));
+  LogSaveHmacKeyResult(SaveHmacKeyResult::kSuccess);
+  return true;
 }
 
-AppShimRegistry::HmacKey AppShimRegistry::GetCdHashHmacKey() {
-  if (auto key = GetExistingCdHashHmacKey(); key.has_value()) {
-    return *key;
+AppShimRegistry::HmacKey AppShimRegistry::GetCdHashHmacKey(
+    const os_crypt_async::Encryptor& encryptor) {
+  if (hmac_key_.has_value()) {
+    // If the key has not successfully been saved to prefs yet, retry encrypting
+    // and storing to prefs, as the keychain might have become available.
+    if (!hmac_key_saved_to_prefs_) {
+      hmac_key_saved_to_prefs_ = SaveCdHashHmacKey(encryptor, *hmac_key_);
+    }
+    return *hmac_key_;
+  }
+
+  // If there is no cached key, try to load one from prefs.
+  if (auto key = GetExistingCdHashHmacKey(encryptor); key.has_value()) {
+    hmac_key_ = std::move(key);
+    hmac_key_saved_to_prefs_ = true;
+    return *hmac_key_;
   }
 
   // Either no key was stored in prefs, or the key that was stored could not be
@@ -318,55 +364,88 @@ AppShimRegistry::HmacKey AppShimRegistry::GetCdHashHmacKey() {
   // invalidate any HMACs that were created with a previous key. The caller is
   // expected to handle this by re-creating the affected app shims and storing
   // the new code directory hash.
-  HmacKey key(kHmacKeySize);
-  crypto::RandBytes(key);
-
-  SaveCdHashHmacKey(key);
-
-  return key;
+  hmac_key_.emplace(kHmacKeySize);
+  crypto::RandBytes(*hmac_key_);
+  hmac_key_saved_to_prefs_ = SaveCdHashHmacKey(encryptor, *hmac_key_);
+  return *hmac_key_;
 }
 
 void AppShimRegistry::SaveCdHashForApp(const std::string& app_id,
-                                       base::span<const uint8_t> cd_hash) {
-  HmacKey hmac_key = GetCdHashHmacKey();
-  crypto::HMAC hmac(crypto::HMAC::SHA256);
-  CHECK(hmac.Init(hmac_key));
+                                       base::span<const uint8_t> cd_hash,
+                                       base::OnceClosure callback) {
+  // base::Unretained is safe, since AppShimRegistry is a singleton that is
+  // never destructed.
+  g_browser_process->os_crypt_async()->GetInstance(
+      base::BindOnce(&AppShimRegistry::DoSaveCdHashForApp,
+                     base::Unretained(this), app_id,
+                     std::vector<uint8_t>(cd_hash.begin(), cd_hash.end()))
+          .Then(std::move(callback)));
+}
 
-  std::array<uint8_t, 32> cd_hash_hmac;
-  CHECK(hmac.Sign(cd_hash, cd_hash_hmac));
-
-  std::string cd_hash_hmac_base64 = base::Base64Encode(cd_hash_hmac);
+void AppShimRegistry::DoSaveCdHashForApp(
+    const std::string& app_id,
+    std::vector<uint8_t> cd_hash,
+    scoped_refptr<os_crypt_async::Encryptor> encryptor) {
+  std::string cd_hash_hmac_base64 = base::Base64Encode(
+      crypto::hmac::SignSha256(GetCdHashHmacKey(*encryptor), cd_hash));
   SetAppInfo(app_id, /*installed_profiles=*/nullptr,
              /*last_active_profiles=*/nullptr, /*handlers=*/nullptr,
              &cd_hash_hmac_base64,
              /*notification_permission_status=*/nullptr);
 }
 
-bool AppShimRegistry::VerifyCdHashForApp(const std::string& app_id,
-                                         base::span<const uint8_t> cd_hash) {
-  const base::Value::Dict& cache = GetPrefService()->GetDict(kAppShims);
-  const base::Value::Dict* app_info = cache.FindDict(app_id);
+void AppShimRegistry::VerifyCdHashForApp(
+    const std::string& app_id,
+    base::span<const uint8_t> cd_hash,
+    base::OnceCallback<void(bool)> callback) {
+  // base::Unretained is safe, since AppShimRegistry is a singleton that is
+  // never destructed.
+  g_browser_process->os_crypt_async()->GetInstance(
+      base::BindOnce(&AppShimRegistry::DoVerifyCdHashForApp,
+                     base::Unretained(this), app_id,
+                     std::vector<uint8_t>(cd_hash.begin(), cd_hash.end()))
+          .Then(std::move(callback)));
+}
+
+bool AppShimRegistry::DoVerifyCdHashForApp(
+    const std::string& app_id,
+    std::vector<uint8_t> cd_hash,
+    scoped_refptr<os_crypt_async::Encryptor> encryptor) {
+  const base::DictValue& cache = GetPrefService()->GetDict(kAppShims);
+  const base::DictValue* app_info = cache.FindDict(app_id);
   if (!app_info) {
     LOG(WARNING) << "No info found for app_id";
+    LogVerifyCdHashResult(VerifyCdHashResult::kNoAppInfo);
     return false;
   }
 
   const std::string* cd_hash_hmac_base64 = app_info->FindString(kCdHashHmac);
   if (!cd_hash_hmac_base64 || cd_hash_hmac_base64->empty()) {
     LOG(WARNING) << "App shim has no associated code directory hash";
+    LogVerifyCdHashResult(VerifyCdHashResult::kNoCdHash);
     return false;
   }
 
   auto cd_hash_hmac = base::Base64Decode(*cd_hash_hmac_base64);
   if (!cd_hash_hmac) {
     LOG(WARNING) << "App shim's code directory hash could not be decoded";
+    LogVerifyCdHashResult(VerifyCdHashResult::kDecodeFailure);
     return false;
   }
 
-  HmacKey hmac_key = GetCdHashHmacKey();
-  crypto::HMAC hmac(crypto::HMAC::SHA256);
-  CHECK(hmac.Init(hmac_key));
-  return hmac.Verify(cd_hash, *cd_hash_hmac);
+  auto cd_hash_hmac_span =
+      base::span(*cd_hash_hmac).to_fixed_extent<crypto::hash::kSha256Size>();
+  if (!cd_hash_hmac_span) {
+    LOG(WARNING) << "App shim's code directory hash is unexpected size";
+    LogVerifyCdHashResult(VerifyCdHashResult::kUnexpectedSize);
+    return false;
+  }
+
+  bool verified = crypto::hmac::VerifySha256(GetCdHashHmacKey(*encryptor),
+                                             cd_hash, *cd_hash_hmac_span);
+  LogVerifyCdHashResult(verified ? VerifyCdHashResult::kSuccess
+                                 : VerifyCdHashResult::kVerificationFailed);
+  return verified;
 }
 
 void AppShimRegistry::SaveNotificationPermissionStatusForApp(
@@ -381,8 +460,8 @@ mac_notifications::mojom::PermissionStatus
 AppShimRegistry::GetNotificationPermissionStatusForApp(
     const std::string& app_id) {
   using PermissionStatus = mac_notifications::mojom::PermissionStatus;
-  const base::Value::Dict& cache = GetPrefService()->GetDict(kAppShims);
-  const base::Value::Dict* app_info = cache.FindDict(app_id);
+  const base::DictValue& cache = GetPrefService()->GetDict(kAppShims);
+  const base::DictValue* app_info = cache.FindDict(app_id);
   if (!app_info) {
     return PermissionStatus::kNotDetermined;
   }
@@ -413,8 +492,8 @@ void AppShimRegistry::SetPrefServiceAndUserDataDirForTesting(
   override_user_data_dir_ = user_data_dir;
 }
 
-base::Value::Dict AppShimRegistry::AsDebugDict() const {
-  const base::Value::Dict& app_shims = GetPrefService()->GetDict(kAppShims);
+base::DictValue AppShimRegistry::AsDebugDict() const {
+  const base::DictValue& app_shims = GetPrefService()->GetDict(kAppShims);
 
   return app_shims.Clone();
 }
@@ -454,7 +533,7 @@ void AppShimRegistry::SetAppInfo(
   }
 
   // Look up dictionary for the app.
-  base::Value::Dict* app_info = update->FindDict(app_id);
+  base::DictValue* app_info = update->FindDict(app_id);
   if (!app_info) {
     // If the key for the app doesn't exist, don't add it unless we are
     // specifying a new |installed_profiles| (e.g, for when the app exits
@@ -465,21 +544,21 @@ void AppShimRegistry::SetAppInfo(
     app_info = update->EnsureDict(app_id);
   }
   if (installed_profiles) {
-    base::Value::List values;
+    base::ListValue values;
     for (const auto& profile : *installed_profiles)
       values.Append(profile.BaseName().value());
     app_info->Set(kInstalledProfiles, std::move(values));
   }
   if (last_active_profiles) {
-    base::Value::List values;
+    base::ListValue values;
     for (const auto& profile : *last_active_profiles)
       values.Append(profile.BaseName().value());
     app_info->Set(kLastActiveProfiles, std::move(values));
   }
   if (handlers) {
-    base::Value::Dict values;
+    base::DictValue values;
     for (const auto& profile_handlers : *handlers) {
-      base::Value::Dict value;
+      base::DictValue value;
       value.Set(
           kFileHandlerExtensions,
           SetToValueList(profile_handlers.second.file_handler_extensions));

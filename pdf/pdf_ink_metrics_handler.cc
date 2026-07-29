@@ -6,11 +6,14 @@
 
 #include <optional>
 
+#include "base/check_op.h"
 #include "base/containers/fixed_flat_map.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/notreached.h"
 #include "pdf/pdf_ink_brush.h"
 #include "pdf/pdf_ink_conversions.h"
+#include "pdf/pdf_ink_text.h"
+#include "third_party/skia/include/core/SkColor.h"
 
 namespace chrome_pdf {
 
@@ -62,7 +65,7 @@ constexpr auto kPenColors =
         {SkColorSetRGB(0x19, 0x67, 0xD2), StrokeMetricPenColor::kBlue3},
         {SkColorSetRGB(0x88, 0x59, 0x45), StrokeMetricPenColor::kTan3},
     });
-// LINT.ThenChange(//chrome/browser/resources/pdf/elements/ink_color_selector.ts:PenColors)
+// LINT.ThenChange(//chrome/browser/resources/pdf/elements//ink_annotation_brush_mixin.ts:PenColors)
 
 // LINT.IfChange(HighlighterColors)
 constexpr auto kHighlighterColors =
@@ -85,7 +88,37 @@ constexpr auto kHighlighterColors =
         {SkColorSetRGB(0xFF, 0x63, 0x0C),
          StrokeMetricHighlighterColor::kOrange},
     });
-// LINT.ThenChange(//chrome/browser/resources/pdf/elements/ink_color_selector.ts:HighlighterColors)
+// LINT.ThenChange(//chrome/browser/resources/pdf/elements//ink_annotation_brush_mixin.ts:HighlighterColors)
+
+// LINT.IfChange(TextAnnotationColors)
+constexpr auto kTextAnnotationColors =
+    base::MakeFixedFlatMap<SkColor, TextAnnotationColor>({
+        {SK_ColorBLACK, TextAnnotationColor::kBlack},
+        {SkColorSetRGB(0x5F, 0x63, 0x68), TextAnnotationColor::kDarkGrey2},
+        {SkColorSetRGB(0x9A, 0xA0, 0xA6), TextAnnotationColor::kDarkGrey1},
+        {SkColorSetRGB(0xDA, 0xDC, 0xE0), TextAnnotationColor::kLightGrey},
+        {SK_ColorWHITE, TextAnnotationColor::kWhite},
+        {SkColorSetRGB(0xF2, 0x8B, 0x82), TextAnnotationColor::kRed1},
+        {SkColorSetRGB(0xFD, 0xD6, 0x63), TextAnnotationColor::kYellow1},
+        {SkColorSetRGB(0x81, 0xC9, 0x95), TextAnnotationColor::kGreen1},
+        {SkColorSetRGB(0x78, 0xD9, 0xEC), TextAnnotationColor::kCyan1},
+        {SkColorSetRGB(0x8A, 0xB4, 0xF8), TextAnnotationColor::kBlue1},
+        {SkColorSetRGB(0xE9, 0x42, 0x35), TextAnnotationColor::kRed2},
+        {SkColorSetRGB(0xFB, 0xBC, 0x04), TextAnnotationColor::kYellow2},
+        {SkColorSetRGB(0x34, 0xA8, 0x53), TextAnnotationColor::kGreen2},
+        {SkColorSetRGB(0x24, 0xC1, 0xE0), TextAnnotationColor::kCyan2},
+        {SkColorSetRGB(0x42, 0x85, 0xF4), TextAnnotationColor::kBlue2},
+        {SkColorSetRGB(0xC5, 0x22, 0x1F), TextAnnotationColor::kRed3},
+        {SkColorSetRGB(0xD5, 0x6E, 0x0C), TextAnnotationColor::kYellow3},
+        {SkColorSetRGB(0x18, 0x80, 0x38), TextAnnotationColor::kGreen3},
+        {SkColorSetRGB(0x12, 0xA4, 0xAF), TextAnnotationColor::kCyan3},
+        {SkColorSetRGB(0x19, 0x67, 0xD2), TextAnnotationColor::kBlue3},
+    });
+// LINT.ThenChange(//chrome/browser/resources/pdf/elements/ink_annotation_text_mixin.ts:TextAnnotationColors)
+
+constexpr char kStrokeInputDeviceMetricName[] = "PDF.Ink2StrokeInputDeviceType";
+constexpr char kTextHighlightInputDeviceMetricName[] =
+    "PDF.Ink2TextHighlightInputDeviceType";
 
 void ReportStrokeTypeAndMaybeSize(StrokeMetricBrushType type,
                                   std::optional<StrokeMetricBrushSize> size) {
@@ -106,22 +139,27 @@ void ReportStrokeTypeAndMaybeSize(StrokeMetricBrushType type,
   base::UmaHistogramEnumeration(size_metric, size.value());
 }
 
-void ReportStrokeInputDeviceType(ink::StrokeInput::ToolType tool_type) {
-  StrokeMetricInputDeviceType type;
+void ReportTextHighlighterColor(const ink::Brush& brush) {
+  SkColor sk_color = GetSkColorFromInkBrush(brush);
+  auto color_iter = kHighlighterColors.find(sk_color);
+  CHECK(color_iter != kHighlighterColors.end());
+  base::UmaHistogramEnumeration("PDF.Ink2TextHighlighterColor",
+                                color_iter->second);
+}
+
+StrokeMetricInputDeviceType GetStrokeInputDeviceType(
+    ink::StrokeInput::ToolType tool_type) {
   switch (tool_type) {
-    case ink::StrokeInput::ToolType::kMouse:
-      type = StrokeMetricInputDeviceType::kMouse;
-      break;
-    case ink::StrokeInput::ToolType::kTouch:
-      type = StrokeMetricInputDeviceType::kTouch;
-      break;
-    case ink::StrokeInput::ToolType::kStylus:
-      type = StrokeMetricInputDeviceType::kPen;
-      break;
-    default:
+    case ink::StrokeInput::ToolType::kUnknown:
       NOTREACHED();
+    case ink::StrokeInput::ToolType::kMouse:
+      return StrokeMetricInputDeviceType::kMouse;
+    case ink::StrokeInput::ToolType::kTouch:
+      return StrokeMetricInputDeviceType::kTouch;
+    case ink::StrokeInput::ToolType::kStylus:
+      return StrokeMetricInputDeviceType::kPen;
   }
-  base::UmaHistogramEnumeration("PDF.Ink2StrokeInputDeviceType", type);
+  NOTREACHED();
 }
 
 }  // namespace
@@ -137,7 +175,8 @@ void ReportDrawStroke(PdfInkBrush::Type type,
   ReportStrokeTypeAndMaybeSize(is_pen ? StrokeMetricBrushType::kPen
                                       : StrokeMetricBrushType::kHighlighter,
                                size_iter->second);
-  ReportStrokeInputDeviceType(tool_type);
+  base::UmaHistogramEnumeration(kStrokeInputDeviceMetricName,
+                                GetStrokeInputDeviceType(tool_type));
 
   SkColor sk_color = GetSkColorFromInkBrush(brush);
   if (is_pen) {
@@ -154,13 +193,57 @@ void ReportDrawStroke(PdfInkBrush::Type type,
 
 void ReportEraseStroke(ink::StrokeInput::ToolType tool_type) {
   ReportStrokeTypeAndMaybeSize(StrokeMetricBrushType::kEraser, std::nullopt);
-  ReportStrokeInputDeviceType(tool_type);
+  base::UmaHistogramEnumeration(kStrokeInputDeviceMetricName,
+                                GetStrokeInputDeviceType(tool_type));
+}
+
+void ReportTextHighlight(const ink::Brush& brush,
+                         ink::StrokeInput::ToolType tool_type) {
+  ReportTextHighlighterColor(brush);
+  base::UmaHistogramEnumeration(kTextHighlightInputDeviceMetricName,
+                                GetStrokeInputDeviceType(tool_type));
+}
+
+void ReportKeyboardTextHighlight(const ink::Brush& brush) {
+  ReportTextHighlighterColor(brush);
+  base::UmaHistogramEnumeration(kTextHighlightInputDeviceMetricName,
+                                StrokeMetricInputDeviceType::kKeyboard);
+}
+
+void RecordPdfLoadedWithInkTextAnnotations(
+    PDFLoadedWithInkTextAnnotations loaded_with_annotations) {
+  base::UmaHistogramEnumeration("PDF.LoadedWithInkTextAnnotations",
+                                loaded_with_annotations);
 }
 
 void RecordPdfLoadedWithV2InkAnnotations(
     PDFLoadedWithV2InkAnnotations loaded_with_annotations) {
   base::UmaHistogramEnumeration("PDF.LoadedWithV2InkAnnotations2",
                                 loaded_with_annotations);
+}
+
+void ReportTextAnnotationMetrics(const InkTextBoxAttributes& attributes) {
+  auto color_it = kTextAnnotationColors.find(attributes.color);
+  CHECK(color_it != kTextAnnotationColors.end());
+  base::UmaHistogramEnumeration("PDF.Ink2TextAnnotationColor",
+                                color_it->second);
+
+  base::UmaHistogramEnumeration("PDF.Ink2TextAnnotationTypeface",
+                                attributes.typeface);
+
+  base::UmaHistogramEnumeration("PDF.Ink2TextAnnotationAlignment",
+                                attributes.alignment);
+
+  base::UmaHistogramBoolean("PDF.Ink2TextAnnotationBold", attributes.is_bold);
+  base::UmaHistogramBoolean("PDF.Ink2TextAnnotationItalic",
+                            attributes.is_italic);
+
+  CHECK_EQ(attributes.css_font_size, std::trunc(attributes.css_font_size));
+  int size = static_cast<int>(attributes.css_font_size);
+  CHECK_EQ(size, attributes.css_font_size);
+  CHECK_GE(size, 1);
+  CHECK_LE(size, 100);
+  base::UmaHistogramExactLinear("PDF.Ink2TextAnnotationSize", size, 101);
 }
 
 }  // namespace chrome_pdf

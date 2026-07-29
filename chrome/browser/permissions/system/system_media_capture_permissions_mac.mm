@@ -5,6 +5,7 @@
 #include "chrome/browser/permissions/system/system_media_capture_permissions_mac.h"
 
 #import <AVFoundation/AVFoundation.h>
+#import <Cocoa/Cocoa.h>
 
 #include "base/apple/foundation_util.h"
 #include "base/apple/scoped_cftyperef.h"
@@ -16,6 +17,7 @@
 #import "base/task/sequenced_task_runner.h"
 #include "base/task/sequenced_task_runner.h"
 #include "chrome/browser/permissions/system/media_authorization_wrapper_mac.h"
+#include "chrome/browser/permissions/system/system_permission_common.h"
 #include "media/base/media_switches.h"
 #include "ui/base/cocoa/permissions_utils.h"
 
@@ -23,7 +25,7 @@ namespace system_permission_settings {
 
 namespace {
 
-std::optional<bool> g_is_screen_capture_allowed_for_testing = std::nullopt;
+std::optional<bool> g_is_screen_capture_allowed_for_testing;
 
 bool UsingFakeMediaDevices() {
   return base::CommandLine::ForCurrentProcess()->HasSwitch(
@@ -132,6 +134,33 @@ SystemPermission CheckSystemScreenCapturePermission() {
                                   : SystemPermission::kDenied;
 }
 
+SystemPermission CheckSystemClipboardPermission() {
+  // Check macOS system privacy settings for programmatic clipboard access using
+  // the accessBehavior property available in macOS 15.4+. These settings only
+  // affect programmatic access - direct user actions like ⌘V always work.
+
+  if (@available(macOS 15.4, *)) {
+    NSPasteboardAccessBehavior access_behavior =
+        [NSPasteboard generalPasteboard].accessBehavior;
+
+    switch (access_behavior) {
+      case NSPasteboardAccessBehaviorAlwaysAllow:
+        return SystemPermission::kAllowed;
+      case NSPasteboardAccessBehaviorAlwaysDeny:
+        return SystemPermission::kDenied;
+      case NSPasteboardAccessBehaviorAsk:
+        return SystemPermission::kNotDetermined;
+      case NSPasteboardAccessBehaviorDefault:
+        // Default behavior for the General pasteboard is to ask upon
+        // programmatic access
+        return SystemPermission::kNotDetermined;
+    }
+  } else {
+    // The behavior of older macOS versions is effectively kAllowed.
+    return SystemPermission::kAllowed;
+  }
+}
+
 void RequestSystemAudioCapturePermission(base::OnceClosure callback) {
   RequestSystemMediaCapturePermission(AVMediaTypeAudio, std::move(callback));
 }
@@ -142,7 +171,7 @@ void RequestSystemVideoCapturePermission(base::OnceClosure callback) {
 
 void SetMediaAuthorizationWrapperForTesting(
     MediaAuthorizationWrapper* wrapper) {
-  CHECK(!g_media_authorization_wrapper_for_tests);
+  CHECK(!wrapper || !g_media_authorization_wrapper_for_tests);
   g_media_authorization_wrapper_for_tests = wrapper;
 }
 

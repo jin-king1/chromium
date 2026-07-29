@@ -13,6 +13,7 @@
 
 #if BUILDFLAG(IS_WIN)
 #include "base/win/scoped_handle.h"
+#include "base/win/windows_handle_util.h"
 #elif BUILDFLAG(IS_FUCHSIA)
 #include <lib/zx/handle.h>
 #elif BUILDFLAG(IS_APPLE)
@@ -21,10 +22,6 @@
 
 #if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
 #include "base/files/scoped_file.h"
-#endif
-
-#if BUILDFLAG(IS_ANDROID)
-#include "base/android/binder.h"
 #endif
 
 namespace mojo {
@@ -56,9 +53,6 @@ class COMPONENT_EXPORT(MOJO_CPP_PLATFORM) PlatformHandle {
 #if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
     kFd,
 #endif
-#if BUILDFLAG(IS_ANDROID)
-    kBinder,
-#endif
   };
 
   PlatformHandle();
@@ -75,10 +69,6 @@ class COMPONENT_EXPORT(MOJO_CPP_PLATFORM) PlatformHandle {
 
 #if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
   explicit PlatformHandle(base::ScopedFD fd);
-#endif
-
-#if BUILDFLAG(IS_ANDROID)
-  explicit PlatformHandle(base::android::BinderRef binder);
 #endif
 
   PlatformHandle(const PlatformHandle&) = delete;
@@ -115,8 +105,11 @@ class COMPONENT_EXPORT(MOJO_CPP_PLATFORM) PlatformHandle {
 
 #if BUILDFLAG(IS_WIN)
   bool is_valid() const { return is_valid_handle(); }
-  bool is_valid_handle() const { return handle_.IsValid(); }
+  bool is_valid_handle() const { return handle_.is_valid(); }
   bool is_handle() const { return type_ == Type::kHandle; }
+  bool is_pseudo_handle() const {
+    return base::win::IsPseudoHandle(handle_.get());
+  }
   const base::win::ScopedHandle& GetHandle() const { return handle_; }
   base::win::ScopedHandle TakeHandle() {
     DCHECK_EQ(type_, Type::kHandle);
@@ -126,7 +119,7 @@ class COMPONENT_EXPORT(MOJO_CPP_PLATFORM) PlatformHandle {
   [[nodiscard]] HANDLE ReleaseHandle() {
     DCHECK_EQ(type_, Type::kHandle);
     type_ = Type::kNone;
-    return handle_.Take();
+    return handle_.release();
   }
 #elif BUILDFLAG(IS_FUCHSIA)
   bool is_valid() const { return is_valid_fd() || is_valid_handle(); }
@@ -134,13 +127,15 @@ class COMPONENT_EXPORT(MOJO_CPP_PLATFORM) PlatformHandle {
   bool is_handle() const { return type_ == Type::kHandle; }
   const zx::handle& GetHandle() const { return handle_; }
   zx::handle TakeHandle() {
-    if (type_ == Type::kHandle)
+    if (type_ == Type::kHandle) {
       type_ = Type::kNone;
+    }
     return std::move(handle_);
   }
   [[nodiscard]] zx_handle_t ReleaseHandle() {
-    if (type_ == Type::kHandle)
+    if (type_ == Type::kHandle) {
       type_ = Type::kNone;
+    }
     return handle_.release();
   }
 #elif BUILDFLAG(IS_APPLE)
@@ -155,8 +150,9 @@ class COMPONENT_EXPORT(MOJO_CPP_PLATFORM) PlatformHandle {
     return mach_send_;
   }
   base::apple::ScopedMachSendRight TakeMachSendRight() {
-    if (type_ == Type::kMachSend)
+    if (type_ == Type::kMachSend) {
       type_ = Type::kNone;
+    }
     return std::move(mach_send_);
   }
   [[nodiscard]] mach_port_t ReleaseMachSendRight() {
@@ -169,15 +165,14 @@ class COMPONENT_EXPORT(MOJO_CPP_PLATFORM) PlatformHandle {
     return mach_receive_;
   }
   base::apple::ScopedMachReceiveRight TakeMachReceiveRight() {
-    if (type_ == Type::kMachReceive)
+    if (type_ == Type::kMachReceive) {
       type_ = Type::kNone;
+    }
     return std::move(mach_receive_);
   }
   [[nodiscard]] mach_port_t ReleaseMachReceiveRight() {
     return TakeMachReceiveRight().release();
   }
-#elif BUILDFLAG(IS_ANDROID)
-  bool is_valid() const { return is_valid_fd() || is_valid_binder(); }
 #elif BUILDFLAG(IS_POSIX)
   bool is_valid() const { return is_valid_fd(); }
 #else
@@ -189,26 +184,16 @@ class COMPONENT_EXPORT(MOJO_CPP_PLATFORM) PlatformHandle {
   bool is_fd() const { return type_ == Type::kFd; }
   const base::ScopedFD& GetFD() const { return fd_; }
   base::ScopedFD TakeFD() {
-    if (type_ == Type::kFd)
+    if (type_ == Type::kFd) {
       type_ = Type::kNone;
+    }
     return std::move(fd_);
   }
   [[nodiscard]] int ReleaseFD() {
-    if (type_ == Type::kFd)
-      type_ = Type::kNone;
-    return fd_.release();
-  }
-#endif
-
-#if BUILDFLAG(IS_ANDROID)
-  bool is_valid_binder() const { return !!binder_; }
-  bool is_binder() const { return type_ == Type::kBinder; }
-  const base::android::BinderRef& GetBinder() const { return binder_; }
-  base::android::BinderRef TakeBinder() {
-    if (type_ == Type::kBinder) {
+    if (type_ == Type::kFd) {
       type_ = Type::kNone;
     }
-    return std::move(binder_);
+    return fd_.release();
   }
 #endif
 
@@ -254,9 +239,6 @@ class COMPONENT_EXPORT(MOJO_CPP_PLATFORM) PlatformHandle {
 
 #if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
   base::ScopedFD fd_;
-#endif
-#if BUILDFLAG(IS_ANDROID)
-  base::android::BinderRef binder_;
 #endif
 };
 

@@ -7,14 +7,16 @@
 
 #include "base/gtest_prod_util.h"
 #include "base/time/time.h"
+#include "components/policy/core/browser/url_list/policy_blocklist_service.h"
 #include "content/public/browser/navigation_throttle.h"
 
 class GURL;
 class PolicyBlocklistService;
 class PrefService;
+class SafeSearchService;
 
 namespace content {
-class BrowserContext;
+class NavigationThrottleRegistry;
 }  // namespace content
 
 // PolicyBlocklistNavigationThrottle provides a simple way to block a navigation
@@ -26,8 +28,10 @@ class BrowserContext;
 class PolicyBlocklistNavigationThrottle : public content::NavigationThrottle {
  public:
   PolicyBlocklistNavigationThrottle(
-      content::NavigationHandle* navigation_handle,
-      content::BrowserContext* context);
+      content::NavigationThrottleRegistry& registry,
+      PrefService* prefs,
+      PolicyBlocklistService* blocklist_service,
+      SafeSearchService* safe_search_service);
   PolicyBlocklistNavigationThrottle(const PolicyBlocklistNavigationThrottle&) =
       delete;
   PolicyBlocklistNavigationThrottle& operator=(
@@ -48,24 +52,13 @@ class PolicyBlocklistNavigationThrottle : public content::NavigationThrottle {
   FRIEND_TEST_ALL_PREFIXES(PolicyBlocklistNavigationThrottleTest,
                            SafeSites_Porn);
 
-  // These values are persisted to logs. Entries should not be renumbered and
-  // numeric values should never be reused.
-  //
-  // LINT.IfChange(RequestThrottleAction)
-  enum class RequestThrottleAction {
-    kNoRequest = 0,
-    kProceed = 1,
-    kBlock = 2,
-    kDefer = 3,
-    kProceedAfterDefer = 4,
-    kBlockAfterDefer = 5,
-    kMaxValue = kBlockAfterDefer,
-  };
-  // LINT.ThenChange(//tools/metrics/histograms/metadata/navigation/enums.xml:PolicyBlocklistRequestThrottleAction)
+  // Returns TRUE if this navigation is to view-source.
+  bool IsViewSourceNavigation();
 
-  // Returns TRUE if this navigation is to view-source: and view-source is on
-  // the URLBlocklist.
-  bool IsBlockedViewSourceNavigation();
+  // Returns the PolicyBlocklistState for a view-source navigation.
+  // Should only be called if the navigation is a view-source.
+  PolicyBlocklistService::PolicyBlocklistState
+  GetViewSourceNavigationBlocklistState();
 
   // To ensure both allow and block policies override Safe Sites,
   // SafeSitesNavigationThrottle must be consulted as part of this throttle
@@ -74,24 +67,13 @@ class PolicyBlocklistNavigationThrottle : public content::NavigationThrottle {
   void OnDeferredSafeSitesResult(bool proceed,
                                  std::optional<ThrottleCheckResult> result);
 
-  void UpdateRequestThrottleAction(
-      content::NavigationThrottle::ThrottleAction action);
-
   ThrottleCheckResult WillStartOrRedirectRequest(bool is_redirect);
-
-  RequestThrottleAction request_throttle_action_ =
-      RequestThrottleAction::kNoRequest;
-
-  base::TimeTicks request_time_;
-  base::TimeTicks defer_time_;
-  base::TimeDelta total_defer_duration_;
-  bool deferring_ = false;
 
   std::unique_ptr<content::NavigationThrottle> safe_sites_navigation_throttle_;
 
-  raw_ptr<PolicyBlocklistService, DanglingUntriaged> blocklist_service_;
+  const raw_ptr<PolicyBlocklistService, DanglingUntriaged> blocklist_service_;
 
-  raw_ptr<PrefService> prefs_;
+  const raw_ptr<PrefService> prefs_;
 };
 
 #endif  // COMPONENTS_POLICY_CONTENT_POLICY_BLOCKLIST_NAVIGATION_THROTTLE_H_

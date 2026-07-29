@@ -2,18 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "ui/events/ozone/evdev/event_converter_evdev_impl.h"
 
 #include <errno.h>
 #include <linux/input.h>
 #include <stddef.h>
 
-#include "base/containers/contains.h"
+#include <algorithm>
+
+#include "base/compiler_specific.h"
 #include "base/logging.h"
 #include "base/trace_event/trace_event.h"
 #include "ui/events/devices/stylus_state.h"
@@ -88,13 +85,9 @@ EventConverterEvdevImpl::EventConverterEvdevImpl(
   const auto key_bits = devinfo.GetKeyBits();
   key_bits_.resize(EVDEV_BITS_TO_INT64(KEY_CNT));
   for (int i = 0; i < KEY_CNT; i++) {
-    if (EvdevBitIsSet(key_bits.data(), i)) {
-      EvdevSetUint64Bit(key_bits_.data(), i);
+    if (EvdevBitIsSet(key_bits, i)) {
+      EvdevSetUint64Bit(key_bits_, i);
     }
-  }
-
-  if (base::FeatureList::IsEnabled(kBlockTelephonyDevicePhoneMute)) {
-    block_telephony_device_phone_mute_ = true;
   }
 }
 
@@ -222,7 +215,7 @@ ui::StylusState EventConverterEvdevImpl::GetStylusSwitchState() {
 void EventConverterEvdevImpl::ProcessEvents(const input_event* inputs,
                                             int count) {
   for (int i = 0; i < count; ++i) {
-    const input_event& input = inputs[i];
+    const input_event& input = UNSAFE_TODO(inputs[i]);
     switch (input.type) {
       case EV_MSC:
         if (input.code == MSC_SCAN)
@@ -297,7 +290,7 @@ void EventConverterEvdevImpl::OnKeyChange(unsigned int key,
 
   // Block all modifiers from continuing down stream from this device if the
   // flag is set.
-  if (block_modifiers_ && base::Contains(kModifierEvdevCodes, key)) {
+  if (block_modifiers_ && std::ranges::contains(kModifierEvdevCodes, key)) {
     return;
   }
 
@@ -305,14 +298,12 @@ void EventConverterEvdevImpl::OnKeyChange(unsigned int key,
 
   // TODO: crbug.com/356306613 - Sync mute state between telephony devices and
   // CrOS
-  if (block_telephony_device_phone_mute_) {
-    // Ignore Telephony Phone Mute scan code so that it does not toggle system
-    // mic mute to resolve user confusions. We don't want to block `KEY_MICMUTE`
-    // as there are other scan codes that map to the same key code. Not suitable
-    // to use `blocked_keys_`.
-    if (key == KEY_MICMUTE && last_scan_code_ == kTelephonyDevicePhoneMute) {
-      return;
-    }
+  // Ignore Telephony Phone Mute scan code so that it does not toggle system
+  // mic mute to resolve user confusions. We don't want to block `KEY_MICMUTE`
+  // as there are other scan codes that map to the same key code. Not suitable
+  // to use `blocked_keys_`.
+  if (key == KEY_MICMUTE && last_scan_code_ == kTelephonyDevicePhoneMute) {
+    return;
   }
 
   // State transition: !(down) -> (down)

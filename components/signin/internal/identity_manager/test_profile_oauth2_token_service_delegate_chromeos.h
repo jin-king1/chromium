@@ -10,14 +10,13 @@
 #include "components/signin/internal/identity_manager/profile_oauth2_token_service_delegate.h"
 #include "components/signin/internal/identity_manager/profile_oauth2_token_service_delegate_chromeos.h"
 #include "components/signin/internal/identity_manager/profile_oauth2_token_service_observer.h"
-#include "services/network/test/test_network_connection_tracker.h"
 
 class AccountTrackerService;
 class SigninClient;
 
-namespace crosapi {
-class AccountManagerMojoService;
-}
+namespace account_manager {
+class AccountManagerFacade;
+}  // namespace account_manager
 
 namespace signin {
 
@@ -29,10 +28,11 @@ class TestProfileOAuth2TokenServiceDelegateChromeOS
     : public ProfileOAuth2TokenServiceDelegate,
       public ProfileOAuth2TokenServiceObserver {
  public:
+  // `account_manager_facade` must outlive `this`.
   TestProfileOAuth2TokenServiceDelegateChromeOS(
       SigninClient* client,
       AccountTrackerService* account_tracker_service,
-      crosapi::AccountManagerMojoService* account_manager_mojo_service,
+      account_manager::AccountManagerFacade* account_manager_facade,
       bool is_regular_profile);
   ~TestProfileOAuth2TokenServiceDelegateChromeOS() override;
   TestProfileOAuth2TokenServiceDelegateChromeOS(
@@ -72,19 +72,16 @@ class TestProfileOAuth2TokenServiceDelegateChromeOS
 
  private:
   // ProfileOAuth2TokenServiceDelegate implementation:
-  void LoadCredentialsInternal(const CoreAccountId& primary_account_id,
-                               bool is_syncing) override;
-  void UpdateCredentialsInternal(const CoreAccountId& account_id,
-                                 const std::string& refresh_token) override;
+  void LoadCredentialsInternal(
+      const CoreAccountId& primary_account_id) override;
+  void UpdateCredentialsInternal(
+      const CoreAccountId& account_id,
+      const std::string& refresh_token,
+      const signin::TokenBindingInfo& token_binding_info) override;
   void RevokeCredentialsInternal(const CoreAccountId& account_id) override;
   void RevokeAllCredentialsInternal(
       signin_metrics::SourceForRefreshTokenOperation source) override;
 
-  // Owning pointer to TestNetworkConnectionTracker. Set only if it wasn't
-  // created before initialization of this class.
-  std::unique_ptr<network::TestNetworkConnectionTracker> owned_tracker_;
-  std::unique_ptr<account_manager::AccountManagerFacade>
-      account_manager_facade_;
   std::unique_ptr<ProfileOAuth2TokenServiceDelegateChromeOS> delegate_;
   base::ScopedObservation<ProfileOAuth2TokenServiceDelegateChromeOS,
                           ProfileOAuth2TokenServiceObserver>

@@ -7,9 +7,9 @@
 #import "base/files/file_path.h"
 #import "base/strings/sys_string_conversions.h"
 #import "google_apis/gaia/gaia_id.h"
+#import "ios/chrome/browser/push_notification/model/constants.h"
 #import "ios/chrome/browser/push_notification/model/push_notification_account_context_manager+testing.h"
 #import "ios/chrome/browser/push_notification/model/push_notification_client_id.h"
-#import "ios/chrome/browser/push_notification/model/push_notification_client_manager.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/profile/profile_attributes_ios.h"
 #import "ios/chrome/browser/shared/model/profile/profile_attributes_storage_ios.h"
@@ -221,26 +221,23 @@ TEST_F(PushNotificationAccountContextManagerTest, RemoveMultipleAccounts) {
 TEST_F(PushNotificationAccountContextManagerTest, AddDuplicateThenRemove) {
   static const TestCase kTestCase[] = {{"0"}};
   const TestCase kRemovalTestCase = {"5"};
-  static const TestCase kNoDuplicatesTestCase[] = {kRemovalTestCase};
 
   AddTestCasesToManagerAndValidate(
       manager_, kTestCase, profile_attributes_storage(), profile_name());
 
+  // Add testcase.
   UpdateProfileAuthInfo(profile_attributes_storage(), profile_name(),
                         kRemovalTestCase.gaia);
   [manager_ addAccount:GaiaId(kRemovalTestCase.gaia)];
 
-  for (const TestCase& test_case : kNoDuplicatesTestCase) {
-    UpdateProfileAuthInfo(profile_attributes_storage(), profile_name(),
-                          test_case.gaia);
-    [manager_ addAccount:GaiaId(test_case.gaia)];
-  }
+  // Add duplicate testcase.
+  UpdateProfileAuthInfo(profile_attributes_storage(), profile_name(),
+                        kRemovalTestCase.gaia);
+  [manager_ addAccount:GaiaId(kRemovalTestCase.gaia)];
 
-  // Validate the occurence counter has increased.
+  // Validate the occurrence counter has increased.
   ASSERT_EQ(
-      [manager_
-          registrationCountForAccount:GaiaId(kNoDuplicatesTestCase[0].gaia)],
-      2u);
+      [manager_ registrationCountForAccount:GaiaId(kRemovalTestCase.gaia)], 2u);
   // Remove the duplicate testcase twice.
   [manager_ removeAccount:GaiaId(kRemovalTestCase.gaia)];
   ASSERT_EQ([manager_ removeAccount:GaiaId(kRemovalTestCase.gaia)], true);
@@ -269,8 +266,7 @@ TEST_F(PushNotificationAccountContextManagerTest, UpdatePreferences) {
   static const TestCase kUpdateTestCase[] = {{"0"}, {"2"}, {"4"}};
 
   PushNotificationClientId clientID = PushNotificationClientId::kCommerce;
-  std::string client_key =
-      PushNotificationClientManager::PushNotificationClientIdToString(clientID);
+  std::string client_key = PushNotificationClientIdToString(clientID);
 
   for (const TestCase& test_case : kTestCase) {
     UpdateProfileAuthInfo(profile_attributes_storage(), profile_name(),

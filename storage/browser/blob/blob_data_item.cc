@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_util.h"
 #include "base/time/time.h"
 #include "components/file_access/scoped_file_access_delegate.h"
 #include "mojo/public/cpp/bindings/remote.h"
@@ -79,15 +80,6 @@ scoped_refptr<BlobDataItem> BlobDataItem::CreateBytesDescription(
     size_t length) {
   return base::WrapRefCounted(
       new BlobDataItem(Type::kBytesDescription, 0, length));
-}
-
-// static
-scoped_refptr<BlobDataItem> BlobDataItem::CreateFile(
-    base::FilePath path,
-    file_access::ScopedFileAccessDelegate::RequestFilesAccessIOCallback
-        file_access) {
-  return CreateFile(path, 0, blink::BlobUtils::kUnknownSize, base::Time(),
-                    nullptr, std::move(file_access));
 }
 
 // static
@@ -249,7 +241,7 @@ void PrintTo(const BlobDataItem& x, ::std::ostream* os) {
     case BlobDataItem::Type::kBytes: {
       uint64_t length = std::min(x.length(), kMaxDataPrintLength);
       *os << "kBytes, data: ["
-          << base::HexEncode(x.bytes().data(), static_cast<size_t>(length));
+          << base::HexEncode(x.bytes().first(static_cast<size_t>(length)));
       if (length < x.length()) {
         *os << "<...truncated due to length...>";
       }

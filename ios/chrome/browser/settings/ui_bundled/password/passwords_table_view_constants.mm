@@ -4,7 +4,7 @@
 
 #import "ios/chrome/browser/settings/ui_bundled/password/passwords_table_view_constants.h"
 
-#import "ios/chrome/browser/shared/ui/symbols/symbols.h"
+#import "ios/chrome/browser/shared/ui/image/image_names.h"
 
 NSString* const kPasswordsTableViewID = @"PasswordsTableViewID";
 NSString* const kPasswordsSearchBarID = @"PasswordsSearchBar";
@@ -40,7 +40,7 @@ NSString* const kDeleteButtonForPasswordDetailsID =
 NSString* const kLocalOnlyPasswordIconID = @"kLocalOnlyPasswordIconID";
 
 NSString* WidgetPromoImageName() {
-#if BUILDFLAG(IOS_USE_BRANDED_SYMBOLS)
+#if BUILDFLAG(IOS_USE_BRANDED_ASSETS)
   return kGooglePasswordManagerWidgetPromoImage;
 #else
   return kChromiumPasswordManagerWidgetPromoImage;
@@ -48,7 +48,7 @@ NSString* WidgetPromoImageName() {
 }
 
 NSString* WidgetPromoDisabledImageName() {
-#if BUILDFLAG(IOS_USE_BRANDED_SYMBOLS)
+#if BUILDFLAG(IOS_USE_BRANDED_ASSETS)
   return kGooglePasswordManagerWidgetPromoDisabledImage;
 #else
   return kChromiumPasswordManagerWidgetPromoDisabledImage;
@@ -57,9 +57,14 @@ NSString* WidgetPromoDisabledImageName() {
 
 NSString* const kWidgetPromoID = @"WidgetPromoID";
 
+NSString* const kWidgetTrustedVaultPromoID = @"WidgetTrustedVaultPromoID";
+
 NSString* const kWidgetPromoCloseButtonID = @"WidgetPromoCloseButtonID";
 
 NSString* const kWidgetPromoImageID = @"WidgetPromoImageID";
 
-const char kPasswordManagerWidgetPromoActionHistogram[] =
-    "IOS.PasswordManager.WidgetPromo.Action";
+NSString* const kWidgetTrustedVaultPromoImageID =
+    @"WidgetTrustedVaultPromoImageID";
+
+const char kPasswordManagerPromoWithTrustedVaultKeyRetrievalActionHistogram[] =
+    "IOS.PasswordManager.TrustedVaultKeyRetrievalPromo.Action";

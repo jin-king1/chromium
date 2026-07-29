@@ -2,14 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "remoting/protocol/ice_config.h"
 
 #include <algorithm>
+#include <string_view>
 
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
@@ -30,7 +26,7 @@ namespace {
 const int kDefaultStunTurnPort = 3478;
 const int kDefaultTurnsPort = 5349;
 
-bool ParseLifetime(const std::string& string, base::TimeDelta* result) {
+bool ParseLifetime(std::string_view string, base::TimeDelta* result) {
   double seconds = 0;
   if (!base::EndsWith(string, "s", base::CompareCase::INSENSITIVE_ASCII) ||
       !base::StringToDouble(string.substr(0, string.size() - 1), &seconds)) {
@@ -62,13 +58,13 @@ IceConfig::IceConfig(const IceConfig& other) = default;
 IceConfig::~IceConfig() = default;
 
 // static
-IceConfig IceConfig::Parse(const base::Value::Dict& dictionary) {
-  const base::Value::Dict* data = dictionary.FindDict("data");
+IceConfig IceConfig::Parse(const base::DictValue& dictionary) {
+  const base::DictValue* data = dictionary.FindDict("data");
   if (data) {
     return Parse(*data);
   }
 
-  const base::Value::List* ice_servers_list = dictionary.FindList("iceServers");
+  const base::ListValue* ice_servers_list = dictionary.FindList("iceServers");
   if (!ice_servers_list) {
     return IceConfig();
   }
@@ -92,13 +88,13 @@ IceConfig IceConfig::Parse(const base::Value::Dict& dictionary) {
   bool errors_found = false;
   ice_config.max_bitrate_kbps = 0;
   for (const auto& server : *ice_servers_list) {
-    const base::Value::Dict* server_dict = server.GetIfDict();
+    const base::DictValue* server_dict = server.GetIfDict();
     if (!server_dict) {
       errors_found = true;
       continue;
     }
 
-    const base::Value::List* urls_list = server_dict->FindList("urls");
+    const base::ListValue* urls_list = server_dict->FindList("urls");
     if (!urls_list) {
       errors_found = true;
       continue;
@@ -202,17 +198,17 @@ bool IceConfig::AddStunServer(std::string_view url) {
 bool IceConfig::AddServer(std::string_view url,
                           const std::string& username,
                           const std::string& password) {
-  cricket::ProtocolType turn_transport_type = cricket::PROTO_LAST;
+  webrtc::ProtocolType turn_transport_type = webrtc::PROTO_LAST;
 
   const char kTcpTransportSuffix[] = "?transport=tcp";
   const char kUdpTransportSuffix[] = "?transport=udp";
   if (base::EndsWith(url, kTcpTransportSuffix,
                      base::CompareCase::INSENSITIVE_ASCII)) {
-    turn_transport_type = cricket::PROTO_TCP;
+    turn_transport_type = webrtc::PROTO_TCP;
     url.remove_suffix(strlen(kTcpTransportSuffix));
   } else if (base::EndsWith(url, kUdpTransportSuffix,
                             base::CompareCase::INSENSITIVE_ASCII)) {
-    turn_transport_type = cricket::PROTO_UDP;
+    turn_transport_type = webrtc::PROTO_UDP;
     url.remove_suffix(strlen(kUdpTransportSuffix));
   }
 
@@ -237,8 +233,8 @@ bool IceConfig::AddServer(std::string_view url,
     if (port == -1) {
       port = kDefaultStunTurnPort;
     }
-    if (turn_transport_type == cricket::PROTO_LAST) {
-      turn_transport_type = cricket::PROTO_UDP;
+    if (turn_transport_type == webrtc::PROTO_LAST) {
+      turn_transport_type = webrtc::PROTO_UDP;
     }
     turn_servers.emplace_back(host, port, username, password,
                               turn_transport_type, false);
@@ -246,8 +242,8 @@ bool IceConfig::AddServer(std::string_view url,
     if (port == -1) {
       port = kDefaultTurnsPort;
     }
-    if (turn_transport_type == cricket::PROTO_LAST) {
-      turn_transport_type = cricket::PROTO_TCP;
+    if (turn_transport_type == webrtc::PROTO_LAST) {
+      turn_transport_type = webrtc::PROTO_TCP;
     }
     turn_servers.emplace_back(host, port, username, password,
                               turn_transport_type, true);

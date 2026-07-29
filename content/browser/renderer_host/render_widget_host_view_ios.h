@@ -5,18 +5,22 @@
 #ifndef CONTENT_BROWSER_RENDERER_HOST_RENDER_WIDGET_HOST_VIEW_IOS_H_
 #define CONTENT_BROWSER_RENDERER_HOST_RENDER_WIDGET_HOST_VIEW_IOS_H_
 
-#include "third_party/blink/public/mojom/input/input_handler.mojom-forward.h"
-
+#include <optional>
 #include <string>
 #include <vector>
 
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
+#include "build/ios_buildflags.h"
 #include "components/viz/common/surfaces/surface_id.h"
 #include "content/browser/renderer_host/browser_compositor_ios.h"
 #include "content/browser/renderer_host/render_widget_host_view_base.h"
 #include "content/browser/renderer_host/text_input_manager.h"
 #include "content/common/content_export.h"
+#include "third_party/blink/public/common/page/content_to_visible_time_request.h"
+#include "third_party/blink/public/mojom/input/focus_type.mojom-forward.h"
+#include "third_party/blink/public/mojom/input/input_handler.mojom.h"
 #include "ui/accelerated_widget_mac/ca_layer_frame_sink.h"
 #include "ui/events/gesture_detection/filtered_gesture_provider.h"
 
@@ -77,8 +81,6 @@ class CONTENT_EXPORT RenderWidgetHostViewIOS
   blink::mojom::PointerLockResult LockPointer(bool) override;
   blink::mojom::PointerLockResult ChangePointerLock(bool) override;
   void UnlockPointer() override;
-  void EnsureSurfaceSynchronizedForWebTest() override;
-  uint32_t GetCaptureSequenceNumber() const override;
   void TakeFallbackContentFrom(RenderWidgetHostView* view) override;
   std::unique_ptr<SyntheticGestureTarget> CreateSyntheticGestureTarget()
       override;
@@ -90,6 +92,7 @@ class CONTENT_EXPORT RenderWidgetHostViewIOS
   const viz::FrameSinkId& GetFrameSinkId() const override;
   const viz::LocalSurfaceId& GetLocalSurfaceId() const override;
   viz::SurfaceId GetCurrentSurfaceId() const override;
+  bool HasSavedCompositorFrame() const override;
   void InitAsPopup(RenderWidgetHostView* parent_host_view,
                    const gfx::Rect& pos,
                    const gfx::Rect& anchor_rect) override;
@@ -97,19 +100,23 @@ class CONTENT_EXPORT RenderWidgetHostViewIOS
   void SetIsLoading(bool is_loading) override;
   void RenderProcessGone() override;
   void ShowWithVisibility(PageVisibilityState page_visibility) override;
-  gfx::Rect GetBoundsInRootWindow() override;
+  gfx::Rect GetBoundsInScreen() override;
   gfx::Size GetRequestedRendererSize() override;
+#if !BUILDFLAG(IS_IOS_TVOS)
+  gfx::Size GetVisibleViewportSize() override;
+  gfx::Size GetVisibleViewportSizeDevicePx() override;
+#endif  // !BUILDFLAG(IS_IOS_TVOS)
   std::optional<DisplayFeature> GetDisplayFeature() override;
-  void SetDisplayFeatureForTesting(
+  void DisableDisplayFeatureOverrideForEmulation() override;
+  void OverrideDisplayFeatureForEmulation(
       const DisplayFeature* display_feature) override;
   void UpdateBackgroundColor() override;
   bool HasFallbackSurface() const override;
   void NotifyHostAndDelegateOnWasShown(
-      blink::mojom::RecordContentToVisibleTimeRequestPtr visible_time_request)
-      override;
+      std::optional<blink::RecordContentToVisibleTimeRequest>
+          visible_time_request) override;
   void RequestSuccessfulPresentationTimeFromHostOrDelegate(
-      blink::mojom::RecordContentToVisibleTimeRequestPtr visible_time_request)
-      override;
+      blink::RecordContentToVisibleTimeRequest visible_time_request) override;
   void CancelSuccessfulPresentationTimeRequestForHostAndDelegate() override;
   viz::ScopedSurfaceIdAllocator DidUpdateVisualProperties(
       const cc::RenderFrameMetadata& metadata) override;
@@ -118,13 +125,16 @@ class CONTENT_EXPORT RenderWidgetHostViewIOS
   void DidEnterBackForwardCache() override;
   void ActivatedOrEvictedFromBackForwardCache() override;
   void DidNavigate() override;
-  bool RequestRepaintForTesting() override;
+  bool RequestRepaintOnNewSurface() override;
   void Destroy() override;
   bool IsSurfaceAvailableForCopy() override;
   void CopyFromSurface(
       const gfx::Rect& src_rect,
       const gfx::Size& dst_size,
-      base::OnceCallback<void(const SkBitmap&)> callback) override;
+      base::TimeDelta timeout,
+      base::OnceCallback<void(const content::CopyFromSurfaceResult&)> callback)
+      override;
+  ui::FilteredGestureProvider* GetFilteredGestureProviderForTesting() override;
   ui::Compositor* GetCompositor() override;
   void GestureEventAck(const blink::WebGestureEvent& event,
                        blink::mojom::InputEventResultSource ack_source,
@@ -132,6 +142,7 @@ class CONTENT_EXPORT RenderWidgetHostViewIOS
   void ChildDidAckGestureEvent(
       const blink::WebGestureEvent& event,
       blink::mojom::InputEventResultState ack_result) override;
+  void OnUnconfirmedTapConvertedToTap() override;
   void OnSynchronizedDisplayPropertiesChanged(bool rotation) override;
   gfx::Size GetCompositorViewportPixelSize() override;
 
@@ -159,7 +170,7 @@ class CONTENT_EXPORT RenderWidgetHostViewIOS
       blink::mojom::InputEventResultState ack_result) override;
 
   // ui::CALayerFrameSink overrides:
-  void UpdateCALayerTree(const gfx::CALayerParams& ca_layer_params) override;
+  void UpdateCALayerTree(gfx::CALayerParams ca_layer_params) override;
 
   // ui::GestureProviderClient implementation.
   void OnGestureEvent(const ui::GestureEventData& gesture) override;
@@ -178,6 +189,8 @@ class CONTENT_EXPORT RenderWidgetHostViewIOS
   // RenderFrameMetadataProvider::Observer implementation.
   void OnRenderFrameMetadataChangedBeforeActivation(
       const cc::RenderFrameMetadata& metadata) override;
+  void OnRootScrollOffsetChanged(
+      const gfx::PointF& root_scroll_offset) override;
   void OnRenderFrameMetadataChangedAfterActivation(
       base::TimeTicks activation_time) override {}
   void OnRenderFrameSubmission() override {}
@@ -211,7 +224,27 @@ class CONTENT_EXPORT RenderWidgetHostViewIOS
   bool CanBecomeFirstResponderForTesting() const;
   bool CanResignFirstResponderForTesting() const;
   void ContentInsetChanged();
-  void DeleteSurroundingText(int before, int after);
+#if !BUILDFLAG(IS_IOS_TVOS)
+  void OnKeyboardVisibilityChanged();
+#endif  // !BUILDFLAG(IS_IOS_TVOS)
+  void ExtendSelectionAndDelete(int32_t before, int32_t after);
+  void ExtendSelectionAndReplace(uint32_t before,
+                                 uint32_t after,
+                                 const std::u16string& replacement_text);
+  void ExecuteEditCommand(const std::string& command);
+  void AdvanceFocusForIME(blink::mojom::FocusType focus_type);
+  void SendKeyEvent(const input::NativeWebKeyboardEvent& event);
+  void ForwardKeyboardEventWithCommands(
+      const input::NativeWebKeyboardEvent& key_event,
+      std::vector<blink::mojom::EditCommandPtr> commands);
+
+  void StartAutoscrollForSelectionToPoint(const gfx::PointF& point);
+  void StopAutoscroll();
+
+  void RectForEditFieldChars(
+      const gfx::Range& range,
+      blink::mojom::FrameWidgetInputHandler::RectForEditFieldCharsCallback
+          callback);
 
  private:
   friend class MockPointerLockRenderWidgetHostView;
@@ -229,10 +262,14 @@ class CONTENT_EXPORT RenderWidgetHostViewIOS
   void ApplyRootScrollOffsetChanged(const gfx::PointF& root_scroll_offset,
                                     bool force);
   void UpdateFrameBounds();
+  void ComputeDisplayFeature();
+
+  blink::mojom::FrameWidgetInputHandler*
+  GetFrameWidgetInputHandlerForFocusedWidget();
 
   // Provides gesture synthesis given a stream of touch events and touch event
   // acks. This is for generating gesture events from injected touch events.
-  ui::FilteredGestureProvider gesture_provider_;
+  scoped_refptr<ui::FilteredGestureProvider> gesture_provider_;
   bool is_first_responder_ = false;
   bool is_getting_focus_ = false;
   bool is_visible_ = false;
@@ -248,10 +285,6 @@ class CONTENT_EXPORT RenderWidgetHostViewIOS
   // is locked.
   bool pointer_lock_unadjusted_movement_ = false;
 
-  // Latest capture sequence number which is incremented when the caller
-  // requests surfaces be synchronized via
-  // EnsureSurfaceSynchronizedForWebTest().
-  uint32_t latest_capture_sequence_number_ = 0u;
 
   std::optional<gfx::PointF> last_root_scroll_offset_;
   bool is_scrolling_ = false;
@@ -259,6 +292,12 @@ class CONTENT_EXPORT RenderWidgetHostViewIOS
   // This stores the underlying view bounds. The UIView might change size but
   // we do not change its size during scroll.
   gfx::Rect view_bounds_;
+
+  // Represents a feature of the physical display whose offset and mask_length
+  // are expressed in DIPs relative to the view. See display_feature.h for more
+  // details.
+  std::optional<DisplayFeature> display_feature_;
+  bool display_feature_overridden_for_emulation_ = false;
 
   std::unique_ptr<BrowserCompositorIOS> browser_compositor_;
   std::unique_ptr<UIViewHolder> ui_view_;

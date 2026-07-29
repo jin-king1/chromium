@@ -21,10 +21,7 @@ class CombinedSelectorSheetView : public AuthenticatorRequestSheetView,
   METADATA_HEADER(CombinedSelectorSheetView, AuthenticatorRequestSheetView)
 
  public:
-  static constexpr int kIllustrationHeight = 56;
-  static constexpr int kTopPadding = 8;
-  static constexpr int kMaxRowHeight = 72;
-  static constexpr int kRowGap = 4;
+  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kCombinedSelectorSheetViewId);
 
   explicit CombinedSelectorSheetView(
       std::unique_ptr<CombinedSelectorSheetModel> model);
@@ -37,7 +34,6 @@ class CombinedSelectorSheetView : public AuthenticatorRequestSheetView,
 
  private:
   // AuthenticatorRequestSheetView:
-  std::unique_ptr<views::View> BuildStepSpecificHeader() override;
   std::pair<std::unique_ptr<views::View>, AutoFocus> BuildStepSpecificContent()
       override;
 

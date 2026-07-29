@@ -43,6 +43,7 @@ android_library("java") {
     "//third_party/androidx:androidx_swiperefreshlayout_swiperefreshlayout_java",
     "//third_party/androidx:androidx_vectordrawable_vectordrawable_animated_java",
     "//third_party/jni_zero:jni_zero_java",
+    "//ui/accessibility:ax_base_java",
     "//ui/android:ui_java",
   ]
 
@@ -58,6 +59,8 @@ generate_jni("modaldialog_jni_headers") {
 android_resources("java_resources") {
   sources = [
     "java/res/layout/modal_dialog_container.xml",
+    "java/res/layout/modal_dialog_menu_item_view.xml",
+    "java/res/layout/modal_dialog_paragraph_view.xml",
     "java/res/layout/modal_dialog_title.xml",
     "java/res/layout/modal_dialog_view.xml",
     "java/res/values-large/themes.xml",
@@ -72,6 +75,7 @@ android_resources("java_resources") {
   deps = [
     "//components/browser_ui/styles/android:java_resources",
     "//components/browser_ui/widget/android:java_resources",
+    "//third_party/android_deps:material_design_java",
     "//ui/android:ui_java_resources",
   ]
 }
@@ -85,21 +89,22 @@ android_library("test_support_java") {
     ":java",
     ":java_test_resources",
     "//base:tasks_java",
+    "//base/test:public_transit_java",
     "//content/public/test/android:content_java_test_support",
     "//third_party/android_deps:espresso_java",
     "//third_party/androidx:androidx_annotation_annotation_java",
     "//third_party/hamcrest:hamcrest_java",
-    "//third_party/junit:junit",
+    "//third_party/junit",
     "//ui/android:ui_java_test_support",
     "//ui/android:ui_no_recycler_view_java",
   ]
 
-  resources_package = "org.chromium.components.browser_ui.modaldialog.test"
+  resources_package = "org.chromium.components.browser_ui.modaldialog"
 }
 
 android_library("unit_device_javatests") {
   testonly = true
-  resources_package = "org.chromium.components.browser_ui.modaldialog.test"
+  resources_package = "org.chromium.components.browser_ui.modaldialog"
 
   sources = [
     "java/src/org/chromium/components/browser_ui/modaldialog/AppModalPresenterTest.java",
@@ -118,13 +123,14 @@ android_library("unit_device_javatests") {
     "//components/browser_ui/widget/android:java",
     "//content/public/test/android:content_java_test_support",
     "//third_party/android_deps:espresso_java",
+    "//third_party/android_deps:org_mockito_mockito_core_java",
     "//third_party/androidx:androidx_activity_activity_java",
     "//third_party/androidx:androidx_annotation_annotation_java",
     "//third_party/androidx:androidx_core_core_java",
     "//third_party/androidx:androidx_swiperefreshlayout_swiperefreshlayout_java",
     "//third_party/androidx:androidx_test_runner_java",
     "//third_party/hamcrest:hamcrest_java",
-    "//third_party/junit:junit",
+    "//third_party/junit",
     "//ui/android:ui_java",
     "//ui/android:ui_java_test_support",
   ]
@@ -132,7 +138,7 @@ android_library("unit_device_javatests") {
 
 robolectric_library("junit") {
   testonly = true
-  resources_package = "org.chromium.components.browser_ui.modaldialog.test"
+  resources_package = "org.chromium.components.browser_ui.modaldialog"
   sources = [
     "java/src/org/chromium/components/browser_ui/modaldialog/AppModalPresenterUnitTest.java",
     "java/src/org/chromium/components/browser_ui/modaldialog/ModalDialogViewUnitTest.java",
@@ -146,7 +152,8 @@ robolectric_library("junit") {
     "//base:supplier_java",
     "//third_party/android_deps:org_mockito_mockito_core_java",
     "//third_party/androidx:androidx_core_core_java",
-    "//third_party/junit:junit",
+    "//third_party/junit",
+    "//ui/android:ui_java_test_support",
     "//ui/android:ui_no_recycler_view_java",
   ]
 }

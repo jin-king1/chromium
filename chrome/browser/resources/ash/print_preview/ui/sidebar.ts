@@ -4,6 +4,7 @@
 
 import 'chrome://resources/cr_elements/cr_collapse/cr_collapse.js';
 import 'chrome://resources/cr_elements/cr_hidden_style.css.js';
+import 'chrome://resources/cr_elements/cr_scrollable.css.js';
 import 'chrome://resources/cr_elements/cr_shared_style.css.js';
 import 'chrome://resources/cr_elements/cr_shared_vars.css.js';
 import './advanced_options_settings.js';
@@ -21,28 +22,16 @@ import './more_settings.js';
 import './other_options_settings.js';
 import './pages_per_sheet_settings.js';
 import './pages_settings.js';
-// <if expr="is_chromeos">
 import './pin_settings.js';
-// </if>
 import './print_preview_vars.css.js';
 import './scaling_settings.js';
 import '/strings.m.js';
-// <if expr="not is_chromeos">
-import './link_container.js';
 
-// </if>
-
-import {CrContainerShadowMixin} from 'chrome://resources/cr_elements/cr_container_shadow_mixin.js';
 import {WebUiListenerMixin} from 'chrome://resources/cr_elements/web_ui_listener_mixin.js';
 import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
 import {DarkModeMixin} from '../dark_mode_mixin.js';
-// <if expr="not is_chromeos">
-import type {Destination} from '../data/destination.js';
-// </if>
-// <if expr="is_chromeos">
 import type {Destination} from '../data/destination_cros.js';
-// </if>
 import type {Settings} from '../data/model.js';
 import type {Error} from '../data/state.js';
 import {State} from '../data/state.js';
@@ -63,8 +52,8 @@ export interface PrintPreviewSidebarElement {
   };
 }
 
-const PrintPreviewSidebarElementBase = CrContainerShadowMixin(
-    WebUiListenerMixin(SettingsMixin(DarkModeMixin(PolymerElement))));
+const PrintPreviewSidebarElementBase =
+    WebUiListenerMixin(SettingsMixin(DarkModeMixin(PolymerElement)));
 
 export class PrintPreviewSidebarElement extends PrintPreviewSidebarElementBase {
   static get is() {
@@ -142,12 +131,10 @@ export class PrintPreviewSidebarElement extends PrintPreviewSidebarElementBase {
             'settings.vendorItems.available)',
       },
 
-      // <if expr="is_chromeos">
       isPinValid_: {
         type: Boolean,
         value: true,
       },
-      // </if>
     };
   }
 
@@ -159,14 +146,13 @@ export class PrintPreviewSidebarElement extends PrintPreviewSidebarElementBase {
   pageCount: number;
   state: State;
   private controlsDisabled_: boolean;
+  maxSheets: number;
   private firstLoad_: boolean;
   private isInAppKioskMode_: boolean;
   private settingsExpandedByUser_: boolean;
   private sheetCount_: number;
   private shouldShowMoreSettings_: boolean;
-  // <if expr="is_chromeos">
   private isPinValid_: boolean;
-  // </if>
 
   /**
    * @param defaultPrinter The system default printer ID.
@@ -268,16 +254,8 @@ export class PrintPreviewSidebarElement extends PrintPreviewSidebarElementBase {
     }
   }
 
-  // <if expr="not is_chromeos">
-  /** @return Whether the system dialog link is available. */
-  systemDialogLinkAvailable(): boolean {
-    const linkContainer =
-        this.shadowRoot!.querySelector('print-preview-link-container');
-    return !!linkContainer && linkContainer.systemDialogLinkAvailable();
-  }
-  // </if>
 
-  // <if expr="is_chromeos">
+
   /**
    * Returns true if at least one non-PDF printer destination is shown in the
    * destination dropdown.
@@ -309,7 +287,6 @@ export class PrintPreviewSidebarElement extends PrintPreviewSidebarElementBase {
       allowedManagedPrintOptionsApplied: boolean): boolean {
     return !settingAvailable && !allowedManagedPrintOptionsApplied;
   }
-  // </if>
 }
 
 declare global {

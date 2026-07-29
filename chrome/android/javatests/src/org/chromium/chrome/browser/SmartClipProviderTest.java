@@ -7,7 +7,6 @@ package org.chromium.chrome.browser;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.graphics.Rect;
-import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
@@ -25,6 +24,7 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.DisabledTest;
@@ -34,7 +34,8 @@ import org.chromium.base.test.util.UrlUtils;
 import org.chromium.chrome.browser.app.ChromeActivity;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.browser.test.util.Coordinates;
 import org.chromium.content_public.browser.test.util.DOMUtils;
@@ -46,13 +47,15 @@ import java.util.concurrent.TimeoutException;
 /** Tests for the SmartClipProvider. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
+@Batch(Batch.PER_CLASS)
 public class SmartClipProviderTest implements Handler.Callback {
     // This is a key for meta-data in the package manifest. It should NOT
     // change, as OEMs will use it when they look for the SmartClipProvider
     // interface.
 
     @Rule
-    public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
+    public AutoResetCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.fastAutoResetCtaActivityRule();
 
     private static final String MOUNTAIN = "Mountain";
 
@@ -119,7 +122,7 @@ public class SmartClipProviderTest implements Handler.Callback {
 
     @Before
     public void setUp() throws Exception {
-        mActivityTestRule.startMainActivityWithURL(DATA_URL);
+        mActivityTestRule.startOnWebPage(DATA_URL);
         mActivity = mActivityTestRule.getActivity();
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
@@ -146,11 +149,7 @@ public class SmartClipProviderTest implements Handler.Callback {
 
     @After
     public void tearDown() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR2) {
-            mHandlerThread.quitSafely();
-        } else {
-            mHandlerThread.quit();
-        }
+        mHandlerThread.quitSafely();
     }
 
     // Implements Handler.Callback
@@ -197,12 +196,13 @@ public class SmartClipProviderTest implements Handler.Callback {
         return null;
     }
 
-    // Disable test on tablet since it fails consistently on M tablet. See https://crbug.com/853816
+    // Disable test on tablet since it fails consistently on M tablet. See
+    // https://crbug.com/41395212
     @Restriction(DeviceFormFactor.PHONE)
     @Test
     @MediumTest
     @Feature({"SmartClip"})
-    @DisabledTest(message = "https://crbug.com/853816")
+    @DisabledTest(message = "https://crbug.com/41395212")
     public void testSmartClipDataCallback() throws TimeoutException {
         final float dpi = Coordinates.createFor(mWebContents).getDeviceScaleFactor();
         final Rect bounds = DOMUtils.getNodeBounds(mWebContents, "simple_text");
@@ -252,7 +252,7 @@ public class SmartClipProviderTest implements Handler.Callback {
                     Assert.assertNotNull(scp);
                     try {
                         // Galaxy Note 4 has a bug where it doesn't always set the handler first; in
-                        // that case, we shouldn't crash: http://crbug.com/710147
+                        // that case, we shouldn't crash: http://crbug.com/40514899
                         mExtractSmartClipDataMethod.invoke(scp, 10, 20, 100, 70);
 
                         // Add a wait for a valid callback to make sure we have time to

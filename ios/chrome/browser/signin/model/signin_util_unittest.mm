@@ -6,12 +6,14 @@
 
 #import "base/memory/raw_ptr.h"
 #import "base/run_loop.h"
+#import "base/test/scoped_feature_list.h"
 #import "components/prefs/pref_registry_simple.h"
 #import "components/prefs/testing_pref_service.h"
 #import "google_apis/gaia/core_account_id.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/account_capabilities_fetcher_ios.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service_factory.h"
@@ -31,30 +33,25 @@ class SigninUtilTest : public PlatformTest {
   }
 
   AccountInfo FakeAccountFull() {
-    AccountInfo account;
-    account.account_id = CoreAccountId::FromString("account_id");
-    account.gaia = GaiaId("gaia");
-    account.email = "person@example.org";
-    account.full_name = "Full Name";
-    account.given_name = "Given Name";
-    account.picture_url = "https://example.org/path";
-    return account;
+    return AccountInfo::Builder(GaiaId("gaia"), "person@example.org")
+        .SetAccountId(CoreAccountId::FromString("account_id"))
+        .SetFullName("Full Name")
+        .SetGivenName("Given Name")
+        .SetAvatarUrl("https://example.org/path")
+        .Build();
   }
 
   AccountInfo FakeAccountMinimal() {
-    AccountInfo account;
-    account.gaia = GaiaId("gaia");
-    account.email = "person@example.org";
-    return account;
+    return AccountInfo::Builder(GaiaId("gaia"), "person@example.org").Build();
   }
 
   void ExpectEqualAccountFields(const AccountInfo& a, const AccountInfo& b) {
-    EXPECT_EQ(a.account_id, b.account_id);
-    EXPECT_EQ(a.gaia, b.gaia);
-    EXPECT_EQ(a.email, b.email);
-    EXPECT_EQ(a.full_name, b.full_name);
-    EXPECT_EQ(a.given_name, b.given_name);
-    EXPECT_EQ(a.picture_url, b.picture_url);
+    EXPECT_EQ(a.GetAccountId(), b.GetAccountId());
+    EXPECT_EQ(a.GetGaiaId(), b.GetGaiaId());
+    EXPECT_EQ(a.GetEmail(), b.GetEmail());
+    EXPECT_EQ(a.GetFullName(), b.GetFullName());
+    EXPECT_EQ(a.GetGivenName(), b.GetGivenName());
+    EXPECT_EQ(a.GetAvatarUrl(), b.GetAvatarUrl());
   }
 
   FakeSystemIdentityManager* fake_system_identity_manager() {
@@ -64,9 +61,9 @@ class SigninUtilTest : public PlatformTest {
 
  protected:
   web::WebTaskEnvironment task_environment_;
-  raw_ptr<PrefService> pref_service_;
   std::unique_ptr<TestProfileIOS> profile_;
-  raw_ptr<ChromeAccountManagerService> account_manager_service_;
+  raw_ptr<PrefService> pref_service_ = nullptr;
+  raw_ptr<ChromeAccountManagerService> account_manager_service_ = nullptr;
 };
 
 TEST_F(SigninUtilTest, StoreAndGetPreRestoreIdentityFull) {
@@ -156,4 +153,34 @@ TEST_F(SigninUtilTest, RunSystemCapabilitiesPrefetchMultipleIdentities) {
   EXPECT_TRUE(fake_system_identity_manager()
                   ->GetVisibleCapabilities(identity2)
                   .AreAllCapabilitiesKnown());
+}
+
+TEST_F(SigninUtilTest, GetSizeForIdentityAvatarSize) {
+  // The avatar should be its default size.
+  {
+    base::test::ScopedFeatureList scoped_feature_list;
+    scoped_feature_list.InitAndDisableFeature(kAiAvatarRingIos);
+    EXPECT_EQ(GetSizeForIdentityAvatarSize(IdentityAvatarSize::Large,
+                                           AITierRingSize::kNoRing)
+                  .width,
+              48.0);
+  }
+  // The avatar should be its default size as the ring is around it.
+  {
+    base::test::ScopedFeatureList scoped_feature_list;
+    scoped_feature_list.InitAndEnableFeature(kAiAvatarRingIos);
+    EXPECT_EQ(GetSizeForIdentityAvatarSize(IdentityAvatarSize::Large,
+                                           AITierRingSize::kImageSize)
+                  .width,
+              48.0);
+  }
+  // The avatar should be smaller so that the ring takes the usual avatar size.
+  {
+    base::test::ScopedFeatureList scoped_feature_list;
+    scoped_feature_list.InitAndEnableFeature(kAiAvatarRingIos);
+    EXPECT_EQ(GetSizeForIdentityAvatarSize(IdentityAvatarSize::Large,
+                                           AITierRingSize::kViewSize)
+                  .width,
+              38.0);
+  }
 }

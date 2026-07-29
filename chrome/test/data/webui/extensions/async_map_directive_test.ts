@@ -13,7 +13,7 @@ import {isVisible, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
 suite('AsyncMapDirectiveTest', function() {
   let initialCount: number = 2;
-  let testElement: TestElement;
+  let testElement: TestParentElement;
   class TestChildElement extends CrLitElement {
     static get is() {
       return 'test-child';
@@ -35,15 +35,15 @@ suite('AsyncMapDirectiveTest', function() {
       };
     }
 
-    name: string = '';
-    featureEnabled: boolean = false;
+    accessor name: string = '';
+    accessor featureEnabled: boolean = false;
   }
 
   customElements.define(TestChildElement.is, TestChildElement);
 
-  class TestElement extends CrLitElement {
+  class TestParentElement extends CrLitElement {
     static get is() {
-      return 'test-element';
+      return 'test-parent';
     }
 
     override render() {
@@ -67,7 +67,7 @@ suite('AsyncMapDirectiveTest', function() {
       };
     }
 
-    items: string[] = [
+    accessor items: string[] = [
       'One',
       'Two',
       'Three',
@@ -81,7 +81,7 @@ suite('AsyncMapDirectiveTest', function() {
       'Eleven',
       'Twelve',
     ];
-    featureEnabled: boolean = false;
+    accessor featureEnabled: boolean = false;
     private itemsRendered_: number[] = [];
     private allItemsRendered_: PromiseResolver<number[]> =
         new PromiseResolver<number[]>();
@@ -128,7 +128,7 @@ suite('AsyncMapDirectiveTest', function() {
     }
   }
 
-  customElements.define(TestElement.is, TestElement);
+  customElements.define(TestParentElement.is, TestParentElement);
 
   setup(function() {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
@@ -136,7 +136,7 @@ suite('AsyncMapDirectiveTest', function() {
   });
 
   test('Basic', async () => {
-    testElement = document.createElement('test-element') as TestElement;
+    testElement = document.createElement('test-parent') as TestParentElement;
     document.body.appendChild(testElement);
     const itemsRendered = await testElement.allItemsRendered();
     // Unfortunately MutationObserver does not perfectly fire for every
@@ -151,7 +151,7 @@ suite('AsyncMapDirectiveTest', function() {
 
   test('Different initial count', async () => {
     initialCount = 6;
-    testElement = document.createElement('test-element') as TestElement;
+    testElement = document.createElement('test-parent') as TestParentElement;
     document.body.appendChild(testElement);
 
     const itemsRendered = await testElement.allItemsRendered();
@@ -167,7 +167,7 @@ suite('AsyncMapDirectiveTest', function() {
     // Test a huge initial count and big list.
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     initialCount = 100;
-    testElement = document.createElement('test-element') as TestElement;
+    testElement = document.createElement('test-parent') as TestParentElement;
     const longList = [];
     for (let i = 0; i < 50; i++) {
       longList.push(...testElement.items);
@@ -182,7 +182,7 @@ suite('AsyncMapDirectiveTest', function() {
   test('Modify list', async () => {
     // Verifies the list updates correctly when the test element updates the
     // list.
-    testElement = document.createElement('test-element') as TestElement;
+    testElement = document.createElement('test-parent') as TestParentElement;
     document.body.appendChild(testElement);
 
     await testElement.allItemsRendered();
@@ -231,7 +231,7 @@ suite('AsyncMapDirectiveTest', function() {
   test('Modify different property', async () => {
     // Verifies the list updates correctly when the test element updates the
     // list.
-    testElement = document.createElement('test-element') as TestElement;
+    testElement = document.createElement('test-parent') as TestParentElement;
     document.body.appendChild(testElement);
 
     await testElement.allItemsRendered();
@@ -262,7 +262,7 @@ suite('AsyncMapDirectiveTest', function() {
   });
 
   test('Remove element', async () => {
-    testElement = document.createElement('test-element') as TestElement;
+    testElement = document.createElement('test-parent') as TestParentElement;
     document.body.appendChild(testElement);
 
     // Verify removing and re-attaching the element works.

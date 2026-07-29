@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ash/app_restore/arc_ghost_window_delegate.h"
 
+#include "base/notimplemented.h"
 #include "base/notreached.h"
 #include "chrome/browser/ash/app_restore/arc_ghost_window_shell_surface.h"
 #include "chrome/browser/ash/app_restore/arc_window_utils.h"
@@ -55,7 +56,7 @@ void ArcGhostWindowDelegate::OnStateChanged(
     return;
 
   display::Display display;
-  const display::Screen* screen = display::Screen::GetScreen();
+  const display::Screen* screen = display::Screen::Get();
   auto display_existed = screen->GetDisplayWithDisplayId(display_id_, &display);
   DCHECK(display_existed);
 
@@ -101,7 +102,7 @@ void ArcGhostWindowDelegate::OnBoundsChanged(
     return;
 
   display::Display target_display;
-  const display::Screen* screen = display::Screen::GetScreen();
+  const display::Screen* screen = display::Screen::Get();
 
   if (!screen->GetDisplayWithDisplayId(display_id, &target_display))
     return;
@@ -179,6 +180,7 @@ bool ArcGhostWindowDelegate::SetDisplayId(int64_t display_id) {
   std::optional<double> scale_factor = GetDisplayScaleFactor(display_id);
   if (!scale_factor.has_value()) {
     LOG(ERROR) << "Invalid display id for ARC Ghost Window";
+    display_id_ = display::kInvalidDisplayId;
     scale_factor_ = 1.;
     return false;
   }

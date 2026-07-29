@@ -19,8 +19,9 @@
 #include "base/time/time.h"
 #include "base/version.h"
 #include "components/certificate_transparency/ct_known_logs.h"
-#include "crypto/rsa_private_key.h"
-#include "crypto/sha2.h"
+#include "crypto/hash.h"
+#include "crypto/keypair.h"
+#include "crypto/test_support.h"
 #include "net/cert/ct_policy_status.h"
 #include "net/cert/x509_certificate.h"
 #include "net/cert/x509_util.h"
@@ -46,7 +47,7 @@ namespace {
 const char kTestLogID[] =
     "\x68\xf6\x98\xf8\x1f\x64\x82\xbe\x3a\x8c\xee\xb9\x28\x1d\x4c\xfc\x71\x51"
     "\x5d\x67\x93\xd4\x44\xd1\x0a\x67\xac\xbb\x4f\x4f\xfb\xc4";
-static_assert(std::size(kTestLogID) - 1 == crypto::kSHA256Length,
+static_assert(std::size(kTestLogID) - 1 == crypto::hash::kSha256Size,
               "Incorrect log ID length.");
 
 // A Static CT API extension that encodes a leaf index with value 42:
@@ -77,8 +78,8 @@ class ChromeCTPolicyEnforcerTest : public ::testing::Test {
     chain_ =
         X509Certificate::CreateFromBytes(base::as_byte_span(der_test_cert));
     ASSERT_TRUE(chain_.get());
-    test_log_id_ = std::string(kTestLogID, crypto::kSHA256Length);
-    another_log_id_.assign(crypto::kSHA256Length, 1);
+    test_log_id_ = std::string(kTestLogID, crypto::hash::kSha256Size);
+    another_log_id_.assign(crypto::hash::kSha256Size, 1);
   }
 
   scoped_refptr<ChromeCTPolicyEnforcer> MakeChromeCTPolicyEnforcer(
@@ -86,16 +87,16 @@ class ChromeCTPolicyEnforcerTest : public ::testing::Test {
       std::map<std::string, LogInfo> log_info) {
     return base::MakeRefCounted<ChromeCTPolicyEnforcer>(
         test_now_, std::move(disqualified_logs), std::move(log_info),
-        /*enable_static_ct_api_enforcement=*/true);
+        /*enforce_one_rfc6962_ct_policy=*/true);
   }
 
   scoped_refptr<ChromeCTPolicyEnforcer> MakeChromeCTPolicyEnforcer(
       std::vector<std::pair<std::string, base::Time>> disqualified_logs,
       std::map<std::string, LogInfo> log_info,
-      bool enable_static_ct_api_enforcement) {
+      bool enforce_one_rfc6962_ct_policy) {
     return base::MakeRefCounted<ChromeCTPolicyEnforcer>(
         test_now_, std::move(disqualified_logs), std::move(log_info),
-        enable_static_ct_api_enforcement);
+        enforce_one_rfc6962_ct_policy);
   }
 
   void FillListWithSCTsOfOrigin(
@@ -110,7 +111,8 @@ class ChromeCTPolicyEnforcerTest : public ::testing::Test {
       if (i < desired_log_keys.size())
         sct->log_id = desired_log_keys[i];
       else
-        sct->log_id = std::string(crypto::kSHA256Length, static_cast<char>(i));
+        sct->log_id =
+            std::string(crypto::hash::kSha256Size, static_cast<char>(i));
 
       EXPECT_TRUE(base::Time::FromUTCExploded({2022, 4, 0, 15, 0, 0, 0, 0},
                                               &sct->timestamp));
@@ -127,7 +129,7 @@ class ChromeCTPolicyEnforcerTest : public ::testing::Test {
     static const char kTestRetiredLogID[] =
         "\xcd\xb5\x17\x9b\x7f\xc1\xc0\x46\xfe\xea\x31\x13\x6a\x3f\x8f\x00\x2e"
         "\x61\x82\xfa\xf8\x89\x6f\xec\xc8\xb2\xf5\xb5\xab\x60\x49\x00";
-    static_assert(std::size(kTestRetiredLogID) - 1 == crypto::kSHA256Length,
+    static_assert(std::size(kTestRetiredLogID) - 1 == crypto::hash::kSha256Size,
                   "Incorrect log ID length.");
     base::Time retirement_time;
     ASSERT_TRUE(base::Time::FromUTCExploded({2022, 4, 0, 16, 0, 0, 0, 0},
@@ -139,7 +141,7 @@ class ChromeCTPolicyEnforcerTest : public ::testing::Test {
     scoped_refptr<SignedCertificateTimestamp> sct(
         new SignedCertificateTimestamp());
     sct->origin = desired_origin;
-    sct->log_id = std::string(kTestRetiredLogID, crypto::kSHA256Length);
+    sct->log_id = std::string(kTestRetiredLogID, crypto::hash::kSha256Size);
     if (timestamp_after_disqualification_date) {
       sct->timestamp = retirement_time + base::Hours(1);
     } else {
@@ -555,7 +557,7 @@ TEST_F(ChromeCTPolicyEnforcerTest,
   disqualified_logs.emplace_back(test_log_id_, retirement_time);
   for (size_t i = 1; i < 5; ++i) {
     disqualified_logs.emplace_back(
-        std::string(crypto::kSHA256Length, static_cast<char>(i)),
+        std::string(crypto::hash::kSha256Size, static_cast<char>(i)),
         retirement_time);
   }
   std::sort(std::begin(disqualified_logs), std::end(disqualified_logs));
@@ -584,7 +586,7 @@ TEST_F(ChromeCTPolicyEnforcerTest,
   disqualified_logs.emplace_back(test_log_id_, retirement_time);
   for (size_t i = 1; i < 5; ++i) {
     disqualified_logs.emplace_back(
-        std::string(crypto::kSHA256Length, static_cast<char>(i)),
+        std::string(crypto::hash::kSha256Size, static_cast<char>(i)),
         retirement_time);
   }
   std::sort(std::begin(disqualified_logs), std::end(disqualified_logs));
@@ -601,10 +603,6 @@ TEST_F(ChromeCTPolicyEnforcerTest,
 }
 
 TEST_F(ChromeCTPolicyEnforcerTest, UpdatedSCTRequirements) {
-  std::unique_ptr<crypto::RSAPrivateKey> private_key(
-      crypto::RSAPrivateKey::Create(1024));
-  ASSERT_TRUE(private_key);
-
   // Test multiple validity periods
   base::Time time_2015_3_0_25_11_25_0_0 =
       CreateTime({2015, 3, 0, 25, 11, 25, 0, 0});
@@ -648,8 +646,9 @@ TEST_F(ChromeCTPolicyEnforcerTest, UpdatedSCTRequirements) {
     // Create a self-signed certificate with exactly the validity period.
     std::string cert_data;
     ASSERT_TRUE(net::x509_util::CreateSelfSignedCert(
-        private_key->key(), net::x509_util::DIGEST_SHA256, "CN=test",
-        i * 10 + scts_required, validity_start, validity_end, {}, &cert_data));
+        crypto::test::FixedRsa2048PrivateKeyForTesting().key(),
+        net::x509_util::DIGEST_SHA256, "CN=test", i * 10 + scts_required,
+        validity_start, validity_end, {}, &cert_data));
     scoped_refptr<X509Certificate> cert(
         X509Certificate::CreateFromBytes(base::as_byte_span(cert_data)));
     ASSERT_TRUE(cert);
@@ -838,52 +837,54 @@ std::string GetLogTypeName(network::mojom::CTLogInfo::LogType log_type) {
 }
 
 TEST_F(ChromeCTPolicyEnforcerTest, DoesNotConformToCTPolicyNoRFC6962Log) {
+  // NOTE: The certificate used in this test requires 3 SCTs to conform to our
+  // policy (i.e. has a lifetime >180 days).
   struct TestCase {
     std::string const name;
     network::mojom::CTLogInfo::LogType log_type;
-    bool enable_static_ct_api_enforcement;
+    bool enforce_one_rfc6962_ct_policy;
     size_t sct_count;
     CTPolicyCompliance result;
   } kTestCases[] = {
       // Tests with Static CT API log types:
-      {"Not enough SCTs with StaticCT API Policy disabled",
+      {"Not enough SCTs with one-6962-log policy disabled",
        network::mojom::CTLogInfo::LogType::kStaticCTAPI,
-       /*enable_static_ct_api_enforcement=*/false, 2,
+       /*enforce_one_rfc6962_ct_policy=*/false, 2,
        CTPolicyCompliance::CT_POLICY_NOT_ENOUGH_SCTS},
-      {"Enough SCTs with StaticCT API Policy disabled",
+      {"Enough SCTs with one-6962-log policy disabled",
        network::mojom::CTLogInfo::LogType::kStaticCTAPI,
-       /*enable_static_ct_api_enforcement=*/false, 3,
+       /*enforce_one_rfc6962_ct_policy=*/false, 3,
        CTPolicyCompliance::CT_POLICY_COMPLIES_VIA_SCTS},
-      {"Not enough SCTs with Static CT API Policy enabled",
+      {"Not enough SCTs with one-6962-log policy enabled",
        network::mojom::CTLogInfo::LogType::kStaticCTAPI,
-       /*enable_static_ct_api_enforcement=*/true, 2,
+       /*enforce_one_rfc6962_ct_policy=*/true, 2,
        // TODO(crbug.com/370724580): Reconsider this, might also return
        // CT_POLICY_NOT_ENOUGH_SCTS.
        CTPolicyCompliance::CT_POLICY_NOT_DIVERSE_SCTS},
-      {"Enough SCTs with Static CT API Policy Enabled",
+      {"Enough SCTs with one-6962-log policy enabled",
        network::mojom::CTLogInfo::LogType::kStaticCTAPI,
-       /*enable_static_ct_api_enforcement=*/true, 3,
+       /*enforce_one_rfc6962_ct_policy=*/true, 3,
        CTPolicyCompliance::CT_POLICY_NOT_DIVERSE_SCTS},
 
       // Same tests as above, but with unspecified log types. These should be
       // treated as RFC6962 logs for now.
       // TODO(crbug.com/370724580): Disallow kUnspecified once all logs in the
       // hardcoded and component updater protos have proper log types.
-      {"Not enough SCTs with StaticCT API Policy disabled",
+      {"Not enough SCTs with one-6962-log policy disabled",
        network::mojom::CTLogInfo::LogType::kUnspecified,
-       /*enable_static_ct_api_enforcement=*/false, 2,
+       /*enforce_one_rfc6962_ct_policy=*/false, 2,
        CTPolicyCompliance::CT_POLICY_NOT_ENOUGH_SCTS},
-      {"Enough SCTs with StaticCT API Policy disabled",
+      {"Enough SCTs with one-6962-log policy disabled",
        network::mojom::CTLogInfo::LogType::kUnspecified,
-       /*enable_static_ct_api_enforcement=*/false, 3,
+       /*enforce_one_rfc6962_ct_policy=*/false, 3,
        CTPolicyCompliance::CT_POLICY_COMPLIES_VIA_SCTS},
-      {"Not enough SCTs with Static CT API Policy enabled",
+      {"Not enough SCTs with one-6962-log policy enabled",
        network::mojom::CTLogInfo::LogType::kUnspecified,
-       /*enable_static_ct_api_enforcement=*/true, 2,
+       /*enforce_one_rfc6962_ct_policy=*/true, 2,
        CTPolicyCompliance::CT_POLICY_NOT_ENOUGH_SCTS},
-      {"Enough SCTs with Static CT API Policy Enabled",
+      {"Enough SCTs with one-6962-log policy enabled",
        network::mojom::CTLogInfo::LogType::kUnspecified,
-       /*enable_static_ct_api_enforcement=*/true, 3,
+       /*enforce_one_rfc6962_ct_policy=*/true, 3,
        CTPolicyCompliance::CT_POLICY_COMPLIES_VIA_SCTS},
   };
 
@@ -906,7 +907,7 @@ TEST_F(ChromeCTPolicyEnforcerTest, DoesNotConformToCTPolicyNoRFC6962Log) {
 
     scoped_refptr<ChromeCTPolicyEnforcer> policy_enforcer =
         MakeChromeCTPolicyEnforcer(GetDisqualifiedLogs(), log_info,
-                                   tc.enable_static_ct_api_enforcement);
+                                   tc.enforce_one_rfc6962_ct_policy);
 
     EXPECT_EQ(tc.result,
               policy_enforcer->CheckCompliance(
@@ -935,25 +936,18 @@ TEST_F(ChromeCTPolicyEnforcerTest, StaticCTAPILeafIndex) {
   const struct TestCase {
     std::string name;
     const std::vector<SctInfo> sct_infos;
-    // Expected result with Static CT API policy enforcement disabled:
-    const CTPolicyCompliance result_without_enforcement;
-    // Expected result with Static CT API policy enforcement enabled:
-    const CTPolicyCompliance result_with_enforcement;
+    // Expected result regardless of one-6962-log policy enforcement.
+    const CTPolicyCompliance result;
   } kTestCases[] = {
-      {"Need at least 3 SCTs for longer lived certs regardless of whether "
-       "Static-CT-API policy enforcement is enabled",
+      {"Need at least 3 SCTs for longer lived certs",
        {
            SctInfo{network::mojom::CTLogInfo::LogType::kRFC6962, ""},
            SctInfo{network::mojom::CTLogInfo::LogType::kStaticCTAPI,
                    extension_with_leaf_index},
        },
-       /*result_without_enforcement=*/
-       CTPolicyCompliance::CT_POLICY_NOT_ENOUGH_SCTS,
-       /*result_with_enforcement=*/
        CTPolicyCompliance::CT_POLICY_NOT_ENOUGH_SCTS},
 
-      {"Leaf indexes for non-static-CT-API logs should be ignored when Static "
-       "CT policy is enforced",
+      {"Leaf indexes for non-static-CT-API logs should be ignored",
        {
            SctInfo{network::mojom::CTLogInfo::LogType::kRFC6962, ""},
            SctInfo{network::mojom::CTLogInfo::LogType::kRFC6962,
@@ -961,25 +955,17 @@ TEST_F(ChromeCTPolicyEnforcerTest, StaticCTAPILeafIndex) {
            SctInfo{network::mojom::CTLogInfo::LogType::kRFC6962,
                    extension_without_leaf_index},
        },
-       /*result_without_enforcement=*/
-       CTPolicyCompliance::CT_POLICY_COMPLIES_VIA_SCTS,
-       /*result_with_enforcement=*/
        CTPolicyCompliance::CT_POLICY_COMPLIES_VIA_SCTS},
 
-      {"Static-CT-API logs without leaf indexes should be ignored "
-       "when Static-CT-API policy is enforced",
+      {"Static-CT-API logs without leaf indexes should be ignored",
        {
            SctInfo{network::mojom::CTLogInfo::LogType::kRFC6962, ""},
            SctInfo{network::mojom::CTLogInfo::LogType::kStaticCTAPI, ""},
            SctInfo{network::mojom::CTLogInfo::LogType::kStaticCTAPI, ""},
        },
-       /*result_without_enforcement=*/
-       CTPolicyCompliance::CT_POLICY_COMPLIES_VIA_SCTS,
-       /*result_with_enforcement=*/
        CTPolicyCompliance::CT_POLICY_NOT_DIVERSE_SCTS},
 
-      {"Static-CT-API logs without valid extensions should be ignored "
-       "when Static-CT-API policy is enforced",
+      {"Static-CT-API logs without valid extensions should be ignored",
        {
            SctInfo{network::mojom::CTLogInfo::LogType::kRFC6962, ""},
            SctInfo{network::mojom::CTLogInfo::LogType::kStaticCTAPI,
@@ -987,13 +973,10 @@ TEST_F(ChromeCTPolicyEnforcerTest, StaticCTAPILeafIndex) {
            SctInfo{network::mojom::CTLogInfo::LogType::kStaticCTAPI,
                    "anotherone"},
        },
-       /*result_without_enforcement=*/
-       CTPolicyCompliance::CT_POLICY_COMPLIES_VIA_SCTS,
-       /*result_with_enforcement=*/
        CTPolicyCompliance::CT_POLICY_NOT_DIVERSE_SCTS},
 
       {"Static-CT-API logs with valid extensions without leaf indexes should "
-       "be ignored when Static CT API policy is enforced",
+       "be ignored",
        {
            SctInfo{network::mojom::CTLogInfo::LogType::kRFC6962, ""},
            SctInfo{network::mojom::CTLogInfo::LogType::kStaticCTAPI,
@@ -1001,13 +984,10 @@ TEST_F(ChromeCTPolicyEnforcerTest, StaticCTAPILeafIndex) {
            SctInfo{network::mojom::CTLogInfo::LogType::kStaticCTAPI,
                    extension_without_leaf_index},
        },
-       /*result_without_enforcement=*/
-       CTPolicyCompliance::CT_POLICY_COMPLIES_VIA_SCTS,
-       /*result_with_enforcement=*/
        CTPolicyCompliance::CT_POLICY_NOT_ENOUGH_SCTS},
 
       {"Static-CT-API logs with valid extensions with multiple leaf indexes "
-       "should be ignored when Static CT API policy is enforced",
+       "should be ignored",
        {
            SctInfo{network::mojom::CTLogInfo::LogType::kRFC6962, ""},
            SctInfo{network::mojom::CTLogInfo::LogType::kStaticCTAPI,
@@ -1015,9 +995,6 @@ TEST_F(ChromeCTPolicyEnforcerTest, StaticCTAPILeafIndex) {
            SctInfo{network::mojom::CTLogInfo::LogType::kStaticCTAPI,
                    extension_with_multiple_leaf_indexes},
        },
-       /*result_without_enforcement=*/
-       CTPolicyCompliance::CT_POLICY_COMPLIES_VIA_SCTS,
-       /*result_with_enforcement=*/
        CTPolicyCompliance::CT_POLICY_NOT_ENOUGH_SCTS},
 
       {"Valid case with valid leaf index extension",
@@ -1028,9 +1005,6 @@ TEST_F(ChromeCTPolicyEnforcerTest, StaticCTAPILeafIndex) {
            SctInfo{network::mojom::CTLogInfo::LogType::kStaticCTAPI,
                    extension_with_leaf_index},
        },
-       /*result_without_enforcement=*/
-       CTPolicyCompliance::CT_POLICY_COMPLIES_VIA_SCTS,
-       /*result_with_enforcement=*/
        CTPolicyCompliance::CT_POLICY_COMPLIES_VIA_SCTS},
 
       {"Valid case with valid leaf index extension where the leaf index "
@@ -1042,9 +1016,6 @@ TEST_F(ChromeCTPolicyEnforcerTest, StaticCTAPILeafIndex) {
            SctInfo{network::mojom::CTLogInfo::LogType::kStaticCTAPI,
                    extension_with_leaf_index2},
        },
-       /*result_without_enforcement=*/
-       CTPolicyCompliance::CT_POLICY_COMPLIES_VIA_SCTS,
-       /*result_with_enforcement=*/
        CTPolicyCompliance::CT_POLICY_COMPLIES_VIA_SCTS},
   };
 
@@ -1064,22 +1035,21 @@ TEST_F(ChromeCTPolicyEnforcerTest, StaticCTAPILeafIndex) {
       log_info[scts[i]->log_id].log_type = test_case.sct_infos[i].log_type;
     }
 
-    // Check with Static CT API policy disabled.
+    // Check with one-6962-log CT policy disabled.
     scoped_refptr<ChromeCTPolicyEnforcer>
         policy_enforcer_without_staticct_enforcement =
-            MakeChromeCTPolicyEnforcer(
-                GetDisqualifiedLogs(), log_info,
-                /*enable_static_ct_api_enforcement=*/false);
-    EXPECT_EQ(test_case.result_without_enforcement,
+            MakeChromeCTPolicyEnforcer(GetDisqualifiedLogs(), log_info,
+                                       /*enforce_one_rfc6962_ct_policy=*/false);
+    EXPECT_EQ(test_case.result,
               policy_enforcer_without_staticct_enforcement->CheckCompliance(
                   chain_.get(), scts, base::Time::Now(), NetLogWithSource()));
 
-    // Check again with Static CT API policy enabled.
+    // Check again with one-6962-log CT policy enabled.
     scoped_refptr<ChromeCTPolicyEnforcer>
-        policy_enforcer_with_staticct_enforcement = MakeChromeCTPolicyEnforcer(
-            GetDisqualifiedLogs(), log_info,
-            /*enable_static_ct_api_enforcement=*/true);
-    EXPECT_EQ(test_case.result_with_enforcement,
+        policy_enforcer_with_staticct_enforcement =
+            MakeChromeCTPolicyEnforcer(GetDisqualifiedLogs(), log_info,
+                                       /*enforce_one_rfc6962_ct_policy=*/true);
+    EXPECT_EQ(test_case.result,
               policy_enforcer_with_staticct_enforcement->CheckCompliance(
                   chain_.get(), scts, base::Time::Now(), NetLogWithSource()));
   }

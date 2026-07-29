@@ -8,6 +8,7 @@
 #include <string_view>
 
 #include "base/base64.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/run_loop.h"
 #include "base/test/bind.h"
@@ -22,6 +23,7 @@
 #include "url/gurl.h"
 
 namespace metrics {
+namespace {
 
 class NetMetricsLogUploaderTest : public testing::Test {
  public:
@@ -208,4 +210,5 @@ TEST_F(NetMetricsLogUploaderTest, MessageOverHTTPLocalhostIsNotEncrypted) {
   EXPECT_EQ(last_upload_data(), "dummy_data");
 }
 
+}  // namespace
 }  // namespace metrics

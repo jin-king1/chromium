@@ -12,13 +12,15 @@
 #include "chrome/browser/apps/link_capturing/link_capturing_feature_test_support.h"
 #include "chrome/browser/favicon/favicon_utils.h"
 #include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/intent_picker_tab_helper.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/test/test_browser_dialog.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
 #include "chrome/browser/ui/views/intent_picker_bubble_view.h"
-#include "chrome/browser/ui/views/location_bar/intent_chip_button.h"
+#include "chrome/browser/ui/views/location_bar/intent_chip_button_test_base.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
 #include "chrome/browser/ui/views/page_action/page_action_icon_view.h"
 #include "content/public/test/browser_test.h"
@@ -53,23 +55,23 @@ class IntentPickerDialogTest : public DialogBrowserTest {
     add_entry("c");
     add_entry("d");
     IntentPickerBubbleView::ShowBubble(
-        BrowserView::GetBrowserViewForBrowser(browser())->GetLocationBarView(),
-        GetAnchorButton(), IntentPickerBubbleView::BubbleType::kLinkCapturing,
+        views::BubbleAnchor(BrowserView::GetBrowserViewForBrowser(browser())
+                                ->GetLocationBarView()),
+        GetHighlightElement(),
+        IntentPickerBubbleView::BubbleType::kLinkCapturing,
         browser()->tab_strip_model()->GetActiveWebContents(),
         std::move(app_info), true, true,
         url::Origin::Create(GURL("https://c.com")), base::DoNothing());
   }
 
  private:
-  virtual views::Button* GetAnchorButton() {
-    return BrowserView::GetBrowserViewForBrowser(browser())
-        ->toolbar_button_provider()
-        ->GetPageActionIconView(PageActionIconType::kIntentPicker);
+  virtual ui::ElementIdentifier GetHighlightElement() {
+    return kIntentPickerPageActionElementId;
   }
 };
 
 #if BUILDFLAG(IS_MAC)
-// Flaky on Mac. See https://crbug.com/1330302.
+// Flaky on Mac. See https://crbug.com/40227125.
 #define MAYBE_InvokeUi_default DISABLED_InvokeUi_default
 #else
 #define MAYBE_InvokeUi_default InvokeUi_default
@@ -82,11 +84,16 @@ IN_PROC_BROWSER_TEST_F(IntentPickerDialogTest, MAYBE_InvokeUi_default) {
 class IntentPickerDialogGridViewTest
     : public IntentPickerDialogTest,
       public testing::WithParamInterface<
-          apps::test::LinkCapturingFeatureVersion> {
+          apps::test::LinkCapturingFeatureVersion>,
+      public IntentChipButtonTestBase {
  public:
   IntentPickerDialogGridViewTest() {
-    feature_list_.InitWithFeaturesAndParameters(
-        apps::test::GetFeaturesToEnableLinkCapturingUX(GetParam()), {});
+    std::vector<base::test::FeatureRefAndParams> features_to_enable =
+        apps::test::GetFeaturesToEnableLinkCapturingUX(GetParam());
+
+    features_to_enable.push_back({::features::kPageActionsMigration, {}});
+
+    feature_list_.InitWithFeaturesAndParameters(features_to_enable, {});
   }
 
   void ShowUi(const std::string& name) override {
@@ -103,14 +110,7 @@ class IntentPickerDialogGridViewTest
     event_generator.MoveMouseTo(button->GetBoundsInScreen().CenterPoint());
     event_generator.ClickLeftButton();
   }
-
  private:
-  views::Button* GetAnchorButton() override {
-    return BrowserView::GetBrowserViewForBrowser(browser())
-        ->toolbar_button_provider()
-        ->GetIntentChipButton();
-  }
-
   base::test::ScopedFeatureList feature_list_;
 };
 
@@ -122,13 +122,9 @@ IN_PROC_BROWSER_TEST_P(IntentPickerDialogGridViewTest, InvokeUi_default) {
 INSTANTIATE_TEST_SUITE_P(
     ,
     IntentPickerDialogGridViewTest,
-#if BUILDFLAG(IS_CHROMEOS)
-    testing::Values(apps::test::LinkCapturingFeatureVersion::kV1DefaultOff,
-                    apps::test::LinkCapturingFeatureVersion::kV2DefaultOff)
-#else
-    testing::Values(apps::test::LinkCapturingFeatureVersion::kV2DefaultOn,
-                    apps::test::LinkCapturingFeatureVersion::kV2DefaultOff)
-#endif  // BUILDFLAG(IS_CHROMEOS)
-        ,
+    testing::Values(apps::test::LinkCapturingFeatureVersion::kV2DefaultOff,
+                    apps::test::LinkCapturingFeatureVersion::kV2DefaultOn),
     [](const testing::TestParamInfo<apps::test::LinkCapturingFeatureVersion>&
-           info) { return apps::test::ToString(info.param); });
+           info) {
+      return IntentChipButtonTestBase::GenerateIntentChipTestName(info);
+    });

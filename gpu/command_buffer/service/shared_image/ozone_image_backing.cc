@@ -5,19 +5,21 @@
 #include "gpu/command_buffer/service/shared_image/ozone_image_backing.h"
 
 #include <dawn/webgpu.h>
+#include <unistd.h>
 
 #include <memory>
 #include <utility>
 
-#include "base/containers/contains.h"
 #include "base/debug/crash_logging.h"
 #include "base/logging.h"
 #include "base/memory/scoped_refptr.h"
-#include "base/not_fatal_until.h"
+#include "base/notimplemented.h"
 #include "base/numerics/checked_math.h"
 #include "build/build_config.h"
 #include "components/viz/common/gpu/vulkan_context_provider.h"
+#include "components/viz/common/resources/shared_image_format_utils.h"
 #include "gpu/command_buffer/common/mailbox.h"
+#include "gpu/command_buffer/common/shared_image_info.h"
 #include "gpu/command_buffer/common/shared_image_usage.h"
 #include "gpu/command_buffer/service/memory_tracking.h"
 #include "gpu/command_buffer/service/shared_context_state.h"
@@ -30,9 +32,9 @@
 #include "gpu/command_buffer/service/shared_memory_region_wrapper.h"
 #include "gpu/command_buffer/service/skia_utils.h"
 #include "gpu/config/gpu_finch_features.h"
+#include "third_party/skia/include/core/SkColorSpace.h"
 #include "third_party/skia/include/gpu/ganesh/GrBackendSemaphore.h"
 #include "third_party/skia/include/private/chromium/GrPromiseImageTexture.h"
-#include "ui/gfx/buffer_format_util.h"
 #include "ui/gfx/buffer_types.h"
 #include "ui/gfx/color_space.h"
 #include "ui/gfx/geometry/rect.h"
@@ -40,7 +42,6 @@
 #include "ui/gfx/gpu_fence.h"
 #include "ui/gfx/gpu_fence_handle.h"
 #include "ui/gfx/native_pixmap.h"
-#include "ui/gfx/native_widget_types.h"
 #include "ui/gl/buildflags.h"
 #include "ui/gl/scoped_make_current_unsafe.h"
 
@@ -53,9 +54,11 @@
 
 #if BUILDFLAG(USE_DAWN)
 #include "gpu/command_buffer/service/dawn_context_provider.h"
+#include "gpu/command_buffer/service/graphite_utils.h"
 #include "gpu/command_buffer/service/shared_image/dawn_ozone_image_representation.h"
 #include "gpu/command_buffer/service/shared_image/skia_graphite_dawn_image_representation.h"
 #include "third_party/skia/include/gpu/graphite/Context.h"
+#include "third_party/skia/include/gpu/graphite/Image.h"
 #include "third_party/skia/include/gpu/graphite/Recorder.h"
 #endif  // BUILDFLAG(USE_DAWN)
 
@@ -63,8 +66,8 @@ namespace gpu {
 namespace {
 
 size_t GetPixmapSizeInBytes(const gfx::NativePixmap& pixmap) {
-  return gfx::BufferSizeForBufferFormat(pixmap.GetBufferSize(),
-                                        pixmap.GetBufferFormat());
+  return pixmap.GetSharedImageFormat().EstimatedSizeInBytes(
+      pixmap.GetBufferSize());
 }
 
 bool IsExoTexture(std::string_view label) {
@@ -128,26 +131,22 @@ bool OzoneImageBacking::IsImportedFromExo() {
 }
 
 gfx::GpuMemoryBufferHandle OzoneImageBacking::GetGpuMemoryBufferHandle() {
-  gfx::GpuMemoryBufferHandle handle;
-  handle.type = gfx::GpuMemoryBufferType::NATIVE_PIXMAP;
-  handle.native_pixmap_handle = pixmap_->ExportHandle();
-  return handle;
+  return gfx::GpuMemoryBufferHandle(pixmap_->ExportHandle());
 }
 
 gfx::GpuMemoryBufferHandle
 OzoneImageBacking::GetSinglePlaneGpuMemoryBufferHandle(uint32_t index) {
-  gfx::GpuMemoryBufferHandle gmb_handle = GetGpuMemoryBufferHandle();
+  gfx::NativePixmapHandle native_pixmap_handle = pixmap_->ExportHandle();
 #if BUILDFLAG(IS_FUCHSIA)
   NOTREACHED() << "Cannot get single plane from GPU memory buffer";
 #else
-  DCHECK(gmb_handle.native_pixmap_handle.modifier == 0);
-  auto& planes = gmb_handle.native_pixmap_handle.planes;
+  DCHECK(native_pixmap_handle.modifier == 0);
+  auto& planes = native_pixmap_handle.planes;
   CHECK(!planes.empty());
   DCHECK(index < planes.size());
-  gfx::NativePixmapPlane plane = std::move(planes[index]);
-  planes.clear();
-  planes.push_back(std::move(plane));
-  return gmb_handle;
+  planes[0] = std::move(planes[index]);
+  planes.resize(1);
+  return gfx::GpuMemoryBufferHandle(std::move(native_pixmap_handle));
 #endif  // BUILDFLAG(IS_FUCHSIA)
 }
 
@@ -399,33 +398,22 @@ std::unique_ptr<OverlayImageRepresentation> OzoneImageBacking::ProduceOverlay(
 
 OzoneImageBacking::OzoneImageBacking(
     const Mailbox& mailbox,
-    viz::SharedImageFormat format,
-    const gfx::Size& size,
-    const gfx::ColorSpace& color_space,
-    GrSurfaceOrigin surface_origin,
-    SkAlphaType alpha_type,
-    SharedImageUsageSet usage,
-    std::string debug_label,
+    const SharedImageInfo& si_info,
     scoped_refptr<SharedContextState> context_state,
     scoped_refptr<gfx::NativePixmap> pixmap,
     const GpuDriverBugWorkarounds& workarounds,
     std::optional<gfx::BufferUsage> buffer_usage)
     : ClearTrackingSharedImageBacking(
           mailbox,
-          format,
-          size,
-          color_space,
-          surface_origin,
-          alpha_type,
-          usage,
-          std::move(debug_label),
+          si_info,
           pixmap ? GetPixmapSizeInBytes(*pixmap) : 0,
           false,
           std::move(buffer_usage)),
       pixmap_(std::move(pixmap)),
       context_state_(std::move(context_state)),
       workarounds_(workarounds),
-      imported_from_exo_(IsExoTexture(this->debug_label())) {
+      imported_from_exo_(IsExoTexture(si_info.debug_label)) {
+  const auto usage = si_info.usage;
   bool used_by_skia = usage.HasAny(SHARED_IMAGE_USAGE_RASTER_READ |
                                    SHARED_IMAGE_USAGE_RASTER_WRITE |
                                    SHARED_IMAGE_USAGE_DISPLAY_READ);
@@ -437,12 +425,15 @@ OzoneImageBacking::OzoneImageBacking(
   bool used_by_webgpu = usage.HasAny(SHARED_IMAGE_USAGE_WEBGPU_READ |
                                      SHARED_IMAGE_USAGE_WEBGPU_WRITE);
   write_streams_count_ = 0;
-  if (used_by_gl)
+  if (used_by_gl) {
     write_streams_count_++;  // gl can write
-  if (used_by_vulkan)
+  }
+  if (used_by_vulkan) {
     write_streams_count_++;  // vulkan can write
-  if (used_by_webgpu)
+  }
+  if (used_by_webgpu) {
     write_streams_count_++;  // webgpu can write
+  }
 
   if (write_streams_count_ == 1) {
     // Initialize last_write_stream_ if its a single stream for cases where
@@ -478,7 +469,7 @@ std::unique_ptr<VulkanImageRepresentation> OzoneImageBacking::ProduceVulkan(
 
   viz::SharedImageFormat image_format = format();
   gfx::Size image_size = size();
-  gfx::GpuMemoryBufferHandle gmb_handle = GetGpuMemoryBufferHandle();
+  gfx::NativePixmapHandle native_pixmap_handle = pixmap_->ExportHandle();
   if (needs_detiling && image_format == viz::MultiPlaneFormat::kP010) {
     // This buffer is actually an MT2T buffer. MT2T is a 10-bit pixel format
     // that only occupies 1.25 bytes per element. We plumb it as P010 since
@@ -496,21 +487,40 @@ std::unique_ptr<VulkanImageRepresentation> OzoneImageBacking::ProduceVulkan(
         gfx::Size(image_size.width(), image_size.height() * kMT2TBppNumerator /
                                           kMT2TBppDenominator);
     base::CheckedNumeric<uint32_t> stride =
-        gmb_handle.native_pixmap_handle.planes[0].stride;
+        native_pixmap_handle.planes[0].stride;
     stride *= kMT2TBppDenominator;
     stride /= kMT2TBppNumerator;
     if (!stride.IsValid()) {
       return nullptr;
     }
-    gmb_handle.native_pixmap_handle.planes[0].stride = stride.ValueOrDie();
-    gmb_handle.native_pixmap_handle.planes[1].stride =
-        gmb_handle.native_pixmap_handle.planes[0].stride;
-    gmb_handle.native_pixmap_handle.planes[0].size = image_size.GetArea();
-    gmb_handle.native_pixmap_handle.planes[1].offset = image_size.GetArea();
-    gmb_handle.native_pixmap_handle.planes[1].size = image_size.GetArea() / 2;
+    native_pixmap_handle.planes[0].stride = stride.ValueOrDie();
+    native_pixmap_handle.planes[1].stride =
+        native_pixmap_handle.planes[0].stride;
+    native_pixmap_handle.planes[0].size = image_size.GetArea();
+    native_pixmap_handle.planes[1].offset = image_size.GetArea();
+    native_pixmap_handle.planes[1].size = image_size.GetArea() / 2;
+
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+    base::CheckedNumeric<uint64_t> checked_required =
+        native_pixmap_handle.planes[1].offset;
+    checked_required += native_pixmap_handle.planes[1].size;
+    if (!checked_required.IsValid()) {
+      return nullptr;
+    }
+    const uint64_t required_buf_size = checked_required.ValueOrDie();
+    const off_t dmabuf_size =
+        lseek(native_pixmap_handle.planes[0].fd.get(), 0, SEEK_END);
+    if (dmabuf_size < 0 ||
+        base::saturated_cast<uint64_t>(dmabuf_size) < required_buf_size) {
+      LOG(ERROR) << "MT2T rewrite plane[1] end [" << required_buf_size
+                 << "] exceeds FD[0] size [" << dmabuf_size << "]";
+      return nullptr;
+    }
+#endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
   }
   auto vulkan_image = vulkan_impl.CreateImageFromGpuMemoryHandle(
-      vulkan_device_queue, std::move(gmb_handle), image_size,
+      vulkan_device_queue,
+      gfx::GpuMemoryBufferHandle(std::move(native_pixmap_handle)), image_size,
       image_format.PrefersExternalSampler()
           ? ToVkFormatExternalSampler(image_format)
           : ToVkFormatSinglePlanar(image_format),
@@ -540,6 +550,9 @@ bool OzoneImageBacking::UploadFromMemory(const std::vector<SkPixmap>& pixmaps) {
 
   auto representation = ProduceSkiaGanesh(
       nullptr, context_state_->memory_type_tracker(), context_state_);
+  if (!representation) {
+    return false;
+  }
   DCHECK_EQ(pixmaps.size(), representation->NumPlanesExpected());
 
   std::vector<GrBackendSemaphore> begin_semaphores;
@@ -578,12 +591,81 @@ bool OzoneImageBacking::UploadFromMemory(const std::vector<SkPixmap>& pixmaps) {
   return written;
 }
 
+bool OzoneImageBacking::ReadbackToMemory(const std::vector<SkPixmap>& pixmaps) {
+  if (context_state_->context_lost()) {
+    return false;
+  }
+  CHECK(context_state_->IsCurrent(nullptr));
+
+#if BUILDFLAG(USE_DAWN)
+  if (context_state_->IsGraphiteDawn()) {
+    return ReadbackToMemoryGraphite(pixmaps);
+  }
+#endif  // BUILDFLAG(USE_DAWN)
+
+  auto representation = ProduceSkiaGanesh(
+      nullptr, context_state_->memory_type_tracker(), context_state_);
+  if (!representation) {
+    return false;
+  }
+  CHECK_EQ(pixmaps.size(), representation->NumPlanesExpected());
+
+  std::vector<GrBackendSemaphore> begin_semaphores;
+  std::vector<GrBackendSemaphore> end_semaphores;
+  auto src_scoped_access =
+      representation->BeginScopedReadAccess(&begin_semaphores, &end_semaphores);
+  if (!src_scoped_access) {
+    return false;
+  }
+  if (!begin_semaphores.empty()) {
+    bool result = context_state_->gr_context()->wait(
+        begin_semaphores.size(), begin_semaphores.data(),
+        /*deleteSemaphoresAfterWait=*/false);
+    CHECK(result);
+  }
+
+  // When format().PrefersExternalSampler() is true (e.g., video frames on Ozone
+  // or Android), there is only 1 underlying GPU texture representing all
+  // planes. Sampling this texture in shaders/Skia performs on-the-fly hardware
+  // YUV to RGBA conversion. Therefore, we iterate over NumPlanesExpected()
+  // (which is 1 for PrefersExternalSampler) and wrap the texture as a single
+  // RGBA SkImage using CreateSkImage(), reading the pixel data directly into 1
+  // RGBA SkPixmap.
+  bool read = true;
+  int num_planes = representation->NumPlanesExpected();
+  for (int plane = 0; plane < num_planes; ++plane) {
+    sk_sp<SkImage> image;
+    if (format().is_single_plane() || format().PrefersExternalSampler()) {
+      image = src_scoped_access->CreateSkImage(context_state_.get());
+    } else {
+      image =
+          src_scoped_access->CreateSkImageForPlane(plane, context_state_.get());
+    }
+    if (!image) {
+      read = false;
+      break;
+    }
+    if (!image->readPixels(context_state_->gr_context(), pixmaps[plane], 0,
+                           0)) {
+      read = false;
+      break;
+    }
+  }
+
+  src_scoped_access->ApplyBackendSurfaceEndState();
+  FlushAndSubmitIfNecessary(std::move(end_semaphores), context_state_.get());
+  return read;
+}
+
 #if BUILDFLAG(USE_DAWN)
 bool OzoneImageBacking::UploadFromMemoryGraphite(
     const std::vector<SkPixmap>& pixmaps) {
   DCHECK(context_state_->IsGraphiteDawn());
   auto representation = ProduceSkiaGraphite(
       nullptr, context_state_->memory_type_tracker(), context_state_);
+  if (!representation) {
+    return false;
+  }
   DCHECK_EQ(pixmaps.size(), representation->NumPlanesExpected());
 
   std::vector<GrBackendSemaphore> begin_semaphores;
@@ -610,15 +692,79 @@ bool OzoneImageBacking::UploadFromMemoryGraphite(
   }
 
   auto recording = context_state_->gpu_main_graphite_recorder()->snap();
+  if (!recording) {
+    LOG(ERROR) << "Graphite failed to snap recording from GPU main recorder";
+    return false;
+  }
   skgpu::graphite::InsertRecordingInfo info;
   info.fRecording = recording.get();
-  context_state_->graphite_context()->insertRecording(info);
-  context_state_->graphite_context()->submit();
+  if (!context_state_->graphite_shared_context()->insertRecording(info)) {
+    LOG(ERROR) << "Graphite insertRecording() failed";
+    return false;
+  }
+  context_state_->graphite_shared_context()->submit();
 
   if (written && !IsCleared()) {
     SetCleared();
   }
   return written;
+}
+
+bool OzoneImageBacking::ReadbackToMemoryGraphite(
+    const std::vector<SkPixmap>& pixmaps) {
+  CHECK(context_state_->IsGraphiteDawn());
+  auto representation = ProduceSkiaGraphite(
+      nullptr, context_state_->memory_type_tracker(), context_state_);
+  if (!representation) {
+    return false;
+  }
+  CHECK_EQ(pixmaps.size(), representation->NumPlanesExpected());
+
+  std::vector<GrBackendSemaphore> begin_semaphores;
+  std::vector<GrBackendSemaphore> end_semaphores;
+  auto src_scoped_access =
+      representation->BeginScopedReadAccess(&begin_semaphores, &end_semaphores);
+  if (!src_scoped_access) {
+    return false;
+  }
+  CHECK(begin_semaphores.empty());
+
+  // When format().PrefersExternalSampler() is true, there is only 1 underlying
+  // GPU texture (NumPlanesExpected() == 1). We must use external sampler
+  // color conversion (ToClosestSkColorTypeExternalSampler) so Skia Graphite
+  // wraps the external backend texture as an opaque RGBA SkImage.
+  int num_planes = representation->NumPlanesExpected();
+  bool success = true;
+
+  for (int plane = 0; plane < num_planes; ++plane) {
+    skgpu::graphite::BackendTexture backend_texture =
+        src_scoped_access->graphite_texture(plane);
+    auto color_type = format().PrefersExternalSampler()
+                          ? ToClosestSkColorTypeExternalSampler(format())
+                          : viz::ToClosestSkColorType(format(), plane);
+
+    sk_sp<SkColorSpace> src_color_space = color_space().ToSkColorSpace();
+
+    sk_sp<SkImage> sk_image = SkImages::WrapTexture(
+        context_state_->gpu_main_graphite_recorder(), backend_texture,
+        color_type, kOpaque_SkAlphaType, std::move(src_color_space));
+    if (!sk_image) {
+      success = false;
+      break;
+    }
+
+    if (!GraphiteReadPixelsSync(context_state_->graphite_shared_context(),
+                                context_state_->gpu_main_graphite_recorder(),
+                                sk_image.get(), pixmaps[plane].info(),
+                                pixmaps[plane].writable_addr(),
+                                pixmaps[plane].rowBytes(), 0, 0)) {
+      LOG(ERROR) << "GraphiteReadPixelsSync failed for plane: " << plane;
+      success = false;
+      break;
+    }
+  }
+
+  return success;
 }
 #endif  // BUILDFLAG(USE_DAWN)
 
@@ -686,10 +832,11 @@ bool OzoneImageBacking::BeginAccess(bool readonly,
     DCHECK(write_fence_.is_null());  // `write_fence_` should be null.
     // For write access we expect new `write_fence_` so we can move the
     // old fence here.
-    if (!readonly)
+    if (!readonly) {
       fences->emplace_back(std::move(external_write_fence_));
-    else
+    } else {
       fences->emplace_back(external_write_fence_.Clone());
+    }
   }
 
   // If current stream is different than `last_write_stream_` then wait on that
@@ -699,10 +846,11 @@ bool OzoneImageBacking::BeginAccess(bool readonly,
                .is_null());  // `external_write_fence_` should be null.
     // For write access we expect new `write_fence_` so we can move the old
     // fence here.
-    if (!readonly)
+    if (!readonly) {
       fences->emplace_back(std::move(write_fence_));
-    else
+    } else {
       fences->emplace_back(write_fence_.Clone());
+    }
   }
 
   if (readonly) {
@@ -746,7 +894,7 @@ void OzoneImageBacking::EndAccess(bool readonly,
       read_fences_[access_stream] = std::move(fence);
     }
   } else {
-    DCHECK(!base::Contains(read_fences_, access_stream));
+    DCHECK(!read_fences_.contains(access_stream));
     write_fence_ = std::move(fence);
     last_write_stream_ = access_stream;
   }
@@ -763,8 +911,7 @@ void OzoneImageBacking::OnGLContextWillDestroy(gl::GLContext* context) {
 void OzoneImageBacking::OnGLContextLostOrDestroy(gl::GLContext* context,
                                                  bool mark_context_lost) {
   auto it = per_context_cached_textures_holders_.find(context);
-  CHECK(it != per_context_cached_textures_holders_.end(),
-        base::NotFatalUntil::M130);
+  CHECK(it != per_context_cached_textures_holders_.end());
 
   // Given the TextureHolder can be used by N contexts (the contexts are
   // compatible with the original one that was used to create the holder), the

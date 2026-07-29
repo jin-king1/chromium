@@ -77,6 +77,10 @@ enum DialogViewId : int {
                      // bubble and during ongoing enrollment in virtual card
                      //  enroll bubble.
 
+  // The following are views::ImageView objects.
+  BUBBLE_TITLE_ICON,  // The icon created in a TitleWithIconAfterLabelView.
+  GPAY_PILL_ICON,    // The GPay pill that appears to the right of upload card
+                      // info.
 };
 
 }  // namespace autofill

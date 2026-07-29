@@ -11,6 +11,7 @@
 #include "base/observer_list_types.h"
 #include "base/scoped_observation.h"
 #include "base/scoped_observation_traits.h"
+#include "base/sequence_checker.h"
 #include "content/browser/file_system_access/file_system_access_change_source.h"
 #include "content/browser/file_system_access/file_system_access_observer_quota_manager.h"
 #include "content/browser/file_system_access/file_system_access_watch_scope.h"
@@ -102,7 +103,10 @@ class CONTENT_EXPORT FileSystemAccessObservationGroup
 
     OnChangesCallback on_change_callback_ GUARDED_BY_CONTEXT(sequence_checker_);
 
-    base::ScopedObservation<FileSystemAccessObservationGroup, Observer> obs_
+    // TODO(crbug.com/494157385): remove when the Observer are no longer
+    // outliving the FileSystemAccessObservationGroup they observe.
+    base::ScopedObservation<FileSystemAccessObservationGroup,
+                            Observer>::LeakedDanglingUntriaged obs_
         GUARDED_BY_CONTEXT(sequence_checker_){this};
   };
 
@@ -161,8 +165,12 @@ class CONTENT_EXPORT FileSystemAccessObservationGroup
 
   // Observations to which this instance will notify of changes within their
   // respective scope.
-  base::ObserverList<Observer> observations_
-      GUARDED_BY_CONTEXT(sequence_checker_);
+  // TODO(crbug.com/484371187): Investigate if reentrancy can be removed.
+  base::ObserverList<
+      Observer,
+      /*check_empty=*/false,
+      base::ObserverListReentrancyPolicy::kAllowReentrancyUntriaged>
+      observations_ GUARDED_BY_CONTEXT(sequence_checker_);
 
   OnUsageChangeCallback on_usage_change_callback_;
 

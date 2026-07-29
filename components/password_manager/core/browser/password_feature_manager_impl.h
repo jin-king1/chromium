@@ -35,13 +35,9 @@ class PasswordFeatureManagerImpl : public PasswordFeatureManager {
 
   bool IsBiometricAuthenticationBeforeFillingEnabled() const override;
 
-  bool IsAccountStorageEnabled() const override;
+  bool IsAccountStorageActive() const override;
   features_util::PasswordAccountStorageUsageLevel
   ComputePasswordAccountStorageUsageLevel() const override;
-
-#if BUILDFLAG(IS_ANDROID)
-  bool ShouldUpdateGmsCore() override;
-#endif  // BUILDFLAG(IS_ANDROID)
 
  private:
   const raw_ptr<PrefService> pref_service_;

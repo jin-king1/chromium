@@ -5,8 +5,6 @@
 #include "chrome/browser/ui/views/location_bar/location_bar_layout.h"
 
 #include "base/memory/raw_ptr.h"
-#include "chrome/browser/themes/theme_properties.h"
-#include "components/lens/lens_features.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/views/view.h"
 
@@ -99,12 +97,8 @@ void LocationBarLayout::LayoutPass1(int* entry_width, int reserved_width) {
     first_item = false;
     // Resizing decorations are ignored in this pass.
     if (!decoration->auto_collapse && (decoration->max_fraction == 0.0)) {
-      // TODO: tluk - Remove this after merge.
       const auto available_size =
-          lens::features::IsOmniboxEntryPointEnabled()
-              ? views::SizeBounds(*entry_width - reserved_width,
-                                  decoration->height)
-              : views::SizeBounds();
+          views::SizeBounds(*entry_width - reserved_width, decoration->height);
       decoration->computed_width =
           decoration->view->GetPreferredSize(available_size).width();
       *entry_width -= decoration->computed_width;

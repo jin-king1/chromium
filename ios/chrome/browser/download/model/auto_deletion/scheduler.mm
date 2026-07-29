@@ -11,6 +11,7 @@
 #import "components/prefs/scoped_user_pref_update.h"
 #import "ios/chrome/browser/download/model/auto_deletion/scheduled_file.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 
 namespace {
 
@@ -24,7 +25,7 @@ std::optional<auto_deletion::ScheduledFile> ScheduledFileFromValue(
     return std::nullopt;
   }
 
-  const base::Value::Dict& dict = value.GetDict();
+  const base::DictValue& dict = value.GetDict();
   const base::Value* time_value = dict.Find("time");
   if (!time_value) {
     return std::nullopt;
@@ -59,8 +60,28 @@ Scheduler::Scheduler(PrefService* local_state) : local_state_(local_state) {
 
 Scheduler::~Scheduler() = default;
 
-std::vector<ScheduledFile> Scheduler::IdentifyScheduledFilesForDeletion() {
-  std::vector<ScheduledFile> files;
+std::vector<ScheduledFile> Scheduler::IdentifyExpiredFiles(base::Time instant) {
+  std::vector<ScheduledFile> expired_files;
+  const base::ListValue& files =
+      local_state_->GetList(prefs::kDownloadAutoDeletionScheduledFiles);
+
+  for (const auto& value : files) {
+    std::optional<ScheduledFile> maybe_file = ScheduledFileFromValue(value);
+    if (!maybe_file) {
+      continue;
+    }
+
+    if (!IsFileReadyForDeletion(instant, *maybe_file)) {
+      break;
+    }
+
+    expired_files.push_back(std::move(*maybe_file));
+  }
+
+  return expired_files;
+}
+
+void Scheduler::RemoveExpiredFiles(base::Time instant) {
   ScopedListPrefUpdate update(local_state_,
                               prefs::kDownloadAutoDeletionScheduledFiles);
 
@@ -72,34 +93,40 @@ std::vector<ScheduledFile> Scheduler::IdentifyScheduledFilesForDeletion() {
       continue;
     }
 
-    if (!IsFileReadyForDeletion(*maybe_file)) {
+    if (!IsFileReadyForDeletion(instant, *maybe_file)) {
       break;
     }
 
-    files.push_back(std::move(*maybe_file));
     ++values_to_erase_count;
   }
 
   if (values_to_erase_count > 0) {
-    base::Value::List& value = update.Get();
+    base::ListValue& value = update.Get();
     value.erase(value.begin(), value.begin() + values_to_erase_count);
   }
-
-  return files;
 }
 
 void Scheduler::ScheduleFile(ScheduledFile file) {
   ScopedListPrefUpdate update(local_state_,
                               prefs::kDownloadAutoDeletionScheduledFiles);
-  update->Append(base::Value::Dict()
+  update->Append(base::DictValue()
                      .Set("path", file.filepath().AsUTF8Unsafe())
                      .Set("hash", file.hash())
                      .Set("time", base::TimeToValue(file.download_time())));
 }
 
-bool Scheduler::IsFileReadyForDeletion(const ScheduledFile& file) {
+void Scheduler::Clear() {
+  local_state_->ClearPref(prefs::kDownloadAutoDeletionScheduledFiles);
+}
+
+bool Scheduler::IsFileReadyForDeletion(base::Time instant,
+                                       const ScheduledFile& file) {
+  if (isDownloadAutoDeletionTestingFeatureEnabled()) {
+    return true;
+  }
+
   const base::Time download_date = file.download_time();
-  const base::TimeDelta download_age = base::Time::Now() - download_date;
+  const base::TimeDelta download_age = instant - download_date;
   return download_age > kFileDeletionThreshold;
 }
 

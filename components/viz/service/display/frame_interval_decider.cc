@@ -7,17 +7,63 @@
 #include <inttypes.h>
 
 #include <utility>
+#include <variant>
 
-#include "base/functional/overloaded.h"
 #include "base/memory/ptr_util.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/rand_util.h"
 #include "base/trace_event/trace_event.h"
+#include "base/trace_event/typed_macros.h"
+#include "base/tracing/protos/chrome_track_event.pbzero.h"
 #include "components/viz/common/quads/frame_interval_inputs.h"
 #include "components/viz/service/surfaces/surface.h"
 #include "components/viz/service/surfaces/surface_manager.h"
+#include "third_party/abseil-cpp/absl/functional/overload.h"
 
 namespace viz {
+
+namespace {
+
+void WriteDeciderResultToProto(
+    perfetto::protos::pbzero::FrameIntervalDecider::Result* proto,
+    const FrameIntervalMatcher::Result& result) {
+  std::visit(
+      absl::Overload(
+          [&](FrameIntervalMatcher::FrameIntervalClass frame_interval_class) {
+            // Increment by 1 to convert from C++ to proto enum. The perfetto
+            // FrameIntervalClass proto enum values are incremented by 1 to
+            // leave 0 value for unknown/unset field.
+            proto->set_frame_interval_class(
+                static_cast<perfetto::protos::pbzero::FrameIntervalDecider::
+                                FrameIntervalClass>(
+                    static_cast<int>(frame_interval_class) + 1));
+          },
+          [&](FrameIntervalMatcher::ResultInterval interval) {
+            auto* result_interval = proto->set_result_interval();
+            result_interval->set_interval_us(
+                interval.interval.InMicroseconds());
+            // Increment by 1 to convert from C++ to proto enum. The perfetto
+            // ResultIntervalType proto enum values are incremented by 1 to
+            // leave 0 value for unknown/unset field.
+            result_interval->set_type(
+                static_cast<perfetto::protos::pbzero::FrameIntervalDecider::
+                                ResultIntervalType>(
+                    static_cast<int>(interval.type) + 1));
+          }),
+      result);
+}
+
+perfetto::protos::pbzero::FrameIntervalDecider::FrameIntervalMatcherType
+ToProtoMatcherType(FrameIntervalMatcherType type) {
+  // Increment by 1 to convert from C++ to proto enum. The perfetto
+  // FrameIntervalMatcherType proto enum values are incremented by 1 to leave 0
+  // value for unknown/unset field.
+  return static_cast<
+      perfetto::protos::pbzero::FrameIntervalDecider::FrameIntervalMatcherType>(
+      static_cast<int>(type) + 1);
+}
+
+}  // namespace
 
 FrameIntervalDecider::ScopedAggregate::ScopedAggregate(
     FrameIntervalDecider& decider,
@@ -46,32 +92,32 @@ FrameIntervalDecider::~FrameIntervalDecider() = default;
 void FrameIntervalDecider::UpdateSettings(
     Settings settings,
     std::vector<std::unique_ptr<FrameIntervalMatcher>> matchers) {
-  absl::visit(base::Overloaded(
-                  [](const absl::monostate& monostate) {},
-                  [](const FixedIntervalSettings& fixed_interval_settings) {
-                    CHECK(!fixed_interval_settings.supported_intervals.empty());
-                  },
-                  [](const ContinuousRangeSettings& continuous_range_settings) {
-                    CHECK_LE(continuous_range_settings.min_interval,
-                             continuous_range_settings.max_interval);
-                  }),
-              settings.interval_settings);
+  std::visit(absl::Overload(
+                 [](const std::monostate& monostate) {},
+                 [](const FixedIntervalSettings& fixed_interval_settings) {
+                   CHECK(!fixed_interval_settings.supported_intervals.empty());
+                 },
+                 [](const ContinuousRangeSettings& continuous_range_settings) {
+                   CHECK_LE(continuous_range_settings.min_interval,
+                            continuous_range_settings.max_interval);
+                 }),
+             settings.interval_settings);
 
   settings_ = std::move(settings);
   matchers_ = std::move(matchers);
 }
 
-std::unique_ptr<FrameIntervalDecider::ScopedAggregate>
-FrameIntervalDecider::WrapAggregate(SurfaceManager& surface_manager,
-                                    base::TimeTicks frame_time) {
-  return base::WrapUnique(new FrameIntervalDecider::ScopedAggregate(
-      *this, surface_manager, frame_time));
+FrameIntervalDecider::ScopedAggregate FrameIntervalDecider::WrapAggregate(
+    SurfaceManager& surface_manager,
+    base::TimeTicks frame_time) {
+  return FrameIntervalDecider::ScopedAggregate(*this, surface_manager,
+                                               frame_time);
 }
 
 void FrameIntervalDecider::Decide(
     base::TimeTicks frame_time,
     base::flat_map<FrameSinkId, FrameIntervalInputs> inputs_map) {
-  FrameIntervalMatcher::Inputs matcher_inputs(settings_);
+  FrameIntervalMatcher::Inputs matcher_inputs(settings_, frame_id_++);
   matcher_inputs.aggregated_frame_time = frame_time;
   matcher_inputs.inputs_map = std::move(inputs_map);
 
@@ -93,27 +139,27 @@ void FrameIntervalDecider::Decide(
     base::UmaHistogramEnumeration("Viz.FrameIntervalDecider.ResultMatcherType",
                                   matcher_type);
     if (match_result &&
-        absl::holds_alternative<base::TimeDelta>(match_result.value())) {
+        std::holds_alternative<ResultInterval>(match_result.value())) {
       base::UmaHistogramCustomTimes(
           "Viz.FrameIntervalDecider.ResultTimeDelta",
-          absl::get<base::TimeDelta>(match_result.value()),
+          std::get<ResultInterval>(match_result.value()).interval,
           base::Milliseconds(0), base::Milliseconds(500), 50);
     }
   }
 
   // If nothing matched, use the default.
   if (!match_result) {
-    match_result = absl::visit(
-        base::Overloaded(
-            [](const absl::monostate& monostate) -> Result {
+    match_result = std::visit(
+        absl::Overload(
+            [](const std::monostate& monostate) -> Result {
               return FrameIntervalClass::kDefault;
             },
             [](const FixedIntervalSettings& fixed_interval_settings) -> Result {
-              return fixed_interval_settings.default_interval;
+              return ResultInterval{fixed_interval_settings.default_interval};
             },
             [](const ContinuousRangeSettings& continuous_range_settings)
                 -> Result {
-              return continuous_range_settings.default_interval;
+              return ResultInterval{continuous_range_settings.default_interval};
             }),
         settings_.interval_settings);
   }
@@ -126,11 +172,11 @@ void FrameIntervalDecider::Decide(
 
   // Same as above but using epsilon comparison for frame interval.
   if (current_result_ && match_result &&
-      absl::holds_alternative<base::TimeDelta>(current_result_.value()) &&
-      absl::holds_alternative<base::TimeDelta>(match_result.value()) &&
+      std::holds_alternative<ResultInterval>(current_result_.value()) &&
+      std::holds_alternative<ResultInterval>(match_result.value()) &&
       FrameIntervalMatcher::AreAlmostEqual(
-          absl::get<base::TimeDelta>(current_result_.value()),
-          absl::get<base::TimeDelta>(match_result.value()),
+          std::get<ResultInterval>(current_result_.value()).interval,
+          std::get<ResultInterval>(match_result.value()).interval,
           settings_.epsilon)) {
     current_result_frame_time_ = frame_time;
     return;
@@ -143,10 +189,13 @@ void FrameIntervalDecider::Decide(
           settings_.increase_frame_interval_timeout ||
       MayDecreaseFrameInterval(current_result_, match_result)) {
     TRACE_EVENT_INSTANT(
-        "viz", "FrameIntervalDeciderResult", "result",
-        FrameIntervalMatcher::ResultToString(match_result.value()),
-        "matcher_type",
-        FrameIntervalMatcher::MatcherTypeToString(matcher_type));
+        "viz", "FrameIntervalDeciderResult", [&](perfetto::EventContext ctx) {
+          auto* event = ctx.event<perfetto::protos::pbzero::ChromeTrackEvent>();
+          auto* decider = event->set_frame_interval_decider();
+          WriteDeciderResultToProto(decider->set_result(),
+                                    match_result.value());
+          decider->set_matcher_type(ToProtoMatcherType(matcher_type));
+        });
     current_result_frame_time_ = frame_time;
     current_result_ = match_result;
     if (settings_.result_callback) {
@@ -162,24 +211,23 @@ bool FrameIntervalDecider::MayDecreaseFrameInterval(
   if (!from || !to) {
     return true;
   }
-  return absl::visit(
-      base::Overloaded(
+  return std::visit(
+      absl::Overload(
           [&](FrameIntervalClass from_frame_interval_class) {
-            if (!absl::holds_alternative<FrameIntervalClass>(to.value())) {
+            if (!std::holds_alternative<FrameIntervalClass>(to.value())) {
               return true;
             }
             FrameIntervalClass to_frame_interval_class =
-                absl::get<FrameIntervalClass>(to.value());
+                std::get<FrameIntervalClass>(to.value());
             return static_cast<int>(from_frame_interval_class) >
                    static_cast<int>(to_frame_interval_class);
           },
-          [&](base::TimeDelta from_interval) {
-            if (!absl::holds_alternative<base::TimeDelta>(to.value())) {
+          [&](ResultInterval from_interval) {
+            if (!std::holds_alternative<ResultInterval>(to.value())) {
               return true;
             }
-            base::TimeDelta to_interval =
-                absl::get<base::TimeDelta>(to.value());
-            return from_interval > to_interval;
+            ResultInterval to_interval = std::get<ResultInterval>(to.value());
+            return from_interval.interval > to_interval.interval;
           }),
       from.value());
 }

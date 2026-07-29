@@ -12,11 +12,14 @@
 #include "base/time/time.h"
 #include "media/audio/audio_debug_recording_helper.h"
 #include "media/audio/audio_io.h"
+#include "media/base/audio_bus.h"
 #include "media/base/audio_glitch_info.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace media {
+
+using Error = AudioInputStream::AudioInputCallback::Error;
 
 namespace {
 
@@ -60,7 +63,7 @@ class MockCallback : public AudioInputStream::AudioInputCallback {
   MOCK_METHOD4(
       OnData,
       void(const AudioBus*, base::TimeTicks, double, const AudioGlitchInfo&));
-  MOCK_METHOD0(OnError, void());
+  MOCK_METHOD1(OnError, void(Error));
 };
 
 class MockDebugRecorderFactory {
@@ -148,8 +151,8 @@ TEST(AudioInputStreamDataInterceptorTest, Start) {
   Mock::VerifyAndClearExpectations(recorder);
 
   // Errors should be propagated to the renderer
-  EXPECT_CALL(callback, OnError());
-  interceptor->OnError();
+  EXPECT_CALL(callback, OnError(Error::kRuntimeError));
+  interceptor->OnError(Error::kRuntimeError);
 
   Mock::VerifyAndClearExpectations(&callback);
 

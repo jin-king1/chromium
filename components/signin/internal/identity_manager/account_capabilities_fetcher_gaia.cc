@@ -7,6 +7,7 @@
 #include <optional>
 
 #include "base/metrics/histogram_functions.h"
+#include "base/strings/string_util.h"
 #include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
 #include "components/signin/internal/identity_manager/account_capabilities_constants.h"
@@ -17,6 +18,7 @@
 #include "google_apis/gaia/google_service_auth_error.h"
 #include "google_apis/gaia/oauth2_access_token_consumer.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "third_party/perfetto/include/perfetto/tracing/track_event_args.h"
 
 namespace {
 
@@ -50,27 +52,33 @@ AccountCapabilitiesFetcherGaia::AccountCapabilitiesFetcherGaia(
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
     const CoreAccountInfo& account_info,
     AccountCapabilitiesFetcher::FetchPriority fetch_priority,
-    AccountCapabilitiesFetcher::OnCompleteCallback on_complete_callback)
-    : AccountCapabilitiesFetcher(account_info,
-                                 fetch_priority,
-                                 std::move(on_complete_callback)),
+    AccountCapabilitiesFetcher::OnSomeCapabilitiesFetchedCallback
+        on_some_capabilities_fetched_callback,
+    AccountCapabilitiesFetcher::OnAllFetchesCompleteCallback
+        on_all_fetches_complete_callback)
+    : AccountCapabilitiesFetcher(
+          account_info,
+          fetch_priority,
+          std::move(on_some_capabilities_fetched_callback),
+          std::move(on_all_fetches_complete_callback)),
       OAuth2AccessTokenManager::Consumer("account_capabilities_fetcher"),
       token_service_(token_service),
       url_loader_factory_(std::move(url_loader_factory)) {
-  TRACE_EVENT_NESTABLE_ASYNC_BEGIN1("AccountFetcherService",
-                                    "AccountCapabilitiesFetcherGaia", this,
-                                    "account_id", account_id().ToString());
+  TRACE_EVENT_INSTANT("AccountFetcherService", "AccountCapabilitiesFetcherGaia",
+                      perfetto::Flow::FromPointer(this), "account_id",
+                      account_id().ToString());
 }
 
 AccountCapabilitiesFetcherGaia::~AccountCapabilitiesFetcherGaia() {
-  TRACE_EVENT_NESTABLE_ASYNC_END0("AccountFetcherService",
-                                  "AccountCapabilitiesFetcherGaia", this);
+  TRACE_EVENT_INSTANT("AccountFetcherService",
+                      "~AccountCapabilitiesFetcherGaia",
+                      perfetto::TerminatingFlow::FromPointer(this));
   RecordFetchResultAndDuration(FetchResult::kCancelled);
 }
 
 void AccountCapabilitiesFetcherGaia::StartImpl() {
-  TRACE_EVENT_NESTABLE_ASYNC_BEGIN0("AccountFetcherService", "GetAccessToken",
-                                    this);
+  TRACE_EVENT_INSTANT("AccountFetcherService", "GetAccessToken",
+                      perfetto::Flow::FromPointer(this));
   fetch_start_time_ = base::TimeTicks::Now();
   OAuth2AccessTokenManager::ScopeSet scopes;
   scopes.insert(GaiaConstants::kAccountCapabilitiesOAuth2Scope);
@@ -81,10 +89,9 @@ void AccountCapabilitiesFetcherGaia::StartImpl() {
 void AccountCapabilitiesFetcherGaia::OnGetTokenSuccess(
     const OAuth2AccessTokenManager::Request* request,
     const OAuth2AccessTokenConsumer::TokenResponse& token_response) {
-  TRACE_EVENT_NESTABLE_ASYNC_END0("AccountFetcherService", "GetAccessToken",
-                                  this);
-  TRACE_EVENT_NESTABLE_ASYNC_BEGIN0("AccountFetcherService",
-                                    "GetAccountCapabilities", this);
+  TRACE_EVENT_INSTANT("AccountFetcherService",
+                      "AccountCapabilitiesFetcherGaia::OnGetTokenSuccess",
+                      perfetto::Flow::FromPointer(this));
   DCHECK_EQ(request, login_token_request_.get());
   login_token_request_.reset();
 
@@ -100,21 +107,25 @@ void AccountCapabilitiesFetcherGaia::OnGetTokenSuccess(
 void AccountCapabilitiesFetcherGaia::OnGetTokenFailure(
     const OAuth2AccessTokenManager::Request* request,
     const GoogleServiceAuthError& error) {
-  TRACE_EVENT_NESTABLE_ASYNC_END1("AccountFetcherService", "GetAccessToken",
-                                  this, "error", error.ToString());
+  TRACE_EVENT_INSTANT("AccountFetcherService",
+                      "AccountCapabilitiesFetcherGaia::OnGetTokenFailure",
+                      perfetto::Flow::FromPointer(this), "error",
+                      error.ToString());
   VLOG(1) << "OnGetTokenFailure: " << error.ToString();
   DCHECK_EQ(request, login_token_request_.get());
   login_token_request_.reset();
   RecordFetchResultAndDuration(FetchResult::kGetTokenFailure);
-  CompleteFetchAndMaybeDestroySelf(std::nullopt);
+  CompleteFetchAndMaybeDestroySelf();
 }
 
 void AccountCapabilitiesFetcherGaia::OnGetAccountCapabilitiesResponse(
-    const base::Value::Dict& account_capabilities) {
-  TRACE_EVENT_NESTABLE_ASYNC_END0("AccountFetcherService",
-                                  "GetAccountCapabilities", this);
+    const base::DictValue& account_capabilities) {
+  TRACE_EVENT_INSTANT(
+      "AccountFetcherService",
+      "AccountCapabilitiesFetcherGaia::OnGetAccountCapabilitiesResponse",
+      perfetto::Flow::FromPointer(this));
   std::optional<AccountCapabilities> parsed_capabilities =
-      AccountCapabilitiesFromValue(account_capabilities);
+      signin::AccountCapabilitiesFromServerResponse(account_capabilities);
   FetchResult result = FetchResult::kSuccess;
   if (!parsed_capabilities) {
     VLOG(1) << "Failed to parse account capabilities for " << account_id()
@@ -123,25 +134,26 @@ void AccountCapabilitiesFetcherGaia::OnGetAccountCapabilitiesResponse(
   }
 
   RecordFetchResultAndDuration(result);
-  CompleteFetchAndMaybeDestroySelf(parsed_capabilities);
+  UpdateAndCompleteFetchAndMaybeDestroySelf(parsed_capabilities);
 }
 
 void AccountCapabilitiesFetcherGaia::OnOAuthError() {
-  TRACE_EVENT_NESTABLE_ASYNC_END1("AccountFetcherService",
-                                  "GetAccountCapabilities", this, "error",
-                                  "OAuthError");
+  TRACE_EVENT_INSTANT("AccountFetcherService",
+                      "AccountCapabilitiesFetcherGaia::OnOAuthError",
+                      perfetto::Flow::FromPointer(this), "error", "OAuthError");
   VLOG(1) << "OnOAuthError";
   RecordFetchResultAndDuration(FetchResult::kOAuthError);
-  CompleteFetchAndMaybeDestroySelf(std::nullopt);
+  CompleteFetchAndMaybeDestroySelf();
 }
 
 void AccountCapabilitiesFetcherGaia::OnNetworkError(int response_code) {
-  TRACE_EVENT_NESTABLE_ASYNC_END2(
-      "AccountFetcherService", "GetAccountCapabilities", this, "error",
-      "NetworkError", "response_code", response_code);
+  TRACE_EVENT_INSTANT("AccountFetcherService",
+                      "AccountCapabilitiesFetcherGaia::OnNetworkError",
+                      perfetto::Flow::FromPointer(this), "error",
+                      "NetworkError", "response_code", response_code);
   VLOG(1) << "OnNetworkError " << response_code;
   RecordFetchResultAndDuration(FetchResult::kNetworkError);
-  CompleteFetchAndMaybeDestroySelf(std::nullopt);
+  CompleteFetchAndMaybeDestroySelf();
 }
 
 void AccountCapabilitiesFetcherGaia::RecordFetchResultAndDuration(

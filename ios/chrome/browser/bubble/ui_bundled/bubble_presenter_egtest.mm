@@ -7,10 +7,13 @@
 #import "base/strings/sys_string_conversions.h"
 #import "base/test/ios/wait_util.h"
 #import "components/feature_engagement/public/feature_constants.h"
+#import "components/omnibox/browser/omnibox_pref_names.h"
 #import "ios/chrome/browser/bubble/ui_bundled/bubble_constants.h"
 #import "ios/chrome/browser/bubble/ui_bundled/gesture_iph/gesture_in_product_help_view_egtest_utils.h"
+#import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/browser/toolbar/ui/toolbar_constants.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey_ui.h"
 #import "ios/chrome/test/earl_grey/chrome_matchers.h"
@@ -26,11 +29,8 @@ namespace {
 
 using ::chrome_test_util::BackButton;
 using ::chrome_test_util::ForwardButton;
-
-// Bottom toolbar of of the tab view.
-id<GREYMatcher> BottomToolbar() {
-  return grey_kindOfClassName(@"SecondaryToolbarView");
-}
+using ::chrome_test_util::PrimaryToolbar;
+using ::chrome_test_util::SecondaryToolbar;
 
 // Open split screen. Should only be invoked for iPad.
 void OpenSplitScreen() {
@@ -57,6 +57,14 @@ void ReloadFromOmnibox() {
 
 @implementation BubblePresenterTestCase
 
+// Relaunches the app with the test case's custom configuration and the given
+// IPH feature enabled.
+- (void)relaunchWithIPHFeature:(NSString*)feature
+                safariSwitcher:(BOOL)safariSwitcher {
+  RelaunchConfigurationWithIPHFeature([self appConfigurationForTestCase],
+                                      feature, safariSwitcher);
+}
+
 // Open a random url from omnibox. `isAfterNewAppLaunch` is used for deciding
 // whether the step of tapping the fake omnibox is needed.
 - (void)openURLFromOmniboxWithIsAfterNewAppLaunch:(BOOL)isAfterNewAppLaunch {
@@ -80,14 +88,14 @@ void ReloadFromOmnibox() {
 - (void)setUp {
   [super setUp];
   MakeFirstRunRecent();
-  [ChromeEarlGrey resetDataForLocalStatePref:prefs::kBottomOmnibox];
-}
-
-- (void)tearDownHelper {
-  [ChromeEarlGrey closeAllExtraWindows];
-  [BaseEarlGreyTestCaseAppInterface enableFastAnimation];
-  ResetFirstRunRecency();
-  [super tearDownHelper];
+  [ChromeEarlGrey
+      resetDataForLocalStatePref:omnibox::kIsOmniboxInBottomPosition];
+  [self addTeardownBlock:^{
+    GREYWaitForAppToIdle(@"App failed to idle");
+    [ChromeEarlGrey closeAllExtraWindows];
+    [BaseEarlGreyTestCaseAppInterface enableFastAnimation];
+    ResetFirstRunRecency();
+  }];
 }
 
 - (AppLaunchConfiguration)appConfigurationForTestCase {
@@ -97,8 +105,13 @@ void ReloadFromOmnibox() {
   if ([self
           isRunningTest:@selector
           (testLensOverlayEntrypointTipDismissedWhenOmniboxPositionChanged)]) {
-    config.features_enabled.push_back(kEnableLensOverlay);
-    config.features_enabled.push_back(kLensOverlayEnableLocationBarEntrypoint);
+    config.features_enabled.push_back(kGeminiKillSwitch);
+    config.features_disabled.push_back(kPageActionMenu);
+    config.iph_feature_enabled = "IPH_iOSLensOverlayEntrypointTip";
+    config.features_enabled_and_params.push_back(
+        {kChromeNextIa, {{"chrome_next_ia_lens_icon_visible", "true"}}});
+  } else {
+    config.features_enabled.push_back(kChromeNextIa);
   }
 
   return config;
@@ -107,8 +120,13 @@ void ReloadFromOmnibox() {
 // Tests that the pull-to-refresh IPH is attempted when user taps the omnibox
 // to reload the same page, and disappears after the user navigates away.
 - (void)testPullToRefreshIPHAfterReloadFromOmniboxAndDisappearsAfterNavigation {
-  RelaunchWithIPHFeature(@"IPH_iOSPullToRefreshFeature",
-                         /*safari_switcher=*/YES);
+  if ([ChromeEarlGrey isIPadIdiom]) {
+    // TODO(crbug.com/508240659): Test is flaky on ios-fieldtrial-rel.
+    EARL_GREY_TEST_DISABLED(
+        @"Test disabled on iPad due to flakiness from split screen.");
+  }
+  [self relaunchWithIPHFeature:@"IPH_iOSPullToRefreshFeature"
+                safariSwitcher:YES];
   if ([ChromeEarlGrey isIPadIdiom]) {
     OpenSplitScreen();
   }
@@ -136,8 +154,8 @@ void ReloadFromOmnibox() {
   if ([ChromeEarlGrey isIPadIdiom]) {
     EARL_GREY_TEST_SKIPPED(@"Skipped for iPad.");
   }
-  RelaunchWithIPHFeature(@"IPH_iOSPullToRefreshFeature",
-                         /*safari_switcher=*/YES);
+  [self relaunchWithIPHFeature:@"IPH_iOSPullToRefreshFeature"
+                safariSwitcher:YES];
   [BaseEarlGreyTestCaseAppInterface disableFastAnimation];
 
   GREYAssertTrue(self.testServer->Start(), @"Server did not start.");
@@ -154,7 +172,13 @@ void ReloadFromOmnibox() {
       @"Pull to refresh IPH did not appear after reloading from context menu.",
       ^{
         // Side swipe on the toolbar.
-        [[EarlGrey selectElementWithMatcher:BottomToolbar()]
+        id<GREYMatcher> toolbarMatcher = SecondaryToolbar();
+        if ([ChromeEarlGrey isChromeNextEnabled] &&
+            ![ChromeEarlGrey
+                localStateBooleanPref:omnibox::kIsOmniboxInBottomPosition]) {
+          toolbarMatcher = PrimaryToolbar();
+        }
+        [[EarlGrey selectElementWithMatcher:toolbarMatcher]
             performAction:grey_swipeSlowInDirection(kGREYDirectionRight)];
       });
   AssertGestureIPHInvisible(
@@ -162,9 +186,15 @@ void ReloadFromOmnibox() {
 }
 
 // Tests that the pull-to-refresh IPH is NOT attempted when page loading fails.
+// TODO(crbug.com/508240659): Test is flaky on ios-fieldtrial-rel.
 - (void)testPullToRefreshIPHShouldDisappearOnEnteringTabGrid {
-  RelaunchWithIPHFeature(@"IPH_iOSPullToRefreshFeature",
-                         /*safari_switcher=*/YES);
+  if ([ChromeEarlGrey isIPadIdiom]) {
+    // TODO(crbug.com/508240659): Test is flaky on ios-fieldtrial-rel.
+    EARL_GREY_TEST_DISABLED(
+        @"Test disabled on iPad due to flakiness from split screen.");
+  }
+  [self relaunchWithIPHFeature:@"IPH_iOSPullToRefreshFeature"
+                safariSwitcher:YES];
   if ([ChromeEarlGrey isIPadIdiom]) {
     OpenSplitScreen();
   }
@@ -190,8 +220,13 @@ void ReloadFromOmnibox() {
 
 // Tests that the pull-to-refresh IPH is NOT attempted when page loading fails.
 - (void)testPullToRefreshIPHShouldNotShowOnPageLoadFail {
-  RelaunchWithIPHFeature(@"IPH_iOSPullToRefreshFeature",
-                         /*safari_switcher=*/YES);
+  if ([ChromeEarlGrey isIPadIdiom]) {
+    // TODO(crbug.com/508240659): Test is flaky on ios-fieldtrial-rel.
+    EARL_GREY_TEST_DISABLED(
+        @"Test disabled on iPad due to flakiness from split screen.");
+  }
+  [self relaunchWithIPHFeature:@"IPH_iOSPullToRefreshFeature"
+                safariSwitcher:YES];
   if ([ChromeEarlGrey isIPadIdiom]) {
     OpenSplitScreen();
   }
@@ -214,8 +249,8 @@ void ReloadFromOmnibox() {
   if (![ChromeEarlGrey isIPadIdiom]) {
     EARL_GREY_TEST_SKIPPED(@"Skipped for iPhone.");
   }
-  RelaunchWithIPHFeature(@"IPH_iOSPullToRefreshFeature",
-                         /*safari_switcher=*/YES);
+  [self relaunchWithIPHFeature:@"IPH_iOSPullToRefreshFeature"
+                safariSwitcher:YES];
   [BaseEarlGreyTestCaseAppInterface disableFastAnimation];
 
   GREYAssertTrue(self.testServer->Start(), @"Server did not start.");
@@ -228,7 +263,7 @@ void ReloadFromOmnibox() {
 // Tests that the swipe back/forward IPH is attempted on navigation, and
 // disappears when user leaves the page.
 - (void)testSwipeBackForwardIPHShowsOnNavigationAndHidesOnNavigation {
-  RelaunchWithIPHFeature(@"IPH_iOSSwipeBackForward", /*safari_switcher=*/NO);
+  [self relaunchWithIPHFeature:@"IPH_iOSSwipeBackForward" safariSwitcher:NO];
   [BaseEarlGreyTestCaseAppInterface disableFastAnimation];
 
   GREYAssertTrue(self.testServer->Start(), @"Server did not start.");
@@ -240,6 +275,12 @@ void ReloadFromOmnibox() {
   [[EarlGrey selectElementWithMatcher:BackButton()] performAction:grey_tap()];
   AssertGestureIPHVisibleWithDismissAction(
       @"Swipe back/forward IPH did not appear after tapping back button.", ^{
+        [ChromeEarlGrey waitForUIElementToAppearWithMatcher:ForwardButton()
+                                                    timeout:base::Seconds(2)];
+        [ChromeEarlGrey
+            waitForViewToStopAnimatingWithAccessibilityID:
+                kToolbarForwardButtonIdentifier
+                                                  timeout:base::Seconds(2)];
         [[EarlGrey selectElementWithMatcher:ForwardButton()]
             performAction:grey_tap()];
       });
@@ -252,8 +293,13 @@ void ReloadFromOmnibox() {
 // Tests that the pull-to-refresh IPH would be dismissed with the reason
 // `kSwipedAsInstructedByGestureIPH` when the user pulls down on the IPH.
 - (void)testPullToRefreshPerformAction {
-  RelaunchWithIPHFeature(@"IPH_iOSPullToRefreshFeature",
-                         /*safari_switcher=*/YES);
+  if ([ChromeEarlGrey isIPadIdiom]) {
+    // TODO(crbug.com/508240659): Test is flaky on ios-fieldtrial-rel.
+    EARL_GREY_TEST_DISABLED(
+        @"Test disabled on iPad due to flakiness from split screen.");
+  }
+  [self relaunchWithIPHFeature:@"IPH_iOSPullToRefreshFeature"
+                safariSwitcher:YES];
   if ([ChromeEarlGrey isIPadIdiom]) {
     OpenSplitScreen();
   }
@@ -287,7 +333,7 @@ void ReloadFromOmnibox() {
   // 12s; use a fixed wait time between the two to distinguish between the two
   // kinds of swipe IPHs.
   const base::TimeDelta waitTime = base::Seconds(11);
-  RelaunchWithIPHFeature(@"IPH_iOSSwipeBackForward", /*safari_switcher=*/NO);
+  [self relaunchWithIPHFeature:@"IPH_iOSSwipeBackForward" safariSwitcher:NO];
   [BaseEarlGreyTestCaseAppInterface disableFastAnimation];
 
   GREYAssertTrue(self.testServer->Start(), @"Server did not start.");
@@ -306,7 +352,7 @@ void ReloadFromOmnibox() {
   }
   AssertGestureIPHVisibleWithDismissAction(
       @"Bi-directional swipe back/forward IPH should still be visible.", nil);
-  RelaunchWithIPHFeature(@"IPH_iOSSwipeBackForward", /*safari_switcher=*/NO);
+  [self relaunchWithIPHFeature:@"IPH_iOSSwipeBackForward" safariSwitcher:NO];
   [BaseEarlGreyTestCaseAppInterface disableFastAnimation];
   // Go forward to destination URL 2.
   [[EarlGrey selectElementWithMatcher:ForwardButton()]
@@ -322,7 +368,7 @@ void ReloadFromOmnibox() {
 
 // Tests that opening a new tab hides the swipe back/forward IPH.
 - (void)testSwipeBackForwardIPHHidesOnNewTabOpening {
-  RelaunchWithIPHFeature(@"IPH_iOSSwipeBackForward", /*safari_switcher=*/NO);
+  [self relaunchWithIPHFeature:@"IPH_iOSSwipeBackForward" safariSwitcher:NO];
   [BaseEarlGreyTestCaseAppInterface disableFastAnimation];
 
   GREYAssertTrue(self.testServer->Start(), @"Server did not start.");
@@ -346,7 +392,7 @@ void ReloadFromOmnibox() {
 // `kSwipedAsInstructedByGestureIPH` when the user swipes the page in the
 // correct direction.
 - (void)testSwipeBackForwardPerformAction {
-  RelaunchWithIPHFeature(@"IPH_iOSSwipeBackForward", /*safari_switcher=*/NO);
+  [self relaunchWithIPHFeature:@"IPH_iOSSwipeBackForward" safariSwitcher:NO];
   [BaseEarlGreyTestCaseAppInterface disableFastAnimation];
 
   GREYAssertTrue(self.testServer->Start(), @"Server did not start.");
@@ -368,7 +414,7 @@ void ReloadFromOmnibox() {
 
 // Tests that the swipe back/forward IPH would NOT show if the page load fails.
 - (void)testSwipeBackForwardDoesNotShowWhenPageFails {
-  RelaunchWithIPHFeature(@"IPH_iOSSwipeBackForward", /*safari_switcher=*/NO);
+  [self relaunchWithIPHFeature:@"IPH_iOSSwipeBackForward" safariSwitcher:NO];
   [BaseEarlGreyTestCaseAppInterface disableFastAnimation];
 
   GREYAssertTrue(self.testServer->Start(), @"Server did not start.");
@@ -393,8 +439,10 @@ void ReloadFromOmnibox() {
   if ([ChromeEarlGrey isIPadIdiom]) {
     EARL_GREY_TEST_SKIPPED(@"Skipped for iPad (IPH is iPhone only)");
   }
-  RelaunchWithIPHFeature(@"IPH_iOSSwipeToolbarToChangeTab",
-                         /*safari_switcher=*/NO);
+  [self relaunchWithIPHFeature:@"IPH_iOSSwipeToolbarToChangeTab"
+                safariSwitcher:NO];
+  [ChromeEarlGrey setBoolValue:YES
+             forLocalStatePref:omnibox::kIsOmniboxInBottomPosition];
   [BaseEarlGreyTestCaseAppInterface disableFastAnimation];
 
   GREYAssertTrue(self.testServer->Start(), @"Server did not start.");
@@ -427,8 +475,10 @@ void ReloadFromOmnibox() {
   if ([ChromeEarlGrey isIPadIdiom]) {
     EARL_GREY_TEST_SKIPPED(@"Skipped for iPad (IPH is iPhone only)");
   }
-  RelaunchWithIPHFeature(@"IPH_iOSSwipeToolbarToChangeTab",
-                         /*safari_switcher=*/NO);
+  [self relaunchWithIPHFeature:@"IPH_iOSSwipeToolbarToChangeTab"
+                safariSwitcher:NO];
+  [ChromeEarlGrey setBoolValue:YES
+             forLocalStatePref:omnibox::kIsOmniboxInBottomPosition];
   [BaseEarlGreyTestCaseAppInterface disableFastAnimation];
 
   GREYAssertTrue(self.testServer->Start(), @"Server did not start.");
@@ -443,6 +493,9 @@ void ReloadFromOmnibox() {
   [ChromeEarlGreyUI openTabGrid];
   [[EarlGrey selectElementWithMatcher:chrome_test_util::TabGridCellAtIndex(0)]
       performAction:grey_tap()];
+  // This is needed because of a race condition with animating the closure of
+  // the tab grid.
+  WaitForTabGridDisappearance();
   AssertGestureIPHVisibleWithDismissAction(
       @"Toolbar swipe IPH should be visible when the user switches to an "
       @"adjacent tab.",
@@ -461,8 +514,10 @@ void ReloadFromOmnibox() {
   if ([ChromeEarlGrey isIPadIdiom]) {
     EARL_GREY_TEST_SKIPPED(@"Skipped for iPad (IPH is iPhone only)");
   }
-  RelaunchWithIPHFeature(@"IPH_iOSSwipeToolbarToChangeTab",
-                         /*safari_switcher=*/NO);
+  [self relaunchWithIPHFeature:@"IPH_iOSSwipeToolbarToChangeTab"
+                safariSwitcher:NO];
+  [ChromeEarlGrey setBoolValue:YES
+             forLocalStatePref:omnibox::kIsOmniboxInBottomPosition];
   [BaseEarlGreyTestCaseAppInterface disableFastAnimation];
 
   GREYAssertTrue(self.testServer->Start(), @"Server did not start.");
@@ -483,10 +538,10 @@ void ReloadFromOmnibox() {
       ^{
         // Swipe the toolbar in the wrong direction after it appears.
         [ChromeEarlGrey
-            waitForUIElementToAppearWithMatcher:grey_allOf(BottomToolbar(),
+            waitForUIElementToAppearWithMatcher:grey_allOf(SecondaryToolbar(),
                                                            grey_interactable(),
                                                            nil)];
-        [[EarlGrey selectElementWithMatcher:BottomToolbar()]
+        [[EarlGrey selectElementWithMatcher:SecondaryToolbar()]
             performAction:grey_swipeSlowInDirection(kGREYDirectionRight)];
       });
   AssertGestureIPHVisibleWithDismissAction(
@@ -494,11 +549,11 @@ void ReloadFromOmnibox() {
       @"direction.",
       ^{
         [ChromeEarlGrey
-            waitForUIElementToAppearWithMatcher:grey_allOf(BottomToolbar(),
+            waitForUIElementToAppearWithMatcher:grey_allOf(SecondaryToolbar(),
                                                            grey_interactable(),
                                                            nil)];
         // Swipe the toolbar in the right direction.
-        [[EarlGrey selectElementWithMatcher:BottomToolbar()]
+        [[EarlGrey selectElementWithMatcher:SecondaryToolbar()]
             performAction:grey_swipeSlowInDirection(kGREYDirectionLeft)];
       });
   AssertGestureIPHInvisible(@"Toolbar swipe IPH should be dismissed after "
@@ -513,8 +568,10 @@ void ReloadFromOmnibox() {
   if ([ChromeEarlGrey isIPadIdiom]) {
     EARL_GREY_TEST_SKIPPED(@"Skipped for iPad (IPH is iPhone only)");
   }
-  RelaunchWithIPHFeature(@"IPH_iOSSwipeToolbarToChangeTab",
-                         /*safari_switcher=*/NO);
+  [self relaunchWithIPHFeature:@"IPH_iOSSwipeToolbarToChangeTab"
+                safariSwitcher:NO];
+  [ChromeEarlGrey setBoolValue:YES
+             forLocalStatePref:omnibox::kIsOmniboxInBottomPosition];
   [BaseEarlGreyTestCaseAppInterface disableFastAnimation];
 
   GREYAssertTrue(self.testServer->Start(), @"Server did not start.");
@@ -548,8 +605,10 @@ void ReloadFromOmnibox() {
   if ([ChromeEarlGrey isIPadIdiom]) {
     EARL_GREY_TEST_SKIPPED(@"Skipped for iPad (IPH is iPhone only)");
   }
-  RelaunchWithIPHFeature(@"IPH_iOSSwipeToolbarToChangeTab",
-                         /*safari_switcher=*/NO);
+  [self relaunchWithIPHFeature:@"IPH_iOSSwipeToolbarToChangeTab"
+                safariSwitcher:NO];
+  [ChromeEarlGrey setBoolValue:YES
+             forLocalStatePref:omnibox::kIsOmniboxInBottomPosition];
   [BaseEarlGreyTestCaseAppInterface disableFastAnimation];
 
   GREYAssertTrue(self.testServer->Start(), @"Server did not start.");
@@ -591,9 +650,6 @@ void ReloadFromOmnibox() {
   if ([ChromeEarlGrey isIPadIdiom]) {
     EARL_GREY_TEST_SKIPPED(@"Skipped for iPad (IPH is iPhone only)");
   }
-  RelaunchConfigurationWithIPHFeature([self appConfigurationForTestCase],
-                                      @"IPH_iOSLensOverlayEntrypointTip",
-                                      /*safari_switcher=*/NO);
 
   // Load a random page.
   GREYAssertTrue(self.testServer->Start(), @"Server did not start.");
@@ -601,23 +657,19 @@ void ReloadFromOmnibox() {
   [ChromeEarlGrey loadURL:destinationUrl1];
 
   // Verify Lens overlay entrypoint tip is shown.
-  GREYAssertTrue(
-      [ChromeEarlGrey
-          testUIElementAppearanceWithMatcher:grey_accessibilityID(
-                                                 kBubbleViewArrowViewIdentifier)
-                                     timeout:base::Seconds(1)],
-      @"Lens overlay entrypoint tip is not shown");
+  [ChromeEarlGrey
+      waitForUIElementToAppearWithMatcher:grey_accessibilityID(
+                                              kBubbleViewArrowViewIdentifier)];
 
   // Move Omnibox to the bottom.
-  [ChromeEarlGrey setBoolValue:YES forLocalStatePref:prefs::kBottomOmnibox];
+  [ChromeEarlGrey setBoolValue:YES
+             forLocalStatePref:omnibox::kIsOmniboxInBottomPosition];
   [ChromeEarlGreyUI waitForToolbarVisible:YES];
 
   // Verify Lens overlay entrypoint tip is hidden after Omnibox position
   // changed.
-  GREYAssertFalse(
-      [ChromeEarlGrey testUIElementAppearanceWithMatcher:
-                          grey_accessibilityID(kBubbleViewArrowViewIdentifier)],
-      @"Lens overlay entrypoint tip is still shown");
+  [ChromeEarlGrey waitForUIElementToDisappearWithMatcher:
+                      grey_accessibilityID(kBubbleViewArrowViewIdentifier)];
 }
 
 @end

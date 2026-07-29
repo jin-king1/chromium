@@ -11,6 +11,7 @@
 #include "base/process/process.h"
 #include "base/process/process_handle.h"
 #include "base/process/process_iterator.h"
+#include "base/test/gmock_expected_support.h"
 #include "base/test/test_timeouts.h"
 #include "base/threading/platform_thread.h"
 #include "base/time/time.h"
@@ -32,18 +33,45 @@ bool IsExplorerRunningAtMediumOrLower() {
 }  // namespace
 
 TEST(ElevationUtil, RunDeElevated) {
-  if (!::IsUserAnAdmin() || !IsExplorerRunningAtMediumOrLower()) {
-    GTEST_SKIP();
-  }
-
-  Process process = RunDeElevated(CommandLine::FromString(L"more.com"));
+  ASSERT_OK_AND_ASSIGN(Process process,
+                       RunDeElevated(CommandLine::FromString(kMoreExecutable)));
   ASSERT_TRUE(process.IsValid());
 
   absl::Cleanup terminate_process = [&] {
     EXPECT_TRUE(process.Terminate(0, false));
   };
 
-  ASSERT_TRUE(IsProcessRunningAtMediumOrLower(process.Pid()));
+  if (::IsUserAnAdmin() && IsExplorerRunningAtMediumOrLower()) {
+    ASSERT_TRUE(IsProcessRunningAtMediumOrLower(process.Pid()));
+  }
+}
+
+TEST(ElevationUtil, RunDeElevatedExplicitExplorerPid) {
+  ASSERT_OK_AND_ASSIGN(Process process,
+                       RunDeElevated(CommandLine::FromString(kMoreExecutable),
+                                     GetExplorerPid()));
+  ASSERT_TRUE(process.IsValid());
+
+  absl::Cleanup terminate_process = [&] {
+    EXPECT_TRUE(process.Terminate(0, false));
+  };
+
+  if (::IsUserAnAdmin() && IsExplorerRunningAtMediumOrLower()) {
+    ASSERT_TRUE(IsProcessRunningAtMediumOrLower(process.Pid()));
+  }
+}
+
+TEST(ElevationUtil, RunDeElevatedFails) {
+  if (!::IsUserAnAdmin() || !IsExplorerRunningAtMediumOrLower()) {
+    GTEST_SKIP();
+  }
+
+  // Generate a command line that is more than MAX_PATH chars long.
+  auto process_or_error = RunDeElevated(
+      CommandLine::FromString(L"more.com " + std::wstring(MAX_PATH * 2, L'A') +
+                              std::wstring(MAX_PATH * 2, L'B')));
+  ASSERT_FALSE(process_or_error.has_value());
+  ASSERT_NE(process_or_error.error(), static_cast<DWORD>(ERROR_SUCCESS));
 }
 
 class ElevationUtilRunDeElevatedNoWaitTest

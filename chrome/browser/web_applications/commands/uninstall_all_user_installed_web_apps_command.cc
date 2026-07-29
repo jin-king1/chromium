@@ -5,15 +5,16 @@
 #include "chrome/browser/web_applications/commands/uninstall_all_user_installed_web_apps_command.h"
 
 #include "base/check.h"
-#include "base/containers/enum_set.h"
 #include "base/functional/bind.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
+#include "base/strings/to_string.h"
 #include "chrome/browser/web_applications/locks/all_apps_lock.h"
 #include "chrome/browser/web_applications/web_app_constants.h"
 #include "chrome/browser/web_applications/web_app_management_type.h"
 #include "chrome/browser/web_applications/web_app_registrar.h"
 #include "components/sync/base/data_type.h"
+#include "components/webapps/browser/installable/installable_metrics.h"
 #include "components/webapps/browser/uninstall_result_code.h"
 
 namespace web_app {
@@ -29,7 +30,7 @@ std::string TypesToString(const WebAppManagementTypes& types) {
 }
 std::optional<std::string> ConstructErrorMessage(
     const std::vector<std::string>& errors) {
-  std::optional<std::string> error_message = std::nullopt;
+  std::optional<std::string> error_message;
   if (!errors.empty()) {
     error_message = base::JoinString(errors, "\n");
   }
@@ -80,6 +81,9 @@ void UninstallAllUserInstalledWebAppsCommand::ProcessNextUninstallOrComplete() {
   // Prepare pending jobs for next app ID.
   webapps::AppId app_id = ids_to_uninstall_.back();
   ids_to_uninstall_.pop_back();
+
+  // Track an uninstallation event, regardless of whether it succeeded or not.
+  webapps::InstallableMetrics::TrackUninstallEvent(uninstall_source_);
 
   WebAppManagementTypes types_to_remove =
       base::Intersection(kUserDrivenInstallSources,

@@ -9,7 +9,10 @@
 #include "base/files/file.h"
 #include "base/files/file_util.h"
 #include "base/json/values_util.h"
+#include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
 #include "sql/statement.h"
 
 namespace content {
@@ -103,13 +106,7 @@ std::optional<std::vector<uint8_t>> CdmStorageDatabase::ReadFile(
     return std::vector<uint8_t>();
   }
 
-  std::vector<uint8_t> data;
-  if (!statement.ColumnBlobAsVector(0, &data)) {
-    DVLOG(1) << "Error reading Cdm storage data.";
-    return std::nullopt;
-  }
-
-  return data;
+  return statement.ColumnBlobAsVector(0);
 }
 
 bool CdmStorageDatabase::WriteFile(const blink::StorageKey& storage_key,
@@ -287,7 +284,7 @@ CdmStorageKeyUsageSize CdmStorageDatabase::GetUsagePerAllStorageKeys(
   while (get_all_storage_keys_statement.Step()) {
     std::optional<blink::StorageKey> maybe_storage_key =
         blink::StorageKey::Deserialize(
-            get_all_storage_keys_statement.ColumnString(0));
+            get_all_storage_keys_statement.ColumnStringView(0));
     if (maybe_storage_key) {
       auto storage_key = maybe_storage_key.value();
       usage_per_storage_keys.emplace_back(

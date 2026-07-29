@@ -8,7 +8,7 @@
 #include "third_party/blink/renderer/core/scroll/scrollbar_test_suite.h"
 #include "third_party/blink/renderer/platform/heap/thread_state.h"
 #include "third_party/blink/renderer/platform/testing/task_environment.h"
-#include "third_party/blink/renderer/platform/testing/testing_platform_support_with_mock_scheduler.h"
+#include "third_party/blink/renderer/platform/testing/testing_platform_support.h"
 
 namespace blink {
 
@@ -16,13 +16,12 @@ using testing::NiceMock;
 using testing::Return;
 
 class ScrollbarThemeOverlayTest : public testing::Test {
- private:
+ protected:
   test::TaskEnvironment task_environment_;
 };
 
 TEST_F(ScrollbarThemeOverlayTest, PaintInvalidation) {
-  ScopedTestingPlatformSupport<TestingPlatformSupportWithMockScheduler>
-      platform;
+  ScopedTestingPlatformSupport<TestingPlatformSupport> platform;
 
   NiceMock<MockScrollableArea>* mock_scrollable_area =
       MakeGarbageCollected<NiceMock<MockScrollableArea>>(
@@ -64,7 +63,8 @@ TEST_F(ScrollbarThemeOverlayTest, PaintInvalidation) {
   // it should cause a "general" invalidation for non-composited scrollbars.
   // Ensure the horizontal scrollbar is unaffected.
   mock_scrollable_area->UpdateScrollOffset(ScrollOffset(0, 5),
-                                           mojom::blink::ScrollType::kUser);
+                                           mojom::blink::ScrollType::kUser,
+                                           cc::ScrollSourceType::kNone);
   vertical_scrollbar->OffsetDidChange(mojom::blink::ScrollType::kUser);
   horizontal_scrollbar->OffsetDidChange(mojom::blink::ScrollType::kUser);
   EXPECT_FALSE(vertical_scrollbar->ThumbNeedsRepaint());
@@ -78,7 +78,8 @@ TEST_F(ScrollbarThemeOverlayTest, PaintInvalidation) {
   // Try the horizontal scrollbar.
   mock_scrollable_area->ClearNeedsPaintInvalidationForScrollControls();
   mock_scrollable_area->UpdateScrollOffset(ScrollOffset(5, 5),
-                                           mojom::blink::ScrollType::kUser);
+                                           mojom::blink::ScrollType::kUser,
+                                           cc::ScrollSourceType::kNone);
   horizontal_scrollbar->OffsetDidChange(mojom::blink::ScrollType::kUser);
   vertical_scrollbar->OffsetDidChange(mojom::blink::ScrollType::kUser);
   EXPECT_FALSE(vertical_scrollbar->ThumbNeedsRepaint());

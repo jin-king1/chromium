@@ -5,8 +5,10 @@
 #ifndef CHROME_BROWSER_UI_SAFETY_HUB_SAFETY_HUB_HATS_SERVICE_H_
 #define CHROME_BROWSER_UI_SAFETY_HUB_SAFETY_HUB_HATS_SERVICE_H_
 
+#include "base/memory/raw_ptr.h"
 #include "chrome/browser/ui/hats/hats_service.h"
 #include "chrome/browser/ui/hats/trust_safety_sentiment_service.h"
+#include "chrome/browser/ui/safety_hub/safety_hub_constants.h"
 #include "components/keyed_service/core/keyed_service.h"
 
 class Profile;
@@ -22,9 +24,6 @@ class SafetyHubHatsService : public KeyedService {
 
   SafetyHubHatsService(const SafetyHubHatsService&) = delete;
   SafetyHubHatsService& operator=(const SafetyHubHatsService&) = delete;
-
-  // Called when the user clicks on the app menu.
-  void TriggerControlSurvey();
 
   // Called when the user interacts with a module of Safety Hub.
   void SafetyHubModuleInteracted();
@@ -45,15 +44,18 @@ class SafetyHubHatsService : public KeyedService {
   // Hub.
   std::map<std::string, bool> GetSafetyHubProductSpecificData();
 
+  // Gets the overall state for the different Safety Hub modules. This will be
+  // the "worst" state that any module is in. For instance, a single "warning"
+  // and two "safe" states will result in "warning". For modules with a card,
+  // the value will reflect that of a card, for the other modules, the state
+  // will be in a "warning" state if any item needs to be reviewed.
+  safety_hub::SafetyHubCardState GetOverallState();
+
  private:
   // Triggers a Safety Hub survey for the long-term Trust & Safety sentiment
   // tracking.
   void TriggerTrustSafetySentimentSurvey(
       TrustSafetySentimentService::FeatureArea area);
-
-  // Triggers a Safety Hub survey for the long-term Trust & Safety sentiment
-  // tracking.
-  void TriggerOneOffSurvey(const std::string& trigger);
 
   const raw_ref<Profile> profile_;
   const raw_ptr<TrustSafetySentimentService> tss_service_;

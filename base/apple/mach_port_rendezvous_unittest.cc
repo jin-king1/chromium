@@ -2,15 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40284755): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "base/apple/mach_port_rendezvous.h"
 
 #include <mach/mach.h>
 
+#include <array>
 #include <utility>
 
 #include "base/apple/foundation_util.h"
@@ -26,6 +22,10 @@
 #include "base/threading/platform_thread.h"
 #include "base/time/time.h"
 #include "testing/multiprocess_func_list.h"
+
+#if BUILDFLAG(IS_MAC)
+#include "base/apple/mach_port_rendezvous_mac.h"
+#endif
 
 namespace base {
 
@@ -193,7 +193,7 @@ TEST_P(MachPortRendezvousServerTest, CleanupIfNoRendezvous) {
 }
 
 TEST_P(MachPortRendezvousServerTest, DestroyRight) {
-  const struct {
+  struct TestCase {
     // How to create the port.
     bool insert_send_right;
 
@@ -203,13 +203,15 @@ TEST_P(MachPortRendezvousServerTest, DestroyRight) {
     // After calling DestroyRight.
     bool is_dead_name;
     mach_port_urefs_t send_rights;
-  } kCases[] = {
-      {true, MACH_MSG_TYPE_MOVE_RECEIVE, true, 0},
-      {true, MACH_MSG_TYPE_MOVE_SEND, false, 0},
-      {true, MACH_MSG_TYPE_COPY_SEND, false, 1},
-      {true, MACH_MSG_TYPE_MAKE_SEND, false, 1},
-      {false, MACH_MSG_TYPE_MAKE_SEND, false, 0},
-      {true, MACH_MSG_TYPE_MAKE_SEND_ONCE, false, 1},
+  };
+
+  const std::array kCases = {
+      TestCase{true, MACH_MSG_TYPE_MOVE_RECEIVE, true, 0},
+      TestCase{true, MACH_MSG_TYPE_MOVE_SEND, false, 0},
+      TestCase{true, MACH_MSG_TYPE_COPY_SEND, false, 1},
+      TestCase{true, MACH_MSG_TYPE_MAKE_SEND, false, 1},
+      TestCase{false, MACH_MSG_TYPE_MAKE_SEND, false, 0},
+      TestCase{true, MACH_MSG_TYPE_MAKE_SEND_ONCE, false, 1},
       // It's not possible to test MOVE_SEND_ONCE since one cannot
       // insert_right MAKE_SEND_ONCE.
   };
@@ -250,7 +252,7 @@ TEST_P(MachPortRendezvousServerTest, DestroyRight) {
 MULTIPROCESS_TEST_MAIN(FailToRendezvous) {
   // The rendezvous system uses the BaseBundleID to construct the bootstrap
   // server name, so changing it will result in a failure to look it up.
-  base::apple::SetBaseBundleID("org.chromium.totallyfake");
+  apple::SetBaseBundleIDOverride("org.chromium.totallyfake");
   CHECK_EQ(nullptr, base::MachPortRendezvousClient::GetInstance());
   return 0;
 }

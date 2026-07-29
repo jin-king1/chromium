@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <variant>
 
 #include "base/metrics/histogram_macros.h"
 #include "build/build_config.h"
@@ -80,27 +81,19 @@ bool FilterOperationSupported(const cc::FilterOperation& operation) {
 gfx::CALayerResult FromRenderPassQuad(
     const DisplayResourceProvider* resource_provider,
     const AggregatedRenderPassDrawQuad* quad,
-    const base::flat_map<AggregatedRenderPassId,
-                         raw_ptr<cc::FilterOperations, CtnExperimental>>&
-        render_pass_filters,
-    const base::flat_map<AggregatedRenderPassId,
-                         raw_ptr<cc::FilterOperations, CtnExperimental>>&
-        render_pass_backdrop_filters,
     OverlayCandidate* ca_layer_overlay) {
-  if (render_pass_backdrop_filters.count(quad->render_pass_id)) {
+  if (!quad->backdrop_filters.IsEmpty()) {
     return gfx::kCALayerFailedRenderPassBackdropFilters;
   }
 
-  auto* shared_quad_state = quad->shared_quad_state;
+  const SharedQuadState* shared_quad_state = quad->shared_quad_state;
   if (shared_quad_state->sorting_context_id != 0)
     return gfx::kCALayerFailedRenderPassSortingContextId;
 
-  auto it = render_pass_filters.find(quad->render_pass_id);
-  if (it != render_pass_filters.end()) {
-    for (const auto& operation : it->second->operations()) {
-      bool success = FilterOperationSupported(operation);
-      if (!success)
-        return gfx::kCALayerFailedRenderPassFilterOperation;
+  for (const auto& operation : quad->filters.operations()) {
+    bool success = FilterOperationSupported(operation);
+    if (!success) {
+      return gfx::kCALayerFailedRenderPassFilterOperation;
     }
   }
 
@@ -151,7 +144,7 @@ gfx::CALayerResult FromTextureQuad(
   const bool y_flipped =
       resource_provider->GetOrigin(resource_id) == kBottomLeft_GrSurfaceOrigin;
   if (y_flipped) {
-    auto transform = absl::get<gfx::Transform>(ca_layer_overlay->transform);
+    auto transform = std::get<gfx::Transform>(ca_layer_overlay->transform);
     // The anchor point is at the bottom-left corner of the CALayer. The
     // transformation that flips the contents of the layer without changing its
     // frame is the composition of a vertical flip about the anchor point, and a
@@ -161,8 +154,8 @@ gfx::CALayerResult FromTextureQuad(
     ca_layer_overlay->transform = transform;
   }
   ca_layer_overlay->resource_id = resource_id;
-  ca_layer_overlay->uv_rect =
-      BoundingRect(quad->uv_top_left, quad->uv_bottom_right);
+  ca_layer_overlay->uv_rect = quad->GetNormalizedTexCoords(
+      resource_provider->GetResourceBackedSize(resource_id));
   ca_layer_overlay->color = quad->background_color;
   ca_layer_overlay->nearest_neighbor_filter = quad->nearest_neighbor;
   ca_layer_overlay->hdr_metadata =
@@ -181,8 +174,9 @@ gfx::CALayerResult FromTileQuad(
     return gfx::kCALayerFailedTileNotCandidate;
   ca_layer_overlay->resource_id = resource_id;
   ca_layer_overlay->uv_rect = quad->tex_coord_rect;
-  ca_layer_overlay->uv_rect.InvScale(quad->texture_size.width(),
-                                     quad->texture_size.height());
+  auto texture_size = resource_provider->GetResourceBackedSize(resource_id);
+  ca_layer_overlay->uv_rect.InvScale(texture_size.width(),
+                                     texture_size.height());
   ca_layer_overlay->nearest_neighbor_filter = quad->nearest_neighbor;
   return gfx::kCALayerSuccess;
 }
@@ -193,12 +187,6 @@ class CALayerOverlayProcessorInternal {
       const DisplayResourceProvider* resource_provider,
       const gfx::RectF& display_rect,
       const DrawQuad* quad,
-      const base::flat_map<AggregatedRenderPassId,
-                           raw_ptr<cc::FilterOperations, CtnExperimental>>&
-          render_pass_filters,
-      const base::flat_map<AggregatedRenderPassId,
-                           raw_ptr<cc::FilterOperations, CtnExperimental>>&
-          render_pass_backdrop_filters,
       OverlayCandidate* ca_layer_overlay,
       bool* skip,
       bool* render_pass_draw_quad,
@@ -272,7 +260,6 @@ class CALayerOverlayProcessorInternal {
       case DrawQuad::Material::kAggregatedRenderPass:
         return FromRenderPassQuad(
             resource_provider, AggregatedRenderPassDrawQuad::MaterialCast(quad),
-            render_pass_filters, render_pass_backdrop_filters,
             ca_layer_overlay);
       case DrawQuad::Material::kSurfaceContent:
         return gfx::kCALayerFailedSurfaceContent;
@@ -356,12 +343,6 @@ void CALayerOverlayProcessor::PutForcedOverlayContentIntoUnderlays(
     AggregatedRenderPass* render_pass,
     const gfx::RectF& display_rect,
     QuadList* quad_list,
-    const base::flat_map<AggregatedRenderPassId,
-                         raw_ptr<cc::FilterOperations, CtnExperimental>>&
-        render_pass_filters,
-    const base::flat_map<AggregatedRenderPassId,
-                         raw_ptr<cc::FilterOperations, CtnExperimental>>&
-        render_pass_backdrop_filters,
     OverlayCandidateList* ca_layer_overlays) const {
   bool failed = false;
 
@@ -392,9 +373,8 @@ void CALayerOverlayProcessor::PutForcedOverlayContentIntoUnderlays(
 
     if (force_quad_to_overlay) {
       if (!PutQuadInSeparateOverlay(it, resource_provider, render_pass,
-                                    display_rect, quad, render_pass_filters,
-                                    render_pass_backdrop_filters,
-                                    protected_video_type, ca_layer_overlays)) {
+                                    display_rect, quad, protected_video_type,
+                                    ca_layer_overlays)) {
         failed = true;
         break;
       }
@@ -408,12 +388,6 @@ bool CALayerOverlayProcessor::ProcessForCALayerOverlays(
     AggregatedRenderPass* render_pass,
     const DisplayResourceProvider* resource_provider,
     const gfx::RectF& display_rect,
-    const base::flat_map<AggregatedRenderPassId,
-                         raw_ptr<cc::FilterOperations, CtnExperimental>>&
-        render_pass_filters,
-    const base::flat_map<AggregatedRenderPassId,
-                         raw_ptr<cc::FilterOperations, CtnExperimental>>&
-        render_pass_backdrop_filters,
     OverlayCandidateList* ca_layer_overlays) {
   const QuadList& quad_list = render_pass->quad_list;
   gfx::CALayerResult result = gfx::kCALayerSuccess;
@@ -449,10 +423,9 @@ bool CALayerOverlayProcessor::ProcessForCALayerOverlays(
     OverlayCandidate ca_layer;
     bool skip = false;
     bool render_pass_draw_quad = false;
-    result = processor.FromDrawQuad(
-        resource_provider, display_rect, quad, render_pass_filters,
-        render_pass_backdrop_filters, &ca_layer, &skip, &render_pass_draw_quad,
-        yuv_draw_quad_count);
+    result = processor.FromDrawQuad(resource_provider, display_rect, quad,
+                                    &ca_layer, &skip, &render_pass_draw_quad,
+                                    yuv_draw_quad_count);
     if (result != gfx::kCALayerSuccess)
       break;
 
@@ -499,12 +472,6 @@ bool CALayerOverlayProcessor::PutQuadInSeparateOverlay(
     AggregatedRenderPass* render_pass,
     const gfx::RectF& display_rect,
     const DrawQuad* quad,
-    const base::flat_map<AggregatedRenderPassId,
-                         raw_ptr<cc::FilterOperations, CtnExperimental>>&
-        render_pass_filters,
-    const base::flat_map<AggregatedRenderPassId,
-                         raw_ptr<cc::FilterOperations, CtnExperimental>>&
-        render_pass_backdrop_filters,
     gfx::ProtectedVideoType protected_video_type,
     OverlayCandidateList* ca_layer_overlays) const {
   CALayerOverlayProcessorInternal processor;
@@ -513,9 +480,8 @@ bool CALayerOverlayProcessor::PutQuadInSeparateOverlay(
   bool render_pass_draw_quad = false;
   int yuv_draw_quad_count = 0;
   gfx::CALayerResult result = processor.FromDrawQuad(
-      resource_provider, display_rect, quad, render_pass_filters,
-      render_pass_backdrop_filters, &ca_layer, &skip, &render_pass_draw_quad,
-      yuv_draw_quad_count);
+      resource_provider, display_rect, quad, &ca_layer, &skip,
+      &render_pass_draw_quad, yuv_draw_quad_count);
   if (result != gfx::kCALayerSuccess)
     return false;
 

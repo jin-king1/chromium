@@ -2,14 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "third_party/blink/renderer/modules/imagecapture/image_capture.h"
 
+#include "base/functional/callback_helpers.h"
 #include "base/time/time.h"
+#include "media/base/video_frame.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/web/web_heap.h"
@@ -53,7 +51,6 @@ using PopulatePanTiltZoom =
     base::StrongAlias<class PopulatePanTiltZoomZoomTag, bool>;
 
 using testing::_;
-using testing::Invoke;
 using testing::NiceMock;
 using testing::Return;
 
@@ -702,16 +699,16 @@ class ImageCaptureTest : public testing::Test {
         .WillRepeatedly(Return(MediaStreamSource::kTypeVideo));
 
     ON_CALL(*component_, AddSink(_, _, _, _))
-        .WillByDefault(Invoke([&](WebMediaStreamSink* sink,
-                                  const VideoCaptureDeliverFrameCB& callback,
-                                  MediaStreamVideoSink::IsSecure is_secure,
-                                  MediaStreamVideoSink::UsesAlpha uses_alpha) {
+        .WillByDefault([&](WebMediaStreamSink* sink,
+                           const VideoCaptureDeliverFrameCB& callback,
+                           MediaStreamVideoSink::IsSecure is_secure,
+                           MediaStreamVideoSink::UsesAlpha uses_alpha) {
           platform_track_->AddSink(sink, callback, is_secure, uses_alpha);
           if (produce_frame_on_add_sink_) {
             callback.Run(media::VideoFrame::CreateBlackFrame(gfx::Size(1, 1)),
                          /*estimated_capture_time=*/base::TimeTicks());
           }
-        }));
+        });
   }
 
  protected:

@@ -9,9 +9,9 @@
 
 #include <algorithm>
 #include <optional>
+#include <utility>
 
 #include "base/apple/foundation_util.h"
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/memory/scoped_refptr.h"
@@ -28,15 +28,18 @@
 #include "device/fido/attestation_object.h"
 #include "device/fido/attestation_statement.h"
 #include "device/fido/authenticator_data.h"
+#include "device/fido/authenticator_supported_options.h"
 #include "device/fido/ctap_get_assertion_request.h"
 #include "device/fido/ctap_make_credential_request.h"
 #include "device/fido/discoverable_credential_metadata.h"
-#include "device/fido/features.h"
 #include "device/fido/fido_authenticator.h"
 #include "device/fido/fido_discovery_base.h"
 #include "device/fido/fido_parsing_utils.h"
-#include "device/fido/fido_transport_protocol.h"
+#include "device/fido/large_blob.h"
 #include "device/fido/mac/icloud_keychain_sys.h"
+#include "device/fido/public/features.h"
+#include "device/fido/public/fido_transport_protocol.h"
+#include "device/fido/public/fido_types.h"
 
 using base::apple::NSDataToSpan;
 
@@ -49,6 +52,22 @@ std::vector<uint8_t> ToVector(NSData* data) {
   return {span.begin(), span.end()};
 }
 
+bool SupportsLargeBlob() {
+  if (@available(macOS 14.0, *)) {
+    return true;
+  }
+  return false;
+}
+
+API_AVAILABLE(macos(13.3))
+SystemInterface::LargeBlobAssertionInputs GetLargeBlobAssertionInputs(
+    const CtapGetAssertionOptions& options) {
+  SystemInterface::LargeBlobAssertionInputs large_blob_inputs;
+  large_blob_inputs.read = options.large_blob_read;
+  large_blob_inputs.write = options.large_blob_write;
+  return large_blob_inputs;
+}
+
 AuthenticatorSupportedOptions AuthenticatorOptions() {
   AuthenticatorSupportedOptions options;
   options.is_platform_device =
@@ -58,8 +77,10 @@ AuthenticatorSupportedOptions AuthenticatorOptions() {
       UserVerificationAvailability::kSupportedAndConfigured;
   options.supports_user_presence = true;
   if (@available(macOS 15.0, *)) {
-    options.supports_prf =
-        base::FeatureList::IsEnabled(kWebAuthniCloudKeychainPrf);
+    options.supports_prf = true;
+  }
+  if (SupportsLargeBlob()) {
+    options.large_blob_type = LargeBlobSupportType::kBespoke;
   }
   return options;
 }
@@ -98,6 +119,16 @@ std::optional<std::vector<uint8_t>> PrfOutputToBytes(T* output) {
   return result;
 }
 
+API_AVAILABLE(macos(14.0))
+static bool LargeBlobSupportedFromRegistration(
+    ASAuthorizationPlatformPublicKeyCredentialRegistration* reg) {
+  // LargeBlob will be non-nil only if the Relying Party asks for the extension.
+  if (!reg.largeBlob) {
+    return false;
+  }
+  return reg.largeBlob.isSupported;
+}
+
 constexpr char kMetricName[] = "WebAuthentication.MacOS.PasskeyPermission";
 
 class API_AVAILABLE(macos(13.3)) Authenticator : public FidoAuthenticator {
@@ -116,9 +147,14 @@ class API_AVAILABLE(macos(13.3)) Authenticator : public FidoAuthenticator {
                       MakeCredentialOptions options,
                       MakeCredentialCallback callback) override {
     scoped_refptr<SystemInterface> sys_interface = GetSystemInterface();
-    auto continuation =
-        base::BindOnce(&Authenticator::OnMakeCredentialComplete,
-                       weak_factory_.GetWeakPtr(), std::move(callback));
+    if (!SupportsLargeBlob()) {
+      options.large_blob_support = LargeBlobSupport::kNotRequested;
+    }
+    const bool large_blob_requested =
+        options.large_blob_support != LargeBlobSupport::kNotRequested;
+    auto continuation = base::BindOnce(
+        &Authenticator::OnMakeCredentialComplete, weak_factory_.GetWeakPtr(),
+        std::move(callback), large_blob_requested);
 
     // Authentication is not required for this operation, but it's a moment
     // when we can reasonably ask for it. If the user authorizes Chromium then
@@ -131,7 +167,7 @@ class API_AVAILABLE(macos(13.3)) Authenticator : public FidoAuthenticator {
         sys_interface->AuthorizeAndContinue(
             base::BindOnce(&Authenticator::MakeCredentialAfterPermissionRequest,
                            weak_factory_.GetWeakPtr(), std::move(request),
-                           std::move(continuation)));
+                           std::move(options), std::move(continuation)));
         break;
       case SystemInterface::kAuthDenied:
         // The operation continues even if the user denied access. See above.
@@ -139,6 +175,7 @@ class API_AVAILABLE(macos(13.3)) Authenticator : public FidoAuthenticator {
         [[fallthrough]];
       case SystemInterface::kAuthAuthorized:
         sys_interface->MakeCredential(window_, std::move(request),
+                                      std::move(options),
                                       std::move(continuation));
         break;
     }
@@ -146,6 +183,7 @@ class API_AVAILABLE(macos(13.3)) Authenticator : public FidoAuthenticator {
 
   void MakeCredentialAfterPermissionRequest(
       CtapMakeCredentialRequest request,
+      MakeCredentialOptions options,
       base::OnceCallback<void(ASAuthorization* authorization, NSError* error)>
           continuation) {
     scoped_refptr<SystemInterface> sys_interface = GetSystemInterface();
@@ -158,7 +196,7 @@ class API_AVAILABLE(macos(13.3)) Authenticator : public FidoAuthenticator {
     }
 
     sys_interface->MakeCredential(window_, std::move(request),
-                                  std::move(continuation));
+                                  std::move(options), std::move(continuation));
   }
 
   void GetAssertion(CtapGetAssertionRequest request,
@@ -177,23 +215,26 @@ class API_AVAILABLE(macos(13.3)) Authenticator : public FidoAuthenticator {
         sys_interface->AuthorizeAndContinue(
             base::BindOnce(&Authenticator::GetAssertionAfterPermissionRequest,
                            weak_factory_.GetWeakPtr(), std::move(request),
-                           std::move(callback)));
+                           std::move(options), std::move(callback)));
         break;
       case SystemInterface::kAuthDenied:
         // The operation continues even if the user denied access. See above.
         FIDO_LOG(DEBUG) << "iCKC: passkeys permission is denied";
         [[fallthrough]];
       case SystemInterface::kAuthAuthorized:
-        auto continuation =
-            base::BindOnce(&Authenticator::OnGetAssertionComplete,
-                           weak_factory_.GetWeakPtr(), std::move(callback));
+        auto continuation = base::BindOnce(
+            &Authenticator::OnGetAssertionComplete, weak_factory_.GetWeakPtr(),
+            options.large_blob_read, options.large_blob_write.has_value(),
+            std::move(callback));
         sys_interface->GetAssertion(window_, std::move(request),
+                                    GetLargeBlobAssertionInputs(options),
                                     std::move(continuation));
         break;
     }
   }
 
   void GetAssertionAfterPermissionRequest(CtapGetAssertionRequest request,
+                                          CtapGetAssertionOptions options,
                                           GetAssertionCallback callback) {
     scoped_refptr<SystemInterface> sys_interface = GetSystemInterface();
     if (sys_interface->GetAuthState() != SystemInterface::kAuthAuthorized) {
@@ -205,10 +246,12 @@ class API_AVAILABLE(macos(13.3)) Authenticator : public FidoAuthenticator {
           PasskeyPermissionMetric::kApprovedDuringGet);
     }
 
-    auto continuation =
-        base::BindOnce(&Authenticator::OnGetAssertionComplete,
-                       weak_factory_.GetWeakPtr(), std::move(callback));
+    auto continuation = base::BindOnce(
+        &Authenticator::OnGetAssertionComplete, weak_factory_.GetWeakPtr(),
+        options.large_blob_read, options.large_blob_write.has_value(),
+        std::move(callback));
     sys_interface->GetAssertion(window_, std::move(request),
+                                GetLargeBlobAssertionInputs(options),
                                 std::move(continuation));
   }
 
@@ -249,6 +292,12 @@ class API_AVAILABLE(macos(13.3)) Authenticator : public FidoAuthenticator {
                     -> bool { return allow_list_cred.id == cred_id; })) {
           continue;
         }
+        std::optional<std::string> provider_name;
+        if (@available(macOS 14.0, *)) {
+          // `providerName` is documented available in 13.3+, but appears broken
+          // in 13.* (see https://crbug.com/407900955)
+          provider_name = cred.providerName.UTF8String;
+        }
         ret.emplace_back(AuthenticatorType::kICloudKeychain, rp_id,
                          std::move(cred_id),
                          PublicKeyCredentialUserEntity(
@@ -256,7 +305,7 @@ class API_AVAILABLE(macos(13.3)) Authenticator : public FidoAuthenticator {
                              /* iCloud Keychain does not store
                                 a displayName for passkeys */
                              std::nullopt),
-                         cred.providerName.UTF8String);
+                         std::move(provider_name));
       }
       const auto has_credentials =
           ret.empty() ? FidoRequestHandlerBase::RecognizedCredential::
@@ -301,6 +350,7 @@ class API_AVAILABLE(macos(13.3)) Authenticator : public FidoAuthenticator {
 
  private:
   void OnMakeCredentialComplete(MakeCredentialCallback callback,
+                                bool large_blob_requested,
                                 ASAuthorization* authorization,
                                 NSError* error) {
     if (cancelled_) {
@@ -383,7 +433,6 @@ class API_AVAILABLE(macos(13.3)) Authenticator : public FidoAuthenticator {
     response.transports->insert(FidoTransportProtocol::kHybrid);
     response.transports->insert(FidoTransportProtocol::kInternal);
     response.transport_used = FidoTransportProtocol::kInternal;
-
     if (@available(macOS 15.0, *)) {
       if ([result isKindOfClass:
                       [ASAuthorizationPlatformPublicKeyCredentialRegistration
@@ -397,12 +446,31 @@ class API_AVAILABLE(macos(13.3)) Authenticator : public FidoAuthenticator {
         }
       }
     }
-
+    if (@available(macOS 14.0, *)) {
+      if ([result isKindOfClass:
+                      [ASAuthorizationPlatformPublicKeyCredentialRegistration
+                          class]]) {
+        ASAuthorizationPlatformPublicKeyCredentialRegistration*
+            platform_result =
+                (ASAuthorizationPlatformPublicKeyCredentialRegistration*)result;
+        response.large_blob_type =
+            LargeBlobSupportedFromRegistration(platform_result)
+                ? std::optional(LargeBlobSupportType::kBespoke)
+                : std::nullopt;
+      }
+    }
+    if (large_blob_requested) {
+      base::UmaHistogramBoolean(
+          "WebAuthentication.MacOS.MakeCredentialLargeBlobResult",
+          response.large_blob_type.has_value());
+    }
     std::move(callback).Run(MakeCredentialStatus::kSuccess,
                             std::move(response));
   }
 
-  void OnGetAssertionComplete(GetAssertionCallback callback,
+  void OnGetAssertionComplete(bool large_blob_read_requested,
+                              bool large_blob_write_requested,
+                              GetAssertionCallback callback,
                               ASAuthorization* authorization,
                               NSError* error) {
     if (cancelled_) {
@@ -424,7 +492,7 @@ class API_AVAILABLE(macos(13.3)) Authenticator : public FidoAuthenticator {
       // please have macOS show its own error dialog.
       GetAssertionStatus response;
       if (error.code == 1001 &&
-          base::Contains(description, "No credentials available for login")) {
+          description.contains("No credentials available for login")) {
         response = GetAssertionStatus::kICloudKeychainNoCredentials;
       } else {
         // All other errors are currently mapped to
@@ -471,7 +539,6 @@ class API_AVAILABLE(macos(13.3)) Authenticator : public FidoAuthenticator {
         CredentialType::kPublicKey,
         fido_parsing_utils::Materialize(NSDataToSpan(result.credentialID)));
     response.user_selected = true;
-
     if (@available(macOS 15.0, *)) {
       if ([result
               isKindOfClass:[ASAuthorizationPlatformPublicKeyCredentialAssertion
@@ -483,7 +550,31 @@ class API_AVAILABLE(macos(13.3)) Authenticator : public FidoAuthenticator {
         }
       }
     }
-
+    if (@available(macOS 14.0, *)) {
+      if ([result
+              isKindOfClass:[ASAuthorizationPlatformPublicKeyCredentialAssertion
+                                class]]) {
+        ASAuthorizationPlatformPublicKeyCredentialAssertion* platform_result =
+            (ASAuthorizationPlatformPublicKeyCredentialAssertion*)result;
+        if (platform_result.largeBlob != nil) {
+          auto* large_blob_out = platform_result.largeBlob;
+          if (large_blob_out.readData != nil) {
+            response.large_blob = fido_parsing_utils::Materialize(
+                NSDataToSpan(large_blob_out.readData));
+          }
+          response.large_blob_written = large_blob_out.didWrite;
+        }
+      }
+    }
+    if (large_blob_read_requested) {
+      base::UmaHistogramBoolean(
+          "WebAuthentication.MacOS.GetAssertion.LargeBlobSucceeded.Read",
+          response.large_blob.has_value());
+    } else if (large_blob_write_requested) {
+      base::UmaHistogramBoolean(
+          "WebAuthentication.MacOS.GetAssertion.LargeBlobSucceeded.Write",
+          response.large_blob_written);
+    }
     std::vector<AuthenticatorGetAssertionResponse> responses;
     responses.emplace_back(std::move(response));
     std::move(callback).Run(GetAssertionStatus::kSuccess, std::move(responses));
@@ -536,15 +627,10 @@ bool IsSupported() {
   return false;
 }
 
-std::unique_ptr<FidoDiscoveryBase> NewDiscovery(uintptr_t ns_window) {
+std::unique_ptr<FidoDiscoveryBase> NewDiscovery(
+    base::apple::WeakNSWindow ns_window) {
   if (@available(macOS 13.5, *)) {
-    NSWindow* window = nullptr;
-    if (ns_window != kFakeNSWindowForTesting) {
-      window = (__bridge NSWindow*)(void*)ns_window;
-      static_assert(sizeof(window) == sizeof(ns_window));
-    }
-
-    return std::make_unique<Discovery>(window);
+    return std::make_unique<Discovery>(ns_window.Get());
   }
 
   NOTREACHED();

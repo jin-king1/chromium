@@ -19,7 +19,7 @@
 @property(nonatomic, copy) NSString* promoText;
 
 // Title of the more info button.
-@property(nonatomic, strong) NSString* moreInfoButtonTitle;
+@property(nonatomic, copy) NSString* moreInfoButtonTitle;
 
 // Whether or not the close button should be visible. `YES` by default.
 @property(nonatomic, assign) BOOL shouldShowCloseButton;
@@ -29,6 +29,9 @@
 
 // Whether or not the cell should be configured with its wide layout.
 @property(nonatomic, assign) BOOL shouldHaveWideLayout;
+
+// Whether or not the badge should be displayed. `YES` by default.
+@property(nonatomic, assign) BOOL shouldDisplayBadge;
 
 @end
 

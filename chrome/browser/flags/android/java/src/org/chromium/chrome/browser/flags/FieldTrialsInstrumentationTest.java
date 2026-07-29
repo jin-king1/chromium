@@ -14,11 +14,13 @@ import org.junit.runner.RunWith;
 import org.chromium.base.FeatureMap;
 import org.chromium.base.FeatureOverrides;
 import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.app.flags.ChromeCachedFlags;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
 import org.chromium.components.cached_flags.BooleanCachedFeatureParam;
 import org.chromium.components.cached_flags.DoubleCachedFeatureParam;
 import org.chromium.components.cached_flags.IntCachedFeatureParam;
@@ -47,7 +49,8 @@ public final class FieldTrialsInstrumentationTest {
             };
 
     @Rule
-    public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
+    public FreshCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.freshChromeTabbedActivityRule();
 
     @Test
     @SmallTest
@@ -64,7 +67,7 @@ public final class FieldTrialsInstrumentationTest {
         // @Param overrides as Java level, but should also override at native level. Remove the
         // override at Java level to check the override at native level.
         FeatureOverrides.removeAllIncludingAnnotations();
-        mActivityTestRule.startMainActivityOnBlankPage();
+        mActivityTestRule.startOnBlankPage();
 
         Assert.assertEquals("b1", ChromeFeatureList.getFieldTrialParamByFeature(FEATURE_1, "a1"));
         Assert.assertEquals("b2", ChromeFeatureList.getFieldTrialParamByFeature(FEATURE_1, "a2"));
@@ -84,7 +87,7 @@ public final class FieldTrialsInstrumentationTest {
     public void testNative_CommandLine_EnableWithParams() {
         // @CommandLine overrides as Java level, but should also override at native level. Remove
         // the override at Java level to check the override at native level.
-        mActivityTestRule.startMainActivityOnBlankPage();
+        mActivityTestRule.startOnBlankPage();
         FeatureOverrides.removeAllIncludingAnnotations();
 
         Assert.assertEquals("b1", ChromeFeatureList.getFieldTrialParamByFeature(FEATURE_1, "a1"));
@@ -109,7 +112,7 @@ public final class FieldTrialsInstrumentationTest {
     public void testNative_ParamValueIsUnescaped_CommandLine_EnableWithParams() {
         // @CommandLine overrides as Java level, but should also override at native level. Remove
         // the override at Java level to check the override at native level.
-        mActivityTestRule.startMainActivityOnBlankPage();
+        mActivityTestRule.startOnBlankPage();
         FeatureOverrides.removeAllIncludingAnnotations();
 
         Assert.assertEquals(
@@ -124,6 +127,9 @@ public final class FieldTrialsInstrumentationTest {
         "enable-features=" + FEATURE_1 + "<Study",
         "force-fieldtrials=Study/Group"
     })
+    // These tests that use --force-fieldtrials and --force-fieldtrial-params are disabled
+    // because a study with such name does not exist, but they would work otherwise.
+    @DisabledTest(message = "--force-fieldtrials and --force-fieldtrial-params are deprecated")
     public void testJava_FeatureWithoutParams_CommandLine_EnableAndFieldTrial() {
         Assert.assertTrue(ChromeFeatureList.isEnabled(FEATURE_1));
         Assert.assertTrue(ChromeFeatureList.sTestDefaultDisabled.isEnabled());
@@ -136,6 +142,7 @@ public final class FieldTrialsInstrumentationTest {
         "force-fieldtrials=Study/Group",
         "force-fieldtrial-params=Study.Group:a1/b1"
     })
+    @DisabledTest(message = "--force-fieldtrials and --force-fieldtrial-params are deprecated")
     public void testJava_OneFeatureTrialGroup_CommandLine_FieldTrialParams() {
         Assert.assertTrue(ChromeFeatureList.sTestDefaultDisabled.isEnabled());
         Assert.assertEquals("b1", ChromeFeatureList.getFieldTrialParamByFeature(FEATURE_1, "a1"));
@@ -153,6 +160,7 @@ public final class FieldTrialsInstrumentationTest {
         "force-fieldtrials=Study/Group",
         "force-fieldtrial-params=Study.Group:a1/b1/a2/b2"
     })
+    @DisabledTest(message = "--force-fieldtrials and --force-fieldtrial-params are deprecated")
     public void testJava_TwoFeaturesWithSameTrialGroup_CommandLine_FieldTrialParams() {
         Assert.assertTrue(ChromeFeatureList.isEnabled(FEATURE_1));
         Assert.assertEquals("b1", ChromeFeatureList.getFieldTrialParamByFeature(FEATURE_1, "a1"));
@@ -189,6 +197,7 @@ public final class FieldTrialsInstrumentationTest {
         "force-fieldtrials=Study1/Group1/Study2/Group2",
         "force-fieldtrial-params=Study1.Group1:a1/0.5/a2/100,Study2.Group2:a3/true"
     })
+    @DisabledTest(message = "--force-fieldtrials and --force-fieldtrial-params are deprecated")
     public void
             testJava_TwoFeaturesWithDifferentTrialGroupsAndMutipleTypesOfValues_CommandLine_FieldTrialParams() {
         Assert.assertTrue(ChromeFeatureList.isEnabled(FEATURE_1));
@@ -215,7 +224,7 @@ public final class FieldTrialsInstrumentationTest {
     @Test
     @SmallTest
     public void testGetLastUpdateFromNativeTimeMillis() {
-        mActivityTestRule.startMainActivityOnBlankPage();
+        mActivityTestRule.startOnBlankPage();
         Assert.assertNotEquals(0, ChromeCachedFlags.getLastCachedMinimalBrowserFlagsTimeMillis());
     }
 }

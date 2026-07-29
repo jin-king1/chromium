@@ -13,6 +13,7 @@
 #include "base/rand_util.h"
 #include "base/test/gtest_util.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/test/task_environment.h"
 #include "base/token.h"
 #include "base/uuid.h"
 #include "build/build_config.h"
@@ -105,6 +106,11 @@ class SavedTabGroupModelObserverTest : public ::testing::Test,
     tabs_reodered_called_ = true;
   }
 
+  void SavedTabGroupTabLastSeenTimeUpdated(const base::Uuid& saved_tab_id,
+                                           TriggerSource source) override {
+    last_seen_tab_id_ = saved_tab_id;
+  }
+
   void ClearSignals() {
     retrieved_group_.clear();
     retrieved_index_ = -1;
@@ -113,6 +119,7 @@ class SavedTabGroupModelObserverTest : public ::testing::Test,
     reordered_called_ = false;
     tabs_reodered_called_ = false;
     retrieved_guid_ = base::Uuid::GenerateRandomV4();
+    last_seen_tab_id_ = base::Uuid::GenerateRandomV4();
   }
 
   std::unique_ptr<SavedTabGroupModel> saved_tab_group_model_;
@@ -124,6 +131,7 @@ class SavedTabGroupModelObserverTest : public ::testing::Test,
   bool tabs_reodered_called_ = false;
 
   base::Uuid retrieved_guid_ = base::Uuid::GenerateRandomV4();
+  base::Uuid last_seen_tab_id_ = base::Uuid::GenerateRandomV4();
   std::string base_path_ = "file:///c:/tmp/";
 
   base::test::ScopedFeatureList feature_list_;
@@ -133,7 +141,10 @@ class SavedTabGroupModelObserverTest : public ::testing::Test,
 class SavedTabGroupModelTest : public ::testing::Test {
  protected:
   SavedTabGroupModelTest()
-      : id_1_(base::Uuid::GenerateRandomV4()),
+      : task_environment_(
+            base::test::SingleThreadTaskEnvironment::MainThreadType::UI,
+            base::test::TaskEnvironment::TimeSource::SYSTEM_TIME),
+        id_1_(base::Uuid::GenerateRandomV4()),
         id_2_(base::Uuid::GenerateRandomV4()),
         id_3_(base::Uuid::GenerateRandomV4()) {}
 
@@ -203,6 +214,11 @@ class SavedTabGroupModelTest : public ::testing::Test {
     return saved_tab_group_ids;
   }
 
+  const SavedTabGroupTab& GetTab(const base::Uuid& group_id, int index) {
+    return saved_tab_group_model_->Get(group_id)->saved_tabs()[index];
+  }
+
+  base::test::SingleThreadTaskEnvironment task_environment_;
   std::unique_ptr<SavedTabGroupModel> saved_tab_group_model_;
   std::string base_path_ = "file:///c:/tmp/";
   base::Uuid id_1_;
@@ -396,7 +412,7 @@ TEST_F(SavedTabGroupModelTest, RemoveTabFromGroup) {
 TEST_F(SavedTabGroupModelTest, RemoveSharedTabFromGroup) {
   SavedTabGroup shared_group =
       saved_tab_group_model_->Get(id_2_)->CloneAsSharedTabGroup(
-          CollaborationId("collaboration"));
+          syncer::CollaborationId("collaboration"));
   ASSERT_THAT(shared_group.saved_tabs(), SizeIs(2));
   ASSERT_THAT(shared_group.last_removed_tabs_metadata(), IsEmpty());
   saved_tab_group_model_->AddedLocally(shared_group);
@@ -564,6 +580,70 @@ TEST_F(SavedTabGroupModelTest, MoveTabInGroup) {
                                  {group->saved_tabs()[0], tab1, tab2});
 }
 
+TEST_F(SavedTabGroupModelTest, ReorderGroupBefore) {
+  RemoveTestData();
+  SavedTabGroup group_A(u"Group A", tab_groups::TabGroupColorId::kRed, {},
+                        std::nullopt, id_1_);
+  SavedTabGroup group_B(u"Group B", tab_groups::TabGroupColorId::kOrange, {},
+                        std::nullopt, id_2_);
+  SavedTabGroup group_C(u"Group C", tab_groups::TabGroupColorId::kYellow, {},
+                        std::nullopt, id_3_);
+  base::Uuid id_4 = base::Uuid::GenerateRandomV4();
+  SavedTabGroup group_D(u"Group D", tab_groups::TabGroupColorId::kGreen, {},
+                        std::nullopt, id_4);
+
+  // Added locally inserts at the front if no position is set.
+  // So adding in order A, B, C, D results in [D, C, B, A]
+  saved_tab_group_model_->AddedLocally(group_A);
+  saved_tab_group_model_->AddedLocally(group_B);
+  saved_tab_group_model_->AddedLocally(group_C);
+  saved_tab_group_model_->AddedLocally(group_D);
+
+  ASSERT_THAT(GetSavedTabGroupIds(),
+              testing::ElementsAre(id_4, id_3_, id_2_, id_1_));
+
+  // Move D before B: [D, C, B, A] -> [C, D, B, A]
+  saved_tab_group_model_->ReorderGroupBefore(id_4, id_2_);
+  EXPECT_THAT(GetSavedTabGroupIds(),
+              testing::ElementsAre(id_3_, id_4, id_2_, id_1_));
+
+  // Move A before C: [C, D, B, A] -> [A, C, D, B]
+  saved_tab_group_model_->ReorderGroupBefore(id_1_, id_3_);
+  EXPECT_THAT(GetSavedTabGroupIds(),
+              testing::ElementsAre(id_1_, id_3_, id_4, id_2_));
+}
+
+TEST_F(SavedTabGroupModelTest, ReorderGroupAfter) {
+  RemoveTestData();
+  SavedTabGroup group_A(u"Group A", tab_groups::TabGroupColorId::kRed, {},
+                        std::nullopt, id_1_);
+  SavedTabGroup group_B(u"Group B", tab_groups::TabGroupColorId::kOrange, {},
+                        std::nullopt, id_2_);
+  SavedTabGroup group_C(u"Group C", tab_groups::TabGroupColorId::kYellow, {},
+                        std::nullopt, id_3_);
+  base::Uuid id_4 = base::Uuid::GenerateRandomV4();
+  SavedTabGroup group_D(u"Group D", tab_groups::TabGroupColorId::kGreen, {},
+                        std::nullopt, id_4);
+
+  saved_tab_group_model_->AddedLocally(group_A);
+  saved_tab_group_model_->AddedLocally(group_B);
+  saved_tab_group_model_->AddedLocally(group_C);
+  saved_tab_group_model_->AddedLocally(group_D);
+
+  ASSERT_THAT(GetSavedTabGroupIds(),
+              testing::ElementsAre(id_4, id_3_, id_2_, id_1_));
+
+  // Move A after C: [D, C, B, A] -> [D, C, A, B]
+  saved_tab_group_model_->ReorderGroupAfter(id_1_, id_3_);
+  EXPECT_THAT(GetSavedTabGroupIds(),
+              testing::ElementsAre(id_4, id_3_, id_1_, id_2_));
+
+  // Move D after B: [D, C, A, B] -> [C, A, B, D]
+  saved_tab_group_model_->ReorderGroupAfter(id_4, id_2_);
+  EXPECT_THAT(GetSavedTabGroupIds(),
+              testing::ElementsAre(id_3_, id_1_, id_2_, id_4));
+}
+
 TEST_F(SavedTabGroupModelTest, MoveElement) {
   ASSERT_EQ(0, saved_tab_group_model_->GetIndexOf(id_3_));
   ASSERT_EQ(1, saved_tab_group_model_->GetIndexOf(id_2_));
@@ -585,7 +665,7 @@ TEST_F(SavedTabGroupModelTest, MoveElement) {
 TEST_F(SavedTabGroupModelTest, ShouldDistinguishSavedAndSharedGroups) {
   SavedTabGroup shared_group =
       saved_tab_group_model_->Get(id_1_)->CloneAsSharedTabGroup(
-          CollaborationId("collaboration"));
+          syncer::CollaborationId("collaboration"));
   saved_tab_group_model_->AddedLocally(shared_group);
 
   ASSERT_TRUE(shared_group.is_shared_tab_group());
@@ -638,17 +718,14 @@ TEST_F(SavedTabGroupModelTest, MergeGroupsFromModel) {
       saved_tab_group_model_->MergeRemoteGroupMetadata(
           group2.saved_guid(), group2.title(), group2.color(),
           group2.position(), group2.creator_cache_guid(),
-          group2.last_updater_cache_guid(),
-          group2.update_time_windows_epoch_micros(),
+          group2.last_updater_cache_guid(), group2.update_time(),
           /*updated_by=*/GaiaId());
 
   EXPECT_EQ(group2.title(), merged_group->title());
   EXPECT_EQ(group2.color(), merged_group->color());
   EXPECT_EQ(group2.saved_guid(), merged_group->saved_guid());
-  EXPECT_EQ(group2.creation_time_windows_epoch_micros(),
-            merged_group->creation_time_windows_epoch_micros());
-  EXPECT_EQ(group2.update_time_windows_epoch_micros(),
-            merged_group->update_time_windows_epoch_micros());
+  EXPECT_EQ(group2.creation_time(), merged_group->creation_time());
+  EXPECT_EQ(group2.update_time(), merged_group->update_time());
 }
 
 TEST_F(SavedTabGroupModelTest, MergePinnedGroupRetainPosition) {
@@ -682,7 +759,7 @@ TEST_F(SavedTabGroupModelTest, MergePinnedGroupRetainPosition) {
           updated_group2.color(), updated_group2.position(),
           updated_group2.creator_cache_guid(),
           updated_group2.last_updater_cache_guid(),
-          updated_group2.update_time_windows_epoch_micros(),
+          updated_group2.update_time(),
           /*updated_by=*/GaiaId());
   EXPECT_EQ(1, merged_group->position());
 
@@ -697,7 +774,7 @@ TEST_F(SavedTabGroupModelTest, MergeSharedTabGroupAttribution) {
 
   SavedTabGroup group(u"Title", tab_groups::TabGroupColorId::kPink, /*urls=*/{},
                       /*position=*/std::nullopt);
-  group.SetCollaborationId(CollaborationId("collaboration"));
+  group.SetCollaborationId(syncer::CollaborationId("collaboration"));
   group.SetUpdatedByAttribution(kCreator);
   saved_tab_group_model_->AddedLocally(group);
 
@@ -711,7 +788,7 @@ TEST_F(SavedTabGroupModelTest, MergeSharedTabGroupAttribution) {
   saved_tab_group_model_->MergeRemoteGroupMetadata(
       group.saved_guid(), group.title(), group.color(), group.position(),
       group.creator_cache_guid(), group.last_updater_cache_guid(),
-      group.update_time_windows_epoch_micros(), kUpdater);
+      group.update_time(), kUpdater);
 
   EXPECT_EQ(model_group->shared_attribution().created_by, kCreator);
   EXPECT_EQ(model_group->shared_attribution().updated_by, kUpdater);
@@ -731,10 +808,8 @@ TEST_F(SavedTabGroupModelTest, MergeTabsFromModel) {
   EXPECT_EQ(tab2.url(), merged_tab->url());
   EXPECT_EQ(tab2.saved_tab_guid(), merged_tab->saved_tab_guid());
   EXPECT_EQ(tab2.saved_group_guid(), merged_tab->saved_group_guid());
-  EXPECT_EQ(tab2.creation_time_windows_epoch_micros(),
-            merged_tab->creation_time_windows_epoch_micros());
-  EXPECT_EQ(tab2.update_time_windows_epoch_micros(),
-            merged_tab->update_time_windows_epoch_micros());
+  EXPECT_EQ(tab2.creation_time(), merged_tab->creation_time());
+  EXPECT_EQ(tab2.update_time(), merged_tab->update_time());
 }
 
 TEST_F(SavedTabGroupModelTest, MergeTabsWithUnsupportedURLFromModel) {
@@ -749,10 +824,8 @@ TEST_F(SavedTabGroupModelTest, MergeTabsWithUnsupportedURLFromModel) {
   EXPECT_EQ(tab1.url(), merged_tab->url());
   EXPECT_EQ(remote_tab.saved_tab_guid(), merged_tab->saved_tab_guid());
   EXPECT_EQ(remote_tab.saved_group_guid(), merged_tab->saved_group_guid());
-  EXPECT_EQ(remote_tab.creation_time_windows_epoch_micros(),
-            merged_tab->creation_time_windows_epoch_micros());
-  EXPECT_EQ(remote_tab.update_time_windows_epoch_micros(),
-            merged_tab->update_time_windows_epoch_micros());
+  EXPECT_EQ(remote_tab.creation_time(), merged_tab->creation_time());
+  EXPECT_EQ(remote_tab.update_time(), merged_tab->update_time());
 }
 
 // Tests that groups inserted in the model are in order stay inserted in sorted
@@ -969,6 +1042,56 @@ TEST_F(SavedTabGroupModelTest, GroupsWithNoPositionInsertedAtEnd) {
     EXPECT_TRUE(test::CompareSavedTabGroups(
         groups[i], saved_tab_group_model_->saved_tab_groups()[i]));
   }
+}
+
+TEST_F(SavedTabGroupModelTest, UpdateTabLastSeenTimeFromLocal) {
+  // Start test with no navigation time and no seen time set.
+  SavedTabGroup saved_group = test::CreateTestSavedTabGroup();
+  saved_group.SetCollaborationId(syncer::CollaborationId("collab_id"));
+  saved_tab_group_model_->AddedLocally(saved_group);
+  const base::Uuid group_id = saved_group.saved_guid();
+
+  ASSERT_FALSE(GetTab(group_id, 0).last_seen_time().has_value());
+
+  base::Time nav_time1 = GetTab(group_id, 0).navigation_time();
+  ASSERT_EQ(base::Time(), nav_time1);
+
+  // Navigate the tab, thereby updating navigation time. Try updating last seen
+  // time after that (e.g. focusing the tab). It should succeed and update the
+  // last seen time.
+  SavedTabGroupTab tab =
+      saved_tab_group_model_->Get(group_id)->saved_tabs().front();
+  saved_tab_group_model_->UpdateTabInGroup(group_id, tab,
+                                           /*notify_observers=*/true);
+  base::Time nav_time2 = GetTab(group_id, 0).navigation_time();
+  ASSERT_NE(nav_time1, nav_time2);
+
+  saved_tab_group_model_->UpdateTabLastSeenTimeFromLocal(
+      saved_group.saved_guid(),
+      saved_group.saved_tabs().front().saved_tab_guid());
+
+  EXPECT_TRUE(GetTab(group_id, 0).last_seen_time().has_value());
+  EXPECT_EQ(nav_time2, GetTab(group_id, 0).last_seen_time());
+
+  // Update the last seen time from local again (e.g. focusing the tab). But
+  // since the navigation time didn't change, the redundant update will be
+  // ignored.
+  saved_tab_group_model_->UpdateTabLastSeenTimeFromLocal(
+      saved_group.saved_guid(),
+      saved_group.saved_tabs().front().saved_tab_guid());
+  EXPECT_EQ(nav_time2, GetTab(group_id, 0).last_seen_time());
+
+  // Update navigation time and try updating last seen time again. It should
+  // succeed.
+  saved_tab_group_model_->UpdateTabInGroup(group_id, tab,
+                                           /*notify_observers=*/true);
+  base::Time nav_time3 = GetTab(group_id, 0).navigation_time();
+  ASSERT_NE(nav_time2, nav_time3);
+  saved_tab_group_model_->UpdateTabLastSeenTimeFromLocal(
+      saved_group.saved_guid(),
+      saved_group.saved_tabs().front().saved_tab_guid());
+
+  EXPECT_EQ(nav_time3, GetTab(group_id, 0).last_seen_time());
 }
 
 // Tests that SavedTabGroupModelObserver::Added passes the correct element from
@@ -1302,8 +1425,8 @@ TEST_F(SavedTabGroupModelObserverTest,
   SavedTabGroup saved_group = test::CreateTestSavedTabGroup();
   saved_tab_group_model_->AddedLocally(saved_group);
 
-  SavedTabGroup shared_group =
-      saved_group.CloneAsSharedTabGroup(CollaborationId("collaboration"));
+  SavedTabGroup shared_group = saved_group.CloneAsSharedTabGroup(
+      syncer::CollaborationId("collaboration"));
   saved_tab_group_model_->AddedLocally(shared_group);
   ASSERT_TRUE(saved_tab_group_model_->Get(shared_group.saved_guid())
                   ->is_transitioning_to_shared());
@@ -1316,6 +1439,93 @@ TEST_F(SavedTabGroupModelObserverTest,
                    ->is_transitioning_to_shared());
   EXPECT_THAT(retrieved_group_,
               UnorderedElementsAre(HasGroupId(shared_group.saved_guid())));
+}
+
+TEST_F(SavedTabGroupModelObserverTest, UpdateTabLastSeenTimeFromSync) {
+  SavedTabGroup saved_group = test::CreateTestSavedTabGroup();
+  saved_group.SetCollaborationId(syncer::CollaborationId("collab_id"));
+  saved_tab_group_model_->AddedLocally(saved_group);
+  const base::Uuid group_id = saved_group.saved_guid();
+
+  EXPECT_FALSE(saved_tab_group_model_->Get(group_id)
+                   ->saved_tabs()
+                   .front()
+                   .last_seen_time()
+                   .has_value());
+
+  base::Time last_seen_time = base::Time::Now();
+  saved_tab_group_model_->UpdateTabLastSeenTimeFromSync(
+      saved_group.saved_guid(),
+      saved_group.saved_tabs().front().saved_tab_guid(), last_seen_time);
+
+  // Observer method was called.
+  EXPECT_EQ(last_seen_tab_id_, saved_tab_group_model_->Get(group_id)
+                                   ->saved_tabs()
+                                   .front()
+                                   .saved_tab_guid());
+  EXPECT_TRUE(saved_tab_group_model_->Get(group_id)
+                  ->saved_tabs()
+                  .front()
+                  .last_seen_time()
+                  .has_value());
+  EXPECT_EQ(last_seen_time, saved_tab_group_model_->Get(group_id)
+                                ->saved_tabs()
+                                .front()
+                                .last_seen_time());
+
+  // Mimic receiving a seen time from sync older than what the tab currently
+  // has. It should be ignored.
+  base::Time last_seen_time2 = last_seen_time - base::Seconds(5);
+  saved_tab_group_model_->UpdateTabLastSeenTimeFromSync(
+      saved_group.saved_guid(),
+      saved_group.saved_tabs().front().saved_tab_guid(), last_seen_time2);
+  EXPECT_EQ(last_seen_time, saved_tab_group_model_->Get(group_id)
+                                ->saved_tabs()
+                                .front()
+                                .last_seen_time());
+}
+
+TEST_F(SavedTabGroupModelTest, UpdatePositionForSharedGroupFromSyncFromSync) {
+  RemoveTestData();
+
+  // Create some tab groups with initial orders.
+  SavedTabGroup group_1(u"Group 1", tab_groups::TabGroupColorId::kRed, {}, 0);
+  SavedTabGroup group_2(u"Group 2", tab_groups::TabGroupColorId::kOrange, {},
+                        1);
+  SavedTabGroup group_3(u"Group 3", tab_groups::TabGroupColorId::kYellow, {},
+                        2);
+  SavedTabGroup group_4(u"Group 4", tab_groups::TabGroupColorId::kGreen, {},
+                        std::nullopt);
+
+  group_1.SetCollaborationId(syncer::CollaborationId("collaboration"));
+  group_2.SetCollaborationId(syncer::CollaborationId("collaboration"));
+  group_3.SetCollaborationId(syncer::CollaborationId("collaboration"));
+  group_4.SetCollaborationId(syncer::CollaborationId("collaboration"));
+
+  // This is the order we expect the groups in the model to be.
+  std::vector<SavedTabGroup> groups = {group_3, group_2, group_4, group_1};
+
+  // Add the groups into the model in an arbitrary order.
+  saved_tab_group_model_->AddedLocally(group_1);
+  saved_tab_group_model_->AddedLocally(group_2);
+  saved_tab_group_model_->AddedLocally(group_3);
+  saved_tab_group_model_->AddedLocally(group_4);
+
+  // Change the order of groups.
+  saved_tab_group_model_->UpdatePositionForSharedGroupFromSync(
+      group_1.saved_guid(), std::nullopt);
+  saved_tab_group_model_->UpdatePositionForSharedGroupFromSync(
+      group_2.saved_guid(), 1);
+  saved_tab_group_model_->UpdatePositionForSharedGroupFromSync(
+      group_3.saved_guid(), 0);
+  saved_tab_group_model_->UpdatePositionForSharedGroupFromSync(
+      group_4.saved_guid(), 2);
+
+  EXPECT_EQ(saved_tab_group_model_->saved_tab_groups().size(), groups.size());
+  for (size_t i = 0; i < groups.size(); ++i) {
+    EXPECT_EQ(groups[i].saved_guid(),
+              saved_tab_group_model_->saved_tab_groups()[i].saved_guid());
+  }
 }
 
 }  // namespace

@@ -21,6 +21,8 @@ import org.jni_zero.NativeMethods;
 import org.chromium.base.ApplicationStatus;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.IntentUtils;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.IntentHandler;
 import org.chromium.chrome.browser.LaunchIntentDispatcher;
@@ -43,8 +45,9 @@ import org.chromium.content_public.browser.LoadUrlParams;
  * displayed in the downloads UI.
  */
 @JNINamespace("offline_pages::android")
+@NullMarked
 public class OfflinePageDownloadBridge {
-    private static OfflinePageDownloadBridge sInstance;
+    private static @Nullable OfflinePageDownloadBridge sInstance;
     private static boolean sIsTesting;
     private long mNativeOfflinePageDownloadBridge;
 
@@ -61,16 +64,13 @@ public class OfflinePageDownloadBridge {
 
     private OfflinePageDownloadBridge() {
         mNativeOfflinePageDownloadBridge =
-                sIsTesting
-                        ? 0L
-                        : OfflinePageDownloadBridgeJni.get().init(OfflinePageDownloadBridge.this);
+                sIsTesting ? 0L : OfflinePageDownloadBridgeJni.get().init(this);
     }
 
     /** Destroys the native portion of the bridge. */
     public void destroy() {
         if (mNativeOfflinePageDownloadBridge != 0) {
-            OfflinePageDownloadBridgeJni.get()
-                    .destroy(mNativeOfflinePageDownloadBridge, OfflinePageDownloadBridge.this);
+            OfflinePageDownloadBridgeJni.get().destroy(mNativeOfflinePageDownloadBridge);
             mNativeOfflinePageDownloadBridge = 0;
         }
     }
@@ -118,6 +118,8 @@ public class OfflinePageDownloadBridge {
         IntentHandler.setIntentExtraHeaders(params.getExtraHeaders(), intent);
         intent.putExtra(
                 Browser.EXTRA_APPLICATION_ID, activity.getApplicationContext().getPackageName());
+        intent.putExtra(
+                IntentHandler.EXTRA_TAB_OPEN_TYPE, IntentHandler.TabOpenType.CLOBBER_CURRENT_TAB);
         intent.setPackage(activity.getApplicationContext().getPackageName());
         intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
 
@@ -147,6 +149,7 @@ public class OfflinePageDownloadBridge {
         } else {
             context = ContextUtils.getApplicationContext();
         }
+        assert context != null;
 
         CustomTabsIntent.Builder builder = new CustomTabsIntent.Builder();
         builder.setShowTitle(true);
@@ -204,7 +207,7 @@ public class OfflinePageDownloadBridge {
         sIsTesting = isTesting;
     }
 
-    private static ComponentName getComponentName() {
+    private static @Nullable ComponentName getComponentName() {
         if (!ApplicationStatus.hasVisibleActivities()) return null;
 
         Activity activity = ApplicationStatus.getLastTrackedFocusedActivity();
@@ -217,9 +220,9 @@ public class OfflinePageDownloadBridge {
 
     @NativeMethods
     interface Natives {
-        long init(OfflinePageDownloadBridge caller);
+        long init(OfflinePageDownloadBridge self);
 
-        void destroy(long nativeOfflinePageDownloadBridge, OfflinePageDownloadBridge caller);
+        void destroy(long nativeOfflinePageDownloadBridge);
 
         void startDownload(Tab tab, @JniType("std::string") String origin);
     }

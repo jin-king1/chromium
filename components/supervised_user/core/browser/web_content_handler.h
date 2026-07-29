@@ -9,17 +9,18 @@
 
 #include "base/functional/callback.h"
 #include "base/time/time.h"
+#include "components/supervised_user/core/browser/supervised_user_url_filtering_service.h"
 #include "components/supervised_user/core/browser/supervised_user_utils.h"
 #include "components/supervised_user/core/common/supervised_user_constants.h"
 
 class GURL;
 namespace supervised_user {
 
-class SupervisedUserSettingsService;
+class FamilyLinkSettingsService;
 
-// This base class contains all the Web Approval Intersitial functionality that
+// This base class contains all the Web Approval Interstitial functionality that
 // requires access to the current web content.
-// It contains implementation of the common methods that can be shared accross
+// It contains implementation of the common methods that can be shared across
 // platforms and can live in components.
 class WebContentHandler {
  public:
@@ -27,14 +28,13 @@ class WebContentHandler {
 
   virtual ~WebContentHandler();
 
-  // Initiates the OS specific local approval flow for a given `url`.
+  // Initiates the OS specific local approval flow for a given `target_url`.
   // Not all platforms with supervised users support this operation,
   // and they must throw an error when implementing this method.
   virtual void RequestLocalApproval(
-      const GURL& url,
+      const GURL& target_url,
+      WebFilteringResult filtering_result,
       const std::u16string& child_display_name,
-      const UrlFormatter& url_formatter,
-      const FilteringBehaviorReason& filtering_behavior_reason,
       ApprovalRequestInitiatedCallback callback) = 0;
 
   // TODO(b/273692421): Add unit (or browser test) coverage for the moved
@@ -52,6 +52,12 @@ class WebContentHandler {
   // Goes back to main frame if we are on a subframe.
   // The action applies when localWebApprovalsEnabled is disabled.
   virtual void GoBack() = 0;
+
+#if BUILDFLAG(IS_ANDROID)
+  // Opens a resource with additional information on what is currently
+  // displayed (typically, some help center article).
+  virtual void LearnMore(base::OnceClosure open_help_page) = 0;
+#endif  // BUILDFLAG(IS_ANDROID)
 
   // Returns the interstitial navigation id.
   virtual int64_t GetInterstitialNavigationId() const = 0;
@@ -72,12 +78,11 @@ class WebContentHandler {
   // Should be called by platform specific completion callback.
   // TODO(b/278079069): Refactor and convert the class to an interface.
   void OnLocalApprovalRequestCompleted(
-      supervised_user::SupervisedUserSettingsService& settings_service,
+      FamilyLinkSettingsService& family_link_settings_service,
       const GURL& url,
       base::TimeTicks start_time,
       LocalApprovalResult approval_result,
-      std::optional<supervised_user::LocalWebApprovalErrorType>
-          local_approval_error_type);
+      std::optional<LocalWebApprovalErrorType> local_approval_error_type);
 };
 
 }  // namespace supervised_user

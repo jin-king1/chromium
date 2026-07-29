@@ -6,6 +6,8 @@
 
 #import <AppKit/AppKit.h>
 
+#include <algorithm>
+
 #include "base/apple/bundle_locations.h"
 #include "base/apple/foundation_util.h"
 #include "base/base_paths.h"
@@ -76,14 +78,18 @@ void CreateShortcutOnUserDesktop(ShortcutMetadata shortcut_metadata,
   // vast majority of cases.
   base::ConcurrentCallbacks<bool> concurrent;
 
-  SetDefaultApplicationToOpenFile(
-      base::apple::FilePathToNSURL(target_path), base::apple::MainBundleURL(),
-      base::BindOnce([](NSError* error) {
-        if (error) {
-          LOG(ERROR) << "Failed to set default application for shortcut.";
-        }
-        return !error;
-      }).Then(concurrent.CreateCallback()));
+  [NSWorkspace.sharedWorkspace
+      setDefaultApplicationAtURL:base::apple::MainBundleURL()
+                 toOpenFileAtURL:base::apple::FilePathToNSURL(target_path)
+               completionHandler:
+                   base::CallbackToBlock(base::BindPostTaskToCurrentDefault(
+                       base::BindOnce([](NSError* error) {
+                         if (error) {
+                           LOG(ERROR) << "Failed to set default application "
+                                         "for shortcut.";
+                         }
+                         return !error;
+                       }).Then(concurrent.CreateCallback())))];
 
   NSImage* icon_image = [[NSImage alloc] init];
   for (const gfx::Image& image : shortcut_metadata.shortcut_images) {
@@ -111,7 +117,7 @@ void CreateShortcutOnUserDesktop(ShortcutMetadata shortcut_metadata,
                   LOG(ERROR) << "Failed to remove quarantine attribute "
                                 "from shortcut.";
                 }
-                return base::Contains(step_successes, false)
+                return std::ranges::contains(step_successes, false)
                            ? Result::kSuccessWithErrors
                            : Result::kSuccess;
               },

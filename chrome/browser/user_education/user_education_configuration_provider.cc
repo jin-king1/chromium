@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "chrome/browser/user_education/user_education_configuration_provider.h"
 
 #include <algorithm>
@@ -23,11 +18,9 @@ namespace {
 
 std::string FeatureNameToEventName(const base::Feature& feature) {
   constexpr char kIPHPrefix[] = "IPH_";
-  std::string name = feature.name;
-  if (base::StartsWith(name, kIPHPrefix)) {
-    name = name.substr(strlen(kIPHPrefix));
-  }
-  return name;
+  std::string_view name = feature.name;
+  auto remainder = base::RemovePrefix(name, kIPHPrefix);
+  return std::string(remainder.value_or(name));
 }
 
 // Returns whether a comparator is bounded from above.
@@ -81,6 +74,7 @@ bool UserEducationConfigurationProvider::MaybeProvideFeatureConfiguration(
     case user_education::FeaturePromoSpecification::PromoType::kSnooze:
     case user_education::FeaturePromoSpecification::PromoType::kCustomAction:
     case user_education::FeaturePromoSpecification::PromoType::kTutorial:
+    case user_education::FeaturePromoSpecification::PromoType::kCustomUi:
       // Heavyweight promos prevent future low-priority heavyweight promos.
       config.session_rate_impact.type =
           feature_engagement::SessionRateImpact::Type::ALL;

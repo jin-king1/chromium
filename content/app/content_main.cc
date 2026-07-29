@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "content/public/app/content_main.h"
 
 #include <memory>
@@ -18,12 +13,12 @@
 #include "base/command_line.h"
 #include "base/compiler_specific.h"
 #include "base/debug/debugger.h"
-#include "base/debug/stack_trace.h"
 #include "base/feature_list.h"
 #include "base/i18n/icu_util.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/message_loop/message_pump_type.h"
+#include "base/no_destructor.h"
 #include "base/process/launch.h"
 #include "base/process/memory.h"
 #include "base/process/process.h"
@@ -37,11 +32,10 @@
 #include "base/threading/platform_thread.h"
 #include "base/threading/thread.h"
 #include "base/trace_event/trace_config.h"
-#include "base/trace_event/trace_log.h"
+#include "base/trace_event/trace_event.h"
+#include "base/trace_event/trace_session_observer.h"
 #include "build/build_config.h"
 #include "components/embedder_support/switches.h"
-#include "components/tracing/common/trace_to_console.h"
-#include "components/tracing/common/tracing_switches.h"
 #include "content/app/content_main_runner_impl.h"
 #include "content/public/app/content_main_delegate.h"
 #include "content/public/common/content_switches.h"
@@ -60,7 +54,6 @@
 #include "base/win/process_startup_helper.h"
 #include "base/win/win_util.h"
 #include "base/win/windows_version.h"
-#include "ui/base/win/atl_module.h"
 #include "ui/gfx/switches.h"
 #endif
 
@@ -109,8 +102,7 @@ void SetupSignalHandlers() {
   CHECK_EQ(0, sigemptyset(&empty_signal_set));
   CHECK_EQ(0, sigprocmask(SIG_SETMASK, &empty_signal_set, nullptr));
 
-  struct sigaction sigact;
-  memset(&sigact, 0, sizeof(sigact));
+  struct sigaction sigact = {};
   sigact.sa_handler = SIG_DFL;
   static const int signals_to_reset[] = {SIGHUP,  SIGINT,  SIGQUIT, SIGILL,
                                          SIGABRT, SIGFPE,  SIGSEGV, SIGALRM,
@@ -125,7 +117,6 @@ bool IsSubprocess() {
   auto type = base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
       switches::kProcessType);
   return type == switches::kGpuProcess ||
-         type == switches::kPpapiPluginProcess ||
          type == switches::kRendererProcess ||
          type == switches::kUtilityProcess || type == switches::kZygoteProcess;
 }
@@ -148,42 +139,29 @@ void CommonSubprocessInit() {
 #endif
 }
 
-void InitTimeTicksAtUnixEpoch() {
-  const auto* command_line = base::CommandLine::ForCurrentProcess();
-  if (!command_line->HasSwitch(switches::kTimeTicksAtUnixEpoch)) {
-    return;
-  }
-
-  std::string time_ticks_at_unix_epoch_as_string =
-      command_line->GetSwitchValueASCII(switches::kTimeTicksAtUnixEpoch);
-
-  int64_t time_ticks_at_unix_epoch_delta_micro;
-  if (!base::StringToInt64(time_ticks_at_unix_epoch_as_string,
-                           &time_ticks_at_unix_epoch_delta_micro)) {
-    return;
-  }
-
-  base::TimeDelta time_ticks_at_unix_epoch_delta =
-      base::Microseconds(time_ticks_at_unix_epoch_delta_micro);
-
-  base::TimeTicks time_ticks_at_unix_epoch =
-      base::TimeTicks() + time_ticks_at_unix_epoch_delta;
-
-  base::TimeTicks::SetSharedUnixEpoch(time_ticks_at_unix_epoch);
-}
-
 // Apply metadata to samples collected by the StackSamplingProfiler when tracing
 // is enabled. This helps distinguish profiles with tracing overhead, e.g. due
 // to background tracing, from those without.
-class TracingEnabledStateObserver
-    : public base::trace_event::TraceLog::EnabledStateObserver {
+class TracingEnabledStateObserver : public perfetto::TrackEventSessionObserver {
  public:
-  void OnTraceLogEnabled() override {
+  TracingEnabledStateObserver() {
+    base::TrackEvent::AddSessionObserver(this);
+    if (base::TrackEvent::IsEnabled()) {
+      apply_sample_metadata_.emplace("TracingEnabled", 1,
+                                     base::SampleMetadataScope::kProcess);
+    }
+  }
+
+  void OnStart(const perfetto::DataSourceBase::StartArgs&) override {
     apply_sample_metadata_.emplace("TracingEnabled", 1,
                                    base::SampleMetadataScope::kProcess);
   }
 
-  void OnTraceLogDisabled() override { apply_sample_metadata_.reset(); }
+  void OnStop(const perfetto::DataSourceBase::StopArgs& args) override {
+    if (!base::trace_event::IsEnabledOnStop(args)) {
+      apply_sample_metadata_.reset();
+    }
+  }
 
  private:
   std::optional<base::ScopedSampleMetadata> apply_sample_metadata_;
@@ -243,7 +221,6 @@ NO_STACK_PROTECTOR int RunContentProcess(
 
 #if BUILDFLAG(IS_WIN)
     base::win::RegisterInvalidParamHandler();
-    ui::win::CreateATLModuleIfNeeded();
 #endif  // BUILDFLAG(IS_WIN)
 
 #if !BUILDFLAG(IS_ANDROID)
@@ -267,8 +244,6 @@ NO_STACK_PROTECTOR int RunContentProcess(
 
     base::SetProcessTitleFromCommandLine(argv);
 #endif  // !BUILDFLAG(IS_ANDROID)
-
-    InitTimeTicksAtUnixEpoch();
 
 // On Android setlocale() is not supported, and we don't override the signal
 // handlers so we can get a stack trace when crashing.
@@ -314,6 +289,10 @@ NO_STACK_PROTECTOR int RunContentProcess(
 #if BUILDFLAG(IS_IOS_TVOS)
     // Set tvOS to single-process mode by default.
     command_line->AppendSwitch(switches::kSingleProcess);
+
+    // Enable spatial navigation; we interpret remote control swipes as arrow
+    // keys.
+    command_line->AppendSwitch(switches::kEnableSpatialNavigation);
 #endif
 #endif
 
@@ -343,15 +322,7 @@ NO_STACK_PROTECTOR int RunContentProcess(
     }
 #endif
 
-    base::trace_event::TraceLog::GetInstance()->AddOwnedEnabledStateObserver(
-        base::WrapUnique(new TracingEnabledStateObserver));
-
-    if (base::CommandLine::ForCurrentProcess()->HasSwitch(
-            ::switches::kTraceToConsole)) {
-      base::trace_event::TraceConfig trace_config =
-          tracing::GetConfigForTraceToConsole();
-      base::trace_event::TraceLog::GetInstance()->SetEnabled(trace_config);
-    }
+    static base::NoDestructor<TracingEnabledStateObserver> tracing_observer;
   }
 
   if (IsSubprocess())

@@ -38,6 +38,7 @@
 #include "base/containers/to_vector.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/scoped_refptr.h"
+#include "net/http/http_response_headers.h"
 #include "net/ssl/ssl_info.h"
 #include "services/network/public/cpp/is_potentially_trustworthy.h"
 #include "services/network/public/mojom/cors.mojom-shared.h"
@@ -48,6 +49,7 @@
 #include "third_party/blink/public/platform/web_http_header_visitor.h"
 #include "third_party/blink/public/platform/web_string.h"
 #include "third_party/blink/public/platform/web_url.h"
+#include "third_party/blink/renderer/platform/loader/fetch/integrity_metadata.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_load_timing.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_response.h"
 #include "third_party/blink/renderer/platform/loader/fetch/service_worker_router_info.h"
@@ -134,8 +136,9 @@ WebURLResponse WebURLResponse::Create(
 
   response.SetCurrentRequestUrl(url);
   response.SetResponseTime(head.response_time);
-  response.SetMimeType(WebString::FromUTF8(head.mime_type));
-  response.SetTextEncodingName(WebString::FromUTF8(head.charset));
+  response.SetOriginalResponseTime(head.original_response_time);
+  response.SetMimeType(WebString::FromUtf8(head.mime_type));
+  response.SetTextEncodingName(WebString::FromUtf8(head.charset));
   response.SetExpectedContentLength(head.content_length);
   response.SetHasMajorCertificateErrors(
       net::IsCertStatusError(head.cert_status));
@@ -148,6 +151,7 @@ WebURLResponse WebURLResponse::Create(
   response.SetConnectionReused(head.load_timing.socket_reused);
   response.SetWasFetchedViaSPDY(head.was_fetched_via_spdy);
   response.SetWasFetchedViaServiceWorker(head.was_fetched_via_service_worker);
+  response.SetFromSyntheticResponse(head.from_synthetic_response);
   response.SetDidUseSharedDictionary(head.did_use_shared_dictionary);
   response.SetServiceWorkerResponseSource(head.service_worker_response_source);
   if (!head.service_worker_router_info.is_null()) {
@@ -161,16 +165,14 @@ WebURLResponse WebURLResponse::Create(
   response.SetCacheStorageCacheName(
       head.service_worker_response_source ==
               network::mojom::FetchResponseSource::kCacheStorage
-          ? WebString::FromUTF8(head.cache_storage_cache_name)
+          ? WebString::FromUtf8(head.cache_storage_cache_name)
           : WebString());
 
   response.SetDnsAliases(
-      base::ToVector(head.dns_aliases, &WebString::FromASCII));
+      base::ToVector(head.dns_aliases, &WebString::FromAscii));
   response.SetRemoteIPEndpoint(head.remote_endpoint);
   response.SetAddressSpace(head.response_address_space);
   response.SetClientAddressSpace(head.client_address_space);
-  response.SetPrivateNetworkAccessPreflightResult(
-      head.private_network_access_preflight_result);
 
   response.SetCorsExposedHeaderNames(
       base::ToVector(head.cors_exposed_header_names, &WebString::FromLatin1));
@@ -182,7 +184,7 @@ WebURLResponse WebURLResponse::Create(
       head.encoded_body_length ? head.encoded_body_length->value : 0);
   response.SetWasAlpnNegotiated(head.was_alpn_negotiated);
   response.SetAlpnNegotiatedProtocol(
-      WebString::FromUTF8(head.alpn_negotiated_protocol));
+      WebString::FromUtf8(head.alpn_negotiated_protocol));
   response.SetAlternateProtocolUsage(head.alternate_protocol_usage);
   response.SetHasAuthorizationCoveredByWildcardOnPreflight(
       head.has_authorization_covered_by_wildcard_on_preflight);
@@ -198,6 +200,13 @@ WebURLResponse WebURLResponse::Create(
   response.SetWasInPrefetchCache(head.was_in_prefetch_cache);
   response.SetWasCookieInRequest(head.was_cookie_in_request);
   response.SetRecursivePrefetchToken(head.recursive_prefetch_token);
+  response.SetDeviceBoundSessionUsage(head.device_bound_session_usage);
+
+  if (head.unencoded_digests) {
+    // Any `issues` will be taken care of in the network stack; we can simply
+    // move the `digests` into the resource response:
+    response.SetUnencodedDigests(std::move(head.unencoded_digests->digests));
+  }
 
   SetSecurityStyleAndDetails(GURL(KURL(url)), head, &response,
                              report_security_info);
@@ -337,6 +346,14 @@ void WebURLResponse::SetResponseTime(base::Time response_time) {
   resource_response_->SetResponseTime(response_time);
 }
 
+base::Time WebURLResponse::OriginalResponseTime() const {
+  return resource_response_->OriginalResponseTime();
+}
+
+void WebURLResponse::SetOriginalResponseTime(base::Time response_time) {
+  resource_response_->SetOriginalResponseTime(response_time);
+}
+
 WebString WebURLResponse::MimeType() const {
   return resource_response_->MimeType();
 }
@@ -470,6 +487,14 @@ void WebURLResponse::SetWasFetchedViaServiceWorker(bool value) {
   resource_response_->SetWasFetchedViaServiceWorker(value);
 }
 
+bool WebURLResponse::FromSyntheticResponse() const {
+  return resource_response_->FromSyntheticResponse();
+}
+
+void WebURLResponse::SetFromSyntheticResponse(bool value) {
+  resource_response_->SetFromSyntheticResponse(value);
+}
+
 network::mojom::FetchResponseSource
 WebURLResponse::GetServiceWorkerResponseSource() const {
   return resource_response_->GetServiceWorkerResponseSource();
@@ -544,7 +569,7 @@ std::vector<WebString> WebURLResponse::CorsExposedHeaderNames() const {
 void WebURLResponse::SetCorsExposedHeaderNames(
     const std::vector<WebString>& header_names) {
   Vector<String> exposed_header_names;
-  exposed_header_names.AppendSpan(base::span(header_names));
+  exposed_header_names.append_range(header_names);
   resource_response_->SetCorsExposedHeaderNames(exposed_header_names);
 }
 
@@ -579,16 +604,6 @@ void WebURLResponse::SetClientAddressSpace(
   resource_response_->SetClientAddressSpace(client_address_space);
 }
 
-network::mojom::PrivateNetworkAccessPreflightResult
-WebURLResponse::PrivateNetworkAccessPreflightResult() const {
-  return resource_response_->PrivateNetworkAccessPreflightResult();
-}
-
-void WebURLResponse::SetPrivateNetworkAccessPreflightResult(
-    network::mojom::PrivateNetworkAccessPreflightResult result) {
-  resource_response_->SetPrivateNetworkAccessPreflightResult(result);
-}
-
 void WebURLResponse::SetIsValidated(bool is_validated) {
   resource_response_->SetIsValidated(is_validated);
 }
@@ -597,7 +612,7 @@ void WebURLResponse::SetEncodedDataLength(int64_t length) {
   resource_response_->SetEncodedDataLength(length);
 }
 
-int64_t WebURLResponse::EncodedBodyLength() const {
+uint64_t WebURLResponse::EncodedBodyLength() const {
   return resource_response_->EncodedBodyLength();
 }
 
@@ -693,7 +708,7 @@ bool WebURLResponse::FromArchive() const {
 void WebURLResponse::SetDnsAliases(const std::vector<WebString>& aliases) {
   Vector<String> dns_aliases(base::checked_cast<wtf_size_t>(aliases.size()));
   std::ranges::transform(aliases, dns_aliases.begin(),
-                         &WebString::operator WTF::String);
+                         &WebString::operator String);
   resource_response_->SetDnsAliases(std::move(dns_aliases));
 }
 
@@ -724,6 +739,21 @@ void WebURLResponse::SetShouldUseSourceHashForJSCodeCache(
 
 bool WebURLResponse::ShouldUseSourceHashForJSCodeCache() const {
   return resource_response_->ShouldUseSourceHashForJSCodeCache();
+}
+
+void WebURLResponse::SetDeviceBoundSessionUsage(
+    network::mojom::DeviceBoundSessionUsage usage) {
+  resource_response_->SetDeviceBoundSessionUsage(usage);
+}
+network::mojom::DeviceBoundSessionUsage
+WebURLResponse::DeviceBoundSessionUsage() const {
+  return resource_response_->DeviceBoundSessionUsage();
+}
+
+void WebURLResponse::SetUnencodedDigests(
+    std::vector<network::IntegrityMetadata> digests) {
+  resource_response_->SetUnencodedDigests(
+      Vector<network::IntegrityMetadata>(std::move(digests)));
 }
 
 WebURLResponse::WebURLResponse(ResourceResponse& r) : resource_response_(&r) {}

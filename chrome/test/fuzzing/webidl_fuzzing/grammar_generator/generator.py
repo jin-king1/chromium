@@ -73,6 +73,23 @@ class DomatoGrammarBuilder:
     self.helperlines.append(rule)
 
 
+# Everything listed here will not get included in the WebIDL grammar, and
+# anything that depends on those won't get included as well to avoid
+# unresolvable dependencies.
+WEBIDL_GRAMMAR_IGNORE_LIST = {
+  'Document': {
+    'methods': [
+      'open'
+    ]
+  },
+  'Window': {
+    'methods': [
+      'open'
+    ]
+  }
+}
+
+
 SIMPLE_TYPE_TO_DOMATOTYPE = {
     'void': DomatoType(name='void', is_terminal=True),
     'object': DomatoType(name='object', is_terminal=True),
@@ -249,19 +266,31 @@ def build_operation_rules(builder: DomatoGrammarBuilder, operation,
   builder.add_line(Rule(lhs, pre_rhs + ['('] + rhs + [');']))
 
 
+def get_methods_to_ignore(
+    interface: web_idl.interface.Interface) -> Sequence[str]:
+  if not interface.identifier in WEBIDL_GRAMMAR_IGNORE_LIST:
+    return []
+  return WEBIDL_GRAMMAR_IGNORE_LIST[interface.identifier]['methods']
+
+
 def build_interface_rules(builder: DomatoGrammarBuilder, interface):
+  to_ignore = get_methods_to_ignore(interface)
   non_static_ops = [
       op for op in interface.operations
       if not op.is_static and not op.is_special_operation
   ]
   iface_type = DomatoType(interface.identifier)
   for op in non_static_ops:
+    if op.identifier in to_ignore:
+      continue
     build_operation_rules(builder, op, iface_type)
   static_ops = [
       op for op in interface.operations
       if op.is_static and not op.is_special_operation
   ]
   for op in static_ops:
+    if op.identifier in to_ignore:
+      continue
     build_operation_rules(builder, op, interface.identifier)
   for attr in interface.attributes:
     should_await = attr.idl_type.is_promise
@@ -440,7 +469,7 @@ def remove_cyclic_dependencies(builder: DomatoGrammarBuilder):
     if cpy == handled:
       break
 
-  # Those predefined types are refering to the `Internal` WebIDL that's only
+  # Those predefined types are referring to the `Internal` WebIDL that's only
   # exposed in tests. It pollutes our grammar, and we don't want to fuzz that.
   to_remove = {
     'InternalDictionary',

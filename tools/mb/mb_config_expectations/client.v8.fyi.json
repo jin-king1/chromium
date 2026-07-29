@@ -1,6 +1,7 @@
 {
   "Android V8 FYI Release": {
     "gn_args": {
+      "android_static_analysis": "off",
       "dcheck_always_on": true,
       "debuggable_apks": false,
       "ffmpeg_branding": "Chrome",
@@ -10,6 +11,7 @@
       "symbol_level": 1,
       "target_cpu": "arm64",
       "target_os": "android",
+      "use_reclient": false,
       "use_remoteexec": true,
       "use_siso": true,
       "use_static_angle": true
@@ -23,6 +25,7 @@
       "is_debug": false,
       "is_lsan": true,
       "symbol_level": 1,
+      "use_reclient": false,
       "use_remoteexec": true,
       "use_siso": true
     }
@@ -34,6 +37,7 @@
       "is_debug": true,
       "proprietary_codecs": true,
       "symbol_level": 1,
+      "use_reclient": false,
       "use_remoteexec": true,
       "use_siso": true
     }
@@ -46,6 +50,7 @@
       "is_debug": false,
       "proprietary_codecs": true,
       "symbol_level": 1,
+      "use_reclient": false,
       "use_remoteexec": true,
       "use_siso": true
     }
@@ -58,9 +63,24 @@
       "is_debug": false,
       "proprietary_codecs": true,
       "symbol_level": 1,
+      "use_reclient": false,
       "use_remoteexec": true,
       "use_siso": true,
       "v8_enable_pointer_compression": false
+    }
+  },
+  "Mac V8 FYI Release (Apple M2)": {
+    "gn_args": {
+      "dcheck_always_on": true,
+      "ffmpeg_branding": "Chrome",
+      "is_component_build": false,
+      "is_debug": false,
+      "proprietary_codecs": true,
+      "symbol_level": 1,
+      "target_cpu": "arm64",
+      "use_reclient": false,
+      "use_remoteexec": true,
+      "use_siso": true
     }
   },
   "Mac V8 FYI Release (Intel)": {
@@ -71,19 +91,7 @@
       "is_debug": false,
       "proprietary_codecs": true,
       "symbol_level": 1,
-      "use_remoteexec": true,
-      "use_siso": true
-    }
-  },
-  "V8 Android GN (dbg)": {
-    "gn_args": {
-      "debuggable_apks": false,
-      "ffmpeg_branding": "Chrome",
-      "is_component_build": true,
-      "is_debug": true,
-      "proprietary_codecs": true,
-      "symbol_level": 1,
-      "target_os": "android",
+      "use_reclient": false,
       "use_remoteexec": true,
       "use_siso": true
     }
@@ -95,6 +103,7 @@
       "is_component_build": false,
       "is_debug": false,
       "proprietary_codecs": true,
+      "use_reclient": false,
       "use_remoteexec": true,
       "use_siso": true
     }
@@ -106,6 +115,7 @@
       "is_component_build": false,
       "is_debug": false,
       "proprietary_codecs": true,
+      "use_reclient": false,
       "use_remoteexec": true,
       "use_siso": true,
       "v8_enable_debugging_features": true
@@ -118,6 +128,7 @@
       "is_component_build": false,
       "is_debug": false,
       "proprietary_codecs": true,
+      "use_reclient": false,
       "use_remoteexec": true,
       "use_siso": true
     }
@@ -129,6 +140,7 @@
       "is_component_build": false,
       "is_debug": false,
       "proprietary_codecs": true,
+      "use_reclient": false,
       "use_remoteexec": true,
       "use_siso": true
     }
@@ -140,15 +152,7 @@
       "is_component_build": false,
       "is_debug": false,
       "proprietary_codecs": true,
-      "use_remoteexec": true,
-      "use_siso": true
-    }
-  },
-  "V8 Linux GN": {
-    "gn_args": {
-      "dcheck_always_on": false,
-      "is_component_build": false,
-      "is_debug": false,
+      "use_reclient": false,
       "use_remoteexec": true,
       "use_siso": true
     }
@@ -163,6 +167,7 @@
       "proprietary_codecs": true,
       "symbol_level": 1,
       "target_cpu": "x86",
+      "use_reclient": false,
       "use_remoteexec": true,
       "use_siso": true
     }

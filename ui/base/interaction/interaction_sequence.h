@@ -10,6 +10,7 @@
 #include <string>
 #include <string_view>
 #include <variant>
+#include <vector>
 
 #include "base/component_export.h"
 #include "base/functional/callback_forward.h"
@@ -17,6 +18,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "ui/base/interaction/element_identifier.h"
+#include "ui/base/interaction/element_specifier.h"
 #include "ui/base/interaction/element_tracker.h"
 
 namespace ui {
@@ -49,7 +51,7 @@ namespace ui {
 //      .SetCompletedCallback(base::BindOnce(...))
 //      .AddStep(InteractionSequence::WithInitialElement(initial_element))
 //      .AddStep(InteractionSequence::StepBuilder()
-//          .SetElementID(kDialogElementID)
+//          .SetElement(kDialogElementID)
 //          .SetType(StepType::kShown)
 //          .SetStartCallback(...)
 //          .Build())
@@ -60,7 +62,7 @@ namespace ui {
 // For more detailed instructions on using the ui/base/interaction library, see
 // README.md in this folder.
 //
-class COMPONENT_EXPORT(UI_BASE) InteractionSequence {
+class COMPONENT_EXPORT(UI_BASE_INTERACTION) InteractionSequence {
  public:
   // The type of event that is expected to happen next in the sequence.
   enum class StepType {
@@ -224,7 +226,7 @@ class COMPONENT_EXPORT(UI_BASE) InteractionSequence {
   using StepEndCallback = base::OnceCallback<void(TrackedElement* element)>;
 
   // Information passed when a sequence fails or is aborted.
-  struct COMPONENT_EXPORT(UI_BASE) AbortedData {
+  struct COMPONENT_EXPORT(UI_BASE_INTERACTION) AbortedData {
     AbortedData();
     ~AbortedData();
     AbortedData(const AbortedData& other);
@@ -277,7 +279,7 @@ class COMPONENT_EXPORT(UI_BASE) InteractionSequence {
   class StepBuilder;
   struct SubsequenceData;
 
-  struct COMPONENT_EXPORT(UI_BASE) Step {
+  struct COMPONENT_EXPORT(UI_BASE_INTERACTION) Step {
     Step();
     Step(const Step& other) = delete;
     void operator=(const Step& other) = delete;
@@ -323,7 +325,7 @@ class COMPONENT_EXPORT(UI_BASE) InteractionSequence {
   };
 
   // Use a Builder to specify parameters when creating an InteractionSequence.
-  class COMPONENT_EXPORT(UI_BASE) Builder {
+  class COMPONENT_EXPORT(UI_BASE_INTERACTION) Builder {
    public:
     Builder();
     Builder(Builder&& other);
@@ -378,20 +380,27 @@ class COMPONENT_EXPORT(UI_BASE) InteractionSequence {
   //
   // Methods intended to be used in Kombucha test bodies have rvalue versions
   // to reduce the need for std::move().
-  class COMPONENT_EXPORT(UI_BASE) StepBuilder {
+  class COMPONENT_EXPORT(UI_BASE_INTERACTION) StepBuilder {
    public:
     StepBuilder();
     ~StepBuilder();
     StepBuilder(StepBuilder&& other);
     StepBuilder& operator=(StepBuilder&& other);
 
+    // Sets the identifier or name of the element to use for this step.
+    // `SetElement()` or equivalent is required for all step types except
+    // `kCustomEvent`.
+    StepBuilder& SetElement(ElementSpecifier element_specifier);
+
     // Sets the unique identifier for this step. Either this or
     // SetElementName() is required for all step types except kCustomEvent.
+    // DEPRECATED: use `SetElement()`.
     StepBuilder& SetElementID(ElementIdentifier element_id);
 
     // Sets the step to refer to a named element instead of an
     // ElementIdentifier. Either this or SetElementID() is required for all
     // step types other than kCustomEvent.
+    // DEPRECATED: use `SetElement()`.
     StepBuilder& SetElementName(std::string_view name);
 
     // Sets the context for the step; useful for setting up the initial
@@ -495,6 +504,42 @@ class COMPONENT_EXPORT(UI_BASE) InteractionSequence {
     std::unique_ptr<Step> step_;
   };
 
+  // Callback that completes the transition from the current step to waiting for
+  // (or executing) the following step. Normally, this is called by the
+  // sequence itself after the step start callback. But some test code may want
+  // to delay calling this until after some asynchronous operation.
+  //
+  // If the parameter is true, the next step proceeds as normal. If it is false,
+  // the sequence fails.
+  using ProceedToNextStepCallback = base::OnceCallback<void(bool)>;
+
+  // Test-only handle for test steps that want to hold off ending a step until
+  // some asynchronous operation completes. The handle must be used to
+  // complete the step.
+  class COMPONENT_EXPORT(UI_BASE_INTERACTION) StepTransitionHandle {
+   public:
+    StepTransitionHandle();
+    StepTransitionHandle(StepTransitionHandle&& other);
+    StepTransitionHandle& operator=(StepTransitionHandle&& other);
+    StepTransitionHandle(const StepTransitionHandle&) = delete;
+    StepTransitionHandle& operator=(const StepTransitionHandle&) = delete;
+    ~StepTransitionHandle();
+
+    // Call to complete the step. Pass true for success, false for failure.
+    // The handle is consumed by this call.
+    void Proceed(bool success) &&;
+
+    // Returns true if this handle is valid.
+
+    explicit operator bool() const { return !callback_.is_null(); }
+
+   private:
+    friend class InteractionSequence;
+    explicit StepTransitionHandle(ProceedToNextStepCallback callback);
+
+    ProceedToNextStepCallback callback_;
+  };
+
   // Returns a step with the following values already set, typically used as the
   // first step in a sequence (because the first element is usually present):
   //   ElementID: element->identifier()
@@ -553,6 +598,11 @@ class COMPONENT_EXPORT(UI_BASE) InteractionSequence {
   // Builds aborted data for the current step and the given reason.
   AbortedData BuildAbortedData(AbortedReason reason) const;
 
+  // Test-only method for test steps that want to hold off ending a step until
+  // some asynchronous operation completes. The handle returned must be used to
+  // complete the step.
+  [[nodiscard]] StepTransitionHandle SeizeStepTransitionControl();
+
   // Gets a weak pointer to this object.
   base::WeakPtr<InteractionSequence> AsWeakPtr();
 
@@ -607,6 +657,10 @@ class COMPONENT_EXPORT(UI_BASE) InteractionSequence {
   // Finish the transition from the current step to the next step.
   void CompleteStepTransition();
 
+  // Called when a step is complete, either automatically or via the callback
+  // from SeizeStepTransitionControl().
+  void FinishStep(bool success);
+
   // Looks at the next step to determine what needs to be done. Called at the
   // start of the sequence and after each subsequent step starts.
   void StageNextStep();
@@ -645,6 +699,7 @@ class COMPONENT_EXPORT(UI_BASE) InteractionSequence {
   int active_step_index_ = 0;
   bool missing_first_element_ = false;
   bool trigger_during_callback_ = false;
+  ProceedToNextStepCallback step_transition_callback_;
   std::unique_ptr<Step> current_step_;
   ElementTracker::Subscription next_step_hidden_subscription_;
   std::unique_ptr<Configuration> configuration_;
@@ -656,41 +711,41 @@ class COMPONENT_EXPORT(UI_BASE) InteractionSequence {
   base::WeakPtrFactory<InteractionSequence> weak_factory_{this};
 };
 
-COMPONENT_EXPORT(UI_BASE)
+COMPONENT_EXPORT(UI_BASE_INTERACTION)
 extern void PrintTo(InteractionSequence::StepType step_type, std::ostream* os);
 
-COMPONENT_EXPORT(UI_BASE)
+COMPONENT_EXPORT(UI_BASE_INTERACTION)
 extern void PrintTo(InteractionSequence::AbortedReason reason,
                     std::ostream* os);
 
-COMPONENT_EXPORT(UI_BASE)
+COMPONENT_EXPORT(UI_BASE_INTERACTION)
 extern void PrintTo(InteractionSequence::SubsequenceMode mode,
                     std::ostream* os);
 
-COMPONENT_EXPORT(UI_BASE)
+COMPONENT_EXPORT(UI_BASE_INTERACTION)
 extern void PrintTo(InteractionSequence::StepStartMode mode, std::ostream* os);
 
-COMPONENT_EXPORT(UI_BASE)
+COMPONENT_EXPORT(UI_BASE_INTERACTION)
 extern void PrintTo(const InteractionSequence::AbortedData& aborted_data,
                     std::ostream* os);
 
-COMPONENT_EXPORT(UI_BASE)
+COMPONENT_EXPORT(UI_BASE_INTERACTION)
 extern std::ostream& operator<<(std::ostream& os,
                                 InteractionSequence::StepType step_type);
 
-COMPONENT_EXPORT(UI_BASE)
+COMPONENT_EXPORT(UI_BASE_INTERACTION)
 extern std::ostream& operator<<(std::ostream& os,
                                 InteractionSequence::AbortedReason reason);
 
-COMPONENT_EXPORT(UI_BASE)
+COMPONENT_EXPORT(UI_BASE_INTERACTION)
 extern std::ostream& operator<<(std::ostream& os,
                                 InteractionSequence::StepStartMode mode);
 
-COMPONENT_EXPORT(UI_BASE)
+COMPONENT_EXPORT(UI_BASE_INTERACTION)
 extern std::ostream& operator<<(std::ostream& os,
                                 InteractionSequence::SubsequenceMode mode);
 
-COMPONENT_EXPORT(UI_BASE)
+COMPONENT_EXPORT(UI_BASE_INTERACTION)
 extern std::ostream& operator<<(
     std::ostream& os,
     const InteractionSequence::AbortedData& aborted_data);

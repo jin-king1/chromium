@@ -23,11 +23,17 @@
 #include "extensions/renderer/script_injection.h"
 #include "extensions/renderer/user_script_set_manager.h"
 
+namespace blink {
+class WebLocalFrame;
+}
+
 namespace content {
 class RenderFrame;
 }
 
 namespace extensions {
+
+class ExtensionFrameHelper;
 
 // The ScriptInjectionManager manages extensions injecting scripts into frames
 // via both content/user scripts and tabs.executeScript(). It is responsible for
@@ -60,6 +66,12 @@ class ScriptInjectionManager : public UserScriptSetManager::Observer {
                                 const std::string& script_id,
                                 const GURL& url);
 
+  // Starts streaming JS sources for injected scripts at document start
+  // to V8, so they can be compiled in the background while the document loads.
+  void StartStreamingJSSources(blink::WebLocalFrame* web_frame,
+                               const GURL& document_url,
+                               ExtensionFrameHelper* frame_helper);
+
   void set_activity_logging_enabled(bool enabled) {
     activity_logging_enabled_ = enabled;
   }
@@ -91,14 +103,14 @@ class ScriptInjectionManager : public UserScriptSetManager::Observer {
   // Notifies that an RFOHelper should be removed.
   void RemoveObserver(RFOHelper* helper);
 
-  // Invalidate any pending tasks associated with |frame|.
+  // Invalidate any pending tasks associated with `frame`.
   void InvalidateForFrame(content::RenderFrame* frame);
 
-  // Starts the process to inject appropriate scripts into |frame|.
+  // Starts the process to inject appropriate scripts into `frame`.
   void StartInjectScripts(content::RenderFrame* frame,
                           mojom::RunLocation run_location);
 
-  // Actually injects the scripts into |frame|.
+  // Actually injects the scripts into `frame`.
   void InjectScripts(content::RenderFrame* frame,
                      mojom::RunLocation run_location);
 

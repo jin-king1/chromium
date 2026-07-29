@@ -18,15 +18,13 @@
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/unguessable_token.h"
-#include "chrome/browser/ash/crosapi/crosapi_ash.h"
-#include "chrome/browser/ash/crosapi/crosapi_manager.h"
 #include "chrome/browser/ash/video_conference/video_conference_manager_ash.h"
 #include "chrome/browser/chromeos/video_conference/video_conference_manager_client_common.h"
 #include "chrome/browser/chromeos/video_conference/video_conference_web_app.h"
 #include "chrome/browser/media/webrtc/media_capture_devices_dispatcher.h"
+#include "chrome/browser/ui/ash/main_extra_parts/chrome_browser_main_extra_parts_ash.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/test/base/in_process_browser_test.h"
-#include "chromeos/crosapi/mojom/video_conference.mojom-forward.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/web_contents_user_data.h"
 #include "content/public/test/browser_test.h"
@@ -147,8 +145,7 @@ class VideoConferenceMediaListenerBrowserTest : public InProcessBrowserTest {
     content::WebContentsUserData<VideoConferenceWebApp>::CreateForWebContents(
         web_contents, base::UnguessableToken::Create(),
         base::BindRepeating([](const base::UnguessableToken& id) {}),
-        base::DoNothingAs<void(
-            crosapi::mojom::VideoConferenceClientUpdatePtr)>());
+        base::DoNothingAs<void(ash::VideoConferenceClientUpdate)>());
 
     return content::WebContentsUserData<VideoConferenceWebApp>::FromWebContents(
         web_contents);
@@ -158,6 +155,17 @@ class VideoConferenceMediaListenerBrowserTest : public InProcessBrowserTest {
       blink::mojom::MediaStreamType stream_type) {
     blink::mojom::StreamDevices fake_devices;
     blink::MediaStreamDevice device(stream_type, "fake_device", "fake_device");
+
+    if (stream_type ==
+            blink::mojom::MediaStreamType::GUM_DESKTOP_VIDEO_CAPTURE ||
+        stream_type ==
+            blink::mojom::MediaStreamType::GUM_DESKTOP_AUDIO_CAPTURE) {
+      device.display_media_info = media::mojom::DisplayMediaInformation::New(
+          media::mojom::DisplayCaptureSurfaceType::WINDOW,
+          /*logical_surface=*/true, media::mojom::CursorCaptureType::NEVER,
+          /*capture_handle=*/nullptr,
+          /*initial_zoom_level=*/100);
+    }
 
     if (blink::IsAudioInputMediaType(stream_type)) {
       fake_devices.audio_device = device;
@@ -272,7 +280,7 @@ IN_PROC_BROWSER_TEST_F(VideoConferenceMediaListenerBrowserTest,
     web_contents->GetController().GetLastCommittedEntry()->SetURL(GURL(url));
 
     // Verify that the url is indeed changed.
-    EXPECT_EQ(web_contents->GetURL().host(), app_id);
+    EXPECT_EQ(web_contents->GetURL().GetHost(), app_id);
 
     // Access video.
     auto stop_capture_callback = StartCapture(
@@ -296,16 +304,14 @@ IN_PROC_BROWSER_TEST_F(VideoConferenceMediaListenerBrowserTest, RequestOnMute) {
           ash::VideoConferenceTrayController::Get());
   ASSERT_TRUE(controller);
 
-  auto* vc_manager = crosapi::CrosapiManager::Get()
-                         ->crosapi_ash()
-                         ->video_conference_manager_ash();
+  auto* vc_manager = ash::VideoConferenceManagerAsh::Get();
   ASSERT_TRUE(vc_manager);
 
   auto* vc_app1 = CreateVcWebAppInNewTab();
   auto* vc_app2 = CreateVcWebAppInNewTab();
 
   vc_manager->SetSystemMediaDeviceStatus(
-      crosapi::mojom::VideoConferenceMediaDevice::kCamera, /*disabled=*/true);
+      ash::VideoConferenceMediaDevice::kCamera, /*enabled=*/false);
 
   // Initially should be zero.
   EXPECT_EQ(controller->device_used_while_disabled_records().size(), 0u);
@@ -318,8 +324,8 @@ IN_PROC_BROWSER_TEST_F(VideoConferenceMediaListenerBrowserTest, RequestOnMute) {
   EXPECT_EQ(controller->device_used_while_disabled_records().size(), 1u);
 
   vc_manager->SetSystemMediaDeviceStatus(
-      crosapi::mojom::VideoConferenceMediaDevice::kMicrophone,
-      /*disabled=*/true);
+      ash::VideoConferenceMediaDevice::kMicrophone,
+      /*enabled=*/false);
   auto stop_capture_callback2 =
       StartCapture(&vc_app2->GetWebContents(),
                    blink::mojom::MediaStreamType::DEVICE_AUDIO_CAPTURE);
@@ -330,9 +336,7 @@ IN_PROC_BROWSER_TEST_F(VideoConferenceMediaListenerBrowserTest, RequestOnMute) {
 // client when capturing stops.
 IN_PROC_BROWSER_TEST_F(VideoConferenceMediaListenerBrowserTest,
                        ExtensionRemovedWhenCapturingStopped) {
-  auto* vc_manager = crosapi::CrosapiManager::Get()
-                         ->crosapi_ash()
-                         ->video_conference_manager_ash();
+  auto* vc_manager = ash::VideoConferenceManagerAsh::Get();
   ASSERT_TRUE(vc_manager);
 
   std::unique_ptr<FakeVideoConferenceMediaListener> media_listener =
@@ -356,9 +360,9 @@ IN_PROC_BROWSER_TEST_F(VideoConferenceMediaListenerBrowserTest,
 
   vc_manager->GetMediaApps(base::BindLambdaForTesting([](ash::MediaApps apps) {
     EXPECT_EQ(apps.size(), 1u);
-    EXPECT_TRUE(apps[0]->is_capturing_camera);
-    EXPECT_FALSE(apps[0]->is_capturing_microphone);
-    EXPECT_FALSE(apps[0]->is_capturing_screen);
+    EXPECT_TRUE(apps[0].is_capturing_camera);
+    EXPECT_FALSE(apps[0].is_capturing_microphone);
+    EXPECT_FALSE(apps[0].is_capturing_screen);
   }));
 
   std::move(stop_capture_callback).Run();

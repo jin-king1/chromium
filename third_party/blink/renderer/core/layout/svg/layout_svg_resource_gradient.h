@@ -47,13 +47,14 @@ class LayoutSVGResourceGradient : public LayoutSVGResourcePaintServer {
                    const gfx::RectF& reference_box,
                    const AffineTransform* additional_transform,
                    const AutoDarkMode& auto_dark_mode,
-                   cc::PaintFlags&) final;
+                   cc::PaintFlags& flags,
+                   PaintFlags paint_flags) final;
 
   bool IsChildAllowed(LayoutObject* child, const ComputedStyle&) const final;
 
  protected:
   virtual const GradientAttributes& EnsureAttributes() const = 0;
-  virtual scoped_refptr<Gradient> BuildGradient() const = 0;
+  virtual std::unique_ptr<Gradient> BuildGradient() const = 0;
 
   gfx::PointF ResolvePoint(SVGUnitTypes::SVGUnitType,
                            const SVGLength& x,

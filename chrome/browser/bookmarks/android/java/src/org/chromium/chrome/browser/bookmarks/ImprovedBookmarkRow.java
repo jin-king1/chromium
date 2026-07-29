@@ -4,13 +4,17 @@
 
 package org.chromium.chrome.browser.bookmarks;
 
+import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.res.ColorStateList;
+import android.content.res.Resources;
+import android.graphics.Outline;
 import android.graphics.drawable.Drawable;
 import android.util.AttributeSet;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewOutlineProvider;
 import android.view.ViewPropertyAnimator;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
@@ -18,9 +22,10 @@ import android.widget.TextView;
 
 import androidx.annotation.ColorInt;
 import androidx.annotation.IntDef;
-import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
 
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.components.browser_ui.widget.RoundedCornerOutlineProvider;
 import org.chromium.components.browser_ui.widget.selectable_list.SelectableListUtils;
 import org.chromium.ui.listmenu.ListMenuButton;
@@ -33,6 +38,7 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 
 /** Common logic for improved bookmark and folder rows. */
+@NullMarked
 public class ImprovedBookmarkRow extends ViewLookupCachingFrameLayout
         implements CancelableAnimator {
     /**
@@ -70,6 +76,8 @@ public class ImprovedBookmarkRow extends ViewLookupCachingFrameLayout
     private ImageView mEndImageView;
     private @Nullable ViewPropertyAnimator mFadeAnimator;
 
+    private @Nullable ImageView mDragHandle;
+    private boolean mIsDragEnabled;
     private boolean mBookmarkIdEditable;
     private boolean mEndImageViewVisible;
     private boolean mMoreButtonVisible;
@@ -100,8 +108,36 @@ public class ImprovedBookmarkRow extends ViewLookupCachingFrameLayout
     }
 
     /** Constructor for inflating from XML. */
-    public ImprovedBookmarkRow(Context context, AttributeSet attrs) {
+    public ImprovedBookmarkRow(Context context, @Nullable AttributeSet attrs) {
         super(context, attrs);
+        // The view from buildView should have a focus highlight, so avoid duplicate focus
+        setDefaultFocusHighlightEnabled(false);
+    }
+
+    public void setDragEnabled(boolean dragEnabled) {
+        mIsDragEnabled = dragEnabled;
+        updateView();
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    public void setDragHandleTouchListener(View.OnTouchListener listener) {
+        if (mDragHandle != null) {
+            mDragHandle.setOnTouchListener(listener);
+        }
+    }
+
+    public void setRowBodyTouchListener(View.OnTouchListener listener) {
+        setOnTouchListener(listener);
+    }
+
+    public void setDragHandleHoverListener(View.OnHoverListener listener) {
+        if (mDragHandle != null) {
+            mDragHandle.setOnHoverListener(listener);
+        }
+    }
+
+    public void setRowBodyHoverListener(View.OnHoverListener listener) {
+        setOnHoverListener(listener);
     }
 
     @Override
@@ -144,6 +180,46 @@ public class ImprovedBookmarkRow extends ViewLookupCachingFrameLayout
 
         mMoreButton = findViewById(R.id.more);
         mEndImageView = findViewById(R.id.end_image);
+
+        mDragHandle = findViewById(R.id.drag_handle);
+        mDragHandle.setClickable(true);
+        mDragHandle.setFocusable(true);
+
+        // Define the shadow shape explicitly. This ensures that the shadow appears even if
+        // mDraggedBackgroundColor is transparent.
+        setOutlineProvider(
+                new ViewOutlineProvider() {
+                    @Override
+                    public void getOutline(View view, Outline outline) {
+                        if (mContainer != null && mContainer.getWidth() > 0) {
+                            Resources res = getContext().getResources();
+
+                            int radiusRes =
+                                    mIsSelected
+                                            ? R.dimen.default_rounded_corner_radius
+                                            : R.dimen.improved_bookmark_row_outer_corner_radius;
+
+                            float radius = res.getDimension(radiusRes);
+
+                            // Calculate the bounds of the container relative to the parent
+                            // (ImprovedBookmarkRow) and draw the shadow.
+                            outline.setRoundRect(
+                                    mContainer.getLeft(),
+                                    mContainer.getTop(),
+                                    mContainer.getRight(),
+                                    mContainer.getBottom(),
+                                    radius);
+                            // Force shadow opacity even if view is transparent.
+                            outline.setAlpha(1.0f);
+                        } else {
+                            // Don't show the shadow.
+                            outline.setRect(0, 0, view.getWidth(), view.getHeight());
+                            outline.setAlpha(0.0f);
+                        }
+                    }
+                });
+        // Allow the shadow to draw outside the view bounds if needed.
+        setClipToOutline(false);
     }
 
     void setRowEnabled(boolean enabled) {
@@ -271,11 +347,19 @@ public class ImprovedBookmarkRow extends ViewLookupCachingFrameLayout
     void updateView() {
         mContainer.setBackgroundResource(
                 mIsSelected
-                        ? R.drawable.rounded_rectangle_surface_1
-                        : R.drawable.rounded_rectangle_surface_0);
+                        ? R.drawable.rounded_rectangle_surface_container_low
+                        : R.drawable.improved_bookmark_row_visual_background);
 
         boolean checkVisible = mSelectionEnabled && mIsSelected;
         boolean moreVisible = mMoreButtonVisible && !mIsSelected && mBookmarkIdEditable;
+
+        // Show handle if row is selected.
+        if (mDragHandle != null) {
+            mDragHandle.setVisibility((mIsDragEnabled && mIsSelected) ? View.VISIBLE : View.GONE);
+        }
+        // ViewOutlineProvider re-runs getOutline().
+        invalidateOutline();
+
         mCheckImageView.setVisibility(checkVisible ? View.VISIBLE : View.GONE);
         mMoreButton.setVisibility(moreVisible ? View.VISIBLE : View.GONE);
         mEndImageView.setVisibility(

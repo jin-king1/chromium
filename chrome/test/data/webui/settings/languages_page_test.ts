@@ -9,7 +9,7 @@ import {flush} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min
 import type {LanguageHelper, SettingsAddLanguagesDialogElement, SettingsLanguagesPageElement} from 'chrome://settings/lazy_load.js';
 import {LanguagesBrowserProxyImpl} from 'chrome://settings/lazy_load.js';
 import type {SettingsCheckboxListEntryElement, CrActionMenuElement, CrButtonElement} from 'chrome://settings/settings.js';
-import {CrSettingsPrefs, loadTimeData} from 'chrome://settings/settings.js';
+import {CrSettingsPrefs, loadTimeData, convertLanguageCodeForTranslate} from 'chrome://settings/settings.js';
 import {assertEquals, assertFalse, assertGE, assertGT, assertLT, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {FakeSettingsPrivate} from 'chrome://webui-test/fake_settings_private.js';
 import {eventToPromise} from 'chrome://webui-test/test_util.js';
@@ -36,7 +36,7 @@ suite('LanguagesPage', function() {
     assertTrue(!!i18nString);
     const menuItems = actionMenu.querySelectorAll<T>('.dropdown-item');
     const menuItem = Array.from(menuItems).find(
-        item => item.textContent!.trim() === i18nString);
+        item => item.textContent.trim() === i18nString);
     assertTrue(!!menuItem, 'Menu item "' + i18nKey + '" not found');
     return menuItem;
   }
@@ -45,58 +45,51 @@ suite('LanguagesPage', function() {
   const initialLanguages = 'en-US,sw';
 
   suiteSetup(function() {
-    document.body.innerHTML = window.trustedTypes!.emptyHTML;
     CrSettingsPrefs.deferInitialization = true;
   });
 
-  setup(function() {
+  setup(async function() {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
     const settingsPrefs = document.createElement('settings-prefs');
     const settingsPrivate = new FakeSettingsPrivate(getFakeLanguagePrefs());
     settingsPrefs.initialize(settingsPrivate);
     document.body.appendChild(settingsPrefs);
-    return CrSettingsPrefs.initialized.then(function() {
-      // Set up test browser proxy.
-      browserProxy = new TestLanguagesBrowserProxy();
-      LanguagesBrowserProxyImpl.setInstance(browserProxy);
 
-      // Set up fake languageSettingsPrivate API.
-      const languageSettingsPrivate =
-          browserProxy.getLanguageSettingsPrivate() as unknown as
-          FakeLanguageSettingsPrivate;
-      languageSettingsPrivate.setSettingsPrefs(settingsPrefs);
+    await CrSettingsPrefs.initialized;
+    // Set up test browser proxy.
+    browserProxy = new TestLanguagesBrowserProxy();
+    LanguagesBrowserProxyImpl.setInstance(browserProxy);
 
-      const settingsLanguages = document.createElement('settings-languages');
-      settingsLanguages.prefs = settingsPrefs.prefs;
-      fakeDataBind(settingsPrefs, settingsLanguages, 'prefs');
-      document.body.appendChild(settingsLanguages);
+    // Set up fake languageSettingsPrivate API.
+    const languageSettingsPrivate = browserProxy.getLanguageSettingsPrivate() as
+        unknown as FakeLanguageSettingsPrivate;
+    languageSettingsPrivate.setSettingsPrefs(settingsPrefs);
 
-      languagesPage = document.createElement('settings-languages-page');
+    const settingsLanguages = document.createElement('settings-languages');
+    settingsLanguages.prefs = settingsPrefs.prefs!;
+    fakeDataBind(settingsPrefs, settingsLanguages, 'prefs');
+    document.body.appendChild(settingsLanguages);
+    languageHelper = settingsLanguages;
 
-      languagesPage.prefs = settingsPrefs.prefs;
-      fakeDataBind(settingsPrefs, languagesPage, 'prefs');
+    languagesPage = document.createElement('settings-languages-page');
 
-      languagesPage.languageHelper = settingsLanguages.languageHelper;
-      fakeDataBind(settingsLanguages, languagesPage, 'language-helper');
+    languagesPage.prefs = settingsPrefs.prefs!;
+    fakeDataBind(settingsPrefs, languagesPage, 'prefs');
 
-      languagesPage.languages = settingsLanguages.languages;
-      fakeDataBind(settingsLanguages, languagesPage, 'languages');
+    languagesPage.languages = settingsLanguages.languages;
+    fakeDataBind(settingsLanguages, languagesPage, 'languages');
 
-      document.body.appendChild(languagesPage);
-      flush();
-      actionMenu = languagesPage.$.menu.get();
+    document.body.appendChild(languagesPage);
+    flush();
+    actionMenu = languagesPage.$.menu.get();
 
-      languageHelper = languagesPage.languageHelper;
-      return languageHelper.whenReady();
-    });
-  });
-
-  teardown(function() {
-    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    return settingsLanguages.whenReady();
   });
 
   suite('AddLanguagesDialog', function() {
     let dialog: SettingsAddLanguagesDialogElement;
     let dialogItems: NodeListOf<SettingsCheckboxListEntryElement>;
+    let addLanguagesButton: CrButtonElement;
     let cancelButton: CrButtonElement;
     let actionButton: CrButtonElement;
     let dialogClosedResolver: PromiseResolver<void>;
@@ -123,51 +116,60 @@ suite('LanguagesPage', function() {
       }
     }
 
-    setup(function() {
-      const addLanguagesButton =
-          languagesPage.shadowRoot!.querySelector<HTMLElement>('#addLanguages')!
-          ;
+    setup(async function() {
+      addLanguagesButton =
+          languagesPage.shadowRoot!.querySelector<CrButtonElement>(
+              '#addLanguages')!;
       const whenDialogOpen = eventToPromise('cr-dialog-open', languagesPage);
       addLanguagesButton.click();
 
       // The page stamps the dialog, registers listeners, and populates the
       // iron-list asynchronously at microtask timing, so wait for a new task.
-      return whenDialogOpen.then(() => {
-        dialog = languagesPage.shadowRoot!.querySelector(
-            'settings-add-languages-dialog')!;
-        assertTrue(!!dialog);
+      await whenDialogOpen;
 
-        // Observe the removal of the dialog via MutationObserver since the
-        // HTMLDialogElement 'close' event fires at an unpredictable time.
-        dialogClosedResolver = new PromiseResolver();
-        dialogClosedObserver = new MutationObserver(onMutation);
-        dialogClosedObserver.observe(
-            languagesPage.shadowRoot!, {childList: true});
+      dialog = languagesPage.shadowRoot!.querySelector(
+          'settings-add-languages-dialog')!;
+      assertTrue(!!dialog);
 
-        actionButton = dialog.shadowRoot!.querySelector<CrButtonElement>(
-            '.action-button')!;
-        assertTrue(!!actionButton);
-        cancelButton = dialog.shadowRoot!.querySelector<CrButtonElement>(
-            '.cancel-button')!;
-        assertTrue(!!cancelButton);
-        flush();
+      // Observe the removal of the dialog via MutationObserver since the
+      // HTMLDialogElement 'close' event fires at an unpredictable time.
+      dialogClosedResolver = new PromiseResolver();
+      dialogClosedObserver = new MutationObserver(onMutation);
+      dialogClosedObserver.observe(
+          languagesPage.shadowRoot!.querySelector('settings-section')!,
+          {childList: true});
 
-        // The fixed-height dialog's iron-list should stamp far fewer than
-        // 50 items.
-        dialogItems =
-            dialog.$.dialog.querySelectorAll<SettingsCheckboxListEntryElement>(
-                'settings-checkbox-list-entry:not([hidden])');
-        assertGT(dialogItems.length, 1);
-        assertLT(dialogItems.length, 50);
+      actionButton =
+          dialog.shadowRoot!.querySelector<CrButtonElement>('.action-button')!;
+      assertTrue(!!actionButton);
+      cancelButton =
+          dialog.shadowRoot!.querySelector<CrButtonElement>('.cancel-button')!;
+      assertTrue(!!cancelButton);
+      flush();
 
-        // No languages have been checked, so the action button is disabled.
-        assertTrue(actionButton.disabled);
-        assertFalse(cancelButton.disabled);
-      });
+      // The fixed-height dialog's iron-list should stamp far fewer than
+      // 50 items.
+      dialogItems =
+          dialog.$.dialog.querySelectorAll<SettingsCheckboxListEntryElement>(
+              'settings-checkbox-list-entry:not([hidden])');
+      assertGT(dialogItems.length, 1);
+      assertLT(dialogItems.length, 50);
+
+      // No languages have been checked, so the action button is disabled.
+      assertTrue(actionButton.disabled);
+      assertFalse(cancelButton.disabled);
     });
 
     teardown(function() {
       dialogClosedObserver.disconnect();
+    });
+
+    test('undefined languages', function() {
+      assertFalse(addLanguagesButton.disabled);
+
+      // Make the languages undefined and make sure the button is disabled.
+      languagesPage.languages = undefined;
+      assertTrue(addLanguagesButton.disabled);
     });
 
     test('cancel', function() {
@@ -187,11 +189,10 @@ suite('LanguagesPage', function() {
       // Canceling the dialog should close and remove it without enabling
       // the checked languages.
       cancelButton.click();
-      return dialogClosedResolver.promise.then(function() {
-        assertEquals(
-            initialLanguages,
-            languagesPage.getPref('intl.accept_languages').value);
-      });
+      await dialogClosedResolver.promise;
+      assertEquals(
+          initialLanguages,
+          languagesPage.getPref('intl.accept_languages').value);
     });
 
     test('add languages and confirm', async function() {
@@ -286,16 +287,16 @@ suite('LanguagesPage', function() {
     /*
      * This suite tests that the translate target language is labelled
      */
-    test('test translate target language is labelled', function() {
+    test('translate target language is labelled', function() {
       // Translate target language disabled.
       const targetLanguageCode = languageHelper.languages!.translateTarget;
       assertTrue(!!targetLanguageCode);
       assertTrue(languageHelper.languages!.enabled.some(
-          l => languageHelper.convertLanguageCodeForTranslate(
-                   l.language.code) === targetLanguageCode));
+          l => convertLanguageCodeForTranslate(l.language.code) ===
+              targetLanguageCode));
       assertTrue(languageHelper.languages!.enabled.some(
-          l => languageHelper.convertLanguageCodeForTranslate(
-                   l.language.code) !== targetLanguageCode));
+          l => convertLanguageCodeForTranslate(l.language.code) !==
+              targetLanguageCode));
       let translateTargetLabel = null;
       let item = null;
 
@@ -315,8 +316,7 @@ suite('LanguagesPage', function() {
             num_visibles++;
             assertEquals(
                 targetLanguageCode,
-                languageHelper.convertLanguageCodeForTranslate(
-                    item.language.code));
+                convertLanguageCodeForTranslate(item.language.code));
           }
         }
         assertEquals(

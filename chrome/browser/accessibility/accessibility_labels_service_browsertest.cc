@@ -17,6 +17,7 @@
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ash/accessibility/accessibility_manager.h"
+#include "chrome/browser/ash/accessibility/chromevox_test_utils.h"
 #include "chrome/browser/ash/accessibility/speech_monitor.h"
 #include "extensions/browser/browsertest_util.h"
 #include "extensions/common/constants.h"
@@ -45,38 +46,30 @@ class AccessibilityLabelsBrowserTest : public InProcessBrowserTest {
 
   void EnableScreenReader(bool enabled) {
 #if BUILDFLAG(IS_CHROMEOS)
-    // Enable Chromevox.
-    ash::AccessibilityManager::Get()->EnableSpokenFeedback(enabled);
-    if (enabled) {
-      // Block until Chromevox is fully loaded.
-      speech_monitor_.ExpectSpeechPattern("*");
-      speech_monitor_.Call([this]() { DisableEarcons(); });
-      speech_monitor_.Replay();
+    if (!enabled) {
+      ash::AccessibilityManager::Get()->EnableSpokenFeedback(false);
+      return;
     }
+
+    chromevox_test_utils_ = std::make_unique<ash::ChromeVoxTestUtils>();
+    chromevox_test_utils_->EnableChromeVox();
+    // Note: we can safely call `Replay` here since none of these tests make
+    // speech assertions.
+    chromevox_test_utils_->sm()->Replay();
 #else
     // Spoof a screen reader.
     if (!enabled) {
       screen_reader_override_.reset();
     } else if (!screen_reader_override_) {
       screen_reader_override_.emplace(ui::AXMode::kWebContents |
-                                      ui::AXMode::kScreenReader);
+                                      ui::AXMode::kExtendedProperties);
     }
 #endif  // BUILDFLAG(IS_CHROMEOS)
   }
 
  private:
 #if BUILDFLAG(IS_CHROMEOS)
-  void DisableEarcons() {
-    // Playing earcons from within a test is not only annoying if you're
-    // running the test locally, but seems to cause crashes
-    // (http://crbug.com/396507). Work around this by just telling
-    // ChromeVox to not ever play earcons (prerecorded sound effects).
-    extensions::browsertest_util::ExecuteScriptInBackgroundPageNoWait(
-        browser()->profile(), extension_misc::kChromeVoxExtensionId,
-        "ChromeVox.earcons.playEarcon = function() {};");
-  }
-
-  ash::test::SpeechMonitor speech_monitor_;
+  std::unique_ptr<ash::ChromeVoxTestUtils> chromevox_test_utils_;
 #else
   std::optional<content::ScopedAccessibilityModeOverride>
       screen_reader_override_;
@@ -91,34 +84,34 @@ IN_PROC_BROWSER_TEST_F(AccessibilityLabelsBrowserTest, NewWebContents) {
       content::BrowserAccessibilityState::GetInstance()->GetAccessibilityMode();
   EXPECT_FALSE(ax_mode.has_mode(ui::AXMode::kLabelImages));
 
-  chrome::NewTab(browser());
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
   content::WebContents* web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
   ax_mode = web_contents->GetAccessibilityMode();
   EXPECT_FALSE(ax_mode.has_mode(ui::AXMode::kLabelImages));
 
-  browser()->profile()->GetPrefs()->SetBoolean(
+  browser()->GetProfile()->GetPrefs()->SetBoolean(
       prefs::kAccessibilityImageLabelsEnabled, true);
 
-  chrome::NewTab(browser());
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
   web_contents = browser()->tab_strip_model()->GetActiveWebContents();
   // Wait for ChromeVox to attach to the new tab if needed.
   if (!web_contents->GetAccessibilityMode().has_mode(
-          ui::AXMode::kScreenReader)) {
+          ui::AXMode::kExtendedProperties)) {
     content::AccessibilityNotificationWaiter waiter(web_contents);
     ASSERT_TRUE(waiter.WaitForNotification());
   }
   ax_mode = web_contents->GetAccessibilityMode();
   EXPECT_TRUE(ax_mode.has_mode(ui::AXMode::kLabelImages));
 
-  browser()->profile()->GetPrefs()->SetBoolean(
+  browser()->GetProfile()->GetPrefs()->SetBoolean(
       prefs::kAccessibilityImageLabelsEnabled, false);
 
-  chrome::NewTab(browser());
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
   web_contents = browser()->tab_strip_model()->GetActiveWebContents();
   // Wait for ChromeVox to attach to the new tab if needed.
   if (!web_contents->GetAccessibilityMode().has_mode(
-          ui::AXMode::kScreenReader)) {
+          ui::AXMode::kExtendedProperties)) {
     content::AccessibilityNotificationWaiter waiter(web_contents);
     ASSERT_TRUE(waiter.WaitForNotification());
   }
@@ -135,13 +128,13 @@ IN_PROC_BROWSER_TEST_F(AccessibilityLabelsBrowserTest, ExistingWebContents) {
   ui::AXMode ax_mode = web_contents->GetAccessibilityMode();
   EXPECT_FALSE(ax_mode.has_mode(ui::AXMode::kLabelImages));
 
-  browser()->profile()->GetPrefs()->SetBoolean(
+  browser()->GetProfile()->GetPrefs()->SetBoolean(
       prefs::kAccessibilityImageLabelsEnabled, true);
 
   ax_mode = web_contents->GetAccessibilityMode();
   EXPECT_TRUE(ax_mode.has_mode(ui::AXMode::kLabelImages));
 
-  browser()->profile()->GetPrefs()->SetBoolean(
+  browser()->GetProfile()->GetPrefs()->SetBoolean(
       prefs::kAccessibilityImageLabelsEnabled, false);
 
   ax_mode = web_contents->GetAccessibilityMode();
@@ -175,14 +168,14 @@ IN_PROC_BROWSER_TEST_F(AccessibilityLabelsBrowserTest,
   ui::AXMode ax_mode = web_contents->GetAccessibilityMode();
   EXPECT_FALSE(ax_mode.has_mode(ui::AXMode::kLabelImages));
 
-  browser()->profile()->GetPrefs()->SetBoolean(
+  browser()->GetProfile()->GetPrefs()->SetBoolean(
       prefs::kAccessibilityImageLabelsEnabled, true);
 
   ax_mode = web_contents->GetAccessibilityMode();
   EXPECT_FALSE(ax_mode.has_mode(ui::AXMode::kLabelImages));
 
   // Reset state.
-  browser()->profile()->GetPrefs()->SetBoolean(
+  browser()->GetProfile()->GetPrefs()->SetBoolean(
       prefs::kAccessibilityImageLabelsEnabled, false);
 }
 
@@ -198,7 +191,7 @@ IN_PROC_BROWSER_TEST_F(AccessibilityLabelsBrowserTest,
   EXPECT_FALSE(
       web_contents->GetAccessibilityMode().has_mode(ui::AXMode::kLabelImages));
 
-  browser()->profile()->GetPrefs()->SetBoolean(
+  browser()->GetProfile()->GetPrefs()->SetBoolean(
       prefs::kAccessibilityImageLabelsEnabled, true);
 
   // Now the feature is on.
@@ -210,7 +203,7 @@ IN_PROC_BROWSER_TEST_F(AccessibilityLabelsBrowserTest,
 // when a screenreader is discovered.
 IN_PROC_BROWSER_TEST_F(AccessibilityLabelsBrowserTest, EnabledByPreference) {
   // The preference was set for the profile by PRE_EnabledByPreference.
-  ASSERT_TRUE(browser()->profile()->GetPrefs()->GetBoolean(
+  ASSERT_TRUE(browser()->GetProfile()->GetPrefs()->GetBoolean(
       prefs::kAccessibilityImageLabelsEnabled));
 
   auto* const web_contents =
@@ -220,7 +213,7 @@ IN_PROC_BROWSER_TEST_F(AccessibilityLabelsBrowserTest, EnabledByPreference) {
   // reader should have been detected yet, and the feature should be off.
   if (!content::BrowserAccessibilityState::GetInstance()
            ->GetAccessibilityMode()
-           .has_mode(ui::AXMode::kScreenReader)) {
+           .has_mode(ui::AXMode::kExtendedProperties)) {
     EXPECT_FALSE(web_contents->GetAccessibilityMode().has_mode(
         ui::AXMode::kLabelImages));
 

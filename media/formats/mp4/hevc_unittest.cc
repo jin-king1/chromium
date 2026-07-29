@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "media/formats/mp4/hevc.h"
 
@@ -14,8 +10,7 @@
 #include "media/formats/mp4/nalu_test_helper.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
-namespace media {
-namespace mp4 {
+namespace media::mp4 {
 
 TEST(HEVCAnalyzeAnnexBTest, ValidAnnexBConstructs) {
   struct TestCases {
@@ -45,16 +40,14 @@ TEST(HEVCAnalyzeAnnexBTest, ValidAnnexBConstructs) {
     BitstreamConverter::AnalysisResult expected;
     expected.is_conformant = true;
     expected.is_keyframe = test_cases[i].is_keyframe;
-    EXPECT_PRED2(AnalysesMatch,
-                 HEVC::AnalyzeAnnexB(buf.data(), buf.size(), subsamples),
-                 expected)
+    EXPECT_PRED2(AnalysesMatch, HEVC::AnalyzeAnnexB(buf, subsamples), expected)
         << "'" << test_cases[i].case_string << "' failed";
   }
 }
 
 TEST(HEVCAnalyzeAnnexBTest, EmptyBuffer) {
   std::vector<SubsampleEntry> subsamples;
-  auto result = HEVC::AnalyzeAnnexB(nullptr, 0, subsamples);
+  auto result = HEVC::AnalyzeAnnexB(base::span<const uint8_t>(), subsamples);
   EXPECT_TRUE(result.is_conformant);
   EXPECT_TRUE(subsamples.empty());
   EXPECT_FALSE(result.is_keyframe.has_value());
@@ -69,17 +62,20 @@ TEST(HEVCAnalyzeAnnexBTest, InvalidAnnexBConstructs) {
       // For these cases, lack of conformance is determined before detecting any
       // IDR or non-IDR slices, so the non-conformant frames' keyframe analysis
       // reports std::nullopt (which means undetermined analysis result).
-      {"AUD", std::nullopt},        // No VCL present.
-      {"AUD,SPS", std::nullopt},    // No VCL present.
-      {"SPS AUD I", std::nullopt},  // Parameter sets must come after AUD.
-      {"EOS", std::nullopt},        // EOS must come after a VCL.
-      {"EOB", std::nullopt},        // EOB must come after a VCL.
+      {"AUD", std::nullopt},      // No VCL present.
+      {"AUD,SPS", std::nullopt},  // No VCL present.
+      {"SPS AUD I", true},        // Parameter sets must come after AUD.
+      {"EOS", std::nullopt},      // EOS must come after a VCL.
+      {"EOB", std::nullopt},      // EOB must come after a VCL.
 
       // For these cases, IDR slice is first VCL and is detected before
       // conformance failure, so the non-conformant frame is reported as a
       // keyframe.
       {"I EOB EOS", true},  // EOS must come before EOB.
       {"I SPS", true},      // SPS must come before first VCL.
+      {"FD PREFIX_SEI I",
+       true},  // FD before VCL is non-conformant but keyframe is detected.
+      {"PREFIX_SEI AUD I", true},  // AUD must be first NALU.
 
       // For this case, P slice is first VCL and is detected before conformance
       // failure, so the non-conformant frame is reported as a non-keyframe.
@@ -95,9 +91,7 @@ TEST(HEVCAnalyzeAnnexBTest, InvalidAnnexBConstructs) {
     std::vector<SubsampleEntry> subsamples;
     HevcStringToAnnexB(test_cases[i].case_string, &buf, nullptr);
     expected.is_keyframe = test_cases[i].is_keyframe;
-    EXPECT_PRED2(AnalysesMatch,
-                 HEVC::AnalyzeAnnexB(buf.data(), buf.size(), subsamples),
-                 expected)
+    EXPECT_PRED2(AnalysesMatch, HEVC::AnalyzeAnnexB(buf, subsamples), expected)
         << "'" << test_cases[i].case_string << "' failed";
   }
 }
@@ -114,11 +108,10 @@ TEST(HEVCAnalyzeAnnexBTest, HEVCDecoderConfigurationRecordTakenFromStream) {
       0xca, 0xe0, 0x10, 0x00, 0x00, 0x06, 0x40, 0x00, 0x00, 0xbb, 0x50, 0x80,
       0x22, 0x00, 0x01, 0x00, 0x06, 0x44, 0x01, 0xc1, 0x73, 0xd1, 0x89};
   HEVCDecoderConfigurationRecord record;
-  EXPECT_TRUE(record.Parse(test_data.data(), test_data.size()));
+  EXPECT_TRUE(record.Parse(test_data));
   std::vector<uint8_t> output;
   EXPECT_TRUE(record.Serialize(output));
   EXPECT_TRUE(test_data == output);
 }
 
-}  // namespace mp4
-}  // namespace media
+}  // namespace media::mp4

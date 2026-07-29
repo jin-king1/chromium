@@ -8,6 +8,7 @@
 #include <optional>
 
 #include "base/functional/callback_forward.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/ui/views/global_media_controls/media_dialog_ui_for_test.h"
 #include "chrome/browser/ui/views/media_router/cast_dialog_view.h"
@@ -16,7 +17,7 @@
 #include "components/media_router/common/media_sink.h"
 #include "components/media_router/common/media_source.h"
 
-class Browser;
+class BrowserWindowInterface;
 
 namespace media_router {
 
@@ -55,9 +56,9 @@ class MediaRouterGmcUiForTest : public MediaRouterUiForTestBase {
       WatchType watch_type,
       std::optional<std::string> sink_name = std::nullopt) override;
 
-  Browser* browser() const { return browser_; }
+  BrowserWindowInterface* browser() const { return browser_; }
 
-  const raw_ptr<Browser> browser_;
+  const raw_ptr<BrowserWindowInterface> browser_;
   MediaDialogUiForTest dialog_ui_{
       base::BindRepeating(&MediaRouterGmcUiForTest::browser,
                           base::Unretained(this))};

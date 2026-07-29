@@ -7,15 +7,13 @@
 
 #import <Foundation/Foundation.h>
 
-#include "base/memory/scoped_refptr.h"
+#import "base/memory/scoped_refptr.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/password_manager_view_controller_delegate.h"
 #import "ios/chrome/browser/shared/ui/table_view/table_view_favicon_data_source.h"
-#import "ios/chrome/common/ui/reauthentication/reauthentication_module.h"
 
 class FaviconLoader;
 class IOSChromePasswordCheckManager;
 @protocol PasswordsConsumer;
-class PrefService;
 
 namespace syncer {
 class SyncService;
@@ -27,7 +25,6 @@ class Tracker;
 
 // This mediator fetches and organises the passwords for its consumer.
 @interface PasswordsMediator : NSObject <PasswordManagerViewControllerDelegate,
-                                         SuccessfulReauthTimeAccessor,
                                          TableViewFaviconDataSource>
 
 - (instancetype)initWithPasswordCheckManager:
@@ -35,7 +32,6 @@ class Tracker;
                         passwordCheckManager
                                faviconLoader:(FaviconLoader*)faviconLoader
                                  syncService:(syncer::SyncService*)syncService
-                                 prefService:(PrefService*)prefService
     NS_DESIGNATED_INITIALIZER;
 
 - (instancetype)init NS_UNAVAILABLE;
@@ -46,6 +42,9 @@ class Tracker;
 // Ask the Feature Engagement Tracker whether or not the Password Manager widget
 // promo can be shown.
 - (void)askFETToShowPasswordManagerWidgetPromo;
+
+// Ask to display or to hide the Trusted Vault widget promo if needed.
+- (void)displayOrHideTrustedVaultPasswordManagerWidgetPromo;
 
 @property(nonatomic, weak) id<PasswordsConsumer> consumer;
 

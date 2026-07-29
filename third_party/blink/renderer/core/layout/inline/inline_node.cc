@@ -2,23 +2,19 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "third_party/blink/renderer/core/layout/inline/inline_node.h"
 
 #include <algorithm>
-#include <memory>
 #include <numeric>
 
 #include "base/containers/adapters.h"
 #include "base/debug/dump_without_crashing.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/not_fatal_until.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/trace_event/trace_event.h"
 #include "third_party/blink/renderer/core/dom/text_diff_range.h"
+#include "third_party/blink/renderer/core/frame/local_frame.h"
+#include "third_party/blink/renderer/core/frame/settings.h"
 #include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/layout/block_break_token.h"
 #include "third_party/blink/renderer/core/layout/constraint_space.h"
@@ -29,10 +25,10 @@
 #include "third_party/blink/renderer/core/layout/inline/inline_item_result_ruby_column.h"
 #include "third_party/blink/renderer/core/layout/inline/inline_items_builder.h"
 #include "third_party/blink/renderer/core/layout/inline/inline_layout_algorithm.h"
-#include "third_party/blink/renderer/core/layout/inline/inline_text_auto_space.h"
 #include "third_party/blink/renderer/core/layout/inline/line_breaker.h"
 #include "third_party/blink/renderer/core/layout/inline/line_info.h"
 #include "third_party/blink/renderer/core/layout/inline/offset_mapping.h"
+#include "third_party/blink/renderer/core/layout/inline/text_auto_space.h"
 #include "third_party/blink/renderer/core/layout/layout_block_flow.h"
 #include "third_party/blink/renderer/core/layout/layout_counter.h"
 #include "third_party/blink/renderer/core/layout/layout_inline.h"
@@ -41,7 +37,6 @@
 #include "third_party/blink/renderer/core/layout/layout_result.h"
 #include "third_party/blink/renderer/core/layout/layout_text.h"
 #include "third_party/blink/renderer/core/layout/layout_text_combine.h"
-#include "third_party/blink/renderer/core/layout/legacy_layout_tree_walking.h"
 #include "third_party/blink/renderer/core/layout/length_utils.h"
 #include "third_party/blink/renderer/core/layout/list/layout_inline_list_item.h"
 #include "third_party/blink/renderer/core/layout/list/layout_list_item.h"
@@ -53,7 +48,9 @@
 #include "third_party/blink/renderer/core/layout/svg/svg_text_layout_attributes_builder.h"
 #include "third_party/blink/renderer/core/layout/unpositioned_float.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
+#include "third_party/blink/renderer/core/style/computed_style_base.h"
 #include "third_party/blink/renderer/core/style/computed_style_base_constants.h"
+#include "third_party/blink/renderer/platform/fonts/font_description.h"
 #include "third_party/blink/renderer/platform/fonts/font_performance.h"
 #include "third_party/blink/renderer/platform/fonts/shaping/harfbuzz_shaper.h"
 #include "third_party/blink/renderer/platform/fonts/shaping/ng_shape_cache.h"
@@ -64,6 +61,7 @@
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/text/bidi_paragraph.h"
 #include "third_party/blink/renderer/platform/wtf/text/character_names.h"
+#include "third_party/blink/renderer/platform/wtf/text/character_visitor.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_buffer.h"
 #include "third_party/blink/renderer/platform/wtf/text/text_offset_map.h"
 
@@ -167,38 +165,47 @@ class ReusingTextShaper final {
   const ShapeResult* Shape(const InlineItem& start_item,
                            const Font& font,
                            unsigned end_offset) {
-    auto ShapeFunc = [&]() -> const ShapeResult* {
+    auto ShapeFunc = [&]() -> ShaperResult {
       return ShapeWithoutCache(start_item, font, end_offset);
     };
     if (allow_shape_cache_) {
-      DCHECK(RuntimeEnabledFeatures::LayoutNGShapeCacheEnabled());
+      const LayoutLocale* locale = font.GetFontDescription().Locale();
       return font.PrimaryFont()->GetShapeCache().GetOrCreate(
-          shaper_.GetText(), start_item.Direction(), ShapeFunc);
+          ShapeCacheKey(shaper_.GetText(), start_item.StartOffset(), end_offset,
+                        locale ? locale->LocaleString() : g_null_atom,
+                        font.GetFontFeatures(), start_item.Direction()),
+          ShapeFunc);
     }
-    return ShapeFunc();
+    return ShapeFunc().shape_result;
   }
 
  private:
-  const ShapeResult* ShapeWithoutCache(const InlineItem& start_item,
-                                       const Font& font,
-                                       unsigned end_offset) {
+  ShaperResult ShapeWithoutCache(const InlineItem& start_item,
+                                 const Font& font,
+                                 unsigned end_offset) {
     const unsigned start_offset = start_item.StartOffset();
     DCHECK_LT(start_offset, end_offset);
 
-    if (!reusable_items_)
-      return Reshape(start_item, font, start_offset, end_offset);
+    if (!reusable_items_) {
+      return {Reshape(start_item, font, start_offset, end_offset),
+              /*can_cache=*/true};
+    }
 
     // TODO(yosin): We should support segment text
-    if (data_.segments)
-      return Reshape(start_item, font, start_offset, end_offset);
+    if (data_.segments) {
+      return {Reshape(start_item, font, start_offset, end_offset),
+              /*can_cache=*/true};
+    }
 
     HeapVector<Member<const ShapeResult>> reusable_shape_results =
         CollectReusableShapeResults(start_offset, end_offset, font,
                                     start_item.Direction());
     ClearCollectionScope clear_scope(&reusable_shape_results);
 
-    if (reusable_shape_results.empty())
-      return Reshape(start_item, font, start_offset, end_offset);
+    if (reusable_shape_results.empty()) {
+      return {Reshape(start_item, font, start_offset, end_offset),
+              /*can_cache=*/true};
+    }
 
     ShapeResult* shape_result =
         ShapeResult::CreateEmpty(*reusable_shape_results.front());
@@ -222,13 +229,20 @@ class ReusingTextShaper final {
           offset, std::min(reusable_shape_result->EndIndex(), end_offset),
           shape_result);
       offset = shape_result->EndIndex();
-      if (offset == end_offset)
-        return shape_result;
+      if (offset == end_offset) {
+        break;
+      }
     }
-    DCHECK_LT(offset, end_offset);
-    AppendShapeResult(*Reshape(start_item, font, offset, end_offset),
-                      shape_result);
-    return shape_result;
+
+    if (offset < end_offset) {
+      AppendShapeResult(*Reshape(start_item, font, offset, end_offset),
+                        shape_result);
+    }
+
+    // Don't allow this shape-result to be inserted into the cache. It's
+    // created from previous shape-results and as such may differ from a
+    // shape-result created without previous shape-results.
+    return {shape_result, /*can_cache=*/false};
   }
 
   void AppendShapeResult(const ShapeResult& shape_result, ShapeResult* target) {
@@ -253,7 +267,7 @@ class ReusingTextShaper final {
           return item->EndOffset() <= offset;
         });
     const wtf_size_t start_item_index =
-        std::distance(reusable_items_->begin(), start_item_iter);
+        CheckedDistance(reusable_items_->begin(), start_item_iter);
     for (const Member<InlineItem>& item_ptr :
          base::span{*reusable_items_}.subspan(start_item_index)) {
       const InlineItem& item = *item_ptr;
@@ -272,8 +286,10 @@ class ReusingTextShaper final {
       if (*item.Style()->GetFont() != font) {
         continue;
       }
-      if (shape_result->IsAppliedSpacing())
+      if (item.IsUnsafeToReuseShapeResult() ||
+          shape_result->IsAppliedSpacing()) {
         continue;
+      }
       shape_results.push_back(shape_result);
     }
     return shape_results;
@@ -326,7 +342,7 @@ void CollectInlinesInternal(ItemsBuilder* builder,
                             const InlineNodeData* previous_data) {
   LayoutBlockFlow* const block = builder->GetLayoutBlockFlow();
   builder->EnterBlock(block->Style());
-  LayoutObject* node = GetLayoutObjectForFirstChildNode(block);
+  LayoutObject* node = block->FirstChild();
 
   const LayoutObject* symbol =
       LayoutListItem::FindSymbolMarkerLayoutText(block);
@@ -334,7 +350,7 @@ void CollectInlinesInternal(ItemsBuilder* builder,
   while (node) {
     if (auto* counter = DynamicTo<LayoutCounter>(node)) {
       // TODO(crbug.com/561873): PrimaryFont should not be nullptr.
-      if (counter->Style()->GetFont()->PrimaryFont()) {
+      if (counter->StyleRef().GetFont()->PrimaryFont()) {
         // According to
         // https://w3c.github.io/csswg-drafts/css-counter-styles/#simple-symbolic,
         // disclosure-* should have special rendering paths.
@@ -348,17 +364,17 @@ void CollectInlinesInternal(ItemsBuilder* builder,
           } else {
             // The text must be in the following form:
             // Symbol, separator, symbol, separator, symbol, ...
-            builder->AppendText(text.Substring(0, 1), counter);
+            builder->AppendText(text.substr(0, 1), counter);
             builder->SetIsSymbolMarker();
             const AtomicString& separator = counter->Separator();
             for (wtf_size_t i = 1; i < text.length();) {
               if (separator.length() > 0) {
-                DCHECK_EQ(separator, text.Substring(i, separator.length()));
+                DCHECK_EQ(separator, text.substr(i, separator.length()));
                 builder->AppendText(separator, counter);
                 i += separator.length();
                 DCHECK_LT(i, text.length());
               }
-              builder->AppendText(text.Substring(i, 1), counter);
+              builder->AppendText(text.substr(i, 1), counter);
               builder->SetIsSymbolMarker();
               ++i;
             }
@@ -389,7 +405,7 @@ void CollectInlinesInternal(ItemsBuilder* builder,
         return;
 
       builder->ClearInlineFragment(node);
-    } else if (node->IsAtomicInlineLevel()) {
+    } else if (node->IsAtomicInline()) {
       if (node->IsLayoutOutsideListMarker()) {
         // LayoutListItem produces the 'outside' list marker as an inline
         // block. This is an out-of-flow item whose position is computed
@@ -397,7 +413,7 @@ void CollectInlinesInternal(ItemsBuilder* builder,
         builder->AppendOpaque(InlineItem::kListMarker, node);
       } else if (node->IsInitialLetterBox()) [[unlikely]] {
         builder->AppendOpaque(InlineItem::kInitialLetterBox,
-                              kObjectReplacementCharacter, node);
+                              uchar::kObjectReplacementCharacter, node);
         builder->SetHasInititialLetterBox();
       } else {
         // For atomic inlines add a unicode "object replacement character" to
@@ -437,7 +453,7 @@ void CollectInlinesInternal(ItemsBuilder* builder,
         node = next;
         break;
       }
-      node = GetLayoutObjectForParentNode(node);
+      node = node->Parent();
       if (node == block || !node) {
         // Set |node| to |nullptr| to break out of the outer loop.
         node = nullptr;
@@ -546,24 +562,60 @@ bool FirstLineNeedsReshape(const ComputedStyle& first_line_style,
 // appending space characters if shorter.
 void TruncateOrPadText(String* text, unsigned length) {
   if (text->length() > length) {
-    *text = text->Substring(0, length);
+    *text = text->substr(0, length);
   } else if (text->length() < length) {
     StringBuilder builder;
     builder.ReserveCapacity(length);
     builder.Append(*text);
     while (builder.length() < length)
-      builder.Append(kSpaceCharacter);
+      builder.Append(uchar::kSpace);
     *text = builder.ToString();
   }
 }
 
-bool SetParagraphTo(const String& text,
-                    const ComputedStyle& block_style,
-                    BidiParagraph& bidi) {
-  if (block_style.GetUnicodeBidi() == UnicodeBidi::kPlaintext) [[unlikely]] {
-    return bidi.SetParagraph(text, std::nullopt);
+// True if the `style` has a positive `letter-spacing` and a negative
+// `margin-right`.
+bool ShouldReportLetterSpacing(const ComputedStyle& style) {
+  const FontDescription& font_description = style.GetFontDescription();
+  const float letter_spacing = font_description.LetterSpacing();
+  if (letter_spacing < 0.5) {
+    return false;
   }
-  return bidi.SetParagraph(text, block_style.Direction());
+  if (!style.MayHaveMargin()) {
+    return false;
+  }
+  if (!style.IsHorizontalWritingMode()) [[unlikely]] {
+    return false;
+  }
+  const Length& margin_right = style.MarginRight();
+  if (margin_right.IsFixed() && margin_right.Pixels() < 0) {
+    return true;
+  }
+  return false;
+}
+
+bool ShouldReportLetterSpacing(const InlineNode node,
+                               const InlineItems& items) {
+  const ComputedStyle& block_style = node.Style();
+  if (ShouldReportLetterSpacing(block_style)) [[unlikely]] {
+    return true;
+  }
+  for (const auto& item_ptr : items) {
+    const InlineItem& item = *item_ptr;
+    if (item.Type() == InlineItem::kOpenTag) {
+      const ComputedStyle& style = *item.Style();
+      if (ShouldReportLetterSpacing(style)) [[unlikely]] {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+void ReportLetterSpacing(const InlineNode node, const InlineItems& items) {
+  if (ShouldReportLetterSpacing(node, items)) [[unlikely]] {
+    UseCounter::Count(node.GetDocument(), WebFeature::kLetterSpacingWithMargin);
+  }
 }
 
 }  // namespace
@@ -571,7 +623,6 @@ bool SetParagraphTo(const String& text,
 InlineNode::InlineNode(LayoutBlockFlow* block)
     : LayoutInputNode(block, kInline) {
   DCHECK(block);
-  DCHECK(block->IsLayoutNGObject());
   if (!block->GetInlineNodeData()) {
     block->ResetInlineNodeData();
   }
@@ -602,8 +653,10 @@ void InlineNode::PrepareLayoutIfNeeded() const {
 
   if (previous_data) {
     // previous_data is not used from now on but exists until GC happens, so it
-    // is better to eagerly clear HeapVector to improve memory utilization.
+    // is better to eagerly clear HeapVector and Strings to improve memory
+    // utilization.
     previous_data->items.clear();
+    previous_data->text_content = String();
   }
 }
 
@@ -691,8 +744,10 @@ class InlineNodeDataEditor final {
     DCHECK(offset_mapping);
     if (data_) {
       // data_ is not used from now on but exists until GC happens, so it is
-      // better to eagerly clear HeapVector to improve memory utilization.
+      // better to eagerly clear HeapVector and Strings to improve memory
+      // utilization.
       data_->items.clear();
+      data_->text_content = String();
     }
     data_ = block_flow_->TakeInlineNodeData();
     return data_;
@@ -946,6 +1001,7 @@ class InlineNodeDataEditor final {
 bool InlineNode::SetTextWithOffset(LayoutText* layout_text,
                                    String new_text,
                                    const TextDiffRange& diff) {
+  TRACE_EVENT0("blink", "InlineNode::SetTextWithOffset");
   if (!layout_text->HasValidInlineItems() ||
       !layout_text->IsInLayoutNGInlineFormattingContext())
     return false;
@@ -960,10 +1016,6 @@ bool InlineNode::SetTextWithOffset(LayoutText* layout_text,
   InlineNodeData* const previous_data = editor.Prepare();
   if (!previous_data)
     return false;
-
-  // This function runs outside of the layout phase. Prevent purging font cache
-  // while shaping.
-  FontCachePurgePreventer font_cache_purge_preventer;
 
   TextOffsetMap offset_map;
   new_text = layout_text->TransformAndSecureText(new_text, offset_map);
@@ -1039,15 +1091,7 @@ void InlineNode::ComputeOffsetMapping(LayoutBlockFlow* layout_block_flow,
       EstimateOffsetMappingItemsCount(*layout_block_flow));
   CollectInlinesInternal(&builder, nullptr);
 
-  // For non-NG object, we need the text, and also the inline items to resolve
-  // bidi levels. Otherwise |data| already has the text from the pre-layout
-  // phase, check they match.
-  if (data->text_content.IsNull()) {
-    DCHECK(!layout_block_flow->IsLayoutNGObject());
-    data->text_content = builder.ToString();
-  } else {
-    DCHECK(layout_block_flow->IsLayoutNGObject());
-  }
+  DCHECK(!data->text_content.IsNull());
 
   // TODO(xiaochengh): This doesn't compute offset mapping correctly when
   // text-transform CSS property changes text length.
@@ -1204,7 +1248,7 @@ void InlineNode::SegmentScriptRuns(InlineNodeData* data,
       // We can reuse InlineNodeData::segments only in horizontal writing modes
       // because we might update it by SegmentFontOrientation() in vertical
       // writing modes.
-      data->segments = std::move(previous_data->segments);
+      data->segments = previous_data->segments;
       return;
     }
   }
@@ -1237,7 +1281,7 @@ void InlineNode::SegmentScriptRuns(InlineNodeData* data,
 
   // This node has multiple segments.
   if (!data->segments)
-    data->segments = std::make_unique<InlineItemSegments>();
+    data->segments = MakeGarbageCollected<InlineItemSegments>();
   data->segments->ComputeSegments(&segmenter, &range);
   DCHECK_EQ(range.end, text_content.length());
 }
@@ -1258,7 +1302,7 @@ void InlineNode::SegmentFontOrientation(InlineNodeData* data) const {
   // If we don't have |InlineItemSegments| yet, create a segment for the
   // entire content.
   const unsigned capacity = items.size() + text_content.length() / 10;
-  InlineItemSegments* segments = data->segments.get();
+  InlineItemSegments* segments = data->segments.Get();
   if (segments) {
     DCHECK(!data->segments->IsEmpty());
     data->segments->ReserveCapacity(capacity);
@@ -1272,8 +1316,8 @@ void InlineNode::SegmentFontOrientation(InlineNodeData* data) const {
         item.Style()->GetFont()->GetFontDescription().Orientation() ==
             FontOrientation::kVerticalMixed) {
       if (!segments) {
-        data->segments = std::make_unique<InlineItemSegments>();
-        segments = data->segments.get();
+        data->segments = MakeGarbageCollected<InlineItemSegments>();
+        segments = data->segments.Get();
         segments->ReserveCapacity(capacity);
         segments->Append(text_content.length(), item);
         DCHECK_EQ(text_content.length(), data->segments->EndOffset());
@@ -1292,12 +1336,17 @@ void InlineNode::SegmentBidiRuns(InlineNodeData* data) const {
     return;
   }
 
+  const ComputedStyle& block_style = Style();
+  std::optional<TextDirection> base_direction;
+  if (block_style.GetUnicodeBidi() != UnicodeBidi::kPlaintext) {
+    base_direction = block_style.Direction();
+  }
   BidiParagraph bidi;
   data->text_content.Ensure16Bit();
-  if (!SetParagraphTo(data->text_content, Style(), bidi)) {
+  const String& text_content = data->text_content;
+  if (!bidi.SetParagraph(text_content, base_direction)) {
     // On failure, give up bidi resolving and reordering.
-    data->is_bidi_enabled_ = false;
-    data->SetBaseDirection(TextDirection::kLtr);
+    data->DisableBidi();
     return;
   }
 
@@ -1309,16 +1358,97 @@ void InlineNode::SegmentBidiRuns(InlineNodeData* data) const {
     return;
   }
 
+  // If this IFC has out-of-flow objects, create a text with them represented by
+  // the U+FFFC OBJECT REPLACEMENT CHARACTER. The [CSS Text] defines that
+  // out-of-flow elements must be ignored for text processing, but many existing
+  // tests require them to act as a [neutral] like U+FFFC OBJECT REPLACEMENT
+  // CHARACTER, and all browsers match.
+  //
+  // [CSS Text]: https://drafts.csswg.org/css-text-3/#text-encoding
+  // [neutral]: https://unicode.org/reports/tr9/#ON
+  struct OutOfFlowItem {
+    wtf_size_t text_offset;
+#if EXPENSIVE_DCHECKS_ARE_ON()
+    UBiDiLevel level = 0;
+#endif  // EXPENSIVE_DCHECKS_ARE_ON()
+  };
+  Vector<OutOfFlowItem> out_of_flow_items;
+  String text_content_with_out_of_flow;
+  wtf_size_t text_len = text_content.length();
   InlineItems& items = data->items;
+  if (data->HasFloatingOrOutOfFlowPositioned()) [[unlikely]] {
+    StringBuilder builder;
+    wtf_size_t last_offset = 0;
+    for (const auto item_ptr : items) {
+      const InlineItem& item = *item_ptr;
+      if (item.IsFloatingOrOutOfFlowPositioned()) [[unlikely]] {
+        const wtf_size_t offset = item.StartOffset();
+        if (builder.empty()) {
+          builder.Reserve16BitCapacity(text_len + 16);
+        }
+        builder.Append(text_content, last_offset, offset - last_offset);
+        last_offset = offset;
+        out_of_flow_items.push_back(OutOfFlowItem{builder.length()});
+        builder.Append(uchar::kObjectReplacementCharacter);
+      }
+    }
+    DCHECK_EQ(builder.empty(), out_of_flow_items.empty());
+    if (!builder.empty()) {
+      builder.Append(StringView{text_content, last_offset});
+      text_content_with_out_of_flow = builder.ReleaseString();
+      if (!bidi.SetParagraph(text_content_with_out_of_flow, base_direction)) {
+        data->DisableBidi();
+        return;
+      }
+      text_len = text_content_with_out_of_flow.length();
+
+      // Add a sentinel to help the loop below.
+      out_of_flow_items.push_back(
+          OutOfFlowItem{std::numeric_limits<wtf_size_t>::max()});
+    }
+  }
+
+  // Copy resolved `BidiLevel`s in the `bidi` to the `items`.
+  // If a boundary is within an `InlineItem`, this involves splitting.
+  wtf_size_t out_of_flow_item_index = 0;
   unsigned item_index = 0;
-  for (unsigned start = 0; start < data->text_content.length();) {
+  for (unsigned start = 0; start < text_len;) {
+    DCHECK_EQ(items[item_index]->start_offset_, start - out_of_flow_item_index);
     UBiDiLevel level;
-    unsigned end = bidi.GetLogicalRun(start, &level);
-    DCHECK_EQ(items[item_index]->start_offset_, start);
-    item_index = InlineItem::SetBidiLevel(items, item_index, end, level);
+    const unsigned end = bidi.GetLogicalRun(start, &level);
+    if (out_of_flow_items.empty()) {
+      item_index = InlineItem::SetBidiLevel(items, item_index, end, level);
+    } else {
+      wtf_size_t num_out_of_flow_in_this_run = 0;
+      while (end > out_of_flow_items[out_of_flow_item_index].text_offset) {
+#if EXPENSIVE_DCHECKS_ARE_ON()
+        out_of_flow_items[out_of_flow_item_index].level = level;
+#endif  // EXPENSIVE_DCHECKS_ARE_ON()
+        ++out_of_flow_item_index;
+        ++num_out_of_flow_in_this_run;
+      }
+      item_index = InlineItem::SetBidiLevel(items, item_index,
+                                            end - out_of_flow_item_index, level,
+                                            num_out_of_flow_in_this_run);
+    }
     start = end;
   }
-#if DCHECK_IS_ON()
+
+#if EXPENSIVE_DCHECKS_ARE_ON()
+  if (!out_of_flow_items.empty()) {
+    // Check the BiDi level for OOF items are set correctly.
+    DCHECK_EQ(out_of_flow_item_index, out_of_flow_items.size() - 1);
+    out_of_flow_item_index = 0;
+    for (const auto item_ptr : items) {
+      const InlineItem& item = *item_ptr;
+      if (item.IsFloatingOrOutOfFlowPositioned()) {
+        DCHECK_EQ(item.BidiLevel(),
+                  out_of_flow_items[out_of_flow_item_index].level);
+        ++out_of_flow_item_index;
+      }
+    }
+  }
+
   // Check all items have bidi levels, except trailing non-length items.
   // Items that do not create break opportunities such as kOutOfFlowPositioned
   // do not have corresponding characters, and that they do not have bidi level
@@ -1327,47 +1457,92 @@ void InlineNode::SegmentBidiRuns(InlineNodeData* data) const {
     item_index++;
   }
   DCHECK_EQ(item_index, items.size());
-#endif
+#endif  // EXPENSIVE_DCHECKS_ARE_ON()
 }
 
-bool InlineNode::IsNGShapeCacheAllowed(
-    const String& text_content,
-    const Font* override_font,
-    const InlineItems& items,
-    ShapeResultSpacing<String>& spacing) const {
-  if (!RuntimeEnabledFeatures::LayoutNGShapeCacheEnabled()) {
+bool InlineNode::IsNGShapeCacheAllowed(const String& text_content,
+                                       const Font* override_font,
+                                       const InlineItems& items,
+                                       ShapeResultSpacing& spacing) const {
+  // We only allow the shape cache in a restricted (but common) set of
+  // circumstances.
+  //
+  // Theoretically we could build a more advanced cache, which stores a
+  // duplicate representation of the inline-items as the cache key, however
+  // this is too complex for what we need at the moment.
+  //
+  // Instead we cache using the raw text, and a restricted set of inline items.
+  // This is to avoid caching bugs (e.g. scripts having Arabic joining).
+
+  // Don't hit the cache if we don't have any text.
+  if (text_content.empty()) {
     return false;
   }
-  // For consistency with similar usages of ShapeCache (e.g. canvas) and in
-  // order to avoid caching bugs (e.g. with scripts having Arabic joining)
-  // NGShapeCache is only enabled when the IFC is made of a single text item. To
-  // be efficient, NGShapeCache only stores entries for short strings and
-  // without memory copy, so don't allow it if the text item is too long or if
-  // the start/end offsets match a substring. Don't allow it either if a call to
-  // ApplySpacing is needed to avoid a costly copy of the ShapeResult in the
-  // loop below. Finally, check that the font meet requirements on the font
-  // family list to avoid expensive hash key calculations.
-  if (items.size() != 1) {
+
+  const Font* font = override_font;
+  unsigned previous_text_end_offset = 0u;
+
+  for (const auto& item : items) {
+    switch (item->Type()) {
+      case InlineItem::kControl:
+      case InlineItem::kText:
+        // Grab the font from the first text item we see.
+        if (!font && item->Type() == InlineItem::kText) {
+          font = &item->FontWithSvgScaling();
+        }
+        if (previous_text_end_offset != item->StartOffset()) {
+          return false;
+        }
+        previous_text_end_offset = item->EndOffset();
+        break;
+      case InlineItem::kFloating:
+      case InlineItem::kOutOfFlowPositioned:
+        // Floats/OOF-positioned objects are transparent to shaping, and just
+        // split the text similar to control items (resulting in multiple shape
+        // calls with different start/end offsets).
+        break;
+      case InlineItem::kOpenTag:
+        // As we get the font from the first item, we can allow an open tag if
+        // its the first.
+        if (item != items.front()) {
+          return false;
+        }
+        break;
+      case InlineItem::kCloseTag:
+        // Similarly allow the a close tag if its the last.
+        if (item != items.back()) {
+          return false;
+        }
+        break;
+      case InlineItem::kAtomicInline:
+      case InlineItem::kBlockInInline:
+      case InlineItem::kInitialLetterBox:
+      case InlineItem::kListMarker:
+      case InlineItem::kBidiControl:
+      case InlineItem::kOpenRubyColumn:
+      case InlineItem::kCloseRubyColumn:
+      case InlineItem::kRubyLinePlaceholder:
+        return false;
+    }
+  }
+
+  // Only allow the cache if the text-item(s) matches the text-content.
+  if (previous_text_end_offset != text_content.length()) {
     return false;
   }
-  if (text_content.length() > NGShapeCache::kMaxTextLengthOfEntries) {
+
+  // We didn't find a text-item (just control-items), skip the cache.
+  if (!font) {
     return false;
   }
-  const InlineItem& single_item = *items[0];
-  if (!(single_item.Type() == InlineItem::kText &&
-        single_item.StartOffset() == 0 &&
-        single_item.EndOffset() == text_content.length())) {
+
+  // Only allow the cache for features we can cache.
+  if (!font->HasSimpleFontFeatures()) [[unlikely]] {
     return false;
   }
-  const Font& font =
-      override_font ? *override_font : single_item.FontWithSvgScaling();
-  if (font.HasNonInitialFontFeatures()) [[unlikely]] {
-    // Non-initial font features can't be cached because the cache is in
-    // `SimpleFontData`.
-    return false;
-  }
-  const FontDescription& font_description = font.GetFontDescription();
-  if (spacing.SetSpacing(font_description)) [[unlikely]] {
+
+  // We mutate the shape-result if there is spacing, it isn't safe to cache.
+  if (spacing.SetSpacing(font->GetFontDescription())) [[unlikely]] {
     return false;
   }
   return true;
@@ -1377,28 +1552,21 @@ void InlineNode::ShapeText(InlineItemsData* data,
                            const String* previous_text,
                            const InlineItems* previous_items,
                            const Font* override_font) const {
-  TRACE_EVENT0("fonts", "InlineNode::ShapeText");
-  base::ScopedClosureRunner scoped_closure_runner(WTF::BindOnce(
-      [](base::ElapsedTimer timer, Document* document) {
-        if (document) {
-          document->MaybeRecordShapeTextElapsedTime(timer.Elapsed());
-        }
-      },
-      base::ElapsedTimer(),
-      WrapWeakPersistent(GetLayoutBox() ? &GetLayoutBox()->GetDocument()
-                                        : nullptr)));
-
   const String& text_content = data->text_content;
-  InlineItems* items = &data->items;
+  InlineItems& items = data->items;
 #if EXPENSIVE_DCHECKS_ARE_ON()
-  InlineItem::CheckIndex(*items);
+  InlineItem::CheckIndex(items);
 #endif  // EXPENSIVE_DCHECKS_ARE_ON()
 
-  ShapeResultSpacing<String> spacing(text_content, IsSvgText());
-  InlineTextAutoSpace auto_space(*data);
+  ShapeResultSpacing spacing(
+      text_content,
+      /*allow_word_spacing_anywhere=*/IsSvgText() ||
+          (RuntimeEnabledFeatures::WordSpacingWhiteSpacePreEnabled() &&
+           Style().ShouldPreserveWhiteSpaces()));
+  TextAutoSpace auto_space(*data);
 
   const bool allow_shape_cache =
-      IsNGShapeCacheAllowed(text_content, override_font, *items, spacing) &&
+      IsNGShapeCacheAllowed(text_content, override_font, items, spacing) &&
       !auto_space.MayApply();
 
   // Provide full context of the entire node to the shaper.
@@ -1408,11 +1576,14 @@ void InlineNode::ShapeText(InlineItemsData* data,
   DCHECK(!data->segments ||
          data->segments->EndOffset() == text_content.length());
 
-  for (unsigned index = 0; index < items->size();) {
-    InlineItem& start_item = *(*items)[index];
+  bool is_letter_spacing_reported = false;
+  for (unsigned index = 0; index < items.size();) {
+    InlineItem& start_item = *items[index];
     if (start_item.Type() != InlineItem::kText || !start_item.Length()) {
       index++;
-      is_next_start_of_paragraph = start_item.IsForcedLineBreak();
+      if (!start_item.IsOpaqueForTextProcessing()) {
+        is_next_start_of_paragraph = start_item.IsForcedLineBreak();
+      }
       continue;
     }
 
@@ -1462,8 +1633,8 @@ void InlineNode::ShapeText(InlineItemsData* data,
     // break. This ensures that adjacent text items are shaped together whenever
     // possible as this is required for accurate cross-element shaping.
     unsigned num_text_items = 1;
-    for (; end_index < items->size(); end_index++) {
-      const InlineItem& item = *(*items)[end_index];
+    for (; end_index < items.size(); end_index++) {
+      const InlineItem& item = *items[end_index];
 
       if (item.Type() == InlineItem::kControl) {
         // Do not shape across control characters (line breaks, zero width
@@ -1482,8 +1653,9 @@ void InlineNode::ShapeText(InlineItemsData* data,
         }
         // Break shaping at ZWNJ so that it prevents kerning. ZWNJ is always at
         // the beginning of an item for this purpose; see InlineItemsBuilder.
-        if (text_content[item.StartOffset()] == kZeroWidthNonJoinerCharacter)
+        if (text_content[item.StartOffset()] == uchar::kZeroWidthNonJoiner) {
           break;
+        }
         end_offset = item.EndOffset();
         num_text_items++;
       } else if (item.Type() == InlineItem::kOpenTag) {
@@ -1518,7 +1690,7 @@ void InlineNode::ShapeText(InlineItemsData* data,
     if (previous_text) {
       bool has_valid_shape_results = true;
       for (unsigned item_index = index; item_index < end_index; item_index++) {
-        if (NeedsShaping(*(*items)[item_index])) {
+        if (NeedsShaping(*items[item_index])) {
           has_valid_shape_results = false;
           break;
         }
@@ -1551,6 +1723,10 @@ void InlineNode::ShapeText(InlineItemsData* data,
       // The ShapeResult is actually not a reusable entry of NGShapeCache,
       // so it is safe to mutate it.
       const_cast<ShapeResult*>(shape_result)->ApplySpacing(spacing);
+      if (!is_letter_spacing_reported) {
+        is_letter_spacing_reported = true;
+        ReportLetterSpacing(*this, items);
+      }
     }
 
     // If the text is from one item, use the ShapeResult as is.
@@ -1572,13 +1748,12 @@ void InlineNode::ShapeText(InlineItemsData* data,
     text_item_ranges.ReserveInitialCapacity(num_text_items);
     ClearCollectionScope clear_scope(&text_item_ranges);
 
-    const bool has_ligatures =
-        shape_result->NumGlyphs() < shape_result->NumCharacters();
+    const bool has_ligatures = shape_result->HasLigatures();
     if (has_ligatures) {
       shape_result->EnsurePositionData();
     }
     for (; index < end_index; index++) {
-      InlineItem& item = *(*items)[index];
+      InlineItem& item = *items[index];
       if (item.Type() != InlineItem::kText || !item.Length()) {
         continue;
       }
@@ -1606,10 +1781,10 @@ void InlineNode::ShapeText(InlineItemsData* data,
     shape_result->CopyRanges(text_item_ranges.data(), text_item_ranges.size());
   }
 
-  auto_space.ApplyIfNeeded(*data);
+  auto_space.ApplyIfNeeded(*this, *data);
 
 #if DCHECK_IS_ON()
-  for (const Member<InlineItem>& item_ptr : *items) {
+  for (const Member<InlineItem>& item_ptr : items) {
     const InlineItem& item = *item_ptr;
     if (item.Type() == InlineItem::kText && item.Length()) {
       DCHECK(item.TextShapeResult());
@@ -1629,29 +1804,42 @@ void InlineNode::ShapeTextForFirstLineIfNeeded(InlineNodeData* data) const {
     return;
 
   // Check if :first-line rules make any differences in the style.
-  const ComputedStyle* block_style = layout_object->Style();
-  const ComputedStyle* first_line_style = layout_object->FirstLineStyle();
+  const ComputedStyle& block_style = layout_object->StyleRef();
+  const ComputedStyle& first_line_style = layout_object->FirstLineStyleRef();
   if (block_style == first_line_style)
     return;
 
-  auto* first_line_items = MakeGarbageCollected<InlineItemsData>();
   String text_content = data->text_content;
   bool needs_reshape = false;
-  if (first_line_style->TextTransform() != block_style->TextTransform()) {
+  TextOffsetMap offset_map;
+  if (first_line_style.TextTransform() != block_style.TextTransform()) {
     // TODO(kojii): This logic assumes that text-transform is applied only to
     // ::first-line, and does not work when the base style has text-transform
     // and ::first-line has different text-transform.
-    text_content = first_line_style->ApplyTextTransform(text_content);
-    if (text_content != data->text_content) {
-      // TODO(kojii): When text-transform changes the length, we need to adjust
-      // offset in InlineItem, or re-collect inlines. Other classes such as
-      // line breaker need to support the scenario too. For now, we force the
-      // string to be the same length to prevent them from crashing. This may
-      // result in a missing or a duplicate character if the length changes.
-      TruncateOrPadText(&text_content, data->text_content.length());
-      needs_reshape = true;
+    if (RuntimeEnabledFeatures::FirstLineTextTransformEnabled()) {
+      text_content =
+          first_line_style.ApplyTextTransform(text_content, ' ', &offset_map);
+      if (text_content != data->text_content) {
+        needs_reshape = true;
+      }
+    } else {
+      text_content = first_line_style.ApplyTextTransform(text_content);
+      if (text_content != data->text_content) {
+        // TODO(kojii): When text-transform changes the length, we need to
+        // adjust offset in InlineItem, or re-collect inlines. Other classes
+        // such as line breaker need to support the scenario too. For now, we
+        // force the string to be the same length to prevent them from crashing.
+        // This may result in a missing or a duplicate character if the length
+        // changes.
+        TruncateOrPadText(&text_content, data->text_content.length());
+        needs_reshape = true;
+      }
     }
   }
+  auto* first_line_items =
+      offset_map.IsEmpty()
+          ? MakeGarbageCollected<InlineItemsData>()
+          : MakeGarbageCollected<InlineItemsDataWithOffsetMap>();
   first_line_items->text_content = text_content;
 
   // Copy `InlineItems` and update their properties.
@@ -1659,10 +1847,23 @@ void InlineNode::ShapeTextForFirstLineIfNeeded(InlineNodeData* data) const {
   for (const Member<InlineItem>& item : data->items) {
     InlineItem* first_line_item = MakeGarbageCollected<InlineItem>(*item);
     first_line_item->SetStyleVariant(StyleVariant::kFirstLine);
+    if (RuntimeEnabledFeatures::FirstLineTextTransformEnabled()) {
+      if (needs_reshape && !offset_map.IsEmpty()) [[unlikely]] {
+        unsigned new_start =
+            offset_map.MapOffset(first_line_item->StartOffset());
+        unsigned new_end = offset_map.MapOffset(first_line_item->EndOffset());
+        first_line_item->SetOffset(new_start, new_end);
+      }
+    }
     first_line_items->items.push_back(first_line_item);
   }
   if (data->segments) {
     first_line_items->segments = data->segments->Clone();
+    if (RuntimeEnabledFeatures::FirstLineTextTransformEnabled()) {
+      if (needs_reshape && !offset_map.IsEmpty()) [[unlikely]] {
+        first_line_items->segments->AdjustOffsets(offset_map);
+      }
+    }
   }
 
 #if EXPENSIVE_DCHECKS_ARE_ON()
@@ -1670,8 +1871,13 @@ void InlineNode::ShapeTextForFirstLineIfNeeded(InlineNodeData* data) const {
 #endif  // EXPENSIVE_DCHECKS_ARE_ON()
 
   // Re-shape if the font is different.
-  if (needs_reshape || FirstLineNeedsReshape(*first_line_style, *block_style))
+  if (needs_reshape || FirstLineNeedsReshape(first_line_style, block_style)) {
     ShapeText(first_line_items);
+  }
+  if (auto* with_offset_map = DynamicTo<InlineItemsDataWithOffsetMap>(
+          first_line_items)) [[unlikely]] {
+    with_offset_map->offset_map = std::move(offset_map);
+  }
 
   data->first_line_items_ = first_line_items;
   // The score line breaker can't apply different styles by different line
@@ -1683,6 +1889,7 @@ void InlineNode::ShapeTextIncludingFirstLine(
     InlineNodeData* data,
     const String* previous_text,
     const InlineItems* previous_items) const {
+  TRACE_EVENT0("blink", "InlineNode::ShapeTextIncludingFirstLine");
   InlineItem::UpdateIndex(data->items);
   ShapeText(data, previous_text, previous_items);
   ShapeTextForFirstLineIfNeeded(data);
@@ -1693,8 +1900,8 @@ void InlineNode::AssociateItemsWithInlines(InlineNodeData* data) const {
   HeapHashSet<Member<LayoutObject>> associated_objects;
 #endif
   InlineItems& items = data->items;
-  WTF::wtf_size_t size = items.size();
-  for (WTF::wtf_size_t i = 0; i != size;) {
+  wtf_size_t size = items.size();
+  for (wtf_size_t i = 0; i != size;) {
     LayoutObject* object = items[i]->GetLayoutObject();
     auto* layout_text = DynamicTo<LayoutText>(object);
     if (layout_text && !layout_text->IsBR()) {
@@ -1704,7 +1911,7 @@ void InlineNode::AssociateItemsWithInlines(InlineNodeData* data) const {
 #endif
       layout_text->ClearHasBidiControlInlineItems();
       bool has_bidi_control = false;
-      WTF::wtf_size_t begin = i;
+      wtf_size_t begin = i;
       for (++i; i != size; ++i) {
         const InlineItem& item = *items[i];
         if (item.GetLayoutObject() != object)
@@ -1739,20 +1946,16 @@ namespace {
 
 template <typename CharType>
 String CreateTextContentForStickyImagesQuirk(
-    const CharType* text,
-    unsigned length,
+    base::span<const CharType> text,
     base::span<const Member<InlineItem>> items) {
-  StringBuffer<CharType> buffer(length);
-  CharType* characters = buffer.Characters();
-  memcpy(characters, text, length * sizeof(CharType));
+  StringBuffer<CharType> buffer(base::checked_cast<wtf_size_t>(text.size()));
+  base::span<CharType> span = buffer.Span();
+  span.copy_from(text);
   for (const Member<InlineItem>& item_ptr : items) {
     const InlineItem& item = *item_ptr;
     if (item.Type() == InlineItem::kAtomicInline && item.IsImage()) {
-      // TODO(crbug.com/351564777): Resolve a buffer safety issue.
-      DCHECK_EQ(UNSAFE_TODO(characters[item.StartOffset()]),
-                kObjectReplacementCharacter);
-      // TODO(crbug.com/351564777): Resolve a buffer safety issue.
-      UNSAFE_TODO(characters[item.StartOffset()]) = kNoBreakSpaceCharacter;
+      DCHECK_EQ(span[item.StartOffset()], uchar::kObjectReplacementCharacter);
+      span[item.StartOffset()] = uchar::kNoBreakSpace;
     }
   }
   return buffer.Release();
@@ -1772,12 +1975,9 @@ String InlineNode::TextContentForStickyImagesQuirk(
     const InlineItem& item = *items_data.items[i];
     if (item.Type() == InlineItem::kAtomicInline && item.IsImage()) {
       auto item_span = base::span(items_data.items).subspan(i);
-      if (text_content.Is8Bit()) {
-        return CreateTextContentForStickyImagesQuirk(
-            text_content.Characters8(), text_content.length(), item_span);
-      }
-      return CreateTextContentForStickyImagesQuirk(
-          text_content.Characters16(), text_content.length(), item_span);
+      return VisitCharacters(text_content, [&](auto chars) {
+        return CreateTextContentForStickyImagesQuirk(chars, item_span);
+      });
     }
   }
   return text_content;
@@ -1877,15 +2077,18 @@ static LayoutUnit ComputeContentSize(InlineNode node,
     const InlineItemsData& items_data;
     wtf_size_t next_item_index = 0;
     const LineBreaker::MaxSizeCache& max_size_cache;
+    const InlineNode& node;
     FloatsMaxSize* floats;
     bool is_after_break = true;
     wtf_size_t annotation_nesting_level = 0;
 
     explicit MaxSizeFromMinSize(const InlineItemsData& items_data,
                                 const LineBreaker::MaxSizeCache& max_size_cache,
+                                const InlineNode& node,
                                 FloatsMaxSize* floats)
         : items_data(items_data),
           max_size_cache(max_size_cache),
+          node(node),
           floats(floats) {}
 
     // Add all text items up to |end|. The line break results for min size
@@ -1930,9 +2133,11 @@ static LayoutUnit ComputeContentSize(InlineNode node,
       AddTextUntil(item.Index());
       DCHECK(item.Style());
       const ComputedStyle& style = *item.Style();
-      const Font* font = style.GetFont();
-      const SimpleFontData* font_data = font->PrimaryFont();
       const TabSize& tab_size = style.GetTabSize();
+      const Font* font = RuntimeEnabledFeatures::TabSizeAncestorEnabled()
+                             ? &node.FontForTab()
+                             : style.GetFont();
+      const SimpleFontData* font_data = font->PrimaryFontForTabSize();
       // Sync with `ShapeResult::CreateForTabulationCharacters()`.
       TextRunLayoutUnit glyph_advance = TextRunLayoutUnit::FromFloatRound(
           font->TabWidth(font_data, tab_size, position));
@@ -1992,13 +2197,14 @@ static LayoutUnit ComputeContentSize(InlineNode node,
         if (item.Type() == InlineItem::kControl) {
           UChar c = items_data.text_content[item.StartOffset()];
 #if DCHECK_IS_ON()
-          if (c == kNewlineCharacter)
+          if (c == uchar::kLineFeed) {
             DCHECK(line_info.HasForcedBreak());
+          }
 #endif
           // Tabulation characters change the widths by their positions, so
           // their widths for the max size may be different from the widths for
           // the min size. Fall back to 2 pass for now.
-          if (c == kTabulationCharacter) {
+          if (c == uchar::kTab) {
             AddTabulationCharacters(item, result.Length());
             continue;
           }
@@ -2027,7 +2233,7 @@ static LayoutUnit ComputeContentSize(InlineNode node,
 
   FloatsMaxSize floats_max_size(float_input);
   bool can_compute_max_size_from_min_size = true;
-  MaxSizeFromMinSize max_size_from_min_size(items_data, *max_size_cache,
+  MaxSizeFromMinSize max_size_from_min_size(items_data, *max_size_cache, node,
                                             &floats_max_size);
 
   LineInfo line_info;
@@ -2052,9 +2258,9 @@ static LayoutUnit ComputeContentSize(InlineNode node,
                                            /* is_new_fc */ true);
       builder.SetAvailableBlockSize(space.AvailableSize().block_size);
       builder.SetPercentageResolutionBlockSize(
-          space.PercentageResolutionBlockSize());
-      builder.SetReplacedPercentageResolutionBlockSize(
-          space.ReplacedPercentageResolutionBlockSize());
+          float_node.IsReplaced()
+              ? space.ReplacedChildPercentageResolutionBlockSize()
+              : space.PercentageResolutionBlockSize());
       const auto float_space = builder.ToConstraintSpace();
 
       const MinMaxSizesResult child_result =
@@ -2145,15 +2351,16 @@ MinMaxSizesResult InlineNode::ComputeMinMaxSizes(
         LineBreakerMode::kMaxContent, &max_size_cache, nullptr, nullptr);
   }
 
-  // Negative text-indent can make min > max. Ensure min is the minimum size.
-  sizes.min_size = std::min(sizes.min_size, sizes.max_size);
+  // Negative text-indent can make min > max. Ensure max encompasses the min.
+  sizes.max_size = std::max(sizes.min_size, sizes.max_size);
 
   return MinMaxSizesResult(sizes, depends_on_block_constraints);
 }
 
-bool InlineNode::UseFirstLineStyle() const {
+bool InlineNode::UseFirstLineStyleItemsData() const {
   return GetLayoutBox() &&
-         GetLayoutBox()->GetDocument().GetStyleEngine().UsesFirstLineRules();
+         GetLayoutBox()->GetDocument().GetStyleEngine().UsesFirstLineRules() &&
+         Data().HasFirstLineItems();
 }
 
 void InlineNode::CheckConsistency() const {
@@ -2183,6 +2390,26 @@ const HeapVector<SvgTextContentRange>& InlineNode::SvgTextPathRangeList()
     const {
   DCHECK(IsSvgText());
   return Data().svg_node_data_->text_path_range_list;
+}
+
+const Font& InlineNode::FontForTab() const {
+  const Node* layout_box_node = GetDOMNode();
+  const bool is_first_letter_pseudo_element =
+      layout_box_node && layout_box_node->IsFirstLetterPseudoElement();
+  const Font* font = is_first_letter_pseudo_element ? Style().ContainerFont()
+                                                    : Style().GetFont();
+  DCHECK(font);
+  return *font;
+}
+
+std::optional<float> InlineNode::MinimumFontPhysicalSize() const {
+  const LocalFrame* frame = GetDocument().GetFrame();
+  if (const auto* settings = frame->GetSettings()) {
+    if (int min_size = settings->GetMinimumFontSize(); min_size > 0) {
+      return min_size * frame->DevicePixelRatio();
+    }
+  }
+  return std::nullopt;
 }
 
 void InlineNode::AdjustFontForTextCombineUprightAll() const {

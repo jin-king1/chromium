@@ -220,7 +220,7 @@ public class AwContentCaptureTest extends AwParameterizedTest {
         private volatile ContentCaptureFrame mFaviconUpdatedFrame;
         private volatile ArrayList<Integer> mCallbacks = new ArrayList<Integer>();
 
-        private CallbackHelper mCallbackHelper = new CallbackHelper();
+        private final CallbackHelper mCallbackHelper = new CallbackHelper();
         private volatile UrlAllowlist mUrlAllowlist;
     }
 
@@ -1242,6 +1242,7 @@ public class AwContentCaptureTest extends AwParameterizedTest {
     @Test
     @SmallTest
     @Feature({"AndroidWebView"})
+    @CommandLineFlags.Add({"enable-features=WebViewDownloadFavicons"})
     public void testFavicon() throws Throwable {
         final String response =
                 "<html><head><link rel=icon href=mac.icns sizes=\"128x128 512x512 8192x8192"

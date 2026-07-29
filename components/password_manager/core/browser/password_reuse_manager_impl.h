@@ -7,16 +7,25 @@
 
 #include <memory>
 #include <optional>
+#include <string>
 
 #include "base/memory/raw_ptr.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/scoped_observation.h"
 #include "base/task/sequenced_task_runner.h"
+#include "components/password_manager/core/browser/hash_password_manager.h"
 #include "components/password_manager/core/browser/password_manager_metrics_util.h"
 #include "components/password_manager/core/browser/password_reuse_manager.h"
 #include "components/password_manager/core/browser/password_store/password_store_consumer.h"
 #include "components/password_manager/core/browser/password_store/password_store_interface.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/primary_account_change_event.h"
+
+namespace os_crypt_async {
+class Encryptor;
+class OSCryptAsync;
+}  // namespace os_crypt_async
 
 namespace password_manager {
 
@@ -25,15 +34,14 @@ class PasswordReuseManagerImpl : public PasswordReuseManager,
                                  public PasswordStoreInterface::Observer,
                                  public signin::IdentityManager::Observer {
  public:
-  PasswordReuseManagerImpl();
+  explicit PasswordReuseManagerImpl(
+      os_crypt_async::OSCryptAsync* os_crypt_async);
   ~PasswordReuseManagerImpl() override;
 
   // Immediately called after |Init()| to retrieve password hash data for
   // reuse detection.
-  // TODO(crbug.com/40925300): This might need to be called from all platforms,
-  // including ios.
   void PreparePasswordHashData(
-      metrics_util::SignInState sign_in_state_for_metrics);
+      std::optional<metrics_util::SignInState> sign_in_state_for_metrics);
 
   // Implements KeyedService interface.
   void Shutdown() override;
@@ -65,16 +73,37 @@ class PasswordReuseManagerImpl : public PasswordReuseManager,
   void ClearAllGaiaPasswordHash() override;
   void ClearAllEnterprisePasswordHash() override;
   void ClearAllNonGmailPasswordHash() override;
-  base::CallbackListSubscription RegisterStateCallbackOnHashPasswordManager(
-      const base::RepeatingCallback<void(const std::string& username)>&
-          callback) override;
   void SetPasswordReuseManagerSigninNotifier(
       std::unique_ptr<PasswordReuseManagerSigninNotifier> notifier) override;
   void ScheduleEnterprisePasswordURLUpdate() override;
-  void MaybeSavePasswordHash(const PasswordForm* submitted_form,
-                             PasswordManagerClient* client) override;
+  void MaybeSavePasswordHash(
+      const PasswordForm* submitted_form,
+      PasswordManagerClient* client,
+      std::optional<metrics_util::GaiaPasswordHashChange> event) override;
+  HashPasswordManager* GetHashPasswordManager() override;
+  void AddObserver(PasswordReuseManager::Observer* observer) override;
+  void RemoveObserver(PasswordReuseManager::Observer* observer) override;
 
  private:
+  // Helper function to delay tasks until the HashPasswordManager is ready.
+  // If the `hash_password_manager_` is not available, it posts a task to be
+  // run later and returns true. Otherwise, returns false.
+  template <typename... MethodArgs, typename... CallArgs>
+  bool DelayUntilReady(void (PasswordReuseManagerImpl::*method)(MethodArgs...),
+                       CallArgs&&... args) {
+    if (!hash_password_manager_) {
+      // Unretained is safe since `this` will own the callback.
+      pending_tasks_.push_back(base::BindOnce(method, base::Unretained(this),
+                                              std::forward<CallArgs>(args)...));
+      return true;
+    }
+    return false;
+  }
+
+  void InitHashPasswordManager(PrefService* local_prefs);
+
+  void OnOsCryptAsyncReady(scoped_refptr<os_crypt_async::Encryptor> encryptor);
+
   // Schedules the update of password hashes used by reuse detector.
   // |sign_in_state_for_metrics|, if not nullopt, is used for metrics only.
   void SchedulePasswordHashUpdate(
@@ -84,8 +113,9 @@ class PasswordReuseManagerImpl : public PasswordReuseManager,
   void RequestLoginsFromStores();
 
   // Implements PasswordStoreConsumer interface.
-  void OnGetPasswordStoreResults(
-      std::vector<std::unique_ptr<PasswordForm>> results) override;
+  void OnGetPasswordStoreResultsOrErrorFrom(
+      PasswordStoreInterface* store,
+      LoginsResultOrError results_or_error) override;
 
   // Implements PasswordStoreInterface::Observer
   void OnLoginsChanged(
@@ -93,7 +123,10 @@ class PasswordReuseManagerImpl : public PasswordReuseManager,
       const password_manager::PasswordStoreChangeList& changes) override;
   void OnLoginsRetained(
       PasswordStoreInterface* store,
-      const std::vector<PasswordForm>& retained_passwords) override;
+      const std::vector<StoredCredential>& retained_credentials) override;
+  void OnLoginsRetainedImpl(
+      PasswordForm::Store store_type,
+      const std::vector<StoredCredential>& retained_credentials);
 
   // Implements signin::IdentityManager::Observer.
   void OnPrimaryAccountChanged(
@@ -116,6 +149,14 @@ class PasswordReuseManagerImpl : public PasswordReuseManager,
   // a request to re-fetch.
   void AccountStoreStateChanged();
 
+  void CheckReuseImpl(const std::u16string& input,
+                      const std::string& domain,
+                      base::WeakPtr<PasswordReuseDetectorConsumer> consumer);
+
+  // A callback for when the password hash list on `hash_password_manager_`
+  // might have changed.
+  void HashPasswordManagerStateChanged(const std::string& username);
+
   // TaskRunner for tasks that run on the main sequence (the UI thread).
   scoped_refptr<base::SequencedTaskRunner> main_task_runner_;
 
@@ -125,10 +166,19 @@ class PasswordReuseManagerImpl : public PasswordReuseManager,
   raw_ptr<PrefService> prefs_ = nullptr;
 
   scoped_refptr<PasswordStoreInterface> profile_store_;
+  base::ScopedObservation<PasswordStoreInterface,
+                          PasswordStoreInterface::Observer>
+      profile_store_observation_{this};
 
   scoped_refptr<PasswordStoreInterface> account_store_;
+  base::ScopedObservation<PasswordStoreInterface,
+                          PasswordStoreInterface::Observer>
+      account_store_observation_{this};
 
   raw_ptr<signin::IdentityManager> identity_manager_ = nullptr;
+  base::ScopedObservation<signin::IdentityManager,
+                          signin::IdentityManager::Observer>
+      identity_manager_observation_{this};
 
   std::unique_ptr<SharedPreferencesDelegate> shared_pref_delegate_;
 
@@ -146,7 +196,13 @@ class PasswordReuseManagerImpl : public PasswordReuseManager,
 
   // Responsible for saving, clearing, retrieving and encryption of a password
   // hash data in preferences.
-  HashPasswordManager hash_password_manager_;
+  std::unique_ptr<HashPasswordManager> hash_password_manager_;
+
+  std::vector<base::OnceClosure> pending_tasks_;
+
+  base::CallbackListSubscription state_callback_list_subscription_;
+
+  base::ObserverList<PasswordReuseManager::Observer> observers_;
 
   base::WeakPtrFactory<PasswordReuseManagerImpl> weak_ptr_factory_{this};
 };

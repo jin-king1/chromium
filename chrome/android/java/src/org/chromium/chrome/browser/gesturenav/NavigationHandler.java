@@ -4,8 +4,10 @@
 
 package org.chromium.chrome.browser.gesturenav;
 
+import static org.chromium.build.NullUtil.assertNonNull;
+import static org.chromium.build.NullUtil.assumeNonNull;
 import static org.chromium.chrome.browser.gesturenav.GestureNavigationProperties.ACTION;
-import static org.chromium.chrome.browser.gesturenav.GestureNavigationProperties.ALLOW_NAV;
+import static org.chromium.chrome.browser.gesturenav.GestureNavigationProperties.ACTIVATION_STATUS;
 import static org.chromium.chrome.browser.gesturenav.GestureNavigationProperties.BUBBLE_OFFSET;
 import static org.chromium.chrome.browser.gesturenav.GestureNavigationProperties.CLOSE_INDICATOR;
 import static org.chromium.chrome.browser.gesturenav.GestureNavigationProperties.DIRECTION;
@@ -20,16 +22,16 @@ import android.view.GestureDetector;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.Window;
 
 import androidx.annotation.IntDef;
-import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.Log;
-import org.chromium.base.supplier.Supplier;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.cc.input.BrowserControlsState;
 import org.chromium.chrome.browser.back_press.BackPressMetrics;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.gesturenav.BackActionDelegate.ActionType;
 import org.chromium.chrome.browser.gesturenav.NavigationBubble.CloseTarget;
 import org.chromium.chrome.browser.tab.EmptyTabObserver;
@@ -38,18 +40,21 @@ import org.chromium.chrome.browser.tab.TabBrowserControlsConstraintsHelper;
 import org.chromium.chrome.browser.tab.TabObserver;
 import org.chromium.components.browser_ui.widget.TouchEventObserver;
 import org.chromium.content_public.browser.NavigationHandle;
+import org.chromium.ui.OverscrollActivationStatus;
 import org.chromium.ui.base.BackGestureEventSwipeEdge;
 import org.chromium.ui.base.LocalizationUtils;
 import org.chromium.ui.modelutil.PropertyModel;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.util.function.Supplier;
 
 /**
  * Handles history overscroll navigation controlling the underlying UI widget. Note: used only from
  * 3-button navigation mode. For gestural navigation mode, see {@link
  * ToolbarManager#OnBackPressHandler}
  */
+@NullMarked
 class NavigationHandler implements TouchEventObserver {
     // Width of a rectangluar area in dp on the left/right edge used for navigation.
     // Swipe beginning from a point within these rects triggers the operation.
@@ -79,14 +84,6 @@ class NavigationHandler implements TouchEventObserver {
         int RESET_BUBBLE = 3;
     }
 
-    @IntDef({GestureEndState.INVOKE, GestureEndState.CANCEL, GestureEndState.RESET})
-    @Retention(RetentionPolicy.SOURCE)
-    @interface GestureEndState {
-        int INVOKE = 1;
-        int CANCEL = 2;
-        int RESET = 3;
-    }
-
     @IntDef({
         TriggerUiCallSource.NO_TRIGGER,
         TriggerUiCallSource.ON_SCROLL,
@@ -104,15 +101,21 @@ class NavigationHandler implements TouchEventObserver {
     private final Handler mHandler = new Handler();
 
     private GestureDetector mDetector;
-    private View.OnAttachStateChangeListener mAttachStateListener;
+    private final View.OnAttachStateChangeListener mAttachStateListener;
+    private final View.OnLayoutChangeListener mLayoutChangeListener;
     private final BackActionDelegate mBackActionDelegate;
-    @Nullable private TabOnBackGestureHandler mTabOnBackGestureHandler;
-    private Tab mTab;
+    private @Nullable TabOnBackGestureHandler mTabOnBackGestureHandler;
+    private @Nullable Tab mTab;
     private final Supplier<Boolean> mWillNavigateSupplier;
+
+    // The width/height of the parent view when gesture navigation gets started (onDown).
+    // These values are used to cancel the navigation if the view size changes.
+    private int mDownWidth;
+    private int mDownHeight;
 
     private @GestureState int mState;
 
-    private PropertyModel mModel;
+    private final PropertyModel mModel;
 
     // Total horizontal pull offset for a swipe gesture.
     private float mPullOffsetX;
@@ -124,7 +127,7 @@ class NavigationHandler implements TouchEventObserver {
     private int mIncorrectEdgeSwipeCount;
     private boolean mBackGestureForTabHistoryInProgress;
     private boolean mStartNavDuringOngoingGesture;
-    private TabObserver mTabObserver =
+    private final TabObserver mTabObserver =
             new EmptyTabObserver() {
                 @Override
                 public void onDidStartNavigationInPrimaryMainFrame(
@@ -141,11 +144,12 @@ class NavigationHandler implements TouchEventObserver {
         }
 
         @Override
-        public boolean onScroll(MotionEvent e1, MotionEvent e2, float distanceX, float distanceY) {
+        public boolean onScroll(
+                @Nullable MotionEvent e1, MotionEvent e2, float distanceX, float distanceY) {
             // |onScroll| needs handling only after the state moved away from |NONE|.
             if (isStopped()) return true;
             return NavigationHandler.this.onScroll(
-                    e1.getX(), distanceX, distanceY, e2.getX(), e2.getY());
+                    assumeNonNull(e1).getX(), distanceX, distanceY, e2.getX(), e2.getY());
         }
     }
 
@@ -176,13 +180,24 @@ class NavigationHandler implements TouchEventObserver {
                     }
                 };
         parentView.addOnAttachStateChangeListener(mAttachStateListener);
+        mLayoutChangeListener =
+                (v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
+                    if ((right - left) != (oldRight - oldLeft)
+                            || (bottom - top) != (oldBottom - oldTop)) {
+                        if (mState != GestureState.NONE) {
+                            if (isActive()) reset();
+                            mState = GestureState.NONE;
+                        }
+                    }
+                };
+        parentView.addOnLayoutChangeListener(mLayoutChangeListener);
         mIncorrectEdgeSwipeCount = 0;
     }
 
-    void setTab(Tab tab) {
+    void setTab(@Nullable Tab tab) {
         if (mTab != null) mTab.removeObserver(mTabObserver);
-        if (ChromeFeatureList.isEnabled(ChromeFeatureList.BACK_FORWARD_TRANSITIONS)) {
-            onGestureEnd(GestureEndState.RESET);
+        if (GestureNavigationUtils.shouldAnimateBackForwardTransitions()) {
+            onGestureEnd(OverscrollActivationStatus.RESET);
         } else {
             mBackGestureForTabHistoryInProgress = false;
         }
@@ -203,7 +218,9 @@ class NavigationHandler implements TouchEventObserver {
         assert e != null : "The motion event in NavigationHandler shouldn't be null!";
         if (e == null || !shouldProcessTouchEvents()) return false;
         mDetector.onTouchEvent(e);
-        if (e.getAction() == MotionEvent.ACTION_UP) release(true);
+        if (e.getAction() == MotionEvent.ACTION_UP || e.getAction() == MotionEvent.ACTION_CANCEL) {
+            release(e.getAction() == MotionEvent.ACTION_UP);
+        }
         return false;
     }
 
@@ -215,12 +232,18 @@ class NavigationHandler implements TouchEventObserver {
      * @see GestureDetector#SimpleOnGestureListener#onDown(MotionEvent)
      */
     public boolean onDown() {
+        mDownWidth = mParentView.getWidth();
+        mDownHeight = mParentView.getHeight();
+        if (isStopped()) {
+            mTriggerUiCallSource = TriggerUiCallSource.NO_TRIGGER;
+        }
         mState = GestureState.STARTED;
         return true;
     }
 
     /**
      * Processes scroll event from {@link SimpleOnGestureListener#onScroll()}.
+     *
      * @param startX X coordinate of the position where gesture swipes from.
      * @param distanceX X delta between previous and current motion event.
      * @param distanceX Y delta between previous and current motion event.
@@ -231,6 +254,11 @@ class NavigationHandler implements TouchEventObserver {
     boolean onScroll(float startX, float distanceX, float distanceY, float endX, float endY) {
         // onScroll needs handling only after the state moves away from |NONE|.
         if (mState == GestureState.NONE || !isValidState()) return true;
+        if (isResizing()) {
+            if (isActive()) reset();
+            mState = GestureState.NONE;
+            return true;
+        }
 
         if (mState == GestureState.STARTED) {
             if (shouldTriggerUi(startX, distanceX, distanceY)) {
@@ -244,6 +272,12 @@ class NavigationHandler implements TouchEventObserver {
         }
         pull(-distanceX, -distanceY);
         return true;
+    }
+
+    private boolean isResizing() {
+        return mDownWidth != 0
+                && mDownHeight != 0
+                && (mParentView.getWidth() != mDownWidth || mParentView.getHeight() != mDownHeight);
     }
 
     private boolean isValidState() {
@@ -265,25 +299,19 @@ class NavigationHandler implements TouchEventObserver {
         if (!isValidState()) return false;
 
         if (mTriggerUiCallSource != TriggerUiCallSource.NO_TRIGGER) {
-            assert false
-                    : "triggerUi has been already called. mInitiatingEdge: "
-                            + String.valueOf(mInitiatingEdge)
-                            + ". initiatingEdge passed to the function: "
-                            + String.valueOf(initiatingEdge)
-                            + ". Previous triggerUi call source: "
-                            + String.valueOf(mTriggerUiCallSource)
-                            + ". Current triggerUi call source: "
-                            + String.valueOf(triggerUiCallSource);
-            Log.i(
-                    NavigationHandler.class.getSimpleName(),
-                    "triggerUi has been already called. mInitiatingEdge: "
-                            + String.valueOf(mInitiatingEdge)
-                            + ". initiatingEdge passed to the function: "
-                            + String.valueOf(initiatingEdge)
-                            + ". Previous triggerUi call source: "
-                            + String.valueOf(mTriggerUiCallSource)
-                            + ". Current triggerUi call source: "
-                            + String.valueOf(triggerUiCallSource));
+            StringBuilder assertMsgBuilder = new StringBuilder(256);
+            assertMsgBuilder
+                    .append("triggerUi has been already called. mInitiatingEdge: ")
+                    .append(String.valueOf(mInitiatingEdge))
+                    .append(". initiatingEdge passed to the function: ")
+                    .append(String.valueOf(initiatingEdge))
+                    .append(". Previous triggerUi call source: ")
+                    .append(String.valueOf(mTriggerUiCallSource))
+                    .append(". Current triggerUi call source: ")
+                    .append(String.valueOf(triggerUiCallSource));
+
+            assert false : assertMsgBuilder.toString();
+            Log.i(NavigationHandler.class.getSimpleName(), assertMsgBuilder.toString());
         }
         mTriggerUiCallSource = triggerUiCallSource;
 
@@ -307,6 +335,7 @@ class NavigationHandler implements TouchEventObserver {
             mState = GestureState.DRAGGED;
 
             if (willUpdateTabHistory(forward)) {
+                assert mTab != null;
                 if (GestureNavigationUtils.allowTransition(mTab, forward)) {
                     if (TabOnBackGestureHandler.shouldAnimateNavigationTransition(
                             forward, initiatingEdge)) {
@@ -319,8 +348,9 @@ class NavigationHandler implements TouchEventObserver {
                             getProgress(), mInitiatingEdge, forward, false);
                 }
                 BackPressMetrics.recordNavStatusOnGestureStart(
-                        mTab.getWebContents().hasUncommittedNavigationInPrimaryMainFrame(),
-                        mTab.getWindowAndroid().getActivity().get().getWindow());
+                        assumeNonNull(mTab.getWebContents())
+                                .hasUncommittedNavigationInPrimaryMainFrame(),
+                        getWindow(mTab));
                 mStartNavDuringOngoingGesture = false;
                 mBackGestureForTabHistoryInProgress = true;
             }
@@ -362,6 +392,7 @@ class NavigationHandler implements TouchEventObserver {
             // Delegate navigation to native side: supposed to be triggered after animation.
             return;
         }
+        assert mTab != null;
         if (forward) {
             // Session history may have changed since the beginning of the gesture such that it's no
             // longer possible to go forward.
@@ -372,22 +403,23 @@ class NavigationHandler implements TouchEventObserver {
             // Perform back action at the next UI thread execution. The back action can
             // potentially close the tab we're running on, which causes use-after-destroy
             // exception if the closing operation is performed synchronously.
-            mHandler.post(() -> mBackActionDelegate.onBackGesture(mTab));
+            mHandler.post(() -> mBackActionDelegate.onBackGesture(assertNonNull(mTab)));
         }
     }
 
     /**
-     * @return The type of target to close when left swipe is performed. Could be
-     *         the current tab, Chrome app, or none as defined in {@link CloseTarget}.
+     * @return The type of target to close when left swipe is performed. Could be the current tab,
+     *     Chrome app, or none as defined in {@link CloseTarget}.
      * @param forward {@code true} for forward navigation, or {@code false} for back.
      */
     private @CloseTarget int getCloseIndicator(boolean forward) {
         if (forward) return CloseTarget.NONE;
 
+        assert mTab != null;
         @ActionType int type = mBackActionDelegate.getBackActionType(mTab);
         if (type == ActionType.CLOSE_TAB) {
             return CloseTarget.TAB;
-        } else if (type == ActionType.EXIT_APP) {
+        } else if (type == ActionType.EXIT_APP_AND_CLOSE_TAB || type == ActionType.EXIT_APP_ONLY) {
             return CloseTarget.APP;
         } else {
             return CloseTarget.NONE;
@@ -398,15 +430,29 @@ class NavigationHandler implements TouchEventObserver {
      * @see {@link HistoryNavigationCoordinator#release(boolean)}
      */
     void release(boolean allowNav) {
-        onGestureEnd(allowNav ? GestureEndState.INVOKE : GestureEndState.CANCEL);
+        release(
+                allowNav
+                        ? OverscrollActivationStatus.ALLOW_ACTIVATION
+                        : OverscrollActivationStatus.DISALLOW_ACTIVATION);
+    }
+
+    /**
+     * Release gesture and possibly trigger navigation.
+     *
+     * @param status The activation status of the release gesture.
+     */
+    void release(@OverscrollActivationStatus int status) {
+        onGestureEnd(status);
     }
 
     /**
      * @see {@link HistoryNavigationCoordinator#reset()}
      */
     void reset() {
-        if (ChromeFeatureList.isEnabled(ChromeFeatureList.BACK_FORWARD_TRANSITIONS)) {
-            onGestureEnd(GestureEndState.RESET);
+        mDownWidth = 0;
+        mDownHeight = 0;
+        if (GestureNavigationUtils.shouldAnimateBackForwardTransitions()) {
+            onGestureEnd(OverscrollActivationStatus.RESET);
         } else {
             if (mState == GestureState.DRAGGED) {
                 mModel.set(ACTION, GestureAction.RESET_BUBBLE);
@@ -417,19 +463,23 @@ class NavigationHandler implements TouchEventObserver {
         }
     }
 
-    private void onGestureEnd(@GestureEndState int endState) {
-        boolean allowNav = endState == GestureEndState.INVOKE;
+    private void onGestureEnd(@OverscrollActivationStatus int status) {
+        mDownWidth = 0;
+        mDownHeight = 0;
+        boolean allowNav =
+                status == OverscrollActivationStatus.ALLOW_ACTIVATION
+                        || status == OverscrollActivationStatus.FORCE_ACTIVATION;
         // If the back gesture will update history, record the metrics.
         if (mBackGestureForTabHistoryInProgress) {
+            assumeNonNull(mTab);
             BackPressMetrics.recordNavStatusDuringGesture(
-                    mStartNavDuringOngoingGesture,
-                    mTab.getWindowAndroid().getActivity().get().getWindow());
+                    mStartNavDuringOngoingGesture, getWindow(mTab));
         }
         mBackGestureForTabHistoryInProgress = false;
         mStartNavDuringOngoingGesture = false;
-        mModel.set(ALLOW_NAV, allowNav);
+        mModel.set(ACTIVATION_STATUS, status);
         if (mState == GestureState.DRAGGED) {
-            if (endState == GestureEndState.RESET) {
+            if (status == OverscrollActivationStatus.RESET) {
                 mModel.set(ACTION, GestureAction.RESET_BUBBLE);
             } else {
                 mModel.set(ACTION, GestureAction.RELEASE_BUBBLE);
@@ -486,12 +536,12 @@ class NavigationHandler implements TouchEventObserver {
     }
 
     /**
-     * Get progress of back gesture. This is a mock of
-     * {@link android.window.BackEvent#getProgress()}.
+     * Get progress of back gesture. This is a mock of {@link
+     * android.window.BackEvent#getProgress()}.
      */
     private float getProgress() {
         assert mTab != null;
-        Activity activity = mTab.getWindowAndroid().getActivity().get();
+        Activity activity = mTab.getWindowAndroidChecked().getActivity().get();
         assert activity != null;
         int width;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -510,16 +560,18 @@ class NavigationHandler implements TouchEventObserver {
     }
 
     /** Performs cleanup upon destruction. */
+    @SuppressWarnings("NullAway")
     void destroy() {
         if (mTab != null) {
             assert mTabObserver != null : "Always has a tab observer";
             mTab.removeObserver(mTabObserver);
         }
         mParentView.removeOnAttachStateChangeListener(mAttachStateListener);
+        mParentView.removeOnLayoutChangeListener(mLayoutChangeListener);
         mDetector = null;
     }
 
-    TabOnBackGestureHandler getTabOnBackGestureHandlerForTesting() {
+    @Nullable TabOnBackGestureHandler getTabOnBackGestureHandlerForTesting() {
         return mTabOnBackGestureHandler;
     }
 
@@ -532,5 +584,9 @@ class NavigationHandler implements TouchEventObserver {
             forward = !forward;
         }
         return forward;
+    }
+
+    private static Window getWindow(Tab tab) {
+        return assumeNonNull(tab.getWindowAndroidChecked().getActivity().get()).getWindow();
     }
 }

@@ -15,8 +15,9 @@
 #include "build/build_config.h"
 #include "components/live_caption/pref_names.h"
 #include "components/prefs/pref_service.h"
+#include "media/base/media_switches.h"
 #include "ui/base/ui_base_switches.h"
-#include "ui/native_theme/native_theme.h"
+#include "ui/native_theme/caption_style.h"
 
 #if BUILDFLAG(IS_WIN)
 #include "base/win/windows_version.h"
@@ -91,10 +92,9 @@ namespace captions {
 std::optional<ui::CaptionStyle> GetCaptionStyleFromUserSettings(
     PrefService* prefs,
     bool record_metrics) {
-  // Apply native CaptionStyle parameters.
   std::optional<ui::CaptionStyle> style;
 
-  // Apply native CaptionStyle parameters.
+  // Apply command-line CaptionStyle parameters.
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
           ::switches::kForceCaptionStyle)) {
     style = ui::CaptionStyle::FromSpec(
@@ -104,8 +104,7 @@ std::optional<ui::CaptionStyle> GetCaptionStyleFromUserSettings(
 
   // Apply system caption style.
   if (!style) {
-    ui::NativeTheme* native_theme = ui::NativeTheme::GetInstanceForWeb();
-    style = native_theme->GetSystemCaptionStyle();
+    style = ui::CaptionStyle::FromSystemSettings();
     if (record_metrics && style.has_value()) {
       base::UmaHistogramBoolean(
           "Accessibility.CaptionSettingsLoadedFromSystemSettings",
@@ -131,6 +130,10 @@ bool IsLiveCaptionFeatureSupported() {
 #else
   return false;
 #endif  // !BUILDFLAG(IS_FUCHSIA) && !BUILDFLAG(IS_ANDROID)
+}
+
+bool IsHeadlessCaptionFeatureSupported() {
+  return base::FeatureList::IsEnabled(media::kHeadlessLiveCaption);
 }
 
 std::string GetCaptionSettingsUrl() {

@@ -7,7 +7,7 @@
 
 #include "base/check_deref.h"
 #include "chrome/browser/ui/autofill/payments/desktop_payments_window_manager.h"
-#include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/geometry/size.h"
 
 namespace autofill::payments {
 
@@ -22,7 +22,7 @@ class DesktopPaymentsWindowManagerTestApi {
       const DesktopPaymentsWindowManagerTestApi&) = delete;
   ~DesktopPaymentsWindowManagerTestApi() = default;
 
-  void CreatePopup(const GURL& url, gfx::Rect popup_size) {
+  void CreatePopup(const GURL& url, gfx::Size popup_size) {
     window_manager_->CreatePopup(url, std::move(popup_size));
   }
 
@@ -39,20 +39,12 @@ class DesktopPaymentsWindowManagerTestApi {
 
   const std::optional<PaymentsWindowManager::Vcn3dsContext>&
   GetVcn3dsContext() {
-    return window_manager_->vcn_3ds_context_;
+    CHECK(window_manager_->flow_state_);
+    return window_manager_->flow_state_->vcn_3ds_context;
   }
 
-  const std::optional<PaymentsWindowManager::BnplContext>& GetBnplContext() {
-    return window_manager_->bnpl_context_;
-  }
-
-  bool NoOngoingFlow() {
-    return window_manager_->flow_type_ ==
-           DesktopPaymentsWindowManager::FlowType::kNoFlow;
-  }
-
-  GURL GetMostRecentUrlNavigation() {
-    return window_manager_->most_recent_url_navigation_;
+  const std::optional<DesktopPaymentsWindowManager::FlowState>& GetFlowState() {
+    return window_manager_->flow_state_;
   }
 
   void SetPopupClosedClosure(base::RepeatingClosure popup_closed_closure) {

@@ -7,6 +7,7 @@ package org.chromium.components.permissions.nfc;
 import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.app.Activity;
+import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.content.res.Resources;
 import android.os.Build;
@@ -111,13 +112,13 @@ public class NfcSystemLevelPrompt implements ModalDialogProperties.Controller {
                         intent,
                         new WindowAndroid.IntentCallback() {
                             @Override
-                            public void onIntentCompleted(int resultCode, Intent data) {
+                            public void onIntentCompleted(int resultCode, @Nullable Intent data) {
                                 mModalDialogManager.dismissDialog(
                                         model, DialogDismissalCause.POSITIVE_BUTTON_CLICKED);
                             }
                         },
                         null);
-            } catch (android.content.ActivityNotFoundException ex) {
+            } catch (ActivityNotFoundException ex) {
                 mModalDialogManager.dismissDialog(
                         model, DialogDismissalCause.POSITIVE_BUTTON_CLICKED);
             }

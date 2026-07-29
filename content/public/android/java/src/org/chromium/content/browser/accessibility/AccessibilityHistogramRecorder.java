@@ -13,127 +13,165 @@ import org.chromium.base.MathUtils;
 import org.chromium.base.TraceEvent;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.content_public.browser.ContentFeatureList;
 import org.chromium.ui.accessibility.AccessibilityState;
 
 /** Helper class for recording UMA histograms of accessibility events */
 @NullMarked
 public class AccessibilityHistogramRecorder {
+    private static final String TAG = "A11yHistRecorder";
+
     // OnDemand AX Mode histogram values
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public static final String PERCENTAGE_DROPPED_HISTOGRAM =
             "Accessibility.Android.OnDemand.PercentageDropped";
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public static final String PERCENTAGE_DROPPED_HISTOGRAM_AXMODE_COMPLETE =
             "Accessibility.Android.OnDemand.PercentageDropped.Complete";
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public static final String PERCENTAGE_DROPPED_HISTOGRAM_AXMODE_FORM_CONTROLS =
             "Accessibility.Android.OnDemand.PercentageDropped.FormControls";
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public static final String PERCENTAGE_DROPPED_HISTOGRAM_AXMODE_BASIC =
             "Accessibility.Android.OnDemand.PercentageDropped.Basic";
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public static final String EVENTS_DROPPED_HISTOGRAM =
             "Accessibility.Android.OnDemand.EventsDropped";
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public static final String ONE_HUNDRED_PERCENT_HISTOGRAM =
             "Accessibility.Android.OnDemand.OneHundredPercentEventsDropped";
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public static final String ONE_HUNDRED_PERCENT_HISTOGRAM_AXMODE_COMPLETE =
             "Accessibility.Android.OnDemand.OneHundredPercentEventsDropped.Complete";
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public static final String ONE_HUNDRED_PERCENT_HISTOGRAM_AXMODE_FORM_CONTROLS =
             "Accessibility.Android.OnDemand.OneHundredPercentEventsDropped.FormControls";
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public static final String ONE_HUNDRED_PERCENT_HISTOGRAM_AXMODE_BASIC =
             "Accessibility.Android.OnDemand.OneHundredPercentEventsDropped.Basic";
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public static final String USAGE_FOREGROUND_TIME = "Accessibility.Android.Usage.Foreground";
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public static final String USAGE_NATIVE_INITIALIZED_TIME =
             "Accessibility.Android.Usage.NativeInit";
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public static final String USAGE_ACCESSIBILITY_ALWAYS_ON_TIME =
             "Accessibility.Android.Usage.A11yAlwaysOn";
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public static final String AUTO_DISABLE_ACCESSIBILITY_DISABLE_METHOD_CALLED_INITIAL =
             "Accessibility.Android.AutoDisableV2.DisableCalled.Initial";
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public static final String AUTO_DISABLE_ACCESSIBILITY_DISABLE_METHOD_CALLED_SUCCESSIVE =
             "Accessibility.Android.AutoDisableV2.DisableCalled.Successive";
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public static final String AUTO_DISABLE_ACCESSIBILITY_REENABLE_METHOD_CALLED_INITIAL =
             "Accessibility.Android.AutoDisableV2.ReEnableCalled.Initial";
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public static final String AUTO_DISABLE_ACCESSIBILITY_REENABLE_METHOD_CALLED_SUCCESSIVE =
             "Accessibility.Android.AutoDisableV2.ReEnabledCalled.Successive";
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public static final String AUTO_DISABLE_ACCESSIBILITY_DISABLED_TIME_INITIAL =
             "Accessibility.Android.AutoDisableV2.DisabledTime.Initial";
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public static final String AUTO_DISABLE_ACCESSIBILITY_DISABLED_TIME_SUCCESSIVE =
             "Accessibility.Android.AutoDisableV2.DisabledTime.Successive";
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public static final String AUTO_DISABLE_ACCESSIBILITY_ENABLED_TIME_INITIAL =
             "Accessibility.Android.AutoDisableV2.EnabledTime.Initial";
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public static final String AUTO_DISABLE_ACCESSIBILITY_ENABLED_TIME_SUCCESSIVE =
             "Accessibility.Android.AutoDisableV2.EnabledTime.Successive";
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public static final String ACCESSIBILITY_INLINE_TEXT_BOXES_BUNDLE =
             "Accessibility.Android.InlineTextBoxes.Bundle.FromFocus";
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public static final String ACCESSIBILITY_INLINE_TEXT_BOXES_COUNT =
             "Accessibility.InlineTextBoxes.Count";
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public static final String ACCESSIBILITY_INLINE_TEXT_BOXES_PRESENT_IN_UPDATE =
             "Accessibility.InlineTextBoxes.PresentInUpdate";
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public static final String ACCESSIBILITY_INLINE_TEXT_BOXES_DUPLICATE_REQUEST =
             "Accessibility.Android.InlineTextBoxes.DuplicateRequest";
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public static final String ACCESSIBILITY_CREATE_ACCESSIBILITY_NODE_INFO_TOTAL_TIME =
             "Accessibility.Android.Performance.CreateAccessibilityNodeInfo.TotalTime";
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public static final String ACCESSIBILITY_TIME_UNTIL_FIRST_ACCESSIBILITY_FOCUS =
             "Accessibility.Android.Performance.TimeUntilFirstAccessibilityFocus";
+
+    @VisibleForTesting
+    public static final String ACCESSIBILITY_TIME_OF_SCROLL_TO_MAKE_VISIBLE =
+            "Accessibility.Android.Performance.TimeOfScrollToMakeVisible";
+
+    @VisibleForTesting
+    public static final String ACCESSIBILITY_FAKE_CACHE_HEALTH_INDEX =
+            "Accessibility.Android.Performance.FakeCache.CacheHealthIndex";
+
+    @VisibleForTesting
+    public static final String ACCESSIBILITY_FAKE_CACHE_PERCENTAGE_STALE_NODES =
+            "Accessibility.Android.Performance.FakeCache.PercentageStaleNodes";
+
+    @VisibleForTesting
+    public static final String ACCESSIBILITY_FAKE_CACHE_PERCENTAGE_CHURN =
+            "Accessibility.Android.Performance.FakeCache.PercentageChurn";
+
+    @VisibleForTesting
+    public static final String ACCESSIBILITY_FAKE_CACHE_PERCENTAGE_OCCUPANCY =
+            "Accessibility.Android.Performance.FakeCache.PercentageOccupancy";
+
+    @VisibleForTesting
+    public static final String ACCESSIBILITY_FAKE_CACHE_SIZE =
+            "Accessibility.Android.Performance.FakeCache.Size";
+
+    @VisibleForTesting
+    public static final String ACCESSIBILITY_FAKE_CACHE_NODE_LIFETIME =
+            "Accessibility.Android.Performance.FakeCache.NodeLifetime";
+
+    @VisibleForTesting
+    public static final String ACCESSIBILITY_CONTENT_CHANGED_SUBTREE =
+            "Accessibility.Android.ContentChanged.Subtree";
 
     private static final int EVENTS_DROPPED_HISTOGRAM_MIN_BUCKET = 1;
     private static final int EVENTS_DROPPED_HISTOGRAM_MAX_BUCKET = 10000;
     private static final int EVENTS_DROPPED_HISTOGRAM_BUCKET_COUNT = 100;
 
     // Node cache histogram values
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public static final String CACHE_MAX_NODES_HISTOGRAM =
             "Accessibility.Android.Cache.MaxNodesInCache";
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public static final String CACHE_PERCENTAGE_RETRIEVED_FROM_CACHE_HISTOGRAM =
             "Accessibility.Android.Cache.PercentageRetrievedFromCache";
+
+    private static final String CACHE_PERCENTAGE_FRESH_HISTOGRAM =
+            "Accessibility.Android.Cache.PercentageFreshInCache";
 
     private static final int CACHE_MAX_NODES_MIN_BUCKET = 1;
     private static final int CACHE_MAX_NODES_MAX_BUCKET = 3000;
@@ -149,6 +187,7 @@ public class AccessibilityHistogramRecorder {
     private int mMaxNodesInCache;
     private int mNodeWasReturnedFromCache;
     private int mNodeWasCreatedFromScratch;
+    private int mNodeWasFreshInCache;
 
     // These track the usage in time when a web contents is in the foreground.
     private long mTimeOfFirstShown = -1;
@@ -167,6 +206,8 @@ public class AccessibilityHistogramRecorder {
     // which happens automatically for screenreaders. Performance improvements around jank should
     // decrease this number. We only want to track this once per instance.
     private boolean mHasRecordedTimeToFirstAccessibilityFocus;
+
+    private long mTimeScrollToMakeVisible = -1;
 
     /** Record that the Auto-disable Accessibility feature has disabled accessibility. */
     public void onDisableCalled(boolean initialCall) {
@@ -260,9 +301,20 @@ public class AccessibilityHistogramRecorder {
         mNodeWasReturnedFromCache++;
     }
 
+    /** Record UMA histogram for the lifetime of removed nodes */
+    public void reportNodeRemovedFromFakeCache(int virtualViewId, long lifetimeMs) {
+        RecordHistogram.recordMediumTimesHistogram(
+                ACCESSIBILITY_FAKE_CACHE_NODE_LIFETIME, lifetimeMs);
+    }
+
     /** Increment the count of instances when a node was created from scratch */
     public void incrementNodeWasCreatedFromScratch() {
         mNodeWasCreatedFromScratch++;
+    }
+
+    /** Increment the count of instances when a node was fresh in cache. */
+    public void incrementNodeWasFreshInCache() {
+        mNodeWasFreshInCache++;
     }
 
     /** Set the time this instance was shown to the current time in ms. */
@@ -273,6 +325,11 @@ public class AccessibilityHistogramRecorder {
     /** Set the time this instance had native initialization called to the current time in ms. */
     public void updateTimeOfNativeInitialization() {
         mTimeOfNativeInitialization = SystemClock.elapsedRealtime();
+    }
+
+    /** Set the time this instance had scroll to make visible called to the current time in ms. */
+    public void updateTimeOfScrollToMakeVisible() {
+        mTimeScrollToMakeVisible = SystemClock.elapsedRealtime();
     }
 
     /** Notify the recorder that this instance was shown, and has previously been auto-disabled. */
@@ -304,16 +361,25 @@ public class AccessibilityHistogramRecorder {
         recordTotalTimeCreateAccessibilityNodeInfoHistogram();
     }
 
+    /**
+     * Calculates what percentage of {@code total} {@code count} is, expressed as an integer
+     * percentage truncated down. {@code total} must not be zero.
+     */
+    private static int computeIntegerPercent(int count, int total) {
+        // Cast to long to account for overflow
+        return (int) ((count * 100L) / total);
+    }
+
     /** Record UMA histograms for the event counts for the OnDemand feature. */
     public void recordEventsHistograms() {
-        // There are only 2 AXModes, kAXModeComplete is used when a screenreader is active.
-        boolean isAXModeComplete = AccessibilityState.isScreenReaderEnabled();
+        // There are only 2 AXModes, kAXModeComplete is used when a complex service is active.
+        boolean isAXModeComplete = AccessibilityState.isComplexUserInteractionServiceEnabled();
         boolean isAXModeFormControls = AccessibilityState.isOnlyPasswordManagersEnabled();
 
         // If we did not enqueue any events, we can ignore the data as a trivial case.
         if (mTotalEnqueuedEvents > 0) {
             // Log the percentage dropped (dispatching 0 events should be 100% dropped).
-            int percentSent = (int) (mTotalDispatchedEvents * 1.0 / mTotalEnqueuedEvents * 100.0);
+            int percentSent = computeIntegerPercent(mTotalDispatchedEvents, mTotalEnqueuedEvents);
             RecordHistogram.recordPercentageHistogram(
                     PERCENTAGE_DROPPED_HISTOGRAM, 100 - percentSent);
             RecordHistogram.recordPercentageHistogram(
@@ -370,15 +436,24 @@ public class AccessibilityHistogramRecorder {
                 CACHE_MAX_NODES_BUCKET_COUNT);
 
         int totalNodeRequests = mNodeWasReturnedFromCache + mNodeWasCreatedFromScratch;
-        int percentFromCache = (int) (mNodeWasReturnedFromCache * 1.0 / totalNodeRequests * 100.0);
+        if (totalNodeRequests > 0) {
+            RecordHistogram.recordPercentageHistogram(
+                    CACHE_PERCENTAGE_RETRIEVED_FROM_CACHE_HISTOGRAM,
+                    computeIntegerPercent(mNodeWasReturnedFromCache, totalNodeRequests));
 
-        RecordHistogram.recordPercentageHistogram(
-                CACHE_PERCENTAGE_RETRIEVED_FROM_CACHE_HISTOGRAM, percentFromCache);
+            if (mNodeWasReturnedFromCache > 0
+                    && ContentFeatureList.enabledAccessibilityCheckJavaNodeCacheFreshness()) {
+                RecordHistogram.recordPercentageHistogram(
+                        CACHE_PERCENTAGE_FRESH_HISTOGRAM,
+                        computeIntegerPercent(mNodeWasFreshInCache, mNodeWasReturnedFromCache));
+            }
+        }
 
         // Reset counters.
         mMaxNodesInCache = 0;
         mNodeWasReturnedFromCache = 0;
         mNodeWasCreatedFromScratch = 0;
+        mNodeWasFreshInCache = 0;
     }
 
     /** Record UMA histograms for the usage timers of the native accessibility engine. */
@@ -448,6 +523,48 @@ public class AccessibilityHistogramRecorder {
                 80);
     }
 
+    /** Record UMA histogram for the number of stale nodes on the fake cache */
+    public void recordFakeCacheHistograms(
+            int peakCacheNodesInBatch, int removedCount, int staleNodes, int cacheSize) {
+        Integer cacheHealthIndex = null;
+        Integer churn = null;
+        int staleNodesPercent;
+
+        RecordHistogram.recordCustomCountHistogram(
+                ACCESSIBILITY_FAKE_CACHE_SIZE,
+                cacheSize,
+                CACHE_MAX_NODES_MIN_BUCKET,
+                CACHE_MAX_NODES_MAX_BUCKET,
+                CACHE_MAX_NODES_BUCKET_COUNT);
+
+        if (cacheSize == 0) {
+            staleNodesPercent = 0;
+        } else {
+            staleNodesPercent = computeIntegerPercent(staleNodes, cacheSize);
+        }
+        RecordHistogram.recordPercentageHistogram(
+                ACCESSIBILITY_FAKE_CACHE_PERCENTAGE_STALE_NODES, staleNodesPercent);
+
+        if (peakCacheNodesInBatch > 0 && removedCount > 0) {
+            churn = computeIntegerPercent(removedCount, peakCacheNodesInBatch);
+            RecordHistogram.recordPercentageHistogram(
+                    ACCESSIBILITY_FAKE_CACHE_PERCENTAGE_CHURN, churn);
+
+            float stability = 1.0f - ((float) churn / 100.0f);
+            float validity = 1.0f - ((float) staleNodesPercent / 100.0f);
+            cacheHealthIndex = (int) (stability * validity * 100.0f);
+
+            RecordHistogram.recordPercentageHistogram(
+                    ACCESSIBILITY_FAKE_CACHE_HEALTH_INDEX, cacheHealthIndex);
+        }
+    }
+
+    /** Record UMA histogram for whether a content changed event was for a subtree. */
+    public void recordContentChangedSubtreeHistogram(boolean setSubtreeChanged) {
+        RecordHistogram.recordBooleanHistogram(
+                ACCESSIBILITY_CONTENT_CHANGED_SUBTREE, setSubtreeChanged);
+    }
+
     /**
      * Record UMA histogram for the length of time from native initialization to first accessibility
      * focus.
@@ -455,8 +572,8 @@ public class AccessibilityHistogramRecorder {
     public void recordTimeToFirstAccessibilityFocus() {
         if (mHasRecordedTimeToFirstAccessibilityFocus) return;
 
-        // We are only interested in this for TalkBack, which always focuses the root node on load.
-        if (!AccessibilityState.getTalkBackEnabledState().first) return;
+        // We are only interested in this for screen readers, which focus the root node on load.
+        if (!AccessibilityState.isKnownScreenReaderEnabled()) return;
 
         // TODO(mschillaci): This uses a 5 sec max, check scale after initial data collection.
         RecordHistogram.recordCustomTimesHistogram(
@@ -467,5 +584,22 @@ public class AccessibilityHistogramRecorder {
                 80);
 
         mHasRecordedTimeToFirstAccessibilityFocus = true;
+    }
+
+    /**
+     * Record UMA histogram for the time from a scroll to make visible action to the resulting
+     * scroll position change.
+     */
+    public void recordTimeOfScrollToMakeVisible() {
+        if (mTimeScrollToMakeVisible < 0) return;
+
+        RecordHistogram.recordCustomTimesHistogram(
+                ACCESSIBILITY_TIME_OF_SCROLL_TO_MAKE_VISIBLE,
+                SystemClock.elapsedRealtime() - mTimeScrollToMakeVisible,
+                /* min= */ 1,
+                /* max= */ DateUtils.SECOND_IN_MILLIS * 2,
+                /* numBuckets= */ 80);
+
+        mTimeScrollToMakeVisible = -1;
     }
 }

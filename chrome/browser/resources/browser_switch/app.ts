@@ -57,10 +57,10 @@ export class BrowserSwitchAppElement extends BrowserSwitchAppElementBase {
     };
   }
 
-  private url_: string =
+  private accessor url_: string =
       new URLSearchParams(window.location.search).get('url') || '';
-  private error_: string = '';
-  private secondCounter_: number = 0;
+  private accessor error_: string = '';
+  private accessor secondCounter_: number = 0;
 
   override connectedCallback() {
     super.connectedCallback();
@@ -127,6 +127,12 @@ export class BrowserSwitchAppElement extends BrowserSwitchAppElementBase {
     return this.i18nAdvanced('description', {
       substitutions: [getUrlHostname(this.url_), getAltBrowserName()],
     });
+  }
+}
+
+declare global {
+  interface HTMLElementTagNameMap {
+    'browser-switch-app': BrowserSwitchAppElement;
   }
 }
 

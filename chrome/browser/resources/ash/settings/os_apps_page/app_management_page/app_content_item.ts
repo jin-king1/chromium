@@ -38,10 +38,11 @@ export class AppManagementAppContentItemElement extends
     };
   }
 
-  app: App;
+  declare app: App;
   appContentLabel: string;
   appContentSublabel: string;
-  showAppContentDialog: boolean;
+  declare hidden: boolean;
+  declare showAppContentDialog: boolean;
 
   override ready(): void {
     super.ready();

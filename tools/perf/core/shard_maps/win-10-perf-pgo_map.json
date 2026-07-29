@@ -101,13 +101,7 @@
             "blink_perf.webgl": {
                 "abridged": false
             },
-            "blink_perf.webgl_fast_call": {
-                "abridged": false
-            },
             "blink_perf.webgpu": {
-                "abridged": false
-            },
-            "blink_perf.webgpu_fast_call": {
                 "abridged": false
             }
         },
@@ -156,9 +150,6 @@
                 "abridged": false
             },
             "memory.desktop": {
-                "abridged": false
-            },
-            "octane": {
                 "abridged": false
             },
             "power.desktop": {
@@ -225,18 +216,6 @@
                 "abridged": false
             },
             "rendering.desktop.notracing": {
-                "abridged": false
-            },
-            "speedometer": {
-                "abridged": false
-            },
-            "speedometer-future": {
-                "abridged": false
-            },
-            "speedometer2": {
-                "abridged": false
-            },
-            "speedometer2-future": {
                 "abridged": false
             },
             "speedometer3": {

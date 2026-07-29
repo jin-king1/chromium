@@ -5,6 +5,7 @@
 #include "chrome/browser/ash/fusebox/fusebox_moniker.h"
 
 #include "base/strings/strcat.h"
+#include "base/strings/string_util.h"
 #include "content/public/browser/browser_thread.h"
 #include "third_party/cros_system_api/dbus/service_constants.h"
 
@@ -94,7 +95,7 @@ MonikerMap::FSURLAndReadOnlyState MonikerMap::Resolve(
 }
 
 base::Value MonikerMap::GetDebugJSON() {
-  base::Value::Dict dict;
+  base::DictValue dict;
   for (const auto& i : map_) {
     dict.Set(i.first.ToString(),
              base::Value(base::StrCat(

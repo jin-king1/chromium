@@ -13,11 +13,11 @@
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/notimplemented.h"
 #include "base/strings/string_util.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
 #include "ui/gl/gl_bindings.h"
-#include "ui/gl/gl_fence.h"
 #include "ui/gl/gl_gl_api_implementation.h"
 #include "ui/gl/gl_implementation.h"
 #include "ui/gl/gl_surface.h"
@@ -52,7 +52,7 @@ constinit thread_local GLContext* current_real_context = nullptr;
 }  // namespace
 
 // static
-base::subtle::Atomic32 GLContext::total_gl_contexts_ = 0;
+std::atomic<int32_t> GLContext::total_gl_contexts_ = 0;
 // static
 bool GLContext::switchable_gpus_supported_ = false;
 
@@ -82,29 +82,24 @@ GLContext::GLContext(GLShareGroup* share_group) : share_group_(share_group) {
   if (!share_group_.get())
     share_group_ = new gl::GLShareGroup();
   share_group_->AddContext(this);
-  base::subtle::NoBarrier_AtomicIncrement(&total_gl_contexts_, 1);
+  total_gl_contexts_.fetch_add(1, std::memory_order_relaxed);
 }
 
 GLContext::~GLContext() {
-  DCHECK(has_called_on_destory_);
-
-#if BUILDFLAG(IS_APPLE)
-  DCHECK(!HasBackpressureFences());
-#endif
+  DCHECK(has_called_on_destroy_);
   share_group_->RemoveContext(this);
   if (GetCurrent() == this) {
     SetCurrent(nullptr);
     SetThreadLocalCurrentGL(nullptr);
   }
-  base::subtle::Atomic32 after_value =
-      base::subtle::NoBarrier_AtomicIncrement(&total_gl_contexts_, -1);
+  int32_t after_value =
+      total_gl_contexts_.fetch_add(-1, std::memory_order_relaxed);
   DCHECK(after_value >= 0);
 }
 
 // static
 int32_t GLContext::TotalGLContexts() {
-  return static_cast<int32_t>(
-      base::subtle::NoBarrier_Load(&total_gl_contexts_));
+  return total_gl_contexts_.load(std::memory_order_relaxed);
 }
 
 // static
@@ -156,6 +151,14 @@ bool GLContext::MakeCurrent(GLSurface* surface) {
       base::UmaHistogramEnumeration("GPU.MaximumGLESVersion", max_gles_version);
     }
     recorded_max_gles_version_if_feasible = true;
+  }
+#elif (BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || \
+       BUILDFLAG(IS_WIN))
+  static bool recorded_emulated_gles_version = false;
+  if (!recorded_emulated_gles_version) {
+    base::UmaHistogramBoolean("GPU.ANGLECanEmulateGLES3",
+                              current_gl_->Version->IsAtLeastGLES(3, 0));
+    recorded_emulated_gles_version = true;
   }
 #endif
 
@@ -225,7 +228,7 @@ std::string GLContext::GetGLRenderer() {
 CurrentGL* GLContext::GetCurrentGL() {
   if (!static_bindings_initialized_) {
     driver_gl_ = std::make_unique<DriverGL>();
-    driver_gl_->InitializeStaticBindings();
+    driver_gl_->InitializeStaticBindings(GetGLProcAddress);
 
     auto gl_api = base::WrapUnique<GLApi>(CreateGLApi(driver_gl_.get()));
     gl_api_wrapper_ =
@@ -264,95 +267,6 @@ GLDisplayEGL* GLContext::GetGLDisplayEGL() {
 GLContextEGL* GLContext::AsGLContextEGL() {
   return nullptr;
 }
-
-#if BUILDFLAG(IS_APPLE)
-constexpr uint64_t kInvalidFenceId = 0;
-
-void GLContext::AddMetalSharedEventsForBackpressure(
-    std::vector<std::unique_ptr<gpu::BackpressureMetalSharedEvent>> events) {
-  for (auto& e : events) {
-    next_backpressure_events_.push_back(std::move(e));
-  }
-}
-
-uint64_t GLContext::BackpressureFenceCreate() {
-  TRACE_EVENT0("gpu", "GLContext::BackpressureFenceCreate");
-
-  std::vector<std::unique_ptr<gpu::BackpressureMetalSharedEvent>>
-      backpressure_events = std::move(next_backpressure_events_);
-
-  if (gl::GetANGLEImplementation() == gl::ANGLEImplementation::kMetal) {
-    // Don't use a GLFence here since we already have Metal shared events
-    // corresponding to each GL access and we can avoid any fence overhead.
-    backpressure_fences_[++next_backpressure_fence_] = {
-        nullptr, std::move(backpressure_events)};
-    return next_backpressure_fence_;
-  } else if (gl::GLFence::IsSupported()) {
-    // This flush will trigger a crash if FlushForDriverCrashWorkaround is not
-    // called sufficiently frequently.
-    glFlush();
-    backpressure_fences_[++next_backpressure_fence_] = {
-        GLFence::Create(), std::move(backpressure_events)};
-    return next_backpressure_fence_;
-  } else {
-    glFinish();
-    return kInvalidFenceId;
-  }
-}
-
-void GLContext::BackpressureFenceWait(uint64_t fence_id) {
-  TRACE_EVENT0("gpu", "GLContext::BackpressureFenceWait");
-  if (fence_id == kInvalidFenceId) {
-    return;
-  }
-
-  // If a fence is not found, then it has already been waited on.
-  auto it = backpressure_fences_.find(fence_id);
-  if (it == backpressure_fences_.end()) {
-    return;
-  }
-  auto [fence, events] = std::move(it->second);
-  backpressure_fences_.erase(it);
-
-  // Poll for all Metal shared events to be signaled with a 1ms delay.
-  bool events_complete = false;
-  while (!events_complete) {
-    events_complete = true;
-    {
-      TRACE_EVENT0("gpu", "BackpressureMetalSharedEvent::HasCompleted");
-      for (const auto& e : events) {
-        if (!e->HasCompleted()) {
-          events_complete = false;
-          break;
-        }
-      }
-    }
-    if (!events_complete) {
-      base::PlatformThread::Sleep(base::Milliseconds(1));
-    }
-  }
-
-  if (fence) {
-    fence->ClientWait();
-    fence.reset();
-  }
-
-  // Waiting on |fence_id| has implicitly waited on all previous fences, so
-  // remove them.
-  while (!backpressure_fences_.empty() &&
-         backpressure_fences_.begin()->first < fence_id) {
-    backpressure_fences_.erase(backpressure_fences_.begin());
-  }
-}
-
-bool GLContext::HasBackpressureFences() const {
-  return !backpressure_fences_.empty();
-}
-
-void GLContext::DestroyBackpressureFences() {
-  backpressure_fences_.clear();
-}
-#endif
 
 #if BUILDFLAG(IS_MAC)
 void GLContext::FlushForDriverCrashWorkaround() {
@@ -409,8 +323,8 @@ GLContext* GLContext::GetRealCurrent() {
 }
 
 void GLContext::OnContextWillDestroy() {
-  DCHECK(!has_called_on_destory_);
-  has_called_on_destory_ = true;
+  DCHECK(!has_called_on_destroy_);
+  has_called_on_destroy_ = true;
 
   observer_list_.Notify(&GLContextObserver::OnGLContextWillDestroy, this);
 }
@@ -484,7 +398,8 @@ void GLContext::InitializeDynamicBindings() {
       real_gl_api_->set_version(GenerateGLVersionInfo());
     }
 
-    driver_gl_->InitializeDynamicBindings(GetVersionInfo(), GetExtensions());
+    driver_gl_->InitializeDynamicBindings(GetGLProcAddress, GetVersionInfo(),
+                                          GetExtensions());
     dynamic_bindings_initialized_ = true;
   }
 }
@@ -527,12 +442,25 @@ bool GLContext::MakeVirtuallyCurrent(
 #endif
 
     // Set all state that is different from the real state
+    GLStateRestorer* current_state =
+        current_virtual_context_ && !current_virtual_context_->context_lost_
+            ? current_virtual_context_->GetGLStateRestorer()
+            : nullptr;
+
+    // Newly created virtual contexts call MakeVirtuallyCurrent before
+    // their command decoder and state restorer are fully initialized.
+    // Separately ensure that transform feedback is paused on the
+    // current context before switching to the newly created one.
+    // TransformFeedback::DoBindTransformFeedback will ensure it's
+    // resumed when coming back to the current context.
+    if (current_state &&
+        !virtual_context->GetGLStateRestorer()->IsInitialized()) {
+      current_state->PauseTransformFeedback();
+      current_state->PauseQueries();
+    }
+
     if (virtual_context->GetGLStateRestorer()->IsInitialized()) {
       GLStateRestorer* virtual_state = virtual_context->GetGLStateRestorer();
-      GLStateRestorer* current_state =
-          current_virtual_context_ && !current_virtual_context_->context_lost_
-              ? current_virtual_context_->GetGLStateRestorer()
-              : nullptr;
       if (current_state)
         current_state->PauseQueries();
       virtual_state->ResumeQueries();

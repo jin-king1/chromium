@@ -38,7 +38,7 @@ class VIZ_SERVICE_EXPORT SkiaOutputDeviceBufferQueue : public SkiaOutputDevice {
       std::unique_ptr<OutputPresenter> presenter,
       SkiaOutputSurfaceDependency* deps,
       gpu::SharedImageRepresentationFactory* representation_factory,
-      gpu::MemoryTracker* memory_tracker,
+      scoped_refptr<gpu::MemoryTracker> memory_tracker,
       const DidSwapBufferCompleteCallback& did_swap_buffer_complete_callback,
       const ReleaseOverlaysCallback& release_overlays_callback);
 
@@ -53,7 +53,6 @@ class VIZ_SERVICE_EXPORT SkiaOutputDeviceBufferQueue : public SkiaOutputDevice {
                BufferPresentedCallback feedback,
                OutputSurfaceFrame frame) override;
   bool Reshape(const ReshapeParams& params) override;
-  void SetViewportSize(const gfx::Size& viewport_size) override;
   SkSurface* BeginPaint(
       std::vector<GrBackendSemaphore>* end_semaphores) override;
   void EndPaint() override;
@@ -61,7 +60,7 @@ class VIZ_SERVICE_EXPORT SkiaOutputDeviceBufferQueue : public SkiaOutputDevice {
   void ScheduleOverlays(SkiaOutputSurface::OverlayList overlays) override;
 
   // SkiaOutputDevice override
-  void SetVSyncDisplayID(int64_t display_id) override;
+  void SetVSyncDisplayID(int64_t display_id, bool force_update) override;
 
   base::OneShotTimer& OverlaysReclaimTimerForTesting() {
     return reclaim_overlays_timer_;
@@ -98,7 +97,6 @@ class VIZ_SERVICE_EXPORT SkiaOutputDeviceBufferQueue : public SkiaOutputDevice {
   // Format of images
   gfx::ColorSpace color_space_;
   gfx::Size image_size_;
-  gfx::Size viewport_size_;
   gfx::OverlayTransform overlay_transform_ = gfx::OVERLAY_TRANSFORM_NONE;
 
   // Mailboxes of scheduled overlays for the next SwapBuffers call.

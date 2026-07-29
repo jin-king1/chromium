@@ -19,9 +19,9 @@
 #include "chrome/browser/task_manager/task_manager_tester.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
-#include "chrome/browser/ui/browser_dialogs.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/dialogs/browser_dialogs.h"
 #include "chrome/browser/ui/tab_contents/tab_contents_iterator.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/task_manager/task_manager_columns.h"
@@ -34,6 +34,7 @@
 #include "components/prefs/pref_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
 #include "components/sessions/content/session_tab_helper.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_delegate.h"
 #include "content/public/test/browser_test.h"
@@ -46,6 +47,7 @@
 #include "ui/display/screen.h"
 #include "ui/events/test/event_generator.h"
 #include "ui/views/controls/table/table_view.h"
+#include "ui/views/test/widget_activation_waiter.h"
 #include "ui/views/test/widget_test.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -87,7 +89,7 @@ class TaskManagerViewTest : public InProcessBrowserTest {
     return GetView() ? GetView()->tab_table_.get() : nullptr;
   }
 
-  void PressKillButton() { GetView()->Accept(); }
+  void PressKillButton() { GetView()->AcceptDialog(); }
 
   void ClearStoredColumnSettings() const {
     PrefService* local_state = g_browser_process->local_state();
@@ -107,10 +109,14 @@ class TaskManagerViewTest : public InProcessBrowserTest {
 
   // Looks up a tab based on its tab ID.
   content::WebContents* FindWebContentsByTabId(SessionID tab_id) {
-    auto& all_tabs = AllTabContentses();
-    auto it = std::ranges::find(all_tabs, tab_id,
-                                &sessions::SessionTabHelper::IdForTab);
-    return (it == all_tabs.end()) ? nullptr : *it;
+    content::WebContents* found = nullptr;
+    tabs::ForEachTabInterface([tab_id, &found](tabs::TabInterface* tab) {
+      if (sessions::SessionTabHelper::IdForTab(tab->GetContents()) == tab_id) {
+        found = tab->GetContents();
+      }
+      return !found;
+    });
+    return found;
   }
 
   // Returns the current TaskManagerTableModel index for a particular tab. Don't
@@ -164,15 +170,11 @@ IN_PROC_BROWSER_TEST_F(TaskManagerViewTest,
   ASSERT_TRUE(table);
 
   // Table should be sorted on the CPU column by default in descending order.
-  if (base::FeatureList::IsEnabled(features::kTaskManagerDesktopRefresh)) {
-    EXPECT_TRUE(table->GetIsSorted());
-    EXPECT_EQ(table->sort_descriptors().size(), 1u);
-    EXPECT_EQ(table->sort_descriptors()[0].column_id,
-              IDS_TASK_MANAGER_CPU_COLUMN);
-    EXPECT_FALSE(table->sort_descriptors()[0].ascending);
-  } else {
-    EXPECT_FALSE(table->GetIsSorted());
-  }
+  EXPECT_TRUE(table->GetIsSorted());
+  EXPECT_EQ(table->sort_descriptors().size(), 1u);
+  EXPECT_EQ(table->sort_descriptors()[0].column_id,
+            IDS_TASK_MANAGER_CPU_COLUMN);
+  EXPECT_FALSE(table->sort_descriptors()[0].ascending);
 
   for (size_t i = 0; i < kColumnsSize; ++i) {
     EXPECT_EQ(kColumns[i].default_visibility,
@@ -192,8 +194,7 @@ IN_PROC_BROWSER_TEST_F(TaskManagerViewTest, ColumnsSettingsAreRestored) {
   ASSERT_TRUE(table);
 
   // Table should be sorted on the CPU column by default in descending order.
-  EXPECT_EQ(table->GetIsSorted(),
-            base::FeatureList::IsEnabled(features::kTaskManagerDesktopRefresh));
+  EXPECT_TRUE(table->GetIsSorted());
   // Toggle the visibility of all columns.
   for (size_t i = 0; i < kColumnsSize; ++i) {
     EXPECT_EQ(kColumns[i].default_visibility,
@@ -254,8 +255,7 @@ IN_PROC_BROWSER_TEST_F(TaskManagerViewTest, HideAllColumnsAndRestored) {
   views::TableView* table = GetTable();
   ASSERT_TRUE(table);
 
-  EXPECT_EQ(table->GetIsSorted(),
-            base::FeatureList::IsEnabled(features::kTaskManagerDesktopRefresh));
+  EXPECT_TRUE(table->GetIsSorted());
 
   // hide all visible columns except IDS_TASK_MANAGER_TASK_COLUMN
   int task_column_index = -1;
@@ -326,7 +326,7 @@ IN_PROC_BROWSER_TEST_F(TaskManagerViewTest, InitialSelection) {
             FindRowForTab(browser()->tab_strip_model()->GetWebContentsAt(0)));
 }
 
-// Test is flaky. https://crbug.com/998403
+// Test is flaky. https://crbug.com/41478531
 IN_PROC_BROWSER_TEST_F(TaskManagerViewTest, DISABLED_SelectionConsistency) {
   ASSERT_NO_FATAL_FAILURE(ClearStoredColumnSettings());
 
@@ -448,9 +448,9 @@ IN_PROC_BROWSER_TEST_F(TaskManagerViewTest, RestoreBounds) {
             GetView()->GetWidget()->GetWindowBoundsInScreen());
 
   // Also make sure that the task manager is not restored off-screen.
-  // This is a regression test for https://crbug.com/308606
+  // This is a regression test for https://crbug.com/41066496
   display::Display display =
-      display::Screen::GetScreen()->GetDisplayMatching(non_default_bounds);
+      display::Screen::Get()->GetDisplayMatching(non_default_bounds);
   const gfx::Rect offscreen_bounds =
       default_bounds + gfx::Vector2d(0, display.bounds().bottom());
   GetView()->GetWidget()->SetBounds(offscreen_bounds);
@@ -473,6 +473,18 @@ IN_PROC_BROWSER_TEST_F(TaskManagerViewTest, CloseByAccelerator) {
   EXPECT_TRUE(GetView()->GetWidget()->IsClosed());
 }
 
+#if BUILDFLAG(IS_WIN)
+IN_PROC_BROWSER_TEST_F(TaskManagerViewTest, CloseByAcceleratorOnWindows) {
+  chrome::ShowTaskManager(browser());
+
+  EXPECT_FALSE(GetView()->GetWidget()->IsClosed());
+
+  GetView()->AcceleratorPressed(ui::Accelerator(ui::VKEY_F4, ui::EF_ALT_DOWN));
+
+  EXPECT_TRUE(GetView()->GetWidget()->IsClosed());
+}
+#endif  // BUILDFLAG(IS_WIN)
+
 #if BUILDFLAG(IS_CHROMEOS)
 IN_PROC_BROWSER_TEST_F(TaskManagerViewTest, AppType) {
   chrome::ShowTaskManager(browser());
@@ -482,5 +494,88 @@ IN_PROC_BROWSER_TEST_F(TaskManagerViewTest, AppType) {
                 chromeos::kAppTypeKey));
 }
 #endif  // BUILDFLAG(IS_CHROMEOS)
+
+// Tests generally if focusing the TableView in Task Manager will auto-select
+// the first row.
+IN_PROC_BROWSER_TEST_F(TaskManagerViewTest, AutoSelectFirstRowOnTableFocus) {
+  chrome::ShowTaskManager(browser());
+
+  views::TableView* table = GetTable();
+  ASSERT_TRUE(table);
+  ASSERT_NO_FATAL_FAILURE(
+      WaitForTaskManagerRows(1, browsertest_util::MatchAnyTab()));
+  ASSERT_GT(table->GetRowCount(), 0u);
+
+  // Clear existing selection entirely, as well as the focus.
+  table->Select(std::nullopt);
+  EXPECT_FALSE(table->selection_model().active().has_value());
+  EXPECT_FALSE(table->GetFirstSelectedRow().has_value());
+  table->GetFocusManager()->ClearFocus();
+  EXPECT_FALSE(table->HasFocus());
+
+  // Wait for the widget to be active before requesting focus.
+  views::test::WaitForWidgetActive(table->GetWidget(), true);
+
+  // Focus the table. This should trigger OnViewFocused() and auto-select row 0.
+  table->RequestFocus();
+
+  EXPECT_TRUE(table->HasFocus());
+  EXPECT_EQ(table->ViewToModel(0), table->GetFirstSelectedRow());
+  EXPECT_EQ(table->ViewToModel(0), table->selection_model().active());
+}
+
+// Tests that the first visual row (not just a model row) is selected. This is
+// required because rows can be sorted so `row 0 != visual row 0` all the time.
+IN_PROC_BROWSER_TEST_F(TaskManagerViewTest,
+                       AutoSelectFirstRowOnTableFocusSorted) {
+  ASSERT_NO_FATAL_FAILURE(ClearStoredColumnSettings());
+
+  // Open two tabs so we have some rows that can be sorted.
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL("a.com", "/title3.html")));
+  ui_test_utils::NavigateToURLWithDisposition(
+      browser(), embedded_test_server()->GetURL("b.com", "/title2.html"),
+      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
+
+  chrome::ShowTaskManager(browser());
+  views::TableView* table = GetTable();
+  ASSERT_TRUE(table);
+
+  ASSERT_NO_FATAL_FAILURE(
+      WaitForTaskManagerRows(2, browsertest_util::MatchAnyTab()));
+  ASSERT_GT(table->GetRowCount(), 0u);
+
+  // Sort by Task column ascending, so that the view and model indices do not
+  // match.
+  int task_col_idx = -1;
+  for (size_t i = 0; i < table->visible_columns().size(); ++i) {
+    if (table->visible_columns()[i].column.id == IDS_TASK_MANAGER_TASK_COLUMN) {
+      task_col_idx = i;
+      break;
+    }
+  }
+  ASSERT_GE(task_col_idx, 0);
+  table->ToggleSortOrder(task_col_idx);  // Ascending
+
+  // Clear existing selection entirely, as well as the focus.
+  table->Select(std::nullopt);
+  EXPECT_FALSE(table->selection_model().active().has_value());
+  EXPECT_FALSE(table->GetFirstSelectedRow().has_value());
+  table->GetFocusManager()->ClearFocus();
+  EXPECT_FALSE(table->HasFocus());
+
+  // Wait for the widget to be active before requesting focus.
+  views::test::WaitForWidgetActive(table->GetWidget(), true);
+
+  // Focus the table. This should trigger OnViewFocused() and auto-select row 0
+  // in the view.
+  table->RequestFocus();
+
+  EXPECT_TRUE(table->HasFocus());
+  EXPECT_TRUE(table->GetFirstSelectedRow().has_value());
+  EXPECT_EQ(table->ViewToModel(0), table->GetFirstSelectedRow());
+  EXPECT_EQ(table->ViewToModel(0), table->selection_model().active());
+}
 
 }  // namespace task_manager

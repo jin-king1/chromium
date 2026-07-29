@@ -29,7 +29,7 @@
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/contextual_sheet_commands.h"
-#import "ios/chrome/browser/shared/public/commands/price_notifications_commands.h"
+#import "ios/chrome/browser/shared/public/commands/price_tracked_items_commands.h"
 #import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
 #import "ios/chrome/grit/ios_branded_strings.h"
 #import "ios/chrome/grit/ios_strings.h"
@@ -335,9 +335,7 @@ NSDate* getNSDateFromString(std::string date) {
 // Callback invoked when the user chooses to open settings.
 - (void)onPushNotificationSettings {
   NSString* settingURL = UIApplicationOpenSettingsURLString;
-  if (@available(iOS 15.4, *)) {
-    settingURL = UIApplicationOpenNotificationSettingsURLString;
-  }
+  settingURL = UIApplicationOpenNotificationSettingsURLString;
 
   [[UIApplication sharedApplication] openURL:[NSURL URLWithString:settingURL]
                                      options:{}
@@ -351,8 +349,8 @@ NSDate* getNSDateFromString(std::string date) {
 // Callback invoked when the notification snackbar closes.
 - (void)onPriceNotificationSnackBarClosed {
   CommandDispatcher* dispatcher = self.browser->GetCommandDispatcher();
-  __weak id<PriceNotificationsCommands> weakPriceNotificationsHandler =
-      HandlerForProtocol(dispatcher, PriceNotificationsCommands);
+  __weak id<PriceTrackedItemsCommands> weakPriceNotificationsHandler =
+      HandlerForProtocol(dispatcher, PriceTrackedItemsCommands);
   __weak id<ContextualSheetCommands> weakContextualSheetHandler =
       HandlerForProtocol(dispatcher, ContextualSheetCommands);
 
@@ -361,7 +359,7 @@ NSDate* getNSDateFromString(std::string date) {
       "IOS.ContextualPanel.DismissedReason",
       ContextualPanelDismissedReason::BlockInteraction);
   [weakContextualSheetHandler closeContextualSheet];
-  [weakPriceNotificationsHandler showPriceNotifications];
+  [weakPriceNotificationsHandler showPriceTrackedItemsWithCurrentPage];
 }
 
 @end

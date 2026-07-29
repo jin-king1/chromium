@@ -2,17 +2,22 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "extensions/browser/api/web_request/upload_data_presenter.h"
+
 #include <stddef.h>
 
 #include <string_view>
 #include <utility>
 
 #include "base/containers/span.h"
+#include "base/strings/string_view_util.h"
 #include "base/values.h"
-#include "extensions/browser/api/web_request/upload_data_presenter.h"
 #include "extensions/browser/api/web_request/web_request_api_constants.h"
+#include "extensions/buildflags/buildflags.h"
 #include "net/base/upload_bytes_element_reader.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace keys = extension_web_request_api_constants;
 
@@ -27,9 +32,9 @@ TEST(WebRequestUploadDataPresenterTest, ParsedData) {
   net::UploadBytesElementReader element(base::byte_span_from_cstring(block));
 
   // Expected output.
-  base::Value::List values;
+  base::ListValue values;
   values.Append("value");
-  base::Value::Dict expected_form;
+  base::DictValue expected_form;
   expected_form.Set("key.with.dots", std::move(values));
 
   // Real output.
@@ -53,7 +58,7 @@ TEST(WebRequestUploadDataPresenterTest, RawData) {
   base::Value expected_b(kFilename);
   base::Value expected_c(block2);
 
-  base::Value::List expected_list;
+  base::ListValue expected_list;
   subtle::AppendKeyValuePair(keys::kRequestBodyRawBytesKey,
                              std::move(expected_a), expected_list);
   subtle::AppendKeyValuePair(keys::kRequestBodyRawFileKey,

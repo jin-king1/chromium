@@ -4,6 +4,7 @@
 
 #include "components/page_load_metrics/browser/observers/third_party_metrics_observer.h"
 
+#include "base/byte_size.h"
 #include "base/memory/ptr_util.h"
 #include "components/page_load_metrics/browser/observers/page_load_metrics_observer_content_test_harness.h"
 #include "components/page_load_metrics/browser/page_load_tracker.h"
@@ -13,6 +14,7 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/navigation_simulator.h"
 #include "content/public/test/test_renderer_host.h"
+#include "net/base/load_timing_info.h"
 #include "net/cookies/canonical_cookie.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
@@ -379,10 +381,11 @@ TEST_P(ThirdPartyMetricsObserverTest,
       main_rfh()->GetFrameTreeNodeId();
   tester()->SimulateLoadedResource(
       {url::SchemeHostPort(GURL("https://bar.test")), net::IPEndPoint(),
-       frame_tree_node_id, false /* was_cached */,
-       1024 * 20 /* raw_body_bytes */, 0 /* original_network_content_length */,
+       frame_tree_node_id, /*was_cached=*/false,
+       /*raw_body_bytes=*/base::KiBU(20),
+       /*original_network_content_length=*/base::ByteSize(0),
        network::mojom::RequestDestination::kFont, 0,
-       nullptr /* load_timing_info */},
+       /*load_timing_info=*/nullptr},
       content::GlobalRequestID());
 
   // Navigate again to force histogram recording.
@@ -418,10 +421,11 @@ TEST_P(ThirdPartyMetricsObserverTest,
       main_rfh()->GetFrameTreeNodeId();
   tester()->SimulateLoadedResource(
       {url::SchemeHostPort(GURL("http://b.foo.test")), net::IPEndPoint(),
-       frame_tree_node_id, false /* was_cached */,
-       1024 * 20 /* raw_body_bytes */, 0 /* original_network_content_length */,
+       frame_tree_node_id, /*was_cached=*/false,
+       /*raw_body_bytes=*/base::KiBU(20),
+       /*original_network_content_length=*/base::ByteSize(0),
        network::mojom::RequestDestination::kFont, 0,
-       nullptr /* load_timing_info */},
+       /*load_timing_info=*/nullptr},
       content::GlobalRequestID());
 
   // Navigate again to force histogram recording.
@@ -452,10 +456,11 @@ TEST_P(ThirdPartyMetricsObserverTest,
       main_rfh()->GetFrameTreeNodeId();
   tester()->SimulateLoadedResource(
       {url::SchemeHostPort(GURL("https://bar.test")), net::IPEndPoint(),
-       frame_tree_node_id, false /* was_cached */,
-       1024 * 20 /* raw_body_bytes */, 0 /* original_network_content_length */,
+       frame_tree_node_id, /*was_cached=*/false,
+       /*raw_body_bytes=*/base::KiBU(20),
+       /*original_network_content_length=*/base::ByteSize(0),
        network::mojom::RequestDestination::kFont, 0,
-       nullptr /* load_timing_info */},
+       /*load_timing_info=*/nullptr},
       content::GlobalRequestID());
 
   // Navigate again to force histogram recording.

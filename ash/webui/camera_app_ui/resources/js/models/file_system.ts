@@ -6,19 +6,12 @@ import {assert} from '../assert.js';
 import {isFileSystemDirectoryHandle} from '../util.js';
 import {WaitableEvent} from '../waitable_event.js';
 
-import {
-  DOCUMENT_PREFIX,
-  IMAGE_PREFIX,
-  VIDEO_PREFIX,
-} from './file_namer.js';
-import {
-  DirectoryAccessEntry,
-  DirectoryAccessEntryImpl,
-  FileAccessEntry,
-} from './file_system_access_entry.js';
+import {DOCUMENT_PREFIX, IMAGE_PREFIX, VIDEO_PREFIX} from './file_namer.js';
+import type {DirectoryAccessEntry, FileAccessEntry} from './file_system_access_entry.js';
+import {DirectoryAccessEntryImpl} from './file_system_access_entry.js';
 import * as idb from './idb.js';
 import {getMaybeLazyDirectory} from './lazy_directory_entry.js';
-import {isLocalDev} from './load_time_data.js';
+import {getPathRelativeToRoot, isLocalDev} from './load_time_data.js';
 
 
 /**
@@ -102,8 +95,8 @@ async function initCameraDirectory(): Promise<DirectoryAccessEntry> {
     });
   }
   const dir = await handle.wait();
-  const myFilesDir = new DirectoryAccessEntryImpl(dir);
-  return getMaybeLazyDirectory(myFilesDir, 'Camera');
+  const rootDir = new DirectoryAccessEntryImpl(dir);
+  return getMaybeLazyDirectory(rootDir, getPathRelativeToRoot());
 }
 
 /**

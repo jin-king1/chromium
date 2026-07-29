@@ -4,6 +4,7 @@
 
 #include "third_party/blink/renderer/modules/push_messaging/push_messaging_bridge.h"
 
+#include "base/task/single_thread_task_runner.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_permission_state.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_push_subscription_options_init.h"
 #include "third_party/blink/renderer/core/dom/dom_exception.h"
@@ -77,8 +78,8 @@ ScriptPromise<V8PermissionState> PushMessagingBridge::GetPermissionState(
 
   permission_service_->HasPermission(
       CreatePermissionDescriptor(mojom::blink::PermissionName::NOTIFICATIONS),
-      WTF::BindOnce(&PushMessagingBridge::DidGetPermissionState,
-                    WrapPersistent(this), WrapPersistent(resolver)));
+      BindOnce(&PushMessagingBridge::DidGetPermissionState,
+               WrapPersistent(this), WrapPersistent(resolver)));
 
   return promise;
 }
@@ -90,8 +91,8 @@ void PushMessagingBridge::Trace(Visitor* visitor) const {
 
 void PushMessagingBridge::DidGetPermissionState(
     ScriptPromiseResolver<V8PermissionState>* resolver,
-    mojom::blink::PermissionStatus status) {
-  resolver->Resolve(ToV8PermissionState(status));
+    mojom::blink::PermissionStatusWithDetailsPtr result) {
+  resolver->Resolve(ToV8PermissionState(result->status));
 }
 
 }  // namespace blink

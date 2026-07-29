@@ -10,7 +10,6 @@
 #include "ash/wm/window_positioning_utils.h"
 #include "ash/wm/window_util.h"
 #include "base/functional/bind.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/time/time.h"
 #include "chromeos/ui/frame/caption_buttons/frame_caption_button_container_view.h"
@@ -94,7 +93,9 @@ WindowResizer::WindowResizer(WindowState* window_state)
   DCHECK(window_state_->drag_details());
 }
 
-WindowResizer::~WindowResizer() = default;
+WindowResizer::~WindowResizer() {
+  CHECK_EQ(delete_block_count_, 0u);
+}
 
 // static
 int WindowResizer::GetBoundsChangeForWindowComponent(int component) {
@@ -187,7 +188,7 @@ gfx::Rect WindowResizer::CalculateBoundsForDrag(
   // has to come first since it might have an impact on the origin as well as
   // on the size.
   if (details().bounds_change & kBoundsChange_Resizes) {
-    gfx::Rect work_area = display::Screen::GetScreen()
+    gfx::Rect work_area = display::Screen::Get()
                               ->GetDisplayNearestWindow(GetTarget())
                               .work_area();
     ::wm::ConvertRectFromScreen(GetTarget()->parent(), &work_area);
@@ -240,7 +241,7 @@ gfx::Rect WindowResizer::CalculateBoundsForDrag(
     // Use a pointer location (matching the logic in DragWindowResizer) to
     // calculate the target display after the drag.
     const display::Display& display =
-        display::Screen::GetScreen()->GetDisplayMatching(near_passed_location);
+        display::Screen::Get()->GetDisplayMatching(near_passed_location);
     gfx::Rect screen_work_area = display.work_area();
     screen_work_area.Inset(gfx::Insets::VH(0, kMinimumOnScreenArea));
     gfx::Rect new_bounds_in_screen(new_bounds);
@@ -261,6 +262,8 @@ gfx::Rect WindowResizer::CalculateBoundsForDrag(
 void WindowResizer::SetBoundsDuringResize(const gfx::Rect& bounds) {
   aura::Window* window = GetTarget();
   DCHECK(window);
+
+  aura::Window::ScopedDeleteBlocker blocker(window);
 
   auto ptr = weak_ptr_factory_.GetWeakPtr();
   const gfx::Size original_size = window->bounds().size();
@@ -449,7 +452,7 @@ int WindowResizer::GetWidthForDrag(int min_width, int* delta_x) const {
     }
 
     // And don't let the window go bigger than the display.
-    int max_width = display::Screen::GetScreen()
+    int max_width = display::Screen::Get()
                         ->GetDisplayNearestWindow(GetTarget())
                         .bounds()
                         .width();
@@ -484,7 +487,7 @@ int WindowResizer::GetHeightForDrag(int min_height, int* delta_y) const {
     }
 
     // And don't let the window go bigger than the display.
-    int max_height = display::Screen::GetScreen()
+    int max_height = display::Screen::Get()
                          ->GetDisplayNearestWindow(GetTarget())
                          .bounds()
                          .height();

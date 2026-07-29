@@ -12,6 +12,7 @@
 #include "ash/wm/float/float_controller.h"
 #include "ash/wm/pip/pip_controller.h"
 #include "ash/wm/screen_pinning_controller.h"
+#include "ash/wm/snap_group/snap_group_controller.h"
 #include "ash/wm/splitview/split_view_metrics_controller.h"
 #include "ash/wm/window_positioning_utils.h"
 #include "ash/wm/window_state_delegate.h"
@@ -41,6 +42,7 @@ namespace ash {
 namespace {
 
 using ::chromeos::WindowStateType;
+using enum WindowSnapGrouping;
 
 // When a window that has restore bounds at least as large as a work area is
 // unmaximized, inset the bounds slightly so that they are not exactly the same.
@@ -104,13 +106,13 @@ void EnsureWindowInCorrectDisplay(WindowState* window_state,
   // TODO(oshima): Restore information should contain the
   // work area information like WindowResizer does for the
   // last window location.
-  gfx::Rect display_area = display::Screen::GetScreen()
+  gfx::Rect display_area = display::Screen::Get()
                                ->GetDisplayNearestWindow(window_state->window())
                                .bounds();
 
   if (!display_area.Intersects(window_bounds)) {
     int64_t display_id =
-        display::Screen::GetScreen()->GetDisplayMatching(window_bounds).id();
+        display::Screen::Get()->GetDisplayMatching(window_bounds).id();
     MoveWindowToDisplayAsNeeded(window_state->window(), display_id);
   }
 }
@@ -135,12 +137,31 @@ bool ShouldEnterNextState(WindowStateType current_state,
   return false;
 }
 
+GroupedWindowStateType Grouped(chromeos::WindowStateType type) {
+  switch (type) {
+    case chromeos::WindowStateType::kPrimarySnapped:
+      return GroupedWindowStateType::kPrimarySnapped;
+    case chromeos::WindowStateType::kSecondarySnapped:
+      return GroupedWindowStateType::kSecondarySnapped;
+    default:
+      NOTREACHED() << "invalid type for grouping";
+  }
+}
+
 }  // namespace
 
 DefaultState::DefaultState(WindowStateType initial_state_type)
     : BaseState(initial_state_type) {}
 
 DefaultState::~DefaultState() = default;
+
+void DefaultState::OnWMEvent(WindowState* window_state, const WMEvent* event) {
+  // A window state change should not lead to the window destruction.
+  // It is the caller's responsibility to delete the window in a safe way
+  // after the transition is completed if necessary (crbug.com/513489429).
+  aura::Window::ScopedDeleteBlocker blocker(window_state->window());
+  BaseState::OnWMEvent(window_state, event);
+}
 
 void DefaultState::AttachState(WindowState* window_state,
                                WindowState::State* state_in_previous_mode) {
@@ -161,8 +182,7 @@ void DefaultState::AttachState(WindowState* window_state,
   // If the display has changed while in the another mode,
   // we need to let windows know the change.
   display::Display current_display =
-      display::Screen::GetScreen()->GetDisplayNearestWindow(
-          window_state->window());
+      display::Screen::Get()->GetDisplayNearestWindow(window_state->window());
   if (stored_display_state_.bounds() != current_display.bounds()) {
     const DisplayMetricsChangedWMEvent event(
         display::DisplayObserver::DISPLAY_METRIC_BOUNDS);
@@ -184,8 +204,8 @@ void DefaultState::DetachState(WindowState* window_state) {
   // while in the other mode, we can perform necessary action to
   // restore the window state to the proper state for the current
   // display.
-  stored_display_state_ = display::Screen::GetScreen()->GetDisplayNearestWindow(
-      window_state->window());
+  stored_display_state_ =
+      display::Screen::Get()->GetDisplayNearestWindow(window_state->window());
 }
 
 void DefaultState::HandleWorkspaceEvents(WindowState* window_state,
@@ -379,6 +399,7 @@ void DefaultState::HandleTransitionEvents(WindowState* window_state,
   WindowStateType current_state_type = window_state->GetStateType();
   WindowStateType next_state_type =
       GetStateForTransitionEvent(window_state, event);
+
   if (event->IsPinEvent()) {
     // If there already is a pinned window, it is not allowed to set it
     // to this window.
@@ -392,16 +413,30 @@ void DefaultState::HandleTransitionEvents(WindowState* window_state,
   }
 
   const WMEventType type = event->type();
+
   // Not all windows can be floated.
   if (type == WM_EVENT_FLOAT &&
       !chromeos::wm::CanFloatWindow(window_state->window())) {
     return;
   }
 
-  if ((type == WM_EVENT_SNAP_PRIMARY || type == WM_EVENT_SNAP_SECONDARY) &&
-      window_state->CanSnap()) {
-    HandleWindowSnapping(window_state, type,
-                         event->AsSnapEvent()->snap_action_source());
+  if (IsSnappedWindowStateType(next_state_type) && window_state->CanSnap()) {
+    WMEventType snap_event_type;
+    WindowSnapActionSource snap_action_source;
+    if (event->IsSnapEvent()) {
+      snap_action_source = event->AsSnapEvent()->snap_action_source();
+      snap_event_type = type;
+    } else {
+      CHECK(type == WM_EVENT_RESTORE ||
+            type == WM_EVENT_NORMAL && window_state->window()->GetProperty(
+                                           aura::client::kIsRestoringKey));
+      snap_action_source = WindowSnapActionSource::kSnapByWindowStateRestore;
+      snap_event_type = next_state_type == WindowStateType::kPrimarySnapped
+                            ? WM_EVENT_SNAP_PRIMARY
+                            : WM_EVENT_SNAP_SECONDARY;
+    }
+    window_state->RecordWindowSnapActionSource(snap_action_source);
+    HandleWindowSnapping(window_state, snap_event_type, snap_action_source);
   }
 
   if (next_state_type == current_state_type && window_state->IsSnapped()) {
@@ -414,20 +449,6 @@ void DefaultState::HandleTransitionEvents(WindowState* window_state,
                                        *window_state->snap_ratio());
     window_state->SetBoundsDirectAnimated(snapped_bounds);
     return;
-  }
-
-  if (IsSnappedWindowStateType(next_state_type)) {
-    const bool is_restoring =
-        window_state->window()->GetProperty(aura::client::kIsRestoringKey) ||
-        type == WM_EVENT_RESTORE;
-    if (is_restoring) {
-      window_state->RecordWindowSnapActionSource(
-          WindowSnapActionSource::kSnapByWindowStateRestore);
-    } else {
-      CHECK(event->IsSnapEvent());
-      window_state->RecordWindowSnapActionSource(
-          event->AsSnapEvent()->snap_action_source());
-    }
   }
 
   std::optional<chromeos::FloatStartLocation> float_start_location =
@@ -494,16 +515,23 @@ void DefaultState::EnterToNextState(
     return;
   }
 
+  auto* snap_group_controller = SnapGroupController::Get();
+  auto* window = window_state->window();
+
   const bool is_previous_normal_type =
       window_state->IsNonVerticalOrHorizontalMaximizedNormalState();
-  WindowStateType previous_state_type = state_type_;
-  state_type_ = next_state_type;
+  const WindowStateType previous_state_type = state_type_;
+  const ExtendedWindowStateType ext_previous_state_type =
+      (snap_group_controller &&
+       snap_group_controller->GetSnapGroupForGivenWindow(window))
+          ? Grouped(previous_state_type)
+          : ExtendedWindowStateType(previous_state_type);
 
+  state_type_ = next_state_type;
   window_state->UpdateWindowPropertiesFromStateType();
   window_state->NotifyPreStateTypeChange(previous_state_type);
 
   auto* const float_controller = Shell::Get()->float_controller();
-  auto* window = window_state->window();
   if (state_type_ == WindowStateType::kFloated) {
     DCHECK_EQ(next_state_type, WindowStateType::kFloated);
     // Add window to float container.
@@ -543,14 +571,14 @@ void DefaultState::EnterToNextState(
                           float_start_location);
     UpdateMinimizedState(window_state, previous_state_type);
   }
-  window_state->NotifyPostStateTypeChange(previous_state_type);
+  window_state->NotifyPostStateTypeChange(ext_previous_state_type);
 
   if (!restore_bounds_in_screen.IsEmpty()) {
     // Set the restore bounds back after unminimize the window to normal state.
     // Usually normal state window should have no restore bounds unless it was
     // horizontal/vertical maximized before minimize.
     window_state->SetRestoreBoundsInScreen(restore_bounds_in_screen);
-  } else if (window_state->window_state_restore_history().empty()) {
+  } else if (window_state->IsRestoreHistoryEmpty()) {
     // Clear the restore bounds when restore history stack has been cleared to
     // keep them consistent. Do this after window state updates as restore
     // history stack will be updated during the process.
@@ -623,9 +651,7 @@ void DefaultState::UpdateBoundsFromState(
           window_state->window(), state_type_, *window_state->snap_ratio());
       base::UmaHistogramEnumeration(
           kSnapWindowDeviceOrientationHistogramName,
-          display::Screen::GetScreen()
-                  ->GetDisplayNearestWindow(window)
-                  .is_landscape()
+          display::Screen::Get()->GetDisplayNearestWindow(window).is_landscape()
               ? SplitViewMetricsController::DeviceOrientation::kLandscape
               : SplitViewMetricsController::DeviceOrientation::kPortrait);
       break;
@@ -664,7 +690,7 @@ void DefaultState::UpdateBoundsFromState(
 
     case WindowStateType::kFullscreen:
     case WindowStateType::kPinned:
-    case WindowStateType::kTrustedPinned:
+    case WindowStateType::kLockedFullscreen:
       MoveWindowToDisplayAsNeeded(window_state->window(),
                                   window_state->GetFullscreenTargetDisplayId());
       bounds_in_parent = screen_util::GetFullscreenWindowBoundsInParent(window);

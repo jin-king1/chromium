@@ -12,6 +12,7 @@ import androidx.annotation.IntDef;
 
 import org.chromium.autofill.mojom.SubmissionSource;
 import org.chromium.base.ContextUtils;
+import org.chromium.base.Log;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -21,19 +22,20 @@ import java.lang.annotation.RetentionPolicy;
 import java.util.concurrent.TimeUnit;
 
 /**
- * The class for AutofillProvider-related UMA. Note that most of the concrete histogram
- * names include "WebView"; when this class was originally developed it was WebView-specific,
- * and when generalizing it we did not change these names to maintain continuity when
- * analyzing the histograms.
+ * The class for AutofillProvider-related UMA. Note that most of the concrete histogram names
+ * include "WebView"; when this class was originally developed it was WebView-specific, and when
+ * generalizing it we did not change these names to maintain continuity when analyzing the
+ * histograms.
  */
 @NullMarked
 public class AutofillProviderUMA {
+    public static final String TAG = "AutofillProvider"; // Part of the provider.
+
     // Records whether the Autofill service is enabled or not.
     public static final String UMA_AUTOFILL_ENABLED = "Autofill.WebView.Enabled";
 
-    // Records whether the Autofill provider is created by activity context or not.
-    public static final String UMA_AUTOFILL_CREATED_BY_ACTIVITY_CONTEXT =
-            "Autofill.WebView.CreatedByActivityContext";
+    public static final String UMA_AUTOFILL_CREATION_CONTEXT =
+            "Autofill.ThirdPartyMode.AutofillManager.CreationContext";
 
     // Records what happened in an autofill session.
     public static final String UMA_AUTOFILL_AUTOFILL_SESSION = "Autofill.WebView.AutofillSession";
@@ -107,7 +109,8 @@ public class AutofillProviderUMA {
     // 3) Increment Provider.MAX_VALUE.
     // 4) Update tools/metrics/histograms/enums.xml with the new entry.
     // 5) Look for switch statements that uses those values and update them accordingly.
-    private static final String UMA_AUTOFILL_PROVIDER = "Autofill.WebView.Provider.PackageName";
+    public static final String UMA_AUTOFILL_PROVIDER = "Autofill.WebView.Provider.PackageName";
+    public static final String UMA_AUTOFILL_MANAGER_ERROR = "Autofill.AndroidAutofillManagerErrors";
     private static final String AWG_PACKAGE_NAME = "com.google.android.gms";
     private static final String SAMSUNG_PASS_PACKAGE_NAME =
             "com.samsung.android.samsungpassautofill";
@@ -116,6 +119,10 @@ public class AutofillProviderUMA {
     private static final String ONE_PASSWORD_PACKAGE_NAME = "com.onepassword.android";
     private static final String BITWARDEN_PACKAGE_NAME = "com.x8bit.bitwarden";
 
+    /**
+     * These values are persisted to logs. Entries should not be renumbered and numeric values
+     * should never be reused. They should be kept in sync with the enum values in enums.xml.
+     */
     @IntDef({
         Provider.UNKNOWN,
         Provider.AWG,
@@ -136,6 +143,66 @@ public class AutofillProviderUMA {
         int ONE_PASSWORD = 5;
         int BITWARDEN = 6;
         int MAX_VALUE = 7;
+    }
+
+    /**
+     * These values are persisted to logs. Entries should not be renumbered and numeric values
+     * should never be reused. They should be kept in sync with the enum values in enums.xml.
+     */
+    @IntDef({
+        AutofillManagerMethod.CANCEL,
+        AutofillManagerMethod.COMMIT,
+        AutofillManagerMethod.GET_AUTOFILL_SERVICE_COMPONENT_NAME,
+        AutofillManagerMethod.IS_AUTOFILL_SUPPORTED,
+        AutofillManagerMethod.IS_ENABLED,
+        AutofillManagerMethod.NOTIFY_VALUE_CHANGED,
+        AutofillManagerMethod.NOTIFY_VIEW_ENTERED,
+        AutofillManagerMethod.NOTIFY_VIEW_EXITED,
+        AutofillManagerMethod.NOTIFY_VIEW_VISIBILITY_CHANGED,
+        AutofillManagerMethod.NOTIFY_VIRTUAL_VIEWS_READY,
+        AutofillManagerMethod.REGISTER_CALLBACK,
+        AutofillManagerMethod.REQUEST_AUTOFILL,
+        AutofillManagerMethod.SHOW_AUTOFILL_DIALOG,
+        AutofillManagerMethod.UNREGISTER_CALLBACK,
+        AutofillManagerMethod.MAX_VALUE
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    @interface AutofillManagerMethod {
+        int CANCEL = 1;
+        int COMMIT = 2;
+        int GET_AUTOFILL_SERVICE_COMPONENT_NAME = 3;
+        int IS_AUTOFILL_SUPPORTED = 4;
+        int IS_ENABLED = 5;
+        int NOTIFY_VALUE_CHANGED = 6;
+        int NOTIFY_VIEW_ENTERED = 7;
+        int NOTIFY_VIEW_EXITED = 8;
+        int NOTIFY_VIEW_VISIBILITY_CHANGED = 9;
+        int NOTIFY_VIRTUAL_VIEWS_READY = 10;
+        int REGISTER_CALLBACK = 11;
+        int REQUEST_AUTOFILL = 12;
+        int SHOW_AUTOFILL_DIALOG = 13;
+        int UNREGISTER_CALLBACK = 14;
+        int MAX_VALUE = 15;
+    }
+
+    /**
+     * These values are persisted to logs. Entries should not be renumbered and numeric values
+     * should never be reused. They should be kept in sync with the enum values in enums.xml.
+     */
+    @IntDef({
+        AutofillManagerCreationContext.UNKNOWN,
+        AutofillManagerCreationContext.NULL,
+        AutofillManagerCreationContext.APPLICATION_CONTEXT,
+        AutofillManagerCreationContext.ACTIVITY_CONTEXT,
+        AutofillManagerCreationContext.MAX_VALUE
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface AutofillManagerCreationContext {
+        int UNKNOWN = 0;
+        int NULL = 1;
+        int APPLICATION_CONTEXT = 2;
+        int ACTIVITY_CONTEXT = 3;
+        int MAX_VALUE = 4;
     }
 
     private static void recordTimesHistogram(String name, long durationMillis) {
@@ -350,9 +417,7 @@ public class AutofillProviderUMA {
     public AutofillProviderUMA(
             Context context, boolean isAwGCurrentAutofillService, String packageName) {
         mCurrentProvider = getCurrentProvider(packageName);
-        RecordHistogram.recordBooleanHistogram(
-                UMA_AUTOFILL_CREATED_BY_ACTIVITY_CONTEXT,
-                ContextUtils.activityFromContext(context) != null);
+        recordUmaCreationContext(context);
         mIsAwGCurrentAutofillService = isAwGCurrentAutofillService;
     }
 
@@ -482,6 +547,21 @@ public class AutofillProviderUMA {
         mRecorder = null;
     }
 
+    /**
+     * Android R changed the Exceptions thrown in AutofillManager from an internal TimeoutException
+     * to a generic RuntimeException. Therefore, catch all Exceptions. This silences the internal
+     * TimeoutException pre-R but may catch others, too, so log them. It's acceptable because
+     * Autofill exceptions should not crash and may even be recoverable.
+     *
+     * @param e An {@link Exception} that's expected to be either an {@link RuntimeException} or a
+     *     {@code TimeoutException} internal to the Android Autofill Framework.
+     */
+    static void recordException(Exception e, @AutofillManagerMethod int calledMethod) {
+        RecordHistogram.recordEnumeratedHistogram(
+                UMA_AUTOFILL_MANAGER_ERROR, calledMethod, AutofillManagerMethod.MAX_VALUE);
+        Log.e(TAG, "Calling AutofillManager#mAutofillManager failed: " + e.getMessage());
+    }
+
     private static void recordUmaAutofillProvider(@Provider int autofillProvider) {
         RecordHistogram.recordEnumeratedHistogram(
                 UMA_AUTOFILL_PROVIDER, autofillProvider, Provider.MAX_VALUE);
@@ -504,5 +584,31 @@ public class AutofillProviderUMA {
             default:
                 return SUBMISSION_SOURCE_HISTOGRAM_COUNT;
         }
+    }
+
+    /**
+     * Although Android Autofill should always be constructed with an activity context, it could
+     * happen that no context or an application context was passed instead. Record these cases.
+     *
+     * @param creationContext The {@link Context} the {@link AutofillProvider} was created with.
+     */
+    static void recordUmaCreationContext(@Nullable Context creationContext) {
+        RecordHistogram.recordEnumeratedHistogram(
+                UMA_AUTOFILL_CREATION_CONTEXT,
+                toCreationContext(creationContext),
+                AutofillManagerCreationContext.MAX_VALUE);
+    }
+
+    static @AutofillManagerCreationContext int toCreationContext(@Nullable Context context) {
+        if (context == null) {
+            return AutofillManagerCreationContext.NULL;
+        }
+        if (context == ContextUtils.getApplicationContext()) {
+            return AutofillManagerCreationContext.APPLICATION_CONTEXT;
+        }
+        if (ContextUtils.activityFromContext(context) != null) {
+            return AutofillManagerCreationContext.ACTIVITY_CONTEXT;
+        }
+        return AutofillManagerCreationContext.UNKNOWN;
     }
 }

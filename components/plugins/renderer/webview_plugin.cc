@@ -13,20 +13,17 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "gin/converter.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "skia/ext/platform_canvas.h"
 #include "third_party/blink/public/common/input/web_coalesced_input_event.h"
-#include "third_party/blink/public/common/page/browsing_context_group_info.h"
 #include "third_party/blink/public/common/page/page_zoom.h"
 #include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/public/common/web_preferences/web_preferences.h"
 #include "third_party/blink/public/mojom/input/focus_type.mojom.h"
 #include "third_party/blink/public/mojom/page/prerender_page_param.mojom.h"
-#include "third_party/blink/public/mojom/partitioned_popins/partitioned_popin_params.mojom.h"
 #include "third_party/blink/public/platform/scheduler/web_agent_group_scheduler.h"
 #include "third_party/blink/public/platform/scheduler/web_thread_scheduler.h"
 #include "third_party/blink/public/platform/web_policy_container.h"
@@ -279,9 +276,10 @@ WebViewPlugin::WebViewHelper::WebViewHelper(
       *agent_group_scheduler_,
       /*session_storage_namespace_id=*/std::string(),
       /*page_base_background_color=*/std::nullopt,
-      blink::BrowsingContextGroupInfo::CreateUnique(),
+      /*browsing_context_group_token=*/base::UnguessableToken(),
       /*color_provider_colors=*/nullptr,
-      /*partitioned_popin_params=*/nullptr);
+      /*history_index=*/-1,
+      /*history_length=*/0);
   // ApplyWebPreferences before making a WebLocalFrame so that the frame sees a
   // consistent view of our preferences.
   blink::WebView::ApplyWebPreferences(parent_web_preferences, web_view_);
@@ -339,7 +337,7 @@ void WebViewPlugin::WebViewHelper::UpdateTooltip(
     const std::u16string& tooltip_text) {
   if (plugin_->container_) {
     plugin_->container_->GetElement().SetAttribute(
-        "title", WebString::FromUTF16(tooltip_text));
+        "title", WebString::FromUtf16(tooltip_text));
   }
 }
 
@@ -431,6 +429,8 @@ void WebViewPlugin::LoadHTML(const std::string& html_data, const GURL& url) {
   params->policy_container->policies.sandbox_flags =
       static_cast<WebSandboxFlags>(
           ~static_cast<int>(WebSandboxFlags::kScripts));
+  params->origin_to_commit = blink::WebSecurityOrigin(url::Origin());
+
   blink::WebNavigationParams::FillStaticResponse(params.get(), "text/html",
                                                  "UTF-8", html_data);
   web_view_helper_.main_frame()->CommitNavigation(std::move(params),

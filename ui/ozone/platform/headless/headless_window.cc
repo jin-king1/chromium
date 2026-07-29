@@ -6,9 +6,10 @@
 
 #include <string>
 
-#include "base/notreached.h"
+#include "base/notimplemented.h"
 #include "build/build_config.h"
 #include "ui/base/cursor/platform_cursor.h"
+#include "ui/display/screen.h"
 #include "ui/display/types/display_constants.h"
 #include "ui/events/platform/platform_event_source.h"
 #include "ui/ozone/platform/headless/headless_window_manager.h"
@@ -77,18 +78,31 @@ void HeadlessWindow::SetFullscreen(bool fullscreen, int64_t target_display_id) {
     return;
   }
 
+  // PlatformWindowDelegate callbacks can destroy the window, invalidating
+  // `this`. Keep a weak pointer and check it after each callback, here and
+  // below.
+  auto weak_ptr = GetWeakPtr();
+
   if (fullscreen) {
     if (window_state_ != PlatformWindowState::kMaximized &&
         window_state_ != PlatformWindowState::kFullScreen) {
       restored_bounds_ = bounds_;
     }
     ZoomWindowBounds();
+    if (!weak_ptr) {
+      return;
+    }
+
     UpdateWindowState(PlatformWindowState::kFullScreen);
   } else {
     if (window_state_ != PlatformWindowState::kFullScreen) {
       return;
     }
     RestoreWindowBounds();
+    if (!weak_ptr) {
+      return;
+    }
+
     UpdateWindowState(PlatformWindowState::kNormal);
   }
 }
@@ -100,21 +114,37 @@ void HeadlessWindow::Maximize() {
 
   if (window_state_ != PlatformWindowState::kMaximized &&
       window_state_ != PlatformWindowState::kFullScreen) {
+    auto weak_ptr = GetWeakPtr();
+
     restored_bounds_ = bounds_;
     ZoomWindowBounds();
+    if (!weak_ptr) {
+      return;
+    }
+
     UpdateWindowState(PlatformWindowState::kMaximized);
   }
 }
 
 void HeadlessWindow::Minimize() {
   if (window_state_ != PlatformWindowState::kMinimized) {
+    auto weak_ptr = GetWeakPtr();
+
     // Minimized window retains its size and position, however, it's made
     // hidden by Aura.
     if (window_state_ == PlatformWindowState::kMaximized ||
         window_state_ == PlatformWindowState::kFullScreen) {
       RestoreWindowBounds();
+      if (!weak_ptr) {
+        return;
+      }
     }
+
     UpdateWindowState(PlatformWindowState::kMinimized);
+    if (!weak_ptr) {
+      return;
+    }
+
     // Minimized windows are inactive. Aura activates minimized windows
     // when restoring. If we don't deactivate the window here, the subsequent
     // activation will be optimized away, causing https://crbug.com/358998544.
@@ -124,7 +154,13 @@ void HeadlessWindow::Minimize() {
 
 void HeadlessWindow::Restore() {
   if (window_state_ != PlatformWindowState::kNormal) {
+    auto weak_ptr = GetWeakPtr();
+
     RestoreWindowBounds();
+    if (!weak_ptr) {
+      return;
+    }
+
     UpdateWindowState(PlatformWindowState::kNormal);
   }
 }
@@ -174,10 +210,11 @@ void HeadlessWindow::SetWindowIcons(const gfx::ImageSkia& window_icon,
 void HeadlessWindow::SizeConstraintsChanged() {}
 
 void HeadlessWindow::ZoomWindowBounds() {
-  gfx::Rect new_bounds = bounds_;
-  new_bounds.set_width(bounds_.width() * 2);
-  new_bounds.set_height(bounds_.height() * 2);
-  UpdateBounds(new_bounds);
+  gfx::Rect zoomed_bounds =
+      display::Screen::Get()->GetDisplayMatching(bounds_).work_area();
+  // Convert the work area bounds from DIP to device pixels before setting
+  // the platform window's geometry.
+  UpdateBounds(delegate_->ConvertRectToPixels(zoomed_bounds));
 }
 
 void HeadlessWindow::RestoreWindowBounds() {

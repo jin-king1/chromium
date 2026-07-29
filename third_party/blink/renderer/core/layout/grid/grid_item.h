@@ -27,10 +27,9 @@ struct OutOfFlowItemPlacement {
 };
 
 struct CORE_EXPORT GridItemData : public GarbageCollected<GridItemData> {
- public:
   GridItemData() = default;
   GridItemData(const GridItemData&) = default;
-  GridItemData& operator=(const GridItemData&) = default;
+  GridItemData& operator=(const GridItemData&) = delete;
 
   GridItemData(BlockNode item_node,
                const ComputedStyle& parent_grid_style,
@@ -43,6 +42,15 @@ struct CORE_EXPORT GridItemData : public GarbageCollected<GridItemData> {
 
   void SetAlignmentFallback(GridTrackSizingDirection track_direction,
                             bool has_synthesized_baseline);
+
+  // This method updates the current item's span to be the given `span` in the
+  // given `track_direction`, translates the item as needed by the
+  // `start_offset`, and recalculates the item's set indices based on its new
+  // span location.
+  void UpdateSpan(const GridSpan& span,
+                  GridTrackSizingDirection track_direction,
+                  wtf_size_t start_offset,
+                  const GridLayoutTrackCollection& track_collection);
 
   AxisEdge Alignment(GridTrackSizingDirection track_direction) const {
     return (track_direction == kForColumns)
@@ -133,6 +141,11 @@ struct CORE_EXPORT GridItemData : public GarbageCollected<GridItemData> {
     column_set_indices = row_set_indices = GridItemIndices();
   }
 
+  const GridSpan& MaybeTranslateSpan(wtf_size_t start_offset,
+                                     GridTrackSizingDirection track_direction) {
+    return resolved_position.MaybeTranslateSpan(start_offset, track_direction);
+  }
+
   const GridSpan& Span(GridTrackSizingDirection track_direction) const {
     return resolved_position.Span(track_direction);
   }
@@ -217,21 +230,47 @@ struct CORE_EXPORT GridItemData : public GarbageCollected<GridItemData> {
         .HasProperty(TrackSpanProperties::kHasFixedMaximumTrack);
   }
 
-  void EncompassContributionSizes(MinMaxSizes&& sizes) {
-    if (contribution_sizes) {
-      contribution_sizes->Encompass(sizes);
-    } else {
-      contribution_sizes = std::move(sizes);
-    }
+  // Returns the track direction in this subgrid's coordinate system relative
+  // to its parent grid's `track_direction`.
+  GridTrackSizingDirection RelativeDirectionInSubgrid(
+      GridTrackSizingDirection track_direction) const {
+    DCHECK(IsSubgrid());
+    const bool is_for_columns =
+        is_parallel_with_root_grid == (track_direction == kForColumns);
+    return is_for_columns ? kForColumns : kForRows;
   }
 
-  void Trace(Visitor* visitor) const { visitor->Trace(node); }
+  // Returns the relative direction this subgrid's coordinate system. If
+  // `opt_track_direction` has no value, returns std::nullopt.
+  std::optional<GridTrackSizingDirection> RelativeDirectionFilterInSubgrid(
+      const std::optional<GridTrackSizingDirection>& opt_track_direction)
+      const {
+    DCHECK(IsSubgrid());
+    if (opt_track_direction) {
+      return RelativeDirectionInSubgrid(*opt_track_direction);
+    }
+    return std::nullopt;
+  }
+
+  // Reset all contribution sizes stored on a virtual item to their default
+  // values. Allocates a fresh `VirtualItemContributions` (rather than mutating
+  // the existing one) so any sibling virtual items that share the previous
+  // instance keep their data intact.
+  void ResetContributionSizes() {
+    contribution_sizes = MakeGarbageCollected<VirtualItemContributions>();
+  }
+
+  void Trace(Visitor* visitor) const {
+    visitor->Trace(node);
+    visitor->Trace(contribution_sizes);
+  }
 
   BlockNode node{nullptr};
   GridArea resolved_position;
 
   bool has_subgridded_columns : 1 {false};
   bool has_subgridded_rows : 1 {false};
+  bool is_auto_placed : 1 {false};
   bool is_considered_for_column_sizing : 1 {true};
   bool is_considered_for_row_sizing : 1 {true};
   bool is_opposite_direction_in_root_grid_columns : 1 {false};
@@ -276,13 +315,105 @@ struct CORE_EXPORT GridItemData : public GarbageCollected<GridItemData> {
   OutOfFlowItemPlacement column_placement;
   OutOfFlowItemPlacement row_placement;
 
-  // Virtual masonry items don't have a node, so we cache the maximum of every
-  // intrinsic contribution among the items that make up its respective group.
-  std::optional<MinMaxSizes> contribution_sizes;
+  // Virtual grid-lanes items don't have a node, so we cache the maximum of
+  // every intrinsic contribution among the items that make up its respective
+  // group, which may be the min/max sizes if parallel to the grid-axis, and the
+  // block contribution size if perpendicular.
+  struct CORE_EXPORT VirtualItemContributions
+      : public GarbageCollected<VirtualItemContributions> {
+    VirtualItemContributions() = default;
+
+    void Trace(Visitor*) const {}
+
+    void EncompassContributionSize(MinMaxSizes sizes) {
+      min_max_contribution.Encompass(sizes);
+    }
+
+    void EncompassIntrinsicMinIgnoringTrackPlacement(LayoutUnit size) {
+      intrinsic_min_ignoring_track_placement =
+          std::max(intrinsic_min_ignoring_track_placement, size);
+    }
+
+    void EncompassIntrinsicMinIgnoringTrackPlacementUnclamped(LayoutUnit size) {
+      intrinsic_min_ignoring_track_placement_unclamped =
+          std::max(intrinsic_min_ignoring_track_placement_unclamped, size);
+    }
+
+    void EncompassIntrinsicMinAssumingTrackPlacement(LayoutUnit size) {
+      intrinsic_min_assuming_track_placement =
+          std::max(intrinsic_min_assuming_track_placement, size);
+    }
+
+    // The min clamp size is the margin, border, padding, and baseline shim
+    // for an item that may be clamped. We take the largest of these to ensure
+    // we don't clamp past the largest such value for these items. This may
+    // not be 100% equivalent to what we would get with the grid
+    // implementation, but should be as close as we can get without leading to
+    // overflow.
+    void EncompassMinClampSize(LayoutUnit min_clamp) {
+      min_clamp_size = std::max(min_clamp_size, min_clamp);
+    }
+
+    void SetSharedBaseline(LayoutUnit baseline) {
+      group_shared_baseline = baseline;
+    }
+
+    MinMaxSizes min_max_contribution;
+
+    // Intrinsic minimums have special contribution size logic as outlined in
+    // [1]. Virtual grid-lanes items don't have a node, so we cache this value
+    // for later. Note that some of the logic depends on the tracks spanned,
+    // which we don't know when creating the virtual item. Some of the logic
+    // also requires clamping based on the total track size an item spans.
+    // Store:
+    //
+    // - `intrinsic_min_assuming_track_placement` - The max intrinsic min
+    // contribution assuming the tracks it spans will lead us to use the
+    // automatic min size. This value will never need to be clamped, so no need
+    // to store a clamped/unclamped version.
+    //
+    // - `intrinsic_min_ignoring_track_placement` - The max intrinsic min
+    // contribution assuming that we *don't* span tracks that will lead us to
+    // use the automatic min size. Under this condition, some items may be
+    // forced to the automatic min size, and some will use the min content
+    // contribution (which may need to be clamped). This var holds the the max
+    // contribution for items that use the min content contribution that may
+    // need to be clamped later to get the actual contribution size once we know
+    // the tracks the item spans.
+    //
+    // - `intrinsic_min_ignoring_track_placement_unclamped` - The max intrinsic
+    // min contribution assuming that we *don't* span tracks that will lead us
+    // to use the automatic min size. Under this condition, some items may be
+    // forced to the automatic min size, and some will use the min content
+    // contribution (which may need to be clamped). This var holds the the max
+    // contribution for items that use the automatic min size, which will *not*
+    // need to be clamped later.
+    //
+    // - `min_clamp_size` - When we clamp
+    // `intrinsic_min_ignoring_track_placement` by the total track span later on
+    // in the track sizing algo, we should not clamp past the sum of
+    // margin/border/padding/baseline shim. This value holds the largest such
+    // sum for items that contribute to
+    // `intrinsic_min_ignoring_track_placement`.
+    //
+    // We store all of these values to choose which ends up leading to the
+    // largest contribution size when we know the final virtual item
+    // position(s).
+    //
+    // [1] https://drafts.csswg.org/css-grid/#min-size-auto
+    LayoutUnit intrinsic_min_assuming_track_placement;
+    LayoutUnit intrinsic_min_ignoring_track_placement;
+    LayoutUnit intrinsic_min_ignoring_track_placement_unclamped;
+    LayoutUnit min_clamp_size;
+
+    // The shared baseline of this virtual item's group (i.e. the max baseline
+    // across all items in the group), used for baseline shim computation in
+    // grid-lanes track sizing.
+    LayoutUnit group_shared_baseline;
+  };
+  Member<VirtualItemContributions> contribution_sizes;
 };
 
-// TODO(crbug.com/399153019) - Refactor this so we don't need to make everything
-// GC'd.
 class CORE_EXPORT GridItems : public GarbageCollected<GridItems> {
  public:
   using GridItemDataVector = HeapVector<Member<GridItemData>, 16>;
@@ -297,8 +428,8 @@ class CORE_EXPORT GridItems : public GarbageCollected<GridItems> {
 
     using GridItemDataVectorPtr =
         typename std::conditional<is_const,
-                                  Member<const GridItemDataVector>,
-                                  Member<GridItemDataVector>>::type;
+                                  const GridItemDataVector*,
+                                  GridItemDataVector*>::type;
 
     Iterator(GridItemDataVectorPtr item_data, wtf_size_t current_index)
         : current_index_(current_index), item_data_(item_data) {
@@ -351,14 +482,11 @@ class CORE_EXPORT GridItems : public GarbageCollected<GridItems> {
   };
 
   GridItems() = default;
-  GridItems(GridItems&&) = default;
-  GridItems& operator=(GridItems&&) = default;
 
-  GridItems(const GridItems& other);
-
-  GridItems& operator=(const GridItems& other) {
-    return *this = GridItems(other);
-  }
+  GridItems(const GridItems&) = delete;
+  GridItems& operator=(const GridItems&) = delete;
+  GridItems(GridItems&&) = delete;
+  GridItems& operator=(GridItems&&) = delete;
 
   Iterator<false> begin() { return {&item_data_, 0}; }
   Iterator<false> end() { return {&item_data_, first_subgridded_item_index_}; }
@@ -394,19 +522,39 @@ class CORE_EXPORT GridItems : public GarbageCollected<GridItems> {
   }
 
   GridItemData& At(wtf_size_t index) {
+    DCHECK_LT(index, item_data_.size());
     DCHECK(item_data_[index]);
     return *item_data_[index];
+  }
+
+  const GridItemData& At(wtf_size_t index) const {
+    DCHECK_LT(index, item_data_.size());
+    DCHECK(item_data_[index]);
+    return *item_data_[index];
+  }
+
+  const Member<GridItemData>& operator[](wtf_size_t index) const {
+    DCHECK_LT(index, item_data_.size());
+    return item_data_[index];
   }
 
   void ReserveInitialCapacity(wtf_size_t initial_capacity) {
     item_data_.ReserveInitialCapacity(initial_capacity);
   }
 
+  void SetHasStackingAxisAlignment() { has_stacking_axis_alignment_ = true; }
+  bool HasStackingAxisAlignment() const { return has_stacking_axis_alignment_; }
+
   void Trace(Visitor* visitor) const { visitor->Trace(item_data_); }
 
  private:
   // End index used to iterate over the non-subgridded items of the collection.
   wtf_size_t first_subgridded_item_index_{0};
+
+  // Whether any item or the container has non-normal stacking-axis alignment.
+  // This only applies to layout modes that have a stacking axis, like
+  // grid-lanes.
+  bool has_stacking_axis_alignment_{false};
 
   // Grid items are rearranged in order-modified document order since
   // auto-placement and painting rely on it later in the algorithm.

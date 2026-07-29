@@ -34,12 +34,15 @@
 #include "components/feature_engagement/internal/feature_config_event_storage_validator.h"
 #include "components/feature_engagement/internal/in_memory_event_store.h"
 #include "components/feature_engagement/internal/init_aware_event_model.h"
+#include "components/feature_engagement/internal/multiple_event_model_provider.h"
+#include "components/feature_engagement/internal/multiple_event_model_writer.h"
 #include "components/feature_engagement/internal/never_availability_model.h"
 #include "components/feature_engagement/internal/never_event_storage_validator.h"
 #include "components/feature_engagement/internal/noop_display_lock_controller.h"
 #include "components/feature_engagement/internal/once_condition_validator.h"
 #include "components/feature_engagement/internal/persistent_event_store.h"
 #include "components/feature_engagement/internal/proto/availability.pb.h"
+#include "components/feature_engagement/internal/single_event_model_provider.h"
 #include "components/feature_engagement/internal/stats.h"
 #include "components/feature_engagement/internal/system_time_provider.h"
 #include "components/feature_engagement/internal/testing_clock_time_provider.h"
@@ -49,7 +52,9 @@
 #include "components/feature_engagement/public/feature_list.h"
 #include "components/feature_engagement/public/group_constants.h"
 #include "components/feature_engagement/public/group_list.h"
+#include "components/feature_engagement/public/pref_names.h"
 #include "components/leveldb_proto/public/proto_database_provider.h"
+#include "components/prefs/pref_service.h"
 
 namespace feature_engagement {
 
@@ -64,14 +69,14 @@ const char kAvailabilityDBName[] = "AvailabilityDB";
 // with the event count in the appropriate window.
 void MaybeGetEventData(Tracker::EventList& result,
                        const EventConfig& config,
-                       const EventModel& event_model,
+                       const EventModelReader& event_model_reader,
                        uint32_t current_day) {
   if (config.name.empty()) {
     return;
   }
-  result.emplace_back(std::make_pair(
-      config,
-      event_model.GetEventCount(config.name, current_day, config.window)));
+  result.emplace_back(
+      std::make_pair(config, event_model_reader.GetEventCount(
+                                 config.name, current_day, config.window)));
 }
 
 #endif  // !BUILDFLAG(IS_ANDROID)
@@ -125,12 +130,16 @@ std::unique_ptr<Tracker> CreateDemoModeTracker(
       std::make_unique<InMemoryEventStore>(),
       std::make_unique<NeverEventStorageValidator>());
 
+  auto event_model =
+      std::make_unique<InitAwareEventModel>(std::move(raw_event_model));
+
   return std::make_unique<TrackerImpl>(
-      std::make_unique<InitAwareEventModel>(std::move(raw_event_model)),
+      std::make_unique<SingleEventModelProvider>(std::move(event_model)),
       std::make_unique<NeverAvailabilityModel>(), std::move(configuration),
       std::make_unique<NoopDisplayLockController>(),
       std::make_unique<OnceConditionValidator>(),
-      std::make_unique<SystemTimeProvider>(), nullptr, nullptr);
+      std::make_unique<SystemTimeProvider>(), nullptr, nullptr, nullptr,
+      nullptr);
 }
 
 // This method is declared in
@@ -139,6 +148,8 @@ std::unique_ptr<Tracker> CreateDemoModeTracker(
 // static
 std::unique_ptr<Tracker> Tracker::Create(
     const base::FilePath& storage_dir,
+    const base::FilePath& device_storage_dir,
+    PrefService* pref_service,
     const scoped_refptr<base::SequencedTaskRunner>& background_task_runner,
     leveldb_proto::ProtoDatabaseProvider* db_provider,
     std::unique_ptr<TrackerEventExporter> event_exporter,
@@ -157,11 +168,12 @@ std::unique_ptr<Tracker> Tracker::Create(
     return CreateDemoModeTracker(feature_action);
   }
 
-  base::FilePath event_storage_dir =
-      storage_dir.AppendASCII(std::string(kEventDBName));
+  base::FilePath event_storage_dir = storage_dir.AppendASCII(kEventDBName);
   auto event_db = db_provider->GetDB<Event>(
       leveldb_proto::ProtoDbType::FEATURE_ENGAGEMENT_EVENT, event_storage_dir,
       background_task_runner);
+
+  auto profile_event_db = event_db.get();
 
   auto event_store =
       std::make_unique<PersistentEventStore>(std::move(event_db));
@@ -180,12 +192,13 @@ std::unique_ptr<Tracker> Tracker::Create(
 
   auto event_model =
       std::make_unique<InitAwareEventModel>(std::move(raw_event_model));
+
   auto condition_validator =
       std::make_unique<FeatureConfigConditionValidator>();
   auto time_provider = std::make_unique<SystemTimeProvider>();
 
   base::FilePath availability_storage_dir =
-      storage_dir.AppendASCII(std::string(kAvailabilityDBName));
+      storage_dir.AppendASCII(kAvailabilityDBName);
   auto availability_db = db_provider->GetDB<Availability>(
       leveldb_proto::ProtoDbType::FEATURE_ENGAGEMENT_AVAILABILITY,
       availability_storage_dir, background_task_runner);
@@ -196,23 +209,64 @@ std::unique_ptr<Tracker> Tracker::Create(
   auto availability_model = std::make_unique<AvailabilityModelImpl>(
       std::move(availability_store_loader));
 
+  std::unique_ptr<EventModelProvider> event_model_provider;
+  std::unique_ptr<EventStorageMigration> event_storage_migration;
+  if (IsOnDeviceStorageEnabled()) {
+    base::FilePath device_event_storage_dir =
+        device_storage_dir.AppendASCII(kEventDBName);
+    auto device_event_db = db_provider->GetUniqueDB<Event>(
+        leveldb_proto::ProtoDbType::FEATURE_ENGAGEMENT_EVENT,
+        device_event_storage_dir, background_task_runner);
+
+    auto* raw_device_event_db = device_event_db.get();
+
+    auto device_event_store =
+        std::make_unique<PersistentEventStore>(std::move(device_event_db));
+
+    auto device_event_storage_validator =
+        std::make_unique<FeatureConfigEventStorageValidator>();
+    device_event_storage_validator->InitializeFeatures(
+        GetAllFeatures(), GetAllGroups(), *configuration);
+
+    auto device_raw_event_model = std::make_unique<EventModelImpl>(
+        std::move(device_event_store),
+        std::move(device_event_storage_validator));
+
+    // If the migration is completed, we don't need to migrate the data.
+    // TODO(crbug.com/426624087): Remove this and all the code related to it
+    // once the migration is completed.
+    event_storage_migration = std::make_unique<EventStorageMigration>(
+        profile_event_db, raw_device_event_db, device_raw_event_model.get());
+
+    auto device_event_model = std::make_unique<InitAwareEventModel>(
+        std::move(device_raw_event_model));
+    event_model_provider = std::make_unique<MultipleEventModelProvider>(
+        std::move(event_model), std::move(device_event_model));
+  } else {
+    event_model_provider =
+        std::make_unique<SingleEventModelProvider>(std::move(event_model));
+  }
+
   return std::make_unique<TrackerImpl>(
-      std::move(event_model), std::move(availability_model),
+      std::move(event_model_provider), std::move(availability_model),
       std::move(configuration), std::make_unique<DisplayLockControllerImpl>(),
       std::move(condition_validator), std::move(time_provider),
-      std::move(event_exporter), std::move(session_controller));
+      std::move(event_exporter), std::move(session_controller),
+      std::move(event_storage_migration), pref_service);
 }
 
 TrackerImpl::TrackerImpl(
-    std::unique_ptr<EventModel> event_model,
+    std::unique_ptr<EventModelProvider> event_model_provider,
     std::unique_ptr<AvailabilityModel> availability_model,
     std::unique_ptr<Configuration> configuration,
     std::unique_ptr<DisplayLockController> display_lock_controller,
     std::unique_ptr<ConditionValidator> condition_validator,
     std::unique_ptr<TimeProvider> time_provider,
     std::unique_ptr<TrackerEventExporter> event_exporter,
-    std::unique_ptr<SessionController> session_controller)
-    : event_model_(std::move(event_model)),
+    std::unique_ptr<SessionController> session_controller,
+    std::unique_ptr<EventStorageMigration> event_storage_migration,
+    PrefService* pref_service)
+    : event_model_provider_(std::move(event_model_provider)),
       availability_model_(std::move(availability_model)),
       configuration_(std::move(configuration)),
       display_lock_controller_(std::move(display_lock_controller)),
@@ -220,15 +274,15 @@ TrackerImpl::TrackerImpl(
       time_provider_(std::move(time_provider)),
       event_exporter_(std::move(event_exporter)),
       session_controller_(std::move(session_controller)),
-      event_model_initialization_finished_(false),
-      availability_model_initialization_finished_(false) {
-  event_model_->Initialize(
-      base::BindOnce(&TrackerImpl::OnEventModelInitializationFinished,
+      event_storage_migration_(std::move(event_storage_migration)),
+      pref_service_(pref_service) {
+  availability_model_->Initialize(
+      base::BindOnce(&TrackerImpl::OnAvailabilityModelInitializationFinished,
                      weak_ptr_factory_.GetWeakPtr()),
       time_provider_->GetCurrentDay());
 
-  availability_model_->Initialize(
-      base::BindOnce(&TrackerImpl::OnAvailabilityModelInitializationFinished,
+  event_model_provider_->Initialize(
+      base::BindOnce(&TrackerImpl::OnEventModelInitializationFinished,
                      weak_ptr_factory_.GetWeakPtr()),
       time_provider_->GetCurrentDay());
 }
@@ -236,9 +290,9 @@ TrackerImpl::TrackerImpl(
 TrackerImpl::~TrackerImpl() = default;
 
 void TrackerImpl::NotifyEvent(const std::string& event) {
-  event_model_->IncrementEvent(event, time_provider_->GetCurrentDay());
+  GetEventModelWriter()->IncrementEvent(event, time_provider_->GetCurrentDay());
   stats::RecordNotifyEvent(event, configuration_.get(),
-                           event_model_->IsReady());
+                           event_model_provider_->IsReady());
 }
 
 #if !BUILDFLAG(IS_ANDROID)
@@ -252,13 +306,13 @@ void TrackerImpl::NotifyUsedEvent(const base::Feature& feature) {
 void TrackerImpl::ClearEventData(const base::Feature& feature) {
   const auto& feature_config = configuration_->GetFeatureConfig(feature);
   if (!feature_config.trigger.name.empty()) {
-    event_model_->ClearEvent(feature_config.trigger.name);
+    GetEventModelWriter()->ClearEvent(feature_config.trigger.name);
   }
   if (!feature_config.used.name.empty()) {
-    event_model_->ClearEvent(feature_config.used.name);
+    GetEventModelWriter()->ClearEvent(feature_config.used.name);
   }
   for (const auto& event_config : feature_config.event_configs) {
-    event_model_->ClearEvent(event_config.name);
+    GetEventModelWriter()->ClearEvent(event_config.name);
   }
 }
 
@@ -269,10 +323,13 @@ Tracker::EventList TrackerImpl::ListEvents(const base::Feature& feature) const {
   }
   const auto& feature_config = configuration_->GetFeatureConfig(feature);
   const auto current_day = time_provider_->GetCurrentDay();
-  MaybeGetEventData(result, feature_config.trigger, *event_model_, current_day);
-  MaybeGetEventData(result, feature_config.used, *event_model_, current_day);
+  auto* event_model_reader = GetEventModelReaderForFeature(feature_config);
+  MaybeGetEventData(result, feature_config.trigger, *event_model_reader,
+                    current_day);
+  MaybeGetEventData(result, feature_config.used, *event_model_reader,
+                    current_day);
   for (const auto& event_config : feature_config.event_configs) {
-    MaybeGetEventData(result, event_config, *event_model_, current_day);
+    MaybeGetEventData(result, event_config, *event_model_reader, current_day);
   }
   return result;
 }
@@ -297,8 +354,9 @@ TrackerImpl::TriggerDetails TrackerImpl::ShouldTriggerHelpUIWithSnooze(
   for (auto group : feature_config.groups) {
     group_configs.push_back(configuration_->GetGroupConfigByName(group));
   }
+  auto* event_model_reader = GetEventModelReaderForFeature(feature_config);
   ConditionValidator::Result result = condition_validator_->MeetsConditions(
-      feature, feature_config, group_configs, *event_model_,
+      feature, feature_config, group_configs, *event_model_reader,
       *availability_model_, *display_lock_controller_, configuration_.get(),
       *time_provider_);
   if (result.NoErrors()) {
@@ -306,13 +364,13 @@ TrackerImpl::TriggerDetails TrackerImpl::ShouldTriggerHelpUIWithSnooze(
         feature, feature_config, configuration_->GetRegisteredFeatures());
 
     DCHECK_NE("", feature_config.trigger.name);
-    event_model_->IncrementEvent(feature_config.trigger.name,
-                                 time_provider_->GetCurrentDay());
+    GetEventModelWriter()->IncrementEvent(feature_config.trigger.name,
+                                          time_provider_->GetCurrentDay());
 
     for (auto group : feature_config.groups) {
       GroupConfig group_config = configuration_->GetGroupConfigByName(group);
-      event_model_->IncrementEvent(group_config.trigger.name,
-                                   time_provider_->GetCurrentDay());
+      GetEventModelWriter()->IncrementEvent(group_config.trigger.name,
+                                            time_provider_->GetCurrentDay());
     }
   }
 
@@ -359,8 +417,9 @@ bool TrackerImpl::WouldTriggerHelpUI(const base::Feature& feature) const {
   for (auto group : feature_config.groups) {
     group_configs.push_back(configuration_->GetGroupConfigByName(group));
   }
+  auto* event_model_reader = GetEventModelReaderForFeature(feature_config);
   ConditionValidator::Result result = condition_validator_->MeetsConditions(
-      feature, feature_config, group_configs, *event_model_,
+      feature, feature_config, group_configs, *event_model_reader,
       *availability_model_, *display_lock_controller_, configuration_.get(),
       *time_provider_);
   DVLOG(2) << "Would trigger result for " << feature.name
@@ -379,8 +438,10 @@ bool TrackerImpl::HasEverTriggered(const base::Feature& feature,
   uint32_t window_size =
       from_window ? trigger_config.window : trigger_config.storage;
 
-  uint32_t event_count = event_model_->GetEventCount(
-      trigger_config.name, time_provider_->GetCurrentDay(), window_size);
+  uint32_t event_count =
+      GetEventModelReaderForFeature(feature_config)
+          ->GetEventCount(trigger_config.name, time_provider_->GetCurrentDay(),
+                          window_size);
 
   return event_count > 0;
 }
@@ -398,9 +459,10 @@ Tracker::TriggerState TrackerImpl::GetTriggerState(
   for (auto group : feature_config.groups) {
     group_configs.push_back(configuration_->GetGroupConfigByName(group));
   }
+  auto* event_model_reader = GetEventModelReaderForFeature(feature_config);
   ConditionValidator::Result result = condition_validator_->MeetsConditions(
       feature, configuration_->GetFeatureConfig(feature), group_configs,
-      *event_model_, *availability_model_, *display_lock_controller_,
+      *event_model_reader, *availability_model_, *display_lock_controller_,
       configuration_.get(), *time_provider_);
 
   if (result.trigger_ok) {
@@ -430,11 +492,11 @@ void TrackerImpl::DismissedWithSnooze(
 
   FeatureConfig feature_config = configuration_->GetFeatureConfig(feature);
   if (snooze_action == SnoozeAction::SNOOZED) {
-    event_model_->IncrementSnooze(feature_config.trigger.name,
-                                  time_provider_->GetCurrentDay(),
-                                  time_provider_->Now());
+    GetEventModelWriter()->IncrementSnooze(feature_config.trigger.name,
+                                           time_provider_->GetCurrentDay(),
+                                           time_provider_->Now());
   } else if (snooze_action == SnoozeAction::DISMISSED) {
-    event_model_->DismissSnooze(feature_config.trigger.name);
+    GetEventModelWriter()->DismissSnooze(feature_config.trigger.name);
   }
   Dismissed(feature);
   if (snooze_action.has_value())
@@ -493,8 +555,7 @@ void TrackerImpl::UpdateConfig(const base::Feature& feature,
 }
 #endif
 
-const Configuration* TrackerImpl::GetConfigurationForTesting() const {
-  CHECK_IS_TEST();
+const Configuration* TrackerImpl::GetConfiguration() const {
   return configuration_.get();
 }
 
@@ -505,8 +566,14 @@ void TrackerImpl::SetClockForTesting(const base::Clock& clock,
       std::make_unique<TestingClockTimeProvider>(clock, initial_now);
 }
 
+bool TrackerImpl::IsInFeatureTestMode() const {
+  auto* const blocked = BlockedIphFeatures::GetInstance();
+  base::AutoLock lock(blocked->GetLock());
+  return blocked->AreAnyFeaturesBlocked();
+}
+
 bool TrackerImpl::IsInitialized() const {
-  return event_model_->IsReady() && availability_model_->IsReady();
+  return event_model_provider_->IsReady() && availability_model_->IsReady();
 }
 
 void TrackerImpl::AddOnInitializedCallback(OnInitializedCallback callback) {
@@ -520,8 +587,49 @@ void TrackerImpl::AddOnInitializedCallback(OnInitializedCallback callback) {
 }
 
 void TrackerImpl::OnEventModelInitializationFinished(bool success) {
-  DCHECK_EQ(success, event_model_->IsReady());
-  event_model_initialization_finished_ = true;
+  DCHECK_EQ(success, event_model_provider_->IsReady());
+
+  // If the migration is not completed, we need to migrate the data from the
+  // profile db to the device db.
+  if (success && event_storage_migration_ &&
+      !pref_service_->GetBoolean(
+          kFeatureEngagementProfileToDeviceMigrationCompleted)) {
+    event_storage_migration_->Migrate(
+        base::BindOnce(&TrackerImpl::OnEventStorageMigrationFinished,
+                       weak_ptr_factory_.GetWeakPtr()),
+        time_provider_->GetCurrentDay());
+    return;
+  }
+
+  if (success && IsOnDeviceStorageEnabled()) {
+    // If the migration was completed, log the status.
+    EventStorageMigration::RecordMigrationStatus(
+        EventStorageMigration::EventStorageMigrationStatus::kNotRequired);
+  }
+
+  event_model_provider_initialization_finished_ = true;
+
+  DVLOG(2) << "Event model initialization result = " << success;
+
+  if (event_exporter_) {
+    event_exporter_->ExportEvents(base::BindOnce(
+        &TrackerImpl::OnReceiveExportedEvents, weak_ptr_factory_.GetWeakPtr()));
+  } else {
+    MaybePostInitializedCallbacks();
+  }
+}
+
+void TrackerImpl::OnEventStorageMigrationFinished(bool success) {
+  DVLOG(2) << "Event storage migration result = " << success;
+
+  if (success) {
+    pref_service_->SetBoolean(
+        kFeatureEngagementProfileToDeviceMigrationCompleted, true);
+  }
+
+  event_storage_migration_ = nullptr;
+
+  event_model_provider_initialization_finished_ = true;
 
   DVLOG(2) << "Event model initialization result = " << success;
 
@@ -545,7 +653,7 @@ void TrackerImpl::OnAvailabilityModelInitializationFinished(bool success) {
 bool TrackerImpl::IsInitializationFinished() const {
   bool event_migration_finished =
       event_exporter_ == nullptr || event_migration_finished_;
-  return event_model_initialization_finished_ &&
+  return event_model_provider_initialization_finished_ &&
          availability_model_initialization_finished_ &&
          event_migration_finished;
 }
@@ -553,6 +661,14 @@ bool TrackerImpl::IsInitializationFinished() const {
 void TrackerImpl::MaybePostInitializedCallbacks() {
   if (!IsInitializationFinished())
     return;
+
+  if (!initialization_time_recorded_) {
+    // TODO(crbug.com/500891039): Re-evaluate the range of this histogram after
+    // gathering initial data.
+    base::UmaHistogramTimes("InProductHelp.InitializationTime.Total",
+                            init_timer_.Elapsed());
+    initialization_time_recorded_ = true;
+  }
 
   DVLOG(2) << "Initialization finished.";
 
@@ -580,11 +696,20 @@ void TrackerImpl::RecordShownTime(const base::Feature& feature) {
 void TrackerImpl::OnReceiveExportedEvents(
     std::vector<TrackerEventExporter::EventData> events) {
   for (auto& event : events) {
-    event_model_->IncrementEvent(event.event_name, event.day);
+    GetEventModelWriter()->IncrementEvent(event.event_name, event.day);
   }
 
   event_migration_finished_ = true;
   MaybePostInitializedCallbacks();
+}
+
+EventModelWriter* TrackerImpl::GetEventModelWriter() {
+  return event_model_provider_->GetEventModelWriter();
+}
+
+const EventModelReader* TrackerImpl::GetEventModelReaderForFeature(
+    const FeatureConfig& feature_config) const {
+  return event_model_provider_->GetEventModelReaderForFeature(feature_config);
 }
 
 // static

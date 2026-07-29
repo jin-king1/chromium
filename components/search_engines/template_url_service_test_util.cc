@@ -6,15 +6,21 @@
 
 #include <memory>
 
+#include "base/check_deref.h"
 #include "base/command_line.h"
 #include "components/country_codes/country_codes.h"
 #include "components/metrics/metrics_pref_names.h"
+#include "components/metrics/profile_metrics_service.h"
 #include "components/os_crypt/async/browser/test_utils.h"
+#include "components/policy/core/common/management/management_service.h"
+#include "components/regional_capabilities/regional_capabilities_prefs.h"
 #include "components/regional_capabilities/regional_capabilities_service.h"
 #include "components/regional_capabilities/regional_capabilities_switches.h"
 #include "components/regional_capabilities/regional_capabilities_test_utils.h"
+#include "components/regional_capabilities/regional_capabilities_utils.h"
 #include "components/search_engines/keyword_table.h"
 #include "components/search_engines/search_engine_choice/search_engine_choice_service.h"
+#include "components/search_engines/search_engines_test_util.h"
 #include "components/search_engines/search_terms_data.h"
 #include "components/search_engines/template_url_prepopulate_data.h"
 #include "components/search_engines/template_url_prepopulate_data_resolver.h"
@@ -26,7 +32,9 @@ void RegisterPrefsForTemplateURLService(
     user_prefs::PrefRegistrySyncable* registry) {
   TemplateURLService::RegisterProfilePrefs(registry);
   TemplateURLPrepopulateData::RegisterProfilePrefs(registry);
+  regional_capabilities::prefs::RegisterProfilePrefs(registry);
   DefaultSearchManager::RegisterProfilePrefs(registry);
+  search_engines::SearchEngineChoiceService::RegisterProfilePrefs(registry);
 }
 
 // -- TemplateURLServiceLoadWaiter --------------------------------------------
@@ -87,14 +95,18 @@ void TemplateURLServiceUnitTestBase::SetUp() {
       std::make_unique<TemplateURLPrepopulateData::Resolver>(
           pref_service_, *regional_capabilities_service_.get());
 
+  management_service_ = std::make_unique<policy::ManagementService>(
+      std::vector<std::unique_ptr<policy::ManagementStatusProvider>>{});
+
+  profile_metrics_service_ = std::make_unique<metrics::ProfileMetricsService>();
+
   search_engine_choice_service_ =
       std::make_unique<search_engines::SearchEngineChoiceService>(
+          std::make_unique<FakeSearchEngineChoiceServiceClient>(),
           pref_service_, &local_state_, *regional_capabilities_service_,
           *prepopulate_data_resolver_,
-#if !BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_ANDROID)
-          /*is_profile_eligible_for_dse_guest_propagation=*/false,
-#endif
-          country_codes::kCountryIDUnknown);
+          CHECK_DEREF(identity_test_env_.identity_manager()),
+          *management_service_, *profile_metrics_service_);
 
   template_url_service_ = CreateService();
 }
@@ -151,7 +163,7 @@ void LoadedTemplateURLServiceUnitTestBase::SetUp() {
   template_url_service_load_waiter_.WaitForLoadComplete(template_url_service());
 
   ASSERT_EQ(GetKeywordTemplateURLs().size(),
-            TemplateURLPrepopulateData::GetDefaultPrepopulatedEngines().size());
+            regional_capabilities::GetDefaultPrepopulatedEngines().size());
 }
 
 void LoadedTemplateURLServiceUnitTestBase::TearDown() {
@@ -168,7 +180,8 @@ LoadedTemplateURLServiceUnitTestBase::GetKeywordTemplateURLs() {
   TemplateURLService::TemplateURLVector turls =
       template_url_service().GetTemplateURLs();
   auto to_remove = std::ranges::remove_if(turls, [](const TemplateURL* turl) {
-    return turl->starter_pack_id() != 0;
+    return turl->starter_pack_id() !=
+           template_url_starter_pack_data::StarterPackId::kNone;
   });
   turls.erase(to_remove.begin(), to_remove.end());
   return turls;

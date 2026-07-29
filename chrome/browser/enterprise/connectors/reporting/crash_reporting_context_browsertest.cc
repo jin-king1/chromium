@@ -26,7 +26,7 @@ IN_PROC_BROWSER_TEST_F(CrashReportingContextTest, OnCloudReportingLaunched) {
   ::policy::SetDMTokenForTesting(
       ::policy::DMToken::CreateValidToken("FAKE_DM_TOKEN"));
 
-  auto* profile = browser()->profile();
+  auto* profile = browser()->GetProfile();
   profile->GetPrefs()->SetInteger(kOnSecurityEventScopePref,
                                   policy::POLICY_SCOPE_MACHINE);
   constexpr char kConnectorsPrefValue[] = R"([
@@ -34,15 +34,17 @@ IN_PROC_BROWSER_TEST_F(CrashReportingContextTest, OnCloudReportingLaunched) {
       "service_provider": "google"
     }
   ])";
-  profile->GetPrefs()->Set(kOnSecurityEventPref,
-                           *base::JSONReader::Read(kConnectorsPrefValue));
+  profile->GetPrefs()->Set(
+      kOnSecurityEventPref,
+      *base::JSONReader::Read(kConnectorsPrefValue,
+                              base::JSON_PARSE_CHROMIUM_EXTENSIONS));
 
   BrowserCrashEventRouter router(profile);
 
   CrashReportingContext* crash_reporting_context =
       CrashReportingContext::GetInstance();
 
-  // This should not crash. See https://crbug.com/1441715.
+  // This should not crash. See https://crbug.com/40266629.
   crash_reporting_context->OnCloudReportingLaunched(nullptr);
 }
 

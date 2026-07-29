@@ -5,6 +5,7 @@
 import("//build/config/ozone.gni")
 import("//build/config/ui.gni")
 import("//components/viz/viz.gni")
+import("//components/vrp_flags/features.gni")
 import("//gpu/vulkan/features.gni")
 import("//media/gpu/args.gni")
 import("//skia/features.gni")
@@ -43,6 +44,7 @@ static_library("viz_debugger") {
     "//base",
     "//components/viz/common:buildflags",
     "//components/viz/service/debugger/mojom",
+    "//components/vrp_flags:buildflags",
     "//mojo/public/cpp/bindings",
     "//skia",
     "//skia:skia_core_public_headers",
@@ -95,12 +97,12 @@ viz_component("service") {
     "display/draw_polygon.h",
     "display/external_use_client.cc",
     "display/external_use_client.h",
+    "display/frame_deadline_decider.cc",
+    "display/frame_deadline_decider.h",
     "display/frame_interval_decider.cc",
     "display/frame_interval_decider.h",
     "display/frame_interval_matchers.cc",
     "display/frame_interval_matchers.h",
-    "display/frame_rate_decider.cc",
-    "display/frame_rate_decider.h",
     "display/null_renderer.cc",
     "display/null_renderer.h",
     "display/occlusion_culler.cc",
@@ -149,8 +151,6 @@ viz_component("service") {
     "display_embedder/compositor_gpu_thread.h",
     "display_embedder/image_context_impl.cc",
     "display_embedder/image_context_impl.h",
-    "display_embedder/in_process_gpu_memory_buffer_manager.cc",
-    "display_embedder/in_process_gpu_memory_buffer_manager.h",
     "display_embedder/output_presenter.h",
     "display_embedder/output_presenter_gl.cc",
     "display_embedder/output_presenter_gl.h",
@@ -176,6 +176,8 @@ viz_component("service") {
     "display_embedder/skia_output_surface_impl_on_gpu.h",
     "display_embedder/skia_output_surface_impl_on_gpu_debug_capture.cc",
     "display_embedder/skia_output_surface_impl_on_gpu_debug_capture.h",
+    "display_embedder/skia_output_surface_shared_image_interface.cc",
+    "display_embedder/skia_output_surface_shared_image_interface.h",
     "display_embedder/skia_render_copy_results.cc",
     "display_embedder/skia_render_copy_results.h",
     "display_embedder/software_output_surface.cc",
@@ -188,10 +190,6 @@ viz_component("service") {
     "frame_sinks/compositor_frame_sink_impl.h",
     "frame_sinks/compositor_frame_sink_support.cc",
     "frame_sinks/compositor_frame_sink_support.h",
-    "frame_sinks/eviction_handler.cc",
-    "frame_sinks/eviction_handler.h",
-    "frame_sinks/external_begin_frame_source_mojo.cc",
-    "frame_sinks/external_begin_frame_source_mojo.h",
     "frame_sinks/frame_counter.cc",
     "frame_sinks/frame_counter.h",
     "frame_sinks/frame_sink_bundle_impl.cc",
@@ -199,6 +197,8 @@ viz_component("service") {
     "frame_sinks/frame_sink_manager_impl.cc",
     "frame_sinks/frame_sink_manager_impl.h",
     "frame_sinks/frame_sink_observer.h",
+    "frame_sinks/frame_sink_throttler.cc",
+    "frame_sinks/frame_sink_throttler.h",
     "frame_sinks/gmb_video_frame_pool_context_provider.h",
     "frame_sinks/gmb_video_frame_pool_context_provider_impl.cc",
     "frame_sinks/gmb_video_frame_pool_context_provider_impl.h",
@@ -213,10 +213,10 @@ viz_component("service") {
     "frame_sinks/video_capture/frame_sink_video_capturer_impl.cc",
     "frame_sinks/video_capture/frame_sink_video_capturer_impl.h",
     "frame_sinks/video_capture/frame_sink_video_capturer_manager.h",
-    "frame_sinks/video_capture/gpu_memory_buffer_video_frame_pool.cc",
-    "frame_sinks/video_capture/gpu_memory_buffer_video_frame_pool.h",
     "frame_sinks/video_capture/in_flight_frame_delivery.cc",
     "frame_sinks/video_capture/in_flight_frame_delivery.h",
+    "frame_sinks/video_capture/mappable_shared_image_video_frame_pool.cc",
+    "frame_sinks/video_capture/mappable_shared_image_video_frame_pool.h",
     "frame_sinks/video_capture/shared_memory_video_frame_pool.cc",
     "frame_sinks/video_capture/shared_memory_video_frame_pool.h",
     "frame_sinks/video_capture/video_capture_overlay.cc",
@@ -225,6 +225,10 @@ viz_component("service") {
     "frame_sinks/video_capture/video_frame_pool.h",
     "frame_sinks/video_detector.cc",
     "frame_sinks/video_detector.h",
+    "gl/exit_code.cc",
+    "gl/exit_code.h",
+    "gl/gpu_log_message_manager.cc",
+    "gl/gpu_log_message_manager.h",
     "gl/gpu_service_impl.cc",
     "gl/gpu_service_impl.h",
     "hit_test/hit_test_aggregator.cc",
@@ -234,6 +238,8 @@ viz_component("service") {
     "hit_test/hit_test_manager.h",
     "input/input_manager.cc",
     "input/input_manager.h",
+    "input/input_on_viz_state_processing_result.cc",
+    "input/input_on_viz_state_processing_result.h",
     "input/peak_gpu_memory_tracker_impl.cc",
     "input/peak_gpu_memory_tracker_impl.h",
     "input/render_input_router_delegate_impl.cc",
@@ -246,6 +252,8 @@ viz_component("service") {
     "input/render_input_router_support_child_frame.h",
     "layers/layer_context_impl.cc",
     "layers/layer_context_impl.h",
+    "layers/viz_layer_tree_host_impl.cc",
+    "layers/viz_layer_tree_host_impl.h",
     "performance_hint/boost_manager.cc",
     "performance_hint/boost_manager.h",
     "performance_hint/hint_session.cc",
@@ -295,24 +303,24 @@ viz_component("service") {
     "//components/input:mojom",
     "//components/startup_metric_utils",
 
-    # Note that dependency on //gpu/ipc/client is for GpuMemoryBufferImpl. This
+    # Note that dependency on //gpu/ipc/client is for MappableBuffer. This
     # dependency should not be in public_deps.
-    "//components/version_info:version_info",
+    "//components/version_info",
+    "//components/viz/client",
     "//components/viz/common",
     "//gpu/command_buffer/client",
     "//gpu/config",
     "//gpu/ipc/client",
-    "//gpu/ipc/common:common",
+    "//gpu/ipc/common",
     "//gpu/ipc/common:surface_handle_type",
     "//gpu/ipc/service",
-    "//gpu/skia_bindings:skia_bindings",
     "//gpu/vulkan:buildflags",
     "//media",
     "//media:media_buildflags",
     "//media/capture:capture_lib",
     "//media/mojo/services",
     "//services/metrics/public/mojom",
-    "//services/tracing/public/cpp:cpp",
+    "//services/tracing/public/cpp",
     "//services/viz/privileged/mojom",
     "//services/webnn:webnn_service",
     "//services/webnn/public/mojom",
@@ -333,6 +341,7 @@ viz_component("service") {
     "//cc",
     "//cc/debug",
     "//components/viz/common",
+    "//components/vrp_flags:buildflags",
     "//gpu/command_buffer/service:gles2",
     "//gpu/ipc/service",
     "//gpu/vulkan:buildflags",
@@ -363,7 +372,7 @@ viz_component("service") {
       "//media/mojo/services",
     ]
 
-    if (use_v4l2_codec || use_vaapi) {
+    if (use_linux_video_acceleration) {
       deps += [ "//chromeos/ash/experiences/arc/video_accelerator" ]
     }
   }
@@ -384,8 +393,22 @@ viz_component("service") {
       sources += [
         "frame_sinks/external_begin_frame_source_mac.cc",
         "frame_sinks/external_begin_frame_source_mac.h",
+        "frame_sinks/external_begin_frame_source_mojo_mac.cc",
+        "frame_sinks/external_begin_frame_source_mojo_mac.h",
       ]
     }
+  }
+
+  if (is_ios) {
+    sources += [
+      "frame_sinks/external_begin_frame_source_mojo_ios.cc",
+      "frame_sinks/external_begin_frame_source_mojo_ios.h",
+    ]
+  } else {
+    sources += [
+      "frame_sinks/external_begin_frame_source_mojo.cc",
+      "frame_sinks/external_begin_frame_source_mojo.h",
+    ]
   }
 
   if (is_android || use_ozone) {
@@ -432,6 +455,8 @@ viz_component("service") {
       "input/fling_scheduler_android.h",
       "input/render_input_router_support_android.cc",
       "input/render_input_router_support_android.h",
+      "input/viz_touch_state_handler.cc",
+      "input/viz_touch_state_handler.h",
     ]
 
     deps += [
@@ -528,7 +553,8 @@ viz_component("service") {
       ]
     }
 
-    # TODO(crbug.com/40193891): ideally, ozone_platform_x11 should not be used outside
+    # TODO(crbug.com/40193891): ideally, ozone_platform_x11 should not be used
+    # outside
     # ui/ozone.
     if (ozone_platform_x11) {
       sources += [
@@ -565,6 +591,10 @@ viz_component("service") {
       "//third_party/dawn/src/dawn/native",
     ]
   }
+
+  if (enable_vrp_flags) {
+    deps += [ "//components/vrp_flags" ]
+  }
 }
 
 viz_source_set("unit_tests") {
@@ -588,14 +618,13 @@ viz_source_set("unit_tests") {
     "display/display_unittest.cc",
     "display/display_utils_unittest.cc",
     "display/draw_polygon_unittest.cc",
+    "display/frame_deadline_decider_unittest.cc",
     "display/frame_interval_decider_unittest.cc",
     "display/frame_interval_matchers_unittest.cc",
-    "display/frame_rate_decider_unittest.cc",
     "display/occlusion_culler_unittest.cc",
     "display/overdraw_tracker_unittest.cc",
     "display/overlay_candidate_factory_unittest.cc",
     "display/readback_pixeltest.cc",
-    "display/renderer_pixeltest.cc",
     "display/resolved_frame_data_unittest.cc",
     "display/software_renderer_unittest.cc",
     "display/surface_aggregator_pixeltest.cc",
@@ -613,6 +642,7 @@ viz_source_set("unit_tests") {
     "frame_sinks/compositor_frame_sink_support_unittest.cc",
     "frame_sinks/frame_sink_bundle_impl_unittest.cc",
     "frame_sinks/frame_sink_manager_unittest.cc",
+    "frame_sinks/frame_sink_throttler_unittest.cc",
     "frame_sinks/surface_references_unittest.cc",
     "frame_sinks/surface_synchronization_unittest.cc",
     "frame_sinks/video_capture/frame_sink_video_capturer_impl_unittest.cc",
@@ -620,15 +650,47 @@ viz_source_set("unit_tests") {
     "frame_sinks/video_capture/video_capture_overlay_unittest.cc",
     "frame_sinks/video_detector_unittest.cc",
     "gl/gpu_service_impl_unittest.cc",
+    "gl/mock_gpu_service_impl.cc",
+    "gl/mock_gpu_service_impl.h",
     "hit_test/hit_test_aggregator_unittest.cc",
     "input/mock_input_manager.cc",
     "input/mock_input_manager.h",
+    "layers/layer_context_impl_animation_unittest.cc",
+    "layers/layer_context_impl_base_unittest.cc",
+    "layers/layer_context_impl_base_unittest.h",
+    "layers/layer_context_impl_layer_tree_unittest.cc",
+    "layers/layer_context_impl_property_trees_unittest.cc",
+    "layers/layer_context_impl_tiling_unittest.cc",
+    "layers/layer_context_impl_unittest.cc",
+    "layers/layer_context_impl_view_transition_unittest.cc",
+    "layers/viz_layer_context_unittest.cc",
+    "layers/viz_layer_context_unittest.h",
+    "layers/viz_layer_tree_host_impl_unittest.cc",
+    "main/viz_compositor_thread_runner_impl_unittest.cc",
     "main/viz_main_impl_unittest.cc",
     "performance_hint/boost_manager_unittest.cc",
     "surfaces/referenced_surface_tracker_unittest.cc",
+    "surfaces/surface_saved_frame_unittest.cc",
     "surfaces/surface_unittest.cc",
     "transitions/transferable_resource_tracker_unittest.cc",
   ]
+
+  if (!is_ios) {
+    # ExternalBeginFrameSourceMojo is only built on non-iOS; iOS uses
+    # ExternalBeginFrameSourceMojoIOS instead.
+    sources += [ "frame_sinks/external_begin_frame_source_mojo_unittest.cc" ]
+  }
+
+  if (!is_android) {
+    sources += [
+      "display/renderer_pixeltest.cc",
+      "display/renderer_pixeltest_delegated_ink.cc",
+      "display/renderer_pixeltest_intersecting_quad.cc",
+      "display/renderer_pixeltest_utils.cc",
+      "display/renderer_pixeltest_utils.h",
+      "display/renderer_pixeltest_video.cc",
+    ]
+  }
 
   if (!use_aura && !is_mac && !is_win) {
     sources -= [ "display_embedder/buffer_queue_unittest.cc" ]
@@ -640,14 +702,16 @@ viz_source_set("unit_tests") {
     "//base",
     "//base/test:test_support",
     "//cc:test_support",
+    "//cc/mojo_embedder",
     "//cc/paint",
     "//components/input",
     "//components/viz/client",
     "//components/viz/common",
     "//components/viz/host",
-    "//components/viz/service/main:main",
+    "//components/viz/service/main",
     "//components/viz/test:test_suite",
     "//components/viz/test:test_support",
+    "//components/vrp_flags:buildflags",
     "//gpu/command_buffer/client",
     "//gpu/command_buffer/client:raster_interface",
     "//gpu/ipc:gl_in_process_context",
@@ -663,6 +727,7 @@ viz_source_set("unit_tests") {
     "//third_party/libyuv",
     "//ui/display/types",
     "//ui/gfx:test_support",
+    "//ui/gfx/animation/keyframe",
     "//ui/gl",
   ]
 
@@ -684,6 +749,7 @@ viz_source_set("unit_tests") {
     sources += [
       "display/overlay_ca_unittest.cc",
       "display_embedder/software_output_device_mac_unittest.mm",
+      "frame_sinks/external_begin_frame_source_mac_unittest.cc",
     ]
     frameworks = [ "IOSurface.framework" ]
   }
@@ -692,7 +758,11 @@ viz_source_set("unit_tests") {
     sources += [
       "display/overlay_dc_unittest.cc",
       "display_embedder/output_device_backing_unittest.cc",
+      "display_embedder/skia_output_device_dcomp_unittest.cc",
+      "display_embedder/software_output_device_win_swapchain_unittest.cc",
       "display_embedder/software_output_device_win_unittest.cc",
+      "display_embedder/test_support/dcomp_mocks.cc",
+      "display_embedder/test_support/dcomp_mocks.h",
     ]
 
     deps += [
@@ -714,6 +784,7 @@ viz_source_set("unit_tests") {
       "frame_sinks/external_begin_frame_source_android_unittest.cc",
       "frame_sinks/fling_scheduler_android_unittest.cc",
       "input/android_state_transfer_handler_unittest.cc",
+      "input/viz_touch_state_handler_unittest.cc",
     ]
     deps += [ "//ui/events:motionevent_jni_headers" ]
   }
@@ -744,8 +815,10 @@ viz_source_set("perf_tests") {
     "//cc",
     "//cc:test_support",
     "//cc/base",
-    "//components/viz/client:client",
+    "//cc/mojo_embedder",
+    "//components/viz/client",
     "//components/viz/test:test_support",
+    "//components/vrp_flags:buildflags",
     "//testing/gtest",
     "//testing/perf",
     "//third_party/zlib/google:zip",
@@ -761,6 +834,7 @@ fuzzer_test("hit_test_manager_fuzzer") {
     ":service",
     "//base/test:test_support",
     "//components/viz/test:test_support",
+    "//components/vrp_flags:buildflags",
     "//ui/gfx:test_support",
   ]
 }
@@ -770,6 +844,7 @@ if (is_android) {
     deps = [
       "//base:base_java",
       "//build/android:build_java",
+      "//components/vrp_flags:buildflags",
       "//third_party/androidx:androidx_annotation_annotation_java",
       "//third_party/jni_zero:jni_zero_java",
       "//ui/android:ui_no_recycler_view_java",
@@ -792,10 +867,66 @@ if (is_android) {
   }
 }
 
+import("//mojo/public/tools/fuzzers/mojolpm.gni")
+
+mojolpm_fuzzer_test("layer_context_impl_mojolpm_fuzzer") {
+  sources = [
+    "layers/layer_context_impl_base_unittest.cc",
+    "layers/layer_context_impl_base_unittest.h",
+    "layers/layer_context_impl_mojolpm_fuzzer.cc",
+  ]
+
+  proto_source = "layers/layer_context_impl_mojolpm_fuzzer.proto"
+
+  seed_corpus_sources = [
+    "layers/layer_context_impl_mojolpm_fuzzer_seed_corpus/simple.textproto",
+  ]
+  testcase_proto_kind = "viz.fuzzing.layer_context.proto.Testcase"
+
+  deps = [
+    ":service",
+    "//base",
+    "//base/test:test_support",
+    "//components/viz/test:test_support",
+    "//mojo/core/embedder",
+    "//mojo/public/tools/fuzzers:mojolpm",
+    "//services/viz/public/mojom:mojom_mojolpm",
+    "//testing/gtest",
+  ]
+
+  proto_deps = [ "//services/viz/public/mojom:mojom_mojolpm" ]
+}
+
+mojolpm_fuzzer_test("compositor_frame_sink_mojolpm_fuzzer") {
+  sources = [ "frame_sinks/compositor_frame_sink_mojolpm_fuzzer.cc" ]
+
+  proto_source = "frame_sinks/compositor_frame_sink_mojolpm_fuzzer.proto"
+
+  seed_corpus_sources = [ "frame_sinks/compositor_frame_sink_mojolpm_fuzzer_seed_corpus/simple.textproto" ]
+  testcase_proto_kind = "viz.fuzzing.compositor_frame_sink.proto.Testcase"
+
+  deps = [
+    ":service",
+    "//base",
+    "//base/test:test_support",
+    "//components/viz/test:test_support",
+    "//mojo/core/embedder",
+    "//mojo/public/tools/fuzzers:mojolpm",
+    "//services/viz/public/mojom:mojom_mojolpm",
+    "//testing/gtest",
+  ]
+
+  proto_deps = [ "//services/viz/public/mojom:mojom_mojolpm" ]
+}
+
 group("viz_service_fuzzers") {
   testonly = true
-  deps = [
-    ":hit_test_manager_fuzzer",
-    "compositor_frame_fuzzer:compositor_frame_fuzzer",
-  ]
+  deps = [ ":hit_test_manager_fuzzer" ]
+
+  if (enable_mojom_fuzzer) {
+    deps += [
+      ":compositor_frame_sink_mojolpm_fuzzer",
+      ":layer_context_impl_mojolpm_fuzzer",
+    ]
+  }
 }

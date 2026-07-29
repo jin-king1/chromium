@@ -20,7 +20,6 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/values.h"
-#include "build/branding_buildflags.h"
 #include "build/buildflag.h"
 #include "chrome/browser/apps/app_discovery_service/recommended_arc_apps/recommend_apps_fetcher.h"
 #include "chrome/browser/apps/app_discovery_service/recommended_arc_apps/recommend_apps_fetcher_delegate.h"
@@ -51,12 +50,10 @@
 #include "chrome/browser/chrome_browser_main.h"
 #include "chrome/browser/chrome_browser_main_extra_parts.h"
 #include "chrome/browser/extensions/api/quick_unlock_private/quick_unlock_private_api.h"
-#include "chrome/browser/lifetime/application_lifetime.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
 #include "chrome/browser/ui/webui/ash/login/ai_intro_screen_handler.h"
 #include "chrome/browser/ui/webui/ash/login/app_downloading_screen_handler.h"
-#include "chrome/browser/ui/webui/ash/login/assistant_optin_flow_screen_handler.h"
 #include "chrome/browser/ui/webui/ash/login/choobe_screen_handler.h"
 #include "chrome/browser/ui/webui/ash/login/consumer_update_screen_handler.h"
 #include "chrome/browser/ui/webui/ash/login/display_size_screen_handler.h"
@@ -75,7 +72,6 @@
 #include "chrome/browser/ui/webui/ash/login/user_creation_screen_handler.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/test/base/fake_gaia_mixin.h"
-#include "chromeos/ash/components/assistant/buildflags.h"
 #include "chromeos/ash/components/attestation/stub_attestation_features.h"
 #include "chromeos/ash/components/dbus/attestation/attestation_client.h"
 #include "chromeos/ash/components/dbus/constants/attestation_constants.h"
@@ -313,35 +309,7 @@ void HandleGeminiIntroScreen() {
   LOG(INFO) << "OobeInteractiveUITest: 'gemini-intro' screen done.";
 }
 
-// Waits for AssistantOptInFlowScreen to be shown, skips the opt-in, and waits
-// for the flow to move away from the screen.
-// Note that due to test setup, the screen will fail to load assistant value
-// proposal error (as the URL is not faked in this test), and display an
-// error, This is good enough for this tests, whose goal is to verify the
-// screen is shown, and how the setup progresses after the screen. The actual
-// assistant opt-in flow is tested separately.
-void HandleAssistantOptInScreen() {
-#if BUILDFLAG(ENABLE_CROS_LIBASSISTANT)
-  OobeScreenWaiter(AssistantOptInFlowScreenView::kScreenId).Wait();
-  LOG(INFO) << "OobeInteractiveUITest: Switched to 'assistant-optin' screen.";
 
-  EXPECT_FALSE(LoginScreenTestApi::IsShutdownButtonShown());
-  EXPECT_FALSE(LoginScreenTestApi::IsGuestButtonShown());
-  EXPECT_FALSE(LoginScreenTestApi::IsAddUserButtonShown());
-
-  test::OobeJS()
-      .CreateVisibilityWaiter(true, {"assistant-optin-flow", "card", "loading"})
-      ->Wait();
-
-  std::initializer_list<std::string_view> skip_button_path = {
-      "assistant-optin-flow", "card", "loading", "skip-button"};
-  test::OobeJS().CreateEnabledWaiter(true, skip_button_path)->Wait();
-  test::OobeJS().TapOnPath(skip_button_path);
-
-  OobeScreenExitWaiter(AssistantOptInFlowScreenView::kScreenId).Wait();
-  LOG(INFO) << "OobeInteractiveUITest: 'assistant-optin' screen done.";
-#endif
-}
 
 // Waits for gesture navigation to get shown, runs through all pages in the
 // screen, and waits for the screen to exit.
@@ -482,14 +450,14 @@ class FakeRecommendAppsFetcher : public apps::RecommendAppsFetcher {
 
   // RecommendAppsFetcher:
   void Start() override {
-    base::Value::Dict app;
+    base::DictValue app;
     app.Set("packageName", "test.package");
     app.Set("title", "TestName");
-    base::Value::Dict big_app;
+    base::DictValue big_app;
     big_app.Set("androidApp", std::move(app));
-    base::Value::List app_list;
+    base::ListValue app_list;
     app_list.Append(std::move(big_app));
-    base::Value::Dict response_dict;
+    base::DictValue response_dict;
     response_dict.Set("recommendedApp", std::move(app_list));
     delegate_->OnLoadSuccess(base::Value(std::move(response_dict)));
   }
@@ -724,7 +692,9 @@ class OobeInteractiveUITest : public OobeBaseTest,
     // If the login display is still showing, exit gracefully.
     if (LoginDisplayHost::default_host()) {
       base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
-          FROM_HERE, base::BindOnce(&chrome::AttemptExit));
+          FROM_HERE, base::BindOnce([]() {
+            session_manager::SessionManager::Get()->RequestSignOut();
+          }));
       RunUntilBrowserProcessQuits();
     }
     OobeBaseTest::TearDownOnMainThread();
@@ -795,9 +765,7 @@ void OobeInteractiveUITest::PerformSessionSignInSteps() {
       test::TapUserCreationNext();
     }
 
-    if (features::IsOobeGaiaInfoScreenEnabled()) {
-      HandleGaiaInfoScreen();
-    }
+    HandleGaiaInfoScreen();
   }
 
   WaitForGaiaSignInScreen();
@@ -841,10 +809,6 @@ void OobeInteractiveUITest::PerformSessionSignInSteps() {
 
   HandleGeminiIntroScreen();
 
-  if (!features::IsOobeSkipAssistantEnabled()) {
-    HandleAssistantOptInScreen();
-  }
-
   if (test_setup()->is_tablet() &&
       test_setup()->hide_shelf_controls_in_tablet_mode()) {
     HandleGestureNavigationScreen();
@@ -875,7 +839,7 @@ void OobeInteractiveUITest::SimpleEndToEnd() {
 }
 
 // Disabled on *San bots since they time out.
-// crbug.com/1260131: SimpleEndToEnd is flaky on builder "linux-chromeos-dbg"
+// crbug.com/40798039: SimpleEndToEnd is flaky on builder "linux-chromeos-dbg"
 #if defined(MEMORY_SANITIZER) || defined(ADDRESS_SANITIZER) || \
     defined(LEAK_SANITIZER) || !defined(NDEBUG)
 #define MAYBE_SimpleEndToEnd DISABLED_SimpleEndToEnd
@@ -963,8 +927,8 @@ void OobeZeroTouchInteractiveUITest::ZeroTouchEndToEnd() {
   WaitForLoginDisplayHostShutdown();
 }
 
-// crbug.com/997987. Disabled on MSAN since they time out.
-// crbug.com/1055853: EndToEnd is flaky on Linux Chromium OS ASan LSan
+// crbug.com/40642229. Disabled on MSAN since they time out.
+// crbug.com/40120095: EndToEnd is flaky on Linux Chromium OS ASan LSan
 #if defined(MEMORY_SANITIZER) || defined(ADDRESS_SANITIZER) || \
     defined(LEAK_SANITIZER) || !defined(NDEBUG)
 #define MAYBE_EndToEnd DISABLED_EndToEnd

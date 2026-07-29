@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "net/socket/transport_client_socket_test_util.h"
 
 #include <string>
@@ -100,7 +95,13 @@ void TransportClientSocketTest::SetUp() {
   AddressList addr = AddressList::CreateFromIPAddress(
       IPAddress::IPv4Localhost(), listen_port_);
   sock_ = socket_factory_->CreateTransportClientSocket(
-      addr, nullptr, nullptr, NetLog::Get(), NetLogSource());
+      addr,
+      // Currently no tests that rely on this test multi-network scenarios.
+      // This makes it safe to always target the default network. Consider
+      // exposing a `target_network` parameter to this method if
+      // this changes.
+      handles::kInvalidNetworkHandle, nullptr, nullptr, NetLog::Get(),
+      NetLogSource());
 }
 
 void TransportClientSocketTest::EstablishConnection(
@@ -277,9 +278,8 @@ TEST_F(TransportClientSocketTest, FullDuplex_ReadFirst) {
   EXPECT_THAT(rv, IsError(ERR_IO_PENDING));
 
   const int kWriteBufLen = 64 * 1024;
-  auto request_buffer = base::MakeRefCounted<IOBufferWithSize>(kWriteBufLen);
-  char* request_data = request_buffer->data();
-  memset(request_data, 'A', kWriteBufLen);
+  auto request_buffer = base::MakeRefCounted<VectorIOBuffer>(
+      std::vector<uint8_t>(kWriteBufLen, 'A'));
   TestCompletionCallback write_callback;
 
   int bytes_written = 0;
@@ -309,9 +309,8 @@ TEST_F(TransportClientSocketTest, FullDuplex_WriteFirst) {
   EstablishConnection(&callback);
 
   const int kWriteBufLen = 64 * 1024;
-  auto request_buffer = base::MakeRefCounted<IOBufferWithSize>(kWriteBufLen);
-  char* request_data = request_buffer->data();
-  memset(request_data, 'A', kWriteBufLen);
+  auto request_buffer = base::MakeRefCounted<VectorIOBuffer>(
+      std::vector<uint8_t>(kWriteBufLen, 'A'));
   TestCompletionCallback write_callback;
 
   int bytes_written = 0;

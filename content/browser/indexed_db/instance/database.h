@@ -8,10 +8,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <map>
+#include <list>
 #include <memory>
+#include <set>
 #include <string>
-#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -19,36 +19,30 @@
 #include "base/functional/callback.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
-#include "base/memory/ref_counted.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/time/time.h"
 #include "components/services/storage/indexed_db/locks/partitioned_lock_manager.h"
 #include "components/services/storage/public/cpp/buckets/bucket_locator.h"
 #include "content/browser/indexed_db/indexed_db_value.h"
 #include "content/browser/indexed_db/instance/backing_store.h"
 #include "content/browser/indexed_db/instance/connection_coordinator.h"
-#include "content/browser/indexed_db/instance/factory_client.h"
 #include "content/browser/indexed_db/instance/pending_connection.h"
-#include "content/browser/indexed_db/list_set.h"
 #include "content/common/content_export.h"
 #include "third_party/blink/public/common/indexeddb/indexeddb_key.h"
 #include "third_party/blink/public/mojom/indexeddb/indexeddb.mojom-forward.h"
 
 namespace blink {
-class IndexedDBKeyPath;
 class IndexedDBKeyRange;
 struct IndexedDBDatabaseMetadata;
-struct IndexedDBIndexMetadata;
-struct IndexedDBObjectStoreMetadata;
 }  // namespace blink
 
 namespace content::indexed_db {
 class BucketContext;
+struct IndexedDBDataLossInfo;
 class Connection;
 class DatabaseCallbacks;
 class Transaction;
-struct IndexedDBValue;
-enum class CursorType;
 
 // This class maps to a single IDB database:
 // https://www.w3.org/TR/IndexedDB/#database
@@ -56,63 +50,65 @@ enum class CursorType;
 // It is created and operated on a bucket thread.
 class CONTENT_EXPORT Database {
  public:
-  // Identifier is pair of (bucket_locator, database name).
-  using Identifier = std::pair<storage::BucketLocator, std::u16string>;
   // Used to report irrecoverable backend errors. The second argument can be
   // null.
   using ErrorCallback = base::RepeatingCallback<void(Status, const char*)>;
 
-  static const int64_t kInvalidId = 0;
-  static const int64_t kMinimumIndexId = 30;
-
-  Database(const std::u16string& name,
-           BucketContext& bucket_context,
-           const Identifier& unique_identifier);
+  Database(const std::u16string& name, BucketContext& bucket_context);
 
   Database(const Database&) = delete;
   Database& operator=(const Database&) = delete;
 
   virtual ~Database();
 
-  const Identifier& identifier() const { return identifier_; }
   BackingStore* backing_store();
+  BackingStore::Database* backing_store_db() { return backing_store_db_.get(); }
   PartitionedLockManager& lock_manager();
 
-  int64_t id() const { return metadata_.id; }
-  const std::u16string& name() const { return metadata_.name; }
-  const storage::BucketLocator& bucket_locator() const {
-    return identifier_.first;
+  const blink::IndexedDBDatabaseMetadata& metadata() const {
+    return backing_store_db_->GetMetadata();
   }
-  const blink::IndexedDBDatabaseMetadata& metadata() const { return metadata_; }
+  const std::u16string& name() const { return name_; }
+  int64_t version() const;
+  bool IsInitialized() const;
 
-  const list_set<Connection*>& connections() const { return connections_; }
+  // Called to permanently delete the database wrapped by `this`. Will call
+  // `on_complete` and release `locks` when done. This may be called more than
+  // once, in which case latter calls are a no-op, and `on_complete` will not be
+  // called. Returns an error, or the latest version of the deleted database
+  // if successful, or 0 if the database had already been deleted.
+  StatusOr<int64_t> DeleteDatabase(std::vector<PartitionedLock> locks,
+                                   base::OnceClosure on_complete);
 
-  enum class RunTasksResult { kDone, kError, kCanBeDestroyed };
-  std::tuple<RunTasksResult, Status> RunTasks();
+  // Builds the set of lock requests for the given transaction `mode` and
+  // `scope`. `scope` is used iff `mode` is not `VersionChange`.
+  std::vector<PartitionedLockManager::PartitionedLockRequest>
+  BuildLockRequestsForTransaction(blink::mojom::IDBTransactionMode mode,
+                                  const std::set<int64_t>& scope) const;
+
+  const std::list<raw_ptr<Connection>>& connections() const {
+    return connections_;
+  }
+
+  size_t GetNumTransactionsAcrossAllConnections() const;
+
+  Status RunTasks();
   void RegisterAndScheduleTransaction(Transaction* transaction);
 
-  // The database object (this object) must be kept alive for the duration of
-  // this call. This means the caller should own an
-  // BucketContextHandle while calling this methods.
-  Status ForceCloseAndRunTasks();
+  // This closes connections and their transactions, and tells the connection
+  // coordinator to cancel all currently pending requests. New requests can be
+  // issued after this function returns and will be processed as usual.
+  void ForceCloseConnectionsAndCancelRequests(const std::string& message);
 
-  void ScheduleOpenConnection(std::unique_ptr<PendingConnection> connection);
+  void ScheduleOpenConnection(std::unique_ptr<PendingConnection> connection,
+                              base::TimeDelta synchronous_duration);
 
-  void ScheduleDeleteDatabase(std::unique_ptr<FactoryClient> factory_client,
-                              base::OnceClosure on_deletion_complete);
-
-  void AddObjectStoreToMetadata(blink::IndexedDBObjectStoreMetadata metadata,
-                                int64_t new_max_object_store_id);
-  blink::IndexedDBObjectStoreMetadata RemoveObjectStoreFromMetadata(
-      int64_t object_store_id);
-  void AddIndexToMetadata(int64_t object_store_id,
-                          blink::IndexedDBIndexMetadata metadata,
-                          int64_t new_max_index_id);
-  blink::IndexedDBIndexMetadata RemoveIndexFromMetadata(int64_t object_store_id,
-                                                        int64_t index_id);
-
-  // The following methods all schedule a task on the transaction & modify the
-  // database:
+  // `on_deletion_complete` is called only if the database existed and was
+  // actually deleted.
+  void ScheduleDeleteDatabase(
+      mojo::AssociatedRemote<blink::mojom::IDBFactoryClient> factory_client,
+      base::OnceClosure on_deletion_complete,
+      base::TimeDelta synchronous_duration);
 
   // Number of connections that have progressed passed initial open call.
   size_t ConnectionCount() const { return connections_.size(); }
@@ -128,84 +124,14 @@ class CONTENT_EXPORT Database {
     return connection_coordinator_.PendingOpenDeleteCount();
   }
 
-  // The following methods are all of the ones actually scheduled asynchronously
-  // within transctions:
-  Status CreateObjectStoreOperation(int64_t object_store_id,
-                                    const std::u16string& name,
-                                    const blink::IndexedDBKeyPath& key_path,
-                                    bool auto_increment,
-                                    Transaction* transaction);
-
-  void CreateObjectStoreAbortOperation(int64_t object_store_id);
-
-  Status DeleteObjectStoreOperation(int64_t object_store_id,
-                                    Transaction* transaction);
-  void DeleteObjectStoreAbortOperation(
-      blink::IndexedDBObjectStoreMetadata object_store_metadata);
-
-  Status RenameObjectStoreOperation(int64_t object_store_id,
-                                    const std::u16string& new_name,
-                                    Transaction* transaction);
-  void RenameObjectStoreAbortOperation(int64_t object_store_id,
-                                       std::u16string old_name);
-
   Status VersionChangeOperation(int64_t version, Transaction* transaction);
-  void VersionChangeAbortOperation(int64_t previous_version);
-
-  Status CreateIndexOperation(int64_t object_store_id,
-                              int64_t index_id,
-                              const std::u16string& name,
-                              const blink::IndexedDBKeyPath& key_path,
-                              bool unique,
-                              bool multi_entry,
-                              Transaction* transaction);
-  void CreateIndexAbortOperation(int64_t object_store_id, int64_t index_id);
-
-  Status DeleteIndexOperation(int64_t object_store_id,
-                              int64_t index_id,
-                              Transaction* transaction);
-  void DeleteIndexAbortOperation(int64_t object_store_id,
-                                 blink::IndexedDBIndexMetadata index_metadata);
-
-  Status RenameIndexOperation(int64_t object_store_id,
-                              int64_t index_id,
-                              const std::u16string& new_name,
-                              Transaction* transaction);
-  void RenameIndexAbortOperation(int64_t object_store_id,
-                                 int64_t index_id,
-                                 std::u16string old_name);
 
   Status GetOperation(int64_t object_store_id,
                       int64_t index_id,
-                      std::unique_ptr<blink::IndexedDBKeyRange> key_range,
-                      indexed_db::CursorType cursor_type,
+                      blink::IndexedDBKeyRange key_range,
+                      bool key_only,
                       blink::mojom::IDBDatabase::GetCallback callback,
                       Transaction* transaction);
-
-  struct CONTENT_EXPORT PutOperationParams {
-    PutOperationParams();
-
-    PutOperationParams(const PutOperationParams&) = delete;
-    PutOperationParams& operator=(const PutOperationParams&) = delete;
-
-    ~PutOperationParams();
-    int64_t object_store_id;
-    IndexedDBValue value;
-    std::unique_ptr<blink::IndexedDBKey> key;
-    blink::mojom::IDBPutMode put_mode;
-    blink::mojom::IDBTransaction::PutCallback callback;
-    std::vector<blink::IndexedDBIndexKeys> index_keys;
-  };
-  Status PutOperation(std::unique_ptr<PutOperationParams> params,
-                      Transaction* transaction);
-
-  Status SetIndexKeysOperation(
-      int64_t object_store_id,
-      std::unique_ptr<blink::IndexedDBKey> primary_key,
-      const std::vector<blink::IndexedDBIndexKeys>& index_keys,
-      Transaction* transaction);
-
-  Status SetIndexesReadyOperation(size_t index_count, Transaction* transaction);
 
   struct OpenCursorOperationParams {
     OpenCursorOperationParams();
@@ -217,9 +143,9 @@ class CONTENT_EXPORT Database {
     ~OpenCursorOperationParams();
     int64_t object_store_id;
     int64_t index_id;
-    std::unique_ptr<blink::IndexedDBKeyRange> key_range;
+    blink::IndexedDBKeyRange key_range;
     blink::mojom::IDBCursorDirection direction;
-    indexed_db::CursorType cursor_type;
+    bool key_only;
     blink::mojom::IDBTaskType task_type;
     blink::mojom::IDBDatabase::OpenCursorCallback callback;
   };
@@ -229,13 +155,13 @@ class CONTENT_EXPORT Database {
 
   Status CountOperation(int64_t object_store_id,
                         int64_t index_id,
-                        std::unique_ptr<blink::IndexedDBKeyRange> key_range,
+                        blink::IndexedDBKeyRange key_range,
                         blink::mojom::IDBDatabase::CountCallback callback,
                         Transaction* transaction);
 
   Status DeleteRangeOperation(
       int64_t object_store_id,
-      std::unique_ptr<blink::IndexedDBKeyRange> key_range,
+      blink::IndexedDBKeyRange key_range,
       blink::mojom::IDBDatabase::DeleteRangeCallback success_callback,
       Transaction* transaction);
 
@@ -253,20 +179,16 @@ class CONTENT_EXPORT Database {
   base::OnceCallback<Status(Transaction*)> CreateGetAllOperation(
       int64_t object_store_id,
       int64_t index_id,
-      std::unique_ptr<blink::IndexedDBKeyRange> key_range,
+      blink::IndexedDBKeyRange key_range,
       blink::mojom::IDBGetAllResultType result_type,
-      int64_t max_count,
+      uint32_t max_count,
       blink::mojom::IDBCursorDirection direction,
       blink::mojom::IDBDatabase::GetAllCallback callback,
       Transaction* transaction);
 
   bool IsObjectStoreIdInMetadata(int64_t object_store_id) const;
-  bool IsObjectStoreIdAndIndexIdInMetadata(int64_t object_store_id,
-                                           int64_t index_id) const;
   bool IsObjectStoreIdAndMaybeIndexIdInMetadata(int64_t object_store_id,
                                                 int64_t index_id) const;
-  bool IsObjectStoreIdInMetadataAndIndexNotInMetadata(int64_t object_store_id,
-                                                      int64_t index_id) const;
 
   // Returns metadata relevant to idb-internals.
   storage::mojom::IdbDatabaseMetadataPtr GetIdbInternalsMetadata() const;
@@ -276,13 +198,10 @@ class CONTENT_EXPORT Database {
 
   base::WeakPtr<Database> AsWeakPtr() { return weak_factory_.GetWeakPtr(); }
 
-  void AddConnectionForTesting(Connection* connection) {
-    connections_.insert(connection);
-  }
+  bool CanBeDestroyed();
 
  protected:
   friend class Transaction;
-  friend class ConnectionCoordinator;
   friend class ConnectionCoordinator::ConnectionRequest;
   friend class ConnectionCoordinator::OpenRequest;
   friend class ConnectionCoordinator::DeleteRequest;
@@ -294,6 +213,7 @@ class CONTENT_EXPORT Database {
   FRIEND_TEST_ALL_PREFIXES(DatabaseOperationTest,
                            IndexGetAllKeysWithInvalidIndexId);
   friend class DatabaseOperationTest;
+  friend class TransactionTestBase;
 
   void CallUpgradeTransactionStartedForTesting(int64_t old_version);
 
@@ -302,18 +222,21 @@ class CONTENT_EXPORT Database {
   class DeleteRequest;
 
   Status OpenInternal();
+  const IndexedDBDataLossInfo& GetDataLossInfo() const;
 
-  // This class informs its result sink of an error if a `GetAllOperation` is
-  // deleted without being run. This functionality mimics that of
-  // AbortOnDestruct callbacks. `GetAll()` cannot easily be shoe-horned into the
-  // abort-on-destruct callback templating.
+  // This class manages sending GetAll results. It can send records directly
+  // via the callback (for small result sets) or create a sink for streaming
+  // larger result sets. If destroyed without completing, it reports an error.
   class CONTENT_EXPORT GetAllResultSinkWrapper {
    public:
     GetAllResultSinkWrapper(base::WeakPtr<Transaction> transaction,
                             blink::mojom::IDBDatabase::GetAllCallback callback);
     ~GetAllResultSinkWrapper();
 
-    mojo::AssociatedRemote<blink::mojom::IDBDatabaseGetAllResultSink>& Get();
+    void SendResults(std::vector<blink::mojom::IDBRecordPtr> records,
+                     bool done);
+
+    void SendError(blink::mojom::IDBErrorPtr error);
 
     // An override for unit tests to bind the associated receiver successfully
     // without a pre-existing endpoint entanglement.
@@ -322,6 +245,10 @@ class CONTENT_EXPORT Database {
     }
 
    private:
+    // Passes `initial_records` to the frontend and creates `result_sink_` for
+    // returning more records (or errors).
+    void SetUpSink(std::vector<blink::mojom::IDBRecordPtr> initial_records);
+
     base::WeakPtr<Transaction> transaction_;
     blink::mojom::IDBDatabase::GetAllCallback callback_;
     mojo::AssociatedRemote<blink::mojom::IDBDatabaseGetAllResultSink>
@@ -331,9 +258,9 @@ class CONTENT_EXPORT Database {
 
   Status GetAllOperation(int64_t object_store_id,
                          int64_t index_id,
-                         std::unique_ptr<blink::IndexedDBKeyRange> key_range,
+                         blink::IndexedDBKeyRange key_range,
                          blink::mojom::IDBGetAllResultType result_type,
-                         int64_t max_count,
+                         uint32_t max_count,
                          blink::mojom::IDBCursorDirection direction,
                          std::unique_ptr<GetAllResultSinkWrapper> result_sink,
                          Transaction* transaction);
@@ -352,7 +279,9 @@ class CONTENT_EXPORT Database {
       mojo::Remote<storage::mojom::IndexedDBClientStateChecker>
           client_state_checker,
       base::UnguessableToken client_token,
-      int scheduling_priority);
+      int scheduling_priority,
+      // Not called during a force close.
+      base::OnceClosure on_connection_close = {});
 
   // Ack that one of the connections notified with a "versionchange" event did
   // not promptly close. Therefore a "blocked" event should be fired at the
@@ -366,12 +295,8 @@ class CONTENT_EXPORT Database {
 
   // This can only be called when the given connection is closed and no longer
   // has any transaction objects.
-  void ConnectionClosed(Connection* connection);
-
-  bool CanBeDestroyed();
-
-  std::vector<PartitionedLockManager::PartitionedLockRequest>
-  BuildLockRequestsFromTransaction(Transaction* transaction) const;
+  void ConnectionClosed(base::OnceClosure forward_on_close,
+                        Connection& connection);
 
   // In rare cases there are a very large number of queued
   // requests/transactions, so calculations related to blocking or blocked
@@ -387,20 +312,32 @@ class CONTENT_EXPORT Database {
       std::vector<PartitionedLockManager::PartitionedLockRequest>&
           lock_requests);
 
-  // `metadata_` may not be fully initialized, but its `name` will always be
-  // valid.
-  blink::IndexedDBDatabaseMetadata metadata_;
+  // Returns `nullptr` if the object store does not exist.
+  const blink::IndexedDBObjectStoreMetadata* GetObjectStoreMetadataIfExists(
+      int64_t object_store_id) const;
 
-  const Identifier identifier_;
+  // Gets metadata for the given object store ID, asserting that the object
+  // store exists.
+  const blink::IndexedDBObjectStoreMetadata& GetObjectStoreMetadata(
+      int64_t object_store_id) const;
+
+  std::u16string name_;
 
   // The object that owns `this`.
   raw_ref<BucketContext> bucket_context_;
 
-  list_set<Connection*> connections_;
+  // `list` because iteration order is important.
+  std::list<raw_ptr<Connection>> connections_;
 
-  bool force_closing_ = false;
+  // True only while `ForceCloseConnectionsAndCancelRequests()` is
+  // (synchronously) running.
+  bool closing_all_connections_ = false;
 
   ConnectionCoordinator connection_coordinator_;
+
+  // Null until `OpenInternal()` is called successfully, as well as after the
+  // database has been deleted via `DeleteDatabase()`.
+  std::unique_ptr<BackingStore::Database> backing_store_db_;
 
   // `weak_factory_` is used for all callback uses.
   base::WeakPtrFactory<Database> weak_factory_{this};

@@ -22,6 +22,8 @@
 #include "components/viz/test/test_surface_id_allocator.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/skia/modules/skcms/skcms.h"
+#include "ui/gfx/geometry/rrect_f.h"
+#include "ui/gfx/geometry/skia_conversions.h"
 
 namespace gfx {
 struct HDRMetadata;
@@ -32,10 +34,10 @@ namespace {
 
 TEST(RenderPassIOTest, Default) {
   auto render_pass0 = CompositorRenderPass::Create();
-  base::Value::Dict dict0 = CompositorRenderPassToDict(*render_pass0);
+  base::DictValue dict0 = CompositorRenderPassToDict(*render_pass0);
   auto render_pass1 = CompositorRenderPassFromDict(dict0);
   EXPECT_TRUE(render_pass1);
-  base::Value::Dict dict1 = CompositorRenderPassToDict(*render_pass1);
+  base::DictValue dict1 = CompositorRenderPassToDict(*render_pass1);
   EXPECT_EQ(dict0, dict1);
 }
 
@@ -65,9 +67,11 @@ TEST(RenderPassIOTest, FilterOperations) {
     // Set backdrop filter bounds.
     gfx::RRectF rrect(gfx::RectF(2.f, 3.f, 4.f, 5.f), 1.5f);
     ASSERT_EQ(gfx::RRectF::Type::kSingle, rrect.GetType());
-    render_pass0->backdrop_filter_bounds = rrect;
+    render_pass0->backdrop_filter_bounds = SkPath::RRect(SkRRect::MakeRectXY(
+        gfx::RectFToSkRect(rrect.rect()), rrect.GetSimpleRadii().x(),
+        rrect.GetSimpleRadii().y()));
   }
-  base::Value::Dict dict0 = CompositorRenderPassToDict(*render_pass0);
+  base::DictValue dict0 = CompositorRenderPassToDict(*render_pass0);
   auto render_pass1 = CompositorRenderPassFromDict(dict0);
   EXPECT_TRUE(render_pass1);
   {
@@ -102,15 +106,19 @@ TEST(RenderPassIOTest, FilterOperations) {
   {
     // Verify backdrop filter bounds are as expected.
     EXPECT_TRUE(render_pass1->backdrop_filter_bounds.has_value());
-    EXPECT_TRUE(render_pass0->backdrop_filter_bounds->Equals(
-        render_pass1->backdrop_filter_bounds.value()));
-    EXPECT_EQ(gfx::RRectF::Type::kSingle,
-              render_pass1->backdrop_filter_bounds->GetType());
-    EXPECT_EQ(1.5f, render_pass1->backdrop_filter_bounds->GetSimpleRadius());
-    EXPECT_EQ(gfx::RectF(2.f, 3.f, 4.f, 5.f),
-              render_pass1->backdrop_filter_bounds->rect());
+    SkRRect backdrop_filter_as_rect_0;
+    SkRRect backdrop_filter_as_rect_1;
+    EXPECT_TRUE(render_pass0->backdrop_filter_bounds->isRRect(
+        &backdrop_filter_as_rect_0));
+    EXPECT_TRUE(render_pass1->backdrop_filter_bounds->isRRect(
+        &backdrop_filter_as_rect_1));
+    EXPECT_EQ(backdrop_filter_as_rect_0, backdrop_filter_as_rect_1);
+    EXPECT_EQ(backdrop_filter_as_rect_1.type(), SkRRect::kSimple_Type);
+    EXPECT_EQ(1.5f, backdrop_filter_as_rect_1.getSimpleRadii().x());
+    EXPECT_EQ(SkRect::MakeXYWH(2.f, 3.f, 4.f, 5.f),
+              backdrop_filter_as_rect_1.rect());
   }
-  base::Value::Dict dict1 = CompositorRenderPassToDict(*render_pass1);
+  base::DictValue dict1 = CompositorRenderPassToDict(*render_pass1);
   EXPECT_EQ(dict0, dict1);
 }
 
@@ -135,7 +143,7 @@ TEST(RenderPassIOTest, SharedQuadStateList) {
         /*opacity_f=*/0.5f, SkBlendMode::kDstOver, /*sorting_context=*/101,
         /*layer_id=*/0u, /*fast_rounded_corner=*/true);
   }
-  base::Value::Dict dict0 = CompositorRenderPassToDict(*render_pass0);
+  base::DictValue dict0 = CompositorRenderPassToDict(*render_pass0);
   auto render_pass1 = CompositorRenderPassFromDict(dict0);
   ASSERT_TRUE(render_pass1);
   {
@@ -181,16 +189,15 @@ TEST(RenderPassIOTest, SharedQuadStateList) {
     EXPECT_EQ(101, sqs1->sorting_context_id);
     EXPECT_TRUE(sqs1->is_fast_rounded_corner);
   }
-  base::Value::Dict dict1 = CompositorRenderPassToDict(*render_pass1);
+  base::DictValue dict1 = CompositorRenderPassToDict(*render_pass1);
   EXPECT_EQ(dict0, dict1);
 }
 
 TEST(RenderPassIOTest, QuadList) {
-  const size_t kSharedQuadStateCount = 4;
+  const size_t kSharedQuadStateCount = 3;
   size_t quad_count = 0;
   const std::array<DrawQuad::Material, 8> kQuadMaterials = {
       DrawQuad::Material::kSolidColor,
-      DrawQuad::Material::kTextureContent,  // is_stream_video set to true.
       DrawQuad::Material::kVideoHole,
       DrawQuad::Material::kTextureContent,
       DrawQuad::Material::kCompositorRenderPass,
@@ -221,21 +228,7 @@ TEST(RenderPassIOTest, QuadList) {
       ++quad_count;
     }
     {
-      // 2. TextureDrawQuad with is_stream_video set to true.
-      TextureDrawQuad* quad =
-          render_pass0->CreateAndAppendDrawQuad<TextureDrawQuad>();
-      quad->SetAll(render_pass0->shared_quad_state_list.ElementAt(sqs_index),
-                   gfx::Rect(10, 10, 300, 400), gfx::Rect(10, 10, 200, 400),
-                   false, ResourceId(100), gfx::Size(600, 800), false,
-                   gfx::PointF(0.f, 0.f), gfx::PointF(1.f, 1.f),
-                   SkColors::kTransparent, false, false,
-                   gfx::ProtectedVideoType::kHardwareProtected);
-      quad->is_stream_video = true;
-      ++sqs_index;
-      ++quad_count;
-    }
-    {
-      // 3. VideoHoleDrawQuad
+      // 2. VideoHoleDrawQuad
       VideoHoleDrawQuad* quad =
           render_pass0->CreateAndAppendDrawQuad<VideoHoleDrawQuad>();
       quad->SetAll(render_pass0->shared_quad_state_list.ElementAt(sqs_index),
@@ -244,44 +237,44 @@ TEST(RenderPassIOTest, QuadList) {
       ++quad_count;
     }
     {
-      // 4. TextureDrawQuad
+      // 3. TextureDrawQuad
       TextureDrawQuad* quad =
           render_pass0->CreateAndAppendDrawQuad<TextureDrawQuad>();
       quad->SetAll(render_pass0->shared_quad_state_list.ElementAt(sqs_index),
                    gfx::Rect(0, 0, 100, 50), gfx::Rect(0, 0, 100, 50), false,
-                   ResourceId(9u), gfx::Size(100, 50), false,
-                   gfx::PointF(0.f, 0.f), gfx::PointF(1.f, 1.f),
-                   SkColors::kBlue, true, false,
-                   gfx::ProtectedVideoType::kHardwareProtected);
+                   ResourceId(9u), gfx::PointF(0.f, 0.f),
+                   gfx::PointF(100.f, 50.f), SkColors::kBlue, true, false,
+                   gfx::ProtectedVideoType::kHardwareProtected,
+                   /*is_tex_coords_normalized=*/false);
 
       ++sqs_index;
       ++quad_count;
     }
     {
-      // 5. CompositorRenderPassDrawQuad
+      // 4. CompositorRenderPassDrawQuad
       CompositorRenderPassDrawQuad* quad =
           render_pass0->CreateAndAppendDrawQuad<CompositorRenderPassDrawQuad>();
       quad->SetAll(render_pass0->shared_quad_state_list.ElementAt(sqs_index),
                    gfx::Rect(2, 3, 100, 50), gfx::Rect(2, 3, 100, 50), true,
                    CompositorRenderPassId{198u}, ResourceId(81u),
                    gfx::RectF(0.1f, 0.2f, 0.5f, 0.6f), gfx::Size(800, 600),
-                   gfx::Vector2dF(1.1f, 0.9f), gfx::PointF(0.01f, 0.02f),
-                   gfx::RectF(0.2f, 0.3f, 0.3f, 0.4f), true, 0.88f, true);
+                   gfx::Vector2dF(1.1f, 0.9f), gfx::PointF(0.01f, 0.02f), true,
+                   0.88f, true);
       ++sqs_index;
       ++quad_count;
     }
     {
-      // 6. TileDrawQuad
+      // 5. TileDrawQuad
       TileDrawQuad* quad =
           render_pass0->CreateAndAppendDrawQuad<TileDrawQuad>();
       quad->SetAll(render_pass0->shared_quad_state_list.ElementAt(sqs_index),
                    gfx::Rect(0, 0, 256, 512), gfx::Rect(2, 2, 250, 500), true,
-                   ResourceId(512u), gfx::RectF(0.0f, 0.0f, 0.9f, 0.8f),
-                   gfx::Size(256, 512), true, true, true);
+                   ResourceId(512u), gfx::RectF(0.0f, 0.0f, 0.9f, 0.8f), true,
+                   true);
       ++quad_count;
     }
     {
-      // 7. SurfaceDrawQuad
+      // 6. SurfaceDrawQuad
       SurfaceDrawQuad* quad =
           render_pass0->CreateAndAppendDrawQuad<SurfaceDrawQuad>();
       quad->SetAll(render_pass0->shared_quad_state_list.ElementAt(sqs_index),
@@ -291,7 +284,7 @@ TEST(RenderPassIOTest, QuadList) {
       ++quad_count;
     }
     {
-      // 8. SurfaceDrawQuad with no starting SurfaceId
+      // 7. SurfaceDrawQuad with no starting SurfaceId
       SurfaceDrawQuad* quad =
           render_pass0->CreateAndAppendDrawQuad<SurfaceDrawQuad>();
       quad->SetAll(render_pass0->shared_quad_state_list.ElementAt(sqs_index),
@@ -302,7 +295,7 @@ TEST(RenderPassIOTest, QuadList) {
     }
     DCHECK_EQ(kSharedQuadStateCount, sqs_index + 1);
   }
-  base::Value::Dict dict0 = CompositorRenderPassToDict(*render_pass0);
+  base::DictValue dict0 = CompositorRenderPassToDict(*render_pass0);
   auto render_pass1 = CompositorRenderPassFromDict(dict0);
   EXPECT_TRUE(render_pass1);
   EXPECT_EQ(kSharedQuadStateCount, render_pass1->shared_quad_state_list.size());
@@ -311,7 +304,7 @@ TEST(RenderPassIOTest, QuadList) {
     EXPECT_EQ(kQuadMaterials[ii],
               render_pass1->quad_list.ElementAt(ii)->material);
   }
-  base::Value::Dict dict1 = CompositorRenderPassToDict(*render_pass1);
+  base::DictValue dict1 = CompositorRenderPassToDict(*render_pass1);
   EXPECT_EQ(dict0, dict1);
 }
 
@@ -328,18 +321,19 @@ TEST(RenderPassIOTest, CompositorRenderPassList) {
   std::string json_text;
   ASSERT_TRUE(base::ReadFileToString(json_path, &json_text));
 
-  std::optional<base::Value> dict0 = base::JSONReader::Read(json_text);
+  std::optional<base::Value> dict0 =
+      base::JSONReader::Read(json_text, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   EXPECT_TRUE(dict0.has_value());
   CompositorRenderPassList render_pass_list;
   EXPECT_TRUE(
       CompositorRenderPassListFromDict(dict0->GetDict(), &render_pass_list));
-  base::Value::Dict dict1 = CompositorRenderPassListToDict(render_pass_list);
+  base::DictValue dict1 = CompositorRenderPassListToDict(render_pass_list);
   // Since the test file doesn't contain the field
   // 'intersects_damage_under' in its CompositorRenderPassDrawQuad, I'm
   // removing the field on dict1 for the exact comparison to work.
-  base::Value::List* list = dict1.FindList("render_pass_list");
+  base::ListValue* list = dict1.FindList("render_pass_list");
   for (auto& entry : *list) {
-    base::Value::List* quad_list = entry.GetDict().FindList("quad_list");
+    base::ListValue* quad_list = entry.GetDict().FindList("quad_list");
 
     for (auto& quad_entry : *quad_list) {
       if (base::Value* extra_value =
@@ -367,11 +361,12 @@ TEST(RenderPassIOTest, CompositorFrameData) {
   std::string json_text;
   ASSERT_TRUE(base::ReadFileToString(json_path, &json_text));
 
-  std::optional<base::Value> list0 = base::JSONReader::Read(json_text);
+  std::optional<base::Value> list0 =
+      base::JSONReader::Read(json_text, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   EXPECT_TRUE(list0.has_value());
   std::vector<FrameData> frame_data_list;
   EXPECT_TRUE(FrameDataFromList(list0->GetList(), &frame_data_list));
-  base::Value::List list1 = FrameDataToList(frame_data_list);
+  base::ListValue list1 = FrameDataToList(frame_data_list);
 
   EXPECT_EQ(list0->GetList(), list1);
 }

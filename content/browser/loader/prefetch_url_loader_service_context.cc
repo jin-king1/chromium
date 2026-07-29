@@ -68,6 +68,20 @@ void PrefetchURLLoaderServiceContext::CreatePrefetchLoaderAndStart(
     return;
   }
 
+  // The request originated in a renderer, but for cross-origin and recursive
+  // prefetches it is forwarded to a trusted network loader factory which does
+  // not validate `load_flags`. Apply the same allowlist that
+  // `CorsURLLoaderFactory::IsValidRequest()` applies to untrusted callers.
+  if (resource_request.load_flags &
+      ~network::GetAllowedLoadFlagsForUntrustedRequests()) {
+    loader_factory_receivers_->ReportBadMessage(
+        "Prefetch/CreatePrefetchLoaderAndStart: restricted load flag");
+    mojo::Remote<network::mojom::URLLoaderClient>(std::move(client))
+        ->OnComplete(
+            network::URLLoaderCompletionStatus(net::ERR_INVALID_ARGUMENT));
+    return;
+  }
+
   if (resource_request.load_flags &
       net::LOAD_RESTRICTED_PREFETCH_FOR_MAIN_FRAME) {
     CHECK(!resource_request.recursive_prefetch_token);
@@ -213,15 +227,6 @@ bool PrefetchURLLoaderServiceContext::IsValidCrossOriginPrefetch(
           current_context.render_frame_host->GetLastCommittedOrigin()) {
     loader_factory_receivers_->ReportBadMessage(
         "Prefetch/IsValidCrossOrigin: frame origin mismatch");
-    return false;
-  }
-
-  // If the PrefetchPrivacyChanges feature is enabled, the request's redirect
-  // mode must be |kError|.
-  if (base::FeatureList::IsEnabled(blink::features::kPrefetchPrivacyChanges) &&
-      resource_request.redirect_mode != network::mojom::RedirectMode::kError) {
-    loader_factory_receivers_->ReportBadMessage(
-        "Prefetch/IsValidCrossOrigin: wrong redirect mode");
     return false;
   }
 

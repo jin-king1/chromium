@@ -9,12 +9,14 @@
 #include <aclapi.h>
 #include <stdint.h>
 
+#include <string>
 #include <utility>
 #include <vector>
 
 #include "base/check.h"
 #include "base/compiler_specific.h"
 #include "base/containers/heap_array.h"
+#include "base/containers/span.h"
 #include "base/logging.h"
 #include "base/notreached.h"
 #include "base/numerics/checked_math.h"
@@ -64,7 +66,7 @@ ACCESS_MODE ConvertAccessMode(SecurityAccessMode access_mode) {
 // control list to become a null ACL (allowing everyone access!).
 base::HeapArray<uint8_t> AddACEToAcl(
     ACL* old_acl,
-    const std::vector<ExplicitAccessEntry>& entries) {
+    base::span<const ExplicitAccessEntry> entries) {
   std::vector<EXPLICIT_ACCESS> access_entries(entries.size());
   auto entries_interator = access_entries.begin();
   for (const ExplicitAccessEntry& entry : entries) {
@@ -101,12 +103,6 @@ ExplicitAccessEntry::ExplicitAccessEntry(const Sid& sid,
       mode_(mode),
       access_mask_(access_mask),
       inheritance_(inheritance) {}
-
-ExplicitAccessEntry::ExplicitAccessEntry(WellKnownSid known_sid,
-                                         SecurityAccessMode mode,
-                                         DWORD access_mask,
-                                         DWORD inheritance)
-    : ExplicitAccessEntry(Sid(known_sid), mode, access_mask, inheritance) {}
 
 ExplicitAccessEntry::ExplicitAccessEntry(ExplicitAccessEntry&&) = default;
 ExplicitAccessEntry& ExplicitAccessEntry::operator=(ExplicitAccessEntry&&) =
@@ -154,7 +150,7 @@ AccessControlList& AccessControlList::operator=(AccessControlList&&) = default;
 AccessControlList::~AccessControlList() = default;
 
 bool AccessControlList::SetEntries(
-    const std::vector<ExplicitAccessEntry>& entries) {
+    base::span<const ExplicitAccessEntry> entries) {
   if (entries.empty()) {
     return true;
   }
@@ -175,6 +171,42 @@ bool AccessControlList::SetEntry(const Sid& sid,
   std::vector<ExplicitAccessEntry> ace_list;
   ace_list.emplace_back(sid, mode, access_mask, inheritance);
   return SetEntries(ace_list);
+}
+
+bool AccessControlList::AddAccessAllowedConditionalAce(
+    const Sid& sid,
+    DWORD ace_flags,
+    DWORD access_mask,
+    std::wstring_view condition) {
+  base::HeapArray<uint8_t> base_acl =
+      acl_.empty() ? EmptyAclToBuffer()
+                   : base::HeapArray<uint8_t>::CopiedFrom(acl_);
+  std::wstring condition_str(condition);
+  DWORD length;
+  if (::AddConditionalAce(reinterpret_cast<ACL*>(base_acl.data()), ACL_REVISION,
+                          ace_flags, ACCESS_ALLOWED_CALLBACK_ACE_TYPE,
+                          access_mask, sid.GetPSID(), condition_str.data(),
+                          &length)) {
+    ::SetLastError(ERROR_INVALID_PARAMETER);
+    return false;
+  }
+
+  if (::GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+    return false;
+  }
+
+  base::HeapArray<uint8_t> acl = base::HeapArray<uint8_t>::Uninit(length);
+  acl.copy_prefix_from(base_acl);
+  ACL* pacl = reinterpret_cast<ACL*>(acl.data());
+  pacl->AclSize = checked_cast<WORD>(length);
+  if (!::AddConditionalAce(pacl, ACL_REVISION, ace_flags,
+                           ACCESS_ALLOWED_CALLBACK_ACE_TYPE, access_mask,
+                           sid.GetPSID(), condition_str.data(), &length)) {
+    return false;
+  }
+
+  acl_ = std::move(acl);
+  return true;
 }
 
 AccessControlList AccessControlList::Clone() const {

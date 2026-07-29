@@ -27,8 +27,6 @@
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
 #include "content/public/test/browser_test.h"
-#include "extensions/browser/extension_registry.h"
-#include "extensions/browser/extension_system.h"
 #include "extensions/test/extension_test_message_listener.h"
 #include "extensions/test/result_catcher.h"
 #include "storage/browser/quota/quota_manager.h"
@@ -96,10 +94,7 @@ class SyncFileSystemTest : public extensions::PlatformAppBrowserTest,
               base::SingleThreadTaskRunner::GetCurrentDefault(),
               MakeSequencedTaskRunner(), MakeSequencedTaskRunner(),
               base_dir_.GetPath(),
-              /*task_logger=*/nullptr,
-              /*notification_manager=*/nullptr,
-              extensions::ExtensionSystem::Get(context)->extension_service(),
-              extensions::ExtensionRegistry::Get(context),
+              /*task_logger=*/nullptr, profile(),
               identity_test_env_->identity_manager(),
               /*url_loader_factory=*/nullptr,
               std::make_unique<FakeDriveServiceFactory>(this),
@@ -113,12 +108,10 @@ class SyncFileSystemTest : public extensions::PlatformAppBrowserTest,
   }
 
   // drive::FakeDriveService::ChangeObserver override.
-  void OnNewChangeAvailable() override {
-    sync_engine()->OnNotificationTimerFired();
-  }
+  void OnNewChangeAvailable() override {}
 
   SyncFileSystemService* sync_file_system_service() {
-    return SyncFileSystemServiceFactory::GetForProfile(browser()->profile());
+    return SyncFileSystemServiceFactory::GetForProfile(browser()->GetProfile());
   }
 
   drive_backend::SyncEngine* sync_engine() {
@@ -207,7 +200,7 @@ IN_PROC_BROWSER_TEST_F(SyncFileSystemTest, AuthorizationTest) {
                                     identity_manager()->GetPrimaryAccountInfo(
                                         signin::ConsentLevel::kSync),
                                     signin::ConsentLevel::kSync),
-                                signin_metrics::AccessPoint::kUnknown));
+                                signin_metrics::AccessPoint::kStartPage));
   WaitUntilIdle();
 
   bar_created.Reply("resume");

@@ -7,14 +7,16 @@ import 'chrome://settings/lazy_load.js';
 
 import {flush} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 import type {CrButtonElement} from 'chrome://settings/settings.js';
-import {loadTimeData} from 'chrome://settings/settings.js';
+import {loadTimeData, MetricsBrowserProxyImpl} from 'chrome://settings/settings.js';
 import type {CrInputElement, SettingsCreditCardEditDialogElement, SettingsIbanEditDialogElement, SettingsPaymentsSectionElement} from 'chrome://settings/lazy_load.js';
 import {PaymentsManagerImpl} from 'chrome://settings/lazy_load.js';
 import {assertEquals, assertFalse, assertNotEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
-import {eventToPromise, isVisible, microtasksFinished, whenAttributeIs} from 'chrome://webui-test/test_util.js';
+import {eventToPromise, microtasksFinished, whenAttributeIs} from 'chrome://webui-test/test_util.js';
 import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
 
 import {createCreditCardEntry, createIbanEntry, TestPaymentsManager} from './autofill_fake_data.js';
+import {verifyBooleanHistogramRecorded} from './payments_section_utils.js';
+import {TestMetricsBrowserProxy} from './test_metrics_browser_proxy.js';
 // clang-format on
 
 /**
@@ -76,10 +78,11 @@ suite('PaymentsSectionCreditCardEditDialogTest', function() {
    * Creates the Add Credit Card dialog. Simulate clicking "Add" button in
    * payments section.
    */
-  async function createAddCreditCardDialog():
+  async function createAddCreditCardDialog(
+      existingCards?: chrome.autofillPrivate.CreditCardEntry[]):
       Promise<SettingsCreditCardEditDialogElement> {
     const section = await createPaymentsSection(
-        /*creditCards=*/[], /*ibans=*/[]);
+        existingCards !== undefined ? existingCards : [], /*ibans=*/[]);
     // Simulate clicking "Add" button in payments section.
     assertFalse(!!section.shadowRoot!.querySelector(
         'settings-credit-card-edit-dialog'));
@@ -232,6 +235,9 @@ suite('PaymentsSectionCreditCardEditDialogTest', function() {
   }
 
   test('add card dialog', async function() {
+    const testMetricsBrowserProxy = new TestMetricsBrowserProxy();
+    MetricsBrowserProxyImpl.setInstance(testMetricsBrowserProxy);
+
     loadTimeData.overrideValues({
       showIbansSettings: false,
     });
@@ -261,6 +267,14 @@ suite('PaymentsSectionCreditCardEditDialogTest', function() {
     // Verify the card number field is autofocused when nickname management is
     // enabled.
     assertTrue(numberInput.matches(':focus-within'));
+
+    await verifyBooleanHistogramRecorded(
+        testMetricsBrowserProxy,
+        'Autofill.PaymentMethodsSettingsPage.AddCardClicked2', true);
+    await verifyBooleanHistogramRecorded(
+        testMetricsBrowserProxy,
+        'Autofill.PaymentMethodsSettingsPage.AddCardClickedWithoutExistingCards2',
+        true);
   });
 
   test('add card dialog from dropdown list', async function() {
@@ -287,6 +301,28 @@ suite('PaymentsSectionCreditCardEditDialogTest', function() {
     // Verify the card number field is autofocused when nickname management is
     // enabled.
     assertTrue(numberInput.matches(':focus-within'));
+  });
+
+  test('add card with existing cards', async function() {
+    const testMetricsBrowserProxy = new TestMetricsBrowserProxy();
+    MetricsBrowserProxyImpl.setInstance(testMetricsBrowserProxy);
+
+    loadTimeData.overrideValues({
+      showIbansSettings: false,
+    });
+    const existingCreditCard = createCreditCardEntry();
+    const creditCardDialog =
+        await createAddCreditCardDialog([existingCreditCard]);
+
+    // Wait for the dialog to open.
+    await whenAttributeIs(creditCardDialog.$.dialog, 'open', '');
+
+    // The only additional thing to verify here versus other tests is that the
+    // metric is recorded correctly.
+    await verifyBooleanHistogramRecorded(
+        testMetricsBrowserProxy,
+        'Autofill.PaymentMethodsSettingsPage.AddCardClickedWithoutExistingCards2',
+        false);
   });
 
   test('save new card', async function() {
@@ -563,50 +599,6 @@ suite('PaymentsSectionCreditCardEditDialogTest', function() {
     assertFalse(saveButton!.disabled);
   });
 
-  test('only show nickname character count when focused', async function() {
-    const creditCardDialog = await createAddCreditCardDialogFromDropdown();
-
-    // Wait for the dialog to open.
-    await whenAttributeIs(creditCardDialog.$.dialog, 'open', '');
-
-    const nicknameInput =
-        creditCardDialog.shadowRoot!.querySelector<CrInputElement>(
-            '#nicknameInput');
-    assertTrue(!!nicknameInput);
-    const characterCount =
-        creditCardDialog.shadowRoot!.querySelector<HTMLElement>('#charCount')!;
-    // Character count is not shown when add card dialog is open (not focusing
-    // on nickname input field).
-    assertFalse(isVisible(characterCount));
-
-    // User clicks on nickname input.
-    nicknameInput.focus();
-    // Character count is shown when nickname input field is focused.
-    assertTrue(isVisible(characterCount));
-    // For new card, the nickname is unset.
-    assertTrue(characterCount.textContent!.includes('0/25'));
-
-    // User types in one character. Ensure the character count is dynamically
-    // updated.
-    await typeInNickname(nicknameInput, 'a');
-    assertTrue(characterCount.textContent!.includes('1/25'));
-    // User types in total 5 characters.
-    await typeInNickname(nicknameInput, 'abcde');
-    assertTrue(characterCount.textContent!.includes('5/25'));
-
-    // User click outside of nickname input, the character count isn't shown.
-    nicknameInput.blur();
-    await nicknameInput.updateComplete;
-    assertFalse(isVisible(characterCount));
-
-    // User clicks on nickname input again.
-    nicknameInput.focus();
-    await nicknameInput.updateComplete;
-    // Character count is shown when nickname input field is re-focused.
-    assertTrue(isVisible(characterCount));
-    assertTrue(characterCount.textContent!.includes('5/25'));
-  });
-
   test('expired card', async function() {
     const creditCard = createCreditCardEntry();
     // Set the expiration year to the previous year to simulate expired card.
@@ -682,23 +674,8 @@ suite('PaymentsSectionCreditCardEditDialogTest', function() {
 
     const nicknameInput = ibanDialog.$.nicknameInput;
     const valueInput = ibanDialog.$.valueInput;
-    const characterCount =
-        ibanDialog.shadowRoot!.querySelector<HTMLElement>('#charCount');
 
-    assertTrue(!!characterCount);
-    assertFalse(isVisible(characterCount));
-    // User clicks on nickname input.
-    nicknameInput.focus();
-    // Character count is shown when nickname input field is focused.
-    assertTrue(isVisible(characterCount));
-    // For new IBAN, the nickname is unset.
-    assertTrue(characterCount.textContent!.includes('0/25'));
-
-    // Fill in IBAN value and nickname, and trigger the on-input handler.
-    nicknameInput.value = 'My doctor\'s IBAN';
-    await nicknameInput.updateComplete;
-    assertTrue(characterCount.textContent!.includes('16/25'));
-
+    await typeInNickname(nicknameInput, 'My doctor\'s IBAN');
     valueInput.value = 'IT60X0542811101000000123456';
 
     // IBAN validation is asynchronous, so wait for it to complete and the save

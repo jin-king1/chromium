@@ -21,9 +21,12 @@
 #include "mojo/public/cpp/bindings/associated_receiver.h"
 #include "mojo/public/cpp/bindings/associated_remote.h"
 #include "third_party/blink/public/mojom/loader/local_resource_loader_config.mojom.h"
+#include "url/origin.h"
 
 namespace content {
+class BrowserContext;
 class NavigationRequest;
+class PerWebUIBrowserInterfaceBroker;
 class RenderFrameHost;
 class RenderFrameHostImpl;
 class WebUIMainFrameObserver;
@@ -46,7 +49,9 @@ class CONTENT_EXPORT WebUIImpl : public WebUI, public mojom::WebUIHost {
   // crash) or when a WebUI is created for a RenderFrame (i.e. navigating from
   // chrome://downloads to chrome://bookmarks) or when both are new (i.e.
   // opening a new tab).
-  void WebUIRenderFrameCreated(RenderFrameHost* render_frame_host);
+  // |origin_to_commit| is the origin that the frame is committing to.
+  void WebUIRenderFrameCreated(RenderFrameHost* render_frame_host,
+                               const url::Origin& origin_to_commit);
 
   // Called when the owning RenderFrameHost has started unloading.
   void RenderFrameHostUnloading();
@@ -58,6 +63,11 @@ class CONTENT_EXPORT WebUIImpl : public WebUI, public mojom::WebUIHost {
 
   // Called right after AllowBindings is notified to a RenderFrame.
   void SetUpMojoConnection();
+  // Sets up a "broker" object which will accept incoming mojo connections and
+  // set up the appropriate handlers. The controller must already be set before
+  // calling this. This method may be called multiple times if the WebUI is
+  // reused.
+  void SetUpMojoInterfaceBroker();
 
   // Called when a RenderFrame is deleted for a WebUI (i.e. a renderer crash).
   void TearDownMojoConnection();
@@ -66,6 +76,7 @@ class CONTENT_EXPORT WebUIImpl : public WebUI, public mojom::WebUIHost {
   void SetProperty(const std::string& name, const std::string& value);
 
   // WebUI implementation:
+  WebUIConfig* GetWebUIConfig() override;
   WebContents* GetWebContents() override;
   WebUIController* GetController() override;
   RenderFrameHost* GetRenderFrameHost() override;
@@ -82,7 +93,7 @@ class CONTENT_EXPORT WebUIImpl : public WebUI, public mojom::WebUIHost {
                                MessageCallback callback) override;
   void ProcessWebUIMessage(const GURL& source_url,
                            const std::string& message,
-                           base::Value::List args) override;
+                           base::ListValue args) override;
   bool CanCallJavascript() override;
   void CallJavascriptFunctionUnsafe(
       std::string_view function_name,
@@ -100,13 +111,16 @@ class CONTENT_EXPORT WebUIImpl : public WebUI, public mojom::WebUIHost {
   bool HasRenderFrameHost() const;
 
   static blink::mojom::LocalResourceLoaderConfigPtr
-  GetLocalResourceLoaderConfigForTesting(URLDataManagerBackend* data_backend);
+  GetLocalResourceLoaderConfigForTesting(BrowserContext* browser_context,
+                                         URLDataManagerBackend* data_backend,
+                                         const url::Origin& current_origin,
+                                         WebUIController* controller);
 
  private:
   friend class WebUIMainFrameObserver;
 
   // mojom::WebUIHost
-  void Send(const std::string& message, base::Value::List args) override;
+  void Send(const std::string& message, base::ListValue args) override;
 
   // Execute a string of raw JavaScript on the page.
   void ExecuteJavascript(const std::u16string& javascript);
@@ -114,7 +128,11 @@ class CONTENT_EXPORT WebUIImpl : public WebUI, public mojom::WebUIHost {
   // Called internally and by the owned WebUIMainFrameObserver.
   void DisallowJavascriptOnAllHandlers();
 
-  blink::mojom::LocalResourceLoaderConfigPtr GetLocalResourceLoaderConfig();
+  // Called internally and by the owned WebUIMainFrameObserver.
+  // Returns the LocalResourceLoaderConfig for the current WebUI.
+  // |origin_to_commit| is the origin that the frame is committing to.
+  blink::mojom::LocalResourceLoaderConfigPtr GetLocalResourceLoaderConfig(
+      const url::Origin& origin_to_commit);
 
   // A map of message name -> message handling callback.
   std::map<std::string, MessageCallback> message_callbacks_;
@@ -158,6 +176,8 @@ class CONTENT_EXPORT WebUIImpl : public WebUI, public mojom::WebUIHost {
   // Notifies this WebUI about notifications in the main frame.
   const std::unique_ptr<WebUIMainFrameObserver> web_contents_observer_;
 
+  // broker_ may change if a WebUI instance if reused.
+  std::unique_ptr<PerWebUIBrowserInterfaceBroker> broker_;
   std::unique_ptr<WebUIController> controller_;
 
   mojo::AssociatedRemote<mojom::WebUI> remote_;

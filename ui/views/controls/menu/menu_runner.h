@@ -15,7 +15,7 @@
 #include "base/memory/raw_ptr.h"
 #include "ui/base/mojom/menu_source_type.mojom-forward.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/views/controls/menu/menu_types.h"
 #include "ui/views/views_export.h"
 
@@ -118,6 +118,10 @@ class VIEWS_EXPORT MenuRunner {
 
     // Indicates that the menu was invoked from the keyboard.
     INVOKED_FROM_KEYBOARD = 1 << 11,
+
+    // The menu is a context menu (not necessarily nested) for a menu item, for
+    // example right click on bookmark drop-down.
+    MENU_ITEM_CONTEXT_MENU = 1 << 12,
   };
 
   // Creates a new MenuRunner, which may use a native menu if available.

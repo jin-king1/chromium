@@ -44,7 +44,8 @@ import org.chromium.chrome.browser.settings.SettingsActivityTestRule;
 import org.chromium.chrome.browser.settings.SettingsNavigationFactory;
 import org.chromium.chrome.browser.tracing.TracingController;
 import org.chromium.chrome.test.ChromeJUnit4RunnerDelegate;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
 import org.chromium.components.browser_ui.notifications.BaseNotificationManagerProxyFactory;
 import org.chromium.components.browser_ui.notifications.MockNotificationManagerProxy;
 import org.chromium.components.browser_ui.notifications.NotificationProxyUtils;
@@ -63,8 +64,8 @@ import java.util.concurrent.TimeUnit;
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 public class TracingSettingsTest {
     @Rule
-    public final ChromeTabbedActivityTestRule mActivityTestRule =
-            new ChromeTabbedActivityTestRule();
+    public final FreshCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.freshChromeTabbedActivityRule();
 
     @Rule
     public final SettingsActivityTestRule<TracingSettings> mSettingsActivityTestRule =
@@ -156,7 +157,7 @@ public class TracingSettingsTest {
     @MediumTest
     @Feature({"Preferences"})
     public void testRecordTrace() throws Exception {
-        mActivityTestRule.startMainActivityOnBlankPage();
+        mActivityTestRule.startOnBlankPage();
         mSettingsActivityTestRule.startSettingsActivity();
         final PreferenceFragmentCompat fragment = mSettingsActivityTestRule.getFragment();
         final ButtonPreference startTracingButton =
@@ -226,7 +227,6 @@ public class TracingSettingsTest {
         // Recording started, a notification with a stop button should be displayed.
         Notification notification = waitForNotification().notification;
         Assert.assertEquals(FLAG_ONGOING_EVENT, notification.flags & FLAG_ONGOING_EVENT);
-        Assert.assertEquals(null, notification.deleteIntent);
         Assert.assertEquals(1, NotificationCompat.getActionCount(notification));
         PendingIntent stopIntent = NotificationCompat.getAction(notification, 0).actionIntent;
 
@@ -291,7 +291,7 @@ public class TracingSettingsTest {
     }
 
     public static class CategoryParams implements ParameterProvider {
-        private static List<ParameterSet> sParams =
+        private static final List<ParameterSet> sParams =
                 Arrays.asList(
                         new ParameterSet()
                                 .value(TracingSettings.UI_PREF_DEFAULT_CATEGORIES, "toplevel")
@@ -315,7 +315,7 @@ public class TracingSettingsTest {
     public void testSelectCategories(String preferenceKey, String sampleCategoryName)
             throws Exception {
         // We need a renderer so that its tracing categories will be populated.
-        mActivityTestRule.startMainActivityOnBlankPage();
+        mActivityTestRule.startOnBlankPage();
         mSettingsActivityTestRule.startSettingsActivity();
         final PreferenceFragmentCompat fragment = mSettingsActivityTestRule.getFragment();
         final Preference categoriesPref = fragment.findPreference(preferenceKey);

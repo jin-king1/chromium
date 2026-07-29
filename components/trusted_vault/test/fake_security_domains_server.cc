@@ -2,18 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "components/trusted_vault/test/fake_security_domains_server.h"
 
 #include "base/base64url.h"
 #include "base/logging.h"
 #include "base/rand_util.h"
+#include "base/strings/string_util.h"
 #include "components/trusted_vault/proto_string_bytes_conversion.h"
 #include "components/trusted_vault/securebox.h"
+#include "components/trusted_vault/standalone_trusted_vault_server_constants.h"
 #include "components/trusted_vault/trusted_vault_crypto.h"
 #include "components/trusted_vault/trusted_vault_server_constants.h"
 #include "net/http/http_status_code.h"
@@ -256,7 +253,7 @@ std::vector<uint8_t> FakeSecurityDomainsServer::RotateTrustedVaultKey(
     trusted_vault_pb::RotationProof rotation_proof;
     rotation_proof.set_new_epoch(state_.current_epoch);
     AssignBytesToProtoString(
-        ComputeRotationProofForTesting(
+        ComputeRotationProof(
             /*trusted_vault_key=*/new_trusted_vault_key,
             /*prev_trusted_vault_key=*/last_trusted_vault_key),
         rotation_proof.mutable_rotation_proof());

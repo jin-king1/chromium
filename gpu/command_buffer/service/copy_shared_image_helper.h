@@ -6,6 +6,8 @@
 #define GPU_COMMAND_BUFFER_SERVICE_COPY_SHARED_IMAGE_HELPER_H_
 
 #include <stdint.h>
+
+#include <array>
 #include <string>
 
 #include "base/memory/raw_ptr.h"
@@ -43,8 +45,10 @@ class GPU_GLES2_EXPORT CopySharedImageHelper {
       GLint yoffset,
       GLint x,
       GLint y,
-      GLsizei width,
-      GLsizei height,
+      GLsizei src_width,
+      GLsizei src_height,
+      GLsizei dst_width,
+      GLsizei dst_height,
       const volatile GLbyte* mailboxes);
   // Only used by passthrough decoder.
   // TODO(crbug.com/40064510): Handle this use-case for graphite.
@@ -57,7 +61,7 @@ class GPU_GLES2_EXPORT CopySharedImageHelper {
       GLint src_y,
       GLsizei width,
       GLsizei height,
-      GLboolean flip_y,
+      GrSurfaceOrigin dst_origin,
       const volatile GLbyte* src_mailbox);
   base::expected<void, GLError> ReadPixels(
       GLint src_x,

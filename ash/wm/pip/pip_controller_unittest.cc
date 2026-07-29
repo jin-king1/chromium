@@ -11,7 +11,7 @@
 #include "ash/wm/collision_detection/collision_detection_utils.h"
 #include "ash/wm/scoped_window_tucker.h"
 #include "ash/wm/test/fake_window_state.h"
-#include "ash/wm/test/test_non_client_frame_view_ash.h"
+#include "ash/wm/test/test_frame_view_ash.h"
 #include "ash/wm/window_dimmer.h"
 #include "ash/wm/window_state.h"
 #include "ash/wm/wm_event.h"
@@ -23,6 +23,8 @@
 #include "ui/wm/core/window_util.h"
 
 namespace ash {
+
+using chromeos::AppType;
 
 using ::chromeos::WindowStateType;
 
@@ -55,7 +57,8 @@ class PipControllerTest : public AshTestBase {
 
  protected:
   std::unique_ptr<aura::Window> CreatePipWindow(gfx::Rect bounds) {
-    std::unique_ptr<aura::Window> window(CreateTestWindow(bounds));
+    std::unique_ptr<aura::Window> window =
+        CreateWindowWithAppType(chromeos::AppType::NON_APP, bounds);
     WindowState* window_state = WindowState::Get(window.get());
     const WMEvent enter_pip(WM_EVENT_PIP);
     window_state->OnWMEvent(&enter_pip);
@@ -229,13 +232,13 @@ class PipToggleResizeFeatureTest : public AshTestBase,
   std::unique_ptr<aura::Window> CreateAppWindow(
       const gfx::Rect& bounds,
       WindowStateType window_state_type) {
-    auto window = AshTestBase::CreateAppWindow(
-        bounds, chromeos::AppType::SYSTEM_APP, kShellWindowId_DeskContainerA,
-        new TestWidgetDelegateAsh);
+    auto window = CreateWindowWithAppType(AppType::SYSTEM_APP, bounds,
+                                          kShellWindowId_DeskContainerA,
+                                          new TestWidgetDelegateAsh);
     Shell::Get()->pip_controller()->SetPipWindow(window.get());
 
-    auto* custom_frame = static_cast<TestNonClientFrameViewAsh*>(
-        NonClientFrameViewAsh::Get(window.get()));
+    auto* custom_frame =
+        static_cast<TestFrameViewAsh*>(FrameViewAsh::Get(window.get()));
 
     custom_frame->SetMaximumSize(kMaxWindowSize);
     custom_frame->SetMinimumSize(kMinWindowSize);

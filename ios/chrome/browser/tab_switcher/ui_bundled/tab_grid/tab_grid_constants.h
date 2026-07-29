@@ -6,7 +6,7 @@
 #define IOS_CHROME_BROWSER_TAB_SWITCHER_UI_BUNDLED_TAB_GRID_TAB_GRID_CONSTANTS_H_
 
 #import <CoreGraphics/CoreGraphics.h>
-#import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
 
 namespace base {
 class TimeDelta;
@@ -15,7 +15,6 @@ class TimeDelta;
 // Keys of UMA IOS.TabSwitcher.Idle histograms.
 extern const char kUMATabSwitcherIdleIncognitoTabGridPageHistogram[];
 extern const char kUMATabSwitcherIdleRegularTabGridPageHistogram[];
-extern const char kUMATabSwitcherIdleRecentTabsHistogram[];
 extern const char kUMATabSwitcherIdleTabGroupsHistogram[];
 
 // Accessibility identifiers for automated testing.
@@ -23,11 +22,10 @@ extern NSString* const kTabGridIncognitoTabsPageButtonIdentifier;
 extern NSString* const kTabGridRegularTabsPageButtonIdentifier;
 extern NSString* const kTabGridRemoteTabsPageButtonIdentifier;
 extern NSString* const kTabGridTabGroupsPageButtonIdentifier;
-extern NSString* const kTabGridDoneButtonIdentifier;
+extern NSString* const kTabGridExitTabGridButtonIdentifier;
+extern NSString* const kTabGridExitSelectionButtonIdentifier;
 extern NSString* const kTabGridSearchButtonIdentifier;
 extern NSString* const kTabGridCancelButtonIdentifier;
-extern NSString* const kTabGridCloseAllButtonIdentifier;
-extern NSString* const kTabGridUndoCloseAllButtonIdentifier;
 extern NSString* const kTabGridIncognitoTabsEmptyStateIdentifier;
 extern NSString* const kTabGridRegularTabsEmptyStateIdentifier;
 extern NSString* const kTabGridScrollViewIdentifier;
@@ -36,7 +34,6 @@ extern NSString* const kIncognitoTabGridIdentifier;
 extern NSString* const kInactiveTabGridIdentifier;
 extern NSString* const kInactiveTabGridCloseAllButtonIdentifier;
 
-extern NSString* const kTabGridEditButtonIdentifier;
 extern NSString* const kTabGridEditCloseTabsButtonIdentifier;
 extern NSString* const kTabGridEditSelectAllButtonIdentifier;
 extern NSString* const kTabGridEditAddToButtonIdentifier;
@@ -44,17 +41,17 @@ extern NSString* const kTabGridEditShareButtonIdentifier;
 extern NSString* const kTabGridSearchBarIdentifier;
 extern NSString* const kTabGridSearchTextFieldIdentifierPrefix;
 extern NSString* const kTabGridScrimIdentifier;
+extern NSString* const kTabGridOverflowMenuButtonIdentifier;
+
+// Accessibility identifier for the activity label on a tab cell.
+extern NSString* const kTabCellActivityLabelIdentifier;
 
 // All kxxxColor constants are RGB values stored in a Hex integer. These will be
 // converted into UIColors using the UIColorFromRGB() function, from
 // uikit_ui_util.h
 
-// The color of the text buttons in the toolbars.
-extern const int kTabGridToolbarTextButtonColor;
-
-// Colors for the empty state.
-extern const int kTabGridEmptyStateTitleTextColor;
-extern const int kTabGridEmptyStateBodyTextColor;
+// Tint color for the buttons in the TabGrid.
+UIColor* TabGridGlassButtonTintColor();
 
 // The distance the toolbar content is inset from either side.
 extern const CGFloat kTabGridToolbarHorizontalInset;
@@ -67,8 +64,8 @@ extern const CGFloat kTabGridEmptyStateVerticalInset;
 extern const CGFloat kTabGridEmptyStateHorizontalInset;
 
 // The insets from the edges for the floating button.
-extern const CGFloat kTabGridFloatingButtonVerticalInset;
-extern const CGFloat kTabGridFloatingButtonHorizontalInset;
+extern const CGFloat kTabGridFloatingButtonInset;
+extern const CGFloat kTabGridFloatingButtonInsetIPad;
 
 // Intrinsic heights of the tab grid toolbars.
 extern const CGFloat kTabGridTopToolbarHeight;
@@ -80,6 +77,9 @@ extern const CGFloat kTabGridSearchBarWidthRatio;
 extern const CGFloat kTabGridSearchBarHeight;
 // The Search bar width ratio modifier for non-compact orientation.
 extern const CGFloat kTabGridSearchBarNonCompactWidthRatioModifier;
+
+// The accessibility identifier of the history search result item.
+extern NSString* const kTabGridSearchSuggestedHistoryItemId;
 
 // Alpha of the background color of the toolbar.
 extern const CGFloat kToolbarBackgroundAlpha;

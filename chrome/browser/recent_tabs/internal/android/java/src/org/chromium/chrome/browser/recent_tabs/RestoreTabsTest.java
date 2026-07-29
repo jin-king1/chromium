@@ -23,8 +23,6 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
-import android.os.Build;
-
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 import androidx.test.filters.MediumTest;
@@ -38,15 +36,15 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.Mockito;
-import org.mockito.MockitoAnnotations;
 import org.mockito.Spy;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 
+import org.chromium.base.DeviceInfo;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
-import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DoNotBatch;
-import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
@@ -55,46 +53,54 @@ import org.chromium.chrome.browser.recent_tabs.ForeignSessionHelper.ForeignSessi
 import org.chromium.chrome.browser.recent_tabs.ForeignSessionHelper.ForeignSessionWindow;
 import org.chromium.chrome.browser.tasks.tab_management.TabUiTestHelper;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.feature_engagement.FeatureConstants;
 import org.chromium.components.feature_engagement.Tracker;
-import org.chromium.components.omnibox.OmniboxFeatureList;
 import org.chromium.components.sync_device_info.FormFactor;
 import org.chromium.ui.base.DeviceFormFactor;
+import org.chromium.ui.modaldialog.ModalDialogManager;
+import org.chromium.ui.modaldialog.ModalDialogProperties;
 import org.chromium.url.JUnitTestGURLs;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Supplier;
 
 /** Integration tests for the RestoreTabs feature. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Restriction(DeviceFormFactor.PHONE)
-@DisableFeatures(OmniboxFeatureList.ANDROID_HUB_SEARCH)
 @DoNotBatch(reason = "Tests startup behaviors that trigger per-session")
 public class RestoreTabsTest {
     private static final String RESTORE_TABS_FEATURE = FeatureConstants.RESTORE_TABS_ON_FRE_FEATURE;
 
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
+
     @Rule
-    public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
+    public FreshCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.freshChromeTabbedActivityRule();
 
     @Spy ForeignSessionHelper.Natives mForeignSessionHelperJniSpy;
     // Tell R8 not to break the ability to mock the class.
-    @Spy ForeignSessionHelperJni mUnused;
+    @Spy org.chromium.chrome.browser.recent_tabs.ForeignSessionHelperJni mUnused;
 
     @Mock private Tracker mMockTracker;
 
     private BottomSheetController mBottomSheetController;
+    private Supplier<ModalDialogManager> mModalDialogManagerSupplier;
+    private WebPageStation mPage;
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
-        mActivityTestRule.startMainActivityOnBlankPage();
+        mPage = mActivityTestRule.startOnBlankPage();
         TrackerFactory.setTrackerForTests(mMockTracker);
 
         mForeignSessionHelperJniSpy = Mockito.spy(ForeignSessionHelperJni.get());
-        ForeignSessionHelperJni.setInstanceForTesting(mForeignSessionHelperJniSpy);
+        org.chromium.chrome.browser.recent_tabs.ForeignSessionHelperJni.setInstanceForTesting(
+                mForeignSessionHelperJniSpy);
         doReturn(true).when(mForeignSessionHelperJniSpy).isTabSyncEnabled(anyLong());
 
         mBottomSheetController =
@@ -102,6 +108,9 @@ public class RestoreTabsTest {
                         .getActivity()
                         .getRootUiCoordinatorForTesting()
                         .getBottomSheetController();
+
+        mModalDialogManagerSupplier =
+                mActivityTestRule.getActivity().getModalDialogManagerSupplier();
     }
 
     @After
@@ -111,11 +120,50 @@ public class RestoreTabsTest {
 
     @Test
     @MediumTest
-    @DisableIf.Build(
-            supported_abis_includes = "armeabi-v7a",
-            sdk_is_less_than = Build.VERSION_CODES.O,
-            message = "Flaky only on test-n-phone, crbug.com/1469008")
     public void testRestoreTabsPromo_triggerBottomSheetView() {
+        triggerRestoreTabsPromo();
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    Criteria.checkThat(
+                            "Bottom sheet never fully loaded",
+                            mBottomSheetController.getCurrentSheetContent(),
+                            Matchers.instanceOf(RestoreTabsPromoSheetContent.class));
+                });
+        Assert.assertTrue(
+                mBottomSheetController.getCurrentSheetContent()
+                        instanceof RestoreTabsPromoSheetContent);
+
+        pressBack();
+        verify(mMockTracker, times(1)).dismissed(eq(RESTORE_TABS_FEATURE));
+    }
+
+    @Test
+    @MediumTest
+    public void testRestoreTabsPromo_triggerDialogOnXr() {
+        DeviceInfo.setIsXrForTesting(true);
+        triggerRestoreTabsPromo();
+        String expectedContentDescription =
+                mActivityTestRule
+                        .getActivity()
+                        .getString(R.string.restore_tabs_content_description);
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    Criteria.checkThat(
+                            "Dialog never fully loaded",
+                            mModalDialogManagerSupplier
+                                    .get()
+                                    .getCurrentDialogForTest()
+                                    .get(ModalDialogProperties.CONTENT_DESCRIPTION),
+                            Matchers.equalTo(expectedContentDescription));
+                });
+
+        onView(withId(R.id.restore_tabs_bottom_sheet_view_flipper)).check(matches(isDisplayed()));
+
+        pressBack();
+        verify(mMockTracker, times(1)).dismissed(eq(RESTORE_TABS_FEATURE));
+    }
+
+    private void triggerRestoreTabsPromo() {
         // Setup mock data
         ForeignSessionTab tab = new ForeignSessionTab(JUnitTestGURLs.URL_1, "title", 32L, 32L, 0);
         List<ForeignSessionTab> tabs = new ArrayList<>();
@@ -132,27 +180,14 @@ public class RestoreTabsTest {
         doReturn(true).when(mMockTracker).shouldTriggerHelpUi(eq(RESTORE_TABS_FEATURE));
         doAnswer(
                         invocation -> {
-                            List<ForeignSession> invoked_sessions = invocation.getArgument(1);
-                            invoked_sessions.addAll(sessions);
+                            List<ForeignSession> invokedSessions = invocation.getArgument(1);
+                            invokedSessions.addAll(sessions);
                             return true;
                         })
                 .when(mForeignSessionHelperJniSpy)
                 .getMobileAndTabletForeignSessions(anyLong(), anyList());
 
         TabUiTestHelper.enterTabSwitcher(mActivityTestRule.getActivity());
-        CriteriaHelper.pollUiThread(
-                () -> {
-                    Criteria.checkThat(
-                            "Bottom sheet never fully loaded",
-                            mBottomSheetController.getCurrentSheetContent(),
-                            Matchers.instanceOf(RestoreTabsPromoSheetContent.class));
-                });
-        Assert.assertTrue(
-                mBottomSheetController.getCurrentSheetContent()
-                        instanceof RestoreTabsPromoSheetContent);
-
-        pressBack();
-        verify(mMockTracker, times(1)).dismissed(eq(RESTORE_TABS_FEATURE));
     }
 
     @Test
@@ -215,9 +250,12 @@ public class RestoreTabsTest {
         int tabSwitcherAncestorViewId =
                 TabUiTestHelper.getTabSwitcherAncestorId(mActivityTestRule.getActivity());
         // Make sure the grid tab switcher is scrolled down to show the selected tab.
+        // With the addition of hub search, check that the last tab is completely visible to verify.
         onView(
                         allOf(
-                                withId(org.chromium.chrome.test.R.id.tab_list_recycler_view),
+                                withId(
+                                        org.chromium.chrome.browser.recent_tabs.R.id
+                                                .tab_list_recycler_view),
                                 isDescendantOfA(withId(tabSwitcherAncestorViewId))))
                 .check(
                         (v, noMatchException) -> {
@@ -226,7 +264,7 @@ public class RestoreTabsTest {
                             LinearLayoutManager layoutManager =
                                     (LinearLayoutManager) ((RecyclerView) v).getLayoutManager();
                             Assert.assertEquals(
-                                    4, layoutManager.findFirstCompletelyVisibleItemPosition());
+                                    6, layoutManager.findLastCompletelyVisibleItemPosition());
                         });
     }
 
@@ -432,8 +470,8 @@ public class RestoreTabsTest {
         doReturn(true).when(mMockTracker).shouldTriggerHelpUi(eq(RESTORE_TABS_FEATURE));
         doAnswer(
                         invocation -> {
-                            List<ForeignSession> invoked_sessions = invocation.getArgument(1);
-                            invoked_sessions.addAll(sessions);
+                            List<ForeignSession> invokedSessions = invocation.getArgument(1);
+                            invokedSessions.addAll(sessions);
                             return true;
                         })
                 .when(mForeignSessionHelperJniSpy)

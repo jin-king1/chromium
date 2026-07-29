@@ -2,15 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/browser/webauthn/android/cable_module_android.h"
+
+#include <variant>
 
 #include "base/android/jni_array.h"
 #include "base/base64.h"
+#include "base/compiler_specific.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
@@ -37,14 +35,7 @@
 #include "device/fido/cable/v2_handshake.h"
 #include "device/fido/cable/v2_registration.h"
 #include "device/fido/cbor_extract.h"
-#include "device/fido/features.h"
-#include "third_party/boringssl/src/include/openssl/bytestring.h"
-#include "third_party/boringssl/src/include/openssl/digest.h"
-#include "third_party/boringssl/src/include/openssl/ec.h"
-#include "third_party/boringssl/src/include/openssl/ec_key.h"
-#include "third_party/boringssl/src/include/openssl/hkdf.h"
-#include "third_party/boringssl/src/include/openssl/mem.h"
-#include "third_party/boringssl/src/include/openssl/obj.h"
+#include "device/fido/public/features.h"
 
 // These "headers" actually contains function definitions and thus can only be
 // included once across Chromium.
@@ -108,7 +99,7 @@ class SystemInterface : public RegistrationState::SystemInterface {
       work_profile_callback_ = std::move(callback);
       // Checking whether this Chrome is in a work profile is sufficiently
       // expensive that doing it at startup impacts benchmarks. (See
-      // crbug.com/1459794.) Since startup is an especially contended time, we
+      // crbug.com/40919627.) Since startup is an especially contended time, we
       // wait a few minutes before doing this check.
       content::BrowserThread::GetTaskRunnerForThread(content::BrowserThread::UI)
           ->PostDelayedTask(
@@ -302,11 +293,12 @@ std::optional<syncer::DeviceInfo::PhoneAsASecurityKeyInfo> PaaskInfoFromCBOR(
       info.peer_public_key_x962->size() != peer_public_key_x962.size()) {
     return std::nullopt;
   }
-  memcpy(&pairing_id, info.pairing_id->data(), sizeof(pairing_id));
+  UNSAFE_TODO(memcpy(&pairing_id, info.pairing_id->data(), sizeof(pairing_id)));
 
-  memcpy(secret.data(), info.secret->data(), secret.size());
-  memcpy(peer_public_key_x962.data(), info.peer_public_key_x962->data(),
-         peer_public_key_x962.size());
+  UNSAFE_TODO(memcpy(secret.data(), info.secret->data(), secret.size()));
+  UNSAFE_TODO(memcpy(peer_public_key_x962.data(),
+                     info.peer_public_key_x962->data(),
+                     peer_public_key_x962.size()));
 
   syncer::DeviceInfo::PhoneAsASecurityKeyInfo paask_info;
   paask_info.tunnel_server_domain = device::cablev2::kTunnelServer.value();
@@ -328,7 +320,7 @@ std::vector<uint8_t> CBORFromPaaskInfo(
 
   const uint64_t pairing_id = paask_info.id;
   uint8_t pairing_id_bytes[sizeof(pairing_id)];
-  memcpy(pairing_id_bytes, &pairing_id, sizeof(pairing_id));
+  UNSAFE_TODO(memcpy(pairing_id_bytes, &pairing_id, sizeof(pairing_id)));
   map.emplace(2, std::vector<uint8_t>(std::begin(pairing_id_bytes),
                                       std::end(pairing_id_bytes)));
 
@@ -349,7 +341,7 @@ syncer::DeviceInfo::PhoneAsASecurityKeyInfo::StatusOrInfo CacheResult(
   // encoded `PhoneAsASecurityKeyInfo`.
   constexpr char kNoSupportString[] = ",";
 
-  if (absl::get_if<syncer::DeviceInfo::PhoneAsASecurityKeyInfo::NotReady>(
+  if (std::get_if<syncer::DeviceInfo::PhoneAsASecurityKeyInfo::NotReady>(
           &result)) {
     const std::string previous_result_serialized_b64 =
         state->GetString(kSerializedPaaskFieldsName);
@@ -365,21 +357,21 @@ syncer::DeviceInfo::PhoneAsASecurityKeyInfo::StatusOrInfo CacheResult(
     }
 
     std::optional<syncer::DeviceInfo::PhoneAsASecurityKeyInfo> paask_info =
-        internal::PaaskInfoFromCBOR(base::as_bytes(
+        internal::PaaskInfoFromCBOR(base::as_bytes(UNSAFE_TODO(
             base::span<const char>(previous_result_serialized.begin(),
-                                   previous_result_serialized.end())));
+                                   previous_result_serialized.end()))));
     if (!paask_info) {
       return result;
     }
     return *paask_info;
   } else if (auto* paask_info =
-                 absl::get_if<syncer::DeviceInfo::PhoneAsASecurityKeyInfo>(
+                 std::get_if<syncer::DeviceInfo::PhoneAsASecurityKeyInfo>(
                      &result)) {
     SetPrefIfDifferent(
         state, kSerializedPaaskFieldsName,
         base::Base64Encode(internal::CBORFromPaaskInfo(*paask_info)));
     return result;
-  } else if (absl::get_if<
+  } else if (std::get_if<
                  syncer::DeviceInfo::PhoneAsASecurityKeyInfo::NoSupport>(
                  &result)) {
     SetPrefIfDifferent(state, kSerializedPaaskFieldsName, kNoSupportString);
@@ -417,8 +409,8 @@ using webauthn::authenticator::SystemInterface;
 
 static void JNI_CableAuthenticatorModuleProvider_OnHaveLinkingInformation(
     JNIEnv* env,
-    jlong system_interface_pointer,
-    const base::android::JavaParamRef<jbyteArray>& cbor_java) {
+    int64_t system_interface_pointer,
+    const base::android::JavaRef<jbyteArray>& cbor_java) {
   std::optional<std::vector<uint8_t>> optional_cbor;
 
   if (cbor_java) {
@@ -438,8 +430,8 @@ static void JNI_CableAuthenticatorModuleProvider_OnHaveLinkingInformation(
 
 static void JNI_CableAuthenticatorModuleProvider_OnHaveWorkProfileResult(
     JNIEnv* env,
-    jlong system_interface_pointer,
-    jboolean in_work_profile) {
+    int64_t system_interface_pointer,
+    bool in_work_profile) {
   content::BrowserThread::GetTaskRunnerForThread(content::BrowserThread::UI)
       ->PostTask(
           FROM_HERE,
@@ -448,3 +440,5 @@ static void JNI_CableAuthenticatorModuleProvider_OnHaveWorkProfileResult(
                              static_cast<uintptr_t>(system_interface_pointer))),
                          in_work_profile));
 }
+
+DEFINE_JNI(CableAuthenticatorModuleProvider)

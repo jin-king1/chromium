@@ -15,7 +15,6 @@
 #include "base/task/bind_post_task.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/trace_event/trace_event.h"
-#include "base/types/cxx23_to_underlying.h"
 #include "media/base/cdm_context.h"
 #include "media/base/decoder_buffer.h"
 #include "media/base/limits.h"
@@ -26,8 +25,21 @@
 #include "media/base/video_decoder.h"
 #include "media/base/video_frame.h"
 #include "media/filters/decrypting_demuxer_stream.h"
+#include "third_party/perfetto/include/perfetto/tracing/track.h"
 
 namespace media {
+
+namespace {
+perfetto::NamedTrack GetTracingTrack(
+    const DecoderStream<DemuxerStream::VIDEO>* stream) {
+  return perfetto::NamedTrack::FromPointer("VideoDecoderStream", stream);
+}
+
+perfetto::NamedTrack GetTracingTrack(
+    const DecoderStream<DemuxerStream::AUDIO>* stream) {
+  return perfetto::NamedTrack::FromPointer("AudioDecoderStream", stream);
+}
+}  // namespace
 
 #define FUNCTION_DVLOG(level) \
   DVLOG(level) << __func__ << "<" << GetStreamTypeString() << ">"
@@ -101,7 +113,7 @@ DecoderStream<StreamType>::DecoderStream(
     MediaLog* media_log)
     : traits_(std::move(traits)),
       task_runner_(std::move(task_runner)),
-      media_log_(media_log),
+      media_log_(MediaLog::CloneSafely(media_log)),
       state_(State::kStateUninitialized),
       stream_(nullptr),
       cdm_context_(nullptr),
@@ -182,13 +194,15 @@ void DecoderStream<StreamType>::Read(ReadCB read_cb) {
   DCHECK(task_runner_->RunsTasksInCurrentSequence());
   DCHECK(state_ != State::kStateUninitialized &&
          state_ != State::kStateInitializing)
-      << base::to_underlying(state_);
+      << std::to_underlying(state_);
   // No two reads in the flight at any time.
   DCHECK(!read_cb_);
   // No read during resetting or stopping process.
   DCHECK(!reset_cb_);
 
-  TRACE_EVENT_ASYNC_BEGIN0("media", GetReadTraceString<StreamType>(), this);
+  TRACE_EVENT_BEGIN("media",
+                    perfetto::StaticString(GetReadTraceString<StreamType>()),
+                    GetTracingTrack(this));
   if (state_ == State::kStateError) {
     read_cb_ = base::BindPostTaskToCurrentDefault(std::move(read_cb));
     // OnDecodeDone, OnBufferReady, and CompleteDecoderReinitialization all set
@@ -384,7 +398,7 @@ void DecoderStream<StreamType>::OnDecoderSelected(
   DCHECK(task_runner_->RunsTasksInCurrentSequence());
   DCHECK(state_ == State::kStateInitializing ||
          state_ == State::kStateReinitializingDecoder)
-      << base::to_underlying(state_);
+      << std::to_underlying(state_);
 
   if (state_ == State::kStateInitializing) {
     DCHECK(init_cb_);
@@ -479,8 +493,8 @@ void DecoderStream<StreamType>::OnDecoderSelected(
 template <DemuxerStream::Type StreamType>
 void DecoderStream<StreamType>::SatisfyRead(ReadResult result) {
   DCHECK(read_cb_);
-  TRACE_EVENT_ASYNC_END1("media", GetReadTraceString<StreamType>(), this,
-                         "status", GetStatusString(result.code()));
+  TRACE_EVENT_END("media", GetTracingTrack(this), "status",
+                  GetStatusString(result.code()));
   std::move(read_cb_).Run(std::move(result));
 }
 
@@ -527,7 +541,7 @@ void DecoderStream<StreamType>::DecodeInternal(
   FUNCTION_DVLOG(3);
   DCHECK(state_ == State::kStateNormal ||
          state_ == State::kStateFlushingDecoder)
-      << base::to_underlying(state_);
+      << std::to_underlying(state_);
   DCHECK_LT(pending_decode_requests_, GetMaxDecodeRequests());
   DCHECK(!reset_cb_);
   DCHECK(buffer);
@@ -544,10 +558,16 @@ void DecoderStream<StreamType>::DecodeInternal(
   traits_->OnDecode(*buffer);
 
   const bool is_eos = buffer->end_of_stream();
-  if (is_eos)
+  if (is_eos) {
     decoding_eos_ = true;
-  else if (buffer->duration() != kNoTimestamp)
-    duration_tracker_.AddSample(buffer->duration());
+  } else {
+    if (buffer->duration() != kNoTimestamp) {
+      duration_tracker_.AddSample(buffer->duration());
+    } else if (last_buffer_timestamp_ != kNoTimestamp) {
+      duration_tracker_.AddSample(buffer->timestamp() - last_buffer_timestamp_);
+    }
+    last_buffer_timestamp_ = buffer->timestamp();
+  }
 
   ++pending_decode_requests_;
 
@@ -569,7 +589,7 @@ void DecoderStream<StreamType>::OnDecodeDone(
       << ": " << static_cast<int>(status.code());
   DCHECK(state_ == State::kStateNormal ||
          state_ == State::kStateFlushingDecoder || state_ == State::kStateError)
-      << base::to_underlying(state_);
+      << std::to_underlying(state_);
   DCHECK_GT(pending_decode_requests_, 0);
 
   --pending_decode_requests_;
@@ -682,7 +702,7 @@ void DecoderStream<StreamType>::OnDecodeOutputReady(
   DCHECK(output);
   DCHECK(state_ == State::kStateNormal ||
          state_ == State::kStateFlushingDecoder || state_ == State::kStateError)
-      << base::to_underlying(state_);
+      << std::to_underlying(state_);
 
   if (state_ == State::kStateError) {
     DCHECK(!read_cb_);
@@ -750,8 +770,9 @@ void DecoderStream<StreamType>::ReadFromDemuxerStream() {
   if (pending_demuxer_read_)
     return;
 
-  TRACE_EVENT_ASYNC_BEGIN0("media", GetDemuxerReadTraceString<StreamType>(),
-                           this);
+  TRACE_EVENT_BEGIN(
+      "media", perfetto::StaticString(GetDemuxerReadTraceString<StreamType>()),
+      GetTracingTrack(this));
   pending_demuxer_read_ = true;
   uint32_t buffer_read_count = 1;
   // Do not batch with software video decoder.
@@ -779,8 +800,8 @@ void DecoderStream<StreamType>::OnBuffersReady(
     return;
   }
 
-  TRACE_EVENT_ASYNC_END1("media", GetDemuxerReadTraceString<StreamType>(), this,
-                         "status", DemuxerStream::GetStatusName(status));
+  TRACE_EVENT_END("media", GetTracingTrack(this), "status",
+                  DemuxerStream::GetStatusName(status));
 
   DCHECK(task_runner_->RunsTasksInCurrentSequence());
   DCHECK(pending_demuxer_read_);
@@ -788,7 +809,7 @@ void DecoderStream<StreamType>::OnBuffersReady(
     DCHECK(state_ == State::kStateError ||
            state_ == State::kStateReinitializingDecoder ||
            state_ == State::kStateNormal)
-        << base::to_underlying(state_);
+        << std::to_underlying(state_);
   }
   pending_demuxer_read_ = false;
 
@@ -802,7 +823,7 @@ void DecoderStream<StreamType>::OnBuffersReady(
         // Save valid buffers to be consumed by the new decoder.
         // |pending_buffers_| is copied to |fallback_buffers_| in
         // OnDecoderSelected().
-        for (auto buffer : buffers) {
+        for (const auto& buffer : buffers) {
           pending_buffers_.push_back(std::move(buffer));
         }
         buffers.clear();
@@ -930,7 +951,7 @@ void DecoderStream<StreamType>::OnBuffersReady(
     ReportEncryptionType(buffers[0]);
   }
 
-  for (auto buffer : buffers) {
+  for (const auto& buffer : buffers) {
     Decode(std::move(buffer));
   }
   buffers.clear();
@@ -1014,7 +1035,7 @@ void DecoderStream<StreamType>::ResetDecoder() {
   DCHECK(state_ == State::kStateNormal ||
          state_ == State::kStateFlushingDecoder ||
          state_ == State::kStateError || state_ == State::kStateEndOfStream)
-      << base::to_underlying(state_);
+      << std::to_underlying(state_);
   DCHECK(reset_cb_);
 
   decoder_->Reset(base::BindOnce(&DecoderStream<StreamType>::OnDecoderReset,
@@ -1028,7 +1049,7 @@ void DecoderStream<StreamType>::OnDecoderReset() {
   DCHECK(state_ == State::kStateNormal ||
          state_ == State::kStateFlushingDecoder ||
          state_ == State::kStateError || state_ == State::kStateEndOfStream)
-      << base::to_underlying(state_);
+      << std::to_underlying(state_);
   // If Reset() was called during pending read, read callback should be fired
   // before the reset callback is fired.
   DCHECK(!read_cb_);
@@ -1038,6 +1059,7 @@ void DecoderStream<StreamType>::OnDecoderReset() {
   fallback_buffers_.clear();
   pending_buffers_.clear();
   fallback_buffers_being_decoded_ = 0;
+  last_buffer_timestamp_ = kNoTimestamp;
 
   if (state_ != State::kStateFlushingDecoder) {
     state_ = State::kStateNormal;
@@ -1068,7 +1090,7 @@ void DecoderStream<StreamType>::MaybePrepareAnotherOutput() {
          state_ == State::kStateFlushingDecoder ||
          state_ == State::kStateEndOfStream ||
          state_ == State::kStateReinitializingDecoder)
-      << base::to_underlying(state_);
+      << std::to_underlying(state_);
 
   // If there's nothing to prepare or a prepare is underway, we're done.
   if (!prepare_cb_ || unprepared_outputs_.empty() || preparing_output_)
@@ -1080,9 +1102,10 @@ void DecoderStream<StreamType>::MaybePrepareAnotherOutput() {
 
   // Retain a copy to avoid dangling reference in OnPreparedOutputReady().
   const scoped_refptr<Output> output = unprepared_outputs_.front();
-  TRACE_EVENT_ASYNC_BEGIN1("media", GetPrepareTraceString<StreamType>(), this,
-                           "timestamp_us",
-                           output->timestamp().InMicroseconds());
+  TRACE_EVENT_BEGIN("media",
+                    perfetto::StaticString(GetPrepareTraceString<StreamType>()),
+                    GetTracingTrack(this), "timestamp_us",
+                    output->timestamp().InMicroseconds());
   preparing_output_ = true;
   prepare_cb_.Run(
       output, base::BindOnce(&DecoderStream<StreamType>::OnPreparedOutputReady,
@@ -1101,7 +1124,7 @@ void DecoderStream<StreamType>::OnPreparedOutputReady(
          state_ == State::kStateFlushingDecoder ||
          state_ == State::kStateEndOfStream ||
          state_ == State::kStateReinitializingDecoder)
-      << base::to_underlying(state_);
+      << std::to_underlying(state_);
   DCHECK(!reset_cb_);
   DCHECK(!unprepared_outputs_.empty());
   DCHECK(preparing_output_);
@@ -1126,8 +1149,8 @@ void DecoderStream<StreamType>::OnPreparedOutputReady(
 template <DemuxerStream::Type StreamType>
 void DecoderStream<StreamType>::CompletePrepare(const Output* output) {
   DCHECK(preparing_output_);
-  TRACE_EVENT_ASYNC_END1(
-      "media", GetPrepareTraceString<StreamType>(), this, "timestamp_us",
+  TRACE_EVENT_END(
+      "media", GetTracingTrack(this), "timestamp_us",
       (output ? output->timestamp() : kNoTimestamp).InMicroseconds());
   preparing_output_ = false;
 }
@@ -1151,7 +1174,7 @@ void DecoderStream<StreamType>::ReportEncryptionType(
 
   if (encryption_type == EncryptionType::kEncryptedWithClearLead) {
     MEDIA_LOG(INFO, media_log_)
-        << GetStreamTypeString() << "stream is encrypted with clear lead";
+        << GetStreamTypeString() << " stream is encrypted with clear lead";
   }
 
   traits_->SetEncryptionType(encryption_type);

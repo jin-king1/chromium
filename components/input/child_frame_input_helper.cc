@@ -4,6 +4,7 @@
 
 #include "components/input/child_frame_input_helper.h"
 
+#include "base/trace_event/trace_event.h"
 #include "components/input/features.h"
 #include "components/input/render_input_router.h"
 #include "components/input/render_widget_host_input_event_router.h"
@@ -22,7 +23,7 @@ ChildFrameInputHelper::ChildFrameInputHelper(RenderWidgetHostViewInput* view,
 void ChildFrameInputHelper::NotifyHitTestRegionUpdated(
     const viz::AggregatedHitTestRegion& region) {
   std::optional<gfx::RectF> screen_rect =
-      region.transform.InverseMapRect(gfx::RectF(region.rect));
+      region.transform.InverseMapRect(region.rect.rect());
   if (!screen_rect) {
     last_stable_screen_rect_ = gfx::RectF();
     last_stable_screen_rect_for_iov2_ = gfx::RectF();
@@ -303,8 +304,7 @@ void ChildFrameInputHelper::GestureEventAckHelper(
     }
   }
 
-  TRACE_EVENT_INSTANT0("input", "Did_Ack_To_Frame_Connector",
-                       TRACE_EVENT_SCOPE_THREAD);
+  TRACE_EVENT_INSTANT("input", "Did_Ack_To_Frame_Connector");
   DidAckGestureEvent(event, ack_result);
 }
 
@@ -353,9 +353,14 @@ bool ChildFrameInputHelper::BubbleScrollEvent(
     return false;
   }
 
-  auto* event_router = parent_view->GetViewRenderInputRouter()
-                           ->delegate()
-                           ->GetInputEventRouter();
+  auto* parent_rir = parent_view->GetViewRenderInputRouter();
+  if (!parent_rir || !parent_rir->delegate()) {
+    return false;
+  }
+  auto* event_router = parent_rir->delegate()->GetInputEventRouter();
+  if (!event_router) {
+    return false;
+  }
 
   // We will only convert the coordinates back to the root here. The
   // RenderWidgetHostInputEventRouter will determine which ancestor view will
@@ -367,12 +372,9 @@ bool ChildFrameInputHelper::BubbleScrollEvent(
   resent_gesture_event.SetPositionInWidget(root_point);
   // When a gesture event is bubbled to the parent frame, set the allowed touch
   // action of the parent frame to Auto so that this gesture event is allowed.
-  parent_view->GetViewRenderInputRouter()
-      ->input_router()
-      ->ForceSetTouchActionAuto();
+  parent_rir->input_router()->ForceSetTouchActionAuto();
 
-  TRACE_EVENT_INSTANT0("input", "Did_Bubble_To_InputEventRouter",
-                       TRACE_EVENT_SCOPE_THREAD);
+  TRACE_EVENT_INSTANT("input", "Did_Bubble_To_InputEventRouter");
   return event_router->BubbleScrollEvent(parent_view, view_,
                                          resent_gesture_event);
 }

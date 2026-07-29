@@ -85,16 +85,17 @@ class MessageService : public BrowserContextKeyedAPI,
   void ClosePort(const PortId& port_id,
                  int process_id,
                  const PortContext& port_context,
-                 bool force_close) override;
-  void PostMessage(const PortId& port_id, const Message& message) override;
+                 bool close_channel,
+                 const std::string& error_message) override;
+  void PostMessage(const PortId& port_id, Message message) override;
   void NotifyResponsePending(const PortId& port_id) override;
 
   // Convenience method to get the MessageService for a browser context.
   static MessageService* Get(content::BrowserContext* context);
 
   // Given an extension's ID, opens a channel between the given renderer "port"
-  // and every listening context owned by that extension. |channel_name| is
-  // an optional identifier for use by extension developers. |opener_port| is an
+  // and every listening context owned by that extension. `channel_name` is
+  // an optional identifier for use by extension developers. `opener_port` is an
   // optional pre-opened port that should be attached to the opened channel.
   void OpenChannelToExtension(const ChannelEndpoint& source,
                               const PortId& source_port_id,
@@ -134,14 +135,14 @@ class MessageService : public BrowserContextKeyedAPI,
       mojo::PendingAssociatedReceiver<extensions::mojom::MessagePortHost>
           port_host);
 
-  // Marks the given port as opened by |port_context| in the render process
-  // with id |process_id|.
+  // Marks the given port as opened by `port_context` in the render process
+  // with id `process_id`.
   void OpenPort(content::RenderProcessHost* process,
                 const PortId& port_id,
                 const PortContext& port_context);
 
-  // Closes the given port in the given |port_context|. If this was the last
-  // context or if |force_close| is true, then the other side is closed as well.
+  // Closes the given port in the given `port_context`. If this was the last
+  // context or if `force_close` is true, then the other side is closed as well.
   void ClosePort(content::RenderProcessHost* process,
                  const PortId& port_id,
                  const PortContext& port_context,
@@ -155,6 +156,9 @@ class MessageService : public BrowserContextKeyedAPI,
 
   // Returns the number of open channels for test.
   size_t GetChannelCountForTest() { return channels_.size(); }
+
+  bool HasPendingLazyContextChannelsForExtension(
+      const ExtensionId& extension_id) const;
 
   base::WeakPtr<MessagePort::ChannelDelegate> GetChannelDelegate() {
     return weak_factory_.GetWeakPtr();
@@ -205,7 +209,12 @@ class MessageService : public BrowserContextKeyedAPI,
   using MessageChannelMap =
       std::map<ChannelId, std::unique_ptr<MessageChannel>>;
 
-  using PendingMessage = std::pair<PortId, Message>;
+  // A PendingMessage holds a message and the port it is destined for.
+  struct PendingMessage {
+    PortId port_id;
+    Message message;
+  };
+
   using PendingMessagesQueue = std::vector<PendingMessage>;
   // A set of channel IDs waiting to complete opening, and any pending messages
   // queued to be sent on those channels.
@@ -216,12 +225,12 @@ class MessageService : public BrowserContextKeyedAPI,
   // Workers.
   using PendingLazyContextChannelMap = std::map<ChannelId, LazyContextId>;
 
-  // Common implementation for opening a channel configured by |params|.
+  // Common implementation for opening a channel configured by `params`.
   //
-  // |target_extension| will be non-null if |params->target_extension_id| is
+  // `target_extension` will be non-null if |params->target_extension_id| is
   // non-empty, that is, if the target is an extension, it must exist.
   //
-  // |did_enqueue| will be true if the channel opening was delayed while
+  // `did_enqueue` will be true if the channel opening was delayed while
   // waiting for an event page to start, false otherwise.
   void OpenChannelImpl(content::BrowserContext* browser_context,
                        std::unique_ptr<OpenChannelParams> params,
@@ -240,7 +249,7 @@ class MessageService : public BrowserContextKeyedAPI,
                         const std::string& error_message,
                         bool notify_other_port);
 
-  // Have MessageService take ownership of |channel|, and remove any pending
+  // Have MessageService take ownership of `channel`, and remove any pending
   // channels with the same id.
   void AddChannel(std::unique_ptr<MessageChannel> channel,
                   const PortId& receiver_port_id);
@@ -253,26 +262,26 @@ class MessageService : public BrowserContextKeyedAPI,
   // Enqueues a message on a pending channel.
   void EnqueuePendingMessage(const PortId& port_id,
                              const ChannelId& channel_id,
-                             const Message& message);
+                             Message message);
 
   // Enqueues a message on a channel pending on a lazy background page load.
   void EnqueuePendingMessageForLazyBackgroundLoad(const PortId& port_id,
                                                   const ChannelId& channel_id,
-                                                  const Message& message);
+                                                  Message message);
 
   // Immediately sends a message to the given port.
   void DispatchMessage(const PortId& port_id,
                        MessageChannel* channel,
-                       const Message& message);
+                       Message message);
 
   // Potentially registers a pending task with lazy context task queue
   // to open a channel. Returns true if a task was queued.
-  // Takes ownership of |params| if true is returned.
+  // Takes ownership of `params` if true is returned.
   bool MaybeAddPendingLazyContextOpenChannelTask(
       content::BrowserContext* context,
       const Extension* extension,
       std::unique_ptr<OpenChannelParams>* params,
-      const PendingMessagesQueue& pending_messages);
+      PendingMessagesQueue& pending_messages);
 
   // Callbacks for background task queue tasks. The queue passes in an
   // ExtensionHost to its task callbacks, though some of our callbacks don't
@@ -296,14 +305,14 @@ class MessageService : public BrowserContextKeyedAPI,
   }
   void PendingLazyContextPostMessage(
       const PortId& port_id,
-      const Message& message,
+      Message message,
       std::unique_ptr<LazyContextTaskQueue::ContextInfo> context_info) {
     if (context_info) {
-      PostMessage(port_id, message);
+      PostMessage(port_id, std::move(message));
     }
   }
 
-  void DispatchPendingMessages(const PendingMessagesQueue& queue,
+  void DispatchPendingMessages(PendingMessagesQueue queue,
                                const ChannelId& channel_id);
 
   // BrowserContextKeyedAPI implementation.
@@ -315,7 +324,7 @@ class MessageService : public BrowserContextKeyedAPI,
   const raw_ptr<content::BrowserContext> context_;
 
   // Delegate for embedder-specific messaging, e.g. for Chrome tabs.
-  // Owned by the ExtensionsAPIClient and guaranteed to outlive |this|.
+  // Owned by the ExtensionsAPIClient and guaranteed to outlive `this`.
   raw_ptr<MessagingDelegate> messaging_delegate_;
 
   MessageChannelMap channels_;

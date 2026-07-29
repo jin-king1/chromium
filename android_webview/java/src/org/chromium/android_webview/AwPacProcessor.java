@@ -10,9 +10,6 @@ import android.net.LinkAddress;
 import android.net.LinkProperties;
 import android.net.Network;
 import android.net.NetworkRequest;
-import android.os.Build;
-
-import androidx.annotation.RequiresApi;
 
 import org.jni_zero.JNINamespace;
 import org.jni_zero.JniType;
@@ -25,14 +22,14 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Class to evaluate PAC scripts. Its lifecycle is independent of
- * any Renderer, Profile, or WebView instance.
+ * Class to evaluate PAC scripts. Its lifecycle is independent of any Renderer, Profile, or WebView
+ * instance.
  */
 @JNINamespace("android_webview")
-@RequiresApi(Build.VERSION_CODES.P)
 // TODO(amalova): remove UsedByReflection
 @UsedByReflection("Android")
 public class AwPacProcessor {
+    // 0 if it's already been destroyed.
     private long mNativePacProcessor;
     private Network mNetwork;
     private ConnectivityManager.NetworkCallback mNetworkCallback;
@@ -69,6 +66,7 @@ public class AwPacProcessor {
     }
 
     public void setNetworkAndLinkAddresses(long networkHandle, List<String> addresses) {
+        if (mNativePacProcessor == 0) return;
         AwPacProcessorJni.get()
                 .setNetworkAndLinkAddresses(mNativePacProcessor, networkHandle, addresses);
     }
@@ -101,18 +99,23 @@ public class AwPacProcessor {
     // The calling code must not call any methods after it called destroy().
     @UsedByReflection("Android")
     public void destroy() {
+        if (mNativePacProcessor == 0) return;
+        long nativePacProcessor = mNativePacProcessor;
+        mNativePacProcessor = 0;
         unregisterNetworkCallback();
-        AwPacProcessorJni.get().destroyNative(mNativePacProcessor, this);
+        AwPacProcessorJni.get().destroyNative(nativePacProcessor);
     }
 
     @UsedByReflection("Android")
     public boolean setProxyScript(String script) {
-        return AwPacProcessorJni.get().setProxyScript(mNativePacProcessor, this, script);
+        if (mNativePacProcessor == 0) return false;
+        return AwPacProcessorJni.get().setProxyScript(mNativePacProcessor, script);
     }
 
     @UsedByReflection("Android")
     public String makeProxyRequest(String url) {
-        return AwPacProcessorJni.get().makeProxyRequest(mNativePacProcessor, this, url);
+        if (mNativePacProcessor == 0) return null;
+        return AwPacProcessorJni.get().makeProxyRequest(mNativePacProcessor, url);
     }
 
     @UsedByReflection("Android")
@@ -141,14 +144,11 @@ public class AwPacProcessor {
 
         long createNativePacProcessor();
 
-        boolean setProxyScript(
-                long nativeAwPacProcessor,
-                AwPacProcessor caller,
-                @JniType("std::string") String script);
+        boolean setProxyScript(long nativeAwPacProcessor, @JniType("std::string") String script);
 
-        String makeProxyRequest(long nativeAwPacProcessor, AwPacProcessor caller, String url);
+        String makeProxyRequest(long nativeAwPacProcessor, String url);
 
-        void destroyNative(long nativeAwPacProcessor, AwPacProcessor caller);
+        void destroyNative(long nativeAwPacProcessor);
 
         void setNetworkAndLinkAddresses(
                 long nativeAwPacProcessor,

@@ -14,6 +14,7 @@
 #include "base/i18n/time_formatting.h"
 #include "base/json/json_writer.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/synchronization/lock.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
@@ -130,10 +131,7 @@ class SCTReportingServiceBrowserTest : public CertVerifierBrowserTest {
  public:
   SCTReportingServiceBrowserTest() {
     // Set sampling rate to 1.0 to ensure deterministic behavior.
-    scoped_feature_list_.InitWithFeaturesAndParameters(
-        {{features::kSCTAuditing,
-          {{features::kSCTAuditingSamplingRate.name, "1.0"}}}},
-        {});
+    SCTReportingService::SetSamplingRateForTesting(1.0);
     SystemNetworkContextManager::SetEnableCertificateTransparencyForTesting(
         true);
     // The report server must be initialized here so the reporting URL can be
@@ -251,16 +249,16 @@ class SCTReportingServiceBrowserTest : public CertVerifierBrowserTest {
 
  protected:
   void SetEnhancedProtectionEnabled(bool enabled) {
-    browser()->profile()->GetPrefs()->SetBoolean(prefs::kSafeBrowsingEnhanced,
-                                                 enabled);
+    browser()->GetProfile()->GetPrefs()->SetBoolean(
+        prefs::kSafeBrowsingEnhanced, enabled);
   }
   void SetExtendedReportingEnabled(bool enabled) {
-    browser()->profile()->GetPrefs()->SetBoolean(
+    browser()->GetProfile()->GetPrefs()->SetBoolean(
         prefs::kSafeBrowsingScoutReportingEnabled, enabled);
   }
   void SetSafeBrowsingEnabled(bool enabled) {
-    browser()->profile()->GetPrefs()->SetBoolean(prefs::kSafeBrowsingEnabled,
-                                                 enabled);
+    browser()->GetProfile()->GetPrefs()->SetBoolean(prefs::kSafeBrowsingEnabled,
+                                                    enabled);
   }
   // |suffix_list| must be sorted lexicographically.
   void SetHashdanceSuffixList(std::vector<std::string> suffix_list) {
@@ -400,31 +398,31 @@ class SCTReportingServiceBrowserTest : public CertVerifierBrowserTest {
     // 2022-01-01 00:00:00 GMT.
     base::Time server_time =
         base::Time::UnixEpoch() + base::Seconds(1640995200);
-    base::Value::Dict response;
+    base::DictValue response;
     response.Set("responseStatus", "OK");
     response.Set("now", base::TimeFormatAsIso8601(server_time));
 
-    base::Value::List suffixes;
+    base::ListValue suffixes;
     for (const auto& suffix : suffix_list_) {
       suffixes.Append(base::Base64Encode(base::as_byte_span(suffix)));
     }
     response.Set("hashSuffix", std::move(suffixes));
 
-    base::Value::List log_list;
+    base::ListValue log_list;
     {
-      base::Value::Dict log_status;
+      base::DictValue log_status;
       log_status.Set("logId", base::Base64Encode(kTestGoogleLogId));
       log_status.Set("ingestedUntil", base::TimeFormatAsIso8601(server_time));
       log_list.Append(std::move(log_status));
     }
     {
-      base::Value::Dict log_status;
+      base::DictValue log_status;
       log_status.Set("logId", base::Base64Encode(kTestNonGoogleLogId1));
       log_status.Set("ingestedUntil", base::TimeFormatAsIso8601(server_time));
       log_list.Append(std::move(log_status));
     }
     {
-      base::Value::Dict log_status;
+      base::DictValue log_status;
       log_status.Set("logId", base::Base64Encode(kTestNonGoogleLogId2));
       log_status.Set("ingestedUntil", base::TimeFormatAsIso8601(server_time));
       log_list.Append(std::move(log_status));
@@ -441,7 +439,6 @@ class SCTReportingServiceBrowserTest : public CertVerifierBrowserTest {
 
   net::EmbeddedTestServer https_server_{net::EmbeddedTestServer::TYPE_HTTPS};
   net::EmbeddedTestServer report_server_{net::EmbeddedTestServer::TYPE_HTTPS};
-  base::test::ScopedFeatureList scoped_feature_list_;
 
   scoped_refptr<net::X509Certificate> cert_with_precert_;
   std::unique_ptr<net::test_server::SimpleConnectionListener>
@@ -572,7 +569,7 @@ IN_PROC_BROWSER_TEST_F(SCTReportingServiceBrowserTest,
   SimulateNetworkServiceCrash();
   // Flush the network interface to make sure it notices the crash.
   browser()
-      ->profile()
+      ->GetProfile()
       ->GetDefaultStoragePartition()
       ->FlushNetworkInterfaceForTesting();
   g_browser_process->system_network_context_manager()
@@ -761,19 +758,13 @@ class SCTReportingServiceZeroSamplingRateBrowserTest
     : public SCTReportingServiceBrowserTest {
  public:
   SCTReportingServiceZeroSamplingRateBrowserTest() {
-    scoped_feature_list_.InitWithFeaturesAndParameters(
-        {{features::kSCTAuditing,
-          {{features::kSCTAuditingSamplingRate.name, "0.0"}}}},
-        {});
+    SCTReportingService::SetSamplingRateForTesting(0.0);
   }
 
   SCTReportingServiceZeroSamplingRateBrowserTest(
       const SCTReportingServiceZeroSamplingRateBrowserTest&) = delete;
   const SCTReportingServiceZeroSamplingRateBrowserTest& operator=(
       const SCTReportingServiceZeroSamplingRateBrowserTest&) = delete;
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 // Tests that the embedder is not notified when the sampling rate is zero.
@@ -1001,7 +992,7 @@ IN_PROC_BROWSER_TEST_F(SCTHashdanceBrowserTest,
 }
 
 // Test that report count isn't incremented when retrying a single audit report.
-// Regression test for crbug.com/1348313.
+// Regression test for crbug.com/40855225.
 IN_PROC_BROWSER_TEST_F(SCTHashdanceBrowserTest,
                        HashdanceReportCountNotIncrementedOnRetry) {
   base::HistogramTester histograms;
@@ -1145,7 +1136,7 @@ IN_PROC_BROWSER_TEST_F(SCTReportingServiceBrowserTest,
   // The empty/cleared persistence file will be 2 bytes (the empty JSON list).
   constexpr int64_t kEmptyPersistenceFileSize = 2;
 
-  base::FilePath persistence_path1 = browser()->profile()->GetPath();
+  base::FilePath persistence_path1 = browser()->GetProfile()->GetPath();
   // If the network service sandbox is enabled, then the network service data
   // dir path has an additional "Network" subdirectory in it. This means that
   // different platforms will have different persistence paths depending on the

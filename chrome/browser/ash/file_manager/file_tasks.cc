@@ -17,9 +17,10 @@
 
 #include "apps/launcher.h"
 #include "ash/constants/ash_features.h"
+#include "ash/constants/ash_pref_names.h"
 #include "ash/constants/web_app_id_constants.h"
 #include "ash/webui/file_manager/url_constants.h"
-#include "base/containers/contains.h"
+#include "base/barrier_callback.h"
 #include "base/containers/fixed_flat_map.h"
 #include "base/containers/fixed_flat_set.h"
 #include "base/feature_list.h"
@@ -35,12 +36,12 @@
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
-#include "chrome/browser/apps/app_service/app_launch_params.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/apps/app_service/metrics/app_platform_metrics.h"
 #include "chrome/browser/apps/app_service/metrics/app_service_metrics.h"
 #include "chrome/browser/ash/drive/drive_integration_service.h"
+#include "chrome/browser/ash/drive/drive_integration_service_factory.h"
 #include "chrome/browser/ash/drive/file_system_util.h"
 #include "chrome/browser/ash/file_manager/app_service_file_tasks.h"
 #include "chrome/browser/ash/file_manager/file_browser_handlers.h"
@@ -54,6 +55,7 @@
 #include "chrome/browser/ash/file_manager/uma_enums.gen.h"
 #include "chrome/browser/ash/file_manager/url_util.h"
 #include "chrome/browser/ash/file_manager/virtual_file_tasks.h"
+#include "chrome/browser/ash/file_manager/virtual_tasks/id_constants.h"
 #include "chrome/browser/ash/file_system_provider/mount_path_util.h"
 #include "chrome/browser/ash/file_system_provider/provided_file_system_info.h"
 #include "chrome/browser/ash/file_system_provider/provided_file_system_interface.h"
@@ -71,21 +73,21 @@
 #include "chrome/browser/ui/webui/ash/cloud_upload/cloud_upload_dialog.h"
 #include "chrome/browser/ui/webui/ash/cloud_upload/cloud_upload_util.h"
 #include "chrome/browser/ui/webui/extensions/extension_icon_source.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/common/extensions/api/file_browser_handlers/file_browser_handler.h"
 #include "chrome/common/extensions/extension_constants.h"
-#include "chrome/common/pref_names.h"
 #include "chromeos/ash/components/file_manager/app_id.h"
 #include "components/drive/drive_api_util.h"
 #include "components/drive/drive_pref_names.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
+#include "components/services/app_service/public/cpp/app_launch_params.h"
 #include "components/services/app_service/public/cpp/app_launch_util.h"
 #include "components/services/app_service/public/cpp/app_types.h"
 #include "components/services/app_service/public/cpp/app_update.h"
 #include "components/services/app_service/public/cpp/file_handler.h"
 #include "components/services/app_service/public/cpp/file_handler_info.h"
+#include "components/services/app_service/public/cpp/launch_result.h"
 #include "extensions/browser/api/file_handlers/mime_util.h"
 #include "extensions/browser/entry_info.h"
 #include "extensions/browser/extension_host.h"
@@ -126,22 +128,21 @@ constexpr char kWebAppTaskType[] = "web";
 constexpr char kPdfMimeType[] = "application/pdf";
 constexpr char kPdfFileExtension[] = ".pdf";
 
-
-base::Value::Dict& GetDebugBaseValueDictForExecuteFileTask() {
+base::DictValue& GetDebugBaseValueDictForExecuteFileTask() {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  static base::NoDestructor<base::Value::Dict> instance;
+  static base::NoDestructor<base::DictValue> instance;
   return *instance;
 }
 
 void UpdateDebugBaseValue(const TaskDescriptor& task,
                           const std::vector<FileSystemURL>& file_urls) {
-  auto urls_list = base::Value::List::with_capacity(file_urls.size());
+  auto urls_list = base::ListValue::with_capacity(file_urls.size());
   for (const auto& url : file_urls) {
     urls_list.Append(url.ToGURL().spec());
   }
   GetDebugBaseValueDictForExecuteFileTask() =
-      base::Value::Dict()
-          .Set("task", base::Value::Dict()
+      base::DictValue()
+          .Set("task", base::DictValue()
                            .Set("action_id", task.action_id)
                            .Set("app_id", task.app_id)
                            .Set("type", TaskTypeToString(task.task_type)))
@@ -151,8 +152,8 @@ void UpdateDebugBaseValue(const TaskDescriptor& task,
 void RecordChangesInDefaultPdfApp(const std::string& new_default_app_id,
                                   const std::set<std::string>& mime_types,
                                   const std::set<std::string>& suffixes) {
-  bool hasPdfMimeType = base::Contains(mime_types, kPdfMimeType);
-  bool hasPdfSuffix = base::Contains(suffixes, kPdfFileExtension);
+  bool hasPdfMimeType = mime_types.contains(kPdfMimeType);
+  bool hasPdfSuffix = suffixes.contains(kPdfFileExtension);
   if (!hasPdfMimeType || !hasPdfSuffix) {
     return;
   }
@@ -190,7 +191,7 @@ void RemoveFileManagerInternalActions(const std::set<std::string>& actions,
   std::erase_if(*tasks, [&actions](const auto& task) {
     const auto& td = task.task_descriptor;
     return IsFilesAppId(td.app_id) &&
-           base::Contains(actions, ParseFilesAppActionId(td.action_id));
+           actions.contains(ParseFilesAppActionId(td.action_id));
   });
 }
 
@@ -216,10 +217,10 @@ void AdjustTasksForMediaApp(const std::vector<extensions::EntryInfo>& entries,
     return;
   }
 
-  // TOOD(crbug/1071289): For a while is_file_extension_match would always be
-  // false for System Web App manifests, even when specifying extension matches.
-  // So this line can be removed once the media app manifest is updated with a
-  // full complement of image file extensions.
+  // TOOD(crbug.com/40685029): For a while is_file_extension_match would always
+  // be false for System Web App manifests, even when specifying extension
+  // matches. So this line can be removed once the media app manifest is updated
+  // with a full complement of image file extensions.
   media_app_task->is_file_extension_match = true;
 
   // The logic in ChooseAndSetDefaultTask() also requires the following to hold.
@@ -264,7 +265,7 @@ bool IsFallbackFileHandler(const FullTaskDescriptor& task) {
       // clang-format on
   });
 
-  return base::Contains(kBuiltInApps, task.task_descriptor.app_id);
+  return kBuiltInApps.contains(task.task_descriptor.app_id);
 }
 
 // Gets the profile in which a file task owned by |extension| should be
@@ -296,11 +297,31 @@ void ExecuteTaskAfterMimeTypesCollected(
   ExecuteAppServiceTask(profile, task, file_urls, *mime_types, std::move(done));
 }
 
+// Adjusts the tasks for handling Isolated Web App (.swbn) files, ensuring
+// only the default installer task is set as default.
+void AdjustTasksForSwbnHandling(
+    Profile* profile,
+    const std::vector<extensions::EntryInfo>& entries,
+    std::vector<FullTaskDescriptor>* tasks) {
+  bool has_swbn_file = std::ranges::any_of(entries, [](const auto& entry) {
+    return entry.path.MatchesExtension(".swbn");
+  });
+  if (!has_swbn_file) {
+    return;
+  }
+
+  std::erase_if(*tasks, [&](const auto& task) {
+    return task.task_descriptor.action_id !=
+           ToSwaActionId(kActionIdInstallIsolatedWebApp);
+  });
+}
+
 void PostProcessFoundTasks(Profile* profile,
                            const std::vector<extensions::EntryInfo>& entries,
                            FindTasksCallback callback,
                            std::unique_ptr<ResultingTasks> resulting_tasks) {
   AdjustTasksForMediaApp(entries, &resulting_tasks->tasks);
+  AdjustTasksForSwbnHandling(profile, entries, &resulting_tasks->tasks);
 
   // Google documents can only be handled by internal handlers.
   if (ContainsGoogleDocument(entries)) {
@@ -344,22 +365,43 @@ bool ShouldBeOpenedWithBrowser(const std::string& extension_id,
           // clang-format on
       });
   return IsFilesAppId(extension_id) &&
-         base::Contains(kOpenWithBrowserActions, action_id);
+         kOpenWithBrowserActions.contains(action_id);
 }
 
 // Opens the files specified by |file_urls| with the browser for |profile|.
 // Returns true on success. It's a failure if no files are opened.
-bool OpenFilesWithBrowser(Profile* profile,
+void OpenFilesWithBrowser(Profile* profile,
                           const std::vector<FileSystemURL>& file_urls,
-                          const std::string& action_id) {
-  int num_opened = 0;
+                          const std::string& action_id,
+                          FileTaskFinishedCallback done) {
+  const auto track_opens = base::BarrierCallback<
+      std::optional<apps::LaunchResult>>(
+      file_urls.size(),
+      base::BindOnce(
+          [](FileTaskFinishedCallback done,
+             const std::vector<std::optional<apps::LaunchResult>>& opens) {
+            const int num_opened = std::ranges::count_if(opens, [](auto& o) {
+              return o.has_value() && o.value() == apps::LaunchResult::kSuccess;
+            });
+
+            if (num_opened > 0) {
+              std::move(done).Run(
+                  extensions::api::file_manager_private::TaskResult::kOpened,
+                  "");
+            } else {
+              std::move(done).Run(
+                  extensions::api::file_manager_private::TaskResult::kFailed,
+                  "");
+            }
+          },
+          std::move(done)));
   for (const FileSystemURL& file_url : file_urls) {
     if (ash::FileSystemBackend::CanHandleURL(file_url)) {
-      num_opened +=
-          util::OpenFileWithAppOrBrowser(profile, file_url, action_id) ? 1 : 0;
+      util::OpenFileWithAppOrBrowser(profile, file_url, action_id, track_opens);
+    } else {
+      track_opens.Run({apps::LaunchResult::kFailed});
     }
   }
-  return num_opened > 0;
 }
 
 void RecordDriveOfflineUMAsGotDocsOfflineStats(
@@ -454,14 +496,15 @@ ResultingTasks::~ResultingTasks() = default;
 
 void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry) {
   // Default handlers according to policy.
-  registry->RegisterDictionaryPref(prefs::kDefaultHandlersForFileExtensions);
+  registry->RegisterDictionaryPref(
+      ash::prefs::kDefaultHandlersForFileExtensions);
 
   // Dictionaries to keep track of default tasks in the file browser.
   registry->RegisterDictionaryPref(
-      prefs::kDefaultTasksByMimeType,
+      ash::prefs::kDefaultTasksByMimeType,
       user_prefs::PrefRegistrySyncable::SYNCABLE_OS_PREF);
   registry->RegisterDictionaryPref(
-      prefs::kDefaultTasksBySuffix,
+      ash::prefs::kDefaultTasksBySuffix,
       user_prefs::PrefRegistrySyncable::SYNCABLE_OS_PREF);
 
   RegisterOfficeProfilePrefs(registry);
@@ -603,13 +646,13 @@ void UpdateDefaultTask(Profile* profile,
   // In the special case where we are setting the default for one type of Office
   // file only, set defaults for the entire group as well.
   if (mime_types.size() == 1 && suffixes.size() == 1) {
-    if (base::Contains(WordGroupExtensions(), *suffixes.begin())) {
+    if (WordGroupExtensions().contains(*suffixes.begin())) {
       suffixes_to_set = WordGroupExtensions();
       mime_types_to_set = WordGroupMimeTypes();
-    } else if (base::Contains(ExcelGroupExtensions(), *suffixes.begin())) {
+    } else if (ExcelGroupExtensions().contains(*suffixes.begin())) {
       suffixes_to_set = ExcelGroupExtensions();
       mime_types_to_set = ExcelGroupMimeTypes();
-    } else if (base::Contains(PowerPointGroupExtensions(), *suffixes.begin())) {
+    } else if (PowerPointGroupExtensions().contains(*suffixes.begin())) {
       suffixes_to_set = PowerPointGroupExtensions();
       mime_types_to_set = PowerPointGroupMimeTypes();
     }
@@ -617,7 +660,7 @@ void UpdateDefaultTask(Profile* profile,
 
   if (!mime_types_to_set.empty()) {
     ScopedDictPrefUpdate mime_type_pref(pref_service,
-                                        prefs::kDefaultTasksByMimeType);
+                                        ash::prefs::kDefaultTasksByMimeType);
     for (const std::string& mime_type : mime_types_to_set) {
       if (!replace_existing && mime_type_pref->contains(mime_type)) {
         continue;
@@ -628,7 +671,7 @@ void UpdateDefaultTask(Profile* profile,
 
   if (!suffixes.empty()) {
     ScopedDictPrefUpdate suffix_pref(pref_service,
-                                     prefs::kDefaultTasksBySuffix);
+                                     ash::prefs::kDefaultTasksBySuffix);
     for (const std::string& suffix : suffixes_to_set) {
       if (!replace_existing && suffix_pref->contains(suffix)) {
         continue;
@@ -655,7 +698,7 @@ void RemoveDefaultTask(Profile* profile,
       [](const std::string& suffix) { return base::ToLowerASCII(suffix); });
 
   ScopedDictPrefUpdate mime_type_pref(pref_service,
-                                      prefs::kDefaultTasksByMimeType);
+                                      ash::prefs::kDefaultTasksByMimeType);
   for (const auto& mime_type : mime_types) {
     std::string* pref_value = mime_type_pref->FindString(mime_type);
     if (pref_value && *pref_value == task_id) {
@@ -663,7 +706,8 @@ void RemoveDefaultTask(Profile* profile,
     }
   }
 
-  ScopedDictPrefUpdate suffix_pref(pref_service, prefs::kDefaultTasksBySuffix);
+  ScopedDictPrefUpdate suffix_pref(pref_service,
+                                   ash::prefs::kDefaultTasksBySuffix);
   for (const auto& suffix : suffixes_to_remove) {
     std::string* pref_value = suffix_pref->FindString(suffix);
     if (pref_value && *pref_value == task_id) {
@@ -679,8 +723,8 @@ std::optional<TaskDescriptor> GetDefaultTaskFromPrefs(
   VLOG(1) << "Looking for default for MIME type: " << mime_type
           << " and suffix: " << suffix;
   if (!mime_type.empty()) {
-    const base::Value::Dict& mime_task_prefs =
-        pref_service.GetDict(prefs::kDefaultTasksByMimeType);
+    const base::DictValue& mime_task_prefs =
+        pref_service.GetDict(ash::prefs::kDefaultTasksByMimeType);
     const std::string* task_id = mime_task_prefs.FindString(mime_type);
     if (task_id) {
       VLOG(1) << "Found MIME default handler: " << *task_id;
@@ -688,8 +732,8 @@ std::optional<TaskDescriptor> GetDefaultTaskFromPrefs(
     }
   }
 
-  const base::Value::Dict& suffix_task_prefs =
-      pref_service.GetDict(prefs::kDefaultTasksBySuffix);
+  const base::DictValue& suffix_task_prefs =
+      pref_service.GetDict(ash::prefs::kDefaultTasksBySuffix);
   std::string lower_suffix = base::ToLowerASCII(suffix);
 
   const std::string* task_id = suffix_task_prefs.FindString(lower_suffix);
@@ -783,7 +827,6 @@ bool ExecuteFileTask(Profile* profile,
         ash::cloud_upload::kOpenInitialCloudProviderMetric,
         ash::cloud_upload::CloudProvider::kNone);
   }
-  // TODO(b/284800493): Add a test that VirtualTasks get run.
   if (IsVirtualTask(task)) {
     const bool started = ExecuteVirtualTask(profile, task, file_urls);
     if (done) {
@@ -803,13 +846,8 @@ bool ExecuteFileTask(Profile* profile,
   // this will always open on the current desktop, regardless of which profile
   // owns the files, so return TASK_RESULT_OPENED.
   if (ShouldBeOpenedWithBrowser(task.app_id, parsed_action_id)) {
-    const bool result =
-        OpenFilesWithBrowser(profile, file_urls, parsed_action_id);
-    if (result && done) {
-      std::move(done).Run(
-          extensions::api::file_manager_private::TaskResult::kOpened, "");
-    }
-    return result;
+    OpenFilesWithBrowser(profile, file_urls, parsed_action_id, std::move(done));
+    return true;
   }
 
   for (const FileSystemURL& file_url : file_urls) {
@@ -860,8 +898,6 @@ bool ExecuteFileTask(Profile* profile,
       task.task_type == TASK_TYPE_BRUSCHETTA_APP ||
       task.task_type == TASK_TYPE_CROSTINI_APP ||
       task.task_type == TASK_TYPE_PLUGIN_VM_APP) {
-    // TODO(petermarshall): Implement GetProfileForExtensionTask in Lacros if
-    // necessary, for Chrome Apps.
     extensions::app_file_handler_util::MimeTypeCollector* mime_collector =
         new extensions::app_file_handler_util::MimeTypeCollector(profile);
     mime_collector->CollectForURLs(
@@ -935,7 +971,6 @@ void FindAllTypesOfTasks(Profile* profile,
     return;
   }
 
-  // TODO(b/284800493): Add a test that VirtualTasks are found.
   MatchVirtualTasks(profile, entries, file_urls, dlp_source_urls,
                     &resulting_tasks->tasks);
 
@@ -1006,7 +1041,7 @@ void ChooseAndSetDefaultTask(Profile* profile,
   // default task. If found, pick and set it as default and return.
   for (FullTaskDescriptor& task : tasks) {
     DCHECK(!task.is_default);
-    if (base::Contains(default_tasks, task.task_descriptor)) {
+    if (default_tasks.contains(task.task_descriptor)) {
       task.is_default = true;
       return;
     }
@@ -1034,7 +1069,7 @@ void ChooseAndSetDefaultTask(Profile* profile,
 
   // Check for an explicit file extension match (without MIME match) in the
   // extension manifest and pick that over the fallback handlers below (see
-  // crbug.com/803930)
+  // crbug.com/41365945)
   for (FullTaskDescriptor& task : tasks) {
     if (task.is_file_extension_match && !task.is_generic_file_handler &&
         !IsFallbackFileHandler(task)) {
@@ -1043,8 +1078,8 @@ void ChooseAndSetDefaultTask(Profile* profile,
     }
   }
 
-  // Prefer a fallback app over viewing in the browser (crbug.com/1111399).
-  // Unless it's HTML which should open in the browser (crbug.com/1121396).
+  // Prefer a fallback app over viewing in the browser (crbug.com/40142559).
+  // Unless it's HTML which should open in the browser (crbug.com/40715467).
   for (FullTaskDescriptor& task : tasks) {
     if (IsFallbackFileHandler(task) &&
         ParseFilesAppActionId(task.task_descriptor.action_id) !=

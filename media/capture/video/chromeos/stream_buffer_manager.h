@@ -7,27 +7,20 @@
 
 #include <cstring>
 #include <initializer_list>
-#include <map>
 #include <memory>
 #include <optional>
-#include <queue>
 #include <set>
-#include <unordered_map>
 #include <vector>
 
 #include "base/containers/flat_map.h"
 #include "base/containers/queue.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
-#include "base/task/single_thread_task_runner.h"
 #include "media/capture/video/chromeos/camera_device_context.h"
 #include "media/capture/video/chromeos/camera_device_delegate.h"
 #include "media/capture/video/chromeos/mojom/camera3.mojom.h"
 #include "media/capture/video_capture_types.h"
-
-namespace gfx {
-class GpuMemoryBuffer;
-}  // namespace gfx
+#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 
 namespace gpu {
 class ClientSharedImage;
@@ -152,10 +145,10 @@ class CAPTURE_EXPORT StreamBufferManager final {
     // The usage of the buffer.
     gfx::BufferUsage buffer_usage;
     // The allocated buffer pairs.
-    std::map<int, BufferPair> buffers;
+    absl::flat_hash_map<int, BufferPair> buffers;
     // The free buffers of this stream.  The queue stores keys into the
     // |buffers| map.
-    std::queue<int> free_buffers;
+    base::queue<int> free_buffers;
   };
 
   static uint64_t GetBufferIpcId(StreamType stream_type, int key);
@@ -169,7 +162,7 @@ class CAPTURE_EXPORT StreamBufferManager final {
   void DestroyCurrentStreamsAndBuffers();
 
   // The context for the set of active streams.
-  std::unordered_map<StreamType, std::unique_ptr<StreamContext>>
+  absl::flat_hash_map<StreamType, std::unique_ptr<StreamContext>>
       stream_context_;
 
   raw_ptr<CameraDeviceContext> device_context_;

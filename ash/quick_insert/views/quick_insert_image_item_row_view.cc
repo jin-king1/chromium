@@ -16,6 +16,7 @@
 #include "ash/style/icon_button.h"
 #include "components/vector_icons/vector_icons.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/controls/button/image_button.h"
@@ -23,6 +24,7 @@
 #include "ui/views/focus/focus_manager.h"
 #include "ui/views/layout/box_layout_view.h"
 #include "ui/views/layout/layout_types.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/view.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/view_utils.h"
@@ -83,12 +85,15 @@ QuickInsertImageItemRowView::QuickInsertImageItemRowView(
                               std::make_unique<IconButton>(
                                   std::move(more_items_callback),
                                   IconButton::Type::kMediumFloating,
-                                  &vector_icons::kSubmenuArrowChromeRefreshIcon,
+                                  ::features::IsRoundedIconsEnabled()
+                                      ? &vector_icons::
+                                            kKeyboardArrowRightFlippableIcon
+                                      : &vector_icons::
+                                            kSubmenuArrowChromeRefreshOldIcon,
                                   std::move(more_items_accessible_name),
                                   /*is_togglable=*/false,
                                   /*has_border=*/false))
-                              // The kSubmenuArrowChromeRefreshIcon flips
-                              // itself, so don't flip it again.
+                              // The icon flips itself, so don't flip it again.
                               .SetFlipCanvasOnPaintForRTLUI(false)
                               .CopyAddressTo(&more_items_button_))))
       .BuildChildren();

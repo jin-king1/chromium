@@ -11,12 +11,14 @@
 
 class ProfileIOS;
 
+namespace supervised_user {
+
 // Singleton that owns ListFamilyMembersService objects and associates
 // them with Profiles.
 class ListFamilyMembersServiceFactory : public ProfileKeyedServiceFactoryIOS {
  public:
-  static supervised_user::ListFamilyMembersService* GetForProfile(
-      ProfileIOS* profile);
+  static ListFamilyMembersService* GetForProfile(ProfileIOS* profile);
+  static ListFamilyMembersService* GetForProfileIfExists(ProfileIOS* profile);
 
   static ListFamilyMembersServiceFactory* GetInstance();
 
@@ -26,9 +28,11 @@ class ListFamilyMembersServiceFactory : public ProfileKeyedServiceFactoryIOS {
   ListFamilyMembersServiceFactory();
   ~ListFamilyMembersServiceFactory() override = default;
 
-  // BrowserStateKeyedServiceFactory implementation.
+  // ProfileKeyedServiceFactoryIOS implementation.
   std::unique_ptr<KeyedService> BuildServiceInstanceFor(
-      web::BrowserState* context) const override;
+      ProfileIOS* profile) const override;
 };
+
+}  // namespace supervised_user
 
 #endif  // IOS_CHROME_BROWSER_SUPERVISED_USER_MODEL_LIST_FAMILY_MEMBERS_SERVICE_FACTORY_H_

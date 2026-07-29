@@ -22,10 +22,10 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/task_environment.h"
 #include "ui/compositor/layer_animator.h"
-#include "ui/compositor/scoped_animation_duration_scale_mode.h"
 #include "ui/compositor/test/layer_animation_stopped_waiter.h"
 #include "ui/display/manager/display_manager.h"
 #include "ui/display/manager/managed_display_info.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/menus/simple_menu_model.h"
 #include "ui/views/accessibility/view_accessibility.h"
 
@@ -171,6 +171,12 @@ class TrayBackgroundViewTest : public AshTestBase,
     controller->dictation().SetEnabled(true);
   }
 
+  void TearDown() override {
+    persistent_bubble_test_tray_background_view_ = nullptr;
+    test_tray_background_view_ = nullptr;
+    AshTestBase::TearDown();
+  }
+
   // ui::LayerAnimationObserver:
   void OnLayerAnimationScheduled(
       ui::LayerAnimationSequence* sequence) override {
@@ -211,9 +217,8 @@ class TrayBackgroundViewTest : public AshTestBase,
   }
 
  private:
-  raw_ptr<TestTrayBackgroundView, DanglingUntriaged>
-      test_tray_background_view_ = nullptr;
-  raw_ptr<PersistentBubbleTestTrayBackgroundView, DanglingUntriaged>
+  raw_ptr<TestTrayBackgroundView> test_tray_background_view_ = nullptr;
+  raw_ptr<PersistentBubbleTestTrayBackgroundView>
       persistent_bubble_test_tray_background_view_ = nullptr;
   int num_animations_scheduled_ = 0;
 };
@@ -225,8 +230,8 @@ TEST_F(TrayBackgroundViewTest, InitiallyHidden) {
 }
 
 TEST_F(TrayBackgroundViewTest, ShowingAnimationAbortedByHideAnimation) {
-  ui::ScopedAnimationDurationScaleMode test_duration_mode(
-      ui::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode test_duration_mode(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
 
   // Starts showing up animation.
   test_tray_background_view()->SetVisiblePreferred(true);
@@ -264,8 +269,8 @@ TEST_F(TrayBackgroundViewTest, EventsDisabledForHideAnimation) {
   test_tray_background_view()->SetVisiblePreferred(true);
 
   // Ensure animations don't complete immediately for the rest of the test.
-  ui::ScopedAnimationDurationScaleMode test_duration_mode(
-      ui::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode test_duration_mode(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
 
   // Start the tray's hide animation and verify that it can't process events.
   test_tray_background_view()->SetVisiblePreferred(false);
@@ -288,8 +293,8 @@ class NoSessionTrayBackgroundViewTest : public TrayBackgroundViewTest {
 }  // namespace
 
 TEST_F(NoSessionTrayBackgroundViewTest, HandleSessionChange) {
-  ui::ScopedAnimationDurationScaleMode test_duration_mode(
-      ui::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode test_duration_mode(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
 
   // Not showing animation after logging in.
   GetSessionControllerClient()->SetSessionState(
@@ -339,17 +344,13 @@ TEST_F(NoSessionTrayBackgroundViewTest, HandleSessionChange) {
   EXPECT_TRUE(test_tray_background_view()->GetVisible());
 
   // Not showing animation when switching users.
-  // TODO: Fix bug. switching active user fails the test.
-  GetSessionControllerClient()->AddUserSession({"a@tray"});
-
   test_tray_background_view()->SetVisiblePreferred(false);
   test_tray_background_view()->SetVisiblePreferred(true);
   EXPECT_TRUE(
       test_tray_background_view()->layer()->GetAnimator()->is_animating());
   EXPECT_TRUE(test_tray_background_view()->GetVisible());
 
-  // Simulates user switching by changing the order of session_ids.
-  Shell::Get()->session_controller()->SetUserSessionOrder({2u, 1u});
+  SimulateUserLogin({"a@tray"});
   task_environment()->FastForwardBy(base::Milliseconds(20));
   EXPECT_FALSE(
       test_tray_background_view()->layer()->GetAnimator()->is_animating());
@@ -412,8 +413,8 @@ TEST_F(TrayBackgroundViewTest, NonPersistentBubbleClosedWhenLockStateChanges) {
 }
 
 TEST_F(TrayBackgroundViewTest, SecondaryDisplay) {
-  ui::ScopedAnimationDurationScaleMode test_duration_mode(
-      ui::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode test_duration_mode(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
 
   // Add secondary screen.
   UpdateDisplay("800x600,800x600");
@@ -515,7 +516,7 @@ TEST_F(TrayBackgroundViewTest, AutoHideShelfWithContextMenu) {
   // Move mouse to display the shelf.
   ui::test::EventGenerator* generator = GetEventGenerator();
   gfx::Rect display_bounds =
-      display::Screen::GetScreen()->GetPrimaryDisplay().bounds();
+      display::Screen::Get()->GetPrimaryDisplay().bounds();
   generator->MoveMouseTo(display_bounds.bottom_center());
   ASSERT_TRUE(TriggerAutoHideTimeout(layout_manager));
   EXPECT_EQ(SHELF_AUTO_HIDE_SHOWN, shelf->GetAutoHideState());

@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "remoting/host/mac/host_service_main.h"
+
 #include <signal.h>
 #include <unistd.h>
 
@@ -24,9 +26,9 @@
 #include "base/threading/platform_thread.h"
 #include "base/time/time.h"
 #include "remoting/base/logging.h"
+#include "remoting/base/username.h"
 #include "remoting/host/base/host_exit_codes.h"
 #include "remoting/host/base/switches.h"
-#include "remoting/host/base/username.h"
 #include "remoting/host/mac/constants_mac.h"
 #include "remoting/host/version.h"
 
@@ -344,9 +346,8 @@ bool HostService::HostIsEnabled() {
 }
 
 }  // namespace
-}  // namespace remoting
 
-int main(int argc, char const* argv[]) {
+int Me2MeHostServiceMain(int argc, char** argv) {
   base::AtExitManager exitManager;
   base::CommandLine::Init(argc, argv);
   remoting::InitHostLogging();
@@ -385,3 +386,5 @@ int main(int argc, char const* argv[]) {
   }
   return 0;
 }
+
+}  // namespace remoting

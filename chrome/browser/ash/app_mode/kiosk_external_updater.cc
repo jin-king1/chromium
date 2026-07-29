@@ -8,6 +8,7 @@
 #include <string>
 #include <utility>
 
+#include "ash/strings/grit/ash_strings.h"
 #include "base/check.h"
 #include "base/check_deref.h"
 #include "base/files/file_path.h"
@@ -17,7 +18,6 @@
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/memory/scoped_refptr.h"
-#include "base/notreached.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/values.h"
@@ -26,7 +26,6 @@
 #include "chrome/browser/ash/app_mode/kiosk_chrome_app_manager.h"
 #include "chrome/browser/ash/app_mode/kiosk_external_update_validator.h"
 #include "chrome/browser/ash/notifications/kiosk_external_update_notification.h"
-#include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/components/dbus/cros_disks/cros_disks_client.h"
 #include "chromeos/ash/components/disks/disk_mount_manager.h"
 #include "content/public/browser/browser_thread.h"
@@ -63,15 +62,6 @@ ParseExternalUpdateManifest(const base::FilePath& external_update_dir) {
 
   return std::make_pair(base::Value::FromUniquePtrValue(std::move(extensions)),
                         KioskExternalUpdater::ErrorCode::kNone);
-}
-
-// Copies `external_crx_file` to `temp_crx_file`, and removes `temp_dir`
-// created for unpacking `external_crx_file`.
-bool CopyExternalCrxAndDeleteTempDir(const base::FilePath& external_crx_file,
-                                     const base::FilePath& temp_crx_file,
-                                     const base::FilePath& temp_dir) {
-  base::DeletePathRecursively(temp_dir);
-  return base::CopyFile(external_crx_file, temp_crx_file);
 }
 
 // Returns true if `version_1` < `version_2`, and
@@ -167,7 +157,8 @@ void KioskExternalUpdater::OnExternalUpdateUnpackSuccess(
     const std::string& app_id,
     const std::string& version,
     const std::string& min_browser_version,
-    const base::FilePath& temp_dir) {
+    const base::FilePath& temp_dir,
+    const base::FilePath& validated_crx_path) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
   // User might pull out the usb stick before updating is completed.
@@ -186,17 +177,28 @@ void KioskExternalUpdater::OnExternalUpdateUnpackSuccess(
     return;
   }
 
-  base::FilePath external_crx_path =
-      external_updates_[app_id].external_crx.path;
-  base::FilePath temp_crx_path =
-      crx_unpack_dir_.Append(external_crx_path.BaseName());
-  backend_task_runner_->PostTaskAndReplyWithResult(
+  backend_task_runner_->PostTask(
       FROM_HERE,
-      base::BindOnce(&CopyExternalCrxAndDeleteTempDir, external_crx_path,
-                     temp_crx_path, temp_dir),
-      base::BindOnce(&KioskExternalUpdater::PutValidatedExtension,
-                     weak_factory_.GetWeakPtr(), app_id, temp_crx_path,
-                     version));
+      base::BindOnce(base::IgnoreResult(&base::DeletePathRecursively),
+                     temp_dir));
+
+  PutValidatedExtension(app_id, validated_crx_path, version);
+}
+
+void KioskExternalUpdater::OnExternalUpdateCopyFailure(
+    const std::string& app_id,
+    const base::FilePath& crx_file_path) {
+  // User might pull out the usb stick before updating is completed.
+  if (CheckExternalUpdateInterrupted()) {
+    return;
+  }
+
+  external_updates_[app_id].update_status = UpdateStatus::kFailed;
+  external_updates_[app_id].error = l10n_util::GetStringFUTF16(
+      IDS_KIOSK_EXTERNAL_UPDATE_FAILED_COPY_CRX_TO_TEMP,
+      base::UTF8ToUTF16(crx_file_path.value()));
+
+  MaybeValidateNextExternalUpdate();
 }
 
 void KioskExternalUpdater::OnExternalUpdateUnpackFailure(
@@ -210,6 +212,7 @@ void KioskExternalUpdater::OnExternalUpdateUnpackFailure(
   external_updates_[app_id].error =
       ui::ResourceBundle::GetSharedInstance().GetLocalizedString(
           IDS_KIOSK_EXTERNAL_UPDATE_BAD_CRX);
+
   MaybeValidateNextExternalUpdate();
 }
 
@@ -255,7 +258,7 @@ void KioskExternalUpdater::ProcessParsedManifest(
                  << manifest.second.type();
       continue;
     }
-    const base::Value::Dict& extension = manifest.second.GetDict();
+    const base::DictValue& extension = manifest.second.GetDict();
 
     const std::string* external_crx_str = extension.FindString(kExternalCrx);
     if (!external_crx_str) {
@@ -275,13 +278,11 @@ void KioskExternalUpdater::ProcessParsedManifest(
       }
     }
 
+    auto app = manager.GetApp(app_id);
+    CHECK(app.has_value());
+
     ExternalUpdate update;
-    KioskChromeAppManager::App app;
-    if (manager.GetApp(app_id, &app)) {
-      update.app_name = app.name;
-    } else {
-      NOTREACHED();
-    }
+    update.app_name = app->name;
     update.external_crx = extensions::CRXFileInfo(
         external_update_path_.AppendASCII(*external_crx_str),
         extensions::GetExternalVerifierFormat());
@@ -352,11 +353,10 @@ bool KioskExternalUpdater::ShouldDoExternalUpdate(
 
   auto& manager = CHECK_DEREF(KioskChromeAppManager::Get());
   auto crx_info = manager.GetCachedCrx(app_id);
-  // TODO(crbug.com/383090254): Replace with CHECK.
-  DUMP_WILL_BE_CHECK(crx_info.has_value());
-  DCHECK(crx_info.has_value());
-  auto [_, existing_version_str] =
-      std::move(crx_info).value_or(KioskChromeAppManager::CachedCrxInfo());
+  if (!crx_info.has_value()) {
+    return false;
+  }
+  auto [_, existing_version_str] = std::move(crx_info).value();
 
   // Compare app version.
   ui::ResourceBundle* rb = &ui::ResourceBundle::GetSharedInstance();
@@ -382,21 +382,10 @@ bool KioskExternalUpdater::ShouldDoExternalUpdate(
 
 void KioskExternalUpdater::PutValidatedExtension(const std::string& app_id,
                                                  const base::FilePath& crx_file,
-                                                 const std::string& version,
-                                                 bool crx_copied) {
+                                                 const std::string& version) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
   if (CheckExternalUpdateInterrupted()) {
-    return;
-  }
-
-  if (!crx_copied) {
-    LOG(ERROR) << "Cannot copy external crx file to " << crx_file.value();
-    external_updates_[app_id].update_status = UpdateStatus::kFailed;
-    external_updates_[app_id].error = l10n_util::GetStringFUTF16(
-        IDS_KIOSK_EXTERNAL_UPDATE_FAILED_COPY_CRX_TO_TEMP,
-        base::UTF8ToUTF16(crx_file.value()));
-    MaybeValidateNextExternalUpdate();
     return;
   }
 

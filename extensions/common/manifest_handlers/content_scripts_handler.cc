@@ -9,6 +9,7 @@
 #include <memory>
 
 #include "base/lazy_instance.h"
+#include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/types/optional_util.h"
 #include "extensions/common/api/content_scripts.h"
@@ -146,6 +147,10 @@ static base::LazyInstance<EmptyUserScriptList>::DestructorAtExit
 
 }  // namespace
 
+// static
+const char* ContentScriptsInfo::kManifestDataKey =
+    ContentScriptsKeys::kContentScripts;
+
 ContentScriptsInfo::ContentScriptsInfo() = default;
 
 ContentScriptsInfo::~ContentScriptsInfo() = default;
@@ -153,8 +158,8 @@ ContentScriptsInfo::~ContentScriptsInfo() = default;
 // static
 const UserScriptList& ContentScriptsInfo::GetContentScripts(
     const Extension* extension) {
-  ContentScriptsInfo* info = static_cast<ContentScriptsInfo*>(
-      extension->GetManifestData(ContentScriptsKeys::kContentScripts));
+  const ContentScriptsInfo* info =
+      extension->GetManifestData<ContentScriptsInfo>();
   return info ? info->content_scripts
               : g_empty_script_list.Get().user_script_list;
 }
@@ -164,8 +169,9 @@ bool ContentScriptsInfo::ExtensionHasScriptAtURL(const Extension* extension,
                                                  const GURL& url) {
   for (const std::unique_ptr<UserScript>& script :
        GetContentScripts(extension)) {
-    if (script->MatchesURL(url))
+    if (script->MatchesURL(url)) {
       return true;
+    }
   }
   return false;
 }
@@ -176,8 +182,9 @@ URLPatternSet ContentScriptsInfo::GetScriptableHosts(
   URLPatternSet scriptable_hosts;
   for (const std::unique_ptr<UserScript>& script :
        GetContentScripts(extension)) {
-    for (const URLPattern& pattern : script->url_patterns())
+    for (const URLPattern& pattern : script->url_patterns()) {
       scriptable_hosts.AddPattern(pattern);
+    }
   }
   return scriptable_hosts;
 }
@@ -205,13 +212,28 @@ bool ContentScriptsHandler::Parse(Extension* extension, std::u16string* error) {
                                                   extension->location());
   const bool all_urls_includes_chrome_urls =
       PermissionsData::AllUrlsIncludesChromeUrls(extension->id());
-  for (size_t i = 0; i < manifest_keys.content_scripts.size(); ++i) {
+  CHECK(manifest_keys.content_scripts.has_value());
+  for (size_t i = 0; i < manifest_keys.content_scripts->size(); ++i) {
     std::unique_ptr<UserScript> user_script =
-        CreateUserScript(std::move(manifest_keys.content_scripts[i]), i,
+        CreateUserScript(std::move((*manifest_keys.content_scripts)[i]), i,
                          can_execute_script_everywhere,
                          all_urls_includes_chrome_urls, extension, error);
-    if (!user_script)
+    if (!user_script) {
       return false;  // Failed to parse script context definition.
+    }
+
+    std::string mime_type_error;
+    if (!script_parsing::ValidateUserScriptMimeTypesFromFileExtensions(
+            *user_script, &mime_type_error)) {
+      // Issue a warning and ignore this file. This is a warning and not a
+      // hard-error to preserve both backwards compatibility and potential
+      // future-compatibility if mime types change.
+      extension->AddInstallWarning(InstallWarning(
+          base::StringPrintf(manifest_errors::kInvalidUserScriptMimeType,
+                             mime_type_error.c_str()),
+          ContentScriptsKeys::kContentScripts));
+      continue;
+    }
 
     user_script->set_host_id(
         mojom::HostID(mojom::HostID::HostType::kExtensions, extension->id()));
@@ -223,22 +245,21 @@ bool ContentScriptsHandler::Parse(Extension* extension, std::u16string* error) {
     content_scripts_info->content_scripts.push_back(std::move(user_script));
   }
 
-  extension->SetManifestData(ContentScriptsKeys::kContentScripts,
-                             std::move(content_scripts_info));
+  extension->SetManifestData(std::move(content_scripts_info));
   PermissionsParser::SetScriptableHosts(
       extension, ContentScriptsInfo::GetScriptableHosts(extension));
   return true;
 }
 
 bool ContentScriptsHandler::Validate(
-    const Extension* extension,
+    const Extension& extension,
     std::string* error,
     std::vector<InstallWarning>* warnings) const {
   // Validate that claimed script resources actually exist,
   // and are UTF-8 encoded.
   return script_parsing::ValidateFileSources(
-      ContentScriptsInfo::GetContentScripts(extension),
-      script_parsing::GetSymlinkPolicy(extension), error, warnings);
+      ContentScriptsInfo::GetContentScripts(&extension),
+      script_parsing::GetSymlinkPolicy(&extension), error, warnings);
 }
 
 }  // namespace extensions

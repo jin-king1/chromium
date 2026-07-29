@@ -15,6 +15,7 @@
 #include "build/build_config.h"
 #include "components/discardable_memory/client/client_discardable_shared_memory_manager.h"
 #include "components/viz/common/buildflags.h"
+#include "components/viz/service/gl/gpu_log_message_manager.h"
 #include "components/viz/service/gl/gpu_service_impl.h"
 #include "components/viz/service/main/viz_compositor_thread_runner_impl.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
@@ -59,6 +60,8 @@ class VizMainImpl : public mojom::VizMain {
     virtual void OnInitializationFailed() = 0;
     virtual void OnGpuServiceConnection(GpuServiceImpl* gpu_service) = 0;
     virtual void PostCompositorThreadCreated(
+        base::SingleThreadTaskRunner* task_runner) = 0;
+    virtual void PostDisplayCompositorGpuThreadCreated(
         base::SingleThreadTaskRunner* task_runner) = 0;
     virtual void QuitMainMessageLoop() = 0;
   };
@@ -123,6 +126,7 @@ class VizMainImpl : public mojom::VizMain {
   void CreateGpuService(
       mojo::PendingReceiver<mojom::GpuService> pending_receiver,
       mojo::PendingRemote<mojom::GpuHost> pending_gpu_host,
+      mojo::PendingRemote<mojom::GpuLogging> pending_gpu_loggging,
       mojo::PendingRemote<
           discardable_memory::mojom::DiscardableSharedMemoryManager>
           discardable_memory_manager,
@@ -139,10 +143,11 @@ class VizMainImpl : public mojom::VizMain {
 #endif
 #if BUILDFLAG(IS_ANDROID)
   void SetHostProcessId(int32_t pid) override;
+  void NotifyWorkloadIncrease() override;
 #endif
   void CreateFrameSinkManager(mojom::FrameSinkManagerParamsPtr params) override;
 #if BUILDFLAG(USE_VIZ_DEBUGGER)
-  void FilterDebugStream(base::Value::Dict filter_data) override;
+  void FilterDebugStream(base::DictValue filter_data) override;
   void StartDebugStream(
       mojo::PendingRemote<mojom::VizDebugOutput> debug_output) override;
   void StopDebugStream() override;

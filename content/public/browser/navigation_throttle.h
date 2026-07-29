@@ -8,9 +8,11 @@
 #include <optional>
 
 #include "base/functional/callback.h"
+#include "base/memory/advanced_memory_safety_checks.h"
 #include "base/memory/raw_ptr.h"
-#include "base/memory/safety_checks.h"
+#include "base/memory/raw_ref.h"
 #include "content/common/content_export.h"
+#include "content/public/browser/navigation_throttle_registry.h"
 #include "net/base/net_errors.h"
 
 namespace content {
@@ -140,7 +142,7 @@ class CONTENT_EXPORT NavigationThrottle {
     std::optional<std::string> error_page_content_;
   };
 
-  NavigationThrottle(NavigationHandle* navigation_handle);
+  explicit NavigationThrottle(NavigationThrottleRegistry& registry);
   virtual ~NavigationThrottle();
 
   // Called when a network request is about to be made for this navigation.
@@ -159,6 +161,16 @@ class CONTENT_EXPORT NavigationThrottle {
   // method. Failing to do so will result in use-after-free bugs. Should the
   // implementer need to destroy the WebContents, it should return CANCEL,
   // CANCEL_AND_IGNORE or DEFER and perform the destruction asynchronously.
+  //
+  // At the point where this is invoked, some navigation state has already been
+  // updated to reflect the redirect. Specifically:
+  // - navigation_handle()->GetURL() returns the new URL (the redirection
+  // target).
+  // - navigation_handle()->GetRedirectChain() contains the new URL as its last
+  //   entry.
+  // - navigation_handle()->GetResponseHeaders() returns the headers of the
+  //   redirect response (i.e. the response that triggered this redirect, not
+  //   the response of the new URL).
   virtual ThrottleCheckResult WillRedirectRequest();
 
   // Called when a request will fail.
@@ -205,7 +217,9 @@ class CONTENT_EXPORT NavigationThrottle {
 
   // The NavigationHandle that is tracking the information related to this
   // navigation.
-  NavigationHandle* navigation_handle() const { return navigation_handle_; }
+  NavigationHandle* navigation_handle() const {
+    return &registry_->GetNavigationHandle();
+  }
 
   // Overrides the default Resume method and replaces it by |callback|. This
   // should only be used in tests.
@@ -237,7 +251,7 @@ class CONTENT_EXPORT NavigationThrottle {
   virtual void CancelDeferredNavigation(ThrottleCheckResult result);
 
  private:
-  const raw_ptr<NavigationHandle> navigation_handle_;
+  const raw_ref<NavigationThrottleRegistry> registry_;
 
   // Used in tests.
   base::RepeatingClosure resume_callback_;
@@ -251,12 +265,6 @@ class CONTENT_EXPORT NavigationThrottle {
 inline bool operator==(NavigationThrottle::ThrottleAction lhs,
                        const NavigationThrottle::ThrottleCheckResult& rhs) {
   return lhs == rhs.action();
-}
-// Test-only operator!= to enable assertions like:
-//   EXPECT_NE(NavigationThrottle::PROCEED, throttle->WillProcessResponse())
-inline bool operator!=(NavigationThrottle::ThrottleAction lhs,
-                       const NavigationThrottle::ThrottleCheckResult& rhs) {
-  return lhs != rhs.action();
 }
 #endif
 

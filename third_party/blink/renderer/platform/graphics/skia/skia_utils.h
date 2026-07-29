@@ -34,44 +34,14 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_GRAPHICS_SKIA_SKIA_UTILS_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_GRAPHICS_SKIA_SKIA_UTILS_H_
 
-#include <utility>
-
-#include "base/check_op.h"
-#include "base/notreached.h"
-#include "cc/paint/paint_canvas.h"
 #include "components/viz/common/resources/shared_image_format.h"
-#include "third_party/blink/renderer/platform/graphics/image.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier.h"
-#include "third_party/blink/renderer/platform/wtf/math_extras.h"
-#include "third_party/skia/include/core/SkBitmap.h"
-#include "third_party/skia/include/core/SkCanvas.h"
-#include "third_party/skia/include/core/SkColor.h"
-#include "third_party/skia/include/core/SkColorType.h"
+#include "third_party/skia/include/core/SkColorSpace.h"
 #include "third_party/skia/include/core/SkData.h"
-#include "third_party/skia/include/core/SkPoint.h"
 #include "third_party/skia/include/core/SkRefCnt.h"
-#include "third_party/skia/include/core/SkScalar.h"
+#include "ui/gfx/color_space.h"
 
 namespace blink {
-
-/**** constants ****/
-
-enum {
-  // Firefox limits width/height to 32767 pixels, but slows down dramatically
-  // before it reaches that limit. We limit by area instead, giving us larger
-  // maximum dimensions, in exchange for a smaller maximum canvas size.
-  kMaxCanvasArea = 32768 * 8192,  // Maximum canvas area in CSS pixels
-
-  // In Skia, we will also limit width/height to 65535.
-  kMaxSkiaDim = 65535  // Maximum width/height in CSS pixels.
-};
-
-bool PLATFORM_EXPORT IsValidImageSize(const gfx::Size&);
-
-// Multiply a color's alpha channel by an additional alpha factor where
-// alpha is in the range [0, 1].
-SkColor PLATFORM_EXPORT ScaleAlpha(SkColor, float);
 
 bool PLATFORM_EXPORT
 ApproximatelyEqualSkColorSpaces(sk_sp<SkColorSpace> src_color_space,
@@ -90,48 +60,7 @@ inline gfx::ColorSpace SkColorSpaceToGfxColorSpace(
 // completely converted to SharedImageFormat (i.e., crbug.com/371227617 is
 // resolved).
 inline viz::SharedImageFormat GetN32FormatForCanvas() {
-  return kN32_SkColorType == kRGBA_8888_SkColorType
-             ? viz::SinglePlaneFormat::kRGBA_8888
-             : viz::SinglePlaneFormat::kBGRA_8888;
-}
-
-bool NearlyIntegral(float value);
-
-InterpolationQuality ComputeInterpolationQuality(float src_width,
-                                                 float src_height,
-                                                 float dest_width,
-                                                 float dest_height,
-                                                 bool is_data_complete = true);
-
-// Technically, this is driven by the CSS/Canvas2D specs and unrelated to Skia.
-// It should probably live in the CSS layer, but the notion of a "blur radius"
-// leaks into platform/graphics currently (ideally we should only deal with
-// sigma at this level).
-// TODO(fmalita): find a better home for this helper.
-inline float BlurRadiusToStdDev(float radius) {
-  DCHECK_GE(radius, 0);
-
-  // Per spec, sigma is exactly half the blur radius:
-  // https://www.w3.org/TR/css-backgrounds-3/#shadow-blur
-  // https://html.spec.whatwg.org/C/#when-shadows-are-drawn
-  return radius * 0.5f;
-}
-
-void PLATFORM_EXPORT DrawPlatformFocusRing(const SkRRect&,
-                                           cc::PaintCanvas*,
-                                           SkColor4f,
-                                           float width);
-void PLATFORM_EXPORT DrawPlatformFocusRing(const SkPath&,
-                                           cc::PaintCanvas*,
-                                           SkColor4f,
-                                           float width,
-                                           float corner_radius);
-
-inline SkCanvas::SrcRectConstraint WebCoreClampingModeToSkiaRectConstraint(
-    Image::ImageClampingMode clamp_mode) {
-  return clamp_mode == Image::kClampImageToSourceRect
-             ? SkCanvas::kStrict_SrcRectConstraint
-             : SkCanvas::kFast_SrcRectConstraint;
+  return viz::SharedImageFormat::N32Format();
 }
 
 // Attempts to allocate an SkData on the PartitionAlloc buffer partition.
@@ -173,29 +102,11 @@ PLATFORM_EXPORT sk_sp<SkData> TryAllocateSkData(size_t size);
 //     sk_sp<SkShader> shader = SkShader::MakeFoo(...);
 //     paint.setShader(shader);
 
+// TODO(dcheng): This one might have some value, though it's not entirely clear
+// if there is a specific issue with thread-hostility here. We transfer other
+// mutable references across threads all the time, e.g. there is a broad
+// allowance for scoped_refptr<T> as long as T is RefCountedThreadSafe.
+
 }  // namespace blink
-
-namespace WTF {
-
-// We define CrossThreadCopier<SKBitMap> here because we cannot include skia
-// headers in platform/wtf.
-template <>
-struct CrossThreadCopier<SkBitmap> {
-  STATIC_ONLY(CrossThreadCopier);
-
-  using Type = SkBitmap;
-  static SkBitmap Copy(const SkBitmap& bitmap) {
-    CHECK(bitmap.isImmutable() || bitmap.isNull())
-        << "Only immutable bitmaps can be transferred.";
-    return bitmap;
-  }
-  static SkBitmap Copy(SkBitmap&& bitmap) {
-    CHECK(bitmap.isImmutable() || bitmap.isNull())
-        << "Only immutable bitmaps can be transferred.";
-    return std::move(bitmap);
-  }
-};
-
-}  // namespace WTF
 
 #endif  // THIRD_PARTY_BLINK_RENDERER_PLATFORM_GRAPHICS_SKIA_SKIA_UTILS_H_

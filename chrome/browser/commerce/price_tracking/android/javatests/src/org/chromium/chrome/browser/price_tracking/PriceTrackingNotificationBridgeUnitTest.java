@@ -5,9 +5,9 @@
 package org.chromium.chrome.browser.price_tracking;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 import org.junit.Assert;
 import org.junit.Before;
@@ -21,8 +21,8 @@ import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
-import org.robolectric.shadows.ShadowLog;
 
+import org.chromium.base.Callback;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.browser.price_tracking.PriceDropNotifier.NotificationData;
 import org.chromium.chrome.browser.price_tracking.proto.Notifications.Action;
@@ -35,8 +35,9 @@ import org.chromium.components.commerce.PriceTracking.ProductPrice;
 import org.chromium.components.optimization_guide.proto.CommonTypesProto.Any;
 import org.chromium.components.payments.ui.CurrencyFormatter;
 import org.chromium.components.payments.ui.CurrencyFormatterJni;
+import org.chromium.ui.test.util.MockitoHelper;
 
-/** Unit test for {@link PriceDropNotifier}. */
+/** Unit test for {@link PriceTrackingNotificationBridge}. */
 @RunWith(BaseRobolectricTestRunner.class)
 @Config(manifest = Config.NONE)
 public class PriceTrackingNotificationBridgeUnitTest {
@@ -65,19 +66,26 @@ public class PriceTrackingNotificationBridgeUnitTest {
 
     @Before
     public void setUp() {
-        ShadowLog.stream = System.out;
         CurrencyFormatter.Natives currencyFormatterJniMock =
                 Mockito.mock(CurrencyFormatter.Natives.class);
         CurrencyFormatterJni.setInstanceForTesting(currencyFormatterJniMock);
         Mockito.doReturn("$1.00")
                 .when(currencyFormatterJniMock)
-                .format(
-                        Mockito.anyLong(),
-                        Mockito.any(CurrencyFormatter.class),
-                        Mockito.anyString());
+                .format(Mockito.anyLong(), Mockito.anyString());
         mPriceTrackingNotificationBridge =
                 new PriceTrackingNotificationBridge(0, mNotifier, mPriceDropNotificationManager);
-        when(mPriceDropNotificationManager.canPostNotification()).thenReturn(true);
+        setCanPostNotification(true);
+    }
+
+    private void setCanPostNotification(boolean canPost) {
+        doAnswer(
+                        (invocation) -> {
+                            Callback<Boolean> callback = invocation.getArgument(0);
+                            callback.onResult(canPost);
+                            return null;
+                        })
+                .when(mPriceDropNotificationManager)
+                .canPostNotification(MockitoHelper.anyCallback());
     }
 
     // Creates a ChromeNotification.Builder that sets a valid ChromeNotification proto.
@@ -154,7 +162,7 @@ public class PriceTrackingNotificationBridgeUnitTest {
 
     @Test
     public void testShowNotification_ChannelNotCreated() {
-        when(mPriceDropNotificationManager.canPostNotification()).thenReturn(false);
+        setCanPostNotification(false);
         mPriceTrackingNotificationBridge.showNotification(
                 createValidChromeNotification().build().toByteArray());
         verify(mNotifier, times(0)).showNotification(any());

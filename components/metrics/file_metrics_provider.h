@@ -14,7 +14,6 @@
 
 #include "base/files/file_path.h"
 #include "base/functional/callback_forward.h"
-#include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
@@ -146,6 +145,7 @@ class FileMetricsProvider : public MetricsProvider,
            SourceType type,
            SourceAssociation association,
            std::string_view prefs_key = std::string_view());
+    Params(const Params&);
 
     ~Params();
 
@@ -162,7 +162,15 @@ class FileMetricsProvider : public MetricsProvider,
     size_t max_dir_files = 100;  // Maximum files in a directory (0=inf).
   };
 
-  explicit FileMetricsProvider(PrefService* local_state);
+  // Max amount of pma files that a source of type
+  // FileMetricsProvider::SOURCE_HISTOGRAMS_ATOMIC_DIR can have.
+  static const size_t kMaxSourceFilesInFRE = 5;
+
+  // `is_fre` is true if the current run is in the First Run Experience (FRE).
+  // If true, the provider may not delete the sources of type
+  // SOURCE_HISTOGRAMS_ATOMIC_DIR and SOURCE_HISTOGRAMS_ATOMIC_FILE. See
+  // fre_source_trial.h for more details.
+  explicit FileMetricsProvider(PrefService* local_state, bool is_fre);
 
   FileMetricsProvider(const FileMetricsProvider&) = delete;
   FileMetricsProvider& operator=(const FileMetricsProvider&) = delete;
@@ -189,7 +197,7 @@ class FileMetricsProvider : public MetricsProvider,
   static void RegisterPrefs(PrefRegistrySimple* prefs);
 
  private:
-  friend class FileMetricsProviderTest;
+  friend class FileMetricsProviderTestBase;
   friend class TestFileMetricsProvider;
 
   // The different results that can occur accessing a file.
@@ -281,7 +289,8 @@ class FileMetricsProvider : public MetricsProvider,
 
   // Records all histograms from a given source via a snapshot-manager. Only the
   // histograms that have |required_flags| will be recorded.
-  static void RecordHistogramSnapshotsFromSource(
+  // Returns the number of histograms reported.
+  static int RecordHistogramSnapshotsFromSource(
       base::HistogramSnapshotManager* snapshot_manager,
       SourceInfo* source,
       base::HistogramBase::Flags required_flags);
@@ -361,6 +370,9 @@ class FileMetricsProvider : public MetricsProvider,
 
   // The preferences-service used to store persistent state about sources.
   raw_ptr<PrefService> pref_service_;
+
+  // Whether the current run is in the First Run Experience (FRE).
+  const bool is_fre_;
 
   SEQUENCE_CHECKER(sequence_checker_);
   base::WeakPtrFactory<FileMetricsProvider> weak_factory_{this};

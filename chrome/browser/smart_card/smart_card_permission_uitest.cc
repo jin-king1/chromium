@@ -2,8 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/strings/stringprintf.h"
 #include "chrome/browser/chrome_content_browser_client.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
+#include "chrome/browser/permissions/permission_decision_auto_blocker_factory.h"
 #include "chrome/browser/policy/policy_test_utils.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/smart_card/chromeos_smart_card_delegate.h"
@@ -13,7 +15,7 @@
 #include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "components/content_settings/core/common/content_settings.h"
 #include "components/content_settings/core/common/pref_names.h"
-#include "components/permissions/features.h"
+#include "components/permissions/permission_decision_auto_blocker.h"
 #include "components/policy/policy_constants.h"
 #include "components/strings/grit/components_strings.h"
 #include "content/public/common/content_client.h"
@@ -21,6 +23,8 @@
 #include "net/dns/mock_host_resolver.h"
 #include "third_party/blink/public/common/features_generated.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/views/controls/button/label_button.h"
+#include "ui/views/views_switches.h"
 
 namespace {
 DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kTestTab);
@@ -32,21 +36,14 @@ DEFINE_LOCAL_STATE_IDENTIFIER_VALUE(
     kPermissionDecision);
 
 class SmartCardPermissionUiTest
-    : public InteractiveBrowserTestT<policy::PolicyTest> {
+    : public InteractiveBrowserTestMixin<policy::PolicyTest> {
  public:
-  SmartCardPermissionUiTest() {
-    scoped_feature_list_.InitWithFeatures(
-        {permissions::features::kOneTimePermission,
-         blink::features::kSmartCard},
-        {});
-  }
-
-  void TearDown() override { InteractiveBrowserTestT::TearDown(); }
+  void TearDown() override { InteractiveBrowserTestMixin::TearDown(); }
 
   auto SetSmartCardConnectAllowedFor(const GURL& origin_url) {
     return Do([this, origin_url]() {
       SetPolicy(&policies_, policy::key::kSmartCardConnectAllowedForUrls,
-                base::Value(base::Value::List().Append(origin_url.spec())));
+                base::Value(base::ListValue().Append(origin_url.spec())));
       UpdateProviderPolicy(policies_);
     });
   }
@@ -54,7 +51,7 @@ class SmartCardPermissionUiTest
   auto SetSmartCardConnectBlockedFor(const GURL& origin_url) {
     return Do([this, origin_url]() {
       SetPolicy(&policies_, policy::key::kSmartCardConnectBlockedForUrls,
-                base::Value(base::Value::List().Append(origin_url.spec())));
+                base::Value(base::ListValue().Append(origin_url.spec())));
       UpdateProviderPolicy(policies_);
     });
   }
@@ -85,7 +82,7 @@ class SmartCardPermissionUiTest
   auto BlockPermission(const GURL& origin_url) {
     return Do([this, origin_url]() {
       auto* settings_map =
-          HostContentSettingsMapFactory::GetForProfile(browser()->profile());
+          HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile());
       settings_map->SetContentSettingDefaultScope(
           origin_url, GURL(), ContentSettingsType::SMART_CARD_GUARD,
           ContentSetting::CONTENT_SETTING_BLOCK);
@@ -96,13 +93,38 @@ class SmartCardPermissionUiTest
     return CheckResult(
         [this, origin_url]() -> bool {
           return HostContentSettingsMapFactory::GetForProfile(
-                     browser()->profile())
+                     browser()->GetProfile())
               ->GetContentSetting(origin_url, GURL(),
                                   ContentSettingsType::SMART_CARD_GUARD);
         },
         setting,
         base::StringPrintf("Expects SMART_CARD_GUARD to be set to %u",
                            setting));
+  }
+
+  auto CheckEmbargo(const GURL& origin_url, bool embargoed_expectation) {
+    return CheckResult(
+        [this, origin_url]() -> bool {
+          return PermissionDecisionAutoBlockerFactory::GetForProfile(
+                     browser()->GetProfile())
+              ->IsEmbargoed(origin_url, ContentSettingsType::SMART_CARD_GUARD);
+        },
+        embargoed_expectation,
+        base::StringPrintf("Expects SMART_CARD_GUARD embargoed status to be %u",
+                           embargoed_expectation));
+  }
+
+  auto CheckPermissionBlocked(const GURL& origin_url,
+                              bool blocked_expectation) {
+    return CheckResult(
+        [this, origin_url]() -> bool {
+          return GetSmartCardDelegate()->IsPermissionBlocked(
+              GetMainFrameHost());
+        },
+        blocked_expectation,
+        base::StringPrintf(
+            "Expects smart card permission blocked status to be %u",
+            blocked_expectation));
   }
 
   auto PressButtonAndWaitResult(ui::ElementIdentifier button_id, bool granted) {
@@ -134,13 +156,21 @@ class SmartCardPermissionUiTest
 
  private:
   void SetUpOnMainThread() override {
-    InteractiveBrowserTestT::SetUpOnMainThread();
+    InteractiveBrowserTestMixin::SetUpOnMainThread();
     host_resolver()->AddRule("*", "127.0.0.1");
     ASSERT_TRUE(embedded_https_test_server().Start());
   }
 
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    InteractiveBrowserTestMixin::SetUpCommandLine(command_line);
+    // Disables the disregarding of potentially unintended input events.
+    command_line->AppendSwitch(
+        views::switches::kDisableInputEventActivationProtectionForTesting);
+  }
+
   std::optional<bool> permission_decision_;
-  base::test::ScopedFeatureList scoped_feature_list_;
+  base::test::ScopedFeatureList scoped_feature_list_{
+      blink::features::kSmartCard};
   policy::PolicyMap policies_;
 };
 
@@ -203,6 +233,15 @@ IN_PROC_BROWSER_TEST_F(SmartCardPermissionUiTest, AllowedByPolicy) {
       NavigateWebContents(kTestTab, embedded_https_test_server().GetURL(
                                         "a.com", "/simple.html")),
       CheckReaderPermission(/*has_permission=*/false),
+      RequestReaderPermission(),
+      WaitForShow(PermissionPromptBubbleBaseView::kMainViewId),
+      CheckViewProperty(PermissionPromptBubbleBaseView::kBlockButtonElementId,
+                        &views::LabelButton::GetText,
+                        l10n_util::GetStringUTF16(IDS_PERMISSION_DONT_ALLOW)),
+      PressButtonAndWaitResult(
+          PermissionPromptBubbleBaseView::kBlockButtonElementId,
+          /*granted=*/false),
+      CheckReaderPermission(/*has_permission=*/false),
       SetSmartCardConnectAllowedFor(
           embedded_https_test_server().GetURL("a.com", "/")),
       CheckReaderPermission(true));
@@ -216,6 +255,9 @@ IN_PROC_BROWSER_TEST_F(SmartCardPermissionUiTest, Deny) {
       CheckReaderPermission(/*has_permission=*/false),
       RequestReaderPermission(),
       WaitForShow(PermissionPromptBubbleBaseView::kMainViewId),
+      CheckViewProperty(PermissionPromptBubbleBaseView::kBlockButtonElementId,
+                        &views::LabelButton::GetText,
+                        l10n_util::GetStringUTF16(IDS_PERMISSION_DONT_ALLOW)),
       PressButtonAndWaitResult(
           PermissionPromptBubbleBaseView::kBlockButtonElementId,
           /*granted=*/false),
@@ -225,30 +267,34 @@ IN_PROC_BROWSER_TEST_F(SmartCardPermissionUiTest, Deny) {
 IN_PROC_BROWSER_TEST_F(SmartCardPermissionUiTest, ThreeConsecutiveDenies) {
   auto simple_url =
       embedded_https_test_server().GetURL("a.com", "/simple.html");
-  RunTestSequence(InstrumentTab(kTestTab),
-                  NavigateWebContents(kTestTab, simple_url),
-                  CheckContentSetting(simple_url, CONTENT_SETTING_ASK),
-                  // 1st
-                  RequestReaderPermission(kFooReader),
-                  WaitForShow(PermissionPromptBubbleBaseView::kMainViewId),
-                  PressButtonAndWaitResult(
-                      PermissionPromptBubbleBaseView::kBlockButtonElementId,
-                      /*granted=*/false),
-                  CheckContentSetting(simple_url, CONTENT_SETTING_ASK),
-                  // 2nd
-                  RequestReaderPermission(kBarReader),
-                  WaitForShow(PermissionPromptBubbleBaseView::kMainViewId),
-                  PressButtonAndWaitResult(
-                      PermissionPromptBubbleBaseView::kBlockButtonElementId,
-                      /*granted=*/false),
-                  CheckContentSetting(simple_url, CONTENT_SETTING_ASK),
-                  // 3rd
-                  RequestReaderPermission(kFooReader),
-                  WaitForShow(PermissionPromptBubbleBaseView::kMainViewId),
-                  PressButtonAndWaitResult(
-                      PermissionPromptBubbleBaseView::kBlockButtonElementId,
-                      /*granted=*/false),
-                  CheckContentSetting(simple_url, CONTENT_SETTING_BLOCK));
+  RunTestSequence(
+      InstrumentTab(kTestTab), NavigateWebContents(kTestTab, simple_url),
+      CheckContentSetting(simple_url, CONTENT_SETTING_ASK),
+      CheckEmbargo(simple_url, false),
+      CheckPermissionBlocked(simple_url, false),
+      // 1st
+      RequestReaderPermission(kFooReader),
+      WaitForShow(PermissionPromptBubbleBaseView::kMainViewId),
+      PressButtonAndWaitResult(
+          PermissionPromptBubbleBaseView::kBlockButtonElementId,
+          /*granted=*/false),
+      CheckEmbargo(simple_url, false),
+      CheckPermissionBlocked(simple_url, false),
+      // 2nd
+      RequestReaderPermission(kBarReader),
+      WaitForShow(PermissionPromptBubbleBaseView::kMainViewId),
+      PressButtonAndWaitResult(
+          PermissionPromptBubbleBaseView::kBlockButtonElementId,
+          /*granted=*/false),
+      CheckEmbargo(simple_url, false),
+      CheckPermissionBlocked(simple_url, false),
+      // 3rd
+      RequestReaderPermission(kFooReader),
+      WaitForShow(PermissionPromptBubbleBaseView::kMainViewId),
+      PressButtonAndWaitResult(
+          PermissionPromptBubbleBaseView::kBlockButtonElementId,
+          /*granted=*/false),
+      CheckEmbargo(simple_url, true), CheckPermissionBlocked(simple_url, true));
 }
 
 IN_PROC_BROWSER_TEST_F(SmartCardPermissionUiTest, ThreeNonConsecutiveDenies) {
@@ -257,27 +303,32 @@ IN_PROC_BROWSER_TEST_F(SmartCardPermissionUiTest, ThreeNonConsecutiveDenies) {
   RunTestSequence(InstrumentTab(kTestTab),
                   NavigateWebContents(kTestTab, simple_url),
                   CheckContentSetting(simple_url, CONTENT_SETTING_ASK),
+                  CheckEmbargo(simple_url, false),
+                  CheckPermissionBlocked(simple_url, false),
                   // 1st - deny
                   RequestReaderPermission(kFooReader),
                   WaitForShow(PermissionPromptBubbleBaseView::kMainViewId),
                   PressButtonAndWaitResult(
                       PermissionPromptBubbleBaseView::kBlockButtonElementId,
                       /*granted=*/false),
-                  CheckContentSetting(simple_url, CONTENT_SETTING_ASK),
+                  CheckEmbargo(simple_url, false),
+                  CheckPermissionBlocked(simple_url, false),
                   // 2nd - allow once
                   RequestReaderPermission(kBarReader),
                   WaitForShow(PermissionPromptBubbleBaseView::kMainViewId),
                   PressButtonAndWaitResult(
                       PermissionPromptBubbleBaseView::kAllowOnceButtonElementId,
                       /*granted=*/true),
-                  CheckContentSetting(simple_url, CONTENT_SETTING_ASK),
+                  CheckEmbargo(simple_url, false),
+                  CheckPermissionBlocked(simple_url, false),
                   // 3rd - deny
                   RequestReaderPermission(kFooReader),
                   WaitForShow(PermissionPromptBubbleBaseView::kMainViewId),
                   PressButtonAndWaitResult(
                       PermissionPromptBubbleBaseView::kBlockButtonElementId,
                       /*granted=*/false),
-                  CheckContentSetting(simple_url, CONTENT_SETTING_ASK),
+                  CheckEmbargo(simple_url, false),
+                  CheckPermissionBlocked(simple_url, false),
                   // 4th - deny
                   RequestReaderPermission(kFooReader),
                   WaitForShow(PermissionPromptBubbleBaseView::kMainViewId),
@@ -285,7 +336,8 @@ IN_PROC_BROWSER_TEST_F(SmartCardPermissionUiTest, ThreeNonConsecutiveDenies) {
                       PermissionPromptBubbleBaseView::kBlockButtonElementId,
                       /*granted=*/false),
                   // 3 denies split by allow - guard setting should not change
-                  CheckContentSetting(simple_url, CONTENT_SETTING_ASK));
+                  CheckEmbargo(simple_url, false),
+                  CheckPermissionBlocked(simple_url, false));
 }
 
 IN_PROC_BROWSER_TEST_F(SmartCardPermissionUiTest, Blocked) {

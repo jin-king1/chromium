@@ -4,7 +4,6 @@
 
 #include "chrome/browser/ui/views/autofill/payments/payments_view_util.h"
 
-#include <algorithm>
 #include <memory>
 #include <optional>
 
@@ -16,16 +15,14 @@
 #include "chrome/browser/ui/views/autofill/payments/dialog_view_ids.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/chrome_typography.h"
+#include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/grit/components_scaled_resources.h"
-#include "components/strings/grit/components_strings.h"
 #include "components/vector_icons/vector_icons.h"
-#include "ui/base/l10n/l10n_util.h"
-#include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/resource/resource_bundle.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_provider.h"
-#include "ui/gfx/color_palette.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/image/image_skia.h"
@@ -33,15 +30,18 @@
 #include "ui/gfx/paint_vector_icon.h"
 #include "ui/gfx/text_constants.h"
 #include "ui/native_theme/native_theme.h"
+#include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/border.h"
 #include "ui/views/controls/image_view.h"
 #include "ui/views/controls/label.h"
-#include "ui/views/controls/separator.h"
 #include "ui/views/controls/styled_label.h"
+#include "ui/views/controls/textfield/textfield.h"
+#include "ui/views/controls/theme_tracking_image_view.h"
 #include "ui/views/controls/throbber.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/box_layout_view.h"
 #include "ui/views/layout/layout_provider.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/style/typography.h"
 #include "ui/views/view.h"
 #include "ui/views/widget/widget.h"
@@ -58,65 +58,116 @@ constexpr int kIconHeight = 16;
 // The size of the icons in the view created by `CreateTextWithIconView()`.
 constexpr int kTextWithIconViewIconSize = 24;
 
-#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
-// kGooglePayLogoIcon is square overall, despite the drawn portion being a
-// rectangular area at the top. CreateTiledImage() will correctly clip it
-// whereas setting the icon size would rescale it incorrectly and keep the
-// bottom empty portion.
-gfx::ImageSkia CreateTiledGooglePayLogo(const ui::ColorProvider* provider) {
-  return gfx::ImageSkiaOperations::CreateTiledImage(
-      gfx::CreateVectorIcon(vector_icons::kGooglePayLogoIcon,
-                            provider->GetColor(kColorPaymentsGooglePayLogo)),
-      /*x=*/0, /*y=*/0, kGooglePayLogoWidth, kIconHeight);
-}
-#endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING)
-
 std::unique_ptr<views::ImageView> CreateIconView(
-    TitleWithIconAfterLabelView::Icon icon_to_show) {
+    TitleWithIconAfterLabelView::Icon icon_to_show,
+    const base::RepeatingCallback<ui::ColorVariant()>&
+        get_background_color_callback) {
   ui::ImageModel model;
+  std::optional<ui::ImageModel> model_dark;
   switch (icon_to_show) {
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
     case TitleWithIconAfterLabelView::Icon::GOOGLE_PAY:
       model = ui::ImageModel::FromImageGenerator(
-          base::BindRepeating(&CreateTiledGooglePayLogo),
+          base::BindRepeating(&CreateTiledGooglePayLogo, kGooglePayLogoWidth,
+                              kIconHeight),
           gfx::Size(kGooglePayLogoWidth, kIconHeight));
       break;
     case TitleWithIconAfterLabelView::Icon::GOOGLE_PAY_AND_AFFIRM:
       model = ui::ImageModel::FromImageSkia(
           *ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(
-              ui::NativeTheme::GetInstanceForNativeUi()->ShouldUseDarkColors()
-                  ? IDR_AUTOFILL_GOOGLE_PAY_AFFIRM_DARK
-                  : IDR_AUTOFILL_GOOGLE_PAY_AFFIRM));
+              IDR_AUTOFILL_GOOGLE_PAY_AFFIRM));
+      model_dark = ui::ImageModel::FromImageSkia(
+          *ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(
+              IDR_AUTOFILL_GOOGLE_PAY_AFFIRM_DARK));
       break;
     case TitleWithIconAfterLabelView::Icon::GOOGLE_PAY_AND_AFTERPAY:
       model = ui::ImageModel::FromImageSkia(
           *ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(
-              ui::NativeTheme::GetInstanceForNativeUi()->ShouldUseDarkColors()
-                  ? IDR_AUTOFILL_GOOGLE_PAY_AFTERPAY_DARK
-                  : IDR_AUTOFILL_GOOGLE_PAY_AFTERPAY));
+              IDR_AUTOFILL_GOOGLE_PAY_AFTERPAY));
+      model_dark = ui::ImageModel::FromImageSkia(
+          *ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(
+              IDR_AUTOFILL_GOOGLE_PAY_AFTERPAY_DARK));
       break;
     case TitleWithIconAfterLabelView::Icon::GOOGLE_PAY_AND_ZIP:
       model = ui::ImageModel::FromImageSkia(
           *ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(
-              ui::NativeTheme::GetInstanceForNativeUi()->ShouldUseDarkColors()
-                  ? IDR_AUTOFILL_GOOGLE_PAY_ZIP_DARK
-                  : IDR_AUTOFILL_GOOGLE_PAY_ZIP));
+              IDR_AUTOFILL_GOOGLE_PAY_ZIP));
+      model_dark = ui::ImageModel::FromImageSkia(
+          *ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(
+              IDR_AUTOFILL_GOOGLE_PAY_ZIP_DARK));
+      break;
+    case TitleWithIconAfterLabelView::Icon::GOOGLE_PAY_AND_KLARNA:
+      model = ui::ImageModel::FromImageSkia(
+          *ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(
+              IDR_AUTOFILL_GOOGLE_PAY_KLARNA));
+      model_dark = ui::ImageModel::FromImageSkia(
+          *ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(
+              IDR_AUTOFILL_GOOGLE_PAY_KLARNA_DARK));
+      break;
+    case TitleWithIconAfterLabelView::Icon::GOOGLE_WALLET:
+      model = ui::ImageModel::FromImageSkia(
+          *ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(
+              base::FeatureList::IsEnabled(
+                  features::kAutofillEnableGradientGoogleLogos)
+                  ? IDR_AUTOFILL_GOOGLE_WALLET_ICON_WITH_GRADIENT
+                  : IDR_AUTOFILL_GOOGLE_WALLET_ICON));
+      break;
+    case TitleWithIconAfterLabelView::Icon::AFFIRM:
+      model = ui::ImageModel::FromImageSkia(
+          *ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(
+              IDR_AUTOFILL_AFFIRM));
+      model_dark = ui::ImageModel::FromImageSkia(
+          *ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(
+              IDR_AUTOFILL_AFFIRM_DARK));
+      break;
+    case TitleWithIconAfterLabelView::Icon::AFTERPAY:
+      model = ui::ImageModel::FromImageSkia(
+          *ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(
+              IDR_AUTOFILL_AFTERPAY));
+      model_dark = ui::ImageModel::FromImageSkia(
+          *ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(
+              IDR_AUTOFILL_AFTERPAY_DARK));
+      break;
+    case TitleWithIconAfterLabelView::Icon::KLARNA:
+      model = ui::ImageModel::FromImageSkia(
+          *ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(
+              IDR_AUTOFILL_KLARNA));
+      model_dark = ui::ImageModel::FromImageSkia(
+          *ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(
+              IDR_AUTOFILL_KLARNA_DARK));
+      break;
+    case TitleWithIconAfterLabelView::Icon::ZIP:
+      model = ui::ImageModel::FromImageSkia(
+          *ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(
+              IDR_AUTOFILL_ZIP));
+      model_dark = ui::ImageModel::FromImageSkia(
+          *ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(
+              IDR_AUTOFILL_ZIP_DARK));
       break;
     case TitleWithIconAfterLabelView::Icon::GOOGLE_G: {
       const gfx::VectorIcon& icon = vector_icons::kGoogleGLogoIcon;
 #else
     case TitleWithIconAfterLabelView::Icon::GOOGLE_PAY:
+    case TitleWithIconAfterLabelView::Icon::GOOGLE_WALLET:
     case TitleWithIconAfterLabelView::Icon::GOOGLE_G:
     case TitleWithIconAfterLabelView::Icon::GOOGLE_PAY_AND_AFFIRM:
     case TitleWithIconAfterLabelView::Icon::GOOGLE_PAY_AND_AFTERPAY:
-    case TitleWithIconAfterLabelView::Icon::GOOGLE_PAY_AND_ZIP: {
-      const gfx::VectorIcon& icon = kCreditCardIcon;
+    case TitleWithIconAfterLabelView::Icon::GOOGLE_PAY_AND_ZIP:
+    case TitleWithIconAfterLabelView::Icon::GOOGLE_PAY_AND_KLARNA:
+    case TitleWithIconAfterLabelView::Icon::AFFIRM:
+    case TitleWithIconAfterLabelView::Icon::AFTERPAY:
+    case TitleWithIconAfterLabelView::Icon::KLARNA:
+    case TitleWithIconAfterLabelView::Icon::ZIP: {
+      const gfx::VectorIcon& icon = ::features::IsRoundedIconsEnabled()
+                                        ? kCreditCardIcon
+                                        : kCreditCardOldIcon;
 #endif
       model = ui::ImageModel::FromVectorIcon(icon, ui::kColorIcon, kIconHeight);
       break;
     }
   }
-  return views::Builder<views::ImageView>().SetImage(model).Build();
+  return std::make_unique<views::ThemeTrackingImageView>(
+      model, model_dark.value_or(model), get_background_color_callback);
 }
 
 }  // namespace
@@ -129,6 +180,39 @@ TextLinkInfo::TextLinkInfo(TextLinkInfo&& other) = default;
 TextLinkInfo& TextLinkInfo::operator=(TextLinkInfo&& other) = default;
 
 TextLinkInfo::~TextLinkInfo() = default;
+
+LabeledTextfieldWithErrorMessage::LabeledTextfieldWithErrorMessage() = default;
+
+LabeledTextfieldWithErrorMessage::LabeledTextfieldWithErrorMessage(
+    LabeledTextfieldWithErrorMessage&& other) = default;
+LabeledTextfieldWithErrorMessage& LabeledTextfieldWithErrorMessage::operator=(
+    LabeledTextfieldWithErrorMessage&& other) = default;
+
+LabeledTextfieldWithErrorMessage::~LabeledTextfieldWithErrorMessage() = default;
+
+views::Textfield& LabeledTextfieldWithErrorMessage::GetInputTextField() const {
+  CHECK(input);
+  return *input;
+}
+
+void LabeledTextfieldWithErrorMessage::SetErrorState(bool is_valid) {
+  CHECK(input);
+  is_valid_input = is_valid;
+  input->SetInvalid(!is_valid);
+  if (error_label) {
+    error_label->SetVisible(!is_valid);
+  }
+  if (error_label_placeholder) {
+    error_label_placeholder->SetVisible(is_valid);
+  }
+}
+
+void LabeledTextfieldWithErrorMessage::MaybeAnnounceError() {
+  if (!GetInputTextField().GetText().empty() && !is_valid_input) {
+    error_label->GetViewAccessibility().AnnouncePolitely(
+        error_label->GetText());
+  }
+}
 
 ui::ImageModel GetProfileAvatar(const AccountInfo& account_info) {
   // Get the user avatar icon.
@@ -147,6 +231,22 @@ ui::ImageModel GetProfileAvatar(const AccountInfo& account_info) {
       account_avatar, avatar_size, avatar_size, profiles::SHAPE_CIRCLE));
 }
 
+std::unique_ptr<views::BoxLayoutView> CreateUserAvatarAndEmailView(
+    const std::u16string& user_email,
+    const ui::ImageModel& user_avatar) {
+  return views::Builder<views::BoxLayoutView>()
+      .SetOrientation(views::BoxLayout::Orientation::kHorizontal)
+      .SetBetweenChildSpacing(ChromeLayoutProvider::Get()->GetDistanceMetric(
+          DISTANCE_RELATED_CONTROL_HORIZONTAL_SMALL))
+      .SetID(DialogViewId::USER_INFORMATION_VIEW)
+      .AddChildren(views::Builder<views::ImageView>().SetImage(user_avatar),
+                   views::Builder<views::Label>()
+                       .SetText(user_email)
+                       .SetTextContext(CONTEXT_DIALOG_BODY_TEXT_SMALL)
+                       .SetTextStyle(views::style::STYLE_SECONDARY))
+      .Build();
+}
+
 TitleWithIconAfterLabelView::TitleWithIconAfterLabelView(
     const std::u16string& window_title,
     TitleWithIconAfterLabelView::Icon icon_to_show) {
@@ -160,7 +260,15 @@ TitleWithIconAfterLabelView::TitleWithIconAfterLabelView(
       window_title, views::style::CONTEXT_DIALOG_TITLE));
   title_label->SetHorizontalAlignment(gfx::ALIGN_TO_HEAD);
   title_label->SetMultiLine(true);
-  auto* icon_view = AddChildView(CreateIconView(icon_to_show));
+  auto* icon_view = AddChildView(CreateIconView(
+      icon_to_show,
+      base::BindRepeating(
+          [](views::View* view) {
+            return ui::ColorVariant(
+                view->GetColorProvider()->GetColor(ui::kColorDialogBackground));
+          },
+          base::Unretained(this))));
+  icon_view->SetID(DialogViewId::BUBBLE_TITLE_ICON);
 
   // Center the icon against the first line of the title label. This needs to be
   // done after we create the title label, so that we can use its preferred
@@ -249,19 +357,7 @@ std::unique_ptr<views::View> CreateLegalMessageView(
 
   // Extra child view for user identity information including the avatar and
   // the email.
-  result->AddChildView(
-      views::Builder<views::BoxLayoutView>()
-          .SetOrientation(views::BoxLayout::Orientation::kHorizontal)
-          .SetBetweenChildSpacing(
-              ChromeLayoutProvider::Get()->GetDistanceMetric(
-                  DISTANCE_RELATED_CONTROL_HORIZONTAL_SMALL))
-          .SetID(DialogViewId::USER_INFORMATION_VIEW)
-          .AddChildren(views::Builder<views::ImageView>().SetImage(user_avatar),
-                       views::Builder<views::Label>()
-                           .SetText(user_email)
-                           .SetTextContext(CONTEXT_DIALOG_BODY_TEXT_SMALL)
-                           .SetTextStyle(views::style::STYLE_SECONDARY))
-          .Build());
+  result->AddChildView(CreateUserAvatarAndEmailView(user_email, user_avatar));
   return result;
 }
 
@@ -325,6 +421,73 @@ std::unique_ptr<views::View> CreateTextWithIconView(
   }
 
   return std::move(view_builder).Build();
+}
+
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
+// kGooglePayLogoIcon is square overall, despite the drawn portion being a
+// rectangular area at the top. CreateTiledImage() will correctly clip it
+// whereas setting the icon size would rescale it incorrectly and keep the
+// bottom empty portion.
+gfx::ImageSkia CreateTiledGooglePayLogo(int width,
+                                        int height,
+                                        const ui::ColorProvider* provider) {
+  return gfx::ImageSkiaOperations::CreateTiledImage(
+      gfx::CreateVectorIcon(vector_icons::kGooglePayLogoIcon,
+                            provider->GetColor(kColorPaymentsGooglePayLogo)),
+      /*x=*/0, /*y=*/0, width, height);
+}
+#endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING)
+
+LabeledTextfieldWithErrorMessage CreateLabelAndTextfieldView(
+    const std::u16string& label_text,
+    std::optional<std::u16string> error_message) {
+  LabeledTextfieldWithErrorMessage result;
+
+  result.container =
+      views::Builder<views::BoxLayoutView>()
+          .SetOrientation(views::BoxLayout::Orientation::kVertical)
+          .Build();
+  result.container->AddChildView(
+      views::Builder<views::Label>()
+          .SetText(label_text)
+          .SetTextContext(views::style::CONTEXT_LABEL)
+          .SetTextStyle(views::style::STYLE_PRIMARY)
+          .SetHorizontalAlignment(gfx::ALIGN_TO_HEAD)
+          .Build());
+  result.container->AddChildView(
+      views::Builder<views::View>()
+          .SetPreferredSize(
+              gfx::Size(0, ChromeLayoutProvider::Get()->GetDistanceMetric(
+                               views::DISTANCE_RELATED_CONTROL_VERTICAL)))
+          .Build());
+  result.input = result.container->AddChildView(
+      views::Builder<views::Textfield>().SetAccessibleName(label_text).Build());
+
+  if (error_message.has_value()) {
+    result.error_label = result.container->AddChildView(
+        views::Builder<views::Label>()
+            .SetText(*error_message)
+            .SetTextContext(views::style::CONTEXT_TEXTFIELD_SUPPORTING_TEXT)
+            .SetTextStyle(STYLE_RED)
+            .SetHorizontalAlignment(gfx::HorizontalAlignment::ALIGN_LEFT)
+            .SetVisible(false)
+            .SetEnabled(false)
+            .SetMultiLine(true)
+            .Build());
+    // Add a padding view which will be visible initially to reserve
+    // space for the error label. This helps maintain the height of the
+    // dialog regardless of whether the error message is visible or not,
+    // preventing the dialog from shifting and stretching. When the error
+    // message appears, this padding is hidden, and when the error message
+    // disappears, the padding reappears to fill the space.
+    result.error_label_placeholder = result.container->AddChildView(
+        views::Builder<views::View>()
+            .SetPreferredSize(result.error_label->GetPreferredSize(
+                views::SizeBounds(result.error_label->width(), {})))
+            .SetVisible(true)
+            .Build());
+  }
+  return result;
 }
 
 }  // namespace autofill

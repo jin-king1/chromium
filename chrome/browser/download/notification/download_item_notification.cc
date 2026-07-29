@@ -11,6 +11,7 @@
 
 #include "ash/constants/web_app_id_constants.h"
 #include "ash/public/cpp/notification_utils.h"
+#include "base/byte_size.h"
 #include "base/feature_list.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
@@ -23,7 +24,6 @@
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/download/download_commands.h"
-#include "chrome/browser/download/download_crx_util.h"
 #include "chrome/browser/download/download_item_model.h"
 #include "chrome/browser/download/download_stats.h"
 #include "chrome/browser/download/notification/download_notification_manager.h"
@@ -56,6 +56,7 @@
 #include "content/public/browser/download_item_utils.h"
 #include "content/public/browser/page_navigator.h"
 #include "content/public/browser/web_contents.h"
+#include "extensions/browser/extension_util.h"
 #include "net/base/mime_util.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkCanvas.h"
@@ -64,6 +65,7 @@
 #include "ui/base/l10n/time_format.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/base/text/bytes_formatting.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/chromeos/styles/cros_tokens_color_mappings.h"
 #include "ui/gfx/codec/jpeg_codec.h"
 #include "ui/gfx/color_palette.h"
@@ -215,7 +217,7 @@ void RecordButtonClickAction(DownloadCommands::Command command) {
 
 bool IsExtensionDownload(DownloadUIModel* item) {
   return item->GetDownloadItem() &&
-         download_crx_util::IsExtensionDownload(*item->GetDownloadItem());
+         extensions::util::IsExtensionDownload(*item->GetDownloadItem());
 }
 
 }  // namespace
@@ -230,7 +232,9 @@ DownloadItemNotification::DownloadItemNotification(
   message_center::RichNotificationData rich_notification_data;
   rich_notification_data.should_make_spoken_feedback_for_popup_updates = false;
   rich_notification_data.vector_small_image =
-      &vector_icons::kNotificationDownloadIcon;
+      &(features::IsRoundedIconsEnabled()
+            ? vector_icons::kDownload2FilledIcon
+            : vector_icons::kNotificationDownloadOldIcon);
 
   notification_ = std::make_unique<message_center::Notification>(
       message_center::NOTIFICATION_TYPE_PROGRESS, GetNotificationId(),
@@ -252,6 +256,11 @@ DownloadItemNotification::DownloadItemNotification(
       rich_notification_data,
       base::MakeRefCounted<message_center::ThunkNotificationDelegate>(
           weak_factory_.GetWeakPtr()));
+  if (item_->GetDownloadItem() == nullptr) {
+    // For background fetches, OfflineItem::original_url is its job's
+    // registration origin.
+    notification_->set_origin_url(item_->GetOriginalURL());
+  }
   notification_->set_progress(0);
   notification_->set_fullscreen_visibility(
       message_center::FullscreenVisibility::OVER_USER);
@@ -297,9 +306,12 @@ void DownloadItemNotification::DisablePopup() {
   CloseNotification();
   notification_->set_priority(message_center::LOW_PRIORITY);
   closed_ = false;
-  NotificationDisplayServiceFactory::GetForProfile(profile())->Display(
-      NotificationHandler::Type::TRANSIENT, *notification_,
-      /*metadata=*/nullptr);
+  // If shutting down, the BrowserContext won't be valid.
+  if (profile() && !profile()->ShutdownStarted()) {
+    NotificationDisplayServiceFactory::GetForProfile(profile())->Display(
+        NotificationHandler::Type::TRANSIENT, *notification_,
+        /*metadata=*/nullptr);
+  }
 }
 
 void DownloadItemNotification::Close(bool by_user) {
@@ -367,7 +379,7 @@ void DownloadItemNotification::Click(
 
     if (command == DownloadCommands::REVIEW) {
       content::WebContents* contents =
-          GetBrowser()->tab_strip_model()->GetActiveWebContents();
+          GetBrowser()->GetTabStripModel()->GetActiveWebContents();
 
       // If there is no currently active web contents, just show the user the
       // downloads page so they get more context on the warned download needing
@@ -484,7 +496,9 @@ void DownloadItemNotification::UpdateNotificationData(bool display,
 
   notification_->set_title(GetTitle());
   notification_->set_message(GetSubStatusString());
-  notification_->set_progress_status(GetStatusString());
+  notification_->set_progress_status((item_->GetDownloadItem() != nullptr)
+                                         ? GetStatusString()
+                                         : std::u16string());
 
   if (item_->IsDangerous()) {
     notification_->set_type(message_center::NOTIFICATION_TYPE_SIMPLE);
@@ -727,6 +741,9 @@ DownloadItemNotification::GetExtraActions() const {
         }
       }
     }
+    if (item_->GetDownloadItem() == nullptr) {
+      actions->push_back(DownloadCommands::CANCEL);
+    }
     return actions;
   }
 
@@ -775,7 +792,11 @@ DownloadItemNotification::GetExtraActions() const {
       }
 #endif
 
-      actions->push_back(DownloadCommands::SHOW_IN_FOLDER);
+      // Do not include the Show in folder action for downloads we can't show in
+      // the folder.
+      if (item_->GetDownloadItem() != nullptr) {
+        actions->push_back(DownloadCommands::SHOW_IN_FOLDER);
+      }
       // We disable this functionality for now as the usage is very low, the
       // feature gets re-written at this time and there is currently no secure
       // way to determine the caller on the Ash side as the dialog is still
@@ -981,6 +1002,10 @@ std::u16string DownloadItemNotification::GetWarningStatusString() const {
       return l10n_util::GetStringUTF16(
           IDS_PROMPT_DOWNLOAD_SENSITIVE_CONTENT_WARNING);
     }
+    case download::DOWNLOAD_DANGER_TYPE_FORCE_SAVE_TO_GDRIVE:
+    case download::DOWNLOAD_DANGER_TYPE_FORCE_SAVE_TO_ONEDRIVE:
+      return l10n_util::GetStringUTF16(
+          IDS_PROMPT_DOWNLOAD_FORCED_SAVE_TO_CLOUD);
     case download::DOWNLOAD_DANGER_TYPE_SENSITIVE_CONTENT_BLOCK: {
       return l10n_util::GetStringUTF16(
           IDS_PROMPT_DOWNLOAD_SENSITIVE_CONTENT_BLOCKED);
@@ -1134,7 +1159,8 @@ std::u16string DownloadItemNotification::GetStatusString() const {
       } else {
         // Otherwise, the download should be completed.
         // "3.4 MB from example.com"
-        std::u16string size = ui::FormatBytes(item_->GetCompletedBytes());
+        std::u16string size = ui::FormatBytes(base::ByteSize(
+            base::checked_cast<uint64_t>(item_->GetCompletedBytes())));
         return l10n_util::GetStringFUTF16(
             IDS_DOWNLOAD_NOTIFICATION_STATUS_COMPLETED, size, host_name);
       }
@@ -1145,9 +1171,11 @@ std::u16string DownloadItemNotification::GetStatusString() const {
 
   // Indication of progress (E.g.:"100/200 MB" or "100 MB"), or just the
   // received bytes if the |show_size_ratio| flag is false.
-  std::u16string size = show_size_ratio
-                            ? item_->GetProgressSizesString()
-                            : ui::FormatBytes(item_->GetCompletedBytes());
+  std::u16string size =
+      show_size_ratio
+          ? item_->GetProgressSizesString()
+          : ui::FormatBytes(base::ByteSize(
+                base::checked_cast<uint64_t>(item_->GetCompletedBytes())));
 
   return l10n_util::GetStringFUTF16(IDS_DOWNLOAD_NOTIFICATION_STATUS_SHORT,
                                     size, host_name);
@@ -1168,10 +1196,10 @@ bool DownloadItemNotification::AllowedToOpenWhileScanning() const {
              enterprise_connectors::AnalysisConnector::FILE_DOWNLOADED);
 }
 
-Browser* DownloadItemNotification::GetBrowser() const {
+BrowserWindowInterface* DownloadItemNotification::GetBrowser() const {
   chrome::ScopedTabbedBrowserDisplayer browser_displayer(profile());
-  DCHECK(browser_displayer.browser());
-  return browser_displayer.browser();
+  DCHECK(browser_displayer.browser_window_interface());
+  return browser_displayer.browser_window_interface();
 }
 
 Profile* DownloadItemNotification::profile() const {

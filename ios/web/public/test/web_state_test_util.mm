@@ -38,7 +38,7 @@ id ExecuteJavaScript(NSString* script, web::WebState* web_state) {
         // Most of executed JS does not return the result, and there is no need
         // to log WKErrorJavaScriptResultTypeIsUnsupported error code.
         if (error && error.code != WKErrorJavaScriptResultTypeIsUnsupported) {
-          DLOG(WARNING) << "Script execution of:"
+          DLOG(WARNING) << "\n\nScript execution of:"
                         << base::SysNSStringToUTF8(script)
                         << "\nfailed with error: "
                         << base::SysNSStringToUTF8(error.description);
@@ -195,7 +195,7 @@ std::unique_ptr<WebState> CreateUnrealizedWebStateWithItems(
 
   std::unique_ptr<WebState> web_state = WebState::CreateWithStorage(
       browser_state, WebStateID::NewUnique(), std::move(metadata),
-      base::ReturnValueOnce(std::move(storage)),
+      base::ReturnValueOnce(std::make_optional(std::move(storage))),
       base::ReturnValueOnce<NSData*>(nil));
 
   DCHECK(!web_state->IsRealized());

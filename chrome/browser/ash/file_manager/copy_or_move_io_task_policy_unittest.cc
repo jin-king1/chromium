@@ -2,13 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
-#include "chrome/browser/ash/file_manager/copy_or_move_io_task.h"
-
+#include "ash/constants/ash_features.h"
+#include "base/compiler_specific.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
@@ -16,6 +11,7 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/test/gmock_callback_support.h"
 #include "base/test/mock_callback.h"
+#include "chrome/browser/ash/file_manager/copy_or_move_io_task.h"
 #include "chrome/browser/ash/file_manager/io_task.h"
 #include "chrome/browser/ash/file_manager/volume_manager.h"
 #include "chrome/browser/ash/file_manager/volume_manager_factory.h"
@@ -35,12 +31,12 @@
 #include "chrome/browser/enterprise/connectors/connectors_service.h"
 #include "chrome/browser/enterprise/connectors/test/deep_scanning_test_utils.h"
 #include "chrome/browser/policy/dm_token_utils.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
 #include "chromeos/ash/components/disks/fake_disk_mount_manager.h"
 #include "components/user_manager/scoped_user_manager.h"
+#include "components/user_manager/test_helper.h"
 #include "content/public/test/browser_task_environment.h"
 #include "google_apis/gaia/gaia_id.h"
 #include "storage/browser/quota/quota_manager_proxy.h"
@@ -132,6 +128,7 @@ std::unique_ptr<KeyedService> BuildVolumeManager(
     ash::disks::FakeDiskMountManager* disk_mount_manager,
     content::BrowserContext* context) {
   return std::make_unique<file_manager::VolumeManager>(
+      TestingBrowserProcess::GetGlobal()->local_state(),
       Profile::FromBrowserContext(context),
       nullptr /* drive_integration_service */,
       nullptr /* power_manager_client */, disk_mount_manager,
@@ -173,19 +170,21 @@ class CopyOrMoveIOTaskWithScansTest
     profile_ = profile_manager_->CreateTestingProfile("test-profile");
 
     std::vector<base::test::FeatureRef> enabled_features{
-        features::kFileTransferEnterpriseConnector};
+        ash::features::kFileTransferEnterpriseConnector};
     std::vector<base::test::FeatureRef> disabled_features;
 
     if (UseNewPolicyUI()) {
-      enabled_features.push_back(features::kNewFilesPolicyUX);
+      enabled_features.push_back(ash::features::kNewFilesPolicyUX);
     } else {
-      disabled_features.push_back(features::kNewFilesPolicyUX);
+      disabled_features.push_back(ash::features::kNewFilesPolicyUX);
     }
 
     if (UseNewConnectorsUI()) {
-      enabled_features.push_back(features::kFileTransferEnterpriseConnectorUI);
+      enabled_features.push_back(
+          ash::features::kFileTransferEnterpriseConnectorUI);
     } else {
-      disabled_features.push_back(features::kFileTransferEnterpriseConnectorUI);
+      disabled_features.push_back(
+          ash::features::kFileTransferEnterpriseConnectorUI);
     }
 
     scoped_feature_list_.InitWithFeatures(enabled_features, disabled_features);
@@ -209,13 +208,13 @@ class CopyOrMoveIOTaskWithScansTest
     file_system_context_ = storage::CreateFileSystemContextForTesting(
         nullptr, source_destination_testing_helper_->GetTempDirPath());
 
-    enterprise_connectors::FileTransferAnalysisDelegate::SetFactorForTesting(
+    enterprise_connectors::FileTransferAnalysisDelegate::SetFactoryForTesting(
         base::BindRepeating(
             [](base::RepeatingCallback<void(
                    enterprise_connectors::MockFileTransferAnalysisDelegate*,
                    const storage::FileSystemURL& source_url)>
                    mock_setup_callback,
-               safe_browsing::DeepScanAccessPoint access_point,
+               enterprise_connectors::DeepScanAccessPoint access_point,
                storage::FileSystemURL source_url,
                storage::FileSystemURL destination_url, Profile* profile,
                storage::FileSystemContext* file_system_context,
@@ -379,13 +378,13 @@ class CopyOrMoveIOTaskWithScansTest
   storage::FileSystemURL GetSourceFileSystemURLForDisabledVolume(
       const std::string& component) {
     return source_destination_testing_helper_->GetTestFileSystemURLForVolume(
-        std::data(kVolumeInfos)[1], component);
+        UNSAFE_TODO(std::data(kVolumeInfos)[1]), component);
   }
 
   storage::FileSystemURL GetDestinationFileSystemURL(
       const std::string& component) {
     return source_destination_testing_helper_->GetTestFileSystemURLForVolume(
-        std::data(kVolumeInfos)[2], component);
+        UNSAFE_TODO(std::data(kVolumeInfos)[2]), component);
   }
 
   // Creates one file.
@@ -1495,17 +1494,15 @@ class CopyOrMoveIOTaskWithDLPTest : public testing::Test {
   }
 
   void SetUp() override {
-    scoped_feature_list_.InitAndEnableFeature(features::kNewFilesPolicyUX);
+    scoped_feature_list_.InitAndEnableFeature(ash::features::kNewFilesPolicyUX);
 
     AccountId account_id = AccountId::FromUserEmailGaiaId(kEmailId, kGaiaId);
     profile_->SetIsNewProfile(true);
-    user_manager::User* user =
-        fake_user_manager_->AddUserWithAffiliationAndTypeAndProfile(
-            account_id, /*is_affiliated=*/false,
-            user_manager::UserType::kRegular, profile_.get());
-    fake_user_manager_->UserLoggedIn(account_id, user->username_hash(),
-                                     /*browser_restart=*/false,
-                                     /*is_child=*/false);
+    fake_user_manager_->AddUserWithAffiliationAndTypeAndProfile(
+        account_id, /*is_affiliated=*/false, user_manager::UserType::kRegular,
+        profile_.get());
+    fake_user_manager_->UserLoggedIn(
+        account_id, user_manager::TestHelper::GetFakeUsernameHash(account_id));
     fake_user_manager_->SimulateUserProfileLoad(account_id);
 
     // DLP Setup.

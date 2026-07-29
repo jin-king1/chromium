@@ -13,20 +13,17 @@
 #import "ios/chrome/browser/ntp/shared/metrics/feed_metrics_constants.h"
 #import "ios/chrome/browser/ntp/shared/metrics/feed_refresh_state_tracker.h"
 
-@protocol FeedControlDelegate;
-@protocol NewTabPageFollowDelegate;
 @protocol NewTabPageActionsDelegate;
-@class NewTabPageState;
+namespace feature_engagement {
+class Tracker;
+}
 class PrefService;
 
 // Records different metrics for the NTP feeds.
+// TODO(crbug.com/402798827): Rename `FeedMetricsRecorder` to something more
+// general like `FeedRecorder` if kFeedSwipeInProductHelp becomes a full launch
+// candidate.
 @interface FeedMetricsRecorder : NSObject <FeedRefreshStateTracker>
-
-// The last active new tab page state.
-@property(nonatomic, weak) NewTabPageState* NTPState;
-
-// Delegate for getting information relating to Following.
-@property(nonatomic, weak) id<NewTabPageFollowDelegate> followDelegate;
 
 // Whether or not the feed is currently being shown on the Start Surface.
 @property(nonatomic, assign) BOOL isShownOnStartSurface;
@@ -35,6 +32,8 @@ class PrefService;
 @property(nonatomic, weak) id<NewTabPageActionsDelegate> NTPActionsDelegate;
 
 - (instancetype)initWithPrefService:(PrefService*)prefService
+           featureEngagementTracker:
+               (feature_engagement::Tracker*)featureEngagementTracker
     NS_DESIGNATED_INITIALIZER;
 
 - (instancetype)init NS_UNAVAILABLE;
@@ -49,42 +48,11 @@ class PrefService;
 // visible.
 - (void)recordDeviceOrientationChanged:(UIDeviceOrientation)orientation;
 
-// Tracks time spent in a specific Feed for a Good Visit.
-- (void)recordFeedTypeChangedFromFeed:(FeedType)previousFeed;
-
 // Record when the NTP changes visibility.
 - (void)recordNTPDidChangeVisibility:(BOOL)visible;
 
 // Record metrics for when the user has tapped on the feed preview.
 - (void)recordDiscoverFeedPreviewTapped;
-
-// Record metrics for when the user selects the 'Learn More' item in the feed
-// header menu.
-- (void)recordHeaderMenuLearnMoreTapped;
-
-// Record metrics for when the user selects the 'Manage' item in the feed header
-// menu.
-- (void)recordHeaderMenuManageTapped;
-
-// Record metrics for when the user selects the 'Manage Activity' item in the
-// feed header menu.
-- (void)recordHeaderMenuManageActivityTapped;
-
-// Record metrics for when the user selects the 'Following' item in the feed
-// header menu.
-- (void)recordHeaderMenuManageFollowingTapped;
-
-// Record metrics for when the user selects the 'Hidden' item in the feed
-// management UI.
-- (void)recordHeaderMenuManageHiddenTapped;
-
-// Record metrics for when the user selects the 'Following' item in the feed
-// management UI.
-- (void)recordHeaderMenuManageFollowingTapped;
-
-// Record metrics for when the user toggles the feed visibility from the feed
-// header menu.
-- (void)recordDiscoverFeedVisibilityChanged:(BOOL)visible;
 
 // Records metrics for when a user opens an article in the same tab.
 - (void)recordOpenURLInSameTab;
@@ -202,15 +170,6 @@ class PrefService;
 // Records that the feed is about to be refreshed.
 - (void)recordFeedWillRefresh;
 
-// Records that a given `feedType` was explicitly selected. Logs position in
-// previous feed as `index`.
-- (void)recordFeedSelected:(FeedType)feedType
-    fromPreviousFeedPosition:(NSUInteger)index;
-
-// Records the user's current follow count after a given event `logReason`.
-- (void)recordFollowCount:(NSUInteger)followCount
-             forLogReason:(FollowCountLogReason)logReason;
-
 // Records the state of the Feed setting based on the `enterprisePolicy` being
 // enabled, `feedVisible`, the user being `signedIn`, user having `waaEnabled`
 // and `spywEnabled`, and the `lastRefreshTime` for the Feed.
@@ -222,9 +181,6 @@ class PrefService;
                                      lastRefreshTime:
                                          (base::Time)lastRefreshTime;
 
-// Records a user action for the Following feed sort type being selected.
-- (void)recordFollowingFeedSortTypeSelected:(FollowingFeedSortType)sortType;
-
 // Records when the user has scrolled `scrollDistance` in a carousel within a
 // cell.
 - (void)recordCarouselScrolled:(int)scrollDistance;
@@ -235,56 +191,6 @@ class PrefService;
 
 // Records the value of the uniformity flag value from Discover.
 - (void)recordUniformityFlagValue:(BOOL)flag;
-
-#pragma mark - Follow
-
-// Record metrics for when the user request to follow/unfollow a website,
-// according to `followRequestedType`. Ex. The user selects the 'Follow' item in
-// the overflow menu.
-- (void)recordFollowRequestedWithType:(FollowRequestType)followRequestType;
-
-// Record metrics for when the user tapped "follow" from menu entry point.
-- (void)recordFollowFromMenu;
-
-// Record metrics for when the user tapped "unfollow" from menu entry point.
-- (void)recordUnfollowFromMenu;
-
-// Record metrics for when the follow confirmation snckbar is shown, according
-// to `followConfirmationType`.
-- (void)recordFollowConfirmationShownWithType:
-    (FollowConfirmationType)followConfirmationType;
-
-// Record metrics for when the follow confirmation snckbar action is tapped,
-// according to `followSnackbarActionType`.Ex. the user tapped "GO TO FEED"
-// button on the follow succeed snackbar.
-- (void)recordFollowSnackbarTappedWithAction:
-    (FollowSnackbarActionType)followSnackbarActionType;
-
-// Record metrics for when the user swipes or taps to unfollow a web channel in
-// the management UI.
-- (void)recordManagementTappedUnfollow;
-
-// Record metrics for when the user taps "UNDO" on the successful unfollow
-// confirmation snackbar in the management UI.
-- (void)recordManagementTappedRefollowAfterUnfollowOnSnackbar;
-
-// Record metrics for when the user taps "Try Again" on the unfollow error
-// confirmation snackbar in the management UI.
-- (void)recordManagementTappedUnfollowTryAgainOnSnackbar;
-
-// Record metrics for when the first follow sheet is shown.
-- (void)recordFirstFollowShown;
-
-// Record metrics for when the user taps "Go To Feed" on the first follow sheet.
-- (void)recordFirstFollowTappedGoToFeed;
-
-// Record metrics for when the user taps "Got it" on the first follow sheet.
-- (void)recordFirstFollowTappedGotIt;
-
-// Record metrics for when a Follow Recommendation IPH is shown.
-// A follow Recommendation IPH is a textual bublle that tells users that they
-// are able to follow a website.
-- (void)recordFollowRecommendationIPHShown;
 
 #pragma mark - Sign-in Promo
 

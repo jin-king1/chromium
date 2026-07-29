@@ -70,6 +70,17 @@ be used.
 [devtools-experiments]: https://developer.chrome.com/docs/devtools/settings/experiments
 [devtools-cli-docs]: https://chromium.googlesource.com/devtools/devtools-frontend/+/HEAD/docs/contributing/settings-experiments-features.md#how-to-add-command-line-flags
 
+### To Use the Flag in Features Spanning Multiple Directories
+
+Add a `base::Feature` to the feature files in the lowest-level directory that
+encompasses the code.
+
+For example, for features used by `/pdf` and additional higher level code, the
+base::Features should be added to the following files:
+
+* [pdf/pdf_features.cc](https://cs.chromium.org/chromium/src/pdf/pdf_features.cc)
+* [pdf/pdf_features.h](https://cs.chromium.org/chromium/src/pdf/pdf_features.h)
+
 ### Examples
 
 You can refer to [this CL](https://chromium-review.googlesource.com/c/554510/)
@@ -83,7 +94,7 @@ and [this document](initialize_blink_features.md) to see
 3. How to wire your new `base::Feature` to a Blink runtime feature:
    [[1][blink-rte-init]]
 4. How to use it in Blink:
-   [[1](https://chromium-review.googlesource.com/c/554510/8/third_party/blnk/renderere/core/workers/worker_thread.cc)]
+   [[1](https://chromium-review.googlesource.com/c/chromium/src/+/554510/8/third_party/WebKit/Source/core/workers/WorkerThread.cpp)]
 
 Also, this patch added a virtual test for running web tests with the flag.
 When you add a flag, you can consider to use that.
@@ -105,14 +116,12 @@ for WebView flags.
 
 You have to modify these five files in total.
 
-* [chrome/browser/about_flags.cc](https://cs.chromium.org/chromium/src/chrome/browser/about_flags.cc) (Add your changes at the bottom of the list)
-* [chrome/browser/flag_descriptions.cc](https://cs.chromium.org/chromium/src/chrome/browser/flag_descriptions.cc) (Features should be alphabetically sorted)
+* [chrome/browser/about_flags.cc](https://cs.chromium.org/chromium/src/chrome/browser/about_flags.cc) (Add your changes at the bottom of the list, search for "Add new entries above this line.")
 * [chrome/browser/flag_descriptions.h](https://cs.chromium.org/chromium/src/chrome/browser/flag_descriptions.h) (Features should be alphabetically sorted)
 * [tools/metrics/histograms/enums.xml](https://cs.chromium.org/chromium/src/tools/metrics/histograms/enums.xml)
 * [chrome/browser/flag-metadata.json](https://cs.chromium.org/chromium/src/chrome/browser/flag-metadata.json)
 
-At first you need to add an entry to __about_flags.cc__,
-__flag_descriptions.cc__ and __flag_descriptions.h__. After that, try running
+At first you need to add an entry to __about_flags.cc__ and __flag_descriptions.h__. After that, try running
 the following script which will update enums.xml:
 
 ```bash
@@ -147,7 +156,6 @@ can be removed in stages.
 
 First remove the flag from the UI:
 * [chrome/browser/about_flags.cc](https://cs.chromium.org/chromium/src/chrome/browser/about_flags.cc)
-* [chrome/browser/flag_descriptions.cc](https://cs.chromium.org/chromium/src/chrome/browser/flag_descriptions.cc)
 * [chrome/browser/flag_descriptions.h](https://cs.chromium.org/chromium/src/chrome/browser/flag_descriptions.h)
 * [chrome/browser/flag-metadata.json](https://cs.chromium.org/chromium/src/chrome/browser/flag-metadata.json)
 * Do not edit enums.xml. Keep the flag for archeological purposes.

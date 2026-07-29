@@ -20,7 +20,6 @@
 #include "base/fuchsia/process_context.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
-#include "base/not_fatal_until.h"
 #include "base/process/process.h"
 #include "base/strings/strcat.h"
 #include "base/time/time.h"
@@ -99,7 +98,7 @@ void EnsureSoftwareVideoDecodersAreDisabled(
 // Exits the Runner process if creation of data storage fails for any reason.
 void SetDataParamsForMainContext(fuchsia::web::CreateContextParams* params) {
   // Set the web data quota based on the CastRunner configuration.
-  const std::optional<base::Value::Dict>& config =
+  const std::optional<base::DictValue>& config =
       fuchsia_component_support::LoadPackageConfig();
   if (!config)
     return;
@@ -132,7 +131,7 @@ void SetDataParamsForMainContext(fuchsia::web::CreateContextParams* params) {
 // CDM data persistence is always enabled, with an optional soft quota.
 // Exits the Runner if creation of CDM storage fails for any reason.
 void SetCdmParamsForMainContext(fuchsia::web::CreateContextParams* params) {
-  const std::optional<base::Value::Dict>& config =
+  const std::optional<base::DictValue>& config =
       fuchsia_component_support::LoadPackageConfig();
   if (config) {
     constexpr char kCdmDataQuotaBytesSwitch[] = "cdm-data-quota-bytes";
@@ -462,7 +461,7 @@ WebContentRunner* CastRunner::CreateIsolatedRunner(
 
 void CastRunner::OnIsolatedContextEmpty(WebContentRunner* context) {
   auto it = isolated_contexts_.find(context);
-  CHECK(it != isolated_contexts_.end(), base::NotFatalUntil::M130);
+  CHECK(it != isolated_contexts_.end());
   isolated_contexts_.erase(it);
 }
 

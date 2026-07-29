@@ -5,10 +5,13 @@
 #include "chrome/browser/ash/file_system_provider/operation_request_manager.h"
 
 #include "base/time/time.h"
+#include "chrome/browser/ash/browser_delegate/browser_controller.h"
+#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/extensions/window_controller_list.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "components/tabs/public/tab_interface.h"
 #include "extensions/browser/app_window/app_window_registry.h"
 #include "extensions/common/constants.h"
 
@@ -72,16 +75,20 @@ bool OperationRequestManager::IsInteractingWithUser() const {
   // which is at most once every 10 seconds per request (except tests).
   for (extensions::WindowController* window :
        *extensions::WindowControllerList::GetInstance()) {
-    const Browser* const browser = window->GetBrowser();
-    if (!browser)
+    const BrowserDelegate* const browser =
+        BrowserController::GetInstance()->GetDelegate(
+            window->GetBrowserWindowInterface());
+    if (!browser || browser->GetType() != ash::BrowserType::kNormal) {
       continue;
-    const TabStripModel* const tabs = browser->tab_strip_model();
-    DCHECK(tabs);
-    for (int i = 0; i < tabs->count(); ++i) {
-      content::WebContents* const web_contents = tabs->GetWebContentsAt(i);
-      const GURL& url = web_contents->GetURL();
+    }
+
+    const TabStripModel* const tab_strip =
+        browser->GetBrowser().GetTabStripModel();
+    CHECK(tab_strip);
+    for (tabs::TabInterface* tab : *tab_strip) {
+      const GURL& url = tab->GetURL();
       if (url.SchemeIs(extensions::kExtensionScheme) &&
-          url.host_piece() == provider_id_) {
+          url.host() == provider_id_) {
         return true;
       }
     }

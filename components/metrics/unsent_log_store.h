@@ -13,6 +13,7 @@
 #include <string_view>
 #include <vector>
 
+#include "base/containers/span.h"
 #include "base/gtest_prod_util.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
@@ -93,11 +94,6 @@ class UnsentLogStore : public LogStore {
   struct LogInfo {
     LogInfo();
 
-    LogInfo(const LogInfo&) = delete;
-    LogInfo& operator=(const LogInfo&) = delete;
-
-    ~LogInfo();
-
     // Initializes the members based on uncompressed |log_data|,
     // |log_timestamp|, and |signing_key|. |log_data| is the uncompressed
     // serialized log protobuf. A hash and a signature are computed from
@@ -105,18 +101,21 @@ class UnsentLogStore : public LogStore {
     // will be compressed and stored in |compressed_log_data|. |log_timestamp|
     // is stored as is. |log_metadata| is any optional metadata that will be
     // attached to the log.
-    // TODO(crbug.com/40119012): Make this a ctor instead.
-    void Init(const std::string& log_data,
-              const std::string& log_timestamp,
-              const std::string& signing_key,
-              const LogMetadata& log_metadata);
+    LogInfo(const std::string& log_data,
+            const std::string& log_timestamp,
+            const std::string& signing_key,
+            const LogMetadata& log_metadata);
 
     // Same as above, but the |timestamp| field will be filled with the current
     // time.
-    // TODO(crbug.com/40119012): Make this a ctor instead.
-    void Init(const std::string& log_data,
-              const std::string& signing_key,
-              const LogMetadata& log_metadata);
+    LogInfo(const std::string& log_data,
+            const std::string& signing_key,
+            const LogMetadata& log_metadata);
+
+    LogInfo(const LogInfo&) = delete;
+    LogInfo& operator=(const LogInfo&) = delete;
+
+    ~LogInfo();
 
     // Compressed log data - a serialized protobuf that's been gzipped.
     std::string compressed_log_data;
@@ -146,25 +145,27 @@ class UnsentLogStore : public LogStore {
   std::optional<uint64_t> staged_log_user_id() const override;
   const LogMetadata staged_log_metadata() const override;
   void StageNextLog() override;
-  void DiscardStagedLog(std::string_view reason = "") override;
+
+ protected:
+  void DiscardStagedLogImpl(std::string_view reason) override;
+
+ public:
   void MarkStagedLogAsSent() override;
   void TrimAndPersistUnsentLogs(bool overwrite_in_memory_store) override;
   void LoadPersistedUnsentLogs() override;
 
-  // Adds a log to the list. |log_metadata| refers to metadata associated with
-  // the log. Before being stored, the data will be compressed, and a hash and
-  // signature will be computed.
-  // TODO(crbug.com/40119012): Remove this function, and use StoreLogInfo()
-  // everywhere instead.
+  // Creates a LogInfo from the passed `log_data` (by compressing, hashing, and
+  // signing it) and stores it (see StoreLogInfo() below). `log_metadata` refers
+  // to metadata associated with the log.
   void StoreLog(const std::string& log_data,
                 const LogMetadata& log_metadata,
                 MetricsLogsEventManager::CreateReason reason);
 
-  // Adds a log to the list, represented by a LogInfo object. This is useful
-  // if the LogInfo instance needs to be created outside the main thread
-  // (since creating a LogInfo from log data requires heavy work). Note that we
-  // also pass the size of the log data before being compressed. This is simply
-  // for calculating and emitting some metrics, and is otherwise unused.
+  // Adds a log to the store, represented by a LogInfo object. Calling this
+  // directly is particularly useful if the LogInfo instance needs to be created
+  // outside the main thread (since creating a LogInfo from log data requires
+  // heavy work). Note that `uncompressed_log_size` is only used for metrics
+  // purposes.
   void StoreLogInfo(std::unique_ptr<LogInfo> log_info,
                     size_t uncompressed_log_size,
                     MetricsLogsEventManager::CreateReason reason);
@@ -198,18 +199,17 @@ class UnsentLogStore : public LogStore {
     return logs_event_manager_;
   }
 
-  // Computes the HMAC for |log_data| using the |signing_key| and returns a bool
-  // indicating whether the signing succeeded. The returned HMAC is written to
-  // the |signature|.
-  static bool ComputeHMACForLog(const std::string& log_data,
-                                const std::string& signing_key,
-                                std::string* signature);
+  // Computes the HMAC for |log_data| using the |signing_key| and returns the
+  // resulting HMAC. Too-short keys (including empty keys) are padded; too-long
+  // keys are hashed to the right length.
+  static std::string ComputeHMACForLog(std::string_view log_data,
+                                       std::string_view key);
 
  private:
   FRIEND_TEST_ALL_PREFIXES(UnsentLogStoreTest, UnsentLogMetadataMetrics);
 
   // Reads the list of logs from |list|.
-  void ReadLogsFromPrefList(const base::Value::List& list);
+  void ReadLogsFromPrefList(const base::ListValue& list);
 
   // Writes the unsent log info to the |metadata_pref_name_| preference.
   void WriteToMetricsPref(base::HistogramBase::Count32 unsent_samples_count,
@@ -230,6 +230,10 @@ class UnsentLogStore : public LogStore {
   void NotifyLogsEvent(base::span<std::unique_ptr<LogInfo>> logs,
                        MetricsLogsEventManager::LogEvent event,
                        std::string_view message = "");
+
+  // Returns the currently staged log.
+  const LogInfo* current_log() const;
+  LogInfo* current_log();
 
   // An object for recording UMA metrics.
   std::unique_ptr<UnsentLogStoreMetrics> metrics_;
@@ -260,8 +264,8 @@ class UnsentLogStore : public LogStore {
   std::vector<std::unique_ptr<LogInfo>> list_;
 
   // The index and type of the log staged for upload. If nothing has been
-  // staged, the index will be -1.
-  int staged_log_index_;
+  // staged, the index will be std::nullopt.
+  std::optional<size_t> staged_log_index_;
 
   // The total number of samples that have been sent from this LogStore.
   base::HistogramBase::Count32 total_samples_sent_ = 0;

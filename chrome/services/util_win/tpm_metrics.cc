@@ -12,6 +12,7 @@
 
 #include "base/metrics/histogram_functions.h"
 #include "base/scoped_native_library.h"
+#include "base/strings/string_util.h"
 #include "base/strings/string_util_win.h"
 #include "base/strings/sys_string_conversions.h"
 
@@ -51,8 +52,6 @@ std::optional<TpmIdentifier> GetTpmIdentifier() {
 
   bool manufacturer_id_read_success =
       (manufacturer_id && manufacturer_id(&id) == 0);
-  base::UmaHistogramBoolean("UMA.TPMMetricsProvider.ReadSuccess",
-                            manufacturer_id_read_success);
   if (!manufacturer_id_read_success) {
     return tpm_identifier;
   }

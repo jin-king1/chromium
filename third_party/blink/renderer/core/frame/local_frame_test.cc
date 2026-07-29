@@ -4,6 +4,11 @@
 
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 
+#include <vector>
+
+#include "base/callback_list.h"
+#include "base/functional/bind.h"
+#include "base/test/bind.h"
 #include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/core/css/properties/longhands.h"
@@ -25,45 +30,9 @@ namespace {
 void RegisterMockedHttpURLLoad(const std::string& base_url,
                                const std::string& file_name) {
   url_test_helpers::RegisterMockedURLLoadFromBase(
-      WebString::FromUTF8(base_url), test::CoreTestDataPath(),
-      WebString::FromUTF8(file_name));
+      WebString::FromUtf8(base_url), test::CoreTestDataPath(),
+      WebString::FromUtf8(file_name));
 }
-
-class TestTextInputHostWaiter : public mojom::blink::TextInputHost {
- public:
-  TestTextInputHostWaiter() = default;
-  ~TestTextInputHostWaiter() override = default;
-
-  void Init(base::OnceClosure callback,
-            const blink::BrowserInterfaceBrokerProxy& provider) {
-    callback_ = std::move(callback);
-    provider.SetBinderForTesting(
-        mojom::blink::TextInputHost::Name_,
-        WTF::BindRepeating(&TestTextInputHostWaiter::BindTextInputHostReceiver,
-                           WTF::Unretained(this)));
-  }
-
-  void GotCharacterIndexAtPoint(uint32_t index) override {
-    index_ = index;
-    if (callback_)
-      std::move(callback_).Run();
-  }
-
-  void GotFirstRectForRange(const gfx::Rect& rect) override {}
-
-  void BindTextInputHostReceiver(
-      mojo::ScopedMessagePipeHandle message_pipe_handle) {
-    receiver_.Bind(mojo::PendingReceiver<mojom::blink::TextInputHost>(
-        std::move(message_pipe_handle)));
-  }
-
-  uint32_t index() { return index_; }
-
- private:
-  mojo::Receiver<mojom::blink::TextInputHost> receiver_{this};
-  uint32_t index_;
-  base::OnceClosure callback_;
-};
 #endif
 
 }  // namespace
@@ -167,17 +136,26 @@ TEST_F(LocalFrameTest, CharacterIndexAtPointWithPinchZoom) {
 
   Page* page = web_view_helper.GetWebView()->GetPage();
   LocalFrame* main_frame = DynamicTo<LocalFrame>(page->MainFrame());
-  main_frame->ResetTextInputHostForTesting();
 
-  base::RunLoop run_loop;
-  TestTextInputHostWaiter waiter;
-  waiter.Init(run_loop.QuitClosure(), main_frame->GetBrowserInterfaceBroker());
-  main_frame->RebindTextInputHostForTesting();
   // Since we're zoomed in to 2X, each char of Ahem is 20px wide/tall in
   // viewport space. We expect to hit the fifth char on the first line.
-  main_frame->GetCharacterIndexAtPoint(gfx::Point(100, 15));
-  run_loop.Run();
-  EXPECT_EQ(waiter.index(), 5ul);
+  uint32_t index = main_frame->GetCharacterIndexAtPoint(gfx::Point(100, 15));
+  EXPECT_EQ(index, 5ul);
 }
 #endif
+
+TEST_F(LocalFrameTest, RequestNetworkIdleCallbackMultiple) {
+  auto page_holder = std::make_unique<DummyPageHolder>(gfx::Size(800, 600));
+  int count = 0;
+  std::vector<base::CallbackListSubscription> subscriptions;
+  subscriptions.push_back(page_holder->GetFrame().RequestNetworkIdleCallback(
+      base::BindLambdaForTesting([&] { count++; })));
+  subscriptions.push_back(page_holder->GetFrame().RequestNetworkIdleCallback(
+      base::BindLambdaForTesting([&] { count++; })));
+
+  EXPECT_EQ(count, 0);
+  page_holder->GetFrame().NetworkBecameIdle(base::TimeDelta());
+  EXPECT_EQ(count, 2);
+}
+
 }  // namespace blink

@@ -6,6 +6,8 @@
 
 #import <UIKit/UIKit.h>
 
+#include "base/apple/foundation_util.h"
+
 namespace ui {
 
 // static
@@ -64,17 +66,18 @@ void BrowserAccessibilityManagerIOS::OnAtomicUpdateFinished(
   }
 
   UIAccessibilityPostNotification(UIAccessibilityLayoutChangedNotification,
-                                  root->GetNativeViewAccessible());
+                                  root->GetNativeViewAccessible().Get());
 }
 
 gfx::Rect BrowserAccessibilityManagerIOS::GetViewBoundsInScreenCoordinates()
     const {
-  AXPlatformTreeManagerDelegate* delegate = GetDelegateFromRootManager();
+  AXPlatformTreeManagerDelegate* delegate = GetDelegateForNativeView();
   if (!delegate) {
     return gfx::Rect();
   }
 
-  UIView* view = delegate->AccessibilityGetNativeViewAccessible();
+  UIView* view = base::apple::ObjCCast<UIView>(
+      delegate->AccessibilityGetNativeViewAccessible().Get());
   if (!view) {
     return gfx::Rect();
   }

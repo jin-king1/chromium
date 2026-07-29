@@ -1,10 +1,5 @@
 <style include="cr-shared-style settings-shared settings-columned-section">
   :host {
-    background-color: var(--info-card-background-color);
-    display: flex;
-    flex: 1;
-    flex-direction: column;
-    padding: 2px 0;
     --cr-icon-size: 16px;
     --info-card-background-color: var(--google-blue-50);
   }
@@ -13,6 +8,15 @@
     :host {
       --info-card-background-color: var(--google-grey-800);
     }
+  }
+
+  :host-context([webui-refresh-2026]) {
+    --info-card-background-color: var(--color-settings-info-card-background);
+    --iron-icon-fill-color: var(--cr-secondary-text-color);
+  }
+
+  .settings-columned-section {
+    background-color: var(--info-card-background-color);
   }
 
   .title {
@@ -30,8 +34,19 @@
   .icon-bulleted-list li {
     margin: 8px 0;
   }
+
+  settings-section {
+    --cr-card-shadow: none;
+  }
+
+  @media (forced-colors: active) {
+    settings-section {
+      --cr-border-hcm: none;
+    }
+  }
 </style>
 
+<settings-section>
 <div class="settings-columned-section">
   <div class="column">
     <h2 class="title first">$i18n{aiPageMainTitle}</h2>
@@ -42,7 +57,7 @@
         <div class="secondary">$i18n{aiPageMainSublabel1}</div>
       </li>
       <li>
-        <cr-icon icon="settings20:googleg" aria-hidden="true"></cr-icon>
+        <cr-icon icon="settings20:google" aria-hidden="true"></cr-icon>
         <div class="secondary">$i18n{aiPageMainSublabel2}</div>
       </li>
       <li>
@@ -65,3 +80,4 @@
     </ul>
   </div>
 </div>
+</settings-section>

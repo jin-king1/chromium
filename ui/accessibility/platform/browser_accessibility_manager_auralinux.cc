@@ -9,6 +9,8 @@
 #include <set>
 #include <vector>
 
+#include "base/version.h"
+#include "ui/accessibility/accessibility_features.h"
 #include "ui/accessibility/ax_selection.h"
 #include "ui/accessibility/platform/ax_platform_node_auralinux.h"
 #include "ui/accessibility/platform/ax_platform_tree_manager_delegate.h"
@@ -48,15 +50,24 @@ BrowserAccessibilityManagerAuraLinux::BrowserAccessibilityManagerAuraLinux(
 }
 
 BrowserAccessibilityManagerAuraLinux::~BrowserAccessibilityManagerAuraLinux() {
-  if (IsRootFrameManager()) {
-    DCHECK(GetBrowserAccessibilityRoot());
-    gfx::NativeViewAccessible obj =
-        GetBrowserAccessibilityRoot()->GetNativeViewAccessible();
-    // We don't fire state:changed:defunct on every object in order to reduce
-    // event noise, but it is useful for the root node of a document.
-    if (ATK_IS_OBJECT(obj)) {
-      atk_object_notify_state_change(obj, ATK_STATE_DEFUNCT, TRUE);
-    }
+  if (!IsRootFrameManager()) {
+    return;
+  }
+
+  // When ViewsAX is enabled, it's possible to have a non-web content source
+  // delegate.
+  if (!features::IsAccessibilityTreeForViewsEnabled()) {
+    CHECK(!delegate() || delegate()->AccessibilityIsWebContentSource())
+        << "We should never get here in non-web content sourced managers.";
+  }
+
+  DCHECK(GetBrowserAccessibilityRoot());
+  gfx::NativeViewAccessible obj =
+      GetBrowserAccessibilityRoot()->GetNativeViewAccessible();
+  // We don't fire state:changed:defunct on every object in order to reduce
+  // event noise, but it is useful for the root node of a document.
+  if (ATK_IS_OBJECT(obj)) {
+    atk_object_notify_state_change(obj, ATK_STATE_DEFUNCT, TRUE);
   }
 }
 
@@ -92,14 +103,9 @@ void BrowserAccessibilityManagerAuraLinux::FireFocusEvent(AXNode* node) {
 
 void BrowserAccessibilityManagerAuraLinux::FireSelectedEvent(
     BrowserAccessibility* node) {
-  // Some browser UI widgets, such as the omnibox popup, only send notifications
-  // when they become selected. In contrast elements in a page, such as options
-  // in the select element, also send notifications when they become unselected.
-  // Since AXPlatformNodeAuraLinux must handle firing a platform event for the
-  // unselected case, we can safely ignore the unselected case for rendered
-  // elements.
-  if (!node->GetBoolAttribute(ax::mojom::BoolAttribute::kSelected))
+  if (!node->HasBoolAttribute(ax::mojom::BoolAttribute::kSelected)) {
     return;
+  }
 
   FireEvent(node, ax::mojom::Event::kSelection);
 }
@@ -157,12 +163,12 @@ void BrowserAccessibilityManagerAuraLinux::FireEvent(BrowserAccessibility* node,
       event);
 }
 
-void BrowserAccessibilityManagerAuraLinux::FireBlinkEvent(
+void BrowserAccessibilityManagerAuraLinux::FireSourceEvent(
     ax::mojom::Event event_type,
     BrowserAccessibility* node,
     int action_request_id) {
-  BrowserAccessibilityManager::FireBlinkEvent(event_type, node,
-                                              action_request_id);
+  BrowserAccessibilityManager::FireSourceEvent(event_type, node,
+                                               action_request_id);
 
   switch (event_type) {
     case ax::mojom::Event::kScrolledToAnchor:
@@ -180,6 +186,21 @@ void BrowserAccessibilityManagerAuraLinux::FireBlinkEvent(
       break;
     case ax::mojom::Event::kLoadStart:
       FireLoadingEvent(node, true);
+      break;
+    case ax::mojom::Event::kWindowActivated:
+      ToBrowserAccessibilityAuraLinux(node)
+          ->GetNode()
+          ->HandleWindowActivatedEvent();
+      break;
+    case ax::mojom::Event::kWindowDeactivated:
+      ToBrowserAccessibilityAuraLinux(node)
+          ->GetNode()
+          ->HandleWindowDeactivatedEvent();
+      break;
+    case ax::mojom::Event::kWindowVisibilityChanged:
+      ToBrowserAccessibilityAuraLinux(node)
+          ->GetNode()
+          ->OnWindowVisibilityChanged();
       break;
     default:
       break;
@@ -343,7 +364,14 @@ void BrowserAccessibilityManagerAuraLinux::FireGeneratedEvent(
     case AXEventGenerator::Event::TEXT_ATTRIBUTE_CHANGED:
       FireTextAttributesChangedEvent(wrapper);
       break;
+    case AXEventGenerator::Event::TEXT_SELECTION_CHANGED:
+      if (delegate() && !delegate()->AccessibilityIsWebContentSource()) {
+        FireEvent(wrapper, ax::mojom::Event::kTextSelectionChanged);
+      }
+      break;
     case AXEventGenerator::Event::VALUE_IN_TEXT_FIELD_CHANGED:
+    case AXEventGenerator::Event::VALUE_IN_SPIN_BUTTON_DECREMENTED:
+    case AXEventGenerator::Event::VALUE_IN_SPIN_BUTTON_INCREMENTED:
       if (!wrapper->IsTextField())
         return;  // node no longer editable since event originally fired.
       FireEvent(wrapper, ax::mojom::Event::kValueChanged);
@@ -360,14 +388,17 @@ void BrowserAccessibilityManagerAuraLinux::FireGeneratedEvent(
     case AXEventGenerator::Event::CHECKED_STATE_DESCRIPTION_CHANGED:
     case AXEventGenerator::Event::CHILDREN_CHANGED:
     case AXEventGenerator::Event::CONTROLS_CHANGED:
+    case AXEventGenerator::Event::DEFAULT_ACTION_VERB_CHANGED:
     case AXEventGenerator::Event::DETAILS_CHANGED:
     case AXEventGenerator::Event::DESCRIBED_BY_CHANGED:
     case AXEventGenerator::Event::EDITABLE_TEXT_CHANGED:
     case AXEventGenerator::Event::FOCUS_CHANGED:
     case AXEventGenerator::Event::FLOW_FROM_CHANGED:
     case AXEventGenerator::Event::FLOW_TO_CHANGED:
+    case AXEventGenerator::Event::GRAMMAR_MARKER_CHANGED:
     case AXEventGenerator::Event::HASPOPUP_CHANGED:
     case AXEventGenerator::Event::HIERARCHICAL_LEVEL_CHANGED:
+    case AXEventGenerator::Event::HIGHLIGHT_MARKER_CHANGED:
     case AXEventGenerator::Event::IGNORED_CHANGED:
     case AXEventGenerator::Event::IMAGE_ANNOTATION_CHANGED:
     case AXEventGenerator::Event::KEY_SHORTCUTS_CHANGED:
@@ -394,11 +425,65 @@ void BrowserAccessibilityManagerAuraLinux::FireGeneratedEvent(
     case AXEventGenerator::Event::SCROLL_HORIZONTAL_POSITION_CHANGED:
     case AXEventGenerator::Event::SCROLL_VERTICAL_POSITION_CHANGED:
     case AXEventGenerator::Event::SET_SIZE_CHANGED:
+    case AXEventGenerator::Event::SPELLING_MARKER_CHANGED:
     case AXEventGenerator::Event::STATE_CHANGED:
-    case AXEventGenerator::Event::TEXT_SELECTION_CHANGED:
     case AXEventGenerator::Event::WIN_IACCESSIBLE_STATE_CHANGED:
       break;
   }
+}
+
+void BrowserAccessibilityManagerAuraLinux::FireAriaNotificationEvent(
+    BrowserAccessibility* node,
+    const std::string& announcement,
+    ax::mojom::AriaNotificationPriority priority_property,
+    ax::mojom::AriaNotificationInterrupt interrupt_property,
+    const std::string& type) {
+  DCHECK(node);
+
+  // Only newer Atk versions support the notification signal type.
+  if (ShouldExposeExtraAnnouncementNodes()) {
+    ToBrowserAccessibilityAuraLinux(
+        node->GetExtraAnnouncementNode(priority_property))
+        ->GetNode()
+        ->OnAriaNotificationPosted(announcement, priority_property);
+  } else {
+    ToBrowserAccessibilityAuraLinux(node)->GetNode()->OnAriaNotificationPosted(
+        announcement, priority_property);
+  }
+}
+
+bool BrowserAccessibilityManagerAuraLinux::ShouldExposeExtraAnnouncementNodes()
+    const {
+  // Compute this once and cache it, since it is expensive to call
+  // atk_get_version() and compare it to a version string for each call or
+  // check made in the BrowserAccessibility APIs.
+  static bool should_expose =
+      base::Version(atk_get_version()).CompareTo(base::Version("2.50.0")) < 0;
+  return should_expose;
+}
+
+BrowserAccessibility*
+BrowserAccessibilityManagerAuraLinux::GetExtraAnnouncementNodeFromNode(
+    const BrowserAccessibility* node,
+    ax::mojom::AriaNotificationPriority priority_property) const {
+  CHECK(ShouldExposeExtraAnnouncementNodes());
+  if (!node) {
+    return nullptr;
+  }
+  AXNode* extra_announcement_node =
+      node->node()->GetExtraAnnouncementNode(priority_property);
+  return GetFromAXNode(extra_announcement_node);
+}
+
+bool BrowserAccessibilityManagerAuraLinux::TreeHasExtraAnnouncementNodes()
+    const {
+  return ax_tree()->extra_announcement_nodes();
+}
+
+size_t BrowserAccessibilityManagerAuraLinux::TreeExtraAnnouncementNodesCount()
+    const {
+  CHECK(TreeHasExtraAnnouncementNodes());
+  return ax_tree()->extra_announcement_nodes()->Count();
 }
 
 void BrowserAccessibilityManagerAuraLinux::OnNodeWillBeDeleted(
@@ -449,7 +534,7 @@ void BrowserAccessibilityManagerAuraLinux::OnAtomicUpdateFinished(
   BrowserAccessibilityManager::OnAtomicUpdateFinished(tree, root_changed,
                                                       changes);
 
-  std::set<AXPlatformNode*> objs_to_update;
+  absl::flat_hash_set<AXPlatformNode*> objs_to_update;
   CollectChangedNodesAndParentsForAtomicUpdate(tree, changes, &objs_to_update);
 
   for (auto* node : objs_to_update)

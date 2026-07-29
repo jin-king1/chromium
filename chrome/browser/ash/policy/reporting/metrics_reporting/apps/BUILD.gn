@@ -2,8 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/chromeos/ui_mode.gni")
-
 assert(is_chromeos)
 
 static_library("apps") {
@@ -55,8 +53,8 @@ source_set("unit_tests") {
     "//base",
     "//base/test:test_support",
     "//chrome/browser/apps/app_service",
-    "//chrome/browser/apps/app_service:constants",
     "//chrome/browser/apps/app_service:test_support",
+    "//chrome/browser/apps/app_service/publishers",
     "//chrome/browser/ash/login/users:test_support",
     "//chrome/browser/ash/policy/reporting/metrics_reporting",
     "//chrome/browser/ash/profiles",
@@ -65,10 +63,12 @@ source_set("unit_tests") {
     "//chrome/test:test_support",
     "//chromeos/ash/components/dbus/session_manager",
     "//chromeos/ash/components/login/session",
+    "//components/account_id:test_support",
     "//components/prefs",
     "//components/reporting/metrics/fakes:test_support",
     "//components/reporting/proto:metric_data_proto",
     "//components/reporting/util:test_callbacks_support",
+    "//components/services/app_service",
     "//components/services/app_service/public/cpp:app_types",
     "//components/services/app_service/public/cpp:instance_update",
     "//components/services/app_service/public/protos",

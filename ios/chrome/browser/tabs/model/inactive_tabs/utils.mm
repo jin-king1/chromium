@@ -181,7 +181,8 @@ void MoveTabsAccordingToPolicy(Browser* source_browser,
   for (int iter = 0; iter < source_count; ++iter) {
     const int index = source_count - iter - 1;
     if (std::ranges::binary_search(indexes_closing, index)) {
-      source_list->CloseWebStateAt(index, WebStateList::CLOSE_NO_FLAGS);
+      source_list->CloseWebStateAt(index,
+                                   WebStateList::ClosingReason::kDefault);
       continue;
     }
 
@@ -205,7 +206,7 @@ void MoveTabsAccordingToPolicy(Browser* source_browser,
 void MoveTabsFromActiveToInactive(Browser* active_browser,
                                   Browser* inactive_browser) {
   PrefService* prefs = active_browser->GetProfile()->GetPrefs();
-  CHECK(IsInactiveTabsEnabled(prefs));
+  CHECK(!IsInactiveTabsExplicitlyDisabledByUser(prefs));
   CHECK_NE(active_browser, inactive_browser);
 
   MoveTabsAccordingToPolicy(
@@ -217,7 +218,7 @@ void MoveTabsFromActiveToInactive(Browser* active_browser,
 void MoveTabsFromInactiveToActive(Browser* inactive_browser,
                                   Browser* active_browser) {
   PrefService* prefs = active_browser->GetProfile()->GetPrefs();
-  CHECK(IsInactiveTabsEnabled(prefs));
+  CHECK(!IsInactiveTabsExplicitlyDisabledByUser(prefs));
   CHECK_NE(active_browser, inactive_browser);
 
   MoveTabsAccordingToPolicy(
@@ -228,7 +229,8 @@ void MoveTabsFromInactiveToActive(Browser* inactive_browser,
 
 void RestoreAllInactiveTabs(Browser* inactive_browser,
                             Browser* active_browser) {
-  CHECK(!IsInactiveTabsEnabled(active_browser->GetProfile()->GetPrefs()));
+  CHECK(IsInactiveTabsExplicitlyDisabledByUser(
+      active_browser->GetProfile()->GetPrefs()));
   CHECK_NE(active_browser, inactive_browser);
 
   // Record the number of tabs restored from the inactive browser after Inactive

@@ -12,21 +12,19 @@ import static org.mockito.Mockito.when;
 import android.content.res.Resources;
 import android.graphics.Color;
 
-import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.android.XmlResourceParserImpl;
 import org.robolectric.annotation.Config;
-import org.robolectric.annotation.LooperMode;
-import org.robolectric.shadows.ShadowLooper;
 import org.w3c.dom.Document;
 
 import org.chromium.base.FakeTimeTestRule;
-import org.chromium.base.task.test.BackgroundShadowAsyncTask;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.RobolectricUtil;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider;
 import org.chromium.chrome.browser.browserservices.intents.WebappIcon;
@@ -36,6 +34,7 @@ import org.chromium.chrome.test.util.browser.webapps.WebApkIntentDataProviderBui
 import org.chromium.components.sync.protocol.WebApkSpecifics;
 
 import java.io.ByteArrayInputStream;
+import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -44,10 +43,7 @@ import javax.xml.parsers.DocumentBuilderFactory;
 
 /** Tests the WebApkSyncService class */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(
-        manifest = Config.NONE,
-        shadows = {BackgroundShadowAsyncTask.class})
-@LooperMode(LooperMode.Mode.LEGACY)
+@Config(manifest = Config.NONE)
 public class WebApkSyncServiceTest {
     private static final String START_URL = "https://example.com/start";
     private static final String MANIFEST_ID = "https://example.com/id";
@@ -63,14 +59,10 @@ public class WebApkSyncServiceTest {
 
     @Mock private Resources mMockResources;
 
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Rule public FakeTimeTestRule mFakeClockRule = new FakeTimeTestRule();
 
     private String mPrimaryIconXmlContents;
-
-    @Before
-    public void setUp() {
-        MockitoAnnotations.initMocks(this);
-    }
 
     private XmlResourceParserImpl getMockXmlResourceParserImpl() {
         try {
@@ -82,8 +74,8 @@ public class WebApkSyncServiceTest {
             Document document =
                     documentBuilder.parse(
                             new ByteArrayInputStream(mPrimaryIconXmlContents.getBytes()));
-
-            return new XmlResourceParserImpl(document, "file", PACKAGE_NAME, PACKAGE_NAME, null);
+            return new XmlResourceParserImpl(
+                    document, Paths.get("file"), PACKAGE_NAME, PACKAGE_NAME, null);
         } catch (Exception e) {
             return null;
         }
@@ -101,8 +93,7 @@ public class WebApkSyncServiceTest {
                                 helper.notifyCalled();
                             }
                         });
-        BackgroundShadowAsyncTask.runBackgroundTasks();
-        ShadowLooper.runUiThreadTasks();
+        RobolectricUtil.runAllBackgroundAndUi();
         helper.waitForOnly();
 
         return WebappRegistry.getInstance().getWebappDataStorage(webappId);
@@ -195,7 +186,7 @@ public class WebApkSyncServiceTest {
     @Test
     public void testGetIconsFallback() throws Exception {
         WebappIcon testIcon = new WebappIcon();
-        Map<String, String> iconUrlAndIconMurmur2HashMap = new HashMap<String, String>();
+        Map<String, String> iconUrlAndIconMurmur2HashMap = new HashMap<>();
         iconUrlAndIconMurmur2HashMap.put(ICON_URL, ICON_MURMUR2_HASH);
         iconUrlAndIconMurmur2HashMap.put(ICON_URL2, ICON_MURMUR2_HASH);
         BrowserServicesIntentDataProvider intentDataProvider =

@@ -24,7 +24,6 @@
 #include "content/public/test/test_browser_context.h"
 #include "content/test/test_navigation_url_loader_delegate.h"
 #include "content/test/test_web_contents.h"
-#include "ipc/ipc_message.h"
 #include "net/base/load_flags.h"
 #include "net/base/net_errors.h"
 #include "net/cert/cert_status_flags.h"
@@ -95,13 +94,15 @@ class NavigationURLLoaderTest : public testing::Test {
             std::string() /* searchable_form_encoding */,
             GURL() /* client_side_redirect_url */,
             std::nullopt /* devtools_initiator_info */,
-            nullptr /* trust_token_params */, std::nullopt /* impression */,
+            nullptr /* trust_token_params */,
             base::TimeTicks() /* renderer_before_unload_start */,
             base::TimeTicks() /* renderer_before_unload_end */,
-            blink::mojom::NavigationInitiatorActivationAndAdStatus::
-                kDidNotStartWithTransientActivation,
-            false /* is_container_initiated */,
-            net::StorageAccessApiStatus::kNone, false /* has_rel_opener */);
+            base::TimeTicks() /* before_unload_dialog_opened */,
+            base::TimeTicks() /* before_unload_dialog_closed */,
+            false /* started_with_transient_activation */,
+            false /* started_by_ad */, false /* is_container_initiated */,
+            false /* has_rel_opener */,
+            std::nullopt /* script_tool_invocation_id */);
     auto common_params = blink::CreateCommonNavigationParams();
     common_params->url = url;
     common_params->initiator_origin = url::Origin::Create(url);
@@ -129,17 +130,12 @@ class NavigationURLLoaderTest : public testing::Test {
             nullptr /* blob_url_loader_factory */,
             base::UnguessableToken::Create() /* devtools_navigation_token */,
             base::UnguessableToken::Create() /* devtools_frame_token */,
-            net::HttpRequestHeaders() /* cors_exempt_headers */,
             nullptr /* client_security_state */,
             std::nullopt /* devtools_accepted_stream_types */,
-            false /* is_pdf */,
-            ChildProcessHost::kInvalidUniqueID /* initiator_process_id */,
+            false /* is_pdf */, ChildProcessId() /* initiator_process_id */,
             std::nullopt /* initiator_document_token */,
-            GlobalRenderFrameHostId() /* previous_render_frame_host_id */,
-            nullptr /* serving_page_metrics_container */,
             false /* allow_cookies_from_browser */, 0 /* navigation_id */,
-            false /* shared_storage_writable */, false /* is_ad_tagged */,
-            false /* force_no_https_upgrade */));
+            false /* is_ad_tagged */, false /* force_no_https_upgrade */));
     return NavigationURLLoader::Create(
         browser_context_.get(), storage_partition, std::move(request_info),
         nullptr, nullptr, nullptr, delegate,
@@ -215,7 +211,7 @@ TEST_F(NavigationURLLoaderTest, RequestFailedCertErrorFatal) {
   auto* storage_partition = browser_context_->GetDefaultStoragePartition();
   base::RunLoop run_loop;
   storage_partition->GetNetworkContext()->AddHSTS(
-      url.host(), expiry, include_subdomains, run_loop.QuitClosure());
+      url.GetHost(), expiry, include_subdomains, run_loop.QuitClosure());
   run_loop.Run();
 
   TestNavigationURLLoaderDelegate delegate;

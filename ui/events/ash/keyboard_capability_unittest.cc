@@ -13,16 +13,16 @@
 #include "ash/constants/ash_switches.h"
 #include "base/auto_reset.h"
 #include "base/command_line.h"
-#include "base/containers/contains.h"
+#include "base/containers/span.h"
 #include "base/files/file_path.h"
 #include "base/files/scoped_file.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/test/task_environment.h"
 #include "device/udev_linux/fake_udev_loader.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/events/ash/mojom/meta_key.mojom-shared.h"
-#include "ui/events/ash/mojom/modifier_key.mojom-shared.h"
 #include "ui/events/ash/mojom/modifier_key.mojom.h"
 #include "ui/events/ash/top_row_action_keys.h"
 #include "ui/events/devices/device_data_manager.h"
@@ -267,6 +267,8 @@ class KeyboardCapabilityTest : public KeyboardCapabilityTestBase,
 
  protected:
   std::unique_ptr<base::test::ScopedFeatureList> modifier_split_feature_list_;
+  base::test::SingleThreadTaskEnvironment task_environment_{
+      base::test::SingleThreadTaskEnvironment::MainThreadType::UI};
 };
 
 INSTANTIATE_TEST_SUITE_P(All, KeyboardCapabilityTest, testing::Bool());
@@ -714,6 +716,24 @@ TEST_P(KeyboardCapabilityTest, TestHasSettingsKey) {
   EXPECT_TRUE(keyboard_capability_->HasSettingsKey(external_keyboard));
 }
 
+TEST_P(KeyboardCapabilityTest, TestHasCameraAccessKey) {
+  KeyboardDevice internal_keyboard(
+      /*id=*/1, /*type=*/InputDeviceType::INPUT_DEVICE_INTERNAL,
+      /*name=*/"Keyboard1");
+  internal_keyboard.sys_path = base::FilePath("path1");
+  fake_keyboard_manager_->AddFakeKeyboard(internal_keyboard,
+                                          kKbdTopRowLayout1Tag);
+  EXPECT_FALSE(keyboard_capability_->HasCameraAccessKey(internal_keyboard));
+
+  KeyboardDevice external_keyboard(
+      /*id=*/2, /*type=*/InputDeviceType::INPUT_DEVICE_BLUETOOTH,
+      /*name=*/"Keyboard2");
+  external_keyboard.sys_path = base::FilePath("path2");
+  fake_keyboard_manager_->AddFakeKeyboard(external_keyboard,
+                                          kKbdTopRowLayoutUnspecified);
+  EXPECT_TRUE(keyboard_capability_->HasCameraAccessKey(external_keyboard));
+}
+
 class ModifierKeyTest : public KeyboardCapabilityTestBase,
                         public testing::WithParamInterface<
                             std::tuple<DeviceCapabilities,
@@ -829,6 +849,8 @@ class KeyEventTest
 
  protected:
   std::unique_ptr<base::test::ScopedFeatureList> modifier_split_feature_list_;
+  base::test::SingleThreadTaskEnvironment task_environment_{
+      base::test::SingleThreadTaskEnvironment::MainThreadType::UI};
 };
 
 // Tests that given the keyboard connection type and layout type, check if this
@@ -1107,7 +1129,7 @@ TEST_P(KeyboardCapabilityTest, TopRowLayout1) {
        action_key =
            static_cast<TopRowActionKey>(static_cast<int>(action_key) + 1)) {
     EXPECT_EQ(
-        base::Contains(kLayout1TopRowActionKeys, action_key),
+        std::ranges::contains(kLayout1TopRowActionKeys, action_key),
         keyboard_capability_->HasTopRowActionKey(input_device, action_key))
         << "Action Key: " << static_cast<int>(action_key);
   }
@@ -1135,7 +1157,7 @@ TEST_P(KeyboardCapabilityTest, TopRowLayout2) {
        action_key =
            static_cast<TopRowActionKey>(static_cast<int>(action_key) + 1)) {
     EXPECT_EQ(
-        base::Contains(kLayout2TopRowActionKeys, action_key),
+        std::ranges::contains(kLayout2TopRowActionKeys, action_key),
         keyboard_capability_->HasTopRowActionKey(input_device, action_key))
         << "Action Key: " << static_cast<int>(action_key);
   }
@@ -1169,11 +1191,11 @@ TEST_P(KeyboardCapabilityTest, TopRowLayoutWilco) {
        action_key =
            static_cast<TopRowActionKey>(static_cast<int>(action_key) + 1)) {
     EXPECT_EQ(
-        base::Contains(kLayoutWilcoDrallionTopRowActionKeys, action_key),
+        std::ranges::contains(kLayoutWilcoDrallionTopRowActionKeys, action_key),
         keyboard_capability_->HasTopRowActionKey(wilco_device, action_key))
         << "Action Key: " << static_cast<int>(action_key);
     EXPECT_EQ(
-        base::Contains(kLayoutWilcoDrallionTopRowActionKeys, action_key),
+        std::ranges::contains(kLayoutWilcoDrallionTopRowActionKeys, action_key),
         keyboard_capability_->HasTopRowActionKey(drallion_device, action_key))
         << "Action Key: " << static_cast<int>(action_key);
   }
@@ -1196,24 +1218,6 @@ TEST_P(KeyboardCapabilityTest, TopRowLayoutWilco) {
 }
 
 TEST_P(KeyboardCapabilityTest, NullTopRowDescriptor) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndDisableFeature(ash::features::kNullTopRowFix);
-
-  KeyboardDevice input_device(kDeviceId1, INPUT_DEVICE_BLUETOOTH,
-                              "External Keyboard");
-  fake_keyboard_manager_->AddFakeKeyboard(input_device,
-                                          "C0000 C0000 C0000 C0000",
-                                          /*has_custom_top_row=*/true);
-  EXPECT_EQ(
-      KeyboardCapability::DeviceType::kDeviceExternalNullTopRowChromeOsKeyboard,
-      keyboard_capability_->GetDeviceType(input_device));
-  EXPECT_TRUE(keyboard_capability_->HasCapsLockKey(input_device));
-}
-
-TEST_P(KeyboardCapabilityTest, NullTopRowDescriptorWithFix) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(ash::features::kNullTopRowFix);
-
   KeyboardDevice input_device(kDeviceId1, INPUT_DEVICE_BLUETOOTH,
                               "External Keyboard");
   fake_keyboard_manager_->AddFakeKeyboard(input_device,
@@ -1238,8 +1242,8 @@ class TopRowLayoutCustomTest
     custom_scan_codes.reserve(top_row_action_keys_.size());
     for (const auto& action_key : top_row_action_keys_) {
       const uint32_t scan_code = ConvertTopRowActionKeyToScanCode(action_key);
-      custom_scan_codes.push_back(
-          base::ToLowerASCII(base::HexEncode(&scan_code, 1)));
+      custom_scan_codes.push_back(base::ToLowerASCII(
+          base::HexEncode(base::byte_span_from_ref(scan_code).first<1>())));
     }
 
     custom_layout_string_ = base::JoinString(custom_scan_codes, " ");
@@ -1299,6 +1303,8 @@ class TopRowLayoutCustomTest
  protected:
   std::vector<TopRowActionKey> top_row_action_keys_;
   std::string custom_layout_string_;
+  base::test::SingleThreadTaskEnvironment task_environment_{
+      base::test::SingleThreadTaskEnvironment::MainThreadType::UI};
 };
 
 INSTANTIATE_TEST_SUITE_P(
@@ -1364,7 +1370,7 @@ TEST_P(TopRowLayoutCustomTest, TopRowLayout) {
        action_key <= TopRowActionKey::kMaxValue;
        action_key =
            static_cast<TopRowActionKey>(static_cast<int>(action_key) + 1)) {
-    EXPECT_EQ(base::Contains(top_row_action_keys_, action_key),
+    EXPECT_EQ(std::ranges::contains(top_row_action_keys_, action_key),
               keyboard_capability_->HasTopRowActionKey(keyboard, action_key))
         << "Action Key: " << static_cast<int>(action_key);
   }

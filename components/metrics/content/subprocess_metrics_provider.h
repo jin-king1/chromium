@@ -5,9 +5,9 @@
 #ifndef COMPONENTS_METRICS_CONTENT_SUBPROCESS_METRICS_PROVIDER_H_
 #define COMPONENTS_METRICS_CONTENT_SUBPROCESS_METRICS_PROVIDER_H_
 
-#include <map>
 #include <memory>
 
+#include "base/functional/callback_helpers.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
@@ -20,6 +20,11 @@
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_process_host_creation_observer.h"
 #include "content/public/browser/render_process_host_observer.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
+
+namespace metrics {
+class MetricsNameMapper;
+}  // namespace metrics
 
 namespace base {
 class PersistentHistogramAllocator;
@@ -39,6 +44,8 @@ class SubprocessMetricsProvider
       public content::RenderProcessHostCreationObserver,
       public content::RenderProcessHostObserver {
  public:
+  using PassKey = base::PassKey<SubprocessMetricsProvider>;
+
   SubprocessMetricsProvider(const SubprocessMetricsProvider&) = delete;
   SubprocessMetricsProvider& operator=(const SubprocessMetricsProvider&) =
       delete;
@@ -59,7 +66,8 @@ class SubprocessMetricsProvider
   // Metrics reporting will read histograms from it and upload them to UMA.
   void RegisterSubprocessAllocator(
       int id,
-      std::unique_ptr<base::PersistentHistogramAllocator> allocator);
+      std::unique_ptr<base::PersistentHistogramAllocator> allocator,
+      bool is_webium_renderer = false);
 
   // Indicates that a subprocess has exited and is thus finished with the
   // allocator it was using.
@@ -75,19 +83,22 @@ class SubprocessMetricsProvider
   // DCHECKs to enforce this).
   class RefCountedAllocator : public base::RefCounted<RefCountedAllocator> {
    public:
-    explicit RefCountedAllocator(
-        std::unique_ptr<base::PersistentHistogramAllocator> allocator);
+    RefCountedAllocator(
+        std::unique_ptr<base::PersistentHistogramAllocator> allocator,
+        bool is_webium_renderer);
 
     RefCountedAllocator(const RefCountedAllocator& other) = delete;
     RefCountedAllocator& operator=(const RefCountedAllocator& other) = delete;
 
     base::PersistentHistogramAllocator* allocator() { return allocator_.get(); }
+    bool IsWebiumRenderer() const { return is_webium_renderer_; }
 
    private:
     friend class base::RefCounted<RefCountedAllocator>;
     ~RefCountedAllocator();
 
     std::unique_ptr<base::PersistentHistogramAllocator> allocator_;
+    const bool is_webium_renderer_;
   };
 
   // The global instance should be accessed through Get().
@@ -133,10 +144,18 @@ class SubprocessMetricsProvider
   static void MergeHistogramDeltasFromAllocator(int id,
                                                 RefCountedAllocator* allocator);
 
+  // Returns the overridden histogram name for merging if the mapping is
+  // initialized and the `histogram_name` is allowed. Otherwise, returns the
+  // original `histogram_name` or an empty string if it should be dropped.
+  static std::string_view GetHistogramNameForMerging(
+      bool is_webium_renderer,
+      std::string_view histogram_name);
+
   // Merges all histograms of the |allocators| to the global StatisticsRecorder.
   // Does not have any form of ownership on the allocators. May be called on a
   // background thread.
-  using AllocatorByIdMap = std::map<int, scoped_refptr<RefCountedAllocator>>;
+  using AllocatorByIdMap =
+      absl::flat_hash_map<int, scoped_refptr<RefCountedAllocator>>;
   static void MergeHistogramDeltasFromAllocators(AllocatorByIdMap* allocators);
 
   // Callback for when MergeHistogramDeltasFromAllocator() is called in a
@@ -165,6 +184,10 @@ class SubprocessMetricsProvider
 
   // Used to asynchronously merge metrics from subprocesses that have exited.
   scoped_refptr<base::TaskRunner> task_runner_;
+
+  // Used to evaluate whether a given metric should be allowed, dropped, or
+  // renamed based on a server-provided configuration.
+  std::unique_ptr<MetricsNameMapper> webium_metrics_name_mapper_;
 
   base::WeakPtrFactory<SubprocessMetricsProvider> weak_ptr_factory_{this};
 };

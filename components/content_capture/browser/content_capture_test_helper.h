@@ -5,6 +5,8 @@
 #ifndef COMPONENTS_CONTENT_CAPTURE_BROWSER_CONTENT_CAPTURE_TEST_HELPER_H_
 #define COMPONENTS_CONTENT_CAPTURE_BROWSER_CONTENT_CAPTURE_TEST_HELPER_H_
 
+#include <vector>
+
 #include "components/content_capture/browser/content_capture_consumer.h"
 #include "components/content_capture/browser/content_capture_receiver.h"
 #include "components/content_capture/browser/onscreen_content_provider.h"
@@ -77,6 +79,15 @@ class ContentCaptureConsumerHelper : public ContentCaptureConsumer {
   void DidUpdateTitle(const ContentCaptureFrame& main_frame) override;
 
   void DidUpdateFavicon(const ContentCaptureFrame& main_frame) override;
+
+  void DidUpdateSensitivityScore(const GURL& url,
+                                 float sensitivity_score) override;
+
+  void DidUpdateLanguageDetails(const GURL& url,
+                                const std::string& detected_language,
+                                float language_confidence) override;
+
+  void ClearContentCaptureMetadata() override;
 
   bool ShouldCapture(const GURL& url) override;
 

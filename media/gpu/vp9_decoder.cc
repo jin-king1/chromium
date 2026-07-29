@@ -113,33 +113,35 @@ VP9Decoder::VP9Decoder(std::unique_ptr<VP9Accelerator> accelerator,
       container_color_space_(container_color_space),
       // TODO(hiroh): Set profile to UNKNOWN.
       profile_(profile),
-      accelerator_(std::move(accelerator)),
-      parser_(accelerator_->NeedsCompressedHeaderParsed()) {}
+      accelerator_(std::move(accelerator)) {}
 
 VP9Decoder::~VP9Decoder() = default;
 
-void VP9Decoder::SetStream(int32_t id, const DecoderBuffer& decoder_buffer) {
-  const uint8_t* ptr = decoder_buffer.data();
-  const size_t size = decoder_buffer.size();
-  const DecryptConfig* decrypt_config = decoder_buffer.decrypt_config();
+void VP9Decoder::SetStream(int32_t id,
+                           scoped_refptr<DecoderBuffer> decoder_buffer) {
+  CHECK(decoder_buffer);
+  // Keep the old buffer alive until the end of this function to ensure
+  // that any active spans in the parser are cleared before the memory is freed.
+  auto outgoing_decoder_buffer = std::move(decoder_buffer_);
+  decoder_buffer_ = std::move(decoder_buffer);
+  const DecryptConfig* decrypt_config = decoder_buffer_->decrypt_config();
 
-  DCHECK(ptr);
-  DCHECK(size);
-  DVLOG(4) << "New input stream id: " << id << " at: " << (void*)ptr
-           << " size: " << size;
+  DVLOG(4) << "New input stream id: " << id
+           << ", buffer: " << decoder_buffer_->AsHumanReadableString();
   stream_id_ = id;
   std::vector<uint32_t> frame_sizes;
-  if (!GetSpatialLayerFrameSize(decoder_buffer, frame_sizes)) {
+  if (!GetSpatialLayerFrameSize(*decoder_buffer_, frame_sizes)) {
     SetError();
     return;
   }
-  if (decoder_buffer.side_data() && decoder_buffer.side_data()->secure_handle) {
-    secure_handle_ = decoder_buffer.side_data()->secure_handle;
+  if (decoder_buffer_->side_data() &&
+      decoder_buffer_->side_data()->secure_handle) {
+    secure_handle_ = decoder_buffer_->side_data()->secure_handle;
   } else {
     secure_handle_ = 0;
   }
 
-  parser_.SetStream(ptr, size, frame_sizes,
+  parser_.SetStream(*decoder_buffer_, frame_sizes,
                     decrypt_config ? decrypt_config->Clone() : nullptr);
 }
 
@@ -157,6 +159,7 @@ void VP9Decoder::Reset() {
   ref_frames_.Clear();
 
   parser_.Reset();
+  decoder_buffer_.reset();
 
   secure_handle_ = 0;
 
@@ -250,12 +253,18 @@ VP9Decoder::DecodeResult VP9Decoder::Decode() {
     gfx::Size new_pic_size = curr_frame_size_;
     gfx::Rect new_render_rect(curr_frame_hdr_->render_width,
                               curr_frame_hdr_->render_height);
-    // For safety, check the validity of render size or leave it as pic size.
-    if (!gfx::Rect(new_pic_size).Contains(new_render_rect)) {
-      DVLOG(1) << "Render size exceeds picture size. render size: "
+    const gfx::Rect frame_size(curr_frame_hdr_->frame_width,
+                               curr_frame_hdr_->frame_height);
+    if (!frame_size.Contains(new_render_rect)) {
+      // For safety, check the validity of render size or leave it as the actual
+      // per-frame decoded size. In the k-SVC path |curr_frame_size_| is the
+      // *maximum* layer size (Vp9Parser::ParseSVCFrame stamps allocate_size
+      // onto every layer), so clamping against it would allow render_rect to
+      // extend into the undecoded region of the surface (b/149727823).
+      DVLOG(1) << "Render size exceeds frame size. render size: "
                << new_render_rect.ToString()
-               << ", picture size: " << new_pic_size.ToString();
-      new_render_rect = gfx::Rect(new_pic_size);
+               << ", frame size: " << frame_size.ToString();
+      new_render_rect = frame_size;
     }
     VideoCodecProfile new_profile =
         VP9ProfileToVideoCodecProfile(curr_frame_hdr_->profile);
@@ -365,6 +374,9 @@ VP9Decoder::DecodeResult VP9Decoder::Decode() {
     // Set the color space for the picture.
     pic->set_colorspace(picture_color_space_);
 
+    // VP9 only supports HDR metadata from the container.
+    pic->SetDynamicHdrMetadata(decoder_buffer_.get());
+
     pic->frame_hdr = std::move(curr_frame_hdr_);
 
     VP9Accelerator::Status status = DecodeAndOutputPicture(std::move(pic));
@@ -427,11 +439,6 @@ VideoChromaSampling VP9Decoder::GetChromaSampling() const {
 
 VideoColorSpace VP9Decoder::GetVideoColorSpace() const {
   return picture_color_space_;
-}
-
-std::optional<gfx::HDRMetadata> VP9Decoder::GetHDRMetadata() const {
-  // VP9 only allow HDR metadata exists in the container.
-  return std::nullopt;
 }
 
 size_t VP9Decoder::GetRequiredNumOfPictures() const {

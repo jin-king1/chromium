@@ -6,8 +6,8 @@
 
 #include <memory>
 
-#include "base/feature_list.h"
 #include "base/task/thread_pool.h"
+#include "base/trace_event/trace_event.h"
 #include "build/android_buildflags.h"
 #include "build/build_config.h"
 #include "mojo/public/cpp/bindings/binder_map.h"
@@ -47,6 +47,7 @@
 #include "third_party/blink/renderer/modules/canvas/imagebitmap/image_bitmap_rendering_context.h"
 #include "third_party/blink/renderer/modules/canvas/offscreencanvas2d/offscreen_canvas_rendering_context_2d.h"
 #include "third_party/blink/renderer/modules/content_extraction/ai_page_content_agent.h"
+#include "third_party/blink/renderer/modules/content_extraction/frame_metadata_observer_registry.h"
 #include "third_party/blink/renderer/modules/content_extraction/inner_html_agent.h"
 #include "third_party/blink/renderer/modules/content_extraction/inner_text_agent.h"
 #include "third_party/blink/renderer/modules/csspaint/css_paint_image_generator_impl.h"
@@ -71,12 +72,12 @@
 #include "third_party/blink/renderer/modules/indexed_db_names.h"
 #include "third_party/blink/renderer/modules/indexeddb/inspector_indexed_db_agent.h"
 #include "third_party/blink/renderer/modules/installation/installation_service_impl.h"
-#include "third_party/blink/renderer/modules/launch/web_launch_service_impl.h"
+#include "third_party/blink/renderer/modules/launch/launch_queue.h"
 #include "third_party/blink/renderer/modules/manifest/manifest_manager.h"
 #include "third_party/blink/renderer/modules/media/audio/audio_renderer_sink_cache.h"
-#include "third_party/blink/renderer/modules/media_capabilities_names.h"
 #include "third_party/blink/renderer/modules/media_controls/media_controls_impl.h"
 #include "third_party/blink/renderer/modules/mediasource/media_source_registry_impl.h"
+#include "third_party/blink/renderer/modules/mediastream/user_media_request_provider_impl.h"
 #include "third_party/blink/renderer/modules/peerconnection/peer_connection_tracker.h"
 #include "third_party/blink/renderer/modules/presentation/presentation.h"
 #include "third_party/blink/renderer/modules/push_messaging/push_messaging_client.h"
@@ -93,10 +94,7 @@
 #include "third_party/blink/renderer/modules/storage/storage_namespace.h"
 #include "third_party/blink/renderer/modules/webaudio/audio_graph_tracer.h"
 #include "third_party/blink/renderer/modules/webaudio/inspector_web_audio_agent.h"
-#include "third_party/blink/renderer/modules/webdatabase/database_client.h"
-#include "third_party/blink/renderer/modules/webdatabase/web_database_host.h"
-#include "third_party/blink/renderer/modules/webdatabase/web_database_impl.h"
-#include "third_party/blink/renderer/modules/webgl/webgl2_rendering_context.h"
+#include "third_party/blink/renderer/modules/webgl/webgl_context_factory.h"
 #include "third_party/blink/renderer/modules/webgl/webgl_rendering_context.h"
 #include "third_party/blink/renderer/modules/webgpu/gpu_canvas_context.h"
 #include "third_party/blink/renderer/modules/worklet/animation_and_paint_worklet_thread.h"
@@ -122,16 +120,6 @@
 
 namespace blink {
 namespace {
-
-// Serves as a kill switch.
-BASE_FEATURE(kBlinkEnableInnerTextAgent,
-             "BlinkEnableInnerTextAgent",
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
-// Serves as a kill switch.
-BASE_FEATURE(kBlinkEnableInnerHtmlAgent,
-             "BlinkEnableInnerHtmlAgent",
-             base::FEATURE_ENABLED_BY_DEFAULT);
 
 #if BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_DESKTOP_ANDROID)
 
@@ -191,7 +179,6 @@ void ModulesInitializer::Initialize() {
   Document::RegisterEventFactory(EventModulesFactory::Create());
   ModuleBindingsInitializer::Init();
   indexed_db_names::Init();
-  media_capabilities_names::Init();
   AXObjectCache::Init(AXObjectCacheImpl::Create);
   DraggedIsolatedFileSystem::Init(
       DraggedIsolatedFileSystemImpl::PrepareForDataObject);
@@ -199,10 +186,7 @@ void ModulesInitializer::Initialize() {
   BackgroundColorPaintImageGenerator::Init(
       BackgroundColorPaintImageGeneratorImpl::Create);
   ClipPathPaintImageGenerator::Init(ClipPathPaintImageGeneratorImpl::Create);
-  WebDatabaseHost::GetInstance().Init();
   MediaSourceRegistryImpl::Init();
-  if (::features::IsTextBasedAudioDescriptionEnabled())
-    SpeechSynthesisBase::Init(SpeechSynthesis::Create);
 
   CoreInitializer::Initialize();
 
@@ -210,9 +194,9 @@ void ModulesInitializer::Initialize() {
   HTMLCanvasElement::RegisterRenderingContextFactory(
       std::make_unique<CanvasRenderingContext2D::Factory>());
   HTMLCanvasElement::RegisterRenderingContextFactory(
-      std::make_unique<WebGLRenderingContext::Factory>());
+      WebGLContextFactory::MakeWebGL1());
   HTMLCanvasElement::RegisterRenderingContextFactory(
-      std::make_unique<WebGL2RenderingContext::Factory>());
+      WebGLContextFactory::MakeWebGL2());
   HTMLCanvasElement::RegisterRenderingContextFactory(
       std::make_unique<ImageBitmapRenderingContext::Factory>());
   HTMLCanvasElement::RegisterRenderingContextFactory(
@@ -222,9 +206,9 @@ void ModulesInitializer::Initialize() {
   OffscreenCanvas::RegisterRenderingContextFactory(
       std::make_unique<OffscreenCanvasRenderingContext2D::Factory>());
   OffscreenCanvas::RegisterRenderingContextFactory(
-      std::make_unique<WebGLRenderingContext::Factory>());
+      WebGLContextFactory::MakeWebGL1());
   OffscreenCanvas::RegisterRenderingContextFactory(
-      std::make_unique<WebGL2RenderingContext::Factory>());
+      WebGLContextFactory::MakeWebGL2());
   OffscreenCanvas::RegisterRenderingContextFactory(
       std::make_unique<ImageBitmapRenderingContext::Factory>());
   OffscreenCanvas::RegisterRenderingContextFactory(
@@ -238,42 +222,44 @@ void ModulesInitializer::Initialize() {
 
 void ModulesInitializer::InitLocalFrame(LocalFrame& frame) const {
   if (frame.IsMainFrame()) {
-    frame.GetInterfaceRegistry()->AddInterface(WTF::BindRepeating(
+    frame.GetInterfaceRegistry()->AddInterface(BindRepeating(
         &DocumentMetadataServer::BindReceiver, WrapWeakPersistent(&frame)));
   }
   if (frame.IsLocalRoot()) {
-    frame.GetInterfaceRegistry()->AddInterface(WTF::BindRepeating(
+    frame.GetInterfaceRegistry()->AddInterface(BindRepeating(
         &AIPageContentAgent::BindReceiver, WrapWeakPersistent(&frame)));
   }
-  frame.GetInterfaceRegistry()->AddAssociatedInterface(WTF::BindRepeating(
-      &WebLaunchServiceImpl::BindReceiver, WrapWeakPersistent(&frame)));
+  frame.GetInterfaceRegistry()->AddAssociatedInterface(
+      BindRepeating(&LaunchQueue::BindReceiver, WrapWeakPersistent(&frame)));
 
-  frame.GetInterfaceRegistry()->AddInterface(WTF::BindRepeating(
+  frame.GetInterfaceRegistry()->AddInterface(BindRepeating(
       &InstallationServiceImpl::BindReceiver, WrapWeakPersistent(&frame)));
   // TODO(dominickn): This interface should be document-scoped rather than
   // frame-scoped, as the resulting banner event is dispatched to
   // frame()->document().
-  frame.GetInterfaceRegistry()->AddInterface(WTF::BindRepeating(
+  frame.GetInterfaceRegistry()->AddInterface(BindRepeating(
       &AppBannerController::BindReceiver, WrapWeakPersistent(&frame)));
-  frame.GetInterfaceRegistry()->AddInterface(WTF::BindRepeating(
+  frame.GetInterfaceRegistry()->AddInterface(BindRepeating(
       &TextSuggestionBackendImpl::Bind, WrapWeakPersistent(&frame)));
 #if BUILDFLAG(IS_ANDROID)
-  frame.GetInterfaceRegistry()->AddInterface(WTF::BindRepeating(
+  frame.GetInterfaceRegistry()->AddInterface(BindRepeating(
       &RemoteObjectGatewayFactoryImpl::Bind, WrapWeakPersistent(&frame)));
 #endif  // BUILDFLAG(IS_ANDROID)
 
   frame.GetInterfaceRegistry()->AddInterface(
-      WTF::BindRepeating(&PeerConnectionTracker::BindToFrame,
-                         WrapCrossThreadWeakPersistent(&frame)));
+      BindRepeating(&PeerConnectionTracker::BindToFrame,
+                    WrapCrossThreadWeakPersistent(&frame)));
 
-  if (base::FeatureList::IsEnabled(kBlinkEnableInnerTextAgent)) {
-    frame.GetInterfaceRegistry()->AddInterface(WTF::BindRepeating(
-        &InnerTextAgent::BindReceiver, WrapWeakPersistent(&frame)));
-  }
+  frame.GetInterfaceRegistry()->AddInterface(
+      BindRepeating(&InnerTextAgent::BindReceiver, WrapWeakPersistent(&frame)));
 
-  if (base::FeatureList::IsEnabled(kBlinkEnableInnerHtmlAgent)) {
-    frame.GetInterfaceRegistry()->AddInterface(WTF::BindRepeating(
-        &InnerHtmlAgent::BindReceiver, WrapWeakPersistent(&frame)));
+  frame.GetInterfaceRegistry()->AddInterface(
+      BindRepeating(&InnerHtmlAgent::BindReceiver, WrapWeakPersistent(&frame)));
+
+  if (base::FeatureList::IsEnabled(features::kFrameMetadataObserver)) {
+    frame.GetInterfaceRegistry()->AddInterface(
+        BindRepeating(&FrameMetadataObserverRegistry::BindReceiver,
+                      WrapWeakPersistent(&frame)));
   }
 }
 
@@ -282,6 +268,14 @@ void ModulesInitializer::InstallSupplements(LocalFrame& frame) const {
   InspectorAccessibilityAgent::ProvideTo(&frame);
   ImageDownloaderImpl::ProvideTo(frame);
   AudioRendererSinkCache::InstallWindowObserver(*frame.DomWindow());
+  UserMediaRequestProviderImpl::ProvideTo(*frame.DomWindow());
+#if DCHECK_IS_ON()
+  if (frame.IsLocalRoot() &&
+      RuntimeEnabledFeatures::AIPageContentBuildOnLoadForTestingEnabled()) {
+    AIPageContentAgent::EnableAutomaticActionableExtractionOnPageLoadForTesting(
+        frame);
+  }
+#endif
 }
 
 MediaControls* ModulesInitializer::CreateMediaControls(
@@ -300,8 +294,8 @@ void ModulesInitializer::InitInspectorAgentSession(
     InspectorDOMAgent* dom_agent,
     InspectedFrames* inspected_frames,
     Page* page) const {
-  session->CreateAndAppend<InspectorIndexedDBAgent>(inspected_frames,
-                                                    session->V8Session());
+  session->CreateAndAppend<InspectorIndexedDBAgent>(
+      inspected_frames, /*worker_global_scope=*/nullptr);
   session->CreateAndAppend<DeviceOrientationInspectorAgent>(inspected_frames);
   session->CreateAndAppend<InspectorDOMStorageAgent>(inspected_frames);
   session->CreateAndAppend<InspectorAccessibilityAgent>(inspected_frames,
@@ -309,6 +303,13 @@ void ModulesInitializer::InitInspectorAgentSession(
   session->CreateAndAppend<InspectorWebAudioAgent>(page);
   session->CreateAndAppend<InspectorCacheStorageAgent>(inspected_frames);
   session->CreateAndAppend<BucketFileSystemAgent>(inspected_frames);
+}
+
+void ModulesInitializer::InitWorkerInspectorAgentSession(
+    DevToolsSession* session,
+    WorkerGlobalScope* worker_global_scope) const {
+  session->CreateAndAppend<InspectorIndexedDBAgent>(
+      /*inspected_frames=*/nullptr, worker_global_scope);
 }
 
 void ModulesInitializer::OnClearWindowObjectInMainWorld(
@@ -360,7 +361,9 @@ std::unique_ptr<WebMediaPlayer> ModulesInitializer::CreateWebMediaPlayer(
       source, media_player_client, context_impl, &encrypted_media,
       encrypted_media.ContentDecryptionModule(), sink_id,
       frame_widget->GetLayerTreeSettings(),
-      base::ThreadPool::CreateTaskRunner(base::TaskTraits{}));
+      base::ThreadPool::CreateTaskRunner(base::TaskTraits{
+          base::InheritThreadType(),
+          base::MaxThreadType(base::ThreadType::kPresentation)}));
 }
 
 RemotePlaybackClient* ModulesInitializer::CreateRemotePlaybackClient(
@@ -371,7 +374,6 @@ RemotePlaybackClient* ModulesInitializer::CreateRemotePlaybackClient(
 void ModulesInitializer::ProvideModulesToPage(
     Page& page,
     const SessionStorageNamespaceId& namespace_id) const {
-  page.ProvideSupplement(MakeGarbageCollected<DatabaseClient>(page));
   StorageNamespace::ProvideSessionStorageNamespaceTo(page, namespace_id);
   AudioGraphTracer::ProvideAudioGraphTracerTo(page);
 #if BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_DESKTOP_ANDROID)
@@ -445,14 +447,6 @@ void ModulesInitializer::SetSessionStorageArea(
 mojom::blink::FileSystemManager& ModulesInitializer::GetFileSystemManager(
     ExecutionContext* context) {
   return FileSystemDispatcher::From(context).GetFileSystemManager();
-}
-
-void ModulesInitializer::RegisterInterfaces(mojo::BinderMap& binders) {
-  DCHECK(Platform::Current());
-  binders.Add<mojom::blink::WebDatabase>(
-      ConvertToBaseRepeatingCallback(
-          CrossThreadBindRepeating(&WebDatabaseImpl::Bind)),
-      Platform::Current()->GetIOTaskRunner());
 }
 
 }  // namespace blink

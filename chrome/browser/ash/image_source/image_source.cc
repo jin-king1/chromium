@@ -2,17 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/browser/ash/image_source/image_source.h"
 
 #include <stddef.h>
 
 #include <vector>
 
+#include "ash/constants/ash_constants.h"
+#include "ash/constants/webui_url_constants.h"
+#include "base/compiler_specific.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
@@ -22,7 +20,6 @@
 #include "base/task/thread_pool.h"
 #include "base/task/thread_pool/thread_pool_instance.h"
 #include "chrome/browser/ash/login/users/avatar/user_image_loader.h"
-#include "chrome/common/url_constants.h"
 #include "components/user_manager/user_image/user_image.h"
 #include "net/base/mime_util.h"
 
@@ -51,7 +48,7 @@ ImageSource::ImageSource() {
 ImageSource::~ImageSource() = default;
 
 std::string ImageSource::GetSource() {
-  return chrome::kChromeOSAssetHost;
+  return ash::kChromeUIChromeOSAssetHost;
 }
 
 void ImageSource::StartDataRequest(
@@ -64,7 +61,7 @@ void ImageSource::StartDataRequest(
     return;
   }
 
-  const base::FilePath asset_dir(chrome::kChromeOSAssetPath);
+  const base::FilePath asset_dir(ash::kChromeOSAssetPath);
   const base::FilePath image_path = asset_dir.AppendASCII(path);
   base::ThreadPool::PostTaskAndReplyWithResult(
       FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
@@ -80,7 +77,8 @@ void ImageSource::StartDataRequestAfterPathExists(
     bool path_exists) {
   if (path_exists) {
     user_image_loader::StartWithFilePath(
-        task_runner_, image_path, ImageDecoder::DEFAULT_CODEC,
+        task_runner_, image_path,
+        user_manager::UserImage::ImageFormat::FORMAT_UNKNOWN,
         0,  // Do not crop.
         base::BindOnce(&ImageLoaded, std::move(got_data_callback)));
   } else {
@@ -90,9 +88,7 @@ void ImageSource::StartDataRequestAfterPathExists(
 
 std::string ImageSource::GetMimeType(const GURL& url) {
   std::string mime_type;
-  std::string ext = base::FilePath(url.path_piece()).Extension();
-  if (!ext.empty())
-    net::GetWellKnownMimeTypeFromExtension(ext.substr(1), &mime_type);
+  net::GetWellKnownMimeTypeFromFile(base::FilePath(url.path()), &mime_type);
   return mime_type;
 }
 
@@ -107,8 +103,9 @@ bool ImageSource::IsAllowlisted(const std::string& path) const {
     return false;
 
   for (size_t i = 0; i < std::size(kAllowlistedDirectories); i++) {
-    if (components[0] == kAllowlistedDirectories[i])
+    if (components[0] == UNSAFE_TODO(kAllowlistedDirectories[i])) {
       return true;
+    }
   }
   return false;
 }

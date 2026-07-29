@@ -7,7 +7,10 @@
 #include <optional>
 
 #include "base/json/json_reader.h"
+#include "extensions/buildflags/buildflags.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace {
 
@@ -19,8 +22,8 @@ TEST(GeneratedSchemaTest, ManifestKeysExcluded) {
   ASSERT_TRUE(GeneratedSchemas::IsGenerated(kApiName));
 
   // The schema string must be in json format.
-  std::optional<base::Value::Dict> json_schema =
-      base::JSONReader::ReadDict(GeneratedSchemas::Get(kApiName));
+  std::optional<base::DictValue> json_schema = base::JSONReader::ReadDict(
+      GeneratedSchemas::Get(kApiName), base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(json_schema);
   EXPECT_FALSE(json_schema->Find("manifest_keys"));
 }

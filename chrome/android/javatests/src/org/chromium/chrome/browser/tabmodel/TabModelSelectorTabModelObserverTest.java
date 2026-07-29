@@ -4,10 +4,11 @@
 
 package org.chromium.chrome.browser.tabmodel;
 
+import static org.junit.Assert.assertTrue;
+
 import androidx.test.annotation.UiThreadTest;
 import androidx.test.filters.SmallTest;
 
-import org.junit.Assert;
 import org.junit.Before;
 import org.junit.ClassRule;
 import org.junit.Test;
@@ -17,6 +18,8 @@ import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.BaseJUnit4ClassRunner;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CallbackHelper;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorObserverTestRule.TabModelSelectorTestTabModel;
@@ -70,8 +73,8 @@ public class TabModelSelectorTabModelObserverTest {
                     public void requestToShowTab(Tab tab, int type) {}
 
                     @Override
-                    public boolean isSessionRestoreInProgress() {
-                        return false;
+                    public boolean isTabModelRestored() {
+                        return true;
                     }
 
                     @Override
@@ -80,6 +83,11 @@ public class TabModelSelectorTabModelObserverTest {
                             @TabLaunchType int type,
                             Tab parent,
                             boolean incognito) {
+                        return null;
+                    }
+
+                    @Override
+                    public @Nullable Profile getProfile(boolean offTheRecord) {
                         return null;
                     }
                 };
@@ -91,11 +99,7 @@ public class TabModelSelectorTabModelObserverTest {
                         registrationCompleteCallback.notifyCalled();
                     }
                 };
-        TabUngrouperFactory factory =
-                (isIncognitoBranded, tabGroupModelFilterSupplier) ->
-                        new PassthroughTabUngrouper(tabGroupModelFilterSupplier);
-        mSelector.initialize(
-                sTestRule.getNormalTabModel(), sTestRule.getIncognitoTabModel(), factory);
+        mSelector.initialize(sTestRule.getNormalTabModel(), sTestRule.getIncognitoTabModel());
         registrationCompleteCallback.waitForCallback(0);
         assertAllModelsHaveObserver(mSelector, observer);
     }
@@ -104,8 +108,8 @@ public class TabModelSelectorTabModelObserverTest {
             TabModelSelector selector, TabModelObserver observer) {
         List<TabModel> models = selector.getModels();
         for (int i = 0; i < models.size(); i++) {
-            Assert.assertTrue(models.get(i) instanceof TabModelSelectorTestTabModel);
-            Assert.assertTrue(
+            assertTrue(models.get(i) instanceof TabModelSelectorTestTabModel);
+            assertTrue(
                     ((TabModelSelectorTestTabModel) models.get(i))
                             .getObservers()
                             .contains(observer));

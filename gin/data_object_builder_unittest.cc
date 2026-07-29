@@ -76,7 +76,7 @@ TEST_F(DataObjectBuilderTest, DoesNotInvokeSetters) {
                       [](v8::Local<v8::Name>,
                          const v8::PropertyCallbackInfo<v8::Value>&) {},
                       [](v8::Local<v8::Name>, v8::Local<v8::Value>,
-                         const v8::PropertyCallbackInfo<void>&) {
+                         const v8::PropertyCallbackInfo<v8::Boolean>&) {
                         ADD_FAILURE() << "setter should not be invoked";
                       })
                   .ToChecked());
@@ -98,7 +98,7 @@ TEST_F(DataObjectBuilderTest, UnusableAfterBuild) {
   EXPECT_FALSE(builder.Build().IsEmpty());
 
   EXPECT_DEATH_IF_SUPPORTED(builder.Build(),
-                            "Check failed: !object_.IsEmpty\\(\\)");
+                            "DCHECK failed: !object_.IsEmpty\\(\\)");
 }
 #endif  // DCHECK_IS_ON()
 

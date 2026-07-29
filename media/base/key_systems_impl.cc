@@ -8,7 +8,6 @@
 
 #include <algorithm>
 #include <memory>
-#include <unordered_map>
 
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
@@ -108,8 +107,9 @@ EmeCodec ToVideoEmeCodec(VideoCodec codec, VideoCodecProfile profile) {
         return EME_CODEC_HEVC_PROFILE_MAIN10;
       return EME_CODEC_NONE;
     case VideoCodec::kDolbyVision:
-      // Only profiles 0, 5, 7, 8, 9 are valid. Profile 0 and 9 are encoded
-      // based on AVC while profile 5, 7 and 8 are based on HEVC.
+      // Only profiles 0, 5, 7, 8, 9, 10 and 20 are valid. Profiles 0 and 9
+      // are encoded based on AVC, profiles 5, 7, 8 and 20 are based on HEVC,
+      // and profile 10 is based on AV1.
       if (profile == DOLBYVISION_PROFILE0)
         return EME_CODEC_DOLBY_VISION_PROFILE0;
       if (profile == DOLBYVISION_PROFILE5)
@@ -120,6 +120,12 @@ EmeCodec ToVideoEmeCodec(VideoCodec codec, VideoCodecProfile profile) {
         return EME_CODEC_DOLBY_VISION_PROFILE8;
       if (profile == DOLBYVISION_PROFILE9)
         return EME_CODEC_DOLBY_VISION_PROFILE9;
+      if (profile == DOLBYVISION_PROFILE10) {
+        return EME_CODEC_DOLBY_VISION_PROFILE10;
+      }
+      if (profile == DOLBYVISION_PROFILE20) {
+        return EME_CODEC_DOLBY_VISION_PROFILE20;
+      }
       return EME_CODEC_NONE;
     case VideoCodec::kAV1:
       return EME_CODEC_AV1;
@@ -280,7 +286,7 @@ EmeCodec KeySystemsImpl::GetEmeCodecForString(
   // This is not checked because MimeUtil declares "vp9" and "vp9.0" as
   // ambiguous, but they have always been supported by EME.
   // TODO(xhwang): Find out whether we should fix MimeUtil about these cases.
-  bool is_ambiguous = true;
+  constexpr bool kAllowAmbiguousMatches = true;
 
   // For testing only.
   auto iter = codec_map_for_testing_.find(codec_string);
@@ -288,11 +294,18 @@ EmeCodec KeySystemsImpl::GetEmeCodecForString(
     return iter->second;
 
   if (media_type == EmeMediaType::AUDIO) {
-    AudioCodec audio_codec = AudioCodec::kUnknown;
-    ParseAudioCodecString(container_mime_type, codec_string, &is_ambiguous,
-                          &audio_codec);
-    DVLOG(3) << "Audio codec = " << audio_codec;
-    return ToAudioEmeCodec(audio_codec);
+    std::optional<AudioType> audio_type = ParseAudioCodecString(
+        container_mime_type, codec_string, kAllowAmbiguousMatches);
+    if (!audio_type) {
+      return EME_CODEC_NONE;
+    }
+
+    // There's no need to pass on the AudioCodecProfile here since the CDM does
+    // not support audio decoding and has already verified that the clear
+    // pipeline can support this codec + profile combination.
+    DVLOG(3) << "Audio codec = " << GetCodecName(audio_type->codec)
+             << ", Audio profile = " << GetProfileName(audio_type->profile);
+    return ToAudioEmeCodec(audio_type->codec);
   }
 
   DCHECK_EQ(media_type, EmeMediaType::VIDEO);
@@ -303,8 +316,8 @@ EmeCodec KeySystemsImpl::GetEmeCodecForString(
   // exceptions where we need to know the profile. For example, for VP9, there
   // are older CDMs only supporting profile 0, hence EmeCodec differentiate
   // between VP9 profile 0 and higher profiles.
-  auto result = ParseVideoCodecString(container_mime_type, codec_string,
-                                      /*allow_ambiguous_matches=*/true);
+  std::optional<VideoType> result = ParseVideoCodecString(
+      container_mime_type, codec_string, kAllowAmbiguousMatches);
   if (!result) {
     return EME_CODEC_NONE;
   }

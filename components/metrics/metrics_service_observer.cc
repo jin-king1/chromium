@@ -89,6 +89,8 @@ std::string CreateReasonToString(
       return "Reason: Independent log";
     case MetricsLogsEventManager::CreateReason::kOutOfBand:
       return "Reason: Manually triggered by client";
+    case MetricsLogsEventManager::CreateReason::kFlush:
+      return "Reason: Flush";
   }
 }
 
@@ -147,8 +149,9 @@ void MetricsServiceObserver::OnLogEvent(MetricsLogsEventManager::LogEvent event,
   // If this observer is not aware of any logs with the given |log_hash|, do
   // nothing. This may happen if this observer started observing after a log
   // was already created.
-  if (!log)
+  if (!log) {
     return;
+  }
 
   log->events.push_back(CreateEventStruct(event, message));
 
@@ -163,10 +166,10 @@ void MetricsServiceObserver::OnLogType(
 
 bool MetricsServiceObserver::ExportLogsAsJson(bool include_log_proto_data,
                                               std::string* json_output) {
-  base::Value::List logs_list;
+  base::ListValue logs_list;
   // Create and append to |logs_list| a base::Value for each log in |logs_|.
   for (const std::unique_ptr<Log>& log : logs_) {
-    base::Value::Dict log_dict;
+    base::DictValue log_dict;
 
     if (log->type.has_value()) {
       DCHECK_EQ(service_type_, MetricsServiceType::UMA);
@@ -181,13 +184,14 @@ bool MetricsServiceObserver::ExportLogsAsJson(bool include_log_proto_data,
 
     log_dict.Set("size", static_cast<int>(log->data.length()));
 
-    base::Value::List log_events_list;
+    base::ListValue log_events_list;
     for (const Log::Event& event : log->events) {
-      base::Value::Dict log_event_dict;
+      base::DictValue log_event_dict;
       log_event_dict.Set("event", EventToString(event.event));
       log_event_dict.Set("timestampMs", event.timestampMs);
-      if (event.message.has_value())
+      if (event.message.has_value()) {
         log_event_dict.Set("message", event.message.value());
+      }
       log_events_list.Append(std::move(log_event_dict));
     }
     log_dict.Set("events", std::move(log_events_list));
@@ -197,7 +201,7 @@ bool MetricsServiceObserver::ExportLogsAsJson(bool include_log_proto_data,
 
   // Create a last |dict| that contains all the logs and |service_type_|,
   // convert it to a JSON string, and write it to |json_output|.
-  base::Value::Dict dict;
+  base::DictValue dict;
   dict.Set("logType", service_type_ == MetricsServiceType::UMA ? "UMA" : "UKM");
   dict.Set("logs", std::move(logs_list));
 

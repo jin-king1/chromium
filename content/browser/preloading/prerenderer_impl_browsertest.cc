@@ -4,11 +4,15 @@
 
 #include "content/browser/preloading/prerenderer_impl.h"
 
+#include "base/strings/utf_string_conversions.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "content/browser/preloading/prefetch/prefetch_features.h"
+#include "content/browser/preloading/prefetch/prefetch_match_resolver.h"
 #include "content/browser/preloading/prefetch/prefetch_service.h"
 #include "content/browser/preloading/prefetch/prefetch_status.h"
+#include "content/browser/preloading/prefetch/prefetch_test_util_internal.h"
+#include "content/browser/preloading/preload_serving_metrics_holder.h"
 #include "content/browser/preloading/preloading.h"
 #include "content/browser/preloading/preloading_confidence.h"
 #include "content/browser/preloading/preloading_decider.h"
@@ -23,12 +27,13 @@
 #include "content/public/test/prefetch_test_util.h"
 #include "content/public/test/prerender_test_util.h"
 #include "content/public/test/test_browser_context.h"
+#include "content/public/test/test_content_browser_client.h"
 #include "content/public/test/test_renderer_host.h"
 #include "content/shell/browser/shell.h"
-#include "content/test/test_content_browser_client.h"
 #include "content/test/test_web_contents.h"
 #include "net/dns/mock_host_resolver.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/navigation/preloading_headers.h"
 #include "third_party/blink/public/mojom/speculation_rules/speculation_rules.mojom.h"
 
 namespace content {
@@ -54,14 +59,12 @@ class PrerendererImplBrowserTestBase : public ContentBrowserTest {
   ~PrerendererImplBrowserTestBase() override = default;
 
   void SetUp() override {
-    prerender_helper_ = std::make_unique<test::PrerenderTestHelper>(
-        base::BindRepeating(
+    prerender_helper_ =
+        std::make_unique<test::PrerenderTestHelper>(base::BindRepeating(
             [](PrerendererImplBrowserTestBase* that) {
               return &that->web_contents();
             },
-            base::Unretained(this)),
-        /*force_disable_prerender2fallback=*/false,
-        /*force_enable_prerender2innewtab==*/false);
+            base::Unretained(this)));
 
     ContentBrowserTest::SetUp();
   }
@@ -86,9 +89,16 @@ class PrerendererImplBrowserTestBase : public ContentBrowserTest {
                             base::Unretained(this)));
     embedded_test_server()->AddDefaultHandlers(GetTestDataFilePath());
     ASSERT_TRUE(embedded_test_server()->Start());
+
+    PreloadServingMetricsHolder::SetDestructorCallbackForTesting(
+        base::BindRepeating(&PrerendererImplBrowserTestBase::
+                                OnPreloadServingMetricsHolderDestructor,
+                            base::Unretained(this)));
   }
 
   void TearDownOnMainThread() override {
+    PreloadServingMetricsHolder::SetDestructorCallbackForTesting({});
+
     ASSERT_TRUE(https_server_->ShutdownAndWaitUntilComplete());
     ASSERT_TRUE(embedded_test_server()->ShutdownAndWaitUntilComplete());
   }
@@ -119,17 +129,21 @@ class PrerendererImplBrowserTestBase : public ContentBrowserTest {
   }
 
   blink::mojom::SpeculationCandidatePtr CreateSpeculationCandidate(
-      const GURL& url) {
+      const GURL& url,
+      blink::mojom::SpeculationAction prerender_action_type =
+          blink::mojom::SpeculationAction::kPrerender) {
     return blink::mojom::SpeculationCandidate::New(
         /*url=*/url,
-        /*action=*/blink::mojom::SpeculationAction::kPrerender,
+        /*action=*/prerender_action_type,
         /*referrer=*/blink::mojom::Referrer::New(),
         /*requires_anonymous_client_ip_when_cross_origin=*/false,
         /*target_browsing_context_name_hint=*/
         blink::mojom::SpeculationTargetHint::kNoHint,
-        /*eagerness=*/blink::mojom::SpeculationEagerness::kEager,
+        /*eagerness=*/blink::mojom::SpeculationEagerness::kImmediate,
         /*no_vary_search_hint=*/nullptr,
-        /*injection_type=*/blink::mojom::SpeculationInjectionType::kNone);
+        /*injection_type=*/blink::mojom::SpeculationInjectionType::kNone,
+        /*tags=*/std::vector<std::optional<std::string>>{std::nullopt},
+        /*form_submission=*/false);
   }
 
   std::vector<RequestPathAndSecPurposeHeader> GetObservedRequests() {
@@ -141,7 +155,8 @@ class PrerendererImplBrowserTestBase : public ContentBrowserTest {
     for (auto request : requests_) {
       ret.push_back(RequestPathAndSecPurposeHeader{
           .path = request.GetURL().PathForRequest(),
-          .sec_purpose_header_value = request.headers["Sec-Purpose"],
+          .sec_purpose_header_value =
+              request.headers[blink::kSecPurposeHeaderName],
       });
     }
     return ret;
@@ -149,6 +164,17 @@ class PrerendererImplBrowserTestBase : public ContentBrowserTest {
 
   void SetResponseDelay(base::TimeDelta duration) {
     response_delay_ = duration;
+  }
+
+  void OnPreloadServingMetricsHolderDestructor(
+      std::unique_ptr<PreloadServingMetrics> log) {
+    preload_serving_metrics_list_.push_back(std::move(log));
+  }
+
+  RenderFrameHostImpl& GetPrimaryMainFrameHost() {
+    return static_cast<WebContentsImpl*>(shell()->web_contents())
+        ->GetPrimaryPage()
+        .GetMainDocument();
   }
 
   net::EmbeddedTestServer& https_server() { return *https_server_.get(); }
@@ -159,6 +185,10 @@ class PrerendererImplBrowserTestBase : public ContentBrowserTest {
   WebContents& web_contents() { return *shell()->web_contents(); }
   WebContentsImpl& web_contents_impl() {
     return static_cast<WebContentsImpl&>(web_contents());
+  }
+  std::vector<std::unique_ptr<PreloadServingMetrics>>&
+  preload_serving_metrics_list() {
+    return preload_serving_metrics_list_;
   }
 
  protected:
@@ -185,6 +215,9 @@ class PrerendererImplBrowserTestBase : public ContentBrowserTest {
   base::TimeDelta response_delay_ = base::Seconds(0);
   base::Lock lock_;
   std::vector<net::test_server::HttpRequest> requests_ GUARDED_BY(lock_);
+
+  std::vector<std::unique_ptr<PreloadServingMetrics>>
+      preload_serving_metrics_list_;
 };
 
 class PrerendererImplBrowserTestNoPrefetchAhead
@@ -192,27 +225,61 @@ class PrerendererImplBrowserTestNoPrefetchAhead
  public:
   PrerendererImplBrowserTestNoPrefetchAhead() {
     feature_list_.InitWithFeatures(
-        {features::kPrefetchReusable},
-        {features::kPrerender2FallbackPrefetchSpecRules,
-         blink::features::kLCPTimingPredictorPrerender2});
+        {}, {features::kPrerender2FallbackPrefetchSpecRules,
+             blink::features::kLCPTimingPredictorPrerender2});
   }
 };
 
 class PrerendererImplBrowserTestPrefetchAhead
-    : public PrerendererImplBrowserTestBase {
+    : public PrerendererImplBrowserTestBase,
+      public ::testing::WithParamInterface<
+          features::Prerender2FallbackPrefetchSchedulerPolicy> {
  public:
   PrerendererImplBrowserTestPrefetchAhead() {
+    const char* prefetch_scheduler_policy = [&]() {
+      switch (GetParam()) {
+        case features::Prerender2FallbackPrefetchSchedulerPolicy::kNotUse:
+          return "NotUse";
+        case features::Prerender2FallbackPrefetchSchedulerPolicy::kPrioritize:
+          return "Prioritize";
+        case features::Prerender2FallbackPrefetchSchedulerPolicy::kBurst:
+          return "Burst";
+      }
+    }();
     feature_list_.InitWithFeaturesAndParameters(
-        {{features::kPrefetchReusable, {}},
-         {features::kPrerender2FallbackPrefetchSpecRules, {}},
-         {features::kPrefetchUseContentRefactor,
-          {
-              {"prefetch_timeout_ms", "1500"},
-              {"block_until_head_timeout_moderate_prefetch", "500"},
-          }}},
-        {blink::features::kLCPTimingPredictorPrerender2});
+        {{
+             features::kPrerender2FallbackPrefetchSpecRules,
+             {
+                 {"kPrerender2FallbackPrefetchSchedulerPolicy",
+                  prefetch_scheduler_policy},
+                 {"kPrerender2FallbackPrefetchUseBlockUntilHeadTimetout",
+                  "false"},
+             },
+         },
+         {
+             features::kPrefetchUseContentRefactor,
+             {
+                 {"prefetch_timeout_ms", "1500"},
+                 {"block_until_head_timeout_moderate_prefetch", "500"},
+             },
+         },
+         {blink::features::kPrerenderUntilScript, {}}},
+        {
+            blink::features::kLCPTimingPredictorPrerender2,
+            // `kPrefetchServiceWorker` is disabled to make the prefetch fail
+            // due to ServiceWorker-related ineligibility.
+            features::kPrefetchServiceWorker,
+        });
   }
 };
+
+INSTANTIATE_TEST_SUITE_P(
+    /* no prefix */,
+    PrerendererImplBrowserTestPrefetchAhead,
+    testing::Values(
+        features::Prerender2FallbackPrefetchSchedulerPolicy::kNotUse,
+        features::Prerender2FallbackPrefetchSchedulerPolicy::kPrioritize,
+        features::Prerender2FallbackPrefetchSchedulerPolicy::kBurst));
 
 IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestNoPrefetchAhead,
                        PrefetchNotTriggeredPrerenderSuccess) {
@@ -238,10 +305,16 @@ IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestNoPrefetchAhead,
       "Prerender.Experimental.PrerenderHostFinalStatus.SpeculationRule",
       PrerenderFinalStatus::kActivated, 1);
 
+  histogram_tester().ExpectTotalCount(
+      "PreloadServingMetrics.ForPrerenderInitialNavigationFailed."
+      "PrefetchMatchMetrics.Count",
+      0);
+
   std::vector<RequestPathAndSecPurposeHeader> expected{
       {.path = "/empty.html", .sec_purpose_header_value = ""},
       {.path = "/title1.html",
-       .sec_purpose_header_value = "prefetch;prerender"}};
+       .sec_purpose_header_value =
+           blink::kSecPurposePrefetchPrerenderHeaderValue}};
   ASSERT_EQ(expected, GetObservedRequests());
 }
 
@@ -280,15 +353,17 @@ IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestNoPrefetchAhead,
   std::vector<RequestPathAndSecPurposeHeader> expected{
       {.path = "/empty.html", .sec_purpose_header_value = ""},
       {.path = "/title1.html",
-       .sec_purpose_header_value = "prefetch;prerender"},
+       .sec_purpose_header_value =
+           blink::kSecPurposePrefetchPrerenderHeaderValue},
       {.path = "/title1.html", .sec_purpose_header_value = ""},
   };
   ASSERT_EQ(expected, GetObservedRequests());
 }
 
-IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestPrefetchAhead,
+IN_PROC_BROWSER_TEST_P(PrerendererImplBrowserTestPrefetchAhead,
                        PrefetchSuccessPrerenderSuccess) {
   ASSERT_TRUE(NavigateToURL(shell(), GetUrl("/empty.html")));
+  preload_serving_metrics_list().clear();
 
   const GURL prerender_url = GetUrl("/title1.html");
   blink::mojom::SpeculationCandidatePtr candidate =
@@ -313,14 +388,60 @@ IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestPrefetchAhead,
       "Prerender.Experimental.PrerenderHostFinalStatus.SpeculationRule",
       PrerenderFinalStatus::kActivated, 1);
 
+  histogram_tester().ExpectTotalCount(
+      "PreloadServingMetrics.ForPrerenderInitialNavigationFailed."
+      "PrefetchMatchMetrics.Count",
+      0);
+
   std::vector<RequestPathAndSecPurposeHeader> expected{
       {.path = "/empty.html", .sec_purpose_header_value = ""},
       {.path = "/title1.html",
-       .sec_purpose_header_value = "prefetch;prerender"}};
+       .sec_purpose_header_value =
+           blink::kSecPurposePrefetchPrerenderHeaderValue}};
   ASSERT_EQ(expected, GetObservedRequests());
+
+  ASSERT_EQ(2u, preload_serving_metrics_list().size());
+
+  auto& prerender_initial_preload_serving_metrics =
+      preload_serving_metrics_list()[0];
+  // Taken and used to record UMAs.
+  ASSERT_FALSE(prerender_initial_preload_serving_metrics);
+
+  auto& preload_serving_metrics = preload_serving_metrics_list()[1];
+  ASSERT_TRUE(preload_serving_metrics);
+  ASSERT_EQ(0u, preload_serving_metrics->prefetch_match_metrics_list.size());
+  ASSERT_TRUE(
+      preload_serving_metrics->prerender_initial_preload_serving_metrics);
+  ASSERT_EQ(1u,
+            preload_serving_metrics->prerender_initial_preload_serving_metrics
+                ->prefetch_match_metrics_list.size());
+  ASSERT_TRUE(preload_serving_metrics->prerender_initial_preload_serving_metrics
+                  ->prefetch_match_metrics_list[0]);
+  ASSERT_EQ(1,
+            preload_serving_metrics->prerender_initial_preload_serving_metrics
+                ->prefetch_match_metrics_list[0]
+                ->n_initial_candidates);
+  ASSERT_EQ(1,
+            preload_serving_metrics->prerender_initial_preload_serving_metrics
+                ->prefetch_match_metrics_list[0]
+                ->n_initial_candidates_block_until_head);
+  ASSERT_TRUE(preload_serving_metrics->prerender_initial_preload_serving_metrics
+                  ->prefetch_match_metrics_list[0]
+                  ->prefetch_container_metrics);
+  ASSERT_TRUE(preload_serving_metrics->prerender_initial_preload_serving_metrics
+                  ->prefetch_match_metrics_list[0]
+                  ->prefetch_container_metrics
+                  ->time_header_determined_successfully.has_value());
+  ASSERT_TRUE(preload_serving_metrics->prerender_initial_preload_serving_metrics
+                  ->prefetch_match_metrics_list[0]
+                  ->prefetch_container_metrics_ahead_of_prerender);
+  ASSERT_TRUE(
+      preload_serving_metrics->prerender_initial_preload_serving_metrics
+          ->prefetch_match_metrics_list[0]
+          ->prefetch_potential_candidate_serving_result_ahead_of_prerender);
 }
 
-IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestPrefetchAhead,
+IN_PROC_BROWSER_TEST_P(PrerendererImplBrowserTestPrefetchAhead,
                        PrefetchSuccessPrerenderNotEligible) {
   ASSERT_TRUE(NavigateToURL(shell(), GetUrl("/empty.html")));
 
@@ -351,14 +472,16 @@ IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestPrefetchAhead,
   std::vector<RequestPathAndSecPurposeHeader> expected{
       {.path = "/empty.html", .sec_purpose_header_value = ""},
       {.path = "/title1.html",
-       .sec_purpose_header_value = "prefetch;prerender"},
+       .sec_purpose_header_value =
+           blink::kSecPurposePrefetchPrerenderHeaderValue},
   };
   ASSERT_EQ(expected, GetObservedRequests());
 }
 
-IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestPrefetchAhead,
+IN_PROC_BROWSER_TEST_P(PrerendererImplBrowserTestPrefetchAhead,
                        PrefetchSuccessPrerenderFailure) {
   ASSERT_TRUE(NavigateToURL(shell(), GetUrl("/empty.html")));
+  preload_serving_metrics_list().clear();
 
   const GURL prerender_url = GetUrl("/title1.html");
   blink::mojom::SpeculationCandidatePtr candidate =
@@ -394,18 +517,57 @@ IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestPrefetchAhead,
       "Prerender.Experimental.PrerenderHostFinalStatus.SpeculationRule",
       PrerenderFinalStatus::kMojoBinderPolicy, 1);
 
+  histogram_tester().ExpectUniqueSample(
+      "PreloadServingMetrics.ForPrerenderInitialNavigationFailed."
+      "PrefetchMatchMetrics.Count",
+      1, 1);
+
   std::vector<RequestPathAndSecPurposeHeader> expected{
       {.path = "/empty.html", .sec_purpose_header_value = ""},
       {.path = "/title1.html",
-       .sec_purpose_header_value = "prefetch;prerender"},
+       .sec_purpose_header_value =
+           blink::kSecPurposePrefetchPrerenderHeaderValue},
   };
   ASSERT_EQ(expected, GetObservedRequests());
+
+  ASSERT_EQ(2u, preload_serving_metrics_list().size());
+
+  auto& prerender_initial_preload_serving_metrics =
+      preload_serving_metrics_list()[0];
+  // Taken and used to record UMAs.
+  ASSERT_FALSE(prerender_initial_preload_serving_metrics);
+
+  auto& preload_serving_metrics = preload_serving_metrics_list()[1];
+  ASSERT_TRUE(preload_serving_metrics);
+  ASSERT_EQ(1u, preload_serving_metrics->prefetch_match_metrics_list.size());
+  ASSERT_EQ(1u, preload_serving_metrics->prefetch_match_metrics_list[0]
+                    ->n_initial_candidates);
+  ASSERT_EQ(0u, preload_serving_metrics->prefetch_match_metrics_list[0]
+                    ->n_initial_candidates_block_until_head);
+  ASSERT_TRUE(preload_serving_metrics->prefetch_match_metrics_list[0]
+                  ->prefetch_container_metrics);
+  ASSERT_TRUE(preload_serving_metrics->prefetch_match_metrics_list[0]
+                  ->prefetch_container_metrics
+                  ->time_header_determined_successfully.has_value());
+  ASSERT_FALSE(preload_serving_metrics->prefetch_match_metrics_list[0]
+                   ->prefetch_container_metrics_ahead_of_prerender);
+  ASSERT_FALSE(
+      preload_serving_metrics->prefetch_match_metrics_list[0]
+          ->prefetch_potential_candidate_serving_result_ahead_of_prerender);
+  ASSERT_FALSE(
+      preload_serving_metrics->prerender_initial_preload_serving_metrics);
 }
 
-IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestPrefetchAhead,
+IN_PROC_BROWSER_TEST_P(PrerendererImplBrowserTestPrefetchAhead,
                        PrefetchNotEligiblePrerenderFailure) {
-  PrefetchService::SetForceIneligibilityForTesting(
-      PreloadingEligibility::kHostIsNonUnique);
+  // Make eligibility check fail with `kHostIsNonUnique`.
+  auto& prefetch_service = *PrefetchService::GetFromFrameTreeNodeId(
+      web_contents().GetPrimaryMainFrame()->GetFrameTreeNodeId());
+  prefetch_service.SetInjectedEligibilityCheckForTesting(base::BindRepeating(
+      [](PrefetchService::InjectedEligibilityCheckResultCallbackForTesting
+             callback) {
+        std::move(callback).Run(PreloadingEligibility::kHostIsNonUnique);
+      }));
 
   ASSERT_TRUE(NavigateToURL(shell(), GetUrl("/empty.html")));
 
@@ -424,6 +586,8 @@ IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestPrefetchAhead,
 
   ASSERT_TRUE(NavigateToURL(shell(), prerender_url));
 
+  prefetch_service.SetInjectedEligibilityCheckForTesting(base::NullCallback());
+
   histogram_tester().ExpectUniqueSample(
       "Preloading.Prefetch.Attempt.SpeculationRules.TriggeringOutcome",
       PreloadingTriggeringOutcome::kUnspecified, 1);
@@ -438,6 +602,11 @@ IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestPrefetchAhead,
       "SpeculationRule",
       PrefetchStatus::kPrefetchIneligibleHostIsNonUnique, 1);
 
+  histogram_tester().ExpectUniqueSample(
+      "PreloadServingMetrics.ForPrerenderInitialNavigationFailed."
+      "PrefetchMatchMetrics.Count",
+      1, 1);
+
   std::vector<RequestPathAndSecPurposeHeader> expected{
       {.path = "/empty.html", .sec_purpose_header_value = ""},
       {.path = "/title1.html", .sec_purpose_header_value = ""},
@@ -445,7 +614,7 @@ IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestPrefetchAhead,
   ASSERT_EQ(expected, GetObservedRequests());
 }
 
-IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestPrefetchAhead,
+IN_PROC_BROWSER_TEST_P(PrerendererImplBrowserTestPrefetchAhead,
                        PrefetchNotEligibleNonHttpsPrerenderSuccess) {
   ASSERT_TRUE(NavigateToURL(shell(), GetUrlHttp("/empty.html")));
 
@@ -470,28 +639,28 @@ IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestPrefetchAhead,
       "Prerender.Experimental.PrerenderHostFinalStatus.SpeculationRule",
       PrerenderFinalStatus::kActivated, 1);
 
+  histogram_tester().ExpectTotalCount(
+      "PreloadServingMetrics.ForPrerenderInitialNavigationFailed."
+      "PrefetchMatchMetrics.Count",
+      0);
+
   std::vector<RequestPathAndSecPurposeHeader> expected{
       {.path = "/empty.html", .sec_purpose_header_value = ""},
       {.path = "/title1.html",
-       .sec_purpose_header_value = "prefetch;prerender"},
+       .sec_purpose_header_value =
+           blink::kSecPurposePrefetchPrerenderHeaderValue},
   };
   ASSERT_EQ(expected, GetObservedRequests());
 }
 
-IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestPrefetchAhead,
+IN_PROC_BROWSER_TEST_P(PrerendererImplBrowserTestPrefetchAhead,
                        PrefetchNotEligibleNonHttpsPrerenderSuccessWithDelay) {
   ASSERT_TRUE(NavigateToURL(shell(), GetUrlHttp("/empty.html")));
 
-  base::test::TestFuture<base::OnceClosure> eligibility_check_callback_future;
-  auto& prefetch_service = *PrefetchService::GetFromFrameTreeNodeId(
-      web_contents().GetPrimaryMainFrame()->GetFrameTreeNodeId());
-  prefetch_service.SetDelayEligibilityCheckForTesting(base::BindRepeating(
-      [](base::test::TestFuture<base::OnceClosure>*
-             eligibility_check_callback_future,
-         base::OnceClosure callback) {
-        eligibility_check_callback_future->SetValue(std::move(callback));
-      },
-      base::Unretained(&eligibility_check_callback_future)));
+  PrefetchServiceInjectedEligibilityCheckFuture
+      eligibility_check_callback_future(
+          *PrefetchService::GetFromFrameTreeNodeId(
+              web_contents().GetPrimaryMainFrame()->GetFrameTreeNodeId()));
 
   const GURL prerender_url = GetUrlHttp("/title1.html");
   blink::mojom::SpeculationCandidatePtr candidate =
@@ -504,7 +673,8 @@ IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestPrefetchAhead,
   base::PlatformThread::Sleep(base::Milliseconds(101));
 
   // Proceed to the eligibility check.
-  eligibility_check_callback_future.Take().Run();
+  eligibility_check_callback_future->Take().Run(
+      PreloadingEligibility::kEligible);
 
   prerender_helper().WaitForPrerenderLoadCompletion(prerender_url);
 
@@ -520,10 +690,16 @@ IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestPrefetchAhead,
       "Prerender.Experimental.PrerenderHostFinalStatus.SpeculationRule",
       PrerenderFinalStatus::kActivated, 1);
 
+  histogram_tester().ExpectTotalCount(
+      "PreloadServingMetrics.ForPrerenderInitialNavigationFailed."
+      "PrefetchMatchMetrics.Count",
+      0);
+
   std::vector<RequestPathAndSecPurposeHeader> expected{
       {.path = "/empty.html", .sec_purpose_header_value = ""},
       {.path = "/title1.html",
-       .sec_purpose_header_value = "prefetch;prerender"},
+       .sec_purpose_header_value =
+           blink::kSecPurposePrefetchPrerenderHeaderValue},
   };
   ASSERT_EQ(expected, GetObservedRequests());
 }
@@ -536,7 +712,7 @@ IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestPrefetchAhead,
 // - Trigger prerender A' for URL U.
 //   - A' falls back to non-prefetch navigation.
 // - Navigation is started. A' is used.
-IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestPrefetchAhead,
+IN_PROC_BROWSER_TEST_P(PrerendererImplBrowserTestPrefetchAhead,
                        PrefetchNotEligibleServiceWorkerPrerenderSuccess) {
   ASSERT_TRUE(NavigateToURL(shell(), GetUrl("/prerender/empty.html")));
 
@@ -570,11 +746,17 @@ IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestPrefetchAhead,
       "Prerender.Experimental.PrerenderHostFinalStatus.SpeculationRule",
       PrerenderFinalStatus::kActivated, 1);
 
+  histogram_tester().ExpectTotalCount(
+      "PreloadServingMetrics.ForPrerenderInitialNavigationFailed."
+      "PrefetchMatchMetrics.Count",
+      0);
+
   std::vector<RequestPathAndSecPurposeHeader> expected{
       {.path = "/prerender/empty.html", .sec_purpose_header_value = ""},
       {.path = "/prerender/sw_fallback.js", .sec_purpose_header_value = ""},
       {.path = "/prerender/empty.html?2",
-       .sec_purpose_header_value = "prefetch;prerender"},
+       .sec_purpose_header_value =
+           blink::kSecPurposePrefetchPrerenderHeaderValue},
   };
   ASSERT_EQ(expected, GetObservedRequests());
 }
@@ -591,7 +773,7 @@ IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestPrefetchAhead,
 // - A failed in eligibility check due to SW.
 //   - A' falls back to non-prefetch navigation.
 // - Navigation is started. A' is used.
-IN_PROC_BROWSER_TEST_F(
+IN_PROC_BROWSER_TEST_P(
     PrerendererImplBrowserTestPrefetchAhead,
     PrefetchNotEligibleServiceWorkerPrerenderSuccessWithDelay) {
   ASSERT_TRUE(NavigateToURL(shell(), GetUrl("/prerender/empty.html")));
@@ -605,16 +787,10 @@ IN_PROC_BROWSER_TEST_F(
   )";
   EXPECT_TRUE(ExecJs(web_contents().GetPrimaryMainFrame(), script));
 
-  base::test::TestFuture<base::OnceClosure> eligibility_check_callback_future;
-  auto& prefetch_service = *PrefetchService::GetFromFrameTreeNodeId(
-      web_contents().GetPrimaryMainFrame()->GetFrameTreeNodeId());
-  prefetch_service.SetDelayEligibilityCheckForTesting(base::BindRepeating(
-      [](base::test::TestFuture<base::OnceClosure>*
-             eligibility_check_callback_future,
-         base::OnceClosure callback) {
-        eligibility_check_callback_future->SetValue(std::move(callback));
-      },
-      base::Unretained(&eligibility_check_callback_future)));
+  PrefetchServiceInjectedEligibilityCheckFuture
+      eligibility_check_callback_future(
+          *PrefetchService::GetFromFrameTreeNodeId(
+              web_contents().GetPrimaryMainFrame()->GetFrameTreeNodeId()));
 
   const GURL prerender_url = GetUrl("/prerender/empty.html?2");
   blink::mojom::SpeculationCandidatePtr candidate =
@@ -627,7 +803,8 @@ IN_PROC_BROWSER_TEST_F(
   base::PlatformThread::Sleep(base::Milliseconds(101));
 
   // Proceed to the eligibility check.
-  eligibility_check_callback_future.Take().Run();
+  eligibility_check_callback_future->Take().Run(
+      PreloadingEligibility::kEligible);
 
   prerender_helper().WaitForPrerenderLoadCompletion(prerender_url);
 
@@ -643,11 +820,17 @@ IN_PROC_BROWSER_TEST_F(
       "Prerender.Experimental.PrerenderHostFinalStatus.SpeculationRule",
       PrerenderFinalStatus::kActivated, 1);
 
+  histogram_tester().ExpectTotalCount(
+      "PreloadServingMetrics.ForPrerenderInitialNavigationFailed."
+      "PrefetchMatchMetrics.Count",
+      0);
+
   std::vector<RequestPathAndSecPurposeHeader> expected{
       {.path = "/prerender/empty.html", .sec_purpose_header_value = ""},
       {.path = "/prerender/sw_fallback.js", .sec_purpose_header_value = ""},
       {.path = "/prerender/empty.html?2",
-       .sec_purpose_header_value = "prefetch;prerender"},
+       .sec_purpose_header_value =
+           blink::kSecPurposePrefetchPrerenderHeaderValue},
   };
   ASSERT_EQ(expected, GetObservedRequests());
 }
@@ -660,13 +843,14 @@ IN_PROC_BROWSER_TEST_F(
 // - A failed due to timeout.
 //   - The failure is propagated to A'.
 // - Navigation is started. No preloads are used.
-IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestPrefetchAhead,
+IN_PROC_BROWSER_TEST_P(PrerendererImplBrowserTestPrefetchAhead,
                        PrefetchTimeoutPrerenderFailure) {
   // Prefetch will fail as
   // `prefetch_timeout_ms = 1500 < response_delay_ = 1500 + 1000`.
   SetResponseDelay(base::Milliseconds(1500 + 1000));
 
   ASSERT_TRUE(NavigateToURL(shell(), GetUrl("/empty.html")));
+  preload_serving_metrics_list().clear();
 
   const GURL prerender_url = GetUrl("/title1.html");
   blink::mojom::SpeculationCandidatePtr candidate =
@@ -693,14 +877,212 @@ IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestPrefetchAhead,
       "SpeculationRule",
       PrefetchStatus::kPrefetchNotFinishedInTime, 1);
 
+  histogram_tester().ExpectUniqueSample(
+      "PreloadServingMetrics.ForPrerenderInitialNavigationFailed."
+      "PrefetchMatchMetrics.Count",
+      1, 1);
+
   std::vector<RequestPathAndSecPurposeHeader> expected{
       {.path = "/empty.html", .sec_purpose_header_value = ""},
       // Prefetch and prerender, timed out and aborted.
       {.path = "/title1.html",
-       .sec_purpose_header_value = "prefetch;prerender"},
+       .sec_purpose_header_value =
+           blink::kSecPurposePrefetchPrerenderHeaderValue},
       // Normal navigation.
       {.path = "/title1.html", .sec_purpose_header_value = ""}};
   ASSERT_EQ(expected, GetObservedRequests());
+
+  ASSERT_EQ(2u, preload_serving_metrics_list().size());
+
+  auto& prerender_initial_preload_serving_metrics =
+      preload_serving_metrics_list()[0];
+  // Taken and used to record UMAs.
+  ASSERT_FALSE(prerender_initial_preload_serving_metrics);
+
+  auto& preload_serving_metrics = preload_serving_metrics_list()[1];
+  ASSERT_TRUE(preload_serving_metrics);
+  ASSERT_EQ(1u, preload_serving_metrics->prefetch_match_metrics_list.size());
+  ASSERT_EQ(0u, preload_serving_metrics->prefetch_match_metrics_list[0]
+                    ->n_initial_candidates);
+  ASSERT_EQ(0u, preload_serving_metrics->prefetch_match_metrics_list[0]
+                    ->n_initial_candidates_block_until_head);
+  ASSERT_FALSE(preload_serving_metrics->prefetch_match_metrics_list[0]
+                   ->prefetch_container_metrics);
+  ASSERT_FALSE(preload_serving_metrics->prefetch_match_metrics_list[0]
+                   ->prefetch_container_metrics_ahead_of_prerender);
+  ASSERT_FALSE(
+      preload_serving_metrics->prefetch_match_metrics_list[0]
+          ->prefetch_potential_candidate_serving_result_ahead_of_prerender);
+  ASSERT_FALSE(
+      preload_serving_metrics->prerender_initial_preload_serving_metrics);
+}
+
+// A variant of PrefetchTimeoutPrerenderFailure, where the navigation is started
+// while prefetch is ongoing and thus the prefetch-ahead-prerender failure
+// occurs during the navigation.
+//
+// Scenario:
+//
+// - Trigger prefetch ahead of prerender A for URL U.
+// - Trigger prerender A' for URL U.
+//   - A blocks A'.
+// - Navigation is started.
+//   - A' blocks it.
+// - A failed due to timeout.
+//   - The failure is propagated to A'.
+//   - It unblocks the navigation.
+// - No preloads are used.
+IN_PROC_BROWSER_TEST_P(
+    PrerendererImplBrowserTestPrefetchAhead,
+    PrefetchTimeoutNavigationStartedWithoutWaitForPrerenderPrerenderFailure) {
+  // Prefetch will fail as
+  // `prefetch_timeout_ms = 1500 < response_delay_ = 1500 + 1000`.
+  SetResponseDelay(base::Milliseconds(1500 + 1000));
+
+  ASSERT_TRUE(NavigateToURL(shell(), GetUrl("/empty.html")));
+  preload_serving_metrics_list().clear();
+
+  const GURL prerender_url = GetUrl("/title1.html");
+  blink::mojom::SpeculationCandidatePtr candidate =
+      CreateSpeculationCandidate(prerender_url);
+  PreloadingPredictor enacting_predictor = GetPredictorForPreloadingTriggerType(
+      PreloadingTriggerType::kSpeculationRule);
+  GetPrerendererImpl().MaybePrerender(candidate, enacting_predictor,
+                                      PreloadingConfidence{100});
+  // Don't `prerender_helper().WaitForPrerenderLoadCompletion(prerender_url);`
+  // here, different from PrefetchTimeoutPrerenderFailure.
+
+  ASSERT_TRUE(NavigateToURLFromRenderer(shell(), prerender_url));
+
+  histogram_tester().ExpectUniqueSample(
+      "Preloading.Prefetch.Attempt.SpeculationRules.TriggeringOutcome",
+      PreloadingTriggeringOutcome::kFailure, 1);
+  histogram_tester().ExpectUniqueSample(
+      "Preloading.Prerender.Attempt.SpeculationRules.TriggeringOutcome",
+      PreloadingTriggeringOutcome::kFailure, 1);
+  histogram_tester().ExpectUniqueSample(
+      "Prerender.Experimental.PrerenderHostFinalStatus.SpeculationRule",
+      PrerenderFinalStatus::kPrerenderFailedDuringPrefetch, 1);
+  histogram_tester().ExpectUniqueSample(
+      "Prerender.Experimental.PrefetchAheadOfPrerenderFailed.PrefetchStatus."
+      "SpeculationRule",
+      PrefetchStatus::kPrefetchNotFinishedInTime, 1);
+
+  histogram_tester().ExpectUniqueSample(
+      "PreloadServingMetrics.ForPrerenderInitialNavigationFailed."
+      "PrefetchMatchMetrics.Count",
+      1, 1);
+  histogram_tester().ExpectUniqueSample(
+      "PreloadServingMetrics.ForPrerenderInitialNavigationFailed."
+      "PrefetchMatchMetrics.IsPotentialMatch",
+      true, 1);
+  histogram_tester().ExpectUniqueSample(
+      "PreloadServingMetrics.ForPrerenderInitialNavigationFailed."
+      "PrefetchMatchMetrics.PotentialMatchThen.NumberOfInitialCandidates",
+      1, 1);
+  histogram_tester().ExpectUniqueSample(
+      "PreloadServingMetrics.ForPrerenderInitialNavigationFailed."
+      "PrefetchMatchMetrics.PotentialMatchThen."
+      "NumberOfInitialCandidatesBlockUntilHead",
+      1, 1);
+  histogram_tester().ExpectUniqueSample(
+      "PreloadServingMetrics.ForPrerenderInitialNavigationFailed."
+      "PrefetchMatchMetrics.PotentialMatchThen.IsActualMatch",
+      false, 1);
+  histogram_tester().ExpectUniqueSample(
+      "PreloadServingMetrics.ForPrerenderInitialNavigationFailed."
+      "PrefetchMatchMetrics.IsPotentialMatch.WithAheadOfPrerender",
+      true, 1);
+  histogram_tester().ExpectUniqueSample(
+      "PreloadServingMetrics.ForPrerenderInitialNavigationFailed."
+      "PrefetchMatchMetrics.PotentialMatchThen.WithAheadOfPrerender."
+      "PotentialCandidateServingResult",
+      PrefetchPotentialCandidateServingResult::kNotServedLoadFailed, 1);
+
+  histogram_tester().ExpectUniqueSample(
+      "PreloadServingMetrics.ForPrerenderInitialNavigationFailed."
+      "FallbackAborted.Match0.PrefetchMatchMetrics.Count",
+      1, 1);
+  histogram_tester().ExpectUniqueSample(
+      "PreloadServingMetrics.ForPrerenderInitialNavigationFailed."
+      "FallbackAborted.Match0.PrefetchMatchMetrics.IsPotentialMatch",
+      true, 1);
+  histogram_tester().ExpectUniqueSample(
+      "PreloadServingMetrics.ForPrerenderInitialNavigationFailed."
+      "FallbackAborted.Match0.PrefetchMatchMetrics.ExistsPaop",
+      true, 1);
+  histogram_tester().ExpectUniqueSample(
+      "PreloadServingMetrics.ForPrerenderInitialNavigationFailed."
+      "FallbackAborted.Match0.PrefetchMatchMetrics.ExistsPaopThen."
+      "PrefetchStatus",
+      PrefetchStatus::kPrefetchNotFinishedInTime, 1);
+  histogram_tester().ExpectUniqueSample(
+      "PreloadServingMetrics.ForPrerenderInitialNavigationFailed."
+      "FallbackAborted.Match0.PrefetchMatchMetrics.ExistsPaopThen."
+      "ServableStateAndMatcherAction",
+      // 4 = PrefetchServableState::kNotServable
+      // 1 = PrefetchMatchResolverAction::ActionKind::kDrop
+      // 8 =
+      // PrefetchMatchResolverAction::ActionReason::kFailedDeterminedHead
+      // 1 = is_expired == false
+      4181, 1);
+  histogram_tester().ExpectUniqueSample(
+      "PreloadServingMetrics.ForPrerenderInitialNavigationFailed."
+      "FallbackAborted.Match0.PrefetchMatchMetrics.ExistsPaopThen."
+      "PotentialCandidateServingResultAndServableStateAndMatcherAction",
+      // 12 =
+      // PrefetchPotentialCandidateServingResult::kNotServedLoadFailed
+      // 4 = PrefetchServableState::kNotServable
+      // 1 = PrefetchMatchResolverAction::ActionKind::kDrop
+      // 8 =
+      // PrefetchMatchResolverAction::ActionReason::kFailedDeterminedHead
+      // 1 = is_expired == false
+      124181, 1);
+  histogram_tester().ExpectUniqueSample(
+      "PreloadServingMetrics.ForPrerenderInitialNavigationFailed."
+      "FallbackAborted.Match0.PrefetchMatchMetrics.ExistsPaopThen.QueueSize",
+      0, 1);
+  histogram_tester().ExpectUniqueSample(
+      "PreloadServingMetrics.ForPrerenderInitialNavigationFailed."
+      "FallbackAborted.Match0.PrefetchMatchMetrics.ExistsPaopThen."
+      "QueueIndexPlus1",
+      0, 1);
+
+  std::vector<RequestPathAndSecPurposeHeader> expected{
+      {.path = "/empty.html", .sec_purpose_header_value = ""},
+      // Prefetch and prerender, timed out and aborted.
+      {.path = "/title1.html",
+       .sec_purpose_header_value =
+           blink::kSecPurposePrefetchPrerenderHeaderValue},
+      // Normal navigation.
+      {.path = "/title1.html", .sec_purpose_header_value = ""}};
+  ASSERT_EQ(expected, GetObservedRequests());
+
+  ASSERT_EQ(2u, preload_serving_metrics_list().size());
+
+  auto& prerender_initial_preload_serving_metrics =
+      preload_serving_metrics_list()[0];
+  // Taken and used to record UMAs.
+  ASSERT_FALSE(prerender_initial_preload_serving_metrics);
+
+  // PreloadServingMetrics for ordinal navigation.
+  auto& preload_serving_metrics = preload_serving_metrics_list()[1];
+  ASSERT_EQ(1u, preload_serving_metrics->prefetch_match_metrics_list.size());
+  // The navigation reaches to `PrefetchMatchResolver` after prefetch A and
+  // prerender A' failed. There is no available prefetch.
+  ASSERT_EQ(0u, preload_serving_metrics->prefetch_match_metrics_list[0]
+                    ->n_initial_candidates);
+  ASSERT_EQ(0u, preload_serving_metrics->prefetch_match_metrics_list[0]
+                    ->n_initial_candidates_block_until_head);
+  ASSERT_FALSE(preload_serving_metrics->prefetch_match_metrics_list[0]
+                   ->prefetch_container_metrics);
+  ASSERT_FALSE(preload_serving_metrics->prefetch_match_metrics_list[0]
+                   ->prefetch_container_metrics_ahead_of_prerender);
+  ASSERT_FALSE(
+      preload_serving_metrics->prefetch_match_metrics_list[0]
+          ->prefetch_potential_candidate_serving_result_ahead_of_prerender);
+  ASSERT_FALSE(
+      preload_serving_metrics->prerender_initial_preload_serving_metrics);
 }
 
 // Consider a case that a site uses a SpecRules containing prefetch and
@@ -715,7 +1097,7 @@ IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestPrefetchAhead,
 // - Trigger prerender B' for URL U.
 //   - A blocks B'.
 // - Navigation is started. B' is used.
-IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestPrefetchAhead,
+IN_PROC_BROWSER_TEST_P(PrerendererImplBrowserTestPrefetchAhead,
                        PrefetchMigratedPrefetchSuccessPrerenderSuccess) {
   ASSERT_TRUE(NavigateToURL(shell(), GetUrl("/empty.html")));
 
@@ -752,15 +1134,21 @@ IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestPrefetchAhead,
       "Prerender.Experimental.PrerenderHostFinalStatus.SpeculationRule",
       PrerenderFinalStatus::kActivated, 1);
 
+  histogram_tester().ExpectTotalCount(
+      "PreloadServingMetrics.ForPrerenderInitialNavigationFailed."
+      "PrefetchMatchMetrics.Count",
+      0);
+
   std::vector<RequestPathAndSecPurposeHeader> expected{
       {.path = "/empty.html", .sec_purpose_header_value = ""},
-      {.path = "/title1.html", .sec_purpose_header_value = "prefetch"}};
+      {.path = "/title1.html",
+       .sec_purpose_header_value = blink::kSecPurposePrefetchHeaderValue}};
   ASSERT_EQ(expected, GetObservedRequests());
 }
 
 // Variant of PrefetchMigratedPrefetchSuccessPrerenderSuccess.
 // The order of migration and prefetch completion is reversed.
-IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestPrefetchAhead,
+IN_PROC_BROWSER_TEST_P(PrerendererImplBrowserTestPrefetchAhead,
                        PrefetchSuccessPrefetchMigratedPrerenderSuccess) {
   ASSERT_TRUE(NavigateToURL(shell(), GetUrl("/empty.html")));
 
@@ -801,9 +1189,15 @@ IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestPrefetchAhead,
       "Prerender.Experimental.PrerenderHostFinalStatus.SpeculationRule",
       PrerenderFinalStatus::kActivated, 1);
 
+  histogram_tester().ExpectTotalCount(
+      "PreloadServingMetrics.ForPrerenderInitialNavigationFailed."
+      "PrefetchMatchMetrics.Count",
+      0);
+
   std::vector<RequestPathAndSecPurposeHeader> expected{
       {.path = "/empty.html", .sec_purpose_header_value = ""},
-      {.path = "/title1.html", .sec_purpose_header_value = "prefetch"}};
+      {.path = "/title1.html",
+       .sec_purpose_header_value = blink::kSecPurposePrefetchHeaderValue}};
   ASSERT_EQ(expected, GetObservedRequests());
 }
 
@@ -822,7 +1216,7 @@ IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestPrefetchAhead,
 //
 // This shows the necessity of eligibility propagation in
 // `PrefetchContainer::MigrateNewlyAdded()`.
-IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestPrefetchAhead,
+IN_PROC_BROWSER_TEST_P(PrerendererImplBrowserTestPrefetchAhead,
                        PrefetchMigratedPrefetchFailurePrerenderFailure) {
   // Prefetch will fail as
   // `prefetch_timeout_ms = 1500 < response_delay_ = 1500 + 1000`.
@@ -871,9 +1265,15 @@ IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestPrefetchAhead,
       "SpeculationRule",
       PrefetchStatus::kPrefetchNotFinishedInTime, 1);
 
+  histogram_tester().ExpectUniqueSample(
+      "PreloadServingMetrics.ForPrerenderInitialNavigationFailed."
+      "PrefetchMatchMetrics.Count",
+      1, 1);
+
   std::vector<RequestPathAndSecPurposeHeader> expected{
       {.path = "/empty.html", .sec_purpose_header_value = ""},
-      {.path = "/title1.html", .sec_purpose_header_value = "prefetch"},
+      {.path = "/title1.html",
+       .sec_purpose_header_value = blink::kSecPurposePrefetchHeaderValue},
       {.path = "/title1.html", .sec_purpose_header_value = ""}};
   ASSERT_EQ(expected, GetObservedRequests());
 }
@@ -888,21 +1288,12 @@ IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestPrefetchAhead,
 // - A fails in eligibility check.
 //   - B' fails as the ineligibility is not admissible.
 // - Navigation is started. No preloads are used.
-IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestPrefetchAhead,
+IN_PROC_BROWSER_TEST_P(PrerendererImplBrowserTestPrefetchAhead,
                        PrefetchMigratedPrefetchNotEligiblePrerenderFailure) {
-  PrefetchService::SetForceIneligibilityForTesting(
-      PreloadingEligibility::kHostIsNonUnique);
-
-  base::test::TestFuture<base::OnceClosure> eligibility_check_callback_future;
-  auto& prefetch_service = *PrefetchService::GetFromFrameTreeNodeId(
-      web_contents().GetPrimaryMainFrame()->GetFrameTreeNodeId());
-  prefetch_service.SetDelayEligibilityCheckForTesting(base::BindRepeating(
-      [](base::test::TestFuture<base::OnceClosure>*
-             eligibility_check_callback_future,
-         base::OnceClosure callback) {
-        eligibility_check_callback_future->SetValue(std::move(callback));
-      },
-      base::Unretained(&eligibility_check_callback_future)));
+  PrefetchServiceInjectedEligibilityCheckFuture
+      eligibility_check_callback_future(
+          *PrefetchService::GetFromFrameTreeNodeId(
+              web_contents().GetPrimaryMainFrame()->GetFrameTreeNodeId()));
 
   ASSERT_TRUE(NavigateToURL(shell(), GetUrl("/empty.html")));
 
@@ -922,8 +1313,10 @@ IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestPrefetchAhead,
                                         PreloadingConfidence{100});
   }
 
-  // Proceed to the eligibility check of the first prefetch.
-  eligibility_check_callback_future.Take().Run();
+  // Resume the eligibility check of the first prefetch and make it fail with
+  // `kHostIsNonUnique`.
+  eligibility_check_callback_future->Take().Run(
+      PreloadingEligibility::kHostIsNonUnique);
 
   // Here we shouldn't call
   // `prerender_helper().WaitForPrerenderLoadCompletion(prerender_url)` since
@@ -946,6 +1339,11 @@ IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestPrefetchAhead,
       "SpeculationRule",
       PrefetchStatus::kPrefetchIneligibleHostIsNonUnique, 1);
 
+  histogram_tester().ExpectUniqueSample(
+      "PreloadServingMetrics.ForPrerenderInitialNavigationFailed."
+      "PrefetchMatchMetrics.Count",
+      1, 1);
+
   std::vector<RequestPathAndSecPurposeHeader> expected{
       {.path = "/empty.html", .sec_purpose_header_value = ""},
       {.path = "/title1.html", .sec_purpose_header_value = ""},
@@ -967,7 +1365,7 @@ IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestPrefetchAhead,
 // - A failed due to timeout.
 //   - The failure is propagated to B'.
 // - Navigation is started. No preloads are used.
-IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestPrefetchAhead,
+IN_PROC_BROWSER_TEST_P(PrerendererImplBrowserTestPrefetchAhead,
                        PrefetchMigratedPrefetchTimeoutPrerenderFailure) {
   // Prefetch will fail as
   // `prefetch_timeout_ms = 1500 < response_delay_ = 1500 + 1000`.
@@ -1012,10 +1410,16 @@ IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestPrefetchAhead,
       "SpeculationRule",
       PrefetchStatus::kPrefetchNotFinishedInTime, 1);
 
+  histogram_tester().ExpectUniqueSample(
+      "PreloadServingMetrics.ForPrerenderInitialNavigationFailed."
+      "PrefetchMatchMetrics.Count",
+      1, 1);
+
   std::vector<RequestPathAndSecPurposeHeader> expected{
       {.path = "/empty.html", .sec_purpose_header_value = ""},
       // Prefetch and prerender, timed out and aborted.
-      {.path = "/title1.html", .sec_purpose_header_value = "prefetch"},
+      {.path = "/title1.html",
+       .sec_purpose_header_value = blink::kSecPurposePrefetchHeaderValue},
       // Normal navigation.
       {.path = "/title1.html", .sec_purpose_header_value = ""}};
   ASSERT_EQ(expected, GetObservedRequests());
@@ -1037,7 +1441,7 @@ IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestPrefetchAhead,
 // request was avoided due to the HTTP cache, but after that change the overall
 // brokenness of the scenario is revealed. It is likely that the /title1.html
 // response is not making it into the speculation rules prefetch cache.
-IN_PROC_BROWSER_TEST_F(
+IN_PROC_BROWSER_TEST_P(
     PrerendererImplBrowserTestPrefetchAhead,
     DISABLED_PrefetchSuccessPrefetchMatchResolverTimeoutPrerenderFailure) {
   SetResponseDelay(base::Milliseconds(1000));
@@ -1050,7 +1454,7 @@ IN_PROC_BROWSER_TEST_F(
 
     blink::mojom::SpeculationCandidatePtr candidate =
         CreateSpeculationCandidate(prerender_url);
-    // Use `kModerate` to trigger `PrefetchMatchResolver2::OnTimeout()`.
+    // Use `kModerate` to trigger `PrefetchMatchResolver::OnTimeout()`.
     // Note that `block_until_head_timeout_moderate_prefetch = 500 <
     // response_delay_ = 1000 < prefetch_timeout_ms = 1500`.
     candidate->eagerness = blink::mojom::SpeculationEagerness::kModerate;
@@ -1087,7 +1491,8 @@ IN_PROC_BROWSER_TEST_F(
       {.path = "/empty.html", .sec_purpose_header_value = ""},
       // Prerender is aborted, but prefetch is success and used.
       {.path = "/title1.html",
-       .sec_purpose_header_value = "prefetch;prerender"}};
+       .sec_purpose_header_value =
+           blink::kSecPurposePrefetchPrerenderHeaderValue}};
   ASSERT_EQ(expected, GetObservedRequests());
 }
 
@@ -1105,7 +1510,7 @@ IN_PROC_BROWSER_TEST_F(
 // - Trigger prerender B' for URL U.
 //   - B' uses A.
 // - Navigation is started. B' is used.
-IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestPrefetchAhead,
+IN_PROC_BROWSER_TEST_P(PrerendererImplBrowserTestPrefetchAhead,
                        PrerenderSuccessCancelledAnotherPrerenderSuccess) {
   ASSERT_TRUE(NavigateToURL(shell(), GetUrl("/empty.html")));
 
@@ -1149,10 +1554,94 @@ IN_PROC_BROWSER_TEST_F(PrerendererImplBrowserTestPrefetchAhead,
           base::Bucket(PrerenderFinalStatus::kActivated, 1),
           base::Bucket(PrerenderFinalStatus::kTriggerDestroyed, 1)));
 
+  histogram_tester().ExpectUniqueSample(
+      "PreloadServingMetrics.ForPrerenderInitialNavigationFailed."
+      "PrefetchMatchMetrics.Count",
+      1, 1);
+
   std::vector<RequestPathAndSecPurposeHeader> expected{
       {.path = "/empty.html", .sec_purpose_header_value = ""},
       {.path = "/title1.html",
-       .sec_purpose_header_value = "prefetch;prerender"}};
+       .sec_purpose_header_value =
+           blink::kSecPurposePrefetchPrerenderHeaderValue}};
+  ASSERT_EQ(expected, GetObservedRequests());
+}
+
+IN_PROC_BROWSER_TEST_P(PrerendererImplBrowserTestPrefetchAhead,
+                       PrerenderUntilScriptUsesPrefetchedResponse) {
+  ASSERT_TRUE(NavigateToURL(shell(), GetUrl("/empty.html")));
+
+  const GURL prerender_url = GetUrl("/title1.html");
+  blink::mojom::SpeculationCandidatePtr candidate = CreateSpeculationCandidate(
+      prerender_url, blink::mojom::SpeculationAction::kPrerenderUntilScript);
+
+  test::TestPrefetchWatcher test_prefetch_watcher;
+  std::vector<blink::mojom::SpeculationCandidatePtr> candidates;
+  candidates.push_back(std::move(candidate));
+  GetPrerendererImpl().ProcessCandidatesForPrerender(
+      candidates, /*enable_cross_origin_prerender_iframes=*/false);
+  test_prefetch_watcher.WaitUntilPrefetchResponseCompleted(
+      GetPrimaryMainFrameHost().GetDocumentToken(), prerender_url);
+  prerender_helper().WaitForPrerenderLoadCompletion(prerender_url);
+
+  // Activate
+  prerender_helper().NavigatePrimaryPage(prerender_url);
+
+  std::vector<RequestPathAndSecPurposeHeader> expected{
+      {.path = "/empty.html", .sec_purpose_header_value = ""},
+      {.path = "/title1.html",
+       .sec_purpose_header_value =
+           blink::kSecPurposePrefetchPrerenderHeaderValue}};
+  ASSERT_EQ(expected, GetObservedRequests());
+
+  // TODO(https://crbug.com/342089066): Record prefetch as
+  // kTriggeredButUpgradedToPrerender.
+  histogram_tester().ExpectUniqueSample(
+      "Preloading.Prefetch.Attempt.SpeculationRules.TriggeringOutcome",
+      PreloadingTriggeringOutcome::kSuccess, 1);
+  // TODO(https://crbug.com/428500219): Record preloading attempt metrics for
+  // prerender-until-script.
+  histogram_tester().ExpectUniqueSample(
+      "Prerender.Experimental.PrerenderHostFinalStatus.SpeculationRule",
+      PrerenderFinalStatus::kActivated, 1);
+
+  histogram_tester().ExpectTotalCount(
+      "PreloadServingMetrics.ForPrerenderInitialNavigationFailed."
+      "PrefetchMatchMetrics.Count",
+      0);
+}
+
+IN_PROC_BROWSER_TEST_P(PrerendererImplBrowserTestPrefetchAhead,
+                       PrefetchCancelledWhenPrerenderUntilScriptRemoved) {
+  ASSERT_TRUE(NavigateToURL(shell(), GetUrl("/empty.html")));
+
+  const GURL prerender_url = GetUrl("/title1.html");
+  blink::mojom::SpeculationCandidatePtr candidate = CreateSpeculationCandidate(
+      prerender_url, blink::mojom::SpeculationAction::kPrerenderUntilScript);
+
+  test::TestPrefetchWatcher test_prefetch_watcher;
+  std::vector<blink::mojom::SpeculationCandidatePtr> candidates;
+  candidates.push_back(std::move(candidate));
+  GetPrerendererImpl().ProcessCandidatesForPrerender(
+      candidates, /*enable_cross_origin_prerender_iframes=*/false);
+  test_prefetch_watcher.WaitUntilPrefetchResponseCompleted(
+      GetPrimaryMainFrameHost().GetDocumentToken(), prerender_url);
+  prerender_helper().WaitForPrerenderLoadCompletion(prerender_url);
+
+  // Remove the rule to cancel prerender-until-script.
+  GetPrerendererImpl().ProcessCandidatesForPrerender(
+      std::vector<blink::mojom::SpeculationCandidatePtr>(),
+      /*enable_cross_origin_prerender_iframes=*/false);
+
+  prerender_helper().NavigatePrimaryPage(prerender_url);
+
+  std::vector<RequestPathAndSecPurposeHeader> expected{
+      {.path = "/empty.html", .sec_purpose_header_value = ""},
+      {.path = "/title1.html",
+       .sec_purpose_header_value =
+           blink::kSecPurposePrefetchPrerenderHeaderValue},
+      // Normal navigation.
+      {.path = "/title1.html", .sec_purpose_header_value = ""}};
   ASSERT_EQ(expected, GetObservedRequests());
 }
 

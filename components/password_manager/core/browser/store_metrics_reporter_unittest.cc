@@ -8,14 +8,13 @@
 
 #include "base/functional/callback_helpers.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/mock_callback.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
-#include "components/os_crypt/sync/os_crypt_mocker.h"
 #include "components/password_manager/core/browser/features/password_features.h"
 #include "components/password_manager/core/browser/features/password_manager_features_util.h"
 #include "components/password_manager/core/browser/mock_password_manager_settings_service.h"
@@ -24,10 +23,11 @@
 #include "components/password_manager/core/browser/password_manager_metrics_util.h"
 #include "components/password_manager/core/browser/password_manager_util.h"
 #include "components/password_manager/core/browser/password_store/mock_password_store_interface.h"
+#include "components/password_manager/core/browser/password_store/password_form_converters.h"
+#include "components/password_manager/core/browser/password_store/password_store_consumer.h"
 #include "components/password_manager/core/browser/password_store/test_password_store.h"
 #include "components/password_manager/core/browser/stub_password_manager_client.h"
 #include "components/password_manager/core/browser/sync_username_test_base.h"
-#include "components/password_manager/core/common/password_manager_features.h"
 #include "components/password_manager/core/common/password_manager_pref_names.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/testing_pref_service.h"
@@ -43,112 +43,112 @@ using ::testing::Return;
 namespace password_manager {
 namespace {
 
-PasswordForm CreateForm(const std::string& signon_realm,
-                        const std::string& username,
-                        const std::string& password) {
-  PasswordForm form;
-  form.signon_realm = signon_realm;
-  form.username_value = base::ASCIIToUTF16(username);
-  form.password_value = base::ASCIIToUTF16(password);
-  return form;
+password_manager::StoredCredential CreateForm(const std::string& signon_realm,
+                                              const std::string& username,
+                                              const std::string& password) {
+  password_manager::StoredCredential cred;
+  cred.signon_realm = signon_realm;
+  cred.username_value = base::ASCIIToUTF16(username);
+  cred.password_value = base::ASCIIToUTF16(password);
+  return cred;
 }
 
 void AddMetricsTestData(TestPasswordStore* store) {
-  PasswordForm password_form;
-  password_form.url = GURL("http://example.com");
-  password_form.username_value = u"test1@gmail.com";
-  password_form.password_value = u"test";
-  password_form.signon_realm = "http://example.com/";
-  password_form.times_used_in_html_form = 0;
-  store->AddLogin(password_form);
+  password_manager::StoredCredential credential;
+  credential.url = GURL("http://example.com");
+  credential.username_value = u"test1@gmail.com";
+  credential.password_value = u"test";
+  credential.signon_realm = "http://example.com/";
+  credential.times_used_in_html_form = 0;
+  store->AddLogin(password_manager::CloneStoredCredential(credential));
 
-  password_form.username_value = u"test2@gmail.com";
-  password_form.times_used_in_html_form = 1;
-  store->AddLogin(password_form);
+  credential.username_value = u"test2@gmail.com";
+  credential.times_used_in_html_form = 1;
+  store->AddLogin(password_manager::CloneStoredCredential(credential));
 
-  password_form.url = GURL("http://second.example.com");
-  password_form.signon_realm = "http://second.example.com";
-  password_form.times_used_in_html_form = 3;
-  store->AddLogin(password_form);
+  credential.url = GURL("http://second.example.com");
+  credential.signon_realm = "http://second.example.com";
+  credential.times_used_in_html_form = 3;
+  store->AddLogin(password_manager::CloneStoredCredential(credential));
 
-  password_form.username_value = u"test3@gmail.com";
-  password_form.type = PasswordForm::Type::kGenerated;
-  password_form.times_used_in_html_form = 2;
-  store->AddLogin(password_form);
+  credential.username_value = u"test3@gmail.com";
+  credential.type = PasswordForm::Type::kGenerated;
+  credential.times_used_in_html_form = 2;
+  store->AddLogin(password_manager::CloneStoredCredential(credential));
 
-  password_form.url = GURL("ftp://third.example.com/");
-  password_form.signon_realm = "ftp://third.example.com/";
-  password_form.times_used_in_html_form = 4;
-  password_form.scheme = PasswordForm::Scheme::kOther;
-  store->AddLogin(password_form);
+  credential.url = GURL("ftp://third.example.com/");
+  credential.signon_realm = "ftp://third.example.com/";
+  credential.times_used_in_html_form = 4;
+  credential.scheme = PasswordForm::Scheme::kOther;
+  store->AddLogin(password_manager::CloneStoredCredential(credential));
 
-  password_form.url = GURL("http://second.example.com");
-  password_form.username_value = u"shared@gmail.com";
-  password_form.type = PasswordForm::Type::kReceivedViaSharing;
-  password_form.scheme = PasswordForm::Scheme::kHtml;
-  password_form.times_used_in_html_form = 20;
-  store->AddLogin(password_form);
+  credential.url = GURL("http://second.example.com");
+  credential.username_value = u"shared@gmail.com";
+  credential.type = PasswordForm::Type::kReceivedViaSharing;
+  credential.scheme = PasswordForm::Scheme::kHtml;
+  credential.times_used_in_html_form = 20;
+  store->AddLogin(password_manager::CloneStoredCredential(credential));
 
-  password_form.url = GURL("http://imported.via.cx.example.com");
-  password_form.username_value = u"imported-via-cx@gmail.com";
-  password_form.type = PasswordForm::Type::kImportedViaCredentialExchange;
-  password_form.scheme = PasswordForm::Scheme::kHtml;
-  password_form.times_used_in_html_form = 23;
-  store->AddLogin(password_form);
+  credential.url = GURL("http://imported.via.cx.example.com");
+  credential.username_value = u"imported-via-cx@gmail.com";
+  credential.type = PasswordForm::Type::kImportedViaCredentialExchange;
+  credential.scheme = PasswordForm::Scheme::kHtml;
+  credential.times_used_in_html_form = 23;
+  store->AddLogin(password_manager::CloneStoredCredential(credential));
 
-  password_form.url = GURL("http://fourth.example.com/");
-  password_form.signon_realm = "http://fourth.example.com/";
-  password_form.type = PasswordForm::Type::kFormSubmission;
-  password_form.username_value = u"";
-  password_form.times_used_in_html_form = 10;
-  password_form.scheme = PasswordForm::Scheme::kHtml;
-  store->AddLogin(password_form);
+  credential.url = GURL("http://fourth.example.com/");
+  credential.signon_realm = "http://fourth.example.com/";
+  credential.type = PasswordForm::Type::kFormSubmission;
+  credential.username_value = u"";
+  credential.times_used_in_html_form = 10;
+  credential.scheme = PasswordForm::Scheme::kHtml;
+  store->AddLogin(password_manager::CloneStoredCredential(credential));
 
-  password_form.url = GURL("https://fifth.example.com/");
-  password_form.signon_realm = "https://fifth.example.com/";
-  password_form.username_value = u"";
-  password_form.password_value = u"";
-  password_form.blocked_by_user = true;
-  store->AddLogin(password_form);
+  credential.url = GURL("https://fifth.example.com/");
+  credential.signon_realm = "https://fifth.example.com/";
+  credential.username_value = u"";
+  credential.password_value = u"";
+  credential.blocked_by_user = true;
+  store->AddLogin(password_manager::CloneStoredCredential(credential));
 
-  password_form.url = GURL("https://sixth.example.com/");
-  password_form.signon_realm = "https://sixth.example.com/";
-  password_form.username_value = u"my_username";
-  password_form.password_value = u"my_password";
-  password_form.blocked_by_user = false;
-  store->AddLogin(password_form);
+  credential.url = GURL("https://sixth.example.com/");
+  credential.signon_realm = "https://sixth.example.com/";
+  credential.username_value = u"my_username";
+  credential.password_value = u"my_password";
+  credential.blocked_by_user = false;
+  store->AddLogin(password_manager::CloneStoredCredential(credential));
 
-  password_form.url = GURL();
-  password_form.signon_realm = "android://hash@com.example.android/";
-  password_form.username_value = u"JohnDoe";
-  password_form.password_value = u"my_password";
-  password_form.blocked_by_user = false;
-  store->AddLogin(password_form);
+  credential.url = GURL();
+  credential.signon_realm = "android://hash@com.example.android/";
+  credential.username_value = u"JohnDoe";
+  credential.password_value = u"my_password";
+  credential.blocked_by_user = false;
+  store->AddLogin(password_manager::CloneStoredCredential(credential));
 
-  password_form.username_value = u"JaneDoe";
-  store->AddLogin(password_form);
+  credential.username_value = u"JaneDoe";
+  store->AddLogin(password_manager::CloneStoredCredential(credential));
 
-  password_form.url = GURL("http://rsolomakhin.github.io/autofill/");
-  password_form.signon_realm = "http://rsolomakhin.github.io/";
-  password_form.username_value = u"";
-  password_form.password_value = u"";
-  password_form.blocked_by_user = true;
-  store->AddLogin(password_form);
+  credential.url = GURL("http://rsolomakhin.github.io/autofill/");
+  credential.signon_realm = "http://rsolomakhin.github.io/";
+  credential.username_value = u"";
+  credential.password_value = u"";
+  credential.blocked_by_user = true;
+  store->AddLogin(password_manager::CloneStoredCredential(credential));
 
-  password_form.url = GURL("https://rsolomakhin.github.io/autofill/");
-  password_form.signon_realm = "https://rsolomakhin.github.io/";
-  password_form.blocked_by_user = true;
-  store->AddLogin(password_form);
+  credential.url = GURL("https://rsolomakhin.github.io/autofill/");
+  credential.signon_realm = "https://rsolomakhin.github.io/";
+  credential.blocked_by_user = true;
+  store->AddLogin(password_manager::CloneStoredCredential(credential));
 
-  password_form.url = GURL("http://rsolomakhin.github.io/autofill/123");
-  password_form.signon_realm = "http://rsolomakhin.github.io/";
-  password_form.blocked_by_user = true;
-  store->AddLogin(password_form);
+  credential.url = GURL("http://rsolomakhin.github.io/autofill/123");
+  credential.signon_realm = "http://rsolomakhin.github.io/";
+  credential.blocked_by_user = true;
+  store->AddLogin(password_manager::CloneStoredCredential(credential));
 
-  password_form.url = GURL("https://rsolomakhin.github.io/autofill/1234");
-  password_form.signon_realm = "https://rsolomakhin.github.io/";
-  password_form.blocked_by_user = true;
-  store->AddLogin(password_form);
+  credential.url = GURL("https://rsolomakhin.github.io/autofill/1234");
+  credential.signon_realm = "https://rsolomakhin.github.io/";
+  credential.blocked_by_user = true;
+  store->AddLogin(std::move(credential));
 }
 
 class StoreMetricsReporterTest : public SyncUsernameTestBase {
@@ -158,13 +158,6 @@ class StoreMetricsReporterTest : public SyncUsernameTestBase {
   ~StoreMetricsReporterTest() override = default;
 
   void SetUp() override {
-    // Mock OSCrypt. There is a call to OSCrypt inside HashPasswordManager so it
-    // should be mocked.
-    OSCryptMocker::SetUp();
-
-    feature_list_.InitWithFeatures({features::kPasswordReuseDetectionEnabled},
-                                   {});
-
     prefs_.registry()->RegisterBooleanPref(prefs::kCredentialsEnableService,
                                            false);
     prefs_.registry()->RegisterBooleanPref(
@@ -191,15 +184,7 @@ class StoreMetricsReporterTest : public SyncUsernameTestBase {
     prefs_.registry()->RegisterBooleanPref(
         prefs::kBiometricAuthenticationBeforeFilling, false);
 #endif
-#if BUILDFLAG(IS_ANDROID)
-    prefs_.registry()->RegisterIntegerPref(
-        prefs::kPasswordsUseUPMLocalAndSeparateStores,
-        static_cast<int>(
-            password_manager::prefs::UseUpmLocalAndSeparateStoresState::kOff));
-#endif
   }
-
-  void TearDown() override { OSCryptMocker::TearDown(); }
 
   PrefService* pref_service() { return &prefs_; }
 
@@ -208,7 +193,6 @@ class StoreMetricsReporterTest : public SyncUsernameTestBase {
   }
 
  protected:
-  base::test::ScopedFeatureList feature_list_;
   TestingPrefServiceSimple prefs_;
   testing::NiceMock<MockPasswordManagerSettingsService> settings_service_;
 };
@@ -343,10 +327,10 @@ INSTANTIATE_TEST_SUITE_P(All, StoreMetricsReporterTestWithParams, Bool());
 TEST_F(StoreMetricsReporterTest, ReportMetricsAtMostOncePerDay) {
   auto profile_store =
       base::MakeRefCounted<TestPasswordStore>(IsAccountStore(false));
-  profile_store->Init(&prefs_, /*affiliated_match_helper=*/nullptr);
+  profile_store->Init();
   auto account_store =
       base::MakeRefCounted<TestPasswordStore>(IsAccountStore(true));
-  account_store->Init(&prefs_, /*affiliated_match_helper=*/nullptr);
+  account_store->Init();
 
   base::HistogramTester histogram_tester;
   base::test::TestFuture<void> done_callback_future;
@@ -394,10 +378,10 @@ TEST_F(StoreMetricsReporterTest, ReportMetricsAtMostOncePerDay) {
 TEST_F(StoreMetricsReporterTest, ReportPasswordLossMetricForAccount) {
   auto profile_store =
       base::MakeRefCounted<TestPasswordStore>(IsAccountStore(false));
-  profile_store->Init(&prefs_, /*affiliated_match_helper=*/nullptr);
+  profile_store->Init();
   auto account_store =
       base::MakeRefCounted<TestPasswordStore>(IsAccountStore(true));
-  account_store->Init(&prefs_, /*affiliated_match_helper=*/nullptr);
+  account_store->Init();
 
   // Setting up the previous password counts.
   pref_service()->SetInteger(prefs::kTotalPasswordsAvailableForAccount, 10);
@@ -433,10 +417,10 @@ TEST_F(StoreMetricsReporterTest, ReportPasswordLossMetricForAccount) {
 TEST_F(StoreMetricsReporterTest, ReportPasswordLossMetricForProfile) {
   auto profile_store =
       base::MakeRefCounted<TestPasswordStore>(IsAccountStore(false));
-  profile_store->Init(&prefs_, /*affiliated_match_helper=*/nullptr);
+  profile_store->Init();
   auto account_store =
       base::MakeRefCounted<TestPasswordStore>(IsAccountStore(true));
-  account_store->Init(&prefs_, /*affiliated_match_helper=*/nullptr);
+  account_store->Init();
 
   // Setting up the previous password counts.
   pref_service()->SetInteger(prefs::kTotalPasswordsAvailableForAccount, 0);
@@ -469,10 +453,88 @@ TEST_F(StoreMetricsReporterTest, ReportPasswordLossMetricForProfile) {
   RunUntilIdle();
 }
 
+TEST_F(StoreMetricsReporterTest,
+       PasswordStoreErrorNotReportedToExcludingStoreErrorsForProfile) {
+  auto profile_store =
+      base::MakeRefCounted<TestPasswordStore>(IsAccountStore(false));
+  profile_store->Init();
+  AddMetricsTestData(profile_store.get());
+  profile_store->ReturnErrorOnRequest(
+      PasswordStoreBackendError(PasswordStoreBackendErrorType::kUncategorized));
+
+  auto account_store =
+      base::MakeRefCounted<TestPasswordStore>(IsAccountStore(true));
+  account_store->Init();
+  AddMetricsTestData(account_store.get());
+
+  base::HistogramTester histogram_tester;
+  StoreMetricsReporter reporter(
+      profile_store.get(), account_store.get(), sync_service(), &prefs_,
+      /*password_reuse_manager=*/nullptr, &settings_service(),
+      /*done_callback*/ base::DoNothing());
+  // Wait for the metrics to get reported, which involves queries to the
+  // stores, i.e. to background task runners.
+  RunUntilIdle();
+
+  histogram_tester.ExpectTotalCount(
+      "PasswordManager.ProfileStore.TotalAccountsHiRes3."
+      "ByType.Overall.ExcludingStoreErrors",
+      0);
+  histogram_tester.ExpectTotalCount(
+      "PasswordManager.AccountStore.TotalAccountsHiRes3."
+      "ByType.Overall.ExcludingStoreErrors",
+      1);
+
+  account_store->ShutdownOnUIThread();
+  profile_store->ShutdownOnUIThread();
+  // Make sure the PasswordStore destruction parts on the background sequence
+  // finish, otherwise we get memory leak reports.
+  RunUntilIdle();
+}
+
+TEST_F(StoreMetricsReporterTest,
+       PasswordStoreErrorNotReportedToExcludingStoreErrorsForAccount) {
+  auto profile_store =
+      base::MakeRefCounted<TestPasswordStore>(IsAccountStore(false));
+  profile_store->Init();
+  AddMetricsTestData(profile_store.get());
+
+  auto account_store =
+      base::MakeRefCounted<TestPasswordStore>(IsAccountStore(true));
+  account_store->Init();
+  AddMetricsTestData(account_store.get());
+  account_store->ReturnErrorOnRequest(
+      PasswordStoreBackendError(PasswordStoreBackendErrorType::kUncategorized));
+
+  base::HistogramTester histogram_tester;
+  StoreMetricsReporter reporter(
+      profile_store.get(), account_store.get(), sync_service(), &prefs_,
+      /*password_reuse_manager=*/nullptr, &settings_service(),
+      /*done_callback*/ base::DoNothing());
+  // Wait for the metrics to get reported, which involves queries to the
+  // stores, i.e. to background task runners.
+  RunUntilIdle();
+
+  histogram_tester.ExpectTotalCount(
+      "PasswordManager.ProfileStore.TotalAccountsHiRes3."
+      "ByType.Overall.ExcludingStoreErrors",
+      1);
+  histogram_tester.ExpectTotalCount(
+      "PasswordManager.AccountStore.TotalAccountsHiRes3."
+      "ByType.Overall.ExcludingStoreErrors",
+      0);
+
+  account_store->ShutdownOnUIThread();
+  profile_store->ShutdownOnUIThread();
+  // Make sure the PasswordStore destruction parts on the background sequence
+  // finish, otherwise we get memory leak reports.
+  RunUntilIdle();
+}
+
 TEST_F(StoreMetricsReporterTest, ReportAccountsPerSiteHiResMetricsTest) {
   auto profile_store =
       base::MakeRefCounted<TestPasswordStore>(IsAccountStore(false));
-  profile_store->Init(&prefs_, /*affiliated_match_helper=*/nullptr);
+  profile_store->Init();
   AddMetricsTestData(profile_store.get());
   // Note: We also create and populate an account store here and instruct it to
   // report metrics, even though all the checks below only test the profile DB.
@@ -480,7 +542,7 @@ TEST_F(StoreMetricsReporterTest, ReportAccountsPerSiteHiResMetricsTest) {
   // histograms.
   auto account_store =
       base::MakeRefCounted<TestPasswordStore>(IsAccountStore(true));
-  account_store->Init(&prefs_, /*affiliated_match_helper=*/nullptr);
+  account_store->Init();
   AddMetricsTestData(account_store.get());
 
   base::HistogramTester histogram_tester;
@@ -564,12 +626,10 @@ TEST_F(StoreMetricsReporterTest, ReportPasswordProtectedMetricsTest) {
 
   auto profile_store =
       base::MakeRefCounted<TestPasswordStore>(IsAccountStore(false));
-  profile_store->Init(&prefs_,
-                      /*affiliated_match_helper=*/nullptr);
+  profile_store->Init();
   auto account_store =
       base::MakeRefCounted<TestPasswordStore>(IsAccountStore(true));
-  account_store->Init(&prefs_,
-                      /*affiliated_match_helper=*/nullptr);
+  account_store->Init();
 
   // Fill Password Store with 1000 account and profile logins
   const std::string kRealm = "https://example.com";
@@ -649,19 +709,19 @@ TEST_F(StoreMetricsReporterTest,
   const std::string kRealm3 = "https://example3.com";
   auto profile_store =
       base::MakeRefCounted<TestPasswordStore>(IsAccountStore(false));
-  profile_store->Init(&prefs_,
-                      /*affiliated_match_helper=*/nullptr);
+  profile_store->Init();
   profile_store->AddLogin(CreateForm(kRealm1, "aprofileuser", "aprofilepass"));
-  profile_store->AddLogin(password_manager_util::MakeNormalizedBlocklistedForm(
-      PasswordFormDigest(PasswordForm::Scheme::kHtml, kRealm2, GURL(kRealm2))));
+  profile_store->AddLogin(password_manager::FromPasswordForm(
+      password_manager_util::MakeNormalizedBlocklistedForm(PasswordFormDigest(
+          PasswordForm::Scheme::kHtml, kRealm2, GURL(kRealm2)))));
   auto account_store =
       base::MakeRefCounted<TestPasswordStore>(IsAccountStore(true));
-  account_store->Init(&prefs_,
-                      /*affiliated_match_helper=*/nullptr);
+  account_store->Init();
   account_store->AddLogin(
       CreateForm(kRealm1, "anaccountuser", "anaccountpass"));
-  account_store->AddLogin(password_manager_util::MakeNormalizedBlocklistedForm(
-      PasswordFormDigest(PasswordForm::Scheme::kHtml, kRealm3, GURL(kRealm3))));
+  account_store->AddLogin(password_manager::FromPasswordForm(
+      password_manager_util::MakeNormalizedBlocklistedForm(PasswordFormDigest(
+          PasswordForm::Scheme::kHtml, kRealm3, GURL(kRealm3)))));
 
   base::HistogramTester histogram_tester;
   StoreMetricsReporter reporter(
@@ -691,7 +751,7 @@ TEST_F(StoreMetricsReporterTest,
 TEST_F(StoreMetricsReporterTest, ReportTotalAccountsHiResMetricsTest) {
   auto profile_store =
       base::MakeRefCounted<TestPasswordStore>(IsAccountStore(false));
-  profile_store->Init(&prefs_, /*affiliated_match_helper=*/nullptr);
+  profile_store->Init();
   AddMetricsTestData(profile_store.get());
   // Note: We also create and populate an account store here and instruct it to
   // report metrics, even though all the checks below only test the profile DB.
@@ -699,7 +759,7 @@ TEST_F(StoreMetricsReporterTest, ReportTotalAccountsHiResMetricsTest) {
   // histograms.
   auto account_store =
       base::MakeRefCounted<TestPasswordStore>(IsAccountStore(true));
-  account_store->Init(&prefs_, /*affiliated_match_helper=*/nullptr);
+  account_store->Init();
   AddMetricsTestData(account_store.get());
 
   base::HistogramTester histogram_tester;
@@ -748,6 +808,11 @@ TEST_F(StoreMetricsReporterTest, ReportTotalAccountsHiResMetricsTest) {
 
   histogram_tester.ExpectUniqueSample(
       "PasswordManager.ProfileStore.TotalAccountsHiRes3."
+      "ByType.Overall.ExcludingStoreErrors",
+      11, 1);
+
+  histogram_tester.ExpectUniqueSample(
+      "PasswordManager.ProfileStore.TotalAccountsHiRes3."
       "ByType.Overall",
       11, 1);
 
@@ -792,7 +857,7 @@ TEST_F(StoreMetricsReporterTest, ReportTotalAccountsHiResMetricsTest) {
 TEST_F(StoreMetricsReporterTest, ReportTimesPasswordUsedMetricsTest) {
   auto profile_store =
       base::MakeRefCounted<TestPasswordStore>(IsAccountStore(false));
-  profile_store->Init(&prefs_, /*affiliated_match_helper=*/nullptr);
+  profile_store->Init();
   AddMetricsTestData(profile_store.get());
   // Note: We also create and populate an account store here and instruct it to
   // report metrics, even though all the checks below only test the profile DB.
@@ -800,7 +865,7 @@ TEST_F(StoreMetricsReporterTest, ReportTimesPasswordUsedMetricsTest) {
   // histograms.
   auto account_store =
       base::MakeRefCounted<TestPasswordStore>(IsAccountStore(true));
-  account_store->Init(&prefs_, /*affiliated_match_helper=*/nullptr);
+  account_store->Init();
   AddMetricsTestData(account_store.get());
 
   base::HistogramTester histogram_tester;
@@ -903,7 +968,7 @@ TEST_F(StoreMetricsReporterTest,
 
   auto profile_store =
       base::MakeRefCounted<TestPasswordStore>(IsAccountStore(false));
-  profile_store->Init(&prefs_, /*affiliated_match_helper=*/nullptr);
+  profile_store->Init();
   AddMetricsTestData(profile_store.get());
   // Note: We also create and populate an account store here and instruct it to
   // report metrics, even though all the checks below only test the profile DB.
@@ -911,7 +976,7 @@ TEST_F(StoreMetricsReporterTest,
   // histograms.
   auto account_store =
       base::MakeRefCounted<TestPasswordStore>(IsAccountStore(true));
-  account_store->Init(&prefs_, /*affiliated_match_helper=*/nullptr);
+  account_store->Init();
   AddMetricsTestData(account_store.get());
 
   base::HistogramTester histogram_tester;
@@ -992,7 +1057,7 @@ TEST_F(StoreMetricsReporterTest,
 
   auto profile_store =
       base::MakeRefCounted<TestPasswordStore>(IsAccountStore(false));
-  profile_store->Init(&prefs_, /*affiliated_match_helper=*/nullptr);
+  profile_store->Init();
   AddMetricsTestData(profile_store.get());
   // Note: We also create and populate an account store here and instruct it to
   // report metrics, even though all the checks below only test the profile DB.
@@ -1000,7 +1065,7 @@ TEST_F(StoreMetricsReporterTest,
   // histograms.
   auto account_store =
       base::MakeRefCounted<TestPasswordStore>(IsAccountStore(true));
-  account_store->Init(&prefs_, /*affiliated_match_helper=*/nullptr);
+  account_store->Init();
   AddMetricsTestData(account_store.get());
 
   base::HistogramTester histogram_tester;
@@ -1035,6 +1100,11 @@ TEST_F(StoreMetricsReporterTest,
       "PasswordManager.AccountStore.TotalAccountsHiRes3."
       "ByType.Overall."
       "WithoutCustomPassphrase",
+      11, 1);
+
+  histogram_tester.ExpectUniqueSample(
+      "PasswordManager.AccountStore.TotalAccountsHiRes3."
+      "ByType.Overall.ExcludingStoreErrors",
       11, 1);
 
   histogram_tester.ExpectUniqueSample(
@@ -1088,7 +1158,7 @@ TEST_F(StoreMetricsReporterTest,
 
   auto profile_store =
       base::MakeRefCounted<TestPasswordStore>(IsAccountStore(false));
-  profile_store->Init(&prefs_, /*affiliated_match_helper=*/nullptr);
+  profile_store->Init();
   AddMetricsTestData(profile_store.get());
   // Note: We also create and populate an account store here and instruct it to
   // report metrics, even though all the checks below only test the profile DB.
@@ -1096,7 +1166,7 @@ TEST_F(StoreMetricsReporterTest,
   // histograms.
   auto account_store =
       base::MakeRefCounted<TestPasswordStore>(IsAccountStore(true));
-  account_store->Init(&prefs_, /*affiliated_match_helper=*/nullptr);
+  account_store->Init();
   AddMetricsTestData(account_store.get());
 
   base::HistogramTester histogram_tester;
@@ -1183,35 +1253,35 @@ TEST_F(StoreMetricsReporterTest,
 TEST_F(StoreMetricsReporterTest, DuplicatesMetrics_NoDuplicates) {
   auto profile_store =
       base::MakeRefCounted<TestPasswordStore>(IsAccountStore(false));
-  profile_store->Init(&prefs_, /*affiliated_match_helper=*/nullptr);
+  profile_store->Init();
 
   // No duplicate.
-  PasswordForm password_form;
-  password_form.signon_realm = "http://example1.com/";
-  password_form.url = GURL("http://example1.com/");
-  password_form.username_element = u"userelem_1";
-  password_form.username_value = u"username_1";
-  password_form.password_value = u"password_1";
-  profile_store->AddLogin(password_form);
+  StoredCredential credential;
+  credential.signon_realm = "http://example1.com/";
+  credential.url = GURL("http://example1.com/");
+  credential.username_element = u"userelem_1";
+  credential.username_value = u"username_1";
+  credential.password_value = u"password_1";
+  profile_store->AddLogin(CloneStoredCredential(credential));
 
   // Different username -> no duplicate.
-  password_form.signon_realm = "http://example2.com/";
-  password_form.url = GURL("http://example2.com/");
-  password_form.username_value = u"username_1";
-  profile_store->AddLogin(password_form);
-  password_form.username_value = u"username_2";
-  profile_store->AddLogin(password_form);
+  credential.signon_realm = "http://example2.com/";
+  credential.url = GURL("http://example2.com/");
+  credential.username_value = u"username_1";
+  profile_store->AddLogin(CloneStoredCredential(credential));
+  credential.username_value = u"username_2";
+  profile_store->AddLogin(CloneStoredCredential(credential));
 
   // Blocklisted forms don't count as duplicates (neither against other
   // blocklisted forms nor against actual saved credentials).
-  password_form.signon_realm = "http://example3.com/";
-  password_form.url = GURL("http://example3.com/");
-  password_form.username_value = u"username_1";
-  profile_store->AddLogin(password_form);
-  password_form.blocked_by_user = true;
-  password_form.username_value = u"";
-  password_form.password_value = u"";
-  profile_store->AddLogin(password_form);
+  credential.signon_realm = "http://example3.com/";
+  credential.url = GURL("http://example3.com/");
+  credential.username_value = u"username_1";
+  profile_store->AddLogin(CloneStoredCredential(credential));
+  credential.blocked_by_user = true;
+  credential.username_value = u"";
+  credential.password_value = u"";
+  profile_store->AddLogin(CloneStoredCredential(credential));
 
   base::HistogramTester histogram_tester;
   StoreMetricsReporter reporter(
@@ -1244,29 +1314,29 @@ TEST_F(StoreMetricsReporterTest, DuplicatesMetrics_NoDuplicates) {
 TEST_F(StoreMetricsReporterTest, DuplicatesMetrics_ExactDuplicates) {
   auto profile_store =
       base::MakeRefCounted<TestPasswordStore>(IsAccountStore(false));
-  profile_store->Init(&prefs_, /*affiliated_match_helper=*/nullptr);
+  profile_store->Init();
 
   // Add some PasswordForms that are "exact" duplicates (only the
   // username_element is different, which doesn't matter).
-  PasswordForm password_form;
-  password_form.signon_realm = "http://example1.com/";
-  password_form.url = GURL("http://example1.com/");
-  password_form.username_element = u"userelem_1";
-  password_form.username_value = u"username_1";
-  profile_store->AddLogin(password_form);
-  password_form.username_element = u"userelem_2";
-  profile_store->AddLogin(password_form);
+  StoredCredential credential;
+  credential.signon_realm = "http://example1.com/";
+  credential.url = GURL("http://example1.com/");
+  credential.username_element = u"userelem_1";
+  credential.username_value = u"username_1";
+  profile_store->AddLogin(CloneStoredCredential(credential));
+  credential.username_element = u"userelem_2";
+  profile_store->AddLogin(CloneStoredCredential(credential));
   // The number of "identical" credentials doesn't matter; we count the *sets*
   // of duplicates.
-  password_form.username_element = u"userelem_3";
-  profile_store->AddLogin(password_form);
+  credential.username_element = u"userelem_3";
+  profile_store->AddLogin(CloneStoredCredential(credential));
 
   // Similarly, origin doesn't make forms "different" either.
-  password_form.signon_realm = "http://example2.com/";
-  password_form.url = GURL("http://example2.com/path1");
-  profile_store->AddLogin(password_form);
-  password_form.url = GURL("http://example2.com/path2");
-  profile_store->AddLogin(password_form);
+  credential.signon_realm = "http://example2.com/";
+  credential.url = GURL("http://example2.com/path1");
+  profile_store->AddLogin(CloneStoredCredential(credential));
+  credential.url = GURL("http://example2.com/path2");
+  profile_store->AddLogin(CloneStoredCredential(credential));
 
   base::HistogramTester histogram_tester;
   StoreMetricsReporter reporter(
@@ -1300,27 +1370,27 @@ TEST_F(StoreMetricsReporterTest, DuplicatesMetrics_ExactDuplicates) {
 TEST_F(StoreMetricsReporterTest, DuplicatesMetrics_MismatchedDuplicates) {
   auto profile_store =
       base::MakeRefCounted<TestPasswordStore>(IsAccountStore(false));
-  profile_store->Init(&prefs_, /*affiliated_match_helper=*/nullptr);
+  profile_store->Init();
 
   // Mismatched duplicates: Identical except for the password.
-  PasswordForm password_form;
-  password_form.signon_realm = "http://example1.com/";
-  password_form.url = GURL("http://example1.com/");
-  password_form.username_element = u"userelem_1";
-  password_form.username_value = u"username_1";
-  password_form.password_element = u"passelem_1";
-  password_form.password_value = u"password_1";
-  profile_store->AddLogin(password_form);
+  StoredCredential credential;
+  credential.signon_realm = "http://example1.com/";
+  credential.url = GURL("http://example1.com/");
+  credential.username_element = u"userelem_1";
+  credential.username_value = u"username_1";
+  credential.password_element = u"passelem_1";
+  credential.password_value = u"password_1";
+  profile_store->AddLogin(CloneStoredCredential(credential));
   // Note: password_value is not part of the unique key, so we need to change
   // some other value to be able to insert the duplicate into the DB.
-  password_form.password_element = u"passelem_2";
-  password_form.password_value = u"password_2";
-  profile_store->AddLogin(password_form);
+  credential.password_element = u"passelem_2";
+  credential.password_value = u"password_2";
+  profile_store->AddLogin(CloneStoredCredential(credential));
   // The number of "identical" credentials doesn't matter; we count the *sets*
   // of duplicates.
-  password_form.password_element = u"passelem_3";
-  password_form.password_value = u"password_3";
-  profile_store->AddLogin(password_form);
+  credential.password_element = u"passelem_3";
+  credential.password_value = u"password_3";
+  profile_store->AddLogin(CloneStoredCredential(credential));
 
   base::HistogramTester histogram_tester;
   StoreMetricsReporter reporter(
@@ -1353,23 +1423,13 @@ TEST_F(StoreMetricsReporterTest, DuplicatesMetrics_MismatchedDuplicates) {
 // A test that covers multi-store metrics, which are recorded by the
 // StoreMetricsReporter directly.
 TEST_F(StoreMetricsReporterTest, MultiStoreMetrics) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(
-      syncer::kEnablePasswordsAccountStorageForSyncingUsers);
-#if BUILDFLAG(IS_ANDROID)
-  prefs_.SetInteger(
-      prefs::kPasswordsUseUPMLocalAndSeparateStores,
-      static_cast<int>(
-          password_manager::prefs::UseUpmLocalAndSeparateStoresState::kOn));
-#endif  // BUILDFLAG(IS_ANDROID)
-
   auto profile_store =
       base::MakeRefCounted<TestPasswordStore>(IsAccountStore(false));
   auto account_store =
       base::MakeRefCounted<TestPasswordStore>(IsAccountStore(true));
 
-  profile_store->Init(&prefs_, /*affiliated_match_helper=*/nullptr);
-  account_store->Init(&prefs_, /*affiliated_match_helper=*/nullptr);
+  profile_store->Init();
+  account_store->Init();
 
   // Simulate account store active.
   test_sync_service()->SetSignedIn(signin::ConsentLevel::kSignin);
@@ -1419,74 +1479,70 @@ TEST_F(StoreMetricsReporterTest, MultiStoreMetrics) {
   profile_store->AddLogin(
       CreateForm(kRealm2, "identicaluser1", "identicalpass1"));
 
-  for (bool syncing : {false, true}) {
-    for (bool account_storage_enabled : {false, true}) {
-      test_sync_service()->SetSignedIn(syncing ? signin::ConsentLevel::kSync
-                                               : signin::ConsentLevel::kSignin);
-      ASSERT_EQ(test_sync_service()->IsSyncFeatureEnabled(), syncing);
-      if (account_storage_enabled) {
-        test_sync_service()->GetUserSettings()->SetSelectedTypes(
-            /*sync_everything=*/true, syncer::UserSelectableTypeSet::All());
-      } else {
-        test_sync_service()->GetUserSettings()->SetSelectedTypes(
-            /*sync_everything=*/false, syncer::UserSelectableTypeSet());
-      }
-      ASSERT_EQ(features_util::IsAccountStorageEnabled(pref_service(),
-                                                       sync_service()),
-                account_storage_enabled);
+  for (bool account_storage_enabled : {false, true}) {
+    test_sync_service()->SetSignedIn(signin::ConsentLevel::kSignin);
+    ASSERT_FALSE(test_sync_service()->IsSyncFeatureEnabled());
+    if (account_storage_enabled) {
+      test_sync_service()->GetUserSettings()->SetSelectedTypes(
+          /*sync_everything=*/true, syncer::UserSelectableTypeSet::All());
+    } else {
+      test_sync_service()->GetUserSettings()->SetSelectedTypes(
+          /*sync_everything=*/false, syncer::UserSelectableTypeSet());
+    }
+    ASSERT_EQ(features_util::IsAccountStorageActive(sync_service()),
+              account_storage_enabled);
 
-      // In every pass in the loop, StoreMetricsReporter uses the same pref
-      // service. Set the kLastTimePasswordStoreMetricsReported to make sure
-      // metrics will be reported in the second pass too.
-      prefs_.SetDouble(
-          password_manager::prefs::kLastTimePasswordStoreMetricsReported, 0.0);
+    // In every pass in the loop, StoreMetricsReporter uses the same pref
+    // service. Set the kLastTimePasswordStoreMetricsReported to make sure
+    // metrics will be reported in the second pass too.
+    prefs_.SetDouble(
+        password_manager::prefs::kLastTimePasswordStoreMetricsReported, 0.0);
 
-      base::HistogramTester histogram_tester;
+    base::HistogramTester histogram_tester;
 
-      StoreMetricsReporter reporter(
-          profile_store.get(), account_store.get(), sync_service(), &prefs_,
-          /*password_reuse_manager=*/nullptr, &settings_service(),
-          /*done_callback*/ base::DoNothing());
+    StoreMetricsReporter reporter(
+        profile_store.get(), account_store.get(), sync_service(), &prefs_,
+        /*password_reuse_manager=*/nullptr, &settings_service(),
+        /*done_callback*/ base::DoNothing());
 
-      // Wait for the metrics to get reported, which involves queries to the
-      // stores, i.e. to background task runners.
-      RunUntilIdle();
+    // Wait for the metrics to get reported, which involves queries to the
+    // stores, i.e. to background task runners.
+    RunUntilIdle();
 
-      if (account_storage_enabled) {
-        histogram_tester.ExpectUniqueSample(
-            "PasswordManager.AccountStoreVsProfileStore4."
-            "Additional",
-            2, 1);
-        histogram_tester.ExpectUniqueSample(
-            "PasswordManager.AccountStoreVsProfileStore4."
-            "Missing",
-            4, 1);
-        histogram_tester.ExpectUniqueSample(
-            "PasswordManager.AccountStoreVsProfileStore4."
-            "Identical",
-            2, 1);
-        histogram_tester.ExpectUniqueSample(
-            "PasswordManager.AccountStoreVsProfileStore4."
-            "Conflicting",
-            1, 1);
-      } else {
-        histogram_tester.ExpectTotalCount(
-            "PasswordManager.AccountStoreVsProfileStore4."
-            "Additional",
-            0);
-        histogram_tester.ExpectTotalCount(
-            "PasswordManager.AccountStoreVsProfileStore4."
-            "Missing",
-            0);
-        histogram_tester.ExpectTotalCount(
-            "PasswordManager.AccountStoreVsProfileStore4."
-            "Identical",
-            0);
-        histogram_tester.ExpectTotalCount(
-            "PasswordManager.AccountStoreVsProfileStore4."
-            "Conflicting",
-            0);
-      }
+    if (account_storage_enabled) {
+      histogram_tester.ExpectUniqueSample(
+          "PasswordManager.AccountStoreVsProfileStore4."
+          "Additional",
+          2, 1);
+      histogram_tester.ExpectUniqueSample(
+          "PasswordManager.AccountStoreVsProfileStore4."
+          "Missing",
+          4, 1);
+      histogram_tester.ExpectUniqueSample(
+          "PasswordManager.AccountStoreVsProfileStore4."
+          "Identical",
+          2, 1);
+      histogram_tester.ExpectUniqueSample(
+          "PasswordManager.AccountStoreVsProfileStore4."
+          "Conflicting",
+          1, 1);
+    } else {
+      histogram_tester.ExpectTotalCount(
+          "PasswordManager.AccountStoreVsProfileStore4."
+          "Additional",
+          0);
+      histogram_tester.ExpectTotalCount(
+          "PasswordManager.AccountStoreVsProfileStore4."
+          "Missing",
+          0);
+      histogram_tester.ExpectTotalCount(
+          "PasswordManager.AccountStoreVsProfileStore4."
+          "Identical",
+          0);
+      histogram_tester.ExpectTotalCount(
+          "PasswordManager.AccountStoreVsProfileStore4."
+          "Conflicting",
+          0);
     }
   }
 
@@ -1537,52 +1593,52 @@ TEST_F(StoreMetricsReporterTest, ReportMetricsForAdvancedProtection) {
 TEST_F(StoreMetricsReporterTest, ReportPasswordNoteMetrics) {
   auto profile_store =
       base::MakeRefCounted<TestPasswordStore>(IsAccountStore(false));
-  profile_store->Init(&prefs_, /*affiliated_match_helper=*/nullptr);
+  profile_store->Init();
 
-  PasswordForm password_form;
-  password_form.url = GURL("http://example.com");
-  password_form.username_value = u"test1@gmail.com";
-  password_form.notes = {PasswordNote(u"note", base::Time::Now())};
-  profile_store->AddLogin(password_form);
+  StoredCredential credential;
+  credential.url = GURL("http://example.com");
+  credential.username_value = u"test1@gmail.com";
+  credential.notes = {PasswordNote(u"note", base::Time::Now())};
+  profile_store->AddLogin(CloneStoredCredential(credential));
   // ProfileStore - CountCredentialsWithNonEmptyNotes2: 1
 
-  password_form.username_value = u"test2@gmail.com";
-  password_form.notes = {PasswordNote(u"another note", base::Time::Now()),
-                         PasswordNote(std::u16string(), base::Time::Now())};
-  profile_store->AddLogin(password_form);
+  credential.username_value = u"test2@gmail.com";
+  credential.notes = {PasswordNote(u"another note", base::Time::Now()),
+                      PasswordNote(std::u16string(), base::Time::Now())};
+  profile_store->AddLogin(CloneStoredCredential(credential));
   // ProfileStore - CountCredentialsWithNonEmptyNotes2: 2
 
-  password_form.username_value = u"test3@gmail.com";
-  password_form.notes = {PasswordNote(std::u16string(), base::Time::Now()),
-                         PasswordNote(u"some note", base::Time::Now())};
-  profile_store->AddLogin(password_form);
+  credential.username_value = u"test3@gmail.com";
+  credential.notes = {PasswordNote(std::u16string(), base::Time::Now()),
+                      PasswordNote(u"some note", base::Time::Now())};
+  profile_store->AddLogin(CloneStoredCredential(credential));
   // ProfileStore -  CountCredentialsWithNonEmptyNotes2: 3
 
-  password_form.username_value = u"test4@gmail.com";
-  password_form.notes = {PasswordNote(std::u16string(), base::Time::Now())};
-  profile_store->AddLogin(password_form);
+  credential.username_value = u"test4@gmail.com";
+  credential.notes = {PasswordNote(std::u16string(), base::Time::Now())};
+  profile_store->AddLogin(CloneStoredCredential(credential));
   // ProfileStore - CountCredentialsWithNonEmptyNotes2: 3
 
-  password_form.username_value = u"test5@gmail.com";
-  password_form.notes = {};
-  profile_store->AddLogin(password_form);
+  credential.username_value = u"test5@gmail.com";
+  credential.notes = {};
+  profile_store->AddLogin(CloneStoredCredential(credential));
   // ProfileStore - CountCredentialsWithNonEmptyNotes2: 3
 
   auto account_store =
       base::MakeRefCounted<TestPasswordStore>(IsAccountStore(true));
-  account_store->Init(&prefs_, /*affiliated_match_helper=*/nullptr);
+  account_store->Init();
 
-  account_store->AddLogin(password_form);
+  account_store->AddLogin(CloneStoredCredential(credential));
   // AccountStore - CountCredentialsWithNonEmptyNotes2: 0
 
-  password_form.username_value = u"test6@gmail.com";
-  password_form.notes = {PasswordNote(std::u16string(), base::Time::Now())};
-  account_store->AddLogin(password_form);
+  credential.username_value = u"test6@gmail.com";
+  credential.notes = {PasswordNote(std::u16string(), base::Time::Now())};
+  account_store->AddLogin(CloneStoredCredential(credential));
   // AccountStore - CountCredentialsWithNonEmptyNotes2: 0
 
-  password_form.username_value = u"test7@gmail.com";
-  password_form.notes = {PasswordNote(u"note", base::Time::Now())};
-  account_store->AddLogin(password_form);
+  credential.username_value = u"test7@gmail.com";
+  credential.notes = {PasswordNote(u"note", base::Time::Now())};
+  account_store->AddLogin(CloneStoredCredential(credential));
   // AccountStore - CountCredentialsWithNonEmptyNotes2: 1
 
   base::HistogramTester histogram_tester;
@@ -1627,25 +1683,25 @@ TEST_F(StoreMetricsReporterTest, ReportPasswordNoteMetrics) {
 TEST_F(StoreMetricsReporterTest, ReportPasswordInsecureCredentialMetrics) {
   auto profile_store =
       base::MakeRefCounted<TestPasswordStore>(IsAccountStore(false));
-  profile_store->Init(&prefs_, /*affiliated_match_helper=*/nullptr);
+  profile_store->Init();
 
   const std::string kRealm1 = "https://example.com";
 
-  PasswordForm secure_password = CreateForm(kRealm1, "user", "pass");
-  profile_store->AddLogin(secure_password);
+  StoredCredential secure_password = CreateForm(kRealm1, "user", "pass");
+  profile_store->AddLogin(std::move(secure_password));
 
-  PasswordForm leaked_password = CreateForm(kRealm1, "user2", "pass");
+  StoredCredential leaked_password = CreateForm(kRealm1, "user2", "pass");
   leaked_password.password_issues.insert(
       {InsecureType::kLeaked, InsecurityMetadata()});
-  profile_store->AddLogin(leaked_password);
+  profile_store->AddLogin(std::move(leaked_password));
 
-  PasswordForm phished_and_leaked_password =
+  StoredCredential phished_and_leaked_password =
       CreateForm(kRealm1, "user3", "pass");
   phished_and_leaked_password.password_issues.insert(
       {InsecureType::kLeaked, InsecurityMetadata()});
   phished_and_leaked_password.password_issues.insert(
       {InsecureType::kPhished, InsecurityMetadata()});
-  profile_store->AddLogin(phished_and_leaked_password);
+  profile_store->AddLogin(std::move(phished_and_leaked_password));
 
   base::HistogramTester histogram_tester;
   StoreMetricsReporter reporter(

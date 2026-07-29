@@ -4,82 +4,98 @@
 
 package org.chromium.chrome.browser.hub;
 
+import static org.chromium.build.NullUtil.assertNonNull;
+import static org.chromium.build.NullUtil.assumeNonNull;
 import static org.chromium.chrome.browser.hub.HubAnimationConstants.PANE_COLOR_BLEND_ANIMATION_DURATION_MS;
 import static org.chromium.chrome.browser.hub.HubAnimationConstants.PANE_FADE_ANIMATION_DURATION_MS;
-import static org.chromium.chrome.browser.hub.HubAnimationConstants.getPaneColorBlendInterpolator;
 import static org.chromium.ui.util.ColorBlendAnimationFactory.createMultiColorBlendAnimation;
 
 import android.animation.Animator;
 import android.animation.AnimatorListenerAdapter;
 import android.animation.AnimatorSet;
 import android.animation.ObjectAnimator;
+import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.res.ColorStateList;
+import android.content.res.Resources;
+import android.graphics.ColorFilter;
+import android.graphics.PorterDuff;
+import android.graphics.PorterDuffColorFilter;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Handler;
 import android.util.AttributeSet;
+import android.util.TypedValue;
+import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.Button;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 
 import androidx.annotation.ColorInt;
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
+import androidx.annotation.Px;
 import androidx.annotation.StringRes;
+import androidx.appcompat.content.res.AppCompatResources;
 import androidx.core.widget.ImageViewCompat;
-import androidx.core.widget.TextViewCompat;
 
 import com.google.android.material.tabs.TabLayout;
 import com.google.android.material.tabs.TabLayout.OnTabSelectedListener;
 import com.google.android.material.tabs.TabLayout.Tab;
 
 import org.chromium.base.Callback;
+import org.chromium.base.supplier.NonNullObservableSupplier;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.hub.HubToolbarProperties.PaneButtonLookup;
-import org.chromium.components.omnibox.OmniboxFeatures;
+import org.chromium.chrome.browser.toolbar.menu_button.MenuButton;
+import org.chromium.chrome.browser.ui.actions.button.FullButtonData;
 import org.chromium.ui.animation.AnimationHandler;
-import org.chromium.ui.base.ViewUtils;
+import org.chromium.ui.interpolators.Interpolators;
 
 import java.util.List;
 
 /** Toolbar for the Hub. May contain a single or multiple rows, of which this view is the parent. */
+@NullMarked
 public class HubToolbarView extends LinearLayout {
-
-    private Button mActionButton;
+    private final HubColorMixerRegistrationHelper mColorMixerHelper =
+            new HubColorMixerRegistrationHelper();
     private TabLayout mPaneSwitcher;
     private LinearLayout mMenuButtonContainer;
     private ImageButton mMenuButton;
+    private MenuButton mMenuButtonWrapper;
     private View mSearchBoxLayout;
     private EditText mSearchBoxTextView;
     private ImageView mSearchLoupeView;
+    private ImageView mHairline;
+    private FrameLayout mPaneSwitcherCard;
+    private ImageButton mCloseButton;
 
-    public Callback<Integer> mToolbarOverviewColorSetter;
-    private OnTabSelectedListener mOnTabSelectedListener;
+    private Callback<Integer> mToolbarOverviewColorSetter;
+    private @Nullable OnTabSelectedListener mOnTabSelectedListener;
     private boolean mBlockTabSelectionCallback;
     private boolean mApplyDelayForSearchBoxAnimation;
-    private final AnimationHandler mColorBlendAnimatorHandler;
+    private boolean mManualSearchBoxAnimation;
     private final AnimationHandler mHubSearchAnimatorHandler;
-    private final HubColorBlendAnimatorSetHelper mAnimatorSetBuilder;
     private final Handler mHandler;
+    private @Nullable NonNullObservableSupplier<Boolean> mXrSpaceModeObservableSupplier;
+    private @Nullable List<FullButtonData> mCachedButtonDataList;
+    private final int mSearchBoxHeightPx;
 
     /** Default {@link LinearLayout} constructor called by inflation. */
     public HubToolbarView(Context context, AttributeSet attributeSet) {
         super(context, attributeSet);
-        mColorBlendAnimatorHandler = new AnimationHandler();
         mHubSearchAnimatorHandler = new AnimationHandler();
         mHandler = new Handler();
-        mAnimatorSetBuilder = new HubColorBlendAnimatorSetHelper();
         mToolbarOverviewColorSetter = (color) -> {};
+        mSearchBoxHeightPx = getResources().getDimensionPixelSize(R.dimen.hub_search_box_height);
     }
 
     @Override
     protected void onFinishInflate() {
         super.onFinishInflate();
-        mActionButton = findViewById(R.id.toolbar_action_button);
         mPaneSwitcher = findViewById(R.id.pane_switcher);
         ViewGroup slidingTabIndicator = (ViewGroup) mPaneSwitcher.getChildAt(0);
         // Unclip children here to get unbounded ripple to work.
@@ -87,43 +103,122 @@ public class HubToolbarView extends LinearLayout {
         slidingTabIndicator.setClipChildren(false);
         mMenuButtonContainer = findViewById(R.id.menu_button_container);
         mMenuButton = mMenuButtonContainer.findViewById(R.id.menu_button);
+        mMenuButtonWrapper = mMenuButtonContainer.findViewById(R.id.menu_button_wrapper);
+        mPaneSwitcherCard = findViewById(R.id.pane_switcher_card);
 
         // SearchBoxLayout is GONE by default, and enabled via the mediator.
         mSearchBoxLayout = findViewById(R.id.search_box);
         mSearchBoxTextView = findViewById(R.id.search_box_text);
         mSearchLoupeView = findViewById(R.id.search_loupe);
+        mHairline = findViewById(R.id.toolbar_bottom_hairline);
+        mCloseButton = mMenuButtonContainer.findViewById(R.id.toolbar_close_button);
 
         registerColorBlends();
-
-        if (OmniboxFeatures.sAndroidHubSearch.isEnabled()) {
-            registerSearchBoxColorBlends();
-        }
+        registerSearchBoxColorBlends();
     }
 
     void setMenuButtonVisible(boolean visible) {
-        mMenuButtonContainer.setVisibility(visible ? View.VISIBLE : View.INVISIBLE);
+        mMenuButtonWrapper.setVisibility(visible ? View.VISIBLE : View.GONE);
     }
 
-    void setActionButton(@Nullable FullButtonData buttonData, boolean showText) {
-        ApplyButtonData.apply(buttonData, mActionButton);
-        if (!showText) {
-            mActionButton.setCompoundDrawablePadding(0);
-            mActionButton.setText(null);
-        } else {
-            mActionButton.setCompoundDrawablePadding(ViewUtils.dpToPx(getContext(), 16));
+    void setCloseButtonVisible(boolean visible) {
+        if (mCloseButton != null) {
+            mCloseButton.setVisibility(visible ? View.VISIBLE : View.GONE);
         }
+    }
+
+    void setPaneSwitcherScrollPosition(int position, float positionOffset) {
+        mPaneSwitcher.setScrollPosition(
+                position,
+                positionOffset,
+                /* updateSelectedTabView= */ false,
+                /* updateIndicatorPosition= */ true);
+    }
+
+    /**
+     * Blocks or unblocks tab selection callbacks during active swipe-to-switch gestures to prevent
+     * intermediate scroll position changes or simultaneous taps from firing extra pane selection
+     * events while a gesture is active.
+     */
+    @SuppressLint("ClickableViewAccessibility") // Intentionally swallows touches mid-swipe.
+    void setBlockTabSelectionCallback(boolean block) {
+        mBlockTabSelectionCallback = block;
+        mPaneSwitcher.setOnTouchListener(block ? (v, event) -> true : null);
     }
 
     void setPaneSwitcherButtonData(
             @Nullable List<FullButtonData> buttonDataList, int selectedIndex) {
-        mPaneSwitcher.removeOnTabSelectedListener(mOnTabSelectedListener);
+        if (canPerformPaneSwitcherUpdate(buttonDataList)) {
+            updatePaneSwitcherButtonList(assumeNonNull(buttonDataList), selectedIndex);
+        } else {
+            buildPaneSwitcherButtonList(buttonDataList, selectedIndex);
+        }
+
+        mCachedButtonDataList = buttonDataList;
+    }
+
+    private void updatePaneSwitcherButtonData(FullButtonData buttonData, int index) {
+        // Currently, we only support in-place updates for panel switchers. Therefore, the index
+        // should remain valid.
+        assert index < mPaneSwitcher.getTabCount();
+
+        Tab tab = mPaneSwitcher.getTabAt(index);
+        assertNonNull(tab);
+
+        Context context = getContext();
+        Drawable drawable = buttonData.resolveIcon(context);
+        tab.setIcon(drawable);
+        tab.setContentDescription(buttonData.resolveContentDescription(context));
+    }
+
+    /**
+     * Determines if we can perform an update of the existing pane switcher button list instead of
+     * rebuilding it. We can only do this if the new list is non-null, the same size as the existing
+     * list, and has more than one button.
+     */
+    private boolean canPerformPaneSwitcherUpdate(@Nullable List<FullButtonData> newList) {
+        if (mCachedButtonDataList == null || newList == null) return false;
+
+        // Currently, we only support updating the pane switcher when the button count remains
+        // unchanged. If there exist more pane addition/creation cases, we should revisit this.
+        if (mCachedButtonDataList.size() != newList.size()) return false;
+
+        return newList.size() > 1;
+    }
+
+    private void updatePaneSwitcherButtonList(
+            List<FullButtonData> buttonDataList, int selectedIndex) {
+        for (int i = 0; i < buttonDataList.size(); i++) {
+            FullButtonData newButtonData = buttonDataList.get(i);
+            FullButtonData oldButtonData = assumeNonNull(mCachedButtonDataList).get(i);
+
+            if (!oldButtonData.buttonDataEquals(newButtonData)) {
+                updatePaneSwitcherButtonData(newButtonData, i);
+            }
+        }
+
+        setPaneSwitcherTabSelectedListenerAndSetIndex(buttonDataList, selectedIndex);
+    }
+
+    private void buildPaneSwitcherButtonList(
+            @Nullable List<FullButtonData> buttonDataList, int selectedIndex) {
+        // Null can safely be passed here.
         mPaneSwitcher.removeAllTabs();
 
         if (buttonDataList == null || buttonDataList.size() <= 1) {
             mPaneSwitcher.setVisibility(View.GONE);
-            mOnTabSelectedListener = null;
         } else {
             Context context = getContext();
+            Resources resources = getResources();
+            @Px
+            int tabItemPadding =
+                    resources.getDimensionPixelSize(R.dimen.hub_pane_switcher_tab_item_padding);
+            @Px
+            int tabItemMargin =
+                    resources.getDimensionPixelSize(
+                            R.dimen.hub_pane_switcher_tab_item_horizontal_margin);
+            @Px
+            int tabItemHeight = resources.getDimensionPixelSize(R.dimen.hub_pane_switcher_tab_size);
             for (FullButtonData buttonData : buttonDataList) {
                 Tab tab = mPaneSwitcher.newTab();
 
@@ -135,11 +230,69 @@ public class HubToolbarView extends LinearLayout {
                 tab.view.setClipChildren(false);
                 tab.view.setClipToPadding(false);
                 mPaneSwitcher.addTab(tab);
+
+                if (HubUtils.isGtsUpdateEnabled()) {
+                    LinearLayout.LayoutParams tabLayoutParams =
+                            (LinearLayout.LayoutParams) tab.view.getLayoutParams();
+
+                    tabLayoutParams.height = tabItemHeight;
+                    tabLayoutParams.leftMargin = tabItemMargin;
+                    tabLayoutParams.rightMargin = tabItemMargin;
+                    tabLayoutParams.gravity = Gravity.CENTER;
+                    tab.view.setLayoutParams(tabLayoutParams);
+                    tab.view.setPadding(
+                            tabItemPadding, tabItemPadding, tabItemPadding, tabItemPadding);
+                    tab.view.setBackground(buildBackgroundDrawableForTab());
+                }
             }
             mPaneSwitcher.setVisibility(View.VISIBLE);
-            mOnTabSelectedListener = makeTabSelectedListener(buttonDataList);
-            mPaneSwitcher.addOnTabSelectedListener(mOnTabSelectedListener);
+
+            if (HubUtils.isGtsUpdateEnabled()) {
+                @Px
+                int paneSwitcherHorizontalPadding =
+                        resources.getDimensionPixelSize(
+                                R.dimen.hub_pane_switcher_horizontal_padding);
+                @Px
+                int paneSwitcherVerticalPadding =
+                        resources.getDimensionPixelSize(R.dimen.hub_pane_switcher_vertical_padding);
+                mPaneSwitcherCard.setPaddingRelative(
+                        paneSwitcherHorizontalPadding,
+                        paneSwitcherVerticalPadding,
+                        paneSwitcherHorizontalPadding,
+                        paneSwitcherVerticalPadding);
+
+                // Pane switcher in new design needs to be center aligned in the toolbar.
+                FrameLayout.LayoutParams params =
+                        (FrameLayout.LayoutParams) mPaneSwitcherCard.getLayoutParams();
+                params.gravity = Gravity.CENTER;
+                params.height =
+                        resources.getDimensionPixelSize(R.dimen.hub_pane_switcher_card_height);
+                mPaneSwitcherCard.setLayoutParams(params);
+
+                mPaneSwitcher.setTabIndicatorAnimationMode(
+                        TabLayout.INDICATOR_ANIMATION_MODE_LINEAR);
+                mPaneSwitcher.setSelectedTabIndicatorGravity(TabLayout.INDICATOR_GRAVITY_CENTER);
+                mPaneSwitcher.setSelectedTabIndicator(
+                        AppCompatResources.getDrawable(
+                                context, R.drawable.hub_pane_switcher_item_selector));
+            }
         }
+
+        setPaneSwitcherTabSelectedListenerAndSetIndex(buttonDataList, selectedIndex);
+    }
+
+    private void setPaneSwitcherTabSelectedListenerAndSetIndex(
+            @Nullable List<FullButtonData> buttonDataList, int selectedIndex) {
+        if (mOnTabSelectedListener != null) {
+            mPaneSwitcher.removeOnTabSelectedListener(mOnTabSelectedListener);
+        }
+        if (buttonDataList == null || buttonDataList.size() <= 1) {
+            mOnTabSelectedListener = null;
+            return;
+        }
+
+        mOnTabSelectedListener = makeTabSelectedListener(buttonDataList);
+        mPaneSwitcher.addOnTabSelectedListener(mOnTabSelectedListener);
 
         setPaneSwitcherIndex(selectedIndex);
     }
@@ -154,46 +307,51 @@ public class HubToolbarView extends LinearLayout {
         mBlockTabSelectionCallback = false;
     }
 
-    void setColorScheme(HubColorSchemeUpdate colorSchemeUpdate) {
-        @HubColorScheme int newColorScheme = colorSchemeUpdate.newColorScheme;
-        @HubColorScheme int prevColorScheme = colorSchemeUpdate.previousColorScheme;
-
-        AnimatorSet animatorSet =
-                mAnimatorSetBuilder
-                        .setNewColorScheme(newColorScheme)
-                        .setPreviousColorScheme(prevColorScheme)
-                        .build();
-        mColorBlendAnimatorHandler.startAnimation(animatorSet);
-
-        // TODO(crbug.com/40948541): Updating the app menu color here is more correct and
-        // should be done for code health.
+    void setColorMixer(HubColorMixer mixer) {
+        mColorMixerHelper.setColorMixer(mixer);
     }
 
     private void registerColorBlends() {
         Context context = getContext();
+        boolean isGtsUpdateEnabled = HubUtils.isGtsUpdateEnabled();
 
-        mAnimatorSetBuilder.registerBlend(
+        mColorMixerHelper.registerBlend(
                 new SingleHubViewColorBlend(
                         PANE_COLOR_BLEND_ANIMATION_DURATION_MS,
-                        colorScheme -> HubColors.getBackgroundColor(context, colorScheme),
+                        colorScheme -> getBackgroundColor(context, colorScheme),
                         this::setBackgroundColor));
 
-        mAnimatorSetBuilder.registerBlend(
+        mColorMixerHelper.registerBlend(
                 new SingleHubViewColorBlend(
                         PANE_COLOR_BLEND_ANIMATION_DURATION_MS,
-                        colorScheme -> HubColors.getSelectedIconColor(context, colorScheme),
+                        colorScheme -> {
+                            if (isGtsUpdateEnabled) {
+                                return HubColors.geTabItemSelectorColor(context, colorScheme);
+                            } else {
+                                return HubColors.getSelectedIconColor(
+                                        context, colorScheme, /* isGtsUpdateEnabled= */ false);
+                            }
+                        },
                         mPaneSwitcher::setSelectedTabIndicatorColor));
+
+        mColorMixerHelper.registerBlend(
+                new SingleHubViewColorBlend(
+                        PANE_COLOR_BLEND_ANIMATION_DURATION_MS,
+                        colorScheme -> HubColors.getHairlineColor(context, colorScheme),
+                        this::setHairlineColor));
 
         HubViewColorBlend multiColorBlend =
                 (prevColorScheme, newColorScheme) -> {
                     @ColorInt int newIconColor = HubColors.getIconColor(context, newColorScheme);
                     @ColorInt
                     int newSelectedIconColor =
-                            HubColors.getSelectedIconColor(context, newColorScheme);
+                            HubColors.getSelectedIconColor(
+                                    context, newColorScheme, isGtsUpdateEnabled);
                     @ColorInt int prevIconColor = HubColors.getIconColor(context, prevColorScheme);
                     @ColorInt
                     int prevSelectedIconColor =
-                            HubColors.getSelectedIconColor(context, prevColorScheme);
+                            HubColors.getSelectedIconColor(
+                                    context, prevColorScheme, isGtsUpdateEnabled);
                     Animator animation =
                             createMultiColorBlendAnimation(
                                     PANE_COLOR_BLEND_ANIMATION_DURATION_MS,
@@ -206,17 +364,16 @@ public class HubToolbarView extends LinearLayout {
                                                 interpolatedIconColor,
                                                 interpolatedSelectedIconColor);
                                     });
-                    animation.setInterpolator(getPaneColorBlendInterpolator());
+                    animation.setInterpolator(Interpolators.LINEAR_INTERPOLATOR);
                     return animation;
                 };
-        mAnimatorSetBuilder.registerBlend(multiColorBlend);
+        mColorMixerHelper.registerBlend(multiColorBlend);
 
-        mAnimatorSetBuilder.registerBlend(
+        mColorMixerHelper.registerBlend(
                 new SingleHubViewColorBlend(
                         PANE_COLOR_BLEND_ANIMATION_DURATION_MS,
                         colorScheme -> HubColors.getIconColor(context, colorScheme),
                         interpolatedColor -> {
-                            updateActionButtonColorInternal(context, interpolatedColor);
                             ColorStateList menuButtonColor =
                                     ColorStateList.valueOf(interpolatedColor);
                             ImageViewCompat.setImageTintList(mMenuButton, menuButtonColor);
@@ -224,21 +381,46 @@ public class HubToolbarView extends LinearLayout {
 
         // We don't want to pass a method reference. Lambdas will ensure we run the most recent
         // setter.
-        mAnimatorSetBuilder.registerBlend(
+        mColorMixerHelper.registerBlend(
                 new SingleHubViewColorBlend(
                         PANE_COLOR_BLEND_ANIMATION_DURATION_MS,
                         colorScheme -> HubColors.getBackgroundColor(context, colorScheme),
                         color -> mToolbarOverviewColorSetter.onResult(color)));
 
-        // TODO(crbug.com/40948541): Updating the app menu color here is more correct and
-        // should be done for code health. Menu Button Color is also set by
-        // HubToolbarCoordinator.
+        if (isGtsUpdateEnabled) {
+            mColorMixerHelper.registerBlend(
+                    new SingleHubViewColorBlend(
+                            PANE_COLOR_BLEND_ANIMATION_DURATION_MS,
+                            colorScheme ->
+                                    HubColors.getPaneSwitcherBackgroundColor(context, colorScheme),
+                            color -> {
+                                ColorFilter filter =
+                                        new PorterDuffColorFilter(color, PorterDuff.Mode.SRC);
+                                mPaneSwitcherCard.getBackground().setColorFilter(filter);
+                            }));
+
+            mColorMixerHelper.registerBlend(
+                    new SingleHubViewColorBlend(
+                            PANE_COLOR_BLEND_ANIMATION_DURATION_MS,
+                            colorScheme ->
+                                    HubColors.getPaneSwitcherTabItemHoverColor(
+                                            context, colorScheme),
+                            color -> updateTabItemBackgroundColor(context, color)));
+
+            mColorMixerHelper.registerBlend(
+                    new SingleHubViewColorBlend(
+                            PANE_COLOR_BLEND_ANIMATION_DURATION_MS,
+                            colorScheme ->
+                                    HubColors.getPaneSwitcherTabItemFocusColor(
+                                            context, colorScheme),
+                            color -> updateTabItemFocusColor(context, color)));
+        }
     }
 
     private void registerSearchBoxColorBlends() {
         Context context = getContext();
 
-        mAnimatorSetBuilder.registerBlend(
+        mColorMixerHelper.registerBlend(
                 new SingleHubViewColorBlend(
                         PANE_COLOR_BLEND_ANIMATION_DURATION_MS,
                         colorScheme -> HubColors.getSearchBoxHintTextColor(context, colorScheme),
@@ -246,13 +428,13 @@ public class HubToolbarView extends LinearLayout {
 
         GradientDrawable backgroundDrawable =
                 (GradientDrawable) mSearchBoxLayout.getBackground().mutate();
-        mAnimatorSetBuilder.registerBlend(
+        mColorMixerHelper.registerBlend(
                 new SingleHubViewColorBlend(
                         PANE_COLOR_BLEND_ANIMATION_DURATION_MS,
                         colorScheme -> HubColors.getSearchBoxBgColor(context, colorScheme),
                         backgroundDrawable::setColor));
 
-        mAnimatorSetBuilder.registerBlend(
+        mColorMixerHelper.registerBlend(
                 new SingleHubViewColorBlend(
                         PANE_COLOR_BLEND_ANIMATION_DURATION_MS,
                         colorScheme -> HubColors.getIconColor(context, colorScheme),
@@ -266,15 +448,35 @@ public class HubToolbarView extends LinearLayout {
         mPaneSwitcher.setTabIconTint(selectableIconList);
     }
 
-    private void updateActionButtonColorInternal(Context context, @ColorInt int color) {
-        ColorStateList actionButtonColor = HubColors.getActionButtonColor(context, color);
-        TextViewCompat.setCompoundDrawableTintList(mActionButton, actionButtonColor);
-        mActionButton.setTextColor(actionButtonColor);
-    }
-
     private void updateSearchLoupeColor(@ColorInt int color) {
         ColorStateList colorStateList = ColorStateList.valueOf(color);
         mSearchLoupeView.setImageTintList(colorStateList);
+    }
+
+    private void updateTabItemBackgroundColor(Context context, @ColorInt int color) {
+        ColorStateList colorStateList =
+                HubColors.generateHoveredStateColorStateList(context, color);
+        for (int i = 0; i < mPaneSwitcher.getTabCount(); i++) {
+            View tabView = getButtonView(i);
+            if (tabView != null) {
+                GradientDrawable background = (GradientDrawable) tabView.getBackground();
+                background.setColor(colorStateList);
+            }
+        }
+    }
+
+    private void updateTabItemFocusColor(Context context, @ColorInt int color) {
+        ColorStateList colorStateList = HubColors.generateFocusStrokeColorStateList(color);
+        int strokeWidth =
+                context.getResources()
+                        .getDimensionPixelSize(R.dimen.hub_pane_switcher_tab_stroke_width);
+        for (int i = 0; i < mPaneSwitcher.getTabCount(); i++) {
+            View tabView = getButtonView(i);
+            if (tabView != null) {
+                GradientDrawable background = (GradientDrawable) tabView.getBackground();
+                background.setStroke(strokeWidth, colorStateList);
+            }
+        }
     }
 
     void setButtonLookupConsumer(Callback<PaneButtonLookup> lookupConsumer) {
@@ -282,6 +484,14 @@ public class HubToolbarView extends LinearLayout {
     }
 
     void setSearchBoxVisible(boolean visible) {
+        // When manual search box animation is enabled, the visibility is controlled directly
+        // by the HubToolbarMediator and HubToolbarViewBinder via the
+        // SEARCH_BOX_VISIBILITY_FRACTION property, and no animation is applied here.
+        if (mManualSearchBoxAnimation) {
+            mSearchBoxLayout.setVisibility(visible ? View.VISIBLE : View.GONE);
+            return;
+        }
+
         AnimatorSet hubSearchTransitionAnimation = getHubSearchBoxTransitionAnimation(visible);
         AnimatorListenerAdapter animationListener =
                 new AnimatorListenerAdapter() {
@@ -303,8 +513,54 @@ public class HubToolbarView extends LinearLayout {
         mHubSearchAnimatorHandler.startAnimation(hubSearchTransitionAnimation);
     }
 
+    void setHubSearchEnabledState(boolean enabled) {
+        mSearchBoxLayout.setEnabled(enabled);
+        mSearchBoxTextView.setEnabled(enabled);
+        mSearchLoupeView.setEnabled(enabled);
+
+        // Manually apply disabled alpha since the color is applied programmatically and not through
+        // a color state list.
+        TypedValue disabledAlpha = new TypedValue();
+        getResources().getValue(R.dimen.default_disabled_alpha, disabledAlpha, true);
+        float alpha = enabled ? 1.0f : disabledAlpha.getFloat();
+        mSearchBoxLayout.setAlpha(alpha);
+        mSearchBoxTextView.setAlpha(alpha);
+        mSearchLoupeView.setAlpha(alpha);
+    }
+
+    void setHairlineVisibility(boolean visible) {
+        mHairline.setVisibility(visible ? View.VISIBLE : View.GONE);
+    }
+
+    void setHairlineColor(@ColorInt int hairlineColor) {
+        mHairline.setImageTintList(ColorStateList.valueOf(hairlineColor));
+    }
+
     void setApplyDelayForSearchBoxAnimation(boolean applyDelay) {
         mApplyDelayForSearchBoxAnimation = applyDelay;
+    }
+
+    void setManualSearchBoxAnimation(boolean manual) {
+        mManualSearchBoxAnimation = manual;
+    }
+
+    void setSearchBoxVisibilityFraction(float fraction) {
+        if (!mManualSearchBoxAnimation) return;
+
+        mSearchBoxLayout.setAlpha(fraction);
+        mSearchBoxLayout.setPivotY(0);
+        mSearchBoxLayout.setScaleY(fraction);
+        mSearchBoxLayout.setTranslationY(0);
+
+        // Physical Height Reduction (Reduces the Canvas size).
+        int targetHeight =
+                Math.max(1, Math.round(mSearchBoxHeightPx * fraction)); // Avoid 0 height.
+
+        ViewGroup.LayoutParams params = mSearchBoxLayout.getLayoutParams();
+        if (params.height != targetHeight) {
+            params.height = targetHeight;
+            mSearchBoxLayout.setLayoutParams(params);
+        }
     }
 
     public void setSearchLoupeVisible(boolean visible) {
@@ -322,23 +578,20 @@ public class HubToolbarView extends LinearLayout {
     }
 
     void updateIncognitoElements(boolean isIncognito) {
-        if (OmniboxFeatures.sAndroidHubSearch.isEnabled()) {
-            updateSearchBoxElements(isIncognito);
-        }
+        updateSearchBoxElements(isIncognito);
     }
 
-    private View getButtonView(int index) {
-        @Nullable Tab tab = mPaneSwitcher.getTabAt(index);
+    private @Nullable View getButtonView(int index) {
+        Tab tab = mPaneSwitcher.getTabAt(index);
         return tab == null ? null : tab.view;
     }
 
-    private OnTabSelectedListener makeTabSelectedListener(
-            @NonNull List<FullButtonData> buttonDataList) {
+    private OnTabSelectedListener makeTabSelectedListener(List<FullButtonData> buttonDataList) {
         return new OnTabSelectedListener() {
             @Override
             public void onTabSelected(Tab tab) {
                 if (!mBlockTabSelectionCallback) {
-                    buttonDataList.get(tab.getPosition()).getOnPressRunnable().run();
+                    buttonDataList.get(tab.getPosition()).onPress(tab.view);
                 }
             }
 
@@ -352,11 +605,10 @@ public class HubToolbarView extends LinearLayout {
 
     private void updateSearchBoxElements(boolean isIncognito) {
         Context context = getContext();
+        @StringRes int regularEmptyHintRes = R.string.hub_search_empty_hint;
         @StringRes
         int emptyHintRes =
-                isIncognito
-                        ? R.string.hub_search_empty_hint_incognito
-                        : R.string.hub_search_empty_hint;
+                isIncognito ? R.string.hub_search_empty_hint_incognito : regularEmptyHintRes;
 
         // Delay the text from changing until the hub search animation is finished to prevent the
         // incorrect text from showing too early on pane toggles.
@@ -371,17 +623,64 @@ public class HubToolbarView extends LinearLayout {
         }
     }
 
-    private AnimatorSet getHubSearchBoxTransitionAnimation(boolean visible) {
+    AnimatorSet getHubSearchBoxTransitionAnimation(boolean visible) {
+        // Reset the search box height to its default for regular transitions.
+        // This is necessary because manual animation might have adjusted its height.
+        ViewGroup.LayoutParams layoutParams = mSearchBoxLayout.getLayoutParams();
+        layoutParams.height = mSearchBoxHeightPx;
+        mSearchBoxLayout.setLayoutParams(layoutParams);
+
+        AnimatorSet transitionAnimator = new AnimatorSet();
+
         float fadeAlphaFrom = visible ? 0 : 1;
         float fadeAlphaTo = visible ? 1 : 0;
-        float slideTransitionY = visible ? 0 : -mSearchBoxLayout.getHeight();
         Animator fade =
                 ObjectAnimator.ofFloat(mSearchBoxLayout, View.ALPHA, fadeAlphaFrom, fadeAlphaTo);
-        Animator slide =
-                ObjectAnimator.ofFloat(mSearchBoxLayout, View.TRANSLATION_Y, slideTransitionY);
-        AnimatorSet slideFadeHubSearchBoxAnimator = new AnimatorSet();
-        slideFadeHubSearchBoxAnimator.play(slide).with(fade);
-        slideFadeHubSearchBoxAnimator.setDuration(PANE_FADE_ANIMATION_DURATION_MS);
-        return slideFadeHubSearchBoxAnimator;
+
+        Animator primaryAnimator;
+        primaryAnimator = createSquishAnimation(visible);
+
+        transitionAnimator.play(primaryAnimator).with(fade);
+        transitionAnimator.setDuration(PANE_FADE_ANIMATION_DURATION_MS);
+
+        return transitionAnimator;
+    }
+
+    private Animator createSquishAnimation(boolean visible) {
+        mSearchBoxLayout.setPivotY(0);
+        float scaleYFrom = visible ? 0f : 1f;
+        float scaleYTo = visible ? 1f : 0f;
+        return ObjectAnimator.ofFloat(mSearchBoxLayout, View.SCALE_Y, scaleYFrom, scaleYTo);
+    }
+
+    private GradientDrawable buildBackgroundDrawableForTab() {
+        int radius = getResources().getDimensionPixelSize(R.dimen.hub_pane_switcher_tab_radius);
+        GradientDrawable hoverDrawable = new GradientDrawable();
+
+        hoverDrawable.setShape(GradientDrawable.RECTANGLE);
+        hoverDrawable.setCornerRadius(radius);
+        return hoverDrawable;
+    }
+
+    private @ColorInt int getBackgroundColor(Context context, @HubColorScheme int colorScheme) {
+        boolean isXrFullSpaceMode =
+                mXrSpaceModeObservableSupplier != null && mXrSpaceModeObservableSupplier.get();
+        return HubColors.getBackgroundColor(context, colorScheme, isXrFullSpaceMode);
+    }
+
+    public void setXrSpaceModeObservableSupplier(
+            NonNullObservableSupplier<Boolean> xrSpaceModeObservableSupplier) {
+        mXrSpaceModeObservableSupplier = xrSpaceModeObservableSupplier;
+        HubColors.setXrSpaceModeObservableSupplier(xrSpaceModeObservableSupplier);
+    }
+
+    public void destroy() {
+        mHubSearchAnimatorHandler.forceFinishAnimation();
+        mColorMixerHelper.destroy();
+        mHandler.removeCallbacksAndMessages(null);
+        if (mOnTabSelectedListener != null) {
+            mPaneSwitcher.removeOnTabSelectedListener(mOnTabSelectedListener);
+            mOnTabSelectedListener = null;
+        }
     }
 }

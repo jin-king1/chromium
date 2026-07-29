@@ -17,10 +17,13 @@
 
 // The diffable data source for the collection view.
 @property(nonatomic, strong)
-    UICollectionViewDiffableDataSource<CustomizationSection*, NSNumber*>*
+    UICollectionViewDiffableDataSource<CustomizationSection*, NSString*>*
         diffableDataSource;
 
 @property(nonatomic, assign) CustomizationMenuPage page;
+
+@property(nonatomic, copy) void (^additionalViewWillTransitionToSizeHandler)
+    (CGSize, id<UIViewControllerTransitionCoordinator>);
 
 // Dismisses the presenting view controller.
 - (void)dismissCustomizationMenuPage;
@@ -32,7 +35,7 @@
 
 // Returns a configured cell at an index path of the collection view.
 - (UICollectionViewCell*)configuredCellForIndexPath:(NSIndexPath*)indexPath
-                                     itemIdentifier:(NSNumber*)itemIdentifier;
+                                     itemIdentifier:(NSString*)itemIdentifier;
 
 @optional
 

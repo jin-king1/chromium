@@ -7,6 +7,7 @@
 #include "base/containers/flat_map.h"
 #include "base/memory/raw_ptr.h"
 #include "components/page_load_metrics/browser/observers/page_load_metrics_observer_content_test_harness.h"
+#include "content/public/common/content_features.h"
 #include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/navigation_simulator.h"
 #include "content/public/test/prerender_test_util.h"
@@ -154,11 +155,6 @@ TEST_F(PageLoadTrackerTest, PrimaryPageType) {
   EXPECT_FALSE(GetEvents().was_prerender_started);
   EXPECT_TRUE(GetEvents().was_committed);
 
-  // Check metrics.
-  tester()->histogram_tester().ExpectUniqueSample(
-      internal::kPageLoadTrackerPageType,
-      internal::PageLoadTrackerPageType::kPrimaryPage, 1);
-
   // Navigate out.
   tester()->NavigateToUntrackedUrl();
 
@@ -180,6 +176,19 @@ TEST_F(PageLoadTrackerTest, PrimaryPageTypeDataScheme) {
   // Check observer behaviors.
   EXPECT_TRUE(GetEvents().was_started);
   EXPECT_FALSE(GetEvents().was_committed);
+}
+
+TEST_F(PageLoadTrackerTest, NotReloadAfterDiscard) {
+  SetTargetUrl(kTestUrl);
+  NavigateAndCommit(GURL(kTestUrl));
+  EXPECT_FALSE(tester()->GetDelegateForCommittedLoad().IsReloadAfterDiscard());
+}
+
+TEST_F(PageLoadTrackerTest, ReloadAfterDiscard) {
+  SetTargetUrl(kTestUrl);
+  web_contents()->SetWasDiscarded(true);
+  NavigateAndCommit(GURL(kTestUrl));
+  EXPECT_TRUE(tester()->GetDelegateForCommittedLoad().IsReloadAfterDiscard());
 }
 
 TEST_F(PageLoadTrackerTest, EventForwarding) {
@@ -251,8 +260,13 @@ TEST_F(PageLoadTrackerTest, EventForwarding) {
   // disabled, the same RenderFrameHost will be reused and not be deleted.
 
 #if BUILDFLAG(IS_ANDROID)
+  // With default SiteInstanceGroup enabled, the navigations are all
+  // cross-SiteInstance, so there will be as many RenderFrameHost deletions as
+  // in the (non-Android) Site Isolation cases, which is possibly more than the
+  // RenderDocument cases. (Applies here and below.)
   if (content::WillSameSiteNavigationChangeRenderFrameHosts(
-          /*is_main_frame=*/true)) {
+          /*is_main_frame=*/true) ||
+      base::FeatureList::IsEnabled(features::kDefaultSiteInstanceGroups)) {
     EXPECT_EQ(1u, GetEvents().render_frame_deleted_count);
   } else {
     EXPECT_EQ(0u, GetEvents().render_frame_deleted_count);
@@ -277,8 +291,10 @@ TEST_F(PageLoadTrackerTest, EventForwarding) {
   }
 
 #if BUILDFLAG(IS_ANDROID)
-  if (content::WillSameSiteNavigationChangeRenderFrameHosts(
-          /*is_main_frame=*/true)) {
+  if (base::FeatureList::IsEnabled(features::kDefaultSiteInstanceGroups)) {
+    EXPECT_EQ(2u, GetEvents().render_frame_deleted_count);
+  } else if (content::WillSameSiteNavigationChangeRenderFrameHosts(
+                 /*is_main_frame=*/true)) {
     EXPECT_EQ(1u, GetEvents().render_frame_deleted_count);
   } else {
     EXPECT_EQ(0u, GetEvents().render_frame_deleted_count);
@@ -289,12 +305,18 @@ TEST_F(PageLoadTrackerTest, EventForwarding) {
 
   EXPECT_EQ(0u, GetEvents().sub_frame_deleted_count);
 
-  // Remove C.
-  content::RenderFrameHostTester::For(rfh_c)->Detach();
+  {
+    content::RenderFrameDeletedObserver delete_observer(rfh_c);
+    // Remove C.
+    content::RenderFrameHostTester::For(rfh_c)->Detach();
+    delete_observer.WaitUntilDeleted();
+  }
 
 #if BUILDFLAG(IS_ANDROID)
-  if (content::WillSameSiteNavigationChangeRenderFrameHosts(
-          /*is_main_frame=*/true)) {
+  if (base::FeatureList::IsEnabled(features::kDefaultSiteInstanceGroups)) {
+    EXPECT_EQ(3u, GetEvents().render_frame_deleted_count);
+  } else if (content::WillSameSiteNavigationChangeRenderFrameHosts(
+                 /*is_main_frame=*/true)) {
     EXPECT_EQ(2u, GetEvents().render_frame_deleted_count);
   } else {
     EXPECT_EQ(1u, GetEvents().render_frame_deleted_count);
@@ -303,12 +325,18 @@ TEST_F(PageLoadTrackerTest, EventForwarding) {
   EXPECT_EQ(3u, GetEvents().render_frame_deleted_count);
 #endif
 
-  // Remove B.
-  content::RenderFrameHostTester::For(rfh_b)->Detach();
+  {
+    content::RenderFrameDeletedObserver delete_observer(rfh_b);
+    // Remove B.
+    content::RenderFrameHostTester::For(rfh_b)->Detach();
+    delete_observer.WaitUntilDeleted();
+  }
 
 #if BUILDFLAG(IS_ANDROID)
-  if (content::WillSameSiteNavigationChangeRenderFrameHosts(
-          /*is_main_frame=*/true)) {
+  if (base::FeatureList::IsEnabled(features::kDefaultSiteInstanceGroups)) {
+    EXPECT_EQ(4u, GetEvents().render_frame_deleted_count);
+  } else if (content::WillSameSiteNavigationChangeRenderFrameHosts(
+                 /*is_main_frame=*/true)) {
     EXPECT_EQ(3u, GetEvents().render_frame_deleted_count);
   } else {
     EXPECT_EQ(2u, GetEvents().render_frame_deleted_count);
@@ -353,14 +381,6 @@ TEST_F(PageLoadTrackerTest, PrerenderPageType) {
   EXPECT_TRUE(GetEvents().was_prerender_started);
   EXPECT_TRUE(GetEvents().was_committed);
 
-  // Check metrics.
-  tester()->histogram_tester().ExpectBucketCount(
-      internal::kPageLoadTrackerPageType,
-      internal::PageLoadTrackerPageType::kPrimaryPage, 1);
-  tester()->histogram_tester().ExpectBucketCount(
-      internal::kPageLoadTrackerPageType,
-      internal::PageLoadTrackerPageType::kPrerenderPage, 1);
-
   // Check ukm::SourceId.
   EXPECT_NE(ukm::kInvalidSourceId, GetObservedUkmSourceIdFor(kTestUrl));
   EXPECT_EQ(ukm::kInvalidSourceId, GetObservedUkmSourceIdFor(kPrerenderingUrl));
@@ -392,14 +412,6 @@ TEST_F(PageLoadTrackerTest, FencedFramesPageType) {
   EXPECT_TRUE(GetEvents().was_fenced_frames_started);
   EXPECT_FALSE(GetEvents().was_prerender_started);
   EXPECT_TRUE(GetEvents().was_committed);
-
-  // Check metrics.
-  tester()->histogram_tester().ExpectBucketCount(
-      internal::kPageLoadTrackerPageType,
-      internal::PageLoadTrackerPageType::kPrimaryPage, 1);
-  tester()->histogram_tester().ExpectBucketCount(
-      internal::kPageLoadTrackerPageType,
-      internal::PageLoadTrackerPageType::kFencedFramesPage, 1);
 
   // Check ukm::SourceId.
   EXPECT_NE(ukm::kInvalidSourceId, GetObservedUkmSourceIdFor(kTestUrl));
@@ -506,6 +518,40 @@ TEST_F(PageLoadTrackerTest, ResumeOnPrerenderActivation) {
 
   EXPECT_TRUE(GetEvents().was_prerendered_page_activated);
 }
+
+// Regression test: activating a prerendered page in a non-visible tab should
+// set first_background_time_ so that a subsequent PageShown() does not crash.
+// Uses WasOccluded() rather than WasHidden() because the prerender host
+// registry cancels activation when both initiator and target are HIDDEN.
+// OCCLUDED exercises the same code path in DidActivatePrerenderedPage.
+TEST_F(PageLoadTrackerTest, PrerenderActivationInBackgroundTab) {
+  ScopedPrerenderWebContentsDelegate web_contents_delegate(*web_contents());
+
+  const char kPrerenderingUrl[] = "https://a.test/prerender";
+  SetTargetUrl(kPrerenderingUrl);
+
+  // Navigate primary page in foreground.
+  NavigateAndCommit(GURL(kTestUrl));
+
+  // Add a prerender page.
+  content::WebContentsTester::For(web_contents())
+      ->AddPrerenderAndCommitNavigation(GURL(kPrerenderingUrl));
+
+  // Occlude the tab before activation. This simulates activating a prerendered
+  // page in a non-foreground tab (e.g., ctrl+click opening a background tab).
+  web_contents()->WasOccluded();
+
+  // Activate the prerendered page while the tab is occluded.
+  content::WebContentsTester::For(web_contents())
+      ->ActivatePrerenderedPage(GURL(kPrerenderingUrl));
+
+  EXPECT_TRUE(GetEvents().was_prerendered_page_activated);
+
+  // Switch to the tab. Without the fix, the DCHECK in PageShown() would fire
+  // because first_background_time_ was never set.
+  web_contents()->WasShown();
+}
+
 }  // namespace
 
 }  // namespace page_load_metrics

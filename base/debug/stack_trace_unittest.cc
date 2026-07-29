@@ -4,6 +4,7 @@
 
 #include "base/debug/stack_trace.h"
 
+#include <ptrauth.h>
 #include <stddef.h>
 
 #include <limits>
@@ -23,6 +24,7 @@
 #include "base/test/test_timeouts.h"
 #include "build/build_config.h"
 #include "partition_alloc/partition_alloc.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/multiprocess_func_list.h"
 #if PA_BUILDFLAG(USE_ALLOCATOR_SHIM)
@@ -52,7 +54,7 @@ TEST_F(StackTraceTest, OutputToStream) {
   // Dump the trace into a string.
   std::ostringstream os;
   trace.OutputToStream(&os);
-  std::string backtrace_message = os.str();
+  std::string backtrace_message = std::move(os).str();
 
   // ToString() should produce the same output.
   EXPECT_EQ(backtrace_message, trace.ToString());
@@ -101,7 +103,7 @@ TEST_F(StackTraceTest, OutputToStream) {
       << backtrace_message;
 }
 
-#if !defined(OFFICIAL_BUILD) && !defined(NO_UNWIND_TABLES)
+#if !defined(OFFICIAL_BUILD) && !BUILDFLAG(EXCLUDE_UNWIND_TABLES)
 // Disabled in Official builds, where Link-Time Optimization can result in two
 // or fewer stack frames being available, causing the test to fail.
 TEST_F(StackTraceTest, TruncatedTrace) {
@@ -112,14 +114,14 @@ TEST_F(StackTraceTest, TruncatedTrace) {
   StackTrace truncated(2);
   EXPECT_EQ(2u, truncated.addresses().size());
 }
-#endif  // !defined(OFFICIAL_BUILD) && !defined(NO_UNWIND_TABLES)
+#endif  // !defined(OFFICIAL_BUILD) && !BUILDFLAG(EXCLUDE_UNWIND_TABLES)
 
 // The test is used for manual testing, e.g., to see the raw output.
 TEST_F(StackTraceTest, DebugOutputToStream) {
   StackTrace trace;
   std::ostringstream os;
   trace.OutputToStream(&os);
-  VLOG(1) << os.str();
+  VLOG(1) << os.view();
 }
 
 // The test is used for manual testing, e.g., to see the raw output.
@@ -145,7 +147,7 @@ TEST_F(StackTraceTest, DebugOutputToStreamWithPrefix) {
   cstring_view prefix_string = "[test]";
   std::ostringstream os;
   trace.OutputToStreamWithPrefix(&os, prefix_string);
-  std::string backtrace_message = os.str();
+  std::string backtrace_message = std::move(os).str();
 
   // ToStringWithPrefix() should produce the same output.
   EXPECT_EQ(backtrace_message, trace.ToStringWithPrefix(prefix_string));
@@ -173,23 +175,27 @@ namespace {
 // In an actual implementation, this could cause infinite recursion into the
 // signal handler or other problems. Because malloc() is not guaranteed to be
 // async signal safe.
-void* BadMalloc(size_t, void*) {
+void* BadMalloc(size_t, allocator_shim::AllocToken, void*) {
   base::ImmediateCrash();
 }
 
-void* BadCalloc(size_t, size_t, void* context) {
+void* BadCalloc(size_t, size_t, allocator_shim::AllocToken, void* context) {
   base::ImmediateCrash();
 }
 
-void* BadAlignedAlloc(size_t, size_t, void*) {
+void* BadAlignedAlloc(size_t, size_t, allocator_shim::AllocToken, void*) {
   base::ImmediateCrash();
 }
 
-void* BadAlignedRealloc(void*, size_t, size_t, void*) {
+void* BadAlignedRealloc(void*,
+                        size_t,
+                        size_t,
+                        allocator_shim::AllocToken,
+                        void*) {
   base::ImmediateCrash();
 }
 
-void* BadRealloc(void*, size_t, void*) {
+void* BadRealloc(void*, size_t, allocator_shim::AllocToken, void*) {
   base::ImmediateCrash();
 }
 
@@ -201,16 +207,19 @@ allocator_shim::AllocatorDispatch g_bad_malloc_dispatch = {
     &BadMalloc,         /* alloc_function */
     &BadMalloc,         /* alloc_unchecked_function */
     &BadCalloc,         /* alloc_zero_initialized_function */
+    &BadCalloc,         /* alloc_zero_initialized_unchecked_function */
     &BadAlignedAlloc,   /* alloc_aligned_function */
     &BadRealloc,        /* realloc_function */
     &BadRealloc,        /* realloc_unchecked_function */
     &BadFree,           /* free_function */
+    nullptr,            /* free_with_size_function */
+    nullptr,            /* free_with_alignment_function */
+    nullptr,            /* free_with_size_and_alignment_function */
     nullptr,            /* get_size_estimate_function */
     nullptr,            /* good_size_function */
     nullptr,            /* claimed_address_function */
     nullptr,            /* batch_malloc_function */
     nullptr,            /* batch_free_function */
-    nullptr,            /* free_definite_size_function */
     nullptr,            /* try_free_default_function */
     &BadAlignedAlloc,   /* aligned_malloc_function */
     &BadAlignedAlloc,   /* aligned_malloc_unchecked_function */
@@ -343,8 +352,10 @@ code_start:
 
   constexpr size_t frame_index = Depth - 1;
   const void* frame = frames[frame_index];
-  EXPECT_GE(frame, &&code_start) << "For frame at index " << frame_index;
-  EXPECT_LE(frame, &&code_end) << "For frame at index " << frame_index;
+  const void* start = ptrauth_strip(&&code_start, ptrauth_key_function_pointer);
+  const void* end = ptrauth_strip(&&code_end, ptrauth_key_function_pointer);
+  EXPECT_GE(frame, start) << "For frame at index " << frame_index;
+  EXPECT_LE(frame, end) << "For frame at index " << frame_index;
 code_end:
   return;
 }
@@ -359,8 +370,10 @@ code_start:
   ASSERT_EQ(frames.size(), count);
 
   const void* frame = frames[0];
-  EXPECT_GE(frame, &&code_start) << "For the top frame";
-  EXPECT_LE(frame, &&code_end) << "For the top frame";
+  const void* start = ptrauth_strip(&&code_start, ptrauth_key_function_pointer);
+  const void* end = ptrauth_strip(&&code_end, ptrauth_key_function_pointer);
+  EXPECT_GE(frame, start) << "For the top frame";
+  EXPECT_LE(frame, end) << "For the top frame";
 code_end:
   return;
 }
@@ -396,10 +409,12 @@ TEST_F(StackTraceTest, MAYBE_StackEnd) {
 
 #if !defined(ADDRESS_SANITIZER) && !defined(UNDEFINED_SANITIZER)
 
-#if !defined(ARCH_CPU_ARM_FAMILY)
+#if defined(ARCH_CPU_X86_FAMILY)
+// Division by zero raising SIGFPE is mostly a x86 specific thing.
 // On Arm architecture invalid math operations such as division by zero are not
 // trapped and do not trigger a SIGFPE.
-// Hence disable the test for Arm platforms.
+// On RISC-V architecture, division by zero does not trigger SIGFPE.
+// Hence enable the test only for x86 platform
 TEST(CheckExitCodeAfterSignalHandlerDeathTest, CheckSIGFPE) {
   // Values are volatile to prevent reordering of instructions, i.e. for
   // optimization. Reordering may lead to tests erroneously failing due to
@@ -411,7 +426,7 @@ TEST(CheckExitCodeAfterSignalHandlerDeathTest, CheckSIGFPE) {
   EXPECT_EXIT(result = nominator / denominator,
               ::testing::KilledBySignal(SIGFPE), "");
 }
-#endif  // !defined(ARCH_CPU_ARM_FAMILY)
+#endif  // defined(ARCH_CPU_X86_FAMILY)
 
 TEST(CheckExitCodeAfterSignalHandlerDeathTest, CheckSIGSEGV) {
   // Pointee and pointer are volatile to prevent reordering of instructions,
@@ -446,6 +461,8 @@ TEST(CheckExitCodeAfterSignalHandlerDeathTest, CheckSIGILL) {
     asm("ud2");
 #elif defined(ARCH_CPU_ARM_FAMILY)
     asm("udf 0");
+#elif defined(ARCH_CPU_RISCV_FAMILY)
+    asm("unimp");
 #else
 #error Unsupported platform!
 #endif
@@ -455,5 +472,27 @@ TEST(CheckExitCodeAfterSignalHandlerDeathTest, CheckSIGILL) {
 }
 
 #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_ANDROID)
+
+#if BUILDFLAG(IS_WIN)
+TEST(StackTraceTest, EnabledStackTraces) {
+  // This is slightly pointless as this is also enabled by the test harness, but
+  // it ensures we are exercising the enabled path.
+  EXPECT_TRUE(base::debug::EnableInProcessStackDumping());
+  EXPECT_TRUE(base::debug::InProcessStackDumpingEnabledForTesting());
+}
+
+TEST(StackTraceTest, UnsymbolizedStackTraces) {
+  EXPECT_TRUE(base::debug::DisableInProcessStackDumpingForTesting());
+  EXPECT_FALSE(base::debug::InProcessStackDumpingEnabledForTesting());
+
+  StackTrace trace;
+  auto as_string = trace.ToString();
+  EXPECT_THAT(as_string,
+              ::testing::ContainsRegex("Dumping unresolved backtrace"));
+
+  // Restore global state.
+  EXPECT_TRUE(base::debug::EnableInProcessStackDumping());
+}
+#endif  // BUILDFLAG(IS_WIN)
 
 }  // namespace base::debug

@@ -10,11 +10,14 @@
 #include <string>
 
 #include "base/containers/flat_map.h"
+#include "base/containers/flat_set.h"
 #include "base/functional/callback_forward.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
 #include "base/thread_annotations.h"
+#include "base/timer/timer.h"
 #include "chromeos/ash/components/boca/boca_session_manager.h"
 #include "chromeos/ash/components/boca/boca_window_observer.h"
 #include "chromeos/ash/components/boca/on_task/activity/active_tab_tracker.h"
@@ -36,10 +39,13 @@ class OnTaskSessionManager : public boca::BocaSessionManager::Observer,
  public:
   explicit OnTaskSessionManager(
       std::unique_ptr<OnTaskSystemWebAppManager> system_web_app_manager,
-      std::unique_ptr<OnTaskExtensionsManager> extensions_manager);
+      std::unique_ptr<OnTaskExtensionsManager> extensions_manager,
+      BocaSessionManager* boca_session_manager);
   OnTaskSessionManager(const OnTaskSessionManager&) = delete;
   OnTaskSessionManager& operator=(const OnTaskSessionManager&) = delete;
   ~OnTaskSessionManager() override;
+
+  inline static constexpr int kStatusCheckerIntervalInSeconds = 60;
 
   // BocaSessionManager::Observer:
   void OnSessionStarted(const std::string& session_id,
@@ -48,7 +54,7 @@ class OnTaskSessionManager : public boca::BocaSessionManager::Observer,
   void OnBundleUpdated(const ::boca::Bundle& bundle) override;
   void OnAppReloaded() override;
 
-  ActiveTabTracker* active_tab_tracker() { return &active_tab_tracker_; }
+  ActiveTabTracker* active_tab_tracker() { return active_tab_tracker_.get(); }
 
   // BocaWindowObserver:
   void OnTabAdded(const SessionID active_tab_id,
@@ -58,6 +64,21 @@ class OnTaskSessionManager : public boca::BocaSessionManager::Observer,
 
   boca::OnTaskSystemWebAppManager* GetOnTaskSystemWebAppManager() {
     return system_web_app_manager_.get();
+  }
+
+  boca::OnTaskNotificationsManager* GetOnTaskNotificationsManager() {
+    return notifications_manager_.get();
+  }
+
+  void SetActiveTabTrackerForTesting(
+      std::unique_ptr<ActiveTabTracker> active_tab_tracker);
+
+  void SetNotificationManagerForTesting(
+      std::unique_ptr<ash::boca::OnTaskNotificationsManager>
+          notification_manager);
+
+  BocaSessionManager* boca_session_manager() {
+    return boca_session_manager_.get();
   }
 
  private:
@@ -86,6 +107,11 @@ class OnTaskSessionManager : public boca::BocaSessionManager::Observer,
     void SetPinStateForActiveSWAWindow(bool pinned,
                                        base::RepeatingClosure callback);
 
+    void SetObserversForTesting(
+        std::vector<boca::BocaWindowObserver*> observers) {
+      observers_ = std::move(observers);
+    }
+
    private:
     // Callback triggered when the Boca SWA is launched. Normally at the onset
     // of a Boca session.
@@ -100,19 +126,37 @@ class OnTaskSessionManager : public boca::BocaSessionManager::Observer,
 
     bool launch_in_progress_ GUARDED_BY_CONTEXT(sequence_checker_) = false;
 
+    // Task queue that tracks pending tab management operations. Only needed
+    // when the app launch is in progress.
+    std::vector<base::OnceClosure> pending_tab_management_tasks_
+        GUARDED_BY_CONTEXT(sequence_checker_);
+
+    // Tracks the pending pin or unpin operation. Only needed when the app
+    // launch is in progress.
+    base::OnceClosure pending_pin_or_unpin_task_
+        GUARDED_BY_CONTEXT(sequence_checker_) = base::NullCallback();
+
     base::WeakPtrFactory<SystemWebAppLaunchHelper> weak_ptr_factory_{this};
   };
-
+  // Lock or unlock current window if the state is not correct.
+  void MaybeHandleBundleUpdate();
   // Internal helper used to lock or unlock the current app window. This
   // involves disabling relevant extensions and pinning the window if
   // `lock_window` is true, or re-enabling extensions and unpinning the window
   // otherwise.
   void LockOrUnlockWindow(bool lock_window);
 
+  // Internal helper used to pause or unpause the boca app.
+  void PauseOrUnpauseApp();
+
+  // Show enter locked mode notification and lock the Boca SWA window.
+  void EnterLockedMode();
+
   // Callback triggered when a tab from the bundle is added.
   void OnBundleTabAdded(
       GURL url,
       ::boca::LockedNavigationOptions::NavigationType restriction_level,
+      ::boca::UrlType url_type,
       SessionID tab_id);
 
   // Callback triggered when a tab from the bundle is removed.
@@ -124,7 +168,7 @@ class OnTaskSessionManager : public boca::BocaSessionManager::Observer,
   // Set the `active_tab_url_` to be the url associated with `tab_id`.
   void TrackActiveTabURLFromTab(SessionID tab_id);
 
-  ActiveTabTracker active_tab_tracker_;
+  std::unique_ptr<ActiveTabTracker> active_tab_tracker_;
 
   const std::unique_ptr<OnTaskSystemWebAppManager> system_web_app_manager_;
 
@@ -134,6 +178,12 @@ class OnTaskSessionManager : public boca::BocaSessionManager::Observer,
       GUARDED_BY_CONTEXT(sequence_checker_) = std::nullopt;
   GURL active_tab_url_ GUARDED_BY_CONTEXT(sequence_checker_);
   bool should_lock_window_ GUARDED_BY_CONTEXT(sequence_checker_) = false;
+  bool lock_in_progress_ GUARDED_BY_CONTEXT(sequence_checker_) = false;
+  bool enter_pause_mode_ GUARDED_BY_CONTEXT(sequence_checker_) = false;
+
+  // The set of urls sent by the provider.
+  base::flat_map<GURL, ::boca::UrlType> provider_url_map_
+      GUARDED_BY_CONTEXT(sequence_checker_);
 
   // Maps the url that providers send to the tab ids spawned from the url. This
   // map allows to remove all the related tabs to the url.
@@ -151,6 +201,11 @@ class OnTaskSessionManager : public boca::BocaSessionManager::Observer,
 
   std::unique_ptr<OnTaskNotificationsManager> notifications_manager_;
 
+  base::TimeDelta notification_countdown_duration_;
+
+  base::RepeatingTimer status_checker_;
+
+  raw_ptr<BocaSessionManager> boca_session_manager_;
   base::WeakPtrFactory<OnTaskSessionManager> weak_ptr_factory_{this};
 };
 

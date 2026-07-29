@@ -32,7 +32,8 @@ class ManagePasswordsBubbleController : public PasswordBubbleControllerBase {
  public:
   enum class SyncState {
     kNotActive,
-    kActiveWithSyncFeatureEnabled,
+    kActiveWithSyncFeatureEnabled,  // TODO(crbug.com/417950948): Remove after
+                                    // deprecating sync feature.
     kActiveWithAccountPasswords,
   };
 
@@ -104,7 +105,7 @@ class ManagePasswordsBubbleController : public PasswordBubbleControllerBase {
   bool UsernameExists(std::u16string_view username);
 
   // Returns whether user can currently use account storage.
-  bool IsAccountStorageEnabled() const;
+  bool IsAccountStorageActive() const;
 
   void set_details_bubble_credential(
       const std::optional<password_manager::PasswordForm>& password) {

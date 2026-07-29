@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import 'chrome://resources/cr_elements/cr_action_menu/cr_action_menu.js';
 import 'chrome://resources/cr_elements/cr_button/cr_button.js';
 import 'chrome://resources/cr_elements/cr_icon_button/cr_icon_button.js';
 import 'chrome://resources/cr_elements/cr_link_row/cr_link_row.js';
@@ -23,7 +24,7 @@ import type {CrLinkRowElement} from 'chrome://resources/cr_elements/cr_link_row/
 import type {CrToggleElement} from 'chrome://resources/cr_elements/cr_toggle/cr_toggle.js';
 import {I18nMixinLit} from 'chrome://resources/cr_elements/i18n_mixin_lit.js';
 import type {CrTooltipIconElement} from 'chrome://resources/cr_elements/policy/cr_tooltip_icon.js';
-import {assert, assertNotReached} from 'chrome://resources/js/assert.js';
+import {assert} from 'chrome://resources/js/assert.js';
 import {focusWithoutInk} from 'chrome://resources/js/focus_without_ink.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
@@ -34,15 +35,14 @@ import {getHtml} from './detail_view.html.js';
 import type {ItemDelegate} from './item.js';
 import {DummyItemDelegate} from './item.js';
 import {ItemMixin} from './item_mixin.js';
-import {computeInspectableViewLabel, convertSafetyCheckReason, createDummyExtensionInfo, EnableControl, getEnableControl, getEnableToggleAriaLabel, getEnableToggleTooltipText, getItemSource, getItemSourceString, isEnabled, SAFETY_HUB_EXTENSION_KEPT_HISTOGRAM_NAME, SAFETY_HUB_EXTENSION_REMOVED_HISTOGRAM_NAME, SAFETY_HUB_WARNING_REASON_MAX_SIZE, sortViews, userCanChangeEnablement} from './item_util.js';
+import {computeInspectableViewLabel, convertSafetyCheckReason, createDummyExtensionInfo, EnableControl, getEnableControl, getEnableToggleAriaLabel, getItemSource, getItemSourceString, isEnabled, sortViews, userCanChangeEnablement} from './item_util.js';
+import {SAFETY_HUB_EXTENSION_KEPT_HISTOGRAM_NAME, SAFETY_HUB_EXTENSION_REMOVED_HISTOGRAM_NAME, SAFETY_HUB_WARNING_REASON_MAX_SIZE, UPLOAD_EXTENSION_TO_ACCOUNT_DETAILS_VIEW_PAGE_HISTOGRAM_NAME} from './metrics_util.js';
 import type {Mv2DeprecationDelegate} from './mv2_deprecation_delegate.js';
-import {getMv2ExperimentStage, Mv2ExperimentStage} from './mv2_deprecation_util.js';
 import {navigation, Page} from './navigation_helper.js';
 import type {ExtensionsToggleRowElement} from './toggle_row.js';
 
 class DummyDetailViewDelegate extends DummyItemDelegate {
   dismissMv2DeprecationNotice() {}
-  dismissMv2DeprecationNoticeForExtension(_id: string) {}
 }
 
 export interface ExtensionsDetailViewElement {
@@ -110,33 +110,24 @@ export class ExtensionsDetailViewElement extends
 
       /** Whether the extensions safety check warning is shown. */
       showSafetyCheck_: {type: Boolean},
-
-      /**
-       * Current Manifest V2 experiment stage.
-       */
-      mv2ExperimentStage_: {
-        type: Number,
-        state: true,
-      },
+      webuiRoundedIconsEnabled_: {type: Boolean},
     };
   }
 
-  data: chrome.developerPrivate.ExtensionInfo = createDummyExtensionInfo();
-  delegate: ItemDelegate&Mv2DeprecationDelegate = new DummyDetailViewDelegate();
-  inDevMode: boolean = false;
-  enableEnhancedSiteControls: boolean = false;
-  incognitoAvailable: boolean = false;
-  showActivityLog: boolean = false;
-  fromActivityLog: boolean = false;
-  protected showSafetyCheck_: boolean = false;
-  protected size_: string = '';
-  protected sortedViews_: chrome.developerPrivate.ExtensionView[] = [];
-  private mv2ExperimentStage_: Mv2ExperimentStage =
-      getMv2ExperimentStage(loadTimeData.getInteger('MV2ExperimentStage'));
-
-  override firstUpdated() {
-    this.addEventListener('view-enter-start', this.onViewEnterStart_);
-  }
+  accessor data: chrome.developerPrivate.ExtensionInfo =
+      createDummyExtensionInfo();
+  accessor delegate: ItemDelegate&Mv2DeprecationDelegate =
+      new DummyDetailViewDelegate();
+  accessor inDevMode: boolean = false;
+  accessor enableEnhancedSiteControls: boolean = false;
+  accessor incognitoAvailable: boolean = false;
+  accessor showActivityLog: boolean = false;
+  accessor fromActivityLog: boolean = false;
+  protected accessor showSafetyCheck_: boolean = false;
+  protected accessor size_: string = '';
+  protected accessor sortedViews_: chrome.developerPrivate.ExtensionView[] = [];
+  protected accessor webuiRoundedIconsEnabled_: boolean =
+      loadTimeData.getBoolean('webuiRoundedIconsEnabled');
 
   override willUpdate(changedProperties: PropertyValues<this>) {
     super.willUpdate(changedProperties);
@@ -149,6 +140,10 @@ export class ExtensionsDetailViewElement extends
     if (changedProperties.has('data') || changedProperties.has('delegate')) {
       this.onItemIdChanged_();
     }
+  }
+
+  override firstUpdated() {
+    this.addEventListener('view-enter-start', this.onViewEnterStart_);
   }
 
   override updated(changedProperties: PropertyValues<this>) {
@@ -215,10 +210,6 @@ export class ExtensionsDetailViewElement extends
         this.i18n('extensionEnabled'), this.i18n('itemOff'));
   }
 
-  protected getEnableToggleTooltipText_(): string {
-    return getEnableToggleTooltipText(this.data);
-  }
-
   protected onCloseButtonClick_() {
     navigation.navigateTo({page: Page.LIST});
   }
@@ -228,7 +219,7 @@ export class ExtensionsDetailViewElement extends
   }
 
   protected isEnableToggleEnabled_(): boolean {
-    return userCanChangeEnablement(this.data, this.mv2ExperimentStage_);
+    return userCanChangeEnablement(this.data);
   }
 
   protected hasDependentExtensions_(): boolean {
@@ -306,8 +297,10 @@ export class ExtensionsDetailViewElement extends
     this.reloadItem().catch((loadError) => this.fire('load-error', loadError));
   }
 
-  protected onUploadClick_() {
-    this.delegate.uploadItemToAccount(this.data.id);
+  protected async onUploadClick_() {
+    const uploaded = await this.delegate.uploadItemToAccount(this.data.id);
+    chrome.metricsPrivate.recordBoolean(
+        UPLOAD_EXTENSION_TO_ACCOUNT_DETAILS_VIEW_PAGE_HISTOGRAM_NAME, uploaded);
   }
 
   protected onRemoveClick_() {
@@ -334,34 +327,11 @@ export class ExtensionsDetailViewElement extends
   }
 
   /**
-   * Opens a URL in the Web Store with extensions recommendations for the
-   * extension.
-   */
-  protected onFindAlternativeButtonClick_(): void {
-    chrome.metricsPrivate.recordUserAction(
-        'Extensions.Mv2Deprecation.Warning.FindAlternativeForExtension.Entry');
-    const recommendationsUrl: string|undefined = this.data.recommendationsUrl;
-    assert(!!recommendationsUrl);
-    this.delegate.openUrl(recommendationsUrl);
-  }
-
-  /**
    * Triggers the extension's removal.
    */
   protected onRemoveButtonClick_(): void {
-    switch (this.mv2ExperimentStage_) {
-      case Mv2ExperimentStage.NONE:
-      case Mv2ExperimentStage.WARNING:
-        assertNotReached();
-      case Mv2ExperimentStage.DISABLE_WITH_REENABLE:
-        chrome.metricsPrivate.recordUserAction(
-            'Extensions.Mv2Deprecation.DisableWithReEnable.Remove');
-        break;
-      case Mv2ExperimentStage.UNSUPPORTED:
-        chrome.metricsPrivate.recordUserAction(
-            'Extensions.Mv2Deprecation.Unsupported.RemoveExtension.DetailPage');
-        break;
-    }
+    chrome.metricsPrivate.recordUserAction(
+        'Extensions.Mv2Deprecation.Unsupported.RemoveExtension.DetailPage');
 
     this.delegate.deleteItem(this.data.id);
   }
@@ -437,9 +407,14 @@ export class ExtensionsDetailViewElement extends
   }
 
   protected onSiteSettingsClick_() {
+    // <if expr="is_android">
+    this.delegate.showSiteSettings(this.data.id);
+    // </if>
+    // <if expr="not is_android">
     this.delegate.openUrl(
         `chrome://settings/content/siteDetails?site=chrome-extension://${
             this.data.id}`);
+    // </if>
   }
 
   protected onViewInStoreClick_() {
@@ -528,30 +503,8 @@ export class ExtensionsDetailViewElement extends
    * Returns whether the mv2 deprecation message should be displayed.
    */
   protected shouldShowMv2DeprecationMessage_(): boolean {
-    switch (this.mv2ExperimentStage_) {
-      case Mv2ExperimentStage.NONE:
-        return false;
-      case Mv2ExperimentStage.WARNING:
-        return this.data.isAffectedByMV2Deprecation;
-      case Mv2ExperimentStage.DISABLE_WITH_REENABLE:
-        return this.data.isAffectedByMV2Deprecation &&
-            this.data.disableReasons.unsupportedManifestVersion &&
-            !this.data.didAcknowledgeMV2DeprecationNotice;
-      case Mv2ExperimentStage.UNSUPPORTED:
-        return this.data.isAffectedByMV2Deprecation &&
-          this.data.disableReasons.unsupportedManifestVersion;
-      default:
-        assertNotReached();
-    }
-  }
-
-  /**
-   * Returns whether the find alternative button in the mv2 deprecation message
-   * should be displayed.
-   */
-  protected shouldShowMv2DeprecationFindAlternativeButton_(): boolean {
-    return this.mv2ExperimentStage_ === Mv2ExperimentStage.WARNING &&
-        !!this.data.recommendationsUrl;
+    return this.data.isAffectedByMV2Deprecation &&
+        this.data.disableReasons.unsupportedManifestVersion;
   }
 
   /**
@@ -559,14 +512,7 @@ export class ExtensionsDetailViewElement extends
    * displayed.
    */
   protected shouldShowMv2DeprecationRemoveButton_(): boolean {
-    switch (this.mv2ExperimentStage_) {
-      case Mv2ExperimentStage.NONE:
-      case Mv2ExperimentStage.WARNING:
-        return false;
-      case Mv2ExperimentStage.DISABLE_WITH_REENABLE:
-      case Mv2ExperimentStage.UNSUPPORTED:
-        return !this.data.mustRemainInstalled;
-    }
+    return !this.data.mustRemainInstalled;
   }
 
   /**
@@ -574,18 +520,7 @@ export class ExtensionsDetailViewElement extends
    * should be displayed.
    */
   protected shouldShowMv2DeprecationActionMenu_(): boolean {
-    switch (this.mv2ExperimentStage_) {
-      case Mv2ExperimentStage.NONE:
-      case Mv2ExperimentStage.WARNING:
-        return false;
-      case Mv2ExperimentStage.DISABLE_WITH_REENABLE:
-        return true;
-      case Mv2ExperimentStage.UNSUPPORTED:
-        // 'Find alternative' is the only action for this stage. Thus, we only
-        // show the menu if the action should be visible. For UNSUPPORTED, this
-        // is when the recommendationsUrl is non-empty.
-        return !!this.data.recommendationsUrl;
-    }
+    return !!this.data.recommendationsUrl;
   }
 
   /**
@@ -593,23 +528,7 @@ export class ExtensionsDetailViewElement extends
    * action menu should be displayed.
    */
   protected shouldShowMv2DeprecationFindAlternativeAction_(): boolean {
-    switch (this.mv2ExperimentStage_) {
-      case Mv2ExperimentStage.NONE:
-      case Mv2ExperimentStage.WARNING:
-        return false;
-      case Mv2ExperimentStage.DISABLE_WITH_REENABLE:
-      case Mv2ExperimentStage.UNSUPPORTED:
-        return !!this.data.recommendationsUrl;
-    }
-  }
-
-  /**
-   * Returns whether the keep button in mv2 deprecation message action menu
-   * should be displayed.
-   */
-  protected shouldShowMv2DeprecationKeepAction_(): boolean {
-    return this.mv2ExperimentStage_ ===
-        Mv2ExperimentStage.DISABLE_WITH_REENABLE;
+    return !!this.data.recommendationsUrl;
   }
 
   protected shouldShowBlocklistText_(): boolean {
@@ -657,19 +576,8 @@ export class ExtensionsDetailViewElement extends
    * extension.
    */
   protected onFindAlternativeActionClick_(): void {
-    switch (this.mv2ExperimentStage_) {
-      case Mv2ExperimentStage.NONE:
-      case Mv2ExperimentStage.WARNING:
-        assertNotReached();
-      case Mv2ExperimentStage.DISABLE_WITH_REENABLE:
-        chrome.metricsPrivate.recordUserAction(
-            'Extensions.Mv2Deprecation.Disabled.FindAlternativeForExtension.DetailPage');
-        break;
-      case Mv2ExperimentStage.UNSUPPORTED:
-        chrome.metricsPrivate.recordUserAction(
-            'Extensions.Mv2Deprecation.Unsupported.FindAlternativeForExtension.DetailPage');
-        break;
-    }
+    chrome.metricsPrivate.recordUserAction(
+        'Extensions.Mv2Deprecation.Unsupported.FindAlternativeForExtension.DetailPage');
 
     this.$.actionMenu.close();
 
@@ -679,33 +587,10 @@ export class ExtensionsDetailViewElement extends
   }
 
   /**
-   * Dismisses the notice for a given extension in the disable experiment stage.
-   * It will not be shown again during this stage.
-   */
-  protected onKeepActionClick_(): void {
-    assert(
-        this.mv2ExperimentStage_ === Mv2ExperimentStage.DISABLE_WITH_REENABLE);
-    chrome.metricsPrivate.recordUserAction(
-        'Extensions.Mv2Deprecation.Disabled.DismissedForExtension.DetailPage');
-    this.$.actionMenu.close();
-    this.delegate.dismissMv2DeprecationNoticeForExtension(this.data.id);
-  }
-
-  /**
    * Returns the Manifest V2 deprecation message header.
    */
   protected getMv2DeprecationMessageHeader_(): string {
-    switch (this.mv2ExperimentStage_) {
-      case Mv2ExperimentStage.NONE:
-        return '';
-      case Mv2ExperimentStage.WARNING:
-        return this.i18n('mv2DeprecationMessageWarningHeader');
-      case Mv2ExperimentStage.DISABLE_WITH_REENABLE:
-      case Mv2ExperimentStage.UNSUPPORTED:
-        return this.i18n('mv2DeprecationMessageDisabledHeader');
-      default:
-        assertNotReached();
-    }
+    return this.i18n('mv2DeprecationMessageDisabledHeader');
   }
 
   /**
@@ -714,46 +599,24 @@ export class ExtensionsDetailViewElement extends
    * since the string holds substitutions.
    */
   protected getMv2DeprecationMessageSubtitle_(): TrustedHTML {
-    switch (this.mv2ExperimentStage_) {
-      case Mv2ExperimentStage.NONE:
-        return window.trustedTypes!.emptyHTML;
-      case Mv2ExperimentStage.WARNING:
-        return this.i18nAdvanced('mv2DeprecationMessageWarningSubtitle', {
-          substitutions: [
-            'https://chromewebstore.google.com/category/extensions',
-            this.i18n('opensInNewTab'),
-          ],
-          attrs: ['aria-description'],
-        });
-      case Mv2ExperimentStage.DISABLE_WITH_REENABLE:
-      case Mv2ExperimentStage.UNSUPPORTED:
-        return this.i18nAdvanced('mv2DeprecationMessageDisabledSubtitle', {
-          substitutions: [
-            'https://support.google.com/chrome_webstore' +
-                '?p=unsupported_extensions',
-            this.i18n('opensInNewTab'),
-          ],
-          attrs: ['aria-description'],
-        });
-      default:
-        assertNotReached();
-    }
+    return this.i18nAdvanced('mv2DeprecationMessageDisabledSubtitle', {
+      substitutions: [
+        'https://support.google.com/chrome_webstore' +
+            '?p=unsupported_extensions',
+        this.i18n('opensInNewTab'),
+      ],
+      attrs: ['aria-description'],
+    });
   }
 
   /**
    * Returns the Manifest V2 deprecation message icon.
    */
   protected getMv2DeprecationMessageIcon_(): string {
-    switch (this.mv2ExperimentStage_) {
-      case Mv2ExperimentStage.NONE:
-      case Mv2ExperimentStage.WARNING:
-        return 'extensions-icons:my_extensions';
-      case Mv2ExperimentStage.DISABLE_WITH_REENABLE:
-      case Mv2ExperimentStage.UNSUPPORTED:
-        return 'extensions-icons:extension_off';
-      default:
-        assertNotReached();
-    }
+    return (
+        loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
+            'extensions-icons:chrome-extension-off' :
+            'extensions-icons:extension_off-old');
   }
 
   /** Returns the accessible label for the action menu button */

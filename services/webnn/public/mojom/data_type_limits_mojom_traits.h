@@ -14,11 +14,11 @@ namespace mojo {
 template <>
 struct StructTraits<webnn::mojom::DataTypeLimitsDataView,
                     webnn::DataTypeLimits> {
-  static webnn::SupportedDataTypes input(
+  static webnn::SupportedTensors input(
       const webnn::DataTypeLimits& data_type_limits) {
     return data_type_limits.input;
   }
-  static webnn::SupportedDataTypes constant(
+  static webnn::SupportedTensors constant(
       const webnn::DataTypeLimits& data_type_limits) {
     return data_type_limits.constant;
   }
@@ -26,7 +26,7 @@ struct StructTraits<webnn::mojom::DataTypeLimitsDataView,
       const webnn::DataTypeLimits& data_type_limits) {
     return data_type_limits.arg_min_max_input;
   }
-  static webnn::SupportedDataTypes arg_min_max_output(
+  static webnn::SupportedTensors arg_min_max_output(
       const webnn::DataTypeLimits& data_type_limits) {
     return data_type_limits.arg_min_max_output;
   }
@@ -46,17 +46,25 @@ struct StructTraits<webnn::mojom::DataTypeLimitsDataView,
       const webnn::DataTypeLimits& data_type_limits) {
     return data_type_limits.clamp_input;
   }
-  static webnn::SupportedDataTypes concat_inputs(
+  static webnn::SupportedTensors concat_inputs(
       const webnn::DataTypeLimits& data_type_limits) {
     return data_type_limits.concat_inputs;
   }
-  static webnn::SupportedDataTypes conv2d_input(
+  static webnn::SupportedTensors conv2d_input(
       const webnn::DataTypeLimits& data_type_limits) {
     return data_type_limits.conv2d_input;
   }
-  static webnn::SupportedDataTypes conv_transpose2d_input(
+  static webnn::SupportedTensors conv2d_bias(
+      const webnn::DataTypeLimits& data_type_limits) {
+    return data_type_limits.conv2d_bias;
+  }
+  static webnn::SupportedTensors conv_transpose2d_input(
       const webnn::DataTypeLimits& data_type_limits) {
     return data_type_limits.conv_transpose2d_input;
+  }
+  static webnn::SupportedTensors conv_transpose2d_bias(
+      const webnn::DataTypeLimits& data_type_limits) {
+    return data_type_limits.conv_transpose2d_bias;
   }
   static webnn::SupportedTensors cumulative_sum_input(
       const webnn::DataTypeLimits& data_type_limits) {
@@ -69,10 +77,6 @@ struct StructTraits<webnn::mojom::DataTypeLimitsDataView,
   static webnn::SupportedTensors dequantize_linear_scale(
       const webnn::DataTypeLimits& data_type_limits) {
     return data_type_limits.dequantize_linear_scale;
-  }
-  static webnn::SupportedTensors dequantize_linear_zero_point(
-      const webnn::DataTypeLimits& data_type_limits) {
-    return data_type_limits.dequantize_linear_zero_point;
   }
   static webnn::SupportedTensors add_input(
       const webnn::DataTypeLimits& data_type_limits) {
@@ -142,6 +146,14 @@ struct StructTraits<webnn::mojom::DataTypeLimitsDataView,
       const webnn::DataTypeLimits& data_type_limits) {
     return data_type_limits.logical_not_input;
   }
+  static webnn::SupportedTensors is_nan_input(
+      const webnn::DataTypeLimits& data_type_limits) {
+    return data_type_limits.is_nan_input;
+  }
+  static webnn::SupportedTensors is_infinite_input(
+      const webnn::DataTypeLimits& data_type_limits) {
+    return data_type_limits.is_infinite_input;
+  }
   static webnn::SupportedDataTypes logical_output(
       const webnn::DataTypeLimits& data_type_limits) {
     return data_type_limits.logical_output;
@@ -186,6 +198,10 @@ struct StructTraits<webnn::mojom::DataTypeLimitsDataView,
       const webnn::DataTypeLimits& data_type_limits) {
     return data_type_limits.reciprocal_input;
   }
+  static webnn::SupportedTensors round_even_input(
+      const webnn::DataTypeLimits& data_type_limits) {
+    return data_type_limits.round_even_input;
+  }
   static webnn::SupportedTensors sign_input(
       const webnn::DataTypeLimits& data_type_limits) {
     return data_type_limits.sign_input;
@@ -210,27 +226,27 @@ struct StructTraits<webnn::mojom::DataTypeLimitsDataView,
       const webnn::DataTypeLimits& data_type_limits) {
     return data_type_limits.expand_input;
   }
-  static webnn::SupportedDataTypes gather_input(
+  static webnn::SupportedTensors gather_input(
       const webnn::DataTypeLimits& data_type_limits) {
     return data_type_limits.gather_input;
   }
-  static webnn::SupportedDataTypes gather_indices(
+  static webnn::SupportedTensors gather_indices(
       const webnn::DataTypeLimits& data_type_limits) {
     return data_type_limits.gather_indices;
   }
-  static webnn::SupportedDataTypes gather_elements_input(
+  static webnn::SupportedTensors gather_elements_input(
       const webnn::DataTypeLimits& data_type_limits) {
     return data_type_limits.gather_elements_input;
   }
-  static webnn::SupportedDataTypes gather_elements_indices(
+  static webnn::SupportedTensors gather_elements_indices(
       const webnn::DataTypeLimits& data_type_limits) {
     return data_type_limits.gather_elements_indices;
   }
-  static webnn::SupportedDataTypes gather_nd_input(
+  static webnn::SupportedTensors gather_nd_input(
       const webnn::DataTypeLimits& data_type_limits) {
     return data_type_limits.gather_nd_input;
   }
-  static webnn::SupportedDataTypes gather_nd_indices(
+  static webnn::SupportedTensors gather_nd_indices(
       const webnn::DataTypeLimits& data_type_limits) {
     return data_type_limits.gather_nd_indices;
   }
@@ -238,17 +254,33 @@ struct StructTraits<webnn::mojom::DataTypeLimitsDataView,
       const webnn::DataTypeLimits& data_type_limits) {
     return data_type_limits.gelu_input;
   }
-  static webnn::SupportedDataTypes gemm_input(
+  static webnn::SupportedTensors gemm_a(
       const webnn::DataTypeLimits& data_type_limits) {
-    return data_type_limits.gemm_input;
+    return data_type_limits.gemm_a;
   }
-  static webnn::SupportedDataTypes gru_input(
+  static webnn::SupportedTensors gemm_c(
+      const webnn::DataTypeLimits& data_type_limits) {
+    return data_type_limits.gemm_c;
+  }
+  static webnn::SupportedTensors gru_input(
       const webnn::DataTypeLimits& data_type_limits) {
     return data_type_limits.gru_input;
   }
-  static webnn::SupportedDataTypes gru_cell_input(
+  static webnn::SupportedTensors gru_bias(
+      const webnn::DataTypeLimits& data_type_limits) {
+    return data_type_limits.gru_bias;
+  }
+  static webnn::SupportedTensors gru_output_sequence(
+      const webnn::DataTypeLimits& data_type_limits) {
+    return data_type_limits.gru_output_sequence;
+  }
+  static webnn::SupportedTensors gru_cell_input(
       const webnn::DataTypeLimits& data_type_limits) {
     return data_type_limits.gru_cell_input;
+  }
+  static webnn::SupportedTensors gru_cell_bias(
+      const webnn::DataTypeLimits& data_type_limits) {
+    return data_type_limits.gru_cell_bias;
   }
   static webnn::SupportedTensors hard_sigmoid_input(
       const webnn::DataTypeLimits& data_type_limits) {
@@ -278,13 +310,25 @@ struct StructTraits<webnn::mojom::DataTypeLimitsDataView,
       const webnn::DataTypeLimits& data_type_limits) {
     return data_type_limits.linear_input;
   }
-  static webnn::SupportedDataTypes lstm_input(
+  static webnn::SupportedTensors lstm_input(
       const webnn::DataTypeLimits& data_type_limits) {
     return data_type_limits.lstm_input;
   }
-  static webnn::SupportedDataTypes lstm_cell_input(
+  static webnn::SupportedTensors lstm_bias(
+      const webnn::DataTypeLimits& data_type_limits) {
+    return data_type_limits.lstm_bias;
+  }
+  static webnn::SupportedTensors lstm_output_sequence(
+      const webnn::DataTypeLimits& data_type_limits) {
+    return data_type_limits.lstm_output_sequence;
+  }
+  static webnn::SupportedTensors lstm_cell_input(
       const webnn::DataTypeLimits& data_type_limits) {
     return data_type_limits.lstm_cell_input;
+  }
+  static webnn::SupportedTensors lstm_cell_bias(
+      const webnn::DataTypeLimits& data_type_limits) {
+    return data_type_limits.lstm_cell_bias;
   }
   static webnn::SupportedTensors matmul_input(
       const webnn::DataTypeLimits& data_type_limits) {
@@ -454,12 +498,12 @@ struct StructTraits<webnn::mojom::DataTypeLimitsDataView,
            data.ReadClampInput(&out->clamp_input) &&
            data.ReadConcatInputs(&out->concat_inputs) &&
            data.ReadConv2dInput(&out->conv2d_input) &&
+           data.ReadConv2dBias(&out->conv2d_bias) &&
            data.ReadConvTranspose2dInput(&out->conv_transpose2d_input) &&
+           data.ReadConvTranspose2dBias(&out->conv_transpose2d_bias) &&
            data.ReadCumulativeSumInput(&out->cumulative_sum_input) &&
            data.ReadDequantizeLinearInput(&out->dequantize_linear_input) &&
            data.ReadDequantizeLinearScale(&out->dequantize_linear_scale) &&
-           data.ReadDequantizeLinearZeroPoint(
-               &out->dequantize_linear_zero_point) &&
            data.ReadAddInput(&out->add_input) &&
            data.ReadSubInput(&out->sub_input) &&
            data.ReadMulInput(&out->mul_input) &&
@@ -477,6 +521,8 @@ struct StructTraits<webnn::mojom::DataTypeLimitsDataView,
            data.ReadLogicalOrInput(&out->logical_or_input) &&
            data.ReadLogicalXorInput(&out->logical_xor_input) &&
            data.ReadLogicalNotInput(&out->logical_not_input) &&
+           data.ReadIsNanInput(&out->is_nan_input) &&
+           data.ReadIsInfiniteInput(&out->is_infinite_input) &&
            data.ReadLogicalOutput(&out->logical_output) &&
            data.ReadAbsInput(&out->abs_input) &&
            data.ReadCeilInput(&out->ceil_input) &&
@@ -488,6 +534,7 @@ struct StructTraits<webnn::mojom::DataTypeLimitsDataView,
            data.ReadLogInput(&out->log_input) &&
            data.ReadNegInput(&out->neg_input) &&
            data.ReadReciprocalInput(&out->reciprocal_input) &&
+           data.ReadRoundEvenInput(&out->round_even_input) &&
            data.ReadSignInput(&out->sign_input) &&
            data.ReadSinInput(&out->sin_input) &&
            data.ReadSqrtInput(&out->sqrt_input) &&
@@ -501,9 +548,12 @@ struct StructTraits<webnn::mojom::DataTypeLimitsDataView,
            data.ReadGatherNdInput(&out->gather_nd_input) &&
            data.ReadGatherNdIndices(&out->gather_nd_indices) &&
            data.ReadGeluInput(&out->gelu_input) &&
-           data.ReadGemmInput(&out->gemm_input) &&
+           data.ReadGemmA(&out->gemm_a) && data.ReadGemmC(&out->gemm_c) &&
            data.ReadGruInput(&out->gru_input) &&
+           data.ReadGruOutputSequence(&out->gru_output_sequence) &&
+           data.ReadGruBias(&out->gru_bias) &&
            data.ReadGruCellInput(&out->gru_cell_input) &&
+           data.ReadGruCellBias(&out->gru_cell_bias) &&
            data.ReadHardSigmoidInput(&out->hard_sigmoid_input) &&
            data.ReadHardSwishInput(&out->hard_swish_input) &&
            data.ReadInstanceNormalizationInput(
@@ -514,7 +564,10 @@ struct StructTraits<webnn::mojom::DataTypeLimitsDataView,
            data.ReadLeakyReluInput(&out->leaky_relu_input) &&
            data.ReadLinearInput(&out->linear_input) &&
            data.ReadLstmInput(&out->lstm_input) &&
+           data.ReadLstmBias(&out->lstm_bias) &&
+           data.ReadLstmOutputSequence(&out->lstm_output_sequence) &&
            data.ReadLstmCellInput(&out->lstm_cell_input) &&
+           data.ReadLstmCellBias(&out->lstm_cell_bias) &&
            data.ReadMatmulInput(&out->matmul_input) &&
            data.ReadPadInput(&out->pad_input) &&
            data.ReadAveragePool2dInput(&out->average_pool2d_input) &&

@@ -15,6 +15,7 @@
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/service_worker_context.h"
+#include "content/public/browser/web_contents.h"
 #include "content/public/test/background_sync_test_util.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/content_browser_test_utils.h"
@@ -202,17 +203,14 @@ void BackgroundSyncBaseBrowserTest::ClearStoragePartitionData() {
 
   uint32_t storage_partition_mask =
       StoragePartition::REMOVE_DATA_MASK_SERVICE_WORKERS;
-  uint32_t quota_storage_mask =
-      StoragePartition::QUOTA_MANAGED_STORAGE_MASK_ALL;
   blink::StorageKey delete_storage_key = blink::StorageKey();
   const base::Time delete_begin = base::Time();
   base::Time delete_end = base::Time::Max();
 
   base::RunLoop run_loop;
 
-  storage->ClearData(storage_partition_mask, quota_storage_mask,
-                     delete_storage_key, delete_begin, delete_end,
-                     run_loop.QuitClosure());
+  storage->ClearData(storage_partition_mask, delete_storage_key, delete_begin,
+                     delete_end, run_loop.QuitClosure());
 
   run_loop.Run();
 }

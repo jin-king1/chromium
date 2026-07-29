@@ -23,11 +23,16 @@ public class FormDataTest {
     public void testCreateFormDataSetsFieldsCorrectly() {
         int sessionId = 12345;
         String name = "SomeFormName";
-        String host = "https://foo.com";
-        FormData form = FormData.createFormData(sessionId, name, host, Collections.emptyList());
+        final String siteHost = "https://foo.com";
+        final String frameHost = "https://frame.foo.com";
+        FormFieldDataBuilder fieldBuilder = new FormFieldDataBuilder();
+        fieldBuilder.mOrigin = frameHost;
+        FormData form =
+                FormData.createFormData(
+                        sessionId, name, siteHost, Collections.singletonList(fieldBuilder.build()));
         assertEquals(sessionId, form.mSessionId);
         assertEquals(name, form.mName);
-        assertEquals(host, form.mHost);
-        assertEquals(Collections.emptyList(), form.mFields);
+        assertEquals(siteHost, form.mHost);
+        assertEquals(frameHost, form.mFields.get(0).mOrigin);
     }
 }

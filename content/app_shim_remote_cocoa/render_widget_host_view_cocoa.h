@@ -15,7 +15,7 @@
 #include "content/browser/renderer_host/input/mouse_wheel_rails_filter_mac.h"
 #include "content/common/content_export.h"
 #include "content/common/render_widget_host_ns_view.mojom.h"
-#include "mojo/public/cpp/bindings/remote.h"
+#import "content/public/browser/render_widget_host_view_mac_delegate.h"
 #include "third_party/blink/public/mojom/input/input_handler.mojom-shared.h"
 #import "ui/base/cocoa/command_dispatcher.h"
 #import "ui/base/cocoa/tool_tip_base_view.h"
@@ -38,8 +38,6 @@ namespace ui {
 enum class DomCode : uint32_t;
 struct DidOverscrollParams;
 }  // namespace ui
-
-@protocol RenderWidgetHostViewMacDelegate;
 
 @protocol RenderWidgetHostNSViewHostOwner
 - (remote_cocoa::mojom::RenderWidgetHostNSViewHost*)renderWidgetHostNSViewHost;
@@ -64,22 +62,10 @@ CONTENT_EXPORT
 
 @property(nonatomic, strong) NSSpellChecker* spellCheckerForTesting;
 
-// Common code path for handling begin gesture events. This helper method is
-// called via different codepaths based on OS version and SDK:
-// - On 10.11 and later, when linking with the 10.11 SDK, it is called from
-//   |magnifyWithEvent:| when the given event's phase is NSEventPhaseBegin.
-// - On 10.10 and earlier, or when linking with an earlier SDK, it is called
-//   by |beginGestureWithEvent:| when a gesture begins.
-- (void)handleBeginGestureWithEvent:(NSEvent*)event
-            isSyntheticallyInjected:(BOOL)isSyntheticallyInjected;
-
-// Common code path for handling end gesture events. This helper method is
-// called via different codepaths based on OS version and SDK:
-// - On 10.11 and later, when linking with the 10.11 SDK, it is called from
-//   |magnifyWithEvent:| when the given event's phase is NSEventPhaseEnded.
-// - On 10.10 and earlier, or when linking with an earlier SDK, it is called
-//   by |endGestureWithEvent:| when a gesture ends.
-- (void)handleEndGestureWithEvent:(NSEvent*)event;
+// Inject a magnify event. Identical to the processing that happens with the
+// -magnifyWithEvent: message, but if `injected` is set to YES, then the pinch
+// threshold is bypassed.
+- (void)magnifyWithEvent:(NSEvent*)event isSyntheticallyInjected:(BOOL)injected;
 
 - (void)setCanBeKeyView:(BOOL)can;
 - (void)setCloseOnDeactivate:(BOOL)b;
@@ -99,6 +85,8 @@ CONTENT_EXPORT
 - (void)updateScreenProperties;
 // Indicate if the embedding WebContents is showing a web content context menu.
 - (void)setShowingContextMenu:(BOOL)showing;
+// Indicate if the native context menu should display "AutoFill" items.
+- (void)setSupportsAutoFill:(BOOL)supports;
 // Set the current TextInputManager::TextSelection from the renderer.
 - (void)setTextSelectionText:(std::u16string)text
                       offset:(size_t)offset
@@ -124,6 +112,9 @@ CONTENT_EXPORT
 // Stores a reference to the popup parent's NSView id, which we can use to
 // retrieve the associated NSView.
 - (void)setPopupParentNSViewId:(uint64_t)view_id;
+
+// Returns the policy for accepting tooltips from the delegate.
+- (AcceptTooltipEvents)acceptsTooltipEvents;
 
 // Methods previously marked as private.
 - (instancetype)

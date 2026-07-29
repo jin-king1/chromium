@@ -10,6 +10,7 @@
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/time/time.h"
 #include "chromeos/ash/components/dbus/cicerone/fake_cicerone_client.h"
 
 namespace ash {
@@ -131,10 +132,14 @@ void FakeConciergeClient::ImportDiskImage(
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
       FROM_HERE,
       base::BindOnce(std::move(callback), import_disk_image_response_));
-  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+  // Give time for callbacks to have posted before notifying progress signals.
+  // If flakiness ensues, could try to use callback.Then() for posting
+  // subsequent notification.
+  base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
       FROM_HERE,
       base::BindOnce(&FakeConciergeClient::NotifyAllDiskImageProgress,
-                     weak_ptr_factory_.GetWeakPtr()));
+                     weak_ptr_factory_.GetWeakPtr()),
+      base::Seconds(2));
 }
 
 void FakeConciergeClient::ExportDiskImage(
@@ -146,10 +151,14 @@ void FakeConciergeClient::ExportDiskImage(
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
       FROM_HERE,
       base::BindOnce(std::move(callback), export_disk_image_response_));
-  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+  // Give time for callbacks to have posted before notifying progress signals.
+  // If flakiness ensues, could try to use callback.Then() for posting
+  // subsequent notification.
+  base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
       FROM_HERE,
       base::BindOnce(&FakeConciergeClient::NotifyAllDiskImageProgress,
-                     weak_ptr_factory_.GetWeakPtr()));
+                     weak_ptr_factory_.GetWeakPtr()),
+      base::Seconds(2));
 }
 
 void FakeConciergeClient::CancelDiskImageOperation(
@@ -449,6 +458,7 @@ void FakeConciergeClient::MuteVmAudio(
     const vm_tools::concierge::MuteVmAudioRequest& request,
     chromeos::DBusMethodCallback<vm_tools::concierge::SuccessFailureResponse>
         callback) {
+  mute_vm_audio_call_count_++;
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
       FROM_HERE, base::BindOnce(std::move(callback), mute_vm_audio_response_));
 }
@@ -459,6 +469,14 @@ void FakeConciergeClient::SetUpVmUser(
         callback) {
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
       FROM_HERE, base::BindOnce(std::move(callback), set_up_vm_user_response_));
+}
+
+void FakeConciergeClient::GetBaguetteImageUrl(
+    chromeos::DBusMethodCallback<
+        vm_tools::concierge::GetBaguetteImageUrlResponse> callback) {
+  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE,
+      base::BindOnce(std::move(callback), get_baguette_image_url_response_));
 }
 
 void FakeConciergeClient::NotifyVmStarted(

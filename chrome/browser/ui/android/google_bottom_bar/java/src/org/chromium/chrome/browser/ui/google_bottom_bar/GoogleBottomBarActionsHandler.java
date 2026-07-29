@@ -26,7 +26,8 @@ import org.chromium.base.ApiCompatibilityUtils;
 import org.chromium.base.Log;
 import org.chromium.base.PackageManagerUtils;
 import org.chromium.base.metrics.RecordUserAction;
-import org.chromium.base.supplier.Supplier;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.lens.LensController;
 import org.chromium.chrome.browser.lens.LensEntryPoint;
 import org.chromium.chrome.browser.lens.LensIntentParams;
@@ -36,13 +37,15 @@ import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.ui.google_bottom_bar.BottomBarConfig.ButtonConfig;
 import org.chromium.chrome.browser.ui.google_bottom_bar.BottomBarConfig.ButtonId;
 import org.chromium.chrome.browser.ui.google_bottom_bar.GoogleBottomBarLogger.GoogleBottomBarButtonEvent;
-import org.chromium.chrome.browser.util.ChromeAccessibilityUtil;
 import org.chromium.components.browser_ui.widget.textbubble.TextBubble;
 import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.widget.ViewRectProvider;
 
+import java.util.function.Supplier;
+
 /** A handler class for actions triggered by buttons in a GoogleBottomBar. */
+@NullMarked
 class GoogleBottomBarActionsHandler {
     private static final String TAG = "GBBActionHandler";
 
@@ -51,19 +54,19 @@ class GoogleBottomBarActionsHandler {
             "launched_from_chrome_search_entrypoint";
 
     private final Activity mActivity;
-    private final Supplier<Tab> mTabProvider;
-    private final Supplier<ShareDelegate> mShareDelegateSupplier;
+    private final Supplier<@Nullable Tab> mTabProvider;
+    private final Supplier<@Nullable ShareDelegate> mShareDelegateSupplier;
 
     GoogleBottomBarActionsHandler(
             Activity activity,
-            Supplier<Tab> tabProvider,
-            Supplier<ShareDelegate> shareDelegateSupplier) {
+            Supplier<@Nullable Tab> tabProvider,
+            Supplier<@Nullable ShareDelegate> shareDelegateSupplier) {
         mActivity = activity;
         mTabProvider = tabProvider;
         mShareDelegateSupplier = shareDelegateSupplier;
     }
 
-    View.OnClickListener getClickListener(ButtonConfig buttonConfig) {
+    View.@Nullable OnClickListener getClickListener(ButtonConfig buttonConfig) {
         switch (buttonConfig.getId()) {
             case ButtonId.SAVE -> {
                 return v -> onSaveButtonClick(buttonConfig, v);
@@ -257,14 +260,8 @@ class GoogleBottomBarActionsHandler {
     private void showTooltip(View view, int messageId) {
         ViewRectProvider rectProvider = new ViewRectProvider(view);
         TextBubble textBubble =
-                new TextBubble(
-                        view.getContext(),
-                        view,
-                        /* stringId= */ messageId,
-                        /* accessibilityStringId= */ messageId,
-                        /* showArrow= */ true,
-                        rectProvider,
-                        ChromeAccessibilityUtil.get().isAccessibilityEnabled());
+                new TextBubble.Builder(view.getContext(), view, rectProvider, messageId, messageId)
+                        .build();
         textBubble.setFocusable(true);
         textBubble.setDismissOnTouchInteraction(true);
         textBubble.show();

@@ -23,9 +23,11 @@
 #include "third_party/blink/renderer/modules/mediastream/mock_media_stream_video_source.h"
 #include "third_party/blink/renderer/platform/mediastream/media_stream_component.h"
 #include "third_party/blink/renderer/platform/mediastream/media_stream_source.h"
+#include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
 #include "third_party/blink/renderer/platform/testing/io_task_runner_testing_platform_support.h"
 #include "third_party/blink/renderer/platform/testing/task_environment.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
+#include "third_party/blink/renderer/platform/wtf/functional.h"
 
 using ::testing::_;
 using ::testing::AtLeast;
@@ -41,9 +43,8 @@ class MediaStreamVideoRendererSinkTest : public testing::Test {
     auto mock_source = std::make_unique<MockMediaStreamVideoSource>();
     mock_source_ = mock_source.get();
     media_stream_source_ = MakeGarbageCollected<MediaStreamSource>(
-        String::FromUTF8("dummy_source_id"), MediaStreamSource::kTypeVideo,
-        String::FromUTF8("dummy_source_name"), false /* remote */,
-        std::move(mock_source));
+        "dummy_source_id", MediaStreamSource::kTypeVideo, "dummy_source_name",
+        false /* remote */, std::move(mock_source));
     WebMediaStreamTrack web_track = MediaStreamVideoTrack::CreateVideoTrack(
         mock_source_, WebPlatformMediaStreamSource::ConstraintsOnceCallback(),
         true);
@@ -117,8 +118,9 @@ class MediaStreamVideoRendererSinkTest : public testing::Test {
     // |media_stream_component_| uses video task runner to send frames to sinks.
     // Make sure that tasks on video task runner are completed before moving on.
     base::RunLoop run_loop;
-    Platform::Current()->GetIOTaskRunner()->PostTaskAndReply(
-        FROM_HERE, base::BindOnce([] {}), run_loop.QuitClosure());
+    PostCrossThreadTaskAndReply(*Platform::Current()->GetIOTaskRunner(),
+                                FROM_HERE, CrossThreadBindOnce([] {}),
+                                CrossThreadOnceClosure(run_loop.QuitClosure()));
     run_loop.Run();
     base::RunLoop().RunUntilIdle();
   }

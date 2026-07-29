@@ -23,7 +23,6 @@
 #include "ash/wallpaper/wallpaper_time_of_day_scheduler.h"
 #include "ash/wallpaper/wallpaper_utils/wallpaper_online_variant_utils.h"
 #include "ash/webui/personalization_app/personalization_app_url_constants.h"
-#include "base/functional/callback_forward.h"
 #include "base/functional/callback_helpers.h"
 #include "base/i18n/time_formatting.h"
 #include "base/run_loop.h"
@@ -43,7 +42,8 @@
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chromeos/ash/components/geolocation/geoposition.h"
-#include "chromeos/ash/components/geolocation/simple_geolocation_provider.h"
+#include "chromeos/ash/components/geolocation/location_fetcher.h"
+#include "chromeos/ash/components/geolocation/system_location_provider.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "content/public/common/isolated_world_ids.h"
 #include "content/public/test/browser_test.h"
@@ -136,7 +136,7 @@ class PersonalizationAppTimeOfDayBrowserTest
   void SetUpOnMainThread() override {
     SystemWebAppBrowserTestBase::SetUpOnMainThread();
 
-    browser()->window()->Minimize();
+    browser()->GetWindow()->Minimize();
 
     WallpaperControllerClientImpl::Get()->SetWallpaperFetcherDelegateForTesting(
         std::make_unique<wallpaper_handlers::TestWallpaperFetcherDelegate>());
@@ -145,7 +145,7 @@ class PersonalizationAppTimeOfDayBrowserTest
         std::make_unique<WallpaperControllerTestApi>(
             ::ash::Shell::Get()->wallpaper_controller());
     wallpaper_controller_test_api->SetDefaultWallpaper(
-        GetAccountId(browser()->profile()));
+        GetAccountId(browser()->GetProfile()));
 
     test_chrome_webui_controller_factory_.AddFactoryOverride(
         kChromeUIPersonalizationAppHost, &test_webui_provider_);
@@ -167,7 +167,9 @@ class PersonalizationAppTimeOfDayBrowserTest
         geolocation_url_loader_factory =
             base::MakeRefCounted<TestGeolocationUrlLoaderFactory>();
     geolocation_url_loader_factory->set_position(GetGeoposition());
-    SimpleGeolocationProvider::GetInstance()
+    SystemLocationProvider::GetInstance()
+        ->GetLocationProviderForTesting()
+        ->GetLocationFetcherForTesting()
         ->SetSharedUrlLoaderFactoryForTesting(geolocation_url_loader_factory);
     // Request immediate geoposition to fetch and broadcast the fixed
     // geoposition set by TestSharedUrlLoaderFactory above.

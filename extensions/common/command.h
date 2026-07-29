@@ -33,13 +33,13 @@ class Command : public ui::Command {
   static ui::Accelerator StringToAccelerator(std::string_view accelerator,
                                              std::string_view command_name);
 
-  // Return true if the |command_name| is one of the following action events:
+  // Return true if the `command_name` is one of the following action events:
   // Action Command Event, Browser Action Command Event, Page Action Command
   // Event.
   static bool IsActionRelatedCommand(std::string_view command_name);
 
   // Parse the command.
-  bool Parse(const base::Value::Dict& command,
+  bool Parse(const base::DictValue& command,
              std::string_view command_name,
              int index,
              std::u16string* error);

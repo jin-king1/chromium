@@ -8,26 +8,33 @@
 #include "base/containers/queue.h"
 #include "base/task/thread_pool.h"
 #include "chrome/browser/collaboration/messaging/messaging_backend_service_factory.h"
-#include "chrome/browser/ui/browser_finder.h"
+#include "chrome/browser/data_sharing/data_sharing_service_factory.h"
+#include "chrome/browser/image_fetcher/image_fetcher_service_factory.h"
+#include "chrome/browser/profiles/profile_key.h"
+#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/collaboration_messaging_tab_data.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_utils.h"
-#include "chrome/browser/ui/tabs/tab_group.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/toasts/api/toast_id.h"
 #include "chrome/browser/ui/toasts/toast_features.h"
-#include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/browser/ui/views/tabs/tab_strip.h"
+#include "chrome/browser/ui/toasts/toast_view.h"
+#include "components/collaboration/public/messaging/message.h"
+#include "components/data_sharing/public/data_sharing_service.h"
+#include "components/image_fetcher/core/image_fetcher_service.h"
 #include "components/saved_tab_groups/public/tab_group_sync_service.h"
+#include "components/signin/public/base/avatar_icon_util.h"
+#include "components/tabs/public/tab_group.h"
 
 namespace tab_groups {
 namespace {
 
 // Returns the local tab group ID from the InstantMessage.
 std::optional<LocalTabGroupID> UnwrapTabGroupID(InstantMessage message) {
-  auto tab_group_metadata = message.attribution.tab_group_metadata;
+  auto tab_group_metadata = message.attributions[0].tab_group_metadata;
   if (tab_group_metadata.has_value()) {
     return tab_group_metadata->local_tab_group_id;
   }
@@ -37,8 +44,11 @@ std::optional<LocalTabGroupID> UnwrapTabGroupID(InstantMessage message) {
 }  // namespace
 
 QueuedInstantMessage::QueuedInstantMessage(InstantMessage message_,
+                                           gfx::Image avatar_,
                                            SuccessCallback success_callback_)
-    : message(message_), success_callback(std::move(success_callback_)) {}
+    : message(message_),
+      avatar(avatar_),
+      success_callback(std::move(success_callback_)) {}
 QueuedInstantMessage::QueuedInstantMessage(QueuedInstantMessage&& other) =
     default;
 QueuedInstantMessage::~QueuedInstantMessage() = default;
@@ -49,17 +59,81 @@ InstantMessageQueueProcessor::~InstantMessageQueueProcessor() = default;
 
 void InstantMessageQueueProcessor::Enqueue(InstantMessage message,
                                            SuccessCallback success_callback) {
-  if (!base::FeatureList::IsEnabled(toast_features::kToastFramework)) {
-    return;
-  }
-
   if (message.level !=
       collaboration::messaging::InstantNotificationLevel::BROWSER) {
     // Only handle browser notifications.
     return;
   }
 
-  instant_message_queue_.emplace(message, std::move(success_callback));
+  if (message.localized_message.empty()) {
+    return;
+  }
+
+  FetchAvatar(message,
+              base::BindOnce(&InstantMessageQueueProcessor::OnAvatarFetched,
+                             weak_factory_.GetWeakPtr(), message,
+                             std::move(success_callback)));
+}
+
+void InstantMessageQueueProcessor::FetchAvatar(
+    InstantMessage message,
+    FetchAvatarSuccessCallback success_callback) {
+  // Aggregated messages do not have a single attribution, therefore cannot
+  // show an avatar.
+  if (message.attributions.size() != 1) {
+    return std::move(success_callback).Run(gfx::Image());
+  }
+
+  GURL avatar_url;
+  switch (message.collaboration_event) {
+    case CollaborationEvent::TAB_REMOVED: {
+      MessageAttribution attribution = message.attributions.front();
+      if (attribution.triggering_user.has_value()) {
+        avatar_url = attribution.triggering_user->avatar_url;
+      }
+      break;
+    }
+    case CollaborationEvent::COLLABORATION_MEMBER_ADDED: {
+      MessageAttribution attribution = message.attributions.front();
+      if (attribution.affected_user.has_value()) {
+        avatar_url = attribution.affected_user->avatar_url;
+      }
+      break;
+    }
+    default:
+      break;
+  }
+
+  if (!avatar_url.is_valid()) {
+    // Message has no avatar to show, immediately trigger callback.
+    return std::move(success_callback).Run(gfx::Image());
+  }
+
+  image_fetcher::ImageFetcherService* image_fetcher_service =
+      ImageFetcherServiceFactory::GetForKey(profile_->GetProfileKey());
+  if (!image_fetcher_service) {
+    return std::move(success_callback).Run(gfx::Image());
+  }
+
+  data_sharing::DataSharingService* const data_sharing_service =
+      data_sharing::DataSharingServiceFactory::GetForProfile(profile_);
+  if (!data_sharing_service) {
+    return std::move(success_callback).Run(gfx::Image());
+  }
+
+  // Request the avatar image using the standard size. This will be
+  // resized to accommodate the Toast surface.
+  data_sharing_service->GetAvatarImageForURL(
+      avatar_url, toasts::ToastView::GetIconSize(), std::move(success_callback),
+      image_fetcher_service->GetImageFetcher(
+          image_fetcher::ImageFetcherConfig::kDiskCacheOnly));
+}
+
+void InstantMessageQueueProcessor::OnAvatarFetched(
+    InstantMessage message,
+    SuccessCallback success_callback,
+    const gfx::Image& avatar) {
+  instant_message_queue_.emplace(message, avatar, std::move(success_callback));
   MaybeShowInstantMessage();
 }
 
@@ -93,8 +167,8 @@ void InstantMessageQueueProcessor::MaybeShowInstantMessage() {
   // Peek at the next item in queue and attempt to find the appropriate
   // browser to show the message.
   QueuedInstantMessage& it = instant_message_queue_.front();
-  const bool message_shown = MaybeShowToastInBrowser(
-      GetBrowser(it.message), GetParamsForMessage(it.message));
+  const bool message_shown =
+      MaybeShowToastInBrowser(GetBrowser(it.message), GetParamsForMessage(it));
   if (!message_shown) {
     // Inform the backend that the message could not be displayed.
     std::move(it.success_callback).Run(false);
@@ -114,9 +188,9 @@ void InstantMessageQueueProcessor::MaybeShowInstantMessage() {
       GetMessageInterval());
 }
 
-Browser* InstantMessageQueueProcessor::GetBrowser(
+BrowserWindowInterface* InstantMessageQueueProcessor::GetBrowser(
     const InstantMessage& message) {
-  Browser* browser = nullptr;
+  BrowserWindowInterface* browser = nullptr;
 
   const bool is_tab_removed_message =
       message.collaboration_event == CollaborationEvent::TAB_REMOVED &&
@@ -139,7 +213,8 @@ Browser* InstantMessageQueueProcessor::GetBrowser(
     // In the case of TAB_GROUP_REMOVED, the group may or may not be open.
     // Find a fallback browser for this profile.
     if (!browser) {
-      browser = chrome::FindLastActiveWithProfile(profile_);
+      browser = ProfileBrowserCollection::GetForProfile(profile_)
+                    ->GetLastActiveBrowser();
     }
   }
 
@@ -147,7 +222,7 @@ Browser* InstantMessageQueueProcessor::GetBrowser(
 }
 
 bool InstantMessageQueueProcessor::MaybeShowToastInBrowser(
-    Browser* browser,
+    BrowserWindowInterface* browser,
     std::optional<ToastParams> params) {
   if (!browser) {
     // Browser state does not support showing this message or this is
@@ -160,8 +235,7 @@ bool InstantMessageQueueProcessor::MaybeShowToastInBrowser(
     return false;
   }
 
-  ToastController* toast_controller =
-      browser->browser_window_features()->toast_controller();
+  ToastController* toast_controller = browser->GetFeatures().toast_controller();
   if (!toast_controller) {
     // Encountered an issue with the toast controller for this browser.
     return false;
@@ -171,62 +245,32 @@ bool InstantMessageQueueProcessor::MaybeShowToastInBrowser(
 }
 
 std::optional<ToastParams> InstantMessageQueueProcessor::GetParamsForMessage(
-    const InstantMessage& message) {
+    const QueuedInstantMessage& queued_message) {
   using collaboration::messaging::TabGroupMessageMetadata;
   using collaboration::messaging::TabMessageMetadata;
 
-  switch (message.collaboration_event) {
+  switch (queued_message.message.collaboration_event) {
     case CollaborationEvent::TAB_REMOVED: {
-      std::optional<data_sharing::GroupMember> user =
-          message.attribution.triggering_user;
-      std::optional<TabMessageMetadata> tab_metadata =
-          message.attribution.tab_metadata;
-      const bool has_title = tab_metadata.has_value() &&
-                             tab_metadata->last_known_title.has_value();
-      if (!user.has_value() || !has_title) {
-        return std::nullopt;
-      }
-
       ToastParams params(ToastId::kTabGroupSyncTabRemoved);
-      params.body_string_replacement_params = {
-          base::UTF8ToUTF16(user->given_name),
-          base::UTF8ToUTF16(tab_metadata->last_known_title.value()),
-      };
+      params.body_string_override = queued_message.message.localized_message;
+      if (!queued_message.avatar.IsEmpty()) {
+        params.image_override =
+            ui::ImageModel::FromImage(queued_message.avatar);
+      }
       return params;
     }
     case CollaborationEvent::COLLABORATION_MEMBER_ADDED: {
-      std::optional<data_sharing::GroupMember> user =
-          message.attribution.affected_user;
-      std::optional<TabGroupMessageMetadata> tab_group_metadata =
-          message.attribution.tab_group_metadata;
-      const bool has_group_title =
-          tab_group_metadata.has_value() &&
-          tab_group_metadata->last_known_title.has_value();
-      if (!user.has_value() || !has_group_title) {
-        return std::nullopt;
-      }
-
       ToastParams params(ToastId::kTabGroupSyncUserJoined);
-      params.body_string_replacement_params = {
-          base::UTF8ToUTF16(user->given_name),
-          base::UTF8ToUTF16(tab_group_metadata->last_known_title.value()),
-      };
+      params.body_string_override = queued_message.message.localized_message;
+      if (!queued_message.avatar.IsEmpty()) {
+        params.image_override =
+            ui::ImageModel::FromImage(queued_message.avatar);
+      }
       return params;
     }
     case CollaborationEvent::TAB_GROUP_REMOVED: {
-      std::optional<TabGroupMessageMetadata> tab_group_metadata =
-          message.attribution.tab_group_metadata;
-      const bool has_group_title =
-          tab_group_metadata.has_value() &&
-          tab_group_metadata->last_known_title.has_value();
-      if (!has_group_title) {
-        return std::nullopt;
-      }
-
       ToastParams params(ToastId::kTabGroupSyncRemovedFromGroup);
-      params.body_string_replacement_params = {
-          base::UTF8ToUTF16(tab_group_metadata->last_known_title.value()),
-      };
+      params.body_string_override = queued_message.message.localized_message;
       return params;
     }
     default:
@@ -240,9 +284,8 @@ base::TimeDelta InstantMessageQueueProcessor::GetMessageInterval() {
   // to show the next message.
   // TODO(crbug.com/390814333): Determine the correct heuristic for
   // time-between-messages.
-  return base::Seconds(1) +
-         std::max(toast_features::kToastTimeout.Get(),
-                  toast_features::kToastWithoutActionTimeout.Get());
+  return base::Seconds(1) + std::max(ToastController::kToastDefaultTimeout,
+                                     ToastController::kToastWithActionTimeout);
 }
 
 void InstantMessageQueueProcessor::ProcessQueueAfterMessageShown() {

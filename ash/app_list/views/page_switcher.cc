@@ -15,7 +15,6 @@
 #include "ash/style/icon_button.h"
 #include "base/functional/bind.h"
 #include "base/i18n/number_formatting.h"
-#include "base/metrics/histogram_macros.h"
 #include "third_party/skia/include/core/SkPath.h"
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -107,8 +106,8 @@ class PageSwitcherButton : public IconButton {
   // Paints a button based on the |info|.
   void PaintButton(gfx::Canvas* canvas, PaintButtonInfo info) {
     gfx::Rect rect(GetContentsBounds());
-    SkPath path;
-    path.addCircle(rect.CenterPoint().x(), rect.CenterPoint().y(), info.radius);
+    const SkPath path = SkPath::Circle(rect.CenterPoint().x(),
+                                       rect.CenterPoint().y(), info.radius);
 
     cc::PaintFlags flags;
     flags.setAntiAlias(true);

@@ -119,6 +119,9 @@ CWV_EXPORT
 // back-forward list navigations.
 @property(nonatomic) BOOL allowsBackForwardNavigationGestures;
 
+// Whether or not long pressing a link in the web view renders a link preview.
+@property(nonatomic) BOOL allowsLinkPreview;
+
 // The web view's autofill controller.
 @property(nonatomic, readonly) CWVAutofillController* autofillController;
 
@@ -137,16 +140,17 @@ CWV_EXPORT
 // CWVWebViewConfiguration instance is initialized.
 @property(nonatomic, class) BOOL chromeContextMenuEnabled;
 
-// Whether or not to use the new session storage. Defaults to NO.
+// Whether or not to use the new session storage. Defaults to YES.
 // This class property setting should only be changed BEFORE any
 // CWVWebViewConfiguration instance is initialized.
+// Deprecated: the code ignore the value assigned.
 @property(nonatomic, class) BOOL useOptimizedSessionStorage;
 
 // Whether or not to enable debugging by Safari Web Inspector.
 // Defaults to NO.
 @property(nonatomic, class) BOOL webInspectorEnabled;
 
-// Normally ios/web_view/ CHECKs IsAccountStorageEnabled() early on. Setting
+// Normally ios/web_view/ CHECKs IsAccountStorageActive() early on. Setting
 // this to true will cause the CHECK to be skipped, which potentially fixes
 // crbug.com/347862165.
 @property(nonatomic, class) BOOL skipAccountStorageCheckEnabled;

@@ -4,6 +4,7 @@
 
 #include "chrome/browser/safe_browsing/test_safe_browsing_service.h"
 
+#include "base/notimplemented.h"
 #include "base/strings/string_util.h"
 #include "chrome/browser/safe_browsing/chrome_safe_browsing_blocking_page_factory.h"
 #include "chrome/browser/safe_browsing/chrome_ui_manager_delegate.h"
@@ -13,6 +14,7 @@
 #include "components/safe_browsing/content/browser/ui_manager.h"
 #include "components/safe_browsing/core/browser/db/database_manager.h"
 #include "components/safe_browsing/core/browser/db/test_database_manager.h"
+#include "components/safe_browsing/core/browser/db/v4_protocol_config.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 
@@ -44,8 +46,8 @@ V4ProtocolConfig TestSafeBrowsingService::GetV4ProtocolConfig() const {
   return SafeBrowsingService::GetV4ProtocolConfig();
 }
 
-void TestSafeBrowsingService::UseV4LocalDatabaseManager() {
-  use_v4_local_db_manager_ = true;
+void TestSafeBrowsingService::UseSBLocalDatabaseManager() {
+  use_sb_local_db_manager_ = true;
 }
 
 void TestSafeBrowsingService::SetUseTestUrlLoaderFactory(
@@ -129,7 +131,7 @@ void TestSafeBrowsingService::SetV4ProtocolConfig(
 }
 // ServicesDelegate::ServicesCreator:
 bool TestSafeBrowsingService::CanCreateDatabaseManager() {
-  return !use_v4_local_db_manager_;
+  return !use_sb_local_db_manager_;
 }
 #if BUILDFLAG(SAFE_BROWSING_DOWNLOAD_PROTECTION)
 bool TestSafeBrowsingService::CanCreateDownloadProtectionService() {
@@ -141,7 +143,7 @@ bool TestSafeBrowsingService::CanCreateIncidentReportingService() {
 }
 
 SafeBrowsingDatabaseManager* TestSafeBrowsingService::CreateDatabaseManager() {
-  DCHECK(!use_v4_local_db_manager_);
+  DCHECK(!use_sb_local_db_manager_);
 #if BUILDFLAG(FULL_SAFE_BROWSING)
   return new TestSafeBrowsingDatabaseManager(
       content::GetUIThreadTaskRunner({}));
@@ -178,7 +180,7 @@ TestSafeBrowsingService::GetURLLoaderFactory(
 
 // TestSafeBrowsingServiceFactory functions:
 TestSafeBrowsingServiceFactory::TestSafeBrowsingServiceFactory()
-    : test_safe_browsing_service_(nullptr), use_v4_local_db_manager_(false) {}
+    : test_safe_browsing_service_(nullptr), use_sb_local_db_manager_(false) {}
 
 TestSafeBrowsingServiceFactory::~TestSafeBrowsingServiceFactory() = default;
 
@@ -187,8 +189,9 @@ TestSafeBrowsingServiceFactory::CreateSafeBrowsingService() {
   // Instantiate TestSafeBrowsingService.
   test_safe_browsing_service_ = new TestSafeBrowsingService();
   // Plug-in test member clases accordingly.
-  if (use_v4_local_db_manager_)
-    test_safe_browsing_service_->UseV4LocalDatabaseManager();
+  if (use_sb_local_db_manager_) {
+    test_safe_browsing_service_->UseSBLocalDatabaseManager();
+  }
   if (test_ui_manager_)
     test_safe_browsing_service_->SetUIManager(test_ui_manager_.get());
   if (test_database_manager_) {
@@ -212,8 +215,8 @@ void TestSafeBrowsingServiceFactory::SetTestDatabaseManager(
     TestSafeBrowsingDatabaseManager* database_manager) {
   test_database_manager_ = database_manager;
 }
-void TestSafeBrowsingServiceFactory::UseV4LocalDatabaseManager() {
-  use_v4_local_db_manager_ = true;
+void TestSafeBrowsingServiceFactory::UseSBLocalDatabaseManager() {
+  use_sb_local_db_manager_ = true;
 }
 
 // TestSafeBrowsingUIManager functions:
@@ -221,14 +224,14 @@ TestSafeBrowsingUIManager::TestSafeBrowsingUIManager()
     : SafeBrowsingUIManager(
           std::make_unique<ChromeSafeBrowsingUIManagerDelegate>(),
           std::make_unique<ChromeSafeBrowsingBlockingPageFactory>(),
-          GURL(chrome::kChromeUINewTabURL)) {}
+          chrome::ChromeUINewTabURLAsGURL()) {}
 
 TestSafeBrowsingUIManager::TestSafeBrowsingUIManager(
     std::unique_ptr<SafeBrowsingBlockingPageFactory> blocking_page_factory)
     : SafeBrowsingUIManager(
           std::make_unique<ChromeSafeBrowsingUIManagerDelegate>(),
           std::move(blocking_page_factory),
-          GURL(chrome::kChromeUINewTabURL)) {}
+          chrome::ChromeUINewTabURLAsGURL()) {}
 
 void TestSafeBrowsingUIManager::SendThreatDetails(
     content::BrowserContext* browser_context,

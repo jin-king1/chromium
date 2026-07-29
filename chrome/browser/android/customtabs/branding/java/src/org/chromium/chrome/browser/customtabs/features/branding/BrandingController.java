@@ -9,18 +9,17 @@ import android.os.SystemClock;
 import android.view.LayoutInflater;
 import android.widget.TextView;
 
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 import androidx.annotation.StringRes;
 import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.CallbackController;
 import org.chromium.base.Log;
-import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.supplier.OneshotSupplierImpl;
-import org.chromium.base.supplier.Supplier;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
+import org.chromium.build.annotations.MonotonicNonNull;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.components.crash.PureJavaExceptionReporter;
 import org.chromium.ui.widget.Toast;
@@ -28,6 +27,7 @@ import org.chromium.ui.widget.Toast;
 import java.util.concurrent.TimeUnit;
 
 /** Controls the strategy to start branding, and the duration to show branding. */
+@NullMarked
 public class BrandingController {
     private static final String TAG = "CctBrand";
 
@@ -52,16 +52,30 @@ public class BrandingController {
     private final OneshotSupplierImpl<BrandingInfo> mBrandingInfo = new OneshotSupplierImpl<>();
     private final BrandingChecker mBrandingChecker;
     private final Context mContext;
-    private final String mAppId;
+    private final @Nullable String mAppId;
     private final String mBrowserName;
     private final int mToastTemplateId;
-    @Nullable private final PureJavaExceptionReporter mExceptionReporter;
-    private ToolbarBrandingDelegate mToolbarBrandingDelegate;
+    private final @Nullable PureJavaExceptionReporter mExceptionReporter;
+    // Non-null once initialized by onToolbarInitialized.
+    private @MonotonicNonNull ToolbarBrandingDelegate mToolbarBrandingDelegate;
     private @Nullable Toast mToast;
     private long mToolbarInitializedTime;
     private boolean mIsDestroyed;
 
-    private Supplier<MismatchNotificationChecker> mMismatchNotificationChecker;
+    private final MismatchNotificationCheckerFactory mMismatchNotificationCheckerFactory;
+    private @Nullable MismatchNotificationChecker mMismatchNotificationChecker;
+
+    /** Factory interface for mismatch notification checker. */
+    public interface MismatchNotificationCheckerFactory {
+        /**
+         * Create a mismatch notification checker.
+         *
+         * @param appId The ID for the embedded app.
+         * @return A mismatch notification checker, or null if the notification is suppressed or not
+         *     applicable to the current session (e.g. Incognito profile, or ineligible app).
+         */
+        @Nullable MismatchNotificationChecker create(@Nullable String appId);
+    }
 
     /**
      * Branding controller responsible for showing branding.
@@ -70,21 +84,21 @@ public class BrandingController {
      * @param appId The ID for the embedded app. Can be {@code null}
      * @param browserName The browser name shown on the branding toast.
      * @param toastTemplateId Resource ID of the string to be shown on Toast branding UI.
-     * @param mismatchNotificationChecker A bridge interface for mismatch notification handler.
+     * @param mismatchNotificationCheckerFactory A factory for mismatch notification checker.
      * @param exceptionReporter Optional reporter that reports wrong state quietly.
      */
     public BrandingController(
             Context context,
-            String appId,
+            @Nullable String appId,
             String browserName,
             @StringRes int toastTemplateId,
-            @NonNull Supplier<MismatchNotificationChecker> mismatchNotificationChecker,
+            MismatchNotificationCheckerFactory mismatchNotificationCheckerFactory,
             @Nullable PureJavaExceptionReporter exceptionReporter) {
         mContext = context;
         mAppId = appId;
         mBrowserName = browserName;
         mToastTemplateId = toastTemplateId;
-        mMismatchNotificationChecker = mismatchNotificationChecker;
+        mMismatchNotificationCheckerFactory = mismatchNotificationCheckerFactory;
         mExceptionReporter = exceptionReporter;
         mBrandingInfo.onAvailable(
                 mCallbackController.makeCancelable((data) -> maybeMakeBrandingDecision()));
@@ -105,7 +119,7 @@ public class BrandingController {
      *
      * @param delegate {@link ToolbarBrandingDelegate} instance from CCT Toolbar.
      */
-    public void onToolbarInitialized(@NonNull ToolbarBrandingDelegate delegate) {
+    public void onToolbarInitialized(ToolbarBrandingDelegate delegate) {
         if (mIsDestroyed) {
             reportErrorMessage("BrandingController should not be access after destroyed.");
             return;
@@ -136,23 +150,29 @@ public class BrandingController {
         BrandingInfo info = mBrandingInfo.get();
         if (mToolbarBrandingDelegate == null || info == null) return;
 
-        @BrandingDecision int brandingDecision = info.getDecision();
+        @BrandingDecision Integer brandingDecision = info.getDecision();
 
         // Mismatch notification checker is invoked when branding decision data is available
         // to respect the timing with which the decision is made. The decision making takes
         // place quite early without native layer involved, while the checker needs the native
         // layer to be initialized. For this reason, it is instantiated lazily only at this
         // point, where the native is likely to be ready for pre-warmed CCTs.
-        var checker = mMismatchNotificationChecker.get();
-        if (checker != null) {
+        if (mMismatchNotificationChecker == null) {
+            mMismatchNotificationChecker = mMismatchNotificationCheckerFactory.create(mAppId);
+        }
+        if (mMismatchNotificationChecker != null) {
             var storage = SharedPreferencesBrandingTimeStorage.getInstance();
-            if (checker.maybeShow(mAppId, info.lastShowTime, info.mimData, storage::putMimData)) {
+            assert mAppId != null;
+            if (mMismatchNotificationChecker.maybeShow(
+                    mAppId, info.lastShowTime, info.mimData, storage::putMimData)) {
                 brandingDecision = BrandingDecision.MIM;
             }
         }
 
         long timeToolbarEmpty = SystemClock.elapsedRealtime() - mToolbarInitializedTime;
         long remainingBrandingTime = TOTAL_BRANDING_DELAY_MS - timeToolbarEmpty;
+
+        assert brandingDecision != null : "Unreachable state!";
 
         switch (brandingDecision) {
             case BrandingDecision.MIM:
@@ -169,11 +189,12 @@ public class BrandingController {
             default:
                 assert false : "Unreachable state!";
         }
-        mBrandingInfo.get().setDecision(brandingDecision);
+        info.setDecision(brandingDecision);
         finish();
     }
 
     private void showToolbarBranding(long durationMs) {
+        if (mToolbarBrandingDelegate == null) return;
         mToolbarBrandingDelegate.showBrandingLocationBar();
 
         Runnable hideToolbarBranding =
@@ -217,8 +238,10 @@ public class BrandingController {
         if (mToast != null) {
             mToast.cancel();
         }
-        var checker = mMismatchNotificationChecker.get();
-        if (checker != null) checker.cancel();
+        if (mMismatchNotificationChecker != null) {
+            mMismatchNotificationChecker.destroy();
+            mMismatchNotificationChecker = null;
+        }
     }
 
     private void reportErrorMessage(String message) {
@@ -229,7 +252,8 @@ public class BrandingController {
     }
 
     private void finish() {
-        if (getBrandingDecision() == BrandingDecision.MIM) {
+        var brandingDecision = getBrandingDecision();
+        if (brandingDecision != null && brandingDecision == BrandingDecision.MIM) {
             var storage = SharedPreferencesBrandingTimeStorage.getInstance();
             storage.putLastShowTimeGlobal(SystemClock.elapsedRealtime());
         }
@@ -238,11 +262,6 @@ public class BrandingController {
                 TaskTraits.BEST_EFFORT,
                 mCallbackController.makeCancelable(
                         () -> {
-                            int numberOfPackages =
-                                    SharedPreferencesBrandingTimeStorage.getInstance().getSize();
-                            RecordHistogram.recordCount100Histogram(
-                                    "CustomTabs.Branding.NumberOfClients", numberOfPackages);
-
                             // Release the in-memory share pref from the current session if branding
                             // checker didn't timeout.
                             if (!mBrandingChecker.isCancelled()) {
@@ -253,7 +272,7 @@ public class BrandingController {
 
     @VisibleForTesting
     @BrandingDecision
-    Integer getBrandingDecision() {
+    @Nullable Integer getBrandingDecision() {
         BrandingInfo info = mBrandingInfo.get();
         return info != null ? info.getDecision() : null;
     }

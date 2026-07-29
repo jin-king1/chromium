@@ -18,6 +18,7 @@ import java.util.Set;
 public class FakePrivacySandboxBridge implements PrivacySandboxBridge.Natives {
     private boolean mIsPrivacySandboxRestricted /* = false*/;
     private boolean mIsRestrictedNoticeEnabled /* = false*/;
+    private boolean mIsRwsManaged /* = false*/;
 
     private final HashMap<String, Topic> mTopics = new HashMap<>();
     private final Set<Topic> mCurrentTopTopics = new LinkedHashSet<>();
@@ -26,11 +27,8 @@ public class FakePrivacySandboxBridge implements PrivacySandboxBridge.Natives {
     private final Set<Topic> mChildTopics = new LinkedHashSet<>();
     private final Set<String> mCurrentFledgeSites = new LinkedHashSet<>();
     private final Set<String> mBlockedFledgeSites = new LinkedHashSet<>();
-    private @PromptType int mPromptType = PromptType.NONE;
-    private Integer mLastPromptAction;
-    private Integer mLastSurfaceType;
     private boolean mLastTopicsToggleValue;
-    private final String mGoogleEmbeddedPrivacyPolicyURL =
+    private static final String GOOGLE_EMBEDDED_PRIVACY_POLICY_U_R_L =
             "https://policies.google.com/privacy/embedded";
 
     public void setCurrentTopTopics(String... topics) {
@@ -92,7 +90,7 @@ public class FakePrivacySandboxBridge implements PrivacySandboxBridge.Natives {
 
     @Override
     public boolean isRelatedWebsiteSetsDataAccessEnabled(Profile profile) {
-        return false;
+        return true;
     }
 
     @Override
@@ -102,7 +100,7 @@ public class FakePrivacySandboxBridge implements PrivacySandboxBridge.Natives {
 
     @Override
     public boolean isPartOfManagedRelatedWebsiteSet(Profile profile, String origin) {
-        return false;
+        return mIsRwsManaged;
     }
 
     @Override
@@ -111,6 +109,10 @@ public class FakePrivacySandboxBridge implements PrivacySandboxBridge.Natives {
     @Override
     public String getRelatedWebsiteSetOwner(Profile profile, String memberOrigin) {
         return null;
+    }
+
+    public void setIsRwsManaged(boolean managed) {
+        mIsRwsManaged = managed;
     }
 
     public void setPrivacySandboxRestricted(boolean restricted) {
@@ -187,38 +189,6 @@ public class FakePrivacySandboxBridge implements PrivacySandboxBridge.Natives {
         }
     }
 
-    public void setRequiredPromptType(@PromptType int type) {
-        mPromptType = type;
-    }
-
-    public int getRequiredPromptType(@SurfaceType int surfaceType) {
-        return mPromptType;
-    }
-
-    @Override
-    public int getRequiredPromptType(Profile profile, @SurfaceType int surfaceType) {
-        return getRequiredPromptType(surfaceType);
-    }
-
-    @Override
-    public void promptActionOccurred(
-            Profile profile, @PromptAction int action, @SurfaceType int surfaceType) {
-        mLastPromptAction = action;
-        mLastSurfaceType = surfaceType;
-    }
-
-    public Integer getLastPromptAction() {
-        return mLastPromptAction;
-    }
-
-    public Integer getLastSurfaceType() {
-        return mLastSurfaceType;
-    }
-
-    public void resetLastPromptAction() {
-        mLastPromptAction = null;
-    }
-
     @Override
     public void topicsToggleChanged(Profile profile, boolean newValue) {
         mLastTopicsToggleValue = newValue;
@@ -232,14 +202,6 @@ public class FakePrivacySandboxBridge implements PrivacySandboxBridge.Natives {
     public void setAllPrivacySandboxAllowedForTesting(Profile profile) {}
 
     @Override
-    public void recordActivityType(Profile profile, int activityType) {}
-
-    @Override
-    public boolean privacySandboxPrivacyGuideShouldShowAdTopicsCard(Profile profile) {
-        return false;
-    }
-
-    @Override
     public boolean shouldUsePrivacyPolicyChinaDomain(Profile profile) {
         return false;
     }
@@ -249,6 +211,6 @@ public class FakePrivacySandboxBridge implements PrivacySandboxBridge.Natives {
             @PrivacyPolicyDomainType int domainType,
             @PrivacyPolicyColorScheme int colorScheme,
             String locale) {
-        return mGoogleEmbeddedPrivacyPolicyURL;
+        return GOOGLE_EMBEDDED_PRIVACY_POLICY_U_R_L;
     }
 }

@@ -8,6 +8,7 @@
 #include <limits>
 #include <memory>
 
+#include "ash/capture_mode/capture_mode_types.h"
 #include "ash/public/cpp/capture_mode/capture_mode_delegate.h"
 #include "base/files/file_path.h"
 #include "base/files/scoped_temp_dir.h"
@@ -58,6 +59,7 @@ class TestCaptureModeDelegate : public CaptureModeDelegate {
   void set_is_audio_capture_disabled_by_policy(bool value) {
     is_audio_capture_disabled_by_policy_ = value;
   }
+  void set_force_lens_web_error(bool value) { force_lens_web_error_ = value; }
   void set_fake_drive_fs_free_bytes(int64_t bytes) {
     fake_drive_fs_free_bytes_ = bytes;
   }
@@ -65,9 +67,6 @@ class TestCaptureModeDelegate : public CaptureModeDelegate {
     policy_capture_path_ = policy_capture_path;
   }
   int num_capture_image_attempts() const { return num_capture_image_attempts_; }
-  int num_multimodal_search_requests() const {
-    return num_multimodal_search_requests_;
-  }
   void set_lens_detected_text(std::string text) {
     lens_detected_text_ = std::move(text);
   }
@@ -104,7 +103,9 @@ class TestCaptureModeDelegate : public CaptureModeDelegate {
   void OpenScreenCaptureItem(const base::FilePath& file_path) override;
   void OpenScreenshotInImageEditor(const base::FilePath& file_path) override;
   bool Uses24HourFormat() const override;
+  void set_uses_24_hour_format(bool value) { uses_24_hour_format_ = value; }
   void CheckCaptureModeInitRestrictionByDlp(
+      bool shutting_down,
       OnCaptureModeDlpRestrictionChecked callback) override;
   void CheckCaptureOperationRestrictionByDlp(
       const aura::Window* window,
@@ -139,14 +140,14 @@ class TestCaptureModeDelegate : public CaptureModeDelegate {
   bool IsCameraDisabledByPolicy() const override;
   bool IsAudioCaptureDisabledByPolicy() const override;
   void RegisterVideoConferenceManagerClient(
-      crosapi::mojom::VideoConferenceManagerClient* client,
+      VideoConferenceManagerClient* client,
       const base::UnguessableToken& client_id) override;
   void UnregisterVideoConferenceManagerClient(
       const base::UnguessableToken& client_id) override;
   void UpdateVideoConferenceManager(
-      crosapi::mojom::VideoConferenceMediaUsageStatusPtr status) override;
+      VideoConferenceMediaUsageStatus status) override;
   void NotifyDeviceUsedWhileDisabled(
-      crosapi::mojom::VideoConferenceMediaDevice device) override;
+      VideoConferenceMediaDevice device) override;
   void FinalizeSavedFile(
       base::OnceCallback<void(bool, const base::FilePath&)> callback,
       const base::FilePath& path,
@@ -158,20 +159,16 @@ class TestCaptureModeDelegate : public CaptureModeDelegate {
               DetectTextInImage,
               (const SkBitmap& image, OnTextDetectionComplete callback),
               (override));
-  void GetPrimaryAccountAccessToken(
-      base::RepeatingCallback<void(const std::string& access_token)> callback)
-      override;
-  void SendRegionSearch(const SkBitmap& image,
-                        const gfx::Rect& region,
-                        ash::OnSearchUrlFetchedCallback search_callback,
-                        ash::OnTextDetectionComplete text_callback) override;
-  void SendMultimodalSearch(const SkBitmap& image,
-                            const gfx::Rect& region,
-                            const std::string& text,
-                            ash::OnSearchUrlFetchedCallback callback) override;
+  void SendLensWebRegionSearch(
+      const gfx::Image& original_image,
+      const bool is_standalone_session,
+      ash::OnSearchUrlFetchedCallback search_callback,
+      ash::OnTextDetectionComplete text_callback,
+      ash::OnLensErrorCallback error_callback) override;
   MOCK_METHOD(bool, IsNetworkConnectionOffline, (), (const, override));
   void DeleteRemoteFile(const base::FilePath& path,
                         base::OnceCallback<void(bool)> callback) override;
+  bool ActiveUserDefaultSearchProviderIsGoogle() const override;
 
  private:
   std::unique_ptr<recording::RecordingServiceTestApi> recording_service_;
@@ -182,13 +179,14 @@ class TestCaptureModeDelegate : public CaptureModeDelegate {
   bool is_allowed_by_dlp_ = true;
   bool is_allowed_by_policy_ = true;
   bool is_search_allowed_by_policy_ = true;
+  bool uses_24_hour_format_ = false;
   bool should_save_after_dlp_check_ = true;
   bool is_camera_disabled_by_policy_ = false;
   bool is_audio_capture_disabled_by_policy_ = false;
+  bool force_lens_web_error_ = false;
   // Counter to track number of times `OnCaptureImageAttempted()` is called, for
   // testing purposes.
   int num_capture_image_attempts_ = 0;
-  int num_multimodal_search_requests_ = 0;
   base::ScopedTempDir fake_drive_fs_mount_path_;
   base::ScopedTempDir fake_android_files_path_;
   base::ScopedTempDir fake_linux_files_path_;

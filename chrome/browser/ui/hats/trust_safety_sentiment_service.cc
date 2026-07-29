@@ -15,7 +15,6 @@
 #include "chrome/browser/ui/hats/hats_service.h"
 #include "chrome/browser/ui/hats/hats_service_factory.h"
 #include "chrome/browser/ui/hats/survey_config.h"
-#include "chrome/browser/ui/safety_hub/card_data_helper.h"
 #include "chrome/browser/ui/safety_hub/menu_notification_service_factory.h"
 #include "chrome/browser/ui/safety_hub/safety_hub_constants.h"
 #include "chrome/browser/ui/webui/settings/site_settings_helper.h"
@@ -30,7 +29,6 @@
 #include "components/password_manager/core/common/password_manager_pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "components/privacy_sandbox/privacy_sandbox_prefs.h"
-#include "components/privacy_sandbox/tracking_protection_prefs.h"
 #include "components/safe_browsing/core/browser/db/v4_protocol_manager_util.h"
 #include "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #include "components/signin/public/base/signin_pref_names.h"
@@ -58,12 +56,12 @@ base::TimeDelta GetMinSessionTime() {
 
 int GetRequiredNtpCount() {
   return base::FeatureList::IsEnabled(features::kTrustSafetySentimentSurveyV2)
-             ? base::RandInt(
+             ? base::RandIntInclusive(
                    features::kTrustSafetySentimentSurveyV2NtpVisitsMinRange
                        .Get(),
                    features::kTrustSafetySentimentSurveyV2NtpVisitsMaxRange
                        .Get())
-             : base::RandInt(
+             : base::RandIntInclusive(
                    features::kTrustSafetySentimentSurveyNtpVisitsMinRange.Get(),
                    features::kTrustSafetySentimentSurveyNtpVisitsMaxRange
                        .Get());
@@ -232,16 +230,17 @@ TrustSafetySentimentService::TrustSafetySentimentService(Profile* profile)
   }
 
   if (base::FeatureList::IsEnabled(features::kTrustSafetySentimentSurveyV2)) {
-    metrics::DesktopSessionDurationTracker::Get()->AddObserver(this);
+    if (metrics::DesktopSessionDurationTracker::IsInitialized()) {
+      session_duration_observation_.Observe(
+          metrics::DesktopSessionDurationTracker::Get());
+    } else {
+      CHECK_IS_TEST();
+    }
     performed_control_group_dice_roll_ = false;
   }
 }
 
-TrustSafetySentimentService::~TrustSafetySentimentService() {
-  if (base::FeatureList::IsEnabled(features::kTrustSafetySentimentSurveyV2)) {
-    metrics::DesktopSessionDurationTracker::Get()->RemoveObserver(this);
-  }
-}
+TrustSafetySentimentService::~TrustSafetySentimentService() = default;
 
 void TrustSafetySentimentService::OpenedNewTabPage() {
   // Explicit early exit for the common path, where the user has not performed
@@ -292,7 +291,7 @@ void TrustSafetySentimentService::OpenedNewTabPage() {
   // Choose a trigger at random to avoid any order biasing.
   auto winning_area_iterator = pending_triggers_.begin();
   std::advance(winning_area_iterator,
-               base::RandInt(0, pending_triggers_.size() - 1));
+               base::RandIntInclusive(0, pending_triggers_.size() - 1));
 
   // The winning feature area should never be kIneligible, as this will
   // have either been removed above, or blocked showing any survey.
@@ -607,7 +606,7 @@ void TrustSafetySentimentService::SettingsWatcher::TimerComplete() {
   const bool stayed_on_settings =
       web_contents_ &&
       web_contents_->GetVisibility() == content::Visibility::VISIBLE &&
-      web_contents_->GetLastCommittedURL().host_piece() ==
+      web_contents_->GetLastCommittedURL().host() ==
           chrome::kChromeUISettingsHost;
   if (stayed_on_settings) {
     std::move(success_callback_).Run();

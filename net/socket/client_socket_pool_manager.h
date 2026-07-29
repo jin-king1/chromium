@@ -3,7 +3,7 @@
 // found in the LICENSE file.
 //
 // ClientSocketPoolManager manages access to all ClientSocketPools.  It's a
-// simple container for all of them.  Most importantly, it handles the lifetime
+// simple container for all of them. Most importantly, it handles the lifetime
 // and destruction order properly.
 
 #ifndef NET_SOCKET_CLIENT_SOCKET_POOL_MANAGER_H_
@@ -14,6 +14,7 @@
 #include "base/values.h"
 #include "net/base/completion_once_callback.h"
 #include "net/base/net_export.h"
+#include "net/base/network_handle.h"
 #include "net/base/request_priority.h"
 #include "net/dns/public/secure_dns_policy.h"
 #include "net/http/http_network_session.h"
@@ -29,8 +30,6 @@ class NetworkAnonymizationKey;
 class ProxyInfo;
 class ProxyChain;
 
-constexpr int kDefaultMaxSocketsPerProxyChain = 32;
-
 class NET_EXPORT_PRIVATE ClientSocketPoolManager {
  public:
   ClientSocketPoolManager();
@@ -39,22 +38,28 @@ class NET_EXPORT_PRIVATE ClientSocketPoolManager {
   // The setter methods below affect only newly created socket pools after the
   // methods are called. Normally they should be called at program startup
   // before any ClientSocketPoolManagerImpl is created.
-  static int max_sockets_per_pool(HttpNetworkSession::SocketPoolType pool_type);
-  static void set_max_sockets_per_pool(
-      HttpNetworkSession::SocketPoolType pool_type,
-      int socket_count);
-
-  static int max_sockets_per_group(
+  static size_t socket_soft_cap_per_pool(
       HttpNetworkSession::SocketPoolType pool_type);
-  static void set_max_sockets_per_group(
+  static void set_socket_soft_cap_per_pool_for_test(
       HttpNetworkSession::SocketPoolType pool_type,
-      int socket_count);
+      size_t socket_count);
 
-  static int max_sockets_per_proxy_chain(
+  static size_t max_sockets_per_group(
       HttpNetworkSession::SocketPoolType pool_type);
+  static void set_max_sockets_per_group_for_test(
+      HttpNetworkSession::SocketPoolType pool_type,
+      size_t socket_count);
+
+  static size_t max_sockets_per_proxy_chain(
+      HttpNetworkSession::SocketPoolType pool_type);
+  static bool allow_size_randomization_for_proxy();
+  // Unlike the other `set_` methods, these ones are used in production code and
+  // thus cannot be marked as `_for_test`. Usage should be carefully audited.
+  // Caller is responsible for following max/min CHECKs on socket_count.
   static void set_max_sockets_per_proxy_chain(
       HttpNetworkSession::SocketPoolType pool_type,
-      int socket_count);
+      size_t socket_count);
+  static void set_allow_size_randomization_for_proxy(bool allow);
 
   static base::TimeDelta unused_idle_socket_timeout(
       HttpNetworkSession::SocketPoolType pool_type);
@@ -76,9 +81,7 @@ class NET_EXPORT_PRIVATE ClientSocketPoolManager {
 // A helper method that uses the passed in proxy information to initialize a
 // ClientSocketHandle with the relevant socket pool. Use this method for
 // HTTP/HTTPS requests. `allowed_bad_certs` is only used if the request
-// uses SSL. `resolution_callback` will be invoked after the the hostname is
-// resolved. If `resolution_callback` does not return OK, then the connection
-// will be aborted with that value.
+// uses SSL.
 int InitSocketHandleForHttpRequest(
     url::SchemeHostPort endpoint,
     int request_load_flags,
@@ -90,19 +93,16 @@ int InitSocketHandleForHttpRequest(
     NetworkAnonymizationKey network_anonymization_key,
     SecureDnsPolicy secure_dns_policy,
     const SocketTag& socket_tag,
+    handles::NetworkHandle target_network,
     const NetLogWithSource& net_log,
     ClientSocketHandle* socket_handle,
     CompletionOnceCallback callback,
-    const ClientSocketPool::ProxyAuthCallback& proxy_auth_callback,
-    bool fail_if_alias_requires_proxy_override);
+    const ClientSocketPool::ProxyAuthCallback& proxy_auth_callback);
 
 // A helper method that uses the passed in proxy information to initialize a
 // ClientSocketHandle with the relevant socket pool. Use this method for
-// HTTP/HTTPS requests for WebSocket handshake.
-// `ssl_config_for_origin` is only used if the request uses SSL.
-// `resolution_callback` will be invoked after the the hostname is resolved. If
-// `resolution_callback` does not return OK, then the connection will be aborted
-// with that value. This function uses WEBSOCKET_SOCKET_POOL socket pools.
+// HTTP/HTTPS requests for WebSocket handshake. This function uses
+// kWebSocket socket pools.
 int InitSocketHandleForWebSocketRequest(
     url::SchemeHostPort endpoint,
     int request_load_flags,
@@ -112,11 +112,11 @@ int InitSocketHandleForWebSocketRequest(
     const std::vector<SSLConfig::CertAndStatus>& allowed_bad_certs,
     PrivacyMode privacy_mode,
     NetworkAnonymizationKey network_anonymization_key,
+    handles::NetworkHandle target_network,
     const NetLogWithSource& net_log,
     ClientSocketHandle* socket_handle,
     CompletionOnceCallback callback,
-    const ClientSocketPool::ProxyAuthCallback& proxy_auth_callback,
-    bool fail_if_alias_requires_proxy_override);
+    const ClientSocketPool::ProxyAuthCallback& proxy_auth_callback);
 
 // Similar to InitSocketHandleForHttpRequest except that it initiates the
 // desired number of preconnect streams from the relevant socket pool.
@@ -130,10 +130,10 @@ int PreconnectSocketsForHttpRequest(
     PrivacyMode privacy_mode,
     NetworkAnonymizationKey network_anonymization_key,
     SecureDnsPolicy secure_dns_policy,
+    handles::NetworkHandle target_network,
     const NetLogWithSource& net_log,
     int num_preconnect_streams,
-    bool fail_if_alias_requires_proxy_override,
-    CompletionOnceCallback callback);
+    ClientSocketPool::PreconnectCompletionCallback callback);
 
 }  // namespace net
 

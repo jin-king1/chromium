@@ -29,7 +29,7 @@ namespace webauthn {
 // Implementation of the public InternalAuthenticator interface.
 // This class is meant only for trusted and internal components of Chrome to
 // use. The Android implementation is in
-// org.chromium.chrome.browser.webauth.AuthenticatorImpl.
+// org.chromium.components.webauthn.AuthenticatorImpl.
 // When MakeCredential() or GetAssertion() is called, the Java implementation
 // passes the response through InvokeMakeCredentialResponse() and
 // InvokeGetAssertionResponse(), which eventually invokes the callback given by
@@ -64,18 +64,18 @@ class InternalAuthenticatorAndroid : public webauthn::InternalAuthenticator {
 
   void InvokeMakeCredentialResponse(
       JNIEnv* env,
-      jint status,
-      const base::android::JavaParamRef<jobject>& byte_buffer);
+      int32_t status,
+      const base::android::JavaRef<jobject>& byte_buffer);
   void InvokeGetAssertionResponse(
       JNIEnv* env,
-      jint status,
-      const base::android::JavaParamRef<jobject>& byte_buffer);
+      int32_t status,
+      const base::android::JavaRef<jobject>& byte_buffer);
   void InvokeIsUserVerifyingPlatformAuthenticatorAvailableResponse(
       JNIEnv* env,
-      jboolean is_uvpaa);
+      bool is_uvpaa);
   void InvokeGetMatchingCredentialIdsResponse(
       JNIEnv* env,
-      const base::android::JavaParamRef<jobjectArray>& credential_ids_array);
+      const base::android::JavaRef<jobjectArray>& credential_ids_array);
 
  private:
   // Returns the associated AuthenticatorImpl Java object. Initializes new

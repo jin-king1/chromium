@@ -9,12 +9,12 @@
 #import "base/time/time.h"
 #import "base/version.h"
 #import "components/variations/seed_response.h"
-#import "components/variations/service/limited_entropy_synthetic_trial.h"
 #import "components/variations/synthetic_trials.h"
 #import "components/version_info/version_info.h"
-#import "ios/chrome/browser/metrics/model/ios_chrome_metrics_service_accessor.h"
+#import "ios/chrome/browser/policy/model/browser_policy_connector_ios.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/paths/paths.h"
+#import "ios/chrome/browser/shared/model/profile/profile_attributes_storage_ios.h"
 #import "ios/chrome/browser/variations/model/ios_chrome_variations_seed_store.h"
 #import "ios/chrome/common/channel_info.h"
 #import "services/network/public/cpp/shared_url_loader_factory.h"
@@ -56,13 +56,25 @@ IOSChromeVariationsServiceClient::TakeSeedFromNativeVariationsSeedStore() {
 }
 
 bool IOSChromeVariationsServiceClient::IsEnterprise() {
-  // TODO(crbug.com/40647432): Implement enterprise check for iOS.
-  return false;
+  BrowserPolicyConnectorIOS* policyConnector =
+      GetApplicationContext()->GetBrowserPolicyConnector();
+
+  // If there are policies enabled or has machine level policies, then we
+  // consider this an enterprise client.
+  return (policyConnector &&
+          (policyConnector->chrome_browser_cloud_management_controller()
+               ->IsEnabled() ||
+           policyConnector->HasMachineLevelPolicies()));
 }
 
-// Nothing to do, as iOS doesn't support multiple profiles.
-void IOSChromeVariationsServiceClient::
-    RemoveGoogleGroupsFromPrefsForDeletedProfiles(PrefService* local_state) {}
+std::optional<base::flat_set<std::string>>
+IOSChromeVariationsServiceClient::GetAllProfilesKeys(PrefService* local_state) {
+  return ProfileAttributesStorageIOS::GetAllProfileNames(local_state);
+}
+
+bool IOSChromeVariationsServiceClient::IsChromeEnterpriseCoreSupported() {
+  return true;
+}
 
 version_info::Channel IOSChromeVariationsServiceClient::GetChannel() {
   return ::GetChannel();

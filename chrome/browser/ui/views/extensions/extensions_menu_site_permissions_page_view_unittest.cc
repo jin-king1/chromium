@@ -4,23 +4,23 @@
 
 #include "chrome/browser/ui/views/extensions/extensions_menu_site_permissions_page_view.h"
 
-#include "base/feature_list.h"
 #include "chrome/browser/extensions/chrome_test_extension_loader.h"
-#include "chrome/browser/extensions/permissions/scripting_permissions_modifier.h"
-#include "chrome/browser/extensions/permissions/site_permissions_helper.h"
 #include "chrome/browser/ui/views/extensions/extensions_menu_coordinator.h"
+#include "chrome/browser/ui/views/extensions/extensions_menu_delegate_desktop.h"
 #include "chrome/browser/ui/views/extensions/extensions_menu_main_page_view.h"
-#include "chrome/browser/ui/views/extensions/extensions_menu_view_controller.h"
 #include "chrome/browser/ui/views/extensions/extensions_request_access_button.h"
 #include "chrome/browser/ui/views/extensions/extensions_toolbar_button.h"
 #include "chrome/browser/ui/views/extensions/extensions_toolbar_unittest.h"
 #include "content/public/browser/web_contents.h"
+#include "extensions/browser/permissions/scripting_permissions_modifier.h"
+#include "extensions/browser/permissions/site_permissions_helper.h"
 #include "extensions/browser/permissions_manager.h"
 #include "extensions/browser/test_extension_registry_observer.h"
 #include "extensions/common/extension_features.h"
 #include "extensions/test/permissions_manager_waiter.h"
 #include "extensions/test/test_extension_dir.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#include "ui/views/controls/button/radio_button.h"
 #include "ui/views/controls/button/toggle_button.h"
 #include "ui/views/test/views_test_utils.h"
 
@@ -69,10 +69,11 @@ class ExtensionsSitePermissionsPageViewUnitTest
 
   // ExtensionsToolbarUnitTest:
   void SetUp() override;
+  void TearDown() override;
 
  private:
   base::test::ScopedFeatureList scoped_feature_list_;
-  raw_ptr<content::WebContentsTester, DanglingUntriaged> web_contents_tester_;
+  raw_ptr<content::WebContentsTester> web_contents_tester_;
 };
 
 ExtensionsSitePermissionsPageViewUnitTest::
@@ -83,8 +84,9 @@ ExtensionsSitePermissionsPageViewUnitTest::
 
 void ExtensionsSitePermissionsPageViewUnitTest::ShowSitePermissionsPage(
     extensions::ExtensionId extension_id) {
-  menu_coordinator()->Show(extensions_button(), extensions_container());
-  menu_coordinator()->GetControllerForTesting()->OpenSitePermissionsPage(
+  menu_coordinator()->Show(views::BubbleAnchor(extensions_button()),
+                           extensions_container());
+  menu_coordinator()->GetDelegateForTesting()->OpenSitePermissionsPage(
       extension_id);
 }
 
@@ -114,23 +116,25 @@ void ExtensionsSitePermissionsPageViewUnitTest::NavigateAndCommit(
 }
 
 void ExtensionsSitePermissionsPageViewUnitTest::LayoutMenuIfNecessary() {
-  menu_coordinator()->GetExtensionsMenuWidget()->LayoutRootViewIfNecessary();
+  if (views::Widget* menu_widget =
+          menu_coordinator()->GetExtensionsMenuWidget()) {
+    menu_widget->LayoutRootViewIfNecessary();
+  }
 }
 
 ExtensionsMenuMainPageView*
 ExtensionsSitePermissionsPageViewUnitTest::main_page() {
-  ExtensionsMenuViewController* menu_controller =
-      menu_coordinator()->GetControllerForTesting();
-  return menu_controller ? menu_controller->GetMainPageViewForTesting()
-                         : nullptr;
+  ExtensionsMenuDelegateDesktop* menu_delegate =
+      menu_coordinator()->GetDelegateForTesting();
+  return menu_delegate ? menu_delegate->GetMainPageViewForTesting() : nullptr;
 }
 
 ExtensionsMenuSitePermissionsPageView*
 ExtensionsSitePermissionsPageViewUnitTest::site_permissions_page() {
-  ExtensionsMenuViewController* menu_controller =
-      menu_coordinator()->GetControllerForTesting();
-  return menu_controller ? menu_controller->GetSitePermissionsPageForTesting()
-                         : nullptr;
+  ExtensionsMenuDelegateDesktop* menu_delegate =
+      menu_coordinator()->GetDelegateForTesting();
+  return menu_delegate ? menu_delegate->GetSitePermissionsPageForTesting()
+                       : nullptr;
 }
 
 void ExtensionsSitePermissionsPageViewUnitTest::SetUp() {
@@ -138,6 +142,11 @@ void ExtensionsSitePermissionsPageViewUnitTest::SetUp() {
   // Menu needs web contents at construction, so we need to add them to every
   // test.
   web_contents_tester_ = AddWebContentsAndGetTester();
+}
+
+void ExtensionsSitePermissionsPageViewUnitTest::TearDown() {
+  web_contents_tester_ = nullptr;
+  ExtensionsToolbarUnitTest::TearDown();
 }
 
 TEST_F(ExtensionsSitePermissionsPageViewUnitTest,
@@ -155,6 +164,10 @@ TEST_F(ExtensionsSitePermissionsPageViewUnitTest,
   // extension A.
   auto extensionB =
       InstallExtensionWithHostPermissions("B Extension", {"<all_urls>"});
+  // Add another extension to the menu, so that the menu doesn't close when
+  // both extension A and B are removed.
+  auto extensionC =
+      InstallExtensionWithHostPermissions("C Extension", {"<all_urls>"});
   EXPECT_TRUE(IsSitePermissionsPageOpened(extensionA->id()));
 
   // Removing extension B doesn't affect the opened site permissions page for
@@ -169,11 +182,48 @@ TEST_F(ExtensionsSitePermissionsPageViewUnitTest,
   EXPECT_TRUE(IsMainPageOpened());
 }
 
+// Tests that removing the last extension while its site permissions page is
+// open closes the menu bubble.
+TEST_F(ExtensionsSitePermissionsPageViewUnitTest,
+       RemoveLastExtensionWhenSitePermissionsPageIsOpen) {
+  auto extension =
+      InstallExtensionWithHostPermissions("Extension", {"<all_urls>"});
+
+  NavigateAndCommit("http://www.url.com");
+  ShowSitePermissionsPage(extension->id());
+  EXPECT_TRUE(IsSitePermissionsPageOpened(extension->id()));
+
+  UninstallExtension(extension->id());
+  EXPECT_FALSE(IsSitePermissionsPageOpened(extension->id()));
+  EXPECT_FALSE(IsMainPageOpened());
+  EXPECT_FALSE(menu_coordinator()->IsShowing());
+}
+
+// Tests that the extension name is elided if it is too long.
+TEST_F(ExtensionsSitePermissionsPageViewUnitTest, LongExtensionNameIsElided) {
+  std::string long_name =
+      "A very very very very very very very very long extension name";
+  auto extension =
+      InstallExtensionWithHostPermissions(long_name, {"<all_urls>"});
+
+  NavigateAndCommit("http://www.url.com");
+  ShowSitePermissionsPage(extension->id());
+  EXPECT_TRUE(IsSitePermissionsPageOpened(extension->id()));
+
+  views::Label* extension_name_label =
+      site_permissions_page()->GetExtensionNameForTesting();
+  ASSERT_TRUE(extension_name_label);
+  EXPECT_EQ(extension_name_label->GetElideBehavior(), gfx::ELIDE_TAIL);
+}
+
 // Tests that menu navigates back to the main page when an extension, whose site
 // permissions page is open, is disabled.
 TEST_F(ExtensionsSitePermissionsPageViewUnitTest, DisableAndEnableExtension) {
   auto extension =
       InstallExtensionWithHostPermissions("Test Extension", {"<all_urls>"});
+  // Add another extension to the menu, so that the menu doesn't close when the
+  // only extension is disabled.
+  InstallExtensionWithHostPermissions("Other Extension", {"<all_urls>"});
 
   NavigateAndCommit("http://www.url.com");
   ShowSitePermissionsPage(extension->id());
@@ -190,6 +240,10 @@ TEST_F(ExtensionsSitePermissionsPageViewUnitTest, DisableAndEnableExtension) {
 // Tests that menu navigates back to the main page when an extension, whose site
 // permissions page is open, is reloaded.
 TEST_F(ExtensionsSitePermissionsPageViewUnitTest, ReloadExtension) {
+  // Add another extension to the menu, so that the menu doesn't close when the
+  // only extension is reloaded.
+  InstallExtensionWithHostPermissions("Other Extension", {"<all_urls>"});
+
   // The extension must have a manifest to be reloaded.
   extensions::TestExtensionDir extension_directory;
   constexpr char kManifest[] = R"({
@@ -292,7 +346,7 @@ TEST_F(ExtensionsSitePermissionsPageViewUnitTest,
   // Directly change the show access requests pref for extension, since it can
   // be changed when menu is open, and verify toggle is updated and extension is
   // not requesting access in the toolbar.
-  SitePermissionsHelper(browser()->profile())
+  SitePermissionsHelper(browser()->GetProfile())
       .SetShowAccessRequestsInToolbar(extension->id(), false);
   EXPECT_FALSE(
       site_permissions_page()->GetShowRequestsToggleForTesting()->GetIsOn());
@@ -328,7 +382,7 @@ TEST_F(ExtensionsSitePermissionsPageViewUnitTest, SiteAccessUpdated) {
   EXPECT_TRUE(on_all_sites_button->GetChecked());
 
   extensions::PermissionsManagerWaiter waiter(
-      PermissionsManager::Get(browser()->profile()));
+      PermissionsManager::Get(browser()->GetProfile()));
   ClickButton(on_click_button);
   waiter.WaitForExtensionPermissionsUpdate();
 
@@ -495,13 +549,59 @@ TEST_F(ExtensionsSitePermissionsPageViewUnitTest,
   // also have a site permissions page.
   NavigateAndCommit("http://www.b.com");
 
-  // Menu should stay open in site permissions page for `extension`.
-  EXPECT_FALSE(IsMainPageOpened());
+  // Menu should navigate back to main page.
+  EXPECT_TRUE(IsMainPageOpened());
+  EXPECT_FALSE(IsSitePermissionsPageOpened(extension->id()));
+}
+
+// Tests that the site access radio buttons are mutually exclusive, and focusing
+// a radio button does not result in multiple selected radio buttons.
+TEST_F(ExtensionsSitePermissionsPageViewUnitTest,
+       RadioButtonsAreMutuallyExclusive) {
+  auto extension =
+      InstallExtensionWithHostPermissions("Extension", {"<all_urls>"});
+
+  NavigateAndCommit("http://www.url.com");
+  ShowSitePermissionsPage(extension->id());
   EXPECT_TRUE(IsSitePermissionsPageOpened(extension->id()));
 
-  // Extension didn't request specific access to url B, but it has active tab
-  // access. Thus, user can only select "on click" access.
-  EXPECT_TRUE(on_click_button->GetEnabled());
-  EXPECT_FALSE(on_site_button->GetEnabled());
-  EXPECT_FALSE(on_all_sites_button->GetEnabled());
+  // Activate the widget so focus changes are processed.
+  auto* widget = site_permissions_page()->GetWidget();
+  ASSERT_TRUE(widget);
+  widget->Activate();
+
+  // RunScheduledLayout() is needed due to widget auto-resize.
+  views::test::RunScheduledLayout(site_permissions_page());
+
+  auto* on_click_button =
+      site_permissions_page()->GetSiteAccessButtonForTesting(
+          PermissionsManager::UserSiteAccess::kOnClick);
+  auto* on_site_button = site_permissions_page()->GetSiteAccessButtonForTesting(
+      PermissionsManager::UserSiteAccess::kOnSite);
+  auto* on_all_sites_button =
+      site_permissions_page()->GetSiteAccessButtonForTesting(
+          PermissionsManager::UserSiteAccess::kOnAllSites);
+
+  // By default, the "always on all sites" option is checked.
+  EXPECT_FALSE(on_click_button->GetChecked());
+  EXPECT_FALSE(on_site_button->GetChecked());
+  EXPECT_TRUE(on_all_sites_button->GetChecked());
+
+  // Focus the "always on site" button. Since `select_on_focus_` is true for
+  // RadioButton, focusing it checks the button.
+  on_site_button->OnFocus();
+
+  // Verify that only the focused button is checked, and the previously checked
+  // one is now unchecked.
+  EXPECT_FALSE(on_click_button->GetChecked());
+  EXPECT_TRUE(on_site_button->GetChecked());
+  EXPECT_FALSE(on_all_sites_button->GetChecked());
+
+  // Focus the "ask on every visit" button.
+  on_click_button->OnFocus();
+
+  // Verify that only the newly focused button is checked.
+  EXPECT_TRUE(on_click_button->GetChecked());
+  EXPECT_FALSE(on_site_button->GetChecked());
+  EXPECT_FALSE(on_all_sites_button->GetChecked());
 }

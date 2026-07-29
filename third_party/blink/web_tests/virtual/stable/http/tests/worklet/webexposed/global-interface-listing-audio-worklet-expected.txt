@@ -69,6 +69,7 @@ CONSOLE MESSAGE:     method addEventListener
 CONSOLE MESSAGE:     method constructor
 CONSOLE MESSAGE:     method dispatchEvent
 CONSOLE MESSAGE:     method removeEventListener
+CONSOLE MESSAGE:     method when
 CONSOLE MESSAGE: interface Float16Array : TypedArray
 CONSOLE MESSAGE:     attribute BYTES_PER_ELEMENT
 CONSOLE MESSAGE:     method constructor
@@ -92,6 +93,11 @@ CONSOLE MESSAGE:     method postMessage
 CONSOLE MESSAGE:     method start
 CONSOLE MESSAGE:     setter onmessage
 CONSOLE MESSAGE:     setter onmessageerror
+CONSOLE MESSAGE: interface QuotaExceededError : DOMException
+CONSOLE MESSAGE:     attribute @@toStringTag
+CONSOLE MESSAGE:     getter quota
+CONSOLE MESSAGE:     getter requested
+CONSOLE MESSAGE:     method constructor
 CONSOLE MESSAGE: interface ReadableByteStreamController
 CONSOLE MESSAGE:     attribute @@toStringTag
 CONSOLE MESSAGE:     getter byobRequest
@@ -185,6 +191,17 @@ CONSOLE MESSAGE:     method constructor
 CONSOLE MESSAGE:     method releaseLock
 CONSOLE MESSAGE:     method write
 CONSOLE MESSAGE: [NAMESPACES]
+CONSOLE MESSAGE: namespace Temporal
+CONSOLE MESSAGE:     attribute @@toStringTag
+CONSOLE MESSAGE:     attribute Now
+CONSOLE MESSAGE:     method Duration
+CONSOLE MESSAGE:     method Instant
+CONSOLE MESSAGE:     method PlainDate
+CONSOLE MESSAGE:     method PlainDateTime
+CONSOLE MESSAGE:     method PlainMonthDay
+CONSOLE MESSAGE:     method PlainTime
+CONSOLE MESSAGE:     method PlainYearMonth
+CONSOLE MESSAGE:     method ZonedDateTime
 CONSOLE MESSAGE: namespace console
 CONSOLE MESSAGE:     attribute @@toStringTag
 CONSOLE MESSAGE:     method assert

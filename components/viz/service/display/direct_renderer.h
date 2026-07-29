@@ -13,7 +13,6 @@
 
 #include "base/containers/circular_deque.h"
 #include "base/containers/flat_map.h"
-#include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
@@ -35,13 +34,8 @@
 #include "ui/gfx/gpu_fence_handle.h"
 #include "ui/latency/latency_info.h"
 
-namespace cc {
-class FilterOperations;
-}  // namespace cc
-
 namespace gfx {
 class ColorSpace;
-class RRectF;
 }  // namespace gfx
 
 namespace gpu {
@@ -84,17 +78,21 @@ class VIZ_SERVICE_EXPORT DirectRenderer {
   void SetVisible(bool visible);
   void ReallocatedFrameBuffers();
   void DecideRenderPassAllocationsForFrame(
-      const AggregatedRenderPassList& render_passes_in_draw_order);
+      const AggregatedRenderPassList& render_passes_in_draw_order,
+      bool skip_root_render_pass_allocation);
   void DrawFrame(AggregatedRenderPassList* render_passes_in_draw_order,
                  float device_scale_factor,
                  const gfx::Size& device_viewport_size,
                  const gfx::DisplayColorSpaces& display_color_spaces,
-                 SurfaceDamageRectList surface_damage_rect_list);
+                 SurfaceDamageRectList surface_damage_rect_list,
+                 const TrackedElementRects& tracked_element_rects);
 
   // The renderer might expand the damage (e.g: HW overlays were used,
   // invalidation rects on previous buffers). This function returns a
   // bounding rect of the area that might need to be recomposited.
   gfx::Rect GetTargetDamageBoundingRect() const;
+
+  virtual int GetCurrentAllocatedBuffers() const;
 
   // Public interface implemented by subclasses.
   struct VIZ_SERVICE_EXPORT SwapFrameData {
@@ -121,7 +119,8 @@ class VIZ_SERVICE_EXPORT DirectRenderer {
     gfx::CALayerResult ca_layer_error_code = gfx::kCALayerSuccess;
 #endif
 
-    bool is_handling_interaction_or_animation = false;
+    bool is_handling_interaction = false;
+    bool is_handling_animation = false;
 
     std::optional<int64_t> choreographer_vsync_id;
     int64_t swap_trace_id = -1;
@@ -145,18 +144,12 @@ class VIZ_SERVICE_EXPORT DirectRenderer {
     raw_ptr<const AggregatedRenderPass> current_render_pass = nullptr;
 
     gfx::Rect root_damage_rect;
-    std::vector<gfx::Rect> root_content_bounds;
     gfx::Size device_viewport_size;
     gfx::DisplayColorSpaces display_color_spaces;
 
     gfx::AxisTransform2d target_to_device_transform;
 
     OverlayProcessorInterface::CandidateList overlay_list;
-    // When we have a buffer queue, the output surface could be treated as an
-    // overlay plane, and the struct to store that information is in
-    // |output_surface_plane|.
-    std::optional<OverlayProcessorInterface::OutputSurfaceOverlayPlane>
-        output_surface_plane;
   };
 
   void SetCurrentFrameForTesting(const DrawingFrame& frame);
@@ -189,8 +182,9 @@ class VIZ_SERVICE_EXPORT DirectRenderer {
   // Puts the draw time wall in trace file relative to the |ready_timestamp|.
   virtual void AddCompositeTimeTraces(base::TimeTicks ready_timestamp);
 
-  // Returns the current frame buffer damage.
-  virtual gfx::Rect GetCurrentFramebufferDamage() const;
+  // Returns the current frame buffer damage for a specific render pass.
+  virtual gfx::Rect GetCurrentFramebufferDamage(
+      const AggregatedRenderPassId& render_pass_id) const;
 
   // Reshapes the output surface.
   virtual void Reshape(const OutputSurface::ReshapeParams& reshape_params);
@@ -200,9 +194,11 @@ class VIZ_SERVICE_EXPORT DirectRenderer {
   // 0 < n <= capabilities_.number_of_buffers.
   virtual void EnsureMinNumberOfBuffers(int n) {}
 
+#if BUILDFLAG(IS_OZONE)
   // Gets a mailbox that can be used for overlay testing the primary plane. This
   // does not need to be the next mailbox that will be swapped.
   virtual gpu::Mailbox GetPrimaryPlaneOverlayTestingMailbox();
+#endif
 
   // Return the bounding rect of previously drawn delegated ink trail.
   gfx::Rect GetDelegatedInkTrailDamageRect();
@@ -226,10 +222,6 @@ class VIZ_SERVICE_EXPORT DirectRenderer {
     bool scanout_dcomp_surface = false;
   };
 
-  static gfx::RectF QuadVertexRect();
-  static void QuadRectTransform(gfx::Transform* quad_rect_transform,
-                                const gfx::Transform& quad_transform,
-                                const gfx::RectF& quad_rect);
   // Returns a transform that maps the the draw rect (i.e. the render pass
   // output rect) to the device space (i.e. buffer space).
   gfx::AxisTransform2d CalculateTargetToDeviceTransform(
@@ -257,7 +249,9 @@ class VIZ_SERVICE_EXPORT DirectRenderer {
       base::circular_deque<std::unique_ptr<DrawPolygon>>* poly_list,
       const gfx::Rect& render_pass_scissor,
       bool use_render_pass_scissor);
-  void DrawRenderPassAndExecuteCopyRequests(AggregatedRenderPass* render_pass);
+  void DrawRenderPassAndExecuteCopyRequests(
+      AggregatedRenderPass* render_pass,
+      const TrackedElementRects& tracked_element_rects);
   void DrawRenderPass(const AggregatedRenderPass* render_pass);
   // Returns true if it detects that we do not need to draw the render pass.
   // This may be because the RenderPass is already cached, or because it is
@@ -270,13 +264,6 @@ class VIZ_SERVICE_EXPORT DirectRenderer {
   void DoDrawPolygon(const DrawPolygon& poly,
                      const gfx::Rect& render_pass_scissor,
                      bool use_render_pass_scissor);
-
-  const cc::FilterOperations* FiltersForPass(
-      AggregatedRenderPassId render_pass_id) const;
-  const cc::FilterOperations* BackdropFiltersForPass(
-      AggregatedRenderPassId render_pass_id) const;
-  const std::optional<gfx::RRectF> BackdropFilterBoundsForPass(
-      AggregatedRenderPassId render_pass_id) const;
 
   virtual void SetRenderPassBackingDrawnRect(
       const AggregatedRenderPassId& render_pass_id,
@@ -314,9 +301,10 @@ class VIZ_SERVICE_EXPORT DirectRenderer {
   virtual void BeginDrawingFrame() = 0;
   virtual void FinishDrawingFrame() = 0;
   // If a pass contains a single tile draw quad and can be drawn without
-  // a render pass (e.g. applying a filter directly to the tile quad)
-  // return that quad, otherwise return null.
-  virtual const DrawQuad* CanPassBeDrawnDirectly(
+  // a render pass (e.g. applying a filter directly to the tile quad) return
+  // that quad. If the render pass itself is empty, but may have backdrop
+  // filters, return nullptr. Otherwise, return nullopt.
+  virtual std::optional<const DrawQuad*> CanPassBeDrawnDirectly(
       const AggregatedRenderPass* pass,
       const RenderPassRequirements& requirements);
   virtual void EnsureScissorTestDisabled() = 0;
@@ -367,11 +355,6 @@ class VIZ_SERVICE_EXPORT DirectRenderer {
   // Whether partial swap can be used.
   bool use_partial_swap_ = false;
 
-  // Whether render pass drawn rect functionality can be used. This means we
-  // will be tracking the drawn area of a render pass to determine what needs to
-  // be redrawn every frame.
-  bool use_render_pass_drawn_rect_ = false;
-
   // A map from RenderPass id to the single quad present in and replacing the
   // RenderPass. The DrawQuads are owned by their RenderPasses, which outlive
   // the drawn frame, so it is safe to store these pointers until the end of
@@ -379,15 +362,7 @@ class VIZ_SERVICE_EXPORT DirectRenderer {
   base::flat_map<AggregatedRenderPassId,
                  raw_ptr<const DrawQuad, CtnExperimental>>
       render_pass_bypass_quads_;
-
-  // A map from RenderPass id to the filters used when drawing the RenderPass.
-  base::flat_map<AggregatedRenderPassId,
-                 raw_ptr<cc::FilterOperations, CtnExperimental>>
-      render_pass_filters_;
-  base::flat_map<AggregatedRenderPassId,
-                 raw_ptr<cc::FilterOperations, CtnExperimental>>
-      render_pass_backdrop_filters_;
-  base::flat_map<AggregatedRenderPassId, std::optional<gfx::RRectF>>
+  base::flat_map<AggregatedRenderPassId, std::optional<SkPath>>
       render_pass_backdrop_filter_bounds_;
   base::flat_map<AggregatedRenderPassId, gfx::Rect>
       backdrop_filter_output_rects_;
@@ -418,10 +393,6 @@ class VIZ_SERVICE_EXPORT DirectRenderer {
     DCHECK(reshape_params_);
     return reshape_params_->color_space;
   }
-  RenderPassAlphaType reshape_alpha_type() const {
-    DCHECK(reshape_params_);
-    return reshape_params_->alpha_type;
-  }
 
   // Sets a DelegatedInkPointRendererSkiaForTest to be used for testing only, in
   // order to save delegated ink metadata values that would otherwise be reset.
@@ -429,6 +400,14 @@ class VIZ_SERVICE_EXPORT DirectRenderer {
       std::unique_ptr<DelegatedInkPointRendererSkia> renderer) {}
 
  private:
+  // Expands the damage rect to include child render passes with pixel-moving
+  // filters (backdrop or foreground) that intersect with the damage rect.
+  // This is used by ComputeScissorRectForRenderPass for both root and non-root
+  // render passes.
+  void ExpandDamageForPixelMovingFilters(
+      const AggregatedRenderPass* render_pass,
+      gfx::Rect& damage_rect) const;
+
   // Update the damage rect of the render pass that will contain the drawn ink
   // trail, or had drawn the ink trail in the previous frame.
   void AddInkDamageToRenderPass(const AggregatedRenderPass* render_pass,

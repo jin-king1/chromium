@@ -16,21 +16,22 @@ import android.content.Context;
 import android.os.PersistableBundle;
 
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Captor;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.RuntimeEnvironment;
 import org.robolectric.annotation.Config;
 
 import org.chromium.base.BaseSwitches;
-import org.chromium.base.Callback;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Feature;
-import org.chromium.chrome.browser.device.ShadowDeviceConditions;
+import org.chromium.chrome.browser.device.DeviceConditions;
 import org.chromium.components.background_task_scheduler.BackgroundTask;
 import org.chromium.components.background_task_scheduler.BackgroundTaskScheduler;
 import org.chromium.components.background_task_scheduler.BackgroundTaskSchedulerFactory;
@@ -42,24 +43,21 @@ import org.chromium.net.ConnectionType;
 
 /** Unit tests for BackgroundSyncBackgroundTask. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(
-        manifest = Config.NONE,
-        shadows = {ShadowDeviceConditions.class})
+@Config(manifest = Config.NONE)
 @CommandLineFlags.Add({BaseSwitches.ENABLE_LOW_END_DEVICE_MODE})
 public class BackgroundSyncBackgroundTaskTest {
 
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     private PersistableBundle mTaskExtras;
     private long mTaskTime;
 
     @Mock private BackgroundSyncBackgroundTask.Natives mNativeMock;
     @Mock private BackgroundTaskScheduler mTaskScheduler;
     @Mock private BackgroundTask.TaskFinishedCallback mTaskFinishedCallback;
-    @Mock private Callback<Boolean> mInternalBooleanCallback;
     @Captor private ArgumentCaptor<TaskInfo> mTaskInfo;
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
         BackgroundTaskSchedulerFactory.setSchedulerForTesting(mTaskScheduler);
 
         mTaskExtras = new PersistableBundle();
@@ -68,7 +66,9 @@ public class BackgroundSyncBackgroundTaskTest {
                 .when(mTaskScheduler)
                 .schedule(eq(RuntimeEnvironment.application), mTaskInfo.capture());
 
-        ShadowDeviceConditions.setCurrentNetworkConnectionType(ConnectionType.CONNECTION_NONE);
+        DeviceConditions.setForTesting(
+                new DeviceConditions(
+                        false, 0, ConnectionType.CONNECTION_NONE, false, false, false));
 
         BackgroundSyncBackgroundTaskJni.setInstanceForTesting(mNativeMock);
     }
@@ -96,7 +96,9 @@ public class BackgroundSyncBackgroundTaskTest {
     @Test
     @Feature("BackgroundSync")
     public void testNetworkConditions_Wifi() {
-        ShadowDeviceConditions.setCurrentNetworkConnectionType(ConnectionType.CONNECTION_WIFI);
+        DeviceConditions.setForTesting(
+                new DeviceConditions(
+                        false, 0, ConnectionType.CONNECTION_WIFI, false, false, false));
         TaskParameters params =
                 TaskParameters.create(TaskIds.BACKGROUND_SYNC_ONE_SHOT_JOB_ID)
                         .addExtras(mTaskExtras)

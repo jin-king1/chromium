@@ -7,7 +7,6 @@
 
 #include <stdint.h>
 
-#include <map>
 #include <memory>
 #include <set>
 #include <string>
@@ -28,7 +27,6 @@ class BrowserContext;
 
 namespace sync_file_system {
 
-class FileStatusObserver;
 class LocalChangeProcessor;
 class RemoteChangeProcessor;
 class TaskLogger;
@@ -128,7 +126,6 @@ class RemoteFileSyncService {
 
   // Adds and removes observers.
   virtual void AddServiceObserver(Observer* observer) = 0;
-  virtual void AddFileStatusObserver(FileStatusObserver* observer) = 0;
 
   // Registers |origin| to track remote side changes for the |origin|.
   // Upon completion, invokes |callback|.

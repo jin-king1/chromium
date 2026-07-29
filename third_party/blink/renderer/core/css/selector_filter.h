@@ -128,9 +128,20 @@ class CORE_EXPORT SelectorFilter {
 
   inline bool FastRejectSelector(
       const base::span<const uint16_t> identifier_hashes) const;
+
   static void CollectIdentifierHashes(const CSSSelector&,
                                       const StyleScope*,
-                                      Vector<uint16_t>& bloom_hash_backing);
+                                      Vector<uint16_t>& bloom_hash_backing,
+                                      Element::TinyBloomFilter& subject_filter);
+
+  static void CollectSubjectIdentifierHashes(
+      const CSSSelector* selector,
+      Element::AttributesToExcludeHashesFor attributes_to_exclude,
+      Element::TinyBloomFilter& subject_filter);
+  static void CollectSingleSelectorIdentifierHashes(
+      const CSSSelector* selector,
+      Element::AttributesToExcludeHashesFor attributes_to_exclude,
+      Element::TinyBloomFilter& subject_filter);
 
   void Trace(Visitor*) const;
 

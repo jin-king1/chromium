@@ -13,16 +13,8 @@ bool StubRenderWidgetHostOwnerDelegate::MayRenderWidgetForwardKeyboardEvent(
   return true;
 }
 
-bool StubRenderWidgetHostOwnerDelegate::ShouldContributePriorityToProcess() {
-  return false;
-}
-
 bool StubRenderWidgetHostOwnerDelegate::IsMainFrameActive() {
   return true;
-}
-
-bool StubRenderWidgetHostOwnerDelegate::IsNeverComposited() {
-  return false;
 }
 
 blink::web_pref::WebPreferences

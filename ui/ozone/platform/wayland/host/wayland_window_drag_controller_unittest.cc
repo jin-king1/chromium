@@ -14,6 +14,7 @@
 
 #include "base/functional/bind.h"
 #include "base/notreached.h"
+#include "base/strings/stringprintf.h"
 #include "base/test/bind.h"
 #include "base/test/mock_callback.h"
 #include "base/time/time.h"
@@ -26,9 +27,10 @@
 #include "ui/events/types/event_type.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/ozone/platform/wayland/host/wayland_cursor_position.h"
 #include "ui/ozone/platform/wayland/host/wayland_data_device.h"
+#include "ui/ozone/platform/wayland/host/wayland_data_device_manager.h"
 #include "ui/ozone/platform/wayland/host/wayland_data_drag_controller.h"
 #include "ui/ozone/platform/wayland/host/wayland_event_source.h"
 #include "ui/ozone/platform/wayland/host/wayland_output.h"
@@ -1219,14 +1221,18 @@ TEST_P(WaylandWindowDragControllerTest, CursorPositionIsUpdatedOnMotion) {
       const uint32_t surface_id = window->root_surface()->get_surface_id();
       const uint32_t output_id = wl_proxy_get_id(
           reinterpret_cast<wl_proxy*>(output.second->get_output()));
-      self->PostToServerAndWait([surface_id, output_id](
-                                    wl::TestWaylandServerThread* server) {
+      const float scale = output.second->scale_factor();
+      self->PostToServerAndWait([surface_id, output_id,
+                                 scale](wl::TestWaylandServerThread* server) {
         wl::MockSurface* surface =
             server->GetObject<wl::MockSurface>(surface_id);
         ASSERT_TRUE(surface);
         wl::TestOutput* output = server->GetObject<wl::TestOutput>(output_id);
         ASSERT_TRUE(output);
         wl_surface_send_enter(surface->resource(), output->resource());
+        if (surface->fractional_scale()) {
+          surface->fractional_scale()->SendPreferredScale(scale);
+        }
       });
       EXPECT_EQ(output.second->scale_factor(),
                 window->applied_state().window_scale);
@@ -1334,7 +1340,7 @@ TEST_P(WaylandWindowDragControllerTest,
   // to when a tab is detached in a Chrome's tab drag session.
   PlatformWindowInitProperties properties{gfx::Rect{80, 80}};
   properties.type = PlatformWindowType::kWindow;
-  MockWaylandPlatformWindowDelegate delegate_2;
+  MockWaylandPlatformWindowDelegate delegate_2(connection_.get());
   EXPECT_CALL(delegate_2, OnAcceleratedWidgetAvailable(_)).Times(1);
   auto window_2 =
       delegate_2.CreateWaylandWindow(connection_.get(), std::move(properties));
@@ -1530,6 +1536,52 @@ TEST_P(WaylandWindowDragControllerTest, NoopUnlessPointerOrTouchPressed) {
   ASSERT_EQ(State::kIdle, drag_controller_state());
 }
 
+ACTION_P(CloneEvent, ptr) {
+  *ptr = arg0->Clone();
+}
+
+// Regression test for https://crbug.com/400486350.
+TEST_P(WaylandWindowDragControllerTest,
+       CancelIfPointerButtonIsReleasedBeforeFirstEnter) {
+  EXPECT_FALSE(window_manager()->GetCurrentPointerOrTouchFocusedWindow());
+
+  // Press left mouse button within |window_|.
+  SendPointerEnter(window_.get(), &delegate_);
+  SendPointerPress(window_.get(), &delegate_, BTN_LEFT);
+
+  // Ensure (at test compositor side) wl_data_device offer and enter are not
+  // automatically sent when the next drag session is started.
+  ASSERT_TRUE(connection_->data_device_manager()->GetDevice());
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    ASSERT_FALSE(server->data_device_manager()->data_source());
+    ASSERT_TRUE(server->data_device_manager()->data_device());
+    server->data_device_manager()
+        ->data_device()
+        ->disable_auto_send_start_drag_events();
+  });
+
+  // Request the drag to start and ensure internal state is set as expected.
+  GetWaylandToplevelExtension(*window_)->StartWindowDraggingSessionIfNeeded(
+      DragEventSource::kMouse,
+      /*allow_system_drag=*/false);
+  ASSERT_EQ(State::kAttached, drag_controller_state());
+  ASSERT_TRUE(drag_controller()->drag_source().has_value());
+
+  // Now the edge case emulation: send a wl_pointer.button release before the
+  // very first wl_data_device has been sent and ensure the drag session is
+  // cancelled, internal state is reset and the corresponding mouse event
+  // gets dispatched.
+  std::unique_ptr<Event> event;
+  EXPECT_CALL(delegate_, DispatchEvent(_)).WillOnce(CloneEvent(&event));
+  SendPointerButton(window_.get(), &delegate_, BTN_LEFT, /*pressed=*/false);
+  Mock::VerifyAndClearExpectations(&delegate_);
+  ASSERT_TRUE(event->IsMouseEvent());
+  EXPECT_TRUE(event->AsMouseEvent()->IsLeftMouseButton());
+  EXPECT_EQ(event->type(), ui::EventType::kMouseReleased);
+  ASSERT_EQ(State::kIdle, drag_controller_state());
+  ASSERT_FALSE(drag_controller()->drag_source().has_value());
+}
+
 // Ensure events are handled appropriately when the target window is destroyed
 // while the move loop is running (i.e. dragging in the detached state).
 // Regression test for crbug.com/1433577.
@@ -1553,7 +1605,7 @@ TEST_P(WaylandWindowDragControllerTest,
   // when a tab is detached in a Chrome's tab drag session.
   PlatformWindowInitProperties properties{gfx::Rect{80, 80}};
   properties.type = PlatformWindowType::kWindow;
-  MockWaylandPlatformWindowDelegate delegate_2;
+  MockWaylandPlatformWindowDelegate delegate_2(connection_.get());
   EXPECT_CALL(delegate_2, OnAcceleratedWidgetAvailable(_)).Times(1);
   auto window_2 =
       delegate_2.CreateWaylandWindow(connection_.get(), std::move(properties));
@@ -1787,6 +1839,95 @@ TEST_P(WaylandWindowDragControllerTest, OutgoingSessionWithoutDndFinished) {
 
   // End the drag.
   SendDndDropAndFinished();
+  EXPECT_EQ(State::kIdle, drag_controller_state());
+}
+
+// Regression test for crbug.com/498008192. Ensures that if the drag session is
+// finished/cancelled while the controller is in State::kAttaching (e.g., after
+// EndMoveLoop() during tab snapping or window destruction), HandleDragEnd()
+// processes the cleanup properly and resets state to kIdle rather than getting
+// stuck in a zombie attaching/attached state.
+TEST_P(WaylandWindowDragControllerTest, CancelDuringAttaching) {
+  SendPointerEnter(window_.get(), &delegate_);
+  SendPointerPress(window_.get(), &delegate_, BTN_LEFT);
+  SendPointerMotion(window_.get(), &delegate_, {10, 10});
+
+  auto* wayland_extension = GetWaylandToplevelExtension(*window_);
+  wayland_extension->StartWindowDraggingSessionIfNeeded(
+      DragEventSource::kMouse,
+      /*allow_system_drag=*/false);
+  EXPECT_EQ(State::kAttached, drag_controller_state());
+
+  auto* move_loop_handler = GetWmMoveLoopHandler(*window_);
+  ASSERT_TRUE(move_loop_handler);
+  ScheduleTestTask(base::BindLambdaForTesting([&]() {
+    move_loop_handler->EndMoveLoop();
+    EXPECT_EQ(State::kAttaching, drag_controller_state());
+    SendDndCancelled();
+  }));
+
+  EXPECT_FALSE(move_loop_handler->RunMoveLoop({}));
+  EXPECT_EQ(State::kIdle, drag_controller_state());
+  EXPECT_FALSE(
+      connection_->data_device_manager()->GetDevice()->IsDragInProgress());
+
+  // Verify that subsequent window dragging sessions can start cleanly.
+  SendPointerPress(window_.get(), &delegate_, BTN_LEFT);
+  EXPECT_TRUE(drag_controller()->StartDragSession(
+      window_->AsWaylandToplevelWindow(), DragEventSource::kMouse));
+  EXPECT_EQ(State::kAttached, drag_controller_state());
+  SendDndDropAndFinished();
+  EXPECT_EQ(State::kIdle, drag_controller_state());
+}
+
+// Regression test for crbug.com/532860184. Ensures that when dragging with a
+// tablet pen, lifting the pen (which causes proximity_out) and hovering it
+// back (proximity_in) does not cancel/destroy the active drag session and cause
+// subsequent CHECK failure in RunLoop.
+TEST_P(WaylandWindowDragControllerTest, TabletPenDragProximityInAndOut) {
+  auto* event_source = connection_->event_source();
+  base::TimeTicks time = base::TimeTicks::Now();
+
+  // 1. Enter pointer and press mouse button to set up pointer focus.
+  SendPointerEnter(window_.get(), &delegate_);
+  SendPointerPress(window_.get(), &delegate_, BTN_LEFT);
+
+  // 2. Hover/proximity-in and press pen tip to start the drag.
+  event_source->OnTabletToolProximityIn(window_.get(), {10, 10}, {}, time);
+  event_source->OnTabletToolButton(EF_LEFT_MOUSE_BUTTON, true, {}, time);
+  event_source->OnTabletToolMotion({10, 10}, {}, time);
+
+  // 3. Start the window drag session.
+  auto* wayland_extension = GetWaylandToplevelExtension(*window_);
+  wayland_extension->StartWindowDraggingSessionIfNeeded(
+      DragEventSource::kMouse,
+      /*allow_system_drag=*/false);
+  EXPECT_EQ(State::kAttached, drag_controller_state());
+
+  // 4. While dragging, lift the pen (proximity-out).
+  // Note: tablet_tool_buttons_ remains treated as pressed during drag.
+  event_source->OnTabletToolProximityOut(time);
+
+  // 5. Hover the pen back in (proximity-in).
+  // Under the bug, this unilaterally released the buttons and cancelled the
+  // drag session because IsDragInProgress() wasn't checked.
+  // With the fix, we check IsDragInProgress() and do NOT release/cancel.
+  event_source->OnTabletToolProximityIn(window_.get(), {15, 15}, {}, time);
+
+  // The drag session must still be active.
+  EXPECT_EQ(State::kAttached, drag_controller_state());
+
+  // 6. Drag the tab to detach it.
+  auto* move_loop_handler = GetWmMoveLoopHandler(*window_);
+  ASSERT_TRUE(move_loop_handler);
+  ScheduleTestTask(base::BindLambdaForTesting([&]() {
+    // End the drag cleanly.
+    SendDndDropAndFinished();
+  }));
+
+  // This runs the nested run loop. It should NOT crash because
+  // nested_dispatcher_ is still valid and has not been reset!
+  EXPECT_TRUE(move_loop_handler->RunMoveLoop({}));
   EXPECT_EQ(State::kIdle, drag_controller_state());
 }
 

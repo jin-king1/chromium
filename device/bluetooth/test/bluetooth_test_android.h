@@ -8,9 +8,11 @@
 #include <stdint.h>
 
 #include "base/android/scoped_java_ref.h"
+#include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/test/task_environment.h"
 #include "device/bluetooth/bluetooth_common.h"
+#include "device/bluetooth/bluetooth_socket.h"
 #include "device/bluetooth/test/bluetooth_test.h"
 
 namespace device {
@@ -28,7 +30,6 @@ class BluetoothTestAndroid : public BluetoothTestBase {
   void TearDown() override;
 
   // BluetoothTestBase overrides:
-  bool PlatformSupportsLowEnergy() override;
   void InitWithDefaultAdapter() override;
   void InitWithoutDefaultAdapter() override;
   void InitWithFakeAdapter() override;
@@ -121,7 +122,18 @@ class BluetoothTestAndroid : public BluetoothTestBase {
   //   2: Name: kTestDeviceName
   //      Address: kTestDeviceAddress2
   //      UUID: kTestUUIDSerial
-  void SimulatePairedClassicDevice(int device_ordinal);
+  // Returns the address of the simulated device.
+  // Notify DeviceBondStateReceiver.Callback if |notify_callback| is true.
+  std::string SimulatePairedClassicDevice(int device_ordinal,
+                                          bool notify_callback = false);
+
+  // Simulates having unpaired a device of |address|.
+  void UnpairDevice(std::string address);
+
+  // Simulates a low level (ACL) connect state change for |device|.
+  void SimulateAclConnectStateChange(BluetoothDevice* device,
+                                     uint8_t transport,
+                                     bool connected);
 
   // Instruct the fake adapter to claim that location services are off for the
   // device.
@@ -134,6 +146,24 @@ class BluetoothTestAndroid : public BluetoothTestBase {
   // Instruct the fake LE scanner to invoke the failure callback with
   // |error_code|.
   void FailCurrentLeScan(int error_code);
+
+  // Instructs the fake device to throw an IOException with |error_message| next
+  // time |connectToService| or |connectToServiceInsecurely| is called with it.
+  void FailNextServiceConnection(BluetoothDevice* device,
+                                 const std::string& error_message);
+
+  // Gets all bytes the fake socket was requested to send since it was created.
+  std::vector<uint8_t> GetSentBytes(BluetoothSocket* socket);
+
+  // Feeds the fake socket |bytes| and serve them when it is requested to read.
+  // Can't be longer than 8KB.
+  void SetReceivedBytes(BluetoothSocket* socket,
+                        const std::vector<uint8_t>& bytes);
+
+  // Fails the next operation on the fake socket by throwing an IOException with
+  // |error_message|.
+  void FailNextOperation(BluetoothSocket* socket,
+                         const std::string& error_message);
 
   // Records that Java FakeBluetoothDevice connectGatt was called.
   void OnFakeBluetoothDeviceConnectGattCalled(JNIEnv* env);
@@ -157,7 +187,7 @@ class BluetoothTestAndroid : public BluetoothTestBase {
   // Records that Java FakeBluetoothGatt writeCharacteristic was called.
   void OnFakeBluetoothGattWriteCharacteristic(
       JNIEnv* env,
-      const base::android::JavaParamRef<jbyteArray>& value);
+      const base::android::JavaRef<jbyteArray>& value);
 
   // Records that Java FakeBluetoothGatt readDescriptor was called.
   void OnFakeBluetoothGattReadDescriptor(JNIEnv* env);
@@ -165,20 +195,17 @@ class BluetoothTestAndroid : public BluetoothTestBase {
   // Records that Java FakeBluetoothGatt writeDescriptor was called.
   void OnFakeBluetoothGattWriteDescriptor(
       JNIEnv* env,
-      const base::android::JavaParamRef<jbyteArray>& value);
+      const base::android::JavaRef<jbyteArray>& value);
 
   // Records that Java FakeBluetoothAdapter onAdapterStateChanged was called.
   void OnFakeAdapterStateChanged(JNIEnv* env, const bool powered);
 
   // Posts a task to be run on the current message loop.
-  void PostTaskFromJava(JNIEnv* env,
-                        const base::android::JavaParamRef<jobject>& runnable);
+  void PostTaskFromJava(base::OnceClosure&& runnable);
 
   // Posts a delayed task to be run on the current message loop.
-  void PostDelayedTaskFromJava(
-      JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& runnable,
-      jlong delayMillis);
+  void PostDelayedTaskFromJava(base::OnceClosure&& runnable,
+                               int64_t delayMillis);
 
   base::android::ScopedJavaGlobalRef<jobject> j_default_bluetooth_adapter_;
   base::android::ScopedJavaGlobalRef<jobject> j_fake_bluetooth_adapter_;

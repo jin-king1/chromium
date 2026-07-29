@@ -14,19 +14,14 @@ ContentSettingConstraints::ContentSettingConstraints(base::Time now)
 
 ContentSettingConstraints::ContentSettingConstraints(
     ContentSettingConstraints&& other) = default;
-ContentSettingConstraints::ContentSettingConstraints(
-    const ContentSettingConstraints& other) = default;
+
 ContentSettingConstraints& ContentSettingConstraints::operator=(
     ContentSettingConstraints&& other) = default;
-ContentSettingConstraints& ContentSettingConstraints::operator=(
-    const ContentSettingConstraints& other) = default;
 
 ContentSettingConstraints::~ContentSettingConstraints() = default;
 
-bool ContentSettingConstraints::operator==(
-    const ContentSettingConstraints& other) const = default;
-
-bool ContentSettingConstraints::operator!=(
-    const ContentSettingConstraints& other) const = default;
+ContentSettingConstraints ContentSettingConstraints::Clone() const {
+  return ContentSettingConstraints(*this);
+}
 
 }  // namespace content_settings

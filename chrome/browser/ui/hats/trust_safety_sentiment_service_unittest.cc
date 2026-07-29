@@ -13,12 +13,12 @@
 #include "chrome/browser/ui/hats/mock_hats_service.h"
 #include "chrome/browser/ui/hats/trust_safety_sentiment_service_factory.h"
 #include "chrome/common/chrome_features.h"
+#include "chrome/common/pref_names.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/browsing_data/core/browsing_data_utils.h"
 #include "components/content_settings/core/test/content_settings_mock_provider.h"
 #include "components/content_settings/core/test/content_settings_test_utils.h"
-#include "components/privacy_sandbox/tracking_protection_prefs.h"
 #include "components/signin/public/base/signin_pref_names.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "components/unified_consent/pref_names.h"
@@ -45,6 +45,8 @@ class TrustSafetySentimentServiceTest : public testing::Test {
   }
 
   void TearDown() override {
+    TrustSafetySentimentServiceFactory::GetInstance()->ShutDownForTesting(
+        profile());
     metrics::DesktopSessionDurationTracker::CleanupForTesting();
   }
 
@@ -75,24 +77,31 @@ class TrustSafetySentimentServiceTest : public testing::Test {
   }
 
   void SetupFeatureParameters(FeatureParams params) {
-    feature_list()->InitAndEnableFeatureWithParameters(
-        features::kTrustSafetySentimentSurvey,
-        {
-            {"privacy-settings-time", params.privacy_settings_time},
-            {"min-time-to-prompt", params.min_time_to_prompt},
-            {"max-time-to-prompt", params.max_time_to_prompt},
-            {"ntp-visits-min-range", params.ntp_visits_min_range},
-            {"ntp-visits-max-range", params.ntp_visits_max_range},
-            {"privacy-settings-probability",
-             params.privacy_settings_probability},
-            {"trusted-surface-probability", params.trusted_surface_probability},
-            {"transactions-probability", params.transactions_probability},
-            {"privacy-settings-trigger-id", params.privacy_settings_trigger_id},
-            {"trusted-surface-trigger-id", params.trusted_surface_trigger_id},
-            {"transactions-trigger-id", params.transactions_trigger_id},
-            {"transactions-password-manager-time",
-             params.transactions_password_manager_time},
-        });
+    feature_list()->InitWithFeaturesAndParameters(
+        /*enabled_features=*/
+        {base::test::FeatureRefAndParams(
+            features::kTrustSafetySentimentSurvey,
+            {
+                {"privacy-settings-time", params.privacy_settings_time},
+                {"min-time-to-prompt", params.min_time_to_prompt},
+                {"max-time-to-prompt", params.max_time_to_prompt},
+                {"ntp-visits-min-range", params.ntp_visits_min_range},
+                {"ntp-visits-max-range", params.ntp_visits_max_range},
+                {"privacy-settings-probability",
+                 params.privacy_settings_probability},
+                {"trusted-surface-probability",
+                 params.trusted_surface_probability},
+                {"transactions-probability", params.transactions_probability},
+                {"privacy-settings-trigger-id",
+                 params.privacy_settings_trigger_id},
+                {"trusted-surface-trigger-id",
+                 params.trusted_surface_trigger_id},
+                {"transactions-trigger-id", params.transactions_trigger_id},
+                {"transactions-password-manager-time",
+                 params.transactions_password_manager_time},
+            })},
+        /*disabled_features=*/
+        {features::kTrustSafetySentimentSurveyV2});
   }
 
   struct FeatureParamsV2 {
@@ -238,7 +247,7 @@ TEST_F(TrustSafetySentimentServiceTest, Eligibility_NtpOpens) {
   params.ntp_visits_max_range = "2";
   SetupFeatureParameters(params);
 
-  EXPECT_CALL(*mock_hats_service(), LaunchSurvey(_, _, _, _, _)).Times(0);
+  EXPECT_CALL(*mock_hats_service(), LaunchSurvey).Times(0);
 
   service()->TriggerOccurred(
       TrustSafetySentimentService::FeatureArea::kPrivacySettings, {});
@@ -259,7 +268,7 @@ TEST_F(TrustSafetySentimentServiceTest, Eligibility_NtpOpens) {
        {TrustSafetySentimentService::FeatureArea::kTrustedSurface, 1}});
 
   // The next NTP should be eligible for a survey.
-  EXPECT_CALL(*mock_hats_service(), LaunchSurvey(_, _, _, _, _));
+  EXPECT_CALL(*mock_hats_service(), LaunchSurvey);
   service()->OpenedNewTabPage();
 }
 
@@ -275,7 +284,7 @@ TEST_F(TrustSafetySentimentServiceTest, Eligibility_Time) {
   params.ntp_visits_max_range = "0";
   SetupFeatureParameters(params);
 
-  EXPECT_CALL(*mock_hats_service(), LaunchSurvey(_, _, _, _, _)).Times(0);
+  EXPECT_CALL(*mock_hats_service(), LaunchSurvey).Times(0);
   service()->TriggerOccurred(
       TrustSafetySentimentService::FeatureArea::kPrivacySettings, {});
   service()->OpenedNewTabPage();
@@ -289,9 +298,9 @@ TEST_F(TrustSafetySentimentServiceTest, Eligibility_Time) {
   // Moving the clock forward such that only the trusted surface trigger is
   // within the window should guarantee it is the survey shown.
   task_environment()->AdvanceClock(base::Minutes(9));
-  EXPECT_CALL(
-      *mock_hats_service(),
-      LaunchSurvey(kHatsSurveyTriggerTrustSafetyTrustedSurface, _, _, _, _));
+  EXPECT_CALL(*mock_hats_service(),
+              LaunchSurvey(kHatsSurveyTriggerTrustSafetyTrustedSurface, _, _, _,
+                           _, _, _));
   service()->OpenedNewTabPage();
 
   CheckHistograms({TrustSafetySentimentService::FeatureArea::kPrivacySettings,
@@ -304,7 +313,7 @@ TEST_F(TrustSafetySentimentServiceTest, Eligibility_Time) {
 
 TEST_F(TrustSafetySentimentServiceTest, TriggerProbability) {
   // Triggers which fail the probability check should not be considered.
-  EXPECT_CALL(*mock_hats_service(), LaunchSurvey(_, _, _, _, _)).Times(0);
+  EXPECT_CALL(*mock_hats_service(), LaunchSurvey).Times(0);
   FeatureParams params;
   params.trusted_surface_probability = "0.0";
   params.min_time_to_prompt = "0s";
@@ -341,8 +350,10 @@ TEST_F(TrustSafetySentimentServiceTest, TriggersClearOnLaunch) {
 
   // The launched survey will be randomly selected from the two triggers.
   std::string requested_survey_trigger;
-  EXPECT_CALL(*mock_hats_service(), LaunchSurvey(_, _, _, _, _))
-      .WillOnce(testing::SaveArg<0>(&requested_survey_trigger));
+  EXPECT_CALL(*mock_hats_service(), LaunchSurvey)
+      .WillOnce(
+          testing::DoAll(testing::SaveArg<0>(&requested_survey_trigger),
+                         testing::Return(HatsService::LaunchError::kNone)));
   service()->OpenedNewTabPage();
   testing::Mock::VerifyAndClearExpectations(mock_hats_service());
   auto surveyed_feature_area =
@@ -352,14 +363,14 @@ TEST_F(TrustSafetySentimentServiceTest, TriggersClearOnLaunch) {
 
   // The trigger which did not result in a survey should no longer be
   // considered.
-  EXPECT_CALL(*mock_hats_service(), LaunchSurvey(_, _, _, _, _)).Times(0);
+  EXPECT_CALL(*mock_hats_service(), LaunchSurvey).Times(0);
   service()->OpenedNewTabPage();
   testing::Mock::VerifyAndClearExpectations(mock_hats_service());
 
   // Repeated triggers post survey launch should however be considered.
-  EXPECT_CALL(
-      *mock_hats_service(),
-      LaunchSurvey(kHatsSurveyTriggerTrustSafetyTransactions, _, _, _, _));
+  EXPECT_CALL(*mock_hats_service(),
+              LaunchSurvey(kHatsSurveyTriggerTrustSafetyTransactions, _, _, _,
+                           _, _, _));
   service()->TriggerOccurred(
       TrustSafetySentimentService::FeatureArea::kTransactions, {});
   service()->OpenedNewTabPage();
@@ -392,16 +403,16 @@ TEST_F(TrustSafetySentimentServiceTest, SettingsWatcher_PrivacySettings) {
 
   // Interacting with setting shouldn't causes a survey to be immediately
   // displayed, but should require the user to stay on settings for some time.
-  EXPECT_CALL(*mock_hats_service(), LaunchSurvey(_, _, _, _, _)).Times(0);
+  EXPECT_CALL(*mock_hats_service(), LaunchSurvey).Times(0);
   service()->InteractedWithPrivacySettings(web_contents.get());
   service()->OpenedNewTabPage();
   testing::Mock::VerifyAndClearExpectations(mock_hats_service());
 
   // Once the user has spent the appropriate amount of time on settings, they
   // should be eligible for a survey.
-  EXPECT_CALL(
-      *mock_hats_service(),
-      LaunchSurvey(kHatsSurveyTriggerTrustSafetyPrivacySettings, _, _, _, _));
+  EXPECT_CALL(*mock_hats_service(),
+              LaunchSurvey(kHatsSurveyTriggerTrustSafetyPrivacySettings, _, _,
+                           _, _, _, _));
   task_environment()->AdvanceClock(base::Seconds(20));
   task_environment()->RunUntilIdle();
   service()->OpenedNewTabPage();
@@ -409,7 +420,7 @@ TEST_F(TrustSafetySentimentServiceTest, SettingsWatcher_PrivacySettings) {
 
   // Leaving settings before the required time should disqualify the user from
   // receiving a survey.
-  EXPECT_CALL(*mock_hats_service(), LaunchSurvey(_, _, _, _, _)).Times(0);
+  EXPECT_CALL(*mock_hats_service(), LaunchSurvey).Times(0);
   service()->InteractedWithPrivacySettings(web_contents.get());
   task_environment()->AdvanceClock(base::Seconds(5));
   task_environment()->RunUntilIdle();
@@ -441,7 +452,7 @@ TEST_F(TrustSafetySentimentServiceTest, SettingsWatcher_PasswordManager) {
 
   // A survey should not be shown unless the user spends at least the required
   // time on settings after opening password manager.
-  EXPECT_CALL(*mock_hats_service(), LaunchSurvey(_, _, _, _, _)).Times(0);
+  EXPECT_CALL(*mock_hats_service(), LaunchSurvey).Times(0);
   service()->OpenedPasswordManager(web_contents.get());
   service()->OpenedNewTabPage();
   testing::Mock::VerifyAndClearExpectations(mock_hats_service());
@@ -452,7 +463,7 @@ TEST_F(TrustSafetySentimentServiceTest, SettingsWatcher_PasswordManager) {
   SurveyBitsData expected_psd = {{"Saved password", false}};
   EXPECT_CALL(*mock_hats_service(),
               LaunchSurvey(kHatsSurveyTriggerTrustSafetyTransactions, _, _,
-                           expected_psd, _));
+                           expected_psd, _, _, _));
 
   task_environment()->AdvanceClock(base::Seconds(20));
   task_environment()->RunUntilIdle();
@@ -461,7 +472,7 @@ TEST_F(TrustSafetySentimentServiceTest, SettingsWatcher_PasswordManager) {
 
   // Leaving settings before the required time should not make the user
   // eligible.
-  EXPECT_CALL(*mock_hats_service(), LaunchSurvey(_, _, _, _, _)).Times(0);
+  EXPECT_CALL(*mock_hats_service(), LaunchSurvey).Times(0);
   service()->OpenedPasswordManager(web_contents.get());
   task_environment()->AdvanceClock(base::Seconds(5));
   task_environment()->RunUntilIdle();
@@ -484,9 +495,9 @@ TEST_F(TrustSafetySentimentServiceTest, RanSafetyCheck) {
   params.ntp_visits_max_range = "0";
   SetupFeatureParameters(params);
 
-  EXPECT_CALL(
-      *mock_hats_service(),
-      LaunchSurvey(kHatsSurveyTriggerTrustSafetyPrivacySettings, _, _, _, _));
+  EXPECT_CALL(*mock_hats_service(),
+              LaunchSurvey(kHatsSurveyTriggerTrustSafetyPrivacySettings, _, _,
+                           _, _, _, _));
   service()->RanSafetyCheck();
   service()->OpenedNewTabPage();
 }
@@ -505,7 +516,7 @@ TEST_F(TrustSafetySentimentServiceTest, SavedPassword) {
 
   EXPECT_CALL(*mock_hats_service(),
               LaunchSurvey(kHatsSurveyTriggerTrustSafetyTransactions, _, _,
-                           expected_psd, _));
+                           expected_psd, _, _, _));
   service()->SavedPassword();
   service()->OpenedNewTabPage();
 }
@@ -524,7 +535,7 @@ TEST_F(TrustSafetySentimentServiceTest, SavedCard) {
 
   EXPECT_CALL(*mock_hats_service(),
               LaunchSurvey(kHatsSurveyTriggerTrustSafetyTransactions, _, _,
-                           expected_psd, _));
+                           expected_psd, _, _, _));
   service()->SavedCard();
   service()->OpenedNewTabPage();
 }
@@ -552,7 +563,7 @@ TEST_F(TrustSafetySentimentServiceTest, PrivacySettingsProductSpecificData) {
   // By default, a user should have no non-default settings.
   EXPECT_CALL(*mock_hats_service(),
               LaunchSurvey(kHatsSurveyTriggerTrustSafetyPrivacySettings, _, _,
-                           expected_psd, _));
+                           expected_psd, _, _, _));
   service()->InteractedWithPrivacySettings(web_contents.get());
   task_environment()->RunUntilIdle();
   service()->OpenedNewTabPage();
@@ -561,7 +572,7 @@ TEST_F(TrustSafetySentimentServiceTest, PrivacySettingsProductSpecificData) {
   expected_psd["Ran safety check"] = true;
   EXPECT_CALL(*mock_hats_service(),
               LaunchSurvey(kHatsSurveyTriggerTrustSafetyPrivacySettings, _, _,
-                           expected_psd, _));
+                           expected_psd, _, _, _));
   service()->RanSafetyCheck();
   service()->OpenedNewTabPage();
   testing::Mock::VerifyAndClearExpectations(mock_hats_service());
@@ -574,7 +585,7 @@ TEST_F(TrustSafetySentimentServiceTest, PrivacySettingsProductSpecificData) {
       ContentSettingsType::SOUND, ContentSetting::CONTENT_SETTING_BLOCK);
   EXPECT_CALL(*mock_hats_service(),
               LaunchSurvey(kHatsSurveyTriggerTrustSafetyPrivacySettings, _, _,
-                           expected_psd, _));
+                           expected_psd, _, _, _));
   service()->RanSafetyCheck();
   service()->OpenedNewTabPage();
   testing::Mock::VerifyAndClearExpectations(mock_hats_service());
@@ -587,7 +598,7 @@ TEST_F(TrustSafetySentimentServiceTest, PrivacySettingsProductSpecificData) {
       prefs::kEnableDoNotTrack, std::make_unique<base::Value>(true));
   EXPECT_CALL(*mock_hats_service(),
               LaunchSurvey(kHatsSurveyTriggerTrustSafetyPrivacySettings, _, _,
-                           expected_psd, _));
+                           expected_psd, _, _, _));
   service()->InteractedWithPrivacySettings(web_contents.get());
   task_environment()->RunUntilIdle();
   service()->OpenedNewTabPage();
@@ -600,7 +611,7 @@ TEST_F(TrustSafetySentimentServiceTest, PrivacySettingsProductSpecificData) {
       std::make_unique<base::Value>(true));
   EXPECT_CALL(*mock_hats_service(),
               LaunchSurvey(kHatsSurveyTriggerTrustSafetyPrivacySettings, _, _,
-                           expected_psd, _));
+                           expected_psd, _, _, _));
   service()->InteractedWithPrivacySettings(web_contents.get());
   task_environment()->RunUntilIdle();
   service()->OpenedNewTabPage();
@@ -610,7 +621,7 @@ TEST_F(TrustSafetySentimentServiceTest, PrivacySettingsProductSpecificData) {
   expected_psd["Non default setting"] = false;
   EXPECT_CALL(*mock_hats_service(),
               LaunchSurvey(kHatsSurveyTriggerTrustSafetyPrivacySettings, _, _,
-                           expected_psd, _));
+                           expected_psd, _, _, _));
   profile()->GetTestingPrefService()->SetUserPref(
       prefs::kGoogleServicesConsentedToSync,
       std::make_unique<base::Value>(true));
@@ -626,14 +637,13 @@ TEST_F(TrustSafetySentimentServiceTest, PrivacySettingsProductSpecificData) {
   managed_provider->SetWebsiteSetting(
       ContentSettingsPattern::Wildcard(), ContentSettingsPattern::Wildcard(),
       ContentSettingsType::COOKIES,
-      base::Value(ContentSetting::CONTENT_SETTING_BLOCK), /*constraints=*/{},
-      content_settings::PartitionKey::GetDefaultForTesting());
+      base::Value(ContentSetting::CONTENT_SETTING_BLOCK), /*constraints=*/{});
   content_settings::TestUtils::OverrideProvider(
       content_settings, std::move(managed_provider),
       content_settings::ProviderType::kPolicyProvider);
   EXPECT_CALL(*mock_hats_service(),
               LaunchSurvey(kHatsSurveyTriggerTrustSafetyPrivacySettings, _, _,
-                           expected_psd, _));
+                           expected_psd, _, _, _));
   service()->InteractedWithPrivacySettings(web_contents.get());
   task_environment()->RunUntilIdle();
   service()->OpenedNewTabPage();
@@ -651,15 +661,15 @@ TEST_F(TrustSafetySentimentServiceTest, ActiveIncognitoPreventsSurvey) {
   auto* otr_profile =
       profile()->GetPrimaryOTRProfile(/*create_if_needed=*/true);
 
-  EXPECT_CALL(*mock_hats_service(), LaunchSurvey(_, _, _, _, _)).Times(0);
+  EXPECT_CALL(*mock_hats_service(), LaunchSurvey).Times(0);
   service()->RanSafetyCheck();
   service()->OpenedNewTabPage();
   testing::Mock::VerifyAndClearExpectations(mock_hats_service());
 
   profile()->DestroyOffTheRecordProfile(otr_profile);
-  EXPECT_CALL(
-      *mock_hats_service(),
-      LaunchSurvey(kHatsSurveyTriggerTrustSafetyPrivacySettings, _, _, _, _));
+  EXPECT_CALL(*mock_hats_service(),
+              LaunchSurvey(kHatsSurveyTriggerTrustSafetyPrivacySettings, _, _,
+                           _, _, _, _));
   service()->OpenedNewTabPage();
   CheckHistograms({TrustSafetySentimentService::FeatureArea::kPrivacySettings,
                    TrustSafetySentimentService::FeatureArea::kIneligible},
@@ -681,7 +691,7 @@ TEST_F(TrustSafetySentimentServiceTest, ClosingIncognitoDelaysSurvey) {
 
   auto* otr_profile =
       profile()->GetPrimaryOTRProfile(/*create_if_needed=*/true);
-  EXPECT_CALL(*mock_hats_service(), LaunchSurvey(_, _, _, _, _)).Times(0);
+  EXPECT_CALL(*mock_hats_service(), LaunchSurvey).Times(0);
   service()->RanSafetyCheck();
 
   // Record 2 visits to the NTP so regardless of the random NTP count chosen,
@@ -709,9 +719,9 @@ TEST_F(TrustSafetySentimentServiceTest, ClosingIncognitoDelaysSurvey) {
   // Up to this point no attempt to show any survey should have been made.
   testing::Mock::VerifyAndClearExpectations(mock_hats_service());
 
-  EXPECT_CALL(
-      *mock_hats_service(),
-      LaunchSurvey(kHatsSurveyTriggerTrustSafetyPrivacySettings, _, _, _, _));
+  EXPECT_CALL(*mock_hats_service(),
+              LaunchSurvey(kHatsSurveyTriggerTrustSafetyPrivacySettings, _, _,
+                           _, _, _, _));
 
   // The next tab open which occurs after the required number of opens, and the
   // minimum time has passed, should trigger a survey.
@@ -854,7 +864,7 @@ TEST_F(TrustSafetySentimentServiceTest, Eligibility_V1FeatureWhileV2Enabled) {
        {features::kTrustSafetySentimentSurveyV2, {}}},
       {});
 
-  EXPECT_CALL(*mock_hats_service(), LaunchSurvey(_, _, _, _, _)).Times(0);
+  EXPECT_CALL(*mock_hats_service(), LaunchSurvey).Times(0);
   service()->TriggerOccurred(
       TrustSafetySentimentService::FeatureArea::kPrivacySettings, {});
 
@@ -868,9 +878,9 @@ TEST_F(TrustSafetySentimentServiceTest, Eligibility_V1FeatureWhileV2Enabled) {
   feature_list()->Reset();
   SetupFeatureParameters(params);
 
-  EXPECT_CALL(
-      *mock_hats_service(),
-      LaunchSurvey(kHatsSurveyTriggerTrustSafetyPrivacySettings, _, _, _, _));
+  EXPECT_CALL(*mock_hats_service(),
+              LaunchSurvey(kHatsSurveyTriggerTrustSafetyPrivacySettings, _, _,
+                           _, _, _, _));
   service()->TriggerOccurred(
       TrustSafetySentimentService::FeatureArea::kPrivacySettings, {});
   service()->OpenedNewTabPage();
@@ -890,7 +900,7 @@ TEST_F(TrustSafetySentimentServiceTest, V2_TrustedSurface) {
   params.ntp_visits_max_range = "2";
   SetupFeatureParametersV2(params);
 
-  EXPECT_CALL(*mock_hats_service(), LaunchSurvey(_, _, _, _, _)).Times(0);
+  EXPECT_CALL(*mock_hats_service(), LaunchSurvey).Times(0);
   service()->TriggerOccurred(
       TrustSafetySentimentService::FeatureArea::kTrustedSurface, {});
 
@@ -905,13 +915,13 @@ TEST_F(TrustSafetySentimentServiceTest, V2_TrustedSurface) {
 
   task_environment()->AdvanceClock(base::Minutes(3));
   // Assert the V2 survey is called and not the V1.
-  EXPECT_CALL(
-      *mock_hats_service(),
-      LaunchSurvey(kHatsSurveyTriggerTrustSafetyTrustedSurface, _, _, _, _))
+  EXPECT_CALL(*mock_hats_service(),
+              LaunchSurvey(kHatsSurveyTriggerTrustSafetyTrustedSurface, _, _, _,
+                           _, _, _))
       .Times(0);
-  EXPECT_CALL(
-      *mock_hats_service(),
-      LaunchSurvey(kHatsSurveyTriggerTrustSafetyV2TrustedSurface, _, _, _, _));
+  EXPECT_CALL(*mock_hats_service(),
+              LaunchSurvey(kHatsSurveyTriggerTrustSafetyV2TrustedSurface, _, _,
+                           _, _, _, _));
 
   // A survey should be shown because we are now within the right time.
   service()->OpenedNewTabPage();
@@ -933,13 +943,13 @@ TEST_F(TrustSafetySentimentServiceTest, V2_SafetyCheck) {
 
   // Running safety check was previously part of PrivacySettings, so assure only
   // the correct histograms and survey are triggered for V2.
-  EXPECT_CALL(
-      *mock_hats_service(),
-      LaunchSurvey(kHatsSurveyTriggerTrustSafetyPrivacySettings, _, _, _, _))
+  EXPECT_CALL(*mock_hats_service(),
+              LaunchSurvey(kHatsSurveyTriggerTrustSafetyPrivacySettings, _, _,
+                           _, _, _, _))
       .Times(0);
-  EXPECT_CALL(
-      *mock_hats_service(),
-      LaunchSurvey(kHatsSurveyTriggerTrustSafetyV2SafetyCheck, _, _, _, _));
+  EXPECT_CALL(*mock_hats_service(),
+              LaunchSurvey(kHatsSurveyTriggerTrustSafetyV2SafetyCheck, _, _, _,
+                           _, _, _));
   service()->RanSafetyCheck();
   service()->OpenedNewTabPage();
   CheckHistograms({TrustSafetySentimentService::FeatureArea::kSafetyCheck},
@@ -959,9 +969,9 @@ TEST_F(TrustSafetySentimentServiceTest, V2_PasswordCheck) {
   SetupFeatureParametersV2(params);
 
   // The correct survey should be launched.
-  EXPECT_CALL(
-      *mock_hats_service(),
-      LaunchSurvey(kHatsSurveyTriggerTrustSafetyV2PasswordCheck, _, _, _, _));
+  EXPECT_CALL(*mock_hats_service(),
+              LaunchSurvey(kHatsSurveyTriggerTrustSafetyV2PasswordCheck, _, _,
+                           _, _, _, _));
   service()->RanPasswordCheck();
   service()->OpenedNewTabPage();
   CheckHistograms({TrustSafetySentimentService::FeatureArea::kPasswordCheck},
@@ -997,7 +1007,7 @@ TEST_F(TrustSafetySentimentServiceTest, V2_BrowsingData) {
     // The correct survey should be launched.
     EXPECT_CALL(*mock_hats_service(),
                 LaunchSurvey(kHatsSurveyTriggerTrustSafetyV2BrowsingData, _, _,
-                             datatype.second, _));
+                             datatype.second, _, _, _));
     service()->ClearedBrowsingData(datatype.first);
     service()->OpenedNewTabPage();
     testing::Mock::VerifyAndClearExpectations(mock_hats_service());
@@ -1015,9 +1025,9 @@ TEST_F(TrustSafetySentimentServiceTest, V2_BrowsingData_NotInterested) {
   SetupFeatureParametersV2(params);
 
   // No browsing data survey should be launched.
-  EXPECT_CALL(
-      *mock_hats_service(),
-      LaunchSurvey(kHatsSurveyTriggerTrustSafetyV2BrowsingData, _, _, _, _))
+  EXPECT_CALL(*mock_hats_service(),
+              LaunchSurvey(kHatsSurveyTriggerTrustSafetyV2BrowsingData, _, _, _,
+                           _, _, _))
       .Times(0);
   service()->ClearedBrowsingData(browsing_data::BrowsingDataType::SITE_DATA);
   service()->OpenedNewTabPage();
@@ -1036,9 +1046,9 @@ TEST_F(TrustSafetySentimentServiceTest, V2_PrivacyGuide) {
   SetupFeatureParametersV2(params);
 
   // The correct survey should be launched.
-  EXPECT_CALL(
-      *mock_hats_service(),
-      LaunchSurvey(kHatsSurveyTriggerTrustSafetyV2PrivacyGuide, _, _, _, _));
+  EXPECT_CALL(*mock_hats_service(),
+              LaunchSurvey(kHatsSurveyTriggerTrustSafetyV2PrivacyGuide, _, _, _,
+                           _, _, _));
   service()->FinishedPrivacyGuide();
   service()->OpenedNewTabPage();
   CheckHistograms({TrustSafetySentimentService::FeatureArea::kPrivacyGuide},
@@ -1060,7 +1070,7 @@ TEST_F(TrustSafetySentimentServiceTest, V2_ControlGroup) {
 
   // A survey should not be launched because the session threshold was not
   // surpassed.
-  EXPECT_CALL(*mock_hats_service(), LaunchSurvey(_, _, _, _, _)).Times(0);
+  EXPECT_CALL(*mock_hats_service(), LaunchSurvey).Times(0);
   base::TimeTicks session_start = base::TimeTicks::Now();
   service()->OnSessionStarted(session_start);
   task_environment()->AdvanceClock(base::Seconds(10));
@@ -1071,9 +1081,9 @@ TEST_F(TrustSafetySentimentServiceTest, V2_ControlGroup) {
   testing::Mock::VerifyAndClearExpectations(mock_hats_service());
 
   // A survey should be launched because the session threshold was surpassed.
-  EXPECT_CALL(
-      *mock_hats_service(),
-      LaunchSurvey(kHatsSurveyTriggerTrustSafetyV2ControlGroup, _, _, _, _));
+  EXPECT_CALL(*mock_hats_service(),
+              LaunchSurvey(kHatsSurveyTriggerTrustSafetyV2ControlGroup, _, _, _,
+                           _, _, _));
   session_start = base::TimeTicks::Now();
   service()->OnSessionStarted(session_start);
   task_environment()->AdvanceClock(base::Seconds(40));
@@ -1088,7 +1098,7 @@ TEST_F(TrustSafetySentimentServiceTest, V2_ControlGroup) {
 
   // A second valid trigger should not launch a survey because we have already
   // performed one dice roll for this user.
-  EXPECT_CALL(*mock_hats_service(), LaunchSurvey(_, _, _, _, _)).Times(0);
+  EXPECT_CALL(*mock_hats_service(), LaunchSurvey).Times(0);
   session_start = base::TimeTicks::Now();
   service()->OnSessionStarted(session_start);
   task_environment()->AdvanceClock(base::Seconds(40));
@@ -1111,7 +1121,7 @@ TEST_F(TrustSafetySentimentServiceTest, V2_SafeBrowsingInterstitial) {
   EXPECT_CALL(
       *mock_hats_service(),
       LaunchSurvey(kHatsSurveyTriggerTrustSafetyV2SafeBrowsingInterstitial, _,
-                   _, _, _));
+                   _, _, _, _, _));
   service()->InteractedWithSafeBrowsingInterstitial(
       true, safe_browsing::SBThreatType::SB_THREAT_TYPE_URL_PHISHING);
   service()->OpenedNewTabPage();
@@ -1136,7 +1146,7 @@ TEST_F(TrustSafetySentimentServiceTest, V2_DownloadWarningUI) {
   // The correct survey should be launched.
   EXPECT_CALL(*mock_hats_service(),
               LaunchSurvey(kHatsSurveyTriggerTrustSafetyV2DownloadWarningUI, _,
-                           _, _, _));
+                           _, _, _, _, _));
   service()->InteractedWithDownloadWarningUI(
       DownloadItemWarningData::WarningSurface::BUBBLE_MAINPAGE,
       DownloadItemWarningData::WarningAction::PROCEED);
@@ -1161,7 +1171,7 @@ TEST_F(TrustSafetySentimentServiceTest, PasswordProtectionUINonPasswordChange) {
   // The correct survey should be launched.
   EXPECT_CALL(*mock_hats_service(),
               LaunchSurvey(kHatsSurveyTriggerTrustSafetyV2PasswordProtectionUI,
-                           _, _, _, _));
+                           _, _, _, _, _, _));
   service()->PhishedPasswordUpdateNotClicked(
       PasswordProtectionUIType::PAGE_INFO,
       PasswordProtectionUIAction::IGNORE_WARNING);
@@ -1187,7 +1197,7 @@ TEST_F(TrustSafetySentimentServiceTest,
   // The correct survey should be launched.
   EXPECT_CALL(*mock_hats_service(),
               LaunchSurvey(kHatsSurveyTriggerTrustSafetyV2PasswordProtectionUI,
-                           _, _, _, _));
+                           _, _, _, _, _, _));
   service()->ProtectResetOrCheckPasswordClicked(
       PasswordProtectionUIType::PAGE_INFO);
   task_environment()->AdvanceClock(kPasswordChangeInactivity);
@@ -1215,7 +1225,7 @@ TEST_F(TrustSafetySentimentServiceTest,
   // The correct survey should be launched.
   EXPECT_CALL(*mock_hats_service(),
               LaunchSurvey(kHatsSurveyTriggerTrustSafetyV2PasswordProtectionUI,
-                           _, _, _, _));
+                           _, _, _, _, _, _));
   service()->ProtectResetOrCheckPasswordClicked(
       PasswordProtectionUIType::PAGE_INFO);
   service()->PhishedPasswordUpdateFinished();
@@ -1241,7 +1251,7 @@ TEST_F(TrustSafetySentimentServiceTest,
   // The correct survey should be launched.
   EXPECT_CALL(*mock_hats_service(),
               LaunchSurvey(kHatsSurveyTriggerTrustSafetyV2PasswordProtectionUI,
-                           _, _, _, _));
+                           _, _, _, _, _, _));
   service()->ProtectResetOrCheckPasswordClicked(
       PasswordProtectionUIType::PAGE_INFO);
   service()->PhishedPasswordUpdateNotClicked(
@@ -1266,7 +1276,7 @@ TEST_F(TrustSafetySentimentServiceTest,
   // The correct survey should be launched.
   EXPECT_CALL(*mock_hats_service(),
               LaunchSurvey(kHatsSurveyTriggerTrustSafetyV2PasswordProtectionUI,
-                           _, _, _, _));
+                           _, _, _, _, _, _));
   service()->ProtectResetOrCheckPasswordClicked(
       PasswordProtectionUIType::PAGE_INFO);
   service()->PhishedPasswordUpdateNotClicked(

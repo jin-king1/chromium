@@ -4,6 +4,7 @@
 
 #include "components/autofill/core/browser/form_parsing/autofill_parsing_utils.h"
 
+#include "base/feature.h"
 #include "base/feature_list.h"
 #include "base/notreached.h"
 #include "components/autofill/core/common/autofill_features.h"
@@ -20,22 +21,14 @@ const base::Feature* GetFeatureOfRegexFeature(RegexFeature feature) {
       return nullptr;
     case RegexFeature::kAutofillGreekRegexes:
       return &features::kAutofillGreekRegexes;
-    case RegexFeature::kAutofillUseITAddressModel:
-      return &features::kAutofillUseITAddressModel;
-    case RegexFeature::kAutofillUsePLAddressModel:
-      return &features::kAutofillUsePLAddressModel;
-    case RegexFeature::kAutofillUseFRAddressModel:
-      return &features::kAutofillUseFRAddressModel;
-    case RegexFeature::kAutofillUseNLAddressModel:
-      return &features::kAutofillUseNLAddressModel;
-    case RegexFeature::kAutofillSupportPhoneticNameForJP:
-      return &features::kAutofillSupportPhoneticNameForJP;
-    case RegexFeature::kAutofillSupportLastNamePrefix:
-      return &features::kAutofillSupportLastNamePrefix;
-    case RegexFeature::kAutofillEnableLoyaltyCardsFilling:
-      return &features::kAutofillEnableLoyaltyCardsFilling;
-    case RegexFeature::kAutofillImproveCityFieldClassification:
-      return &features::kAutofillImproveCityFieldClassification;
+    case RegexFeature::kAutofillSupportSplitZipCode:
+      return &features::kAutofillSupportSplitZipCode;
+    case RegexFeature::kAutofillDisallowMoreHyphenLikeLabels:
+      return &features::kAutofillDisallowMoreHyphenLikeLabels;
+    case RegexFeature::kAutofillFixStateCountryMisclassification:
+      return &features::kAutofillFixStateCountryMisclassification;
+    case RegexFeature::kAutofillSupportCombinedZipAndCityFR:
+      return &features::kAutofillSupportCombinedZipAndCityFR;
   }
   NOTREACHED();
 }

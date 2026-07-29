@@ -34,7 +34,7 @@
   _tapCounter += 1;
 }
 
-- (void)didTapSnoozeButton {
+- (void)didTapNextButton {
   _tapCounter += 1;
 }
 
@@ -97,14 +97,16 @@ TEST_F(BubbleViewTest, Accessibility) {
 
 // Tests that the close button is not showed when the option is set to hidden.
 TEST_F(BubbleViewTest, CloseButtonIsNotPresent) {
-  BubbleView* bubble = [[BubbleView alloc] initWithText:long_text_
-                                         arrowDirection:arrow_direction_
-                                              alignment:alignment_
-                                       showsCloseButton:NO
-                                                  title:nil
-                                      showsSnoozeButton:NO
-                                          textAlignment:text_alignment_
-                                               delegate:nil];
+  BubbleView* bubble =
+      [[BubbleView alloc] initWithText:long_text_
+                        arrowDirection:arrow_direction_
+                             alignment:alignment_
+                      showsCloseButton:NO
+                                 title:nil
+                       showsNextButton:NO
+                                  page:BubblePageControlPageNone
+                         textAlignment:text_alignment_
+                              delegate:nil];
   UIView* superview = [[UIView alloc] initWithFrame:CGRectZero];
   [superview addSubview:bubble];
   UIButton* close_button = GetCloseButtonFromBubbleView(bubble);
@@ -114,14 +116,16 @@ TEST_F(BubbleViewTest, CloseButtonIsNotPresent) {
 // Tests the close button action and its presence.
 TEST_F(BubbleViewTest, CloseButtonActionAndPresent) {
   BubbleViewDelegateTest* delegate = [[BubbleViewDelegateTest alloc] init];
-  BubbleView* bubble = [[BubbleView alloc] initWithText:long_text_
-                                         arrowDirection:arrow_direction_
-                                              alignment:alignment_
-                                       showsCloseButton:YES
-                                                  title:nil
-                                      showsSnoozeButton:NO
-                                          textAlignment:text_alignment_
-                                               delegate:delegate];
+  BubbleView* bubble =
+      [[BubbleView alloc] initWithText:long_text_
+                        arrowDirection:arrow_direction_
+                             alignment:alignment_
+                      showsCloseButton:YES
+                                 title:nil
+                       showsNextButton:NO
+                                  page:BubblePageControlPageNone
+                         textAlignment:text_alignment_
+                              delegate:delegate];
   UIView* superview = [[UIView alloc] initWithFrame:CGRectZero];
   [superview addSubview:bubble];
   UIButton* close_button = GetCloseButtonFromBubbleView(bubble);
@@ -144,14 +148,16 @@ TEST_F(BubbleViewTest, TitleIsNotPresent) {
 
 // Tests that the title is present and correct.
 TEST_F(BubbleViewTest, TitleIsPresentAndCorrect) {
-  BubbleView* bubble = [[BubbleView alloc] initWithText:long_text_
-                                         arrowDirection:arrow_direction_
-                                              alignment:alignment_
-                                       showsCloseButton:NO
-                                                  title:short_text_
-                                      showsSnoozeButton:NO
-                                          textAlignment:text_alignment_
-                                               delegate:nil];
+  BubbleView* bubble =
+      [[BubbleView alloc] initWithText:long_text_
+                        arrowDirection:arrow_direction_
+                             alignment:alignment_
+                      showsCloseButton:NO
+                                 title:short_text_
+                       showsNextButton:NO
+                                  page:BubblePageControlPageNone
+                         textAlignment:text_alignment_
+                              delegate:nil];
   UIView* superview = [[UIView alloc] initWithFrame:CGRectZero];
   [superview addSubview:bubble];
   UILabel* title_label = GetTitleLabelFromBubbleView(bubble);
@@ -161,14 +167,16 @@ TEST_F(BubbleViewTest, TitleIsPresentAndCorrect) {
 
 // Tests that the title is aligned correctly.
 TEST_F(BubbleViewTest, TitleIsAligned) {
-  BubbleView* bubble = [[BubbleView alloc] initWithText:long_text_
-                                         arrowDirection:arrow_direction_
-                                              alignment:alignment_
-                                       showsCloseButton:NO
-                                                  title:short_text_
-                                      showsSnoozeButton:NO
-                                          textAlignment:NSTextAlignmentNatural
-                                               delegate:nil];
+  BubbleView* bubble =
+      [[BubbleView alloc] initWithText:long_text_
+                        arrowDirection:arrow_direction_
+                             alignment:alignment_
+                      showsCloseButton:NO
+                                 title:short_text_
+                       showsNextButton:NO
+                                  page:BubblePageControlPageNone
+                         textAlignment:NSTextAlignmentNatural
+                              delegate:nil];
   UIView* superview = [[UIView alloc] initWithFrame:CGRectZero];
   [superview addSubview:bubble];
   UILabel* title_label = GetTitleLabelFromBubbleView(bubble);
@@ -178,38 +186,20 @@ TEST_F(BubbleViewTest, TitleIsAligned) {
 
 // Tests that the snooze button is not showed when the option is set to hidden.
 TEST_F(BubbleViewTest, SnoozeButtonIsNotPresent) {
-  BubbleView* bubble = [[BubbleView alloc] initWithText:long_text_
-                                         arrowDirection:arrow_direction_
-                                              alignment:alignment_
-                                       showsCloseButton:NO
-                                                  title:nil
-                                      showsSnoozeButton:NO
-                                          textAlignment:text_alignment_
-                                               delegate:nil];
+  BubbleView* bubble =
+      [[BubbleView alloc] initWithText:long_text_
+                        arrowDirection:arrow_direction_
+                             alignment:alignment_
+                      showsCloseButton:NO
+                                 title:nil
+                       showsNextButton:NO
+                                  page:BubblePageControlPageNone
+                         textAlignment:text_alignment_
+                              delegate:nil];
   UIView* superview = [[UIView alloc] initWithFrame:CGRectZero];
   [superview addSubview:bubble];
   UIButton* snooze_button = GetSnoozeButtonFromBubbleView(bubble);
   ASSERT_FALSE(snooze_button);
-}
-
-// Tests the snooze button action and its presence.
-TEST_F(BubbleViewTest, SnoozeButtonActionAndPresent) {
-  BubbleViewDelegateTest* delegate = [[BubbleViewDelegateTest alloc] init];
-  BubbleView* bubble = [[BubbleView alloc] initWithText:long_text_
-                                         arrowDirection:arrow_direction_
-                                              alignment:alignment_
-                                       showsCloseButton:NO
-                                                  title:nil
-                                      showsSnoozeButton:YES
-                                          textAlignment:text_alignment_
-                                               delegate:delegate];
-  UIView* superview = [[UIView alloc] initWithFrame:CGRectZero];
-  [superview addSubview:bubble];
-  UIButton* snooze_button = GetSnoozeButtonFromBubbleView(bubble);
-  ASSERT_TRUE(snooze_button);
-  // Tests snooze button action.
-  [snooze_button sendActionsForControlEvents:UIControlEventTouchUpInside];
-  EXPECT_EQ(delegate.tapCounter, 1);
 }
 
 // Tests the arrow view is aligned properly with BubbleAlignmentTopOrLeading.
@@ -261,4 +251,45 @@ TEST_F(BubbleViewTest, ArrowViewTrailingAligned) {
   // trailing edge of the bubble.
   EXPECT_EQ(CGRectGetMidX(arrow_view.frame),
             bubble.frame.size.width - alignment_offset_);
+}
+
+// Tests the next button action and its presence.
+TEST_F(BubbleViewTest, NextButtonActionAndPresent) {
+  BubbleViewDelegateTest* delegate = [[BubbleViewDelegateTest alloc] init];
+  BubbleView* bubble =
+      [[BubbleView alloc] initWithText:long_text_
+                        arrowDirection:arrow_direction_
+                             alignment:alignment_
+                      showsCloseButton:NO
+                                 title:nil
+                       showsNextButton:YES
+                                  page:BubblePageControlPageNone
+                         textAlignment:text_alignment_
+                              delegate:delegate];
+  UIView* superview = [[UIView alloc] initWithFrame:CGRectZero];
+  [superview addSubview:bubble];
+  UIButton* next_button = GetNextButtonFromBubbleView(bubble);
+  ASSERT_TRUE(next_button);
+  // Tests snooze button action.
+  [next_button sendActionsForControlEvents:UIControlEventTouchUpInside];
+  EXPECT_EQ(delegate.tapCounter, 1);
+}
+
+// Tests the optional  and its presence.
+TEST_F(BubbleViewTest, HighlightedPagePresent) {
+  BubbleViewDelegateTest* delegate = [[BubbleViewDelegateTest alloc] init];
+  BubbleView* bubble =
+      [[BubbleView alloc] initWithText:long_text_
+                        arrowDirection:arrow_direction_
+                             alignment:alignment_
+                      showsCloseButton:NO
+                                 title:nil
+                       showsNextButton:YES
+                                  page:BubblePageControlPageThird
+                         textAlignment:text_alignment_
+                              delegate:delegate];
+  UIView* superview = [[UIView alloc] initWithFrame:CGRectZero];
+  [superview addSubview:bubble];
+  UIStackView* highlighted_page = GetPageControlPageBubbleView(bubble);
+  ASSERT_TRUE(highlighted_page);
 }

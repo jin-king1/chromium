@@ -4,9 +4,10 @@
 
 #include "chrome/browser/ui/ash/wallpaper/wallpaper_controller_client_impl.h"
 
+#include <algorithm>
+
 #include "ash/webui/personalization_app/mojom/personalization_app.mojom.h"
 #include "base/check_deref.h"
-#include "base/containers/contains.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/task_environment.h"
@@ -14,7 +15,6 @@
 #include "chrome/browser/ash/settings/scoped_cros_settings_test_helper.h"
 #include "chrome/browser/ash/wallpaper_handlers/test_wallpaper_fetcher_delegate.h"
 #include "chrome/browser/ui/ash/wallpaper/test_wallpaper_controller.h"
-#include "chrome/test/base/scoped_testing_local_state.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chromeos/ash/components/cryptohome/system_salt_getter.h"
 #include "components/user_manager/fake_user_manager.h"
@@ -28,10 +28,10 @@ namespace {
 
 class WallpaperControllerClientImplTest : public testing::Test {
  public:
-  WallpaperControllerClientImplTest()
-      : local_state_(TestingBrowserProcess::GetGlobal()) {
+  WallpaperControllerClientImplTest() {
     user_manager_ = std::make_unique<user_manager::ScopedUserManager>(
-        std::make_unique<user_manager::FakeUserManager>(local_state_.Get()));
+        std::make_unique<user_manager::FakeUserManager>(
+            TestingBrowserProcess::GetGlobal()->local_state()));
   }
 
   void SetUp() override {
@@ -63,7 +63,6 @@ class WallpaperControllerClientImplTest : public testing::Test {
   }
 
  private:
-  ScopedTestingLocalState local_state_;
   ash::ScopedCrosSettingsTestHelper cros_settings_test_helper_;
   base::test::TaskEnvironment task_environment_;
   std::unique_ptr<user_manager::ScopedUserManager> user_manager_;
@@ -144,7 +143,7 @@ TEST_F(WallpaperControllerClientImplTest, DailyGooglePhotosDoNotRepeat) {
   auto handle_photo = [&last_ten](GooglePhotosPhotoPtr photo, bool success) {
     ASSERT_TRUE(success);
 
-    EXPECT_FALSE(base::Contains(last_ten, photo->id));
+    EXPECT_FALSE(std::ranges::contains(last_ten, photo->id));
 
     last_ten.push_back(photo->id);
 
@@ -154,6 +153,38 @@ TEST_F(WallpaperControllerClientImplTest, DailyGooglePhotosDoNotRepeat) {
   };
 
   for (int i = 0; i < 20; i++) {
+    OnGooglePhotosDailyAlbumFetched(account_id,
+                                    base::BindLambdaForTesting(handle_photo),
+                                    response->Clone());
+  }
+}
+
+TEST_F(WallpaperControllerClientImplTest, DailyGooglePhotosDuplicateIds) {
+  using ash::personalization_app::mojom::GooglePhotosPhotoPtr;
+  AccountId account_id =
+      AccountId::FromUserEmailGaiaId("idontexist@test.com", GaiaId("444444"));
+
+  auto response =
+      ash::personalization_app::mojom::FetchGooglePhotosPhotosResponse::New(
+          std::vector<GooglePhotosPhotoPtr>(), std::nullopt);
+
+  // Create photos with duplicate IDs.
+  for (int i = 0; i < 3; i++) {
+    response->photos->push_back(
+        ash::personalization_app::mojom::GooglePhotosPhoto::New(
+            "same_id", /*dedup_key=*/std::nullopt,
+            /*name=*/"", /*date=*/u"",
+            /*url=*/GURL(""), /*location=*/std::nullopt));
+  }
+
+  auto handle_photo = [](GooglePhotosPhotoPtr photo, bool success) {
+    ASSERT_TRUE(success);
+    EXPECT_EQ(photo->id, "same_id");
+  };
+
+  // Trigger multiple refreshes to cycle the ID cache, ensuring an album
+  // with duplicate IDs safely returns a valid photo each time.
+  for (int i = 0; i < 5; i++) {
     OnGooglePhotosDailyAlbumFetched(account_id,
                                     base::BindLambdaForTesting(handle_photo),
                                     response->Clone());

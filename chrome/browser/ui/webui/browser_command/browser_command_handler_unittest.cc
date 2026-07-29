@@ -21,9 +21,13 @@
 #include "components/user_education/common/help_bubble/help_bubble_factory_registry.h"
 #include "components/user_education/common/tutorial/tutorial_identifier.h"
 #include "components/user_education/common/tutorial/tutorial_registry.h"
+#include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_task_environment.h"
+#include "content/public/test/test_web_contents_factory.h"
+#include "content/public/test/web_contents_tester.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/interaction/element_identifier.h"
 #include "ui/base/window_open_disposition.h"
 #include "ui/base/window_open_disposition_utils.h"
 #include "ui/webui/resources/js/browser_command/browser_command.mojom.h"
@@ -51,18 +55,20 @@ std::vector<Command> supported_commands = {
     Command::kOpenAISettings,
     Command::kOpenSafetyCheckFromWhatsNew,
     Command::kOpenPaymentsSettings,
-    Command::KOpenHistorySearchSettings,
-    Command::kShowCustomizeChromeToolbar,
+    Command::kOpenGlic,
+    Command::kOpenGlicSettings,
+    Command::kOpenSplitView,
+    Command::kEnableVerticalTabs,
 };
-
-const ui::ElementContext kTestContext1(1);
 
 class TestCommandHandler : public BrowserCommandHandler {
  public:
-  explicit TestCommandHandler(Profile* profile)
+  explicit TestCommandHandler(Profile* profile,
+                              content::WebContents* web_contents = nullptr)
       : BrowserCommandHandler(mojo::PendingReceiver<CommandHandler>(),
                               profile,
-                              supported_commands) {}
+                              supported_commands,
+                              web_contents) {}
   ~TestCommandHandler() override = default;
 
   void NavigateToEnhancedProtectionSetting() override {
@@ -90,8 +96,8 @@ class TestCommandHandler : public BrowserCommandHandler {
     // cannot be executed in a unittest.
   }
 
-  void ShowCustomizeChromeToolbar() override {
-    // The functionality of opening the AI settings is removed, as it
+  void OpenGlic() override {
+    // The functionality of opening Glic is removed, as it
     // cannot be executed in a unittest.
   }
 
@@ -126,10 +132,6 @@ class TestCommandHandler : public BrowserCommandHandler {
     saved_tab_groups_feature_supported_ = is_supported;
   }
 
-  void SetActiveTabSupportsCustomizeChrome(bool is_supported) {
-    customize_chrome_supported_ = is_supported;
-  }
-
  protected:
   bool BrowserSupportsTabGroups() override {
     return tab_groups_feature_supported_;
@@ -143,10 +145,6 @@ class TestCommandHandler : public BrowserCommandHandler {
     return saved_tab_groups_feature_supported_;
   }
 
-  bool ActiveTabSupportsCustomizeChrome() override {
-    return customize_chrome_supported_;
-  }
-
  private:
   bool tutorial_service_exists_ = false;
   std::unique_ptr<CommandUpdater> command_updater_;
@@ -154,7 +152,6 @@ class TestCommandHandler : public BrowserCommandHandler {
   bool tab_groups_feature_supported_ = true;
   bool default_search_provider_is_google_ = true;
   bool saved_tab_groups_feature_supported_ = true;
-  bool customize_chrome_supported_ = true;
 };
 
 class TestTutorialService : public user_education::TutorialService {
@@ -210,7 +207,9 @@ class MockTutorialService : public TestTutorialService {
 
 class MockCommandHandler : public TestCommandHandler {
  public:
-  explicit MockCommandHandler(Profile* profile) : TestCommandHandler(profile) {}
+  explicit MockCommandHandler(Profile* profile,
+                              content::WebContents* web_contents = nullptr)
+      : TestCommandHandler(profile, web_contents) {}
   ~MockCommandHandler() override = default;
 
   MOCK_METHOD(void, StartTutorial, (StartTutorialInPage::Params params));
@@ -226,6 +225,14 @@ class MockCommandHandler : public TestCommandHandler {
   MOCK_METHOD(void, OpenAISettings, ());
 
   MOCK_METHOD(void, ShowCustomizeChromeToolbar, ());
+
+  MOCK_METHOD(void, OpenGlic, ());
+
+  MOCK_METHOD(void, OpenGlicSettings, ());
+
+  MOCK_METHOD(void, OpenSplitView, ());
+
+  MOCK_METHOD(void, EnableVerticalTabs, ());
 };
 
 class MockCommandUpdater : public CommandUpdaterImpl {
@@ -651,56 +658,6 @@ TEST_F(BrowserCommandHandlerTest, StartPasswordManagerTutorialCommand) {
   command_handler_->OnTutorialStarted(kPasswordManagerTutorialId, &service);
 }
 
-TEST_F(BrowserCommandHandlerTest, StartSavedTabGroupTutorialCommand) {
-  // Skip test if Tab Groups Save V2 feature flag is enabled
-  if (tab_groups::IsTabGroupsSaveV2Enabled()) {
-    EXPECT_FALSE(CanExecuteCommand(Command::kStartSavedTabGroupTutorial));
-    GTEST_SKIP();
-  }
-
-  // Command cannot be executed if the tutorial service doesn't exist.
-  command_handler_->SetTutorialServiceExists(false);
-  EXPECT_FALSE(CanExecuteCommand(Command::kStartSavedTabGroupTutorial));
-
-  // Create mock service so the command can be executed.
-  auto bubble_factory_registry =
-      std::make_unique<user_education::HelpBubbleFactoryRegistry>();
-  user_education::TutorialRegistry registry;
-  MockTutorialService service(&registry, bubble_factory_registry.get());
-
-  // Allow command to be executed.
-  command_handler_->SetTutorialServiceExists(true);
-
-  // If the browser does not support saved tab groups, dont run the command.
-  command_handler_->SetBrowserSupportsSavedTabGroups(false);
-  EXPECT_FALSE(CanExecuteCommand(Command::kStartSavedTabGroupTutorial));
-
-  // If the browser supports the new password manager and has a tutorial
-  // service it should allow running commands.
-  command_handler_->SetBrowserSupportsSavedTabGroups(true);
-  EXPECT_TRUE(CanExecuteCommand(Command::kStartSavedTabGroupTutorial));
-
-  ClickInfoPtr info = ClickInfo::New();
-  EXPECT_CALL(*command_handler_, StartTutorial)
-      .WillOnce([&](StartTutorialInPage::Params params) {
-        EXPECT_EQ(params.tutorial_id, kSavedTabGroupTutorialId);
-      });
-  EXPECT_TRUE(
-      ExecuteCommand(Command::kStartSavedTabGroupTutorial, std::move(info)));
-
-  EXPECT_CALL(service, IsRunningTutorial).WillOnce(testing::Return(true));
-  EXPECT_CALL(service, LogStartedFromWhatsNewPage)
-      .WillOnce(
-          [&](user_education::TutorialIdentifier tutorial_id, bool is_running) {
-            EXPECT_EQ(tutorial_id, kSavedTabGroupTutorialId);
-            EXPECT_TRUE(is_running);
-            return;
-          });
-
-  // Manually call tutorial started callback.
-  command_handler_->OnTutorialStarted(kSavedTabGroupTutorialId, &service);
-}
-
 TEST_F(BrowserCommandHandlerTest, OpenAISettingsCommand) {
   // By default, opening the password manager is allowed.
   EXPECT_TRUE(CanExecuteCommand(Command::kOpenAISettings));
@@ -727,35 +684,50 @@ TEST_F(BrowserCommandHandlerTest, OpenPaymentsSettingsCommand) {
   EXPECT_TRUE(ExecuteCommand(Command::kOpenPaymentsSettings, std::move(info)));
 }
 
-TEST_F(BrowserCommandHandlerTest, OpenHistorySearchSettingsCommand) {
-  // By default, opening the History Search subpage is allowed.
-  EXPECT_TRUE(CanExecuteCommand(Command::KOpenHistorySearchSettings));
+TEST_F(BrowserCommandHandlerTest, OpenGlicCommand) {
+  // By default, opening Glic is allowed.
+  EXPECT_TRUE(CanExecuteCommand(Command::kOpenGlic));
   ClickInfoPtr info = ClickInfo::New();
   info->middle_button = true;
   info->meta_key = true;
-  // The KOpenHistorySearchSettings command opens a new settings window with the
-  // History Search settings and the correct disposition.
-  EXPECT_CALL(
-      *command_handler_,
-      NavigateToURL(GURL(chrome::GetSettingsUrl(chrome::kHistorySearchSubpage)),
-                    DispositionFromClick(*info)));
-  EXPECT_TRUE(
-      ExecuteCommand(Command::KOpenHistorySearchSettings, std::move(info)));
+  // The OpenGlic command opens glic.
+  EXPECT_CALL(*command_handler_, OpenGlic());
+  EXPECT_TRUE(ExecuteCommand(Command::kOpenGlic, std::move(info)));
 }
 
-TEST_F(BrowserCommandHandlerTest, ShowCustomizeChromeToolbarCommand) {
-  // If the active tab does not support customize chrome, dont run the command.
-  command_handler_->SetActiveTabSupportsCustomizeChrome(false);
-  EXPECT_FALSE(CanExecuteCommand(Command::kShowCustomizeChromeToolbar));
-
-  // If the active tab supports customize chrome it should
-  // allow running commands.
-  command_handler_->SetActiveTabSupportsCustomizeChrome(true);
-  EXPECT_TRUE(CanExecuteCommand(Command::kShowCustomizeChromeToolbar));
-
-  // Show customize chrome toolbar command calls show customize chrome toolbar.
+TEST_F(BrowserCommandHandlerTest, OpenGlicSettingsCommand) {
+  // The OpenGlicSettings command opens a new settings window
+  // with the Glic settings sub page, and the correct disposition.
+  EXPECT_TRUE(CanExecuteCommand(Command::kOpenGlicSettings));
   ClickInfoPtr info = ClickInfo::New();
-  EXPECT_CALL(*command_handler_, ShowCustomizeChromeToolbar());
-  EXPECT_TRUE(
-      ExecuteCommand(Command::kShowCustomizeChromeToolbar, std::move(info)));
+  info->middle_button = true;
+  info->meta_key = true;
+  EXPECT_CALL(*command_handler_, OpenGlicSettings());
+  EXPECT_TRUE(ExecuteCommand(Command::kOpenGlicSettings, std::move(info)));
+}
+
+TEST_F(BrowserCommandHandlerTest, OpenSplitViewCommand) {
+  EXPECT_TRUE(CanExecuteCommand(Command::kOpenSplitView));
+  ClickInfoPtr info = ClickInfo::New();
+  EXPECT_CALL(*command_handler_, OpenSplitView());
+  EXPECT_TRUE(ExecuteCommand(Command::kOpenSplitView, std::move(info)));
+}
+
+TEST_F(BrowserCommandHandlerTest, EnableVerticalTabsCommand) {
+  EXPECT_TRUE(CanExecuteCommand(Command::kEnableVerticalTabs));
+  ClickInfoPtr info = ClickInfo::New();
+  EXPECT_CALL(*command_handler_, EnableVerticalTabs());
+  EXPECT_TRUE(ExecuteCommand(Command::kEnableVerticalTabs, std::move(info)));
+}
+
+TEST_F(BrowserCommandHandlerTest, EnableVerticalTabsActualImplementation) {
+  base::HistogramTester histogram_tester;
+
+  auto handler = std::make_unique<TestCommandHandler>(&profile_);
+  ClickInfoPtr info = ClickInfo::New();
+  handler->ExecuteCommand(Command::kEnableVerticalTabs, std::move(info),
+                          base::DoNothing());
+
+  histogram_tester.ExpectBucketCount("TabStrip.Vertical.EnteredMode",
+                                     5 /* kWhatsNew */, 1);
 }

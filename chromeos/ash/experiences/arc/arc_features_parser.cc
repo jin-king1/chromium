@@ -31,7 +31,8 @@ base::RepeatingCallback<std::optional<ArcFeatures>()>*
 std::optional<ArcFeatures> ParseFeaturesJson(std::string_view input_json) {
   ArcFeatures arc_features;
 
-  auto parsed_json = base::JSONReader::ReadAndReturnValueWithError(input_json);
+  auto parsed_json = base::JSONReader::ReadAndReturnValueWithError(
+      input_json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   if (!parsed_json.has_value()) {
     LOG(ERROR) << "Error parsing feature JSON: " << parsed_json.error().message;
     return std::nullopt;
@@ -40,10 +41,10 @@ std::optional<ArcFeatures> ParseFeaturesJson(std::string_view input_json) {
     return std::nullopt;
   }
 
-  const base::Value::Dict& dict = parsed_json->GetDict();
+  const base::DictValue& dict = parsed_json->GetDict();
 
   // Parse each item under features.
-  const base::Value::List* feature_list = dict.FindList("features");
+  const base::ListValue* feature_list = dict.FindList("features");
   if (!feature_list) {
     LOG(ERROR) << "No feature list in JSON.";
     return std::nullopt;
@@ -64,7 +65,7 @@ std::optional<ArcFeatures> ParseFeaturesJson(std::string_view input_json) {
   }
 
   // Parse each item under unavailable_features.
-  const base::Value::List* unavailable_feature_list =
+  const base::ListValue* unavailable_feature_list =
       dict.FindList("unavailable_features");
   if (!unavailable_feature_list) {
     LOG(ERROR) << "No unavailable feature list in JSON.";
@@ -84,7 +85,7 @@ std::optional<ArcFeatures> ParseFeaturesJson(std::string_view input_json) {
   }
 
   // Parse each item under build_props.
-  const base::Value::Dict* properties = dict.FindDict("properties");
+  const base::DictValue* properties = dict.FindDict("properties");
   if (!properties) {
     LOG(ERROR) << "No properties in JSON.";
     return std::nullopt;

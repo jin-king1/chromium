@@ -22,11 +22,12 @@ rust_static_library("processor") {
     "//third_party/rust/base64/v0_22:lib",
     "//third_party/rust/bytes/v1:lib",
     "//third_party/rust/lazy_static/v1:lib",
-    "//third_party/rust/prost/v0_13:lib",
+    "//third_party/rust/prost/v0_14:lib",
     "//third_party/rust/static_assertions/v1:lib",
   ]
   no_chromium_prelude = true
   testonly = true
+  no_clippy = true  # TODO(https://crbug.com/472355480)
 
   # Switches to using test keys for the recovery key store.
   features = [ "chromium_integration_test" ]

@@ -14,18 +14,15 @@ static_library("platform_keys") {
     "extension_platform_keys_service.h",
     "extension_platform_keys_service_factory.cc",
     "extension_platform_keys_service_factory.h",
-    "platform_keys.cc",
-    "platform_keys.h",
   ]
 
   public_deps = [ "//chrome/browser:browser_public_dependencies" ]
 
   deps = [
     "//base",
-    "//chrome/browser/ash/profiles",
     "//chrome/browser/profiles:profile",
-    "//chromeos/crosapi/cpp",
-    "//chromeos/crosapi/mojom",
+    "//chromeos/ash/components/browser_context_helper",
+    "//chromeos/ash/components/platform_keys",
     "//components/keyed_service/core",
     "//components/policy:generated",
     "//components/policy/core/common",

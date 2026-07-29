@@ -2,26 +2,21 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/393091624): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
-#include "fuzzer/fuzzer.h"
-
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "fuzzer/driver.h"
+#include "fuzzer/fuzzer.h"
 #include "ipcz/ipcz.h"
 #include "third_party/abseil-cpp/absl/base/macros.h"
 #include "third_party/abseil-cpp/absl/types/span.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 #include "util/ref_counted.h"
+#include "util/unsafe_buffers.h"
 
 namespace ipcz::fuzzer {
 
@@ -60,7 +55,7 @@ class Transmission {
  private:
   void Reset() {
     for (auto handle : handles_) {
-      kDriver.Close(handle, IPCZ_NO_FLAGS, nullptr);
+      GetFuzzerDriver().Close(handle, IPCZ_NO_FLAGS, nullptr);
     }
     data_.clear();
     handles_.clear();
@@ -146,7 +141,7 @@ class Fuzzer::TransportBackend : public RefCounted<Fuzzer::TransportBackend> {
   friend class RefCounted<TransportBackend>;
 
   struct Error {};
-  using Activity = absl::variant<Transmission, Error>;
+  using Activity = std::variant<Transmission, Error>;
 
   struct Endpoint {
     bool is_closed = false;
@@ -167,11 +162,11 @@ class Fuzzer::TransportBackend : public RefCounted<Fuzzer::TransportBackend> {
     std::vector<Activity> activity;
     activity.swap(e.activity);
     for (auto& entry : activity) {
-      if (absl::holds_alternative<Error>(entry)) {
+      if (std::holds_alternative<Error>(entry)) {
         e.handler(e.listener, nullptr, 0, nullptr, 0,
                   IPCZ_TRANSPORT_ACTIVITY_ERROR, nullptr);
       } else {
-        absl::get<Transmission>(entry).Dispatch(fuzzer_, e.listener, e.handler);
+        std::get<Transmission>(entry).Dispatch(fuzzer_, e.listener, e.handler);
       }
     }
     return true;
@@ -466,8 +461,8 @@ void Fuzzer::InjectFuzzDataIntoMemory() {
     const auto bytes = memory->bytes();
     const size_t offset = (4ul * config_.target_offset) % bytes.size();
     const size_t size = std::min(bytes.size() - offset, fuzz_data_.size());
-    std::copy(fuzz_data_.begin(), fuzz_data_.begin() + size,
-              bytes.begin() + offset);
+    std::copy(fuzz_data_.begin(), IPCZ_UNSAFE_TODO(fuzz_data_.begin() + size),
+              IPCZ_UNSAFE_TODO(bytes.begin() + offset));
   }
 }
 

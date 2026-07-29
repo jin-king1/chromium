@@ -41,16 +41,12 @@ void LogAcceptLanguageStatus(AcceptLanguageNegotiationRestart status) {
 }  // namespace
 
 ReduceAcceptLanguageThrottle::ReduceAcceptLanguageThrottle(
-    ReduceAcceptLanguageControllerDelegate& accept_language_delegate,
+    ReduceAcceptLanguageUtils reduce_accept_language_utils,
     OriginTrialsControllerDelegate* origin_trials_delegate,
     FrameTreeNodeId frame_tree_node_id)
-    : accept_language_delegate_(accept_language_delegate),
+    : reduce_accept_language_utils_(std::move(reduce_accept_language_utils)),
       origin_trials_delegate_(origin_trials_delegate),
       frame_tree_node_id_(frame_tree_node_id) {
-  DCHECK(
-      base::FeatureList::IsEnabled(network::features::kReduceAcceptLanguage) ||
-      base::FeatureList::IsEnabled(
-          network::features::kReduceAcceptLanguageHTTP));
   LogAcceptLanguageStatus(AcceptLanguageNegotiationRestart::kNavigationStarted);
 }
 
@@ -64,12 +60,9 @@ void ReduceAcceptLanguageThrottle::WillStartRequest(
 }
 
 void ReduceAcceptLanguageThrottle::BeforeWillRedirectRequest(
-    net::RedirectInfo* redirect_info,
+    const net::RedirectInfo& redirect_info,
     const network::mojom::URLResponseHead& response_head,
-    RestartWithURLReset* restart_with_url_reset,
-    std::vector<std::string>* to_be_removed_request_headers,
-    net::HttpRequestHeaders* modified_request_headers,
-    net::HttpRequestHeaders* modified_cors_exempt_request_headers) {
+    RestartWithURLReset* restart_with_url_reset) {
   // For redirect case, checking if a redirect response should result in a
   // restart of the last requested URL with a better negotiation language,
   // rather than following the redirect.
@@ -85,7 +78,7 @@ void ReduceAcceptLanguageThrottle::BeforeWillRedirectRequest(
   MaybeRestartWithLanguageNegotiation(response_head, restart_with_url_reset);
   // Update the url with the redirect new url to make sure last_request_url_
   // with be the response_url.
-  last_request_url_ = redirect_info->new_url;
+  last_request_url_ = redirect_info.new_url;
 }
 
 void ReduceAcceptLanguageThrottle::BeforeWillProcessResponse(
@@ -129,7 +122,6 @@ void ReduceAcceptLanguageThrottle::MaybeRestartWithLanguageNegotiation(
     return;
   }
 
-  ReduceAcceptLanguageUtils reduce_language_utils(*accept_language_delegate_);
   FrameTreeNode* frame_tree_node =
       FrameTreeNode::GloballyFindByID(frame_tree_node_id_);
   // Skip if origin opted-in ReduceAcceptLanguage deprecation origin trial.
@@ -143,7 +135,7 @@ void ReduceAcceptLanguageThrottle::MaybeRestartWithLanguageNegotiation(
     return;
 
   bool need_restart =
-      reduce_language_utils.ReadAndPersistAcceptLanguageForNavigation(
+      reduce_accept_language_utils_.ReadAndPersistAcceptLanguageForNavigation(
           last_request_origin, initial_request_headers_,
           response_head.parsed_headers);
 

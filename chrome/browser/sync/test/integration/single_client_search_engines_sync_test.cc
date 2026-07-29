@@ -7,6 +7,7 @@
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/search_engines/template_url_service_test_util.h"
 #include "chrome/browser/sync/test/integration/committed_all_nudged_changes_checker.h"
+#include "chrome/browser/sync/test/integration/preferences_helper.h"
 #include "chrome/browser/sync/test/integration/search_engines_helper.h"
 #include "chrome/browser/sync/test/integration/sync_service_impl_harness.h"
 #include "chrome/browser/sync/test/integration/sync_test.h"
@@ -16,6 +17,8 @@
 #include "components/search_engines/template_url.h"
 #include "components/search_engines/template_url_data.h"
 #include "components/search_engines/template_url_service.h"
+#include "components/signin/public/base/signin_pref_names.h"
+#include "components/signin/public/base/signin_switches.h"
 #include "components/sync/base/features.h"
 #include "components/sync/engine/loopback_server/loopback_server_entity.h"
 #include "components/sync/engine/loopback_server/persistent_unique_client_entity.h"
@@ -24,15 +27,47 @@
 #include "components/sync/service/sync_service_impl.h"
 #include "content/public/test/browser_test.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#if BUILDFLAG(IS_ANDROID)
+#include "ui/base/device_form_factor.h"
+#endif
 
 using search_engines_helper::HasSearchEngine;
 using testing::IsNull;
 using testing::NotNull;
 
-class SingleClientSearchEnginesSyncTest : public SyncTest {
+namespace {
+
+std::unique_ptr<syncer::LoopbackServerEntity> CreateFromTemplateURL(
+    std::unique_ptr<TemplateURL> turl) {
+  DCHECK(turl);
+  syncer::SyncData sync_data =
+      TemplateURLService::CreateSyncDataFromTemplateURLData(turl->data());
+  return syncer::PersistentUniqueClientEntity::CreateFromSpecificsForTesting(
+      /*non_unique_name=*/sync_data.GetTitle(),
+      /*client_tag=*/turl->sync_guid(), sync_data.GetSpecifics(),
+      /*creation_time=*/0,
+      /*last_modified_time=*/0);
+}
+
+}  // namespace
+
+class SingleClientSearchEnginesSyncTestBase : public SyncTest {
  public:
-  SingleClientSearchEnginesSyncTest() : SyncTest(SINGLE_CLIENT) {}
-  ~SingleClientSearchEnginesSyncTest() override = default;
+  explicit SingleClientSearchEnginesSyncTestBase(TestType test_type)
+      : SyncTest(test_type) {}
+  ~SingleClientSearchEnginesSyncTestBase() override = default;
+
+  void SetUpOnMainThread() override {
+    SyncTest::SetUpOnMainThread();
+#if BUILDFLAG(IS_ANDROID)
+    const ui::DeviceFormFactor form_factor = ui::GetDeviceFormFactor();
+    if (form_factor != ui::DEVICE_FORM_FACTOR_TABLET &&
+        form_factor != ui::DEVICE_FORM_FACTOR_DESKTOP) {
+      GTEST_SKIP() << "Search engines sync is only supported on Large Form "
+                      "Factor (LFF) Android devices.";
+    }
+#endif
+  }
 
   bool SetupClients() override {
     if (!SyncTest::SetupClients()) {
@@ -41,43 +76,47 @@ class SingleClientSearchEnginesSyncTest : public SyncTest {
 
     // Wait for models to load.
     search_test_utils::WaitForTemplateURLServiceToLoad(
-        TemplateURLServiceFactory::GetForProfile(verifier()));
-    search_test_utils::WaitForTemplateURLServiceToLoad(
         TemplateURLServiceFactory::GetForProfile(GetProfile(0)));
 
     return true;
   }
-
-  bool UseVerifier() override {
-    // TODO(crbug.com/40724973): rewrite test to not use verifier.
-    return true;
-  }
-
-  std::unique_ptr<syncer::LoopbackServerEntity> CreateFromTemplateURL(
-      std::unique_ptr<TemplateURL> turl) {
-    DCHECK(turl);
-    syncer::SyncData sync_data =
-        TemplateURLService::CreateSyncDataFromTemplateURLData(turl->data());
-    return syncer::PersistentUniqueClientEntity::CreateFromSpecificsForTesting(
-        /*non_unique_name=*/sync_data.GetTitle(),
-        /*client_tag=*/turl->sync_guid(), sync_data.GetSpecifics(),
-        /*creation_time=*/0,
-        /*last_modified_time=*/0);
-  }
 };
 
-IN_PROC_BROWSER_TEST_F(SingleClientSearchEnginesSyncTest, Sanity) {
-  ASSERT_TRUE(SetupSync()) << "SetupSync() failed.";
-  ASSERT_TRUE(search_engines_helper::ServiceMatchesVerifier(0));
+class SingleClientSearchEnginesSyncTest
+    : public SingleClientSearchEnginesSyncTestBase,
+      public testing::WithParamInterface<SyncTest::SetupSyncMode> {
+ public:
+  SingleClientSearchEnginesSyncTest()
+      : SingleClientSearchEnginesSyncTestBase(SINGLE_CLIENT) {
+    std::vector<base::test::FeatureRef> enabled_features;
+#if BUILDFLAG(IS_ANDROID)
+    enabled_features.push_back(syncer::kSyncSearchEnginesAndroidLFF);
+#endif
+    if (GetSetupSyncMode() == SyncTest::SetupSyncMode::kSyncTransportOnly) {
+      enabled_features.push_back(syncer::kReplaceSyncPromosWithSignInPromos);
+    }
+    scoped_feature_list_.InitWithFeatures(enabled_features, {});
+  }
+  ~SingleClientSearchEnginesSyncTest() override = default;
+
+  SetupSyncMode GetSetupSyncMode() const override { return GetParam(); }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_P(SingleClientSearchEnginesSyncTest, Sanity) {
+  ASSERT_TRUE(SetupSync());
   search_engines_helper::AddSearchEngine(/*profile_index=*/0,
                                          /*keyword=*/"test0");
   ASSERT_TRUE(UpdatedProgressMarkerChecker(GetSyncService(0)).Wait());
-  ASSERT_TRUE(search_engines_helper::ServiceMatchesVerifier(0));
+  EXPECT_TRUE(search_engines_helper::HasSearchEngineInFakeServer(
+      "test0", GetFakeServer()));
 }
 
-IN_PROC_BROWSER_TEST_F(SingleClientSearchEnginesSyncTest,
+IN_PROC_BROWSER_TEST_P(SingleClientSearchEnginesSyncTest,
                        DuplicateKeywordEnginesAllFromSync) {
-  ASSERT_TRUE(SetupClients()) << "SetupClients() failed.";
+  ASSERT_TRUE(SetupClients());
   TemplateURLService* service =
       search_engines_helper::GetServiceForBrowserContext(0);
   ASSERT_FALSE(HasSearchEngine(/*profile_index=*/0, "key1"));
@@ -97,7 +136,7 @@ IN_PROC_BROWSER_TEST_F(SingleClientSearchEnginesSyncTest,
       /*keyword=*/u"key1", /*url=*/"http://key1.com",
       /*guid=*/"guid3", base::Time::FromTimeT(5))));
 
-  ASSERT_TRUE(SetupSync()) << "SetupSync() failed.";
+  ASSERT_TRUE(SetupSync());
   ASSERT_TRUE(UpdatedProgressMarkerChecker(GetSyncService(0)).Wait());
 
   EXPECT_TRUE(HasSearchEngine(/*profile_index=*/0, "key1"));
@@ -116,19 +155,8 @@ IN_PROC_BROWSER_TEST_F(SingleClientSearchEnginesSyncTest,
   EXPECT_EQ(guid1, service->GetTemplateURLForKeyword(u"key1"));
 }
 
-class SingleClientSearchEnginesWithDisableSyncAutogeneratedSearchEnginesTest
-    : public SingleClientSearchEnginesSyncTest {
- public:
-  SingleClientSearchEnginesWithDisableSyncAutogeneratedSearchEnginesTest()
-      : feature_list_(switches::kDisableSyncAutogeneratedSearchEngines) {}
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-};
-
-IN_PROC_BROWSER_TEST_F(
-    SingleClientSearchEnginesWithDisableSyncAutogeneratedSearchEnginesTest,
-    ShouldNotUploadUntouchedAutogeneratedEngines) {
+IN_PROC_BROWSER_TEST_P(SingleClientSearchEnginesSyncTest,
+                       ShouldNotUploadUntouchedAutogeneratedEngines) {
   ASSERT_TRUE(SetupSync());
 
   TemplateURLService* service =
@@ -207,9 +235,8 @@ IN_PROC_BROWSER_TEST_F(
       "untouched_autogenerated", GetFakeServer()));
 }
 
-IN_PROC_BROWSER_TEST_F(
-    SingleClientSearchEnginesWithDisableSyncAutogeneratedSearchEnginesTest,
-    ShouldNotSyncUntouchedAutogeneratedEnginesFromRemote) {
+IN_PROC_BROWSER_TEST_P(SingleClientSearchEnginesSyncTest,
+                       ShouldNotSyncUntouchedAutogeneratedEnginesFromRemote) {
   ASSERT_TRUE(SetupClients());
 
   // `safe_for_autoreplace` being true indicates that the keyword is
@@ -280,12 +307,33 @@ IN_PROC_BROWSER_TEST_F(
   EXPECT_FALSE(HasSearchEngine(/*profile_index=*/0, "untouched_autogenerated"));
 }
 
+INSTANTIATE_TEST_SUITE_P(,
+                         SingleClientSearchEnginesSyncTest,
+                         GetSyncTestModes(),
+                         testing::PrintToStringParamName());
+
 class
     SingleClientSearchEnginesSyncTestWithSeparateLocalAndAccountSearchEnginesEnabled
-    : public SingleClientSearchEnginesSyncTest {
+    : public SingleClientSearchEnginesSyncTestBase {
  public:
   SingleClientSearchEnginesSyncTestWithSeparateLocalAndAccountSearchEnginesEnabled()
-      : feature_list_(syncer::kSeparateLocalAndAccountSearchEngines) {}
+      : SingleClientSearchEnginesSyncTestBase(SINGLE_CLIENT) {
+    std::vector<base::test::FeatureRef> enabled_features = {
+        syncer::kSeparateLocalAndAccountSearchEngines,
+        // This is needed to enable search engines in transport mode.
+        switches::kEnablePreferencesAccountStorage,
+        syncer::kReplaceSyncPromosWithSignInPromos,
+    };
+#if BUILDFLAG(IS_ANDROID)
+    enabled_features.push_back(syncer::kSyncSearchEnginesAndroidLFF);
+#endif
+    feature_list_.InitWithFeatures(enabled_features, {});
+  }
+
+  // This test suite runs in transport-only mode because it deals with sepe.
+  SetupSyncMode GetSetupSyncMode() const override {
+    return SyncTest::SetupSyncMode::kSyncTransportOnly;
+  }
 
  protected:
   auto CreateSyncEntity(const std::u16string& keyword,
@@ -364,7 +412,7 @@ IN_PROC_BROWSER_TEST_F(
       "key1", GetFakeServer()));
 
   // Disable sync.
-  ASSERT_TRUE(GetClient(0)->DisableSyncForType(
+  ASSERT_TRUE(GetClient(0)->DisableSelectableType(
       syncer::UserSelectableType::kPreferences));
 
   EXPECT_TRUE(HasSearchEngine(/*profile_index=*/0, "key1"));
@@ -388,7 +436,7 @@ IN_PROC_BROWSER_TEST_F(
   ASSERT_TRUE(HasSearchEngine(/*profile_index=*/0, "key2"));
 
   // Disable sync.
-  ASSERT_TRUE(GetClient(0)->DisableSyncForType(
+  ASSERT_TRUE(GetClient(0)->DisableSelectableType(
       syncer::UserSelectableType::kPreferences));
 
   EXPECT_TRUE(HasSearchEngine(/*profile_index=*/0, "key1"));
@@ -411,7 +459,7 @@ IN_PROC_BROWSER_TEST_F(
       search_engines_helper::FakeServerHasSearchEngineChecker("key1").Wait());
 
   // Disable sync.
-  ASSERT_TRUE(GetClient(0)->DisableSyncForType(
+  ASSERT_TRUE(GetClient(0)->DisableSelectableType(
       syncer::UserSelectableType::kPreferences));
 
   EXPECT_TRUE(HasSearchEngine(/*profile_index=*/0, "key1"));
@@ -437,7 +485,7 @@ IN_PROC_BROWSER_TEST_F(
       search_engines_helper::FakeServerHasSearchEngineChecker("key1").Wait());
 
   // Disable sync.
-  ASSERT_TRUE(GetClient(0)->DisableSyncForType(
+  ASSERT_TRUE(GetClient(0)->DisableSelectableType(
       syncer::UserSelectableType::kPreferences));
 
   EXPECT_TRUE(HasSearchEngine(/*profile_index=*/0, "key1"));
@@ -461,9 +509,6 @@ IN_PROC_BROWSER_TEST_F(
   EXPECT_EQ("http://key1.com", account->url());
 }
 
-// TODO(crbug.com/374903497): Investigate why these tests fail on ChromeOS.
-#if !BUILDFLAG(IS_CHROMEOS)
-
 IN_PROC_BROWSER_TEST_F(
     SingleClientSearchEnginesSyncTestWithSeparateLocalAndAccountSearchEnginesEnabled,
     PRE_ShouldPreserveLocalAndAccountSearchEnginesAcrossRestart) {
@@ -483,18 +528,23 @@ IN_PROC_BROWSER_TEST_F(
     SingleClientSearchEnginesSyncTestWithSeparateLocalAndAccountSearchEnginesEnabled,
     ShouldPreserveLocalAndAccountSearchEnginesAcrossRestart) {
   ASSERT_TRUE(SetupClients());
+  // Account-based search engines (like key2) reside only in sync's private
+  // database and are not persisted locally, so
+  // WaitForTemplateURLServiceToLoad() cannot load them. Calling
+  // AwaitSyncTransportActive() ensures that the sync engine has initialized and
+  // loaded the account-based search engines from its local sync database.
+  ASSERT_TRUE(GetClient(0)->AwaitSyncTransportActive());
 
   EXPECT_TRUE(HasSearchEngine(/*profile_index=*/0, "key1"));
   EXPECT_TRUE(HasSearchEngine(/*profile_index=*/0, "key2"));
 
-  ASSERT_TRUE(GetClient(0)->AwaitSyncSetupCompletion());
   EXPECT_FALSE(search_engines_helper::HasSearchEngineInFakeServer(
       "key1", GetFakeServer()));
   EXPECT_TRUE(search_engines_helper::HasSearchEngineInFakeServer(
       "key2", GetFakeServer()));
 
   // Disable sync.
-  ASSERT_TRUE(GetClient(0)->DisableSyncForType(
+  ASSERT_TRUE(GetClient(0)->DisableSelectableType(
       syncer::UserSelectableType::kPreferences));
 
   EXPECT_TRUE(HasSearchEngine(/*profile_index=*/0, "key1"));
@@ -524,7 +574,7 @@ IN_PROC_BROWSER_TEST_F(
       "key1", GetFakeServer()));
 
   // Disable sync.
-  ASSERT_TRUE(GetClient(0)->DisableSyncForType(
+  ASSERT_TRUE(GetClient(0)->DisableSelectableType(
       syncer::UserSelectableType::kPreferences));
 
   EXPECT_TRUE(HasSearchEngine(/*profile_index=*/0, "key1"));
@@ -532,4 +582,100 @@ IN_PROC_BROWSER_TEST_F(
       "key1", GetFakeServer()));
 }
 
+#if !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_ANDROID)
+IN_PROC_BROWSER_TEST_F(
+    SingleClientSearchEnginesSyncTestWithSeparateLocalAndAccountSearchEnginesEnabled,
+    PRE_ShouldClearAccountDataOnStartupIfSignInAllowedBitChanged) {
+  ASSERT_TRUE(SetupClients());
+
+  // Set the sign-in allowed bit to true initially.
+  preferences_helper::GetPrefs(/*index=*/0)
+      ->SetBoolean(prefs::kSigninAllowedOnNextStartup, true);
+
+  TemplateURLService* service =
+      search_engines_helper::GetServiceForBrowserContext(0);
+  service->Add(CreateTestTemplateURL(u"localkeyword", "http://local.com",
+                                     "guid", base::Time::FromTimeT(100)));
+
+  GetFakeServer()->InjectEntity(CreateFromTemplateURL(
+      CreateTestTemplateURL(u"accountkeyword", "http://account.com", "guid",
+                            base::Time::FromTimeT(100))));
+
+  ASSERT_TRUE(SignIn());
+
+  // Account value is effective.
+  ASSERT_THAT(service->GetTemplateURLForGUID("guid"),
+              testing::Pointee(
+                  testing::Property(&TemplateURL::keyword, u"accountkeyword")));
+
+  // Simulate turning off the sign-in allowed bit on the settings page.
+  preferences_helper::GetPrefs(/*index=*/0)
+      ->SetBoolean(prefs::kSigninAllowedOnNextStartup, false);
+}
+
+IN_PROC_BROWSER_TEST_F(
+    SingleClientSearchEnginesSyncTestWithSeparateLocalAndAccountSearchEnginesEnabled,
+    ShouldClearAccountDataOnStartupIfSignInAllowedBitChanged) {
+  ASSERT_TRUE(SetupClients());
+
+  // Original local value should be active and the account value should not have
+  // been applied.
+  EXPECT_THAT(search_engines_helper::GetServiceForBrowserContext(0)
+                  ->GetTemplateURLForGUID("guid"),
+              testing::Pointee(
+                  testing::Property(&TemplateURL::keyword, u"localkeyword")));
+}
 #endif  // !BUILDFLAG(IS_CHROMEOS)
+
+IN_PROC_BROWSER_TEST_F(
+    SingleClientSearchEnginesSyncTestWithSeparateLocalAndAccountSearchEnginesEnabled,
+    PRE_ShouldClearAccountDataOnStartupIfAccountStateChanged) {
+  ASSERT_TRUE(SetupClients());
+
+  TemplateURLService* service =
+      search_engines_helper::GetServiceForBrowserContext(0);
+  service->Add(CreateTestTemplateURL(u"localkeyword", "http://local.com",
+                                     "guid", base::Time::FromTimeT(100)));
+
+  GetFakeServer()->InjectEntity(CreateFromTemplateURL(
+      CreateTestTemplateURL(u"accountkeyword", "http://account.com", "guid",
+                            base::Time::FromTimeT(100))));
+
+#if BUILDFLAG(IS_CHROMEOS)
+  ASSERT_TRUE(SetupSync());
+#else
+  ASSERT_TRUE(SignIn());
+#endif  // BUILDFLAG(IS_CHROMEOS)
+
+  // Account value is effective.
+  ASSERT_THAT(service->GetTemplateURLForGUID("guid"),
+              testing::Pointee(
+                  testing::Property(&TemplateURL::keyword, u"accountkeyword")));
+
+  // Simulate a data type error to prevent clearing of account data.
+  GetSyncService(0)->ReportDataTypeErrorForTest(syncer::SEARCH_ENGINES);
+#if BUILDFLAG(IS_CHROMEOS)
+  // Disable sync.
+  ASSERT_TRUE(GetClient(0)->DisableSelectableType(
+      syncer::UserSelectableType::kPreferences));
+#else
+  // Sign out.
+  GetClient(0)->SignOutPrimaryAccount();
+#endif  // BUILDFLAG(IS_CHROMEOS)
+  ASSERT_TRUE(HasSearchEngine(/*profile_index=*/0, "accountkeyword"));
+
+  ExcludeDataTypesFromCheckForDataTypeFailures({syncer::SEARCH_ENGINES});
+}
+
+IN_PROC_BROWSER_TEST_F(
+    SingleClientSearchEnginesSyncTestWithSeparateLocalAndAccountSearchEnginesEnabled,
+    ShouldClearAccountDataOnStartupIfAccountStateChanged) {
+  ASSERT_TRUE(SetupClients());
+
+  // Original local value should be active and the account value should not have
+  // been applied.
+  EXPECT_THAT(search_engines_helper::GetServiceForBrowserContext(0)
+                  ->GetTemplateURLForGUID("guid"),
+              testing::Pointee(
+                  testing::Property(&TemplateURL::keyword, u"localkeyword")));
+}

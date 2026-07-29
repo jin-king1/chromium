@@ -58,13 +58,13 @@ export class ViewerZoomButtonElement extends CrLitElement {
     };
   }
 
-  activeIndex: number = 0;
-  disabled: boolean = false;
-  icons: string = '';
-  keyboardNavigationActive: boolean = false;
-  tooltips: string = '';
-  private icons_: string[] = [''];
-  private tooltips_: string[] = [];
+  accessor activeIndex: number = 0;
+  accessor disabled: boolean = false;
+  accessor icons: string = '';
+  accessor keyboardNavigationActive: boolean = false;
+  accessor tooltips: string = '';
+  private accessor icons_: string[] = [''];
+  private accessor tooltips_: string[] = [];
 
   override willUpdate(changedProperties: PropertyValues<this>) {
     super.willUpdate(changedProperties);
@@ -92,12 +92,18 @@ export class ViewerZoomButtonElement extends CrLitElement {
         ;
   }
 
-  protected fireClick_() {
+  protected onClick_() {
     // We cannot attach an on-click to the entire viewer-zoom-button, as this
     // will include clicks on the margins. Instead, proxy clicks on the FAB
     // through.
     this.fire('fabclick');
     this.activeIndex = (this.activeIndex + 1) % this.icons_.length;
+  }
+}
+
+declare global {
+  interface HTMLElementTagNameMap {
+    'viewer-zoom-button': ViewerZoomButtonElement;
   }
 }
 

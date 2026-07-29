@@ -14,21 +14,22 @@ namespace webnn {
 struct COMPONENT_EXPORT(WEBNN_PUBLIC_CPP) DataTypeLimits {
   explicit DataTypeLimits(mojo::DefaultConstruct::Tag);
 
-  DataTypeLimits(SupportedDataTypes input,
-                 SupportedDataTypes constant,
+  DataTypeLimits(SupportedTensors input,
+                 SupportedTensors constant,
                  SupportedTensors arg_min_max_input,
-                 SupportedDataTypes arg_min_max_output,
+                 SupportedTensors arg_min_max_output,
                  SupportedTensors batch_normalization_input,
                  SupportedTensors batch_normalization_mean,
                  SupportedTensors cast_input,
                  SupportedTensors clamp_input,
-                 SupportedDataTypes concat_inputs,
-                 SupportedDataTypes conv2d_input,
-                 SupportedDataTypes conv_transpose2d_input,
+                 SupportedTensors concat_inputs,
+                 SupportedTensors conv2d_input,
+                 SupportedTensors conv2d_bias,
+                 SupportedTensors conv_transpose2d_input,
+                 SupportedTensors conv_transpose2d_bias,
                  SupportedTensors cumulative_sum_input,
                  SupportedTensors dequantize_linear_input,
                  SupportedTensors dequantize_linear_scale,
-                 SupportedTensors dequantize_linear_zero_point,
                  SupportedTensors add_input,
                  SupportedTensors sub_input,
                  SupportedTensors mul_input,
@@ -46,6 +47,8 @@ struct COMPONENT_EXPORT(WEBNN_PUBLIC_CPP) DataTypeLimits {
                  SupportedTensors logical_or_input,
                  SupportedTensors logical_xor_input,
                  SupportedTensors logical_not_input,
+                 SupportedTensors is_nan_input,
+                 SupportedTensors is_infinite_input,
                  SupportedDataTypes logical_output,
                  SupportedTensors abs_input,
                  SupportedTensors ceil_input,
@@ -57,22 +60,27 @@ struct COMPONENT_EXPORT(WEBNN_PUBLIC_CPP) DataTypeLimits {
                  SupportedTensors log_input,
                  SupportedTensors neg_input,
                  SupportedTensors reciprocal_input,
+                 SupportedTensors round_even_input,
                  SupportedTensors sign_input,
                  SupportedTensors sin_input,
                  SupportedTensors sqrt_input,
                  SupportedTensors tan_input,
                  SupportedTensors elu_input,
                  SupportedTensors expand_input,
-                 SupportedDataTypes gather_input,
-                 SupportedDataTypes gather_indices,
-                 SupportedDataTypes gather_elements_input,
-                 SupportedDataTypes gather_elements_indices,
-                 SupportedDataTypes gather_nd_input,
-                 SupportedDataTypes gather_nd_indices,
+                 SupportedTensors gather_input,
+                 SupportedTensors gather_indices,
+                 SupportedTensors gather_elements_input,
+                 SupportedTensors gather_elements_indices,
+                 SupportedTensors gather_nd_input,
+                 SupportedTensors gather_nd_indices,
                  SupportedTensors gelu_input,
-                 SupportedDataTypes gemm_input,
-                 SupportedDataTypes gru_input,
-                 SupportedDataTypes gru_cell_input,
+                 SupportedTensors gemm_a,
+                 SupportedTensors gemm_c,
+                 SupportedTensors gru_input,
+                 SupportedTensors gru_bias,
+                 SupportedTensors gru_output_sequence,
+                 SupportedTensors gru_cell_input,
+                 SupportedTensors gru_cell_bias,
                  SupportedTensors hard_sigmoid_input,
                  SupportedTensors hard_swish_input,
                  SupportedTensors instance_normalization_input,
@@ -80,8 +88,11 @@ struct COMPONENT_EXPORT(WEBNN_PUBLIC_CPP) DataTypeLimits {
                  SupportedTensors layer_normalization_input,
                  SupportedTensors leaky_relu_input,
                  SupportedTensors linear_input,
-                 SupportedDataTypes lstm_input,
-                 SupportedDataTypes lstm_cell_input,
+                 SupportedTensors lstm_input,
+                 SupportedTensors lstm_bias,
+                 SupportedTensors lstm_output_sequence,
+                 SupportedTensors lstm_cell_input,
+                 SupportedTensors lstm_cell_bias,
                  SupportedTensors matmul_input,
                  SupportedTensors pad_input,
                  SupportedTensors average_pool2d_input,
@@ -130,23 +141,24 @@ struct COMPONENT_EXPORT(WEBNN_PUBLIC_CPP) DataTypeLimits {
   ~DataTypeLimits();
 
   // Output supported data types are the same as inputs.
-  SupportedDataTypes output() const { return input; }
+  SupportedTensors output() const { return input; }
 
-  SupportedDataTypes input;
-  SupportedDataTypes constant;
+  SupportedTensors input;
+  SupportedTensors constant;
   SupportedTensors arg_min_max_input;
-  SupportedDataTypes arg_min_max_output;
+  SupportedTensors arg_min_max_output;
   SupportedTensors batch_normalization_input;
   SupportedTensors batch_normalization_mean;
   SupportedTensors cast_input;
   SupportedTensors clamp_input;
-  SupportedDataTypes concat_inputs;
-  SupportedDataTypes conv2d_input;
-  SupportedDataTypes conv_transpose2d_input;
+  SupportedTensors concat_inputs;
+  SupportedTensors conv2d_input;
+  SupportedTensors conv2d_bias;
+  SupportedTensors conv_transpose2d_input;
+  SupportedTensors conv_transpose2d_bias;
   SupportedTensors cumulative_sum_input;
   SupportedTensors dequantize_linear_input;
   SupportedTensors dequantize_linear_scale;
-  SupportedTensors dequantize_linear_zero_point;
   SupportedTensors add_input;
   SupportedTensors sub_input;
   SupportedTensors mul_input;
@@ -164,6 +176,8 @@ struct COMPONENT_EXPORT(WEBNN_PUBLIC_CPP) DataTypeLimits {
   SupportedTensors logical_or_input;
   SupportedTensors logical_xor_input;
   SupportedTensors logical_not_input;
+  SupportedTensors is_nan_input;
+  SupportedTensors is_infinite_input;
   SupportedDataTypes logical_output;
   SupportedTensors abs_input;
   SupportedTensors ceil_input;
@@ -175,22 +189,27 @@ struct COMPONENT_EXPORT(WEBNN_PUBLIC_CPP) DataTypeLimits {
   SupportedTensors log_input;
   SupportedTensors neg_input;
   SupportedTensors reciprocal_input;
+  SupportedTensors round_even_input;
   SupportedTensors sign_input;
   SupportedTensors sin_input;
   SupportedTensors sqrt_input;
   SupportedTensors tan_input;
   SupportedTensors elu_input;
   SupportedTensors expand_input;
-  SupportedDataTypes gather_input;
-  SupportedDataTypes gather_indices;
-  SupportedDataTypes gather_elements_input;
-  SupportedDataTypes gather_elements_indices;
-  SupportedDataTypes gather_nd_input;
-  SupportedDataTypes gather_nd_indices;
+  SupportedTensors gather_input;
+  SupportedTensors gather_indices;
+  SupportedTensors gather_elements_input;
+  SupportedTensors gather_elements_indices;
+  SupportedTensors gather_nd_input;
+  SupportedTensors gather_nd_indices;
   SupportedTensors gelu_input;
-  SupportedDataTypes gemm_input;
-  SupportedDataTypes gru_input;
-  SupportedDataTypes gru_cell_input;
+  SupportedTensors gemm_a;
+  SupportedTensors gemm_c;
+  SupportedTensors gru_input;
+  SupportedTensors gru_bias;
+  SupportedTensors gru_output_sequence;
+  SupportedTensors gru_cell_input;
+  SupportedTensors gru_cell_bias;
   SupportedTensors hard_sigmoid_input;
   SupportedTensors hard_swish_input;
   SupportedTensors instance_normalization_input;
@@ -198,8 +217,11 @@ struct COMPONENT_EXPORT(WEBNN_PUBLIC_CPP) DataTypeLimits {
   SupportedTensors layer_normalization_input;
   SupportedTensors leaky_relu_input;
   SupportedTensors linear_input;
-  SupportedDataTypes lstm_input;
-  SupportedDataTypes lstm_cell_input;
+  SupportedTensors lstm_input;
+  SupportedTensors lstm_bias;
+  SupportedTensors lstm_output_sequence;
+  SupportedTensors lstm_cell_input;
+  SupportedTensors lstm_cell_bias;
   SupportedTensors matmul_input;
   SupportedTensors pad_input;
   SupportedTensors average_pool2d_input;
@@ -253,11 +275,12 @@ inline bool operator==(const DataTypeLimits& lhs, const DataTypeLimits& rhs) {
          lhs.clamp_input == rhs.clamp_input &&
          lhs.concat_inputs == rhs.concat_inputs &&
          lhs.conv2d_input == rhs.conv2d_input &&
+         lhs.conv2d_bias == rhs.conv2d_bias &&
          lhs.conv_transpose2d_input == rhs.conv_transpose2d_input &&
+         lhs.conv_transpose2d_bias == rhs.conv_transpose2d_bias &&
          lhs.cumulative_sum_input == rhs.cumulative_sum_input &&
          lhs.dequantize_linear_input == rhs.dequantize_linear_input &&
          lhs.dequantize_linear_scale == rhs.dequantize_linear_scale &&
-         lhs.dequantize_linear_zero_point == rhs.dequantize_linear_zero_point &&
          lhs.add_input == rhs.add_input &&
          lhs.sub_input == rhs.sub_input &&
          lhs.mul_input == rhs.mul_input &&
@@ -275,6 +298,8 @@ inline bool operator==(const DataTypeLimits& lhs, const DataTypeLimits& rhs) {
          lhs.logical_or_input == rhs.logical_or_input &&
          lhs.logical_xor_input == rhs.logical_xor_input &&
          lhs.logical_not_input == rhs.logical_not_input &&
+         lhs.is_nan_input == rhs.is_nan_input &&
+         lhs.is_infinite_input == rhs.is_infinite_input &&
          lhs.logical_output == rhs.logical_output &&
          lhs.abs_input == rhs.abs_input &&
          lhs.ceil_input == rhs.ceil_input &&
@@ -286,6 +311,7 @@ inline bool operator==(const DataTypeLimits& lhs, const DataTypeLimits& rhs) {
          lhs.log_input == rhs.log_input &&
          lhs.neg_input == rhs.neg_input &&
          lhs.reciprocal_input == rhs.reciprocal_input &&
+         lhs.round_even_input == rhs.round_even_input &&
          lhs.sign_input == rhs.sign_input &&
          lhs.sin_input == rhs.sin_input &&
          lhs.sqrt_input == rhs.sqrt_input &&
@@ -299,9 +325,13 @@ inline bool operator==(const DataTypeLimits& lhs, const DataTypeLimits& rhs) {
          lhs.gather_nd_input == rhs.gather_nd_input &&
          lhs.gather_nd_indices == rhs.gather_nd_indices &&
          lhs.gelu_input == rhs.gelu_input &&
-         lhs.gemm_input == rhs.gemm_input &&
+         lhs.gemm_a == rhs.gemm_a &&
+         lhs.gemm_c == rhs.gemm_c &&
          lhs.gru_input == rhs.gru_input &&
+         lhs.gru_bias == rhs.gru_bias &&
+         lhs.gru_output_sequence == rhs.gru_output_sequence &&
          lhs.gru_cell_input == rhs.gru_cell_input &&
+         lhs.gru_cell_bias == rhs.gru_cell_bias &&
          lhs.hard_sigmoid_input == rhs.hard_sigmoid_input &&
          lhs.hard_swish_input == rhs.hard_swish_input &&
          lhs.instance_normalization_input == rhs.instance_normalization_input &&
@@ -310,7 +340,10 @@ inline bool operator==(const DataTypeLimits& lhs, const DataTypeLimits& rhs) {
          lhs.leaky_relu_input == rhs.leaky_relu_input &&
          lhs.linear_input == rhs.linear_input &&
          lhs.lstm_input == rhs.lstm_input &&
+         lhs.lstm_bias == rhs.lstm_bias &&
+         lhs.lstm_output_sequence == rhs.lstm_output_sequence &&
          lhs.lstm_cell_input == rhs.lstm_cell_input &&
+         lhs.lstm_cell_bias == rhs.lstm_cell_bias &&
          lhs.matmul_input == rhs.matmul_input &&
          lhs.pad_input == rhs.pad_input &&
          lhs.average_pool2d_input == rhs.average_pool2d_input &&

@@ -13,7 +13,6 @@
 #include "chrome/browser/ash/printing/cups_print_job.h"
 #include "chrome/browser/ash/printing/history/print_job_info.pb.h"
 #include "chrome/browser/printing/printer_query.h"
-#include "chromeos/crosapi/mojom/local_printer.mojom.h"
 #include "content/public/browser/global_routing_id.h"
 #include "content/public/test/browser_task_environment.h"
 #include "printing/backend/cups_jobs.h"
@@ -29,7 +28,7 @@ namespace {
 using State = CupsPrintJob::State;
 using ::printing::CupsJob;
 using PrinterReason = ::printing::PrinterStatus::PrinterReason;
-using ::chromeos::PrinterErrorCode;
+using chromeos::PrinterErrorCode;
 
 constexpr int kTotalPages = 2;
 
@@ -152,6 +151,19 @@ INSTANTIATE_TEST_SUITE_P(
     CupsPrintJobManagerUtilsTest,
     testing::ValuesIn(GenerateParams(CupsJob::COMPLETED,
                                      State::STATE_DOCUMENT_DONE)));
+
+INSTANTIATE_TEST_SUITE_P(
+    CompletedCancelledAtDevice,
+    CupsPrintJobManagerUtilsTest,
+    testing::Values(Params(State::STATE_STARTED,
+                           /*pages=*/1,
+                           CupsJob::COMPLETED,
+                           std::vector<CupsJob::JobStateReason>{
+                               CupsJob::JobStateReason::kJobCanceledAtDevice},
+                           /*job_pages=*/1,
+                           State::STATE_CANCELLED,
+                           /*expected_pages=*/1)));
+
 INSTANTIATE_TEST_SUITE_P(
     Cancelled,
     CupsPrintJobManagerUtilsTest,
@@ -246,7 +258,7 @@ TEST_P(CupsPrintJobManagerUtilsTest, UpdatePrintJob) {
         ::printing::ToJobStateReasonString(job_state_reason).data());
   }
   CupsPrintJob print_job(chromeos::Printer(), 0, std::string(), kTotalPages,
-                         crosapi::mojom::PrintJob::Source::kUnknown,
+                         ::printing::PrintJob::Source::kPrintPreview,
                          std::string(), printing::proto::PrintSettings());
   print_job.set_state(params.state);
   print_job.set_printed_page_number(params.pages);
@@ -268,7 +280,7 @@ TEST(CupsPrintJobManagerUtilsTest, UpdatePrintJobTimeout) {
   job.state = CupsJob::PROCESSING;
 
   CupsPrintJob print_job(chromeos::Printer(), 0, std::string(), kTotalPages,
-                         crosapi::mojom::PrintJob::Source::kUnknown,
+                         ::printing::PrintJob::Source::kPrintPreview,
                          std::string(), printing::proto::PrintSettings());
   print_job.set_state(State::STATE_STARTED);
 

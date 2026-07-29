@@ -12,7 +12,7 @@
 
 #include "base/containers/flat_set.h"
 #include "base/memory/raw_ptr.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "build/build_config.h"
 #include "components/policy/core/browser/browser_policy_connector.h"
@@ -68,6 +68,11 @@ class ChromeBrowserPolicyConnector : public BrowserPolicyConnector {
   void Shutdown() override;
 
   ConfigurationPolicyProvider* GetPlatformProvider();
+
+  // Refreshes only platform (non-cloud) policies. This is used by the
+  // --refresh-platform-policy command line switch to provide fast policy
+  // updates without triggering network requests to cloud policy servers.
+  void RefreshPlatformPolicies();
 
   ConfigurationPolicyProvider* local_test_policy_provider();
   void SetLocalTestPolicyProviderForTesting(

@@ -12,7 +12,6 @@ import {assert} from 'chrome://resources/ash/common/assert.js';
 import {loadTimeData} from 'chrome://resources/ash/common/load_time_data.m.js';
 import {strictQuery} from 'chrome://resources/ash/common/typescript_utils/strict_query.js';
 import {ColorChangeUpdater} from 'chrome://resources/cr_components/color_change_listener/colors_css_updater.js';
-import {stringToMojoString16} from 'chrome://resources/js/mojo_type_util.js';
 import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
 import {ConfirmationPageElement} from './confirmation_page.js';
@@ -59,8 +58,8 @@ export const AdditionalContextQueryParam = {
   EXTRA_DIAGNOSTICS: 'extra_diagnostics',
   CATEGORY_TAG: 'category_tag',
   PAGE_URL: 'page_url',
-  FROM_ASSISTANT: 'from_assistant',
-  FROM_SETTINGS_SEARCH: 'from_settings_search',
+  SETTINGS_SEARCH_DO_NOT_RECORD_METRICS:
+      'settings_search_do_not_record_metrics',
   FROM_AUTOFILL: 'from_autofill',
   AUTOFILL_METADATA: 'autofill_metadata',
 };
@@ -161,10 +160,10 @@ export class FeedbackFlowElement extends PolymerElement {
   }
 
   /**  The id of an element on the page that is currently shown. */
-  protected currentState: FeedbackFlowState = FeedbackFlowState.SEARCH;
+  declare protected currentState: FeedbackFlowState;
 
   /**  The feedback context. */
-  protected feedbackContext: FeedbackContext|null;
+  declare protected feedbackContext: FeedbackContext|null;
 
   /**  Whether to show the bluetooth Logs checkbox in share data page. */
   shouldShowBluetoothCheckbox: boolean = false;
@@ -172,17 +171,8 @@ export class FeedbackFlowElement extends PolymerElement {
   /**  Whether to show the Wifi debug Logs checkbox in share data page. */
   shouldShowWifiDebugLogsCheckbox = false;
 
-  /**
-   * Whether to show the Link Cross Device Dogfood Feedback checkbox in share
-   * data page.
-   */
-  shouldShowLinkCrossDeviceDogfoodFeedbackCheckbox = false;
-
   /**  Whether to show the autofill checkbox in share data page. */
   protected shouldShowAutofillCheckbox = false;
-
-  /**  Whether to show the assistant checkbox in share data page. */
-  shouldShowAssistantCheckbox = false;
 
   private feedbackServiceProvider: FeedbackServiceProviderInterface;
 
@@ -231,6 +221,7 @@ export class FeedbackFlowElement extends PolymerElement {
 
   constructor() {
     super();
+    this.currentState = FeedbackFlowState.SEARCH;
     this.dialogArgs = chrome.getVariableValue('dialogArguments');
     this.feedbackServiceProvider = getFeedbackServiceProvider();
   }
@@ -337,19 +328,16 @@ export class FeedbackFlowElement extends PolymerElement {
     const feedbackInfo = JSON.parse(this.dialogArgs);
     assert(!!feedbackInfo);
     this.feedbackContext = {
-      assistantDebugInfoAllowed: false,
-      fromSettingsSearch: feedbackInfo.fromSettingsSearch ?? false,
+      settingsSearchDoNotRecordMetrics:
+          feedbackInfo.settingsSearchDoNotRecordMetrics ?? false,
       isInternalAccount: feedbackInfo.isInternalAccount ?? false,
       wifiDebugLogsAllowed: false,
       traceId: feedbackInfo.traceId ?? 0,
-      pageUrl: {url: feedbackInfo.pageUrl ?? ''},
-      fromAssistant: feedbackInfo.fromAssistant ?? false,
+      pageUrl: feedbackInfo.pageUrl ?? '',
       fromAutofill: feedbackInfo.fromAutofill ?? false,
       autofillMetadata: feedbackInfo.autofillMetadata ?
           JSON.stringify(feedbackInfo.autofillMetadata) :
           '{}',
-      hasLinkedCrossDevicePhone:
-          feedbackInfo.hasLinkedCrossDevicePhone ?? false,
       categoryTag: feedbackInfo.categoryTag ?? '',
       email: '',
       extraDiagnostics: '',
@@ -408,8 +396,6 @@ export class FeedbackFlowElement extends PolymerElement {
     if (!this.feedbackContext) {
       return;
     }
-    this.shouldShowAssistantCheckbox = this.feedbackContext.isInternalAccount &&
-        this.feedbackContext.fromAssistant;
     this.shouldShowAutofillCheckbox = this.feedbackContext.fromAutofill;
   }
   /**
@@ -443,14 +429,13 @@ export class FeedbackFlowElement extends PolymerElement {
         categoryTag ? decodeURIComponent(categoryTag) : '';
     const pageUrl = params.get(AdditionalContextQueryParam.PAGE_URL);
     if (pageUrl) {
-      this.set('feedbackContext.pageUrl', {url: pageUrl});
+      this.set('feedbackContext.pageUrl', pageUrl);
     }
-    const fromAssistant =
-        params.get(AdditionalContextQueryParam.FROM_ASSISTANT);
-    this.feedbackContext.fromAssistant = !!fromAssistant;
-    const fromSettingsSearch =
-        params.get(AdditionalContextQueryParam.FROM_SETTINGS_SEARCH);
-    this.set('feedbackContext.fromSettingsSearch', !!fromSettingsSearch);
+    const settingsSearchDoNotRecordMetrics = params.get(
+        AdditionalContextQueryParam.SETTINGS_SEARCH_DO_NOT_RECORD_METRICS);
+    this.set(
+        'feedbackContext.settingsSearchDoNotRecordMetrics',
+        !!settingsSearchDoNotRecordMetrics);
 
     const fromAutofill = params.get(AdditionalContextQueryParam.FROM_AUTOFILL);
     this.feedbackContext.fromAutofill = !!fromAutofill;
@@ -472,13 +457,6 @@ export class FeedbackFlowElement extends PolymerElement {
             this.isDescriptionRelatedToBluetooth(this.description);
         this.shouldShowWifiDebugLogsCheckbox =
             this.computeShouldShowWifiDebugLogsCheckbox();
-        this.shouldShowLinkCrossDeviceDogfoodFeedbackCheckbox =
-            this.feedbackContext !== null &&
-            loadTimeData.getBoolean(
-                'enableLinkCrossDeviceDogfoodFeedbackFlag') &&
-            this.feedbackContext.isInternalAccount &&
-            this.feedbackContext.hasLinkedCrossDevicePhone &&
-            this.isDescriptionRelatedToCrossDevice(this.description);
         this.fetchScreenshot();
         const shareDataPage = strictQuery(
             'share-data-page', this.shadowRoot, ShareDataPageElement);
@@ -495,7 +473,7 @@ export class FeedbackFlowElement extends PolymerElement {
         break;
       case FeedbackFlowState.SHARE_DATA:
         const report = customEvent.detail.report as Report;
-        report.description = stringToMojoString16(this.description);
+        report.description = this.description;
 
         // TODO(xiangdongkong): Show a spinner or the like for sendReport could
         // take a while.
@@ -642,24 +620,11 @@ export class FeedbackFlowElement extends PolymerElement {
      * bluetooth checkbox should be hidden and skip the relative check.
      */
     const isRelatedToBluetooth = btRegEx.test(textInput) ||
-        cantConnectRegEx.test(textInput) ||
-        this.isDescriptionRelatedToCrossDevice(textInput) ||
-        fastPairRegEx.test(textInput) || btDeviceRegEx.test(textInput);
-    return isRelatedToBluetooth;
-  }
-
-  /**
-   * If the user is not signed in with a internal google account, the Cross
-   * Device checkbox should be hidden and skip the relative check.
-   *
-   * Checks if any keywords related to Cross Device have been typed. If they
-   * are, we show the cross device checkbox, otherwise hide it.
-   */
-  protected isDescriptionRelatedToCrossDevice(textInput: string): boolean {
-    const isRelatedToCrossDevice = phoneHubRegEx.test(textInput) ||
+        cantConnectRegEx.test(textInput) || phoneHubRegEx.test(textInput) ||
         tetherRegEx.test(textInput) || smartLockRegEx.test(textInput) ||
-        nearbyShareRegEx.test(textInput);
-    return isRelatedToCrossDevice;
+        nearbyShareRegEx.test(textInput) || fastPairRegEx.test(textInput) ||
+        btDeviceRegEx.test(textInput);
+    return isRelatedToBluetooth;
   }
 }
 

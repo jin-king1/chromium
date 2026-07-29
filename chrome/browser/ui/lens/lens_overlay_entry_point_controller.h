@@ -5,18 +5,25 @@
 #ifndef CHROME_BROWSER_UI_LENS_LENS_OVERLAY_ENTRY_POINT_CONTROLLER_H_
 #define CHROME_BROWSER_UI_LENS_LENS_OVERLAY_ENTRY_POINT_CONTROLLER_H_
 
+#include "base/callback_list.h"
+#include "base/memory/raw_ptr.h"
 #include "base/scoped_observation.h"
-#include "chrome/browser/ui/exclusive_access/fullscreen_controller.h"
-#include "chrome/browser/ui/exclusive_access/fullscreen_observer.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/search_engines/template_url_service.h"
 #include "components/search_engines/template_url_service_observer.h"
 #include "ui/actions/actions.h"
+#include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 #include "ui/views/focus/focus_manager.h"
 #include "ui/views/view_observer.h"
 
 class BrowserWindowInterface;
 class CommandUpdater;
+
+class Profile;
+
+namespace optimization_guide {
+class OptimizationGuideDecider;
+}  // namespace optimization_guide
 
 namespace tabs {
 class TabInterface;
@@ -32,12 +39,19 @@ namespace lens {
 // their correct state. This functionality needs to be separate from
 // LensOverlayController, since LensOverlayController exist per tab, while entry
 // points are per browser window.
-class LensOverlayEntryPointController : public FullscreenObserver,
-                                        public TemplateURLServiceObserver,
+class LensOverlayEntryPointController : public TemplateURLServiceObserver,
                                         public views::FocusChangeListener,
                                         public views::ViewObserver {
  public:
-  LensOverlayEntryPointController();
+  DECLARE_USER_DATA(LensOverlayEntryPointController);
+  static LensOverlayEntryPointController* From(
+      BrowserWindowInterface* browser_window_interface);
+
+  // Returns true if the Lens Overlay is enabled at the profile level.
+  static bool IsEnabledOnInit(Profile* profile);
+
+  explicit LensOverlayEntryPointController(
+      BrowserWindowInterface* browser_window_interface);
   ~LensOverlayEntryPointController() override;
 
   // This class does nothing if not initialized. IsEnabled returns false.
@@ -56,7 +70,7 @@ class LensOverlayEntryPointController : public FullscreenObserver,
   // this current moment in time. Sometimes, entrypoints are hidden ephermally,
   // such as when the Lens Overlay is currently active, so entrypoints do
   // nothing.
-  bool AreVisible();
+  bool AreVisible() const;
 
   // Updates the enable/disable and visibility state of entry points. If
   // hide_toolbar_entrypoint is true, instead of just disabling the toolbar
@@ -64,20 +78,23 @@ class LensOverlayEntryPointController : public FullscreenObserver,
   // entrypoints will be updated to their correct state.
   void UpdateEntryPointsState(bool hide_toolbar_entrypoint);
 
+  // Returns true if the given URL is eligible for EDU promos present on some
+  // entrypoints.
+  bool IsUrlEduEligible(const GURL& url) const;
+
   // Invokes the entrypoint action.
   static void InvokeAction(tabs::TabInterface* active_tab,
                            const actions::ActionInvocationContext& context);
 
  private:
-  // FullscreenObserver:
-  void OnFullscreenStateChanged() override;
+  // Called when the browser window's fullscreen state changes.
+  void OnFullscreenStateChanged();
 
   // TemplateURLServiceObserver:
   void OnTemplateURLServiceChanged() override;
   void OnTemplateURLServiceShuttingDown() override;
 
   // views::FocusChangeListener
-  void OnWillChangeFocus(views::View* before, views::View* now) override;
   void OnDidChangeFocus(views::View* before, views::View* now) override;
 
   // views::ViewObserver
@@ -92,11 +109,14 @@ class LensOverlayEntryPointController : public FullscreenObserver,
   actions::ActionItem* GetToolbarEntrypoint();
 
   // Return true if the Lens Overlay is active on the current tab.
-  bool IsOverlayActive();
+  bool IsOverlayActive() const;
 
-  // Observer to check for browser window entering fullscreen.
-  base::ScopedObservation<FullscreenController, FullscreenObserver>
-      fullscreen_observation_{this};
+  // Observer to check for focus changes.
+  base::ScopedObservation<views::FocusManager, views::FocusChangeListener>
+      focus_manager_observation_{this};
+
+  // Subscription to be notified when the browser window enters fullscreen.
+  base::CallbackListSubscription fullscreen_subscription_;
 
   // Observer to check for changes to the users DSE.
   base::ScopedObservation<TemplateURLService, TemplateURLServiceObserver>
@@ -113,6 +133,14 @@ class LensOverlayEntryPointController : public FullscreenObserver,
   PrefChangeRegistrar pref_change_registrar_;
 
   raw_ptr<views::View> location_bar_;
+
+  // Optimization guide decider used for determining EDU action chip
+  // eligibility.
+  raw_ptr<optimization_guide::OptimizationGuideDecider>
+      optimization_guide_decider_{nullptr};
+
+  ui::ScopedUnownedUserData<LensOverlayEntryPointController>
+      scoped_unowned_user_data_;
 };
 
 }  // namespace lens

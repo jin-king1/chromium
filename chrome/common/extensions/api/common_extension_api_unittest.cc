@@ -10,8 +10,9 @@
 #include <utility>
 #include <vector>
 
+#include "base/check.h"
 #include "base/files/file_path.h"
-#include "base/files/file_util.h"
+#include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
 #include "base/path_service.h"
@@ -24,6 +25,7 @@
 #include "base/values.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/extensions/extension_features_unittest.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/api/extension_action/action_info.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_api.h"
@@ -36,6 +38,8 @@
 #include "extensions/common/mojom/feature_session_type.mojom.h"
 #include "extensions/test/test_context_data.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace extensions {
 
@@ -296,7 +300,7 @@ TEST(ExtensionAPITest, APIFeaturesAlias) {
 
   scoped_refptr<const Extension> extension =
       ExtensionBuilder()
-          .SetManifest(base::Value::Dict()
+          .SetManifest(base::DictValue()
                            .Set("name", "extension")
                            .Set("version", "1")
                            .Set("manifest_version", 2))
@@ -318,19 +322,19 @@ TEST(ExtensionAPITest, IsAnyFeatureAvailableToContext) {
   scoped_refptr<const Extension> app =
       ExtensionBuilder()
           .SetManifest(
-              base::Value::Dict()
+              base::DictValue()
                   .Set("name", "app")
-                  .Set("app", base::Value::Dict().Set(
+                  .Set("app", base::DictValue().Set(
                                   "background",
-                                  base::Value::Dict().Set(
-                                      "scripts", base::Value::List().Append(
+                                  base::DictValue().Set(
+                                      "scripts", base::ListValue().Append(
                                                      "background.js"))))
                   .Set("version", "1")
                   .Set("manifest_version", 2))
           .Build();
   scoped_refptr<const Extension> extension =
       ExtensionBuilder()
-          .SetManifest(base::Value::Dict()
+          .SetManifest(base::DictValue()
                            .Set("name", "extension")
                            .Set("version", "1")
                            .Set("manifest_version", 2))
@@ -406,12 +410,12 @@ TEST(ExtensionAPITest, SessionTypeFeature) {
   scoped_refptr<const Extension> app =
       ExtensionBuilder()
           .SetManifest(
-              base::Value::Dict()
+              base::DictValue()
                   .Set("name", "app")
-                  .Set("app", base::Value::Dict().Set(
+                  .Set("app", base::DictValue().Set(
                                   "background",
-                                  base::Value::Dict().Set(
-                                      "scripts", base::Value::List().Append(
+                                  base::DictValue().Set(
+                                      "scripts", base::ListValue().Append(
                                                      "background.js"))))
                   .Set("version", "1")
                   .Set("manifest_version", 2))
@@ -484,19 +488,19 @@ TEST(ExtensionAPITest, LazyGetSchema) {
 
 scoped_refptr<Extension> CreateExtensionWithPermissions(
     const std::set<std::string>& permissions) {
-  auto manifest = base::Value::Dict()
+  auto manifest = base::DictValue()
                       .Set("name", "extension")
                       .Set("version", "1.0")
                       .Set("manifest_version", 2);
   {
-    base::Value::List permissions_list;
+    base::ListValue permissions_list;
     for (const auto& i : permissions) {
       permissions_list.Append(i);
     }
     manifest.Set("permissions", std::move(permissions_list));
   }
 
-  std::string error;
+  std::u16string error;
   scoped_refptr<Extension> extension(
       Extension::Create(base::FilePath(), mojom::ManifestLocation::kUnpacked,
                         manifest, Extension::NO_FLAGS, &error));
@@ -575,14 +579,14 @@ TEST(ExtensionAPITest, ExtensionWithUnprivilegedAPIs) {
 }
 
 scoped_refptr<Extension> CreateHostedApp() {
-  base::Value::Dict values;
+  base::DictValue values;
   values.Set(manifest_keys::kName, "test");
   values.Set(manifest_keys::kVersion, "0.1");
   values.SetByDottedPath(manifest_keys::kWebURLs,
                          base::Value(base::Value::Type::LIST));
   values.SetByDottedPath(manifest_keys::kLaunchWebURL,
                          "http://www.example.com");
-  std::string error;
+  std::u16string error;
   scoped_refptr<Extension> extension(
       Extension::Create(base::FilePath(), mojom::ManifestLocation::kInternal,
                         values, Extension::NO_FLAGS, &error));
@@ -593,24 +597,24 @@ scoped_refptr<Extension> CreateHostedApp() {
 scoped_refptr<Extension> CreatePackagedAppWithPermissions(
     const std::set<std::string>& permissions) {
   auto manifest =
-      base::Value::Dict()
+      base::DictValue()
           .Set(manifest_keys::kName, "test")
           .Set(manifest_keys::kVersion, "0.1")
           .Set(manifest_keys::kApp,
-               base::Value::Dict().Set(
+               base::DictValue().Set(
                    "background",
-                   base::Value::Dict().Set(
-                       "scripts", base::Value::List().Append("test.js"))));
+                   base::DictValue().Set("scripts",
+                                         base::ListValue().Append("test.js"))));
 
   {
-    base::Value::List permissions_list;
+    base::ListValue permissions_list;
     for (const auto& i : permissions) {
       permissions_list.Append(i);
     }
     manifest.Set("permissions", std::move(permissions_list));
   }
 
-  std::string error;
+  std::u16string error;
   scoped_refptr<Extension> extension(
       Extension::Create(base::FilePath(), mojom::ManifestLocation::kInternal,
                         manifest, Extension::NO_FLAGS, &error));
@@ -657,6 +661,7 @@ TEST(ExtensionAPITest, HostedAppPermissions) {
                    .is_available());
 }
 
+#if BUILDFLAG(ENABLE_PLATFORM_APPS)
 TEST(ExtensionAPITest, AppAndFriendsAvailability) {
   std::unique_ptr<ExtensionAPI> extension_api(
       ExtensionAPI::CreateWithDefaultConfiguration());
@@ -720,6 +725,7 @@ TEST(ExtensionAPITest, AppAndFriendsAvailability) {
                      .is_available());
   }
 }
+#endif  // BUILDFLAG(ENABLE_PLATFORM_APPS)
 
 TEST(ExtensionAPITest, ExtensionWithDependencies) {
   // Extension with the "ttsEngine" permission but not the "tts" permission; it
@@ -813,8 +819,8 @@ TEST(ExtensionAPITest, GetAPINameFromFullName) {
       {"bookmarks.create", "bookmarks", "create"},
       {"bookmarks.create.", "bookmarks", "create."},
       {"bookmarks.create.monkey", "bookmarks", "create.monkey"},
-      {"bookmarkManagerPrivate", "bookmarkManagerPrivate", ""},
-      {"bookmarkManagerPrivate.copy", "bookmarkManagerPrivate", "copy"},
+      {"runtime", "runtime", ""},
+      {"runtime.connect", "runtime", "connect"},
   });
 
   std::unique_ptr<ExtensionAPI> api(
@@ -832,18 +838,16 @@ TEST(ExtensionAPITest, DefaultConfigurationFeatures) {
   std::unique_ptr<ExtensionAPI> api(
       ExtensionAPI::CreateWithDefaultConfiguration());
 
-  const SimpleFeature* browser_action = static_cast<const SimpleFeature*>(
-      api->GetFeatureDependency("api:browserAction"));
-  const SimpleFeature* browser_action_set_title =
-      static_cast<const SimpleFeature*>(
-          api->GetFeatureDependency("api:browserAction.setTitle"));
+  const SimpleFeature* action = static_cast<const SimpleFeature*>(
+      api->GetFeatureDependency("api:action"));
+  const SimpleFeature* action_set_title = static_cast<const SimpleFeature*>(
+      api->GetFeatureDependency("api:action.setTitle"));
 
   struct TestData {
     raw_ptr<const SimpleFeature> feature;
     // TODO(aa): More stuff to test over time.
   };
-  auto test_data =
-      std::to_array<TestData>({{browser_action}, {browser_action_set_title}});
+  auto test_data = std::to_array<TestData>({{action}, {action_set_title}});
 
   for (size_t i = 0; i < std::size(test_data); ++i) {
     const SimpleFeature* feature = test_data[i].feature;
@@ -859,75 +863,75 @@ TEST(ExtensionAPITest, DefaultConfigurationFeatures) {
   }
 }
 
-static const base::Value::Dict* GetDictChecked(const base::Value::Dict* dict,
-                                               const std::string& key) {
-  const base::Value::Dict* out = dict->FindDict(key);
+static const base::DictValue* GetDictChecked(const base::DictValue* dict,
+                                             const std::string& key) {
+  const base::DictValue* out = dict->FindDict(key);
   CHECK(out) << key;
   return out;
 }
 
-static std::string GetStringChecked(const base::Value::Dict* dict,
+static std::string GetStringChecked(const base::DictValue* dict,
                                     const std::string& key) {
   const std::string* out = dict->FindString(key);
   CHECK(out) << key;
   return *out;
 }
 
+// Returns the dictionary that has `key`: `value`.
+static const base::DictValue* GetDictFromList(const base::ListValue* list,
+                                              const std::string& key,
+                                              const std::string& value) {
+  for (const auto& val : *list) {
+    const base::DictValue* dict = val.GetIfDict();
+    if (!dict) {
+      continue;
+    }
+    if (const std::string* str = dict->FindString(key); str && *str == value) {
+      return dict;
+    }
+  }
+  return nullptr;
+}
+
 TEST(ExtensionAPITest, TypesHaveNamespace) {
   std::unique_ptr<ExtensionAPI> api(
       ExtensionAPI::CreateWithDefaultConfiguration());
 
-  // Returns the dictionary that has |key|: |value|.
-  auto get_dict_from_list =
-      [](const base::Value::List* list, const std::string& key,
-         const std::string& value) -> const base::Value::Dict* {
-    for (const auto& val : *list) {
-      const base::Value::Dict* dict = val.GetIfDict();
-      if (!dict)
-        continue;
-      if (const std::string* str = dict->FindString(key)) {
-        if (*str == value)
-          return dict;
-      }
-    }
-    return nullptr;
-  };
-
-  const base::Value::Dict* schema = api->GetSchema("sessions");
+  const base::DictValue* schema = api->GetSchema("sessions");
   ASSERT_TRUE(schema);
 
-  const base::Value::List* types = schema->FindList("types");
+  const base::ListValue* types = schema->FindList("types");
   ASSERT_TRUE(types);
   {
-    const base::Value::Dict* session_type =
-        get_dict_from_list(types, "id", "sessions.Session");
+    const base::DictValue* session_type =
+        GetDictFromList(types, "id", "sessions.Session");
     ASSERT_TRUE(session_type);
-    const base::Value::Dict* props = GetDictChecked(session_type, "properties");
-    const base::Value::Dict* tab = GetDictChecked(props, "tab");
+    const base::DictValue* props = GetDictChecked(session_type, "properties");
+    const base::DictValue* tab = GetDictChecked(props, "tab");
     EXPECT_EQ("tabs.Tab", GetStringChecked(tab, "$ref"));
-    const base::Value::Dict* window = GetDictChecked(props, "window");
+    const base::DictValue* window = GetDictChecked(props, "window");
     EXPECT_EQ("windows.Window", GetStringChecked(window, "$ref"));
   }
   {
-    const base::Value::Dict* device_type =
-        get_dict_from_list(types, "id", "sessions.Device");
+    const base::DictValue* device_type =
+        GetDictFromList(types, "id", "sessions.Device");
     ASSERT_TRUE(device_type);
-    const base::Value::Dict* props = GetDictChecked(device_type, "properties");
-    const base::Value::Dict* sessions = GetDictChecked(props, "sessions");
-    const base::Value::Dict* items = GetDictChecked(sessions, "items");
+    const base::DictValue* props = GetDictChecked(device_type, "properties");
+    const base::DictValue* sessions = GetDictChecked(props, "sessions");
+    const base::DictValue* items = GetDictChecked(sessions, "items");
     EXPECT_EQ("sessions.Session", GetStringChecked(items, "$ref"));
   }
-  const base::Value::List* functions = schema->FindList("functions");
+  const base::ListValue* functions = schema->FindList("functions");
   ASSERT_TRUE(functions);
   {
-    const base::Value::Dict* get_recently_closed =
-        get_dict_from_list(functions, "name", "getRecentlyClosed");
+    const base::DictValue* get_recently_closed =
+        GetDictFromList(functions, "name", "getRecentlyClosed");
     ASSERT_TRUE(get_recently_closed);
-    const base::Value::List* parameters =
+    const base::ListValue* parameters =
         get_recently_closed->FindList("parameters");
     ASSERT_TRUE(parameters);
-    const base::Value::Dict* filter =
-        get_dict_from_list(parameters, "name", "filter");
+    const base::DictValue* filter =
+        GetDictFromList(parameters, "name", "filter");
     ASSERT_TRUE(filter);
     EXPECT_EQ("sessions.Filter", GetStringChecked(filter, "$ref"));
   }
@@ -937,8 +941,8 @@ TEST(ExtensionAPITest, TypesHaveNamespace) {
   types = schema->FindList("types");
   ASSERT_TRUE(types);
   {
-    const base::Value::Dict* chrome_setting =
-        get_dict_from_list(types, "id", "types.ChromeSetting");
+    const base::DictValue* chrome_setting =
+        GetDictFromList(types, "id", "types.ChromeSetting");
     ASSERT_TRUE(chrome_setting);
     EXPECT_EQ("types.ChromeSetting",
               GetStringChecked(chrome_setting, "customBindings"));
@@ -1051,13 +1055,12 @@ TEST(ExtensionAPITest, GetSchemaFromDifferentThreads) {
   ASSERT_TRUE(t.Start());
 
   base::RunLoop run_loop;
-  const base::Value::Dict* another_thread_schema = nullptr;
+  const base::DictValue* another_thread_schema = nullptr;
 
-  auto result_cb =
-      base::BindLambdaForTesting([&](const base::Value::Dict* res) {
-        another_thread_schema = res;
-        run_loop.Quit();
-      });
+  auto result_cb = base::BindLambdaForTesting([&](const base::DictValue* res) {
+    another_thread_schema = res;
+    run_loop.Quit();
+  });
   auto task =
       base::BindOnce(&ExtensionAPI::GetSchema,
                      base::Unretained(shared_instance), "storage")
@@ -1071,6 +1074,50 @@ TEST(ExtensionAPITest, GetSchemaFromDifferentThreads) {
 
   // The pointers (not only the values) must be the same.
   EXPECT_EQ(another_thread_schema, current_thread_schema);
+}
+
+// Test that the keys of RuleCondition dictionary in the declarativeNetRequest
+// API are consistent with the RuleConditionKeys enum.
+TEST(ExtensionAPITest, DNRRuleConditionKeysConsistent) {
+  ExtensionAPI* shared_instance = ExtensionAPI::GetSharedInstance();
+  ASSERT_TRUE(shared_instance);
+
+  const base::DictValue* schema =
+      shared_instance->GetSchema("declarativeNetRequest");
+  EXPECT_TRUE(schema);
+
+  // Get the keys of the RuleConditions dictionary.
+  const base::ListValue* types = schema->FindList("types");
+  EXPECT_TRUE(types);
+  const base::DictValue* rule_condition_dict =
+      GetDictFromList(types, "id", "declarativeNetRequest.RuleCondition");
+  EXPECT_TRUE(rule_condition_dict);
+  const base::DictValue* rule_condition_dict_properties =
+      rule_condition_dict->FindDict("properties");
+  EXPECT_TRUE(rule_condition_dict_properties);
+  std::set<std::string> rule_condition_dict_keys;
+  for (const auto [key, _] : *rule_condition_dict_properties) {
+    rule_condition_dict_keys.insert(key);
+  }
+
+  // Get the values of the RuleConditionKeys enum.
+  const base::DictValue* rule_condition_keys_enum =
+      GetDictFromList(types, "id", "declarativeNetRequest.RuleConditionKeys");
+  EXPECT_TRUE(rule_condition_keys_enum);
+  const base::ListValue* rule_condition_keys_enum_value_dicts =
+      rule_condition_keys_enum->FindList("enum");
+  EXPECT_TRUE(rule_condition_keys_enum_value_dicts);
+  std::set<std::string> rule_condition_keys_enum_values;
+  for (const auto& value : *rule_condition_keys_enum_value_dicts) {
+    EXPECT_TRUE(value.is_dict());
+    const std::string* name = value.GetDict().FindString("name");
+    EXPECT_TRUE(name);
+    rule_condition_keys_enum_values.insert(*name);
+  }
+
+  // Check the RuleConditionKeys enum and RuleCondition dict's keys are
+  // consistent.
+  EXPECT_EQ(rule_condition_dict_keys, rule_condition_keys_enum_values);
 }
 
 }  // namespace extensions

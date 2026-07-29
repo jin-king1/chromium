@@ -2,17 +2,19 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "ash/constants/ash_extension_constants.h"
 #include "ash/public/cpp/window_tree_host_lookup.h"
 #include "ash/shell.h"
 #include "chrome/browser/ash/accessibility/accessibility_feature_browsertest.h"
 #include "chrome/browser/ash/accessibility/accessibility_manager.h"
+#include "chrome/browser/ash/accessibility/accessibility_test_utils.h"
 #include "chrome/browser/ash/accessibility/automation_test_utils.h"
 #include "chrome/browser/ash/accessibility/switch_access_test_utils.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/common/extensions/extension_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "content/public/test/browser_test.h"
+#include "ui/accessibility/accessibility_features.h"
 #include "ui/aura/client/cursor_client.h"
 #include "ui/aura/window_tree_host.h"
 #include "ui/display/screen.h"
@@ -34,6 +36,18 @@ class SwitchAccessTest : public AccessibilityFeatureBrowserTest {
         Shell::Get()->GetPrimaryRootWindow());
   }
 
+  void TearDownOnMainThread() override {
+    if (switch_access_test_utils_->console_observer() &&
+        !switch_access_test_utils_->console_observer()->HasErrorsOrWarnings()) {
+      // In manifest v3, there are errors that get fired during tear down that
+      // can cause tests to flake. To avoid flakiness, we reset the console
+      // observer, but only if there were no errors during the test.
+      switch_access_test_utils_->ResetConsoleObserver();
+    }
+
+    AccessibilityFeatureBrowserTest::TearDownOnMainThread();
+  }
+
   void SendVirtualKeyPress(ui::KeyboardCode key) {
     generator_->PressAndReleaseKey(key);
   }
@@ -42,8 +56,7 @@ class SwitchAccessTest : public AccessibilityFeatureBrowserTest {
   aura::client::CursorClient* GetCursorClient(const int x, const int y) {
     gfx::Point location_in_screen(x, y);
     const display::Display& display =
-        display::Screen::GetScreen()->GetDisplayNearestPoint(
-            location_in_screen);
+        display::Screen::Get()->GetDisplayNearestPoint(location_in_screen);
     auto* host = GetWindowTreeHostForDisplay(display.id());
     CHECK(host);
 
@@ -76,38 +89,70 @@ class SwitchAccessTest : public AccessibilityFeatureBrowserTest {
   std::unique_ptr<ui::test::EventGenerator> generator_;
 };
 
-// Flaky. See https://crbug.com/1224254.
-IN_PROC_BROWSER_TEST_F(SwitchAccessTest, DISABLED_ConsumesKeyEvents) {
+// TODO(crbug.com/431933537): Disabled on MSAN due to a renderer crash. The
+// crash is caused by a use-of-uninitialized-value in
+// blink::CSSParserImpl::ParseStyleSheet when parsing default stylesheets,
+// indicating an underlying Blink issue rather than a problem with the test
+// logic.
+//
+// A separate bug (crbug.com/431933537) is filed to specifically track the
+// blink::CSSParserImpl::ParseStyleSheet issue.
+//
+// TODO(crbug.com/450997936): Flaky on ChromeOS.
+#if defined(MEMORY_SANITIZER) || BUILDFLAG(IS_CHROMEOS)
+#define MAYBE_ConsumesKeyEvents DISABLED_ConsumesKeyEvents
+#else
+#define MAYBE_ConsumesKeyEvents ConsumesKeyEvents
+#endif
+IN_PROC_BROWSER_TEST_F(SwitchAccessTest, MAYBE_ConsumesKeyEvents) {
   utils()->EnableSwitchAccess({'1', 'A'} /* select */, {'2', 'B'} /* next */,
                               {'3', 'C'} /* previous */);
   AutomationTestUtils test_utils(extension_misc::kSwitchAccessExtensionId);
   test_utils.SetUpTestSupport();
 
-  // Load a webpage with a text box.
-  NavigateToUrl(GURL(
-      "data:text/html;charset=utf-8,<input type='text' class='sa-input'>"));
+  // Load a webpage with a text box that will be focused automatically.
+  NavigateToUrl(
+      GURL("data:text/html;charset=utf-8,<input type='text' class='sa-input' "
+           "autofocus aria-label='MyTextField'>"));
+  utils()->WaitForFocusRing("primary", "textField", "MyTextField");
 
-  // Put focus in the text box.
-  SendVirtualKeyPress(ui::KeyboardCode::VKEY_TAB);
+  // Send a key event for a character not consumed by Switch Access.
+  SendVirtualKeyPress(ui::KeyboardCode::VKEY_X);
+  test_utils.WaitForValueChangedEvent();
+
+  // Check that the text field received the character.
+  EXPECT_STREQ("x",
+               test_utils.GetValueForNodeWithClassName("sa-input").c_str());
 
   // Send a key event for a character consumed by Switch Access.
   SendVirtualKeyPress(ui::KeyboardCode::VKEY_1);
 
-  // Check that the text field did not receive the character.
-  EXPECT_STREQ("", test_utils.GetValueForNodeWithClassName("sa_input").c_str());
-
-  // Send a key event for a character not consumed by Switch Access.
-  SendVirtualKeyPress(ui::KeyboardCode::VKEY_X);
-
-  // Check that the text field received the character.
+  // Pressing '1' should be consumed by Switch Access to open the menu.
+  utils()->WaitForFocusRing("primary", "button", "Keyboard");
+  // Verify that '1' was not typed into the text field. The value should remain
+  // "x".
   EXPECT_STREQ("x",
-               test_utils.GetValueForNodeWithClassName("sa_input").c_str());
+               test_utils.GetValueForNodeWithClassName("sa-input").c_str());
 }
 
-IN_PROC_BROWSER_TEST_F(SwitchAccessTest, NavigateGroupings) {
+// TODO(crbug.com/388867933): Disabled on MSAN due to a renderer crash. The
+// crash is caused by a use-of-uninitialized-value in
+// blink::CSSParserImpl::ParseStyleSheet when parsing default stylesheets,
+// indicating an underlying Blink issue rather than a problem with the test
+// logic.
+//
+// A separate bug (crbug.com/431933537) is filed to specifically track the
+// blink::CSSParserImpl::ParseStyleSheet issue.
+//
+// TODO(crbug.com/516557726): Also flaky on ASan/LSan and debug builds.
+#if defined(MEMORY_SANITIZER) || defined(ADDRESS_SANITIZER) || !defined(NDEBUG)
+#define MAYBE_NavigateGroupings DISABLED_NavigateGroupings
+#else
+#define MAYBE_NavigateGroupings NavigateGroupings
+#endif
+IN_PROC_BROWSER_TEST_F(SwitchAccessTest, MAYBE_NavigateGroupings) {
   utils()->EnableSwitchAccess({'1', 'A'} /* select */, {'2', 'B'} /* next */,
                               {'3', 'C'} /* previous */);
-
   // Load a webpage with two groups of controls.
   NavigateToUrl(GURL(R"HTML(data:text/html,
       <div role="group" aria-label="Top">
@@ -130,6 +175,8 @@ IN_PROC_BROWSER_TEST_F(SwitchAccessTest, NavigateGroupings) {
   // Next is the back button.
   SendVirtualKeyPress(ui::KeyboardCode::VKEY_2);
   utils()->WaitForFocusRing("primary", "back", "");
+
+  utils()->WaitForBackButtonInitialized();
 
   // Press the select key to press the back button, which should focus
   // on the Top container, with Northwest as the preview.
@@ -155,7 +202,14 @@ IN_PROC_BROWSER_TEST_F(SwitchAccessTest, NavigateGroupings) {
   utils()->WaitForFocusRing("primary", "button", "Southeast");
 }
 
-IN_PROC_BROWSER_TEST_F(SwitchAccessTest, NavigateButtonsInTextFieldMenu) {
+// TODO(crbug.com/388867933): flaky on MSAN. Deflake and re-enable the test.
+#if defined(MEMORY_SANITIZER)
+#define MAYBE_NavigateButtonsInTextFieldMenu \
+  DISABLED_NavigateButtonsInTextFieldMenu
+#else
+#define MAYBE_NavigateButtonsInTextFieldMenu NavigateButtonsInTextFieldMenu
+#endif
+IN_PROC_BROWSER_TEST_F(SwitchAccessTest, MAYBE_NavigateButtonsInTextFieldMenu) {
   utils()->EnableSwitchAccess({'1', 'A'} /* select */, {'2', 'B'} /* next */,
                               {'3', 'C'} /* previous */);
 
@@ -216,8 +270,22 @@ IN_PROC_BROWSER_TEST_F(SwitchAccessTest, NavigateButtonsInTextFieldMenu) {
   utils()->WaitForFocusRing("primary", "button", "Keyboard");
 }
 
-// TODO(crbug.com/40926594): Enable after fixing flakiness.
-IN_PROC_BROWSER_TEST_F(SwitchAccessTest, DISABLED_TypeIntoVirtualKeyboard) {
+// TODO(crbug.com/431933537): Disabled on MSAN due to a renderer crash. The
+// crash is caused by a use-of-uninitialized-value in
+// blink::CSSParserImpl::ParseStyleSheet when parsing default stylesheets,
+// indicating an underlying Blink issue rather than a problem with the test
+// logic.
+//
+// A separate bug (crbug.com/431933537) is filed to specifically track the
+// blink::CSSParserImpl::ParseStyleSheet issue.
+// TODO(crbug.com/520519497): Re-enable on linux once consistent failures are
+// fixed.
+#if defined(MEMORY_SANITIZER) || BUILDFLAG(IS_CHROMEOS)
+#define MAYBE_TypeIntoVirtualKeyboard DISABLED_TypeIntoVirtualKeyboard
+#else
+#define MAYBE_TypeIntoVirtualKeyboard TypeIntoVirtualKeyboard
+#endif
+IN_PROC_BROWSER_TEST_F(SwitchAccessTest, MAYBE_TypeIntoVirtualKeyboard) {
   utils()->EnableSwitchAccess({'1', 'A'} /* select */, {'2', 'B'} /* next */,
                               {'3', 'C'} /* previous */);
 

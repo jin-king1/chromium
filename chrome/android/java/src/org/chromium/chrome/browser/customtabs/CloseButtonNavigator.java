@@ -6,9 +6,9 @@ package org.chromium.chrome.browser.customtabs;
 
 import static org.chromium.chrome.browser.customtabs.content.CustomTabActivityNavigationController.FinishReason.USER_NAVIGATION;
 
-import androidx.annotation.Nullable;
-
 import org.chromium.base.Callback;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider;
 import org.chromium.chrome.browser.customtabs.content.CustomTabActivityNavigationController.FinishReason;
 import org.chromium.chrome.browser.customtabs.content.CustomTabActivityTabController;
@@ -38,8 +38,9 @@ import java.util.function.Predicate;
  * <p>Thread safety: Should only be called on UI thread. <br>
  * Native: Requires native.
  */
+@NullMarked
 public class CloseButtonNavigator {
-    @Nullable private Predicate<String> mLandingPagePredicate;
+    private @Nullable Predicate<String> mLandingPagePredicate;
     private final CustomTabActivityTabController mTabController;
     private final CustomTabActivityTabProvider mTabProvider;
     private final CustomTabMinimizationManagerHolder mMinimizationManagerHolder;
@@ -99,7 +100,8 @@ public class CloseButtonNavigator {
             boolean isMinimized = minimizationManager != null && minimizationManager.isMinimized();
             if (mTabController.onlyOneTabRemaining() && !isMinimized) {
                 // If we call mTabController.closeTab() and wait for the Activity to close as a
-                // result, we have a blank screen flashing before closing. https://crbug.com/1518767
+                // result, we have a blank screen flashing before closing.
+                // https://crbug.com/41491741
                 finishCallback.onResult(USER_NAVIGATION);
                 break;
             }
@@ -124,6 +126,7 @@ public class CloseButtonNavigator {
         if (mLandingPagePredicate == null || controller == null) return false;
 
         NavigationHistory history = controller.getNavigationHistory();
+        assert history != null;
         for (int i = history.getCurrentEntryIndex() - 1; i >= 0; i--) {
             String url = history.getEntryAtIndex(i).getUrl().getSpec();
             if (!isLandingPage(url)) continue;

@@ -38,13 +38,14 @@ import org.chromium.chrome.browser.keyboard_accessory.AccessorySuggestionType;
 import org.chromium.chrome.browser.keyboard_accessory.AccessoryTabType;
 import org.chromium.chrome.browser.keyboard_accessory.R;
 import org.chromium.chrome.browser.keyboard_accessory.data.KeyboardAccessoryData;
-import org.chromium.chrome.browser.keyboard_accessory.data.KeyboardAccessoryData.PlusAddressInfo;
 import org.chromium.chrome.browser.keyboard_accessory.data.KeyboardAccessoryData.UserInfo;
 import org.chromium.chrome.browser.keyboard_accessory.data.UserInfoField;
 import org.chromium.chrome.browser.keyboard_accessory.sheet_component.AccessorySheetCoordinator;
 import org.chromium.chrome.browser.keyboard_accessory.sheet_tabs.AccessorySheetTabItemsModel.AccessorySheetDataPiece;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.components.browser_ui.widget.chips.ChipView;
 
 import java.util.concurrent.ExecutionException;
@@ -55,15 +56,17 @@ import java.util.concurrent.atomic.AtomicReference;
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 public class AddressAccessorySheetViewTest {
+    private WebPageStation mPage;
     private AccessorySheetTabItemsModel mModel;
-    private AtomicReference<RecyclerView> mView = new AtomicReference<>();
+    private final AtomicReference<RecyclerView> mView = new AtomicReference<>();
 
     @Rule
-    public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
+    public FreshCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.freshChromeTabbedActivityRule();
 
     @Before
     public void setUp() throws InterruptedException {
-        mActivityTestRule.startMainActivityOnBlankPage();
+        mPage = mActivityTestRule.startOnBlankPage();
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     mModel = new AccessorySheetTabItemsModel();
@@ -78,7 +81,7 @@ public class AddressAccessorySheetViewTest {
                             new KeyboardAccessoryData.Tab[] {
                                 new KeyboardAccessoryData.Tab(
                                         "Addresses",
-                                        null,
+                                        0,
                                         null,
                                         R.layout.address_accessory_sheet,
                                         AccessoryTabType.ADDRESSES,
@@ -194,38 +197,6 @@ public class AddressAccessorySheetViewTest {
         assertThat(clicked.get(), is(true));
     }
 
-    @Test
-    @MediumTest
-    public void testAddingPlusAddressInfoToTheModelRendersClickableActions()
-            throws ExecutionException {
-        final AtomicBoolean clicked = new AtomicBoolean();
-
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    mModel.add(
-                            new AccessorySheetDataPiece(
-                                    new PlusAddressInfo(
-                                            /* origin= */ "google.com",
-                                            new UserInfoField.Builder()
-                                                    .setSuggestionType(
-                                                            AccessorySuggestionType.PLUS_ADDRESS)
-                                                    .setDisplayText("example@gmail.com")
-                                                    .setTextToFill("example@gmail.com")
-                                                    .setIsObfuscated(false)
-                                                    .setCallback(unused -> clicked.set(true))
-                                                    .build()),
-                                    AccessorySheetDataPiece.Type.PLUS_ADDRESS_SECTION));
-                });
-
-        CriteriaHelper.pollUiThread(
-                () -> Criteria.checkThat(mView.get().getChildCount(), greaterThan(0)));
-
-        assertThat(getChipText(R.id.plus_address), is("example@gmail.com"));
-
-        // Plus address chip is clickable:
-        ThreadUtils.runOnUiThreadBlocking(findChipView(R.id.plus_address)::performClick);
-        assertThat(clicked.get(), is(true));
-    }
 
     private UserInfo createInfo(
             String nameFull,

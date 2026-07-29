@@ -5,6 +5,7 @@
 package org.chromium.content_public.browser;
 
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 
 /** A delegate interface for the contacts picker. */
 @NullMarked
@@ -22,6 +23,7 @@ public interface ContactsPickerDelegate {
      * @param includeIcons Whether to include icons of the shared contacts.
      * @param formattedOrigin The origin the data will be shared with, formatted for display with
      *     the scheme omitted.
+     * @param contactsFetcher The source of contact information.
      * @return the contacts picker object.
      */
     Object showContactsPicker(
@@ -33,5 +35,13 @@ public interface ContactsPickerDelegate {
             boolean includeTel,
             boolean includeAddresses,
             boolean includeIcons,
-            String formattedOrigin);
+            String formattedOrigin,
+            @Nullable ContactsFetcher contactsFetcher);
+
+    /**
+     * Called to cancel the contacts picker.
+     *
+     * @param picker The contacts picker object returned by showContactsPicker.
+     */
+    void cancelContactsPicker(Object picker);
 }

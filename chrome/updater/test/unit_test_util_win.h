@@ -9,7 +9,6 @@
 
 #include "base/command_line.h"
 #include "base/files/scoped_temp_dir.h"
-#include "base/win/atl.h"
 #include "base/win/registry.h"
 #include "chrome/updater/updater_scope.h"
 #include "chrome/updater/test/unit_test_util.h"
@@ -70,6 +69,9 @@ void SetupCmdExe(UpdaterScope scope,
 [[nodiscard]] bool CreateService(const std::wstring& service_name,
                                  const std::wstring& display_name,
                                  const std::wstring& command_line);
+
+// Disables a service for test purposes.
+[[nodiscard]] bool DisableService(const std::wstring& service_name);
 
 // Creates an event accessible to all authenticated users on the machine.
 test::EventHolder CreateEveryoneWaitableEventForTest();

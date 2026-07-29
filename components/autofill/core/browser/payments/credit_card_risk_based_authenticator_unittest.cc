@@ -6,6 +6,7 @@
 
 #include <memory>
 
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/task_environment.h"
@@ -38,8 +39,6 @@ class CreditCardRiskBasedAuthenticatorTest : public testing::Test {
 
   void SetUp() override {
     requester_ = std::make_unique<TestAuthenticationRequester>();
-    autofill_client_.SetPrefs(test::PrefServiceForTesting());
-    personal_data().SetPrefService(autofill_client_.GetPrefs());
     personal_data().SetSyncServiceForTest(&sync_service_);
     autofill_client_.GetPaymentsAutofillClient()
         ->set_payments_network_interface(
@@ -52,12 +51,12 @@ class CreditCardRiskBasedAuthenticatorTest : public testing::Test {
     card_ = test::GetMaskedServerCard();
   }
 
-  base::Value::Dict GetTestRequestOptions() {
-    base::Value::Dict request_options;
+  base::DictValue GetTestRequestOptions() {
+    base::DictValue request_options;
     request_options.Set("challenge", base::Value(kTestChallenge));
     request_options.Set("relying_party_id", base::Value(kGooglePaymentsRpid));
 
-    base::Value::Dict key_info;
+    base::DictValue key_info;
     key_info.Set("credential_id", base::Value(kCredentialId));
     request_options.Set("key_info", base::Value(base::Value::Type::LIST));
     request_options.FindList("key_info")->Append(std::move(key_info));
@@ -452,37 +451,24 @@ TEST_F(CreditCardRiskBasedAuthenticatorTest, CardInfoRetrievalUnmaskFailure) {
 // Params of the CreditCardRiskBasedAuthenticatorCardMetadataTest:
 // -- bool card_name_available;
 // -- bool card_art_available;
-// -- bool metadata_enabled;
 class CreditCardRiskBasedAuthenticatorCardMetadataTest
     : public CreditCardRiskBasedAuthenticatorTest,
-      public testing::WithParamInterface<std::tuple<bool, bool, bool>> {
+      public testing::WithParamInterface<std::tuple<bool, bool>> {
  public:
   CreditCardRiskBasedAuthenticatorCardMetadataTest() = default;
   ~CreditCardRiskBasedAuthenticatorCardMetadataTest() override = default;
 
   bool CardNameAvailable() { return std::get<0>(GetParam()); }
   bool CardArtAvailable() { return std::get<1>(GetParam()); }
-  bool MetadataEnabled() { return std::get<2>(GetParam()); }
 };
 
 INSTANTIATE_TEST_SUITE_P(,
                          CreditCardRiskBasedAuthenticatorCardMetadataTest,
-                         testing::Combine(testing::Bool(),
-                                          testing::Bool(),
-                                          testing::Bool()));
+                         testing::Combine(testing::Bool(), testing::Bool()));
 
 TEST_P(CreditCardRiskBasedAuthenticatorCardMetadataTest, MetadataSignal) {
   base::test::ScopedFeatureList metadata_feature_list;
   CreditCard virtual_card = test::GetVirtualCard();
-  if (MetadataEnabled()) {
-    metadata_feature_list.InitWithFeatures(
-        /*enabled_features=*/{features::kAutofillEnableCardProductName},
-        /*disabled_features=*/{});
-  } else {
-    metadata_feature_list.InitWithFeaturesAndParameters(
-        /*enabled_features=*/{},
-        /*disabled_features=*/{features::kAutofillEnableCardProductName});
-  }
   if (CardNameAvailable()) {
     virtual_card.set_product_description(u"Fake card product name");
   }
@@ -502,7 +488,7 @@ TEST_P(CreditCardRiskBasedAuthenticatorCardMetadataTest, MetadataSignal) {
                   ->last_committed_primary_main_frame_origin.has_value());
   std::vector<ClientBehaviorConstants> signals =
       payments_network_interface()->unmask_request()->client_behavior_signals;
-  if (MetadataEnabled() && CardNameAvailable() && CardArtAvailable()) {
+  if (CardNameAvailable() && CardArtAvailable()) {
     EXPECT_NE(
         signals.end(),
         std::ranges::find(
@@ -516,41 +502,46 @@ TEST_P(CreditCardRiskBasedAuthenticatorCardMetadataTest, MetadataSignal) {
 // Params:
 // 1. Function reference to call which creates the appropriate credit card
 // benefit for the unittest.
-// 2. Whether the flag to render benefits is enabled.
-// 3. Issuer ID which is set for the credit card with benefits.
+// 2. Benefit source which is set for the credit card with benefits.
 class CreditCardRiskBasedAuthenticatorCardBenefitsTest
     : public CreditCardRiskBasedAuthenticatorTest,
       public ::testing::WithParamInterface<
           std::tuple<base::FunctionRef<CreditCardBenefit()>,
-                     bool,
                      std::string>> {
  public:
   void SetUp() override {
     CreditCardRiskBasedAuthenticatorTest::SetUp();
-    scoped_feature_list_.InitWithFeatureStates(
-        {{features::kAutofillEnableCardBenefitsForAmericanExpress,
-          IsCreditCardBenefitsEnabled()},
-         {features::kAutofillEnableCardBenefitsForBmo,
-          IsCreditCardBenefitsEnabled()}});
     card_ = test::GetMaskedServerCard();
     autofill_client()->set_last_committed_primary_main_frame_url(
         test::GetOriginsForMerchantBenefit().begin()->GetURL());
-    test::SetUpCreditCardAndBenefitData(
-        card_, GetBenefit(), GetIssuerId(), personal_data(),
-        autofill_client()->GetAutofillOptimizationGuide());
+      test::SetUpCreditCardAndBenefitData(
+          card_, /*issuer_id=*/"", GetBenefit(), GetBenefitSource(),
+          personal_data(),
+          autofill_client()->GetAutofillOptimizationGuideDecider());
   }
 
   CreditCardBenefit GetBenefit() const { return std::get<0>(GetParam())(); }
 
-  bool IsCreditCardBenefitsEnabled() const { return std::get<1>(GetParam()); }
+  const std::string& GetBenefitSource() const {
+    return std::get<1>(GetParam());
+  }
 
-  const std::string& GetIssuerId() const { return std::get<2>(GetParam()); }
+  bool ShouldShowCardBenefits() const {
+#if !BUILDFLAG(IS_IOS)
+    // Benefits sourced from Curinos currently only supports flat rate benefits.
+    if (GetBenefitSource() == "curinos") {
+      return std::holds_alternative<CreditCardFlatRateBenefit>(GetBenefit());
+    }
+    return true;
+#else
+    return false;
+#endif  // !BUILDFLAG(IS_IOS)
+  }
 
   const CreditCard& card() { return card_; }
 
  private:
   CreditCard card_;
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 INSTANTIATE_TEST_SUITE_P(
@@ -560,8 +551,7 @@ INSTANTIATE_TEST_SUITE_P(
         ::testing::Values(&test::GetActiveCreditCardFlatRateBenefit,
                           &test::GetActiveCreditCardCategoryBenefit,
                           &test::GetActiveCreditCardMerchantBenefit),
-        ::testing::Bool(),
-        ::testing::Values("amex", "bmo")));
+        ::testing::Values("amex", "bmo", "curinos")));
 
 // Checks that ClientBehaviorConstants::kShowingCardBenefits is populated as a
 // signal if a card benefit was shown when unmasking a credit card suggestion
@@ -576,11 +566,10 @@ TEST_P(CreditCardRiskBasedAuthenticatorCardBenefitsTest,
 
   std::vector<ClientBehaviorConstants> signals =
       payments_network_interface()->unmask_request()->client_behavior_signals;
-
   EXPECT_EQ(std::ranges::find(signals,
                               ClientBehaviorConstants::kShowingCardBenefits) !=
                 signals.end(),
-            IsCreditCardBenefitsEnabled());
+            ShouldShowCardBenefits());
 }
 
 }  // namespace

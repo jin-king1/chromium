@@ -14,22 +14,23 @@
 
 namespace content {
 
-void JNI_PrefetchTestUtil_WaitUntilPrefetchResponseCompleted(
+static void JNI_PrefetchTestUtil_WaitUntilPrefetchResponseCompleted(
     JNIEnv* env,
-    GURL& url,
-    const base::android::JavaParamRef<jobject>& callback) {
-  PrefetchService::SetPrefetchResponseCompletedCallbackForTesting(
+    const GURL& url,
+    const base::android::JavaRef<jobject>& callback) {
+  PrefetchContainer::SetPrefetchResponseCompletedCallbackForTesting(
       base::BindRepeating(
           [](const GURL& url,
              const base::android::ScopedJavaGlobalRef<jobject>& callback,
              base::WeakPtr<PrefetchContainer> container) {
-            PrefetchContainer::Key key{std::nullopt, url};
+            PrefetchKey key{std::nullopt, url};
             if (key == container->key()) {
-              base::android::RunRunnableAndroid(callback);
+              jni_zero::RunRunnable(callback);
             }
           },
-          url,
-          base::android::ScopedJavaGlobalRef<jobject>(callback)));
+          url, base::android::ScopedJavaGlobalRef<jobject>(callback)));
 }
 
 }  // namespace content
+
+DEFINE_JNI(PrefetchTestUtil)

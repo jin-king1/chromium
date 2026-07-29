@@ -44,22 +44,17 @@
 #include "third_party/blink/renderer/platform/wtf/forward.h"  // nogncheck
 #endif
 
-namespace WTF {
-#if INSIDE_BLINK
-class String;
-#endif
-class StringImpl;
-}
-
 namespace blink {
+
+class StringImpl;
 
 // Use either one of static methods to convert ASCII, Latin1, UTF-8 or
 // UTF-16 string into WebString:
 //
-// * WebString::FromASCII(std::string_view ascii)
+// * WebString::FromAscii(std::string_view ascii)
 // * WebString::FromLatin1(std::string_view latin1)
-// * WebString::FromUTF8(std::string_view utf8)
-// * WebString::FromUTF16(std::optional<std::u16string_view> utf16)
+// * WebString::FromUtf8(std::string_view utf8)
+// * WebString::FromUtf16(std::optional<std::u16string_view> utf16)
 //
 // Similarly, use either of following methods to convert WebString to
 // ASCII, Latin1, UTF-8 or UTF-16:
@@ -71,8 +66,8 @@ namespace blink {
 // * WebString::ToOptionalString16(webstring)
 //
 // Note that if you need to convert the UTF8 string converted from WebString
-// back to WebString with FromUTF8() you may want to specify Strict
-// UTF8ConversionMode when you call Utf8(), as FromUTF8 rejects strings
+// back to WebString with FromUtf8() you may want to specify Strict
+// UTF8ConversionMode when you call Utf8(), as FromUtf8 rejects strings
 // with invalid UTF8 characters.
 //
 // Some types like GURL and base::FilePath can directly take either utf-8 or
@@ -87,14 +82,14 @@ namespace blink {
 //
 class BLINK_PLATFORM_EXPORT WebString {
  public:
-  enum class UTF8ConversionMode {
+  enum class Utf8ConversionMode {
     // Ignores errors for invalid characters.
     kLenient,
     // Errors out on invalid characters, returns null string.
     kStrict,
     // Replace invalid characters with 0xFFFD.
     // (This is the same conversion mode as base::UTF16ToUTF8)
-    kStrictReplacingErrorsWithFFFD,
+    kStrictReplacingErrors,
   };
 
   ~WebString();
@@ -124,16 +119,19 @@ class BLINK_PLATFORM_EXPORT WebString {
   bool IsEmpty() const { return !length(); }
   bool IsNull() const { return !impl_; }
 
-  std::string Utf8(UTF8ConversionMode = UTF8ConversionMode::kLenient) const;
+  std::string Utf8(Utf8ConversionMode = Utf8ConversionMode::kLenient) const;
 
   WebString Substring(size_t pos,
                       size_t len = std::numeric_limits<size_t>::max()) const;
 
-  static WebString FromUTF8(std::string_view s);
+  // Create a WebString instance from a UTF-8 string.
+  // This returns a null WebString if the input data contains invalid
+  // UTF-8 sequences.
+  static WebString FromUtf8(std::string_view s);
 
   std::u16string Utf16() const;
 
-  static WebString FromUTF16(std::optional<std::u16string_view>);
+  static WebString FromUtf16(std::optional<std::u16string_view>);
 
   static std::optional<std::u16string> ToOptionalString16(const WebString& s) {
     return s.IsNull() ? std::nullopt : std::make_optional(s.Utf16());
@@ -149,72 +147,60 @@ class BLINK_PLATFORM_EXPORT WebString {
   std::string Ascii() const;
 
   // Use this rather than calling base::IsStringASCII().
-  bool ContainsOnlyASCII() const;
+  bool ContainsOnlyAscii() const;
 
   // Does same as FromLatin1 but asserts if the given string has non-ascii char.
-  static WebString FromASCII(std::string_view);
+  static WebString FromAscii(std::string_view);
 
   template <int N>
   WebString(const char (&data)[N])
-      : WebString(FromUTF8(std::string_view(data, N - 1))) {}
+      : WebString(FromUtf8(std::string_view(data, N - 1))) {}
 
   template <int N>
   WebString& operator=(const char (&data)[N]) {
-    *this = FromUTF8(std::string_view(data, N - 1));
+    *this = FromUtf8(std::string_view(data, N - 1));
     return *this;
   }
 
   bool operator<(const WebString& other) const;
 
 #if INSIDE_BLINK
-  WebString(const WTF::String&);
-  WebString& operator=(const WTF::String&);
-  operator WTF::String() const;
+  WebString(const String&);
+  WebString& operator=(const String&);
+  operator String() const;
 
-  operator WTF::StringView() const;
+  operator StringView() const;
 
-  WebString(const WTF::AtomicString&);
-  WebString& operator=(const WTF::AtomicString&);
-  operator WTF::AtomicString() const;
+  WebString(const AtomicString&);
+  WebString& operator=(const AtomicString&);
+  operator AtomicString() const;
 #endif
 
  private:
   bool Is8Bit() const;
 
-  scoped_refptr<WTF::StringImpl> impl_;
+  scoped_refptr<StringImpl> impl_;
 };
 
 #if INSIDE_BLINK
 // This can be used as a projection, e.g. when calling base::ToVector().
-inline WebString ToWebString(const WTF::String& s) {
+inline WebString ToWebString(const String& s) {
   return WebString(s);
 }
-// To convert a std::vector<WebString> to WTF::Vector<String>, use
-//   WTF::Vector<String>(std_vector_web_string).
+// To convert a std::vector<WebString> to Vector<String>, use
+//   Vector<String>(std_vector_web_string).
 #endif
 
 inline bool operator==(const WebString& a, const char* b) {
   return a.Equals(b);
 }
 
-inline bool operator!=(const WebString& a, const char* b) {
-  return !(a == b);
-}
-
 inline bool operator==(const char* a, const WebString& b) {
   return b == a;
 }
 
-inline bool operator!=(const char* a, const WebString& b) {
-  return !(b == a);
-}
-
 inline bool operator==(const WebString& a, const WebString& b) {
   return a.Equals(b);
-}
-
-inline bool operator!=(const WebString& a, const WebString& b) {
-  return !(a == b);
 }
 
 }  // namespace blink

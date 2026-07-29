@@ -10,21 +10,22 @@
 #import "components/affiliations/core/browser/fake_affiliation_service.h"
 #import "components/keyed_service/core/service_access_type.h"
 #import "components/password_manager/core/browser/password_manager_test_utils.h"
+#import "components/password_manager/core/browser/password_store/password_form_converters.h"
 #import "components/password_manager/core/browser/password_store/test_password_store.h"
 #import "components/password_manager/core/browser/ui/saved_passwords_presenter.h"
 #import "components/signin/public/identity_manager/objc/identity_manager_observer_bridge.h"
 #import "components/sync/base/data_type.h"
-#import "components/sync/base/features.h"
 #import "components/sync/base/passphrase_enums.h"
 #import "components/sync/test/mock_sync_service.h"
 #import "components/webauthn/core/browser/passkey_sync_bridge.h"
 #import "components/webauthn/core/browser/test_passkey_model.h"
+#import "ios/chrome/browser/credential_provider/model/features.h"
 #import "ios/chrome/browser/passwords/model/ios_chrome_profile_password_store_factory.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
-#import "ios/chrome/browser/signin/model/trusted_vault_client_backend.h"
-#import "ios/chrome/browser/signin/model/trusted_vault_client_backend_factory.h"
+#import "ios/chrome/browser/signin/model/trusted_vault/trusted_vault_client_backend.h"
+#import "ios/chrome/browser/signin/model/trusted_vault/trusted_vault_client_backend_factory.h"
 #import "ios/chrome/browser/sync/model/sync_observer_bridge.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
 #import "ios/chrome/browser/webauthn/model/ios_passkey_model_factory.h"
@@ -35,6 +36,7 @@
 #import "testing/gtest_mac.h"
 #import "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
+#import "third_party/ocmock/gtest_support.h"
 
 namespace {
 
@@ -55,10 +57,6 @@ class MockTrustedVaultClientBackend : public TrustedVaultClientBackend {
   MockTrustedVaultClientBackend() = default;
   ~MockTrustedVaultClientBackend() override = default;
 
-  MOCK_METHOD(void,
-              SetDeviceRegistrationPublicKeyVerifierForUMA,
-              (VerifierCallback verifier),
-              (override));
   MOCK_METHOD(void,
               FetchKeys,
               (id<SystemIdentity> identity,
@@ -81,6 +79,7 @@ class MockTrustedVaultClientBackend : public TrustedVaultClientBackend {
               Reauthentication,
               (id<SystemIdentity> identity,
                trusted_vault::SecurityDomainId security_domain_id,
+               trusted_vault::TrustedVaultUserActionTriggerForUMA trigger,
                UIViewController* presenting_view_controller,
                CompletionBlock completion),
               (override));
@@ -137,15 +136,14 @@ class PasswordSettingsMediatorTest : public PlatformTest {
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
         IOSChromeProfilePasswordStoreFactory::GetInstance(),
-        base::BindRepeating(
-            &password_manager::BuildPasswordStore<web::BrowserState,
+        base::BindOnce(
+            &password_manager::BuildPasswordStore<ProfileIOS,
                                                   TestPasswordStore>));
     builder.AddTestingFactory(
         IOSPasskeyModelFactory::GetInstance(),
-        base::BindRepeating(
-            [](web::BrowserState*) -> std::unique_ptr<KeyedService> {
-              return std::make_unique<webauthn::TestPasskeyModel>();
-            }));
+        base::BindOnce([](ProfileIOS*) -> std::unique_ptr<KeyedService> {
+          return std::make_unique<webauthn::TestPasskeyModel>();
+        }));
     profile_ = std::move(builder).Build();
 
     passkey_model_ = static_cast<webauthn::TestPasskeyModel*>(
@@ -160,12 +158,19 @@ class PasswordSettingsMediatorTest : public PlatformTest {
     trusted_vault_backend_ = std::make_unique<MockTrustedVaultClientBackend>();
   }
 
-  void TearDown() override { [mediator_ disconnect]; }
+  void TearDown() override {
+    EXPECT_OCMOCK_VERIFY(consumer_);
+    EXPECT_OCMOCK_VERIFY(export_handler_);
+    EXPECT_OCMOCK_VERIFY(bulk_move_passwords_to_account_handler_);
+    EXPECT_OCMOCK_VERIFY(reauth_module_);
+    [mediator_ disconnect];
+  }
 
   void CreateMediator() {
     mediator_ = [[PasswordSettingsMediator alloc]
            initWithReauthenticationModule:reauth_module_
                   savedPasswordsPresenter:presenter_.get()
+                             passkeyModel:passkey_model_
         bulkMovePasswordsToAccountHandler:
             bulk_move_passwords_to_account_handler_
                             exportHandler:export_handler_
@@ -181,15 +186,15 @@ class PasswordSettingsMediatorTest : public PlatformTest {
   void AddPassword(std::string url,
                    std::u16string password,
                    PasswordForm::Store store) {
-    auto form = std::make_unique<PasswordForm>();
-    form->username_value = u"user@gmail.com";
-    form->password_value = password;
-    form->url = GURL(url);
-    form->signon_realm = "https://www.example.com/";
-    form->in_store = store;
+    password_manager::StoredCredential cred;
+    cred.username_value = u"user@gmail.com";
+    cred.password_value = password;
+    cred.url = GURL(url);
+    cred.signon_realm = "https://www.example.com/";
+    cred.in_store = store;
 
     base::RunLoop run_loop;
-    profile_store_->AddLogin(*form, run_loop.QuitClosure());
+    profile_store_->AddLogin(std::move(cred), run_loop.QuitClosure());
     run_loop.Run();
   }
 
@@ -208,10 +213,10 @@ class PasswordSettingsMediatorTest : public PlatformTest {
   web::WebTaskEnvironment task_env_;
   SyncServiceForPasswordTests sync_service_;
   affiliations::FakeAffiliationService affiliation_service_;
-  raw_ptr<webauthn::TestPasskeyModel> passkey_model_;
   scoped_refptr<TestPasswordStore> profile_store_;
   std::unique_ptr<SavedPasswordsPresenter> presenter_;
   std::unique_ptr<TestProfileIOS> profile_;
+  raw_ptr<webauthn::TestPasskeyModel> passkey_model_;
   id consumer_ = OCMProtocolMock(@protocol(PasswordSettingsConsumer));
   id export_handler_ = OCMProtocolMock(@protocol(PasswordExportHandler));
   id bulk_move_passwords_to_account_handler_ =
@@ -264,12 +269,11 @@ TEST_F(PasswordSettingsMediatorTest,
   CreateMediator();
   ASSERT_TRUE(
       [mediator_ conformsToProtocol:@protocol(SyncObserverModelBridge)]);
-  PasswordSettingsMediator<IdentityManagerObserverBridgeDelegate>*
-      syncObserver = static_cast<
-          PasswordSettingsMediator<IdentityManagerObserverBridgeDelegate>*>(
+  PasswordSettingsMediator<IdentityManagerObserving>* syncObserver =
+      static_cast<PasswordSettingsMediator<IdentityManagerObserving>*>(
           mediator_);
   const signin::PrimaryAccountChangeEvent event;
-  [syncObserver onPrimaryAccountChanged:event];
+  [syncObserver primaryAccountDidChange:event];
   [[consumer_ verify] setOnDeviceEncryptionState:
                           PasswordSettingsOnDeviceEncryptionStateNotShown];
 }
@@ -294,9 +298,6 @@ TEST_F(PasswordSettingsMediatorTest,
 // created (has non-degraded recoverability status) and with a bootstrapped
 // device (keys being returned from the passkey trusted vault).
 TEST_F(PasswordSettingsMediatorTest, ShowsUpdateGPMPinButtonForEligibleUser) {
-  if (!syncer::IsWebauthnCredentialSyncEnabled()) {
-    GTEST_SKIP() << "This build configuration does not support passkeys.";
-  }
   EXPECT_CALL(*trusted_vault_backend_, GetDegradedRecoverabilityStatus(
                                            fake_identity_, kPasskeysDomain, _))
       .WillOnce(WithArg<2>(
@@ -315,9 +316,6 @@ TEST_F(PasswordSettingsMediatorTest, ShowsUpdateGPMPinButtonForEligibleUser) {
 // GPM Pin created (is in degraded recoverability).
 TEST_F(PasswordSettingsMediatorTest,
        DoesNotShowChangeGPMPinButtonWithNoGPMPinCreated) {
-  if (!syncer::IsWebauthnCredentialSyncEnabled()) {
-    GTEST_SKIP() << "This build configuration does not support passkeys.";
-  }
   EXPECT_CALL(*trusted_vault_backend_, GetDegradedRecoverabilityStatus(
                                            fake_identity_, kPasskeysDomain, _))
       .WillOnce(WithArg<2>(
@@ -331,9 +329,6 @@ TEST_F(PasswordSettingsMediatorTest,
 // bootstrapped their device (no keys returned from the passkey trusted vault).
 TEST_F(PasswordSettingsMediatorTest,
        DoesNotShowChangeGPMPinButtonWhenNotBootstrapped) {
-  if (!syncer::IsWebauthnCredentialSyncEnabled()) {
-    GTEST_SKIP() << "This build configuration does not support passkeys.";
-  }
   EXPECT_CALL(*trusted_vault_backend_, GetDegradedRecoverabilityStatus(
                                            fake_identity_, kPasskeysDomain, _))
       .WillOnce(WithArg<2>(
@@ -364,9 +359,18 @@ TEST_F(PasswordSettingsMediatorTest, CountsProfileStorePasswordsAsLocal) {
               PasswordForm::Store::kAccountStore);
   [[consumer_ verify] setCanBulkMove:NO localPasswordsCount:2];
 
-  if (syncer::IsWebauthnCredentialSyncEnabled()) {
-    // Count should not be increased for a passkey.
-    AddPasskey();
-    [[consumer_ verify] setCanBulkMove:NO localPasswordsCount:2];
-  }
+  // Count should not be increased for a passkey.
+  AddPasskey();
+  [[consumer_ verify] setCanBulkMove:NO localPasswordsCount:2];
+}
+
+// Tests that the export button is enabled/disabled based on passkey presence
+// when the Credential Exchange feature is enabled.
+TEST_F(PasswordSettingsMediatorTest, UpdatesExportStateWhenPasskeysChange) {
+  CreateMediator();
+
+  [[consumer_ verify] setCanExportCredentials:NO];
+
+  AddPasskey();
+  [[consumer_ verify] setCanExportCredentials:YES];
 }

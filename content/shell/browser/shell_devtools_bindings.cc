@@ -12,7 +12,6 @@
 #include <vector>
 
 #include "base/base64.h"
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/json/json_reader.h"
@@ -21,6 +20,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/no_destructor.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/uuid.h"
@@ -39,6 +39,7 @@
 #include "content/shell/browser/shell_browser_main_parts.h"
 #include "content/shell/browser/shell_content_browser_client.h"
 #include "content/shell/browser/shell_devtools_manager_delegate.h"
+#include "ipc/constants.mojom.h"
 #include "net/http/http_response_headers.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "services/network/public/cpp/resource_request.h"
@@ -61,10 +62,10 @@ std::vector<ShellDevToolsBindings*>* GetShellDevtoolsBindingsInstances() {
   return instance.get();
 }
 
-base::Value::Dict BuildObjectForResponse(const net::HttpResponseHeaders* rh,
-                                         bool success,
-                                         int net_error) {
-  base::Value::Dict response;
+base::DictValue BuildObjectForResponse(const net::HttpResponseHeaders* rh,
+                                       bool success,
+                                       int net_error) {
+  base::DictValue response;
   int responseCode = 200;
   if (rh) {
     responseCode = rh->response_code();
@@ -76,7 +77,7 @@ base::Value::Dict BuildObjectForResponse(const net::HttpResponseHeaders* rh,
   response.Set("netError", net_error);
   response.Set("netErrorName", net::ErrorToString(net_error));
 
-  base::Value::Dict headers;
+  base::DictValue headers;
   size_t iterator = 0;
   std::string name;
   std::string value;
@@ -156,7 +157,7 @@ class ShellDevToolsBindings::NetworkResourceLoader
 // the constant
 // kMaxMessageChunkSize in chrome/browser/devtools/devtools_ui_bindings.cc.
 constexpr size_t kShellMaxMessageChunkSize =
-    IPC::Channel::kMaximumMessageSize / 4;
+    IPC::mojom::kChannelMaximumMessageSize / 4;
 
 void ShellDevToolsBindings::InspectElementAt(int x, int y) {
   if (agent_host_) {
@@ -176,7 +177,7 @@ ShellDevToolsBindings::ShellDevToolsBindings(WebContents* devtools_contents,
       inspect_element_at_x_(-1),
       inspect_element_at_y_(-1) {
   auto* bindings = GetShellDevtoolsBindingsInstances();
-  DCHECK(!base::Contains(*bindings, this));
+  DCHECK(!std::ranges::contains(*bindings, this));
   bindings->push_back(this);
 }
 
@@ -185,7 +186,7 @@ ShellDevToolsBindings::~ShellDevToolsBindings() {
     agent_host_->DetachClient(this);
 
   auto* bindings = GetShellDevtoolsBindingsInstances();
-  DCHECK(base::Contains(*bindings, this));
+  DCHECK(std::ranges::contains(*bindings, this));
   std::erase(*bindings, this);
 }
 
@@ -244,16 +245,16 @@ void ShellDevToolsBindings::WebContentsDestroyed() {
 }
 
 void ShellDevToolsBindings::HandleMessageFromDevToolsFrontend(
-    base::Value::Dict message) {
+    base::DictValue message) {
   const std::string* method = message.FindString("method");
   if (!method)
     return;
 
   int request_id = message.FindInt("id").value_or(0);
-  base::Value::List* params_value = message.FindList("params");
+  base::ListValue* params_value = message.FindList("params");
 
   // Since we've received message by value, we can take the list.
-  base::Value::List params;
+  base::ListValue params;
   if (params_value) {
     params = std::move(*params_value);
   }
@@ -277,7 +278,7 @@ void ShellDevToolsBindings::HandleMessageFromDevToolsFrontend(
 
     GURL gurl(*url);
     if (!gurl.is_valid()) {
-      base::Value::Dict response;
+      base::DictValue response;
       response.Set("statusCode", 404);
       response.Set("urlValid", false);
       SendMessageAck(request_id, std::move(response));
@@ -408,7 +409,7 @@ void ShellDevToolsBindings::CallClientFunction(
 
   web_contents()->GetPrimaryMainFrame()->AllowInjectingJavaScript();
 
-  base::Value::List arguments;
+  base::ListValue arguments;
   if (!arg1.is_none()) {
     arguments.Append(std::move(arg1));
     if (!arg2.is_none()) {
@@ -424,7 +425,7 @@ void ShellDevToolsBindings::CallClientFunction(
 }
 
 void ShellDevToolsBindings::SendMessageAck(int request_id,
-                                           base::Value::Dict arg) {
+                                           base::DictValue arg) {
   CallClientFunction("DevToolsAPI", "embedderMessageAck",
                      base::Value(request_id), base::Value(std::move(arg)));
 }
@@ -433,6 +434,10 @@ void ShellDevToolsBindings::AgentHostClosed(DevToolsAgentHost* agent_host) {
   agent_host_ = nullptr;
   if (delegate_)
     delegate_->Close();
+}
+
+bool ShellDevToolsBindings::MayAccessAllCookies() {
+  return true;
 }
 
 }  // namespace content

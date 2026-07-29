@@ -4,7 +4,10 @@
 
 package org.chromium.components.browser_ui.widget;
 
+import static org.chromium.components.browser_ui.widget.containment.ContainmentUiUtils.parseContainmentAttributes;
+
 import android.content.Context;
+import android.content.res.Resources;
 import android.content.res.TypedArray;
 import android.graphics.drawable.Drawable;
 import android.os.Bundle;
@@ -21,8 +24,13 @@ import android.widget.RadioButton;
 import android.widget.RelativeLayout;
 import android.widget.TextView;
 
+import androidx.annotation.StyleRes;
+import androidx.core.widget.TextViewCompat;
+
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.components.browser_ui.widget.containment.ContainmentItem;
+import org.chromium.components.browser_ui.widget.containment.ContainmentUiUtils;
 import org.chromium.ui.UiUtils;
 import org.chromium.ui.widget.ChromeImageView;
 
@@ -61,7 +69,10 @@ import java.util.List;
  * </p>
  */
 @NullMarked
-public class RadioButtonWithDescription extends RelativeLayout implements OnClickListener {
+public class RadioButtonWithDescription extends RelativeLayout
+        implements OnClickListener, ContainmentItem {
+    private final int mBackgroundStyle;
+
     /** Interface to listen to radio button changes. */
     public interface ButtonCheckedStateChangedListener {
         /**
@@ -100,6 +111,10 @@ public class RadioButtonWithDescription extends RelativeLayout implements OnClic
         setViewsInternal();
 
         if (attrs != null) applyAttributes(attrs);
+
+        ContainmentUiUtils.ContainmentAttributes containmentAttributes =
+                parseContainmentAttributes(context, attrs);
+        mBackgroundStyle = containmentAttributes.backgroundStyle;
 
         setMinimumHeight(getResources().getDimensionPixelSize(R.dimen.min_touch_target_size));
 
@@ -169,24 +184,47 @@ public class RadioButtonWithDescription extends RelativeLayout implements OnClic
         return R.layout.radio_button_with_description;
     }
 
-    /** @return RadioButton View inside this {@link RadioButtonWithDescription}. */
+    /**
+     * @return RadioButton View inside this {@link RadioButtonWithDescription}.
+     */
     protected RadioButton getRadioButtonView() {
-        return (RadioButton) findViewById(R.id.radio_button);
+        return findViewById(R.id.radio_button);
     }
 
-    /** @return ChromeImageView inside this {@link RadioButtonWithDescription}. */
+    /**
+     * @return ChromeImageView inside this {@link RadioButtonWithDescription}.
+     */
     protected ChromeImageView getIcon() {
-        return (ChromeImageView) findViewById(R.id.icon);
+        return findViewById(R.id.icon);
     }
 
-    /** @return TextView displayed as primary inside this {@link RadioButtonWithDescription}. */
+    /** Set the icon in the front of the primary texts {@link RadioButtonWithDescription}. */
+    public void setIcon(int resId) {
+        mIcon.setImageResource(resId);
+        mIcon.setVisibility(View.VISIBLE);
+    }
+
+    /** Set the icon margin end. */
+    public void setIconMarginEnd(int end) {
+        LayoutParams params = new LayoutParams(mIcon.getLayoutParams());
+        params.setMarginEnd(end);
+        params.addRule(RelativeLayout.END_OF, mRadioButton.getId());
+        params.addRule(RelativeLayout.CENTER_VERTICAL);
+        mIcon.setLayoutParams(params);
+    }
+
+    /**
+     * @return TextView displayed as primary inside this {@link RadioButtonWithDescription}.
+     */
     protected TextView getPrimaryTextView() {
-        return (TextView) findViewById(R.id.primary);
+        return findViewById(R.id.primary);
     }
 
-    /** @return TextView displayed as description inside this {@link RadioButtonWithDescription}. */
+    /**
+     * @return TextView displayed as description inside this {@link RadioButtonWithDescription}.
+     */
     protected TextView getDescriptionTextView() {
-        return (TextView) findViewById(R.id.description);
+        return findViewById(R.id.description);
     }
 
     /**
@@ -220,6 +258,15 @@ public class RadioButtonWithDescription extends RelativeLayout implements OnClic
         String primaryText = a.getString(R.styleable.RadioButtonWithDescription_primaryText);
         if (primaryText != null) mPrimary.setText(primaryText);
 
+        @StyleRes
+        int primaryTextAppearance =
+                a.getResourceId(
+                        R.styleable.RadioButtonWithDescription_primaryTextAppearance,
+                        Resources.ID_NULL);
+        if (primaryTextAppearance != Resources.ID_NULL) {
+            TextViewCompat.setTextAppearance(mPrimary, primaryTextAppearance);
+        }
+
         String descriptionText =
                 a.getString(R.styleable.RadioButtonWithDescription_descriptionText);
         if (descriptionText != null) {
@@ -227,6 +274,15 @@ public class RadioButtonWithDescription extends RelativeLayout implements OnClic
             mDescription.setVisibility(View.VISIBLE);
         } else {
             ((LayoutParams) mPrimary.getLayoutParams()).addRule(RelativeLayout.CENTER_VERTICAL);
+        }
+
+        @StyleRes
+        int descriptionTextAppearance =
+                a.getResourceId(
+                        R.styleable.RadioButtonWithDescription_descriptionTextAppearance,
+                        Resources.ID_NULL);
+        if (descriptionTextAppearance != Resources.ID_NULL) {
+            TextViewCompat.setTextAppearance(mDescription, descriptionTextAppearance);
         }
 
         a.recycle();
@@ -390,5 +446,10 @@ public class RadioButtonWithDescription extends RelativeLayout implements OnClic
     @Override
     protected void dispatchRestoreInstanceState(SparseArray<Parcelable> container) {
         dispatchThawSelfOnly(container);
+    }
+
+    @Override
+    public @BackgroundStyle int getCustomBackgroundStyle() {
+        return mBackgroundStyle;
     }
 }

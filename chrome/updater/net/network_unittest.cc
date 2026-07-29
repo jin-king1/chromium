@@ -13,6 +13,7 @@
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/notreached.h"
 #include "base/path_service.h"
@@ -62,15 +63,17 @@ class UpdaterNetworkTest : public ::testing::Test {
   }
 
   void PostRequestCompleteCallback(const std::string& expected_body,
-                                   std::unique_ptr<std::string> response_body,
+                                   std::optional<std::string> response_body,
                                    int net_error,
                                    const std::string& header_etag,
                                    const std::string& header_x_cup_server_proof,
+                                   const std::string& header_set_cookie,
                                    int64_t xheader_retry_after_sec) {
-    EXPECT_STREQ(response_body->c_str(), expected_body.c_str());
+    EXPECT_EQ(*response_body, expected_body);
     EXPECT_EQ(net_error, 0);
-    EXPECT_STREQ(header_etag.c_str(), "Wfhw789h");
-    EXPECT_STREQ(header_x_cup_server_proof.c_str(), "server-proof");
+    EXPECT_EQ(header_etag, "Wfhw789h");
+    EXPECT_EQ(header_x_cup_server_proof, "server-proof");
+    EXPECT_EQ(header_set_cookie, "cookie");
     EXPECT_EQ(xheader_retry_after_sec, 67);
     PostRequestCompleted();
   }
@@ -95,6 +98,8 @@ class UpdaterNetworkTest : public ::testing::Test {
       http_response->AddCustomHeader("x-retry-after", "67");
       http_response->AddCustomHeader("etag", "Wfhw789h");
       http_response->AddCustomHeader("x-cup-server-proof", "server-proof");
+      http_response->AddCustomHeader(
+          update_client::NetworkFetcher::kHeaderSetCookie, "cookie");
     } else if (request.method == net::test_server::HttpMethod::METHOD_GET) {
       http_response->set_content("hello");
       http_response->set_content_type("application/octet-stream");
@@ -122,7 +127,8 @@ class UpdaterNetworkTest : public ::testing::Test {
     server_handle_ = test_server_.StartAndReturnHandle();
     ASSERT_TRUE(server_handle_);
     network_fetcher_factory_ = base::MakeRefCounted<NetworkFetcherFactory>(
-        PolicyServiceProxyConfiguration::Get(test::CreateTestPolicyService()));
+        PolicyServiceProxyConfiguration::Get(test::CreateTestPolicyService()),
+        /*event_logger=*/nullptr);
     fetcher_ = network_fetcher_factory_->Create();
   }
 
@@ -200,7 +206,8 @@ TEST_F(UpdaterDownloadTest, NetworkFetcher) {
 
   base::RunLoop run_loop;
   auto factory = base::MakeRefCounted<NetworkFetcherFactory>(
-      PolicyServiceProxyConfiguration::Get(test::CreateTestPolicyService()));
+      PolicyServiceProxyConfiguration::Get(test::CreateTestPolicyService()),
+      /*event_logger=*/nullptr);
   ASSERT_NE(factory, nullptr);
   {
     base::ScopedDisallowBlocking no_blocking_allowed_on_sequence;
@@ -211,7 +218,7 @@ TEST_F(UpdaterDownloadTest, NetworkFetcher) {
         base::BindRepeating([](int response_code, int64_t /*content_length*/) {
           EXPECT_EQ(response_code, 200);
         }),
-        base::BindRepeating([](int64_t /*current*/) {}),
+        base::DoNothing(),
         base::BindOnce([](int net_error, int64_t content_size) {
           EXPECT_EQ(net_error, 0);
         }).Then(run_loop.QuitClosure()));

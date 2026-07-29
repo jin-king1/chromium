@@ -5,6 +5,7 @@
 #include "chrome/browser/webauthn/android/cable_module_android.h"
 
 #include <algorithm>
+#include <variant>
 
 #include "components/prefs/testing_pref_service.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -38,7 +39,7 @@ constexpr uint8_t kCBOR[] = {
     0x20, 0x36, 0x61, 0x19, 0x03, 0xe7, 0xf5,
 };
 
-}
+}  // namespace
 
 TEST(CableModuleAndroidTest, PaaskInfoFromCBOR) {
   // This CBOR was captured from Play Services.
@@ -106,27 +107,27 @@ TEST(CableModuleAndroidTest, Cache) {
   syncer::DeviceInfo::PhoneAsASecurityKeyInfo::StatusOrInfo result;
 
   result = CacheResult(NotReady(), &dummy_prefs);
-  EXPECT_TRUE(absl::get_if<NotReady>(&result));
+  EXPECT_TRUE(std::get_if<NotReady>(&result));
 
   result = CacheResult(NoSupport(), &dummy_prefs);
-  EXPECT_TRUE(absl::get_if<NoSupport>(&result));
+  EXPECT_TRUE(std::get_if<NoSupport>(&result));
 
   // The "NoSupport" state should have been cached.
   result = CacheResult(NotReady(), &dummy_prefs);
-  EXPECT_TRUE(absl::get_if<NoSupport>(&result));
+  EXPECT_TRUE(std::get_if<NoSupport>(&result));
 
   std::optional<PhoneAsASecurityKeyInfo> paask_info =
       webauthn::authenticator::internal::PaaskInfoFromCBOR(kCBOR);
   CHECK(paask_info);
   result = CacheResult(*paask_info, &dummy_prefs);
-  EXPECT_TRUE(absl::get_if<PhoneAsASecurityKeyInfo>(&result));
+  EXPECT_TRUE(std::get_if<PhoneAsASecurityKeyInfo>(&result));
 
   // Now the `PhoneAsASecurityKeyInfo` should have been cached.
   result = CacheResult(NotReady(), &dummy_prefs);
-  EXPECT_TRUE(absl::get_if<PhoneAsASecurityKeyInfo>(&result));
+  EXPECT_TRUE(std::get_if<PhoneAsASecurityKeyInfo>(&result));
 
   // Corrupt data should be ignored.
   dummy_prefs.SetString("webauthn.authenticator_info", "AAAA");
   result = CacheResult(NotReady(), &dummy_prefs);
-  EXPECT_TRUE(absl::get_if<NotReady>(&result));
+  EXPECT_TRUE(std::get_if<NotReady>(&result));
 }

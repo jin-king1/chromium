@@ -6,7 +6,9 @@
 
 #import "base/apple/foundation_util.h"
 #import "base/strings/sys_string_conversions.h"
+#import "base/strings/utf_string_conversions.h"
 #import "base/test/ios/wait_util.h"
+#import "components/search_engines/search_engines_switches.h"
 #import "ios/chrome/browser/favicon/model/favicon_service_factory.h"
 #import "ios/chrome/browser/favicon/model/ios_chrome_favicon_loader_factory.h"
 #import "ios/chrome/browser/favicon/model/ios_chrome_large_icon_service_factory.h"
@@ -19,9 +21,9 @@
 
 SearchEngineTableViewControllerTest::SearchEngineTableViewControllerTest()
     : prepopulated_search_engine_({
-          {"google.com", GURL("https://p1.com?q={searchTerms}")},
           {"bing.com", GURL("https://p2.com?q={searchTerms}")},
           {"duckduckgo.com", GURL("https://p3.com?q={searchTerms}")},
+          {"google.com", GURL("https://p1.com?q={searchTerms}")},
       }),
       custom_search_engine_({
           {"custom-1", GURL("https://c1.com?q={searchTerms}")},
@@ -33,6 +35,7 @@ SearchEngineTableViewControllerTest::SearchEngineTableViewControllerTest()
 SearchEngineTableViewControllerTest::~SearchEngineTableViewControllerTest() {}
 
 void SearchEngineTableViewControllerTest::SetUp() {
+  scoped_feature_list_.InitAndEnableFeature(switches::kSearchSettingsUpdateV2);
   LegacyChromeTableViewControllerTest::SetUp();
 
   TestProfileIOS::Builder builder;
@@ -189,6 +192,73 @@ void SearchEngineTableViewControllerTest::CheckRealItem(const TemplateURL* turl,
   CheckItem(base::SysUTF16ToNSString(turl->short_name()),
             base::SysUTF16ToNSString(turl->keyword()), expected_checked,
             section, row, enabled);
+}
+
+// Tests that the search engine from starter pack is not shown.
+TEST_F(SearchEngineTableViewControllerTest, TestStarterPackSearchEngine) {
+  AddPriorSearchEngine(prepopulated_search_engine_[0], 1, true);
+
+  TemplateURLData starter_pack_engine_data;
+  starter_pack_engine_data.SetShortName(
+      base::ASCIIToUTF16(prepopulated_search_engine_[1].short_name));
+  starter_pack_engine_data.SetKeyword(
+      base::ASCIIToUTF16(prepopulated_search_engine_[1].short_name));
+  starter_pack_engine_data.SetURL(
+      prepopulated_search_engine_[1].searchable_url.possibly_invalid_spec());
+  starter_pack_engine_data.favicon_url = TemplateURL::GenerateFaviconURL(
+      prepopulated_search_engine_[1].searchable_url);
+  starter_pack_engine_data.starter_pack_id = 1;
+  template_url_service_->Add(
+      std::make_unique<TemplateURL>(starter_pack_engine_data));
+
+  CreateController();
+  CheckController();
+
+  EXPECT_EQ(1, NumberOfSections());
+  EXPECT_EQ(1, NumberOfItemsInSection(0));
+  CheckPrepopulatedItem(prepopulated_search_engine_[0], true, 0, 0, true);
+}
+
+// Tests that multiple search engines from starter pack are not shown, but
+// the non-starter-pack engines are visible.
+TEST_F(SearchEngineTableViewControllerTest,
+       TestMultipleStarterPackSearchEngines) {
+  AddPriorSearchEngine(prepopulated_search_engine_[0], 1, true);
+  AddPriorSearchEngine(prepopulated_search_engine_[1], 2, false);
+
+  TemplateURLData starter_pack_engine_data_1;
+  starter_pack_engine_data_1.SetShortName(
+      base::ASCIIToUTF16(custom_search_engine_[0].short_name));
+  starter_pack_engine_data_1.SetKeyword(
+      base::ASCIIToUTF16(custom_search_engine_[0].short_name));
+  starter_pack_engine_data_1.SetURL(
+      custom_search_engine_[0].searchable_url.possibly_invalid_spec());
+  starter_pack_engine_data_1.favicon_url =
+      TemplateURL::GenerateFaviconURL(custom_search_engine_[0].searchable_url);
+  starter_pack_engine_data_1.starter_pack_id = 1;
+  template_url_service_->Add(
+      std::make_unique<TemplateURL>(starter_pack_engine_data_1));
+
+  TemplateURLData starter_pack_engine_data_2;
+  starter_pack_engine_data_2.SetShortName(
+      base::ASCIIToUTF16(custom_search_engine_[1].short_name));
+  starter_pack_engine_data_2.SetKeyword(
+      base::ASCIIToUTF16(custom_search_engine_[1].short_name));
+  starter_pack_engine_data_2.SetURL(
+      custom_search_engine_[1].searchable_url.possibly_invalid_spec());
+  starter_pack_engine_data_2.favicon_url =
+      TemplateURL::GenerateFaviconURL(custom_search_engine_[1].searchable_url);
+  starter_pack_engine_data_2.starter_pack_id = 2;
+  template_url_service_->Add(
+      std::make_unique<TemplateURL>(starter_pack_engine_data_2));
+
+  CreateController();
+  CheckController();
+
+  EXPECT_EQ(1, NumberOfSections());
+  EXPECT_EQ(2, NumberOfItemsInSection(0));
+  CheckPrepopulatedItem(prepopulated_search_engine_[0], true, 0, 0, true);
+  CheckPrepopulatedItem(prepopulated_search_engine_[1], false, 0, 1, true);
 }
 
 // Deletes items at `indexes` and wait util condition returns true or timeout.

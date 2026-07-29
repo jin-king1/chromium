@@ -10,15 +10,14 @@
 #include "base/base_export.h"
 #include "base/functional/callback.h"
 #include "base/gtest_prod_util.h"
-#include "base/memory/raw_ptr_exclusion.h"
-#include "base/task/delay_policy.h"
+#include "base/memory/raw_ptr.h"
 #include "base/task/delayed_task_handle.h"
 #include "base/task/sequenced_task_runner_helpers.h"
 #include "base/task/task_runner.h"
-#include "base/types/pass_key.h"
 
 namespace blink {
 class LowPrecisionTimer;
+class PaintTiming;
 class ScriptedIdleTaskController;
 class TimerBase;
 class TimerBasedTickProvider;
@@ -32,6 +31,9 @@ class AlsaPcmOutputStream;
 class AlsaPcmInputStream;
 class FakeAudioWorker;
 }  // namespace media
+namespace page_content_annotations {
+class PageStabilityMonitor;
+}  // namespace page_content_annotations
 namespace viz {
 class ExternalBeginFrameSourceWin;
 }  // namespace viz
@@ -56,6 +58,8 @@ class TimeTicks;
 
 namespace subtle {
 
+enum class DelayPolicy;
+
 // Restricts access to PostCancelableDelayedTask*() to authorized callers.
 class PostDelayedTaskPassKey {
  private:
@@ -67,11 +71,13 @@ class PostDelayedTaskPassKey {
   friend class base::DeadlineTimer;
   friend class base::MetronomeTimer;
   friend class blink::LowPrecisionTimer;
+  friend class blink::PaintTiming;
   friend class blink::ScriptedIdleTaskController;
   friend class blink::TimerBase;
   friend class blink::TimerBasedTickProvider;
   friend class blink::WebRtcTaskQueue;
   friend class PostDelayedTaskPassKeyForTesting;
+  friend class page_content_annotations::PageStabilityMonitor;
   friend class webrtc::ThreadWrapper;
   friend class media::AlsaPcmOutputStream;
   friend class media::AlsaPcmInputStream;
@@ -362,7 +368,7 @@ class BASE_EXPORT SequencedTaskRunner : public TaskRunner {
     // SingleThreadTaskRunner::CurrentHandleOverrideForTesting in unit tests to
     // avoid the friend requirement.
     friend class SingleThreadTaskRunner;
-    FRIEND_TEST_ALL_PREFIXES(SequencedTaskRunnerCurrentDefaultHandleTest,
+    FRIEND_TEST_ALL_PREFIXES(SequencedTaskRunnerCurrentDefaultHandleDeathTest,
                              OverrideWithNull);
     FRIEND_TEST_ALL_PREFIXES(SequencedTaskRunnerCurrentDefaultHandleTest,
                              OverrideWithNonNull);
@@ -375,9 +381,10 @@ class BASE_EXPORT SequencedTaskRunner : public TaskRunner {
                          MayAlreadyExist);
 
     scoped_refptr<SequencedTaskRunner> task_runner_;
-    // RAW_PTR_EXCLUSION: Performance reasons (based on analysis of
+    // Uses UnprotectedInRelease: Performance reasons (based on analysis of
     // speedometer3).
-    RAW_PTR_EXCLUSION CurrentDefaultHandle* previous_handle_ = nullptr;
+    raw_ptr<CurrentDefaultHandle, UnprotectedInRelease> previous_handle_ =
+        nullptr;
   };
 
  protected:

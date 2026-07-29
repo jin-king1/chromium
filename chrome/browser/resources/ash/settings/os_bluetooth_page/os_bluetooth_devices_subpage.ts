@@ -54,15 +54,6 @@ export class SettingsBluetoothDevicesSubpageElement extends
       },
 
       /**
-       * Used by DeepLinkingMixin to focus this page's deep links.
-       */
-      supportedSettingIds: {
-        type: Object,
-        value: () =>
-            new Set<Setting>([Setting.kBluetoothOnOff, Setting.kFastPairOnOff]),
-      },
-
-      /**
        * Reflects the current state of the toggle button. This will be set when
        * the |systemProperties| state changes or when the user presses the
        * toggle.
@@ -100,14 +91,20 @@ export class SettingsBluetoothDevicesSubpageElement extends
     };
   }
 
-  systemProperties: BluetoothSystemProperties;
+  // DeepLinkingMixin override
+  override supportedSettingIds = new Set<Setting>([
+    Setting.kBluetoothOnOff,
+    Setting.kFastPairOnOff,
+  ]);
+
+  declare systemProperties: BluetoothSystemProperties;
   private browserProxy_: OsBluetoothDevicesSubpageBrowserProxy;
-  private connectedDevices_: PairedBluetoothDeviceProperties[];
-  private isBluetoothToggleOn_: boolean;
-  private isFastPairSupportedByDevice_: boolean;
+  declare private connectedDevices_: PairedBluetoothDeviceProperties[];
+  declare private isBluetoothToggleOn_: boolean;
+  declare private isFastPairSupportedByDevice_: boolean;
   private lastSelectedDeviceId_: string|null;
-  private savedDevicesSublabel_: string;
-  private unconnectedDevices_: PairedBluetoothDeviceProperties[];
+  declare private savedDevicesSublabel_: string;
+  declare private unconnectedDevices_: PairedBluetoothDeviceProperties[];
 
   constructor() {
     super();

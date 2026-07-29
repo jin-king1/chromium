@@ -4,21 +4,29 @@
 
 #include "chrome/browser/extensions/api/developer_private/developer_private_api.h"
 
+#include "base/lazy_instance.h"
 #include "chrome/browser/extensions/api/developer_private/extension_info_generator.h"
+#include "chrome/browser/extensions/commands/command_service.h"
 #include "chrome/browser/extensions/error_console/error_console_factory.h"
+#include "chrome/browser/extensions/extension_management.h"
+#include "chrome/browser/extensions/sync/account_extension_tracker.h"
 #include "extensions/browser/event_router_factory.h"
 #include "extensions/browser/extension_prefs_factory.h"
 #include "extensions/browser/extension_registry_factory.h"
+#include "extensions/browser/extension_system_provider.h"
+#include "extensions/browser/extensions_browser_client.h"
+#include "extensions/browser/permissions_manager.h"
 #include "extensions/browser/process_manager_factory.h"
 #include "extensions/browser/warning_service_factory.h"
+#include "extensions/buildflags/buildflags.h"
+#include "ui/base/clipboard/file_info.h"
 
-#if !BUILDFLAG(IS_ANDROID)
-#include "chrome/browser/extensions/account_extension_tracker.h"
-#include "chrome/browser/extensions/chrome_extension_system_factory.h"
+#if BUILDFLAG(ENABLE_EXTENSIONS)
 #include "chrome/browser/ui/toolbar/toolbar_actions_model_factory.h"
 #include "extensions/browser/app_window/app_window_registry.h"
-#include "extensions/browser/permissions_manager.h"
-#endif  // !BUILDFLAG(IS_ANDROID)
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace extensions {
 
@@ -42,8 +50,9 @@ class DeveloperPrivateAPI::WebContentsTracker
   ~WebContentsTracker() override = default;
 
   void WebContentsDestroyed() override {
-    if (api_)
+    if (api_) {
       api_->web_contents_data_.erase(web_contents());
+    }
     delete this;
   }
 
@@ -66,6 +75,7 @@ void BrowserContextKeyedAPIFactory<
     DeveloperPrivateAPI>::DeclareFactoryDependencies() {
   // Keep this in sync with observers DeveloperPrivateEventRouterShared
   // implements.
+  DependsOn(AccountExtensionTracker::GetFactory());
   DependsOn(ExtensionRegistryFactory::GetInstance());
   DependsOn(ErrorConsoleFactory::GetInstance());
   DependsOn(ProcessManagerFactory::GetInstance());
@@ -73,14 +83,14 @@ void BrowserContextKeyedAPIFactory<
   DependsOn(ExtensionPrefsFactory::GetInstance());
   DependsOn(EventRouterFactory::GetInstance());
   DependsOn(PermissionsManager::GetFactory());
-#if !BUILDFLAG(IS_ANDROID)
-  DependsOn(AppWindowRegistry::Factory::GetInstance());
+  DependsOn(ExtensionsBrowserClient::Get()->GetExtensionSystemFactory());
   DependsOn(ExtensionManagementFactory::GetInstance());
   DependsOn(CommandService::GetFactoryInstance());
-  DependsOn(ChromeExtensionSystemFactory::GetInstance());
+
+#if BUILDFLAG(ENABLE_EXTENSIONS)
+  DependsOn(AppWindowRegistry::Factory::GetInstance());
   DependsOn(ToolbarActionsModelFactory::GetInstance());
-  DependsOn(AccountExtensionTracker::GetFactory());
-#endif  // !BUILDFLAG(IS_ANDROID)
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
 }
 
 // static
@@ -103,8 +113,9 @@ DeveloperPrivateAPI::UnpackedRetryId DeveloperPrivateAPI::AddUnpackedPath(
   IdToPathMap& paths = data->allowed_unpacked_paths;
   auto existing =
       std::ranges::find(paths, path, &IdToPathMap::value_type::second);
-  if (existing != paths.end())
+  if (existing != paths.end()) {
     return existing->first;
+  }
 
   UnpackedRetryId id = base::Uuid::GenerateRandomV4().AsLowercaseString();
   paths[id] = path;
@@ -115,25 +126,27 @@ base::FilePath DeveloperPrivateAPI::GetUnpackedPath(
     content::WebContents* web_contents,
     const UnpackedRetryId& id) const {
   const WebContentsData* data = GetWebContentsData(web_contents);
-  if (!data)
+  if (!data) {
     return base::FilePath();
+  }
   const IdToPathMap& paths = data->allowed_unpacked_paths;
   auto path_iter = paths.find(id);
-  if (path_iter == paths.end())
+  if (path_iter == paths.end()) {
     return base::FilePath();
+  }
   return path_iter->second;
 }
 
-void DeveloperPrivateAPI::SetDraggedPath(content::WebContents* web_contents,
-                                         const base::FilePath& dragged_path) {
+void DeveloperPrivateAPI::SetDraggedFile(content::WebContents* web_contents,
+                                         const ui::FileInfo& dragged_file) {
   WebContentsData* data = GetOrCreateWebContentsData(web_contents);
-  data->dragged_path = dragged_path;
+  data->dragged_file = dragged_file;
 }
 
-base::FilePath DeveloperPrivateAPI::GetDraggedPath(
+ui::FileInfo DeveloperPrivateAPI::GetDraggedFile(
     content::WebContents* web_contents) const {
   const WebContentsData* data = GetWebContentsData(web_contents);
-  return data ? data->dragged_path : base::FilePath();
+  return data ? data->dragged_file : ui::FileInfo();
 }
 
 void DeveloperPrivateAPI::RegisterNotifications() {
@@ -154,8 +167,9 @@ DeveloperPrivateAPI::WebContentsData*
 DeveloperPrivateAPI::GetOrCreateWebContentsData(
     content::WebContents* web_contents) {
   auto iter = web_contents_data_.find(web_contents);
-  if (iter != web_contents_data_.end())
+  if (iter != web_contents_data_.end()) {
     return &iter->second;
+  }
 
   // This is the first we've added this WebContents. Track its lifetime so we
   // can clean up the paths when it is destroyed.

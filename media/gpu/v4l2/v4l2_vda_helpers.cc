@@ -2,13 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+
 #include "media/gpu/v4l2/v4l2_vda_helpers.h"
 
 #include <algorithm>
 
-#include "base/containers/contains.h"
+#include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/types/to_address.h"
 #include "media/base/color_plane_layout.h"
 #include "media/base/video_codecs.h"
 #include "media/gpu/chromeos/fourcc.h"
@@ -24,11 +26,10 @@ std::optional<Fourcc> FindImageProcessorInputFormat(V4L2Device* vda_device) {
   std::vector<uint32_t> processor_input_formats =
       V4L2ImageProcessorBackend::GetSupportedInputFormats();
 
-  struct v4l2_fmtdesc fmtdesc;
-  memset(&fmtdesc, 0, sizeof(fmtdesc));
+  struct v4l2_fmtdesc fmtdesc = {};
   fmtdesc.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
   while (vda_device->Ioctl(VIDIOC_ENUM_FMT, &fmtdesc) == 0) {
-    if (base::Contains(processor_input_formats, fmtdesc.pixelformat)) {
+    if (std::ranges::contains(processor_input_formats, fmtdesc.pixelformat)) {
       DVLOGF(3) << "Image processor input format=" << fmtdesc.description;
       return Fourcc::FromV4L2PixFmt(fmtdesc.pixelformat);
     }
@@ -211,8 +212,9 @@ bool H264InputBufferFragmentSplitter::AdvanceFrameFragment(const uint8_t* data,
     switch (nalu.nal_unit_type) {
       case H264NALU::kNonIDRSlice:
       case H264NALU::kIDRSlice:
-        if (nalu.size < 1)
+        if (nalu.data.size() < 1) {
           return false;
+        }
 
         has_frame_data = true;
 
@@ -221,7 +223,7 @@ bool H264InputBufferFragmentSplitter::AdvanceFrameFragment(const uint8_t* data,
         // the eighth data bit of the NAL; a zero value is encoded with a
         // leading '1' bit in the byte, which we can detect as the byte being
         // (unsigned) greater than or equal to 0x80.
-        if (nalu.data[1] >= 0x80) {
+        if (UNSAFE_TODO(nalu.data[1]) >= 0x80) {
           end_of_frame = true;
           break;
         }
@@ -259,7 +261,7 @@ bool H264InputBufferFragmentSplitter::AdvanceFrameFragment(const uint8_t* data,
         return true;
       }
     }
-    *endpos = (nalu.data + base::checked_cast<size_t>(nalu.size)) - data;
+    *endpos = base::to_address(nalu.data.end()) - data;
   }
   NOTREACHED();
 }

@@ -7,6 +7,8 @@
 
 #include <cstring>
 #include <memory>
+#include <optional>
+#include <string>
 #include <vector>
 
 #include "base/functional/callback_forward.h"
@@ -22,11 +24,13 @@
 #include "components/facilitated_payments/core/browser/network_api/facilitated_payments_initiate_payment_request_details.h"
 #include "components/facilitated_payments/core/browser/network_api/facilitated_payments_initiate_payment_response_details.h"
 #include "components/facilitated_payments/core/metrics/facilitated_payments_metrics.h"
+#include "components/facilitated_payments/core/mojom/pix_code_validator.mojom.h"
 #include "components/facilitated_payments/core/utils/facilitated_payments_ui_utils.h"
 #include "components/facilitated_payments/core/utils/facilitated_payments_utils.h"
-#include "components/optimization_guide/core/optimization_guide_decider.h"
+#include "components/optimization_guide/core/hints/optimization_guide_decider.h"
 #include "services/data_decoder/public/cpp/data_decoder.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
+#include "url/origin.h"
 
 class GURL;
 
@@ -49,119 +53,34 @@ class PixManager {
   // Resets `this` to initial state. Cancels any alive async callbacks.
   void Reset();
 
-  // Checks whether the `render_frame_host_url` is allowlisted and validates the
-  // `pix_code` before trigger the Pix payments flow. Note: If the Pix payment
-  // flow has already been triggered by the other code detection methods like
-  // DOM search then this method is a no-op.
-  virtual void OnPixCodeCopiedToClipboard(const GURL& render_frame_host_url,
-                                          const std::string& pix_code,
-                                          ukm::SourceId ukm_source_id);
+  // Checks whether the `main_frame_url` or the `iframe_url` (if present) is
+  // allowlisted and validates the `pix_code` before triggering the Pix payments
+  // flow. Note: If the Pix payment flow has already been triggered by the other
+  // code detection methods like DOM search then this method is a no-op.
+  //
+  // If Rust Pix code validation is enabled, `rust_validation_result` will
+  // always have a value.
+  virtual void OnPixCodeCopiedToClipboard(
+      const GURL& main_frame_url,
+      const std::optional<GURL>& iframe_url,
+      const url::Origin& main_frame_origin,
+      bool is_same_origin,
+      std::optional<PixCodeRustValidationResult> rust_validation_result,
+      std::string pix_code,
+      ukm::SourceId ukm_source_id);
 
  private:
   friend class PixManagerTest;
+  friend class PixManagerTestApi;
   friend class PixManagerTestForUiScreens;
-  // Keep all entries in alphabetical order!
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTest, ApiClientInitializedLazily);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTest,
-                           ApiClientTriggeredAfterPixCodeValidation);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTest,
-                           CopyTrigger_UrlInAllowlist_PixValidationTriggered);
-  FRIEND_TEST_ALL_PREFIXES(
-      PixManagerTest,
-      CopyTrigger_UrlNotInAllowlist_PixValidationNotTriggered);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTest, DismissPrompt);
-  FRIEND_TEST_ALL_PREFIXES(
-      PixManagerTest,
-      ErrorScreenNotAutoDismissedAfterInvokingPurchaseAction);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTest,
-                           HandlesFailureToLazilyInitializeApiClient);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTest,
-                           LogApiAvailabilityCheckResultAndLatency);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTest, LogGetClientTokenResultAndLatency);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTest, LogInitiatePurchaseActionAttempt);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTest,
-                           LogInitiatePurchaseActionResultAndLatency);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTest, LogTransactionResultAndLatency);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTest,
-                           NoPaymentsDataManager_NoApiClientTriggered);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTest, NoPixAccounts_NoApiClientTriggered);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTest,
-                           NoPixPaymentPromptWhenApiClientNotAvailable);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTest,
-                           OnGetClientToken_ClientTokenEmpty_ErrorScreenShown);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTest,
-                           OnInitiatePaymentResponseReceived_FailureResponse);
-  FRIEND_TEST_ALL_PREFIXES(
-      PixManagerTest,
-      OnInitiatePaymentResponseReceived_InvokePurchaseActionTriggered);
-  FRIEND_TEST_ALL_PREFIXES(
-      PixManagerTest,
-      OnInitiatePaymentResponseReceived_LoggedOutProfile_ErrorScreenShown);
-  FRIEND_TEST_ALL_PREFIXES(
-      PixManagerTest,
-      OnInitiatePaymentResponseReceived_NoActionToken_ErrorScreenShown);
-  FRIEND_TEST_ALL_PREFIXES(
-      PixManagerTest,
-      OnInitiatePaymentResponseReceived_NoCoreAccountInfo_ErrorScreenShown);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTest, OnPixAccountSelected);
-  FRIEND_TEST_ALL_PREFIXES(
-      PixManagerTest,
-      OnPurchaseActionResult_CouldNotInvoke_ErrorScreenShown);
-  FRIEND_TEST_ALL_PREFIXES(
-      PixManagerTest,
-      OnPurchaseActionResult_ResultCanceled_UiScreenDismissed);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTest,
-                           OnPurchaseActionResult_ResultOk_UiScreenDismissed);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTest,
-                           PayflowExitedReason_ApiClientNotAvailable);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTest,
-                           PayflowExitedReason_ClientTokenNotAvailable);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTest,
-                           PayflowExitedReason_CodeValidatorFailed);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTest, PayflowExitedReason_InvalidCode);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTest, PayflowExitedReason_NoLinkedAccount);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTest, PayflowExitedReason_RiskDataEmpty);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTest, PayflowExitedReason_UserOptedOut);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTest,
-                           PixCodeValidationFailed_NoApiClientTriggered);
-  FRIEND_TEST_ALL_PREFIXES(
-      PixManagerTest,
-      PixCodeValidatorTerminatedUnexpectedly_NoApiClientTriggered);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTest,
-                           PixFopSelectorShown_HistogramsLogged);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTest,
-                           PixPrefTurnedOff_NoApiClientTriggered);
-  FRIEND_TEST_ALL_PREFIXES(
-      PixManagerTest,
-      ProgressScreenAutoDismissedAfterInvokingPurchaseAction);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTest, RegisterPixAllowlist);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTest, ResettingPreventsPayment);
-  FRIEND_TEST_ALL_PREFIXES(
-      PixManagerTest,
-      RiskDataEmpty_GetClientTokenNotCalled_ErrorScreenShown);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTest, RiskDataEmpty_HistogramsLogged);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTest,
-                           RiskDataNotEmpty_GetClientTokenCalled);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTest, RiskDataNotEmpty_HistogramsLogged);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTest, SendInitiatePaymentRequest);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTest, ShowErrorScreen);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTest, ShowPixPaymentPrompt);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTest, ShowProgressScreen);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTest,
-                           ShowsPixPaymentPromptWhenApiClientAvailable);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTestForUiScreens,
-                           NewScreenCouldNotBeShown);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTestForUiScreens, NewScreenShown);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTestForUiScreens, ScreenClosedByUser);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTestForUiScreens, ScreenClosedNotByUser);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTestInLandscapeMode,
-                           PayflowExitedReason_LandscapeScreenOrientation);
-  FRIEND_TEST_ALL_PREFIXES(PixManagerTestInLandscapeMode,
-                           PixPayflowBlockedWhenFlagDisabled);
+  friend class PixManagerPaymentsNetworkInterfaceTest;
 
-  // Register optimization guide deciders for PIX. It is an allowlist of URLs
-  // where we attempt PIX code detection.
-  void RegisterPixAllowlist() const;
+  // Determines if the copy event in the iframe is allowed, returning the exit
+  // reason if it should be rejected, or std::nullopt if it is allowed.
+  std::optional<PixFlowExitedReason> GetExitedReasonForIframe(
+      const GURL& iframe_url,
+      const GURL& main_frame_url,
+      bool is_same_origin) const;
 
   // Queries the allowlist for the `url`. The result could be:
   // 1. In the allowlist
@@ -170,14 +89,25 @@ class PixManager {
   // Returns true if the result is [1].
   bool IsMerchantAllowlisted(const GURL& url) const;
 
+  // Returns true if the URL is in the PSP allowlist.
+  bool IsIframeUrlAllowlisted(const GURL& url) const;
+
   // Called by the utility process after validation of the `pix_code`. If the
   // utility processes has disconnected (e.g., due to a crash in the validation
-  // code), then `is_pix_code_valid` contains an error string instead of the
-  // boolean validation result. The call to validate the PIX code was made at
+  // code), then `pix_qr_code_type` contains an error string instead of the
+  // PixQrCodeType result. The call to validate the Pix code was made at
   // `start_time`.
-  void OnPixCodeValidated(std::string pix_code,
-                          base::TimeTicks start_time,
-                          base::expected<bool, std::string> is_pix_code_valid);
+  void OnPixCodeValidated(
+      std::optional<PixCodeRustValidationResult> rust_validation_result,
+      std::string pix_code,
+      base::TimeTicks start_time,
+      base::expected<mojom::PixQrCodeType, std::string> pix_qr_code_type);
+
+  // Processes a fully-validated Pix code. Exposed separately from
+  // `OnPixCodeValidated()` since the Rust validator does not need to go to the
+  // utility process at all.
+  void OnValidPixCode(std::string pix_code,
+                      mojom::PixQrCodeType pix_qr_code_type);
 
   // Lazily initializes an API client and returns a pointer to it. Returns a
   // pointer to the existing API client, if one is already initialized. The
@@ -227,7 +157,7 @@ class PixManager {
                               PurchaseActionResult result);
 
   // Called by the view to communicate UI events.
-  void OnUiEvent(UiEvent ui_event_type);
+  void OnUiScreenEvent(UiEvent ui_event_type);
 
   // Sets the internal state and triggers dismissal.
   void DismissPrompt();
@@ -283,13 +213,22 @@ class PixManager {
   // double-click.
   bool has_payflow_started_ = false;
 
-  // Utility process validator for PIX code strings.
+  // Whether the Pix code was copied within an iframe. This state is used
+  // to categorize transaction result logging by frame type (Iframe vs.
+  // MainFrame).
+  bool pix_code_is_in_iframe_ = false;
+
+  // Utility process validator for Pix code strings.
   data_decoder::DataDecoder utility_process_validator_;
 
   // Represents the current state of the UI or the UI state that is intended. In
   // the latter case, the UI state is always updated to reflect the current
   // state via a callback.
   UiState ui_state_ = UiState::kHidden;
+
+  // The origin of the Pix payment page on main frame that triggered the payment
+  // flow.
+  url::Origin pix_payment_page_main_frame_origin_;
 
   base::WeakPtrFactory<PixManager> weak_ptr_factory_{this};
 };

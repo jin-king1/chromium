@@ -9,10 +9,12 @@ import android.graphics.drawable.Drawable;
 import android.view.View;
 import android.widget.Button;
 
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.ui.actions.button.FullButtonData;
 
 /** Util class for applying data to buttons. */
+@NullMarked
 public final class ApplyButtonData {
     private ApplyButtonData() {}
 
@@ -23,20 +25,23 @@ public final class ApplyButtonData {
      * @param buttonData Contains the information to be set.
      * @param button The button that should be updated.
      */
-    public static void apply(@Nullable FullButtonData buttonData, @NonNull Button button) {
+    public static void apply(@Nullable FullButtonData buttonData, Button button) {
         if (buttonData == null) {
             button.setVisibility(View.GONE);
             button.setText(null);
             button.setContentDescription(null);
+            button.setTooltipText(null);
             button.setOnClickListener(null);
             setStartDrawable(button, null);
         } else {
             Context context = button.getContext();
             button.setVisibility(View.VISIBLE);
             button.setText(buttonData.resolveText(context));
-            button.setContentDescription(buttonData.resolveContentDescription(context));
-            if (buttonData.getOnPressRunnable() != null) {
-                button.setOnClickListener((v) -> buttonData.getOnPressRunnable().run());
+            CharSequence contentDescription = buttonData.resolveContentDescription(context);
+            button.setContentDescription(contentDescription);
+            button.setTooltipText(contentDescription);
+            if (buttonData.canPress()) {
+                button.setOnClickListener(buttonData::onPress);
                 button.setEnabled(true);
             } else {
                 button.setOnClickListener(null);
@@ -46,7 +51,7 @@ public final class ApplyButtonData {
         }
     }
 
-    private static void setStartDrawable(Button button, Drawable drawable) {
+    private static void setStartDrawable(Button button, @Nullable Drawable drawable) {
         button.setCompoundDrawablesRelativeWithIntrinsicBounds(drawable, null, null, null);
     }
 }

@@ -2,7 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 import logging
-import sys
 from core import perf_benchmark
 from core import platforms as core_platforms
 
@@ -31,6 +30,9 @@ RENDERING_BENCHMARK_UMA = [
     'Graphics.Smoothness.PercentDroppedFrames3.AllAnimations',
     'Graphics.Smoothness.PercentDroppedFrames3.AllInteractions',
     'Graphics.Smoothness.PercentDroppedFrames3.AllSequences',
+    'Graphics.Smoothness.PercentDroppedFrames4.AllAnimations',
+    'Graphics.Smoothness.PercentDroppedFrames4.AllInteractions',
+    'Graphics.Smoothness.PercentDroppedFrames4.AllSequences',
     'Memory.GPU.PeakMemoryUsage2.Scroll',
     'Memory.GPU.PeakMemoryUsage2.PageLoad',
     'Event.Jank.PredictorJankyFramePercentage2',
@@ -82,6 +84,7 @@ class _RenderingBenchmark(perf_benchmark.PerfBenchmark):
   def SetExtraBrowserOptions(self, options):
     options.AppendExtraBrowserArgs('--enable-gpu-benchmarking')
     options.AppendExtraBrowserArgs('--touch-events=enabled')
+    options.AppendExtraBrowserArgs('--enable-automation')
     # TODO(jonross): Catapult's record_wpr.py calls SetExtraBrowserOptions
     # before calling ProcessCommandLineArgs. This will crash attempting to
     # record new rendering benchmarks. We do not want to support software
@@ -125,9 +128,8 @@ class RenderingDesktop(_RenderingBenchmark):
   def Name(cls):
     return 'rendering.desktop'
 
-  def SetExtraBrowserOptions(self, options):
-    super(RenderingDesktop, self).SetExtraBrowserOptions(options)
-    if sys.platform == 'darwin':
+  def SetExtraBrowserOptionsWithBrowser(self, options, possible_browser):
+    if possible_browser.platform.GetOSName() == 'mac':
       # Mac bots without a physical display fallbacks to SRGB. This flag forces
       # them to use a color profile (P3), which matches the usual color profile
       # on Mac monitors and changes the cost of some overlay operations to match

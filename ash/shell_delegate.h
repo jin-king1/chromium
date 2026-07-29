@@ -21,10 +21,12 @@
 #include "services/device/public/mojom/fingerprint.mojom-forward.h"
 #include "services/media_session/public/cpp/media_session_service.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 #include "url/gurl.h"
 
 class AccountId;
+class PrefService;
+
 namespace aura {
 class Window;
 }
@@ -45,8 +47,8 @@ class BackGestureContextualNudgeController;
 class BackGestureContextualNudgeDelegate;
 class CaptureModeDelegate;
 class ClipboardHistoryControllerDelegate;
+class ClipboardImageModelFactory;
 class CoralDelegate;
-class DeskProfilesDelegate;
 class FocusModeDelegate;
 class GameDashboardDelegate;
 class MediaNotificationProvider;
@@ -76,12 +78,17 @@ class ASH_EXPORT ShellDelegate {
   virtual bool CanShowWindowForUser(const aura::Window* window) const = 0;
 
   // Creates and returns the delegate of the Capture Mode feature.
-  virtual std::unique_ptr<CaptureModeDelegate> CreateCaptureModeDelegate()
-      const = 0;
+  virtual std::unique_ptr<CaptureModeDelegate> CreateCaptureModeDelegate(
+      PrefService* local_state) const = 0;
 
   // Creates and returns the delegate of the clipboard history feature.
   virtual std::unique_ptr<ClipboardHistoryControllerDelegate>
   CreateClipboardHistoryControllerDelegate() const = 0;
+
+  // Creates and returns the browser-implemented image model factory which
+  // renders html of a clipboard history item.
+  virtual std::unique_ptr<ClipboardImageModelFactory>
+  CreateClipboardImageModelFactory() const = 0;
 
   // Creates and returns the delegate of the Coral feature.
   virtual std::unique_ptr<CoralDelegate> CreateCoralDelegate() const = 0;
@@ -150,13 +157,6 @@ class ASH_EXPORT ShellDelegate {
   // Returns true if we should wait for touch press ack when deciding if back
   // gesture can be performed.
   virtual bool ShouldWaitForTouchPressAck(gfx::NativeWindow window);
-
-  // Checks whether a drag-drop operation is a tab drag.
-  virtual bool IsTabDrag(const ui::OSExchangeData& drop_data);
-
-  // Return the height of WebUI tab strip used to determine if a tab has
-  // dragged out of it.
-  virtual int GetBrowserWebUITabStripHeight() = 0;
 
   // Binds a fingerprint receiver in the Device Service if possible.
   virtual void BindFingerprint(
@@ -230,16 +230,6 @@ class ASH_EXPORT ShellDelegate {
 
   // Retrieves the official Chrome version string e.g. 105.0.5178.0.
   virtual std::string GetVersionString() = 0;
-
-  // Forwards the ShouldExitFullscreenBeforeLock() call to the crosapi browser
-  // manager.
-  using ShouldExitFullscreenCallback = base::OnceCallback<void(bool)>;
-  virtual void ShouldExitFullscreenBeforeLock(
-      ShouldExitFullscreenCallback callback);
-
-  // Returns the DeskProfilesDelegate, or nullptr if it isn't available. The
-  // delegate (when available) is owned by `CrosapiAsh`.
-  virtual DeskProfilesDelegate* GetDeskProfilesDelegate();
 
   // Opens the Multitasking OS Settings page.
   virtual void OpenMultitaskingSettings() = 0;

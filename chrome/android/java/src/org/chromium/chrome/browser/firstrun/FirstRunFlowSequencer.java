@@ -4,6 +4,8 @@
 
 package org.chromium.chrome.browser.firstrun;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
@@ -14,12 +16,15 @@ import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.ApiCompatibilityUtils;
 import org.chromium.base.CommandLine;
+import org.chromium.base.DeviceInfo;
 import org.chromium.base.IntentUtils;
 import org.chromium.base.Log;
 import org.chromium.base.ResettersForTesting;
 import org.chromium.base.TimeUtils;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.supplier.OneshotSupplier;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.IntentHandler;
 import org.chromium.chrome.browser.LaunchIntentDispatcher;
 import org.chromium.chrome.browser.customtabs.AuthTabIntentDataProvider;
@@ -30,7 +35,6 @@ import org.chromium.chrome.browser.partnercustomizations.PartnerBrowserCustomiza
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileProvider;
 import org.chromium.chrome.browser.search_engines.SearchEnginePromoType;
-import org.chromium.chrome.browser.signin.AppRestrictionSupplier;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.chrome.browser.signin.services.SigninPreferencesManager;
 import org.chromium.chrome.browser.ui.signin.history_sync.HistorySyncHelper;
@@ -38,7 +42,7 @@ import org.chromium.components.crash.CrashKeyIndex;
 import org.chromium.components.crash.CrashKeys;
 import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.components.signin.AccountManagerFacadeProvider;
-import org.chromium.components.signin.identitymanager.ConsentLevel;
+import org.chromium.components.signin.identitymanager.IdentityManager;
 
 /**
  * A helper to determine what should be the sequence of First Run Experience screens, and whether it
@@ -47,6 +51,7 @@ import org.chromium.components.signin.identitymanager.ConsentLevel;
  * <p>Usage: new FirstRunFlowSequencer(activity, launcherProvidedProperties) { override
  * onFlowIsKnown }.start();
  */
+@NullMarked
 public abstract class FirstRunFlowSequencer {
     private static final String TAG = "firstrun";
 
@@ -69,14 +74,22 @@ public abstract class FirstRunFlowSequencer {
             if (isChild) {
                 return !historySyncHelper.isHistorySyncDisabledByCustodian();
             }
-            if (historySyncHelper.isHistorySyncDisabledByPolicy()
-                    || historySyncHelper.didAlreadyOptIn()) {
+
+            boolean alreadyOptedIn = historySyncHelper.didAlreadyOptIn();
+            if (ChromeFeatureList.isEnabled(ChromeFeatureList.DEFAULT_BROWSER_PROMO_FRE)) {
+                // HistorySync is no longer the last page in the FRE flow, so users should be able
+                // to navigate back to the history sync page.
+                alreadyOptedIn = false;
+            }
+
+            if (historySyncHelper.isHistorySyncDisabledByPolicy() || alreadyOptedIn) {
                 return false;
             }
             // Show the page only to signed-in users.
-            return IdentityServicesProvider.get()
-                    .getIdentityManager(profile)
-                    .hasPrimaryAccount(ConsentLevel.SIGNIN);
+            IdentityManager identityManager =
+                    IdentityServicesProvider.get().getIdentityManager(profile);
+            assumeNonNull(identityManager);
+            return identityManager.hasPrimaryAccount();
         }
 
         /** @return true if the Search Engine promo page should be shown. */
@@ -96,19 +109,18 @@ public abstract class FirstRunFlowSequencer {
                 OneshotSupplier<ProfileProvider> profileSupplier);
     }
 
-
     /**
      * The delegate to be used by the Sequencer. By default, it's an instance of
      * {@link FirstRunFlowSequencerDelegate}, unless it's overridden by {@code sDelegateForTesting}.
      */
-    private FirstRunFlowSequencerDelegate mDelegate;
+    private final FirstRunFlowSequencerDelegate mDelegate;
 
     /** If not null, creates {@code mDelegate} for this object during tests. */
-    private static DelegateFactoryForTesting sDelegateFactoryForTesting;
+    private static @Nullable DelegateFactoryForTesting sDelegateFactoryForTesting;
 
     private boolean mIsFlowKnown;
     private boolean mAccountsAvailable;
-    private Boolean mIsChild;
+    private @Nullable Boolean mIsChild;
 
     /**
      * Callback that is called once the flow is determined. If the properties is null, the First Run
@@ -138,12 +150,12 @@ public abstract class FirstRunFlowSequencer {
      */
     void start() {
         AccountManagerFacadeProvider.getInstance()
-                .getCoreAccountInfos()
+                .getAccounts()
                 .then(
-                        coreAccountInfos -> {
+                        accounts -> {
                             RecordHistogram.recordCount1MHistogram(
                                     "Signin.AndroidDeviceAccountsNumberWhenEnteringFRE",
-                                    Math.min(coreAccountInfos.size(), 2));
+                                    Math.min(accounts.size(), 2));
 
                             assert !mAccountsAvailable;
                             mAccountsAvailable = true;
@@ -157,7 +169,7 @@ public abstract class FirstRunFlowSequencer {
     }
 
     private boolean shouldShowHistorySyncOptIn() {
-        return mDelegate.shouldShowHistorySyncOptIn(mIsChild);
+        return mDelegate.shouldShowHistorySyncOptIn(assumeNonNull(mIsChild));
     }
 
     private void setChildAccountStatus(boolean isChild) {
@@ -228,7 +240,7 @@ public abstract class FirstRunFlowSequencer {
     public static boolean checkIfFirstRunIsNecessary(boolean preferLightweightFre, boolean isCct) {
         // If FRE is disabled (e.g. in tests), proceed directly to the intent handling.
         if (CommandLine.getInstance().hasSwitch(ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE)
-                || ApiCompatibilityUtils.isDemoUser()
+                || DeviceInfo.isRetailDemoMode()
                 || ApiCompatibilityUtils.isRunningInUserTestHarness()) {
             return false;
         }
@@ -298,9 +310,6 @@ public abstract class FirstRunFlowSequencer {
 
         Log.d(TAG, "Redirecting user through FRE.");
         CrashKeys.getInstance().set(CrashKeyIndex.FIRST_RUN, "yes");
-
-        // Launch the async restriction checking as soon as we know we'll be running FRE.
-        AppRestrictionSupplier.startInitializationHint();
 
         if (inSameTask) {
             FreIntentCreator intentCreator = new FreIntentCreator();

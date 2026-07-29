@@ -397,7 +397,7 @@ TEST_F(NetErrorHelperCoreTest, GetErrorPageStateStringPlaceholders) {
   const std::string failed_url_string_escaped =
       base::EscapeForHTML(failed_url_string);
   const GURL failed_url(failed_url_string);
-  const std::string failed_url_host(failed_url.host());
+  const std::string failed_url_host(failed_url.GetHost());
 
   struct FieldWithPlaceholder {
     std::string_view key;
@@ -1070,7 +1070,7 @@ TEST_F(NetErrorHelperCoreTest, AlternativeErrorPageNoUpdates) {
   // `chrome/browser/web_applications/web_app_offline.h`
   auto alternative_error_page_info =
       content::mojom::AlternativeErrorPageOverrideInfo::New();
-  base::Value::Dict dict;
+  base::DictValue dict;
   dict.Set("theme_color", skia::SkColorToHexString(SK_ColorBLUE));
   dict.Set("customized_background_color",
            skia::SkColorToHexString(SK_ColorYELLOW));

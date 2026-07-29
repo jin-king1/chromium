@@ -4,24 +4,44 @@
 
 #import "ios/chrome/browser/web/model/choose_file/choose_file_tab_helper.h"
 
+#import <UIKit/UIKit.h>
+#import <WebKit/WebKit.h>
+
 #import "base/apple/foundation_util.h"
+#import "base/check_deref.h"
+#import "base/feature_list.h"
 #import "base/files/file_util.h"
+#import "base/memory/raw_ptr.h"
+#import "base/metrics/histogram_functions.h"
 #import "base/task/thread_pool.h"
-#import "ios/chrome/browser/web/model/choose_file/choose_file_controller.h"
+#import "base/time/time.h"
+#import "ios/chrome/browser/shared/public/commands/file_upload_panel_commands.h"
+#import "ios/chrome/browser/web/model/choose_file/choose_file_controller_impl.h"
+#import "ios/chrome/browser/web/model/choose_file/choose_file_event.h"
 #import "ios/chrome/browser/web/model/choose_file/choose_file_file_utils.h"
+#import "ios/chrome/browser/web/model/choose_file/last_tap_location_tab_helper.h"
 #import "ios/web/public/navigation/navigation_context.h"
+#import "ios/web/public/web_state.h"
 
 ChooseFileTabHelper::ChooseFileTabHelper(web::WebState* web_state)
-    : file_urls_ready_for_selection_([NSMutableDictionary dictionary]) {
+    : file_urls_ready_for_selection_([NSMutableDictionary dictionary]),
+      web_state_(CHECK_DEREF(web_state)) {
   observation_.Observe(web_state);
 }
 
-ChooseFileTabHelper::~ChooseFileTabHelper() = default;
+ChooseFileTabHelper::~ChooseFileTabHelper() {
+  web_state_->SetCustomOpenPanelSupported(false);
+}
 
 void ChooseFileTabHelper::StartChoosingFiles(
     std::unique_ptr<ChooseFileController> controller) {
   CHECK(controller);
   controller_ = std::move(controller);
+  controller_->SetDelegate(this);
+}
+
+ChooseFileController* ChooseFileTabHelper::GetChooseFileController() {
+  return controller_.get();
 }
 
 bool ChooseFileTabHelper::IsChoosingFiles() const {
@@ -47,11 +67,107 @@ void ChooseFileTabHelper::StopChoosingFiles(NSArray<NSURL*>* file_urls,
                                             NSString* display_string,
                                             UIImage* icon_image) {
   CHECK(controller_);
+  if (!file_urls.count) {
+    controller_.reset();
+    return;
+  }
   CHECK([[NSSet setWithArray:file_urls]
       isSubsetOfSet:[NSSet setWithArray:[file_urls_ready_for_selection_
                                             allKeys]]]);
   controller_->SubmitSelection(file_urls, display_string, icon_image);
-  controller_.reset();
+}
+
+void ChooseFileTabHelper::SetFileUploadPanelHandler(
+    id<FileUploadPanelCommands> file_upload_panel_handler) {
+  file_upload_panel_handler_ = file_upload_panel_handler;
+}
+
+void ChooseFileTabHelper::RunOpenPanel(
+    WKOpenPanelParameters* parameters,
+    WKFrameInfo* frame,
+    base::OnceCallback<void(NSArray<NSURL*>*)> completion)
+    API_AVAILABLE(ios(18.4)) {
+  web::WebState* web_state = observation_.GetSource();
+  if (!web_state || web_state->IsBeingDestroyed() || !web_state->IsVisible() ||
+      is_pending_navigation_) {
+    // If there is no WebState anymore, or it is being destroyed or not shown,
+    // or a navigation is pending, then call the completion with no selection
+    // and return.
+    std::move(completion).Run(nil);
+    return;
+  }
+
+  std::optional<ChooseFileEvent> last_choose_file_event =
+      ResetLastChooseFileEvent();
+  base::UmaHistogramBoolean("IOS.Web.FileInput.EventMatched",
+                            last_choose_file_event.has_value());
+
+  LastTapLocationTabHelper* last_tap_helper =
+      LastTapLocationTabHelper::FromWebState(web_state);
+  CHECK(last_tap_helper);
+  const CGPoint last_tap_point = last_tap_helper->GetLastTapPoint();
+  const BOOL last_tap_is_recent =
+      (base::TimeTicks::Now() - last_tap_helper->GetLastTapTime() <
+       base::Seconds(1));
+  const BOOL voiceover_is_active = UIAccessibilityIsVoiceOverRunning();
+
+  if (last_choose_file_event.has_value()) {
+    if ((last_tap_is_recent && !voiceover_is_active) ||
+        CGPointEqualToPoint(last_choose_file_event->screen_location,
+                            CGPointZero)) {
+      last_choose_file_event->screen_location = last_tap_point;
+    }
+    if (!!last_choose_file_event->allow_multiple_files !=
+        !!parameters.allowsMultipleSelection) {
+      // If the `last_choose_file_event->allow_multiple_files` does not have the
+      // correct value according to `parameters`, overwrite it.
+      last_choose_file_event->allow_multiple_files =
+          parameters.allowsMultipleSelection;
+      base::UmaHistogramBoolean("IOS.Web.FileInput.MultipleAttributeMismatched",
+                                last_choose_file_event->allow_multiple_files);
+    }
+    if (!!last_choose_file_event->only_allow_directory !=
+        !!parameters.allowsDirectories) {
+      // If the `last_choose_file_event->only_allow_directory` does not have the
+      // correct value according to `parameters`, overwrite it.
+      last_choose_file_event->only_allow_directory =
+          parameters.allowsDirectories;
+      base::UmaHistogramBoolean(
+          "IOS.Web.FileInput.DirectoryAttributeMismatched",
+          last_choose_file_event->only_allow_directory);
+    }
+  } else {
+    // If no ChooseFileEvent could be found, create a default event from
+    // `parameters`.
+    last_choose_file_event =
+        ChooseFileEvent::Builder()
+            .SetWebState(observation_.GetSource())
+            .SetAllowMultipleFiles(parameters.allowsMultipleSelection)
+            .SetOnlyAllowDirectory(parameters.allowsDirectories)
+            .Build();
+  }
+
+  std::unique_ptr<ChooseFileController> choose_file_controller =
+      std::make_unique<ChooseFileControllerImpl>(
+          std::move(*last_choose_file_event), std::move(completion));
+  StartChoosingFiles(std::move(choose_file_controller));
+
+  [file_upload_panel_handler_ showFileUploadPanel];
+}
+
+void ChooseFileTabHelper::SetLastChooseFileEvent(ChooseFileEvent event) {
+  if (is_pending_navigation_) {
+    return;
+  }
+  last_choose_file_event_ = std::move(event);
+}
+
+std::optional<ChooseFileEvent> ChooseFileTabHelper::ResetLastChooseFileEvent() {
+  return std::exchange(last_choose_file_event_, std::nullopt);
+}
+
+bool ChooseFileTabHelper::HasLastChooseFileEvent() const {
+  return last_choose_file_event_.has_value();
 }
 
 void ChooseFileTabHelper::AbortSelection() {
@@ -99,18 +215,47 @@ void ChooseFileTabHelper::CheckFileUrlReadyForSelection(
       std::move(completion));
 }
 
+#pragma mark - ChooseFileController::Delegate
+
+void ChooseFileTabHelper::DidSubmitSelection(ChooseFileController* controller,
+                                             NSArray<NSURL*>* file_urls,
+                                             NSString* display_string,
+                                             UIImage* icon_image) {
+  if (controller_ && controller_.get() == controller) {
+    controller_.reset();
+  }
+}
+
 #pragma mark - web::WebStateObserver
+
+void ChooseFileTabHelper::DidStartNavigation(
+    web::WebState* web_state,
+    web::NavigationContext* navigation_context) {
+  if (!navigation_context->IsSameDocument()) {
+    is_pending_navigation_ = true;
+    AbortSelection();
+    ResetLastChooseFileEvent();
+  }
+}
 
 void ChooseFileTabHelper::DidFinishNavigation(
     web::WebState* web_state,
     web::NavigationContext* navigation_context) {
-  if (!navigation_context->IsSameDocument()) {
-    AbortSelection();
+  if (navigation_context->IsSameDocument()) {
+    return;
+  }
+  is_pending_navigation_ = false;
+  if (navigation_context->HasCommitted()) {
+    // The outgoing document can keep running script after `DidStartNavigation`
+    // and may set a new event before this navigation commits. Reset the event
+    // again so it is not associated with the newly committed document.
+    ResetLastChooseFileEvent();
   }
 }
 
 void ChooseFileTabHelper::WasHidden(web::WebState* web_state) {
   AbortSelection();
+  ResetLastChooseFileEvent();
 }
 
 void ChooseFileTabHelper::WebStateDestroyed(web::WebState* web_state) {
@@ -118,5 +263,3 @@ void ChooseFileTabHelper::WebStateDestroyed(web::WebState* web_state) {
   DeleteTempChooseFileDirectoryForTab(web_state->GetUniqueIdentifier());
   observation_.Reset();
 }
-
-WEB_STATE_USER_DATA_KEY_IMPL(ChooseFileTabHelper)

@@ -25,17 +25,6 @@
 #import "ios/chrome/browser/tabs/model/ios_chrome_synced_tab_delegate.h"
 #import "ios/web/public/web_state_observer.h"
 
-namespace {
-
-sync_sessions::SyncedTabDelegate* GetSyncedTabDelegateFromWebState(
-    web::WebState* web_state) {
-  sync_sessions::SyncedTabDelegate* delegate =
-      IOSChromeSyncedTabDelegate::FromWebState(web_state);
-  return delegate;
-}
-
-}  // namespace
-
 #pragma mark - IOSChromeLocalSessionEventRouter::Observer
 
 class IOSChromeLocalSessionEventRouter::Observer
@@ -201,17 +190,9 @@ void IOSChromeLocalSessionEventRouter::Observer::WebStateListDidChange(
       break;
     }
     case WebStateListChange::Type::kGroupCreate:
-      // TODO(crbug.com/329640035): Notify the router about the group creation.
-      break;
     case WebStateListChange::Type::kGroupVisualDataUpdate:
-      // TODO(crbug.com/329640035): Notify the router about the group's visual
-      // data update.
-      break;
     case WebStateListChange::Type::kGroupMove:
-      // Do nothing when a tab group is moved.
-      break;
     case WebStateListChange::Type::kGroupDelete:
-      // TODO(crbug.com/329640035): Notify the router about the group deletion.
       break;
   }
 }
@@ -303,7 +284,7 @@ void IOSChromeLocalSessionEventRouter::OnWebStateChange(
     return;
   }
   sync_sessions::SyncedTabDelegate* tab =
-      GetSyncedTabDelegateFromWebState(web_state);
+      IOSChromeSyncedTabDelegate::FromWebState(web_state);
   if (!tab) {
     return;
   }

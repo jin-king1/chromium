@@ -7,6 +7,7 @@
 #include "base/numerics/safe_conversions.h"
 #include "third_party/blink/public/common/css/forced_colors.h"
 #include "third_party/blink/public/platform/web_theme_engine.h"
+#include "third_party/blink/renderer/core/paint/paint_info.h"
 #include "third_party/blink/renderer/core/scroll/scrollable_area.h"
 #include "third_party/blink/renderer/core/scroll/scrollbar.h"
 #include "third_party/blink/renderer/platform/graphics/paint/drawing_recorder.h"
@@ -37,9 +38,7 @@ ScrollbarThemeFluent::ScrollbarThemeFluent() {
           : theme_engine->GetSize(WebThemeEngine::kPartScrollbarUpArrow)
                 .height();
 
-  is_fluent_overlay_scrollbar_enabled_ =
-      theme_engine->IsFluentOverlayScrollbarEnabled();
-  if (!is_fluent_overlay_scrollbar_enabled_) {
+  if (!OverlayScrollbarsEnabled()) {
     return;
   }
   // Hit testable invisible border around the scrollbar's track.
@@ -115,7 +114,7 @@ gfx::Size ScrollbarThemeFluent::ButtonSize(const Scrollbar& scrollbar) const {
 }
 
 bool ScrollbarThemeFluent::UsesOverlayScrollbars() const {
-  return is_fluent_overlay_scrollbar_enabled_;
+  return OverlayScrollbarsEnabled();
 }
 
 bool ScrollbarThemeFluent::UsesFluentScrollbars() const {
@@ -155,23 +154,23 @@ int ScrollbarThemeFluent::ThumbThickness(
   return thumb_thickness - ((scrollbar_thickness - thumb_thickness) % 2);
 }
 
-void ScrollbarThemeFluent::PaintTrackBackground(GraphicsContext& context,
+void ScrollbarThemeFluent::PaintTrackBackground(const PaintInfo& paint_info,
                                                 const Scrollbar& scrollbar,
                                                 const gfx::Rect& rect) {
   if (rect.IsEmpty()) {
     return;
   }
   ScrollbarThemeAura::PaintTrackBackground(
-      context, scrollbar,
+      paint_info, scrollbar,
       UsesOverlayScrollbars() ? InsetTrackRect(scrollbar, rect) : rect);
 }
 
-void ScrollbarThemeFluent::PaintButton(GraphicsContext& context,
+void ScrollbarThemeFluent::PaintButton(const PaintInfo& paint_info,
                                        const Scrollbar& scrollbar,
                                        const gfx::Rect& rect,
                                        ScrollbarPart part) {
   ScrollbarThemeAura::PaintButton(
-      context, scrollbar,
+      paint_info, scrollbar,
       UsesOverlayScrollbars() ? InsetButtonRect(scrollbar, rect, part) : rect,
       part);
 }
@@ -253,7 +252,7 @@ gfx::Rect ScrollbarThemeFluent::ShrinkMainThreadedMinimalModeThumbRect(
 }
 
 bool ScrollbarThemeFluent::UsesNinePatchTrackAndButtonsResource() const {
-  return RuntimeEnabledFeatures::FluentScrollbarUsesNinePatchTrackEnabled();
+  return true;
 }
 
 }  // namespace blink

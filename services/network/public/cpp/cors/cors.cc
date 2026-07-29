@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "services/network/public/cpp/cors/cors.h"
 
@@ -14,7 +10,6 @@
 #include <string_view>
 #include <vector>
 
-#include "base/containers/contains.h"
 #include "base/containers/fixed_flat_set.h"
 #include "base/feature_list.h"
 #include "base/metrics/histogram_functions.h"
@@ -24,6 +19,7 @@
 #include "net/http/http_request_headers.h"
 #include "net/http/http_util.h"
 #include "services/network/public/cpp/client_hints.h"
+#include "services/network/public/cpp/features.h"
 #include "services/network/public/cpp/is_potentially_trustworthy.h"
 #include "services/network/public/cpp/request_mode.h"
 #include "third_party/abseil-cpp/absl/strings/ascii.h"
@@ -98,7 +94,9 @@ bool IsCorsUnsafeRequestHeaderByte(char c) {
 }
 
 // |value| should be lower case.
-bool IsCorsSafelistedLowerCaseContentType(const std::string& value) {
+bool IsCorsSafelistedLowerCaseContentType(
+    const std::string& value,
+    bool is_ad_auction_trusted_signals_request) {
   DCHECK_EQ(value, base::ToLowerASCII(value));
   if (std::ranges::any_of(value, IsCorsUnsafeRequestHeaderByte)) {
     return false;
@@ -112,7 +110,9 @@ bool IsCorsSafelistedLowerCaseContentType(const std::string& value) {
   }
 
   return *mime_type == "application/x-www-form-urlencoded" ||
-         *mime_type == "multipart/form-data" || *mime_type == "text/plain";
+         *mime_type == "multipart/form-data" || *mime_type == "text/plain" ||
+         (*mime_type == "message/ad-auction-trusted-signals-request" &&
+          is_ad_auction_trusted_signals_request);
 }
 
 bool IsNoCorsSafelistedHeaderNameLowerCase(const std::string& lower_name) {
@@ -134,15 +134,9 @@ const char kAccessControlAllowCredentials[] =
 const char kAccessControlAllowHeaders[] = "Access-Control-Allow-Headers";
 const char kAccessControlAllowMethods[] = "Access-Control-Allow-Methods";
 const char kAccessControlAllowOrigin[] = "Access-Control-Allow-Origin";
-const char kAccessControlAllowPrivateNetwork[] =
-    "Access-Control-Allow-Private-Network";
 const char kAccessControlMaxAge[] = "Access-Control-Max-Age";
 const char kAccessControlRequestHeaders[] = "Access-Control-Request-Headers";
 const char kAccessControlRequestMethod[] = "Access-Control-Request-Method";
-const char kAccessControlRequestPrivateNetwork[] =
-    "Access-Control-Request-Private-Network";
-const char kPrivateNetworkDeviceId[] = "Private-Network-Access-ID";
-const char kPrivateNetworkDeviceName[] = "Private-Network-Access-Name";
 
 }  // namespace header_names
 
@@ -226,27 +220,6 @@ base::expected<void, CorsErrorStatus> CheckAccess(
   return base::ok();
 }
 
-base::expected<void, CorsErrorStatus> CheckAccessAndReportMetrics(
-    const GURL& response_url,
-    const std::optional<std::string>& allow_origin_header,
-    const std::optional<std::string>& allow_credentials_header,
-    mojom::CredentialsMode credentials_mode,
-    const url::Origin& origin) {
-  auto check_result =
-      CheckAccess(response_url, allow_origin_header, allow_credentials_header,
-                  credentials_mode, origin);
-  cors::AccessCheckResult result = check_result.has_value()
-                                       ? cors::AccessCheckResult::kPermitted
-                                       : cors::AccessCheckResult::kNotPermitted;
-
-  base::UmaHistogramEnumeration("Net.Cors.AccessCheckResult", result);
-  if (!IsOriginPotentiallyTrustworthy(origin)) {
-    base::UmaHistogramEnumeration(
-        "Net.Cors.AccessCheckResult.NotSecureRequestor", result);
-  }
-  return check_result;
-}
-
 bool ShouldCheckCors(const GURL& request_url,
                      const std::optional<url::Origin>& request_initiator,
                      mojom::RequestMode request_mode) {
@@ -279,10 +252,29 @@ bool IsCorsSafelistedMethod(const std::string& method) {
 }
 
 bool IsCorsSafelistedContentType(const std::string& media_type) {
-  return IsCorsSafelistedLowerCaseContentType(base::ToLowerASCII(media_type));
+  return IsCorsSafelistedLowerCaseContentType(
+      base::ToLowerASCII(media_type),
+      /*is_ad_auction_trusted_signals_request=*/false);
 }
 
-bool IsCorsSafelistedHeader(const std::string& name, const std::string& value) {
+bool IsCorsSafelistedResponseHeaderName(std::string_view name) {
+  // https://fetch.spec.whatwg.org/#cors-safelisted-response-header-name
+  static constexpr auto kSafelistedResponseHeaderNames =
+      base::MakeFixedFlatSet<std::string_view>({
+          "cache-control",
+          "content-language",
+          "content-length",
+          "content-type",
+          "expires",
+          "last-modified",
+          "pragma",
+      });
+  return kSafelistedResponseHeaderNames.contains(base::ToLowerASCII(name));
+}
+
+bool IsCorsSafelistedHeader(const std::string& name,
+                            const std::string& value,
+                            bool is_ad_auction_trusted_signals_request) {
   const std::string lower_name = base::ToLowerASCII(name);
 
   // If |value|’s length is greater than 128, then return false.
@@ -381,7 +373,7 @@ bool IsCorsSafelistedHeader(const std::string& name, const std::string& value) {
   });
 
   // Check if the name of the header to send is safe.
-  if (!base::Contains(safe_names, lower_name))
+  if (!safe_names.contains(lower_name))
     return false;
 
   // Verify the values of all non-secure headers (except `intervention`).
@@ -396,7 +388,8 @@ bool IsCorsSafelistedHeader(const std::string& name, const std::string& value) {
              c == 0x2d || c == 0x2e || c == 0x3b || c == 0x3d;
     });
   } else if (lower_name == "content-type") {
-    return IsCorsSafelistedLowerCaseContentType(lower_value);
+    return IsCorsSafelistedLowerCaseContentType(
+        lower_value, is_ad_auction_trusted_signals_request);
   } else if (lower_name == "range") {
     // A 'simple' range value is of the following form: 'bytes=\d+-(\d+)?'.
     // We can use the regular range header parser with the following caveats:
@@ -465,7 +458,9 @@ std::vector<std::string> CorsUnsafeRequestHeaderNames(
   size_t safe_list_value_size = 0;
 
   for (const auto& header : headers) {
-    if (!IsCorsSafelistedHeader(header.key, header.value)) {
+    if (!IsCorsSafelistedHeader(
+            header.key, header.value,
+            /*is_ad_auction_trusted_signals_request=*/false)) {
       header_names.push_back(base::ToLowerASCII(header.key));
     } else {
       potentially_unsafe_names.push_back(base::ToLowerASCII(header.key));
@@ -483,7 +478,7 @@ std::vector<std::string> PrivilegedNoCorsHeaderNames() {
   return {"range"};
 }
 
-bool IsForbiddenMethod(const std::string& method) {
+bool IsForbiddenMethod(std::string_view method) {
   const std::string upper_method = base::ToUpperASCII(method);
   return upper_method == net::HttpRequestHeaders::kConnectMethod ||
          upper_method == net::HttpRequestHeaders::kTraceMethod ||
@@ -524,12 +519,12 @@ bool CalculateCredentialsFlag(mojom::CredentialsMode credentials_mode,
   //    response tainting is "basic"
   // is true, and unset otherwise.
   switch (credentials_mode) {
-    case network::mojom::CredentialsMode::kOmit:
-    case network::mojom::CredentialsMode::kOmitBug_775438_Workaround:
+    case mojom::CredentialsMode::kOmit:
+    case mojom::CredentialsMode::kOmitBug_775438_Workaround:
       return false;
-    case network::mojom::CredentialsMode::kSameOrigin:
-      return response_tainting == network::mojom::FetchResponseType::kBasic;
-    case network::mojom::CredentialsMode::kInclude:
+    case mojom::CredentialsMode::kSameOrigin:
+      return response_tainting == mojom::FetchResponseType::kBasic;
+    case mojom::CredentialsMode::kInclude:
       return true;
   }
 }
@@ -538,14 +533,14 @@ mojom::FetchResponseType CalculateResponseType(
     mojom::RequestMode mode,
     bool is_request_considered_same_origin) {
   if (is_request_considered_same_origin ||
-      mode == network::mojom::RequestMode::kNavigate ||
-      mode == network::mojom::RequestMode::kSameOrigin) {
-    return network::mojom::FetchResponseType::kBasic;
-  } else if (mode == network::mojom::RequestMode::kNoCors) {
-    return network::mojom::FetchResponseType::kOpaque;
+      mode == mojom::RequestMode::kNavigate ||
+      mode == mojom::RequestMode::kSameOrigin) {
+    return mojom::FetchResponseType::kBasic;
+  } else if (mode == mojom::RequestMode::kNoCors) {
+    return mojom::FetchResponseType::kOpaque;
   } else {
-    DCHECK(network::cors::IsCorsEnabledRequestMode(mode)) << mode;
-    return network::mojom::FetchResponseType::kCors;
+    DCHECK(cors::IsCorsEnabledRequestMode(mode)) << mode;
+    return mojom::FetchResponseType::kCors;
   }
 }
 

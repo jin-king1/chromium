@@ -30,6 +30,7 @@
 #include "ui/base/clipboard/clipboard_format_type.h"
 #include "ui/base/clipboard/custom_data_helper.h"
 #include "ui/base/clipboard/scoped_clipboard_writer.h"
+#include "ui/base/clipboard/test/clipboard_test_util.h"
 #include "ui/base/dragdrop/mojom/drag_drop_types.mojom-shared.h"
 #include "ui/events/event.h"
 #include "ui/events/event_constants.h"
@@ -121,9 +122,9 @@ TEST_F(SeatTest, SetSelection) {
 
   RunReadingTask();
 
-  std::string clipboard;
-  ui::Clipboard::GetForCurrentThread()->ReadAsciiText(
-      ui::ClipboardBuffer::kCopyPaste, /*data_dst=*/nullptr, &clipboard);
+  std::string clipboard = ui::clipboard_test_util::ReadAsciiText(
+      ui::Clipboard::GetForCurrentThread(), ui::ClipboardBuffer::kCopyPaste,
+      /*data_dst=*/nullptr);
 
   EXPECT_EQ(clipboard, std::string("TestData"));
 }
@@ -152,16 +153,16 @@ TEST_F(SeatTest, SetSelectionTextUTF8) {
 
   RunReadingTask();
 
-  std::u16string clipboard;
-  ui::Clipboard::GetForCurrentThread()->ReadText(
-      ui::ClipboardBuffer::kCopyPaste, /*data_dst=*/nullptr, &clipboard);
+  std::u16string clipboard = ui::clipboard_test_util::ReadText(
+      ui::Clipboard::GetForCurrentThread(), ui::ClipboardBuffer::kCopyPaste,
+      /*data_dst=*/nullptr);
   EXPECT_EQ(clipboard, converted_data);
 
   std::string url;
   uint32_t start, end;
-  ui::Clipboard::GetForCurrentThread()->ReadHTML(
-      ui::ClipboardBuffer::kCopyPaste, /*data_dst=*/nullptr, &clipboard, &url,
-      &start, &end);
+  ui::clipboard_test_util::ReadHTML(
+      ui::Clipboard::GetForCurrentThread(), ui::ClipboardBuffer::kCopyPaste,
+      /*data_dst=*/nullptr, &clipboard, &url, &start, &end);
   EXPECT_EQ(clipboard, converted_data);
 }
 
@@ -185,9 +186,9 @@ TEST_F(SeatTest, SetSelectionTextUTF8Legacy) {
 
   RunReadingTask();
 
-  std::u16string clipboard;
-  ui::Clipboard::GetForCurrentThread()->ReadText(
-      ui::ClipboardBuffer::kCopyPaste, /*data_dst=*/nullptr, &clipboard);
+  std::u16string clipboard = ui::clipboard_test_util::ReadText(
+      ui::Clipboard::GetForCurrentThread(), ui::ClipboardBuffer::kCopyPaste,
+      /*data_dst=*/nullptr);
   EXPECT_EQ(clipboard, converted_data);
 }
 
@@ -218,16 +219,16 @@ TEST_F(SeatTest, SetSelectionTextUTF16LE) {
 
   RunReadingTask();
 
-  std::u16string clipboard;
-  ui::Clipboard::GetForCurrentThread()->ReadText(
-      ui::ClipboardBuffer::kCopyPaste, /*data_dst=*/nullptr, &clipboard);
+  std::u16string clipboard = ui::clipboard_test_util::ReadText(
+      ui::Clipboard::GetForCurrentThread(), ui::ClipboardBuffer::kCopyPaste,
+      /*data_dst=*/nullptr);
   EXPECT_EQ(clipboard, converted_data);
 
   std::string url;
   uint32_t start, end;
-  ui::Clipboard::GetForCurrentThread()->ReadHTML(
-      ui::ClipboardBuffer::kCopyPaste, /*data_dst=*/nullptr, &clipboard, &url,
-      &start, &end);
+  ui::clipboard_test_util::ReadHTML(
+      ui::Clipboard::GetForCurrentThread(), ui::ClipboardBuffer::kCopyPaste,
+      /*data_dst=*/nullptr, &clipboard, &url, &start, &end);
   EXPECT_EQ(clipboard, converted_data);
 }
 
@@ -258,16 +259,16 @@ TEST_F(SeatTest, SetSelectionTextUTF16BE) {
 
   RunReadingTask();
 
-  std::u16string clipboard;
-  ui::Clipboard::GetForCurrentThread()->ReadText(
-      ui::ClipboardBuffer::kCopyPaste, /*data_dst=*/nullptr, &clipboard);
+  std::u16string clipboard = ui::clipboard_test_util::ReadText(
+      ui::Clipboard::GetForCurrentThread(), ui::ClipboardBuffer::kCopyPaste,
+      /*data_dst=*/nullptr);
   EXPECT_EQ(clipboard, converted_data);
 
   std::string url;
   uint32_t start, end;
-  ui::Clipboard::GetForCurrentThread()->ReadHTML(
-      ui::ClipboardBuffer::kCopyPaste, /*data_dst=*/nullptr, &clipboard, &url,
-      &start, &end);
+  ui::clipboard_test_util::ReadHTML(
+      ui::Clipboard::GetForCurrentThread(), ui::ClipboardBuffer::kCopyPaste,
+      /*data_dst=*/nullptr, &clipboard, &url, &start, &end);
   EXPECT_EQ(clipboard, converted_data);
 }
 
@@ -288,16 +289,16 @@ TEST_F(SeatTest, SetSelectionTextEmptyString) {
 
   RunReadingTask();
 
-  std::u16string clipboard;
-  ui::Clipboard::GetForCurrentThread()->ReadText(
-      ui::ClipboardBuffer::kCopyPaste, /*data_dst=*/nullptr, &clipboard);
+  std::u16string clipboard = ui::clipboard_test_util::ReadText(
+      ui::Clipboard::GetForCurrentThread(), ui::ClipboardBuffer::kCopyPaste,
+      /*data_dst=*/nullptr);
   EXPECT_EQ(clipboard.size(), 0u);
 
   std::string url;
   uint32_t start, end;
-  ui::Clipboard::GetForCurrentThread()->ReadHTML(
-      ui::ClipboardBuffer::kCopyPaste, /*data_dst=*/nullptr, &clipboard, &url,
-      &start, &end);
+  ui::clipboard_test_util::ReadHTML(
+      ui::Clipboard::GetForCurrentThread(), ui::ClipboardBuffer::kCopyPaste,
+      /*data_dst=*/nullptr, &clipboard, &url, &start, &end);
   EXPECT_EQ(clipboard.size(), 0u);
 }
 
@@ -313,9 +314,9 @@ TEST_F(SeatTest, SetSelectionRTF) {
 
   RunReadingTask();
 
-  std::string clipboard;
-  ui::Clipboard::GetForCurrentThread()->ReadRTF(
-      ui::ClipboardBuffer::kCopyPaste, /*data_dst=*/nullptr, &clipboard);
+  std::string clipboard = ui::clipboard_test_util::ReadRTF(
+      ui::Clipboard::GetForCurrentThread(), ui::ClipboardBuffer::kCopyPaste,
+      /*data_dst=*/nullptr);
 
   EXPECT_EQ(clipboard, std::string("TestData"));
 }
@@ -336,10 +337,9 @@ TEST_F(SeatTest, SetSelectionFilenames) {
 
   RunReadingTask();
 
-  std::vector<ui::FileInfo> filenames;
-  ui::Clipboard::GetForCurrentThread()->ReadFilenames(
-      ui::ClipboardBuffer::kCopyPaste,
-      /*data_dst=*/nullptr, &filenames);
+  std::vector<ui::FileInfo> filenames = ui::clipboard_test_util::ReadFilenames(
+      ui::Clipboard::GetForCurrentThread(), ui::ClipboardBuffer::kCopyPaste,
+      /*data_dst=*/nullptr);
 
   EXPECT_EQ(ui::FileInfosToURIList(filenames), data);
 }
@@ -353,8 +353,7 @@ TEST_F(SeatTest, SetSelectionWebCustomData) {
   custom_data[u"text/uri-list"] = u"data";
   base::Pickle pickle;
   ui::WriteCustomDataToPickle(custom_data, &pickle);
-  auto custom_data_str =
-      std::string(reinterpret_cast<const char*>(pickle.data()), pickle.size());
+  std::string custom_data_str(pickle.AsStringView());
 
   TestDataSourceDelegate delegate;
   const std::string kMimeType = "chromium/x-web-custom-data";
@@ -365,11 +364,59 @@ TEST_F(SeatTest, SetSelectionWebCustomData) {
 
   RunReadingTask();
 
-  std::u16string result;
-  ui::Clipboard::GetForCurrentThread()->ReadDataTransferCustomData(
-      ui::ClipboardBuffer::kCopyPaste, u"text/uri-list", /*data_dst=*/nullptr,
-      &result);
+  std::u16string result = ui::clipboard_test_util::ReadDataTransferCustomData(
+      ui::Clipboard::GetForCurrentThread(), ui::ClipboardBuffer::kCopyPaste,
+      u"text/uri-list", /*data_dst=*/nullptr);
   EXPECT_EQ(result, u"data");
+}
+
+TEST_F(SeatTest, SetSelectionWebCustomDataFiltersFilesAppKeys) {
+  TestSeat seat;
+  Surface focused_surface;
+  seat.set_focused_surface(&focused_surface);
+
+  base::flat_map<std::u16string, std::u16string> custom_data;
+  custom_data[u"text/uri-list"] = u"data";
+  custom_data[u"fs/tag"] = u"filemanager-data";
+  custom_data[u"fs/sources"] =
+      u"filesystem:chrome://file-manager/external/Downloads-u-HASH/secret.txt";
+  custom_data[u"safe_key"] = u"safe_value";
+  base::Pickle pickle;
+  ui::WriteCustomDataToPickle(custom_data, &pickle);
+  std::string custom_data_str(pickle.AsStringView());
+
+  TestDataSourceDelegate delegate;
+  const std::string kMimeType = "chromium/x-web-custom-data";
+  delegate.SetData(kMimeType, std::move(custom_data_str));
+  DataSource source(&delegate);
+  source.Offer(kMimeType);
+  seat.SetSelection(&source);
+
+  RunReadingTask();
+
+  std::u16string result_uri =
+      ui::clipboard_test_util::ReadDataTransferCustomData(
+          ui::Clipboard::GetForCurrentThread(), ui::ClipboardBuffer::kCopyPaste,
+          u"text/uri-list", /*data_dst=*/nullptr);
+  EXPECT_EQ(result_uri, u"data");
+
+  std::u16string result_safe =
+      ui::clipboard_test_util::ReadDataTransferCustomData(
+          ui::Clipboard::GetForCurrentThread(), ui::ClipboardBuffer::kCopyPaste,
+          u"safe_key", /*data_dst=*/nullptr);
+  EXPECT_EQ(result_safe, u"safe_value");
+
+  std::u16string result_fs_tag =
+      ui::clipboard_test_util::ReadDataTransferCustomData(
+          ui::Clipboard::GetForCurrentThread(), ui::ClipboardBuffer::kCopyPaste,
+          u"fs/tag", /*data_dst=*/nullptr);
+  EXPECT_TRUE(result_fs_tag.empty());
+
+  std::u16string result_fs_sources =
+      ui::clipboard_test_util::ReadDataTransferCustomData(
+          ui::Clipboard::GetForCurrentThread(), ui::ClipboardBuffer::kCopyPaste,
+          u"fs/sources", /*data_dst=*/nullptr);
+  EXPECT_TRUE(result_fs_sources.empty());
 }
 
 TEST_F(SeatTest, SetSelection_TwiceSame) {
@@ -426,9 +473,9 @@ TEST_F(SeatTest, SetSelection_ClipboardChangedDuringSetSelection) {
   // The previous source should be cancelled.
   EXPECT_TRUE(delegate.cancelled());
 
-  std::string clipboard;
-  ui::Clipboard::GetForCurrentThread()->ReadAsciiText(
-      ui::ClipboardBuffer::kCopyPaste, /*data_dst=*/nullptr, &clipboard);
+  std::string clipboard = ui::clipboard_test_util::ReadAsciiText(
+      ui::Clipboard::GetForCurrentThread(), ui::ClipboardBuffer::kCopyPaste,
+      /*data_dst=*/nullptr);
   EXPECT_EQ(clipboard, "New data");
 }
 
@@ -450,9 +497,9 @@ TEST_F(SeatTest, SetSelection_ClipboardChangedAfterSetSelection) {
   // The previous source should be cancelled.
   EXPECT_TRUE(delegate.cancelled());
 
-  std::string clipboard;
-  ui::Clipboard::GetForCurrentThread()->ReadAsciiText(
-      ui::ClipboardBuffer::kCopyPaste, /*data_dst=*/nullptr, &clipboard);
+  std::string clipboard = ui::clipboard_test_util::ReadAsciiText(
+      ui::Clipboard::GetForCurrentThread(), ui::ClipboardBuffer::kCopyPaste,
+      /*data_dst=*/nullptr);
   EXPECT_EQ(clipboard, "New data");
 }
 
@@ -475,9 +522,9 @@ TEST_F(SeatTest, SetSelection_SourceDestroyedDuringSetSelection) {
 
   RunReadingTask();
 
-  std::string clipboard;
-  ui::Clipboard::GetForCurrentThread()->ReadAsciiText(
-      ui::ClipboardBuffer::kCopyPaste, /*data_dst=*/nullptr, &clipboard);
+  std::string clipboard = ui::clipboard_test_util::ReadAsciiText(
+      ui::Clipboard::GetForCurrentThread(), ui::ClipboardBuffer::kCopyPaste,
+      /*data_dst=*/nullptr);
   EXPECT_EQ(clipboard, "Original data");
 }
 
@@ -533,9 +580,9 @@ TEST_F(SeatTest, SetSelection_NullSource) {
 
   ASSERT_TRUE(delegate.cancelled());
 
-  std::string clipboard;
-  ui::Clipboard::GetForCurrentThread()->ReadAsciiText(
-      ui::ClipboardBuffer::kCopyPaste, /*data_dst=*/nullptr, &clipboard);
+  std::string clipboard = ui::clipboard_test_util::ReadAsciiText(
+      ui::Clipboard::GetForCurrentThread(), ui::ClipboardBuffer::kCopyPaste,
+      /*data_dst=*/nullptr);
   EXPECT_EQ(clipboard, "Golden data");
 }
 
@@ -581,14 +628,16 @@ TEST_F(SeatTest, PressedKeys) {
   seat.OnKeyEvent(press_a.AsKeyEvent());
   seat.DidProcessEvent(&press_a);
   base::flat_map<PhysicalCode, base::flat_set<KeyState>> pressed_keys;
-  pressed_keys[ui::CodeFromNative(&press_a)].emplace(press_a.code(), false);
+  pressed_keys[PhysicalCode(ui::CodeFromNative(&press_a))].emplace(
+      press_a.code(), false);
   EXPECT_EQ(pressed_keys, seat.pressed_keys());
 
   // Press B, then A & B should be in the map.
   seat.WillProcessEvent(&press_b);
   seat.OnKeyEvent(press_b.AsKeyEvent());
   seat.DidProcessEvent(&press_b);
-  pressed_keys[ui::CodeFromNative(&press_b)].emplace(press_b.code(), false);
+  pressed_keys[PhysicalCode(ui::CodeFromNative(&press_b))].emplace(
+      press_b.code(), false);
   EXPECT_EQ(pressed_keys, seat.pressed_keys());
 
   // Release A, with the normal order where DidProcessEvent is after OnKeyEvent,
@@ -642,7 +691,8 @@ TEST_F(SeatTest, MultiRewriteEventsFromInvalidSource) {
   seat.WillProcessEvent(&press_a);
   seat.OnKeyEvent(press_a.AsKeyEvent());
   base::flat_map<PhysicalCode, base::flat_set<KeyState>> pressed_keys;
-  pressed_keys[ui::CodeFromNative(&press_a)].emplace(press_a.code(), false);
+  pressed_keys[PhysicalCode(ui::CodeFromNative(&press_a))].emplace(
+      press_a.code(), false);
   EXPECT_EQ(pressed_keys, seat.pressed_keys());
 
   // Press A, but it was remapped to B. Should not be added to pressed_keys map.
@@ -678,7 +728,8 @@ TEST_F(SeatTest, MultiRewriteEventsFromValidSource) {
   seat.WillProcessEvent(&press_a);
   seat.OnKeyEvent(press_a.AsKeyEvent());
   base::flat_map<PhysicalCode, base::flat_set<KeyState>> pressed_keys;
-  auto& key_state_set = pressed_keys[ui::CodeFromNative(&press_a)];
+  auto& key_state_set =
+      pressed_keys[PhysicalCode(ui::CodeFromNative(&press_a))];
   key_state_set.emplace(press_a.code(), false);
   EXPECT_EQ(pressed_keys, seat.pressed_keys());
 
@@ -724,7 +775,8 @@ TEST_F(SeatTest, MouseMultiRewriteEventsFromValidSource) {
   seat.WillProcessEvent(&press_back);
   seat.OnKeyEvent(press_a.AsKeyEvent());
   base::flat_map<PhysicalCode, base::flat_set<KeyState>> pressed_keys;
-  auto& key_state_set = pressed_keys[ash::mojom::CustomizableButton::kBack];
+  auto& key_state_set =
+      pressed_keys[PhysicalCode(ash::mojom::CustomizableButton::kBack)];
   key_state_set.emplace(press_a.code(), false);
   EXPECT_EQ(pressed_keys, seat.pressed_keys());
 

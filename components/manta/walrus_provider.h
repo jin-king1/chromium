@@ -5,7 +5,6 @@
 #ifndef COMPONENTS_MANTA_WALRUS_PROVIDER_H_
 #define COMPONENTS_MANTA_WALRUS_PROVIDER_H_
 
-#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -20,7 +19,6 @@
 #include "components/manta/provider_params.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
-#include "url/gurl.h"
 
 namespace manta {
 

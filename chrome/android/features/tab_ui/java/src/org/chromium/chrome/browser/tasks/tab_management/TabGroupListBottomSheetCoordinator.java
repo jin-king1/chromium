@@ -9,22 +9,21 @@ import android.content.Context;
 import androidx.annotation.IntDef;
 import androidx.annotation.VisibleForTesting;
 
-import org.chromium.base.Token;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.collaboration.CollaborationServiceFactory;
-import org.chromium.chrome.browser.data_sharing.DataSharingServiceFactory;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabFavicon;
 import org.chromium.chrome.browser.tab_group_sync.TabGroupSyncServiceFactory;
 import org.chromium.chrome.browser.tab_ui.TabListFaviconProvider;
-import org.chromium.chrome.browser.tabmodel.TabGroupModelFilter;
+import org.chromium.chrome.browser.tab_ui.TabListMode;
+import org.chromium.chrome.browser.tabmodel.TabGroupUtils.TabGroupCreationCallback;
+import org.chromium.chrome.browser.tabmodel.TabGroupUtils.TabMovedCallback;
+import org.chromium.chrome.browser.tabmodel.TabModel;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController.StateChangeReason;
-import org.chromium.components.collaboration.CollaborationService;
-import org.chromium.components.data_sharing.DataSharingService;
 import org.chromium.components.tab_group_sync.TabGroupSyncService;
 import org.chromium.ui.modelutil.LayoutViewBuilder;
 import org.chromium.ui.modelutil.MVCListAdapter;
@@ -44,25 +43,23 @@ public class TabGroupListBottomSheetCoordinator {
         int EXISTING_GROUP = 1;
     }
 
-    interface TabGroupParityBottomSheetCoordinatorDelegate {
+    interface TabGroupListBottomSheetCoordinatorDelegate {
         /** Requests to show the bottom sheet content. */
         boolean requestShowContent();
 
         /** Hides the bottom sheet. */
         void hide(@StateChangeReason int hideReason);
 
-        /** To be run on sheet close. */
-        void onSheetClosed();
-    }
+        /** Adds padding to the bottom of the recycler view. */
+        void addPadding();
 
-    /** A callback to run after a tab group is created. */
-    public interface TabGroupCreationCallback {
         /**
-         * Responds to tab group creation.
+         * Checks to see see whether the bottom sheet content is the same as this bottom sheet's
+         * content view.
          *
-         * @param tabGroupId The tab group ID of the newly-created tab group.
+         * @param content The content to be checked.
          */
-        void onTabGroupCreated(Token tabGroupId);
+        boolean isSameContentView(@Nullable BottomSheetContent content);
     }
 
     private final TabGroupListBottomSheetView mView;
@@ -75,18 +72,24 @@ public class TabGroupListBottomSheetCoordinator {
      * @param context The {@link Context} to attach the bottom sheet to.
      * @param profile The current user profile.
      * @param tabGroupCreationCallback Used to follow up on tab group creation.
-     * @param filter Used to read current tab groups.
+     * @param tabMovedCallback Used to follow up on a tab being moved groups or ungrouped.
+     * @param tabModel Used to read current tab groups.
      * @param bottomSheetController Used to interact with the bottom sheet.
-     * @param showNewGroupRow Whether the 'New Tab Group' row should be displayed.
+     * @param supportsShowNewGroup Whether the 'New Tab Group' row is supported.
+     * @param destroyOnHide Whether this object should be destroyed on hiding the bottom sheet.
      */
     public TabGroupListBottomSheetCoordinator(
             Context context,
             Profile profile,
             TabGroupCreationCallback tabGroupCreationCallback,
-            TabGroupModelFilter filter,
+            @Nullable TabMovedCallback tabMovedCallback,
+            TabModel tabModel,
             BottomSheetController bottomSheetController,
-            boolean showNewGroupRow) {
-        mView = new TabGroupListBottomSheetView(context, showNewGroupRow);
+            boolean supportsShowNewGroup,
+            boolean destroyOnHide) {
+        mView =
+                new TabGroupListBottomSheetView(
+                        context, bottomSheetController, supportsShowNewGroup);
         mBottomSheetController = bottomSheetController;
 
         MVCListAdapter.ModelList modelList = new MVCListAdapter.ModelList();
@@ -114,37 +117,37 @@ public class TabGroupListBottomSheetCoordinator {
         mTabListFaviconProvider =
                 new TabListFaviconProvider(
                         context,
-                        /* isTabStrip= */ false,
+                        TabListMode.GRID,
                         R.dimen.default_favicon_corner_radius,
                         TabFavicon::getBitmap);
+
+        boolean isProfileOffTheRecord = profile.isOffTheRecord();
         FaviconResolver faviconResolver =
-                TabGroupListFaviconResolverFactory.build(context, profile, mTabListFaviconProvider);
+                isProfileOffTheRecord
+                        ? TabGroupListFaviconResolverFactory.buildLocal(
+                                context, profile, mTabListFaviconProvider)
+                        : TabGroupListFaviconResolverFactory.build(
+                                context, profile, mTabListFaviconProvider);
         @Nullable TabGroupSyncService tabGroupSyncService =
-                TabGroupSyncServiceFactory.getForProfile(profile);
-
-        CollaborationService collaborationService =
-                CollaborationServiceFactory.getForProfile(profile);
-
-        DataSharingService dataSharingService = DataSharingServiceFactory.getForProfile(profile);
+                isProfileOffTheRecord ? null : TabGroupSyncServiceFactory.getForProfile(profile);
 
         mMediator =
                 new TabGroupListBottomSheetMediator(
                         modelList,
-                        filter,
+                        tabModel,
                         tabGroupCreationCallback,
+                        tabMovedCallback,
                         faviconResolver,
                         tabGroupSyncService,
-                        dataSharingService,
-                        collaborationService,
                         bottomSheetController,
-                        createDelegate(),
-                        showNewGroupRow);
+                        createDelegate(destroyOnHide),
+                        supportsShowNewGroup);
     }
 
     /** Creates the delegate. */
     @VisibleForTesting
-    TabGroupParityBottomSheetCoordinatorDelegate createDelegate() {
-        return new TabGroupParityBottomSheetCoordinatorDelegate() {
+    TabGroupListBottomSheetCoordinatorDelegate createDelegate(boolean destroyOnHide) {
+        return new TabGroupListBottomSheetCoordinatorDelegate() {
             @Override
             public boolean requestShowContent() {
                 return mBottomSheetController.requestShowContent(mView, /* animate= */ true);
@@ -153,11 +156,19 @@ public class TabGroupListBottomSheetCoordinator {
             @Override
             public void hide(@StateChangeReason int hideReason) {
                 mBottomSheetController.hideContent(mView, /* animate= */ true, hideReason);
+                if (destroyOnHide) {
+                    destroy();
+                }
             }
 
             @Override
-            public void onSheetClosed() {
-                destroy();
+            public void addPadding() {
+                mView.addBottomPadding();
+            }
+
+            @Override
+            public boolean isSameContentView(@Nullable BottomSheetContent content) {
+                return content != null && content.getContentView() == mView.getContentView();
             }
         };
     }
@@ -173,6 +184,7 @@ public class TabGroupListBottomSheetCoordinator {
 
     /** Permanently cleans up this component. */
     public void destroy() {
+        mMediator.destroy();
         mSimpleRecyclerViewAdapter.destroy();
         mTabListFaviconProvider.destroy();
     }

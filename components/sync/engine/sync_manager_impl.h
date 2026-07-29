@@ -7,13 +7,11 @@
 
 #include <stdint.h>
 
-#include <map>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include "base/functional/callback_forward.h"
-#include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/observer_list.h"
 #include "base/sequence_checker.h"
@@ -30,7 +28,9 @@
 namespace syncer {
 
 class Cryptographer;
+class CustomPassphraseBootstrapToken;
 class DataTypeRegistry;
+class RequiredPassphraseVerifier;
 class SyncCycleContext;
 
 // Lives on the sync sequence.
@@ -87,11 +87,13 @@ class SyncManagerImpl
 
   // SyncEncryptionHandler::Observer implementation.
   void OnPassphraseRequired(
-      const KeyDerivationParams& key_derivation_params,
-      const sync_pb::EncryptedData& pending_keys) override;
-  void OnPassphraseAccepted() override;
+      std::unique_ptr<RequiredPassphraseVerifier> verifier) override;
+  void OnPassphraseAccepted(
+      const CustomPassphraseBootstrapToken& bootstrap_token) override;
   void OnTrustedVaultKeyRequired() override;
   void OnTrustedVaultKeyAccepted() override;
+  void OnKeystoreKeysRequired() override;
+  void OnKeystoreKeysAccepted() override;
   void OnEncryptedTypesChanged(DataTypeSet encrypted_types,
                                bool encrypt_everything) override;
   void OnCryptographerStateChanged(Cryptographer* cryptographer,
@@ -115,7 +117,8 @@ class SyncManagerImpl
   void RefreshTypes(DataTypeSet types) override;
 
   // NetworkConnectionTracker::NetworkConnectionObserver implementation.
-  void OnConnectionChanged(network::mojom::ConnectionType type) override;
+  void OnConnectionChanged(
+      net::NetworkChangeNotifier::ConnectionType type) override;
 
   // NudgeHandler implementation.
   void NudgeForInitialDownload(DataType type) override;
@@ -132,8 +135,7 @@ class SyncManagerImpl
 
   SEQUENCE_CHECKER(sequence_checker_);
 
-  base::ObserverList<SyncManager::Observer>::UncheckedAndDanglingUntriaged
-      observers_;
+  base::ObserverList<SyncManager::Observer> observers_;
 
   // The ServerConnectionManager used to abstract communication between the
   // client (the Syncer) and the sync server.

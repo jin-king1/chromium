@@ -4,6 +4,8 @@
 
 package org.chromium.chrome.browser.customtabs.features.minimizedcustomtab;
 
+import static org.chromium.build.NullUtil.assertNonNull;
+
 import android.app.AppOpsManager;
 import android.content.Context;
 import android.content.pm.PackageManager;
@@ -12,30 +14,32 @@ import android.os.Build.VERSION;
 import android.os.Build.VERSION_CODES;
 import android.text.TextUtils;
 
-import androidx.annotation.DrawableRes;
 import androidx.annotation.IntDef;
-import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.IntentUtils;
 import org.chromium.base.ResettersForTesting;
 import org.chromium.base.SysUtils;
 import org.chromium.base.metrics.RecordHistogram;
-import org.chromium.chrome.R;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.IntentHandler;
 import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider;
-import org.chromium.chrome.browser.customtabs.CustomTabFeatureOverridesManager;
+import org.chromium.chrome.browser.flags.ActivityType;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.Locale;
 import java.util.Set;
 
 /** Utility methods for the Minimized Custom Tab feature. */
+@NullMarked
 public class MinimizedFeatureUtils {
 
-    private static Set<String> sManufacturerExcludeList;
+    private static @Nullable Set<String> sManufacturerExcludeList;
 
     // These values are persisted to logs. Entries should not be renumbered and
     // numeric values should never be reused.
@@ -47,6 +51,7 @@ public class MinimizedFeatureUtils {
         MinimizedFeatureAvailability.UNAVAILABLE_EXCLUDED_MANUFACTURER,
         MinimizedFeatureAvailability.NUM_ENTRIES
     })
+    @Retention(RetentionPolicy.SOURCE)
     @VisibleForTesting
     @interface MinimizedFeatureAvailability {
         int AVAILABLE = 0;
@@ -59,30 +64,17 @@ public class MinimizedFeatureUtils {
         int NUM_ENTRIES = 6;
     }
 
-    private static Boolean sIsDeviceEligibleForMinimizedCustomTab;
+    private static @Nullable Boolean sIsDeviceEligibleForMinimizedCustomTab;
     private static boolean sIsDeviceEligibleForMinimizedCustomTabForTesting;
 
     /**
-     * Computes the availability of the Minimized Custom Tab feature based on multiple signals and
-     * emits histograms accordingly.
+     * Computes the availability of the Minimized Custom Tab feature.
      *
      * @param context The {@link Context}.
-     * @param featureOverridesManager The {@link CustomTabFeatureOverridesManager} to check
-     *     overridden features.
      * @return Whether the Minimized Custom Tab feature is available.
      */
-    public static boolean isMinimizedCustomTabAvailable(
-            Context context, @Nullable CustomTabFeatureOverridesManager featureOverridesManager) {
-        if (!isDeviceEligibleForMinimizedCustomTab(context)) return false;
-        if (!ChromeFeatureList.sCctIntentFeatureOverrides.isEnabled()) {
-            return ChromeFeatureList.sCctMinimized.isEnabled();
-        }
-        if (featureOverridesManager == null) return ChromeFeatureList.sCctMinimized.isEnabled();
-
-        Boolean override =
-                featureOverridesManager.isFeatureEnabled(ChromeFeatureList.CCT_MINIMIZED);
-        if (override != null) return override;
-        return ChromeFeatureList.sCctMinimized.isEnabled();
+    public static boolean isMinimizedCustomTabAvailable(Context context) {
+        return isDeviceEligibleForMinimizedCustomTab(context);
     }
 
     /**
@@ -153,12 +145,6 @@ public class MinimizedFeatureUtils {
                 () -> sIsDeviceEligibleForMinimizedCustomTabForTesting = false);
     }
 
-    public static @DrawableRes int getMinimizeIcon() {
-        return ChromeFeatureList.sCctMinimizedIconVariant.getValue() == 1
-                ? R.drawable.ic_pip_24dp
-                : R.drawable.ic_minimize;
-    }
-
     /**
      * Returns whether Minimized Custom Tabs should be enabled based on the intent data provider.
      *
@@ -167,6 +153,11 @@ public class MinimizedFeatureUtils {
      */
     public static boolean shouldEnableMinimizedCustomTabs(
             BrowserServicesIntentDataProvider intentDataProvider) {
+        if (intentDataProvider.hasTargetNetwork()) return false;
+
+        // DevToolsActivity does not support minimization into Picture-in-Picture mode.
+        if (intentDataProvider.getActivityType() == ActivityType.DEV_TOOLS) return false;
+
         boolean isWebApp =
                 intentDataProvider.isWebappOrWebApkActivity()
                         || intentDataProvider.isTrustedWebActivity();
@@ -175,7 +166,7 @@ public class MinimizedFeatureUtils {
         boolean isFedCmIntent =
                 intentDataProvider.isTrustedIntent()
                         && IntentUtils.safeGetIntExtra(
-                                        intentDataProvider.getIntent(),
+                                        assertNonNull(intentDataProvider.getIntent()),
                                         IntentHandler.EXTRA_FEDCM_ID,
                                         -1)
                                 != -1;

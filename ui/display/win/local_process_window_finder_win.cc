@@ -34,8 +34,8 @@ bool LocalProcessWindowFinder::ShouldStopIterating(HWND hwnd) {
   // Ignore non visible  and cloaked windows. This will include windows not on
   // the current virtual desktop, which are cloaked.
   RECT r;
-  if (!IsWindowVisible(hwnd) || gfx::IsWindowCloaked(hwnd) ||
-      !GetWindowRect(hwnd, &r) || !PtInRect(&r, screen_loc_.ToPOINT())) {
+  if (!::IsWindowVisible(hwnd) || gfx::IsWindowCloaked(hwnd) ||
+      !::GetWindowRect(hwnd, &r) || !::PtInRect(&r, screen_loc_.ToPOINT())) {
     return false;  // Window is not at `screen_loc_`.
   }
 
@@ -52,8 +52,8 @@ LocalProcessWindowFinder::LocalProcessWindowFinder(const gfx::Point& screen_loc,
                                                    ScreenWin* screen_win,
                                                    const std::set<HWND>& ignore)
     : BaseWindowFinderWin(ignore), screen_win_(screen_win) {
-  screen_loc_ = display::win::ScreenWin::DIPToScreenPoint(screen_loc);
-  EnumThreadWindows(GetCurrentThreadId(), WindowCallbackProc, as_lparam());
+  screen_loc_ = display::win::GetScreenWin()->DIPToScreenPoint(screen_loc);
+  ::EnumThreadWindows(::GetCurrentThreadId(), WindowCallbackProc, as_lparam());
 }
 
 LocalProcessWindowFinder::~LocalProcessWindowFinder() = default;

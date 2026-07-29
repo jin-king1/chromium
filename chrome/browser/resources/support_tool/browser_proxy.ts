@@ -48,10 +48,8 @@ export interface BrowserProxy {
   getAllDataCollectors(): Promise<DataCollectorItem[]>;
 
   startDataCollection(
-      issueDetails: IssueDetails, selectedDataCollectors: DataCollectorItem[],
-      screenshotBase64: string): Promise<StartDataCollectionResult>;
-
-  takeScreenshot(): void;
+      issueDetails: IssueDetails, selectedDataCollectors: DataCollectorItem[]):
+      Promise<StartDataCollectionResult>;
 
   cancelDataCollection(): void;
 
@@ -68,26 +66,21 @@ export interface BrowserProxy {
 
 export class BrowserProxyImpl implements BrowserProxy {
   getEmailAddresses() {
-    return sendWithPromise('getEmailAddresses');
+    return sendWithPromise<string[]>('getEmailAddresses');
   }
 
   getDataCollectors() {
-    return sendWithPromise('getDataCollectors');
+    return sendWithPromise<DataCollectorItem[]>('getDataCollectors');
   }
 
   getAllDataCollectors() {
-    return sendWithPromise('getAllDataCollectors');
-  }
-
-  takeScreenshot() {
-    chrome.send('takeScreenshot');
+    return sendWithPromise<DataCollectorItem[]>('getAllDataCollectors');
   }
 
   startDataCollection(
-      issueDetails: IssueDetails, dataCollectors: DataCollectorItem[],
-      screenshotBase64: string) {
-    return sendWithPromise(
-        'startDataCollection', issueDetails, dataCollectors, screenshotBase64);
+      issueDetails: IssueDetails, dataCollectors: DataCollectorItem[]) {
+    return sendWithPromise<StartDataCollectionResult>(
+        'startDataCollection', issueDetails, dataCollectors);
   }
 
   cancelDataCollection() {
@@ -103,11 +96,13 @@ export class BrowserProxyImpl implements BrowserProxy {
   }
 
   generateCustomizedUrl(caseId: string, dataCollectors: DataCollectorItem[]) {
-    return sendWithPromise('generateCustomizedUrl', caseId, dataCollectors);
+    return sendWithPromise<SupportTokenGenerationResult>(
+        'generateCustomizedUrl', caseId, dataCollectors);
   }
 
   generateSupportToken(dataCollectors: DataCollectorItem[]) {
-    return sendWithPromise('generateSupportToken', dataCollectors);
+    return sendWithPromise<SupportTokenGenerationResult>(
+        'generateSupportToken', dataCollectors);
   }
 
   static getInstance(): BrowserProxy {

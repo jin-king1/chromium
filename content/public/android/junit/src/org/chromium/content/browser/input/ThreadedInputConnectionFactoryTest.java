@@ -21,13 +21,14 @@ import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethodManager;
 
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.InOrder;
 import org.mockito.Mock;
-import org.mockito.Mockito;
-import org.mockito.MockitoAnnotations;
 import org.mockito.invocation.InvocationOnMock;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.mockito.stubbing.Answer;
 import org.robolectric.Robolectric;
 import org.robolectric.annotation.Config;
@@ -45,6 +46,8 @@ import java.util.concurrent.Callable;
 @RunWith(BaseRobolectricTestRunner.class)
 @Config(manifest = Config.NONE)
 public class ThreadedInputConnectionFactoryTest {
+    @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
+
     /** A testable version of ThreadedInputConnectionFactory. */
     private class TestFactory extends ThreadedInputConnectionFactory {
 
@@ -116,15 +119,9 @@ public class ThreadedInputConnectionFactoryTest {
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
 
         mEditorInfo = new EditorInfo();
         mUiHandler = new Handler();
-
-        mContext = Mockito.mock(Context.class);
-        mContainerView = Mockito.mock(View.class);
-        mImeAdapter = Mockito.mock(ImeAdapterImpl.class);
-        mInputMethodManager = Mockito.mock(InputMethodManager.class);
 
         mFactory = new TestFactory(new InputMethodManagerWrapperImpl(mContext, null, null));
         mFactory.onWindowFocusChanged(true);
@@ -141,7 +138,6 @@ public class ThreadedInputConnectionFactoryTest {
         when(mContainerView.hasFocus()).thenReturn(true);
         when(mContainerView.hasWindowFocus()).thenReturn(true);
 
-        mProxyView = Mockito.mock(ThreadedInputConnectionProxyView.class);
         when(mProxyView.getContext()).thenReturn(mContext);
         when(mProxyView.requestFocus()).thenReturn(true);
         when(mProxyView.getHandler()).thenReturn(mImeHandler);
@@ -169,6 +165,7 @@ public class ThreadedInputConnectionFactoryTest {
                             private int mCount;
 
                             @Override
+                            @SuppressWarnings("DirectInvocationOnMock")
                             public Boolean answer(InvocationOnMock invocation) {
                                 mCount++;
                                 // To simplify IMM's behavior, let's say that it succeeds input

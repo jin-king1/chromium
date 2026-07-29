@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "chrome/browser/ash/login/hwid_checker.h"
 
@@ -80,10 +76,11 @@ bool IsCorrectExceptionalHWID(std::string_view hwid) {
   std::string hwid_without_dashes;
   base::RemoveChars(hwid, "-", &hwid_without_dashes);
   LOG_ASSERT(hwid_without_dashes.length() >= 2);
-  std::string not_checksum =
-      hwid_without_dashes.substr(0, hwid_without_dashes.length() - 2);
-  std::string checksum =
-      hwid_without_dashes.substr(hwid_without_dashes.length() - 2);
+  std::string_view not_checksum =
+      std::string_view(hwid_without_dashes)
+          .substr(0, hwid_without_dashes.length() - 2);
+  std::string_view checksum = std::string_view(hwid_without_dashes)
+                                  .substr(hwid_without_dashes.length() - 2);
   return CalculateExceptionalHWIDChecksum(not_checksum) == checksum;
 }
 

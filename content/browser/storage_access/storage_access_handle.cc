@@ -4,7 +4,9 @@
 
 #include "content/browser/storage_access/storage_access_handle.h"
 
+#include "base/byte_size.h"
 #include "base/functional/callback_helpers.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/types/pass_key.h"
 #include "content/browser/broadcast_channel/broadcast_channel_provider.h"
 #include "content/browser/broadcast_channel/broadcast_channel_service.h"
@@ -13,8 +15,10 @@
 #include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/browser/worker_host/shared_worker_connector_impl.h"
 #include "content/public/browser/permission_controller.h"
+#include "content/public/browser/permission_descriptor_util.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_client.h"
+#include "storage/browser/blob/blob_url_registry.h"
 #include "storage/browser/quota/quota_manager_proxy.h"
 #include "third_party/blink/public/common/permissions/permission_utils.h"
 
@@ -30,10 +34,15 @@ void EstimateImplAfterGetBucketUsageAndQuota(
     int64_t usage,
     int64_t quota) {
   if (code != blink::mojom::QuotaStatusCode::kOk) {
-    std::move(callback).Run(/*usage=*/0, /*quota=*/0, /*success=*/false);
+    std::move(callback).Run(/*usage=*/base::ByteSize(0),
+                            /*quota=*/base::ByteSize(0), /*success=*/false);
     return;
   }
-  std::move(callback).Run(usage, quota, /*success=*/true);
+  // CHECKs in QuotaManagerImpl ensure that if code is `kOk`, usage and quota
+  // are non-negative. If that ever changes this will CHECK as a fallback.
+  std::move(callback).Run(base::ByteSize(base::checked_cast<uint64_t>(usage)),
+                          base::ByteSize(base::checked_cast<uint64_t>(quota)),
+                          /*success=*/true);
 }
 
 }  // namespace
@@ -43,32 +52,14 @@ void StorageAccessHandle::Create(
     RenderFrameHost* host,
     mojo::PendingReceiver<blink::mojom::StorageAccessHandle> receiver) {
   CHECK(host);
-  if (!DoesFrameHaveStorageAccess(host)) {
+  if (!host->IsFullCookieAccessAllowed()) {
 #if DCHECK_IS_ON()
     mojo::ReportBadMessage(
-        "Binding a StorageAccessHandle requires third-party cookie access or "
-        "permission access.");
+        "Binding a StorageAccessHandle requires third-party cookie access.");
 #endif
     return;
   }
   new StorageAccessHandle(*host, std::move(receiver));
-}
-
-// static
-bool StorageAccessHandle::DoesFrameHaveStorageAccess(RenderFrameHost* host) {
-  bool has_full_cookie_access =
-      GetContentClient()->browser()->IsFullCookieAccessAllowed(
-          host->GetBrowserContext(), WebContents::FromRenderFrameHost(host),
-          host->GetLastCommittedURL(), host->GetStorageKey());
-  if (has_full_cookie_access) {
-    return true;
-  }
-  return host->GetProcess()
-             ->GetBrowserContext()
-             ->GetPermissionController()
-             ->GetPermissionStatusForCurrentDocument(
-                 blink::PermissionType::STORAGE_ACCESS_GRANT, host) ==
-         blink::mojom::PermissionStatus::GRANTED;
 }
 
 void StorageAccessHandle::BindIndexedDB(
@@ -145,7 +136,8 @@ void StorageAccessHandle::EstimateImpl(
     storage::QuotaErrorOr<std::set<storage::BucketInfo>> bucket_set) const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (!bucket_set.has_value()) {
-    std::move(callback).Run(/*usage=*/0, /*quota=*/0, /*success=*/false);
+    std::move(callback).Run(/*usage=*/base::ByteSize(0),
+                            /*quota=*/base::ByteSize(0), /*success=*/false);
     return;
   }
   storage::BucketInfo bucket_info;
@@ -156,7 +148,8 @@ void StorageAccessHandle::EstimateImpl(
     }
   }
   if (bucket_info.is_null()) {
-    std::move(callback).Run(/*usage=*/0, /*quota=*/0, /*success=*/true);
+    std::move(callback).Run(/*usage=*/base::ByteSize(0),
+                            /*quota=*/base::ByteSize(0), /*success=*/true);
     return;
   }
   static_cast<RenderFrameHostImpl&>(render_frame_host())
@@ -173,12 +166,35 @@ void StorageAccessHandle::BindBlobStorage(
   static_cast<RenderFrameHostImpl&>(render_frame_host())
       .GetStoragePartition()
       ->GetBlobUrlRegistry()
-      ->AddReceiver(blink::StorageKey::CreateFirstParty(
-                        render_frame_host().GetStorageKey().origin()),
-                    render_frame_host().GetLastCommittedOrigin(),
-                    render_frame_host().GetProcess()->GetDeprecatedID(),
-                    std::move(receiver), base::DoNothing(),
-                    /*partitioning_disabled_by_policy=*/false);
+      ->AddReceiver(
+          blink::StorageKey::CreateFirstParty(
+              render_frame_host().GetStorageKey().origin()),
+          render_frame_host().GetLastCommittedOrigin(),
+          render_frame_host().GetProcess()->GetDeprecatedID(),
+          std::move(receiver),
+          /*partitioning_blob_url_closure=*/base::DoNothing(),
+          // In the case that a context is granted storage access, the
+          // StorageAccessHandle context still shouldn't bypass the partitioning
+          // check (e.g. using a Blob URL created with URL.createObjectURL in
+          // the third-party context with the StorageAccessHandle's SharedWorker
+          // constructor.)
+          /*storage_access_check_callback=*/
+          base::BindRepeating([]() -> bool { return false; }),
+          // A StorageAccessHandle is not a top-level blob document, so always
+          // pass std::nullopt here.
+          /*top_level_blob_document_url=*/std::nullopt,
+          /*context_type_for_debugging=*/"StorageAccessHandle",
+          base::BindRepeating(
+              [](base::WeakPtr<StorageAccessHandle> handle) -> std::string {
+                if (!handle) {
+                  return "destroyed StorageAccessHandle";
+                }
+                return handle->render_frame_host()
+                    .GetStorageKey()
+                    .GetDebugString();
+              },
+              weak_factory_.GetWeakPtr()),
+          /*partitioning_disabled_by_policy=*/false);
 }
 
 void StorageAccessHandle::BindBroadcastChannel(

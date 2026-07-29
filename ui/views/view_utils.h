@@ -39,6 +39,7 @@ class ViewDebugWrapperImpl : public debug::ViewDebugWrapper {
   bool GetVisible() override;
   bool GetNeedsLayout() override;
   bool GetEnabled() override;
+  bool IsPaintLocked() override;
   std::vector<debug::ViewDebugWrapper*> GetChildren() override;
   void ForAllProperties(PropCallback callback) override;
 
@@ -60,6 +61,15 @@ V* AsViewClass(View* view) {
 template <typename V>
 const V* AsViewClass(const View* view) {
   return IsViewClass<V>(view) ? static_cast<const V*>(view) : nullptr;
+}
+
+template <typename V>
+std::unique_ptr<V> AsViewClass(std::unique_ptr<View>&& view) {
+  if (IsViewClass<V>(view.get())) {
+    auto* result = static_cast<V*>(view.release());
+    return std::unique_ptr<V>(result);
+  }
+  return nullptr;
 }
 
 VIEWS_EXPORT std::string PrintViewHierarchy(View* view, bool verbose = false);

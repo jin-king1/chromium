@@ -10,6 +10,7 @@
 
 #include "base/containers/flat_map.h"
 #include "base/containers/flat_set.h"
+#include "chrome/browser/web_applications/jobs/finalize_install_job.h"
 #include "chrome/browser/web_applications/os_integration/os_integration_manager.h"
 #include "chrome/browser/web_applications/web_app_constants.h"
 #include "chrome/browser/web_applications/web_app_icon_operations.h"
@@ -21,12 +22,6 @@
 #include "third_party/blink/public/mojom/manifest/manifest.mojom-forward.h"
 
 class GURL;
-
-namespace blink {
-namespace mojom {
-class Manifest;
-}  // namespace mojom
-}  // namespace blink
 
 namespace content {
 class WebContents;
@@ -65,16 +60,6 @@ void PopulateFileHandlerInfoFromManifest(
     const GURL& app_scope,
     WebAppInstallInfo* web_app_info);
 
-// Update the given WebAppInstallInfo with information from the manifest.
-// Will sanitise the manifest fields to be suitable for installation to prevent
-// sites from using arbitrarily large amounts of disk space.
-void UpdateWebAppInfoFromManifest(const blink::mojom::Manifest& manifest,
-                                  WebAppInstallInfo* web_app_info);
-
-// Same as above, but returns a fresh WebAppInstallInfo.
-WebAppInstallInfo CreateWebAppInfoFromManifest(
-    const blink::mojom::Manifest& manifest);
-
 // Populate non-product icons in WebAppInstallInfo using the IconsMap. This
 // currently covers shortcut item icons and file handler icons. It ignores
 // icons that might have already existed in `web_app_info`.
@@ -89,6 +74,13 @@ void PopulateOtherIcons(WebAppInstallInfo* web_app_info,
 // `web_app_info` may be retained, and even used to generate missing icons.
 void PopulateProductIcons(WebAppInstallInfo* web_app_info,
                           const IconsMap* icons_map);
+
+// Populates `web_app_info.trusted_icon_bitmaps`, using the information in
+// `trusted_icons` from the downloaded icons in `icons_map`. It is possible that
+// at the end of the call, the `web_app_info.trusted_icon_bitmaps` field might
+// not be populated due to various factors like icon downloading failure etc.
+void PopulateTrustedIconBitmaps(WebAppInstallInfo& web_app_info,
+                                const IconsMap& icons_map);
 
 // Records downloaded icons result and http code and code class.
 void RecordDownloadedIconsResultAndHttpStatusCodes(
@@ -139,9 +131,8 @@ void ApplyParamsToWebAppInstallInfo(const WebAppInstallParams& install_params,
                                     WebAppInstallInfo& web_app_info);
 
 // Update |options| using |install_params|.
-void ApplyParamsToFinalizeOptions(
-    const WebAppInstallParams& install_params,
-    WebAppInstallFinalizer::FinalizeOptions& options);
+void ApplyParamsToFinalizeOptions(const WebAppInstallParams& install_params,
+                                  FinalizeJobOptions& options);
 
 // Returns whether the home tab icons exist.
 bool HomeTabIconsExistInTabStrip(const WebAppInstallInfo& web_app_info);

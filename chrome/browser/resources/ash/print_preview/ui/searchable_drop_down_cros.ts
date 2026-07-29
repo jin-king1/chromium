@@ -52,12 +52,6 @@ export class SearchableDropDownCrosElement extends PolymerElement {
 
   static get properties() {
     return {
-      autofocus: {
-        type: Boolean,
-        value: false,
-        reflectToAttribute: true,
-      },
-
       readonly: {
         type: Boolean,
         reflectToAttribute: true,
@@ -349,6 +343,8 @@ export class SearchableDropDownCrosElement extends PolymerElement {
         event.preventDefault();
         break;
       }
+      default:
+        break;
     }
   }
 

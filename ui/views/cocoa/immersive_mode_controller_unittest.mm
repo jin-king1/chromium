@@ -8,6 +8,7 @@
 
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
+#include "base/mac/mac_util.h"
 #include "components/remote_cocoa/app_shim/bridged_content_view.h"
 #include "components/remote_cocoa/app_shim/immersive_mode_controller_cocoa.h"
 #include "components/remote_cocoa/app_shim/immersive_mode_tabbed_controller_cocoa.h"
@@ -105,19 +106,16 @@ class CocoaImmersiveModeControllerTest : public ui::CocoaTest {
     overlay_ = CreateNativeWidgetMacOverlayNSWindow(kOverlayViewWidth,
                                                     kOverlayViewHeight);
     [browser_ addChildWindow:overlay_ ordered:NSWindowAbove];
-    EXPECT_EQ(overlay_.isVisible, YES);
+    EXPECT_EQ(overlay_.visible, YES);
 
     // Create a blank tab overlay window as a child of overlay window.
     tab_overlay_ = CreateNativeWidgetMacOverlayNSWindow(kTabOverlayViewWidth,
                                                         kTabOverlayViewHeight);
     [overlay_ addChildWindow:tab_overlay_ ordered:NSWindowAbove];
-    EXPECT_EQ(tab_overlay_.isVisible, YES);
+    EXPECT_EQ(tab_overlay_.visible, YES);
   }
 
   void TearDown() override {
-    // The thinTitlebarViewController is alive permanently in the browser
-    // windows. It is not affected by immersive fullscreen enablement or
-    // disablement.
     EXPECT_EQ(browser_.titlebarAccessoryViewControllers.count, 1u);
 
     [tab_overlay_ close];
@@ -237,6 +235,7 @@ TEST_F(CocoaImmersiveModeControllerTest, IsRevealed) {
 
 // Test ImmersiveModeController toolbar visibility.
 TEST_F(CocoaImmersiveModeControllerTest, ToolbarVisibility) {
+  ASSERT_EQ(controllers().count, 1u);
   // Controller under test.
   auto immersive_mode_controller =
       std::make_unique<ImmersiveModeTabbedControllerCocoa>(browser(), overlay(),
@@ -258,8 +257,8 @@ TEST_F(CocoaImmersiveModeControllerTest, ToolbarVisibility) {
 
   immersive_mode_controller->UpdateToolbarVisibility(
       mojom::ToolbarVisibilityStyle::kNone);
-  // The first object is the permanent thin controller.
-  // The second object is the regular controller.
+  // The first object is the permanent thin controller, if present.
+  // The last object is the regular controller.
   EXPECT_EQ(controllers().count, 2u);
   EXPECT_TRUE(controllers().lastObject.hidden);
 

@@ -13,18 +13,38 @@
 #include "components/omnibox/browser/in_memory_url_index_types.h"
 #include "components/search_engines/template_url_service.h"
 #include "content/public/common/url_constants.h"
+#include "extensions/buildflags/buildflags.h"
 #include "third_party/metrics_proto/omnibox_scoring_signals.pb.h"
 #include "url/gurl.h"
 #include "url/url_constants.h"
 
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+#include "extensions/common/constants.h"
+#endif
+
 namespace {
 #if BUILDFLAG(IS_ANDROID)
-// Note: explicitly exclude schemes that may be used to execute Javascript code
+// Note: On Android, restrict the verbatim URLs allowed to be default. We
+// explicitly exclude schemes that may be used to execute Javascript code
 // snippet in the context of the current page on mobile devices.
-constexpr auto kNavigableSchemes = base::MakeFixedFlatSet<std::string_view>(
-    {url::kHttpScheme, url::kHttpsScheme, url::kAboutScheme,
-     content::kChromeUIScheme});
+constexpr auto kAndroidNavigableSchemes =
+    base::MakeFixedFlatSet<std::string_view>({
+        url::kHttpScheme,
+        url::kHttpsScheme,
+        url::kAboutScheme,
+        content::kChromeUIScheme,
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+        // On desktop, extensions are always enabled, `kAndroidNavigableSchemes`
+        // is not used, and verbatim extension URLs are always allowed to be
+        // default. On mobile android, extensions are disabled,
+        // `ENABLE_EXTENSIONS_CORE` is false, and verbatim extension URLs are
+        // not allowed to be default. On desktop android, extensions are enabled
+        // and verbatim extension URLs are allowed to be default depending on
+        // `ENABLE_EXTENSIONS_CORE`.
+        extensions::kExtensionScheme,
 #endif
+    });
+#endif  // BUILDFLAG(IS_ANDROID)
 }  // namespace
 
 AutocompleteMatch VerbatimMatchForURL(
@@ -110,7 +130,7 @@ AutocompleteMatch VerbatimMatchForInput(AutocompleteProvider* provider,
     // Disallow non-navigable schemes to be default. This prevents javascript:
     // snippets from being accidentally executed upon paste, refine, edit, etc.
     match.allowed_to_be_default_match &=
-        kNavigableSchemes.contains(destination_url.scheme());
+        kAndroidNavigableSchemes.contains(destination_url.GetScheme());
 #endif
 
     // NOTE: Don't set match.inline_autocompletion to something non-empty here;
@@ -136,6 +156,43 @@ AutocompleteMatch VerbatimMatchForInput(AutocompleteProvider* provider,
       }
       match.scoring_signals->set_is_verbatim(true);
     }
+  }
+
+  return match;
+}
+
+AutocompleteMatch VerbatimMatchForContext(AutocompleteProvider* provider,
+                                          AutocompleteProviderClient* client,
+                                          const AutocompleteInput& input,
+                                          int relevance) {
+  AutocompleteMatch match(provider, relevance, /*deletable=*/false,
+                          AutocompleteMatchType::SEARCH_WHAT_YOU_TYPED);
+  match.allowed_to_be_default_match = true;
+
+  if (client->GetTemplateURLService()) {
+    const TemplateURL* default_search_provider =
+        client->GetTemplateURLService()->GetDefaultSearchProvider();
+    if (default_search_provider) {
+      TemplateURLRef::SearchTermsArgs search_terms_args;
+      search_terms_args.page_classification =
+          input.current_page_classification();
+      match.destination_url =
+          GURL(default_search_provider->url_ref().ReplaceSearchTerms(
+              search_terms_args,
+              client->GetTemplateURLService()->search_terms_data()));
+      match.keyword = default_search_provider->keyword();
+      match.transition = ui::PAGE_TRANSITION_GENERATED;
+      match.search_terms_args =
+          std::make_unique<TemplateURLRef::SearchTermsArgs>(search_terms_args);
+    }
+  }
+
+  if (match.IsMlSignalLoggingEligible()) {
+    if (!match.scoring_signals) {
+      match.scoring_signals =
+          std::make_optional<::metrics::OmniboxScoringSignals>();
+    }
+    match.scoring_signals->set_is_verbatim(true);
   }
 
   return match;

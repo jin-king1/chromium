@@ -11,13 +11,13 @@
 #include "base/functional/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/run_until.h"
-#include "base/test/scoped_feature_list.h"
 #include "build/buildflag.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/supervised_user/child_accounts/child_account_service_factory.h"
 #include "chrome/browser/supervised_user/supervised_user_browser_utils.h"
 #include "chrome/browser/supervised_user/supervised_user_service_factory.h"
+#include "chrome/browser/supervised_user/supervised_user_test_util.h"
 #include "chrome/browser/supervised_user/supervised_user_verification_controller_client.h"
 #include "chrome/browser/supervised_user/supervised_user_verification_page.h"
 #include "chrome/browser/ui/browser.h"
@@ -40,15 +40,11 @@
 #include "components/strings/grit/components_strings.h"
 #include "components/supervised_user/core/browser/child_account_service.h"
 #include "components/supervised_user/core/browser/supervised_user_service.h"
-#include "components/supervised_user/core/common/features.h"
-#include "components/ukm/test_ukm_recorder.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/mock_navigation_handle.h"
 #include "content/public/test/test_navigation_observer.h"
-#include "services/metrics/public/cpp/ukm_builders.h"
-#include "services/metrics/public/cpp/ukm_source_id.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "url/gurl.h"
@@ -56,13 +52,6 @@
 namespace {
 
 using ::testing::_;
-
-static constexpr std::string_view
-    kUmaReauthenticationBlockedSitedHistogramName =
-        "FamilyLinkUser.BlockedSiteVerifyItsYouInterstitialState";
-static constexpr std::string_view
-    kUmaReauthenticationYoutubeSubframeHistogramName =
-        "FamilyLinkUser.SubframeYoutubeReauthenticationInterstitial";
 
 bool IsReauthenticationInterstitialBeingShown(content::WebContents* content) {
   CHECK(content);
@@ -81,33 +70,13 @@ bool IsBlockedUrlInterstitialBeingShown(content::WebContents* content) {
 class SupervisedUserPendingStateNavigationTest
     : public MixinBasedInProcessBrowserTest {
  public:
-  SupervisedUserPendingStateNavigationTest() {
-    scoped_feature_list_.InitWithFeatures(
-        /*enabled_features=*/
-        {supervised_user::kUncredentialedFilteringFallbackForSupervisedUsers,
-         supervised_user::kForceSupervisedUserReauthenticationForYouTube},
-        /*disabled_features=*/{});
-  }
-
  protected:
-  void PreRunTestOnMainThread() override {
-    InProcessBrowserTest::PreRunTestOnMainThread();
-    // TestAutoSetUkmRecorder should be initialized before UKMs are recorded.
-    ukm_recorder_ = std::make_unique<ukm::TestAutoSetUkmRecorder>();
-  }
-
   content::WebContents* contents() {
     return browser()->tab_strip_model()->GetActiveWebContents();
   }
 
   signin::IdentityManager* identity_manager() {
     return supervision_mixin_.GetIdentityTestEnvironment()->identity_manager();
-  }
-
-  int GetReauthInterstitialUKMTotalCount() {
-    auto entries = ukm_recorder_->GetEntriesByName(
-        ukm::builders::FamilyLinkUser_ReauthenticationInterstitial::kEntryName);
-    return entries.size();
   }
 
   void WaitForPageTitle(const std::u16string& page_title) {
@@ -204,14 +173,9 @@ class SupervisedUserPendingStateNavigationTest
        .embedded_test_server_options = {.resolver_rules_map_host_list =
                                             "*.example.com"}}};
 
-  void SetManualHost(GURL url, bool allowlist) {
-    supervised_user::SupervisedUserService* supervised_user_service =
-        SupervisedUserServiceFactory::GetForProfile(browser()->profile());
-    supervised_user::SupervisedUserURLFilter* url_filter =
-        supervised_user_service->GetURLFilter();
-    std::map<std::string, bool> hosts;
-    hosts[url.host()] = allowlist;
-    url_filter->SetManualHosts(std::move(hosts));
+  void SetManualHost(const GURL& url, bool allowlist) {
+    supervised_user_test_util::SetManualFilterForHost(browser()->GetProfile(),
+                                                      url.GetHost(), allowlist);
   }
 
   content::RenderFrameHost* FindFrameByName(const std::string& name) {
@@ -230,23 +194,7 @@ class SupervisedUserPendingStateNavigationTest
         .ExtractString();
   }
 
-  int GetReauthInterstitialUKMCount(const std::string& metric_name) {
-    int count = 0;
-    auto entries = ukm_recorder_->GetEntriesByName(
-        ukm::builders::FamilyLinkUser_ReauthenticationInterstitial::kEntryName);
-    for (const ukm::mojom::UkmEntry* const entry : entries) {
-      if (ukm_recorder_->GetEntryMetric(entry, metric_name)) {
-        ++count;
-      }
-    }
-    return count;
-  }
-
   int GetTabCount() { return browser()->tab_strip_model()->count(); }
-
- private:
-  std::unique_ptr<ukm::TestAutoSetUkmRecorder> ukm_recorder_;
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 // Tests the blocked site main frame re-authentication interstitial.
@@ -269,9 +217,6 @@ IN_PROC_BROWSER_TEST_F(SupervisedUserPendingStateNavigationTest,
 
   // Sign in a supervised user, which completes re-authentication.
   SignInSupervisedUserAndWaitForInterstitialReload(interstitial_contents, url);
-
-  // UKM should not be recorded for the blocked site interstitial.
-  EXPECT_EQ(GetReauthInterstitialUKMTotalCount(), 0);
 }
 
 // Tests that the sign-in tabs opened through the re-auth interstitial
@@ -290,9 +235,6 @@ IN_PROC_BROWSER_TEST_F(SupervisedUserPendingStateNavigationTest,
 
   // Wait for the re-authentication interstitial. It should be the only tab.
   WaitForReauthenticationInterstitial();
-  histogram_tester.ExpectBucketCount(
-      kUmaReauthenticationBlockedSitedHistogramName,
-      static_cast<int>(SupervisedUserVerificationPage::Status::SHOWN), 1);
   auto* interstitial_contents = contents();
   EXPECT_EQ(1, GetTabCount());
 
@@ -300,11 +242,6 @@ IN_PROC_BROWSER_TEST_F(SupervisedUserPendingStateNavigationTest,
   // times.
   for (int i = 1; i <= 3; i++) {
     ASSERT_TRUE(StartSignInFlowFromContent(interstitial_contents));
-    histogram_tester.ExpectBucketCount(
-        kUmaReauthenticationBlockedSitedHistogramName,
-        static_cast<int>(
-            SupervisedUserVerificationPage::Status::REAUTH_STARTED),
-        i);
     EXPECT_EQ(i + 1, GetTabCount());
 
     // Wait for the navigation to finish in the sign-in tabs.
@@ -343,11 +280,6 @@ IN_PROC_BROWSER_TEST_F(SupervisedUserPendingStateNavigationTest,
   // navigation, remain open.
   SignInSupervisedUserAndWaitForInterstitialReload(interstitial_contents,
                                                    original_tab_target_url);
-  histogram_tester.ExpectBucketCount(
-      kUmaReauthenticationBlockedSitedHistogramName,
-      static_cast<int>(
-          SupervisedUserVerificationPage::Status::REAUTH_COMPLETED),
-      1);
   EXPECT_EQ(2, GetTabCount());
 }
 
@@ -378,7 +310,6 @@ IN_PROC_BROWSER_TEST_F(SupervisedUserPendingStateNavigationTest,
   ASSERT_TRUE(WaitForRenderFrameReady(contents()->GetPrimaryMainFrame()));
   WaitForPageTitle(
       l10n_util::GetStringUTF16(IDS_SUPERVISED_USER_VERIFY_PAGE_TAB_TITLE));
-  EXPECT_EQ(GetReauthInterstitialUKMCount("InterstitialShown"), 1);
 
   // Check that the YouTube interstitial contains the correct text.
   EXPECT_EQ(ui_test_utils::FindInPage(
@@ -391,19 +322,13 @@ IN_PROC_BROWSER_TEST_F(SupervisedUserPendingStateNavigationTest,
 
   // Open re-authentication in a new tab.
   ASSERT_TRUE(StartSignInFlowFromContent(contents()));
-  EXPECT_EQ(GetReauthInterstitialUKMCount("ReauthenticationStarted"), 1);
   EXPECT_EQ(2, GetTabCount());
 
   // Sign in a supervised user, which completes re-authentication.
-  // This should records UKM metrics and close the sign-in tab.
+  // This should close the sign-in tab.
   supervision_mixin_.SignIn(
       supervised_user::SupervisionMixin::SignInMode::kSupervised);
-  ASSERT_TRUE(base::test::RunUntil([&]() {
-    return GetReauthInterstitialUKMCount("ReauthenticationCompleted") == 1;
-  }));
   EXPECT_EQ(1, GetTabCount());
-
-  EXPECT_EQ(GetReauthInterstitialUKMTotalCount(), 3);
 }
 
 // Tests the blocked site subframe re-authentication interstitial.
@@ -447,12 +372,6 @@ IN_PROC_BROWSER_TEST_F(SupervisedUserPendingStateNavigationTest,
   supervision_mixin_.SignIn(
       supervised_user::SupervisionMixin::SignInMode::kSupervised);
   ASSERT_TRUE(base::test::RunUntil([&]() { return GetTabCount() == 1; }));
-
-  // TODO(https://crbug.com/365531704): Wait until the blocked site interstitial
-  // is displayed.
-
-  // UKM should not be recorded for the subframe interstitial.
-  EXPECT_EQ(GetReauthInterstitialUKMTotalCount(), 0);
 }
 
 // Tests the YouTube subframe re-authentication interstitial.
@@ -485,39 +404,24 @@ IN_PROC_BROWSER_TEST_F(SupervisedUserPendingStateNavigationTest,
               testing::HasSubstr(subframe_description));
   EXPECT_THAT(GetInnerHTMLString(iframe2),
               testing::HasSubstr(subframe_description));
-  // Verify the Uma subframe interstitial metrics.
-  histogram_tester.ExpectBucketCount(
-      kUmaReauthenticationYoutubeSubframeHistogramName,
-      static_cast<int>(SupervisedUserVerificationPage::Status::SHOWN), 2);
 
   // Click the "Next" buttons in both interstitials, which should open
   // re-authentication in two new tabs.
   ASSERT_TRUE(StartSignInFlowFromRenderFrameHost(iframe1));
   ASSERT_TRUE(StartSignInFlowFromRenderFrameHost(iframe2));
   EXPECT_EQ(3, GetTabCount());
-  histogram_tester.ExpectBucketCount(
-      kUmaReauthenticationYoutubeSubframeHistogramName,
-      static_cast<int>(SupervisedUserVerificationPage::Status::REAUTH_STARTED),
-      2);
 
   // Sign in a supervised user, which completes re-authentication.
   // This should close the sign-in tabs.
   supervision_mixin_.SignIn(
       supervised_user::SupervisionMixin::SignInMode::kSupervised);
   ASSERT_TRUE(base::test::RunUntil([&]() { return GetTabCount() == 1; }));
-
-  // TODO(https://crbug.com/365531704): Wait until the re-auth subframe
-  // interstitials are no longer displayed. Only then check for the
-  // re-authentication completion histograms.
-
-  // UKM should not be recorded for the subframe interstitial.
-  EXPECT_EQ(GetReauthInterstitialUKMTotalCount(), 0);
 }
 
 // Accepts a net::test_server::HttpRequest and checks if the google
 // api key is present in the headers.
 MATCHER(ContainsGoogleApiKey, "") {
-  return base::Contains(arg.headers, "X-Goog-Api-Key");
+  return arg.headers.contains("X-Goog-Api-Key");
 }
 
 // Tests that when the user doesn't have a valid access token the request is
@@ -544,8 +448,8 @@ IN_PROC_BROWSER_TEST_F(SupervisedUserPendingStateNavigationTest,
           supervision_mixin_.GetIdentityTestEnvironment()
               ->identity_manager()
               ->GetPrimaryAccountId(signin::ConsentLevel::kSignin),
-          GoogleServiceAuthError(
-              GoogleServiceAuthError::State::INVALID_GAIA_CREDENTIALS));
+          GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+              GoogleServiceAuthError::InvalidGaiaCredentialsReason::UNKNOWN));
   kids_management_api_mock().AllowSubsequentClassifyUrl();
 
   ASSERT_TRUE(
@@ -574,8 +478,8 @@ IN_PROC_BROWSER_TEST_F(SupervisedUserPendingStateNavigationTest,
           supervision_mixin_.GetIdentityTestEnvironment()
               ->identity_manager()
               ->GetPrimaryAccountId(signin::ConsentLevel::kSignin),
-          GoogleServiceAuthError(
-              GoogleServiceAuthError::State::INVALID_GAIA_CREDENTIALS));
+          GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+              GoogleServiceAuthError::InvalidGaiaCredentialsReason::UNKNOWN));
 
   ASSERT_TRUE(WaitForRenderFrameReady(contents()->GetPrimaryMainFrame()));
 

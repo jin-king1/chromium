@@ -8,7 +8,6 @@
 
 #include "base/command_line.h"
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
 #include "base/metrics/histogram_functions.h"
 #include "build/build_config.h"
 #include "components/live_caption/caption_bubble_context.h"
@@ -64,7 +63,6 @@ LiveCaptionController::LiveCaptionController(
 
   enabled_ = IsLiveCaptionEnabled();
   base::UmaHistogramBoolean("Accessibility.LiveCaption2", enabled_);
-  MaybeSetLiveCaptionLanguage();
 
   if (enabled_) {
     StartLiveCaption();
@@ -90,6 +88,8 @@ void LiveCaptionController::RegisterProfilePrefs(
   registry->RegisterBooleanPref(
       prefs::kLiveCaptionMaskOffensiveWords, false,
       user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
+  registry->RegisterBooleanPref(prefs::kHeadlessCaptionEnabled, false,
+                                /*flags=*/0);
 
   // Initially default the language to en-US. The language
   // preference value will be set to a default language when Live Caption is
@@ -114,9 +114,29 @@ void LiveCaptionController::OnLiveCaptionEnabledChanged() {
     StartLiveCaption();
   } else {
     StopLiveCaption();
-    speech::SodaInstaller::GetInstance()->SetUninstallTimer(profile_prefs(),
-                                                            global_prefs_);
   }
+}
+
+void LiveCaptionController::OnFirstListenerAdded() {
+  // We have a listener, so be sure we also have soda.  This listener might not
+  // be the UI.
+
+  MaybeSetLiveCaptionLanguage();
+  // The SodaInstaller determines whether SODA is already on the device and
+  // whether or not to download. Once SODA is on the device and ready, the
+  // SODAInstaller calls OnSodaInstalled on its observers.
+  if (!speech::SodaInstaller::GetInstance()->IsSodaInstalled(
+          speech::GetLanguageCode(GetLanguageCode()))) {
+    speech::SodaInstaller::GetInstance()->AddObserver(this);
+    speech::SodaInstaller::GetInstance()->Init(profile_prefs(), global_prefs_);
+  }
+}
+
+void LiveCaptionController::OnLastListenerRemoved() {
+  // We might not have installed a listener, but that's okay.
+  speech::SodaInstaller::GetInstance()->RemoveObserver(this);
+  speech::SodaInstaller::GetInstance()->SetUninstallTimer(global_prefs_,
+                                                          GetLanguageCode());
 }
 
 void LiveCaptionController::OnLiveCaptionLanguageChanged() {
@@ -137,22 +157,12 @@ bool LiveCaptionController::IsLiveCaptionEnabled() {
 
 void LiveCaptionController::StartLiveCaption() {
   DCHECK(enabled_);
-  // The SodaInstaller determines whether SODA is already on the device and
-  // whether or not to download. Once SODA is on the device and ready, the
-  // SODAInstaller calls OnSodaInstalled on its observers. The UI is created at
-  // that time.
-  if (speech::SodaInstaller::GetInstance()->IsSodaInstalled(
-          speech::GetLanguageCode(GetLanguageCode()))) {
-    CreateUI();
-  } else {
-    speech::SodaInstaller::GetInstance()->AddObserver(this);
-    speech::SodaInstaller::GetInstance()->Init(profile_prefs(), global_prefs_);
-  }
+  // Creating the UI will trigger soda to install if needed.
+  CreateUI();
 }
 
 void LiveCaptionController::StopLiveCaption() {
   DCHECK(!enabled_);
-  speech::SodaInstaller::GetInstance()->RemoveObserver(this);
   DestroyUI();
 }
 
@@ -162,45 +172,24 @@ CaptionBubbleSettings* LiveCaptionController::caption_bubble_settings() {
 
 void LiveCaptionController::OnSodaInstalled(
     speech::LanguageCode language_code) {
-  // Live Caption should always be enabled when this is called. If Live Caption
-  // has been disabled, then this should not be observing the SodaInstaller
-  // anymore.
-  DCHECK(enabled_);
+  // Live Caption might not be enabled right now, because installation might
+  // have been triggered by a caption observer that isn't our UI.  That's fine.
   bool is_language_code_for_live_caption =
       prefs::IsLanguageCodeForLiveCaption(language_code, profile_prefs());
 
   if (is_language_code_for_live_caption) {
     speech::SodaInstaller::GetInstance()->RemoveObserver(this);
-    CreateUI();
   }
 }
 
+// SODA install errors are observed and handled in the Settings WebUI:
+// chrome/browser/ui/webui/settings/captions_handler.cc
 void LiveCaptionController::OnSodaInstallError(
     speech::LanguageCode language_code,
-    speech::SodaInstaller::ErrorCode error_code) {
-  // Check that language code matches the selected language for Live Caption or
-  // is LanguageCode::kNone (signifying the SODA binary failed).
-  if (!prefs::IsLanguageCodeForLiveCaption(language_code, profile_prefs()) &&
-      language_code != speech::LanguageCode::kNone) {
-    return;
-  }
-  if (!base::FeatureList::IsEnabled(media::kLiveCaptionMultiLanguage)) {
-    profile_prefs()->SetBoolean(prefs::kLiveCaptionEnabled, false);
-  }
-}
+    speech::SodaInstaller::ErrorCode error_code) {}
 
 const std::string LiveCaptionController::GetLanguageCode() const {
   return prefs::GetLiveCaptionLanguageCode(profile_prefs());
-}
-
-bool LiveCaptionController::DispatchTranscription(
-    CaptionBubbleContext* caption_bubble_context,
-    const media::SpeechRecognitionResult& result) {
-  if (!caption_bubble_controller()) {
-    return false;
-  }
-  return caption_bubble_controller()->OnTranscription(caption_bubble_context,
-                                                      result);
 }
 
 void LiveCaptionController::OnError(
@@ -214,24 +203,6 @@ void LiveCaptionController::OnError(
   caption_bubble_controller()->OnError(caption_bubble_context, error_type,
                                        std::move(error_clicked_callback),
                                        std::move(error_silenced_callback));
-}
-
-void LiveCaptionController::OnAudioStreamEnd(
-    CaptionBubbleContext* caption_bubble_context) {
-  if (!caption_bubble_controller()) {
-    return;
-  }
-  caption_bubble_controller()->OnAudioStreamEnd(caption_bubble_context);
-}
-
-void LiveCaptionController::OnLanguageIdentificationEvent(
-    CaptionBubbleContext* caption_bubble_context,
-    const media::mojom::LanguageIdentificationEventPtr& event) {
-  // TODO(crbug.com/40167928): Implement the UI for language identification.
-  if (caption_bubble_controller()) {
-    return caption_bubble_controller()->OnLanguageIdentificationEvent(
-        caption_bubble_context, event);
-  }
 }
 
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_CHROMEOS)

@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import {assert} from 'chrome://resources/js/assert.js';
+
 /**
  * Navigates focus through nested elements given a HTMLElement parent
  * node with child nodes with specific element types such as `div` or custom
@@ -15,7 +17,7 @@ export class KeyArrowNavigationService {
    * flat format sorted by tab order.
    */
   private elements_: HTMLElement[] = [];
-  private rootElement_!: HTMLElement;
+  private rootElement_: HTMLElement;
   private focusIndex_: number = 0;
   private childrenQuerySelector_: string = '';
 
@@ -113,7 +115,7 @@ export class KeyArrowNavigationService {
    * @returns the current focused element
    */
   getElementAtFocusIndexForTesting(): HTMLElement {
-    return this.elements_[this.focusIndex_];
+    return this.elements_[this.focusIndex_]!;
   }
 
   /**
@@ -125,6 +127,34 @@ export class KeyArrowNavigationService {
     return [...this.elements_];
   }
 
+  /**
+   * Returns the amount of focusable elements in the current list.
+   *
+   * @returns Number of tree elements
+   */
+  getElementCount(): number {
+    return this.elements_.length;
+  }
+
+  /**
+   * Moves the focus on the current tree to either the next or the previous
+   * element depending on the direction that is passed in.
+   */
+  moveFocus(direction: -1|1) {
+    const elementCount = this.elements_.length;
+    if (elementCount === 0) {
+      return;
+    }
+
+    if (direction === 1) {
+      this.focusIndex_ = (this.focusIndex_ + 1) % elementCount;
+    } else {
+      this.focusIndex_ = (this.focusIndex_ - 1 + elementCount) % elementCount;
+    }
+
+    this.focusCurrentIndex_();
+  }
+
   private handleKeyArrowEvent_(event: KeyboardEvent) {
     const {key} = event;
 
@@ -132,35 +162,26 @@ export class KeyArrowNavigationService {
       return;
     }
 
+    if (this.elements_.length === 0) {
+      return;
+    }
+
     event.preventDefault();
     event.stopPropagation();
 
     if (key === 'ArrowUp') {
-      this.moveFocus_(-1);
+      this.moveFocus(-1);
     }
     if (key === 'ArrowDown') {
-      this.moveFocus_(1);
+      this.moveFocus(1);
     }
-  }
-
-  private moveFocus_(direction: -1|1) {
-    if (this.focusIndex_ + direction > this.elements_.length - 1) {
-      this.focusIndex_ = 0;
-      this.focusCurrentIndex_();
-      return;
-    }
-    if (this.focusIndex_ + direction < 0) {
-      this.focusIndex_ = this.elements_.length - 1;
-      this.focusCurrentIndex_();
-      return;
-    }
-
-    this.focusIndex_ += direction;
-    this.focusCurrentIndex_();
   }
 
   private focusCurrentIndex_() {
-    this.elements_[this.focusIndex_].focus();
+    const element = this.elements_[this.focusIndex_];
+    if (element) {
+      element.focus();
+    }
   }
 
   private findElementIndex_(element: HTMLElement): number {
@@ -189,4 +210,15 @@ export class KeyArrowNavigationService {
 
     return treeElements;
   }
+
+  static getInstance(): KeyArrowNavigationService {
+    assert(instance);
+    return instance;
+  }
+
+  static setInstance(obj: KeyArrowNavigationService) {
+    instance = obj;
+  }
 }
+
+let instance: KeyArrowNavigationService|null = null;

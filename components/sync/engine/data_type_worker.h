@@ -25,7 +25,7 @@
 #include "components/sync/engine/commit_and_get_updates_types.h"
 #include "components/sync/engine/commit_contributor.h"
 #include "components/sync/engine/commit_queue.h"
-#include "components/sync/engine/nigori/cryptographer.h"
+#include "components/sync/engine/cryptographer.h"
 #include "components/sync/engine/nudge_handler.h"
 #include "components/sync/engine/sync_encryption_handler.h"
 #include "components/sync/engine/update_handler.h"
@@ -191,7 +191,7 @@ class DataTypeWorker : public UpdateHandler,
   void ApplyUpdates(StatusController* status, bool cycle_done) override;
   void RecordRemoteInvalidation(
       std::unique_ptr<SyncInvalidation> incoming) override;
-  void RecordDownloadFailure() const override;
+  void RecordDownloadFailure(NudgedUpdateResult failure_result) const override;
   void CollectPendingInvalidations(sync_pb::GetUpdateTriggers* msg) override;
   bool HasPendingInvalidations() const override;
 
@@ -328,6 +328,10 @@ class DataTypeWorker : public UpdateHandler,
   // Note that Passwords and OutgoingPasswordSharingInvitations have their own
   // encryption scheme.
   void EncryptSpecifics(CommitRequestDataList* request_data_list);
+
+  // Encrypts `page_context` field for `SEND_TAB_TO_SELF` specifics.
+  void EncryptSendTabToSelfPageContext(
+      CommitRequestDataList* request_data_list);
 
   // The (up to kMaxPayloads) most recent invalidations received since the last
   // successful sync cycle.

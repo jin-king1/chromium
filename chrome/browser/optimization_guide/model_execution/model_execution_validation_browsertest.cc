@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/strings/strcat.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/chromeos_buildflags.h"
@@ -10,7 +11,6 @@
 #include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/test/base/in_process_browser_test.h"
-#include "components/optimization_guide/core/optimization_guide_constants.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/optimization_guide/core/optimization_guide_switches.h"
 #include "components/optimization_guide/core/optimization_guide_util.h"
@@ -40,8 +40,7 @@ class ModelExecutionValidationBrowserTestBase : public InProcessBrowserTest {
     model_execution_server_ = std::make_unique<net::EmbeddedTestServer>(
         net::EmbeddedTestServer::TYPE_HTTPS);
     net::EmbeddedTestServer::ServerCertificateConfig cert_config;
-    cert_config.dns_names = {
-        GURL(kOptimizationGuideServiceModelExecutionDefaultURL).host()};
+    cert_config.dns_names = {switches::GetModelExecutionServiceURL().GetHost()};
     model_execution_server_->SetSSLConfig(cert_config);
     model_execution_server_->RegisterRequestHandler(
         base::BindRepeating(&ModelExecutionValidationBrowserTestBase::
@@ -55,9 +54,7 @@ class ModelExecutionValidationBrowserTestBase : public InProcessBrowserTest {
     cmd->AppendSwitchASCII(
         switches::kOptimizationGuideServiceModelExecutionURL,
         model_execution_server_
-            ->GetURL(
-                GURL(kOptimizationGuideServiceModelExecutionDefaultURL).host(),
-                "/")
+            ->GetURL(switches::GetModelExecutionServiceURL().GetHost(), "/")
             .spec());
   }
 
@@ -72,7 +69,7 @@ class ModelExecutionValidationBrowserTestBase : public InProcessBrowserTest {
     InProcessBrowserTest::SetUpOnMainThread();
     identity_test_env_adaptor_ =
         std::make_unique<IdentityTestEnvironmentProfileAdaptor>(
-            browser()->profile());
+            browser()->GetProfile());
     host_resolver()->AddRule("*", "127.0.0.1");
   }
 
@@ -86,7 +83,7 @@ class ModelExecutionValidationBrowserTestBase : public InProcessBrowserTest {
         identity_test_env_adaptor_->identity_test_env()
             ->MakePrimaryAccountAvailable("user@gmail.com",
                                           signin::ConsentLevel::kSignin);
-    AccountCapabilitiesTestMutator mutator(&account_info.capabilities);
+    AccountCapabilitiesTestMutator mutator(&account_info);
     mutator.set_can_use_model_execution_features(true);
     identity_test_env_adaptor_->identity_test_env()
         ->UpdateAccountInfoForAccount(account_info);
@@ -104,8 +101,8 @@ class ModelExecutionValidationBrowserTestBase : public InProcessBrowserTest {
     auto response = std::make_unique<net::test_server::BasicHttpResponse>();
     EXPECT_EQ(request.method, net::test_server::METHOD_POST);
     EXPECT_NE(request.headers.end(), request.headers.find("X-Client-Data"));
-    EXPECT_TRUE(base::Contains(request.headers,
-                               net::HttpRequestHeaders::kAuthorization));
+    EXPECT_TRUE(
+        request.headers.contains(net::HttpRequestHeaders::kAuthorization));
     std::move(model_execution_request_closure_).Run();
 
     if (should_server_fail_model_execution_) {
@@ -117,8 +114,8 @@ class ModelExecutionValidationBrowserTestBase : public InProcessBrowserTest {
     string_response.set_value("test_response");
     proto::ExecuteResponse execute_response;
     proto::Any* any_metadata = execute_response.mutable_response_metadata();
-    any_metadata->set_type_url("type.googleapis.com/" +
-                               string_response.GetTypeName());
+    any_metadata->set_type_url(
+        base::StrCat({"type.googleapis.com/", string_response.GetTypeName()}));
     string_response.SerializeToString(any_metadata->mutable_value());
 
     std::string serialized_response;
@@ -151,7 +148,7 @@ class ModelExecutionValidationBrowserTest
   }
 };
 
-// TODO(b/318433299, crbug.com/1520214): Flaky on linux-chromeos, Win and Mac.
+// TODO(b/318433299, crbug.com/41493189): Flaky on linux-chromeos, Win and Mac.
 #if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
 #define MAYBE_ModelExecutionSuccess DISABLED_ModelExecutionSuccess
 #else
@@ -174,7 +171,7 @@ IN_PROC_BROWSER_TEST_F(ModelExecutionValidationBrowserTest,
       FetcherRequestStatus::kSuccess, 1);
 }
 
-// TODO(b/318433299, crbug.com/1520214): Flaky on linux-chromeos and win
+// TODO(b/318433299, crbug.com/41493189): Flaky on linux-chromeos and win
 #if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_WIN)
 #define MAYBE_ModelExecutionFailsServerFailure \
   DISABLED_ModelExecutionFailsServerFailure

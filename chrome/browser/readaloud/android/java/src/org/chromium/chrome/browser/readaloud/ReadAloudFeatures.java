@@ -4,13 +4,12 @@
 
 package org.chromium.chrome.browser.readaloud;
 
-import android.app.Activity;
-
-import androidx.annotation.Nullable;
+import com.google.common.collect.ImmutableList;
 
 import org.jni_zero.JNINamespace;
 import org.jni_zero.NativeMethods;
 
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.profiles.Profile;
@@ -21,44 +20,23 @@ import org.chromium.chrome.browser.signin.services.UnifiedConsentServiceBridge;
 import org.chromium.components.search_engines.TemplateUrl;
 import org.chromium.components.search_engines.TemplateUrlService;
 import org.chromium.components.user_prefs.UserPrefs;
+import org.chromium.ui.accessibility.AccessibilityFeatures;
+import org.chromium.ui.accessibility.AccessibilityFeaturesMap;
+
+import java.util.List;
 
 /** Functions for reading feature flags and params and checking eligibility. */
 @JNINamespace("readaloud")
+@NullMarked
 public final class ReadAloudFeatures {
-    private static final String API_KEY_OVERRIDE_PARAM_NAME = "api_key_override";
-    private static final String VOICES_OVERRIDE_PARAM_NAME = "voices_override";
-    private static long sKnownReadableTrialPtr;
+    private static final int READABILITY_DELAY_MS_AFTER_PAGE_LOAD = 500;
 
     private static @IneligibilityReason int sIneligibilityReason = IneligibilityReason.UNKNOWN;
-
-    /** Perform startup tasks. */
-    public static void init() {
-        ReadAloudFeaturesJni.get().clearStaleSyntheticTrialPrefs();
-
-        // Prepare the "known readable" synthetic trial. If it was active in a previous session and
-        // the trial associated with the "ReadAloud" flag hasn't changed since then, reactivate it
-        // now, otherwise it will not be active until activateKnownReadableStudy() is called.
-        if (sKnownReadableTrialPtr != 0L) {
-            return;
-        }
-        sKnownReadableTrialPtr =
-                ReadAloudFeaturesJni.get()
-                        .initSyntheticTrial(ChromeFeatureList.READALOUD, "_KnownReadable");
-    }
-
-    /** Destroy native components. */
-    public static void shutdown() {
-        if (sKnownReadableTrialPtr != 0L) {
-            ReadAloudFeaturesJni.get().destroySyntheticTrial(sKnownReadableTrialPtr);
-            sKnownReadableTrialPtr = 0L;
-        }
-    }
 
     /**
      * Returns true if Read Aloud is allowed. All must be true:
      *
      * <ul>
-     *   <li>Feature flag enabled
      *   <li>Not incognito mode
      *   <li>User opted into "Make search and browsing better"
      *   <li>Google is the default search engine
@@ -103,79 +81,38 @@ public final class ReadAloudFeatures {
             return false;
         }
 
-        if (!ChromeFeatureList.isEnabled(ChromeFeatureList.READALOUD)) {
-            sIneligibilityReason = IneligibilityReason.FEATURE_FLAG_DISABLED;
-            return false;
-        }
-
         return true;
+    }
+
+    public static boolean isAudioOverviewsAllowed() {
+        return ChromeFeatureList.isEnabled(ChromeFeatureList.READALOUD_AUDIO_OVERVIEWS);
+    }
+
+    public static int getAudioOverviewsSpeedAdditionPercentage() {
+        return ChromeFeatureList.sReadAloudAudioOverviewsSpeedAdditionPercentage.getValue();
+    }
+
+    public static boolean shouldConsiderLanguageInOverviewReadability() {
+      return ChromeFeatureList.sShouldConsiderLanguageInOverviewReadability.getValue();
+    }
+
+    public static int getReadabilityDelayMsAfterPageLoad() {
+        return READABILITY_DELAY_MS_AFTER_PAGE_LOAD;
     }
 
     public static @IneligibilityReason int getIneligibilityReason() {
         return sIneligibilityReason;
     }
 
-    /** Returns true if playback is enabled. */
-    public static boolean isPlaybackEnabled() {
-        return ChromeFeatureList.isEnabled(ChromeFeatureList.READALOUD_PLAYBACK);
-    }
-
-    /** Returns true if Read Aloud is allowed to play in the background. */
-    public static boolean isBackgroundPlaybackEnabled() {
-        return ChromeFeatureList.isEnabled(ChromeFeatureList.READALOUD_BACKGROUND_PLAYBACK);
-    }
-
-    /** Returns true if Read Aloud entrypoint can be added to overflow menu in CCT. */
-    public static boolean isEnabledForOverflowMenuInCct() {
-        return ChromeFeatureList.isEnabled(ChromeFeatureList.READALOUD_IN_OVERFLOW_MENU_IN_CCT);
-    }
-
-    // TODO: b/323238277 Move this check into isAllowed()
-    /** Returns true if in multi-window and ReadAloud is disabled for multi-window. */
-    public static boolean isInMultiWindowAndDisabled(Activity activity) {
-        return activity.isInMultiWindowMode()
-                && !ChromeFeatureList.isEnabled(ChromeFeatureList.READALOUD_IN_MULTI_WINDOW);
-    }
-
-    /** Returns true if Read Aloud tap to seek is enabled. */
-    public static boolean isTapToSeekEnabled() {
-        return ChromeFeatureList.sReadAloudTapToSeek.isEnabled();
+    /** Returns true if the native C++ Read Aloud implementation is enabled. */
+    public static boolean isNativeEnabled() {
+        return AccessibilityFeaturesMap.isEnabled(AccessibilityFeatures.READ_ALOUD_NATIVE);
     }
 
     /** Returns true if the ReadAloud CCT IPH should highlight the menu button. */
     public static boolean isIPHMenuButtonHighlightCctEnabled() {
         return ChromeFeatureList.isEnabled(
                 ChromeFeatureList.READALOUD_IPH_MENU_BUTTON_HIGHLIGHT_CCT);
-    }
-
-    /** Returns the API key override feature param if present, or null otherwise. */
-    @Nullable
-    public static String getApiKeyOverride() {
-        String apiKeyOverride =
-                ChromeFeatureList.getFieldTrialParamByFeature(
-                        ChromeFeatureList.READALOUD, API_KEY_OVERRIDE_PARAM_NAME);
-        return apiKeyOverride.isEmpty() ? null : apiKeyOverride;
-    }
-
-    /**
-     * Returns the voice list override param value in serialized form, or empty
-     * string if the param is absent. Value is a base64-encoded ListVoicesResponse
-     * binarypb.
-     */
-    public static String getVoicesParam() {
-        return ChromeFeatureList.getFieldTrialParamByFeature(
-                ChromeFeatureList.READALOUD, VOICES_OVERRIDE_PARAM_NAME);
-    }
-
-    /**
-     * Activate the "known readable" synthetic trial if it isn't already active. It may be
-     * reactivated on the next startup as described above. Only the first call to this method has
-     * any effect.
-     */
-    public static void activateKnownReadableTrial() {
-        if (sKnownReadableTrialPtr != 0L) {
-            ReadAloudFeaturesJni.get().activateSyntheticTrial(sKnownReadableTrialPtr);
-        }
     }
 
     /** Return the metrics client ID or empty string if it isn't available. */
@@ -193,23 +130,22 @@ public final class ReadAloudFeatures {
         return ReadAloudFeaturesJni.get().getServerExperimentFlag();
     }
 
+    public static List<String> getSupportedLanguagesForOverview() {
+        ImmutableList.Builder<String> result = ImmutableList.builder();
+        for (String language :
+                ChromeFeatureList.sReadAloudAudioOverviewsSupportedLanguages
+                        .getValue()
+                        .split(",")) {
+            String trimmed = language.trim();
+            if (!trimmed.isEmpty()) {
+                result.add(trimmed);
+            }
+      }
+      return result.build();
+    }
+
     @NativeMethods
     public interface Natives {
-        // Create a native readaloud::SyntheticTrial and return its address. It must be
-        // cleaned up with destroySyntheticTrial(). May return nullptr if there is no
-        // field trial overriding `featureName`.
-        long initSyntheticTrial(String featureName, String syntheticTrialNameSuffix);
-
-        // Activate a synthetic trial if not already active. Pointer must not be null.
-        void activateSyntheticTrial(long syntheticTrialPtr);
-
-        // Destroy the synthetic trial native object. Pointer must not be null.
-        void destroySyntheticTrial(long syntheticTrialPtr);
-
-        // Check stored synthetic trial reactivation prefs and delete those that don't
-        // match current field trial state.
-        void clearStaleSyntheticTrialPrefs();
-
         // Get metrics client ID or empty string if it isn't available.
         String getMetricsId();
 

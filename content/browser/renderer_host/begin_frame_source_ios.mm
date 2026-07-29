@@ -4,6 +4,8 @@
 
 #include "content/browser/renderer_host/begin_frame_source_ios.h"
 
+#include "base/functional/callback_helpers.h"
+
 namespace content {
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -12,6 +14,7 @@ namespace content {
 BeginFrameSourceIOS::BeginFrameSourceIOS(ui::Compositor* compositor)
     : compositor_(compositor),
       begin_frame_source_(viz::BackToBackBeginFrameSource::kNotRestartableId) {
+  CHECK(compositor_, base::NotFatalUntil::M152);
   compositor_->SetExternalBeginFrameControllerClientFactory(this);
 }
 
@@ -20,19 +23,8 @@ BeginFrameSourceIOS::~BeginFrameSourceIOS() {
 }
 
 void BeginFrameSourceIOS::OnBeginFrame(const viz::BeginFrameArgs& args) {
-  if (!compositor_ || !send_begin_frame_) {
-    return;
-  }
   last_used_begin_frame_args_ = args;
-  send_begin_frame_ = false;
-  compositor_->IssueExternalBeginFrame(
-      args, /*force=*/true,
-      base::BindOnce(&BeginFrameSourceIOS::BeginFrameAck,
-                     weak_factory_.GetWeakPtr()));
-}
-
-void BeginFrameSourceIOS::BeginFrameAck(const viz::BeginFrameAck&) {
-  send_begin_frame_ = true;
+  compositor_->IssueExternalBeginFrameNoAck(args);
 }
 
 const viz::BeginFrameArgs& BeginFrameSourceIOS::LastUsedBeginFrameArgs() const {
@@ -45,10 +37,6 @@ bool BeginFrameSourceIOS::WantsAnimateOnlyBeginFrames() const {
   return false;
 }
 
-bool BeginFrameSourceIOS::IsRoot() const {
-  return true;
-}
-
 mojo::PendingAssociatedRemote<viz::mojom::ExternalBeginFrameControllerClient>
 BeginFrameSourceIOS::CreateExternalBeginFrameControllerClient() {
   mojo::PendingAssociatedRemote<viz::mojom::ExternalBeginFrameControllerClient>
@@ -58,23 +46,24 @@ BeginFrameSourceIOS::CreateExternalBeginFrameControllerClient() {
 }
 
 void BeginFrameSourceIOS::SetNeedsBeginFrame(bool needs_begin_frames) {
+  if (needs_begin_frames == observing_begin_frame_source_) {
+    return;
+  }
+  observing_begin_frame_source_ = needs_begin_frames;
   if (needs_begin_frames) {
-    if (added_observer_) {
-      return;
-    }
-    added_observer_ = true;
     begin_frame_source_.AddObserver(this);
   } else {
-    if (!added_observer_) {
-      return;
-    }
-    added_observer_ = false;
     begin_frame_source_.RemoveObserver(this);
   }
 }
 
 void BeginFrameSourceIOS::SetPreferredInterval(base::TimeDelta interval) {
   begin_frame_source_.SetPreferredInterval(interval);
+}
+
+void BeginFrameSourceIOS::NeedsBeginFrameWithId(int64_t display_id,
+                                                bool needs_begin_frames) {
+  // Should do nothing on iOS crbug.com/469887778#comment3.
 }
 
 }  // namespace content

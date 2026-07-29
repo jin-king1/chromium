@@ -23,6 +23,7 @@ import static org.mockito.Mockito.verifyNoMoreInteractions;
 import android.content.Context;
 import android.view.ContextThemeWrapper;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
 
 import org.junit.Before;
@@ -33,17 +34,18 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
+import org.chromium.base.Callback;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.chrome.browser.omnibox.R;
 import org.chromium.chrome.browser.omnibox.suggestions.RecyclerViewSelectionController;
-import org.chromium.chrome.browser.omnibox.test.R;
 
 /** Tests for {@link BaseSuggestionView}. */
 @RunWith(BaseRobolectricTestRunner.class)
 public class BaseSuggestionViewUnitTest {
     public @Rule MockitoRule mMockitoRule = MockitoJUnit.rule();
 
-    private @Mock View.OnClickListener mOnClickListener;
+    private @Mock Callback<Integer> mOnActivateListener;
     private @Mock View.OnLongClickListener mOnLongClickListener;
 
     private Context mContext;
@@ -57,7 +59,7 @@ public class BaseSuggestionViewUnitTest {
                         ContextUtils.getApplicationContext(), R.style.Theme_BrowserUI_DayNight);
         mInnerView = new View(mContext);
         mView = spy(new BaseSuggestionView<>(mInnerView));
-        mView.setOnClickListener(mOnClickListener);
+        mView.setOnActivateListener(mOnActivateListener);
         mView.setOnLongClickListener(mOnLongClickListener);
     }
 
@@ -73,9 +75,33 @@ public class BaseSuggestionViewUnitTest {
         // This test evaluates that <Enter> key triggers the navigation event until we plumb both
         // keyDown and keyUp events.
         assertTrue(sendKey(KeyEvent.KEYCODE_ENTER));
-        verify(mOnClickListener).onClick(any());
-        verifyNoMoreInteractions(mOnClickListener, mOnLongClickListener);
+        verify(mOnActivateListener).onResult(eq(0));
+        verifyNoMoreInteractions(mOnActivateListener, mOnLongClickListener);
         verify(mView, never()).super_onKeyDown(anyInt(), any());
+    }
+
+    @Test
+    public void onKeyDown_enterKeyWithModifiersActivatesSuggestion() {
+        var event =
+                new KeyEvent(
+                        0,
+                        0,
+                        KeyEvent.ACTION_DOWN,
+                        KeyEvent.KEYCODE_ENTER,
+                        0,
+                        KeyEvent.META_ALT_ON);
+        assertTrue(mView.onKeyDown(KeyEvent.KEYCODE_ENTER, event));
+        verify(mOnActivateListener).onResult(eq(KeyEvent.META_ALT_ON));
+    }
+
+    @Test
+    public void performClick_usesLastTouchModifiers() {
+        MotionEvent downEvent =
+                MotionEvent.obtain(0, 0, MotionEvent.ACTION_DOWN, 0f, 0f, KeyEvent.META_ALT_ON);
+        mView.onTouchEvent(downEvent);
+
+        assertTrue(mView.performClick());
+        verify(mOnActivateListener).onResult(eq(KeyEvent.META_ALT_ON));
     }
 
     @Test
@@ -97,7 +123,7 @@ public class BaseSuggestionViewUnitTest {
     @Test
     public void onKeyDown_unrecognizedKeysPassedToSuper() {
         assertFalse(sendKey(KeyEvent.KEYCODE_A));
-        verifyNoMoreInteractions(mOnClickListener, mOnLongClickListener);
+        verifyNoMoreInteractions(mOnActivateListener, mOnLongClickListener);
         verify(mView).super_onKeyDown(eq(KeyEvent.KEYCODE_A), any());
     }
 
@@ -162,5 +188,94 @@ public class BaseSuggestionViewUnitTest {
         mView.setActionButtonsCount(1);
         assertEquals(1, mView.getActionButtons().size());
         assertEquals(btn0, mView.getActionButtons().get(0));
+    }
+
+    @Test
+    public void showOnlyOnFocusActionButton_toggleVisibility() {
+        mView.setActionButtonsCount(2);
+
+        ActionButtonView actionButtonWithShowOnFocus = mView.getActionButtons().get(0);
+        actionButtonWithShowOnFocus.enableShowOnlyOnFocus(true);
+        ActionButtonView actionButtonWithoutShowOnFocus = mView.getActionButtons().get(1);
+
+        // Initial visibility is invisible for the showOnlyOnFocus button.
+        assertEquals(View.INVISIBLE, actionButtonWithShowOnFocus.getVisibility());
+        assertEquals(View.VISIBLE, actionButtonWithoutShowOnFocus.getVisibility());
+
+        // Select the view. The showOnlyOnFocus button should become visible.
+        mView.setSelected(true);
+        assertEquals(View.VISIBLE, actionButtonWithShowOnFocus.getVisibility());
+        assertEquals(View.VISIBLE, actionButtonWithoutShowOnFocus.getVisibility());
+
+        // Deselect the view. The showOnlyOnFocus button should become invisible.
+        mView.setSelected(false);
+        assertEquals(View.INVISIBLE, actionButtonWithShowOnFocus.getVisibility());
+        assertEquals(View.VISIBLE, actionButtonWithoutShowOnFocus.getVisibility());
+
+        // Hover over the view. The showOnlyOnFocus button should become invisible.
+        mView.onHoverEvent(MotionEvent.obtain(0, 0, MotionEvent.ACTION_HOVER_ENTER, 1.f, 1.f, 0));
+        assertEquals(View.VISIBLE, actionButtonWithShowOnFocus.getVisibility());
+        assertEquals(View.VISIBLE, actionButtonWithoutShowOnFocus.getVisibility());
+
+        // Hover away from the view. The showOnlyOnFocus button should become invisible.
+        mView.onHoverEvent(MotionEvent.obtain(0, 0, MotionEvent.ACTION_HOVER_EXIT, 1.f, 1.f, 0));
+        assertEquals(View.INVISIBLE, actionButtonWithShowOnFocus.getVisibility());
+        assertEquals(View.VISIBLE, actionButtonWithoutShowOnFocus.getVisibility());
+    }
+
+    @Test
+    public void actionButton_hoverUpdate() {
+        View innerView = new View(mContext);
+        // Don't use the spy version of BaseSuggestionView.
+        BaseSuggestionView<View> view = new BaseSuggestionView<>(innerView);
+
+        view.setActionButtonsCount(1);
+        ActionButtonView actionButton = view.getActionButtons().get(0);
+        assertFalse(view.isHovered());
+
+        view.onHoverEvent(MotionEvent.obtain(0, 0, MotionEvent.ACTION_HOVER_ENTER, 1.f, 1.f, 0));
+        assertTrue(view.isHovered());
+
+        view.onHoverEvent(MotionEvent.obtain(0, 0, MotionEvent.ACTION_HOVER_EXIT, 1.f, 1.f, 0));
+        assertFalse(view.isHovered());
+
+        // The hover change in action button should affect BaseSuggestionView.
+        actionButton.dispatchHoverEventForTesting(
+                MotionEvent.obtain(0, 0, MotionEvent.ACTION_HOVER_ENTER, 1.f, 1.f, 0));
+        view.setHovered(false);
+        assertTrue(view.isHovered());
+
+        actionButton.dispatchHoverEventForTesting(
+                MotionEvent.obtain(0, 0, MotionEvent.ACTION_HOVER_EXIT, 1.f, 1.f, 0));
+        view.setHovered(false);
+        assertFalse(view.isHovered());
+
+        // The pressed change in action button should affect BaseSuggestionView.
+        actionButton.dispatchTouchEvent(
+                MotionEvent.obtain(0, 0, MotionEvent.ACTION_DOWN, 1.f, 1.f, 0));
+        view.setHovered(false);
+        assertTrue(view.isHovered());
+
+        actionButton.dispatchTouchEvent(
+                MotionEvent.obtain(0, 0, MotionEvent.ACTION_UP, 1.f, 1.f, 0));
+        view.setHovered(false);
+        assertFalse(view.isHovered());
+    }
+
+    @Test
+    public void setActionButtonsCount_decreaseToZeroWhileButtonSelected() {
+        mView.setActionButtonsCount(1);
+        mView.setSelected(true);
+
+        // Select the action button.
+        assertTrue(sendKey(KeyEvent.KEYCODE_TAB));
+
+        // Verify that the action button is selected.
+        assertTrue(mView.getActionButtons().get(0).isSelected());
+
+        // Now set count to 0. This should not crash.
+        mView.setActionButtonsCount(0);
+
+        assertEquals(0, mView.getActionButtons().size());
     }
 }

@@ -9,6 +9,7 @@
 #include <dlfcn.h>
 #include <netdb.h>
 #include <unistd.h>
+
 #include <cstddef>
 #include <memory>
 #include <string>
@@ -16,6 +17,7 @@
 #include "base/android/jni_android.h"
 #include "base/android/jni_array.h"
 #include "base/android/jni_string.h"
+#include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
@@ -36,7 +38,6 @@
 using base::android::AttachCurrentThread;
 using base::android::ConvertJavaStringToUTF8;
 using base::android::ConvertUTF8ToJavaString;
-using base::android::JavaParamRef;
 using base::android::JavaRef;
 using base::android::ScopedJavaGlobalRef;
 using base::android::ScopedJavaLocalRef;
@@ -187,8 +188,7 @@ class HostResolver : public proxy_resolver::ProxyHostResolver {
     }
 
     bool DnsResolveImpl(const std::string& host) {
-      struct addrinfo hints;
-      memset(&hints, 0, sizeof hints);
+      struct addrinfo hints = {};
       hints.ai_family = AF_INET;
 
       struct addrinfo* res = nullptr;
@@ -397,9 +397,7 @@ void AwPacProcessor::Destroy(base::WaitableEvent* event) {
   event->Signal();
 }
 
-void AwPacProcessor::DestroyNative(
-    JNIEnv* env,
-    const base::android::JavaParamRef<jobject>& obj) {
+void AwPacProcessor::DestroyNative(JNIEnv* env) {
   delete this;
 }
 
@@ -436,9 +434,7 @@ bool AwPacProcessor::SetProxyScript(std::string script) {
   return job.ExecSync();
 }
 
-jboolean AwPacProcessor::SetProxyScript(JNIEnv* env,
-                                        const JavaParamRef<jobject>& obj,
-                                        std::string& script) {
+bool AwPacProcessor::SetProxyScript(JNIEnv* env, const std::string& script) {
   return SetProxyScript(script);
 }
 
@@ -458,8 +454,7 @@ bool AwPacProcessor::MakeProxyRequest(std::string url, std::string* result) {
 
 ScopedJavaLocalRef<jstring> AwPacProcessor::MakeProxyRequest(
     JNIEnv* env,
-    const JavaParamRef<jobject>& obj,
-    const JavaParamRef<jstring>& jurl) {
+    const JavaRef<jstring>& jurl) {
   std::string url = ConvertJavaStringToUTF8(env, jurl);
   std::string result;
   if (MakeProxyRequest(url, &result)) {
@@ -489,7 +484,7 @@ void AwPacProcessor::SetNetworkAndLinkAddresses(
                                 net_handle, std::move(link_addresses)));
 }
 
-static jlong JNI_AwPacProcessor_CreateNativePacProcessor(JNIEnv* env) {
+static int64_t JNI_AwPacProcessor_CreateNativePacProcessor(JNIEnv* env) {
   AwPacProcessor* processor = new AwPacProcessor();
   return reinterpret_cast<intptr_t>(processor);
 }
@@ -499,3 +494,5 @@ static void JNI_AwPacProcessor_InitializeEnvironment(JNIEnv* env) {
 }
 
 }  // namespace android_webview
+
+DEFINE_JNI(AwPacProcessor)

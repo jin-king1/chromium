@@ -6,6 +6,7 @@ package org.chromium.chrome.browser.grouped_affiliations;
 
 import android.content.Context;
 import android.content.res.Resources;
+import android.graphics.Typeface;
 import android.text.SpannableString;
 import android.text.TextUtils;
 import android.text.style.StyleSpan;
@@ -29,7 +30,7 @@ class AcknowledgeGroupedCredentialSheetView implements BottomSheetContent {
     private static final float URL_IN_TITLE_MAX_LINES = 1.5f;
     private final View mContent;
     private final String mCurrentHostname;
-    private String mCredentialHostname;
+    private final String mCredentialHostname;
     private final Callback<Integer> mInterationCallback;
 
     public AcknowledgeGroupedCredentialSheetView(
@@ -91,12 +92,9 @@ class AcknowledgeGroupedCredentialSheetView implements BottomSheetContent {
         SpannableString formattedString =
                 SpanApplier.applySpans(
                         fullString,
-                        new SpanApplier.SpanInfo(
-                                "<b1>", "</b1>", new StyleSpan(android.graphics.Typeface.BOLD)),
-                        new SpanApplier.SpanInfo(
-                                "<b2>", "</b2>", new StyleSpan(android.graphics.Typeface.BOLD)),
-                        new SpanApplier.SpanInfo(
-                                "<b3>", "</b3>", new StyleSpan(android.graphics.Typeface.BOLD)));
+                        new SpanApplier.SpanInfo("<b1>", "</b1>", new StyleSpan(Typeface.BOLD)),
+                        new SpanApplier.SpanInfo("<b2>", "</b2>", new StyleSpan(Typeface.BOLD)),
+                        new SpanApplier.SpanInfo("<b3>", "</b3>", new StyleSpan(Typeface.BOLD)));
         descView.setText(formattedString);
     }
 
@@ -166,10 +164,5 @@ class AcknowledgeGroupedCredentialSheetView implements BottomSheetContent {
     @Override
     public float getFullHeightRatio() {
         return HeightMode.WRAP_CONTENT;
-    }
-
-    @Override
-    public int getPeekHeight() {
-        return HeightMode.DISABLED;
     }
 }

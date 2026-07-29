@@ -19,6 +19,12 @@ class EditableCombobox;
 class EditablePasswordCombobox;
 }  // namespace views
 
+namespace ui {
+class SimpleMenuModel;
+}
+
+class PasswordSaveUpdateExperimentButtonRow;
+
 // A view offering the user the ability to save or update credentials (depending
 // on |is_update_bubble|) either in the profile and/or account stores. Contains
 // a username and password field. In addition, it contains a "Save"/"Update"
@@ -28,11 +34,27 @@ class PasswordSaveUpdateView : public PasswordBubbleViewBase,
   METADATA_HEADER(PasswordSaveUpdateView, PasswordBubbleViewBase)
 
  public:
-  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kPasswordBubble);
+  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kPasswordBubbleElementId);
+  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kExtraButtonElementId);
+  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kNotNowButtonElementId);
+  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kCaretButtonElementId);
+  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kNeverMenuItemElementId);
+
+  enum ViewIds {
+    kSplitButton = 1,
+    kDismissUpdateButton,
+    kOkButton,
+    kCaretButton,
+    kNotNowButton,
+    kCustomButtonRow
+  };
 
   PasswordSaveUpdateView(content::WebContents* web_contents,
-                         views::View* anchor_view,
+                         views::BubbleAnchor anchor_view,
                          DisplayReason reason);
+
+  bool AcceleratorPressed(const ui::Accelerator& accelerator) override;
+
 #ifdef UNIT_TEST
   views::EditableCombobox* username_dropdown_for_testing() const {
     return username_dropdown_.get();
@@ -41,7 +63,17 @@ class PasswordSaveUpdateView : public PasswordBubbleViewBase,
   views::EditablePasswordCombobox* password_dropdown_for_testing() const {
     return password_dropdown_.get();
   }
+
+  views::MdTextButton* extra_view_for_testing() const {
+    return extra_view_.get();
+  }
+
+  void TriggerOnContentChangedForTesting() { OnContentChanged(); }
 #endif  // #ifdef UNIT_TEST
+
+  ui::SimpleMenuModel* MenuModelForTesting() const;
+  views::MdTextButton* GetOkButtonForTesting() const;
+  views::MdTextButton* GetCancelButtonForTesting() const;
 
  private:
   ~PasswordSaveUpdateView() override;
@@ -64,6 +96,8 @@ class PasswordSaveUpdateView : public PasswordBubbleViewBase,
   // View:
   void AddedToWidget() override;
 
+  bool IsSaveBubbleDropdownExperimentEnabled() const;
+  bool IsTrustedVaultErrorResolutionEnabled() const;
   void UpdateUsernameAndPasswordInModel();
   void UpdateBubbleUIElements();
   std::unique_ptr<views::View> CreateFooterView();
@@ -96,6 +130,15 @@ class PasswordSaveUpdateView : public PasswordBubbleViewBase,
   // Hidden view that will contain status text for immediate output by
   // screen readers when the bubble changes state between Save and Update.
   raw_ptr<views::View> accessibility_alert_ = nullptr;
+
+  // Points to the "not now" button when present.
+  raw_ptr<views::MdTextButton> extra_view_ = nullptr;
+
+  // The custom button row container occupying the bottom area when
+  // `kPasswordSaveUpdateDropdownMenuExperiment` is enabled.
+  raw_ptr<PasswordSaveUpdateExperimentButtonRow> custom_button_row_ = nullptr;
+
+  std::unique_ptr<CloseOnDeactivatePin> reveal_password_pin_;
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_PASSWORDS_PASSWORD_SAVE_UPDATE_VIEW_H_

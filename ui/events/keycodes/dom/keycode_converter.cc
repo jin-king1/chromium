@@ -2,15 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "ui/events/keycodes/dom/keycode_converter.h"
 
+#include <array>
 #include <string_view>
 
+#include "base/compiler_specific.h"
 #include "base/logging.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversion_utils.h"
@@ -58,11 +55,11 @@ struct DomKeyMapEntry {
 };
 
 #define DOM_KEY_MAP_DECLARATION_START \
-  constexpr DomKeyMapEntry kDomKeyMappings[] = {
+  constexpr auto kDomKeyMappings = std::to_array<DomKeyMapEntry>({
 #define DOM_KEY_UNI(key, id, value) {DomKey::id, key},
 #define DOM_KEY_MAP(key, id, value) {DomKey::id, key},
 #define DOM_KEY_MAP_DECLARATION_END \
-  }                                 \
+  })                                 \
   ;
 #include "ui/events/keycodes/dom/dom_key_data.inc"
 #undef DOM_KEY_MAP_DECLARATION_START
@@ -421,8 +418,7 @@ DomKey KeycodeConverter::KeyStringToDomKey(std::string_view key) {
   const size_t key_length = key.length();
   size_t char_index = 0;
   base_icu::UChar32 character;
-  if (base::ReadUnicodeCharacter(key.data(), key_length, &char_index,
-                                 &character) &&
+  if (base::ReadUnicodeCharacter(key, &char_index, &character) &&
       ++char_index == key_length) {
     return DomKey::FromCharacter(character);
   }
@@ -540,6 +536,10 @@ uint32_t KeycodeConverter::DomCodeToUsbKeycode(DomCode dom_code) {
       return mapping.usb_keycode;
   }
   return InvalidUsbKeycode();
+}
+
+std::ostream& operator<<(std::ostream& os, const DomKey& dom_key) {
+  return os << KeycodeConverter::DomKeyToKeyString(dom_key);
 }
 
 }  // namespace ui

@@ -30,7 +30,6 @@ include_rules = [
   "+components/bookmarks/common/android/java/src/org/chromium/components/bookmarks",
   "+components/browser_ui/accessibility",
   "+components/browser_ui/desktop_windowing/android",
-  "+components/browser_ui/edge_to_edge/android",
   "+components/browser_ui/http_auth",
   "+components/browser_ui/notifications/android",
   "+components/browser_ui/settings/android",
@@ -67,8 +66,8 @@ include_rules = [
   "+components/segmentation_platform/content/android/java",
   "+components/segmentation_platform/public/android/java",
   "+components/stylus_handwriting/android/java",
+  "+components/sync_preferences/cross_device_pref_tracker",
   "+components/sync/android/java/src/org/chromium/components/sync",
-  "+components/query_tiles/android/java",
   "+components/thin_webview/java",
   "+components/ukm/android/java",
   "+components/webauthn/android/java",
@@ -79,14 +78,5 @@ include_rules = [
   "+content/public/android/java/src/org/chromium/content_public",
 
   "+device/gamepad/android/java",
+  "+ui/edge_to_edge",
 ]
-
-specific_include_rules = {
-  # Special-case where monochrome composes chrome+webview
-  "MonochromeApplicationImpl\.java": [
-    "+android_webview/nonembedded/java/src/org/chromium/android_webview/nonembedded/WebViewApkApplication.java",
-  ],
-  "SplitMonochromeApplication\.java": [
-    "+android_webview/nonembedded/java/src/org/chromium/android_webview/nonembedded/WebViewApkApplication.java",
-  ],
-}

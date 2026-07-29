@@ -7,6 +7,7 @@
 
 #include <stddef.h>
 
+#include <array>
 #include <initializer_list>
 #include <memory>
 #include <optional>
@@ -15,9 +16,12 @@
 #include <string_view>
 #include <vector>
 
-#include "base/functional/callback_forward.h"
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
+#include "base/functional/callback.h"
 #include "base/gtest_prod_util.h"
-#include "base/lazy_instance.h"
+#include "base/memory/raw_ptr_exclusion.h"
+#include "base/memory/raw_span.h"
 #include "components/version_info/channel.h"
 #include "extensions/common/context_data.h"
 #include "extensions/common/extension.h"
@@ -33,6 +37,25 @@ namespace extensions {
 class FeatureProviderTest;
 class ExtensionAPITest;
 
+// A view whose backing array is required to have static storage duration.
+// SimpleFeature retains these views for its lifetime.
+template <typename T>
+class StaticSpan {
+ public:
+  template <size_t N>
+  explicit consteval StaticSpan(const T (&arr LIFETIME_BOUND)[N])
+      : span_(arr) {}
+  template <size_t N>
+  explicit consteval StaticSpan(const std::array<T, N>& arr LIFETIME_BOUND)
+      : span_(arr) {}
+  consteval StaticSpan() = default;
+
+  constexpr base::span<const T> span() const LIFETIME_BOUND { return span_; }
+
+ private:
+  RAW_PTR_EXCLUSION base::span<const T> span_;
+};
+
 class SimpleFeature : public Feature {
  public:
   // Used by tests to override the cached --allowlisted-extension-id.
@@ -41,6 +64,11 @@ class SimpleFeature : public Feature {
   class ScopedThreadUnsafeAllowlistForTest {
    public:
     explicit ScopedThreadUnsafeAllowlistForTest(const std::string& id);
+    explicit ScopedThreadUnsafeAllowlistForTest(
+        const std::vector<std::string>& ids);
+
+    static std::unique_ptr<ScopedThreadUnsafeAllowlistForTest>
+    CreateFromCommaSeparated(const std::string& comma_separated_ids);
 
     ScopedThreadUnsafeAllowlistForTest(
         const ScopedThreadUnsafeAllowlistForTest&) = delete;
@@ -50,7 +78,7 @@ class SimpleFeature : public Feature {
     ~ScopedThreadUnsafeAllowlistForTest();
 
    private:
-    std::string previous_id_;
+    std::vector<std::string> previous_ids_;
   };
 
   SimpleFeature();
@@ -113,11 +141,11 @@ class SimpleFeature : public Feature {
   // Similar to mojom::ManifestLocation, these are the classes of locations
   // supported in feature files. These should only be used in this class and in
   // generated files.
-  enum Location {
-    COMPONENT_LOCATION,
-    EXTERNAL_COMPONENT_LOCATION,
-    POLICY_LOCATION,
-    UNPACKED_LOCATION,
+  enum class Location {
+    kComponent,
+    kExternalComponent,
+    kPolicy,
+    kUnpacked,
   };
 
   // Setters used by generated code to create the feature.
@@ -150,10 +178,8 @@ class SimpleFeature : public Feature {
     disallow_for_service_workers_ = disallow;
   }
   void set_location(Location location) { location_ = location; }
-  // set_matches() is an exception to pass-by-value since we construct an
-  // URLPatternSet from the vector of strings.
-  // TODO(devlin): Pass in an URLPatternSet directly.
-  void set_matches(std::initializer_list<const char* const> matches);
+  void set_matches(StaticSpan<std::string_view> matches);
+  void set_matches(std::initializer_list<std::string_view> matches) = delete;
   void set_max_manifest_version(int max_manifest_version) {
     max_manifest_version_ = max_manifest_version;
   }
@@ -192,7 +218,9 @@ class SimpleFeature : public Feature {
   bool component_extensions_auto_granted() const {
     return component_extensions_auto_granted_;
   }
-  const URLPatternSet& matches() const { return matches_; }
+  base::span<const std::string_view> match_patterns() const LIFETIME_BOUND {
+    return match_patterns_;
+  }
 
   std::string GetAvailabilityMessage(
       AvailabilityResult result,
@@ -248,7 +276,7 @@ class SimpleFeature : public Feature {
 
   bool MatchesManifestLocation(mojom::ManifestLocation manifest_location) const;
 
-  // Checks if the feature is allowed in a session of type |session_type|
+  // Checks if the feature is allowed in a session of type `session_type`
   // (based on session type feature restrictions).
   bool MatchesSessionTypes(mojom::FeatureSessionType session_type) const;
 
@@ -291,6 +319,9 @@ class SimpleFeature : public Feature {
       bool check_developer_mode,
       const ContextData& context_data) const;
 
+  // Returns true if `url` matches any of `match_patterns_`.
+  bool MatchesURL(const GURL& url) const;
+
   // For clarity and consistency, we handle the default value of each of these
   // members the same way: it matches everything. It is up to the higher level
   // code that reads Features out of static data to validate that data and set
@@ -302,7 +333,9 @@ class SimpleFeature : public Feature {
   std::vector<mojom::FeatureSessionType> session_types_;
   std::optional<std::vector<mojom::ContextType>> contexts_;
   std::vector<Platform> platforms_;
-  URLPatternSet matches_;
+  // The feature's URL match patterns, parsed into a transient URLPattern on
+  // demand. Generated features provide statically allocated strings.
+  base::raw_span<const std::string_view> match_patterns_;
 
   std::optional<Location> location_;
   std::optional<int> min_manifest_version_;
@@ -319,7 +352,10 @@ class SimpleFeature : public Feature {
   // to perform the override availability check.
   DelegatedAvailabilityCheckHandler delegated_availability_check_handler_;
 
-  bool component_extensions_auto_granted_{false};
+  // Whether access to the feature is automatically granted to component
+  // extensions. This defaults to true to maintain backward compatibility and
+  // the expectation that component extensions are trusted.
+  bool component_extensions_auto_granted_{true};
   bool is_internal_;
   bool requires_delegated_availability_check_{false};
   bool developer_mode_only_{false};

@@ -5,7 +5,7 @@
 #ifndef IOS_CHROME_BROWSER_NTP_SHARED_METRICS_HOME_METRICS_H_
 #define IOS_CHROME_BROWSER_NTP_SHARED_METRICS_HOME_METRICS_H_
 
-#import "ios/chrome/browser/ui/content_suggestions/content_suggestions_constants.h"
+#import "ios/chrome/browser/content_suggestions/public/content_suggestions_constants.h"
 
 class PrefService;
 
@@ -21,11 +21,18 @@ enum class IOSHomeActionType {
   kSetUpList = 5,
   kOmnibox = 6,
   kSafetyCheck = 7,
-  kParcelTracking = 8,
+  // Removed: kParcelTracking = 8,
   kOpenDistantTabResumption = 9,
   kPriceTrackingPromo = 10,
   kTips = 11,
-  kMaxValue = kTips,
+  kShopCard = 12,
+  kLens = 13,
+  kVoiceSearch = 14,
+  kQuickActionIncognito = 15,
+  kQuickActionAIM = 16,
+  kTabSwitcher = 17,
+  kPlusButton = 18,
+  kMaxValue = kPlusButton,
 };
 // LINT.ThenChange(/tools/metrics/histograms/metadata/ios/enums.xml)
 

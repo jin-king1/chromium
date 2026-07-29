@@ -26,13 +26,13 @@ import org.chromium.chrome.browser.settings.SettingsNavigationFactory;
 import org.chromium.components.browser_ui.settings.SettingsNavigation;
 import org.chromium.components.browser_ui.site_settings.AllSiteSettings;
 import org.chromium.components.browser_ui.site_settings.ContentSettingsResources;
+import org.chromium.components.browser_ui.site_settings.CookieSettingsPreference;
 import org.chromium.components.browser_ui.site_settings.GroupedWebsitesSettings;
 import org.chromium.components.browser_ui.site_settings.SingleCategorySettings;
 import org.chromium.components.browser_ui.site_settings.SingleWebsiteSettings;
 import org.chromium.components.browser_ui.site_settings.SiteSettings;
 import org.chromium.components.browser_ui.site_settings.SiteSettingsCategory;
 import org.chromium.components.browser_ui.site_settings.StorageAccessSubpageSettings;
-import org.chromium.components.browser_ui.site_settings.TriStateCookieSettingsPreference;
 import org.chromium.components.browser_ui.site_settings.Website;
 import org.chromium.components.browser_ui.site_settings.WebsiteGroup;
 import org.chromium.components.browser_ui.widget.RadioButtonWithDescription;
@@ -91,15 +91,6 @@ public class SiteSettingsTestUtils {
         return startSiteSettings(AllSiteSettings.class, fragmentArgs);
     }
 
-    public static SettingsActivity startAllSitesSettingsForRws(
-            @SiteSettingsCategory.Type int type, String rwsPage) {
-        Bundle fragmentArgs = new Bundle();
-        fragmentArgs.putString(
-                AllSiteSettings.EXTRA_CATEGORY, SiteSettingsCategory.preferenceKey(type));
-        fragmentArgs.putString(AllSiteSettings.EXTRA_SEARCH, rwsPage);
-        return startSiteSettings(AllSiteSettings.class, fragmentArgs);
-    }
-
     private static SettingsActivity startSiteSettings(
             Class<? extends Fragment> fragmentClass, Bundle fragmentArgs) {
         SettingsNavigation settingsNavigation =
@@ -117,8 +108,7 @@ public class SiteSettingsTestUtils {
     }
 
     public static RadioButtonWithDescriptionAndAuxButton getCookieRadioButtonFrom(
-            TriStateCookieSettingsPreference cookiePage,
-            @CookieControlsMode int cookieControlsMode) {
+            CookieSettingsPreference cookiePage, @CookieControlsMode int cookieControlsMode) {
         RadioButtonWithDescription button = cookiePage.getButton(cookieControlsMode);
 
         return ((RadioButtonWithDescriptionAndAuxButton) button);

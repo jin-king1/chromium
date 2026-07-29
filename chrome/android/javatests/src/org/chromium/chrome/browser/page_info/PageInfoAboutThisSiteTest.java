@@ -11,7 +11,6 @@ import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
 
-import static org.hamcrest.CoreMatchers.allOf;
 import static org.hamcrest.CoreMatchers.containsString;
 import static org.hamcrest.CoreMatchers.not;
 import static org.junit.Assert.assertEquals;
@@ -21,7 +20,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.verify;
 
-import static org.chromium.ui.test.util.ViewUtils.onViewWaiting;
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
 
 import android.annotation.SuppressLint;
 
@@ -30,12 +29,12 @@ import androidx.test.espresso.ViewAssertion;
 import androidx.test.filters.MediumTest;
 
 import org.junit.Before;
-import org.junit.ClassRule;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
@@ -43,6 +42,7 @@ import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features.EnableFeatures;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.ephemeraltab.EphemeralTabCoordinator;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
@@ -50,9 +50,9 @@ import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabbed_mode.TabbedRootUiCoordinator;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
-import org.chromium.chrome.test.R;
-import org.chromium.chrome.test.batch.BlankCTATabInitialStateRule;
+import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.util.ChromeRenderTestRule;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetTestSupport;
 import org.chromium.components.page_info.PageInfoController;
@@ -84,13 +84,11 @@ public class PageInfoAboutThisSiteTest {
     private static final String sSimpleHtml = "/chrome/test/data/android/simple.html";
     private static final String sAboutHtml = "/chrome/test/data/android/about.html";
 
-    @ClassRule
-    public static final ChromeTabbedActivityTestRule sActivityTestRule =
-            new ChromeTabbedActivityTestRule();
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Rule
-    public final BlankCTATabInitialStateRule mInitialStateRule =
-            new BlankCTATabInitialStateRule(sActivityTestRule, false);
+    public final AutoResetCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.fastAutoResetCtaActivityRule();
 
     @Rule public EmbeddedTestServerRule mTestServerRule = new EmbeddedTestServerRule();
 
@@ -100,6 +98,7 @@ public class PageInfoAboutThisSiteTest {
                     .setBugComponent(ChromeRenderTestRule.Component.UI_BROWSER_BUBBLES_PAGE_INFO)
                     .build();
 
+    private WebPageStation mStartingPage;
     private EphemeralTabCoordinator mEphemeralTabCoordinator;
 
     private BottomSheetTestSupport mSheetTestSupport;
@@ -108,20 +107,21 @@ public class PageInfoAboutThisSiteTest {
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
         doReturn(true).when(mMockAboutThisSiteJni).isFeatureEnabled();
-        doReturn(R.drawable.ic_info_outline_grey_24dp)
-                .when(mMockAboutThisSiteJni)
-                .getJavaDrawableIconId();
+        doReturn(R.drawable.ic_info_24dp).when(mMockAboutThisSiteJni).getJavaDrawableIconId();
         PageInfoAboutThisSiteControllerJni.setInstanceForTesting(mMockAboutThisSiteJni);
         mTestServerRule.setServerUsesHttps(true);
-        sActivityTestRule.loadUrl(mTestServerRule.getServer().getURL(sSimpleHtml));
+        mStartingPage =
+                mActivityTestRule
+                        .startOnBlankPage()
+                        .loadWebPageProgrammatically(
+                                mTestServerRule.getServer().getURL(sSimpleHtml));
 
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     TabbedRootUiCoordinator tabbedRootUiCoordinator =
                             ((TabbedRootUiCoordinator)
-                                    sActivityTestRule
+                                    mActivityTestRule
                                             .getActivity()
                                             .getRootUiCoordinatorForTesting());
                     mEphemeralTabCoordinator =
@@ -130,15 +130,15 @@ public class PageInfoAboutThisSiteTest {
 
         mSheetTestSupport =
                 new BottomSheetTestSupport(
-                        sActivityTestRule
+                        mActivityTestRule
                                 .getActivity()
                                 .getRootUiCoordinatorForTesting()
                                 .getBottomSheetController());
     }
 
     private void openPageInfo() {
-        ChromeTabbedActivity activity = sActivityTestRule.getActivity();
-        Tab tab = activity.getActivityTab();
+        ChromeTabbedActivity activity = mActivityTestRule.getActivity();
+        Tab tab = mActivityTestRule.getActivityTab();
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     new ChromePageInfo(
@@ -150,7 +150,7 @@ public class PageInfoAboutThisSiteTest {
                                     null)
                             .show(tab, ChromePageInfoHighlight.noHighlight());
                 });
-        onViewWaiting(allOf(withId(R.id.page_info_url_wrapper), isDisplayed()), true);
+        waitForView(withId(R.id.page_info_url_wrapper));
     }
 
     private void dismissPageInfo() throws TimeoutException {
@@ -221,7 +221,7 @@ public class PageInfoAboutThisSiteTest {
     @Test
     @MediumTest
     public void testAboutThisSiteRowWithDataOnInsecureSite() {
-        sActivityTestRule.loadUrl(
+        mActivityTestRule.loadUrl(
                 mTestServerRule.getServer().getURLWithHostName("invalidcert.com", sSimpleHtml));
         mockResponse(createDescription());
         openPageInfo();
@@ -293,5 +293,29 @@ public class PageInfoAboutThisSiteTest {
         verify(mMockAboutThisSiteJni).onAboutThisSiteRowClicked(false);
 
         closeBottomSheet();
+    }
+
+    @Test
+    @MediumTest
+    public void testAboutThisSiteRowWithNullTabCreator() throws TimeoutException {
+        mockResponse(createDescription());
+        ChromeTabbedActivity activity = mActivityTestRule.getActivity();
+        Tab tab = mActivityTestRule.getActivityTab();
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    new ChromePageInfo(
+                                    activity.getModalDialogManagerSupplier(),
+                                    null,
+                                    PageInfoController.OpenedFromSource.TOOLBAR,
+                                    null,
+                                    () -> null,
+                                    null)
+                            .show(tab, ChromePageInfoHighlight.noHighlight());
+                });
+        waitForView(withId(R.id.page_info_url_wrapper));
+
+        onView(withId(PageInfoAboutThisSiteController.ROW_ID)).perform(click());
+        verify(mMockAboutThisSiteJni).onAboutThisSiteRowClicked(true);
+        dismissPageInfo();
     }
 }

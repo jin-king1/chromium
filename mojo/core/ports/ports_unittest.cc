@@ -2,24 +2,21 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include <array>
 #include <map>
 #include <sstream>
 #include <string_view>
 #include <utility>
+#include <vector>
 
-#include "base/containers/contains.h"
 #include "base/containers/heap_array.h"
 #include "base/containers/queue.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/logging.h"
@@ -28,6 +25,7 @@
 #include "base/strings/stringprintf.h"
 #include "base/synchronization/lock.h"
 #include "base/synchronization/waitable_event.h"
+#include "base/test/mock_log.h"
 #include "base/test/task_environment.h"
 #include "base/threading/thread.h"
 #include "mojo/core/ports/event.h"
@@ -151,8 +149,9 @@ class TestNode : public NodeDelegate {
   int SendMultipleMessages(const PortRef& port, size_t num_messages) {
     for (size_t i = 0; i < num_messages; ++i) {
       int result = SendStringMessage(port, "");
-      if (result != OK)
+      if (result != OK) {
         return result;
+      }
     }
     return OK;
   }
@@ -188,8 +187,9 @@ class TestNode : public NodeDelegate {
   bool ReadMultipleMessages(const PortRef& port, size_t num_messages) {
     for (size_t i = 0; i < num_messages; ++i) {
       ScopedMessage message;
-      if (!ReadMessage(port, &message))
+      if (!ReadMessage(port, &message)) {
         return false;
+      }
     }
     return true;
   }
@@ -240,15 +240,17 @@ class TestNode : public NodeDelegate {
   void PortStatusChanged(const PortRef& port) override {
     // The port may be closed, in which case we ignore the notification.
     base::AutoLock lock(lock_);
-    if (!save_messages_)
+    if (!save_messages_) {
       return;
+    }
 
     for (;;) {
       ScopedMessage message;
       {
         base::AutoUnlock unlock(lock_);
-        if (!ReadMessage(port, &message))
+        if (!ReadMessage(port, &message)) {
           break;
+        }
       }
 
       saved_messages_.emplace(std::move(message));
@@ -256,28 +258,32 @@ class TestNode : public NodeDelegate {
   }
 
   void ClosePortsInEvent(Event* event) {
-    if (event->type() != Event::Type::kUserMessage)
+    if (event->type() != Event::Type::kUserMessage) {
       return;
+    }
 
     UserMessageEvent* message_event = static_cast<UserMessageEvent*>(event);
-    for (size_t i = 0; i < message_event->num_ports(); ++i) {
+    for (const auto& port_name : message_event->ports()) {
       PortRef port;
-      ASSERT_EQ(OK, node_.GetPort(message_event->ports()[i], &port));
+      ASSERT_EQ(OK, node_.GetPort(port_name, &port));
       EXPECT_EQ(OK, node_.ClosePort(port));
     }
   }
 
   uint64_t GetUnacknowledgedMessageCount(const PortRef& port_ref) {
     PortStatus status;
-    if (node_.GetStatus(port_ref, &status) != OK)
+    if (node_.GetStatus(port_ref, &status) != OK) {
       return 0;
+    }
 
     return status.unacknowledged_message_count;
   }
 
-  void AllowPortMerge(const PortRef& port_ref) {
+  void AllowPortMerge(const PortRef& port_ref,
+                      const NodeName& allowed_node = kInvalidNodeName) {
     SinglePortLocker locker(&port_ref);
     locker.port()->pending_merge_peer = true;
+    locker.port()->pending_merge_peer_node = allowed_node;
   }
 
  private:
@@ -286,8 +292,9 @@ class TestNode : public NodeDelegate {
       events_available_event_.Wait();
       base::AutoLock lock(lock_);
 
-      if (should_quit_)
+      if (should_quit_) {
         return;
+      }
 
       dispatching_ = true;
       while (!incoming_events_.empty()) {
@@ -353,8 +360,9 @@ class PortsTest : public testing::Test, public MessageRouter {
       nodes_.erase(node->name());
     }
 
-    for (const auto& entry : nodes_)
+    for (const auto& entry : nodes_) {
       entry.second->node().LostConnectionToNode(node->name());
+    }
   }
 
   // Waits until all known Nodes are idle. Message forwarding and processing
@@ -367,19 +375,22 @@ class PortsTest : public testing::Test, public MessageRouter {
       base::AutoLock global_lock(global_lock_);
       bool all_nodes_idle = true;
       for (const auto& entry : nodes_) {
-        if (!entry.second->IsIdle())
+        if (!entry.second->IsIdle()) {
           all_nodes_idle = false;
+        }
         entry.second->WakeUp();
       }
-      if (all_nodes_idle)
+      if (all_nodes_idle) {
         return;
+      }
 
       // Wait for any Node to signal that it's idle.
       base::AutoUnlock global_unlock(global_lock_);
       std::vector<base::WaitableEvent*> events;
-      for (const auto& entry : nodes_)
+      for (const auto& entry : nodes_) {
         events.push_back(&entry.second->idle_event());
-      base::WaitableEvent::WaitMany(events.data(), events.size());
+      }
+      base::WaitableEvent::WaitMany(events);
     }
   }
 
@@ -409,7 +420,7 @@ class PortsTest : public testing::Test, public MessageRouter {
     base::AutoLock global_lock(global_lock_);
     base::AutoLock lock(lock_);
     // Drop messages from nodes that have been removed.
-    if (!base::Contains(nodes_, from_node->name())) {
+    if (!nodes_.contains(from_node->name())) {
       from_node->ClosePortsInEvent(event.get());
       return;
     }
@@ -448,15 +459,16 @@ class PortsTest : public testing::Test, public MessageRouter {
     base::AutoLock lock(lock_);
 
     // Drop messages from nodes that have been removed.
-    if (!base::Contains(nodes_, from_node->name())) {
+    if (!nodes_.contains(from_node->name())) {
       return;
     }
 
     for (const auto& entry : nodes_) {
       TestNode* node = entry.second;
       // Broadcast doesn't deliver to the local node.
-      if (node == from_node)
+      if (node == from_node) {
         continue;
+      }
       node->EnqueueEvent(from_node->name(), event->CloneForBroadcast());
     }
   }
@@ -865,16 +877,17 @@ TEST_F(PortsTest, GetMessage3) {
   PortRef a0, a1;
   EXPECT_EQ(OK, node.node().CreatePortPair(&a0, &a1));
 
-  const char* kStrings[] = {"1", "2", "3"};
+  const std::array<const char*, 3> kStrings = {"1", "2", "3"};
 
-  for (size_t i = 0; i < sizeof(kStrings) / sizeof(kStrings[0]); ++i)
-    EXPECT_EQ(OK, node.SendStringMessage(a1, kStrings[i]));
+  for (const char* s : kStrings) {
+    EXPECT_EQ(OK, node.SendStringMessage(a1, s));
+  }
 
   ScopedMessage message;
-  for (size_t i = 0; i < sizeof(kStrings) / sizeof(kStrings[0]); ++i) {
+  for (const char* s : kStrings) {
     EXPECT_EQ(OK, node.node().GetMessage(a0, &message, nullptr));
     ASSERT_TRUE(message);
-    EXPECT_TRUE(MessageEquals(message, kStrings[i]));
+    EXPECT_TRUE(MessageEquals(message, s));
   }
 
   EXPECT_EQ(OK, node.node().ClosePort(a0));
@@ -1325,6 +1338,62 @@ TEST_F(PortsTest, MergePorts) {
   // No more ports should be open.
   EXPECT_TRUE(node0.node().CanShutdownCleanly());
   EXPECT_TRUE(node1.node().CanShutdownCleanly());
+}
+
+TEST_F(PortsTest, PendingMergeRejectsUnexpectedNode) {
+  TestNode node0(0);
+  AddNode(&node0);
+
+  TestNode node1(1);
+  AddNode(&node1);
+
+  TestNode node2(2);
+  AddNode(&node2);
+
+  // Set up three independent port pairs:
+  //   A-B on node0, C-D on node1, and E-F on node2.
+  PortRef A, B, C, D, E, F;
+  EXPECT_EQ(OK, node0.node().CreatePortPair(&A, &B));
+  EXPECT_EQ(OK, node1.node().CreatePortPair(&C, &D));
+  EXPECT_EQ(OK, node2.node().CreatePortPair(&E, &F));
+
+  // node1 is explicitly waiting for a merge from node0, not node2.
+  node1.AllowPortMerge(C, node0.name());
+
+  base::test::MockLog log;
+  log.StartCapturingLogs();
+
+  EXPECT_CALL(log, Log(logging::LOGGING_ERROR, ::testing::_, ::testing::_,
+                       ::testing::_, ::testing::HasSubstr("MergePort sender")))
+      .Times(1);
+
+  // node2 is not the expected merge peer, so this merge must be rejected.
+  EXPECT_EQ(OK, node2.SendStringMessage(E, "intruder"));
+  EXPECT_EQ(OK, node2.node().MergePorts(F, node1.name(), C.name()));
+
+  WaitForIdle();
+
+  log.StopCapturingLogs();
+
+  ScopedMessage message;
+  EXPECT_FALSE(node1.ReadMessage(D, &message));
+
+  // The original expected merge from node0 can still proceed afterward.
+  EXPECT_EQ(OK, node0.SendStringMessage(A, "expected"));
+  EXPECT_EQ(OK, node0.node().MergePorts(B, node1.name(), C.name()));
+  WaitForIdle();
+  ASSERT_TRUE(node1.ReadMessage(D, &message));
+  EXPECT_TRUE(MessageEquals(message, "expected"));
+
+  EXPECT_EQ(OK, node0.node().ClosePort(A));
+  EXPECT_EQ(OK, node1.node().ClosePort(D));
+  EXPECT_EQ(OK, node2.node().ClosePort(E));
+
+  WaitForIdle();
+
+  EXPECT_TRUE(node0.node().CanShutdownCleanly());
+  EXPECT_TRUE(node1.node().CanShutdownCleanly());
+  EXPECT_TRUE(node2.node().CanShutdownCleanly());
 }
 
 TEST_F(PortsTest, MergePortWithClosedPeer1) {

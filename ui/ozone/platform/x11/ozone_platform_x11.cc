@@ -9,9 +9,9 @@
 #include <utility>
 
 #include "base/command_line.h"
+#include "base/logging.h"
 #include "base/message_loop/message_pump_type.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/no_destructor.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/single_thread_task_runner.h"
@@ -27,8 +27,8 @@
 #include "ui/events/ozone/layout/keyboard_layout_engine_manager.h"
 #include "ui/events/ozone/layout/stub/stub_keyboard_layout_engine.h"
 #include "ui/events/platform/x11/x11_event_source.h"
-#include "ui/gfx/linux/gpu_memory_buffer_support_x11.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/linux/gbm_support_x11.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/gfx/switches.h"
 #include "ui/gfx/x/atom_cache.h"
 #include "ui/gfx/x/visual_manager.h"
@@ -134,11 +134,12 @@ class OzonePlatformX11 : public OzonePlatform,
 
   std::unique_ptr<InputMethod> CreateInputMethod(
       ImeKeyEventDispatcher* ime_key_event_dispatcher,
-      gfx::AcceleratedWidget) override {
+      gfx::AcceleratedWidget widget) override {
 #if BUILDFLAG(IS_CHROMEOS)
     return std::make_unique<ash::InputMethodAsh>(ime_key_event_dispatcher);
 #else
-    return std::make_unique<InputMethodAuraLinux>(ime_key_event_dispatcher);
+    return std::make_unique<InputMethodAuraLinux>(ime_key_event_dispatcher,
+                                                  widget);
 #endif
   }
 
@@ -180,6 +181,11 @@ class OzonePlatformX11 : public OzonePlatform,
   }
 
   const PlatformProperties& GetPlatformProperties() override {
+    using SupportsForTest = OzonePlatform::PlatformProperties::SupportsForTest;
+    const auto& override_set_parent_for_non_top_level_windows_for_test =
+        OzonePlatform::PlatformProperties::
+            override_set_parent_for_non_top_level_windows_for_test;
+
     static base::NoDestructor<OzonePlatform::PlatformProperties> properties;
     static bool initialised = false;
     if (!initialised) {
@@ -195,9 +201,12 @@ class OzonePlatformX11 : public OzonePlatform,
       properties->supports_vulkan_swap_chain = true;
       properties->skia_can_fall_back_to_x11 = true;
       properties->platform_shows_drag_image = false;
-      properties->supports_global_application_menus = true;
       properties->app_modal_dialogs_use_event_blocker = true;
-      properties->fetch_buffer_formats_for_gmb_on_gpu = true;
+
+      // Defaults to false unless explicitly enabled for testing.
+      properties->set_parent_for_non_top_level_windows =
+          override_set_parent_for_non_top_level_windows_for_test ==
+          SupportsForTest::kYes;
 
       initialised = true;
     }
@@ -209,24 +218,23 @@ class OzonePlatformX11 : public OzonePlatform,
     static OzonePlatform::PlatformRuntimeProperties properties;
 
     if (has_initialized_gpu() &&
-        ui::GpuMemoryBufferSupportX11::GetInstance()->has_gbm_device()) {
+        ui::GBMSupportX11::GetInstance()->has_gbm_device()) {
       // This property is set when the GetPlatformRuntimeProperties is
       // called on the gpu process side.
       properties.supports_native_pixmaps = true;
     }
-    properties.supports_subwindows_as_accelerated_widgets = true;
+    properties.supports_subwindows_as_accelerated_widgets = false;
     properties.supports_system_tray_windowing = true;
     properties.supports_server_window_menus =
         x11::Connection::Get()->WmSupportsHint(
             x11::GetAtom("_GTK_SHOW_WINDOW_MENU"));
+    properties.supports_global_application_menus = true;
 
     return properties;
   }
 
-  bool IsNativePixmapConfigSupported(gfx::BufferFormat format,
+  bool IsNativePixmapConfigSupported(viz::SharedImageFormat format,
                                      gfx::BufferUsage usage) const override {
-    // Native pixmap support is determined on gpu process via gpu extra info
-    // that gets this information from GpuMemoryBufferSupportX11.
     return false;
   }
 
@@ -274,6 +282,10 @@ class OzonePlatformX11 : public OzonePlatform,
 
     base::UmaHistogramEnumeration("Linux.WindowManager", GetWindowManagerUMA());
 
+    base::UmaHistogramBoolean(
+        "Linux.X11.XInput2",
+        x11::Connection::Get()->xinput_version().first == 2);
+
     return true;
   }
 
@@ -281,7 +293,7 @@ class OzonePlatformX11 : public OzonePlatform,
     InitializeCommon(params);
     if (params.enable_native_gpu_memory_buffers) {
       base::ThreadPool::PostTask(FROM_HERE, base::BindOnce([]() {
-                                   ui::GpuMemoryBufferSupportX11::GetInstance();
+                                   ui::GBMSupportX11::GetInstance();
                                  }));
     }
     // In single process mode either the UI thread will create an event source

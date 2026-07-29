@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
+#include "base/memory/safe_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "components/permissions/permission_prompt.h"
 #include "components/permissions/permission_request.h"
@@ -23,15 +24,15 @@ class EmbeddedPermissionPromptViewDelegate {
   virtual void Acknowledge() = 0;
   virtual void StopAllowing() = 0;
   virtual void ShowSystemSettings() = 0;
+  virtual void SystemPermissionsNoLongerDenied() = 0;
 
-  // Return a weak pointer of `PermissionPrompt::Delegate` which is implemnted
+  // Return a weak pointer of `PermissionPrompt::Delegate` which is implemented
   // in `components` layer
   virtual base::WeakPtr<permissions::PermissionPrompt::Delegate>
   GetPermissionPromptDelegate() const = 0;
 
   // Requests list the current prompt view is representing for.
-  virtual const std::vector<
-      raw_ptr<permissions::PermissionRequest, VectorExperimental>>&
+  virtual const std::vector<base::SafeRef<permissions::PermissionRequest>>&
   Requests() const = 0;
 
  protected:

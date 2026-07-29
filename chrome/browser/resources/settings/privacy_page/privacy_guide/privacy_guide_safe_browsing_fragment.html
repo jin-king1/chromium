@@ -1,12 +1,12 @@
 <style include="privacy-guide-fragment-shared"></style>
-<div class="header-phase2" focus-element tabindex="-1">
+<div class="settings-fragment-header" focus-element tabindex="-1">
   <picture>
     <source
         srcset="./images/privacy_guide/safe_browsing_graphic_dark_v2.svg"
         media="(prefers-color-scheme: dark)">
     <img alt="" src="./images/privacy_guide/safe_browsing_graphic_v2.svg">
   </picture>
-  <h2 class="header-label-phase2">
+  <h2 class="settings-fragment-header-label">
     $i18n{privacyGuideSafeBrowsingCardHeader}
   </h2>
 </div>
@@ -18,7 +18,7 @@
         pref="[[prefs.generated.safe_browsing]]"
         name="[[safeBrowsingSettingEnum_.ENHANCED]]"
         label="$i18n{safeBrowsingEnhanced}"
-        sub-label="$i18n{safeBrowsingEnhancedDesc}"
+        sub-label="$i18n{safeBrowsingEnhancedDescUpdated}"
         expand-aria-label="$i18n{safeBrowsingEnhancedExpandA11yLabel}"
         on-click="onSafeBrowsingEnhancedClick_">
           <div slot="collapse" class="settings-columned-section">
@@ -28,7 +28,7 @@
               </h3>
               <ul id="updatedDescItemContainer" class="icon-bulleted-list">
                 <li>
-                  <cr-icon icon="settings20:data" aria-hidden="true">
+                  <cr-icon icon="settings20:bar-chart" aria-hidden="true">
                   </cr-icon>
                   <div class="secondary">
                     $i18n{safeBrowsingEnhancedWhenOnBulOne}
@@ -55,13 +55,6 @@
                     $i18n{safeBrowsingEnhancedWhenOnBulFour}
                   </div>
                 </li>
-                <li>
-                  <cr-icon icon="settings20:vpn-key-new" aria-hidden="true">
-                  </cr-icon>
-                  <div class="secondary">
-                    $i18n{safeBrowsingEnhancedWhenOnBulFive}
-                  </div>
-                </li>
               </ul>
             </div>
             <div class="column">
@@ -84,7 +77,7 @@
                   </div>
                 </li>
                 <li>
-                  <cr-icon icon="settings:performance" aria-hidden="true">
+                  <cr-icon icon="settings:speed" aria-hidden="true">
                   </cr-icon>
                   <div class="secondary">
                     $i18n{safeBrowsingEnhancedThingsToConsiderBulThree}

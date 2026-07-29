@@ -17,7 +17,7 @@
 #include "components/viz/common/quads/compositor_render_pass.h"
 #include "components/viz/common/quads/solid_color_draw_quad.h"
 #include "components/viz/common/quads/texture_draw_quad.h"
-#include "gpu/ipc/client/client_shared_image_interface.h"
+#include "gpu/command_buffer/client/shared_image_interface.h"
 #include "media/base/limits.h"
 #include "media/base/video_frame.h"
 #include "media/renderers/video_resource_updater.h"
@@ -38,7 +38,7 @@ VideoFrameResourceProvider::~VideoFrameResourceProvider() {
 
 void VideoFrameResourceProvider::Initialize(
     viz::RasterContextProvider* media_context_provider,
-    scoped_refptr<gpu::ClientSharedImageInterface> shared_image_interface) {
+    scoped_refptr<gpu::SharedImageInterface> shared_image_interface) {
   context_provider_ = media_context_provider;
   resource_provider_ = std::make_unique<viz::ClientResourceProvider>();
 
@@ -94,6 +94,15 @@ void VideoFrameResourceProvider::AppendQuads(
   // it will produce the bounds in target space.
   auto quad_rect = gfx::Rect(frame->natural_size());
 
+  if (media_transform.mirrored) {
+    transform.RotateAboutYAxis(180.0);
+    transform.Translate((media_transform.rotation == media::VIDEO_ROTATION_0 ||
+                         media_transform.rotation == media::VIDEO_ROTATION_180)
+                            ? -quad_rect.width()
+                            : -quad_rect.height(),
+                        0);
+  }
+
   switch (media_transform.rotation) {
     case media::VIDEO_ROTATION_90:
       transform.RotateAboutZAxis(90.0);
@@ -109,11 +118,6 @@ void VideoFrameResourceProvider::AppendQuads(
       break;
     case media::VIDEO_ROTATION_0:
       break;
-  }
-
-  if (media_transform.mirrored) {
-    transform.RotateAboutYAxis(180.0);
-    transform.Translate(-quad_rect.width(), 0);
   }
 
   gfx::Rect visible_quad_rect = quad_rect;
@@ -141,8 +145,10 @@ std::vector<viz::TransferableResource>
 VideoFrameResourceProvider::PrepareSendToParent(
     const std::vector<viz::ResourceId>& resource_ids) {
   std::vector<viz::TransferableResource> resources_list;
-  resource_provider_->PrepareSendToParent(resource_ids, &resources_list,
-                                          context_provider_);
+  resource_provider_->PrepareSendToParent(
+      resource_ids, &resources_list,
+      context_provider_ ? context_provider_->SharedImageInterface()
+                        : resource_updater_->shared_image_interface());
   return resources_list;
 }
 

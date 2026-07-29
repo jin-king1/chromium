@@ -14,7 +14,9 @@ import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
 import org.jni_zero.NativeMethods;
 
+import org.chromium.base.ContextUtils;
 import org.chromium.blink.mojom.AuthenticatorStatus;
+import org.chromium.blink.mojom.GetCredentialOptions;
 import org.chromium.blink.mojom.PaymentOptions;
 import org.chromium.blink.mojom.PublicKeyCredentialCreationOptions;
 import org.chromium.blink.mojom.PublicKeyCredentialRequestOptions;
@@ -27,6 +29,7 @@ import org.chromium.ui.base.WindowAndroid;
 import org.chromium.url.Origin;
 
 import java.nio.ByteBuffer;
+import java.util.List;
 
 /**
  * Acts as a bridge from InternalAuthenticator declared in
@@ -45,8 +48,8 @@ public class InternalAuthenticator {
             long nativeInternalAuthenticatorAndroid,
             @Nullable Context context,
             @Nullable WebContents webContents,
-            FidoIntentSender intentSender,
-            RenderFrameHost renderFrameHost,
+            @Nullable FidoIntentSender intentSender,
+            @Nullable RenderFrameHost renderFrameHost,
             @Nullable Origin topOrigin) {
         mNativeInternalAuthenticatorAndroid = nativeInternalAuthenticatorAndroid;
         WebauthnModeProvider.getInstance().setGlobalWebauthnMode(WebauthnMode.CHROME);
@@ -85,6 +88,17 @@ public class InternalAuthenticator {
                 new AuthenticatorImpl.WindowIntentSender(window),
                 renderFrameHost,
                 topOrigin);
+    }
+
+    @CalledByNative
+    public static InternalAuthenticator create(long nativeInternalAuthenticatorAndroid) {
+        return new InternalAuthenticator(
+                nativeInternalAuthenticatorAndroid,
+                ContextUtils.getApplicationContext(),
+                /* webContents= */ null,
+                /* intentSender= */ null,
+                /* renderFrameHost= */ null,
+                /* topOrigin= */ null);
     }
 
     @CalledByNative
@@ -131,8 +145,10 @@ public class InternalAuthenticator {
      */
     @CalledByNative
     public void getAssertion(ByteBuffer optionsByteBuffer) {
+        GetCredentialOptions options = new GetCredentialOptions();
+        options.publicKey = PublicKeyCredentialRequestOptions.deserialize(optionsByteBuffer);
         mAuthenticator.getCredential(
-                PublicKeyCredentialRequestOptions.deserialize(optionsByteBuffer),
+                options,
                 (getCredentialResponse) -> {
                     // DOMExceptions can only be passed through the webAuthenticationProxy
                     // extensions API, which doesn't exist on Android.
@@ -194,14 +210,18 @@ public class InternalAuthenticator {
                 relyingPartyId,
                 credentialIds,
                 requireThirdPartyPayment,
-                (matchingCredentialIds) -> {
-                    if (mNativeInternalAuthenticatorAndroid != 0) {
-                        InternalAuthenticatorJni.get()
-                                .invokeGetMatchingCredentialIdsResponse(
-                                        mNativeInternalAuthenticatorAndroid,
-                                        matchingCredentialIds.toArray(new byte[0][]));
-                    }
-                });
+                this::handleGetMatchingCredentialIdsResponse);
+    }
+
+    private void handleGetMatchingCredentialIdsResponse(
+            @Nullable List<byte[]> matchingCredentialIds) {
+        if (matchingCredentialIds == null || mNativeInternalAuthenticatorAndroid == 0) {
+            return;
+        }
+        InternalAuthenticatorJni.get()
+                .invokeGetMatchingCredentialIdsResponse(
+                        mNativeInternalAuthenticatorAndroid,
+                        matchingCredentialIds.toArray(new byte[0][]));
     }
 
     @CalledByNative

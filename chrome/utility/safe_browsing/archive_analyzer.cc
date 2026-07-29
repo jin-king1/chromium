@@ -76,6 +76,17 @@ void ArchiveAnalyzer::SetFinishedCallbackForTesting(
   finished_analysis_callback_ = std::move(callback);
 }
 
+void ArchiveAnalyzer::SetGetTempFileCallbackForTesting(
+    GetTempFileCallback callback) {
+  get_temp_file_callback_ = std::move(callback);
+}
+
+void ArchiveAnalyzer::SetAnalysisDelegate(
+    std::unique_ptr<ArchiveAnalysisDelegate> analysis_delegate) {
+  CHECK(analysis_delegate);
+  analysis_delegate_ = std::move(analysis_delegate);
+}
+
 base::File& ArchiveAnalyzer::GetArchiveFile() {
   return archive_file_;
 }
@@ -93,12 +104,17 @@ bool ArchiveAnalyzer::UpdateResultsForEntry(base::File entry,
                                             bool is_encrypted,
                                             bool is_directory,
                                             bool contents_valid) {
-  if (!is_encrypted) {
+  if (!is_encrypted && !is_directory) {
     nested_analyzer_ = ArchiveAnalyzer::CreateForArchiveType(GetFileType(path));
     if (nested_analyzer_) {
       // Archive analyzers expect to start at the beginning of the
       // archive, but we may be at the end.
       entry.Seek(base::File::FROM_BEGIN, 0);
+      if (analysis_delegate_) {
+        nested_analyzer_->SetAnalysisDelegate(
+            analysis_delegate_->CreateNestedDelegate(entry.Duplicate()));
+      }
+
       nested_analyzer_->Analyze(
           entry.Duplicate(), path, password(),
           base::BindOnce(&ArchiveAnalyzer::NestedAnalysisFinished, GetWeakPtr(),

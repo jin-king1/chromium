@@ -10,6 +10,7 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/location.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/synchronization/waitable_event.h"
@@ -936,11 +937,10 @@ std::string CameraHalDispatcherImpl::GetDeviceIdFromCameraId(
 
 base::flat_set<std::string> CameraHalDispatcherImpl::GetDeviceIdsFromCameraIds(
     const base::flat_set<int32_t>& camera_ids) {
-  base::flat_set<std::string> device_ids;
-  for (const auto& camera_id : camera_ids) {
-    device_ids.insert(GetDeviceIdFromCameraId(camera_id));
-  }
-  return device_ids;
+  return base::MakeFlatSet<std::string>(
+      camera_ids, /*comp=*/{}, [&](const auto& camera_id) {
+        return GetDeviceIdFromCameraId(camera_id);
+      });
 }
 
 TokenManager* CameraHalDispatcherImpl::GetTokenManagerForTesting() {

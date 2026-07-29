@@ -31,18 +31,21 @@
 
 #include "third_party/blink/renderer/platform/wtf/text/text_codec.h"
 
-namespace WTF {
+namespace blink {
 
-class TextCodecUTF8 : public TextCodec {
+class TextCodecUtf8 : public TextCodec {
  public:
   static void RegisterEncodingNames(EncodingNameRegistrar);
   static void RegisterCodecs(TextCodecRegistrar);
+  // Returns true if the given `canonical_name` is supported.
+  // This function ignores ASCII cases.
+  static bool IsSupported(StringView canonical_name);
 
  protected:
-  TextCodecUTF8() : partial_sequence_size_(0) {}
+  TextCodecUtf8() : partial_sequence_size_(0) {}
 
  private:
-  static std::unique_ptr<TextCodec> Create(const TextEncoding&, const void*);
+  static std::unique_ptr<TextCodec> Create(const TextEncoding&);
 
   String Decode(base::span<const uint8_t> data,
                 FlushBehavior,
@@ -67,23 +70,24 @@ class TextCodecUTF8 : public TextCodec {
   EncodeIntoResult EncodeIntoCommon(base::span<const CharType> characters,
                                     base::span<uint8_t> destination);
 
-  template <typename CharType>
-  bool HandlePartialSequence(CharType*& destination,
-                             const uint8_t*& source,
-                             const uint8_t* end,
+  bool HandlePartialSequence(base::span<LChar>& destination,
+                             base::span<const uint8_t>& source,
+                             bool flush);
+  bool HandlePartialSequence(base::span<UChar>& destination,
+                             base::span<const uint8_t>& source,
                              bool flush,
                              bool stop_on_error,
                              bool& saw_error);
-  void HandleError(int character,
-                   UChar*& destination,
-                   bool stop_on_error,
-                   bool& saw_error);
-  void ConsumePartialSequenceBytes(int num_bytes);
+  void FillPartialSequenceBytes(size_t sequence_length,
+                                base::span<const uint8_t>& source);
+  bool NeedMoreData(size_t sequence_length, int character, bool flush) const;
+  void SavePartialSequenceBytes(base::span<const uint8_t>& source);
+  void ConsumePartialSequenceBytes(size_t num_bytes);
 
-  int partial_sequence_size_;
-  uint8_t partial_sequence_[U8_MAX_LENGTH];
+  std::array<uint8_t, U8_MAX_LENGTH> partial_sequence_;
+  size_t partial_sequence_size_ = 0;
 };
 
-}  // namespace WTF
+}  // namespace blink
 
 #endif  // THIRD_PARTY_BLINK_RENDERER_PLATFORM_WTF_TEXT_TEXT_CODEC_UTF8_H_

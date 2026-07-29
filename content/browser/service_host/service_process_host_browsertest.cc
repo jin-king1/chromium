@@ -2,24 +2,26 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "content/public/browser/service_process_host.h"
 
 #include <string.h>
 
 #include <array>
 
+#include "base/compiler_specific.h"
 #include "base/memory/shared_memory_mapping.h"
 #include "base/memory/unsafe_shared_memory_region.h"
+#include "base/memory/weak_ptr.h"
 #include "base/process/process.h"
 #include "base/run_loop.h"
 #include "base/test/bind.h"
+#include "base/test/test_future.h"
 #include "base/time/time.h"
 #include "base/timer/elapsed_timer.h"
+#include "build/blink_buildflags.h"
+#include "build/build_config.h"
+#include "content/public/browser/service_process_observer_hub.h"
+#include "content/public/common/content_switches.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/content_browser_test.h"
 #include "services/test/echo/public/mojom/echo.mojom.h"
@@ -32,6 +34,10 @@
 #include "base/files/file_path.h"
 #include "base/path_service.h"
 #include "content/public/browser/service_process_host_passkeys.h"
+#endif
+
+#if (BUILDFLAG(IS_MAC) || (BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_IOS_TVOS)))
+#include "content/public/browser/browser_child_process_host.h"
 #endif
 
 namespace content {
@@ -69,10 +75,16 @@ class EchoServiceProcessObserver : public ServiceProcessHost::Observer {
 
   void WaitForLaunch() { launch_loop_.Run(); }
   void WaitForDeath() { death_loop_.Run(); }
-  void WaitForCrash() { crash_loop_.Run(); }
+  // Returns true if the crash was a 'startup crash'.
+  bool WaitForCrash() {
+    crash_loop_.Run();
+    EXPECT_TRUE(crashed_pre_ipc_.has_value());
+    return *crashed_pre_ipc_;
+  }
 
   // Valid after WaitForLaunch.
   base::ProcessId pid() const { return process_.Pid(); }
+  const base::Process& process() const { return process_; }
 
  private:
   // ServiceProcessHost::Observer:
@@ -91,6 +103,9 @@ class EchoServiceProcessObserver : public ServiceProcessHost::Observer {
   }
 
   void OnServiceProcessCrashed(const ServiceProcessInfo& info) override {
+    CHECK(info.crashed_pre_ipc().has_value());
+    crashed_pre_ipc_ = info.crashed_pre_ipc().value();
+
     if (info.IsService<echo::mojom::EchoService>()) {
       ASSERT_EQ(info.site(), GURL(kTestUrl));
       crash_loop_.Quit();
@@ -101,6 +116,7 @@ class EchoServiceProcessObserver : public ServiceProcessHost::Observer {
   base::RunLoop death_loop_;
   base::RunLoop crash_loop_;
   base::Process process_;
+  std::optional<bool> crashed_pre_ipc_;
 };
 
 IN_PROC_BROWSER_TEST_F(ServiceProcessHostBrowserTest, Launch) {
@@ -164,7 +180,7 @@ IN_PROC_BROWSER_TEST_F(ServiceProcessHostBrowserTest, AllMessagesReceived) {
   });
   auto region = base::UnsafeSharedMemoryRegion::Create(kBufferSize);
   base::WritableSharedMemoryMapping mapping = region.Map();
-  memset(mapping.memory(), 0, kBufferSize);
+  UNSAFE_TODO(memset(mapping.memory(), 0, kBufferSize));
 
   // Send several messages, since it helps to verify a lack of raciness between
   // service-side message dispatch and service termination.
@@ -176,8 +192,8 @@ IN_PROC_BROWSER_TEST_F(ServiceProcessHostBrowserTest, AllMessagesReceived) {
   observer.WaitForDeath();
 
   const std::string& kLastMessage = kMessages[std::size(kMessages) - 1];
-  EXPECT_EQ(0,
-            memcmp(mapping.memory(), kLastMessage.data(), kLastMessage.size()));
+  UNSAFE_TODO(EXPECT_EQ(
+      0, memcmp(mapping.memory(), kLastMessage.data(), kLastMessage.size())));
 }
 
 IN_PROC_BROWSER_TEST_F(ServiceProcessHostBrowserTest, ObserveCrash) {
@@ -186,8 +202,143 @@ IN_PROC_BROWSER_TEST_F(ServiceProcessHostBrowserTest, ObserveCrash) {
       ServiceProcessHost::Options().WithSite(GURL(kTestUrl)).Pass());
   observer.WaitForLaunch();
   echo_service->Crash();
-  observer.WaitForCrash();
+  bool crashed_pre_ipc = observer.WaitForCrash();
+  EXPECT_FALSE(crashed_pre_ipc);
 }
+
+// Verifies that a per-instance observer (WithObserver) receives notifications
+// for its specific service process.
+IN_PROC_BROWSER_TEST_F(ServiceProcessHostBrowserTest, PerInstanceObserver) {
+  base::RunLoop launch_loop;
+  base::RunLoop death_loop;
+
+  class InstanceObserver : public ServiceProcessHost::Observer {
+   public:
+    void OnServiceProcessLaunched(const ServiceProcessInfo& info) override {
+      launched = true;
+      if (launch_quit) {
+        std::move(launch_quit).Run();
+      }
+    }
+    void OnServiceProcessTerminatedNormally(
+        const ServiceProcessInfo& info) override {
+      terminated = true;
+      if (death_quit) {
+        std::move(death_quit).Run();
+      }
+    }
+    void OnServiceProcessCrashed(const ServiceProcessInfo& info) override {}
+
+    bool launched = false;
+    bool terminated = false;
+    base::OnceClosure launch_quit;
+    base::OnceClosure death_quit;
+    base::WeakPtrFactory<InstanceObserver> weak_factory{this};
+  };
+
+  InstanceObserver instance_observer;
+  instance_observer.launch_quit = launch_loop.QuitClosure();
+  instance_observer.death_quit = death_loop.QuitClosure();
+
+  auto echo_service = ServiceProcessHost::Launch<echo::mojom::EchoService>(
+      ServiceProcessHost::Options()
+          .WithObserver(instance_observer.weak_factory.GetWeakPtr())
+          .Pass());
+  launch_loop.Run();
+  EXPECT_TRUE(instance_observer.launched);
+
+  echo_service.reset();
+  death_loop.Run();
+  EXPECT_TRUE(instance_observer.terminated);
+}
+
+// Verifies that a per-instance observer does NOT fire for a different service.
+IN_PROC_BROWSER_TEST_F(ServiceProcessHostBrowserTest,
+                       PerInstanceObserverIsolation) {
+  class TrackingObserver : public ServiceProcessHost::Observer {
+   public:
+    void OnServiceProcessLaunched(const ServiceProcessInfo& info) override {
+      launch_count++;
+      if (launch_quit) {
+        std::move(launch_quit).Run();
+      }
+    }
+    void OnServiceProcessTerminatedNormally(
+        const ServiceProcessInfo& info) override {
+      terminate_count++;
+      if (terminate_quit) {
+        std::move(terminate_quit).Run();
+      }
+    }
+    void OnServiceProcessCrashed(const ServiceProcessInfo& info) override {}
+
+    int launch_count = 0;
+    int terminate_count = 0;
+    base::OnceClosure launch_quit;
+    base::OnceClosure terminate_quit;
+    base::WeakPtrFactory<TrackingObserver> weak_factory{this};
+  };
+
+  TrackingObserver observer1;
+  TrackingObserver observer2;
+
+  base::RunLoop launch1_loop;
+  base::RunLoop launch2_loop;
+  base::RunLoop death1_loop;
+  base::RunLoop death2_loop;
+  observer1.launch_quit = launch1_loop.QuitClosure();
+  observer2.launch_quit = launch2_loop.QuitClosure();
+  observer1.terminate_quit = death1_loop.QuitClosure();
+  observer2.terminate_quit = death2_loop.QuitClosure();
+
+  // Launch two services, each with its own per-instance observer.
+  auto echo1 = ServiceProcessHost::Launch<echo::mojom::EchoService>(
+      ServiceProcessHost::Options()
+          .WithObserver(observer1.weak_factory.GetWeakPtr())
+          .Pass());
+  auto echo2 = ServiceProcessHost::Launch<echo::mojom::EchoService>(
+      ServiceProcessHost::Options()
+          .WithObserver(observer2.weak_factory.GetWeakPtr())
+          .Pass());
+
+  // Wait for both launches.
+  launch1_loop.Run();
+  launch2_loop.Run();
+
+  // Each observer should have seen exactly one launch — its own.
+  EXPECT_EQ(1, observer1.launch_count);
+  EXPECT_EQ(1, observer2.launch_count);
+
+  // Terminate echo2 — only observer2 should fire.
+  echo2.reset();
+  death2_loop.Run();
+
+  EXPECT_EQ(0, observer1.terminate_count);
+  EXPECT_EQ(1, observer2.terminate_count);
+
+  // Terminate echo1 — only observer1 should fire.
+  echo1.reset();
+  death1_loop.Run();
+
+  EXPECT_EQ(1, observer1.terminate_count);
+  EXPECT_EQ(1, observer2.terminate_count);
+}
+
+// Pre-IPC crash detection is only available on Windows.
+#if BUILDFLAG(IS_WIN)
+IN_PROC_BROWSER_TEST_F(ServiceProcessHostBrowserTest, ObservePreIpcCrash) {
+  EchoServiceProcessObserver observer;
+  auto echo_service = ServiceProcessHost::Launch<echo::mojom::EchoService>(
+      ServiceProcessHost::Options()
+          .WithSite(GURL(kTestUrl))
+          .WithExtraCommandLineSwitches(
+              {switches::kUtilityImmediateCrashForTesting})
+          .Pass());
+  observer.WaitForLaunch();
+  bool crashed_pre_ipc = observer.WaitForCrash();
+  EXPECT_TRUE(crashed_pre_ipc);
+}
+#endif  // #if BUILDFLAG(IS_WIN)
 
 IN_PROC_BROWSER_TEST_F(ServiceProcessHostBrowserTest, IdleTimeout) {
   EchoServiceProcessObserver observer;
@@ -229,7 +380,7 @@ IN_PROC_BROWSER_TEST_F(ServiceProcessHostBrowserTest, PreloadLibraryNotSet) {
 
   base::RunLoop loop;
   echo_service->LoadNativeLibrary(
-      GetDllPath(kEchoPreloadLibrary), /*call_sec32_delayload=*/false,
+      GetDllPath(kEchoPreloadLibrary), /*call_winmm_delayload=*/false,
       base::BindLambdaForTesting([&](LoadStatus status, uint32_t result) {
         EXPECT_EQ(LoadStatus::kFailedLoadLibrary, status);
         EXPECT_EQ(DWORD{ERROR_ACCESS_DENIED}, result);
@@ -253,7 +404,7 @@ IN_PROC_BROWSER_TEST_F(ServiceProcessHostBrowserTest, PreloadLibraryPreloaded) {
   base::RunLoop loop;
   echo_service->LoadNativeLibrary(
       GetDllPath(kEchoPreloadLibrary),
-      /*call_sec32_delayload=*/true,
+      /*call_winmm_delayload=*/true,
       base::BindLambdaForTesting([&](LoadStatus status, uint32_t result) {
         EXPECT_EQ(LoadStatus::kSuccess, status);
         EXPECT_EQ(0u, result);
@@ -279,7 +430,7 @@ IN_PROC_BROWSER_TEST_F(ServiceProcessHostBrowserTest, PreloadLibraryMultiple) {
 
   base::RunLoop loop;
   echo_service->LoadNativeLibrary(
-      GetDllPath(kEchoPreloadLibrary), /*call_sec32_delayload=*/false,
+      GetDllPath(kEchoPreloadLibrary), /*call_winmm_delayload=*/false,
       base::BindLambdaForTesting([&](LoadStatus status, uint32_t result) {
         EXPECT_EQ(LoadStatus::kSuccess, status);
         EXPECT_EQ(0u, result);
@@ -303,7 +454,7 @@ IN_PROC_BROWSER_TEST_F(ServiceProcessHostBrowserTest, PreloadLibraryModName) {
   base::RunLoop loop;
   // Once preloaded can people simply provide the module name?
   echo_service->LoadNativeLibrary(
-      base::FilePath(kEchoPreloadLibrary), /*call_sec32_delayload=*/false,
+      base::FilePath(kEchoPreloadLibrary), /*call_winmm_delayload=*/false,
       base::BindLambdaForTesting([&](LoadStatus status, uint32_t result) {
         EXPECT_EQ(LoadStatus::kSuccess, status);
         EXPECT_EQ(0u, result);
@@ -328,5 +479,39 @@ IN_PROC_BROWSER_TEST_F(ServiceProcessHostBrowserTest, PreloadLibraryBadPath) {
   observer.WaitForCrash();
 }
 #endif  // BUILDFLAG(IS_WIN)
+
+IN_PROC_BROWSER_TEST_F(ServiceProcessHostBrowserTest, UtilityCheckIsTest) {
+  mojo::Remote<echo::mojom::EchoService> echo_service;
+  content::ServiceProcessHost::Launch(
+      echo_service.BindNewPipeAndPassReceiver());
+  base::test::TestFuture<bool> future;
+  echo_service->VerifyCheckIsTest(future.GetCallback());
+  EXPECT_TRUE(future.Get());
+}
+
+IN_PROC_BROWSER_TEST_F(ServiceProcessHostBrowserTest, Priority) {
+#if BUILDFLAG(IS_ANDROID)
+  // Process priority elevation is not supported on Android utility processes.
+  GTEST_SKIP();
+#else
+  if (!base::Process::CanSetPriority()) {
+    GTEST_SKIP()
+        << "Setting process priority is not supported on this platform.";
+  }
+
+  EchoServiceProcessObserver observer;
+  auto echo_service = ServiceProcessHost::Launch<echo::mojom::EchoService>(
+      ServiceProcessHost::Options()
+          .WithPriority(base::Process::Priority::kUserBlocking)
+          .Pass());
+  observer.WaitForLaunch();
+  base::Process::Priority priority = observer.process().GetPriority(
+#if (BUILDFLAG(IS_MAC) || (BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_IOS_TVOS)))
+      content::BrowserChildProcessHost::GetPortProvider()
+#endif
+  );
+  EXPECT_EQ(base::Process::Priority::kUserBlocking, priority);
+#endif
+}
 
 }  // namespace content

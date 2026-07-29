@@ -13,7 +13,9 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/threading/thread.h"
 #include "base/types/pass_key.h"
+#include "media/base/audio_bus.h"
 #include "media/base/audio_glitch_info.h"
+#include "media/base/audio_sample_types.h"
 #include "media/base/audio_timestamp_helper.h"
 
 namespace {
@@ -431,9 +433,13 @@ void WebEngineAudioOutputDevice::PumpSamples(base::TimeTicks playback_time) {
     int buffer_index = available_buffers_indices_.back();
     available_buffers_indices_.pop_back();
 
-    audio_bus_->ToInterleaved<media::Float32SampleTypeTraitsNoClip>(
-        frames_filled,
-        static_cast<float*>(stream_sink_buffers_[buffer_index].memory()));
+    const size_t samples_filled = frames_filled * audio_bus_->channels();
+    auto samples_dest =
+        stream_sink_buffers_[buffer_index].GetMemoryAsSpan<float>().first(
+            samples_filled);
+    audio_bus_->ToInterleavedPartial<media::Float32SampleTypeTraitsNoClip>(
+        0u, stream_sink_buffers_[buffer_index].GetMemoryAsSpan<float>().first(
+                samples_filled));
 
     fuchsia::media::StreamPacket packet;
     packet.payload_buffer_id = buffer_index;
@@ -441,7 +447,8 @@ void WebEngineAudioOutputDevice::PumpSamples(base::TimeTicks playback_time) {
                      media_pos_frames_, params_.sample_rate())
                      .InNanoseconds();
     packet.payload_offset = 0;
-    packet.payload_size = frames_filled * sizeof(float) * params_.channels();
+    packet.payload_size =
+        base::as_bytes(base::allow_nonunique_obj, samples_dest).size();
 
     stream_sink_->SendPacket(std::move(packet), [this, buffer_index]() {
       OnStreamSendDone(buffer_index);

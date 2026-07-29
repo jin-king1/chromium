@@ -88,7 +88,9 @@ synchronous access to each other, as a constraint for process model decisions.
     modify their document.domain value to access other same-site documents, and
     not just same-origin documents. In some cases, though, the principal may be
     an origin or have a coarser granularity (e.g., `file:`). The SiteInfo class
-    tracks all values that identify a security principal.
+    tracks all values that identify a security principal, while the
+    SecurityPrincipal interface exposes a subset of these values in the
+    content/public API.
 
 * **Principal Instance** (implemented by
     [SiteInstance](https://source.chromium.org/chromium/chromium/src/+/main:content/public/browser/site_instance.h;drc=858df4ab8b73f2418f51385954760f2154512029;l=32)):
@@ -478,6 +480,27 @@ affect invariants or how features are designed.
 * **Android WebView**: While Android WebView uses much of the same code as
     Chromium, it currently only supports a single renderer process in most
     cases.
+
+
+## Videos
+
+[**What's Up with Site
+Isolation**](https://youtu.be/OH-bt7spDgo?si=T_mL39Sxr_JPit0K), September 2023\
+An interview about the goals and implementation of Site Isolation (46:41).
+
+[**Chrome Security EDU: Site Isolation
+101**](https://youtu.be/-L-LwHiCl9E?si=wEv7gdc7lr_6yiAy), June 2025\
+A short overview of how Site Isolation helps secure the browser (1:30).
+
+[**Chrome Security EDU: Site Isolation
+201**](https://youtu.be/Als73-6bqD0?si=LajJlqJeXZe7RTIl), June 2025\
+An introduction to how Site Isolation uses placeholders for frames in other
+renderer processes (1:15).
+
+[**Chrome Security EDU: Chrome's Process Model and Site
+Isolation**](https://youtu.be/2Ds_RIACLbk?si=kZWWF75slbRoZMa_), June 2025\
+An in-depth look at Site Isolation for browser engineers, including tradeoffs
+when making decisions around the process model (16:36).
 
 
 ## Further Reading

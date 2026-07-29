@@ -17,6 +17,7 @@
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/scoped_observation.h"
 #include "base/strings/string_number_conversions.h"
 #include "chromeos/ash/components/network/certificate_helper.h"
 #include "chromeos/ash/components/network/policy_certificate_provider.h"
@@ -144,9 +145,7 @@ class NetworkCertLoader::CertCache : public net::CertDatabase::Observer {
   CertCache(const CertCache&) = delete;
   CertCache& operator=(const CertCache&) = delete;
 
-  ~CertCache() override {
-    net::CertDatabase::GetInstance()->RemoveObserver(this);
-  }
+  ~CertCache() override = default;
 
   void MarkWillBeInitialized(bool will_be_initialized) {
     DCHECK(state_ == State::kNotInitialized ||
@@ -171,7 +170,7 @@ class NetworkCertLoader::CertCache : public net::CertDatabase::Observer {
     // TODO(tbarzic): Once singleton NSSCertDatabase is removed, investigate if
     // it would be OK to observe |nss_database_| directly; or change
     // NSSCertDatabase to send notification on all relevant changes.
-    net::CertDatabase::GetInstance()->AddObserver(this);
+    cert_database_observation_.Observe(net::CertDatabase::GetInstance());
 
     LoadCertificates(/*initial_load=*/true);
   }
@@ -179,6 +178,8 @@ class NetworkCertLoader::CertCache : public net::CertDatabase::Observer {
   net::NSSCertDatabase* nss_database() { return nss_database_; }
 
   // net::CertDatabase::Observer
+  // TODO(crbug.com/390333881): Remove OnTrustStoreChanged when system slot NSS
+  // authority certs are no longer used.
   void OnTrustStoreChanged() override {
     VLOG(1) << "OnTrustStoreChanged";
     LoadCertificates(/*initial_load=*/false);
@@ -299,6 +300,9 @@ class NetworkCertLoader::CertCache : public net::CertDatabase::Observer {
   // Client Certificates loaded from the database.
   NetworkCertList client_certs_;
 
+  base::ScopedObservation<net::CertDatabase, net::CertDatabase::Observer>
+      cert_database_observation_{this};
+
   THREAD_CHECKER(thread_checker_);
 
   base::WeakPtrFactory<CertCache> weak_factory_{this};
@@ -414,6 +418,7 @@ class NetworkCertLoader::ServerCertDbCache {
     DCHECK(certificates_update_running());
     VLOG(1) << "UpdateCertificates: " << cert_infos.size();
 
+    authority_certs_.clear();
     for (const auto& cert_info : cert_infos) {
       // TODO(crbug.com/390333881): This includes all certificates from the DB
       // (trusted, untrusted "hint" certificates, and distrusted certs). This
@@ -698,7 +703,7 @@ std::string NetworkCertLoader::GetPkcs11IdAndSlotForCert(CERTCertificate* cert,
   SECItem* sec_item = PK11_GetLowLevelKeyIDForPrivateKey(priv_key);
   std::string pkcs11_id;
   if (sec_item) {
-    pkcs11_id = base::HexEncode(sec_item->data, sec_item->len);
+    pkcs11_id = base::HexEncode(net::x509_util::SECItemAsSpan(*sec_item));
     SECITEM_FreeItem(sec_item, PR_TRUE);
   }
   SECKEY_DestroyPrivateKey(priv_key);
@@ -759,25 +764,15 @@ void NetworkCertLoader::UpdateCertificates() {
       user_policy_certificate_provider_, false /* device_wide */);
   NetworkCertList device_policy_authorities = GetPolicyProvidedAuthorities(
       device_policy_certificate_provider_, true /* device_wide */);
-  if (user_server_cert_db_cache_->is_or_will_be_initialized()) {
-    // TODO(crbug.com/390333881): is there any reason to include the NSS system
-    // slot in all_authority_certs_? I don't think there is any way for anyone
-    // to have imported authority certs into the system slot so including
-    // system_slot_cert_cache_ here should be unnecessary. Unless I missed
-    // something?
-    all_authority_certs_ = CombineNetworkCertLists(
-        {&system_slot_cert_cache_->authority_certs(),
-         &user_server_cert_db_cache_->authority_certs(),
-         &user_policy_authorities, &device_policy_authorities});
-  } else {
-    // TODO(crbug.com/390333881): remove once ServerCertificateDatabaseService
-    // is fully launched.
-    all_authority_certs_ = CombineNetworkCertLists(
-        {&system_slot_cert_cache_->authority_certs(),
-         &user_public_slot_cert_cache_->authority_certs(),
-         &user_private_slot_cert_cache_->authority_certs(),
-         &user_policy_authorities, &device_policy_authorities});
-  }
+  // TODO(crbug.com/390333881): is there any reason to include the NSS system
+  // slot in all_authority_certs_? I don't think there is any way for anyone
+  // to have imported authority certs into the system slot so including
+  // system_slot_cert_cache_ here should be unnecessary. Unless I missed
+  // something?
+  all_authority_certs_ = CombineNetworkCertLists(
+      {&system_slot_cert_cache_->authority_certs(),
+       &user_server_cert_db_cache_->authority_certs(), &user_policy_authorities,
+       &device_policy_authorities});
 
   all_client_certs_ =
       CombineNetworkCertLists({&system_slot_cert_cache_->client_certs(),

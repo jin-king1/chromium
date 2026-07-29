@@ -9,6 +9,12 @@ namespace update_client {
 
 // Errors generated as a result of calling UpdateClient member functions.
 // These errors are not sent in pings.
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused. Keep in sync with the
+// UpdateClientError UMA enum defined in
+// //tools/metrics/histograms/enums.xml.
+//
+// LINT.IfChange(UpdateClientError)
 enum class Error {
   NONE = 0,
   UPDATE_IN_PROGRESS = 1,
@@ -19,8 +25,9 @@ enum class Error {
   CRX_NOT_FOUND = 6,
   INVALID_ARGUMENT = 7,
   BAD_CRX_DATA_CALLBACK = 8,
-  MAX_VALUE,
+  kMaxValue = BAD_CRX_DATA_CALLBACK,
 };
+// LINT.ThenChange(//tools/metrics/histograms/enums.xml:UpdateClientError)
 
 // These errors are sent in pings. Add new values only to the bottom of
 // the enums below; the order must be kept stable.
@@ -87,6 +94,11 @@ enum class UnpackerError {
   kCrxCacheNotProvided = 21,
   kCrxCacheMetadataCorrupted = 22,
   kCrxCacheFileNotCached = 23,
+  kPatchInvalidOldFile = 24,
+  kPatchInvalidPatchFile = 25,
+  kPatchInvalidNewFile = 26,
+  kXzFailed = 27,
+  kPatchOutHashMismatch = 28,
 };
 
 // These errors are returned with the |kInstall| error category and
@@ -131,7 +143,7 @@ enum class ServiceError {
 enum class ProtocolError : int {
   NONE = 0,
   RESPONSE_NOT_TRUSTED = -10000,
-  MISSING_PUBLIC_KEY = -10001,
+  // Obsolete: MISSING_PUBLIC_KEY = -10001,
   MISSING_URLS = -10002,
   PARSE_FAILED = -10003,
   UPDATE_RESPONSE_NOT_FOUND = -10004,
@@ -144,12 +156,16 @@ enum class ProtocolError : int {
   NO_HASH = -10011,
   UNSUPPORTED_PROTOCOL = -10012,
   INTERNAL = -10013,
+  UNSUPPORTED_OPERATION = -10014,
+  INEXPRESSIBLE = -10015,
+  UNKNOWN_ERROR = -10016,
+  INVALID_OPERATION_ATTRIBUTES = -10017,
 };
 
 struct CategorizedError {
-  ErrorCategory category_ = ErrorCategory::kNone;
-  int code_ = 0;
-  int extra_ = 0;
+  ErrorCategory category = ErrorCategory::kNone;
+  int code = 0;
+  int extra = 0;
 };
 
 }  // namespace update_client

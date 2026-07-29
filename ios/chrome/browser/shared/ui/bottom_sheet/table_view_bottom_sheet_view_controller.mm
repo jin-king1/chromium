@@ -14,6 +14,7 @@
 #import "ios/chrome/browser/shared/ui/bottom_sheet/table_view_bottom_sheet_view_controller+subclassing.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/common/ui/table_view/table_view_cells_constants.h"
+#import "ui/base/device_form_factor.h"
 
 namespace {
 
@@ -64,6 +65,10 @@ NSString* const kCustomDetentIdentifier = @"customDetent";
   [self updateHeight];
 }
 
+- (void)reconfigureCellAtIndexPath:(NSIndexPath*)indexPath {
+  [_tableView reconfigureRowsAtIndexPaths:@[ indexPath ]];
+}
+
 - (NSInteger)selectedRow {
   return _tableView.indexPathForSelectedRow.row;
 }
@@ -72,41 +77,37 @@ NSString* const kCustomDetentIdentifier = @"customDetent";
   return _tableView.frame.size.width;
 }
 
-- (UIEdgeInsets)separatorInsetForTableViewWidth:(CGFloat)tableViewWidth
-                                    atIndexPath:(NSIndexPath*)indexPath {
-  // Make separator invisible on last cell
-  CGFloat separatorLeftMargin =
-      [self isLastRow:indexPath] ? tableViewWidth : kTableViewHorizontalSpacing;
-  return UIEdgeInsetsMake(0.f, separatorLeftMargin, 0.f, 0.f);
-}
-
 - (UITableViewCellAccessoryType)accessoryType:(NSIndexPath*)indexPath {
   return ([self selectedRow] == indexPath.row)
              ? UITableViewCellAccessoryCheckmark
              : UITableViewCellAccessoryNone;
 }
 
-- (void)adjustTransactionsPrimaryActionButtonHorizontalConstraints {
+- (void)adjustTransactionsButtonHorizontalConstraints {
   CGFloat buttonHorizontalMargin =
-      ([[UIDevice currentDevice] userInterfaceIdiom] == UIUserInterfaceIdiomPad
-           ? 64.0
-           : 24.0);
+      (ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_TABLET ? 64.0
+                                                                  : 24.0);
 
-  [self.primaryActionButton.leadingAnchor
-      constraintEqualToAnchor:(self.view.leadingAnchor)
-                     constant:buttonHorizontalMargin]
-      .active = YES;
-  [self.primaryActionButton.trailingAnchor
-      constraintEqualToAnchor:(self.view.trailingAnchor)
-                     constant:-buttonHorizontalMargin]
-      .active = YES;
+  [self applyHorizontalConstraints:buttonHorizontalMargin
+                         forButton:self.primaryActionButton];
+  [self applyHorizontalConstraints:buttonHorizontalMargin
+                         forButton:self.secondaryActionButton];
 }
 
 #pragma mark - Subclassing
 
+- (UIView*)createUnderTitleView {
+  return [self createTableView];
+}
+
 - (UITableView*)createTableView {
   _tableView = [[UITableView alloc] initWithFrame:CGRectZero
                                             style:UITableViewStylePlain];
+
+  _tableView.separatorInset =
+      UIEdgeInsetsMake(0, kTableViewHorizontalSpacing, 0, 0);
+  _tableView.tableFooterView =
+      [[UIView alloc] initWithFrame:CGRectMake(0, 0, 0, CGFLOAT_MIN)];
 
   _tableView.layer.cornerRadius = kTableViewCornerRadius;
   _tableView.estimatedRowHeight = kTableViewEstimatedRowHeight;
@@ -151,24 +152,23 @@ NSString* const kCustomDetentIdentifier = @"customDetent";
   // minimized.
   _tableViewIsMinimized = [self rowCount] > [self initialNumberOfVisibleCells];
 
-  self.underTitleView = [self createTableView];
+  self.underTitleView = [self createUnderTitleView];
 
   // Set the properties read by the super when constructing the
   // views in `-[ConfirmationAlertViewController viewDidLoad]`.
   self.imageHasFixedSize = YES;
   self.showsVerticalScrollIndicator = NO;
-  self.showDismissBarButton = NO;
   self.topAlignedLayout = YES;
-  self.customScrollViewBottomInsets = 0;
 
   [super viewDidLoad];
-
-  [self displayGradientView:NO];
 
   // Assign table view's width anchor now that it is in the same hierarchy as
   // the top view.
   [_tableView.widthAnchor
       constraintEqualToAnchor:self.primaryActionButton.widthAnchor]
+      .active = YES;
+  [_tableView.widthAnchor
+      constraintEqualToAnchor:self.secondaryActionButton.widthAnchor]
       .active = YES;
 
   [self setUpBottomSheetDetents];
@@ -176,35 +176,15 @@ NSString* const kCustomDetentIdentifier = @"customDetent";
   // Set selection to the first one.
   [self selectFirstRow];
 
-  if (@available(iOS 17, *)) {
-    NSArray<UITrait>* traits = TraitCollectionSetForTraits(
-        @[ UITraitPreferredContentSizeCategory.class ]);
-    [self registerForTraitChanges:traits
-                       withAction:@selector(updateHeightOnTraitChange)];
-  }
+  [self registerForTraitChanges:@[ UITraitPreferredContentSizeCategory.class ]
+                     withAction:@selector(updateHeightOnTraitChange)];
 }
 
 - (void)viewIsAppearing:(BOOL)animated {
-#if __IPHONE_OS_VERSION_MAX_ALLOWED >= 170000
   [super viewIsAppearing:animated];
-#endif
 
   [self updateHeight];
 }
-
-#if !defined(__IPHONE_17_0) || __IPHONE_OS_VERSION_MIN_REQUIRED < __IPHONE_17_0
-- (void)traitCollectionDidChange:(UITraitCollection*)previousTraitCollection {
-  [super traitCollectionDidChange:previousTraitCollection];
-  if (@available(iOS 17, *)) {
-    return;
-  }
-
-  if (self.traitCollection.preferredContentSizeCategory !=
-      previousTraitCollection.preferredContentSizeCategory) {
-    [self updateHeightOnTraitChange];
-  }
-}
-#endif
 
 #pragma mark - UITableViewDelegate
 
@@ -229,30 +209,19 @@ NSString* const kCustomDetentIdentifier = @"customDetent";
   cell.userInteractionEnabled = [self rowCount] > 1;
 }
 
-#pragma mark - UIScrollViewDelegate
-
-- (void)scrollViewDidScroll:(UIScrollView*)scrollView {
-  [self displayGradientView:![self isScrolledToBottom]];
-}
-
-#pragma mark - UISheetPresentationControllerDelegate
-
-- (void)sheetPresentationControllerDidChangeSelectedDetentIdentifier:
-    (UISheetPresentationController*)sheetPresentationController
-    API_AVAILABLE(ios(16)) {
-  // Show the gradient view to let the user know that the view can be scrolled
-  // when the bottom sheet is in minimized state or if the expanded state takes
-  // more space than the screen.
-  NSString* selectedDetentIdentifier =
-      sheetPresentationController.selectedDetentIdentifier;
-  [self displayGradientView:selectedDetentIdentifier ==
-                                kCustomMinimizedDetentIdentifier ||
-                            (selectedDetentIdentifier ==
-                                 kCustomDetentIdentifier &&
-                             _expandSizeTooLarge)];
-}
-
 #pragma mark - Private
+
+// Applies horizontal constraints to a button.
+- (void)applyHorizontalConstraints:(CGFloat)buttonHorizontalMargin
+                         forButton:(UIView*)button {
+  [button.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor
+                                       constant:buttonHorizontalMargin]
+      .active = YES;
+
+  [button.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor
+                                        constant:-buttonHorizontalMargin]
+      .active = YES;
+}
 
 // Maximum initial number of visible cells.
 - (CGFloat)initialNumberOfVisibleCells {
@@ -312,10 +281,6 @@ NSString* const kCustomDetentIdentifier = @"customDetent";
   // `initialNumberOfVisibleCells` rows).
   NSMutableArray* currentDetents = [[NSMutableArray alloc] init];
   if (useMinimizedState) {
-    // Show gradient view when the user is in minimized state to show that the
-    // view can be scrolled.
-    [self displayGradientView:YES];
-
     CGFloat bottomSheetHeight = [self initialHeight];
     auto detentBlock = ^CGFloat(
         id<UISheetPresentationControllerDetentResolutionContext> context) {

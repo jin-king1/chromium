@@ -33,10 +33,8 @@ NavigationPresence GetNavigationPresence(
     case UserEventSpecifics::kGaiaPasswordCapturedEvent:
     case UserEventSpecifics::kFlocIdComputedEvent:
       return kCannotHave;
-    // The event types below are not recorded anymore, so are not handled here
-    // (will fall through to the NOTREACHED() below).
-    case UserEventSpecifics::kLanguageDetectionEvent:
-    case UserEventSpecifics::kTranslationEvent:
+    // EVENT_NOT_SET is not recorded, so is not handled here (will fall through
+    // to the NOTREACHED() below).
     case UserEventSpecifics::EVENT_NOT_SET:
       break;
   }
@@ -45,7 +43,7 @@ NavigationPresence GetNavigationPresence(
 
 bool NavigationPresenceValid(UserEventSpecifics::EventCase event_case,
                              bool has_navigation_id) {
-  NavigationPresence presence = GetNavigationPresence(event_case);
+  const NavigationPresence presence = GetNavigationPresence(event_case);
   return presence == kEitherOkay ||
          (presence == kMustHave && has_navigation_id) ||
          (presence == kCannotHave && !has_navigation_id);
@@ -77,10 +75,8 @@ EventTypeForUMA GetEventTypeForUMA(UserEventSpecifics::EventCase event_case) {
       return EventTypeForUMA::kGaiaPasswordCapturedEvent;
     case UserEventSpecifics::kFlocIdComputedEvent:
       return EventTypeForUMA::kFlocIdComputedEvent;
-    // The event types below are not recorded anymore, so are not handled here
-    // (will fall through to the NOTREACHED() below).
-    case UserEventSpecifics::kLanguageDetectionEvent:
-    case UserEventSpecifics::kTranslationEvent:
+    // EVENT_NOT_SET is not recorded, so is not handled here (will fall through
+    // to the NOTREACHED() below).
     case UserEventSpecifics::EVENT_NOT_SET:
       break;
   }
@@ -114,18 +110,13 @@ void UserEventServiceImpl::RecordUserEvent(
   bridge_->RecordUserEvent(std::move(specifics));
 }
 
-void UserEventServiceImpl::RecordUserEvent(
-    const UserEventSpecifics& specifics) {
-  RecordUserEvent(std::make_unique<UserEventSpecifics>(specifics));
-}
-
 base::WeakPtr<syncer::DataTypeControllerDelegate>
 UserEventServiceImpl::GetControllerDelegate() {
   return bridge_->change_processor()->GetControllerDelegate();
 }
 
 bool UserEventServiceImpl::ShouldRecordEvent(
-    const UserEventSpecifics& specifics) {
+    const UserEventSpecifics& specifics) const {
   if (specifics.event_case() == UserEventSpecifics::EVENT_NOT_SET) {
     return false;
   }

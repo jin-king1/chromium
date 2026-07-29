@@ -18,6 +18,7 @@
 #include "ui/display/screen.h"
 #include "ui/gfx/image/image_skia.h"
 #include "ui/views/view.h"
+#include "ui/views/view_tracker.h"
 #include "ui/views/views_delegate.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/window/client_view.h"
@@ -26,14 +27,13 @@ namespace views {
 
 namespace {
 
-std::unique_ptr<ClientView> CreateDefaultClientView(WidgetDelegate* delegate,
-                                                    Widget* widget) {
-  return std::make_unique<ClientView>(
-      widget, delegate->TransferOwnershipOfContentsView());
+std::unique_ptr<ClientView> CreateDefaultClientView(
+    Widget* widget,
+    views::View* contents_view) {
+  return std::make_unique<ClientView>(widget, contents_view);
 }
 
-std::unique_ptr<NonClientFrameView> CreateDefaultNonClientFrameView(
-    Widget* widget) {
+std::unique_ptr<FrameView> CreateDefaultFrameView(Widget* widget) {
   return nullptr;
 }
 
@@ -51,10 +51,8 @@ WidgetDelegate::Params::~Params() = default;
 
 WidgetDelegate::WidgetDelegate()
     : widget_initialized_callbacks_(std::make_unique<ClosureVector>()),
-      client_view_factory_(
-          base::BindOnce(&CreateDefaultClientView, base::Unretained(this))),
-      non_client_frame_view_factory_(
-          base::BindRepeating(&CreateDefaultNonClientFrameView)),
+      client_view_factory_(base::BindOnce(&CreateDefaultClientView)),
+      frame_view_factory_(base::BindRepeating(&CreateDefaultFrameView)),
       overlay_view_factory_(base::BindOnce(&CreateDefaultOverlayView)) {}
 
 WidgetDelegate::~WidgetDelegate() {
@@ -81,11 +79,12 @@ bool WidgetDelegate::OnCloseRequested(Widget::ClosedReason close_reason) {
 }
 
 View* WidgetDelegate::GetInitiallyFocusedView() {
-  return params_.initially_focused_view.value_or(nullptr);
+  return params_.initially_focused_view ? params_.initially_focused_view->view()
+                                        : nullptr;
 }
 
 bool WidgetDelegate::HasConfiguredInitiallyFocusedView() const {
-  return params_.initially_focused_view.has_value();
+  return params_.initially_focused_view != nullptr;
 }
 
 BubbleDialogDelegate* WidgetDelegate::AsBubbleDialogDelegate() {
@@ -266,8 +265,7 @@ bool WidgetDelegate::GetSavedWindowPlacement(
     return false;
   }
   // Try to find a display intersecting the saved bounds.
-  const auto& display =
-      display::Screen::GetScreen()->GetDisplayMatching(*bounds);
+  const auto& display = display::Screen::Get()->GetDisplayMatching(*bounds);
   return display.bounds().Intersects(*bounds);
 }
 
@@ -371,13 +369,14 @@ View* WidgetDelegate::TransferOwnershipOfContentsView() {
 
 ClientView* WidgetDelegate::CreateClientView(Widget* widget) {
   DCHECK(client_view_factory_);
-  return std::move(client_view_factory_).Run(widget).release();
+  return std::move(client_view_factory_)
+      .Run(widget, TransferOwnershipOfContentsView())
+      .release();
 }
 
-std::unique_ptr<NonClientFrameView> WidgetDelegate::CreateNonClientFrameView(
-    Widget* widget) {
-  CHECK(non_client_frame_view_factory_);
-  return non_client_frame_view_factory_.Run(widget);
+std::unique_ptr<FrameView> WidgetDelegate::CreateFrameView(Widget* widget) {
+  CHECK(frame_view_factory_);
+  return frame_view_factory_.Run(widget);
 }
 
 View* WidgetDelegate::CreateOverlayView() {
@@ -440,10 +439,8 @@ void WidgetDelegate::SetCanResize(bool can_resize) {
   }
 }
 
-// TODO (kylixrd): This will be removed once Widget no longer "owns" the
-// WidgetDelegate.
-void WidgetDelegate::SetOwnedByWidget(bool owned) {
-  owned_by_widget_ = owned;
+void WidgetDelegate::SetOwnedByWidget(OwnedByWidgetPassKey) {
+  owned_by_widget_ = true;
 }
 
 void WidgetDelegate::SetFocusTraversesOut(bool focus_traverses_out) {
@@ -471,7 +468,10 @@ void WidgetDelegate::SetAppIcon(ui::ImageModel icon) {
 
 void WidgetDelegate::SetInitiallyFocusedView(View* initially_focused_view) {
   DCHECK(!GetWidget());
-  params_.initially_focused_view = initially_focused_view;
+  if (!params_.initially_focused_view) {
+    params_.initially_focused_view = std::make_unique<ViewTracker>();
+  }
+  params_.initially_focused_view->SetView(initially_focused_view);
 }
 
 void WidgetDelegate::SetModalType(ui::mojom::ModalType modal_type) {
@@ -531,16 +531,18 @@ void WidgetDelegate::RegisterWidgetInitializedCallback(
   widget_initialized_callbacks_->emplace_back(std::move(callback));
 }
 
-void WidgetDelegate::RegisterWindowWillCloseCallback(
-    base::OnceClosure callback) {
-  window_will_close_callbacks_.emplace_back(std::move(callback));
-}
-
 void WidgetDelegate::RegisterWindowClosingCallback(base::OnceClosure callback) {
   window_closing_callbacks_.emplace_back(std::move(callback));
 }
 
+void WidgetDelegate::RegisterWindowWillCloseCallback(
+    RegisterWillCloseCallbackPassKey,
+    base::OnceClosure callback) {
+  window_will_close_callbacks_.emplace_back(std::move(callback));
+}
+
 void WidgetDelegate::RegisterDeleteDelegateCallback(
+    RegisterDeleteCallbackPassKey,
     base::OnceClosure callback) {
   delete_delegate_callbacks_.emplace_back(std::move(callback));
 }
@@ -550,10 +552,9 @@ void WidgetDelegate::SetClientViewFactory(ClientViewFactory factory) {
   client_view_factory_ = std::move(factory);
 }
 
-void WidgetDelegate::SetNonClientFrameViewFactory(
-    NonClientFrameViewFactory factory) {
+void WidgetDelegate::SetFrameViewFactory(FrameViewFactory factory) {
   DCHECK(!GetWidget());
-  non_client_frame_view_factory_ = std::move(factory);
+  frame_view_factory_ = std::move(factory);
 }
 
 void WidgetDelegate::SetOverlayViewFactory(OverlayViewFactory factory) {

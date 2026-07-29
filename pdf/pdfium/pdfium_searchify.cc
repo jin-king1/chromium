@@ -7,7 +7,6 @@
 #include <math.h>
 #include <stdint.h>
 
-#include <algorithm>
 #include <array>
 #include <string>
 #include <utility>
@@ -18,6 +17,7 @@
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/functional/callback.h"
+#include "base/logging.h"
 #include "base/numerics/angle_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "pdf/pdfium/pdfium_api_wrappers.h"
@@ -25,6 +25,7 @@
 #include "pdf/pdfium/pdfium_mem_buffer_file_write.h"
 #include "pdf/pdfium/pdfium_ocr.h"
 #include "pdf/pdfium/pdfium_searchify_font.h"
+#include "services/screen_ai/public/cpp/utilities.h"
 #include "services/screen_ai/public/mojom/screen_ai_service.mojom.h"
 #include "third_party/pdfium/public/cpp/fpdf_scopers.h"
 #include "third_party/pdfium/public/fpdf_edit.h"
@@ -161,75 +162,11 @@ bool AddWordOnImage(FPDF_DOCUMENT document,
   return true;
 }
 
-double IsInRange(double v, double min_value, double max_value) {
-  CHECK_LT(min_value, max_value);
-  return v >= min_value && v <= max_value;
-}
-
-// Returns the rectangle covering the space between the bounding rectangles of
-// two consecutive words.
-gfx::Rect GetSpaceRect(const gfx::Rect& rect1, const gfx::Rect& rect2) {
-  if (rect1.IsEmpty() || rect2.IsEmpty()) {
-    return gfx::Rect();
-  }
-
-  // Return empty if the two rects intersect.
-  gfx::Rect r1 = rect1;
-  if (r1.InclusiveIntersect(rect2)) {
-    return gfx::Rect();
-  }
-
-  // Compute the angle of text flow from `rect1` to `rect2`, to decide where the
-  // space rectangle should be.
-  gfx::Vector2dF vec(rect2.CenterPoint() - rect1.CenterPoint());
-  double text_flow_angle = base::RadToDeg(vec.SlopeAngleRadians());
-
-  int x;
-  int y;
-  int width;
-  int height;
-
-  if (IsInRange(text_flow_angle, -45, 45)) {
-    // Left to Right
-    x = rect1.right();
-    y = std::min(rect1.y(), rect2.y());
-    width = rect2.x() - x;
-    height = std::max(rect1.bottom(), rect2.bottom()) - y;
-  } else if (IsInRange(text_flow_angle, 45, 135)) {
-    // Top to Bottom.
-    x = std::min(rect1.x(), rect2.x());
-    y = rect1.bottom();
-    width = std::max(rect1.right(), rect2.right()) - x;
-    height = rect2.y() - y;
-  } else if (IsInRange(text_flow_angle, 135, 180) ||
-             IsInRange(text_flow_angle, -180, -135)) {
-    // Right to Left.
-    x = rect2.right();
-    y = std::min(rect1.y(), rect2.y());
-    width = rect1.x() - x;
-    height = std::max(rect1.bottom(), rect2.bottom()) - y;
-  } else {
-    CHECK(IsInRange(text_flow_angle, -135, -45));
-    // Bottom to Top.
-    x = std::min(rect1.x(), rect2.x());
-    y = rect2.bottom();
-    width = std::max(rect1.right(), rect2.right()) - x;
-    height = rect1.y() - y;
-  }
-
-  // To avoid returning an empty rectangle, width and height are set to at least
-  // one.
-  width = std::max(1, width);
-  height = std::max(1, height);
-
-  return gfx::Rect(x, y, width, height);
-}
-
 // If OCR has recognized a space character between two consecutive words,
 // inserts a new word between them to represent it, and returns the vector of
 // words and spaces.
 std::vector<screen_ai::mojom::WordBox> GetWordsAndSpaces(
-    const std::vector<screen_ai::mojom::WordBoxPtr>& words) {
+    base::span<const screen_ai::mojom::WordBoxPtr> words) {
   std::vector<screen_ai::mojom::WordBox> words_and_spaces;
 
   size_t original_word_count = words.size();
@@ -237,19 +174,20 @@ std::vector<screen_ai::mojom::WordBox> GetWordsAndSpaces(
     words_and_spaces.reserve(original_word_count * 2 - 1);
   }
 
+  gfx::Rect empty_rect;
   for (size_t i = 0; i < original_word_count; i++) {
     auto& current_word = words[i];
     words_and_spaces.push_back(*current_word);
-    if (current_word->has_space_after && i + 1 < original_word_count) {
-      gfx::Rect space_rect =
-          GetSpaceRect(current_word->bounding_box, words[i + 1]->bounding_box);
-      if (!space_rect.IsEmpty()) {
-        words_and_spaces.push_back(screen_ai::mojom::WordBox(
-            /*word=*/" ", current_word->language,
-            /*has_space_after=*/false, space_rect,
-            current_word->bounding_box_angle, current_word->direction,
-            /*confidence=*/1));
-      }
+    // Add whitespace if it's not empty.
+    if (current_word->whitespace_bounding_box.width() &&
+        current_word->whitespace_bounding_box.height()) {
+      words_and_spaces.emplace_back(
+          /*word=*/" ", current_word->language,
+          current_word->whitespace_bounding_box,
+          current_word->whitespace_bounding_box_angle, current_word->direction,
+          /*whitespace_bounding_box=*/empty_rect,
+          /*whitespace_bounding_box_angle=*/0,
+          /*confidence=*/1);
     }
   }
 
@@ -284,7 +222,8 @@ std::vector<uint8_t> PDFiumSearchify(
     for (int object_index = 0; object_index < object_count; object_index++) {
       // GetImageForOcr() checks for null `image`.
       FPDF_PAGEOBJECT image = FPDFPage_GetObject(page.get(), object_index);
-      SkBitmap bitmap = GetImageForOcr(document.get(), page.get(), image);
+      SkBitmap bitmap = GetImageForOcr(document.get(), page.get(), image,
+                                       screen_ai::GetMaxDimensionForOCR());
       // The object is not an image or failed to get the bitmap from the image.
       if (bitmap.empty()) {
         continue;
@@ -387,13 +326,8 @@ FS_MATRIX CalculateWordMoveMatrixForTesting(
   return CalculateWordMoveMatrix(origin, word_bounding_box_width, word_is_rtl);
 }
 
-gfx::Rect GetSpaceRectForTesting(const gfx::Rect& rect1,  // IN-TEST
-                                 const gfx::Rect& rect2) {
-  return GetSpaceRect(rect1, rect2);
-}
-
 std::vector<screen_ai::mojom::WordBox> GetWordsAndSpacesForTesting(  // IN-TEST
-    const std::vector<screen_ai::mojom::WordBoxPtr>& words) {
+    base::span<const screen_ai::mojom::WordBoxPtr> words) {
   return GetWordsAndSpaces(words);
 }
 

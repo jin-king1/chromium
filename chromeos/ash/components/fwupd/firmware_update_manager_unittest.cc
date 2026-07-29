@@ -9,17 +9,20 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <utility>
 
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_switches.h"
 #include "ash/system/firmware_update/firmware_update_notification_controller.h"
 #include "ash/webui/firmware_update_ui/mojom/firmware_update.mojom.h"
+#include "base/command_line.h"
 #include "base/files/file.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/path_service.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
@@ -148,6 +151,27 @@ const uint8_t kGarbageTestChecksumData[] = {
     0x48, 0xcd, 0xc9, 0xc9, 0x57, 0x28, 0xcf, 0x2f, 0xca, 0x49, 0x1,
     0x0,  0x85, 0x11, 0x4a, 0xd,  0xb,  0x0,  0x0,  0x0};
 
+// Malicious checksum file with path traversal in "Id". Uses the same JSON as
+// kTestChecksumData above, but prefixes the ID string with "../../".
+const uint8_t kPathTraversalTestChecksumData[] = {
+    0x1f, 0x8b, 0x8,  0x0,  0x41, 0x24, 0xce, 0x69, 0x0,  0x3,  0xa5, 0x8f,
+    0x31, 0xb,  0xc2, 0x30, 0x10, 0x85, 0xf7, 0xfc, 0x8a, 0x70, 0x73, 0x1b,
+    0x1b, 0x52, 0xa8, 0xb8, 0x29, 0x22, 0x54, 0x71, 0x13, 0x17, 0xe9, 0x10,
+    0x6d, 0x94, 0x48, 0xd2, 0x4a, 0x12, 0xb0, 0x58, 0xfc, 0xef, 0x5e, 0x4b,
+    0x2b, 0x14, 0xdc, 0x24, 0x19, 0xee, 0xde, 0xdd, 0xf7, 0x5e, 0xd2, 0xc2,
+    0xf6, 0x22, 0xc3, 0x51, 0x39, 0xaf, 0xeb, 0x6a, 0x2f, 0xef, 0xb5, 0x83,
+    0x5,  0x4d, 0x22, 0x3a, 0x91, 0x75, 0xd5, 0xcb, 0x1c, 0xe5, 0x3c, 0x28,
+    0xeb, 0xb1, 0x3e, 0xb5, 0x90, 0x97, 0xb0, 0x20, 0xc0, 0xd8, 0xc,  0xef,
+    0x55, 0x3b, 0xfb, 0x94, 0x4e, 0xc5, 0x49, 0xc6, 0x33, 0x1e, 0x7,  0xe5,
+    0x3,  0x6b, 0xac, 0x61, 0xcd, 0xb,  0x10, 0x5a, 0x1a, 0x2d, 0x7d, 0x5e,
+    0xf6, 0x1c, 0x8c, 0xab, 0xe3, 0xbc, 0xc0, 0x85, 0x95, 0xa9, 0xcf, 0x38,
+    0x25, 0xe8, 0xba, 0xd3, 0x15, 0xfa, 0xd2, 0x14, 0xd5, 0x8d, 0x91, 0x37,
+    0x3f, 0xe4, 0x1e, 0xb4, 0x45, 0x4f, 0x69, 0x1f, 0xc3, 0xf3, 0xd6, 0x32,
+    0x48, 0x2c, 0xa1, 0x4b, 0x8a, 0xcb, 0xae, 0x79, 0x47, 0xf4, 0x4b, 0xf3,
+    0x88, 0xfc, 0x41, 0x8b, 0x49, 0x36, 0x99, 0xd0, 0xf8, 0x3b, 0xc1, 0xe7,
+    0x42, 0x88, 0xf4, 0xb7, 0x4d, 0x81, 0x87, 0x7c, 0x0,  0x5b, 0xa6, 0xfd,
+    0xaf, 0x55, 0x1,  0x0,  0x0};
+
 void RunResponseCallback(dbus::ObjectProxy::ResponseOrErrorCallback callback,
                          std::unique_ptr<dbus::Response> response) {
   if (response->GetMessageType() == DBUS_MESSAGE_TYPE_ERROR) {
@@ -243,7 +267,7 @@ class FirmwareUpdateManagerTest : public testing::Test {
     network_handler_test_helper_ = std::make_unique<NetworkHandlerTestHelper>();
     dbus::Bus::Options options;
     options.bus_type = dbus::Bus::SYSTEM;
-    bus_ = base::MakeRefCounted<dbus::MockBus>(options);
+    bus_ = base::MakeRefCounted<dbus::MockBus>(std::move(options));
 
     dbus::ObjectPath fwupd_service_path(kFwupdServicePath);
     proxy_ = base::MakeRefCounted<NiceMock<dbus::MockObjectProxy>>(
@@ -253,7 +277,7 @@ class FirmwareUpdateManagerTest : public testing::Test {
                 GetObjectProxy(kFwupdServiceName, fwupd_service_path))
         .WillRepeatedly(testing::Return(proxy_.get()));
 
-    EXPECT_CALL(*proxy_, DoCallMethodWithErrorResponse(_, _, _))
+    EXPECT_CALL(*proxy_, CallMethodWithErrorResponse(_, _, _))
         .WillRepeatedly(
             Invoke(this, &FirmwareUpdateManagerTest::OnMethodCalled));
 
@@ -290,11 +314,11 @@ class FirmwareUpdateManagerTest : public testing::Test {
 
   void OnMethodCalled(dbus::MethodCall* method_call,
                       int timeout_ms,
-                      dbus::ObjectProxy::ResponseOrErrorCallback* callback) {
+                      dbus::ObjectProxy::ResponseOrErrorCallback callback) {
     ASSERT_FALSE(dbus_responses_.empty());
     auto response = std::move(dbus_responses_.front());
     task_environment_.GetMainThreadTaskRunner()->PostTask(
-        FROM_HERE, base::BindOnce(&RunResponseCallback, std::move(*callback),
+        FROM_HERE, base::BindOnce(&RunResponseCallback, std::move(callback),
                                   std::move(response)));
     dbus_responses_.pop_front();
   }
@@ -697,6 +721,15 @@ class FirmwareUpdateManagerTest : public testing::Test {
     std::string data(reinterpret_cast<const char*>(kGarbageTestChecksumData),
                      std::size(kGarbageTestChecksumData));
     GetTestUrlLoaderFactory().AddResponse(kChecksumFileUriForTesting, data);
+  }
+
+  void PrepareForPathTraversalRefreshRemote() {
+    firmware_update_manager_->set_refresh_remote_for_testing(true);
+    std::string data(
+        reinterpret_cast<const char*>(kPathTraversalTestChecksumData),
+        std::size(kPathTraversalTestChecksumData));
+    GetTestUrlLoaderFactory().AddResponse(kChecksumFileUriForTesting, data);
+    GetTestUrlLoaderFactory().AddResponse(kFirmwareFileUriForTesting, "");
   }
 
   bool PrepareForUpdate(const std::string& device_id) {
@@ -1166,6 +1199,36 @@ TEST_F(FirmwareUpdateManagerTest, BeginUpdateInvalidFile) {
 
   histogram_tester.ExpectUniqueSample("ChromeOS.FirmwareUpdateUi.InstallResult",
                                       MethodResult::kInvalidPatchFile, 1);
+  EXPECT_EQ(ash::firmware_update::mojom::UpdateState::kFailed,
+            update_progress_observer.GetLatestUpdate()->state);
+}
+
+TEST_F(FirmwareUpdateManagerTest, BeginUpdateUnknownDeviceId) {
+  base::HistogramTester histogram_tester;
+
+  // Provide one device and update for RequestUpdates() call from SetupObserver.
+  CreateOneDeviceAndUpdateResponse();
+  // InstallUpdate success response.
+  dbus_responses_.push_back(dbus::ErrorResponse::CreateEmpty());
+  // For RequestAllUpdates() call after install completes.
+  PrepareForRefreshRemote();
+  CreateOneDeviceAndUpdateResponse();
+
+  FakeUpdateObserver update_observer;
+  SetupObserver(&update_observer);
+
+  const std::string fake_url =
+      std::string("https://faketesturl/") + kFakeUpdateFileNameForTesting;
+  SetFakeUrlForTesting(fake_url);
+  GetTestUrlLoaderFactory().AddResponse(fake_url, "");
+
+  EXPECT_TRUE(PrepareForUpdate(std::string(kFakeDeviceIdForTesting)));
+  FakeUpdateProgressObserver update_progress_observer;
+  SetupProgressObserver(&update_progress_observer);
+  BeginUpdate("badDeviceId", base::FilePath(fake_url));
+
+  histogram_tester.ExpectUniqueSample("ChromeOS.FirmwareUpdateUi.InstallResult",
+                                      MethodResult::kUnknownDeviceId, 1);
   EXPECT_EQ(ash::firmware_update::mojom::UpdateState::kFailed,
             update_progress_observer.GetLatestUpdate()->state);
 }
@@ -1720,6 +1783,29 @@ TEST_F(FirmwareUpdateManagerTest, RefreshRemoteIncorrectChecksumFormat) {
 
   dbus_responses_.clear();
   PrepareForIncorrectFormatRefreshRemote();
+  // Provide one device and one update for RequestUpdates() call from
+  // SetupObserver.
+  CreateOneDeviceAndUpdateResponse();
+
+  FakeUpdateObserver update_observer;
+  SetupObserver(&update_observer);
+  const std::vector<firmware_update::mojom::FirmwareUpdatePtr>& updates =
+      update_observer.updates();
+
+  // Verify updates were caught even though RefreshRemote got an error
+  ASSERT_EQ(1U, updates.size());
+  ASSERT_EQ(1, update_observer.num_times_notified());
+
+  histogram_tester.ExpectBucketCount(
+      "ChromeOS.FirmwareUpdateUi.RefreshRemoteResult",
+      MethodResult::kFailedToGetFirmwareFilename, 1);
+}
+
+TEST_F(FirmwareUpdateManagerTest, RefreshRemotePathTraversal) {
+  base::HistogramTester histogram_tester;
+
+  dbus_responses_.clear();
+  PrepareForPathTraversalRefreshRemote();
   // Provide one device and one update for RequestUpdates() call from
   // SetupObserver.
   CreateOneDeviceAndUpdateResponse();

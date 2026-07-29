@@ -6,12 +6,14 @@
 #ifndef CHROME_BROWSER_UI_OMNIBOX_OMNIBOX_THEME_H_
 #define CHROME_BROWSER_UI_OMNIBOX_OMNIBOX_THEME_H_
 
+#include <array>
+
 #include "chrome/browser/ui/color/chrome_color_id.h"
 
-enum class OmniboxPartState { NORMAL, HOVERED, SELECTED, IPH };
+enum class OmniboxPartState { NORMAL, HOVERED, SELECTED, IPH, TOOLBELT };
 
-constexpr float kOmniboxOpacityHovered = 0.10f;
-constexpr float kOmniboxOpacitySelected = 0.16f;
+inline constexpr float kOmniboxOpacityHovered = 0.10f;
+inline constexpr float kOmniboxOpacitySelected = 0.16f;
 
 inline ui::ColorId GetOmniboxBackgroundColorId(OmniboxPartState state) {
   // TODO(crbug.com/333762301): Update the background color for the IPH
@@ -20,7 +22,8 @@ inline ui::ColorId GetOmniboxBackgroundColorId(OmniboxPartState state) {
       kColorOmniboxResultsBackground,
       kColorOmniboxResultsBackgroundHovered,
       kColorOmniboxResultsBackgroundSelected,
-      kColorOmniboxResultsBackgroundIPH,
+      kColorOmniboxResultsBackgroundIph,
+      kColorOmniboxResultsBackground,
   });
   return kIds[static_cast<size_t>(state)];
 }

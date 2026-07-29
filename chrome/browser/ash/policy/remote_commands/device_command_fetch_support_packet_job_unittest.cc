@@ -22,7 +22,8 @@
 #include "base/time/time.h"
 #include "base/values.h"
 #include "chrome/browser/ash/app_mode/kiosk_chrome_app_manager.h"
-#include "chrome/browser/ash/app_mode/web_app/web_kiosk_app_manager.h"
+#include "chrome/browser/ash/app_mode/kiosk_cryptohome_remover.h"
+#include "chrome/browser/ash/app_mode/web_app/kiosk_web_app_manager.h"
 #include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
 #include "chrome/browser/ash/policy/remote_commands/device_command_fetch_support_packet_job_test_util.h"
 #include "chrome/browser/ash/policy/remote_commands/user_session_type_test_util.h"
@@ -45,6 +46,7 @@
 #include "components/user_manager/scoped_user_manager.h"
 #include "record.pb.h"
 #include "record_constants.pb.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -100,8 +102,14 @@ class DeviceCommandFetchSupportPacketTest : public ash::DeviceSettingsTestBase {
     ash::system::StatisticsProvider::SetTestProvider(&statistics_provider_);
     cros_settings_helper_.ReplaceDeviceSettingsProviderWithStub();
 
-    web_kiosk_app_manager_ = std::make_unique<ash::WebKioskAppManager>();
-    kiosk_chrome_app_manager_ = std::make_unique<ash::KioskChromeAppManager>();
+    kiosk_web_app_manager_ = std::make_unique<ash::KioskWebAppManager>(
+        TestingBrowserProcess::GetGlobal()->local_state(),
+        TestingBrowserProcess::GetGlobal()->shared_url_loader_factory(),
+        &kiosk_cryptohome_remover_);
+    kiosk_chrome_app_manager_ = std::make_unique<ash::KioskChromeAppManager>(
+        TestingBrowserProcess::GetGlobal()->local_state(),
+        TestingBrowserProcess::GetGlobal()->shared_url_loader_factory(),
+        &kiosk_cryptohome_remover_);
 
     {
       base::ScopedAllowBlockingForTesting allow_blocking;
@@ -116,7 +124,7 @@ class DeviceCommandFetchSupportPacketTest : public ash::DeviceSettingsTestBase {
     DeviceCommandFetchSupportPacketJob::SetTargetDirForTesting(nullptr);
 
     kiosk_chrome_app_manager_.reset();
-    web_kiosk_app_manager_.reset();
+    kiosk_web_app_manager_.reset();
 
     ash::DebugDaemonClient::Shutdown();
     DeviceSettingsTestBase::TearDown();
@@ -144,8 +152,11 @@ class DeviceCommandFetchSupportPacketTest : public ash::DeviceSettingsTestBase {
   }
 
  protected:
+  ash::KioskCryptohomeRemover kiosk_cryptohome_remover_{
+      TestingBrowserProcess::GetGlobal()->local_state()};
+
   // App manager instances for testing kiosk sessions.
-  std::unique_ptr<ash::WebKioskAppManager> web_kiosk_app_manager_;
+  std::unique_ptr<ash::KioskWebAppManager> kiosk_web_app_manager_;
   std::unique_ptr<ash::KioskChromeAppManager> kiosk_chrome_app_manager_;
 
   scoped_refptr<reporting::test::TestStorageModule> reporting_test_storage_;
@@ -174,11 +185,11 @@ TEST_F(DeviceCommandFetchSupportPacketTest,
        FailIfPayloadContainsEmptyDataCollectors) {
   DeviceCommandFetchSupportPacketJob job;
   // Wrong payload with empty data collectors list.
-  base::Value::Dict command_payload =
+  base::DictValue command_payload =
       test::GetFetchSupportPacketCommandPayloadDict(
           {support_tool::DataCollectorType::CHROMEOS_SYSTEM_LOGS});
   command_payload.SetByDottedPath(
-      "supportPacketDetails.requestedDataCollectors", base::Value::List());
+      "supportPacketDetails.requestedDataCollectors", base::ListValue());
   auto wrong_payload = base::WriteJson(std::move(command_payload));
   ASSERT_TRUE(wrong_payload.has_value());
 
@@ -208,7 +219,7 @@ TEST_F(DeviceCommandFetchSupportPacketTest, FailWhenLogUploadDisabled) {
   // supported on the device.
   EXPECT_THAT(
       *job.GetResultPayload(),
-      IsJson(base::Value::Dict().Set(
+      IsJson(base::DictValue().Set(
           "result", enterprise_management::FetchSupportPacketResultCode::
                         FAILURE_COMMAND_NOT_ENABLED)));
 
@@ -255,7 +266,7 @@ TEST_P(DeviceCommandFetchSupportPacketTestParameterized,
   // The result payload should contain the success result code.
   EXPECT_THAT(
       enqueued_event.remote_command_details().command_result_payload(),
-      IsJson(base::Value::Dict().Set(
+      IsJson(base::DictValue().Set(
           "result", enterprise_management::FetchSupportPacketResultCode::
                         FETCH_SUPPORT_PACKET_RESULT_SUCCESS)));
   EXPECT_EQ(enqueued_event.remote_command_details().command_id(), kUniqueID);
@@ -313,7 +324,7 @@ TEST_P(DeviceCommandFetchSupportPacketTestParameterized,
   EXPECT_EQ(enqueued_event.remote_command_details().command_id(), kUniqueID);
 
   // The result payload should contain the success result code.
-  base::Value::Dict expected_payload;
+  base::DictValue expected_payload;
   expected_payload.Set("result",
                        enterprise_management::FetchSupportPacketResultCode::
                            FETCH_SUPPORT_PACKET_RESULT_SUCCESS);
@@ -321,7 +332,7 @@ TEST_P(DeviceCommandFetchSupportPacketTestParameterized,
     // A note will be added to the result payload when requested PII is
     // not included in the collected logs.
     expected_payload.Set(
-        "notes", base::Value::List().Append(
+        "notes", base::ListValue().Append(
                      enterprise_management::FetchSupportPacketResultNote::
                          WARNING_PII_NOT_ALLOWED));
   }

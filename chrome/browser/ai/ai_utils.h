@@ -1,24 +1,19 @@
-// Copyright 2024 The Chromium Authors
+// Copyright 2026 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
 #ifndef CHROME_BROWSER_AI_AI_UTILS_H_
 #define CHROME_BROWSER_AI_AI_UTILS_H_
 
-#include "components/optimization_guide/core/model_execution/optimization_guide_model_execution_error.h"
-#include "third_party/blink/public/mojom/ai/ai_common.mojom-forward.h"
-#include "third_party/blink/public/mojom/ai/model_streaming_responder.mojom-forward.h"
+#include "components/optimization_guide/proto/on_device_model_execution_config.pb.h"
+#include "services/on_device_model/public/mojom/on_device_model.mojom.h"
 
-class AIUtils {
- public:
-  using LanguageCodes =
-      std::optional<std::vector<blink::mojom::AILanguageCodePtr>>;
+namespace ai {
 
-  static blink::mojom::ModelStreamingResponseStatus ConvertModelExecutionError(
-      optimization_guide::OptimizationGuideModelExecutionError::
-          ModelExecutionError error);
+// Convert ResponseConstraint proto to mojom.
+on_device_model::mojom::ResponseConstraintPtr ToMojomResponseConstraint(
+    const optimization_guide::proto::ResponseConstraint& constraint);
 
-  static constexpr int kNormalizedDownloadProgressMax = 0x10000;
-};
+}  // namespace ai
 
 #endif  // CHROME_BROWSER_AI_AI_UTILS_H_

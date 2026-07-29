@@ -5,6 +5,7 @@
 #import "components/translate/ios/browser/translate_java_script_feature.h"
 
 #import "base/check_op.h"
+#import "base/functional/callback_helpers.h"
 #import "base/strings/utf_string_conversions.h"
 #import "components/translate/ios/browser/translate_controller.h"
 #import "ios/web/public/js_messaging/script_message.h"
@@ -41,7 +42,7 @@ void TranslateJavaScriptFeature::StartTranslation(
     return;
   }
 
-  base::Value::List parameters;
+  base::ListValue parameters;
   parameters.Append(source_language);
   parameters.Append(target_language);
   CallJavaScriptFunction(frame, "translate.startTranslation", parameters);
@@ -78,14 +79,15 @@ TranslateJavaScriptFeature::GetScriptMessageHandlerName() const {
 void TranslateJavaScriptFeature::ScriptMessageReceived(
     web::WebState* web_state,
     const web::ScriptMessage& message) {
-  if (!message.is_main_frame() || !message.body() ||
-      !message.body()->is_dict()) {
+  if (!message.is_main_frame() || !message.legacy_body() ||
+      !message.legacy_body()->is_dict()) {
     return;
   }
 
   TranslateController* translate_controller =
       TranslateController::FromWebState(web_state);
-  translate_controller->OnJavascriptCommandReceived(message.body()->GetDict());
+  translate_controller->OnJavascriptCommandReceived(
+      message.security_origin(), message.legacy_body()->GetDict());
 }
 
 }  // namespace translate

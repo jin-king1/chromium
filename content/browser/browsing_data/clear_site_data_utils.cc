@@ -5,7 +5,6 @@
 #include "content/public/browser/clear_site_data_utils.h"
 
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
@@ -89,8 +88,7 @@ class SiteDataClearer : public BrowsingDataRemover::Observer {
               BrowsingDataFilterBuilder::Mode::kDelete));
       cookie_filter_builder->AddRegisterableDomain(domain);
       cookie_filter_builder->SetCookiePartitionKeyCollection(
-          net::CookiePartitionKeyCollection::FromOptional(
-              cookie_partition_key_));
+          net::CookiePartitionKeyCollection(cookie_partition_key_));
       cookie_filter_builder->SetPartitionedCookiesOnly(
           partitioned_state_allowed_only_);
       if (storage_partition_config_.has_value()) {
@@ -135,10 +133,22 @@ class SiteDataClearer : public BrowsingDataRemover::Observer {
       remove_mask |= BrowsingDataRemover::DATA_TYPE_DEVICE_BOUND_SESSIONS;
       // Internal data should not be removed by site-initiated deletions.
       remove_mask &= ~BrowsingDataRemover::DATA_TYPE_PRIVACY_SANDBOX_INTERNAL;
+      // Some deletions should also be more narrow for Clear-Site-Data, to avoid
+      // sites from hostilely interfering with each other where a user-initiated
+      // deletion would be conservative.
+      remove_mask &= ~BrowsingDataRemover::DATA_TYPE_INTEREST_GROUPS_USER_CLEAR;
     }
 
     if (clear_site_data_types_.Has(ClearSiteDataType::kCache)) {
       remove_mask |= BrowsingDataRemover::DATA_TYPE_CACHE;
+    }
+
+    if (clear_site_data_types_.Has(ClearSiteDataType::kPrefetchCache)) {
+      remove_mask |= BrowsingDataRemover::DATA_TYPE_PREFETCH_CACHE;
+    }
+
+    if (clear_site_data_types_.Has(ClearSiteDataType::kPrerenderCache)) {
+      remove_mask |= BrowsingDataRemover::DATA_TYPE_PRERENDER_CACHE;
     }
 
     if (remove_mask) {
@@ -160,10 +170,13 @@ class SiteDataClearer : public BrowsingDataRemover::Observer {
           std::move(origin_filter_builder), this);
     }
 
-    // We clear client hints for both cookie and cache clears.
+    // We should clear client hints when we clear cookies and cache as well.
+    // The client hints cache is only read in first-party contexts, so can only
+    // be cleared in them too (see ClearSiteDataHandler::Run for the warning).
     if (clear_site_data_types_.HasAny({ClearSiteDataType::kCookies,
                                        ClearSiteDataType::kCache,
-                                       ClearSiteDataType::kClientHints})) {
+                                       ClearSiteDataType::kClientHints}) &&
+        (!storage_key_ || storage_key_->IsFirstPartyContext())) {
       pending_task_count_++;
 
       // For client hints, no mask is being passed per se. Therefore, when

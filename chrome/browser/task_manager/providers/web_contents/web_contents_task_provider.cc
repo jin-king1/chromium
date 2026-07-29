@@ -12,7 +12,6 @@
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
-#include "base/not_fatal_until.h"
 #include "base/notreached.h"
 #include "chrome/browser/task_manager/providers/web_contents/back_forward_cache_task.h"
 #include "chrome/browser/task_manager/providers/web_contents/fenced_frame_task.h"
@@ -20,16 +19,18 @@
 #include "chrome/browser/task_manager/providers/web_contents/prerender_task.h"
 #include "chrome/browser/task_manager/providers/web_contents/subframe_task.h"
 #include "chrome/browser/task_manager/providers/web_contents/web_contents_tags_manager.h"
-#if !BUILDFLAG(IS_ANDROID)
-#include "components/guest_view/browser/guest_view_base.h"
-#endif  // !BUILDFLAG(IS_ANDROID)
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
+#include "content/public/browser/site_instance.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/common/content_features.h"
+
+#if !BUILDFLAG(IS_ANDROID)
+#include "components/guest_view/browser/guest_view_base.h"
+#endif  // !BUILDFLAG(IS_ANDROID)
 
 using content::RenderFrameHost;
 using content::RenderProcessHost;
@@ -204,11 +205,11 @@ WebContentsTaskProvider::WebContentsEntry::GetTaskForFrame(
 
 RenderFrameHost* WebContentsTaskProvider::WebContentsEntry::FindLocalRoot(
     RenderFrameHost* render_frame_host) const {
-  SiteInstance* site_instance = render_frame_host->GetSiteInstance();
   RenderFrameHost* candidate = render_frame_host;
   while (RenderFrameHost* parent = candidate->GetParent()) {
-    if (parent->GetSiteInstance() != site_instance)
+    if (parent->GetProcess() != candidate->GetProcess()) {
       break;
+    }
     candidate = parent;
   }
   return candidate;
@@ -330,8 +331,9 @@ void WebContentsTaskProvider::WebContentsEntry::DidFinishNavigation(
   // We only need to update tasks for primary main frame navigations except for
   // MPArch guest view.
   //
-  // FencedFrame task gets the title from |SiteInstance::GetSiteURL()| which
-  // does not change for the same site instance, thus no need to update;
+  // FencedFrame task gets the title from
+  // |SecurityPrincipal::GetDeprecatedSiteURL()| which does not change for the
+  // same site instance, thus no need to update;
   // prerender does not support multiple navigations thus no need to update its
   // title.
   if (!navigation_handle->IsInPrimaryMainFrame() &&
@@ -572,7 +574,7 @@ void WebContentsTaskProvider::OnWebContentsTagRemoved(
   DCHECK(web_contents);
 
   auto itr = entries_map_.find(web_contents);
-  CHECK(itr != entries_map_.end(), base::NotFatalUntil::M130);
+  CHECK(itr != entries_map_.end());
 
   // Must manually clear the tasks and notify the observer.
   itr->second->ClearAllTasks(true);

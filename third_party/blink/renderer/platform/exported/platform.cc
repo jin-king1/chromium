@@ -32,6 +32,7 @@
 
 #include <memory>
 
+#include "base/notimplemented.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/threading/thread_checker.h"
@@ -47,7 +48,6 @@
 #include "third_party/blink/public/platform/web_graphics_context_3d_provider.h"
 #include "third_party/blink/renderer/platform/bindings/parkable_string_manager.h"
 #include "third_party/blink/renderer/platform/font_family_names.h"
-#include "third_party/blink/renderer/platform/fonts/font_cache_memory_dump_provider.h"
 #include "third_party/blink/renderer/platform/geometry/length.h"
 #include "third_party/blink/renderer/platform/graphics/parkable_image_manager.h"
 #include "third_party/blink/renderer/platform/heap/blink_gc_memory_dump_provider.h"
@@ -65,6 +65,7 @@
 #include "third_party/blink/renderer/platform/scheduler/public/non_main_thread.h"
 #include "third_party/blink/renderer/platform/scheduler/public/thread_scheduler.h"
 #include "third_party/blink/renderer/platform/theme/web_theme_engine_helper.h"
+#include "third_party/blink/renderer/platform/wtf/functional.h"
 
 namespace blink {
 
@@ -107,9 +108,9 @@ class IdleDelayedTaskHelper : public base::SingleThreadTaskRunner {
     DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
     ThreadScheduler::Current()->PostDelayedIdleTask(
         from_here, delay,
-        base::BindOnce([](base::OnceClosure task,
-                          base::TimeTicks deadline) { std::move(task).Run(); },
-                       std::move(task)));
+        blink::BindOnce([](base::OnceClosure task,
+                           base::TimeTicks deadline) { std::move(task).Run(); },
+                        std::move(task)));
     return true;
   }
 
@@ -134,13 +135,14 @@ WebThemeEngine* Platform::ThemeEngine() {
   return WebThemeEngineHelper::GetNativeThemeEngine();
 }
 
-void Platform::InitializeBlink() {
+void Platform::InitializeBlink(
+    std::optional<cppgc::StackStartMarker> stack_start_marker) {
   DCHECK(!did_initialize_blink_);
-  WTF::Partitions::Initialize();
-  WTF::Initialize();
+  Partitions::Initialize();
+  InitializeWtf();
   Length::Initialize();
   ProcessHeap::Init();
-  ThreadState::AttachMainThread();
+  ThreadState::AttachMainThread(std::move(stack_start_marker));
   did_initialize_blink_ = true;
 }
 
@@ -184,9 +186,6 @@ void Platform::InitializeMainThreadCommon(
       PartitionAllocMemoryDumpProvider::Instance(), "PartitionAlloc",
       base::SingleThreadTaskRunner::GetCurrentDefault());
   base::trace_event::MemoryDumpManager::GetInstance()->RegisterDumpProvider(
-      FontCacheMemoryDumpProvider::Instance(), "FontCaches",
-      base::SingleThreadTaskRunner::GetCurrentDefault());
-  base::trace_event::MemoryDumpManager::GetInstance()->RegisterDumpProvider(
       MemoryCacheDumpProvider::Instance(), "MemoryCache",
       base::SingleThreadTaskRunner::GetCurrentDefault());
   base::trace_event::MemoryDumpManager::GetInstance()->RegisterDumpProvider(
@@ -208,7 +207,7 @@ void Platform::InitializeMainThreadCommon(
   // This relies on being called prior to
   // PartitionAllocSupport::ReconfigureAfterTaskRunnerInit, which would start
   // memory reclaimer with a regular task runner. The first one prevails.
-  WTF::Partitions::StartMemoryReclaimer(
+  Partitions::StartMemoryReclaimer(
       base::MakeRefCounted<IdleDelayedTaskHelper>());
 }
 
@@ -223,13 +222,13 @@ void Platform::CreateMainThreadForTesting() {
 }
 
 void Platform::SetMainThreadTaskRunnerForTesting() {
-  DCHECK(WTF::IsMainThread());
+  DCHECK(IsMainThread());
   DCHECK(Thread::MainThread()->IsSimpleMainThread());
   scheduler::SetMainThreadTaskRunnerForTesting();
 }
 
 void Platform::UnsetMainThreadTaskRunnerForTesting() {
-  DCHECK(WTF::IsMainThread());
+  DCHECK(IsMainThread());
   DCHECK(Thread::MainThread()->IsSimpleMainThread());
   scheduler::UnsetMainThreadTaskRunnerForTesting();
 }
@@ -270,10 +269,18 @@ Platform::CompositorThreadTaskRunner() {
 }
 
 std::unique_ptr<WebGraphicsContext3DProvider>
-Platform::CreateOffscreenGraphicsContext3DProvider(
-    const Platform::ContextAttributes&,
+Platform::CreateWebGLGraphicsContextProvider(
+    bool prefer_low_power_gpu,
+    bool fail_if_major_performance_caveat,
+    WebGLContextType context_type,
     const WebURL& document_url,
-    Platform::GraphicsInfo*) {
+    WebGLContextInfo*) {
+  return nullptr;
+}
+
+std::unique_ptr<WebGraphicsContext3DProvider>
+Platform::CreateRasterGraphicsContextProvider(const WebURL& document_url,
+                                              RasterContextType context_type) {
   return nullptr;
 }
 
@@ -283,12 +290,15 @@ Platform::CreateSharedOffscreenGraphicsContext3DProvider() {
 }
 
 std::unique_ptr<WebGraphicsContext3DProvider>
-Platform::CreateWebGPUGraphicsContext3DProvider(const WebURL& document_url) {
+Platform::CreateWebGPUGraphicsContext3DProvider(
+    const WebURL& document_url,
+    WebGPUReplyThread reply_thread) {
   return nullptr;
 }
 
 void Platform::CreateWebGPUGraphicsContext3DProviderAsync(
     const blink::WebURL& document_url,
+    WebGPUReplyThread reply_thread,
     base::OnceCallback<
         void(std::unique_ptr<blink::WebGraphicsContext3DProvider>)> callback) {}
 
@@ -297,10 +307,16 @@ Platform::SharedMainThreadContextProvider() {
   return nullptr;
 }
 
-scoped_refptr<cc::RasterContextProviderWrapper>
+scoped_refptr<viz::RasterContextProvider>
 Platform::SharedCompositorWorkerContextProvider(
     cc::RasterDarkModeFilter* dark_mode_filter) {
   return nullptr;
+}
+
+void Platform::SharedMediaContextProvider(
+    base::OnceCallback<void(scoped_refptr<viz::RasterContextProvider>)>
+        callback) {
+  std::move(callback).Run(nullptr);
 }
 
 scoped_refptr<gpu::GpuChannelHost> Platform::EstablishGpuChannelSync() {

@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/341324165): Fix and remove.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "content/common/zygote/zygote_communication_linux.h"
 
 #include <string.h>
@@ -14,6 +9,7 @@
 
 #include "base/base_switches.h"
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
 #include "base/files/platform_file.h"
 #include "base/i18n/unicodestring.h"
 #include "base/logging.h"
@@ -51,8 +47,7 @@ bool ZygoteCommunication::SendMessage(const base::Pickle& data,
       << "(sending " << fds->size() << ", max is "
       << base::UnixDomainSocket::kMaxFileDescriptors << ")";
 
-  return base::UnixDomainSocket::SendMsg(control_fd_.get(), data.data(),
-                                         data.size(),
+  return base::UnixDomainSocket::SendMsg(control_fd_.get(), data,
                                          fds ? *fds : std::vector<int>());
 }
 
@@ -150,15 +145,15 @@ pid_t ZygoteCommunication::ForkRequest(
     peer_sock.reset();
 
     {
-      char buf[sizeof(kZygoteChildPingMessage) + 1];
+      uint8_t buf[sizeof(kZygoteChildPingMessage) + 1];
       std::vector<base::ScopedFD> recv_fds;
       base::ProcessId real_pid;
 
-      ssize_t n = base::UnixDomainSocket::RecvMsgWithPid(
-          my_sock.get(), buf, sizeof(buf), &recv_fds, &real_pid);
+      ssize_t n = base::UnixDomainSocket::RecvMsgWithPid(my_sock.get(), buf,
+                                                         &recv_fds, &real_pid);
       if (n != sizeof(kZygoteChildPingMessage) ||
-          0 != memcmp(buf, kZygoteChildPingMessage,
-                      sizeof(kZygoteChildPingMessage))) {
+          0 != UNSAFE_TODO(memcmp(buf, kZygoteChildPingMessage,
+                                  sizeof(kZygoteChildPingMessage)))) {
         // Zygote children should still be trustworthy when they're supposed to
         // ping us, so something's broken if we don't receive a valid ping.
         DUMP_WILL_BE_NOTREACHED() << "Did not receive ping from zygote child";
@@ -176,12 +171,11 @@ pid_t ZygoteCommunication::ForkRequest(
 
     // Read the reply, which pickles the PID and an optional UMA enumeration.
     static const unsigned kMaxReplyLength = 2048;
-    char buf[kMaxReplyLength];
+    uint8_t buf[kMaxReplyLength];
     const ssize_t len = ReadReply(buf, sizeof(buf));
 
-    base::Pickle reply_pickle = base::Pickle::WithUnownedBuffer(
-        base::as_bytes(base::span(buf, base::checked_cast<size_t>(len))));
-    base::PickleIterator iter(reply_pickle);
+    base::PickleIterator iter = base::PickleIterator::WithData(
+        UNSAFE_TODO(base::span(buf, base::checked_cast<size_t>(len))));
     if (len <= 0 || !iter.ReadInt(&pid))
       return base::kNullProcessHandle;
 
@@ -262,6 +256,7 @@ void ZygoteCommunication::Init(
   static const char* const kForwardSwitches[] = {
       sandbox::policy::switches::kAllowSandboxDebugging,
       switches::kDisableInProcessStackTraces,
+      sandbox::policy::switches::kDisableLandlockSandbox,
       sandbox::policy::switches::kDisableSeccompFilterSandbox,
       sandbox::policy::switches::kNoSandbox,
   };
@@ -288,7 +283,7 @@ base::TerminationStatus ZygoteCommunication::GetTerminationStatus(
   pickle.WriteInt(handle);
 
   static const unsigned kMaxMessageLength = 128;
-  char buf[kMaxMessageLength];
+  uint8_t buf[kMaxMessageLength];
   ssize_t len;
   {
     base::AutoLock lock(control_lock_);
@@ -307,10 +302,9 @@ base::TerminationStatus ZygoteCommunication::GetTerminationStatus(
   } else if (len == 0) {
     LOG(WARNING) << "Socket closed prematurely.";
   } else {
-    base::Pickle read_pickle = base::Pickle::WithUnownedBuffer(
-        base::as_bytes(base::span(buf, base::checked_cast<size_t>(len))));
+    base::PickleIterator iter = base::PickleIterator::WithData(
+        UNSAFE_TODO(base::span(buf, base::checked_cast<size_t>(len))));
     int tmp_status, tmp_exit_code;
-    base::PickleIterator iter(read_pickle);
     if (!iter.ReadInt(&tmp_status) || !iter.ReadInt(&tmp_exit_code)) {
       LOG(WARNING)
           << "Error parsing GetTerminationStatus response from zygote.";

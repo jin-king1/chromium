@@ -26,11 +26,11 @@ struct AccountInfo;
 class DeviceAccountsProviderImpl;
 class PrefService;
 @protocol RefreshAccessTokenError;
-@class ResizedAvatarCache;
 
-// Service that provides SystemIdentities for use within a Chrome profile. In
-// particular, it only passes on accounts that AccountProfileMapper has assigned
-// to this profile, and it additionally filters out identities according to the
+// Service that provides SystemIdentities and avatar caches. Most methods only
+// return the identities belonging to `profile_name_`  according to
+// `AccountProfileMapper`, but this can also be used to access identities on
+// device. This service filters out identities according to the
 // RestrictAccountsToPatterns policy.
 class ChromeAccountManagerService : public KeyedService,
                                     public AccountProfileMapper::Observer {
@@ -64,11 +64,12 @@ class ChromeAccountManagerService : public KeyedService,
     virtual void OnRefreshTokenUpdated(id<SystemIdentity> identity) {}
 
     // Handles access token refresh failed events.
-    // `identity` is the the identity for which the access token refresh failed.
+    // `identity` is the identity for which the access token refresh failed.
     // `error` is an opaque type containing information about the error.
-    virtual void OnAccessTokenRefreshFailed(id<SystemIdentity> identity,
-                                            id<RefreshAccessTokenError> error) {
-    }
+    virtual void OnAccessTokenRefreshFailed(
+        id<SystemIdentity> identity,
+        id<RefreshAccessTokenError> error,
+        const std::set<std::string>& scopes) {}
 
     // Called on Shutdown(), for observers that aren't KeyedServices to remove
     // their observers.
@@ -88,34 +89,29 @@ class ChromeAccountManagerService : public KeyedService,
   // Returns the name of the profile that this service belongs to.
   const std::string& GetProfileName() const;
 
-  // Returns true if there is at least one identity known by the service.
+  // Returns whether there is at least one identity in the profile of this
+  // service.
   bool HasIdentities() const;
 
-  // Returns whether `identity` is valid and known by the service.
-  bool IsValidIdentity(id<SystemIdentity> identity) const;
+  // Returns whether `gaia_id` is valid and belongs to the profile of this
+  // service.
+  bool IsValidIdentity(const GaiaId& gaia_id) const;
 
   // Returns whether `email` is restricted according to the
   // RestrictAccountsToPatterns policy.
   bool IsEmailRestricted(std::string_view email) const;
 
   // Returns the SystemIdentity with gaia ID equals to `gaia_id` or nil if
-  // no matching identity is found.
+  // no matching identity is found in the profile of this service.
   id<SystemIdentity> GetIdentityWithGaiaID(const GaiaId& gaia_id) const;
 
-  // Returns all SystemIdentity objects, sorted by the ordering used in the
-  // SystemIdentityManager, which is typically based on the keychain ordering of
-  // accounts.
+  // Returns all SystemIdentity objects of the profile of this service, sorted
+  // by the ordering used in the SystemIdentityManager, which is typically based
+  // on the keychain ordering of accounts.
   NSArray<id<SystemIdentity>>* GetAllIdentities() const;
 
-  // Returns the first SystemIdentity object.
+  // Returns the first SystemIdentity object of the profile of this service.
   id<SystemIdentity> GetDefaultIdentity() const;
-
-  // Returns the identity avatar. If the avatar is not available, it is fetched
-  // in background (a notification will be received when it will be available),
-  // and the default avatar is returned (see
-  // `Observer::OnIdentityInProfileUpdated()`).
-  UIImage* GetIdentityAvatarWithIdentity(id<SystemIdentity> identity,
-                                         IdentityAvatarSize size);
 
   // Returns whether signin is supported.
   bool IsServiceSupported() const;
@@ -132,14 +128,20 @@ class ChromeAccountManagerService : public KeyedService,
   // opposed to that (and most other methods in this service), this also handles
   // accounts that are assigned to other profiles.
   id<SystemIdentity> GetIdentityOnDeviceWithGaiaID(const GaiaId& gaia_id) const;
-  id<SystemIdentity> GetIdentityOnDeviceWithGaiaID(NSString* gaia_id) const;
   // Converts a vector of AccountInfos, as returned by
-  // IdentityManager::GetAccountsOnDevice(), to `SystemIdentities (by looking
+  // IdentityManager::GetAccountsOnDevice(), to `SystemIdentity`’s (by looking
   // them up via their Gaia IDs). Note that, as opposed to most other methods in
   // this service, this also handles accounts that are assigned to other
   // profiles.
   NSArray<id<SystemIdentity>>* GetIdentitiesOnDeviceWithGaiaIDs(
       const std::vector<AccountInfo>& account_infos) const;
+
+  // Returns the SystemIdentity with the given email, or nil if no matching
+  // identity exists on the device. Similar to GetIdentityOnDeviceWithGaiaID().
+  //
+  // Use GetIdentityOnDeviceWithGaiaID() instead of this method if possible.
+  // Emails can change, while gaia ids are fixed.
+  id<SystemIdentity> GetIdentityOnDeviceWithEmail(NSString* email) const;
 
   // For use by DeviceAccountsProviderImpl only, may not be called otherwise!
   // Returns all SystemIdentity objects that are available on the device,
@@ -149,7 +151,7 @@ class ChromeAccountManagerService : public KeyedService,
   NSArray<id<SystemIdentity>>* GetAllIdentitiesOnDevice(
       base::PassKey<DeviceAccountsProviderImpl>) const;
 
-  // SystemIdentityManagerObserver implementation.
+  // AccountProfileMapper::Observer implementation.
   void OnIdentitiesInProfileChanged() override;
   void OnIdentitiesOnDeviceChanged() override;
   void OnIdentityInProfileUpdated(id<SystemIdentity> identity) override;
@@ -157,7 +159,8 @@ class ChromeAccountManagerService : public KeyedService,
   void OnIdentityRefreshTokenUpdated(id<SystemIdentity> identity) override;
   void OnIdentityAccessTokenRefreshFailed(
       id<SystemIdentity> identity,
-      id<RefreshAccessTokenError> error) override;
+      id<RefreshAccessTokenError> error,
+      const std::set<std::string>& scopes) override;
 
   // Gets base::WeakPtr to the object.
   base::WeakPtr<ChromeAccountManagerService> GetWeakPtr();
@@ -167,10 +170,6 @@ class ChromeAccountManagerService : public KeyedService,
   // `local_state_` is null, no identity will be filtered.
   void UpdateRestriction();
 
-  // Returns a ResizedAvatarCache based on `avatar_size`.
-  ResizedAvatarCache* GetAvatarCacheForIdentityAvatarSize(
-      IdentityAvatarSize avatar_size);
-
   // The local-state pref service, used to retrieve restricted patterns.
   raw_ptr<PrefService> local_state_ = nullptr;
   // Used to filter ChromeIdentities.
@@ -179,15 +178,6 @@ class ChromeAccountManagerService : public KeyedService,
   PrefChangeRegistrar registrar_;
 
   base::ObserverList<Observer, true> observer_list_;
-
-  // ResizedAvatarCache for IdentityAvatarSize::TableViewIcon.
-  ResizedAvatarCache* default_table_view_avatar_cache_;
-  // ResizedAvatarCache for IdentityAvatarSize::SmallSize.
-  ResizedAvatarCache* small_size_avatar_cache_;
-  // ResizedAvatarCache for IdentityAvatarSize::Regular.
-  ResizedAvatarCache* regular_avatar_cache_;
-  // ResizedAvatarCache for IdentityAvatarSize::Large.
-  ResizedAvatarCache* large_avatar_cache_;
 
   const std::string profile_name_;
 

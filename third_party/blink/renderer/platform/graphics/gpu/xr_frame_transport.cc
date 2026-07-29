@@ -5,21 +5,20 @@
 #include "third_party/blink/renderer/platform/graphics/gpu/xr_frame_transport.h"
 
 #include "base/logging.h"
+#include "base/notimplemented.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
 #include "device/vr/public/mojom/vr_service.mojom-blink.h"
 #include "gpu/command_buffer/client/gles2_interface.h"
 #include "gpu/command_buffer/client/webgpu_interface.h"
-#include "gpu/command_buffer/common/mailbox_holder.h"
 #include "mojo/public/cpp/system/platform_handle.h"
 #include "third_party/blink/public/platform/task_type.h"
 #include "third_party/blink/renderer/platform/graphics/gpu/dawn_control_client_holder.h"
+#include "third_party/blink/renderer/platform/graphics/gpu/xr_webgl_drawing_buffer.h"
 #include "third_party/blink/renderer/platform/graphics/image_to_buffer_copier.h"
-#include "third_party/blink/renderer/platform/graphics/static_bitmap_image.h"
 #include "third_party/blink/renderer/platform/mojo/mojo_binding_context.h"
 #include "ui/gfx/gpu_fence.h"
-#include "ui/gfx/gpu_memory_buffer.h"
 
 namespace blink {
 
@@ -31,8 +30,6 @@ XRFrameTransport::XRFrameTransport(
 XRFrameTransport::~XRFrameTransport() = default;
 
 void XRFrameTransport::PresentChange() {
-  frame_copier_ = nullptr;
-
   // Ensure we don't wait for a frame separator fence when rapidly exiting and
   // re-entering presentation, cf. https://crbug.com/855722.
   waiting_for_previous_frame_fence_ = false;
@@ -54,8 +51,7 @@ bool XRFrameTransport::DrawingIntoSharedBuffer() {
   switch (transport_options_->transport_method) {
     case device::mojom::blink::XRPresentationTransportMethod::
         SUBMIT_AS_TEXTURE_HANDLE:
-    case device::mojom::blink::XRPresentationTransportMethod::
-        SUBMIT_AS_MAILBOX_HOLDER:
+    case device::mojom::blink::XRPresentationTransportMethod::SUBMIT_AS_TEST:
       return false;
     case device::mojom::blink::XRPresentationTransportMethod::
         DRAW_INTO_TEXTURE_MAILBOX:
@@ -65,7 +61,7 @@ bool XRFrameTransport::DrawingIntoSharedBuffer() {
   }
 }
 
-void XRFrameTransport::FramePreImage(gpu::gles2::GLES2Interface* gl) {
+void XRFrameTransport::FramePreImage(XRFrameTransportDelegate* delegate) {
   frame_wait_time_ = base::TimeDelta();
 
   // If we're expecting a fence for the previous frame and it hasn't arrived
@@ -77,83 +73,31 @@ void XRFrameTransport::FramePreImage(gpu::gles2::GLES2Interface* gl) {
   // failed), send it to the GPU service process and ask it to do an
   // asynchronous server wait.
   if (previous_frame_fence_) {
-    DVLOG(3) << "CreateClientGpuFenceCHROMIUM";
-    GLuint id = gl->CreateClientGpuFenceCHROMIUM(
-        previous_frame_fence_->AsClientGpuFence());
-    gl->WaitGpuFenceCHROMIUM(id);
-    gl->DestroyGpuFenceCHROMIUM(id);
-    previous_frame_fence_.reset();
-  }
-}
-
-void XRFrameTransport::FramePreImageWebGPU(
-    scoped_refptr<DawnControlClientHolder> dawn_control_client) {
-  frame_wait_time_ = base::TimeDelta();
-
-  // If we're expecting a fence for the previous frame and it hasn't arrived
-  // yet, wait for it to be received.
-  if (waiting_for_previous_frame_fence_) {
-    frame_wait_time_ += WaitForGpuFenceReceived();
-  }
-  // If we have a GpuFence (it may be missing if WaitForIncomingMethodCall
-  // failed), send it to the GPU service process and ask it to do an
-  // asynchronous server wait.
-  if (previous_frame_fence_) {
-    DVLOG(3) << "CreateClientGpuFenceCHROMIUM";
-
-    // TODO(crbug.com/359418629): Wait on previous_frame_fence_ like the WebGL
-    // path does.
-
+    delegate->WaitOnFence(previous_frame_fence_.get());
     previous_frame_fence_.reset();
   }
 }
 
 void XRFrameTransport::FrameSubmitMissing(
     device::mojom::blink::XRPresentationProvider* vr_presentation_provider,
-    gpu::gles2::GLES2Interface* gl,
+    gpu::SharedImageExportResult camera_export_result,
     int16_t vr_frame_id) {
-  TRACE_EVENT0("gpu", __FUNCTION__);
-  gpu::SyncToken sync_token;
-  // https://crbug.com/1132837 : Apparently the GL context is sometimes null
-  // when reaching this method. Avoid a crash in that case, but do send the mojo
-  // message to ensure the XR session stays in sync.
-  if (gl) {
-    gl->GenSyncTokenCHROMIUM(sync_token.GetData());
-  }
-  vr_presentation_provider->SubmitFrameMissing(vr_frame_id, sync_token);
-}
-
-void XRFrameTransport::FrameSubmitMissingWebGPU(
-    device::mojom::blink::XRPresentationProvider* vr_presentation_provider,
-    scoped_refptr<DawnControlClientHolder> dawn_control_client,
-    int16_t vr_frame_id) {
-  TRACE_EVENT0("gpu", __FUNCTION__);
-  gpu::SyncToken sync_token;
-
-  if (dawn_control_client) {
-    auto context_provider_weak_ptr =
-        dawn_control_client->GetContextProviderWeakPtr();
-    if (context_provider_weak_ptr) {
-      WebGraphicsContext3DProvider& context_provider =
-          context_provider_weak_ptr->ContextProvider();
-
-      gpu::webgpu::WebGPUInterface* webgpu = context_provider.WebGPUInterface();
-      TRACE_EVENT0("gpu", "GenSyncTokenCHROMIUM");
-      webgpu->GenSyncTokenCHROMIUM(sync_token.GetData());
-    }
-  }
-
-  vr_presentation_provider->SubmitFrameMissing(vr_frame_id, sync_token);
+  TRACE_EVENT0("gpu", "FrameSubmitMissing");
+  // The drawing buffer doesn't need synchronization since this frame is
+  // dropped. We only pass camera_export_result to ensure pending reads finish
+  // before the device overwrites the camera texture.
+  vr_presentation_provider->SubmitFrameMissing(vr_frame_id,
+                                               std::move(camera_export_result));
 }
 
 bool XRFrameTransport::FrameSubmit(
     device::mojom::blink::XRPresentationProvider* vr_presentation_provider,
-    gpu::gles2::GLES2Interface* gl,
-    gpu::SharedImageInterface* sii,
-    DrawingBuffer::Client* drawing_buffer_client,
-    scoped_refptr<Image> image_ref,
+    XRFrameTransportDelegate* delegate,
+    Vector<XRLayerUpdate> layers,
+    gpu::SharedImageExportResult camera_export_result,
     int16_t vr_frame_id) {
   DCHECK(transport_options_);
+  CHECK(delegate);
 
   if (transport_options_->transport_method ==
       device::mojom::blink::XRPresentationTransportMethod::
@@ -162,23 +106,22 @@ bool XRFrameTransport::FrameSubmit(
     TRACE_EVENT0("gpu", "XRFrameTransport::CopyImage");
     // Update last_transfer_succeeded_ value. This should usually complete
     // without waiting.
-    if (transport_options_->wait_for_transfer_notification)
+    if (transport_options_->wait_for_transfer_notification) {
       WaitForPreviousTransfer();
-    if (!frame_copier_ || !last_transfer_succeeded_) {
-      frame_copier_ = std::make_unique<ImageToBufferCopier>(gl, sii);
     }
-    auto [gpu_memory_buffer_handle, sync_token] =
-        frame_copier_->CopyImage(image_ref.get());
-    drawing_buffer_client->DrawingBufferClientRestoreTexture2DBinding();
-    drawing_buffer_client->DrawingBufferClientRestoreFramebufferBinding();
-    drawing_buffer_client->DrawingBufferClientRestoreRenderbufferBinding();
+    // TODO(crbug.com/359418629): This only works because we're restricted to a
+    // single layer at the moment.
+    CHECK_EQ(layers.size(), 1UL);
+    auto [gpu_memory_buffer_handle, sync_token] = delegate->CopyImage(
+        layers[0].current_frame_image.get(), last_transfer_succeeded_);
 
     // We can fail to obtain a GMB handle if we don't have GPU support, or
     // for some out-of-memory situations.
     // TODO(billorr): Consider whether we should just drop the frame or exit
     // presentation.
     if (gpu_memory_buffer_handle.is_null()) {
-      FrameSubmitMissing(vr_presentation_provider, gl, vr_frame_id);
+      FrameSubmitMissing(vr_presentation_provider,
+                         std::move(camera_export_result), vr_frame_id);
       // We didn't actually submit anything, so don't set
       // the waiting_for_previous_frame_transfer_ and related state.
       return false;
@@ -189,111 +132,74 @@ bool XRFrameTransport::FrameSubmit(
     // passed over IPC.
     vr_presentation_provider->SubmitFrameWithTextureHandle(
         vr_frame_id,
-        mojo::PlatformHandle(
-            gpu_memory_buffer_handle.dxgi_handle().TakeBufferHandle()),
+        mojo::PlatformHandle(std::move(gpu_memory_buffer_handle)
+                                 .dxgi_handle()
+                                 .TakeBufferHandle()),
         sync_token);
 #else
     NOTIMPLEMENTED();
 #endif
   } else if (transport_options_->transport_method ==
              device::mojom::blink::XRPresentationTransportMethod::
-                 SUBMIT_AS_MAILBOX_HOLDER) {
-    // The AcceleratedStaticBitmapImage must be kept alive until the
-    // mailbox is used via CreateAndTexStorage2DSharedImageCHROMIUM, the mailbox
-    // itself does not keep it alive. We must keep a reference to the
-    // image until the mailbox was consumed.
-    StaticBitmapImage* static_image =
-        static_cast<StaticBitmapImage*>(image_ref.get());
-    static_image->EnsureSyncTokenVerified();
+                 SUBMIT_AS_TEST) {
+    CHECK_EQ(layers.size(), 1UL);
 
     // Conditionally wait for the previous render to finish. A late wait here
     // attempts to overlap work in parallel with the previous frame's
     // rendering. This is used if submitting fully rendered frames to GVR, but
     // is susceptible to bad GPU scheduling if the new frame competes with the
     // previous frame's incomplete rendering.
-    if (waiting_for_previous_frame_render_)
+    if (waiting_for_previous_frame_render_) {
       frame_wait_time_ += WaitForPreviousRenderToFinish();
+    }
 
     // Save a reference to the image to keep it alive until next frame,
     // but first wait for the transfer to finish before overwriting it.
     // Usually this check is satisfied without waiting.
-    if (transport_options_->wait_for_transfer_notification)
+    if (transport_options_->wait_for_transfer_notification) {
       WaitForPreviousTransfer();
-    previous_image_ = std::move(image_ref);
+    }
+    previous_images_.clear();
+    for (auto& layer : layers) {
+      previous_images_.push_back(std::move(layer.current_frame_image));
+    }
 
-    // Create mailbox and sync token for transfer.
-    TRACE_EVENT_BEGIN0("gpu", "XRFrameTransport::GetMailbox");
-    auto mailbox_holder = static_image->GetMailboxHolder();
-    TRACE_EVENT_END0("gpu", "XRFrameTransport::GetMailbox");
-
-    TRACE_EVENT_BEGIN0("gpu", "XRFrameTransport::SubmitFrame");
-    vr_presentation_provider->SubmitFrame(vr_frame_id, mailbox_holder,
-                                          frame_wait_time_);
-    TRACE_EVENT_END0("gpu", "XRFrameTransport::SubmitFrame");
+    {
+      TRACE_EVENT("gpu", "XRFrameTransport::SubmitFrame");
+      vr_presentation_provider->SubmitFrame(vr_frame_id, frame_wait_time_);
+    }
   } else if (transport_options_->transport_method ==
              device::mojom::blink::XRPresentationTransportMethod::
                  DRAW_INTO_TEXTURE_MAILBOX) {
     TRACE_EVENT0("gpu", "XRFrameTransport::SubmitFrameDrawnIntoTexture");
-    gpu::SyncToken sync_token;
-    {
-      TRACE_EVENT0("gpu", "GenSyncTokenCHROMIUM");
-      gl->GenSyncTokenCHROMIUM(sync_token.GetData());
+    if (delegate->IsContextLost()) {
+      return false;
     }
     if (waiting_for_previous_frame_render_) {
       frame_wait_time_ += WaitForPreviousRenderToFinish();
     }
-    vr_presentation_provider->SubmitFrameDrawnIntoTexture(
-        vr_frame_id, sync_token, frame_wait_time_);
-  } else {
-    NOTREACHED() << "Unimplemented frame transport method";
-  }
 
-  // Set the expected notifications the next frame should wait for.
-  waiting_for_previous_frame_transfer_ =
-      transport_options_->wait_for_transfer_notification;
-  waiting_for_previous_frame_render_ =
-      transport_options_->wait_for_render_notification;
-  waiting_for_previous_frame_fence_ = transport_options_->wait_for_gpu_fence;
-  return true;
-}
+    Vector<device::mojom::blink::XRLayerUpdatePtr> mojom_layer_updates;
+    mojom_layer_updates.reserve(layers.size());
 
-bool XRFrameTransport::FrameSubmitWebGPU(
-    device::mojom::blink::XRPresentationProvider* vr_presentation_provider,
-    scoped_refptr<DawnControlClientHolder> dawn_control_client,
-    wgpu::Device device,
-    int16_t vr_frame_id) {
-  CHECK(transport_options_);
-
-  if (transport_options_->transport_method ==
-      device::mojom::blink::XRPresentationTransportMethod::
-          DRAW_INTO_TEXTURE_MAILBOX) {
-    TRACE_EVENT0("gpu", "XRFrameTransport::SubmitFrameDrawnIntoTexture");
-
-    gpu::SyncToken sync_token;
-    {
-      auto context_provider_weak_ptr =
-          dawn_control_client->GetContextProviderWeakPtr();
-      if (!context_provider_weak_ptr) {
-        return false;
+    for (auto& layer : layers) {
+      auto mojom_layer_update = device::mojom::blink::XRLayerUpdate::New();
+      mojom_layer_update->layer_id = layer.layer_id;
+      if (layer.current_frame_image) {
+        delegate->VerifySyncToken(layer.current_frame_image->sync_token);
+        mojom_layer_update->shared_image_export_result =
+            layer.current_frame_image->shared_image->EndImport(
+                layer.current_frame_image->sync_token);
+      } else {
+        mojom_layer_update->shared_image_export_result =
+            gpu::SharedImageExportResult::CreateEmptyResult();
       }
-
-      WebGraphicsContext3DProvider& context_provider =
-          context_provider_weak_ptr->ContextProvider();
-
-      gpu::webgpu::WebGPUInterface* webgpu = context_provider.WebGPUInterface();
-      TRACE_EVENT0("gpu", "GenSyncTokenCHROMIUM");
-      webgpu->GenSyncTokenCHROMIUM(sync_token.GetData());
+      mojom_layer_updates.push_back(std::move(mojom_layer_update));
     }
-
-    if (waiting_for_previous_frame_render_) {
-      frame_wait_time_ += WaitForPreviousRenderToFinish();
-    }
-
     vr_presentation_provider->SubmitFrameDrawnIntoTexture(
-        vr_frame_id, sync_token, frame_wait_time_);
+        vr_frame_id, std::move(mojom_layer_updates),
+        std::move(camera_export_result), frame_wait_time_);
   } else {
-    // WebGPU sessions don't support SUBMIT_AS_TEXTURE_HANDLE or
-    // SUBMIT_AS_MAILBOX_HOLDER yet.
     NOTREACHED() << "Unimplemented frame transport method";
   }
 
@@ -306,10 +212,21 @@ bool XRFrameTransport::FrameSubmitWebGPU(
   return true;
 }
 
-void XRFrameTransport::OnSubmitFrameTransferred(bool success) {
-  DVLOG(3) << __FUNCTION__;
+void XRFrameTransport::OnSubmitFrameTransferred(
+    bool success,
+    const Vector<device::LayerId>& layer_ids) {
+  DVLOG(3) << __func__;
   waiting_for_previous_frame_transfer_ = false;
   last_transfer_succeeded_ = success;
+
+  if (on_submit_frame_transferred_callback_) {
+    on_submit_frame_transferred_callback_.Run(success, layer_ids);
+  }
+}
+
+void XRFrameTransport::RegisterFrameTransferredCallback(
+    OnSubmitFrameTransferredCallback callback) {
+  on_submit_frame_transferred_callback_ = std::move(callback);
 }
 
 void XRFrameTransport::RegisterFrameRenderedCallback(
@@ -322,7 +239,7 @@ void XRFrameTransport::WaitForPreviousTransfer() {
   TRACE_EVENT0("gpu", "waitForPreviousTransferToFinish");
   while (waiting_for_previous_frame_transfer_) {
     if (!submit_frame_client_receiver_.WaitForIncomingCall()) {
-      DLOG(ERROR) << __FUNCTION__ << ": Failed to receive response";
+      DLOG(ERROR) << __func__ << ": Failed to receive response";
       break;
     }
   }
@@ -330,7 +247,7 @@ void XRFrameTransport::WaitForPreviousTransfer() {
 }
 
 void XRFrameTransport::OnSubmitFrameRendered() {
-  DVLOG(3) << __FUNCTION__;
+  DVLOG(3) << __func__;
   waiting_for_previous_frame_render_ = false;
   if (on_submit_frame_rendered_callback_) {
     on_submit_frame_rendered_callback_.Run();
@@ -343,7 +260,7 @@ base::TimeDelta XRFrameTransport::WaitForPreviousRenderToFinish() {
   base::TimeTicks start = base::TimeTicks::Now();
   while (waiting_for_previous_frame_render_) {
     if (!submit_frame_client_receiver_.WaitForIncomingCall()) {
-      DLOG(ERROR) << __FUNCTION__ << ": Failed to receive response";
+      DLOG(ERROR) << __func__ << ": Failed to receive response";
       break;
     }
   }
@@ -366,7 +283,7 @@ base::TimeDelta XRFrameTransport::WaitForGpuFenceReceived() {
   base::TimeTicks start = base::TimeTicks::Now();
   while (waiting_for_previous_frame_fence_) {
     if (!submit_frame_client_receiver_.WaitForIncomingCall()) {
-      DLOG(ERROR) << __FUNCTION__ << ": Failed to receive response";
+      DLOG(ERROR) << __func__ << ": Failed to receive response";
       break;
     }
   }

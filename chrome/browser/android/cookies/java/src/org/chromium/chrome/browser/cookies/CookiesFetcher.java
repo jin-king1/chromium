@@ -76,7 +76,7 @@ public class CookiesFetcher implements Destroyable {
                     @Override
                     public void onProfileDestroyed(Profile profile) {
                         if (profile.isOffTheRecord()
-                                && mProfileProvider.getOffTheRecordProfile(false) == profile) {
+                                && mProfileProvider.getOffTheRecordProfile() == profile) {
                             scheduleDeleteCookies();
                         }
                     }
@@ -136,7 +136,7 @@ public class CookiesFetcher implements Destroyable {
     /** Asynchronously fetches cookies from the incognito profile and saves them to a file. */
     public void persistCookies() {
         ThreadUtils.assertOnUiThread();
-        Profile offTheRecordProfile = mProfileProvider.getOffTheRecordProfile(false);
+        Profile offTheRecordProfile = mProfileProvider.getOffTheRecordProfile();
         if (offTheRecordProfile == null) {
             return;
         }
@@ -153,7 +153,7 @@ public class CookiesFetcher implements Destroyable {
      */
     public void restoreCookies(Runnable restoreCompletedAction) {
         ThreadUtils.assertOnUiThread();
-        Profile offTheRecordProfile = mProfileProvider.getOffTheRecordProfile(false);
+        Profile offTheRecordProfile = mProfileProvider.getOffTheRecordProfile();
         if (offTheRecordProfile == null) {
             scheduleDeleteCookies();
             restoreCompletedAction.run();
@@ -173,7 +173,7 @@ public class CookiesFetcher implements Destroyable {
             @Override
             protected List<CanonicalCookie> doInBackground() {
                 // Read cookies from disk on a background thread to avoid strict mode violations.
-                List<CanonicalCookie> cookies = new ArrayList<CanonicalCookie>();
+                List<CanonicalCookie> cookies = new ArrayList<>();
                 DataInputStream in = null;
                 try {
                     Cipher cipher = mCipherFactory.getCipher(Cipher.DECRYPT_MODE);

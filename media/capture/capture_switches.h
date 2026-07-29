@@ -24,9 +24,15 @@ CAPTURE_EXPORT bool IsMediaFoundationCameraUsageMonitoringEnabled();
 
 namespace features {
 
+CAPTURE_EXPORT BASE_DECLARE_FEATURE(kExcludePipFromScreenCapture);
+
 #if defined(WEBRTC_USE_PIPEWIRE)
 CAPTURE_EXPORT BASE_DECLARE_FEATURE(kWebRtcPipeWireCamera);
 #endif  // defined(WEBRTC_USE_PIPEWIRE)
+
+#if BUILDFLAG(IS_WIN)
+CAPTURE_EXPORT BASE_DECLARE_FEATURE(kMediaFoundationCameraUsageMonitoring);
+#endif
 
 }  // namespace features
 

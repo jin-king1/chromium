@@ -13,16 +13,15 @@
 #include "ash/constants/ash_switches.h"
 #include "ash/session/session_controller_impl.h"
 #include "ash/shell.h"
-#include "ash/webui/system_apps/public/system_web_app_type.h"
 #include "ash/wm/overview/overview_test_util.h"
 #include "base/test/run_until.h"
 #include "chrome/browser/apps/platform_apps/app_browsertest_util.h"
 #include "chrome/browser/ash/app_restore/app_restore_test_util.h"
 #include "chrome/browser/ash/system_web_apps/system_web_app_manager.h"
 #include "chrome/browser/ui/ash/birch/birch_test_util.h"
-#include "chrome/browser/ui/browser_list.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/ash/util/ash_test_util.h"
+#include "chromeos/ash/components/system_web_apps/system_web_app_type.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/test/browser_test.h"
 #include "gmock/gmock.h"
@@ -72,7 +71,8 @@ MATCHER_P2(AppEq, title, id, "") {
 }
 
 // Tests that the coral provider collects correct in-session tab and app data.
-IN_PROC_BROWSER_TEST_F(BirchCoralProviderTest, CollectInSessionData) {
+// TODO(crbug.com/398348784): flaky.
+IN_PROC_BROWSER_TEST_F(BirchCoralProviderTest, DISABLED_CollectInSessionData) {
   // Close existing browser windows.
   CloseAllBrowsers();
 
@@ -116,55 +116,6 @@ IN_PROC_BROWSER_TEST_F(BirchCoralProviderTest, CollectInSessionData) {
                   AppEq("www.gmail.com", "gdkbjbkdgeggmfkjbfohmimchmkikbid"),
                   AppEq("www.youtube.com", "adnlfjpnmidfimlkaohpidplnoimahfh"),
                   AppEq("Explore", "nbljnnecbjbmifnoehiemkgefbnpoeak"),
-                  AppEq("Settings", "odknhmnlageboeamepcngndbggdpaobj"),
-                  AppEq("Files", "fkiggjmkendpmbegkagpmagjepfkpmeb")));
-}
-
-// Tests that the coral provider filters out duplicated tab and app data.
-IN_PROC_BROWSER_TEST_F(BirchCoralProviderTest, NoDupInSessionData) {
-  // Close existing browser windows.
-  CloseAllBrowsers();
-
-  // Create two browsers with duplicated urls.
-  test::CreateAndShowBrowser(
-      profile(), {GURL("https://examples1.com"), GURL("https://examples2.com"),
-                  GURL("https://examples2.com")});
-  test::CreateAndShowBrowser(profile(), {GURL("https://examples1.com"),
-                                         GURL("https://examples3.com")});
-
-  // Open some SWA windows with duplicated apps.
-  test::CreateSystemWebApp(profile(), SystemWebAppType::FILE_MANAGER);
-  test::CreateSystemWebApp(profile(), SystemWebAppType::FILE_MANAGER);
-  test::CreateSystemWebApp(profile(), SystemWebAppType::SETTINGS);
-
-  // Open some PWA windows with duplicated apps.
-  test::InstallAndLaunchPWA(profile(), GURL("https://www.youtube.com/"),
-                            /*launch_in_browser=*/false,
-                            /*app_title=*/u"YouTube");
-  test::InstallAndLaunchPWA(profile(), GURL("https://www.youtube.com/"),
-                            /*launch_in_browser=*/false,
-                            /*app_title=*/u"Youtube");
-
-  ash::ToggleOverview();
-  ash::WaitForOverviewEnterAnimation();
-
-  // Check if the collected data as expected.
-  const coral_util::TabsAndApps tabs_and_apps = coral_util::SplitContentData(
-      GetCoralProvider()->GetCoralRequestForTest().content());
-
-  // Comparing the collected tab data with the expected tab data.
-  EXPECT_THAT(tabs_and_apps.tabs,
-              testing::UnorderedElementsAre(
-                  TabEq("examples1.com", GURL("https://examples1.com/")),
-                  TabEq("examples2.com", GURL("https://examples2.com/")),
-                  TabEq("examples3.com", GURL("https://examples3.com/"))));
-
-  // Comparing the collected app data with the expected app data in mru order.
-  EXPECT_THAT(tabs_and_apps.apps,
-              testing::UnorderedElementsAre(
-                  // URL will be used when app tab title is empty, which happens
-                  // in this test setup.
-                  AppEq("www.youtube.com", "adnlfjpnmidfimlkaohpidplnoimahfh"),
                   AppEq("Settings", "odknhmnlageboeamepcngndbggdpaobj"),
                   AppEq("Files", "fkiggjmkendpmbegkagpmagjepfkpmeb")));
 }

@@ -17,11 +17,10 @@ class SearchEngineChoiceMetricsServiceAccessor
     : public metrics::MetricsServiceAccessor {
  private:
   friend class SearchEngineChoiceService;
-  friend class SearchEngineChoiceServiceTest;
+  friend class SearchEngineChoiceServiceTestBase;
   friend class SearchEngineChoiceServiceSimpleTest;
-  FRIEND_TEST_ALL_PREFIXES(
-      SearchEngineChoiceServiceTest,
-      MaybeRecordChoiceScreenDisplayState_OnServiceStartup_UmaDisabled);
+  FRIEND_TEST_ALL_PREFIXES(SearchEngineChoiceServiceDisplayStateRecordTest,
+                           RecordFromCacheCancelled_UmaDisabled);
 };
 
 }  // namespace search_engines

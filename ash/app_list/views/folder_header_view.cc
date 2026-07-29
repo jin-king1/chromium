@@ -21,6 +21,7 @@
 #include "ash/style/system_textfield_controller.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "ui/base/cursor/cursor.h"
@@ -34,6 +35,7 @@
 #include "ui/views/background.h"
 #include "ui/views/border.h"
 #include "ui/views/controls/button/image_button.h"
+#include "ui/views/controls/focus_ring.h"
 #include "ui/views/controls/highlight_path_generator.h"
 #include "ui/views/controls/textfield/textfield.h"
 #include "ui/views/focus/focus_manager.h"
@@ -121,15 +123,10 @@ class FolderHeaderView::FolderNameView : public views::Textfield,
         GetFolderBackgroundColor(is_active), kFolderNameBorderRadius,
         kFolderNameBorderThickness));
 
-    const ui::ColorProvider* const color_provider = GetColorProvider();
-    set_placeholder_text_color(
-        color_provider->GetColor(kColorAshTextColorSecondary));
-    const SkColor text_color =
-        color_provider->GetColor(kColorAshTextColorPrimary);
-    SetTextColor(text_color);
-    SetSelectionTextColor(text_color);
-    SetSelectionBackgroundColor(
-        color_provider->GetColor(kColorAshFocusAuraColor));
+    SetPlaceholderTextColorId(kColorAshTextColorSecondary);
+    SetTextColorId(kColorAshTextColorPrimary);
+    SetSelectionTextColorId(kColorAshTextColorPrimary);
+    SetSelectionBackgroundColorId(kColorAshFocusAuraColor);
     UpdateBackgroundColor(is_active);
   }
 
@@ -246,7 +243,7 @@ class FolderHeaderView::FolderNameView : public views::Textfield,
 
  private:
   void UpdateBackgroundColor(bool is_active) {
-    background()->SetNativeControlColor(GetFolderBackgroundColor(is_active));
+    background()->SetColor(GetFolderBackgroundColor(is_active));
     SchedulePaint();
   }
 

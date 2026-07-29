@@ -13,6 +13,7 @@
 #import "base/not_fatal_until.h"
 #import "base/notreached.h"
 #import "components/webauthn/core/browser/passkey_model_utils.h"
+#import "components/webauthn/ios/passkey_types.h"
 #import "ios/chrome/common/app_group/app_group_metrics.h"
 #import "ios/chrome/common/app_group/app_group_utils.h"
 #import "ios/chrome/common/crash_report/crash_helper.h"
@@ -20,6 +21,9 @@
 #import "ios/chrome/common/credential_provider/constants.h"
 #import "ios/chrome/common/credential_provider/credential.h"
 #import "ios/chrome/common/credential_provider/multi_store_credential_store.h"
+#import "ios/chrome/common/credential_provider/passkey_keychain_provider_bridge.h"
+#import "ios/chrome/common/credential_provider/ui/passkey_welcome_screen_strings.h"
+#import "ios/chrome/common/credential_provider/ui/passkey_welcome_screen_view_controller.h"
 #import "ios/chrome/common/credential_provider/user_defaults_credential_store.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/confirmation_alert/confirmation_alert_action_handler.h"
@@ -28,8 +32,9 @@
 #import "ios/chrome/credential_provider_extension/account_verification_provider.h"
 #import "ios/chrome/credential_provider_extension/font_provider.h"
 #import "ios/chrome/credential_provider_extension/metrics_util.h"
-#import "ios/chrome/credential_provider_extension/passkey_keychain_provider_bridge.h"
 #import "ios/chrome/credential_provider_extension/passkey_request_details.h"
+#import "ios/chrome/credential_provider_extension/passkey_util.h"
+#import "ios/chrome/credential_provider_extension/passkey_welcome_screen_util.h"
 #import "ios/chrome/credential_provider_extension/reauthentication_handler.h"
 #import "ios/chrome/credential_provider_extension/ui/consent_coordinator.h"
 #import "ios/chrome/credential_provider_extension/ui/create_navigation_item_title_view.h"
@@ -37,12 +42,13 @@
 #import "ios/chrome/credential_provider_extension/ui/credential_response_handler.h"
 #import "ios/chrome/credential_provider_extension/ui/feature_flags.h"
 #import "ios/chrome/credential_provider_extension/ui/generic_error_view_controller.h"
+#import "ios/chrome/credential_provider_extension/ui/multi_profile_passkey_creation_view_controller.h"
 #import "ios/chrome/credential_provider_extension/ui/passkey_error_alert_view_controller.h"
-#import "ios/chrome/credential_provider_extension/ui/passkey_welcome_screen_view_controller.h"
 #import "ios/chrome/credential_provider_extension/ui/stale_credentials_view_controller.h"
 #import "ios/components/credential_provider_extension/password_util.h"
 
 using app_group::UserDefaultsStringForKey;
+using webauthn::PasskeyUserVerificationStatus;
 
 namespace {
 
@@ -60,8 +66,6 @@ BOOL HasSavedPasskeys(NSArray<id<Credential>>* credentials) {
   return passkey_credential_index != NSNotFound;
 }
 
-}  // namespace
-
 enum class PasskeyCreationEligibility {
   kCanCreate,
   kCanCreateWithUserInteraction,
@@ -70,14 +74,18 @@ enum class PasskeyCreationEligibility {
   kPasswordSyncDisabled,
   kSignedOut,
   kUnsupportedAlgorithm,
+  kExcludedPasskey,
 };
 
+}  // namespace
+
+// TODO(crbug.com/454307667): Add unit tests for the whole file.
 @interface CredentialProviderViewController () <
     ConfirmationAlertActionHandler,
     CredentialResponseHandler,
+    MultiProfilePasskeyCreationViewControllerDelegate,
     PasskeyKeychainProviderBridgeDelegate,
     PasskeyWelcomeScreenViewControllerDelegate,
-    SuccessfulReauthTimeAccessor,
     UIAdaptivePresentationControllerDelegate>
 
 // Interface for the persistent credential store.
@@ -89,9 +97,6 @@ enum class PasskeyCreationEligibility {
 // Consent coordinator that shows a view requesting device auth in order to
 // enable the extension.
 @property(nonatomic, strong) ConsentCoordinator* consentCoordinator;
-
-// Date kept for ReauthenticationModule.
-@property(nonatomic, strong) NSDate* lastSuccessfulReauthTime;
 
 // Reauthentication Module used for reauthentication.
 @property(nonatomic, strong) ReauthenticationModule* reauthenticationModule;
@@ -106,7 +111,7 @@ enum class PasskeyCreationEligibility {
 // Loading indicator used for user validation, which APIs can take a long time.
 @property(nonatomic, strong) UIActivityIndicatorView* activityIndicatorView;
 
-// Identfiers cached in `-prepareCredentialListForServiceIdentifiers:` to show
+// Identifiers cached in `-prepareCredentialListForServiceIdentifiers:` to show
 // the next time this view appears.
 @property(nonatomic, strong)
     NSArray<ASCredentialServiceIdentifier*>* serviceIdentifiers;
@@ -122,15 +127,17 @@ enum class PasskeyCreationEligibility {
 @property(nonatomic, strong)
     PasskeyKeychainProviderBridge* passkeyKeychainProviderBridge;
 
+// Indicates the status of user verification (required, completed, or not
+// needed) for the current passkey flow. Uninitialized and/or stale if the user
+// is not currently in a passkey flow.
+@property(nonatomic, assign)
+    PasskeyUserVerificationStatus userVerificationStatus;
+
 @end
 
 @implementation CredentialProviderViewController {
   // Information about a passkey credential request.
   PasskeyRequestDetails* _passkeyRequestDetails;
-
-  // Stores whether or not user verification should be performed for passkey
-  // creation or assertion.
-  BOOL _userVerificationRequired;
 }
 
 + (void)initialize {
@@ -198,35 +205,20 @@ enum class PasskeyCreationEligibility {
   _passkeyRequestDetails = nil;
 }
 
-// Only available in iOS 17.0+.
 // The system calls this method when there’s an active passkey request in the
 // app or website.
 - (void)prepareCredentialListForServiceIdentifiers:
             (NSArray<ASCredentialServiceIdentifier*>*)serviceIdentifiers
                                  requestParameters:
                                      (ASPasskeyCredentialRequestParameters*)
-                                         requestParameters
-    API_AVAILABLE(ios(17.0)) {
+                                         requestParameters {
   self.serviceIdentifiers = serviceIdentifiers;
   _passkeyRequestDetails =
       [self passkeyDetailsFromParameters:requestParameters];
 }
 
-// Deprecated in iOS 17.0+.
-// Replaced with provideCredentialWithoutUserInteractionForRequest.
-- (void)provideCredentialWithoutUserInteractionForIdentity:
-    (ASPasswordCredentialIdentity*)credentialIdentity {
-  if (@available(iOS 17.0, *)) {
-    return;
-  }
-
-  [self provideCredentialWithoutUserInteractionForIdentifier:
-            credentialIdentity.recordIdentifier];
-}
-
-// Only available in iOS 17.0+.
 - (void)provideCredentialWithoutUserInteractionForRequest:
-    (id<ASCredentialRequest>)credentialRequest API_AVAILABLE(ios(17.0)) {
+    (id<ASCredentialRequest>)credentialRequest {
   if (credentialRequest.type == ASCredentialRequestTypePasskeyAssertion) {
     // Unlike passwords, iOS doesn't already gate passkeys with device auth. If
     // the credential request is for a passkey, first evaluate if a device auth
@@ -241,7 +233,7 @@ enum class PasskeyCreationEligibility {
 
   __weak __typeof__(self) weakSelf = self;
   [self validateUserWithCompletion:^(BOOL userIsValid) {
-    // `reauthenticationModule` can't attempt reauth when no passscode is set.
+    // `reauthenticationModule` can't attempt reauth when no passcode is set.
     // This means a credential shouldn't be retrieved just yet.
     if (!weakSelf.reauthenticationModule.canAttemptReauth || !userIsValid) {
       [weakSelf exitWithErrorCode:ASExtensionErrorCodeUserInteractionRequired];
@@ -256,21 +248,8 @@ enum class PasskeyCreationEligibility {
   }];
 }
 
-// Deprecated in iOS 17.0+.
-// Replaced with prepareInterfaceToProvideCredentialForRequest.
-- (void)prepareInterfaceToProvideCredentialForIdentity:
-    (ASPasswordCredentialIdentity*)credentialIdentity {
-  if (@available(iOS 17.0, *)) {
-    return;
-  }
-
-  [self prepareInterfaceToProvideCredentialForIdentifier:credentialIdentity
-                                                             .recordIdentifier];
-}
-
-// Only available in iOS 17.0+.
 - (void)prepareInterfaceToProvideCredentialForRequest:
-    (id<ASCredentialRequest>)credentialRequest API_AVAILABLE(ios(17.0)) {
+    (id<ASCredentialRequest>)credentialRequest {
   __weak __typeof__(self) weakSelf = self;
   if (credentialRequest.type == ASCredentialRequestTypePasskeyAssertion) {
     // Reaching this code means that user reauthentication is needed in order to
@@ -311,37 +290,43 @@ enum class PasskeyCreationEligibility {
 }
 
 - (void)prepareInterfaceForExtensionConfiguration {
-  if (HasSavedPasskeys(self.credentialStore.credentials) &&
-      IsPasskeysM2Enabled()) {
+  if (HasSavedPasskeys(self.credentialStore.credentials)) {
     __weak __typeof__(self) weakSelf = self;
-    auto completion = ^(NSArray<NSData*>* securityDomainSecrets) {
-      [weakSelf completeSecurityDomainSecretFetchForExtensionConfigutation];
-    };
+    auto completion =
+        ^(webauthn::SharedKeyList trustedVaultKeys, NSError* error) {
+          [weakSelf completeTrustedVaultKeyFetchForExtensionConfiguration];
+        };
 
-    // Trigger a security domain secret fetch to know whether the user needs to
+    // Trigger trusted vault keys fetch to know whether the user needs to
     // bootstrap (create/enter their GPM pin) to use passkeys on their device.
     // If bootstrapping is needed, then the fetching flow will take care of
-    // presenting the relevent UI. The `completion` will then take care of
+    // presenting the relevant UI. The `completion` will then take care of
     // dismissing the bootstrapping UI if it was presented. If it wasn't
     // presented, it means that the user was already bootstrapped. In this case,
     // `completion` will present the ConsentViewController.
-    [self
-        fetchSecurityDomainSecretForGaia:[self gaia]
-                              credential:nil
-                                 purpose:PasskeyKeychainProvider::
-                                             ReauthenticatePurpose::kUnspecified
-                userVerificationRequired:NO
-                              completion:completion];
+    [self fetchTrustedVaultKeysForGaia:[self gaia]
+                            credential:nil
+                               purpose:webauthn::ReauthenticatePurpose::
+                                           kUnspecified
+              userVerificationRequired:NO
+                            completion:completion];
   } else {
     [self presentConsentViewController];
   }
 }
 
-// Only available in iOS 18.0+.
 - (void)performPasskeyRegistrationWithoutUserInteractionIfPossible:
-    (ASPasskeyCredentialRequest*)registrationRequest API_AVAILABLE(ios(18.0)) {
+    (ASPasskeyCredentialRequest*)registrationRequest {
+  // TODO(crbug.com/515318495): Force disable registration to prevent the CPE
+  // startup crash in M149
+  [self exitWithErrorCode:ASExtensionErrorCodeFailed];
+  return;
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunreachable-code"
+
   PasskeyRequestDetails* passkeyRequestDetails =
-      [self passkeyDetailsFromRequest:registrationRequest];
+      [self passkeyDetailsFromConditionalCreateRequest:registrationRequest];
   if (![passkeyRequestDetails
           hasMatchingPassword:self.credentialStore.credentials]) {
     [self exitWithErrorCode:ASExtensionErrorCodeFailed];
@@ -362,6 +347,8 @@ enum class PasskeyCreationEligibility {
 
   // Try to create a passkey while user interaction is disallowed.
   [self createPasskeyWithDetails:passkeyRequestDetails gaia:gaia];
+
+#pragma clang diagnostic pop
 }
 
 - (void)prepareInterfaceForPasskeyRegistration:
@@ -394,20 +381,109 @@ enum class PasskeyCreationEligibility {
     case PasskeyCreationEligibility::kUnsupportedAlgorithm:
       [self exitWithErrorCode:ASExtensionErrorCodeFailed];
       return;
-    case PasskeyCreationEligibility::kCanCreate:
+    case PasskeyCreationEligibility::kExcludedPasskey:
+      [self exitWithErrorCode:ASExtensionErrorCodeMatchedExcludedCredential];
+      return;
     case PasskeyCreationEligibility::kCanCreateWithUserInteraction:
+      if ([self isUsingMultiProfile]) {
+        [self showMultiProfilePasskeyCreationDialogWithDetails:
+                  passkeyRequestDetails
+                                                          gaia:gaia];
+        return;
+      }
+      break;
+    case PasskeyCreationEligibility::kCanCreate:
       // Passkey creation is allowed.
       break;
   }
 
-  __weak __typeof__(self) weakSelf = self;
-  [self validateUserWithCompletion:^(BOOL userIsValid) {
-    if (!userIsValid) {
-      [weakSelf exitWithErrorCode:ASExtensionErrorCodeFailed];
-      return;
-    }
-    [weakSelf createPasskeyWithDetails:passkeyRequestDetails gaia:gaia];
-  }];
+  [self validateUserAndCreatePasskeyWithDetails:passkeyRequestDetails
+                                           gaia:gaia];
+}
+
+- (void)reportUnknownPublicKeyCredentialForRelyingParty:(NSString*)relyingParty
+                                           credentialID:(NSData*)credentialID {
+
+  NSArray<id<Credential>>* credentials = self.credentialStore.credentials;
+  NSUInteger credentialIndex =
+      [credentials indexOfObjectPassingTest:^BOOL(id<Credential> credential,
+                                                  NSUInteger idx, BOOL* stop) {
+        return [credential.rpId isEqualToString:relyingParty] &&
+               [credential.credentialId isEqualToData:credentialID];
+      }];
+  if (credentialIndex == NSNotFound) {
+    return;
+  }
+
+  id<Credential> credential = credentials[credentialIndex];
+  credential.hidden = YES;
+  credential.hiddenTime = base::Time::Now().InMillisecondsSinceUnixEpoch();
+  SavePasskeyCredential(credential);
+}
+
+- (void)reportPublicKeyCredentialUpdateForRelyingParty:(NSString*)relyingParty
+                                            userHandle:(NSData*)userHandle
+                                               newName:(NSString*)newName {
+
+  NSArray<id<Credential>>* credentials = self.credentialStore.credentials;
+  NSUInteger credentialIndex =
+      [credentials indexOfObjectPassingTest:^BOOL(id<Credential> credential,
+                                                  NSUInteger idx, BOOL* stop) {
+        return [credential.rpId isEqualToString:relyingParty] &&
+               [credential.userId isEqualToData:userHandle];
+      }];
+  if (credentialIndex == NSNotFound) {
+    return;
+  }
+
+  id<Credential> credential = credentials[credentialIndex];
+
+  // Respect the user's choice and skip the update if the data was explicitly
+  // changed by the user previously or if the username did not change.
+  if (credential.editedByUser ||
+      [credential.username isEqualToString:newName]) {
+    return;
+  }
+
+  credential.username = newName;
+  SavePasskeyCredential(credential);
+}
+
+- (void)reportAllAcceptedPublicKeyCredentialsForRelyingParty:
+            (NSString*)relyingParty
+                                                  userHandle:(NSData*)userHandle
+                                       acceptedCredentialIDs:
+                                           (NSArray<NSData*>*)
+                                               acceptedCredentialIDs {
+
+  NSArray<id<Credential>>* credentials = self.credentialStore.credentials;
+  NSUInteger credentialIndex =
+      [credentials indexOfObjectPassingTest:^BOOL(id<Credential> credential,
+                                                  NSUInteger idx, BOOL* stop) {
+        return [credential.rpId isEqualToString:relyingParty] &&
+               [credential.userId isEqualToData:userHandle];
+      }];
+  if (credentialIndex == NSNotFound) {
+    return;
+  }
+
+  id<Credential> credential = credentials[credentialIndex];
+  BOOL credentialShouldBeHidden =
+      ![acceptedCredentialIDs containsObject:credential.credentialId];
+  if (credential.hidden == credentialShouldBeHidden) {
+    return;
+  }
+
+  credential.hidden = credentialShouldBeHidden;
+  credential.hiddenTime = credentialShouldBeHidden
+                              ? base::Time::Now().InMillisecondsSinceUnixEpoch()
+                              : 0;
+  SavePasskeyCredential(credential);
+}
+
+- (void)reportUnusedPasswordCredentialForDomain:(NSString*)domain
+                                       userName:(NSString*)userName {
+  // Password credential updates are currently not handled.
 }
 
 #pragma mark - Properties
@@ -439,8 +515,7 @@ enum class PasskeyCreationEligibility {
 
 - (ReauthenticationModule*)reauthenticationModule {
   if (!_reauthenticationModule) {
-    _reauthenticationModule = [[ReauthenticationModule alloc]
-        initWithSuccessfulReauthTimeAccessor:self];
+    _reauthenticationModule = [[ReauthenticationModule alloc] init];
   }
   return _reauthenticationModule;
 }
@@ -474,7 +549,6 @@ enum class PasskeyCreationEligibility {
   if (!_passkeyKeychainProviderBridge) {
     _passkeyKeychainProviderBridge = [[PasskeyKeychainProviderBridge alloc]
           initWithEnableLogging:[self metricsAreEnabled]
-           navigationController:self.passkeyNavigationController
         navigationItemTitleView:self.passkeyNavigationItemTitleView];
     _passkeyKeychainProviderBridge.delegate = self;
   }
@@ -483,18 +557,9 @@ enum class PasskeyCreationEligibility {
 
 #pragma mark - ConfirmationAlertActionHandler
 
-- (void)confirmationAlertDismissAction {
-  // Finish the extension. There is no recovery from the stale credentials
-  // state.
-  [self exitWithErrorCode:ASExtensionErrorCodeFailed];
-}
-
 - (void)confirmationAlertPrimaryAction {
-  if ([self.presentedViewController
-          isKindOfClass:[PasskeyErrorAlertViewController class]]) {
-    [self dismissViewControllerAnimated:YES completion:nil];
-    [self exitWithErrorCode:ASExtensionErrorCodeFailed];
-  }
+  [self dismissViewControllerAnimated:YES completion:nil];
+  [self exitWithErrorCode:ASExtensionErrorCodeFailed];
 }
 
 #pragma mark - CredentialResponseHandler
@@ -503,8 +568,7 @@ enum class PasskeyCreationEligibility {
   [self completeRequestWithSelectedCredential:credential];
 }
 
-- (void)userSelectedPasskey:(ASPasskeyAssertionCredential*)credential
-    API_AVAILABLE(ios(17.0)) {
+- (void)userSelectedPasskey:(ASPasskeyAssertionCredential*)credential {
   if (credential) {
     [self completeAssertionRequestWithSelectedPasskeyCredential:credential];
   } else {
@@ -515,19 +579,19 @@ enum class PasskeyCreationEligibility {
 - (void)userSelectedPasskey:(id<Credential>)credential
       passkeyRequestDetails:(PasskeyRequestDetails*)passkeyRequestDetails {
   __weak __typeof(self) weakSelf = self;
-  auto completion = ^(NSArray<NSData*>* securityDomainSecrets) {
-    [weakSelf passkeyAssertionWithCredential:credential
-                       passkeyRequestDetails:passkeyRequestDetails
-                       securityDomainSecrets:securityDomainSecrets];
-  };
+  auto completion =
+      ^(webauthn::SharedKeyList trustedVaultKeys, NSError* error) {
+        [weakSelf passkeyAssertionWithCredential:credential
+                           passkeyRequestDetails:passkeyRequestDetails
+                                trustedVaultKeys:std::move(trustedVaultKeys)];
+      };
 
-  [self fetchSecurityDomainSecretForGaia:credential.gaia
-                              credential:credential
-                                 purpose:PasskeyKeychainProvider::
-                                             ReauthenticatePurpose::kDecrypt
-                userVerificationRequired:passkeyRequestDetails
-                                             .userVerificationRequired
-                              completion:completion];
+  [self fetchTrustedVaultKeysForGaia:credential.gaia
+                          credential:credential
+                             purpose:webauthn::ReauthenticatePurpose::kDecrypt
+            userVerificationRequired:passkeyRequestDetails
+                                         .userVerificationRequired
+                          completion:completion];
 }
 
 - (void)userCancelledRequestWithErrorCode:(ASExtensionErrorCode)errorCode {
@@ -542,8 +606,21 @@ enum class PasskeyCreationEligibility {
 
 // Returns the gaia ID associated with the current account.
 - (NSString*)gaia {
-  return UserDefaultsStringForKey(
+  NSString* gaia = UserDefaultsStringForKey(
       AppGroupUserDefaultsCredentialProviderUserID(), /*default_value=*/@"");
+  if (gaia.length > 0) {
+    return gaia;
+  }
+
+  // As a fallback, attempt to get a valid gaia from existing credentials.
+  NSArray<id<Credential>>* credentials = self.credentialStore.credentials;
+  NSUInteger credentialIndex =
+      [credentials indexOfObjectPassingTest:^BOOL(id<Credential> credential,
+                                                  NSUInteger idx, BOOL* stop) {
+        return credential.gaia.length > 0;
+      }];
+  return credentialIndex != NSNotFound ? credentials[credentialIndex].gaia
+                                       : nil;
 }
 
 // Returns the email address associated with the current account.
@@ -552,11 +629,18 @@ enum class PasskeyCreationEligibility {
       AppGroupUserDefaultsCredentialProviderUserEmail(), /*default_value=*/@"");
 }
 
+// Returns whether the user is currently using multiple profile in Chrome.
+- (BOOL)isUsingMultiProfile {
+  return [app_group::GetGroupUserDefaults()
+      boolForKey:AppGroupUserDefaultsCredentialProviderMultiProfileSetting()];
+}
+
 #pragma mark - PasskeyKeychainProviderBridgeDelegate
 
-- (void)performUserVerificationIfNeeded:(ProceduralBlock)completion {
-  if (!_userVerificationRequired) {
-    completion();
+- (void)performUserVerificationIfNeeded:
+    (UserVerificationCompletionBlock)completion {
+  if (_userVerificationStatus != PasskeyUserVerificationStatus::kRequired) {
+    completion(YES);
     return;
   }
 
@@ -564,39 +648,32 @@ enum class PasskeyCreationEligibility {
   [self
       reauthenticateIfNeededToAccessPasskeys:YES
                        withCompletionHandler:^(ReauthenticationResult result) {
-                         if (result != ReauthenticationResult::kFailure) {
-                           completion();
-                         } else {
+                         BOOL success =
+                             (result != ReauthenticationResult::kFailure);
+                         completion(success);
+                         if (!success) {
                            [weakSelf
                                exitWithErrorCode:ASExtensionErrorCodeFailed];
                          }
                        }];
 }
 
-- (void)showEnrollmentWelcomeScreen:(ProceduralBlock)enrollBlock {
-  [self createAndPresentPasskeyWelcomeScreenForPurpose:
-            PasskeyWelcomeScreenPurpose::kEnroll
-                                   primaryButtonAction:enrollBlock];
+- (void)showWelcomeScreenWithPurpose:
+            (webauthn::PasskeyWelcomeScreenPurpose)purpose
+                          completion:
+                              (webauthn::PasskeyWelcomeScreenAction)completion {
+  [self createAndPresentPasskeyWelcomeScreenForPurpose:purpose
+                                   primaryButtonAction:completion];
 }
 
-- (void)showFixDegradedRecoverabilityWelcomeScreen:
-    (ProceduralBlock)fixDegradedRecoverabilityBlock {
-  [self createAndPresentPasskeyWelcomeScreenForPurpose:
-            PasskeyWelcomeScreenPurpose::kFixDegradedRecoverability
-                                   primaryButtonAction:
-                                       fixDegradedRecoverabilityBlock];
-}
-
-- (void)showReauthenticationWelcomeScreen:(ProceduralBlock)reauthenticateBlock {
-  [self createAndPresentPasskeyWelcomeScreenForPurpose:
-            PasskeyWelcomeScreenPurpose::kReauthenticate
-                                   primaryButtonAction:reauthenticateBlock];
+- (void)providerDidCompleteReauthentication {
+  _userVerificationStatus = PasskeyUserVerificationStatus::kCompleted;
 }
 
 #pragma mark - PasskeyWelcomeScreenViewControllerDelegate
 
 - (void)passkeyWelcomeScreenViewControllerShouldBeDismissed:
-    (id)passkeyWelcomeScreenViewController {
+    (PasskeyWelcomeScreenViewController*)passkeyWelcomeScreenViewController {
   if (self.passkeyNavigationController.topViewController ==
       passkeyWelcomeScreenViewController) {
     [self.passkeyNavigationController popViewControllerAnimated:YES];
@@ -604,11 +681,27 @@ enum class PasskeyCreationEligibility {
   [self exitWithErrorCode:ASExtensionErrorCodeUserCanceled];
 }
 
-#pragma mark - SuccessfulReauthTimeAccessor
+#pragma mark - MultiProfilePasskeyCreationViewControllerDelegate
 
-- (void)updateSuccessfulReauthTime {
-  self.lastSuccessfulReauthTime = [[NSDate alloc] init];
-  UpdateUMACountForKey(app_group::kCredentialExtensionReauthCount);
+- (void)multiProfilePasskeyCreationViewControllerShouldBeDismissed:
+    (MultiProfilePasskeyCreationViewController*)
+        multiProfilePasskeyCreationViewController {
+  [self exitWithErrorCode:ASExtensionErrorCodeUserCanceled];
+}
+
+// Attempts to create a passkey if validation succeeds. Exits with an error code
+// otherwise.
+- (void)validateUserAndCreatePasskeyWithDetails:
+            (PasskeyRequestDetails*)passkeyRequestDetails
+                                           gaia:(NSString*)gaia {
+  __weak __typeof(self) weakSelf = self;
+  [self validateUserWithCompletion:^(BOOL userIsValid) {
+    if (!userIsValid) {
+      [weakSelf exitWithErrorCode:ASExtensionErrorCodeFailed];
+      return;
+    }
+    [weakSelf createPasskeyWithDetails:passkeyRequestDetails gaia:gaia];
+  }];
 }
 
 #pragma mark - UIAdaptivePresentationControllerDelegate
@@ -620,24 +713,43 @@ enum class PasskeyCreationEligibility {
 
 #pragma mark - Private
 
+// Finishes the extension.
+- (void)dismissExtension {
+  [self exitWithErrorCode:ASExtensionErrorCodeFailed];
+}
+
 // Returns a PasskeyRequestDetails object created from ASCredentialRequest if
 // possible. May return nil.
 - (PasskeyRequestDetails*)passkeyDetailsFromRequest:
-    (id<ASCredentialRequest>)credentialRequest API_AVAILABLE(ios(17.0)) {
+    (id<ASCredentialRequest>)credentialRequest {
   if (!credentialRequest) {
     return nil;
   }
 
   return [[PasskeyRequestDetails alloc]
                        initWithRequest:credentialRequest
-      isBiometricAuthenticationEnabled:[self isBiometricAuthenticationEnabled]];
+      isBiometricAuthenticationEnabled:[self isBiometricAuthenticationEnabled]
+                   isConditionalCreate:NO];
+}
+
+// Returns a PasskeyRequestDetails object created from ASCredentialRequest for a
+// conditional registration request. May return nil.
+- (PasskeyRequestDetails*)passkeyDetailsFromConditionalCreateRequest:
+    (id<ASCredentialRequest>)credentialRequest {
+  if (!credentialRequest) {
+    return nil;
+  }
+
+  return [[PasskeyRequestDetails alloc]
+                       initWithRequest:credentialRequest
+      isBiometricAuthenticationEnabled:[self isBiometricAuthenticationEnabled]
+                   isConditionalCreate:YES];
 }
 
 // Returns a PasskeyRequestDetails object created from
 // ASPasskeyCredentialRequestParameters if possible. May return nil.
 - (PasskeyRequestDetails*)passkeyDetailsFromParameters:
-    (ASPasskeyCredentialRequestParameters*)requestParameters
-    API_AVAILABLE(ios(17.0)) {
+    (ASPasskeyCredentialRequestParameters*)requestParameters {
   if (!requestParameters) {
     return nil;
   }
@@ -652,7 +764,14 @@ enum class PasskeyCreationEligibility {
                                               (PasskeyRequestDetails*)
                                                   passkeyRequestDetails {
   // Granular policy that allows enterprises to disable just passkey creation.
-  if (!IsPasskeyCreationAllowedByPolicy()) {
+  std::optional<bool> passkeyCreationPolicy = GetPasskeyCreationPolicy();
+
+  if (!passkeyCreationPolicy) {
+    // If the policy isn't set at all, the user has to sign in to Chrome.
+    return PasskeyCreationEligibility::kSignedOut;
+  } else if (!passkeyCreationPolicy.value()) {
+    // If the policy is set to false, the user is not allowed to create
+    // passkeys.
     return PasskeyCreationEligibility::kSaveDisabledByEnterprise;
   }
 
@@ -666,20 +785,25 @@ enum class PasskeyCreationEligibility {
     }
   }
 
-  if (!IsPasswordSyncEnabled()) {
-    return PasskeyCreationEligibility::kPasswordSyncDisabled;
-  }
-
   if ([gaia length] == 0) {
     return PasskeyCreationEligibility::kSignedOut;
+  }
+
+  if (!IsPasswordSyncEnabled()) {
+    return PasskeyCreationEligibility::kPasswordSyncDisabled;
   }
 
   if (!passkeyRequestDetails.algorithmIsSupported) {
     return PasskeyCreationEligibility::kUnsupportedAlgorithm;
   }
 
+  if ([passkeyRequestDetails
+          hasExcludedPasskey:self.credentialStore.credentials]) {
+    return PasskeyCreationEligibility::kExcludedPasskey;
+  }
+
   if (passkeyRequestDetails.userVerificationRequired ||
-      !IsAutomaticPasskeyUpgradeEnabled()) {
+      !IsAutomaticPasskeyUpgradeEnabled() || [self isUsingMultiProfile]) {
     return PasskeyCreationEligibility::kCanCreateWithUserInteraction;
   }
 
@@ -691,10 +815,18 @@ enum class PasskeyCreationEligibility {
 // or an access to passwords (when `NO`).
 - (void)reauthenticateIfNeededToAccessPasskeys:(BOOL)forPasskeys
                          withCompletionHandler:
-                             (void (^)(ReauthenticationResult))
-                                 completionHandler {
+                             (ReauthenticationResultBlock)completionHandler {
+  __weak __typeof__(self) weakSelf = self;
+  auto handlerWrapper = ^(ReauthenticationResult result) {
+    if (result != ReauthenticationResult::kFailure) {
+      weakSelf.userVerificationStatus =
+          PasskeyUserVerificationStatus::kCompleted;
+    }
+    completionHandler(result);
+  };
+
   [self.reauthenticationHandler verifyUserToAccessPasskeys:(BOOL)forPasskeys
-                                     withCompletionHandler:completionHandler
+                                     withCompletionHandler:handlerWrapper
                            presentReminderOnViewController:self];
 }
 
@@ -758,8 +890,7 @@ enum class PasskeyCreationEligibility {
   [self exitWithErrorCode:ASExtensionErrorCodeCredentialIdentityNotFound];
 }
 
-- (void)provideCredentialForRequest:(id<ASCredentialRequest>)credentialRequest
-    API_AVAILABLE(ios(17.0)) {
+- (void)provideCredentialForRequest:(id<ASCredentialRequest>)credentialRequest {
   NSString* identifier = credentialRequest.credentialIdentity.recordIdentifier;
   if (credentialRequest.type == ASCredentialRequestTypePassword) {
     [self provideCredentialForIdentifier:identifier];
@@ -835,13 +966,17 @@ enum class PasskeyCreationEligibility {
 - (void)showStaleCredentials {
   StaleCredentialsViewController* staleCredentialsViewController =
       [[StaleCredentialsViewController alloc] init];
-  staleCredentialsViewController.modalPresentationStyle =
+  UINavigationController* navigationController = [[UINavigationController alloc]
+      initWithRootViewController:staleCredentialsViewController];
+  staleCredentialsViewController.navigationItem.rightBarButtonItem =
+      [[UIBarButtonItem alloc]
+          initWithBarButtonSystemItem:UIBarButtonSystemItemClose
+                               target:self
+                               action:@selector(dismissExtension)];
+  navigationController.modalPresentationStyle =
       UIModalPresentationOverCurrentContext;
-  staleCredentialsViewController.actionHandler = self;
-  staleCredentialsViewController.presentationController.delegate = self;
-  [self presentViewController:staleCredentialsViewController
-                     animated:NO
-                   completion:nil];
+  navigationController.presentationController.delegate = self;
+  [self presentViewController:navigationController animated:NO completion:nil];
 }
 
 // Starts the credential list feature.
@@ -862,7 +997,6 @@ enum class PasskeyCreationEligibility {
        credentialResponseHandler:self];
   self.listCoordinator.passkeyRequestDetails = _passkeyRequestDetails;
   [self.listCoordinator start];
-  UpdateUMACountForKey(app_group::kCredentialExtensionDisplayCount);
 }
 
 // Convenience wrapper for
@@ -878,7 +1012,7 @@ enum class PasskeyCreationEligibility {
 // Convenience wrapper for
 // -completeAssertionRequestWithSelectedPasskeyCredential:completionHandler:.
 - (void)completeAssertionRequestWithSelectedPasskeyCredential:
-    (ASPasskeyAssertionCredential*)credential API_AVAILABLE(ios(17.0)) {
+    (ASPasskeyAssertionCredential*)credential {
   [self.listCoordinator stop];
   self.listCoordinator = nil;
   [self.extensionContext
@@ -889,7 +1023,7 @@ enum class PasskeyCreationEligibility {
 // Convenience wrapper for
 // -completeRegistrationRequestWithSelectedPasskeyCredential:completionHandler:.
 - (void)completeRegistrationRequestWithSelectedPasskeyCredential:
-    (ASPasskeyRegistrationCredential*)credential API_AVAILABLE(ios(17.0)) {
+    (ASPasskeyRegistrationCredential*)credential {
   [self.listCoordinator stop];
   self.listCoordinator = nil;
   [self.extensionContext
@@ -912,7 +1046,7 @@ enum class PasskeyCreationEligibility {
 - (void)showSavingDisabledByEnterpriseAlert {
   // TODO(crbug.com/362719658): Check whether it's possible to make the whole
   // VC a half sheet.
-  PasskeyErrorAlertViewController* savingEnterpriseDisabledViewController =
+  UIViewController* savingEnterpriseDisabledViewController =
       [self createPasskeyErrorAlertForErrorType:
                 ErrorType::kEnterpriseDisabledSavingCredentials];
   [self presentViewController:savingEnterpriseDisabledViewController
@@ -923,7 +1057,7 @@ enum class PasskeyCreationEligibility {
 // Displays sheet with information that the user is signed out and needs to sign
 // in to Chrome.
 - (void)showSignedOutUserAlert {
-  PasskeyErrorAlertViewController* signedOutUserViewController =
+  UIViewController* signedOutUserViewController =
       [self createPasskeyErrorAlertForErrorType:ErrorType::kSignedOut];
   [self presentViewController:signedOutUserViewController
                      animated:NO
@@ -933,7 +1067,7 @@ enum class PasskeyCreationEligibility {
 // Displays sheet with information that credential saving has been manually
 // disabled in Password Settings by the user.
 - (void)showSavingManuallyDisabledAlert {
-  PasskeyErrorAlertViewController* savingDisabledInSettingsViewController =
+  UIViewController* savingDisabledInSettingsViewController =
       [self createPasskeyErrorAlertForErrorType:
                 ErrorType::kUserDisabledSavingCredentialsInPasswordSettings];
   [self presentViewController:savingDisabledInSettingsViewController
@@ -944,7 +1078,7 @@ enum class PasskeyCreationEligibility {
 // Displays sheet with information that credential saving to account (sync) is
 // disabled.
 - (void)showSavingToAccountDisabledAlert {
-  PasskeyErrorAlertViewController* savingToAccountDisabledViewController =
+  UIViewController* savingToAccountDisabledViewController =
       [self createPasskeyErrorAlertForErrorType:
                 ErrorType::kUserDisabledSavingCredentialsToAccount];
   [self presentViewController:savingToAccountDisabledViewController
@@ -957,21 +1091,78 @@ enum class PasskeyCreationEligibility {
 - (void)showGenericErrorAlert {
   GenericErrorViewController* genericErrorViewController =
       [[GenericErrorViewController alloc] init];
-  genericErrorViewController.actionHandler = self;
-  genericErrorViewController.presentationController.delegate = self;
-  [self presentViewController:genericErrorViewController
-                     animated:YES
-                   completion:nil];
+  UINavigationController* navigationController = [[UINavigationController alloc]
+      initWithRootViewController:genericErrorViewController];
+
+  genericErrorViewController.navigationItem.rightBarButtonItem =
+      [[UIBarButtonItem alloc]
+          initWithBarButtonSystemItem:UIBarButtonSystemItemClose
+                               target:self
+                               action:@selector(dismissExtension)];
+
+  navigationController.presentationController.delegate = self;
+  [self presentViewController:navigationController animated:YES completion:nil];
+}
+
+// Returns the favicon associated with the rpId if it exists.
+// Returns nil otherwise.
+- (NSString*)faviconForRpId:(NSString*)rpId {
+  // Verify if a favicon already exists for the provided rpId.
+  NSArray<id<Credential>>* credentials = self.credentialStore.credentials;
+  NSUInteger credentialIndex =
+      [credentials indexOfObjectPassingTest:^BOOL(id<Credential> credential,
+                                                  NSUInteger idx, BOOL* stop) {
+        return [credential.rpId isEqualToString:rpId] &&
+               credential.favicon.length > 0;
+      }];
+  return credentialIndex != NSNotFound ? credentials[credentialIndex].favicon
+                                       : nil;
+}
+
+// Shows a confirmation dialog to the user before performing passkey creation.
+- (void)showMultiProfilePasskeyCreationDialogWithDetails:
+            (PasskeyRequestDetails*)passkeyRequestDetails
+                                                    gaia:(NSString*)gaia {
+  NSString* favicon =
+      [self faviconForRpId:passkeyRequestDetails.relyingPartyIdentifier];
+  MultiProfilePasskeyCreationViewController*
+      multiProfilePasskeyCreationViewController =
+          [[MultiProfilePasskeyCreationViewController alloc]
+                      initWithDetails:passkeyRequestDetails
+                                 gaia:gaia
+                            userEmail:[self userEmail]
+                              favicon:favicon
+              navigationItemTitleView:self.passkeyNavigationItemTitleView
+                             delegate:self];
+
+  [self.passkeyNavigationController
+      pushViewController:multiProfilePasskeyCreationViewController
+                animated:NO];
+  [self.presentingView presentViewController:self.passkeyNavigationController
+                                    animated:NO
+                                  completion:nil];
 }
 
 // Attempts to create a passkey.
 - (void)createPasskeyWithDetails:(PasskeyRequestDetails*)passkeyRequestDetails
                             gaia:(NSString*)gaia
-           securityDomainSecrets:(NSArray<NSData*>*)securityDomainSecrets
-    API_AVAILABLE(ios(17.0)) {
+                trustedVaultKeys:(webauthn::SharedKeyList)trustedVaultKeys {
+  if (trustedVaultKeys.empty()) {
+    [self exitWithErrorCode:ASExtensionErrorCodeFailed];
+    return;
+  }
+
+  BOOL didCompleteUserVerification =
+      _userVerificationStatus == PasskeyUserVerificationStatus::kCompleted;
+
+  if (passkeyRequestDetails.userVerificationRequired) {
+    CHECK(didCompleteUserVerification, base::NotFatalUntil::M144);
+  }
+
   ASPasskeyRegistrationCredential* passkeyRegistrationCredential =
       [passkeyRequestDetails createPasskeyForGaia:gaia
-                            securityDomainSecrets:securityDomainSecrets];
+                                 trustedVaultKeys:std::move(trustedVaultKeys)
+                      didCompleteUserVerification:didCompleteUserVerification];
   if (passkeyRegistrationCredential) {
     [self completeRegistrationRequestWithSelectedPasskeyCredential:
               passkeyRegistrationCredential];
@@ -980,58 +1171,73 @@ enum class PasskeyCreationEligibility {
   }
 }
 
-// Fetches the security domain secret in order to use it in the passkey creation
+// Fetches the trusted vault key in order to use it in the passkey creation
 // process.
 - (void)createPasskeyWithDetails:(PasskeyRequestDetails*)passkeyRequestDetails
-                            gaia:(NSString*)gaia API_AVAILABLE(ios(17.0)) {
+                            gaia:(NSString*)gaia {
   __weak __typeof(self) weakSelf = self;
-  auto completion = ^(NSArray<NSData*>* securityDomainSecrets) {
-    [weakSelf createPasskeyWithDetails:passkeyRequestDetails
-                                  gaia:gaia
-                 securityDomainSecrets:securityDomainSecrets];
-  };
+  auto completion =
+      ^(webauthn::SharedKeyList trustedVaultKeys, NSError* error) {
+        [weakSelf createPasskeyWithDetails:passkeyRequestDetails
+                                      gaia:gaia
+                          trustedVaultKeys:std::move(trustedVaultKeys)];
+      };
 
-  [self fetchSecurityDomainSecretForGaia:gaia
-                              credential:nil
-                                 purpose:PasskeyKeychainProvider::
-                                             ReauthenticatePurpose::kEncrypt
-                userVerificationRequired:passkeyRequestDetails
-                                             .userVerificationRequired
-                              completion:completion];
+  [self fetchTrustedVaultKeysForGaia:gaia
+                          credential:nil
+                             purpose:webauthn::ReauthenticatePurpose::kEncrypt
+            userVerificationRequired:passkeyRequestDetails
+                                         .userVerificationRequired
+                          completion:completion];
 }
 
 // Attempts to perform passkey assertion and retry on failure if allowed.
 - (void)
     passkeyAssertionWithCredential:(id<Credential>)credential
              passkeyRequestDetails:(PasskeyRequestDetails*)passkeyRequestDetails
-             securityDomainSecrets:(NSArray<NSData*>*)securityDomainSecrets {
-  if (@available(iOS 17.0, *)) {
-    ASPasskeyAssertionCredential* passkeyCredential =
-        [passkeyRequestDetails assertPasskeyCredential:credential
-                                 securityDomainSecrets:securityDomainSecrets];
-    [self userSelectedPasskey:passkeyCredential];
+                  trustedVaultKeys:(webauthn::SharedKeyList)trustedVaultKeys {
+  if (trustedVaultKeys.empty()) {
+    [self exitWithErrorCode:ASExtensionErrorCodeFailed];
+    return;
   }
+
+  BOOL didCompleteUserVerification =
+      _userVerificationStatus == PasskeyUserVerificationStatus::kCompleted;
+
+  if (passkeyRequestDetails.userVerificationRequired) {
+    CHECK(didCompleteUserVerification, base::NotFatalUntil::M144);
+  }
+
+  ASPasskeyAssertionCredential* passkeyCredential = [passkeyRequestDetails
+          assertPasskeyCredential:credential
+                 trustedVaultKeys:std::move(trustedVaultKeys)
+      didCompleteUserVerification:didCompleteUserVerification];
+  [self userSelectedPasskey:passkeyCredential];
 }
 
-// Triggers the process to fetch the security domain secret and calls the
-// completion block with the security domain secret as input.
-// "credential" will be used to validate the security domain secret.
-- (void)fetchSecurityDomainSecretForGaia:(NSString*)gaia
-                              credential:(id<Credential>)credential
-                                 purpose:(PasskeyKeychainProvider::
-                                              ReauthenticatePurpose)purpose
-                userVerificationRequired:(BOOL)userVerificationRequired
-                              completion:
-                                  (FetchSecurityDomainSecretCompletionBlock)
-                                      completion {
+// Triggers the process to fetch the trusted vault keys and calls the completion
+// block with the trusted vault key as input. "credential" will be used to
+// validate the trusted vault key.
+- (void)fetchTrustedVaultKeysForGaia:(NSString*)gaia
+                          credential:(id<Credential>)credential
+                             purpose:(webauthn::ReauthenticatePurpose)purpose
+            userVerificationRequired:(BOOL)userVerificationRequired
+                          completion:
+                              (FetchTrustedVaultKeysCompletionBlock)completion {
   // Store `userVerificationRequired` here as it will be needed at a later stage
-  // in the process of fetching the security domain secret.
-  _userVerificationRequired = userVerificationRequired;
-  [self.passkeyKeychainProviderBridge
-      fetchSecurityDomainSecretForGaia:gaia
-                            credential:credential
-                               purpose:purpose
-                            completion:completion];
+  // in the process of fetching the trusted vault key.
+  if (userVerificationRequired) {
+    _userVerificationStatus = PasskeyUserVerificationStatus::kRequired;
+    // Since UV is required, do not allow a previous reauth to be reused.
+    [self.reauthenticationModule clearAuthValidity];
+  } else {
+    _userVerificationStatus = PasskeyUserVerificationStatus::kNotRequired;
+  }
+
+  [self.passkeyKeychainProviderBridge fetchTrustedVaultKeysForGaia:gaia
+                                                        credential:credential
+                                                           purpose:purpose
+                                                        completion:completion];
 }
 
 - (BOOL)metricsAreEnabled {
@@ -1064,21 +1270,29 @@ enum class PasskeyCreationEligibility {
 
 // Creates and configures a PasskeyErrorAlertViewController for the given
 // `errorType`.
-- (PasskeyErrorAlertViewController*)createPasskeyErrorAlertForErrorType:
-    (ErrorType)errorType {
+- (UIViewController*)createPasskeyErrorAlertForErrorType:(ErrorType)errorType {
   PasskeyErrorAlertViewController* passkeyErrorAlertViewController =
       [[PasskeyErrorAlertViewController alloc] initForErrorType:errorType];
   passkeyErrorAlertViewController.actionHandler = self;
-  passkeyErrorAlertViewController.presentationController.delegate = self;
+  UINavigationController* navigationController = [[UINavigationController alloc]
+      initWithRootViewController:passkeyErrorAlertViewController];
+  navigationController.presentationController.delegate = self;
 
-  return passkeyErrorAlertViewController;
+  passkeyErrorAlertViewController.navigationItem.rightBarButtonItem =
+      [[UIBarButtonItem alloc]
+          initWithBarButtonSystemItem:UIBarButtonSystemItemClose
+                               target:self
+                               action:@selector(dismissExtension)];
+
+  return navigationController;
 }
 
 // Creates and presents a PasskeyWelcomeScreenViewController.
 - (void)createAndPresentPasskeyWelcomeScreenForPurpose:
-            (PasskeyWelcomeScreenPurpose)purpose
+            (webauthn::PasskeyWelcomeScreenPurpose)purpose
                                    primaryButtonAction:
-                                       (ProceduralBlock)primaryButtonAction {
+                                       (webauthn::PasskeyWelcomeScreenAction)
+                                           primaryButtonAction {
   // Early return if the `passkeyNavigationController` is already visible. This
   // means that a passkey welcome screen is already presented and a new one
   // shouldn't be shown. Hitting this early return is most likely a result of
@@ -1096,20 +1310,20 @@ enum class PasskeyCreationEligibility {
     return;
   }
 
-  ProceduralBlock action;
+  webauthn::PasskeyWelcomeScreenAction action;
   // With the `kReauthenticate` purpose, the user will be asked to enter their
-  // Google Passowrd Manager PIN, so no need to also do a device
+  // Google Password Manager PIN, so no need to also do a device
   // reauthentication before showing the UI.
-  if (purpose != PasskeyWelcomeScreenPurpose::kReauthenticate &&
-      _userVerificationRequired) {
+  if (purpose != webauthn::PasskeyWelcomeScreenPurpose::kReauthenticate &&
+      _userVerificationStatus == PasskeyUserVerificationStatus::kRequired) {
     __weak __typeof(self) weakSelf = self;
-    action = ^{
+    action = ^(UINavigationController* navigationController) {
       [weakSelf
           reauthenticateIfNeededToAccessPasskeys:YES
                            withCompletionHandler:^(
                                ReauthenticationResult result) {
                              if (result != ReauthenticationResult::kFailure) {
-                               primaryButtonAction();
+                               primaryButtonAction(navigationController);
                              } else {
                                [weakSelf exitWithErrorCode:
                                              ASExtensionErrorCodeFailed];
@@ -1119,14 +1333,9 @@ enum class PasskeyCreationEligibility {
   } else {
     action = primaryButtonAction;
   }
-  // Now that the need to perform a device reauthentication has been evaluated
-  // and handled, set `_userVerificationRequired` to `NO` so that the user won't
-  // be asked to reauthenticate at a later time in the process of handling the
-  // passkey request.
-  _userVerificationRequired = NO;
 
   NSString* userEmail;
-  if (purpose == PasskeyWelcomeScreenPurpose::kEnroll) {
+  if (purpose == webauthn::PasskeyWelcomeScreenPurpose::kEnroll) {
     userEmail = [self userEmail];
     if (!userEmail.length) {
       [self showGenericErrorAlert];
@@ -1138,9 +1347,10 @@ enum class PasskeyCreationEligibility {
       [[PasskeyWelcomeScreenViewController alloc]
                    initForPurpose:purpose
           navigationItemTitleView:self.passkeyNavigationItemTitleView
-                        userEmail:userEmail
                          delegate:self
-              primaryButtonAction:action];
+              primaryButtonAction:action
+                          strings:GetPasskeyWelcomeScreenStrings(purpose,
+                                                                 userEmail)];
   [self.passkeyNavigationController pushViewController:welcomeScreen
                                               animated:NO];
   [self.presentingView presentViewController:self.passkeyNavigationController
@@ -1156,18 +1366,17 @@ enum class PasskeyCreationEligibility {
   [self.consentCoordinator start];
 }
 
-// Completes the security domain secret fetch that happens when enabling the app
-// as a credential provider in iOS Settings. Dismisses the
+// Completes the trusted vault key fetch that happens when enabling the app as a
+// credential provider in iOS Settings. Dismisses the
 // `passkeyNavigationController` if presented for passkey bootstrapping purposes
 // during the fetching process. Otherwise, presents the ConsentViewController.
-- (void)completeSecurityDomainSecretFetchForExtensionConfigutation {
+- (void)completeTrustedVaultKeyFetchForExtensionConfiguration {
   // If the `passkeyNavigationController` has a `visibleViewController`, it
   // means that the bootstrapping UI has been presented to the user through the
-  // security domain secret fetch (see
-  // `-prepareInterfaceForExtensionConfiguration`). In this case, all that's
-  // left to do is dismiss the bootstrapping UI. Otherwise, it means that the
-  // bootstrapping UI hasn't been shown, hence the ConsentViewController needs
-  // to be presented.
+  // trusted vault key fetch (see `-prepareInterfaceForExtensionConfiguration`).
+  // In this case, all that's left to do is dismiss the bootstrapping UI.
+  // Otherwise, it means that the bootstrapping UI hasn't been shown, hence the
+  // ConsentViewController needs to be presented.
   if (self.passkeyNavigationController.visibleViewController) {
     [self.passkeyNavigationController.presentingViewController
         dismissViewControllerAnimated:YES

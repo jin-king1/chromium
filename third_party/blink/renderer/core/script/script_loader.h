@@ -41,7 +41,6 @@ class Resource;
 class ResourceFetcher;
 class ScriptElementBase;
 class Script;
-class ScriptResource;
 class ScriptWebBundle;
 class Modulator;
 
@@ -51,7 +50,7 @@ class CORE_EXPORT ScriptLoader final : public ResourceFinishObserver,
   ScriptLoader(ScriptElementBase*, const CreateElementFlags);
   ~ScriptLoader() override;
   void Trace(Visitor*) const override;
-  const char* NameInHeapSnapshot() const override { return "ScriptLoader"; }
+  const char* GetHumanReadableName() const override { return "ScriptLoader"; }
   String DebugName() const override { return "ScriptLoader"; }
 
   // Script type at the time of #prepare-the-script-element. Import maps are

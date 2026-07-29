@@ -8,7 +8,6 @@
 #include <string>
 
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
 #include "base/scoped_observation.h"
@@ -37,6 +36,11 @@
 #include "services/network/test/test_utils.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+#include "components/signin/public/base/binding_key_registration_token_result.h"
+#include "components/unexportable_keys/unexportable_key_id.h"
+#endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
 namespace {
 
@@ -114,9 +118,10 @@ class FakeProfileOAuth2TokenServiceDelegateDesktop
   }
   void InvalidateTokenForMultilogin(
       const CoreAccountId& failed_account) override {
-    UpdateAuthError(failed_account,
-                    GoogleServiceAuthError(
-                        GoogleServiceAuthError::INVALID_GAIA_CREDENTIALS));
+    UpdateAuthError(
+        failed_account,
+        GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+            GoogleServiceAuthError::InvalidGaiaCredentialsReason::UNKNOWN));
   }
 };
 
@@ -184,8 +189,7 @@ TEST_F(ProfileOAuth2TokenServiceTest, GetAccounts) {
   EXPECT_TRUE(accounts.empty());
 
   // Load tokens from disk.
-  oauth2_service_->GetDelegate()->LoadCredentials(CoreAccountId(),
-                                                  /*is_syncing=*/false);
+  oauth2_service_->GetDelegate()->LoadCredentials(CoreAccountId());
 
   // |account_id_| should now be visible in the accounts.
   accounts = oauth2_service_->GetAccounts();
@@ -429,11 +433,15 @@ TEST_F(ProfileOAuth2TokenServiceTest, NotificationOrderOnRefreshTokenAdded) {
         oauth2_service_.get());
   }
 
-  // `OnAuthErrorChanged()` is not called after adding a new account in tests.
   testing::InSequence sequence;
-  // First, all observers will receive `OnRefreshTokenAvailable()` notification.
+  // First, all observers will receive `OnRefreshTokenAvailable()` and
+  // `OnAuthErrorChanged()` notifications.
   for (auto& observer : observers) {
     EXPECT_CALL(*observer, OnRefreshTokenAvailable(account_id_));
+    EXPECT_CALL(*observer,
+                OnAuthErrorChanged(
+                    account_id_, GoogleServiceAuthError::AuthErrorNone(),
+                    signin_metrics::SourceForRefreshTokenOperation::kUnknown));
   }
   // Then, `OnEndBatchChanges()` is called.
   for (auto& observer : observers) {
@@ -466,11 +474,9 @@ TEST_F(ProfileOAuth2TokenServiceTest, NotificationOrderOnRefreshTokenRevoked) {
     EXPECT_CALL(*observer, OnRefreshTokenRevoked(account_id_));
   }
   // Then, all ongoing requests get cancelled.
-  EXPECT_CALL(
-      consumer,
-      OnGetTokenFailure(
-          ::testing::_,
-          GoogleServiceAuthError(GoogleServiceAuthError::USER_NOT_SIGNED_UP)))
+  EXPECT_CALL(consumer, OnGetTokenFailure(
+                            ::testing::_,
+                            GoogleServiceAuthError::CreateAccountNotFound()))
       .Times(1);
   // Finally, `OnEndBatchChanges()` is called.
   for (auto& observer : observers) {
@@ -537,7 +543,8 @@ TEST_F(ProfileOAuth2TokenServiceTest, StartRequestForMultiloginDesktop) {
   token_service.GetDelegate()->UpdateCredentials(account_id_2, "refreshToken");
   token_service.GetDelegate()->UpdateAuthError(
       account_id_2,
-      GoogleServiceAuthError(GoogleServiceAuthError::INVALID_GAIA_CREDENTIALS));
+      GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+          GoogleServiceAuthError::InvalidGaiaCredentialsReason::UNKNOWN));
 
   {
     base::test::TestFuture<const signin::OAuthMultiloginTokenRequest*,
@@ -550,9 +557,9 @@ TEST_F(ProfileOAuth2TokenServiceTest, StartRequestForMultiloginDesktop) {
     EXPECT_EQ(future.Get<0>(), &request);
     ASSERT_TRUE(future.Get<1>().has_value());
     EXPECT_EQ(future.Get<1>()->oauth_token(), "refreshToken");
-#if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
     EXPECT_EQ(future.Get<1>()->token_binding_assertion(), std::string());
-#endif  // BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
+#endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
   }
 
   {
@@ -565,9 +572,10 @@ TEST_F(ProfileOAuth2TokenServiceTest, StartRequestForMultiloginDesktop) {
     EXPECT_FALSE(future.IsReady());
     EXPECT_EQ(future.Get<0>(), &request);
     ASSERT_FALSE(future.Get<1>().has_value());
-    EXPECT_EQ(future.Get<1>().error(),
-              GoogleServiceAuthError(
-                  GoogleServiceAuthError::INVALID_GAIA_CREDENTIALS));
+    EXPECT_EQ(
+        future.Get<1>().error(),
+        GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+            GoogleServiceAuthError::InvalidGaiaCredentialsReason::UNKNOWN));
   }
 
   {
@@ -581,13 +589,12 @@ TEST_F(ProfileOAuth2TokenServiceTest, StartRequestForMultiloginDesktop) {
     EXPECT_FALSE(future.IsReady());
     EXPECT_EQ(future.Get<0>(), &request);
     ASSERT_FALSE(future.Get<1>().has_value());
-    EXPECT_EQ(
-        future.Get<1>().error(),
-        GoogleServiceAuthError(GoogleServiceAuthError::USER_NOT_SIGNED_UP));
+    EXPECT_EQ(future.Get<1>().error(),
+              GoogleServiceAuthError::CreateAccountNotFound());
   }
 }
 
-#if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
 TEST_F(ProfileOAuth2TokenServiceTest,
        StartRequestForMultiloginDesktopBoundToken) {
   ProfileOAuth2TokenService token_service(
@@ -598,7 +605,8 @@ TEST_F(ProfileOAuth2TokenServiceTest,
       account_id_, "refreshToken",
       signin_metrics::SourceForRefreshTokenOperation::
           kDiceResponseHandler_Signin,
-      /*wrapped_binding_key=*/{1, 2, 3});
+      signin::TokenBindingInfo(std::vector<uint8_t>{1, 2, 3},
+                               /*mtls_token_binding=*/false));
 
   {
     base::test::TestFuture<const signin::OAuthMultiloginTokenRequest*,
@@ -644,10 +652,12 @@ TEST_F(ProfileOAuth2TokenServiceTest,
       account_id_, "refreshToken",
       signin_metrics::SourceForRefreshTokenOperation::
           kDiceResponseHandler_Signin,
-      /*wrapped_binding_key=*/{2, 3, 4});
+      signin::TokenBindingInfo(std::vector<uint8_t>{2, 3, 4},
+                               /*mtls_token_binding=*/false));
   token_service.GetDelegate()->UpdateAuthError(
       account_id_,
-      GoogleServiceAuthError(GoogleServiceAuthError::INVALID_GAIA_CREDENTIALS));
+      GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+          GoogleServiceAuthError::InvalidGaiaCredentialsReason::UNKNOWN));
 
   base::test::TestFuture<const signin::OAuthMultiloginTokenRequest*,
                          signin::OAuthMultiloginTokenRequest::Result>
@@ -659,9 +669,9 @@ TEST_F(ProfileOAuth2TokenServiceTest,
   EXPECT_FALSE(future.IsReady());
   EXPECT_EQ(future.Get<0>(), &request);
   ASSERT_FALSE(future.Get<1>().has_value());
-  EXPECT_EQ(
-      future.Get<1>().error(),
-      GoogleServiceAuthError(GoogleServiceAuthError::INVALID_GAIA_CREDENTIALS));
+  EXPECT_EQ(future.Get<1>().error(),
+            GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+                GoogleServiceAuthError::InvalidGaiaCredentialsReason::UNKNOWN));
 }
 
 class FakeProfileOAuth2TokenServiceDelegateDesktopFailsBindingAssertion
@@ -686,7 +696,8 @@ TEST_F(ProfileOAuth2TokenServiceTest,
       account_id_, "refreshToken",
       signin_metrics::SourceForRefreshTokenOperation::
           kDiceResponseHandler_Signin,
-      /*wrapped_binding_key=*/{1, 2, 3});
+      signin::TokenBindingInfo(std::vector<uint8_t>{1, 2, 3},
+                               /*mtls_token_binding=*/false));
 
   base::test::TestFuture<const signin::OAuthMultiloginTokenRequest*,
                          signin::OAuthMultiloginTokenRequest::Result>
@@ -701,7 +712,7 @@ TEST_F(ProfileOAuth2TokenServiceTest,
   EXPECT_EQ(future.Get<1>()->oauth_token(), "refreshToken");
   EXPECT_EQ(future.Get<1>()->token_binding_assertion(), "SIGNATURE_FAILED");
 }
-#endif  // BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
+#endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
 TEST_F(ProfileOAuth2TokenServiceTest, StartRequestForMultiloginMobile) {
   oauth2_service_->GetDelegate()->UpdateCredentials(account_id_,
@@ -767,13 +778,6 @@ TEST_F(ProfileOAuth2TokenServiceTest, InvalidateTokensForMultiloginDesktop) {
       std::make_unique<FakeProfileOAuth2TokenServiceDelegateDesktop>();
   ProfileOAuth2TokenService token_service(&prefs_, std::move(delegate));
   signin::MockProfileOAuth2TokenServiceObserver observer(&token_service);
-  EXPECT_CALL(observer,
-              OnAuthErrorChanged(
-                  account_id_,
-                  GoogleServiceAuthError(
-                      GoogleServiceAuthError::INVALID_GAIA_CREDENTIALS),
-                  signin_metrics::SourceForRefreshTokenOperation::kUnknown))
-      .Times(1);
 
   token_service.GetDelegate()->UpdateCredentials(
       account_id_, "refreshToken",
@@ -785,6 +789,15 @@ TEST_F(ProfileOAuth2TokenServiceTest, InvalidateTokensForMultiloginDesktop) {
       account_id_2, "refreshToken2",
       signin_metrics::SourceForRefreshTokenOperation::
           kDiceResponseHandler_Signin);
+
+  EXPECT_CALL(
+      observer,
+      OnAuthErrorChanged(
+          account_id_,
+          GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+              GoogleServiceAuthError::InvalidGaiaCredentialsReason::UNKNOWN),
+          signin_metrics::SourceForRefreshTokenOperation::kUnknown))
+      .Times(1);
   token_service.InvalidateTokenForMultilogin(account_id_, "refreshToken");
   // Check that refresh tokens for failed accounts are set in error.
   EXPECT_EQ(token_service.GetDelegate()->GetAuthError(account_id_).state(),
@@ -795,13 +808,6 @@ TEST_F(ProfileOAuth2TokenServiceTest, InvalidateTokensForMultiloginDesktop) {
 
 TEST_F(ProfileOAuth2TokenServiceTest, InvalidateTokensForMultiloginMobile) {
   signin::MockProfileOAuth2TokenServiceObserver observer(oauth2_service_.get());
-  EXPECT_CALL(
-      observer,
-      OnAuthErrorChanged(account_id_,
-                         GoogleServiceAuthError(
-                             GoogleServiceAuthError::INVALID_GAIA_CREDENTIALS),
-                         testing::_))
-      .Times(0);
 
   oauth2_service_->GetDelegate()->UpdateCredentials(account_id_,
                                                     "refreshToken");
@@ -809,7 +815,15 @@ TEST_F(ProfileOAuth2TokenServiceTest, InvalidateTokensForMultiloginMobile) {
       CoreAccountId::FromGaiaId(GaiaId("account_id_2"));
   oauth2_service_->GetDelegate()->UpdateCredentials(account_id_2,
                                                     "refreshToken2");
-  ;
+
+  EXPECT_CALL(
+      observer,
+      OnAuthErrorChanged(
+          account_id_,
+          GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+              GoogleServiceAuthError::InvalidGaiaCredentialsReason::UNKNOWN),
+          testing::_))
+      .Times(0);
   oauth2_service_->InvalidateTokenForMultilogin(account_id_, "refreshToken");
   // Check that refresh tokens are not affected.
   EXPECT_EQ(oauth2_service_->GetDelegate()->GetAuthError(account_id_).state(),
@@ -876,7 +890,7 @@ TEST_F(ProfileOAuth2TokenServiceTest, SameScopesRequestedForDifferentClients) {
   std::string client_secret_1("secret1");
   std::string client_id_2("client2");
   std::string client_secret_2("secret2");
-  std::set<std::string> scope_set;
+  OAuth2AccessTokenManager::ScopeSet scope_set;
   scope_set.insert("scope1");
   scope_set.insert("scope2");
 
@@ -972,3 +986,30 @@ TEST_F(ProfileOAuth2TokenServiceTest, FixAccountErrorIfPossible) {
   EXPECT_EQ(0, consumer_.number_of_successful_tokens_);
   EXPECT_EQ(1, consumer_.number_of_errors_);
 }
+
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+TEST_F(ProfileOAuth2TokenServiceTest, GenerateBindingKeyRegistrationToken) {
+  base::test::TestFuture<
+      std::optional<signin::BindingKeyRegistrationTokenResult>>
+      future;
+  EXPECT_FALSE(oauth2_service_->GenerateBindingKeyRegistrationToken(
+      {crypto::SignatureVerifier::ECDSA_SHA256}, "test_code",
+      future.GetCallback()));
+
+  delegate_ptr_->EnableTokenBindingRegistration();
+  EXPECT_TRUE(oauth2_service_->GenerateBindingKeyRegistrationToken(
+      {crypto::SignatureVerifier::ECDSA_SHA256}, "test_code",
+      future.GetCallback()));
+  EXPECT_FALSE(future.IsReady());
+
+  delegate_ptr_->IssueTokenBindingRegistrationTokenForAuthCode(
+      "test_code", signin::BindingKeyRegistrationTokenResult(
+                       unexportable_keys::UnexportableSigningKeyId(), {1, 2, 3},
+                       "test_registration_token"));
+
+  ASSERT_TRUE(future.IsReady());
+  ASSERT_TRUE(future.Get().has_value());
+  EXPECT_EQ(future.Get()->wrapped_binding_key, std::vector<uint8_t>({1, 2, 3}));
+  EXPECT_EQ(future.Get()->registration_token, "test_registration_token");
+}
+#endif

@@ -29,10 +29,15 @@
 
 #include "third_party/blink/renderer/platform/fonts/font_description.h"
 
+#include <set>
+
+#include "base/compiler_specific.h"
 #include "base/memory/values_equivalent.h"
+#include "base/notreached.h"
 #include "base/strings/to_string.h"
 #include "build/build_config.h"
 #include "third_party/blink/public/platform/web_font_description.h"
+#include "third_party/blink/renderer/platform/geometry/evaluation_input.h"
 #include "third_party/blink/renderer/platform/language.h"
 #include "third_party/blink/renderer/platform/wtf/hash_functions.h"
 #include "third_party/blink/renderer/platform/wtf/size_assertions.h"
@@ -54,10 +59,16 @@ struct SameSizeAsFontDescription {
   scoped_refptr<FontPalette> palette_;
   scoped_refptr<FontVariantAlternates> font_variant_alternates_;
   AtomicString locale;
-  float sizes[5];
+  float sizes[3];
+  Length letter_spacing;
+  Length word_spacing;
   FontSizeAdjust size_adjust_;
+  ResolvedFontFeatures resolved_font_features_;
   FontSelectionRequest selection_request_;
+  FontSelectionValue original_slope_;
+  FontDescription::StyleSyntax style_syntax_;
   FieldsAsUnsignedType bitfields;
+  AtomicString language_override_;
 };
 
 ASSERT_SIZE(FontDescription, SameSizeAsFontDescription);
@@ -67,13 +78,13 @@ bool FontDescription::use_subpixel_text_positioning_ = false;
 // static
 FontDescription FontDescription::CreateHashTableEmptyValue() {
   FontDescription result;
-  memset(&result, 0, sizeof(FontDescription));
+  UNSAFE_TODO(memset(&result, 0, sizeof(FontDescription)));
   DCHECK(result.IsHashTableEmptyValue());
   return result;
 }
 
-FontDescription::FontDescription(WTF::HashTableDeletedValueType) {
-  memset(this, 0, sizeof(FontDescription));
+FontDescription::FontDescription(HashTableDeletedValueType) {
+  UNSAFE_TODO(memset(this, 0, sizeof(FontDescription)));
   fields_.hash_category_ = kHashDeletedValue;
 }
 
@@ -81,8 +92,8 @@ FontDescription::FontDescription()
     : specified_size_(0),
       computed_size_(0),
       adjusted_size_(0),
-      letter_spacing_(0),
-      word_spacing_(0),
+      letter_spacing_(Length(0, Length::kFixed)),
+      word_spacing_(Length(0, Length::kFixed)),
       font_selection_request_(kNormalWeightValue,
                               kNormalWidthValue,
                               kNormalSlopeValue) {
@@ -131,6 +142,7 @@ bool FontDescription::operator==(const FontDescription& other) const {
          letter_spacing_ == other.letter_spacing_ &&
          word_spacing_ == other.word_spacing_ &&
          font_selection_request_ == other.font_selection_request_ &&
+         style_syntax_ == other.style_syntax_ &&
          fields_as_unsigned_.parts[0] == other.fields_as_unsigned_.parts[0] &&
          fields_as_unsigned_.parts[1] == other.fields_as_unsigned_.parts[1] &&
          (feature_settings_ == other.feature_settings_ ||
@@ -188,6 +200,34 @@ FontDescription::Size FontDescription::SmallerSize(const Size& size) {
 
 FontSelectionRequest FontDescription::GetFontSelectionRequest() const {
   return font_selection_request_;
+}
+
+float FontDescription::LetterSpacing() const {
+  switch (letter_spacing_.GetType()) {
+    case Length::kFixed:
+      return letter_spacing_.Pixels();
+    case Length::kPercent:
+      return letter_spacing_.Percent() / 100 * computed_size_;
+    case Length::kCalculated:
+      return letter_spacing_.NonNanCalculatedValue(LayoutUnit(computed_size_),
+                                                   {});
+    default:
+      NOTREACHED();
+  }
+}
+
+float FontDescription::WordSpacing() const {
+  switch (word_spacing_.GetType()) {
+    case Length::kFixed:
+      return word_spacing_.Pixels();
+    case Length::kPercent:
+      return word_spacing_.Percent() / 100 * computed_size_;
+    case Length::kCalculated:
+      return word_spacing_.NonNanCalculatedValue(LayoutUnit(computed_size_),
+                                                 {});
+    default:
+      NOTREACHED();
+  }
 }
 
 FontDescription::VariantLigatures FontDescription::GetVariantLigatures() const {
@@ -328,7 +368,7 @@ void FontDescription::UpdateTypesettingFeatures() {
   // When the effective letter-spacing between two characters is not zero (due
   // to either justification or non-zero computed letter-spacing), user agents
   // should not apply optional ligatures.
-  if (letter_spacing_ == 0) {
+  if (letter_spacing_.IsZero()) {
     switch (CommonLigaturesState()) {
       case FontDescription::kDisabledLigaturesState:
         fields_.typesetting_features_ &= ~blink::kLigatures;
@@ -358,33 +398,38 @@ unsigned FontDescription::StyleHashWithoutFamilyList() const {
   if (settings) {
     unsigned num_features = settings->size();
     for (unsigned i = 0; i < num_features; ++i) {
-      WTF::AddIntToHash(hash, settings->at(i).Tag());
-      WTF::AddIntToHash(hash, settings->at(i).Value());
+      AddIntToHash(hash, settings->at(i).Tag());
+      AddIntToHash(hash, settings->at(i).Value());
     }
   }
 
   if (VariationSettings()) {
-    WTF::AddIntToHash(hash, VariationSettings()->GetHash());
+    AddIntToHash(hash, VariationSettings()->GetHash());
+  }
+
+  if (HasLanguageOverride()) {
+    AddIntToHash(hash, language_override_.Hash());
   }
 
   if (font_palette_) {
-    WTF::AddIntToHash(hash, font_palette_->GetHash());
+    AddIntToHash(hash, font_palette_->GetHash());
   }
 
   if (locale_) {
     const AtomicString& locale = locale_->LocaleString();
-    WTF::AddIntToHash(hash, locale.Hash());
+    AddIntToHash(hash, locale.Hash());
   }
 
-  WTF::AddFloatToHash(hash, specified_size_);
-  WTF::AddFloatToHash(hash, computed_size_);
-  WTF::AddFloatToHash(hash, adjusted_size_);
-  WTF::AddFloatToHash(hash, letter_spacing_);
-  WTF::AddFloatToHash(hash, word_spacing_);
-  WTF::AddIntToHash(hash, fields_as_unsigned_.parts[0]);
-  WTF::AddIntToHash(hash, fields_as_unsigned_.parts[1]);
-  WTF::AddIntToHash(hash, font_selection_request_.GetHash());
-  WTF::AddIntToHash(hash, size_adjust_.GetHash());
+  AddFloatToHash(hash, specified_size_);
+  AddFloatToHash(hash, computed_size_);
+  AddFloatToHash(hash, adjusted_size_);
+  AddIntToHash(hash, letter_spacing_.GetHash());
+  AddIntToHash(hash, word_spacing_.GetHash());
+  AddIntToHash(hash, fields_as_unsigned_.parts[0]);
+  AddIntToHash(hash, fields_as_unsigned_.parts[1]);
+  AddIntToHash(hash, font_selection_request_.GetHash());
+  AddIntToHash(hash, static_cast<unsigned>(style_syntax_));
+  AddIntToHash(hash, size_adjust_.GetHash());
 
   return hash;
 }
@@ -395,8 +440,8 @@ unsigned FontDescription::GetHash() const {
        family = family->Next()) {
     if (family->FamilyName().empty())
       continue;
-    WTF::AddIntToHash(hash, family->FamilyIsGeneric());
-    WTF::AddIntToHash(hash, WTF::GetHash(family->FamilyName()));
+    AddIntToHash(hash, family->FamilyIsGeneric());
+    AddIntToHash(hash, blink::GetHash(family->FamilyName()));
   }
   return hash;
 }
@@ -409,6 +454,9 @@ void FontDescription::SetOrientation(FontOrientation orientation) {
 void FontDescription::SetStyle(FontSelectionValue value) {
   font_selection_request_.slope = value;
   original_slope = value;
+  // Since this value did not come from authored CSS, serialization falls
+  // back to the slope alone.
+  style_syntax_ = StyleSyntax::kImplicitAngle;
   UpdateSyntheticOblique();
 }
 
@@ -508,22 +556,63 @@ void FontDescription::UpdateFromSkiaFontStyle(const SkFontStyle& font_style) {
     SetStyle(kNormalSlopeValue);
 }
 
-int FontDescription::MinimumPrefixWidthToHyphenate() const {
-  // If the maximum width available for the prefix before the hyphen is small,
-  // then it is very unlikely that an hyphenation opportunity exists, so do not
-  // bother to look for it.  These are heuristic numbers for performance added
-  // in http://wkb.ug/45606
-  const int kMinimumPrefixWidthNumerator = 5;
-  const int kMinimumPrefixWidthDenominator = 4;
-  return ComputedPixelSize() * kMinimumPrefixWidthNumerator /
-         kMinimumPrefixWidthDenominator;
+ResolvedFontFeatures FontDescription::ResolveFontFeatures() const {
+  if (const auto* alternates = GetFontVariantAlternates()) {
+    // Per CSS Fonts 4 section 7.2, the font-variant-alternates CSS property
+    // takes precedence over the @font-face font-feature-settings descriptor.
+    // https://drafts.csswg.org/css-fonts-4/#feature-variation-precedence
+    ResolvedFontFeatures merged_features =
+        alternates->GetResolvedFontFeatures();
+    const wtf_size_t resolved_size = merged_features.size();
+    merged_features.reserve(resolved_size + resolved_font_features_.size());
+    for (const auto& descriptor_feature : resolved_font_features_) {
+      if (!std::ranges::contains(
+              base::span{merged_features}.first(resolved_size),
+              descriptor_feature.tag, &FontFeatureValue::tag)) {
+        merged_features.emplace_back(descriptor_feature);
+      }
+    }
+    return merged_features;
+  }
+  return resolved_font_features_;
 }
 
-ResolvedFontFeatures FontDescription::ResolveFontFeatures() const {
-  if (const FontVariantAlternates* alternates = GetFontVariantAlternates()) {
-    return alternates->GetResolvedFontFeatures();
+void FontDescription::MergeFontFeatureSettingsWithDescriptor(
+    const FontFeatureSettings* feature_settings_descriptor) {
+  ResolvedFontFeatures resolved_font_features =
+      ResolveFontFeatureSettingsDescriptor(FeatureSettings(),
+                                           feature_settings_descriptor);
+  SetResolvedFontFeatures(std::move(resolved_font_features));
+}
+
+void FontDescription::MergeFontVariationSettingsWithDescriptor(
+    const FontVariationSettings* variation_settings_descriptor) {
+  scoped_refptr<FontVariationSettings> font_variation_settings =
+      FontVariationSettings::Create();
+
+  if ((!variation_settings_ || variation_settings_->size() == 0) &&
+      (!variation_settings_descriptor ||
+       variation_settings_descriptor->size() == 0)) {
+    SetVariationSettings(font_variation_settings);
+    return;
   }
-  return ResolvedFontFeatures();
+
+  std::set<uint32_t> existing_tags;
+  // Store the existing axis settings
+  if (variation_settings_) {
+    for (const FontVariationAxis& axis : *variation_settings_) {
+      existing_tags.insert(axis.Tag());
+      font_variation_settings->Append(axis);
+    }
+  }
+  for (const FontVariationAxis& axis : *variation_settings_descriptor) {
+    if (existing_tags.find(axis.Tag()) == existing_tags.end()) {
+      font_variation_settings->Append(
+          FontVariationAxis(axis.Tag(), axis.Value()));
+    }
+  }
+  std::sort(font_variation_settings->begin(), font_variation_settings->end());
+  SetVariationSettings(font_variation_settings);
 }
 
 String FontDescription::ToString(GenericFamilyType familyType) {
@@ -668,20 +757,15 @@ String FontDescription::ToString(
 }
 
 String FontDescription::VariantLigatures::ToString() const {
-  return String::Format(
-      "common=%s, discretionary=%s, historical=%s, contextual=%s",
-      FontDescription::ToString(static_cast<LigaturesState>(common))
-          .Ascii()
-          .data(),
-      FontDescription::ToString(static_cast<LigaturesState>(discretionary))
-          .Ascii()
-          .data(),
-      FontDescription::ToString(static_cast<LigaturesState>(historical))
-          .Ascii()
-          .data(),
-      FontDescription::ToString(static_cast<LigaturesState>(contextual))
-          .Ascii()
-          .data());
+  return StrCat(
+      {"common=",
+       FontDescription::ToString(static_cast<LigaturesState>(common)),
+       ", discretionary=",
+       FontDescription::ToString(static_cast<LigaturesState>(discretionary)),
+       ", historical=",
+       FontDescription::ToString(static_cast<LigaturesState>(historical)),
+       ", contextual=",
+       FontDescription::ToString(static_cast<LigaturesState>(contextual))});
 }
 
 String FontDescription::Size::ToString() const {
@@ -691,10 +775,8 @@ String FontDescription::Size::ToString() const {
 }
 
 String FontDescription::FamilyDescription::ToString() const {
-  return String::Format(
-      "generic_family=%s, family=[%s]",
-      FontDescription::ToString(generic_family).Ascii().c_str(),
-      family.ToString().Ascii().c_str());
+  return StrCat({"generic_family=", FontDescription::ToString(generic_family),
+                 ", family=[", family.ToString(), "]"});
 }
 
 String FontDescription::ToString(FontVariantPosition variant_position) {
@@ -710,7 +792,7 @@ String FontDescription::ToString(FontVariantPosition variant_position) {
 }
 
 String FontDescription::ToString() const {
-  return String::Format(
+  return UNSAFE_TODO(String::Format(
       "family_list=[%s], feature_settings=[%s], variation_settings=[%s], "
       "locale=%s, "
       "specified_size=%f, computed_size=%f, adjusted_size=%f, "
@@ -736,7 +818,7 @@ String FontDescription::ToString() const {
       // string method.
       (locale_ ? locale_->LocaleString().Ascii().c_str() : ""), specified_size_,
       computed_size_, adjusted_size_, size_adjust_.ToString().Ascii().c_str(),
-      letter_spacing_, word_spacing_,
+      LetterSpacing(), WordSpacing(),
       font_selection_request_.ToString().Ascii().c_str(),
       blink::ToString(
           static_cast<TypesettingFeatures>(fields_.typesetting_features_))
@@ -762,7 +844,7 @@ String FontDescription::ToString() const {
       FontDescription::ToString(GetFontSynthesisStyle()).Ascii().c_str(),
       FontDescription::ToString(GetFontSynthesisSmallCaps()).Ascii().c_str(),
       FontDescription::ToString(VariantPosition()).Ascii().c_str(),
-      blink::ToString(VariantEmoji()).Ascii().c_str());
+      blink::ToString(VariantEmoji()).Ascii().c_str()));
 }
 
 }  // namespace blink

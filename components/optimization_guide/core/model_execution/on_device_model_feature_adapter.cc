@@ -7,74 +7,55 @@
 #include <optional>
 #include <string>
 
+#include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/strcat.h"
 #include "base/timer/elapsed_timer.h"
 #include "base/types/expected.h"
 #include "components/optimization_guide/core/model_execution/multimodal_message.h"
+#include "components/optimization_guide/core/model_execution/on_device_capability.h"
 #include "components/optimization_guide/core/model_execution/on_device_model_execution_proto_descriptors.h"
 #include "components/optimization_guide/core/model_execution/on_device_model_execution_proto_value_utils.h"
-#include "components/optimization_guide/core/model_execution/redactor.h"
 #include "components/optimization_guide/core/model_execution/response_parser.h"
-#include "components/optimization_guide/core/model_execution/response_parser_registry.h"
+#include "components/optimization_guide/core/model_execution/response_parser_factory.h"
 #include "components/optimization_guide/core/model_execution/simple_response_parser.h"
 #include "components/optimization_guide/core/optimization_guide_constants.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
-#include "components/optimization_guide/core/optimization_guide_model_executor.h"
 #include "components/optimization_guide/core/optimization_guide_util.h"
 
 namespace optimization_guide {
 
 OnDeviceModelFeatureAdapter::OnDeviceModelFeatureAdapter(
-    proto::OnDeviceModelExecutionFeatureConfig&& config)
-    : config_(config),
-      redactor_(Redactor::FromProto(config.output_config().redact_rules())),
-      response_streaming_mode_(
-          config.output_config().response_streaming_mode()),
-      parser_(
-          ResponseParserRegistry::Get().CreateParser(config_.output_config())) {
+    proto::OnDeviceModelExecutionFeatureConfig config,
+    ResponseParserFactory response_parser_factory)
+    : config_(std::move(config)),
+      parser_(response_parser_factory
+                  ? response_parser_factory.Run(config_.output_config())
+                  : CreateResponseParser(config_.output_config())) {
   // Set limits values in `token_limits_`.
   auto& input_config = config_.input_config();
   auto& output_config = config_.output_config();
-  token_limits_.max_tokens = features::GetOnDeviceModelMaxTokens();
+  uint32_t max_tokens = kOnDeviceModelMaxTokens;
+  token_limits_.max_tokens = max_tokens;
   token_limits_.min_context_tokens =
       input_config.has_min_context_tokens()
-          ? input_config.min_context_tokens()
-          : static_cast<uint32_t>(
-                features::GetOnDeviceModelMinTokensForContext());
+          ? std::min(input_config.min_context_tokens(), max_tokens)
+          : 1024;
   token_limits_.max_context_tokens =
       input_config.has_max_context_tokens()
-          ? input_config.max_context_tokens()
-          : static_cast<uint32_t>(
-                features::GetOnDeviceModelMaxTokensForContext());
+          ? std::min(input_config.max_context_tokens(), max_tokens)
+          : 8192;
   token_limits_.max_execute_tokens =
       input_config.has_max_execute_tokens()
-          ? input_config.max_execute_tokens()
-          : static_cast<uint32_t>(
-                features::GetOnDeviceModelMaxTokensForExecute());
+          ? std::min(input_config.max_execute_tokens(), max_tokens)
+          : 1024;
   token_limits_.max_output_tokens =
       output_config.has_max_output_tokens()
-          ? output_config.max_output_tokens()
-          : static_cast<uint32_t>(
-                features::GetOnDeviceModelMaxTokensForOutput());
+          ? std::min(output_config.max_output_tokens(), max_tokens)
+          : 1024;
 }
 
 OnDeviceModelFeatureAdapter::~OnDeviceModelFeatureAdapter() = default;
-
-std::string OnDeviceModelFeatureAdapter::GetStringToCheckForRedacting(
-    MultimodalMessageReadView message) const {
-  for (const auto& proto_field :
-       config_.output_config().redact_rules().fields_to_check()) {
-    std::optional<proto::Value> value = message.GetValue(proto_field);
-    if (value) {
-      const std::string string_value = GetStringFromValue(*value);
-      if (!string_value.empty()) {
-        return string_value;
-      }
-    }
-  }
-  return std::string();
-}
 
 std::optional<SubstitutionResult>
 OnDeviceModelFeatureAdapter::ConstructInputString(
@@ -92,21 +73,11 @@ OnDeviceModelFeatureAdapter::ConstructInputString(
                                   : input_config.execute_substitutions());
 }
 
-RedactResult OnDeviceModelFeatureAdapter::Redact(
-    MultimodalMessageReadView last_message,
-    std::string& current_response) const {
-  auto redact_string_input = GetStringToCheckForRedacting(last_message);
-  base::ElapsedTimer elapsed_timer;
-  auto redact_result = redactor_.Redact(redact_string_input, current_response);
-  base::UmaHistogramMicrosecondsTimes(
-      base::StrCat({"OptimizationGuide.ModelExecution.TimeToProcessRedactions.",
-                    GetStringNameForModelExecutionFeature(config_.feature())}),
-      elapsed_timer.Elapsed());
-  return redact_result;
-}
+
 
 bool OnDeviceModelFeatureAdapter::ShouldParseResponse(
     ResponseCompleteness completeness) const {
+  // Streaming responses are incompatible with redaction.
   return completeness == ResponseCompleteness::kComplete ||
          !parser_->SuppressParsingIncompleteResponse();
 }
@@ -116,32 +87,13 @@ void OnDeviceModelFeatureAdapter::ParseResponse(
     const std::string& model_response,
     size_t previous_response_pos,
     ResponseParser::ResultCallback callback) const {
-  std::string redacted_response = model_response;
-  auto redact_result = Redact(request.read(), redacted_response);
-  if (redact_result != RedactResult::kContinue) {
-    std::move(callback).Run(
-        base::unexpected(ResponseParsingError::kRejectedPii));
-    return;
-  }
   if (!parser_) {
     std::move(callback).Run(base::unexpected(ResponseParsingError::kFailed));
     return;
   }
 
-  switch (response_streaming_mode_) {
-    case proto::ResponseStreamingMode::STREAMING_MODE_CURRENT_RESPONSE: {
-      parser_->ParseAsync(redacted_response, std::move(callback));
-      break;
-    }
-
-    case proto::ResponseStreamingMode::STREAMING_MODE_CHUNK_BY_CHUNK: {
-      // The `redacted_response` is actually not redacted here because the
-      // redactor config and chunk-by-chunk mode are mutual exclusive.
-      parser_->ParseAsync(redacted_response.substr(previous_response_pos),
-                          std::move(callback));
-      break;
-    }
-  }
+  parser_->ParseAsync(model_response.substr(previous_response_pos),
+                      std::move(callback));
 }
 
 std::optional<proto::TextSafetyRequest>
@@ -173,19 +125,47 @@ OnDeviceModelFeatureAdapter::ConstructTextSafetyRequest(
 
 SamplingParamsConfig OnDeviceModelFeatureAdapter::GetSamplingParamsConfig()
     const {
+  std::string feature_name =
+      proto::ModelExecutionFeature_Name(config_.feature());
+
   if (!config_.has_sampling_params()) {
     // Returns default value if the sampling params are not configured.
-    return SamplingParamsConfig{
+    const SamplingParamsConfig result{
         .default_top_k = uint32_t(features::GetOnDeviceModelDefaultTopK()),
         .default_temperature =
             float(features::GetOnDeviceModelDefaultTemperature()),
     };
+    VLOG(1) << feature_name << "'s config does not specify sampling params; "
+            << __func__ << " for " << feature_name << " yields fallbacks: "
+            << "{top_k=" << result.default_top_k
+            << ", temperature=" << result.default_temperature << "}";
+    return result;
   }
 
-  return SamplingParamsConfig{
+  const SamplingParamsConfig result{
       .default_top_k = config_.sampling_params().top_k(),
       .default_temperature = config_.sampling_params().temperature(),
   };
+
+  if (!config_.sampling_params().has_top_k()) {
+    VLOG(1) << feature_name << "'s config does not specify top_k; using "
+            << "protobuf default: top_k=" << result.default_top_k;
+  }
+  if (!config_.sampling_params().has_temperature()) {
+    VLOG(1) << feature_name << "'s config does not specify temperature; using "
+            << "protobuf default: temperature=" << result.default_temperature;
+  }
+
+  VLOG(1) << __func__ << " for " << feature_name << " yields: "
+          << "{top_k=" << result.default_top_k
+          << ", temperature=" << result.default_temperature << "}";
+  return result;
+}
+
+SamplingParams OnDeviceModelFeatureAdapter::GetDefaultSamplingParams() const {
+  SamplingParamsConfig feature_params = GetSamplingParamsConfig();
+  return SamplingParams{.top_k = feature_params.default_top_k,
+                        .temperature = feature_params.default_temperature};
 }
 
 const proto::Any& OnDeviceModelFeatureAdapter::GetFeatureMetadata() const {
@@ -194,6 +174,22 @@ const proto::Any& OnDeviceModelFeatureAdapter::GetFeatureMetadata() const {
 
 const TokenLimits& OnDeviceModelFeatureAdapter::GetTokenLimits() const {
   return token_limits_;
+}
+
+on_device_model::mojom::ResponseConstraintPtr
+OnDeviceModelFeatureAdapter::GetResponseConstraint() const {
+  const auto& constraint = config_.output_config().response_constraint();
+  switch (constraint.format_case()) {
+    case proto::ResponseConstraint::kJsonSchema:
+      return on_device_model::mojom::ResponseConstraint::NewJsonSchema(
+          constraint.json_schema());
+    case proto::ResponseConstraint::kRegex:
+      return on_device_model::mojom::ResponseConstraint::NewRegex(
+          constraint.regex());
+    default:
+      // Not configured, or not supported configuration.
+      return nullptr;
+  }
 }
 
 }  // namespace optimization_guide

@@ -8,9 +8,11 @@
 #include <stdint.h>
 
 #include "base/memory/weak_ptr.h"
+#include "base/unguessable_token.h"
 #include "components/services/storage/privileged/mojom/indexed_db_client_state_checker.mojom.h"
 #include "content/browser/indexed_db/indexed_db_data_loss_info.h"
 #include "content/common/content_export.h"
+#include "mojo/public/cpp/bindings/associated_remote.h"
 #include "mojo/public/cpp/bindings/pending_associated_receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "third_party/blink/public/mojom/indexeddb/indexeddb.mojom-forward.h"
@@ -18,14 +20,13 @@
 namespace content::indexed_db {
 
 class DatabaseCallbacks;
-class FactoryClient;
 class Transaction;
 
 // This struct holds data relevant to opening a new connection/database while
 // ConnectionCoordinator manages queued operations.
 struct CONTENT_EXPORT PendingConnection {
   PendingConnection(
-      std::unique_ptr<FactoryClient> factory_client,
+      mojo::AssociatedRemote<blink::mojom::IDBFactoryClient> factory_client,
       std::unique_ptr<DatabaseCallbacks> database_callbacks,
       int64_t transaction_id,
       int64_t version,
@@ -33,7 +34,7 @@ struct CONTENT_EXPORT PendingConnection {
           pending_mojo_receiver);
   ~PendingConnection();
 
-  std::unique_ptr<FactoryClient> factory_client;
+  mojo::AssociatedRemote<blink::mojom::IDBFactoryClient> factory_client;
   std::unique_ptr<DatabaseCallbacks> database_callbacks;
   int64_t transaction_id;
   int64_t version;
@@ -43,11 +44,10 @@ struct CONTENT_EXPORT PendingConnection {
   base::WeakPtr<Transaction> transaction;
   mojo::PendingAssociatedReceiver<blink::mojom::IDBTransaction>
       pending_mojo_receiver;
-  bool was_cold_open = false;
   mojo::Remote<storage::mojom::IndexedDBClientStateChecker>
       client_state_checker;
   base::UnguessableToken client_token;
-  base::WeakPtrFactory<PendingConnection> weak_factory{this};
+  bool request_shared_connection = false;
 };
 
 }  // namespace content::indexed_db

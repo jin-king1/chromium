@@ -10,11 +10,11 @@
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
-#include "base/not_fatal_until.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/task_traits.h"
 #include "base/trace_event/trace_event.h"
 #include "cc/base/completion_event.h"
+#include "cc/base/features.h"
 #include "cc/tiles/tile_task_manager.h"
 
 namespace cc {
@@ -56,6 +56,17 @@ ImageController::WorkerState::WorkerState(
     base::WeakPtr<ImageController> weak_ptr)
     : origin_task_runner(std::move(origin_task_runner)), weak_ptr(weak_ptr) {}
 ImageController::WorkerState::~WorkerState() = default;
+
+void ImageController::ForEachDecodeRequest(
+    base::FunctionRef<void(ImageDecodeRequest&)> func) {
+  worker_state_->lock.AssertAcquired();
+  std::ranges::for_each(
+      worker_state_->image_decode_queue.begin(),
+      worker_state_->image_decode_queue.end(), func,
+      &std::pair<const ImageDecodeRequestId, ImageDecodeRequest>::second);
+  std::ranges::for_each(orphaned_decode_requests_.begin(),
+                        orphaned_decode_requests_.end(), func);
+}
 
 void ImageController::StopWorkerTasks() {
   // We can't have worker threads without a cache_ or a worker_task_runner_, so
@@ -215,7 +226,9 @@ void ImageController::FlushDecodeTasksForTesting() {
 }
 
 void ImageController::SetImageDecodeCache(ImageDecodeCache* cache) {
-  DCHECK(!cache_ || !cache);
+  if (cache_ == cache) {
+    return;
+  }
 
   if (!cache) {
     SetPredecodeImages(std::vector<DrawImage>(),
@@ -239,13 +252,9 @@ void ImageController::ConvertImagesToTasks(
     std::vector<DrawImage>* sync_decoded_images,
     std::vector<scoped_refptr<TileTask>>* tasks,
     bool* has_at_raster_images,
-    bool* has_hardware_accelerated_jpeg_candidates,
-    bool* has_hardware_accelerated_webp_candidates,
     const ImageDecodeCache::TracingInfo& tracing_info) {
   DCHECK(cache_);
   *has_at_raster_images = false;
-  *has_hardware_accelerated_jpeg_candidates = false;
-  *has_hardware_accelerated_webp_candidates = false;
 
   // We may read/write stand-alone decode image tasks if they are duplicates of
   // raster tasks.
@@ -261,23 +270,22 @@ void ImageController::ConvertImagesToTasks(
         image_cache_client_id_, *it, tracing_info);
     *has_at_raster_images |= result.is_at_raster_decode;
 
-    ImageType image_type =
-        it->paint_image().GetImageHeaderMetadata()
-            ? it->paint_image().GetImageHeaderMetadata()->image_type
-            : ImageType::kInvalid;
-    *has_hardware_accelerated_jpeg_candidates |=
-        (result.can_do_hardware_accelerated_decode &&
-         image_type == ImageType::kJPEG);
-    *has_hardware_accelerated_webp_candidates |=
-        (result.can_do_hardware_accelerated_decode &&
-         image_type == ImageType::kWEBP);
-
-    if (result.task)
+    if (result.task) {
+      if (scoped_refptr<TileTask>& dependent =
+              result.task->external_dependent()) {
+        ForEachDecodeRequest([&dependent](ImageDecodeRequest& request) -> void {
+          if (request.task == dependent) {
+            request.has_external_dependency = true;
+          }
+        });
+      }
       tasks->push_back(std::move(result.task));
-    if (result.need_unref)
+    }
+    if (result.need_unref) {
       ++it;
-    else
+    } else {
       it = sync_decoded_images->erase(it);
+    }
   }
 }
 
@@ -300,11 +308,8 @@ std::vector<scoped_refptr<TileTask>> ImageController::SetPredecodeImages(
   // getting rasterized, we will still have a chance to record the raster
   // scheduling delay UMAs when we create and run the raster task.
   bool has_at_raster_images = false;
-  bool has_hardware_accelerated_jpeg_candidates = false;
-  bool has_hardware_accelerated_webp_candidates = false;
   ConvertImagesToTasks(&images, &new_tasks, &has_at_raster_images,
-                       &has_hardware_accelerated_jpeg_candidates,
-                       &has_hardware_accelerated_webp_candidates, tracing_info);
+                       tracing_info);
   UnrefImages(predecode_locked_images_);
   predecode_locked_images_ = std::move(images);
   return new_tasks;
@@ -312,7 +317,8 @@ std::vector<scoped_refptr<TileTask>> ImageController::SetPredecodeImages(
 
 ImageController::ImageDecodeRequestId ImageController::QueueImageDecode(
     const DrawImage& draw_image,
-    ImageDecodedCallback callback) {
+    ImageDecodedCallback callback,
+    bool speculative) {
   // We must not receive any image requests if we have no worker.
   CHECK(worker_task_runner_);
 
@@ -325,17 +331,17 @@ ImageController::ImageDecodeRequestId ImageController::QueueImageDecode(
   // Get the tasks for this decode.
   ImageDecodeCache::TaskResult result(
       /*need_unref=*/false,
-      /*is_at_raster_decode=*/false,
-      /*can_do_hardware_accelerated_decode=*/false);
+      /*is_at_raster_decode=*/false);
   if (is_image_lazy) {
     if (!cache_) {
       orphaned_decode_requests_.emplace_back(
           id, draw_image, std::move(callback), /*task=*/nullptr,
-          /*need_unref=*/false, /*has_external_dependency=*/false);
+          /*need_unref=*/false, /*has_external_dependency=*/false,
+          /*too_large_to_pin=*/false);
       return id;
     }
     result = cache_->GetOutOfRasterDecodeTaskForImageAndRef(
-        image_cache_client_id_, draw_image);
+        image_cache_client_id_, draw_image, speculative);
   }
   // If we don't need to unref this, we don't actually have a task.
   DCHECK(result.need_unref || !result.task);
@@ -348,7 +354,7 @@ ImageController::ImageDecodeRequestId ImageController::QueueImageDecode(
         result.task->dependencies()[0]->IsRasterTask());
   worker_state_->image_decode_queue[id] = ImageDecodeRequest(
       id, draw_image, std::move(callback), std::move(result.task),
-      result.need_unref, has_external_dependency);
+      result.need_unref, has_external_dependency, result.is_at_raster_decode);
   ScheduleImageDecodeOnWorkerIfNeeded();
 
   return id;
@@ -357,19 +363,11 @@ ImageController::ImageDecodeRequestId ImageController::QueueImageDecode(
 void ImageController::ExternalDependencyCompletedForTask(
     scoped_refptr<TileTask> task) {
   base::AutoLock hold(worker_state_->lock);
-  auto external_dependency_completed =
-      [&task](ImageDecodeRequest& request) -> void {
+  ForEachDecodeRequest([&task](ImageDecodeRequest& request) -> void {
     if (request.task == task) {
       request.has_external_dependency = false;
     }
-  };
-  std::ranges::for_each(
-      worker_state_->image_decode_queue.begin(),
-      worker_state_->image_decode_queue.end(), external_dependency_completed,
-      &std::pair<const ImageDecodeRequestId, ImageDecodeRequest>::second);
-  std::ranges::for_each(orphaned_decode_requests_.begin(),
-                        orphaned_decode_requests_.end(),
-                        external_dependency_completed);
+  });
   ScheduleImageDecodeOnWorkerIfNeeded();
 }
 
@@ -405,8 +403,7 @@ void ImageController::ProcessNextImageDecodeWithLock(
 
   // Take the next request from the queue.
   auto decode_it = worker_state->image_decode_queue.begin();
-  CHECK(decode_it != worker_state->image_decode_queue.end(),
-        base::NotFatalUntil::M130);
+  CHECK(decode_it != worker_state->image_decode_queue.end());
   // Skip tasks that have an unmet external dependency.
   while (decode_it != worker_state->image_decode_queue.end() &&
          decode_it->second.has_external_dependency) {
@@ -500,6 +497,10 @@ ImageController::ImageDecodeResult ImageController::CompleteTaskForRequest(
   ImageDecodeResult result;
   if (!request.draw_image.paint_image().IsLazyGenerated()) {
     result = ImageDecodeResult::DECODE_NOT_REQUIRED;
+  } else if (request.too_large_to_pin &&
+             base::FeatureList::IsEnabled(
+                 features::kResolveLargeImageDecodes)) {
+    result = ImageDecodeResult::SUCCESS;
   } else if (!request.need_unref) {
     result = ImageDecodeResult::FAILURE;
   } else {
@@ -540,6 +541,7 @@ void ImageController::GenerateTasksForOrphanedRequests() {
       request.task = result.task;
       request.has_external_dependency =
           result.task && !result.task->dependencies().empty();
+      request.too_large_to_pin = result.is_at_raster_decode;
     }
     worker_state_->image_decode_queue[request.id] = std::move(request);
   }
@@ -563,13 +565,15 @@ ImageController::ImageDecodeRequest::ImageDecodeRequest(
     ImageDecodedCallback callback,
     scoped_refptr<TileTask> task,
     bool need_unref,
-    bool has_external_dependency)
+    bool has_external_dependency,
+    bool too_large_to_pin)
     : id(id),
       draw_image(draw_image),
       callback(std::move(callback)),
       task(std::move(task)),
       need_unref(need_unref),
-      has_external_dependency(has_external_dependency) {}
+      has_external_dependency(has_external_dependency),
+      too_large_to_pin(too_large_to_pin) {}
 ImageController::ImageDecodeRequest::ImageDecodeRequest(
     ImageDecodeRequest&& other) = default;
 ImageController::ImageDecodeRequest::~ImageDecodeRequest() = default;

@@ -6,8 +6,6 @@
 
 #include <memory>
 #include <string>
-#include <utility>
-#include <vector>
 
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
@@ -22,11 +20,10 @@
 #include "chrome/test/base/browser_with_test_window_test.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/app_constants/constants.h"
+#include "extensions/browser/extension_registrar.h"
 #include "extensions/browser/extension_registry.h"
-#include "extensions/browser/extension_system.h"
 #include "extensions/common/extension_urls.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/views/controls/link.h"
 #include "ui/views/test/scoped_views_test_helper.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_observer.h"
@@ -37,6 +34,7 @@
 #include "chrome/browser/ash/app_list/arc/arc_app_list_prefs.h"
 #include "chrome/browser/ash/app_list/arc/arc_app_test.h"
 #include "chrome/browser/ash/app_list/arc/arc_app_utils.h"
+#include "chrome/browser/ash/browser_delegate/browser_controller_impl.h"
 #include "chrome/browser/ui/ash/shelf/chrome_shelf_controller.h"
 #include "chrome/browser/ui/ash/shelf/shelf_controller_helper.h"
 #include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
@@ -96,15 +94,21 @@ class AppInfoDialogViewsTest : public BrowserWithTestWindowTest,
 
   // Overridden from testing::Test:
   void SetUp() override {
-    BrowserWithTestWindowTest::SetUp();
 #if BUILDFLAG(IS_CHROMEOS)
     // Sets up a fake user manager over |BrowserWithTestWindowTest| user
     // manager.
-    arc_test_ =
+    arc_app_test_ =
         std::make_unique<ArcAppTest>(ArcAppTest::UserManagerMode::kDoNothing);
-    arc_test_->SetUp(extension_environment_.profile());
+    arc_app_test_->PreProfileSetUp();
+#endif
+
+    BrowserWithTestWindowTest::SetUp();
+
+#if BUILDFLAG(IS_CHROMEOS)
+    arc_app_test_->PostProfileSetUp(extension_environment_.profile());
 
     shelf_model_ = std::make_unique<ash::ShelfModel>();
+    browser_controller_.emplace();
     chrome_shelf_controller_ = std::make_unique<ChromeShelfController>(
         extension_environment_.profile(), shelf_model_.get());
     chrome_shelf_controller_->SetProfileForTest(
@@ -125,12 +129,11 @@ class AppInfoDialogViewsTest : public BrowserWithTestWindowTest,
     chrome_app_ = nullptr;
 #if BUILDFLAG(IS_CHROMEOS)
     chrome_shelf_controller_.reset();
+    browser_controller_.reset();
     shelf_model_.reset();
-    if (arc_test_) {
-      arc_test_->TearDown();
-      arc_test_.reset();
-    }
-#endif
+    CHECK(arc_app_test_);
+    arc_app_test_->PreProfileTearDown();
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
     // The Browser class had dependencies on LocalState, which is owned by
     // |extension_environment_|.
@@ -145,6 +148,11 @@ class AppInfoDialogViewsTest : public BrowserWithTestWindowTest,
     extension_environment_.DeleteProfile();
 
     BrowserWithTestWindowTest::TearDown();
+
+#if BUILDFLAG(IS_CHROMEOS)
+    arc_app_test_->PostProfileTearDown();
+    arc_app_test_.reset();
+#endif  // BUILDFLAG(IS_CHROMEOS)
   }
 
   TestingProfile* CreateProfile(const std::string& profile_name) override {
@@ -167,7 +175,7 @@ class AppInfoDialogViewsTest : public BrowserWithTestWindowTest,
 
     DCHECK(!widget_);
     widget_ = views::DialogDelegate::CreateDialogWidget(
-        new views::DialogDelegateView(), GetContext(), nullptr);
+        new views::DialogDelegateView(), GetContext(), gfx::NativeView());
     widget_->AddObserver(this);
     dialog_ = widget_->GetContentsView()->AddChildView(
         std::make_unique<AppInfoDialog>(profile, extension));
@@ -189,8 +197,7 @@ class AppInfoDialogViewsTest : public BrowserWithTestWindowTest,
   }
 
   void UninstallApp(const std::string& app_id) {
-    extensions::ExtensionSystem::Get(extension_environment_.profile())
-        ->extension_service()
+    extensions::ExtensionRegistrar::Get(extension_environment_.profile())
         ->UninstallExtension(
             app_id, extensions::UninstallReason::UNINSTALL_REASON_FOR_TESTING,
             nullptr);
@@ -211,8 +218,9 @@ class AppInfoDialogViewsTest : public BrowserWithTestWindowTest,
   };
 #if BUILDFLAG(IS_CHROMEOS)
   std::unique_ptr<ash::ShelfModel> shelf_model_;
+  std::optional<ash::BrowserControllerImpl> browser_controller_;
   std::unique_ptr<ChromeShelfController> chrome_shelf_controller_;
-  std::unique_ptr<ArcAppTest> arc_test_;
+  std::unique_ptr<ArcAppTest> arc_app_test_;
 #endif
 };
 
@@ -255,9 +263,6 @@ TEST_F(AppInfoDialogViewsTest, DestroyedProfileClosesDialog) {
     std::unique_ptr<Browser> browser = release_browser();
     browser->tab_strip_model()->CloseAllTabs();
     browser.reset();
-    std::unique_ptr<BrowserWindow> browser_window = release_browser_window();
-    browser_window->Close();
-    browser_window.reset();
 
     // The following serves two purposes:
     // it ensures the Widget close is being triggered by the DeleteProfile()
@@ -293,8 +298,7 @@ TEST_F(AppInfoDialogViewsTest, DestroyedOtherProfileDoesNotCloseDialog) {
 
   scoped_refptr<const extensions::Extension> other_app =
       extension_environment_.MakePackagedApp(kTestOtherExtensionId, false);
-  extensions::ExtensionSystem::Get(other_profile.get())
-      ->extension_service()
+  extensions::ExtensionRegistrar::Get(other_profile.get())
       ->AddExtension(other_app.get());
 
   ASSERT_TRUE(widget_);
@@ -364,8 +368,7 @@ TEST_F(AppInfoDialogViewsTest, ArcAppInfoLinks) {
   scoped_refptr<const extensions::Extension> other_app =
       extension_environment_.MakePackagedApp(app_constants::kChromeAppId,
                                              install);
-  extensions::ExtensionSystem::Get(other_profile.get())
-      ->extension_service()
+  extensions::ExtensionRegistrar::Get(other_profile.get())
       ->AddExtension(other_app.get());
   ShowAppInfoForProfile(app_constants::kChromeAppId, other_profile.get());
   EXPECT_FALSE(widget_->IsClosed());
@@ -375,7 +378,7 @@ TEST_F(AppInfoDialogViewsTest, ArcAppInfoLinks) {
 }
 
 // Tests that the pin/unpin button is focused after unpinning/pinning. This is
-// to verify regression in crbug.com/428704 is fixed.
+// to verify regression in crbug.com/41140316 is fixed.
 TEST_F(AppInfoDialogViewsTest, PinButtonsAreFocusedAfterPinUnpin) {
   ShowAppInfo(kTestExtensionId);
   AppInfoFooterPanel* dialog_footer =

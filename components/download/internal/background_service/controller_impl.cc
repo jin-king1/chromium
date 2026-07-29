@@ -11,6 +11,8 @@
 #include <utility>
 
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
+#include "base/logging.h"
 #include "base/strings/stringprintf.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
@@ -35,6 +37,7 @@
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "services/network/public/cpp/resource_request_body.h"
 #include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
+#include "third_party/perfetto/include/perfetto/tracing/track.h"
 
 namespace download {
 namespace {
@@ -153,8 +156,8 @@ void ControllerImpl::Initialize(base::OnceClosure callback) {
       this, "DownloadService",
       base::SingleThreadTaskRunner::GetCurrentDefault());
 
-  TRACE_EVENT_NESTABLE_ASYNC_BEGIN0(
-      "download_service", "DownloadServiceInitialize", TRACE_ID_LOCAL(this));
+  TRACE_EVENT_BEGIN("download_service", "DownloadServiceInitialize",
+                    perfetto::NamedTrack::FromPointer("DownloadService", this));
 
   driver_->Initialize(this);
   model_->Initialize(this);
@@ -453,13 +456,13 @@ void ControllerImpl::HandleTaskFinished(DownloadTaskType task_type,
 void ControllerImpl::OnDriverReady(bool success) {
   DCHECK(!startup_status_.driver_ok.has_value());
   startup_status_.driver_ok = success;
-  AttemptToFinalizeSetup();
+  PostAttemptToFinalizeSetup();
 }
 
 void ControllerImpl::OnDriverHardRecoverComplete(bool success) {
   DCHECK(!startup_status_.driver_ok.has_value());
   startup_status_.driver_ok = success;
-  AttemptToFinalizeSetup();
+  PostAttemptToFinalizeSetup();
 }
 
 void ControllerImpl::OnDownloadCreated(const DriverEntry& download) {
@@ -565,25 +568,25 @@ void ControllerImpl::OnUploadProgress(const std::string& guid,
 void ControllerImpl::OnFileMonitorReady(bool success) {
   DCHECK(!startup_status_.file_monitor_ok.has_value());
   startup_status_.file_monitor_ok = success;
-  AttemptToFinalizeSetup();
+  PostAttemptToFinalizeSetup();
 }
 
 void ControllerImpl::OnFileMonitorHardRecoverComplete(bool success) {
   DCHECK(!startup_status_.file_monitor_ok.has_value());
   startup_status_.file_monitor_ok = success;
-  AttemptToFinalizeSetup();
+  PostAttemptToFinalizeSetup();
 }
 
 void ControllerImpl::OnModelReady(bool success) {
   DCHECK(!startup_status_.model_ok.has_value());
   startup_status_.model_ok = success;
-  AttemptToFinalizeSetup();
+  PostAttemptToFinalizeSetup();
 }
 
 void ControllerImpl::OnModelHardRecoverComplete(bool success) {
   DCHECK(!startup_status_.model_ok.has_value());
   startup_status_.model_ok = success;
-  AttemptToFinalizeSetup();
+  PostAttemptToFinalizeSetup();
 }
 
 void ControllerImpl::OnItemAdded(bool success,
@@ -692,7 +695,7 @@ void ControllerImpl::OnDeviceStatusChanged(const DeviceStatus& device_status) {
   ActivateMoreDownloads();
 }
 
-void ControllerImpl::AttemptToFinalizeSetup() {
+void ControllerImpl::PostAttemptToFinalizeSetup() {
   DCHECK(controller_state_ == State::INITIALIZING ||
          controller_state_ == State::RECOVERING);
 
@@ -718,6 +721,14 @@ void ControllerImpl::AttemptToFinalizeSetup() {
     return;
   }
 
+  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, base::BindOnce(&ControllerImpl::AttemptToFinalizeSetup,
+                                weak_ptr_factory_.GetWeakPtr()));
+}
+
+void ControllerImpl::AttemptToFinalizeSetup() {
+  bool in_recovery = controller_state_ == State::RECOVERING;
+
   device_status_listener_->SetObserver(this);
   device_status_listener_->Start(config_->network_startup_delay);
   PollActiveDriverDownloads();
@@ -730,6 +741,7 @@ void ControllerImpl::AttemptToFinalizeSetup() {
 
   controller_state_ = State::READY;
 
+  log_sink_->OnServiceStatusChanged();
   log_sink_->OnServiceDownloadsAvailable();
 
   UpdateDriverStates();
@@ -1111,8 +1123,9 @@ DownloadBlockageStatus ControllerImpl::IsDownloadBlocked(Entry* entry) {
 }
 
 void ControllerImpl::KillTimedOutUploads() {
-  for (const std::string& guid : std::move(pending_uploads_))
+  for (const std::string& guid : pending_uploads_) {
     HandleCompleteDownload(CompletionType::UPLOAD_TIMEOUT, guid);
+  }
 }
 
 void ControllerImpl::NotifyClientsOfStartup(bool state_lost) {
@@ -1128,8 +1141,10 @@ void ControllerImpl::NotifyClientsOfStartup(bool state_lost) {
 }
 
 void ControllerImpl::NotifyServiceOfStartup() {
-  TRACE_EVENT_NESTABLE_ASYNC_END0(
-      "download_service", "DownloadServiceInitialize", TRACE_ID_LOCAL(this));
+  TRACE_EVENT_END(
+      "download_service",
+      /* DownloadServiceInitialize */ perfetto::NamedTrack::FromPointer(
+          "DownloadService", this));
 
   if (init_callback_.is_null())
     return;
@@ -1184,10 +1199,10 @@ void ControllerImpl::HandleCompleteDownload(CompletionType type,
   uint64_t file_size =
       driver_entry.has_value() ? driver_entry->bytes_downloaded : 0;
   stats::LogDownloadCompletion(entry->client, type, file_size);
-  LOG(WARNING) << "Background download complete, client: "
-               << static_cast<int>(entry->client)
-               << ", completion type: " << static_cast<int>(type)
-               << ", file size:" << file_size;
+  DVLOG(1) << "Background download complete, client: "
+           << static_cast<int>(entry->client)
+           << ", completion type: " << static_cast<int>(type)
+           << ", file size:" << file_size;
 
   if (type == CompletionType::SUCCEED) {
     DCHECK(driver_entry.has_value());

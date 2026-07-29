@@ -44,7 +44,7 @@ struct NET_EXPORT_PRIVATE DnsResourceRecord {
 
   // A helper to set |owned_rdata| that also sets |rdata| to point to it. The
   // |value| must be non-empty. See the definition of |owned_rdata| below.
-  void SetOwnedRdata(std::string value);
+  void SetOwnedRdata(base::span<const uint8_t> value);
 
   // NAME (variable length) + TYPE (2 bytes) + CLASS (2 bytes) + TTL (4 bytes) +
   // RDLENGTH (2 bytes) + RDATA (variable length)
@@ -52,15 +52,17 @@ struct NET_EXPORT_PRIVATE DnsResourceRecord {
   // Uses |owned_rdata| for RDATA if non-empty.
   size_t CalculateRecordSize() const;
 
-  std::string name;  // in dotted form
+  // The dotted name field of the resource record. For OPT records (RFC 6891),
+  // this will be empty as OPT records must use the root domain.
+  std::string name;
   uint16_t type = 0;
   uint16_t klass = 0;
   uint32_t ttl = 0;
   // Points to the original response buffer or otherwise to |owned_rdata|.
-  std::string_view rdata;
+  std::vector<uint8_t> owned_rdata;
   // Used to construct a DnsResponse from data. This field is empty if |rdata|
   // points to the response buffer.
-  std::string owned_rdata;
+  base::raw_span<const uint8_t> rdata;
 };
 
 // Iterator to walk over resource records of the DNS response packet.

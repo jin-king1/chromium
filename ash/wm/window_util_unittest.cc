@@ -4,6 +4,8 @@
 
 #include "ash/wm/window_util.h"
 
+#include <algorithm>
+
 #include "ash/public/cpp/presentation_time_recorder.h"
 #include "ash/shell.h"
 #include "ash/test/ash_test_base.h"
@@ -13,13 +15,15 @@
 #include "ash/wm/window_state.h"
 #include "ash/wm/window_state_delegate.h"
 #include "ash/wm/wm_event.h"
-#include "base/containers/contains.h"
 #include "base/memory/raw_ptr.h"
+#include "chromeos/ui/wm/window_util.h"
 #include "ui/aura/test/test_windows.h"
 #include "ui/aura/window.h"
 #include "ui/compositor/layer.h"
 #include "ui/display/screen.h"
 #include "ui/events/base_event_utils.h"
+#include "ui/events/event.h"
+#include "ui/gfx/geometry/point.h"
 #include "ui/wm/core/window_util.h"
 
 namespace ash {
@@ -104,8 +108,8 @@ TEST_F(WindowUtilTest, AdjustBoundsToEnsureMinimumVisibility) {
 TEST_F(WindowUtilTest, MoveWindowToDisplay) {
   UpdateDisplay("500x400, 600x400");
   std::unique_ptr<aura::Window> window(
-      CreateTestWindowInShellWithBounds(gfx::Rect(12, 20, 100, 100)));
-  display::Screen* screen = display::Screen::GetScreen();
+      CreateTestWindowInShell({.bounds = {12, 20, 100, 100}}));
+  display::Screen* screen = display::Screen::Get();
   const int64_t original_display_id =
       screen->GetDisplayNearestWindow(window.get()).id();
   EXPECT_EQ(screen->GetPrimaryDisplay().id(), original_display_id);
@@ -132,8 +136,9 @@ TEST_F(WindowUtilTest, MoveWindowToDisplay) {
 // window moved by MoveWindowToDisplay.
 TEST_F(WindowUtilTest, MoveWindowToDisplayAndLockScreen) {
   UpdateDisplay("500x400, 600x400");
-  auto window = CreateTestWindow(gfx::Rect(12, 20, 100, 100));
-  display::Screen* screen = display::Screen::GetScreen();
+  auto window =
+      CreateWindowWithAppType(chromeos::AppType::NON_APP, {12, 20, 100, 100});
+  display::Screen* screen = display::Screen::Get();
   ASSERT_EQ(2, screen->GetNumDisplays());
   const int64_t primary_display_id = screen->GetAllDisplays()[0].id();
   const int64_t secondary_display_id = screen->GetAllDisplays()[1].id();
@@ -163,8 +168,8 @@ TEST_F(WindowUtilTest, MoveWindowToDisplayAndLockScreen) {
 TEST_F(WindowUtilTest, EnsureTransientRoots) {
   // Create two windows which have no transient children or parents. Test that
   // neither of them get removed when running EnsureTransientRoots.
-  auto window1 = CreateTestWindow();
-  auto window2 = CreateTestWindow();
+  auto window1 = CreateWindowWithAppType();
+  auto window2 = CreateWindowWithAppType();
   std::vector<raw_ptr<aura::Window, VectorExperimental>> window_list = {
       window1.get(), window2.get()};
   EnsureTransientRoots(&window_list);
@@ -173,50 +178,50 @@ TEST_F(WindowUtilTest, EnsureTransientRoots) {
   // Create two windows whose transient roots are |window1|. One is a direct
   // transient child and one is a transient descendant. Test that both get
   // removed when calling EnsureTransientRoots.
-  auto descendant1 = CreateTestWindow();
-  auto descendant2 = CreateTestWindow();
+  auto descendant1 = CreateWindowWithAppType();
+  auto descendant2 = CreateWindowWithAppType();
   ::wm::AddTransientChild(descendant1.get(), descendant2.get());
   ::wm::AddTransientChild(window1.get(), descendant1.get());
   window_list.push_back(descendant1.get());
   window_list.push_back(descendant2.get());
   EnsureTransientRoots(&window_list);
   ASSERT_EQ(2u, window_list.size());
-  ASSERT_TRUE(base::Contains(window_list, window1.get()));
-  ASSERT_TRUE(base::Contains(window_list, window2.get()));
+  ASSERT_TRUE(std::ranges::contains(window_list, window1.get()));
+  ASSERT_TRUE(std::ranges::contains(window_list, window2.get()));
 
   // Create a window which has a transient parent that is not in |window_list|.
   // Test that the window is replaced with its transient root when calling
   // EnsureTransientRoots.
-  auto window3 = CreateTestWindow();
-  auto descendant3 = CreateTestWindow();
+  auto window3 = CreateWindowWithAppType();
+  auto descendant3 = CreateWindowWithAppType();
   ::wm::AddTransientChild(window3.get(), descendant3.get());
   window_list.push_back(descendant3.get());
   EnsureTransientRoots(&window_list);
   EXPECT_EQ(3u, window_list.size());
-  EXPECT_TRUE(base::Contains(window_list, window3.get()));
-  EXPECT_FALSE(base::Contains(window_list, descendant3.get()));
+  EXPECT_TRUE(std::ranges::contains(window_list, window3.get()));
+  EXPECT_FALSE(std::ranges::contains(window_list, descendant3.get()));
 
   // Create two windows which have the same transient parent that is not in
   // |window_list|. Test that one of the windows is replaced with its transient
   // root and the other is removed from |window_list| when calling
   // EnsureTransientRoots.
-  auto window4 = CreateTestWindow();
-  auto descendant4 = CreateTestWindow();
-  auto descendant5 = CreateTestWindow();
+  auto window4 = CreateWindowWithAppType();
+  auto descendant4 = CreateWindowWithAppType();
+  auto descendant5 = CreateWindowWithAppType();
   ::wm::AddTransientChild(window4.get(), descendant4.get());
   ::wm::AddTransientChild(window4.get(), descendant5.get());
   window_list.push_back(descendant4.get());
   window_list.push_back(descendant5.get());
   EnsureTransientRoots(&window_list);
   EXPECT_EQ(4u, window_list.size());
-  EXPECT_TRUE(base::Contains(window_list, window4.get()));
-  EXPECT_FALSE(base::Contains(window_list, descendant4.get()));
-  EXPECT_FALSE(base::Contains(window_list, descendant5.get()));
+  EXPECT_TRUE(std::ranges::contains(window_list, window4.get()));
+  EXPECT_FALSE(std::ranges::contains(window_list, descendant4.get()));
+  EXPECT_FALSE(std::ranges::contains(window_list, descendant5.get()));
 }
 
 TEST_F(WindowUtilTest,
        MinimizeAndHideWithoutAnimationMinimizesArcWindowsBeforeHiding) {
-  auto window = CreateTestWindow();
+  auto window = CreateWindowWithAppType();
   auto* state = new FakeWindowState(chromeos::WindowStateType::kNormal);
   WindowState::Get(window.get())
       ->SetStateObject(std::unique_ptr<WindowState::State>(state));
@@ -230,9 +235,9 @@ TEST_F(WindowUtilTest,
 }
 
 TEST_F(WindowUtilTest, SortWindowsBottomToTop) {
-  auto window1 = CreateTestWindow();
-  auto window2 = CreateTestWindow();
-  auto window3 = CreateTestWindow();
+  auto window1 = CreateWindowWithAppType();
+  auto window2 = CreateWindowWithAppType();
+  auto window3 = CreateWindowWithAppType();
 
   EXPECT_EQ(
       (std::vector<aura::Window*>{window1.get(), window2.get(), window3.get()}),
@@ -266,17 +271,21 @@ TEST_F(WindowUtilTest, SortWindowsBottomToTop) {
 }
 
 TEST_F(WindowUtilTest, InteriorTargeter) {
-  auto window = CreateTestWindow();
+  auto window = CreateWindowWithAppType();
   window->SetBounds(gfx::Rect(0, 0, 100, 100));
 
   WindowState::Get(window.get())->Maximize();
-  InstallResizeHandleWindowTargeterForWindow(window.get());
+  chromeos::wm::InstallResizeHandleWindowTargeterForWindow(window.get());
 
-  auto* child = aura::test::CreateTestWindowWithDelegateAndType(
-      aura::test::TestWindowDelegate::CreateSelfDestroyingDelegate(),
-      aura::client::WINDOW_TYPE_UNKNOWN, 1, gfx::Rect(window->bounds().size()),
-      window.get(),
-      /*show_on_creation=*/true);
+  auto* child =
+      aura::test::CreateTestWindow(
+          {.delegate =
+               aura::test::TestWindowDelegate::CreateSelfDestroyingDelegate(),
+           .parent = window.get(),
+           .bounds = gfx::Rect(window->bounds().size()),
+           .window_type = aura::client::WINDOW_TYPE_UNKNOWN,
+           .window_id = 1})
+          .release();
 
   ui::EventTarget* root_target = window->GetRootWindow();
   auto* targeter = root_target->GetEventTargeter();
@@ -298,28 +307,74 @@ TEST_F(WindowUtilTest, InteriorTargeter) {
   }
 }
 
+TEST_F(WindowUtilTest, InteriorTargeterWithCustomInsets) {
+  auto window = CreateWindowWithAppType();
+  window->SetBounds({0, 0, 100, 100});
+
+  WindowState::Get(window.get())->Maximize();
+  chromeos::wm::InstallResizeHandleWindowTargeterForWindow(
+      window.get(), chromeos::ResizeBorderInsets{.for_mouse = gfx::Insets(5),
+                                                 .for_touch = gfx::Insets(10)});
+
+  auto* child =
+      aura::test::CreateTestWindow(
+          {.delegate =
+               aura::test::TestWindowDelegate::CreateSelfDestroyingDelegate(),
+           .parent = window.get(),
+           .bounds = gfx::Rect(window->bounds().size())})
+          .release();
+
+  ui::EventTarget* root_target = window->GetRootWindow();
+  auto* targeter = root_target->GetEventTargeter();
+  {
+    gfx::Point location{2, 2};
+    ui::MouseEvent mouse(ui::EventType::kMouseMoved, location, location,
+                         ui::EventTimeForNow(), ui::EF_NONE, ui::EF_NONE);
+    EXPECT_EQ(child, targeter->FindTargetForEvent(root_target, &mouse));
+  }
+
+  // InteriorEventTargeter is now active and should pass an event at the edge to
+  // its parent.
+  WindowState::Get(window.get())->Restore();
+
+  {
+    gfx::Point location{2, 2};
+    ui::MouseEvent mouse(ui::EventType::kMouseMoved, location, location,
+                         ui::EventTimeForNow(), ui::EF_NONE, ui::EF_NONE);
+    EXPECT_EQ(window.get(), targeter->FindTargetForEvent(root_target, &mouse));
+  }
+
+  {
+    gfx::PointF location{9, 9};
+    ui::TouchEvent touch(ui::EventType::kTouchPressed, location, location,
+                         ui::EventTimeForNow(),
+                         ui::PointerDetails(ui::EventPointerType::kTouch));
+    EXPECT_EQ(window.get(), targeter->FindTargetForEvent(root_target, &touch));
+  }
+}
+
 TEST_F(WindowUtilTest, PinWindow) {
   auto window_state_delegate = std::make_unique<FakeWindowStateDelegate>();
   auto* window_state_delegate_ptr = window_state_delegate.get();
   EXPECT_EQ(window_state_delegate_ptr->toggle_locked_fullscreen_count(), 0);
 
-  auto window = CreateTestWindow();
+  auto window = CreateWindowWithAppType();
   WindowState* window_state = WindowState::Get(window.get());
   window_state->SetDelegate(std::move(window_state_delegate));
   window_util::PinWindow(window.get(), /* trusted */ false);
   EXPECT_TRUE(WindowState::Get(window.get())->IsPinned());
-  EXPECT_FALSE(WindowState::Get(window.get())->IsTrustedPinned());
+  EXPECT_FALSE(WindowState::Get(window.get())->IsLockedFullscreen());
   EXPECT_EQ(window_state_delegate_ptr->toggle_locked_fullscreen_count(), 1);
 
   WindowState::Get(window.get())->Restore();
 
   EXPECT_FALSE(WindowState::Get(window.get())->IsPinned());
-  EXPECT_FALSE(WindowState::Get(window.get())->IsTrustedPinned());
+  EXPECT_FALSE(WindowState::Get(window.get())->IsLockedFullscreen());
   EXPECT_EQ(window_state_delegate_ptr->toggle_locked_fullscreen_count(), 2);
 
   window_util::PinWindow(window.get(), /* trusted */ true);
   EXPECT_TRUE(WindowState::Get(window.get())->IsPinned());
-  EXPECT_TRUE(WindowState::Get(window.get())->IsTrustedPinned());
+  EXPECT_TRUE(WindowState::Get(window.get())->IsLockedFullscreen());
   EXPECT_EQ(window_state_delegate_ptr->toggle_locked_fullscreen_count(), 3);
 }
 
@@ -330,23 +385,23 @@ TEST_F(WindowUtilTest, PinWindow_TabletMode) {
   auto* window_state_delegate_ptr = window_state_delegate.get();
   EXPECT_EQ(window_state_delegate_ptr->toggle_locked_fullscreen_count(), 0);
 
-  auto window = CreateTestWindow();
+  auto window = CreateWindowWithAppType();
   WindowState* window_state = WindowState::Get(window.get());
   window_state->SetDelegate(std::move(window_state_delegate));
   window_util::PinWindow(window.get(), /* trusted */ false);
   EXPECT_TRUE(WindowState::Get(window.get())->IsPinned());
-  EXPECT_FALSE(WindowState::Get(window.get())->IsTrustedPinned());
+  EXPECT_FALSE(WindowState::Get(window.get())->IsLockedFullscreen());
   EXPECT_EQ(window_state_delegate_ptr->toggle_locked_fullscreen_count(), 1);
 
   WindowState::Get(window.get())->Restore();
 
   EXPECT_FALSE(WindowState::Get(window.get())->IsPinned());
-  EXPECT_FALSE(WindowState::Get(window.get())->IsTrustedPinned());
+  EXPECT_FALSE(WindowState::Get(window.get())->IsLockedFullscreen());
   EXPECT_EQ(window_state_delegate_ptr->toggle_locked_fullscreen_count(), 2);
 
   window_util::PinWindow(window.get(), /* trusted */ true);
   EXPECT_TRUE(WindowState::Get(window.get())->IsPinned());
-  EXPECT_TRUE(WindowState::Get(window.get())->IsTrustedPinned());
+  EXPECT_TRUE(WindowState::Get(window.get())->IsLockedFullscreen());
   EXPECT_EQ(window_state_delegate_ptr->toggle_locked_fullscreen_count(), 3);
 }
 

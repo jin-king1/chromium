@@ -5,8 +5,6 @@
 #ifndef COMPONENTS_SERVICES_APP_SERVICE_PUBLIC_CPP_PREFERRED_APPS_IMPL_H_
 #define COMPONENTS_SERVICES_APP_SERVICE_PUBLIC_CPP_PREFERRED_APPS_IMPL_H_
 
-#include <map>
-
 #include "base/containers/queue.h"
 #include "base/files/file_path.h"
 #include "base/functional/callback.h"
@@ -28,7 +26,7 @@ class AppServiceMojomImpl;
 class AppServiceProxyPreferredAppsTest;
 
 // The implementation of the preferred apps to manage the PreferredAppsList.
-class PreferredAppsImpl {
+class PreferredAppsImpl : public PreferredAppsList::Delegate {
  public:
   class Host {
    public:
@@ -42,6 +40,17 @@ class PreferredAppsImpl {
     // publisher (if any) of the change.
     virtual void OnSupportedLinksPreferenceChanged(const std::string& app_id,
                                                    bool open_in_app) = 0;
+
+    // Returns true if `first_app_id` and `second_app_id` have conflicting
+    // settings for the given filters, which means the older preference must be
+    // disabled.
+    virtual bool QueryConflict(const std::string& first_app_id,
+                               const IntentFilterPtr& first_filter,
+                               const std::string& second_app_id,
+                               const IntentFilterPtr& second_filter) = 0;
+
+    virtual bool IsWebAppInExtendedScope(const GURL& url,
+                                         const std::string& app_id) const = 0;
   };
 
   PreferredAppsImpl(
@@ -53,11 +62,29 @@ class PreferredAppsImpl {
   PreferredAppsImpl(const PreferredAppsImpl&) = delete;
   PreferredAppsImpl& operator=(const PreferredAppsImpl&) = delete;
 
-  ~PreferredAppsImpl();
+  ~PreferredAppsImpl() override;
 
   void RemovePreferredApp(const std::string& app_id);
   void SetSupportedLinksPreference(const std::string& app_id,
                                    IntentFilters all_link_filters);
+
+  // PreferredAppsList::Delegate overrides:
+  bool QueryConflict(const std::string& first_app_id,
+                     const IntentFilterPtr& first_filter,
+                     const std::string& second_app_id,
+                     const IntentFilterPtr& second_filter) override;
+  bool IsWebAppInExtendedScope(const GURL& url,
+                               const std::string& app_id) const override;
+
+  void SetLongestPrefixMatchEnabled(bool enabled) {
+    preferred_apps_list_.SetLongestPrefixMatchEnabled(enabled);
+  }
+#if BUILDFLAG(IS_CHROMEOS)
+  void SetProtocolLinkPreference(const std::string& app_id,
+                                 IntentFilterPtr protocol_link_filter);
+  void RemoveProtocolLinkFilters(const std::string& app_id,
+                                 IntentFilters protocol_link_filters);
+#endif
   void RemoveSupportedLinksPreference(const std::string& app_id);
 
   PreferredAppsListHandle& preferred_apps_list() {
@@ -88,6 +115,12 @@ class PreferredAppsImpl {
   void RemovePreferredAppImpl(const std::string& app_id);
   void SetSupportedLinksPreferenceImpl(const std::string& app_id,
                                        IntentFilters all_link_filters);
+#if BUILDFLAG(IS_CHROMEOS)
+  void SetProtocolLinkPreferenceImpl(const std::string& app_id,
+                                     IntentFilterPtr protocol_link_filter);
+  void RemoveProtocolLinkFiltersImpl(const std::string& app_id,
+                                     IntentFilters protocol_link_filters);
+#endif
   void RemoveSupportedLinksPreferenceImpl(const std::string& app_id);
 
   // `host_` owns `this`.

@@ -7,9 +7,10 @@
 
 #include <stddef.h>
 
-#include <map>
 #include <memory>
+#include <optional>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
@@ -17,19 +18,18 @@
 #include "base/scoped_observation.h"
 #include "build/build_config.h"
 #include "cc/trees/render_frame_metadata.h"
+#include "content/browser/back_forward_cache/back_forward_cache_impl.h"
 #include "content/browser/devtools/devtools_video_consumer.h"
 #include "content/browser/devtools/protocol/devtools_domain_handler.h"
 #include "content/browser/devtools/protocol/devtools_download_manager_delegate.h"
 #include "content/browser/devtools/protocol/page.h"
 #include "content/browser/preloading/prerender/prerender_final_status.h"
-#include "content/browser/renderer_host/back_forward_cache_impl.h"
 #include "content/browser/renderer_host/render_widget_host_impl.h"
 #include "content/public/browser/download_manager.h"
 #include "content/public/browser/javascript_dialog_manager.h"
 #include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/render_widget_host_observer.h"
 #include "content/public/common/javascript_dialog_type.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 #include "third_party/blink/public/mojom/manifest/manifest.mojom-forward.h"
 #include "url/gurl.h"
 
@@ -89,15 +89,19 @@ class PageHandler : public DevToolsDomainHandler,
   using JavaScriptDialogCallback =
       content::JavaScriptDialogManager::DialogClosedCallback;
   void DidRunJavaScriptDialog(const GURL& url,
+                              const base::UnguessableToken& frame_id,
                               const std::u16string& message,
                               const std::u16string& default_prompt,
                               JavaScriptDialogType dialog_type,
                               bool has_non_devtools_handlers,
                               JavaScriptDialogCallback callback);
   void DidRunBeforeUnloadConfirm(const GURL& url,
+                                 const base::UnguessableToken& frame_id,
                                  bool has_non_devtools_handlers,
                                  JavaScriptDialogCallback callback);
-  void DidCloseJavaScriptDialog(bool success, const std::u16string& user_input);
+  void DidCloseJavaScriptDialog(const base::UnguessableToken& frame_id,
+                                bool success,
+                                const std::u16string& user_input);
   void NavigationReset(NavigationRequest* navigation_request);
   void DownloadWillBegin(FrameTreeNode* ftn, download::DownloadItem* item);
   void DidStartNavigating(FrameTreeNode& ftn,
@@ -189,6 +193,21 @@ class PageHandler : public DevToolsDomainHandler,
                                const Binary& data) override;
 
   Response SetPrerenderingAllowed(bool is_allowed) override;
+  void GetAnnotatedPageContent(
+      std::optional<bool> include_actionable_information,
+      std::unique_ptr<GetAnnotatedPageContentCallback> callback) override;
+
+  Response AddScriptToEvaluateOnNewDocument(
+      const std::string& source,
+      std::optional<std::string> world_name,
+      std::optional<bool> include_command_line_api,
+      std::optional<bool> run_immediately,
+      std::string* identifier) override;
+  Response RemoveScriptToEvaluateOnNewDocument(
+      const std::string& identifier) override;
+  Response AddScriptToEvaluateOnLoad(const std::string& source,
+                                     std::string* identifier) override;
+  Response RemoveScriptToEvaluateOnLoad(const std::string& identifier) override;
 
   Response AssureTopLevelActiveFrame();
 
@@ -229,7 +248,7 @@ class PageHandler : public DevToolsDomainHandler,
 
   // Returns WebContents only if `host_` is a top level frame. Otherwise, it
   // returns Response with an error.
-  using ResponseOrWebContents = absl::variant<Response, WebContentsImpl*>;
+  using ResponseOrWebContents = std::variant<Response, WebContentsImpl*>;
   ResponseOrWebContents GetWebContentsForTopLevelActiveFrame();
 
   const bool allow_unsafe_operations_;
@@ -276,6 +295,12 @@ class PageHandler : public DevToolsDomainHandler,
   base::RepeatingCallback<void(std::string)> prepare_for_reload_callback_;
   bool have_pending_reload_ = false;
   std::string pending_script_to_evaluate_on_load_;
+
+  Response AddScriptToEvaluateOnNewDocumentInternal(
+      const std::string& source,
+      std::optional<std::string> world_name,
+      std::optional<bool> include_command_line_api,
+      std::string* identifier);
 
   base::WeakPtrFactory<PageHandler> weak_factory_{this};
 };

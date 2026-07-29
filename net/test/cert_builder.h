@@ -5,22 +5,31 @@
 #ifndef NET_TEST_CERT_BUILDER_H_
 #define NET_TEST_CERT_BUILDER_H_
 
+#include <array>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "base/containers/span.h"
 #include "base/memory/raw_ptr.h"
 #include "base/rand_util.h"
+#include "crypto/keypair.h"
+#include "net/base/hash_value.h"
 #include "net/base/ip_address.h"
+#include "net/cert/qwac.h"
 #include "net/cert/x509_certificate.h"
+#include "net/net_buildflags.h"
 #include "third_party/boringssl/src/include/openssl/base.h"
 #include "third_party/boringssl/src/include/openssl/bytestring.h"
 #include "third_party/boringssl/src/include/openssl/evp.h"
 #include "third_party/boringssl/src/include/openssl/pool.h"
+#include "third_party/boringssl/src/pki/merkle_tree.h"
 #include "third_party/boringssl/src/pki/parse_certificate.h"
 #include "third_party/boringssl/src/pki/signature_algorithm.h"
+#include "third_party/boringssl/src/pki/trust_store.h"
 
 class GURL;
 
@@ -33,6 +42,10 @@ namespace der {
 class Input;
 }  // namespace der
 }  // namespace bssl
+
+namespace chrome_root_store {
+class MtcAnchorData;
+}
 
 namespace net {
 
@@ -121,12 +134,12 @@ class CertBuilder {
   // signature onto |out_signature| and returns true if successful.
   static bool SignData(bssl::SignatureAlgorithm signature_algorithm,
                        std::string_view tbs_data,
-                       EVP_PKEY* key,
+                       const EVP_PKEY* key,
                        CBB* out_signature);
 
   static bool SignDataWithDigest(const EVP_MD* digest,
                                  std::string_view tbs_data,
-                                 EVP_PKEY* key,
+                                 const EVP_PKEY* key,
                                  CBB* out_signature);
 
   // Returns a DER encoded AlgorithmIdentifier TLV for |signature_algorithm|
@@ -143,6 +156,11 @@ class CertBuilder {
   static std::vector<uint8_t> BuildNameWithCommonNameOfType(
       std::string_view common_name,
       unsigned common_name_tag);
+
+  // Returns a DER encoded SEQUENCE OF OBJECT IDENTIFIER from the vector of
+  // OID values.
+  static std::vector<uint8_t> BuildSequenceOfOid(
+      std::vector<bssl::der::Input> oids);
 
   // Set the version of the certificate. Note that only V3 certificates may
   // contain extensions, so if |version| is |V1| or |V2| you may want to also
@@ -247,6 +265,15 @@ class CertBuilder {
   // Sets the inhibitAnyPolicy extension.
   void SetInhibitAnyPolicy(uint64_t skip_certs);
 
+  // Sets the QcStatements extension with statements as specified by
+  // `qc_statements`.
+  void SetQcStatements(std::vector<QcStatement> qc_statements);
+
+  // Sets the QcStatements extension to have QWAC statements: a QcCompliance
+  // statement with no info and a QcType statement with the info being the OIDs
+  // with values from `qc_types`.
+  void SetQwacQcStatements(std::vector<bssl::der::Input> qc_types);
+
   void SetValidity(base::Time not_before, base::Time not_after);
 
   // Sets the Subject Key Identifier (SKI) extension to the specified string.
@@ -310,6 +337,10 @@ class CertBuilder {
   // key is specifically needed. If a key was already set, it will be replaced.
   void GenerateRSAKey();
 
+  // Sets the private key for the generated certificate to an ML-DSA-44 key. If
+  // a key was already set, it will be replaced.
+  void GenerateMldsa44Key();
+
   // Loads the private key for the generated certificate from |key_file|.
   bool UseKeyFromFile(const base::FilePath& key_file);
 
@@ -341,6 +372,15 @@ class CertBuilder {
   // Parses and returns validity period for the generated certificate in
   // |not_before| and |not_after|, returning true on success.
   bool GetValidity(base::Time* not_before, base::Time* not_after) const;
+
+  // Get the DER-encoded validity.
+  base::span<const uint8_t> GetEncodedValidity() {
+    return base::as_byte_span(validity_tlv_);
+  }
+
+  // Get the DER-encoded extensions, or an empty vector if there are no
+  // extensions.
+  void GetEncodedExtensions(std::vector<uint8_t>* out);
 
   // Returns the key for the generated certificate.
   EVP_PKEY* GetKey();
@@ -448,6 +488,211 @@ class CertBuilder {
   bssl::UniquePtr<EVP_PKEY> key_;
 
   raw_ptr<CertBuilder, DanglingUntriaged> issuer_ = nullptr;
+};
+
+// Creates MTC logs and certificates.
+// TODO(crbug.com/469624806): for plants-05, an MTC CA can have multiple logs,
+// but this class only represents a single log. That's fine for most testing,
+// but it might be useful to have a higher level test class for representing a
+// CA with multiple logs? (The only place it really matters currently is the
+// FillMtcMetadataAnchorProto method, otherwise you could just create multiple
+// MtcLogBuilder objects to represent each log for a single CA.)
+class MtcLogBuilder {
+ public:
+  enum Spec {
+    kDavidBen08,
+    kPlants05,
+  };
+  // Type aliases to make interfaces more obvious what the integer types mean.
+  using LogNumber = uint16_t;
+  using LandmarkNumber = uint64_t;
+  using LogIndex = uint64_t;
+
+  struct Cosigner {
+    std::vector<uint8_t> id;
+    crypto::keypair::PrivateKey key;
+    bssl::SignatureAlgorithm signature_algorithm;
+  };
+
+  // Create a log builder for draft-davidben-08 with the specified log id and
+  // base id. If `base_id` is empty, `log_id` will also be used as the
+  // `base_id`.
+  explicit MtcLogBuilder(base::span<const uint8_t> log_id,
+                         base::span<const uint8_t> base_id = {});
+
+  // Create a log builder for draft-plants-05 with the specified `ca_id` and
+  // `log_number`.
+  // The spec requires `log_number` to be non-zero to generate valid a log, but
+  // this class allows it to be 0 so that tests can generate intentionally
+  // invalid test data.
+  explicit MtcLogBuilder(base::span<const uint8_t> ca_id, LogNumber log_number);
+
+  ~MtcLogBuilder();
+
+  base::span<const uint8_t> log_id() const { return log_id_; }
+  base::span<const uint8_t> ca_id() const {
+    CHECK_EQ(spec_, kPlants05);
+    return ca_id_;
+  }
+
+  // Creates the next landmark. Returns false on failure (eg if there were
+  // no new entries added since the last landmark).
+  bool AdvanceLandmark();
+
+  // Returns the range, inclusive, of active landmark numbers.
+  //
+  // Active landmarks are those that may contain un-expired certificates
+  // (https://davidben.github.io/merkle-tree-certs/draft-davidben-tls-merkle-tree-certs.html#section-6.3.1-7)
+  //
+  // This implementation doesn't directly care about expiration or validity
+  // periods and leaves those details to the test to control. It does not
+  // currently support advancing the minimum landmark, but that could be added
+  // if a test needs it.
+  //
+  // Landmark numbers can be used to form Trust Anchor IDs
+  // https://davidben.github.io/merkle-tree-certs/draft-davidben-tls-merkle-tree-certs.html#section-6.3.1-4
+  std::pair<LandmarkNumber, LandmarkNumber> GetActiveLandmarkRange() const {
+    return {0, landmarks_.size() - 1};
+  }
+
+  // Returns the currently active landmark subtrees.
+  //
+  // https://davidben.github.io/merkle-tree-certs/draft-davidben-tls-merkle-tree-certs.html#section-6.3.1-7
+  std::vector<bssl::Subtree> GetLandmarkSubtrees() const;
+
+  // Returns the subtrees and subtree hashes for the currently active
+  // landmarks. This information is needed by the client to verify
+  // signatureless certificates.
+  //
+  // https://davidben.github.io/merkle-tree-certs/draft-davidben-tls-merkle-tree-certs.html#trusted-subtrees
+  std::vector<bssl::TrustedSubtree> GetLandmarkSubtreeHashes() const;
+
+  // Add entry to the log and return the index of the entry.
+  // Once the index is included in a landmark subtree, the index can be used
+  // with CreateSignaturelessCertificate to create a certificate.
+  // TODO(crbug.com/469624806): using CertBuilder for this is slightly odd,
+  // refactor so that MTC certs have a builder that only contains methods
+  // that are relevant for MTCs (sharing code with the legacy CertBuilder in
+  // whatever way makes sense).
+  LogIndex AddEntry(CertBuilder& mtc_builder);
+
+  // Add entries to the log that will not actually be used. This can be used
+  // to make the merkle tree in a certain shape without having to create a
+  // bunch of otherwise unused MTC cert builders.
+  // `extra_data` will be hashed into the entries, and can be used to test
+  // logs with the same shape trees with different merkle tree hashes.
+  void AddUnusedEntries(size_t n, base::span<const uint8_t> extra_data = {});
+
+  // TODO(crbug.com/469624806): rename "Signatureless" to "LandmarkRelative".
+
+  // Returns the DER-encoded certificate for entry `index`, which must be
+  // included in the active landmark subtrees. Returns nullopt otherwise.
+  //
+  // https://davidben.github.io/merkle-tree-certs/draft-davidben-tls-merkle-tree-certs.html#name-constructing-signatureless-
+  std::optional<std::vector<uint8_t>> CreateSignaturelessCertificate(
+      LogIndex index);
+
+  // Like CreateSignaturelessCertificate, but returns a CRYPTO_BUFFER instead
+  // of a byte vector, or returns nullptr on error.
+  bssl::UniquePtr<CRYPTO_BUFFER> CreateSignaturelessCertificateBuffer(
+      LogIndex index);
+
+  // Creates a standalone MTC. In order for this to create a valid MTC,
+  // `cosigners` should include the CA cosigner, and optionally additional
+  // cosigners. The order of `cosigners` does not matter.
+  std::optional<std::vector<uint8_t>> CreateStandaloneCertificate(
+      LogIndex index,
+      std::vector<Cosigner*> cosigners);
+
+#if BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
+  // Helper to fill a MtcAnchorData protobuf object with the information from
+  // this log.
+  void FillMtcMetadataAnchorProto(
+      chrome_root_store::MtcAnchorData* mtc_anchor_data) const;
+#endif  // BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
+
+  static std::vector<bssl::Subtree> SubtreesForLandmarkRangeForTesting(
+      LogIndex start,
+      LogIndex end);
+
+ private:
+  class Data;
+
+  std::vector<uint8_t> GetEncodedLogName();
+  std::vector<uint8_t> CreateSignaturelessMtcProof(LogIndex index);
+  std::vector<uint8_t> CreateMtcProof(LogIndex index,
+                                      bssl::Subtree subtree,
+                                      std::vector<Cosigner*> cosigners);
+  std::vector<uint8_t> CreateCosignedMessage(bssl::Subtree subtree,
+                                             const Cosigner* cosigner);
+  std::vector<uint8_t> CreateMtcSignature(bssl::Subtree subtree,
+                                          const Cosigner* cosigner);
+  std::vector<SHA256HashValue> CalculateSubtreeInclusionProof(
+      bssl::Subtree subtree,
+      bssl::Subtree tree);
+  std::optional<std::vector<uint8_t>> CreateCertificate(
+      LogIndex index,
+      base::span<const uint8_t> signature_value);
+
+  // TBSCertificateLogEntry  ::=  SEQUENCE  {
+  // version             [0]  EXPLICIT Version DEFAULT v1,
+  // issuer                   Name,
+  // validity                 Validity,
+  // subject                  Name,
+  // subjectPublicKeyInfoHash OCTET STRING,
+  // issuerUniqueID      [1]  IMPLICIT UniqueIdentifier OPTIONAL,
+  // subjectUniqueID     [2]  IMPLICIT UniqueIdentifier OPTIONAL,
+  // extensions          [3]  EXPLICIT Extensions OPTIONAL }
+  struct MtcLogEntry {
+    MtcLogEntry();
+    ~MtcLogEntry();
+    MtcLogEntry(const MtcLogEntry&);
+    MtcLogEntry& operator=(const MtcLogEntry& other);
+    MtcLogEntry(MtcLogEntry&&);
+    MtcLogEntry& operator=(MtcLogEntry&& other);
+
+    static MtcLogEntry NullEntry();
+
+    std::vector<uint8_t> BuildMerkleTreeCertEntryTbsCertEntry(
+        std::vector<uint8_t> issuer_tlv,
+        Spec spec);
+    std::vector<uint8_t> BuildTBSCertificate(std::vector<uint8_t> issuer_tlv,
+                                             uint64_t serial);
+
+    // Fields corresponding to TBSCertificateLogEntry:
+    // TODO(crbug.com/469624806): Version is always v3. Support
+    // CertBuilder::version_?
+    // Issuer is not present since it is always derived from the builder's
+    // `log_id_`.
+    std::vector<uint8_t> validity;
+    std::vector<uint8_t> subject;
+    // subjectPublicKeyAlgorithm and subjectPublicKeyInfoHash aren't saved in
+    // the struct, they are calculated from the `subject_public_key_info` when
+    // needed.
+    // issuerUniqueID and subjectUniqueID are not supported.
+    std::vector<uint8_t> extensions;
+
+    // Additional fields for creating a final certificate:
+    std::vector<uint8_t> subject_public_key_info;
+  };
+
+  Spec spec_;
+
+  // The tree size at each landmark (the vector is a mapping from
+  // LandmarkNumber to LogIndex). Landmark 0 is always the empty tree.
+  std::vector<LogIndex> landmarks_;
+
+  // The meaning of log_id_ differs between davidben-08 and plants-05.
+  std::vector<uint8_t> log_id_;
+  // Only used in davidben-08.
+  std::vector<uint8_t> base_id_;
+  // Only used in plants-05.
+  std::vector<uint8_t> ca_id_;
+
+  // Not used in kDavidBen08.
+  LogNumber log_number_;
+
+  std::unique_ptr<Data> data_;
 };
 
 }  // namespace net

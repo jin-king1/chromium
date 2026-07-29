@@ -22,7 +22,6 @@ import android.content.res.Resources;
 import android.content.res.Resources.NotFoundException;
 import android.graphics.drawable.Drawable;
 import android.net.Uri;
-import android.os.Build;
 import android.text.TextUtils;
 
 import androidx.annotation.IntDef;
@@ -33,7 +32,6 @@ import org.chromium.base.ContextUtils;
 import org.chromium.base.IntentUtils;
 import org.chromium.base.Log;
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.UnownedUserData;
 import org.chromium.base.UnownedUserDataHost;
 import org.chromium.base.UnownedUserDataKey;
 import org.chromium.base.metrics.RecordHistogram;
@@ -163,10 +161,9 @@ public class ShareHelper {
     }
 
     /** BroadcastReceiver to record the chosen component when sharing an Intent. */
-    public static class TargetChosenReceiver extends BroadcastReceiver
-            implements IntentCallback, UnownedUserData {
+    public static class TargetChosenReceiver extends BroadcastReceiver implements IntentCallback {
         private static final UnownedUserDataKey<TargetChosenReceiver> TARGET_CHOSEN_RECEIVER_KEY =
-                new UnownedUserDataKey<>(TargetChosenReceiver.class);
+                new UnownedUserDataKey<>(TargetChosenReceiver::onDetachedFromHost);
         private @Nullable TargetChosenCallback mCallback;
         private WeakReference<Context> mAttachedContext;
         private WeakReference<WindowAndroid> mAttachedWindow;
@@ -250,10 +247,8 @@ public class ShareHelper {
             final Context context = ContextUtils.getApplicationContext();
             Intent intent = new Intent(mReceiverAction);
             intent.setPackage(context.getPackageName());
-            // Adding intent extras since non-exported broadcast listener does not exist pre-T.
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-                IntentUtils.addTrustedIntentExtras(intent);
-            }
+            // Adding intent extras to verify the intent is from Chrome.
+            IntentUtils.addTrustedIntentExtras(intent);
             return intent;
         }
 
@@ -277,7 +272,7 @@ public class ShareHelper {
         }
 
         @Override
-        public void onIntentCompleted(int resultCode, Intent data) {
+        public void onIntentCompleted(int resultCode, @Nullable Intent data) {
             // NOTE: The validity of the returned |resultCode| is somewhat unexpected. For
             // background, a sharing flow starts with a "Chooser" activity that enables the user
             // to select the app to share to, and then when the user selects that application,
@@ -296,19 +291,43 @@ public class ShareHelper {
             }
         }
 
-        @Override
-        public void onDetachedFromHost(UnownedUserDataHost host) {
+        private static void onDetachedFromHost(
+                TargetChosenReceiver self, UnownedUserDataHost host) {
             // Remove the weak reference to the context and window when it is removed from the
             // attaching window.
-            Context attachedContext = mAttachedContext.get();
+            Context attachedContext = self.mAttachedContext.get();
             if (attachedContext != null) {
+                Activity activity = ContextUtils.activityFromContext(attachedContext);
+                // An activity is "finishing" if it is done and should be closed (see
+                // https://developer.android.com/reference/android/app/Activity#finish()).
+                // If the activity is finishing, we can't send the clearing intent. The clearing
+                // intent uses FLAG_ACTIVITY_CLEAR_TOP to reuse the parent activity and clear the
+                // share sheet on top of it. However, if the parent activity is finishing, the OS
+                // cannot reuse it and falls back to launching a new instance of it. Since this
+                // clearing intent has no URL, the new instance (or Custom Tab) defaults to loading
+                // about:blank.
+                //
+                // Furthermore, we don't need to explicitly clear the ChooserActivity when the
+                // parent
+                // activity is finishing, because the OS will automatically destroy any activities
+                // on top of it in the task stack (see
+                // https://developer.android.com/guide/components/activities/tasks-and-back-stack).
+                //
+                // The activity may be destroyed temporarily during a recreate (see
+                // https://developer.android.com/reference/android/app/Activity#onDestroy()). Theme
+                // changes recreate the activity and dismiss the share sheet in non-freeform window
+                // mode, so we want to emit the clearing intent in those cases.
+                if (activity != null && activity.isFinishing()) {
+                    self.cancel();
+                    return;
+                }
                 Log.i(TAG, "Dispatch cleaning intent to close the share sheet.");
                 // Issue a cleaner intent so the share sheet is cleared. This is a workaround to
                 // close the top ChooserActivity when share isn't completed.
                 Intent cleanerIntent = createCleanupIntent(attachedContext);
                 attachedContext.startActivity(cleanerIntent);
             }
-            cancel();
+            self.cancel();
         }
 
         private static Intent createCleanupIntent(Context context) {
@@ -322,8 +341,7 @@ public class ShareHelper {
         }
 
         private boolean isUntrustedIntent(Intent intent) {
-            return Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
-                    && !IntentUtils.isTrustedIntentFromSelf(intent);
+            return !IntentUtils.isTrustedIntentFromSelf(intent);
         }
 
         private void detach() {
@@ -361,6 +379,7 @@ public class ShareHelper {
                         | Intent.FLAG_ACTIVITY_FORWARD_RESULT
                         | Intent.FLAG_ACTIVITY_PREVIOUS_IS_TOP
                         | Intent.FLAG_ACTIVITY_NEW_TASK);
+        intent.putExtra(ShareParams.EXTRA_SHARE_ORIGIN, params.getOrigin());
         intent.putExtra(
                 EXTRA_TASK_ID, assumeNonNull(params.getWindow().getActivity().get()).getTaskId());
 
@@ -373,8 +392,8 @@ public class ShareHelper {
             ContentResolver resolver = ContextUtils.getApplicationContext().getContentResolver();
             intent.setType(resolver.getType(imageUri));
             intent.setClipData(ClipData.newUri(resolver, null, imageUri));
-            if (!TextUtils.isEmpty(params.getUrl())) {
-                intent.putExtra(Intent.EXTRA_TEXT, params.getUrl());
+            if (!TextUtils.isEmpty(params.getTextAndUrl())) {
+                intent.putExtra(Intent.EXTRA_TEXT, params.getTextAndUrl());
             }
             if (!TextUtils.isEmpty(params.getImageAltText())) {
                 intent.putExtra(EXTRA_STREAM_ALT_TEXT, params.getImageAltText());

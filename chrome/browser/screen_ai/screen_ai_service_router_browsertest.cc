@@ -11,6 +11,7 @@
 #include "base/logging.h"
 #include "base/memory/weak_ptr.h"
 #include "base/run_loop.h"
+#include "base/strings/stringprintf.h"
 #include "base/task/thread_pool.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
@@ -200,7 +201,7 @@ class ScreenAIServiceRouterTest
 
   ScreenAIServiceRouter* router() {
     return ScreenAIServiceRouterFactory::GetForBrowserContext(
-        browser()->profile());
+        browser()->GetProfile());
   }
 
  protected:

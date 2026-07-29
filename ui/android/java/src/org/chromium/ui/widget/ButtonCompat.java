@@ -13,37 +13,34 @@ import android.view.ContextThemeWrapper;
 
 import androidx.annotation.ColorRes;
 import androidx.annotation.StyleRes;
-import androidx.appcompat.content.res.AppCompatResources;
 import androidx.appcompat.widget.AppCompatButton;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.ui.R;
+import org.chromium.ui.widget.RippleBackgroundHelper.BorderType;
 
 /**
  * A Material-styled button with a customizable background color. On L devices, this is a true
  * Material button. On earlier devices, the button is similar but lacks ripples and a shadow.
  *
- * Create a button in Java:
+ * <p>Create a button in Java:
  *
- *   new ButtonCompat(context, R.style.TextButtonThemeOverlay);
+ * <p>new ButtonCompat(context, R.style.TextButtonThemeOverlay);
  *
- * Create a button in XML:
+ * <p>Create a button in XML:
  *
- *   <org.chromium.ui.widget.ButtonCompat
- *       android:layout_width="wrap_content"
- *       android:layout_height="wrap_content"
- *       android:text="Click me"
- *       style="@style/TextButton" />
+ * <p><org.chromium.ui.widget.ButtonCompat android:layout_width="wrap_content"
+ * android:layout_height="wrap_content" android:text="Click me" style="@style/TextButton" />
  *
- * Note: To ensure the button's shadow is fully visible, you may need to set
+ * <p>Note: To ensure the button's shadow is fully visible, you may need to set
  * android:clipToPadding="false" on the button's parent view.
  *
- * See {@link R.styleable#ButtonCompat ButtonCompat Attributes}.
+ * <p>See {@link R.styleable#ButtonCompat ButtonCompat Attributes}.
  */
 @NullMarked
 public class ButtonCompat extends AppCompatButton {
-    private RippleBackgroundHelper mRippleBackgroundHelper;
+    private final RippleBackgroundHelper mRippleBackgroundHelper;
 
     /**
      * Constructor for programmatically creating a {@link ButtonCompat}.
@@ -89,15 +86,22 @@ public class ButtonCompat extends AppCompatButton {
                 a.getResourceId(R.styleable.ButtonCompat_borderColor, android.R.color.transparent);
         int borderWidthId =
                 a.getResourceId(
-                        R.styleable.ButtonCompat_borderWidth,
+                        R.styleable.ButtonCompat_buttonBorderWidth,
                         R.dimen.default_ripple_background_border_size);
         int verticalInset =
                 a.getDimensionPixelSize(
                         R.styleable.ButtonCompat_verticalInset,
                         getResources().getDimensionPixelSize(R.dimen.button_bg_vertical_inset));
+        int horizontalInset = a.getDimensionPixelSize(R.styleable.ButtonCompat_horizontalInset, 0);
+
+        // Border style attribute
+        @BorderType
+        int borderStyle = a.getInt(R.styleable.ButtonCompat_buttonBorderStyle, BorderType.SOLID);
 
         final int defaultRadius =
-                getResources().getDimensionPixelSize(R.dimen.button_compat_corner_radius);
+                a.getDimensionPixelSize(
+                        R.styleable.ButtonCompat_rippleCornerRadius,
+                        getResources().getDimensionPixelSize(R.dimen.button_compat_corner_radius));
         final int topStartRippleRadius =
                 a.getDimensionPixelSize(
                         R.styleable.ButtonCompat_rippleCornerRadiusTopStart, defaultRadius);
@@ -117,7 +121,7 @@ public class ButtonCompat extends AppCompatButton {
                 a.getResourceId(R.styleable.ButtonCompat_buttonTextColor, -1);
 
         if (textColorRes != -1) {
-            setTextColor(AppCompatResources.getColorStateList(getContext(), textColorRes));
+            setTextColor(getContext().getColorStateList(textColorRes));
         }
 
         float[] radii;
@@ -156,11 +160,32 @@ public class ButtonCompat extends AppCompatButton {
                         radii,
                         borderColorId,
                         borderWidthId,
-                        verticalInset);
+                        verticalInset,
+                        horizontalInset);
+
+        setBorderStyle(borderStyle);
     }
 
     /** Sets the background color of the button. */
     public void setButtonColor(ColorStateList buttonColorList) {
         mRippleBackgroundHelper.setBackgroundColor(buttonColorList);
+    }
+
+    /**
+     * Sets the border style for the button.
+     *
+     * @param borderType The type of border (SOLID or DASHED).
+     */
+    public void setBorderStyle(@BorderType int borderType) {
+        mRippleBackgroundHelper.setBorderStyle(borderType);
+    }
+
+    /**
+     * Sets the border color for the button.
+     *
+     * @param borderColor The color that is drawn around the button with the current style.
+     */
+    public void setBorderColor(ColorStateList borderColor) {
+        mRippleBackgroundHelper.setBorderColor(borderColor);
     }
 }

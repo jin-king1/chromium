@@ -7,27 +7,21 @@
 #include <memory>
 #include <vector>
 
-#include "base/feature_list.h"
-#include "chrome/browser/password_manager/android/access_loss/password_access_loss_warning_bridge_impl.h"
 #include "chrome/browser/password_manager/chrome_password_manager_client.h"
-#include "chrome/browser/plus_addresses/plus_address_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/safe_browsing/chrome_password_reuse_detection_manager_client.h"
 #include "chrome/browser/ui/android/passwords/all_passwords_bottom_sheet_view.h"
 #include "chrome/browser/ui/android/passwords/all_passwords_bottom_sheet_view_impl.h"
 #include "components/device_reauth/device_authenticator.h"
 #include "components/password_manager/content/browser/content_password_manager_driver.h"
-#include "components/password_manager/core/browser/features/password_features.h"
 #include "components/password_manager/core/browser/password_form.h"
 #include "components/password_manager/core/browser/password_manager_client.h"
 #include "components/password_manager/core/browser/password_manager_driver.h"
 #include "components/password_manager/core/browser/password_manager_metrics_util.h"
+#include "components/password_manager/core/browser/password_store/password_form_converters.h"
 #include "components/password_manager/core/browser/password_store/password_store_interface.h"
-#include "components/password_manager/core/common/password_manager_features.h"
-#include "components/plus_addresses/features.h"
-#include "components/plus_addresses/plus_address_service.h"
 #include "content/public/browser/web_contents.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 
 using autofill::mojom::FocusedFieldType;
 using password_manager::PasswordManagerClient;
@@ -45,8 +39,7 @@ AllPasswordsBottomSheetController::AllPasswordsBottomSheetController(
     FocusedFieldType focused_field_type,
     PasswordManagerClient* client,
     PasswordReuseDetectionManagerClient*
-        password_reuse_detection_manager_client,
-    std::unique_ptr<PasswordAccessLossWarningBridge> access_loss_warning_bridge)
+        password_reuse_detection_manager_client)
     : view_(std::move(view)),
       web_contents_(web_contents),
       profile_store_(profile_store),
@@ -56,10 +49,7 @@ AllPasswordsBottomSheetController::AllPasswordsBottomSheetController(
       focused_field_type_(focused_field_type),
       client_(client),
       password_reuse_detection_manager_client_(
-          password_reuse_detection_manager_client),
-      access_loss_warning_bridge_(std::move(access_loss_warning_bridge)),
-      plus_address_service_(PlusAddressServiceFactory::GetForBrowserContext(
-          web_contents_->GetBrowserContext())) {}
+          password_reuse_detection_manager_client) {}
 
 AllPasswordsBottomSheetController::AllPasswordsBottomSheetController(
     content::WebContents* web_contents,
@@ -72,11 +62,7 @@ AllPasswordsBottomSheetController::AllPasswordsBottomSheetController(
       profile_store_(profile_store),
       account_store_(account_store),
       dismissal_callback_(std::move(dismissal_callback)),
-      focused_field_type_(focused_field_type),
-      access_loss_warning_bridge_(
-          std::make_unique<PasswordAccessLossWarningBridgeImpl>()),
-      plus_address_service_(PlusAddressServiceFactory::GetForBrowserContext(
-          web_contents_->GetBrowserContext())) {
+      focused_field_type_(focused_field_type) {
   CHECK(web_contents_);
   CHECK(profile_store);
   CHECK(dismissal_callback_);
@@ -103,12 +89,12 @@ void AllPasswordsBottomSheetController::Show() {
   }
 
   int awaiting_calls = account_store_ ? 2 : 1;
-  on_password_forms_received_barrier_callback_ = base::BarrierCallback<
-      std::vector<std::unique_ptr<password_manager::PasswordForm>>>(
-      awaiting_calls,
-      base::BindOnce(
-          &AllPasswordsBottomSheetController::OnResultFromAllStoresReceived,
-          weak_ptr_factory_.GetWeakPtr()));
+  on_password_forms_received_barrier_callback_ =
+      base::BarrierCallback<std::vector<password_manager::PasswordForm>>(
+          awaiting_calls,
+          base::BindOnce(
+              &AllPasswordsBottomSheetController::OnResultFromAllStoresReceived,
+              weak_ptr_factory_.GetWeakPtr()));
 
   profile_store_->GetAllLoginsWithAffiliationAndBrandingInformation(
       weak_ptr_factory_.GetWeakPtr());
@@ -118,12 +104,21 @@ void AllPasswordsBottomSheetController::Show() {
   }
 }
 
-void AllPasswordsBottomSheetController::OnGetPasswordStoreResults(
-    std::vector<std::unique_ptr<password_manager::PasswordForm>> results) {
+void AllPasswordsBottomSheetController::OnGetPasswordStoreResultsOrErrorFrom(
+    password_manager::PasswordStoreInterface* store,
+    password_manager::LoginsResultOrError results_or_error) {
   CHECK(on_password_forms_received_barrier_callback_);
-  std::erase_if(results,
-                [](const auto& form_ptr) { return form_ptr->blocked_by_user; });
-  on_password_forms_received_barrier_callback_.Run(std::move(results));
+  if (std::holds_alternative<password_manager::PasswordStoreBackendError>(
+          results_or_error)) {
+    on_password_forms_received_barrier_callback_.Run({});
+    return;
+  }
+  auto results =
+      std::get<password_manager::LoginsResult>(std::move(results_or_error));
+  std::erase_if(results, [](const auto& form) { return form.blocked_by_user; });
+
+  on_password_forms_received_barrier_callback_.Run(
+      password_manager::ToPasswordForms(std::move(results)));
 }
 
 Profile* AllPasswordsBottomSheetController::GetProfile() {
@@ -167,8 +162,6 @@ void AllPasswordsBottomSheetController::OnCredentialSelected(
     driver_->FillIntoFocusedField(is_password_field, username);
   }
 
-  TryToShowAccessLossWarningSheet();
-
   // Consumes the dismissal callback to destroy the native controller and java
   // controller after the user selects a credential.
   OnDismiss();
@@ -182,12 +175,6 @@ const GURL& AllPasswordsBottomSheetController::GetFrameUrl() {
   return driver_->GetLastCommittedURL();
 }
 
-bool AllPasswordsBottomSheetController::IsPlusAddress(
-    const std::string& potential_plus_address) const {
-  return plus_address_service_ &&
-         plus_address_service_->IsPlusAddress(potential_plus_address);
-}
-
 void AllPasswordsBottomSheetController::OnReauthCompleted(
     const std::u16string& password,
     bool auth_succeeded) {
@@ -195,7 +182,6 @@ void AllPasswordsBottomSheetController::OnReauthCompleted(
 
   if (auth_succeeded) {
     FillPassword(password);
-    TryToShowAccessLossWarningSheet();
   }
 
   // Consumes the dismissal callback to destroy the native controller and java
@@ -213,8 +199,7 @@ void AllPasswordsBottomSheetController::FillPassword(
 }
 
 void AllPasswordsBottomSheetController::OnResultFromAllStoresReceived(
-    std::vector<std::vector<std::unique_ptr<password_manager::PasswordForm>>>
-        results) {
+    std::vector<std::vector<password_manager::PasswordForm>> results) {
   CHECK(on_password_forms_received_barrier_callback_);
   CHECK(!results.empty());
   on_password_forms_received_barrier_callback_.Reset();
@@ -224,22 +209,4 @@ void AllPasswordsBottomSheetController::OnResultFromAllStoresReceived(
               std::back_inserter(results[0]));
   }
   view_->Show(std::move(results[0]), focused_field_type_);
-}
-
-void AllPasswordsBottomSheetController::TryToShowAccessLossWarningSheet() {
-  if (!base::FeatureList::IsEnabled(
-          password_manager::features::
-              kUnifiedPasswordManagerLocalPasswordsAndroidAccessLossWarning)) {
-    return;
-  }
-  Profile* profile =
-      Profile::FromBrowserContext(web_contents_->GetBrowserContext());
-  if (profile && access_loss_warning_bridge_->ShouldShowAccessLossNoticeSheet(
-                     profile->GetPrefs(), /*called_at_startup=*/false)) {
-    access_loss_warning_bridge_->MaybeShowAccessLossNoticeSheet(
-        profile->GetPrefs(), web_contents_->GetTopLevelNativeWindow(), profile,
-        /*called_at_startup=*/false,
-        password_manager_android_util::PasswordAccessLossWarningTriggers::
-            kAllPasswords);
-  }
 }

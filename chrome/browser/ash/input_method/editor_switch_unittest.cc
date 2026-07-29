@@ -5,11 +5,11 @@
 #include "chrome/browser/ash/input_method/editor_switch.h"
 
 #include <string>
+#include <utility>
 
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
 #include "base/test/scoped_feature_list.h"
-#include "base/types/cxx23_to_underlying.h"
 #include "chrome/browser/ash/input_method/editor_consent_enums.h"
 #include "chrome/browser/ash/input_method/editor_context.h"
 #include "chrome/browser/ash/input_method/editor_geolocation_mock_provider.h"
@@ -258,6 +258,7 @@ struct EditorSwitchTriggerTestCase {
   net::NetworkChangeNotifier::ConnectionType network_status;
   bool user_pref;
   chromeos::editor_menu::EditorConsentStatus consent_status;
+  bool is_selection_valid;
   size_t num_chars_selected;
 
   EditorMode expected_editor_mode;
@@ -285,6 +286,7 @@ INSTANTIATE_TEST_SUITE_P(
             .user_pref = true,
             .consent_status =
                 chromeos::editor_menu::EditorConsentStatus::kDeclined,
+            .is_selection_valid = true,
             .num_chars_selected = 0,
             .expected_editor_mode = EditorMode::kSoftBlocked,
             .expected_editor_opportunity_mode = EditorOpportunityMode::kWrite,
@@ -305,6 +307,7 @@ INSTANTIATE_TEST_SUITE_P(
             .user_pref = true,
             .consent_status =
                 chromeos::editor_menu::EditorConsentStatus::kApproved,
+            .is_selection_valid = true,
             .num_chars_selected = 0,
             .expected_editor_mode = EditorMode::kSoftBlocked,
             .expected_editor_opportunity_mode =
@@ -325,6 +328,7 @@ INSTANTIATE_TEST_SUITE_P(
          .user_pref = true,
          .consent_status =
              chromeos::editor_menu::EditorConsentStatus::kApproved,
+         .is_selection_valid = true,
          .num_chars_selected = 0,
          .expected_editor_mode = EditorMode::kWrite,
          .expected_editor_opportunity_mode = EditorOpportunityMode::kWrite,
@@ -342,6 +346,7 @@ INSTANTIATE_TEST_SUITE_P(
          .user_pref = true,
          .consent_status =
              chromeos::editor_menu::EditorConsentStatus::kApproved,
+         .is_selection_valid = true,
          .num_chars_selected = 0,
          .expected_editor_mode = EditorMode::kWrite,
          .expected_editor_opportunity_mode = EditorOpportunityMode::kWrite,
@@ -360,6 +365,7 @@ INSTANTIATE_TEST_SUITE_P(
          .user_pref = true,
          .consent_status =
              chromeos::editor_menu::EditorConsentStatus::kApproved,
+         .is_selection_valid = true,
          .num_chars_selected = 0,
          .expected_editor_mode = EditorMode::kWrite,
          .expected_editor_opportunity_mode = EditorOpportunityMode::kWrite,
@@ -378,6 +384,7 @@ INSTANTIATE_TEST_SUITE_P(
          .user_pref = true,
          .consent_status =
              chromeos::editor_menu::EditorConsentStatus::kApproved,
+         .is_selection_valid = true,
          .num_chars_selected = 0,
          .expected_editor_mode = EditorMode::kSoftBlocked,
          .expected_editor_opportunity_mode = EditorOpportunityMode::kWrite,
@@ -396,6 +403,7 @@ INSTANTIATE_TEST_SUITE_P(
          .user_pref = true,
          .consent_status =
              chromeos::editor_menu::EditorConsentStatus::kApproved,
+         .is_selection_valid = true,
          .num_chars_selected = 0,
          .expected_editor_mode = EditorMode::kWrite,
          .expected_editor_opportunity_mode = EditorOpportunityMode::kWrite,
@@ -413,6 +421,7 @@ INSTANTIATE_TEST_SUITE_P(
          .user_pref = false,
          .consent_status =
              chromeos::editor_menu::EditorConsentStatus::kApproved,
+         .is_selection_valid = true,
          .num_chars_selected = 0,
          .expected_editor_mode = EditorMode::kSoftBlocked,
          .expected_editor_opportunity_mode = EditorOpportunityMode::kWrite,
@@ -430,6 +439,7 @@ INSTANTIATE_TEST_SUITE_P(
          .user_pref = true,
          .consent_status =
              chromeos::editor_menu::EditorConsentStatus::kApproved,
+         .is_selection_valid = true,
          .num_chars_selected = 0,
          .expected_editor_mode = EditorMode::kSoftBlocked,
          .expected_editor_opportunity_mode = EditorOpportunityMode::kWrite,
@@ -448,6 +458,7 @@ INSTANTIATE_TEST_SUITE_P(
          .user_pref = true,
          .consent_status =
              chromeos::editor_menu::EditorConsentStatus::kApproved,
+         .is_selection_valid = true,
          .num_chars_selected = 0,
          .expected_editor_mode = EditorMode::kSoftBlocked,
          .expected_editor_opportunity_mode = EditorOpportunityMode::kWrite,
@@ -466,11 +477,31 @@ INSTANTIATE_TEST_SUITE_P(
          .user_pref = true,
          .consent_status =
              chromeos::editor_menu::EditorConsentStatus::kApproved,
+         .is_selection_valid = true,
          .num_chars_selected = 10001,
          .expected_editor_mode = EditorMode::kSoftBlocked,
          .expected_editor_opportunity_mode = EditorOpportunityMode::kRewrite,
          .expected_blocked_reasons =
              {EditorBlockedReason::kBlockedByTextLength}},
+        {.test_name = "DoNotTriggerFeatureWhenTheSelectionIsInvalid",
+         .additional_enabled_flags = {},
+         .email = "testuser@gmail.com",
+         .active_engine_id = "xkb:us::eng",
+         .locale = "en-us",
+         .url = kAllowedTestUrl,
+         .input_type = ui::TEXT_INPUT_TYPE_TEXT,
+         .app_type = chromeos::AppType::BROWSER,
+         .is_in_tablet_mode = false,
+         .network_status = net::NetworkChangeNotifier::CONNECTION_UNKNOWN,
+         .user_pref = true,
+         .consent_status =
+             chromeos::editor_menu::EditorConsentStatus::kApproved,
+         .is_selection_valid = false,
+         .num_chars_selected = 100,
+         .expected_editor_mode = EditorMode::kSoftBlocked,
+         .expected_editor_opportunity_mode = EditorOpportunityMode::kRewrite,
+         .expected_blocked_reasons =
+             {EditorBlockedReason::kBlockedByInvalidSelection}},
         {.test_name =
              "TriggersConsentIfSettingToggleIsOnAndUserHasNotGivenConsent",
          .additional_enabled_flags = {},
@@ -484,6 +515,7 @@ INSTANTIATE_TEST_SUITE_P(
          .network_status = net::NetworkChangeNotifier::CONNECTION_UNKNOWN,
          .user_pref = true,
          .consent_status = chromeos::editor_menu::EditorConsentStatus::kPending,
+         .is_selection_valid = true,
          .num_chars_selected = 100,
          .expected_editor_mode = EditorMode::kConsentNeeded,
          .expected_editor_opportunity_mode = EditorOpportunityMode::kRewrite,
@@ -501,6 +533,7 @@ INSTANTIATE_TEST_SUITE_P(
          .user_pref = true,
          .consent_status =
              chromeos::editor_menu::EditorConsentStatus::kApproved,
+         .is_selection_valid = true,
          .num_chars_selected = 0,
          .expected_editor_mode = EditorMode::kWrite,
          .expected_editor_opportunity_mode = EditorOpportunityMode::kWrite,
@@ -518,12 +551,12 @@ INSTANTIATE_TEST_SUITE_P(
          .user_pref = true,
          .consent_status =
              chromeos::editor_menu::EditorConsentStatus::kApproved,
+         .is_selection_valid = true,
          .num_chars_selected = 100,
          .expected_editor_mode = EditorMode::kRewrite,
          .expected_editor_opportunity_mode = EditorOpportunityMode::kRewrite,
          .expected_blocked_reasons = {}},
-        {.test_name = "TriggersRewriteModeWhenOrcaRestrictedInEnglishLocalesFla"
-                      "gIsSetAsDefault",
+        {.test_name = "TriggersRewriteModeInFrenchLocale",
          .additional_enabled_flags = {},
          .email = "testuser@gmail.com",
          .active_engine_id = "xkb:us::eng",
@@ -536,46 +569,12 @@ INSTANTIATE_TEST_SUITE_P(
          .user_pref = true,
          .consent_status =
              chromeos::editor_menu::EditorConsentStatus::kApproved,
+         .is_selection_valid = true,
          .num_chars_selected = 100,
          .expected_editor_mode = EditorMode::kRewrite,
          .expected_editor_opportunity_mode = EditorOpportunityMode::kRewrite,
          .expected_blocked_reasons = {}},
-        {.test_name = "DoNotTriggerFeatureInEnUsLocaleWhenOrcaOnlyInEnglishLoca"
-                      "lesFlagIsEnabled",
-         .additional_enabled_flags = {features::kOrcaOnlyInEnglishLocales},
-         .email = "testuser@gmail.com",
-         .active_engine_id = "xkb:us::eng",
-         .locale = "en-us",
-         .url = kAllowedTestUrl,
-         .input_type = ui::TEXT_INPUT_TYPE_TEXT,
-         .app_type = chromeos::AppType::BROWSER,
-         .is_in_tablet_mode = false,
-         .network_status = net::NetworkChangeNotifier::CONNECTION_UNKNOWN,
-         .user_pref = true,
-         .consent_status =
-             chromeos::editor_menu::EditorConsentStatus::kApproved,
-         .num_chars_selected = 100,
-         .expected_editor_mode = EditorMode::kRewrite,
-         .expected_editor_opportunity_mode = EditorOpportunityMode::kRewrite,
-         .expected_blocked_reasons = {}},
-        {.test_name = "DoNotTriggerFeatureInFrenchLocaleWhenOrcaOnlyInEnglishLo"
-                      "calesFlagIsEnabled",
-         .additional_enabled_flags = {features::kOrcaOnlyInEnglishLocales},
-         .email = "testuser@gmail.com",
-         .active_engine_id = "xkb:us::eng",
-         .locale = "fr",
-         .url = kAllowedTestUrl,
-         .input_type = ui::TEXT_INPUT_TYPE_TEXT,
-         .app_type = chromeos::AppType::BROWSER,
-         .is_in_tablet_mode = false,
-         .network_status = net::NetworkChangeNotifier::CONNECTION_UNKNOWN,
-         .user_pref = true,
-         .consent_status =
-             chromeos::editor_menu::EditorConsentStatus::kApproved,
-         .num_chars_selected = 100,
-         .expected_editor_mode = EditorMode::kSoftBlocked,
-         .expected_editor_opportunity_mode = EditorOpportunityMode::kRewrite,
-         .expected_blocked_reasons = {}},
+
     }),
     [](const testing::TestParamInfo<EditorSwitchTriggerTest::ParamType>& info) {
       return info.param.test_name;
@@ -614,15 +613,16 @@ TEST_P(EditorSwitchTriggerTest, TestEditorMode) {
   mock_notifier->SetConnectionType(test_case.network_status);
 
   profile->GetPrefs()->SetBoolean(prefs::kOrcaEnabled, test_case.user_pref);
-  profile->GetPrefs()->SetInteger(
-      prefs::kOrcaConsentStatus, base::to_underlying(test_case.consent_status));
+  profile->GetPrefs()->SetInteger(prefs::kOrcaConsentStatus,
+                                  std::to_underlying(test_case.consent_status));
   context.OnTabletModeUpdated(test_case.is_in_tablet_mode);
   context.OnActivateIme(test_case.active_engine_id);
   context.OnInputContextUpdated(
       TextInputMethod::InputContext(test_case.input_type),
       CreateFakeTextFieldContextualInfo(test_case.app_type, test_case.url,
                                         test_case.app_id));
-  context.OnTextSelectionLengthChanged(test_case.num_chars_selected);
+  context.OnTextSelectionChanged(EditorTextSelection(
+      test_case.is_selection_valid, test_case.num_chars_selected));
 
   ASSERT_TRUE(editor_switch.IsAllowedForUse());
   EXPECT_EQ(editor_switch.GetEditorMode(), test_case.expected_editor_mode);
@@ -701,7 +701,7 @@ TEST_P(EditorSwitchDenylistTest, IsBlockedWhenVisitingUrlInDenylist) {
   profile->GetPrefs()->SetBoolean(prefs::kOrcaEnabled, true);
   profile->GetPrefs()->SetInteger(
       prefs::kOrcaConsentStatus,
-      base::to_underlying(
+      std::to_underlying(
           chromeos::editor_menu::EditorConsentStatus::kApproved));
   context.OnTabletModeUpdated(false);
   context.OnActivateIme(kUsEngineId);
@@ -709,7 +709,8 @@ TEST_P(EditorSwitchDenylistTest, IsBlockedWhenVisitingUrlInDenylist) {
       TextInputMethod::InputContext(ui::TEXT_INPUT_TYPE_TEXT),
       CreateFakeTextFieldContextualInfo(chromeos::AppType::BROWSER, test_url,
                                         ""));
-  context.OnTextSelectionLengthChanged(10);
+
+  context.OnTextSelectionChanged(EditorTextSelection(true, 100));
 
   EXPECT_TRUE(editor_switch.IsAllowedForUse());
   EXPECT_EQ(editor_switch.GetEditorMode(), expected_mode);
@@ -732,7 +733,7 @@ class InternationalizeTestSuite : public TestWithParam<InputMethodTestCase> {
     profile_->GetPrefs()->SetBoolean(prefs::kOrcaEnabled, true);
     profile_->GetPrefs()->SetInteger(
         prefs::kOrcaConsentStatus,
-        base::to_underlying(
+        std::to_underlying(
             chromeos::editor_menu::EditorConsentStatus::kApproved));
   }
 
@@ -831,7 +832,7 @@ TEST_P(EditorSwitchDefaultFlagsTest, EditorModeHasCorrectState) {
       TextInputMethod::InputContext(ui::TEXT_INPUT_TYPE_TEXT),
       CreateFakeTextFieldContextualInfo(chromeos::AppType::BROWSER,
                                         kAllowedTestUrl, ""));
-  context_.OnTextSelectionLengthChanged(0);
+  context_.OnTextSelectionChanged(EditorTextSelection(true, 0));
 
   EXPECT_TRUE(editor_switch.IsAllowedForUse());
   EXPECT_EQ(editor_switch.GetEditorMode(), expected_mode);
@@ -925,7 +926,7 @@ TEST_P(EditorSwitchAllFlagsEnabledTest, EditorModeHasCorrectState) {
       TextInputMethod::InputContext(ui::TEXT_INPUT_TYPE_TEXT),
       CreateFakeTextFieldContextualInfo(chromeos::AppType::BROWSER,
                                         kAllowedTestUrl, ""));
-  context_.OnTextSelectionLengthChanged(0);
+  context_.OnTextSelectionChanged(EditorTextSelection(true, 0));
 
   EXPECT_TRUE(editor_switch.IsAllowedForUse());
   EXPECT_EQ(editor_switch.GetEditorMode(), expected_mode);

@@ -96,8 +96,9 @@ std::optional<base::TimeDelta>
 AggregatableReportScheduler::GetFailedReportDelay(int failed_send_attempts) {
   CHECK_GT(failed_send_attempts, 0);
 
-  if (failed_send_attempts > kMaxRetries)
+  if (failed_send_attempts > kMaxRetries) {
     return std::nullopt;
+  }
 
   return kInitialRetryDelay *
          std::pow(kRetryDelayFactor, failed_send_attempts - 1);
@@ -178,7 +179,7 @@ void AggregatableReportScheduler::TimerDelegate::OnRequestsReturnedFromStorage(
   std::erase_if(
       requests_and_ids,
       [this](const AggregationServiceStorage::RequestAndId& request_and_id) {
-        return base::Contains(in_progress_requests_, request_and_id.id);
+        return in_progress_requests_.contains(request_and_id.id);
       });
   for (const AggregationServiceStorage::RequestAndId& request_and_id :
        requests_and_ids) {

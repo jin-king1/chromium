@@ -23,6 +23,8 @@ export class SensorInfoAppElement extends PolymerElement {
       },
     };
   }
+
+  declare private message_: string;
 }
 
 declare global {

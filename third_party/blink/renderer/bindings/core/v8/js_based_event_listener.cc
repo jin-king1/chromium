@@ -12,9 +12,13 @@
 #include "third_party/blink/renderer/core/dom/events/event.h"
 #include "third_party/blink/renderer/core/dom/events/event_target.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
+#include "third_party/blink/renderer/core/loader/resource_initiator_helper.h"
 #include "third_party/blink/renderer/core/probe/core_probes.h"
+#include "third_party/blink/renderer/core/scheduler/task_attribution_util.h"
+#include "third_party/blink/renderer/core/timing/resource_timing_context.h"
 #include "third_party/blink/renderer/platform/bindings/source_location.h"
 #include "third_party/blink/renderer/platform/instrumentation/instance_counters.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
 namespace blink {
 
@@ -23,6 +27,12 @@ JSBasedEventListener::JSBasedEventListener() {
     InstanceCounters::IncrementCounter(
         InstanceCounters::kJSEventListenerCounter);
   }
+  if (RuntimeEnabledFeatures::ResourceTimingInitiatorEnabled()) {
+    v8::Isolate* isolate = ResourceInitiatorHelper::GetIsolateIfRunningScript();
+    resource_timing_context_ =
+        isolate ? ResourceInitiatorHelper::GetResourceTimingContext(*isolate)
+                : nullptr;
+  }
 }
 
 JSBasedEventListener::~JSBasedEventListener() {
@@ -30,6 +40,11 @@ JSBasedEventListener::~JSBasedEventListener() {
     InstanceCounters::DecrementCounter(
         InstanceCounters::kJSEventListenerCounter);
   }
+}
+
+void JSBasedEventListener::Trace(Visitor* visitor) const {
+  visitor->Trace(resource_timing_context_);
+  EventListener::Trace(visitor);
 }
 
 bool JSBasedEventListener::BelongsToTheCurrentWorld(
@@ -56,7 +71,7 @@ void JSBasedEventListener::Invoke(
     Event* event) {
   DCHECK(execution_context_of_event_target);
   DCHECK(event);
-  DCHECK(event->target());
+  DCHECK(event->RawTarget());
   DCHECK(event->currentTarget());
 
   v8::Isolate* isolate = GetIsolate();
@@ -142,9 +157,15 @@ void JSBasedEventListener::Invoke(
     // Step 8-2: If |struct|’s invocation-target-in-shadow-tree is false (i.e.,
     // event's target is in a shadow tree), then set |global|’s current
     // event to event.
-    Node* target_node = event->target()->ToNode();
-    if (!(target_node && target_node->IsInShadowTree()))
+    bool in_shadow_tree =
+        RuntimeEnabledFeatures::TargetInShadowDeterminedBeforeListenerEnabled()
+            ? event->invocationTargetInShadowTree()
+            : (event->RawTarget()->ToNode() &&
+               event->RawTarget()->ToNode()->IsInShadowTree());
+
+    if (!in_shadow_tree) {
       window->SetCurrentEvent(event);
+    }
   }
 
   {
@@ -153,6 +174,16 @@ void JSBasedEventListener::Invoke(
     v8::TryCatch try_catch(isolate);
     try_catch.SetVerbose(true);
 
+    // To report initiator url for resources fetched in the event handler.
+    // see:
+    // https://github.com/MicrosoftEdge/MSEdgeExplainers/blob/main/ResourceTimingInitiatorInfo/explainer.md
+    std::optional<scheduler::TaskAttributionTracker::TaskScope>
+        task_attribution_resource_timing_scope;
+    if (RuntimeEnabledFeatures::ResourceTimingInitiatorEnabled() &&
+        resource_timing_context_) {
+      task_attribution_resource_timing_scope = SetTaskStateVariable(
+          resource_timing_context_, execution_context_of_event_target);
+    }
     // Step 10: Call a listener with event's currentTarget as receiver and event
     // and handle errors if thrown.
     InvokeInternal(*event->currentTarget(), *event, js_event);
@@ -169,8 +200,7 @@ void JSBasedEventListener::Invoke(
     window->SetCurrentEvent(current_event);
 }
 
-std::unique_ptr<SourceLocation> JSBasedEventListener::GetSourceLocation(
-    EventTarget& target) {
+SourceLocation* JSBasedEventListener::GetSourceLocation(EventTarget& target) {
   v8::HandleScope handle_scope(GetIsolate());
   v8::Local<v8::Value> effective_function = GetEffectiveFunction(target);
   if (effective_function->IsFunction()) {

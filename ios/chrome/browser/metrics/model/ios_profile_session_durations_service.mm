@@ -12,22 +12,22 @@
 IOSProfileSessionDurationsService::IOSProfileSessionDurationsService(
     syncer::SyncService* sync_service,
     PrefService* pref_service,
-    signin::IdentityManager* identity_manager) {
+    signin::IdentityManager* identity_manager,
+    metrics::ProfileMetricsService* profile_metrics_service) {
   CHECK(sync_service);
   CHECK(pref_service);
   CHECK(identity_manager);
 
   sync_metrics_recorder_ =
       std::make_unique<syncer::SyncSessionDurationsMetricsRecorder>(
-          sync_service, identity_manager);
+          sync_service, identity_manager, profile_metrics_service);
 
   msbb_metrics_recorder_ =
       std::make_unique<unified_consent::MsbbSessionDurationsMetricsRecorder>(
           pref_service);
 
   password_metrics_recorder_ = std::make_unique<
-      password_manager::PasswordSessionDurationsMetricsRecorder>(pref_service,
-                                                                 sync_service);
+      password_manager::PasswordSessionDurationsMetricsRecorder>(sync_service);
 
   // `IOSProfileSessionDurationsService` is called explicitly each time a
   // session starts or ends. So there is no need to mimic what is done on
@@ -38,6 +38,13 @@ IOSProfileSessionDurationsService::~IOSProfileSessionDurationsService() =
     default;
 
 void IOSProfileSessionDurationsService::Shutdown() {
+  // The ProfileIOS is being destroyed. Recorders expect every call to
+  // OnSessionStarted() to have a corresponding OnSessionEnded().
+  //
+  // Use a `session_length` of zero, so each recorder can infer the duration
+  // based on their internal state.
+  OnSessionEnded(base::TimeDelta());
+
   sync_metrics_recorder_.reset();
   msbb_metrics_recorder_.reset();
   password_metrics_recorder_.reset();

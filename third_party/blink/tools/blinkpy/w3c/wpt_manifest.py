@@ -400,8 +400,8 @@ class WPTManifest:
 
         if not port.should_update_manifest(path):
             return
-        _log.debug('%s MANIFEST.json for %s ...',
-                   'Partially updating' if test_paths else 'Generating', path)
+        _log.info('%s MANIFEST.json for %s ...',
+                  'Partially updating' if test_paths else 'Generating', path)
 
         wpt_path = fs.join(port.web_tests_dir(), path)
         manifest_path = fs.join(wpt_path, MANIFEST_NAME)
@@ -415,7 +415,7 @@ class WPTManifest:
 
         # TODO(crbug.com/853815): perhaps also cache the manifest for wpt_internal.
         #
-        # `url_base` should match those of `external/wpt/.config.json` (or
+        # `url_base` should match those of `external/wpt/config.tmpl.json` (or
         # the implicit root `/` URL base).
         if path.startswith('external'):
             base_manifest_path = fs.join(port.web_tests_dir(), 'external',
@@ -425,8 +425,8 @@ class WPTManifest:
                            base_manifest_path, manifest_path)
                 fs.copyfile(base_manifest_path, manifest_path)
             else:
-                _log.error('Manifest base not found at "%s".',
-                           base_manifest_path)
+                _log.info('Manifest base not found at "%s".',
+                          base_manifest_path)
             url_base = '/'
         elif path.startswith('wpt_internal'):
             url_base = '/wpt_internal/'
@@ -448,12 +448,17 @@ class WPTManifest:
                           url_base: str = '/',
                           test_paths: Optional[List[str]] = None):
         """Generates MANIFEST.json on the specified directory."""
-        wpt_exec_path = PathFinder(
-            port.host.filesystem).path_from_chromium_base(
-                'third_party', 'wpt_tools', 'wpt', 'wpt')
+        fs = port.host.filesystem
+        wpt_tools_dir = PathFinder(fs).path_from_chromium_base(
+            'third_party', 'wpt_tools', 'wpt')
         cmd = [
             port.python3_command(),
-            wpt_exec_path,
+            fs.join(wpt_tools_dir, 'wpt'),
+            # Third-party packages are vended through vpython instead of plain
+            # virtualenv. We still need to specify `wpt --venv`, which doubles
+            # as a gitignored scratch directory.
+            f'--venv={fs.join(wpt_tools_dir, "_venv3")}',
+            '--skip-venv-setup',
             'manifest',
             '-v',
             '--no-download',

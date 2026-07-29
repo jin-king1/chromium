@@ -5,20 +5,12 @@
 #ifndef IOS_CHROME_BROWSER_CREDENTIAL_PROVIDER_MODEL_FEATURES_H_
 #define IOS_CHROME_BROWSER_CREDENTIAL_PROVIDER_MODEL_FEATURES_H_
 
-#include "base/feature_list.h"
+#import "base/feature_list.h"
 
-// Feature flag to enable automatic passkey upgrade for the credential
-// provider.
-BASE_DECLARE_FEATURE(kCredentialProviderAutomaticPasskeyUpgrade);
+// Feature flag to enable passkey Large Blob support in the credential provider.
+BASE_DECLARE_FEATURE(kCredentialProviderPasskeyLargeBlob);
 
-// Feature flag to enable passkey PRF support in the credential provider.
-BASE_DECLARE_FEATURE(kCredentialProviderPasskeyPRF);
-
-// Feature flag to enable the performance improvements for the credential
-// provider.
-BASE_DECLARE_FEATURE(kCredentialProviderPerformanceImprovements);
-
-// Returns whether the CPE Performance Improvement Feature is enabled.
-bool IsCPEPerformanceImprovementsEnabled();
+// Feature flag to enable refactored AddCredentials in the credential provider.
+BASE_DECLARE_FEATURE(kCredentialProviderRefactoredAddCredentials);
 
 #endif  // IOS_CHROME_BROWSER_CREDENTIAL_PROVIDER_MODEL_FEATURES_H_

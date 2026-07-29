@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_AUTOFILL_PAYMENTS_BNPL_TOS_VIEW_DESKTOP_H_
 #define CHROME_BROWSER_UI_VIEWS_AUTOFILL_PAYMENTS_BNPL_TOS_VIEW_DESKTOP_H_
 
+#include "base/memory/raw_ptr.h"
 #include "components/autofill/core/browser/ui/payments/bnpl_tos_view.h"
 #include "ui/views/widget/widget.h"
 
@@ -30,11 +31,14 @@ class BnplTosViewDesktop : public BnplTosView {
   ~BnplTosViewDesktop() override;
 
  private:
-  void CloseWidget(views::Widget::ClosedReason reason);
   void OpenLink(const GURL& url);
 
   raw_ptr<content::WebContents> web_contents_;
   std::unique_ptr<views::Widget> dialog_widget_;
+
+  // Subscription to watch for the tab detaching. Handles logging to
+  // BnplTosDialogResult if the dialog's parent window is closed.
+  base::CallbackListSubscription tab_detach_subscription_;
 
   base::WeakPtrFactory<BnplTosViewDesktop> weak_ptr_factory_{this};
 };

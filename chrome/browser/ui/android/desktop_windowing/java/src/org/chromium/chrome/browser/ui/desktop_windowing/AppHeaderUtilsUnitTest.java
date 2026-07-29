@@ -9,12 +9,14 @@ import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.when;
 
-import org.junit.Before;
+import org.junit.After;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.Mockito;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
@@ -25,12 +27,14 @@ import org.chromium.components.browser_ui.desktop_windowing.DesktopWindowStateMa
 /** Unit tests for {@link AppHeaderUtils}. */
 @RunWith(BaseRobolectricTestRunner.class)
 public class AppHeaderUtilsUnitTest {
+    @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock private ActivityLifecycleDispatcher mActivityLifecycleDispatcher;
     @Mock private DesktopWindowStateManager mDesktopWindowStateManager;
 
-    @Before
-    public void setup() {
-        MockitoAnnotations.openMocks(this);
+    @After
+    public void tearDown() {
+        AppHeaderUtils.setAppInDesktopWindowForTesting(false);
+        AppHeaderUtils.resetHeaderCustomizationDisallowedOnExternalDisplayForOemForTesting();
     }
 
     @Test

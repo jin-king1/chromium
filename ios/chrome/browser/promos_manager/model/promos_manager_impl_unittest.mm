@@ -20,10 +20,8 @@
 #import "components/prefs/pref_registry_simple.h"
 #import "components/prefs/testing_pref_service.h"
 #import "ios/chrome/browser/promos_manager/model/constants.h"
-#import "ios/chrome/browser/promos_manager/model/features.h"
-#import "ios/chrome/browser/promos_manager/model/impression_limit.h"
-#import "ios/chrome/browser/promos_manager/model/promo.h"
 #import "ios/chrome/browser/promos_manager/model/promo_config.h"
+#import "ios/chrome/browser/promos_manager/model/promo_display_context.h"
 #import "ios/chrome/browser/promos_manager/model/promos_manager.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "testing/gmock/include/gmock/gmock.h"
@@ -55,15 +53,6 @@ class PromosManagerImplTest : public PlatformTest {
   PromosManagerImplTest();
   ~PromosManagerImplTest() override;
 
-  // Creates a mock promo without impression limits.
-  Promo* TestPromo();
-
-  // Creates a mock promo with impression limits.
-  Promo* TestPromoWithImpressionLimits();
-
-  // Creates mock impression limits.
-  NSArray<ImpressionLimit*>* TestImpressionLimits();
-
  protected:
   // Creates PromosManager with empty pref data.
   void CreatePromosManager();
@@ -73,7 +62,7 @@ class PromosManagerImplTest : public PlatformTest {
 
   base::SimpleTestClock test_clock_;
 
-  std::unique_ptr<TestingPrefServiceSimple> local_state_;
+  std::unique_ptr<TestingPrefServiceSimple> pref_service_;
   std::unique_ptr<PromosManagerImpl> promos_manager_;
   feature_engagement::test::MockTracker mock_tracker_;
   base::test::ScopedFeatureList scoped_feature_list_;
@@ -85,46 +74,22 @@ PromosManagerImplTest::PromosManagerImplTest() {
 
 PromosManagerImplTest::~PromosManagerImplTest() {}
 
-NSArray<ImpressionLimit*>* PromosManagerImplTest::TestImpressionLimits() {
-  static NSArray<ImpressionLimit*>* limits;
-  static dispatch_once_t onceToken;
-
-  dispatch_once(&onceToken, ^{
-    ImpressionLimit* oncePerWeek = [[ImpressionLimit alloc] initWithLimit:1
-                                                               forNumDays:7];
-    ImpressionLimit* twicePerMonth = [[ImpressionLimit alloc] initWithLimit:2
-                                                                 forNumDays:31];
-    limits = @[ oncePerWeek, twicePerMonth ];
-  });
-
-  return limits;
-}
-
-Promo* PromosManagerImplTest::TestPromo() {
-  return [[Promo alloc] initWithIdentifier:promos_manager::Promo::Test];
-}
-
-Promo* PromosManagerImplTest::TestPromoWithImpressionLimits() {
-  return [[Promo alloc] initWithIdentifier:promos_manager::Promo::Test
-                       andImpressionLimits:TestImpressionLimits()];
-}
-
 void PromosManagerImplTest::CreatePromosManager() {
   CreatePrefs();
   promos_manager_ = std::make_unique<PromosManagerImpl>(
-      local_state_.get(), &test_clock_, &mock_tracker_);
+      pref_service_.get(), &test_clock_, &mock_tracker_);
   promos_manager_->Init();
 }
 
 // Create pref registry for tests.
 void PromosManagerImplTest::CreatePrefs() {
-  local_state_ = std::make_unique<TestingPrefServiceSimple>();
+  pref_service_ = std::make_unique<TestingPrefServiceSimple>();
 
-  local_state_->registry()->RegisterListPref(
+  pref_service_->registry()->RegisterListPref(
       prefs::kIosPromosManagerActivePromos);
-  local_state_->registry()->RegisterListPref(
+  pref_service_->registry()->RegisterListPref(
       prefs::kIosPromosManagerSingleDisplayActivePromos);
-  local_state_->registry()->RegisterDictionaryPref(
+  pref_service_->registry()->RegisterDictionaryPref(
       prefs::kIosPromosManagerSingleDisplayPendingPromos);
 }
 
@@ -133,13 +98,14 @@ void PromosManagerImplTest::CreatePrefs() {
 TEST_F(PromosManagerImplTest, InitWithPrefService) {
   CreatePromosManager();
 
-  EXPECT_NE(local_state_->FindPreference(prefs::kIosPromosManagerActivePromos),
+  EXPECT_NE(pref_service_->FindPreference(prefs::kIosPromosManagerActivePromos),
             nullptr);
-  EXPECT_NE(local_state_->FindPreference(
+  EXPECT_NE(pref_service_->FindPreference(
                 prefs::kIosPromosManagerSingleDisplayActivePromos),
             nullptr);
-  EXPECT_FALSE(local_state_->HasPrefPath(prefs::kIosPromosManagerActivePromos));
-  EXPECT_FALSE(local_state_->HasPrefPath(
+  EXPECT_FALSE(
+      pref_service_->HasPrefPath(prefs::kIosPromosManagerActivePromos));
+  EXPECT_FALSE(pref_service_->HasPrefPath(
       prefs::kIosPromosManagerSingleDisplayActivePromos));
 }
 
@@ -164,35 +130,6 @@ TEST_F(PromosManagerImplTest, ReturnsNulloptForBadName) {
                    .has_value());
 }
 
-// Tests PromosManagerImplTest::TestPromo() correctly creates one mock promo.
-TEST_F(PromosManagerImplTest, CreatesPromo) {
-  Promo* promo = TestPromo();
-
-  EXPECT_NE(promo, nil);
-  EXPECT_EQ((int)promo.impressionLimits.count, 0);
-}
-
-// Tests PromosManagerImplTest::TestPromoWithImpressionLimits() correctly
-// creates one mock promo with mock impression limits.
-TEST_F(PromosManagerImplTest, CreatesPromoWithImpressionLimits) {
-  Promo* promoWithImpressionLimits = TestPromoWithImpressionLimits();
-
-  EXPECT_NE(promoWithImpressionLimits, nil);
-  EXPECT_EQ((int)promoWithImpressionLimits.impressionLimits.count, 2);
-}
-
-// Tests PromosManagerImplTest::TestImpressionLimits() correctly creates two
-// mock impression limits.
-TEST_F(PromosManagerImplTest, CreatesImpressionLimits) {
-  NSArray<ImpressionLimit*>* impressionLimits = TestImpressionLimits();
-
-  EXPECT_NE(impressionLimits, nil);
-  EXPECT_EQ(impressionLimits[0].numImpressions, 1);
-  EXPECT_EQ(impressionLimits[0].numDays, 7);
-  EXPECT_EQ(impressionLimits[1].numImpressions, 2);
-  EXPECT_EQ(impressionLimits[1].numDays, 31);
-}
-
 // Tests PromosManager::CanShowPromo() correctly allows a promo to be shown
 // because it hasn't met any impression limits.
 TEST_F(PromosManagerImplTest, DecidesCanShowPromo) {
@@ -201,7 +138,7 @@ TEST_F(PromosManagerImplTest, DecidesCanShowPromo) {
   CreatePromosManager();
 
   PromoConfigsSet promoConfigs;
-  promoConfigs.emplace(promos_manager::Promo::Test, &kTestFeatureOne);
+  promoConfigs.emplace(promos_manager::Promo::Test, kTestFeatureOne);
   promos_manager_->InitializePromoConfigs(std::move(promoConfigs));
 
   EXPECT_CALL(mock_tracker_, ShouldTriggerHelpUI(testing::Ref(kTestFeatureOne)))
@@ -218,10 +155,10 @@ TEST_F(PromosManagerImplTest, CanShowPromo_TestPromoSpecificLimits) {
   CreatePromosManager();
 
   PromoConfigsSet promoConfigs;
-  promoConfigs.emplace(promos_manager::Promo::Test, &kTestFeatureOne);
-  promoConfigs.emplace(promos_manager::Promo::AppStoreRating, &kTestFeatureTwo);
+  promoConfigs.emplace(promos_manager::Promo::Test, kTestFeatureOne);
+  promoConfigs.emplace(promos_manager::Promo::AppStoreRating, kTestFeatureTwo);
   promoConfigs.emplace(promos_manager::Promo::CredentialProviderExtension,
-                       &kTestFeatureThree);
+                       kTestFeatureThree);
   promos_manager_->InitializePromoConfigs(std::move(promoConfigs));
 
   // Mock the FET tracker to disallow Test and AppStoreRating due to impression
@@ -299,11 +236,11 @@ TEST_F(PromosManagerImplTest, ReturnsSortPromosBreakingTies) {
 
   PromoConfigsSet promoImpressionLimits;
   promoImpressionLimits.emplace(
-      promos_manager::Promo::CredentialProviderExtension, &kTestFeatureOne);
+      promos_manager::Promo::CredentialProviderExtension, kTestFeatureOne);
   promoImpressionLimits.emplace(promos_manager::Promo::AppStoreRating,
-                                &kTestFeatureTwo);
+                                kTestFeatureTwo);
   promoImpressionLimits.emplace(promos_manager::Promo::DefaultBrowser,
-                                &kTestFeatureThree);
+                                kTestFeatureThree);
   promos_manager_->InitializePromoConfigs(std::move(promoImpressionLimits));
 
   EXPECT_CALL(mock_tracker_, IsInitialized())
@@ -367,11 +304,11 @@ TEST_F(PromosManagerImplTest,
   };
 
   PromoConfigsSet promoImpressionLimits;
-  promoImpressionLimits.emplace(promos_manager::Promo::Test, &kTestFeatureOne);
+  promoImpressionLimits.emplace(promos_manager::Promo::Test, kTestFeatureOne);
   promoImpressionLimits.emplace(promos_manager::Promo::AppStoreRating,
-                                &kTestFeatureTwo);
+                                kTestFeatureTwo);
   promoImpressionLimits.emplace(promos_manager::Promo::DefaultBrowser,
-                                &kTestFeatureThree);
+                                kTestFeatureThree);
   promos_manager_->InitializePromoConfigs(std::move(promoImpressionLimits));
 
   EXPECT_CALL(mock_tracker_, IsInitialized())
@@ -439,10 +376,10 @@ TEST_F(PromosManagerImplTest, SortsPromosPreferPendingToNonPending) {
 }
 
 // Tests PromosManager::ActivePromos() correctly ingests active promos
-// (base::Value::List) and returns corresponding
+// (base::ListValue) and returns corresponding
 // std::vector<promos_manager::Promo>.
 TEST_F(PromosManagerImplTest, ReturnsActivePromos) {
-  base::Value::List promos;
+  base::ListValue promos;
   promos.Append("promos_manager::Promo::DefaultBrowser");
   promos.Append("promos_manager::Promo::AppStoreRating");
   promos.Append("promos_manager::Promo::CredentialProviderExtension");
@@ -460,9 +397,9 @@ TEST_F(PromosManagerImplTest, ReturnsActivePromos) {
 }
 
 // Tests PromosManager::ActivePromos() correctly ingests empty active promos
-// (base::Value::List) and returns empty std::set<promos_manager::Promo>.
+// (base::ListValue) and returns empty std::set<promos_manager::Promo>.
 TEST_F(PromosManagerImplTest, ReturnsBlankActivePromosForBlankPrefs) {
-  base::Value::List promos;
+  base::ListValue promos;
 
   std::set<promos_manager::Promo> result =
       promos_manager_->ActivePromos(promos);
@@ -471,10 +408,10 @@ TEST_F(PromosManagerImplTest, ReturnsBlankActivePromosForBlankPrefs) {
 }
 
 // Tests PromosManager::ActivePromos() correctly ingests active promos with
-// malformed data (base::Value::List) and returns corresponding
+// malformed data (base::ListValue) and returns corresponding
 // std::vector<promos_manager::Promo> with malformed entries pruned.
 TEST_F(PromosManagerImplTest, ReturnsActivePromosAndSkipsMalformedData) {
-  base::Value::List promos;
+  base::ListValue promos;
   promos.Append("promos_manager::Promo::DefaultBrowser");
   promos.Append("promos_manager::Promo::AppStoreRating");
   promos.Append("promos_manager::Promo::FOOBAR");
@@ -495,13 +432,13 @@ TEST_F(PromosManagerImplTest, InitializePendingPromos) {
   CreatePromosManager();
 
   // write to Pref
-  base::Value::Dict promos;
+  base::DictValue promos;
   promos.Set("promos_manager::Promo::DefaultBrowser",
              base::TimeToValue(test_clock_.Now()));
   promos.Set("promos_manager::Promo::AppStoreRating",
              base::TimeToValue(test_clock_.Now()));
-  local_state_->SetDict(prefs::kIosPromosManagerSingleDisplayPendingPromos,
-                        std::move(promos));
+  pref_service_->SetDict(prefs::kIosPromosManagerSingleDisplayPendingPromos,
+                         std::move(promos));
 
   std::map<promos_manager::Promo, base::Time> expected;
   expected[promos_manager::Promo::DefaultBrowser] = test_clock_.Now();
@@ -526,14 +463,14 @@ TEST_F(PromosManagerImplTest, InitializePendingPromosMalformedData) {
   CreatePromosManager();
 
   // write to Pref
-  base::Value::Dict promos;
+  base::DictValue promos;
   promos.Set("promos_manager::Promo::DefaultBrowser",
              base::TimeToValue(test_clock_.Now()));
   promos.Set("promos_manager::Promo::Foo",
              base::TimeToValue(test_clock_.Now()));
   promos.Set("promos_manager::Promo::AppStoreRating", base::Value(1));
-  local_state_->SetDict(prefs::kIosPromosManagerSingleDisplayPendingPromos,
-                        std::move(promos));
+  pref_service_->SetDict(prefs::kIosPromosManagerSingleDisplayPendingPromos,
+                         std::move(promos));
 
   std::map<promos_manager::Promo, base::Time> expected;
   expected[promos_manager::Promo::DefaultBrowser] = test_clock_.Now();
@@ -549,30 +486,30 @@ TEST_F(PromosManagerImplTest, InitializePendingPromosMalformedData) {
 TEST_F(PromosManagerImplTest, RegistersPromoForContinuousDisplay) {
   CreatePromosManager();
   EXPECT_TRUE(
-      local_state_->GetList(prefs::kIosPromosManagerActivePromos).empty());
+      pref_service_->GetList(prefs::kIosPromosManagerActivePromos).empty());
 
   // Initial active promos state.
   promos_manager_->RegisterPromoForContinuousDisplay(
       promos_manager::Promo::CredentialProviderExtension);
   promos_manager_->RegisterPromoForContinuousDisplay(
       promos_manager::Promo::AppStoreRating);
-  EXPECT_EQ(local_state_->GetList(prefs::kIosPromosManagerActivePromos).size(),
+  EXPECT_EQ(pref_service_->GetList(prefs::kIosPromosManagerActivePromos).size(),
             (size_t)2);
 
   // Register new promo.
   promos_manager_->RegisterPromoForContinuousDisplay(
       promos_manager::Promo::DefaultBrowser);
 
-  EXPECT_EQ(local_state_->GetList(prefs::kIosPromosManagerActivePromos).size(),
+  EXPECT_EQ(pref_service_->GetList(prefs::kIosPromosManagerActivePromos).size(),
             (size_t)3);
-  EXPECT_EQ(local_state_->GetList(prefs::kIosPromosManagerActivePromos)[0],
+  EXPECT_EQ(pref_service_->GetList(prefs::kIosPromosManagerActivePromos)[0],
             promos_manager::NameForPromo(
                 promos_manager::Promo::CredentialProviderExtension));
   EXPECT_EQ(
-      local_state_->GetList(prefs::kIosPromosManagerActivePromos)[1],
+      pref_service_->GetList(prefs::kIosPromosManagerActivePromos)[1],
       promos_manager::NameForPromo(promos_manager::Promo::AppStoreRating));
   EXPECT_EQ(
-      local_state_->GetList(prefs::kIosPromosManagerActivePromos)[2],
+      pref_service_->GetList(prefs::kIosPromosManagerActivePromos)[2],
       promos_manager::NameForPromo(promos_manager::Promo::DefaultBrowser));
 }
 
@@ -584,7 +521,7 @@ TEST_F(PromosManagerImplTest,
        RegistersPromoForContinuousDisplayAndImmediatelyUpdateVariables) {
   CreatePromosManager();
   EXPECT_TRUE(
-      local_state_->GetList(prefs::kIosPromosManagerActivePromos).empty());
+      pref_service_->GetList(prefs::kIosPromosManagerActivePromos).empty());
 
   // Initial active promos state.
   promos_manager_->RegisterPromoForContinuousDisplay(
@@ -607,15 +544,15 @@ TEST_F(PromosManagerImplTest,
        RegistersPromoForContinuousDisplayForEmptyActivePromos) {
   CreatePromosManager();
   EXPECT_TRUE(
-      local_state_->GetList(prefs::kIosPromosManagerActivePromos).empty());
+      pref_service_->GetList(prefs::kIosPromosManagerActivePromos).empty());
 
   promos_manager_->RegisterPromoForContinuousDisplay(
       promos_manager::Promo::DefaultBrowser);
 
-  EXPECT_EQ(local_state_->GetList(prefs::kIosPromosManagerActivePromos).size(),
+  EXPECT_EQ(pref_service_->GetList(prefs::kIosPromosManagerActivePromos).size(),
             (size_t)1);
   EXPECT_EQ(
-      local_state_->GetList(prefs::kIosPromosManagerActivePromos)[0],
+      pref_service_->GetList(prefs::kIosPromosManagerActivePromos)[0],
       promos_manager::NameForPromo(promos_manager::Promo::DefaultBrowser));
 }
 
@@ -627,26 +564,26 @@ TEST_F(PromosManagerImplTest,
        RegistersAlreadyRegisteredPromoForContinuousDisplay) {
   CreatePromosManager();
   EXPECT_TRUE(
-      local_state_->GetList(prefs::kIosPromosManagerActivePromos).empty());
+      pref_service_->GetList(prefs::kIosPromosManagerActivePromos).empty());
 
   // Initial active promos state.
   promos_manager_->RegisterPromoForContinuousDisplay(
       promos_manager::Promo::CredentialProviderExtension);
   promos_manager_->RegisterPromoForContinuousDisplay(
       promos_manager::Promo::AppStoreRating);
-  EXPECT_EQ(local_state_->GetList(prefs::kIosPromosManagerActivePromos).size(),
+  EXPECT_EQ(pref_service_->GetList(prefs::kIosPromosManagerActivePromos).size(),
             (size_t)2);
 
   // Register existing promo.
   promos_manager_->RegisterPromoForContinuousDisplay(
       promos_manager::Promo::CredentialProviderExtension);
 
-  EXPECT_EQ(local_state_->GetList(prefs::kIosPromosManagerActivePromos).size(),
+  EXPECT_EQ(pref_service_->GetList(prefs::kIosPromosManagerActivePromos).size(),
             (size_t)2);
   EXPECT_EQ(
-      local_state_->GetList(prefs::kIosPromosManagerActivePromos)[0],
+      pref_service_->GetList(prefs::kIosPromosManagerActivePromos)[0],
       promos_manager::NameForPromo(promos_manager::Promo::AppStoreRating));
-  EXPECT_EQ(local_state_->GetList(prefs::kIosPromosManagerActivePromos)[1],
+  EXPECT_EQ(pref_service_->GetList(prefs::kIosPromosManagerActivePromos)[1],
             promos_manager::NameForPromo(
                 promos_manager::Promo::CredentialProviderExtension));
 }
@@ -660,7 +597,7 @@ TEST_F(
     RegistersAlreadyRegisteredPromoForContinuousDisplayForEmptyActivePromos) {
   CreatePromosManager();
   EXPECT_TRUE(
-      local_state_->GetList(prefs::kIosPromosManagerActivePromos).empty());
+      pref_service_->GetList(prefs::kIosPromosManagerActivePromos).empty());
 
   // Initial active promos state.
   promos_manager_->RegisterPromoForContinuousDisplay(
@@ -670,9 +607,9 @@ TEST_F(
   promos_manager_->RegisterPromoForContinuousDisplay(
       promos_manager::Promo::CredentialProviderExtension);
 
-  EXPECT_EQ(local_state_->GetList(prefs::kIosPromosManagerActivePromos).size(),
+  EXPECT_EQ(pref_service_->GetList(prefs::kIosPromosManagerActivePromos).size(),
             (size_t)1);
-  EXPECT_EQ(local_state_->GetList(prefs::kIosPromosManagerActivePromos)[0],
+  EXPECT_EQ(pref_service_->GetList(prefs::kIosPromosManagerActivePromos)[0],
             promos_manager::NameForPromo(
                 promos_manager::Promo::CredentialProviderExtension));
 }
@@ -683,7 +620,7 @@ TEST_F(
 TEST_F(PromosManagerImplTest, RegistersPromoForSingleDisplay) {
   CreatePromosManager();
   EXPECT_TRUE(
-      local_state_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
+      pref_service_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
           .empty());
 
   // Initial active promos state.
@@ -692,7 +629,7 @@ TEST_F(PromosManagerImplTest, RegistersPromoForSingleDisplay) {
   promos_manager_->RegisterPromoForSingleDisplay(
       promos_manager::Promo::AppStoreRating);
   EXPECT_EQ(
-      local_state_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
+      pref_service_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
           .size(),
       (size_t)2);
 
@@ -701,19 +638,19 @@ TEST_F(PromosManagerImplTest, RegistersPromoForSingleDisplay) {
       promos_manager::Promo::DefaultBrowser);
 
   EXPECT_EQ(
-      local_state_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
+      pref_service_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
           .size(),
       (size_t)3);
-  EXPECT_EQ(local_state_->GetList(
+  EXPECT_EQ(pref_service_->GetList(
                 prefs::kIosPromosManagerSingleDisplayActivePromos)[0],
             promos_manager::NameForPromo(
                 promos_manager::Promo::CredentialProviderExtension));
   EXPECT_EQ(
-      local_state_->GetList(
+      pref_service_->GetList(
           prefs::kIosPromosManagerSingleDisplayActivePromos)[1],
       promos_manager::NameForPromo(promos_manager::Promo::AppStoreRating));
   EXPECT_EQ(
-      local_state_->GetList(
+      pref_service_->GetList(
           prefs::kIosPromosManagerSingleDisplayActivePromos)[2],
       promos_manager::NameForPromo(promos_manager::Promo::DefaultBrowser));
 }
@@ -725,18 +662,18 @@ TEST_F(PromosManagerImplTest,
        RegistersPromoForSingleDisplayWithBecomesActivePeriod) {
   CreatePromosManager();
   EXPECT_TRUE(
-      local_state_->GetDict(prefs::kIosPromosManagerSingleDisplayPendingPromos)
+      pref_service_->GetDict(prefs::kIosPromosManagerSingleDisplayPendingPromos)
           .empty());
 
   // Initial state: 1 active promo, 0 pending promo.
   promos_manager_->RegisterPromoForSingleDisplay(
       promos_manager::Promo::AppStoreRating);
   EXPECT_EQ(
-      local_state_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
+      pref_service_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
           .size(),
       (size_t)1);
   EXPECT_EQ(
-      local_state_->GetDict(prefs::kIosPromosManagerSingleDisplayPendingPromos)
+      pref_service_->GetDict(prefs::kIosPromosManagerSingleDisplayPendingPromos)
           .size(),
       (size_t)0);
 
@@ -746,23 +683,23 @@ TEST_F(PromosManagerImplTest,
 
   // End state: 1 active promo, 1 pending promo.
   EXPECT_EQ(
-      local_state_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
+      pref_service_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
           .size(),
       (size_t)1);
   EXPECT_EQ(
-      local_state_->GetDict(prefs::kIosPromosManagerSingleDisplayPendingPromos)
+      pref_service_->GetDict(prefs::kIosPromosManagerSingleDisplayPendingPromos)
           .size(),
       (size_t)1);
 
   // Active promo in Pref doesn't change.
   EXPECT_EQ(
-      local_state_->GetList(
+      pref_service_->GetList(
           prefs::kIosPromosManagerSingleDisplayActivePromos)[0],
       promos_manager::NameForPromo(promos_manager::Promo::AppStoreRating));
 
   // Pending promo in Pref is updated with the correct time.
   std::optional<base::Time> actual_becomes_active_time = ValueToTime(
-      local_state_->GetDict(prefs::kIosPromosManagerSingleDisplayPendingPromos)
+      pref_service_->GetDict(prefs::kIosPromosManagerSingleDisplayPendingPromos)
           .Find(promos_manager::NameForPromo(
               promos_manager::Promo::CredentialProviderExtension)));
   EXPECT_TRUE(actual_becomes_active_time.has_value());
@@ -778,7 +715,7 @@ TEST_F(PromosManagerImplTest,
        RegistersPromoForSingleDisplayAndImmediatelyUpdateVariables) {
   CreatePromosManager();
   EXPECT_TRUE(
-      local_state_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
+      pref_service_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
           .empty());
 
   // Initial active promos state.
@@ -804,7 +741,7 @@ TEST_F(
     RegistersPromoForSingleDisplayWithBecomesActivePeriodAndUpdateVariables) {
   CreatePromosManager();
   EXPECT_TRUE(
-      local_state_->GetDict(prefs::kIosPromosManagerSingleDisplayPendingPromos)
+      pref_service_->GetDict(prefs::kIosPromosManagerSingleDisplayPendingPromos)
           .empty());
 
   // Register
@@ -827,18 +764,18 @@ TEST_F(PromosManagerImplTest,
        RegistersPromoForSingleDisplayForEmptyActivePromos) {
   CreatePromosManager();
   EXPECT_TRUE(
-      local_state_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
+      pref_service_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
           .empty());
 
   promos_manager_->RegisterPromoForSingleDisplay(
       promos_manager::Promo::DefaultBrowser);
 
   EXPECT_EQ(
-      local_state_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
+      pref_service_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
           .size(),
       (size_t)1);
   EXPECT_EQ(
-      local_state_->GetList(
+      pref_service_->GetList(
           prefs::kIosPromosManagerSingleDisplayActivePromos)[0],
       promos_manager::NameForPromo(promos_manager::Promo::DefaultBrowser));
 }
@@ -851,7 +788,7 @@ TEST_F(PromosManagerImplTest,
 TEST_F(PromosManagerImplTest, RegistersAlreadyRegisteredPromoForSingleDisplay) {
   CreatePromosManager();
   EXPECT_TRUE(
-      local_state_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
+      pref_service_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
           .empty());
 
   // Initial active promos state.
@@ -860,7 +797,7 @@ TEST_F(PromosManagerImplTest, RegistersAlreadyRegisteredPromoForSingleDisplay) {
   promos_manager_->RegisterPromoForSingleDisplay(
       promos_manager::Promo::AppStoreRating);
   EXPECT_EQ(
-      local_state_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
+      pref_service_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
           .size(),
       (size_t)2);
 
@@ -869,14 +806,14 @@ TEST_F(PromosManagerImplTest, RegistersAlreadyRegisteredPromoForSingleDisplay) {
       promos_manager::Promo::CredentialProviderExtension);
 
   EXPECT_EQ(
-      local_state_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
+      pref_service_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
           .size(),
       (size_t)2);
   EXPECT_EQ(
-      local_state_->GetList(
+      pref_service_->GetList(
           prefs::kIosPromosManagerSingleDisplayActivePromos)[0],
       promos_manager::NameForPromo(promos_manager::Promo::AppStoreRating));
-  EXPECT_EQ(local_state_->GetList(
+  EXPECT_EQ(pref_service_->GetList(
                 prefs::kIosPromosManagerSingleDisplayActivePromos)[1],
             promos_manager::NameForPromo(
                 promos_manager::Promo::CredentialProviderExtension));
@@ -891,7 +828,7 @@ TEST_F(PromosManagerImplTest,
        RegistersAlreadyRegisteredPromoForSingleDisplayForEmptyActivePromos) {
   CreatePromosManager();
   EXPECT_TRUE(
-      local_state_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
+      pref_service_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
           .empty());
 
   // Initial active promos state.
@@ -903,10 +840,10 @@ TEST_F(PromosManagerImplTest,
       promos_manager::Promo::CredentialProviderExtension);
 
   EXPECT_EQ(
-      local_state_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
+      pref_service_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
           .size(),
       (size_t)1);
-  EXPECT_EQ(local_state_->GetList(
+  EXPECT_EQ(pref_service_->GetList(
                 prefs::kIosPromosManagerSingleDisplayActivePromos)[0],
             promos_manager::NameForPromo(
                 promos_manager::Promo::CredentialProviderExtension));
@@ -920,7 +857,7 @@ TEST_F(PromosManagerImplTest,
        RegistersAlreadyRegisteredPromoForSingleDisplayWithBecomesActiveTime) {
   CreatePromosManager();
   EXPECT_TRUE(
-      local_state_->GetDict(prefs::kIosPromosManagerSingleDisplayPendingPromos)
+      pref_service_->GetDict(prefs::kIosPromosManagerSingleDisplayPendingPromos)
           .empty());
 
   // Initial pending promos state.
@@ -933,11 +870,11 @@ TEST_F(PromosManagerImplTest,
 
   // End state: only the second registered promo is in the pref.
   EXPECT_EQ(
-      local_state_->GetDict(prefs::kIosPromosManagerSingleDisplayPendingPromos)
+      pref_service_->GetDict(prefs::kIosPromosManagerSingleDisplayPendingPromos)
           .size(),
       (size_t)1);
   std::optional<base::Time> actual_becomes_active_time = ValueToTime(
-      local_state_->GetDict(prefs::kIosPromosManagerSingleDisplayPendingPromos)
+      pref_service_->GetDict(prefs::kIosPromosManagerSingleDisplayPendingPromos)
           .Find(promos_manager::NameForPromo(
               promos_manager::Promo::CredentialProviderExtension)));
   EXPECT_TRUE(actual_becomes_active_time.has_value());
@@ -951,33 +888,33 @@ TEST_F(PromosManagerImplTest,
 TEST_F(PromosManagerImplTest, DeregistersActivePromo) {
   CreatePromosManager();
 
-  EXPECT_EQ(local_state_->GetList(prefs::kIosPromosManagerActivePromos).size(),
+  EXPECT_EQ(pref_service_->GetList(prefs::kIosPromosManagerActivePromos).size(),
             (size_t)0);
   EXPECT_EQ(
-      local_state_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
+      pref_service_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
           .size(),
       (size_t)0);
   EXPECT_EQ(
-      local_state_->GetDict(prefs::kIosPromosManagerSingleDisplayPendingPromos)
+      pref_service_->GetDict(prefs::kIosPromosManagerSingleDisplayPendingPromos)
           .size(),
       (size_t)0);
 
   promos_manager_->RegisterPromoForContinuousDisplay(
       promos_manager::Promo::CredentialProviderExtension);
-  EXPECT_EQ(local_state_->GetList(prefs::kIosPromosManagerActivePromos).size(),
+  EXPECT_EQ(pref_service_->GetList(prefs::kIosPromosManagerActivePromos).size(),
             (size_t)1);
 
   promos_manager_->RegisterPromoForSingleDisplay(
       promos_manager::Promo::CredentialProviderExtension);
   EXPECT_EQ(
-      local_state_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
+      pref_service_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
           .size(),
       (size_t)1);
 
   promos_manager_->RegisterPromoForSingleDisplay(
       promos_manager::Promo::CredentialProviderExtension, kTimeDelta1Day);
   EXPECT_EQ(
-      local_state_->GetDict(prefs::kIosPromosManagerSingleDisplayPendingPromos)
+      pref_service_->GetDict(prefs::kIosPromosManagerSingleDisplayPendingPromos)
           .size(),
       (size_t)1);
 
@@ -985,14 +922,14 @@ TEST_F(PromosManagerImplTest, DeregistersActivePromo) {
       promos_manager::Promo::CredentialProviderExtension);
 
   // all entries with the same type are removed.
-  EXPECT_EQ(local_state_->GetList(prefs::kIosPromosManagerActivePromos).size(),
+  EXPECT_EQ(pref_service_->GetList(prefs::kIosPromosManagerActivePromos).size(),
             (size_t)0);
   EXPECT_EQ(
-      local_state_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
+      pref_service_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
           .size(),
       (size_t)0);
   EXPECT_EQ(
-      local_state_->GetDict(prefs::kIosPromosManagerSingleDisplayPendingPromos)
+      pref_service_->GetDict(prefs::kIosPromosManagerSingleDisplayPendingPromos)
           .size(),
       (size_t)0);
 }
@@ -1004,14 +941,14 @@ TEST_F(PromosManagerImplTest,
        DeregistersActivePromoAndImmediatelyUpdateVariables) {
   CreatePromosManager();
 
-  EXPECT_EQ(local_state_->GetList(prefs::kIosPromosManagerActivePromos).size(),
+  EXPECT_EQ(pref_service_->GetList(prefs::kIosPromosManagerActivePromos).size(),
             (size_t)0);
   EXPECT_EQ(
-      local_state_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
+      pref_service_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
           .size(),
       (size_t)0);
   EXPECT_EQ(
-      local_state_->GetDict(prefs::kIosPromosManagerSingleDisplayPendingPromos)
+      pref_service_->GetDict(prefs::kIosPromosManagerSingleDisplayPendingPromos)
           .size(),
       (size_t)0);
 
@@ -1048,30 +985,30 @@ TEST_F(PromosManagerImplTest,
 TEST_F(PromosManagerImplTest, DeregistersNonExistentPromo) {
   CreatePromosManager();
 
-  EXPECT_EQ(local_state_->GetList(prefs::kIosPromosManagerActivePromos).size(),
+  EXPECT_EQ(pref_service_->GetList(prefs::kIosPromosManagerActivePromos).size(),
             (size_t)0);
   EXPECT_EQ(
-      local_state_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
+      pref_service_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
           .size(),
       (size_t)0);
 
   promos_manager_->RegisterPromoForContinuousDisplay(
       promos_manager::Promo::CredentialProviderExtension);
 
-  EXPECT_EQ(local_state_->GetList(prefs::kIosPromosManagerActivePromos).size(),
+  EXPECT_EQ(pref_service_->GetList(prefs::kIosPromosManagerActivePromos).size(),
             (size_t)1);
   EXPECT_EQ(
-      local_state_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
+      pref_service_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
           .size(),
       (size_t)0);
 
   promos_manager_->DeregisterPromo(
       promos_manager::Promo::CredentialProviderExtension);
 
-  EXPECT_EQ(local_state_->GetList(prefs::kIosPromosManagerActivePromos).size(),
+  EXPECT_EQ(pref_service_->GetList(prefs::kIosPromosManagerActivePromos).size(),
             (size_t)0);
   EXPECT_EQ(
-      local_state_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
+      pref_service_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
           .size(),
       (size_t)0);
 }
@@ -1081,7 +1018,7 @@ TEST_F(PromosManagerImplTest, DeregistersSingleDisplayPromoAfterDisplay) {
   CreatePromosManager();
 
   EXPECT_TRUE(
-      local_state_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
+      pref_service_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
           .empty());
 
   // Initial active promos state.
@@ -1089,7 +1026,7 @@ TEST_F(PromosManagerImplTest, DeregistersSingleDisplayPromoAfterDisplay) {
       promos_manager::Promo::CredentialProviderExtension);
 
   EXPECT_EQ(
-      local_state_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
+      pref_service_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
           .size(),
       (size_t)1);
 
@@ -1097,7 +1034,7 @@ TEST_F(PromosManagerImplTest, DeregistersSingleDisplayPromoAfterDisplay) {
       promos_manager::Promo::CredentialProviderExtension);
 
   EXPECT_TRUE(
-      local_state_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
+      pref_service_->GetList(prefs::kIosPromosManagerSingleDisplayActivePromos)
           .empty());
 }
 
@@ -1108,7 +1045,7 @@ TEST_F(PromosManagerImplTest,
   CreatePromosManager();
 
   EXPECT_TRUE(
-      local_state_->GetDict(prefs::kIosPromosManagerSingleDisplayPendingPromos)
+      pref_service_->GetDict(prefs::kIosPromosManagerSingleDisplayPendingPromos)
           .empty());
 
   // Initial active promos state.
@@ -1116,7 +1053,7 @@ TEST_F(PromosManagerImplTest,
       promos_manager::Promo::CredentialProviderExtension, kTimeDelta1Day);
 
   EXPECT_EQ(
-      local_state_->GetDict(prefs::kIosPromosManagerSingleDisplayPendingPromos)
+      pref_service_->GetDict(prefs::kIosPromosManagerSingleDisplayPendingPromos)
           .size(),
       (size_t)1);
 
@@ -1124,7 +1061,7 @@ TEST_F(PromosManagerImplTest,
       promos_manager::Promo::CredentialProviderExtension);
 
   EXPECT_TRUE(
-      local_state_->GetDict(prefs::kIosPromosManagerSingleDisplayPendingPromos)
+      pref_service_->GetDict(prefs::kIosPromosManagerSingleDisplayPendingPromos)
           .empty());
 }
 
@@ -1147,11 +1084,11 @@ TEST_F(PromosManagerImplTest, NextPromoForDisplayReturnsPendingPromo) {
   };
 
   PromoConfigsSet promoConfigs;
-  promoConfigs.emplace(promos_manager::Promo::Test, &kTestFeatureOne);
+  promoConfigs.emplace(promos_manager::Promo::Test, kTestFeatureOne);
   promoConfigs.emplace(promos_manager::Promo::CredentialProviderExtension,
-                       &kTestFeatureTwo);
+                       kTestFeatureTwo);
   promoConfigs.emplace(promos_manager::Promo::AppStoreRating,
-                       &kTestFeatureThree);
+                       kTestFeatureThree);
   promos_manager_->InitializePromoConfigs(std::move(promoConfigs));
 
   // Mock the FET tracker to allow all promos.
@@ -1163,8 +1100,9 @@ TEST_F(PromosManagerImplTest, NextPromoForDisplayReturnsPendingPromo) {
   // Advance to so that the CredentialProviderExtension becomes active.
   test_clock_.Advance(kTimeDelta1Day + kTimeDelta1Hour);
 
+  PromoDisplayContext context;
   std::optional<promos_manager::Promo> promo =
-      promos_manager_->NextPromoForDisplay();
+      promos_manager_->NextPromoForDisplay(context);
   ASSERT_TRUE(promo.has_value());
   EXPECT_EQ(promo.value(), promos_manager::Promo::CredentialProviderExtension);
   histogram_tester.ExpectUniqueSample(
@@ -1191,9 +1129,9 @@ TEST_F(PromosManagerImplTest,
 
   PromoConfigsSet promoConfigs;
   promoConfigs.emplace(promos_manager::Promo::PostRestoreSignInFullscreen,
-                       &kTestFeatureOne);
+                       kTestFeatureOne);
   promoConfigs.emplace(promos_manager::Promo::CredentialProviderExtension,
-                       &kTestFeatureTwo);
+                       kTestFeatureTwo);
   promos_manager_->InitializePromoConfigs(std::move(promoConfigs));
 
   // Mock the FET tracker to allow all promos.
@@ -1205,13 +1143,51 @@ TEST_F(PromosManagerImplTest,
   // Advance to so that the CredentialProviderExtension becomes active.
   test_clock_.Advance(kTimeDelta1Day + kTimeDelta1Hour);
 
+  PromoDisplayContext context;
   std::optional<promos_manager::Promo> promo =
-      promos_manager_->NextPromoForDisplay();
+      promos_manager_->NextPromoForDisplay(context);
 
   ASSERT_TRUE(promo.has_value());
   EXPECT_EQ(promo.value(), promos_manager::Promo::PostRestoreSignInFullscreen);
   histogram_tester.ExpectUniqueSample(
       "IOS.PromosManager.EligiblePromosInQueueCount", 2, 1);
+}
+
+// Tests `NextPromoForDisplay` correctly filters promos based on their
+// display_time requirement.
+TEST_F(PromosManagerImplTest, NextPromoForDisplayWithFreshNtpRequirement) {
+  base::test::ScopedFeatureList feature_list;
+  CreatePromosManager();
+
+  promos_manager_->active_promos_ = {
+      promos_manager::Promo::Test,
+  };
+
+  PromoConfigsSet promoConfigs;
+  promoConfigs.emplace(promos_manager::Promo::Test, kTestFeatureOne,
+                       PromoDisplayTime::kFreshNtp);
+  promos_manager_->InitializePromoConfigs(std::move(promoConfigs));
+
+  // Mock the FET tracker to allow the promo.
+  EXPECT_CALL(mock_tracker_, ShouldTriggerHelpUI(testing::_))
+      .WillRepeatedly(testing::Return(true));
+  EXPECT_CALL(mock_tracker_, WouldTriggerHelpUI(testing::_))
+      .WillRepeatedly(testing::Return(true));
+
+  // 1. Test when is_on_fresh_ntp is false: the promo should NOT be displayed.
+  PromoDisplayContext context_not_fresh;
+  context_not_fresh.is_on_fresh_ntp = false;
+  std::optional<promos_manager::Promo> promo_not_fresh =
+      promos_manager_->NextPromoForDisplay(context_not_fresh);
+  EXPECT_FALSE(promo_not_fresh.has_value());
+
+  // 2. Test when is_on_fresh_ntp is true: the promo SHOULD be displayed.
+  PromoDisplayContext context_fresh;
+  context_fresh.is_on_fresh_ntp = true;
+  std::optional<promos_manager::Promo> promo_fresh =
+      promos_manager_->NextPromoForDisplay(context_fresh);
+  ASSERT_TRUE(promo_fresh.has_value());
+  EXPECT_EQ(promo_fresh.value(), promos_manager::Promo::Test);
 }
 
 // Tests `NextPromoForDisplay` returns empty when non of the pending promos can
@@ -1230,8 +1206,9 @@ TEST_F(PromosManagerImplTest, NextPromoForDisplayReturnsEmpty) {
   // Advance to so that the none of the pending promo can become active.
   test_clock_.Advance(kTimeDelta1Hour);
 
+  PromoDisplayContext context;
   std::optional<promos_manager::Promo> promo =
-      promos_manager_->NextPromoForDisplay();
+      promos_manager_->NextPromoForDisplay(context);
 
   EXPECT_FALSE(promo.has_value());
   histogram_tester.ExpectTotalCount(

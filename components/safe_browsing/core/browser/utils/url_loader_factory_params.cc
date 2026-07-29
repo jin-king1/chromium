@@ -4,12 +4,14 @@
 
 #include "components/safe_browsing/core/browser/utils/url_loader_factory_params.h"
 
+#include "services/network/public/mojom/network_context.mojom.h"
+
 namespace safe_browsing {
 
 network::mojom::URLLoaderFactoryParamsPtr GetUrlLoaderFactoryParams() {
   network::mojom::URLLoaderFactoryParamsPtr params =
       network::mojom::URLLoaderFactoryParams::New();
-  params->process_id = network::mojom::kBrowserProcessId;
+  params->process_id = network::OriginatingProcessId::browser();
   params->is_orb_enabled = false;
   params->is_trusted = true;
   return params;

@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "third_party/blink/renderer/platform/bindings/runtime_call_stats.h"
 
 #include <inttypes.h>
@@ -14,6 +9,7 @@
 #include <algorithm>
 #include <array>
 
+#include "base/compiler_specific.h"
 #include "base/logging.h"
 #include "base/time/default_tick_clock.h"
 #include "third_party/blink/public/web/blink.h"
@@ -62,32 +58,27 @@ RuntimeCallTimer* RuntimeCallTimer::Stop() {
 }
 
 RuntimeCallStats::RuntimeCallStats(const base::TickClock* clock)
-    : clock_(clock) {
-  static const auto names = std::to_array<const char*>({
-#define BINDINGS_COUNTER_NAME(name) "Blink_Bindings_" #name,
-      BINDINGS_COUNTERS(BINDINGS_COUNTER_NAME)  //
+    : counters_{
+#define BINDINGS_COUNTER_NAME(name) RuntimeCallCounter("Blink_Bindings_" #name),
+          BINDINGS_COUNTERS(BINDINGS_COUNTER_NAME)
 #undef BINDINGS_COUNTER_NAME
-#define GC_COUNTER_NAME(name) "Blink_GC_" #name,
-      GC_COUNTERS(GC_COUNTER_NAME)  //
+#define GC_COUNTER_NAME(name) RuntimeCallCounter("Blink_GC_" #name),
+          GC_COUNTERS(GC_COUNTER_NAME)
 #undef GC_COUNTER_NAME
-#define PARSING_COUNTER_NAME(name) "Blink_Parsing_" #name,
-      PARSING_COUNTERS(PARSING_COUNTER_NAME)  //
+#define PARSING_COUNTER_NAME(name) RuntimeCallCounter("Blink_Parsing_" #name),
+          PARSING_COUNTERS(PARSING_COUNTER_NAME)
 #undef PARSING_COUNTER_NAME
-#define STYLE_COUNTER_NAME(name) "Blink_Style_" #name,
-      STYLE_COUNTERS(STYLE_COUNTER_NAME)  //
+#define STYLE_COUNTER_NAME(name) RuntimeCallCounter("Blink_Style_" #name),
+          STYLE_COUNTERS(STYLE_COUNTER_NAME)
 #undef STYLE_COUNTER_NAME
-#define LAYOUT_COUNTER_NAME(name) "Blink_Layout_" #name,
-      LAYOUT_COUNTERS(LAYOUT_COUNTER_NAME)  //
-#undef STYLE_COUNTER_NAME
-#define COUNTER_NAME(name) "Blink_" #name,
-      CALLBACK_COUNTERS(COUNTER_NAME)  //
-      EXTRA_COUNTERS(COUNTER_NAME)
+#define LAYOUT_COUNTER_NAME(name) RuntimeCallCounter("Blink_Layout_" #name),
+          LAYOUT_COUNTERS(LAYOUT_COUNTER_NAME)
+#undef LAYOUT_COUNTER_NAME
+#define COUNTER_NAME(name) RuntimeCallCounter("Blink_" #name),
+          CALLBACK_COUNTERS(COUNTER_NAME) EXTRA_COUNTERS(COUNTER_NAME)
 #undef COUNTER_NAME
-  });
-
-  for (int i = 0; i < number_of_counters_; i++) {
-    counters_[i] = RuntimeCallCounter(names[i]);
-  }
+      },
+      clock_(clock) {
 }
 
 // static
@@ -98,8 +89,8 @@ RuntimeCallStats* RuntimeCallStats::From(v8::Isolate* isolate) {
 }
 
 void RuntimeCallStats::Reset() {
-  for (int i = 0; i < number_of_counters_; i++) {
-    counters_[i].Reset();
+  for (auto& counter : counters_) {
+    counter.Reset();
   }
 
 #if BUILDFLAG(RCS_COUNT_EVERYTHING)
@@ -110,9 +101,10 @@ void RuntimeCallStats::Reset() {
 }
 
 void RuntimeCallStats::Dump(TracedValue& value) const {
-  for (int i = 0; i < number_of_counters_; i++) {
-    if (counters_[i].GetCount() > 0)
-      counters_[i].Dump(value);
+  for (const auto& counter : counters_) {
+    if (counter.GetCount() > 0) {
+      counter.Dump(value);
+    }
   }
 
 #if BUILDFLAG(RCS_COUNT_EVERYTHING)
@@ -133,10 +125,10 @@ String RuntimeCallStats::ToString() const {
   builder.Append(
       "Name                                                    Count     Time "
       "(ms)\n\n");
-  for (int i = 0; i < number_of_counters_; i++) {
-    const RuntimeCallCounter* counter = &counters_[i];
-    builder.AppendFormat(row_format, counter->GetName(), counter->GetCount(),
-                         counter->GetTime().InMillisecondsF());
+  for (const auto& counter : counters_) {
+    UNSAFE_TODO(builder.AppendFormat(row_format, counter.GetName(),
+                                     counter.GetCount(),
+                                     counter.GetTime().InMillisecondsF()));
   }
 
 #if BUILDFLAG(RCS_COUNT_EVERYTHING)
@@ -206,10 +198,7 @@ constexpr const char* RuntimeCallStatsScopedTracer::s_name_ =
 
 void RuntimeCallStatsScopedTracer::AddBeginTraceEventIfEnabled(
     v8::Isolate* isolate) {
-  bool category_group_enabled;
-  TRACE_EVENT_CATEGORY_GROUP_ENABLED(s_category_group_,
-                                     &category_group_enabled);
-  if (!category_group_enabled) [[likely]] {
+  if (!TRACE_EVENT_CATEGORY_ENABLED(s_category_group_)) [[likely]] {
     return;
   }
 
@@ -219,15 +208,14 @@ void RuntimeCallStatsScopedTracer::AddBeginTraceEventIfEnabled(
   stats_ = stats;
   stats_->Reset();
   stats_->SetInUse(true);
-  TRACE_EVENT_BEGIN0(s_category_group_, s_name_);
+  TRACE_EVENT_BEGIN(s_category_group_, perfetto::StaticString(s_name_));
 }
 
 void RuntimeCallStatsScopedTracer::AddEndTraceEvent() {
   auto value = std::make_unique<TracedValue>();
   stats_->Dump(*value);
   stats_->SetInUse(false);
-  TRACE_EVENT_END1(s_category_group_, s_name_, "runtime-call-stats",
-                   std::move(value));
+  TRACE_EVENT_END(s_category_group_, "runtime-call-stats", std::move(value));
 }
 
 }  // namespace blink

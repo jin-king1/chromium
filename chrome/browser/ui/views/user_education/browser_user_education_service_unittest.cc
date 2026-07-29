@@ -4,12 +4,13 @@
 
 #include "chrome/browser/ui/views/user_education/browser_user_education_service.h"
 
+#include <algorithm>
 #include <iterator>
 #include <string>
 #include <vector>
 
 #include "base/strings/string_util.h"
-#include "base/test/metrics/action_suffix_reader.h"
+#include "base/test/metrics/action_variants_reader.h"
 #include "base/test/metrics/histogram_variants_reader.h"
 #include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
@@ -18,6 +19,7 @@
 #include "components/feature_engagement/public/feature_constants.h"
 #include "components/user_education/common/feature_promo/feature_promo_registry.h"
 #include "components/user_education/common/tutorial/tutorial_registry.h"
+#include "components/user_education/common/user_education_data.h"
 #include "components/user_education/common/user_education_metadata.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -61,7 +63,7 @@ TEST(BrowserUserEducationServiceTest, CheckFeaturePromoHistograms) {
   MaybeRegisterChromeFeaturePromos(registry);
   const auto& iph_specifications = registry.feature_data();
   for (const auto& [feature, spec] : iph_specifications) {
-    if (!base::Contains(*iph_features, feature->name)) {
+    if (!iph_features->contains(feature->name)) {
       missing_features.emplace_back(feature->name);
     }
   }
@@ -75,13 +77,13 @@ TEST(BrowserUserEducationServiceTest, CheckFeaturePromoHistograms) {
 }
 
 TEST(BrowserUserEducationServiceTest, CheckFeaturePromoActions) {
-  std::vector<base::ActionSuffixEntryMap> iph_suffixes;
+  std::vector<base::test::ActionVariantsEntryMap> iph_variants;
   std::vector<std::string> missing_features;
   {
     base::ScopedAllowBlockingForTesting allow_blocking;
-    iph_suffixes =
-        base::ReadActionSuffixesForAction("UserEducation.MessageShown.IPH");
-    ASSERT_EQ(1U, iph_suffixes.size());
+    iph_variants = base::test::ReadActionVariantsForAction(
+        "UserEducation.MessageShown.IPH", "_");
+    ASSERT_EQ(1U, iph_variants.size());
   }
 
   user_education::FeaturePromoRegistry registry;
@@ -92,7 +94,7 @@ TEST(BrowserUserEducationServiceTest, CheckFeaturePromoActions) {
     if (feature_name.starts_with("IPH_")) {
       feature_name = feature_name.substr(4);
     }
-    if (!base::Contains(iph_suffixes[0], feature_name)) {
+    if (!iph_variants[0].contains(feature_name)) {
       missing_features.emplace_back(feature->name);
     }
   }
@@ -100,7 +102,7 @@ TEST(BrowserUserEducationServiceTest, CheckFeaturePromoActions) {
       << "IPH Features:\n"
       << base::JoinString(missing_features, ", ")
       << "\nconfigured in browser_user_education_service.cc but no "
-         "corresponding action suffixes were added in "
+         "corresponding action variants were added in "
          "//tools/metrics/actions/actions.xml";
 }
 
@@ -117,7 +119,7 @@ TEST(BrowserUserEducationServiceTest, CheckNewBadgeHistograms) {
   MaybeRegisterChromeNewBadges(registry);
   const auto& new_badge_specifications = registry.feature_data();
   for (const auto& [feature, spec] : new_badge_specifications) {
-    if (!base::Contains(*new_badge_features, feature->name)) {
+    if (!new_badge_features->contains(feature->name)) {
       missing_features.emplace_back(feature->name);
     }
   }
@@ -153,7 +155,7 @@ TEST(BrowserUserEducationServiceTest, CheckTutorialHistograms) {
       histogram_collisions.emplace_back(
           identifier, known_histograms[identifier], variant_name);
     }
-    if (!base::Contains(*tutorial_features, variant_name)) {
+    if (!tutorial_features->contains(variant_name)) {
       missing_features.emplace_back(variant_name);
     }
   }
@@ -185,7 +187,6 @@ TEST(BrowserUserEducationServiceTest, PreventNewHardCodedConfigurations) {
       &feature_engagement::kIPHDesktopSharedHighlightingFeature,
       &feature_engagement::kIPHDiscardRingFeature,
       &feature_engagement::kIPHDownloadEsbPromoFeature,
-      &feature_engagement::kIPHExperimentalAIPromoFeature,
       &feature_engagement::kIPHExtensionsMenuFeature,
       &feature_engagement::kIPHExtensionsRequestAccessButtonFeature,
       &feature_engagement::kIPHGMCCastStartStopFeature,
@@ -200,8 +201,6 @@ TEST(BrowserUserEducationServiceTest, PreventNewHardCodedConfigurations) {
       &feature_engagement::kIPHReadingListInSidePanelFeature,
       &feature_engagement::kIPHReadingModeSidePanelFeature,
       &feature_engagement::kIPHSidePanelGenericPinnableFeature,
-      &feature_engagement::kIPHSignoutWebInterceptFeature,
-      &feature_engagement::kIPHTabOrganizationSuccessFeature,
       &feature_engagement::kIPHProfileSwitchFeature,
       &feature_engagement::kIPHPriceTrackingInSidePanelFeature,
       &feature_engagement::kIPHBackNavigationMenuFeature,
@@ -209,10 +208,6 @@ TEST(BrowserUserEducationServiceTest, PreventNewHardCodedConfigurations) {
       &feature_engagement::kIPHAutofillExternalAccountProfileSuggestionFeature,
       &feature_engagement::kIPHAutofillVirtualCardCVCSuggestionFeature,
       &feature_engagement::kIPHAutofillVirtualCardSuggestionFeature,
-      &feature_engagement::kIPHCookieControlsFeature,
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
-      &feature_engagement::kIPHDesktopPWAsLinkCapturingLaunch
-#endif
       // Explicitly allowed:
       //
       // (These have been cleared by Frizzle Team as requiring their own
@@ -221,7 +216,6 @@ TEST(BrowserUserEducationServiceTest, PreventNewHardCodedConfigurations) {
       // DO NOT ADD ENTRIES TO THIS LIST WITHOUT APPROVAL FROM
       // components/user_education/OWNERS
   };
-
   std::vector<std::string> invalid_configs;
 
   user_education::FeaturePromoRegistry registry;
@@ -229,7 +223,7 @@ TEST(BrowserUserEducationServiceTest, PreventNewHardCodedConfigurations) {
   const auto& iph_specifications = registry.feature_data();
   for (const auto& [feature, spec] : iph_specifications) {
     const auto config = feature_engagement::GetClientSideFeatureConfig(feature);
-    if (config && !Contains(kAllowedConfigurations, feature)) {
+    if (config && !std::ranges::contains(kAllowedConfigurations, feature)) {
       invalid_configs.emplace_back(feature->name);
     }
   }
@@ -252,8 +246,6 @@ TEST(BrowserUserEducationServiceTest, CheckFeaturePromoMetadata) {
   const base::Feature* const kExistingPromosWithoutMetadata[] = {
       &feature_engagement::kIPHComposeMSBBSettingsFeature,
       &feature_engagement::kIPHDesktopSharedHighlightingFeature,
-      &feature_engagement::kIPHDesktopCustomizeChromeFeature,
-      &feature_engagement::kIPHExperimentalAIPromoFeature,
       &feature_engagement::kIPHExplicitBrowserSigninPreferenceRememberedFeature,
       &feature_engagement::kIPHGMCCastStartStopFeature,
       &feature_engagement::kIPHGMCLocalMediaCastingFeature,
@@ -266,10 +258,8 @@ TEST(BrowserUserEducationServiceTest, CheckFeaturePromoMetadata) {
       &feature_engagement::kIPHReadingListDiscoveryFeature,
       &feature_engagement::kIPHReadingListEntryPointFeature,
       &feature_engagement::kIPHReadingListInSidePanelFeature,
-      &feature_engagement::kIPHSignoutWebInterceptFeature,
       &feature_engagement::kIPHProfileSwitchFeature,
-      &feature_engagement::kIPHBackNavigationMenuFeature,
-      &feature_engagement::kIPHCookieControlsFeature};
+      &feature_engagement::kIPHBackNavigationMenuFeature};
 
   user_education::FeaturePromoRegistry registry;
   MaybeRegisterChromeFeaturePromos(registry);
@@ -278,7 +268,8 @@ TEST(BrowserUserEducationServiceTest, CheckFeaturePromoMetadata) {
   bool failed = false;
   for (const auto& [feature, spec] : iph_specifications) {
     const auto errors = CheckMetadata(spec.metadata());
-    if (!errors.empty() && !Contains(kExistingPromosWithoutMetadata, feature)) {
+    if (!errors.empty() &&
+        !std::ranges::contains(kExistingPromosWithoutMetadata, feature)) {
       failed = true;
       oss << "\n"
           << feature->name

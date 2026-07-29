@@ -37,9 +37,10 @@ LoginState::LoggedInUserType GetLoggedInUserTypeFromUser(
       return LoginState::LOGGED_IN_USER_PUBLIC_ACCOUNT;
     case user_manager::UserType::kChild:
       return LoginState::LOGGED_IN_USER_CHILD;
-    case user_manager::UserType::kKioskApp:
-    case user_manager::UserType::kWebKioskApp:
+    case user_manager::UserType::kKioskChromeApp:
+    case user_manager::UserType::kKioskWebApp:
     case user_manager::UserType::kKioskIWA:
+    case user_manager::UserType::kKioskArcvmApp:
       return LoginState::LOGGED_IN_USER_KIOSK;
       // Since there is no default, the compiler warns about unhandled types.
   }
@@ -131,20 +132,6 @@ bool LoginState::UserHasNetworkProfile() const {
 bool LoginState::IsUserAuthenticated() const {
   return logged_in_user_type_ == LOGGED_IN_USER_REGULAR ||
          logged_in_user_type_ == LOGGED_IN_USER_CHILD;
-}
-
-const std::string& LoginState::primary_user_hash() const {
-  auto* user_manager = user_manager::UserManager::Get();
-  if (!user_manager) {
-    return base::EmptyString();
-  }
-
-  auto* primary_user = user_manager->GetPrimaryUser();
-  if (!primary_user) {
-    return base::EmptyString();
-  }
-
-  return primary_user->username_hash();
 }
 
 void LoginState::OnUserManagerCreated(user_manager::UserManager* user_manager) {

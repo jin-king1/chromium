@@ -2,12 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "ash/strings/grit/ash_strings.h"
 #include "base/memory/raw_ptr.h"
 #include "chrome/browser/ash/app_list/app_service/app_service_app_icon_loader.h"
 #include "chrome/browser/ash/app_list/arc/arc_data_removal_dialog.h"
 #include "chrome/browser/ash/arc/session/arc_session_manager.h"
 #include "chrome/browser/ash/arc/session/arc_session_manager_observer.h"
-#include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/experiences/arc/app/arc_app_constants.h"
 #include "components/constrained_window/constrained_window_views.h"
 #include "components/strings/grit/components_strings.h"
@@ -32,6 +32,8 @@ namespace arc {
 namespace {
 
 constexpr int kArcAppIconSize = 48;
+
+}  // namespace
 
 // This dialog is shown when ARC++ comes into the state when normal
 // functionality could not be possible without resetting whole container by data
@@ -157,8 +159,6 @@ void DataRemovalConfirmationDialog::OnArcPlayStoreEnabledChanged(bool enabled) {
 
 BEGIN_METADATA(DataRemovalConfirmationDialog)
 END_METADATA
-
-}  // namespace
 
 void ShowDataRemovalConfirmationDialog(
     Profile* profile,

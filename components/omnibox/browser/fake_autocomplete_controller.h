@@ -30,7 +30,7 @@ class FakeAutocompleteControllerObserver
 class FakeAutocompleteController : public AutocompleteController {
  public:
   FakeAutocompleteController(
-      raw_ptr<base::test::SingleThreadTaskEnvironment> task_environment);
+      raw_ptr<base::test::TaskEnvironment> task_environment);
   ~FakeAutocompleteController() override;
 
   // Getter for `providers_`.
@@ -97,25 +97,30 @@ class FakeAutocompleteController : public AutocompleteController {
   using AutocompleteController::OldResult;
 
   // AutocompleteController (methods):
+  using AutocompleteController::CheckWhetherDefaultMatchChanged;
   using AutocompleteController::MaybeRemoveCompanyEntityImages;
   using AutocompleteController::ShouldRunProvider;
   using AutocompleteController::UpdateAssociatedKeywords;
   using AutocompleteController::UpdateResult;
+  using AutocompleteController::UpdateSearchboxStats;
+  using AutocompleteController::UpdateShownInSession;
 
   // AutocompleteController (fields):
   using AutocompleteController::input_;
   using AutocompleteController::internal_result_;
   using AutocompleteController::keyword_provider_;
+  using AutocompleteController::last_time_default_match_changed_;
   using AutocompleteController::last_update_type_;
   using AutocompleteController::metrics_;
   using AutocompleteController::providers_;
   using AutocompleteController::published_result_;
   using AutocompleteController::template_url_service_;
+  using AutocompleteController::zero_suggest_provider_;
 
   // Used to verify the correct number of notifications occur.
   std::unique_ptr<FakeAutocompleteControllerObserver> observer_;
   // Used to simulate time passing.
-  raw_ptr<base::test::SingleThreadTaskEnvironment> task_environment_;
+  raw_ptr<base::test::TaskEnvironment> task_environment_;
 };
 
 #endif  // COMPONENTS_OMNIBOX_BROWSER_FAKE_AUTOCOMPLETE_CONTROLLER_H_

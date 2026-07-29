@@ -4,12 +4,12 @@
 
 #include "chrome/browser/ash/apps/apk_web_app_installer.h"
 
+#include <algorithm>
 #include <memory>
 #include <utility>
 #include <vector>
 
 #include "ash/public/cpp/shelf_model.h"
-#include "base/containers/contains.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
@@ -71,7 +71,7 @@ std::unique_ptr<web_app::WebAppInstallInfo> CreateWebAppInstallInfo(
       web_app::WebAppInstallInfo::CreateWithStartUrlForTesting(url);
   web_app_install_info->title = u"App Title";
   web_app_install_info->theme_color = SK_ColorBLUE;
-  web_app_install_info->scope = url.Resolve("scope");
+  web_app_install_info->scope = url;
   web_app_install_info->display_mode = web_app::DisplayMode::kBrowser;
   web_app_install_info->user_display_mode =
       web_app::mojom::UserDisplayMode::kStandalone;
@@ -107,7 +107,7 @@ void ExpectInitialManifestFieldsFromWebAppInstallInfo(
   // Manifest fields:
   EXPECT_EQ(web_app->untranslated_name(), "App Title");
   EXPECT_EQ(web_app->start_url(), url);
-  EXPECT_EQ(web_app->scope().spec(), url.Resolve("scope"));
+  EXPECT_EQ(web_app->scope().spec(), url);
   EXPECT_EQ(web_app->display_mode(), web_app::DisplayMode::kBrowser);
 
   ASSERT_TRUE(web_app->theme_color().has_value());
@@ -117,7 +117,7 @@ void ExpectInitialManifestFieldsFromWebAppInstallInfo(
   EXPECT_EQ(SK_ColorBLUE, web_app->sync_proto().theme_color());
 
   EXPECT_EQ("App Title", web_app->sync_proto().name());
-  EXPECT_EQ(url.Resolve("scope").spec(), web_app->sync_proto().scope());
+  EXPECT_EQ(url.spec(), web_app->sync_proto().scope());
   {
     SCOPED_TRACE("web_app->manifest_icons()");
     ExpectInitialIconInfosFromWebAppInstallInfo(web_app->manifest_icons(), url);
@@ -166,9 +166,9 @@ class ApkWebAppInstallerBrowserTest
   }
 
   void EnableArc() {
-    arc::SetArcPlayStoreEnabledForProfile(browser()->profile(), true);
+    arc::SetArcPlayStoreEnabledForProfile(browser()->GetProfile(), true);
 
-    arc_app_list_prefs_ = ArcAppListPrefs::Get(browser()->profile());
+    arc_app_list_prefs_ = ArcAppListPrefs::Get(browser()->GetProfile());
     DCHECK(arc_app_list_prefs_);
 
     base::RunLoop run_loop;
@@ -192,7 +192,7 @@ class ApkWebAppInstallerBrowserTest
   }
 
   void SetUpWebApps() {
-    provider_ = web_app::WebAppProvider::GetForTest(browser()->profile());
+    provider_ = web_app::WebAppProvider::GetForTest(browser()->GetProfile());
     DCHECK(provider_);
     observation_.Observe(&provider_->install_manager());
   }
@@ -245,11 +245,11 @@ class ApkWebAppInstallerBrowserTest
   }
 
   ApkWebAppService* apk_web_app_service() {
-    return ApkWebAppService::Get(browser()->profile());
+    return ApkWebAppService::Get(browser()->GetProfile());
   }
 
   web_app::WebAppIconManager& icon_manager() {
-    return web_app::WebAppProvider::GetForTest(browser()->profile())
+    return web_app::WebAppProvider::GetForTest(browser()->GetProfile())
         ->icon_manager();
   }
 
@@ -481,8 +481,8 @@ IN_PROC_BROWSER_TEST_F(ApkWebAppInstallerDelayedArcStartBrowserTest,
   app_instance_->SendRefreshPackageList(std::move(packages));
 
   EXPECT_EQ(2u, removed_packages_.size());
-  EXPECT_TRUE(base::Contains(removed_packages_, kPackageName));
-  EXPECT_TRUE(base::Contains(removed_packages_, kPackageName1));
+  EXPECT_TRUE(std::ranges::contains(removed_packages_, kPackageName));
+  EXPECT_TRUE(std::ranges::contains(removed_packages_, kPackageName1));
   EXPECT_EQ(std::nullopt, service->GetPackageNameForWebApp(kAppUrl));
   EXPECT_EQ(std::nullopt, service->GetPackageNameForWebApp(kAppUrl1));
 
@@ -590,7 +590,7 @@ IN_PROC_BROWSER_TEST_F(ApkWebAppInstallerBrowserTest,
 
   // Reinstall the Web App through the Browser.
   webapps::AppId non_arc_app_id = web_app::test::InstallDummyWebApp(
-      browser()->profile(), kAppTitle, GURL(kAppUrl));
+      browser()->GetProfile(), kAppTitle, GURL(kAppUrl));
   ASSERT_EQ(app_id, non_arc_app_id);
   ASSERT_FALSE(service->IsWebAppInstalledFromArc(app_id));
 }
@@ -685,7 +685,7 @@ IN_PROC_BROWSER_TEST_F(ApkWebAppInstallerBrowserTest,
       CreateWebAppInstallInfo(GURL(kAppUrl));
 
   webapps::AppId app_id = web_app::test::InstallWebApp(
-      browser()->profile(), std::move(web_app_install_info),
+      browser()->GetProfile(), std::move(web_app_install_info),
       /*overwrite_existing_manifest_fields=*/true,
       webapps::WebappInstallSource::SYNC);
 
@@ -768,7 +768,7 @@ IN_PROC_BROWSER_TEST_F(ApkWebAppInstallerBrowserTest,
       CreateWebAppInstallInfo(GURL(kAppUrl));
 
   webapps::AppId web_app_id = web_app::test::InstallWebApp(
-      browser()->profile(), std::move(web_app_install_info),
+      browser()->GetProfile(), std::move(web_app_install_info),
       /*overwrite_existing_manifest_fields=*/true,
       webapps::WebappInstallSource::SYNC);
   ASSERT_EQ(app_id, web_app_id);
@@ -811,7 +811,7 @@ IN_PROC_BROWSER_TEST_F(ApkWebAppInstallerDelayedArcStartBrowserTest,
   service->SetWebAppUninstalledCallbackForTesting(
       uninstalled_future.GetCallback());
 
-  arc::SetArcPlayStoreEnabledForProfile(browser()->profile(), false);
+  arc::SetArcPlayStoreEnabledForProfile(browser()->GetProfile(), false);
   DisableArc();
 
   ASSERT_EQ(uninstalled_future.Get<1>(), installed_app_id);
@@ -911,7 +911,7 @@ IN_PROC_BROWSER_TEST_F(ApkWebAppInstallerBrowserTest,
       CreateWebAppInstallInfo(GURL(kAppUrl));
 
   webapps::AppId app_id = web_app::test::InstallWebApp(
-      browser()->profile(), std::move(web_app_install_info),
+      browser()->GetProfile(), std::move(web_app_install_info),
       /*overwrite_existing_manifest_fields=*/true,
       webapps::WebappInstallSource::SYNC);
 

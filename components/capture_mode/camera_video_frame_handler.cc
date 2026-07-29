@@ -13,29 +13,31 @@
 #include "base/memory/shared_memory_mapping.h"
 #include "base/memory/unsafe_shared_memory_region.h"
 #include "base/system/sys_info.h"
+#include "components/capture_mode/capture_mode_util.h"
 #include "components/viz/common/gpu/context_lost_observer.h"
 #include "components/viz/common/gpu/context_provider.h"
 #include "gpu/command_buffer/client/client_shared_image.h"
 #include "gpu/command_buffer/client/shared_image_interface.h"
 #include "gpu/command_buffer/common/shared_image_capabilities.h"
 #include "gpu/command_buffer/common/shared_image_usage.h"
+#include "gpu/config/gpu_feature_info.h"
 #include "gpu/config/gpu_finch_features.h"
 #include "media/base/media_switches.h"
 #include "media/base/video_frame.h"
 #include "media/base/video_types.h"
 #include "media/capture/video_capture_types.h"
 #include "mojo/public/cpp/system/buffer.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/compositor/compositor.h"
 #include "ui/gfx/buffer_types.h"
 #include "ui/gfx/geometry/size.h"
-#include "ui/gfx/gpu_memory_buffer.h"
 
 #if BUILDFLAG(IS_WIN)
 #include "gpu/command_buffer/common/shared_image_capabilities.h"
 #endif
 
 #if BUILDFLAG(IS_MAC)
-#include "media/capture/video/apple/video_capture_device_factory_apple.h"
+#include "media/capture/video/apple/video_capture_device_factory_apple.h"  // nogncheck
 #endif
 
 namespace capture_mode {
@@ -91,13 +93,6 @@ bool IsFatalError(media::VideoCaptureError error) {
 }
 #endif
 
-#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
-bool IsGpuRasterizationSupported(ui::ContextFactory* context_factory) {
-  DCHECK(context_factory);
-  auto provider = context_factory->SharedMainThreadRasterContextProvider();
-  return provider && provider->ContextCapabilities().gpu_rasterization;
-}
-#endif
 
 #if BUILDFLAG(IS_WIN)
 bool IsD3DSharedImageSupported(ui::ContextFactory* context_factory) {
@@ -140,14 +135,17 @@ void AdjustMacParamsForCurrentConfig(media::VideoCaptureParams* params,
 // frame that is backed by a `kSharedMemory` buffer type.
 class SharedMemoryBufferHandleHolder : public BufferHandleHolder {
  public:
-  explicit SharedMemoryBufferHandleHolder(base::UnsafeSharedMemoryRegion region)
-      : region_(std::move(region)) {
-    CHECK(region_.IsValid());
+  explicit SharedMemoryBufferHandleHolder(
+      const base::UnsafeSharedMemoryRegion& region)
+      : mapping_(base::MakeRefCounted<
+                 base::RefCountedData<base::WritableSharedMemoryMapping>>(
+            region.Map())) {
+    CHECK(region.IsValid());
   }
   explicit SharedMemoryBufferHandleHolder(
       media::mojom::VideoBufferHandlePtr buffer_handle)
-      : region_(std::move(buffer_handle->get_unsafe_shmem_region())) {
-    DCHECK(buffer_handle->is_unsafe_shmem_region());
+      : SharedMemoryBufferHandleHolder(
+            buffer_handle->get_unsafe_shmem_region()) {
 #if BUILDFLAG(IS_CHROMEOS)
     DCHECK(!base::SysInfo::IsRunningOnChromeOS());
 #endif
@@ -164,7 +162,7 @@ class SharedMemoryBufferHandleHolder : public BufferHandleHolder {
     const size_t mapping_size = media::VideoFrame::AllocationSize(
         buffer->frame_info->pixel_format, buffer->frame_info->coded_size);
 
-    auto mapping = region_.Map();
+    const auto& mapping = mapping_->data;
     if (!mapping.IsValid()) {
       return {};
     }
@@ -173,12 +171,11 @@ class SharedMemoryBufferHandleHolder : public BufferHandleHolder {
     auto& frame_info = buffer->frame_info;
     auto frame = media::VideoFrame::WrapExternalData(
         frame_info->pixel_format, frame_info->coded_size,
-        frame_info->visible_rect, frame_info->visible_rect.size(),
-        mapping.GetMemoryAs<uint8_t>(), mapping.size(), frame_info->timestamp);
+        frame_info->visible_rect, frame_info->visible_rect.size(), mapping,
+        frame_info->timestamp);
 
     if (frame) {
-      frame->AddDestructionObserver(
-          base::DoNothingWithBoundArgs(std::move(mapping)));
+      frame->AddDestructionObserver(base::DoNothingWithBoundArgs(mapping_));
     }
     frame->metadata().MergeMetadataFrom(frame_info->metadata);
 
@@ -186,8 +183,9 @@ class SharedMemoryBufferHandleHolder : public BufferHandleHolder {
   }
 
  private:
-  // The held shared memory region associated with this object.
-  base::UnsafeSharedMemoryRegion region_;
+  // The held shared memory mapping associated with this object.
+  scoped_refptr<base::RefCountedData<base::WritableSharedMemoryMapping>>
+      mapping_;
 };
 
 // -----------------------------------------------------------------------------
@@ -229,8 +227,7 @@ class GpuMemoryBufferHandleHolder : public BufferHandleHolder,
     if (!shared_image_) {
       return;
     }
-    shared_image_interface->DestroySharedImage(release_sync_token_,
-                                               std::move(shared_image_));
+    shared_image_->UpdateDestructionSyncToken(release_sync_token_);
   }
 
   // BufferHandleHolder:
@@ -271,10 +268,6 @@ class GpuMemoryBufferHandleHolder : public BufferHandleHolder,
     return gpu_memory_buffer_handle_;
   }
 
-  base::UnsafeSharedMemoryRegion TakeGpuMemoryBufferHandleRegion() {
-    return std::move(gpu_memory_buffer_handle_.region());
-  }
-
  private:
   // Initializes this holder by creating `shared_image_`. This shared image is
   // backed by a GpuMemoryBuffer whose handle is a clone of our
@@ -302,12 +295,10 @@ class GpuMemoryBufferHandleHolder : public BufferHandleHolder,
     }
 #endif
 
-    // A flag that describes which APIs the shared images created
-    // for the video frames will be used with. They will be read via the raster
-    // interface (which will be going over GLES2 if OOP-R is not enabled), sent
-    // to the display compositor, and may be used as overlays.
+    // A flag that describes which APIs the shared images created for the video
+    // frames will be used with. They will be read via the raster interface,
+    // sent to the display compositor, and may be used as overlays.
     gpu::SharedImageUsageSet shared_image_usage =
-        gpu::SHARED_IMAGE_USAGE_GLES2_READ |
         gpu::SHARED_IMAGE_USAGE_RASTER_READ |
         gpu::SHARED_IMAGE_USAGE_DISPLAY_READ;
 
@@ -320,15 +311,21 @@ class GpuMemoryBufferHandleHolder : public BufferHandleHolder,
     // to create the shared image. This way, the lifetime of our
     // `gpu_memory_buffer_handle_` remains tied to the lifetime of this object
     // (i.e. until `OnBufferRetired()` is called).
+    gfx::ColorSpace color_space = frame_info->color_space;
+    if (!color_space.IsValid()) {
+      color_space = format.is_multi_plane() ? gfx::ColorSpace::CreateREC709()
+                                            : gfx::ColorSpace::CreateSRGB();
+    }
     shared_image_ = shared_image_interface->CreateSharedImage(
-        {format, frame_info->coded_size, frame_info->color_space,
-         shared_image_usage, "CameraVideoFrame"},
+        {format, frame_info->coded_size, color_space, shared_image_usage,
+         "CameraVideoFrame"},
         gpu_memory_buffer_handle_.Clone());
     CHECK(shared_image_);
 
     // Since this is the first time we create the `shared_image_`, we need to
     // guarantee that the shared image is created before it is used.
-    mailbox_holder_sync_token_ = shared_image_interface->GenVerifiedSyncToken();
+    shared_image_sync_token_ = shared_image_->creation_sync_token();
+    shared_image_interface->VerifySyncToken(shared_image_sync_token_);
 
     should_create_shared_image_ = false;
     return true;
@@ -348,6 +345,13 @@ class GpuMemoryBufferHandleHolder : public BufferHandleHolder,
       return {};
     }
 
+    if (frame_info->coded_size != shared_image_->size()) {
+      LOG(ERROR) << "Different sizes, frame_info="
+                 << frame_info->coded_size.ToString()
+                 << " shared_image=" << shared_image_->size().ToString();
+      return {};
+    }
+
 #if !BUILDFLAG(IS_WIN)
     // The camera GpuMemoryBuffer is backed by a DMA-buff, and doesn't use a
     // pre-mapped shared memory region.
@@ -356,12 +360,12 @@ class GpuMemoryBufferHandleHolder : public BufferHandleHolder,
 
     CHECK(shared_image_);
     auto frame = media::VideoFrame::WrapSharedImage(
-        frame_info->pixel_format, shared_image_, mailbox_holder_sync_token_,
+        frame_info->pixel_format, shared_image_, shared_image_sync_token_,
         base::BindOnce(&GpuMemoryBufferHandleHolder::OnMailboxReleased,
                        weak_ptr_factory_.GetWeakPtr()),
-        frame_info->coded_size, frame_info->visible_rect,
-        frame_info->visible_rect.size(), frame_info->timestamp);
-    mailbox_holder_sync_token_.Clear();
+        frame_info->visible_rect, frame_info->visible_rect.size(),
+        frame_info->timestamp);
+    shared_image_sync_token_.Clear();
 
     if (!frame) {
       LOG(ERROR) << "Failed to create a video frame.";
@@ -372,10 +376,9 @@ class GpuMemoryBufferHandleHolder : public BufferHandleHolder,
     // If format is not multiplanar it must be used for testing.
     CHECK(format.is_multi_plane() || g_force_use_gpu_memory_buffer_for_test);
 
-    if (frame_info->color_space.IsValid()) {
-      frame->set_color_space(frame_info->color_space);
-    }
-    frame->metadata().allow_overlay = true;
+    frame->set_color_space(shared_image_->color_space());
+    frame->metadata().allow_overlay =
+        shared_image_->usage().Has(gpu::SHARED_IMAGE_USAGE_SCANOUT);
     frame->metadata().read_lock_fences_enabled = true;
     frame->metadata().MergeMetadataFrom(frame_info->metadata);
 
@@ -398,9 +401,10 @@ class GpuMemoryBufferHandleHolder : public BufferHandleHolder,
   // buffer.
   scoped_refptr<gpu::ClientSharedImage> shared_image_;
 
-  // The sync token used when creating a `MailboxHolder`. This will be a
-  // verified sync token the first time we wrap a video frame around a mailbox.
-  gpu::SyncToken mailbox_holder_sync_token_;
+  // The sync token used when creating a SharedImage. This will be a
+  // verified sync token the first time we wrap a video frame around a shared
+  // image.
+  gpu::SyncToken shared_image_sync_token_;
 
   // The release sync token of the above `shared_image_`.
   gpu::SyncToken release_sync_token_;
@@ -473,7 +477,8 @@ class WinGpuMemoryBufferHandleHolder : public BufferHandleHolder {
       ui::ContextFactory* context_factory)
       : context_factory_(context_factory),
         gmb_holder_(std::move(buffer_handle), context_factory),
-        sh_mem_holder_(gmb_holder_.TakeGpuMemoryBufferHandleRegion()),
+        sh_mem_holder_(
+            gmb_holder_.GetGpuMemoryBufferHandle().dxgi_handle().region()),
         require_mapped_frame_callback_(
             std::move(require_mapped_frame_callback)) {
     CHECK_EQ(gmb_holder_.GetGpuMemoryBufferHandle().type,
@@ -702,8 +707,8 @@ void CameraVideoFrameHandler::OnFrameDropped(
               << static_cast<int>(reason);
 }
 
-void CameraVideoFrameHandler::OnNewSubCaptureTargetVersion(
-    uint32_t sub_capture_target_version) {}
+void CameraVideoFrameHandler::OnNewCaptureVersion(
+    const media::CaptureVersion& capture_version) {}
 
 void CameraVideoFrameHandler::OnFrameWithEmptyRegionCapture() {}
 

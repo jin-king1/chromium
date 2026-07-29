@@ -31,8 +31,7 @@ namespace blink {
 class SVGMatrixTearOff;
 class SVGRectTearOff;
 
-class CORE_EXPORT SVGGraphicsElement : public SVGTransformableElement,
-                                       public SVGTests {
+class CORE_EXPORT SVGGraphicsElement : public SVGTransformableElement {
   DEFINE_WRAPPERTYPEINFO();
 
  public:
@@ -47,7 +46,11 @@ class CORE_EXPORT SVGGraphicsElement : public SVGTransformableElement,
   virtual gfx::RectF GetBBox();
   SVGRectTearOff* getBBoxFromJavascript();
 
-  bool IsValid() const final { return SVGTests::IsValid(); }
+  bool IsValid() const final { return !tests_ || tests_->IsValid(); }
+
+  // SVGTests mixin forwarders.
+  SVGStringListTearOff* requiredExtensions();
+  SVGStringListTearOff* systemLanguage();
 
   AffineTransform ComputeCTM(
       CTMScope mode,
@@ -55,12 +58,18 @@ class CORE_EXPORT SVGGraphicsElement : public SVGTransformableElement,
 
   void Trace(Visitor*) const override;
 
+  bool IsNonRendered(const LayoutObject* object) const;
+
  protected:
   SVGGraphicsElement(const QualifiedName&,
                      Document&,
                      ConstructionType = kCreateSVGElement);
 
   FocusableState SupportsFocus(UpdateBehavior update_behavior) const override {
+    if (IsNonRendered(GetLayoutObject())) {
+      return FocusableState::kNotFocusable;
+    }
+
     if (HasFocusEventListeners()) {
       return FocusableState::kFocusable;
     }
@@ -75,6 +84,10 @@ class CORE_EXPORT SVGGraphicsElement : public SVGTransformableElement,
 
  private:
   bool IsSVGGraphicsElement() const final { return true; }
+
+  SVGTests& EnsureSvgTests() const;
+
+  mutable Member<SVGTests> tests_;
 };
 
 template <>

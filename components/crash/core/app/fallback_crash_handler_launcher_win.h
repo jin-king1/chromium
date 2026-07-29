@@ -7,6 +7,8 @@
 
 #include <windows.h>
 
+#include <vector>
+
 #include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/win/scoped_handle.h"
@@ -51,7 +53,7 @@ class FallbackCrashHandlerLauncher {
 
  private:
   // A copy of the actual exception pointers made at time of exception.
-  EXCEPTION_POINTERS exception_pointers_;
+  EXCEPTION_POINTERS exception_pointers_ = {};
 
   // The precomputed startup info and command line for launching the fallback
   // handler.

@@ -77,10 +77,6 @@ class SadTabTabHelper : public web::WebStateUserData<SadTabTabHelper>,
   void DidFinishNavigation(web::WebState* web_state,
                            web::NavigationContext* navigation_context) override;
   void WebStateDestroyed(web::WebState* web_state) override;
-  void WebStateRealized(web::WebState* web_state) override;
-
-  // Helper used to create notification observer.
-  void CreateNotificationObserver();
 
   // The WebState this instance is observing. Will be null after
   // WebStateDestroyed has been called.
@@ -117,8 +113,6 @@ class SadTabTabHelper : public web::WebStateUserData<SadTabTabHelper>,
   id background_notification_observer_;
 
   base::WeakPtrFactory<SadTabTabHelper> weak_factory_{this};
-
-  WEB_STATE_USER_DATA_KEY_DECL();
 };
 
 #endif  // IOS_CHROME_BROWSER_WEB_MODEL_SAD_TAB_TAB_HELPER_H_

@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40284755): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "base/files/file_path.h"
 
 #include <stddef.h>
@@ -15,18 +10,18 @@
 #include <sstream>
 #include <string_view>
 
+#include "base/compiler_specific.h"
+#include "base/features.h"
 #include "base/files/safe_base_name.h"
 #include "base/strings/utf_ostream_operators.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/gtest_util.h"
+#include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "build/buildflag.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/platform_test.h"
-
-#if BUILDFLAG(ENABLE_BASE_TRACING)
-#include "third_party/perfetto/include/perfetto/test/traced_value_test_support.h"  // no-presubmit-check nogncheck
-#endif  // BUILDFLAG(ENABLE_BASE_TRACING)
+#include "third_party/perfetto/include/perfetto/test/traced_value_test_support.h"
 
 #if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
 #include "base/test/scoped_locale.h"
@@ -80,6 +75,7 @@ using FilePathTest = PlatformTest;
 TEST_F(FilePathTest, DirName) {
   const auto cases = std::to_array<UnaryTestData>({
       {FPL(""), FPL(".")},
+      {FPL("."), FPL(".")},
       {FPL("aa"), FPL(".")},
       {FPL("/aa/bb"), FPL("/aa")},
       {FPL("/aa/bb/"), FPL("/aa")},
@@ -100,11 +96,9 @@ TEST_F(FilePathTest, DirName) {
       {FPL("//aa/bb"), FPL("//aa")},
       {FPL("//aa/"), FPL("//")},
       {FPL("//aa"), FPL("//")},
-#if BUILDFLAG(IS_POSIX)
       {FPL("///aa/"), FPL("/")},
       {FPL("///aa"), FPL("/")},
       {FPL("///"), FPL("/")},
-#endif  // BUILDFLAG(IS_POSIX)
       {FPL("0:"), FPL(".")},
       {FPL("@:"), FPL(".")},
       {FPL("[:"), FPL(".")},
@@ -157,6 +151,8 @@ TEST_F(FilePathTest, DirName) {
       {FPL("c:\\"), FPL("c:\\")},
       {FPL("c:\\\\"), FPL("c:\\\\")},
       {FPL("c:\\\\\\"), FPL("c:\\")},
+      {FPL("c:\\\\aa"), FPL("c:\\\\")},
+      {FPL("c:\\\\\\aa"), FPL("c:\\")},
       {FPL("c:\\aa"), FPL("c:\\")},
       {FPL("c:\\aa\\"), FPL("c:\\")},
       {FPL("c:\\aa\\bb"), FPL("c:\\aa")},
@@ -595,9 +591,7 @@ TEST_F(FilePathTest, PathComponentsTest) {
   const auto cases = std::to_array<UnaryTestData>({
       {FPL("//foo/bar/baz/"), FPL("|//|foo|bar|baz")},
       {FPL("///"), FPL("|/")},
-#if BUILDFLAG(IS_POSIX)
       {FPL("///foo//bar/baz"), FPL("|/|foo|bar|baz")},
-#endif  // BUILDFLAG(IS_POSIX)
       {FPL("/foo//bar//baz/"), FPL("|/|foo|bar|baz")},
       {FPL("/foo/bar/baz/"), FPL("|/|foo|bar|baz")},
       {FPL("/foo/bar/baz//"), FPL("|/|foo|bar|baz")},
@@ -611,7 +605,12 @@ TEST_F(FilePathTest, PathComponentsTest) {
 #if defined(FILE_PATH_USES_DRIVE_LETTERS)
       {FPL("e:/foo"), FPL("|e:|/|foo")},
       {FPL("e:/"), FPL("|e:|/")},
+      {FPL("e:foo"), FPL("|e:|foo")},
       {FPL("e:"), FPL("|e:")},
+      {FPL("e://foo"), FPL("|e:|//|foo")},
+      {FPL("e://"), FPL("|e:|//")},
+      {FPL("e:///foo"), FPL("|e:|/|foo")},
+      {FPL("e:///"), FPL("|e:|/")},
 #endif  // FILE_PATH_USES_DRIVE_LETTERS
 #if defined(FILE_PATH_USES_WIN_SEPARATORS)
       {FPL("../foo"), FPL("|..|foo")},
@@ -646,47 +645,109 @@ TEST_F(FilePathTest, PathComponentsTest) {
   }
 }
 
-TEST_F(FilePathTest, IsParentTest) {
+void IsParentTest(bool is_fast) {
+#if defined(FILE_PATH_USES_WIN_SEPARATORS)
+  auto swap_separators = [](const FilePath& path) {
+    FilePath::StringType new_path(path.value());
+    for (auto& character : new_path) {
+      if (character == '/') {
+        character = '\\';
+      } else if (character == '\\') {
+        character = '/';
+      }
+    }
+    return new_path;
+  };
+#endif  // defined(FILE_PATH_USES_WIN_SEPARATORS)
+
   const auto cases = std::to_array<BinaryBooleanTestData>({
-      {{FPL("/"), FPL("/foo/bar/baz")}, true},
-      {{FPL("/foo"), FPL("/foo/bar/baz")}, true},
-      {{FPL("/foo/bar"), FPL("/foo/bar/baz")}, true},
-      {{FPL("/foo/bar/"), FPL("/foo/bar/baz")}, true},
-      {{FPL("//foo/bar/"), FPL("//foo/bar/baz")}, true},
-      {{FPL("/foo/bar"), FPL("/foo2/bar/baz")}, false},
-      {{FPL("/foo/bar.txt"), FPL("/foo/bar/baz")}, false},
-      {{FPL("/foo/bar"), FPL("/foo/bar2/baz")}, false},
-      {{FPL("/foo/bar"), FPL("/foo/bar")}, false},
-      {{FPL("/foo/bar/baz"), FPL("/foo/bar")}, false},
-      {{FPL("foo"), FPL("foo/bar/baz")}, true},
-      {{FPL("foo/bar"), FPL("foo/bar/baz")}, true},
-      {{FPL("foo/bar"), FPL("foo2/bar/baz")}, false},
-      {{FPL("foo/bar"), FPL("foo/bar2/baz")}, false},
+      {{FPL(""), FPL("")}, false},
+      {{FPL(""), FPL(".")}, false},
       {{FPL(""), FPL("foo")}, false},
+      {{FPL("."), FPL("")}, false},
+      {{FPL("."), FPL(".")}, false},
+      // While the 2 cases below are incorrect, they verify that an old behavior
+      // of IsParent() is preserved. We should consider modifying the code so
+      // that the result is `true` for the 2 cases below.
+      {{FPL("."), FPL("./foo")}, false},
+      {{FPL("./"), FPL("./foo")}, false},
+      {{FPL("./"), FPL("/")}, false},
+      {{FPL("./"), FPL("//")}, false},
+      {{FPL("./"), FPL("/foo")}, false},
+      {{FPL("./"), FPL("//foo")}, false},
+      {{FPL("./foo"), FPL("foo/bar")}, true},
+      {{FPL("./foo"), FPL("./foo/bar")}, true},
+      {{FPL("./foo"), FPL("/foo/bar")}, false},
+      {{FPL("./foo"), FPL("//foo/bar")}, false},
+      {{FPL("/"), FPL("/")}, false},
+      {{FPL("/"), FPL("//foo")}, false},
+      {{FPL("/"), FPL("///foo")}, true},
+      {{FPL("/"), FPL("/foo/bar/baz")}, true},
+      {{FPL("//////host/bar/"), FPL("//////HOST/bar/baz")}, true},
+      {{FPL("//host/bar/"), FPL("//host/bar/baz")}, true},
+      {{FPL("//host/bar/"), FPL("//host2/bar/baz")}, false},
+      {{FPL("//host/bar/"), FPL("/HOST/bar/baz")}, false},
+      {{FPL("//host/bar/"), FPL("/host/bar/baz")}, false},
+      {{FPL("//HOST/foo"), FPL("//host/foo/bar")}, true},
+      {{FPL("/foo"), FPL("/foo/bar/baz")}, true},
+      {{FPL("/foo/bar.txt"), FPL("/foo/bar/baz")}, false},
+      {{FPL("/foo/bar"), FPL("/foo//bar/baz")}, true},
+      {{FPL("/foo/bar"), FPL("/FOO//bar/baz/")}, false},
+      {{FPL("/foo/bar"), FPL("/foo//bar/baz/")}, true},
+      {{FPL("/foo/bar"), FPL("/foo/bar")}, false},
+      {{FPL("/foo/bar"), FPL("/foo/bar/baz")}, true},
+      {{FPL("/foo/bar"), FPL("/foo/bar2/baz")}, false},
+      {{FPL("/foo/bar"), FPL("/foo2/bar/baz")}, false},
+      {{FPL("/foo/bar/"), FPL("/foo/bar/baz")}, true},
+      {{FPL("/foo/bar/baz"), FPL("/foo/bar")}, false},
+      {{FPL("foo"), FPL("./foo/bar/baz")}, true},
+      {{FPL("foo"), FPL("")}, false},
+      {{FPL("foo"), FPL(".")}, false},
+      {{FPL("foo"), FPL(".")}, false},
+      {{FPL("foo"), FPL("boo/bar/baz")}, false},
+      {{FPL("foo"), FPL("foo/bar/baz")}, true},
+      {{FPL("foo/b:"), FPL("foo/B:/baz")}, false},
+      {{FPL("foo/bar"), FPL("/foo/bar/baz")}, false},
+      {{FPL("foo/bar"), FPL("foo/bar/baz")}, true},
+      {{FPL("foo/bar"), FPL("foo/bar2/baz")}, false},
+      {{FPL("foo/bar"), FPL("foo2/bar/baz")}, false},
+      {{FPL("foo/bar/../baz"), FPL("foo/baz/aaa")}, false},
 #if defined(FILE_PATH_USES_DRIVE_LETTERS)
-      {{FPL("c:/foo/bar"), FPL("c:/foo/bar/baz")}, true},
-      {{FPL("E:/foo/bar"), FPL("e:/foo/bar/baz")}, true},
-      {{FPL("f:/foo/bar"), FPL("F:/foo/bar/baz")}, true},
-      {{FPL("E:/Foo/bar"), FPL("e:/foo/bar/baz")}, false},
-      {{FPL("f:/foo/bar"), FPL("F:/foo/Bar/baz")}, false},
-      {{FPL("c:/"), FPL("c:/foo/bar/baz")}, true},
+      {{FPL("./c:"), FPL("C:foo")}, true},
+      {{FPL("c:"), FPL("*:/foo/bar/baz")}, false},
+      {{FPL("c:"), FPL("C:/foo")}, true},
       {{FPL("c:"), FPL("c:/foo/bar/baz")}, true},
+      {{FPL("c:"), FPL("C:foo")}, true},
+      {{FPL("c:/"), FPL("C:/foo")}, true},
+      {{FPL("c:/"), FPL("c:/foo/bar/baz")}, true},
+      // IsParentSlow() splits "c:/" -> ["c:", "/"], "C:foo" -> ["C:", "foo"].
+      // Since the components of "c:/" aren't a prefix of the components of
+      // "C:foo", it concludes that it isn't a parent.
+      {{FPL("c:/"), FPL("C:foo")}, false},
+      {{FPL("c:/foo"), FPL("C:foo/bar")}, false},
+      {{FPL("c:/foo/bar"), FPL("c:///foo/bar/baz")}, true},
+      {{FPL("c:/foo/bar"), FPL("c://foo/bar/baz")}, false},
+      {{FPL("c:/foo/bar"), FPL("c:/foo/bar/baz")}, true},
+      {{FPL("c:/foo/bar"), FPL("c:/foo/bar2/baz")}, false},
+      {{FPL("c:/foo/bar"), FPL("c:/foo2/bar/baz")}, false},
       {{FPL("c:/foo/bar"), FPL("d:/foo/bar/baz")}, false},
       {{FPL("c:/foo/bar"), FPL("D:/foo/bar/baz")}, false},
       {{FPL("C:/foo/bar"), FPL("d:/foo/bar/baz")}, false},
-      {{FPL("c:/foo/bar"), FPL("c:/foo2/bar/baz")}, false},
+      {{FPL("c:foo"), FPL("C:/foo/bar")}, false},
+      {{FPL("c:foo"), FPL("C:foo/bar")}, true},
+      {{FPL("c:foo/bar"), FPL("C:foo/bar/baz")}, true},
+      {{FPL("E:/Foo/bar"), FPL("e:/foo/bar/baz")}, false},
+      {{FPL("E:/foo/bar"), FPL("e:/foo/bar/baz")}, true},
       {{FPL("e:/foo/bar"), FPL("E:/foo2/bar/baz")}, false},
+      {{FPL("f:/foo/bar"), FPL("F:/foo/Bar/baz")}, false},
+      {{FPL("f:/foo/bar"), FPL("F:/foo/bar/baz")}, true},
       {{FPL("F:/foo/bar"), FPL("f:/foo2/bar/baz")}, false},
-      {{FPL("c:/foo/bar"), FPL("c:/foo/bar2/baz")}, false},
 #endif  // FILE_PATH_USES_DRIVE_LETTERS
 #if defined(FILE_PATH_USES_WIN_SEPARATORS)
-      {{FPL("\\foo\\bar"), FPL("\\foo\\bar\\baz")}, true},
-      {{FPL("\\foo/bar"), FPL("\\foo\\bar\\baz")}, true},
+      // Mix different types of separators in the same test case.
       {{FPL("\\foo/bar"), FPL("\\foo/bar/baz")}, true},
-      {{FPL("\\"), FPL("\\foo\\bar\\baz")}, true},
-      {{FPL(""), FPL("\\foo\\bar\\baz")}, false},
-      {{FPL("\\foo\\bar"), FPL("\\foo2\\bar\\baz")}, false},
-      {{FPL("\\foo\\bar"), FPL("\\foo\\bar2\\baz")}, false},
+      {{FPL("\\foo/bar"), FPL("\\foo\\bar/baz")}, true},
+      {{FPL("\\foo/bar"), FPL("\\foo\\/\\/bar/baz")}, true},
 #endif  // FILE_PATH_USES_WIN_SEPARATORS
   });
 
@@ -697,7 +758,39 @@ TEST_F(FilePathTest, IsParentTest) {
     EXPECT_EQ(parent.IsParent(child), cases[i].expected)
         << "i: " << i << ", parent: " << parent.value()
         << ", child: " << child.value();
+
+#if defined(FILE_PATH_USES_WIN_SEPARATORS)
+    // Using different separators should not affect the result.
+    FilePath parent_swapped(swap_separators(parent));
+    FilePath child_swapped(swap_separators(child));
+
+    EXPECT_EQ(parent_swapped.IsParent(child_swapped), cases[i].expected)
+        << "i (swapped): " << i << ", parent: " << parent_swapped.value()
+        << ", child: " << child_swapped.value();
+#endif  // defined(FILE_PATH_USES_WIN_SEPARATORS)
   }
+}
+
+TEST_F(FilePathTest, IsParentFastTest) {
+  {
+    test::ScopedFeatureList feature_list;
+    feature_list.InitAndEnableFeature(features::kFastFilePathIsParent);
+    FilePath::InitializeFeatures();
+    IsParentTest(/*is_fast=*/true);
+  }
+  // Reset feature state.
+  FilePath::InitializeFeatures();
+}
+
+TEST_F(FilePathTest, IsParentSlowTest) {
+  {
+    test::ScopedFeatureList feature_list;
+    feature_list.InitAndDisableFeature(features::kFastFilePathIsParent);
+    FilePath::InitializeFeatures();
+    IsParentTest(/*is_fast=*/false);
+  }
+  // Reset feature state.
+  FilePath::InitializeFeatures();
 }
 
 TEST_F(FilePathTest, AppendRelativePathTest) {
@@ -1494,9 +1587,10 @@ TEST_F(FilePathTest, NormalizePathSeparators) {
       {FPL("/\\foo\\/bar"), FPL("\\\\foo\\\\bar")},
   };
   for (size_t i = 0; i < std::size(cases); ++i) {
-    FilePath input(cases[i].input);
+    FilePath input(UNSAFE_TODO(cases[i].input));
     FilePath observed = input.NormalizePathSeparators();
-    EXPECT_EQ(FilePath::StringType(cases[i].expected), observed.value())
+    EXPECT_EQ(FilePath::StringType(UNSAFE_TODO(cases[i].expected)),
+              observed.value())
         << "i: " << i << ", input: " << input.value();
   }
 }
@@ -1546,9 +1640,9 @@ TEST_F(FilePathTest, ContentUriTest) {
   };
 
   for (size_t i = 0; i < std::size(cases); ++i) {
-    FilePath input(cases[i].input);
+    FilePath input(UNSAFE_TODO(cases[i].input));
     bool observed = input.IsContentUri();
-    EXPECT_EQ(cases[i].expected, observed)
+    EXPECT_EQ(UNSAFE_TODO(cases[i].expected), observed)
         << "i: " << i << ", input: " << input.value();
   }
 }
@@ -1559,14 +1653,23 @@ TEST_F(FilePathTest, PrintToOstream) {
   std::stringstream ss;
   FilePath fp(FPL("foo"));
   ss << fp;
-  EXPECT_EQ("foo", ss.str());
+  EXPECT_EQ("foo", ss.view());
 }
 
-#if BUILDFLAG(ENABLE_BASE_TRACING)
 TEST_F(FilePathTest, TracedValueSupport) {
   EXPECT_EQ(perfetto::TracedValueToString(FilePath(FPL("foo"))), "foo");
 }
-#endif  // BUILDFLAG(ENABLE_BASE_TRACING)
+
+TEST_F(FilePathTest, IsSeparator) {
+  EXPECT_FALSE(FilePath::IsSeparator(FILE_PATH_LITERAL('x')));
+  EXPECT_FALSE(FilePath::IsSeparator(FILE_PATH_LITERAL('\0')));
+  EXPECT_TRUE(FilePath::IsSeparator(FILE_PATH_LITERAL('/')));
+#if defined(FILE_PATH_USES_WIN_SEPARATORS)
+  EXPECT_TRUE(FilePath::IsSeparator(FILE_PATH_LITERAL('\\')));
+#else
+  EXPECT_FALSE(FilePath::IsSeparator(FILE_PATH_LITERAL('\\')));
+#endif
+}
 
 // Test GetHFSDecomposedForm should return empty result for invalid UTF-8
 // strings.

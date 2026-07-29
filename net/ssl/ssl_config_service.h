@@ -10,11 +10,28 @@
 #include <vector>
 
 #include "base/observer_list.h"
+#include "net/base/ech_mode.h"
 #include "net/base/net_export.h"
+#include "net/cert/x509_certificate.h"
 #include "net/ssl/ssl_config.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 
 namespace net {
 
+// Represents a given named group in TLS, used in supported_groups and
+// key_share.
+struct NET_EXPORT SSLNamedGroupInfo {
+  // NamedGroup enum codepoint for the group, from
+  // https://datatracker.ietf.org/doc/html/rfc8446#section-4.2.7.
+  uint16_t group_id = 0u;
+  // Whether the group should be sent in the key_share extension for the
+  // initial ClientHello.
+  bool send_key_share = false;
+
+  bool operator==(const SSLNamedGroupInfo&) const = default;
+};
+
+// Configuration options for SSL connections.
 struct NET_EXPORT SSLContextConfig {
   SSLContextConfig();
   SSLContextConfig(const SSLContextConfig&);
@@ -25,8 +42,29 @@ struct NET_EXPORT SSLContextConfig {
 
   bool operator==(const SSLContextConfig&) const;
 
-  // Returns whether post-quantum key agreement is enabled in TLS handshakes.
-  bool PostQuantumKeyAgreementEnabled() const;
+  // Returns a copy of the list of group IDs given by `supported_named_groups`.
+  // If `key_shares_only` is false, the returned vector is the list of groups to
+  // include in the supported_groups extension. If `key_shares_only` is true,
+  // only the groups that have `send_key_share == true` are included in the
+  // returned vector, which will be the list of groups to include in the
+  // key_share extension.
+  std::vector<uint16_t> GetSupportedGroups(bool key_shares_only = false) const;
+
+  // Returns true if Trust Anchor IDs should be advertised in the TLS
+  // handshake. This will be false if the feature is disabled or no Trust
+  // Anchor IDs are configured.
+  bool ShouldAdvertiseTrustAnchorIDs() const;
+
+  // Returns the amount of bytes of padding that should be requested from the
+  // server for the TLS handshake. This will return nullopt if a padding request
+  // should not be sent.
+  std::optional<uint16_t> RequestServerPadding() const;
+
+  // Helper function to select TLS Trust Anchor IDs to advertise in the TLS
+  // handshake, so that the server can serve a certificate that the client
+  // trusts. The list is returned in wire format (a series of 8-bit length
+  // prefixed non-empty strings) such that it can be passed into BoringSSL.
+  std::vector<uint8_t> SelectAllTrustAnchorIDs() const;
 
   // The minimum and maximum protocol versions that are enabled.
   // (Use the SSL_PROTOCOL_VERSION_xxx enumerators defined in ssl_config.h.)
@@ -45,13 +83,30 @@ struct NET_EXPORT SSLContextConfig {
   // disable TLS_ECDH_ECDSA_WITH_RC4_128_SHA, specify 0xC002.
   std::vector<uint16_t> disabled_cipher_suites;
 
-  // If specified, controls whether post-quantum key agreement in TLS
-  // connections is allowed. If `std::nullopt`, this is determined by feature
-  // flags.
-  std::optional<bool> post_quantum_override;
+  // This configures a compliance policy that sets the cipher order for
+  // TLS 1.3 to prefer AES-256-GCM over AES-128-GCM over ChaCha20-Poly1305.
+  bool tls13_cipher_prefer_aes_256 = false;
+
+  // Ordered list of NamedGroups that are supported, used to configure
+  // supported_groups and key_share. Set to `kDefaultSSLSupportedGroups` by
+  // default.
+  std::vector<SSLNamedGroupInfo> supported_named_groups;
 
   // Controls whether ECH is enabled.
   bool ech_enabled = true;
+
+  // TLS Trust Anchor IDs that are configured as trusted, as a list of Trust
+  // Anchor IDs in binary representation.
+  absl::flat_hash_set<std::vector<uint8_t>> trust_anchor_ids;
+
+  // MTC TLS Trust Anchor IDs that are configured as trusted, as a list of
+  // Trust Anchor IDs in binary representation.
+  std::vector<std::vector<uint8_t>> mtc_trust_anchor_ids;
+
+  // The time (represented as seconds since the unix epoch) that the latest
+  // MtcMetadata was generated. See MtcMetadata.update_time_seconds in
+  // net/cert/root_store.proto.
+  int64_t mtc_update_time_seconds = 0;
 };
 
 // The interface for retrieving global SSL configuration.  This interface
@@ -75,6 +130,12 @@ class NET_EXPORT SSLConfigService {
 
   // May not be thread-safe, should only be called on the IO thread.
   virtual SSLContextConfig GetSSLContextConfig() = 0;
+
+  // Returns the host-specific EchMode for `hostname`.
+  //
+  // NOTE: This method should only be called when `ech_enabled` is true in
+  // `SSLContextConfig`.
+  virtual EchMode GetEchMode(std::string_view hostname) const = 0;
 
   // Returns true if connections to |hostname| can reuse, or are permitted to
   // reuse, connections on which a client cert has been negotiated. Note that

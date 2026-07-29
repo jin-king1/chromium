@@ -9,7 +9,7 @@ import {assert} from '//resources/js/assert.js';
 import type {CrDialogElement} from 'chrome://resources/ash/common/cr_elements/cr_dialog/cr_dialog.js';
 import {I18nMixin} from 'chrome://resources/ash/common/cr_elements/i18n_mixin.js';
 import type {App} from 'chrome://resources/cr_components/app_management/app_management.mojom-webui.js';
-import {BrowserProxy} from 'chrome://resources/cr_components/app_management/browser_proxy.js';
+import {browserProxyFactory} from 'chrome://resources/cr_components/app_management/app_management.mojom-webui.js';
 import {AppManagementUserAction} from 'chrome://resources/cr_components/app_management/constants.js';
 import {recordAppManagementUserAction} from 'chrome://resources/cr_components/app_management/util.js';
 import {focusWithoutInk} from 'chrome://resources/js/focus_without_ink.js';
@@ -34,17 +34,11 @@ export class AppManagementFileHandlingItemElement extends
     return {
       app: Object,
 
-      /**
-       * @type {boolean}
-       */
       showOverflowDialog: {
         type: Boolean,
         value: false,
       },
 
-      /**
-       * @type {boolean}
-       */
       hidden: {
         type: Boolean,
         computed: 'isHidden_(app)',
@@ -53,8 +47,9 @@ export class AppManagementFileHandlingItemElement extends
     };
   }
 
-  app: App;
-  showOverflowDialog: boolean;
+  declare app: App;
+  declare hidden: boolean;
+  declare showOverflowDialog: boolean;
 
   override ready(): void {
     super.ready();
@@ -91,7 +86,7 @@ export class AppManagementFileHandlingItemElement extends
 
   private getLearnMoreLinkUrl_(app: App): string {
     if (app && app.fileHandlingState && app.fileHandlingState.learnMoreUrl) {
-      return app.fileHandlingState.learnMoreUrl.url;
+      return app.fileHandlingState.learnMoreUrl;
     }
     return '';
   }
@@ -101,7 +96,7 @@ export class AppManagementFileHandlingItemElement extends
       // Currently, this branch should only be used on Windows.
       e.detail.event.preventDefault();
       e.stopPropagation();
-      BrowserProxy.getInstance().handler.showDefaultAppAssociationsUi();
+      browserProxyFactory.getInstance().handler.showDefaultAppAssociationsUi();
     }
   }
 
@@ -140,7 +135,7 @@ export class AppManagementFileHandlingItemElement extends
                         .querySelector<AppManagementToggleRowElement>(
                             '#toggle-row')!.isChecked();
 
-    BrowserProxy.getInstance().handler.setFileHandlingEnabled(
+    browserProxyFactory.getInstance().handler.setFileHandlingEnabled(
         this.app.id,
         enabled,
     );

@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/342213636): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "content/browser/network/network_errors_listing_ui.h"
 
@@ -35,13 +31,13 @@ namespace content {
 
 namespace {
 
-base::Value::List GetNetworkErrorData() {
-  base::Value::Dict error_codes = net::GetNetConstants();
-  const base::Value::Dict* net_error_codes_dict =
+base::ListValue GetNetworkErrorData() {
+  base::DictValue error_codes = net::GetNetConstants();
+  const base::DictValue* net_error_codes_dict =
       error_codes.FindDict(kNetworkErrorKey);
   DCHECK(net_error_codes_dict);
 
-  base::Value::List error_list;
+  base::ListValue error_list;
 
   for (auto it = net_error_codes_dict->begin();
        it != net_error_codes_dict->end(); ++it) {
@@ -49,7 +45,7 @@ base::Value::List GetNetworkErrorData() {
     // Exclude the aborted and pending codes as these don't return a page.
     if (error_code != net::Error::ERR_IO_PENDING &&
         error_code != net::Error::ERR_ABORTED) {
-      base::Value::Dict error;
+      base::DictValue error;
       error.Set(kErrorIdField, error_code);
       error.Set(kErrorCodeField, it->first);
       error_list.Append(std::move(error));
@@ -67,10 +63,9 @@ void HandleWebUIRequestCallback(BrowserContext* current_context,
                                 WebUIDataSource::GotDataCallback callback) {
   DCHECK(ShouldHandleWebUIRequestCallback(path));
 
-  base::Value::Dict data;
+  base::DictValue data;
   data.Set(kErrorCodesDataName, GetNetworkErrorData());
-  std::string json_string;
-  base::JSONWriter::Write(data, &json_string);
+  std::string json_string = base::WriteJson(data).value_or("");
   std::move(callback).Run(
       base::MakeRefCounted<base::RefCountedString>(std::move(json_string)));
 }

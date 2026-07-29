@@ -9,8 +9,6 @@ import android.media.ThumbnailUtils;
 
 import androidx.annotation.VisibleForTesting;
 
-import jp.tomorrowkey.android.gifplayer.BaseGifImage;
-
 import org.chromium.base.Callback;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -26,7 +24,7 @@ public abstract class ImageFetcher {
     // update the histogram suffix ImageFetcherClients in histograms.xml as well.
     public static final String ASSISTANT_DETAILS_UMA_CLIENT_NAME = "AssistantDetails";
     public static final String ASSISTANT_INFO_BOX_UMA_CLIENT_NAME = "AssistantInfoBox";
-    public static final String AUTOFILL_CARD_ART_UMA_CLIENT_NAME = "AutofillCardArt";
+    public static final String AUTOFILL_IMAGE_FETCHER_UMA_CLIENT_NAME = "AutofillImageFetcher";
     public static final String CRYPTIDS_UMA_CLIENT_NAME = "Cryptids";
     public static final String DATA_SHARING_UMA_CLIENT_NAME = "DataSharing";
     public static final String OMNIBOX_UMA_CLIENT_NAME = "Omnibox";
@@ -40,6 +38,8 @@ public abstract class ImageFetcher {
     public static final String WEB_NOTES_UMA_CLIENT_NAME = "WebNotes";
     public static final String PRICE_CHANGE_MODULE_NAME = "PriceChangeModule";
     public static final String TAB_RESUMPTION_MODULE_NAME = "TabResumptionModule";
+    public static final String NTP_CUSTOMIZATION_THEME_COLLECTION_NAME =
+            "NtpCustomizationThemeCollection";
 
     /**
      * Encapsulates image fetching customization options. Supports a subset of the native
@@ -297,7 +297,7 @@ public abstract class ImageFetcher {
      *     with null result if fetching fails.
      */
     public abstract void fetchGif(
-            final ImageFetcher.Params params, Callback<@Nullable BaseGifImage> callback);
+            final ImageFetcher.Params params, Callback<ImageDataFetchResult> callback);
 
     /**
      * Fetches the image based on customized parameters specified.
@@ -307,6 +307,17 @@ public abstract class ImageFetcher {
      *     with null result if fetching fails;
      */
     public abstract void fetchImage(final Params params, Callback<@Nullable Bitmap> callback);
+
+    /**
+     * Fetches the image based on customized parameters specified. This has the same functionality
+     * as fetchImage but returns an ImageFetchResult that contains both Bitmap and RequestMetadata.
+     *
+     * @param params The parameters to specify image fetching details.
+     * @param callback The function which will be called when the image is ready; will be called
+     *     with null imageBitmap field in the ImageFetchResult if fetching fails;
+     */
+    public abstract void fetchImageWithRequestMetadata(
+            final Params params, Callback<ImageFetchResult> callback);
 
     /** Clear the cache of any bitmaps that may be in-memory. */
     public abstract void clear();

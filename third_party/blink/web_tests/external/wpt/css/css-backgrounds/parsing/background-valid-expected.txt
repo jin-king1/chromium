@@ -13,5 +13,41 @@ This is a testharness.js-based test.
   assert_equals: background-repeat should be canonical expected "repeat" but got "initial"
 [FAIL] e.style['background'] = "none" should set background-size
   assert_equals: background-size should be canonical expected "auto" but got "initial"
+[FAIL] e.style['background'] = "border-box content-box" should set background-attachment
+  assert_equals: background-attachment should be canonical expected "scroll" but got "initial"
+[FAIL] e.style['background'] = "border-box content-box" should set background-color
+  assert_equals: background-color should be canonical expected "transparent" but got "initial"
+[FAIL] e.style['background'] = "border-box content-box" should set background-image
+  assert_equals: background-image should be canonical expected "none" but got "initial"
+[FAIL] e.style['background'] = "border-box content-box" should set background-position
+  assert_equals: background-position should be canonical expected "0% 0%" but got "initial"
+[FAIL] e.style['background'] = "border-box content-box" should set background-repeat
+  assert_equals: background-repeat should be canonical expected "repeat" but got "initial"
+[FAIL] e.style['background'] = "border-box content-box" should set background-size
+  assert_equals: background-size should be canonical expected "auto" but got "initial"
+[FAIL] e.style['background'] = "border-area" should set background-attachment
+  assert_equals: background-attachment should be canonical expected "scroll" but got "initial"
+[FAIL] e.style['background'] = "border-area" should set background-color
+  assert_equals: background-color should be canonical expected "transparent" but got "initial"
+[FAIL] e.style['background'] = "border-area" should set background-image
+  assert_equals: background-image should be canonical expected "none" but got "initial"
+[FAIL] e.style['background'] = "border-area" should set background-position
+  assert_equals: background-position should be canonical expected "0% 0%" but got "initial"
+[FAIL] e.style['background'] = "border-area" should set background-repeat
+  assert_equals: background-repeat should be canonical expected "repeat" but got "initial"
+[FAIL] e.style['background'] = "border-area" should set background-size
+  assert_equals: background-size should be canonical expected "auto" but got "initial"
+[FAIL] e.style['background'] = "border-area text" should set background-attachment
+  assert_equals: background-attachment should be canonical expected "scroll" but got "initial"
+[FAIL] e.style['background'] = "border-area text" should set background-color
+  assert_equals: background-color should be canonical expected "transparent" but got "initial"
+[FAIL] e.style['background'] = "border-area text" should set background-image
+  assert_equals: background-image should be canonical expected "none" but got "initial"
+[FAIL] e.style['background'] = "border-area text" should set background-position
+  assert_equals: background-position should be canonical expected "0% 0%" but got "initial"
+[FAIL] e.style['background'] = "border-area text" should set background-repeat
+  assert_equals: background-repeat should be canonical expected "repeat" but got "initial"
+[FAIL] e.style['background'] = "border-area text" should set background-size
+  assert_equals: background-size should be canonical expected "auto" but got "initial"
 Harness: the test ran to completion.
 

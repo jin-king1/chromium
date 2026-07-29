@@ -89,17 +89,17 @@ import java.util.HashMap;
     }
 
     /* package */ boolean removeIntentCallback(IntentCallback callback) {
-        int requestCode = getOutstandingIntents().indexOfValue(callback);
+        int requestCode = mOutstandingIntents.indexOfValue(callback);
         if (requestCode < 0) return false;
-        getOutstandingIntents().remove(requestCode);
+        mOutstandingIntents.remove(requestCode);
         mIntentErrors.remove(requestCode);
         return true;
     }
 
     @Override
-    public boolean onActivityResult(int requestCode, int resultCode, Intent data) {
-        IntentCallback callback = getOutstandingIntents().get(requestCode);
-        getOutstandingIntents().delete(requestCode);
+    public boolean onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
+        IntentCallback callback = mOutstandingIntents.get(requestCode);
+        mOutstandingIntents.delete(requestCode);
         String errorMessage = mIntentErrors.remove(requestCode);
 
         if (callback != null) {
@@ -124,13 +124,13 @@ import java.util.HashMap;
     }
 
     @Override
-    public void restoreInstanceState(Bundle bundle) {
+    public void restoreInstanceState(@Nullable Bundle bundle) {
         if (bundle == null) return;
 
         Object errors = bundle.getSerializable(WindowAndroid.WINDOW_CALLBACK_ERRORS);
         if (errors instanceof HashMap) {
             @SuppressWarnings("unchecked")
-            HashMap<Integer, String> intentErrors = (HashMap<Integer, @Nullable String>) errors;
+            var intentErrors = (HashMap<Integer, @Nullable String>) errors;
             mIntentErrors = intentErrors;
         }
     }
@@ -147,9 +147,5 @@ import java.util.HashMap;
         mIntentErrors.put(
                 requestCode,
                 errorId == null ? null : ContextUtils.getApplicationContext().getString(errorId));
-    }
-
-    private SparseArray<IntentCallback> getOutstandingIntents() {
-        return mOutstandingIntents;
     }
 }

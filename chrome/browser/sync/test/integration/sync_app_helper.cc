@@ -8,11 +8,10 @@
 #include <map>
 #include <memory>
 
+#include "base/memory/singleton.h"
 #include "chrome/browser/extensions/extension_service.h"
-#include "chrome/browser/extensions/extension_sync_util.h"
 #include "chrome/browser/extensions/extension_util.h"
-#include "chrome/browser/extensions/launch_util.h"
-#include "chrome/browser/extensions/pending_extension_manager.h"
+#include "chrome/browser/extensions/sync/extension_sync_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sync/test/integration/extensions_helper.h"
 #include "chrome/browser/sync/test/integration/sync_datatype_helper.h"
@@ -25,7 +24,10 @@
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_system.h"
+#include "extensions/browser/launch_util.h"
+#include "extensions/browser/pending_extension_manager.h"
 #include "extensions/common/extension_set.h"
+#include "extensions/common/manifest_handlers/description_info.h"
 
 using extensions::AppSorting;
 using extensions::ExtensionPrefs;
@@ -41,7 +43,7 @@ struct AppState {
 
   syncer::StringOrdinal app_launch_ordinal;
   syncer::StringOrdinal page_ordinal;
-  extensions::LaunchType launch_type = extensions::LAUNCH_TYPE_INVALID;
+  extensions::LaunchType launch_type = extensions::LaunchType::kInvalid;
   GURL launch_web_url;
   std::string description;
   std::string name;
@@ -83,7 +85,8 @@ void LoadApp(content::BrowserContext* context,
   if (extension) {
     app_state->launch_web_url =
         extensions::AppLaunchInfo::GetLaunchWebURL(extension);
-    app_state->description = extension->description();
+    app_state->description =
+        extensions::DescriptionInfo::GetDescription(*extension);
     app_state->name = extension->name();
   }
 }

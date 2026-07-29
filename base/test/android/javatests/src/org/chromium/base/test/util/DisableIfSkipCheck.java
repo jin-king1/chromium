@@ -73,12 +73,7 @@ public class DisableIfSkipCheck extends SkipCheck {
     private boolean abi(DisableIf.Build v) {
         if (v.supported_abis_includes().isEmpty()) return true;
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            return Arrays.asList(Build.SUPPORTED_ABIS).contains(v.supported_abis_includes());
-        } else {
-            return Build.CPU_ABI.equals(v.supported_abis_includes())
-                    || Build.CPU_ABI2.equals(v.supported_abis_includes());
-        }
+        return Arrays.asList(Build.SUPPORTED_ABIS).contains(v.supported_abis_includes());
     }
 
     private boolean hardware(DisableIf.Build v) {
@@ -100,7 +95,9 @@ public class DisableIfSkipCheck extends SkipCheck {
     }
 
     protected boolean deviceTypeApplies(String type) {
-        return false;
+        throw new UnsupportedOperationException(
+                "BaseJUnit4ClassRunner does not support checking device type restrictions. "
+                        + "Use ChromeJUnit4ClassRunner instead.");
     }
 
     private List<DisableIf.Build> gatherBuildAnnotations(FrameworkMethod method) {

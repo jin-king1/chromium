@@ -7,10 +7,8 @@
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/branding_buildflags.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
-#include "chrome/browser/ui/views/data_sharing/data_sharing_open_group_helper.h"
 #include "chrome/browser/ui/webui/data_sharing/data_sharing_ui.h"
-#include "chrome/test/base/browser_with_test_window_test.h"
+#include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "components/data_sharing/public/features.h"
 #include "components/saved_tab_groups/public/features.h"
 #include "content/public/test/test_web_ui.h"
@@ -34,6 +32,10 @@ class MockPage : public data_sharing::mojom::Page {
               (data_sharing::mojom::ReadGroupsParamsPtr read_groups_params,
                ReadGroupsCallback callback));
   MOCK_METHOD(void,
+              ReadGroupWithToken,
+              (data_sharing::mojom::ReadGroupWithTokenParamPtr param,
+               ReadGroupWithTokenCallback callback));
+  MOCK_METHOD(void,
               DeleteGroup,
               (const std::string& group_id, DeleteGroupCallback callback));
   MOCK_METHOD(void,
@@ -56,30 +58,25 @@ class TestDataSharingPageHandler : public DataSharingPageHandler {
 
 }  // namespace
 
-class DataSharingPageHandlerUnitTest : public BrowserWithTestWindowTest {
+class DataSharingPageHandlerUnitTest : public ChromeRenderViewHostTestHarness {
  public:
   DataSharingPageHandlerUnitTest()
-      : BrowserWithTestWindowTest(
+      : ChromeRenderViewHostTestHarness(
             base::test::SingleThreadTaskEnvironment::TimeSource::MOCK_TIME) {}
   void SetUp() override {
     scoped_feature_list_.InitWithFeatures(
-        {data_sharing::features::kDataSharingFeature,
-         tab_groups::kTabGroupsSaveV2,
-         tab_groups::kTabGroupSyncServiceDesktopMigration},
-        {});
-    BrowserWithTestWindowTest::SetUp();
-    web_contents_ = content::WebContents::Create(
-        content::WebContents::CreateParams(profile()));
-    web_ui_.set_web_contents(web_contents_.get());
+        {data_sharing::features::kDataSharingFeature}, {});
+    ChromeRenderViewHostTestHarness::SetUp();
+    web_ui_.set_web_contents(web_contents());
     webui_controller_ = std::make_unique<DataSharingUI>(&web_ui_);
     handler_ = std::make_unique<TestDataSharingPageHandler>(
         webui_controller_.get(), page_.BindAndGetRemote());
   }
 
   void TearDown() override {
-    web_contents_.reset();
     handler_.reset();
-    BrowserWithTestWindowTest::TearDown();
+    webui_controller_.reset();
+    ChromeRenderViewHostTestHarness::TearDown();
   }
 
   TestDataSharingPageHandler* handler() { return handler_.get(); }
@@ -88,7 +85,6 @@ class DataSharingPageHandlerUnitTest : public BrowserWithTestWindowTest {
   testing::StrictMock<MockPage> page_;
 
  private:
-  std::unique_ptr<content::WebContents> web_contents_;
   content::TestWebUI web_ui_;
   std::unique_ptr<TestDataSharingPageHandler> handler_;
   std::unique_ptr<DataSharingUI> webui_controller_;
@@ -113,15 +109,6 @@ TEST_F(DataSharingPageHandlerUnitTest, GetTabGroupPreview) {
           });
   handler()->GetTabGroupPreview("GROUP_ID", "ACCESS_TOKEN",
                                 std::move(callback));
-}
-
-// TODO(crbug.com/381173816): This test should not run without setting sync
-// service.
-TEST_F(DataSharingPageHandlerUnitTest, DISABLED_OpenTabGroup) {
-  handler()->OpenTabGroup("FAKE_GROUP_ID");
-  DataSharingOpenGroupHelper* helper =
-      browser()->browser_window_features()->data_sharing_open_group_helper();
-  EXPECT_TRUE(helper->group_ids_for_testing().contains("FAKE_GROUP_ID"));
 }
 
 TEST_F(DataSharingPageHandlerUnitTest, OnAccessTokenFetched) {

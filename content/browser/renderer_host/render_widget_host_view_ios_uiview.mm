@@ -6,10 +6,21 @@
 
 #include "base/apple/foundation_util.h"
 #include "base/strings/sys_string_conversions.h"
+#include "components/input/native_web_keyboard_event.h"
 #include "components/input/web_input_event_builders_ios.h"
+#include "components/strings/grit/components_strings.h"
+#include "content/browser/renderer_host/ios_extended_text_input_traits.h"
 #include "ui/accessibility/platform/browser_accessibility_manager.h"
+#include "ui/base/ime/text_input_flags.h"
+#include "ui/base/l10n/l10n_util_mac.h"
 
 static void* kObservingContext = &kObservingContext;
+
+namespace {
+NSString* const kPreviousAccessoryImageName = @"chevron.up";
+NSString* const kNextAccessoryImageName = @"chevron.down";
+NSString* const kDoneAccessoryImageName = @"checkmark";
+}  // namespace
 
 #pragma mark - BETextPosition
 @interface BETextPosition : UITextPosition {
@@ -91,38 +102,21 @@ static void* kObservingContext = &kObservingContext;
 }
 @end
 
-@interface BlinkExtendedTextInputTraits : NSObject <BEExtendedTextInputTraits>
-@property(nonatomic) UITextAutocapitalizationType autocapitalizationType;
-@property(nonatomic) UITextAutocorrectionType autocorrectionType;
-@property(nonatomic) UITextSpellCheckingType spellCheckingType;
-@property(nonatomic) UITextSmartQuotesType smartQuotesType;
-@property(nonatomic) UITextSmartDashesType smartDashesType;
-@property(nonatomic) UITextInlinePredictionType inlinePredictionType;
-@property(nonatomic) UIKeyboardType keyboardType;
-@property(nonatomic) UIKeyboardAppearance keyboardAppearance;
-@property(nonatomic) UIReturnKeyType returnKeyType;
-@property(nonatomic, getter=isSecureTextEntry) BOOL secureTextEntry;
-@property(nonatomic, getter=isSingleLineDocument) BOOL singleLineDocument;
-@property(nonatomic, getter=isTypingAdaptationEnabled)
-    BOOL typingAdaptationEnabled;
-@property(nonatomic, copy) UITextContentType textContentType;
-@property(nonatomic, copy) UITextInputPasswordRules* passwordRules;
-@property(nonatomic) UITextSmartInsertDeleteType smartInsertDeleteType;
-@property(nonatomic) BOOL enablesReturnKeyAutomatically;
-@property(nonatomic, strong) UIColor* insertionPointColor;
-@property(nonatomic, strong) UIColor* selectionHandleColor;
-@property(nonatomic, strong) UIColor* selectionHighlightColor;
-@end
-@implementation BlinkExtendedTextInputTraits
-- (instancetype)init {
-  if (!(self = [super init])) {
-    return nil;
-  }
-  self.typingAdaptationEnabled = YES;
-  self.selectionHandleColor = [UIColor blueColor];
-  return self;
+#pragma mark - BETextSelectionRect
+@interface BETextSelectionRect : UITextSelectionRect {
+  CGRect rect_;
 }
+- (instancetype)initWithCGRect:(CGRect)rect;
+@end
 
+@implementation BETextSelectionRect
+- (instancetype)initWithCGRect:(CGRect)rect {
+  rect_ = rect;
+  return [self init];
+}
+- (CGRect)rect {
+  return rect_;
+}
 @end
 
 @implementation RenderWidgetUIView
@@ -133,11 +127,18 @@ static void* kObservingContext = &kObservingContext;
   self = [self init];
   if (self) {
     _view = view;
+    _extendedTextInputTraits = [[IOSExtendedTextInputTraits alloc] init];
     text_interaction_ = [[BETextInteraction alloc] init];
     [self addInteraction:text_interaction_];
     self.multipleTouchEnabled = YES;
     self.autoresizingMask =
         UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [self initializeInputAccessory];
+    [[NSNotificationCenter defaultCenter]
+        addObserver:self
+           selector:@selector(keyboardWillChangeFrame:)
+               name:UIKeyboardWillChangeFrameNotification
+             object:nil];
   }
   return self;
 }
@@ -150,6 +151,64 @@ static void* kObservingContext = &kObservingContext;
   // TODO(dtapuska): This isn't correct, we need to figure out when the window
   // gains/loses focus.
   _view->SetActive(true);
+}
+
+- (UIView*)inputAccessoryView {
+  return _inputAccessoryContainerView;
+}
+
+- (void)initializeInputAccessory {
+  _previousAccessoryButton = [[UIBarButtonItem alloc]
+      initWithImage:[UIImage systemImageNamed:kPreviousAccessoryImageName]
+              style:UIBarButtonItemStylePlain
+             target:self
+             action:@selector(handlePreviousAccessoryAction)];
+  _previousAccessoryButton.accessibilityLabel =
+      l10n_util::GetNSString(IDS_ACCNAME_PREVIOUS);
+  _nextAccessoryButton = [[UIBarButtonItem alloc]
+      initWithImage:[UIImage systemImageNamed:kNextAccessoryImageName]
+              style:UIBarButtonItemStylePlain
+             target:self
+             action:@selector(handleNextAccessoryAction)];
+  _nextAccessoryButton.accessibilityLabel =
+      l10n_util::GetNSString(IDS_ACCNAME_NEXT);
+
+  if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
+    UIBarButtonItemGroup* navigationGroup =
+        [[UIBarButtonItemGroup alloc] initWithBarButtonItems:@[
+          _previousAccessoryButton, _nextAccessoryButton
+        ]
+                                          representativeItem:nil];
+    self.inputAssistantItem.trailingBarButtonGroups = @[ navigationGroup ];
+    return;
+  }
+
+  UIToolbar* toolbar = [[UIToolbar alloc] init];
+  [toolbar sizeToFit];
+
+  CGSize toolbarSize = toolbar.frame.size;
+
+  _inputAccessoryContainerView = [[UIView alloc]
+      initWithFrame:CGRectMake(0, 0, toolbarSize.width,
+                               toolbarSize.height +
+                                   kInputAccessoryToolbarBottomMargin)];
+  toolbar.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+  [_inputAccessoryContainerView addSubview:toolbar];
+
+  UIBarButtonItem* flexSpace = [[UIBarButtonItem alloc]
+      initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace
+                           target:nil
+                           action:nil];
+  UIBarButtonItem* doneButton = [[UIBarButtonItem alloc]
+      initWithImage:[UIImage systemImageNamed:kDoneAccessoryImageName]
+              style:UIBarButtonItemStylePlain
+             target:self
+             action:@selector(hideKeyboard)];
+  doneButton.accessibilityLabel = l10n_util::GetNSString(IDS_DONE);
+
+  toolbar.items = @[
+    _previousAccessoryButton, _nextAccessoryButton, flexSpace, doneButton
+  ];
 }
 
 - (ui::CALayerFrameSink*)frameSink {
@@ -239,10 +298,43 @@ static void* kObservingContext = &kObservingContext;
 }
 
 - (void)removeView {
+  [[NSNotificationCenter defaultCenter]
+      removeObserver:self
+                name:UIKeyboardWillChangeFrameNotification
+              object:nil];
   UIScrollView* view = (UIScrollView*)[self superview];
   [view removeObserver:self
             forKeyPath:NSStringFromSelector(@selector(contentInset))];
   [self removeFromSuperview];
+}
+
+- (CGFloat)keyboardHeight {
+  return _keyboardHeight;
+}
+
+- (void)keyboardWillChangeFrame:(NSNotification*)notification {
+  CHECK(_view);
+  UIWindow* window = self.window;
+  if (!window) {
+    _keyboardHeight = 0;
+    _view->OnKeyboardVisibilityChanged();
+    return;
+  }
+  NSDictionary* userInfo = notification.userInfo;
+  CGRect keyboardFrame = [userInfo[UIKeyboardFrameEndUserInfoKey] CGRectValue];
+
+  id<UICoordinateSpace> fromCoordinateSpace =
+      ((UIScreen*)notification.object).coordinateSpace;
+
+  CGRect keyboardFrameInWindow =
+      [fromCoordinateSpace convertRect:keyboardFrame
+                     toCoordinateSpace:window.coordinateSpace];
+
+  CGFloat visibleHeight =
+      CGRectIntersection(keyboardFrameInWindow, window.bounds).size.height;
+  CGFloat accessoryHeight = _inputAccessoryContainerView.frame.size.height;
+  _keyboardHeight = std::max(visibleHeight - accessoryHeight, 0.0);
+  _view->OnKeyboardVisibilityChanged();
 }
 
 - (BETextInteraction*)textInteraction {
@@ -292,7 +384,11 @@ static void* kObservingContext = &kObservingContext;
 }
 
 - (NSAttributedString*)attributedMarkedText {
-  return nil;
+  NSString* text = [self markedText];
+  if (!text) {
+    return nil;
+  }
+  return [[NSAttributedString alloc] initWithString:text];
 }
 
 - (CGRect)textFirstRect {
@@ -339,11 +435,14 @@ static void* kObservingContext = &kObservingContext;
 }
 
 - (BOOL)hasMarkedText {
-  return NO;
+  return _markedText.length() > 0;
 }
 
 - (NSString*)markedText {
-  return nil;
+  if (![self hasMarkedText]) {
+    return nil;
+  }
+  return base::SysUTF16ToNSString(_markedText);
 }
 
 - (NSString*)selectedText {
@@ -356,6 +455,13 @@ static void* kObservingContext = &kObservingContext;
 }
 
 - (void)unmarkText {
+  if (![self hasMarkedText]) {
+    return;
+  }
+
+  CHECK(_view);
+  _view->ImeFinishComposingText(false);
+  _markedText.clear();
 }
 
 - (CGRect)selectionClipRect {
@@ -369,68 +475,292 @@ static void* kObservingContext = &kObservingContext;
 }
 
 - (id<BEExtendedTextInputTraits>)extendedTextInputTraits {
-  return [[BlinkExtendedTextInputTraits alloc] init];
+  return _extendedTextInputTraits;
+}
+
+- (void)handleEditCommands:(const std::vector<std::string>&)commands {
+  CHECK(_view);
+  // If there's a pending key down event, forward it along with the edit
+  // commands to the renderer. This allows the renderer to associate the
+  // commands with the keyboard event that triggered them.
+  if (auto event = std::exchange(_currentKeyDownEvent, std::nullopt)) {
+    std::vector<blink::mojom::EditCommandPtr> editCommands;
+    editCommands.reserve(commands.size());
+    for (const auto& command : commands) {
+      editCommands.push_back(blink::mojom::EditCommand::New(command, ""));
+    }
+    _view->ForwardKeyboardEventWithCommands(*event, std::move(editCommands));
+    return;
+  }
+  // No pending key event - execute the edit commands directly. This handles
+  // cases where commands are triggered by non-keyboard input.
+  for (const auto& command : commands) {
+    _view->ExecuteEditCommand(command);
+  }
+}
+
+- (std::string)moveSelectionCommand:(UITextLayoutDirection)direction {
+  switch (direction) {
+    case UITextLayoutDirectionLeft:
+      return "moveLeft";
+    case UITextLayoutDirectionRight:
+      return "moveRight";
+    case UITextLayoutDirectionUp:
+      return "moveUp";
+    case UITextLayoutDirectionDown:
+      return "moveDown";
+  }
+  NOTREACHED() << "Unknown Text Layout Direction";
 }
 
 - (void)moveInLayoutDirection:(UITextLayoutDirection)direction {
+  [self handleEditCommands:{[self moveSelectionCommand:direction]}];
+}
+
+- (std::string)extendSelectionCommand:(UITextLayoutDirection)direction {
+  switch (direction) {
+    case UITextLayoutDirectionLeft:
+      return "moveLeftAndModifySelection";
+    case UITextLayoutDirectionRight:
+      return "moveRightAndModifySelection";
+    case UITextLayoutDirectionUp:
+      return "moveUpAndModifySelection";
+    case UITextLayoutDirectionDown:
+      return "moveDownAndModifySelection";
+  }
+  NOTREACHED() << "Unknown Text Layout Direction";
 }
 
 - (void)extendInLayoutDirection:(UITextLayoutDirection)direction {
+  [self handleEditCommands:{[self extendSelectionCommand:direction]}];
+}
+
+- (std::vector<std::string>)
+    moveSelectionCommands:(UITextStorageDirection)direction
+            byGranularity:(UITextGranularity)granularity {
+  if (granularity == UITextGranularityCharacter) {
+    return direction == UITextStorageDirectionForward
+               ? std::vector<std::string>{"moveForward"}
+               : std::vector<std::string>{"moveBackward"};
+  }
+  if (granularity == UITextGranularityWord) {
+    return direction == UITextStorageDirectionForward
+               ? std::vector<std::string>{"moveWordForward"}
+               : std::vector<std::string>{"moveWordBackward"};
+  }
+  if (granularity == UITextGranularitySentence) {
+    return direction == UITextStorageDirectionForward
+               ? std::vector<std::string>{"moveToEndOfSentence"}
+               : std::vector<std::string>{"moveToBeginningOfSentence"};
+  }
+  if (granularity == UITextGranularityParagraph) {
+    return direction == UITextStorageDirectionForward
+               ? std::vector<std::string>{"moveForward", "moveToEndOfParagraph"}
+               : std::vector<std::string>{"moveBackward",
+                                          "moveToBeginningOfParagraph"};
+  }
+  if (granularity == UITextGranularityLine) {
+    return direction == UITextStorageDirectionForward
+               ? std::vector<std::string>{"moveToEndOfLine"}
+               : std::vector<std::string>{"moveToBeginningOfLine"};
+  }
+  return direction == UITextStorageDirectionForward
+             ? std::vector<std::string>{"moveToEndOfDocument"}
+             : std::vector<std::string>{"moveToBeginningOfDocument"};
 }
 
 - (void)moveInStorageDirection:(UITextStorageDirection)direction
                  byGranularity:(UITextGranularity)granularity {
+  [self handleEditCommands:[self moveSelectionCommands:direction
+                                         byGranularity:granularity]];
+}
+
+- (std::vector<std::string>)
+    extendSelectionCommands:(UITextStorageDirection)direction
+              byGranularity:(UITextGranularity)granularity {
+  if (granularity == UITextGranularityCharacter) {
+    return direction == UITextStorageDirectionForward
+               ? std::vector<std::string>{"moveBackwardAndModifySelection"}
+               : std::vector<std::string>{"moveForwardAndModifySelection"};
+  }
+  if (granularity == UITextGranularityWord) {
+    return direction == UITextStorageDirectionForward
+               ? std::vector<std::string>{"moveWordForwardAndModifySelection"}
+               : std::vector<std::string>{"moveWordBackwardAndModifySelection"};
+  }
+  if (granularity == UITextGranularitySentence) {
+    return direction == UITextStorageDirectionForward
+               ? std::vector<
+                     std::string>{"moveToEndOfSentenceAndModifySelection"}
+               : std::vector<std::string>{
+                     "moveToBeginningOfSentenceAndModifySelection"};
+  }
+  if (granularity == UITextGranularityParagraph) {
+    return direction == UITextStorageDirectionForward
+               ? std::vector<
+                     std::string>{"moveForwardAndModifySelection",
+                                  "moveToEndOfParagraphAndModifySelection"}
+               : std::vector<std::string>{
+                     "moveBackwardAndModifySelection",
+                     "moveToBeginningOfParagraphAndModifySelection"};
+  }
+  if (granularity == UITextGranularityLine) {
+    return direction == UITextStorageDirectionForward
+               ? std::vector<std::string>{"moveToEndOfLineAndModifySelection"}
+               : std::vector<std::string>{
+                     "moveToBeginningOfLineAndModifySelection"};
+  }
+  return direction == UITextStorageDirectionForward
+             ? std::vector<std::string>{"moveToEndOfDocumentAndModifySelection"}
+             : std::vector<std::string>{
+                   "moveToBeginningOfDocumentAndModifySelection"};
 }
 
 - (void)extendInStorageDirection:(UITextStorageDirection)direction
                    byGranularity:(UITextGranularity)granularity {
+  [self handleEditCommands:[self extendSelectionCommands:direction
+                                           byGranularity:granularity]];
 }
 
 - (BOOL)canPerformAction:(SEL)action withSender:(nullable id)sender {
   return YES;
 }
 
+- (BOOL)shouldInsertCharacter:(const blink::WebKeyboardEvent&)webKeyboardEvent {
+  size_t textLength =
+      std::char_traits<char16_t>::length(webKeyboardEvent.text.data());
+
+  // For inputting emojis (multiple characters)
+  if (textLength > 1) {
+    return YES;
+  }
+
+  if (textLength == 0) {
+    return NO;
+  }
+
+  // Check the first character if text is available
+  char16_t ch = webKeyboardEvent.text[0];
+  if (ch < ' ') {
+    return NO;
+  }
+
+  // Check for ASCII control characters with modifiers
+  if (ch < 0x80) {
+    int modifiers = webKeyboardEvent.GetModifiers();
+    if ((modifiers & blink::WebInputEvent::kControlKey) ||
+        (modifiers & blink::WebInputEvent::kMetaKey)) {
+      return NO;
+    }
+  }
+
+  return YES;
+}
+
 - (void)handleKeyEntry:(BEKeyEntry*)entry
     withCompletionHandler:
         (void (^)(BEKeyEntry* theEvent, BOOL wasHandled))completionHandler {
-  // Temporary implementation: To ensure the basic input functionality works
-  // properly it appears necessary to call
-  // shouldDeferEventHandlingToSystemForTextInput twice as shown below.
+  CHECK(_view);
 
-  BEKeyEntryContext* context =
-      [[BEKeyEntryContext alloc] initWithKeyEntry:entry];
-  [context setDocumentEditable:YES];
-  [context setShouldEvaluateForInputSystemHandling:YES];
-  [[self asyncInputDelegate]
-      shouldDeferEventHandlingToSystemForTextInput:self
-                                           context:context];
-
-  if (entry.state == BEKeyPressState::BEKeyPressStateDown) {
-    BEKeyEntryContext* contextForKeyDown =
-        [[BEKeyEntryContext alloc] initWithKeyEntry:entry];
-    [contextForKeyDown setDocumentEditable:YES];
-    [contextForKeyDown setShouldInsertCharacter:YES];
-    [[self asyncInputDelegate]
-        shouldDeferEventHandlingToSystemForTextInput:self
-                                             context:contextForKeyDown];
+  input::NativeWebKeyboardEvent nativeEvent(
+      (base::apple::OwnedBEKeyEntry(entry)));
+  if (entry.state != BEKeyPressState::BEKeyPressStateDown) {
+    _currentKeyDownEvent.reset();
+    _view->SendKeyEvent(nativeEvent);
     completionHandler(entry, YES);
-  } else {
-    completionHandler(entry, NO);
+    return;
   }
+
+  _currentKeyDownEvent = nativeEvent;
+  BEKeyEntryContext* contextForKeyDown =
+      [[BEKeyEntryContext alloc] initWithKeyEntry:entry];
+  [contextForKeyDown setDocumentEditable:[self isEditable]];
+  // To trigger key commands correctly, e.g. trigger
+  // `transposeCharactersAroundSelection` on Ctrl+T, we need to set
+  // `shouldInsertCharacter` to NO when users are not inputting characters.
+  // Otherwise, the key commands will not be triggered.
+  [contextForKeyDown
+      setShouldInsertCharacter:[self shouldInsertCharacter:nativeEvent]];
+
+  BOOL handled = [[self asyncInputDelegate]
+      shouldDeferEventHandlingToSystemForTextInput:self
+                                           context:contextForKeyDown];
+  if (!handled) {
+    // The system did not handle the event (e.g., the user pressed Enter).
+    auto event = std::exchange(_currentKeyDownEvent, std::nullopt);
+    // Reset to kKeyDown so Blink dispatches both keydown and keypress events.
+    event->SetType(blink::WebInputEvent::Type::kKeyDown);
+    _view->SendKeyEvent(*event);
+  }
+  completionHandler(entry, YES);
 }
 
 - (void)shiftKeyStateChangedFromState:(BEKeyModifierFlags)oldState
                               toState:(BEKeyModifierFlags)newState {
 }
 
+- (std::vector<std::string>)
+    deleteSelectionCommands:(UITextStorageDirection)direction
+              toGranularity:(UITextGranularity)granularity {
+  if (granularity == UITextGranularityCharacter) {
+    return direction == UITextStorageDirectionForward
+               ? std::vector<std::string>{"deleteForward"}
+               : std::vector<std::string>{"deleteBackward"};
+  }
+  if (granularity == UITextGranularityWord) {
+    return direction == UITextStorageDirectionForward
+               ? std::vector<std::string>{"deleteWordForward"}
+               : std::vector<std::string>{"deleteWordBackward"};
+  }
+  if (granularity == UITextGranularitySentence) {
+    return {direction == UITextStorageDirectionForward
+                ? "moveToEndOfSentenceAndModifySelection"
+                : "moveToBeginningOfSentenceAndModifySelection",
+            "deleteBackward"};
+  }
+  if (granularity == UITextGranularityParagraph) {
+    return direction == UITextStorageDirectionForward
+               ? std::vector<std::string>{"deleteToEndOfParagraph"}
+               : std::vector<std::string>{"deleteToBeginningOfParagraph"};
+  }
+  if (granularity == UITextGranularityLine) {
+    return direction == UITextStorageDirectionForward
+               ? std::vector<std::string>{"deleteToEndOfLine"}
+               : std::vector<std::string>{"deleteToBeginningOfLine"};
+  }
+  return {direction == UITextStorageDirectionForward
+              ? "moveToEndOfDocumentAndModifySelection"
+              : "moveToBeginningOfDocumentAndModifySelection",
+          "deleteBackward"};
+}
+
 - (void)deleteInDirection:(UITextStorageDirection)direction
             toGranularity:(UITextGranularity)granularity {
-  CHECK(_view);
-  // TODO: bug 388320178 - support multi-emoji & direction
-  _view->DeleteSurroundingText(1, 0);
+  [self handleEditCommands:[self deleteSelectionCommands:direction
+                                           toGranularity:granularity]];
 }
 
 - (void)transposeCharactersAroundSelection {
+  [self handleEditCommands:{"transpose"}];
+}
+
+- (BOOL)replaceText:(NSString*)originalText
+           withText:(NSString*)replacementText {
+  if (replacementText == originalText) {
+    return NO;
+  }
+
+  // If we call ExtendSelectionAndReplace with an empty replacementText,
+  // textarea will be broken, users cannot focus and input in textarea.
+  // TODO(crbug.com/428561251): Call ExtendSelectionAndReplace with an empty
+  // replacementText will make textarea broken
+  if (!replacementText.length) {
+    _view->ExtendSelectionAndDelete(originalText.length, 0);
+  } else {
+    _view->ExtendSelectionAndReplace(originalText.length, 0,
+                                     base::SysNSStringToUTF16(replacementText));
+  }
+  return YES;
 }
 
 - (void)replaceText:(NSString*)originalText
@@ -438,25 +768,11 @@ static void* kObservingContext = &kObservingContext;
               options:(BETextReplacementOptions)options
     completionHandler:
         (void (^)(NSArray<UITextSelectionRect*>* rects))completionHandler {
-  auto* state = [self editState];
-  if (!state) {
-    _view->ImeCommitText(base::SysNSStringToUTF16(replacementText),
-                         gfx::Range::InvalidRange(), 0);
-  } else {
-    auto len = originalText.length;
-    if (state->selection.length() == 0) {
-      auto pos = state->selection.start();
-      auto start = pos > len ? pos - len : 0;
-      auto end = start + len;
-      gfx::Range replacementRange(start, end);
-      _view->ImeCommitText(base::SysNSStringToUTF16(replacementText),
-                           replacementRange, 0);
-    } else {
-      _view->ImeCommitText(base::SysNSStringToUTF16(replacementText),
-                           state->selection, 0);
-    }
-    gfx::Range replacementRange(0, originalText.length);
+  if (![self replaceText:originalText withText:replacementText]) {
+    completionHandler(@[]);
+    return;
   }
+
   // TODO: bug 388320178 - still don't know what to do with this.
   completionHandler(@[]);
 }
@@ -470,11 +786,34 @@ static void* kObservingContext = &kObservingContext;
             withCompletionHandler:
                 (void (^)(NSArray<UITextSelectionRect*>* rects))
                     completionHandler {
-  // TODO: bug 388320178 - need to implement this.
-  // During the input process, there are instances where the text system will
-  // continuously wait for the completionHandler to be called; if not, the
-  // on-screen keyboard will become unresponsive.
-  completionHandler(@[]);
+  auto* state = [self editState];
+  if (!state || !state->selection.is_empty()) {
+    completionHandler(@[]);
+    return;
+  }
+
+  NSRange range =
+      [[self editText] rangeOfString:input
+                             options:NSLiteralSearch
+                               range:NSMakeRange(0, state->selection.start())];
+  if (range.location == NSNotFound) {
+    completionHandler(@[]);
+    return;
+  }
+
+  _view->RectForEditFieldChars(
+      gfx::Range(range),
+      base::BindOnce(
+          [](void (^completionHandler)(NSArray<UITextSelectionRect*>* rects),
+             const gfx::Rect& rect) {
+            if (rect.IsEmpty()) {
+              completionHandler(@[]);
+              return;
+            }
+            completionHandler(@[ [[BETextSelectionRect alloc]
+                initWithCGRect:rect.ToCGRect()] ]);
+          },
+          completionHandler));
 }
 
 - (void)requestPreferredArrowDirectionForEditMenuWithCompletionHandler:
@@ -612,12 +951,26 @@ static void* kObservingContext = &kObservingContext;
   completionHandler();
 }
 
+// To set caret when users long-press on spacebar and move.
 - (void)selectPositionAtPoint:(CGPoint)point
             completionHandler:(void (^)(void))completionHandler {
-  // Unclear when this is used instead of selectTextInGranularity.
-  [self selectTextInGranularity:UITextGranularityWord
-                        atPoint:point
-              completionHandler:completionHandler];
+  if (!_view) {
+    completionHandler();
+    return;
+  }
+
+  CGFloat x = point.x;
+  CGFloat y = point.y;
+  // Constrain point to bounds of focused element.
+  auto textControlBounds = [self textControlBounds];
+  if (textControlBounds.has_value()) {
+    x = std::clamp<CGFloat>(x, textControlBounds->x(),
+                            textControlBounds->right());
+    y = std::clamp<CGFloat>(y, textControlBounds->y(),
+                            textControlBounds->bottom());
+  }
+  _view->host()->delegate()->MoveCaret(gfx::ToRoundedPoint(gfx::PointF(x, y)));
+  completionHandler();
 }
 
 - (void)selectPositionAtPoint:(CGPoint)point
@@ -649,6 +1002,7 @@ static void* kObservingContext = &kObservingContext;
 
 - (void)setAttributedMarkedText:(nullable NSAttributedString*)markedText
                   selectedRange:(NSRange)selectedRange {
+  [self setMarkedText:markedText.string selectedRange:selectedRange];
 }
 
 - (BOOL)isPointNearMarkedText:(CGPoint)point {
@@ -666,6 +1020,7 @@ static void* kObservingContext = &kObservingContext;
 }
 
 - (void)replaceDictatedText:(NSString*)oldText withText:(NSString*)newText {
+  [self replaceText:oldText withText:newText];
 }
 
 - (void)didInsertFinalDictationResult {
@@ -679,6 +1034,8 @@ static void* kObservingContext = &kObservingContext;
 }
 
 - (void)insertTextAlternatives:(BETextAlternatives*)alternatives {
+  auto text = alternatives.primaryString;
+  [self insertText:text];
 }
 
 - (void)insertTextPlaceholderWithSize:(CGSize)size
@@ -695,11 +1052,11 @@ static void* kObservingContext = &kObservingContext;
 }
 
 - (void)autoscrollToPoint:(CGPoint)point {
-  // This is a good place to tell Blink to auto scroll.
+  _view->StartAutoscrollForSelectionToPoint(gfx::PointF(point.x, point.y));
 }
 
 - (void)cancelAutoscroll {
-  // This is a good place to tell Blink to stop auto scroll.
+  _view->StopAutoscroll();
 }
 
 - (UITextRange*)markedTextRange {
@@ -732,17 +1089,29 @@ static void* kObservingContext = &kObservingContext;
 
 - (void)insertText:(NSString*)text {
   CHECK(_view);
+  if (auto event = std::exchange(_currentKeyDownEvent, std::nullopt)) {
+    // If this insert was triggered by a key down event, forward it to the
+    // renderer as kKeyDown. This ensures both keydown and keypress events
+    // are dispatched to JavaScript with the correct text.
+    event->SetType(blink::WebInputEvent::Type::kKeyDown);
+    _view->SendKeyEvent(*event);
+    return;
+  }
   if (text.length == 0) {
     return;
   }
+
+  _markedText.clear();
   _view->ImeCommitText(base::SysNSStringToUTF16(text),
                        gfx::Range::InvalidRange(), 0);
 }
 
 - (void)deleteBackward {
-  CHECK(_view);
-  // TODO: bug 388320178 - support multi-emoji
-  _view->DeleteSurroundingText(1, 0);
+  [self handleEditCommands:{"deleteBackward"}];
+}
+
+- (void)selectAll:(nullable id)sender {
+  [self handleEditCommands:{"selectAll"}];
 }
 
 - (void)setSelectedTextRange:(UITextRange*)range {
@@ -765,6 +1134,27 @@ static void* kObservingContext = &kObservingContext;
 
 - (void)setMarkedText:(nullable NSString*)markedText
         selectedRange:(NSRange)selectedRange {
+  _markedText = base::SysNSStringToUTF16(markedText);
+  std::vector<ui::ImeTextSpan> imeTextSpans;
+  if (_markedText.length() > 0) {
+    ui::ImeTextSpan span;
+    span.start_offset = 0;
+    span.end_offset = _markedText.length();
+    span.underline_style = ui::ImeTextSpan::UnderlineStyle::kSolid;
+    imeTextSpans.push_back(span);
+  }
+
+  CHECK(_view);
+  if (auto event = std::exchange(_currentKeyDownEvent, std::nullopt)) {
+    // If an Input Method Editor is processing key input and the event is
+    // keydown, keyCode should return 229, see:
+    // https://lists.w3.org/Archives/Public/www-dom/2010JulSep/att-0182/keyCode-spec.html
+    event->windows_key_code = 0xE5;  // VKEY_PROCESSKEY
+    _view->SendKeyEvent(*event);
+  }
+  _view->ImeSetComposition(_markedText, imeTextSpans,
+                           gfx::Range::InvalidRange(), selectedRange.location,
+                           selectedRange.location + selectedRange.length);
 }
 
 - (nullable UITextRange*)textRangeFromPosition:(UITextPosition*)fromPosition
@@ -865,7 +1255,8 @@ static void* kObservingContext = &kObservingContext;
   ui::BrowserAccessibilityManager* manager =
       _view->host()->GetRootBrowserAccessibilityManager();
   if (manager) {
-    id root = manager->GetBrowserAccessibilityRoot()->GetNativeViewAccessible();
+    id root =
+        manager->GetBrowserAccessibilityRoot()->GetNativeViewAccessible().Get();
     if (root) {
       return @[ root ];
     }
@@ -923,6 +1314,16 @@ static void* kObservingContext = &kObservingContext;
 
 - (void)onUpdateTextInputState:(const ui::mojom::TextInputState&)state
                     withBounds:(CGRect)bounds {
+  [_extendedTextInputTraits updateFromTextInputState:state];
+  _previousAccessoryButton.enabled =
+      (state.flags & ui::TEXT_INPUT_FLAG_HAVE_PREVIOUS_FOCUSABLE_ELEMENT) != 0;
+  _nextAccessoryButton.enabled =
+      (state.flags & ui::TEXT_INPUT_FLAG_HAVE_NEXT_FOCUSABLE_ELEMENT) != 0;
+
+  bool editable = state.type != ui::TextInputType::TEXT_INPUT_TYPE_NONE &&
+                  state.mode != ui::TextInputMode::TEXT_INPUT_MODE_NONE;
+  [self setIsEditable:editable];
+
   // Check for the visibility request and policy if VK APIs are enabled.
   if (state.vk_policy == ui::mojom::VirtualKeyboardPolicy::MANUAL) {
     // policy is manual.
@@ -934,30 +1335,33 @@ static void* kObservingContext = &kObservingContext;
                ui::mojom::VirtualKeyboardVisibilityRequest::HIDE) {
       [self hideKeyboard];
     }
-  } else {
-    bool hide = state.always_hide_ime ||
-                state.mode == ui::TextInputMode::TEXT_INPUT_MODE_NONE ||
-                state.type == ui::TextInputType::TEXT_INPUT_TYPE_NONE;
-    if (hide) {
-      [self hideKeyboard];
-    } else if (state.show_ime_if_needed) {
-      [self showKeyboard:(state.value && !state.value->empty())
-              withBounds:bounds];
-    }
+  } else if (state.always_hide_ime || !editable) {
+    [self hideKeyboard];
+  } else if (state.show_ime_if_needed) {
+    [self showKeyboard:(state.value && !state.value->empty())
+            withBounds:bounds];
   }
+}
+
+- (void)handlePreviousAccessoryAction {
+  CHECK(_view);
+  _view->AdvanceFocusForIME(blink::mojom::FocusType::kBackward);
+}
+
+- (void)handleNextAccessoryAction {
+  CHECK(_view);
+  _view->AdvanceFocusForIME(blink::mojom::FocusType::kForward);
 }
 
 - (void)showKeyboard:(bool)has_text withBounds:(CGRect)bounds {
   self.frame = bounds;
-  BOOL result = [self becomeFirstResponder];
+  [self becomeFirstResponder];
   [self reloadInputViews];
-  [self setIsEditable:result];
 }
 
 - (void)hideKeyboard {
   [self resignFirstResponder];
   [self reloadInputViews];
-  [self setIsEditable:NO];
 }
 
 @end

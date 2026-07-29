@@ -33,14 +33,15 @@ import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.Features;
+import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.IntentHandler;
-import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider.CustomTabProfileType;
 import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider.CustomTabsUiType;
+import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider.TitleVisibility;
 import org.chromium.chrome.browser.flags.ActivityType;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.flags.CustomTabProfileType;
 import org.chromium.ui.base.TestActivity;
 
 @RunWith(BaseRobolectricTestRunner.class)
@@ -85,7 +86,7 @@ public class AuthTabIntentDataProviderUnitTest {
                 mIntentDataProvider.shouldEnableUrlBarHiding());
         assertEquals(
                 "Page title should be visible.",
-                CustomTabsIntent.SHOW_PAGE_TITLE,
+                TitleVisibility.VISIBLE,
                 mIntentDataProvider.getTitleVisibilityState());
         assertEquals(
                 "Ui type should be AUTH_TAB.",
@@ -158,7 +159,6 @@ public class AuthTabIntentDataProviderUnitTest {
     }
 
     @Test
-    @Features.EnableFeatures(ChromeFeatureList.CCT_EPHEMERAL_MODE)
     public void testIntentData_ephemeralBrowsing() {
         var histogramWatcher =
                 HistogramWatcher.newBuilder()
@@ -198,5 +198,27 @@ public class AuthTabIntentDataProviderUnitTest {
                 icon,
                 ((BitmapDrawable) mIntentDataProvider.getCloseButtonDrawable()).getBitmap());
         histogramWatcher.assertExpected();
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.CCT_ADAPTIVE_BUTTON)
+    public void testIsOptionalButtonSupported_normalAuthTab() {
+        mIntentDataProvider = new AuthTabIntentDataProvider(mIntent, mActivity, COLOR_SCHEME_LIGHT);
+        assertFalse(
+                "AuthTab should not support optional button",
+                mIntentDataProvider.isOptionalButtonSupported());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.CCT_ADAPTIVE_BUTTON)
+    public void testIsOptionalButtonSupported_ephemeralAuthTab() {
+        mIntent.putExtra(CustomTabsIntent.EXTRA_ENABLE_EPHEMERAL_BROWSING, true);
+        mIntentDataProvider = new AuthTabIntentDataProvider(mIntent, mActivity, COLOR_SCHEME_LIGHT);
+        assertTrue(
+                "IntentDataProvider should be for ephemeral AuthTab",
+                AuthTabIntentDataProvider.isEphemeralTab(mIntent));
+        assertFalse(
+                "Ephemeral AuthTab should not support optional button",
+                mIntentDataProvider.isOptionalButtonSupported());
     }
 }

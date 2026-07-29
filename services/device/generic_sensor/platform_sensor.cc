@@ -4,12 +4,14 @@
 
 #include "services/device/generic_sensor/platform_sensor.h"
 
+#include <atomic>
 #include <list>
 #include <utility>
 
 #include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/logging.h"
 #include "base/observer_list.h"
 #include "base/task/sequenced_task_runner.h"
 #include "services/device/generic_sensor/platform_sensor_provider.h"
@@ -183,8 +185,8 @@ void PlatformSensor::ResetSharedBuffer() {
 void PlatformSensor::WriteToSharedBuffer(const SensorReading& reading) {
   CHECK(is_active_);
   reading_buffer_->seqlock.value().WriteBegin();
-  device::OneWriterSeqLock::AtomicWriterMemcpy(&reading_buffer_->reading,
-                                               &reading, sizeof(reading));
+  std::atomic_ref(reading_buffer_->reading)
+      .store(reading, std::memory_order_relaxed);
   reading_buffer_->seqlock.value().WriteEnd();
 }
 

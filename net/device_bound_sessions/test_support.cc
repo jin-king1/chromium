@@ -6,22 +6,28 @@
 
 #include <vector>
 
+#include "base/base64.h"
 #include "base/base64url.h"
 #include "base/compiler_specific.h"
 #include "base/containers/to_vector.h"
+#include "base/feature_list.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
+#include "base/numerics/byte_conversions.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
+#include "base/strings/string_view_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/values.h"
+#include "crypto/evp.h"
 #include "crypto/signature_verifier.h"
+#include "net/base/features.h"
 #include "net/test/embedded_test_server/http_request.h"
 #include "net/test/embedded_test_server/http_response.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/boringssl/src/include/openssl/base.h"
 #include "third_party/boringssl/src/include/openssl/bn.h"
-#include "third_party/boringssl/src/include/openssl/bytestring.h"
+#include "third_party/boringssl/src/include/openssl/curve25519.h"
 #include "third_party/boringssl/src/include/openssl/ec_key.h"
 #include "third_party/boringssl/src/include/openssl/ecdsa.h"
 #include "third_party/boringssl/src/include/openssl/evp.h"
@@ -31,48 +37,175 @@ namespace net::device_bound_sessions {
 
 namespace {
 
+// Copied from //tools/origin_trials/eftest.key
+constexpr std::array<uint8_t, 64> kTestOriginTrialPrivateKey = {
+    0x83, 0x67, 0xf4, 0xcd, 0x2a, 0x1f, 0xe,  0x4,  0xd,  0x43, 0x13,
+    0x4c, 0x67, 0xc4, 0xf4, 0x28, 0xc9, 0x90, 0x15, 0x2,  0xe2, 0xba,
+    0xfd, 0xbb, 0xfa, 0xbc, 0x92, 0x76, 0x8a, 0x2c, 0x4b, 0xc7, 0x75,
+    0x10, 0xac, 0xf9, 0x3a, 0x1c, 0xb8, 0xa9, 0x28, 0x70, 0xd2, 0x9a,
+    0xd0, 0xb,  0x59, 0xe1, 0xac, 0x2b, 0xb7, 0xd5, 0xca, 0x1f, 0x64,
+    0x90, 0x8,  0x8e, 0xa8, 0xe0, 0x56, 0x3a, 0x4,  0xd0};
+
+std::string GetOriginTrialToken(const GURL& base_url) {
+  base::DictValue token_data;
+  token_data.Set("origin", url::Origin::Create(base_url).Serialize());
+  token_data.Set("feature", "DeviceBoundSessionCredentials");
+  base::Time expiry = base::Time::Now() + base::Days(1);
+  token_data.Set("expiry", static_cast<int>(expiry.InSecondsFSinceUnixEpoch()));
+
+  std::string payload = base::WriteJson(token_data).value_or(std::string());
+  std::array<uint8_t, 4> payload_size = base::U32ToBigEndian(payload.size());
+  // Version 3
+  std::string data_to_sign = base::StrCat(
+      {"\x03", std::string(payload_size.begin(), payload_size.end()), payload});
+
+  std::array<uint8_t, ED25519_SIGNATURE_LEN> signature;
+
+  if (!ED25519_sign(signature.data(),
+                    reinterpret_cast<const uint8_t*>(data_to_sign.data()),
+                    data_to_sign.size(), kTestOriginTrialPrivateKey.data())) {
+    return "";
+  }
+
+  std::string token =
+      base::StrCat({"\x03", base::as_string_view(signature),
+                    base::as_string_view(payload_size), payload});
+
+  return base::Base64Encode(token);
+}
+
+std::optional<std::string> GetQueryParameter(const GURL& url,
+                                             const std::string& key) {
+  std::string result;
+  bool found = net::GetValueForKeyInQuery(url, key, &result);
+  if (!found) {
+    return std::nullopt;
+  }
+  return result;
+}
+
 std::unique_ptr<net::test_server::HttpResponse> RequestHandler(
     const GURL& base_url,
     const net::test_server::HttpRequest& request) {
   auto response = std::make_unique<net::test_server::BasicHttpResponse>();
   response->set_code(net::HTTP_OK);
-  if (request.relative_url == "/dbsc_required") {
-    response->AddCustomHeader(
-        "Sec-Session-Registration",
-        "(RS256 "
-        "ES256);challenge=\"challenge_value\";path=\"dbsc_register_session\"");
+  if (request.relative_url == "/dbsc_login_page") {
+    response->AddCustomHeader("Origin-Trial", GetOriginTrialToken(base_url));
     response->set_content_type("text/html");
     return response;
-  } else if (request.relative_url == "/dbsc_register_session") {
-    response->AddCustomHeader("Set-Cookie", "auth_cookie=abcdef0123;");
+  } else if (request.relative_url.starts_with("/dbsc_required")) {
+    std::string query_params = request.GetURL().GetQuery();
+    response->AddCustomHeader(
+        "Secure-Session-Registration",
+        base::StringPrintf("(RS256 "
+                           "ES256);challenge=\"challenge_value\";path=\"dbsc_"
+                           "register_session?%s\"",
+                           query_params));
+    response->set_content_type("text/html");
+    return response;
+  } else if (request.relative_url.starts_with("/dbsc_register_session") ||
+             request.relative_url.starts_with("/dbsc_refresh_session")) {
+    std::string session_id = GetQueryParameter(request.GetURL(), "session_id")
+                                 .value_or("session_id");
+    std::string cookie_name = GetQueryParameter(request.GetURL(), "cookie_name")
+                                  .value_or("auth_cookie");
+    bool is_refresh = request.relative_url.starts_with("/dbsc_refresh_session");
+    std::optional<std::string> trigger_challenge =
+        GetQueryParameter(request.GetURL(), "trigger_challenge");
+    bool has_secure_session_response =
+        request.headers.contains("Secure-Session-Response");
+
+    if (is_refresh && trigger_challenge.has_value() &&
+        !has_secure_session_response) {
+      response->AddCustomHeader(
+          "Secure-Session-Challenge",
+          base::StringPrintf("\"%s\";id=\"%s\"", *trigger_challenge,
+                             session_id));
+      response->set_code(net::HTTP_FORBIDDEN);
+      return response;
+    }
+
+    response->AddCustomHeader(
+        "Set-Cookie", base::StringPrintf("%s=abcdef0123;SameSite=Strict;Secure",
+                                         cookie_name));
+
+    std::string refresh_path =
+        GetQueryParameter(request.GetURL(), "refresh_path")
+            .value_or("/dbsc_refresh_session");
+    if (std::string query = request.GetURL().GetQuery(); !query.empty()) {
+      base::StrAppend(&refresh_path, {"?", query});
+    }
 
     const auto registration_response =
-        base::Value::Dict()
-            .Set("session_identifier", "session_id")
-            .Set("refresh_url",
-                 base_url.Resolve("/dbsc_refresh_session").spec())
+        base::DictValue()
+            .Set("session_identifier", session_id)
+            .Set("refresh_url", base_url.Resolve(refresh_path).spec())
+            .Set("scope", base::DictValue()
+                              .Set("include_site", false)
+                              .Set("scope_specification",
+                                   base::ListValue().Append(
+                                       base::DictValue()
+                                           .Set("type", "exclude")
+                                           .Set("domain", base_url.GetHost())
+                                           .Set("path", "/favicon.ico"))))
             .Set("credentials",
-                 base::Value::List().Append(base::Value::Dict()
-                                                .Set("type", "cookie")
-                                                .Set("name", "auth_cookie")
-                                                .Set("attributes", "")));
+                 base::ListValue().Append(
+                     base::DictValue()
+                         .Set("type", "cookie")
+                         .Set("name", cookie_name)
+                         .Set("attributes", "SameSite=Strict; Secure")))
+            .Set("allowed_refresh_initiators", base::ListValue().Append("*"));
 
     std::optional<std::string> json = base::WriteJson(registration_response);
     EXPECT_TRUE(json.has_value());
     response->set_content(*json);
     return response;
-  } else if (request.relative_url == "/resource_triggered_dbsc_registration") {
+  } else if (request.relative_url.starts_with(
+                 "/resource_triggered_dbsc_registration")) {
+    std::string query_params = request.GetURL().GetQuery();
+    std::string path = base::StringPrintf("/dbsc_required?%s", query_params);
+    response->AddCustomHeader("Origin-Trial", GetOriginTrialToken(base_url));
     response->set_content_type("text/html");
     response->set_content(base::StringPrintf(
         R"*(<html><body onload="fetch('%s')"></body></html>)*",
-        base_url.Resolve("/dbsc_required").spec()));
+        base_url.Resolve(path).spec()));
+    return response;
+  } else if (request.relative_url.starts_with("/set_early_challenge")) {
+    std::string challenge = request.GetURL().GetQuery();
+    CHECK(!challenge.empty());
+    response->AddCustomHeader(
+        "Secure-Session-Challenge",
+        base::StrCat({"\"", challenge, "\";id=\"session_id\""}));
+    response->set_content_type("text/html");
+    return response;
+  } else if (request.relative_url.starts_with("/ensure_authenticated")) {
+    std::optional<std::string> expected_debug_header =
+        GetQueryParameter(request.GetURL(), "debug_header");
+    auto debug_header_it = request.headers.find("Secure-Session-Skipped");
+    std::string actual_debug_header = debug_header_it == request.headers.end()
+                                          ? std::string()
+                                          : debug_header_it->second;
+    if (expected_debug_header.has_value()) {
+      EXPECT_EQ(actual_debug_header, expected_debug_header);
+    } else {
+      EXPECT_EQ(actual_debug_header, "");
+    }
+    // We do a very coarse-grained cookie check here rather than parsing
+    // cookies.
+    auto it = request.headers.find("Cookie");
+    if (it == request.headers.end()) {
+      response->set_code(net::HTTP_UNAUTHORIZED);
+    } else if (it->second.find("auth_cookie") == std::string::npos) {
+      response->set_code(net::HTTP_UNAUTHORIZED);
+    }
+    response->set_content_type("text/html");
     return response;
   }
+
   return nullptr;
 }
 
-std::optional<std::vector<uint8_t>> Es256JwkToSpki(
-    const base::Value::Dict& jwk) {
+std::optional<std::vector<uint8_t>> Es256JwkToSpki(const base::DictValue& jwk) {
   const std::string* x = jwk.FindString("x");
   const std::string* y = jwk.FindString("y");
   if (!x || !y) {
@@ -111,22 +244,7 @@ std::optional<std::vector<uint8_t>> Es256JwkToSpki(
     return std::nullopt;
   }
 
-  bssl::ScopedCBB cbb;
-  if (!CBB_init(cbb.get(), 0) ||
-      !EVP_marshal_public_key(cbb.get(), pkey.get())) {
-    return std::nullopt;
-  }
-
-  uint8_t* data;
-  size_t len;
-  if (!CBB_finish(cbb.get(), &data, &len)) {
-    return std::nullopt;
-  }
-
-  bssl::UniquePtr<uint8_t> delete_der(data);
-  // SAFETY: `CBB_finish` uses a C-style API.
-  auto spki_span = UNSAFE_BUFFERS(base::span<const uint8_t>(data, len));
-  return base::ToVector(spki_span);
+  return crypto::evp::PublicKeyToBytes(pkey.get());
 }
 
 std::optional<std::vector<uint8_t>> RawSigToDerSig(
@@ -206,6 +324,10 @@ GetRS256SpkiAndJwkForTesting() {
   return {kSpki, jwk};
 }
 
+// Copied from //docs/origin_trials_integration.md
+constexpr char kTestOriginTrialPublicKey[] =
+    "dRCs+TocuKkocNKa0AtZ4awrt9XKH2SQCI6o4FY6BNA=";
+
 EmbeddedTestServer::HandleRequestCallback GetTestRequestHandler(
     const GURL& base_url) {
   return base::BindRepeating(&RequestHandler, base_url);
@@ -223,8 +345,10 @@ bool VerifyEs256Jwt(std::string_view jwt) {
   const std::string& payload64 = jwt_sections[1];
   const std::string& signature64 = jwt_sections[2];
 
-  std::string payload, signature;
+  std::string header, payload, signature;
   if (!base::Base64UrlDecode(
+          header64, base::Base64UrlDecodePolicy::DISALLOW_PADDING, &header) ||
+      !base::Base64UrlDecode(
           payload64, base::Base64UrlDecodePolicy::DISALLOW_PADDING, &payload) ||
       !base::Base64UrlDecode(signature64,
                              base::Base64UrlDecodePolicy::DISALLOW_PADDING,
@@ -232,14 +356,19 @@ bool VerifyEs256Jwt(std::string_view jwt) {
     return false;
   }
 
-  // Extract the JWK.
-  const std::optional<base::Value::Dict> payload_json =
-      base::JSONReader::ReadDict(payload);
+  const std::optional<base::DictValue> header_json =
+      base::JSONReader::ReadDict(header, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
+  if (!header_json) {
+    return false;
+  }
+  const std::optional<base::DictValue> payload_json =
+      base::JSONReader::ReadDict(payload, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   if (!payload_json) {
     return false;
   }
 
-  const base::Value::Dict* jwk = payload_json->FindDict("key");
+  // Extract the JWK.
+  const base::DictValue* jwk = header_json->FindDict("jwk");
   if (!jwk) {
     return false;
   }
@@ -274,17 +403,20 @@ ScopedTestRegistrationFetcher ScopedTestRegistrationFetcher::CreateWithSuccess(
     std::string_view origin_string) {
   return ScopedTestRegistrationFetcher(base::BindRepeating(
       [](const std::string& session_id, const std::string& refresh_url_string,
-         const std::string& origin_string) {
-        std::vector<SessionParams::Credential> cookie_credentials;
-        cookie_credentials.push_back(
-            SessionParams::Credential{"test_cookie", "secure"});
-        SessionParams::Scope scope;
-        scope.include_site = true;
-        scope.origin = origin_string;
-        return base::expected<SessionParams, SessionError>(SessionParams(
-            session_id, GURL(refresh_url_string), refresh_url_string,
-            std::move(scope), std::move(cookie_credentials),
-            unexportable_keys::UnexportableKeyId()));
+         const std::string& origin_string,
+         RegistrationFetcher::RegistrationCompleteCallback callback) {
+        std::move(callback).Run(
+            nullptr,
+            RegistrationResult(Session::CreateIfValid(SessionParams{
+                .session_id = session_id,
+                .fetcher_url = GURL(refresh_url_string),
+                .refresh_url = refresh_url_string,
+                .scope = {.include_site = true, .origin = origin_string},
+                .credentials = {{
+                    .name = "test_cookie",
+                    .attributes = "secure",
+                }},
+            })));
       },
       std::string(session_id), std::string(refresh_url_string),
       std::string(origin_string)));
@@ -295,10 +427,10 @@ ScopedTestRegistrationFetcher ScopedTestRegistrationFetcher::CreateWithFailure(
     SessionError::ErrorType error_type,
     std::string_view refresh_url_string) {
   return ScopedTestRegistrationFetcher(base::BindRepeating(
-      [](SessionError::ErrorType error_type, const GURL& refresh_url) {
-        return base::expected<SessionParams, SessionError>(base::unexpected(
-            SessionError{error_type, net::SchemefulSite(refresh_url),
-                         /*session_id=*/std::nullopt}));
+      [](SessionError::ErrorType error_type, const GURL& refresh_url,
+         RegistrationFetcher::RegistrationCompleteCallback callback) {
+        return std::move(callback).Run(
+            nullptr, RegistrationResult(SessionError{error_type}));
       },
       error_type, GURL(refresh_url_string)));
 }
@@ -309,11 +441,11 @@ ScopedTestRegistrationFetcher::CreateWithTermination(
     std::string_view session_id,
     std::string_view refresh_url_string) {
   return ScopedTestRegistrationFetcher(base::BindRepeating(
-      [](const std::string& session_id, const std::string& refresh_url_string) {
-        return base::expected<SessionParams, SessionError>(
-            base::unexpected(SessionError{
-                SessionError::ErrorType::kServerRequestedTermination,
-                net::SchemefulSite(GURL(refresh_url_string)), session_id}));
+      [](const std::string& session_id, const std::string& refresh_url_string,
+         RegistrationFetcher::RegistrationCompleteCallback callback) {
+        return std::move(callback).Run(
+            nullptr, RegistrationResult(SessionError{
+                         SessionError::kServerRequestedTermination}));
       },
       std::string(session_id), std::string(refresh_url_string)));
 }

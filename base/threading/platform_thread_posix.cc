@@ -22,13 +22,14 @@
 #include "base/memory/raw_ptr.h"
 #include "base/notimplemented.h"
 #include "base/threading/platform_thread_internal_posix.h"
+#include "base/threading/platform_thread_metrics.h"
 #include "base/threading/scoped_blocking_call.h"
 #include "base/threading/thread_id_name_manager.h"
 #include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
 #include "partition_alloc/buildflags.h"
 
-#if !BUILDFLAG(IS_APPLE) && !BUILDFLAG(IS_FUCHSIA) && !BUILDFLAG(IS_NACL)
+#if !BUILDFLAG(IS_APPLE) && !BUILDFLAG(IS_FUCHSIA)
 #include "base/posix/can_lower_nice_to.h"
 #endif
 
@@ -83,7 +84,6 @@ void* ThreadFunc(void* params) {
     partition_alloc::internal::StackTopRegistry::Get().NotifyThreadCreated();
 #endif
 
-#if !BUILDFLAG(IS_NACL)
 #if BUILDFLAG(IS_APPLE)
     PlatformThread::SetCurrentThreadRealtimePeriodValue(
         delegate->GetRealtimePeriod());
@@ -92,8 +92,7 @@ void* ThreadFunc(void* params) {
     // Threads on linux/android may inherit their priority from the thread
     // where they were created. This explicitly sets the priority of all new
     // threads.
-    PlatformThread::SetCurrentThreadType(thread_params->thread_type);
-#endif  //  !BUILDFLAG(IS_NACL)
+    PlatformThread::SetDefaultThreadType(thread_params->thread_type);
   }
 
   ThreadIdNameManager::GetInstance()->RegisterThread(
@@ -105,6 +104,9 @@ void* ThreadFunc(void* params) {
   ThreadIdNameManager::GetInstance()->RemoveName(
       PlatformThread::CurrentHandle().platform_handle(),
       PlatformThread::CurrentId());
+#if BUILDFLAG(IS_ANDROID)
+  PlatformThreadPriorityMonitor::Get().UnregisterCurrentThread();
+#endif
 
 #if PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
   partition_alloc::internal::StackTopRegistry::Get().NotifyThreadDestroyed();
@@ -265,11 +267,7 @@ PlatformThreadId PlatformThreadBase::CurrentId() {
   return PlatformThreadId(id);
 #elif BUILDFLAG(IS_SOLARIS) || BUILDFLAG(IS_QNX)
   return PlatformThreadId(pthread_self());
-#elif BUILDFLAG(IS_NACL) && defined(__GLIBC__)
-  return PlatformThreadId(pthread_self());
-#elif BUILDFLAG(IS_NACL) && !defined(__GLIBC__)
-  // Pointers are 32-bits in NaCl.
-  return PlatformThreadId(reinterpret_cast<int32_t>(pthread_self()));
+
 #elif BUILDFLAG(IS_POSIX) && BUILDFLAG(IS_AIX)
   return PlatformThreadId(pthread_self());
 #elif BUILDFLAG(IS_POSIX) && !BUILDFLAG(IS_AIX)
@@ -365,9 +363,6 @@ void PlatformThreadBase::Detach(PlatformThreadHandle thread_handle) {
 
 // static
 bool PlatformThreadBase::CanChangeThreadType(ThreadType from, ThreadType to) {
-#if BUILDFLAG(IS_NACL)
-  return false;
-#else
   if (from >= to) {
     // Decreasing thread priority on POSIX is always allowed.
     return true;
@@ -377,53 +372,20 @@ bool PlatformThreadBase::CanChangeThreadType(ThreadType from, ThreadType to) {
   }
 
   return internal::CanLowerNiceTo(internal::ThreadTypeToNiceValue(to));
-#endif  // BUILDFLAG(IS_NACL)
 }
-
-namespace internal {
-
-void SetCurrentThreadTypeImpl(ThreadType thread_type,
-                              MessagePumpType pump_type_hint) {
-#if BUILDFLAG(IS_NACL)
-  NOTIMPLEMENTED();
-#else
-  if (internal::SetCurrentThreadTypeForPlatform(thread_type, pump_type_hint)) {
-    return;
-  }
-
-  // setpriority(2) should change the whole thread group's (i.e. process)
-  // priority. However, as stated in the bugs section of
-  // http://man7.org/linux/man-pages/man2/getpriority.2.html: "under the current
-  // Linux/NPTL implementation of POSIX threads, the nice value is a per-thread
-  // attribute". Also, 0 is prefered to the current thread id since it is
-  // equivalent but makes sandboxing easier (https://crbug.com/399473).
-  const int nice_setting = internal::ThreadTypeToNiceValue(thread_type);
-  if (setpriority(PRIO_PROCESS, 0, nice_setting)) {
-    DVPLOG(1) << "Failed to set nice value of thread ("
-              << PlatformThread::CurrentId() << ") to " << nice_setting;
-  }
-#endif  // BUILDFLAG(IS_NACL)
-}
-
-}  // namespace internal
 
 // static
-ThreadPriorityForTest PlatformThreadBase::GetCurrentThreadPriorityForTest() {
-#if BUILDFLAG(IS_NACL)
-  NOTIMPLEMENTED();
-  return ThreadPriorityForTest::kNormal;
-#else
+ThreadType PlatformThreadBase::GetCurrentEffectiveThreadTypeForTest() {
   // Mirrors SetCurrentThreadPriority()'s implementation.
   auto platform_specific_priority =
-      internal::GetCurrentThreadPriorityForPlatformForTest();  // IN-TEST
+      internal::GetCurrentEffectiveThreadTypeForPlatformForTest();  // IN-TEST
   if (platform_specific_priority) {
     return platform_specific_priority.value();
   }
 
   int nice_value = internal::GetCurrentThreadNiceValue();
 
-  return internal::NiceValueToThreadPriorityForTest(nice_value);  // IN-TEST
-#endif  // !BUILDFLAG(IS_NACL)
+  return internal::NiceValueToThreadTypeForTest(nice_value);  // IN-TEST
 }
 
 #endif  // !BUILDFLAG(IS_APPLE) && !BUILDFLAG(IS_FUCHSIA)

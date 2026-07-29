@@ -6,7 +6,8 @@
 
 #include <memory>
 
-#include "media/audio/apple/audio_input.h"
+#include "base/notimplemented.h"
+#include "base/notreached.h"
 #include "media/audio/apple/audio_low_latency_input.h"
 #include "media/audio/apple/audio_manager_apple.h"
 #include "media/audio/ios/audio_session_manager_ios.h"
@@ -43,15 +44,17 @@ bool AudioManagerIOS::HasAudioInputDevices() {
       /*is_input=*/true);
 }
 
-void AudioManagerIOS::GetAudioInputDeviceNames(AudioDeviceNames* device_names) {
+bool AudioManagerIOS::GetAudioInputDeviceNames(AudioDeviceNames* device_names) {
   DCHECK(device_names->empty());
   AudioSessionManagerIOS::GetInstance().GetAudioDeviceInfo(true, device_names);
+  return true;
 }
 
-void AudioManagerIOS::GetAudioOutputDeviceNames(
+bool AudioManagerIOS::GetAudioOutputDeviceNames(
     AudioDeviceNames* device_names) {
   DCHECK(device_names->empty());
   AudioSessionManagerIOS::GetInstance().GetAudioDeviceInfo(false, device_names);
+  return true;
 }
 
 AudioParameters AudioManagerIOS::GetInputStreamParameters(
@@ -76,7 +79,7 @@ std::string AudioManagerIOS::GetAssociatedOutputDeviceID(
   return std::string();
 }
 
-const char* media::AudioManagerIOS::GetName() {
+const std::string_view media::AudioManagerIOS::GetName() {
   return "iOS";
 }
 
@@ -101,9 +104,8 @@ AudioInputStream* AudioManagerIOS::MakeLinearInputStream(
     const AudioParameters& params,
     const std::string& device_id,
     const LogCallback& log_callback) {
-  DCHECK(GetTaskRunner()->BelongsToCurrentThread());
-  AudioInputStream* stream = new PCMQueueInAudioInputStream(this, params);
-  return stream;
+  DUMP_WILL_BE_NOTREACHED();
+  return nullptr;
 }
 
 AudioInputStream* AudioManagerIOS::MakeLowLatencyInputStream(

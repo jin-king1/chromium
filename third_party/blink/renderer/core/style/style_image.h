@@ -34,10 +34,6 @@ namespace gfx {
 class SizeF;
 }  // namespace gfx
 
-namespace WTF {
-class String;
-}  // namespace WTF
-
 namespace blink {
 
 class CSSValue;
@@ -46,6 +42,7 @@ class ImageResourceContent;
 class Document;
 class ComputedStyle;
 class ImageResourceObserver;
+class Node;
 enum class CSSValuePhase;
 
 // A const pointer to either an ImageResource or a CSSImageGeneratorValue. It is
@@ -62,7 +59,6 @@ class CORE_EXPORT StyleImage : public GarbageCollected<StyleImage> {
   virtual ~StyleImage() = default;
 
   bool operator==(const StyleImage& other) const { return IsEqual(other); }
-  bool operator!=(const StyleImage& other) const { return !(*this == other); }
 
   // Returns a CSSValue representing the origin <image> value. May not be the
   // actual CSSValue from which this StyleImage was originally created if the
@@ -90,9 +86,8 @@ class CORE_EXPORT StyleImage : public GarbageCollected<StyleImage> {
   // Any underlying resources this <image> references failed to load.
   virtual bool ErrorOccurred() const { return false; }
 
-  // Is the <image> considered same-origin? `failing_url` is set to the
-  // (potentially formatted) URL of the first non-same-origin <image>.
-  virtual bool IsAccessAllowed(WTF::String& failing_url) const = 0;
+  // Is the <image> considered same-origin?
+  virtual bool IsCorsSameOrigin() const = 0;
 
   // Determine the natural dimensions (width, height, aspect ratio) of this
   // <image>, scaled by `multiplier`.
@@ -145,7 +140,7 @@ class CORE_EXPORT StyleImage : public GarbageCollected<StyleImage> {
   // `target_size` is not zoomed.
   virtual scoped_refptr<Image> GetImage(
       const ImageResourceObserver&,
-      const Document&,
+      const Node&,
       const ComputedStyle&,
       const gfx::SizeF& target_size) const = 0;
 
@@ -166,10 +161,11 @@ class CORE_EXPORT StyleImage : public GarbageCollected<StyleImage> {
 
   // Correct the image orientation preference for potentially cross-origin
   // content.
-  virtual RespectImageOrientationEnum ForceOrientationIfNecessary(
-      RespectImageOrientationEnum default_orientation) const {
-    return default_orientation;
-  }
+  RespectImageOrientationEnum ForceOrientationIfNecessary(
+      RespectImageOrientationEnum) const;
+
+  // Whether this <image> depends on the current color.
+  virtual bool DependsOnCurrentColor() const { return false; }
 
   ALWAYS_INLINE bool IsImageResource() const { return is_image_resource_; }
   ALWAYS_INLINE bool IsPendingImage() const { return is_pending_image_; }
@@ -182,13 +178,7 @@ class CORE_EXPORT StyleImage : public GarbageCollected<StyleImage> {
   ALWAYS_INLINE bool IsPaintImage() const { return is_paint_image_; }
   ALWAYS_INLINE bool IsCrossfadeImage() const { return is_crossfade_; }
 
-  bool IsLazyloadPossiblyDeferred() const {
-    return is_lazyload_possibly_deferred_;
-  }
-
   virtual bool IsLoadedAfterMouseover() const { return false; }
-
-  virtual bool IsOriginClean() const { return true; }
 
   virtual void Trace(Visitor* visitor) const {}
 
@@ -200,8 +190,7 @@ class CORE_EXPORT StyleImage : public GarbageCollected<StyleImage> {
         is_image_resource_set_(false),
         is_crossfade_(false),
         is_mask_source_(false),
-        is_paint_image_(false),
-        is_lazyload_possibly_deferred_(false) {}
+        is_paint_image_(false) {}
   bool is_image_resource_ : 1;
   bool is_pending_image_ : 1;
   bool is_generated_image_ : 1;
@@ -209,7 +198,6 @@ class CORE_EXPORT StyleImage : public GarbageCollected<StyleImage> {
   bool is_crossfade_ : 1;
   bool is_mask_source_ : 1;
   bool is_paint_image_ : 1;
-  bool is_lazyload_possibly_deferred_ : 1;
 
   virtual bool IsEqual(const StyleImage&) const = 0;
 

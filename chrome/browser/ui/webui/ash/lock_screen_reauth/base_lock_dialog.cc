@@ -4,7 +4,6 @@
 
 #include "chrome/browser/ui/webui/ash/lock_screen_reauth/base_lock_dialog.h"
 
-#include "chrome/common/webui_url_constants.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
 #include "ui/display/display.h"
 #include "ui/display/screen.h"
@@ -14,8 +13,7 @@ namespace ash {
 namespace {
 
 gfx::Size FitSizeToDisplay(const gfx::Size& desired) {
-  const display::Display display =
-      display::Screen::GetScreen()->GetPrimaryDisplay();
+  const display::Display display = display::Screen::Get()->GetPrimaryDisplay();
 
   gfx::Size display_size = display.size();
   display_size.SetToMin(desired);

@@ -22,16 +22,28 @@ inline constexpr char kSchoolToolsAuthScope[] =
 inline constexpr char kGetSessionUrlTemplate[] =
     "v1/users/$1/sessions:getActive?device.device_id=$2";
 
+inline constexpr char kGetGeminiStatusUrlTemplate[] =
+    "v1/users/$1:getGeminiStatus";
+
 inline constexpr char kUploadFCMTokenTemplate[] = "v1/users/$1";
 
 inline constexpr char kUpdateSessionUrlTemplate[] =
     "v1/teachers/$1/sessions/$2?updateMask=$3";
+
+inline constexpr char kUpdateSessionConfigUrlTemplate[] =
+    "v1/teachers/$1/sessions/$2:updateConfig";
+
+inline constexpr char kUpdateSessionConfigUrlTemplateWithUpdateMask[] =
+    "v1/teachers/$1/sessions/$2:updateConfig?updateMask=$3";
 
 inline constexpr char kInsertStudentActivity[] =
     "v1/sessions/$1/students/$2/devices/$3/activities:insert";
 
 inline constexpr char kRemoveStudentUrlTemplate[] =
     "v1/teachers/$1/sessions/$2/students:remove";
+
+inline constexpr char kAddStudentsUrlTemplate[] =
+    "v1/teachers/$1/sessions/$2/students:add";
 
 inline constexpr char kJoinTachyonGroupUrlTemplate[] =
     "/v1/students/$1/sessions/$2/tachyon:join";
@@ -50,12 +62,25 @@ inline constexpr char kUpdateViewScreenStateUrlTemplate[] =
 inline constexpr char kStudentHeartbeatUrlTemplate[] =
     "v1/sessions/$1/students/$2/devices/$3:heartbeat?studentGroupId=$4";
 
+inline constexpr char kNotifyGetActiveSession[] =
+    "v1/teachers/$1/sessions/$2/students:notifyGetActiveSession";
+
+inline constexpr char kGetKioskReceiverWithoutConnectionIdUrlTemplate[] =
+    "/v1/receivers/$1";
+
+inline constexpr char kGetKioskReceiverUrlTemplate[] =
+    "/v1/receivers/$1?connectionId=$2";
+
+inline constexpr char kStartKioskReceiverUrlTemplate[] =
+    "/v1/receivers/$1:start";
+
 inline constexpr char kSessionId[] = "sessionId";
 inline constexpr char kTeacher[] = "teacher";
 inline constexpr char kRoster[] = "roster";
 inline constexpr char kRosterTitle[] = "title";
 inline constexpr char kStudentGroupTitle[] = "title";
 inline constexpr char kStudentGroups[] = "studentGroups";
+inline constexpr char kStudentGroupIds[] = "studentGroupIds";
 inline constexpr char kStudents[] = "students";
 inline constexpr char kGaiaId[] = "gaiaId";
 inline constexpr char kEmail[] = "email";
@@ -66,17 +91,28 @@ inline constexpr char kStartTime[] = "startTime";
 inline constexpr char kDuration[] = "duration";
 inline constexpr char kSessionState[] = "sessionState";
 inline constexpr char kOnTaskConfig[] = "onTaskConfig";
+inline constexpr char kSessionConfig[] = "sessionConfig";
 inline constexpr char kCaptionsConfig[] = "captionsConfig";
 inline constexpr char kCaptionsEnabled[] = "captionsEnabled";
 inline constexpr char kTranslationsEnabled[] = "translationsEnabled";
 inline constexpr char kStudentStatus[] = "studentStatuses";
 inline constexpr char kStudentStatusState[] = "state";
+inline constexpr char kDeviceStatusState[] = "state";
+inline constexpr char kReceiverConnectionState[] = "receiverConnectionState";
+inline constexpr char kGeminiEnablementState[] = "geminiEnablementState";
+inline constexpr char kGeminiStateEnabled[] = "GEMINI_ENABLEMENT_STATE_ENABLED";
+inline constexpr char kGeminiStateDisabled[] =
+    "GEMINI_ENABLEMENT_STATE_DISABLED";
+inline constexpr char kGeminiStatusFetchResponseTemplate[] =
+    R"({"geminiEnablementState": "$1"})";
 inline constexpr char kUrl[] = "url";
 inline constexpr char kTitle[] = "title";
 inline constexpr char kFavIcon[] = "faviconUrl";
+inline constexpr char kUrlType[] = "urlType";
 inline constexpr char kContentConfigs[] = "contentConfigs";
 inline constexpr char kActiveBundle[] = "activeBundle";
 inline constexpr char kLocked[] = "locked";
+inline constexpr char kLockToAppHome[] = "lockToAppHome";
 inline constexpr char kLockedNavigationOptions[] = "lockedNavigationOptions";
 inline constexpr char kNavigationType[] = "navigationType";
 inline constexpr char kSeconds[] = "seconds";
@@ -84,6 +120,7 @@ inline constexpr char kNanos[] = "nanos";
 inline constexpr char kRequestTime[] = "requestTime";
 inline constexpr char kActivities[] = "activities";
 inline constexpr char kActiveTab[] = "activeTab";
+inline constexpr char kDevice[] = "device";
 inline constexpr char kDevices[] = "devices";
 inline constexpr char kDeviceId[] = "deviceId";
 inline constexpr char kActivity[] = "activity";
@@ -101,9 +138,17 @@ inline constexpr char kTeacherClientDevice[] = "teacherClientDevice";
 inline constexpr char kHostDevice[] = "hostDevice";
 inline constexpr char kSpotlightConnectionCode[] = "connectionCode";
 inline constexpr char kSpotlightConnectionParam[] = "connectionParam";
+inline constexpr char kViewScreenRequester[] = "viewScreenRequester";
+inline constexpr char kServiceAccount[] = "serviceAccount";
 inline constexpr char kStudentGroupId[] = "studentGroupId";
 inline constexpr char kViewScreenConfig[] = "viewScreenConfig";
 inline constexpr char kViewScreenState[] = "viewScreenState";
+inline constexpr char kRobotEmail[] = "robotEmail";
+inline constexpr char kConnection[] = "connection";
+inline constexpr char kConnectionId[] = "connectionId";
+inline constexpr char kConnectionCode[] = "connectionCode";
+inline constexpr char kInitiator[] = "initiator";
+inline constexpr char kPresenter[] = "presenter";
 
 inline constexpr net::NetworkTrafficAnnotationTag kTrafficAnnotation =
     net::DefineNetworkTrafficAnnotation("boca_server_integration", R"(

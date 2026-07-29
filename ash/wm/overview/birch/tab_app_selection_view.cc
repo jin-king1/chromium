@@ -18,6 +18,7 @@
 #include "ash/wm/overview/birch/birch_bar_controller.h"
 #include "base/containers/flat_tree.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/task/cancelable_task_tracker.h"
 #include "chromeos/ash/services/coral/public/mojom/coral_service.mojom.h"
 #include "components/prefs/pref_service.h"
@@ -36,6 +37,7 @@
 #include "ui/views/controls/scroll_view.h"
 #include "ui/views/controls/separator.h"
 #include "ui/views/highlight_border.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/view_utils.h"
 
@@ -346,7 +348,8 @@ class TabAppSelectionView::UserFeedbackView : public views::BoxLayoutView {
   explicit UserFeedbackView(TabAppSelectionView* owner) : owner_(owner) {
     SetOrientation(views::BoxLayout::Orientation::kHorizontal);
     SetInsideBorderInsets(kUserFeedbackInsets);
-    SetMainAxisAlignment(views::LayoutAlignment::kCenter);
+    SetMainAxisAlignment(views::BoxLayout::MainAxisAlignment::kCenter);
+    SetCrossAxisAlignment(views::BoxLayout::CrossAxisAlignment::kCenter);
     SetBackground(views::CreateRoundedRectBackground(
         cros_tokens::kCrosSysSystemOnBaseOpaque,
         kUserFeedbackContainerCornerRadius, 0));
@@ -510,7 +513,7 @@ TabAppSelectionView::TabAppSelectionView(const base::Token& group_id,
   // std::nullopt and apply a rounded rectangle background above on the whole
   // view. We still need to set the viewport rounded corner radius to clip the
   // child backgrounds when they are hovered over.
-  scroll_view_->SetBackgroundThemeColorId(std::nullopt);
+  scroll_view_->SetBackgroundColor(std::nullopt);
   scroll_view_->SetBorder(std::make_unique<views::HighlightBorder>(
       kTabAppItemsContainerCornerRadius,
       views::HighlightBorder::Type::kHighlightBorderOnShadow));
@@ -714,7 +717,7 @@ void TabAppSelectionView::SetFocus(views::View* focus_view) {
   }
 
   if (auto* focus_ring = views::FocusRing::Get(focus_view)) {
-    focus_ring->SchedulePaint();
+    focus_ring->Refresh();
   }
 
   focus_view->GetViewAccessibility().NotifyEvent(ax::mojom::Event::kSelection,
@@ -727,7 +730,7 @@ void TabAppSelectionView::SetBlur(views::View* blur_view) {
   }
 
   if (auto* focus_ring = views::FocusRing::Get(blur_view)) {
-    focus_ring->SchedulePaint();
+    focus_ring->Refresh();
   }
 
   for (const auto& item_view : item_views_) {

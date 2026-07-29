@@ -137,6 +137,11 @@ class TestRunner {
   // applies to all four sides of the page.
   int GetPrintingMargin() const;
 
+  // Returns printable safe inset. Printers usually have unprintable areas near
+  // the paper edges, due to the paper handling mechanism. This is the larger
+  // inset of those areas.
+  float GetSafePrintableInset(blink::WebLocalFrame* frame) const;
+
   // Returns the page ranges to be printed. This is specified in the document
   // via a tag of the form <meta name=reftest-pages content="1,2-3,5-">. If no
   // tag is found, print all pages.
@@ -154,7 +159,7 @@ class TestRunner {
   // Replicates changes to web test runtime flags (i.e. changes that happened in
   // another renderer). See also `OnWebTestRuntimeFlagsChanged()`.
   void ReplicateWebTestRuntimeFlagsChanges(
-      const base::Value::Dict& changed_values);
+      const base::DictValue& changed_values);
 
   // If custom text dump is present (i.e. if testRunner.setCustomTextOutput has
   // been called from javascript), then returns |true| and populates the
@@ -241,7 +246,7 @@ class TestRunner {
       WebFrameTestProxy& source);
 
   void ProcessWorkItem(mojom::WorkItemPtr work_item, WebFrameTestProxy& source);
-  void ReplicateWorkQueueStates(const base::Value::Dict& changed_values,
+  void ReplicateWorkQueueStates(const base::DictValue& changed_values,
                                 WebFrameTestProxy& source);
 
   blink::WebEffectiveConnectionType effective_connection_type() const {
@@ -294,7 +299,7 @@ class TestRunner {
     void RequestWork(WebFrameTestProxy& source);
     void ProcessWorkItem(mojom::WorkItemPtr work_item,
                          WebFrameTestProxy& source);
-    void ReplicateStates(const base::Value::Dict& values,
+    void ReplicateStates(const base::DictValue& values,
                          WebFrameTestProxy& source);
 
     // Takes care of notifying the browser after a change to the state.
@@ -480,6 +485,7 @@ class TestRunner {
                            WebFrameTestProxy& source);
   void SetPrintingSize(int width, int height, WebFrameTestProxy& source);
   void SetPrintingMargin(int size, WebFrameTestProxy& source);
+  void SetSafePrintableInset(int inset, WebFrameTestProxy& source);
   void SetShouldCenterAndShrinkToFitPaper(bool b) {
     should_center_and_shrink_to_fit_paper_ = b;
   }

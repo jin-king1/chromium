@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "gpu/ipc/in_process_command_buffer.h"
 
 #include <stddef.h>
@@ -18,6 +13,7 @@
 #include "base/atomic_sequence_num.h"
 #include "base/auto_reset.h"
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
@@ -42,7 +38,6 @@
 #include "gpu/command_buffer/service/context_group.h"
 #include "gpu/command_buffer/service/gl_context_virtual.h"
 #include "gpu/command_buffer/service/gles2_cmd_decoder.h"
-#include "gpu/command_buffer/service/gpu_command_buffer_memory_tracker.h"
 #include "gpu/command_buffer/service/gpu_fence_manager.h"
 #include "gpu/command_buffer/service/gpu_tracer.h"
 #include "gpu/command_buffer/service/gr_shader_cache.h"
@@ -99,6 +94,27 @@ class ScopedEvent {
 };
 
 }  // namespace
+
+InProcessCommandBuffer::InitializeOnGpuThreadParams::
+    InitializeOnGpuThreadParams(mojom::ContextCreationAttribsPtr attribs,
+                                Capabilities* capabilities,
+                                GLCapabilities* gl_capabilities,
+                                gpu::raster::GrShaderCache* gr_shader_cache,
+                                GpuProcessShmCount* use_shader_cache_shm_count)
+    : attribs(std::move(attribs)),
+      capabilities(capabilities),
+      gl_capabilities(gl_capabilities),
+      gr_shader_cache(gr_shader_cache),
+      use_shader_cache_shm_count(use_shader_cache_shm_count) {}
+
+InProcessCommandBuffer::InitializeOnGpuThreadParams::
+    ~InitializeOnGpuThreadParams() = default;
+
+InProcessCommandBuffer::InitializeOnGpuThreadParams::
+    InitializeOnGpuThreadParams(InitializeOnGpuThreadParams&& other) = default;
+InProcessCommandBuffer::InitializeOnGpuThreadParams&
+InProcessCommandBuffer::InitializeOnGpuThreadParams::operator=(
+    InitializeOnGpuThreadParams&& other) = default;
 
 InProcessCommandBuffer::InProcessCommandBuffer(
     CommandBufferTaskExecutor* task_executor,
@@ -172,7 +188,7 @@ void InProcessCommandBuffer::CreateCacheUse(
 }
 
 gpu::ContextResult InProcessCommandBuffer::Initialize(
-    const ContextCreationAttribs& attribs,
+    mojom::ContextCreationAttribsPtr attribs,
     scoped_refptr<base::SingleThreadTaskRunner> task_runner,
     gpu::raster::GrShaderCache* gr_shader_cache,
     GpuProcessShmCount* use_shader_cache_shm_count) {
@@ -186,13 +202,13 @@ gpu::ContextResult InProcessCommandBuffer::Initialize(
 
   Capabilities capabilities;
   GLCapabilities gl_capabilities;
-  InitializeOnGpuThreadParams params(attribs, &capabilities, &gl_capabilities,
-                                     gr_shader_cache,
+  InitializeOnGpuThreadParams params(std::move(attribs), &capabilities,
+                                     &gl_capabilities, gr_shader_cache,
                                      use_shader_cache_shm_count);
 
   base::OnceCallback<gpu::ContextResult(void)> init_task =
       base::BindOnce(&InProcessCommandBuffer::InitializeOnGpuThread,
-                     base::Unretained(this), params);
+                     base::Unretained(this), std::move(params));
 
   task_scheduler_holder_ =
       std::make_unique<gpu::GpuTaskSchedulerHelper>(task_executor_);
@@ -213,13 +229,12 @@ gpu::ContextResult InProcessCommandBuffer::Initialize(
   if (result == gpu::ContextResult::kSuccess) {
     capabilities_ = capabilities;
     gl_capabilities_ = gl_capabilities;
-    shared_image_interface_ =
-        base::MakeRefCounted<SharedImageInterfaceInProcess>(
-            task_sequence_, task_executor_->gpu_preferences(),
-            context_group_->feature_info()->workarounds(),
-            task_executor_->gpu_feature_info(), context_state_.get(),
-            task_executor_->shared_image_manager(),
-            /*is_for_display_compositor=*/false);
+    shared_image_interface_ = SharedImageInterfaceInProcess::Create(
+        task_sequence_, task_executor_->gpu_preferences(),
+        context_group_->feature_info()->workarounds(),
+        task_executor_->gpu_feature_info(), context_state_.get(),
+        task_executor_->shared_image_manager(),
+        /*is_for_display_compositor=*/false, task_executor_->GetTaskRunner());
   }
 
   return result;
@@ -234,34 +249,29 @@ gpu::ContextResult InProcessCommandBuffer::InitializeOnGpuThread(
   GpuDriverBugWorkarounds workarounds(
       task_executor_->gpu_feature_info().enabled_gpu_driver_bug_workarounds);
 
-  std::unique_ptr<MemoryTracker> memory_tracker;
-  // Android WebView won't have a memory tracker.
-  if (task_executor_->ShouldCreateMemoryTracker()) {
-    const uint64_t client_tracing_id =
-        base::trace_event::MemoryDumpManager::GetInstance()
-            ->GetTracingProcessId();
-    memory_tracker = std::make_unique<GpuCommandBufferMemoryTracker>(
-        GetCommandBufferID(), client_tracing_id,
-        base::SingleThreadTaskRunner::GetCurrentDefault(),
-        /* obserer=*/nullptr);
-  }
+  const uint64_t client_tracing_id =
+      base::trace_event::MemoryDumpManager::GetInstance()
+          ->GetTracingProcessId();
+  auto memory_tracker = base::MakeRefCounted<MemoryTracker>(
+      GetCommandBufferID(), client_tracing_id,
+      /*peak_memory_monitor=*/nullptr,
+      GpuPeakMemoryAllocationSource::COMMAND_BUFFER);
 
   auto feature_info = base::MakeRefCounted<gles2::FeatureInfo>(
       workarounds, task_executor_->gpu_feature_info());
   context_group_ = base::MakeRefCounted<gles2::ContextGroup>(
-      task_executor_->gpu_preferences(), std::move(memory_tracker),
+      task_executor_->gpu_preferences(), memory_tracker,
       task_executor_->shader_translator_cache(),
       task_executor_->framebuffer_completeness_cache(), feature_info,
-      params.attribs->bind_generates_resource, nullptr /* progress_reporter */,
-      task_executor_->gpu_feature_info(), task_executor_->discardable_manager(),
-      task_executor_->passthrough_discardable_manager(),
+      /*progress_reporter=*/nullptr, task_executor_->gpu_feature_info(),
       task_executor_->shared_image_manager());
 
 #if BUILDFLAG(IS_MAC)
   // Virtualize GpuPreference:::kLowPower contexts by default on OS X to prevent
   // performance regressions when enabling FCM. https://crbug.com/180463
-  use_virtualized_gl_context_ |=
-      (params.attribs->gpu_preference == gl::GpuPreference::kLowPower);
+  use_virtualized_gl_context_ |= params.attribs->is_gles() &&
+                                 (params.attribs->get_gles()->gpu_preference ==
+                                  gl::GpuPreference::kLowPower);
 #endif
 
   use_virtualized_gl_context_ |= task_executor_->ForceVirtualizedGLContexts();
@@ -275,8 +285,8 @@ gpu::ContextResult InProcessCommandBuffer::InitializeOnGpuThread(
     use_virtualized_gl_context_ = false;
   }
 
-  command_buffer_ = std::make_unique<CommandBufferService>(
-      this, context_group_->memory_tracker());
+  command_buffer_ =
+      std::make_unique<CommandBufferService>(this, memory_tracker);
 
   context_state_ = task_executor_->GetSharedContextState();
 
@@ -308,27 +318,29 @@ gpu::ContextResult InProcessCommandBuffer::InitializeOnGpuThread(
     gl_share_group_ = task_executor_->GetShareGroup();
   }
 
-  if (params.attribs->context_type == CONTEXT_TYPE_WEBGPU) {
-    if (!task_executor_->gpu_preferences().enable_webgpu) {
-      DLOG(ERROR) << "ContextResult::kFatalFailure: WebGPU not enabled";
-      return gpu::ContextResult::kFatalFailure;
-    }
-    std::unique_ptr<webgpu::WebGPUDecoder> webgpu_decoder(
-        webgpu::WebGPUDecoder::Create(
-            this, command_buffer_.get(), task_executor_->shared_image_manager(),
-            context_group_->memory_tracker(), task_executor_->outputter(),
-            task_executor_->gpu_preferences(), context_state_));
-    gpu::ContextResult result =
-        webgpu_decoder->Initialize(task_executor_->gpu_feature_info());
-    if (result != gpu::ContextResult::kSuccess) {
-      DestroyOnGpuThread();
-      DLOG(ERROR) << "Failed to initialize WebGPU decoder.";
-      return result;
-    }
-    decoder_ = std::move(webgpu_decoder);
-  } else {
-    if (params.attribs->enable_raster_interface &&
-        !params.attribs->enable_gles2_interface) {
+  switch (params.attribs->which()) {
+    case mojom::ContextCreationAttribs::Tag::kWebgpu: {
+      if (!task_executor_->gpu_preferences().enable_webgpu) {
+        DLOG(ERROR) << "ContextResult::kFatalFailure: WebGPU not enabled";
+        return gpu::ContextResult::kFatalFailure;
+      }
+      std::unique_ptr<webgpu::WebGPUDecoder> webgpu_decoder =
+          webgpu::WebGPUDecoder::Create(
+              this, command_buffer_.get(),
+              task_executor_->shared_image_manager(), memory_tracker,
+              task_executor_->outputter(), task_executor_->gpu_preferences(),
+              context_state_);
+      gpu::ContextResult result =
+          webgpu_decoder->Initialize(task_executor_->gpu_feature_info());
+      if (result != gpu::ContextResult::kSuccess) {
+        DestroyOnGpuThread();
+        DLOG(ERROR) << "Failed to initialize WebGPU decoder.";
+        return result;
+      }
+
+      decoder_ = std::move(webgpu_decoder);
+    } break;
+    case mojom::ContextCreationAttribs::Tag::kRaster: {
       // RasterDecoder uses the shared context.
       use_virtualized_gl_context_ = false;
 
@@ -341,20 +353,27 @@ gpu::ContextResult InProcessCommandBuffer::InitializeOnGpuThread(
         return ContextResult::kTransientFailure;
       }
 
-      // TODO(penghuang): Merge all SharedContextState::Initialize*()
-      if (!context_state_->IsGLInitialized()) {
-        context_state_->InitializeGL(task_executor_->gpu_preferences(),
-                                     context_group_->feature_info());
+      context_ = context_state_->context();
+      std::unique_ptr<raster::RasterDecoder> raster_decoder =
+          raster::RasterDecoder::Create(
+              this, command_buffer_.get(), task_executor_->outputter(),
+              task_executor_->gpu_feature_info(),
+              task_executor_->gpu_preferences(), memory_tracker,
+              task_executor_->shared_image_manager(), context_state_,
+              /*is_privileged=*/true);
+
+      auto result =
+          raster_decoder->Initialize(/*lose_context_when_out_of_memory=*/true);
+      if (result != gpu::ContextResult::kSuccess) {
+        DestroyOnGpuThread();
+        DLOG(ERROR) << "Failed to initialize decoder.";
+        return result;
       }
 
-      context_ = context_state_->context();
-      decoder_.reset(raster::RasterDecoder::Create(
-          this, command_buffer_.get(), task_executor_->outputter(),
-          task_executor_->gpu_feature_info(), task_executor_->gpu_preferences(),
-          context_group_->memory_tracker(),
-          task_executor_->shared_image_manager(), context_state_,
-          true /*is_privileged*/));
-    } else {
+      decoder_ = std::move(raster_decoder);
+    } break;
+    case mojom::ContextCreationAttribs::Tag::kGles: {
+      const auto& attribs = params.attribs->get_gles();
       // TODO(khushalsagar): A lot of this initialization code is duplicated in
       // GpuChannelManager. Pull it into a common util method.
       scoped_refptr<gl::GLContext> real_context =
@@ -368,7 +387,8 @@ gpu::ContextResult InProcessCommandBuffer::InitializeOnGpuThread(
       if (!real_context) {
         real_context = gl::init::CreateGLContext(
             gl_share_group_.get(), surface.get(),
-            GenerateGLContextAttribsForDecoder(*params.attribs,
+            GenerateGLContextAttribsForDecoder(attribs->context_type,
+                                               attribs->gpu_preference,
                                                context_group_.get()));
         if (!real_context) {
           // TODO(piman): This might not be fatal, we could recurse into
@@ -395,15 +415,19 @@ gpu::ContextResult InProcessCommandBuffer::InitializeOnGpuThread(
         return ContextResult::kTransientFailure;
       }
 
-      decoder_.reset(gles2::GLES2Decoder::Create(this, command_buffer_.get(),
-                                                 task_executor_->outputter(),
-                                                 context_group_.get()));
+      std::unique_ptr<gles2::GLES2Decoder> gles2_decoder =
+          gles2::GLES2Decoder::Create(this, command_buffer_.get(),
+                                      task_executor_->outputter(),
+                                      context_group_.get());
       if (use_virtualized_gl_context_) {
         context_ = base::MakeRefCounted<GLContextVirtual>(
-            gl_share_group_.get(), real_context.get(), decoder_->AsWeakPtr());
-        if (!context_->Initialize(surface.get(),
-                                  GenerateGLContextAttribsForDecoder(
-                                      *params.attribs, context_group_.get()))) {
+            gl_share_group_.get(), real_context.get(),
+            gles2_decoder->AsWeakPtr());
+        if (!context_->Initialize(
+                surface.get(),
+                GenerateGLContextAttribsForDecoder(attribs->context_type,
+                                                   attribs->gpu_preference,
+                                                   context_group_.get()))) {
           // TODO(piman): This might not be fatal, we could recurse into
           // CreateGLContext to get more info, tho it should be exceedingly
           // rare and may not be recoverable anyway.
@@ -424,22 +448,24 @@ gpu::ContextResult InProcessCommandBuffer::InitializeOnGpuThread(
         context_ = real_context;
         DCHECK(context_->IsCurrent(surface.get()));
       }
-    }
+      auto result = gles2_decoder->Initialize(
+          surface, context_, /*offscreen=*/true, attribs->context_type,
+          /*lose_context_when_out_of_memory=*/true);
+      if (result != gpu::ContextResult::kSuccess) {
+        DestroyOnGpuThread();
+        DLOG(ERROR) << "Failed to initialize decoder.";
+        return result;
+      }
 
-    if (!context_group_->has_program_cache() &&
-        !context_group_->feature_info()->workarounds().disable_program_cache) {
-      context_group_->set_program_cache(task_executor_->program_cache());
-    }
-    DCHECK(context_->default_surface());
-  }
-
-  gles2::DisallowedFeatures disallowed_features;
-  auto result = decoder_->Initialize(surface, context_, /*offscreen=*/true,
-                                     disallowed_features, *params.attribs);
-  if (result != gpu::ContextResult::kSuccess) {
-    DestroyOnGpuThread();
-    DLOG(ERROR) << "Failed to initialize decoder.";
-    return result;
+      decoder_ = std::move(gles2_decoder);
+      if (!context_group_->has_program_cache() &&
+          !context_group_->feature_info()
+               ->workarounds()
+               .disable_program_cache) {
+        context_group_->set_program_cache(task_executor_->program_cache());
+      }
+      DCHECK(context_->default_surface());
+    } break;
   }
 
   if (task_executor_->gpu_preferences().enable_gpu_service_logging)
@@ -772,7 +798,9 @@ scoped_refptr<Buffer> InProcessCommandBuffer::CreateTransferBuffer(
     int32_t* id,
     uint32_t alignment,
     TransferBufferAllocationOption option) {
-  scoped_refptr<Buffer> buffer = MakeMemoryBuffer(size, alignment);
+  constexpr uint32_t kDefaultAlignment = 16;
+  uint32_t buffer_alignment = std::max(alignment, kDefaultAlignment);
+  scoped_refptr<Buffer> buffer = MakeMemoryBuffer(size, buffer_alignment);
   *id = GetNextBufferId();
   ScheduleGpuTask(
       base::BindOnce(&InProcessCommandBuffer::RegisterTransferBufferOnGpuThread,
@@ -862,14 +890,10 @@ void InProcessCommandBuffer::ScheduleGrContextCleanup() {
 
 void InProcessCommandBuffer::HandleReturnData(base::span<const uint8_t> data) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(gpu_sequence_checker_);
-  std::vector<uint8_t> vec(data.data(), data.data() + data.size());
+  std::vector<uint8_t> vec(data.data(), UNSAFE_TODO(data.data() + data.size()));
   PostOrRunClientCallback(
       base::BindOnce(&InProcessCommandBuffer::HandleReturnDataOnOriginThread,
                      client_thread_weak_ptr_, std::move(vec)));
-}
-
-bool InProcessCommandBuffer::ShouldYield() {
-  return task_sequence_->ShouldYield();
 }
 
 void InProcessCommandBuffer::PostOrRunClientCallback(

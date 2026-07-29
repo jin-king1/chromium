@@ -38,9 +38,24 @@ StylusHandwritingCallbackSinkWin::DetermineProximateHandwritingTarget(
   return E_NOTIMPL;
 }
 
+void StylusHandwritingCallbackSinkWin::SetCallback(
+    OnFocusHandwritingTargetCallback callback) {
+  // Called defensively to clean up any pending callback args. If this is being
+  // called, it means the previous session is no longer valid.
+  OnFocusFailed();
+  handwriting_callback_ = std::move(callback);
+  decline_next_target_ = false;
+}
+
 HRESULT STDMETHODCALLTYPE
 StylusHandwritingCallbackSinkWin::FocusHandwritingTarget(
     ::ITfFocusHandwritingTargetArgs* args) {
+  if (decline_next_target_) {
+    decline_next_target_ = false;
+    args->SetResponse(::TF_NO_HANDWRITING_TARGET);
+    return S_OK;
+  }
+
   CHECK(handwriting_callback_);
   HWND window;
   RECT rect;
@@ -51,12 +66,12 @@ StylusHandwritingCallbackSinkWin::FocusHandwritingTarget(
   }
 
   handwriting_callback_.Run(
-      display::win::ScreenWin::ScreenToDIPRect(window, gfx::Rect(rect)),
-      display::win::ScreenWin::ScreenToDIPSize(
+      display::win::GetScreenWin()->ScreenToDIPRect(window, gfx::Rect(rect)),
+      display::win::GetScreenWin()->ScreenToDIPSize(
           window, gfx::Size(distance_threshold.cx, distance_threshold.cy)));
 
   // Check that we have no pending callback.
-  DCHECK(!pending_target_args_);
+  CHECK(!pending_target_args_, base::NotFatalUntil::M152);
   pending_target_args_ = args;
 
   // The response is later be set via OnEditElementFocusedForStylusWriting

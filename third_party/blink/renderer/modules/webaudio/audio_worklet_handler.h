@@ -11,7 +11,7 @@
 #include "third_party/blink/renderer/bindings/modules/v8/v8_audio_worklet_node_options.h"
 #include "third_party/blink/renderer/modules/webaudio/audio_node.h"
 #include "third_party/blink/renderer/modules/webaudio/audio_param_map.h"
-#include "third_party/blink/renderer/modules/webaudio/audio_worklet_processor_error_state.h"
+#include "third_party/blink/renderer/modules/webaudio/audio_worklet_processor_error_details.h"
 #include "third_party/blink/renderer/platform/heap/cross_thread_persistent.h"
 #include "third_party/blink/renderer/platform/wtf/threading.h"
 
@@ -19,11 +19,6 @@ namespace blink {
 
 class AudioNodeInput;
 class AudioWorkletProcessor;
-class BaseAudioContext;
-class CrossThreadAudioParamInfo;
-class ExceptionState;
-class MessagePort;
-class ScriptState;
 
 class AudioWorkletHandler final : public AudioHandler {
  public:
@@ -51,13 +46,6 @@ class AudioWorkletHandler final : public AudioHandler {
   // MUST be called from the render thread.
   void SetProcessorOnRenderThread(AudioWorkletProcessor*);
 
-  // Finish `AudioWorkletProcessor` and set the tail time to zero, when
-  // the user-supplied `process()` method returns false.
-  void FinishProcessorOnRenderThread();
-
-  void NotifyProcessorError(AudioWorkletProcessorErrorState);
-
-  void MarkProcessorInactiveOnMainThread();
   bool IsProcessorActive() { return is_processor_active_; }
 
  private:
@@ -68,11 +56,20 @@ class AudioWorkletHandler final : public AudioHandler {
       HashMap<String, scoped_refptr<AudioParamHandler>> param_handler_map,
       const AudioWorkletNodeOptions*);
 
-  // Used to avoid code duplication when using scoped objects that affect
-  // `Process`.
-  void ProcessInternal(uint32_t frames_to_process);
+  // TODO(crbug.com/40268877): The tail time of AudioWorkletNode is decided by
+  // the active processing flag. So it doesn't need an automatic tail time
+  // management from the renderer.
+  bool RequiresTailProcessing() const override { return true; }
 
-  String name_;
+  void NotifyProcessorError(
+      const AudioWorkletProcessorErrorDetails& error_details);
+
+  void MarkProcessorInactiveOnMainThread();
+
+  bool HasActiveInputs();
+  void FinishProcessorOnRenderThread();
+
+  const String name_;
 
   double tail_time_ = std::numeric_limits<double>::infinity();
 
@@ -91,11 +88,6 @@ class AudioWorkletHandler final : public AudioHandler {
   HashMap<String, scoped_refptr<AudioParamHandler>> param_handler_map_;
   HashMap<String, std::unique_ptr<AudioFloatArray>> param_value_map_;
 
-  // TODO(crbug.com/1447088): The tail time of AudioWorkletNode is decided by
-  // the active processing flag. So it doesn't need an automatic tail time
-  // management from the renderer.
-  bool RequiresTailProcessing() const override { return true; }
-
   scoped_refptr<base::SingleThreadTaskRunner> main_thread_task_runner_;
 
   // Used only if number of inputs and outputs are 1.
@@ -106,8 +98,15 @@ class AudioWorkletHandler final : public AudioHandler {
   // when a processor stops invoking the user-defined `process()` callback.
   bool is_processor_active_ = true;
 
-  // Cached feature flag value
-  const bool allow_denormal_in_processing_;
+  // The active source flag of the AudioWorkletProcessor, which is updated by
+  // the return value of the user-defined `process()` callback.
+  bool is_active_source_ = true;
+
+  // Pre-bound WeakPtr to this handler. Storing it on the main thread avoids
+  // calling GetWeakPtr() on the WeakPtrFactory from the audio thread (which is
+  // not thread-safe). The audio thread can then safely copy this pre-bound
+  // WeakPtr to post tasks back to the main thread.
+  base::WeakPtr<AudioWorkletHandler> weak_this_;
 
   base::WeakPtrFactory<AudioWorkletHandler> weak_ptr_factory_{this};
 };

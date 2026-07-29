@@ -22,9 +22,6 @@ template("system_webview_bundle") {
     # TODO(crbug.com/41486995): Set this back to true once split translations
     # are working again.
     enable_language_splits = false
-    if (_is_trichrome) {
-      min_sdk_version = 29
-    }
     system_image_locale_allowlist = platform_pak_locales
     if (android_64bit_target_cpu) {
       _include_32_bit_webview = !defined(invoker.include_32_bit_webview) ||
@@ -34,20 +31,17 @@ template("system_webview_bundle") {
       is_multi_abi = _include_32_bit_webview && _include_64_bit_webview
       not_needed([ "_include_64_bit_webview" ])
       if (!defined(android_app_secondary_abi)) {
-        assert(!is_multi_abi)
+        assert(!is_multi_abi, "target should not be enabled: $target_name")
       }
-    }
-
-    if (!defined(proguard_android_sdk_dep)) {
-      proguard_android_sdk_dep = webview_framework_dep
     }
 
     if (enable_silent_java_assert_reporting) {
       custom_assertion_handler = crash_reporting_assertion_handler
     }
 
-    # For this to be respected, it must also be set on the base module target.
-    strip_unused_resources = is_official_build
+    if (optimize_android_resources) {
+      resources_config_paths = [ "//android_webview/aapt2.config" ]
+    }
 
     forward_variables_from(invoker, "*")
   }

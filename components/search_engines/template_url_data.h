@@ -14,6 +14,7 @@
 #include "base/time/time.h"
 #include "base/values.h"
 #include "components/search_engines/template_url_id.h"
+#include "components/search_engines/template_url_starter_pack_data.h"
 #include "third_party/search_engines_data/resources/definitions/prepopulated_engines.h"
 #include "url/gurl.h"
 
@@ -59,9 +60,10 @@ struct TemplateURLData {
                   std::string_view favicon_url,
                   std::string_view encoding,
                   std::u16string_view image_search_branding_label,
-                  const base::Value::List& alternate_urls_list,
+                  const base::ListValue& alternate_urls_list,
                   bool preconnect_to_search_url,
                   bool prefetch_likely_navigations,
+                  bool send_x_geo_header,
                   int prepopulate_id,
                   const base::span<const RegulatoryExtension>& extensions);
 
@@ -85,6 +87,9 @@ struct TemplateURLData {
   // Generate the deterministic hash of data within this TemplateURL.
   std::vector<uint8_t> GenerateHash() const;
 
+  // Retrieve builtin image resource ID for this engine.
+  std::string GetBuiltinImageResourceId() const;
+
   // Recomputes |sync_guid| using the same logic as in the constructor. This
   // means a random GUID is generated, except for built-in search engines,
   // which generate GUIDs deterministically based on |prepopulate_id| or
@@ -100,12 +105,18 @@ struct TemplateURLData {
   // Returns whether this search engine was created by the Default Search
   // Provider Enterprise policy.
   bool CreatedByDefaultSearchProviderPolicy() const;
-  // Returns whether this search engine was created by an Enterprise policy that
-  // doesn't define the Default Search Provider.
+  // Returns whether this search engine was created by an Enterprise policy,
+  // but not by the Default Search Provider policy (e.g., created by the
+  // SiteSearchSettings or EnterpriseSearchAggregatorSettings policies).
   bool CreatedByNonDefaultSearchProviderPolicy() const;
   // Returns whether this search engine was created by the
   // EnterpriseSearchAggregatorSettings policy.
   bool CreatedByEnterpriseSearchAggregatorPolicy() const;
+  // Returns whether this search engine was created by the SiteSearchSettings
+  // policy.
+  bool CreatedBySiteSearchPolicy() const;
+  // Returns whether this search engine was created by a regulatory program.
+  bool CreatedByRegulatoryProgram() const;
 
   // Optional additional raw URLs.
   std::string suggestions_url;
@@ -184,15 +195,26 @@ struct TemplateURLData {
   // group policy.
   PolicyOrigin policy_origin;
 
-  // True if this TemplateURL is forced to be the default search engine via
-  // policy. This prevents the user from setting another search engine as
-  // default.
-  // False if this TemplateURL is recommended or not set via policy. This allows
-  // the user to set another search engine as default.
+  // True if this TemplateURL is forced to be the default search engine or a
+  // site search engine via policy. This prevents the user from setting another
+  // search engine as default (for default search engines) or modifying/deleting
+  // this engine (for site search engines).
+  // False if this TemplateURL is recommended (allowing user override) or not
+  // set via policy. This allows the user to set another search engine as
+  // default (for default search engines) or to modify/delete the this engine
+  // (for site search engines).
   bool enforced_by_policy;
 
-  // True if this TemplateURL was created from metadata received from Play API.
-  bool created_from_play_api;
+  // The Regulatory program supplying this definition.
+  // This permits deduplication and election of the best supported TemplateURL
+  // definition from all known sources (see ReconcilingTemplateURLDataHolder).
+  //
+  // TODO(b:322513019): All definition origins could possibly be aggregated
+  // under a single enum for clarity and simplicity. This would allow for more
+  // consistent handling and detection (what should be processed, and how).
+  // The amount of work needed to do this seems very significant. Investigate
+  // whether this makes sense and is feasible.
+  RegulatoryExtensionType regulatory_origin;
 
   // True if this TemplateURL should be promoted in the Omnibox along with the
   // starter pack.
@@ -207,6 +229,11 @@ struct TemplateURLData {
 
   // If this TemplateURL comes from prepopulated data the prepopulate_id is > 0.
   int prepopulate_id;
+
+  // If this TemplateURL is subject to some migration to another prepopulated
+  // engine, this ID refers to the post-migration engine's prepopulate_id. See
+  // `TryGetMigratedEngine()` for the migration matching logic.
+  int migrate_to_id = 0;
 
   // The primary unique identifier for Sync. This set on all TemplateURLs
   // regardless of whether they have been associated with Sync.
@@ -229,6 +256,11 @@ struct TemplateURLData {
   // (in addition to queries that are recommended via suggestion server). This
   // is experimental.
   bool prefetch_likely_navigations = false;
+
+  // Whether this search engine should receive the X-Geo geolocation header.
+  // This is a privacy-sensitive opt-in and should only be enabled for trusted
+  // partners.
+  bool send_x_geo_header = false;
 
   enum class ActiveStatus {
     kUnspecified = 0,  // The default value when a search engine is auto-added.

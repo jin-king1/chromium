@@ -10,6 +10,7 @@
 #include <iterator>
 #include <memory>
 #include <numeric>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -22,7 +23,6 @@
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/i18n/case_conversion.h"
-#include "base/i18n/time_formatting.h"
 #include "base/json/json_reader.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/no_destructor.h"
@@ -32,6 +32,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/trace_event/trace_event.h"
 #include "base/values.h"
+#include "components/omnibox/browser/autocomplete_enums.h"
 #include "components/omnibox/browser/autocomplete_input.h"
 #include "components/omnibox/browser/autocomplete_match.h"
 #include "components/omnibox/browser/autocomplete_match_classification.h"
@@ -77,7 +78,7 @@ enum class DocumentProviderAllowedReason : int {
   kDriveSettingDisabledObsolete = 4,
   kOffTheRecord = 5,
   kNotLoggedIn = 6,
-  kNotSyncing = 7,
+  kNotSyncing_DEPRECATED = 7,
   kBackoff = 8,
   kDSENotGoogle = 9,
   kInputOnFocusOrEmpty = 10,
@@ -161,11 +162,10 @@ std::vector<T> Concat(std::vector<T>& v1, const std::vector<T>& v2) {
 // Extracts a list of pointers to strings from a DictionaryValue containing a
 // list of objects containing a string field of interest. Note that pointers may
 // be `nullptr` if the value at `field_path` is not found or is not a string.
-std::vector<const std::string*> ExtractResultList(
-    const base::Value::Dict& result,
-    std::string_view list_path,
-    std::string_view field_path) {
-  const base::Value::List* list = result.FindListByDottedPath(list_path);
+std::vector<const std::string*> ExtractResultList(const base::DictValue& result,
+                                                  std::string_view list_path,
+                                                  std::string_view field_path) {
+  const base::ListValue* list = result.FindListByDottedPath(list_path);
   if (!list) {
     return {};
   }
@@ -180,7 +180,7 @@ std::vector<const std::string*> ExtractResultList(
 }
 
 // Return whether `user` owns the doc `result`.
-bool IsOwnedByUser(const std::string& user, const base::Value::Dict& result) {
+bool IsOwnedByUser(const std::string& user, const base::DictValue& result) {
   std::vector<const std::string*> owner_emails = ExtractResultList(
       result, "metadata.owner.emailAddresses", "emailAddress");
   const auto lower_user = base::i18n::ToLower(base::UTF8ToUTF16(user));
@@ -195,7 +195,7 @@ bool IsOwnedByUser(const std::string& user, const base::Value::Dict& result) {
 // Return whether all words in `input` are contained in either the `result`
 // title or owners.
 bool IsCompletelyMatchedInTitleOrOwner(const std::u16string& input,
-                                       const base::Value::Dict& result) {
+                                       const base::DictValue& result) {
   // Accumulate a vector of the title and all owners.
   auto search_strings = ExtractResultList(
       result, "metadata.owner.emailAddresses", "emailAddress");
@@ -320,7 +320,7 @@ bool ValidHostPrefix(const std::string& host) {
 }
 
 // If `value[key]`, returns it. Otherwise, returns `fallback`.
-std::string FindStringKeyOrFallback(const base::Value::Dict& value,
+std::string FindStringKeyOrFallback(const base::DictValue& value,
                                     std::string_view key,
                                     std::string fallback = "") {
   auto* ptr = value.FindString(key);
@@ -379,7 +379,7 @@ bool DocumentProvider::IsDocumentProviderAllowed(
           omnibox::kDocumentProviderEnterpriseEligibility)) {
     const auto& entrprise_account_state =
         client_->GetDocumentSuggestionsService()
-            ->account_is_subject_to_enterprise_policies();
+            ->account_is_workspace_managed();
     is_enterprise_eligible =
         base::FeatureList::IsEnabled(
             omnibox::kDocumentProviderEnterpriseEligibilityWhenUnknown)
@@ -390,15 +390,6 @@ bool DocumentProvider::IsDocumentProviderAllowed(
     base::UmaHistogramEnumeration(
         "Omnibox.DocumentSuggest.ProviderAllowed",
         DocumentProviderAllowedReason::kNotEnterpriseEligible);
-    return false;
-  }
-
-  // Sync must be enabled and active.
-  if (!base::FeatureList::IsEnabled(
-          omnibox::kDocumentProviderNoSyncRequirement) &&
-      !client_->IsSyncActive()) {
-    base::UmaHistogramEnumeration("Omnibox.DocumentSuggest.ProviderAllowed",
-                                  DocumentProviderAllowedReason::kNotSyncing);
     return false;
   }
 
@@ -479,8 +470,7 @@ bool DocumentProvider::IsInputLikelyURL(const AutocompleteInput& input) {
 void DocumentProvider::Start(const AutocompleteInput& input,
                              bool minimal_changes) {
   TRACE_EVENT0("omnibox", "DocumentProvider::Start");
-  Stop(true, false);
-
+  Stop(AutocompleteStopReason::kClobbered);
   // Perform various checks - feature is enabled, user is allowed to use the
   // feature, we're not under backoff, etc.
   if (!IsDocumentProviderAllowed(input))
@@ -499,10 +489,10 @@ void DocumentProvider::Start(const AutocompleteInput& input,
 
   done_ = false;  // Set true in callbacks.
   debouncer_->RequestRun(
-      base::BindOnce(&DocumentProvider::Run, base::Unretained(this)));
+      base::BindOnce(&DocumentProvider::Run, base::Unretained(this), input));
 }
 
-void DocumentProvider::Run() {
+void DocumentProvider::Run(const AutocompleteInput& input) {
   // DocumentSuggestionsServiceFactory does not create a service instance for
   // OTR profiles. We should not get this far for those profiles.
   DCHECK(!client_->IsOffTheRecord());
@@ -510,6 +500,7 @@ void DocumentProvider::Run() {
   client_->GetRemoteSuggestionsService(/*create_if_necessary=*/true)
       ->CreateDocumentSuggestionsRequest(
           input_.text(), /*is_off_the_record=*/false,
+          input.current_page_classification(),
           base::BindOnce(
               &DocumentProvider::OnDocumentSuggestionsLoaderAvailable,
               weak_ptr_factory_.GetWeakPtr()),
@@ -518,12 +509,16 @@ void DocumentProvider::Run() {
               base::Unretained(this) /* this owns SimpleURLLoader */));
 }
 
-void DocumentProvider::Stop(bool clear_cached_results,
-                            bool due_to_user_inactivity) {
+void DocumentProvider::Stop(AutocompleteStopReason stop_reason) {
   TRACE_EVENT0("omnibox", "DocumentProvider::Stop");
-  AutocompleteProvider::Stop(clear_cached_results, due_to_user_inactivity);
+  AutocompleteProvider::Stop(stop_reason);
 
   debouncer_->CancelRequest();
+
+  if (auto* remote_suggestions_service =
+          client_->GetRemoteSuggestionsService(/*create_if_necessary=*/false)) {
+    remote_suggestions_service->StopCreatingDocumentSuggestionsRequest();
+  }
 
   // If the request was sent, then log its duration and that it was invalidated.
   if (loader_) {
@@ -543,11 +538,6 @@ void DocumentProvider::Stop(bool clear_cached_results,
     LogTotalTime(time_run_invoked_, true);
     time_run_invoked_ = base::TimeTicks();
   }
-
-  if (auto* remote_suggestions_service =
-          client_->GetRemoteSuggestionsService(/*create_if_necessary=*/false)) {
-    remote_suggestions_service->StopCreatingDocumentSuggestionsRequest();
-  }
 }
 
 void DocumentProvider::DeleteMatch(const AutocompleteMatch& match) {
@@ -566,7 +556,9 @@ DocumentProvider::DocumentProvider(AutocompleteProviderClient* client,
                                    AutocompleteProviderListener* listener)
     : AutocompleteProvider(AutocompleteProvider::TYPE_DOCUMENT),
       client_(client),
-      debouncer_(std::make_unique<AutocompleteProviderDebouncer>(true, 300)),
+      debouncer_(std::make_unique<AutocompleteProviderDebouncer>(
+          true,
+          omnibox_feature_configs::DocumentProvider::Get().debounce_delay_ms)),
       matches_cache_(20),
       task_runner_(base::SequencedTaskRunner::GetCurrentDefault()) {
   AddListener(listener);
@@ -577,7 +569,7 @@ DocumentProvider::~DocumentProvider() = default;
 void DocumentProvider::OnURLLoadComplete(
     const network::SimpleURLLoader* source,
     const int response_code,
-    std::unique_ptr<std::string> response_body) {
+    std::optional<std::string> response_body) {
   DCHECK(!done_);
   DCHECK_EQ(loader_.get(), source);
 
@@ -587,14 +579,12 @@ void DocumentProvider::OnURLLoadComplete(
                            response_code);
 
   // Also log the response code sliced by the enterprise account capability.
-  const auto& account_is_subject_to_enterprise_policies =
-      signin::TriboolToString(
-          client_->GetDocumentSuggestionsService()
-              ->account_is_subject_to_enterprise_policies());
+  const auto& account_is_workspace_managed = signin::TriboolToString(
+      client_->GetDocumentSuggestionsService()->account_is_workspace_managed());
   base::UmaHistogramSparse(
       base::StringPrintf("Omnibox.DocumentSuggest.HttpResponseCode."
                          "IsSubjectToEnterprisePolicies.%s",
-                         account_is_subject_to_enterprise_policies),
+                         account_is_workspace_managed),
       response_code);
 
   // The following are codes that we believe indicate non-transient failures,
@@ -602,7 +592,9 @@ void DocumentProvider::OnURLLoadComplete(
   // expected to be semi-persistent, it does not make sense to continue to issue
   // requests during the current session after receiving one.
   if (response_code == 400 || response_code == 401 || response_code == 403 ||
-      response_code == 499) {
+      response_code == 499 ||
+      (response_code == 429 &&
+       omnibox_feature_configs::DocumentProvider::Get().backoff_on_429)) {
     bool scope_backoff_to_profile =
         omnibox_feature_configs::DocumentProvider::Get()
             .scope_backoff_to_profile;
@@ -681,38 +673,31 @@ std::u16string DocumentProvider::GenerateLastModifiedString(
                               &modified_time))
     return std::u16string();
 
-  // Use shorthand if the times fall on the same day or in the same year.
-  base::Time::Exploded exploded_modified_time;
-  base::Time::Exploded exploded_now;
-  modified_time.LocalExplode(&exploded_modified_time);
-  now.LocalExplode(&exploded_now);
-  if (exploded_modified_time.year == exploded_now.year) {
-    if (exploded_modified_time.month == exploded_now.month &&
-        exploded_modified_time.day_of_month == exploded_now.day_of_month) {
-      // Same local calendar day - use localized time.
-      return base::TimeFormatTimeOfDay(modified_time);
-    }
-    // Same year but not the same day: use abbreviated month/day ("Jan 1").
-    return base::LocalizedTimeFormatWithPattern(modified_time, "MMMd");
-  }
-
-  // No shorthand; display full MM/DD/YYYY.
-  return base::TimeFormatShortDateNumeric(modified_time);
+  return AutocompleteProvider::LocalizedLastModifiedString(now, modified_time);
 }
 
 // static
 std::u16string DocumentProvider::GetProductDescriptionString(
     const std::string& mimetype) {
-  if (mimetype == kDocumentMimetype)
-    return l10n_util::GetStringUTF16(IDS_DRIVE_SUGGESTION_DOCUMENT);
-  if (mimetype == kFormMimetype)
-    return l10n_util::GetStringUTF16(IDS_DRIVE_SUGGESTION_FORM);
-  if (mimetype == kSpreadsheetMimetype)
-    return l10n_util::GetStringUTF16(IDS_DRIVE_SUGGESTION_SPREADSHEET);
-  if (mimetype == kPresentationMimetype)
-    return l10n_util::GetStringUTF16(IDS_DRIVE_SUGGESTION_PRESENTATION);
+  if (mimetype == kDocumentMimetype) {
+    return l10n_util::GetStringUTF16(
+        IDS_CONTENT_SUGGESTION_DESCRIPTION_GOOGLE_DOCS);
+  }
+  if (mimetype == kFormMimetype) {
+    return l10n_util::GetStringUTF16(
+        IDS_CONTENT_SUGGESTION_DESCRIPTION_GOOGLE_FORMS);
+  }
+  if (mimetype == kSpreadsheetMimetype) {
+    return l10n_util::GetStringUTF16(
+        IDS_CONTENT_SUGGESTION_DESCRIPTION_GOOGLE_SHEETS);
+  }
+  if (mimetype == kPresentationMimetype) {
+    return l10n_util::GetStringUTF16(
+        IDS_CONTENT_SUGGESTION_DESCRIPTION_GOOGLE_SLIDES);
+  }
   // Fallback to "Drive" for other filetypes.
-  return l10n_util::GetStringUTF16(IDS_DRIVE_SUGGESTION_GENERAL);
+  return l10n_util::GetStringUTF16(
+      IDS_CONTENT_SUGGESTION_DESCRIPTION_GOOGLE_DRIVE);
 }
 
 // static
@@ -726,16 +711,16 @@ std::u16string DocumentProvider::GetMatchDescription(
         GenerateLastModifiedString(update_time, base::Time::Now());
     return owner.empty()
                ? l10n_util::GetStringFUTF16(
-                     IDS_DRIVE_SUGGESTION_DESCRIPTION_TEMPLATE_WITHOUT_OWNER,
+                     IDS_CONTENT_SUGGESTION_DESCRIPTION_TEMPLATE_WITHOUT_OWNER,
                      date_desc, mime_desc)
                : l10n_util::GetStringFUTF16(
-                     IDS_DRIVE_SUGGESTION_DESCRIPTION_TEMPLATE, date_desc,
+                     IDS_CONTENT_SUGGESTION_DESCRIPTION_TEMPLATE, date_desc,
                      base::UTF8ToUTF16(owner), mime_desc);
   }
   return owner.empty()
              ? std::move(mime_desc)
              : l10n_util::GetStringFUTF16(
-                   IDS_DRIVE_SUGGESTION_DESCRIPTION_TEMPLATE_WITHOUT_DATE,
+                   IDS_CONTENT_SUGGESTION_DESCRIPTION_TEMPLATE_WITHOUT_DATE,
                    base::UTF8ToUTF16(owner), mime_desc);
 }
 
@@ -744,7 +729,7 @@ ACMatches DocumentProvider::ParseDocumentSearchResults(
   ACMatches matches;
 
   // Parse the results.
-  const base::Value::List* results = root_val.GetDict().FindList("results");
+  const base::ListValue* results = root_val.GetDict().FindList("results");
   if (!results) {
     return matches;
   }
@@ -765,7 +750,7 @@ ACMatches DocumentProvider::ParseDocumentSearchResults(
       return matches;
     }
 
-    const base::Value::Dict& result = result_value.GetDict();
+    const base::DictValue& result = result_value.GetDict();
     const std::string title = FindStringKeyOrFallback(result, "title");
     const std::string url = FindStringKeyOrFallback(result, "url");
     if (title.empty() || url.empty()) {
@@ -812,7 +797,7 @@ ACMatches DocumentProvider::ParseDocumentSearchResults(
     match.contents =
         AutocompleteMatch::SanitizeString(base::UTF8ToUTF16(title));
     match.contents_class = Classify(match.contents, input_.text());
-    const base::Value::Dict* metadata = result.FindDict("metadata");
+    const base::DictValue* metadata = result.FindDict("metadata");
     if (metadata) {
       const std::string update_time =
           FindStringKeyOrFallback(*metadata, "updateTime");
@@ -842,8 +827,9 @@ ACMatches DocumentProvider::ParseDocumentSearchResults(
                                  match.description_for_shortcuts);
     }
 
-    match.TryRichAutocompletion(base::UTF8ToUTF16(match.destination_url.spec()),
-                                match.contents, input_);
+    match.TryRichAutocompletion(input_,
+                                base::UTF8ToUTF16(match.destination_url.spec()),
+                                match.contents);
     match.transition = ui::PAGE_TRANSITION_GENERATED;
     match.RecordAdditionalInfo("owned", is_owned);
     match.RecordAdditionalInfo("completely matched in title and owner",
@@ -865,8 +851,8 @@ void DocumentProvider::CopyCachedMatchesToMatches() {
       [this](auto match) {
         match.allowed_to_be_default_match = false;
         match.TryRichAutocompletion(
-            base::UTF8ToUTF16(match.destination_url.spec()), match.contents,
-            input_);
+            input_, base::UTF8ToUTF16(match.destination_url.spec()),
+            match.contents);
         match.contents_class =
             DocumentProvider::Classify(match.contents, input_.text());
         match.RecordAdditionalInfo("from cache", "true");
@@ -931,14 +917,14 @@ const GURL DocumentProvider::GetURLForDeduping(const GURL& url) {
   // The below logic handles google.com redirects; e.g., google.com/url/q=<url>
   std::string url_str;
   std::string url_str_host;
-  if (url.host() == "www.google.com" && url.path() == "/url") {
+  if (url.GetHost() == "www.google.com" && url.GetPath() == "/url") {
     if ((!net::GetValueForKeyInQuery(url, "q", &url_str) || url_str.empty()) &&
         (!net::GetValueForKeyInQuery(url, "url", &url_str) || url_str.empty()))
       return GURL();
-    url_str_host = GURL(url_str).host();
+    url_str_host = GURL(url_str).GetHost();
   } else {
     url_str = url.spec();
-    url_str_host = url.host();
+    url_str_host = url.GetHost();
   }
 
   // Recheck the domain, since a google URL could redirect to a non-google URL

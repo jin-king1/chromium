@@ -4,14 +4,14 @@
 
 #include "third_party/blink/renderer/core/input/touch_event_manager.h"
 
-#include <algorithm>
+#include <array>
 #include <memory>
 
-#include "base/compiler_specific.h"
 #include "third_party/blink/public/common/input/web_coalesced_input_event.h"
 #include "third_party/blink/public/common/input/web_touch_event.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/flat_tree_traversal.h"
+#include "third_party/blink/renderer/core/dom/pseudo_element.h"
 #include "third_party/blink/renderer/core/events/touch_event.h"
 #include "third_party/blink/renderer/core/frame/event_handler_registry.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
@@ -395,10 +395,10 @@ TouchEventManager::DispatchTouchEventFromAccumulatdTouchPoints() {
   TargetTouchesHeapMap touches_by_target;
 
   // Array of touches per state, used to assemble the |changedTouches| list.
-  ChangedTouches
-      changed_touches[static_cast<int>(WebInputEvent::Type::kPointerTypeLast) -
-                      static_cast<int>(WebInputEvent::Type::kPointerTypeFirst) +
-                      1];
+  std::array<ChangedTouches,
+             static_cast<int>(WebInputEvent::Type::kPointerTypeLast) -
+                 static_cast<int>(WebInputEvent::Type::kPointerTypeFirst) + 1>
+      changed_touches;
 
   Vector<int> available_ids;
   for (const auto& id : touch_attribute_map_.Keys())
@@ -440,13 +440,11 @@ TouchEventManager::DispatchTouchEventFromAccumulatdTouchPoints() {
       size_t event_type_idx =
           static_cast<int>(event_type) -
           static_cast<int>(WebInputEvent::Type::kPointerTypeFirst);
-      UNSAFE_TODO({
-        if (!changed_touches[event_type_idx].touches_) {
-          changed_touches[event_type_idx].touches_ = TouchList::Create();
-        }
-        changed_touches[event_type_idx].touches_->Append(touch);
-        changed_touches[event_type_idx].targets_.insert(touch_target);
-      });
+      if (!changed_touches[event_type_idx].touches_) {
+        changed_touches[event_type_idx].touches_ = TouchList::Create();
+      }
+      changed_touches[event_type_idx].touches_->Append(touch);
+      changed_touches[event_type_idx].targets_.insert(touch_target);
     }
   }
 
@@ -464,19 +462,18 @@ TouchEventManager::DispatchTouchEventFromAccumulatdTouchPoints() {
        ++action) {
     size_t action_idx =
         action - static_cast<int>(WebInputEvent::Type::kPointerTypeFirst);
-    if (!UNSAFE_TODO(changed_touches[action_idx].touches_)) {
+    if (!changed_touches[action_idx].touches_) {
       continue;
     }
 
     const AtomicString& event_name(TouchEventNameForPointerEventType(
         static_cast<WebInputEvent::Type>(action)));
 
-    for (const auto& event_target :
-         UNSAFE_TODO(changed_touches[action_idx].targets_)) {
+    for (const auto& event_target : changed_touches[action_idx].targets_) {
       EventTarget* touch_event_target = event_target;
       TouchEvent* touch_event = TouchEvent::Create(
           coalesced_event, touches, touches_by_target.at(touch_event_target),
-          UNSAFE_TODO(changed_touches[action_idx].touches_), event_name,
+          changed_touches[action_idx].touches_, event_name,
           touch_event_target->ToNode()->GetDocument().domWindow(),
           current_touch_action_);
 
@@ -604,9 +601,9 @@ void TouchEventManager::HandleTouchPoint(
     // If the active touch document has no frame or view, it's probably being
     // destroyed so we can't dispatch events.
     // Update the points so they get removed in flush when they are released.
-    if (touch_attribute_map_.Contains(event.id)) {
-      TouchPointAttributes* attributes = touch_attribute_map_.at(event.id);
-      attributes->event_ = event;
+    const auto it = touch_attribute_map_.find(event.id);
+    if (it != touch_attribute_map_.end()) {
+      it->value->event_ = event;
     }
     return;
   }
@@ -615,12 +612,14 @@ void TouchEventManager::HandleTouchPoint(
   // would have never added them to |touch_attribute_map_| or hit-tested
   // them. For those just keep them in the map with a null target. Later they
   // will be targeted at the |touch_sequence_document_|.
-  if (!touch_attribute_map_.Contains(event.id)) {
-    touch_attribute_map_.insert(
-        event.id, MakeGarbageCollected<TouchPointAttributes>(event));
+  const auto it = touch_attribute_map_.find(event.id);
+  TouchPointAttributes* attributes;
+  if (it != touch_attribute_map_.end()) {
+    attributes = it->value;
+  } else {
+    attributes = MakeGarbageCollected<TouchPointAttributes>(event);
+    touch_attribute_map_.insert(event.id, attributes);
   }
-
-  TouchPointAttributes* attributes = touch_attribute_map_.at(event.id);
   attributes->event_ = event;
   attributes->coalesced_events_ = coalesced_events;
   attributes->stale_ = false;
@@ -674,6 +673,16 @@ void TouchEventManager::AllTouchesReleasedCleanup() {
   // (https://crbug.com/345372).
   delayed_effective_touch_action_ = std::nullopt;
   should_enforce_vertical_scroll_ = false;
+}
+
+void TouchEventManager::HandlePseudoElementRemoval(PseudoElement& pseudo) {
+  Element* parent = pseudo.ParentOrShadowHostElement();
+  for (auto& entry : touch_attribute_map_) {
+    if (entry.value->target_ && entry.value->target_->IsPseudoElement() &&
+        pseudo.IsShadowIncludingInclusiveAncestorOf(*entry.value->target_)) {
+      entry.value->target_ = parent;
+    }
+  }
 }
 
 bool TouchEventManager::IsAnyTouchActive() const {

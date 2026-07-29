@@ -4,6 +4,7 @@
 
 #include "chrome/browser/chromeos/extensions/login_screen/login/cleanup/extension_cleanup_handler.h"
 
+#include <algorithm>
 #include <memory>
 #include <string>
 
@@ -14,11 +15,10 @@
 #include "chrome/browser/ash/policy/core/device_local_account.h"
 #include "chrome/browser/ash/policy/core/device_policy_cros_browser_test.h"
 #include "chrome/browser/ash/policy/test_support/embedded_policy_test_server_mixin.h"
+#include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/extensions/chrome_test_extension_loader.h"
 #include "chrome/browser/extensions/component_loader.h"
-#include "chrome/browser/extensions/extension_service.h"
-#include "chrome/browser/extensions/pending_extension_manager.h"
 #include "chrome/browser/extensions/policy_test_utils.h"
 #include "chrome/browser/policy/extension_force_install_mixin.h"
 #include "chrome/common/chrome_paths.h"
@@ -27,8 +27,9 @@
 #include "components/policy/core/common/cloud/test/policy_builder.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/test_utils.h"
+#include "extensions/browser/extension_registrar.h"
 #include "extensions/browser/extension_registry.h"
-#include "extensions/browser/extension_system.h"
+#include "extensions/browser/pending_extension_manager.h"
 #include "extensions/browser/test_extension_registry_observer.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_builder.h"
@@ -130,14 +131,11 @@ class ExtensionCleanupHandlerTest : public policy::DevicePolicyCrosBrowserTest {
   }
 
   void InstallUserExtension(const std::string& extension_id) {
-    extensions::ExtensionService* extension_service =
-        extensions::ExtensionSystem::Get(GetActiveUserProfile())
-            ->extension_service();
-    base::Value::Dict manifest(base::Value::Dict()
-                                   .Set("name", "Foo")
-                                   .Set("description", "Bar")
-                                   .Set("manifest_version", 2)
-                                   .Set("version", "1.0"));
+    base::DictValue manifest(base::DictValue()
+                                 .Set("name", "Foo")
+                                 .Set("description", "Bar")
+                                 .Set("manifest_version", 2)
+                                 .Set("version", "1.0"));
 
     auto observer = GetTestExtensionRegistryObserver(extension_id);
     scoped_refptr<const extensions::Extension> extension =
@@ -146,7 +144,8 @@ class ExtensionCleanupHandlerTest : public policy::DevicePolicyCrosBrowserTest {
             .SetID(extension_id)
             .SetManifest(std::move(manifest))
             .Build();
-    extension_service->AddExtension(extension.get());
+    extensions::ExtensionRegistrar::Get(GetActiveUserProfile())
+        ->AddExtension(extension.get());
     observer->WaitForExtensionReady();
   }
 
@@ -174,12 +173,10 @@ class ExtensionCleanupHandlerTest : public policy::DevicePolicyCrosBrowserTest {
   }
 
   void WaitForComponentExtensionsInstall() {
-    extensions::ExtensionService* extension_service =
-        extensions::ExtensionSystem::Get(GetActiveUserProfile())
-            ->extension_service();
+    auto* component_loader =
+        extensions::ComponentLoader::Get(GetActiveUserProfile());
     std::vector<std::string> registered_component_extensions =
-        extension_service->component_loader()
-            ->GetRegisteredComponentExtensionsIds();
+        component_loader->GetRegisteredComponentExtensionsIds();
     std::unordered_set<
         std::unique_ptr<extensions::TestExtensionRegistryObserver>>
         extension_observers;
@@ -244,8 +241,9 @@ IN_PROC_BROWSER_TEST_F(ExtensionCleanupHandlerTest,
       extension_observers;
   for (const auto& extension : all_installed_extensions) {
     // Don't observe exempt and user installed extensions.
-    if (base::Contains(kExemptExtensions, extension->id()))
+    if (std::ranges::contains(kExemptExtensions, extension->id())) {
       continue;
+    }
     if (extension->id() == kExemptExtensionId ||
         extension->id() == kUserExtensionId)
       continue;

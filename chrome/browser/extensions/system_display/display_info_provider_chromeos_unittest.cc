@@ -10,7 +10,6 @@
 #include <utility>
 
 #include "ash/constants/ash_switches.h"
-#include "ash/display/cros_display_config.h"
 #include "ash/display/screen_orientation_controller.h"
 #include "ash/display/screen_orientation_controller_test_api.h"
 #include "ash/public/cpp/test/shell_test_api.h"
@@ -23,7 +22,6 @@
 #include "chrome/browser/extensions/system_display/display_info_provider_chromeos.h"
 #include "chrome/test/base/chrome_ash_test_base.h"
 #include "extensions/common/api/system_display.h"
-#include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "ui/display/display.h"
 #include "ui/display/display_layout.h"
 #include "ui/display/display_switches.h"
@@ -65,19 +63,8 @@ class DisplayInfoProviderChromeosTest : public ChromeAshTestBase {
 
     ChromeAshTestBase::SetUp();
 
-    // Note: for now we have two instances of CrosDisplayConfig, one owned by
-    // ash::Shell and this one. Since CrosDisplayConfig just provides an
-    // interface and doesn't own any classes this should be fine.
-    cros_display_config_ = std::make_unique<ash::CrosDisplayConfig>();
-
-    // Initialize the DisplayInfoProviderChromeOS with a remote connected to our
-    // local implementation.
-    mojo::PendingRemote<crosapi::mojom::CrosDisplayConfigController>
-        display_config;
-    cros_display_config_->BindReceiver(
-        display_config.InitWithNewPipeAndPassReceiver());
     DisplayInfoProvider::InitializeForTesting(
-        new DisplayInfoProviderChromeOS(std::move(display_config)));
+        new DisplayInfoProviderChromeOS());
 
     provider_ = DisplayInfoProvider::Get();
     ASSERT_TRUE(provider_);
@@ -85,15 +72,7 @@ class DisplayInfoProviderChromeosTest : public ChromeAshTestBase {
     // Wait for TabletModeController to take its initial state from the power
     // manager.
     base::RunLoop().RunUntilIdle();
-    EXPECT_FALSE(display::Screen::GetScreen()->InTabletMode());
-  }
-
-  void TearDown() override {
-    // Destroy CrosDisplayConfig before the ash::Shell is destroyed, since it
-    // depends on the TabletModeController and the ScreenOrientationController.
-    cros_display_config_.reset();
-
-    ChromeAshTestBase::TearDown();
+    EXPECT_FALSE(display::Screen::Get()->InTabletMode());
   }
 
   float GetDisplayZoom(int64_t display_id) {
@@ -161,30 +140,6 @@ class DisplayInfoProviderChromeosTest : public ChromeAshTestBase {
     return GetAllDisplaysInfoSetSingleUnified(false);
   }
 
-  DisplayLayoutList GetDisplayLayout() {
-    DisplayLayoutList result;
-    base::RunLoop run_loop;
-    provider_->GetDisplayLayout(base::BindOnce(
-        [](DisplayLayoutList* result_ptr, base::OnceClosure callback,
-           DisplayLayoutList result) {
-          *result_ptr = std::move(result);
-          std::move(callback).Run();
-        },
-        &result, run_loop.QuitClosure()));
-    run_loop.Run();
-    return result;
-  }
-
-  bool SetDisplayLayout(const DisplayLayoutList& layouts) {
-    std::string result;
-    base::RunLoop run_loop;
-    provider_->SetDisplayLayout(
-        layouts,
-        base::BindOnce(&ErrorCallback, &result, run_loop.QuitClosure()));
-    run_loop.Run();
-    return result.empty();
-  }
-
   bool SetMirrorMode(const api::system_display::MirrorModeInfo& info) {
     std::string result;
     base::RunLoop run_loop;
@@ -193,9 +148,6 @@ class DisplayInfoProviderChromeosTest : public ChromeAshTestBase {
     run_loop.Run();
     return result.empty();
   }
-
- private:
-  std::unique_ptr<ash::CrosDisplayConfig> cros_display_config_;
 
  protected:
   raw_ptr<DisplayInfoProvider> provider_;
@@ -713,7 +665,7 @@ TEST_F(DisplayInfoProviderChromeosTest, Layout) {
   std::string primary_id = displays[0].id;
   ASSERT_EQ(3u, displays.size());
 
-  DisplayLayoutList layout = GetDisplayLayout();
+  DisplayLayoutList layout = provider_->GetDisplayLayout();
 
   ASSERT_EQ(2u, layout.size());
 
@@ -735,10 +687,10 @@ TEST_F(DisplayInfoProviderChromeosTest, Layout) {
   layout[1].offset = -100;
 
   // Update with modified layout.
-  EXPECT_TRUE(SetDisplayLayout(layout));
+  EXPECT_TRUE(provider_->SetDisplayLayout(layout).has_value());
 
   // Get updated layout.
-  layout = GetDisplayLayout();
+  layout = provider_->GetDisplayLayout();
 
   // Confirm modified layout.
   EXPECT_EQ(displays[1].id, layout[0].id);
@@ -756,7 +708,7 @@ TEST_F(DisplayInfoProviderChromeosTest, Layout) {
   // Test setting invalid layout fails.
   layout[0].parent_id = displays[2].id;
   layout[1].parent_id = displays[1].id;
-  EXPECT_FALSE(SetDisplayLayout(layout));
+  EXPECT_FALSE(provider_->SetDisplayLayout(layout).has_value());
 }
 
 TEST_F(DisplayInfoProviderChromeosTest, UnifiedModeLayout) {
@@ -768,7 +720,7 @@ TEST_F(DisplayInfoProviderChromeosTest, UnifiedModeLayout) {
   ASSERT_EQ(4u, displays.size());
 
   // Get the default layout, which should be a horizontal layout.
-  DisplayLayoutList default_layout = GetDisplayLayout();
+  DisplayLayoutList default_layout = provider_->GetDisplayLayout();
 
   // There is no placement for the primary display.
   ASSERT_EQ(3u, default_layout.size());
@@ -805,9 +757,9 @@ TEST_F(DisplayInfoProviderChromeosTest, UnifiedModeLayout) {
   layout[2].parent_id = displays[2].id;
   layout[2].position = api::system_display::LayoutPosition::kRight;
 
-  EXPECT_TRUE(SetDisplayLayout(layout));
+  EXPECT_TRUE(provider_->SetDisplayLayout(layout).has_value());
   EXPECT_EQ(gfx::Size(650, 743),
-            display::Screen::GetScreen()->GetPrimaryDisplay().size());
+            display::Screen::Get()->GetPrimaryDisplay().size());
   EXPECT_EQ(
       displays[2].id,
       base::NumberToString(ash::Shell::Get()
@@ -816,7 +768,7 @@ TEST_F(DisplayInfoProviderChromeosTest, UnifiedModeLayout) {
                                .id()));
 
   // Confirm the new layout.
-  DisplayLayoutList new_layout = GetDisplayLayout();
+  DisplayLayoutList new_layout = provider_->GetDisplayLayout();
   ASSERT_EQ(3u, new_layout.size());
 
   EXPECT_EQ(layout[0].id, new_layout[0].id);
@@ -844,8 +796,7 @@ TEST_F(DisplayInfoProviderChromeosTest, SetUnified) {
   // called first.
   info.is_unified = true;
   EXPECT_FALSE(CallSetDisplayUnitInfo(
-      base::NumberToString(
-          display::Screen::GetScreen()->GetPrimaryDisplay().id()),
+      base::NumberToString(display::Screen::Get()->GetPrimaryDisplay().id()),
       info));
   base::RunLoop().RunUntilIdle();
   EXPECT_FALSE(GetDisplayManager()->IsInUnifiedMode());
@@ -861,8 +812,7 @@ TEST_F(DisplayInfoProviderChromeosTest, SetUnified) {
   // enabled.
   info.is_unified = false;
   EXPECT_TRUE(CallSetDisplayUnitInfo(
-      base::NumberToString(
-          display::Screen::GetScreen()->GetPrimaryDisplay().id()),
+      base::NumberToString(display::Screen::Get()->GetPrimaryDisplay().id()),
       info));
   EXPECT_FALSE(GetDisplayManager()->IsInUnifiedMode());
 
@@ -870,8 +820,7 @@ TEST_F(DisplayInfoProviderChromeosTest, SetUnified) {
   // EnableUnifiedDesktop.
   info.is_unified = true;
   EXPECT_TRUE(CallSetDisplayUnitInfo(
-      base::NumberToString(
-          display::Screen::GetScreen()->GetPrimaryDisplay().id()),
+      base::NumberToString(display::Screen::Get()->GetPrimaryDisplay().id()),
       info));
   EXPECT_TRUE(GetDisplayManager()->IsInUnifiedMode());
 
@@ -1201,8 +1150,7 @@ TEST_F(DisplayInfoProviderChromeosTest, SetBoundsOriginOnPrimary) {
   EXPECT_EQ("1200,0 300x500", secondary.bounds().ToString());
   // The operation failed because the primary property would be set before
   // setting bounds. The primary display shouldn't have been changed, though.
-  EXPECT_NE(display::Screen::GetScreen()->GetPrimaryDisplay().id(),
-            secondary.id());
+  EXPECT_NE(display::Screen::Get()->GetPrimaryDisplay().id(), secondary.id());
 }
 
 TEST_F(DisplayInfoProviderChromeosTest, SetBoundsOriginWithMirroring) {
@@ -1211,8 +1159,7 @@ TEST_F(DisplayInfoProviderChromeosTest, SetBoundsOriginWithMirroring) {
   const display::Display& secondary =
       display::test::DisplayManagerTestApi(display_manager())
           .GetSecondaryDisplay();
-  const display::Display& primary =
-      display::Screen::GetScreen()->GetPrimaryDisplay();
+  const display::Display& primary = display::Screen::Get()->GetPrimaryDisplay();
 
   api::system_display::DisplayProperties info;
   info.bounds_origin_x = 300;
@@ -1252,8 +1199,7 @@ TEST_F(DisplayInfoProviderChromeosTest, SetRotation) {
 
   EXPECT_EQ("0,0 300x500", secondary.bounds().ToString());
   EXPECT_EQ(display::Display::ROTATE_180, secondary.rotation());
-  EXPECT_EQ(display::Screen::GetScreen()->GetPrimaryDisplay().id(),
-            secondary.id());
+  EXPECT_EQ(display::Screen::Get()->GetPrimaryDisplay().id(), secondary.id());
 
   info.rotation = 0;
   EXPECT_TRUE(
@@ -1261,8 +1207,7 @@ TEST_F(DisplayInfoProviderChromeosTest, SetRotation) {
 
   EXPECT_EQ("0,0 300x500", secondary.bounds().ToString());
   EXPECT_EQ(display::Display::ROTATE_0, secondary.rotation());
-  EXPECT_EQ(display::Screen::GetScreen()->GetPrimaryDisplay().id(),
-            secondary.id());
+  EXPECT_EQ(display::Screen::Get()->GetPrimaryDisplay().id(), secondary.id());
 }
 
 // Tests that rotation changes made before entering tablet mode are restored
@@ -1653,7 +1598,7 @@ TEST_F(DisplayInfoProviderChromeosTouchviewTest, GetTabletMode) {
   EXPECT_FALSE(*result[1].is_auto_rotation_allowed);
 
   // Entering tablet mode will cause DisplayConfigurationObserver to set
-  // forced mirror mode. https://crbug.com/733092.
+  // forced mirror mode. https://crbug.com/252374807.
   EnableTabletMode(true);
   // DisplayConfigurationObserver enables mirror mode asynchronously after
   // tablet mode is enabled.

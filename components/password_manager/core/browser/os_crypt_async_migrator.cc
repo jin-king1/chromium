@@ -4,8 +4,11 @@
 
 #include "components/password_manager/core/browser/os_crypt_async_migrator.h"
 
+#include <variant>
+
 #include "base/time/time.h"
 #include "components/password_manager/core/browser/features/password_features.h"
+#include "components/password_manager/core/browser/password_store/password_form_converters.h"
 #include "components/password_manager/core/common/password_manager_pref_names.h"
 #include "components/prefs/pref_service.h"
 
@@ -24,19 +27,8 @@ OSCryptAsyncMigrator::OSCryptAsyncMigrator(
 OSCryptAsyncMigrator::~OSCryptAsyncMigrator() = default;
 
 bool OSCryptAsyncMigrator::NeedsCleaning() {
-  // Phase 1 of OSCryptMigration has to be enabled.
-  if (!base::FeatureList::IsEnabled(
-          features::kUseAsyncOsCryptInLoginDatabase)) {
-    return false;
-  }
-  // Phase 2 of OSCryptMigration has to be enabled.
-  if (!base::FeatureList::IsEnabled(features::kUseNewEncryptionMethod)) {
-    return false;
-  }
-  if (!base::FeatureList::IsEnabled(
-          features::kEncryptAllPasswordsWithOSCryptAsync)) {
-    return false;
-  }
+  // Phase 1 of OSCryptMigration is enabled by default since M133.
+  // Phase 2 of OSCryptMigration is also enabled by default since M137.
   return !prefs_->GetBoolean(store_pref_name_);
 }
 
@@ -44,7 +36,6 @@ void OSCryptAsyncMigrator::StartCleaning(Observer* observer) {
   CHECK(NeedsCleaning());
   CHECK(observer);
   CHECK(!observer_);
-  CHECK(base::FeatureList::IsEnabled(features::kUseNewEncryptionMethod));
   observer_ = observer;
   store_->GetAutofillableLogins(weak_ptr_factory_.GetWeakPtr());
 }
@@ -53,14 +44,14 @@ void OSCryptAsyncMigrator::OnGetPasswordStoreResultsOrErrorFrom(
     PasswordStoreInterface* store,
     LoginsResultOrError results_or_error) {
   CHECK(store_ == store);
-  if (absl::holds_alternative<PasswordStoreBackendError>(results_or_error)) {
+  if (std::holds_alternative<PasswordStoreBackendError>(results_or_error)) {
     // Notify observer that cleaning is complete. Although don't mark it as such
     // to retry again in the future.
     observer_->CleaningCompleted();
     return;
   }
 
-  LoginsResult logins = std::move(absl::get<LoginsResult>(results_or_error));
+  LoginsResult logins = std::move(std::get<LoginsResult>(results_or_error));
 
   if (logins.empty()) {
     MarkMigrationComplete();
@@ -68,8 +59,9 @@ void OSCryptAsyncMigrator::OnGetPasswordStoreResultsOrErrorFrom(
   }
 
   store->UpdateLogins(
-      logins, base::BindOnce(&OSCryptAsyncMigrator::MarkMigrationComplete,
-                             weak_ptr_factory_.GetWeakPtr()));
+      std::move(logins),
+      base::BindOnce(&OSCryptAsyncMigrator::MarkMigrationComplete,
+                     weak_ptr_factory_.GetWeakPtr()));
 }
 
 void OSCryptAsyncMigrator::MarkMigrationComplete() {

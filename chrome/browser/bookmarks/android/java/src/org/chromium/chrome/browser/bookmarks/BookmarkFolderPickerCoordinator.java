@@ -14,8 +14,9 @@ import androidx.appcompat.widget.Toolbar;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
-import org.chromium.base.supplier.ObservableSupplier;
-import org.chromium.base.supplier.ObservableSupplierImpl;
+import org.chromium.base.supplier.NonNullObservableSupplier;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.bookmarks.BookmarkListEntry.ViewType;
 import org.chromium.chrome.browser.bookmarks.BookmarkUiPrefs.BookmarkRowDisplayPref;
 import org.chromium.components.bookmarks.BookmarkId;
@@ -31,9 +32,11 @@ import org.chromium.ui.modelutil.SimpleRecyclerViewAdapter;
 import java.util.List;
 
 /** Coordinates the views/mediators that make up the bookmark folder picker. */
+@NullMarked
 public class BookmarkFolderPickerCoordinator implements BackPressHandler {
-    private final ObservableSupplierImpl<Boolean> mBackPressStateSupplier =
-            new ObservableSupplierImpl<>();
+    // Back presses are always handled.
+    private final NonNullObservableSupplier<Boolean> mBackPressStateSupplier =
+            ObservableSuppliers.alwaysTrue();
     private final ModelList mModelList = new ModelList();
     private final Context mContext;
     private final BookmarkModel mBookmarkModel;
@@ -102,9 +105,6 @@ public class BookmarkFolderPickerCoordinator implements BackPressHandler {
                     }
                 });
 
-        // Back presses are always handled.
-        mBackPressStateSupplier.set(true);
-
         mBookmarkUiPrefs = bookmarkUiPrefs;
     }
 
@@ -165,7 +165,7 @@ public class BookmarkFolderPickerCoordinator implements BackPressHandler {
     }
 
     @Override
-    public ObservableSupplier<Boolean> getHandleBackPressChangedSupplier() {
+    public NonNullObservableSupplier<Boolean> getHandleBackPressChangedSupplier() {
         return mBackPressStateSupplier;
     }
 

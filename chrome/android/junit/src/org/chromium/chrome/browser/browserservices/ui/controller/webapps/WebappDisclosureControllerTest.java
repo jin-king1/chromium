@@ -18,18 +18,18 @@ import static org.chromium.chrome.browser.browserservices.ui.TrustedWebActivityM
 import static org.chromium.chrome.browser.browserservices.ui.TrustedWebActivityModel.DISCLOSURE_STATE_SHOWN;
 
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Captor;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
-import org.robolectric.android.util.concurrent.RoboExecutorService;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
-import org.robolectric.annotation.LooperMode;
 
-import org.chromium.base.task.PostTask;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.RobolectricUtil;
 import org.chromium.base.test.util.Feature;
 import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider;
 import org.chromium.chrome.browser.browserservices.intents.WebappIntentUtils;
@@ -48,12 +48,12 @@ import org.chromium.components.webapk.lib.common.WebApkConstants;
 @RunWith(BaseRobolectricTestRunner.class)
 @Config(manifest = Config.NONE)
 // TODO(crbug.com/40182398): Change to use paused looper. See crbug for details.
-@LooperMode(LooperMode.Mode.LEGACY)
 public class WebappDisclosureControllerTest {
     private static final String UNBOUND_PACKAGE = "unbound";
     private static final String BOUND_PACKAGE = WebApkConstants.WEBAPK_PACKAGE_PREFIX + ".bound";
     private static final String SCOPE = "https://www.example.com";
 
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock public CurrentPageVerifier mCurrentPageVerifier;
 
     @Captor public ArgumentCaptor<Runnable> mVerificationObserverCaptor;
@@ -62,10 +62,6 @@ public class WebappDisclosureControllerTest {
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
-        // Run AsyncTasks synchronously.
-        PostTask.setPrenativeThreadPoolExecutorForTesting(new RoboExecutorService());
-
         doNothing()
                 .when(mCurrentPageVerifier)
                 .addVerificationObserver(mVerificationObserverCaptor.capture());
@@ -86,6 +82,7 @@ public class WebappDisclosureControllerTest {
     private WebappDataStorage registerStorageForWebApk(String packageName) {
         String id = WebappIntentUtils.getIdForWebApkPackage(packageName);
         WebappRegistry.getInstance().register(id, (storage) -> {});
+        RobolectricUtil.runAllBackgroundAndUi();
         return WebappRegistry.getInstance().getWebappDataStorage(id);
     }
 

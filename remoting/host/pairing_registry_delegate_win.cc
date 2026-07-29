@@ -10,7 +10,7 @@
 #include <string>
 #include <utility>
 
-#include "base/json/json_string_value_serializer.h"
+#include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/logging.h"
 #include "base/strings/utf_string_conversions.h"
@@ -43,8 +43,8 @@ bool DuplicateKeyHandle(HKEY source, base::win::RegKey* dest) {
 
 // Reads value |value_name| from |key| as a JSON string and returns it as
 // |base::Value|.
-std::optional<base::Value::Dict> ReadValue(const base::win::RegKey& key,
-                                           const wchar_t* value_name) {
+std::optional<base::DictValue> ReadValue(const base::win::RegKey& key,
+                                         const wchar_t* value_name) {
   // presubmit: allow wstring
   std::wstring value_json;
   LONG result = key.ReadValue(value_name, &value_json);
@@ -56,14 +56,12 @@ std::optional<base::Value::Dict> ReadValue(const base::win::RegKey& key,
 
   // Parse the value.
   std::string value_json_utf8 = base::WideToUTF8(value_json);
-  JSONStringValueDeserializer deserializer(value_json_utf8);
-  int error_code;
-  std::string error_message;
-  std::unique_ptr<base::Value> value =
-      deserializer.Deserialize(&error_code, &error_message);
-  if (!value) {
-    LOG(ERROR) << "Failed to parse '" << value_name << "': " << error_message
-               << " (" << error_code << ").";
+  base::JSONReader::Result value =
+      base::JSONReader::ReadAndReturnValueWithError(
+          value_json_utf8, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
+  if (!value.has_value()) {
+    LOG(ERROR) << "Failed to parse '" << value_name
+               << "': " << value.error().ToString();
     return std::nullopt;
   }
 
@@ -79,7 +77,7 @@ std::optional<base::Value::Dict> ReadValue(const base::win::RegKey& key,
 // under |key|.
 bool WriteValue(base::win::RegKey& key,
                 const wchar_t* value_name,
-                const base::Value::Dict& value) {
+                const base::DictValue& value) {
   std::optional<std::string> value_json_utf8 = base::WriteJson(value);
   if (!value_json_utf8.has_value()) {
     LOG(ERROR) << "Failed to serialize '" << value_name << "'";
@@ -125,8 +123,8 @@ bool PairingRegistryDelegateWin::SetRootKeys(HKEY privileged,
   return true;
 }
 
-base::Value::List PairingRegistryDelegateWin::LoadAll() {
-  base::Value::List pairings;
+base::ListValue PairingRegistryDelegateWin::LoadAll() {
+  base::ListValue pairings;
 
   // Enumerate and parse all values under the unprivileged key.
   DWORD count = unprivileged_.GetValueCount().value_or(0);
@@ -193,7 +191,7 @@ PairingRegistry::Pairing PairingRegistryDelegateWin::Load(
   std::wstring value_name = base::UTF8ToWide(client_id);
 
   // Read unprivileged fields first.
-  std::optional<base::Value::Dict> pairing =
+  std::optional<base::DictValue> pairing =
       ReadValue(unprivileged_, value_name.c_str());
   if (!pairing) {
     return PairingRegistry::Pairing();
@@ -201,7 +199,7 @@ PairingRegistry::Pairing PairingRegistryDelegateWin::Load(
 
   // Read the shared secret.
   if (privileged_.Valid()) {
-    std::optional<base::Value::Dict> secret =
+    std::optional<base::DictValue> secret =
         ReadValue(privileged_, value_name.c_str());
     if (!secret) {
       return PairingRegistry::Pairing();
@@ -222,13 +220,13 @@ bool PairingRegistryDelegateWin::Save(const PairingRegistry::Pairing& pairing) {
   }
 
   // Convert pairing to JSON.
-  base::Value::Dict pairing_json = pairing.ToValue();
+  base::DictValue pairing_json = pairing.ToValue();
 
   // Extract the shared secret to a separate dictionary.
   std::optional<base::Value> secret_key =
       pairing_json.Extract(PairingRegistry::kSharedSecretKey);
   CHECK(secret_key.has_value());
-  base::Value::Dict secret_json;
+  base::DictValue secret_json;
   secret_json.Set(PairingRegistry::kSharedSecretKey, std::move(*secret_key));
 
   // presubmit: allow wstring

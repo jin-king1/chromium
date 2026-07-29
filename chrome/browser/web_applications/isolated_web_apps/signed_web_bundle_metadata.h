@@ -8,10 +8,10 @@
 #include <string>
 
 #include "base/types/expected.h"
-#include "base/version.h"
-#include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_source.h"
 #include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_url_info.h"
-#include "chrome/browser/web_applications/web_app_install_info.h"
+#include "chrome/browser/web_applications/model/dialog_image_info.h"
+#include "components/webapps/isolated_web_apps/types/iwa_version.h"
+#include "components/webapps/isolated_web_apps/types/source.h"
 
 class Profile;
 
@@ -41,8 +41,10 @@ class SignedWebBundleMetadata {
       const IsolatedWebAppUrlInfo& url_info,
       const IwaSourceBundleWithMode& source,
       const std::u16string& app_name,
-      const base::Version& version,
-      const IconBitmaps& icons);
+      const IwaVersion& version,
+      DialogImageInfo image_info,
+      const std::optional<std::string>& enterprise_name,
+      const std::optional<GURL>& update_manifest_url = std::nullopt);
 
   ~SignedWebBundleMetadata();
   SignedWebBundleMetadata(const SignedWebBundleMetadata&);
@@ -54,9 +56,17 @@ class SignedWebBundleMetadata {
 
   const std::u16string& app_name() const { return app_name_; }
 
-  const base::Version& version() const { return version_; }
+  const IwaVersion& version() const { return version_; }
 
-  const IconBitmaps& icons() const { return icons_; }
+  const DialogImageInfo& image_info() const { return image_info_; }
+
+  const std::optional<std::string>& enterprise_name() const {
+    return enterprise_name_;
+  }
+
+  const std::optional<GURL>& update_manifest_url() const {
+    return update_manifest_url_;
+  }
 
   bool operator==(const SignedWebBundleMetadata& other) const;
 
@@ -64,13 +74,17 @@ class SignedWebBundleMetadata {
   SignedWebBundleMetadata(const IsolatedWebAppUrlInfo& url_info,
                           const IwaSourceBundleWithMode& source,
                           const std::u16string& app_name,
-                          const base::Version& version,
-                          const IconBitmaps& icons);
+                          const IwaVersion& version,
+                          DialogImageInfo image_info,
+                          const std::optional<std::string>& enterprise_name,
+                          const std::optional<GURL>& update_manifest_url);
 
   IsolatedWebAppUrlInfo url_info_;
   std::u16string app_name_;
-  base::Version version_;
-  IconBitmaps icons_;
+  IwaVersion version_;
+  DialogImageInfo image_info_;
+  std::optional<std::string> enterprise_name_;
+  std::optional<GURL> update_manifest_url_;
 };
 
 }  // namespace web_app

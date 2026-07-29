@@ -29,6 +29,7 @@
 #include "third_party/blink/renderer/core/html/forms/html_opt_group_element.h"
 #include "third_party/blink/renderer/core/html/forms/html_select_element.h"
 #include "third_party/blink/renderer/core/html_names.h"
+#include "third_party/blink/renderer/platform/wtf/text/string_to_number.h"
 
 namespace blink {
 
@@ -48,13 +49,13 @@ void HTMLHRElement::CollectStyleForPresentationAttribute(
     const AtomicString& value,
     HeapVector<CSSPropertyValue, 8>& style) {
   if (name == html_names::kAlignAttr) {
-    if (EqualIgnoringASCIICase(value, "left")) {
+    if (EqualIgnoringAsciiCase(value, "left")) {
       AddPropertyToPresentationAttributeStyle(
           style, CSSPropertyID::kMarginLeft, 0,
           CSSPrimitiveValue::UnitType::kPixels);
       AddPropertyToPresentationAttributeStyle(
           style, CSSPropertyID::kMarginRight, CSSValueID::kAuto);
-    } else if (EqualIgnoringASCIICase(value, "right")) {
+    } else if (EqualIgnoringAsciiCase(value, "right")) {
       AddPropertyToPresentationAttributeStyle(style, CSSPropertyID::kMarginLeft,
                                               CSSValueID::kAuto);
       AddPropertyToPresentationAttributeStyle(
@@ -67,19 +68,7 @@ void HTMLHRElement::CollectStyleForPresentationAttribute(
           style, CSSPropertyID::kMarginRight, CSSValueID::kAuto);
     }
   } else if (name == html_names::kWidthAttr) {
-    if (RuntimeEnabledFeatures::HTMLHRWidthAllowZeroEnabled()) {
-      AddHTMLLengthToStyle(style, CSSPropertyID::kWidth, value);
-    } else {
-      bool ok;
-      int v = value.ToInt(&ok);
-      if (ok && !v) {
-        AddPropertyToPresentationAttributeStyle(
-            style, CSSPropertyID::kWidth, 1,
-            CSSPrimitiveValue::UnitType::kPixels);
-      } else {
-        AddHTMLLengthToStyle(style, CSSPropertyID::kWidth, value);
-      }
-    }
+    AddHTMLLengthToStyle(style, CSSPropertyID::kWidth, value);
   } else if (name == html_names::kColorAttr) {
     for (CSSPropertyID property_id :
          {CSSPropertyID::kBorderTopStyle, CSSPropertyID::kBorderBottomStyle,
@@ -116,7 +105,7 @@ void HTMLHRElement::CollectStyleForPresentationAttribute(
                          dark_gray_value);
     }
   } else if (name == html_names::kSizeAttr) {
-    int size = value.ToInt();
+    int size = StringToIntLoose(value).value_or(0);
     if (size <= 1) {
       AddPropertyToPresentationAttributeStyle(
           style, CSSPropertyID::kBorderBottomWidth, 0,
@@ -132,70 +121,50 @@ void HTMLHRElement::CollectStyleForPresentationAttribute(
 }
 
 HTMLSelectElement* HTMLHRElement::OwnerSelectElement() const {
-  if (HTMLSelectElement::SelectParserRelaxationEnabled(this)) {
-    DCHECK_EQ(owner_select_,
-              HTMLSelectElement::NearestAncestorSelectNoNesting(*this));
-    return owner_select_;
-  }
-  if (!parentNode())
-    return nullptr;
-  if (auto* select = DynamicTo<HTMLSelectElement>(*parentNode()))
-    return select;
-  if (!IsA<HTMLOptGroupElement>(*parentNode()))
-    return nullptr;
-  return DynamicTo<HTMLSelectElement>(parentNode()->parentNode());
+  DCHECK_EQ(nearest_ancestor_select_,
+            HTMLSelectElement::WalkAncestorsForRelatedParts(*this).select);
+  return nearest_ancestor_select_;
+}
+
+HTMLOptGroupElement* HTMLHRElement::NearestAncestorOptgroup() const {
+  DCHECK_EQ(nearest_ancestor_optgroup_,
+            HTMLSelectElement::WalkAncestorsForRelatedParts(*this).optgroup);
+  return nearest_ancestor_optgroup_;
 }
 
 Node::InsertionNotificationRequest HTMLHRElement::InsertedInto(
     ContainerNode& insertion_point) {
   HTMLElement::InsertedInto(insertion_point);
-  if (HTMLSelectElement::SelectParserRelaxationEnabled(this)) {
-    owner_select_ = HTMLSelectElement::NearestAncestorSelectNoNesting(*this);
-    if (owner_select_) {
-      owner_select_->HrInsertedOrRemoved(*this);
-    }
-  } else {
-    if (HTMLSelectElement* select = OwnerSelectElement()) {
-      if (&insertion_point == select ||
-          (IsA<HTMLOptGroupElement>(insertion_point) &&
-           insertion_point.parentNode() == select)) {
-        select->HrInsertedOrRemoved(*this);
-      }
-    }
+  UpdateAncestors();
+  if (nearest_ancestor_select_) {
+    nearest_ancestor_select_->HrInsertedOrRemoved(*this);
   }
   return kInsertionDone;
 }
 
 void HTMLHRElement::RemovedFrom(ContainerNode& insertion_point) {
   HTMLElement::RemovedFrom(insertion_point);
-  if (HTMLSelectElement::SelectParserRelaxationEnabled(this)) {
-    HTMLSelectElement* new_ancestor_select =
-        HTMLSelectElement::NearestAncestorSelectNoNesting(*this);
-    if (owner_select_ != new_ancestor_select) {
-      // When removing, we can only lose an associated <select>
-      CHECK(owner_select_);
-      CHECK(!new_ancestor_select);
-      owner_select_->HrInsertedOrRemoved(*this);
-      owner_select_ = new_ancestor_select;
-    }
-  } else {
-    if (auto* select = DynamicTo<HTMLSelectElement>(insertion_point)) {
-      if (!parentNode() || IsA<HTMLOptGroupElement>(*parentNode())) {
-        select->HrInsertedOrRemoved(*this);
-      }
-    } else if (IsA<HTMLOptGroupElement>(insertion_point)) {
-      Node* parent = insertion_point.parentNode();
-      select = DynamicTo<HTMLSelectElement>(parent);
-      if (select) {
-        select->HrInsertedOrRemoved(*this);
-      }
-    }
+  HTMLSelectElement* old_ancestor_select = nearest_ancestor_select_;
+  UpdateAncestors();
+  if (old_ancestor_select != nearest_ancestor_select_) {
+    // When removing, we can only lose an associated <select>
+    CHECK(old_ancestor_select);
+    CHECK(!nearest_ancestor_select_);
+    old_ancestor_select->HrInsertedOrRemoved(*this);
   }
+}
+
+void HTMLHRElement::UpdateAncestors() {
+  HTMLSelectElement::SelectOptgroupDatalist ancestors =
+      HTMLSelectElement::WalkAncestorsForRelatedParts(*this);
+  nearest_ancestor_select_ = ancestors.select;
+  nearest_ancestor_optgroup_ = ancestors.optgroup;
 }
 
 void HTMLHRElement::Trace(Visitor* visitor) const {
   HTMLElement::Trace(visitor);
-  visitor->Trace(owner_select_);
+  visitor->Trace(nearest_ancestor_select_);
+  visitor->Trace(nearest_ancestor_optgroup_);
 }
 
 }  // namespace blink

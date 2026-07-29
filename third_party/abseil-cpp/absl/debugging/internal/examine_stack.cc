@@ -309,7 +309,7 @@ void DumpStackTrace(int min_dropped_frames, int max_num_frames,
 
   auto hook = GetDebugStackTraceHook();
   if (hook != nullptr) {
-    (*hook)(stack, depth, writer, writer_arg);
+    hook(stack, depth, /*crash_pc=*/nullptr, writer, writer_arg);
   }
 
   if (allocated_bytes != 0) Deallocate(stack, allocated_bytes);

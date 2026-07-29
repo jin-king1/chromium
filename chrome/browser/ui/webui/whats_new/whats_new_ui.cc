@@ -6,7 +6,6 @@
 
 #include "base/feature_list.h"
 #include "base/version.h"
-#include "chrome/browser/browser_features.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/global_features.h"
 #include "chrome/browser/profiles/profile.h"
@@ -14,7 +13,6 @@
 #include "chrome/browser/ui/webui/browser_command/browser_command_handler.h"
 #include "chrome/browser/ui/webui/whats_new/whats_new_handler.h"
 #include "chrome/browser/ui/webui/whats_new/whats_new_util.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/generated_resources.h"
@@ -39,9 +37,8 @@ void CreateAndAddWhatsNewUIHtmlSource(Profile* profile, bool enable_staging) {
   content::WebUIDataSource* source = content::WebUIDataSource::CreateAndAdd(
       profile, chrome::kChromeUIWhatsNewHost);
 
-  webui::SetupWebUIDataSource(
-      source, base::span<const webui::ResourcePath>(kWhatsNewResources),
-      IDR_WHATS_NEW_WHATS_NEW_HTML);
+  webui::SetupWebUIDataSource(source, kWhatsNewResources,
+                              IDR_WHATS_NEW_WHATS_NEW_HTML);
 
   static constexpr webui::LocalizedString kStrings[] = {
       {"title", IDS_WHATS_NEW_TITLE},
@@ -51,11 +48,11 @@ void CreateAndAddWhatsNewUIHtmlSource(Profile* profile, bool enable_staging) {
 
   // Allow embedding of iframe from chrome.com
   source->OverrideContentSecurityPolicy(
-      network::mojom::CSPDirectiveName::ChildSrc,
+      network::mojom::CSPDirectiveName::FrameSrc,
       enable_staging
-          ? "child-src chrome://webui-test https://www.google.com/ "
+          ? "frame-src chrome://webui-test https://www.google.com/ "
             "https://chrome-staging.corp.google.com/;"
-          : "child-src chrome://webui-test https://www.google.com/;");
+          : "frame-src chrome://webui-test https://www.google.com/;");
 }
 
 }  // namespace
@@ -83,7 +80,9 @@ WhatsNewUI::WhatsNewUI(content::WebUI* web_ui)
       browser_command_factory_receiver_(this),
       profile_(Profile::FromWebUI(web_ui)) {
   GURL url = web_ui->GetWebContents()->GetVisibleURL();
-  bool enable_staging = url.query_piece().compare("staging=true") == 0;
+  const bool staging_param_enabled = url.query().compare("staging=true") == 0;
+  const bool enable_staging =
+      staging_param_enabled || whats_new::UseStagingOverrideEnabled();
   CreateAndAddWhatsNewUIHtmlSource(profile_, enable_staging);
 }
 
@@ -104,12 +103,10 @@ void WhatsNewUI::BindInterface(
 }
 
 void WhatsNewUI::CreatePageHandler(
-    mojo::PendingRemote<whats_new::mojom::Page> page,
     mojo::PendingReceiver<whats_new::mojom::PageHandler> receiver) {
-  DCHECK(page);
   page_handler_ = std::make_unique<WhatsNewHandler>(
-      std::move(receiver), std::move(page), profile_,
-      web_ui()->GetWebContents(), navigation_start_time_,
+      std::move(receiver), profile_, web_ui()->GetWebContents(),
+      navigation_start_time_,
       g_browser_process->GetFeatures()->whats_new_registry());
 }
 
@@ -148,7 +145,8 @@ void WhatsNewUI::CreateBrowserCommandHandler(
           browser_command::mojom::Command::kOpenSafetyCheckFromWhatsNew,
       });
   command_handler_ = std::make_unique<BrowserCommandHandler>(
-      std::move(pending_handler), profile_, supported_commands);
+      std::move(pending_handler), profile_, supported_commands,
+      web_ui()->GetWebContents());
 }
 
 WhatsNewUI::~WhatsNewUI() = default;

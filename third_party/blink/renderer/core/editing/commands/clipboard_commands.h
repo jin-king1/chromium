@@ -32,6 +32,8 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_EDITING_COMMANDS_CLIPBOARD_COMMANDS_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_EDITING_COMMANDS_CLIPBOARD_COMMANDS_H_
 
+#include "base/gtest_prod_util.h"
+#include "third_party/abseil-cpp/absl/numeric/int128.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/editing/forward.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
@@ -39,6 +41,7 @@
 
 namespace blink {
 
+class DataTransfer;
 class DocumentFragment;
 class Element;
 class Event;
@@ -52,6 +55,12 @@ enum class PasteMode;
 // This class provides static functions about commands related to clipboard.
 class CORE_EXPORT ClipboardCommands {
   STATIC_ONLY(ClipboardCommands);
+  FRIEND_TEST_ALL_PREFIXES(ClipboardTest, PasteEventUninterruptedReadText);
+  FRIEND_TEST_ALL_PREFIXES(ClipboardTest,
+                           PasteEventInterruptedReadTextRejected);
+  FRIEND_TEST_ALL_PREFIXES(ClipboardTest, PasteEventInterruptedReadRejected);
+  FRIEND_TEST_ALL_PREFIXES(ClipboardTest,
+                           GlobalSelectionPasteEventReadTextRequiresPermission);
 
  public:
   static bool EnabledCopy(LocalFrame&, Event*, EditorCommandSource);
@@ -79,7 +88,7 @@ class CORE_EXPORT ClipboardCommands {
                                         Event*,
                                         EditorCommandSource,
                                         const String&);
-  static bool ExecutePasteFromImageURL(LocalFrame&,
+  static bool ExecutePasteFromImageUrl(LocalFrame&,
                                        Event*,
                                        EditorCommandSource,
                                        const String&);
@@ -94,6 +103,9 @@ class CORE_EXPORT ClipboardCommands {
   static bool IsExecutingCutOrCopy(ExecutionContext&);
   // As above, but for the "paste" event.
   static bool IsExecutingPaste(ExecutionContext&);
+  // Returns the clipboard sequence number at the start of executing paste.
+  static std::optional<absl::uint128> GetSequenceNumberForExecutingPaste(
+      ExecutionContext&);
 
  private:
   static bool CanSmartReplaceInClipboard(LocalFrame&);
@@ -118,10 +130,13 @@ class CORE_EXPORT ClipboardCommands {
                               DocumentFragment*,
                               bool smart_replace,
                               bool match_style,
-                              EditorCommandSource);
+                              EditorCommandSource,
+                              DataTransfer* = nullptr);
   static void PasteAsPlainTextFromClipboard(LocalFrame&, EditorCommandSource);
-  static void PasteFromClipboard(LocalFrame&, EditorCommandSource);
-  static void PasteFromImageURL(LocalFrame&, EditorCommandSource, String);
+  static void PasteFromClipboard(LocalFrame&,
+                                 EditorCommandSource,
+                                 DataTransfer* = nullptr);
+  static void PasteFromImageUrl(LocalFrame&, EditorCommandSource, String);
 
   using FragmentAndPlainText = std::pair<DocumentFragment*, const bool>;
   static FragmentAndPlainText GetFragmentFromClipboard(LocalFrame&);

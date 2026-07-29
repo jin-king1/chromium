@@ -4,8 +4,8 @@
 
 import("//extensions/buildflags/buildflags.gni")
 
-assert(enable_extensions,
-       "Cannot depend on extensions because enable_extensions=false.")
+assert(enable_extensions_core,
+       "Cannot depend on extensions because enable_extensions_core=false.")
 
 source_set("content_settings") {
   sources = [
@@ -17,8 +17,8 @@ source_set("content_settings") {
 
   public_deps = [
     "//base",
+    "//content/public/common:buildflags",
     "//extensions/browser",
-    "//ppapi/buildflags",
   ]
 
   deps = [

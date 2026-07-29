@@ -5,6 +5,7 @@
 #import "ios/web/test/web_int_test.h"
 
 #import "base/apple/foundation_util.h"
+#import "base/functional/callback_helpers.h"
 #import "base/ios/block_types.h"
 #import "base/memory/ptr_util.h"
 #import "base/scoped_observation.h"
@@ -18,6 +19,7 @@
 #import "ios/web/public/test/web_view_interaction_test_util.h"
 #import "ios/web/public/web_state_observer.h"
 #import "ios/web/web_state/web_state_impl.h"
+#import "ui/display/screen.h"
 
 #if DCHECK_IS_ON()
 #import "ui/display/screen_base.h"
@@ -59,7 +61,8 @@ class IntTestWebStateObserver : public WebStateObserver {
 
 #pragma mark - WebIntTest
 
-WebIntTest::WebIntTest() {}
+WebIntTest::WebIntTest()
+    : screen_(std::make_unique<display::ScopedNativeScreen>()) {}
 WebIntTest::~WebIntTest() {}
 
 void WebIntTest::SetUp() {
@@ -105,11 +108,10 @@ void WebIntTest::TearDown() {
   WebTest::TearDown();
 
 #if DCHECK_IS_ON()
-  // The same screen object is shared across multiple test runs on IOS build.
   // Make sure that all display observers are removed at the end of each
   // test.
   display::ScreenBase* screen =
-      static_cast<display::ScreenBase*>(display::Screen::GetScreen());
+      static_cast<display::ScreenBase*>(display::Screen::Get());
   DCHECK(!screen->HasDisplayObservers());
 #endif
 }

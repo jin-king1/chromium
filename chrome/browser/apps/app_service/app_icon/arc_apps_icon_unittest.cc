@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <utility>
+
 #include "base/containers/flat_map.h"
 #include "base/scoped_observation.h"
 #include "base/test/test_future.h"
@@ -17,11 +19,9 @@
 #include "chrome/test/base/testing_profile.h"
 #include "chromeos/ash/experiences/arc/mojom/app.mojom.h"
 #include "chromeos/ash/experiences/arc/test/fake_app_instance.h"
-#include "components/services/app_service/public/cpp/features.h"
 #include "content/public/test/browser_task_environment.h"
 #include "services/data_decoder/public/cpp/test_support/in_process_data_decoder.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/abseil-cpp/absl/utility/utility.h"
 #include "ui/base/resource/resource_scale_factor.h"
 #include "ui/gfx/codec/png_codec.h"
 #include "ui/gfx/image/image_skia_rep.h"
@@ -31,14 +31,17 @@ namespace apps {
 class ArcAppsIconFactoryTest : public testing::Test {
  public:
   void SetUp() override {
-    testing::Test::SetUp();
-    arc_test_.SetUp(profile());
+    arc_app_test_.PreProfileSetUp();
+    profile_ = std::make_unique<TestingProfile>();
+    arc_app_test_.PostProfileSetUp(profile());
     task_environment_.RunUntilIdle();
   }
 
   void TearDown() override {
-    arc_test_.StopArcInstance();
-    arc_test_.TearDown();
+    arc_app_test_.StopArcInstance();
+    arc_app_test_.PreProfileTearDown();
+    profile_.reset();
+    arc_app_test_.PostProfileTearDown();
   }
 
   arc::mojom::RawIconPngDataPtr GenerateRawArcAppIcon(
@@ -61,22 +64,22 @@ class ArcAppsIconFactoryTest : public testing::Test {
     return result.Take();
   }
 
-  TestingProfile* profile() { return &profile_; }
+  TestingProfile* profile() { return profile_.get(); }
 
-  ArcAppTest* arc_test() { return &arc_test_; }
+  ArcAppTest* arc_app_test() { return &arc_app_test_; }
 
  private:
   content::BrowserTaskEnvironment task_environment_;
-  ArcAppTest arc_test_;
-  TestingProfile profile_;
+  ArcAppTest arc_app_test_;
+  std::unique_ptr<TestingProfile> profile_;
 };
 
 TEST_F(ArcAppsIconFactoryTest, GetArcAppCompressedIconData) {
-  const auto& fake_apps = arc_test()->fake_apps();
+  const auto& fake_apps = arc_app_test()->fake_apps();
   std::string package_name = fake_apps[0]->package_name;
   std::string app_id = ArcAppListPrefs::GetAppId(fake_apps[0]->package_name,
                                                  fake_apps[0]->activity);
-  arc_test()->app_instance()->SendRefreshAppList(fake_apps);
+  arc_app_test()->app_instance()->SendRefreshAppList(fake_apps);
 
   // Generate the source raw icon data for comparing.
   auto raw_icon_data =
@@ -103,6 +106,12 @@ class AppServiceArcAppIconTest : public ArcAppsIconFactoryTest,
     ArcAppsIconFactoryTest::SetUp();
 
     proxy_ = AppServiceProxyFactory::GetForProfile(profile());
+  }
+
+  void TearDown() override {
+    proxy_ = nullptr;
+
+    ArcAppsIconFactoryTest::TearDown();
   }
 
   void GenerateArcAppUncompressedIcon(const std::string& app_id,
@@ -175,7 +184,7 @@ class AppServiceArcAppIconTest : public ArcAppsIconFactoryTest,
   // ArcAppListPrefs::Observer:
   void OnAppIconUpdated(const std::string& app_id,
                         const ArcAppIconDescriptor& descriptor) override {
-    if (base::Contains(waiting_icon_updates_, app_id)) {
+    if (waiting_icon_updates_.contains(app_id)) {
       std::move(waiting_icon_updates_[app_id]).Run();
       waiting_icon_updates_.erase(app_id);
     }
@@ -189,11 +198,11 @@ class AppServiceArcAppIconTest : public ArcAppsIconFactoryTest,
 };
 
 TEST_F(AppServiceArcAppIconTest, GetCompressedIconDataForUncompressedIcon) {
-  const auto& fake_apps = arc_test()->fake_apps();
+  const auto& fake_apps = arc_app_test()->fake_apps();
   std::string package_name = fake_apps[0]->package_name;
   std::string app_id = ArcAppListPrefs::GetAppId(fake_apps[0]->package_name,
                                                  fake_apps[0]->activity);
-  arc_test()->app_instance()->SendRefreshAppList(fake_apps);
+  arc_app_test()->app_instance()->SendRefreshAppList(fake_apps);
 
   // Generate the source uncompressed icon for comparing.
   gfx::ImageSkia src_image_skia;
@@ -208,11 +217,11 @@ TEST_F(AppServiceArcAppIconTest, GetCompressedIconDataForUncompressedIcon) {
 }
 
 TEST_F(AppServiceArcAppIconTest, GetCompressedIconDataForCompressedIcon) {
-  const auto& fake_apps = arc_test()->fake_apps();
+  const auto& fake_apps = arc_app_test()->fake_apps();
   std::string package_name = fake_apps[0]->package_name;
   std::string app_id = ArcAppListPrefs::GetAppId(fake_apps[0]->package_name,
                                                  fake_apps[0]->activity);
-  arc_test()->app_instance()->SendRefreshAppList(fake_apps);
+  arc_app_test()->app_instance()->SendRefreshAppList(fake_apps);
 
   // Generate the source compressed icon for comparing.
   std::vector<uint8_t> src_data =
@@ -224,11 +233,11 @@ TEST_F(AppServiceArcAppIconTest, GetCompressedIconDataForCompressedIcon) {
 }
 
 TEST_F(AppServiceArcAppIconTest, GetCompressedIconDataForStandardIcon) {
-  const auto& fake_apps = arc_test()->fake_apps();
+  const auto& fake_apps = arc_app_test()->fake_apps();
   std::string package_name = fake_apps[0]->package_name;
   std::string app_id = ArcAppListPrefs::GetAppId(fake_apps[0]->package_name,
                                                  fake_apps[0]->activity);
-  arc_test()->app_instance()->SendRefreshAppList(fake_apps);
+  arc_app_test()->app_instance()->SendRefreshAppList(fake_apps);
 
   // Generate the source uncompressed icon for comparing.
   gfx::ImageSkia src_image_skia;
@@ -252,20 +261,20 @@ TEST_F(AppServiceArcAppIconTest, GetCompressedIconDataForStandardIcon) {
 }
 
 TEST_F(AppServiceArcAppIconTest, GetCompressedIconDataFromArcDiskCache) {
-  const auto& fake_apps = arc_test()->fake_apps();
+  const auto& fake_apps = arc_app_test()->fake_apps();
   std::string package_name = fake_apps[0]->package_name;
   std::string app_id = ArcAppListPrefs::GetAppId(fake_apps[0]->package_name,
                                                  fake_apps[0]->activity);
-  arc_test()->app_instance()->SendRefreshAppList(fake_apps);
+  arc_app_test()->app_instance()->SendRefreshAppList(fake_apps);
 
   // Ensure that app icons are in the ARC disk cache.
   base::ScopedObservation<ArcAppListPrefs, ArcAppListPrefs::Observer>
       observation(this);
-  observation.Observe(arc_test()->arc_app_list_prefs());
+  observation.Observe(arc_app_test()->arc_app_list_prefs());
   for (const auto scale_factor : ui::GetSupportedResourceScaleFactors()) {
     base::RunLoop run_loop;
     AwaitIconUpdate(app_id, run_loop.QuitClosure());
-    arc_test()->arc_app_list_prefs()->MaybeRequestIcon(
+    arc_app_test()->arc_app_list_prefs()->MaybeRequestIcon(
         app_id, ArcAppIconDescriptor(kSizeInDip, scale_factor));
     run_loop.Run();
   }
@@ -276,7 +285,7 @@ TEST_F(AppServiceArcAppIconTest, GetCompressedIconDataFromArcDiskCache) {
 
   // Stop ARC from running so that LoadIcon requests must load from the disk
   // cache rather than ARC itself.
-  arc_test()->StopArcInstance();
+  arc_app_test()->StopArcInstance();
 
   // Verify the icon reading and writing function in AppService for the
   // compressed icon.

@@ -19,13 +19,11 @@
 #include "extensions/renderer/bindings/js_runner.h"
 #include "gin/converter.h"
 #include "gin/dictionary.h"
-#include "gin/handle.h"
 #include "gin/object_template_builder.h"
+#include "v8/include/cppgc/allocation.h"
+#include "v8/include/v8-cppgc.h"
 
 namespace extensions {
-
-gin::WrapperInfo APIBindingJSUtil::kWrapperInfo = {gin::kEmbedderNativeGin};
-
 APIBindingJSUtil::APIBindingJSUtil(APITypeReferenceMap* type_refs,
                                    APIRequestHandler* request_handler,
                                    APIEventHandler* event_handler,
@@ -43,6 +41,8 @@ gin::ObjectTemplateBuilder APIBindingJSUtil::GetObjectTemplateBuilder(
       .SetMethod("sendRequest", &APIBindingJSUtil::SendRequest)
       .SetMethod("registerEventArgumentMassager",
                  &APIBindingJSUtil::RegisterEventArgumentMassager)
+      .SetMethod("registerEventDispatchHandler",
+                 &APIBindingJSUtil::RegisterEventDispatchHandler)
       .SetMethod("createCustomEvent", &APIBindingJSUtil::CreateCustomEvent)
       .SetMethod("createCustomDeclarativeEvent",
                  &APIBindingJSUtil::CreateCustomDeclarativeEvent)
@@ -59,6 +59,10 @@ gin::ObjectTemplateBuilder APIBindingJSUtil::GetObjectTemplateBuilder(
       .SetMethod("validateCustomSignature",
                  &APIBindingJSUtil::ValidateCustomSignature)
       .SetMethod("addCustomSignature", &APIBindingJSUtil::AddCustomSignature);
+}
+
+const gin::WrapperInfo* APIBindingJSUtil::wrapper_info() const {
+  return &kWrapperInfo;
 }
 
 void APIBindingJSUtil::SendRequest(
@@ -123,6 +127,18 @@ void APIBindingJSUtil::RegisterEventArgumentMassager(
   event_handler_->RegisterArgumentMassager(context, event_name, massager);
 }
 
+void APIBindingJSUtil::RegisterEventDispatchHandler(
+    gin::Arguments* arguments,
+    const std::string& event_name,
+    v8::Local<v8::Function> dispatch_handler) {
+  v8::Isolate* isolate = arguments->isolate();
+  v8::HandleScope handle_scope(isolate);
+  v8::Local<v8::Context> context = arguments->GetHolderCreationContext();
+
+  event_handler_->RegisterEventDispatchHandler(context, event_name,
+                                               dispatch_handler);
+}
+
 void APIBindingJSUtil::CreateCustomEvent(gin::Arguments* arguments,
                                          v8::Local<v8::Value> v8_event_name,
                                          bool supports_filters,
@@ -166,12 +182,10 @@ void APIBindingJSUtil::CreateCustomDeclarativeEvent(
   v8::Isolate* isolate = arguments->isolate();
   v8::HandleScope handle_scope(isolate);
 
-  gin::Handle<DeclarativeEvent> event = gin::CreateHandle(
-      isolate,
-      new DeclarativeEvent(event_name, type_refs_, request_handler_,
-                           actions_list, conditions_list, webview_instance_id));
-
-  arguments->Return(event.ToV8());
+  auto* event = cppgc::MakeGarbageCollected<DeclarativeEvent>(
+      isolate->GetCppHeap()->GetAllocationHandle(), event_name, type_refs_,
+      request_handler_, actions_list, conditions_list, webview_instance_id);
+  arguments->Return(event->GetWrapper(isolate).ToLocalChecked());
 }
 
 void APIBindingJSUtil::InvalidateEvent(gin::Arguments* arguments,
@@ -313,9 +327,8 @@ void APIBindingJSUtil::AddCustomSignature(
   }
 
   type_refs_->AddCustomSignature(
-      custom_signature_name,
-      APISignature::CreateFromValues(*base_signature, nullptr /*returns_async*/,
-                                     nullptr /*access_checker*/));
+      custom_signature_name, APISignature::CreateFromValues(
+                                 *base_signature, nullptr /*returns_async*/));
 }
 
 void APIBindingJSUtil::ValidateCustomSignature(

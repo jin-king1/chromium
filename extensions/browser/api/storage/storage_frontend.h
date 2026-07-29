@@ -51,7 +51,7 @@ class StorageFrontend : public BrowserContextKeyedAPI {
     ~GetKeysResult();
 
     ResultStatus status;
-    std::optional<base::Value::List> data;
+    std::optional<base::ListValue> data;
   };
 
   struct GetResult {
@@ -61,13 +61,23 @@ class StorageFrontend : public BrowserContextKeyedAPI {
     ~GetResult();
 
     ResultStatus status;
-    std::optional<base::Value::Dict> data;
+    std::optional<base::DictValue> data;
   };
 
-  // Returns the current instance for |context|.
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  enum class ExtensionsDatabaseOperation {
+    kGet = 0,
+    kSet = 1,
+    kRemove = 2,
+    kClear = 3,
+    kMaxValue = kClear,
+  };
+
+  // Returns the current instance for `context`.
   static StorageFrontend* Get(content::BrowserContext* context);
 
-  // Creates with a specific |storage_factory|.
+  // Creates with a specific `storage_factory`.
   static std::unique_ptr<StorageFrontend> CreateForTesting(
       scoped_refptr<value_store::ValueStoreFactory> storage_factory,
       content::BrowserContext* context);
@@ -79,21 +89,21 @@ class StorageFrontend : public BrowserContextKeyedAPI {
   // Public so tests can create and delete their own instances.
   ~StorageFrontend() override;
 
-  // Returns the value store cache for |settings_namespace|.
+  // Returns the value store cache for `settings_namespace`.
   ValueStoreCache* GetValueStoreCache(
       settings_namespace::Namespace settings_namespace) const;
 
-  // Returns true if |settings_namespace| is a valid namespace.
+  // Returns true if `settings_namespace` is a valid namespace.
   bool IsStorageEnabled(settings_namespace::Namespace settings_namespace) const;
 
-  // Runs |callback| with the storage area of the given |settings_namespace|
-  // for the |extension|.
+  // Runs `callback` with the storage area of the given `settings_namespace`
+  // for the `extension`.
   void RunWithStorage(scoped_refptr<const Extension> extension,
                       settings_namespace::Namespace settings_namespace,
                       ValueStoreCache::StorageCallback callback);
 
-  // Deletes the settings for the given |extension_id| and synchronously invokes
-  // |done_callback| once the settings are deleted.
+  // Deletes the settings for the given `extension_id` and synchronously invokes
+  // `done_callback` once the settings are deleted.
   void DeleteStorageSoon(const ExtensionId& extension_id,
                          base::OnceClosure done_callback);
 
@@ -125,7 +135,7 @@ class StorageFrontend : public BrowserContextKeyedAPI {
   // `values` in storage and fires `callback`.
   void Set(scoped_refptr<const Extension> extension,
            StorageAreaNamespace storage_area,
-           base::Value::Dict values,
+           base::DictValue values,
            base::OnceCallback<void(ResultStatus)> callback);
 
   // For a given `extension` and `storage_area`, removes the items specified by
@@ -191,14 +201,12 @@ class StorageFrontend : public BrowserContextKeyedAPI {
                        value_store::ValueStore::WriteResult result);
 
   // Called when storage with `storage_area` for `extension_id` is updated with
-  // `changes`. Must include `session_access_level` iff `storage_area` is
-  // session (other storage areas don't support access levels, see
-  // crbug.com/1508463).
-  void OnSettingsChanged(
-      const ExtensionId& extension_id,
-      StorageAreaNamespace storage_area,
-      std::optional<api::storage::AccessLevel> session_access_level,
-      base::Value changes);
+  // `changes`. Must include `access_level` iff `storage_area` is
+  // session, local, or sync.
+  void OnSettingsChanged(const ExtensionId& extension_id,
+                         StorageAreaNamespace storage_area,
+                         std::optional<api::storage::AccessLevel> access_level,
+                         base::Value changes);
 
   // The (non-incognito) browser context this Frontend belongs to.
   const raw_ptr<content::BrowserContext> browser_context_;

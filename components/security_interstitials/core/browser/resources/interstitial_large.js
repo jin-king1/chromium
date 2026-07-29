@@ -83,8 +83,6 @@ function setupEvents() {
   const supervisedUserVerifySubframe =
       interstitialType === 'SUPERVISED_USER_VERIFY_SUBFRAME';
   const hidePrimaryButton = loadTimeData.getBoolean('hide_primary_button');
-  const showRecurrentErrorParagraph =
-      loadTimeData.getBoolean('show_recurrent_error_paragraph');
   const showBlockedSiteMessage =
       loadTimeData.valueExists('show_blocked_site_message') ?
       loadTimeData.getBoolean('show_blocked_site_message') :
@@ -214,14 +212,6 @@ function setupEvents() {
     document.querySelector('#final-paragraph').classList.add(HIDDEN_CLASS);
   }
 
-
-  if (!ssl || !showRecurrentErrorParagraph) {
-    document.querySelector('#recurrent-error-message')
-        .classList.add(HIDDEN_CLASS);
-  } else {
-    body.classList.add('showing-recurrent-error-message');
-  }
-
   if (showBlockedSiteMessage) {
     document.querySelector('#blocked-site-message')
         .classList.remove(HIDDEN_CLASS);
@@ -237,12 +227,33 @@ function setupEvents() {
     diagnosticLink.addEventListener('click', function(event) {
       sendCommand(SecurityInterstitialCommandId.CMD_OPEN_DIAGNOSTIC);
     });
+    diagnosticLink.addEventListener('auxclick', function(event) {
+      if (event.button === 1) {  // Middle click
+        sendCommand(
+            SecurityInterstitialCommandId.CMD_OPEN_DIAGNOSTIC_IN_NEW_TAB);
+      }
+    });
   }
 
   const learnMoreLink = document.querySelector('#learn-more-link');
   if (learnMoreLink) {
     learnMoreLink.addEventListener('click', function(event) {
       sendCommand(SecurityInterstitialCommandId.CMD_OPEN_HELP_CENTER);
+    });
+    learnMoreLink.addEventListener('auxclick', function(event) {
+      if (event.button === 1) {  // Middle click
+        sendCommand(
+            SecurityInterstitialCommandId.CMD_OPEN_HELP_CENTER_IN_NEW_TAB);
+      }
+    });
+  }
+
+  const androidAdvancedProtectionLink =
+      document.querySelector('#android-advanced-protection-settings-link');
+  if (androidAdvancedProtectionLink) {
+    androidAdvancedProtectionLink.addEventListener('click', function(event) {
+      sendCommand(SecurityInterstitialCommandId
+                      .CMD_OPEN_ANDROID_ADVANCED_PROTECTION_SETTINGS);
     });
   }
 
@@ -255,6 +266,26 @@ function setupEvents() {
     // have details buttons.
     detailsButton.classList.add('hidden');
   } else {
+    if (loadTimeData.valueExists('is_qwac_enabled') &&
+        loadTimeData.getBoolean('is_qwac_enabled')) {
+      // TODO(crbug.com/436274249): Once the feature is launched, move the
+      // debugging div to the details section unconditionally (in the HTML file
+      // instead of here.) But do any of the cases that have the details
+      // button hidden use the debugging element?
+      const details = document.querySelector('#details');
+      const debugging = document.querySelector('#debugging');
+      details.prepend(debugging);
+
+      const viewCertificateLink =
+          document.querySelector('#view-certificate-link');
+      if (viewCertificateLink) {
+        viewCertificateLink.addEventListener('click', function(event) {
+          sendCommand(
+              SecurityInterstitialCommandId.CMD_SHOW_CERTIFICATE_VIEWER);
+        });
+      }
+    }
+
     detailsButton.setAttribute(
         'aria-expanded',
         !document.querySelector('#details').classList.contains(HIDDEN_CLASS));
@@ -287,6 +318,12 @@ function setupEvents() {
     reportErrorLink.addEventListener('click', function(event) {
       sendCommand(SecurityInterstitialCommandId.CMD_REPORT_PHISHING_ERROR);
     });
+    reportErrorLink.addEventListener('auxclick', function(event) {
+      if (event.button === 1) {  // Middle click
+        sendCommand(
+            SecurityInterstitialCommandId.CMD_REPORT_PHISHING_ERROR_IN_NEW_TAB);
+      }
+    });
   }
 
   if (lookalike) {
@@ -301,7 +338,13 @@ function setupEvents() {
   setupExtendedReportingCheckbox();
   setupEnhancedProtectionMessage();
   setupSSLDebuggingInfo();
-  document.addEventListener('keypress', handleKeypress);
+
+  const disableKeyboardOverride =
+      loadTimeData.valueExists('disableKeyboardOverride') &&
+      loadTimeData.getBoolean('disableKeyboardOverride');
+  if (!disableKeyboardOverride) {
+    document.addEventListener('keypress', handleKeypress);
+  }
 
   // Begin tracking for the clickjacking delay.
   timePageLastFocused = window.performance.now();

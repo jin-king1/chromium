@@ -11,7 +11,7 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/models/image_model.h"
-#include "ui/gfx/paint_vector_icon.h"
+#include "ui/base/ui_base_features.h"
 
 ToggleCameraButton::ToggleCameraButton(PressedCallback callback)
     : OverlayWindowImageButton(std::move(callback)) {
@@ -36,10 +36,17 @@ void ToggleCameraButton::UpdateImageAndTooltipText() {
     return;
   }
 
-  const auto& icon = is_turned_on_ ? vector_icons::kVideocamIcon
-                                   : vector_icons::kVideocamOffIcon;
+  const auto& icon = is_turned_on_
+                         ? features::IsRoundedIconsEnabled()
+                               ? vector_icons::kVideocamIcon
+                               : vector_icons::kVideocamChromeRefreshOldIcon
+                     : features::IsRoundedIconsEnabled()
+                         ? vector_icons::kVideocamOffIcon
+                         : vector_icons::kVideocamOffChromeRefreshOldIcon;
+
   auto text = is_turned_on_ ? IDS_PICTURE_IN_PICTURE_TURN_OFF_CAMERA_TEXT
                             : IDS_PICTURE_IN_PICTURE_TURN_ON_CAMERA_TEXT;
+
   const int icon_size = std::max(0, width() - (2 * kPipWindowIconPadding));
 
   SetImageModel(views::Button::STATE_NORMAL,

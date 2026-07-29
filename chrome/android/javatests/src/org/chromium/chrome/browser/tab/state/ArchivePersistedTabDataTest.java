@@ -7,20 +7,21 @@ package org.chromium.chrome.browser.tab.state;
 import androidx.test.filters.SmallTest;
 
 import org.junit.Assert;
-import org.junit.ClassRule;
+import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.supplier.ObservableSupplierImpl;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableNonNullObservableSupplier;
 import org.chromium.base.test.BaseJUnit4ClassRunner;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
-import org.chromium.chrome.test.batch.BlankCTATabInitialStateRule;
+import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 
 import java.nio.ByteBuffer;
 import java.util.concurrent.TimeoutException;
@@ -29,13 +30,14 @@ import java.util.concurrent.TimeoutException;
 @CommandLineFlags.Add(ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE)
 @Batch(Batch.PER_CLASS)
 public class ArchivePersistedTabDataTest {
-    @ClassRule
-    public static ChromeTabbedActivityTestRule sActivityTestRule =
-            new ChromeTabbedActivityTestRule();
-
     @Rule
-    public BlankCTATabInitialStateRule mInitialStateRule =
-            new BlankCTATabInitialStateRule(sActivityTestRule, false);
+    public AutoResetCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.fastAutoResetCtaActivityRule();
+
+    @Before
+    public void setUp() {
+        mActivityTestRule.startOnBlankPage();
+    }
 
     @SmallTest
     @Test
@@ -44,7 +46,7 @@ public class ArchivePersistedTabDataTest {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     ArchivePersistedTabData.from(
-                            sActivityTestRule.getActivity().getActivityTab(),
+                            mActivityTestRule.getActivity().getActivityTab(),
                             (res) -> {
                                 Assert.assertNotNull(res);
                                 Assert.assertEquals(
@@ -65,10 +67,9 @@ public class ArchivePersistedTabDataTest {
                 () -> {
                     ArchivePersistedTabData archivePersistedTabData =
                             ArchivePersistedTabData.from(
-                                    sActivityTestRule.getActivity().getActivityTab());
-                    ObservableSupplierImpl<Boolean> observableSupplier =
-                            new ObservableSupplierImpl<>();
-                    observableSupplier.set(true);
+                                    mActivityTestRule.getActivity().getActivityTab());
+                    SettableNonNullObservableSupplier<Boolean> observableSupplier =
+                            ObservableSuppliers.createNonNull(true);
                     archivePersistedTabData.registerIsTabSaveEnabledSupplier(observableSupplier);
                     archivePersistedTabData.setArchivedTimeMs(42L);
                     helpers[0].notifyCalled();
@@ -77,7 +78,7 @@ public class ArchivePersistedTabDataTest {
         helpers[1] = new CallbackHelper();
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    sActivityTestRule
+                    mActivityTestRule
                             .getActivity()
                             .getActivityTab()
                             .getUserDataHost()
@@ -89,7 +90,7 @@ public class ArchivePersistedTabDataTest {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     ArchivePersistedTabData.from(
-                            sActivityTestRule.getActivity().getActivityTab(),
+                            mActivityTestRule.getActivity().getActivityTab(),
                             (res) -> {
                                 Assert.assertNotNull(res);
                                 Assert.assertEquals(42L, res.getArchivedTimeMs());
@@ -106,7 +107,7 @@ public class ArchivePersistedTabDataTest {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     ArchivePersistedTabData.from(
-                            sActivityTestRule.getActivity().getActivityTab(),
+                            mActivityTestRule.getActivity().getActivityTab(),
                             (res) -> {
                                 Assert.assertNotNull(res);
                                 ByteBuffer bytes = null;

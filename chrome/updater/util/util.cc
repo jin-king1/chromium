@@ -4,7 +4,6 @@
 
 #include "chrome/updater/util/util.h"
 
-#include <algorithm>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -16,6 +15,9 @@
 #include <initguid.h>
 #include <windows.h>
 
+#include <shlobj.h>
+
+#include "base/base_paths_win.h"
 #include "base/logging_win.h"
 #endif  // BUILDFLAG(IS_WIN)
 
@@ -29,7 +31,10 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/callback.h"
+#include "base/functional/function_ref.h"
 #include "base/logging.h"
+#include "base/logging/logging_settings.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/path_service.h"
 #include "base/strings/escape.h"
 #include "base/strings/strcat.h"
@@ -42,11 +47,13 @@
 #include "base/time/time.h"
 #include "base/version.h"
 #include "build/build_config.h"
+#include "chrome/updater/branded_constants.h"
 #include "chrome/updater/constants.h"
 #include "chrome/updater/tag.h"
 #include "chrome/updater/updater_branding.h"
 #include "chrome/updater/updater_scope.h"
 #include "chrome/updater/updater_version.h"
+#include "components/update_client/utils.h"
 #include "url/gurl.h"
 
 #if BUILDFLAG(IS_LINUX)
@@ -66,16 +73,25 @@ namespace {
 
 constexpr int64_t kLogRotateAtSize = 1024 * 1024;  // 1 MiB.
 
+template <typename CharT>
+bool IsValidAppIdImpl(std::basic_string_view<CharT> app_id) {
+  static constexpr size_t kMaxAppIdLength = 256;
+  return !app_id.empty() && app_id.length() <= kMaxAppIdLength &&
+         std::ranges::all_of(app_id, &base::IsAsciiPrintable<CharT>) &&
+         app_id.find(CharT{'/'}) == std::basic_string_view<CharT>::npos &&
+         app_id.find(CharT{'\\'}) == std::basic_string_view<CharT>::npos &&
+         app_id[0] != CharT{'.'};
+}
+
 }  // namespace
 
 std::optional<base::FilePath> GetVersionedInstallDirectory(
     UpdaterScope scope,
     const base::Version& version) {
-  const std::optional<base::FilePath> path = GetInstallDirectory(scope);
-  if (!path) {
-    return std::nullopt;
-  }
-  return path->AppendUTF8(version.GetString());
+  return GetInstallDirectory(scope).transform(
+      [&version](const base::FilePath& path) {
+        return path.AppendUTF8(version.GetString());
+      });
 }
 
 std::optional<base::FilePath> GetVersionedInstallDirectory(UpdaterScope scope) {
@@ -85,20 +101,35 @@ std::optional<base::FilePath> GetVersionedInstallDirectory(UpdaterScope scope) {
 std::optional<base::FilePath> GetUpdaterExecutablePath(
     UpdaterScope scope,
     const base::Version& version) {
-  std::optional<base::FilePath> path =
-      GetVersionedInstallDirectory(scope, version);
-  if (!path) {
-    return std::nullopt;
-  }
-  return path->Append(GetExecutableRelativePath());
+  return GetVersionedInstallDirectory(scope, version)
+      .transform([](const base::FilePath& path) {
+        return path.Append(GetExecutableRelativePath());
+      });
 }
 
 std::optional<base::FilePath> GetCrxCacheDirectory(UpdaterScope scope) {
-  const std::optional<base::FilePath> cache_path(GetInstallDirectory(scope));
-  if (!cache_path) {
+  return GetInstallDirectory(scope).transform(
+      [](const base::FilePath& path) { return path.AppendUTF8("crx_cache"); });
+}
+
+std::optional<base::FilePath> GetUpdaterTempDir() {
+  base::FilePath temp_dir;
+#if BUILDFLAG(IS_WIN)
+  if (::IsUserAnAdmin()) {
+    if (!base::PathService::Get(base::DIR_SYSTEM_TEMP, &temp_dir)) {
+      return std::nullopt;
+    }
+  } else {
+    if (!base::GetTempDir(&temp_dir)) {
+      return std::nullopt;
+    }
+  }
+#else
+  if (!base::GetTempDir(&temp_dir)) {
     return std::nullopt;
   }
-  return std::optional<base::FilePath>(cache_path->AppendUTF8("crx_cache"));
+#endif
+  return temp_dir;
 }
 
 std::optional<base::FilePath> GetUpdaterExecutablePath(UpdaterScope scope) {
@@ -106,16 +137,18 @@ std::optional<base::FilePath> GetUpdaterExecutablePath(UpdaterScope scope) {
 }
 
 std::optional<base::FilePath> GetCrashDatabasePath(UpdaterScope scope) {
-  const std::optional<base::FilePath> path(GetVersionedInstallDirectory(scope));
-  return path ? std::optional<base::FilePath>(path->AppendUTF8("Crashpad"))
-              : std::nullopt;
+  return GetVersionedInstallDirectory(scope).transform(
+      [](const base::FilePath& path) { return path.AppendUTF8("Crashpad"); });
 }
 
 std::optional<base::FilePath> EnsureCrashDatabasePath(UpdaterScope scope) {
-  const std::optional<base::FilePath> database_path(
-      GetCrashDatabasePath(scope));
-  return database_path && base::CreateDirectory(*database_path) ? database_path
-                                                                : std::nullopt;
+  return GetCrashDatabasePath(scope).and_then(
+      [](const base::FilePath& path) -> std::optional<base::FilePath> {
+        if (base::CreateDirectory(path)) {
+          return path;
+        }
+        return std::nullopt;
+      });
 }
 
 TagParsingResult::TagParsingResult() = default;
@@ -191,14 +224,6 @@ std::string GetInstallDataIndexFromAppArgs(const std::string& app_id) {
   return app_args ? app_args->install_data_index : std::string();
 }
 
-std::optional<base::FilePath> GetLogFilePath(UpdaterScope scope) {
-  const std::optional<base::FilePath> log_dir = GetInstallDirectory(scope);
-  if (log_dir) {
-    return log_dir->Append(FILE_PATH_LITERAL("updater.log"));
-  }
-  return std::nullopt;
-}
-
 void InitLogging(UpdaterScope updater_scope) {
   std::optional<base::FilePath> log_file = GetLogFilePath(updater_scope);
   if (!log_file) {
@@ -227,7 +252,7 @@ void InitLogging(UpdaterScope updater_scope) {
 #if BUILDFLAG(IS_WIN)
   // Enable Event Tracing for Windows.
   // {4D7D9607-78B6-4583-A188-2136AB85F5F1}
-  constexpr GUID kUpdaterETWProviderName = {
+  static constexpr GUID kUpdaterETWProviderName = {
       0x4d7d9607,
       0x78b6,
       0x4583,
@@ -246,7 +271,7 @@ std::string GetUpdaterUserAgent(const base::Version& updater_version) {
 GURL AppendQueryParameter(const GURL& url,
                           const std::string& name,
                           const std::string& value) {
-  std::string query(url.query());
+  std::string query(url.GetQuery());
 
   if (!query.empty()) {
     query += "&";
@@ -261,16 +286,18 @@ GURL AppendQueryParameter(const GURL& url,
 
 #if BUILDFLAG(IS_WIN)
 
-std::wstring GetTaskNamePrefix(UpdaterScope scope) {
-  std::wstring task_name = GetTaskDisplayName(scope);
+std::wstring GetTaskNamePrefix(UpdaterScope scope,
+                               const base::Version& version) {
+  std::wstring task_name = GetTaskDisplayName(scope, version);
   std::erase_if(task_name, base::IsAsciiWhitespace<wchar_t>);
   return task_name;
 }
 
-std::wstring GetTaskDisplayName(UpdaterScope scope) {
+std::wstring GetTaskDisplayName(UpdaterScope scope,
+                                const base::Version& version) {
   return base::StrCat({base::UTF8ToWide(PRODUCT_FULLNAME_STRING), L" Task ",
                        IsSystemInstall(scope) ? L"System " : L"User ",
-                       kUpdaterVersionUtf16});
+                       base::UTF8ToWide(version.GetString())});
 }
 
 base::CommandLine GetCommandLineLegacyCompatible() {
@@ -335,14 +362,10 @@ bool DeleteExcept(std::optional<base::FilePath> except) {
       .ForEach([&](const base::FilePath& item) {
         if (item != *except) {
           VLOG(2) << "DeleteExcept deleting: " << item;
-          for (size_t i = 0; i <= 2; ++i) {
-            if (delete_success = base::DeletePathRecursively(item);
-                delete_success) {
-              break;
-            }
-            VPLOG(1) << "DeleteExcept failed to delete: " << item;
-            base::PlatformThread::Sleep(base::Milliseconds(100));
-          }
+          const bool success = update_client::RetryFileOperation(
+              &base::DeletePathRecursively, item, /*tries=*/2,
+              /*time_between_tries=*/base::Milliseconds(100));
+          VPLOG_IF(1, !success) << "DeleteExcept failed to delete: " << item;
         }
       });
   return delete_success;
@@ -354,6 +377,56 @@ int GetDownloadProgress(int64_t downloaded_bytes, int64_t total_bytes) {
   }
   return 100 * std::clamp(static_cast<double>(downloaded_bytes) / total_bytes,
                           0.0, 1.0);
+}
+
+std::vector<base::FilePath> GetFilesWithPredicate(
+    const base::FilePath& dir,
+    base::FunctionRef<bool(const base::FilePath&)> predicate) {
+  if (dir.empty()) {
+    return {};
+  }
+  std::vector<base::FilePath> files;
+  base::FileEnumerator(dir, /*recursive=*/true, base::FileEnumerator::FILES)
+      .ForEach([&](const base::FilePath& item) {
+        if (predicate(item)) {
+          files.push_back(item);
+        }
+      });
+  return files;
+}
+
+void EnumerateUpdateClientTempDirectories(
+    UpdaterScope scope,
+    base::FunctionRef<void(const base::FilePath& dir)> callback) {
+  base::FilePath temp_dir;
+
+#if BUILDFLAG(IS_WIN)
+  if (!base::GetSecureTempDirectory(&temp_dir)) {
+    return;
+  }
+#else   // BUILDFLAG(IS_WIN)
+  if (!base::GetTempDir(&temp_dir)) {
+    return;
+  }
+#endif  // BUILDFLAG(IS_WIN)
+
+  for (const auto& matcher :
+       {"_chrome_url_fetcher_", "_chrome_Unpacker_BeginUnzipping",
+        "_chrome_BITS_"}) {
+    base::FileEnumerator(temp_dir,
+                         /*recursive=*/false, base::FileEnumerator::DIRECTORIES,
+                         update_client::UTF8ToStringType(
+                             base::StrCat({"*", kProdId, matcher, "*"})))
+        .ForEach([&callback](const base::FilePath& dir) { callback(dir); });
+  }
+}
+
+bool IsValidAppId(std::string_view app_id) {
+  return IsValidAppIdImpl(app_id);
+}
+
+bool IsValidAppId(std::wstring_view app_id) {
+  return IsValidAppIdImpl(app_id);
 }
 
 }  // namespace updater

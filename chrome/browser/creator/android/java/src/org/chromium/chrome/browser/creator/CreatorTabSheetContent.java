@@ -16,13 +16,15 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 
 import androidx.annotation.DrawableRes;
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 import androidx.annotation.StringRes;
 
-import org.chromium.base.supplier.ObservableSupplierImpl;
-import org.chromium.base.supplier.UnownedUserDataSupplier;
+import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.base.supplier.NonNullObservableSupplier;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.share.ShareDelegate;
+import org.chromium.chrome.browser.share.ShareDelegateSupplier;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
 import org.chromium.components.browser_ui.widget.ChromeTransitionDrawable;
 import org.chromium.components.browser_ui.widget.FadingShadow;
@@ -30,6 +32,7 @@ import org.chromium.components.browser_ui.widget.FadingShadowView;
 import org.chromium.components.embedder_support.delegate.WebContentsDelegateAndroid;
 import org.chromium.components.embedder_support.view.ContentView;
 import org.chromium.components.thinwebview.ThinWebView;
+import org.chromium.components.thinwebview.ThinWebViewAttachParams;
 import org.chromium.components.thinwebview.ThinWebViewConstraints;
 import org.chromium.components.thinwebview.ThinWebViewFactory;
 import org.chromium.components.url_formatter.SchemeDisplay;
@@ -45,6 +48,7 @@ import org.chromium.url.GURL;
  * Represents creator tab content and the toolbar, which can be included inside the bottom sheet.
  * This is based on the implementation of bottombar/ephemeraltab/EphemeralTabSheetContent.java.
  */
+@NullMarked
 public class CreatorTabSheetContent implements BottomSheetContent {
     /**
      * The base duration of the settling animation of the sheet. 218 ms is a spec for material
@@ -59,22 +63,21 @@ public class CreatorTabSheetContent implements BottomSheetContent {
     private final Runnable mOpenNewTabCallback;
     private final Runnable mToolbarClickCallback;
     private final Runnable mCloseButtonCallback;
-    private final UnownedUserDataSupplier<ShareDelegate> mShareDelegateSupplier;
-    private final ObservableSupplierImpl<Boolean> mBackPressStateChangedSupplier =
-            new ObservableSupplierImpl<>();
+    private final MonotonicObservableSupplier<ShareDelegate> mShareDelegateSupplier;
 
     private ViewGroup mToolbarView;
     private ViewGroup mSheetContentView;
 
-    private WebContents mWebContents;
-    private ContentView mWebContentView;
+    private @Nullable WebContents mWebContents;
+    private @Nullable ContentView mWebContentView;
     private ThinWebView mThinWebView;
     private FadingShadowView mShadow;
-    private Drawable mCurrentFavicon;
+    private @Nullable Drawable mCurrentFavicon;
     private ImageView mFaviconView;
 
     /**
      * Constructor.
+     *
      * @param context An Android context.
      * @param openNewTabCallback Callback invoked to open a new tab.
      * @param toolbarClickCallback Callback invoked when user clicks on the toolbar.
@@ -89,7 +92,7 @@ public class CreatorTabSheetContent implements BottomSheetContent {
             Runnable closeButtonCallback,
             int maxViewHeight,
             IntentRequestTracker intentRequestTracker,
-            UnownedUserDataSupplier<ShareDelegate> shareDelegateSupplier) {
+            MonotonicObservableSupplier<ShareDelegate> shareDelegateSupplier) {
         mContext = context;
         mOpenNewTabCallback = openNewTabCallback;
         mToolbarClickCallback = toolbarClickCallback;
@@ -98,7 +101,6 @@ public class CreatorTabSheetContent implements BottomSheetContent {
         createThinWebView(getMaxSheetHeight(maxViewHeight), intentRequestTracker);
         createToolbarView(maxViewHeight);
 
-        mBackPressStateChangedSupplier.set(true);
         mShareDelegateSupplier = shareDelegateSupplier;
     }
 
@@ -109,20 +111,25 @@ public class CreatorTabSheetContent implements BottomSheetContent {
      * @param delegate The {@link WebContentsDelegateAndroid} that handles requests on WebContents.
      */
     public void attachWebContents(
-            WebContents webContents, ContentView contentView, WebContentsDelegateAndroid delegate) {
+            WebContents webContents,
+            ContentView contentView,
+            @Nullable WebContentsDelegateAndroid delegate) {
         mWebContents = webContents;
         mWebContentView = contentView;
         if (mWebContentView.getParent() != null) {
             ((ViewGroup) mWebContentView.getParent()).removeView(mWebContentView);
         }
-        mThinWebView.attachWebContents(mWebContents, mWebContentView, delegate);
+        mThinWebView.attachWebContents(
+                mWebContents,
+                mWebContentView,
+                new ThinWebViewAttachParams.Builder().setWebContentsDelegate(delegate).build());
 
         // Initialize the supplier of {@link ShareDelegate} for the WindowAndroid used by
         // ThinWebView.  The {@link ShareDelegate} itself is not set by design in order to leave
         // the share feature disabled on Preview Tab.
         WindowAndroid window = mWebContents.getTopLevelNativeWindow();
         assert window != null;
-        mShareDelegateSupplier.attach(window.getUnownedUserDataHost());
+        ShareDelegateSupplier.attach(window.getUnownedUserDataHost(), mShareDelegateSupplier);
     }
 
     /**
@@ -132,7 +139,10 @@ public class CreatorTabSheetContent implements BottomSheetContent {
     private void createThinWebView(int maxSheetHeight, IntentRequestTracker intentRequestTracker) {
         mThinWebView =
                 ThinWebViewFactory.create(
-                        mContext, new ThinWebViewConstraints(), intentRequestTracker);
+                        mContext,
+                        new ThinWebViewConstraints(),
+                        intentRequestTracker,
+                        /* enablePermissionRequests= */ false);
 
         mSheetContentView = new FrameLayout(mContext);
         mThinWebView
@@ -275,13 +285,12 @@ public class CreatorTabSheetContent implements BottomSheetContent {
     }
 
     @Override
-    public Integer getBackgroundColor() {
-        return null;
+    public boolean hasSolidBackgroundColor() {
+        return false;
     }
 
-    @Nullable
     @Override
-    public View getToolbarView() {
+    public @Nullable View getToolbarView() {
         return mToolbarView;
     }
 
@@ -308,11 +317,6 @@ public class CreatorTabSheetContent implements BottomSheetContent {
     }
 
     @Override
-    public int getPeekHeight() {
-        return HeightMode.DISABLED;
-    }
-
-    @Override
     public float getHalfHeightRatio() {
         return HeightMode.DEFAULT;
     }
@@ -329,8 +333,8 @@ public class CreatorTabSheetContent implements BottomSheetContent {
     }
 
     @Override
-    public ObservableSupplierImpl<Boolean> getBackPressStateChangedSupplier() {
-        return mBackPressStateChangedSupplier;
+    public NonNullObservableSupplier<Boolean> getBackPressStateChangedSupplier() {
+        return ObservableSuppliers.alwaysTrue();
     }
 
     @Override
@@ -339,7 +343,7 @@ public class CreatorTabSheetContent implements BottomSheetContent {
     }
 
     @Override
-    public @NonNull String getSheetContentDescription(Context context) {
+    public String getSheetContentDescription(Context context) {
         return context.getString(R.string.ephemeral_tab_sheet_description);
     }
 

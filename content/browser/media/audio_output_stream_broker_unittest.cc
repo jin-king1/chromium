@@ -34,7 +34,6 @@
 #include "services/audio/public/cpp/fake_stream_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/abseil-cpp/absl/utility/utility.h"
 #include "third_party/blink/public/common/tokens/tokens.h"
 
 using ::testing::_;
@@ -399,12 +398,11 @@ TEST(AudioOutputStreamBrokerTest, SwitchableStreamCreationSuccess) {
   constexpr char kRawDeviceId[] = "rawdeviceid";
   EXPECT_CALL(*manager,
               SetPreferredSinkId(kMainFrameHostToken, kRawDeviceId, _))
-      .WillOnce(testing::Invoke(
-          [&env](const GlobalRenderFrameHostToken&,
-                 const std::string& device_id,
-                 base::OnceCallback<void(media::OutputDeviceStatus)>) {
-            env.broker->SwitchAudioOutputDeviceId(device_id);
-          }));
+      .WillOnce([&env](const GlobalRenderFrameHostToken&,
+                       const std::string& device_id,
+                       base::OnceCallback<void(media::OutputDeviceStatus)>) {
+        env.broker->SwitchAudioOutputDeviceId(device_id);
+      });
 
   EXPECT_CALL(env.device_switch_interface,
               SwitchAudioOutputDeviceId(kRawDeviceId))
@@ -525,10 +523,10 @@ TEST(AudioOutputStreamBrokerTest, SwitchableStreamCreationWithPreferredSinkId) {
       std::move(mock_preferred_audio_output_device_manager));
 
   EXPECT_CALL(*manager, AddSwitcher(_, _))
-      .WillOnce(testing::Invoke([](const GlobalRenderFrameHostToken&,
-                                   AudioOutputDeviceSwitcher* switcher) {
+      .WillOnce([](const GlobalRenderFrameHostToken&,
+                   AudioOutputDeviceSwitcher* switcher) {
         switcher->SwitchAudioOutputDeviceId(kDeviceId);
-      }));
+      });
 
   env.broker->CreateStream(env.factory_ptr.get());
   env.RunUntilIdle();
@@ -541,12 +539,11 @@ TEST(AudioOutputStreamBrokerTest, SwitchableStreamCreationWithPreferredSinkId) {
   EXPECT_CALL(*manager, SetPreferredSinkId(
                             kMainFrameHostToken,
                             media::AudioDeviceDescription::kDefaultDeviceId, _))
-      .WillOnce(testing::Invoke(
-          [&env](const GlobalRenderFrameHostToken&,
-                 const std::string& device_id,
-                 base::OnceCallback<void(media::OutputDeviceStatus)>) {
-            env.broker->SwitchAudioOutputDeviceId(device_id);
-          }));
+      .WillOnce([&env](const GlobalRenderFrameHostToken&,
+                       const std::string& device_id,
+                       base::OnceCallback<void(media::OutputDeviceStatus)>) {
+        env.broker->SwitchAudioOutputDeviceId(device_id);
+      });
 
   EXPECT_CALL(env.device_switch_interface,
               SwitchAudioOutputDeviceId(

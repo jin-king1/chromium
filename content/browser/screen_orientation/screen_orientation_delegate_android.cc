@@ -36,7 +36,7 @@ void ScreenOrientationDelegateAndroid::Lock(
   Java_ScreenOrientationProviderImpl_lockOrientationForWebContents(
       base::android::AttachCurrentThread(), java_instance,
       static_cast<WebContentsImpl*>(web_contents)->GetJavaWebContents(),
-      static_cast<jbyte>(lock_orientation));
+      static_cast<int8_t>(lock_orientation));
 }
 
 bool ScreenOrientationDelegateAndroid::IsPhone() const {
@@ -73,3 +73,5 @@ void ScreenOrientationDelegateAndroid::Unlock(WebContents* web_contents) {
 }
 
 } // namespace content
+
+DEFINE_JNI(ScreenOrientationProviderImpl)

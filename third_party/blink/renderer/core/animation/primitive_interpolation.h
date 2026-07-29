@@ -35,6 +35,10 @@ class PrimitiveInterpolation : public GarbageCollected<PrimitiveInterpolation> {
                                                double fraction) const = 0;
   virtual bool IsFlip() const { return false; }
 
+  // Return the start/end values for pairwise interpolations, nullptr otherwise.
+  virtual const InterpolableValue* StartValue() const { return nullptr; }
+  virtual const InterpolableValue* EndValue() const { return nullptr; }
+
   virtual void Trace(Visitor*) const {}
 
  protected:
@@ -46,39 +50,44 @@ class PrimitiveInterpolation : public GarbageCollected<PrimitiveInterpolation> {
 class PairwisePrimitiveInterpolation : public PrimitiveInterpolation {
  public:
   PairwisePrimitiveInterpolation(
-      const InterpolationType& type,
+      const InterpolationType* type,
       InterpolableValue* start,
       InterpolableValue* end,
-      scoped_refptr<const NonInterpolableValue> non_interpolable_value)
+      const NonInterpolableValue* non_interpolable_value)
       : type_(type),
         start_(start),
         end_(end),
-        non_interpolable_value_(std::move(non_interpolable_value)) {
+        non_interpolable_value_(non_interpolable_value) {
     DCHECK(start_);
     DCHECK(end_);
   }
 
   ~PairwisePrimitiveInterpolation() override = default;
 
-  const InterpolationType& GetType() const { return type_; }
+  const InterpolationType* GetType() const { return type_; }
 
   TypedInterpolationValue* InitialValue() const {
     return MakeGarbageCollected<TypedInterpolationValue>(
         type_, start_->Clone(), non_interpolable_value_);
   }
 
+  const InterpolableValue* StartValue() const override { return start_; }
+  const InterpolableValue* EndValue() const override { return end_; }
+
   void Trace(Visitor* v) const override {
     PrimitiveInterpolation::Trace(v);
+    v->Trace(type_);
     v->Trace(start_);
     v->Trace(end_);
+    v->Trace(non_interpolable_value_);
   }
 
  private:
   void InterpolateValue(double fraction,
                         Member<TypedInterpolationValue>& result) const final {
     DCHECK(result);
-    DCHECK_EQ(&result->GetType(), &type_);
-    DCHECK_EQ(result->GetNonInterpolableValue(), non_interpolable_value_.get());
+    DCHECK_EQ(result->GetType(), type_);
+    DCHECK_EQ(result->GetNonInterpolableValue(), non_interpolable_value_.Get());
     start_->AssertCanInterpolateWith(*end_);
     start_->Interpolate(*end_, fraction,
                         *result->MutableValue().interpolable_value);
@@ -90,10 +99,10 @@ class PairwisePrimitiveInterpolation : public PrimitiveInterpolation {
     return Blend(start, end, fraction);
   }
 
-  const InterpolationType& type_;
+  Member<const InterpolationType> type_;
   Member<InterpolableValue> start_;
   Member<InterpolableValue> end_;
-  scoped_refptr<const NonInterpolableValue> non_interpolable_value_;
+  Member<const NonInterpolableValue> non_interpolable_value_;
 };
 
 // Represents a pair of incompatible keyframes that fall back to 50% flip

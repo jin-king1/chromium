@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "ui/events/ozone/layout/xkb/xkb_keyboard_layout_engine.h"
 
 #include <stddef.h>
@@ -16,14 +11,15 @@
 #include <string_view>
 #include <utility>
 
+#include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/memory/free_deleter.h"
 #include "base/memory/raw_ptr_exclusion.h"
+#include "base/notimplemented.h"
 #include "base/strings/string_util.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/task/task_runner.h"
@@ -658,7 +654,10 @@ void LoadKeymap(const std::string& layout_name,
         FROM_HERE, base::BindOnce(std::move(reply_callback), layout_name,
                                   std::move(keymap_str)));
   } else {
-    LOG(FATAL) << "Keymap file failed to load: " << layout_name;
+    LOG(ERROR) << "Keymap file failed to load: " << layout_name;
+    reply_runner->PostTask(
+        FROM_HERE, base::BindOnce(std::move(reply_callback), layout_name,
+                                  std::unique_ptr<char, base::FreeDeleter>()));
   }
 }
 #endif
@@ -704,13 +703,13 @@ bool XkbKeyboardLayoutEngine::CanSetCurrentLayout() const {
 
 void XkbKeyboardLayoutEngine::SetCurrentLayoutByName(
     const std::string& layout_name,
-    base::OnceCallback<void(bool)> callback) {
+    base::OnceCallback<void(bool success)> callback) {
 #if BUILDFLAG(IS_CHROMEOS)
   current_layout_name_ = layout_name;
   for (const auto& entry : xkb_keymaps_) {
     if (entry.layout_name == layout_name) {
       SetKeymap(entry.keymap);
-      std::move(callback).Run(true);
+      std::move(callback).Run(/*success=*/true);
       return;
     }
   }
@@ -729,23 +728,29 @@ void XkbKeyboardLayoutEngine::SetCurrentLayoutByName(
 }
 
 void XkbKeyboardLayoutEngine::OnKeymapLoaded(
-    base::OnceCallback<void(bool)> callback,
+    base::OnceCallback<void(bool success)> callback,
     const std::string& layout_name,
     std::unique_ptr<char, base::FreeDeleter> keymap_str) {
   if (keymap_str) {
     xkb_keymap* keymap = xkb_keymap_new_from_string(
         xkb_context_.get(), keymap_str.get(), XKB_KEYMAP_FORMAT_TEXT_V1,
         XKB_KEYMAP_COMPILE_NO_FLAGS);
+    if (!keymap) {
+      LOG(ERROR) << "Failed to compile keymap from string: " << layout_name;
+      std::move(callback).Run(/*success=*/false);
+      return;
+    }
     XkbKeymapEntry entry = {layout_name, keymap};
     xkb_keymaps_.push_back(entry);
     if (layout_name == current_layout_name_) {
       SetKeymap(keymap);
-      std::move(callback).Run(true);
+      std::move(callback).Run(/*success=*/true);
     } else {
-      std::move(callback).Run(false);
+      std::move(callback).Run(/*success=*/false);
     }
   } else {
-    LOG(FATAL) << "Keymap file failed to load: " << layout_name;
+    LOG(ERROR) << "Keymap file failed to load: " << layout_name;
+    std::move(callback).Run(/*success=*/false);
   }
 }
 
@@ -917,7 +922,7 @@ void XkbKeyboardLayoutEngine::SetKeymap(xkb_keymap* keymap) {
                                                         level, &keysyms);
         for (int i = 0; i < num_syms; ++i)
           keysym_map.emplace_back(
-              XkbKeysymMapEntry{keysyms[i], keycode, layout});
+              XkbKeysymMapEntry{UNSAFE_TODO(keysyms[i]), keycode, layout});
       }
     }
   }
@@ -1010,8 +1015,9 @@ DomCode XkbKeyboardLayoutEngine::GetDomCodeByKeysym(
       int num_syms =
           xkb_state_key_get_syms(xkb_state.get(), xkb_keycode, &out_keysyms);
       for (int i = 0; i < num_syms; ++i) {
-        if (out_keysyms[i] == keysym)
+        if (UNSAFE_TODO(out_keysyms[i]) == keysym) {
           return KeycodeConverter::NativeKeycodeToDomCode(xkb_keycode);
+        }
       }
     }
   }
@@ -1049,10 +1055,15 @@ KeyboardCode XkbKeyboardLayoutEngine::DifficultKeyboardCode(
     xkb_keysym_t xkb_keysym,
     char16_t character) const {
   // Get the layout interpretation without modifiers, so that
-  // e.g. Ctrl+D correctly generates VKEY_D.
+  // e.g. Ctrl+D correctly generates VKEY_D. Keep NumLock enabled if it was
+  // active, because it changes the function of the keypad keys (e.g. from
+  // navigation keys to numeric/decimal keys) rather than being a shortcut
+  // modifier.
+  xkb_mod_mask_t num_lock_flags = xkb_modifier_converter_.MaskFromUiFlags(
+      ui_flags & ui::EF_NUM_LOCK_ON);
   xkb_keysym_t plain_keysym;
   uint32_t plain_character;
-  if (!XkbLookup(xkb_keycode, 0, &plain_keysym, &plain_character))
+  if (!XkbLookup(xkb_keycode, num_lock_flags, &plain_keysym, &plain_character))
     return VKEY_UNKNOWN;
 
   // If the plain key is non-printable, that determines the VKEY.
@@ -1077,25 +1088,30 @@ KeyboardCode XkbKeyboardLayoutEngine::DifficultKeyboardCode(
     char16_t shift_character = kNonCharacter;
     char16_t altgr_character = kNonCharacter;
     for (size_t i = 0; i < multi->subtable_size; ++i) {
-      if (multi->subtable[i].dom_code != dom_code)
+      if (UNSAFE_TODO(multi->subtable[i]).dom_code != dom_code) {
         continue;
-      if (multi->subtable[i].test_shift) {
+      }
+      if (UNSAFE_TODO(multi->subtable[i]).test_shift) {
         if (shift_character == kNonCharacter) {
           shift_character = XkbSubCharacter(xkb_keycode, xkb_flags, character,
                                             shift_mod_mask_);
         }
-        if (shift_character != multi->subtable[i].shift_character)
+        if (shift_character !=
+            UNSAFE_TODO(multi->subtable[i]).shift_character) {
           continue;
+        }
       }
-      if (multi->subtable[i].test_altgr) {
+      if (UNSAFE_TODO(multi->subtable[i]).test_altgr) {
         if (altgr_character == kNonCharacter) {
           altgr_character = XkbSubCharacter(xkb_keycode, xkb_flags, character,
                                             altgr_mod_mask_);
         }
-        if (altgr_character != multi->subtable[i].altgr_character)
+        if (altgr_character !=
+            UNSAFE_TODO(multi->subtable[i]).altgr_character) {
           continue;
+        }
       }
-      return multi->subtable[i].key_code;
+      return UNSAFE_TODO(multi->subtable[i]).key_code;
     }
   }
 
@@ -1143,6 +1159,19 @@ void XkbKeyboardLayoutEngine::ParseLayoutName(const std::string& layout_name,
   } else if (dash_index != std::string::npos) {
     *layout_id = layout_name.substr(0, dash_index);
     *layout_variant = layout_name.substr(dash_index + 1);
+  }
+
+  // Sanitize the layout ID and variant to only allow safe characters.
+  const char kAllowedChars[] =
+      "abcdefghijklmnopqrstuvwxyz"
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+      "0123456789"
+      "_()-:";
+  if (!base::ContainsOnlyChars(*layout_id, kAllowedChars)) {
+    layout_id->clear();
+  }
+  if (!base::ContainsOnlyChars(*layout_variant, kAllowedChars)) {
+    layout_variant->clear();
   }
 }
 

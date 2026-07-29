@@ -4,17 +4,14 @@
 
 #include "chrome/browser/ui/views/autofill/popup/popup_separator_view.h"
 
-#include <memory>
-
-#include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "ui/accessibility/ax_enums.mojom.h"
-#include "ui/accessibility/ax_node_data.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/color/color_id.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/background.h"
 #include "ui/views/border.h"
 #include "ui/views/controls/separator.h"
+#include "ui/views/metadata/view_factory.h"
 
 namespace autofill {
 

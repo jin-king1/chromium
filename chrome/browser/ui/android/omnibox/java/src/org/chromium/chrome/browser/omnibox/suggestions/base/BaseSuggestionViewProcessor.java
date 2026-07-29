@@ -11,18 +11,19 @@ import android.text.style.StyleSpan;
 
 import androidx.annotation.CallSuper;
 import androidx.annotation.DrawableRes;
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.base.metrics.TimingMetric;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.omnibox.MatchClassificationStyle;
 import org.chromium.chrome.browser.omnibox.OmniboxMetrics;
 import org.chromium.chrome.browser.omnibox.R;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxDrawableState;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxImageSupplier;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
+import org.chromium.chrome.browser.omnibox.suggestions.AutocompleteUIContext;
 import org.chromium.chrome.browser.omnibox.suggestions.SuggestionHost;
 import org.chromium.chrome.browser.omnibox.suggestions.SuggestionProcessor;
 import org.chromium.chrome.browser.omnibox.suggestions.base.BaseSuggestionViewProperties.Action;
@@ -30,36 +31,37 @@ import org.chromium.components.metrics.OmniboxEventProtos.OmniboxEventProto.Page
 import org.chromium.components.omnibox.AutocompleteInput;
 import org.chromium.components.omnibox.AutocompleteMatch;
 import org.chromium.components.omnibox.AutocompleteMatch.MatchClassification;
+import org.chromium.components.omnibox.OmniboxCapabilities;
 import org.chromium.components.omnibox.OmniboxFeatures;
-import org.chromium.components.omnibox.OmniboxSuggestionType;
+import org.chromium.components.omnibox.action.ActionPresentationMode;
+import org.chromium.ui.base.DeviceFormFactor;
+import org.chromium.ui.base.DeviceInput;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.url.GURL;
 
 import java.util.List;
-import java.util.Optional;
 
 /** A class that handles base properties and model for most suggestions. */
+@NullMarked
 public abstract class BaseSuggestionViewProcessor implements SuggestionProcessor {
-    protected final @NonNull Context mContext;
-    protected final @NonNull SuggestionHost mSuggestionHost;
-    private final @NonNull ActionChipsProcessor mActionChipsProcessor;
-    private final @NonNull Optional<OmniboxImageSupplier> mImageSupplier;
+    protected final AutocompleteUIContext mUiContext;
+    protected final Context mContext;
+    protected final SuggestionHost mSuggestionHost;
+    private final ActionChipsProcessor mActionChipsProcessor;
+    private final @Nullable OmniboxImageSupplier mImageSupplier;
     private final int mDesiredFaviconWidthPx;
     private final int mDecorationImageSizePx;
     private final int mSuggestionSizePx;
+    private final boolean mShouldShowRemoveButton;
 
     /**
-     * @param context Current context.
-     * @param host A handle to the object using the suggestions.
-     * @param imageSupplier A mechanism to use to retrieve favicons.
+     * @param uiContext Context object containing common UI dependencies.
      */
-    public BaseSuggestionViewProcessor(
-            @NonNull Context context,
-            @NonNull SuggestionHost host,
-            @NonNull Optional<OmniboxImageSupplier> imageSupplier) {
-        mContext = context;
-        mSuggestionHost = host;
-        mImageSupplier = imageSupplier;
+    public BaseSuggestionViewProcessor(AutocompleteUIContext uiContext) {
+        mUiContext = uiContext;
+        mContext = uiContext.context;
+        mSuggestionHost = uiContext.host;
+        mImageSupplier = uiContext.imageSupplier;
         mDesiredFaviconWidthPx =
                 mContext.getResources()
                         .getDimensionPixelSize(R.dimen.omnibox_suggestion_favicon_size);
@@ -69,7 +71,11 @@ public abstract class BaseSuggestionViewProcessor implements SuggestionProcessor
         mSuggestionSizePx =
                 mContext.getResources()
                         .getDimensionPixelSize(R.dimen.omnibox_suggestion_content_height);
-        mActionChipsProcessor = new ActionChipsProcessor(host);
+        mActionChipsProcessor = new ActionChipsProcessor(uiContext.host, uiContext.actionDelegate);
+
+        mShouldShowRemoveButton =
+                DeviceFormFactor.isNonMultiDisplayContextOnTablet(mContext)
+                        && DeviceInput.supportsPrecisionPointer();
     }
 
     /**
@@ -102,7 +108,7 @@ public abstract class BaseSuggestionViewProcessor implements SuggestionProcessor
      * @param match AutocompleteMatch instance to retrieve fallback icon for
      * @return OmniboxDrawableState that can be immediately applied to suggestion view
      */
-    protected @NonNull OmniboxDrawableState getFallbackIcon(@NonNull AutocompleteMatch match) {
+    protected OmniboxDrawableState getFallbackIcon(AutocompleteMatch match) {
         int icon =
                 match.isSearchSuggestion()
                         ? R.drawable.ic_suggestion_magnifier
@@ -117,7 +123,7 @@ public abstract class BaseSuggestionViewProcessor implements SuggestionProcessor
      * @param decoration the OmniboxDrawableState to apply
      */
     protected void setOmniboxDrawableState(
-            @NonNull PropertyModel model, @NonNull OmniboxDrawableState decoration) {
+            PropertyModel model, @Nullable OmniboxDrawableState decoration) {
         model.set(BaseSuggestionViewProperties.ICON, decoration);
     }
 
@@ -127,12 +133,12 @@ public abstract class BaseSuggestionViewProcessor implements SuggestionProcessor
      * @param model Property model to update.
      * @param actions List of actions for the suggestion.
      */
-    protected void setActionButtons(@NonNull PropertyModel model, @Nullable List<Action> actions) {
+    protected void setActionButtons(PropertyModel model, @Nullable List<Action> actions) {
         model.set(BaseSuggestionViewProperties.ACTION_BUTTONS, actions);
     }
 
     /**
-     * Setup action icon base on the suggestion, either show query build arrow or switch to tab.
+     * Setup action icon as query build arrow.
      *
      * @param model Property model to update.
      * @param input The input to produce this suggestion.
@@ -140,41 +146,51 @@ public abstract class BaseSuggestionViewProcessor implements SuggestionProcessor
      * @param position The position of the button in the list.
      */
     @VisibleForTesting(otherwise = VisibleForTesting.PROTECTED)
-    public void setTabSwitchOrRefineAction(
-            @NonNull PropertyModel model,
-            @NonNull AutocompleteInput input,
-            @NonNull AutocompleteMatch suggestion,
+    public void setRemoveOrRefineAction(
+            PropertyModel model,
+            AutocompleteInput input,
+            AutocompleteMatch suggestion,
             int position) {
-        @DrawableRes int icon;
-        String iconString;
-        Runnable action;
-        if (suggestion.hasTabMatch() || suggestion.getType() == OmniboxSuggestionType.OPEN_TAB) {
-            // Hub doesn't have refine icons for switch-to-tab.
-            if (input.getPageClassification() == PageClassification.ANDROID_HUB_VALUE) {
-                return;
+        if (mShouldShowRemoveButton) {
+            if (suggestion.isDeletable()) {
+                setActionButtons(
+                        model,
+                        List.of(
+                                new Action(
+                                        OmniboxDrawableState.forSmallIcon(
+                                                mContext, R.drawable.btn_close, true),
+                                        OmniboxResourceProvider.getString(
+                                                mContext,
+                                                R.string.accessibility_omnibox_remove_suggestion),
+                                        null,
+                                        /* showOnlyOnFocus= */ true,
+                                        () -> {
+                                            RecordUserAction.record(
+                                                    "MobileOmniboxRemoveSuggestion.Button");
+                                            mSuggestionHost.deleteMatch(suggestion);
+                                        })));
             }
-            icon = R.drawable.switch_to_tab;
-            iconString =
-                    OmniboxResourceProvider.getString(
-                            mContext, R.string.accessibility_omnibox_switch_to_tab);
-            action = () -> mSuggestionHost.onSwitchToTab(suggestion, position);
-        } else {
-            iconString =
-                    OmniboxResourceProvider.getString(
-                            mContext,
-                            R.string.accessibility_omnibox_btn_refine,
-                            suggestion.getFillIntoEdit());
-            icon = R.drawable.btn_suggestion_refine;
-            action =
-                    () -> {
-                        if (suggestion.isSearchSuggestion()) {
-                            RecordUserAction.record("MobileOmniboxRefineSuggestion.Search");
-                        } else {
-                            RecordUserAction.record("MobileOmniboxRefineSuggestion.Url");
-                        }
-                        mSuggestionHost.onRefineSuggestion(suggestion);
-                    };
+            return;
         }
+
+        if (!suggestion.isRefineable()) return;
+
+        String iconString =
+                OmniboxResourceProvider.getString(
+                        mContext,
+                        R.string.accessibility_omnibox_btn_refine,
+                        suggestion.getFillIntoEdit());
+        @DrawableRes int icon = R.drawable.btn_suggestion_refine_up;
+
+        Runnable action =
+                () -> {
+                    if (suggestion.isSearchSuggestion()) {
+                        RecordUserAction.record("MobileOmniboxRefineSuggestion.Search");
+                    } else {
+                        RecordUserAction.record("MobileOmniboxRefineSuggestion.Url");
+                    }
+                    mSuggestionHost.onRefineSuggestion(suggestion);
+                };
         setActionButtons(
                 model,
                 List.of(
@@ -189,9 +205,10 @@ public abstract class BaseSuggestionViewProcessor implements SuggestionProcessor
      *
      * @param suggestion Selected suggestion.
      * @param position Position of the suggestion on the list.
+     * @param modifiers The modifier keys pressed during click/activation (metaState).
      */
-    protected void onSuggestionClicked(@NonNull AutocompleteMatch suggestion, int position) {
-        mSuggestionHost.onSuggestionClicked(suggestion, position, suggestion.getUrl());
+    protected void onSuggestionClicked(AutocompleteMatch suggestion, int position, int modifiers) {
+        mSuggestionHost.onSuggestionClicked(suggestion, position, suggestion.getUrl(), modifiers);
     }
 
     /**
@@ -199,8 +216,8 @@ public abstract class BaseSuggestionViewProcessor implements SuggestionProcessor
      *
      * @param suggestion Selected suggestion.
      */
-    protected void onSuggestionLongClicked(@NonNull AutocompleteMatch suggestion) {
-        mSuggestionHost.onDeleteMatch(suggestion, suggestion.getDisplayText());
+    protected void onSuggestionLongClicked(AutocompleteMatch suggestion) {
+        mSuggestionHost.confirmDeleteMatch(suggestion, suggestion.getDisplayText());
     }
 
     /**
@@ -208,28 +225,30 @@ public abstract class BaseSuggestionViewProcessor implements SuggestionProcessor
      *
      * @param suggestion Selected suggestion.
      * @param position Position of the suggesiton on the list.
+     * @param eventTime Uptime of the touch down event in milliseconds.
      */
-    protected void onSuggestionTouchDownEvent(@NonNull AutocompleteMatch suggestion, int position) {
+    protected void onSuggestionTouchDownEvent(
+            AutocompleteMatch suggestion, int position, long eventTime) {
         try (TimingMetric metric = OmniboxMetrics.recordTouchDownProcessTime()) {
-            mSuggestionHost.onSuggestionTouchDown(suggestion, position);
+            mSuggestionHost.onSuggestionTouchDown(suggestion, position, eventTime);
         }
     }
 
     @Override
     public void populateModel(
-            @NonNull AutocompleteInput input,
-            @NonNull AutocompleteMatch suggestion,
-            @NonNull PropertyModel model,
+            AutocompleteInput input,
+            AutocompleteMatch suggestion,
+            PropertyModel model,
             int position) {
         model.set(
-                BaseSuggestionViewProperties.ON_CLICK,
-                () -> onSuggestionClicked(suggestion, position));
+                BaseSuggestionViewProperties.ON_ACTIVATE,
+                (modifiers) -> onSuggestionClicked(suggestion, position, modifiers));
         model.set(
                 BaseSuggestionViewProperties.ON_LONG_CLICK,
                 () -> onSuggestionLongClicked(suggestion));
         model.set(
                 BaseSuggestionViewProperties.ON_FOCUS_VIA_SELECTION,
-                () -> mSuggestionHost.setOmniboxEditingText(suggestion.getFillIntoEdit()));
+                () -> mSuggestionHost.onSuggestionFocused(suggestion));
         setActionButtons(model, null);
 
         model.set(BaseSuggestionViewProperties.USE_LARGE_DECORATION, false);
@@ -240,14 +259,16 @@ public abstract class BaseSuggestionViewProcessor implements SuggestionProcessor
         model.set(BaseSuggestionViewProperties.TOP_PADDING, 0);
 
         if (OmniboxFeatures.isTouchDownTriggerForPrefetchEnabled()
-                && !OmniboxFeatures.isLowMemoryDevice()
+                && !OmniboxCapabilities.isLowMemoryDevice()
                 && suggestion.isSearchSuggestion()) {
             model.set(
                     BaseSuggestionViewProperties.ON_TOUCH_DOWN_EVENT,
-                    () -> onSuggestionTouchDownEvent(suggestion, position));
+                    (eventTime) -> onSuggestionTouchDownEvent(suggestion, position, eventTime));
         }
 
-        if (allowOmniboxActions()) {
+        // Action chips should not be provided in the hub.
+        if (input.getPageClassification() != PageClassification.ANDROID_HUB_VALUE
+                && allowOmniboxActions()) {
             mActionChipsProcessor.populateModel(suggestion, model, position);
         }
 
@@ -257,19 +278,45 @@ public abstract class BaseSuggestionViewProcessor implements SuggestionProcessor
         if (suggestion.isSearchSuggestion()) {
             fetchImage(model, suggestion.getImageUrl());
         }
+
+        // Action button should not be provided in the hub.
+        if (input.getPageClassification() != PageClassification.ANDROID_HUB_VALUE) {
+            addActionButtonIfAvailable(suggestion, model, position);
+        }
+    }
+
+    private void addActionButtonIfAvailable(
+            AutocompleteMatch suggestion, PropertyModel model, int position) {
+        for (var action : suggestion.getActions()) {
+            if (action.presentationMode != ActionPresentationMode.BUTTON) {
+                continue;
+            }
+            setActionButtons(
+                    model,
+                    List.of(
+                            new Action(
+                                    OmniboxDrawableState.forSmallIconWithIncognitoVariant(
+                                            mContext,
+                                            action.icon.buttonIconRes,
+                                            action.icon.incognitoButtonIconRes,
+                                            action.icon.tintWithTextColor),
+                                    action.accessibilityHint,
+                                    null,
+                                    () -> {
+                                        mSuggestionHost.onOmniboxActionClicked(action, position);
+                                    })));
+            // Only one action button is supported.
+            return;
+        }
     }
 
     @Override
     @CallSuper
-    public void onOmniboxSessionStateChange(boolean activated) {
-        mActionChipsProcessor.onOmniboxSessionStateChange(activated);
-    }
+    public void onOmniboxSessionStateChange(boolean activated) {}
 
     @Override
     @CallSuper
-    public void onSuggestionsReceived() {
-        mActionChipsProcessor.onSuggestionsReceived();
-    }
+    public void onSuggestionsReceived() {}
 
     /**
      * Apply In-Place highlight to matching sections of Suggestion text.
@@ -316,18 +363,16 @@ public abstract class BaseSuggestionViewProcessor implements SuggestionProcessor
      * @param model Model representing current suggestion.
      * @param url Target URL the suggestion points to.
      */
-    protected void fetchSuggestionFavicon(@NonNull PropertyModel model, @NonNull GURL url) {
-        mImageSupplier.ifPresent(
-                s ->
-                        s.fetchFavicon(
-                                url,
-                                icon -> {
-                                    if (icon != null) {
-                                        setOmniboxDrawableState(
-                                                model,
-                                                OmniboxDrawableState.forFavIcon(mContext, icon));
-                                    }
-                                }));
+    protected void fetchSuggestionFavicon(PropertyModel model, GURL url) {
+        if (mImageSupplier != null) {
+            mImageSupplier.fetchFavicon(
+                    url,
+                    icon -> {
+                        if (icon != null) {
+                            setOmniboxDrawableState(model, OmniboxDrawableState.forFavIcon(icon));
+                        }
+                    });
+        }
     }
 
     /**
@@ -337,17 +382,15 @@ public abstract class BaseSuggestionViewProcessor implements SuggestionProcessor
      * @param model the PropertyModel to update with retrieved image
      * @param imageUrl the URL of the image to retrieve and decode
      */
-    protected void fetchImage(@NonNull PropertyModel model, @NonNull GURL imageUrl) {
-        mImageSupplier.ifPresent(
-                s ->
-                        s.fetchImage(
-                                imageUrl,
-                                bitmap -> {
-                                    if (bitmap != null) {
-                                        setOmniboxDrawableState(
-                                                model,
-                                                OmniboxDrawableState.forImage(mContext, bitmap));
-                                    }
-                                }));
+    protected void fetchImage(PropertyModel model, GURL imageUrl) {
+        if (mImageSupplier != null) {
+            mImageSupplier.fetchImage(
+                    imageUrl,
+                    drawable -> {
+                        if (drawable != null) {
+                            setOmniboxDrawableState(model, OmniboxDrawableState.forImage(drawable));
+                        }
+                    });
+        }
     }
 }

@@ -9,7 +9,9 @@
 #include <optional>
 #include <utility>
 
+#include "base/memory/raw_ptr.h"
 #include "base/power_monitor/battery_level_provider.h"
+#include "base/sequence_checker.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "build/build_config.h"
@@ -59,6 +61,13 @@ class PowerMetricsReporter : public ProcessMonitor::Observer {
     return battery_state_;
   }
 
+  // ProcessMonitor::Observer:
+  // Public for testing.
+  void OnMetricsSampled(ProcessInfo::Key key,
+                        const ProcessMonitor::Metrics& metrics) override;
+  void OnAggregatedMetricsSampled(
+      const ProcessMonitor::Metrics& aggregated_process_metrics) override;
+
   static int64_t GetBucketForSampleForTesting(base::TimeDelta value);
 
  private:
@@ -72,12 +81,6 @@ class PowerMetricsReporter : public ProcessMonitor::Observer {
 
   // Called when the long interval ended.
   void OnLongIntervalEnd();
-
-  // ProcessMonitor::Observer:
-  void OnMetricsSampled(MonitoredProcessType type,
-                        const ProcessMonitor::Metrics& metrics) override;
-  void OnAggregatedMetricsSampled(
-      const ProcessMonitor::Metrics& aggregated_process_metrics) override;
 
   void OnBatteryAndAggregatedProcessMetricsSampled(
       const ProcessMonitor::Metrics& aggregated_process_metrics,

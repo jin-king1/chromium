@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "components/startup_metric_utils/browser/startup_metric_utils.h"
 
 #include <stddef.h>
@@ -19,10 +14,13 @@
 #include <vector>
 
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
 #include "base/dcheck_is_on.h"
 #include "base/location.h"
+#include "base/memory/page_size.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/notreached.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/strings/strcat.h"
 #include "base/threading/scoped_thread_priority.h"
 #include "base/trace_event/trace_event.h"
@@ -31,18 +29,19 @@
 
 #if BUILDFLAG(IS_WIN)
 #include <windows.h>
-
 #include <winternl.h>
 
-#include "base/win/win_util.h"
+#include "base/byte_size.h"
+#include "base/win/windows_handle_util.h"
+#elif BUILDFLAG(IS_MAC)
+#include <mach/mach.h>
+#include <mach/task.h>
+#elif BUILDFLAG(IS_LINUX)
+#include <sys/resource.h>
+#endif
 
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 namespace {
-
-// The signature of the NtQuerySystemInformation function.
-typedef NTSTATUS(WINAPI* NtQuerySystemInformationPtr)(SYSTEM_INFORMATION_CLASS,
-                                                      PVOID,
-                                                      ULONG,
-                                                      PULONG);
 
 // These values are taken from the
 // Startup.BrowserMessageLoopStartHardFaultCount histogram. The latest
@@ -63,6 +62,12 @@ constexpr uint32_t kWarmStartHardFaultCountThreshold = 5;
 // and split from chrome_child.dll) and was made 3500 in M81 when chrome.dll
 // was 126MB).
 constexpr uint32_t kColdStartHardFaultCountThreshold = 3500;
+
+}  // namespace
+#endif
+
+#if BUILDFLAG(IS_WIN)
+namespace {
 
 // The struct used to return system process information via the NT internal
 // QuerySystemInformation call. This is partially documented at
@@ -96,30 +101,8 @@ struct SYSTEM_PROCESS_INFORMATION_EX {
 namespace {
 const char kProcessType[] = "type";
 
-// An enumeration of startup temperatures. This must be kept in sync with
-// the UMA StartupType enumeration defined in histograms.xml.
-enum StartupTemperature {
-  // The startup was a cold start: nearly all of the binaries and resources
-  // were
-  // brought into memory using hard faults.
-  COLD_STARTUP_TEMPERATURE = 0,
-  // The startup was a warm start: the binaries and resources were mostly
-  // already resident in memory and effectively no hard faults were
-  // observed.
-  WARM_STARTUP_TEMPERATURE = 1,
-  // The startup type couldn't quite be classified as warm or cold, but
-  // rather
-  // was somewhere in between.
-  LUKEWARM_STARTUP_TEMPERATURE = 2,
-  // Startup temperature wasn't yet determined, or could not be determined.
-  UNDETERMINED_STARTUP_TEMPERATURE = 3,
-  // This must be after all meaningful values. All new values should be
-  // added
-  // above this one.
-  STARTUP_TEMPERATURE_COUNT,
-};
-
-StartupTemperature g_startup_temperature = UNDETERMINED_STARTUP_TEMPERATURE;
+startup_metric_utils::StartupTemperature g_startup_temperature =
+    startup_metric_utils::UNDETERMINED_STARTUP_TEMPERATURE;
 
 // Helper function for splitting out an UMA histogram based on startup
 // temperature. |histogram_function| is the histogram type, and corresponds to
@@ -144,20 +127,20 @@ void EmitHistogramWithTemperature(void (*histogram_function)(std::string_view,
   (*histogram_function)(histogram_basename, value);
   // Record to the cold/warm suffixed histogram as appropriate.
   switch (g_startup_temperature) {
-    case COLD_STARTUP_TEMPERATURE:
+    case startup_metric_utils::COLD_STARTUP_TEMPERATURE:
       (*histogram_function)(base::StrCat({histogram_basename, ".ColdStartup"}),
                             value);
       break;
-    case WARM_STARTUP_TEMPERATURE:
+    case startup_metric_utils::WARM_STARTUP_TEMPERATURE:
       (*histogram_function)(base::StrCat({histogram_basename, ".WarmStartup"}),
                             value);
       break;
-    case LUKEWARM_STARTUP_TEMPERATURE:
+    case startup_metric_utils::LUKEWARM_STARTUP_TEMPERATURE:
       // No suffix emitted for lukewarm startups.
       break;
-    case UNDETERMINED_STARTUP_TEMPERATURE:
+    case startup_metric_utils::UNDETERMINED_STARTUP_TEMPERATURE:
       break;
-    case STARTUP_TEMPERATURE_COUNT:
+    case startup_metric_utils::STARTUP_TEMPERATURE_COUNT:
       NOTREACHED();
   }
 }
@@ -165,6 +148,8 @@ void EmitHistogramWithTemperature(void (*histogram_function)(std::string_view,
 }  // namespace
 
 namespace startup_metric_utils {
+
+BrowserStartupMetricRecorder::BrowserStartupMetricRecorder() = default;
 
 void BrowserStartupMetricRecorder::EmitHistogramWithTemperatureAndTraceEvent(
     void (*histogram_function)(std::string_view, base::TimeDelta),
@@ -174,6 +159,31 @@ void BrowserStartupMetricRecorder::EmitHistogramWithTemperatureAndTraceEvent(
   EmitHistogramWithTemperature(histogram_function, histogram_basename,
                                end_ticks - begin_ticks);
   GetCommon().EmitTraceEvent(histogram_basename, begin_ticks, end_ticks);
+}
+
+void BrowserStartupMetricRecorder::EmitBrowserWindowDisplayHistogram() {
+  if (is_browser_window_display_metric_emitted_) {
+    return;
+  }
+
+  // The metric requires the message loop to have started so that the startup
+  // temperature evaluation has run.
+  if (browser_window_display_ticks_.is_null() ||
+      message_loop_start_ticks_.is_null()) {
+    return;
+  }
+
+  // Skip logging if the main window startup was interrupted, e.g., by
+  // --silent-launch, profile picker, or bad flags prompt.
+  if (!ShouldLogStartupHistogram()) {
+    return;
+  }
+
+  is_browser_window_display_metric_emitted_ = true;
+
+  EmitHistogramWithTemperatureAndTraceEvent(
+      &base::UmaHistogramLongTimes, "Startup.BrowserWindowDisplay",
+      GetCommon().application_start_ticks_, browser_window_display_ticks_);
 }
 
 BrowserStartupMetricRecorder& GetBrowser() {
@@ -195,29 +205,20 @@ BrowserStartupMetricRecorder& GetBrowser() {
 // be determined.
 std::optional<uint32_t>
 BrowserStartupMetricRecorder::GetHardFaultCountForCurrentProcess() {
-  // Get the function pointer.
-  static const NtQuerySystemInformationPtr query_sys_info =
-      reinterpret_cast<NtQuerySystemInformationPtr>(::GetProcAddress(
-          GetModuleHandle(L"ntdll.dll"), "NtQuerySystemInformation"));
-  if (query_sys_info == nullptr) {
-    return std::nullopt;
-  }
-
   // The output of this system call depends on the number of threads and
   // processes on the entire system, and this can change between calls. Retry
   // a small handful of times growing the buffer along the way.
   // NOTE: The actual required size depends entirely on the number of
-  // processes
-  //       and threads running on the system. The initial guess suffices for
-  //       ~100s of processes and ~1000s of threads.
-  std::vector<uint8_t> buffer(32 * 1024);
+  // processes and threads running on the system. The initial guess suffices for
+  // ~100s of processes and ~1000s of threads.
+  std::vector<uint8_t> buffer(base::KiBU(32).InBytes());
   constexpr int kMaxNumBufferResize = 2;
   int num_buffer_resize = 0;
   for (;;) {
     ULONG return_length = 0;
-    const NTSTATUS status =
-        query_sys_info(SystemProcessInformation, buffer.data(),
-                       static_cast<ULONG>(buffer.size()), &return_length);
+    const NTSTATUS status = ::NtQuerySystemInformation(
+        SystemProcessInformation, buffer.data(),
+        static_cast<ULONG>(buffer.size()), &return_length);
 
     // NtQuerySystemInformation succeeded.
     if (NT_SUCCESS(status)) {
@@ -229,16 +230,23 @@ BrowserStartupMetricRecorder::GetHardFaultCountForCurrentProcess() {
     if (return_length > buffer.size()) {
       // Abort if a large size is required for the buffer. It is undesirable
       // to fill a large buffer just to record histograms.
-      constexpr ULONG kMaxLength = 512 * 1024;
+#if defined(_WIN64)
+      constexpr ULONG kMaxLength =
+          base::MiBU(2).InBytes();  // 2 MB for 64-bit systems
+#else
+      constexpr ULONG kMaxLength =
+          base::KiBU(512).InBytes();  // 512 KB for 32-bit systems
+#endif
       if (return_length >= kMaxLength) {
         return std::nullopt;
       }
 
       // Resize the buffer and retry, if the buffer hasn't already been
-      // resized too many times.
+      // resized too many times. Use double the return length to have padding
+      // for new threads spawned in the meantime.
       if (num_buffer_resize < kMaxNumBufferResize) {
         ++num_buffer_resize;
-        buffer.resize(return_length);
+        buffer.resize(std::min(return_length * 2, kMaxLength));
         continue;
       }
     }
@@ -257,7 +265,8 @@ BrowserStartupMetricRecorder::GetHardFaultCountForCurrentProcess() {
   while (index < buffer.size()) {
     DCHECK_LE(index + sizeof(SYSTEM_PROCESS_INFORMATION_EX), buffer.size());
     SYSTEM_PROCESS_INFORMATION_EX* proc_info =
-        reinterpret_cast<SYSTEM_PROCESS_INFORMATION_EX*>(buffer.data() + index);
+        UNSAFE_TODO(reinterpret_cast<SYSTEM_PROCESS_INFORMATION_EX*>(
+            buffer.data() + index));
     if (base::win::HandleToUint32(proc_info->UniqueProcessId) == proc_id) {
       return proc_info->HardFaultCount;
     }
@@ -271,7 +280,32 @@ BrowserStartupMetricRecorder::GetHardFaultCountForCurrentProcess() {
 
   return std::nullopt;
 }
-#endif  // BUILDFLAG(IS_WIN)
+#elif BUILDFLAG(IS_MAC)
+std::optional<uint32_t>
+BrowserStartupMetricRecorder::GetHardFaultCountForCurrentProcess() {
+  task_events_info_data_t events_info;
+  mach_msg_type_number_t count = TASK_EVENTS_INFO_COUNT;
+  // TASK_EVENTS_INFO is passed to task_info() to retrieve event
+  // statistics for a task (such as page faults and pageins). See:
+  // https://github.com/apple-oss-distributions/xnu/blob/main/osfmk/mach/task_info.h
+  kern_return_t kr =
+      task_info(mach_task_self(), TASK_EVENTS_INFO,
+                reinterpret_cast<task_info_t>(&events_info), &count);
+  if (kr != KERN_SUCCESS) {
+    return std::nullopt;
+  }
+  return base::saturated_cast<uint32_t>(events_info.pageins);
+}
+#elif BUILDFLAG(IS_LINUX)
+std::optional<uint32_t>
+BrowserStartupMetricRecorder::GetHardFaultCountForCurrentProcess() {
+  struct rusage usage;
+  if (getrusage(RUSAGE_SELF, &usage) != 0) {
+    return std::nullopt;
+  }
+  return base::saturated_cast<uint32_t>(usage.ru_majflt);
+}
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
 void BrowserStartupMetricRecorder::ResetSessionForTesting() {
   GetCommon().ResetSessionForTesting();
@@ -283,6 +317,10 @@ void BrowserStartupMetricRecorder::ResetSessionForTesting() {
   browser_window_first_paint_ticks_ = base::TimeTicks();
   is_privacy_sandbox_attestations_component_ready_recorded_ = false;
   is_privacy_sandbox_attestations_first_check_recorded_ = false;
+  is_first_run_ = false;
+  is_browser_window_display_metric_emitted_ = false;
+  did_record_startup_fcp_ = false;
+  did_record_startup_lcp_ = false;
 }
 
 bool BrowserStartupMetricRecorder::WasMainWindowStartupInterrupted() const {
@@ -314,6 +352,7 @@ void BrowserStartupMetricRecorder::RecordBrowserMainMessageLoopStart(
     base::TimeTicks ticks,
     bool is_first_run) {
   DCHECK(!GetCommon().application_start_ticks_.is_null());
+  is_first_run_ = is_first_run;
 
   RecordMessageLoopStartTicks(ticks);
 
@@ -333,15 +372,10 @@ void BrowserStartupMetricRecorder::RecordBrowserMainMessageLoopStart(
         &base::UmaHistogramLongTimes100, "Startup.BrowserMessageLoopStartTime",
         GetCommon().application_start_ticks_, ticks);
   }
-
   GetCommon().AddStartupEventsForTelemetry();
 
   // Record values stored prior to startup temperature evaluation.
-  if (ShouldLogStartupHistogram() && !browser_window_display_ticks_.is_null()) {
-    EmitHistogramWithTemperatureAndTraceEvent(
-        &base::UmaHistogramLongTimes, "Startup.BrowserWindowDisplay",
-        GetCommon().application_start_ticks_, browser_window_display_ticks_);
-  }
+  EmitBrowserWindowDisplayHistogram();
 
   // Process creation to application start. See comment above
   // RecordApplicationStart().
@@ -388,6 +422,7 @@ void BrowserStartupMetricRecorder::RecordBrowserWindowDisplay(
     base::TimeTicks ticks) {
   DCHECK(!ticks.is_null());
 
+  // Return if it has already been recorded.
   if (!browser_window_display_ticks_.is_null()) {
     return;
   }
@@ -400,6 +435,8 @@ void BrowserStartupMetricRecorder::RecordBrowserWindowDisplay(
   // these cases, the value will not be recorded, which is the desired behavior
   // for a non-conventional launch.
   browser_window_display_ticks_ = ticks;
+
+  EmitBrowserWindowDisplayHistogram();
 }
 
 void BrowserStartupMetricRecorder::RecordBrowserWindowFirstPaintTicks(
@@ -432,6 +469,68 @@ void BrowserStartupMetricRecorder::RecordFirstWebContentsNonEmptyPaint(
       &base::UmaHistogramLongTimes100,
       "Startup.BrowserMessageLoopStart.To.NonEmptyPaint2",
       now - message_loop_start_ticks_);
+}
+
+void BrowserStartupMetricRecorder::
+    RecordFirstWebContentsNonEmptyPaintForOsLaunch(base::TimeTicks now) {
+  const base::TimeTicks web_contents_start_ticks = GetWebContentsStartTicks();
+  DCHECK(!web_contents_start_ticks.is_null());
+  GetCommon().AssertFirstCallInSession(FROM_HERE);
+
+  if (!ShouldLogStartupHistogram()) {
+    return;
+  }
+
+  base::UmaHistogramLongTimes100(
+      "Startup.FirstWebContents.NonEmptyPaint3.AutoLaunchByOs",
+      now - web_contents_start_ticks);
+}
+
+void BrowserStartupMetricRecorder::RecordFirstWebContentsFirstContentfulPaint(
+    base::TimeTicks fcp_ticks) {
+  if (did_record_startup_fcp_) {
+    return;
+  }
+
+  const base::TimeTicks web_contents_start_ticks = GetWebContentsStartTicks();
+  if (web_contents_start_ticks.is_null()) {
+    return;
+  }
+
+  if (!ShouldLogStartupHistogram()) {
+    return;
+  }
+
+  did_record_startup_fcp_ = true;
+
+  EmitHistogramWithTemperatureAndTraceEvent(
+      &base::UmaHistogramLongTimes100,
+      "Startup.FirstWebContents.FirstContentfulPaint", web_contents_start_ticks,
+      fcp_ticks);
+}
+
+void BrowserStartupMetricRecorder::RecordFirstWebContentsLargestContentfulPaint(
+    base::TimeTicks lcp_ticks) {
+  // Only record LCP if FCP was already recorded for the same page load.
+  if (!did_record_startup_fcp_ || did_record_startup_lcp_) {
+    return;
+  }
+
+  const base::TimeTicks web_contents_start_ticks = GetWebContentsStartTicks();
+  if (web_contents_start_ticks.is_null()) {
+    return;
+  }
+
+  if (!ShouldLogStartupHistogram()) {
+    return;
+  }
+
+  did_record_startup_lcp_ = true;
+
+  EmitHistogramWithTemperatureAndTraceEvent(
+      &base::UmaHistogramLongTimes100,
+      "Startup.FirstWebContents.LargestContentfulPaint",
+      web_contents_start_ticks, lcp_ticks);
 }
 
 void BrowserStartupMetricRecorder::RecordFirstWebContentsMainNavigationStart(
@@ -478,26 +577,10 @@ void BrowserStartupMetricRecorder::RecordBrowserWindowFirstPaint(
     return;
   }
 
-  base::TimeTicks latency_origin;
-#if BUILDFLAG(IS_CHROMEOS)
-  // `application_start_ticks_` is inappropriate since the device often boots
-  // to a login screen, and an indefinite amount of time can elapse before a
-  // browser window is opened. Even when restoring a session after a crash
-  // (which has no login screen), the session is not restored automatically.
-  // The user must click a notification first before browser windows are
-  // created and restored, so using `application_start_ticks_` would have the
-  // same issue.
-  //
-  // If `web_contents_start_ticks_` is not set here, that could be intentional
-  // as this metric should not be recorded in certain cases (ex: a manually
-  // opened browser window).
-  if (web_contents_start_ticks_.is_null()) {
+  base::TimeTicks latency_origin = GetApplicationStartTicksForStartup();
+  if (latency_origin.is_null()) {
     return;
   }
-  latency_origin = web_contents_start_ticks_;
-#else
-  latency_origin = GetCommon().application_start_ticks_;
-#endif  // BUILDFLAG(IS_CHROMEOS)
   DCHECK(!latency_origin.is_null());
 
   EmitHistogramWithTemperatureAndTraceEvent(&base::UmaHistogramLongTimes100,
@@ -511,7 +594,7 @@ void BrowserStartupMetricRecorder::RecordFirstRunSentinelCreation(
 }
 
 void BrowserStartupMetricRecorder::RecordHardFaultHistogram() {
-#if BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
   DCHECK_EQ(UNDETERMINED_STARTUP_TEMPERATURE, g_startup_temperature);
 
   const std::optional<uint32_t> hard_fault_count =
@@ -525,6 +608,11 @@ void BrowserStartupMetricRecorder::RecordHardFaultHistogram() {
     base::UmaHistogramCustomCounts(
         "Startup.BrowserMessageLoopStartHardFaultCount",
         hard_fault_count.value(), 1, 40000, 50);
+    int hard_fault_bytes = base::saturated_cast<int>(hard_fault_count.value() *
+                                                     base::GetPageSize());
+    base::UmaHistogramCustomCounts(
+        "Startup.BrowserMessageLoopStartHardFaultBytes", hard_fault_bytes, 1024,
+        1073741824, 50);
 
     // Determine the startup type based on the number of observed hard faults.
     if (hard_fault_count < kWarmStartHardFaultCountThreshold) {
@@ -546,11 +634,42 @@ void BrowserStartupMetricRecorder::RecordHardFaultHistogram() {
   // Record the startup 'temperature'.
   base::UmaHistogramEnumeration("Startup.Temperature", g_startup_temperature,
                                 STARTUP_TEMPERATURE_COUNT);
-#endif  // BUILDFLAG(IS_WIN)
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 }
 
 bool BrowserStartupMetricRecorder::ShouldLogStartupHistogram() const {
   return !WasMainWindowStartupInterrupted();
+}
+
+StartupTemperature BrowserStartupMetricRecorder::GetStartupTemperature() const {
+  return g_startup_temperature;
+}
+
+bool BrowserStartupMetricRecorder::IsFirstRun() const {
+  return is_first_run_;
+}
+
+base::TimeTicks
+BrowserStartupMetricRecorder::GetApplicationStartTicksForStartup() const {
+#if BUILDFLAG(IS_CHROMEOS)
+  // `application_start_ticks_` is inappropriate since the device often boots
+  // to a login screen, and an indefinite amount of time can elapse before a
+  // browser window is opened. Even when restoring a session after a crash
+  // (which has no login screen), the session is not restored automatically.
+  // The user must click a notification first before browser windows are
+  // created and restored, so using `application_start_ticks_` would have the
+  // same issue.
+  //
+  // If `web_contents_start_ticks_` is not set here, that could be intentional
+  // as this metric should not be recorded in certain cases (ex: a manually
+  // opened browser window).
+  if (web_contents_start_ticks_.is_null()) {
+    return base::TimeTicks();
+  }
+  return web_contents_start_ticks_;
+#else
+  return GetCommon().application_start_ticks_;
+#endif  // BUILDFLAG(IS_CHROMEOS)
 }
 
 #if BUILDFLAG(IS_CHROMEOS)

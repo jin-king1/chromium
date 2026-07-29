@@ -5,12 +5,15 @@
 #ifndef CHROME_BROWSER_BACKGROUND_GLIC_GLIC_LAUNCHER_CONFIGURATION_H_
 #define CHROME_BROWSER_BACKGROUND_GLIC_GLIC_LAUNCHER_CONFIGURATION_H_
 
+#include "base/functional/callback_forward.h"
+#include "base/memory/raw_ptr.h"
 #include "base/observer_list.h"
 #include "base/observer_list_types.h"
+#include "chrome/browser/shell_integration.h"
 #include "components/prefs/pref_change_registrar.h"
+#include "components/version_info/channel.h"
 #include "ui/base/accelerators/accelerator.h"
 
-class PrefRegistrySimple;
 namespace glic {
 
 // This class observes and reports changes to glic prefs such as the
@@ -21,20 +24,32 @@ class GlicLauncherConfiguration {
   class Observer : public base::CheckedObserver {
    public:
     virtual void OnEnabledChanged(bool enabled) {}
-    virtual void OnGlobalHotkeyChanged(ui::Accelerator hotkey) {}
+    virtual void OnGlobalHotkeyChanged() {}
   };
 
   explicit GlicLauncherConfiguration(Observer* manager);
   ~GlicLauncherConfiguration();
-
-  static void RegisterLocalStatePrefs(PrefRegistrySimple* registry);
 
   // Returns whether the glic launcher is enabled. If `is_default_value` is
   // provided, then it will be updated to reflect if the glic launcher enabled
   // pref is the default value.
   static bool IsEnabled(bool* is_default_value = nullptr);
 
-  static ui::Accelerator GetGlobalHotkey();
+  static ui::Accelerator GetToggleHotkey();
+
+  static ui::Accelerator GetSelectionHotkey();
+
+  // Checks if the browser is the default browser and enables the launcher if it
+  // is.
+  static void CheckDefaultBrowserToEnableLauncher();
+
+  // Callback for checking if the browser is the default browser.
+  static void OnCheckIsDefaultBrowserFinished(
+      version_info::Channel channel,
+      shell_integration::DefaultWebClientState state);
+
+  static void SetCheckDefaultBrowserCallbackForTesting(
+      base::RepeatingClosure callback);
 
  private:
   void OnEnabledPrefChanged();

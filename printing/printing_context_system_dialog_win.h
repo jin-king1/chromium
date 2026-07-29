@@ -11,9 +11,10 @@
 
 #include <string>
 
+#include "base/containers/span.h"
 #include "printing/mojom/print.mojom.h"
 #include "printing/printing_context_win.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 
 namespace printing {
 
@@ -21,7 +22,7 @@ class COMPONENT_EXPORT(PRINTING) PrintingContextSystemDialogWin
     : public PrintingContextWin {
  public:
   PrintingContextSystemDialogWin(Delegate* delegate,
-                                 ProcessBehavior process_behavior);
+                                 OutOfProcessBehavior out_of_process_behavior);
   PrintingContextSystemDialogWin(const PrintingContextSystemDialogWin&) =
       delete;
   PrintingContextSystemDialogWin& operator=(
@@ -45,8 +46,7 @@ class COMPONENT_EXPORT(PRINTING) PrintingContextSystemDialogWin
   // its margins.
   bool InitializeSettingsWithRanges(const DEVMODE& dev_mode,
                                     const std::wstring& new_device_name,
-                                    const PRINTPAGERANGE* ranges,
-                                    int number_ranges,
+                                    base::span<const PRINTPAGERANGE> pages_span,
                                     bool selection_only);
 
   // Parses the result of a PRINTDLGEX result.

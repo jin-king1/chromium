@@ -25,16 +25,13 @@ const char kSenderFrameIdKey[] = "sender_frame";
 }  // namespace
 
 JavaScriptConsoleFeature::JavaScriptConsoleFeature()
-    : JavaScriptFeature(
-          web::ContentWorld::kPageContentWorld,
-          {FeatureScript::CreateWithFilename(
-              kScriptName,
-              FeatureScript::InjectionTime::kDocumentStart,
-              FeatureScript::TargetFrames::kAllFrames,
-              FeatureScript::ReinjectionBehavior::
-                  kReinjectOnDocumentRecreation)},
-          {web::java_script_features::GetCommonJavaScriptFeature(),
-           web::java_script_features::GetMessageJavaScriptFeature()}) {}
+    : JavaScriptFeature(web::ContentWorld::kPageContentWorld,
+                        {FeatureScript::CreateWithFilename(
+                            kScriptName,
+                            FeatureScript::InjectionTime::kDocumentStart,
+                            FeatureScript::TargetFrames::kAllFrames,
+                            FeatureScript::ReinjectionBehavior::
+                                kReinjectOnDocumentRecreation)}) {}
 
 JavaScriptConsoleFeature::~JavaScriptConsoleFeature() = default;
 
@@ -56,8 +53,9 @@ void JavaScriptConsoleFeature::ScriptMessageReceived(
     return;
   }
 
-  const base::Value::Dict* script_dict =
-      script_message.body() ? script_message.body()->GetIfDict() : nullptr;
+  const base::DictValue* script_dict =
+      script_message.legacy_body() ? script_message.legacy_body()->GetIfDict()
+                                   : nullptr;
   if (!script_dict) {
     return;
   }

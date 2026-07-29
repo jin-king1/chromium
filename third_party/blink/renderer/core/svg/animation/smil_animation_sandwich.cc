@@ -28,7 +28,6 @@
 #include <algorithm>
 
 #include "base/compiler_specific.h"
-#include "base/not_fatal_until.h"
 #include "third_party/blink/renderer/core/svg/animation/smil_animation_value.h"
 #include "third_party/blink/renderer/core/svg/svg_animation_element.h"
 
@@ -56,7 +55,7 @@ void SMILAnimationSandwich::Add(SVGAnimationElement* animation) {
 
 void SMILAnimationSandwich::Remove(SVGAnimationElement* animation) {
   auto position = std::ranges::find(sandwich_, animation);
-  CHECK(sandwich_.end() != position, base::NotFatalUntil::M130);
+  CHECK(sandwich_.end() != position);
   sandwich_.erase(position);
   // Clear the animated value when there are active animation elements but the
   // sandwich is empty.
@@ -68,10 +67,8 @@ void SMILAnimationSandwich::Remove(SVGAnimationElement* animation) {
 
 void SMILAnimationSandwich::UpdateActiveAnimationStack(
     SMILTime presentation_time) {
-  if (!std::is_sorted(sandwich_.begin(), sandwich_.end(),
-                      PriorityCompare(presentation_time))) {
-    std::sort(sandwich_.begin(), sandwich_.end(),
-              PriorityCompare(presentation_time));
+  if (!std::ranges::is_sorted(sandwich_, PriorityCompare(presentation_time))) {
+    std::ranges::sort(sandwich_, PriorityCompare(presentation_time));
   }
 
   const bool was_active = !active_.empty();
@@ -99,11 +96,11 @@ bool SMILAnimationSandwich::ApplyAnimationValues() {
   // Only calculate the relevant animations. If we actually set the
   // animation value, we don't need to calculate what is beneath it
   // in the sandwich.
-  auto sandwich_start = active_.end();
-  while (sandwich_start != active_.begin()) {
-    UNSAFE_TODO(--sandwich_start);
-    if ((*sandwich_start)->OverwritesUnderlyingAnimationValue())
+  wtf_size_t sandwich_start = active_.size();
+  while (sandwich_start != 0) {
+    if (active_[--sandwich_start]->OverwritesUnderlyingAnimationValue()) {
       break;
+    }
   }
 
   // For now we need an element to setup and apply an animation. Any animation
@@ -115,9 +112,8 @@ bool SMILAnimationSandwich::ApplyAnimationValues() {
   // contributes to a particular element/attribute pair.
   SMILAnimationValue animation_value = animation->CreateAnimationValue();
 
-  for (auto sandwich_it = sandwich_start; sandwich_it != active_.end();
-       UNSAFE_TODO(sandwich_it++)) {
-    (*sandwich_it)->ApplyAnimation(animation_value);
+  for (; sandwich_start < active_.size(); ++sandwich_start) {
+    active_[sandwich_start]->ApplyAnimation(animation_value);
   }
 
   animation->ApplyResultsToTarget(animation_value);

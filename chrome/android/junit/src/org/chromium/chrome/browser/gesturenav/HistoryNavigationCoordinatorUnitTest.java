@@ -4,6 +4,7 @@
 
 package org.chromium.chrome.browser.gesturenav;
 
+import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -21,16 +22,15 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
-import org.chromium.base.supplier.Supplier;
+import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.base.test.util.Features;
-import org.chromium.chrome.browser.ActivityTabProvider;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.base.test.util.DisabledTest;
 import org.chromium.chrome.browser.fullscreen.FullscreenManager;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
-import org.chromium.chrome.test.AutomotiveContextWrapperTestRule;
+import org.chromium.chrome.test.OverrideContextWrapperTestRule;
 import org.chromium.components.browser_ui.widget.TouchEventProvider;
 import org.chromium.ui.base.TestActivity;
+import org.chromium.ui.insets.InsetObserver;
 
 @RunWith(BaseRobolectricTestRunner.class)
 public class HistoryNavigationCoordinatorUnitTest {
@@ -39,8 +39,8 @@ public class HistoryNavigationCoordinatorUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Rule
-    public AutomotiveContextWrapperTestRule mAutomotiveContextWrapperTestRule =
-            new AutomotiveContextWrapperTestRule();
+    public OverrideContextWrapperTestRule mAutomotiveContextWrapperTestRule =
+            new OverrideContextWrapperTestRule();
 
     @Rule
     public ActivityScenarioRule<TestActivity> mActivityScenarioRule =
@@ -48,10 +48,9 @@ public class HistoryNavigationCoordinatorUnitTest {
 
     @Mock private ActivityLifecycleDispatcher mLifecycleDispatcher;
     @Mock private ViewGroup mParentView;
-    @Mock private ActivityTabProvider mTab;
-    @Mock private Supplier<TouchEventProvider> mTouchEventProviderSupplier;
     @Mock private TouchEventProvider mTouchEventProvider;
     @Mock private FullscreenManager mFullscreenManager;
+    @Mock private InsetObserver mInsetObserver;
 
     @Captor private ArgumentCaptor<FullscreenManager.Observer> mFullscreenObserverCaptor;
 
@@ -62,7 +61,6 @@ public class HistoryNavigationCoordinatorUnitTest {
 
     private void onActivity(TestActivity activity) {
         when(mParentView.getContext()).thenReturn(activity);
-        when(mTouchEventProviderSupplier.get()).thenReturn(mTouchEventProvider);
     }
 
     private void initializeHistoryNavigationCoordinator() {
@@ -72,15 +70,15 @@ public class HistoryNavigationCoordinatorUnitTest {
                         mLifecycleDispatcher,
                         mParentView,
                         null,
-                        mTab,
+                        ObservableSuppliers.alwaysNull(),
+                        mInsetObserver,
                         null,
-                        null,
-                        mTouchEventProviderSupplier,
+                        mTouchEventProvider,
                         mFullscreenManager);
     }
 
     @Test
-    @Features.EnableFeatures({ChromeFeatureList.AUTOMOTIVE_FULLSCREEN_TOOLBAR_IMPROVEMENTS})
+    @DisabledTest // This needs to be re-worked for Q.
     public void testFullscreenObserver_onEnterAndOnExit() {
         mAutomotiveContextWrapperTestRule.setIsAutomotive(true);
         initializeHistoryNavigationCoordinator();
@@ -92,5 +90,24 @@ public class HistoryNavigationCoordinatorUnitTest {
         verify(mTouchEventProvider).removeTouchEventObserver(navigationHandler);
         mFullscreenObserverCaptor.getValue().onExitFullscreen(null);
         verify(mTouchEventProvider).addTouchEventObserver(navigationHandler);
+    }
+
+    @Test
+    public void testWindowResizing_stopsOnScroll() {
+        initializeHistoryNavigationCoordinator();
+        mHistoryNavigationCoordinator.initNavigationHandler();
+        NavigationHandler navigationHandler =
+                mHistoryNavigationCoordinator.getNavigationHandlerForTesting();
+
+        when(mParentView.getWidth()).thenReturn(100);
+        when(mParentView.getHeight()).thenReturn(200);
+        navigationHandler.onDown();
+
+        // Simulate resizing the window.
+        when(mParentView.getWidth()).thenReturn(150);
+        when(mParentView.getHeight()).thenReturn(200);
+
+        boolean handled = navigationHandler.onScroll(0f, 10f, 0f, 10f, 0f);
+        assertTrue(handled);
     }
 }

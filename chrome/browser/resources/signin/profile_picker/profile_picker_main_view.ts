@@ -2,17 +2,22 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import 'chrome://resources/cr_elements/cr_button/cr_button.js';
+import 'chrome://resources/cr_elements/cr_checkbox/cr_checkbox.js';
+import 'chrome://resources/cr_elements/cr_dialog/cr_dialog.js';
 import 'chrome://resources/cr_elements/cr_icon_button/cr_icon_button.js';
 import 'chrome://resources/cr_elements/cr_icon/cr_icon.js';
+import 'chrome://resources/cr_elements/cr_toggle/cr_toggle.js';
 import 'chrome://resources/cr_elements/icons.html.js';
-import 'chrome://resources/cr_elements/cr_checkbox/cr_checkbox.js';
 import './icons.html.js';
 import './profile_card.js';
 import '/strings.m.js';
+import './signin_error_dialog.js';
 
 import {HelpBubbleMixinLit} from 'chrome://resources/cr_components/help_bubble/help_bubble_mixin_lit.js';
+import type {CrButtonElement} from 'chrome://resources/cr_elements/cr_button/cr_button.js';
 import type {CrCheckboxElement} from 'chrome://resources/cr_elements/cr_checkbox/cr_checkbox.js';
-import type {CrDialogElement} from 'chrome://resources/cr_elements/cr_dialog/cr_dialog.js';
+import type {CrToggleElement} from 'chrome://resources/cr_elements/cr_toggle/cr_toggle.js';
 import {I18nMixinLit} from 'chrome://resources/cr_elements/i18n_mixin_lit.js';
 import {WebUiListenerMixinLit} from 'chrome://resources/cr_elements/web_ui_listener_mixin_lit.js';
 import {assert} from 'chrome://resources/js/assert.js';
@@ -26,19 +31,20 @@ import {DragDropReorderTileListDelegate} from './drag_drop_reorder_tile_list_del
 import type {ManageProfilesBrowserProxy, ProfileState} from './manage_profiles_browser_proxy.js';
 import {ManageProfilesBrowserProxyImpl} from './manage_profiles_browser_proxy.js';
 import {navigateTo, NavigationMixin, Routes} from './navigation_mixin.js';
-import {isAskOnStartupAllowed, isGlicVersion, isProfileCreationAllowed} from './profile_picker_flags.js';
+import {isAskOnStartupAllowed, isGlicVersion, isProfileCreationAllowed, isUseRefreshedUI} from './profile_picker_flags.js';
 import {getCss} from './profile_picker_main_view.css.js';
 import {getHtml} from './profile_picker_main_view.html.js';
+import type {SigninErrorDialogElement} from './signin_error_dialog.js';
 
 export interface ProfilePickerMainViewElement {
   $: {
-    addProfile: HTMLElement,
-    askOnStartup: CrCheckboxElement,
-    'product-logo': HTMLElement,
+    addProfile: CrButtonElement,
+    askOnStartup: CrCheckboxElement|CrToggleElement,
+    pickerLogo: HTMLElement,
     browseAsGuestButton: HTMLElement,
     profilesContainer: HTMLElement,
     profilesWrapper: HTMLElement,
-    forceSigninErrorDialog: CrDialogElement,
+    signinErrorDialog: SigninErrorDialogElement,
   };
 }
 
@@ -70,26 +76,27 @@ export class ProfilePickerMainViewElement extends
       askOnStartup_: {type: Boolean},
       guestModeEnabled_: {type: Boolean},
       profileCreationAllowed_: {type: Boolean},
-      forceSigninErrorDialogTitle_: {type: String},
-      forceSigninErrorDialogBody_: {type: String},
-      forceSigninErrorProfilePath_: {type: String},
-      shouldShownSigninButton_: {type: Boolean},
-
+      pickerButtonsDisabled_: {type: Boolean},
       // Exposed to CSS as 'is-glic_'.
       isGlic_: {type: Boolean, reflect: true},
+      // Exposed to CSS as 'is-refreshed-ui_'.
+      isRefreshedUI_: {type: Boolean, reflect: true},
+      webuiRoundedIconsEnabled_: {type: Boolean},
     };
   }
 
-  protected profilesList_: ProfileState[] = [];
-  protected profilesListLoaded_: boolean = false;
-  protected hideAskOnStartup_: boolean = false;
-  protected askOnStartup_: boolean = loadTimeData.getBoolean('askOnStartup');
+  protected accessor profilesList_: ProfileState[] = [];
+  protected accessor profilesListLoaded_: boolean = false;
+  protected accessor hideAskOnStartup_: boolean = false;
+  protected accessor askOnStartup_: boolean =
+      loadTimeData.getBoolean('askOnStartup');
   // Initial value when the page is rendered.
   // Potentially updated on profile addition/removal/sign-in.
-  protected guestModeEnabled_: boolean =
+  protected accessor guestModeEnabled_: boolean =
       loadTimeData.getBoolean('isGuestModeEnabled');
-  protected profileCreationAllowed_: boolean = isProfileCreationAllowed();
-  protected isGlic_: boolean = isGlicVersion();
+  protected accessor profileCreationAllowed_: boolean =
+      isProfileCreationAllowed();
+  protected accessor isGlic_: boolean = isGlicVersion();
   private manageProfilesBrowserProxy_: ManageProfilesBrowserProxy =
       ManageProfilesBrowserProxyImpl.getInstance();
   private resizeObserver_: ResizeObserver|null = null;
@@ -98,21 +105,13 @@ export class ProfilePickerMainViewElement extends
   private dragDelegate_: DragDropReorderTileListDelegate|null = null;
   private dragDuration_: number = 300;
 
-  // TODO(crbug.com/40280498): Move the dialog into it's own element with the
-  // below members. This dialog state should be independent of the Profile
-  // Picker itself.
-  protected forceSigninErrorDialogTitle_: string = '';
-  protected forceSigninErrorDialogBody_: string = '';
-  private forceSigninErrorProfilePath_: string = '';
-  protected shouldShownSigninButton_: boolean = false;
+  protected accessor pickerButtonsDisabled_: boolean = false;
+
+  protected accessor isRefreshedUI_: boolean = isUseRefreshedUI();
+  protected accessor webuiRoundedIconsEnabled_: boolean =
+      loadTimeData.getBoolean('webuiRoundedIconsEnabled');
 
   private eventTracker_: EventTracker = new EventTracker();
-
-  override firstUpdated() {
-    this.addEventListener('view-enter-finish', this.onViewEnterFinish_);
-
-    this.addEventListener('toggle-drag', this.toggleDrag_);
-  }
 
   override connectedCallback() {
     super.connectedCallback();
@@ -121,10 +120,9 @@ export class ProfilePickerMainViewElement extends
         'profiles-list-changed', this.handleProfilesListChanged_.bind(this));
     this.addWebUiListener(
         'profile-removed', this.handleProfileRemoved_.bind(this));
-    this.addWebUiListener(
-        'display-force-signin-error-dialog',
-        (title: string, body: string, profilePath: string) =>
-            this.showForceSigninErrorDialog(title, body, profilePath));
+    this.addWebUiListener('reset-picker-buttons', () => {
+      this.enableAllPickerButtons_();
+    });
     if (!this.isGlic_) {
       this.addWebUiListener(
           'guest-mode-availability-updated',
@@ -133,10 +131,25 @@ export class ProfilePickerMainViewElement extends
     this.manageProfilesBrowserProxy_.initializeMainView();
   }
 
+  override disconnectedCallback() {
+    super.disconnectedCallback();
+    if (this.resizeObserver_) {
+      this.resizeObserver_.disconnect();
+    }
+
+    if (this.dragDelegate_) {
+      this.dragDelegate_.clearListeners();
+    }
+  }
+
   override willUpdate(changedProperties: PropertyValues<this>) {
     super.willUpdate(changedProperties);
 
     this.hideAskOnStartup_ = this.computeHideAskOnStartup_();
+  }
+
+  override firstUpdated() {
+    this.addEventListener('view-enter-finish', this.onViewEnterFinish_);
   }
 
   override updated(changedProperties: PropertyValues<this>) {
@@ -155,19 +168,11 @@ export class ProfilePickerMainViewElement extends
     }
   }
 
-  override disconnectedCallback() {
-    super.disconnectedCallback();
-    if (this.resizeObserver_) {
-      this.resizeObserver_.disconnect();
-    }
-
-    if (this.dragDelegate_) {
-      this.dragDelegate_.clearListeners();
-    }
-  }
-
   override onRouteChange(route: Routes) {
     if (route === Routes.MAIN) {
+      // Every time we go back to the main route, we re-enable all the profile
+      // card buttons.
+      this.enableAllPickerButtons_();
       return;
     }
     this.previousRoute_ = route;
@@ -199,7 +204,12 @@ export class ProfilePickerMainViewElement extends
   }
 
   protected onProductLogoClick_() {
-    this.$['product-logo'].animate(
+    // No animation for Glic logo version.
+    if (this.isGlic_) {
+      return;
+    }
+
+    this.$.pickerLogo.animate(
         {
           transform: ['none', 'rotate(-10turn)'],
         },
@@ -235,7 +245,7 @@ export class ProfilePickerMainViewElement extends
   /**
    * Called when the user modifies 'Ask on startup' preference.
    */
-  protected onAskOnStartupChangedByUser_(e: CustomEvent<{value: boolean}>) {
+  protected onAskOnStartupCheckedChanged_(e: CustomEvent<{value: boolean}>) {
     if (this.hideAskOnStartup_) {
       return;
     }
@@ -248,6 +258,8 @@ export class ProfilePickerMainViewElement extends
     if (!isProfileCreationAllowed()) {
       return;
     }
+
+    this.disableAllPickerButtons_();
     chrome.metricsPrivate.recordUserAction('ProfilePicker_AddClicked');
     navigateTo(Routes.NEW_PROFILE);
   }
@@ -275,7 +287,6 @@ export class ProfilePickerMainViewElement extends
     const index = this.profilesList_.findIndex(
         profile => profile.profilePath === profilePath);
     assert(index !== -1);
-    // TODO(crbug.com/40123459): Add animation.
     this.profilesList_.splice(index, 1);
     this.requestUpdate();
   }
@@ -284,13 +295,30 @@ export class ProfilePickerMainViewElement extends
     return !isAskOnStartupAllowed() || this.profilesList_.length < 2;
   }
 
-  private toggleDrag_(e: Event) {
+  protected onToggleDrag_(e: CustomEvent<{toggle: boolean}>) {
     if (!this.dragDelegate_) {
       return;
     }
 
-    const customEvent = e as CustomEvent;
-    this.dragDelegate_.toggleDrag(customEvent.detail.toggle);
+    this.dragDelegate_.toggleDrag(e.detail.toggle);
+  }
+
+  protected onDisableAllPickerButtons_() {
+    this.disableAllPickerButtons_();
+  }
+
+  private disableAllPickerButtons_() {
+    this.pickerButtonsDisabled_ = true;
+    if (this.dragDelegate_) {
+      this.dragDelegate_.toggleDrag(false);
+    }
+  }
+
+  private enableAllPickerButtons_() {
+    this.pickerButtonsDisabled_ = false;
+    if (this.dragDelegate_) {
+      this.dragDelegate_.toggleDrag(true);
+    }
   }
 
   // Redirects the call to the handler, to create/use a browser to show the
@@ -301,51 +329,43 @@ export class ProfilePickerMainViewElement extends
   }
 
   protected getTitle_(): TrustedHTML {
-    const titleStringResouce = this.isProfileListLoadedAndEmpty_() ?
-        'glicTitleNoProfile' :
-        'mainViewTitle';
-    // Special styling through 'class' attribute in some version of the title.
-    return this.i18nAdvanced(titleStringResouce, {attrs: ['class']});
-  }
+    return this.i18nAdvanced(
+        this.isProfileListLoadedAndEmptyAndGlic_() ? 'glicTitleNoProfile' :
+                                                     'mainViewTitle',
+        // Special styling through 'class' attribute in some version of the
+        // title.
+        {attrs: ['class']});
+    }
 
   protected getSubtitle_(): TrustedHTML {
-    const subtitleStringResource = this.isProfileListLoadedAndEmpty_() ?
-        'mainViewSubtitleGlicNoProfile' :
-        'mainViewSubtitle';
-    // Special tagging through 'class' attribute in some version of the
-    // subtitle.
-    return this.i18nAdvanced(subtitleStringResource, {attrs: ['class']});
-  }
+    return this.i18nAdvanced(
+        this.isProfileListLoadedAndEmptyAndGlic_() ?
+            'mainViewSubtitleGlicNoProfile' :
+            'mainViewSubtitle',
+        // Special styling through 'class' attribute in some version of the
+        // subtitle.
+        {attrs: ['class']});
+    }
 
   protected shouldHideProfilesWrapper_(): boolean {
     if (!this.profilesListLoaded_) {
       return true;
     }
 
-    return this.isProfileListLoadedAndEmpty_();
+    return this.isProfileListLoadedAndEmptyAndGlic_();
   }
 
   protected shouldHideFooterText_(): boolean {
-    if (this.isProfileListLoadedAndEmpty_()) {
+    if (this.isProfileListLoadedAndEmptyAndGlic_()) {
       return true;
     }
 
     return !isGlicVersion();
   }
 
-  // This should only return true if the shown version is the Glic version. The
-  // regular version does not support having no profiles available (if the list
-  // is loaded).
-  private isProfileListLoadedAndEmpty_(): boolean {
-    if (!this.profilesListLoaded_) {
-      return false;
-    }
-
-    const isProfileListEmpty = this.profilesList_.length === 0;
-    assert(
-        !isProfileListEmpty || isGlicVersion(),
-        'Only Glic version supports empty profile list');
-    return isProfileListEmpty;
+  private isProfileListLoadedAndEmptyAndGlic_(): boolean {
+    return this.profilesListLoaded_ && this.profilesList_.length === 0 &&
+        isGlicVersion();
   }
 
   private updateLearnMoreLinkEvents_(): void {
@@ -390,34 +410,6 @@ export class ProfilePickerMainViewElement extends
 
   getProfileListForTesting(): ProfileState[] {
     return this.profilesList_;
-  }
-
-  showForceSigninErrorDialog(title: string, body: string, profilePath: string):
-      void {
-    this.forceSigninErrorDialogTitle_ = title;
-    this.forceSigninErrorDialogBody_ = body;
-    this.forceSigninErrorProfilePath_ = profilePath;
-    this.shouldShownSigninButton_ = profilePath.length !== 0;
-    this.$.forceSigninErrorDialog.showModal();
-  }
-
-  protected onForceSigninErrorDialogOkButtonClicked_(): void {
-    this.$.forceSigninErrorDialog.close();
-    this.clearErrorDialogInfo_();
-  }
-
-  protected onReauthClicked_(): void {
-    this.$.forceSigninErrorDialog.close();
-    this.manageProfilesBrowserProxy_.launchSelectedProfile(
-        this.forceSigninErrorProfilePath_);
-    this.clearErrorDialogInfo_();
-  }
-
-  private clearErrorDialogInfo_(): void {
-    this.forceSigninErrorDialogTitle_ = '';
-    this.forceSigninErrorDialogBody_ = '';
-    this.forceSigninErrorProfilePath_ = '';
-    this.shouldShownSigninButton_ = false;
   }
 }
 

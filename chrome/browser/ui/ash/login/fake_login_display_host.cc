@@ -6,7 +6,10 @@
 
 #include "base/notreached.h"
 #include "chrome/browser/ash/login/wizard_controller.h"
+#include "chrome/browser/global_features.h"
 #include "chrome/browser/ui/webui/ash/login/user_creation_screen_handler.h"
+#include "chrome/test/base/testing_browser_process.h"
+#include "components/session_manager/core/fake_session_manager_delegate.h"
 #include "components/session_manager/core/session_manager.h"
 
 namespace ash {
@@ -27,13 +30,17 @@ class FakeLoginDisplayHost::FakeBaseScreen : public BaseScreen {
   void HideImpl() override {}
 };
 
-FakeLoginDisplayHost::FakeLoginDisplayHost()
+FakeLoginDisplayHost::FakeLoginDisplayHost(PrefService* local_state)
     : wizard_context_(std::make_unique<WizardContext>()),
-      oobe_metrics_helper_(std::make_unique<OobeMetricsHelper>()) {
+      oobe_metrics_helper_(std::make_unique<OobeMetricsHelper>(
+          local_state ? local_state
+                      : TestingBrowserProcess::GetGlobal()->local_state(),
+          /*metrics_service=*/nullptr)) {
   // Only one SessionManager can be instantiated at a time. Check to see if one
   // has already been instantiated before creating one.
   if (!session_manager::SessionManager::Get()) {
-    session_manager_ = std::make_unique<session_manager::SessionManager>();
+    session_manager_ = std::make_unique<session_manager::SessionManager>(
+        std::make_unique<session_manager::FakeSessionManagerDelegate>());
   }
 }
 
@@ -75,8 +82,20 @@ void FakeLoginDisplayHost::StartWizard(OobeScreenId first_screen) {
   if (wizard_controller_) {
     wizard_controller_->AdvanceToScreen(first_screen);
   } else {
-    wizard_controller_ =
-        std::make_unique<WizardController>(wizard_context_.get());
+    wizard_controller_ = std::make_unique<WizardController>(
+        TestingBrowserProcess::GetGlobal()->local_state(),
+        TestingBrowserProcess::GetGlobal()->metrics_service(),
+        TestingBrowserProcess::GetGlobal()
+            ->GetFeatures()
+            ->application_locale_storage(),
+        TestingBrowserProcess::GetGlobal()->shared_url_loader_factory(),
+        TestingBrowserProcess::GetGlobal()
+            ->platform_part()
+            ->browser_policy_connector_ash(),
+        TestingBrowserProcess::GetGlobal()
+            ->platform_part()
+            ->component_manager_ash(),
+        wizard_context_.get());
 
     fake_screen_ = std::make_unique<FakeBaseScreen>(first_screen);
     wizard_controller_->SetCurrentScreenForTesting(fake_screen_.get());

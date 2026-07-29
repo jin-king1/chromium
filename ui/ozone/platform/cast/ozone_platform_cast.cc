@@ -21,7 +21,7 @@
 #include "ui/events/ozone/evdev/event_factory_evdev.h"
 #include "ui/events/ozone/layout/keyboard_layout_engine_manager.h"
 #include "ui/events/ozone/layout/stub/stub_keyboard_layout_engine.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/ozone/platform/cast/overlay_manager_cast.h"
 #include "ui/ozone/platform/cast/platform_window_cast.h"
 #include "ui/ozone/platform/cast/surface_factory_cast.h"
@@ -115,9 +115,9 @@ class OzonePlatformCast : public OzonePlatform {
     return std::make_unique<InputMethodMinimal>(ime_key_event_dispatcher);
   }
 
-  bool IsNativePixmapConfigSupported(gfx::BufferFormat format,
+  bool IsNativePixmapConfigSupported(viz::SharedImageFormat format,
                                      gfx::BufferUsage usage) const override {
-    return format == gfx::BufferFormat::BGRA_8888 &&
+    return format == viz::SinglePlaneFormat::kBGRA_8888 &&
            usage == gfx::BufferUsage::SCANOUT;
   }
 
@@ -128,14 +128,10 @@ class OzonePlatformCast : public OzonePlatform {
     cursor_factory_ = std::make_unique<CursorFactory>();
     gpu_platform_support_host_.reset(CreateStubGpuPlatformSupportHost());
 
-    // Enable dummy software rendering support if GPU process disabled
-    // or if we're an audio-only build.
+    // Enable dummy software rendering support if GPU process disabled.
     // Note: switch is kDisableGpu from content/public/common/content_switches.h
-    bool enable_dummy_software_rendering = true;
-#if !BUILDFLAG(IS_CAST_AUDIO_ONLY)
-    enable_dummy_software_rendering =
+    bool enable_dummy_software_rendering =
         base::CommandLine::ForCurrentProcess()->HasSwitch("disable-gpu");
-#endif  // BUILDFLAG(IS_CAST_AUDIO_ONLY)
 
     keyboard_layout_engine_ = std::make_unique<StubKeyboardLayoutEngine>();
     KeyboardLayoutEngineManager::SetKeyboardLayoutEngine(

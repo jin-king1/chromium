@@ -15,25 +15,35 @@ import android.view.ViewGroup;
 import android.widget.FrameLayout;
 
 import androidx.annotation.AnyRes;
+import androidx.annotation.ColorInt;
 
-import org.chromium.base.BuildInfo;
+import org.chromium.base.DeviceInfo;
+import org.chromium.base.ResettersForTesting;
+import org.chromium.build.annotations.NullMarked;
 
 /**
  * Layout that sizes itself with constraints similar to DialogWhenLarge: on large screens and
  * automotive, the view is shown in a dialog-like style and takes a fixed percentage of the screen,
  * given by the constants below.
  */
+@NullMarked
 public class DialogWhenLargeContentLayout extends FrameLayout {
-    private TypedValue mFixedWidthMajor = new TypedValue();
-    private TypedValue mFixedWidthMinor = new TypedValue();
-    private TypedValue mFixedHeightMajor = new TypedValue();
-    private TypedValue mFixedHeightMinor = new TypedValue();
+    private final TypedValue mFixedWidthMajor = new TypedValue();
+    private final TypedValue mFixedWidthMinor = new TypedValue();
+    private final TypedValue mFixedHeightMajor = new TypedValue();
+    private final TypedValue mFixedHeightMinor = new TypedValue();
+
+    private static boolean sShouldShowAsDialogForTesting;
 
     /**
      * Wraps contentView into layout that resembles DialogWhenLarge. The layout centers the content
      * and dims the background to simulate a modal dialog.
+     *
+     * @param contentView The view to wrap.
+     * @param backgroundColor The color of the background upon which the dialog is showing.
      */
-    static View wrapInDialogWhenLargeLayout(View contentView) {
+    public static View wrapInDialogWhenLargeLayout(
+            View contentView, @ColorInt int backgroundColor) {
         DialogWhenLargeContentLayout layout =
                 new DialogWhenLargeContentLayout(contentView.getContext());
         layout.addView(contentView);
@@ -51,8 +61,17 @@ public class DialogWhenLargeContentLayout extends FrameLayout {
                         ViewGroup.LayoutParams.WRAP_CONTENT,
                         ViewGroup.LayoutParams.WRAP_CONTENT,
                         Gravity.CENTER));
-        outerLayout.setBackgroundResource(R.color.modal_dialog_scrim_color);
+        outerLayout.setBackgroundColor(backgroundColor);
         return outerLayout;
+    }
+
+    /**
+     * Wraps contentView into layout that resembles DialogWhenLarge. The layout centers the content
+     * and dims the background to simulate a modal dialog.
+     */
+    static View wrapInDialogWhenLargeLayout(View contentView) {
+        int backgroundColor = contentView.getContext().getColor(R.color.modal_dialog_scrim_color);
+        return wrapInDialogWhenLargeLayout(contentView, backgroundColor);
     }
 
     /**
@@ -61,7 +80,15 @@ public class DialogWhenLargeContentLayout extends FrameLayout {
      */
     public static boolean shouldShowAsDialog(Context context) {
         Configuration configuration = context.getResources().getConfiguration();
+        if (sShouldShowAsDialogForTesting) {
+            return true;
+        }
         return configuration.isLayoutSizeAtLeast(Configuration.SCREENLAYOUT_SIZE_LARGE);
+    }
+
+    public static void enableShouldShowAsDialogForTesting(boolean shouldShowAsDialog) {
+        sShouldShowAsDialogForTesting = shouldShowAsDialog;
+        ResettersForTesting.register(() -> sShouldShowAsDialogForTesting = false);
     }
 
     private DialogWhenLargeContentLayout(Context context) {
@@ -90,7 +117,7 @@ public class DialogWhenLargeContentLayout extends FrameLayout {
         // system DialogWhenLarge theme.
         // Note that we don't care about the return values, because onMeasure() handles null
         // constraints (and they will be null when the device is not considered "large").
-        if (BuildInfo.getInstance().isAutomotive) {
+        if (DeviceInfo.isAutomotive()) {
             safeGetResourceValue(R.dimen.dialog_fixed_width_minor_automotive, mFixedWidthMinor);
             safeGetResourceValue(R.dimen.dialog_fixed_width_major_automotive, mFixedWidthMajor);
             safeGetResourceValue(R.dimen.dialog_fixed_height_minor_automotive, mFixedHeightMinor);
@@ -139,8 +166,7 @@ public class DialogWhenLargeContentLayout extends FrameLayout {
 
                 // Calculate height from the View's measureSpec to account for larger status
                 // bar and back toolbar on automotive devices.
-                int referenceHeight =
-                        BuildInfo.getInstance().isAutomotive ? heightSize : metrics.heightPixels;
+                int referenceHeight = DeviceInfo.isAutomotive() ? heightSize : metrics.heightPixels;
 
                 int height = (int) tvh.getFraction(referenceHeight, referenceHeight);
                 heightSize = Math.min(height, heightSize);

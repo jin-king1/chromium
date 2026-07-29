@@ -10,28 +10,36 @@
 
 #include "base/files/file_path.h"
 #include "base/functional/callback_forward.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
-#include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
-#include "components/enterprise/browser/device_trust/device_trust_key_manager.h"
-#include "components/enterprise/browser/reporting/reporting_delegate_factory.h"
-#include "components/enterprise/client_certificates/core/certificate_provisioning_service.h"
 #include "components/policy/core/common/cloud/chrome_browser_cloud_management_metrics.h"
 #include "components/policy/core/common/cloud/cloud_policy_client.h"
 #include "components/policy/core/common/policy_service.h"
 
 class PrefService;
 
+namespace base {
+class SingleThreadTaskRunner;
+}  // namespace base
+
 namespace network {
 class NetworkConnectionTracker;
 class SharedURLLoaderFactory;
 }  // namespace network
 
+namespace enterprise_connectors {
+class DeviceTrustKeyManager;
+}  // namespace enterprise_connectors
+
 namespace enterprise_reporting {
+class BrowserLaunchEventController;
+class ReportingDelegateFactory;
 class ReportScheduler;
+class SaasUsageReportScheduler;
+class SaasUsageReportingDelegateFactory;
 }  // namespace enterprise_reporting
 
 namespace client_certificates {
@@ -42,6 +50,7 @@ namespace policy {
 class ChromeBrowserCloudManagementRegistrar;
 class ClientDataDelegate;
 class ConfigurationPolicyProvider;
+class EnterpriseGroupsBrowserHandler;
 class MachineLevelUserCloudPolicyManager;
 class MachineLevelUserCloudPolicyFetcher;
 
@@ -141,6 +150,15 @@ class ChromeBrowserCloudManagementController
     virtual std::unique_ptr<enterprise_reporting::ReportingDelegateFactory>
     GetReportingDelegateFactory() = 0;
 
+    // Gets the platform-specific SaaS usage reporting delegate factory.
+    virtual std::unique_ptr<
+        enterprise_reporting::SaasUsageReportingDelegateFactory>
+    GetSaasUsageReportingDelegateFactory() = 0;
+
+    // Creates the platform-specific browser launch event controller.
+    virtual std::unique_ptr<enterprise_reporting::BrowserLaunchEventController>
+    CreateBrowserLaunchEventController() = 0;
+
     // Creates a platform-specific DeviceTrustKeyManager instance.
     virtual std::unique_ptr<enterprise_connectors::DeviceTrustKeyManager>
     CreateDeviceTrustKeyManager();
@@ -167,6 +185,10 @@ class ChromeBrowserCloudManagementController
 
     // Returns the platform-specific client data delegate.
     virtual std::unique_ptr<ClientDataDelegate> CreateClientDataDelegate() = 0;
+
+    virtual void StartExtensionInstallPolicyInvalidator();
+
+    virtual bool CanStartExtensionInstallPolicyInvalidator() const;
 
     // Postpones controller initialization until |ReadyToInit()| is true.
     // Implemented in the delegate because the reason why initialization needs
@@ -238,6 +260,8 @@ class ChromeBrowserCloudManagementController
       PrefService* local_state,
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory);
 
+  void MaybeStartExtensionInstallPolicyInvalidator();
+
   bool WaitUntilPolicyEnrollmentFinished();
 
   void AddObserver(Observer* observer);
@@ -291,7 +315,7 @@ class ChromeBrowserCloudManagementController
   void InvalidatePolicies();
   void UnenrollCallback(const std::string& metric_name, bool success);
 
-  void CreateReportScheduler();
+  void InitializeReporting();
 
   // Implementation of |DeferrableCreatePolicyManager| that can be invoked right
   // away or bound to a callback to be executed later.
@@ -313,10 +337,16 @@ class ChromeBrowserCloudManagementController
       cloud_management_registrar_;
   std::unique_ptr<MachineLevelUserCloudPolicyFetcher> policy_fetcher_;
 
+  std::unique_ptr<EnterpriseGroupsBrowserHandler> enterprise_groups_handler_;
+
   // Time at which the enrollment process was started.  Used to log UMA metric.
   base::Time enrollment_start_time_;
 
   std::unique_ptr<enterprise_reporting::ReportScheduler> report_scheduler_;
+  std::unique_ptr<enterprise_reporting::SaasUsageReportScheduler>
+      saas_usage_report_scheduler_;
+  std::unique_ptr<enterprise_reporting::BrowserLaunchEventController>
+      browser_launch_controller_;
 
   std::unique_ptr<CloudPolicyClient> cloud_policy_client_;
 

@@ -31,7 +31,7 @@ enum class UnsuccessfulUploadListState {
 };
 
 // TODO(isherman): This is a temporary histogram for debugging
-// [ https://crbug.com/772159 ] and should be removed once that bug is closed.
+// [ https://crbug.com/40543462 ] and should be removed once that bug is closed.
 void RecordUnsuccessfulUploadListState(UnsuccessfulUploadListState state) {
   LOCAL_HISTOGRAM_ENUMERATION(
       "Debug.Crash.Android.LoadUnsuccessfulUploadListState", state,
@@ -64,9 +64,9 @@ CrashUploadListAndroid::LoadUploadList() {
   LoadUnsuccessfulUploadList(&uploads);
 
   auto complete_uploads = TextLogUploadList::LoadUploadList();
-  for (auto& info : complete_uploads) {
-    uploads.push_back(std::move(info));
-  }
+  uploads.insert(uploads.end(),
+                 std::make_move_iterator(complete_uploads.begin()),
+                 std::make_move_iterator(complete_uploads.end()));
   return uploads;
 }
 
@@ -139,3 +139,5 @@ void CrashUploadListAndroid::LoadUnsuccessfulUploadList(
         id, info.creation_time, upload_state, file_size.value()));
   }
 }
+
+DEFINE_JNI(MinidumpUploadServiceImpl)

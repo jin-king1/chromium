@@ -17,7 +17,7 @@ static_library("net") {
   public_deps = [
     "//components/variations",
     "//net",
-    "//services/network/public/cpp:cpp",
+    "//services/network/public/cpp",
     "//services/network/public/cpp:cpp_base",
     "//url",
   ]
@@ -31,7 +31,7 @@ static_library("net") {
   ]
 
   if (!is_chromeos) {
-    deps += [ "//third_party/boringssl" ]
+    deps += [ "//crypto" ]
   }
 
   if (use_blink) {

@@ -4,6 +4,9 @@
 
 #import "ios/chrome/common/credential_provider/archivable_credential_store.h"
 
+#import "base/apple/backup_util.h"
+#import "base/apple/foundation_util.h"
+#import "base/files/file_path.h"
 #import "base/test/ios/wait_util.h"
 #import "ios/chrome/common/credential_provider/archivable_credential.h"
 #import "testing/gtest_mac.h"
@@ -42,8 +45,10 @@ ArchivableCredential* TestCredential() {
                                       recordIdentifier:@"recordIdentifier"
                                      serviceIdentifier:@"serviceIdentifier"
                                            serviceName:@"serviceName"
+                              registryControlledDomain:@"example.com"
                                               username:@"user"
-                                                  note:@"note"];
+                                                  note:@"note"
+                                          lastUsedTime:0];
 }
 
 // Tests that an ArchivableCredentialStore can be created.
@@ -80,8 +85,10 @@ TEST_F(ArchivableCredentialStoreTest, update) {
                                    recordIdentifier:@"recordIdentifier"
                                   serviceIdentifier:@"other_serviceIdentifier"
                                         serviceName:@"other_serviceName"
+                           registryControlledDomain:@"otherexample.com"
                                            username:@"other_user"
-                                               note:@"other_note"];
+                                               note:@"other_note"
+                                       lastUsedTime:0];
 
   [credentialStore updateCredential:updatedCredential];
   EXPECT_EQ(1u, credentialStore.credentials.count);
@@ -154,5 +161,9 @@ TEST_F(ArchivableCredentialStoreTest, createFolder) {
   NSError* error = nil;
   [deepFolderURL checkResourceIsReachableAndReturnError:&error];
   EXPECT_FALSE(error);
+  EXPECT_TRUE(base::apple::GetBackupExclusion(
+      base::apple::NSURLToFilePath(deepFolderURL)));
+  EXPECT_TRUE(base::apple::GetBackupExclusion(base::apple::NSURLToFilePath(
+      deepFolderURL.URLByDeletingLastPathComponent)));
 }
 }  // namespace

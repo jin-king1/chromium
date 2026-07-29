@@ -5,6 +5,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_IMAGE_DECODERS_RW_BUFFER_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_IMAGE_DECODERS_RW_BUFFER_H_
 
+#include "base/containers/span.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
@@ -90,7 +91,7 @@ class PLATFORM_EXPORT RWBuffer {
  * the caller must instantiate a local iterator, as the memory is stored in 1 or
  * more contiguous blocks.
  */
-class PLATFORM_EXPORT ROBuffer : public WTF::ThreadSafeRefCounted<ROBuffer> {
+class PLATFORM_EXPORT ROBuffer : public ThreadSafeRefCounted<ROBuffer> {
  public:
   /**
    * Return the logical length of the data owned/shared by this buffer. It may
@@ -124,7 +125,7 @@ class PLATFORM_EXPORT ROBuffer : public WTF::ThreadSafeRefCounted<ROBuffer> {
   };
 
  private:
-  friend class WTF::ThreadSafeRefCounted<ROBuffer>;
+  friend class ThreadSafeRefCounted<ROBuffer>;
   ROBuffer(const RWBuffer::BufferHead* head,
            size_t available,
            const RWBuffer::BufferBlock* tail);

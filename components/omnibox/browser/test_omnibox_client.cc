@@ -10,9 +10,11 @@
 
 #include "base/functional/callback.h"
 #include "components/omnibox/browser/autocomplete_controller.h"
+#include "components/omnibox/browser/autocomplete_controller_config.h"
 #include "components/omnibox/browser/autocomplete_scheme_classifier.h"
-#include "components/omnibox/browser/mock_autocomplete_provider_client.h"
+#include "components/omnibox/browser/fake_autocomplete_provider_client.h"
 #include "components/omnibox/browser/mock_unscoped_extension_provider_delegate.h"
+#include "components/search_engines/ai_mode_button_service.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/skia/include/core/SkBitmap.h"
@@ -21,10 +23,14 @@
 
 TestOmniboxClient::TestOmniboxClient()
     : session_id_(SessionID::FromSerializedValue(1)),
+      ai_mode_button_service_(
+          std::make_unique<TestAiModeButtonService>(GetTemplateURLService())),
       autocomplete_classifier_(
           std::make_unique<AutocompleteController>(
               CreateAutocompleteProviderClient(),
-              AutocompleteClassifier::DefaultOmniboxProviders()),
+              AutocompleteControllerConfig{
+                  .provider_types =
+                      AutocompleteClassifier::DefaultOmniboxProviders()}),
           std::make_unique<TestSchemeClassifier>()),
       last_log_disposition_(WindowOpenDisposition::UNKNOWN) {}
 
@@ -34,16 +40,13 @@ TestOmniboxClient::~TestOmniboxClient() {
 
 std::unique_ptr<AutocompleteProviderClient>
 TestOmniboxClient::CreateAutocompleteProviderClient() {
-  auto provider_client = std::make_unique<MockAutocompleteProviderClient>();
+  auto provider_client = std::make_unique<FakeAutocompleteProviderClient>();
   EXPECT_CALL(*provider_client, GetBuiltinURLs())
       .WillRepeatedly(testing::Return(std::vector<std::u16string>()));
   EXPECT_CALL(*provider_client, GetSchemeClassifier())
       .WillRepeatedly(testing::ReturnRef(scheme_classifier_));
   EXPECT_CALL(*provider_client, GetApplicationLocale())
       .WillRepeatedly(testing::Return("en-US"));
-
-  provider_client->set_template_url_service(
-      search_engines_test_environment_.template_url_service());
 
   // The `UnscopedExtensionProviderDelegate` should be set. It will be called
   // when `AutocompleteController::Stop()` is called on destruction.
@@ -70,6 +73,10 @@ TestOmniboxClient::GetAutocompleteControllerEmitter() {
 TemplateURLService* TestOmniboxClient::GetTemplateURLService() {
   CHECK(search_engines_test_environment_.template_url_service());
   return search_engines_test_environment_.template_url_service();
+}
+
+TestAiModeButtonService* TestOmniboxClient::GetAiModeButtonService() {
+  return ai_mode_button_service_.get();
 }
 
 const AutocompleteSchemeClassifier& TestOmniboxClient::GetSchemeClassifier()
@@ -120,8 +127,20 @@ std::u16string TestOmniboxClient::GetURLForDisplay() const {
   return location_bar_model_.GetURLForDisplay();
 }
 
+bool TestOmniboxClient::IsContextualTasksPage() const {
+  return location_bar_model_.IsContextualTasksPage();
+}
+
 GURL TestOmniboxClient::GetNavigationEntryURL() const {
   return location_bar_model_.GetURL();
+}
+
+const GURL& TestOmniboxClient::GetURL() const {
+  return url_;
+}
+
+void TestOmniboxClient::SetURL(const GURL& url) {
+  url_ = url;
 }
 
 metrics::OmniboxEventProto::PageClassification

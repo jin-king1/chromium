@@ -6,6 +6,7 @@
 #define COMPONENTS_SYNC_SERVICE_SYNC_SESSION_DURATIONS_METRICS_RECORDER_H_
 
 #include <memory>
+#include <optional>
 
 #include "base/memory/raw_ptr.h"
 #include "base/scoped_observation.h"
@@ -14,6 +15,10 @@
 #include "components/sync/service/history_sync_session_durations_metrics_recorder.h"
 #include "components/sync/service/sync_service.h"
 #include "components/sync/service/sync_service_observer.h"
+
+namespace metrics {
+class ProfileMetricsService;
+}
 
 namespace syncer {
 
@@ -28,7 +33,8 @@ class SyncSessionDurationsMetricsRecorder
   // Callers must ensure that the parameters outlive this object.
   SyncSessionDurationsMetricsRecorder(
       SyncService* sync_service,
-      signin::IdentityManager* identity_manager);
+      signin::IdentityManager* identity_manager,
+      metrics::ProfileMetricsService* profile_metrics_service);
 
   SyncSessionDurationsMetricsRecorder(
       const SyncSessionDurationsMetricsRecorder&) = delete;
@@ -53,6 +59,7 @@ class SyncSessionDurationsMetricsRecorder
 
   // syncer::SyncServiceObserver:
   void OnStateChanged(syncer::SyncService* sync) override;
+  void OnSyncShutdown(syncer::SyncService* sync) override;
 
   // IdentityManager::Observer:
   void OnPrimaryAccountChanged(
@@ -70,6 +77,8 @@ class SyncSessionDurationsMetricsRecorder
   void OnAccountsInCookieUpdated(
       const signin::AccountsInCookieJarInfo& accounts_in_cookie_jar_info,
       const GoogleServiceAuthError& error) override;
+  void OnIdentityManagerShutdown(
+      signin::IdentityManager* identity_manager) override;
 
  private:
   // The state the feature is in. The state starts as UNKNOWN. After it moves
@@ -92,8 +101,12 @@ class SyncSessionDurationsMetricsRecorder
 
   void HandleSyncAndAccountChange();
 
-  // Determines the signin status.
-  SigninStatus DetermineSigninStatus() const;
+  // Determines the cookie signin status.
+  FeatureState DetermineCookieSigninStatus(
+      const signin::AccountsInCookieJarInfo& accounts_in_cookie_jar_info) const;
+
+  // Determines the browser signin status.
+  SigninStatus DetermineBrowserSigninStatus() const;
 
   // Determines the sync status.
   FeatureState DetermineSyncStatus() const;
@@ -111,13 +124,13 @@ class SyncSessionDurationsMetricsRecorder
 
   // Tracks the elapsed active session time while the browser is open. The timer
   // is absent if there's no active session.
-  std::unique_ptr<base::ElapsedTimer> total_session_timer_;
+  std::optional<base::ElapsedTimer> total_session_timer_;
 
   // Whether there is a signed in account in Gaia cookies.
   FeatureState cookie_signin_status_ = FeatureState::UNKNOWN;
   // Tracks the elapsed active session time in the current signin status. The
   // timer is absent if there's no active session.
-  std::unique_ptr<base::ElapsedTimer> signin_session_timer_;
+  std::optional<base::ElapsedTimer> signin_session_timer_;
 
   // Whether Chrome currently has a primary account and whether its token is
   // valid.
@@ -127,7 +140,9 @@ class SyncSessionDurationsMetricsRecorder
   FeatureState sync_status_ = FeatureState::UNKNOWN;
   // Tracks the elapsed active session time in the current sync and account
   // status. The timer is absent if there's no active session.
-  std::unique_ptr<base::ElapsedTimer> sync_account_session_timer_;
+  std::optional<base::ElapsedTimer> sync_account_session_timer_;
+
+  const base::raw_ref<metrics::ProfileMetricsService> profile_metrics_service_;
 };
 
 }  // namespace syncer

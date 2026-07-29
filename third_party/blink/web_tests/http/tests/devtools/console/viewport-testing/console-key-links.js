@@ -5,7 +5,7 @@
 import {TestRunner} from 'test_runner';
 import {ConsoleTestRunner} from 'console_test_runner';
 
-import * as Platform from 'devtools/core/platform/platform.js';
+import * as UI from 'devtools/ui/legacy/legacy.js';
 import * as Console from 'devtools/panels/console/console.js';
 
 (async function() {
@@ -130,6 +130,7 @@ import * as Console from 'devtools/panels/console/console.js';
     await TestRunner.evaluateInPagePromise(expression);
     await ConsoleTestRunner.waitForConsoleMessagesPromise(expectedCount);
     await ConsoleTestRunner.waitForPendingViewportUpdates();
+    await TestRunner.waitForPendingLiveLocationUpdates();
   }
 
   function press(key) {
@@ -169,7 +170,7 @@ import * as Console from 'devtools/panels/console/console.js';
 
     if (!activeElement)
       return;
-    var element = Platform.DOMUtilities.deepActiveElement(document);
+    var element = UI.DOMUtilities.deepActiveElement(document);
     if (!element) {
       TestRunner.addResult('null');
       return;
@@ -178,7 +179,7 @@ import * as Console from 'devtools/panels/console/console.js';
     if (element.id)
       name += '#' + element.id;
     else if (element.className)
-      name += '.' + element.className.split(' ').join('.');
+      name += '.' + element.className.split(' ').filter(Boolean).join('.');
     if (element.deepTextContent())
       name += '\nactive text: ' + element.deepTextContent();
     TestRunner.addResult(name);

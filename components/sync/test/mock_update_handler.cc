@@ -8,13 +8,14 @@
 #include <string>
 #include <utility>
 
+#include "base/strings/strcat.h"
+
 namespace syncer {
 
 MockUpdateHandler::MockUpdateHandler(DataType type) {
   progress_marker_.set_data_type_id(GetSpecificsFieldNumberFromDataType(type));
-  const std::string& token_str =
-      std::string("Mock token: ") + std::string(DataTypeToDebugString(type));
-  progress_marker_.set_token(token_str);
+  progress_marker_.set_token(
+      base::StrCat({"Mock token: ", DataTypeToDebugString(type)}));
 }
 
 MockUpdateHandler::~MockUpdateHandler() = default;
@@ -48,7 +49,8 @@ void MockUpdateHandler::ApplyUpdates(StatusController* status,
 void MockUpdateHandler::RecordRemoteInvalidation(
     std::unique_ptr<SyncInvalidation> incoming) {}
 
-void MockUpdateHandler::RecordDownloadFailure() const {}
+void MockUpdateHandler::RecordDownloadFailure(
+    UpdateHandler::NudgedUpdateResult failure_result) const {}
 
 void MockUpdateHandler::CollectPendingInvalidations(
     sync_pb::GetUpdateTriggers* msg) {

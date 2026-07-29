@@ -37,7 +37,6 @@
 <translation id="2311842470354187719">барактардын үзүлгөн жери</translation>
 <translation id="2335594187091864976">күн жана убакыт тандагыч</translation>
 <translation id="2393030564806080191">Он алты түстүү код</translation>
-<translation id="2398813069815436052">диалог ачылды.</translation>
 <translation id="245932805758469625">видеонун бүтөөрүнө канча секунд калды</translation>
 <translation id="248395913932153421">Күн</translation>
 <translation id="2508569020611168319">өтмөк тизмеси</translation>
@@ -223,6 +222,7 @@
 <translation id="8634971699417195529">Ай тандагычты көрсөтүү</translation>
 <translation id="8711688047404765493">чыгаруу</translation>
 <translation id="8808573423886751634">бөлүм</translation>
+<translation id="8826423933757944500">маалымат</translation>
 <translation id="8851136666856101339">башкы</translation>
 <translation id="8861621546968757188">диалогдун калкыма терезе баскычы</translation>
 <translation id="8889402386540077796">Түс</translation>
@@ -238,7 +238,6 @@
 <translation id="9138385573473225930">айгай кабар</translation>
 <translation id="9155987714137265666"><ph name="WEEK" />, <ph name="WEEK_START_DATE" /> күнү башталат</translation>
 <translation id="9168329111483466115">шилтеме</translation>
-<translation id="945780513535800434">Бир пункт тандалды</translation>
 <translation id="954003015749068518">сүрөт ичиндеги сүрөт режимине кирүү</translation>
 <translation id="966787709310836684">меню</translation>
 </translationbundle>

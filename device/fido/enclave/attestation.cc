@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "device/fido/enclave/attestation.h"
 
 #include <optional>
@@ -15,15 +10,17 @@
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/memory/raw_ref.h"
+#include "base/strings/string_view_util.h"
 #include "base/types/expected.h"
 #include "base/types/expected_macros.h"
 #include "components/cbor/reader.h"
 #include "components/cbor/values.h"
 #include "components/cbor/writer.h"
+#include "crypto/evp.h"
 #include "device/fido/enclave/attestation_report.h"
 #include "device/fido/enclave/proto/evidence.pb.h"
-#include "device/fido/fido_constants.h"
 #include "device/fido/p256_public_key.h"
+#include "device/fido/public/fido_constants.h"
 #include "device/fido/public_key.h"
 #include "net/cert/asn1_util.h"
 #include "third_party/boringssl/src/include/openssl/asn1.h"
@@ -125,11 +122,11 @@ base::expected<void, const char*> VerifySignatureFromEC_KEY(
     base::span<const uint8_t> message,
     const ECDSA_SIG* ecdsa_sig,
     const EC_KEY* ec_key) {
-  uint8_t hash[SHA256_DIGEST_LENGTH];
-  SHA256(message.data(), message.size(), hash);
+  std::array<uint8_t, SHA256_DIGEST_LENGTH> hash;
+  SHA256(message.data(), message.size(), hash.data());
 
   const int verify_result =
-      ECDSA_do_verify(hash, SHA256_DIGEST_LENGTH, ecdsa_sig, ec_key);
+      ECDSA_do_verify(hash.data(), hash.size(), ecdsa_sig, ec_key);
   if (verify_result == 1) {
     return base::ok();
   } else if (verify_result < 0) {
@@ -151,13 +148,11 @@ base::expected<void, const char*> VerifyConcatSignatureFromEC_KEY(
     return base::unexpected("Invalid signature length; expected 64 bytes");
   }
   bssl::UniquePtr<ECDSA_SIG> ecdsa_sig(ECDSA_SIG_new());
-  const uint8_t* r_bytes = signature.data();
-  const uint8_t* s_bytes = signature.subspan(kP256FieldElementBytes).data();
+  auto r_span = signature.first<kP256FieldElementBytes>();
+  auto s_span = signature.subspan<kP256FieldElementBytes>();
 
-  bssl::UniquePtr<BIGNUM> r(
-      BN_bin2bn(r_bytes, kP256FieldElementBytes, nullptr));
-  bssl::UniquePtr<BIGNUM> s(
-      BN_bin2bn(s_bytes, kP256FieldElementBytes, nullptr));
+  bssl::UniquePtr<BIGNUM> r(BN_bin2bn(r_span.data(), r_span.size(), nullptr));
+  bssl::UniquePtr<BIGNUM> s(BN_bin2bn(s_span.data(), s_span.size(), nullptr));
 
   CHECK(ECDSA_SIG_set0(ecdsa_sig.get(), r.release(), s.release()));
   return VerifySignatureFromEC_KEY(message, ecdsa_sig.get(), ec_key);
@@ -226,11 +221,9 @@ base::expected<bssl::UniquePtr<EC_KEY>, const char*> EC_KEYFromCOSE(
 
   // If `ExtractFromCOSEKey` was happy with the key then none of the following
   // should fail.
-  CBS cbs;
-  CBS_init(&cbs, pubkey->der_bytes->data(), pubkey->der_bytes->size());
-  bssl::UniquePtr<EVP_PKEY> public_key(EVP_parse_public_key(&cbs));
+  bssl::UniquePtr<EVP_PKEY> public_key =
+      crypto::evp::PublicKeyFromBytes(*pubkey->der_bytes);
   CHECK(public_key);
-  CHECK(CBS_len(&cbs) == 0);
   CHECK(EVP_PKEY_id(public_key.get()) == EVP_PKEY_EC);
   bssl::UniquePtr<EC_KEY> ec_key(EVP_PKEY_get1_EC_KEY(public_key.get()));
   CHECK(ec_key && EC_GROUP_get_curve_name(EC_KEY_get0_group(ec_key.get())) ==
@@ -479,17 +472,16 @@ base::expected<void, const char*> VerifyExtensions(
 base::expected<void, const char*> CheckRootKeyHash(
     base::span<const uint8_t> root_key,
     base::span<const uint8_t, REPORT_DATA_SIZE> report_data) {
-  uint8_t digest[SHA256_DIGEST_LENGTH];
-  SHA256(root_key.data(), root_key.size(), digest);
+  std::array<uint8_t, SHA256_DIGEST_LENGTH> digest;
+  SHA256(root_key.data(), root_key.size(), digest.data());
   static_assert(REPORT_DATA_SIZE >= sizeof(digest));
-  if (memcmp(digest, report_data.data(), sizeof(digest)) != 0) {
+  if (!std::ranges::equal(digest, report_data.first<sizeof(digest)>())) {
     return base::unexpected("root key hash incorrect");
   }
   // The rest of the report data should be zeros.
-  for (size_t i = sizeof(digest); i < REPORT_DATA_SIZE; i++) {
-    if (report_data[i]) {
-      return base::unexpected("report data is not zero-padded");
-    }
+  if (!std::ranges::all_of(report_data.subspan(sizeof(digest)),
+                           [](uint8_t b) { return b == 0; })) {
+    return base::unexpected("report data is not zero-padded");
   }
 
   return base::ok();
@@ -507,14 +499,10 @@ base::expected<void, const char*> VerifyAttestationReportSignature(
     return base::unexpected("Failed to extract SPKI from certificate");
   }
 
-  CBS cbs;
-  CBS_init(&cbs, reinterpret_cast<const uint8_t*>(spki.data()), spki.size());
-  bssl::UniquePtr<EVP_PKEY> evp_key(EVP_parse_public_key(&cbs));
+  bssl::UniquePtr<EVP_PKEY> evp_key =
+      crypto::evp::PublicKeyFromBytes(base::as_byte_span(spki));
   if (!evp_key) {
     return base::unexpected("Failed to parse public key from SPKI.");
-  }
-  if (CBS_len(&cbs) != 0) {
-    return base::unexpected("Extra data found after parsing SPKI.");
   }
 
   bssl::UniquePtr<EC_KEY> ec_key(EVP_PKEY_get1_EC_KEY(evp_key.get()));
@@ -536,11 +524,11 @@ base::expected<void, const char*> VerifyAttestationReportSignature(
   bssl::UniquePtr<ECDSA_SIG> ecdsa_sig(ECDSA_SIG_new());
   CHECK(ECDSA_SIG_set0(ecdsa_sig.get(), bn_r.release(), bn_s.release()));
 
-  uint8_t digest[SHA384_DIGEST_LENGTH];
-  SHA384(message.data(), message.size(), digest);
+  std::array<uint8_t, SHA384_DIGEST_LENGTH> digest;
+  SHA384(message.data(), message.size(), digest.data());
 
-  const int verify_result =
-      ECDSA_do_verify(digest, sizeof(digest), ecdsa_sig.get(), ec_key.get());
+  const int verify_result = ECDSA_do_verify(digest.data(), digest.size(),
+                                            ecdsa_sig.get(), ec_key.get());
   if (verify_result == 1) {
     return base::ok();
   } else if (verify_result < 0) {
@@ -592,9 +580,7 @@ base::expected<CertificateParts, const char*> ParseVcekCertificate(
     return base::unexpected("trailing data inside VCEK certificate");
   }
 
-  return CertificateParts{
-      base::as_byte_span(tbs_certificate.AsStringView()),
-      base::as_byte_span(signature->bytes().AsStringView())};
+  return CertificateParts{tbs_certificate, signature->bytes()};
 }
 
 // Verify the signature on the VCEK certificate by the issuing certificate.
@@ -603,11 +589,8 @@ base::expected<void, const char*> VerifyVcekSignature(
     base::span<const uint8_t> tbs_cert,
     base::span<const uint8_t> signature,
     base::span<const uint8_t> spki) {
-  CBS cbs;
-  CBS_init(&cbs, spki.data(), spki.size());
-  bssl::UniquePtr<EVP_PKEY> public_key(EVP_parse_public_key(&cbs));
-  if (!public_key || CBS_len(&cbs) != 0 ||
-      EVP_PKEY_id(public_key.get()) != EVP_PKEY_RSA) {
+  bssl::UniquePtr<EVP_PKEY> public_key = crypto::evp::PublicKeyFromBytes(spki);
+  if (!public_key || EVP_PKEY_id(public_key.get()) != EVP_PKEY_RSA) {
     return base::unexpected("invalid SPKI");
   }
 
@@ -706,16 +689,14 @@ base::expected<AttestationResult, const char*> ProcessAttestation(
     return base::unexpected("expected exactly one layer in Evidence");
   }
 
-  const std::string& amd_attestation =
-      evidence.root_layer().remote_attestation_report();
+  auto amd_attestation =
+      base::as_byte_span(evidence.root_layer().remote_attestation_report());
   if (amd_attestation.size() != sizeof(AttestationReport)) {
     return base::unexpected("attestation report has incorrect size");
   }
   AttestationReport attestation_report;
-  // Use `memcpy` rather than setting a pointer as the alignment of
-  // `amd_attestation` may not be correct.
-  memcpy(&attestation_report, amd_attestation.data(),
-         sizeof(attestation_report));
+  base::byte_span_from_ref(attestation_report)
+      .copy_from_nonoverlapping(amd_attestation);
 
   ASSIGN_OR_RETURN(auto vcek_extensions,
                    ExtractVCEKCertificateExtensions(*values.vcek_cert));
@@ -727,8 +708,7 @@ base::expected<AttestationResult, const char*> ProcessAttestation(
   // report.
   static_assert(sizeof(attestation_report.data) == 0x2a0);
   RETURN_IF_ERROR(VerifyAttestationReportSignature(
-      base::as_byte_span(amd_attestation)
-          .subspan(0u, sizeof(attestation_report.data)),
+      amd_attestation.first<sizeof(attestation_report.data)>(),
       attestation_report.signature, *values.vcek_cert));
 
   base::span<const uint8_t> root_cose_key =

@@ -8,6 +8,7 @@
 #include "base/memory/raw_ref.h"
 #include "base/time/time.h"
 #include "base/values.h"
+#include "components/optimization_guide/core/model_execution/on_device_model_validator.h"
 #include "components/optimization_guide/core/optimization_guide_enums.h"
 
 class PrefService;
@@ -32,12 +33,19 @@ class OnDeviceModelAccessController {
   void OnResponseCompleted();
 
   // Called when a connection from the remote happens prematurely.
-  void OnDisconnectedFromRemote();
+  // Returns the next time the model can be loaded.
+  base::Time OnDisconnectedFromRemote();
 
   // Called if using the gpu is blocked.
   void OnGpuBlocked();
 
-  bool ShouldValidateModel(std::string_view model_version);
+  // Returns true if a validation attempt can be started.
+  // This can be false if validation is disabled, has already succeeded, or
+  // the maximum number of attempts has already been reached.
+  bool HasRemainingValidationAttempts(std::string_view version) const;
+  // Begins a validation attempt, if any attempts remain.
+  // Returns true if an attempt was started.
+  bool MaybeBeginValidation(std::string_view model_version);
   void OnValidationFinished(OnDeviceModelValidationResult result);
 
  private:

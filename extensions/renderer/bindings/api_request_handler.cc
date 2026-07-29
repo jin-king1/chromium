@@ -31,7 +31,7 @@ constexpr const char kExceptionHandlerKey[] = "exceptionHandler";
 // arguments were used in construction).
 class APIRequestHandler::ArgumentAdapter {
  public:
-  ArgumentAdapter(const base::Value::List* base_argumements,
+  ArgumentAdapter(const base::ListValue* base_argumements,
                   mojom::ExtraResponseDataPtr extra_data);
   explicit ArgumentAdapter(const v8::LocalVector<v8::Value>& v8_arguments);
 
@@ -48,13 +48,13 @@ class APIRequestHandler::ArgumentAdapter {
   mojom::ExtraResponseDataPtr TakeExtraData() { return std::move(extra_data_); }
 
  private:
-  raw_ptr<const base::Value::List> base_arguments_ = nullptr;
+  raw_ptr<const base::ListValue> base_arguments_ = nullptr;
   mutable std::optional<v8::LocalVector<v8::Value>> v8_arguments_;
   mojom::ExtraResponseDataPtr extra_data_ = nullptr;
 };
 
 APIRequestHandler::ArgumentAdapter::ArgumentAdapter(
-    const base::Value::List* base_arguments,
+    const base::ListValue* base_arguments,
     mojom::ExtraResponseDataPtr extra_data)
     : base_arguments_(base_arguments), extra_data_(std::move(extra_data)) {}
 APIRequestHandler::ArgumentAdapter::ArgumentAdapter(
@@ -65,7 +65,7 @@ APIRequestHandler::ArgumentAdapter::~ArgumentAdapter() = default;
 const v8::LocalVector<v8::Value>&
 APIRequestHandler::ArgumentAdapter::GetArguments(
     v8::Local<v8::Context> context) const {
-  v8::Isolate* isolate = context->GetIsolate();
+  v8::Isolate* isolate = v8::Isolate::GetCurrent();
   DCHECK(isolate->GetCurrentContext() == context);
 
   if (base_arguments_) {
@@ -212,7 +212,7 @@ void APIRequestHandler::AsyncResultHandler::ResolveRequest(
     const v8::LocalVector<v8::Value>& response_args,
     const std::string& error,
     mojom::ExtraResponseDataPtr extra_data) {
-  v8::Isolate* isolate = context->GetIsolate();
+  v8::Isolate* isolate = v8::Isolate::GetCurrent();
 
   // Set runtime.lastError if there is an error and this isn't a promise-based
   // request (promise-based requests instead reject to indicate failure).
@@ -241,10 +241,9 @@ void APIRequestHandler::AsyncResultHandler::ResolveRequest(
       for (auto& blob : extra_data->blobs) {
         auto web_blob =
             blink::WebBlob::CreateFromSerializedBlob(std::move(blob));
-        v8_blobs.push_back(web_blob.ToV8Value(context->GetIsolate()));
+        v8_blobs.push_back(web_blob.ToV8Value(isolate));
       }
-      auto blobs = v8::Array::New(context->GetIsolate(), v8_blobs.data(),
-                                  v8_blobs.size());
+      auto blobs = v8::Array::New(isolate, v8_blobs.data(), v8_blobs.size());
       args.push_back(std::move(blobs));
     }
 
@@ -277,7 +276,7 @@ void APIRequestHandler::AsyncResultHandler::ResolvePromise(
     v8::Local<v8::Promise::Resolver> resolver) {
   DCHECK_LE(response_args.size(), 1u);
 
-  v8::Isolate* isolate = context->GetIsolate();
+  v8::Isolate* isolate = v8::Isolate::GetCurrent();
   v8::MicrotasksScope microtasks_scope(
       isolate, context->GetMicrotaskQueue(),
       v8::MicrotasksScope::kDoNotRunMicrotasks);
@@ -364,7 +363,7 @@ void APIRequestHandler::AsyncResultHandler::CallCustomCallback(
     v8::Local<v8::Context> context,
     const v8::LocalVector<v8::Value>& response_args,
     const std::string& error) {
-  v8::Isolate* isolate = context->GetIsolate();
+  v8::Isolate* isolate = v8::Isolate::GetCurrent();
 
   v8::Local<v8::Value> callback_to_pass = v8::Undefined(isolate);
   if (!extension_callback_.IsEmpty() || !promise_resolver_.IsEmpty()) {
@@ -449,12 +448,12 @@ APIRequestHandler::~APIRequestHandler() = default;
 v8::Local<v8::Promise> APIRequestHandler::StartRequest(
     v8::Local<v8::Context> context,
     const std::string& method,
-    base::Value::List arguments_list,
+    base::ListValue arguments_list,
     binding::AsyncResponseType async_type,
     v8::Local<v8::Function> callback,
     v8::Local<v8::Function> custom_callback,
     binding::ResultModifierFunction result_modifier) {
-  v8::Isolate* isolate = context->GetIsolate();
+  v8::Isolate* isolate = v8::Isolate::GetCurrent();
 
   v8::Local<v8::Promise> promise;
   std::unique_ptr<AsyncResultHandler> async_handler =
@@ -491,7 +490,7 @@ v8::Local<v8::Promise> APIRequestHandler::StartRequest(
 
 void APIRequestHandler::CompleteRequest(
     int request_id,
-    const base::Value::List& response_args,
+    const base::ListValue& response_args,
     const std::string& error,
     mojom::ExtraResponseDataPtr extra_data) {
   CompleteRequestImpl(request_id,
@@ -511,7 +510,7 @@ APIRequestHandler::RequestDetails APIRequestHandler::AddPendingRequest(
     binding::AsyncResponseType async_type,
     v8::Local<v8::Function> callback,
     binding::ResultModifierFunction result_modifier) {
-  v8::Isolate* isolate = context->GetIsolate();
+  v8::Isolate* isolate = v8::Isolate::GetCurrent();
   v8::Local<v8::Promise> promise;
   std::unique_ptr<AsyncResultHandler> async_handler = GetAsyncResultHandler(
       context, async_type, callback, v8::Local<v8::Function>(),
@@ -525,7 +524,7 @@ APIRequestHandler::RequestDetails APIRequestHandler::AddPendingRequest(
   // these that aren't sent to the browser. It is the caller's responsibility to
   // handle any user gesture behavior. This prevents an issue where messaging
   // handling would create an extra scoped user gesture, causing issues. See
-  // https://crbug.com/921141.
+  // https://crbug.com/41435171.
   std::unique_ptr<InteractionProvider::Token> null_user_gesture_token;
 
   pending_requests_.emplace(
@@ -583,7 +582,7 @@ APIRequestHandler::GetAsyncResultHandler(
     v8::Local<v8::Function> custom_callback,
     binding::ResultModifierFunction result_modifier,
     v8::Local<v8::Promise>* promise_out) {
-  v8::Isolate* isolate = context->GetIsolate();
+  v8::Isolate* isolate = v8::Isolate::GetCurrent();
 
   std::unique_ptr<AsyncResultHandler> async_handler;
   if (async_type == binding::AsyncResponseType::kPromise) {

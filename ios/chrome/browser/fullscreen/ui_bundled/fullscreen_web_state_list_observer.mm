@@ -5,7 +5,7 @@
 #import "ios/chrome/browser/fullscreen/ui_bundled/fullscreen_web_state_list_observer.h"
 
 #import "base/check_op.h"
-#import "base/containers/contains.h"
+#import "ios/chrome/browser/fullscreen/public/fullscreen_metrics.h"
 #import "ios/chrome/browser/fullscreen/ui_bundled/fullscreen_content_adjustment_util.h"
 #import "ios/chrome/browser/fullscreen/ui_bundled/fullscreen_controller.h"
 #import "ios/chrome/browser/fullscreen/ui_bundled/fullscreen_model.h"
@@ -15,7 +15,7 @@
 FullscreenWebStateListObserver::FullscreenWebStateListObserver(
     FullscreenController* controller,
     FullscreenModel* model,
-    FullscreenMediator* mediator)
+    LegacyFullscreenMediator* mediator)
     : controller_(controller),
       model_(model),
       web_state_observer_(controller, model, mediator) {
@@ -109,7 +109,8 @@ void FullscreenWebStateListObserver::WebStateListDidChange(
         if (web_state_list_->IsBatchInProgress()) {
           controller_->ExitFullscreenWithoutAnimation();
         } else {
-          controller_->ExitFullscreen();
+          controller_->ExitFullscreen(
+              FullscreenModeTransitionTrigger::kForcedByCode);
         }
       }
       break;
@@ -159,5 +160,5 @@ void FullscreenWebStateListObserver::WebStateWasRemoved(
 
 bool FullscreenWebStateListObserver::HasWebStateBeenActivated(
     web::WebState* web_state) {
-  return base::Contains(activated_web_states_, web_state);
+  return activated_web_states_.contains(web_state);
 }

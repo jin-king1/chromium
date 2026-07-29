@@ -2,6 +2,10 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+if (is_android) {
+  import("//build/config/android/rules.gni")
+}
+
 import("//device/vr/buildflags/buildflags.gni")
 
 declare_args() {
@@ -18,6 +22,17 @@ declare_args() {
 }
 
 if (enable_openxr) {
+  source_set("openxr_core_headers") {
+    sources = [
+      "dev/xr_android.h",
+      "src/include/openxr/openxr.h",
+      "src/include/openxr/openxr_platform_defines.h",
+      "src/src/common/hex_and_handles.h",
+    ]
+
+    public_configs = [ ":config" ]
+  }
+
   source_set("openxr_headers") {
     # This visibility is done to help enforce the dependency that
     # openxr_platform.h requires platform headers to be included before it.
@@ -30,15 +45,9 @@ if (enable_openxr) {
       "//device/vr/*",
     ]
 
-    sources = [
-      "dev/xr_android.h",
-      "src/include/openxr/openxr.h",
-      "src/include/openxr/openxr_platform.h",
-      "src/include/openxr/openxr_platform_defines.h",
-      "src/src/common/hex_and_handles.h",
-    ]
+    sources = [ "src/include/openxr/openxr_platform.h" ]
 
-    public_configs = [ ":config" ]
+    public_deps = [ ":openxr_core_headers" ]
   }
 
   if (is_android) {
@@ -123,6 +132,8 @@ if (enable_openxr) {
       "src/src/loader/loader_logger_recorders.cpp",
       "src/src/loader/loader_logger_recorders.hpp",
       "src/src/loader/loader_platform.hpp",
+      "src/src/loader/loader_properties.cpp",
+      "src/src/loader/loader_properties.hpp",
       "src/src/loader/manifest_file.hpp",
       "src/src/loader/runtime_interface.cpp",
       "src/src/loader/runtime_interface.hpp",
@@ -178,14 +189,23 @@ if (enable_openxr) {
       # include path:
       include_dirs += [ "src/src/external/android-jni-wrappers" ]
 
-      # OpenXR loader on Android has a bug where there is unconditional try-catch block
-      # (in android_utilities.cpp) even when built without exceptions support.
-      configs += [ "//build/config/compiler:exceptions" ]
-
       libs = [
         "android",
         "log",
       ]
+    }
+
+    # Missing includes are fixed upstream
+    # TODO(crbug.com/440183782): Remove this once a release contains the fix
+    use_libcxx_modules = false
+  }
+
+  if (is_android) {
+    java_group("openxr_manifest_java") {
+      if (allow_openxr_content_providers) {
+        mergeable_android_manifests =
+            [ "src_overrides/src/loader/AndroidManifest.xml.in" ]
+      }
     }
   }
 

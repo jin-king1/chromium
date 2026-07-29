@@ -35,7 +35,7 @@ class TrustSafetySentimentServiceBrowserTest : public InProcessBrowserTest {
  public:
   TrustSafetySentimentServiceBrowserTest() {
     feature_list_.InitAndEnableFeatureWithParameters(
-        features::kTrustSafetySentimentSurvey,
+        features::kTrustSafetySentimentSurveyV2,
         {{"trusted-surface-probability", "1.0"}});
   }
 
@@ -48,9 +48,10 @@ class TrustSafetySentimentServiceBrowserTest : public InProcessBrowserTest {
   void SetUpOnMainThread() override {
     mock_hats_service_ = static_cast<MockHatsService*>(
         HatsServiceFactory::GetInstance()->SetTestingFactoryAndUse(
-            browser()->profile(), base::BindRepeating(&BuildMockHatsService)));
+            browser()->GetProfile(),
+            base::BindRepeating(&BuildMockHatsService)));
     TrustSafetySentimentServiceFactory::GetInstance()->SetTestingFactory(
-        browser()->profile(),
+        browser()->GetProfile(),
         base::BindRepeating(&BuildSentimentServiceForTesting));
     EXPECT_CALL(*mock_hats_service_, CanShowAnySurvey(_))
         .WillRepeatedly(testing::Return(true));
@@ -108,8 +109,8 @@ IN_PROC_BROWSER_TEST_F(TrustSafetySentimentServiceBrowserTest,
   SurveyBitsData expected_product_specific_data = {
       {"Interacted with Page Info", false}};
   EXPECT_CALL(*mock_hats_service_,
-              LaunchSurvey(kHatsSurveyTriggerTrustSafetyTrustedSurface, _, _,
-                           expected_product_specific_data, _));
+              LaunchSurvey(kHatsSurveyTriggerTrustSafetyV2TrustedSurface, _, _,
+                           expected_product_specific_data, _, _, _));
   {
     base::subtle::ScopedTimeClockOverrides override(
         []() {
@@ -152,8 +153,8 @@ IN_PROC_BROWSER_TEST_F(TrustSafetySentimentServiceBrowserTest,
   SurveyBitsData expected_product_specific_data = {
       {"Interacted with Page Info", true}};
   EXPECT_CALL(*mock_hats_service_,
-              LaunchSurvey(kHatsSurveyTriggerTrustSafetyTrustedSurface, _, _,
-                           expected_product_specific_data, _));
+              LaunchSurvey(kHatsSurveyTriggerTrustSafetyV2TrustedSurface, _, _,
+                           expected_product_specific_data, _, _, _));
 
   {
     base::subtle::ScopedTimeClockOverrides override(

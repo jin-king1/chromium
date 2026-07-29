@@ -10,7 +10,10 @@
 #include <vector>
 
 #include "base/memory/scoped_refptr.h"
+#include "net/base/completion_once_callback.h"
 #include "net/base/network_anonymization_key.h"
+#include "net/base/network_handle.h"
+#include "net/log/net_log_with_source.h"
 #include "net/quic/web_transport_error.h"
 #include "net/third_party/quiche/src/quiche/quic/core/crypto/web_transport_fingerprint_proof_verifier.h"
 #include "net/third_party/quiche/src/quiche/quic/core/quic_types.h"
@@ -22,6 +25,7 @@ namespace net {
 
 class HttpResponseHeaders;
 class URLRequestContext;
+class IPEndPoint;
 
 // Diagram of allowed state transitions:
 //
@@ -73,8 +77,16 @@ class NET_EXPORT WebTransportClientVisitor {
  public:
   virtual ~WebTransportClientVisitor();
 
+  // Delegating the Local Network Access check to the visitor.
+  //
+  // See https://wicg.github.io/local-network-access/
+  virtual void OnLocalNetworkAccessCheck(const IPEndPoint& server_address,
+                                         const NetLogWithSource& net_log,
+                                         CompletionOnceCallback callback) = 0;
+
   // State change notifiers.
   // CONNECTING -> CONNECTED
+  virtual void OnBeforeConnect(const IPEndPoint& server_address) = 0;
   virtual void OnConnected(
       scoped_refptr<HttpResponseHeaders> response_headers) = 0;
   // CONNECTING -> FAILED
@@ -91,7 +103,7 @@ class NET_EXPORT WebTransportClientVisitor {
   virtual void OnCanCreateNewOutgoingBidirectionalStream() = 0;
   virtual void OnCanCreateNewOutgoingUnidirectionalStream() = 0;
   virtual void OnDatagramProcessed(
-      std::optional<quic::MessageStatus> status) = 0;
+      std::optional<quic::DatagramStatus> status) = 0;
 };
 
 // Parameters that determine the way WebTransport session is established.
@@ -101,14 +113,40 @@ struct NET_EXPORT WebTransportParameters {
   WebTransportParameters(const WebTransportParameters&);
   WebTransportParameters(WebTransportParameters&&);
 
+  // A hint for what kind of congestion control algorithm the application
+  // prefers. Corresponds to the WebTransportCongestionControl enum in the
+  // W3C WebTransport specification.
+  // https://w3c.github.io/webtransport/#enumdef-webtransportcongestioncontrol
+  enum class CongestionControlHint {
+    kDefault,
+    kThroughput,
+    kLowLatency,
+  };
+
   bool allow_pooling = false;
 
   bool enable_web_transport_http3 = false;
 
   // A vector of fingerprints for expected server certificates, as described in
-  // https://wicg.github.io/web-transport/#dom-quictransportconfiguration-server_certificate_fingerprints
+  // https://w3c.github.io/webtransport/#dom-webtransportoptions-servercertificatehashes
   // When empty, Web PKI is used.
   std::vector<quic::CertificateFingerprint> server_certificate_fingerprints;
+
+  // A vector of strings offered by client as a list of potential subprotocols.
+  // https://w3c.github.io/webtransport/#dom-webtransportoptions-protocols
+  std::vector<std::string> application_protocols;
+
+  // Defaults to kDefault (no algorithm change).
+  CongestionControlHint congestion_control_hint =
+      CongestionControlHint::kDefault;
+
+  // Hints for how many incoming streams the application anticipates the server
+  // creating. When set, the QUIC client advertises these as
+  // initial_max_streams_uni / initial_max_streams_bidi transport parameters.
+  // https://w3c.github.io/webtransport/#dom-webtransportoptions-anticipatedconcurrentincomingunidirectionalstreams
+  std::optional<uint16_t>
+      anticipated_concurrent_incoming_unidirectional_streams;
+  std::optional<uint16_t> anticipated_concurrent_incoming_bidirectional_streams;
 };
 
 // An abstract base for a WebTransport client.  Most of the useful operations
@@ -144,6 +182,7 @@ std::unique_ptr<WebTransportClient> CreateWebTransportClient(
     const url::Origin& origin,
     WebTransportClientVisitor* visitor,
     const NetworkAnonymizationKey& anonymization_key,
+    handles::NetworkHandle target_network,
     URLRequestContext* context,
     const WebTransportParameters& parameters);
 

@@ -17,11 +17,13 @@
 
 #include "base/command_line.h"
 #include "base/system/sys_info.h"
-#include "base/types/cxx23_to_underlying.h"
 #include "remoting/base/logging.h"
 #include "remoting/host/desktop_geometry.h"
+#include "remoting/host/linux/gvariant_ref.h"
 #include "remoting/host/linux/x11_display_util.h"
 #include "remoting/host/linux/x11_util.h"
+#include "ui/base/glib/gsettings.h"
+#include "ui/base/glib/scoped_gobject.h"
 #include "ui/gfx/geometry/vector2d.h"
 #include "ui/gfx/x/future.h"
 #include "ui/gfx/x/randr.h"
@@ -57,7 +59,7 @@ DesktopResizerX11::DesktopResizerX11()
   RandR()->SelectInput({RootWindow(), x11::RandR::NotifyMask::ScreenChange});
 
   gnome_display_config_.Init();
-  registry_ = TakeGObject(g_settings_new("org.gnome.desktop.interface"));
+  registry_ = ui::GSettingsNew("org.gnome.desktop.interface");
 }
 
 DesktopResizerX11::~DesktopResizerX11() = default;
@@ -200,7 +202,7 @@ void DesktopResizerX11::SetResolutionForOutput(
   // that we have to detach the output from the mode in order to delete the
   // mode and re-create it with the new resolution. The output may also need to
   // be detached from all modes in order to reduce the root window size.
-  HOST_LOG << "Resizing RANDR Output " << base::to_underlying(output) << " to "
+  HOST_LOG << "Resizing RANDR Output " << std::to_underlying(output) << " to "
            << resolution.dimensions().width() << "x"
            << resolution.dimensions().height();
 
@@ -213,7 +215,8 @@ void DesktopResizerX11::SetResolutionForOutput(
   // Check to see if GNOME is using automatic-scaling. If the value is non-zero,
   // the user prefers a particular scaling, so don't adjust the
   // text-scaling-factor here.
-  if (g_settings_get_uint(registry_.get(), "scaling-factor") == 0U) {
+  if (registry_ &&
+      g_settings_get_uint(registry_.get(), "scaling-factor") == 0U) {
     // Start the timer to update the text-scaling-factor. Any previously
     // started timer will be cancelled.
     requested_dpi_ = resolution.dpi().x();
@@ -268,12 +271,36 @@ void DesktopResizerX11::OnGnomeDisplayConfigReceived(
            << ", GNOME scale = " << monitor.scale
            << ", calculated text-scaling = " << text_scaling_factor;
 
-  if (!g_settings_set_double(registry_.get(), "text-scaling-factor",
+  if (!registry_ ||
+      !g_settings_set_double(registry_.get(), "text-scaling-factor",
                              text_scaling_factor)) {
     // Just log a warning - failure is expected if the value falls outside the
     // interval [0.5, 3.0].
     LOG(WARNING) << "Failed to set text-scaling-factor.";
   }
+}
+
+bool DesktopResizerX11::supportsHighDpiResize() {
+  // High-DPI resize is supported only for Gnome.
+  ScopedGObject<GDBusConnection> connection =
+      TakeGObject(g_bus_get_sync(G_BUS_TYPE_SESSION, nullptr, nullptr));
+  if (!connection) {
+    return false;
+  }
+  ScopedGObject<GDBusProxy> dbus = TakeGObject(g_dbus_proxy_new_sync(
+      connection, G_DBUS_PROXY_FLAGS_NONE, nullptr, "org.freedesktop.DBus",
+      "/org/freedesktop/DBus", "org.freedesktop.DBus", nullptr, nullptr));
+  if (!dbus) {
+    return false;
+  }
+  auto has_owner = GVariantRef<>::Take(g_dbus_proxy_call_sync(
+      dbus, "NameHasOwner", g_variant_new("(s)", "org.gnome.Shell"),
+      G_DBUS_CALL_FLAGS_NONE, -1, nullptr, nullptr));
+  auto has_owner_bool = GVariantRef<"(b)">::TryFrom(has_owner);
+  if (!has_owner_bool.has_value()) {
+    return false;
+  }
+  return has_owner_bool->get<0>().Into<bool>();
 }
 
 }  // namespace remoting

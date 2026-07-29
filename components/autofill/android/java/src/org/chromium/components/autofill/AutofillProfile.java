@@ -29,7 +29,7 @@ import java.util.Map;
 public class AutofillProfile {
     private String mGUID;
     private @RecordType int mRecordType;
-    private Map<Integer, ValueWithStatus> mFields;
+    private final Map<Integer, ValueWithStatus> mFields;
     private @Nullable String mLabel;
     private String mLanguageCode;
 
@@ -419,6 +419,15 @@ public class AutofillProfile {
 
     public void setLanguageCode(String languageCode) {
         mLanguageCode = languageCode;
+    }
+
+    public boolean isHomeOrWorkProfile() {
+        return getRecordType() == RecordType.ACCOUNT_HOME
+                || getRecordType() == RecordType.ACCOUNT_WORK;
+    }
+
+    public boolean isNameEmailProfile() {
+        return getRecordType() == RecordType.ACCOUNT_NAME_EMAIL;
     }
 
     /** Used by ArrayAdapter in credit card settings. */

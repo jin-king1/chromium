@@ -41,7 +41,6 @@ class SessionRestorationWebStateObserver final
   void WasShown(web::WebState* web_state) final;
   void DidFinishNavigation(web::WebState* web_state,
                            web::NavigationContext* navigation_context) final;
-  void WebStateRealized(web::WebState* web_state) final;
   void WebStateDestroyed(web::WebState* web_state) final;
 
   // web::WebFramesManager::Observer implementation.
@@ -71,8 +70,6 @@ class SessionRestorationWebStateObserver final
   int last_committed_item_index_ = -1;
 
   __strong SessionRestorationScrollObserver* scroll_observer_ = nil;
-
-  WEB_STATE_USER_DATA_KEY_DECL();
 };
 
 #endif  // IOS_CHROME_BROWSER_SESSIONS_MODEL_SESSION_RESTORATION_WEB_STATE_OBSERVER_H_

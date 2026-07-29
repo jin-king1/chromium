@@ -27,6 +27,13 @@ public class ViewPrinter {
     /** Options to customize rendering and printing. */
     public static class Options {
         public static final Options DEFAULT = new Options();
+        public static final Options PRINT_SHALLOW_WITH_BOUNDS =
+                new Options()
+                        .setPrintChildren(false)
+                        .setPrintNonVisibleViews(true)
+                        .setPrintViewBounds(true);
+        public static final Options PRINT_SHALLOW =
+                new Options().setPrintChildren(false).setPrintNonVisibleViews(true);
 
         private String mLogTag = "ViewPrinter";
         private boolean mPrintChildren = true;
@@ -265,7 +272,7 @@ public class ViewPrinter {
      * </pre>
      */
     public static class TreeOutput {
-        private String mLabel;
+        private final String mLabel;
         private @Nullable List<TreeOutput> mChildren;
 
         public TreeOutput(String label) {

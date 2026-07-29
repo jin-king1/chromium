@@ -4,6 +4,9 @@
 
 package org.chromium.components.payments;
 
+import static java.util.Collections.emptyList;
+
+import android.graphics.Bitmap;
 import android.graphics.drawable.Drawable;
 
 import org.chromium.base.task.PostTask;
@@ -12,6 +15,7 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.components.autofill.EditableOption;
 import org.chromium.payments.mojom.PaymentDetailsModifier;
+import org.chromium.payments.mojom.PaymentEventResponseType;
 import org.chromium.payments.mojom.PaymentItem;
 import org.chromium.payments.mojom.PaymentMethodData;
 import org.chromium.payments.mojom.PaymentOptions;
@@ -43,10 +47,34 @@ public abstract class PaymentApp extends EditableOption {
 
         /**
          * Called if unable to retrieve payment details.
+         *
+         * <p>TODO(crbug.com/473478138): Deprecated in favour of two-argument version. This version
+         * kept temporarily to allow Chrome for Android internal code to keep compiling. Remove this
+         * method once that dependency is removed.
+         *
          * @param errorMessage Developer-facing error message to be used when rejecting the promise
-         *                     returned from PaymentRequest.show().
+         *     returned from PaymentRequest.show().
          */
-        void onInstrumentDetailsError(String errorMessage);
+        default void onInstrumentDetailsError(String errorMessage) {
+            onInstrumentDetailsError(PaymentEventResponseType.PAYMENT_EVENT_REJECT, errorMessage);
+        }
+
+        /**
+         * Called if unable to retrieve payment details.
+         *
+         * <p>TODO(crbug.com/473478138): Temporarily default to allow a unittest in Chrome for
+         * Android internal code to keep compiling. Remove 'default' once the test overrides this
+         * method.
+         * <p>TODO(crbug.com/506994069): Pass PaymentAppError directly to
+         * InstrumentDetailsCallback.onInstrumentDetailsError instead of separate error type and
+         * message.
+         *
+         * @param error One of the {@link PaymentEventResponseType} values.
+         * @param errorMessage Developer-facing error message to be used when rejecting the promise
+         *     returned from PaymentRequest.show().
+         */
+        default void onInstrumentDetailsError(
+                @PaymentEventResponseType.EnumType int error, String errorMessage) {}
     }
 
     /** The interface for the requester to abort payment. */
@@ -57,6 +85,23 @@ public abstract class PaymentApp extends EditableOption {
          * @param abortSucceeded Indicates whether abort is succeed.
          */
         void onInstrumentAbortResult(boolean abortSucceeded);
+    }
+
+    /**
+     * The interface for retrieving the label and icon of a PaymentEntityLogo.
+     *
+     * <p>This is a Secure Payment Confirmation specific interface.
+     */
+    public interface PaymentEntityLogo {
+        /**
+         * @return The accessibility label for the payment entity.
+         */
+        String getLabel();
+
+        /**
+         * @return The icon for the payment entity.
+         */
+        Bitmap getIcon();
     }
 
     protected PaymentApp(String id, String label, @Nullable String sublabel, Drawable icon) {
@@ -285,5 +330,13 @@ public abstract class PaymentApp extends EditableOption {
      */
     public PaymentResponse setAppSpecificResponseFields(PaymentResponse response) {
         return response;
+    }
+
+    /**
+     * @return The payment entities logos, an unmodifiable {@link List} (Secure Payment Confirmation
+     *     specific).
+     */
+    public List<PaymentEntityLogo> getPaymentEntitiesLogos() {
+        return emptyList();
     }
 }

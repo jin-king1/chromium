@@ -10,11 +10,11 @@ import android.util.DisplayMetrics;
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
 import org.jni_zero.JniType;
-import org.jni_zero.NativeClassQualifiedName;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.ContextUtils;
-import org.chromium.chrome.browser.feed.v2.ContentOrder;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.feed.v2.FeedUserActionType;
 import org.chromium.chrome.browser.xsurface.ImageCacheHelper;
 import org.chromium.chrome.browser.xsurface.ProcessScope;
@@ -24,8 +24,9 @@ import java.util.Locale;
 
 /** Bridge for FeedService-related calls. */
 @JNINamespace("feed")
+@NullMarked
 public final class FeedServiceBridge {
-    public static ProcessScope xSurfaceProcessScope() {
+    public static @Nullable ProcessScope xSurfaceProcessScope() {
         return XSurfaceProcessScopeProvider.getProcessScope();
     }
 
@@ -87,56 +88,23 @@ public final class FeedServiceBridge {
         return FeedServiceBridgeJni.get().getReliabilityLoggingId();
     }
 
-    public static @ContentOrder int getContentOrderForWebFeed() {
-        return FeedServiceBridgeJni.get().getContentOrderForWebFeed();
-    }
-
-    public static void setContentOrderForWebFeed(@ContentOrder int contentOrder) {
-        FeedServiceBridgeJni.get().setContentOrderForWebFeed(contentOrder);
-    }
-
-    /**
-     * Reports that a user action occurred which is untied to a Feed tab. Use
-     * FeedStream.reportOtherUserAction for stream-specific actions.
-     */
+    /** Reports that a user action occurred which is associated with a feed stream. */
     public static void reportOtherUserAction(
             @StreamKind int streamKind, @FeedUserActionType int userAction) {
-        FeedServiceBridgeJni.get().reportOtherUserAction(streamKind, userAction);
+        FeedServiceBridgeJni.get().reportOtherUserActionForStream(streamKind, userAction);
+    }
+
+    /** Reports that a user action occurred which is independent of any feed stream. */
+    public static void reportOtherUserAction(@FeedUserActionType int userAction) {
+        FeedServiceBridgeJni.get().reportOtherUserAction(userAction);
     }
 
     /**
      * @return True if the user is signed in for feed purposes (i.e. if a personalized feed can be
-     *         requested).
+     *     requested).
      */
     public static boolean isSignedIn() {
         return FeedServiceBridgeJni.get().isSignedIn();
-    }
-
-    /** Observes whether or not the Feed stream contains unread content */
-    public static class UnreadContentObserver {
-        private long mNativePtr;
-
-        /**
-         * Begins observing.
-         *
-         * @param isWebFeed  Whether to observe the Web Feed, or the For-you Feed.
-         */
-        public UnreadContentObserver(boolean isWebFeed) {
-            mNativePtr = FeedServiceBridgeJni.get().addUnreadContentObserver(this, isWebFeed);
-        }
-
-        /** Stops observing. Must be called when this observer is no longer needed */
-        public void destroy() {
-            FeedServiceBridgeJni.get().destroy(mNativePtr);
-            mNativePtr = 0;
-        }
-
-        /**
-         * Called to signal whether unread content is available. Called once after the observer is
-         * initialized, and after that, called each time unread content status changes.
-         */
-        @CalledByNative("UnreadContentObserver")
-        public void hasUnreadContentChanged(boolean hasUnreadContent) {}
     }
 
     @NativeMethods
@@ -151,18 +119,11 @@ public final class FeedServiceBridge {
 
         long getReliabilityLoggingId();
 
-        void reportOtherUserAction(@StreamKind int streamKind, @FeedUserActionType int userAction);
+        void reportOtherUserActionForStream(
+                @StreamKind int streamKind, @FeedUserActionType int userAction);
 
-        @ContentOrder
-        int getContentOrderForWebFeed();
-
-        void setContentOrderForWebFeed(@ContentOrder int contentOrder);
-
-        long addUnreadContentObserver(Object object, boolean isWebFeed);
+        void reportOtherUserAction(@FeedUserActionType int userAction);
 
         boolean isSignedIn();
-
-        @NativeClassQualifiedName("feed::JavaUnreadContentObserver")
-        void destroy(long nativePtr);
     }
 }

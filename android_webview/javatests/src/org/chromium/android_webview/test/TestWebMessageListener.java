@@ -16,10 +16,10 @@ import org.chromium.content_public.browser.MessagePort;
 import java.util.concurrent.LinkedBlockingQueue;
 
 public class TestWebMessageListener implements WebMessageListener {
-    private LinkedBlockingQueue<Data> mQueue = new LinkedBlockingQueue<>();
+    private final LinkedBlockingQueue<Data> mQueue = new LinkedBlockingQueue<>();
 
     public static class Data {
-        private MessagePayload mPayload;
+        private final MessagePayload mPayload;
         public Uri mTopLevelOrigin;
         public Uri mSourceOrigin;
         public boolean mIsMainFrame;
@@ -54,17 +54,36 @@ public class TestWebMessageListener implements WebMessageListener {
             final AwContents awContents,
             final String jsObjectName,
             final String[] allowedOriginRules,
-            final WebMessageListener listener)
-            throws Exception {
+            final WebMessageListener listener) {
         AwActivityTestRule.checkJavaScriptEnabled(awContents);
         ThreadUtils.runOnUiThreadBlocking(
                 () -> awContents.addWebMessageListener(jsObjectName, allowedOriginRules, listener));
     }
 
     public static void removeWebMessageListenerOnUiThread(
-            final AwContents awContents, final String jsObjectName) throws Exception {
+            final AwContents awContents, final String jsObjectName) {
         AwActivityTestRule.checkJavaScriptEnabled(awContents);
         ThreadUtils.runOnUiThreadBlocking(() -> awContents.removeWebMessageListener(jsObjectName));
+    }
+
+    public static void addWebMessageListenerOnUiThreadInIsolatedWorld(
+            final AwContents awContents,
+            final String jsObjectName,
+            final String[] allowedOriginRules,
+            final WebMessageListener listener,
+            final String worldName) {
+        AwActivityTestRule.checkJavaScriptEnabled(awContents);
+        ThreadUtils.runOnUiThreadBlocking(
+                () ->
+                        awContents.addWebMessageListener(
+                                jsObjectName, allowedOriginRules, listener, worldName));
+    }
+
+    public static void removeWebMessageListenerOnUiThreadInIsolatedWorld(
+            final AwContents awContents, final String jsObjectName, String worldName) {
+        AwActivityTestRule.checkJavaScriptEnabled(awContents);
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> awContents.removeWebMessageListener(jsObjectName, worldName));
     }
 
     @Override

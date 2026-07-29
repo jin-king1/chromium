@@ -4,11 +4,14 @@
 
 package org.chromium.chrome.browser.native_page;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.app.Activity;
 
-import androidx.annotation.Nullable;
-
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.incognito.IncognitoUtils;
+import org.chromium.chrome.browser.multiwindow.MultiInstanceOrchestratorFactory;
 import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
 import org.chromium.chrome.browser.offlinepages.DownloadUiActionFlags;
 import org.chromium.chrome.browser.offlinepages.OfflinePageBridge;
@@ -18,12 +21,12 @@ import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
-import org.chromium.chrome.browser.tabmodel.document.ChromeAsyncTabLauncher;
 import org.chromium.chrome.browser.ui.native_page.NativePageHost;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.ui.mojom.WindowOpenDisposition;
 
 /** {@link NativePageNavigationDelegate} implementation. */
+@NullMarked
 public class NativePageNavigationDelegateImpl implements NativePageNavigationDelegate {
     private final Profile mProfile;
 
@@ -51,9 +54,8 @@ public class NativePageNavigationDelegateImpl implements NativePageNavigationDel
     }
 
     @Override
-    public boolean isOpenInNewWindowEnabled() {
-        return MultiWindowUtils.getInstance().isOpenInOtherWindowSupported(mActivity)
-                || MultiWindowUtils.getInstance().canEnterMultiWindowMode(mActivity);
+    public boolean isOpenInOtherWindowEnabled() {
+        return MultiWindowUtils.getInstance().isLinkNavigationToOtherWindowSupported(mActivity);
     }
 
     @Override
@@ -75,7 +77,13 @@ public class NativePageNavigationDelegateImpl implements NativePageNavigationDel
                 mHost.loadUrl(loadUrlParams, true);
                 break;
             case WindowOpenDisposition.NEW_WINDOW:
-                openUrlInNewWindow(loadUrlParams);
+                MultiInstanceOrchestratorFactory.getInstance()
+                        .openUrlInOtherWindow(
+                                mActivity,
+                                loadUrlParams,
+                                mTab.getParentId(),
+                                /* preferNew= */ !isOpenInOtherWindowEnabled(),
+                                mTab.isIncognitoBranded());
                 break;
             case WindowOpenDisposition.SAVE_TO_DISK:
                 saveUrlForOffline(loadUrlParams.getUrl());
@@ -88,7 +96,7 @@ public class NativePageNavigationDelegateImpl implements NativePageNavigationDel
     }
 
     @Override
-    public Tab openUrlInGroup(int windowOpenDisposition, LoadUrlParams loadUrlParams) {
+    public @Nullable Tab openUrlInGroup(int windowOpenDisposition, LoadUrlParams loadUrlParams) {
         Tab newTab =
                 mTabModelSelector.openNewTab(
                         loadUrlParams,
@@ -98,16 +106,7 @@ public class NativePageNavigationDelegateImpl implements NativePageNavigationDel
         return newTab;
     }
 
-    private void openUrlInNewWindow(LoadUrlParams loadUrlParams) {
-        ChromeAsyncTabLauncher chromeAsyncTabLauncher = new ChromeAsyncTabLauncher(false);
-        chromeAsyncTabLauncher.launchTabInOtherWindow(
-                loadUrlParams,
-                mActivity,
-                mHost.getParentId(),
-                MultiWindowUtils.getAdjacentWindowActivity(mActivity));
-    }
-
-    private Tab openUrlInNewTab(LoadUrlParams loadUrlParams, int windowOpenDisposition) {
+    private @Nullable Tab openUrlInNewTab(LoadUrlParams loadUrlParams, int windowOpenDisposition) {
         int tabLaunchType = TabLaunchType.FROM_LONGPRESS_BACKGROUND;
         if (windowOpenDisposition == WindowOpenDisposition.NEW_FOREGROUND_TAB) {
             tabLaunchType = TabLaunchType.FROM_LONGPRESS_FOREGROUND;
@@ -118,18 +117,16 @@ public class NativePageNavigationDelegateImpl implements NativePageNavigationDel
 
     private void saveUrlForOffline(String url) {
         if (mTab != null) {
-            OfflinePageBridge.getForProfile(mProfile)
-                    .scheduleDownload(
-                            mTab.getWebContents(),
-                            OfflinePageBridge.NTP_SUGGESTIONS_NAMESPACE,
-                            url,
-                            DownloadUiActionFlags.ALL);
+            var bridge = assumeNonNull(OfflinePageBridge.getForProfile(mProfile));
+            bridge.scheduleDownload(
+                    mTab.getWebContents(),
+                    OfflinePageBridge.NTP_SUGGESTIONS_NAMESPACE,
+                    url,
+                    DownloadUiActionFlags.ALL);
         } else {
-            RequestCoordinatorBridge.getForProfile(mProfile)
-                    .savePageLater(
-                            url,
-                            OfflinePageBridge.NTP_SUGGESTIONS_NAMESPACE,
-                            /* userRequested= */ true);
+            var bridge = assumeNonNull(RequestCoordinatorBridge.getForProfile(mProfile));
+            bridge.savePageLater(
+                    url, OfflinePageBridge.NTP_SUGGESTIONS_NAMESPACE, /* userRequested= */ true);
         }
     }
 

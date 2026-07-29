@@ -2,9 +2,11 @@ Name: Darwin
 URL: https://github.com/apple-oss-distributions/libmalloc
 Version: 409.40.6
 Revision: 387a5a03c017801ecdfe9cbe7f8d69a9b427df68
+Update Mechanism: Static (https://crbug.com/537106252)
 Security Critical: yes
 Shipped: yes
 License: APSL-2.0
+License Android Compatible: yes
 License File: LICENSE
 
 Local Modifications:
@@ -24,9 +26,10 @@ https://github.com/apple-oss-distributions/libmalloc/blob/libmalloc-409.40.6/inc
 Name: CF
 URL: https://www.opensource.apple.com/
 Version: CF-635
+Update Mechanism: Static (https://crbug.com/422324360)
 Security Critical: yes
 Shipped: yes
-License: Apple Public Source License 2.0
+License: APSL-2.0
 License File: LICENSE
 
 Local Modifications:

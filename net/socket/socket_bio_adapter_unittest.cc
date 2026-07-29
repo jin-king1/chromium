@@ -2,18 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "net/socket/socket_bio_adapter.h"
 
 #include <string.h>
 
 #include <memory>
+#include <string_view>
 
 #include "base/check_op.h"
+#include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/location.h"
 #include "base/memory/raw_ptr.h"
@@ -56,7 +53,11 @@ class SocketBIOAdapterTest : public testing::TestWithParam<ReadIfReadySupport>,
     data->set_connect_data(MockConnect(SYNCHRONOUS, OK));
     factory_.AddSocketDataProvider(data);
     std::unique_ptr<StreamSocket> socket = factory_.CreateTransportClientSocket(
-        AddressList(), nullptr, nullptr, nullptr, NetLogSource());
+        AddressList(),
+        // No need to use a target network here. This is used only for testing
+        // in non-multi-network scenarios.
+        handles::kInvalidNetworkHandle, nullptr, nullptr, nullptr,
+        NetLogSource());
     CHECK_EQ(OK, socket->Connect(CompletionOnceCallback()));
     return socket;
   }
@@ -188,7 +189,7 @@ TEST_P(SocketBIOAdapterTest, ReadSync) {
   // BIO_read only reports one socket-level Read.
   char buf[10];
   EXPECT_EQ(5, BIO_read(bio, buf, sizeof(buf)));
-  EXPECT_EQ(0, memcmp("hello", buf, 5));
+  EXPECT_EQ(std::string_view(buf, 5), "hello");
   EXPECT_FALSE(adapter->HasPendingReadData());
 
   // Consume the next portion one byte at a time.
@@ -202,7 +203,7 @@ TEST_P(SocketBIOAdapterTest, ReadSync) {
 
   // The remainder may be consumed in a single BIO_read.
   EXPECT_EQ(3, BIO_read(bio, buf, sizeof(buf)));
-  EXPECT_EQ(0, memcmp("rld", buf, 3));
+  EXPECT_EQ(std::string_view(buf, 3), "rld");
   EXPECT_FALSE(adapter->HasPendingReadData());
 
   // The error is available synchoronously.
@@ -240,7 +241,7 @@ TEST_P(SocketBIOAdapterTest, ReadAsync) {
 
   // The first read is now available synchronously.
   EXPECT_EQ(5, BIO_read(bio, buf, sizeof(buf)));
-  EXPECT_EQ(0, memcmp("hello", buf, 5));
+  EXPECT_EQ(std::string_view(buf, 5), "hello");
   EXPECT_FALSE(adapter->HasPendingReadData());
 
   // The adapter does not schedule another Read until BIO_read is next called.
@@ -262,7 +263,7 @@ TEST_P(SocketBIOAdapterTest, ReadAsync) {
 
   // The next read is now available synchronously.
   EXPECT_EQ(5, BIO_read(bio, buf, sizeof(buf)));
-  EXPECT_EQ(0, memcmp("world", buf, 5));
+  EXPECT_EQ(std::string_view(buf, 5), "world");
   EXPECT_FALSE(adapter->HasPendingReadData());
 
   // The error is not yet available.

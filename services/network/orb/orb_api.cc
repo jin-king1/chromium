@@ -5,8 +5,9 @@
 #include "services/network/public/cpp/orb/orb_api.h"
 
 #include <string>
-#include <unordered_set>
+#include <vector>
 
+#include "base/strings/string_util.h"
 #include "net/http/http_response_headers.h"
 #include "services/network/orb/orb_impl.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
@@ -18,13 +19,13 @@ namespace {
 void RemoveAllHttpResponseHeaders(
     const scoped_refptr<net::HttpResponseHeaders>& headers) {
   DCHECK(headers);
-  std::unordered_set<std::string> names_of_headers_to_remove;
+  std::vector<std::string> names_of_headers_to_remove;
 
   size_t it = 0;
   std::string name;
   std::string value;
   while (headers->EnumerateHeaderLines(&it, &name, &value))
-    names_of_headers_to_remove.insert(base::ToLowerASCII(name));
+    names_of_headers_to_remove.push_back(name);
 
   headers->RemoveHeaders(names_of_headers_to_remove);
 }

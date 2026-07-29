@@ -26,12 +26,10 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_INSPECTOR_INSPECTOR_CSS_AGENT_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_INSPECTOR_INSPECTOR_CSS_AGENT_H_
 
-#include "base/memory/scoped_refptr.h"
 #include "third_party/blink/renderer/core/animation/keyframe_effect.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/css/css_condition_rule.h"
 #include "third_party/blink/renderer/core/css/css_import_rule.h"
-#include "third_party/blink/renderer/core/css/css_keyframes_rule.h"
 #include "third_party/blink/renderer/core/css/css_layer_block_rule.h"
 #include "third_party/blink/renderer/core/css/css_rule_list.h"
 #include "third_party/blink/renderer/core/css/css_selector.h"
@@ -57,9 +55,12 @@ namespace probe {
 class RecalculateStyle;
 }  // namespace probe
 
+class CascadeLayer;
 class CSSConditionRule;
 class CSSContainerRule;
 class CSSFunctionRule;
+class CSSKeyframesRule;
+class CSSNavigationRule;
 class CSSPropertyName;
 class CSSRule;
 class CSSStyleRule;
@@ -79,6 +80,7 @@ class InspectorResourceContentLoader;
 class MediaList;
 class Node;
 class LayoutObject;
+class StyleRuleKeyframes;
 class StyleRuleUsageTracker;
 
 class CORE_EXPORT InspectorCSSAgent final
@@ -116,6 +118,7 @@ class CORE_EXPORT InspectorCSSAgent final
   static CSSMediaRule* AsCSSMediaRule(CSSRule*);
   static CSSContainerRule* AsCSSContainerRule(CSSRule*);
   static CSSSupportsRule* AsCSSSupportsRule(CSSRule*);
+  static CSSNavigationRule* AsCSSNavigationRule(CSSRule*);
   static CSSScopeRule* AsCSSScopeRule(CSSRule*);
 
   static void CollectAllDocumentStyleSheets(Document*,
@@ -127,12 +130,23 @@ class CORE_EXPORT InspectorCSSAgent final
                                   String* computed_font_weight,
                                   float* text_opacity);
 
+  // Collect all StyleRuleFunction rules across the stylesheets of the Document
+  // and build a "reverse" mapping, from StyleRuleFunction to CSSFunctionRule.
+  //
+  // This is needed because we need to find the CSSFunctionRule
+  // (not the StyleRuleFunction) resulting from a function lookup
+  // (StyleEngine::FindFunctionAcrossScopes()).
+  HeapHashMap<Member<StyleRuleFunction>, Member<CSSFunctionRule>>
+  BuildFunctionRuleMap(Document& document);
+  static HeapHashMap<Member<StyleRuleFunction>, Member<CSSFunctionRule>>
+  BuildFunctionRuleMap(
+      const HeapHashSet<Member<CSSStyleSheet>>& document_style_sheets);
+
   // Collects all function references (i.e. <dashed-ident>s) within
   // the rule list, and the CSSFunctionRules that resulted from looking up
   // those function references.
   static void CollectReferencedFunctionRules(
-      Document&,
-      const HeapHashSet<Member<CSSStyleSheet>>& document_style_sheets,
+      const HeapHashMap<Member<StyleRuleFunction>, Member<CSSFunctionRule>>&,
       const RuleIndexList&,
       HeapHashMap<Member<const ScopedCSSName>, Member<CSSFunctionRule>>&
           result);
@@ -163,6 +177,7 @@ class CORE_EXPORT InspectorCSSAgent final
   void SetCoverageEnabled(bool);
   void WillChangeStyleElement(Element*);
   void DidMutateStyleSheet(CSSStyleSheet* css_style_sheet);
+  void DidInvalidateStyleAttr(Element* element);
   void GetTextPosition(wtf_size_t offset,
                        const String* text,
                        TextPosition* result);
@@ -194,9 +209,12 @@ class CORE_EXPORT InspectorCSSAgent final
       std::optional<int>*,
       std::unique_ptr<protocol::Array<protocol::CSS::CSSPropertyRule>>*,
       std::unique_ptr<protocol::Array<protocol::CSS::CSSPropertyRegistration>>*,
-      std::unique_ptr<protocol::CSS::CSSFontPaletteValuesRule>*,
+      std::unique_ptr<protocol::Array<protocol::CSS::CSSAtRule>>*,
       std::optional<int>* parent_layout_node_id,
       std::unique_ptr<protocol::Array<protocol::CSS::CSSFunctionRule>>*)
+      override;
+  protocol::Response getEnvironmentVariables(
+      std::unique_ptr<protocol::DictionaryValue>* environment_variables)
       override;
   protocol::Response getInlineStylesForNode(
       int node_id,
@@ -204,8 +222,10 @@ class CORE_EXPORT InspectorCSSAgent final
       std::unique_ptr<protocol::CSS::CSSStyle>* attributes_style) override;
   protocol::Response getComputedStyleForNode(
       int node_id,
-      std::unique_ptr<
-          protocol::Array<protocol::CSS::CSSComputedStyleProperty>>*) override;
+      std::unique_ptr<protocol::Array<protocol::CSS::CSSComputedStyleProperty>>*
+          style,
+      std::unique_ptr<protocol::CSS::ComputedStyleExtraFields>* extra_fields)
+      override;
   protocol::Response resolveValues(
       std::unique_ptr<protocol::Array<String>> values,
       int node_id,
@@ -262,6 +282,11 @@ class CORE_EXPORT InspectorCSSAgent final
       std::unique_ptr<protocol::CSS::SourceRange>,
       const String& text,
       std::unique_ptr<protocol::CSS::CSSContainerQuery>*) override;
+  protocol::Response setContainerQueryConditionText(
+      const String& style_sheet_id,
+      std::unique_ptr<protocol::CSS::SourceRange>,
+      const String& text,
+      std::unique_ptr<protocol::CSS::CSSContainerQuery>*) override;
   protocol::Response setScopeText(
       const String& style_sheet_id,
       std::unique_ptr<protocol::CSS::SourceRange>,
@@ -272,6 +297,11 @@ class CORE_EXPORT InspectorCSSAgent final
       std::unique_ptr<protocol::CSS::SourceRange>,
       const String& text,
       std::unique_ptr<protocol::CSS::CSSSupports>*) override;
+  protocol::Response setNavigationText(
+      const String& style_sheet_id,
+      std::unique_ptr<protocol::CSS::SourceRange>,
+      const String& text,
+      std::unique_ptr<protocol::CSS::CSSNavigation>*) override;
   protocol::Response createStyleSheet(const String& frame_id,
                                       std::optional<bool> force,
                                       String* style_sheet_id) override;
@@ -399,10 +429,12 @@ class CORE_EXPORT InspectorCSSAgent final
       std::unique_ptr<protocol::Array<protocol::CSS::CSSPropertyRule>>,
       std::unique_ptr<protocol::Array<protocol::CSS::CSSPropertyRegistration>>>
   CustomPropertiesForNode(Element* element);
-  std::unique_ptr<protocol::CSS::CSSFontPaletteValuesRule> FontPalettesForNode(
-      Element& element);
+  std::unique_ptr<protocol::Array<protocol::CSS::CSSAtRule>>
+  CounterAtRulesForElement(Element* element);
+  std::unique_ptr<protocol::Array<protocol::CSS::CSSAtRule>>
+  FontAtRulesForNodes(HeapVector<Member<Element>>& elements);
 
-  // If the |animating_element| is a pseudo element, then |element| is a
+  // If the |animating_element| is a pseudo-element, then |element| is a
   // reference to its originating DOM element.
   std::unique_ptr<protocol::Array<protocol::CSS::CSSKeyframesRule>>
   AnimationsForNode(Element* element, Element* animating_element);
@@ -436,7 +468,8 @@ class CORE_EXPORT InspectorCSSAgent final
       CSSStyleRule*,
       Element* element,
       PseudoId pseudo_id = kPseudoIdNone,
-      const AtomicString& pseudo_argument = g_null_atom);
+      const AtomicString& pseudo_argument = g_null_atom,
+      const TreeScope* tree_scope = nullptr);
   std::unique_ptr<protocol::CSS::RuleUsage> BuildCoverageInfo(CSSStyleRule*,
                                                               bool);
   std::unique_ptr<protocol::Array<protocol::CSS::RuleMatch>>
@@ -472,7 +505,7 @@ class CORE_EXPORT InspectorCSSAgent final
 
   std::unique_ptr<protocol::CSS::CSSLayerData> BuildLayerDataObject(
       const CascadeLayer* layer,
-      unsigned& max_order);
+      unsigned& order);
 
   // Layers at-rule implementation
   std::unique_ptr<protocol::CSS::CSSLayer> BuildLayerObject(
@@ -499,6 +532,14 @@ class CORE_EXPORT InspectorCSSAgent final
                              protocol::Array<protocol::CSS::CSSScope>*,
                              protocol::Array<protocol::CSS::CSSRuleType>*);
 
+  // Navigation at-rule implementation
+  std::unique_ptr<protocol::CSS::CSSNavigation> BuildNavigationObject(
+      CSSNavigationRule* rule);
+  void CollectNavigationQueriesFromRule(
+      CSSRule*,
+      protocol::Array<protocol::CSS::CSSNavigation>*,
+      protocol::Array<protocol::CSS::CSSRuleType>*);
+
   // Function at-rule implementation
   std::unique_ptr<protocol::CSS::CSSFunctionRule> BuildObjectForFunctionRule(
       CSSFunctionRule*);
@@ -511,6 +552,7 @@ class CORE_EXPORT InspectorCSSAgent final
   void DidAddDocument(Document*) override;
   void WillRemoveDOMNode(Node*) override;
   void DidModifyDOMAttr(Element*) override;
+  void InvalidateInlineStyleCacheForElement(Element&);
 
   // InspectorStyleSheet::Listener implementation
   void StyleSheetChanged(InspectorStyleSheetBase*) override;
@@ -522,6 +564,10 @@ class CORE_EXPORT InspectorCSSAgent final
   void DecrementFocusedCountForAncestors(Element*);
 
   void NotifyComputedStyleUpdatedForNode(int node_id);
+  static String ResolvePercentagesValues(Element*,
+                                         CSSPropertyName,
+                                         const CSSValue* parsed_value,
+                                         const String& original_value);
 
   Member<InspectorDOMAgent> dom_agent_;
   Member<InspectedFrames> inspected_frames_;
@@ -534,9 +580,9 @@ class CORE_EXPORT InspectorCSSAgent final
       id_to_inspector_style_sheet_for_inline_style_;
   HeapHashMap<Member<CSSStyleSheet>, Member<InspectorStyleSheet>>
       css_style_sheet_to_inspector_style_sheet_;
-  typedef HeapHashMap<Member<Document>,
-                      Member<HeapHashSet<Member<CSSStyleSheet>>>>
-      DocumentStyleSheets;
+  using DocumentStyleSheets =
+      HeapHashMap<Member<Document>,
+                  Member<GCedHeapHashSet<Member<CSSStyleSheet>>>>;
   DocumentStyleSheets document_to_css_style_sheets_;
   HeapHashSet<Member<Document>> invalidated_documents_;
 
@@ -580,6 +626,7 @@ class CORE_EXPORT InspectorCSSAgent final
 
   friend class InspectorResourceContentLoaderCallback;
   friend class StyleSheetBinder;
+  friend class InspectorCSSAgentTest;
 };
 
 }  // namespace blink

@@ -3,7 +3,7 @@
 // found in the LICENSE file.
 
 // This code should move into the default Windows shim once the win-specific
-// allocation shim has been removed, and the generic shim has becaome the
+// allocation shim has been removed, and the generic shim has become the
 // default.
 
 #include "partition_alloc/shim/winheap_stubs_win.h"
@@ -13,11 +13,14 @@
 #include <malloc.h>
 #include <new.h>
 
-#include <algorithm>
+#include <bit>
 #include <climits>
+#include <cstring>
 #include <limits>
 
 #include "partition_alloc/partition_alloc_base/bits.h"
+#include "partition_alloc/partition_alloc_base/compiler_specific.h"
+#include "partition_alloc/partition_alloc_base/cxx_wrapper/algorithm.h"
 #include "partition_alloc/partition_alloc_base/numerics/safe_conversions.h"
 #include "partition_alloc/partition_alloc_check.h"
 
@@ -27,9 +30,6 @@ bool g_is_win_shim_layer_initialized = false;
 
 namespace {
 
-const size_t kWindowsPageSize = 4096;
-const size_t kMaxWindowsAllocation = INT_MAX - kWindowsPageSize;
-
 inline HANDLE get_heap_handle() {
   return reinterpret_cast<HANDLE>(_get_heap_handle());
 }
@@ -37,17 +37,13 @@ inline HANDLE get_heap_handle() {
 }  // namespace
 
 void* WinHeapMalloc(size_t size) {
-  if (size < kMaxWindowsAllocation) {
-    return HeapAlloc(get_heap_handle(), 0, size);
-  }
-  return nullptr;
+  return HeapAlloc(get_heap_handle(), 0, size);
 }
 
 void WinHeapFree(void* ptr) {
   if (!ptr) {
     return;
   }
-
   HeapFree(get_heap_handle(), 0, ptr);
 }
 
@@ -59,17 +55,13 @@ void* WinHeapRealloc(void* ptr, size_t size) {
     WinHeapFree(ptr);
     return nullptr;
   }
-  if (size < kMaxWindowsAllocation) {
-    return HeapReAlloc(get_heap_handle(), 0, ptr, size);
-  }
-  return nullptr;
+  return HeapReAlloc(get_heap_handle(), 0, ptr, size);
 }
 
 size_t WinHeapGetSizeEstimate(void* ptr) {
   if (!ptr) {
     return 0;
   }
-
   return HeapSize(get_heap_handle(), 0, ptr);
 }
 
@@ -100,9 +92,6 @@ struct AlignedPrefix {
   // Offset to the original allocation point.
   unsigned int original_allocation_offset;
   // Make sure an unsigned int is enough to store the offset
-  static_assert(
-      kMaxWindowsAllocation < std::numeric_limits<unsigned int>::max(),
-      "original_allocation_offset must be able to fit into an unsigned int");
 #if PA_BUILDFLAG(DCHECKS_ARE_ON)
   // Magic value used to check that _aligned_free() and _aligned_realloc() are
   // only ever called on an aligned allocated chunk.
@@ -129,7 +118,8 @@ void* AlignAllocation(void* ptr, size_t alignment) {
       address + sizeof(AlignedPrefix), alignment);
 
   // Write the prefix.
-  AlignedPrefix* prefix = reinterpret_cast<AlignedPrefix*>(address) - 1;
+  AlignedPrefix* prefix =
+      PA_UNSAFE_TODO(reinterpret_cast<AlignedPrefix*>(address) - 1);
   prefix->original_allocation_offset =
       partition_alloc::internal::base::checked_cast<unsigned int>(
           address - reinterpret_cast<uintptr_t>(ptr));
@@ -141,28 +131,23 @@ void* AlignAllocation(void* ptr, size_t alignment) {
 
 // Return the original allocation from an aligned allocation.
 void* UnalignAllocation(void* ptr) {
-  AlignedPrefix* prefix = reinterpret_cast<AlignedPrefix*>(ptr) - 1;
+  AlignedPrefix* prefix =
+      PA_UNSAFE_TODO(reinterpret_cast<AlignedPrefix*>(ptr) - 1);
 #if PA_BUILDFLAG(DCHECKS_ARE_ON)
   PA_DCHECK(prefix->magic == AlignedPrefix::kMagic);
 #endif  // PA_BUILDFLAG(DCHECKS_ARE_ON)
-  void* unaligned =
-      static_cast<uint8_t*>(ptr) - prefix->original_allocation_offset;
+  void* unaligned = PA_UNSAFE_TODO(static_cast<uint8_t*>(ptr) -
+                                   prefix->original_allocation_offset);
   PA_CHECK(unaligned < ptr);
-  PA_CHECK(reinterpret_cast<uintptr_t>(ptr) -
-               reinterpret_cast<uintptr_t>(unaligned) <=
-           kMaxWindowsAllocation);
   return unaligned;
 }
 
 }  // namespace
 
 void* WinHeapAlignedMalloc(size_t size, size_t alignment) {
-  PA_CHECK(partition_alloc::internal::base::bits::HasSingleBit(alignment));
+  PA_CHECK(std::has_single_bit(alignment));
 
   size_t adjusted = AdjustedSize(size, alignment);
-  if (adjusted >= kMaxWindowsAllocation) {
-    return nullptr;
-  }
 
   void* ptr = WinHeapMalloc(adjusted);
   if (!ptr) {
@@ -173,7 +158,7 @@ void* WinHeapAlignedMalloc(size_t size, size_t alignment) {
 }
 
 void* WinHeapAlignedRealloc(void* ptr, size_t size, size_t alignment) {
-  PA_CHECK(partition_alloc::internal::base::bits::HasSingleBit(alignment));
+  PA_CHECK(std::has_single_bit(alignment));
 
   if (!ptr) {
     return WinHeapAlignedMalloc(size, alignment);
@@ -184,9 +169,6 @@ void* WinHeapAlignedRealloc(void* ptr, size_t size, size_t alignment) {
   }
 
   size_t adjusted = AdjustedSize(size, alignment);
-  if (adjusted >= kMaxWindowsAllocation) {
-    return nullptr;
-  }
 
   // Try to resize the allocation in place first.
   void* unaligned = UnalignAllocation(ptr);
@@ -206,7 +188,7 @@ void* WinHeapAlignedRealloc(void* ptr, size_t size, size_t alignment) {
   size_t gap =
       reinterpret_cast<uintptr_t>(ptr) - reinterpret_cast<uintptr_t>(unaligned);
   size_t old_size = WinHeapGetSizeEstimate(unaligned) - gap;
-  memcpy(new_ptr, ptr, std::min(size, old_size));
+  PA_UNSAFE_TODO(memcpy(new_ptr, ptr, std::min(size, old_size)));
   WinHeapAlignedFree(ptr);
   return new_ptr;
 }

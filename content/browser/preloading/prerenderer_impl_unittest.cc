@@ -6,7 +6,11 @@
 
 #include <array>
 
+#include "base/strings/string_number_conversions.h"
+#include "base/strings/to_string.h"
 #include "base/test/scoped_feature_list.h"
+#include "components/variations/scoped_variations_ids_provider.h"
+#include "content/browser/preloading/preloading.h"
 #include "content/browser/preloading/preloading_confidence.h"
 #include "content/browser/preloading/prerender/prerender_features.h"
 #include "content/browser/preloading/prerender/prerender_host_registry.h"
@@ -14,8 +18,8 @@
 #include "content/public/common/content_client.h"
 #include "content/public/test/prerender_test_util.h"
 #include "content/public/test/test_browser_context.h"
+#include "content/public/test/test_content_browser_client.h"
 #include "content/public/test/test_renderer_host.h"
-#include "content/test/test_content_browser_client.h"
 #include "content/test/test_web_contents.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -24,10 +28,34 @@ namespace {
 
 class PrerendererTest : public RenderViewHostTestHarness {
  public:
-  PrerendererTest() = default;
+  PrerendererTest()
+      : scoped_variations_ids_provider_(
+            variations::test::ScopedVariationsIdsProvider(
+                variations::VariationsIdsProvider::Mode::kUseSignedInState)) {}
 
   void SetUp() override {
     RenderViewHostTestHarness::SetUp();
+
+    scoped_feature_list_prerender2_fallback_.InitWithFeaturesAndParameters(
+        {
+            {
+                features::kPrerender2FallbackPrefetchSpecRules,
+                {
+                    {
+                        features::
+                            kPrerender2FallbackPrefetchUseBlockUntilHeadTimetout
+                                .name,
+                        "false",
+                    },
+                    {
+                        features::kPrerender2FallbackPrefetchSchedulerPolicy
+                            .name,
+                        "NotUse",
+                    },
+                },
+            },
+        },
+        {});
 
     browser_context_ = std::make_unique<TestBrowserContext>();
     web_contents_ = TestWebContents::Create(
@@ -67,7 +95,8 @@ class PrerendererTest : public RenderViewHostTestHarness {
     candidate->action = blink::mojom::SpeculationAction::kPrerender;
     candidate->url = url;
     candidate->referrer = blink::mojom::Referrer::New();
-    candidate->eagerness = blink::mojom::SpeculationEagerness::kEager;
+    candidate->eagerness = blink::mojom::SpeculationEagerness::kImmediate;
+    candidate->tags = {std::nullopt};
     return candidate;
   }
 
@@ -82,10 +111,15 @@ class PrerendererTest : public RenderViewHostTestHarness {
 
  private:
   test::ScopedPrerenderFeatureList prerender_feature_list_;
+  base::test::ScopedFeatureList scoped_feature_list_prerender2_fallback_;
   std::unique_ptr<TestBrowserContext> browser_context_;
   std::unique_ptr<TestWebContents> web_contents_;
   std::unique_ptr<test::ScopedPrerenderWebContentsDelegate>
       web_contents_delegate_;
+  // Prevent `DCHECK(g_instance)` failure in
+  // `VariationsIdsProvider::GetInstance()` via
+  // `PrefetchContainer::MakeInitialResourceRequest()`.
+  variations::test::ScopedVariationsIdsProvider scoped_variations_ids_provider_;
 };
 
 // Tests that Prerenderer starts prerendering when it receives prerender
@@ -225,27 +259,9 @@ TEST_F(PrerendererTest, RemoveRendererHostAfterCandidateRemoved) {
   EXPECT_FALSE(registry->FindHostByUrlForTesting(urls[1]));
 }
 
-class PrerendererNewLimitAndSchedulerTest : public PrerendererTest {
- public:
-  PrerendererNewLimitAndSchedulerTest() {
-    feature_list_.InitWithFeaturesAndParameters(
-        {{features::kPrerender2NewLimitAndScheduler,
-          {{"max_num_of_running_speculation_rules_non_eager_prerenders",
-            base::NumberToString(
-                MaxNumOfRunningSpeculationRulesNonEagerPrerenders())}}}},
-        {});
-  }
-
-  int MaxNumOfRunningSpeculationRulesNonEagerPrerenders() { return 2; }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-};
-
 // Tests that Prerenderer will remove the host if the host is canceled with
-// non-eager limit, and the canceled host can be reprocessed.
-TEST_F(PrerendererNewLimitAndSchedulerTest,
-       RemoveRendererHostAfterNonEagerLimitCancel) {
+// non-immediate limit, and the canceled host can be reprocessed.
+TEST_F(PrerendererTest, RemoveRendererHostAfterNonImmediateLimitCancel) {
   PrerenderHostRegistry* registry = GetPrerenderHostRegistry();
   PrerendererImpl prerenderer(*GetRenderFrameHost());
 
@@ -253,7 +269,10 @@ TEST_F(PrerendererNewLimitAndSchedulerTest,
 
   // Prerender as many times as limit + 1. All prerenders should be started
   // once.
-  for (int i = 0; i < MaxNumOfRunningSpeculationRulesNonEagerPrerenders() + 1;
+  for (int i = 0;
+       i < PrerenderHostRegistry::
+                   kMaxRunningSpeculationRulesNonImmediatePrerenders +
+               1;
        i++) {
     const GURL url = GetSameOriginUrl("/empty.html?" + base::ToString(i));
     urls.push_back(url);
@@ -267,7 +286,10 @@ TEST_F(PrerendererNewLimitAndSchedulerTest,
     EXPECT_TRUE(registry->FindHostByUrlForTesting(url));
   }
 
-  for (int i = 0; i < MaxNumOfRunningSpeculationRulesNonEagerPrerenders() + 1;
+  for (int i = 0;
+       i < PrerenderHostRegistry::
+                   kMaxRunningSpeculationRulesNonImmediatePrerenders +
+               1;
        i++) {
     if (i == 0) {
       // The first (= oldest) prerender should be removed since the (limit +
@@ -286,7 +308,10 @@ TEST_F(PrerendererNewLimitAndSchedulerTest,
   prerenderer.MaybePrerender(std::move(candidate),
                              preloading_predictor::kUnspecified,
                              PreloadingConfidence{100});
-  for (int i = 0; i < MaxNumOfRunningSpeculationRulesNonEagerPrerenders() + 1;
+  for (int i = 0;
+       i < PrerenderHostRegistry::
+                   kMaxRunningSpeculationRulesNonImmediatePrerenders +
+               1;
        i++) {
     if (i == 1) {
       EXPECT_FALSE(registry->FindHostByUrlForTesting(urls[i]));
@@ -323,9 +348,9 @@ TEST_F(PrerendererTest, MaybePrerenderAndShouldWaitForPrerenderResult) {
   EXPECT_FALSE(prerenderer.ShouldWaitForPrerenderResult(kPrerenderingUrl));
   // MaybePrerender the candidate and check if ShouldWaitForPrerenderResult
   // returns true.
-  EXPECT_TRUE(prerenderer.MaybePrerender(candidate,
-                                         preloading_predictor::kUnspecified,
-                                         PreloadingConfidence{100}));
+  EXPECT_TRUE(prerenderer.MaybePrerender(
+      candidate, content_preloading_predictor::kSpeculationRules,
+      PreloadingConfidence{100}));
   EXPECT_TRUE(prerenderer.ShouldWaitForPrerenderResult(kPrerenderingUrl));
   EXPECT_TRUE(registry->FindHostByUrlForTesting(kPrerenderingUrl));
 }

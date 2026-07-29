@@ -28,13 +28,12 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "third_party/blink/renderer/platform/loader/fetch/memory_cache.h"
-
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/mojom/fetch/fetch_api_request.mojom-blink.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/loader/fetch/fetch_context.h"
 #include "third_party/blink/renderer/platform/loader/fetch/fetch_parameters.h"
+#include "third_party/blink/renderer/platform/loader/fetch/memory_cache.h"
 #include "third_party/blink/renderer/platform/loader/fetch/raw_resource.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_fetcher.h"
@@ -43,8 +42,9 @@
 #include "third_party/blink/renderer/platform/loader/testing/mock_resource.h"
 #include "third_party/blink/renderer/platform/loader/testing/test_loader_factory.h"
 #include "third_party/blink/renderer/platform/loader/testing/test_resource_fetcher_properties.h"
+#include "third_party/blink/renderer/platform/scheduler/test/task_environment.h"
 #include "third_party/blink/renderer/platform/testing/mock_context_lifecycle_notifier.h"
-#include "third_party/blink/renderer/platform/testing/testing_platform_support_with_mock_scheduler.h"
+#include "third_party/blink/renderer/platform/testing/testing_platform_support.h"
 
 namespace blink {
 
@@ -64,6 +64,10 @@ constexpr base::TimeDelta kOneDay = base::Days(1);
 
 class MemoryCacheCorrectnessTest : public testing::Test {
  protected:
+  MemoryCacheCorrectnessTest()
+      : scoped_memory_cache_(MakeGarbageCollected<MemoryCache>(
+            task_environment_.GetMainThreadTaskRunner())) {}
+
   MockResource* ResourceFromResourceResponse(ResourceResponse response) {
     if (response.CurrentRequestUrl().IsNull())
       response.SetCurrentRequestUrl(KURL(kResourceURL));
@@ -110,7 +114,9 @@ class MemoryCacheCorrectnessTest : public testing::Test {
     return MockResource::Fetch(fetch_params, Fetcher(), nullptr);
   }
   ResourceFetcher* Fetcher() const { return fetcher_.Get(); }
-  void AdvanceClock(base::TimeDelta delta) { platform_->AdvanceClock(delta); }
+  void AdvanceClock(base::TimeDelta delta) {
+    task_environment_.AdvanceClock(delta);
+  }
   scoped_refptr<const SecurityOrigin> GetSecurityOrigin() const {
     return security_origin_;
   }
@@ -118,10 +124,6 @@ class MemoryCacheCorrectnessTest : public testing::Test {
  private:
   // Overrides testing::Test.
   void SetUp() override {
-    // Save the global memory cache to restore it upon teardown.
-    global_memory_cache_ = ReplaceMemoryCacheForTesting(
-        MakeGarbageCollected<MemoryCache>(platform_->test_task_runner()));
-
     security_origin_ = SecurityOrigin::CreateUniqueOpaque();
     MockFetchContext* context = MakeGarbageCollected<MockFetchContext>();
     auto* properties =
@@ -134,23 +136,21 @@ class MemoryCacheCorrectnessTest : public testing::Test {
         MakeGarbageCollected<TestLoaderFactory>(),
         MakeGarbageCollected<MockContextLifecycleNotifier>(),
         nullptr /* back_forward_cache_loader_helper */));
-    Resource::SetClockForTesting(platform_->test_task_runner()->GetMockClock());
+    Resource::SetClockForTesting(task_environment_.GetMockClock());
   }
   void TearDown() override {
-    MemoryCache::Get()->EvictResources();
-
     Resource::SetClockForTesting(nullptr);
-
-    // Yield the ownership of the global memory cache back.
-    ReplaceMemoryCacheForTesting(global_memory_cache_.Release());
   }
 
-  base::test::SingleThreadTaskEnvironment task_environment_;
-  Persistent<MemoryCache> global_memory_cache_;
+ protected:
+  test::TaskEnvironmentWithMainThreadScheduler task_environment_{
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME};
+  ScopedTestingPlatformSupport<TestingPlatformSupport> platform_;
+
+ private:
   scoped_refptr<const SecurityOrigin> security_origin_;
   Persistent<ResourceFetcher> fetcher_;
-  ScopedTestingPlatformSupport<TestingPlatformSupportWithMockScheduler>
-      platform_;
+  ScopedMemoryCacheForTesting scoped_memory_cache_;
 };
 
 TEST_F(MemoryCacheCorrectnessTest, FreshFromLastModified) {

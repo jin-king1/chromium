@@ -6,6 +6,7 @@ import '//resources/cr_elements/cr_lazy_render/cr_lazy_render_lit.js';
 import '//resources/cr_elements/cr_action_menu/cr_action_menu.js';
 import '//resources/cr_elements/cr_feedback_buttons/cr_feedback_buttons.js';
 import '//resources/cr_elements/cr_icon/cr_icon.js';
+import '//resources/cr_elements/cr_icon_button/cr_icon_button.js';
 import '//resources/cr_elements/cr_loading_gradient/cr_loading_gradient.js';
 import '//resources/cr_elements/cr_url_list_item/cr_url_list_item.js';
 import './icons.html.js';
@@ -17,7 +18,7 @@ import type {CrActionMenuElement} from '//resources/cr_elements/cr_action_menu/c
 import {CrFeedbackOption} from '//resources/cr_elements/cr_feedback_buttons/cr_feedback_buttons.js';
 import type {CrLazyRenderLitElement} from '//resources/cr_elements/cr_lazy_render/cr_lazy_render_lit.js';
 import {I18nMixinLit} from '//resources/cr_elements/i18n_mixin_lit.js';
-import {assert, assertNotReached} from '//resources/js/assert.js';
+import {assert, assertNotReachedCase} from '//resources/js/assert.js';
 import {EventTracker} from '//resources/js/event_tracker.js';
 import {getFaviconForPageURL} from '//resources/js/icon.js';
 import {loadTimeData} from '//resources/js/load_time_data.js';
@@ -25,9 +26,9 @@ import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
 import type {Time} from '//resources/mojo/mojo/public/mojom/base/time.mojom-webui.js';
 
-import {HistoryEmbeddingsBrowserProxyImpl} from './browser_proxy.js';
 import {getCss} from './history_embeddings.css.js';
 import {getHtml} from './history_embeddings.html.js';
+import {browserProxyFactory} from './history_embeddings.mojom-webui.js';
 import type {SearchQuery, SearchResult, SearchResultItem} from './history_embeddings.mojom-webui.js';
 import {AnswerStatus, UserFeedback} from './history_embeddings.mojom-webui.js';
 
@@ -91,10 +92,10 @@ export class HistoryEmbeddingsElement extends HistoryEmbeddingsElementBase {
 
   static override get properties() {
     return {
-      clickedIndices_: {type: Array},
+      clickedIndices_: {type: Object},
       forceSuppressLogging: {type: Boolean},
       numCharsForQuery: {type: Number},
-      feedbackState_: {type: String},
+      feedbackState_: {type: Number},
       loadingAnswer_: {type: Boolean},
       loadingResults_: {type: Boolean},
       searchResult_: {type: Object},
@@ -123,25 +124,29 @@ export class HistoryEmbeddingsElement extends HistoryEmbeddingsElementBase {
         type: Boolean,
         reflect: true,
       },
+      webuiRoundedIconsEnabled_: {type: Boolean},
     };
   }
 
   private actionMenuItem_: SearchResultItem|null = null;
-  protected answerSource_: SearchResultItem|null = null;
+  protected accessor answerSource_: SearchResultItem|null = null;
   private answerLinkClicked_: boolean = false;
-  private browserProxy_ = HistoryEmbeddingsBrowserProxyImpl.getInstance();
-  private clickedIndices_: Set<number> = new Set();
-  protected enableAnswers_: boolean =
+  private browserProxy_ = browserProxyFactory.getInstance();
+  private accessor clickedIndices_: Set<number> = new Set();
+  protected accessor enableAnswers_: boolean =
       loadTimeData.getBoolean('enableHistoryEmbeddingsAnswers');
-  protected enableImages_: boolean =
+  protected accessor enableImages_: boolean =
       loadTimeData.getBoolean('enableHistoryEmbeddingsImages');
-  protected feedbackState_: CrFeedbackOption = CrFeedbackOption.UNSPECIFIED;
-  protected loadingAnswer_ = false;
-  protected loadingResults_ = false;
+  protected accessor feedbackState_: CrFeedbackOption =
+      CrFeedbackOption.UNSPECIFIED;
+  protected accessor loadingAnswer_ = false;
+  protected accessor loadingResults_ = false;
   private loadingStateMinimumMs_ = LOADING_STATE_MINIMUM_MS;
   private queryResultMinAge_ = QUERY_RESULT_MINIMUM_AGE;
-  protected searchResult_: SearchResult|null = null;
-  protected searchResultDirty_: boolean = false;
+  protected accessor searchResult_: SearchResult|null = null;
+  protected accessor searchResultDirty_: boolean = false;
+  protected accessor webuiRoundedIconsEnabled_: boolean =
+      loadTimeData.getBoolean('webuiRoundedIconsEnabled');
   private searchTimestamp_: number = 0;
   /**
    * When this is non-null, that means there's a SearchResult that's pending
@@ -151,12 +156,12 @@ export class HistoryEmbeddingsElement extends HistoryEmbeddingsElementBase {
    */
   private resultPendingMetricsTimestamp_: number|null = null;
   private eventTracker_: EventTracker = new EventTracker();
-  forceSuppressLogging: boolean = false;
-  isEmpty: boolean = true;
-  numCharsForQuery: number = 0;
+  accessor forceSuppressLogging: boolean = false;
+  accessor isEmpty: boolean = true;
+  accessor numCharsForQuery: number = 0;
   private numCharsForLastResultQuery_: number = 0;
-  searchQuery: string = '';
-  timeRangeStart?: Date;
+  accessor searchQuery: string = '';
+  accessor timeRangeStart: Date|undefined;
   private searchResultChangedId_: number|null = null;
   /**
    * A promise of a setTimeout for the first set of search results to come back
@@ -165,10 +170,10 @@ export class HistoryEmbeddingsElement extends HistoryEmbeddingsElementBase {
    * search result for the same query is queued after it.
    */
   private searchResultPromise_: Promise<void>|null = null;
-  showRelativeTimes: boolean = false;
-  showMoreFromSiteMenuOption: boolean = false;
-  otherHistoryResultClicked: boolean = false;
-  inSidePanel: boolean = false;
+  accessor showRelativeTimes: boolean = false;
+  accessor showMoreFromSiteMenuOption: boolean = false;
+  accessor otherHistoryResultClicked: boolean = false;
+  accessor inSidePanel: boolean = false;
 
   override connectedCallback() {
     super.connectedCallback();
@@ -270,7 +275,7 @@ export class HistoryEmbeddingsElement extends HistoryEmbeddingsElementBase {
       case AnswerStatus.kExecutionFailure:
         return this.i18n('historyEmbeddingsAnswererErrorTryAgain');
       default:
-        assertNotReached();
+        assertNotReachedCase(this.searchResult_.answerStatus);
     }
   }
 
@@ -278,7 +283,7 @@ export class HistoryEmbeddingsElement extends HistoryEmbeddingsElementBase {
     if (!this.answerSource_) {
       return undefined;
     }
-    const sourceUrl = new URL(this.answerSource_.url.url);
+    const sourceUrl = new URL(this.answerSource_.url);
     const textDirectives = this.answerSource_.answerData?.answerTextDirectives;
     if (textDirectives && textDirectives.length > 0) {
       // Only the first directive is used for now until there's a way to show
@@ -292,7 +297,7 @@ export class HistoryEmbeddingsElement extends HistoryEmbeddingsElementBase {
 
   protected getFavicon_(item: SearchResultItem|undefined): string {
     return getFaviconForPageURL(
-        item?.url.url || '', /*isSyncedUrlForHistoryUi=*/ true);
+        item?.url || '', /*isSyncedUrlForHistoryUi=*/ true);
   }
 
   protected getHeadingText_(): string {
@@ -350,24 +355,32 @@ export class HistoryEmbeddingsElement extends HistoryEmbeddingsElementBase {
     this.feedbackState_ = e.detail.value;
     switch (e.detail.value) {
       case CrFeedbackOption.UNSPECIFIED:
-        this.browserProxy_.setUserFeedback(
+        this.browserProxy_.handler.setUserFeedback(
             UserFeedback.kUserFeedbackUnspecified);
         return;
       case CrFeedbackOption.THUMBS_UP:
-        this.browserProxy_.setUserFeedback(UserFeedback.kUserFeedbackPositive);
+        this.browserProxy_.handler.setUserFeedback(
+            UserFeedback.kUserFeedbackPositive);
         return;
       case CrFeedbackOption.THUMBS_DOWN:
-        this.browserProxy_.setUserFeedback(UserFeedback.kUserFeedbackNegative);
+        this.browserProxy_.handler.setUserFeedback(
+            UserFeedback.kUserFeedbackNegative);
         return;
+      default:
+        assertNotReachedCase(e.detail.value);
     }
   }
 
-  protected onAnswerLinkContextMenu_(e: MouseEvent) {
+  protected onAnswerLinkContextmenu_(e: MouseEvent) {
     this.fire('answer-context-menu', {
       item: this.answerSource_,
       x: e.clientX,
       y: e.clientY,
     });
+  }
+
+  protected onAnswerLinkAuxclick_(e: MouseEvent) {
+    this.onAnswerLinkClick_(e);
   }
 
   protected onAnswerLinkClick_(e: MouseEvent) {
@@ -413,7 +426,7 @@ export class HistoryEmbeddingsElement extends HistoryEmbeddingsElementBase {
     this.$.sharedMenu.get().close();
   }
 
-  protected onResultContextMenu_(e: MouseEvent) {
+  protected onResultContextmenu_(e: MouseEvent) {
     assert(this.searchResult_);
     const index = Number((e.currentTarget as HTMLElement).dataset['index']);
     this.fire('result-context-menu', {
@@ -421,6 +434,10 @@ export class HistoryEmbeddingsElement extends HistoryEmbeddingsElementBase {
       x: e.clientX,
       y: e.clientY,
     });
+  }
+
+  protected onResultAuxclick_(e: MouseEvent) {
+    this.onResultClick_(e);
   }
 
   protected onResultClick_(e: MouseEvent) {
@@ -441,7 +458,7 @@ export class HistoryEmbeddingsElement extends HistoryEmbeddingsElementBase {
     });
 
     this.clickedIndices_.add(index);
-    this.browserProxy_.recordSearchResultsMetrics(
+    this.browserProxy_.handler.recordSearchResultsMetrics(
         /* nonEmptyResults= */ true, /* userClickedResult= */ true,
         /* answerShown= */ this.hasAnswer_(),
         /* answerCitationClicked= */ this.answerLinkClicked_,
@@ -470,7 +487,7 @@ export class HistoryEmbeddingsElement extends HistoryEmbeddingsElementBase {
           this.timeRangeStart ? jsDateToMojoDate(this.timeRangeStart) : null,
     };
     this.searchTimestamp_ = performance.now();
-    this.browserProxy_.search(query);
+    this.browserProxy_.handler.search(query);
   }
 
   private searchResultChanged_(result: SearchResult) {
@@ -567,7 +584,7 @@ export class HistoryEmbeddingsElement extends HistoryEmbeddingsElementBase {
     if (canLog && !userClickedResult) {
       const nonEmptyResults: boolean = !!this.searchResult_ &&
           this.searchResult_.items && this.searchResult_.items.length > 0;
-      this.browserProxy_.recordSearchResultsMetrics(
+      this.browserProxy_.handler.recordSearchResultsMetrics(
           nonEmptyResults, /* userClickedResult= */ false,
           /* answerShown= */ this.hasAnswer_(),
           /* answerCitationClicked= */ this.answerLinkClicked_,
@@ -576,7 +593,7 @@ export class HistoryEmbeddingsElement extends HistoryEmbeddingsElementBase {
     }
 
     if (!this.forceSuppressLogging && canLog) {
-      this.browserProxy_.sendQualityLog(
+      this.browserProxy_.handler.sendQualityLog(
           Array.from(this.clickedIndices_), this.numCharsForLastResultQuery_);
     }
 

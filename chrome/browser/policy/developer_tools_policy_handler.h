@@ -5,14 +5,15 @@
 #ifndef CHROME_BROWSER_POLICY_DEVELOPER_TOOLS_POLICY_HANDLER_H_
 #define CHROME_BROWSER_POLICY_DEVELOPER_TOOLS_POLICY_HANDLER_H_
 
-#include "chrome/browser/policy/extension_developer_mode_policy_handler.h"
 #include "components/policy/core/browser/configuration_policy_handler.h"
+#include "components/policy/core/browser/developer_tools_availability.h"
+#include "extensions/buildflags/buildflags.h"
+
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+#include "chrome/browser/policy/extension_developer_mode_policy_handler.h"
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
 class Profile;
-
-namespace user_prefs {
-class PrefRegistrySyncable;
-}
 
 namespace policy {
 
@@ -27,38 +28,22 @@ class DeveloperToolsPolicyHandler : public ConfigurationPolicyHandler {
       delete;
   ~DeveloperToolsPolicyHandler() override;
 
-  // Developer tools availability as set by policy. The values must match the
-  // 'DeveloperToolsAvailability' policy definition.
-  enum class Availability {
-    // Default: Developer tools are allowed, except for policy-installed
-    // extensions and, if this is a managed profile, component extensions.
-    kDisallowedForForceInstalledExtensions = 0,
-    // Developer tools allowed in all contexts.
-    kAllowed = 1,
-    // Developer tools disallowed in all contexts.
-    kDisallowed = 2,
-    // Maximal valid value for range checking.
-    kMaxValue = kDisallowed
-  };
-
   // ConfigurationPolicyHandler methods:
   bool CheckPolicySettings(const policy::PolicyMap& policies,
                            policy::PolicyErrorMap* errors) override;
   void ApplyPolicySettings(const PolicyMap& policies,
                            PrefValueMap* prefs) override;
 
-  // Registers the pref for policy-set developer tools availability in
-  // |registry|.
-  static void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry);
-
   // Returns the effective developer tools availability for the profile.
-  static Availability GetEffectiveAvailability(Profile* profile);
+  static DeveloperToolsAvailability GetEffectiveAvailability(Profile* profile);
 
  private:
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   // This instance should only be used for calling IsValidPolicySet() and not
   // for applying the policy settings. The latter is done by the instance which
   // is added in `ConfigurationPolicyHandlerList`.
   ExtensionDeveloperModePolicyHandler extension_developer_mode_policy_handler_;
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 };
 
 }  // namespace policy

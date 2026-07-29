@@ -11,6 +11,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "base/containers/span.h"
 #include "base/files/file_util.h"
 #include "base/logging.h"
 #include "base/numerics/safe_conversions.h"
@@ -21,7 +22,6 @@ namespace base {
 
 MemoryMappedFile::MemoryMappedFile() = default;
 
-#if !BUILDFLAG(IS_NACL)
 bool MemoryMappedFile::MapFileRegionToMemory(
     const MemoryMappedFile::Region& region,
     Access access) {
@@ -129,7 +129,6 @@ bool MemoryMappedFile::MapFileRegionToMemory(
   bytes_ = UNSAFE_BUFFERS(base::span(ptr + data_offset, byte_size));
   return true;
 }
-#endif
 
 void MemoryMappedFile::CloseHandles() {
   ScopedBlockingCall scoped_blocking_call(FROM_HERE, BlockingType::MAY_BLOCK);

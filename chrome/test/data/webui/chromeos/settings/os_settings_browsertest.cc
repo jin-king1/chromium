@@ -3,14 +3,15 @@
 // found in the LICENSE file.
 
 #include "ash/constants/ash_features.h"
+#include "ash/constants/webui_url_constants.h"
 #include "base/strings/strcat.h"
 #include "base/test/scoped_feature_list.h"
+#include "build/branding_buildflags.h"
 #include "chrome/browser/ash/crostini/fake_crostini_features.h"
 #include "chrome/browser/ash/login/test/cryptohome_mixin.h"
 #include "chrome/browser/ash/login/test/user_auth_config.h"
 #include "chrome/browser/nearby_sharing/common/nearby_share_features.h"
 #include "chrome/common/chrome_features.h"
-#include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/web_ui_mocha_browser_test.h"
 #include "chromeos/ash/components/cryptohome/cryptohome_parameters.h"
 #include "chromeos/ash/components/cryptohome/system_salt_getter.h"
@@ -28,9 +29,7 @@ namespace ash::settings {
 
 class OSSettingsMochaTest : public WebUIMochaBrowserTest {
  protected:
-  OSSettingsMochaTest() {
-    set_test_loader_host(chrome::kChromeUIOSSettingsHost);
-  }
+  OSSettingsMochaTest() { set_test_loader_host(ash::kChromeUIOSSettingsHost); }
 
   // Runs the specified test.
   // - test_path: The path to the test file within the CrOS Settings test root
@@ -48,9 +47,6 @@ class OSSettingsMochaTest : public WebUIMochaBrowserTest {
     });
     RunTest(path_with_parent_directory, trigger);
   }
-
-  base::test::ScopedFeatureList scoped_feature_list_{
-      ash::features::kEnableHostnameSetting};
 };
 
 /* Start Test Classes */
@@ -115,28 +111,10 @@ class OSSettingsMochaTestMagnifierFollowsChromeVoxEnabled
       ::features::kAccessibilityMagnifierFollowsChromeVox};
 };
 
-class OSSettingsMochaTestFilterKeysEnabled : public OSSettingsMochaTest {
- protected:
-  OSSettingsMochaTestFilterKeysEnabled() {
-    scoped_feature_list_.InitWithFeatures({::features::kAccessibilityBounceKeys,
-                                           ::features::kAccessibilitySlowKeys},
-                                          {});
-  }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
 class OSSettingsMochaTestMouseKeysEnabled : public OSSettingsMochaTest {
  private:
   base::test::ScopedFeatureList scoped_feature_list_{
       ::features::kAccessibilityMouseKeys};
-};
-
-class OSSettingsMochaTestFaceGazeEnabled : public OSSettingsMochaTest {
- private:
-  base::test::ScopedFeatureList scoped_feature_list_{
-      ::features::kAccessibilityFaceGaze};
 };
 
 class OSSettingsMochaTestGraduationEnabled : public OSSettingsMochaTest {
@@ -173,7 +151,6 @@ class OSSettingsDeviceTestPeripheralAndSplitEnabled
         /*enabled=*/
         {
             ash::features::kPeripheralCustomization,
-            ash::features::kInputDeviceSettingsSplit,
         },
         /*disabled=*/{});
   }
@@ -189,7 +166,6 @@ class OSSettingsDeviceTestSplitAndAltAndFKeyEnabled
     scoped_feature_list_.InitWithFeatures(
         /*enabled=*/
         {
-            ash::features::kInputDeviceSettingsSplit,
             ash::features::kAltClickAndSixPackCustomization,
             ::features::kSupportF11AndF12KeyShortcuts,
         },
@@ -200,57 +176,18 @@ class OSSettingsDeviceTestSplitAndAltAndFKeyEnabled
   base::test::ScopedFeatureList scoped_feature_list_;
 };
 
-class OSSettingsMochaTestSplitEnabled : public OSSettingsMochaTest {
- private:
-  base::test::ScopedFeatureList scoped_feature_list_{
-      ash::features::kInputDeviceSettingsSplit};
+class OSSettingsDeviceTestBacklightEnabled : public OSSettingsMochaTest {
+ protected:
+  OSSettingsDeviceTestBacklightEnabled() = default;
 };
 
-class OSSettingsDeviceTestPeripheralEnabledSplitDisabled
-    : public OSSettingsMochaTest {
+class OSSettingsDeviceTestAltAndBacklightEnabled : public OSSettingsMochaTest {
  protected:
-  OSSettingsDeviceTestPeripheralEnabledSplitDisabled() {
-    scoped_feature_list_.InitWithFeatures(
-        /*enabled=*/
-        {
-            ash::features::kPeripheralCustomization,
-        },
-        /*disabled=*/{
-            ash::features::kInputDeviceSettingsSplit,
-        });
-  }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
-class OSSettingsDeviceTestSplitAndBacklightEnabled
-    : public OSSettingsMochaTest {
- protected:
-  OSSettingsDeviceTestSplitAndBacklightEnabled() {
-    scoped_feature_list_.InitWithFeatures(
-        /*enabled=*/
-        {
-            ash::features::kInputDeviceSettingsSplit,
-            ash::features::kEnableKeyboardBacklightControlInSettings,
-        },
-        /*disabled=*/{});
-  }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
-class OSSettingsDeviceTestAltAndSplitAndBacklightEnabled
-    : public OSSettingsMochaTest {
- protected:
-  OSSettingsDeviceTestAltAndSplitAndBacklightEnabled() {
+  OSSettingsDeviceTestAltAndBacklightEnabled() {
     scoped_feature_list_.InitWithFeatures(
         /*enabled=*/
         {
             ash::features::kAltClickAndSixPackCustomization,
-            ash::features::kInputDeviceSettingsSplit,
-            ash::features::kEnableKeyboardBacklightControlInSettings,
         },
         /*disabled=*/{});
   }
@@ -418,11 +355,6 @@ IN_PROC_BROWSER_TEST_F(OSSettingsCrostiniTest,
 }
 
 IN_PROC_BROWSER_TEST_F(OSSettingsCrostiniTest,
-                       CrostiniPageCrostiniExtraContainersSubpage) {
-  RunSettingsTest("crostini_page/crostini_extra_containers_subpage_test.js");
-}
-
-IN_PROC_BROWSER_TEST_F(OSSettingsCrostiniTest,
                        CrostiniPageCrostiniPortForwarding) {
   RunSettingsTest("crostini_page/crostini_port_forwarding_test.js");
 }
@@ -462,6 +394,14 @@ IN_PROC_BROWSER_TEST_F(OSSettingsDeviceTestPeripheralAndSplitEnabled,
 
 IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest, DevicePageAudioPage) {
   RunSettingsTest("device_page/audio_page_test.js");
+}
+
+IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest, DevicePageKeyboard) {
+  RunSettingsTest("device_page/keyboard_test.js");
+}
+
+IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest, DevicePagePointers) {
+  RunSettingsTest("device_page/pointers_test.js");
 }
 
 IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest,
@@ -534,7 +474,7 @@ IN_PROC_BROWSER_TEST_F(OSSettingsDeviceTestPeripheralAndSplitEnabled,
   RunSettingsTest("device_page/graphics_tablet_subpage_test.js");
 }
 
-IN_PROC_BROWSER_TEST_F(OSSettingsMochaTestSplitEnabled,
+IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest,
                        DevicePageInputDeviceMojoInterfaceProvider) {
   RunSettingsTest("device_page/input_device_mojo_interface_provider_test.js");
 }
@@ -544,13 +484,7 @@ IN_PROC_BROWSER_TEST_F(OSSettingsDeviceTestPeripheralAndSplitEnabled,
   RunSettingsTest("device_page/key_combination_input_dialog_test.js");
 }
 
-IN_PROC_BROWSER_TEST_F(OSSettingsDeviceTestPeripheralEnabledSplitDisabled,
-                       DevicePageKeyboard) {
-  RunSettingsTest("device_page/keyboard_test.js");
-}
-
-IN_PROC_BROWSER_TEST_F(OSSettingsMochaTestSplitEnabled,
-                       DevicePageKeyboardSixPackKeyRow) {
+IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest, DevicePageKeyboardSixPackKeyRow) {
   RunSettingsTest("device_page/keyboard_six_pack_key_row_test.js");
 }
 
@@ -564,24 +498,23 @@ IN_PROC_BROWSER_TEST_F(OSSettingsDeviceTestPeripheralAndSplitEnabled,
   RunSettingsTest("device_page/per_device_install_row_test.js");
 }
 
-IN_PROC_BROWSER_TEST_F(OSSettingsDeviceTestSplitAndBacklightEnabled,
+IN_PROC_BROWSER_TEST_F(OSSettingsDeviceTestBacklightEnabled,
                        DevicePagePerDeviceKeyboard) {
   RunSettingsTest("device_page/per_device_keyboard_test.js");
 }
 
 // TODO(b/367799335): Re-enable this test.
-IN_PROC_BROWSER_TEST_F(OSSettingsDeviceTestAltAndSplitAndBacklightEnabled,
+IN_PROC_BROWSER_TEST_F(OSSettingsDeviceTestAltAndBacklightEnabled,
                        DISABLED_DevicePagePerDeviceKeyboardRemapKeys) {
   RunSettingsTest("device_page/per_device_keyboard_remap_keys_test.js");
 }
 
-IN_PROC_BROWSER_TEST_F(OSSettingsDeviceTestAltAndSplitAndBacklightEnabled,
+IN_PROC_BROWSER_TEST_F(OSSettingsDeviceTestAltAndBacklightEnabled,
                        DevicePagePerDeviceKeyboardSubsection) {
   RunSettingsTest("device_page/per_device_keyboard_subsection_test.js");
 }
 
-IN_PROC_BROWSER_TEST_F(OSSettingsMochaTestSplitEnabled,
-                       DevicePagePerDeviceMouse) {
+IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest, DevicePagePerDeviceMouse) {
   RunSettingsTest("device_page/per_device_mouse_test.js");
 }
 
@@ -590,12 +523,11 @@ IN_PROC_BROWSER_TEST_F(OSSettingsDeviceTestPeripheralAndSplitEnabled,
   RunSettingsTest("device_page/per_device_mouse_subsection_test.js");
 }
 
-IN_PROC_BROWSER_TEST_F(OSSettingsMochaTestSplitEnabled,
-                       DevicePagePerDevicePointingStick) {
+IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest, DevicePagePerDevicePointingStick) {
   RunSettingsTest("device_page/per_device_pointing_stick_test.js");
 }
 
-IN_PROC_BROWSER_TEST_F(OSSettingsMochaTestSplitEnabled,
+IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest,
                        DevicePagePerDevicePointingStickSubsection) {
   RunSettingsTest("device_page/per_device_pointing_stick_subsection_test.js");
 }
@@ -605,19 +537,13 @@ IN_PROC_BROWSER_TEST_F(OSSettingsDeviceTestPeripheralAndSplitEnabled,
   RunSettingsTest("device_page/per_device_subsection_header_test.js");
 }
 
-IN_PROC_BROWSER_TEST_F(OSSettingsMochaTestSplitEnabled,
-                       DevicePagePerDeviceTouchpad) {
+IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest, DevicePagePerDeviceTouchpad) {
   RunSettingsTest("device_page/per_device_touchpad_test.js");
 }
 
-IN_PROC_BROWSER_TEST_F(OSSettingsMochaTestSplitEnabled,
+IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest,
                        DevicePagePerDeviceTouchpadSubsection) {
   RunSettingsTest("device_page/per_device_touchpad_subsection_test.js");
-}
-
-IN_PROC_BROWSER_TEST_F(OSSettingsDeviceTestPeripheralEnabledSplitDisabled,
-                       DevicePagePointers) {
-  RunSettingsTest("device_page/pointers_test.js");
 }
 
 IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest, DevicePagePower) {
@@ -749,7 +675,15 @@ IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest, InternetPageNetworkSummary) {
   RunSettingsTest("internet_page/network_summary_test.js");
 }
 
-IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest, InternetPageNetworkSummaryItem) {
+// TODO(crbug.com/452098595): Test is flaky on linux-chromeos-dbg.
+#if BUILDFLAG(IS_CHROMEOS) && !defined(NDEBUG)
+#define MAYBE_InternetPageNetworkSummaryItem \
+  DISABLED_InternetPageNetworkSummaryItem
+#else
+#define MAYBE_InternetPageNetworkSummaryItem InternetPageNetworkSummaryItem
+#endif
+IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest,
+                       MAYBE_InternetPageNetworkSummaryItem) {
   RunSettingsTest("internet_page/network_summary_item_test.js");
 }
 
@@ -791,6 +725,10 @@ IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest, KeyboardShortcutBanner) {
 
 IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest, LockScreenSubpage) {
   RunSettingsTest("lock_screen_subpage_test.js");
+}
+
+IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest, LockStateMixin) {
+  RunSettingsTest("lock_state_mixin_test.js");
 }
 
 IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest, MainPageContainer) {
@@ -933,22 +871,19 @@ IN_PROC_BROWSER_TEST_F(OSSettingsMochaTestMouseKeysEnabled,
   RunSettingsTest("os_a11y_page/mouse_keys_subpage_test.js");
 }
 
-IN_PROC_BROWSER_TEST_F(OSSettingsMochaTestFaceGazeEnabled,
-                       OsA11yPageFaceGazeSubpage) {
+IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest, OsA11yPageFaceGazeSubpage) {
   RunSettingsTest("os_a11y_page/facegaze_subpage_test.js");
 }
 
-IN_PROC_BROWSER_TEST_F(OSSettingsMochaTestFaceGazeEnabled,
-                       OsA11yPageFaceGazeCursorCard) {
+IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest, OsA11yPageFaceGazeCursorCard) {
   RunSettingsTest("os_a11y_page/facegaze_cursor_card_test.js");
 }
 
-IN_PROC_BROWSER_TEST_F(OSSettingsMochaTestFaceGazeEnabled,
-                       OsA11yPageFaceGazeActionsCard) {
+IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest, OsA11yPageFaceGazeActionsCard) {
   RunSettingsTest("os_a11y_page/facegaze_actions_card_test.js");
 }
 
-IN_PROC_BROWSER_TEST_F(OSSettingsMochaTestFaceGazeEnabled,
+IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest,
                        OsA11yPageFaceGazeActionsAddDialog) {
   RunSettingsTest("os_a11y_page/facegaze_actions_add_dialog_test.js");
 }
@@ -973,8 +908,7 @@ IN_PROC_BROWSER_TEST_F(OSSettingsMochaTestMagnifierFollowsChromeVoxEnabled,
   RunSettingsTest("os_a11y_page/display_and_magnification_subpage_test.js");
 }
 
-IN_PROC_BROWSER_TEST_F(OSSettingsMochaTestFilterKeysEnabled,
-                       OsA11yPageFilterKeys) {
+IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest, OsA11yPageFilterKeys) {
   RunSettingsTest("os_a11y_page/filter_keys_test.js");
 }
 
@@ -1045,10 +979,6 @@ IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest,
   RunSettingsTest("os_about_page/detailed_build_info_subpage_test.js");
 }
 
-IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest, OsAboutPageEditHostnameDialog) {
-  RunSettingsTest("os_about_page/edit_hostname_dialog_test.js");
-}
-
 IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest, OsAppsPage) {
   RunSettingsTest("os_apps_page/os_apps_page_test.js");
 }
@@ -1113,12 +1043,6 @@ IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest,
 IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest,
                        OsAppsPageAppManagementPagePinToShelfItem) {
   RunSettingsTest("os_apps_page/app_management_page/pin_to_shelf_item_test.js");
-}
-
-IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest,
-                       OsAppsPageAppManagementPagePluginVmDetailView) {
-  RunSettingsTest(
-      "os_apps_page/app_management_page/plugin_vm_detail_view_test.js");
 }
 
 IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest,
@@ -1207,14 +1131,6 @@ IN_PROC_BROWSER_TEST_F(
       "app_verify_pin_dialog_test.js");
 }
 
-IN_PROC_BROWSER_TEST_F(
-    OSSettingsMochaTest,
-    OsAppsPageManageIsolatedWebAppsPageManageIsolatedWebAppsSubpage) {
-  RunSettingsTest(
-      "os_apps_page/manage_isolated_web_apps_page/"
-      "manage_isolated_web_apps_subpage_test.js");
-}
-
 IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest, OsBluetoothPage) {
   RunSettingsTest("os_bluetooth_page/os_bluetooth_page_test.js");
 }
@@ -1225,7 +1141,7 @@ IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest,
       "os_bluetooth_page/os_bluetooth_change_device_name_dialog_test.js");
 }
 
-IN_PROC_BROWSER_TEST_F(OSSettingsMochaTestSplitEnabled,
+IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest,
                        OsBluetoothPageOsBluetoothDeviceDetailSubpage) {
   RunSettingsTest(
       "os_bluetooth_page/os_bluetooth_device_detail_subpage_test.js");
@@ -1462,11 +1378,6 @@ IN_PROC_BROWSER_TEST_F(OSSettingsResetTestSanitizeEnabled,
 IN_PROC_BROWSER_TEST_F(OSSettingsResetTestSanitizeDisabled,
                        OsResetPageResetSettingsCardWithoutSanitize) {
   RunSettingsTest("os_reset_page/reset_settings_card_test.js");
-}
-
-IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest,
-                       OsSearchPageGoogleAssistantSubpage) {
-  RunSettingsTest("os_search_page/google_assistant_subpage_test.js");
 }
 
 IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest, OsSearchPageSearchEngine) {

@@ -26,7 +26,6 @@ class WebContents;
 }  // namespace content
 
 class Profile;
-class PasswordAccessLossWarningBridge;
 
 namespace autofill {
 
@@ -63,7 +62,9 @@ class AutofillKeyboardAccessoryControllerImpl
 
   // AutofillSuggestionController:
   void OnSuggestionsChanged() override;
-  void AcceptSuggestion(int index) override;
+  void AcceptSuggestion(
+      int index,
+      AutofillMetrics::SuggestionAcceptedMethod accept_method) override;
   bool RemoveSuggestion(
       int index,
       AutofillMetrics::SingleEntryRemovalMethod removal_method) override;
@@ -71,22 +72,29 @@ class AutofillKeyboardAccessoryControllerImpl
   const std::vector<Suggestion>& GetSuggestions() const override;
   const Suggestion& GetSuggestionAt(int row) const override;
   FillingProduct GetMainFillingProduct() const override;
-  std::optional<AutofillClient::PopupScreenLocation> GetPopupScreenLocation()
-      const override;
+  AutofillSuggestionTriggerSource GetSuggestionTriggerSource() const;
   void Show(UiSessionId ui_session_id,
             std::vector<Suggestion> suggestions,
             AutofillSuggestionTriggerSource trigger_source,
-            AutoselectFirstSuggestion autoselect_first_suggestion) override;
+            AutoselectFirstSuggestion autoselect_first_suggestion,
+            AutofillSuggestionsIgnoreFocusLoss ignore_focus_loss) override;
   std::optional<UiSessionId> GetUiSessionId() const override;
   void SetKeepPopupOpenForTesting(bool keep_popup_open_for_testing) override;
   void UpdateDataListValues(base::span<const SelectOption> options) override;
+  bool MayRecycle(
+      base::WeakPtr<AutofillSuggestionDelegate> delegate,
+      content::WebContents* web_contents,
+      AutofillSuggestionTriggerSource trigger_source) const override;
+  void Recycle(PopupControllerCommon controller_common,
+               int32_t form_control_ax_id) override;
 
   // AutofillKeyboardAccessoryController:
   std::vector<std::vector<Suggestion::Text>> GetSuggestionLabelsAt(
       int row) const override;
-  bool GetRemovalConfirmationText(int index,
-                                  std::u16string* title,
-                                  std::u16string* body) override;
+  bool GetRemovalConfirmationText(
+      int index,
+      RemovalConfirmationText* removal_text) override;
+  void OpenSettingsForEntityType(int32_t entity_type) override;
 
   base::WeakPtr<AutofillKeyboardAccessoryControllerImpl> GetWeakPtr() {
     return weak_ptr_factory_.GetWeakPtr();
@@ -103,10 +111,9 @@ class AutofillKeyboardAccessoryControllerImpl
   // of `suggestions_`.
   void OrderSuggestionsAndCreateLabels();
 
-  // Reacts to the result of a deletion dialog by attempting to delete the
-  // suggestion at `index` if the dialog `confirmed` deletion and by emitting
-  // metrics.
-  void OnDeletionDialogClosed(int index, bool confirmed);
+  // Reacts to the result of a deletion dialog by attempting to delete
+  // `suggestion` if the dialog `confirmed` deletion and by emitting metrics.
+  void OnDeletionDialogClosed(const Suggestion& suggestion, bool confirmed);
 
   // Hides the view and asynchronously deletes itself.
   void HideViewAndDie();
@@ -156,10 +163,6 @@ class AutofillKeyboardAccessoryControllerImpl
   // The first `IsStandaloneSuggestionType()` is used to define what the
   // `FillingProduct` is.
   FillingProduct suggestions_filling_product_ = FillingProduct::kNone;
-
-  // Bridge used to show the data loss warning (expected to be shown after
-  // filling user's credentials).
-  std::unique_ptr<PasswordAccessLossWarningBridge> access_loss_warning_bridge_;
 
   base::WeakPtrFactory<AutofillKeyboardAccessoryControllerImpl>
       self_deletion_weak_ptr_factory_{this};

@@ -24,10 +24,12 @@
 
 #include "third_party/blink/renderer/core/html/html_embed_element.h"
 
+#include "third_party/blink/renderer/bindings/core/v8/v8_union_trustedscripturl_usvstring.h"
 #include "third_party/blink/renderer/core/css/css_property_names.h"
 #include "third_party/blink/renderer/core/dom/attribute.h"
 #include "third_party/blink/renderer/core/dom/element_traversal.h"
 #include "third_party/blink/renderer/core/dom/shadow_root.h"
+#include "third_party/blink/renderer/core/frame/deprecation/deprecation.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_client.h"
 #include "third_party/blink/renderer/core/html/html_image_loader.h"
@@ -37,6 +39,7 @@
 #include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/layout/layout_embedded_content.h"
 #include "third_party/blink/renderer/core/layout/layout_embedded_object.h"
+#include "third_party/blink/renderer/core/layout/layout_object_inlines.h"
 
 namespace blink {
 
@@ -48,8 +51,10 @@ HTMLEmbedElement::HTMLEmbedElement(Document& document,
 
 const AttrNameToTrustedType& HTMLEmbedElement::GetCheckedAttributeTypes()
     const {
-  DEFINE_STATIC_LOCAL(AttrNameToTrustedType, attribute_map,
-                      ({{"src", SpecificTrustedType::kScriptURL}}));
+  DEFINE_STATIC_LOCAL(
+      AttrNameToTrustedType, attribute_map,
+      ({{"src", std::pair{SpecificTrustedType::kScriptURL,
+                          trusted_types_names::kHTMLEmbedElement}}}));
   return attribute_map;
 }
 
@@ -90,10 +95,10 @@ void HTMLEmbedElement::CollectStyleForPresentationAttribute(
 void HTMLEmbedElement::ParseAttribute(
     const AttributeModificationParams& params) {
   if (params.name == html_names::kTypeAttr) {
-    SetServiceType(params.new_value.LowerASCII());
-    wtf_size_t pos = service_type_.Find(";");
+    SetServiceType(params.new_value.ToAsciiLower());
+    wtf_size_t pos = service_type_.find(';');
     if (pos != kNotFound)
-      SetServiceType(service_type_.Left(pos));
+      SetServiceType(service_type_.substr(0, pos));
     SetDisposeView();
     if (GetLayoutObject()) {
       SetNeedsPluginUpdate(true);
@@ -103,7 +108,7 @@ void HTMLEmbedElement::ParseAttribute(
   } else if (params.name == html_names::kCodeAttr) {
     // TODO(rendering-core): Remove this branch? It's not in the spec and we're
     // not in the HTMLAppletElement hierarchy.
-    SetUrl(StripLeadingAndTrailingHTMLSpaces(params.new_value));
+    SetUrl(StripLeadingAndTrailingHtmlSpaces(params.new_value));
     SetDisposeView();
   } else if (params.name == html_names::kSrcAttr) {
     // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-embed-element
@@ -112,19 +117,19 @@ void HTMLEmbedElement::ParseAttribute(
     // steps.
     // We don't follow the "potentially active" definition precisely here, but
     // it works.
-    SetUrl(StripLeadingAndTrailingHTMLSpaces(params.new_value));
+    SetUrl(StripLeadingAndTrailingHtmlSpaces(params.new_value));
     SetDisposeView();
     if (GetLayoutObject() && IsImageType()) {
       if (!image_loader_)
         image_loader_ = MakeGarbageCollected<HTMLImageLoader>(this);
       image_loader_->UpdateFromElement(ImageLoader::kUpdateIgnorePreviousError);
-    } else if (GetLayoutObject()) {
+    } else {
       if (!FastHasAttribute(html_names::kTypeAttr)) {
         UseCounter::Count(GetDocument(),
                           WebFeature::kEmbedElementWithoutTypeSrcChanged);
       }
       SetNeedsPluginUpdate(true);
-      ReattachOnPluginChangeIfNeeded();
+      ReattachOnPluginChangeIfNeeded(/*require_layout=*/false);
     }
   } else {
     HTMLPlugInElement::ParseAttribute(params);
@@ -165,7 +170,8 @@ void HTMLEmbedElement::UpdatePluginInternal() {
       GetDocument().GetFrame()->Client()->OverrideFlashEmbedWithHTML(
           GetDocument().CompleteURL(url_));
   if (!overriden_url.IsEmpty()) {
-    UseCounter::Count(GetDocument(), WebFeature::kOverrideFlashEmbedwithHTML);
+    Deprecation::CountDeprecation(GetDocument().GetExecutionContext(),
+                                      WebFeature::kOverrideFlashEmbedwithHTML);
     url_ = overriden_url.GetString();
     SetServiceType("text/html");
   }
@@ -176,10 +182,6 @@ void HTMLEmbedElement::UpdatePluginInternal() {
 bool HTMLEmbedElement::LayoutObjectIsNeeded(const DisplayStyle& style) const {
   // In the current specification, there is no requirement for `ImageType` to
   // enforce layout.
-  if (!RuntimeEnabledFeatures::HTMLEmbedElementNotForceLayoutEnabled() &&
-      IsImageType()) {
-    return HTMLPlugInElement::LayoutObjectIsNeeded(style);
-  }
 
   // https://html.spec.whatwg.org/C/#the-embed-element
   // While any of the following conditions are occurring, any plugin
@@ -228,6 +230,22 @@ bool HTMLEmbedElement::IsExposed() const {
       return false;
   }
   return true;
+}
+
+String HTMLEmbedElement::src() {
+  return GetURLAttribute(html_names::kSrcAttr);
+}
+
+void HTMLEmbedElement::setSrc(const V8UnionTrustedScriptURLOrUSVString* value,
+                              ExceptionState& exception_state) {
+  String compliantValue = TrustedTypesCheckForScriptURL(
+      value, GetExecutionContext(), trusted_types_names::kHTMLEmbedElement,
+      trusted_types_names::kSrc, exception_state);
+  if (exception_state.HadException()) {
+    return;
+  }
+  SetAttributeWithoutValidation(html_names::kSrcAttr,
+                                AtomicString(compliantValue));
 }
 
 }  // namespace blink

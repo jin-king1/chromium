@@ -14,14 +14,14 @@ import static org.junit.Assert.assertTrue;
 import android.app.Activity;
 import android.content.Context;
 
-import androidx.annotation.Nullable;
 import androidx.annotation.WorkerThread;
 
 import org.junit.Assert;
 
-import org.chromium.base.BuildInfo;
+import org.chromium.base.DeviceInfo;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.CallbackHelper;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.signin.SigninFirstRunFragment;
@@ -30,12 +30,11 @@ import org.chromium.chrome.browser.signin.services.SigninManager;
 import org.chromium.chrome.test.util.browser.sync.SyncTestUtil;
 import org.chromium.components.browser_ui.device_lock.DeviceLockActivityLauncher;
 import org.chromium.components.signin.base.CoreAccountInfo;
-import org.chromium.components.signin.identitymanager.ConsentLevel;
 import org.chromium.components.signin.metrics.SigninAccessPoint;
 import org.chromium.components.signin.metrics.SignoutReason;
-import org.chromium.components.sync.SyncFirstSetupCompleteSource;
 import org.chromium.components.sync.SyncService;
 import org.chromium.components.sync.UserSelectableType;
+import org.chromium.google_apis.gaia.CoreAccountId;
 import org.chromium.ui.base.WindowAndroid;
 
 import java.util.concurrent.TimeoutException;
@@ -51,11 +50,11 @@ public final class SigninTestUtil {
         @Override
         public void launchDeviceLockActivity(
                 Context context,
-                String selectedAccount,
+                @Nullable CoreAccountId selectedAccountId,
                 boolean requireDeviceLockReauthentication,
                 WindowAndroid windowAndroid,
                 WindowAndroid.IntentCallback callback,
-                @DeviceLockActivityLauncher.Source String source) {
+                @Source String source) {
             mCallback = callback;
             mLaunched = true;
         }
@@ -70,14 +69,14 @@ public final class SigninTestUtil {
     }
 
     /**
-     * @return The primary account of the requested {@link ConsentLevel}.
+     * @return The primary account.
      */
-    static CoreAccountInfo getPrimaryAccount(@ConsentLevel int consentLevel) {
+    static CoreAccountInfo getPrimaryAccount() {
         return ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     return IdentityServicesProvider.get()
                             .getIdentityManager(ProfileManager.getLastUsedRegularProfile())
-                            .getPrimaryAccountInfo(consentLevel);
+                            .getPrimaryAccountInfo();
                 });
     }
 
@@ -101,7 +100,7 @@ public final class SigninTestUtil {
                                     .getSigninManager(ProfileManager.getLastUsedRegularProfile());
                     signinManager.signin(
                             coreAccountInfo,
-                            SigninAccessPoint.UNKNOWN,
+                            SigninAccessPoint.WEB_SIGNIN,
                             new SigninManager.SignInCallback() {
                                 @Override
                                 public void onSignInComplete() {
@@ -129,51 +128,24 @@ public final class SigninTestUtil {
         }
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    Assert.assertEquals(coreAccountInfo, getPrimaryAccount(ConsentLevel.SIGNIN));
+                    Assert.assertEquals(coreAccountInfo, getPrimaryAccount());
                 });
     }
 
-    /**
-     * Signs into an account and enables the sync if given a {@link SyncService} object.
-     *
-     * @param syncService Enable the sync with it if it is not null.
-     */
+    /** Signs into an account with the legacy Sync consent level. */
+    // TODO(crbug.com/40066949): Remove once Sync-the-feature is fully removed.
     @WorkerThread
-    public static void signinAndEnableSync(
-            CoreAccountInfo coreAccountInfo, @Nullable SyncService syncService) {
-        CallbackHelper callbackHelper = new CallbackHelper();
+    static void signinWithConsentLevelSync(CoreAccountInfo coreAccountInfo) {
+        signinAndWaitForPrefsCommit(coreAccountInfo);
+
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     SigninManager signinManager =
                             IdentityServicesProvider.get()
                                     .getSigninManager(ProfileManager.getLastUsedRegularProfile());
-                    signinManager.signinAndEnableSync(
-                            coreAccountInfo,
-                            SigninAccessPoint.UNKNOWN,
-                            new SigninManager.SignInCallback() {
-                                @Override
-                                public void onSignInComplete() {
-                                    if (syncService != null) {
-                                        syncService.setInitialSyncFeatureSetupComplete(
-                                                SyncFirstSetupCompleteSource.BASIC_FLOW);
-                                    }
-                                    callbackHelper.notifyCalled();
-                                }
-
-                                @Override
-                                public void onSignInAborted() {
-                                    Assert.fail("Sign-in was aborted");
-                                }
-                            });
-                });
-        try {
-            callbackHelper.waitForOnly();
-        } catch (TimeoutException e) {
-            throw new RuntimeException("Timed out waiting for callback", e);
-        }
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    Assert.assertEquals(coreAccountInfo, getPrimaryAccount(ConsentLevel.SYNC));
+                    signinManager.turnOnSyncForTesting(
+                            coreAccountInfo, SigninAccessPoint.WEB_SIGNIN);
+                    Assert.assertEquals(coreAccountInfo, getPrimaryAccount());
                 });
     }
 
@@ -192,7 +164,7 @@ public final class SigninTestUtil {
                                     .getSigninManager(ProfileManager.getLastUsedRegularProfile());
                     signinManager.signin(
                             coreAccountInfo,
-                            SigninAccessPoint.UNKNOWN,
+                            SigninAccessPoint.WEB_SIGNIN,
                             new SigninManager.SignInCallback() {
                                 @Override
                                 public void onSignInComplete() {
@@ -218,7 +190,7 @@ public final class SigninTestUtil {
         }
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    Assert.assertEquals(coreAccountInfo, getPrimaryAccount(ConsentLevel.SIGNIN));
+                    Assert.assertEquals(coreAccountInfo, getPrimaryAccount());
                 });
         SyncTestUtil.waitForHistorySyncEnabled();
     }
@@ -242,7 +214,7 @@ public final class SigninTestUtil {
                     signinManager.runAfterOperationInProgress(
                             () ->
                                     signinManager.signOut(
-                                            signoutReason, callbackHelper::notifyCalled, false));
+                                            signoutReason, callbackHelper::notifyCalled));
                 });
         try {
             callbackHelper.waitForOnly();
@@ -258,7 +230,10 @@ public final class SigninTestUtil {
      */
     // TODO(crbug.com/328117919): Delete this method after deleting sign-in tests for FRE on Auto.
     public static void completeAutoDeviceLockForFirstRunIfNeeded(SigninFirstRunFragment fragment) {
-        if (!ThreadUtils.runOnUiThreadBlocking(() -> BuildInfo.getInstance().isAutomotive)) {
+        if (!ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    return DeviceInfo.isAutomotive();
+                })) {
             return;
         }
 
@@ -270,7 +245,7 @@ public final class SigninTestUtil {
     /** Completes the device lock flow when on automotive devices. */
     public static void completeDeviceLockIfOnAutomotive(
             CustomDeviceLockActivityLauncher deviceLockActivityLauncher) {
-        if (BuildInfo.getInstance().isAutomotive) {
+        if (DeviceInfo.isAutomotive()) {
             completeDeviceLock(deviceLockActivityLauncher, true);
         }
     }
@@ -281,7 +256,7 @@ public final class SigninTestUtil {
     public static void completeDeviceLock(
             CustomDeviceLockActivityLauncher deviceLockActivityLauncher,
             boolean deviceLockCreated) {
-        assertTrue(BuildInfo.getInstance().isAutomotive);
+        assertTrue(DeviceInfo.isAutomotive());
         assertTrue(deviceLockActivityLauncher.isLaunched());
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {

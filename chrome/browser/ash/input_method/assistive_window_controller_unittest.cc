@@ -6,6 +6,8 @@
 
 #include "ash/constants/ash_pref_names.h"
 #include "base/feature_list.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/test/task_environment.h"
 #include "chrome/browser/ash/input_method/assistive_window_controller_delegate.h"
 #include "chrome/browser/ui/ash/input_method/announcement_view.h"
@@ -68,7 +70,8 @@ class AssistiveWindowControllerTest : public ChromeAshTestBase {
 
   void SetUp() override {
     ChromeAshTestBase::SetUp();
-    std::unique_ptr<aura::Window> window(CreateTestWindowInShellWithId(1));
+    std::unique_ptr<aura::Window> window(
+        CreateTestWindowInShell({.window_id = 1}));
     wm::ActivateWindow(window.get());
 
     profile_ = std::make_unique<TestingProfile>();
@@ -97,17 +100,6 @@ class AssistiveWindowControllerTest : public ChromeAshTestBase {
     return candidates;
   }
 
-  void InitEmojiSuggestionWindow() {
-    emoji_window_.type = ash::ime::AssistiveWindowType::kEmojiSuggestion;
-    emoji_window_.visible = true;
-    emoji_window_.candidates = Candidates();
-  }
-
-  void InitEmojiButton() {
-    emoji_button_.window_type = ash::ime::AssistiveWindowType::kEmojiSuggestion;
-    emoji_button_.announce_string = kAnnounceString;
-  }
-
   void WaitForSuggestionWindowDelay() {
     task_environment()->FastForwardBy(
         base::Milliseconds(kShowSuggestionDelay + 1));
@@ -117,8 +109,6 @@ class AssistiveWindowControllerTest : public ChromeAshTestBase {
   std::unique_ptr<MockDelegate> delegate_ = std::make_unique<MockDelegate>();
   std::unique_ptr<TestingProfile> profile_;
   const std::u16string suggestion_ = u"test";
-  ui::ime::AssistiveWindowButton emoji_button_;
-  AssistiveWindowProperties emoji_window_;
   std::unique_ptr<TestAnnouncementView> announcement_view_;
 };
 
@@ -252,7 +242,7 @@ TEST_F(AssistiveWindowControllerTest,
 
   // Create new suggestion window.
   AssistiveWindowProperties properties;
-  properties.type = ash::ime::AssistiveWindowType::kEmojiSuggestion;
+  properties.type = ash::ime::AssistiveWindowType::kMultiWordSuggestion;
   properties.visible = true;
   properties.candidates = std::vector<std::u16string>({u"candidate"});
   controller_->SetAssistiveWindowProperties(properties);
@@ -284,24 +274,6 @@ TEST_F(AssistiveWindowControllerTest, SetsUndoWindowAnchorRectCorrectly) {
   autocorrect_bounds.Inset(-4);
   EXPECT_EQ(controller_->GetUndoWindowForTesting()->GetAnchorRect(),
             autocorrect_bounds);
-}
-
-TEST_F(AssistiveWindowControllerTest, SetsEmojiWindowOrientationVertical) {
-  // Create new suggestion window.
-  AssistiveWindowProperties properties;
-  properties.type = ash::ime::AssistiveWindowType::kEmojiSuggestion;
-  properties.visible = true;
-  properties.candidates = std::vector<std::u16string>({u"candidate"});
-  controller_->SetAssistiveWindowProperties(properties);
-
-  ASSERT_TRUE(controller_->GetSuggestionWindowViewForTesting() != nullptr);
-  views::BoxLayout::Orientation layout_orientation =
-      static_cast<views::BoxLayout*>(
-          controller_->GetSuggestionWindowViewForTesting()
-              ->multiple_candidate_area_for_testing()
-              ->GetLayoutManager())
-          ->GetOrientation();
-  EXPECT_EQ(layout_orientation, views::BoxLayout::Orientation::kVertical);
 }
 
 TEST_F(AssistiveWindowControllerTest,
@@ -415,35 +387,6 @@ TEST_F(AssistiveWindowControllerTest,
           ->GetOrientation();
   EXPECT_EQ(layout_orientation, views::BoxLayout::Orientation::kVertical);
 }
-TEST_F(AssistiveWindowControllerTest,
-       AnnouncesWhenSetButtonHighlightedInEmojiWindowHasAnnounceString) {
-  profile_->GetPrefs()->SetBoolean(
-      ash::prefs::kAccessibilitySpokenFeedbackEnabled, true);
-  InitEmojiSuggestionWindow();
-  InitEmojiButton();
-
-  controller_->SetAssistiveWindowProperties(emoji_window_);
-  controller_->SetButtonHighlighted(emoji_button_, true);
-  task_environment()->RunUntilIdle();
-
-  announcement_view_->VerifyAnnouncement(kAnnounceString);
-}
-
-TEST_F(
-    AssistiveWindowControllerTest,
-    DoesNotAnnounceWhenSetButtonHighlightedInEmojiWindowDoesNotHaveAnnounceString) {
-  profile_->GetPrefs()->SetBoolean(
-      ash::prefs::kAccessibilitySpokenFeedbackEnabled, true);
-  InitEmojiSuggestionWindow();
-  InitEmojiButton();
-  emoji_button_.announce_string.clear();
-
-  controller_->SetAssistiveWindowProperties(emoji_window_);
-  controller_->SetButtonHighlighted(emoji_button_, true);
-  task_environment()->RunUntilIdle();
-
-  announcement_view_->VerifyAnnouncement(std::u16string());
-}
 
 TEST_F(AssistiveWindowControllerTest,
        AnnouncesWhenSetButtonHighlightedInUndoWindowHasAnnounceString) {
@@ -468,9 +411,11 @@ TEST_F(
     DoesNotAnnounceWhenSetButtonHighlightedAndSuggestionWindowViewIsNotActive) {
   profile_->GetPrefs()->SetBoolean(
       ash::prefs::kAccessibilitySpokenFeedbackEnabled, true);
-  InitEmojiButton();
+  ui::ime::AssistiveWindowButton button;
+  button.window_type = ash::ime::AssistiveWindowType::kUndoWindow;
+  button.announce_string = kAnnounceString;
 
-  controller_->SetButtonHighlighted(emoji_button_, true);
+  controller_->SetButtonHighlighted(button, true);
   task_environment()->RunUntilIdle();
 
   announcement_view_->VerifyAnnouncement(std::u16string());

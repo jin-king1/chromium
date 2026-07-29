@@ -4,6 +4,7 @@
 
 #import "components/autofill/ios/form_util/child_frame_registrar.h"
 
+#import "base/functional/bind.h"
 #import "base/strings/string_util.h"
 #import "components/autofill/ios/browser/autofill_util.h"
 #import "ios/web/public/js_messaging/content_world.h"
@@ -53,7 +54,7 @@ TEST_F(ChildFrameRegistrarTest, RegisterAndLookup) {
   autofill::RemoteFrameToken remote_token(
       *DeserializeJavaScriptFrameId(remote_frame_id));
 
-  base::Value::Dict dict;
+  base::DictValue dict;
   dict.Set("local_frame_id", local_frame_id);
   dict.Set("remote_frame_id", remote_frame_id);
   base::Value dict_as_value(std::move(dict));
@@ -71,7 +72,7 @@ TEST_F(ChildFrameRegistrarTest, JunkDoesntRegister) {
   autofill::RemoteFrameToken valid_remote_token(
       *autofill::DeserializeJavaScriptFrameId(valid_remote_id));
 
-  base::Value::Dict dict;
+  base::DictValue dict;
   dict.Set("local_frame_id", "this is junk");
   dict.Set("remote_frame_id", valid_remote_id);
   base::Value dict_as_value(std::move(dict));
@@ -144,6 +145,43 @@ TEST_F(ChildFrameRegistrarTest, CleanUpStaleLocalFrameTokens) {
 
   // Validate that the other entry was not deleted.
   ASSERT_TRUE(registrar()->LookupChildFrame(remote_token3));
+}
+
+// Tests that multiple callbacks can be registered for the same remote token and
+// are all executed when the mapping becomes available.
+TEST_F(ChildFrameRegistrarTest, DeclareNewRemoteToken) {
+  const std::string local_frame_id = std::string(32, 'a');
+  const std::string remote_frame_id = std::string(32, 'b');
+
+  autofill::LocalFrameToken local_token(
+      *DeserializeJavaScriptFrameId(local_frame_id));
+  autofill::RemoteFrameToken remote_token(
+      *DeserializeJavaScriptFrameId(remote_frame_id));
+
+  bool callback1_called = false;
+  registrar()->DeclareNewRemoteToken(
+      remote_token, base::BindOnce(
+                        [](bool* called, LocalFrameToken expected_token,
+                           LocalFrameToken received_token) {
+                          *called = true;
+                          EXPECT_EQ(expected_token, received_token);
+                        },
+                        &callback1_called, local_token));
+
+  bool callback2_called = false;
+  registrar()->DeclareNewRemoteToken(
+      remote_token, base::BindOnce(
+                        [](bool* called, LocalFrameToken expected_token,
+                           LocalFrameToken received_token) {
+                          *called = true;
+                          EXPECT_EQ(expected_token, received_token);
+                        },
+                        &callback2_called, local_token));
+
+  registrar()->RegisterMapping(remote_token, local_token);
+
+  EXPECT_TRUE(callback1_called);
+  EXPECT_TRUE(callback2_called);
 }
 
 }  // namespace autofill

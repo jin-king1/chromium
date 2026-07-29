@@ -4,11 +4,12 @@
 
 #include "components/safe_browsing/content/browser/base_blocking_page.h"
 
+#include <cstddef>
 #include <memory>
 
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
-#include "base/lazy_instance.h"
+#include "base/no_destructor.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/time/time.h"
 #include "components/safe_browsing/content/browser/async_check_tracker.h"
@@ -22,6 +23,7 @@
 #include "components/security_interstitials/core/metrics_helper.h"
 #include "components/security_interstitials/core/safe_browsing_loud_error_ui.h"
 #include "components/security_interstitials/core/unsafe_resource.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/web_contents.h"
 
@@ -39,9 +41,6 @@ namespace {
 // ThreatDetails::FinishCollection() by this much time (in
 // milliseconds).
 const int64_t kThreatDetailsProceedDelayMilliSeconds = 3000;
-
-base::LazyInstance<BaseBlockingPage::UnsafeResourceMap>::Leaky
-    g_unsafe_resource_map = LAZY_INSTANCE_INITIALIZER;
 
 }  // namespace
 
@@ -132,7 +131,7 @@ void BaseBlockingPage::CommandReceived(const std::string& page_cmd) {
 }
 
 void BaseBlockingPage::PopulateInterstitialStrings(
-    base::Value::Dict& load_time_data) {
+    base::DictValue& load_time_data) {
   sb_error_ui_->PopulateStringsForHtml(load_time_data);
 }
 
@@ -142,11 +141,12 @@ void BaseBlockingPage::FinishThreatDetails(const base::TimeDelta& delay,
 
 // static
 BaseBlockingPage::UnsafeResourceMap* BaseBlockingPage::GetUnsafeResourcesMap() {
-  return g_unsafe_resource_map.Pointer();
+  static base::NoDestructor<UnsafeResourceMap> unsafe_resource_map;
+  return unsafe_resource_map.get();
 }
 
 // static
-std::string BaseBlockingPage::GetMetricPrefix(
+std::string_view BaseBlockingPage::GetMetricPrefix(
     const UnsafeResourceList& unsafe_resources,
     BaseSafeBrowsingErrorUI::SBInterstitialReason interstitial_reason) {
   switch (interstitial_reason) {
@@ -235,6 +235,19 @@ BaseBlockingPage::GetReportingInfo(
       GetMetricPrefix(unsafe_resources, interstitial_reason);
   CHECK_GE(unsafe_resources.size(), 1u);
   reporting_info.extra_suffix = GetExtraMetricsSuffix(unsafe_resources[0]);
+  // When the subtype expands to more threat_source and the CHECK below is hit,
+  // define new histograms in xml file to represent the change.
+  if (unsafe_resources[0].threat_source ==
+      ThreatSource::CLIENT_SIDE_DETECTION) {
+    reporting_info.extra_extra_suffix =
+        GetExtraExtraMetricsSuffix(unsafe_resources[0]);
+  }
+
+  if (unsafe_resources[0].threat_subtype !=
+      safe_browsing::ThreatSubtype::UNKNOWN) {
+    CHECK_EQ(unsafe_resources[0].threat_source,
+             ThreatSource::CLIENT_SIDE_DETECTION);
+  }
   reporting_info.blocked_page_shown_timestamp = blocked_page_shown_timestamp;
   return reporting_info;
 }

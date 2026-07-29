@@ -23,10 +23,14 @@ const char kSuffixWasNonSRP[] = ".WasNonSRP";
 
 const char kGwsAFTStartMarkName[] = "SearchAFTStart";
 const char kGwsAFTEndMarkName[] = "trigger:SearchAFTEnd";
-const char kGwsHeaderChunkStartMarkName[] = "SearchHeadStart";
-const char kGwsHeaderChunkEndMarkName[] = "SearchHeadEnd";
+const char kGwsHeadChunkStartMarkName[] = "SearchHeadStart";
+const char kGwsHeadChunkEndMarkName[] = "SearchHeadEnd";
 const char kGwsBodyChunkStartMarkName[] = "SearchBodyStart";
 const char kGwsBodyChunkEndMarkName[] = "SearchBodyEnd";
+const char kGwsSGLMarkName[] = "SearchSGL";
+const char kGwsAIOAsyncStartMarkName[] = "SearchAIOAsyncStart";
+const char kGwsAIOInitialContentTimeMarkName[] = "SearchAIOInitialContentTime";
+const char kGwsAIOViewportEndTimeMarkName[] = "SearchAIOViewportEndTime";
 
 }  // namespace internal
 
@@ -74,9 +78,9 @@ GWSAbandonedPageLoadMetricsObserver::GetCustomUserTimingMarkNames() const {
       mark_names({
           {internal::kGwsAFTStartMarkName, NavigationMilestone::kAFTStart},
           {internal::kGwsAFTEndMarkName, NavigationMilestone::kAFTEnd},
-          {internal::kGwsHeaderChunkStartMarkName,
+          {internal::kGwsHeadChunkStartMarkName,
            NavigationMilestone::kHeaderChunkStart},
-          {internal::kGwsHeaderChunkEndMarkName,
+          {internal::kGwsHeadChunkEndMarkName,
            NavigationMilestone::kHeaderChunkEnd},
           {internal::kGwsBodyChunkStartMarkName,
            NavigationMilestone::kBodyChunkStart},

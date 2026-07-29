@@ -44,7 +44,6 @@ class IPEndPoint;
 class IsolationInfo;
 class NetLogWithSource;
 class SSLInfo;
-class SiteForCookies;
 class URLRequest;
 class URLRequestContext;
 class WebSocketBasicHandshakeStream;
@@ -55,6 +54,11 @@ struct TransportInfo;
 struct WebSocketFrame;
 struct WebSocketHandshakeRequestInfo;
 struct WebSocketHandshakeResponseInfo;
+
+enum class WebSocketPriorityHint {
+  kDefault,
+  kMaximum,
+};
 
 // WebSocketStreamRequest is the caller's handle to the process of creation of a
 // WebSocketStream. Deleting the object before the ConnectDelegate OnSuccess or
@@ -106,8 +110,9 @@ class NET_EXPORT_PRIVATE WebSocketStream {
     virtual void OnCreateRequest(URLRequest* url_request) = 0;
 
     // Called when the URLRequest::OnConnected() is called.
-    virtual void OnURLRequestConnected(URLRequest* request,
-                                       const TransportInfo& info) = 0;
+    virtual int OnURLRequestConnected(URLRequest* request,
+                                      const TransportInfo& info,
+                                      CompletionOnceCallback callback) = 0;
 
     // Called on successful connection. The parameter is an object derived from
     // WebSocketStream.
@@ -116,7 +121,7 @@ class NET_EXPORT_PRIVATE WebSocketStream {
         std::unique_ptr<WebSocketHandshakeResponseInfo> response) = 0;
 
     // Called on failure to connect.
-    // |message| contains defails of the failure.
+    // |message| contains details of the failure.
     virtual void OnFailure(const std::string& message,
                            int net_error,
                            std::optional<int> response_code) = 0;
@@ -168,12 +173,12 @@ class NET_EXPORT_PRIVATE WebSocketStream {
       const GURL& socket_url,
       const std::vector<std::string>& requested_subprotocols,
       const url::Origin& origin,
-      const SiteForCookies& site_for_cookies,
       StorageAccessApiStatus storage_access_api_status,
       const IsolationInfo& isolation_info,
       const HttpRequestHeaders& additional_headers,
       URLRequestContext* url_request_context,
       const NetLogWithSource& net_log,
+      WebSocketPriorityHint priority_hint,
       NetworkTrafficAnnotationTag traffic_annotation,
       std::unique_ptr<ConnectDelegate> connect_delegate);
 
@@ -186,12 +191,12 @@ class NET_EXPORT_PRIVATE WebSocketStream {
       const GURL& socket_url,
       const std::vector<std::string>& requested_subprotocols,
       const url::Origin& origin,
-      const SiteForCookies& site_for_cookies,
       StorageAccessApiStatus storage_access_api_status,
       const IsolationInfo& isolation_info,
       const HttpRequestHeaders& additional_headers,
       URLRequestContext* url_request_context,
       const NetLogWithSource& net_log,
+      WebSocketPriorityHint priority_hint,
       NetworkTrafficAnnotationTag traffic_annotation,
       std::unique_ptr<ConnectDelegate> connect_delegate,
       std::unique_ptr<base::OneShotTimer> timer,

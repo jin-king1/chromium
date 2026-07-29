@@ -17,7 +17,7 @@ export class TestAmbientProvider extends TestBrowserProxy implements
       description: '0',
       numberOfPhotos: 0,
       topicSource: TopicSource.kArtGallery,
-      url: {url: 'http://test_url0'},
+      url: 'http://test_url0',
     },
     {
       id: '1',
@@ -26,7 +26,7 @@ export class TestAmbientProvider extends TestBrowserProxy implements
       description: '1',
       numberOfPhotos: 0,
       topicSource: TopicSource.kArtGallery,
-      url: {url: 'http://test_url1'},
+      url: 'http://test_url1',
     },
     {
       id: '2',
@@ -35,7 +35,7 @@ export class TestAmbientProvider extends TestBrowserProxy implements
       description: '2',
       numberOfPhotos: 0,
       topicSource: TopicSource.kArtGallery,
-      url: {url: 'http://test_url2'},
+      url: 'http://test_url2',
     },
     {
       id: '3',
@@ -44,7 +44,7 @@ export class TestAmbientProvider extends TestBrowserProxy implements
       description: '3',
       numberOfPhotos: 1,
       topicSource: TopicSource.kGooglePhotos,
-      url: {url: 'http://test_url3'},
+      url: 'http://test_url3',
     },
     {
       id: '4',
@@ -53,7 +53,7 @@ export class TestAmbientProvider extends TestBrowserProxy implements
       description: '4',
       numberOfPhotos: 1,
       topicSource: TopicSource.kVideo,
-      url: {url: 'http://test_url4'},
+      url: 'http://test_url4',
     },
     {
       id: '5',
@@ -62,7 +62,7 @@ export class TestAmbientProvider extends TestBrowserProxy implements
       description: '5',
       numberOfPhotos: 1,
       topicSource: TopicSource.kVideo,
-      url: {url: 'http://test_url5'},
+      url: 'http://test_url5',
     },
   ];
 
@@ -71,11 +71,18 @@ export class TestAmbientProvider extends TestBrowserProxy implements
   geolocationIsUserModifiable: boolean = true;
 
   previews: Url[] = [
-    {url: 'http://preview0'},
-    {url: 'http://preview1'},
-    {url: 'http://preview2'},
-    {url: 'http://preview#'},
+    'http://preview0',
+    'http://preview1',
+    'http://preview2',
+    'http://preview#',
   ];
+
+  ambientThemePreviews = {
+    [AmbientTheme.kSlideshow]: 'chrome://1.png',
+    [AmbientTheme.kFeelTheBreeze]: 'chrome://2.png',
+    [AmbientTheme.kFloatOnBy]: 'chrome://3.png',
+    [AmbientTheme.kVideo]: 'chrome://4.png',
+  };
 
   constructor() {
     super([
@@ -116,6 +123,8 @@ export class TestAmbientProvider extends TestBrowserProxy implements
         /*ambientModeEnabled=*/ true);
 
     this.ambientObserverRemote!.onAlbumsChanged(this.albums);
+    this.ambientObserverRemote!.onAmbientThemePreviewImagesChanged(
+        this.ambientThemePreviews);
     this.ambientObserverRemote!.onAmbientThemeChanged(AmbientTheme.kSlideshow);
     this.ambientObserverRemote!.onTopicSourceChanged(TopicSource.kArtGallery);
     this.ambientObserverRemote!.onTemperatureUnitChanged(

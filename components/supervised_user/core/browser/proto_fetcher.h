@@ -16,7 +16,7 @@
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ref.h"
 #include "base/memory/scoped_refptr.h"
-#include "base/strings/string_util.h"
+#include "base/timer/timer.h"
 #include "base/types/expected.h"
 #include "base/version_info/channel.h"
 #include "components/signin/public/identity_manager/access_token_info.h"
@@ -28,13 +28,9 @@
 #include "components/supervised_user/core/common/supervised_user_constants.h"
 #include "google_apis/gaia/google_service_auth_error.h"
 #include "net/base/backoff_entry.h"
-#include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/simple_url_loader.h"
-#include "services/network/public/mojom/fetch_api.mojom-shared.h"
-#include "services/network/public/mojom/url_response_head.mojom.h"
 #include "third_party/protobuf/src/google/protobuf/message_lite.h"
-#include "url/gurl.h"
 
 namespace supervised_user {
 // -----------------------------------------------------------------------------
@@ -51,8 +47,8 @@ namespace supervised_user {
 // If you want to create new fetcher factory method, then some
 // details must be provided in order to enable fetching for said Response. The
 // new fetcher factory should have at least the following arguments:
-// signin::IdentityManager, network::SharedURLLoaderFactory, consuming callback
-// and must reference a static configuration.
+// signin::IdentityManager (optional), network::SharedURLLoaderFactory,
+// consuming callback and must reference a static configuration.
 //
 // The static configuration should be placed in the fetcher_config.h module.
 
@@ -74,7 +70,7 @@ class FetchProcess {
 
   // Identity manager and fetcher_config must outlive this call.
   FetchProcess(
-      signin::IdentityManager& identity_manager,
+      signin::IdentityManager* identity_manager,
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
       const Payload& payload,
       const FetcherConfig& fetcher_config,
@@ -91,33 +87,41 @@ class FetchProcess {
   void RecordMetrics(const ProtoFetcherStatus& status) const;
 
  private:
-  // First phase of fetching: the access token response is ready.
+  // First phase of fetching: the access token response is ready. Access token
+  // step is optional - empty access token means that access token procedure was
+  // not performed at all.
   void OnAccessTokenFetchComplete(
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
       base::expected<signin::AccessTokenInfo, GoogleServiceAuthError>
           access_token);
-  // Second phase of fetching: the remote service responded.
+  // Second phase of fetching: perform the request to the remote service. Access
+  // token is optional.
+  void StartUrlLoader(
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
+      const std::optional<signin::AccessTokenInfo> access_token_info);
+  // Third phase of fetching: the remote service responded
   void OnSimpleUrlLoaderComplete(
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
-      std::unique_ptr<std::string> response_body);
+      std::optional<std::string> response_body);
 
   // Final phase of fetching: binary data is collected and ready to be
   // interpreted or error is encountered.
-  virtual void OnResponse(std::unique_ptr<std::string> response_body) = 0;
+  virtual void OnResponse(std::optional<std::string> response_body) = 0;
   virtual void OnError(const ProtoFetcherStatus& status) = 0;
 
-  const raw_ref<signin::IdentityManager> identity_manager_;
-  std::unique_ptr<network::SimpleURLLoader> simple_url_loader_;
   const Payload payload_;
   const raw_ref<const FetcherConfig> config_;
   const FetcherConfig::PathArgs args_;
   std::optional<version_info::Channel> channel_;
   std::optional<ProtoFetcherMetrics> metrics_;
 
-  // Entrypoint of the fetch process, which starts with ApiAccessToken access
-  // followed by a request made with SimpleURLLoader. Purposely made last field
-  // should it depend on other members of this class.
-  ApiAccessTokenFetcher fetcher_;
+  // Entrypoint of the fetch process with end-user-credentials, which starts
+  // with ApiAccessToken access followed by a request made with SimpleURLLoader.
+  std::unique_ptr<ApiAccessTokenFetcher> fetcher_;
+
+  // Alternative entrypoint of the fetch process without end-user-credentials,
+  // or next stage when end-user-credentials are resolved.
+  std::unique_ptr<network::SimpleURLLoader> simple_url_loader_;
 
   // If an auth error was encountered when fetching the access token, it is
   // stored here (whether or not it was fatal).
@@ -143,7 +147,7 @@ class TypedFetchProcess : public FetchProcess {
                                            std::unique_ptr<Response>)>;
   TypedFetchProcess() = delete;
   TypedFetchProcess(
-      signin::IdentityManager& identity_manager,
+      signin::IdentityManager* identity_manager,
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
       const Payload& payload,
       Callback callback,
@@ -161,7 +165,7 @@ class TypedFetchProcess : public FetchProcess {
   ~TypedFetchProcess() override = default;
 
  private:
-  void OnResponse(std::unique_ptr<std::string> response_body) override {
+  void OnResponse(std::optional<std::string> response_body) override {
     CHECK(response_body) << "Use OnError when there is no response.";
     std::unique_ptr<Response> response = std::make_unique<Response>();
     if (!response->ParseFromString(*response_body)) {
@@ -196,7 +200,7 @@ class ProtoFetcher final {
 
   ProtoFetcher() = delete;
   ProtoFetcher(
-      signin::IdentityManager& identity_manager,
+      signin::IdentityManager* identity_manager,
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
       const FetchProcess::Payload& payload,
       TypedFetchProcess<Response>::Callback callback,
@@ -206,7 +210,7 @@ class ProtoFetcher final {
       : callback_(std::move(callback)),
         factory_(base::BindRepeating(&ProtoFetcher<Response>::Factory,
                                      base::Unretained(this),
-                                     std::ref(identity_manager),
+                                     identity_manager,
                                      url_loader_factory,
                                      payload,
                                      fetcher_config,
@@ -223,7 +227,7 @@ class ProtoFetcher final {
 
  private:
   std::unique_ptr<TypedFetchProcess<Response>> Factory(
-      signin::IdentityManager& identity_manager,
+      signin::IdentityManager* identity_manager,
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
       FetchProcess::Payload payload,
       const FetcherConfig& fetcher_config,
@@ -292,6 +296,11 @@ class ProtoFetcher final {
   const std::optional<CumulativeProtoFetcherMetrics> metrics_;
 };
 
+// Tells if the FetcherConfig allows requests without end user credentials at
+// any stage.
+bool ConfiguresFetcherWithoutEndUserCredentials(
+    const FetcherConfig& fetcher_config);
+
 // Constructs a launched fetcher. The fetcher will be either one shot or
 // retryable, depending on the FetcherConfig::backoff_policy setting.
 // `identity_manager` and `fetcher_config` must outlive this call.
@@ -303,16 +312,14 @@ class ProtoFetcher final {
 // `CredentialsRequirement::kBestEffort`.
 template <typename Response>
 std::unique_ptr<ProtoFetcher<Response>> CreateFetcher(
-    signin::IdentityManager& identity_manager,
+    signin::IdentityManager* identity_manager,
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
     const FetchProcess::Payload& payload,
     typename ProtoFetcher<Response>::Callback callback,
     const FetcherConfig& fetcher_config,
     const FetcherConfig::PathArgs& args = {},
     const std::optional<version_info::Channel> channel = std::nullopt) {
-  CHECK((fetcher_config.access_token_config.credentials_requirement !=
-         AccessTokenConfig::CredentialsRequirement::kBestEffort) ||
-        channel)
+  CHECK(!ConfiguresFetcherWithoutEndUserCredentials(fetcher_config) || channel)
       << "The Chrome channel must be specified for fetchers which can send "
          "requests without user credentials.";
   return std::make_unique<ProtoFetcher<Response>>(
@@ -323,7 +330,7 @@ std::unique_ptr<ProtoFetcher<Response>> CreateFetcher(
 // Same as above, but payload is implicitly constructed from the request
 template <typename Response>
 std::unique_ptr<ProtoFetcher<Response>> CreateFetcher(
-    signin::IdentityManager& identity_manager,
+    signin::IdentityManager* identity_manager,
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
     const google::protobuf::MessageLite& message,
     typename ProtoFetcher<Response>::Callback callback,

@@ -7,6 +7,7 @@
 #include "base/command_line.h"
 #include "base/memory/weak_ptr.h"
 #include "base/strings/stringprintf.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
@@ -35,25 +36,26 @@
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace autofill::payments {
+namespace {
 
 using testing::_;
 using testing::NiceMock;
 using PaymentsRpcCardType = PaymentsAutofillClient::PaymentsRpcCardType;
 using PaymentsRpcResult = PaymentsAutofillClient::PaymentsRpcResult;
-using UnmaskCardReason = payments::PaymentsAutofillClient::UnmaskCardReason;
+using UnmaskCardReason = PaymentsAutofillClient::UnmaskCardReason;
 
 // The consumer of the full card request API.
 class MockResultDelegate : public FullCardRequest::ResultDelegate {
  public:
   MOCK_METHOD(void,
               OnFullCardRequestSucceeded,
-              (const payments::FullCardRequest&,
+              (const FullCardRequest&,
                const CreditCard&,
                const std::u16string&),
               (override));
   MOCK_METHOD(void,
               OnFullCardRequestFailed,
-              (CreditCard::RecordType, payments::FullCardRequest::FailureType),
+              (CreditCard::RecordType, FullCardRequest::FailureType),
               (override));
 
   base::WeakPtr<MockResultDelegate> AsWeakPtr() {
@@ -125,10 +127,10 @@ class FullCardRequestTest : public testing::Test {
       : test_shared_loader_factory_(
             base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(
                 &test_url_loader_factory_)) {
-    autofill_client().SetPrefs(test::PrefServiceForTesting());
     personal_data().set_payments_data_manager(
         std::make_unique<MockPaymentsDataManager>());
-    personal_data().SetPrefService(autofill_client().GetPrefs());
+    personal_data().test_payments_data_manager().SetPrefService(
+        autofill_client().GetPrefs());
     personal_data().SetSyncServiceForTest(&sync_service_);
     autofill_client()
         .GetPaymentsAutofillClient()
@@ -140,7 +142,7 @@ class FullCardRequestTest : public testing::Test {
     request_ = std::make_unique<FullCardRequest>(&autofill_client());
     personal_data().test_payments_data_manager().SetAccountInfoForPayments(
         autofill_client_.GetIdentityManager()->GetPrimaryAccountInfo(
-            signin::ConsentLevel::kSync));
+            signin::ConsentLevel::kSignin));
     // Silence the warning from PaymentsNetworkInterface about matching sync and
     // Payments server types.
     base::CommandLine::ForCurrentProcess()->AppendSwitchASCII(
@@ -155,7 +157,7 @@ class FullCardRequestTest : public testing::Test {
   void OnDidGetRealPan(PaymentsRpcResult result,
                        const std::string& real_pan,
                        bool is_virtual_card = false) {
-    payments::UnmaskResponseDetails response;
+    UnmaskResponseDetails response;
     response.card_type = is_virtual_card ? PaymentsRpcCardType::kVirtualCard
                                          : PaymentsRpcCardType::kServerCard;
     request_->OnDidGetRealPan(result, response.with_real_pan(real_pan));
@@ -165,7 +167,7 @@ class FullCardRequestTest : public testing::Test {
                                const std::string& real_pan,
                                const std::string& dcvv,
                                bool is_virtual_card = false) {
-    payments::UnmaskResponseDetails response;
+    UnmaskResponseDetails response;
     response.card_type = is_virtual_card ? PaymentsRpcCardType::kVirtualCard
                                          : PaymentsRpcCardType::kServerCard;
     request_->OnDidGetRealPan(result,
@@ -203,7 +205,7 @@ class FullCardRequestTest : public testing::Test {
 
  private:
   base::test::SingleThreadTaskEnvironment task_environment_;
-  variations::ScopedVariationsIdsProvider scoped_variations_ids_provider_{
+  variations::test::ScopedVariationsIdsProvider scoped_variations_ids_provider_{
       variations::VariationsIdsProvider::Mode::kUseSignedInState};
   syncer::TestSyncService sync_service_;
   MockResultDelegate result_delegate_;
@@ -288,7 +290,7 @@ TEST_F(FullCardRequestTest, GetFullCardPanAndCvcForMaskedServerCardViaFido) {
   request().GetFullCardViaFIDO(
       CreditCard(CreditCard::RecordType::kMaskedServerCard, "server_id"),
       UnmaskCardReason::kAutofill, result_delegate().AsWeakPtr(),
-      base::Value::Dict());
+      base::DictValue());
   OnDidGetRealPan(PaymentsRpcResult::kSuccess, "4111");
 }
 
@@ -367,7 +369,7 @@ TEST_F(FullCardRequestTest,
       ui_delegate().AsWeakPtr(), GURL("https://example.com/"),
       "test_context_token", challenge_option);
   ASSERT_TRUE(request().GetShouldUnmaskCardForTesting());
-  payments::UnmaskRequestDetails* request_details =
+  UnmaskRequestDetails* request_details =
       request().GetUnmaskRequestDetailsForTesting();
   EXPECT_EQ(request_details->selected_challenge_option->type,
             CardUnmaskChallengeOptionType::kCvc);
@@ -383,7 +385,7 @@ TEST_F(FullCardRequestTest,
   details.exp_year = base::UTF8ToUTF16(test::NextYear());
   details.enable_fido_auth = false;
   card_unmask_delegate().OnUnmaskPromptAccepted(details);
-  payments::UnmaskResponseDetails response;
+  UnmaskResponseDetails response;
   response.real_pan = "4111";
   response.dcvv = "123";
   response.expiration_month = "12";
@@ -410,8 +412,8 @@ TEST_F(FullCardRequestTest, OneRequestAtATime) {
       FullCardRequestOptions()
           .with_credit_card(CreditCard(
               CreditCard::RecordType::kMaskedServerCard, "server_id_2"))
-          .with_unmask_card_reason(payments::PaymentsAutofillClient::
-                                       UnmaskCardReason::kPaymentRequest));
+          .with_unmask_card_reason(
+              PaymentsAutofillClient::UnmaskCardReason::kPaymentRequest));
 }
 
 // After the first request completes, it's OK to start the second request.
@@ -735,8 +737,8 @@ TEST_F(FullCardRequestTest, UnmaskForPaymentRequest) {
       FullCardRequestOptions()
           .with_credit_card(CreditCard(
               CreditCard::RecordType::kMaskedServerCard, "server_id"))
-          .with_unmask_card_reason(payments::PaymentsAutofillClient::
-                                       UnmaskCardReason::kPaymentRequest));
+          .with_unmask_card_reason(
+              PaymentsAutofillClient::UnmaskCardReason::kPaymentRequest));
   CardUnmaskDelegate::UserProvidedUnmaskDetails details;
   details.cvc = u"123";
   card_unmask_delegate().OnUnmaskPromptAccepted(details);
@@ -746,38 +748,26 @@ TEST_F(FullCardRequestTest, UnmaskForPaymentRequest) {
 // Params of the FullCardRequestCardMetadataTest:
 // -- bool card_name_available;
 // -- bool card_art_available;
-// -- bool metadata_enabled;
 class FullCardRequestCardMetadataTest
     : public FullCardRequestTest,
-      public testing::WithParamInterface<std::tuple<bool, bool, bool>> {
+      public testing::WithParamInterface<std::tuple<bool, bool>> {
  public:
   FullCardRequestCardMetadataTest() = default;
   ~FullCardRequestCardMetadataTest() override = default;
 
   bool CardNameAvailable() { return std::get<0>(GetParam()); }
   bool CardArtAvailable() { return std::get<1>(GetParam()); }
-  bool MetadataEnabled() { return std::get<2>(GetParam()); }
 };
 
 INSTANTIATE_TEST_SUITE_P(,
                          FullCardRequestCardMetadataTest,
                          testing::Combine(testing::Bool(),
-                                          testing::Bool(),
                                           testing::Bool()));
 
 // Verify the metadata signal is correctly set in the unmask request.
 TEST_P(FullCardRequestCardMetadataTest, MetadataSignal) {
   base::test::ScopedFeatureList metadata_feature_list;
   CreditCard card = test::GetMaskedServerCard();
-  if (MetadataEnabled()) {
-    metadata_feature_list.InitWithFeatures(
-        /*enabled_features=*/{features::kAutofillEnableCardProductName},
-        /*disabled_features=*/{});
-  } else {
-    metadata_feature_list.InitWithFeaturesAndParameters(
-        /*enabled_features=*/{},
-        /*disabled_features=*/{features::kAutofillEnableCardProductName});
-  }
   if (CardNameAvailable()) {
     card.set_product_description(u"fake product description");
   }
@@ -790,7 +780,7 @@ TEST_P(FullCardRequestCardMetadataTest, MetadataSignal) {
   EXPECT_TRUE(request().GetShouldUnmaskCardForTesting());
   std::vector<ClientBehaviorConstants> signals =
       request().GetUnmaskRequestDetailsForTesting()->client_behavior_signals;
-  if (MetadataEnabled() && CardNameAvailable() && CardArtAvailable()) {
+  if (CardNameAvailable() && CardArtAvailable()) {
     EXPECT_NE(
         signals.end(),
         std::ranges::find(
@@ -804,41 +794,45 @@ TEST_P(FullCardRequestCardMetadataTest, MetadataSignal) {
 // Params:
 // 1. Function reference to call which creates the appropriate credit card
 // benefit for the unittest.
-// 2. Whether the flag to render benefits is enabled.
-// 3. Issuer ID which is set for the credit card with benefits.
+// 2. Benefit source which is set for the credit card with benefits.
 class FullCardRequestCardBenefitsTest
     : public FullCardRequestTest,
       public ::testing::WithParamInterface<
           std::tuple<base::FunctionRef<CreditCardBenefit()>,
-                     bool,
                      std::string>> {
  public:
   void SetUp() override {
-    scoped_feature_list_.InitWithFeatureStates(
-        {{features::kAutofillEnableCardBenefitsForAmericanExpress,
-          IsCreditCardBenefitsEnabled()},
-         {features::kAutofillEnableCardBenefitsForBmo,
-          IsCreditCardBenefitsEnabled()}});
-
     card_ = test::GetMaskedServerCard();
     autofill_client().set_last_committed_primary_main_frame_url(
         test::GetOriginsForMerchantBenefit().begin()->GetURL());
     test::SetUpCreditCardAndBenefitData(
-        card_, GetBenefit(), GetIssuerId(), personal_data(),
-        autofill_client().GetAutofillOptimizationGuide());
+        card_, /*issuer_id=*/"", GetBenefit(), GetBenefitSource(),
+        personal_data(),
+        autofill_client().GetAutofillOptimizationGuideDecider());
   }
 
   CreditCardBenefit GetBenefit() const { return std::get<0>(GetParam())(); }
 
-  bool IsCreditCardBenefitsEnabled() const { return std::get<1>(GetParam()); }
+  const std::string& GetBenefitSource() const {
+    return std::get<1>(GetParam());
+  }
 
-  const std::string& GetIssuerId() const { return std::get<2>(GetParam()); }
+  bool ShouldShowCardBenefits() const {
+#if !BUILDFLAG(IS_IOS)
+    // Benefits sourced from Curinos currently only supports flat rate benefits.
+    if (GetBenefitSource() == "curinos") {
+      return std::holds_alternative<CreditCardFlatRateBenefit>(GetBenefit());
+    }
+    return true;
+#else
+    return false;
+#endif  // !BUILDFLAG(IS_IOS)
+  }
 
   const CreditCard& card() { return card_; }
 
  private:
   CreditCard card_;
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 INSTANTIATE_TEST_SUITE_P(
@@ -848,8 +842,7 @@ INSTANTIATE_TEST_SUITE_P(
         ::testing::Values(&test::GetActiveCreditCardFlatRateBenefit,
                           &test::GetActiveCreditCardCategoryBenefit,
                           &test::GetActiveCreditCardMerchantBenefit),
-        ::testing::Bool(),
-        ::testing::Values("amex", "bmo")));
+        ::testing::Values("amex", "bmo", "curinos")));
 
 // Checks that ClientBehaviorConstants::kShowingCardBenefits is populated as a
 // signal if a card benefit was shown when unmasking a credit card suggestion
@@ -862,7 +855,8 @@ TEST_P(FullCardRequestCardBenefitsTest, Benefits_ClientBehaviorConstants) {
   EXPECT_EQ(std::ranges::find(signals,
                               ClientBehaviorConstants::kShowingCardBenefits) !=
                 signals.end(),
-            IsCreditCardBenefitsEnabled());
+            ShouldShowCardBenefits());
 }
 
+}  // namespace
 }  // namespace autofill::payments

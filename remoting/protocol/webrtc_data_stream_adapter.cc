@@ -15,9 +15,12 @@
 #include "base/location.h"
 #include "base/memory/ptr_util.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/threading/thread_restrictions.h"
 #include "net/base/net_errors.h"
 #include "remoting/base/compound_buffer.h"
+#include "remoting/base/logging.h"
 #include "remoting/protocol/message_serialization.h"
+#include "third_party/webrtc/api/data_channel_interface.h"
 
 namespace remoting::protocol {
 
@@ -28,10 +31,15 @@ class ScopedAllowSyncPrimitivesForWebRtcDataStreamAdapter
     : public base::ScopedAllowBaseSyncPrimitivesOutsideBlockingScope {};
 
 WebrtcDataStreamAdapter::WebrtcDataStreamAdapter(
-    rtc::scoped_refptr<webrtc::DataChannelInterface> channel)
+    webrtc::scoped_refptr<webrtc::DataChannelInterface> channel)
     : channel_(channel.get()) {
   channel_->RegisterObserver(this);
-  DCHECK_EQ(channel_->state(), webrtc::DataChannelInterface::kConnecting);
+  if (channel_->state() != webrtc::DataChannelInterface::kConnecting) {
+    HOST_LOG << "Initial state for channel " << channel_->label() << " is "
+             << webrtc::DataChannelInterface::DataStateString(
+                    channel_->state());
+    OnStateChange();
+  }
 }
 
 WebrtcDataStreamAdapter::~WebrtcDataStreamAdapter() {
@@ -42,11 +50,12 @@ WebrtcDataStreamAdapter::~WebrtcDataStreamAdapter() {
     // Destroy |channel_| asynchronously as it may be on stack.
     // TODO(dcheng): This could probably be ReleaseSoon() however that method
     // expects a scoped_refptr from //base whereas |channel_| is an
-    // rtc::scoped_refptr.
+    // webrtc::scoped_refptr.
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE,
-        base::BindOnce([](rtc::scoped_refptr<webrtc::DataChannelInterface>) {},
-                       std::move(channel_)));
+        base::BindOnce(
+            [](webrtc::scoped_refptr<webrtc::DataChannelInterface>) {},
+            std::move(channel_)));
   }
 }
 
@@ -65,7 +74,7 @@ void WebrtcDataStreamAdapter::Start(EventHandler* event_handler) {
 
 void WebrtcDataStreamAdapter::Send(google::protobuf::MessageLite* message,
                                    base::OnceClosure done) {
-  rtc::CopyOnWriteBuffer buffer;
+  webrtc::CopyOnWriteBuffer buffer;
   buffer.SetSize(message->ByteSizeLong());
   message->SerializeWithCachedSizesToArray(buffer.MutableData());
   pending_outgoing_messages_.emplace(
@@ -142,8 +151,7 @@ void WebrtcDataStreamAdapter::OnStateChange() {
 
 void WebrtcDataStreamAdapter::OnMessage(const webrtc::DataBuffer& rtc_buffer) {
   auto buffer = std::make_unique<CompoundBuffer>();
-  buffer->AppendCopyOf(reinterpret_cast<const char*>(rtc_buffer.data.data()),
-                       rtc_buffer.data.size());
+  buffer->AppendCopyOf(rtc_buffer.data);
   buffer->Lock();
   pending_incoming_messages_.emplace(std::move(buffer));
   HandleIncomingMessages();

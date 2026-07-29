@@ -10,9 +10,6 @@ namespace cc {
 
 TestGpuChannelHost::TestGpuChannelHost()
     : GpuChannelHost(0 /* channel_id */,
-                     gpu::GPUInfo(),
-                     gpu::GpuFeatureInfo(),
-                     gpu::SharedImageCapabilities(),
                      mojo::ScopedMessagePipeHandle(
                          mojo::MessagePipeHandle(mojo::kInvalidHandleValue))) {
   // There is a "LeakSanitizer: detected memory leaks" on
@@ -37,6 +34,29 @@ TestClientSharedImageInterface::~TestClientSharedImageInterface() = default;
 
 gpu::SyncToken TestClientSharedImageInterface::GenVerifiedSyncToken() {
   return shared_image_interface_->GenVerifiedSyncToken();
+}
+
+gpu::SyncToken TestClientSharedImageInterface::GenUnverifiedSyncToken() {
+  return shared_image_interface_->GenUnverifiedSyncToken();
+}
+
+void TestClientSharedImageInterface::VerifySyncToken(
+    gpu::SyncToken& sync_token) {
+  shared_image_interface_->VerifySyncToken(sync_token);
+}
+
+bool TestClientSharedImageInterface::CanVerifySyncToken(
+    const gpu::SyncToken& sync_token) {
+  return shared_image_interface_->CanVerifySyncToken(sync_token);
+}
+
+void TestClientSharedImageInterface::VerifyFlush() {
+  shared_image_interface_->VerifyFlush();
+}
+
+void TestClientSharedImageInterface::WaitSyncToken(
+    const gpu::SyncToken& sync_token) {
+  shared_image_interface_->WaitSyncToken(sync_token);
 }
 
 scoped_refptr<gpu::ClientSharedImage>

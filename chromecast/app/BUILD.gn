@@ -20,7 +20,6 @@ cast_source_set("app") {
     "//chromecast/base",
     "//chromecast/browser",
     "//chromecast/common",
-    "//chromecast/common:resource_delegate",
     "//chromecast/gpu",
     "//chromecast/renderer",
     "//components/crash/core/common:crash_key",
@@ -74,7 +73,7 @@ cast_source_set("cast_crash_client") {
 
 cast_source_set("crash_uploader") {
   sources = [ "cast_crash_uploader.h" ]
-  public_deps = [ "//components/prefs:prefs" ]
+  public_deps = [ "//components/prefs" ]
   if (is_android) {
     sources += [
       "android/cast_crash_uploader_android.cc",
@@ -149,13 +148,11 @@ grit("resources") {
   ]
 }
 
-grit("chromecast_settings") {
+grit_strings("chromecast_settings") {
   source = "//chromecast/app/resources/chromecast_settings.grd"
 
   outputs = [ "grit/chromecast_settings.h" ]
-  foreach(locale, cast_locales) {
-    outputs += [ "chromecast_settings_${locale}.pak" ]
-  }
+  locales = cast_locales
 
   deps = [ ":verify_cast_locales" ]
 }

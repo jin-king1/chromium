@@ -10,7 +10,6 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mockito;
 import org.robolectric.annotation.Config;
-import org.robolectric.annotation.LooperMode;
 import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.base.Callback;
@@ -23,18 +22,17 @@ import java.lang.ref.WeakReference;
 /** Unit tests for {@link ComposedBrowserControlsVisibilityDelegate}. */
 @RunWith(BaseRobolectricTestRunner.class)
 @Config(manifest = Config.NONE)
-@LooperMode(LooperMode.Mode.PAUSED)
 public class ComposedBrowserControlsVisibilityDelegateTest {
     private ComposedBrowserControlsVisibilityDelegate mComposedDelegate;
-    private TestVisibilityDelegate mDelegate1;
-    private TestVisibilityDelegate mDelegate2;
-    private TestVisibilityDelegate mDelegate3;
+    private BrowserControlsVisibilityDelegate mDelegate1;
+    private BrowserControlsVisibilityDelegate mDelegate2;
+    private BrowserControlsVisibilityDelegate mDelegate3;
 
     @Before
     public void setUp() {
-        mDelegate1 = new TestVisibilityDelegate();
-        mDelegate2 = new TestVisibilityDelegate();
-        mDelegate3 = new TestVisibilityDelegate();
+        mDelegate1 = new BrowserControlsVisibilityDelegate();
+        mDelegate2 = new BrowserControlsVisibilityDelegate();
+        mDelegate3 = new BrowserControlsVisibilityDelegate();
         mComposedDelegate =
                 new ComposedBrowserControlsVisibilityDelegate(mDelegate1, mDelegate2, mDelegate3);
     }
@@ -114,9 +112,11 @@ public class ComposedBrowserControlsVisibilityDelegateTest {
     }
 
     @Test
+    @SuppressWarnings(
+            "unchecked") // mock(Callback.class) + Mockito.reset varargs Callback<Integer>[].
     public void testObserver() {
         Callback<Integer> callback = Mockito.mock(Callback.class);
-        mComposedDelegate.addObserver(callback);
+        mComposedDelegate.addSyncObserverAndPostIfNonNull(callback);
         ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
         Mockito.verify(callback).onResult(BrowserControlsState.BOTH);
         Mockito.reset(callback);
@@ -138,7 +138,7 @@ public class ComposedBrowserControlsVisibilityDelegateTest {
     @Test
     public void testAddDelegate_ObservesChanges() {
         Assert.assertEquals(BrowserControlsState.BOTH, composedState());
-        TestVisibilityDelegate newDelegate = new TestVisibilityDelegate();
+        BrowserControlsVisibilityDelegate newDelegate = new BrowserControlsVisibilityDelegate();
         mComposedDelegate.addDelegate(newDelegate);
         Assert.assertEquals(BrowserControlsState.BOTH, composedState());
         newDelegate.set(BrowserControlsState.HIDDEN);
@@ -148,7 +148,7 @@ public class ComposedBrowserControlsVisibilityDelegateTest {
     @Test
     public void testAddDelegate_WithExistingState() {
         Assert.assertEquals(BrowserControlsState.BOTH, composedState());
-        TestVisibilityDelegate newDelegate = new TestVisibilityDelegate();
+        BrowserControlsVisibilityDelegate newDelegate = new BrowserControlsVisibilityDelegate();
         newDelegate.set(BrowserControlsState.SHOWN);
         mComposedDelegate.addDelegate(newDelegate);
         Assert.assertEquals(BrowserControlsState.SHOWN, composedState());
@@ -156,10 +156,10 @@ public class ComposedBrowserControlsVisibilityDelegateTest {
 
     @Test
     public void testDelegateLeak() {
-        WeakReference delegate = new WeakReference(mDelegate1);
+        WeakReference<BrowserControlsVisibilityDelegate> delegate = new WeakReference<>(mDelegate1);
 
         Callback<Integer> callback = (value) -> {};
-        mComposedDelegate.addObserver(callback);
+        mComposedDelegate.addSyncObserverAndPostIfNonNull(callback);
         Assert.assertTrue(mComposedDelegate.hasObservers());
 
         mComposedDelegate.removeObserver(callback);
@@ -168,11 +168,5 @@ public class ComposedBrowserControlsVisibilityDelegateTest {
         mComposedDelegate = null;
         ShadowLooper.idleMainLooper();
         Assert.assertTrue(GarbageCollectionTestUtils.canBeGarbageCollected(delegate));
-    }
-
-    private static class TestVisibilityDelegate extends BrowserControlsVisibilityDelegate {
-        public TestVisibilityDelegate() {
-            super(BrowserControlsState.BOTH);
-        }
     }
 }

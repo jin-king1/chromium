@@ -15,6 +15,7 @@
 
 #include "base/functional/callback_forward.h"
 #include "base/memory/ref_counted.h"
+#include "base/time/time.h"
 #include "base/version.h"
 #include "components/crx_file/crx_verifier.h"
 #include "components/update_client/update_client_errors.h"
@@ -71,13 +72,13 @@
 // Otherwise, the version of the CRX set in the CrxComponent may not be correct.
 //
 // The UpdateClient public interface includes two functions: Install and
-// Update. These functions correspond to installing one CRX immediately as a
-// foreground activity (Install), and updating a group of CRXs silently in the
-// background (Update). This distinction is important. Background updates are
-// queued up and their actions run serially, one at a time, for the purpose of
-// conserving local resources such as CPU, network, and I/O.
-// On the other hand, installs are never queued up but run concurrently, as
-// requested by the user.
+// Update. The primary distinction between them relates to concurrency and
+// queuing. Calls to Update result in a queuing behavior, where the execution of
+// each call is serialized for the purpose of conserving local resources such
+// as CPU, network, and I/O. On the other hand, calls to Install are never
+// queued up but run concurrently. While Install is used for immediate
+// foreground installation of a single item, Update supports both background
+// and foreground operations for a set of items.
 //
 // The update client introduces a runtime constraint regarding interleaving
 // updates and installs. If installs or updates for a given CRX are in progress,
@@ -148,21 +149,17 @@ enum class Error;
 struct CrxUpdateItem;
 
 enum class ComponentState {
-  kNew,          // The component has not yet been checked for updates.
-  kChecking,     // The component is being checked for updates now.
-  kCanUpdate,    // An update is available and will soon be processed.
-  kDownloading,  // An update is being downloaded.
-  kUpdating,     // An update is being installed.
-  kUpdated,      // An update was successfully applied.
-  kUpToDate,     // The component was already up to date.
-  kUpdateError,  // The service encountered an error.
-  kRun,          // The component is running a server-specified action.
-
-  // TODO(crbug.com/353249967): These states are unsent by the engine and can
-  // be removed, along with translations and mappings associated with them.
-  kDownloadingDiff,
-  kUpdatingDiff,
-  kLastStatus
+  kNew,            // The component has not yet been checked for updates.
+  kChecking,       // The component is being checked for updates now.
+  kCanUpdate,      // An update is available and will soon be processed.
+  kDownloading,    // An update is being downloaded.
+  kDecompressing,  // An update is being decompressed.
+  kPatching,       // A patch is being applied.
+  kUpdating,       // An update is being installed.
+  kUpdated,        // An update was successfully applied.
+  kUpToDate,       // The component was already up to date.
+  kUpdateError,    // The service encountered an error.
+  kRun             // The component is running a server-specified action.
 };
 
 // Defines an interface for a generic CRX installer.
@@ -172,20 +169,20 @@ class CrxInstaller : public base::RefCountedThreadSafe<CrxInstaller> {
   struct Result {
     Result() = default;
     explicit Result(int error, int extended_error = 0)
-        : result({.category_ = error == 0 ? ErrorCategory::kNone
-                                          : ErrorCategory::kInstall,
-                  .code_ = error,
-                  .extra_ = extended_error}) {}
+        : result({.category = error == 0 ? ErrorCategory::kNone
+                                         : ErrorCategory::kInstall,
+                  .code = error,
+                  .extra = extended_error}) {}
     explicit Result(InstallError error, int extended_error = 0)
-        : result({.category_ = error == InstallError::NONE
-                                   ? ErrorCategory::kNone
-                                   : ErrorCategory::kInstall,
-                  .code_ = static_cast<int>(error),
-                  .extra_ = extended_error}) {}
+        : result({.category = error == InstallError::NONE
+                                  ? ErrorCategory::kNone
+                                  : ErrorCategory::kInstall,
+                  .code = static_cast<int>(error),
+                  .extra = extended_error}) {}
     explicit Result(CategorizedError error) : result(error) {}
 
-    // The install is successful if and only if result.category_ is kNone.
-    // result.code_ may be non-zero for a successful install.
+    // The install is successful if and only if result.category is kNone.
+    // result.code may be non-zero for a successful install.
     CategorizedError result;
 
     // Localized text displayed to the user, if applicable.
@@ -207,11 +204,6 @@ class CrxInstaller : public base::RefCountedThreadSafe<CrxInstaller> {
 
   using ProgressCallback = base::RepeatingCallback<void(int progress)>;
   using Callback = base::OnceCallback<void(const Result& result)>;
-
-  // Called on the main sequence when there was a problem unpacking or
-  // verifying the CRX. |error| is a non-zero value which is only meaningful
-  // to the caller.
-  virtual void OnUpdateError(int error) = 0;
 
   // Called by the update service when a CRX has been unpacked
   // and it is ready to be installed. This method may be called from a
@@ -279,8 +271,8 @@ struct CrxComponent {
   CrxComponent& operator=(const CrxComponent& other);
   ~CrxComponent();
 
-  // Optional SHA256 hash of the CRX's public key. If not supplied, the
-  // unpacker can accept any CRX for this app, provided that the CRX meets the
+  // Optional SHA256 hash of the CRX's public key. If not supplied, the unpacker
+  // can accept any CRX for this app, provided that the CRX meets the
   // VerifierFormat requirements specified by the service's configurator.
   // Callers that know or need a specific developer signature on acceptable CRX
   // files must provide this.
@@ -461,12 +453,11 @@ class UpdateClient : public base::RefCountedThreadSafe<UpdateClient> {
   // instances of CrxComponent to be used for this update. Provides state change
   // notifications through invocations of the optional
   // |crx_state_change_callback| callback.
-  // The |Update| function is intended to be used for background updates of
-  // several CRXs. Overlapping calls to this function result in a queuing
-  // behavior, and the execution of each call is serialized. In addition,
-  // updates are always queued up when installs are running. The |is_foreground|
-  // parameter must be set to true if the invocation of this function is a
-  // result of a user initiated update.
+  // The |Update| function updates the specified CRXs. Overlapping calls to
+  // this function result in a queuing behavior, and the execution of each call
+  // is serialized. In addition, updates are always queued up when installs are
+  // running. The |is_foreground| parameter must be set to true if the
+  // invocation of this function is a result of a user initiated update.
   virtual void Update(const std::vector<std::string>& ids,
                       CrxDataCallback crx_data_callback,
                       CrxStateChangeCallback crx_state_change_callback,
@@ -494,6 +485,11 @@ class UpdateClient : public base::RefCountedThreadSafe<UpdateClient> {
   // case, the updates will run to completion. Calling this function has no
   // effect if updates are not currently executed or queued up.
   virtual void Stop() = 0;
+
+  // Perform a best-effort cleanup up of temporary download directories older
+  // than the given time.
+  virtual void CleanupStaleDownloads(base::Time older_than,
+                                     base::OnceClosure callback) = 0;
 
  protected:
   friend class base::RefCountedThreadSafe<UpdateClient>;

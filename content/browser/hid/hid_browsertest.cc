@@ -68,6 +68,7 @@ class HidTest : public ContentBrowserTest {
   void SetUpCommandLine(base::CommandLine* command_line) override {
     command_line->AppendSwitch(
         switches::kEnableExperimentalWebPlatformFeatures);
+    command_line->AppendSwitchASCII(switches::kEnableBlinkFeatures, "WebHID");
   }
 
   void SetUpOnMainThread() override {
@@ -245,7 +246,8 @@ IN_PROC_BROWSER_TEST_F(HidFencedFramesBrowserTest, BlockFromFencedFrame) {
   auto result = content::EvalJs(
       render_frame_host,
       R"(navigator.hid.getDevices().then(devices => devices.length))");
-  EXPECT_THAT(result.error, ::testing::HasSubstr(kFencedFrameError));
+  EXPECT_THAT(result,
+              EvalJsResult::ErrorIs(::testing::HasSubstr(kFencedFrameError)));
 }
 
 }  // namespace content

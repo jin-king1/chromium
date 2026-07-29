@@ -9,7 +9,7 @@
 #include <vector>
 
 #include "base/functional/callback.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/sequence_checker.h"
 #include "components/update_client/task.h"
 #include "components/update_client/update_client.h"
@@ -38,11 +38,11 @@ class TaskSendPing : public Task {
   TaskSendPing(const TaskSendPing&) = delete;
   TaskSendPing& operator=(const TaskSendPing&) = delete;
 
+  // Overrides for Task.
   void Run() override;
-
   void Cancel() override;
-
-  std::vector<std::string> GetIds() const override;
+  std::vector<std::string> ids() const override;
+  std::string name() const override;
 
  private:
   ~TaskSendPing() override;

@@ -9,8 +9,8 @@ import androidx.annotation.IntDef;
 import androidx.annotation.MainThread;
 
 import org.chromium.base.Promise;
-import org.chromium.base.supplier.ObservableSupplier;
-import org.chromium.base.supplier.ObservableSupplierImpl;
+import org.chromium.base.supplier.NullableObservableSupplier;
+import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 
@@ -32,13 +32,11 @@ public abstract class SearchEngineCountryDelegate {
     public SearchEngineCountryDelegate(Context context) {}
 
     /**
-     * Returns a {@link Promise} that will be fulfilled with the device country code. The promise
-     * may be rejected if unable to fetch device country code. Clients should implement proper
-     * callbacks to handle rejection. The promise is guaranteed to contain a non-null string.
+     * Returns a {@link Promise} that will be fulfilled with the device country code. The promise is
+     * guaranteed to contain a non-null string. No rejection will be propagated in case of error in
+     * obtaining the device country, the promise will be kept pending instead.
      *
-     * <p>If {@link SearchEnginesFeatures#CLAY_BLOCKING} is enabled, no rejection will be
-     * propagated, the promise will be kept pending instead. Implement some timeout if that's
-     * needed.
+     * <p>Implement some timeout if that's needed.
      */
     @MainThread
     public Promise<String> getDeviceCountry() {
@@ -54,6 +52,21 @@ public abstract class SearchEngineCountryDelegate {
         return null;
     }
 
+    @IntDef({
+        DefaultBrowserPromoSuppressionDelayType.STANDARD,
+        DefaultBrowserPromoSuppressionDelayType.MAX,
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface DefaultBrowserPromoSuppressionDelayType {
+        int STANDARD = 1;
+        int MAX = 2;
+    }
+
+    public @DefaultBrowserPromoSuppressionDelayType int
+            getDefaultBrowserPromoSuppressionDelayType() {
+        return DefaultBrowserPromoSuppressionDelayType.MAX;
+    }
+
     /** Proxy for {@link SearchEngineChoiceService#isDeviceChoiceDialogEligible()}. */
     @MainThread
     public boolean isDeviceChoiceDialogEligible() {
@@ -62,8 +75,8 @@ public abstract class SearchEngineCountryDelegate {
 
     /** Proxy for {@link SearchEngineChoiceService#getIsDeviceChoiceRequiredSupplier()}. */
     @MainThread
-    public ObservableSupplier<Boolean> getIsDeviceChoiceRequiredSupplier() {
-        return new ObservableSupplierImpl<>(false);
+    public NullableObservableSupplier<Boolean> getIsDeviceChoiceRequiredSupplier() {
+        return ObservableSuppliers.alwaysFalse();
     }
 
     /** Proxy for {@link SearchEngineChoiceService#refreshDeviceChoiceRequiredNow}. */
@@ -93,4 +106,7 @@ public abstract class SearchEngineCountryDelegate {
      */
     @MainThread
     public void notifyDeviceChoiceEvent(@DeviceChoiceEventType int eventType) {}
+
+    @MainThread
+    public void destroy() {}
 }

@@ -20,10 +20,11 @@ import org.chromium.base.TraceEvent;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.NullUnmarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.components.browser_ui.notifications.NotificationProxyUtils.NotificationEvent;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.function.Function;
@@ -35,14 +36,18 @@ import java.util.function.Function;
 @NullMarked
 public class NotificationManagerProxyImpl implements NotificationManagerProxy {
     private static final String TAG = "NotifManagerProxy";
-    private final NotificationManagerCompat mNotificationManager;
+
+    @SuppressWarnings("NullAway.Init")
+    private NotificationManagerCompat mNotificationManager;
 
     private static @Nullable NotificationManagerProxy sInstance;
 
     public static NotificationManagerProxy getInstance() {
         // No need to cache the real instance, it makes testing more difficult as tests that shadow
         // the NotificationManager would have to clear this.
-        if (sInstance == null) return new NotificationManagerProxyImpl();
+        if (sInstance == null) {
+            sInstance = new NotificationManagerProxyImpl();
+        }
         return sInstance;
     }
 
@@ -54,7 +59,12 @@ public class NotificationManagerProxyImpl implements NotificationManagerProxy {
     }
 
     public NotificationManagerProxyImpl() {
-        mNotificationManager = NotificationManagerCompat.from(ContextUtils.getApplicationContext());
+        runRunnable(
+                TraceEvent.scoped("NotificationManagerProxyImpl()"),
+                () -> {
+                    mNotificationManager =
+                            NotificationManagerCompat.from(ContextUtils.getApplicationContext());
+                });
     }
 
     @Override
@@ -65,7 +75,7 @@ public class NotificationManagerProxyImpl implements NotificationManagerProxy {
     }
 
     @Override
-    public void cancel(String tag, int id) {
+    public void cancel(@Nullable String tag, int id) {
         runRunnable(
                 TraceEvent.scoped("NotificationManagerProxyImpl.cancel(tag, id)"),
                 () -> mNotificationManager.cancel(tag, id));
@@ -106,7 +116,8 @@ public class NotificationManagerProxyImpl implements NotificationManagerProxy {
         runCallableAndReply(
                 TraceEvent.scoped("NotificationManagerProxyImpl.getNotificationChannels"),
                 () -> mNotificationManager.getNotificationChannels(),
-                callback);
+                callback,
+                Collections.emptyList());
     }
 
     @Override
@@ -114,7 +125,8 @@ public class NotificationManagerProxyImpl implements NotificationManagerProxy {
         runCallableAndReply(
                 TraceEvent.scoped("NotificationManagerProxyImpl.getNotificationChannel"),
                 () -> mNotificationManager.getNotificationChannel(channelId),
-                callback);
+                callback,
+                null);
     }
 
     @Override
@@ -122,7 +134,8 @@ public class NotificationManagerProxyImpl implements NotificationManagerProxy {
         runCallableAndReply(
                 TraceEvent.scoped("NotificationManagerProxyImpl.getNotificationChannelGroups"),
                 () -> mNotificationManager.getNotificationChannelGroups(),
-                callback);
+                callback,
+                Collections.emptyList());
     }
 
     @Override
@@ -240,21 +253,16 @@ public class NotificationManagerProxyImpl implements NotificationManagerProxy {
                     }
                     return notifications;
                 },
-                callback);
+                callback,
+                Collections.emptyList());
     }
 
     /** Helper method to run an runnable inside a scoped event. */
     private void runRunnable(@Nullable TraceEvent scopedEvent, Runnable runnable) {
         try (scopedEvent) {
-            NotificationProxyUtils.recordNotificationEventHistogram(
-                    NotificationEvent.NO_CALLBACK_START);
             runnable.run();
-            NotificationProxyUtils.recordNotificationEventHistogram(
-                    NotificationEvent.NO_CALLBACK_SUCCESS);
         } catch (Exception e) {
             Log.e(TAG, "unable to run a runnable.", e);
-            NotificationProxyUtils.recordNotificationEventHistogram(
-                    NotificationEvent.NO_CALLBACK_FAILED);
         }
     }
 
@@ -262,19 +270,20 @@ public class NotificationManagerProxyImpl implements NotificationManagerProxy {
      * Helper method to run an runnable inside a scoped event in background, and executes callback
      * on the ui thread.
      */
-    private <T> void runCallableAndReply(
-            @Nullable TraceEvent scopedEvent, Callable<T> callable, Callback callback) {
+    @NullUnmarked // https://github.com/uber/NullAway/issues/1075
+    private <T extends @Nullable Object> void runCallableAndReply(
+            @Nullable TraceEvent scopedEvent,
+            Callable<T> callable,
+            Callback<T> callback,
+            T defaultValue) {
+        T result;
         try (scopedEvent) {
-            NotificationProxyUtils.recordNotificationEventHistogram(
-                    NotificationEvent.HAS_CALLBACK_START);
-            T result = callable.call();
-            PostTask.postTask(TaskTraits.UI_DEFAULT, () -> callback.onResult(result));
-            NotificationProxyUtils.recordNotificationEventHistogram(
-                    NotificationEvent.HAS_CALLBACK_SUCCESS);
+            result = callable.call();
         } catch (Exception e) {
             Log.e(TAG, "Unable to call method.", e);
-            NotificationProxyUtils.recordNotificationEventHistogram(
-                    NotificationEvent.HAS_CALLBACK_FAILED);
+            result = defaultValue;
         }
+        T finalResult = result;
+        PostTask.postTask(TaskTraits.UI_DEFAULT, callback.bind(finalResult));
     }
 }

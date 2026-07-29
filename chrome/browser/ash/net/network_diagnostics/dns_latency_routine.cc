@@ -48,7 +48,7 @@ constexpr char kHostSuffix[] = "-ccd-testing-v4.metric.gstatic.com";
 const std::string GetRandomString(int length) {
   std::string prefix;
   for (int i = 0; i < length; i++) {
-    prefix += ('a' + base::RandInt(0, 25));
+    prefix += ('a' + base::RandIntInclusive(0, 25));
   }
   return prefix;
 }
@@ -164,15 +164,14 @@ void DnsLatencyRoutine::AttemptNextResolution() {
 void DnsLatencyRoutine::OnComplete(
     int result,
     const net::ResolveErrorInfo& resolve_error_info,
-    const std::optional<net::AddressList>& resolved_addresses,
-    const std::optional<net::HostResolverEndpointResults>&
-        endpoint_results_with_metadata) {
+    const net::AddressList& resolved_addresses,
+    const net::HostResolverEndpointResults& alternative_endpoints) {
   resolution_complete_time_ = tick_clock_->NowTicks();
   const base::TimeDelta latency =
       resolution_complete_time_ - start_resolution_time_;
 
   if (result != net::OK) {
-    CHECK(!resolved_addresses);
+    CHECK(resolved_addresses.empty());
     // Failed to get resolved address of host
     AnalyzeResultsAndExecuteCallback();
   } else if (hostnames_to_query_.size() > 0) {

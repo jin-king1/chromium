@@ -12,6 +12,7 @@
 #include <wrl/client.h>
 
 #include "base/check_op.h"
+#include "base/compiler_specific.h"
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/logging.h"
@@ -19,6 +20,7 @@
 #include "base/path_service.h"
 #include "base/strings/string_util.h"
 #include "base/win/com_init_util.h"
+#include "base/win/registry.h"
 #include "base/win/scoped_bstr.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/chrome_paths_internal.h"
@@ -33,17 +35,17 @@ namespace os_crypt {
 
 namespace {
 
-bool g_non_standard_user_data_dir_supported_for_testing = false;
+AppBoundEncryptionOverridesForTesting* g_overrides_for_testing = nullptr;
 
 ProtectionLevel AddFlags(ProtectionLevel protection_level,
                          elevation_service::EncryptFlags flags) {
   // Check protection_level fits into 8-bits.
   CHECK_EQ(protection_level, protection_level & 0xFF);
 
+  // Flag value addition goes here. Currently no flags sent to service are
+  // supported.
   uint32_t flag_value = 0;
-  if (flags.use_latest_key) {
-    flag_value |= elevation_service::internal::kFlagUseLatestKey;
-  }
+
   // Double check flags fits into 24-bits. This is checked elsewhere too by
   // static_asserts.
   CHECK_EQ(flag_value, flag_value & 0xFFFFFF);
@@ -56,30 +58,29 @@ ProtectionLevel AddFlags(ProtectionLevel protection_level,
 }  // namespace
 
 namespace features {
-BASE_FEATURE(kAppBoundDataReencrypt,
-             "AppBoundDataReencrypt",
-             base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kAppBoundDataReencrypt, base::FEATURE_ENABLED_BY_DEFAULT);
 }  // namespace features
 
 SupportLevel GetAppBoundEncryptionSupportLevel(PrefService* local_state) {
+  if (g_overrides_for_testing) {
+    return g_overrides_for_testing->GetAppBoundEncryptionSupportLevel(
+        local_state);
+  }
+
   // Must be a system install.
   if (!install_static::IsSystemInstall()) {
     return SupportLevel::kNotSystemLevel;
   }
 
-  base::FilePath user_data_dir;
-  if (!base::PathService::Get(chrome::DIR_USER_DATA, &user_data_dir)) {
-    return SupportLevel::kApiFailed;
-  }
+  const auto maybe_using_default_user_data_dir =
+      chrome::IsUsingDefaultDataDirectory();
 
-  base::FilePath default_user_data_dir;
-  if (!chrome::GetDefaultUserDataDirectory(&default_user_data_dir)) {
+  if (!maybe_using_default_user_data_dir.has_value()) {
     return SupportLevel::kApiFailed;
   }
 
   // User data dir can be overridden by policy or by a command line option.
-  if (user_data_dir != default_user_data_dir &&
-      !g_non_standard_user_data_dir_supported_for_testing) {
+  if (!maybe_using_default_user_data_dir.value()) {
     return SupportLevel::kNotUsingDefaultUserDataDir;
   }
 
@@ -107,6 +108,21 @@ SupportLevel GetAppBoundEncryptionSupportLevel(PrefService* local_state) {
     if (profile_type > 0) {
       return SupportLevel::kDisabledByRoamingWindowsProfile;
     }
+  }
+
+  // https://learn.microsoft.com/en-us/fslogix/ is a roaming profile solution
+  // that does not use profile type. Detect it explicitly here.
+  for (const auto access_mask : {KEY_WOW64_32KEY, KEY_WOW64_64KEY}) {
+    if (base::win::RegKey{}.Open(HKEY_LOCAL_MACHINE, L"SOFTWARE\\FSLogix",
+                                 KEY_QUERY_VALUE | access_mask) ==
+        ERROR_SUCCESS) {
+      return SupportLevel::kDisabledByRoamingWindowsProfile;
+    }
+  }
+
+  base::FilePath user_data_dir;
+  if (!base::PathService::Get(chrome::DIR_USER_DATA, &user_data_dir)) {
+    return SupportLevel::kApiFailed;
   }
 
   // If the user data dir is on a network drive, then maybe it is shared between
@@ -149,6 +165,15 @@ HRESULT EncryptAppBoundString(ProtectionLevel protection_level,
                               std::string& ciphertext,
                               DWORD& last_error,
                               elevation_service::EncryptFlags* flags) {
+  elevation_service::EncryptFlags default_flags = {};
+  if (!flags) {
+    flags = &default_flags;
+  }
+  if (g_overrides_for_testing) {
+    return g_overrides_for_testing->EncryptAppBoundString(
+        protection_level, plaintext, ciphertext, last_error, flags);
+  }
+
   base::win::AssertComInitialized();
   Microsoft::WRL::ComPtr<IElevator> elevator;
   last_error = ERROR_GEN_FAILURE;
@@ -167,13 +192,11 @@ HRESULT EncryptAppBoundString(ProtectionLevel protection_level,
     return hr;
 
   base::win::ScopedBstr plaintext_data;
-  ::memcpy(plaintext_data.AllocateBytes(plaintext.length()), plaintext.data(),
-           plaintext.length());
+  UNSAFE_TODO(::memcpy(plaintext_data.AllocateBytes(plaintext.length()),
+                       plaintext.data(), plaintext.length()));
 
   base::win::ScopedBstr encrypted_data;
-  if (flags) {
-    protection_level = AddFlags(protection_level, *flags);
-  }
+  protection_level = AddFlags(protection_level, *flags);
   hr = elevator->EncryptData(protection_level, plaintext_data.Get(),
                              encrypted_data.Receive(), &last_error);
   if (FAILED(hr))
@@ -193,6 +216,17 @@ HRESULT DecryptAppBoundString(const std::string& ciphertext,
                               std::optional<std::string>& new_ciphertext,
                               DWORD& last_error,
                               elevation_service::EncryptFlags* flags) {
+  elevation_service::EncryptFlags default_flags = {};
+  if (!flags) {
+    flags = &default_flags;
+  }
+
+  if (g_overrides_for_testing) {
+    return g_overrides_for_testing->DecryptAppBoundString(
+        ciphertext, plaintext, protection_level, new_ciphertext, last_error,
+        flags);
+  }
+
   DCHECK(!ciphertext.empty());
   base::win::AssertComInitialized();
   Microsoft::WRL::ComPtr<IElevator> elevator;
@@ -212,8 +246,8 @@ HRESULT DecryptAppBoundString(const std::string& ciphertext,
     return hr;
 
   base::win::ScopedBstr ciphertext_data;
-  ::memcpy(ciphertext_data.AllocateBytes(ciphertext.length()),
-           ciphertext.data(), ciphertext.length());
+  UNSAFE_TODO(::memcpy(ciphertext_data.AllocateBytes(ciphertext.length()),
+                       ciphertext.data(), ciphertext.length()));
 
   base::win::ScopedBstr plaintext_data;
   hr = elevator->DecryptData(ciphertext_data.Get(), plaintext_data.Receive(),
@@ -225,24 +259,18 @@ HRESULT DecryptAppBoundString(const std::string& ciphertext,
   new_ciphertext = std::nullopt;
 
   if (base::FeatureList::IsEnabled(features::kAppBoundDataReencrypt) &&
-      hr == elevation_service::Elevator::kSuccessShouldReencrypt) {
+      (hr == elevation_service::Elevator::kSuccessShouldReencrypt ||
+       flags->force_reencrypt)) {
     DWORD encrypt_last_error;
     base::win::ScopedBstr reencrypted_data;
-    if (flags) {
-      protection_level = AddFlags(protection_level, *flags);
-    }
+    protection_level = AddFlags(protection_level, *flags);
     HRESULT encrypt_hr =
         elevator->EncryptData(protection_level, plaintext_data.Get(),
                               reencrypted_data.Receive(), &encrypt_last_error);
-    base::UmaHistogramSparse("OSCrypt.AppBound.ReEncrypt.ResultCode",
-                             encrypt_hr);
     if (SUCCEEDED(encrypt_hr)) {
       new_ciphertext.emplace(
           reinterpret_cast<std::string::value_type*>(reencrypted_data.Get()),
           reencrypted_data.ByteLength());
-    } else {
-      base::UmaHistogramSparse("OSCrypt.AppBound.ReEncrypt.ResultLastError",
-                               encrypt_last_error);
     }
   }
 
@@ -256,8 +284,9 @@ HRESULT DecryptAppBoundString(const std::string& ciphertext,
   return S_OK;
 }
 
-void SetNonStandardUserDataDirSupportedForTesting(bool supported) {
-  g_non_standard_user_data_dir_supported_for_testing = supported;
+void SetOverridesForTesting(AppBoundEncryptionOverridesForTesting* overrides) {
+  CHECK(!g_overrides_for_testing || !overrides);
+  g_overrides_for_testing = overrides;
 }
 
 }  // namespace os_crypt

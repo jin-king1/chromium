@@ -15,6 +15,7 @@
 #include "build/build_config.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/storage_partition.h"
+#include "content/public/common/buildflags.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/common/main_function_params.h"
 #include "content/public/common/url_constants.h"
@@ -25,9 +26,8 @@
 #include "content/web_test/browser/web_test_browser_context.h"
 #include "content/web_test/browser/web_test_shell_platform_delegate.h"
 #include "net/base/filename_util.h"
-#include "net/base/net_module.h"
+#include "net/base/module/net_module.h"
 #include "net/grit/net_resources.h"
-#include "ppapi/buildflags/buildflags.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "url/gurl.h"
 

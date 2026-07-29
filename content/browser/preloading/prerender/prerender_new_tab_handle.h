@@ -9,6 +9,7 @@
 
 #include "content/browser/preloading/preloading_confidence.h"
 #include "content/browser/preloading/prerender/prerender_attributes.h"
+#include "content/browser/preloading/prerender/prerender_host.h"
 #include "content/common/frame.mojom-forward.h"
 #include "content/public/browser/prerender_web_contents_delegate.h"
 #include "content/public/browser/render_frame_host.h"
@@ -41,16 +42,17 @@ class PrerenderNewTabHandle {
                         BrowserContext& browser_context);
   ~PrerenderNewTabHandle();
 
-  // Starts prerendering in `web_contents_`. Returns the root FrameTreeNode id
-  // of the prerendered page, which can be used as the id of PrerenderHost, on
-  // success. Returns an invalid FrameTreeNodeId on failure.
-  FrameTreeNodeId StartPrerendering(
+  // Starts prerendering in `web_contents_`. Returns the PrerenderHostId of the
+  // PrerenderHost, on success. Returns an invalid PrerenderHostId on failure.
+  PrerenderHostId StartPrerendering(
       const PreloadingPredictor& creating_predictor,
       const PreloadingPredictor& enacting_predictor,
       PreloadingConfidence confidence);
 
-  // Cancels prerendering started in `web_contents_`.
-  void CancelPrerendering(const PrerenderCancellationReason& reason);
+  // Cancels prerendering and schedules the destruction of the handle.
+  static void CancelPrerenderingAndDestroy(
+      std::unique_ptr<PrerenderNewTabHandle> handle,
+      const PrerenderCancellationReason& reason);
 
   // Passes the ownership of `web_contents_` to the caller if it's available for
   // new tab navigation with given params.
@@ -65,12 +67,22 @@ class PrerenderNewTabHandle {
 
   // Returns SpeculationEagerness.
   std::optional<blink::mojom::SpeculationEagerness> eagerness() const {
-    return attributes_.eagerness;
+    return attributes_.GetEagerness();
   }
 
- private:
+  // Returns std::nullopt iff prerendering is initiated by the browser (not by
+  // a renderer using Speculation Rules API).
+  std::optional<url::Origin> initiator_origin() const {
+    return attributes_.initiator_origin;
+  }
+
+  bool form_submission() const { return attributes_.form_submission; }
+
+  PrerenderHostId prerender_host_id() const { return prerender_host_id_; }
+
   PrerenderHostRegistry& GetPrerenderHostRegistry();
 
+ private:
   const PrerenderAttributes attributes_;
 
   // Used for creating WebContentsImpl that contains a prerendered page for a
@@ -91,7 +103,7 @@ class PrerenderNewTabHandle {
   // initiator's tab.
   std::unique_ptr<PrerenderWebContentsDelegate> web_contents_delegate_;
 
-  FrameTreeNodeId prerender_host_id_;
+  PrerenderHostId prerender_host_id_;
 };
 
 }  // namespace content

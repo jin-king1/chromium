@@ -92,9 +92,11 @@ bool CanShareInternal(const LocalDOMWindow& window,
 
   if (data.hasUrl()) {
     url = window.CompleteURL(data.url());
-    if (!url.IsValid() ||
-        (!url.ProtocolIsInHTTPFamily() &&
-         url.Protocol() != window.document()->BaseURL().Protocol())) {
+    if (!url.IsValid() || (!url.ProtocolIsInHttpFamily() &&
+                           url.Protocol() != window.document()
+                                                 ->GetExecutionContext()
+                                                 ->GetSecurityOrigin()
+                                                 ->Protocol())) {
       if (exception_state) {
         exception_state->ThrowTypeError("Invalid URL");
       }
@@ -279,8 +281,8 @@ ScriptPromise<IDLUndefined> NavigatorShare::share(
     window->GetFrame()->GetBrowserInterfaceBroker().GetInterface(
         service_remote_.BindNewPipeAndPassReceiver(
             window->GetTaskRunner(TaskType::kMiscPlatformAPI)));
-    service_remote_.set_disconnect_handler(WTF::BindOnce(
-        &NavigatorShare::OnConnectionError, WrapWeakPersistent(this)));
+    service_remote_.set_disconnect_handler(
+        BindOnce(&NavigatorShare::OnConnectionError, WrapWeakPersistent(this)));
     DCHECK(service_remote_.is_bound());
   }
 
@@ -296,7 +298,7 @@ ScriptPromise<IDLUndefined> NavigatorShare::share(
   }
 
   bool has_files = HasFiles(*data);
-  WTF::Vector<mojom::blink::SharedFilePtr> files;
+  Vector<mojom::blink::SharedFilePtr> files;
   uint64_t total_bytes = 0;
   if (has_files) {
     files.ReserveInitialCapacity(data->files().size());
@@ -348,7 +350,7 @@ ScriptPromise<IDLUndefined> NavigatorShare::share(
   service_remote_->Share(
       data->hasTitle() ? data->title() : g_empty_string,
       data->hasText() ? data->text() : g_empty_string, url, std::move(files),
-      WTF::BindOnce(&ShareClientImpl::Callback, WrapPersistent(client)));
+      BindOnce(&ShareClientImpl::Callback, WrapPersistent(client)));
 
   return promise;
 }

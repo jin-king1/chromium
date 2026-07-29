@@ -23,11 +23,10 @@
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "base/unguessable_token.h"
-#include "build/build_config.h"
 #include "media/audio/audio_io.h"
 #include "media/audio/audio_manager.h"
 #include "media/base/audio_power_monitor.h"
-#include "services/audio/loopback_group_member.h"
+#include "services/audio/loopback_source.h"
 
 // An OutputController controls an AudioOutputStream and provides data to this
 // output stream. It executes audio operations like play, pause, stop, etc. on
@@ -60,7 +59,7 @@
 
 namespace audio {
 class OutputController : public media::AudioOutputStream::AudioSourceCallback,
-                         public LoopbackGroupMember {
+                         public LoopbackSource {
  public:
   // An event handler that receives events from the OutputController. The
   // following methods are called on the audio manager thread.
@@ -143,15 +142,7 @@ class OutputController : public media::AudioOutputStream::AudioSourceCallback,
 
   ~OutputController() override;
 
-  // Indicates whether audio power level analysis will be performed.  If false,
-  // ReadCurrentPowerAndClip() can not be called.
-  static constexpr bool will_monitor_audio_levels() {
-#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
-    return false;
-#else
-    return true;
-#endif
-  }
+  const base::UnguessableToken& id() const { return id_; }
 
   // Methods to control playback of the stream.
 
@@ -203,6 +194,10 @@ class OutputController : public media::AudioOutputStream::AudioSourceCallback,
   // Recreates the output stream to play audio to specified device.
   void SwitchAudioOutputDeviceId(const std::string& new_output_device_id);
 
+  // Indicates whether audio power level analysis will be performed.  If false,
+  // ReadCurrentPowerAndClip() can not be called.
+  bool will_monitor_audio_levels() const { return will_monitor_audio_levels_; }
+
  protected:
   // Time constant for AudioPowerMonitor.  See AudioPowerMonitor ctor comments
   // for semantics.  This value was arbitrarily chosen, but seems to work well.
@@ -242,10 +237,16 @@ class OutputController : public media::AudioOutputStream::AudioSourceCallback,
     void RegisterError();
 
     // This function should be called from the stream callback thread.
-    void OnMoreDataCalled();
+    void OnMoreDataCalled(const media::AudioGlitchInfo& glitch_info);
 
    private:
     void WedgeCheck();
+
+    void LogGlitchStats(const char* call_name, base::TimeTicks now);
+    void DoLogGlitchStats(const char* call_name,
+                          base::TimeDelta total_duration,
+                          media::AudioGlitchInfo glitch_info,
+                          double glitch_percentage);
 
     // RAW_PTR_EXCLUSION: OutputController object will outlive the
     // ErrorStatisticsTracker object.
@@ -253,11 +254,22 @@ class OutputController : public media::AudioOutputStream::AudioSourceCallback,
 
     const base::TimeTicks start_time_;
 
+    base::TimeTicks last_periodic_log_time_;
+
+    // Accumulates AudioGlitchInfo provided in OnMoreData callbacks. Only used
+    // for logging purposes.
+    media::AudioGlitchInfo glitch_info_;
+
     bool error_during_callback_ = false;
 
     // Flags when we've asked for a stream to start but it never did.
     base::AtomicRefCount on_more_io_data_called_;
     base::OneShotTimer wedge_timer_;
+
+    const scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
+
+    base::WeakPtr<ErrorStatisticsTracker> weak_this_;
+    base::WeakPtrFactory<ErrorStatisticsTracker> weak_ptr_factory_{this};
   };
 
   // Reports UMA statistics for stream creation.
@@ -285,7 +297,7 @@ class OutputController : public media::AudioOutputStream::AudioSourceCallback,
   void StopCloseAndClearStream();
 
   // Helper method which delivers a log string to the event handler.
-  PRINTF_FORMAT(2, 3) void SendLogMessage(const char* fmt, ...);
+  void SendLogMessage(const std::string& message);
 
   // Log the current average power level measured by power_monitor_.
   void LogAudioPowerLevel(const char* call_name);
@@ -298,6 +310,8 @@ class OutputController : public media::AudioOutputStream::AudioSourceCallback,
   // a new stream, and then transition back to an equivalent state prior to
   // being called.
   void ProcessDeviceChange();
+
+  const base::UnguessableToken id_;
 
   const raw_ptr<media::AudioManager> audio_manager_;
   const media::AudioParameters params_;
@@ -354,6 +368,13 @@ class OutputController : public media::AudioOutputStream::AudioSourceCallback,
   // and destroyed when a stream stops. Also reset every time there is a stream
   // being created due to device changes.
   std::optional<ErrorStatisticsTracker> stats_tracker_;
+
+  // Request and read data in the same OnMoreData call, to reduce latency.
+  const bool request_before_read_;
+
+  // Indicates whether audio power level analysis will be performed.  If false,
+  // ReadCurrentPowerAndClip() can not be called.
+  const bool will_monitor_audio_levels_;
 };
 
 }  // namespace audio

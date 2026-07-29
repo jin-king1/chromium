@@ -12,6 +12,7 @@
 #include "components/vector_icons/vector_icons.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/resource/resource_bundle.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_provider.h"
 #include "ui/gfx/animation/tween.h"
@@ -20,6 +21,7 @@
 #include "ui/gfx/image/image_skia.h"
 #include "ui/gfx/paint_throbber.h"
 #include "ui/gfx/paint_vector_icon.h"
+#include "ui/views/property_effects.h"
 
 namespace views {
 
@@ -46,9 +48,9 @@ void Throbber::Start() {
   }
 
   start_time_ = base::TimeTicks::Now();
-  timer_.Start(
-      FROM_HERE, base::Milliseconds(GetFrameDelay(diameter_)),
-      base::BindRepeating(&Throbber::SchedulePaint, base::Unretained(this)));
+  timer_.Start(FROM_HERE, base::Milliseconds(GetFrameDelay(diameter_)),
+               base::BindRepeating(&Throbber::SchedulePaint,
+                                   weak_ptr_factory_.GetWeakPtr()));
   SchedulePaint();  // paint right away
 }
 
@@ -71,7 +73,7 @@ void Throbber::SetChecked(bool checked) {
   }
 
   checked_ = checked;
-  OnPropertyChanged(&checked_, kPropertyEffectsPaint);
+  OnPropertyChanged(&checked_, PropertyEffects::kPaint);
 }
 
 gfx::Size Throbber::CalculatePreferredSize(
@@ -90,7 +92,10 @@ void Throbber::OnPaint(gfx::Canvas* canvas) {
       const int kCheckmarkDipSize = diameter_ + 2;
       canvas->Translate(gfx::Vector2d((width() - kCheckmarkDipSize) / 2,
                                       (height() - kCheckmarkDipSize) / 2));
-      gfx::PaintVectorIcon(canvas, vector_icons::kCheckCircleIcon,
+      gfx::PaintVectorIcon(canvas,
+                           features::IsRoundedIconsEnabled()
+                               ? vector_icons::kCheckCircleFilledIcon
+                               : vector_icons::kCheckCircleOldIcon,
                            kCheckmarkDipSize, color);
     }
     return;
@@ -149,7 +154,7 @@ void SmoothedThrobber::SetStartDelay(const base::TimeDelta& start_delay) {
     return;
   }
   start_delay_ = start_delay;
-  OnPropertyChanged(&start_delay_, kPropertyEffectsNone);
+  OnPropertyChanged(&start_delay_, PropertyEffects::kNone);
 }
 
 base::TimeDelta SmoothedThrobber::GetStopDelay() const {
@@ -161,7 +166,7 @@ void SmoothedThrobber::SetStopDelay(const base::TimeDelta& stop_delay) {
     return;
   }
   stop_delay_ = stop_delay;
-  OnPropertyChanged(&stop_delay_, kPropertyEffectsNone);
+  OnPropertyChanged(&stop_delay_, PropertyEffects::kNone);
 }
 
 void SmoothedThrobber::StopDelayOver() {

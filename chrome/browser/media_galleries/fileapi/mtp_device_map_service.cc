@@ -7,9 +7,7 @@
 #include <string>
 #include <utility>
 
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
-#include "base/not_fatal_until.h"
 #include "chrome/browser/media_galleries/fileapi/mtp_device_async_delegate.h"
 #include "content/public/browser/browser_thread.h"
 #include "storage/browser/file_system/external_mount_points.h"
@@ -36,7 +34,7 @@ void MTPDeviceMapService::RegisterMTPFileSystem(
   DCHECK(!filesystem_id.empty());
 
   const AsyncDelegateKey key = GetAsyncDelegateKey(device_location, read_only);
-  if (!base::Contains(mtp_device_usage_map_, key)) {
+  if (!mtp_device_usage_map_.contains(key)) {
     // Note that this initializes the delegate asynchronously, but since
     // the delegate will only be used from the IO thread, it is guaranteed
     // to be created before use of it expects it to be there.
@@ -66,8 +64,7 @@ void MTPDeviceMapService::RevokeMTPFileSystem(
     const AsyncDelegateKey key =
         GetAsyncDelegateKey(device_location, read_only);
     MTPDeviceUsageMap::iterator delegate_it = mtp_device_usage_map_.find(key);
-    CHECK(delegate_it != mtp_device_usage_map_.end(),
-          base::NotFatalUntil::M130);
+    CHECK(delegate_it != mtp_device_usage_map_.end());
 
     mtp_device_usage_map_[key]--;
     if (mtp_device_usage_map_[key] == 0) {
@@ -86,8 +83,9 @@ void MTPDeviceMapService::AddAsyncDelegate(
   DCHECK(!device_location.empty());
 
   const AsyncDelegateKey key = GetAsyncDelegateKey(device_location, read_only);
-  if (base::Contains(async_delegate_map_, key))
+  if (async_delegate_map_.contains(key)) {
     return;
+  }
   async_delegate_map_[key] = delegate;
 }
 
@@ -99,7 +97,7 @@ void MTPDeviceMapService::RemoveAsyncDelegate(
 
   const AsyncDelegateKey key = GetAsyncDelegateKey(device_location, read_only);
   AsyncDelegateMap::iterator it = async_delegate_map_.find(key);
-  CHECK(it != async_delegate_map_.end(), base::NotFatalUntil::M130);
+  CHECK(it != async_delegate_map_.end());
   it->second->CancelPendingTasksAndDeleteDelegate();
   async_delegate_map_.erase(it);
 }

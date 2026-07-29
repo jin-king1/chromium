@@ -7,6 +7,8 @@ package org.chromium.chrome.browser.notifications.permissions;
 import static androidx.test.espresso.matcher.ViewMatchers.assertThat;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
 
+import static com.google.common.truth.Truth.assertThat;
+
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
@@ -34,6 +36,7 @@ import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modaldialog.ModalDialogProperties;
 import org.chromium.ui.modaldialog.ModalDialogProperties.ButtonStyles;
 import org.chromium.ui.modelutil.PropertyModel;
+import org.chromium.ui.test.util.MockitoHelper;
 
 /** Tests for {@link NotificationPermissionRationaleDialogController}. */
 @RunWith(BaseRobolectricTestRunner.class)
@@ -56,7 +59,7 @@ public class NotificationPermissionRationaleDialogControllerTest {
         // Show the dialog, we don't dismiss it so the callback shouldn't be called.
         dialog.showRationaleUi(
                 result -> {
-                    assert false;
+                    throw new AssertionError();
                 });
 
         PropertyModel dialogModel = mModalDialogManager.getCurrentDialogForTest();
@@ -81,6 +84,7 @@ public class NotificationPermissionRationaleDialogControllerTest {
 
         // Check that the custom view contains the expected title and message.
         assertThat(dialogTitle, withText(R.string.notification_permission_rationale_dialog_title));
+        assertTrue(dialogTitle.isAccessibilityHeading());
         assertThat(
                 dialogMessage, withText(R.string.notification_permission_rationale_dialog_message));
     }
@@ -90,7 +94,7 @@ public class NotificationPermissionRationaleDialogControllerTest {
         NotificationPermissionRationaleDialogController dialog =
                 new NotificationPermissionRationaleDialogController(mContext, mModalDialogManager);
 
-        Callback<Integer> mockCallback = Mockito.mock(Callback.class);
+        Callback<Integer> mockCallback = MockitoHelper.mockCallback();
         dialog.showRationaleUi(mockCallback);
 
         PropertyModel dialogModel = mModalDialogManager.getCurrentDialogForTest();
@@ -110,7 +114,7 @@ public class NotificationPermissionRationaleDialogControllerTest {
         NotificationPermissionRationaleDialogController dialog =
                 new NotificationPermissionRationaleDialogController(mContext, mModalDialogManager);
 
-        Callback<Integer> mockCallback = Mockito.mock(Callback.class);
+        Callback<Integer> mockCallback = MockitoHelper.mockCallback();
         dialog.showRationaleUi(mockCallback);
 
         PropertyModel dialogModel = mModalDialogManager.getCurrentDialogForTest();
@@ -130,7 +134,7 @@ public class NotificationPermissionRationaleDialogControllerTest {
         NotificationPermissionRationaleDialogController dialog =
                 new NotificationPermissionRationaleDialogController(mContext, mModalDialogManager);
 
-        Callback<Integer> mockCallback = Mockito.mock(Callback.class);
+        Callback<Integer> mockCallback = MockitoHelper.mockCallback();
         dialog.showRationaleUi(mockCallback);
 
         PropertyModel dialogModel = mModalDialogManager.getCurrentDialogForTest();
@@ -150,7 +154,7 @@ public class NotificationPermissionRationaleDialogControllerTest {
         NotificationPermissionRationaleDialogController dialog =
                 new NotificationPermissionRationaleDialogController(mContext, mModalDialogManager);
 
-        Callback<Integer> mockCallback = Mockito.mock(Callback.class);
+        Callback<Integer> mockCallback = MockitoHelper.mockCallback();
         dialog.showRationaleUi(mockCallback);
 
         PropertyModel dialogModel = mModalDialogManager.getCurrentDialogForTest();
@@ -169,7 +173,7 @@ public class NotificationPermissionRationaleDialogControllerTest {
         NotificationPermissionRationaleDialogController dialog =
                 new NotificationPermissionRationaleDialogController(mContext, mModalDialogManager);
 
-        Callback<Integer> mockCallback = Mockito.mock(Callback.class);
+        Callback<Integer> mockCallback = MockitoHelper.mockCallback();
         dialog.showRationaleUi(mockCallback);
 
         PropertyModel dialogModel = mModalDialogManager.getCurrentDialogForTest();

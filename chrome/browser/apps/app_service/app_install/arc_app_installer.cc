@@ -4,14 +4,16 @@
 
 #include "chrome/browser/apps/app_service/app_install/arc_app_installer.h"
 
+#include <variant>
+
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/strcat.h"
+#include "base/strings/to_string.h"
 #include "chrome/browser/apps/app_service/app_install/app_install_types.h"
 #include "chromeos/ash/experiences/arc/mojom/app.mojom.h"
 #include "chromeos/ash/experiences/arc/session/arc_bridge_service.h"
 #include "chromeos/ash/experiences/arc/session/arc_service_manager.h"
 #include "chromeos/ash/experiences/arc/session/connection_holder.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 
 namespace apps {
 namespace {
@@ -41,7 +43,7 @@ ArcAppInstaller::~ArcAppInstaller() {
 void ArcAppInstaller::InstallApp(AppInstallSurface surface,
                                  AppInstallData data,
                                  ArcAppInstalledCallback callback) {
-  CHECK(absl::holds_alternative<AndroidAppInstallData>(data.app_type_data));
+  CHECK(std::holds_alternative<AndroidAppInstallData>(data.app_type_data));
 
   // Installation is only allowed from specific surfaces, while we build a
   // general-purpose installation method.

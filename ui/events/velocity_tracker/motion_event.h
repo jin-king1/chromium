@@ -17,6 +17,7 @@ namespace ui {
 
 // Abstract class for a generic motion-related event, patterned after that
 // subset of Android's MotionEvent API used in gesture detection.
+// https://developer.android.com/reference/android/view/MotionEvent
 class COMPONENT_EXPORT(VELOCITY_TRACKER) MotionEvent {
  public:
   // These values are persisted to logs. Entries should not be renumbered and
@@ -34,7 +35,9 @@ class COMPONENT_EXPORT(VELOCITY_TRACKER) MotionEvent {
     HOVER_MOVE = 9,
     BUTTON_PRESS = 10,
     BUTTON_RELEASE = 11,
-    kMaxValue = BUTTON_RELEASE
+    OUTSIDE = 12,
+    SCROLL = 13,
+    kMaxValue = SCROLL
   };
 
   enum class ToolType { UNKNOWN, FINGER, STYLUS, MOUSE, ERASER, LAST = ERASER };
@@ -76,6 +79,7 @@ class COMPONENT_EXPORT(VELOCITY_TRACKER) MotionEvent {
   virtual float GetRawY(size_t pointer_index) const = 0;
   virtual float GetTouchMajor(size_t pointer_index) const = 0;
   virtual float GetTouchMinor(size_t pointer_index) const = 0;
+  virtual bool HasNativeTouchMajor(size_t pointer_index) const = 0;
   virtual float GetOrientation(size_t pointer_index) const = 0;
   virtual float GetPressure(size_t pointer_index) const = 0;
   virtual float GetTiltX(size_t pointer_index) const = 0;
@@ -89,7 +93,7 @@ class COMPONENT_EXPORT(VELOCITY_TRACKER) MotionEvent {
   virtual base::TimeTicks GetLatestEventTime() const;
   // Returns the event time (in milliseconds) of first down in the input
   // sequence.
-  virtual base::TimeTicks GetDownTime() const;
+  virtual base::TimeTicks GetRawDownTime() const;
 
   virtual Classification GetClassification() const;
 
@@ -98,6 +102,8 @@ class COMPONENT_EXPORT(VELOCITY_TRACKER) MotionEvent {
   virtual base::TimeTicks GetHistoricalEventTime(size_t historical_index) const;
   virtual float GetHistoricalTouchMajor(size_t pointer_index,
                                         size_t historical_index) const;
+  virtual bool GetHistoricalHasNativeTouchMajor(size_t pointer_index,
+                                                size_t historical_index) const;
   virtual float GetHistoricalX(size_t pointer_index,
                                size_t historical_index) const;
   virtual float GetHistoricalY(size_t pointer_index,
@@ -105,6 +111,8 @@ class COMPONENT_EXPORT(VELOCITY_TRACKER) MotionEvent {
 
   // Get the id of the device which created the event. Currently Aura only.
   virtual int GetSourceDeviceId(size_t pointer_index) const;
+
+  virtual bool IsLatestEventTimeResampled() const;
 
   // Utility accessor methods for convenience.
   int GetPointerId() const { return GetPointerId(0); }
@@ -148,7 +156,7 @@ class COMPONENT_EXPORT(VELOCITY_TRACKER) MotionEvent {
   // They guarantee only that the returned type will reflect the same
   // data exposed by the MotionEvent interface; no guarantees are made that the
   // underlying implementation is identical to the source implementation.
-  std::unique_ptr<MotionEvent> Clone() const;
+  std::unique_ptr<MotionEvent> Clone(bool with_history = true) const;
   std::unique_ptr<MotionEvent> Cancel() const;
 };
 

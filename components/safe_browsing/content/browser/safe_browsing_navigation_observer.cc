@@ -58,7 +58,8 @@ void SafeBrowsingNavigationObserver::MaybeCreateForWebContents(
   if (FromWebContents(web_contents))
     return;
 
-  if (safe_browsing::SafeBrowsingNavigationObserverManager::IsEnabledAndReady(
+  if (observer_manager &&
+      safe_browsing::SafeBrowsingNavigationObserverManager::IsEnabledAndReady(
           prefs, has_safe_browsing_service)) {
     web_contents->SetUserData(
         kWebContentsUserDataKey,
@@ -134,10 +135,6 @@ void SafeBrowsingNavigationObserver::DidStartNavigation(
 
 void SafeBrowsingNavigationObserver::DidRedirectNavigation(
     content::NavigationHandle* navigation_handle) {
-  // Log whether a tel scheme was observed.
-  base::UmaHistogramBoolean(
-      "SafeBrowsing.NavigationObserver.RedirectForTelScheme",
-      navigation_handle->GetURL().SchemeIs(url::kTelScheme));
   // We should have already seen this navigation_handle in DidStartNavigation.
   if (navigation_handle_map_.find(navigation_handle) ==
       navigation_handle_map_.end()) {
@@ -158,7 +155,7 @@ void SafeBrowsingNavigationObserver::DidFinishNavigation(
   if ((navigation_handle->HasCommitted() || navigation_handle->IsDownload()) &&
       !navigation_handle->GetSocketAddress().address().empty()) {
     GetObserverManager()->RecordHostToIpMapping(
-        navigation_handle->GetURL().host(),
+        navigation_handle->GetURL().GetHost(),
         navigation_handle->GetSocketAddress().ToStringWithoutPort());
   }
 
@@ -339,6 +336,14 @@ void SafeBrowsingNavigationObserver::SetNavigationOutermostMainFrameIds(
       nav_event->initiator_outermost_main_frame_id =
           initiator_frame_host->GetOutermostMainFrame()->GetGlobalId();
     }
+  }
+}
+
+void SafeBrowsingNavigationObserver::RecordHostToIpMapping(
+    const std::string& host,
+    const std::string& ip) {
+  if (GetObserverManager()) {
+    GetObserverManager()->RecordHostToIpMapping(host, ip);
   }
 }
 

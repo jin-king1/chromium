@@ -25,14 +25,14 @@ namespace blink {
 namespace {
 
 void EmitWarningMayBeBlocked(const String& url, Document& document) {
-  String message =
-      "A parser-blocking, cross site (i.e. different eTLD+1) script, " + url +
-      ", is invoked via document.write. The network request for this script "
-      "MAY be blocked by the browser in this or a future page load due to poor "
-      "network connectivity. If blocked in this page load, it will be "
-      "confirmed in a subsequent console message. "
-      "See https://www.chromestatus.com/feature/5718547946799104 "
-      "for more details.";
+  String message = StrCat(
+      {"A parser-blocking, cross site (i.e. different eTLD+1) script, ", url,
+       ", is invoked via document.write. The network request for this script "
+       "MAY be blocked by the browser in this or a future page load due to "
+       "poor network connectivity. If blocked in this page load, it will be "
+       "confirmed in a subsequent console message. See "
+       "https://www.chromestatus.com/feature/5718547946799104 for more "
+       "details."});
   document.AddConsoleMessage(MakeGarbageCollected<ConsoleMessage>(
       mojom::ConsoleMessageSource::kJavaScript,
       mojom::ConsoleMessageLevel::kWarning, message));
@@ -40,23 +40,23 @@ void EmitWarningMayBeBlocked(const String& url, Document& document) {
 }
 
 void EmitWarningNotBlocked(const String& url, Document& document) {
-  String message =
-      "The parser-blocking, cross site (i.e. different eTLD+1) script, " + url +
-      ", invoked via document.write was NOT BLOCKED on this page load, but MAY "
-      "be blocked by the browser in future page loads with poor network "
-      "connectivity.";
+  String message = StrCat(
+      {"The parser-blocking, cross site (i.e. different eTLD+1) script, ", url,
+       ", invoked via document.write was NOT BLOCKED on this page load, but "
+       "MAY be blocked by the browser in future page loads with poor network "
+       "connectivity."});
   document.AddConsoleMessage(MakeGarbageCollected<ConsoleMessage>(
       mojom::ConsoleMessageSource::kJavaScript,
       mojom::ConsoleMessageLevel::kWarning, message));
 }
 
 void EmitErrorBlocked(const String& url, Document& document) {
-  String message =
-      "Network request for the parser-blocking, cross site (i.e. different "
-      "eTLD+1) script, " +
-      url +
-      ", invoked via document.write was BLOCKED by the browser due to poor "
-      "network connectivity. ";
+  String message = StrCat(
+      {"Network request for the parser-blocking, cross site (i.e. different "
+       "eTLD+1) script, ",
+       url,
+       ", invoked via document.write was BLOCKED by the browser due to poor "
+       "network connectivity. "});
   document.AddConsoleMessage(MakeGarbageCollected<ConsoleMessage>(
       mojom::ConsoleMessageSource::kIntervention,
       mojom::ConsoleMessageLevel::kError, message));
@@ -127,8 +127,9 @@ bool MaybeDisallowFetchForDocWrittenScript(FetchParameters& params,
 
   probe::DocumentWriteFetchScript(&document);
 
-  if (!params.Url().ProtocolIsInHTTPFamily())
+  if (!params.Url().ProtocolIsInHttpFamily()) {
     return false;
+  }
 
   // Avoid blocking same origin scripts, as they may be used to render main
   // page content, whereas cross-origin scripts inserted via document.write
@@ -216,7 +217,7 @@ void PossiblyFetchBlockedDocWriteScript(
   ScriptResource::Fetch(params, element_document.Fetcher(), nullptr,
                         context->GetIsolate(), ScriptResource::kNoStreaming,
                         kNoCompileHintsProducer, kNoCompileHintsConsumer,
-                        v8_compile_hints::MagicCommentMode::kNever);
+                        v8_compile_hints::MagicCommentMode::kNone);
 }
 
 }  // namespace blink

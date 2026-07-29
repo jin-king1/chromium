@@ -10,14 +10,16 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
 #include "base/barrier_closure.h"
+#include "base/byte_size.h"
 #include "base/command_line.h"
-#include "base/containers/contains.h"
+#include "base/containers/flat_map.h"
 #include "base/files/file.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
@@ -32,6 +34,7 @@
 #include "base/run_loop.h"
 #include "base/strings/escape.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
@@ -42,6 +45,7 @@
 #include "base/test/gtest_util.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/mock_entropy_provider.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/simple_test_clock.h"
 #include "base/test/task_environment.h"
@@ -50,18 +54,23 @@
 #include "base/time/default_clock.h"
 #include "base/time/default_tick_clock.h"
 #include "base/time/time.h"
+#include "base/types/expected.h"
+#include "base/values.h"
 #include "build/build_config.h"
 #include "components/content_settings/core/common/content_settings.h"
 #include "components/content_settings/core/common/content_settings_pattern.h"
 #include "components/content_settings/core/common/content_settings_types.h"
+#include "components/enterprise/buildflags/buildflags.h"
 #include "components/network_session_configurator/browser/network_session_configurator.h"
 #include "components/network_session_configurator/common/network_switches.h"
 #include "components/prefs/testing_pref_service.h"
-#include "crypto/scoped_mock_unexportable_key_provider.h"
+#include "components/variations/net/variations_http_headers.h"
+#include "crypto/scoped_fake_unexportable_key_provider.h"
 #include "crypto/sha2.h"
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "mojo/public/cpp/system/data_pipe_utils.h"
 #include "mojo/public/cpp/system/functions.h"
+#include "net/base/address_family.h"
 #include "net/base/cache_type.h"
 #include "net/base/features.h"
 #include "net/base/hash_value.h"
@@ -73,7 +82,9 @@
 #include "net/base/net_errors.h"
 #include "net/base/network_anonymization_key.h"
 #include "net/base/network_change_notifier.h"
+#include "net/base/network_handle.h"
 #include "net/base/network_isolation_key.h"
+#include "net/base/pickle.h"
 #include "net/base/proxy_chain.h"
 #include "net/base/proxy_server.h"
 #include "net/base/proxy_string_util.h"
@@ -86,12 +97,17 @@
 #include "net/cookies/canonical_cookie.h"
 #include "net/cookies/cookie_access_result.h"
 #include "net/cookies/cookie_inclusion_status.h"
+#include "net/cookies/cookie_monster_store_test.h"
 #include "net/cookies/cookie_options.h"
 #include "net/cookies/cookie_setting_override.h"
 #include "net/cookies/cookie_store.h"
 #include "net/cookies/cookie_store_test_callbacks.h"
 #include "net/cookies/cookie_util.h"
 #include "net/cookies/site_for_cookies.h"
+#include "net/reporting/reporting_policy.h"
+#include "services/network/devtools_durable_msg_collector.h"
+#include "services/network/public/cpp/permissions_policy/permissions_policy.h"
+#include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom-shared.h"
 
 #if BUILDFLAG(ENABLE_DEVICE_BOUND_SESSIONS)
 #include "net/device_bound_sessions/session_service.h"
@@ -101,6 +117,8 @@
 #include "net/disk_cache/disk_cache.h"
 #include "net/disk_cache/memory/mem_backend_impl.h"
 #include "net/dns/context_host_resolver.h"
+#include "net/dns/dns_config.h"
+#include "net/dns/dns_session.h"
 #include "net/dns/dns_test_util.h"
 #include "net/dns/host_resolver_manager.h"
 #include "net/dns/mock_host_resolver.h"
@@ -111,6 +129,7 @@
 #include "net/dns/resolve_context.h"
 #include "net/http/http_auth.h"
 #include "net/http/http_cache.h"
+#include "net/http/http_cache_invalidation_pickle_traits.h"
 #include "net/http/http_network_session.h"
 #include "net/http/http_request_headers.h"
 #include "net/http/http_server_properties_manager.h"
@@ -124,6 +143,8 @@
 #include "net/http/mock_http_cache.h"
 #include "net/http/transport_security_state.h"
 #include "net/http/transport_security_state_test_util.h"
+#include "net/log/net_log_source_type.h"
+#include "net/log/test_net_log.h"
 #include "net/nqe/network_quality_estimator_test_util.h"
 #include "net/proxy_resolution/configured_proxy_resolution_service.h"
 #include "net/proxy_resolution/proxy_config.h"
@@ -140,7 +161,6 @@
 #include "net/test/embedded_test_server/embedded_test_server_connection_listener.h"
 #include "net/test/gtest_util.h"
 #include "net/test/scoped_mutually_exclusive_feature_list.h"
-#include "net/test/spawned_test_server/spawned_test_server.h"
 #include "net/test/test_data_directory.h"
 #include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 #include "net/url_request/referrer_policy.h"
@@ -152,11 +172,13 @@
 #include "services/network/net_log_exporter.h"
 #include "services/network/network_qualities_pref_delegate.h"
 #include "services/network/network_service.h"
+#include "services/network/public/cpp/constants.h"
 #include "services/network/public/cpp/features.h"
 #include "services/network/public/cpp/network_service_buildflags.h"
 #include "services/network/public/cpp/resolve_host_client_base.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/mojom/clear_data_filter.mojom.h"
+#include "services/network/public/mojom/connection_change_observer_client.mojom.h"
 #include "services/network/public/mojom/cookie_manager.mojom.h"
 #include "services/network/public/mojom/fetch_api.mojom-shared.h"
 #include "services/network/public/mojom/host_resolver.mojom.h"
@@ -164,9 +186,11 @@
 #include "services/network/public/mojom/network_context.mojom.h"
 #include "services/network/public/mojom/network_service.mojom.h"
 #include "services/network/public/mojom/proxy_config.mojom.h"
+#include "services/network/public/mojom/reporting_service.mojom.h"
 #include "services/network/public/mojom/url_loader.mojom-shared.h"
 #include "services/network/public/mojom/url_loader_factory.mojom-forward.h"
 #include "services/network/test/fake_test_cert_verifier_params_factory.h"
+#include "services/network/test/test_network_context_client.h"
 #include "services/network/test/test_url_loader_client.h"
 #include "services/network/test/test_utils.h"
 #include "services/network/test/udp_socket_test_util.h"
@@ -186,6 +210,8 @@
 #include "net/network_error_logging/network_error_logging_service.h"
 #include "net/reporting/reporting_cache.h"
 #include "net/reporting/reporting_context.h"
+#include "net/reporting/reporting_delivery_agent.h"
+#include "net/reporting/reporting_policy.h"
 #include "net/reporting/reporting_report.h"
 #include "net/reporting/reporting_service.h"
 #include "net/reporting/reporting_test_util.h"
@@ -201,7 +227,7 @@
 #endif  // BUILDFLAG(IS_P2P_ENABLED)
 
 #if BUILDFLAG(IS_ANDROID)
-#include "base/android/build_info.h"
+#include "base/android/android_info.h"
 #endif  // BUILDFLAG(IS_ANDROID)
 
 namespace network {
@@ -226,8 +252,6 @@ constexpr char kFrameOriginForFetchRequest[] = "https://xyz.com";
 constexpr char kSecFetchStorageAccess[] = "Sec-Fetch-Storage-Access";
 constexpr char kStorageAccessStatusHistogram[] =
     "API.StorageAccessHeader.StorageAccessStatusOutcome";
-constexpr char kSecFetchStorageAccessHistogram[] =
-    "API.StorageAccessHeader.SecFetchStorageAccessOutcome";
 
 #if BUILDFLAG(ENABLE_REPORTING)
 const base::FilePath::CharType kFilename[] =
@@ -240,13 +264,16 @@ const std::string kGroup_ = "group";
 const std::string kType_ = "type";
 const std::optional<base::UnguessableToken> kReportingSource_ =
     base::UnguessableToken::Create();
-const net::NetworkAnonymizationKey kNak_ =
-    net::NetworkAnonymizationKey::CreateTransient();
+const GURL kConnectionAllowlistContextUrl_ =
+    GURL("https://connection.allowlist/document.html");
 #endif  // BUILDFLAG(ENABLE_REPORTING)
 
-void StoreValue(base::Value::Dict* result,
+const net::NetworkAnonymizationKey kNak_ =
+    net::NetworkAnonymizationKey::CreateTransient();
+
+void StoreValue(base::DictValue* result,
                 base::OnceClosure callback,
-                base::Value::Dict value) {
+                base::DictValue value) {
   *result = std::move(value);
   std::move(callback).Run();
 }
@@ -299,7 +326,7 @@ std::unique_ptr<TestURLLoaderClient> FetchRequest(
     const ResourceRequest& request,
     NetworkContext* network_context,
     int url_loader_options = mojom::kURLLoadOptionNone,
-    int process_id = mojom::kBrowserProcessId,
+    OriginatingProcessId process_id = OriginatingProcessId::browser(),
     mojom::URLLoaderFactoryParamsPtr params = nullptr) {
   mojo::Remote<mojom::URLLoaderFactory> loader_factory;
   if (!params) {
@@ -345,12 +372,23 @@ disk_cache::Backend* WaitForCacheBackend(NetworkContext& network_context) {
                               ->GetCache();
   EXPECT_TRUE(cache);
 
-  net::TestGetBackendCompletionCallback callback;
-  net::HttpCache::GetBackendResult result =
-      cache->GetBackend(callback.callback());
-  result = callback.GetResult(result);
-  EXPECT_EQ(net::OK, result.first);
-  return result.second;
+  disk_cache::Backend* backend = cache->GetCurrentBackend();
+  if (!backend) {
+    base::test::TestFuture<disk_cache::Backend*> future;
+    auto [rv, got_backend] = cache->GetBackend(base::BindOnce(
+        [](base::OnceCallback<void(disk_cache::Backend*)> cb,
+           net::HttpCache::GetBackendResult result) {
+          std::move(cb).Run(result.second);
+        },
+        future.GetCallback()));
+    if (rv == net::OK) {
+      backend = got_backend;
+    } else {
+      backend = future.Get();
+    }
+  }
+  EXPECT_TRUE(backend);
+  return backend;
 }
 
 // proxy_resolver::mojom::ProxyResolverFactory that captures the most recent PAC
@@ -505,7 +543,8 @@ class HostResolverFactory final : public net::HostResolver::Factory {
   std::unique_ptr<net::HostResolver> CreateResolver(
       net::HostResolverManager* manager,
       std::string_view host_mapping_rules,
-      bool enable_caching) override {
+      bool enable_caching,
+      bool enable_stale) override {
     DCHECK(resolver_);
     return std::move(resolver_);
   }
@@ -515,7 +554,8 @@ class HostResolverFactory final : public net::HostResolver::Factory {
       net::NetLog* net_log,
       const net::HostResolver::ManagerOptions& options,
       std::string_view host_mapping_rules,
-      bool enable_caching) override {
+      bool enable_caching,
+      bool enable_stale) override {
     NOTREACHED();
   }
 
@@ -532,8 +572,14 @@ class NetworkContextTest : public testing::Test {
                           time_source),
         network_change_notifier_(
             net::NetworkChangeNotifier::CreateMockIfNeeded()),
-        network_service_(NetworkService::CreateForTesting()) {}
-  ~NetworkContextTest() override {}
+        network_service_(NetworkService::CreateForTesting()) {
+    // TODO(crbug.com/382291442): Remove features when launched.
+    features_.InitWithFeatures(
+        {network::features::kPopulatePermissionsPolicyOnRequest,
+         network::features::kStorageAccessHeadersRespectPermissionsPolicy},
+        {});
+  }
+  ~NetworkContextTest() override = default;
 
   std::unique_ptr<NetworkContext> CreateContextWithParams(
       mojom::NetworkContextParamsPtr context_params
@@ -542,6 +588,25 @@ class NetworkContextTest : public testing::Test {
       std::unique_ptr<net::ReportingService> reporting_service = nullptr
 #endif
   ) {
+    NetworkContext::OnURLRequestContextBuilderConfiguredCallback callback;
+#if BUILDFLAG(ENABLE_REPORTING)
+    if (reporting_service) {
+      callback = base::BindOnce(
+          [](std::unique_ptr<net::ReportingService> service,
+             net::URLRequestContextBuilder* builder) {
+            builder->set_reporting_service(std::move(service));
+          },
+          std::move(reporting_service));
+    }
+#endif
+    return CreateContextWithBuilderCallback(std::move(context_params),
+                                            std::move(callback));
+  }
+
+  std::unique_ptr<NetworkContext> CreateContextWithBuilderCallback(
+      mojom::NetworkContextParamsPtr context_params,
+      NetworkContext::OnURLRequestContextBuilderConfiguredCallback
+          on_url_request_context_builder_configured) {
     // Use a dummy CertVerifier that always passes cert verification, since
     // these unittests don't need to test CertVerifier behavior.
     DCHECK(!context_params->cert_verifier_params);
@@ -552,11 +617,7 @@ class NetworkContextTest : public testing::Test {
         network_service_.get(),
         network_context_remote_.BindNewPipeAndPassReceiver(),
         std::move(context_params),
-        base::BindLambdaForTesting([&](net::URLRequestContextBuilder* builder) {
-#if BUILDFLAG(ENABLE_REPORTING)
-          builder->set_reporting_service(std::move(reporting_service));
-#endif
-        }));
+        std::move(on_url_request_context_builder_configured));
   }
 
   // Searches through |backend|'s stats to discover its type. Only supports
@@ -601,9 +662,8 @@ class NetworkContextTest : public testing::Test {
     return context->url_request_context()
         ->http_transaction_factory()
         ->GetSession()
-        ->GetSocketPool(
-            net::HttpNetworkSession::SocketPoolType::NORMAL_SOCKET_POOL,
-            net::ProxyChain::Direct())
+        ->GetSocketPool(net::HttpNetworkSession::SocketPoolType::kNormal,
+                        net::ProxyChain::Direct())
         ->GetInfoAsValue("", "")
         .GetDict()
         .FindInt(name)
@@ -634,36 +694,32 @@ class NetworkContextTest : public testing::Test {
   int GetSocketCountFromClientSocketPool(
       NetworkContext* context,
       const net::ClientSocketPool::GroupId& group) {
-    base::Value::Dict pool_info =
+    base::DictValue pool_info =
         context->url_request_context()
             ->http_transaction_factory()
             ->GetSession()
-            ->GetSocketPool(
-                net::HttpNetworkSession::SocketPoolType::NORMAL_SOCKET_POOL,
-                net::ProxyChain::Direct())
+            ->GetSocketPool(net::HttpNetworkSession::SocketPoolType::kNormal,
+                            net::ProxyChain::Direct())
             ->GetInfoAsValue("", "")
             .TakeDict();
 
     // "groups" dictionary should always exist.
-    const base::Value::Dict& groups_dict = *pool_info.FindDict("groups");
+    const base::DictValue& groups_dict = *pool_info.FindDict("groups");
 
     // The dictionary for the requested group may not exist.
-    const base::Value::Dict* group_dict =
-        groups_dict.FindDict(group.ToString());
+    const base::DictValue* group_dict = groups_dict.FindDict(group.ToString());
     if (!group_dict) {
       return 0;
     }
 
     int count = group_dict->FindInt("active_socket_count").value_or(0);
 
-    const base::Value::List* idle_sockets =
-        group_dict->FindList("idle_sockets");
+    const base::ListValue* idle_sockets = group_dict->FindList("idle_sockets");
     if (idle_sockets) {
       count += idle_sockets->size();
     }
 
-    const base::Value::List* connect_jobs =
-        group_dict->FindList("connect_jobs");
+    const base::ListValue* connect_jobs = group_dict->FindList("connect_jobs");
     if (idle_sockets) {
       count += connect_jobs->size();
     }
@@ -693,6 +749,28 @@ class NetworkContextTest : public testing::Test {
                                          std::string("5"), nullptr);
   }
 
+  std::unique_ptr<network::PermissionsPolicy>
+  CreateStorageAccessPermissionsPolicy(const GURL& url,
+                                       bool matches_all_origins = false) {
+    return PermissionsPolicy::CreateFromParentPolicy(
+        /*parent_policy=*/nullptr,
+        /*header_policy=*/
+        {{{mojom::PermissionsPolicyFeature::kStorageAccessAPI,
+           /*allowed_origins=*/{},
+           /*self_if_matches=*/std::nullopt, matches_all_origins,
+           /*matches_opaque_src=*/false}}},
+        /*container_policy=*/{}, url::Origin::Create(url));
+  }
+
+  mojom::IdAndAllowlistedPatternsPtr CreateIdAndAllowlistedPatterns(
+      const base::UnguessableToken& nonce) {
+    auto nonce_and_allowlisted_urls = mojom::IdAndAllowlistedPatterns::New();
+    nonce_and_allowlisted_urls->network_restrictions_id = nonce;
+    nonce_and_allowlisted_urls->allowlists.enforced =
+        network::ConnectionAllowlist();
+    return nonce_and_allowlisted_urls;
+  }
+
  protected:
   base::test::TaskEnvironment task_environment_;
   std::unique_ptr<net::NetworkChangeNotifier> network_change_notifier_;
@@ -701,6 +779,9 @@ class NetworkContextTest : public testing::Test {
   // NetworkContext. Not strictly needed, but seems best to mimic real-world
   // usage.
   mojo::Remote<mojom::NetworkContext> network_context_remote_;
+
+ private:
+  base::test::ScopedFeatureList features_;
 };
 
 class NetworkContextTestWithMockTime : public NetworkContextTest {
@@ -725,7 +806,7 @@ TEST_F(NetworkContextTest, DestroyContextWithLiveRequest) {
   mojo::Remote<mojom::URLLoaderFactory> loader_factory;
   mojom::URLLoaderFactoryParamsPtr params =
       mojom::URLLoaderFactoryParams::New();
-  params->process_id = mojom::kBrowserProcessId;
+  params->process_id = OriginatingProcessId::browser();
   params->is_orb_enabled = false;
   network_context->CreateURLLoaderFactory(
       loader_factory.BindNewPipeAndPassReceiver(), std::move(params));
@@ -850,8 +931,8 @@ TEST_F(NetworkContextTest, EnableBrotli) {
 // NetworkContext properly targets that network.
 TEST_F(NetworkContextTest, NetworkBoundNetworkContext) {
 #if BUILDFLAG(IS_ANDROID)
-  if (base::android::BuildInfo::GetInstance()->sdk_int() <
-      base::android::SDK_VERSION_MARSHMALLOW) {
+  if (base::android::android_info::sdk_int() <
+      base::android::android_info::SDK_VERSION_MARSHMALLOW) {
     GTEST_SKIP()
         << "bound_network is supported starting from Android Marshmallow";
   }
@@ -890,8 +971,8 @@ TEST_F(NetworkContextTest, NetworkBoundNetworkContext) {
 // correctly target that network.
 TEST_F(NetworkContextTest, NetworkBoundURLLoaderFactory) {
 #if BUILDFLAG(IS_ANDROID)
-  if (base::android::BuildInfo::GetInstance()->sdk_int() <
-      base::android::SDK_VERSION_MARSHMALLOW) {
+  if (base::android::android_info::sdk_int() <
+      base::android::android_info::SDK_VERSION_MARSHMALLOW) {
     GTEST_SKIP()
         << "bound_network is supported starting from Android Marshmallow";
   }
@@ -918,7 +999,7 @@ TEST_F(NetworkContextTest, NetworkBoundURLLoaderFactory) {
       mojom::URLLoaderFactoryParams::New();
   // This needs to be different than mojom::kInvalidProcessId to stop Mojo
   // from yelling.
-  params->process_id = mojom::kBrowserProcessId;
+  params->process_id = OriginatingProcessId::browser();
   params->disable_web_security = true;
   network_context->CreateURLLoaderFactory(
       loader_factory.BindNewPipeAndPassReceiver(), std::move(params));
@@ -955,7 +1036,7 @@ TEST_F(NetworkContextTest, UnhandedProtocols) {
     mojo::Remote<mojom::URLLoaderFactory> loader_factory;
     mojom::URLLoaderFactoryParamsPtr params =
         mojom::URLLoaderFactoryParams::New();
-    params->process_id = mojom::kBrowserProcessId;
+    params->process_id = OriginatingProcessId::browser();
     params->is_orb_enabled = false;
     network_context->CreateURLLoaderFactory(
         loader_factory.BindNewPipeAndPassReceiver(), std::move(params));
@@ -1034,7 +1115,7 @@ TEST_F(NetworkContextTest, QueueReport) {
       net::ReportingService::CreateForTesting(std::move(reporting_context)));
 
   network_context->QueueReport(kType_, kGroup_, kUrl_, kReportingSource_, kNak_,
-                               base::Value::Dict());
+                               base::DictValue());
 
   std::vector<raw_ptr<const net::ReportingReport, VectorExperimental>> reports =
       network_context->url_request_context()->reporting_service()->GetReports();
@@ -1058,7 +1139,7 @@ TEST_F(NetworkContextTest, QueueEnterpriseReport) {
       net::ReportingService::CreateForTesting(std::move(reporting_context)));
 
   network_context->QueueEnterpriseReport(kType_, kGroup_, kUrl_,
-                                         base::Value::Dict());
+                                         base::DictValue());
 
   std::vector<raw_ptr<const net::ReportingReport, VectorExperimental>> reports =
       network_context->url_request_context()->reporting_service()->GetReports();
@@ -1070,138 +1151,265 @@ TEST_F(NetworkContextTest, QueueEnterpriseReport) {
   EXPECT_EQ(net::ReportingTargetType::kEnterprise, reports[0]->target_type);
 }
 
-TEST_F(NetworkContextTest, QueueReportAfterNetworkRevocation) {
-  auto reporting_context = std::make_unique<net::TestReportingContext>(
-      base::DefaultClock::GetInstance(), base::DefaultTickClock::GetInstance(),
-      net::ReportingPolicy());
+#if BUILDFLAG(ENABLE_REPORTING)
+TEST_F(NetworkContextTest, AddVariationsHeadersToReportingRequest) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      features::kReportingApiEnableVariationsHeaders);
+
+  auto variations_headers = variations::mojom::VariationsHeaders::New();
+  variations_headers->headers_map[variations::mojom::GoogleWebVisibility::ANY] =
+      "abc";
+  variations_headers
+      ->headers_map[variations::mojom::GoogleWebVisibility::FIRST_PARTY] =
+      "abc";
+
   mojom::NetworkContextParamsPtr params =
       CreateNetworkContextParamsForTesting();
-  params->user_agent = kUserAgent_;
-  std::unique_ptr<NetworkContext> network_context = CreateContextWithParams(
-      std::move(params),
-      net::ReportingService::CreateForTesting(std::move(reporting_context)));
+  params->file_paths->http_cache_directory =
+      base::FilePath(FILE_PATH_LITERAL("cache"));
+  params->initial_variations_headers = std::move(variations_headers);
 
-  // Create 2 nonces. Only one will have its network access revoked.
-  const base::UnguessableToken revoked_nonce = base::UnguessableToken::Create();
-  const base::UnguessableToken allowed_nonce = base::UnguessableToken::Create();
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(std::move(params));
 
-  // Revoke untrusted network access for the nonce.
-  base::test::TestFuture<void> revoked;
-  network_context->RevokeNetworkForNonces(
-      {revoked_nonce}, base::BindOnce(revoked.GetCallback()));
-  EXPECT_TRUE(revoked.Wait());
-  EXPECT_FALSE(
-      network_context->IsNetworkForNonceAndUrlAllowed(revoked_nonce, kUrl_));
-  EXPECT_TRUE(
-      network_context->IsNetworkForNonceAndUrlAllowed(allowed_nonce, kUrl_));
+  // The variations header is only added for Google origins.
+  GURL google_url("https://www.google.com");
+  auto request = network_context->url_request_context()->CreateRequest(
+      google_url, net::DEFAULT_PRIORITY, nullptr, TRAFFIC_ANNOTATION_FOR_TESTS,
+      net::handles::kInvalidNetworkHandle);
 
-  // Create the 2 NetworkAnonymizationKey(s).
-  const auto site = net::SchemefulSite(kUrl_);
-  net::NetworkAnonymizationKey revoked_anonymization_key =
-      net::NetworkAnonymizationKey::CreateFromFrameSite(site, site,
-                                                        revoked_nonce);
-  net::NetworkAnonymizationKey allowed_anonymization_key =
-      net::NetworkAnonymizationKey::CreateFromFrameSite(site, site,
-                                                        allowed_nonce);
+  network_context->AddVariationsHeadersToReportingRequest(request.get());
 
-  // The report with the revoked key should not be queued after network cutoff,
-  // but the report with the still allowed key should.
-  const std::string revoked_type = "revoked_type";
-  const std::string allowed_type = "allowed_type";
-  network_context->QueueReport(revoked_type, kGroup_, kUrl_, kReportingSource_,
-                               revoked_anonymization_key, base::Value::Dict());
-  network_context->QueueReport(allowed_type, kGroup_, kUrl_, kReportingSource_,
-                               allowed_anonymization_key, base::Value::Dict());
-  std::vector<raw_ptr<const net::ReportingReport, VectorExperimental>> reports =
-      network_context->url_request_context()->reporting_service()->GetReports();
-  ASSERT_EQ(1u, reports.size());
-  EXPECT_EQ(allowed_type, reports[0]->type);
+  std::optional<std::string> value =
+      request->extra_request_headers().GetHeader("X-Client-Data");
+  EXPECT_TRUE(value.has_value());
+  EXPECT_EQ("abc", *value);
 }
 
-TEST_F(NetworkContextTest,
-       QueueSignedExchangeReportReportAfterNetworkRevocation) {
-  base::test::ScopedFeatureList scoped_feature_list_;
-  scoped_feature_list_.InitAndEnableFeature(
-      net::features::kPartitionConnectionsByNetworkIsolationKey);
+TEST_F(NetworkContextTest, AddVariationsHeadersToReportingRequestIncognito) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      features::kReportingApiEnableVariationsHeaders);
 
-  auto reporting_context = std::make_unique<net::TestReportingContext>(
-      base::DefaultClock::GetInstance(), base::DefaultTickClock::GetInstance(),
-      net::ReportingPolicy());
+  auto variations_headers = variations::mojom::VariationsHeaders::New();
+  variations_headers->headers_map[variations::mojom::GoogleWebVisibility::ANY] =
+      "abc";
+  variations_headers
+      ->headers_map[variations::mojom::GoogleWebVisibility::FIRST_PARTY] =
+      "abc";
+
   mojom::NetworkContextParamsPtr params =
       CreateNetworkContextParamsForTesting();
-  params->user_agent = kUserAgent_;
+  params->initial_variations_headers = std::move(variations_headers);
+  // No http_cache_directory means incognito according to IsIncognitoFromParams.
+  params->file_paths = mojom::NetworkContextFilePaths::New();
 
-  // Ensure that a Nel store is created. This is required for reports to send
-  // out.
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(std::move(params));
+
+  GURL google_url("https://www.google.com");
+  auto request = network_context->url_request_context()->CreateRequest(
+      google_url, net::DEFAULT_PRIORITY, nullptr, TRAFFIC_ANNOTATION_FOR_TESTS,
+      net::handles::kInvalidNetworkHandle);
+
+  network_context->AddVariationsHeadersToReportingRequest(request.get());
+
+  std::optional<std::string> value =
+      request->extra_request_headers().GetHeader("X-Client-Data");
+  // In incognito, the header should not be added.
+  EXPECT_FALSE(value.has_value());
+}
+
+class StubHttpTransaction : public net::HttpTransaction {
+ public:
+  explicit StubHttpTransaction(std::string* captured_headers,
+                               base::RepeatingClosure on_start_callback)
+      : captured_headers_(captured_headers),
+        on_start_callback_(std::move(on_start_callback)) {}
+  ~StubHttpTransaction() override = default;
+
+  int Start(const net::HttpRequestInfo* request_info,
+            net::CompletionOnceCallback callback,
+            const net::NetLogWithSource& net_log) override {
+    if (captured_headers_) {
+      *captured_headers_ = request_info->extra_headers.ToString();
+    }
+    if (on_start_callback_) {
+      on_start_callback_.Run();
+    }
+    return net::ERR_FAILED;
+  }
+  int RestartIgnoringLastError(net::CompletionOnceCallback callback) override {
+    return net::ERR_FAILED;
+  }
+  int RestartWithCertificate(
+      scoped_refptr<net::X509Certificate> client_cert,
+      scoped_refptr<net::SSLPrivateKey> client_private_key,
+      net::CompletionOnceCallback callback) override {
+    return net::ERR_FAILED;
+  }
+  int RestartWithAuth(const net::AuthCredentials& credentials,
+                      net::CompletionOnceCallback callback) override {
+    return net::ERR_FAILED;
+  }
+  bool IsReadyToRestartForAuth() override { return false; }
+  int Read(net::IOBuffer* buf,
+           int buf_len,
+           net::CompletionOnceCallback callback) override {
+    return net::ERR_FAILED;
+  }
+  void StopCaching() override {}
+  base::ByteSize GetTotalReceivedBytes() const override {
+    return base::ByteSize();
+  }
+  base::ByteSize GetTotalSentBytes() const override { return base::ByteSize(); }
+  base::ByteSize GetReceivedBodyBytes() const override {
+    return base::ByteSize();
+  }
+  void DoneReading() override {}
+  const net::HttpResponseInfo* GetResponseInfo() const override {
+    return nullptr;
+  }
+  net::LoadState GetLoadState() const override { return net::LOAD_STATE_IDLE; }
+  bool GetLoadTimingInfo(net::LoadTimingInfo* load_timing_info) const override {
+    return false;
+  }
+  void PopulateLoadTimingInternalInfo(
+      net::LoadTimingInternalInfo* load_timing_internal_info) const override {}
+  bool GetRemoteEndpoint(net::IPEndPoint* endpoint) const override {
+    return false;
+  }
+  void PopulateNetErrorDetails(net::NetErrorDetails* details) const override {}
+  void SetPriority(net::RequestPriority priority) override {}
+  void SetWebSocketHandshakeStreamCreateHelper(
+      net::WebSocketHandshakeStreamBase::CreateHelper* create_helper) override {
+  }
+  void SetConnectedCallback(const ConnectedCallback& callback) override {}
+  void SetRequestHeadersCallback(
+      net::RequestHeadersCallback callback) override {}
+  void SetResponseHeadersCallback(
+      net::ResponseHeadersCallback callback) override {}
+  void SetEarlyResponseHeadersCallback(
+      net::ResponseHeadersCallback callback) override {}
+  void SetModifyRequestHeadersCallback(
+      base::RepeatingCallback<void(net::HttpRequestHeaders*)> callback)
+      override {}
+  void SetIsSharedDictionaryReadAllowedCallback(
+      base::RepeatingCallback<bool()> callback) override {}
+  net::ConnectionAttempts GetConnectionAttempts() const override { return {}; }
+  void CloseConnectionOnDestruction() override {}
+
+ private:
+  raw_ptr<std::string> captured_headers_;
+  base::RepeatingClosure on_start_callback_;
+};
+
+class StubHttpTransactionFactory : public net::HttpTransactionFactory {
+ public:
+  explicit StubHttpTransactionFactory(std::string* captured_headers,
+                                      net::HttpNetworkSession* session,
+                                      base::RepeatingClosure on_start_callback)
+      : captured_headers_(captured_headers),
+        session_(session),
+        on_start_callback_(std::move(on_start_callback)) {}
+  ~StubHttpTransactionFactory() override = default;
+
+  std::unique_ptr<net::HttpTransaction> CreateTransaction(
+      net::RequestPriority priority) override {
+    return std::make_unique<StubHttpTransaction>(captured_headers_,
+                                                 on_start_callback_);
+  }
+  net::HttpCache* GetCache() override { return nullptr; }
+  net::HttpNetworkSession* GetSession() override { return session_; }
+
+ private:
+  raw_ptr<std::string> captured_headers_;
+  raw_ptr<net::HttpNetworkSession> session_;
+  base::RepeatingClosure on_start_callback_;
+};
+
+TEST_F(NetworkContextTestWithMockTime,
+       ReportingUploadIncludesVariationsHeaderIntegration) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      {features::kReporting, features::kReportingApiEnableVariationsHeaders,
+       net::features::kPartitionConnectionsByNetworkIsolationKey},
+      {});
+
+  auto variations_headers = variations::mojom::VariationsHeaders::New();
+  variations_headers->headers_map[variations::mojom::GoogleWebVisibility::ANY] =
+      "abc";
+  variations_headers
+      ->headers_map[variations::mojom::GoogleWebVisibility::FIRST_PARTY] =
+      "abc";
+
+  mojom::NetworkContextParamsPtr params =
+      CreateNetworkContextParamsForTesting();
+  params->initial_variations_headers = std::move(variations_headers);
+  params->http_cache_enabled = false;
+  params->skip_reporting_send_permission_check = true;
   base::ScopedTempDir temp_dir;
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
-  base::FilePath reporting_and_nel_store = temp_dir.GetPath().Append(kFilename);
   params->file_paths = mojom::NetworkContextFilePaths::New();
-  params->file_paths->data_directory = reporting_and_nel_store.DirName();
-  params->file_paths->reporting_and_nel_store_database_name =
-      reporting_and_nel_store.BaseName();
+  params->file_paths->http_cache_directory = temp_dir.GetPath();
 
-  std::unique_ptr<NetworkContext> network_context = CreateContextWithParams(
-      std::move(params),
-      net::ReportingService::CreateForTesting(std::move(reporting_context)));
+  std::string captured_headers;
+  base::RunLoop run_loop;
 
-  // Create 2 nonces. Only one will have its network access revoked.
-  const base::UnguessableToken revoked_nonce = base::UnguessableToken::Create();
-  const base::UnguessableToken allowed_nonce = base::UnguessableToken::Create();
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithBuilderCallback(
+          std::move(params),
+          base::BindLambdaForTesting(
+              [&](net::URLRequestContextBuilder* builder) {
+                builder->SetWrapHttpNetworkLayerCallback(base::BindOnce(
+                    [](std::string* headers_ptr,
+                       base::RepeatingClosure callback,
+                       std::unique_ptr<net::HttpNetworkLayer> network_layer)
+                        -> std::unique_ptr<net::HttpTransactionFactory> {
+                      return std::make_unique<StubHttpTransactionFactory>(
+                          headers_ptr, network_layer->GetSession(),
+                          std::move(callback));
+                    },
+                    &captured_headers, run_loop.QuitClosure()));
+              }));
 
-  // Revoke untrusted network access for the nonce.
-  base::test::TestFuture<void> revoked;
-  network_context->RevokeNetworkForNonces(
-      {revoked_nonce}, base::BindOnce(revoked.GetCallback()));
-  EXPECT_TRUE(revoked.Wait());
-  EXPECT_FALSE(
-      network_context->IsNetworkForNonceAndUrlAllowed(revoked_nonce, kUrl_));
+  mojo::PendingRemote<mojom::NetworkContextClient> client_remote;
+  TestNetworkContextClient client(
+      client_remote.InitWithNewPipeAndPassReceiver());
+  network_context->SetClient(std::move(client_remote));
 
-  // Create the 2 NetworkAnonymizationKey(s).
-  const auto site = net::SchemefulSite(kUrl_);
-  net::NetworkAnonymizationKey revoked_anonymization_key =
-      net::NetworkAnonymizationKey::CreateFromFrameSite(site, site,
-                                                        revoked_nonce);
-  net::NetworkAnonymizationKey allowed_anonymization_key =
-      net::NetworkAnonymizationKey::CreateFromFrameSite(site, site,
-                                                        allowed_nonce);
+  // Use a Google origin for the report to avoid cross-origin preflight.
+  GURL google_url("https://www.google.com");
+  url::Origin google_origin = url::Origin::Create(google_url);
+  GURL report_url("https://www.google.com/report");
+  base::UnguessableToken reporting_source = base::UnguessableToken::Create();
+  net::IsolationInfo isolation_info = net::IsolationInfo::Create(
+      net::IsolationInfo::RequestType::kOther, google_origin, google_origin,
+      net::SiteForCookies::FromOrigin(google_origin));
+  net::NetworkAnonymizationKey nak = isolation_info.network_anonymization_key();
+  if (!net::NetworkAnonymizationKey::IsPartitioningEnabled()) {
+    nak = net::NetworkAnonymizationKey();
+  }
 
-  // Create a Nel policy for the revoked and allowed nonces.
-  net::NetworkErrorLoggingService::NelPolicy revoked_policy;
-  revoked_policy.key = net::NetworkErrorLoggingService::NelPolicyKey(
-      revoked_anonymization_key, kOrigin_);
-  revoked_policy.expires = base::Time::Now() + base::Days(7);
-  net::NetworkErrorLoggingService::NelPolicy allowed_policy;
-  allowed_policy.key = net::NetworkErrorLoggingService::NelPolicyKey(
-      allowed_anonymization_key, kOrigin_);
-  allowed_policy.expires = base::Time::Now() + base::Days(7);
+  base::flat_map<std::string, std::string> endpoints = {
+      {"default", report_url.spec()},
+  };
+  network_context->SetDocumentReportingEndpoints(
+      reporting_source, google_origin, isolation_info, endpoints);
 
-  net::NetworkErrorLoggingService* logging_service =
-      network_context->url_request_context()->network_error_logging_service();
-  logging_service->LoadPoliciesForTesting({revoked_policy, allowed_policy});
+  network_context->QueueReport("test_type", "default", google_url,
+                               reporting_source, nak, base::DictValue());
 
-  // The first report is sent with the anonymization key that contains the
-  // revoked nonce. This report should not be sent out.
-  mojom::SignedExchangeReportPtr revoked_report =
-      mojom::SignedExchangeReport::New();
-  revoked_report->outer_url = kUrl_;
-  network_context->QueueSignedExchangeReport(std::move(revoked_report),
-                                             revoked_anonymization_key);
-  std::vector<raw_ptr<const net::ReportingReport, VectorExperimental>> reports =
-      network_context->url_request_context()->reporting_service()->GetReports();
-  ASSERT_EQ(0u, reports.size());
+  network_context->url_request_context()
+      ->reporting_service()
+      ->SendReportsAndRemoveSource(reporting_source);
 
-  // The second report is sent with a key whose nonce has not been revoked. This
-  // report should send.
-  mojom::SignedExchangeReportPtr allowed_report =
-      mojom::SignedExchangeReport::New();
-  allowed_report->outer_url = kUrl_;
-  network_context->QueueSignedExchangeReport(std::move(allowed_report),
-                                             allowed_anonymization_key);
-  reports =
-      network_context->url_request_context()->reporting_service()->GetReports();
-  ASSERT_EQ(1u, reports.size());
+  run_loop.Run();
+
+  EXPECT_NE(std::string::npos, captured_headers.find("X-Client-Data: abc"));
 }
+#endif  // BUILDFLAG(ENABLE_REPORTING)
 
 #if BUILDFLAG(ENABLE_DEVICE_BOUND_SESSIONS)
 
@@ -1218,7 +1426,7 @@ TEST_F(NetworkContextTest, DeviceBoundSessionsDefaultParam) {
 }
 
 TEST_F(NetworkContextTest, DeviceBoundSessionsEnableParam) {
-  crypto::ScopedMockUnexportableKeyProvider scoped_mock_key_provider;
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
   mojom::NetworkContextParamsPtr context_params =
       CreateNetworkContextParamsForTesting();
   context_params->device_bound_sessions_enabled = true;
@@ -1241,10 +1449,7 @@ TEST_F(NetworkContextTest, DeviceBoundSessionsDisableParam) {
 }
 
 TEST_F(NetworkContextTest, DeviceBoundSessionsEnableWithStore) {
-  crypto::ScopedMockUnexportableKeyProvider scoped_mock_key_provider;
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(
-      net::features::kPersistDeviceBoundSessions);
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
   mojom::NetworkContextParamsPtr context_params =
       CreateNetworkContextParamsForTesting();
   base::ScopedTempDir temp_dir;
@@ -1273,6 +1478,132 @@ TEST_F(NetworkContextTest, DeviceBoundSessionsEnableWithStore) {
       future;
   service->GetAllSessionsAsync(future.GetCallback());
   ASSERT_TRUE(future.Wait());
+}
+
+TEST_F(NetworkContextTest, DeviceBoundSessionsEnabledWithValidPendingRemote) {
+  mojom::NetworkContextParamsPtr context_params =
+      CreateNetworkContextParamsForTesting();
+  context_params->device_bound_sessions_enabled = true;
+
+  mojo::PendingRemote<unexportable_keys::mojom::UnexportableKeyService>
+      pending_unexportable_key_service;
+
+  // We need to create a receiver for the remote to be valid.
+  mojo::PendingReceiver<unexportable_keys::mojom::UnexportableKeyService>
+      receiver =
+          pending_unexportable_key_service.InitWithNewPipeAndPassReceiver();
+
+  context_params->bound_sessions_unexportable_key_service =
+      std::move(pending_unexportable_key_service);
+
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(std::move(context_params));
+
+  EXPECT_TRUE(
+      network_context->url_request_context()->unexportable_key_service());
+}
+
+TEST_F(NetworkContextTest,
+       HasCookieAccessForDeviceBoundSession_StorageAccessGrant) {
+  mojom::NetworkContextParamsPtr context_params =
+      CreateNetworkContextParamsForTesting();
+  context_params->device_bound_sessions_enabled = true;
+
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(std::move(context_params));
+
+  auto provider = url::Origin::Create(GURL("https://provider.example.com"));
+  auto rp = url::Origin::Create(GURL("https://rp.example.org"));
+
+  // Block third party cookies to ensure HasCookieAccessForDBSC correctly checks
+  // for the storage access grant instead of relying on the global cookie
+  // access.
+  network_context->cookie_manager()->BlockThirdPartyCookies(true);
+
+  // No storage access by default.
+  EXPECT_FALSE(network_context->HasCookieAccessForDeviceBoundSession(
+      {.provider_origin{provider}, .relying_party_origin{rp}}));
+
+  // Grant storage access.
+  base::RunLoop run_loop;
+  network_context->cookie_manager()->SetContentSettings(
+      ContentSettingsType::STORAGE_ACCESS,
+      {ContentSettingPatternSource(
+          ContentSettingsPattern::FromURLNoWildcard(provider.GetURL()),
+          ContentSettingsPattern::FromURLNoWildcard(rp.GetURL()),
+          base::Value(CONTENT_SETTING_ALLOW),
+          content_settings::ProviderType::kNone, false)},
+      run_loop.QuitClosure());
+  run_loop.Run();
+
+  EXPECT_TRUE(network_context->HasCookieAccessForDeviceBoundSession(
+      {.provider_origin{provider}, .relying_party_origin{rp}}));
+}
+
+TEST_F(NetworkContextTest,
+       HasCookieAccessForDeviceBoundSession_Global3PCookieAllowance) {
+  mojom::NetworkContextParamsPtr context_params =
+      CreateNetworkContextParamsForTesting();
+  context_params->device_bound_sessions_enabled = true;
+
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(std::move(context_params));
+
+  auto provider = url::Origin::Create(GURL("https://provider.example.com"));
+  auto rp = url::Origin::Create(GURL("https://rp.example.org"));
+
+  // By default, third-party cookies are allowed in this test environment.
+  // We do NOT block them here, simulating a user who allows 3P cookies.
+
+  // No storage access is granted explicitly.
+  // Expect true because global third-party cookies are allowed.
+  EXPECT_TRUE(network_context->HasCookieAccessForDeviceBoundSession(
+      {.provider_origin{provider}, .relying_party_origin{rp}}));
+}
+
+TEST_F(NetworkContextTest,
+       HasCookieAccessForDeviceBoundSession_ExplicitSiteBlock) {
+  mojom::NetworkContextParamsPtr context_params =
+      CreateNetworkContextParamsForTesting();
+  context_params->device_bound_sessions_enabled = true;
+
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(std::move(context_params));
+
+  auto provider = url::Origin::Create(GURL("https://provider.example.com"));
+  auto rp = url::Origin::Create(GURL("https://rp.example.org"));
+
+  // Explicitly block cookies for the provider site.
+  base::RunLoop run_loop;
+  network_context->cookie_manager()->SetContentSettings(
+      ContentSettingsType::COOKIES,
+      {ContentSettingPatternSource(
+          ContentSettingsPattern::FromURLNoWildcard(provider.GetURL()),
+          ContentSettingsPattern::FromURLNoWildcard(rp.GetURL()),
+          base::Value(CONTENT_SETTING_BLOCK),
+          content_settings::ProviderType::kNone, false)},
+      run_loop.QuitClosure());
+  run_loop.Run();
+
+  // Expect false because the site is explicitly blocked.
+  EXPECT_FALSE(network_context->HasCookieAccessForDeviceBoundSession(
+      {.provider_origin{provider}, .relying_party_origin{rp}}));
+
+  // Even if we grant storage access, it should still be false because an
+  // explicit site block should override the storage access grant.
+  base::RunLoop run_loop2;
+  network_context->cookie_manager()->SetContentSettings(
+      ContentSettingsType::STORAGE_ACCESS,
+      {ContentSettingPatternSource(
+          ContentSettingsPattern::FromURLNoWildcard(provider.GetURL()),
+          ContentSettingsPattern::FromURLNoWildcard(rp.GetURL()),
+          base::Value(CONTENT_SETTING_ALLOW),
+          content_settings::ProviderType::kNone, false)},
+      run_loop2.QuitClosure());
+  run_loop2.Run();
+
+  EXPECT_FALSE(network_context->HasCookieAccessForDeviceBoundSession(
+      {.provider_origin{provider}, .relying_party_origin{rp}}));
 }
 #endif  // BUILDFLAG(ENABLE_DEVICE_BOUND_SESSIONS)
 
@@ -1334,155 +1665,6 @@ TEST_F(NetworkContextTest, EnableNetworkErrorLoggingWithStore) {
                   ->GetContextForTesting()
                   ->store());
 }
-
-TEST_F(NetworkContextTest, SetEnterpriseReportingEndpointsWithFeatureEnabled) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(
-      net::features::kReportingApiEnableEnterpriseCookieIssues);
-  base::flat_map<std::string, GURL> test_enterprise_endpoints{
-      {"endpoint-1", GURL("https://example.com/reports")},
-      {"endpoint-2", GURL("https://reporting.example/cookie-issues")},
-      {"endpoint-3", GURL("https://report-collector.example")},
-  };
-
-  auto reporting_context = std::make_unique<net::TestReportingContext>(
-      base::DefaultClock::GetInstance(), base::DefaultTickClock::GetInstance(),
-      net::ReportingPolicy());
-  net::ReportingCache* reporting_cache = reporting_context->cache();
-  std::unique_ptr<NetworkContext> network_context = CreateContextWithParams(
-      CreateNetworkContextParamsForTesting(),
-      net::ReportingService::CreateForTesting(std::move(reporting_context)));
-
-  EXPECT_EQ(0u, reporting_cache->GetEnterpriseEndpointsForTesting().size());
-  network_context->SetEnterpriseReportingEndpoints(test_enterprise_endpoints);
-  std::vector<net::ReportingEndpoint> expected_enterprise_endpoints = {
-      {net::ReportingEndpointGroupKey(net::NetworkAnonymizationKey(),
-                                      /*reporting_source=*/std::nullopt,
-                                      /*origin=*/std::nullopt, "endpoint-1",
-                                      net::ReportingTargetType::kEnterprise),
-       {.url = GURL("https://example.com/reports")}},
-      {net::ReportingEndpointGroupKey(net::NetworkAnonymizationKey(),
-                                      /*reporting_source=*/std::nullopt,
-                                      /*origin=*/std::nullopt, "endpoint-2",
-                                      net::ReportingTargetType::kEnterprise),
-       {.url = GURL("https://reporting.example/cookie-issues")}},
-      {net::ReportingEndpointGroupKey(net::NetworkAnonymizationKey(),
-                                      /*reporting_source=*/std::nullopt,
-                                      /*origin=*/std::nullopt, "endpoint-3",
-                                      net::ReportingTargetType::kEnterprise),
-       {.url = GURL("https://report-collector.example")}}};
-  EXPECT_EQ(expected_enterprise_endpoints,
-            reporting_cache->GetEnterpriseEndpointsForTesting());
-}
-
-TEST_F(NetworkContextTest, SetEnterpriseReportingEndpointsWithFeatureDisabled) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndDisableFeature(
-      net::features::kReportingApiEnableEnterpriseCookieIssues);
-  base::flat_map<std::string, GURL> test_enterprise_endpoints{
-      {"endpoint-1", GURL("https://example.com/reports")},
-      {"endpoint-2", GURL("https://reporting.example/cookie-issues")},
-      {"endpoint-3", GURL("https://report-collector.example")},
-  };
-
-  auto reporting_context = std::make_unique<net::TestReportingContext>(
-      base::DefaultClock::GetInstance(), base::DefaultTickClock::GetInstance(),
-      net::ReportingPolicy());
-  net::ReportingCache* reporting_cache = reporting_context->cache();
-  std::unique_ptr<NetworkContext> network_context = CreateContextWithParams(
-      CreateNetworkContextParamsForTesting(),
-      net::ReportingService::CreateForTesting(std::move(reporting_context)));
-
-  EXPECT_EQ(0u, reporting_cache->GetEnterpriseEndpointsForTesting().size());
-  network_context->SetEnterpriseReportingEndpoints(test_enterprise_endpoints);
-  EXPECT_EQ(0u, reporting_cache->GetEnterpriseEndpointsForTesting().size());
-}
-
-TEST_F(NetworkContextTest, CheckInitialEnterpriseReportingEndpointsParamSet) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(
-      net::features::kReportingApiEnableEnterpriseCookieIssues);
-  base::flat_map<std::string, GURL> enterprise_endpoints_for_testing{
-      {"endpoint-1", GURL("https://example.com/reports")},
-      {"endpoint-2", GURL("https://reporting.example/cookie-issues")},
-      {"endpoint-3", GURL("https://report-collector.example")},
-  };
-  mojom::NetworkContextParamsPtr params =
-      CreateNetworkContextParamsForTesting();
-  EXPECT_FALSE(params->enterprise_reporting_endpoints.has_value());
-  params->enterprise_reporting_endpoints = enterprise_endpoints_for_testing;
-  std::unique_ptr<NetworkContext> network_context =
-      CreateContextWithParams(std::move(params));
-  std::vector<net::ReportingEndpoint> expected_enterprise_endpoints = {
-      {net::ReportingEndpointGroupKey(net::NetworkAnonymizationKey(),
-                                      /*reporting_source=*/std::nullopt,
-                                      /*origin=*/std::nullopt, "endpoint-1",
-                                      net::ReportingTargetType::kEnterprise),
-       {.url = GURL("https://example.com/reports")}},
-      {net::ReportingEndpointGroupKey(net::NetworkAnonymizationKey(),
-                                      /*reporting_source=*/std::nullopt,
-                                      /*origin=*/std::nullopt, "endpoint-2",
-                                      net::ReportingTargetType::kEnterprise),
-       {.url = GURL("https://reporting.example/cookie-issues")}},
-      {net::ReportingEndpointGroupKey(net::NetworkAnonymizationKey(),
-                                      /*reporting_source=*/std::nullopt,
-                                      /*origin=*/std::nullopt, "endpoint-3",
-                                      net::ReportingTargetType::kEnterprise),
-       {.url = GURL("https://report-collector.example")}}};
-  EXPECT_EQ(expected_enterprise_endpoints,
-            network_context->url_request_context()
-                ->reporting_service()
-                ->GetContextForTesting()
-                ->cache()
-                ->GetEnterpriseEndpointsForTesting());
-}
-
-TEST_F(NetworkContextTest,
-       CheckInitialEnterpriseReportingEndpointsParamNotSet) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(
-      net::features::kReportingApiEnableEnterpriseCookieIssues);
-  base::flat_map<std::string, GURL> enterprise_endpoints_for_testing{
-      {"endpoint-1", GURL("https://example.com/reports")},
-      {"endpoint-2", GURL("https://reporting.example/cookie-issues")},
-      {"endpoint-3", GURL("https://report-collector.example")},
-  };
-  mojom::NetworkContextParamsPtr params =
-      CreateNetworkContextParamsForTesting();
-  EXPECT_FALSE(params->enterprise_reporting_endpoints.has_value());
-  std::unique_ptr<NetworkContext> network_context =
-      CreateContextWithParams(std::move(params));
-  EXPECT_EQ(0u, network_context->url_request_context()
-                    ->reporting_service()
-                    ->GetContextForTesting()
-                    ->cache()
-                    ->GetEnterpriseEndpointsForTesting()
-                    .size());
-}
-
-TEST_F(NetworkContextTest,
-       CheckInitialEnterpriseReportingEndpointsParamSetWithFeatureDisabled) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndDisableFeature(
-      net::features::kReportingApiEnableEnterpriseCookieIssues);
-  base::flat_map<std::string, GURL> enterprise_endpoints_for_testing{
-      {"endpoint-1", GURL("https://example.com/reports")},
-      {"endpoint-2", GURL("https://reporting.example/cookie-issues")},
-      {"endpoint-3", GURL("https://report-collector.example")},
-  };
-  mojom::NetworkContextParamsPtr params =
-      CreateNetworkContextParamsForTesting();
-  EXPECT_FALSE(params->enterprise_reporting_endpoints.has_value());
-  std::unique_ptr<NetworkContext> network_context =
-      CreateContextWithParams(std::move(params));
-  EXPECT_EQ(0u, network_context->url_request_context()
-                    ->reporting_service()
-                    ->GetContextForTesting()
-                    ->cache()
-                    ->GetEnterpriseEndpointsForTesting()
-                    .size());
-}
-
 #endif  // BUILDFLAG(ENABLE_REPORTING)
 
 TEST_F(NetworkContextTest, DefaultHttpNetworkSessionParams) {
@@ -1505,6 +1687,36 @@ TEST_F(NetworkContextTest, DefaultHttpNetworkSessionParams) {
   EXPECT_FALSE(params.ignore_certificate_errors);
   EXPECT_EQ(0, params.testing_fixed_http_port);
   EXPECT_EQ(0, params.testing_fixed_https_port);
+}
+
+TEST_F(NetworkContextTest, QuicIdleConnectionTimeout) {
+  mojom::NetworkContextParamsPtr context_params =
+      CreateNetworkContextParamsForTesting();
+
+  const uint32_t kTestIdleTimeoutSeconds = 60;
+  context_params->quic_idle_connection_timeout_seconds =
+      kTestIdleTimeoutSeconds;
+
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(std::move(context_params));
+
+  const net::QuicParams* quic_params =
+      network_context->url_request_context()->quic_context()->params();
+
+  // Verify that the idle_connection_timeout is set correctly.
+  EXPECT_EQ(base::Seconds(kTestIdleTimeoutSeconds),
+            quic_params->idle_connection_timeout);
+
+  // Test with no timeout specified (should use default).
+  mojom::NetworkContextParamsPtr default_context_params =
+      CreateNetworkContextParamsForTesting();
+  std::unique_ptr<NetworkContext> default_network_context =
+      CreateContextWithParams(std::move(default_context_params));
+
+  const net::QuicParams* default_quic_params =
+      default_network_context->url_request_context()->quic_context()->params();
+  // 30 seconds is the default.
+  EXPECT_EQ(base::Seconds(30), default_quic_params->idle_connection_timeout);
 }
 
 // Make sure that network_session_configurator is hooked up.
@@ -1568,64 +1780,156 @@ TEST_F(NetworkContextTest, DiskCache) {
             GetBackendType(backend));
 }
 
-class DiskCacheSizeTest : public NetworkContextTest {
- public:
-  DiskCacheSizeTest() = default;
-  ~DiskCacheSizeTest() override = default;
+TEST_F(NetworkContextTest, DiskCacheSize) {
+  base::HistogramTester histogram_tester;
 
-  int64_t VerifyDiskCacheSize(int scale = 100) {
-    base::test::ScopedFeatureList scoped_feature_list;
-    if (scale != 100) {
-      std::map<std::string, std::string> field_trial_params;
-      field_trial_params["percent_relative_size"] = base::NumberToString(scale);
-      scoped_feature_list.InitAndEnableFeatureWithParameters(
-          disk_cache::kChangeDiskCacheSizeExperiment, field_trial_params);
-    }
+  mojom::NetworkContextParamsPtr context_params =
+      CreateNetworkContextParamsForTesting();
+  context_params->file_paths = mojom::NetworkContextFilePaths::New();
+  context_params->http_cache_enabled = true;
 
-    base::HistogramTester histogram_tester;
+  base::ScopedTempDir temp_dir;
+  EXPECT_TRUE(temp_dir.CreateUniqueTempDir());
+  context_params->file_paths->http_cache_directory = temp_dir.GetPath();
 
-    mojom::NetworkContextParamsPtr context_params =
-        CreateNetworkContextParamsForTesting();
-    context_params->file_paths = mojom::NetworkContextFilePaths::New();
-    context_params->http_cache_enabled = true;
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(std::move(context_params));
 
-    base::ScopedTempDir temp_dir;
-    EXPECT_TRUE(temp_dir.CreateUniqueTempDir());
-    context_params->file_paths->http_cache_directory = temp_dir.GetPath();
+  disk_cache::Backend* backend = WaitForCacheBackend(*network_context);
+  EXPECT_TRUE(backend);
+  EXPECT_EQ(net::DISK_CACHE, backend->GetCacheType());
 
-    std::unique_ptr<NetworkContext> network_context =
-        CreateContextWithParams(std::move(context_params));
-
-    disk_cache::Backend* backend = WaitForCacheBackend(*network_context);
-    EXPECT_TRUE(backend);
-    EXPECT_EQ(net::DISK_CACHE, backend->GetCacheType());
-
-    int64_t max_file_size = backend->MaxFileSize();
-    histogram_tester.ExpectTotalCount("HttpCache.MaxFileSizeOnInit", 1);
-    histogram_tester.ExpectUniqueSample("HttpCache.MaxFileSizeOnInit",
-                                        max_file_size / 1024, 1);
-
-    return max_file_size;
-  }
-};
-
-TEST_F(DiskCacheSizeTest, DiskCacheSize) {
-  int64_t max_file_size = VerifyDiskCacheSize();
-
-  int64_t max_file_size_scaled = VerifyDiskCacheSize(200);
-
-#if BUILDFLAG(IS_WIN)
-  // In most cases, the scaled size will be 2x the non-scaled size. However,
-  // this is dependent on available disk space and we cannot guarantee that it
-  // will remain constant between 2 calls to VerifyDiskCacheSize(), so we only
-  // check that the scaled size is larger than the non-scaled size.
-  EXPECT_GE(max_file_size_scaled, max_file_size);
-#else
-  // On non-Windows, a 400% scaling factor is applied by default. Therefore,
-  // applying a 200% scaling factor results in a smaller size than the default.
-  EXPECT_LE(max_file_size_scaled, max_file_size);
-#endif
+  int64_t max_file_size = backend->MaxFileSize();
+  histogram_tester.ExpectTotalCount("HttpCache.MaxFileSizeOnInit", 1);
+  histogram_tester.ExpectUniqueSample("HttpCache.MaxFileSizeOnInit",
+                                      max_file_size / 1024, 1);
 }
+
+#if BUILDFLAG(IS_ANDROID)
+TEST_F(NetworkContextTest, SetHttpCacheMaxSizeAfterBackendInit) {
+  mojom::NetworkContextParamsPtr context_params =
+      CreateNetworkContextParamsForTesting();
+  // Explicitly clear file_paths to force in-memory cache.
+  context_params->file_paths.reset();
+  context_params->http_cache_enabled = true;
+
+  const base::ByteSize kInitialSize = base::MiBU(20);
+  const base::ByteSize kNewSize = base::MiBU(10);
+  context_params->http_cache_max_size =
+      base::checked_cast<int32_t>(kInitialSize.InBytes());
+
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(std::move(context_params));
+
+  disk_cache::Backend* backend = WaitForCacheBackend(*network_context);
+  ASSERT_TRUE(backend);
+
+  // Verify initial size.
+  EXPECT_EQ(kInitialSize, backend->GetMaxBytesForTesting());
+
+  // Call the Mojo endpoint.
+  network_context->SetHttpCacheMaxSize(kNewSize, false);
+
+  EXPECT_TRUE(base::test::RunUntil(
+      [&]() { return backend->GetMaxBytesForTesting() == kNewSize; }));
+
+  // Verify that setting size to 0 doesn't crash.
+  // (It could result in any size.)
+  network_context->SetHttpCacheMaxSize(base::ByteSize(0), true);
+  task_environment_.RunUntilIdle();
+}
+
+TEST_F(NetworkContextTest, SetHttpCacheMaxSizeBeforeUnforcedBackendInit) {
+  mojom::NetworkContextParamsPtr context_params =
+      CreateNetworkContextParamsForTesting();
+  // Explicitly clear file_paths to force in-memory cache.
+  context_params->file_paths.reset();
+  context_params->http_cache_enabled = true;
+
+  const base::ByteSize kInitialSize = base::MiBU(20);
+  const base::ByteSize kNewSize = base::MiBU(10);
+  context_params->http_cache_max_size =
+      base::checked_cast<int32_t>(kInitialSize.InBytes());
+
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(std::move(context_params));
+
+  // There should not be a backend yet.
+  ASSERT_EQ(nullptr, network_context->url_request_context()
+                         ->http_transaction_factory()
+                         ->GetCache()
+                         ->GetCurrentBackend());
+
+  // Invoke the resize before calling `WaitForCacheBackend()` to ensure
+  // the operation is queued or correctly forces initialization.
+  network_context->SetHttpCacheMaxSize(kNewSize, false);
+  task_environment_.RunUntilIdle();
+
+  // There should still not be a backend yet.
+  ASSERT_EQ(nullptr, network_context->url_request_context()
+                         ->http_transaction_factory()
+                         ->GetCache()
+                         ->GetCurrentBackend());
+
+  // Now trigger the initialization and wait.
+  disk_cache::Backend* backend = WaitForCacheBackend(*network_context);
+  ASSERT_TRUE(backend);
+
+  // Verify the new limit is successfully applied to the underlying backend.
+  EXPECT_EQ(kNewSize, backend->GetMaxBytesForTesting());
+}
+
+TEST_F(NetworkContextTest, SetHttpCacheMaxSizeBeforeForcedBackendInit) {
+  mojom::NetworkContextParamsPtr context_params =
+      CreateNetworkContextParamsForTesting();
+  // Explicitly clear file_paths to force in-memory cache.
+  context_params->file_paths.reset();
+  context_params->http_cache_enabled = true;
+
+  const base::ByteSize kInitialSize = base::MiBU(20);
+  const base::ByteSize kNewSize = base::MiBU(10);
+  context_params->http_cache_max_size =
+      base::checked_cast<int32_t>(kInitialSize.InBytes());
+
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(std::move(context_params));
+
+  // There should not be a backend yet.
+  ASSERT_EQ(nullptr, network_context->url_request_context()
+                         ->http_transaction_factory()
+                         ->GetCache()
+                         ->GetCurrentBackend());
+
+  // Invoke the resize before calling `WaitForCacheBackend()` to ensure
+  // the operation is queued or correctly forces initialization.
+  network_context->SetHttpCacheMaxSize(kNewSize, true);
+
+  // Now trigger the initialization and wait.
+  disk_cache::Backend* backend = WaitForCacheBackend(*network_context);
+  ASSERT_TRUE(backend);
+
+  // Verify the new limit is successfully applied to the underlying backend.
+  EXPECT_EQ(kNewSize, backend->GetMaxBytesForTesting());
+}
+
+TEST_F(NetworkContextTest, SetHttpCacheMaxSizeNoCache) {
+  mojom::NetworkContextParamsPtr context_params =
+      CreateNetworkContextParamsForTesting();
+  context_params->http_cache_enabled = false;
+
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(std::move(context_params));
+
+  // There should not be an HTTP Cache at all.
+  ASSERT_EQ(nullptr, network_context->url_request_context()
+                         ->http_transaction_factory()
+                         ->GetCache());
+
+  // Ensure this doesn't crash when the internal `GetCache()` returns nullptr.
+  network_context->SetHttpCacheMaxSize(base::MiBU(10), true);
+  task_environment_.RunUntilIdle();
+}
+#endif  // BUILDFLAG(IS_ANDROID)
 
 // This makes sure that network_session_configurator::ChooseCacheType is
 // connected to NetworkContext.
@@ -1955,7 +2259,7 @@ TEST_F(NetworkContextTest, HostResolutionFailure) {
   mojo::Remote<mojom::URLLoaderFactory> loader_factory;
   mojom::URLLoaderFactoryParamsPtr params =
       mojom::URLLoaderFactoryParams::New();
-  params->process_id = mojom::kBrowserProcessId;
+  params->process_id = OriginatingProcessId::browser();
   params->is_orb_enabled = false;
   network_context->CreateURLLoaderFactory(
       loader_factory.BindNewPipeAndPassReceiver(), std::move(params));
@@ -2021,7 +2325,7 @@ TEST_F(NetworkContextTest, P2PHostResolution) {
   base::RunLoop run_loop;
   std::vector<net::IPAddress> results;
   socket_manager->GetHostAddress(
-      kHostname, false /* enable_mdns */,
+      kHostname, std::nullopt /* address family */, false /* enable_mdns */,
       base::BindLambdaForTesting(
           [&](const std::vector<net::IPAddress>& addresses) {
             EXPECT_EQ(std::vector<net::IPAddress>{ip_address}, addresses);
@@ -2036,6 +2340,7 @@ TEST_F(NetworkContextTest, P2PHostResolution) {
   params.source = net::HostResolverSource::LOCAL_ONLY;
   std::unique_ptr<net::HostResolver::ResolveHostRequest> request1 =
       host_resolver.CreateRequest(kHostPortPair, network_anonymization_key,
+                                  net::handles::kInvalidNetworkHandle,
                                   net::NetLogWithSource(), params);
   net::TestCompletionCallback callback1;
   int result = request1->Start(callback1.callback());
@@ -2052,6 +2357,7 @@ TEST_F(NetworkContextTest, P2PHostResolution) {
   for (const auto& other_nak : kOtherNaks) {
     std::unique_ptr<net::HostResolver::ResolveHostRequest> request2 =
         host_resolver.CreateRequest(kHostPortPair, other_nak,
+                                    net::handles::kInvalidNetworkHandle,
                                     net::NetLogWithSource(), params);
     net::TestCompletionCallback callback2;
     result = request2->Start(callback2.callback());
@@ -2108,8 +2414,9 @@ TEST_F(NetworkContextTest, P2PHostResolutionWithFamily) {
     base::RunLoop run_loop;
     std::vector<net::IPAddress> results;
     // Expect IPv4 address when family passed as AF_INET.
-    socket_manager->GetHostAddressWithFamily(
-        kIPv4Hostname, AF_INET, false /* enable_mdns */,
+    socket_manager->GetHostAddress(
+        kIPv4Hostname, net::AddressFamily::ADDRESS_FAMILY_IPV4,
+        false /* enable_mdns */,
         base::BindLambdaForTesting(
             [&](const std::vector<net::IPAddress>& addresses) {
               EXPECT_EQ(std::vector<net::IPAddress>{ipv4_address}, addresses);
@@ -2122,8 +2429,9 @@ TEST_F(NetworkContextTest, P2PHostResolutionWithFamily) {
     base::RunLoop run_loop;
     std::vector<net::IPAddress> results;
     // Expect IPv6 address when family passed as AF_INET6.
-    socket_manager->GetHostAddressWithFamily(
-        kIPv6Hostname, AF_INET6, false /* enable_mdns */,
+    socket_manager->GetHostAddress(
+        kIPv6Hostname, net::AddressFamily::ADDRESS_FAMILY_IPV6,
+        false /* enable_mdns */,
         base::BindLambdaForTesting(
             [&](const std::vector<net::IPAddress>& addresses) {
               EXPECT_EQ(std::vector<net::IPAddress>{ipv6_address}, addresses);
@@ -2155,7 +2463,7 @@ TEST_F(NetworkContextTest, Referrers) {
       mojo::Remote<mojom::URLLoaderFactory> loader_factory;
       mojom::URLLoaderFactoryParamsPtr params =
           mojom::URLLoaderFactoryParams::New();
-      params->process_id = 0;
+      params->process_id = OriginatingProcessId::browser();
       network_context->CreateURLLoaderFactory(
           loader_factory.BindNewPipeAndPassReceiver(), std::move(params));
 
@@ -2258,13 +2566,31 @@ TEST_F(NetworkContextTest, ClearHttpCache) {
 
     result.ReleaseEntry()->Close();
   }
-  EXPECT_EQ(entry_urls.size(), static_cast<size_t>(backend->GetEntryCount()));
+  {
+    base::test::TestFuture<int32_t> future;
+    base::expected<int32_t, net::Error> result =
+        backend->GetEntryCount(future.GetCallback());
+    if (!result.has_value()) {
+      CHECK_EQ(result.error(), net::ERR_IO_PENDING);
+      result = base::ok(future.Get());
+    }
+    EXPECT_EQ(static_cast<int32_t>(entry_urls.size()), result.value());
+  }
   base::RunLoop run_loop;
   network_context->ClearHttpCache(base::Time(), base::Time(),
                                   nullptr /* filter */,
                                   base::BindOnce(run_loop.QuitClosure()));
   run_loop.Run();
-  EXPECT_EQ(0U, static_cast<size_t>(backend->GetEntryCount()));
+  {
+    base::test::TestFuture<int32_t> future;
+    base::expected<int32_t, net::Error> result =
+        backend->GetEntryCount(future.GetCallback());
+    if (!result.has_value()) {
+      CHECK_EQ(result.error(), net::ERR_IO_PENDING);
+      result = base::ok(future.Get());
+    }
+    EXPECT_EQ(0, result.value());
+  }
 }
 
 // Checks that when multiple calls are made to clear the HTTP cache, all
@@ -2295,6 +2621,494 @@ TEST_F(NetworkContextTest, MultipleClearHttpCacheCalls) {
   run_loop.Run();
   // If all the callbacks were invoked, we should terminate.
 }
+
+TEST_F(NetworkContextTest, DestroyWithPendingHttpCacheDataRemovers) {
+  mojom::NetworkContextParamsPtr context_params =
+      CreateNetworkContextParamsForTesting();
+  context_params->file_paths = mojom::NetworkContextFilePaths::New();
+  context_params->http_cache_enabled = true;
+
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  context_params->file_paths->http_cache_directory = temp_dir.GetPath();
+
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(std::move(context_params));
+
+  bool callback_called = false;
+  network_context->ClearHttpCache(
+      base::Time(), base::Time(), nullptr /* filter */,
+      base::BindOnce([](bool* called) { *called = true; }, &callback_called));
+
+  // Destroy the NetworkContext while HttpCacheDataRemover operations are
+  // in-flight.
+  network_context.reset();
+
+  // Run pending tasks to ensure clean teardown without dangling pointers or
+  // races.
+  base::RunLoop().RunUntilIdle();
+
+  EXPECT_FALSE(callback_called);
+}
+
+TEST_F(NetworkContextTest, LogicalClearHttpCache) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(net::features::kLogicalClearHttpCache);
+
+  mojom::NetworkContextParamsPtr context_params =
+      CreateNetworkContextParamsForTesting();
+  context_params->http_cache_enabled = true;
+
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(std::move(context_params));
+
+  base::HistogramTester histograms;
+
+  base::test::TestFuture<void> future;
+  network_context->ClearHttpCacheLogically(base::Time(), base::Time(), nullptr,
+                                           future.GetCallback());
+
+  // The callback should be called immediately.
+  EXPECT_TRUE(future.Wait());
+  histograms.ExpectBucketCount("NetworkService.ClearHttpCacheMode", 1, 1);
+
+  base::test::TestFuture<void> physical_future;
+  network_context->ClearHttpCache(base::Time(), base::Time(), nullptr,
+                                  physical_future.GetCallback());
+  EXPECT_TRUE(physical_future.Wait());
+  histograms.ExpectBucketCount("NetworkService.ClearHttpCacheMode", 0, 1);
+}
+
+namespace {
+
+void WritePickleFiltersToFile(
+    const base::FilePath& path,
+    const std::vector<net::HttpCache::InvalidationFilter>& filters) {
+  base::Pickle pickle;
+  net::WriteToPickle(pickle, filters);
+  ASSERT_TRUE(base::WriteFile(path, pickle.AsBytes()));
+}
+
+std::string GetRequestCacheKey(const std::string& url_string) {
+  net::HttpRequestInfo request_info;
+  request_info.url = GURL(url_string);
+  return net::HttpCache::GenerateCacheKeyForRequest(&request_info).value_or("");
+}
+
+void CreateCacheEntry(disk_cache::Backend* backend, const std::string& key) {
+  base::test::TestFuture<disk_cache::EntryResult> future;
+  disk_cache::EntryResult result =
+      backend->CreateEntry(key, net::HIGHEST, future.GetCallback());
+  if (result.net_error() == net::ERR_IO_PENDING) {
+    result = future.Take();
+  }
+  ASSERT_EQ(net::OK, result.net_error());
+  result.ReleaseEntry()->Close();
+}
+
+int OpenEntryError(disk_cache::Backend* backend, const std::string& key) {
+  base::test::TestFuture<disk_cache::EntryResult> future;
+  disk_cache::EntryResult result =
+      backend->OpenEntry(key, net::HIGHEST, future.GetCallback());
+  if (result.net_error() == net::ERR_IO_PENDING) {
+    result = future.Take();
+  }
+  int error = result.net_error();
+  if (error == net::OK) {
+    result.ReleaseEntry()->Close();
+  }
+  return error;
+}
+
+std::vector<net::HttpCache::InvalidationFilter> LoadFiltersFromStore(
+    LogicalInvalidationStore* store) {
+  base::test::TestFuture<LogicalInvalidationStore::LoadResult,
+                         std::vector<net::HttpCache::InvalidationFilter>>
+      future;
+  store->Load(future.GetCallback());
+  EXPECT_EQ(LogicalInvalidationStore::LoadResult::kSuccess, future.Get<0>());
+  return future.Get<1>();
+}
+
+}  // namespace
+
+TEST_F(NetworkContextTestWithMockTime, LogicalInvalidationStartupPurge) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(net::features::kLogicalClearHttpCache);
+
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+
+  // 1. Write a persistent invalidation filter targeting stale.example.com to
+  // disk.
+  base::FilePath invalidation_file =
+      temp_dir.GetPath().AppendASCII("invalidation_filters");
+
+  net::HttpCache::InvalidationFilter filter;
+  filter.begin_time = base::Time();
+  filter.end_time = base::Time::Max();
+  filter.filter_type = net::UrlFilterType::kTrueIfMatches;
+  filter.origins.insert(url::Origin::Create(GURL("https://stale.example.com")));
+
+  WritePickleFiltersToFile(invalidation_file, {filter});
+
+  // 2. Create a NetworkContext with this persistent directory and cache
+  // enabled.
+  mojom::NetworkContextParamsPtr context_params =
+      CreateNetworkContextParamsForTesting();
+  context_params->file_paths = mojom::NetworkContextFilePaths::New();
+  context_params->http_cache_enabled = true;
+  context_params->file_paths->logical_invalidation_directory =
+      temp_dir.GetPath();
+
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(std::move(context_params));
+
+  net::HttpCache* cache = network_context->url_request_context()
+                              ->http_transaction_factory()
+                              ->GetCache();
+  ASSERT_TRUE(cache);
+
+  // 1. Get the HTTP cache backend. This initializes it, but the Load() task is
+  // still blocked/queued in the ThreadPool!
+  disk_cache::Backend* backend = WaitForCacheBackend(*network_context);
+  ASSERT_TRUE(backend);
+
+  // Create two entries in the cache backend:
+  // entry1: https://stale.example.com/index.html (should be purged)
+  // entry2: https://fresh.example.com/index.html (should remain)
+  std::string url1 = GetRequestCacheKey("https://stale.example.com/index.html");
+  std::string url2 = GetRequestCacheKey("https://fresh.example.com/index.html");
+  CreateCacheEntry(backend, url1);
+  CreateCacheEntry(backend, url2);
+
+  // Confirm both entries are currently in the backend.
+  {
+    base::test::TestFuture<int32_t> future;
+    base::expected<int32_t, net::Error> entry_count =
+        backend->GetEntryCount(future.GetCallback());
+    if (!entry_count.has_value()) {
+      entry_count = base::ok(future.Get());
+    }
+    EXPECT_EQ(2, entry_count.value());
+  }
+
+  // 3. Now flush the ThreadPool to let the startup Load() task finish reading.
+  base::ThreadPoolInstance::Get()->FlushForTesting();
+
+  // 4. Execute the Load reply (OnInvalidationFiltersLoaded) on the main thread.
+  // This merges filters and starts the physical dooming tasks synchronously
+  // (since the cache backend is already fully initialized!).
+  base::RunLoop run_loop_load;
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, run_loop_load.QuitClosure());
+  run_loop_load.Run();
+
+  // 4. Verify entry1 (stale.example.com) was physically purged!
+  task_environment_.RunUntilIdle();
+  EXPECT_EQ(net::ERR_FAILED, OpenEntryError(backend, url1));
+  EXPECT_EQ(net::OK, OpenEntryError(backend, url2));
+
+  EXPECT_EQ(0u, cache->GetInvalidationFilterCountForTesting());
+
+  // 5. Verify that the persistence file on disk was updated to contain 0
+  // filters.
+  EXPECT_TRUE(LoadFiltersFromStore(network_context->logical_invalidation_store())
+                  .empty());
+}
+
+TEST_F(NetworkContextTestWithMockTime, LogicalInvalidationStartupAddRace) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(net::features::kLogicalClearHttpCache);
+
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+
+  // Pre-populate disk with filter_old targeting stale.example.com.
+  base::FilePath invalidation_file =
+      temp_dir.GetPath().AppendASCII("invalidation_filters");
+
+  net::HttpCache::InvalidationFilter filter_old;
+  filter_old.begin_time = base::Time();
+  filter_old.end_time = base::Time::Max();
+  filter_old.filter_type = net::UrlFilterType::kTrueIfMatches;
+  filter_old.origins.insert(
+      url::Origin::Create(GURL("https://stale.example.com")));
+
+  WritePickleFiltersToFile(invalidation_file, {filter_old});
+
+  // 1. Initialize NetworkContext. This starts async Load() (queued on
+  // ThreadPool).
+  mojom::NetworkContextParamsPtr context_params =
+      CreateNetworkContextParamsForTesting();
+  context_params->file_paths = mojom::NetworkContextFilePaths::New();
+  context_params->http_cache_enabled = true;
+  context_params->file_paths->logical_invalidation_directory =
+      temp_dir.GetPath();
+
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(std::move(context_params));
+
+  net::HttpCache* cache = network_context->url_request_context()
+                              ->http_transaction_factory()
+                              ->GetCache();
+  ASSERT_TRUE(cache);
+
+  // 2. Get the HTTP cache backend immediately to create entries before startup
+  // Load() completes.
+  disk_cache::Backend* backend = WaitForCacheBackend(*network_context);
+  ASSERT_TRUE(backend);
+
+  // 3. Create three entries in the cache backend:
+  // entry1: https://stale.example.com/index.html (should be purged via
+  // filter_old)
+  // entry2: https://dynamic.example.com/index.html (should be purged via
+  // filter_new)
+  // entry3: https://fresh.example.com/index.html (should remain)
+  std::string url1 = GetRequestCacheKey("https://stale.example.com/index.html");
+  std::string url2 =
+      GetRequestCacheKey("https://dynamic.example.com/index.html");
+  std::string url3 = GetRequestCacheKey("https://fresh.example.com/index.html");
+  CreateCacheEntry(backend, url1);
+  CreateCacheEntry(backend, url2);
+  CreateCacheEntry(backend, url3);
+
+  // 4. IMMEDIATELY dynamically add filter_new (still loading!).
+  // Since Load() hasn't run, this will be queued in pending_additions_!
+  mojom::ClearDataFilterPtr filter_new = mojom::ClearDataFilter::New();
+  filter_new->type = mojom::ClearDataFilter_Type::DELETE_MATCHES;
+  filter_new->origins.push_back(
+      url::Origin::Create(GURL("https://dynamic.example.com")));
+  network_context->ClearHttpCacheLogically(base::Time(), base::Time::Max(),
+                                           std::move(filter_new),
+                                           base::DoNothing());
+
+  // 5. Flush ThreadPool to let startup Load() finish reading and post its
+  // reply.
+  base::ThreadPoolInstance::Get()->FlushForTesting();
+
+  // 6. Run the message loop until the Load reply executes.
+  base::RunLoop run_loop_load;
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, run_loop_load.QuitClosure());
+  run_loop_load.Run();
+
+  // Verify entry1 (stale) and entry2 (dynamic) were physically purged!
+  task_environment_.RunUntilIdle();
+  EXPECT_EQ(net::ERR_FAILED, OpenEntryError(backend, url1));
+  EXPECT_EQ(net::ERR_FAILED, OpenEntryError(backend, url2));
+
+  // Verify entry3 (fresh) remains active!
+  EXPECT_EQ(net::OK, OpenEntryError(backend, url3));
+
+  // Verify memory has cleanly cleared both filters.
+  EXPECT_EQ(0u, cache->GetInvalidationFilterCountForTesting());
+
+  // Verify disk file is updated and empty.
+  EXPECT_TRUE(LoadFiltersFromStore(network_context->logical_invalidation_store())
+                  .empty());
+}
+
+TEST_F(NetworkContextTestWithMockTime, LogicalInvalidationStartupRemoveRace) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(net::features::kLogicalClearHttpCache);
+
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+
+  // Pre-populate disk with filter2 (example2.com).
+  base::FilePath invalidation_file =
+      temp_dir.GetPath().AppendASCII("invalidation_filters");
+
+  auto create_filter = [](const std::string& url_str) {
+    net::HttpCache::InvalidationFilter filter;
+    filter.begin_time = base::Time();
+    filter.end_time = base::Time::Max();
+    filter.filter_type = net::UrlFilterType::kTrueIfMatches;
+    filter.origins.insert(url::Origin::Create(GURL(url_str)));
+    return filter;
+  };
+
+  net::HttpCache::InvalidationFilter filter2 =
+      create_filter("https://example2.com");
+  WritePickleFiltersToFile(invalidation_file, {filter2});
+
+  // Initialize NetworkContext.
+  mojom::NetworkContextParamsPtr context_params =
+      CreateNetworkContextParamsForTesting();
+  context_params->file_paths = mojom::NetworkContextFilePaths::New();
+  context_params->http_cache_enabled = true;
+  context_params->file_paths->logical_invalidation_directory =
+      temp_dir.GetPath();
+
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(std::move(context_params));
+
+  net::HttpCache* cache = network_context->url_request_context()
+                              ->http_transaction_factory()
+                              ->GetCache();
+  ASSERT_TRUE(cache);
+
+  // 2. Get the HTTP cache backend immediately to create entries.
+  disk_cache::Backend* backend = WaitForCacheBackend(*network_context);
+  ASSERT_TRUE(backend);
+
+  // 3. Create two entries in cache immediately (at mock time T_0).
+  std::string url1 = GetRequestCacheKey("https://example1.com/index.html");
+  std::string url2 = GetRequestCacheKey("https://example2.com/index.html");
+  CreateCacheEntry(backend, url1);
+  CreateCacheEntry(backend, url2);
+
+  // 4. IMMEDIATELY dynamically add filter1 (example1.com) and remove filter2
+  // (example2.com) before startup load completes!
+  mojom::ClearDataFilterPtr filter_ptr = mojom::ClearDataFilter::New();
+  filter_ptr->type = mojom::ClearDataFilter_Type::DELETE_MATCHES;
+  filter_ptr->origins.push_back(
+      url::Origin::Create(GURL("https://example1.com")));
+
+  network_context->ClearHttpCacheLogically(base::Time(), base::Time::Max(),
+                                           std::move(filter_ptr),
+                                           base::DoNothing());
+
+  network_context->OnLogicalFilterRemoved(filter2);
+  cache->RemoveInvalidationFilter(filter2);
+
+  // 5. Advance mock time and flush ThreadPool to let startup Load() and physical
+  // dooming complete.
+  task_environment_.FastForwardBy(base::Seconds(1));
+  base::ThreadPoolInstance::Get()->FlushForTesting();
+
+  // 6. Execute the Load reply (OnInvalidationFiltersLoaded) on the main thread.
+  base::RunLoop run_loop_load;
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, run_loop_load.QuitClosure());
+  run_loop_load.Run();
+
+  // Verify entry1 (example1) was purged and entry2 (example2) was preserved!
+  task_environment_.RunUntilIdle();
+  EXPECT_EQ(net::ERR_FAILED, OpenEntryError(backend, url1));
+  EXPECT_EQ(net::OK, OpenEntryError(backend, url2));
+
+  // Verify memory is clean.
+  EXPECT_EQ(0u, cache->GetInvalidationFilterCountForTesting());
+
+  // Verify disk file is clean.
+  EXPECT_TRUE(LoadFiltersFromStore(network_context->logical_invalidation_store())
+                  .empty());
+}
+
+TEST_F(NetworkContextTestWithMockTime, LogicalInvalidationStartupBatchSaves) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(net::features::kLogicalClearHttpCache);
+
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+
+  // Pre-populate disk with filter_old.
+  base::FilePath invalidation_file =
+      temp_dir.GetPath().AppendASCII("invalidation_filters");
+
+  auto create_filter = [](const std::string& url_str) {
+    net::HttpCache::InvalidationFilter filter;
+    filter.begin_time = base::Time();
+    filter.end_time = base::Time::Max();
+    filter.filter_type = net::UrlFilterType::kTrueIfMatches;
+    filter.origins.insert(url::Origin::Create(GURL(url_str)));
+    return filter;
+  };
+
+  net::HttpCache::InvalidationFilter filter_old =
+      create_filter("https://stale.example.com");
+
+  WritePickleFiltersToFile(invalidation_file, {filter_old});
+
+  // Initialize NetworkContext.
+  mojom::NetworkContextParamsPtr context_params =
+      CreateNetworkContextParamsForTesting();
+  context_params->file_paths = mojom::NetworkContextFilePaths::New();
+  context_params->http_cache_enabled = true;
+  context_params->file_paths->logical_invalidation_directory =
+      temp_dir.GetPath();
+
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(std::move(context_params));
+
+  net::HttpCache* cache = network_context->url_request_context()
+                              ->http_transaction_factory()
+                              ->GetCache();
+  ASSERT_TRUE(cache);
+
+  // Setup Histogram Tester to monitor write operations.
+  base::HistogramTester histograms;
+
+  // IMMEDIATELY perform multiple dynamic changes (during startup load).
+  mojom::ClearDataFilterPtr filter_new1 = mojom::ClearDataFilter::New();
+  filter_new1->type = mojom::ClearDataFilter_Type::KEEP_MATCHES;
+  filter_new1->origins.push_back(url::Origin::Create(GURL("https://new1.com")));
+
+  mojom::ClearDataFilterPtr filter_new2 = mojom::ClearDataFilter::New();
+  filter_new2->type = mojom::ClearDataFilter_Type::KEEP_MATCHES;
+  filter_new2->origins.push_back(url::Origin::Create(GURL("https://new2.com")));
+
+  network_context->ClearHttpCacheLogically(base::Time(), base::Time::Max(),
+                                           std::move(filter_new1),
+                                           base::DoNothing());
+  network_context->ClearHttpCacheLogically(base::Time(), base::Time::Max(),
+                                           std::move(filter_new2),
+                                           base::DoNothing());
+  cache->RemoveInvalidationFilter(filter_old);
+
+  // 1. Flush ThreadPool to let startup Load() finish reading.
+  base::ThreadPoolInstance::Get()->FlushForTesting();
+
+  // 2. Run message loop until the Load reply executes.
+  // This executes OnInvalidationFiltersLoaded.
+  base::RunLoop run_loop4;
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, run_loop4.QuitClosure());
+  run_loop4.Run();
+
+  task_environment_.RunUntilIdle();
+
+  // Verify Batch Save:
+  // Assert that the "PersistenceWriteDuration" metric was recorded between 1
+  // and 3 times! (If it was not batched, it would have recorded 7 saves).
+  const char kMetric[] =
+      "Net.HttpCache.LogicalInvalidation.PersistenceWriteDuration";
+  auto counts = histograms.GetTotalCountsForPrefix(kMetric);
+  auto it = counts.find(kMetric);
+  EXPECT_TRUE(it != counts.end() && it->second >= 1);
+
+  // Verify final list on disk matches.
+  EXPECT_TRUE(LoadFiltersFromStore(network_context->logical_invalidation_store())
+                  .empty());
+}
+
+#if BUILDFLAG(ENTERPRISE_CACHE_ENCRYPTION)
+// Verifies that the simple backend is always used when encrypting the cache.
+TEST_F(NetworkContextTest, EncryptedHttpCacheForcesSimpleBackend) {
+  mojom::NetworkContextParamsPtr context_params =
+      CreateNetworkContextParamsForTesting();
+  context_params->file_paths = mojom::NetworkContextFilePaths::New();
+  context_params->http_cache_enabled = true;
+
+  // Enable the encryption flag.
+  context_params->enable_encrypted_http_cache = true;
+
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  context_params->file_paths->http_cache_directory = temp_dir.GetPath();
+
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(std::move(context_params));
+
+  disk_cache::Backend* backend = WaitForCacheBackend(*network_context);
+  ASSERT_TRUE(backend);
+
+  EXPECT_EQ(net::URLRequestContextBuilder::HttpCacheParams::DISK_SIMPLE,
+            GetBackendType(backend));
+}
+#endif  // BUILDFLAG(ENTERPRISE_CACHE_ENCRYPTION)
 
 TEST_F(NetworkContextTest, NotifyExternalCacheHit) {
   const std::vector<GURL> kUrls = {
@@ -2355,7 +3169,8 @@ TEST_F(NetworkContextTest, NotifyExternalCacheHit) {
       EXPECT_EQ(entry->GetLastUsed(), kNow1);
 
       clock.SetNow(kNow2);
-      network_context->NotifyExternalCacheHit(url, url.scheme(), isolation_key,
+      network_context->NotifyExternalCacheHit(url, url.GetScheme(),
+                                              isolation_key,
                                               /*include_credentials=*/true);
 
       EXPECT_EQ(entry->GetLastUsed(), kNow2);
@@ -2481,7 +3296,7 @@ TEST_F(NetworkContextTest, ClearCorsPreflightCache) {
     for (auto entry : kCacheEntries) {
       preflight_cache.AppendEntry(
           url::Origin::Create(GURL(entry.origin)), GURL(entry.url),
-          net::NetworkIsolationKey(), mojom::IPAddressSpace::kUnknown,
+          net::NetworkIsolationKey(),
           cors::PreflightResult::Create(mojom::CredentialsMode::kInclude,
                                         std::string("POST"), std::nullopt,
                                         std::string("5"), nullptr));
@@ -2518,8 +3333,7 @@ TEST_F(NetworkContextTest, ClearCorsPreflightCache) {
       EXPECT_EQ(expect_entry_cached,
                 preflight_cache.DoesEntryExistForTesting(
                     url::Origin::Create(GURL(kCacheEntries[i].origin)),
-                    kCacheEntries[i].url, net::NetworkIsolationKey(),
-                    mojom::IPAddressSpace::kUnknown));
+                    kCacheEntries[i].url, net::NetworkIsolationKey()));
       if (expect_entry_cached) {
         ++cached_entries;
       }
@@ -2602,7 +3416,8 @@ TEST_F(NetworkContextTest, ClearHostCache) {
       host_cache->Set(
           net::HostCache::Key(domain, net::DnsQueryType::UNSPECIFIED, 0,
                               net::HostResolverSource::ANY,
-                              net::NetworkAnonymizationKey()),
+                              net::NetworkAnonymizationKey(),
+                              net::handles::kInvalidNetworkHandle),
           net::HostCache::Entry(net::OK, /*ip_endpoints=*/{}, /*aliases=*/{},
                                 net::HostCache::Entry::SOURCE_UNKNOWN),
           base::TimeTicks::Now(), base::Days(1));
@@ -2610,7 +3425,8 @@ TEST_F(NetworkContextTest, ClearHostCache) {
           net::HostCache::Key(
               url::SchemeHostPort(url::kHttpsScheme, domain, 443),
               net::DnsQueryType::UNSPECIFIED, 0, net::HostResolverSource::ANY,
-              net::NetworkAnonymizationKey()),
+              net::NetworkAnonymizationKey(),
+              net::handles::kInvalidNetworkHandle),
           net::HostCache::Entry(net::OK, /*ip_endpoints=*/{}, /*aliases=*/{},
                                 net::HostCache::Entry::SOURCE_UNKNOWN),
           base::TimeTicks::Now(), base::Days(1));
@@ -2792,67 +3608,6 @@ TEST_F(NetworkContextTest, ClearEmptyHttpAuthCache) {
   EXPECT_EQ(0u, cache->GetEntriesSizeForTesting());
 }
 
-std::optional<net::AuthCredentials> GetAuthCredentials(
-    NetworkContext* network_context,
-    const GURL& origin,
-    const net::NetworkAnonymizationKey& network_anonymization_key) {
-  base::RunLoop run_loop;
-  std::optional<net::AuthCredentials> result;
-  network_context->LookupServerBasicAuthCredentials(
-      origin, network_anonymization_key,
-      base::BindLambdaForTesting(
-          [&](const std::optional<net::AuthCredentials>& credentials) {
-            result = credentials;
-            run_loop.Quit();
-          }));
-  run_loop.Run();
-  return result;
-}
-
-TEST_F(NetworkContextTest, LookupServerBasicAuthCredentials) {
-  GURL origin("http://foo.test");
-  GURL origin2("http://bar.test");
-  GURL origin3("http://baz.test");
-  const auto network_anonymization_key1 =
-      net::NetworkAnonymizationKey::CreateSameSite(
-          net::SchemefulSite(url::Origin::Create(origin)));
-  const auto network_anonymization_key2 =
-      net::NetworkAnonymizationKey::CreateSameSite(
-          net::SchemefulSite(url::Origin::Create(origin2)));
-  std::unique_ptr<NetworkContext> network_context =
-      CreateContextWithParams(CreateNetworkContextParamsForTesting());
-  network_context->SetSplitAuthCacheByNetworkAnonymizationKey(true);
-  net::HttpAuthCache* cache = network_context->url_request_context()
-                                  ->http_transaction_factory()
-                                  ->GetSession()
-                                  ->http_auth_cache();
-
-  std::u16string user = u"user";
-  std::u16string password = u"pass";
-  cache->Add(url::SchemeHostPort(origin), net::HttpAuth::AUTH_SERVER, "Realm",
-             net::HttpAuth::AUTH_SCHEME_BASIC, network_anonymization_key1,
-             "basic realm=Realm", net::AuthCredentials(user, password), "/");
-  cache->Add(url::SchemeHostPort(origin2), net::HttpAuth::AUTH_PROXY, "Realm",
-             net::HttpAuth::AUTH_SCHEME_BASIC, network_anonymization_key1,
-             "basic realm=Realm", net::AuthCredentials(user, password), "/");
-
-  std::optional<net::AuthCredentials> result = GetAuthCredentials(
-      network_context.get(), origin, network_anonymization_key1);
-  ASSERT_TRUE(result.has_value());
-  EXPECT_EQ(user, result->username());
-  EXPECT_EQ(password, result->password());
-
-  // Nothing should be returned when using a different NIK.
-  EXPECT_FALSE(GetAuthCredentials(network_context.get(), origin,
-                                  network_anonymization_key2)
-                   .has_value());
-
-  // Proxy credentials should not be returned
-  result = GetAuthCredentials(network_context.get(), origin2,
-                              network_anonymization_key1);
-  EXPECT_FALSE(result.has_value());
-}
-
 #if BUILDFLAG(IS_CHROMEOS)
 std::optional<net::AuthCredentials> GetProxyAuthCredentials(
     NetworkContext* network_context,
@@ -2970,10 +3725,10 @@ TEST_F(NetworkContextTest, ClearReportingCacheReports) {
   GURL domain("http://google.com");
   network_context->url_request_context()->reporting_service()->QueueReport(
       domain, std::nullopt, net::NetworkAnonymizationKey(), "Mozilla/1.0",
-      "group", "type", base::Value::Dict(), 0,
+      "group", "type", base::DictValue(), 0,
       net::ReportingTargetType::kDeveloper);
   network_context->QueueEnterpriseReport("type", "group", domain,
-                                         base::Value::Dict());
+                                         base::DictValue());
 
   std::vector<raw_ptr<const net::ReportingReport, VectorExperimental>> reports;
   reporting_cache->GetReports(&reports);
@@ -3002,12 +3757,12 @@ TEST_F(NetworkContextTest, ClearReportingCacheReportsWithFilter) {
   GURL url1("http://google.com");
   reporting_service->QueueReport(url1, std::nullopt,
                                  net::NetworkAnonymizationKey(), "Mozilla/1.0",
-                                 "group", "type", base::Value::Dict(), 0,
+                                 "group", "type", base::DictValue(), 0,
                                  net::ReportingTargetType::kDeveloper);
   GURL url2("http://chromium.org");
   reporting_service->QueueReport(url2, std::nullopt,
                                  net::NetworkAnonymizationKey(), "Mozilla/1.0",
-                                 "group", "type", base::Value::Dict(), 0,
+                                 "group", "type", base::DictValue(), 0,
                                  net::ReportingTargetType::kDeveloper);
 
   std::vector<raw_ptr<const net::ReportingReport, VectorExperimental>> reports;
@@ -3043,12 +3798,12 @@ TEST_F(NetworkContextTest,
   GURL url1("http://192.168.0.1");
   reporting_service->QueueReport(url1, std::nullopt,
                                  net::NetworkAnonymizationKey(), "Mozilla/1.0",
-                                 "group", "type", base::Value::Dict(), 0,
+                                 "group", "type", base::DictValue(), 0,
                                  net::ReportingTargetType::kDeveloper);
   GURL url2("http://192.168.0.2");
   reporting_service->QueueReport(url2, std::nullopt,
                                  net::NetworkAnonymizationKey(), "Mozilla/1.0",
-                                 "group", "type", base::Value::Dict(), 0,
+                                 "group", "type", base::DictValue(), 0,
                                  net::ReportingTargetType::kDeveloper);
 
   std::vector<raw_ptr<const net::ReportingReport, VectorExperimental>> reports;
@@ -3337,9 +4092,10 @@ bool SetCookieHelper(NetworkContext* network_context,
   bool result = false;
   cookie_manager->SetCanonicalCookie(
       *net::CanonicalCookie::CreateUnsafeCookieForTesting(
-          key, value, url.host(), "/", base::Time(), base::Time(), base::Time(),
-          base::Time(), true, false, net::CookieSameSite::NO_RESTRICTION,
-          net::COOKIE_PRIORITY_LOW),
+          key, value, url.GetHost(), "/", base::Time(), base::Time(),
+          base::Time(), base::Time(), true, false,
+          net::CookieSameSite::NO_RESTRICTION, net::COOKIE_PRIORITY_LOW,
+          net::CookieSourceType::kOther),
       url, net::CookieOptions::MakeAllInclusive(),
       base::BindOnce(&SetCookieCallback, &run_loop, &result));
   run_loop.Run();
@@ -3360,7 +4116,7 @@ TEST_F(NetworkContextTest, CookieManager) {
   auto cookie = net::CanonicalCookie::CreateUnsafeCookieForTesting(
       "TestCookie", "1", "www.test.com", "/", base::Time(), base::Time(),
       base::Time(), base::Time(), false, false, net::CookieSameSite::LAX_MODE,
-      net::COOKIE_PRIORITY_LOW);
+      net::COOKIE_PRIORITY_LOW, net::CookieSourceType::kOther);
   cookie_manager_remote->SetCanonicalCookie(
       *cookie, net::cookie_util::SimulatedCookieSource(*cookie, "https"),
       net::CookieOptions::MakeAllInclusive(),
@@ -3893,7 +4649,8 @@ TEST_F(NetworkContextTest, CreateRestrictedUDPSocket) {
         net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS),
         /*params=*/nullptr, server_socket.BindNewPipeAndPassReceiver(),
         socket_listener_receiver.BindNewPipeAndPassRemote(),
-        create_future.GetCallback());
+        /*allow_multicast=*/false,
+        /*allow_source_specific_multicast=*/false, create_future.GetCallback());
     ASSERT_EQ(create_future.Get<0>(), net::OK);
     server_addr = *create_future.Get<1>();
   }
@@ -3913,7 +4670,8 @@ TEST_F(NetworkContextTest, CreateRestrictedUDPSocket) {
         net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS),
         /*params=*/nullptr, client_socket.BindNewPipeAndPassReceiver(),
         client_listener_receiver.BindNewPipeAndPassRemote(),
-        create_future.GetCallback());
+        /*allow_multicast=*/false,
+        /*allow_source_specific_multicast=*/false, create_future.GetCallback());
     ASSERT_EQ(create_future.Get<0>(), net::OK);
     client_addr = *create_future.Get<1>();
   }
@@ -3974,6 +4732,142 @@ TEST_F(NetworkContextTest, CreateRestrictedUDPSocket) {
   }
 }
 
+struct SendUdpToMulticastParams {
+  bool flag_enabled;
+  bool allow_multicast;
+  bool connected_else_bound_socket;
+};
+
+class RestrictedUDPSocketMulticastTest
+    : public NetworkContextTest,
+      public testing::WithParamInterface<SendUdpToMulticastParams> {
+ public:
+  RestrictedUDPSocketMulticastTest() {
+    if (GetParam().flag_enabled) {
+      feature_list_.InitAndEnableFeature(
+          features::kDirectSocketsUdpSendRequireMulticastPermissionPolicy);
+    } else {
+      feature_list_.InitAndDisableFeature(
+          features::kDirectSocketsUdpSendRequireMulticastPermissionPolicy);
+    }
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    RestrictedUDPSocketMulticastTest,
+    testing::Values(
+        SendUdpToMulticastParams{/*flag_enabled=*/false,
+                                 /*allow_multicast=*/false,
+                                 /*connected_else_bound_socket=*/false},
+        SendUdpToMulticastParams{/*flag_enabled=*/false,
+                                 /*allow_multicast=*/false,
+                                 /*connected_else_bound_socket=*/true},
+        SendUdpToMulticastParams{/*flag_enabled=*/false,
+                                 /*allow_multicast=*/true,
+                                 /*connected_else_bound_socket=*/false},
+        SendUdpToMulticastParams{/*flag_enabled=*/false,
+                                 /*allow_multicast=*/true,
+                                 /*connected_else_bound_socket=*/true},
+        SendUdpToMulticastParams{/*flag_enabled=*/true,
+                                 /*allow_multicast=*/false,
+                                 /*connected_else_bound_socket=*/false},
+        SendUdpToMulticastParams{/*flag_enabled=*/true,
+                                 /*allow_multicast=*/false,
+                                 /*connected_else_bound_socket=*/true},
+        SendUdpToMulticastParams{/*flag_enabled=*/true,
+                                 /*allow_multicast=*/true,
+                                 /*connected_else_bound_socket=*/false},
+        SendUdpToMulticastParams{/*flag_enabled=*/true,
+                                 /*allow_multicast=*/true,
+                                 /*connected_else_bound_socket=*/true}),
+    [](const testing::TestParamInfo<SendUdpToMulticastParams>& info) {
+      return base::StringPrintf(
+          "%s_%s_%s", info.param.flag_enabled ? "FlagEnabled" : "FlagDisabled",
+          info.param.allow_multicast ? "MulticastAllowed" : "MulticastDenied",
+          info.param.connected_else_bound_socket ? "Connected" : "Bound");
+    });
+
+TEST_P(RestrictedUDPSocketMulticastTest, MulticastSendOrConnect) {
+  auto resolver = std::make_unique<net::MockHostResolver>();
+  resolver->rules()->AddRule("mcast.test", "224.0.0.251");
+  network_service_->set_host_resolver_factory_for_testing(
+      std::make_unique<HostResolverFactory>(std::move(resolver)));
+
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(CreateNetworkContextParamsForTesting());
+
+  mojo::Remote<mojom::RestrictedUDPSocket> socket;
+  const SendUdpToMulticastParams& params = GetParam();
+
+  if (params.connected_else_bound_socket) {
+    base::test::TestFuture<int32_t, const std::optional<net::IPEndPoint>&>
+        create_future;
+    if (params.flag_enabled && !params.allow_multicast) {
+      EXPECT_CHECK_DEATH(network_context->CreateRestrictedUDPSocket(
+          net::IPEndPoint(net::IPAddress(224, 0, 0, 251), 5353),
+          mojom::RestrictedUDPSocketMode::CONNECTED,
+          net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS),
+          /*params=*/nullptr, socket.BindNewPipeAndPassReceiver(),
+          /*listener=*/mojo::NullRemote(),
+          /*allow_multicast=*/params.allow_multicast,
+          /*allow_source_specific_multicast=*/false,
+          create_future.GetCallback()));
+    } else {
+      network_context->CreateRestrictedUDPSocket(
+          net::IPEndPoint(net::IPAddress(224, 0, 0, 251), 5353),
+          mojom::RestrictedUDPSocketMode::CONNECTED,
+          net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS),
+          /*params=*/nullptr, socket.BindNewPipeAndPassReceiver(),
+          /*listener=*/mojo::NullRemote(),
+          /*allow_multicast=*/params.allow_multicast,
+          /*allow_source_specific_multicast=*/false,
+          create_future.GetCallback());
+      EXPECT_NE(create_future.Get<0>(), net::ERR_MULTICAST_NOT_ALLOWED);
+    }
+  } else {
+    base::test::TestFuture<int32_t, const std::optional<net::IPEndPoint>&>
+        create_future;
+    network_context->CreateRestrictedUDPSocket(
+        GetLocalHostWithAnyPort(), mojom::RestrictedUDPSocketMode::BOUND,
+        net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS),
+        /*params=*/nullptr, socket.BindNewPipeAndPassReceiver(),
+        /*listener=*/mojo::NullRemote(),
+        /*allow_multicast=*/params.allow_multicast,
+        /*allow_source_specific_multicast=*/false, create_future.GetCallback());
+    ASSERT_EQ(create_future.Get<0>(), net::OK);
+
+    const std::vector<uint8_t> test_msg{1, 2, 3};
+
+    // SendTo() with a multicast IP literal.
+    {
+      base::test::TestFuture<int32_t> send_future;
+      socket->SendTo(test_msg, net::HostPortPair("224.0.0.251", 5353),
+                     net::DnsQueryType::UNSPECIFIED, send_future.GetCallback());
+      if (params.flag_enabled && !params.allow_multicast) {
+        EXPECT_EQ(send_future.Get(), net::ERR_MULTICAST_NOT_ALLOWED);
+      } else {
+        EXPECT_NE(send_future.Get(), net::ERR_MULTICAST_NOT_ALLOWED);
+      }
+    }
+
+    // SendTo() with a hostname that resolves to a multicast address.
+    {
+      base::test::TestFuture<int32_t> send_future;
+      socket->SendTo(test_msg, net::HostPortPair("mcast.test", 5353),
+                     net::DnsQueryType::UNSPECIFIED, send_future.GetCallback());
+      if (params.flag_enabled && !params.allow_multicast) {
+        EXPECT_EQ(send_future.Get(), net::ERR_MULTICAST_NOT_ALLOWED);
+      } else {
+        EXPECT_NE(send_future.Get(), net::ERR_MULTICAST_NOT_ALLOWED);
+      }
+    }
+  }
+}
+
 TEST_F(NetworkContextTest, CreateNetLogExporter) {
   // Basic flow around start/stop.
   std::unique_ptr<NetworkContext> network_context =
@@ -3995,15 +4889,16 @@ TEST_F(NetworkContextTest, CreateNetLogExporter) {
 
   net::TestCompletionCallback start_callback;
   net_log_exporter->Start(
-      std::move(out_file), base::Value::Dict().Set(kKeyEarly, kValEarly),
-      net::NetLogCaptureMode::kDefault, 100 * 1024, start_callback.callback());
+      std::move(out_file), base::DictValue().Set(kKeyEarly, kValEarly),
+      net::NetLogCaptureMode::kDefault, net::NetLogFileFormat::kJson,
+      100 * 1024, start_callback.callback());
   EXPECT_EQ(net::OK, start_callback.WaitForResult());
 
   const char kKeyLate[] = "late";
   const char kValLate[] = "snowval";
 
   net::TestCompletionCallback stop_callback;
-  net_log_exporter->Stop(base::Value::Dict().Set(kKeyLate, kValLate),
+  net_log_exporter->Stop(base::DictValue().Set(kKeyLate, kValLate),
                          stop_callback.callback());
   EXPECT_EQ(net::OK, stop_callback.WaitForResult());
 
@@ -4022,6 +4917,57 @@ TEST_F(NetworkContextTest, CreateNetLogExporter) {
   EXPECT_NE(std::string::npos, contents.find(kValLate)) << contents;
 }
 
+TEST_F(NetworkContextTest, CreateNetLogExporterNdjson) {
+  // Basic flow around start/stop for NDJSON.
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(CreateNetworkContextParamsForTesting());
+
+  mojo::Remote<mojom::NetLogExporter> net_log_exporter;
+  network_context->CreateNetLogExporter(
+      net_log_exporter.BindNewPipeAndPassReceiver());
+
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  base::FilePath out_path(temp_dir.GetPath().AppendASCII("out.jsonl"));
+  base::File out_file(out_path,
+                      base::File::FLAG_CREATE | base::File::FLAG_WRITE);
+  ASSERT_TRUE(out_file.IsValid());
+
+  const char kKeyEarly[] = "early";
+  const char kValEarly[] = "morning";
+
+  net::TestCompletionCallback start_callback;
+  net_log_exporter->Start(
+      std::move(out_file), base::DictValue().Set(kKeyEarly, kValEarly),
+      net::NetLogCaptureMode::kDefault, net::NetLogFileFormat::kNdjson,
+      100 * 1024, start_callback.callback());
+  EXPECT_EQ(net::OK, start_callback.WaitForResult());
+
+  const char kKeyLate[] = "late";
+  const char kValLate[] = "snowval";
+
+  net::TestCompletionCallback stop_callback;
+  net_log_exporter->Stop(base::DictValue().Set(kKeyLate, kValLate),
+                         stop_callback.callback());
+  EXPECT_EQ(net::OK, stop_callback.WaitForResult());
+
+  // Check that file got written.
+  std::string contents;
+  ASSERT_TRUE(base::ReadFileToString(out_path, &contents));
+
+  // Contents should have net constants in NDJSON format.
+  EXPECT_NE(std::string::npos, contents.find("{\"type\":\"constants\""))
+      << contents;
+  EXPECT_NE(std::string::npos, contents.find("ERR_IO_PENDING")) << contents;
+
+  // The additional stuff inject should also occur.
+  EXPECT_NE(std::string::npos, contents.find(kKeyEarly)) << contents;
+  EXPECT_NE(std::string::npos, contents.find(kValEarly)) << contents;
+  EXPECT_NE(std::string::npos, contents.find(kKeyLate)) << contents;
+  EXPECT_NE(std::string::npos, contents.find(kValLate)) << contents;
+  EXPECT_NE(std::string::npos, contents.find("{\"type\":\"end\"}")) << contents;
+}
+
 TEST_F(NetworkContextTest, CreateNetLogExporterUnbounded) {
   // Make sure that exporting without size limit works.
   std::unique_ptr<NetworkContext> network_context =
@@ -4038,14 +4984,14 @@ TEST_F(NetworkContextTest, CreateNetLogExporterUnbounded) {
   ASSERT_TRUE(out_file.IsValid());
 
   net::TestCompletionCallback start_callback;
-  net_log_exporter->Start(std::move(out_file), base::Value::Dict(),
-                          net::NetLogCaptureMode::kDefault,
-                          mojom::NetLogExporter::kUnlimitedFileSize,
-                          start_callback.callback());
+  net_log_exporter->Start(
+      std::move(out_file), base::DictValue(), net::NetLogCaptureMode::kDefault,
+      net::NetLogFileFormat::kJson, mojom::NetLogExporter::kUnlimitedFileSize,
+      start_callback.callback());
   EXPECT_EQ(net::OK, start_callback.WaitForResult());
 
   net::TestCompletionCallback stop_callback;
-  net_log_exporter->Stop(base::Value::Dict(), stop_callback.callback());
+  net_log_exporter->Stop(base::DictValue(), stop_callback.callback());
   EXPECT_EQ(net::OK, stop_callback.WaitForResult());
 
   // Check that file got written.
@@ -4069,7 +5015,7 @@ TEST_F(NetworkContextTest, CreateNetLogExporterErrors) {
       net_log_exporter.BindNewPipeAndPassReceiver());
 
   net::TestCompletionCallback stop_callback;
-  net_log_exporter->Stop(base::Value::Dict(), stop_callback.callback());
+  net_log_exporter->Stop(base::DictValue(), stop_callback.callback());
   EXPECT_EQ(net::ERR_UNEXPECTED, stop_callback.WaitForResult());
 
   base::FilePath temp_path;
@@ -4079,9 +5025,9 @@ TEST_F(NetworkContextTest, CreateNetLogExporterErrors) {
   ASSERT_TRUE(temp_file.IsValid());
 
   net::TestCompletionCallback start_callback;
-  net_log_exporter->Start(std::move(temp_file), base::Value::Dict(),
-                          net::NetLogCaptureMode::kDefault, 100 * 1024,
-                          start_callback.callback());
+  net_log_exporter->Start(
+      std::move(temp_file), base::DictValue(), net::NetLogCaptureMode::kDefault,
+      net::NetLogFileFormat::kJson, 100 * 1024, start_callback.callback());
   EXPECT_EQ(net::OK, start_callback.WaitForResult());
 
   // Can't start twice.
@@ -4092,8 +5038,9 @@ TEST_F(NetworkContextTest, CreateNetLogExporterErrors) {
   ASSERT_TRUE(temp_file2.IsValid());
 
   net::TestCompletionCallback start_callback2;
-  net_log_exporter->Start(std::move(temp_file2), base::Value::Dict(),
-                          net::NetLogCaptureMode::kDefault, 100 * 1024,
+  net_log_exporter->Start(std::move(temp_file2), base::DictValue(),
+                          net::NetLogCaptureMode::kDefault,
+                          net::NetLogFileFormat::kJson, 100 * 1024,
                           start_callback2.callback());
   EXPECT_EQ(net::ERR_UNEXPECTED, start_callback2.WaitForResult());
 
@@ -4136,9 +5083,9 @@ TEST_F(NetworkContextTest, DestroyNetLogExporterWhileCreatingScratchDir) {
                        base::File::FLAG_CREATE_ALWAYS | base::File::FLAG_WRITE);
   ASSERT_TRUE(temp_file.IsValid());
 
-  net_log_exporter->Start(std::move(temp_file), base::Value::Dict(),
-                          net::NetLogCaptureMode::kDefault, 100,
-                          base::BindOnce([](int) {}));
+  net_log_exporter->Start(
+      std::move(temp_file), base::DictValue(), net::NetLogCaptureMode::kDefault,
+      net::NetLogFileFormat::kJson, 100, base::BindOnce([](int) {}));
   net_log_exporter = nullptr;
   block_mktemp.Signal();
 
@@ -4167,11 +5114,11 @@ class TestResolveHostClient : public ResolveHostClientBase {
 
   void CloseReceiver() { receiver_.reset(); }
 
-  void OnComplete(int error,
-                  const net::ResolveErrorInfo& resolve_error_info,
-                  const std::optional<net::AddressList>& addresses,
-                  const std::optional<net::HostResolverEndpointResults>&
-                      endpoint_results_with_metadata) override {
+  void OnComplete(
+      int error,
+      const net::ResolveErrorInfo& resolve_error_info,
+      const net::AddressList& addresses,
+      const net::HostResolverEndpointResults& alternative_endpoints) override {
     DCHECK(!complete_);
 
     complete_ = true;
@@ -4193,7 +5140,7 @@ class TestResolveHostClient : public ResolveHostClientBase {
     return result_error_;
   }
 
-  const std::optional<net::AddressList>& result_addresses() const {
+  const net::AddressList& result_addresses() const {
     DCHECK(complete_);
     return result_addresses_;
   }
@@ -4204,7 +5151,7 @@ class TestResolveHostClient : public ResolveHostClientBase {
   bool complete_;
   int top_level_result_error_;
   int result_error_;
-  std::optional<net::AddressList> result_addresses_;
+  net::AddressList result_addresses_;
   const raw_ptr<base::RunLoop> run_loop_;
 };
 
@@ -4239,8 +5186,107 @@ TEST_F(NetworkContextResolveHostTest, Sync) {
   EXPECT_EQ(net::OK, response_client.top_level_result_error());
   EXPECT_EQ(net::OK, response_client.result_error());
   EXPECT_THAT(
-      response_client.result_addresses().value().endpoints(),
+      response_client.result_addresses().endpoints(),
       testing::UnorderedElementsAre(CreateExpectedEndPoint("1.2.3.4", 160)));
+  EXPECT_EQ(0u,
+            network_context->GetNumOutstandingResolveHostRequestsForTesting());
+}
+
+TEST_F(NetworkContextResolveHostTest, DirectOnlyDirect) {
+  auto resolver = std::make_unique<net::MockHostResolver>();
+  resolver->rules()->AddRule("sync.test", "1.2.3.4");
+  resolver->set_synchronous_mode(true);
+  network_service_->set_host_resolver_factory_for_testing(
+      std::make_unique<HostResolverFactory>(std::move(resolver)));
+
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(CreateNetworkContextParamsForTesting());
+
+  base::RunLoop run_loop;
+  mojom::ResolveHostParametersPtr optional_parameters =
+      mojom::ResolveHostParameters::New();
+  optional_parameters->direct_only = true;
+  mojo::PendingRemote<mojom::ResolveHostClient> pending_response_client;
+  TestResolveHostClient response_client(&pending_response_client, &run_loop);
+
+  network_context->ResolveHost(
+      network::mojom::HostResolverHost::NewHostPortPair(
+          net::HostPortPair("sync.test", 160)),
+      net::NetworkAnonymizationKey(), std::move(optional_parameters),
+      std::move(pending_response_client));
+  run_loop.Run();
+
+  EXPECT_EQ(net::OK, response_client.top_level_result_error());
+  EXPECT_EQ(net::OK, response_client.result_error());
+  EXPECT_THAT(
+      response_client.result_addresses().endpoints(),
+      testing::UnorderedElementsAre(CreateExpectedEndPoint("1.2.3.4", 160)));
+  EXPECT_EQ(0u,
+            network_context->GetNumOutstandingResolveHostRequestsForTesting());
+}
+
+TEST_F(NetworkContextResolveHostTest, DirectOnlyDisconnect) {
+  mojom::NetworkContextParamsPtr context_params =
+      CreateNetworkContextParamsForTesting();
+  net::ProxyConfig proxy_config =
+      net::ProxyConfig::CreateFromCustomPacURL(GURL("http://pac.test/"));
+  context_params->initial_proxy_config = net::ProxyConfigWithAnnotation(
+      proxy_config, TRAFFIC_ANNOTATION_FOR_TESTS);
+
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(std::move(context_params));
+
+  mojom::ResolveHostParametersPtr optional_parameters =
+      mojom::ResolveHostParameters::New();
+  optional_parameters->direct_only = true;
+  mojo::PendingRemote<mojom::ResolveHostClient> pending_response_client;
+  auto receiver = pending_response_client.InitWithNewPipeAndPassReceiver();
+
+  network_context->ResolveHost(
+      network::mojom::HostResolverHost::NewHostPortPair(
+          net::HostPortPair("sync.test", 160)),
+      net::NetworkAnonymizationKey(), std::move(optional_parameters),
+      std::move(pending_response_client));
+
+  // Drop the receiver, simulating client disconnect while proxy resolution is
+  // pending.
+  receiver.reset();
+
+  // Run pending tasks to ensure disconnect handler runs.
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return network_context->GetNumOutstandingResolveHostRequestsForTesting() ==
+           0u;
+  }));
+}
+
+TEST_F(NetworkContextResolveHostTest, DirectOnlyProxied) {
+  mojom::NetworkContextParamsPtr context_params =
+      CreateNetworkContextParamsForTesting();
+  net::ProxyConfig proxy_config;
+  proxy_config.proxy_rules().ParseFromString("proxy.bad.dns");
+  context_params->initial_proxy_config = net::ProxyConfigWithAnnotation(
+      proxy_config, TRAFFIC_ANNOTATION_FOR_TESTS);
+
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(std::move(context_params));
+
+  base::RunLoop run_loop;
+  mojom::ResolveHostParametersPtr optional_parameters =
+      mojom::ResolveHostParameters::New();
+  optional_parameters->direct_only = true;
+  mojo::PendingRemote<mojom::ResolveHostClient> pending_response_client;
+  TestResolveHostClient response_client(&pending_response_client, &run_loop);
+
+  network_context->ResolveHost(
+      network::mojom::HostResolverHost::NewHostPortPair(
+          net::HostPortPair("sync.test", 160)),
+      net::NetworkAnonymizationKey(), std::move(optional_parameters),
+      std::move(pending_response_client));
+  run_loop.Run();
+
+  EXPECT_EQ(net::ERR_DNS_DIRECT_ONLY, response_client.top_level_result_error());
+  EXPECT_EQ(net::ERR_DNS_DIRECT_ONLY, response_client.result_error());
+  EXPECT_TRUE(response_client.result_addresses().empty());
   EXPECT_EQ(0u,
             network_context->GetNumOutstandingResolveHostRequestsForTesting());
 }
@@ -4278,7 +5324,7 @@ TEST_F(NetworkContextResolveHostTest, Async) {
   EXPECT_EQ(net::OK, response_client.top_level_result_error());
   EXPECT_EQ(net::OK, response_client.result_error());
   EXPECT_THAT(
-      response_client.result_addresses().value().endpoints(),
+      response_client.result_addresses().endpoints(),
       testing::UnorderedElementsAre(CreateExpectedEndPoint("1.2.3.4", 160)));
   EXPECT_TRUE(control_handle_closed);
   EXPECT_EQ(0u,
@@ -4313,7 +5359,7 @@ TEST_F(NetworkContextResolveHostTest, FailureSync) {
   EXPECT_EQ(net::ERR_NAME_NOT_RESOLVED,
             response_client.top_level_result_error());
   EXPECT_EQ(net::ERR_DNS_TIMED_OUT, response_client.result_error());
-  EXPECT_FALSE(response_client.result_addresses());
+  EXPECT_THAT(response_client.result_addresses(), testing::IsEmpty());
   EXPECT_EQ(0u,
             network_context->GetNumOutstandingResolveHostRequestsForTesting());
 }
@@ -4351,7 +5397,7 @@ TEST_F(NetworkContextResolveHostTest, FailureAsync) {
   EXPECT_EQ(net::ERR_NAME_NOT_RESOLVED,
             response_client.top_level_result_error());
   EXPECT_EQ(net::ERR_DNS_TIMED_OUT, response_client.result_error());
-  EXPECT_FALSE(response_client.result_addresses());
+  EXPECT_THAT(response_client.result_addresses(), testing::IsEmpty());
   EXPECT_TRUE(control_handle_closed);
   EXPECT_EQ(0u,
             network_context->GetNumOutstandingResolveHostRequestsForTesting());
@@ -4389,7 +5435,7 @@ TEST_F(NetworkContextResolveHostTest, NetworkAnonymizationKey) {
 
   EXPECT_EQ(net::OK, response_client.result_error());
   EXPECT_THAT(
-      response_client.result_addresses().value().endpoints(),
+      response_client.result_addresses().endpoints(),
       testing::UnorderedElementsAre(CreateExpectedEndPoint("1.2.3.4", 160)));
   EXPECT_EQ(0u,
             network_context->GetNumOutstandingResolveHostRequestsForTesting());
@@ -4400,10 +5446,10 @@ TEST_F(NetworkContextResolveHostTest, NetworkAnonymizationKey) {
 // Revoke fenced frame network but the resolve request is without the
 // NetworkAnonymizationKey. The request should succeed.
 TEST_F(NetworkContextResolveHostTest,
-       SchemeHostPortRevokeNetworkWithoutNetworkAnonymizationKey) {
+       SchemeHostPortRestrictNetworkWithoutNetworkAnonymizationKey) {
   const GURL url = GURL("https://sync.test");
   auto resolver = std::make_unique<net::MockHostResolver>();
-  resolver->rules()->AddRule(url.host(), "1.2.3.4");
+  resolver->rules()->AddRule(url.GetHost(), "1.2.3.4");
   resolver->set_synchronous_mode(true);
   network_service_->set_host_resolver_factory_for_testing(
       std::make_unique<HostResolverFactory>(std::move(resolver)));
@@ -4424,16 +5470,20 @@ TEST_F(NetworkContextResolveHostTest,
 
   // Revoke untrusted network access for the nonce.
   base::test::TestFuture<void> revoked;
-  network_context->RevokeNetworkForNonces(
-      {nonce}, base::BindOnce(revoked.GetCallback()));
+  auto revoked_nonce_pattern = CreateIdAndAllowlistedPatterns(nonce);
+  std::vector<network::mojom::IdAndAllowlistedPatternsPtr> nonces_to_urls;
+  nonces_to_urls.push_back(std::move(revoked_nonce_pattern));
+  network_context->RestrictNetworkForIds(std::move(nonces_to_urls),
+                                         base::BindOnce(revoked.GetCallback()));
   EXPECT_TRUE(revoked.Wait());
-  EXPECT_FALSE(network_context->IsNetworkForNonceAndUrlAllowed(nonce, url));
+  EXPECT_FALSE(network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+      nonce, url, kNak_));
 
   // Resolve the host without the NetworkAnonymizationKey. The resolve request
   // should succeed.
   network_context->ResolveHost(
       network::mojom::HostResolverHost::NewSchemeHostPort(
-          url::SchemeHostPort(url::kHttpScheme, url.host(), 160)),
+          url::SchemeHostPort(url::kHttpScheme, url.GetHost(), 160)),
       net::NetworkAnonymizationKey(), std::move(optional_parameters),
       std::move(pending_response_client));
   run_loop.Run();
@@ -4441,19 +5491,22 @@ TEST_F(NetworkContextResolveHostTest,
   EXPECT_EQ(net::OK, response_client.top_level_result_error());
   EXPECT_EQ(net::OK, response_client.result_error());
   EXPECT_THAT(
-      response_client.result_addresses().value().endpoints(),
+      response_client.result_addresses().endpoints(),
       testing::UnorderedElementsAre(CreateExpectedEndPoint("1.2.3.4", 160)));
   EXPECT_EQ(0u,
             network_context->GetNumOutstandingResolveHostRequestsForTesting());
 }
 
-// Revoke fenced frame network and the resolve request is with the
-// NetworkAnonymizationKey. The request should be disabled.
+// Revoke network access for a given network_restrictions_id, but the resolve
+// request is without the id. The request should succeed.
 TEST_F(NetworkContextResolveHostTest,
-       SchemeHostPortRevokeNetworkWithNetworkAnonymizationKey) {
+       SchemeHostPortRestrictNetworkWithoutNetworkRestrictionsID) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(network::features::kConnectionAllowlists);
+
   const GURL url = GURL("https://sync.test");
   auto resolver = std::make_unique<net::MockHostResolver>();
-  resolver->rules()->AddRule(url.host(), "1.2.3.4");
+  resolver->rules()->AddRule(url.GetHost(), "1.2.3.4");
   resolver->set_synchronous_mode(true);
   network_service_->set_host_resolver_factory_for_testing(
       std::make_unique<HostResolverFactory>(std::move(resolver)));
@@ -4472,24 +5525,91 @@ TEST_F(NetworkContextResolveHostTest,
 
   const base::UnguessableToken nonce = base::UnguessableToken::Create();
 
-  // Revoke untrusted network access for the nonce.
+  // Revoke network access for the network_restrictions_id.
   base::test::TestFuture<void> revoked;
-  network_context->RevokeNetworkForNonces(
-      {nonce}, base::BindOnce(revoked.GetCallback()));
+  auto revoked_nonce_pattern = CreateIdAndAllowlistedPatterns(nonce);
+  std::vector<network::mojom::IdAndAllowlistedPatternsPtr> nonces_to_urls;
+  nonces_to_urls.push_back(std::move(revoked_nonce_pattern));
+  network_context->RestrictNetworkForIds(std::move(nonces_to_urls),
+                                         base::BindOnce(revoked.GetCallback()));
   EXPECT_TRUE(revoked.Wait());
-  EXPECT_FALSE(network_context->IsNetworkForNonceAndUrlAllowed(nonce, url));
+  EXPECT_FALSE(network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+      nonce, url, kNak_));
+  auto scheme_host_port = network::mojom::HostResolverHost::NewSchemeHostPort(
+      url::SchemeHostPort(url::kHttpScheme, url.GetHost(), 160));
+  EXPECT_FALSE(
+      network_context->IsHostResolutionForNetworkRestrictionsIdAndHostAllowed(
+          nonce, *scheme_host_port, kNak_));
 
-  // Create the NetworkAnonymizationKey.
-  const auto site = net::SchemefulSite(url);
-  net::NetworkAnonymizationKey network_anonymization_key =
-      net::NetworkAnonymizationKey::CreateFromFrameSite(site, site, nonce);
-
-  // Resolve the host with the NetworkAnonymizationKey. The resolve request
-  // should be disabled.
+  // Resolve the host without the network_restrictions_id. The resolve request
+  // should succeed.
   network_context->ResolveHost(
       network::mojom::HostResolverHost::NewSchemeHostPort(
-          url::SchemeHostPort(url::kHttpScheme, url.host(), 160)),
-      network_anonymization_key, std::move(optional_parameters),
+          url::SchemeHostPort(url::kHttpScheme, url.GetHost(), 160)),
+      net::NetworkAnonymizationKey(), std::move(optional_parameters),
+      std::move(pending_response_client));
+  run_loop.Run();
+
+  EXPECT_EQ(net::OK, response_client.top_level_result_error());
+  EXPECT_EQ(net::OK, response_client.result_error());
+  EXPECT_THAT(
+      response_client.result_addresses().endpoints(),
+      testing::UnorderedElementsAre(CreateExpectedEndPoint("1.2.3.4", 160)));
+  EXPECT_EQ(0u,
+            network_context->GetNumOutstandingResolveHostRequestsForTesting());
+}
+
+// Revoke network access for a given network_restrictions_id, and the resolve
+// request contains the id. The request should be disabled.
+TEST_F(NetworkContextResolveHostTest,
+       SchemeHostPortRestrictNetworkWithNetworkRestrictionsID) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(network::features::kConnectionAllowlists);
+
+  const GURL url = GURL("https://sync.test");
+  auto resolver = std::make_unique<net::MockHostResolver>();
+  resolver->rules()->AddRule(url.GetHost(), "1.2.3.4");
+  resolver->set_synchronous_mode(true);
+  network_service_->set_host_resolver_factory_for_testing(
+      std::make_unique<HostResolverFactory>(std::move(resolver)));
+
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(CreateNetworkContextParamsForTesting());
+
+  const base::UnguessableToken nonce = base::UnguessableToken::Create();
+
+  base::RunLoop run_loop;
+  mojo::Remote<mojom::ResolveHostHandle> control_handle;
+  mojom::ResolveHostParametersPtr optional_parameters =
+      mojom::ResolveHostParameters::New();
+  // Set the network_restrictions_id for the request.
+  optional_parameters->control_handle =
+      control_handle.BindNewPipeAndPassReceiver();
+  optional_parameters->network_restrictions_id = nonce;
+  mojo::PendingRemote<mojom::ResolveHostClient> pending_response_client;
+  TestResolveHostClient response_client(&pending_response_client, &run_loop);
+
+  // Revoke network access for the nonce.
+  base::test::TestFuture<void> revoked;
+  auto revoked_nonce_pattern = CreateIdAndAllowlistedPatterns(nonce);
+  std::vector<network::mojom::IdAndAllowlistedPatternsPtr> nonces_to_urls;
+  nonces_to_urls.push_back(std::move(revoked_nonce_pattern));
+  network_context->RestrictNetworkForIds(std::move(nonces_to_urls),
+                                         base::BindOnce(revoked.GetCallback()));
+  EXPECT_TRUE(revoked.Wait());
+  EXPECT_FALSE(network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+      nonce, url, kNak_));
+  auto scheme_host_port = network::mojom::HostResolverHost::NewSchemeHostPort(
+      url::SchemeHostPort(url::kHttpScheme, url.GetHost(), 160));
+  EXPECT_FALSE(
+      network_context->IsHostResolutionForNetworkRestrictionsIdAndHostAllowed(
+          nonce, *scheme_host_port, kNak_));
+
+  // Resolve the host. The resolve request should be disabled.
+  network_context->ResolveHost(
+      network::mojom::HostResolverHost::NewSchemeHostPort(
+          url::SchemeHostPort(url::kHttpScheme, url.GetHost(), 160)),
+      net::NetworkAnonymizationKey(), std::move(optional_parameters),
       std::move(pending_response_client));
   run_loop.RunUntilIdle();
 
@@ -4501,10 +5621,77 @@ TEST_F(NetworkContextResolveHostTest,
             network_context->GetNumOutstandingResolveHostRequestsForTesting());
 }
 
-// Revoke fenced frame network but the resolve request is without the
-// NetworkAnonymizationKey. The request should succeed.
 TEST_F(NetworkContextResolveHostTest,
-       HostPortPairRevokeNetworkWithoutNetworkAnonymizationKey) {
+       ResolveHostSucceedsWithNetworkRestrictionsIDAndSchemeHostPort) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(network::features::kConnectionAllowlists);
+
+  const GURL url = GURL("https://sync.test");
+  auto resolver = std::make_unique<net::MockHostResolver>();
+  resolver->rules()->AddRule(url.GetHost(), "1.2.3.4");
+  resolver->set_synchronous_mode(true);
+  network_service_->set_host_resolver_factory_for_testing(
+      std::make_unique<HostResolverFactory>(std::move(resolver)));
+
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(CreateNetworkContextParamsForTesting());
+
+  const base::UnguessableToken nonce = base::UnguessableToken::Create();
+
+  base::RunLoop run_loop;
+  mojo::Remote<mojom::ResolveHostHandle> control_handle;
+  mojom::ResolveHostParametersPtr optional_parameters =
+      mojom::ResolveHostParameters::New();
+  // Set the network_restrictions_id for the request.
+  optional_parameters->control_handle =
+      control_handle.BindNewPipeAndPassReceiver();
+  optional_parameters->network_restrictions_id = nonce;
+  mojo::PendingRemote<mojom::ResolveHostClient> pending_response_client;
+  TestResolveHostClient response_client(&pending_response_client, &run_loop);
+
+  // Revoke network access for the nonce. Allow requests to `url` to succeed.
+  base::test::TestFuture<void> revoked;
+  mojom::IdAndAllowlistedPatternsPtr revoked_nonce_pattern =
+      CreateIdAndAllowlistedPatterns(nonce);
+  revoked_nonce_pattern->allowlists.enforced->allowlist.push_back(url.spec());
+  std::vector<network::mojom::IdAndAllowlistedPatternsPtr> nonces_to_urls;
+  nonces_to_urls.push_back(std::move(revoked_nonce_pattern));
+  network_context->RestrictNetworkForIds(std::move(nonces_to_urls),
+                                         base::BindOnce(revoked.GetCallback()));
+  EXPECT_TRUE(revoked.Wait());
+  EXPECT_TRUE(network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+      nonce, url, kNak_));
+  auto scheme_host_port = network::mojom::HostResolverHost::NewSchemeHostPort(
+      url::SchemeHostPort(url::kHttpScheme, url.GetHost(), 160));
+  EXPECT_TRUE(
+      network_context->IsHostResolutionForNetworkRestrictionsIdAndHostAllowed(
+          nonce, *scheme_host_port, kNak_));
+
+  // Resolve the host.
+  network_context->ResolveHost(
+      network::mojom::HostResolverHost::NewSchemeHostPort(
+          url::SchemeHostPort(url::kHttpScheme, url.GetHost(), 160)),
+      net::NetworkAnonymizationKey(), std::move(optional_parameters),
+      std::move(pending_response_client));
+  run_loop.RunUntilIdle();
+
+  // The resolve request should succeed because the host is allowlisted.
+  EXPECT_EQ(net::OK, response_client.top_level_result_error());
+  EXPECT_EQ(net::OK, response_client.result_error());
+  EXPECT_THAT(
+      response_client.result_addresses().endpoints(),
+      testing::UnorderedElementsAre(CreateExpectedEndPoint("1.2.3.4", 160)));
+  EXPECT_EQ(0u,
+            network_context->GetNumOutstandingResolveHostRequestsForTesting());
+}
+
+// Revoke network access for a given network_restrictions_id, but the resolve
+// request is without the id. The request should succeed.
+TEST_F(NetworkContextResolveHostTest,
+       HostPortPairRestrictNetworkWithoutNetworkRestrictionsID) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(network::features::kConnectionAllowlists);
+
   auto resolver = std::make_unique<net::MockHostResolver>();
   resolver->rules()->AddRule("nik.test", "1.2.3.4");
   resolver->set_synchronous_mode(true);
@@ -4527,13 +5714,21 @@ TEST_F(NetworkContextResolveHostTest,
 
   // Revoke untrusted network access for the nonce.
   base::test::TestFuture<void> revoked;
-  network_context->RevokeNetworkForNonces(
-      {nonce}, base::BindOnce(revoked.GetCallback()));
+  auto revoked_nonce_pattern = CreateIdAndAllowlistedPatterns(nonce);
+  std::vector<network::mojom::IdAndAllowlistedPatternsPtr> nonces_to_urls;
+  nonces_to_urls.push_back(std::move(revoked_nonce_pattern));
+  network_context->RestrictNetworkForIds(std::move(nonces_to_urls),
+                                         base::BindOnce(revoked.GetCallback()));
   EXPECT_TRUE(revoked.Wait());
-  EXPECT_FALSE(network_context->IsNetworkForNonceAndUrlAllowed(
-      nonce, GURL("nik.test:160")));
+  EXPECT_FALSE(network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+      nonce, GURL("https://nik.test:160"), kNak_));
+  auto host_port_pair = network::mojom::HostResolverHost::NewHostPortPair(
+      net::HostPortPair("nik.test", 160));
+  EXPECT_FALSE(
+      network_context->IsHostResolutionForNetworkRestrictionsIdAndHostAllowed(
+          nonce, *host_port_pair, kNak_));
 
-  // Resolve the host without the NetworkAnonymizationKey. The resolve request
+  // Resolve the host without the network_restritctions_id. The resolve request
   // should succeed.
   network_context->ResolveHost(
       network::mojom::HostResolverHost::NewHostPortPair(
@@ -4545,16 +5740,19 @@ TEST_F(NetworkContextResolveHostTest,
   EXPECT_EQ(net::OK, response_client.top_level_result_error());
   EXPECT_EQ(net::OK, response_client.result_error());
   EXPECT_THAT(
-      response_client.result_addresses().value().endpoints(),
+      response_client.result_addresses().endpoints(),
       testing::UnorderedElementsAre(CreateExpectedEndPoint("1.2.3.4", 160)));
   EXPECT_EQ(0u,
             network_context->GetNumOutstandingResolveHostRequestsForTesting());
 }
 
-// Revoke fenced frame network and the resolve request is with the
-// NetworkAnonymizationKey. The request should be disabled.
+// Revoke network access for a given network_restrictions_id, and the resolve
+// request contains the id. The request should be disabled.
 TEST_F(NetworkContextResolveHostTest,
-       HostPortPairRevokeNetworkWithNetworkAnonymizationKey) {
+       HostPortPairRestrictNetworkWithNetworkRestrictionsID) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(network::features::kConnectionAllowlists);
+
   auto resolver = std::make_unique<net::MockHostResolver>();
   resolver->rules()->AddRule("nik.test", "1.2.3.4");
   resolver->set_synchronous_mode(true);
@@ -4564,36 +5762,40 @@ TEST_F(NetworkContextResolveHostTest,
   std::unique_ptr<NetworkContext> network_context =
       CreateContextWithParams(CreateNetworkContextParamsForTesting());
 
+  const base::UnguessableToken nonce = base::UnguessableToken::Create();
+
   base::RunLoop run_loop;
   mojo::Remote<mojom::ResolveHostHandle> control_handle;
   mojom::ResolveHostParametersPtr optional_parameters =
       mojom::ResolveHostParameters::New();
   optional_parameters->control_handle =
       control_handle.BindNewPipeAndPassReceiver();
+  optional_parameters->network_restrictions_id = nonce;
   mojo::PendingRemote<mojom::ResolveHostClient> pending_response_client;
   TestResolveHostClient response_client(&pending_response_client, &run_loop);
 
-  const base::UnguessableToken nonce = base::UnguessableToken::Create();
-
   // Revoke untrusted network access for the nonce.
   base::test::TestFuture<void> revoked;
-  network_context->RevokeNetworkForNonces(
-      {nonce}, base::BindOnce(revoked.GetCallback()));
+  auto revoked_nonce_pattern = CreateIdAndAllowlistedPatterns(nonce);
+  std::vector<network::mojom::IdAndAllowlistedPatternsPtr> nonces_to_urls;
+  nonces_to_urls.push_back(std::move(revoked_nonce_pattern));
+  network_context->RestrictNetworkForIds(std::move(nonces_to_urls),
+                                         base::BindOnce(revoked.GetCallback()));
   EXPECT_TRUE(revoked.Wait());
-  EXPECT_FALSE(network_context->IsNetworkForNonceAndUrlAllowed(
-      nonce, GURL("nik.test:160")));
+  EXPECT_FALSE(network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+      nonce, GURL("https://nik.test:160"), kNak_));
+  auto host_port_pair = network::mojom::HostResolverHost::NewHostPortPair(
+      net::HostPortPair("nik.test", 160));
+  EXPECT_FALSE(
+      network_context->IsHostResolutionForNetworkRestrictionsIdAndHostAllowed(
+          nonce, *host_port_pair, kNak_));
 
-  // Create the NetworkAnonymizationKey.
-  const auto site = net::SchemefulSite(GURL("nik.test:160"));
-  net::NetworkAnonymizationKey network_anonymization_key =
-      net::NetworkAnonymizationKey::CreateFromFrameSite(site, site, nonce);
-
-  // Resolve the host with the NetworkAnonymizationKey. The resolve request
+  // Resolve the host with the network_restrictions_id. The resolve request
   // should be disabled.
   network_context->ResolveHost(
       network::mojom::HostResolverHost::NewHostPortPair(
           net::HostPortPair("nik.test", 160)),
-      network_anonymization_key, std::move(optional_parameters),
+      net::NetworkAnonymizationKey(), std::move(optional_parameters),
       std::move(pending_response_client));
   run_loop.Run();
 
@@ -4601,6 +5803,201 @@ TEST_F(NetworkContextResolveHostTest,
   // for network access.
   EXPECT_TRUE(response_client.complete());
   EXPECT_EQ(response_client.result_error(), net::ERR_NETWORK_ACCESS_REVOKED);
+  EXPECT_EQ(0u,
+            network_context->GetNumOutstandingResolveHostRequestsForTesting());
+}
+
+TEST_F(NetworkContextResolveHostTest,
+       ResolveHostSucceedsWithNetworkRestrictionsIDAndHostPortPair) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(network::features::kConnectionAllowlists);
+
+  const GURL url = GURL("https://sync.test");
+  auto resolver = std::make_unique<net::MockHostResolver>();
+  resolver->rules()->AddRule(url.GetHost(), "1.2.3.4");
+  resolver->set_synchronous_mode(true);
+  network_service_->set_host_resolver_factory_for_testing(
+      std::make_unique<HostResolverFactory>(std::move(resolver)));
+
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(CreateNetworkContextParamsForTesting());
+
+  const base::UnguessableToken nonce = base::UnguessableToken::Create();
+
+  base::RunLoop run_loop;
+  mojo::Remote<mojom::ResolveHostHandle> control_handle;
+  mojom::ResolveHostParametersPtr optional_parameters =
+      mojom::ResolveHostParameters::New();
+  // Set the network_restrictions_id for the request.
+  optional_parameters->control_handle =
+      control_handle.BindNewPipeAndPassReceiver();
+  optional_parameters->network_restrictions_id = nonce;
+  mojo::PendingRemote<mojom::ResolveHostClient> pending_response_client;
+  TestResolveHostClient response_client(&pending_response_client, &run_loop);
+
+  // Revoke network access for the nonce. Allow requests to `url` to succeed.
+  base::test::TestFuture<void> revoked;
+  mojom::IdAndAllowlistedPatternsPtr revoked_nonce_pattern =
+      CreateIdAndAllowlistedPatterns(nonce);
+  revoked_nonce_pattern->allowlists.enforced->allowlist.push_back(url.spec());
+  std::vector<network::mojom::IdAndAllowlistedPatternsPtr> nonces_to_urls;
+  nonces_to_urls.push_back(std::move(revoked_nonce_pattern));
+  network_context->RestrictNetworkForIds(std::move(nonces_to_urls),
+                                         base::BindOnce(revoked.GetCallback()));
+  EXPECT_TRUE(revoked.Wait());
+  EXPECT_TRUE(network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+      nonce, url, kNak_));
+  auto host_port_pair = network::mojom::HostResolverHost::NewHostPortPair(
+      net::HostPortPair(url.GetHost(), 160));
+  EXPECT_TRUE(
+      network_context->IsHostResolutionForNetworkRestrictionsIdAndHostAllowed(
+          nonce, *host_port_pair, kNak_));
+
+  // Resolve the host.
+  network_context->ResolveHost(
+      network::mojom::HostResolverHost::NewHostPortPair(
+          net::HostPortPair(url.GetHost(), 160)),
+      net::NetworkAnonymizationKey(), std::move(optional_parameters),
+      std::move(pending_response_client));
+  run_loop.RunUntilIdle();
+
+  // The resolve request should succeed because the host is allowlisted.
+  EXPECT_EQ(net::OK, response_client.top_level_result_error());
+  EXPECT_EQ(net::OK, response_client.result_error());
+  EXPECT_THAT(
+      response_client.result_addresses().endpoints(),
+      testing::UnorderedElementsAre(CreateExpectedEndPoint("1.2.3.4", 160)));
+  EXPECT_EQ(0u,
+            network_context->GetNumOutstandingResolveHostRequestsForTesting());
+}
+
+TEST_F(NetworkContextResolveHostTest,
+       ResolveHostFailsWithNetworkRestrictionsIDAndInvalidHost) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(network::features::kConnectionAllowlists);
+
+  const GURL url = GURL("https://sync.test");
+  auto resolver = std::make_unique<net::MockHostResolver>();
+  resolver->rules()->AddRule(url.GetHost(), "1.2.3.4");
+  resolver->set_synchronous_mode(true);
+  network_service_->set_host_resolver_factory_for_testing(
+      std::make_unique<HostResolverFactory>(std::move(resolver)));
+
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(CreateNetworkContextParamsForTesting());
+
+  const base::UnguessableToken nonce = base::UnguessableToken::Create();
+
+  base::RunLoop run_loop;
+  mojo::Remote<mojom::ResolveHostHandle> control_handle;
+  mojom::ResolveHostParametersPtr optional_parameters =
+      mojom::ResolveHostParameters::New();
+  // Set the network_restrictions_id for the request.
+  optional_parameters->control_handle =
+      control_handle.BindNewPipeAndPassReceiver();
+  optional_parameters->network_restrictions_id = nonce;
+  mojo::PendingRemote<mojom::ResolveHostClient> pending_response_client;
+  TestResolveHostClient response_client(&pending_response_client, &run_loop);
+
+  // Revoke network access for the nonce. Allow requests to `url` to succeed.
+  base::test::TestFuture<void> revoked;
+  mojom::IdAndAllowlistedPatternsPtr revoked_nonce_pattern =
+      CreateIdAndAllowlistedPatterns(nonce);
+  revoked_nonce_pattern->allowlists.enforced->allowlist.push_back(url.spec());
+  std::vector<network::mojom::IdAndAllowlistedPatternsPtr> nonces_to_urls;
+  nonces_to_urls.push_back(std::move(revoked_nonce_pattern));
+  network_context->RestrictNetworkForIds(std::move(nonces_to_urls),
+                                         base::BindOnce(revoked.GetCallback()));
+  EXPECT_TRUE(revoked.Wait());
+
+  // Provide an invalid host.
+  auto host_port_pair = network::mojom::HostResolverHost::NewHostPortPair(
+      net::HostPortPair("potato", 160));
+  ASSERT_EQ(host_port_pair->get_host_port_pair().host(), "potato");
+  EXPECT_FALSE(
+      network_context->IsHostResolutionForNetworkRestrictionsIdAndHostAllowed(
+          nonce, *host_port_pair, kNak_));
+
+  // Resolve the host.
+  network_context->ResolveHost(
+      network::mojom::HostResolverHost::NewHostPortPair(
+          net::HostPortPair("potato", 160)),
+      net::NetworkAnonymizationKey(), std::move(optional_parameters),
+      std::move(pending_response_client));
+  run_loop.RunUntilIdle();
+
+  // The resolve request should fail because the synthetic URL error disabled
+  // network access.
+  EXPECT_TRUE(response_client.complete());
+  EXPECT_EQ(response_client.result_error(), net::ERR_NETWORK_ACCESS_REVOKED);
+  EXPECT_EQ(0u,
+            network_context->GetNumOutstandingResolveHostRequestsForTesting());
+}
+
+TEST_F(NetworkContextResolveHostTest,
+       ResolveHostWithNetworkRestrictionsIDAndFeatureFlagDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(network::features::kConnectionAllowlists);
+
+  // Common setup. Note the lack of command line flag.
+  const GURL url = GURL("https://sync.test");
+  auto resolver = std::make_unique<net::MockHostResolver>();
+  resolver->rules()->AddRule(url.GetHost(), "1.2.3.4");
+  resolver->rules()->AddRule("wrong.test", "5.6.7.8");
+  resolver->set_synchronous_mode(true);
+  network_service_->set_host_resolver_factory_for_testing(
+      std::make_unique<HostResolverFactory>(std::move(resolver)));
+
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(CreateNetworkContextParamsForTesting());
+
+  const base::UnguessableToken nonce = base::UnguessableToken::Create();
+
+  base::RunLoop run_loop;
+  mojo::Remote<mojom::ResolveHostHandle> control_handle;
+  mojom::ResolveHostParametersPtr optional_parameters =
+      mojom::ResolveHostParameters::New();
+  // Set the network_restrictions_id for the request.
+  optional_parameters->control_handle =
+      control_handle.BindNewPipeAndPassReceiver();
+  optional_parameters->network_restrictions_id = nonce;
+  mojo::PendingRemote<mojom::ResolveHostClient> pending_response_client;
+  TestResolveHostClient response_client(&pending_response_client, &run_loop);
+
+  // Revoke network access for the nonce. Allow requests to `url` to succeed.
+  base::test::TestFuture<void> revoked;
+  mojom::IdAndAllowlistedPatternsPtr revoked_nonce_pattern =
+      CreateIdAndAllowlistedPatterns(nonce);
+  revoked_nonce_pattern->allowlists.enforced->allowlist.push_back(url.spec());
+  std::vector<network::mojom::IdAndAllowlistedPatternsPtr> nonces_to_urls;
+  nonces_to_urls.push_back(std::move(revoked_nonce_pattern));
+  network_context->RestrictNetworkForIds(std::move(nonces_to_urls),
+                                         base::BindOnce(revoked.GetCallback()));
+  EXPECT_TRUE(revoked.Wait());
+
+  // Now, intentionally try to resolve a URL that does NOT match `url`. We would
+  // normally expect this to fail, but because the feature flag is off, it
+  // should succeed.
+  auto host_port_pair = network::mojom::HostResolverHost::NewHostPortPair(
+      net::HostPortPair("wrong.test", 160));
+  EXPECT_TRUE(
+      network_context->IsHostResolutionForNetworkRestrictionsIdAndHostAllowed(
+          nonce, *host_port_pair, kNak_));
+
+  // Resolve the host.
+  network_context->ResolveHost(
+      network::mojom::HostResolverHost::NewHostPortPair(
+          net::HostPortPair("wrong.test", 160)),
+      net::NetworkAnonymizationKey(), std::move(optional_parameters),
+      std::move(pending_response_client));
+  run_loop.RunUntilIdle();
+
+  // The resolve request should succeed.
+  EXPECT_EQ(net::OK, response_client.top_level_result_error());
+  EXPECT_EQ(net::OK, response_client.result_error());
+  EXPECT_THAT(
+      response_client.result_addresses().endpoints(),
+      testing::UnorderedElementsAre(CreateExpectedEndPoint("5.6.7.8", 160)));
   EXPECT_EQ(0u,
             network_context->GetNumOutstandingResolveHostRequestsForTesting());
 }
@@ -4624,7 +6021,7 @@ TEST_F(NetworkContextResolveHostTest, NoControlHandle) {
 
   EXPECT_EQ(net::OK, response_client.result_error());
   EXPECT_THAT(
-      response_client.result_addresses().value().endpoints(),
+      response_client.result_addresses().endpoints(),
       testing::UnorderedElementsAre(CreateExpectedEndPoint("127.0.0.1", 80),
                                     CreateExpectedEndPoint("::1", 80)));
   EXPECT_EQ(0u,
@@ -4656,7 +6053,7 @@ TEST_F(NetworkContextResolveHostTest, CloseControlHandle) {
 
   EXPECT_EQ(net::OK, response_client.result_error());
   EXPECT_THAT(
-      response_client.result_addresses().value().endpoints(),
+      response_client.result_addresses().endpoints(),
       testing::UnorderedElementsAre(CreateExpectedEndPoint("127.0.0.1", 160),
                                     CreateExpectedEndPoint("::1", 160)));
   EXPECT_EQ(0u,
@@ -4701,7 +6098,7 @@ TEST_F(NetworkContextResolveHostTest, Cancellation) {
   // On cancellation, should receive an ERR_FAILED result, and the internal
   // resolver request should have been cancelled.
   EXPECT_EQ(net::ERR_ABORTED, response_client.result_error());
-  EXPECT_FALSE(response_client.result_addresses());
+  EXPECT_THAT(response_client.result_addresses(), testing::IsEmpty());
   EXPECT_EQ(1, state->num_cancellations());
   EXPECT_TRUE(control_handle_closed);
   EXPECT_EQ(0u,
@@ -4746,7 +6143,7 @@ TEST_F(NetworkContextResolveHostTest, DestroyContext) {
   // On context destruction, should receive an ERR_FAILED result, and the
   // internal resolver request should have been cancelled.
   EXPECT_EQ(net::ERR_FAILED, response_client.result_error());
-  EXPECT_FALSE(response_client.result_addresses());
+  EXPECT_THAT(response_client.result_addresses(), testing::IsEmpty());
   EXPECT_EQ(1, state->num_cancellations());
   EXPECT_TRUE(control_handle_closed);
 }
@@ -4809,7 +6206,8 @@ class TestResolverFactory : public net::HostResolver::Factory {
   std::unique_ptr<net::HostResolver> CreateResolver(
       net::HostResolverManager* manager,
       std::string_view host_mapping_rules,
-      bool enable_caching) override {
+      bool enable_caching,
+      bool enable_stale) override {
     DCHECK(host_mapping_rules.empty());
     auto resolve_context = std::make_unique<net::ResolveContext>(
         /*url_request_context=*/nullptr, /*enable_caching=*/false);
@@ -4823,7 +6221,8 @@ class TestResolverFactory : public net::HostResolver::Factory {
       net::NetLog* net_log,
       const net::HostResolver::ManagerOptions& options,
       std::string_view host_mapping_rules,
-      bool enable_caching) override {
+      bool enable_caching,
+      bool enable_stale) override {
     DCHECK(host_mapping_rules.empty());
     std::unique_ptr<net::ContextHostResolver> resolver =
         net::HostResolver::CreateStandaloneContextResolver(net_log, options,
@@ -4876,7 +6275,7 @@ TEST_F(NetworkContextCreateHostResolverTest, Basic) {
 
   EXPECT_EQ(net::OK, response_client.result_error());
   EXPECT_THAT(
-      response_client.result_addresses().value().endpoints(),
+      response_client.result_addresses().endpoints(),
       testing::UnorderedElementsAre(CreateExpectedEndPoint("127.0.0.1", 80),
                                     CreateExpectedEndPoint("::1", 80)));
   EXPECT_EQ(0u,
@@ -4925,7 +6324,7 @@ TEST_F(NetworkContextCreateHostResolverTest, CloseResolver) {
   // On resolver destruction, should receive an ERR_FAILED result, and the
   // internal resolver request should have been cancelled.
   EXPECT_EQ(net::ERR_FAILED, response_client.result_error());
-  EXPECT_FALSE(response_client.result_addresses());
+  EXPECT_THAT(response_client.result_addresses(), testing::IsEmpty());
   EXPECT_EQ(1, state->num_cancellations());
   EXPECT_TRUE(control_handle_closed);
 }
@@ -4981,7 +6380,7 @@ TEST_F(NetworkContextCreateHostResolverTest, CloseContext) {
   // On context destruction, should receive an ERR_FAILED result, and the
   // internal resolver request should have been cancelled.
   EXPECT_EQ(net::ERR_FAILED, response_client.result_error());
-  EXPECT_FALSE(response_client.result_addresses());
+  EXPECT_THAT(response_client.result_addresses(), testing::IsEmpty());
   EXPECT_EQ(1, state->num_cancellations());
   EXPECT_TRUE(control_handle_closed);
   EXPECT_TRUE(resolver_closed);
@@ -5034,7 +6433,7 @@ TEST_F(NetworkContextCreateHostResolverTest, WithConfigOverrides) {
                      false /* delay */);
   auto mock_dns_client = std::make_unique<net::MockDnsClient>(
       base_configuration, std::move(rules));
-  mock_dns_client->SetInsecureEnabled(/*enabled=*/true,
+  mock_dns_client->SetInsecureEnabled(net::InsecureDnsMode::kEnabledBuiltIn,
                                       /*additional_types_enabled=*/false);
   mock_dns_client->set_ignore_system_config_changes(true);
   auto* mock_dns_client_ptr = mock_dns_client.get();
@@ -5062,7 +6461,7 @@ TEST_F(NetworkContextCreateHostResolverTest, WithConfigOverrides) {
   run_loop.Run();
 
   EXPECT_EQ(net::OK, response_client.result_error());
-  EXPECT_THAT(response_client.result_addresses().value().endpoints(),
+  EXPECT_THAT(response_client.result_addresses().endpoints(),
               ElementsAre(CreateExpectedEndPoint(kResult, 80)));
 }
 #endif  // BUILDFLAG(IS_IOS)
@@ -5120,7 +6519,7 @@ TEST_F(NetworkContextTest, PrivacyModeDisabledByDefault) {
       CreateTestURLRequestContextBuilder()->Build();
   std::unique_ptr<net::URLRequest> request = request_context->CreateRequest(
       kURL, net::DEFAULT_PRIORITY, /*delegate=*/nullptr,
-      TRAFFIC_ANNOTATION_FOR_TESTS);
+      TRAFFIC_ANNOTATION_FOR_TESTS, net::handles::kInvalidNetworkHandle);
 
   std::unique_ptr<NetworkContext> network_context =
       CreateContextWithParams(CreateNetworkContextParamsForTesting());
@@ -5146,7 +6545,7 @@ TEST_F(NetworkContextTest, PrivacyModeEnabledIfCookiesBlocked) {
   {
     std::unique_ptr<net::URLRequest> request = request_context->CreateRequest(
         kURL, net::DEFAULT_PRIORITY, /*delegate=*/nullptr,
-        TRAFFIC_ANNOTATION_FOR_TESTS);
+        TRAFFIC_ANNOTATION_FOR_TESTS, net::handles::kInvalidNetworkHandle);
     request->set_site_for_cookies(net::SiteForCookies::FromUrl(kOtherURL));
     EXPECT_EQ(net::NetworkDelegate::PrivacySetting::kStateDisallowed,
               network_context->url_request_context()
@@ -5156,8 +6555,8 @@ TEST_F(NetworkContextTest, PrivacyModeEnabledIfCookiesBlocked) {
 
   {
     std::unique_ptr<net::URLRequest> request = request_context->CreateRequest(
-        kOtherURL, net::DEFAULT_PRIORITY,
-        /*delegate=*/nullptr, TRAFFIC_ANNOTATION_FOR_TESTS);
+        kOtherURL, net::DEFAULT_PRIORITY, /*delegate=*/nullptr,
+        TRAFFIC_ANNOTATION_FOR_TESTS, net::handles::kInvalidNetworkHandle);
     request->set_site_for_cookies(net::SiteForCookies::FromUrl(kURL));
     EXPECT_EQ(net::NetworkDelegate::PrivacySetting::kStateAllowed,
               network_context->url_request_context()
@@ -5180,7 +6579,7 @@ TEST_F(NetworkContextTest, PrivacyModeDisabledIfCookiesAllowed) {
 
   std::unique_ptr<net::URLRequest> request = request_context->CreateRequest(
       kURL, net::DEFAULT_PRIORITY, /*delegate=*/nullptr,
-      TRAFFIC_ANNOTATION_FOR_TESTS);
+      TRAFFIC_ANNOTATION_FOR_TESTS, net::handles::kInvalidNetworkHandle);
   request->set_site_for_cookies(net::SiteForCookies::FromUrl(kOtherURL));
   EXPECT_EQ(net::NetworkDelegate::PrivacySetting::kStateAllowed,
             network_context->url_request_context()
@@ -5203,7 +6602,7 @@ TEST_F(NetworkContextTest, PrivacyModeDisabledIfCookiesSettingForOtherURL) {
 
   std::unique_ptr<net::URLRequest> request = request_context->CreateRequest(
       kURL, net::DEFAULT_PRIORITY, /*delegate=*/nullptr,
-      TRAFFIC_ANNOTATION_FOR_TESTS);
+      TRAFFIC_ANNOTATION_FOR_TESTS, net::handles::kInvalidNetworkHandle);
   request->set_site_for_cookies(net::SiteForCookies::FromUrl(kOtherURL));
   EXPECT_EQ(net::NetworkDelegate::PrivacySetting::kStateAllowed,
             network_context->url_request_context()
@@ -5227,7 +6626,7 @@ TEST_F(NetworkContextTest, PrivacyModeEnabledIfThirdPartyCookiesBlocked) {
   {
     std::unique_ptr<net::URLRequest> request = request_context->CreateRequest(
         kURL, net::DEFAULT_PRIORITY, /*delegate=*/nullptr,
-        TRAFFIC_ANNOTATION_FOR_TESTS);
+        TRAFFIC_ANNOTATION_FOR_TESTS, net::handles::kInvalidNetworkHandle);
     request->set_site_for_cookies(net::SiteForCookies::FromUrl(kOtherURL));
     EXPECT_EQ(
         net::NetworkDelegate::PrivacySetting::kPartitionedStateAllowedOnly,
@@ -5237,7 +6636,7 @@ TEST_F(NetworkContextTest, PrivacyModeEnabledIfThirdPartyCookiesBlocked) {
   {
     std::unique_ptr<net::URLRequest> request = request_context->CreateRequest(
         kURL, net::DEFAULT_PRIORITY, /*delegate=*/nullptr,
-        TRAFFIC_ANNOTATION_FOR_TESTS);
+        TRAFFIC_ANNOTATION_FOR_TESTS, net::handles::kInvalidNetworkHandle);
     request->set_site_for_cookies(net::SiteForCookies::FromUrl(kURL));
     EXPECT_EQ(net::NetworkDelegate::PrivacySetting::kStateAllowed,
               delegate->ForcePrivacyMode(*request));
@@ -5247,7 +6646,7 @@ TEST_F(NetworkContextTest, PrivacyModeEnabledIfThirdPartyCookiesBlocked) {
   {
     std::unique_ptr<net::URLRequest> request = request_context->CreateRequest(
         kURL, net::DEFAULT_PRIORITY, /*delegate=*/nullptr,
-        TRAFFIC_ANNOTATION_FOR_TESTS);
+        TRAFFIC_ANNOTATION_FOR_TESTS, net::handles::kInvalidNetworkHandle);
     request->set_site_for_cookies(net::SiteForCookies::FromUrl(kOtherURL));
     EXPECT_EQ(net::NetworkDelegate::PrivacySetting::kStateAllowed,
               delegate->ForcePrivacyMode(*request));
@@ -5256,7 +6655,7 @@ TEST_F(NetworkContextTest, PrivacyModeEnabledIfThirdPartyCookiesBlocked) {
   {
     std::unique_ptr<net::URLRequest> request = request_context->CreateRequest(
         kURL, net::DEFAULT_PRIORITY, /*delegate=*/nullptr,
-        TRAFFIC_ANNOTATION_FOR_TESTS);
+        TRAFFIC_ANNOTATION_FOR_TESTS, net::handles::kInvalidNetworkHandle);
     request->set_site_for_cookies(net::SiteForCookies::FromUrl(kURL));
     EXPECT_EQ(net::NetworkDelegate::PrivacySetting::kStateAllowed,
               delegate->ForcePrivacyMode(*request));
@@ -5269,12 +6668,12 @@ TEST_F(NetworkContextTest, CanSetCookieFalseIfCookiesBlocked) {
   std::unique_ptr<net::URLRequestContext> context =
       CreateTestURLRequestContextBuilder()->Build();
   std::unique_ptr<net::URLRequest> request = context->CreateRequest(
-      GURL("http://foo.com"), net::DEFAULT_PRIORITY,
-      /*delegate=*/nullptr, TRAFFIC_ANNOTATION_FOR_TESTS);
+      GURL("http://foo.com"), net::DEFAULT_PRIORITY, /*delegate=*/nullptr,
+      TRAFFIC_ANNOTATION_FOR_TESTS, net::handles::kInvalidNetworkHandle);
   auto cookie = net::CanonicalCookie::CreateUnsafeCookieForTesting(
       "TestCookie", "1", "www.test.com", "/", base::Time(), base::Time(),
       base::Time(), base::Time(), false, false, net::CookieSameSite::LAX_MODE,
-      net::COOKIE_PRIORITY_LOW);
+      net::COOKIE_PRIORITY_LOW, net::CookieSourceType::kOther);
   EXPECT_TRUE(
       network_context->url_request_context()->network_delegate()->CanSetCookie(
           *request, *cookie, /* options */ nullptr,
@@ -5296,12 +6695,13 @@ TEST_F(NetworkContextTest, CanSetCookieTrueIfCookiesAllowed) {
   std::unique_ptr<net::URLRequestContext> context =
       CreateTestURLRequestContextBuilder()->Build();
   std::unique_ptr<net::URLRequest> request = context->CreateRequest(
-      GURL("http://foo.com"), net::DEFAULT_PRIORITY,
-      /*delegate=*/nullptr, TRAFFIC_ANNOTATION_FOR_TESTS);
+      GURL("http://foo.com"), net::DEFAULT_PRIORITY, /*delegate=*/nullptr,
+      TRAFFIC_ANNOTATION_FOR_TESTS, net::handles::kInvalidNetworkHandle);
   auto cookie = net::CanonicalCookie::CreateUnsafeCookieForTesting(
       "TestCookie", "1", "www.test.com", "/", base::Time(), base::Time(),
       base::Time(), base::Time(), false, false,
-      net::CookieSameSite::NO_RESTRICTION, net::COOKIE_PRIORITY_LOW);
+      net::CookieSameSite::NO_RESTRICTION, net::COOKIE_PRIORITY_LOW,
+      net::CookieSourceType::kOther);
 
   SetDefaultContentSetting(CONTENT_SETTING_ALLOW, network_context.get());
   net::CookieInclusionStatus status;
@@ -5323,8 +6723,8 @@ TEST_F(NetworkContextAnnotateAndMoveUserBlockedCookiesTest,
   std::unique_ptr<net::URLRequestContext> context =
       CreateTestURLRequestContextBuilder()->Build();
   std::unique_ptr<net::URLRequest> request = context->CreateRequest(
-      GURL("http://foo.com"), net::DEFAULT_PRIORITY,
-      /*delegate=*/nullptr, TRAFFIC_ANNOTATION_FOR_TESTS);
+      GURL("http://foo.com"), net::DEFAULT_PRIORITY, /*delegate=*/nullptr,
+      TRAFFIC_ANNOTATION_FOR_TESTS, net::handles::kInvalidNetworkHandle);
 
   net::CookieAccessResultList included;
   net::CookieAccessResultList excluded;
@@ -5362,8 +6762,8 @@ TEST_F(NetworkContextAnnotateAndMoveUserBlockedCookiesTest,
   std::unique_ptr<net::URLRequestContext> context =
       CreateTestURLRequestContextBuilder()->Build();
   std::unique_ptr<net::URLRequest> request = context->CreateRequest(
-      GURL("http://foo.com"), net::DEFAULT_PRIORITY,
-      /*delegate=*/nullptr, TRAFFIC_ANNOTATION_FOR_TESTS);
+      GURL("http://foo.com"), net::DEFAULT_PRIORITY, /*delegate=*/nullptr,
+      TRAFFIC_ANNOTATION_FOR_TESTS, net::handles::kInvalidNetworkHandle);
   net::CookieAccessResultList included;
   net::CookieAccessResultList excluded;
 
@@ -5507,8 +6907,9 @@ TEST_F(NetworkContextTest, PreconnectOne) {
 
   network_context->PreconnectSockets(
       1, test_server.base_url(), network::mojom::CredentialsMode::kInclude,
-      net::NetworkAnonymizationKey(),
-      net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS));
+      net::NetworkAnonymizationKey(), GetTestNetworkRestrictionsId(),
+      net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS),
+      std::nullopt, mojo::NullRemote());
   connection_listener.WaitForAcceptedConnections(1u);
 }
 
@@ -5523,17 +6924,20 @@ TEST_F(NetworkContextTest, PreconnectDifferentCredentialsMode) {
 
   network_context->PreconnectSockets(
       1, test_server.base_url(), network::mojom::CredentialsMode::kOmit,
-      net::NetworkAnonymizationKey(),
-      net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS));
+      net::NetworkAnonymizationKey(), GetTestNetworkRestrictionsId(),
+      net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS),
+      std::nullopt, mojo::NullRemote());
   network_context->PreconnectSockets(
       1, test_server.base_url(), network::mojom::CredentialsMode::kInclude,
-      net::NetworkAnonymizationKey(),
-      net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS));
+      net::NetworkAnonymizationKey(), GetTestNetworkRestrictionsId(),
+      net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS),
+      std::nullopt, mojo::NullRemote());
   network_context->PreconnectSockets(
       1, test_server.base_url(),
       network::mojom::CredentialsMode::kOmitBug_775438_Workaround,
-      net::NetworkAnonymizationKey(),
-      net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS));
+      net::NetworkAnonymizationKey(), GetTestNetworkRestrictionsId(),
+      net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS),
+      std::nullopt, mojo::NullRemote());
 
   // The requests above should each trigger the connection of a different
   // socket, since they specify a different credentials mode.
@@ -5571,7 +6975,8 @@ TEST_F(NetworkContextTest, PreconnectHSTS) {
         net::PrivacyMode::PRIVACY_MODE_ENABLED,
         partition_connections ? network_anonymization_key
                               : net::NetworkAnonymizationKey(),
-        net::SecureDnsPolicy::kAllow, /*disable_cert_network_fetches=*/false);
+        net::SecureDnsPolicy::kAllow, /*disable_cert_network_fetches=*/false,
+        net::handles::kInvalidNetworkHandle);
 
     const GURL server_http_url = GetHttpUrlFromHttps(test_server.base_url());
     ASSERT_TRUE(server_http_url.SchemeIs(url::kHttpScheme));
@@ -5580,12 +6985,14 @@ TEST_F(NetworkContextTest, PreconnectHSTS) {
         net::PrivacyMode::PRIVACY_MODE_ENABLED,
         partition_connections ? network_anonymization_key
                               : net::NetworkAnonymizationKey(),
-        net::SecureDnsPolicy::kAllow, /*disable_cert_network_fetches=*/false);
+        net::SecureDnsPolicy::kAllow, /*disable_cert_network_fetches=*/false,
+        net::handles::kInvalidNetworkHandle);
 
     network_context->PreconnectSockets(
         1, server_http_url, network::mojom::CredentialsMode::kOmit,
-        network_anonymization_key,
-        net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS));
+        network_anonymization_key, GetTestNetworkRestrictionsId(),
+        net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS),
+        std::nullopt, mojo::NullRemote());
     connection_listener.WaitForAcceptedConnections(1u);
 
     int num_sockets = GetSocketCountForGroup(network_context.get(), group);
@@ -5593,11 +7000,12 @@ TEST_F(NetworkContextTest, PreconnectHSTS) {
 
     const base::Time expiry = base::Time::Now() + base::Seconds(1000);
     network_context->url_request_context()->transport_security_state()->AddHSTS(
-        server_http_url.host(), expiry, false);
+        server_http_url.GetHost(), expiry, false);
     network_context->PreconnectSockets(
         1, server_http_url, network::mojom::CredentialsMode::kOmit,
-        network_anonymization_key,
-        net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS));
+        network_anonymization_key, GetTestNetworkRestrictionsId(),
+        net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS),
+        std::nullopt, mojo::NullRemote());
     connection_listener.WaitForAcceptedConnections(1u);
 
     // If HSTS weren't respected, the initial connection would have been reused.
@@ -5617,8 +7025,9 @@ TEST_F(NetworkContextTest, PreconnectZero) {
 
   network_context->PreconnectSockets(
       0, test_server.base_url(), network::mojom::CredentialsMode::kInclude,
-      net::NetworkAnonymizationKey(),
-      net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS));
+      net::NetworkAnonymizationKey(), GetTestNetworkRestrictionsId(),
+      net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS),
+      std::nullopt, mojo::NullRemote());
   base::RunLoop().RunUntilIdle();
 
   int num_sockets =
@@ -5640,8 +7049,9 @@ TEST_F(NetworkContextTest, PreconnectTwo) {
 
   network_context->PreconnectSockets(
       2, test_server.base_url(), network::mojom::CredentialsMode::kInclude,
-      net::NetworkAnonymizationKey(),
-      net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS));
+      net::NetworkAnonymizationKey(), GetTestNetworkRestrictionsId(),
+      net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS),
+      std::nullopt, mojo::NullRemote());
   connection_listener.WaitForAcceptedConnections(2u);
 
   int num_sockets =
@@ -5660,8 +7070,9 @@ TEST_F(NetworkContextTest, PreconnectFour) {
 
   network_context->PreconnectSockets(
       4, test_server.base_url(), network::mojom::CredentialsMode::kInclude,
-      net::NetworkAnonymizationKey(),
-      net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS));
+      net::NetworkAnonymizationKey(), GetTestNetworkRestrictionsId(),
+      net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS),
+      std::nullopt, mojo::NullRemote());
 
   connection_listener.WaitForAcceptedConnections(4u);
 
@@ -5685,8 +7096,9 @@ TEST_F(NetworkContextTest, PreconnectMax) {
 
   network_context->PreconnectSockets(
       76, test_server.base_url(), network::mojom::CredentialsMode::kInclude,
-      net::NetworkAnonymizationKey(),
-      net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS));
+      net::NetworkAnonymizationKey(), GetTestNetworkRestrictionsId(),
+      net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS),
+      std::nullopt, mojo::NullRemote());
 
   // Wait until |max_num_sockets| have been connected.
   connection_listener.WaitForAcceptedConnections(max_num_sockets);
@@ -5724,20 +7136,26 @@ TEST_F(NetworkContextTest, PreconnectNetworkIsolationKey) {
   const auto kNak2 = net::NetworkAnonymizationKey::CreateSameSite(kSiteBar);
   network_context->PreconnectSockets(
       1, test_server.base_url(), network::mojom::CredentialsMode::kOmit, kKey1,
-      net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS));
+      GetTestNetworkRestrictionsId(),
+      net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS),
+      std::nullopt, mojo::NullRemote());
   network_context->PreconnectSockets(
       2, test_server.base_url(), network::mojom::CredentialsMode::kOmit, kKey2,
-      net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS));
+      GetTestNetworkRestrictionsId(),
+      net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS),
+      std::nullopt, mojo::NullRemote());
   connection_listener.WaitForAcceptedConnections(3u);
 
   url::SchemeHostPort destination(test_server.base_url());
   net::ClientSocketPool::GroupId group_id1(
       destination, net::PrivacyMode::PRIVACY_MODE_ENABLED, kNak1,
-      net::SecureDnsPolicy::kAllow, /*disable_cert_network_fetches=*/false);
+      net::SecureDnsPolicy::kAllow, /*disable_cert_network_fetches=*/false,
+      net::handles::kInvalidNetworkHandle);
   EXPECT_EQ(1, GetSocketCountForGroup(network_context.get(), group_id1));
   net::ClientSocketPool::GroupId group_id2(
       destination, net::PrivacyMode::PRIVACY_MODE_ENABLED, kNak2,
-      net::SecureDnsPolicy::kAllow, /*disable_cert_network_fetches=*/false);
+      net::SecureDnsPolicy::kAllow, /*disable_cert_network_fetches=*/false,
+      net::handles::kInvalidNetworkHandle);
   EXPECT_EQ(2, GetSocketCountForGroup(network_context.get(), group_id2));
 }
 
@@ -5772,7 +7190,7 @@ TEST_F(NetworkContextTest, CloseConnections) {
     std::unique_ptr<net::URLRequest> request1 =
         network_context->url_request_context()->CreateRequest(
             test_server.GetURL(kPath1), net::DEFAULT_PRIORITY, &delegate1,
-            TRAFFIC_ANNOTATION_FOR_TESTS);
+            TRAFFIC_ANNOTATION_FOR_TESTS, net::handles::kInvalidNetworkHandle);
     request1->Start();
     controllable_response1.WaitForRequest();
     EXPECT_EQ(
@@ -5784,7 +7202,7 @@ TEST_F(NetworkContextTest, CloseConnections) {
     std::unique_ptr<net::URLRequest> request2 =
         network_context->url_request_context()->CreateRequest(
             test_server.GetURL(kPath2), net::DEFAULT_PRIORITY, &delegate2,
-            TRAFFIC_ANNOTATION_FOR_TESTS);
+            TRAFFIC_ANNOTATION_FOR_TESTS, net::handles::kInvalidNetworkHandle);
     request2->Start();
     controllable_response2.WaitForRequest();
     EXPECT_EQ(
@@ -5796,7 +7214,7 @@ TEST_F(NetworkContextTest, CloseConnections) {
     std::unique_ptr<net::URLRequest> request3 =
         network_context->url_request_context()->CreateRequest(
             test_server.GetURL(kPath3), net::DEFAULT_PRIORITY, &delegate3,
-            TRAFFIC_ANNOTATION_FOR_TESTS);
+            TRAFFIC_ANNOTATION_FOR_TESTS, net::handles::kInvalidNetworkHandle);
     request3->Start();
     controllable_response3.WaitForRequest();
     EXPECT_EQ(
@@ -5868,7 +7286,7 @@ TEST_F(NetworkContextTrustedParamsTest, Basic) {
     mojo::Remote<mojom::URLLoaderFactory> loader_factory;
     mojom::URLLoaderFactoryParamsPtr params =
         mojom::URLLoaderFactoryParams::New();
-    params->process_id = mojom::kBrowserProcessId;
+    params->process_id = OriginatingProcessId::browser();
     params->is_orb_enabled = false;
     // URLLoaderFactories should not be trusted by default.
     EXPECT_FALSE(params->is_trusted);
@@ -5931,7 +7349,7 @@ TEST_F(NetworkContextTrustedParamsTest, DisableSecureDns) {
   mojo::Remote<mojom::URLLoaderFactory> loader_factory;
   mojom::URLLoaderFactoryParamsPtr params =
       mojom::URLLoaderFactoryParams::New();
-  params->process_id = mojom::kBrowserProcessId;
+  params->process_id = OriginatingProcessId::browser();
   params->is_orb_enabled = false;
   params->is_trusted = true;
   network_context->CreateURLLoaderFactory(
@@ -5988,7 +7406,7 @@ TEST_F(NetworkContextTest, FactoryParamsDisableSecureDns) {
     mojo::Remote<mojom::URLLoaderFactory> loader_factory;
     mojom::URLLoaderFactoryParamsPtr params =
         mojom::URLLoaderFactoryParams::New();
-    params->process_id = mojom::kBrowserProcessId;
+    params->process_id = OriginatingProcessId::browser();
     params->is_orb_enabled = false;
     params->disable_secure_dns = disable_secure_dns;
     network_context.CreateURLLoaderFactory(
@@ -6066,12 +7484,11 @@ TEST_F(NetworkContextTest, QueryHSTS) {
 TEST_F(NetworkContextTest, GetHSTSState) {
   const char kTestDomain[] = "example.com";
   const base::Time expiry = base::Time::Now() + base::Seconds(1000);
-  const GURL report_uri = GURL("https://example.com/foo/bar");
 
   std::unique_ptr<NetworkContext> network_context =
       CreateContextWithParams(CreateNetworkContextParamsForTesting());
 
-  base::Value::Dict state;
+  base::DictValue state;
   {
     base::RunLoop run_loop;
     network_context->GetHSTSState(
@@ -6134,11 +7551,11 @@ TEST_F(NetworkContextTest, ForceReloadProxyConfig) {
       start_param = result;
       run_loop.Quit();
     });
-    net_log_exporter->Start(std::move(net_log_file),
-                            /*extra_constants=*/base::Value::Dict(),
-                            net::NetLogCaptureMode::kDefault,
-                            network::mojom::NetLogExporter::kUnlimitedFileSize,
-                            start_callback);
+    net_log_exporter->Start(
+        std::move(net_log_file),
+        /*extra_constants=*/base::DictValue(), net::NetLogCaptureMode::kDefault,
+        net::NetLogFileFormat::kJson,
+        network::mojom::NetLogExporter::kUnlimitedFileSize, start_callback);
     run_loop.Run();
     EXPECT_EQ(net::OK, start_param);
   }
@@ -6157,7 +7574,7 @@ TEST_F(NetworkContextTest, ForceReloadProxyConfig) {
       run_loop.Quit();
     });
     net_log_exporter->Stop(
-        /*polled_data=*/base::Value::Dict(), stop_callback);
+        /*polled_data=*/base::DictValue(), stop_callback);
     run_loop.Run();
     EXPECT_EQ(net::OK, stop_param);
   }
@@ -6313,7 +7730,7 @@ TEST_F(NetworkContextTest, ProxyErrorClientNotifiedOfProxyConnection) {
   mojo::Remote<mojom::URLLoaderFactory> loader_factory;
   mojom::URLLoaderFactoryParamsPtr loader_params =
       mojom::URLLoaderFactoryParams::New();
-  loader_params->process_id = mojom::kBrowserProcessId;
+  loader_params->process_id = OriginatingProcessId::browser();
   network_context->CreateURLLoaderFactory(
       loader_factory.BindNewPipeAndPassReceiver(), std::move(loader_params));
 
@@ -6369,7 +7786,7 @@ TEST_F(NetworkContextTest, ProxyErrorClientNotNotifiedOfUnreachableError) {
   mojo::Remote<mojom::URLLoaderFactory> loader_factory;
   mojom::URLLoaderFactoryParamsPtr loader_params =
       mojom::URLLoaderFactoryParams::New();
-  loader_params->process_id = mojom::kBrowserProcessId;
+  loader_params->process_id = OriginatingProcessId::browser();
   network_context->CreateURLLoaderFactory(
       loader_factory.BindNewPipeAndPassReceiver(), std::move(loader_params));
 
@@ -6443,7 +7860,7 @@ TEST_F(NetworkContextTest, ProxyErrorClientNotifiedOfPacError) {
   mojo::Remote<mojom::URLLoaderFactory> loader_factory;
   mojom::URLLoaderFactoryParamsPtr loader_params =
       mojom::URLLoaderFactoryParams::New();
-  loader_params->process_id = mojom::kBrowserProcessId;
+  loader_params->process_id = OriginatingProcessId::browser();
   network_context->CreateURLLoaderFactory(
       loader_factory.BindNewPipeAndPassReceiver(), std::move(loader_params));
 
@@ -6525,7 +7942,7 @@ TEST_F(NetworkContextTest, EnsureProperProxyChainIsUsed) {
     mojo::Remote<mojom::URLLoaderFactory> loader_factory;
     mojom::URLLoaderFactoryParamsPtr params =
         mojom::URLLoaderFactoryParams::New();
-    params->process_id = 0;
+    params->process_id = OriginatingProcessId::browser();
     network_context->CreateURLLoaderFactory(
         loader_factory.BindNewPipeAndPassReceiver(), std::move(params));
 
@@ -6562,21 +7979,26 @@ class TestURLLoaderHeaderClient : public mojom::TrustedURLLoaderHeaderClient {
     TestHeaderClient& operator=(const TestHeaderClient&) = delete;
 
     // network::mojom::TrustedHeaderClient:
-    void OnBeforeSendHeaders(const net::HttpRequestHeaders& headers,
+    void OnBeforeSendHeaders(const GURL& request_url,
+                             const net::HttpRequestHeaders& headers,
                              OnBeforeSendHeadersCallback callback) override {
       auto new_headers = headers;
       for (const auto& [name, value] : request_headers_to_set_) {
         new_headers.SetHeader(name, value);
       }
-      std::move(callback).Run(on_before_send_headers_result_, new_headers);
+      std::move(callback).Run(on_before_send_headers_result_, new_headers,
+                              std::nullopt);
     }
 
     void OnHeadersReceived(const std::string& headers,
                            const net::IPEndPoint& endpoint,
+                           const std::optional<net::SSLInfo>& ssl_info,
                            OnHeadersReceivedCallback callback) override {
       auto new_headers =
           base::MakeRefCounted<net::HttpResponseHeaders>(headers);
       new_headers->SetHeader("baz", "qux");
+
+      on_headers_received_ssl_info_ = ssl_info;
       std::move(callback).Run(on_headers_received_result_,
                               new_headers->raw_headers(), GURL());
     }
@@ -6593,6 +8015,10 @@ class TestURLLoaderHeaderClient : public mojom::TrustedURLLoaderHeaderClient {
       request_headers_to_set_.emplace_back(std::move(name), std::move(value));
     }
 
+    std::optional<net::SSLInfo> get_on_headers_received_ssl_info() {
+      return on_headers_received_ssl_info_;
+    }
+
     void Bind(
         mojo::PendingReceiver<network::mojom::TrustedHeaderClient> receiver) {
       receiver_.reset();
@@ -6604,6 +8030,7 @@ class TestURLLoaderHeaderClient : public mojom::TrustedURLLoaderHeaderClient {
         {"foo", "bar"}};
     int on_before_send_headers_result_ = net::OK;
     int on_headers_received_result_ = net::OK;
+    std::optional<net::SSLInfo> on_headers_received_ssl_info_;
     mojo::Receiver<mojom::TrustedHeaderClient> receiver_{this};
   };
 
@@ -6636,6 +8063,10 @@ class TestURLLoaderHeaderClient : public mojom::TrustedURLLoaderHeaderClient {
     header_client_.set_on_headers_received_result(result);
   }
 
+  std::optional<net::SSLInfo> get_on_headers_received_ssl_info() {
+    return header_client_.get_on_headers_received_ssl_info();
+  }
+
   void AddRequestHeaderToSet(std::string name, std::string value) {
     header_client_.AddRequestHeaderToSet(std::move(name), std::move(value));
   }
@@ -6659,7 +8090,7 @@ TEST_F(NetworkContextTest, HeaderClientModifiesHeaders) {
   mojo::Remote<mojom::URLLoaderFactory> loader_factory;
   mojom::URLLoaderFactoryParamsPtr params =
       mojom::URLLoaderFactoryParams::New();
-  params->process_id = mojom::kBrowserProcessId;
+  params->process_id = OriginatingProcessId::browser();
   params->is_orb_enabled = false;
   TestURLLoaderHeaderClient header_client(
       params->header_client.InitWithNewPipeAndPassReceiver());
@@ -6711,6 +8142,79 @@ TEST_F(NetworkContextTest, HeaderClientModifiesHeaders) {
   }
 }
 
+TEST_F(NetworkContextTest, HeaderClientReceivesSslInfo) {
+  net::EmbeddedTestServer test_server(
+      net::test_server::EmbeddedTestServer::Type::TYPE_HTTPS);
+  test_server.SetSSLConfig(net::EmbeddedTestServer::CERT_OK);
+  net::test_server::RegisterDefaultHandlers(&test_server);
+  ASSERT_TRUE(test_server.Start());
+
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(CreateNetworkContextParamsForTesting());
+
+  ResourceRequest request;
+  request.url = test_server.GetURL("/echo");
+
+  // First, do a request with kURLLoadOptionUseHeaderClient set. ssl_info must
+  // be passed to headers client.
+  {
+    mojo::Remote<mojom::URLLoaderFactory> loader_factory;
+    mojom::URLLoaderFactoryParamsPtr params =
+        mojom::URLLoaderFactoryParams::New();
+    params->process_id = OriginatingProcessId::browser();
+    params->is_orb_enabled = false;
+    TestURLLoaderHeaderClient header_client(
+        params->header_client.InitWithNewPipeAndPassReceiver());
+    network_context->CreateURLLoaderFactory(
+        loader_factory.BindNewPipeAndPassReceiver(), std::move(params));
+
+    mojo::PendingRemote<mojom::URLLoader> loader;
+    TestURLLoaderClient client;
+    loader_factory->CreateLoaderAndStart(
+        loader.InitWithNewPipeAndPassReceiver(), 0 /* request_id */,
+        mojom::kURLLoadOptionUseHeaderClient, request, client.CreateRemote(),
+        net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS));
+
+    client.RunUntilComplete();
+
+    // Make sure that ssl info is present.
+    std::optional<net::SSLInfo> ssl_info =
+        header_client.get_on_headers_received_ssl_info();
+
+    ASSERT_TRUE(ssl_info.has_value());
+    ASSERT_TRUE(ssl_info->is_valid());
+    ASSERT_FALSE(net::IsCertStatusError(ssl_info->cert_status));
+  }
+  // Do a request without kURLLoadOptionUseHeaderClient set, ssl_info must not
+  // be present.
+  {
+    mojo::Remote<mojom::URLLoaderFactory> loader_factory;
+    mojom::URLLoaderFactoryParamsPtr params =
+        mojom::URLLoaderFactoryParams::New();
+    params->process_id = OriginatingProcessId::browser();
+    params->is_orb_enabled = false;
+    TestURLLoaderHeaderClient header_client(
+        params->header_client.InitWithNewPipeAndPassReceiver());
+    network_context->CreateURLLoaderFactory(
+        loader_factory.BindNewPipeAndPassReceiver(), std::move(params));
+
+    mojo::PendingRemote<mojom::URLLoader> loader;
+    TestURLLoaderClient client;
+    loader_factory->CreateLoaderAndStart(
+        loader.InitWithNewPipeAndPassReceiver(), 0 /* request_id */,
+        0 /* options */, request, client.CreateRemote(),
+        net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS));
+
+    client.RunUntilComplete();
+
+    // Make sure that ssl info is not present.
+    std::optional<net::SSLInfo> ssl_info =
+        header_client.get_on_headers_received_ssl_info();
+
+    ASSERT_FALSE(ssl_info.has_value());
+  }
+}
+
 TEST_F(NetworkContextTest, HeaderClientFailsRequest) {
   net::EmbeddedTestServer test_server;
   net::test_server::RegisterDefaultHandlers(&test_server);
@@ -6725,7 +8229,7 @@ TEST_F(NetworkContextTest, HeaderClientFailsRequest) {
   mojo::Remote<mojom::URLLoaderFactory> loader_factory;
   mojom::URLLoaderFactoryParamsPtr params =
       mojom::URLLoaderFactoryParams::New();
-  params->process_id = mojom::kBrowserProcessId;
+  params->process_id = OriginatingProcessId::browser();
   params->is_orb_enabled = false;
   TestURLLoaderHeaderClient header_client(
       params->header_client.InitWithNewPipeAndPassReceiver());
@@ -6773,7 +8277,8 @@ class HangingTestURLLoaderHeaderClient
     TestHeaderClient& operator=(const TestHeaderClient&) = delete;
 
     // network::mojom::TrustedHeaderClient:
-    void OnBeforeSendHeaders(const net::HttpRequestHeaders& headers,
+    void OnBeforeSendHeaders(const GURL& request_url,
+                             const net::HttpRequestHeaders& headers,
                              OnBeforeSendHeadersCallback callback) override {
       saved_request_headers_ = headers;
       saved_on_before_send_headers_callback_ = std::move(callback);
@@ -6782,6 +8287,7 @@ class HangingTestURLLoaderHeaderClient
 
     void OnHeadersReceived(const std::string& headers,
                            const net::IPEndPoint& endpoint,
+                           const std::optional<::net::SSLInfo>& ssl_info,
                            OnHeadersReceivedCallback callback) override {
       saved_received_headers_ = headers;
       saved_on_headers_received_callback_ = std::move(callback);
@@ -6792,7 +8298,7 @@ class HangingTestURLLoaderHeaderClient
       net::HttpRequestHeaders new_headers = std::move(saved_request_headers_);
       new_headers.SetHeader("foo", "bar");
       std::move(saved_on_before_send_headers_callback_)
-          .Run(net::OK, new_headers);
+          .Run(net::OK, new_headers, std::nullopt);
     }
 
     void WaitForOnBeforeSendHeaders() { on_before_send_headers_loop_.Run(); }
@@ -6881,7 +8387,7 @@ TEST_F(NetworkContextTest, HangingHeaderClientModifiesHeadersAsynchronously) {
   mojo::Remote<mojom::URLLoaderFactory> loader_factory;
   mojom::URLLoaderFactoryParamsPtr params =
       mojom::URLLoaderFactoryParams::New();
-  params->process_id = mojom::kBrowserProcessId;
+  params->process_id = OriginatingProcessId::browser();
   params->is_orb_enabled = false;
   HangingTestURLLoaderHeaderClient header_client(
       params->header_client.InitWithNewPipeAndPassReceiver());
@@ -6931,7 +8437,7 @@ TEST_F(NetworkContextTest, HangingHeaderClientAbortDuringOnBeforeSendHeaders) {
   mojo::Remote<mojom::URLLoaderFactory> loader_factory;
   mojom::URLLoaderFactoryParamsPtr params =
       mojom::URLLoaderFactoryParams::New();
-  params->process_id = mojom::kBrowserProcessId;
+  params->process_id = OriginatingProcessId::browser();
   params->is_orb_enabled = false;
   HangingTestURLLoaderHeaderClient header_client(
       params->header_client.InitWithNewPipeAndPassReceiver());
@@ -6975,7 +8481,7 @@ TEST_F(NetworkContextTest, HangingHeaderClientAbortDuringOnHeadersReceived) {
   mojo::Remote<mojom::URLLoaderFactory> loader_factory;
   mojom::URLLoaderFactoryParamsPtr params =
       mojom::URLLoaderFactoryParams::New();
-  params->process_id = mojom::kBrowserProcessId;
+  params->process_id = OriginatingProcessId::browser();
   params->is_orb_enabled = false;
   HangingTestURLLoaderHeaderClient header_client(
       params->header_client.InitWithNewPipeAndPassReceiver());
@@ -7051,7 +8557,7 @@ TEST_F(NetworkContextIncludeRequestCookiesWithResponseTest, FailWhenUntrusted) {
   mojo::Remote<mojom::URLLoaderFactory> loader_factory;
   auto params = mojom::URLLoaderFactoryParams::New();
   params->is_trusted = false;
-  params->process_id = mojom::kBrowserProcessId;
+  params->process_id = OriginatingProcessId::browser();
   params->is_orb_enabled = false;
   params->isolation_info =
       net::IsolationInfo::CreateForInternalRequest(test_server.GetOrigin());
@@ -7093,7 +8599,7 @@ TEST_F(NetworkContextIncludeRequestCookiesWithResponseTest,
   mojo::Remote<mojom::URLLoaderFactory> loader_factory;
   auto params = mojom::URLLoaderFactoryParams::New();
   params->is_trusted = true;
-  params->process_id = mojom::kBrowserProcessId;
+  params->process_id = OriginatingProcessId::browser();
   params->is_orb_enabled = false;
   params->isolation_info =
       net::IsolationInfo::CreateForInternalRequest(test_server.GetOrigin());
@@ -7132,7 +8638,7 @@ TEST_F(NetworkContextIncludeRequestCookiesWithResponseTest, Cookie) {
   mojo::Remote<mojom::URLLoaderFactory> loader_factory;
   auto params = mojom::URLLoaderFactoryParams::New();
   params->is_trusted = true;
-  params->process_id = mojom::kBrowserProcessId;
+  params->process_id = OriginatingProcessId::browser();
   params->is_orb_enabled = false;
   params->isolation_info =
       net::IsolationInfo::CreateForInternalRequest(test_server.GetOrigin());
@@ -7177,7 +8683,7 @@ TEST_F(NetworkContextIncludeRequestCookiesWithResponseTest,
   mojo::Remote<mojom::URLLoaderFactory> loader_factory;
   auto params = mojom::URLLoaderFactoryParams::New();
   params->is_trusted = true;
-  params->process_id = mojom::kBrowserProcessId;
+  params->process_id = OriginatingProcessId::browser();
   params->is_orb_enabled = false;
   params->isolation_info =
       net::IsolationInfo::CreateForInternalRequest(test_server.GetOrigin());
@@ -7206,7 +8712,8 @@ TEST_F(NetworkContextIncludeRequestCookiesWithResponseTest,
   EXPECT_TRUE(
       HasCookie(client.response_head()->request_cookies, "chocolate", "chip"));
   EXPECT_EQ(client.redirect_info().new_url, final_url);
-  loader->FollowRedirect({}, {}, {}, {});
+  loader->FollowRedirect(/*headers_update_params=*/{},
+                         /*new_url=*/std::nullopt);
 
   client.RunUntilResponseReceived();
   EXPECT_EQ(net::HTTP_OK, client.response_head()->headers->response_code());
@@ -7228,7 +8735,7 @@ TEST_F(NetworkContextIncludeRequestCookiesWithResponseTest,
   mojo::Remote<mojom::URLLoaderFactory> loader_factory;
   auto params = mojom::URLLoaderFactoryParams::New();
   params->is_trusted = true;
-  params->process_id = mojom::kBrowserProcessId;
+  params->process_id = OriginatingProcessId::browser();
   params->is_orb_enabled = false;
   params->isolation_info =
       net::IsolationInfo::CreateForInternalRequest(test_server.GetOrigin());
@@ -7272,7 +8779,7 @@ TEST_F(NetworkContextIncludeRequestCookiesWithResponseTest, HeaderClient) {
   mojo::Remote<mojom::URLLoaderFactory> loader_factory;
   auto params = mojom::URLLoaderFactoryParams::New();
   params->is_trusted = true;
-  params->process_id = mojom::kBrowserProcessId;
+  params->process_id = OriginatingProcessId::browser();
   params->is_orb_enabled = false;
   params->isolation_info =
       net::IsolationInfo::CreateForInternalRequest(test_server.GetOrigin());
@@ -7343,7 +8850,7 @@ TEST_F(NetworkContextIncludeRequestCookiesWithResponseTest,
   mojo::Remote<mojom::URLLoaderFactory> loader_factory;
   auto params = mojom::URLLoaderFactoryParams::New();
   params->is_trusted = true;
-  params->process_id = mojom::kBrowserProcessId;
+  params->process_id = OriginatingProcessId::browser();
   params->is_orb_enabled = false;
   network_context->CreateURLLoaderFactory(
       loader_factory.BindNewPipeAndPassReceiver(), std::move(params));
@@ -7376,14 +8883,16 @@ TEST_F(NetworkContextIncludeRequestCookiesWithResponseTest,
   EXPECT_TRUE(
       HasCookie(client.response_head()->request_cookies, "chocolate", "chip"));
   client.ClearHasReceivedRedirect();
-  loader->FollowRedirect({}, {}, {}, {});
+  loader->FollowRedirect(/*headers_update_params=*/{},
+                         /*new_url=*/std::nullopt);
 
   client.RunUntilRedirectReceived();
   EXPECT_EQ(net::HTTP_TEMPORARY_REDIRECT,
             client.response_head()->headers->response_code());
   EXPECT_FALSE(HasCookie(client.response_head()->request_cookies, "chocolate"));
   EXPECT_EQ(client.redirect_info().new_url, https_url);
-  loader->FollowRedirect({}, {}, {}, {});
+  loader->FollowRedirect(/*headers_update_params=*/{},
+                         /*new_url=*/std::nullopt);
 
   client.RunUntilResponseReceived();
   EXPECT_EQ(net::HTTP_OK, client.response_head()->headers->response_code());
@@ -7407,8 +8916,8 @@ class NetworkContextMockHostTest : public NetworkContextTest {
                           const std::string& relative_url) {
     GURL server_base_url = server.base_url();
     GURL base_url =
-        GURL(base::StrCat({server_base_url.scheme(), "://", kMockHost, ":",
-                           server_base_url.port()}));
+        GURL(base::StrCat({server_base_url.GetScheme(), "://", kMockHost, ":",
+                           server_base_url.GetPort()}));
     EXPECT_TRUE(base_url.is_valid()) << base_url.possibly_invalid_spec();
     return base_url.Resolve(relative_url);
   }
@@ -7488,7 +8997,7 @@ TEST_F(NetworkContextTest, MaximumCount) {
   mojo::Remote<mojom::URLLoaderFactory> loader_factory;
   mojom::URLLoaderFactoryParamsPtr params =
       mojom::URLLoaderFactoryParams::New();
-  params->process_id = mojom::kBrowserProcessId;
+  params->process_id = OriginatingProcessId::browser();
   params->is_orb_enabled = false;
   network_context->CreateURLLoaderFactory(
       loader_factory.BindNewPipeAndPassReceiver(), std::move(params));
@@ -7976,13 +9485,15 @@ TEST_F(NetworkContextTest, FactoriesDeletedWhenBindingsCleared) {
       CreateContextWithParams(CreateNetworkContextParamsForTesting());
 
   auto loader_params = mojom::URLLoaderFactoryParams::New();
-  loader_params->process_id = 1;
+  loader_params->process_id =
+      OriginatingProcessId::renderer(RendererProcessId(1));
   mojo::Remote<mojom::URLLoaderFactory> remote1;
   network_context->CreateURLLoaderFactory(remote1.BindNewPipeAndPassReceiver(),
                                           std::move(loader_params));
 
   loader_params = mojom::URLLoaderFactoryParams::New();
-  loader_params->process_id = 1;
+  loader_params->process_id =
+      OriginatingProcessId::renderer(RendererProcessId(1));
   mojo::Remote<mojom::URLLoaderFactory> remote2;
   network_context->CreateURLLoaderFactory(remote2.BindNewPipeAndPassReceiver(),
                                           std::move(loader_params));
@@ -8003,27 +9514,10 @@ static ResourceRequest CreateResourceRequest(const char* method,
   return request;
 }
 
-enum class SplitCacheTestCase {
-  kEnabledTripleKeyed,
-  kEnabledTriplePlusCrossSiteMainFrameNavBool,
-};
-
-const struct {
-  const SplitCacheTestCase test_case;
-  base::test::FeatureRef feature;
-} kTestCaseToFeatureMapping[] = {
-    {SplitCacheTestCase::kEnabledTriplePlusCrossSiteMainFrameNavBool,
-     net::features::kSplitCacheByCrossSiteMainFrameNavigationBoolean}};
-
-class NetworkContextSplitCacheTest
-    : public NetworkContextTest,
-      public testing::WithParamInterface<SplitCacheTestCase> {
+class NetworkContextSplitCacheEnabledTest : public NetworkContextTest {
  protected:
-  NetworkContextSplitCacheTest()
-      : split_cache_test_case_(GetParam()),
-        split_cache_experiment_feature_list_(GetParam(),
-                                             kTestCaseToFeatureMapping) {
-    split_cache_always_enabled_feature_list_.InitAndEnableFeature(
+  NetworkContextSplitCacheEnabledTest() {
+    split_cache_enabled_feature_list_.InitAndEnableFeature(
         net::features::kSplitCacheByNetworkIsolationKey);
 
     test_server_.AddDefaultHandlers(
@@ -8057,7 +9551,7 @@ class NetworkContextSplitCacheTest
 
     mojo::Remote<mojom::URLLoaderFactory> loader_factory;
     auto params = mojom::URLLoaderFactoryParams::New();
-    params->process_id = mojom::kBrowserProcessId;
+    params->process_id = OriginatingProcessId::browser();
     params->is_orb_enabled = false;
     if (isolation_info.request_type() ==
         net::IsolationInfo::RequestType::kOther) {
@@ -8071,6 +9565,7 @@ class NetworkContextSplitCacheTest
       // TODO(crbug.com/40745575): Unify these to avoid inconsistencies.
       if (isolation_info.request_type() ==
           net::IsolationInfo::RequestType::kMainFrame) {
+        params->is_outermost_main_frame = true;
         request.is_outermost_main_frame = true;
         request.update_first_party_url_on_redirect = true;
       }
@@ -8096,13 +9591,14 @@ class NetworkContextSplitCacheTest
 
     if (expect_redirect) {
       client->RunUntilRedirectReceived();
-      loader->FollowRedirect({}, {}, {}, new_url);
+      loader->FollowRedirect({}, new_url);
       client->ClearHasReceivedRedirect();
     }
 
     if (new_url) {
       client->RunUntilRedirectReceived();
-      loader->FollowRedirect({}, {}, {}, std::nullopt);
+      loader->FollowRedirect(/*headers_update_params=*/{},
+                             /*new_url=*/std::nullopt);
     }
 
     client->RunUntilComplete();
@@ -8112,31 +9608,13 @@ class NetworkContextSplitCacheTest
   }
 
  private:
-  const SplitCacheTestCase split_cache_test_case_;
-  net::test::ScopedMutuallyExclusiveFeatureList
-      split_cache_experiment_feature_list_;
-  base::test::ScopedFeatureList split_cache_always_enabled_feature_list_;
+  base::test::ScopedFeatureList split_cache_enabled_feature_list_;
   net::EmbeddedTestServer test_server_;
   std::unique_ptr<net::ScopedDefaultHostResolverProc> mock_host_resolver_;
   std::unique_ptr<NetworkContext> network_context_;
 };
 
-INSTANTIATE_TEST_SUITE_P(
-    All,
-    NetworkContextSplitCacheTest,
-    testing::ValuesIn(
-        {SplitCacheTestCase::kEnabledTripleKeyed,
-         SplitCacheTestCase::kEnabledTriplePlusCrossSiteMainFrameNavBool}),
-    [](const testing::TestParamInfo<SplitCacheTestCase>& info) {
-      switch (info.param) {
-        case SplitCacheTestCase::kEnabledTripleKeyed:
-          return "SplitCacheEnabledTripleKeyed";
-        case SplitCacheTestCase::kEnabledTriplePlusCrossSiteMainFrameNavBool:
-          return "SplitCacheEnabledTriplePlusCrossSiteMainFrameNavigationBool";
-      }
-    });
-
-TEST_P(NetworkContextSplitCacheTest, CachedUsingNetworkIsolationKey) {
+TEST_F(NetworkContextSplitCacheEnabledTest, CachedUsingNetworkIsolationKey) {
   GURL url = test_server()->GetURL("/resource");
   url::Origin origin_a = url::Origin::Create(GURL("http://a.test/"));
   net::IsolationInfo info_a =
@@ -8154,7 +9632,7 @@ TEST_P(NetworkContextSplitCacheTest, CachedUsingNetworkIsolationKey) {
   LoadAndVerifyCached(url, info_b, /*was_cached=*/true);
 }
 
-TEST_P(NetworkContextSplitCacheTest,
+TEST_F(NetworkContextSplitCacheEnabledTest,
        NavigationResourceCachedUsingNetworkIsolationKey) {
   GURL url = test_server()->GetURL("othersite.test", "/main.html");
   url::Origin origin_a = url::Origin::Create(url);
@@ -8176,7 +9654,7 @@ TEST_P(NetworkContextSplitCacheTest,
   LoadAndVerifyCached(url_b, info_b, /*was_cached=*/true);
 }
 
-TEST_P(NetworkContextSplitCacheTest,
+TEST_F(NetworkContextSplitCacheEnabledTest,
        CachedUsingNetworkIsolationKeyWithFrameOrigin) {
   GURL url = test_server()->GetURL("/resource");
   url::Origin origin_a = url::Origin::Create(GURL("http://a.test/"));
@@ -8194,7 +9672,7 @@ TEST_P(NetworkContextSplitCacheTest,
   LoadAndVerifyCached(url, info_b, /*was_cached=*/false);
 }
 
-TEST_P(NetworkContextSplitCacheTest,
+TEST_F(NetworkContextSplitCacheEnabledTest,
        NavigationResourceRedirectNetworkIsolationKey) {
   // Create a request that redirects.
   GURL url = test_server()->GetURL(
@@ -8216,50 +9694,30 @@ TEST_P(NetworkContextSplitCacheTest,
           redirected_origin,
           net::SiteForCookies::FromOrigin(redirected_origin));
 
-  switch (GetParam()) {
-    case SplitCacheTestCase::kEnabledTripleKeyed:
-      // Now directly load with the key using the redirected URL. This should be
-      // a cache hit.
-      LoadAndVerifyCached(redirected_url,
-                          info.CreateForRedirect(redirected_origin),
-                          /*was_cached=*/true);
+  // Since the initiator is incorporated into the HTTP cache key, the redirect
+  // means that it will share a different partition than if we tried to load the
+  // redirected URL directly.
+  LoadAndVerifyCached(redirected_url, info.CreateForRedirect(redirected_origin),
+                      /*was_cached=*/false);
 
-      // A non-navigation resource with the same key and url should also be
-      // cached.
-      LoadAndVerifyCached(redirected_url, non_navigation_redirected_info,
-                          /*was_cached=*/true);
-      break;
-    case SplitCacheTestCase::kEnabledTriplePlusCrossSiteMainFrameNavBool:
-      // When the initiator is incorporated into the HTTP cache key, the
-      // redirect means that it will share a different partition than if we
-      // tried to load the redirected URL directly.
-      LoadAndVerifyCached(redirected_url,
-                          info.CreateForRedirect(redirected_origin),
-                          /*was_cached=*/false);
+  // A non-navigation resource with the same key and url should be cached now.
+  LoadAndVerifyCached(redirected_url, non_navigation_redirected_info,
+                      /*was_cached=*/true);
 
-      // A non-navigation resource with the same key and url should be cached
-      // now.
-      LoadAndVerifyCached(redirected_url, non_navigation_redirected_info,
-                          /*was_cached=*/true);
+  net::IsolationInfo navigation_redirected_info = net::IsolationInfo::Create(
+      net::IsolationInfo::RequestType::kMainFrame, redirected_origin,
+      redirected_origin, net::SiteForCookies::FromOrigin(redirected_origin));
 
-      net::IsolationInfo navigation_redirected_info =
-          net::IsolationInfo::Create(
-              net::IsolationInfo::RequestType::kMainFrame, redirected_origin,
-              redirected_origin,
-              net::SiteForCookies::FromOrigin(redirected_origin));
-
-      // A cache hit should result if we simulate another navigation from the
-      // corresponding initiator (for instance, a client-side redirect).
-      LoadAndVerifyCached(redirected_url, navigation_redirected_info,
-                          /*was_cached=*/true, /*expect_redirect=*/false,
-                          /*new_url=*/std::nullopt,
-                          /*automatically_assign_isolation_info=*/false,
-                          /*initiator=*/origin);
-      break;
-  }
+  // A cache hit should result if we simulate another navigation from the
+  // corresponding initiator (for instance, a client-side redirect).
+  LoadAndVerifyCached(redirected_url, navigation_redirected_info,
+                      /*was_cached=*/true, /*expect_redirect=*/false,
+                      /*new_url=*/std::nullopt,
+                      /*automatically_assign_isolation_info=*/false,
+                      /*initiator=*/origin);
 }
 
-TEST_P(NetworkContextSplitCacheTest, AutomaticallyAssignIsolationInfo) {
+TEST_F(NetworkContextSplitCacheEnabledTest, AutomaticallyAssignIsolationInfo) {
   GURL url = test_server()->GetURL("/resource");
   // Load with an automatically assigned IsolationInfo, which should populate
   // the cache using the IsolationInfo for |url|'s origin.
@@ -8302,7 +9760,7 @@ TEST_F(NetworkContextTest, EnableTrustTokens) {
 // NotifyExternalCacheHit currently assumes that the cache hits are for
 // resources, so ensure that entries corresponding to subframe navigations don't
 // get updated unexpectedly.
-TEST_P(NetworkContextSplitCacheTest,
+TEST_F(NetworkContextSplitCacheEnabledTest,
        NotifyExternalCacheHitIsSubframeDocumentResource) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeature(
@@ -8357,12 +9815,82 @@ TEST_P(NetworkContextSplitCacheTest,
   disk_cache::ScopedEntryPtr resource_entry(resource_result.ReleaseEntry());
 
   clock.SetNow(kNow2);
-  network_context->NotifyExternalCacheHit(kUrl, kUrl.scheme(),
+  network_context->NotifyExternalCacheHit(kUrl, kUrl.GetScheme(),
                                           kNetworkIsolationKey,
                                           /*include_credentials=*/true);
 
   EXPECT_EQ(navigation_entry->GetLastUsed(), kNow1);
   EXPECT_EQ(resource_entry->GetLastUsed(), kNow2);
+}
+
+TEST_F(NetworkContextTest, AddHttpAuthCacheEntryWithNetworkAnonymizationKey) {
+  mojom::NetworkContextParamsPtr context_params =
+      CreateNetworkContextParamsForTesting();
+  context_params->split_auth_cache_by_network_anonymization_key = true;
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(std::move(context_params));
+  net::HttpAuthCache* cache = network_context->url_request_context()
+                                  ->http_transaction_factory()
+                                  ->GetSession()
+                                  ->http_auth_cache();
+  ASSERT_TRUE(cache);
+  // If this isn't true, the rest of this test is pretty meaningless.
+  ASSERT_TRUE(cache->key_server_entries_by_network_anonymization_key());
+
+  // Add an AUTH_SERVER cache entry.
+  url::Origin origin = url::Origin::Create(GURL("http://example.test/"));
+  auto site = net::SchemefulSite(origin);
+  url::SchemeHostPort scheme_host_port =
+      origin.GetTupleOrPrecursorTupleIfOpaque();
+  net::NetworkIsolationKey network_isolation_key(site, site);
+  auto network_anonymization_key =
+      net::NetworkAnonymizationKey::CreateSameSite(site);
+  net::AuthChallengeInfo challenge;
+  challenge.is_proxy = false;
+  challenge.challenger = scheme_host_port;
+  challenge.scheme = "basic";
+  challenge.realm = "testrealm";
+  const char16_t kUsername[] = u"test_user";
+  const char16_t kPassword[] = u"test_pass";
+  ASSERT_FALSE(cache->Lookup(scheme_host_port, net::HttpAuth::AUTH_SERVER,
+                             challenge.realm, net::HttpAuth::AUTH_SCHEME_BASIC,
+                             network_anonymization_key));
+  base::RunLoop run_loop;
+  network_context->AddAuthCacheEntry(challenge, network_anonymization_key,
+                                     net::AuthCredentials(kUsername, kPassword),
+                                     run_loop.QuitClosure());
+  run_loop.Run();
+  net::HttpAuthCache::Entry* entry = cache->Lookup(
+      scheme_host_port, net::HttpAuth::AUTH_SERVER, challenge.realm,
+      net::HttpAuth::AUTH_SCHEME_BASIC, network_anonymization_key);
+  ASSERT_TRUE(entry);
+  EXPECT_EQ(scheme_host_port, entry->scheme_host_port());
+  EXPECT_EQ(challenge.realm, entry->realm());
+  EXPECT_EQ(net::HttpAuth::StringToScheme(challenge.scheme), entry->scheme());
+  EXPECT_EQ(kUsername, entry->credentials().username());
+  EXPECT_EQ(kPassword, entry->credentials().password());
+  // Entry should only be accessible when using the correct
+  // NetworkAnonymizationKey.
+  EXPECT_FALSE(cache->Lookup(scheme_host_port, net::HttpAuth::AUTH_SERVER,
+                             challenge.realm, net::HttpAuth::AUTH_SCHEME_BASIC,
+                             net::NetworkAnonymizationKey()));
+}
+
+TEST_F(NetworkContextTest,
+       AddHttpAuthCacheEntryWithNetworkAnonymizationKeySettingDisabled) {
+  mojom::NetworkContextParamsPtr context_params =
+      CreateNetworkContextParamsForTesting();
+  context_params->split_auth_cache_by_network_anonymization_key = false;
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(std::move(context_params));
+  net::HttpAuthCache* cache = network_context->url_request_context()
+                                  ->http_transaction_factory()
+                                  ->GetSession()
+                                  ->http_auth_cache();
+  ASSERT_TRUE(cache);
+  // Since the split_auth_cache_by_network_anonymization_key is being set to
+  // false expect this to also be false.
+  ASSERT_FALSE(cache->key_server_entries_by_network_anonymization_key());
 }
 
 TEST_F(NetworkContextTest, EnableTrustTokensForFledge) {
@@ -8486,7 +10014,7 @@ TEST_F(NetworkContextExpectBadMessageTest,
       mojom::TrustTokenOperationPolicyVerdict::kForbid;
   std::unique_ptr<TestURLLoaderClient> client =
       FetchRequest(my_request, network_context.get(), mojom::kURLLoadOptionNone,
-                   mojom::kBrowserProcessId, std::move(factory_params));
+                   OriginatingProcessId::browser(), std::move(factory_params));
 
   AssertBadMessage();
 }
@@ -8513,7 +10041,7 @@ TEST_F(NetworkContextExpectBadMessageTest,
       mojom::TrustTokenOperationPolicyVerdict::kForbid;
   std::unique_ptr<TestURLLoaderClient> client =
       FetchRequest(my_request, network_context.get(), mojom::kURLLoadOptionNone,
-                   mojom::kBrowserProcessId, std::move(factory_params));
+                   OriginatingProcessId::browser(), std::move(factory_params));
 
   AssertBadMessage();
 }
@@ -8540,7 +10068,7 @@ TEST_F(NetworkContextExpectBadMessageTest,
       mojom::TrustTokenOperationPolicyVerdict::kForbid;
   std::unique_ptr<TestURLLoaderClient> client =
       FetchRequest(my_request, network_context.get(), mojom::kURLLoadOptionNone,
-                   mojom::kBrowserProcessId, std::move(factory_params));
+                   OriginatingProcessId::browser(), std::move(factory_params));
 
   AssertBadMessage();
 }
@@ -8561,7 +10089,7 @@ TEST_F(NetworkContextTest,
   // Trust Tokens issuer, it should fail.
   std::unique_ptr<TestURLLoaderClient> client = FetchRequest(
       my_request, network_context.get(), mojom::kURLLoadOptionNone,
-      mojom::kBrowserProcessId, mojom::URLLoaderFactoryParams::New());
+      OriginatingProcessId::browser(), mojom::URLLoaderFactoryParams::New());
   EXPECT_EQ(client->completion_status().error_code,
             net::ERR_TRUST_TOKEN_OPERATION_FAILED);
   EXPECT_EQ(client->completion_status().trust_token_operation_status,
@@ -8588,7 +10116,7 @@ TEST_F(NetworkContextTest,
 
   std::unique_ptr<TestURLLoaderClient> client = FetchRequest(
       my_request, network_context.get(), mojom::kURLLoadOptionNone,
-      mojom::kBrowserProcessId, mojom::URLLoaderFactoryParams::New());
+      OriginatingProcessId::browser(), mojom::URLLoaderFactoryParams::New());
   EXPECT_EQ(client->completion_status().error_code,
             net::ERR_TRUST_TOKEN_OPERATION_FAILED);
   EXPECT_EQ(client->completion_status().trust_token_operation_status,
@@ -8613,10 +10141,12 @@ TEST_F(NetworkContextTest,
   ResourceRequest my_request;
   my_request.trust_token_params =
       OptionalTrustTokenParams(mojom::TrustTokenParams::New());
+  my_request.permissions_policy =
+      *CreateStorageAccessPermissionsPolicy(my_request.url);
 
   std::unique_ptr<TestURLLoaderClient> client = FetchRequest(
       my_request, network_context.get(), mojom::kURLLoadOptionNone,
-      mojom::kBrowserProcessId, mojom::URLLoaderFactoryParams::New());
+      OriginatingProcessId::browser(), mojom::URLLoaderFactoryParams::New());
   EXPECT_EQ(client->completion_status().error_code,
             net::ERR_TRUST_TOKEN_OPERATION_FAILED);
   EXPECT_EQ(client->completion_status().trust_token_operation_status,
@@ -8962,11 +10492,11 @@ TEST_F(NetworkContextTest,
   {
     base::RunLoop run_loop;
     const std::string test_origin = test_server.GetOrigin("a.test").Serialize();
-    const std::string key_commitment =
-        base::ReplaceStringPlaceholders(R"( {"$1": { "PrivateStateTokenV3PMB": {
-          "protocol_version": "PrivateStateTokenV3PMB", "id": 1,
+    const std::string key_commitment = base::ReplaceStringPlaceholders(
+        R"( {"$1": { "PrivateStateTokenV1VOPRF": {
+          "protocol_version": "PrivateStateTokenV1VOPRF", "id": 1,
           "batchsize": 5 } } } )",
-                                        {test_origin}, /*offsets=*/nullptr);
+        {test_origin}, /*offsets=*/nullptr);
     network_service_->SetTrustTokenKeyCommitments(
         key_commitment,
         base::BindLambdaForTesting([&run_loop]() { run_loop.Quit(); }));
@@ -8984,7 +10514,7 @@ TEST_F(NetworkContextTest,
 
   std::unique_ptr<TestURLLoaderClient> client = FetchRequest(
       my_request, network_context.get(), mojom::kURLLoadOptionNone,
-      mojom::kBrowserProcessId, mojom::URLLoaderFactoryParams::New());
+      OriginatingProcessId::browser(), mojom::URLLoaderFactoryParams::New());
   // Operation status should be kOk.
   EXPECT_EQ(client->completion_status().trust_token_operation_status,
             mojom::TrustTokenOperationStatus::kOk);
@@ -9003,9 +10533,9 @@ TEST_F(NetworkContextTest,
       content_settings_run_loop.QuitClosure());
   content_settings_run_loop.Run();
 
-  client = FetchRequest(my_request, network_context.get(),
-                        mojom::kURLLoadOptionNone, mojom::kBrowserProcessId,
-                        mojom::URLLoaderFactoryParams::New());
+  client = FetchRequest(
+      my_request, network_context.get(), mojom::kURLLoadOptionNone,
+      OriginatingProcessId::browser(), mojom::URLLoaderFactoryParams::New());
   // Authorizer should fail since kTopFrameOriginForFetchRequest is blocked
   // through content settings.
   EXPECT_EQ(client->completion_status().trust_token_operation_status,
@@ -9038,11 +10568,11 @@ TEST_F(NetworkContextTest,
   {
     base::RunLoop run_loop;
     const std::string test_origin = test_server.GetOrigin("a.test").Serialize();
-    const std::string key_commitment =
-        base::ReplaceStringPlaceholders(R"( {"$1": { "PrivateStateTokenV3PMB": {
-          "protocol_version": "PrivateStateTokenV3PMB", "id": 1,
+    const std::string key_commitment = base::ReplaceStringPlaceholders(
+        R"( {"$1": { "PrivateStateTokenV1VOPRF": {
+          "protocol_version": "PrivateStateTokenV1VOPRF", "id": 1,
           "batchsize": 5 } } } )",
-                                        {test_origin}, /*offsets=*/nullptr);
+        {test_origin}, /*offsets=*/nullptr);
     network_service_->SetTrustTokenKeyCommitments(
         key_commitment,
         base::BindLambdaForTesting([&run_loop]() { run_loop.Quit(); }));
@@ -9053,6 +10583,8 @@ TEST_F(NetworkContextTest,
 
   ResourceRequest my_request;
   my_request.url = test_server.GetURL("a.test", "/empty.html");
+  my_request.permissions_policy =
+      *CreateStorageAccessPermissionsPolicy(my_request.url);
   my_request.trust_token_params =
       OptionalTrustTokenParams(mojom::TrustTokenParams::New());
   my_request.trust_token_params->operation =
@@ -9060,7 +10592,7 @@ TEST_F(NetworkContextTest,
 
   std::unique_ptr<TestURLLoaderClient> client = FetchRequest(
       my_request, network_context.get(), mojom::kURLLoadOptionNone,
-      mojom::kBrowserProcessId, mojom::URLLoaderFactoryParams::New());
+      OriginatingProcessId::browser(), mojom::URLLoaderFactoryParams::New());
   // Operation status should be kOk.
   EXPECT_EQ(client->completion_status().trust_token_operation_status,
             mojom::TrustTokenOperationStatus::kOk);
@@ -9078,9 +10610,9 @@ TEST_F(NetworkContextTest,
       content_settings_run_loop.QuitClosure());
   content_settings_run_loop.Run();
 
-  client = FetchRequest(my_request, network_context.get(),
-                        mojom::kURLLoadOptionNone, mojom::kBrowserProcessId,
-                        mojom::URLLoaderFactoryParams::New());
+  client = FetchRequest(
+      my_request, network_context.get(), mojom::kURLLoadOptionNone,
+      OriginatingProcessId::browser(), mojom::URLLoaderFactoryParams::New());
   // Authorizer should fail since a.test is blocked through content settings.
   EXPECT_EQ(client->completion_status().trust_token_operation_status,
             mojom::TrustTokenOperationStatus::kUnauthorized);
@@ -9158,6 +10690,54 @@ TEST_F(NetworkContextTest, HttpAuthUrlFilter) {
   EXPECT_TRUE(is_url_allowed_to_use_auth_schemes(kBlocked));
 }
 
+TEST_F(NetworkContextTest, HttpAuthUrlFilterWithPort) {
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(CreateNetworkContextParamsForTesting());
+  auto is_url_allowed_to_use_auth_schemes =
+      [&network_context](const GURL& url) {
+        return network_context->GetHttpAuthPreferences()
+            ->IsAllowedToUseAllHttpAuthSchemes(url::SchemeHostPort(url));
+      };
+
+  network::mojom::HttpAuthDynamicParamsPtr auth_dynamic_params =
+      network::mojom::HttpAuthDynamicParams::New();
+  const GURL kHttpGoogle("http://google.com");
+  const GURL kGoogle("https://google.com");
+  const GURL kGoogle8000("https://google.com:8000");
+
+  // Scheme is specified in origin and should be matched in the filter.
+  auth_dynamic_params->patterns_allowed_to_use_all_schemes =
+      std::vector<std::string>{"https://google.com"};
+  network_context->OnHttpAuthDynamicParamsChanged(auth_dynamic_params.get());
+  EXPECT_FALSE(is_url_allowed_to_use_auth_schemes(kHttpGoogle));
+  EXPECT_TRUE(is_url_allowed_to_use_auth_schemes(kGoogle));
+  EXPECT_TRUE(is_url_allowed_to_use_auth_schemes(kGoogle8000));
+
+  // Port is not specified in origin and should be ignored.
+  auth_dynamic_params->patterns_allowed_to_use_all_schemes =
+      std::vector<std::string>{"google.com"};
+  network_context->OnHttpAuthDynamicParamsChanged(auth_dynamic_params.get());
+  EXPECT_TRUE(is_url_allowed_to_use_auth_schemes(kHttpGoogle));
+  EXPECT_TRUE(is_url_allowed_to_use_auth_schemes(kGoogle));
+  EXPECT_TRUE(is_url_allowed_to_use_auth_schemes(kGoogle8000));
+
+  // Port is specified in origin and should be matched in the filter.
+  auth_dynamic_params->patterns_allowed_to_use_all_schemes =
+      std::vector<std::string>{"google.com:8000"};
+  network_context->OnHttpAuthDynamicParamsChanged(auth_dynamic_params.get());
+  EXPECT_FALSE(is_url_allowed_to_use_auth_schemes(kHttpGoogle));
+  EXPECT_FALSE(is_url_allowed_to_use_auth_schemes(kGoogle));
+  EXPECT_TRUE(is_url_allowed_to_use_auth_schemes(kGoogle8000));
+
+  // Wildcard for the host should match all hosts with the specified port.
+  auth_dynamic_params->patterns_allowed_to_use_all_schemes =
+      std::vector<std::string>{"*:8000"};
+  network_context->OnHttpAuthDynamicParamsChanged(auth_dynamic_params.get());
+  EXPECT_FALSE(is_url_allowed_to_use_auth_schemes(kHttpGoogle));
+  EXPECT_FALSE(is_url_allowed_to_use_auth_schemes(kGoogle));
+  EXPECT_TRUE(is_url_allowed_to_use_auth_schemes(kGoogle8000));
+}
+
 TEST_F(NetworkContextExpectBadMessageTest, DataUrl) {
   std::unique_ptr<NetworkContext> network_context =
       CreateContextWithParams(CreateNetworkContextParamsForTesting());
@@ -9166,12 +10746,12 @@ TEST_F(NetworkContextExpectBadMessageTest, DataUrl) {
   auto factory_params = mojom::URLLoaderFactoryParams::New();
   std::unique_ptr<TestURLLoaderClient> client =
       FetchRequest(request, network_context.get(), mojom::kURLLoadOptionNone,
-                   mojom::kBrowserProcessId, std::move(factory_params));
+                   OriginatingProcessId::browser(), std::move(factory_params));
 
   AssertBadMessage();
 }
 
-TEST_F(NetworkContextTest, RevokeNetworkForNoncesTest) {
+TEST_F(NetworkContextTest, RestrictNetworkForIdsTest) {
   std::unique_ptr<NetworkContext> network_context =
       CreateContextWithParams(CreateNetworkContextParamsForTesting());
 
@@ -9184,603 +10764,134 @@ TEST_F(NetworkContextTest, RevokeNetworkForNoncesTest) {
   // Revoke nonce1 and nonce3 but not nonce2.
   {
     base::test::TestFuture<void> revoked;
-    network_context->RevokeNetworkForNonces(
-        {nonce1, nonce3}, base::BindOnce(revoked.GetCallback()));
+    std::vector<network::mojom::IdAndAllowlistedPatternsPtr> nonces_to_urls;
+    auto revoked_nonce_pattern1 = CreateIdAndAllowlistedPatterns(nonce1);
+    auto revoked_nonce_pattern3 = CreateIdAndAllowlistedPatterns(nonce3);
+    nonces_to_urls.push_back(std::move(revoked_nonce_pattern1));
+    nonces_to_urls.push_back(std::move(revoked_nonce_pattern3));
+    network_context->RestrictNetworkForIds(
+        std::move(nonces_to_urls), base::BindOnce(revoked.GetCallback()));
     EXPECT_TRUE(revoked.Wait());
     EXPECT_FALSE(
-        network_context->IsNetworkForNonceAndUrlAllowed(nonce1, kFooHttpsUrl));
-    EXPECT_TRUE(
-        network_context->IsNetworkForNonceAndUrlAllowed(nonce2, kFooHttpsUrl));
+        network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+            nonce1, kFooHttpsUrl, kNak_));
+    EXPECT_TRUE(network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+        nonce2, kFooHttpsUrl, kNak_));
     EXPECT_FALSE(
-        network_context->IsNetworkForNonceAndUrlAllowed(nonce3, kFooHttpsUrl));
+        network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+            nonce3, kFooHttpsUrl, kNak_));
   }
 
   // Redundant revocations should have no effect.
   {
     base::test::TestFuture<void> revoked;
-    network_context->RevokeNetworkForNonces(
-        {nonce3, nonce1}, base::BindOnce(revoked.GetCallback()));
+    std::vector<network::mojom::IdAndAllowlistedPatternsPtr> nonces_to_urls;
+    auto revoked_nonce_pattern3 = CreateIdAndAllowlistedPatterns(nonce3);
+    nonces_to_urls.push_back(std::move(revoked_nonce_pattern3));
+    network_context->RestrictNetworkForIds(
+        std::move(nonces_to_urls), base::BindOnce(revoked.GetCallback()));
     EXPECT_TRUE(revoked.Wait());
     EXPECT_FALSE(
-        network_context->IsNetworkForNonceAndUrlAllowed(nonce1, kFooHttpsUrl));
-    EXPECT_TRUE(
-        network_context->IsNetworkForNonceAndUrlAllowed(nonce2, kFooHttpsUrl));
+        network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+            nonce1, kFooHttpsUrl, kNak_));
+    EXPECT_TRUE(network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+        nonce2, kFooHttpsUrl, kNak_));
     EXPECT_FALSE(
-        network_context->IsNetworkForNonceAndUrlAllowed(nonce3, kFooHttpsUrl));
+        network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+            nonce3, kFooHttpsUrl, kNak_));
   }
 
   // Revoke nonce2 too.
   {
     base::test::TestFuture<void> revoked;
-    network_context->RevokeNetworkForNonces(
-        {nonce2}, base::BindOnce(revoked.GetCallback()));
+    std::vector<network::mojom::IdAndAllowlistedPatternsPtr> nonces_to_urls;
+    auto revoked_nonce_pattern2 = CreateIdAndAllowlistedPatterns(nonce2);
+    nonces_to_urls.push_back(std::move(revoked_nonce_pattern2));
+    network_context->RestrictNetworkForIds(
+        std::move(nonces_to_urls), base::BindOnce(revoked.GetCallback()));
     EXPECT_TRUE(revoked.Wait());
     EXPECT_FALSE(
-        network_context->IsNetworkForNonceAndUrlAllowed(nonce1, kFooHttpsUrl));
+        network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+            nonce1, kFooHttpsUrl, kNak_));
     EXPECT_FALSE(
-        network_context->IsNetworkForNonceAndUrlAllowed(nonce2, kFooHttpsUrl));
+        network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+            nonce2, kFooHttpsUrl, kNak_));
   }
+
+  // Local-scheme URLs, however, succeed (as they don't create network requests)
+  EXPECT_TRUE(network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+      nonce1, GURL("data:text/html,Hello world!"), kNak_));
+  EXPECT_TRUE(network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+      nonce1, GURL("blob:https://example.com/"), kNak_));
+  EXPECT_TRUE(network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+      nonce1, GURL("filesystem:https://example.com/"), kNak_));
 }
 
-TEST_F(NetworkContextTest, RevokeNetworkForNoncesDisablesNewRequestsTest) {
-  net::test_server::EmbeddedTestServer test_server(
-      net::test_server::EmbeddedTestServer::TYPE_HTTPS);
-  test_server.AddDefaultHandlers(
-      base::FilePath(FILE_PATH_LITERAL("services/test/data")));
-  ASSERT_TRUE(test_server.Start());
-  GURL server_url = test_server.GetURL("/echo");
-
+TEST_F(NetworkContextTest, RestrictNetworkForIdsResponseUrlTest) {
   std::unique_ptr<NetworkContext> network_context =
       CreateContextWithParams(CreateNetworkContextParamsForTesting());
 
   const base::UnguessableToken nonce = base::UnguessableToken::Create();
-  const base::UnguessableToken nonce2 = base::UnguessableToken::Create();
-  ResourceRequest request;
-  request.url = server_url;
-
-  // A nonced network request should initially succeed.
-  {
-    auto params = mojom::URLLoaderFactoryParams::New();
-    params->isolation_info = net::IsolationInfo::CreateTransient(nonce);
-    std::unique_ptr<TestURLLoaderClient> client =
-        FetchRequest(request, network_context.get(), mojom::kURLLoadOptionNone,
-                     mojom::kBrowserProcessId, std::move(params));
-    EXPECT_EQ(net::OK, client->completion_status().error_code);
-  }
+  const GURL kResponseUrl = GURL("https://example.com/page.html");
 
   {
     base::test::TestFuture<void> revoked;
-    network_context->RevokeNetworkForNonces(
-        {nonce}, base::BindOnce(revoked.GetCallback()));
+    std::vector<network::mojom::IdAndAllowlistedPatternsPtr> nonces_to_urls;
+    auto revoked_nonce_pattern = CreateIdAndAllowlistedPatterns(nonce);
+    revoked_nonce_pattern->allowlists.response_url = kResponseUrl;
+    nonces_to_urls.push_back(std::move(revoked_nonce_pattern));
+    network_context->RestrictNetworkForIds(
+        std::move(nonces_to_urls), base::BindOnce(revoked.GetCallback()));
     EXPECT_TRUE(revoked.Wait());
-    EXPECT_FALSE(
-        network_context->IsNetworkForNonceAndUrlAllowed(nonce, server_url));
-  }
-
-  // After revoking network for the nonce, the request should fail with
-  // NETWORK_ACCESS_REVOKED.
-  {
-    auto params = mojom::URLLoaderFactoryParams::New();
-    params->isolation_info = net::IsolationInfo::CreateTransient(nonce);
-    std::unique_ptr<TestURLLoaderClient> client =
-        FetchRequest(request, network_context.get(), mojom::kURLLoadOptionNone,
-                     mojom::kBrowserProcessId, std::move(params));
-    EXPECT_EQ(net::ERR_NETWORK_ACCESS_REVOKED,
-              client->completion_status().error_code);
-  }
-
-  {
-    base::test::TestFuture<void> exempted;
-    network_context->ExemptUrlFromNetworkRevocationForNonce(
-        GURL(server_url), nonce, base::BindOnce(exempted.GetCallback()));
-    EXPECT_TRUE(exempted.Wait());
-  }
-
-  // After exempting the url, the request should succeed even though the nonce
-  // is revoked.
-  {
-    auto params = mojom::URLLoaderFactoryParams::New();
-    params->is_trusted = true;
-    params->isolation_info = net::IsolationInfo::CreateTransient(nonce);
-    std::unique_ptr<TestURLLoaderClient> client =
-        FetchRequest(request, network_context.get(), mojom::kURLLoadOptionNone,
-                     mojom::kBrowserProcessId, std::move(params));
-    EXPECT_EQ(net::OK, client->completion_status().error_code);
-  }
-
-  // But the exemption should have no effect on other nonces.
-  {
-    base::test::TestFuture<void> revoked;
-    network_context->RevokeNetworkForNonces(
-        {nonce2}, base::BindOnce(revoked.GetCallback()));
-    EXPECT_TRUE(revoked.Wait());
-    EXPECT_FALSE(
-        network_context->IsNetworkForNonceAndUrlAllowed(nonce2, server_url));
-  }
-  {
-    auto params = mojom::URLLoaderFactoryParams::New();
-    params->isolation_info = net::IsolationInfo::CreateTransient(nonce2);
-    std::unique_ptr<TestURLLoaderClient> client =
-        FetchRequest(request, network_context.get(), mojom::kURLLoadOptionNone,
-                     mojom::kBrowserProcessId, std::move(params));
-    EXPECT_EQ(net::ERR_NETWORK_ACCESS_REVOKED,
-              client->completion_status().error_code);
+    EXPECT_EQ(
+        kResponseUrl,
+        network_context->GetNetworkRestrictionResponseUrlForTesting(nonce));
   }
 }
 
-TEST_F(NetworkContextTest,
-       RevokeNetworkForNoncesCancelsRequestsInProgressTest) {
-  net::EmbeddedTestServer test_server;
-  net::test_server::RegisterDefaultHandlers(&test_server);
-  ASSERT_TRUE(test_server.Start());
-
+TEST_F(NetworkContextTest, PreconnectRequestWithNetworkRestrictionsID) {
+  base::test::ScopedFeatureList feature_list{
+      network::features::kConnectionAllowlists};
   std::unique_ptr<NetworkContext> network_context =
       CreateContextWithParams(CreateNetworkContextParamsForTesting());
 
-  const base::UnguessableToken nonce = base::UnguessableToken::Create();
-  const base::UnguessableToken nonce2 = base::UnguessableToken::Create();
-  ResourceRequest request;
-  GURL test_url = test_server.GetURL("/hung");
-  request.url = test_url;
+  const base::UnguessableToken network_restrictions_id =
+      base::UnguessableToken::Create();
 
-  // Exempt `test_url` from network revocation for irrelevant `nonce2`.
-  // This will show that exemptions for unrelated nonces are ignored.
-  base::test::TestFuture<void> exempted;
-  network_context->ExemptUrlFromNetworkRevocationForNonce(
-      test_url, nonce2, base::BindOnce(exempted.GetCallback()));
-  EXPECT_TRUE(exempted.Wait());
-
-  mojo::Remote<mojom::URLLoaderFactory> loader_factory;
-  mojom::URLLoaderFactoryParamsPtr params =
-      mojom::URLLoaderFactoryParams::New();
-  params->process_id = mojom::kBrowserProcessId;
-  params->is_orb_enabled = false;
-  params->isolation_info = net::IsolationInfo::CreateTransient(nonce);
-  HangingTestURLLoaderHeaderClient header_client(
-      params->header_client.InitWithNewPipeAndPassReceiver());
-  network_context->CreateURLLoaderFactory(
-      loader_factory.BindNewPipeAndPassReceiver(), std::move(params));
-
-  mojo::PendingRemote<mojom::URLLoader> loader;
-  TestURLLoaderClient client;
-  loader_factory->CreateLoaderAndStart(
-      loader.InitWithNewPipeAndPassReceiver(), 0 /* request_id */,
-      mojom::kURLLoadOptionUseHeaderClient, request, client.CreateRemote(),
-      net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS));
-
-  // Wait for OnBeforeSendHeaders.
-  header_client.WaitForOnBeforeSendHeaders();
-
-  // Revoke network access for the nonce.
+  // Create an empty connection allowlist associated with the network
+  // restriction id.
   base::test::TestFuture<void> revoked;
-  network_context->RevokeNetworkForNonces(
-      {nonce}, base::BindOnce(revoked.GetCallback()));
+  auto revoked_nonce_pattern =
+      CreateIdAndAllowlistedPatterns(network_restrictions_id);
+  std::vector<network::mojom::IdAndAllowlistedPatternsPtr> nonces_to_urls;
+  nonces_to_urls.push_back(std::move(revoked_nonce_pattern));
+  network_context->RestrictNetworkForIds(std::move(nonces_to_urls),
+                                         base::BindOnce(revoked.GetCallback()));
   EXPECT_TRUE(revoked.Wait());
 
-  // Continue sending headers.
-  header_client.CallOnBeforeSendHeadersCallback();
-
-  // Run the request to completion.
-  client.RunUntilComplete();
-
-  // The request should have been cancelled due to network revocation.
-  EXPECT_EQ(client.completion_status().error_code,
-            net::ERR_NETWORK_ACCESS_REVOKED);
-}
-
-TEST_F(NetworkContextTest,
-       RevokeNetworkForNoncesCancelsRequestsInProgressForSecondNonceTest) {
+  // Set up and start the test server.
   net::EmbeddedTestServer test_server;
-  net::test_server::RegisterDefaultHandlers(&test_server);
   ASSERT_TRUE(test_server.Start());
+  ASSERT_FALSE(network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+      network_restrictions_id, test_server.base_url(), kNak_));
 
-  std::unique_ptr<NetworkContext> network_context =
-      CreateContextWithParams(CreateNetworkContextParamsForTesting());
-
-  const base::UnguessableToken nonce = base::UnguessableToken::Create();
-  const base::UnguessableToken nonce2 = base::UnguessableToken::Create();
-  ResourceRequest request;
-  GURL test_url = test_server.GetURL("/hung");
-  request.url = test_url;
-
-  mojo::Remote<mojom::URLLoaderFactory> loader_factory;
-  mojom::URLLoaderFactoryParamsPtr params =
-      mojom::URLLoaderFactoryParams::New();
-  params->process_id = mojom::kBrowserProcessId;
-  params->is_orb_enabled = false;
-  params->isolation_info = net::IsolationInfo::CreateTransient(nonce);
-  HangingTestURLLoaderHeaderClient header_client(
-      params->header_client.InitWithNewPipeAndPassReceiver());
-  network_context->CreateURLLoaderFactory(
-      loader_factory.BindNewPipeAndPassReceiver(), std::move(params));
-
-  mojo::PendingRemote<mojom::URLLoader> loader;
-  TestURLLoaderClient client;
-  loader_factory->CreateLoaderAndStart(
-      loader.InitWithNewPipeAndPassReceiver(), 0 /* request_id */,
-      mojom::kURLLoadOptionUseHeaderClient, request, client.CreateRemote(),
-      net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS));
-
-  // Wait for OnBeforeSendHeaders.
-  header_client.WaitForOnBeforeSendHeaders();
-
-  // Revoke network access for both `nonce` and `nonce2`. This confirms that
-  // requests for nonces beyond the first get cancelled.
-  base::test::TestFuture<void> revoked;
-  network_context->RevokeNetworkForNonces(
-      {nonce2, nonce}, base::BindOnce(revoked.GetCallback()));
-  EXPECT_TRUE(revoked.Wait());
-
-  // Continue sending headers.
-  header_client.CallOnBeforeSendHeadersCallback();
-
-  // Run the request to completion.
-  client.RunUntilComplete();
-
-  // The request should have been cancelled due to network revocation.
-  EXPECT_EQ(client.completion_status().error_code,
-            net::ERR_NETWORK_ACCESS_REVOKED);
-}
-
-TEST_F(NetworkContextTest,
-       RevokeNetworkForNoncesAllowsExemptedRequestsInProgressTest) {
-  net::EmbeddedTestServer test_server;
-  net::test_server::RegisterDefaultHandlers(&test_server);
-  ASSERT_TRUE(test_server.Start());
-
-  std::unique_ptr<NetworkContext> network_context =
-      CreateContextWithParams(CreateNetworkContextParamsForTesting());
-
-  const base::UnguessableToken nonce = base::UnguessableToken::Create();
-  ResourceRequest request;
-  GURL test_url = test_server.GetURL("/echoheader?foo");
-  request.url = test_url;
-
-  // Exempt `test_url` from network revocation for `nonce`.
-  base::test::TestFuture<void> exempted;
-  network_context->ExemptUrlFromNetworkRevocationForNonce(
-      test_url, nonce, base::BindOnce(exempted.GetCallback()));
-  EXPECT_TRUE(exempted.Wait());
-
-  mojo::Remote<mojom::URLLoaderFactory> loader_factory;
-  mojom::URLLoaderFactoryParamsPtr params =
-      mojom::URLLoaderFactoryParams::New();
-  params->process_id = mojom::kBrowserProcessId;
-  params->is_orb_enabled = false;
-  params->isolation_info = net::IsolationInfo::CreateTransient(nonce);
-  HangingTestURLLoaderHeaderClient header_client(
-      params->header_client.InitWithNewPipeAndPassReceiver());
-  network_context->CreateURLLoaderFactory(
-      loader_factory.BindNewPipeAndPassReceiver(), std::move(params));
-
-  mojo::PendingRemote<mojom::URLLoader> loader;
-  TestURLLoaderClient client;
-  loader_factory->CreateLoaderAndStart(
-      loader.InitWithNewPipeAndPassReceiver(), 0 /* request_id */,
-      mojom::kURLLoadOptionUseHeaderClient, request, client.CreateRemote(),
-      net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS));
-
-  // Pause the request in progress.
-  header_client.WaitForOnBeforeSendHeaders();
-
-  // Revoke network access for the nonce.
-  base::test::TestFuture<void> revoked;
-  network_context->RevokeNetworkForNonces(
-      {nonce}, base::BindOnce(revoked.GetCallback()));
-  EXPECT_TRUE(revoked.Wait());
-
-  // Run the request to completion.
-  header_client.CallOnBeforeSendHeadersCallback();
-  header_client.WaitForOnHeadersReceived();
-  header_client.CallOnHeadersReceivedCallback();
-  client.RunUntilComplete();
-
-  // The request should have succeeded because the url was exempted.
-  EXPECT_EQ(client.completion_status().error_code, net::OK);
-}
-
-TEST_F(NetworkContextTest,
-       RevokeNetworkForNoncesAllowsUnrelatedNonceRequestsInProgressTest) {
-  net::EmbeddedTestServer test_server;
-  net::test_server::RegisterDefaultHandlers(&test_server);
-  ASSERT_TRUE(test_server.Start());
-
-  std::unique_ptr<NetworkContext> network_context =
-      CreateContextWithParams(CreateNetworkContextParamsForTesting());
-
-  const base::UnguessableToken nonce = base::UnguessableToken::Create();
-  const base::UnguessableToken nonce2 = base::UnguessableToken::Create();
-  ResourceRequest request;
-  request.url = test_server.GetURL("/echoheader?foo");
-
-  mojo::Remote<mojom::URLLoaderFactory> loader_factory;
-  mojom::URLLoaderFactoryParamsPtr params =
-      mojom::URLLoaderFactoryParams::New();
-  params->process_id = mojom::kBrowserProcessId;
-  params->is_orb_enabled = false;
-  params->isolation_info = net::IsolationInfo::CreateTransient(nonce);
-  HangingTestURLLoaderHeaderClient header_client(
-      params->header_client.InitWithNewPipeAndPassReceiver());
-  network_context->CreateURLLoaderFactory(
-      loader_factory.BindNewPipeAndPassReceiver(), std::move(params));
-
-  mojo::PendingRemote<mojom::URLLoader> loader;
-  TestURLLoaderClient client;
-  loader_factory->CreateLoaderAndStart(
-      loader.InitWithNewPipeAndPassReceiver(), 0 /* request_id */,
-      mojom::kURLLoadOptionUseHeaderClient, request, client.CreateRemote(),
-      net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS));
-
-  // Pause the request in progress.
-  header_client.WaitForOnBeforeSendHeaders();
-
-  // Revoke network access for an unrelated nonce `nonce2`.
-  base::test::TestFuture<void> revoked;
-  network_context->RevokeNetworkForNonces(
-      {nonce2}, base::BindOnce(revoked.GetCallback()));
-  EXPECT_TRUE(revoked.Wait());
-
-  // Run the request to completion.
-  header_client.CallOnBeforeSendHeadersCallback();
-  header_client.WaitForOnHeadersReceived();
-  header_client.CallOnHeadersReceivedCallback();
-  client.RunUntilComplete();
-
-  // The request should have succeeded because the url was exempted.
-  EXPECT_EQ(client.completion_status().error_code, net::OK);
-}
-
-TEST_F(NetworkContextTest, RevokeNetworkForNoncesCancelsPreconnectRequests) {
-  std::unique_ptr<NetworkContext> network_context =
-      CreateContextWithParams(CreateNetworkContextParamsForTesting());
-
-  const base::UnguessableToken nonce = base::UnguessableToken::Create();
-
-  // Revoke untrusted network access for the nonce.
-  base::test::TestFuture<void> revoked;
-  network_context->RevokeNetworkForNonces(
-      {nonce}, base::BindOnce(revoked.GetCallback()));
-  EXPECT_TRUE(revoked.Wait());
-
-  // Set up the connection listener.
-  ConnectionListener connection_listener;
-  net::EmbeddedTestServer test_server;
-  test_server.SetConnectionListener(&connection_listener);
-  ASSERT_TRUE(test_server.Start());
-  EXPECT_FALSE(network_context->IsNetworkForNonceAndUrlAllowed(
-      nonce, test_server.base_url()));
-
-  // Preconnect with a NetworkAnonymizationKey that does not contain the revoked
-  // nonce.
+  // Attempt to preconnect with the network restrictions id that accoresponds to
+  // an empty connection connection allowlist.
   network_context->PreconnectSockets(
       1, test_server.base_url(), network::mojom::CredentialsMode::kInclude,
-      net::NetworkAnonymizationKey(),
-      net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS));
-  connection_listener.WaitForAcceptedConnections(1u);
-  EXPECT_EQ(1, connection_listener.GetTotalSocketsSeen());
+      net::NetworkAnonymizationKey(), network_restrictions_id,
+      net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS),
+      std::nullopt, mojo::NullRemote());
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return task_environment_.MainThreadIsIdle(); }));
 
-  // Attempt to preconnect with a NetworkAnonymizationKey contains the revoked
-  // nonce.
-  const auto site = net::SchemefulSite(test_server.base_url());
-  network_context->PreconnectSockets(
-      1, test_server.base_url(), network::mojom::CredentialsMode::kInclude,
-      net::NetworkAnonymizationKey::CreateFromFrameSite(site, site, nonce),
-      net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS));
-  base::RunLoop().RunUntilIdle();
-
-  // No new sockets are opened because the preconnect request is cancelled.
-  EXPECT_EQ(1, connection_listener.GetTotalSocketsSeen());
+  // No socket is connected due to the empty connection allowlist.
+  ASSERT_EQ(GetSocketPoolInfo(network_context.get(), "idle_socket_count"), 0);
+  ASSERT_EQ(GetSocketPoolInfo(network_context.get(), "connecting_socket_count"),
+            0);
 }
 
-// ExemptUrlFromNetworkRevocationForNonce(exempted_url, nonce) exempts
-// future requests that have the same "url without filename" as `exempted_url`
-// under the nonce `nonce`.
-TEST_F(NetworkContextTest, ExemptUrlFromNetworkRevocationForNonceTest) {
-  std::unique_ptr<NetworkContext> network_context =
-      CreateContextWithParams(CreateNetworkContextParamsForTesting());
-
-  const std::string kFooHttpsUrl = "https://foo.com";
-  const std::string kFooHttpUrl = "http://foo.com";
-  const std::string kBarHttpsUrl = "https://bar.com";
-
-  const base::UnguessableToken nonce = base::UnguessableToken::Create();
-  const base::UnguessableToken nonce2 = base::UnguessableToken::Create();
-
-  // For `nonce` exempt kFooHttpsUrl but not kBarHttpsUrl.
-  {
-    base::test::TestFuture<void> exempted;
-    network_context->ExemptUrlFromNetworkRevocationForNonce(
-        GURL(kFooHttpsUrl), nonce, base::BindOnce(exempted.GetCallback()));
-    EXPECT_TRUE(exempted.Wait());
-  }
-  // Since `nonce` isn't revoked yet, everything should be allowed.
-  EXPECT_TRUE(network_context->IsNetworkForNonceAndUrlAllowed(
-      nonce, GURL(kFooHttpsUrl)));
-  EXPECT_TRUE(network_context->IsNetworkForNonceAndUrlAllowed(
-      nonce, GURL(kFooHttpsUrl + "?baz=qux")));
-  EXPECT_TRUE(network_context->IsNetworkForNonceAndUrlAllowed(
-      nonce, GURL(kFooHttpsUrl + "#section")));
-  EXPECT_TRUE(network_context->IsNetworkForNonceAndUrlAllowed(
-      nonce, GURL(kFooHttpsUrl + "/baz/qux.html")));
-  EXPECT_TRUE(network_context->IsNetworkForNonceAndUrlAllowed(
-      nonce, GURL(kFooHttpUrl)));
-  EXPECT_TRUE(network_context->IsNetworkForNonceAndUrlAllowed(
-      nonce, GURL(kBarHttpsUrl)));
-
-  // Revoke `nonce`.
-  {
-    base::test::TestFuture<void> revoked;
-    network_context->RevokeNetworkForNonces(
-        {nonce}, base::BindOnce(revoked.GetCallback()));
-    EXPECT_TRUE(revoked.Wait());
-  }
-  // Now for `nonce` kFooHttpsUrl should be exempted, but kBarHttpsUrl blocked.
-  EXPECT_TRUE(network_context->IsNetworkForNonceAndUrlAllowed(
-      nonce, GURL(kFooHttpsUrl)));
-  EXPECT_TRUE(network_context->IsNetworkForNonceAndUrlAllowed(
-      nonce, GURL(kFooHttpsUrl + "?baz=qux")));
-  EXPECT_TRUE(network_context->IsNetworkForNonceAndUrlAllowed(
-      nonce, GURL(kFooHttpsUrl + "#section")));
-  EXPECT_FALSE(network_context->IsNetworkForNonceAndUrlAllowed(
-      nonce, GURL(kFooHttpsUrl + "/baz/qux.html")));
-  EXPECT_FALSE(network_context->IsNetworkForNonceAndUrlAllowed(
-      nonce, GURL(kFooHttpUrl)));
-  EXPECT_FALSE(network_context->IsNetworkForNonceAndUrlAllowed(
-      nonce, GURL(kBarHttpsUrl)));
-
-  // Redundant exemptions should have no effect.
-  {
-    base::test::TestFuture<void> exempted;
-    network_context->ExemptUrlFromNetworkRevocationForNonce(
-        GURL(kFooHttpsUrl), nonce, base::BindOnce(exempted.GetCallback()));
-    EXPECT_TRUE(exempted.Wait());
-  }
-  EXPECT_TRUE(network_context->IsNetworkForNonceAndUrlAllowed(
-      nonce, GURL(kFooHttpsUrl)));
-  EXPECT_TRUE(network_context->IsNetworkForNonceAndUrlAllowed(
-      nonce, GURL(kFooHttpsUrl + "?baz=qux")));
-  EXPECT_TRUE(network_context->IsNetworkForNonceAndUrlAllowed(
-      nonce, GURL(kFooHttpsUrl + "#section")));
-  EXPECT_FALSE(network_context->IsNetworkForNonceAndUrlAllowed(
-      nonce, GURL(kFooHttpsUrl + "/baz/qux.html")));
-  EXPECT_FALSE(network_context->IsNetworkForNonceAndUrlAllowed(
-      nonce, GURL(kFooHttpUrl)));
-  EXPECT_FALSE(network_context->IsNetworkForNonceAndUrlAllowed(
-      nonce, GURL(kBarHttpsUrl)));
-
-  // For `nonce` exempt a file rooted at kBarHttpsUrl too.
-  {
-    base::test::TestFuture<void> exempted;
-    network_context->ExemptUrlFromNetworkRevocationForNonce(
-        GURL(kBarHttpsUrl + "/baz/qux.html?a=b"), nonce,
-        base::BindOnce(exempted.GetCallback()));
-    EXPECT_TRUE(exempted.Wait());
-  }
-  EXPECT_TRUE(network_context->IsNetworkForNonceAndUrlAllowed(
-      nonce, GURL(kFooHttpsUrl)));
-  EXPECT_FALSE(network_context->IsNetworkForNonceAndUrlAllowed(
-      nonce, GURL(kBarHttpsUrl)));
-  EXPECT_TRUE(network_context->IsNetworkForNonceAndUrlAllowed(
-      nonce, GURL(kBarHttpsUrl + "/baz/qux.html?c=d")));
-  EXPECT_FALSE(network_context->IsNetworkForNonceAndUrlAllowed(
-      nonce, GURL(kBarHttpsUrl + "/baz")));
-  EXPECT_TRUE(network_context->IsNetworkForNonceAndUrlAllowed(
-      nonce, GURL(kBarHttpsUrl + "/baz/")));
-  EXPECT_TRUE(network_context->IsNetworkForNonceAndUrlAllowed(
-      nonce, GURL(kBarHttpsUrl + "/baz/corge.html")));
-
-  // Revoke `nonce2`.
-  {
-    base::test::TestFuture<void> revoked;
-    network_context->RevokeNetworkForNonces(
-        {nonce2}, base::BindOnce(revoked.GetCallback()));
-    EXPECT_TRUE(revoked.Wait());
-  }
-  // Nothing should be exempted for `nonce2`.
-  EXPECT_FALSE(network_context->IsNetworkForNonceAndUrlAllowed(
-      nonce2, GURL(kFooHttpsUrl)));
-  EXPECT_FALSE(network_context->IsNetworkForNonceAndUrlAllowed(
-      nonce2, GURL(kFooHttpsUrl + "?baz=qux")));
-  EXPECT_FALSE(network_context->IsNetworkForNonceAndUrlAllowed(
-      nonce2, GURL(kFooHttpsUrl + "#section")));
-  EXPECT_FALSE(network_context->IsNetworkForNonceAndUrlAllowed(
-      nonce2, GURL(kFooHttpsUrl + "/baz/qux.html")));
-  EXPECT_FALSE(network_context->IsNetworkForNonceAndUrlAllowed(
-      nonce2, GURL(kFooHttpUrl)));
-  EXPECT_FALSE(network_context->IsNetworkForNonceAndUrlAllowed(
-      nonce2, GURL(kBarHttpsUrl)));
-
-  // Exempt kFooHttpsUrl for `nonce2`.
-  {
-    base::test::TestFuture<void> exempted;
-    network_context->ExemptUrlFromNetworkRevocationForNonce(
-        GURL(kFooHttpsUrl), nonce, base::BindOnce(exempted.GetCallback()));
-    EXPECT_TRUE(exempted.Wait());
-  }
-  EXPECT_TRUE(network_context->IsNetworkForNonceAndUrlAllowed(
-      nonce, GURL(kFooHttpsUrl)));
-  EXPECT_TRUE(network_context->IsNetworkForNonceAndUrlAllowed(
-      nonce, GURL(kFooHttpsUrl + "?baz=qux")));
-  EXPECT_TRUE(network_context->IsNetworkForNonceAndUrlAllowed(
-      nonce, GURL(kFooHttpsUrl + "#section")));
-  EXPECT_FALSE(network_context->IsNetworkForNonceAndUrlAllowed(
-      nonce, GURL(kFooHttpsUrl + "/baz/qux.html")));
-  EXPECT_FALSE(network_context->IsNetworkForNonceAndUrlAllowed(
-      nonce, GURL(kFooHttpUrl)));
-  EXPECT_FALSE(network_context->IsNetworkForNonceAndUrlAllowed(
-      nonce, GURL(kBarHttpsUrl)));
-}
-
-TEST_F(NetworkContextTest, ExemptUrlFromNetworkRevocationForNonce_InvalidURLs) {
-  std::unique_ptr<NetworkContext> network_context =
-      CreateContextWithParams(CreateNetworkContextParamsForTesting());
-
-  // The following URLs are not valid to exempt from network revocation. Note
-  // by "invalid", it means `GURL::GetWithoutFilename()` returns an invalid and
-  // empty URL for these URLs. The returned value is what
-  // `ExemptUrlFromNetworkRevocationForNonce()` and
-  // `IsNetworkForNonceAndUrlAllowed()` internally use. Some of the URLs are
-  // valid URL by itself, for example, "foo.test".
-  const std::vector<std::string> invalid_urls{
-      "foo.test",
-      "foo.test:80",
-      "foo",
-      "/",
-      "http",
-      "file://foo:123",  // file: URLs cannot have a port
-      "://foo.test",
-      "http://?k=v",
-      "http://foo.test:12three45"};
-
-  const std::string valid_url = "https://foo.test";
-  const base::UnguessableToken nonce = base::UnguessableToken::Create();
-
-  // For `nonce` exempt the `invalid_urls`. The exemption did not have effects.
-  for (const std::string& invalid_url : invalid_urls) {
-    ASSERT_FALSE(GURL(invalid_url).GetWithoutFilename().is_valid());
-    base::test::TestFuture<void> exempted;
-    network_context->ExemptUrlFromNetworkRevocationForNonce(
-        GURL(invalid_url), nonce, base::BindOnce(exempted.GetCallback()));
-    EXPECT_TRUE(exempted.Wait());
-  }
-
-  // Since `nonce` isn't revoked yet, everything should be allowed.
-  auto is_network_allowed = [&nonce = std::as_const(nonce),
-                             network_context = network_context.get()](
-                                const std::string& url) {
-    return network_context->IsNetworkForNonceAndUrlAllowed(nonce, GURL(url));
-  };
-  ASSERT_TRUE(std::ranges::all_of(invalid_urls, is_network_allowed));
-  ASSERT_TRUE(
-      network_context->IsNetworkForNonceAndUrlAllowed(nonce, GURL(valid_url)));
-
-  // Revoke `nonce`.
-  base::test::TestFuture<void> revoked;
-  network_context->RevokeNetworkForNonces(
-      {nonce}, base::BindOnce(revoked.GetCallback()));
-  EXPECT_TRUE(revoked.Wait());
-
-  // Now the `invalid_urls` and the `valid_url` all have network disabled.
-  ASSERT_TRUE(std::ranges::none_of(invalid_urls, is_network_allowed));
-  ASSERT_FALSE(
-      network_context->IsNetworkForNonceAndUrlAllowed(nonce, GURL(valid_url)));
-
-  // Exempt the `valid_url`.
-  {
-    base::test::TestFuture<void> exempted;
-    network_context->ExemptUrlFromNetworkRevocationForNonce(
-        GURL(valid_url), nonce, base::BindOnce(exempted.GetCallback()));
-    EXPECT_TRUE(exempted.Wait());
-  }
-
-  // Now the `valid_url` should be exempted. The `invalid_urls` are still
-  // disabled for network.
-  ASSERT_TRUE(std::ranges::none_of(invalid_urls, is_network_allowed));
-  ASSERT_TRUE(
-      network_context->IsNetworkForNonceAndUrlAllowed(nonce, GURL(valid_url)));
-}
-
-TEST_F(NetworkContextTest, ClearNoncesTest) {
+TEST_F(NetworkContextTest, ClearNetworkRestrictionsTest) {
   std::unique_ptr<NetworkContext> network_context =
       CreateContextWithParams(CreateNetworkContextParamsForTesting());
 
@@ -9793,26 +10904,33 @@ TEST_F(NetworkContextTest, ClearNoncesTest) {
   // Revoke nonce1 and nonce3 but not nonce2.
   {
     base::test::TestFuture<void> revoked;
-    network_context->RevokeNetworkForNonces(
-        {nonce1, nonce3}, base::BindOnce(revoked.GetCallback()));
+    auto revoked_nonce_pattern1 = CreateIdAndAllowlistedPatterns(nonce1);
+    std::vector<network::mojom::IdAndAllowlistedPatternsPtr> nonces_to_urls;
+    nonces_to_urls.push_back(std::move(revoked_nonce_pattern1));
+    auto revoked_nonce_pattern3 = CreateIdAndAllowlistedPatterns(nonce3);
+    nonces_to_urls.push_back(std::move(revoked_nonce_pattern3));
+    network_context->RestrictNetworkForIds(
+        std::move(nonces_to_urls), base::BindOnce(revoked.GetCallback()));
     EXPECT_TRUE(revoked.Wait());
     EXPECT_FALSE(
-        network_context->IsNetworkForNonceAndUrlAllowed(nonce1, kFooHttpsUrl));
-    EXPECT_TRUE(
-        network_context->IsNetworkForNonceAndUrlAllowed(nonce2, kFooHttpsUrl));
+        network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+            nonce1, kFooHttpsUrl, kNak_));
+    EXPECT_TRUE(network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+        nonce2, kFooHttpsUrl, kNak_));
     EXPECT_FALSE(
-        network_context->IsNetworkForNonceAndUrlAllowed(nonce3, kFooHttpsUrl));
+        network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+            nonce3, kFooHttpsUrl, kNak_));
   }
 
   // Clear nonce1 and nonce3.
   {
-    network_context->ClearNonces({nonce1, nonce3});
-    EXPECT_TRUE(
-        network_context->IsNetworkForNonceAndUrlAllowed(nonce1, kFooHttpsUrl));
-    EXPECT_TRUE(
-        network_context->IsNetworkForNonceAndUrlAllowed(nonce2, kFooHttpsUrl));
-    EXPECT_TRUE(
-        network_context->IsNetworkForNonceAndUrlAllowed(nonce3, kFooHttpsUrl));
+    network_context->ClearNetworkRestrictions({nonce1, nonce3});
+    EXPECT_TRUE(network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+        nonce1, kFooHttpsUrl, kNak_));
+    EXPECT_TRUE(network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+        nonce2, kFooHttpsUrl, kNak_));
+    EXPECT_TRUE(network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+        nonce3, kFooHttpsUrl, kNak_));
   }
 }
 
@@ -9841,11 +10959,69 @@ TEST_F(NetworkContextTest, Prefetch) {
 
   network_context->Prefetch(
       /*request_id=*/0, mojom::kURLLoadOptionNone, request,
-      net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS));
+      net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS),
+      GetTestNetworkRestrictionsId());
 
   auto received_request = future.Take();
   EXPECT_EQ(received_request.GetURL(), url);
   EXPECT_EQ(received_request.method, net::test_server::METHOD_GET);
+}
+
+TEST_F(NetworkContextTest, PrefetchBlockedByConnectionAllowlist) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures({features::kNetworkContextPrefetch,
+                                 network::features::kConnectionAllowlists},
+                                {});
+
+  net::EmbeddedTestServer test_server;
+  net::test_server::RegisterDefaultHandlers(&test_server);
+  base::test::TestFuture<const net::test_server::HttpRequest&> request_future;
+  test_server.RegisterRequestMonitor(
+      request_future.GetSequenceBoundRepeatingCallback());
+  ASSERT_TRUE(test_server.Start());
+
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(CreateNetworkContextParamsForTesting());
+
+  const base::UnguessableToken network_restrictions_id =
+      base::UnguessableToken::Create();
+
+  // Create an empty connection allowlist associated with the network
+  // restriction id (blocking everything).
+  base::test::TestFuture<void> revoked;
+  auto revoked_nonce_pattern =
+      CreateIdAndAllowlistedPatterns(network_restrictions_id);
+  std::vector<network::mojom::IdAndAllowlistedPatternsPtr> nonces_to_urls;
+  nonces_to_urls.push_back(std::move(revoked_nonce_pattern));
+  network_context->RestrictNetworkForIds(std::move(nonces_to_urls),
+                                         base::BindOnce(revoked.GetCallback()));
+  EXPECT_TRUE(revoked.Wait());
+
+  const auto url = test_server.GetURL("/echo");
+  auto origin = url::Origin::Create(test_server.GetURL("/"));
+  auto isolation_info = net::IsolationInfo::CreateForInternalRequest(origin);
+
+  ASSERT_FALSE(network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+      network_restrictions_id, url,
+      isolation_info.network_anonymization_key()));
+
+  ResourceRequest request = CreateResourceRequest("GET", url);
+  request.trusted_params = ResourceRequest::TrustedParams();
+  request.trusted_params->isolation_info = isolation_info;
+  request.site_for_cookies = isolation_info.site_for_cookies();
+
+  network_context->Prefetch(
+      /*request_id=*/0, mojom::kURLLoadOptionNone, request,
+      net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS),
+      network_restrictions_id);
+
+  // Wait to see if any request arrives. Since it's blocked, it shouldn't.
+  base::RunLoop run_loop;
+  base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+      FROM_HERE, run_loop.QuitClosure(), base::Milliseconds(100));
+  run_loop.Run();
+
+  EXPECT_FALSE(request_future.IsReady());
 }
 
 class NetworkContextBrowserCookieTest
@@ -9898,7 +11074,7 @@ class NetworkContextBrowserCookieTest
     mojo::Remote<mojom::URLLoaderFactory> loader_factory;
     mojom::URLLoaderFactoryParamsPtr params =
         mojom::URLLoaderFactoryParams::New();
-    params->process_id = mojom::kBrowserProcessId;
+    params->process_id = OriginatingProcessId::browser();
     params->is_trusted = true;
     if (options & mojom::kURLLoadOptionUseHeaderClient) {
       header_client_receiver_ =
@@ -10130,7 +11306,9 @@ TEST_P(NetworkContextBrowserCookieTest, Redirect) {
   ValidateRequestHeaderIsUnset(kHeader2Name);
 
   // Redirect with cookies added to the modified headers.
-  loader_->FollowRedirect({}, {GenerateTestRequestHeaders()}, {}, std::nullopt);
+  network::HttpRequestHeadersUpdateParams headers_update_params;
+  headers_update_params.modified_headers = GenerateTestRequestHeaders();
+  loader_->FollowRedirect(std::move(headers_update_params), std::nullopt);
   url_loader_client()->RunUntilComplete();
   EXPECT_EQ(net::OK, url_loader_client()->completion_status().error_code);
 
@@ -10172,7 +11350,10 @@ TEST_P(NetworkContextBrowserCookieTest, RedirectClear) {
   net::HttpRequestHeaders modified_headers;
   const char kHeader1ValueUpdated[] = "new-header-value-1";
   modified_headers.SetHeader(kHeader1Name, kHeader1ValueUpdated);
-  loader_->FollowRedirect({kHeader2Name}, {modified_headers}, {}, std::nullopt);
+  network::HttpRequestHeadersUpdateParams headers_update_params;
+  headers_update_params.removed_headers.push_back(kHeader2Name);
+  headers_update_params.modified_headers = modified_headers;
+  loader_->FollowRedirect(std::move(headers_update_params), std::nullopt);
   url_loader_client()->RunUntilComplete();
   EXPECT_EQ(net::OK, url_loader_client()->completion_status().error_code);
 
@@ -10201,9 +11382,12 @@ TEST_P(NetworkContextBrowserCookieTest, CorsRedirect) {
   ValidateRequestHeaderIsUnset(kCorsHeaderName);
 
   // Redirect with cookies added to the modified headers.
-  loader_->FollowRedirect({kHeader1Name}, {GenerateTestRequestHeaders()},
-                          {GenerateTestCorsExemptRequestHeaders()},
-                          std::nullopt);
+  network::HttpRequestHeadersUpdateParams headers_update_params;
+  headers_update_params.removed_headers.push_back(kHeader1Name);
+  headers_update_params.modified_headers = GenerateTestRequestHeaders();
+  headers_update_params.modified_cors_exempt_headers =
+      GenerateTestCorsExemptRequestHeaders();
+  loader_->FollowRedirect(std::move(headers_update_params), std::nullopt);
   url_loader_client()->RunUntilComplete();
   EXPECT_EQ(net::OK, url_loader_client()->completion_status().error_code);
 
@@ -10253,8 +11437,12 @@ TEST_P(NetworkContextBrowserCookieTest, CorsRedirectClear) {
   const char kCorsHeaderValueUpdated[] = "new-cors-header-value";
   modified_cors_exempt_headers.SetHeader(kCorsHeaderName,
                                          kCorsHeaderValueUpdated);
-  loader_->FollowRedirect({kHeader1Name}, {modified_headers},
-                          {modified_cors_exempt_headers}, std::nullopt);
+  network::HttpRequestHeadersUpdateParams headers_update_params;
+  headers_update_params.removed_headers.push_back(kHeader1Name);
+  headers_update_params.modified_headers = modified_headers;
+  headers_update_params.modified_cors_exempt_headers =
+      modified_cors_exempt_headers;
+  loader_->FollowRedirect(std::move(headers_update_params), std::nullopt);
   url_loader_client()->RunUntilComplete();
   EXPECT_EQ(net::OK, url_loader_client()->completion_status().error_code);
 
@@ -10296,7 +11484,8 @@ class StorageAccessHeaderNetworkContextTest : public NetworkContextTest {
 
   std::unique_ptr<net::test_server::HttpResponse> HandleRetryRequest(
       const net::test_server::HttpRequest& request) {
-    if (!base::StartsWith(request.GetURL().path(), kStorageAccessRetryPath)) {
+    if (!base::StartsWith(request.GetURL().GetPath(),
+                          kStorageAccessRetryPath)) {
       return nullptr;
     }
     auto http_response =
@@ -10322,7 +11511,7 @@ class StorageAccessHeaderNetworkContextTest : public NetworkContextTest {
       case ResponseKind::kRedirect: {
         http_response->set_code(net::HTTP_TEMPORARY_REDIRECT);
         std::string dest =
-            base::UnescapeBinaryURLComponent(request.GetURL().query_piece());
+            base::UnescapeBinaryURLComponent(request.GetURL().query());
         http_response->AddCustomHeader("Location", dest);
         break;
       }
@@ -10376,7 +11565,7 @@ class StorageAccessHeaderNetworkContextTest : public NetworkContextTest {
   void RunRequestToCompletion(std::unique_ptr<NetworkContext> network_context,
                               mojom::URLLoaderFactoryParamsPtr params,
                               ResourceRequest request) {
-    params->process_id = mojom::kBrowserProcessId;
+    params->process_id = OriginatingProcessId::browser();
     mojo::Remote<mojom::URLLoaderFactory> loader_factory;
     network_context->CreateURLLoaderFactory(
         loader_factory.BindNewPipeAndPassReceiver(), std::move(params));
@@ -10437,7 +11626,7 @@ class StorageAccessHeaderNetworkContextTest : public NetworkContextTest {
  private:
   std::unique_ptr<net::test_server::HttpResponse> HandleRedirectLoadRequest(
       const net::test_server::HttpRequest& request) {
-    if (!base::StartsWith(request.GetURL().path(),
+    if (!base::StartsWith(request.GetURL().GetPath(),
                           kStorageAccessRedirectLoadPath)) {
       return nullptr;
     }
@@ -10452,100 +11641,24 @@ class StorageAccessHeaderNetworkContextTest : public NetworkContextTest {
   }
 };
 
-class StorageAccessHeaderNetworkContextOriginTrialTest
-    : public StorageAccessHeaderNetworkContextTest {
- public:
-  StorageAccessHeaderNetworkContextOriginTrialTest() {
-    features_.InitWithFeatures({network::features::kStorageAccessHeadersTrial},
-                               {network::features::kStorageAccessHeaders});
-  }
-
- private:
-  base::test::ScopedFeatureList features_;
-};
-
-TEST_F(StorageAccessHeaderNetworkContextOriginTrialTest,
-       RequestHeaderAbsentWhenNoOTSetting) {
-  StartTestServerWithRequestHeaderMonitorAndRetryHandler();
-
-  ResourceRequest request;
-  request.url = test_server_.GetURL("/defaultresponse");
-  const url::Origin kTopFrameOrigin =
-      url::Origin::Create(GURL("https://b.test"));
-
-  mojom::URLLoaderFactoryParamsPtr params =
-      mojom::URLLoaderFactoryParams::New();
-  params->isolation_info = net::IsolationInfo::Create(
-      net::IsolationInfo::RequestType::kOther, kTopFrameOrigin,
-      url::Origin::Create(request.url), request.site_for_cookies);
-
-  std::unique_ptr<NetworkContext> network_context =
-      CreateContextWithParams(CreateNetworkContextParamsForTesting());
-
-  network_context->cookie_manager()->BlockThirdPartyCookies(true);
-  base::HistogramTester histogram_tester;
-
-  RunRequestToCompletion(std::move(network_context), std::move(params),
-                         request);
-
-  EXPECT_THAT(most_recent_request_headers(),
-              testing::ElementsAre(testing::Not(
-                  testing::Contains(testing::Key(kSecFetchStorageAccess)))));
-  histogram_tester.ExpectUniqueSample(
-      kStorageAccessStatusHistogram, /*sample=*/
-      net::cookie_util::StorageAccessStatusOutcome::kOmittedFeatureDisabled,
-      /*expected_bucket_count=*/1);
-  histogram_tester.ExpectUniqueSample(
-      kSecFetchStorageAccessHistogram, /*sample=*/
-      net::cookie_util::SecFetchStorageAccessOutcome::kOmittedStatusMissing,
-      /*expected_bucket_count=*/1);
-}
-
-// This test class uses either the `kStorageAccessHeadersTrial` or the
-// `kStorageAccessHeaders` feature to enable the Storage Access Headers flow
-// for testing, depending on the value of the boolean parameter.
 class StorageAccessHeaderNetworkContextParameterizedTest
     : public StorageAccessHeaderNetworkContextTest,
-      public testing::WithParamInterface<bool> {
+      public testing::WithParamInterface<
+          bool /* permissions_policy_matches_all_origins */> {
  public:
-  StorageAccessHeaderNetworkContextParameterizedTest() {
-    if (is_origin_trial_test()) {
-      features_.InitWithFeatures(
-          {network::features::kStorageAccessHeadersTrial},
-          {network::features::kStorageAccessHeaders});
-    } else {
-      features_.InitWithFeatures(
-          {network::features::kStorageAccessHeaders},
-          {network::features::kStorageAccessHeadersTrial});
-    }
-  }
-
-  bool is_origin_trial_test() const { return GetParam(); }
-
-  void SeedStorageAccessHeaderOriginTrialToken(
-      const GURL& primary_url,
-      const GURL& secondary_url,
-      NetworkContext* network_context) {
-    SetNonCookieContentSetting(
-        ContentSettingsPattern::FromURLNoWildcard(primary_url),
-        ContentSettingsPattern::FromURLToSchemefulSitePattern(secondary_url),
-        ContentSettingsType::STORAGE_ACCESS_HEADER_ORIGIN_TRIAL,
-        CONTENT_SETTING_ALLOW, network_context);
-  }
-
- private:
-  base::test::ScopedFeatureList features_;
+  StorageAccessHeaderNetworkContextParameterizedTest() = default;
+  bool permissions_policy_matches_all_origins() const { return GetParam(); }
 };
 
-INSTANTIATE_TEST_SUITE_P(,
-                         StorageAccessHeaderNetworkContextParameterizedTest,
-                         testing::Bool());
+INSTANTIATE_TEST_SUITE_P(
+    ,
+    StorageAccessHeaderNetworkContextParameterizedTest,
+    testing::Bool() /* permissions_policy_matches_all_origins */);
 
 // This test fetches `kStorageAccessRetryPath`, but the browser does not retry
 // the request since there is no matching content setting (and therefore
 // retrying the request would be a waste of time).
-TEST_P(StorageAccessHeaderNetworkContextParameterizedTest,
-       RetryWithoutContentSetting) {
+TEST_F(StorageAccessHeaderNetworkContextTest, RetryWithoutContentSetting) {
   set_retry_response_sequence({ResponseKind::kOk});
   StartTestServerWithRequestHeaderMonitorAndRetryHandler();
 
@@ -10556,11 +11669,6 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest,
   std::unique_ptr<NetworkContext> network_context =
       CreateContextWithParams(CreateNetworkContextParamsForTesting());
 
-  if (is_origin_trial_test()) {
-    SeedStorageAccessHeaderOriginTrialToken(request_url, top_level_url,
-                                            network_context.get());
-  }
-
   ASSERT_TRUE(
       SetCookieHelper(network_context.get(), request_url, "3PCookie", "1"));
 
@@ -10568,9 +11676,11 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest,
 
   ResourceRequest request;
   request.url = request_url;
+  request.permissions_policy =
+      *CreateStorageAccessPermissionsPolicy(request.url);
   auto params = mojom::URLLoaderFactoryParams::New();
   params->is_trusted = true;
-  params->process_id = mojom::kBrowserProcessId;
+  params->process_id = OriginatingProcessId::browser();
   params->is_orb_enabled = false;
   params->isolation_info = net::IsolationInfo::Create(
       net::IsolationInfo::RequestType::kOther,
@@ -10578,7 +11688,7 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest,
       request.site_for_cookies);
   std::unique_ptr<TestURLLoaderClient> client =
       FetchRequest(request, network_context.get(), mojom::kURLLoadOptionNone,
-                   mojom::kBrowserProcessId, std::move(params));
+                   OriginatingProcessId::browser(), std::move(params));
 
   client->RunUntilComplete();
 
@@ -10588,8 +11698,7 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest,
 // This test fetches `kStorageAccessRetryPath`, but the browser does not retry
 // the request since cookies are not blocked (and therefore retrying the request
 // would be a waste of time).
-TEST_P(StorageAccessHeaderNetworkContextParameterizedTest,
-       Retry_WithoutBlockingCookies) {
+TEST_F(StorageAccessHeaderNetworkContextTest, Retry_WithoutBlockingCookies) {
   set_retry_response_sequence({ResponseKind::kOk});
   StartTestServerWithRequestHeaderMonitorAndRetryHandler();
 
@@ -10600,11 +11709,6 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest,
   std::unique_ptr<NetworkContext> network_context =
       CreateContextWithParams(CreateNetworkContextParamsForTesting());
 
-  if (is_origin_trial_test()) {
-    SeedStorageAccessHeaderOriginTrialToken(request_url, top_level_url,
-                                            network_context.get());
-  }
-
   ASSERT_TRUE(
       SetCookieHelper(network_context.get(), request_url, "3PCookie", "1"));
 
@@ -10612,9 +11716,11 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest,
 
   ResourceRequest request;
   request.url = request_url;
+  request.permissions_policy =
+      *CreateStorageAccessPermissionsPolicy(request.url);
   auto params = mojom::URLLoaderFactoryParams::New();
   params->is_trusted = true;
-  params->process_id = mojom::kBrowserProcessId;
+  params->process_id = OriginatingProcessId::browser();
   params->is_orb_enabled = false;
   params->isolation_info = net::IsolationInfo::Create(
       net::IsolationInfo::RequestType::kOther,
@@ -10622,7 +11728,7 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest,
       request.site_for_cookies);
   std::unique_ptr<TestURLLoaderClient> client =
       FetchRequest(request, network_context.get(), mojom::kURLLoadOptionNone,
-                   mojom::kBrowserProcessId, std::move(params));
+                   OriginatingProcessId::browser(), std::move(params));
 
   client->RunUntilComplete();
 
@@ -10635,7 +11741,12 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest,
 // response still includes the header, but the browser ignores it the second
 // time, since retrying would not make any difference.
 TEST_P(StorageAccessHeaderNetworkContextParameterizedTest, Retry) {
-  set_retry_response_sequence({ResponseKind::kOk, ResponseKind::kOk});
+  if (permissions_policy_matches_all_origins()) {
+    set_retry_response_sequence({ResponseKind::kOk, ResponseKind::kOk});
+  } else {
+    set_retry_response_sequence({ResponseKind::kOk});
+  }
+
   StartTestServerWithRequestHeaderMonitorAndRetryHandler();
 
   const GURL request_url =
@@ -10644,11 +11755,6 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest, Retry) {
 
   std::unique_ptr<NetworkContext> network_context =
       CreateContextWithParams(CreateNetworkContextParamsForTesting());
-
-  if (is_origin_trial_test()) {
-    SeedStorageAccessHeaderOriginTrialToken(request_url, top_level_url,
-                                            network_context.get());
-  }
 
   ASSERT_TRUE(
       SetCookieHelper(network_context.get(), request_url, "3PCookie", "1"));
@@ -10668,9 +11774,11 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest, Retry) {
 
   ResourceRequest request;
   request.url = request_url;
+  request.permissions_policy = *CreateStorageAccessPermissionsPolicy(
+      request.url, permissions_policy_matches_all_origins());
   auto params = mojom::URLLoaderFactoryParams::New();
   params->is_trusted = true;
-  params->process_id = mojom::kBrowserProcessId;
+  params->process_id = OriginatingProcessId::browser();
   params->is_orb_enabled = false;
   params->isolation_info = net::IsolationInfo::Create(
       net::IsolationInfo::RequestType::kOther,
@@ -10678,15 +11786,22 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest, Retry) {
       request.site_for_cookies);
   std::unique_ptr<TestURLLoaderClient> client =
       FetchRequest(request, network_context.get(), mojom::kURLLoadOptionNone,
-                   mojom::kBrowserProcessId, std::move(params));
+                   OriginatingProcessId::browser(), std::move(params));
 
   client->RunUntilComplete();
 
-  EXPECT_THAT(cookie_headers(), ElementsAre("None", "3PCookie=1"));
+  EXPECT_THAT(cookie_headers(),
+              testing::Conditional(permissions_policy_matches_all_origins(),
+                                   ElementsAre("None", "3PCookie=1"),
+                                   ElementsAre("None")));
 }
 
 struct StorageAccessRedirectData {
   std::string redirect_dest_host;
+  bool is_redirect_dest_enabled_by_permissions_policy;
+  // TODO(crbug.com/382291442): Delete `is_respect_permissions_policy_enabled`
+  // once launched.
+  bool is_respect_permissions_policy_enabled;
   std::vector<std::string> expected_storage_access_header_sequence;
   std::vector<std::string> expected_cookie_header_sequence;
 };
@@ -10696,11 +11811,33 @@ class StorageAccessHeaderRedirectNetworkContextTest
       public testing::WithParamInterface<StorageAccessRedirectData> {
  public:
   StorageAccessHeaderRedirectNetworkContextTest() {
-    features_.InitAndEnableFeature(network::features::kStorageAccessHeaders);
+    // TODO(crbug.com/382291442): Remove once launched.
+    std::vector<base::test::FeatureRef> permissions_policy_features = {
+        network::features::kPopulatePermissionsPolicyOnRequest,
+        network::features::kStorageAccessHeadersRespectPermissionsPolicy,
+    };
+    if (is_respect_permissions_policy_enabled()) {
+      features_.InitWithFeatures(
+          /*enabled_features=*/permissions_policy_features,
+          /*disabled_features=*/{});
+    } else {
+      features_.InitWithFeatures(
+          /*enabled_features=*/{},
+          /*disabled_features=*/permissions_policy_features);
+    }
   }
 
   std::string redirect_dest_host() const {
     return GetParam().redirect_dest_host;
+  }
+
+  bool is_redirect_dest_enabled_by_permissions_policy() const {
+    return GetParam().is_redirect_dest_enabled_by_permissions_policy;
+  }
+
+  // TODO(crbug.com/382291442): Delete once launched.
+  bool is_respect_permissions_policy_enabled() const {
+    return GetParam().is_respect_permissions_policy_enabled;
   }
 
   std::vector<testing::Matcher<net::test_server::HttpRequest::HeaderMap>>
@@ -10722,34 +11859,126 @@ class StorageAccessHeaderRedirectNetworkContextTest
   base::test::ScopedFeatureList features_;
 };
 
-INSTANTIATE_TEST_SUITE_P(,
-                         StorageAccessHeaderRedirectNetworkContextTest,
-                         testing::ValuesIn({
-                             // Redirect to the top-level site
-                             StorageAccessRedirectData{
-                                 "b.test",
-                                 {"inactive", "active", "inactive"},
-                                 {"None", "3PCookie=1", "None"},
-                             },
-                             // Redirect to a different 3P
-                             StorageAccessRedirectData{
-                                 "c.test",
-                                 {"inactive", "active", "none"},
-                                 {"None", "3PCookie=1", "None"},
-                             },
-                             // Same-origin redirect
-                             StorageAccessRedirectData{
-                                 "a.test",
-                                 {"inactive", "active", "active"},
-                                 {"None", "3PCookie=1", "3PCookie=1"},
-                             },
-                             // Same-site, cross-origin redirect
-                             StorageAccessRedirectData{
-                                 "sub.a.test",
-                                 {"inactive", "active", "inactive"},
-                                 {"None", "3PCookie=1", "None"},
-                             },
-                         }));
+INSTANTIATE_TEST_SUITE_P(
+    ,
+    StorageAccessHeaderRedirectNetworkContextTest,
+    testing::ValuesIn({
+        // Redirect to the top-level site, enabled PP
+        StorageAccessRedirectData{
+            "b.test",
+            /*is_redirect_dest_enabled_by_permissions_policy=*/true,
+            /*is_respect_permissions_policy_enabled=*/true,
+            {"inactive", "active", "inactive"},
+            {"None", "3PCookie=1", "None"},
+        },
+        // Redirect to a different 3P, enabled PP
+        StorageAccessRedirectData{
+            "c.test",
+            /*is_redirect_dest_enabled_by_permissions_policy=*/true,
+            /*is_respect_permissions_policy_enabled=*/true,
+            {"inactive", "active", "none"},
+            {"None", "3PCookie=1", "None"},
+        },
+        // Same-origin redirect, enabled PP
+        StorageAccessRedirectData{
+            "a.test",
+            /*is_redirect_dest_enabled_by_permissions_policy=*/true,
+            /*is_respect_permissions_policy_enabled=*/true,
+            {"inactive", "active", "active"},
+            {"None", "3PCookie=1", "3PCookie=1"},
+        },
+        // Same-site, cross-origin redirect, enabled PP
+        StorageAccessRedirectData{
+            "sub.a.test",
+            /*is_redirect_dest_enabled_by_permissions_policy=*/true,
+            /*is_respect_permissions_policy_enabled=*/true,
+            {"inactive", "active", "inactive"},
+            {"None", "3PCookie=1", "None"},
+        },
+        // Redirect to the top-level site, disabled PP
+        StorageAccessRedirectData{
+            "b.test",
+            /*is_redirect_dest_enabled_by_permissions_policy=*/false,
+            /*is_respect_permissions_policy_enabled=*/true,
+            {"inactive", "active", "none"},
+            {"None", "3PCookie=1", "None"},
+        },
+        // Redirect to a different 3P, disabled PP
+        StorageAccessRedirectData{
+            "c.test",
+            /*is_redirect_dest_enabled_by_permissions_policy=*/false,
+            /*is_respect_permissions_policy_enabled=*/true,
+            {"inactive", "active", "none"},
+            {"None", "3PCookie=1", "None"},
+        },
+        // Same-site, cross-origin redirect, disabled PP
+        StorageAccessRedirectData{
+            "sub.a.test",
+            /*is_redirect_dest_enabled_by_permissions_policy=*/false,
+            /*is_respect_permissions_policy_enabled=*/true,
+            {"inactive", "active", "none"},
+            {"None", "3PCookie=1", "None"},
+        },
+
+        // TODO(crbug.com/382291442): Delete test below once launched.
+
+        // Redirect to the top-level site, enabled PP, disabled feature
+        StorageAccessRedirectData{
+            "b.test",
+            /*is_redirect_dest_enabled_by_permissions_policy=*/true,
+            /*is_respect_permissions_policy_enabled=*/false,
+            {"inactive", "active", "inactive"},
+            {"None", "3PCookie=1", "None"},
+        },
+        // Redirect to a different 3P, enabled PP, disabled feature
+        StorageAccessRedirectData{
+            "c.test",
+            /*is_redirect_dest_enabled_by_permissions_policy=*/true,
+            /*is_respect_permissions_policy_enabled=*/false,
+            {"inactive", "active", "none"},
+            {"None", "3PCookie=1", "None"},
+        },
+        // Same-origin redirect, enabled PP, disabled feature
+        StorageAccessRedirectData{
+            "a.test",
+            /*is_redirect_dest_enabled_by_permissions_policy=*/true,
+            /*is_respect_permissions_policy_enabled=*/false,
+            {"inactive", "active", "active"},
+            {"None", "3PCookie=1", "3PCookie=1"},
+        },
+        // Same-site, cross-origin redirect, enabled PP, disabled feature
+        StorageAccessRedirectData{
+            "sub.a.test",
+            /*is_redirect_dest_enabled_by_permissions_policy=*/true,
+            /*is_respect_permissions_policy_enabled=*/false,
+            {"inactive", "active", "inactive"},
+            {"None", "3PCookie=1", "None"},
+        },
+        // Redirect to the top-level site, disabled PP, disabled feature
+        StorageAccessRedirectData{
+            "b.test",
+            /*is_redirect_dest_enabled_by_permissions_policy=*/false,
+            /*is_respect_permissions_policy_enabled=*/false,
+            {"inactive", "active", "inactive"},
+            {"None", "3PCookie=1", "None"},
+        },
+        // Redirect to a different 3P, disabled PP, disabled feature
+        StorageAccessRedirectData{
+            "c.test",
+            /*is_redirect_dest_enabled_by_permissions_policy=*/false,
+            /*is_respect_permissions_policy_enabled=*/false,
+            {"inactive", "active", "none"},
+            {"None", "3PCookie=1", "None"},
+        },
+        // Same-site, cross-origin redirect, disabled PP, disabled feature
+        StorageAccessRedirectData{
+            "sub.a.test",
+            /*is_redirect_dest_enabled_by_permissions_policy=*/false,
+            /*is_respect_permissions_policy_enabled=*/false,
+            {"inactive", "active", "inactive"},
+            {"None", "3PCookie=1", "None"},
+        },
+    }));
 
 // Issues a cross-site request to "a.test" (with a top-level site of "b.test"),
 // which redirects to somewhere else after going through the "retry" flow.
@@ -10789,9 +12018,26 @@ TEST_P(StorageAccessHeaderRedirectNetworkContextTest, RetryThenRedirect) {
 
   ResourceRequest request;
   request.url = request_url;
+
+  std::vector<network::OriginWithPossibleWildcards> allowed_origins = {
+      *network::OriginWithPossibleWildcards::FromOrigin(
+          url::Origin::Create(request.url))};
+  if (is_redirect_dest_enabled_by_permissions_policy()) {
+    allowed_origins.emplace_back(
+        *network::OriginWithPossibleWildcards::FromOrigin(
+            url::Origin::Create(redirect_dest)));
+  }
+  request.permissions_policy = *PermissionsPolicy::CreateFromParentPolicy(
+      /*parent_policy=*/nullptr,
+      /*header_policy=*/
+      {{{mojom::PermissionsPolicyFeature::kStorageAccessAPI, allowed_origins,
+         /*self_if_matches=*/std::nullopt, /*matches_all_origins=*/false,
+         /*matches_opaque_src=*/false}}},
+      /*container_policy=*/{}, url::Origin::Create(request.url));
+
   auto params = mojom::URLLoaderFactoryParams::New();
   params->is_trusted = true;
-  params->process_id = mojom::kBrowserProcessId;
+  params->process_id = OriginatingProcessId::browser();
   params->is_orb_enabled = false;
   params->isolation_info = net::IsolationInfo::Create(
       net::IsolationInfo::RequestType::kOther,
@@ -10809,7 +12055,8 @@ TEST_P(StorageAccessHeaderRedirectNetworkContextTest, RetryThenRedirect) {
       mojom::kURLLoadOptionNone, request, client.CreateRemote(),
       net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS));
   client.RunUntilRedirectReceived();
-  loader->FollowRedirect({}, {}, {}, {});
+  loader->FollowRedirect(/*headers_update_params=*/{},
+                         /*new_url=*/std::nullopt);
 
   client.RunUntilComplete();
 
@@ -10819,10 +12066,68 @@ TEST_P(StorageAccessHeaderRedirectNetworkContextTest, RetryThenRedirect) {
               ElementsAreArray(ExpectedStorageAccessHeaderSequence()));
 }
 
+// TODO(crbug.com/382291442): Delete once the feature is launched.
+// Tests that the `kStorageAccessHeadersRespectPermissionsPolicy` killswitch is
+// working as expected. Issues a cross-site request to "a.test" (with a
+// top-level site of "b.test"), with the feature disabled and without including
+// a permissions policy on the request. The test would crash with the feature
+// enabled but, since the feature is disabled, it issues a request with
+// `Sec-Fetch-Storage-Access: inactive`.
+TEST_F(StorageAccessHeaderNetworkContextTest,
+       CrossSiteRequest_WithoutPermissionsPolicy) {
+  base::test::ScopedFeatureList features;
+  features.InitAndDisableFeature(
+      network::features::kStorageAccessHeadersRespectPermissionsPolicy);
+  StartTestServerWithRequestHeaderMonitorAndRetryHandler();
+
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(CreateNetworkContextParamsForTesting());
+  network_context->cookie_manager()->BlockThirdPartyCookies(true);
+  const GURL request_url = test_server_.GetURL("a.test", "/defaultresponse");
+  const GURL top_level_url = test_server_.GetURL("b.test", "/");
+  SetContentSettings(
+      network_context->cookie_manager(), ContentSettingsType::STORAGE_ACCESS,
+      {
+          {
+              ContentSettingsPattern::FromURLToSchemefulSitePattern(
+                  request_url),
+              ContentSettingsPattern::FromURLToSchemefulSitePattern(
+                  top_level_url),
+              CONTENT_SETTING_ALLOW,
+          },
+      });
+
+  ResourceRequest request;
+  request.url = request_url;
+  request.permissions_policy = std::nullopt;
+  request.credentials_mode = mojom::CredentialsMode::kInclude;
+  auto params = mojom::URLLoaderFactoryParams::New();
+  params->is_trusted = true;
+  params->process_id = OriginatingProcessId::browser();
+  params->is_orb_enabled = false;
+  params->isolation_info = net::IsolationInfo::Create(
+      net::IsolationInfo::RequestType::kOther,
+      url::Origin::Create(top_level_url), url::Origin::Create(request.url),
+      request.site_for_cookies);
+  std::unique_ptr<TestURLLoaderClient> client =
+      FetchRequest(request, network_context.get(), mojom::kURLLoadOptionNone,
+                   OriginatingProcessId::browser(), std::move(params));
+
+  client->RunUntilComplete();
+
+  EXPECT_THAT(most_recent_request_headers(),
+              ElementsAre(Contains(Pair(kSecFetchStorageAccess, "inactive"))));
+}
+
 // Regression test for https://crbug.com/352722603.
 TEST_P(StorageAccessHeaderNetworkContextParameterizedTest,
        RetryABAWithResourceRequestOptIn) {
-  set_retry_response_sequence({ResponseKind::kOk, ResponseKind::kOk});
+  if (permissions_policy_matches_all_origins()) {
+    set_retry_response_sequence({ResponseKind::kOk, ResponseKind::kOk});
+  } else {
+    set_retry_response_sequence({ResponseKind::kOk});
+  }
+
   StartTestServerWithRequestHeaderMonitorAndRetryHandler();
 
   const GURL request_url =
@@ -10831,11 +12136,6 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest,
 
   std::unique_ptr<NetworkContext> network_context =
       CreateContextWithParams(CreateNetworkContextParamsForTesting());
-
-  if (is_origin_trial_test()) {
-    SeedStorageAccessHeaderOriginTrialToken(request_url, top_level_url,
-                                            network_context.get());
-  }
 
   ASSERT_TRUE(
       SetCookieHelper(network_context.get(), request_url, "3PCookie", "1"));
@@ -10855,6 +12155,8 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest,
 
   ResourceRequest request;
   request.url = request_url;
+  request.permissions_policy = *CreateStorageAccessPermissionsPolicy(
+      request.url, permissions_policy_matches_all_origins());
   // The SiteForCookies makes this a cross-site context. Since the top-level
   // site and request URL's site are same-site, this is an "ABA" fetch.
   request.site_for_cookies = net::SiteForCookies();
@@ -10868,7 +12170,7 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest,
 
   auto params = mojom::URLLoaderFactoryParams::New();
   params->is_trusted = true;
-  params->process_id = mojom::kBrowserProcessId;
+  params->process_id = OriginatingProcessId::browser();
   params->is_orb_enabled = false;
   params->isolation_info = net::IsolationInfo::Create(
       net::IsolationInfo::RequestType::kOther,
@@ -10876,11 +12178,14 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest,
       request.site_for_cookies);
   std::unique_ptr<TestURLLoaderClient> client =
       FetchRequest(request, network_context.get(), mojom::kURLLoadOptionNone,
-                   mojom::kBrowserProcessId, std::move(params));
+                   OriginatingProcessId::browser(), std::move(params));
 
   client->RunUntilComplete();
 
-  EXPECT_THAT(cookie_headers(), ElementsAre("None", "3PCookie=1"));
+  EXPECT_THAT(cookie_headers(),
+              testing::Conditional(permissions_policy_matches_all_origins(),
+                                   ElementsAre("None", "3PCookie=1"),
+                                   ElementsAre("None")));
 }
 
 // Regression test for https://crbug.com/371011222. This sends a request that
@@ -10888,8 +12193,7 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest,
 // StorageAccessApiStatus weren't taken into account. This ensures that
 // CorsURLLoader uses the same logic as the rest of the stack when determining
 // the StorageAccessStatus.
-TEST_P(StorageAccessHeaderNetworkContextParameterizedTest,
-       OptedInViaResourceRequest) {
+TEST_F(StorageAccessHeaderNetworkContextTest, OptedInViaResourceRequest) {
   set_retry_response_sequence({ResponseKind::kOk});
   StartTestServerWithRequestHeaderMonitorAndRetryHandler();
 
@@ -10899,11 +12203,6 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest,
 
   std::unique_ptr<NetworkContext> network_context =
       CreateContextWithParams(CreateNetworkContextParamsForTesting());
-
-  if (is_origin_trial_test()) {
-    SeedStorageAccessHeaderOriginTrialToken(request_url, top_level_url,
-                                            network_context.get());
-  }
 
   ASSERT_TRUE(
       SetCookieHelper(network_context.get(), request_url, "3PCookie", "1"));
@@ -10923,12 +12222,14 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest,
 
   ResourceRequest request;
   request.url = request_url;
+  request.permissions_policy =
+      *CreateStorageAccessPermissionsPolicy(request.url);
   request.storage_access_api_status =
       net::StorageAccessApiStatus::kAccessViaAPI;
   request.request_initiator = url::Origin::Create(request_url);
   auto params = mojom::URLLoaderFactoryParams::New();
   params->is_trusted = true;
-  params->process_id = mojom::kBrowserProcessId;
+  params->process_id = OriginatingProcessId::browser();
   params->is_orb_enabled = false;
   params->isolation_info = net::IsolationInfo::Create(
       net::IsolationInfo::RequestType::kOther,
@@ -10936,7 +12237,7 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest,
       request.site_for_cookies);
   std::unique_ptr<TestURLLoaderClient> client =
       FetchRequest(request, network_context.get(), mojom::kURLLoadOptionNone,
-                   mojom::kBrowserProcessId, std::move(params));
+                   OriginatingProcessId::browser(), std::move(params));
 
   client->RunUntilComplete();
 
@@ -10952,8 +12253,7 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest,
 // be honored, however, because the request's credentials mode was `kOmit` (so
 // there is no point to re-sending the request, as nothing would change compared
 // to the first request).
-TEST_P(StorageAccessHeaderNetworkContextParameterizedTest,
-       Retry_OmitCredentials) {
+TEST_F(StorageAccessHeaderNetworkContextTest, Retry_OmitCredentials) {
   set_retry_response_sequence({ResponseKind::kOk});
   StartTestServerWithRequestHeaderMonitorAndRetryHandler();
 
@@ -10963,11 +12263,6 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest,
 
   std::unique_ptr<NetworkContext> network_context =
       CreateContextWithParams(CreateNetworkContextParamsForTesting());
-
-  if (is_origin_trial_test()) {
-    SeedStorageAccessHeaderOriginTrialToken(request_url, top_level_url,
-                                            network_context.get());
-  }
 
   ASSERT_TRUE(
       SetCookieHelper(network_context.get(), request_url, "3PCookie", "1"));
@@ -10987,10 +12282,12 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest,
 
   ResourceRequest request;
   request.url = request_url;
+  request.permissions_policy =
+      *CreateStorageAccessPermissionsPolicy(request.url);
   request.credentials_mode = mojom::CredentialsMode::kOmit;
   auto params = mojom::URLLoaderFactoryParams::New();
   params->is_trusted = true;
-  params->process_id = mojom::kBrowserProcessId;
+  params->process_id = OriginatingProcessId::browser();
   params->is_orb_enabled = false;
   params->isolation_info = net::IsolationInfo::Create(
       net::IsolationInfo::RequestType::kOther,
@@ -10998,7 +12295,7 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest,
       request.site_for_cookies);
   std::unique_ptr<TestURLLoaderClient> client =
       FetchRequest(request, network_context.get(), mojom::kURLLoadOptionNone,
-                   mojom::kBrowserProcessId, std::move(params));
+                   OriginatingProcessId::browser(), std::move(params));
 
   client->RunUntilComplete();
 
@@ -11019,11 +12316,6 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest, Load) {
   std::unique_ptr<NetworkContext> network_context =
       CreateContextWithParams(CreateNetworkContextParamsForTesting());
 
-  if (is_origin_trial_test()) {
-    SeedStorageAccessHeaderOriginTrialToken(request_url, top_level_url,
-                                            network_context.get());
-  }
-
   ASSERT_TRUE(
       SetCookieHelper(network_context.get(), request_url, "3PCookie", "1"));
 
@@ -11042,9 +12334,11 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest, Load) {
 
   ResourceRequest request;
   request.url = request_url;
+  request.permissions_policy = *CreateStorageAccessPermissionsPolicy(
+      request.url, permissions_policy_matches_all_origins());
   auto params = mojom::URLLoaderFactoryParams::New();
   params->is_trusted = true;
-  params->process_id = mojom::kBrowserProcessId;
+  params->process_id = OriginatingProcessId::browser();
   params->is_orb_enabled = false;
   params->isolation_info = net::IsolationInfo::Create(
       net::IsolationInfo::RequestType::kOther,
@@ -11052,15 +12346,16 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest, Load) {
       request.site_for_cookies);
   std::unique_ptr<TestURLLoaderClient> client =
       FetchRequest(request, network_context.get(), mojom::kURLLoadOptionNone,
-                   mojom::kBrowserProcessId, std::move(params));
+                   OriginatingProcessId::browser(), std::move(params));
 
   client->RunUntilComplete();
 
   // Cookies were blocked on the request, since the server did not request them.
   EXPECT_THAT(cookie_headers(), ElementsAre("None"));
-  // But the server *is* able to request that the response is loaded with
-  // storage access.
-  EXPECT_TRUE(client->response_head()->load_with_storage_access);
+  // But, if the permissions policy allows, the server *is* able to request that
+  // the response is loaded with storage access.
+  EXPECT_EQ(client->response_head()->load_with_storage_access,
+            permissions_policy_matches_all_origins());
 }
 
 TEST_P(StorageAccessHeaderNetworkContextParameterizedTest,
@@ -11074,11 +12369,6 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest,
   std::unique_ptr<NetworkContext> network_context =
       CreateContextWithParams(CreateNetworkContextParamsForTesting());
 
-  if (is_origin_trial_test()) {
-    SeedStorageAccessHeaderOriginTrialToken(request_url, top_level_url,
-                                            network_context.get());
-  }
-
   ASSERT_TRUE(
       SetCookieHelper(network_context.get(), request_url, "3PCookie", "1"));
 
@@ -11097,10 +12387,12 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest,
 
   ResourceRequest request;
   request.url = request_url;
+  request.permissions_policy = *CreateStorageAccessPermissionsPolicy(
+      request.url, permissions_policy_matches_all_origins());
   request.credentials_mode = mojom::CredentialsMode::kOmit;
   auto params = mojom::URLLoaderFactoryParams::New();
   params->is_trusted = true;
-  params->process_id = mojom::kBrowserProcessId;
+  params->process_id = OriginatingProcessId::browser();
   params->is_orb_enabled = false;
   params->isolation_info = net::IsolationInfo::Create(
       net::IsolationInfo::RequestType::kOther,
@@ -11108,20 +12400,23 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest,
       request.site_for_cookies);
   std::unique_ptr<TestURLLoaderClient> client =
       FetchRequest(request, network_context.get(), mojom::kURLLoadOptionNone,
-                   mojom::kBrowserProcessId, std::move(params));
+                   OriginatingProcessId::browser(), std::move(params));
 
   client->RunUntilComplete();
 
   // Cookies were blocked on the request, since the server did not request them.
   EXPECT_THAT(cookie_headers(), ElementsAre("None"));
-  // But the server *is* able to request that the response is loaded with
+  // But, if the permissions policy allows, the server *is* able to request that
+  // the response is loaded with
   // storage access.
-  EXPECT_TRUE(client->response_head()->load_with_storage_access);
+  EXPECT_EQ(client->response_head()->load_with_storage_access,
+            permissions_policy_matches_all_origins());
 }
 
+// Server requests `load` in a Storage-Access-Activation header, and a redirect.
 // Only the final response in a redirect chain has any say on the
 // `load_with_storage_access` field of the response.
-TEST_P(StorageAccessHeaderNetworkContextParameterizedTest, RedirectWithLoad) {
+TEST_F(StorageAccessHeaderNetworkContextTest, RedirectWithLoad) {
   StartTestServerWithRequestHeaderMonitorAndRetryHandler();
   const GURL top_level_url = test_server_.GetURL("a.test", "/");
   const GURL request_url =
@@ -11130,11 +12425,6 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest, RedirectWithLoad) {
   std::unique_ptr<NetworkContext> network_context =
       CreateContextWithParams(CreateNetworkContextParamsForTesting());
 
-  if (is_origin_trial_test()) {
-    SeedStorageAccessHeaderOriginTrialToken(request_url, top_level_url,
-                                            network_context.get());
-  }
-
   ASSERT_TRUE(
       SetCookieHelper(network_context.get(), request_url, "3PCookie", "1"));
 
@@ -11153,13 +12443,15 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest, RedirectWithLoad) {
 
   ResourceRequest request;
   request.url = request_url;
+  request.permissions_policy =
+      *CreateStorageAccessPermissionsPolicy(request.url);
   request.trusted_params.emplace();
   request.trusted_params->include_request_cookies_with_response = true;
 
   mojo::Remote<mojom::URLLoaderFactory> loader_factory;
   auto params = mojom::URLLoaderFactoryParams::New();
   params->is_trusted = true;
-  params->process_id = mojom::kBrowserProcessId;
+  params->process_id = OriginatingProcessId::browser();
   params->is_orb_enabled = false;
   params->isolation_info = net::IsolationInfo::Create(
       net::IsolationInfo::RequestType::kOther,
@@ -11176,7 +12468,8 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest, RedirectWithLoad) {
       net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS));
 
   client.RunUntilRedirectReceived();
-  loader->FollowRedirect({}, {}, {}, {});
+  loader->FollowRedirect(/*headers_update_params=*/{},
+                         /*new_url=*/std::nullopt);
   client.RunUntilComplete();
 
   EXPECT_THAT(cookie_headers(), ElementsAre("None", "None"));
@@ -11185,12 +12478,79 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest, RedirectWithLoad) {
   EXPECT_FALSE(client.response_head()->load_with_storage_access);
 }
 
-TEST_P(StorageAccessHeaderNetworkContextParameterizedTest,
+// Server requests a redirect then the second request asks for `load` in a
+// Storage-Access-Activation header. Only the final response in a redirect chain
+// has any say on the `load_with_storage_access` field of the response.
+TEST_F(StorageAccessHeaderNetworkContextTest, RedirectThenLoad) {
+  StartTestServerWithRequestHeaderMonitorAndRetryHandler();
+  const GURL top_level_url = test_server_.GetURL("a.test", "/");
+  const GURL final_url = test_server_.GetURL(
+      "b.test", "/set-header?Activate-Storage-Access: load");
+
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(CreateNetworkContextParamsForTesting());
+
+  ASSERT_TRUE(
+      SetCookieHelper(network_context.get(), final_url, "3PCookie", "1"));
+
+  network_context->cookie_manager()->BlockThirdPartyCookies(true);
+  SetContentSettings(
+      network_context->cookie_manager(), ContentSettingsType::STORAGE_ACCESS,
+      {
+          {
+              ContentSettingsPattern::FromURLToSchemefulSitePattern(final_url),
+              ContentSettingsPattern::FromURLToSchemefulSitePattern(
+                  top_level_url),
+              CONTENT_SETTING_ALLOW,
+          },
+      });
+
+  ResourceRequest request;
+  request.url = test_server_.GetURL(
+      "/server-redirect?" + base::EscapeAllExceptUnreserved(final_url.spec()));
+  request.permissions_policy = *CreateStorageAccessPermissionsPolicy(
+      request.url, /*matches_all_origins=*/true);
+  request.trusted_params.emplace();
+  request.trusted_params->include_request_cookies_with_response = true;
+
+  mojo::Remote<mojom::URLLoaderFactory> loader_factory;
+  auto params = mojom::URLLoaderFactoryParams::New();
+  params->is_trusted = true;
+  params->process_id = OriginatingProcessId::browser();
+  params->is_orb_enabled = false;
+  params->isolation_info = net::IsolationInfo::Create(
+      net::IsolationInfo::RequestType::kOther,
+      url::Origin::Create(top_level_url), url::Origin::Create(request.url),
+      request.site_for_cookies);
+  network_context->CreateURLLoaderFactory(
+      loader_factory.BindNewPipeAndPassReceiver(), std::move(params));
+
+  TestURLLoaderClient client;
+  mojo::Remote<mojom::URLLoader> loader;
+  loader_factory->CreateLoaderAndStart(
+      loader.BindNewPipeAndPassReceiver(), /*request_id=*/0,
+      mojom::kURLLoadOptionNone, request, client.CreateRemote(),
+      net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS));
+
+  client.RunUntilRedirectReceived();
+  loader->FollowRedirect(/*headers_update_params=*/{},
+                         /*new_url=*/std::nullopt);
+  client.RunUntilComplete();
+
+  EXPECT_THAT(cookie_headers(), ElementsAre("None", "None"));
+  // The redirect response did not include the `load` header, but the final
+  // response did, so the URLLoader should propagate it.
+  EXPECT_TRUE(client.response_head()->load_with_storage_access);
+}
+
+TEST_F(StorageAccessHeaderNetworkContextTest,
        RequestHeaderOmittedFirstPartyRequest) {
   StartTestServerWithRequestHeaderMonitorAndRetryHandler();
 
   ResourceRequest request;
   request.url = test_server_.GetURL("/defaultresponse");
+  request.permissions_policy =
+      *CreateStorageAccessPermissionsPolicy(request.url);
   request.site_for_cookies = net::SiteForCookies::FromUrl(request.url);
   mojom::URLLoaderFactoryParamsPtr params =
       mojom::URLLoaderFactoryParams::New();
@@ -11201,16 +12561,11 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest,
   std::unique_ptr<NetworkContext> network_context =
       CreateContextWithParams(CreateNetworkContextParamsForTesting());
 
-  if (is_origin_trial_test()) {
-    SeedStorageAccessHeaderOriginTrialToken(request.url, request.url,
-                                            network_context.get());
-  }
-
   network_context->cookie_manager()->BlockThirdPartyCookies(true);
 
   base::HistogramTester histogram_tester;
   RunRequestToCompletion(std::move(network_context), std::move(params),
-                         request);
+                         std::move(request));
 
   EXPECT_THAT(most_recent_request_headers(),
               ElementsAre(Not(Contains(Key(kSecFetchStorageAccess)))));
@@ -11218,18 +12573,16 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest,
       kStorageAccessStatusHistogram, /*sample=*/
       net::cookie_util::StorageAccessStatusOutcome::kOmittedSameSite,
       /*expected_bucket_count=*/1);
-  histogram_tester.ExpectUniqueSample(
-      kSecFetchStorageAccessHistogram, /*sample=*/
-      net::cookie_util::SecFetchStorageAccessOutcome::kOmittedStatusMissing,
-      /*expected_bucket_count=*/1);
 }
 
-TEST_P(StorageAccessHeaderNetworkContextParameterizedTest,
+TEST_F(StorageAccessHeaderNetworkContextTest,
        RequestHeaderOmittedCookiesBlocked) {
   StartTestServerWithRequestHeaderMonitorAndRetryHandler();
 
   ResourceRequest request;
   request.url = test_server_.GetURL("/defaultresponse");
+  request.permissions_policy =
+      *CreateStorageAccessPermissionsPolicy(request.url);
   const url::Origin kTopFrameOrigin =
       url::Origin::Create(GURL("https://b.test"));
   request.credentials_mode = mojom::CredentialsMode::kOmit;
@@ -11243,35 +12596,23 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest,
   std::unique_ptr<NetworkContext> network_context =
       CreateContextWithParams(CreateNetworkContextParamsForTesting());
 
-  if (is_origin_trial_test()) {
-    SeedStorageAccessHeaderOriginTrialToken(
-        request.url, kTopFrameOrigin.GetURL(), network_context.get());
-  }
   base::HistogramTester histogram_tester;
 
   RunRequestToCompletion(std::move(network_context), std::move(params),
-                         request);
+                         std::move(request));
 
   // Since credentials are blocked, no header should be attached.
   EXPECT_THAT(most_recent_request_headers(),
               ElementsAre(Not(Contains(Key(kSecFetchStorageAccess)))));
-
-  histogram_tester.ExpectUniqueSample(
-      kStorageAccessStatusHistogram, /*sample=*/
-      net::cookie_util::StorageAccessStatusOutcome::kValueActive,
-      /*expected_bucket_count=*/1);
-  histogram_tester.ExpectUniqueSample(
-      kSecFetchStorageAccessHistogram, /*sample=*/
-      net::cookie_util::SecFetchStorageAccessOutcome::
-          kOmittedRequestOmitsCredentials,
-      /*expected_bucket_count=*/1);
 }
 
-TEST_P(StorageAccessHeaderNetworkContextParameterizedTest, RequestHeader_None) {
+TEST_F(StorageAccessHeaderNetworkContextTest, RequestHeader_None) {
   StartTestServerWithRequestHeaderMonitorAndRetryHandler();
 
   ResourceRequest request;
   request.url = test_server_.GetURL("/defaultresponse");
+  request.permissions_policy =
+      *CreateStorageAccessPermissionsPolicy(request.url);
   const url::Origin kTopFrameOrigin =
       url::Origin::Create(GURL("https://b.test"));
 
@@ -11284,16 +12625,11 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest, RequestHeader_None) {
   std::unique_ptr<NetworkContext> network_context =
       CreateContextWithParams(CreateNetworkContextParamsForTesting());
 
-  if (is_origin_trial_test()) {
-    SeedStorageAccessHeaderOriginTrialToken(
-        request.url, kTopFrameOrigin.GetURL(), network_context.get());
-  }
-
   network_context->cookie_manager()->BlockThirdPartyCookies(true);
   base::HistogramTester histogram_tester;
 
   RunRequestToCompletion(std::move(network_context), std::move(params),
-                         request);
+                         std::move(request));
   EXPECT_THAT(most_recent_request_headers(),
               ElementsAre(Contains(Pair(kSecFetchStorageAccess, "none"))));
   histogram_tester.ExpectUniqueSample(
@@ -11301,18 +12637,16 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest, RequestHeader_None) {
       /*sample=*/
       net::cookie_util::StorageAccessStatusOutcome::kValueNone,
       /*expected_bucket_count=*/1);
-  histogram_tester.ExpectUniqueSample(
-      kSecFetchStorageAccessHistogram, /*sample=*/
-      net::cookie_util::SecFetchStorageAccessOutcome::kValueNone,
-      /*expected_bucket_count=*/1);
 }
 
 TEST_P(StorageAccessHeaderNetworkContextParameterizedTest,
-       RequestHeader_Inactive) {
+       RequestHeader_InactiveOrNone_DependingOnPermissionsPolicy) {
   StartTestServerWithRequestHeaderMonitorAndRetryHandler();
 
   ResourceRequest request;
   request.url = test_server_.GetURL("/defaultresponse");
+  request.permissions_policy = *CreateStorageAccessPermissionsPolicy(
+      request.url, permissions_policy_matches_all_origins());
   request.request_initiator = url::Origin::Create(GURL("https://c.test"));
   const url::Origin kTopFrameOrigin =
       url::Origin::Create(GURL("https://b.test"));
@@ -11326,11 +12660,6 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest,
   std::unique_ptr<NetworkContext> network_context =
       CreateContextWithParams(CreateNetworkContextParamsForTesting());
 
-  if (is_origin_trial_test()) {
-    SeedStorageAccessHeaderOriginTrialToken(
-        request.url, kTopFrameOrigin.GetURL(), network_context.get());
-  }
-
   network_context->cookie_manager()->BlockThirdPartyCookies(true);
   base::HistogramTester histogram_tester;
 
@@ -11342,30 +12671,37 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest,
       ContentSetting::CONTENT_SETTING_ALLOW, network_context.get());
 
   RunRequestToCompletion(std::move(network_context), std::move(params),
-                         request);
+                         std::move(request));
 
-  EXPECT_THAT(most_recent_request_headers(),
-              ElementsAre(IsSupersetOf({
-                  Pair(kSecFetchStorageAccess, "inactive"),
-                  Pair(net::HttpRequestHeaders::kOrigin, "https://c.test"),
-              })));
-  histogram_tester.ExpectUniqueSample(
-      kStorageAccessStatusHistogram,
-      /*sample=*/
-      net::cookie_util::StorageAccessStatusOutcome::kValueInactive,
-      /*expected_bucket_count=*/1);
-  histogram_tester.ExpectUniqueSample(
-      kSecFetchStorageAccessHistogram, /*sample=*/
-      net::cookie_util::SecFetchStorageAccessOutcome::kValueInactive,
-      /*expected_bucket_count=*/1);
+  if (permissions_policy_matches_all_origins()) {
+    EXPECT_THAT(most_recent_request_headers(),
+                ElementsAre(IsSupersetOf({
+                    Pair(kSecFetchStorageAccess, "inactive"),
+                    Pair(net::HttpRequestHeaders::kOrigin, "https://c.test"),
+                })));
+    histogram_tester.ExpectUniqueSample(
+        kStorageAccessStatusHistogram,
+        /*sample=*/
+        net::cookie_util::StorageAccessStatusOutcome::kValueInactive,
+        /*expected_bucket_count=*/1);
+  } else {
+    EXPECT_THAT(most_recent_request_headers(),
+                ElementsAre(Contains(Pair(kSecFetchStorageAccess, "none"))));
+    histogram_tester.ExpectUniqueSample(
+        kStorageAccessStatusHistogram,
+        /*sample=*/
+        net::cookie_util::StorageAccessStatusOutcome::kValueNone,
+        /*expected_bucket_count=*/1);
+  }
 }
 
-TEST_P(StorageAccessHeaderNetworkContextParameterizedTest,
-       RequestHeader_Active) {
+TEST_F(StorageAccessHeaderNetworkContextTest, RequestHeader_Active) {
   StartTestServerWithRequestHeaderMonitorAndRetryHandler();
 
   ResourceRequest request;
   request.url = test_server_.GetURL("/defaultresponse");
+  request.permissions_policy =
+      *CreateStorageAccessPermissionsPolicy(request.url);
   request.storage_access_api_status =
       net::StorageAccessApiStatus::kAccessViaAPI;
   const url::Origin kTopFrameOrigin =
@@ -11381,11 +12717,6 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest,
   std::unique_ptr<NetworkContext> network_context =
       CreateContextWithParams(CreateNetworkContextParamsForTesting());
 
-  if (is_origin_trial_test()) {
-    SeedStorageAccessHeaderOriginTrialToken(
-        request.url, kTopFrameOrigin.GetURL(), network_context.get());
-  }
-
   network_context->cookie_manager()->BlockThirdPartyCookies(true);
   base::HistogramTester histogram_tester;
 
@@ -11397,7 +12728,7 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest,
       ContentSetting::CONTENT_SETTING_ALLOW, network_context.get());
 
   RunRequestToCompletion(std::move(network_context), std::move(params),
-                         request);
+                         std::move(request));
 
   EXPECT_THAT(most_recent_request_headers(),
               ElementsAre(Contains(Pair(kSecFetchStorageAccess, "active"))));
@@ -11406,32 +12737,73 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest,
       /*sample=*/
       net::cookie_util::StorageAccessStatusOutcome::kValueActive,
       /*expected_bucket_count=*/1);
-  histogram_tester.ExpectUniqueSample(
-      kSecFetchStorageAccessHistogram, /*sample=*/
-      net::cookie_util::SecFetchStorageAccessOutcome::kValueActive,
-      /*expected_bucket_count=*/1);
+}
+
+TEST_F(StorageAccessHeaderNetworkContextTest,
+       RequestHeader_Active_TopLevelStorageAccess) {
+  StartTestServerWithRequestHeaderMonitorAndRetryHandler();
+
+  ResourceRequest request;
+  request.url = test_server_.GetURL("/defaultresponse");
+  request.mode = mojom::RequestMode::kCors;
+  request.is_outermost_main_frame = true;
+  request.permissions_policy =
+      *CreateStorageAccessPermissionsPolicy(request.url);
+  const url::Origin kTopFrameOrigin =
+      url::Origin::Create(GURL("https://b.test"));
+  request.request_initiator = url::Origin::Create(request.url);
+
+  mojom::URLLoaderFactoryParamsPtr params =
+      mojom::URLLoaderFactoryParams::New();
+  params->isolation_info = net::IsolationInfo::Create(
+      net::IsolationInfo::RequestType::kOther, kTopFrameOrigin,
+      url::Origin::Create(request.url), request.site_for_cookies);
+  params->is_outermost_main_frame = true;  // Main frame factory context
+
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(CreateNetworkContextParamsForTesting());
+
+  ASSERT_TRUE(
+      SetCookieHelper(network_context.get(), request.url, "3PCookie", "1"));
+  network_context->cookie_manager()->BlockThirdPartyCookies(true);
+
+  SetNonCookieContentSetting(
+      ContentSettingsPattern::FromURLToSchemefulSitePattern(request.url),
+      ContentSettingsPattern::FromURLToSchemefulSitePattern(
+          kTopFrameOrigin.GetURL()),
+      ContentSettingsType::TOP_LEVEL_STORAGE_ACCESS,
+      ContentSetting::CONTENT_SETTING_ALLOW, network_context.get());
+
+  RunRequestToCompletion(std::move(network_context), std::move(params),
+                         std::move(request));
+
+  EXPECT_THAT(most_recent_request_headers(),
+              ElementsAre(Contains(Pair(kSecFetchStorageAccess, "active"))));
+  EXPECT_THAT(cookie_headers(), ElementsAre("3PCookie=1"));
 }
 
 // This test recreates the case of StorageAccessHeaderRetry, with the
 // additional logic of demonstrating an initial call that receives an inactive
 // response.
 TEST_P(StorageAccessHeaderNetworkContextParameterizedTest, RetryAfterInactive) {
-  set_retry_response_sequence({ResponseKind::kOk, ResponseKind::kOk});
+  if (permissions_policy_matches_all_origins()) {
+    set_retry_response_sequence({ResponseKind::kOk, ResponseKind::kOk});
+  } else {
+    set_retry_response_sequence({ResponseKind::kOk});
+  }
+
   StartTestServerWithRequestHeaderMonitorAndRetryHandler();
 
   ResourceRequest request;
   request.url = test_server_.GetURL("a.test", kStorageAccessRetryPath);
+  request.permissions_policy = *CreateStorageAccessPermissionsPolicy(
+      request.url, permissions_policy_matches_all_origins());
   request.request_initiator = url::Origin::Create(GURL("https://c.test"));
   const url::Origin kTopFrameOrigin =
       url::Origin::Create(GURL("https://b.test"));
 
   std::unique_ptr<NetworkContext> network_context =
       CreateContextWithParams(CreateNetworkContextParamsForTesting());
-
-  if (is_origin_trial_test()) {
-    SeedStorageAccessHeaderOriginTrialToken(
-        request.url, kTopFrameOrigin.GetURL(), network_context.get());
-  }
 
   network_context->cookie_manager()->BlockThirdPartyCookies(true);
 
@@ -11442,7 +12814,7 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest, RetryAfterInactive) {
   mojo::Remote<mojom::URLLoaderFactory> loader_factory;
   mojom::URLLoaderFactoryParamsPtr params =
       mojom::URLLoaderFactoryParams::New();
-  params->process_id = mojom::kBrowserProcessId;
+  params->process_id = OriginatingProcessId::browser();
   params->isolation_info = net::IsolationInfo::Create(
       net::IsolationInfo::RequestType::kOther, kTopFrameOrigin,
       url::Origin::Create(request.url), request.site_for_cookies);
@@ -11455,36 +12827,407 @@ TEST_P(StorageAccessHeaderNetworkContextParameterizedTest, RetryAfterInactive) {
       ContentSetting::CONTENT_SETTING_ALLOW, network_context.get());
 
   RunRequestToCompletion(std::move(network_context), std::move(params),
-                         request);
+                         std::move(request));
 
-  EXPECT_THAT(
-      most_recent_request_headers(),
-      ElementsAre(IsSupersetOf({
-                      Pair(kSecFetchStorageAccess, "inactive"),
-                      Pair(net::HttpRequestHeaders::kOrigin, "https://c.test"),
-                  }),
-                  Contains(Pair(kSecFetchStorageAccess, "active"))));
-  // Values we expect after the request has been retried
-  EXPECT_THAT(cookie_headers(), ElementsAre("None", "3PCookie=1"));
+  if (permissions_policy_matches_all_origins()) {
+    EXPECT_THAT(
+        most_recent_request_headers(),
+        ElementsAre(
+            IsSupersetOf({
+                Pair(kSecFetchStorageAccess, "inactive"),
+                Pair(net::HttpRequestHeaders::kOrigin, "https://c.test"),
+            }),
+            Contains(Pair(kSecFetchStorageAccess, "active"))));
 
-  histogram_tester.ExpectBucketCount(
-      kStorageAccessStatusHistogram,
-      /*sample=*/
-      net::cookie_util::StorageAccessStatusOutcome::kValueInactive,
-      /*expected_count=*/1);
-  histogram_tester.ExpectBucketCount(
-      kStorageAccessStatusHistogram,
-      /*sample=*/
-      net::cookie_util::StorageAccessStatusOutcome::kValueActive,
-      /*expected_count=*/1);
-  histogram_tester.ExpectBucketCount(
-      kSecFetchStorageAccessHistogram, /*sample=*/
-      net::cookie_util::SecFetchStorageAccessOutcome::kValueInactive,
-      /*expected_count=*/1);
-  histogram_tester.ExpectBucketCount(
-      kSecFetchStorageAccessHistogram, /*sample=*/
-      net::cookie_util::SecFetchStorageAccessOutcome::kValueActive,
-      /*expected_count=*/1);
+    // Values we expect after the request has been retried
+    EXPECT_THAT(cookie_headers(), ElementsAre("None", "3PCookie=1"));
+
+    histogram_tester.ExpectBucketCount(
+        kStorageAccessStatusHistogram,
+        /*sample=*/
+        net::cookie_util::StorageAccessStatusOutcome::kValueInactive,
+        /*expected_count=*/1);
+    histogram_tester.ExpectBucketCount(
+        kStorageAccessStatusHistogram,
+        /*sample=*/
+        net::cookie_util::StorageAccessStatusOutcome::kValueActive,
+        /*expected_count=*/1);
+  } else {
+    EXPECT_THAT(most_recent_request_headers(),
+                ElementsAre(Contains(Pair(kSecFetchStorageAccess, "none"))));
+    EXPECT_THAT(cookie_headers(), ElementsAre("None"));
+
+    histogram_tester.ExpectBucketCount(
+        kStorageAccessStatusHistogram,
+        /*sample=*/
+        net::cookie_util::StorageAccessStatusOutcome::kValueNone,
+        /*expected_count=*/1);
+  }
+}
+
+TEST_F(NetworkContextTest, AddQuicHints) {
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(CreateNetworkContextParamsForTesting());
+
+  url::SchemeHostPort google("https", "www.google.com", 443);
+  url::SchemeHostPort example("https", "www.example.com", 443);
+  std::vector<url::SchemeHostPort> origins = {google, example};
+
+  net::NetworkAnonymizationKey key = net::NetworkAnonymizationKey();
+  network_context->AddQuicHints(origins, key);
+
+  net::AlternativeServiceInfoVector google_infos =
+      network_context->url_request_context()
+          ->http_server_properties()
+          ->GetAlternativeServiceInfos(google, key);
+  EXPECT_EQ(1u, google_infos.size());
+
+  EXPECT_EQ(443, google_infos[0].GetHostPortPair().port());
+  EXPECT_EQ("www.google.com", google_infos[0].GetHostPortPair().host());
+  EXPECT_EQ(net::NextProto::kProtoQUIC, google_infos[0].protocol());
+
+  net::AlternativeServiceInfoVector example_infos =
+      network_context->url_request_context()
+          ->http_server_properties()
+          ->GetAlternativeServiceInfos(example, key);
+  EXPECT_EQ(1u, example_infos.size());
+
+  EXPECT_EQ(443, example_infos[0].GetHostPortPair().port());
+  EXPECT_EQ("www.example.com", example_infos[0].GetHostPortPair().host());
+  EXPECT_EQ(net::NextProto::kProtoQUIC, example_infos[0].protocol());
+}
+
+TEST_F(NetworkContextTest, ProvidedResponseBodyStream) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      features::kURLLoaderUseProvidedResponseBodyStream);
+
+  net::EmbeddedTestServer test_server;
+  test_server.AddDefaultHandlers(
+      base::FilePath(FILE_PATH_LITERAL("services/test/data")));
+  ASSERT_TRUE(test_server.Start());
+
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(CreateNetworkContextParamsForTesting());
+
+  ResourceRequest request;
+  request.url = test_server.GetURL("/hello.html");
+  request.method = "GET";
+
+  mojo::ScopedDataPipeProducerHandle producer;
+  mojo::ScopedDataPipeConsumerHandle consumer;
+  ASSERT_EQ(MOJO_RESULT_OK, mojo::CreateDataPipe(nullptr, producer, consumer));
+
+  request.trusted_params = ResourceRequest::TrustedParams();
+  request.trusted_params->response_body_stream =
+      base::MakeRefCounted<network::SharedDataPipeProducerHandle>(
+          std::move(producer));
+
+  mojo::Remote<mojom::URLLoaderFactory> loader_factory;
+  mojom::URLLoaderFactoryParamsPtr params =
+      mojom::URLLoaderFactoryParams::New();
+  params->process_id = OriginatingProcessId::browser();
+  params->is_orb_enabled = false;
+  params->is_trusted = true;
+  network_context->CreateURLLoaderFactory(
+      loader_factory.BindNewPipeAndPassReceiver(), std::move(params));
+
+  mojo::PendingRemote<mojom::URLLoader> loader;
+  TestURLLoaderClient client;
+  loader_factory->CreateLoaderAndStart(
+      loader.InitWithNewPipeAndPassReceiver(), 0 /* request_id */,
+      0 /* options */, request, client.CreateRemote(),
+      net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS));
+
+  client.RunUntilComplete();
+  EXPECT_EQ(net::OK, client.completion_status().error_code);
+
+  // When a response body stream is provided, the client should not receive one.
+  EXPECT_FALSE(client.response_body().is_valid());
+
+  // Data should be written to our consumer handle.
+  std::string body;
+  EXPECT_TRUE(mojo::BlockingCopyToString(std::move(consumer), &body));
+  EXPECT_EQ("<!doctype html>\n<p>hello</p>\n", body);
+}
+
+// Tests for WebSocket NetLog tracking feature.
+// The core NetLog entry creation logic is tested in websocket_factory_unittest
+// and websocket_channel_test. These tests cover the NetworkContext delegation
+// layer.
+class NetworkContextWebSocketNetLogTest : public NetworkContextTest {};
+
+#if BUILDFLAG(ENABLE_WEBSOCKETS)
+TEST_F(NetworkContextWebSocketNetLogTest,
+       CreateNetLogEntriesWithNoWebSocketFactory) {
+  // Create a network context without any WebSocket factory
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(CreateNetworkContextParamsForTesting());
+
+  // Create a RecordingNetLogObserver to capture events
+  net::RecordingNetLogObserver observer(
+      network_context->url_request_context()->net_log(),
+      net::NetLogCaptureMode::kIncludeSensitive);
+
+  // Should not crash and should not create any entries
+  network_context->CreateNetLogEntriesForActiveWebSockets(&observer);
+
+  // No WEBSOCKET_ALIVE entries should be created
+  std::vector<net::NetLogEntry> entries =
+      observer.GetEntriesWithType(net::NetLogEventType::WEBSOCKET_ALIVE);
+  EXPECT_TRUE(entries.empty());
+}
+
+#endif  // BUILDFLAG(ENABLE_WEBSOCKETS)
+
+#if BUILDFLAG(ENABLE_REPORTING)
+MATCHER(ConnectionAllowlistReportsMatch, "") {
+  const raw_ptr<const net::ReportingReport, VectorExperimental>& report =
+      std::get<0>(arg);
+  const std::pair<GURL, std::string>& expectation = std::get<1>(arg);
+
+  const std::string* reported_url = report->body.FindString("connection");
+  if (report->type != "connection-allowlist" ||
+      report->url != kConnectionAllowlistContextUrl_ ||
+      *reported_url != expectation.first.GetAsReferrer().spec() ||
+      report->group != expectation.second) {
+    *result_listener << "The report with url `" << report->url.spec()
+                     << "` and group `" << report->group
+                     << "` did not match the expectation <`"
+                     << expectation.first.spec() << "`, `" << expectation.second
+                     << "`>.";
+    return false;
+  }
+
+  return true;
+}
+
+class ConnectionAllowlistReportingTest : public NetworkContextTest {
+ public:
+  ConnectionAllowlistReportingTest() {
+    feature_list_.InitAndEnableFeature(
+        network::features::kConnectionAllowlists);
+  }
+
+  std::unique_ptr<NetworkContext> CreateContextWithReporting() {
+    auto reporting_context = std::make_unique<net::TestReportingContext>(
+        base::DefaultClock::GetInstance(),
+        base::DefaultTickClock::GetInstance(), net::ReportingPolicy());
+    return CreateContextWithParams(
+        CreateNetworkContextParamsForTesting(),
+        net::ReportingService::CreateForTesting(std::move(reporting_context)));
+  }
+
+  void RestrictNetworkForIdWithAllowlists(
+      NetworkContext* network_context,
+      const base::UnguessableToken& network_restrictions_id,
+      std::optional<network::ConnectionAllowlist> enforced,
+      std::optional<network::ConnectionAllowlist> report_only) {
+    auto allowlist = mojom::IdAndAllowlistedPatterns::New();
+    allowlist->network_restrictions_id = network_restrictions_id;
+
+    allowlist->allowlists.response_url = kConnectionAllowlistContextUrl_;
+    if (enforced) {
+      allowlist->allowlists.enforced = std::move(enforced);
+    }
+    if (report_only) {
+      allowlist->allowlists.report_only = std::move(report_only);
+    }
+    std::vector<mojom::IdAndAllowlistedPatternsPtr> nonces_to_urls;
+    nonces_to_urls.push_back(std::move(allowlist));
+
+    base::test::TestFuture<void> revoked;
+    network_context->RestrictNetworkForIds(std::move(nonces_to_urls),
+                                           revoked.GetCallback());
+    EXPECT_TRUE(revoked.Wait());
+  }
+
+  void ClearReports(NetworkContext* network_context) {
+    network_context->url_request_context()
+        ->reporting_service()
+        ->GetContextForTesting()
+        ->cache()
+        ->RemoveAllReports();
+  }
+
+  void VerifyReports(
+      NetworkContext* network_context,
+      const std::vector<std::pair<GURL, std::string>>& expected_reports) {
+    std::vector<raw_ptr<const net::ReportingReport, VectorExperimental>>
+        reports = network_context->url_request_context()
+                      ->reporting_service()
+                      ->GetReports();
+    ASSERT_EQ(expected_reports.size(), reports.size());
+
+    EXPECT_THAT(reports,
+                testing::UnorderedPointwise(ConnectionAllowlistReportsMatch(),
+                                            expected_reports));
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+TEST_F(ConnectionAllowlistReportingTest,
+       ConnectionAllowlistsReportingEnforced) {
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithReporting();
+
+  base::UnguessableToken nonce = base::UnguessableToken::Create();
+  GURL blocked_url("https://blocked.example.com");
+  GURL allowed_url("https://allowed.example.com");
+
+  network::ConnectionAllowlist enforced;
+  enforced.allowlist.push_back(allowed_url.spec());
+  enforced.reporting_endpoint = "enforced-endpoint";
+
+  RestrictNetworkForIdWithAllowlists(network_context.get(), nonce,
+                                     std::move(enforced), std::nullopt);
+
+  net::NetworkAnonymizationKey nak =
+      net::NetworkAnonymizationKey::CreateTransient();
+  EXPECT_FALSE(network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+      nonce, blocked_url, nak));
+  VerifyReports(network_context.get(), {{blocked_url, "enforced-endpoint"}});
+
+  // Allowed URLs should not generate new reports.
+  ClearReports(network_context.get());
+  EXPECT_TRUE(network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+      nonce, allowed_url, nak));
+  VerifyReports(network_context.get(), {});
+}
+
+TEST_F(ConnectionAllowlistReportingTest,
+       ConnectionAllowlistsReportingReportOnly) {
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithReporting();
+
+  base::UnguessableToken nonce = base::UnguessableToken::Create();
+  GURL blocked_url("https://blocked.example.com");
+  GURL allowed_url("https://allowed.example.com");
+
+  network::ConnectionAllowlist report_only;
+  report_only.allowlist.push_back(allowed_url.spec());
+  report_only.reporting_endpoint = "report-only-endpoint";
+
+  RestrictNetworkForIdWithAllowlists(network_context.get(), nonce, std::nullopt,
+                                     std::move(report_only));
+
+  net::NetworkAnonymizationKey nak =
+      net::NetworkAnonymizationKey::CreateTransient();
+  // Request should be allowed, but a report should be queued.
+  EXPECT_TRUE(network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+      nonce, blocked_url, nak));
+  VerifyReports(network_context.get(), {{blocked_url, "report-only-endpoint"}});
+
+  // Allowed URLs should not generate new reports.
+  ClearReports(network_context.get());
+  EXPECT_TRUE(network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+      nonce, allowed_url, nak));
+  VerifyReports(network_context.get(), {});
+}
+
+TEST_F(ConnectionAllowlistReportingTest,
+       ConnectionAllowlistsReporting_EnforcedAndReportOnly) {
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithReporting();
+
+  base::UnguessableToken nonce = base::UnguessableToken::Create();
+  GURL blocked_url("https://blocked.example.com");
+  GURL allowed_by_enforced_url("https://allowed-by-enforced.example.com");
+  GURL allowed_url("https://allowed.example.com");
+
+  network::ConnectionAllowlist enforced;
+  enforced.allowlist.push_back(allowed_url.spec());
+  enforced.allowlist.push_back(allowed_by_enforced_url.spec());
+  enforced.reporting_endpoint = "enforced-endpoint";
+
+  network::ConnectionAllowlist report_only;
+  report_only.allowlist.push_back(allowed_url.spec());
+  report_only.reporting_endpoint = "report-only-endpoint";
+
+  RestrictNetworkForIdWithAllowlists(network_context.get(), nonce,
+                                     std::move(enforced),
+                                     std::move(report_only));
+
+  net::NetworkAnonymizationKey nak =
+      net::NetworkAnonymizationKey::CreateTransient();
+
+  // 1. Blocked by both (neither matches).
+  EXPECT_FALSE(network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+      nonce, blocked_url, nak));
+  VerifyReports(network_context.get(), {{blocked_url, "report-only-endpoint"},
+                                        {blocked_url, "enforced-endpoint"}});
+
+  // 2. Allowed by enforced, but blocked by report-only.
+  ClearReports(network_context.get());
+  EXPECT_TRUE(network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+      nonce, allowed_by_enforced_url, nak));
+  VerifyReports(network_context.get(),
+                {{allowed_by_enforced_url, "report-only-endpoint"}});
+
+  // 3. Allowed by both: no reports expected.
+  ClearReports(network_context.get());
+  EXPECT_TRUE(network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+      nonce, allowed_url, nak));
+  VerifyReports(network_context.get(), {});
+}
+#endif  // BUILDFLAG(ENABLE_REPORTING)
+
+class EarlyCookieLoadOnPreconnectTest : public NetworkContextTest {
+ public:
+  EarlyCookieLoadOnPreconnectTest() {
+    feature_list_.InitAndEnableFeature(
+        net::features::kEarlyCookieLoadOnPreconnect);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+TEST_F(EarlyCookieLoadOnPreconnectTest, Basic) {
+  auto store = base::MakeRefCounted<net::MockPersistentCookieStore>();
+  store->set_store_load_commands(true);
+
+  mojom::NetworkContextParamsPtr context_params =
+      CreateNetworkContextParamsForTesting();
+
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithBuilderCallback(
+          std::move(context_params),
+          base::BindOnce(
+              [](scoped_refptr<net::MockPersistentCookieStore> store,
+                 net::URLRequestContextBuilder* builder) {
+                auto cookie_monster = std::make_unique<net::CookieMonster>(
+                    std::move(store), nullptr);
+                builder->SetCookieStore(std::move(cookie_monster));
+              },
+              store));
+
+  net::EmbeddedTestServer test_server;
+  ASSERT_TRUE(test_server.Start());
+
+  base::HistogramTester histogram_tester;
+
+  network_context->PreconnectSockets(
+      1, test_server.base_url(), network::mojom::CredentialsMode::kInclude,
+      net::NetworkAnonymizationKey(), GetTestNetworkRestrictionsId(),
+      net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS),
+      std::nullopt, mojo::NullRemote());
+
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return store->commands().size() == 2u; }));
+
+  // Now, let the MockPersistentCookieStore finish loading.
+  ASSERT_EQ(2u, store->commands().size());
+  EXPECT_EQ(net::CookieStoreCommand::LOAD, store->commands()[0].type);
+  EXPECT_EQ(net::CookieStoreCommand::LOAD_COOKIES_FOR_KEY,
+            store->commands()[1].type);
+  EXPECT_EQ(net::CookieMonster::GetKey(test_server.base_url().host()),
+            store->commands()[1].key);
+
+  histogram_tester.ExpectUniqueSample("Cookie.OnPreconnect.LoadCookie", true,
+                                      1);
 }
 
 }  // namespace

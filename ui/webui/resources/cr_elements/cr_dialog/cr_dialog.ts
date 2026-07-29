@@ -22,17 +22,13 @@
 import '../cr_icon_button/cr_icon_button.js';
 
 import {assert} from '//resources/js/assert.js';
+import {EventTracker} from '//resources/js/event_tracker.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 
-import {CrContainerShadowMixinLit} from '../cr_container_shadow_mixin_lit.js';
 import type {CrInputElement} from '../cr_input/cr_input.js';
-import {CrScrollObserverMixinLit} from '../cr_scroll_observer_mixin_lit.js';
 
 import {getCss} from './cr_dialog.css.js';
 import {getHtml} from './cr_dialog.html.js';
-
-const CrDialogElementBase =
-    CrContainerShadowMixinLit(CrScrollObserverMixinLit(CrLitElement));
 
 export interface CrDialogElement {
   $: {
@@ -40,7 +36,7 @@ export interface CrDialogElement {
   };
 }
 
-export class CrDialogElement extends CrDialogElementBase {
+export class CrDialogElement extends CrLitElement {
   static get is() {
     return 'cr-dialog';
   }
@@ -101,42 +97,26 @@ export class CrDialogElement extends CrDialogElementBase {
     };
   }
 
-  closeText?: string;
-  consumeKeydownEvent: boolean = false;
-  ignoreEnterKey: boolean = false;
-  ignorePopstate: boolean = false;
-  noCancel: boolean = false;
-  open: boolean = false;
-  showCloseButton: boolean = false;
-  showOnAttach: boolean = false;
-  ariaDescriptionText?: string;
+  accessor closeText: string|undefined;
+  accessor consumeKeydownEvent: boolean = false;
+  accessor ignoreEnterKey: boolean = false;
+  accessor ignorePopstate: boolean = false;
+  accessor noCancel: boolean = false;
+  accessor open: boolean = false;
+  accessor showCloseButton: boolean = false;
+  accessor showOnAttach: boolean = false;
+  accessor ariaDescriptionText: string|undefined;
 
   private mutationObserver_: MutationObserver|null = null;
   private boundKeydown_: ((e: KeyboardEvent) => void)|null = null;
-
-  override firstUpdated() {
-    // If the active history entry changes (i.e. user clicks back button),
-    // all open dialogs should be cancelled.
-    window.addEventListener('popstate', () => {
-      if (!this.ignorePopstate && this.$.dialog.open) {
-        this.cancel();
-      }
-    });
-
-    if (!this.ignoreEnterKey) {
-      this.addEventListener('keypress', this.onKeypress_.bind(this));
-    }
-    this.addEventListener('pointerdown', e => this.onPointerdown_(e));
-  }
+  private tracker_: EventTracker = new EventTracker();
 
   override connectedCallback() {
     super.connectedCallback();
     const mutationObserverCallback = () => {
       if (this.$.dialog.open) {
-        this.enableScrollObservation(true);
         this.addKeydownListener_();
       } else {
-        this.enableScrollObservation(false);
         this.removeKeydownListener_();
       }
     };
@@ -153,6 +133,12 @@ export class CrDialogElement extends CrDialogElementBase {
     if (this.showOnAttach) {
       this.showModal();
     }
+
+    this.tracker_.add(window, 'popstate', () => {
+      if (!this.ignorePopstate && this.$.dialog.open) {
+        this.cancel();
+      }
+    });
   }
 
   override disconnectedCallback() {
@@ -162,6 +148,14 @@ export class CrDialogElement extends CrDialogElementBase {
       this.mutationObserver_.disconnect();
       this.mutationObserver_ = null;
     }
+    this.tracker_.removeAll();
+  }
+
+  override firstUpdated() {
+    if (!this.ignoreEnterKey) {
+      this.addEventListener('keypress', this.onKeypress_.bind(this));
+    }
+    this.addEventListener('pointerdown', e => this.onPointerdown_(e));
   }
 
   private addKeydownListener_() {
@@ -206,6 +200,10 @@ export class CrDialogElement extends CrDialogElementBase {
     this.fire('cr-dialog-open');
   }
 
+  protected onCloseClick_() {
+    this.cancel();
+  }
+
   cancel() {
     this.fire('cancel');
     this.$.dialog.close();
@@ -248,11 +246,6 @@ export class CrDialogElement extends CrDialogElementBase {
   protected async onNativeDialogCancel_(e: Event) {
     // Ignore any 'cancel' events not fired directly by the <dialog> element.
     if (e.target !== this.getNative()) {
-      return;
-    }
-
-    if (this.noCancel) {
-      e.preventDefault();
       return;
     }
 

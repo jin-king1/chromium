@@ -4,11 +4,14 @@
 
 #include "services/network/test/trust_token_request_handler.h"
 
+#include <optional>
+#include <string>
+
 #include "base/base64.h"
 #include "base/check.h"
 #include "base/containers/span.h"
 #include "base/functional/callback.h"
-#include "base/json/json_string_value_serializer.h"
+#include "base/json/json_writer.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
@@ -45,7 +48,7 @@ IssuanceKeyPair GenerateIssuanceKeyPair(int id) {
   keys.verification.resize(TRUST_TOKEN_MAX_PUBLIC_KEY_SIZE);
   size_t signing_key_len, verification_key_len;
   CHECK(TRUST_TOKEN_generate_key(
-      TRUST_TOKEN_experiment_v2_pmb(), keys.signing.data(), &signing_key_len,
+      TRUST_TOKEN_pst_v1_voprf(), keys.signing.data(), &signing_key_len,
       keys.signing.size(), keys.verification.data(), &verification_key_len,
       keys.verification.size(), id));
   keys.signing.resize(signing_key_len);
@@ -98,7 +101,7 @@ struct TrustTokenRequestHandler::Rep {
 bssl::UniquePtr<TRUST_TOKEN_ISSUER>
 TrustTokenRequestHandler::Rep::CreateIssuerContextFromUnexpiredKeys() const {
   bssl::UniquePtr<TRUST_TOKEN_ISSUER> ret(
-      TRUST_TOKEN_ISSUER_new(TRUST_TOKEN_experiment_v2_pmb(), batch_size));
+      TRUST_TOKEN_ISSUER_new(TRUST_TOKEN_pst_v1_voprf(), batch_size));
   if (!ret) {
     return nullptr;
   }
@@ -146,12 +149,9 @@ TrustTokenRequestHandler::~TrustTokenRequestHandler() = default;
 std::string TrustTokenRequestHandler::GetKeyCommitmentRecord() const {
   base::AutoLock lock(mutex_);
 
-  std::string ret;
-  JSONStringValueSerializer serializer(&ret);
-
-  base::Value::Dict dict;
+  base::DictValue dict;
   const std::string protocol_string = internal::ProtocolVersionToString(
-      mojom::TrustTokenProtocolVersion::kTrustTokenV3Pmb);
+      mojom::TrustTokenProtocolVersion::kPrivateStateTokenV1Voprf);
   dict.SetByDottedPath(protocol_string + ".protocol_version",
                        rep_->protocol_version);
   dict.SetByDottedPath(protocol_string + ".id", rep_->id);
@@ -171,8 +171,9 @@ std::string TrustTokenRequestHandler::GetKeyCommitmentRecord() const {
   // It's OK to be a bit crashy in exceptional failure cases because it
   // indicates a serious coding error in this test-only code; we'd like to find
   // this out sooner rather than later.
-  CHECK(serializer.Serialize(dict));
-  return ret;
+  std::optional<std::string> ret = base::WriteJson(dict);
+  CHECK(ret);
+  return *ret;
 }
 
 std::optional<std::string> TrustTokenRequestHandler::Issue(

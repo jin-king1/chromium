@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40284755): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "base/trace_event/process_memory_dump.h"
 
 #include <errno.h>
@@ -16,6 +11,7 @@
 #include <vector>
 
 #include "base/bits.h"
+#include "base/compiler_specific.h"
 #include "base/containers/heap_array.h"
 #include "base/logging.h"
 #include "base/memory/page_size.h"
@@ -67,11 +63,9 @@ std::string GetSharedGlobalAllocatorDumpName(
   return "global/" + guid.ToString();
 }
 
-#if defined(COUNT_RESIDENT_BYTES_SUPPORTED)
 size_t GetSystemPageCount(size_t mapped_size, size_t page_size) {
   return (mapped_size + page_size - 1) / page_size;
 }
-#endif
 
 UnguessableToken GetTokenForCurrentProcess() {
   static UnguessableToken instance = UnguessableToken::Create();
@@ -83,7 +77,6 @@ UnguessableToken GetTokenForCurrentProcess() {
 // static
 bool ProcessMemoryDump::is_black_hole_non_fatal_for_testing_ = false;
 
-#if defined(COUNT_RESIDENT_BYTES_SUPPORTED)
 // static
 size_t ProcessMemoryDump::GetSystemPageSize() {
 #if BUILDFLAG(IS_IOS)
@@ -262,7 +255,7 @@ std::optional<size_t> ProcessMemoryDump::CountResidentBytesInSharedMemory(
   for (size_t i = 0; i < pages_to_fault; ++i) {
     // Reading from a volatile is a visible side-effect for the purposes of
     // optimization. This guarantees that the optimizer will not kill this line.
-    base_address[i * PAGE_SIZE];
+    UNSAFE_TODO(base_address[i * PAGE_SIZE]);
   }
 
   return resident_pages * PAGE_SIZE;
@@ -270,8 +263,6 @@ std::optional<size_t> ProcessMemoryDump::CountResidentBytesInSharedMemory(
   return CountResidentBytes(aligned_start_address, adjusted_size);
 #endif  // BUILDFLAG(IS_MAC)
 }
-
-#endif  // defined(COUNT_RESIDENT_BYTES_SUPPORTED)
 
 ProcessMemoryDump::ProcessMemoryDump(const MemoryDumpArgs& dump_args)
     : process_token_(GetTokenForCurrentProcess()), dump_args_(dump_args) {}
@@ -378,7 +369,8 @@ void ProcessMemoryDump::SetAllEdgesForSerialization(
     const std::vector<ProcessMemoryDump::MemoryAllocatorDumpEdge>& edges) {
   DCHECK(allocator_dumps_edges_.empty());
   for (const MemoryAllocatorDumpEdge& edge : edges) {
-    auto it_and_inserted = allocator_dumps_edges_.emplace(edge.source, edge);
+    auto it_and_inserted =
+        allocator_dumps_edges_.try_emplace(edge.source, edge);
     DCHECK(it_and_inserted.second);
   }
 }

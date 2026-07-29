@@ -5,9 +5,10 @@
 #ifndef ASH_STYLE_BLURRED_BACKGROUND_SHIELD_H_
 #define ASH_STYLE_BLURRED_BACKGROUND_SHIELD_H_
 
+#include <variant>
+
 #include "ash/ash_export.h"
 #include "base/scoped_observation.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_variant.h"
 #include "ui/compositor/layer.h"
@@ -48,7 +49,8 @@ class ASH_EXPORT BlurredBackgroundShield : public views::ViewObserver {
   // views::ViewObserver:
   void OnViewAddedToWidget(views::View* observed_view) override;
   void OnViewVisibilityChanged(views::View* observed_view,
-                               views::View* starting_view) override;
+                               views::View* starting_view,
+                               bool visible) override;
   void OnViewLayerBoundsSet(views::View* observed_view) override;
   void OnViewThemeChanged(views::View* observed_view) override;
 
@@ -56,7 +58,7 @@ class ASH_EXPORT BlurredBackgroundShield : public views::ViewObserver {
   void StackLayerBelowHost();
   void UpdateBackgroundColor();
 
-  ui::Layer background_layer_ = ui::Layer(ui::LAYER_SOLID_COLOR);
+  ui::LayerSolidColor background_layer_;
   const raw_ptr<views::View> host_;
   ui::ColorVariant color_;
   const float blur_sigma_;

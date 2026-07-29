@@ -11,7 +11,7 @@ import 'chrome://os-settings/lazy_load.js';
 import type {SettingsChromeVoxSubpageElement} from 'chrome://os-settings/lazy_load.js';
 import type {SettingsDropdownMenuElement, SettingsPrefsElement} from 'chrome://os-settings/os_settings.js';
 import {ChromeVoxSubpageBrowserProxyImpl, CrSettingsPrefs} from 'chrome://os-settings/os_settings.js';
-import {assert} from 'chrome://resources/js/assert.js';
+import {assert, assertNotReachedCase} from 'chrome://resources/js/assert.js';
 import {flush} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 import {assertDeepEquals, assertEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {waitAfterNextRender} from 'chrome://webui-test/polymer_test_util.js';
@@ -41,7 +41,7 @@ suite('<settings-chromevox-subpage>', () => {
 
     await CrSettingsPrefs.initialized;
     page = document.createElement('settings-chromevox-subpage');
-    page.prefs = prefElement.prefs;
+    page.prefs = prefElement.prefs!;
     document.body.appendChild(page);
     flush();
   });
@@ -187,7 +187,6 @@ suite('<settings-chromevox-subpage>', () => {
           // Click toggle control to attempt updating to secondary value.
           control.click();
           break;
-
         case ControlType.DROPDOWN:
           // Make sure dropdown is set to the default value.
           await waitAfterNextRender(control);
@@ -199,7 +198,6 @@ suite('<settings-chromevox-subpage>', () => {
           selectElement.dispatchEvent(
               new CustomEvent('change', {bubbles: true, composed: true}));
           break;
-
         case ControlType.INPUT:
           // Make sure input is set to the default value.
           await waitAfterNextRender(control);
@@ -222,6 +220,8 @@ suite('<settings-chromevox-subpage>', () => {
           inputElement.dispatchEvent(
               new CustomEvent('input', {bubbles: true, composed: true}));
           break;
+        default:
+          assertNotReachedCase(type);
       }
 
       // Make sure pref is set to secondary value.
@@ -239,7 +239,8 @@ suite('<settings-chromevox-subpage>', () => {
     await waitAfterNextRender(loggingToggle);
 
     // Get all event stream filter prefs.
-    let pref = page.getPref('settings.a11y.chromevox.event_stream_filters');
+    let pref = page.getPref<Record<string, boolean>>(
+        'settings.a11y.chromevox.event_stream_filters');
 
     // Toggle each filter, verify each pref is set.
     page.get('eventStreamFilters_').forEach((filter: string) => {
@@ -255,8 +256,9 @@ suite('<settings-chromevox-subpage>', () => {
       toggle.click();
 
       // Make sure event stream filter pref state is true.
-      pref = page.getPref('settings.a11y.chromevox.event_stream_filters');
-      assertTrue(pref.value[filter]);
+      pref = page.getPref<Record<string, boolean>>(
+          'settings.a11y.chromevox.event_stream_filters');
+      assertTrue(pref.value[filter]!);
     });
   });
 
@@ -359,5 +361,56 @@ suite('<settings-chromevox-subpage>', () => {
 
     // Verify VarioUltra Bluetooth Braille Display is selected.
     assertEquals('abcd1234', selectElement.value);
+  });
+
+  test('voice dropdown omits internal speaker name', () => {
+    page.populateVoiceListForTesting([
+      {
+        name: 'en-us-x-abc-network',
+        displayName: 'en-us-x-abc-network',
+        // The remaining information isn't used and is present to allow this to
+        // compile.
+        remote: true,
+        extensionId: '1234',
+      },
+      {
+        name: 'en-us-x-abc-local',
+        displayName: 'en-us-x-abc-local',
+        // The remaining information isn't used and is present to allow this to
+        // compile.
+        remote: false,
+        extensionId: '1234',
+      },
+      {
+        name: 'fr-fr-x-abc-local',
+        // Verify that we handle malformed data gracefully.
+        displayName: '',
+        remote: false,
+        extensionId: '1234',
+      },
+      {
+        // Verify that we handle malformed data gracefully.
+        name: 'Not a voice name',
+        displayName: 'Not a voice name',
+        remote: false,
+        extensionId: '1234',
+      },
+    ]);
+    flush();
+
+    const voiceDropdown =
+        page.shadowRoot!.querySelector<SettingsDropdownMenuElement>(
+            '#voiceDropdown');
+    assert(voiceDropdown);
+    // The speaker name, e.g. 'abc' should be stripped from the `name` property
+    // below.
+    const expectedMenuOptions = [
+      {name: 'System Text-to-Speech voice', value: 'chromeos_system_voice'},
+      {name: 'en-us-x-local', value: 'en-us-x-abc-local'},
+      {name: 'fr-fr-x-local', value: 'fr-fr-x-abc-local'},
+      {name: 'Not a voice name', value: 'Not a voice name'},
+      {name: 'en-us-x-network', value: 'en-us-x-abc-network'},
+    ];
+    assertDeepEquals(expectedMenuOptions, voiceDropdown.menuOptions);
   });
 });

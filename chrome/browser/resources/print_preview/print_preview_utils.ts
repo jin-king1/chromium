@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import type {CrIconsetElement} from 'chrome://resources/cr_elements/cr_icon/cr_iconset.js';
+import type {Iconset} from 'chrome://resources/cr_elements/cr_icon/iconset_map.js';
 import {assert} from 'chrome://resources/js/assert.js';
 
 import {inDarkMode} from './dark_mode_mixin.js';
@@ -21,7 +21,8 @@ export function areRangesEqual(array1: Range[], array2: Range[]): boolean {
     return false;
   }
   for (let i = 0; i < array1.length; i++) {
-    if (array1[i].from !== array2[i].from || array1[i].to !== array2[i].to) {
+    if (array1[i]!.from !== array2[i]!.from ||
+        array1[i]!.to !== array2[i]!.to) {
       return false;
     }
   }
@@ -37,9 +38,9 @@ export function areRangesEqual(array1: Range[], array2: Range[]): boolean {
 function getStringForLocale(
     localizedStrings: LocalizedString[], locale: string): string {
   locale = locale.toLowerCase();
-  for (let i = 0; i < localizedStrings.length; i++) {
-    if (localizedStrings[i].locale.toLowerCase() === locale) {
-      return localizedStrings[i].value;
+  for (const localizedString of localizedStrings) {
+    if (localizedString.locale.toLowerCase() === locale) {
+      return localizedString.value;
     }
   }
   return '';
@@ -54,15 +55,7 @@ export function getStringForCurrentLocale(localizedStrings: LocalizedString[]):
     string {
   // First try to find an exact match and then look for the language only.
   return getStringForLocale(localizedStrings, navigator.language) ||
-      getStringForLocale(localizedStrings, navigator.language.split('-')[0]);
-}
-
-/**
- * @param args The arguments for the observer.
- * @return Whether all arguments are defined.
- */
-export function observerDepsDefined(args: any[]): boolean {
-  return args.every(arg => arg !== undefined);
+      getStringForLocale(localizedStrings, navigator.language.split('-')[0]!);
 }
 
 /**
@@ -74,7 +67,7 @@ export function observerDepsDefined(args: any[]): boolean {
  *     url(path_to_arrow) separated by a comma.
  */
 export function getSelectDropdownBackground(
-    iconset: CrIconsetElement, iconName: string, el: HTMLElement): string {
+    iconset: Iconset, iconName: string, el: HTMLElement): string {
   const serializer = new XMLSerializer();
   const iconElement = iconset.createIcon(iconName);
   assert(iconElement);

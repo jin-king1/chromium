@@ -10,7 +10,6 @@
 #include "base/functional/callback_forward.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
-#include "components/password_manager/core/browser/password_store/insecure_credentials_table.h"
 #include "components/password_manager/core/browser/password_store/password_store_consumer.h"
 
 class PrefService;
@@ -23,6 +22,15 @@ namespace password_manager {
 
 class PasswordManagerSettingsService;
 class PasswordReuseManager;
+struct PasswordStoreResults {
+  PasswordStoreResults(std::vector<PasswordForm> store_results, bool has_error);
+  ~PasswordStoreResults();
+  PasswordStoreResults(PasswordStoreResults&& other);
+  PasswordStoreResults& operator=(PasswordStoreResults&& other);
+
+  std::vector<PasswordForm> store_results;
+  bool has_error;
+};
 
 // Instantiate this object to report metrics about the contents of the password
 // store.
@@ -55,11 +63,11 @@ class StoreMetricsReporter : public PasswordStoreConsumer {
 
  private:
   // PasswordStoreConsumer:
-  void OnGetPasswordStoreResults(
-      std::vector<std::unique_ptr<PasswordForm>> results) override;
-  void OnGetPasswordStoreResultsFrom(
+  void OnGetPasswordStoreResultsOrErrorFrom(
       PasswordStoreInterface* store,
-      std::vector<std::unique_ptr<PasswordForm>> results) override;
+      LoginsResultOrError results_or_error) override;
+  void ProcessPasswordResults(PasswordStoreInterface* store,
+                              PasswordStoreResults results);
 
   void OnBackgroundMetricsReportingCompleted(
       CredentialsCount credentials_count);
@@ -75,17 +83,16 @@ class StoreMetricsReporter : public PasswordStoreConsumer {
 
   bool custom_passphrase_enabled_;
 
-  bool is_account_storage_enabled_;
+  bool is_account_storage_active_;
 
   bool is_safe_browsing_enabled_;
 
   // Temporarily holds the credentials stored in the profile and account stores
   // till the actual metric computation starts. They don't have a value until
   // the credentials are loaded from the storage.
-  std::optional<std::vector<std::unique_ptr<PasswordForm>>>
-      profile_store_results_;
-  std::optional<std::vector<std::unique_ptr<PasswordForm>>>
-      account_store_results_;
+  std::optional<PasswordStoreResults> profile_store_results_;
+
+  std::optional<PasswordStoreResults> account_store_results_;
 
   base::OnceClosure done_callback_;
   base::WeakPtrFactory<StoreMetricsReporter> weak_ptr_factory_{this};

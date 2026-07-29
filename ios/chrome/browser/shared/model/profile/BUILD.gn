@@ -2,6 +2,21 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+source_set("features") {
+  sources = [
+    "features.h",
+    "features.mm",
+  ]
+
+  deps = [
+    ":profile",
+    "//base",
+    "//ios/chrome/browser/ntp/ui_bundled:feature_flags",
+    "//ios/chrome/browser/shared/model/application_context",
+    "//ios/chrome/browser/shared/public/features",
+  ]
+}
+
 source_set("profile") {
   sources = [
     "mutable_profile_attributes_storage_ios.cc",
@@ -15,6 +30,8 @@ source_set("profile") {
     "profile_ios.mm",
     "profile_manager_ios.h",
     "profile_manager_observer_ios.h",
+    "scoped_profile_keep_alive_ios.cc",
+    "scoped_profile_keep_alive_ios.h",
   ]
 
   deps = [
@@ -37,6 +54,8 @@ source_set("profile") {
 
 source_set("profile_keyed_service_factory") {
   sources = [
+    "profile_dependency_manager_ios.cc",
+    "profile_dependency_manager_ios.h",
     "profile_keyed_service_factory_ios.cc",
     "profile_keyed_service_factory_ios.h",
     "profile_keyed_service_traits.h",
@@ -48,7 +67,7 @@ source_set("profile_keyed_service_factory") {
 
   deps = [
     ":profile",
-    "//components/keyed_service/ios",
+    "//components/keyed_service/core",
     "//ios/web/public",
   ]
 }
@@ -57,12 +76,26 @@ source_set("incognito_session_tracker") {
   sources = [
     "incognito_session_tracker.h",
     "incognito_session_tracker.mm",
+    "profile_incognito_session_tracker.h",
+    "profile_incognito_session_tracker.mm",
   ]
   deps = [
     ":profile",
     "//base",
     "//ios/chrome/browser/shared/model/browser",
     "//ios/chrome/browser/shared/model/web_state_list",
+  ]
+}
+
+source_set("utils") {
+  sources = [
+    "profile_ios_util.h",
+    "profile_ios_util.mm",
+  ]
+  deps = [
+    ":profile",
+    "//base",
+    "//ios/chrome/browser/shared/model/application_context",
   ]
 }
 

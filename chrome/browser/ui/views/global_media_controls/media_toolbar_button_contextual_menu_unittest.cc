@@ -6,6 +6,7 @@
 
 #include <memory>
 
+#include "build/branding_buildflags.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/media/router/chrome_media_router_factory.h"
 #include "chrome/browser/media/router/mojo/media_router_debugger_impl.h"
@@ -35,6 +36,11 @@ class MediaToolbarButtonContextualMenuTest : public MenuModelTest,
 
     ON_CALL(*router, GetDebugger())
         .WillByDefault(testing::ReturnRef(debugger_));
+  }
+
+  void TearDown() override {
+    menu_.reset();
+    BrowserWithTestWindowTest::TearDown();
   }
 
   void ExecuteToggleOtherSessionCommand() {
@@ -89,7 +95,7 @@ TEST_F(MediaToolbarButtonContextualMenuTest, ShowMenu) {
 // Android.
 #if !BUILDFLAG(IS_ANDROID)
 TEST_F(MediaToolbarButtonContextualMenuTest, ToggleOtherSessionsItem) {
-  PrefService* pref_service = browser()->profile()->GetPrefs();
+  PrefService* pref_service = browser()->GetProfile()->GetPrefs();
   pref_service->SetBoolean(
       media_router::prefs::kMediaRouterShowCastSessionsStartedByOtherDevices,
       false);

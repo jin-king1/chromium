@@ -16,13 +16,16 @@
 #include "base/syslog_logging.h"
 #include "base/task/sequenced_task_runner.h"
 #include "build/build_config.h"
+#include "chrome/browser/browser_process.h"
 #include "chrome/browser/metrics/chrome_metrics_service_accessor.h"
 #include "chrome/browser/sync/glue/extensions_activity_monitor.h"
 #include "chrome/common/buildflags.h"
 #include "chrome/common/chrome_paths.h"
 #include "components/browser_sync/sync_engine_factory_impl.h"
+#include "components/network_time/network_time_tracker.h"
+#include "components/password_manager/core/browser/features/password_features.h"
 #include "components/prefs/pref_service.h"
-#include "components/supervised_user/core/browser/supervised_user_settings_service.h"
+#include "components/supervised_user/core/browser/family_link_settings_service.h"
 #include "components/sync/base/pref_names.h"
 #include "components/sync/model/data_type_store_service.h"
 #include "components/sync/service/trusted_vault_synthetic_field_trial.h"
@@ -30,11 +33,6 @@
 #include "components/trusted_vault/trusted_vault_server_constants.h"
 #include "components/trusted_vault/trusted_vault_service.h"
 #include "content/public/browser/browser_thread.h"
-
-#if BUILDFLAG(IS_ANDROID)
-#include "components/keyed_service/core/service_access_type.h"
-#include "components/password_manager/core/common/password_manager_pref_names.h"
-#endif  // BUILDFLAG(IS_ANDROID)
 
 namespace browser_sync {
 namespace {
@@ -74,15 +72,14 @@ ChromeSyncClient::ChromeSyncClient(
     syncer::SyncInvalidationsService* sync_invalidations_service,
     syncer::DeviceInfoSyncService* device_info_sync_service,
     syncer::DataTypeStoreService* data_type_store_service,
-    supervised_user::SupervisedUserSettingsService*
-        supervised_user_settings_service,
+    supervised_user::FamilyLinkSettingsService* family_link_settings_service,
     std::unique_ptr<ExtensionsActivityMonitor> extensions_activity_monitor)
     : profile_base_name_(profile_base_name),
       pref_service_(pref_service),
       identity_manager_(identity_manager),
       trusted_vault_service_(trusted_vault_service),
       sync_invalidations_service_(sync_invalidations_service),
-      supervised_user_settings_service_(supervised_user_settings_service),
+      family_link_settings_service_(family_link_settings_service),
       extensions_activity_monitor_(std::move(extensions_activity_monitor)),
       engine_factory_(this,
                       device_info_sync_service->GetDeviceInfoTracker(),
@@ -102,6 +99,11 @@ signin::IdentityManager* ChromeSyncClient::GetIdentityManager() {
   return identity_manager_;
 }
 
+network_time::NetworkTimeTracker* ChromeSyncClient::GetNetworkTimeTracker() {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  return g_browser_process->network_time_tracker();
+}
+
 base::FilePath ChromeSyncClient::GetLocalSyncBackendFolder() {
   base::FilePath local_sync_backend_folder =
       GetPrefService()->GetFilePath(syncer::prefs::kLocalSyncBackendDir);
@@ -119,7 +121,7 @@ base::FilePath ChromeSyncClient::GetLocalSyncBackendFolder() {
   // all machines, which is not a given. It is to be defined if only the
   // Default profile should get this treatment or all profile as is the case
   // now.
-  // TODO(pastarmovj): http://crbug.com/674928 Decide if only the Default one
+  // TODO(pastarmovj): http://crbug.com/41291598 Decide if only the Default one
   // should be considered roamed. For now the code assumes all profiles are
   // created in the same order on all machines.
   local_sync_backend_folder =
@@ -151,38 +153,10 @@ syncer::SyncEngineFactory* ChromeSyncClient::GetSyncEngineFactory() {
 }
 
 bool ChromeSyncClient::IsCustomPassphraseAllowed() {
-  if (supervised_user_settings_service_) {
-    return supervised_user_settings_service_->IsCustomPassphraseAllowed();
+  if (family_link_settings_service_) {
+    return family_link_settings_service_->IsCustomPassphraseAllowed();
   }
   return true;
-}
-
-bool ChromeSyncClient::IsPasswordSyncAllowed() {
-#if BUILDFLAG(IS_ANDROID)
-  return pref_service_->GetInteger(
-             password_manager::prefs::kPasswordsUseUPMLocalAndSeparateStores) !=
-         static_cast<int>(
-             password_manager::prefs::UseUpmLocalAndSeparateStoresState::
-                 kOffAndMigrationPending);
-#else
-  return true;
-#endif  // BUILDFLAG(IS_ANDROID)
-}
-
-void ChromeSyncClient::SetPasswordSyncAllowedChangeCb(
-    const base::RepeatingClosure& cb) {
-#if BUILDFLAG(IS_ANDROID)
-  CHECK(!upm_pref_change_registrar_.prefs())
-      << "SetPasswordSyncAllowedChangeCb() must be called at most once";
-  upm_pref_change_registrar_.Init(pref_service_);
-  // This overfires: the kPasswordsUseUPMLocalAndSeparateStores pref might have
-  // changed value, but not IsPasswordSyncAllowed(). That's fine, `cb` should
-  // handle this case.
-  upm_pref_change_registrar_.Add(
-      password_manager::prefs::kPasswordsUseUPMLocalAndSeparateStores, cb);
-#else
-  // IsPasswordSyncAllowed() doesn't change outside of Android.
-#endif  // BUILDFLAG(IS_ANDROID)
 }
 
 void ChromeSyncClient::RegisterTrustedVaultAutoUpgradeSyntheticFieldTrial(
@@ -220,6 +194,10 @@ void ChromeSyncClient::RegisterTrustedVaultAutoUpgradeSyntheticFieldTrial(
   ChromeMetricsServiceAccessor::RegisterSyntheticFieldTrial(
       syncer::kTrustedVaultAutoUpgradeSyntheticFieldTrialName, group_name,
       variations::SyntheticTrialAnnotationMode::kCurrentLog);
+}
+
+bool ChromeSyncClient::IsMetricsAndCrashReportingEnabled() {
+  return ChromeMetricsServiceAccessor::IsMetricsAndCrashReportingEnabled();
 }
 
 }  // namespace browser_sync

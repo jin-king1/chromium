@@ -6,8 +6,10 @@
 #define UI_OZONE_COMMON_NATIVE_PIXMAP_EGL_BINDING_H_
 
 #include <memory>
+#include <optional>
 
 #include "base/threading/thread_checker.h"
+#include "components/viz/common/resources/shared_image_format.h"
 #include "ui/gfx/color_space.h"
 #include "ui/gfx/native_pixmap.h"
 #include "ui/gl/scoped_egl_image.h"
@@ -19,11 +21,11 @@ namespace ui {
 class NativePixmapEGLBinding : public NativePixmapGLBinding {
  public:
   NativePixmapEGLBinding(const gfx::Size& size,
-                         gfx::BufferFormat format,
-                         gfx::BufferPlane plane);
+                         viz::SharedImageFormat format,
+                         std::optional<int> plane_index);
   ~NativePixmapEGLBinding() override;
 
-  static bool IsBufferFormatSupported(gfx::BufferFormat format);
+  static bool IsSharedImageFormatSupported(viz::SharedImageFormat format);
 
   // Create an EGLImage from a given NativePixmap and plane and bind
   // |texture_id| to |target| followed by binding the image to |target|. The
@@ -32,8 +34,8 @@ class NativePixmapEGLBinding : public NativePixmapGLBinding {
   // (limited or null), and |color_space| conveys this.
   static std::unique_ptr<NativePixmapGLBinding> Create(
       scoped_refptr<gfx::NativePixmap> pixmap,
-      gfx::BufferFormat plane_format,
-      gfx::BufferPlane plane,
+      viz::SharedImageFormat plane_format,
+      std::optional<int> plane_index,
       gfx::Size plane_size,
       const gfx::ColorSpace& color_space,
       GLenum target,
@@ -51,9 +53,11 @@ class NativePixmapEGLBinding : public NativePixmapGLBinding {
   gl::ScopedEGLImage egl_image_;
   const gfx::Size size_;
   THREAD_CHECKER(thread_checker_);
-  gfx::BufferFormat format_;
+  viz::SharedImageFormat format_;
   scoped_refptr<gfx::NativePixmap> pixmap_;
-  gfx::BufferPlane plane_;
+  // Set only for multiplanar formats without external sampler (textures per
+  // plane).
+  std::optional<int> plane_index_;
 };
 
 }  // namespace ui

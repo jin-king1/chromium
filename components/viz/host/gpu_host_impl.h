@@ -7,7 +7,6 @@
 
 #include <map>
 #include <optional>
-#include <queue>
 #include <set>
 #include <string>
 #include <vector>
@@ -24,6 +23,7 @@
 #include "base/values.h"
 #include "build/build_config.h"
 #include "components/discardable_memory/public/mojom/discardable_shared_memory_manager.mojom.h"
+#include "components/persistent_cache/pending_backend.h"
 #include "components/viz/common/buildflags.h"
 #include "components/viz/host/viz_host_export.h"
 #include "components/viz/service/debugger/mojom/viz_debugger.mojom.h"
@@ -39,6 +39,7 @@
 #include "services/service_manager/public/mojom/service.mojom.h"
 #include "services/viz/privileged/mojom/compositing/frame_sink_manager.mojom.h"
 #include "services/viz/privileged/mojom/gl/gpu_host.mojom.h"
+#include "services/viz/privileged/mojom/gl/gpu_logging.mojom.h"
 #include "services/viz/privileged/mojom/gl/gpu_service.mojom.h"
 #include "services/viz/privileged/mojom/viz_main.mojom.h"
 #include "ui/gfx/gpu_extra_info.h"
@@ -46,6 +47,8 @@
 
 #if BUILDFLAG(IS_WIN)
 #include "services/viz/privileged/mojom/gl/info_collection_gpu_service.mojom.h"
+#include "services/webnn/public/mojom/ep_package_info.mojom.h"
+#include "services/webnn/public/mojom/webnn_context_provider.mojom.h"
 #include "ui/gfx/mojom/dxgi_info.mojom.h"
 #endif
 
@@ -58,9 +61,17 @@ class GpuDiskCacheFactory;
 class GpuDiskCache;
 }  // namespace gpu
 
+#if BUILDFLAG(IS_WIN)
+namespace webnn {
+struct ContextProperties;
+struct EpDeviceInfo;
+}  // namespace webnn
+#endif
+
 namespace viz {
 
-class VIZ_HOST_EXPORT GpuHostImpl : public mojom::GpuHost
+class VIZ_HOST_EXPORT GpuHostImpl : public mojom::GpuHost,
+                                    public mojom::GpuLogging
 #if BUILDFLAG(USE_VIZ_DEBUGGER)
     ,
                                     public mojom::VizDebugOutput
@@ -107,6 +118,18 @@ class VIZ_HOST_EXPORT GpuHostImpl : public mojom::GpuHost
 #if BUILDFLAG(IS_OZONE)
     virtual void TerminateGpuProcess(const std::string& message) = 0;
 #endif
+#if BUILDFLAG(IS_WIN)
+    // Requests the Browser to create a CompilerContext in the Compiler
+    // process, launching it first if needed.
+    virtual void RequestWebNNCompilerContext(
+        webnn::mojom::CreateContextOptionsPtr context_options,
+        const webnn::ContextProperties& context_properties,
+        const webnn::EpDeviceInfo& target_device,
+        mojo::PendingReceiver<webnn::mojom::WebNNCompilerContext>
+            compiler_context_receiver,
+        mojo::PendingRemote<webnn::mojom::WebNNModelLoader>
+            model_loader_remote);
+#endif
 
    protected:
     virtual ~Delegate() = default;
@@ -149,8 +172,7 @@ class VIZ_HOST_EXPORT GpuHostImpl : public mojom::GpuHost
     kSuccess,
   };
   using EstablishChannelCallback =
-      base::OnceCallback<void(mojo::ScopedMessagePipeHandle,
-                              const gpu::GPUInfo&,
+      base::OnceCallback<void(const gpu::GPUInfo&,
                               const gpu::GpuFeatureInfo&,
                               const gpu::SharedImageCapabilities&,
                               EstablishChannelStatus)>;
@@ -169,6 +191,7 @@ class VIZ_HOST_EXPORT GpuHostImpl : public mojom::GpuHost
 
   void SetProcessId(base::ProcessId pid);
   void OnProcessCrashed();
+  void NotifyWorkloadIncrease();
 
   // Adds a connection error handler for the GpuService.
   void AddConnectionErrorHandler(base::OnceClosure handler);
@@ -189,18 +212,21 @@ class VIZ_HOST_EXPORT GpuHostImpl : public mojom::GpuHost
   void EstablishGpuChannel(int client_id,
                            uint64_t client_tracing_id,
                            bool is_gpu_host,
+                           bool enable_extra_handles_validation,
                            bool sync,
+                           mojo::ScopedMessagePipeHandle handle,
                            EstablishChannelCallback callback);
   void SetChannelClientPid(int client_id, base::ProcessId client_pid);
   void SetChannelDiskCacheHandle(int client_id,
                                  const gpu::GpuDiskCacheHandle& handle);
   void RemoveChannelDiskCacheHandles(int client_id);
   void CloseChannel(int client_id);
+  void CancelEstablishGpuChannel(int client_id);
 
 #if BUILDFLAG(USE_VIZ_DEBUGGER)
   // Command as a Json string that the visual debugging instance interprets as
   // stream filtering.
-  void FilterVisualDebugStream(base::Value::Dict filter_data);
+  void FilterVisualDebugStream(base::DictValue filter_data);
 
   // Establishes the connection between the visual debugging instance and the
   // output stream.
@@ -224,6 +250,7 @@ class VIZ_HOST_EXPORT GpuHostImpl : public mojom::GpuHost
 #endif
 
   void MaybeSendFontRenderParams();
+  gpu::GpuProcessHostShmCount* GetShaderCacheShmCountForTesting();
 
  private:
   friend class GpuHostImplTestApi;
@@ -232,6 +259,12 @@ class VIZ_HOST_EXPORT GpuHostImpl : public mojom::GpuHost
   void InitOzone();
   void TerminateGpuProcess(const std::string& message);
 #endif  // BUILDFLAG(IS_OZONE)
+
+  void InitPersistentCache();
+  void SetChannelPersistentCachePendingBackend(
+      int client_id,
+      const gpu::GpuDiskCacheHandle& handle,
+      persistent_cache::PendingBackend pending_backend);
 
   std::string GetShaderPrefixKey();
 
@@ -243,7 +276,7 @@ class VIZ_HOST_EXPORT GpuHostImpl : public mojom::GpuHost
   void OnChannelEstablished(
       int client_id,
       bool sync,
-      mojo::ScopedMessagePipeHandle channel_handle,
+      bool success,
       const gpu::GPUInfo& gpu_info,
       const gpu::GpuFeatureInfo& gpu_feature_info,
       const gpu::SharedImageCapabilities& shared_image_capabilities);
@@ -277,15 +310,35 @@ class VIZ_HOST_EXPORT GpuHostImpl : public mojom::GpuHost
   void StoreBlobToDisk(const gpu::GpuDiskCacheHandle& handle,
                        const std::string& key,
                        const std::string& blob) override;
+  void ClearGrShaderDiskCache() override;
+#if BUILDFLAG(IS_WIN)
+  void EnsureWebNNExecutionProvidersReady(
+      EnsureWebNNExecutionProvidersReadyCallback cb) override;
+  void RequestWebNNCompilerContext(
+      webnn::mojom::CreateContextOptionsPtr context_options,
+      const webnn::ContextProperties& context_properties,
+      const webnn::EpDeviceInfo& target_device,
+      mojo::PendingReceiver<webnn::mojom::WebNNCompilerContext>
+          compiler_context_receiver,
+      mojo::PendingRemote<webnn::mojom::WebNNModelLoader> model_loader_remote)
+      override;
+#endif
+  void CreateWebNNWeightsFile(CreateWebNNWeightsFileCallback cb) override;
+
+  // mojom::GpuLogging:
   void RecordLogMessage(int32_t severity,
                         const std::string& header,
                         const std::string& message) override;
-  void ClearGrShaderDiskCache() override;
 
   // Implements mojom::VizDebugOutput and is called by VizDebugger.
 #if BUILDFLAG(USE_VIZ_DEBUGGER)
   void LogFrame(base::Value frame_data) override;
 #endif
+
+  void ClearPersistentCaches(bool delete_cache_files);
+  void OnPersistentCacheFilesCreated(
+      gpu::GpuDiskCacheHandle handle,
+      persistent_cache::PendingBackend pending_backend);
 
   // Can be modified in tests by GpuHostImplTestApi.
   raw_ptr<Delegate> delegate_;
@@ -299,6 +352,8 @@ class VIZ_HOST_EXPORT GpuHostImpl : public mojom::GpuHost
       info_collection_gpu_service_remote_;
 #endif
   mojo::Receiver<mojom::GpuHost> gpu_host_receiver_{this};
+  mojo::Receiver<mojom::GpuLogging> gpu_logging_receiver_{this};
+
   gpu::GpuProcessHostShmCount use_shader_cache_shm_count_;
 
 #if BUILDFLAG(USE_VIZ_DEBUGGER)
@@ -324,7 +379,24 @@ class VIZ_HOST_EXPORT GpuHostImpl : public mojom::GpuHost
   // service, but haven't heard back about yet.
   base::flat_map<int, EstablishChannelCallback> channel_requests_;
 
+  // Track the client IDs of requests that were cancelled. The value is the
+  // number of cancelled requests for that client ID. Their replies will be
+  // ignored.
+  base::flat_map<int, int> cancelled_channel_requests_;
+
   base::OneShotTimer shutdown_timeout_;
+
+  // Opened persistent cache files which have not been forwarded to the GPU
+  // process yet.
+  std::map<gpu::GpuDiskCacheHandle, persistent_cache::PendingBackend>
+      persistent_cache_files_;
+
+  // Signal that the GPU process is ready to accept persistent cache files. They
+  // should be forwarded as soon as they are loaded.
+  bool send_persistent_cache_files_to_service_ = false;
+
+  // This is only set in GpuHostImpl::DidInitialize().
+  std::optional<bool> gpu_uses_graphite_;
 
   SEQUENCE_CHECKER(sequence_checker_);
 

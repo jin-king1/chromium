@@ -11,7 +11,7 @@
 #include <utility>
 
 #include "base/command_line.h"
-#include "base/memory/scoped_refptr.h"
+#include "base/message_loop/message_pump_type.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool.h"
 #include "base/task/thread_pool/thread_pool_instance.h"
@@ -123,12 +123,13 @@ bool Delegate::PreRun() {
   ipc_support_.emplace(ipc_thread_.task_runner(),
                        mojo::core::ScopedIPCSupport::ShutdownPolicy::FAST);
 
+  // Initialize tracing in the process.
+  tracing::InitTracingPostFeatureList(/*enable_consumer=*/false,
+                                      /*will_trace_thread_restart=*/false);
+
   // Run a ThreadPool.
   base::ThreadPoolInstance::CreateAndStartWithDefaultParams(
       "elevated_tracing_service");
-
-  // Initialize tracing in the process.
-  tracing::InitTracingPostFeatureList(/*enable_consumer=*/false);
 
   // Create the global SessionRegistry.
   session_registry_ = base::MakeRefCounted<SessionRegistry>();

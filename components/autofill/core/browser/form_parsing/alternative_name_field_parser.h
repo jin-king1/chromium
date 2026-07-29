@@ -7,6 +7,7 @@
 
 #include <memory>
 
+#include "components/autofill/core/browser/form_parsing/field_candidates.h"
 #include "components/autofill/core/browser/form_parsing/form_field_parser.h"
 
 namespace autofill {
@@ -19,7 +20,7 @@ class AutofillScanner;
 class AlternativeNameFieldParser : public FormFieldParser {
  public:
   static std::unique_ptr<FormFieldParser> Parse(ParsingContext& context,
-                                                AutofillScanner* scanner);
+                                                AutofillScanner& scanner);
 
   AlternativeNameFieldParser(const AlternativeNameFieldParser&) = delete;
   AlternativeNameFieldParser& operator=(const AlternativeNameFieldParser&) =

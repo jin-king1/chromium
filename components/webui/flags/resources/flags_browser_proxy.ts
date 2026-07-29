@@ -5,7 +5,7 @@
 import {sendWithPromise} from 'chrome://resources/js/cr.js';
 
 /**
- * `enabled` and `is_default` are only set if the feature is single valued.
+ * `enabled` is only set if the feature is single valued.
  * `enabled` is true if the feature is currently enabled.
  * `is_default` is true if the feature is in its default state.
  * `options` is only set if the entry has multiple values.
@@ -35,15 +35,25 @@ export interface ExperimentalFeaturesData {
   needsRestart: boolean;
   showBetaChannelPromotion: boolean;
   showDevChannelPromotion: boolean;
+  importExportEnabled?: boolean;
   // <if expr="is_chromeos">
   showOwnerWarning: boolean;
   // </if>
 }
 
+// <if expr="not is_ios">
+export interface FlagsExportData {
+  enabled_flags: string[];
+  customized_flags: Record<string, string>;
+}
+// </if>
+
 export interface FlagsBrowserProxy {
   // <if expr="not is_ios">
   restartBrowser(): void;
   requestDeprecatedFeatures(): Promise<ExperimentalFeaturesData>;
+  exportFlags(): Promise<FlagsExportData>;
+  importFlags(data: FlagsExportData): Promise<boolean>;
   // </if>
   resetAllFlags(): void;
   requestExperimentalFeatures(): Promise<ExperimentalFeaturesData>;
@@ -60,7 +70,16 @@ export class FlagsBrowserProxyImpl implements FlagsBrowserProxy {
   }
 
   requestDeprecatedFeatures() {
-    return sendWithPromise('requestDeprecatedFeatures');
+    return sendWithPromise<ExperimentalFeaturesData>(
+        'requestDeprecatedFeatures');
+  }
+
+  exportFlags() {
+    return sendWithPromise<FlagsExportData>('exportFlags');
+  }
+
+  importFlags(data: FlagsExportData) {
+    return sendWithPromise<boolean>('importFlags', data);
   }
   // </if>
 
@@ -69,7 +88,8 @@ export class FlagsBrowserProxyImpl implements FlagsBrowserProxy {
   }
 
   requestExperimentalFeatures() {
-    return sendWithPromise('requestExperimentalFeatures');
+    return sendWithPromise<ExperimentalFeaturesData>(
+        'requestExperimentalFeatures');
   }
 
   enableExperimentalFeature(internalName: string, enable: boolean) {

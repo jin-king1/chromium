@@ -25,9 +25,9 @@ import org.robolectric.annotation.Config;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.chrome.browser.omnibox.R;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
 import org.chromium.chrome.browser.omnibox.suggestions.base.SuggestionLayout.LayoutParams.SuggestionViewType;
-import org.chromium.chrome.browser.omnibox.test.R;
 
 /**
  * Tests for {@link SuggestionLayout}.
@@ -40,9 +40,10 @@ public class SuggestionLayoutUnitTest {
 
     public @Rule MockitoRule mMockitoRule = MockitoJUnit.rule();
 
-    private Context mContext = ContextUtils.getApplicationContext();
-    private View mDecorationView = new View(mContext);
-    private View mContentView = new View(mContext);
+    private final Context mContext = ContextUtils.getApplicationContext();
+    private final View mDecorationView = new View(mContext);
+    private final View mActionButtonView = new View(mContext);
+    private final View mContentView = new View(mContext);
     private SuggestionLayout mLayout = new SuggestionLayout(mContext);
 
     @Test
@@ -195,7 +196,25 @@ public class SuggestionLayoutUnitTest {
                 MeasureSpec.makeMeasureSpec(48, MeasureSpec.AT_MOST));
         mLayout.layout(0, 0, 200, 48);
         assertEquals(
-                mContext.getResources().getDimensionPixelSize(R.dimen.omnibox_simple_card_leadin),
+                mContext.getResources().getDimensionPixelSize(R.dimen.omnibox_simple_card_lead_in),
                 mContentView.getLeft());
+    }
+
+    @Test
+    public void testOmniboxSuggestionEndPaddingNoActionButton() {
+        mLayout.addView(
+                mContentView,
+                SuggestionLayout.LayoutParams.forViewType(SuggestionViewType.CONTENT));
+        mLayout.measure(
+                MeasureSpec.makeMeasureSpec(200, MeasureSpec.AT_MOST),
+                MeasureSpec.makeMeasureSpec(48, MeasureSpec.AT_MOST));
+        mLayout.layout(0, 0, 200, 48);
+
+        assertEquals(
+                200
+                        - mContext.getResources()
+                                .getDimensionPixelSize(
+                                        R.dimen.omnibox_suggestion_end_padding_no_action_button),
+                mContentView.getRight());
     }
 }

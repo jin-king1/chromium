@@ -10,7 +10,6 @@
 
 #include "ash/constants/ash_features.h"
 #include "base/check.h"
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/json/json_reader.h"
@@ -42,6 +41,7 @@
 #include "chromeos/ash/components/network/shill_property_util.h"
 #include "dbus/object_path.h"
 #include "net/cert/x509_certificate.h"
+#include "network_connection_observer.h"
 #include "third_party/cros_system_api/dbus/service_constants.h"
 
 namespace ash {
@@ -67,16 +67,16 @@ bool IsAuthenticationError(const std::string& error) {
           error == shill::kErrorEapAuthenticationFailed);
 }
 
-std::string GetStringFromDictionary(const base::Value::Dict& dict,
+std::string GetStringFromDictionary(const base::DictValue& dict,
                                     const std::string& key) {
   const std::string* s = dict.FindString(key);
   return s ? *s : std::string();
 }
 
 bool IsCertificateConfigured(const client_cert::ConfigType cert_config_type,
-                             const base::Value::Dict& properties) {
+                             const base::DictValue& properties) {
   // VPN certificate properties are read from the Provider dictionary.
-  const base::Value::Dict* provider_properties =
+  const base::DictValue* provider_properties =
       properties.FindDict(shill::kProviderProperty);
   switch (cert_config_type) {
     case client_cert::ConfigType::kNone:
@@ -117,7 +117,7 @@ bool IsCertificateConfigured(const client_cert::ConfigType cert_config_type,
 
 std::string VPNCheckCredentials(const std::string& service_path,
                                 const std::string& provider_type,
-                                const base::Value::Dict& provider_properties) {
+                                const base::DictValue& provider_properties) {
   if (provider_type == shill::kProviderOpenVpn) {
     bool passphrase_required =
         provider_properties.FindBool(shill::kPassphraseRequiredProperty)
@@ -198,7 +198,7 @@ bool IsVpnProhibited() {
       NetworkHandler::Get()
           ->prohibited_technologies_handler()
           ->GetCurrentlyProhibitedTechnologies();
-  return base::Contains(prohibited_technologies, shill::kTypeVPN);
+  return std::ranges::contains(prohibited_technologies, shill::kTypeVPN);
 }
 
 bool IsBuiltInVpnType(const std::string& vpn_type) {
@@ -249,10 +249,7 @@ NetworkConnectionHandlerImpl::ConnectRequest::ConnectRequest(ConnectRequest&&) =
 
 NetworkConnectionHandlerImpl::NetworkConnectionHandlerImpl() = default;
 
-NetworkConnectionHandlerImpl::~NetworkConnectionHandlerImpl() {
-  if (network_cert_loader_)
-    network_cert_loader_->RemoveObserver(this);
-}
+NetworkConnectionHandlerImpl::~NetworkConnectionHandlerImpl() = default;
 
 void NetworkConnectionHandlerImpl::Init(
     NetworkStateHandler* network_state_handler,
@@ -261,7 +258,7 @@ void NetworkConnectionHandlerImpl::Init(
     CellularConnectionHandler* cellular_connection_handler) {
   if (NetworkCertLoader::IsInitialized()) {
     network_cert_loader_ = NetworkCertLoader::Get();
-    network_cert_loader_->AddObserver(this);
+    network_cert_loader_observer_.Observe(network_cert_loader_);
     if (network_cert_loader_->initial_load_finished()) {
       NET_LOG(EVENT) << "Certificates Loaded";
       certificates_loaded_ = true;
@@ -308,8 +305,31 @@ void NetworkConnectionHandlerImpl::ConnectToNetwork(
     bool check_error_state,
     ConnectCallbackMode mode) {
   NET_LOG(USER) << "ConnectToNetworkRequested: " << NetworkPathId(service_path);
-  for (auto& observer : observers_)
-    observer.ConnectToNetworkRequested(service_path);
+
+  // If an observer vetoes the connection attempt, continue notifying
+  // subsequente observers, treating this case consistently with other failure
+  // modes such as `kErrorBlockedByPolicy`.
+  // If multiple observers veto the connection attempt, the last verdict will
+  // win at the moment. That is not an issue currently because there's only one
+  // blocking verdict.
+  ConnectToNetworkRequestVerdict verdict =
+      ConnectToNetworkRequestVerdict::kProceed;
+  for (auto& observer : observers_) {
+    ConnectToNetworkRequestVerdict current_verdict =
+        observer.ConnectToNetworkRequested(service_path);
+    if (current_verdict != ConnectToNetworkRequestVerdict::kProceed) {
+      verdict = current_verdict;
+    }
+  }
+
+  switch (verdict) {
+    case ConnectToNetworkRequestVerdict::kProceed:
+      break;
+    case ConnectToNetworkRequestVerdict::kVetoWaitingForScan:
+      InvokeConnectErrorCallback(service_path, std::move(error_callback),
+                                 kErrorWaitingForScan);
+      return;
+  }
 
   // Clear any existing queued connect request.
   if (queued_connect_) {
@@ -659,7 +679,7 @@ void NetworkConnectionHandlerImpl::OnConnectTimeout(ConnectRequest* request) {
 void NetworkConnectionHandlerImpl::VerifyConfiguredAndConnect(
     bool check_error_state,
     const std::string& service_path,
-    std::optional<base::Value::Dict> properties) {
+    std::optional<base::DictValue> properties) {
   if (!properties) {
     HandleConfigurationFailure(
         service_path, "GetShillProperties failed",
@@ -699,7 +719,7 @@ void NetworkConnectionHandlerImpl::VerifyConfiguredAndConnect(
 
   // Get VPN provider type and host (required for configuration) and ensure
   // that required VPN non-cert properties are set.
-  const base::Value::Dict* provider_properties =
+  const base::DictValue* provider_properties =
       properties->FindDict(shill::kProviderProperty);
   std::string vpn_provider_type, vpn_provider_host, vpn_client_cert_id;
   if (*type == shill::kTypeVPN) {
@@ -724,7 +744,7 @@ void NetworkConnectionHandlerImpl::VerifyConfiguredAndConnect(
   const std::string* guid = properties->FindString(shill::kGuidProperty);
   const std::string* profile = properties->FindString(shill::kProfileProperty);
   ::onc::ONCSource onc_source = ::onc::ONC_SOURCE_NONE;
-  const base::Value::Dict* policy = nullptr;
+  const base::DictValue* policy = nullptr;
   if (guid && profile) {
     // Fetch network policy with PolicyType::kOriginal to be able to process a
     // client certificate pattern (which would be replaced with a certificate
@@ -744,8 +764,8 @@ void NetworkConnectionHandlerImpl::VerifyConfiguredAndConnect(
       return;
     }
     if (network_state_handler_->OnlyManagedWifiNetworksAllowed() ||
-        base::Contains(managed_configuration_handler_->GetBlockedHexSSIDs(),
-                       *hex_ssid)) {
+        std::ranges::contains(
+            managed_configuration_handler_->GetBlockedHexSSIDs(), *hex_ssid)) {
       ErrorCallbackForPendingRequest(service_path, kErrorBlockedByPolicy);
       return;
     }
@@ -786,7 +806,7 @@ void NetworkConnectionHandlerImpl::VerifyConfiguredAndConnect(
       client_cert_type = client_cert::ConfigType::kEap;
   }
 
-  base::Value::Dict config_properties;
+  base::DictValue config_properties;
   if (client_cert_type != client_cert::ConfigType::kNone) {
     // Note: if we get here then a certificate *may* be required, so we want
     // to ensure that certificates have loaded successfully before attempting
@@ -1102,7 +1122,7 @@ void NetworkConnectionHandlerImpl::CheckPendingRequest(
   }
   if (NetworkState::StateIsConnected(connection_state)) {
     if (network->type() == shill::kTypeWifi) {
-      base::Value::Dict config_properties;
+      base::DictValue config_properties;
       config_properties.Set(shill::kGuidProperty, network->guid());
       configuration_handler_->SetShillProperties(
           service_path, config_properties, base::DoNothing(),

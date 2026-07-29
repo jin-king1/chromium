@@ -7,6 +7,7 @@ import {SourcesTestRunner} from 'sources_test_runner';
 
 import * as Common from 'devtools/core/common/common.js';
 import * as SDK from 'devtools/core/sdk/sdk.js';
+import * as Main from 'devtools/entrypoints/main/main.js';
 
 (async function() {
   TestRunner.addResult(
@@ -28,13 +29,14 @@ import * as SDK from 'devtools/core/sdk/sdk.js';
   `);
 
   var frameworkRegexString = '/framework\\.js$';
-  Common.Settings.settingForTest('skip-stack-frames-pattern').set(frameworkRegexString);
+  Main.MainImpl.MainImpl.universeForTest.settings.settingForTest('skip-stack-frames-pattern').set(frameworkRegexString);
 
   SourcesTestRunner.setQuiet(true);
   SourcesTestRunner.startDebuggerTest(step1);
 
   function step1() {
-    TestRunner.DebuggerAgent.setPauseOnExceptions(SDK.DebuggerModel.PauseOnExceptionsState.PauseOnAllExceptions);
+    TestRunner.DebuggerAgent.invoke_setPauseOnExceptions(
+        {state: SDK.DebuggerModel.PauseOnExceptionsState.PauseOnAllExceptions});
     SourcesTestRunner.runTestFunctionAndWaitUntilPaused(didPause);
   }
 
@@ -44,7 +46,8 @@ import * as SDK from 'devtools/core/sdk/sdk.js';
   }
 
   function completeTest() {
-    TestRunner.DebuggerAgent.setPauseOnExceptions(SDK.DebuggerModel.PauseOnExceptionsState.DontPauseOnExceptions);
+    TestRunner.DebuggerAgent.invoke_setPauseOnExceptions(
+        {state: SDK.DebuggerModel.PauseOnExceptionsState.DontPauseOnExceptions});
     SourcesTestRunner.completeDebuggerTest();
   }
 })();

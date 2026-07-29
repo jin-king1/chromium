@@ -15,13 +15,15 @@ import android.os.Looper;
 import androidx.test.filters.SmallTest;
 
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.Mockito;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.browser.browserservices.ui.controller.CurrentPageVerifier.VerificationStatus;
@@ -33,7 +35,6 @@ import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.components.embedder_support.util.Origin;
 import org.chromium.content_public.browser.NavigationHandle;
-import org.chromium.content_public.browser.Page;
 import org.chromium.url.GURL;
 
 import java.util.Collections;
@@ -50,6 +51,7 @@ public class CurrentPageVerifierTest {
 
     public static final String PACKAGE_NAME = "package.name";
 
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock TabObserverRegistrar mTabObserverRegistrar;
     @Mock ActivityLifecycleDispatcher mLifecycleDispatcher;
     @Mock CustomTabActivityTabProvider mTabProvider;
@@ -63,7 +65,6 @@ public class CurrentPageVerifierTest {
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
         when(mTabProvider.getTab()).thenReturn(mTab);
         doNothing()
                 .when(mTabObserverRegistrar)
@@ -183,21 +184,7 @@ public class CurrentPageVerifierTest {
             tabObserver.onDidStartNavigationInPrimaryMainFrame(mTab, navigation);
         }
 
-        navigation.didFinish(
-                gurl,
-                /* isErrorPage= */ false,
-                /* hasCommitted= */ true,
-                /* isPrimaryMainFrameFragmentNavigation= */ false,
-                /* isDownload= */ false,
-                /* isValidSearchFormUrl= */ false,
-                /* transition= */ 0,
-                /* errorCode= */ 0,
-                /* httpStatuscode= */ 200,
-                /* isExternalProtocol= */ false,
-                /* isPdf= */ false,
-                /* mimeType= */ "",
-                /* isSaveableNavigation= */ false,
-                Page.createForTesting());
+        navigation.callDidFinishForTesting(gurl);
         for (CustomTabTabObserver tabObserver : mTabObserverCaptor.getAllValues()) {
             tabObserver.onDidFinishNavigationInPrimaryMainFrame(mTab, navigation);
         }

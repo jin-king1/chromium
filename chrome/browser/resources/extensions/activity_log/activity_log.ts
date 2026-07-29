@@ -86,14 +86,14 @@ export class ExtensionsActivityLogElement extends
     };
   }
 
-  extensionInfo: chrome.developerPrivate.ExtensionInfo|
+  accessor extensionInfo: chrome.developerPrivate.ExtensionInfo|
       ActivityLogExtensionPlaceholder = {
     isPlaceholder: true,
     id: '',
   };
-  delegate: ActivityLogDelegate = new DummyActivityLogDelegate();
-  protected selectedSubpage_: MaybeActivityLogSubpage = NONE_SELECTED;
-  protected tabNames_: string[] = [
+  accessor delegate: ActivityLogDelegate = new DummyActivityLogDelegate();
+  protected accessor selectedSubpage_: MaybeActivityLogSubpage = NONE_SELECTED;
+  protected accessor tabNames_: string[] = [
     loadTimeData.getString('activityLogHistoryTabHeading'),
     loadTimeData.getString('activityLogStreamTabHeading'),
   ];
@@ -119,8 +119,8 @@ export class ExtensionsActivityLogElement extends
   }
 
   protected isPlaceholder_(): boolean {
-    return !!(this.extensionInfo as ActivityLogExtensionPlaceholder)
-                 .isPlaceholder;
+    return (this.extensionInfo as ActivityLogExtensionPlaceholder)
+        .isPlaceholder;
   }
 
   protected getExtensionIconUrl_(): string {
@@ -171,7 +171,7 @@ export class ExtensionsActivityLogElement extends
     return this.selectedSubpage_ === ActivityLogSubpage.STREAM;
   }
 
-  protected onTabsChangedSelectedSubpage_(
+  protected onTabsSelectedChanged_(
       e: CustomEvent<{value: ActivityLogSubpage}>) {
     this.selectedSubpage_ = e.detail.value;
   }

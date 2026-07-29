@@ -4,18 +4,26 @@
 
 // Utilities that are used in multiple tests.
 
-import type {Bookmark, DocumentDimensions, LayoutOptions, PdfViewerElement, ViewerToolbarElement} from 'chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/pdf_viewer_wrapper.js';
-import {resetForTesting as resetMetricsForTesting, UserAction, Viewport} from 'chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/pdf_viewer_wrapper.js';
+// clang-format off
+import './test_bookmarks.js';
+
+import type {DocumentDimensions, LayoutOptions, PdfViewerElement, SaveMessage, ViewerToolbarElement, TextAnnotation} from 'chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/pdf_viewer_wrapper.js';
+import {PostMessageDataType, resetForTesting as resetMetricsForTesting, UserAction, Viewport} from 'chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/pdf_viewer_wrapper.js';
 // <if expr="enable_pdf_ink2">
-import type {AnnotationBrush, BeforeUnloadProxy, InkBrushSelectorElement, InkColorSelectorElement, InkSizeSelectorElement} from 'chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/pdf_viewer_wrapper.js';
-import {AnnotationBrushType, BeforeUnloadProxyImpl, PluginController, PluginControllerEventType} from 'chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/pdf_viewer_wrapper.js';
+import type {AnnotationBrush, AnnotationBrushMessage, InkBrushSelectorElement, InkColorSelectorElement, InkSizeSelectorElement, SelectableIconButtonElement, ViewerBottomToolbarDropdownElement, InkTextBoxElement, InkTextAnnotationsElement} from 'chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/pdf_viewer_wrapper.js';
+import {AnnotationBrushType, DEFAULT_TEXTBOX_WIDTH, MIN_TEXTBOX_SIZE_PX, hexToColor, Ink2Manager, TEXT_COLORS, TextAlignment, PluginController, PluginControllerEventType, TextTypeface} from 'chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/pdf_viewer_wrapper.js';
 // </if>
-import {assert} from 'chrome://resources/js/assert.js';
-import {CrLitElement, html} from 'chrome://resources/lit/v3_0/lit.rollup.js';
-// <if expr="enable_pdf_ink2">
-import {TestBrowserProxy} from 'chrome://webui-test/test_browser_proxy.js';
+// <if expr="enable_pdf_save_to_drive">
+import {SaveToDriveBubbleAction, SaveToDriveBubbleState, SaveToDriveSaveType } from 'chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/pdf_viewer_wrapper.js';
+
 // </if>
+import type {TestBookmarksElement} from './test_bookmarks.js';
+
 import {eventToPromise, isVisible, microtasksFinished} from 'chrome://webui-test/test_util.js';
+// clang-format on
+
+const SaveRequestType = chrome.pdfViewerPrivate.SaveRequestType;
+type SaveRequestType = chrome.pdfViewerPrivate.SaveRequestType;
 
 export class MockElement {
   dir: string = '';
@@ -67,6 +75,16 @@ export class MockElement {
     this.scrollLeft = Math.max(0, x);
     this.scrollTop = Math.max(0, y);
     this.scrollCallback!();
+  }
+
+  dispatchEvent(event: Event): boolean {
+    if (event.type === 'scroll') {
+      if (this.scrollCallback) {
+        this.scrollCallback();
+      }
+      window.dispatchEvent(new Event('scroll'));
+    }
+    return true;
   }
 }
 
@@ -170,14 +188,21 @@ export class MockDocumentDimensions implements DocumentDimensions {
   }
 }
 
+interface MockMessage extends Record<string, unknown> {
+  type: string;
+  messageId?: string;
+  token?: string;
+}
+
 export class MockPdfPluginElement extends HTMLEmbedElement {
-  private messages_: any[] = [];
+  viewport: Viewport|null = null;
+  private messages_: MockMessage[] = [];
   // <if expr="enable_pdf_ink2">
-  private messageReply_: Object|null = null;
-  private replyType_: string = '';
+  private messageReplies_: Map<string, Object> = new Map();
+  private replyToSave_: boolean = false;
   // </if>
 
-  get messages(): any[] {
+  get messages(): MockMessage[] {
     return this.messages_;
   }
 
@@ -185,21 +210,31 @@ export class MockPdfPluginElement extends HTMLEmbedElement {
     this.messages_.length = 0;
   }
 
-  findMessage(type: string): any {
-    return this.messages_.find(element => element.type === type);
+  findMessage<T = MockMessage>(type: string): T|undefined {
+    return this.messages_.find(element => element.type === type) as unknown as
+        T |
+        undefined;
   }
 
-  postMessage(message: any, _transfer: Transferable[]) {
-    assert(message.type);
+  postMessage(message: MockMessage, _transfer: Transferable[]) {
+    chrome.test.assertTrue(!!message.type);
     // <if expr="enable_pdf_ink2">
-    if (message.type === this.replyType_) {
-      assert(this.messageReply_);
-      assert(message.messageId);
-
+    if (message.type === 'save' && this.replyToSave_) {
+      this.replyToSaveMessage_(message as unknown as SaveMessage);
+    } else if (message.type === 'syncScrollToRemote' && this.viewport) {
+      this.viewport.ackScrollToRemote({
+        x: message['x'] as number,
+        y: message['y'] as number,
+      });
+    } else if (this.messageReplies_.has(message.type)) {
+      const reply = this.messageReplies_.get(message.type);
+      chrome.test.assertTrue(!!reply);
+      chrome.test.assertTrue(!!message.messageId);
       this.dispatchEvent(new MessageEvent('message', {
         data: {
           messageId: message.messageId,
-          ...this.messageReply_,
+          type: message.type + 'Reply',
+          ...reply,
         },
         origin: '*',
       }));
@@ -216,8 +251,47 @@ export class MockPdfPluginElement extends HTMLEmbedElement {
    * @param reply The reply to the message.
    */
   setMessageReply(type: string, reply: Object) {
-    this.replyType_ = type;
-    this.messageReply_ = reply;
+    this.messageReplies_.set(type, reply);
+  }
+
+  /**
+   * Tells the plugin to respond to a "save" event by firing a 'saveData'
+   * or 'consumeSaveToken' message.
+   */
+  setReplyToSave(reply: boolean) {
+    this.replyToSave_ = reply;
+  }
+
+  private replyToSaveMessage_(message: SaveMessage) {
+    chrome.test.assertTrue(!!message.token);
+    if (message.saveRequestType === SaveRequestType.ORIGINAL) {
+      this.dispatchEvent(new MessageEvent('message', {
+        data: {
+          type: 'consumeSaveToken',
+          token: message.token,
+        },
+        origin: '*',
+      }));
+      return;
+    }
+    chrome.test.assertEq(SaveRequestType.ANNOTATION, message.saveRequestType);
+    const testData = '%PDF1.0 Hello World';
+    const buffer = new ArrayBuffer(testData.length);
+    // Encode the same way chrome/browser/resources/pdf/controller.ts decodes.
+    const view = new Uint8Array(buffer);
+    for (let i = 0; i < testData.length; i++) {
+      view[i] = testData.charCodeAt(i);
+    }
+    this.dispatchEvent(new MessageEvent('message', {
+      data: {
+        type: 'saveData',
+        token: message.token,
+        dataToSave: buffer,
+        fileName: 'test.pdf',
+        bypassSaveFileForTesting: true,
+      },
+      origin: '*',
+    }));
   }
   // </if>
 }
@@ -232,33 +306,6 @@ export function createMockPdfPluginForTest(): MockPdfPluginElement {
       MockPdfPluginElement;
 }
 
-class TestBookmarksElement extends CrLitElement {
-  static get is() {
-    return 'test-bookmarks';
-  }
-
-  override render() {
-    return this.bookmarks.map(
-        item => html`<viewer-bookmark .bookmark="${item}" depth="0">
-             </viewer-bookmark>`);
-  }
-
-  static override get properties() {
-    return {
-      bookmarks: {type: Array},
-    };
-  }
-
-  bookmarks: Bookmark[] = [];
-}
-
-declare global {
-  interface HTMLElementTagNameMap {
-    'test-bookmarks': TestBookmarksElement;
-  }
-}
-
-customElements.define(TestBookmarksElement.is, TestBookmarksElement);
 
 /**
  * @return An element containing a dom-repeat of bookmarks, for
@@ -270,6 +317,16 @@ export function createBookmarksForTest(): TestBookmarksElement {
 
 export class MockMetricsPrivate {
   actionCounter: Map<UserAction, number> = new Map();
+  // <if expr="enable_pdf_save_to_drive">
+  enumerationCounter: Map<string, Map<number, number>> = new Map();
+  metricsEnumSize = new Map<string, number>([
+    ['PDF.PostMessageDataType', PostMessageDataType.COUNT],
+    ['PDF.SaveToDrive.BubbleAction', SaveToDriveBubbleAction.COUNT],
+    ['PDF.SaveToDrive.BubbleState', SaveToDriveBubbleState.COUNT],
+    ['PDF.SaveToDrive.RetrySaveType', SaveToDriveSaveType.COUNT],
+    ['PDF.SaveToDrive.SaveType', SaveToDriveSaveType.COUNT],
+  ]);
+  // </if> enable_pdf_save_to_drive
 
   recordValue(metric: chrome.metricsPrivate.MetricType, value: number) {
     chrome.test.assertEq('PDF.Actions', metric.metricName);
@@ -287,9 +344,39 @@ export class MockMetricsPrivate {
     chrome.test.assertEq(count, this.actionCounter.get(action) || 0);
   }
 
+  // <if expr="enable_pdf_save_to_drive">
+  recordEnumerationValue(metricName: string, value: number, enumSize: number) {
+    if (this.metricsEnumSize.has(metricName)) {
+      chrome.test.assertEq(this.metricsEnumSize.get(metricName), enumSize);
+    } else {
+      chrome.test.fail(`Unexpected metric name: ${metricName}`);
+    }
+
+    if (!this.enumerationCounter.has(metricName)) {
+      this.enumerationCounter.set(metricName, new Map());
+    }
+    const metricMap = this.enumerationCounter.get(metricName);
+    chrome.test.assertTrue(!!metricMap);
+    const counter = metricMap.get(value) ?? 0;
+    metricMap.set(value, counter + 1);
+  }
+
+  assertEnumerationCount(metricName: string, value: number, count: number) {
+    const metricMap = this.enumerationCounter.get(metricName);
+    if (metricMap === undefined) {
+      chrome.test.assertEq(count, 0);
+      return;
+    }
+    chrome.test.assertEq(count, metricMap.get(value) ?? 0);
+  }
+  // </if> enable_pdf_save_to_drive
+
   reset() {
     resetMetricsForTesting();
     this.actionCounter.clear();
+    // <if expr="enable_pdf_save_to_drive">
+    this.enumerationCounter.clear();
+    // </if> enable_pdf_save_to_drive
   }
 }
 
@@ -298,6 +385,10 @@ export function setupMockMetricsPrivate(): MockMetricsPrivate {
   const mockMetricsPrivate = new MockMetricsPrivate();
   chrome.metricsPrivate.recordValue =
       mockMetricsPrivate.recordValue.bind(mockMetricsPrivate);
+  // <if expr="enable_pdf_save_to_drive">
+  chrome.metricsPrivate.recordEnumerationValue =
+      mockMetricsPrivate.recordEnumerationValue.bind(mockMetricsPrivate);
+  // </if> enable_pdf_save_to_drive
   return mockMetricsPrivate;
 }
 
@@ -384,7 +475,7 @@ export function getRequiredElement<E extends HTMLElement = HTMLElement>(
     parent: HTMLElement, query: string): E;
 export function getRequiredElement(parent: HTMLElement, query: string) {
   const element = parent.shadowRoot!.querySelector(query);
-  assert(element);
+  chrome.test.assertTrue(!!element);
   return element;
 }
 
@@ -400,7 +491,7 @@ export async function openToolbarMenu(toolbar: ViewerToolbarElement) {
 
   getRequiredElement(toolbar, '#more').click();
   await microtasksFinished();
-  assert(menu.open);
+  chrome.test.assertTrue(menu.open);
 }
 
 /**
@@ -419,14 +510,14 @@ export function assertCheckboxMenuButton(
 
 export async function ensureFullscreen(): Promise<void> {
   const viewer = document.body.querySelector('pdf-viewer');
-  assert(viewer);
+  chrome.test.assertTrue(!!viewer);
 
   if (document.fullscreenElement !== null) {
     return;
   }
 
   const toolbar = viewer.shadowRoot.querySelector('viewer-toolbar');
-  assert(toolbar);
+  chrome.test.assertTrue(!!toolbar);
   toolbar.dispatchEvent(new CustomEvent('present-click'));
   await eventToPromise('fullscreenchange', viewer.$.scroller);
 }
@@ -442,34 +533,48 @@ export function enterFullscreenWithUserGesture(): Promise<void> {
   });
 }
 
+/**
+ * @returns The most visible page.
+ */
+export function getCurrentPage(): number {
+  const viewer = document.body.querySelector('pdf-viewer');
+  chrome.test.assertTrue(!!viewer);
+  return viewer.viewport.getMostVisiblePage();
+}
+
 // <if expr="enable_pdf_ink2">
 /**
- * Helper to simulate the PDF content sending a message to the PDF extension
- * to indicate that a new ink stroke has been drawn.
+ * Convenience function to start stroking, and then modify some Ink stroke
+ * before finishing.
  */
-export function finishInkStroke(controller: PluginController) {
+export function startFinishModifiedInkStroke(controller: PluginController) {
+  startInkStroke(controller);
+  finishInkStroke(controller, true);
+}
+
+/**
+ * Helper to simulate the PDF content sending a message to the PDF extension
+ * to indicate that a new ink stroke has been started.
+ */
+export function startInkStroke(controller: PluginController) {
   const eventTarget = controller.getEventTarget();
-  const message = {type: 'finishInkStroke'};
+  const message = {type: 'startInkStroke'};
 
   eventTarget.dispatchEvent(new CustomEvent(
       PluginControllerEventType.PLUGIN_MESSAGE, {detail: message}));
 }
 
-export class TestBeforeUnloadProxy extends TestBrowserProxy implements
-    BeforeUnloadProxy {
-  constructor() {
-    super(['preventDefault']);
-  }
+/**
+ * Helper to simulate the PDF content sending a message to the PDF extension
+ * to indicate that Ink stroking has occurred.
+ */
+export function finishInkStroke(
+    controller: PluginController, modified: boolean) {
+  const eventTarget = controller.getEventTarget();
+  const message = {type: 'finishInkStroke', modified};
 
-  preventDefault() {
-    this.methodCalled('preventDefault');
-  }
-}
-
-export function getNewTestBeforeUnloadProxy(): TestBeforeUnloadProxy {
-  const testProxy = new TestBeforeUnloadProxy();
-  BeforeUnloadProxyImpl.setInstance(testProxy);
-  return testProxy;
+  eventTarget.dispatchEvent(new CustomEvent(
+      PluginControllerEventType.PLUGIN_MESSAGE, {detail: message}));
 }
 
 export function setupTestMockPluginForInk(): MockPdfPluginElement {
@@ -483,7 +588,67 @@ export function setupTestMockPluginForInk(): MockPdfPluginElement {
       color: {r: 0, g: 0, b: 0},
     },
   });
+  mockPlugin.setMessageReply('getAllTextAnnotations', {
+    annotations: [],
+  });
+  mockPlugin.setMessageReply('getSuggestedFileName', {
+    fileName: 'test.pdf',
+    bypassSaveFileForTesting: true,
+  });
   return mockPlugin;
+}
+
+// Sets up zoomable viewport and a dummy plugin for Ink. This combines the
+// functionality of getZoomableViewport() and setupTestMockPluginForInk(), which
+// are mutually exclusive since they both attempt to call setContent() on the
+// viewport. Returns a reference to the new viewport and mock plugin.
+export function setUpInkTestContext(scrollbarWidth: number = 5): {
+  viewport: Viewport,
+  mockPlugin: MockPdfPluginElement,
+  mockWindow: MockElement,
+} {
+  // Clear the DOM and create dummy content.
+  document.body.innerHTML = '';
+  const dummyContent = document.createElement('div');
+  document.body.appendChild(dummyContent);
+
+  // Create the viewport.
+  const mockWindow = new MockElement(500, 500, null);
+  const mockSizer = new MockSizer();
+  const viewport = new Viewport(
+      mockWindow as unknown as HTMLElement, mockSizer as unknown as HTMLElement,
+      dummyContent, scrollbarWidth, /*defaultZoom=*/ 1);
+  viewport.setZoomFactorRange([0.25, 0.4, 0.5, 1, 2]);
+  const documentDimensions = new MockDocumentDimensions(0, 0);
+  documentDimensions.addPage(400, 500);
+  viewport.setDocumentDimensions(documentDimensions);
+
+  // Create mock plugin.
+  const mockPlugin = createMockPdfPluginForTest();
+  mockPlugin.viewport = viewport;
+  mockPlugin.id = 'plugin';
+  mockPlugin.src = 'data:text/plain,plugin-content';
+  mockPlugin.setMessageReply('getAnnotationBrush', {
+    data: {
+      type: AnnotationBrushType.PEN,
+      size: 3,
+      color: {r: 0, g: 0, b: 0},
+    },
+  });
+  mockPlugin.setMessageReply('getAllTextAnnotations', {
+    annotations: [],
+  });
+
+  // Initialize controller. This also calls setContent() on the viewport.
+  const controller = PluginController.getInstance();
+  controller.init(mockPlugin, viewport, () => false);
+
+  // Initialize the ink manager and update its viewport parameters with the
+  // new dummy viewport.
+  const manager = Ink2Manager.getInstance();
+  manager.setViewport(viewport);
+
+  return {viewport, mockPlugin, mockWindow};
 }
 
 /**
@@ -510,22 +675,20 @@ export function setGetAnnotationBrushReply(
 export function assertAnnotationBrush(
     mockPlugin: MockPdfPluginElement, expectedBrush: AnnotationBrush) {
   const setAnnotationBrushMessage =
-      mockPlugin.findMessage('setAnnotationBrush');
+      mockPlugin.findMessage<AnnotationBrushMessage>('setAnnotationBrush');
   chrome.test.assertTrue(setAnnotationBrushMessage !== undefined);
-  chrome.test.assertEq('setAnnotationBrush', setAnnotationBrushMessage.type);
-  chrome.test.assertEq(expectedBrush.type, setAnnotationBrushMessage.data.type);
+  const message = setAnnotationBrushMessage;
+  chrome.test.assertEq('setAnnotationBrush', message.type);
+  chrome.test.assertEq(expectedBrush.type, message.data.type);
   const hasColor = expectedBrush.color !== undefined;
-  chrome.test.assertEq(
-      hasColor, setAnnotationBrushMessage.data.color !== undefined);
+  chrome.test.assertEq(hasColor, message.data.color !== undefined);
   if (hasColor) {
-    chrome.test.assertEq(
-        expectedBrush.color!.r, setAnnotationBrushMessage.data.color.r);
-    chrome.test.assertEq(
-        expectedBrush.color!.g, setAnnotationBrushMessage.data.color.g);
-    chrome.test.assertEq(
-        expectedBrush.color!.b, setAnnotationBrushMessage.data.color.b);
+    const color = message.data.color!;
+    chrome.test.assertEq(expectedBrush.color!.r, color.r);
+    chrome.test.assertEq(expectedBrush.color!.g, color.g);
+    chrome.test.assertEq(expectedBrush.color!.b, color.b);
   }
-  chrome.test.assertEq(expectedBrush.size, setAnnotationBrushMessage.data.size);
+  chrome.test.assertEq(expectedBrush.size, message.data.size);
 
   mockPlugin.clearMessages();
 }
@@ -540,6 +703,15 @@ export function getBrushSelector(parentElement: HTMLElement):
   return getRequiredElement(parentElement, 'ink-brush-selector');
 }
 
+export function getBrush(
+    selector: InkBrushSelectorElement,
+    type: AnnotationBrushType): SelectableIconButtonElement {
+  const brush = selector.shadowRoot.querySelector<SelectableIconButtonElement>(
+      `#${type}`);
+  chrome.test.assertTrue(!!brush);
+  return brush;
+}
+
 
 /**
  * Helper to get a non-empty list of brush size buttons.
@@ -547,11 +719,10 @@ export function getBrushSelector(parentElement: HTMLElement):
  * @returns A list of exactly 5 size buttons.
  */
 export function getSizeButtons(selector: InkSizeSelectorElement):
-    NodeListOf<HTMLElement> {
+    NodeListOf<SelectableIconButtonElement> {
   const sizeButtons =
-      selector.shadowRoot.querySelectorAll<HTMLElement>('cr-icon-button');
-  assert(sizeButtons);
-  assert(sizeButtons.length === 5);
+      selector.shadowRoot.querySelectorAll('selectable-icon-button');
+  chrome.test.assertEq(5, sizeButtons.length);
   return sizeButtons;
 }
 
@@ -562,10 +733,10 @@ export function getSizeButtons(selector: InkSizeSelectorElement):
  * @param buttonIndex The expected selected size button.
  */
 export function assertSelectedSize(
-    sizeButtons: NodeListOf<HTMLElement>, buttonIndex: number) {
+    sizeButtons: NodeListOf<SelectableIconButtonElement>, buttonIndex: number) {
   for (let i = 0; i < sizeButtons.length; ++i) {
-    const buttonSelected = sizeButtons[i]!.dataset['selected'];
-    chrome.test.assertEq(i === buttonIndex ? 'true' : 'false', buttonSelected);
+    const buttonSelected = sizeButtons[i]!.checked;
+    chrome.test.assertEq(i === buttonIndex, buttonSelected);
   }
 }
 
@@ -577,7 +748,7 @@ export function assertSelectedSize(
 export function getColorButtons(selector: InkColorSelectorElement):
     NodeListOf<HTMLElement> {
   const colorButtons = selector.shadowRoot.querySelectorAll('input');
-  assert(colorButtons);
+  chrome.test.assertTrue(colorButtons.length > 0);
   return colorButtons;
 }
 
@@ -605,4 +776,75 @@ export function assertLabels(element: HTMLElement, label: string) {
   chrome.test.assertEq(label, element.title);
 }
 
+export async function clickDropdownButton(
+    dropdown: ViewerBottomToolbarDropdownElement) {
+  const dropdownButton = getRequiredElement(dropdown, 'cr-button');
+  dropdownButton.click();
+  await microtasksFinished();
+}
+
+export function assertDeepEquals(
+    value1: object|unknown[]|undefined|null,
+    value2: object|unknown[]|undefined|null) {
+  chrome.test.assertTrue(chrome.test.checkDeepEq(value1, value2));
+}
+
+// Simulates initializing a textbox. To make this usable from tests that do
+// not use a mock viewport, directly dispatch the event from the
+// Ink2Manager. Otherwise, the real viewport and page layout can vary, and
+// a textbox may not actually be created if a click event is simulated in a part
+// of the viewport that doesn't contain a page.
+export function createTextBox() {
+  const annotation = getTestAnnotation(0);
+  annotation.text = '';
+  annotation.textAttributes.color = hexToColor(TEXT_COLORS[0]!.color);
+  annotation.textBoxRect = {
+    height: MIN_TEXTBOX_SIZE_PX,
+    locationX: 50,
+    locationY: 50,
+    width: DEFAULT_TEXTBOX_WIDTH,
+  };
+  Ink2Manager.getInstance().dispatchEvent(
+      new CustomEvent('initialize-text-box', {
+        detail: {
+          annotation,
+          pageDimensions: {x: 10, y: 3, width: 390, height: 490},
+        },
+      }));
+}
+
+export function getTextBox(viewer: PdfViewerElement): InkTextBoxElement|null {
+  const annotations =
+      viewer.shadowRoot.querySelector<InkTextAnnotationsElement>(
+          'ink-text-annotations');
+  return annotations ? annotations.$.textBox : null;
+}
+
+export function getTestAnnotation(id: number): TextAnnotation {
+  return {
+    id: id,
+    mojoTextInfo: new ArrayBuffer(0),
+    pageIndex: 0,
+    pdfZoom: 1.0,
+    text: 'Hello World',
+    textAttributes: {
+      typeface: TextTypeface.SANS_SERIF,
+      size: 12,
+      color: {r: 0, g: 100, b: 0},
+      alignment: TextAlignment.LEFT,
+      styles: {
+        bold: false,
+        italic: false,
+      },
+    },
+    textBoxRect: {
+      height: 35,
+      locationX: 60,
+      locationY: 25,
+      width: 50,
+    },
+    textOrientation: 0,
+    viewportOrientation: 0,
+  };
+}
 // </if>

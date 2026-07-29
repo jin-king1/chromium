@@ -10,23 +10,34 @@
 #include "ash/constants/web_app_id_constants.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
+#include "chrome/browser/ui/web_applications/test/web_app_browsertest_util.h"
 #include "chrome/browser/ui/web_applications/web_app_browsertest_base.h"
+#include "chrome/browser/web_applications/model/pending_migration_info.h"
 #include "chrome/browser/web_applications/test/prevent_close_test_base.h"
 #include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
+#include "chrome/browser/web_applications/web_app_icon_manager.h"
+#include "chrome/browser/web_applications/web_app_install_info.h"
+#include "chrome/browser/web_applications/web_app_provider.h"
+#include "chrome/browser/web_applications/web_app_registry_update.h"
+#include "chrome/browser/web_applications/web_app_sync_bridge.h"
 #include "chrome/test/base/browser_with_test_window_test.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "content/public/common/content_features.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/features.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/models/menu_model.h"
+#include "ui/gfx/image/image_unittest_util.h"
+#include "ui/menus/simple_menu_model.h"
 #include "url/gurl.h"
 
 namespace web_app {
 
 class TestWebAppMenuModelCR2023 : public WebAppBrowserTestBase {
  public:
-  TestWebAppMenuModelCR2023() : WebAppBrowserTestBase({}, {}) {}
+  TestWebAppMenuModelCR2023() = default;
 
   TestWebAppMenuModelCR2023(const TestWebAppMenuModelCR2023&) = delete;
   TestWebAppMenuModelCR2023& operator=(const TestWebAppMenuModelCR2023&) =
@@ -95,6 +106,130 @@ IN_PROC_BROWSER_TEST_F(TestWebAppMenuModelCR2023, CommandStatusTest) {
   UninstallWebApp(app_id);
 }
 
+class WebAppMenuModelBrowserTest : public WebAppBrowserTestBase {
+ public:
+  WebAppMenuModelBrowserTest() = default;
+  ~WebAppMenuModelBrowserTest() override = default;
+};
+
+IN_PROC_BROWSER_TEST_F(WebAppMenuModelBrowserTest, HasPendingUpdate) {
+  const GURL app_url = GetInstallableAppURL();
+  const webapps::AppId app_id = InstallWebAppFromPage(browser(), app_url);
+  Browser* const browser = LaunchWebAppBrowser(app_id);
+
+  {
+    WebAppMenuModel app_menu_model(nullptr, browser);
+    app_menu_model.Init();
+
+    // Verify that "Review update" button is not visible in the menu.
+    ui::MenuModel* model = &app_menu_model;
+    size_t index = 0;
+    const bool found = ui::MenuModel::GetModelAndIndexForCommandId(
+        IDC_WEB_APP_UPGRADE_DIALOG, &model, &index);
+    EXPECT_FALSE(found);
+  }
+
+  // Set the `was_ignored` field to true deliberately to ensure that the menu
+  // model still works correctly even if the user has ignored an update.
+  {
+    web_app::ScopedRegistryUpdate update =
+        provider().sync_bridge_unsafe().BeginUpdate();
+    web_app::proto::PendingUpdateInfo update_info;
+    update_info.set_name("Updated app name");
+    update_info.set_was_ignored(true);
+    update->UpdateApp(app_id)->SetPendingUpdateInfo(std::move(update_info));
+  }
+
+  {
+    WebAppMenuModel app_menu_model(nullptr, browser);
+    app_menu_model.Init();
+
+    // Verify that "Review update" button is visible in the menu.
+    ui::MenuModel* model = &app_menu_model;
+    size_t index = 0;
+    const bool found = ui::MenuModel::GetModelAndIndexForCommandId(
+        IDC_WEB_APP_UPGRADE_DIALOG, &model, &index);
+    EXPECT_TRUE(found);
+    EXPECT_TRUE(app_menu_model.IsCommandIdEnabled(IDC_WEB_APP_UPGRADE_DIALOG));
+    EXPECT_TRUE(model->IsEnabledAt(index));
+    EXPECT_TRUE(app_menu_model.IsCommandIdVisible(IDC_WEB_APP_UPGRADE_DIALOG));
+    EXPECT_TRUE(model->IsVisibleAt(index));
+    ui::ImageModel update_icon = model->GetIconAt(index);
+    ASSERT_TRUE(update_icon.IsImage());
+    EXPECT_EQ(update_icon.Size().width(), update_icon.Size().height());
+    EXPECT_EQ(update_icon.Size().width(),
+              ui::SimpleMenuModel::kDefaultIconSize);
+    EXPECT_TRUE(gfx::test::AreImagesClose(
+        update_icon.GetImage(),
+        gfx::Image(provider().icon_manager().GetFaviconImageSkia(app_id)),
+        /*max_deviation=*/1));
+  }
+
+  UninstallWebApp(app_id);
+}
+
+class WebAppMenuModelMigrationBrowserTest : public WebAppBrowserTestBase {
+ public:
+  WebAppMenuModelMigrationBrowserTest()
+      : WebAppBrowserTestBase({blink::features::kWebAppMigrationApi}, {}) {}
+  ~WebAppMenuModelMigrationBrowserTest() override = default;
+};
+
+IN_PROC_BROWSER_TEST_F(WebAppMenuModelMigrationBrowserTest,
+                       HasPendingMigration) {
+  const GURL app_url = GetInstallableAppURL();
+  const webapps::AppId app_id = InstallWebAppFromPage(browser(), app_url);
+  Browser* const browser = LaunchWebAppBrowser(app_id);
+
+  {
+    WebAppMenuModel app_menu_model(nullptr, browser);
+    app_menu_model.Init();
+
+    // Verify that "Review update" button is not visible in the menu.
+    ui::MenuModel* model = &app_menu_model;
+    size_t index = 0;
+    const bool found = ui::MenuModel::GetModelAndIndexForCommandId(
+        IDC_WEB_APP_UPGRADE_DIALOG, &model, &index);
+    EXPECT_FALSE(found);
+  }
+
+  {
+    web_app::ScopedRegistryUpdate update =
+        provider().sync_bridge_unsafe().BeginUpdate();
+    web_app::PendingMigrationInfo migration_info(
+        webapps::ManifestId(GURL("https://migrated-app.com/")),
+        web_app::MigrationBehavior::kSuggest);
+    update->UpdateApp(app_id)->SetPendingMigrationInfo(std::move(migration_info));
+  }
+
+  {
+    WebAppMenuModel app_menu_model(nullptr, browser);
+    app_menu_model.Init();
+
+    // Verify that "Review update" button is visible in the menu.
+    ui::MenuModel* model = &app_menu_model;
+    size_t index = 0;
+    const bool found = ui::MenuModel::GetModelAndIndexForCommandId(
+        IDC_WEB_APP_UPGRADE_DIALOG, &model, &index);
+    EXPECT_TRUE(found);
+    EXPECT_TRUE(app_menu_model.IsCommandIdEnabled(IDC_WEB_APP_UPGRADE_DIALOG));
+    EXPECT_TRUE(model->IsEnabledAt(index));
+    EXPECT_TRUE(app_menu_model.IsCommandIdVisible(IDC_WEB_APP_UPGRADE_DIALOG));
+    EXPECT_TRUE(model->IsVisibleAt(index));
+    ui::ImageModel update_icon = model->GetIconAt(index);
+    ASSERT_TRUE(update_icon.IsImage());
+    EXPECT_EQ(update_icon.Size().width(), update_icon.Size().height());
+    EXPECT_EQ(update_icon.Size().width(),
+              ui::SimpleMenuModel::kDefaultIconSize);
+    EXPECT_TRUE(gfx::test::AreImagesClose(
+        update_icon.GetImage(),
+        gfx::Image(provider().icon_manager().GetFaviconImageSkia(app_id)),
+        /*max_deviation=*/1));
+  }
+
+  UninstallWebApp(app_id);
+}
+
 namespace {
 constexpr char kCalculatorAppUrl[] = "https://calculator.apps.chrome/";
 
@@ -139,21 +274,15 @@ IN_PROC_BROWSER_TEST_F(WebAppModelMenuPreventCloseTest,
         std::make_unique<WebAppMenuModel>(/*provider=*/nullptr, browser);
     app_menu_model->Init();
 
-    EXPECT_EQ(!kShouldPreventClose,
-              app_menu_model->IsCommandIdEnabled(IDC_OPEN_IN_CHROME));
-    EXPECT_EQ(!kShouldPreventClose,
-              app_menu_model->IsCommandIdVisible(IDC_OPEN_IN_CHROME));
-
     // Verify that "Open in Chrome" button is not visible in the menu.
     ui::MenuModel* model = app_menu_model.get();
     size_t index = 0;
     const bool found = ui::MenuModel::GetModelAndIndexForCommandId(
         IDC_OPEN_IN_CHROME, &model, &index);
-    EXPECT_TRUE(found);
-    EXPECT_EQ(!kShouldPreventClose, model->IsVisibleAt(index));
+    EXPECT_EQ(!kShouldPreventClose, found);
   }
 
-  test::UninstallAllWebApps(browser->profile());
+  test::UninstallAllWebApps(browser->GetProfile());
 }
 
 }  // namespace web_app

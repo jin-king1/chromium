@@ -8,7 +8,6 @@
  * settings.
  */
 
-import '../icons.html.js';
 import '../settings_shared.css.js';
 import 'chrome://resources/ash/common/cr_elements/localized_link/localized_link.js';
 import 'chrome://resources/ash/common/cr_elements/cr_radio_button/cr_radio_button.js';
@@ -58,8 +57,8 @@ export class SettingsPerDeviceMouseElement extends
     };
   }
 
-  protected mice: Mouse[];
-  protected mousePolicies: MousePolicies;
+  declare protected mice: Mouse[];
+  declare protected mousePolicies: MousePolicies;
 
   override currentRouteChanged(route: Route): void {
     // Does not apply to this page.

@@ -11,7 +11,6 @@
 #include <memory>
 #include <optional>
 #include <string>
-#include <unordered_set>
 
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
@@ -24,7 +23,6 @@
 #include "extensions/common/api/socket.h"
 #include "extensions/common/extension_id.h"
 #include "extensions/common/permissions/api_permission.h"
-#include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
@@ -72,7 +70,7 @@ class SocketResourceManagerInterface {
   virtual void Replace(const ExtensionId& extension_id,
                        int api_resource_id,
                        Socket* socket) = 0;
-  virtual std::unordered_set<int>* GetResourceIds(
+  virtual absl::flat_hash_set<int>* GetResourceIds(
       const ExtensionId& extension_id) = 0;
 };
 
@@ -112,7 +110,7 @@ class SocketResourceManager : public SocketResourceManagerInterface {
     manager_->Remove(extension_id, api_resource_id);
   }
 
-  std::unordered_set<int>* GetResourceIds(
+  absl::flat_hash_set<int>* GetResourceIds(
       const ExtensionId& extension_id) override {
     return manager_->GetResourceIds(extension_id);
   }
@@ -138,8 +136,8 @@ class SocketApiFunction : public ExtensionFunction {
   // ExtensionFunction:
   ResponseAction Run() final;
 
-  // Convenience wrapper for ErrorWithArguments(), where the arguments are just
-  // one integer value.
+  // Convenience wrapper for ErrorWithArgumentsDoNotUse(), where the arguments
+  // are just one integer value.
   ResponseValue ErrorWithCode(int error_code, const std::string& error);
 
   // Either extension_id() or url origin for CrOS Terminal.
@@ -166,7 +164,7 @@ class SocketApiFunction : public ExtensionFunction {
   Socket* GetSocket(int api_resource_id);
   void ReplaceSocket(int api_resource_id, Socket* socket);
   void RemoveSocket(int api_resource_id);
-  std::unordered_set<int>* GetSocketIds();
+  absl::flat_hash_set<int>* GetSocketIds();
 
   // A no-op outside of Chrome OS. Calls Respond() with an error if it fails.
   void OpenFirewallHole(const std::string& address,
@@ -174,6 +172,8 @@ class SocketApiFunction : public ExtensionFunction {
                         Socket* socket);
 
  private:
+  FRIEND_TEST_ALL_PREFIXES(SocketApiTest, ShutdownWithLingeringWriteQuota);
+
   class ScopedWriteQuota {
    public:
     ScopedWriteQuota(SocketApiFunction* owner, size_t bytes_used);
@@ -203,11 +203,11 @@ class SocketExtensionWithDnsLookupFunction
 
  private:
   // network::mojom::ResolveHostClient implementation:
-  void OnComplete(int result,
-                  const net::ResolveErrorInfo& resolve_error_info,
-                  const std::optional<net::AddressList>& resolved_addresses,
-                  const std::optional<net::HostResolverEndpointResults>&
-                      endpoint_results_with_metadata) override;
+  void OnComplete(
+      int result,
+      const net::ResolveErrorInfo& resolve_error_info,
+      const net::AddressList& resolved_addresses,
+      const net::HostResolverEndpointResults& alternative_endpoints) override;
 
   mojo::PendingRemote<network::mojom::HostResolver> pending_host_resolver_;
   mojo::Remote<network::mojom::HostResolver> host_resolver_;

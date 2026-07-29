@@ -13,74 +13,46 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.robolectric.annotation.Config;
 
-import org.chromium.base.FeatureOverrides;
 import org.chromium.base.shared_preferences.SharedPreferencesManager;
-import org.chromium.base.task.TaskTraits;
-import org.chromium.base.task.test.ShadowPostTask;
-import org.chromium.base.task.test.ShadowPostTask.TestImpl;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.RobolectricUtil;
 import org.chromium.base.test.util.CallbackHelper;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.tab.TabArchiveSettings.Observer;
 
 /** Tests for {@link TabArchiveSettings}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(shadows = {ShadowPostTask.class})
+@Config(manifest = Config.NONE)
 public class TabArchiveSettingsTest {
-
-    static final String ARCHIVE_ENABLED_PARAM = "android_tab_declutter_archive_enabled";
-    static final String ARCHIVE_TIME_DELTA_PARAM = "android_tab_declutter_archive_time_delta_hours";
-    static final int ARCHIVE_TIME_DELTA_HOURS_DEFAULT = 21 * 24;
-    static final String AUTO_DELETE_ENABLED_PARAM = "android_tab_declutter_auto_delete_enabled";
-    static final String AUTO_DELETE_TIME_DELTA_PARAM =
-            "android_tab_declutter_auto_delete_time_delta_hours";
-    static final int AUTO_DELETE_TIME_DELTA_HOURS_DEFAULT = 60 * 24;
+    private static final int AUTO_DELETE_TIME_DELTA_HOURS_DEFAULT = 90 * 24; // 60 days.
 
     private TabArchiveSettings mSettings;
     private SharedPreferencesManager mPrefsManager;
 
     @Before
     public void setUp() {
-        // Run posted tasks immediately.
-        ShadowPostTask.setTestImpl(
-                new TestImpl() {
-                    @Override
-                    public void postDelayedTask(
-                            @TaskTraits int taskTraits, Runnable task, long delay) {
-                        task.run();
-                    }
-                });
-
         mPrefsManager = ChromeSharedPreferences.getInstance();
         mSettings = new TabArchiveSettings(mPrefsManager);
         mSettings.resetSettingsForTesting();
     }
 
     @Test
-    public void testSettings() {
+    public void testDefaultSettings() {
         // Archive is disabled for tests, reset it to the default param value.
-        mSettings.setArchiveEnabled(
-                ChromeFeatureList.sAndroidTabDeclutterArchiveEnabled.getValue());
-        assertEquals(
-                ChromeFeatureList.sAndroidTabDeclutterArchiveEnabled.getValue(),
-                mSettings.getArchiveEnabled());
-        assertEquals(ARCHIVE_TIME_DELTA_HOURS_DEFAULT, mSettings.getArchiveTimeDeltaHours());
-        assertEquals(false, mSettings.isAutoDeleteEnabled());
-        assertEquals(AUTO_DELETE_TIME_DELTA_HOURS_DEFAULT, mSettings.getAutoDeleteTimeDeltaHours());
-
-        mSettings.setArchiveEnabled(false);
-        assertFalse(mSettings.getArchiveEnabled());
-
-        mSettings.setArchiveTimeDeltaHours(1);
-        assertEquals(1, mSettings.getArchiveTimeDeltaHours());
-
         mSettings.setArchiveEnabled(true);
+        assertTrue(mSettings.getArchiveEnabled());
+        assertEquals(
+                TabArchiveSettings.DEFAULT_ARCHIVE_TIME_HOURS,
+                mSettings.getArchiveTimeDeltaHours());
+        // Auto-delete is disabled until the user has seen the promo or enables it manually.
+        assertFalse(mSettings.isAutoDeleteEnabled());
+        // Mock the user enabling auto-delete manually, and verify the settings are updated.
         mSettings.setAutoDeleteEnabled(true);
         assertTrue(mSettings.isAutoDeleteEnabled());
-
-        mSettings.setAutoDeleteTimeDeltaHours(1);
-        assertEquals(1, mSettings.getArchiveTimeDeltaHours());
+        assertEquals(AUTO_DELETE_TIME_DELTA_HOURS_DEFAULT, mSettings.getAutoDeleteTimeDeltaHours());
+        assertEquals(
+                TabArchiveSettings.DEFAULT_MAX_SIMULTANEOUS_ARCHIVES,
+                mSettings.getMaxSimultaneousArchives());
     }
 
     @Test
@@ -88,38 +60,6 @@ public class TabArchiveSettingsTest {
         mSettings.setArchiveEnabled(false);
         mSettings.setAutoDeleteEnabled(true);
         assertEquals(false, mSettings.isAutoDeleteEnabled());
-    }
-
-    @Test
-    public void testSettingsDefaultOverriddenByFinch() {
-        // Archive is disabled for tests, reset it to the default param value.
-        mSettings.setArchiveEnabled(
-                ChromeFeatureList.sAndroidTabDeclutterArchiveEnabled.getValue());
-        assertTrue(mSettings.getArchiveEnabled());
-        assertFalse(mSettings.isAutoDeleteEnabled());
-
-        FeatureOverrides.newBuilder()
-                .param(ChromeFeatureList.ANDROID_TAB_DECLUTTER, ARCHIVE_ENABLED_PARAM, false)
-                .param(ChromeFeatureList.ANDROID_TAB_DECLUTTER, ARCHIVE_TIME_DELTA_PARAM, 10)
-                .param(ChromeFeatureList.ANDROID_TAB_DECLUTTER, AUTO_DELETE_ENABLED_PARAM, true)
-                .param(ChromeFeatureList.ANDROID_TAB_DECLUTTER, AUTO_DELETE_TIME_DELTA_PARAM, 20)
-                .apply();
-
-        // Archive is disabled for tests, reset it to the default param value.
-        mSettings.setArchiveEnabled(
-                ChromeFeatureList.sAndroidTabDeclutterArchiveEnabled.getValue());
-        assertFalse(mSettings.getArchiveEnabled());
-        assertFalse(mSettings.isAutoDeleteEnabled());
-        mSettings.setArchiveEnabled(true);
-        assertTrue(mSettings.isAutoDeleteEnabled());
-        assertEquals(10, mSettings.getArchiveTimeDeltaHours());
-        assertEquals(20, mSettings.getAutoDeleteTimeDeltaHours());
-
-        mSettings.setArchiveTimeDeltaHours(1);
-        assertEquals(1, mSettings.getArchiveTimeDeltaHours());
-
-        mSettings.setAutoDeleteTimeDeltaHours(1);
-        assertEquals(1, mSettings.getArchiveTimeDeltaHours());
     }
 
     @Test
@@ -132,6 +72,7 @@ public class TabArchiveSettingsTest {
 
         mSettings.addObserver(obs);
         mSettings.setArchiveTimeDeltaHours(1);
+        RobolectricUtil.runAllBackgroundAndUi();
         callbackHelper.waitForNext();
     }
 }

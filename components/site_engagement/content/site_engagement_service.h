@@ -42,8 +42,8 @@ class WebAppEngagementBrowserTest;
 class GURL;
 class HostContentSettingsMap;
 class PrefRegistrySimple;
-class NotificationPermissionReviewServiceTest;
-class SafetyHubCardDataHelperTest;
+class NotificationPermissionReviewServiceTestBase;
+class SafetyHubHatsServiceTest;
 
 namespace site_engagement {
 
@@ -134,13 +134,16 @@ class SiteEngagementService : public KeyedService,
   static double GetScoreFromSettings(HostContentSettingsMap* settings,
                                      const GURL& origin);
 
-  // Retrieves all details for origins within `url_set`. Can be called
+  // Retrieves all details for origins within `url_set` and with minimum total
+  // engagement level greater than `minimum_engagement`. Can be called
   // from a background thread. `now` must be the current timestamp. Takes a
   // scoped_refptr to keep HostContentSettingsMap alive. See crbug.com/901287.
   static std::vector<mojom::SiteEngagementDetails> GetAllDetailsInBackground(
       base::Time now,
       scoped_refptr<HostContentSettingsMap> map,
-      URLSets::Type url_set = URLSets::HTTP);
+      URLSets::Type url_set = URLSets::HTTP,
+      blink::mojom::EngagementLevel minimum_engagement =
+          blink::mojom::EngagementLevel::NONE);
 
   // Returns whether |score| is at least the given |level| of engagement.
   static bool IsEngagementAtLeast(double score,
@@ -212,8 +215,8 @@ class SiteEngagementService : public KeyedService,
   friend class SiteEngagementObserver;
   friend class SiteEngagementServiceTest;
   friend class web_app::WebAppEngagementBrowserTest;
-  friend class ::NotificationPermissionReviewServiceTest;
-  friend class ::SafetyHubCardDataHelperTest;
+  friend class ::NotificationPermissionReviewServiceTestBase;
+  friend class ::SafetyHubHatsServiceTest;
   FRIEND_TEST_ALL_PREFIXES(SiteEngagementServiceTest, CheckHistograms);
   FRIEND_TEST_ALL_PREFIXES(SiteEngagementServiceTest, CleanupEngagementScores);
   FRIEND_TEST_ALL_PREFIXES(SiteEngagementServiceTest,

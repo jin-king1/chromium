@@ -10,7 +10,6 @@
 #include <utility>
 
 #include "ash/child_accounts/parent_access_controller_impl.h"
-#include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
 #include "ash/detachable_base/detachable_base_pairing_status.h"
 #include "ash/login/login_screen_controller.h"
@@ -40,6 +39,7 @@
 #include "ash/root_window_controller.h"
 #include "ash/session/session_controller_impl.h"
 #include "ash/shelf/login_shelf_view.h"
+#include "ash/shelf/login_shelf_widget.h"
 #include "ash/shelf/shelf.h"
 #include "ash/shelf/shelf_navigation_widget.h"
 #include "ash/shelf/shelf_widget.h"
@@ -55,7 +55,6 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/test/simple_test_tick_clock.h"
 #include "base/timer/mock_timer.h"
 #include "chromeos/ash/components/login/auth/auth_events_recorder.h"
@@ -67,11 +66,11 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/l10n/l10n_util.h"
-#include "ui/compositor/scoped_animation_duration_scale_mode.h"
 #include "ui/display/manager/display_manager.h"
 #include "ui/display/test/display_manager_test_api.h"
 #include "ui/events/test/event_generator.h"
 #include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/controls/textfield/textfield.h"
 #include "ui/views/test/views_test_utils.h"
@@ -153,6 +152,17 @@ class LockContentsViewUnitTest : public LoginTestBase {
     DataDispatcher()->SetSmartLockState(account_id, smart_lock_state);
     EXPECT_EQ(should_have_auth_method,
               test_api.HasAuthMethod(LoginAuthUserView::AUTH_SMART_LOCK));
+  }
+
+  void AdvanceClock(base::TimeDelta time_delta) {
+    task_environment()->AdvanceClock(time_delta);
+    base::RunLoop().RunUntilIdle();
+  }
+
+  std::u16string GetExpectedPinStatusMessage(
+      const std::u16string& time_string) {
+    return l10n_util::GetStringFUTF16(IDS_ASH_LOGIN_POD_PIN_LOCKED_WARNING,
+                                      time_string);
   }
 };
 
@@ -341,7 +351,7 @@ TEST_F(LockContentsViewUnitTest, AutoLayoutAfterRotation) {
   };
 
   const display::Display& display =
-      display::Screen::GetScreen()->GetDisplayNearestWindow(
+      display::Screen::Get()->GetDisplayNearestWindow(
           widget->GetNativeWindow());
   for (int i = 2; i < 10; ++i) {
     SetUserCount(i);
@@ -388,7 +398,7 @@ TEST_F(LockContentsViewUnitTest, AutoLayoutExtraSmallUsersListAfterRotation) {
   EXPECT_EQ(contents->height(), users_list->height());
 
   const display::Display& display =
-      display::Screen::GetScreen()->GetDisplayNearestWindow(
+      display::Screen::Get()->GetDisplayNearestWindow(
           widget->GetNativeWindow());
 
   // Start at 0 degrees (landscape).
@@ -438,7 +448,7 @@ TEST_F(LockContentsViewUnitTest, AutoLayoutSmallUsersListAfterRotation) {
   EXPECT_EQ(users_list->height(), users_list->contents()->height());
 
   const display::Display& display =
-      display::Screen::GetScreen()->GetDisplayNearestWindow(
+      display::Screen::Get()->GetDisplayNearestWindow(
           widget->GetNativeWindow());
 
   // Start at 0 degrees (landscape).
@@ -509,7 +519,7 @@ TEST_F(LockContentsViewKeyboardUnitTest,
   // Check if the previous focus is set correctly to the shelf widget.
   EXPECT_EQ(delegate->GetViewAccessibility().GetPreviousWindowFocus(),
             Shelf::ForWindow(delegate->GetWidget()->GetNativeWindow())
-                ->shelf_widget());
+                ->login_shelf_widget());
 }
 
 TEST_F(LockContentsViewKeyboardUnitTest, AutoLayoutSmallUsersListForKeyboard) {
@@ -801,7 +811,7 @@ TEST_F(LockContentsViewUnitTest, ShowStatusIndicatorIfEnrolledDevice) {
 }
 
 // Show bottom status indicator if device is enrolled
-TEST_F(LockContentsViewUnitTest, ShowManagementBubbleOnClickIfEnrolledDevice) {
+TEST_F(LockContentsViewUnitTest, ShowManagementDialogOnClickIfEnrolledDevice) {
   // If the device is enrolled, bottom_status_indicator should be visible.
   Shell::Get()->system_tray_model()->SetDeviceEnterpriseInfo(
       DeviceEnterpriseInfo{"BestCompanyEver", ManagementDeviceMode::kNone});
@@ -815,27 +825,18 @@ TEST_F(LockContentsViewUnitTest, ShowManagementBubbleOnClickIfEnrolledDevice) {
   LockContentsViewTestApi test_api(contents);
 
   EXPECT_TRUE(test_api.bottom_status_indicator()->GetVisible());
-  EXPECT_FALSE(test_api.management_bubble()->GetVisible());
-
-  // Make the management bubble appear on click.
+  EXPECT_FALSE(test_api.management_disclosure_dialog());
+  // Make the management dialog appear on click.
   ui::test::EventGenerator* generator = GetEventGenerator();
   generator->MoveMouseTo(
       test_api.bottom_status_indicator()->GetBoundsInScreen().CenterPoint());
   generator->ClickLeftButton();
-  EXPECT_TRUE(test_api.management_bubble()->GetVisible());
-
-  // Click somewhere else to make the management bubble disappear.
-  generator->MoveMouseTo(test_api.primary_big_view()
-                             ->GetUserView()
-                             ->GetBoundsInScreen()
-                             .CenterPoint());
-  generator->ClickLeftButton();
-  EXPECT_FALSE(test_api.management_bubble()->GetVisible());
+  EXPECT_TRUE(test_api.management_disclosure_dialog()->GetVisible());
 }
 
 // Do not show the management bubble on click if ADB sideloading is enabled and
 // device is enrolled.
-TEST_F(LockContentsViewUnitTest, DoNotShowManagementBubbleOnClickIfAdb) {
+TEST_F(LockContentsViewUnitTest, DoNotShowManagementDialogOnClickIfAdb) {
   // If the device is enrolled, bottom_status_indicator should be visible.
   Shell::Get()->system_tray_model()->SetDeviceEnterpriseInfo(
       DeviceEnterpriseInfo{"BestCompanyEver", ManagementDeviceMode::kNone});
@@ -867,7 +868,7 @@ TEST_F(LockContentsViewUnitTest, DoNotShowManagementBubbleOnClickIfAdb) {
   generator->MoveMouseTo(
       test_api.bottom_status_indicator()->GetBoundsInScreen().CenterPoint());
   generator->ClickLeftButton();
-  EXPECT_FALSE(test_api.management_bubble()->GetVisible());
+  EXPECT_FALSE(test_api.management_disclosure_dialog());
 }
 
 TEST_F(LockContentsViewUnitTest, ShowErrorBubbleOnAuthFailure) {
@@ -1444,7 +1445,7 @@ TEST_F(LockContentsViewKeyboardUnitTest,
   ASSERT_NE(nullptr, contents);
 
   const display::Display& display =
-      display::Screen::GetScreen()->GetDisplayNearestWindow(
+      display::Screen::Get()->GetDisplayNearestWindow(
           contents->GetWidget()->GetNativeWindow());
 
   for (int user_count = 1; user_count < 10; user_count++) {
@@ -2847,8 +2848,8 @@ TEST_F(LockContentsViewUnitTest, ToggleGaiaOnUsersChanged) {
 
 TEST_F(LockContentsViewUnitTest, UpdatingSmartLockStateSetsAuthMethod) {
   // Build login screen with 1 user.
-  ui::ScopedAnimationDurationScaleMode non_zero_duration_mode(
-      ui::ScopedAnimationDurationScaleMode::NORMAL_DURATION);
+  gfx::ScopedAnimationDurationScaleMode non_zero_duration_mode(
+      gfx::ScopedAnimationDurationScaleMode::NORMAL_DURATION);
   auto* contents = new LockContentsView(
       LockScreen::ScreenType::kLogin, DataDispatcher(),
       std::make_unique<FakeLoginDetachableBaseModel>(DataDispatcher()));
@@ -2879,8 +2880,8 @@ TEST_F(LockContentsViewUnitTest, UpdatingSmartLockStateSetsAuthMethod) {
 }
 
 TEST_F(LockContentsViewUnitTest, SmartLockStateHidesPasswordView) {
-  ui::ScopedAnimationDurationScaleMode non_zero_duration_mode(
-      ui::ScopedAnimationDurationScaleMode::NORMAL_DURATION);
+  gfx::ScopedAnimationDurationScaleMode non_zero_duration_mode(
+      gfx::ScopedAnimationDurationScaleMode::NORMAL_DURATION);
 
   // Build login screen with 1 user.
   auto* contents = new LockContentsView(
@@ -2912,8 +2913,8 @@ TEST_F(LockContentsViewUnitTest, SmartLockStateHidesPasswordView) {
 }
 
 TEST_F(LockContentsViewUnitTest, SmartLockStateHidesAuthErrorMessage) {
-  ui::ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
-      ui::ScopedAnimationDurationScaleMode::ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
+      gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION);
 
   ASSERT_NO_FATAL_FAILURE(ShowLockScreen());
   LockContentsView* contents =
@@ -3086,6 +3087,11 @@ class LockContentsViewWithKioskLicenseTest : public LoginTestBase {
     NotifySessionStateChanged(session_manager::SessionState::OOBE);
   }
 
+  void TearDown() override {
+    login_shelf_view_ = nullptr;
+    LoginTestBase::TearDown();
+  }
+
   void SetNFakeKioskApps(int n) {
     std::vector<KioskAppMenuEntry> kiosk_apps(
         n, KioskAppMenuEntry(KioskAppMenuEntry::AppType::kChromeApp,
@@ -3101,11 +3107,7 @@ class LockContentsViewWithKioskLicenseTest : public LoginTestBase {
     GetSessionControllerClient()->FlushForTest();
   }
 
-  raw_ptr<LoginShelfView, DanglingUntriaged> login_shelf_view_ =
-      nullptr;  // Unowned.
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
+  raw_ptr<LoginShelfView> login_shelf_view_ = nullptr;  // Unowned.
 };
 
 // Checks default message hides if device is with kiosk license but with apps.
@@ -3350,7 +3352,7 @@ TEST_F(LockContentsViewUnitTest, LoginAccessibleProperties) {
   EXPECT_EQ(data.GetString16Attribute(ax::mojom::StringAttribute::kName),
             l10n_util::GetStringUTF16(IDS_ASH_LOGIN_SCREEN_ACCESSIBLE_NAME));
   EXPECT_EQ(contents->GetViewAccessibility().GetNextWindowFocus(),
-            shelf->shelf_widget());
+            shelf->login_shelf_widget());
   EXPECT_EQ(contents->GetViewAccessibility().GetPreviousWindowFocus(),
             shelf->GetStatusAreaWidget());
 }
@@ -3368,7 +3370,7 @@ TEST_F(LockContentsViewUnitTest, LockAccessibleProperties) {
   EXPECT_EQ(data.GetString16Attribute(ax::mojom::StringAttribute::kName),
             l10n_util::GetStringUTF16(IDS_ASH_LOCK_SCREEN_ACCESSIBLE_NAME));
   EXPECT_EQ(contents->GetViewAccessibility().GetNextWindowFocus(),
-            shelf->shelf_widget());
+            shelf->login_shelf_widget());
   EXPECT_EQ(contents->GetViewAccessibility().GetPreviousWindowFocus(),
             shelf->GetStatusAreaWidget());
 }
@@ -3386,28 +3388,7 @@ TEST_F(LockContentsViewUnitTest, LoginToolTipViewAccessibleProperties) {
   EXPECT_EQ(data.role, ax::mojom::Role::kTooltip);
 }
 
-class LockContentsViewPinTimeoutUnitTest : public LockContentsViewUnitTest {
- public:
-  LockContentsViewPinTimeoutUnitTest() {
-    scoped_feature_list_.InitAndEnableFeature(features::kAllowPinTimeoutSetup);
-  }
-
-  void AdvanceClock(base::TimeDelta time_delta) {
-    task_environment()->AdvanceClock(time_delta);
-    base::RunLoop().RunUntilIdle();
-  }
-
-  std::u16string GetExpectedPinStatusMessage(
-      const std::u16string& time_string) {
-    return l10n_util::GetStringFUTF16(IDS_ASH_LOGIN_POD_PIN_LOCKED_WARNING,
-                                      time_string);
-  }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
-TEST_F(LockContentsViewPinTimeoutUnitTest, PinDelayMessageCorrectness) {
+TEST_F(LockContentsViewUnitTest, PinDelayMessageCorrectness) {
   ASSERT_NO_FATAL_FAILURE(ShowLoginScreen());
   LockContentsView* contents =
       LockScreen::TestApi(LockScreen::Get()).contents_view();
@@ -3458,7 +3439,7 @@ TEST_F(LockContentsViewPinTimeoutUnitTest, PinDelayMessageCorrectness) {
   EXPECT_FALSE(pin_status_message_view->GetVisible());
 }
 
-TEST_F(LockContentsViewPinTimeoutUnitTest, TwoUsers) {
+TEST_F(LockContentsViewUnitTest, TwoUsers) {
   ASSERT_NO_FATAL_FAILURE(ShowLoginScreen());
   AddUsers(2);
 
@@ -3540,7 +3521,7 @@ TEST_F(LockContentsViewPinTimeoutUnitTest, TwoUsers) {
   EXPECT_FALSE(secondary_pin_status_message_view->GetVisible());
 }
 
-TEST_F(LockContentsViewPinTimeoutUnitTest, MultipleUsers) {
+TEST_F(LockContentsViewUnitTest, MultipleUsers) {
   ASSERT_NO_FATAL_FAILURE(ShowLoginScreen());
   AddUsers(3);
 

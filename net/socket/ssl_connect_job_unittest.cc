@@ -8,7 +8,9 @@
 #include <string>
 
 #include "base/compiler_specific.h"
+#include "base/containers/extend.h"
 #include "base/functional/callback.h"
+#include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
@@ -21,6 +23,7 @@
 #include "net/base/load_timing_info.h"
 #include "net/base/net_errors.h"
 #include "net/base/network_anonymization_key.h"
+#include "net/base/network_handle.h"
 #include "net/base/network_isolation_key.h"
 #include "net/base/proxy_chain.h"
 #include "net/base/proxy_server.h"
@@ -37,6 +40,8 @@
 #include "net/http/transport_security_state.h"
 #include "net/log/net_log_source.h"
 #include "net/log/net_log_with_source.h"
+#include "net/log/test_net_log.h"
+#include "net/log/test_net_log_util.h"
 #include "net/proxy_resolution/configured_proxy_resolution_service.h"
 #include "net/quic/quic_context.h"
 #include "net/socket/connect_job_test_util.h"
@@ -49,6 +54,8 @@
 #include "net/ssl/ssl_config_service_defaults.h"
 #include "net/ssl/ssl_connection_status_flags.h"
 #include "net/ssl/test_ssl_config_service.h"
+#include "net/ssl/test_static_ech_mode_getter.h"
+#include "net/test/cert_builder.h"
 #include "net/test/cert_test_util.h"
 #include "net/test/gtest_util.h"
 #include "net/test/ssl_test_util.h"
@@ -105,11 +112,16 @@ const ProxyServer kHttpProxyServer{ProxyServer::SCHEME_HTTP,
 
 const ProxyChain kHttpProxyChain{kHttpProxyServer};
 
-class SSLConnectJobTest : public WithTaskEnvironment, public testing::Test {
+
+// Test fixture runs with Happy Eyeballs v2 both enabled and disabled, based on
+// the boolean test parameter.
+//
+// TODO(https://crbug.com/484073410): Remove the param, once HappyEyeballs v2 is
+// enabled by default.
+class SSLConnectJobTestBase : public ::testing::Test {
  public:
-  SSLConnectJobTest()
-      : WithTaskEnvironment(base::test::TaskEnvironment::TimeSource::MOCK_TIME),
-        proxy_resolution_service_(
+  SSLConnectJobTestBase()
+      : proxy_resolution_service_(
             ConfiguredProxyResolutionService::CreateDirect()),
         ssl_config_service_(
             std::make_unique<TestSSLConfigService>(SSLContextConfig())),
@@ -117,13 +129,13 @@ class SSLConnectJobTest : public WithTaskEnvironment, public testing::Test {
         session_(CreateNetworkSession()),
         common_connect_job_params_(session_->CreateCommonConnectJobParams()) {}
 
-  ~SSLConnectJobTest() override = default;
+  ~SSLConnectJobTestBase() override = default;
 
   scoped_refptr<TransportSocketParams> CreateDirectTransportSocketParams(
       SecureDnsPolicy secure_dns_policy) const {
     return base::MakeRefCounted<TransportSocketParams>(
         kHostHttps, NetworkAnonymizationKey(), secure_dns_policy,
-        OnHostResolutionCallback(),
+        handles::kInvalidNetworkHandle, OnHostResolutionCallback(),
         /*supported_alpns=*/base::flat_set<std::string>({"h2", "http/1.1"}));
   }
 
@@ -131,7 +143,8 @@ class SSLConnectJobTest : public WithTaskEnvironment, public testing::Test {
       SecureDnsPolicy secure_dns_policy) const {
     return base::MakeRefCounted<TransportSocketParams>(
         kHttpProxyServer.host_port_pair(), NetworkAnonymizationKey(),
-        secure_dns_policy, OnHostResolutionCallback(),
+        secure_dns_policy, handles::kInvalidNetworkHandle,
+        OnHostResolutionCallback(),
         /*supported_alpns=*/base::flat_set<std::string>({}));
   }
 
@@ -151,7 +164,8 @@ class SSLConnectJobTest : public WithTaskEnvironment, public testing::Test {
         kHostHttp, kHttpProxyChain,
         /*proxy_server_index=*/0,
         /*tunnel=*/true, TRAFFIC_ANNOTATION_FOR_TESTS,
-        NetworkAnonymizationKey(), secure_dns_policy);
+        NetworkAnonymizationKey(), secure_dns_policy,
+        handles::kInvalidNetworkHandle);
   }
 
   std::unique_ptr<ConnectJob> CreateConnectJob(
@@ -203,6 +217,7 @@ class SSLConnectJobTest : public WithTaskEnvironment, public testing::Test {
     session_context.http_auth_handler_factory =
         http_auth_handler_factory_.get();
     session_context.http_server_properties = &http_server_properties_;
+    session_context.net_log = NetLog::Get();
     session_context.http_user_agent_settings = &http_user_agent_settings_;
     session_context.quic_context = &quic_context_;
     return std::make_unique<HttpNetworkSession>(HttpNetworkSessionParams(),
@@ -210,6 +225,10 @@ class SSLConnectJobTest : public WithTaskEnvironment, public testing::Test {
   }
 
  protected:
+  base::test::ScopedFeatureList scoped_feature_list_;
+  base::test::TaskEnvironment task_environment_{
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME};
+
   MockClientSocketFactory socket_factory_;
   MockHostResolver host_resolver_{/*default_result=*/MockHostResolverBase::
                                       RuleResolver::GetLocalhostResult()};
@@ -227,7 +246,23 @@ class SSLConnectJobTest : public WithTaskEnvironment, public testing::Test {
   const CommonConnectJobParams common_connect_job_params_;
 };
 
-TEST_F(SSLConnectJobTest, TCPFail) {
+class SSLConnectJobTest : public SSLConnectJobTestBase,
+                          public ::testing::WithParamInterface<bool> {
+ public:
+  SSLConnectJobTest() {
+    if (IsUsingHappyEyeballsV2()) {
+      scoped_feature_list_.InitAndEnableFeature(features::kHappyEyeballsV2);
+    } else {
+      scoped_feature_list_.InitAndDisableFeature(features::kHappyEyeballsV2);
+    }
+  }
+
+  bool IsUsingHappyEyeballsV2() const { return GetParam(); }
+};
+
+INSTANTIATE_TEST_SUITE_P(All, SSLConnectJobTest, testing::Bool());
+
+TEST_P(SSLConnectJobTest, TCPFail) {
   for (IoMode io_mode : {SYNCHRONOUS, ASYNC}) {
     SCOPED_TRACE(io_mode);
     host_resolver_.set_synchronous_mode(io_mode == SYNCHRONOUS);
@@ -250,7 +285,7 @@ TEST_F(SSLConnectJobTest, TCPFail) {
   }
 }
 
-TEST_F(SSLConnectJobTest, TCPTimeout) {
+TEST_P(SSLConnectJobTest, TCPTimeout) {
   const base::TimeDelta kTinyTime = base::Microseconds(1);
 
   // Make request hang.
@@ -263,16 +298,17 @@ TEST_F(SSLConnectJobTest, TCPTimeout) {
 
   // Right up until just before the TCP connection timeout, the job does not
   // time out.
-  FastForwardBy(TransportConnectJob::ConnectionTimeout() - kTinyTime);
+  task_environment_.FastForwardBy(TransportConnectJob::ConnectionTimeout() -
+                                  kTinyTime);
   EXPECT_FALSE(test_delegate.has_result());
 
   // But at the exact time of TCP connection timeout, the job fails.
-  FastForwardBy(kTinyTime);
+  task_environment_.FastForwardBy(kTinyTime);
   EXPECT_TRUE(test_delegate.has_result());
   EXPECT_THAT(test_delegate.WaitForResult(), test::IsError(ERR_TIMED_OUT));
 }
 
-TEST_F(SSLConnectJobTest, SSLTimeoutSyncConnect) {
+TEST_P(SSLConnectJobTest, SSLTimeoutSyncConnect) {
   const base::TimeDelta kTinyTime = base::Microseconds(1);
 
   // DNS lookup and transport connect complete synchronously, but SSL
@@ -292,16 +328,17 @@ TEST_F(SSLConnectJobTest, SSLTimeoutSyncConnect) {
 
   // Right up until just before the SSL handshake timeout, the job does not time
   // out.
-  FastForwardBy(SSLConnectJob::HandshakeTimeoutForTesting() - kTinyTime);
+  task_environment_.FastForwardBy(SSLConnectJob::HandshakeTimeoutForTesting() -
+                                  kTinyTime);
   EXPECT_FALSE(test_delegate.has_result());
 
   // But at the exact SSL handshake timeout time, the job fails.
-  FastForwardBy(kTinyTime);
+  task_environment_.FastForwardBy(kTinyTime);
   EXPECT_TRUE(test_delegate.has_result());
   EXPECT_THAT(test_delegate.WaitForResult(), test::IsError(ERR_TIMED_OUT));
 }
 
-TEST_F(SSLConnectJobTest, SSLTimeoutAsyncTcpConnect) {
+TEST_P(SSLConnectJobTest, SSLTimeoutAsyncTcpConnect) {
   const base::TimeDelta kTinyTime = base::Microseconds(1);
 
   // DNS lookup is asynchronous, and later SSL negotiation hangs.
@@ -320,7 +357,8 @@ TEST_F(SSLConnectJobTest, SSLTimeoutAsyncTcpConnect) {
 
   // Right up until just before the TCP connection timeout, the job does not
   // time out.
-  FastForwardBy(TransportConnectJob::ConnectionTimeout() - kTinyTime);
+  task_environment_.FastForwardBy(TransportConnectJob::ConnectionTimeout() -
+                                  kTinyTime);
   EXPECT_FALSE(test_delegate.has_result());
 
   // The DNS lookup completes, and a TCP connection is immediately establshed,
@@ -331,16 +369,17 @@ TEST_F(SSLConnectJobTest, SSLTimeoutAsyncTcpConnect) {
 
   // Right up until just before the SSL handshake timeout, the job does not time
   // out.
-  FastForwardBy(SSLConnectJob::HandshakeTimeoutForTesting() - kTinyTime);
+  task_environment_.FastForwardBy(SSLConnectJob::HandshakeTimeoutForTesting() -
+                                  kTinyTime);
   EXPECT_FALSE(test_delegate.has_result());
 
   // But at the exact SSL handshake timeout time, the job fails.
-  FastForwardBy(kTinyTime);
+  task_environment_.FastForwardBy(kTinyTime);
   EXPECT_TRUE(test_delegate.has_result());
   EXPECT_THAT(test_delegate.WaitForResult(), test::IsError(ERR_TIMED_OUT));
 }
 
-TEST_F(SSLConnectJobTest, BasicDirectSync) {
+TEST_P(SSLConnectJobTest, BasicDirectSync) {
   host_resolver_.set_synchronous_mode(true);
   StaticSocketDataProvider data;
   data.set_connect_data(MockConnect(SYNCHRONOUS, OK));
@@ -362,7 +401,7 @@ TEST_F(SSLConnectJobTest, BasicDirectSync) {
   CheckConnectTimesSet(ssl_connect_job->connect_timing());
 }
 
-TEST_F(SSLConnectJobTest, BasicDirectAsync) {
+TEST_P(SSLConnectJobTest, BasicDirectAsync) {
   host_resolver_.set_ondemand_mode(true);
   base::TimeTicks start_time = base::TimeTicks::Now();
   StaticSocketDataProvider data;
@@ -377,7 +416,7 @@ TEST_F(SSLConnectJobTest, BasicDirectAsync) {
   EXPECT_THAT(ssl_connect_job->Connect(), test::IsError(ERR_IO_PENDING));
   EXPECT_TRUE(host_resolver_.has_pending_requests());
   EXPECT_EQ(MEDIUM, host_resolver_.last_request_priority());
-  FastForwardBy(base::Seconds(5));
+  task_environment_.FastForwardBy(base::Seconds(5));
 
   base::TimeTicks resolve_complete_time = base::TimeTicks::Now();
   host_resolver_.ResolveAllPending();
@@ -402,7 +441,7 @@ TEST_F(SSLConnectJobTest, BasicDirectAsync) {
             ssl_connect_job->connect_timing().connect_end);
 }
 
-TEST_F(SSLConnectJobTest, DirectHasEstablishedConnection) {
+TEST_P(SSLConnectJobTest, DirectHasEstablishedConnection) {
   host_resolver_.set_ondemand_mode(true);
   StaticSocketDataProvider data;
   data.set_connect_data(MockConnect(ASYNC, OK));
@@ -436,7 +475,7 @@ TEST_F(SSLConnectJobTest, DirectHasEstablishedConnection) {
   EXPECT_TRUE(ssl_connect_job->HasEstablishedConnection());
 }
 
-TEST_F(SSLConnectJobTest, RequestPriority) {
+TEST_P(SSLConnectJobTest, RequestPriority) {
   host_resolver_.set_ondemand_mode(true);
   for (int initial_priority = MINIMUM_PRIORITY;
        initial_priority <= MAXIMUM_PRIORITY; ++initial_priority) {
@@ -467,7 +506,7 @@ TEST_F(SSLConnectJobTest, RequestPriority) {
   }
 }
 
-TEST_F(SSLConnectJobTest, SecureDnsPolicy) {
+TEST_P(SSLConnectJobTest, SecureDnsPolicy) {
   for (auto secure_dns_policy :
        {SecureDnsPolicy::kAllow, SecureDnsPolicy::kDisable}) {
     TestConnectJobDelegate test_delegate;
@@ -480,7 +519,7 @@ TEST_F(SSLConnectJobTest, SecureDnsPolicy) {
   }
 }
 
-TEST_F(SSLConnectJobTest, DirectHostResolutionFailure) {
+TEST_P(SSLConnectJobTest, DirectHostResolutionFailure) {
   host_resolver_.rules()->AddSimulatedTimeoutFailure("host");
 
   TestConnectJobDelegate test_delegate;
@@ -493,7 +532,7 @@ TEST_F(SSLConnectJobTest, DirectHostResolutionFailure) {
               test::IsError(ERR_DNS_TIMED_OUT));
 }
 
-TEST_F(SSLConnectJobTest, DirectCertError) {
+TEST_P(SSLConnectJobTest, DirectCertError) {
   StaticSocketDataProvider data;
   socket_factory_.AddSocketDataProvider(&data);
   SSLSocketDataProvider ssl(ASYNC, ERR_CERT_COMMON_NAME_INVALID);
@@ -516,7 +555,7 @@ TEST_F(SSLConnectJobTest, DirectCertError) {
   CheckConnectTimesSet(ssl_connect_job->connect_timing());
 }
 
-TEST_F(SSLConnectJobTest, DirectIgnoreCertErrors) {
+TEST_P(SSLConnectJobTest, DirectIgnoreCertErrors) {
   session_->IgnoreCertificateErrorsForTesting();
 
   StaticSocketDataProvider data;
@@ -534,7 +573,7 @@ TEST_F(SSLConnectJobTest, DirectIgnoreCertErrors) {
                                         /*expect_sync_result=*/false);
 }
 
-TEST_F(SSLConnectJobTest, DirectSSLError) {
+TEST_P(SSLConnectJobTest, DirectSSLError) {
   StaticSocketDataProvider data;
   socket_factory_.AddSocketDataProvider(&data);
   SSLSocketDataProvider ssl(ASYNC, ERR_BAD_SSL_CLIENT_AUTH_CERT);
@@ -554,7 +593,7 @@ TEST_F(SSLConnectJobTest, DirectSSLError) {
               test::IsError(ERR_BAD_SSL_CLIENT_AUTH_CERT));
 }
 
-TEST_F(SSLConnectJobTest, DirectWithNPN) {
+TEST_P(SSLConnectJobTest, DirectWithNPN) {
   StaticSocketDataProvider data;
   socket_factory_.AddSocketDataProvider(&data);
   SSLSocketDataProvider ssl(ASYNC, OK);
@@ -570,7 +609,7 @@ TEST_F(SSLConnectJobTest, DirectWithNPN) {
   CheckConnectTimesSet(ssl_connect_job->connect_timing());
 }
 
-TEST_F(SSLConnectJobTest, DirectGotHTTP2) {
+TEST_P(SSLConnectJobTest, DirectGotHTTP2) {
   StaticSocketDataProvider data;
   socket_factory_.AddSocketDataProvider(&data);
   SSLSocketDataProvider ssl(ASYNC, OK);
@@ -588,7 +627,7 @@ TEST_F(SSLConnectJobTest, DirectGotHTTP2) {
   CheckConnectTimesSet(ssl_connect_job->connect_timing());
 }
 
-TEST_F(SSLConnectJobTest, SOCKSFail) {
+TEST_P(SSLConnectJobTest, SOCKSFail) {
   for (IoMode io_mode : {SYNCHRONOUS, ASYNC}) {
     SCOPED_TRACE(io_mode);
     host_resolver_.set_synchronous_mode(io_mode == SYNCHRONOUS);
@@ -610,7 +649,7 @@ TEST_F(SSLConnectJobTest, SOCKSFail) {
   }
 }
 
-TEST_F(SSLConnectJobTest, SOCKSHostResolutionFailure) {
+TEST_P(SSLConnectJobTest, SOCKSHostResolutionFailure) {
   host_resolver_.rules()->AddSimulatedTimeoutFailure("proxy");
 
   TestConnectJobDelegate test_delegate;
@@ -623,7 +662,7 @@ TEST_F(SSLConnectJobTest, SOCKSHostResolutionFailure) {
               test::IsError(ERR_DNS_TIMED_OUT));
 }
 
-TEST_F(SSLConnectJobTest, SOCKSBasic) {
+TEST_P(SSLConnectJobTest, SOCKSBasic) {
   for (IoMode io_mode : {SYNCHRONOUS, ASYNC}) {
     SCOPED_TRACE(io_mode);
     const uint8_t kSOCKS5Request[] = {0x05, 0x01, 0x00, 0x03, 0x09, 's',
@@ -631,14 +670,13 @@ TEST_F(SSLConnectJobTest, SOCKSBasic) {
                                       's',  't',  0x01, 0xBB};
 
     MockWrite writes[] = {
-        MockWrite(io_mode, kSOCKS5GreetRequest, kSOCKS5GreetRequestLength),
-        MockWrite(io_mode, reinterpret_cast<const char*>(kSOCKS5Request),
-                  std::size(kSOCKS5Request)),
+        MockWrite(io_mode, kSOCKS5GreetRequest),
+        MockWrite(io_mode, base::as_byte_span(kSOCKS5Request)),
     };
 
     MockRead reads[] = {
-        MockRead(io_mode, kSOCKS5GreetResponse, kSOCKS5GreetResponseLength),
-        MockRead(io_mode, kSOCKS5OkResponse, kSOCKS5OkResponseLength),
+        MockRead(io_mode, kSOCKS5GreetResponse),
+        MockRead(io_mode, kSOCKS5OkResponse),
     };
 
     host_resolver_.set_synchronous_mode(io_mode == SYNCHRONOUS);
@@ -660,22 +698,21 @@ TEST_F(SSLConnectJobTest, SOCKSBasic) {
   }
 }
 
-TEST_F(SSLConnectJobTest, SOCKSHasEstablishedConnection) {
+TEST_P(SSLConnectJobTest, SOCKSHasEstablishedConnection) {
   const uint8_t kSOCKS5Request[] = {0x05, 0x01, 0x00, 0x03, 0x09, 's',
                                     'o',  'c',  'k',  's',  'h',  'o',
                                     's',  't',  0x01, 0xBB};
 
   MockWrite writes[] = {
-      MockWrite(SYNCHRONOUS, kSOCKS5GreetRequest, kSOCKS5GreetRequestLength, 0),
-      MockWrite(SYNCHRONOUS, reinterpret_cast<const char*>(kSOCKS5Request),
-                std::size(kSOCKS5Request), 3),
+      MockWrite(SYNCHRONOUS, /*seq=*/0, kSOCKS5GreetRequest),
+      MockWrite(SYNCHRONOUS, /*seq=*/3, base::as_byte_span(kSOCKS5Request)),
   };
 
   MockRead reads[] = {
       // Pause so can probe current state.
-      MockRead(ASYNC, ERR_IO_PENDING, 1),
-      MockRead(ASYNC, kSOCKS5GreetResponse, kSOCKS5GreetResponseLength, 2),
-      MockRead(SYNCHRONOUS, kSOCKS5OkResponse, kSOCKS5OkResponseLength, 4),
+      MockRead(ASYNC, ERR_IO_PENDING, /*seq=*/1),
+      MockRead(ASYNC, /*seq=*/2, kSOCKS5GreetResponse),
+      MockRead(SYNCHRONOUS, /*seq=*/4, kSOCKS5OkResponse),
   };
 
   host_resolver_.set_ondemand_mode(true);
@@ -720,7 +757,7 @@ TEST_F(SSLConnectJobTest, SOCKSHasEstablishedConnection) {
   EXPECT_TRUE(ssl_connect_job->HasEstablishedConnection());
 }
 
-TEST_F(SSLConnectJobTest, SOCKSRequestPriority) {
+TEST_P(SSLConnectJobTest, SOCKSRequestPriority) {
   host_resolver_.set_ondemand_mode(true);
   for (int initial_priority = MINIMUM_PRIORITY;
        initial_priority <= MAXIMUM_PRIORITY; ++initial_priority) {
@@ -751,7 +788,7 @@ TEST_F(SSLConnectJobTest, SOCKSRequestPriority) {
   }
 }
 
-TEST_F(SSLConnectJobTest, HttpProxyFail) {
+TEST_P(SSLConnectJobTest, HttpProxyFail) {
   for (IoMode io_mode : {SYNCHRONOUS, ASYNC}) {
     SCOPED_TRACE(io_mode);
     host_resolver_.set_synchronous_mode(io_mode == SYNCHRONOUS);
@@ -773,7 +810,7 @@ TEST_F(SSLConnectJobTest, HttpProxyFail) {
   }
 }
 
-TEST_F(SSLConnectJobTest, HttpProxyHostResolutionFailure) {
+TEST_P(SSLConnectJobTest, HttpProxyHostResolutionFailure) {
   host_resolver_.rules()->AddSimulatedTimeoutFailure("proxy");
 
   TestConnectJobDelegate test_delegate;
@@ -786,7 +823,7 @@ TEST_F(SSLConnectJobTest, HttpProxyHostResolutionFailure) {
               test::IsError(ERR_DNS_TIMED_OUT));
 }
 
-TEST_F(SSLConnectJobTest, HttpProxyAuthChallenge) {
+TEST_P(SSLConnectJobTest, HttpProxyAuthChallenge) {
   MockWrite writes[] = {
       MockWrite(ASYNC, 0,
                 "CONNECT host:80 HTTP/1.1\r\n"
@@ -826,7 +863,7 @@ TEST_F(SSLConnectJobTest, HttpProxyAuthChallenge) {
 
   // While waiting for auth credentials to be provided, the Job should not time
   // out.
-  FastForwardBy(base::Days(1));
+  task_environment_.FastForwardBy(base::Days(1));
   test_delegate.WaitForAuthChallenge(1);
   EXPECT_FALSE(test_delegate.has_result());
 
@@ -840,7 +877,7 @@ TEST_F(SSLConnectJobTest, HttpProxyAuthChallenge) {
   EXPECT_TRUE(test_delegate.socket()->GetDnsAliases().empty());
 }
 
-TEST_F(SSLConnectJobTest, HttpProxyAuthWithCachedCredentials) {
+TEST_P(SSLConnectJobTest, HttpProxyAuthWithCachedCredentials) {
   for (IoMode io_mode : {SYNCHRONOUS, ASYNC}) {
     SCOPED_TRACE(io_mode);
     host_resolver_.set_synchronous_mode(io_mode == SYNCHRONOUS);
@@ -872,7 +909,7 @@ TEST_F(SSLConnectJobTest, HttpProxyAuthWithCachedCredentials) {
   }
 }
 
-TEST_F(SSLConnectJobTest, HttpProxyRequestPriority) {
+TEST_P(SSLConnectJobTest, HttpProxyRequestPriority) {
   host_resolver_.set_ondemand_mode(true);
   for (int initial_priority = MINIMUM_PRIORITY;
        initial_priority <= MAXIMUM_PRIORITY; ++initial_priority) {
@@ -903,7 +940,7 @@ TEST_F(SSLConnectJobTest, HttpProxyRequestPriority) {
   }
 }
 
-TEST_F(SSLConnectJobTest, HttpProxyAuthHasEstablishedConnection) {
+TEST_P(SSLConnectJobTest, HttpProxyAuthHasEstablishedConnection) {
   host_resolver_.set_ondemand_mode(true);
   MockWrite writes[] = {
       MockWrite(ASYNC, 0,
@@ -988,7 +1025,7 @@ TEST_F(SSLConnectJobTest, HttpProxyAuthHasEstablishedConnection) {
   EXPECT_THAT(test_delegate.WaitForResult(), test::IsOk());
 }
 
-TEST_F(SSLConnectJobTest,
+TEST_P(SSLConnectJobTest,
        HttpProxyAuthHasEstablishedConnectionWithProxyConnectionClose) {
   host_resolver_.set_ondemand_mode(true);
   MockWrite writes1[] = {
@@ -1095,7 +1132,7 @@ TEST_F(SSLConnectJobTest,
   EXPECT_THAT(test_delegate.WaitForResult(), test::IsOk());
 }
 
-TEST_F(SSLConnectJobTest, DnsAliases) {
+TEST_P(SSLConnectJobTest, DnsAliases) {
   host_resolver_.set_synchronous_mode(true);
 
   // Resolve an AddressList with DNS aliases.
@@ -1122,7 +1159,7 @@ TEST_F(SSLConnectJobTest, DnsAliases) {
               testing::ElementsAre("alias1", "alias2", "host"));
 }
 
-TEST_F(SSLConnectJobTest, NoAdditionalDnsAliases) {
+TEST_P(SSLConnectJobTest, NoAdditionalDnsAliases) {
   host_resolver_.set_synchronous_mode(true);
 
   // Resolve an AddressList without additional DNS aliases. (The parameter
@@ -1149,9 +1186,133 @@ TEST_F(SSLConnectJobTest, NoAdditionalDnsAliases) {
               testing::ElementsAre("host"));
 }
 
+// Test that when `kTLSTrustAnchorIDs` is enabled, `SSLConnectJob`
+// unconditionally selects all Trust Anchor IDs that are allowed by the
+// sub-flags.
+TEST_P(SSLConnectJobTest, TrustAnchorIDs) {
+  HostResolverEndpointResult endpoint;
+  endpoint.metadata.trust_anchor_ids = {
+      {0x01, 0x02, 0x03}, {0x04, 0x04}, {0x05, 0x05, 0x05}};
+  endpoint.ip_endpoints = {IPEndPoint(ParseIP("1::"), 8441)};
+  host_resolver_.rules()->AddRule(
+      "host",
+      MockHostResolverBase::RuleResolver::RuleResult(std::vector{endpoint}));
+
+  SSLContextConfig config;
+  config.trust_anchor_ids = {{0x01, 0x02, 0x03}, {0x02, 0x02}, {0x04, 0x04}};
+  config.mtc_trust_anchor_ids = {{0x07, 0x08, 0x09}, {0x06, 0x06}};
+  ssl_config_service_->UpdateSSLConfigAndNotify(config);
+
+  for (bool trust_anchor_ids_enabled : {false, true}) {
+    SCOPED_TRACE(trust_anchor_ids_enabled);
+    for (bool non_mtc_enabled : {false, true}) {
+      SCOPED_TRACE(non_mtc_enabled);
+      for (bool mtc_enabled : {false, true}) {
+        SCOPED_TRACE(mtc_enabled);
+
+        std::vector<base::test::FeatureRef> enabled_features;
+        std::vector<base::test::FeatureRef> disabled_features;
+
+        if (trust_anchor_ids_enabled) {
+          enabled_features.push_back(features::kTLSTrustAnchorIDs);
+        } else {
+          disabled_features.push_back(features::kTLSTrustAnchorIDs);
+        }
+
+        if (non_mtc_enabled) {
+          enabled_features.push_back(features::kNonMtcTrustAnchorIDs);
+        } else {
+          disabled_features.push_back(features::kNonMtcTrustAnchorIDs);
+        }
+
+#if BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
+        if (mtc_enabled) {
+          enabled_features.push_back(features::kVerifyMTCs);
+        } else {
+          disabled_features.push_back(features::kVerifyMTCs);
+        }
+#endif
+
+        base::test::ScopedFeatureList feature_list;
+        feature_list.InitWithFeatures(enabled_features, disabled_features);
+
+        StaticSocketDataProvider data;
+        data.set_expected_addresses(AddressList(endpoint.ip_endpoints));
+        data.set_connect_data(MockConnect(SYNCHRONOUS, OK));
+        socket_factory_.AddSocketDataProvider(&data);
+        SSLSocketDataProvider ssl(ASYNC, OK);
+
+        bool expect_any = false;
+        std::vector<std::vector<uint8_t>> expected_ids;
+        std::vector<std::string> expected_strings;
+        if (trust_anchor_ids_enabled) {
+          if (non_mtc_enabled) {
+            expect_any = true;
+            expected_strings.push_back("1.2.3");
+            expected_strings.push_back("2.2");
+            expected_strings.push_back("4.4");
+            expected_ids.push_back({0x01, 0x02, 0x03});
+            expected_ids.push_back({0x02, 0x02});
+            expected_ids.push_back({0x04, 0x04});
+          }
+#if BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
+          if (mtc_enabled) {
+            expect_any = true;
+            expected_strings.push_back("7.8.9");
+            expected_strings.push_back("6.6");
+            expected_ids.push_back({0x07, 0x08, 0x09});
+            expected_ids.push_back({0x06, 0x06});
+          }
+#endif
+        }
+
+        if (expect_any) {
+          ssl.expected_trust_anchor_ids = expected_ids;
+        } else {
+          ssl.expect_no_trust_anchor_ids = true;
+        }
+        socket_factory_.AddSSLSocketDataProvider(&ssl);
+
+        base::HistogramTester histogram_tester;
+        TestConnectJobDelegate test_delegate;
+        RecordingNetLogObserver net_log_observer(
+            common_connect_job_params_.net_log, NetLogCaptureMode::kDefault);
+        std::unique_ptr<ConnectJob> ssl_connect_job =
+            CreateConnectJob(&test_delegate, ProxyChain::Direct(), MEDIUM);
+        EXPECT_THAT(ssl_connect_job->Connect(), test::IsError(ERR_IO_PENDING));
+        EXPECT_THAT(test_delegate.WaitForResult(), test::IsOk());
+        histogram_tester.ExpectTotalCount(
+            "Net.SSL_Connection_Error_TrustAnchorIDs", 0);
+        histogram_tester.ExpectTotalCount(
+            "Net.SSL_Connection_Latency_TrustAnchorIDs", 0);
+        histogram_tester.ExpectUniqueSample(
+            "Net.SSL.TrustAnchorIDsResult",
+            SSLClientSocket::TrustAnchorIDsResult::kNoDnsSuccessInitial, 1);
+        auto events = net_log_observer.GetEntriesWithType(
+            NetLogEventType::SSL_CONNECT_JOB_SSL_CONNECT);
+        ASSERT_EQ(1u, events.size());
+        EXPECT_FALSE(
+            events[0].params.contains("selected_trust_anchor_ids_for_retry"));
+        EXPECT_FALSE(events[0].params.contains("trust_anchor_ids_from_dns"));
+        if (!expect_any) {
+          EXPECT_FALSE(events[0].params.contains("selected_trust_anchor_ids"));
+        } else {
+          EXPECT_THAT(
+              base::SplitString(GetStringValueFromParams(
+                                    events[0], "selected_trust_anchor_ids"),
+                                ", ", base::TRIM_WHITESPACE,
+                                base::SPLIT_WANT_NONEMPTY),
+              testing::UnorderedElementsAreArray(expected_strings));
+        }
+      }
+    }
+  }
+}
+
+
 // Test that `SSLConnectJob` passes the ECHConfigList from DNS to
 // `SSLClientSocket`.
-TEST_F(SSLConnectJobTest, EncryptedClientHello) {
+TEST_P(SSLConnectJobTest, EncryptedClientHello) {
   std::vector<uint8_t> ech_config_list1, ech_config_list2;
   ASSERT_TRUE(MakeTestEchKeys("public.example", /*max_name_len=*/128,
                               &ech_config_list1));
@@ -1202,10 +1363,6 @@ TEST_F(SSLConnectJobTest, EncryptedClientHello) {
     EXPECT_THAT(ssl_connect_job->Connect(), test::IsError(ERR_IO_PENDING));
     EXPECT_THAT(test_delegate.WaitForResult(), test::IsOk());
 
-    // Whether or not the feature is enabled, we should record data for the
-    // ECH-capable server.
-    histogram_tester.ExpectUniqueSample("Net.SSL_Connection_Error_ECH", OK, 1);
-    histogram_tester.ExpectTotalCount("Net.SSL_Connection_Latency_ECH", 1);
     // The ECH result should only be recorded if ECH was actually enabled.
     if (ech_enabled) {
       histogram_tester.ExpectUniqueSample("Net.SSL.ECHResult",
@@ -1218,7 +1375,7 @@ TEST_F(SSLConnectJobTest, EncryptedClientHello) {
 
 // Test that `SSLConnectJob` retries the connection if there was a stale ECH
 // configuration.
-TEST_F(SSLConnectJobTest, ECHStaleConfig) {
+TEST_P(SSLConnectJobTest, ECHStaleConfig) {
   std::vector<uint8_t> ech_config_list1, ech_config_list2, ech_config_list3;
   ASSERT_TRUE(MakeTestEchKeys("public.example", /*max_name_len=*/128,
                               &ech_config_list1));
@@ -1279,7 +1436,7 @@ TEST_F(SSLConnectJobTest, ECHStaleConfig) {
 
 // Test that `SSLConnectJob` retries the connection given a secure rollback
 // signal.
-TEST_F(SSLConnectJobTest, ECHRollback) {
+TEST_P(SSLConnectJobTest, ECHRollback) {
   std::vector<uint8_t> ech_config_list1, ech_config_list2;
   ASSERT_TRUE(MakeTestEchKeys("public.example", /*max_name_len=*/128,
                               &ech_config_list1));
@@ -1336,8 +1493,60 @@ TEST_F(SSLConnectJobTest, ECHRollback) {
                                       4 /* kSuccessRollback */, 1);
 }
 
+// Test that `SSLConnectJob` fails the connection under strict ECH mode
+// if the server returns an empty retry config.
+TEST_P(SSLConnectJobTest, ECHStrictRollbackFail) {
+  ssl_config_service_->SetEchModeGetter(
+      std::make_unique<TestStaticEchModeGetter>(EchMode::kStrict,
+                                                kHostHttps.host()));
+
+  std::vector<uint8_t> ech_config_list;
+  ASSERT_TRUE(MakeTestEchKeys("public.example", /*max_name_len=*/128,
+                              &ech_config_list));
+
+  HostResolverEndpointResult endpoint;
+  endpoint.ip_endpoints = {IPEndPoint(ParseIP("1::"), 8441)};
+  endpoint.metadata.supported_protocol_alpns = {"http/1.1"};
+  endpoint.metadata.ech_config_list = ech_config_list;
+  host_resolver_.rules()->AddRule(
+      "host",
+      MockHostResolverBase::RuleResolver::RuleResult(std::vector{endpoint}));
+
+  // The first connection attempt will succeed at the TCP layer.
+  StaticSocketDataProvider data1;
+  data1.set_expected_addresses(AddressList(endpoint.ip_endpoints));
+  data1.set_connect_data(MockConnect(SYNCHRONOUS, OK));
+  socket_factory_.AddSocketDataProvider(&data1);
+  // The handshake will then fail, and provide an empty retry config.
+  SSLSocketDataProvider ssl1(ASYNC, ERR_ECH_NOT_NEGOTIATED);
+  ssl1.expected_ech_config_list = ech_config_list;
+  ssl1.ech_retry_configs = std::vector<uint8_t>();
+  socket_factory_.AddSSLSocketDataProvider(&ssl1);
+  // The connect job will restart and try the endpoint again.
+  StaticSocketDataProvider data2;
+  data2.set_expected_addresses(AddressList(endpoint.ip_endpoints));
+  data2.set_connect_data(MockConnect(SYNCHRONOUS, OK));
+  socket_factory_.AddSocketDataProvider(&data2);
+  // The handshake should fail because it's strict mode and we got an empty
+  // retry config.
+  SSLSocketDataProvider ssl2(ASYNC, ERR_STRICT_ECH_REQUIRED);
+  socket_factory_.AddSSLSocketDataProvider(&ssl2);
+
+  // The connection should ultimately fail.
+  base::HistogramTester histogram_tester;
+  TestConnectJobDelegate test_delegate;
+  std::unique_ptr<ConnectJob> ssl_connect_job =
+      CreateConnectJob(&test_delegate, ProxyChain::Direct(), MEDIUM);
+  EXPECT_THAT(ssl_connect_job->Connect(), test::IsError(ERR_IO_PENDING));
+  EXPECT_THAT(test_delegate.WaitForResult(),
+              test::IsError(ERR_STRICT_ECH_REQUIRED));
+
+  histogram_tester.ExpectUniqueSample("Net.SSL.ECHResult",
+                                      5 /* kErrorRollback */, 1);
+}
+
 // Test that `SSLConnectJob` will not retry more than once.
-TEST_F(SSLConnectJobTest, ECHTooManyRetries) {
+TEST_P(SSLConnectJobTest, ECHTooManyRetries) {
   std::vector<uint8_t> ech_config_list1, ech_config_list2, ech_config_list3;
   ASSERT_TRUE(MakeTestEchKeys("public.example", /*max_name_len=*/128,
                               &ech_config_list1));
@@ -1387,7 +1596,7 @@ TEST_F(SSLConnectJobTest, ECHTooManyRetries) {
 }
 
 // Test that `SSLConnectJob` will not retry for ECH given the wrong error.
-TEST_F(SSLConnectJobTest, ECHWrongRetryError) {
+TEST_P(SSLConnectJobTest, ECHWrongRetryError) {
   std::vector<uint8_t> ech_config_list1, ech_config_list2;
   ASSERT_TRUE(MakeTestEchKeys("public.example", /*max_name_len=*/128,
                               &ech_config_list1));
@@ -1425,7 +1634,7 @@ TEST_F(SSLConnectJobTest, ECHWrongRetryError) {
 }
 
 // Test the legacy crypto callback can trigger after the ECH recovery flow.
-TEST_F(SSLConnectJobTest, ECHRecoveryThenLegacyCrypto) {
+TEST_P(SSLConnectJobTest, ECHRecoveryThenLegacyCrypto) {
   std::vector<uint8_t> ech_config_list1, ech_config_list2, ech_config_list3;
   ASSERT_TRUE(MakeTestEchKeys("public.example", /*max_name_len=*/128,
                               &ech_config_list1));
@@ -1497,7 +1706,7 @@ TEST_F(SSLConnectJobTest, ECHRecoveryThenLegacyCrypto) {
 }
 
 // Test the ECH recovery flow can trigger after the legacy crypto fallback.
-TEST_F(SSLConnectJobTest, LegacyCryptoThenECHRecovery) {
+TEST_P(SSLConnectJobTest, LegacyCryptoThenECHRecovery) {
   std::vector<uint8_t> ech_config_list1, ech_config_list2, ech_config_list3;
   ASSERT_TRUE(MakeTestEchKeys("public.example", /*max_name_len=*/128,
                               &ech_config_list1));
@@ -1571,98 +1780,282 @@ TEST_F(SSLConnectJobTest, LegacyCryptoThenECHRecovery) {
                                       2 /* kSuccessRetry */, 1);
 }
 
-TEST_F(SSLConnectJobTest,
-       OnDestinationDnsAliasesResolved_IsInvokedIfDirectAndAliases_Ok) {
-  std::vector<std::string> aliases({"alias1", "alias2", kHostHttps.host()});
-  std::set<std::string> aliases_set(aliases.begin(), aliases.end());
-  host_resolver_.rules()->AddIPLiteralRuleWithDnsAliases(
-      kHostHttps.host(), "2.2.2.2", std::move(aliases));
+TEST_P(SSLConnectJobTest, ServerPaddingNotRequested) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(features::kAddTLSServerHandshakePadding);
+  RecordingNetLogObserver net_log_observer(common_connect_job_params_.net_log,
+                                           NetLogCaptureMode::kDefault);
 
-  for (IoMode io_mode : {SYNCHRONOUS, ASYNC}) {
-    SCOPED_TRACE(io_mode);
-    host_resolver_.set_synchronous_mode(io_mode == SYNCHRONOUS);
-    StaticSocketDataProvider data;
-    data.set_connect_data(MockConnect(io_mode, OK));
-    socket_factory_.AddSocketDataProvider(&data);
-    SSLSocketDataProvider ssl(io_mode, OK);
-    socket_factory_.AddSSLSocketDataProvider(&ssl);
-
-    TestConnectJobDelegate test_delegate;
-    std::unique_ptr<ConnectJob> ssl_connect_job =
-        CreateConnectJob(&test_delegate, ProxyChain::Direct(), MEDIUM);
-
-    test_delegate.StartJobExpectingResult(ssl_connect_job.get(), OK,
-                                          io_mode == SYNCHRONOUS);
-
-    EXPECT_TRUE(test_delegate.on_dns_aliases_resolved_called());
-    EXPECT_EQ(test_delegate.dns_aliases(), aliases_set);
-  }
-}
-
-TEST_F(SSLConnectJobTest,
-       OnDestinationDnsAliasesResolved_IsInvokedIfDirectAndAliases_Error) {
-  std::vector<std::string> aliases({"alias1", "alias2", kHostHttps.host()});
-  std::set<std::string> aliases_set(aliases.begin(), aliases.end());
-  host_resolver_.rules()->AddIPLiteralRuleWithDnsAliases(
-      kHostHttps.host(), "2.2.2.2", std::move(aliases));
-
-  for (IoMode io_mode : {SYNCHRONOUS, ASYNC}) {
-    SCOPED_TRACE(io_mode);
-    host_resolver_.set_synchronous_mode(io_mode == SYNCHRONOUS);
-    StaticSocketDataProvider data;
-    data.set_connect_data(MockConnect(io_mode, OK));
-    socket_factory_.AddSocketDataProvider(&data);
-    SSLSocketDataProvider ssl(io_mode, OK);
-    socket_factory_.AddSSLSocketDataProvider(&ssl);
-
-    TestConnectJobDelegate test_delegate;
-    test_delegate.set_error_for_on_destination_dns_aliases_resolved(
-        ERR_PROXY_REQUIRED);
-    std::unique_ptr<ConnectJob> ssl_connect_job =
-        CreateConnectJob(&test_delegate, ProxyChain::Direct(), MEDIUM);
-
-    test_delegate.StartJobExpectingResult(
-        ssl_connect_job.get(), ERR_PROXY_REQUIRED, io_mode == SYNCHRONOUS);
-
-    EXPECT_TRUE(test_delegate.on_dns_aliases_resolved_called());
-    EXPECT_EQ(test_delegate.dns_aliases(), aliases_set);
-  }
-}
-
-TEST_F(SSLConnectJobTest, OnDestinationDnsAliasesResolved_NotInvokedForProxy) {
-  std::set<std::string> aliases = {"proxy.example.com",
-                                   kHttpProxyServer.GetHost()};
-  host_resolver_.rules()->AddIPLiteralRuleWithDnsAliases(
-      kHttpProxyServer.GetHost(), "2.2.2.2", std::move(aliases));
-  const uint8_t kSOCKS5Request[] = {0x05, 0x01, 0x00, 0x03, 0x09, 's',
-                                    'o',  'c',  'k',  's',  'h',  'o',
-                                    's',  't',  0x01, 0xBB};
-
-  MockWrite writes[] = {
-      MockWrite(SYNCHRONOUS, kSOCKS5GreetRequest, kSOCKS5GreetRequestLength),
-      MockWrite(SYNCHRONOUS, reinterpret_cast<const char*>(kSOCKS5Request),
-                std::size(kSOCKS5Request)),
-  };
-
-  MockRead reads[] = {
-      MockRead(SYNCHRONOUS, kSOCKS5GreetResponse, kSOCKS5GreetResponseLength),
-      MockRead(SYNCHRONOUS, kSOCKS5OkResponse, kSOCKS5OkResponseLength),
-  };
-
-  host_resolver_.set_synchronous_mode(true);
-  StaticSocketDataProvider data(reads, writes);
-  data.set_connect_data(MockConnect(SYNCHRONOUS, OK));
+  StaticSocketDataProvider data;
   socket_factory_.AddSocketDataProvider(&data);
-  SSLSocketDataProvider ssl(SYNCHRONOUS, OK);
+  SSLSocketDataProvider ssl(ASYNC, OK);
   socket_factory_.AddSSLSocketDataProvider(&ssl);
 
+  base::HistogramTester histogram_tester;
   TestConnectJobDelegate test_delegate;
-  std::unique_ptr<ConnectJob> ssl_connect_job = CreateConnectJob(
-      &test_delegate, PacResultElementToProxyChain("SOCKS5 foo:333"));
+  std::unique_ptr<ConnectJob> ssl_connect_job =
+      CreateConnectJob(&test_delegate);
+
   test_delegate.StartJobExpectingResult(ssl_connect_job.get(), OK,
-                                        /*expect_sync_result=*/true);
-  EXPECT_TRUE(test_delegate.socket()->GetDnsAliases().empty());
-  EXPECT_FALSE(test_delegate.on_dns_aliases_resolved_called());
+                                        /*expect_sync_result=*/false);
+  histogram_tester.ExpectTotalCount("Net.SSL_Connection_Latency_ServerPadding",
+                                    0);
+  auto events = net_log_observer.GetEntriesWithType(
+      NetLogEventType::SSL_CONNECT_JOB_SSL_CONNECT);
+  ASSERT_EQ(1u, events.size());
+  EXPECT_FALSE(
+      GetOptionalIntegerValueFromParams(events[0], "requested_server_padding")
+          .has_value());
+}
+
+TEST_P(SSLConnectJobTest, ServerPaddingRequest) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      features::kAddTLSServerHandshakePadding,
+      {{"AddTLSServerHandshakePaddingBytes", "128"}});
+  RecordingNetLogObserver net_log_observer(common_connect_job_params_.net_log,
+                                           NetLogCaptureMode::kDefault);
+
+  StaticSocketDataProvider data;
+  socket_factory_.AddSocketDataProvider(&data);
+  SSLSocketDataProvider ssl(ASYNC, OK);
+  ssl.expected_server_padding_to_request = 128;
+  ssl.ssl_info.server_padding_received = true;
+  socket_factory_.AddSSLSocketDataProvider(&ssl);
+
+  base::HistogramTester histogram_tester;
+  TestConnectJobDelegate test_delegate;
+  std::unique_ptr<ConnectJob> ssl_connect_job =
+      CreateConnectJob(&test_delegate);
+
+  test_delegate.StartJobExpectingResult(ssl_connect_job.get(), OK,
+                                        /*expect_sync_result=*/false);
+  histogram_tester.ExpectTotalCount("Net.SSL_Connection_Latency_ServerPadding",
+                                    1);
+  auto events = net_log_observer.GetEntriesWithType(
+      NetLogEventType::SSL_CONNECT_JOB_SSL_CONNECT);
+  ASSERT_EQ(1u, events.size());
+  EXPECT_EQ(128, GetOptionalIntegerValueFromParams(events[0],
+                                                   "requested_server_padding"));
+}
+
+TEST_P(SSLConnectJobTest, ServerPaddingRequestZeroPadding) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      features::kAddTLSServerHandshakePadding,
+      {{"AddTLSServerHandshakePaddingBytes", "0"}});
+  RecordingNetLogObserver net_log_observer(common_connect_job_params_.net_log,
+                                           NetLogCaptureMode::kDefault);
+
+  StaticSocketDataProvider data;
+  socket_factory_.AddSocketDataProvider(&data);
+  SSLSocketDataProvider ssl(ASYNC, OK);
+  ssl.expected_server_padding_to_request = 0;
+  ssl.ssl_info.server_padding_received = true;
+  socket_factory_.AddSSLSocketDataProvider(&ssl);
+
+  base::HistogramTester histogram_tester;
+  TestConnectJobDelegate test_delegate;
+  std::unique_ptr<ConnectJob> ssl_connect_job =
+      CreateConnectJob(&test_delegate);
+
+  test_delegate.StartJobExpectingResult(ssl_connect_job.get(), OK,
+                                        /*expect_sync_result=*/false);
+  histogram_tester.ExpectTotalCount("Net.SSL_Connection_Latency_ServerPadding",
+                                    1);
+  auto events = net_log_observer.GetEntriesWithType(
+      NetLogEventType::SSL_CONNECT_JOB_SSL_CONNECT);
+  ASSERT_EQ(1u, events.size());
+  EXPECT_EQ(0, GetOptionalIntegerValueFromParams(events[0],
+                                                 "requested_server_padding"));
+}
+
+TEST_P(SSLConnectJobTest, ServerPaddingRequestButNotReceived) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      features::kAddTLSServerHandshakePadding,
+      {{"AddTLSServerHandshakePaddingBytes", "0"}});
+  RecordingNetLogObserver net_log_observer(common_connect_job_params_.net_log,
+                                           NetLogCaptureMode::kDefault);
+
+  StaticSocketDataProvider data;
+  socket_factory_.AddSocketDataProvider(&data);
+  SSLSocketDataProvider ssl(ASYNC, OK);
+  ssl.expected_server_padding_to_request = 0;
+  ssl.ssl_info.server_padding_received = false;
+  socket_factory_.AddSSLSocketDataProvider(&ssl);
+
+  base::HistogramTester histogram_tester;
+  TestConnectJobDelegate test_delegate;
+  std::unique_ptr<ConnectJob> ssl_connect_job =
+      CreateConnectJob(&test_delegate);
+
+  test_delegate.StartJobExpectingResult(ssl_connect_job.get(), OK,
+                                        /*expect_sync_result=*/false);
+  histogram_tester.ExpectTotalCount("Net.SSL_Connection_Latency_ServerPadding",
+                                    0);
+  auto events = net_log_observer.GetEntriesWithType(
+      NetLogEventType::SSL_CONNECT_JOB_SSL_CONNECT);
+  ASSERT_EQ(1u, events.size());
+  EXPECT_EQ(0, GetOptionalIntegerValueFromParams(events[0],
+                                                 "requested_server_padding"));
+}
+
+class SSLConnectJobOptimisticDnsTest
+    : public SSLConnectJobTestBase,
+      public ::testing::WithParamInterface<bool> {
+ public:
+  SSLConnectJobOptimisticDnsTest() {
+    scoped_feature_list_.InitWithFeaturesAndParameters(
+        {{features::kOptimisticDnsForTcp,
+          {{features::kUseStaleConnectorsForOptimisticDns.name,
+            IsUsingStaleConnectors() ? "true" : "false"}}},
+         {features::kHappyEyeballsV2, {}}},
+        /*disabled_features=*/{});
+  }
+
+  bool IsUsingStaleConnectors() const { return GetParam(); }
+};
+
+INSTANTIATE_TEST_SUITE_P(All, SSLConnectJobOptimisticDnsTest, testing::Bool());
+
+TEST_P(SSLConnectJobOptimisticDnsTest, StaleDnsTlsFailure) {
+  HostResolverEndpointResult endpoint;
+  endpoint.ip_endpoints = {IPEndPoint(ParseIP("1::"), 8441)};
+  host_resolver_.rules()->AddRule(
+      "host",
+      MockHostResolverBase::RuleResolver::RuleResult(std::vector{endpoint}));
+  host_resolver_.set_is_stale_while_refreshing(true);
+
+  // First connection attempt (Stale DNS) succeeds TCP but fails TLS with a cert
+  // error.
+  StaticSocketDataProvider data1;
+  data1.set_expected_addresses(AddressList(endpoint.ip_endpoints));
+  data1.set_connect_data(MockConnect(SYNCHRONOUS, OK));
+  socket_factory_.AddSocketDataProvider(&data1);
+
+  SSLSocketDataProvider ssl_fail(ASYNC, ERR_CERT_COMMON_NAME_INVALID);
+  socket_factory_.AddSSLSocketDataProvider(&ssl_fail);
+
+  // Second connection attempt (Fresh DNS) succeeds TCP and TLS.
+  StaticSocketDataProvider data2;
+  data2.set_expected_addresses(AddressList(endpoint.ip_endpoints));
+  data2.set_connect_data(MockConnect(SYNCHRONOUS, OK));
+  socket_factory_.AddSocketDataProvider(&data2);
+
+  SSLSocketDataProvider ssl_success(ASYNC, OK);
+  socket_factory_.AddSSLSocketDataProvider(&ssl_success);
+
+  TestConnectJobDelegate test_delegate;
+  std::unique_ptr<ConnectJob> ssl_connect_job =
+      CreateConnectJob(&test_delegate, ProxyChain::Direct());
+
+  EXPECT_THAT(ssl_connect_job->Connect(), test::IsError(ERR_IO_PENDING));
+  EXPECT_THAT(test_delegate.WaitForResult(), test::IsOk());
+
+  // Both sockets should be consumed (retry occurred).
+  EXPECT_TRUE(data1.AllReadDataConsumed());
+  EXPECT_TRUE(data1.AllWriteDataConsumed());
+  EXPECT_TRUE(data2.AllReadDataConsumed());
+  EXPECT_TRUE(data2.AllWriteDataConsumed());
+}
+
+TEST_P(SSLConnectJobOptimisticDnsTest, StaleDnsTlsFailureTwice) {
+  HostResolverEndpointResult endpoint;
+  endpoint.ip_endpoints = {IPEndPoint(ParseIP("1::"), 8441)};
+  host_resolver_.rules()->AddRule(
+      "host",
+      MockHostResolverBase::RuleResolver::RuleResult(std::vector{endpoint}));
+  host_resolver_.set_is_stale_while_refreshing(true);
+
+  // First connection attempt (Stale DNS) succeeds TCP but fails TLS with a cert
+  // error.
+  StaticSocketDataProvider data1;
+  data1.set_expected_addresses(AddressList(endpoint.ip_endpoints));
+  data1.set_connect_data(MockConnect(SYNCHRONOUS, OK));
+  socket_factory_.AddSocketDataProvider(&data1);
+
+  SSLSocketDataProvider ssl_fail1(ASYNC, ERR_CERT_COMMON_NAME_INVALID);
+  socket_factory_.AddSSLSocketDataProvider(&ssl_fail1);
+
+  // Second connection attempt (Fresh DNS) succeeds TCP and also fails TLS.
+  StaticSocketDataProvider data2;
+  data2.set_expected_addresses(AddressList(endpoint.ip_endpoints));
+  data2.set_connect_data(MockConnect(SYNCHRONOUS, OK));
+  socket_factory_.AddSocketDataProvider(&data2);
+
+  SSLSocketDataProvider ssl_fail2(ASYNC, ERR_CERT_COMMON_NAME_INVALID);
+  socket_factory_.AddSSLSocketDataProvider(&ssl_fail2);
+
+  TestConnectJobDelegate test_delegate(
+      TestConnectJobDelegate::SocketExpected::ALWAYS);
+  std::unique_ptr<ConnectJob> ssl_connect_job =
+      CreateConnectJob(&test_delegate, ProxyChain::Direct());
+
+  EXPECT_THAT(ssl_connect_job->Connect(), test::IsError(ERR_IO_PENDING));
+  EXPECT_THAT(test_delegate.WaitForResult(),
+              test::IsError(ERR_CERT_COMMON_NAME_INVALID));
+
+  // Both sockets should be consumed (retry occurred and failed).
+  EXPECT_TRUE(data1.AllReadDataConsumed());
+  EXPECT_TRUE(data1.AllWriteDataConsumed());
+  EXPECT_TRUE(data2.AllReadDataConsumed());
+  EXPECT_TRUE(data2.AllWriteDataConsumed());
+}
+
+TEST_P(SSLConnectJobOptimisticDnsTest, StaleDnsEarlyDataDisabled) {
+  HostResolverEndpointResult endpoint;
+  endpoint.ip_endpoints = {IPEndPoint(ParseIP("1::"), 8441)};
+  host_resolver_.rules()->AddRule(
+      "host",
+      MockHostResolverBase::RuleResolver::RuleResult(std::vector{endpoint}));
+  host_resolver_.set_is_stale_while_refreshing(true);
+
+  // First connection attempt (Stale DNS) succeeds TCP but fails TLS with a cert
+  // error.
+  StaticSocketDataProvider data1;
+  data1.set_expected_addresses(AddressList(endpoint.ip_endpoints));
+  data1.set_connect_data(MockConnect(SYNCHRONOUS, OK));
+  socket_factory_.AddSocketDataProvider(&data1);
+
+  SSLSocketDataProvider ssl_fail1(ASYNC, ERR_CERT_COMMON_NAME_INVALID);
+  // Early data should be explicitly disabled on the stale connection attempt.
+  ssl_fail1.expected_early_data_enabled = false;
+  socket_factory_.AddSSLSocketDataProvider(&ssl_fail1);
+
+  // Second connection attempt (Fresh DNS) succeeds TCP and TLS.
+  StaticSocketDataProvider data2;
+  data2.set_expected_addresses(AddressList(endpoint.ip_endpoints));
+  data2.set_connect_data(MockConnect(SYNCHRONOUS, OK));
+  socket_factory_.AddSocketDataProvider(&data2);
+
+  SSLSocketDataProvider ssl_success(ASYNC, OK);
+  // Early data should be re-enabled on the fresh retry attempt.
+  ssl_success.expected_early_data_enabled = true;
+  socket_factory_.AddSSLSocketDataProvider(&ssl_success);
+
+  SSLConfig ssl_config;
+  ssl_config.early_data_enabled = true;
+  scoped_refptr<SSLSocketParams> ssl_params =
+      base::MakeRefCounted<SSLSocketParams>(
+          ConnectJobParams(
+              CreateDirectTransportSocketParams(SecureDnsPolicy::kAllow)),
+          HostPortPair::FromSchemeHostPort(kHostHttps), ssl_config,
+          NetworkAnonymizationKey());
+
+  TestConnectJobDelegate test_delegate;
+  auto ssl_connect_job = std::make_unique<SSLConnectJob>(
+      DEFAULT_PRIORITY, SocketTag(), &common_connect_job_params_, ssl_params,
+      &test_delegate, /*net_log=*/nullptr);
+
+  EXPECT_THAT(ssl_connect_job->Connect(), test::IsError(ERR_IO_PENDING));
+  EXPECT_THAT(test_delegate.WaitForResult(), test::IsOk());
+
+  // Both sockets should be consumed (retry occurred).
+  EXPECT_TRUE(data1.AllReadDataConsumed());
+  EXPECT_TRUE(data1.AllWriteDataConsumed());
+  EXPECT_TRUE(data2.AllReadDataConsumed());
+  EXPECT_TRUE(data2.AllWriteDataConsumed());
 }
 
 }  // namespace

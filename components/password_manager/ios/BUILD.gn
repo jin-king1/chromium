@@ -2,14 +2,27 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/features.gni")
 import("//ios/web/public/js_messaging/optimize_ts.gni")
+
+bundle_data("auto_submit_test_bundle_data") {
+  testonly = true
+  sources = [
+    "//components/test/data/password_manager/auto_submit_disabled_field_after.html",
+    "//components/test/data/password_manager/auto_submit_disabled_field_between.html",
+    "//components/test/data/password_manager/auto_submit_synthetic_form.html",
+    "//components/test/data/password_manager/auto_submit_test.html",
+    "//components/test/data/password_manager/auto_submit_with_preceding_field.html",
+  ]
+  outputs = [ "{{bundle_resources_dir}}/" +
+              "{{source_root_relative_dir}}/{{source_file_part}}" ]
+}
 
 component("ios") {
   public_deps = [ ":password_manager_feature_header" ]
 
   deps = [
     ":account_select_fill_data",
+    ":features",
     ":password_controller_js",
     "//base",
     "//components/autofill/core/browser",
@@ -17,9 +30,8 @@ component("ios") {
     "//components/autofill/ios/browser",
     "//components/autofill/ios/browser:util",
     "//components/autofill/ios/common",
+    "//components/autofill/ios/common:autofill_optimization_features",
     "//components/autofill/ios/form_util",
-    "//components/autofill/ios/form_util:autofill_renderer_id_feature",
-    "//components/autofill/ios/form_util:form_util_feature",
     "//components/password_manager/core/browser",
     "//components/password_manager/core/browser/features:password_features",
     "//components/password_manager/core/browser/form_parsing",
@@ -27,6 +39,8 @@ component("ios") {
     "//components/security_state/ios",
     "//components/strings:components_strings_grit",
     "//components/ukm/ios:ukm_url_recorder",
+    "//components/webauthn/ios",
+    "//components/webauthn/ios:utils",
     "//ios/web/common",
     "//ios/web/public",
     "//ios/web/public/js_messaging",
@@ -66,8 +80,10 @@ component("ios") {
 
 source_set("password_manager_feature_header") {
   deps = [
+    ":features",
     "//base",
     "//components/autofill/core/common",
+    "//components/webauthn/ios:utils",
     "//ios/web/public/js_messaging",
   ]
 
@@ -78,6 +94,7 @@ source_set("password_manager_feature_header") {
 
 source_set("account_select_fill_data") {
   deps = [
+    ":features",
     "//base",
     "//components/autofill/core/common",
     "//components/autofill/ios/browser:util",
@@ -93,12 +110,23 @@ source_set("account_select_fill_data") {
   ]
 }
 
+source_set("features") {
+  deps = [ "//base" ]
+
+  configs += [ "//build/config/compiler:wexit_time_destructors" ]
+
+  sources = [
+    "features.h",
+    "features.mm",
+  ]
+}
+
 optimize_ts("password_controller_js") {
   sources = [ "resources/password_controller.ts" ]
 
   deps = [
+    "//components/autofill/ios/form_util:fill_js_constants",
     "//components/autofill/ios/form_util:fill_js_dependencies",
-    "//components/autofill/ios/form_util:fill_js_namespace",
     "//ios/web/public/js_messaging:gcrweb",
     "//ios/web/public/js_messaging:util_scripts",
   ]
@@ -134,6 +162,7 @@ source_set("unit_tests") {
   ]
   deps = [
     ":account_select_fill_data",
+    ":features",
     ":ios",
     ":test_support",
     "//base",
@@ -147,7 +176,8 @@ source_set("unit_tests") {
     "//components/autofill/ios/form_util",
     "//components/autofill/ios/form_util:child_frame_registrar",
     "//components/autofill/ios/form_util:form_handler_feature",
-    "//components/autofill/ios/form_util:form_util_feature",
+    "//components/autofill/ios/form_util:renderer_id_test",
+    "//components/autofill/ios/form_util:renderer_id_test_util",
     "//components/autofill/ios/form_util:test_support",
     "//components/password_manager/core/browser",
     "//components/password_manager/core/browser:test_support",
@@ -155,8 +185,12 @@ source_set("unit_tests") {
     "//components/password_manager/core/common:features",
     "//components/password_manager/ios:password_manager_feature_header",
     "//components/password_manager/ios:test_support",
+    "//components/test/ios",
     "//components/ukm:test_support",
     "//components/ukm/ios:ukm_url_recorder",
+    "//components/webauthn/core/browser:test_support",
+    "//components/webauthn/ios",
+    "//components/webauthn/ios:test_support",
     "//ios/web/js_messaging",
     "//ios/web/js_messaging:java_script_feature_manager_header",
     "//ios/web/public/js_messaging",
@@ -168,6 +202,10 @@ source_set("unit_tests") {
     "//testing/gtest",
     "//third_party/ocmock",
   ]
+
+  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+  # enable the diagnostic by removing this line.
+  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 source_set("fake_bulk_leak_check_service") {

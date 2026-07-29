@@ -4,10 +4,14 @@
 
 package org.chromium.chrome.browser.hub;
 
+import org.chromium.build.annotations.NullMarked;
+
 import java.util.Locale;
 import java.util.Objects;
 
-class HubColorSchemeUpdate {
+/** Represents color scheme updates to be made in the Hub. */
+@NullMarked
+public class HubColorSchemeUpdate {
     public final @HubColorScheme int newColorScheme;
     public final @HubColorScheme int previousColorScheme;
 

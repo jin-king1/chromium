@@ -9,17 +9,15 @@
 #include <optional>
 #include <string>
 
-#include "base/memory/memory_pressure_listener.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
 #include "base/synchronization/lock.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/thread_annotations.h"
-#include "base/threading/sequence_bound.h"
 #include "components/services/storage/public/mojom/local_storage_control.mojom.h"
 #include "components/services/storage/public/mojom/session_storage_control.mojom.h"
 #include "components/services/storage/public/mojom/storage_usage_info.mojom.h"
-#include "content/browser/child_process_security_policy_impl.h"
+#include "content/browser/security/cpsp/child_process_security_policy_impl.h"
 #include "content/common/content_export.h"
 #include "content/public/browser/dom_storage_context.h"
 #include "mojo/public/cpp/bindings/message.h"
@@ -36,9 +34,6 @@ class StorageKey;
 
 namespace storage {
 class SpecialStoragePolicy;
-namespace mojom {
-class Partition;
-}  // namespace mojom
 }  // namespace storage
 
 namespace content {
@@ -130,7 +125,9 @@ class CONTENT_EXPORT DOMStorageContextWrapper
   // Pushes information about known Session Storage namespaces down to the
   // Storage Service instance after a crash. This in turn allows renderer
   // clients to re-establish working connections.
-  void RecoverFromStorageServiceCrash();
+  void OnSessionStorageDisconnected();
+  // Resets LocalStorage related StorageAreas after disconnection.
+  void OnLocalStorageDisconnected();
 
  private:
   friend class DOMStorageContextWrapperTest;
@@ -139,7 +136,7 @@ class CONTENT_EXPORT DOMStorageContextWrapper
 
   ~DOMStorageContextWrapper() override;
 
-  void MaybeBindSessionStorageControl();
+  void MaybeBindSessionStorageControl(bool clear_on_open);
   void MaybeBindLocalStorageControl();
   scoped_refptr<SessionStorageNamespaceImpl> MaybeGetExistingNamespace(
       const std::string& namespace_id) const;
@@ -150,10 +147,6 @@ class CONTENT_EXPORT DOMStorageContextWrapper
 
   // Note: can be called on multiple threads, protected by a mutex.
   void RemoveNamespace(const std::string& namespace_id);
-
-  // Called on UI thread when the system is under memory pressure.
-  void OnMemoryPressure(
-      base::MemoryPressureListener::MemoryPressureLevel memory_pressure_level);
 
   void PurgeMemory(PurgeOption purge_option);
 
@@ -191,9 +184,6 @@ class CONTENT_EXPORT DOMStorageContextWrapper
   // reset to null if/when the partition is destroyed. May also be null in
   // tests.
   raw_ptr<StoragePartitionImpl> partition_;
-
-  // To receive memory pressure signals.
-  std::unique_ptr<base::MemoryPressureListener> memory_pressure_listener_;
 
   // Connections to the partition's Session and Local Storage control interfaces
   // within the Storage Service.

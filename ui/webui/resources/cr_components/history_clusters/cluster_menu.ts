@@ -19,12 +19,6 @@ import {getHtml} from './cluster_menu.html.js';
  * visit, or the whole cluster, or the top visit of unlabelled cluster.
  */
 
-declare global {
-  interface HTMLElementTagNameMap {
-    'cluster-menu': ClusterMenuElement;
-  }
-}
-
 const ClusterMenuElementBase = I18nMixinLit(CrLitElement);
 
 export interface ClusterMenuElement {
@@ -70,10 +64,11 @@ export class ClusterMenuElement extends ClusterMenuElementBase {
   // Properties
   //============================================================================
 
-  protected allowDeletingHistory_: boolean =
+  protected accessor allowDeletingHistory_: boolean =
       loadTimeData.getBoolean('allowDeletingHistory');
-  protected inSidePanel_: boolean = loadTimeData.getBoolean('inSidePanel');
-  protected renderActionMenu_: boolean = false;
+  protected accessor inSidePanel_: boolean =
+      loadTimeData.getBoolean('inSidePanel');
+  protected accessor renderActionMenu_: boolean = false;
 
   //============================================================================
   // Event handlers
@@ -122,6 +117,12 @@ export class ClusterMenuElement extends ClusterMenuElementBase {
     const menu = this.shadowRoot.querySelector('cr-action-menu');
     assert(menu);
     menu.close();
+  }
+}
+
+declare global {
+  interface HTMLElementTagNameMap {
+    'cluster-menu': ClusterMenuElement;
   }
 }
 

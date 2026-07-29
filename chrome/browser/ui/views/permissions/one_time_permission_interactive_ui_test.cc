@@ -35,8 +35,8 @@
 #include "components/content_settings/core/common/content_settings_types.h"
 #include "components/content_settings/core/common/features.h"
 #include "components/performance_manager/public/performance_manager.h"
+#include "components/permissions/content_setting_permission_context_base.h"
 #include "components/permissions/features.h"
-#include "components/permissions/permission_context_base.h"
 #include "components/permissions/permission_decision_auto_blocker.h"
 #include "components/permissions/permission_request_manager.h"
 #include "components/permissions/permission_uma_util.h"
@@ -93,8 +93,6 @@ class OneTimePermissionInteractiveUiTest : public WebRtcTestBase {
   OneTimePermissionInteractiveUiTest()
       : geolocation_overrider_(
             std::make_unique<device::ScopedGeolocationOverrider>(6.66, 9.99)) {
-    feature_list_.InitWithFeatures({permissions::features::kOneTimePermission},
-                                   {});
   }
 
   OneTimePermissionInteractiveUiTest(
@@ -143,7 +141,7 @@ class OneTimePermissionInteractiveUiTest : public WebRtcTestBase {
   void Initialize(InitializationOptions options, const GURL& url) {
     current_browser_ = browser();
     if (options == INITIALIZATION_NEWTAB) {
-      chrome::NewTab(current_browser_);
+      chrome::NewTab(current_browser_, NewTabTypes::kNoUserAction);
     } else if (options == INITIALIZATION_CLOSETAB_NEWTAB) {
       chrome::NewTabToRight(current_browser_);
       current_browser_->tab_strip_model()->CloseWebContentsAt(
@@ -265,8 +263,6 @@ class OneTimePermissionInteractiveUiTest : public WebRtcTestBase {
   // The render frame host where JS calls will be executed.
   raw_ptr<content::RenderFrameHost, AcrossTasksDanglingUntriaged>
       render_frame_host_ = nullptr;
-
-  base::test::ScopedFeatureList feature_list_;
 };
 
 IN_PROC_BROWSER_TEST_F(OneTimePermissionInteractiveUiTest,
@@ -649,15 +645,12 @@ INSTANTIATE_TEST_SUITE_P(All,
 IN_PROC_BROWSER_TEST_P(OneTimePermissionExpiryEnforcementUmaInteractiveUiTest,
                        TestExpiryEnforcement) {
   base::HistogramTester histograms;
-  const std::string kActiveExpiryHistogram =
-      "ContentSettings.ActiveExpiry.OneTimePermissionProvider."
-      "ContentSettingsType";
 
   bool active_expiry_is_active = GetParam();
   ASSERT_NO_FATAL_FAILURE(Initialize(INITIALIZATION_DEFAULT, GetWebrtcGurl()));
 
   auto* hcsm =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile());
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile());
 
   // Setup to request content setting in the past (maximum one time
   // permission grant lifetime)
@@ -696,23 +689,6 @@ IN_PROC_BROWSER_TEST_P(OneTimePermissionExpiryEnforcementUmaInteractiveUiTest,
   GetUserMediaAndExpectGrantedPermission(
       permissions::PermissionRequestManager::ACCEPT_ONCE,
       active_expiry_is_active);
-
-  // Check UMA records for expiry events (only recorded if active expiry is
-  // enabled)
-  histograms.ExpectTotalCount(kActiveExpiryHistogram,
-                              active_expiry_is_active ? 2 : 0);
-  histograms.ExpectBucketCount(
-      kActiveExpiryHistogram,
-      static_cast<base::HistogramBase::Sample32>(
-          content_settings_uma_util::ContentSettingTypeToHistogramValue(
-              ContentSettingsType::MEDIASTREAM_MIC)),
-      active_expiry_is_active ? 1 : 0);
-  histograms.ExpectBucketCount(
-      kActiveExpiryHistogram,
-      static_cast<base::HistogramBase::Sample32>(
-          content_settings_uma_util::ContentSettingTypeToHistogramValue(
-              ContentSettingsType::MEDIASTREAM_CAMERA)),
-      active_expiry_is_active ? 1 : 0);
 
   // Check UMA records for grant events (if expiry is disabled, there's only one
   // grant event)

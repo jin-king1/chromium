@@ -11,6 +11,7 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import androidx.test.filters.SmallTest;
 
 import org.junit.After;
+import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -22,6 +23,9 @@ import org.mockito.junit.MockitoRule;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Batch;
 
+import java.util.Arrays;
+import java.util.List;
+
 /** Tests for the native bridge of the facilitated payment API client. */
 @RunWith(BaseRobolectricTestRunner.class)
 @Batch(Batch.UNIT_TESTS)
@@ -29,7 +33,7 @@ import org.chromium.base.test.util.Batch;
 public class FacilitatedPaymentsApiClientBridgeUnitTest {
     private static final long NATIVE_FACILITATED_PAYMENTS_API_CLIENT_ANDROID = 0x12345678;
     private static final byte[] ACTION_TOKEN = new byte[] {'A', 'c', 't', 'i', 'o', 'n'};
-    private static final SecureData[] SECURE_DATA = new SecureData[] {new SecureData(1, "value_1")};
+    private static final List<SecureData> SECURE_DATA = Arrays.asList(new SecureData(1, "value_1"));
 
     @Mock private FacilitatedPaymentsApiClientBridge.Natives mBridgeNatives;
 
@@ -56,6 +60,16 @@ public class FacilitatedPaymentsApiClientBridgeUnitTest {
 
         verify(mBridgeNatives)
                 .onIsAvailable(eq(NATIVE_FACILITATED_PAYMENTS_API_CLIENT_ANDROID), eq(false));
+    }
+
+    @Test
+    public void apiIsNotAvailableByDefaultSyncCheck() throws Exception {
+        FacilitatedPaymentsApiClientBridge bridge =
+                new FacilitatedPaymentsApiClientBridge(
+                        NATIVE_FACILITATED_PAYMENTS_API_CLIENT_ANDROID,
+                        /* renderFrameHost= */ null);
+
+        Assert.assertFalse(bridge.isAvailableSync());
     }
 
     @Test

@@ -4,17 +4,18 @@
 
 #include "chrome/browser/ash/kcer/kcer_factory_ash.h"
 
+#include "ash/constants/ash_pref_names.h"
 #include "ash/constants/ash_switches.h"
 #include "ash/session/session_controller_impl.h"
 #include "ash/shell.h"
 #include "base/check_is_test.h"
 #include "base/feature_list.h"
+#include "base/functional/callback_helpers.h"
 #include "base/task/bind_post_task.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/net/nss_service.h"
 #include "chrome/browser/net/nss_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/common/pref_names.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_types.h"
 #include "chromeos/ash/components/kcer/chaps/session_chaps_client.h"
 #include "chromeos/ash/components/kcer/extra_instances.h"
@@ -31,21 +32,6 @@
 
 namespace kcer {
 namespace {
-
-PrefService* GetActiveUserPrefs() {
-  if (!user_manager::UserManager::IsInitialized()) {
-    return nullptr;
-  }
-  user_manager::UserManager* manager = user_manager::UserManager::Get();
-  if (!manager) {
-    return nullptr;
-  }
-  user_manager::User* user = manager->GetActiveUser();
-  if (!user) {
-    return nullptr;
-  }
-  return user->GetProfilePrefs();
-}
 
 const user_manager::User* GetUserByContext(content::BrowserContext* context) {
   if (!context) {
@@ -220,26 +206,11 @@ void KcerFactoryAsh::Initialize() {
   } else {
     StartInitializingDeviceKcerForNss();
   }
-
-  // Check whether prefs for the active user are already available. If yes,
-  // continue with the potential rollback, otherwise observe session_controller
-  // and wait for the user. If Chrome is restarted with the correct user
-  // instead of adding a new one on user login, then
-  // OnActiveUserPrefServiceChanged() might not be called.
-  PrefService* pref_service = GetActiveUserPrefs();
-  if (pref_service) {
-    return MaybeScheduleRollbackForCertDoubleWrite(pref_service);
-  }
-  if (ash::Shell::HasInstance() && ash::Shell::Get()->session_controller()) {
-    ash::Shell::Get()->session_controller()->AddObserver(this);
-  } else {
-    CHECK_IS_TEST();
-  }
 }
 
 void KcerFactoryAsh::RegisterProfilePrefs(
     user_prefs::PrefRegistrySyncable* registry) {
-  registry->RegisterBooleanPref(prefs::kNssChapsDualWrittenCertsExist,
+  registry->RegisterBooleanPref(ash::prefs::kNssChapsDualWrittenCertsExist,
                                 /*default_value=*/false);
 }
 
@@ -290,7 +261,7 @@ void KcerFactoryAsh::RecordPkcs12CertDualWrittenImpl() {
   if (!prefs) {
     return;
   }
-  prefs->SetBoolean(prefs::kNssChapsDualWrittenCertsExist, true);
+  prefs->SetBoolean(ash::prefs::kNssChapsDualWrittenCertsExist, true);
 }
 
 void KcerFactoryAsh::ClearNssTokenMapForTestingImpl() {
@@ -603,7 +574,7 @@ void KcerFactoryAsh::InitializeDeviceKcerWithoutNss(
   }
 
   ExtraInstances::Get()->InitializeDeviceKcer(
-      content::GetIOThreadTaskRunner({}), std::move(device_token));
+      content::GetUIThreadTaskRunner({}), std::move(device_token));
 }
 
 void KcerFactoryAsh::StartInitializingDeviceKcerForNss() {
@@ -638,27 +609,6 @@ void KcerFactoryAsh::InitializeDeviceKcerForNss(
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   ExtraInstances::Get()->InitializeDeviceKcer(
       content::GetIOThreadTaskRunner({}), std::move(device_token));
-}
-
-void KcerFactoryAsh::OnActiveUserPrefServiceChanged(PrefService* pref_service) {
-  MaybeScheduleRollbackForCertDoubleWrite(pref_service);
-}
-
-void KcerFactoryAsh::MaybeScheduleRollbackForCertDoubleWrite(
-    PrefService* pref_service) {
-  if (rollback_helper_) {
-    rollback_helper_.reset();
-  }
-  if (!pref_service) {
-    return;
-  }
-  EnsureHighLevelChapsClientInitialized();
-  if (internal::KcerRollbackHelper::IsChapsRollbackRequired(pref_service)) {
-    rollback_helper_ = std::make_unique<internal::KcerRollbackHelper>(
-        high_level_chaps_client_.get(), pref_service);
-
-    return rollback_helper_->PerformRollback();
-  }
 }
 
 }  // namespace kcer

@@ -5,13 +5,25 @@
 #ifndef CC_TREES_LAYER_CONTEXT_H_
 #define CC_TREES_LAYER_CONTEXT_H_
 
+#include <vector>
+
+#include "base/time/time.h"
 #include "cc/cc_export.h"
 #include "cc/trees/commit_state.h"
 #include "components/viz/common/surfaces/local_surface_id.h"
+#include "ui/latency/latency_info.h"
+
+namespace gfx {
+class Rect;
+}  // namespace gfx
+
+namespace gpu {
+class SharedImageInterface;
+}  // namespace gpu
 
 namespace viz {
 class ClientResourceProvider;
-class RasterContextProvider;
+class LocalSurfaceId;
 }  // namespace viz
 
 namespace cc {
@@ -29,18 +41,28 @@ class CC_EXPORT LayerContext {
   // Globally controls the visibility of layers within the tree.
   virtual void SetVisible(bool visible) = 0;
 
+  // Sets the target LocalSurfaceId to unthrottle drawing for.
+  virtual void SetTargetLocalSurfaceId(
+      const viz::LocalSurfaceId& target_local_surface_id) = 0;
+
   // Pushes updates from `tree` into the context's display tree.
-  virtual void UpdateDisplayTreeFrom(
+  virtual base::TimeTicks UpdateDisplayTreeFrom(
       LayerTreeImpl& tree,
       viz::ClientResourceProvider& resource_provider,
-      viz::RasterContextProvider& context_provider) = 0;
+      gpu::SharedImageInterface* shared_image_interface,
+      const gfx::Rect& viewport_damage_rect,
+      bool frame_has_damage,
+      bool is_flush,
+      std::vector<ui::LatencyInfo> latency_info,
+      viz::TrackedElementRects tracked_element_rects) = 0;
 
   // Pushes an update to a single tile in the context's display tree.
   virtual void UpdateDisplayTile(
       PictureLayerImpl& layer,
       const Tile& tile,
       viz::ClientResourceProvider& resource_provider,
-      viz::RasterContextProvider& context_provider) = 0;
+      gpu::SharedImageInterface* shared_image_interface,
+      bool update_damage) = 0;
 };
 
 }  // namespace cc

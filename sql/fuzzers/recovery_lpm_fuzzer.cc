@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 // This fuzzer constructs a DB from fuzzer-derived SQL statements and then
 // mutates the file with fuzzer-derived XOR masks before exercising recovery.
 
@@ -35,8 +30,9 @@
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/logging.h"
+#include "base/logging/log_severity.h"
+#include "base/logging/logging_settings.h"
 #include "base/strings/cstring_view.h"
-#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
@@ -127,13 +123,6 @@ class Environment {
   // The path the database is copied to after it's been mutated.
   const base::FilePath& out_db_path() const { return out_db_path_; }
 
-  // Deletes the backing file and related journal files.
-  void DeleteDbFiles() const {
-    CHECK(base::DeleteFile(GetTempFilePath("db.sqlite")));
-    CHECK(base::DeleteFile(GetTempFilePath("db.sqlite-journal")));
-    CHECK(base::DeleteFile(GetTempFilePath("db.sqlite-wal")));
-  }
-
   void AssertTempDirIsEmpty() const {
     if (base::IsDirectoryEmpty(temp_dir_.GetPath())) {
       return;
@@ -153,7 +142,11 @@ class Environment {
 #if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
     base::CommandLine::Init(0, nullptr);
     base::FilePath shmem_temp_dir;
-    CHECK(base::GetShmemTempDir(false, &shmem_temp_dir));
+    if (char* env_shmdir = std::getenv("SQL_RECOVERY_FUZZER_TEMP_DIR")) {
+      shmem_temp_dir = base::FilePath(env_shmdir);
+    } else {
+      CHECK(base::GetShmemTempDir(false, &shmem_temp_dir));
+    }
     base::ScopedTempDir temp_dir;
     CHECK(temp_dir.CreateUniqueTempDirUnderPath(shmem_temp_dir));
     return temp_dir;
@@ -295,8 +288,8 @@ DEFINE_PROTO_FUZZER(const sql_fuzzers::RecoveryFuzzerTestCase& fuzzer_input) {
 
   // Mutate the backing file. Skip the expensive file operations when there are
   // no bytes to mutate.
-  std::optional<int64_t> file_length = GetFileSize(env.db_path());
-  if (*file_length > 0) {
+  std::optional<int64_t> file_length = base::GetFileSize(env.db_path());
+  if (file_length.value_or(0) > 0) {
     base::File file(env.db_path(), base::File::FLAG_OPEN |
                                        base::File::FLAG_READ |
                                        base::File::FLAG_WRITE);
@@ -311,9 +304,9 @@ DEFINE_PROTO_FUZZER(const sql_fuzzers::RecoveryFuzzerTestCase& fuzzer_input) {
       }
 
       uint64_t buf = 0;
-      const int num_read =
-          file.Read(mutation.pos, reinterpret_cast<char*>(&buf), sizeof(buf));
-      CHECK_NE(num_read, -1);
+      const std::optional<size_t> num_read =
+          file.Read(mutation.pos, base::byte_span_from_ref(buf));
+      CHECK(num_read.has_value());
       if (num_read == 0) {
         continue;
       }
@@ -322,9 +315,9 @@ DEFINE_PROTO_FUZZER(const sql_fuzzers::RecoveryFuzzerTestCase& fuzzer_input) {
 
       // Write `buf` back to the file, being careful not to add bytes to the
       // file that did not exist before.
-      CHECK_NE(
-          file.Write(mutation.pos, reinterpret_cast<char*>(&buf), num_read),
-          -1);
+      std::optional<size_t> num_written = file.Write(
+          mutation.pos, base::byte_span_from_ref(buf).first(*num_read));
+      CHECK(num_written.has_value());
     }
     CHECK_EQ(*file_length, file.GetLength());
   }
@@ -350,12 +343,16 @@ DEFINE_PROTO_FUZZER(const sql_fuzzers::RecoveryFuzzerTestCase& fuzzer_input) {
     logging::ScopedLoggingSettings scoped_logging;
     logging::SetMinLogLevel(logging::LOGGING_FATAL);
     std::ignore = database.Execute(test_case.sql_statement_after_open());
-
-    database.Close();
   }
 
-  // Delete the backing file to prepare for the next iteration.
-  env.DeleteDbFiles();
+  // The database must be closed before we can call `sql::Database::Delete()`.
+  // Note that it could be open even though `database.Open()` returned false.
+  database.Close();
+  CHECK(!database.is_open());
+
+  // Delete the backing file and related journal files so the next iteration
+  // starts with a clean slate.
+  PCHECK(sql::Database::Delete(env.db_path()));
   // Ensure that no unexpected files were created in the temp directory.
   env.AssertTempDirIsEmpty();
 }

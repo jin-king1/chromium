@@ -15,15 +15,17 @@
 #include "base/base_paths.h"
 #include "base/check_op.h"
 #include "base/compiler_specific.h"
-#include "base/containers/contains.h"
 #include "base/containers/fixed_flat_map.h"
 #include "base/files/file.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_file.h"
-#include "base/json/json_string_value_serializer.h"
+#include "base/json/json_reader.h"
 #include "base/path_service.h"
+#include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
+#include "base/strings/string_view_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/system/sys_info.h"
 #include "base/task/task_traits.h"
@@ -74,7 +76,7 @@ static constexpr auto FwupdStatusStringMap =
          {FwupdStatus::kWaitingForUser, "Waiting for user action"}});
 
 const char* GetFwupdStatusString(FwupdStatus enum_val) {
-  DCHECK(base::Contains(FwupdStatusStringMap, enum_val));
+  DCHECK(FwupdStatusStringMap.contains(enum_val));
   return FwupdStatusStringMap.at(enum_val);
 }
 
@@ -91,7 +93,7 @@ const char kLVFSMirrorBaseURL[] =
 constexpr std::string_view kMirrorJcatFileName = "firmware.xml.xz.jcat";
 constexpr std::string_view kMirrorZipFileName = "firmware.xml.gz";
 const char kLocalFirmwareBasePath[] = "/var/lib/fwupd/metadata/";
-const char kLocalMetadataFileName[] = "metadata.xml.zst";
+const char kLocalMetadataFileName[] = "firmware.xml.zst";
 
 FirmwareUpdateManager* g_instance = nullptr;
 
@@ -160,21 +162,16 @@ base::File VerifyChecksum(base::File file, const std::string& checksum) {
   }
 
   // Safe to truncate down to <int>.
-  int file_length = raw_file_length;
+  const int file_length = raw_file_length;
 
   // Check checksum of the file.
-  std::vector<char> buf(file_length);
-  if (UNSAFE_TODO(file.Read(0, buf.data(), file_length)) != file_length) {
+  std::vector<uint8_t> buf(file_length);
+  if (file.Read(0, buf) != file_length) {
     return base::File();
   }
 
-  const std::string_view contents(buf.data(), file_length);
-
-  const std::string sha_contents = crypto::SHA256HashString(contents);
-
   const std::string encoded_sha =
-      base::ToLowerASCII(base::HexEncode(sha_contents));
-
+      base::HexEncodeLower(crypto::SHA256HashString(base::as_string_view(buf)));
   if (encoded_sha != checksum) {
     FIRMWARE_LOG(ERROR) << "Wrong checksum, expected: " << checksum
                         << ", got: " << encoded_sha;
@@ -298,7 +295,8 @@ firmware_update::mojom::DeviceRequestPtr GetDeviceRequest(
       static_cast<firmware_update::mojom::DeviceRequestKind>(request.kind));
 }
 
-bool GetMetadataFileInfo(base::FilePath filepath, base::File::Info* info) {
+bool GetMetadataFileInfo(const base::FilePath& filepath,
+                         base::File::Info* info) {
   if (!base::PathExists(filepath)) {
     FIRMWARE_LOG(DEBUG) << "Local firmware file not found at: " << filepath;
     return false;
@@ -315,25 +313,26 @@ bool GetMetadataFileInfo(base::FilePath filepath, base::File::Info* info) {
   return true;
 }
 
-std::string GetFirmwareFileNameFromJsonString(std::string json_content) {
+std::string GetFirmwareFileNameFromJsonString(const std::string& json_content) {
   if (json_content == "") {
     FIRMWARE_LOG(ERROR) << "Failed to deserialize json for empty string";
     return "";
   }
 
-  std::string error;
-  JSONStringValueDeserializer messages_deserializer(json_content);
-  std::unique_ptr<base::Value> value =
-      messages_deserializer.Deserialize(/*error_code=*/nullptr, &error);
-  if (error != "") {
+  base::JSONReader::Result value =
+      base::JSONReader::ReadAndReturnValueWithError(
+          json_content, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
+  if (!value.has_value()) {
     FIRMWARE_LOG(ERROR) << "Failed to deserialize json string with error: "
-                        << error;
+                        << value.error().ToString();
     return "";
   }
-  DCHECK(value);
-  auto dictionary =
-      std::make_unique<base::Value::Dict>(std::move(*value).TakeDict());
-  base::Value::List* items = dictionary->FindList("Items");
+  base::DictValue* dict = value->GetIfDict();
+  if (!dict) {
+    FIRMWARE_LOG(ERROR) << "Parsed JSON is not a dictionary";
+    return "";
+  }
+  base::ListValue* items = dict->FindList("Items");
   if (items == nullptr || items->empty()) {
     FIRMWARE_LOG(ERROR) << "Couldn't find 'Items' key in checksum json file";
     return "";
@@ -343,10 +342,10 @@ std::string GetFirmwareFileNameFromJsonString(std::string json_content) {
     FIRMWARE_LOG(ERROR) << "Couldn't find 'Id' key in checksum json file";
     return "";
   }
-  return *filename;
+  return std::move(*filename);
 }
 
-bool CreateAndClearFile(base::FilePath filepath) {
+bool CreateAndClearFile(const base::FilePath& filepath) {
   // TODO(michaelcheco): Verify that creating the empty file is
   // necessary.
   return base::WriteFile(filepath, /*data=*/"");
@@ -360,9 +359,9 @@ device_event_log::LogLevel LogLevelForFileErrors() {
              : device_event_log::LOG_LEVEL_DEBUG;
 }
 
-void CleanUpTempFiles(base::FilePath checksum_filepath,
+void CleanUpTempFiles(const base::FilePath& checksum_filepath,
                       base::File checksum_file,
-                      base::FilePath firmware_filepath,
+                      const base::FilePath& firmware_filepath,
                       base::File firmware_file) {
   if (!checksum_filepath.empty()) {
     base::DeleteFile(checksum_filepath);
@@ -385,7 +384,7 @@ std::string ReadFileToString(const base::FilePath& filename) {
   return file_contents;
 }
 
-std::string UncompressFileAndGetFilename(std::string file_contents) {
+std::string UncompressFileAndGetFilename(const std::string& file_contents) {
   // Log an EVENT here in case b/339310876 comes up again.
   FIRMWARE_LOG(EVENT) << "GzipUncompress: " << file_contents.size();
   std::string content;
@@ -814,6 +813,12 @@ void FirmwareUpdateManager::OnGetFile(const std::string& device_id,
     }
   }
 
+  if (inflight_update_.is_null()) {
+    FIRMWARE_LOG(ERROR) << "Unknown device ID: " << device_id;
+    std::move(callback).Run(MethodResult::kUnknownDeviceId);
+    return;
+  }
+
   task_runner_->PostTaskAndReplyWithResult(
       FROM_HERE,
       base::BindOnce(&VerifyChecksum, std::move(file),
@@ -865,7 +870,7 @@ void FirmwareUpdateManager::OnDeviceListResponse(FwupdDeviceList* devices) {
 void FirmwareUpdateManager::ShowNotificationIfRequired() {
   for (const auto& update : updates_) {
     if (update->priority == firmware_update::mojom::UpdatePriority::kCritical &&
-        !base::Contains(devices_already_notified_, update->device_id)) {
+        !devices_already_notified_.contains(update->device_id)) {
       devices_already_notified_.insert(update->device_id);
       NotifyCriticalFirmwareUpdateReceived();
     }
@@ -875,7 +880,7 @@ void FirmwareUpdateManager::ShowNotificationIfRequired() {
 void FirmwareUpdateManager::OnUpdateListResponse(const std::string& device_id,
                                                  FwupdUpdateList* updates) {
   DCHECK(updates);
-  DCHECK(base::Contains(devices_pending_update_, device_id));
+  DCHECK(devices_pending_update_.contains(device_id));
 
   // If there are updates, then choose the first one.
   if (!updates->empty()) {
@@ -1177,7 +1182,8 @@ void FirmwareUpdateManager::GetFirmwareFilename(
   FIRMWARE_LOG(DEBUG) << "GetFirmwareFilename: " << checksum_filepath_
                       << ", Uncompressing and parsing checksum file.";
   task_runner_->PostTaskAndReplyWithResult(
-      FROM_HERE, base::BindOnce(&UncompressFileAndGetFilename, file_contents),
+      FROM_HERE,
+      base::BindOnce(&UncompressFileAndGetFilename, std::move(file_contents)),
       base::BindOnce(&FirmwareUpdateManager::TriggerDownloadOfFirmwareFile,
                      weak_ptr_factory_.GetWeakPtr()));
 }
@@ -1190,16 +1196,25 @@ void FirmwareUpdateManager::TriggerDownloadOfFirmwareFile(
     RefreshRemoteComplete(MethodResult::kFailedToGetFirmwareFilename);
     return;
   }
-  FIRMWARE_LOG(DEBUG) << "Got firmware filename: " << firmware_filename;
+
   const base::FilePath cache_path = GetCacheDirPath();
+  const base::FilePath firmware_path(firmware_filename);
+  if (firmware_path.ReferencesParent() || firmware_path.IsAbsolute()) {
+    FIRMWARE_LOG(ERROR) << "Path traversal detected: " << firmware_filename;
+    RefreshRemoteComplete(MethodResult::kFailedToGetFirmwareFilename);
+    return;
+  }
+  const base::FilePath appended_path = cache_path.Append(firmware_path);
+
+  FIRMWARE_LOG(DEBUG) << "Got firmware filename: " << firmware_filename;
+
   task_runner_->PostTaskAndReplyWithResult(
       FROM_HERE,
       base::BindOnce(
           [](const base::FilePath& path) { return CreateDirIfNotExists(path); },
           cache_path),
       base::BindOnce(&FirmwareUpdateManager::CreateTempFileAndDownload,
-                     weak_ptr_factory_.GetWeakPtr(),
-                     cache_path.Append(firmware_filename),
+                     weak_ptr_factory_.GetWeakPtr(), appended_path,
                      std::move(firmware_filename),
                      base::BindOnce(&FirmwareUpdateManager::UpdateMetadata,
                                     weak_ptr_factory_.GetWeakPtr())));

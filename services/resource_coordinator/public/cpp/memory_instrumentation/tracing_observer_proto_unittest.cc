@@ -15,7 +15,7 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/bind.h"
 #include "base/test/task_environment.h"
-#include "base/test/trace_test_utils.h"
+#include "base/test/tracing/trace_test_utils.h"
 #include "base/trace_event/memory_dump_manager.h"
 #include "base/trace_event/traced_value.h"
 #include "base/tracing/trace_time.h"
@@ -136,7 +136,7 @@ memory_instrumentation::mojom::OSMemDump GetFakeOSMemDump(
       /*is_peak_rss_resettable=*/true, private_footprint_kb, shared_footprint_kb
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
       ,
-      0, 0,
+      0, 0, 0, 0
 #endif
   );
 }

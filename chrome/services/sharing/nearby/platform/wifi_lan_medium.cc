@@ -9,7 +9,7 @@
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/notreached.h"
+#include "base/notimplemented.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/task_traits.h"
@@ -115,14 +115,16 @@ WifiLanMedium::WifiLanMedium(
   // NOTE: We do not set the disconnect handler for the SharedRemotes here. They
   // are fundamental dependencies of the Nearby Connections process, which will
   // crash if any dependency disconnects.
-  if (mdns_manager_.is_bound() && ::features::IsNearbyMdnsEnabled()) {
+  if (mdns_manager_.is_bound()) {
     mdns_manager_->AddObserver(mdns_observer_.BindNewPipeAndPassRemote());
     VLOG(1) << " Added Mdns observer.";
   }
 }
 
 WifiLanMedium::~WifiLanMedium() {
-  mdns_observer_.reset();
+  if (mdns_observer_.is_bound()) {
+    mdns_observer_.reset();
+  }
   // For thread safety, shut down on the |task_runner_|.
   base::WaitableEvent shutdown_waitable_event;
   task_runner_->PostTask(FROM_HERE, base::BindOnce(&WifiLanMedium::Shutdown,

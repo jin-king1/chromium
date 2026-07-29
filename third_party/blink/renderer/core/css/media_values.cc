@@ -523,7 +523,7 @@ int MediaValues::CalculateHorizontalViewportSegments(LocalFrame* frame) {
 
   std::vector<gfx::Rect> viewport_segments =
       frame->GetWidgetForLocalRoot()->ViewportSegments();
-  WTF::HashSet<int> unique_x;
+  HashSet<int> unique_x;
   for (const auto& segment : viewport_segments) {
     // HashSet can't have 0 as a key, so add 1 to all the values we see.
     unique_x.insert(segment.x() + 1);
@@ -539,7 +539,7 @@ int MediaValues::CalculateVerticalViewportSegments(LocalFrame* frame) {
 
   std::vector<gfx::Rect> viewport_segments =
       frame->GetWidgetForLocalRoot()->ViewportSegments();
-  WTF::HashSet<int> unique_y;
+  HashSet<int> unique_y;
   for (const auto& segment : viewport_segments) {
     // HashSet can't have 0 as a key, so add 1 to all the values we see.
     unique_y.insert(segment.y() + 1);

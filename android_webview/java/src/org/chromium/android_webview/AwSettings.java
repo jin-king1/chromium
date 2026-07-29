@@ -4,20 +4,17 @@
 
 package org.chromium.android_webview;
 
+import static java.lang.annotation.ElementType.TYPE_USE;
+
 import android.annotation.SuppressLint;
-import android.content.Context;
 import android.content.pm.PackageManager;
-import android.content.res.Configuration;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Message;
-import android.os.Process;
-import android.provider.Settings;
 import android.webkit.WebSettings;
 
 import androidx.annotation.IntDef;
-import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
 
@@ -26,13 +23,13 @@ import org.jni_zero.JNINamespace;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.android_webview.client_hints.AwUserAgentMetadata;
+import org.chromium.android_webview.common.AwFeatureMap;
 import org.chromium.android_webview.common.AwFeatures;
 import org.chromium.android_webview.common.AwSwitches;
 import org.chromium.android_webview.common.Lifetime;
 import org.chromium.android_webview.common.MediaIntegrityApiStatus;
 import org.chromium.android_webview.metrics.BackForwardCacheNotRestoredReason;
 import org.chromium.android_webview.safe_browsing.AwSafeBrowsingConfigHelper;
-import org.chromium.android_webview.settings.AttributionBehavior;
 import org.chromium.android_webview.settings.ForceDarkBehavior;
 import org.chromium.android_webview.settings.ForceDarkMode;
 import org.chromium.android_webview.settings.SpeculativeLoadingAllowedFlags;
@@ -41,16 +38,15 @@ import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.metrics.RecordHistogram;
+import org.chromium.components.embedder_support.util.PasswordEchoSettingState;
 import org.chromium.components.webauthn.WebauthnMode;
 import org.chromium.components.webauthn.WebauthnModeProvider;
 import org.chromium.content_public.browser.WebContents;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
-import java.util.Collections;
-import java.util.HashSet;
+import java.lang.annotation.Target;
 import java.util.Map;
-import java.util.Set;
 
 /**
  * Stores Android WebView specific settings that does not need to be synced to WebKit.
@@ -66,7 +62,7 @@ public class AwSettings {
     private static final String TAG = "AwSettings";
     private static final boolean TRACE = false;
 
-    /* See {@link android.webkit.WebSettings}. */
+    /** See {@link android.webkit.WebSettings}. */
     @Retention(RetentionPolicy.SOURCE)
     @IntDef({
         LAYOUT_ALGORITHM_NORMAL,
@@ -79,11 +75,15 @@ public class AwSettings {
     public @interface LayoutAlgorithm {}
 
     public static final int LAYOUT_ALGORITHM_NORMAL = 0;
-    /* See {@link android.webkit.WebSettings}. */
+
+    /** See {@link android.webkit.WebSettings}. */
     public static final int LAYOUT_ALGORITHM_SINGLE_COLUMN = 1;
-    /* See {@link android.webkit.WebSettings}. */
+
+    /** See {@link android.webkit.WebSettings}. */
     public static final int LAYOUT_ALGORITHM_NARROW_COLUMNS = 2;
+
     public static final int LAYOUT_ALGORITHM_TEXT_AUTOSIZING = 3;
+    private static final int LAYOUT_ALGORITHM_COUNT = 4;
 
     public static final int FORCE_DARK_OFF = ForceDarkMode.FORCE_DARK_OFF;
     public static final int FORCE_DARK_AUTO = ForceDarkMode.FORCE_DARK_AUTO;
@@ -104,24 +104,34 @@ public class AwSettings {
     @ForceDarkBehavior
     private int mForceDarkBehavior = ForceDarkBehavior.PREFER_MEDIA_QUERY_OVER_FORCE_DARK;
 
-    @AttributionBehavior
-    public static final int ATTRIBUTION_DISABLED = AttributionBehavior.DISABLED;
+    /**
+     * Do not change these constants. Apps rely on them for compatibility across WebView versions.
+     */
 
-    @AttributionBehavior
-    public static final int ATTRIBUTION_APP_SOURCE_AND_WEB_TRIGGER =
-            AttributionBehavior.APP_SOURCE_AND_WEB_TRIGGER;
+    // LINT.IfChange(AwSettingsHyperlinkContextMenuItems)
+    @IntDef(
+            flag = true,
+            value = {
+                HyperlinkContextMenuItems.DISABLED,
+                HyperlinkContextMenuItems.COPY_LINK_ADDRESS,
+                HyperlinkContextMenuItems.COPY_LINK_TEXT,
+                HyperlinkContextMenuItems.OPEN_LINK
+            })
+    @Retention(RetentionPolicy.SOURCE)
+    @Target(TYPE_USE)
+    public @interface HyperlinkContextMenuItems {
+        int DISABLED = 0;
+        int COPY_LINK_ADDRESS = 1; // 2^0
+        int COPY_LINK_TEXT = 1 << 1; // 2^1
+        int OPEN_LINK = 1 << 2; // 2^2
+    }
 
-    @AttributionBehavior
-    public static final int ATTRIBUTION_WEB_SOURCE_AND_WEB_TRIGGER =
-            AttributionBehavior.WEB_SOURCE_AND_WEB_TRIGGER;
+    // LINT.ThenChange(/android_webview/support_library/boundary_interfaces/src/org/chromium/support_lib_boundary/WebSettingsBoundaryInterface.java:BoundaryHyperlinkContextMenuItems)
 
-    @AttributionBehavior
-    public static final int ATTRIBUTION_APP_SOURCE_AND_APP_TRIGGER =
-            AttributionBehavior.APP_SOURCE_AND_APP_TRIGGER;
+    private @HyperlinkContextMenuItems int mHyperlinkContextMenuItems =
+            HyperlinkContextMenuItems.DISABLED;
 
-    private Set<String> mRequestedWithHeaderAllowedOriginRules;
-
-    private Context mContext;
+    private final AwContents mAwContents;
     private WebContents mWebContents;
 
     // This class must be created on the UI thread. Afterwards, it can be
@@ -161,7 +171,6 @@ public class AwSettings {
     private boolean mJavaScriptCanOpenWindowsAutomatically;
     private boolean mSupportMultipleWindows;
     private boolean mDomStorageEnabled;
-    private boolean mDatabaseEnabled;
     private boolean mUseWideViewport;
     private boolean mZeroLayoutHeightDisablesViewportQuirk;
     private boolean mForceZeroLayoutHeight;
@@ -170,9 +179,9 @@ public class AwSettings {
     private String mDefaultVideoPosterUrl;
     private float mInitialPageScalePercent;
     private boolean mSpatialNavigationEnabled; // Default depends on device features.
+    private boolean mDownloadFaviconsEnabled = true;
     private boolean mEnableSupportedHardwareAcceleratedFeatures;
     private int mMixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW;
-    private int mAttributionBehavior = AttributionBehavior.APP_SOURCE_AND_WEB_TRIGGER;
 
     @SpeculativeLoadingAllowedFlags
     private int mSpeculativeLoadingAllowedFlags =
@@ -184,6 +193,10 @@ public class AwSettings {
     // in WebView.
     private boolean mBackForwardCacheEnabled;
     private boolean mHasCalledSetBackForwardCacheEnabledBefore;
+
+    private long mBackForwardCacheTimeoutInSeconds;
+    private int mBackForwardCacheMaxPagesInCache;
+    private boolean mBackForwardCacheKeepForwardEntries = true;
 
     private boolean mCssHexAlphaColorEnabled;
     private boolean mScrollTopLeftInteropEnabled;
@@ -203,7 +216,8 @@ public class AwSettings {
     private final boolean mAllowGeolocationOnInsecureOrigins;
     private final boolean mDoNotUpdateSelectionOnMutatingSelectionRange;
 
-    private final boolean mPasswordEchoEnabled;
+    private boolean mPasswordEchoEnabledPhysical;
+    private boolean mPasswordEchoEnabledTouch;
 
     // Not accessed by the native side.
     private boolean mBlockSpecialFileUrls;
@@ -217,7 +231,10 @@ public class AwSettings {
     private boolean mSupportZoom = true;
     private boolean mBuiltInZoomControls;
     private boolean mDisplayZoomControls = true;
+    private boolean mPaymentRequestEnabled;
+    private boolean mHasEnrolledInstrumentEnabled = true;
     private final AwMediaIntegrityApiStatusConfig mIntegrityApiStatusConfig;
+    private boolean mIncludeCookiesOnIntercept;
 
     private @WebauthnMode int mWebauthnMode = WebauthnMode.NONE;
 
@@ -322,9 +339,30 @@ public class AwSettings {
                     AwSettings.this::updateSpeculativeLoadingAllowedOnUiThreadLocked);
         }
 
+        void updateDownloadFaviconsEnabledLocked() {
+            runOnUiThreadBlockingAndLocked(
+                    AwSettings.this::updateDownloadFaviconsEnabledOnUiThreadLocked);
+        }
+
         void updateBackForwardCacheEnabled() {
             runOnUiThreadBlockingAndLocked(
                     AwSettings.this::updateBackForwardCacheEnabledOnUiThreadLocked);
+        }
+
+        void updateBackForwardCacheSettingsTimeout() {
+            runOnUiThreadBlockingAndLocked(
+                    AwSettings.this::updateBackForwardCacheSettingsTimeoutOnUiThreadLocked);
+        }
+
+        void updateBackForwardCacheSettingsMaxPagesInCache() {
+            runOnUiThreadBlockingAndLocked(
+                    AwSettings.this::updateBackForwardCacheSettingsMaxPagesInCacheOnUiThreadLocked);
+        }
+
+        void updateBackForwardCacheSettingsKeepForwardEntries() {
+            runOnUiThreadBlockingAndLocked(
+                    AwSettings.this
+                            ::updateBackForwardCacheSettingsKeepForwardEntriesOnUiThreadLocked);
         }
 
         void updateGeolocationEnabled() {
@@ -334,23 +372,22 @@ public class AwSettings {
     }
 
     interface ZoomSupportChangeListener {
-        public void onGestureZoomSupportChanged(
+        void onGestureZoomSupportChanged(
                 boolean supportsDoubleTapZoom, boolean supportsMultiTouchZoom);
     }
 
     public AwSettings(
-            Context context,
+            AwContents awContents,
             boolean isAccessFromFileUrlsGrantedByDefault,
             boolean supportsLegacyQuirks,
             boolean allowEmptyDocumentPersistence,
             boolean allowGeolocationOnInsecureOrigins,
             boolean doNotUpdateSelectionOnMutatingSelectionRange) {
-        mContext = context;
+        mAwContents = awContents;
         boolean hasInternetPermission =
-                context.checkPermission(
-                                android.Manifest.permission.INTERNET,
-                                Process.myPid(),
-                                Process.myUid())
+                mAwContents
+                                .getProvidedContext()
+                                .checkSelfPermission(android.Manifest.permission.INTERNET)
                         == PackageManager.PERMISSION_GRANTED;
         synchronized (mAwSettingsLock) {
             mHasInternetPermission = hasInternetPermission;
@@ -366,21 +403,26 @@ public class AwSettings {
 
             // Best-guess a sensible initial value based on the features supported on the device.
             mSpatialNavigationEnabled =
-                    !context.getPackageManager()
+                    !mAwContents
+                            .getProvidedContext()
+                            .getPackageManager()
                             .hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN);
 
             // Respect the system setting for password echoing.
-            mPasswordEchoEnabled =
-                    Settings.System.getInt(
-                                    context.getContentResolver(),
-                                    Settings.System.TEXT_SHOW_PASSWORD,
-                                    1)
-                            == 1;
+            final PasswordEchoSettingState state = PasswordEchoSettingState.getInstance();
+            mPasswordEchoEnabledPhysical = state.getPasswordEchoEnabledPhysical();
+            mPasswordEchoEnabledTouch = state.getPasswordEchoEnabledTouch();
 
             // By default, scale the text size by the system font scale factor. Embedders
             // may override this by invoking setTextZoom().
             mTextSizePercent =
-                    (int) (mTextSizePercent * context.getResources().getConfiguration().fontScale);
+                    (int)
+                            (mTextSizePercent
+                                    * mAwContents
+                                            .getProvidedContext()
+                                            .getResources()
+                                            .getConfiguration()
+                                            .fontScale);
 
             mSupportLegacyQuirks = supportsLegacyQuirks;
             mAllowEmptyDocumentPersistence = allowEmptyDocumentPersistence;
@@ -398,26 +440,37 @@ public class AwSettings {
             mAllowFileUrlAccess =
                     ContextUtils.getApplicationContext().getApplicationInfo().targetSdkVersion
                             < Build.VERSION_CODES.R;
-            mRequestedWithHeaderAllowedOriginRules =
-                    ManifestMetadataUtil.getXRequestedWithAllowList();
             mIntegrityApiStatusConfig = new AwMediaIntegrityApiStatusConfig();
             mSpeculativeLoadingAllowedFlags =
                     SpeculativeLoadingAllowedFlags.SPECULATIVE_LOADING_DISABLED;
             mHasCalledSetSpeculativeLoadingAllowedBefore = false;
             mBackForwardCacheEnabled = false;
             mHasCalledSetBackForwardCacheEnabledBefore = false;
+
+            if (AwFeatureMap.isEnabled(AwFeatures.WEBVIEW_HYPERLINK_CONTEXT_MENU)) {
+                mHyperlinkContextMenuItems =
+                        HyperlinkContextMenuItems.COPY_LINK_ADDRESS
+                                | HyperlinkContextMenuItems.COPY_LINK_TEXT
+                                | HyperlinkContextMenuItems.OPEN_LINK;
+            }
+
+            if (AwFeatureMap.isEnabled(AwFeatures.WEBVIEW_FORCE_WEB_AUTHN)) {
+                mWebauthnMode = WebauthnMode.APP;
+            }
         }
         // Defer initializing the native side until a native WebContents instance is set.
     }
 
     /** Get the AwSettings for the WebView with the given WebContents */
     @Nullable
-    public static AwSettings fromWebContents(@NonNull WebContents webContents) {
+    public static AwSettings fromWebContents(WebContents webContents) {
         return AwSettingsJni.get().fromWebContents(webContents);
     }
 
-    public int getUiModeNight() {
-        return mContext.getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
+    public void runUnderLock(Runnable runnable) {
+        synchronized (mAwSettingsLock) {
+            runnable.run();
+        }
     }
 
     @CalledByNative
@@ -484,7 +537,6 @@ public class AwSettings {
                 mEventHandler.bindUiThread();
                 mNativeAwSettings = AwSettingsJni.get().init(AwSettings.this, webContents);
                 updateEverythingLocked();
-                setRequestedWithHeaderOriginAllowListLocked(mRequestedWithHeaderAllowedOriginRules);
                 WebauthnModeProvider.getInstance()
                         .setWebauthnModeForWebContents(webContents, mWebauthnMode);
                 flushBackForwardCacheOnUiThreadLocked();
@@ -598,6 +650,32 @@ public class AwSettings {
         synchronized (mAwSettingsLock) {
             return mAllowFileUrlAccess;
         }
+    }
+
+    /** Sets whether a navigation will attempt to download a Favicon */
+    public void setDownloadFaviconsEnabled(boolean enabled) {
+        if (TRACE) Log.i(TAG, "setDownloadFaviconsEnabled=" + enabled);
+        synchronized (mAwSettingsLock) {
+            if (!AwFeatureMap.isEnabled(AwFeatures.WEBVIEW_SET_DOWNLOAD_FAVICONS_ENABLED)) {
+                // no-op kill switch for setDownloadFaviconsEnabled
+                return;
+            }
+            mDownloadFaviconsEnabled = enabled;
+            mEventHandler.updateDownloadFaviconsEnabledLocked();
+        }
+    }
+
+    /** Returns whether a navigation will download a Favicon or not */
+    public boolean getDownloadFaviconsEnabled() {
+        synchronized (mAwSettingsLock) {
+            return AwSettingsJni.get().getShouldDownloadFaviconsOnNavigation(mNativeAwSettings);
+        }
+    }
+
+    @CalledByNative
+    private boolean getDownloadFaviconsEnabledLocked() {
+        assert Thread.holdsLock(mAwSettingsLock);
+        return mDownloadFaviconsEnabled;
     }
 
     /** See {@link android.webkit.WebSettings#setAllowContentAccess}. */
@@ -779,20 +857,15 @@ public class AwSettings {
         if (TRACE) Log.i(TAG, "setUserAgentString=" + ua);
         synchronized (mAwSettingsLock) {
             final String oldUserAgent = mUserAgent;
-            if (ua == null || ua.length() == 0) {
+            if (ua == null || ua.isEmpty()) {
                 mUserAgent = LazyDefaultUserAgent.sInstance;
+            } else if (!AwBrowserContext.isValidHttpHeaderValue(ua)) {
+                throw new IllegalArgumentException("Invalid HTTP header value: '" + ua + "'");
             } else {
                 mUserAgent = ua;
             }
             if (!oldUserAgent.equals(mUserAgent)) {
-                if (ua != null
-                        && ua.length() > 0
-                        && AwBrowserContext.BAD_HEADER_CHAR.matcher(ua).find()) {
-                    throw new IllegalArgumentException(
-                            AwBrowserContext.BAD_HEADER_MSG + "Invalid User-Agent '" + ua + "'");
-                }
-                mEventHandler.runOnUiThreadBlockingAndLocked(
-                        () -> updateUserAgentOnUiThreadLocked());
+                mEventHandler.runOnUiThreadBlockingAndLocked(this::updateUserAgentOnUiThreadLocked);
             }
         }
     }
@@ -1301,6 +1374,8 @@ public class AwSettings {
     /** See {@link android.webkit.WebSettings#setLayoutAlgorithm}. */
     public void setLayoutAlgorithm(@LayoutAlgorithm int l) {
         if (TRACE) Log.i(TAG, "setLayoutAlgorithm=" + l);
+        RecordHistogram.recordEnumeratedHistogram(
+                "Android.WebView.SetLayoutAlgorithm", l, LAYOUT_ALGORITHM_COUNT);
         synchronized (mAwSettingsLock) {
             if (mLayoutAlgorithm != l) {
                 mLayoutAlgorithm = l;
@@ -1314,48 +1389,6 @@ public class AwSettings {
     public int getLayoutAlgorithm() {
         synchronized (mAwSettingsLock) {
             return mLayoutAlgorithm;
-        }
-    }
-
-    public void setRequestedWithHeaderOriginAllowList(Set<String> allowedOriginRules) {
-        // Even though clients shouldn't pass in null, it's better to guard against it
-        allowedOriginRules =
-                allowedOriginRules != null ? allowedOriginRules : Collections.emptySet();
-        AwWebContentsMetricsRecorder.recordRequestedWithHeaderModeAPIUsage(allowedOriginRules);
-        synchronized (mAwSettingsLock) {
-            setRequestedWithHeaderOriginAllowListLocked(allowedOriginRules);
-        }
-    }
-
-    private void setRequestedWithHeaderOriginAllowListLocked(final Set<String> allowedOriginRules) {
-        assert Thread.holdsLock(mAwSettingsLock);
-        if (mNativeAwSettings == 0) {
-            return;
-        }
-
-        // Final set to be updated by the Runnable on the UI thread.
-        final Set<String> rejectedRules = new HashSet<>();
-
-        mEventHandler.runOnUiThreadBlockingAndLocked(
-                () -> {
-                    flushBackForwardCache();
-                    String[] rejected =
-                            AwSettingsJni.get()
-                                    .updateXRequestedWithAllowListOriginMatcher(
-                                            mNativeAwSettings,
-                                            allowedOriginRules.toArray(new String[0]));
-                    rejectedRules.addAll(java.util.Arrays.asList(rejected));
-                });
-
-        if (!rejectedRules.isEmpty()) {
-            throw new IllegalArgumentException("Malformed origin match rules: " + rejectedRules);
-        }
-        mRequestedWithHeaderAllowedOriginRules = allowedOriginRules;
-    }
-
-    public Set<String> getRequestedWithHeaderOriginAllowList() {
-        synchronized (mAwSettingsLock) {
-            return mRequestedWithHeaderAllowedOriginRules;
         }
     }
 
@@ -1559,9 +1592,27 @@ public class AwSettings {
     }
 
     @CalledByNative
-    private boolean getPasswordEchoEnabledLocked() {
+    private boolean getPasswordEchoEnabledPhysicalLocked() {
         assert Thread.holdsLock(mAwSettingsLock);
-        return mPasswordEchoEnabled;
+        return mPasswordEchoEnabledPhysical;
+    }
+
+    @CalledByNative
+    private boolean getPasswordEchoEnabledTouchLocked() {
+        assert Thread.holdsLock(mAwSettingsLock);
+        return mPasswordEchoEnabledTouch;
+    }
+
+    public void setPasswordEchoEnabled(
+            boolean physicalSettingEnabled, boolean touchSettingEnabled) {
+        synchronized (mAwSettingsLock) {
+            if (mPasswordEchoEnabledPhysical != physicalSettingEnabled
+                    || mPasswordEchoEnabledTouch != touchSettingEnabled) {
+                mPasswordEchoEnabledPhysical = physicalSettingEnabled;
+                mPasswordEchoEnabledTouch = touchSettingEnabled;
+                mEventHandler.updateWebkitPreferencesLocked();
+            }
+        }
     }
 
     /** See {@link android.webkit.WebSettings#setDomStorageEnabled}. */
@@ -1586,30 +1637,6 @@ public class AwSettings {
     private boolean getDomStorageEnabledLocked() {
         assert Thread.holdsLock(mAwSettingsLock);
         return mDomStorageEnabled;
-    }
-
-    /** See {@link android.webkit.WebSettings#setDatabaseEnabled}. */
-    public void setDatabaseEnabled(boolean flag) {
-        if (TRACE) Log.i(TAG, "setDatabaseEnabled=" + flag);
-        synchronized (mAwSettingsLock) {
-            if (mDatabaseEnabled != flag) {
-                mDatabaseEnabled = flag;
-                mEventHandler.updateWebkitPreferencesLocked();
-            }
-        }
-    }
-
-    /** See {@link android.webkit.WebSettings#getDatabaseEnabled}. */
-    public boolean getDatabaseEnabled() {
-        synchronized (mAwSettingsLock) {
-            return mDatabaseEnabled;
-        }
-    }
-
-    @CalledByNative
-    private boolean getDatabaseEnabledLocked() {
-        assert Thread.holdsLock(mAwSettingsLock);
-        return mDatabaseEnabled;
     }
 
     /** See {@link android.webkit.WebSettings#setDefaultTextEncodingName}. */
@@ -1756,6 +1783,39 @@ public class AwSettings {
         }
     }
 
+    public void setPaymentRequestEnabled(boolean enabled) {
+        if (TRACE) Log.i(TAG, "setPaymentRequestEnabled=" + enabled);
+        synchronized (mAwSettingsLock) {
+            if (mPaymentRequestEnabled != enabled) {
+                mPaymentRequestEnabled = enabled;
+                mEventHandler.updateWebkitPreferencesLocked();
+            }
+        }
+    }
+
+    @CalledByNative
+    public boolean getPaymentRequestEnabled() {
+        synchronized (mAwSettingsLock) {
+            return mPaymentRequestEnabled;
+        }
+    }
+
+    public void setHasEnrolledInstrumentEnabled(boolean enabled) {
+        if (TRACE) Log.i(TAG, "setHasEnrolledInstrumentEnabled=" + enabled);
+        synchronized (mAwSettingsLock) {
+            if (mHasEnrolledInstrumentEnabled != enabled) {
+                flushBackForwardCacheOnUiThreadLocked();
+            }
+            mHasEnrolledInstrumentEnabled = enabled;
+        }
+    }
+
+    public boolean getHasEnrolledInstrumentEnabled() {
+        synchronized (mAwSettingsLock) {
+            return mHasEnrolledInstrumentEnabled;
+        }
+    }
+
     public void setMixedContentMode(int mode) {
         // Using explicit max count for the histogram since enum is defined in Android code. The
         // values can be trusted to remain stable since they are defined in the Android API.
@@ -1772,23 +1832,6 @@ public class AwSettings {
     public int getMixedContentMode() {
         synchronized (mAwSettingsLock) {
             return mMixedContentMode;
-        }
-    }
-
-    public void setAttributionBehavior(@AttributionBehavior int behavior) {
-        synchronized (mAwSettingsLock) {
-            if (mAttributionBehavior != behavior) {
-                mAttributionBehavior = behavior;
-                mEventHandler.updateWebkitPreferencesLocked();
-            }
-        }
-    }
-
-    @CalledByNative
-    @AttributionBehavior
-    public int getAttributionBehavior() {
-        synchronized (mAwSettingsLock) {
-            return mAttributionBehavior;
         }
     }
 
@@ -1836,6 +1879,79 @@ public class AwSettings {
         }
     }
 
+    public void setBackForwardCacheTimeoutInSeconds(long timeoutInSeconds) {
+        if (TRACE) Log.i(TAG, "setBackForwardCacheTimeoutInSeconds=" + timeoutInSeconds);
+        // Setting BackForwardCacheSettings implicitly enables BFCache as well.
+        setBackForwardCacheEnabled(true);
+        synchronized (mAwSettingsLock) {
+            if (mBackForwardCacheTimeoutInSeconds == timeoutInSeconds) {
+                return;
+            }
+            mBackForwardCacheTimeoutInSeconds = timeoutInSeconds;
+            mEventHandler.updateBackForwardCacheSettingsTimeout();
+        }
+    }
+
+    public void setBackForwardCacheMaxPagesInCache(int maxPagesInCache) {
+        if (TRACE) Log.i(TAG, "setBackForwardCacheMaxPagesInCache=" + maxPagesInCache);
+        // Setting BackForwardCacheSettings implicitly enables BFCache as well.
+        setBackForwardCacheEnabled(true);
+        synchronized (mAwSettingsLock) {
+            if (mBackForwardCacheMaxPagesInCache == maxPagesInCache) {
+                return;
+            }
+            mBackForwardCacheMaxPagesInCache = maxPagesInCache;
+            mEventHandler.updateBackForwardCacheSettingsMaxPagesInCache();
+        }
+    }
+
+    /**
+     * Sets whether to keep forward entries when the user navigates back. Disabling this saves
+     * memory by discarding unreachable pages.
+     */
+    public void setBackForwardCacheKeepForwardEntries(boolean keepForwardEntries) {
+        if (TRACE) {
+            Log.i(TAG, "setBackForwardCacheKeepForwardEntries=" + keepForwardEntries);
+        }
+        // Setting BackForwardCacheSettings implicitly enables BFCache as well.
+        setBackForwardCacheEnabled(true);
+        synchronized (mAwSettingsLock) {
+            if (mBackForwardCacheKeepForwardEntries == keepForwardEntries) {
+                return;
+            }
+            mBackForwardCacheKeepForwardEntries = keepForwardEntries;
+            mEventHandler.updateBackForwardCacheSettingsKeepForwardEntries();
+        }
+    }
+
+    public static void setShouldDownloadFaviconsGlobal() {
+        AwSettingsJni.get().setShouldDownloadFaviconsGlobal();
+    }
+
+    @CalledByNative
+    public long getBackForwardCacheSettingsTimeout() {
+        synchronized (mAwSettingsLock) {
+            assert Thread.holdsLock(mAwSettingsLock);
+            return mBackForwardCacheTimeoutInSeconds;
+        }
+    }
+
+    @CalledByNative
+    public int getBackForwardCacheSettingsMaxPagesInCache() {
+        synchronized (mAwSettingsLock) {
+            assert Thread.holdsLock(mAwSettingsLock);
+            return mBackForwardCacheMaxPagesInCache;
+        }
+    }
+
+    @CalledByNative
+    public boolean getBackForwardCacheSettingsKeepForwardEntries() {
+        synchronized (mAwSettingsLock) {
+            assert Thread.holdsLock(mAwSettingsLock);
+            return mBackForwardCacheKeepForwardEntries;
+        }
+    }
+
     @ForceDarkMode
     public int getForceDarkMode() {
         synchronized (mAwSettingsLock) {
@@ -1851,7 +1967,6 @@ public class AwSettings {
     }
 
     public void setForceDarkMode(@ForceDarkMode int forceDarkMode) {
-        AwWebContentsMetricsRecorder.recordForceDarkModeAPIUsage(mContext, forceDarkMode);
         synchronized (mAwSettingsLock) {
             if (mForceDarkMode != forceDarkMode) {
                 mForceDarkMode = forceDarkMode;
@@ -1910,7 +2025,6 @@ public class AwSettings {
     }
 
     public void setForceDarkBehavior(@ForceDarkBehavior int forceDarkBehavior) {
-        AwWebContentsMetricsRecorder.recordForceDarkBehaviorAPIUsage(forceDarkBehavior);
         synchronized (mAwSettingsLock) {
             if (mForceDarkBehavior != forceDarkBehavior) {
                 mForceDarkBehavior = forceDarkBehavior;
@@ -1945,6 +2059,7 @@ public class AwSettings {
         }
         return false;
     }
+
 
     public boolean getOffscreenPreRaster() {
         synchronized (mAwSettingsLock) {
@@ -2137,13 +2252,46 @@ public class AwSettings {
         }
     }
 
-    private void updateBackForwardCacheEnabledOnUiThreadLocked() {
+    private void updateDownloadFaviconsEnabledOnUiThreadLocked() {
         assert mEventHandler.mHandler != null;
         ThreadUtils.assertOnUiThread();
         if (mNativeAwSettings != 0) {
             AwSettingsJni.get()
-                    .updateBackForwardCacheEnabledLocked(mNativeAwSettings, AwSettings.this);
+                    .updateDownloadFaviconsEnabledLocked(mNativeAwSettings, AwSettings.this);
         }
+    }
+
+    private void updateBackForwardCacheEnabledOnUiThreadLocked() {
+        assert mEventHandler.mHandler != null;
+        ThreadUtils.assertOnUiThread();
+        if (mNativeAwSettings == 0) return;
+        AwSettingsJni.get().updateBackForwardCacheEnabledLocked(mNativeAwSettings, AwSettings.this);
+    }
+
+    private void updateBackForwardCacheSettingsTimeoutOnUiThreadLocked() {
+        assert mEventHandler.mHandler != null;
+        ThreadUtils.assertOnUiThread();
+        if (mNativeAwSettings == 0) return;
+        AwSettingsJni.get()
+                .updateBackForwardCacheSettingsTimeoutLocked(mNativeAwSettings, AwSettings.this);
+    }
+
+    private void updateBackForwardCacheSettingsMaxPagesInCacheOnUiThreadLocked() {
+        assert mEventHandler.mHandler != null;
+        ThreadUtils.assertOnUiThread();
+        if (mNativeAwSettings == 0) return;
+        AwSettingsJni.get()
+                .updateBackForwardCacheSettingsMaxPagesInCacheLocked(
+                        mNativeAwSettings, AwSettings.this);
+    }
+
+    private void updateBackForwardCacheSettingsKeepForwardEntriesOnUiThreadLocked() {
+        assert mEventHandler.mHandler != null;
+        ThreadUtils.assertOnUiThread();
+        if (mNativeAwSettings == 0) return;
+        AwSettingsJni.get()
+                .updateBackForwardCacheSettingsKeepForwardEntriesLocked(
+                        mNativeAwSettings, AwSettings.this);
     }
 
     private void updateGeolocationEnabledOnUiThreadLocked() {
@@ -2205,11 +2353,26 @@ public class AwSettings {
 
     public void setWebauthnSupport(@WebauthnMode int support) {
         synchronized (mAwSettingsLock) {
-            if (mWebauthnMode != support && AwFeatureMap.isEnabled(AwFeatures.WEBVIEW_WEBAUTHN)) {
+            if (support == WebauthnMode.BROWSER) {
+                boolean hasPermission =
+                        ContextUtils.getApplicationContext()
+                                        .checkSelfPermission(
+                                                android.Manifest.permission
+                                                        .CREDENTIAL_MANAGER_SET_ORIGIN)
+                                == android.content.pm.PackageManager.PERMISSION_GRANTED;
+                RecordHistogram.recordBooleanHistogram(
+                        "Android.WebView.Webauthn.BrowserModePermissionGranted", hasPermission);
+            }
+            if (mWebauthnMode != support) {
                 mWebauthnMode = support;
                 mEventHandler.updateWebkitPreferencesLocked();
-                WebauthnModeProvider.getInstance()
-                        .setWebauthnModeForWebContents(mWebContents, support);
+                mEventHandler.runOnUiThreadBlockingAndLocked(
+                        () -> {
+                            if (mWebContents != null) {
+                                WebauthnModeProvider.getInstance()
+                                        .setWebauthnModeForWebContents(mWebContents, support);
+                            }
+                        });
             }
         }
     }
@@ -2218,14 +2381,48 @@ public class AwSettings {
     public @WebauthnMode int getWebauthnSupportLocked() {
         assert Thread.holdsLock(mAwSettingsLock);
         // TODO(crbug.com/40210253): Consider supporting a NOT_SUPPORTED case.
-        return AwFeatureMap.isEnabled(AwFeatures.WEBVIEW_WEBAUTHN)
-                ? mWebauthnMode
-                : WebauthnMode.NONE;
+        return mWebauthnMode;
     }
 
     public int getWebauthnSupport() {
         synchronized (mAwSettingsLock) {
             return getWebauthnSupportLocked();
+        }
+    }
+
+    /**
+     * Set whether the shouldInterceptRequest API should include request cookies and accept response
+     * cookies.
+     */
+    public void setIncludeCookiesOnIntercept(boolean includeCookiesOnIntercept) {
+        synchronized (mAwSettingsLock) {
+            this.mIncludeCookiesOnIntercept = includeCookiesOnIntercept;
+        }
+    }
+
+    public boolean getIncludeCookiesOnIntercept() {
+        synchronized (mAwSettingsLock) {
+            return mIncludeCookiesOnIntercept;
+        }
+    }
+
+    /**
+     * Sets the hyperlink context menu item flags set on this AwSettings. By default, all items are
+     * disabled.
+     *
+     * @param hyperlinkMenuItems A bitwise combination of flags from {@link
+     *     HyperlinkContextMenuItems}.
+     */
+    public void setHyperlinkContextMenuItems(@HyperlinkContextMenuItems int hyperlinkMenuItems) {
+        synchronized (mAwSettingsLock) {
+            mHyperlinkContextMenuItems = hyperlinkMenuItems;
+        }
+    }
+
+    /** Gets the hyperlink context menu item flags set on this AwSettings. */
+    public @HyperlinkContextMenuItems int getHyperlinkContextMenuItems() {
+        synchronized (mAwSettingsLock) {
+            return mHyperlinkContextMenuItems;
         }
     }
 
@@ -2268,6 +2465,14 @@ public class AwSettings {
 
         void updateBackForwardCacheEnabledLocked(long nativeAwSettings, AwSettings caller);
 
+        void updateBackForwardCacheSettingsTimeoutLocked(long nativeAwSettings, AwSettings caller);
+
+        void updateBackForwardCacheSettingsMaxPagesInCacheLocked(
+                long nativeAwSettings, AwSettings caller);
+
+        void updateBackForwardCacheSettingsKeepForwardEntriesLocked(
+                long nativeAwSettings, AwSettings caller);
+
         boolean isForceDarkApplied(long nativeAwSettings, AwSettings caller);
 
         boolean prefersDarkFromTheme(long nativeAwSettings, AwSettings caller);
@@ -2278,8 +2483,12 @@ public class AwSettings {
         boolean getEnterpriseAuthenticationAppLinkPolicyEnabled(
                 long nativeAwSettings, AwSettings caller);
 
-        String[] updateXRequestedWithAllowListOriginMatcher(long nativeAwSettings, String[] rules);
-
         void updateGeolocationEnabledLocked(long nativeAwSettings, AwSettings caller);
+
+        void updateDownloadFaviconsEnabledLocked(long nativeAwSettings, AwSettings caller);
+
+        void setShouldDownloadFaviconsGlobal();
+
+        boolean getShouldDownloadFaviconsOnNavigation(long nativeAwSettings);
     }
 }

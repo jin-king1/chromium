@@ -46,8 +46,8 @@ function getDefaultUndoRedoComposeState(): ComposeState {
     },
     webuiState: JSON.stringify({
       input: 'some other input',
-      selectedLength: Number(StyleModifier.kUnset),
-      selectedTone: Number(StyleModifier.kUnset),
+      selectedLength: StyleModifier.kUnset,
+      selectedTone: StyleModifier.kUnset,
     }),
     feedback: UserFeedback.kUserFeedbackUnspecified,
   };
@@ -73,6 +73,7 @@ export class TestComposeApiProxy extends TestBrowserProxy implements
       'logEditInput',
       'openBugReportingLink',
       'openComposeLearnMorePage',
+      'openEnterpriseComposeLearnMorePage',
       'openFeedbackSurveyLink',
       'openSignInPage',
       'requestInitialState',
@@ -147,6 +148,10 @@ export class TestComposeApiProxy extends TestBrowserProxy implements
 
   openComposeLearnMorePage() {
     this.methodCalled('openComposeLearnMorePage');
+  }
+
+  openEnterpriseComposeLearnMorePage() {
+    this.methodCalled('openEnterpriseComposeLearnMorePage');
   }
 
   openFeedbackSurveyLink() {

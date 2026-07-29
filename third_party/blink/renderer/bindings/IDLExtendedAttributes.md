@@ -111,6 +111,24 @@ Extended attributes are generally not inherited: only extended attributes on the
 
 These are defined in the [ECMAScript-specific extended attributes](https://webidl.spec.whatwg.org/#es-extended-attributes) section of the [Web IDL spec](https://webidl.spec.whatwg.org/), and alter the binding behavior.
 
+### [AllowResizable]
+
+Standard: [AllowResizable](https://webidl.spec.whatwg.org/#AllowResizable)
+
+Summary: `[AllowResizable]` specified on a type indicates that for ArrayBuffer or ArrayBufferView arguments the values backed by resizable array buffers are allowed. In case of a SharedArrayBuffer being passed, if allowed by specifying `[AllowShared]` (documented below)), this implies that the shared array buffer is growable.
+
+Usage: `[AllowResizable]` must be specified on a parameter to a method or a typedef:
+
+```webidl
+interface Context {
+    void bufferData1([AllowResizable] ArrayBufferView buffer);
+    void bufferData2([AllowResizable] Float32Array buffer);
+    void bufferData3([AllowResizable] ArrayBuffer buffer);
+};
+```
+
+Note that while there's a low-level support for resizable array buffers, Blink IDL code generator currently does not support this attribute and, at the time of writing, there are no APIs using it in the blink tree.
+
 ### [AllowShared]
 
 Standard: [AllowShared](https://webidl.spec.whatwg.org/#AllowShared)
@@ -484,20 +502,6 @@ Summary: Serializable objects support being serialized, and later deserialized, 
 
 This attribute has no effect on code generation and should simply be used in Blink IDL files if the specification uses it. Code to perform the serialization/deserialization must be added to `V8ScriptValueSerializer` for types in `core/` or `V8ScriptValueDeserializerForModules` for types in `modules/`.
 
-### [StringContext=TrustedHTML|TrustedScript|TrustedScriptURL]
-
-Standard: [TrustedType](https://w3c.github.io/trusted-types/dist/spec/#!trustedtypes-extended-attribute)
-
-Summary: Indicate that a DOMString for HTMLs and scripts or USVString for script URLs is to be supplemented with additional Trusted Types enforcement logic.
-
-Usage: Must be specified on a DOMString or a USVString type.
-
-```webidl
-typedef [StringContext=TrustedHTML] DOMString TrustedString;
-attribute TrustedString str;
-void func(TrustedString str);
-```
-
 ### [Transferable]
 
 Standard: [Transferable](https://html.spec.whatwg.org/C/#transferable)
@@ -697,25 +701,6 @@ Usage: `[DeprecateAs]` can be specified on methods, attributes, and constants.
 
 For more documentation on deprecations, see [the documentation](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/third_party/blink/renderer/core/frame/deprecation/README.md).
 
-### [HighEntropy]
-
-Summary: Denotes an API that exposes data that folks on the internet find useful for fingerprinting.
-
-Attributes and methods marked as `[HighEntropy]` are known to be practically useful for [identifying particular clients](https://dev.chromium.org/Home/chromium-security/client-identification-mechanisms) on the web today.
-Both methods and attribute/constant getters annotated with this attribute are wired up to [`Dactyloscoper::Record`](https://source.chromium.org/chromium/chromium/src/+/main:third_party/blink/renderer/core/frame/dactyloscoper.h) for additional processing.
-
-```webidl
-[HighEntropy] attribute Node interestingAttribute;
-[HighEntropy] Node getInterestingNode();
-```
-
-Attributes and methods labeled with `[HighEntropy=Direct]` are simple surfaces which can be expressed as a sequence of bytes without any need for additional parsing logic.
-For now, this label is only supported for attribute getters, although the `[HighEntropy]` label is supported more broadly. Note that `[HighEntropy=Direct]` must be accompanied by either `[Measure]` or `[MeasureAs]`.
-
-```webidl
-[HighEntropy=Direct, MeasureAs=SimpleNamedAttribute] attribute unsigned long simpleNamedAttribute;
-```
-
 ### [ImplementedAs]
 
 Summary: `[ImplementedAs]` specifies a method name in Blink, if the method name in an IDL file and the method name in Blink are different.
@@ -798,6 +783,25 @@ Usage: `[NotEnumerable]` can be specified on methods and attributes
 ```
 
 `[NotEnumerable]` indicates that the method or attribute is not enumerable.
+
+### [NotSubclassable]
+
+Summary: Disallows constructing subclasses of an interface.
+
+Usage: `[NotSubclassable]` can be specified on interfaces with a constructor.
+
+```webidl
+[Exposed=Window, NotSubclassable]
+interface XXX {
+  constructor();
+};
+```
+
+`[NotSubclassable]` makes the generated constructor reject `NewTarget`s
+that are not the interface's own constructor function, throwing a `TypeError("Illegal constructor")`.
+This forbids constructing subclasses with `class Foo extends XXX { ... }; new Foo()` (or equivalent
+`Reflect.construct` calls). The check only runs at construction time; existing
+instances may still be placed on the prototype chain of other objects.
 
 ### [PassAsSpan]
 
@@ -1251,21 +1255,11 @@ Summary: The same as `[RuntimeEnabled]` but applied to the property exposed as `
 
 ### [NoAllocDirectCall]
 
-Summary: `[NoAllocDirectCall]` marks a given method as being usable with the fast API calls implemented in V8. They get their value conversions inlined in TurboFan, leading to overall better performance.
+Summary: `[NoAllocDirectCall]` marks a given method as being usable with the fast API calls implemented in V8. They get their value conversions inlined in TurboFan, leading to overall better performance for methods with primitive-type parameters. Note that the `NoAlloc` portion of the name is historical only, as nowadays it is allowed to allocate memory, and it is also allowed to throw exceptions and to call back to JavaScript.
 
-Usage: The method must adhere to the following requirements:
+Usage: The method must adhere to the following requirement: All overloads are marked as `[NoAllocDirectCall]`, and the overloads either differ in the number of arguments, or in a single argument's type if the argument type is a sequence.
 
-1. Doesn't trigger GC, i.e., doesn't allocate Blink or V8 objects;
-2. Doesn't trigger JavaScript execution;
-3. Has no side effect.
-
-Those requirements lead to the specific inability to log warnings to the console, as logging uses `MakeGarbageCollected<ConsoleMessage>`. If logging needs to happen, the method marked with `[NoAllocDirectCall]` should expect a last parameter `bool* has_error`, in which it might store `true` to signal V8. V8 will in turn re-execute the "default" callback, giving the possibility of the exception/error to be reported. This mechanism also implies that the "fast" callback is idempotent up to the point of reporting the error.
-
-If `[NoAllocDirectCall]` is applied to a method, then the corresponding implementation C++ class must **also** derive from the [`NoAllocDirectCallHost` class](https://source.chromium.org/chromium/chromium/src/+/main:third_party/blink/renderer/platform/bindings/no_alloc_direct_call_host.h).
-
-Calling `ThrowDOMException` would seemingly cause `MakeGarbageCollected<DOMException>` to occur, violating the requirement about potentially triggering garbage collection. However, `ThrowDOMException` from a `[NoAllocDirectCall]` method is actually safe in practice. When generating the bindings for a method which is marked as both `[NoAllocDirectCall]` and `[RaisesException]`, V8 will automatically use [`NoAllocDirectCallExceptionState`](https://source.chromium.org/chromium/chromium/src/+/main:third_party/blink/renderer/platform/bindings/no_alloc_direct_call_exception_state.h) instead of `ExceptionState`. This class will defer the allocation of the `DOMException` object via `PostDeferrableAction` until it is safe to allocate GC memory. The `WTF::String` inside of the `DOMException` is not a V8 object and does not participate in garbage collection, so its allocation is safe and doesn't violate the requirements of `[NoAllocDirectCall]`.
-
-Note: the `[NoAllocDirectCall]` extended attribute can only be applied to methods, and not attributes. An attribute getter's V8 return value constitutes a V8 allocation, and setters likely allocate on the Blink side.
+For attributes, if the extended attribute should only be used for e.g. the setter, then `[NoAllocDirectCall=Setter]` can be used.
 
 ### [PerWorldBindings]
 
@@ -1290,6 +1284,25 @@ Usage: `[URL]` can be specified on DOMString attributes that have `[Reflect]` ex
 You need to specify `[URL]` if a given DOMString represents a URL, since getters of URL attributes need to be realized in a special routine in Blink, i.e. `Element::getURLAttribute(...)`. If you forgot to specify `[URL]`, then the attribute getter might cause a bug.
 
 Only used in some HTML*ELement.idl files and one other place.
+
+### [V8EnableIndexOf]
+
+Summary: `[V8EnableIndexOf]` enable [Array.prototype.indexOf](https://tc39.es/ecma262/#sec-array.prototype.indexof) optimization for collections.
+
+Usage: `[V8EnableIndexOf]` can be specified on [collection](https://dom.spec.whatwg.org/#concept-collection) interfaces:
+
+```webidl
+[V8EnableIndexOf]
+interface NodeList {
+  readonly attribute unsigned long length;
+  getter Node? item(unsigned long index);
+  ...
+};
+```
+
+Setting this attribute makes the bindings generator create a callback that V8 would call on a fast path of [Array.prototype.indexOf](https://tc39.es/ecma262/#sec-array.prototype.indexof). Having such a callback avoids the need to materialize V8 wrappers and to cross V8-Blink boundary multiple times for every element in the collection.
+
+Only used in NodeList.idl to speed up the idiom of "attaching an event handler to elements matching a selector now or in the future, based on a root element". See, [example](https://source.chromium.org/chromium/chromium/src/+/435b391842a73b172749d98c4e051a80374d3a68:third_party/speedometer/v3.1/resources/todomvc/vanilla-examples/javascript-es5/src/helpers.js;l=24?q=%22Array.prototype.indexOf.call%28potentialElements,%20targetElement%29%22&ss=chromium%2Fchromium%2Fsrc).
 
 ## Temporary Blink-specific IDL Extended Attributes
 

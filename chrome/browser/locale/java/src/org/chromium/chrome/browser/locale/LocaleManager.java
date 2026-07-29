@@ -6,15 +6,17 @@ package org.chromium.chrome.browser.locale;
 
 import android.app.Activity;
 
-import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JniType;
 
 import org.chromium.base.Callback;
+import org.chromium.base.ResettersForTesting;
 import org.chromium.base.ServiceLoaderUtil;
 import org.chromium.base.ThreadUtils;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.search_engines.DefaultSearchEngineDialogHelper;
 import org.chromium.chrome.browser.search_engines.SearchEnginePromoType;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
@@ -27,6 +29,7 @@ import java.util.List;
  * Manager for some locale specific logics. TODO(crbug.com/40177565) Turn this into a per-activity
  * object.
  */
+@NullMarked
 public class LocaleManager implements DefaultSearchEngineDialogHelper.Delegate {
     private static final LocaleManager sInstance = new LocaleManager();
 
@@ -49,7 +52,7 @@ public class LocaleManager implements DefaultSearchEngineDialogHelper.Delegate {
             delegate = new LocaleManagerDelegate();
         }
         mDelegate = delegate;
-        mDelegate.setDefaulSearchEngineDelegate(this);
+        mDelegate.setDefaultSearchEngineDelegate(this);
     }
 
     /** Starts listening to state changes of the phone. */
@@ -155,7 +158,13 @@ public class LocaleManager implements DefaultSearchEngineDialogHelper.Delegate {
     /** Set a LocaleManagerDelegate to be used for testing. */
     @VisibleForTesting
     public void setDelegateForTest(LocaleManagerDelegate delegate) {
+        LocaleManagerDelegate previousDelegate = mDelegate;
         mDelegate = delegate;
-        mDelegate.setDefaulSearchEngineDelegate(this);
+        mDelegate.setDefaultSearchEngineDelegate(this);
+        ResettersForTesting.register(
+                () -> {
+                    mDelegate = previousDelegate;
+                    mDelegate.setDefaultSearchEngineDelegate(this);
+                });
     }
 }

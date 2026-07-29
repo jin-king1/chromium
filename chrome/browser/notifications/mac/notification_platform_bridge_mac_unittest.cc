@@ -428,7 +428,7 @@ TEST_F(NotificationPlatformBridgeMacTest,
   EXPECT_EQ(false, remaining_notification->meta->id->profile->incognito);
 }
 
-// Regression test for crbug.com/1182795
+// Regression test for crbug.com/40751657
 TEST_F(NotificationPlatformBridgeMacTest, TestNullProfileShutdown) {
   auto bridge = std::make_unique<NotificationPlatformBridgeMac>(
       CreateBannerDispatcher(), CreateAlertDispatcher(),
@@ -561,6 +561,13 @@ TEST_F(NotificationPlatformBridgeMacTest, TestDisplayETLDPlusOne) {
 class NotificationPlatformBridgeMacTestWithNotificationAttribution
     : public NotificationPlatformBridgeMacTest {
  public:
+  NotificationPlatformBridgeMacTestWithNotificationAttribution() {
+    scoped_feature_list_.InitWithFeatures(
+        /*enabled_features=*/{features::kAppShimNotificationAttribution,
+                              features::kUseAdHocSigningForWebAppShims},
+        /*disabled_features=*/{});
+  }
+
   void SetUp() override {
     NotificationPlatformBridgeMacTest::SetUp();
     web_app::test::AwaitStartWebAppProviderAndSubsystems(profile());
@@ -576,8 +583,7 @@ class NotificationPlatformBridgeMacTestWithNotificationAttribution
   webapps::AppId installed_app_id_;
 
  private:
-  base::test::ScopedFeatureList scoped_feature_list_{
-      features::kAppShimNotificationAttribution};
+  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 TEST_F(NotificationPlatformBridgeMacTestWithNotificationAttribution,

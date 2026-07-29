@@ -67,7 +67,7 @@ function getDragElement(path: EventTarget[]): BookmarkElement|null {
 }
 
 function getBookmarkNode(bookmarkElement: BookmarkElement): BookmarkNode {
-  return Store.getInstance().data.nodes[bookmarkElement.itemId];
+  return Store.getInstance().data.nodes[bookmarkElement.itemId]!;
 }
 
 function isTextInputElement(element: HTMLElement): boolean {
@@ -125,11 +125,11 @@ export class DragInfo {
       return false;
     }
 
-    let parentId = nodes[itemId].parentId;
+    let parentId = nodes[itemId]!.parentId;
     const parents: ObjectMap<boolean> = {};
     while (parentId) {
       parents[parentId] = true;
-      parentId = nodes[parentId].parentId;
+      parentId = nodes[parentId]!.parentId;
     }
 
     return !!this.dragData && this.dragData.elements.some(function(node) {
@@ -285,6 +285,7 @@ export class DndManager {
   private autoExpander_: AutoExpander|null;
   private timerProxy_: TimerProxy;
   private lastPointerWasTouch_: boolean;
+  private dragStarted_: boolean = false;
 
   constructor() {
     this.dragInfo_ = null;
@@ -327,6 +328,11 @@ export class DndManager {
   // DragEvent handlers:
 
   private onDragStart_(e: Event) {
+    if (this.dragStarted_) {
+      e.preventDefault();
+      return;
+    }
+
     const dragElement = getDragElement(e.composedPath());
     if (!dragElement) {
       return;
@@ -364,6 +370,8 @@ export class DndManager {
 
     const dragNodeIndex = draggedNodes.indexOf(dragElement.itemId);
     assert(dragNodeIndex !== -1);
+
+    this.dragStarted_ = true;
 
     BookmarkManagerApiProxyImpl.getInstance().startDrag(
         draggedNodes, dragNodeIndex, this.lastPointerWasTouch_,
@@ -441,10 +449,12 @@ export class DndManager {
 
   private onMouseDown_() {
     this.lastPointerWasTouch_ = false;
+    this.dragStarted_ = false;
   }
 
   private onTouchStart_() {
     this.lastPointerWasTouch_ = true;
+    this.dragStarted_ = false;
   }
 
   private handleChromeDragEnter_(dragData: DragData) {
@@ -455,6 +465,7 @@ export class DndManager {
   // Helper methods:
 
   private clearDragData_() {
+    this.dragStarted_ = false;
     this.autoExpander_!.reset();
 
     // Defer the clearing of the data so that the bookmark manager API's drop
@@ -488,7 +499,7 @@ export class DndManager {
       // destination node's parent.
       assert(node.parentId);
       parentId = node.parentId;
-      index = state.nodes[parentId].children!.indexOf(node.id);
+      index = state.nodes[parentId]!.children!.indexOf(node.id);
 
       if (position === DropPosition.BELOW) {
         index++;
@@ -537,7 +548,7 @@ export class DndManager {
     }
 
     return {
-      elements: draggedNodes.map((id) => state.nodes[id]),
+      elements: draggedNodes.map((id) => state.nodes[id]!),
       sameProfile: true,
     };
   }
@@ -664,8 +675,8 @@ export class DndManager {
     // Allow dragging onto empty bookmark lists.
     if (isBookmarkList(overElement)) {
       const state = Store.getInstance().data;
-      return !!state.selectedFolder &&
-          state.nodes[state.selectedFolder].children!.length === 0;
+      return !!state.selectedFolder && !!state.nodes[state.selectedFolder] &&
+          state.nodes[state.selectedFolder]!.children!.length === 0;
     }
 
     // We can only drop on a folder.

@@ -4,21 +4,28 @@
 
 #include "third_party/blink/renderer/core/paint/pre_paint_tree_walk.h"
 
-#include "base/test/scoped_feature_list.h"
 #include "cc/base/features.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/core/dom/events/native_event_listener.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
+#include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/layout/layout_tree_as_text.h"
 #include "third_party/blink/renderer/core/layout/layout_view.h"
 #include "third_party/blink/renderer/core/paint/object_paint_properties.h"
 #include "third_party/blink/renderer/core/paint/paint_controller_paint_test.h"
 #include "third_party/blink/renderer/core/paint/paint_layer.h"
 #include "third_party/blink/renderer/core/paint/paint_property_tree_printer.h"
+#include "third_party/blink/renderer/core/paint/timing/container_timing.h"
+#include "third_party/blink/renderer/core/paint/timing/container_timing_paint_attribution_tracker.h"
 #include "third_party/blink/renderer/core/testing/core_unit_test_helper.h"
+#include "third_party/blink/renderer/core/timing/soft_navigation_context.h"
+#include "third_party/blink/renderer/core/timing/soft_navigation_heuristics.h"
+#include "third_party/blink/renderer/core/timing/soft_navigation_heuristics_test_util.h"
+#include "third_party/blink/renderer/core/timing/soft_navigation_paint_attribution_tracker.h"
 #include "third_party/blink/renderer/platform/graphics/paint/geometry_mapper.h"
 #include "third_party/blink/renderer/platform/graphics/paint/scroll_paint_property_node.h"
 #include "third_party/blink/renderer/platform/graphics/paint/transform_paint_property_node.h"
+#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 #include "third_party/blink/renderer/platform/testing/unit_test_helpers.h"
 #include "third_party/blink/renderer/platform/wtf/hash_map.h"
 
@@ -89,7 +96,7 @@ TEST_P(PrePaintTreeWalkTest, PropertyTreesRebuiltWithFrameScroll) {
   EXPECT_TRUE(FrameScrollTranslation()->IsIdentity());
 
   // Cause a scroll invalidation and ensure the translation is updated.
-  GetDocument().domWindow()->scrollTo(0, 100);
+  GetDocument().domWindow()->scrollToForTesting(0, 100);
   UpdateAllLifecyclePhasesForTest();
 
   EXPECT_EQ(gfx::Vector2dF(0, -100),
@@ -523,11 +530,205 @@ TEST_P(PrePaintTreeWalkTest, ScrollTranslationNodeForNonZeroScrollPosition) {
 
   // When the scroll is scrolled all the way to the end of content it should
   // still get a scroll node.
-  scroller->scrollBy(-10000, 0);
+  scroller->scrollByForTesting(-10000, 0);
   UpdateAllLifecyclePhasesForTest();
   ASSERT_NE(ScrollOffset(), scrollable_area->GetScrollOffset());
   ASSERT_EQ(gfx::PointF(), scrollable_area->ScrollPosition());
   EXPECT_TRUE(object->FirstFragment().PaintProperties()->ScrollTranslation());
+}
+
+class SoftNavigationPrePaintTreeWalkTest : public RenderingTest {
+ public:
+  SoftNavigationPrePaintTreeWalkTest() = default;
+  ~SoftNavigationPrePaintTreeWalkTest() override = default;
+
+  SoftNavigationContext* CreateSoftNavigationContext() {
+    auto* initial_event_timing = CreatePerformanceEventTimingForTest(
+        event_type_names::kClick, base::TimeTicks::Now(), GetDocument().body(),
+        GetDocument().domWindow());
+    return MakeGarbageCollected<SoftNavigationContext>(
+        *GetDocument().domWindow(), initial_event_timing);
+  }
+
+ private:
+  void SetUp() override {
+    EnableCompositing();
+    RenderingTest::SetUp();
+  }
+};
+
+TEST_F(SoftNavigationPrePaintTreeWalkTest,
+       ShouldInheritSoftNavigationContextUpdate) {
+  SetBodyInnerHTML(R"HTML(
+    <div id='ancestor' style='width: 100px; height: 100px;'>
+      <div id='target' style='width: 100px; height: 100px;'>
+        <div id='descendant' style='width: 100px; height: 100px;'>
+          <div id='content' style='width: 100px; height: 100px;'>
+            Content
+          </div>
+        </div>
+      </div>
+    </div>
+  )HTML");
+
+  UpdateAllLifecyclePhasesForTest();
+  auto& ancestor = *GetLayoutObjectByElementId("ancestor");
+  auto& target = *GetLayoutObjectByElementId("target");
+  auto& descendant = *GetLayoutObjectByElementId("descendant");
+  auto& content = *GetLayoutObjectByElementId("content");
+
+  EXPECT_FALSE(ancestor.SoftNavigationContextChanged());
+  EXPECT_FALSE(target.SoftNavigationContextChanged());
+  EXPECT_FALSE(descendant.SoftNavigationContextChanged());
+  EXPECT_FALSE(content.SoftNavigationContextChanged());
+
+  EXPECT_FALSE(ancestor.DescendantSoftNavigationContextChanged());
+  EXPECT_FALSE(target.DescendantSoftNavigationContextChanged());
+  EXPECT_FALSE(descendant.DescendantSoftNavigationContextChanged());
+  EXPECT_FALSE(content.DescendantSoftNavigationContextChanged());
+
+  EXPECT_TRUE(ancestor.ShouldInheritSoftNavigationContext());
+  EXPECT_TRUE(target.ShouldInheritSoftNavigationContext());
+  EXPECT_TRUE(descendant.ShouldInheritSoftNavigationContext());
+  EXPECT_TRUE(content.ShouldInheritSoftNavigationContext());
+
+  auto* context = CreateSoftNavigationContext();
+  SoftNavigationHeuristics* heuristics =
+      GetDocument().domWindow()->GetSoftNavigationHeuristics();
+  ASSERT_TRUE(heuristics);
+  SoftNavigationPaintAttributionTracker* tracker =
+      heuristics->GetPaintAttributionTracker();
+  ASSERT_TRUE(tracker);
+  tracker->MarkNodeAsDirectlyModified(target.GetNode(), context);
+
+  EXPECT_FALSE(ancestor.SoftNavigationContextChanged());
+  EXPECT_TRUE(target.SoftNavigationContextChanged());
+  EXPECT_FALSE(descendant.SoftNavigationContextChanged());
+  EXPECT_FALSE(content.SoftNavigationContextChanged());
+
+  EXPECT_TRUE(ancestor.DescendantSoftNavigationContextChanged());
+  EXPECT_FALSE(target.DescendantSoftNavigationContextChanged());
+  EXPECT_FALSE(descendant.DescendantSoftNavigationContextChanged());
+  EXPECT_FALSE(content.DescendantSoftNavigationContextChanged());
+
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(ancestor.SoftNavigationContextChanged());
+  EXPECT_FALSE(target.SoftNavigationContextChanged());
+  EXPECT_FALSE(descendant.SoftNavigationContextChanged());
+  EXPECT_FALSE(content.SoftNavigationContextChanged());
+
+  EXPECT_FALSE(ancestor.DescendantSoftNavigationContextChanged());
+  EXPECT_FALSE(target.DescendantSoftNavigationContextChanged());
+  EXPECT_FALSE(descendant.DescendantSoftNavigationContextChanged());
+  EXPECT_FALSE(content.DescendantSoftNavigationContextChanged());
+
+  EXPECT_TRUE(ancestor.ShouldInheritSoftNavigationContext());
+  EXPECT_FALSE(target.ShouldInheritSoftNavigationContext());
+  EXPECT_TRUE(descendant.ShouldInheritSoftNavigationContext());
+  EXPECT_TRUE(content.ShouldInheritSoftNavigationContext());
+
+  EXPECT_TRUE(tracker->IsAttributable(content.GetNode(), context));
+}
+
+class ContainerTimingPrePaintTreeWalkTest : public RenderingTest {
+ public:
+  ContainerTimingPrePaintTreeWalkTest() = default;
+  ~ContainerTimingPrePaintTreeWalkTest() override = default;
+
+  ContainerTimingPaintAttributionTracker* GetTracker() {
+    return ContainerTiming::From(*GetDocument().domWindow())
+        .PaintAttributionTracker();
+  }
+
+ private:
+  void SetUp() override {
+    EnableCompositing();
+    RenderingTest::SetUp();
+  }
+
+  ScopedContainerTimingPrepaintTraversalForTest scoped_feature_{true};
+};
+
+// Mirrors ShouldInheritSoftNavigationContextUpdate: verifies the pre-paint walk
+// maintains the per-LayoutObject container-timing dirty bits and the
+// ShouldInheritContainerTimingRoot cache, and that adding a containertiming
+// attribute re-attributes the subtree through the real walk.
+TEST_F(ContainerTimingPrePaintTreeWalkTest,
+       ShouldInheritContainerTimingRootUpdate) {
+  SetBodyInnerHTML(R"HTML(
+    <div id='ancestor' style='width: 100px; height: 100px;'>
+      <div id='target' style='width: 100px; height: 100px;'>
+        <div id='descendant' style='width: 100px; height: 100px;'>
+          <div id='content' style='width: 100px; height: 100px;'>
+            Content
+          </div>
+        </div>
+      </div>
+    </div>
+  )HTML");
+
+  UpdateAllLifecyclePhasesForTest();
+  auto& ancestor = *GetLayoutObjectByElementId("ancestor");
+  auto& target = *GetLayoutObjectByElementId("target");
+  auto& descendant = *GetLayoutObjectByElementId("descendant");
+  auto& content = *GetLayoutObjectByElementId("content");
+
+  // A clean walk with no containertiming roots leaves every node clean and
+  // inheriting its (absent) ancestor root.
+  EXPECT_FALSE(ancestor.ContainerTimingChanged());
+  EXPECT_FALSE(target.ContainerTimingChanged());
+  EXPECT_FALSE(descendant.ContainerTimingChanged());
+  EXPECT_FALSE(content.ContainerTimingChanged());
+
+  EXPECT_FALSE(ancestor.DescendantContainerTimingChanged());
+  EXPECT_FALSE(target.DescendantContainerTimingChanged());
+  EXPECT_FALSE(descendant.DescendantContainerTimingChanged());
+  EXPECT_FALSE(content.DescendantContainerTimingChanged());
+
+  EXPECT_TRUE(ancestor.ShouldInheritContainerTimingRoot());
+  EXPECT_TRUE(target.ShouldInheritContainerTimingRoot());
+  EXPECT_TRUE(descendant.ShouldInheritContainerTimingRoot());
+  EXPECT_TRUE(content.ShouldInheritContainerTimingRoot());
+
+  // Adding containertiming to #target dirties it and propagates the descendant
+  // bit up to its ancestors, without touching the subtree below.
+  auto* target_element = GetDocument().getElementById(AtomicString("target"));
+  target_element->setAttribute(html_names::kContainertimingAttr,
+                               AtomicString("target"));
+
+  EXPECT_FALSE(ancestor.ContainerTimingChanged());
+  EXPECT_TRUE(target.ContainerTimingChanged());
+  EXPECT_FALSE(descendant.ContainerTimingChanged());
+  EXPECT_FALSE(content.ContainerTimingChanged());
+
+  EXPECT_TRUE(ancestor.DescendantContainerTimingChanged());
+  EXPECT_FALSE(target.DescendantContainerTimingChanged());
+  EXPECT_FALSE(descendant.DescendantContainerTimingChanged());
+  EXPECT_FALSE(content.DescendantContainerTimingChanged());
+
+  // The walk consumes the dirty bits and caches the inheritance decision:
+  // #target becomes a root (does not inherit), its descendants inherit it.
+  UpdateAllLifecyclePhasesForTest();
+
+  EXPECT_FALSE(ancestor.ContainerTimingChanged());
+  EXPECT_FALSE(target.ContainerTimingChanged());
+  EXPECT_FALSE(descendant.ContainerTimingChanged());
+  EXPECT_FALSE(content.ContainerTimingChanged());
+
+  EXPECT_FALSE(ancestor.DescendantContainerTimingChanged());
+  EXPECT_FALSE(target.DescendantContainerTimingChanged());
+  EXPECT_FALSE(descendant.DescendantContainerTimingChanged());
+  EXPECT_FALSE(content.DescendantContainerTimingChanged());
+
+  EXPECT_TRUE(ancestor.ShouldInheritContainerTimingRoot());
+  EXPECT_FALSE(target.ShouldInheritContainerTimingRoot());
+  EXPECT_TRUE(descendant.ShouldInheritContainerTimingRoot());
+  EXPECT_TRUE(content.ShouldInheritContainerTimingRoot());
+
+  // The tracker now attributes the text aggregation box (#content) to #target.
+  ContainerTimingPaintAttributionTracker* tracker = GetTracker();
+  ASSERT_TRUE(tracker);
+  EXPECT_EQ(tracker->GetContainerRootFor(content.GetNode()), target_element);
 }
 
 }  // namespace blink

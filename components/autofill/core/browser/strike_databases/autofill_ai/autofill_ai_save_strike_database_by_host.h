@@ -5,10 +5,13 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_STRIKE_DATABASES_AUTOFILL_AI_AUTOFILL_AI_SAVE_STRIKE_DATABASE_BY_HOST_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_STRIKE_DATABASES_AUTOFILL_AI_AUTOFILL_AI_SAVE_STRIKE_DATABASE_BY_HOST_H_
 
+#include <stddef.h>
+
 #include <string>
 #include <string_view>
 
-#include "components/autofill/core/browser/strike_databases/history_clearable_strike_database.h"
+#include "base/time/time.h"
+#include "components/strike_database/history_clearable_strike_database.h"
 
 namespace autofill {
 
@@ -26,10 +29,10 @@ struct AutofillAiSaveStrikeDatabaseByHostTraits {
 };
 
 class AutofillAiSaveStrikeDatabaseByHost
-    : public autofill::HistoryClearableStrikeDatabase<
+    : public strike_database::HistoryClearableStrikeDatabase<
           AutofillAiSaveStrikeDatabaseByHostTraits> {
  public:
-  using autofill::HistoryClearableStrikeDatabase<
+  using strike_database::HistoryClearableStrikeDatabase<
       AutofillAiSaveStrikeDatabaseByHostTraits>::HistoryClearableStrikeDatabase;
 
   // Returns an id for use in the strike database.

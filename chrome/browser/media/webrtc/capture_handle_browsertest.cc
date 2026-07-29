@@ -11,8 +11,10 @@
 #include "base/memory/raw_ptr.h"
 #include "base/path_service.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/to_string.h"
+#include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "build/buildflag.h"
 #include "chrome/browser/media/webrtc/webrtc_browsertest_base.h"
@@ -204,11 +206,16 @@ class CaptureHandleBrowserTest : public WebRtcTestBase {
         switches::kEnableExperimentalWebPlatformFeatures);
     command_line->AppendSwitchASCII(
         switches::kAutoSelectTabCaptureSourceByTitle, kCapturedTabTitle);
-    // MSan and GL do not get along so avoid using the GPU with MSan.
+#if defined(MEMORY_SANITIZER) && !BUILDFLAG(IS_CHROMEOS)
+    // Force software rendering to avoid GPU process crashes on slow MSan bots.
+    // ChromeOS is excluded as it requires GPU acceleration even under MSan.
+    command_line->AppendSwitch(switches::kDisableGpu);
+#else
     // TODO(crbug.com/40260482): Remove the CrOS exception after fixing feature
     // detection in 0c tab capture path as it'll no longer be needed.
-#if !BUILDFLAG(IS_CHROMEOS) && !defined(MEMORY_SANITIZER)
+#if !BUILDFLAG(IS_CHROMEOS)
     command_line->AppendSwitch(switches::kUseGpuInTests);
+#endif
 #endif
   }
 
@@ -400,7 +407,7 @@ IN_PROC_BROWSER_TEST_F(
 }
 
 // TODO(crbug.com/40185394): Test disabled on Mac due to multiple failing bots.
-// TODO(crbug.com/1287616, crbug.com/1362946): Flaky on Chrome OS and Windows.
+// TODO(crbug.com/40211291, crbug.com/40864623): Flaky on Chrome OS and Windows.
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_WIN)
 #define MAYBE_HandleExposedIfCallingFrameAllowlistedEvenIfTopLevelNotAllowlisted \
   DISABLED_HandleExposedIfCallingFrameAllowlistedEvenIfTopLevelNotAllowlisted
@@ -534,9 +541,17 @@ IN_PROC_BROWSER_TEST_F(
   EXPECT_EQ(capturing_tab.ReadCaptureHandle(), captured_tab.capture_handle);
 }
 
+// TODO(crbug.com/462962569): Flaky on linux msan.
+#if BUILDFLAG(IS_LINUX) && defined(MEMORY_SANITIZER)
+#define MAYBE_PermittedOriginsChangeThatRemovesCapturerCausesEventAndEmptyConfig \
+  DISABLED_PermittedOriginsChangeThatRemovesCapturerCausesEventAndEmptyConfig
+#else
+#define MAYBE_PermittedOriginsChangeThatRemovesCapturerCausesEventAndEmptyConfig \
+  PermittedOriginsChangeThatRemovesCapturerCausesEventAndEmptyConfig
+#endif
 IN_PROC_BROWSER_TEST_F(
     CaptureHandleBrowserTest,
-    PermittedOriginsChangeThatRemovesCapturerCausesEventAndEmptyConfig) {
+    MAYBE_PermittedOriginsChangeThatRemovesCapturerCausesEventAndEmptyConfig) {
   TabInfo captured_tab =
       SetUpCapturedPage(/*expose_origin=*/true, "handle", {"*"});
 

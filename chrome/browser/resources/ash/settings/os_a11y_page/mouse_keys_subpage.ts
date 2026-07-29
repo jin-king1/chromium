@@ -13,7 +13,6 @@ import {VKey} from 'chrome://resources/ash/common/shortcut_input_ui/accelerator_
 import {MetaKey, Modifier} from 'chrome://resources/ash/common/shortcut_input_ui/shortcut_utils.js';
 import type {ShortcutLabelProperties} from 'chrome://resources/ash/common/shortcut_input_ui/shortcut_utils.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
-import {stringToMojoString16} from 'chrome://resources/js/mojo_type_util.js';
 import {AcceleratorKeyState} from 'chrome://resources/mojo/ui/base/accelerators/mojom/accelerator.mojom-webui.js';
 import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
@@ -69,13 +68,6 @@ export class SettingsMouseKeysSubpageElement extends
         type: String,
         computed:
             'getToggleLabel_(prefs.settings.a11y.mouse_keys.enabled.value)',
-      },
-
-      supportedSettingIds: {
-        type: Object,
-        value: () => new Set<Setting>([
-          Setting.kMouseKeysEnabled,
-        ]),
       },
 
       mouseKeysDominantHandOptions_: {
@@ -170,7 +162,7 @@ export class SettingsMouseKeysSubpageElement extends
         },
       },
 
-      numKeypadPreviewOptions: {
+      numKeypadPreviewOptions_: {
         readOnly: true,
         type: Array,
         value() {
@@ -208,8 +200,19 @@ export class SettingsMouseKeysSubpageElement extends
     };
   }
 
-  private primaryKeyboardRightHandPreviewOptions_: KeyboardPreviewOption[];
-  private primaryKeyboardLeftHandPreviewOptions_: KeyboardPreviewOption[];
+  // DeepLinkingMixin override
+  override supportedSettingIds = new Set<Setting>([
+    Setting.kMouseKeysEnabled,
+  ]);
+
+  declare private readonly mouseKeysDominantHandOptions_:
+      Array<{value: number, name: string}>;
+  declare private readonly numKeypadPreviewOptions_: KeyboardPreviewOption[];
+  declare private primaryKeyboardRightHandPreviewOptions_:
+      KeyboardPreviewOption[];
+  declare private primaryKeyboardLeftHandPreviewOptions_:
+      KeyboardPreviewOption[];
+  declare private toggleLabel_: string;
 
   private getToggleLabel_(): string {
     return this.getPref('settings.a11y.mouse_keys.enabled').value ?
@@ -292,7 +295,7 @@ export class SettingsMouseKeysSubpageElement extends
 
   private getShortcutLabelProperties_(): ShortcutLabelProperties[] {
     return [{
-      keyDisplay: stringToMojoString16('4'),
+      keyDisplay: '4',
       accelerator: {
         modifiers: Modifier.ALT + Modifier.COMMAND,
         keyCode: VKey.kNum4,

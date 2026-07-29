@@ -13,8 +13,10 @@
 #include <string_view>
 #include <type_traits>
 #include <utility>
+#include <variant>
 #include <vector>
 
+#include "base/compiler_specific.h"
 #include "base/component_export.h"
 #include "base/files/file_path.h"
 #include "base/notreached.h"
@@ -24,7 +26,6 @@
 #include "services/network/public/mojom/chunked_data_pipe_getter.mojom-forward.h"
 #include "services/network/public/mojom/data_pipe_getter.mojom-forward.h"
 #include "services/network/public/mojom/url_request.mojom-shared.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 
 namespace network {
 
@@ -43,10 +44,10 @@ class COMPONENT_EXPORT(NETWORK_CPP_BASE) DataElementBytes final {
 
   const std::vector<uint8_t>& bytes() const { return bytes_; }
 
-  std::string_view AsStringPiece() const {
-    return std::string_view(reinterpret_cast<const char*>(bytes_.data()),
-                            bytes_.size());
-  }
+  // DEPRECATED. Use AsStringView() instead.
+  std::string_view AsStringPiece() const { return AsStringView(); }
+
+  std::string_view AsStringView() const;
 
   DataElementBytes Clone() const;
 
@@ -145,11 +146,11 @@ class COMPONENT_EXPORT(NETWORK_CPP_BASE) DataElementFile final {
 // above. See them for details.
 class COMPONENT_EXPORT(NETWORK_CPP_BASE) DataElement {
  private:
-  using Variant = absl::variant<absl::monostate,
-                                DataElementBytes,
-                                DataElementDataPipe,
-                                DataElementChunkedDataPipe,
-                                DataElementFile>;
+  using Variant = std::variant<std::monostate,
+                               DataElementBytes,
+                               DataElementDataPipe,
+                               DataElementChunkedDataPipe,
+                               DataElementFile>;
 
  public:
   using Tag = mojom::DataElementDataView::Tag;
@@ -159,8 +160,8 @@ class COMPONENT_EXPORT(NETWORK_CPP_BASE) DataElement {
   // and replaced with a valid value as soon as possible.
   DataElement();
 
-  template <typename T,
-            typename = std::enable_if_t<std::is_constructible_v<Variant, T>>>
+  template <typename T>
+    requires(std::is_constructible_v<Variant, T>)
   explicit DataElement(T&& t) : variant_(std::forward<T>(t)) {}
   DataElement(const DataElement&) = delete;
   DataElement& operator=(const DataElement&) = delete;
@@ -190,13 +191,23 @@ class COMPONENT_EXPORT(NETWORK_CPP_BASE) DataElement {
   }
 
   template <typename T>
-  const T& As() const {
-    return absl::get<T>(variant_);
+  const T& As() const LIFETIME_BOUND {
+    return std::get<T>(variant_);
   }
 
   template <typename T>
-  T& As() {
-    return absl::get<T>(variant_);
+  T& As() LIFETIME_BOUND {
+    return std::get<T>(variant_);
+  }
+
+  template <typename T>
+  const T* TryAs() const LIFETIME_BOUND {
+    return std::get_if<T>(&variant_);
+  }
+
+  template <typename T>
+  T* TryAs() LIFETIME_BOUND {
+    return std::get_if<T>(&variant_);
   }
 
  private:

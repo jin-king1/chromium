@@ -9,6 +9,7 @@
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/test/bind.h"
+#include "base/test/run_until.h"
 #include "base/time/time.h"
 #include "chrome/browser/ash/file_manager/file_tasks_observer.h"
 #include "chrome/browser/ash/file_manager/path_util.h"
@@ -16,6 +17,7 @@
 #include "chrome/browser/ash/file_suggest/file_suggest_util.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile_manager.h"
+#include "components/prefs/pref_service.h"
 #include "content/public/test/browser_task_environment.h"
 #include "storage/browser/file_system/external_mount_points.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -53,15 +55,11 @@ class LocalFileSuggestionProviderTest : public testing::Test {
   void WriteFile(const base::FilePath& path) {
     CHECK(base::WriteFile(path, "abcd"));
     CHECK(base::PathExists(path));
-    Wait();
   }
 
-  void Wait() { task_environment_.RunUntilIdle(); }
-
   void WaitForProviderToBeInitialized() {
-    while (!provider_->IsInitialized()) {
-      Wait();
-    }
+    ASSERT_TRUE(
+        base::test::RunUntil([&] { return provider_->IsInitialized(); }));
   }
 
   void UpdateResults() {
@@ -87,9 +85,10 @@ class LocalFileSuggestionProviderTest : public testing::Test {
     profile_ = testing_profile_manager_->CreateTestingProfile(
         "primary_profile@test", {});
     provider_ = std::make_unique<LocalFileSuggestionProvider>(
-        profile_, base::BindRepeating(
-                      &LocalFileSuggestionProviderTest::OnSuggestionsUpdated,
-                      base::Unretained(this)));
+        TestingBrowserProcess::GetGlobal()->local_state(), profile_,
+        base::BindRepeating(
+            &LocalFileSuggestionProviderTest::OnSuggestionsUpdated,
+            base::Unretained(this)));
     UpdateResults();
     WaitForProviderToBeInitialized();
   }

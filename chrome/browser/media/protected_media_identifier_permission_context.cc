@@ -4,9 +4,11 @@
 
 #include "chrome/browser/media/protected_media_identifier_permission_context.h"
 
+#include "base/check.h"
 #include "base/command_line.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
+#include "base/logging.h"
 #include "base/metrics/user_metrics.h"
 #include "base/strings/string_split.h"
 #include "build/build_config.h"
@@ -15,6 +17,7 @@
 #include "chrome/common/pref_names.h"
 #include "components/content_settings/browser/page_specific_content_settings.h"
 #include "components/permissions/permission_util.h"
+#include "components/policy/core/common/policy_pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/render_frame_host.h"
@@ -27,7 +30,6 @@
 #include <utility>
 
 #include "ash/constants/ash_switches.h"
-#include "base/metrics/histogram_macros.h"
 #include "chromeos/ash/components/settings/cros_settings.h"
 #include "chromeos/ash/components/settings/cros_settings_names.h"
 #include "chromeos/dbus/constants/dbus_switches.h"
@@ -42,10 +44,24 @@
 #error This file currently only supports Chrome OS, Android and Windows.
 #endif
 
+namespace {
+
+// Returns whether the use of protected content identifier is allowed by
+// enterprise policy.
+bool IsProtectedContentIdentifierAllowedByPolicy(Profile* profile) {
+  PrefService* service = profile->GetPrefs();
+  DCHECK(service);
+
+  return service->GetBoolean(
+      policy::policy_prefs::kProtectedContentIdentifiersAllowed);
+}
+
+}  // namespace
+
 ProtectedMediaIdentifierPermissionContext::
     ProtectedMediaIdentifierPermissionContext(
         content::BrowserContext* browser_context)
-    : PermissionContextBase(
+    : permissions::ContentSettingPermissionContextBase(
           browser_context,
           ContentSettingsType::PROTECTED_MEDIA_IDENTIFIER,
           network::mojom::PermissionsPolicyFeature::kEncryptedMedia) {}
@@ -54,7 +70,7 @@ ProtectedMediaIdentifierPermissionContext::
     ~ProtectedMediaIdentifierPermissionContext() = default;
 
 ContentSetting
-ProtectedMediaIdentifierPermissionContext::GetPermissionStatusInternal(
+ProtectedMediaIdentifierPermissionContext::GetContentSettingStatusInternal(
     content::RenderFrameHost* render_frame_host,
     const GURL& requesting_origin,
     const GURL& embedding_origin) const {
@@ -67,8 +83,8 @@ ProtectedMediaIdentifierPermissionContext::GetPermissionStatusInternal(
     return CONTENT_SETTING_BLOCK;
   }
 
-  ContentSetting content_setting =
-      permissions::PermissionContextBase::GetPermissionStatusInternal(
+  ContentSetting content_setting = permissions::
+      ContentSettingPermissionContextBase::GetContentSettingStatusInternal(
           render_frame_host, requesting_origin, embedding_origin);
   DCHECK(content_setting == CONTENT_SETTING_ALLOW ||
 #if BUILDFLAG(IS_ANDROID)
@@ -106,18 +122,17 @@ bool ProtectedMediaIdentifierPermissionContext::IsOriginAllowed(
 }
 
 void ProtectedMediaIdentifierPermissionContext::UpdateTabContext(
-    const permissions::PermissionRequestID& id,
-    const GURL& requesting_frame,
+    const permissions::PermissionRequestData& request_data,
     bool allowed) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
   // WebContents may have gone away.
   content_settings::PageSpecificContentSettings* content_settings =
       content_settings::PageSpecificContentSettings::GetForFrame(
-          id.global_render_frame_host_id());
+          request_data.id.global_render_frame_host_id());
   if (content_settings) {
     content_settings->OnProtectedMediaIdentifierPermissionSet(
-        requesting_frame.DeprecatedGetOriginAsURL(), allowed);
+        request_data.requesting_origin.DeprecatedGetOriginAsURL(), allowed);
   }
 }
 
@@ -157,6 +172,12 @@ bool ProtectedMediaIdentifierPermissionContext::
   }
 #endif  // BUILDFLAG(IS_CHROMEOS)
 #endif  // BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_WIN)
+
+  if (!IsProtectedContentIdentifierAllowedByPolicy(profile)) {
+    DVLOG(1)
+        << "Protected content identifier disabled due to enterprise policy.";
+    return false;
+  }
 
   return true;
 }

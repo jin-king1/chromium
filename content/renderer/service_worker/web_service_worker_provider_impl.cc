@@ -8,12 +8,14 @@
 #include <utility>
 
 #include "base/containers/to_vector.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/trace_event/trace_event.h"
 #include "content/renderer/service_worker/service_worker_provider_context.h"
 #include "content/renderer/service_worker/service_worker_type_converters.h"
 #include "content/renderer/worker/fetch_client_settings_object_helpers.h"
+#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/messaging/message_port_channel.h"
 #include "third_party/blink/public/common/service_worker/service_worker_scope_match.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_container_type.mojom.h"
@@ -22,15 +24,13 @@
 #include "third_party/blink/public/platform/modules/service_worker/web_service_worker_error.h"
 #include "third_party/blink/public/platform/modules/service_worker/web_service_worker_provider_client.h"
 #include "third_party/blink/public/platform/web_url.h"
+#include "third_party/perfetto/include/perfetto/tracing/track.h"
 
 using blink::WebURL;
 
 namespace content {
 
 namespace {
-
-const char kLostConnectionErrorMessage[] =
-    "Lost connection to the service worker system.";
 
 template <typename T>
 static std::string MojoEnumToString(T mojo_enum) {
@@ -39,14 +39,22 @@ static std::string MojoEnumToString(T mojo_enum) {
   return oss.str();
 }
 
+bool IsValidContext(ServiceWorkerProviderContext* context) {
+  return context->container_type() ==
+             blink::mojom::ServiceWorkerContainerType::kForWindow ||
+         (base::FeatureList::IsEnabled(
+              blink::features::kServiceWorkerInDedicatedWorker) &&
+          context->container_type() ==
+              blink::mojom::ServiceWorkerContainerType::kForDedicatedWorker);
+}
+
 }  // anonymous namespace
 
 WebServiceWorkerProviderImpl::WebServiceWorkerProviderImpl(
     ServiceWorkerProviderContext* context)
     : context_(context), provider_client_(nullptr) {
   DCHECK(context_);
-  DCHECK_EQ(context_->container_type(),
-            blink::mojom::ServiceWorkerContainerType::kForWindow);
+  DCHECK(IsValidContext(context_.get()));
   context_->SetWebServiceWorkerProvider(weak_factory_.GetWeakPtr());
 }
 
@@ -84,23 +92,10 @@ void WebServiceWorkerProviderImpl::RegisterServiceWorker(
       script_url.possibly_invalid_spec().size() > url::kMaxURLChars) {
     callbacks->OnError(blink::WebServiceWorkerError(
         blink::mojom::ServiceWorkerErrorType::kSecurity,
-        blink::WebString::FromASCII(
+        blink::WebString::FromAscii(
             error_prefix + "The provided scriptURL or scope is too long.")));
     return;
   }
-
-  if (!context_->container_host()) {
-    callbacks->OnError(blink::WebServiceWorkerError(
-        blink::mojom::ServiceWorkerErrorType::kAbort,
-        blink::WebString::FromASCII(error_prefix +
-                                    kLostConnectionErrorMessage)));
-    return;
-  }
-
-  TRACE_EVENT_NESTABLE_ASYNC_BEGIN2(
-      "ServiceWorker", "WebServiceWorkerProviderImpl::RegisterServiceWorker",
-      TRACE_ID_LOCAL(this), "Scope", pattern.spec(), "Script URL",
-      script_url.spec());
 
   // TODO(asamidoi): Create this options in
   // ServiceWorkerContainer::RegisterServiceWorker() and pass it as an argument
@@ -108,7 +103,11 @@ void WebServiceWorkerProviderImpl::RegisterServiceWorker(
   // blink::mojom::ServiceWorkerUpdateViaCache.
   auto options = blink::mojom::ServiceWorkerRegistrationOptions::New(
       pattern, script_type, update_via_cache);
-  context_->container_host()->Register(
+  TRACE_EVENT_INSTANT(
+      "ServiceWorker", "WebServiceWorkerProviderImpl::RegisterServiceWorker",
+      perfetto::Flow::FromPointer(callbacks.get(), "RegisterServiceWorker"),
+      "Scope", pattern.spec(), "Script URL", script_url.spec());
+  context_->Register(
       script_url, std::move(options),
       FetchClientSettingsObjectFromWebToMojom(fetch_client_settings_object),
       base::BindOnce(&WebServiceWorkerProviderImpl::OnRegistered,
@@ -124,23 +123,15 @@ void WebServiceWorkerProviderImpl::GetRegistration(
   if (document_url.possibly_invalid_spec().size() > url::kMaxURLChars) {
     callbacks->OnError(blink::WebServiceWorkerError(
         blink::mojom::ServiceWorkerErrorType::kSecurity,
-        blink::WebString::FromASCII(error_prefix +
+        blink::WebString::FromAscii(error_prefix +
                                     "The provided documentURL is too long.")));
     return;
   }
-
-  if (!context_->container_host()) {
-    callbacks->OnError(blink::WebServiceWorkerError(
-        blink::mojom::ServiceWorkerErrorType::kAbort,
-        blink::WebString::FromASCII(error_prefix +
-                                    kLostConnectionErrorMessage)));
-    return;
-  }
-
-  TRACE_EVENT_NESTABLE_ASYNC_BEGIN1(
+  TRACE_EVENT_INSTANT(
       "ServiceWorker", "WebServiceWorkerProviderImpl::GetRegistration",
-      TRACE_ID_LOCAL(this), "Document URL", document_url.spec());
-  context_->container_host()->GetRegistration(
+      perfetto::Flow::FromPointer(callbacks.get(), "GetRegistration"),
+      "Document URL", document_url.spec());
+  context_->GetRegistration(
       document_url,
       base::BindOnce(&WebServiceWorkerProviderImpl::OnDidGetRegistration,
                      weak_factory_.GetWeakPtr(), std::move(callbacks)));
@@ -148,35 +139,20 @@ void WebServiceWorkerProviderImpl::GetRegistration(
 
 void WebServiceWorkerProviderImpl::GetRegistrations(
     std::unique_ptr<WebServiceWorkerGetRegistrationsCallbacks> callbacks) {
-  DCHECK(callbacks);
-  if (!context_->container_host()) {
-    const std::string error_prefix(
-        "Failed to get ServiceWorkerRegistration objects: ");
-    callbacks->OnError(blink::WebServiceWorkerError(
-        blink::mojom::ServiceWorkerErrorType::kAbort,
-        blink::WebString::FromASCII(error_prefix +
-                                    kLostConnectionErrorMessage)));
-    return;
-  }
-
-  TRACE_EVENT_NESTABLE_ASYNC_BEGIN0(
+  TRACE_EVENT_INSTANT(
       "ServiceWorker", "WebServiceWorkerProviderImpl::GetRegistrations",
-      TRACE_ID_LOCAL(this));
-  context_->container_host()->GetRegistrations(
+      perfetto::Flow::FromPointer(callbacks.get(), "GetRegistrations"));
+  context_->GetRegistrations(
       base::BindOnce(&WebServiceWorkerProviderImpl::OnDidGetRegistrations,
                      weak_factory_.GetWeakPtr(), std::move(callbacks)));
 }
 
 void WebServiceWorkerProviderImpl::GetRegistrationForReady(
     GetRegistrationForReadyCallback callback) {
-  if (!context_->container_host()) {
-    return;
-  }
-
-  TRACE_EVENT_NESTABLE_ASYNC_BEGIN0(
+  TRACE_EVENT_INSTANT(
       "ServiceWorker", "WebServiceWorkerProviderImpl::GetRegistrationForReady",
-      TRACE_ID_LOCAL(this));
-  context_->container_host()->GetRegistrationForReady(base::BindOnce(
+      perfetto::Flow::FromPointer(this, "GetRegistrationForReady"));
+  context_->GetRegistrationForReady(base::BindOnce(
       &WebServiceWorkerProviderImpl::OnDidGetRegistrationForReady,
       weak_factory_.GetWeakPtr(), std::move(callback)));
 }
@@ -190,7 +166,7 @@ bool WebServiceWorkerProviderImpl::ValidateScopeAndScriptURL(
       blink::ServiceWorkerScopeOrScriptUrlContainsDisallowedCharacter(
           scope, script_url, &error);
   if (has_error)
-    *error_message = blink::WebString::FromUTF8(error);
+    *error_message = blink::WebString::FromUtf8(error);
   return !has_error;
 }
 
@@ -231,15 +207,17 @@ void WebServiceWorkerProviderImpl::OnRegistered(
     blink::mojom::ServiceWorkerErrorType error,
     const std::optional<std::string>& error_msg,
     blink::mojom::ServiceWorkerRegistrationObjectInfoPtr registration) {
-  TRACE_EVENT_NESTABLE_ASYNC_END2(
-      "ServiceWorker", "WebServiceWorkerProviderImpl::RegisterServiceWorker",
-      TRACE_ID_LOCAL(this), "Error", MojoEnumToString(error), "Message",
-      error_msg ? *error_msg : "Success");
+  TRACE_EVENT_INSTANT("ServiceWorker",
+                      "WebServiceWorkerProviderImpl::OnRegistered",
+                      perfetto::TerminatingFlow::FromPointer(
+                          callbacks.get(), "RegisterServiceWorker"),
+                      "Error", MojoEnumToString(error), "Message",
+                      error_msg ? *error_msg : "Success");
   if (error != blink::mojom::ServiceWorkerErrorType::kNone) {
     DCHECK(error_msg);
     DCHECK(!registration);
     callbacks->OnError(blink::WebServiceWorkerError(
-        error, blink::WebString::FromASCII(*error_msg)));
+        error, blink::WebString::FromAscii(*error_msg)));
     return;
   }
 
@@ -257,15 +235,17 @@ void WebServiceWorkerProviderImpl::OnDidGetRegistration(
     blink::mojom::ServiceWorkerErrorType error,
     const std::optional<std::string>& error_msg,
     blink::mojom::ServiceWorkerRegistrationObjectInfoPtr registration) {
-  TRACE_EVENT_NESTABLE_ASYNC_END2(
-      "ServiceWorker", "WebServiceWorkerProviderImpl::GetRegistration",
-      TRACE_ID_LOCAL(this), "Error", MojoEnumToString(error), "Message",
-      error_msg ? *error_msg : "Success");
+  TRACE_EVENT_INSTANT("ServiceWorker",
+                      "WebServiceWorkerProviderImpl::OnDidGetRegistration",
+                      perfetto::TerminatingFlow::FromPointer(callbacks.get(),
+                                                             "GetRegistration"),
+                      "Error", MojoEnumToString(error), "Message",
+                      error_msg ? *error_msg : "Success");
   if (error != blink::mojom::ServiceWorkerErrorType::kNone) {
     DCHECK(error_msg);
     DCHECK(!registration);
     callbacks->OnError(blink::WebServiceWorkerError(
-        error, blink::WebString::FromASCII(*error_msg)));
+        error, blink::WebString::FromAscii(*error_msg)));
     return;
   }
 
@@ -287,15 +267,17 @@ void WebServiceWorkerProviderImpl::OnDidGetRegistrations(
     std::optional<
         std::vector<blink::mojom::ServiceWorkerRegistrationObjectInfoPtr>>
         infos) {
-  TRACE_EVENT_NESTABLE_ASYNC_END2(
-      "ServiceWorker", "WebServiceWorkerProviderImpl::GetRegistrations",
-      TRACE_ID_LOCAL(this), "Error", MojoEnumToString(error), "Message",
-      error_msg ? *error_msg : "Success");
+  TRACE_EVENT_INSTANT("ServiceWorker",
+                      "WebServiceWorkerProviderImpl::OnDidGetRegistrations",
+                      perfetto::TerminatingFlow::FromPointer(
+                          callbacks.get(), "GetRegistrations"),
+                      "Error", MojoEnumToString(error), "Message",
+                      error_msg ? *error_msg : "Success");
   if (error != blink::mojom::ServiceWorkerErrorType::kNone) {
     DCHECK(error_msg);
     DCHECK(!infos);
     callbacks->OnError(blink::WebServiceWorkerError(
-        error, blink::WebString::FromASCII(*error_msg)));
+        error, blink::WebString::FromAscii(*error_msg)));
     return;
   }
 
@@ -310,9 +292,10 @@ void WebServiceWorkerProviderImpl::OnDidGetRegistrations(
 void WebServiceWorkerProviderImpl::OnDidGetRegistrationForReady(
     GetRegistrationForReadyCallback callback,
     blink::mojom::ServiceWorkerRegistrationObjectInfoPtr registration) {
-  TRACE_EVENT_NESTABLE_ASYNC_END0(
-      "ServiceWorker", "WebServiceWorkerProviderImpl::GetRegistrationForReady",
-      TRACE_ID_LOCAL(this));
+  TRACE_EVENT_INSTANT(
+      "ServiceWorker",
+      "WebServiceWorkerProviderImpl::OnDidGetRegistrationForReady",
+      perfetto::TerminatingFlow::FromPointer(this, "GetRegistrationForReady"));
   // TODO(leonhsl): Currently the only reason that we allow nullable
   // |registration| is: impl of the mojo method
   // GetRegistrationForReady() needs to respond some non-sense params even if it

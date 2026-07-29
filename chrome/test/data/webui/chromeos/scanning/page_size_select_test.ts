@@ -11,7 +11,7 @@ import {flush} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min
 import type {PageSizeSelectElement} from 'chrome://scanning/page_size_select.js';
 import {PageSize} from 'chrome://scanning/scanning.mojom-webui.js';
 import {getPageSizeString} from 'chrome://scanning/scanning_app_util.js';
-import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chromeos/chai_assert.js';
+import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 
 import {assertOrderedAlphabetically, changeSelectedIndex, changeSelectedValue} from './scanning_app_test_utils.js';
 
@@ -62,9 +62,9 @@ suite('pageSizeSelectTest', function() {
 
     assertEquals(2, select.length);
     assertEquals(
-        getPageSizeString(firstPageSize), getOption(0).textContent!.trim());
+        getPageSizeString(firstPageSize), getOption(0).textContent.trim());
     assertEquals(
-        getPageSizeString(secondPageSize), getOption(1).textContent!.trim());
+        getPageSizeString(secondPageSize), getOption(1).textContent.trim());
     assertEquals(firstPageSize.toString(), select.value);
 
     // Selecting a different option should update the selected value.

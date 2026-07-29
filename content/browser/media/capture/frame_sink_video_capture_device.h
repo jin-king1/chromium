@@ -102,7 +102,7 @@ class CONTENT_EXPORT FrameSinkVideoCaptureDevice
       const gfx::Rect& content_rect,
       mojo::PendingRemote<viz::mojom::FrameSinkVideoConsumerFrameCallbacks>
           callbacks) override;
-  void OnNewSubCaptureTargetVersion(uint32_t sub_capture_target_version) final;
+  void OnNewCaptureVersion(const media::CaptureVersion& capture_version) final;
   void OnFrameWithEmptyRegionCapture() final;
   void OnStopped() final;
   void OnLog(const std::string& message) final;
@@ -115,9 +115,13 @@ class CONTENT_EXPORT FrameSinkVideoCaptureDevice
       uint32_t sub_capture_target_version);
   virtual void OnTargetPermanentlyLost();
 
+  // Set the rotation of the video frames. This is used when capturing a
+  // rotated screen.
+  void SetVideoRotation(media::VideoRotation video_rotation);
+
  protected:
   MouseCursorOverlayController* cursor_controller() const {
-#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+#if !BUILDFLAG(IS_IOS)
     return cursor_controller_.get();
 #else
     return nullptr;
@@ -136,8 +140,11 @@ class CONTENT_EXPORT FrameSinkVideoCaptureDevice
 
   // Establishes connection to FrameSinkVideoCapturer using the global
   // viz::HostFrameSinkManager.
+  // `capture_version_source` indicates how many times the source was changed
+  // in the current capture-session. Changing the source resets sub-capture.
   static void CreateCapturerViaGlobalManager(
-      mojo::PendingReceiver<viz::mojom::FrameSinkVideoCapturer> receiver);
+      mojo::PendingReceiver<viz::mojom::FrameSinkVideoCapturer> receiver,
+      uint32_t capture_version_source);
 
  private:
   using BufferId = decltype(media::VideoCaptureDevice::Client::Buffer::id);
@@ -231,7 +238,7 @@ class CONTENT_EXPORT FrameSinkVideoCaptureDevice
 
   SEQUENCE_CHECKER(sequence_checker_);
 
-#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+#if !BUILDFLAG(IS_IOS)
   // Controls the overlay that renders the mouse cursor onto each video frame.
   const std::unique_ptr<MouseCursorOverlayController,
                         BrowserThread::DeleteOnUIThread>
@@ -245,12 +252,15 @@ class CONTENT_EXPORT FrameSinkVideoCaptureDevice
   // The value 0 is used before any sub-capture-target is assigned.
   // (Note that by applying and then removing a sub-capture target,
   // values other than 0 can also be associated with an uncropped track.)
-  uint32_t sub_capture_target_version_ = 0;
+  // TODO(crbug.com/394794490): Change to a media::CaptureVersion.
+  uint32_t sub_capture_version_ = 0;
 
   // Prevent display sleeping while content capture is in progress.
   mojo::Remote<device::mojom::WakeLock> wake_lock_;
 
   bool has_sent_on_started_to_client_ = false;
+
+  media::VideoRotation video_rotation_ = media::VIDEO_ROTATION_0;
 
   // Creates WeakPtrs for use on the device thread.
   base::WeakPtrFactory<FrameSinkVideoCaptureDevice> weak_factory_{this};

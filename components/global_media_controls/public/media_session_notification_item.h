@@ -67,7 +67,8 @@ class COMPONENT_EXPORT(GLOBAL_MEDIA_CONTROLS) MediaSessionNotificationItem
       const std::string& source_name,
       const std::optional<base::UnguessableToken>& source_id,
       mojo::Remote<media_session::mojom::MediaController> controller,
-      media_session::mojom::MediaSessionInfoPtr session_info);
+      media_session::mojom::MediaSessionInfoPtr session_info,
+      bool always_hidden);
   MediaSessionNotificationItem(const MediaSessionNotificationItem&) = delete;
   MediaSessionNotificationItem& operator=(const MediaSessionNotificationItem&) =
       delete;
@@ -87,9 +88,15 @@ class COMPONENT_EXPORT(GLOBAL_MEDIA_CONTROLS) MediaSessionNotificationItem
       const std::optional<media_session::MediaPosition>& position) override;
 
   // Called when a media session item is associated with a presentation request
-  // to show the origin associated with the request rather than that for the
-  // top frame.
-  void UpdatePresentationRequestOrigin(const url::Origin& origin);
+  // to show the origin associated with the request rather than that for the top
+  // frame.
+  void UpdatePresentationRequestOrigin(
+      const std::optional<url::Origin>& origin);
+
+  const std::optional<url::Origin>& optional_presentation_request_origin()
+      const {
+    return optional_presentation_request_origin_;
+  }
 
   // Called during the creation of the footer view to show / set sink name if
   // there is an active casting session associated with `this` media item.
@@ -257,6 +264,9 @@ class COMPONENT_EXPORT(GLOBAL_MEDIA_CONTROLS) MediaSessionNotificationItem
   // True if we're currently frozen and the frozen view contains non-null
   // artwork.
   bool frozen_with_artwork_ = false;
+
+  // True if the notification item should always be hidden.
+  const bool always_hidden_;
 
   // The value is true if we're currently frozen and the frozen view contains
   // non-null artwork at the chapter index.

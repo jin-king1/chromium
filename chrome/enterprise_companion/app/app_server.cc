@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include <memory>
+#include <optional>
 #include <utility>
 
 #include "base/functional/bind.h"
@@ -10,6 +11,7 @@
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/threading/sequence_bound.h"
 #include "chrome/enterprise_companion/app/app.h"
 #include "chrome/enterprise_companion/dm_client.h"
@@ -27,13 +29,10 @@
 #endif
 
 #if BUILDFLAG(IS_WIN)
-#include <windows.h>
-
-#include <atlsecurity.h>
-
+#include "base/win/access_token.h"
 #include "base/win/scoped_com_initializer.h"
+#include "base/win/sid.h"
 #include "chrome/updater/util/win_util.h"
-#include "chrome/updater/win/scoped_handle.h"
 #endif
 
 namespace enterprise_companion {
@@ -41,21 +40,16 @@ namespace enterprise_companion {
 namespace {
 
 #if BUILDFLAG(IS_WIN)
+
 bool IsSystemProcess() {
-  CAccessToken current_process_token;
-  if (!current_process_token.GetProcessToken(TOKEN_QUERY,
-                                             ::GetCurrentProcess())) {
-    VPLOG(1) << "CAccessToken::GetProcessToken failed";
+  std::optional<base::win::AccessToken> token =
+      base::win::AccessToken::FromCurrentProcess();
+  if (!token) {
+    VPLOG(1) << "AccessToken::FromCurrentProcess failed";
     return false;
   }
 
-  CSid logon_sid;
-  if (!current_process_token.GetUser(&logon_sid)) {
-    VPLOG(1) << "CAccessToken::GetUser failed";
-    return false;
-  }
-
-  return logon_sid == Sids::System();
+  return token->User() == base::win::Sid(base::win::WellKnownSid::kLocalSystem);
 }
 #endif
 
@@ -65,27 +59,6 @@ class AppServer : public App {
   AppServer() {
 #if !BUILDFLAG(IS_MAC)
     net_thread_.StartWithOptions({base::MessagePumpType::IO, 0});
-#endif
-#if BUILDFLAG(IS_WIN)
-    // Try to impersonate the logged-in user for the lifetime of the net thread.
-    // Skip impersonation if the process is not running as the SYSTEM user,
-    // which should only be true in tests.
-    if (IsSystemProcess()) {
-      net_thread_.task_runner()->PostTask(
-          FROM_HERE, base::BindOnce([] {
-            updater::HResultOr<updater::ScopedKernelHANDLE> token =
-                updater::GetLoggedOnUserToken();
-            VLOG_IF(2, !token.has_value())
-                << __func__ << ": GetLoggedOnUserToken failed: " << std::hex
-                << token.error();
-            if (token.has_value()) {
-              if (!::ImpersonateLoggedOnUser(token->get())) {
-                VPLOG(1) << "Failed to impersonate logged on user. Networking "
-                            "may fail.";
-              }
-            }
-          }));
-    }
 #endif
   }
 
@@ -137,20 +110,6 @@ class AppServer : public App {
   }
 
  private:
-  SEQUENCE_CHECKER(sequence_checker_);
-
-#if !BUILDFLAG(IS_MAC)
-  base::Thread net_thread_{"Network"};
-#endif
-
-#if BUILDFLAG(IS_WIN)
-  base::win::ScopedCOMInitializer com_initializer_{
-      base::win::ScopedCOMInitializer::kMTA};
-#endif
-  base::SequenceBound<URLLoaderFactoryProvider> url_loader_factory_provider_;
-  std::unique_ptr<ScopedLock> lock_;
-  std::unique_ptr<mojom::EnterpriseCompanion> stub_;
-
   void OnUrlLoaderFactoryReceived(
       std::unique_ptr<network::PendingSharedURLLoaderFactory>
           pending_url_loader_factory) {
@@ -160,15 +119,70 @@ class AppServer : public App {
         network::SharedURLLoaderFactory::Create(
             std::move(pending_url_loader_factory));
 
+#if BUILDFLAG(IS_WIN)
+    base::RepeatingClosure before_each_request = base::BindRepeating(
+        [](scoped_refptr<base::SequencedTaskRunner> net_thread_task_runner) {
+          // Try to impersonate the logged-in user. Impersonation is attempted
+          // on every request and lasts for the lifetime of the net thread, or
+          // until a new request is received. Skip impersonation if the process
+          // is not running as the SYSTEM user, which should only be true in
+          // tests.
+          if (!IsSystemProcess()) {
+            return;
+          }
+          net_thread_task_runner->PostTask(
+              FROM_HERE, base::BindOnce([] {
+                // If the thread is already impersonating it is necessary to
+                // terminate impersonation before impersonating again, as the
+                // logged-in user could be different across attempts.
+                // Additionally, if the thread is impersonating a user that has
+                // logged off it is preferable to terminate the impersonation
+                // even if there is no other logged-in user to impersonate;
+                // else, the security context may be disconnected from
+                // environmental resources (including network credentials).
+                if (!::RevertToSelf()) {
+                  VPLOG(1) << "Failed to revert net thread impersonation";
+                }
+                std::optional<base::win::AccessToken> token =
+                    updater::GetLoggedOnUserToken();
+                VLOG_IF(2, !token.has_value())
+                    << __func__ << ": GetLoggedOnUserToken failed";
+                if (token.has_value()) {
+                  if (!::ImpersonateLoggedOnUser(token->get())) {
+                    VPLOG(1)
+                        << "Failed to impersonate logged on user. Networking "
+                           "may fail.";
+                  }
+                }
+              }));
+        },
+        net_thread_.task_runner());
+#else
+    base::RepeatingClosure before_each_request = base::DoNothing();
+#endif
+
     VLOG(1) << "Launching Chrome Enterprise Companion App";
     stub_ =
         CreateEnterpriseCompanionServiceStub(CreateEnterpriseCompanionService(
             CreateDMClient(
                 GetDefaultCloudPolicyClientProvider(url_loader_factory)),
+            before_each_request,
             EnterpriseCompanionEventLogger::Create(url_loader_factory),
             base::BindOnce(&AppServer::Shutdown, weak_ptr_factory_.GetWeakPtr(),
                            EnterpriseCompanionStatus::Success())));
   }
+
+  SEQUENCE_CHECKER(sequence_checker_);
+#if !BUILDFLAG(IS_MAC)
+  base::Thread net_thread_{"Network"};
+#endif
+#if BUILDFLAG(IS_WIN)
+  base::win::ScopedCOMInitializer com_initializer_{
+      base::win::ScopedCOMInitializer::kMTA};
+#endif
+  base::SequenceBound<URLLoaderFactoryProvider> url_loader_factory_provider_;
+  std::unique_ptr<ScopedLock> lock_;
+  std::unique_ptr<mojom::EnterpriseCompanion> stub_;
 
   base::WeakPtrFactory<AppServer> weak_ptr_factory_{this};
 };

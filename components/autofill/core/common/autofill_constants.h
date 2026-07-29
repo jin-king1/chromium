@@ -19,7 +19,7 @@ extern const char kSettingsOrigin[];
 // The maximum number of `FieldLogEvent` objects that we store per field. We
 // assume that fields that would have more than this number of events are not
 // interesting for Autofill's purpose.
-inline constexpr size_t kMaxLogEventsPerField = 1000;
+inline constexpr size_t kMaxLogEventsPerField = 250;
 
 // The maximum number of Addresses and CreditCards considered while trying to
 // determine the possible field types of AutofillField's by looking at the
@@ -86,8 +86,16 @@ inline constexpr size_t kMaxTypeMatchingCalls = 5000;
 // upload the form to and request predictions from the Autofill servers.
 inline constexpr size_t kRequiredFieldsForFormsWithOnlyPasswordFields = 2;
 
-// A refill happens only within `kLimitBeforeRefill` of the original fill.
-inline constexpr base::TimeDelta kLimitBeforeRefill = base::Seconds(1);
+// Automatic refills, which may happen after DOM changes, have a tigther timeout
+// than programmatic refills, which can be triggered by JavaScript.
+inline constexpr base::TimeDelta kLimitBeforeAutomaticRefill = base::Seconds(1);
+inline constexpr base::TimeDelta kLimitBeforeProgrammaticRefill =
+    base::Seconds(3);
+
+// The time the renderer waits for a response from the browser to a
+// RequestRefill() message.
+inline constexpr base::TimeDelta kRequestRefillTimeout =
+    base::Milliseconds(500);
 
 // Constants for the soft/hard deletion of Autofill data.
 inline constexpr base::TimeDelta kDisusedDataModelTimeDelta = base::Days(180);
@@ -132,6 +140,12 @@ inline constexpr size_t kMaxDisplayedAddressSuggestions = 10;
 // will keep after prefix matching with a field's contents to show as
 // suggestions. Remaining profiles will be dropped.
 inline constexpr size_t kMaxPrefixMatchedProfilesForSuggestion = 50;
+
+// Maximum limit on the number of the options of the select field for
+// determining the field to be of |PHONE_HOME_COUNTRY_CODE| type.
+// Currently, there are approximately 250 countries that have been assigned a
+// phone country code, therefore, 275 is taken as the upper bound.
+inline constexpr size_t kMaxSelectOptionsForCountryCode = 275;
 
 }  // namespace autofill
 

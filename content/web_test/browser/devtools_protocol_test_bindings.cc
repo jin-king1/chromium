@@ -16,6 +16,7 @@
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/task/single_thread_task_runner.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "content/public/browser/devtools_agent_host.h"
@@ -25,7 +26,7 @@
 #include "content/public/common/isolated_world_ids.h"
 #include "content/web_test/browser/web_test_control_host.h"
 #include "content/web_test/common/web_test_switches.h"
-#include "ipc/ipc_channel.h"
+#include "ipc/constants.mojom.h"
 
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_FUCHSIA)
 #include "content/public/browser/devtools_frontend_host.h"
@@ -38,7 +39,7 @@ namespace {
 // the constant
 // kMaxMessageChunkSize in chrome/browser/devtools/devtools_ui_bindings.cc.
 constexpr size_t kWebTestMaxMessageChunkSize =
-    IPC::Channel::kMaximumMessageSize / 4;
+    IPC::mojom::kChannelMaximumMessageSize / 4;
 }  // namespace
 
 DevToolsProtocolTestBindings::DevToolsProtocolTestBindings(
@@ -86,7 +87,8 @@ void DevToolsProtocolTestBindings::ParseLog(std::string_view log) {
   std::vector<std::string> lines = base::SplitStringUsingSubstr(
       log, "\n", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
   for (const std::string& line : lines) {
-    std::optional<base::Value::Dict> item = base::JSONReader::ReadDict(line);
+    std::optional<base::DictValue> item =
+        base::JSONReader::ReadDict(line, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
     CHECK(!item->empty());
     log_.push_back(std::move(item.value()));
   }
@@ -115,22 +117,22 @@ void DevToolsProtocolTestBindings::WebContentsDestroyed() {
 
 void DevToolsProtocolTestBindings::HandleMessagesFromLog(
     std::string_view protocol_message_string) {
-  std::optional<base::Value::Dict> parsed =
-      base::JSONReader::ReadDict(protocol_message_string);
+  std::optional<base::DictValue> parsed = base::JSONReader::ReadDict(
+      protocol_message_string, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   if (!parsed) {
     return;
   }
-  base::Value::Dict protocol_message = std::move(parsed.value());
+  base::DictValue protocol_message = std::move(parsed.value());
 
   CHECK(log_pos_ < log_.size()) << "Test sent commands but the log is empty";
-  const base::Value::Dict& top = log_[log_pos_];
+  const base::DictValue& top = log_[log_pos_];
   CHECK(protocol_message == top)
       << "Test sent a command that is not the next in the log \n"
       << protocol_message << "\n"
       << top;
   log_pos_++;
   while (log_pos_ < log_.size()) {
-    const base::Value::Dict& item = log_[log_pos_];
+    const base::DictValue& item = log_[log_pos_];
     // Stop when the next command is encountered in the log.
     if (item.FindString("method") && item.FindInt("id")) {
       break;
@@ -148,12 +150,12 @@ void DevToolsProtocolTestBindings::HandleMessagesFromLog(
 }
 
 void DevToolsProtocolTestBindings::HandleMessageFromTest(
-    base::Value::Dict message) {
+    base::DictValue message) {
   const std::string* method = message.FindString("method");
   if (!method)
     return;
 
-  const base::Value::List* params = message.FindList("params");
+  const base::ListValue* params = message.FindList("params");
   if (*method == "dispatchProtocolMessage" && params && params->size() == 1) {
     const std::string* protocol_message = (*params)[0].GetIfString();
     if (!protocol_message)

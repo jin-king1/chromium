@@ -4,8 +4,6 @@
 
 package org.chromium.components.autofill;
 
-import static org.chromium.build.NullUtil.assumeNonNull;
-
 import android.annotation.SuppressLint;
 import android.content.Context;
 import android.view.View;
@@ -16,22 +14,15 @@ import android.widget.AdapterView;
 import android.widget.PopupWindow;
 
 import org.chromium.build.annotations.NullMarked;
-import org.chromium.build.annotations.Nullable;
-import org.chromium.ui.DropdownItem;
+import org.chromium.ui.DropdownItemBase;
 import org.chromium.ui.DropdownPopupWindow;
-import org.chromium.ui.widget.RectProvider;
 
-import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashSet;
-import java.util.List;
 
 /** The Autofill suggestion popup that lists relevant suggestions. */
 @NullMarked
 public class AutofillPopup extends DropdownPopupWindow
-        implements AdapterView.OnItemClickListener,
-                AdapterView.OnItemLongClickListener,
-                PopupWindow.OnDismissListener {
+        implements AdapterView.OnItemClickListener, PopupWindow.OnDismissListener {
     /**
      * We post a delayed runnable to clear accessibility focus from the autofill popup's list view
      * when we receive a {@code TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED} event because we receive a
@@ -43,7 +34,6 @@ public class AutofillPopup extends DropdownPopupWindow
 
     private final Context mContext;
     private final AutofillDelegate mAutofillDelegate;
-    @Nullable private List<AutofillSuggestion> mSuggestions;
 
     private final Runnable mClearAccessibilityFocusRunnable =
             new Runnable() {
@@ -59,14 +49,12 @@ public class AutofillPopup extends DropdownPopupWindow
      * @param context Application context.
      * @param anchorView View anchored for popup.
      * @param autofillDelegate An object that handles the calls to the native AutofillPopupView.
-     * @param visibleWebContentsRectProvider The {@link RectProvider} for popup limits.
      */
     public AutofillPopup(
             Context context,
             View anchorView,
-            AutofillDelegate autofillDelegate,
-            @Nullable RectProvider visibleWebContentsRectProvider) {
-        super(context, anchorView, visibleWebContentsRectProvider);
+            AutofillDelegate autofillDelegate) {
+        super(context, anchorView);
         mContext = context;
         mAutofillDelegate = autofillDelegate;
 
@@ -78,30 +66,16 @@ public class AutofillPopup extends DropdownPopupWindow
     }
 
     /**
-     * Filters the Autofill suggestions to the ones that we support and shows the popup.
+     * Shows the Autofill popup with the given items.
      *
-     * @param suggestions Autofill suggestion data.
+     * @param items Autofill suggestion data.
      * @param isRtl true if right-to-left text.
      */
     @SuppressLint("InlinedApi")
-    public void filterAndShow(AutofillSuggestion[] suggestions, boolean isRtl) {
-        mSuggestions = new ArrayList<AutofillSuggestion>(Arrays.asList(suggestions));
-        // Remove the AutofillSuggestions with IDs that are not supported by Android
-        List<DropdownItem> cleanedData = new ArrayList<>();
-        HashSet<Integer> separators = new HashSet<Integer>();
-        for (int i = 0; i < suggestions.length; i++) {
-            int itemId = suggestions[i].getSuggestionType();
-            if (itemId == SuggestionType.SEPARATOR) {
-                separators.add(cleanedData.size());
-            } else {
-                cleanedData.add(suggestions[i]);
-            }
-        }
-
-        setAdapter(new AutofillDropdownAdapter(mContext, cleanedData, separators));
+    public void filterAndShow(AutofillDropdownItem[] items, boolean isRtl) {
+        setAdapter(new AutofillDropdownAdapter(mContext, Arrays.asList(items)));
         setRtl(isRtl);
         show();
-        getListView().setOnItemLongClickListener(this);
         getListView()
                 .setAccessibilityDelegate(
                         new AccessibilityDelegate() {
@@ -124,27 +98,32 @@ public class AutofillPopup extends DropdownPopupWindow
 
     @Override
     public void onItemClick(AdapterView<?> parent, View view, int position, long id) {
-        AutofillDropdownAdapter adapter = (AutofillDropdownAdapter) parent.getAdapter();
-        int listIndex = assumeNonNull(mSuggestions).indexOf(adapter.getItem(position));
-        assert listIndex > -1;
-        mAutofillDelegate.suggestionSelected(listIndex);
-    }
-
-    @Override
-    public boolean onItemLongClick(AdapterView<?> parent, View view, int position, long id) {
-        AutofillDropdownAdapter adapter = (AutofillDropdownAdapter) parent.getAdapter();
-        AutofillSuggestion suggestion =
-                (AutofillSuggestion) assumeNonNull(adapter.getItem(position));
-        if (!suggestion.isDeletable()) return false;
-
-        int listIndex = assumeNonNull(mSuggestions).indexOf(suggestion);
-        assert listIndex > -1;
-        mAutofillDelegate.deleteSuggestion(listIndex);
-        return true;
+        mAutofillDelegate.suggestionSelected(position);
     }
 
     @Override
     public void onDismiss() {
         mAutofillDelegate.dismissed();
+    }
+
+    /** A specialized DropdownItem for Autofill suggestions. */
+    public static class AutofillDropdownItem extends DropdownItemBase {
+        private final String mLabel;
+        private final String mSublabel;
+
+        public AutofillDropdownItem(String label, String sublabel) {
+            mLabel = label;
+            mSublabel = sublabel;
+        }
+
+        @Override
+        public String getLabel() {
+            return mLabel;
+        }
+
+        @Override
+        public String getSublabel() {
+            return mSublabel;
+        }
     }
 }

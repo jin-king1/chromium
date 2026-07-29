@@ -43,10 +43,6 @@ class FormFieldData;
 // -----------------------------------------------------------------------------
 class AutocompleteTable : public WebDatabaseTable {
  public:
-  // Drops the table created by AutocompleteTable.
-  // TODO(crbug.com/390473673): Remove after M143.
-  class Dropper;
-
   AutocompleteTable();
 
   AutocompleteTable(const AutocompleteTable&) = delete;
@@ -101,7 +97,7 @@ class AutocompleteTable : public WebDatabaseTable {
   // Returns the number of unique values such that for all autocomplete entries
   // with that value, the interval between creation date and last usage is
   // entirely contained between [|begin|, |end|).
-  int GetCountOfValuesContainedBetween(base::Time begin, base::Time end);
+  int64_t GetCountOfValuesContainedBetween(base::Time begin, base::Time end);
 
   // Retrieves all of the entries in the autocomplete table.
   bool GetAllAutocompleteEntries(std::vector<AutocompleteEntry>* entries);
@@ -124,18 +120,6 @@ class AutocompleteTable : public WebDatabaseTable {
   bool InsertAutocompleteEntry(const AutocompleteEntry& entry);
 
   bool InitMainTable();
-};
-
-class AutocompleteTable::Dropper : public WebDatabaseTable {
- public:
-  Dropper();
-  Dropper(const Dropper&) = delete;
-  Dropper& operator=(const Dropper&) = delete;
-  ~Dropper() override;
-
-  TypeKey GetTypeKey() const override;
-  bool CreateTablesIfNecessary() override;
-  bool MigrateToVersion(int version, bool* update_compatible_version) override;
 };
 
 }  // namespace autofill

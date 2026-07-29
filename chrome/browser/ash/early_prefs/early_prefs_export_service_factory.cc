@@ -4,13 +4,12 @@
 
 #include "chrome/browser/ash/early_prefs/early_prefs_export_service_factory.h"
 
+#include "ash/constants/ash_paths.h"
 #include "base/check_is_test.h"
 #include "base/feature_list.h"
 #include "base/path_service.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/common/chrome_paths.h"
-#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_types.h"
 #include "chromeos/ash/components/osauth/impl/login_screen_auth_policy_connector.h"
 #include "chromeos/ash/components/osauth/public/auth_parts.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
@@ -22,7 +21,8 @@ namespace ash {
 
 // static
 EarlyPrefsExportServiceFactory* EarlyPrefsExportServiceFactory::GetInstance() {
-  return base::Singleton<EarlyPrefsExportServiceFactory>::get();
+  static base::NoDestructor<EarlyPrefsExportServiceFactory> instance;
+  return instance.get();
 }
 
 EarlyPrefsExportServiceFactory::EarlyPrefsExportServiceFactory()
@@ -41,8 +41,8 @@ EarlyPrefsExportServiceFactory::BuildServiceInstanceForBrowserContext(
   auto* primary_user = user_manager::UserManager::Get()->GetPrimaryUser();
   CHECK(primary_user);
   base::FilePath early_prefs_dir;
-  bool success = base::PathService::Get(chrome::DIR_CHROMEOS_HOMEDIR_MOUNT,
-                                        &early_prefs_dir);
+  bool success =
+      base::PathService::Get(ash::DIR_HOMEDIR_MOUNT, &early_prefs_dir);
   CHECK(success);
   early_prefs_dir = early_prefs_dir.Append(primary_user->username_hash());
 
@@ -59,7 +59,7 @@ content::BrowserContext* EarlyPrefsExportServiceFactory::GetBrowserContextToUse(
 
   auto* profile = Profile::FromBrowserContext(context);
   if (profile->AsTestingProfile() || profile->IsGuestSession() ||
-      !ProfileHelper::IsUserProfile(profile)) {
+      !ash::IsUserBrowserContext(profile)) {
     return nullptr;
   }
 

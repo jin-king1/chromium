@@ -22,7 +22,6 @@
 #include "third_party/blink/renderer/platform/wtf/cross_thread_copier_std.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
-#include "third_party/webrtc/api/array_view.h"
 #include "third_party/webrtc/api/frame_transformer_interface.h"
 #include "third_party/webrtc/api/test/mock_transformable_video_frame.h"
 #include "third_party/webrtc/api/units/time_delta.h"
@@ -119,7 +118,7 @@ class RTCEncodedVideoStreamTransformerTest
   base::test::TaskEnvironment task_environment_;
   scoped_refptr<base::SingleThreadTaskRunner> main_task_runner_;
   scoped_refptr<base::SingleThreadTaskRunner> webrtc_task_runner_;
-  rtc::scoped_refptr<MockWebRtcTransformedFrameCallback> webrtc_callback_;
+  webrtc::scoped_refptr<MockWebRtcTransformedFrameCallback> webrtc_callback_;
   MockTransformerCallbackHolder mock_transformer_callback_holder_;
   raw_ptr<MockMetronome> metronome_;
   RTCEncodedVideoStreamTransformer encoded_video_stream_transformer_;
@@ -133,9 +132,9 @@ TEST_P(RTCEncodedVideoStreamTransformerTest,
        TransformerForwardsFrameToTransformerCallback) {
   EXPECT_FALSE(encoded_video_stream_transformer_.HasTransformerCallback());
   encoded_video_stream_transformer_.SetTransformerCallback(
-      WTF::CrossThreadBindRepeating(
+      CrossThreadBindRepeating(
           &MockTransformerCallbackHolder::OnEncodedFrame,
-          WTF::CrossThreadUnretained(&mock_transformer_callback_holder_)));
+          CrossThreadUnretained(&mock_transformer_callback_holder_)));
   EXPECT_TRUE(encoded_video_stream_transformer_.HasTransformerCallback());
 
   EXPECT_CALL(mock_transformer_callback_holder_, OnEncodedFrame);
@@ -178,7 +177,7 @@ TEST_P(RTCEncodedVideoStreamTransformerTest,
   EXPECT_CALL(*webrtc_callback_, StartShortCircuiting);
   encoded_video_stream_transformer_.StartShortCircuiting();
 
-  rtc::scoped_refptr<MockWebRtcTransformedFrameCallback> webrtc_callback_2(
+  webrtc::scoped_refptr<MockWebRtcTransformedFrameCallback> webrtc_callback_2(
       new webrtc::RefCountedObject<MockWebRtcTransformedFrameCallback>());
   EXPECT_CALL(*webrtc_callback_2, StartShortCircuiting);
   encoded_video_stream_transformer_.RegisterTransformedFrameSinkCallback(
@@ -190,9 +189,9 @@ TEST_P(RTCEncodedVideoStreamTransformerTest, WaitsForMetronomeTick) {
     return;
   }
   encoded_video_stream_transformer_.SetTransformerCallback(
-      WTF::CrossThreadBindRepeating(
+      CrossThreadBindRepeating(
           &MockTransformerCallbackHolder::OnEncodedFrame,
-          WTF::CrossThreadUnretained(&mock_transformer_callback_holder_)));
+          CrossThreadUnretained(&mock_transformer_callback_holder_)));
   ASSERT_TRUE(encoded_video_stream_transformer_.HasTransformerCallback());
 
   // There should be no transform call initially.
@@ -283,9 +282,46 @@ TEST_P(RTCEncodedVideoStreamTransformerTest,
   EXPECT_CALL(mock_transformer_callback_holder_, OnEncodedFrame)
       .Times(transform_count);
   encoded_video_stream_transformer_.SetTransformerCallback(
-      WTF::CrossThreadBindRepeating(
+      CrossThreadBindRepeating(
           &MockTransformerCallbackHolder::OnEncodedFrame,
-          WTF::CrossThreadUnretained(&mock_transformer_callback_holder_)));
+          CrossThreadUnretained(&mock_transformer_callback_holder_)));
+}
+
+TEST_P(RTCEncodedVideoStreamTransformerTest, WorkerOutlivesDelegate) {
+  if (!GetParam()) {
+    return;
+  }
+
+  MockTransformerCallbackHolder lifecycle_callback_holder;
+  scoped_refptr<base::SingleThreadTaskRunner> main_runner =
+      blink::scheduler::GetSingleThreadTaskRunnerForTesting();
+  auto* mock_metronome = new NiceMock<MockMetronome>();
+  // Using AnyInvocable as that's what the libwebrtc Metronome
+  // interface requires.
+  absl::AnyInvocable<void() &&> metronome_callback;
+  EXPECT_CALL(*mock_metronome, RequestCallOnNextTick)
+      .WillOnce([&](absl::AnyInvocable<void() &&> c) {
+        metronome_callback = std::move(c);
+      });
+
+  auto transformer = std::make_unique<RTCEncodedVideoStreamTransformer>(
+      main_runner, absl::WrapUnique(mock_metronome));
+  transformer->SetTransformerCallback(CrossThreadBindRepeating(
+      &MockTransformerCallbackHolder::OnEncodedFrame,
+      CrossThreadUnretained(&lifecycle_callback_holder)));
+
+  // Send a frame to schedule a tick.
+  transformer->Delegate()->Transform(CreateMockFrame());
+  ASSERT_TRUE(metronome_callback);
+
+  // Destroy the transformer. This should call Disconnect() on the delegate's
+  // worker.
+  transformer.reset();
+
+  // Now fire the metronome tick. It should NOT crash and should NOT call
+  // the callback (since the transformer is gone).
+  EXPECT_CALL(lifecycle_callback_holder, OnEncodedFrame).Times(0);
+  std::move(metronome_callback)();
 }
 
 }  // namespace blink

@@ -15,8 +15,8 @@
 #include "base/time/default_clock.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
+#include "chrome/browser/apps/app_service/chrome_app_deprecation/chrome_app_deprecation.h"
 #include "chrome/browser/apps/app_service/publishers/arc_apps.h"
-#include "chrome/browser/apps/app_service/publishers/arc_apps_factory.h"
 #include "chrome/browser/apps/platform_apps/app_browsertest_util.h"
 #include "chrome/browser/ash/arc/arc_util.h"
 #include "chrome/browser/ash/arc/session/arc_session_manager.h"
@@ -34,7 +34,6 @@
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/web_applications/test/web_app_browsertest_util.h"
 #include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_switches.h"
 #include "chromeos/ash/experiences/arc/message_center/arc_notification_manager.h"
 #include "chromeos/ash/experiences/arc/session/arc_bridge_service.h"
@@ -150,6 +149,9 @@ class AppNotificationsExtensionApiTest : public extensions::ExtensionApiTest {
     base::FilePath extdir = test_data_dir_.AppendASCII(test_name);
     const extensions::Extension* extension = LoadExtension(extdir);
     EXPECT_TRUE(extension);
+
+    apps::chrome_app_deprecation::ScopedAddAppToAllowlistForTesting allowlist(
+        extension->id());
 
     ExtensionTestMessageListener launched_listener("launched",
                                                    ReplyBehavior::kWillReply);
@@ -272,11 +274,11 @@ class AppNotificationsWebNotificationTest
     auto web_app_info =
         web_app::WebAppInstallInfo::CreateWithStartUrlForTesting(url);
     web_app_info->scope = scope;
-    std::string app_id = web_app::test::InstallWebApp(browser()->profile(),
+    std::string app_id = web_app::test::InstallWebApp(browser()->GetProfile(),
                                                       std::move(web_app_info));
     content::TestNavigationObserver navigation_observer(url);
     navigation_observer.StartWatchingNewWebContents();
-    web_app::LaunchWebAppBrowser(browser()->profile(), app_id);
+    web_app::LaunchWebAppBrowser(browser()->GetProfile(), app_id);
     navigation_observer.WaitForNavigationFinished();
     return app_id;
   }
@@ -287,13 +289,13 @@ class AppNotificationsWebNotificationTest
     return std::make_unique<message_center::Notification>(
         message_center::NOTIFICATION_TYPE_SIMPLE, notification_id,
         std::u16string(), std::u16string(), ui::ImageModel(),
-        base::UTF8ToUTF16(origin.host()), origin,
+        base::UTF8ToUTF16(origin.GetHost()), origin,
         message_center::NotifierId(origin),
         message_center::RichNotificationData(), nullptr);
   }
 
   void UninstallWebApp(const std::string& app_id) const {
-    web_app::test::UninstallWebApp(browser()->profile(), app_id);
+    web_app::test::UninstallWebApp(browser()->GetProfile(), app_id);
   }
 
   GURL GetOrigin() const { return https_server_.GetURL("app.com", "/"); }
@@ -815,9 +817,11 @@ class AppNotificationsArcNotificationTest
         std::make_unique<FakeArcNotificationManagerDelegate>(),
         EmptyAccountId(), message_center::MessageCenter::Get());
 
+    // TODO(crbug.com/450429333): Avoid directly talking to ArcApps.
     ash::ArcNotificationsHostInitializer::Observer* observer =
-        apps::ArcAppsFactory::GetInstance()->GetForProfile(profile());
-    observer->OnSetArcNotificationsInstance(arc_notification_manager_.get());
+        apps::ArcApps::GetForTesting(profile());
+    observer->OnArcNotificationManagerInitialized(
+        arc_notification_manager_.get());
   }
 
   void TearDownOnMainThread() override {

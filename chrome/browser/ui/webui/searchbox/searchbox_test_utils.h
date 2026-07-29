@@ -6,16 +6,45 @@
 #define CHROME_BROWSER_UI_WEBUI_SEARCHBOX_SEARCHBOX_TEST_UTILS_H_
 
 #include "base/memory/raw_ptr.h"
+#include "chrome/browser/ui/contextual_search/tab_contextualization_controller.h"
+#include "chrome/browser/ui/omnibox/omnibox_controller.h"
+#include "chrome/browser/ui/omnibox/test_omnibox_edit_model.h"
+#include "chrome/browser/ui/webui/cr_components/searchbox/searchbox_handler.h"
 #include "chrome/browser/ui/webui/searchbox/lens_searchbox_client.h"
+#include "components/contextual_search/contextual_search_types.h"
 #include "components/omnibox/browser/autocomplete_controller.h"
 #include "components/omnibox/browser/mock_autocomplete_provider_client.h"
-#include "components/omnibox/browser/omnibox_controller.h"
+#include "components/omnibox/browser/searchbox.mojom.h"
 #include "components/omnibox/browser/test_omnibox_client.h"
-#include "components/omnibox/browser/test_omnibox_edit_model.h"
+#include "components/omnibox/composebox/composebox_query.mojom.h"
 #include "realbox_handler.h"
-#include "searchbox_handler.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/window_open_disposition.h"
+#include "ui/gfx/geometry/size.h"
+
+#if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/ui/webui/omnibox_popup/mojom/omnibox_popup.mojom.h"
+#endif
+
+class MockTabContextualizationController
+    : public lens::TabContextualizationController {
+ public:
+  explicit MockTabContextualizationController(
+      tabs::TabInterface* tab_interface);
+  ~MockTabContextualizationController() override;
+
+  MOCK_METHOD(bool, GetInitialPageContextEligibility, (), (override));
+  MOCK_METHOD(void,
+              GetPageContext,
+              (GetPageContextCallback callback),
+              (override));
+  MOCK_METHOD(void,
+              CaptureScreenshot,
+              (std::optional<lens::ImageEncodingOptions> image_options,
+               CaptureScreenshotCallback callback),
+              (override));
+};
 
 using testing::_;
 using testing::DoAll;
@@ -39,9 +68,73 @@ class MockSearchboxPage : public searchbox::mojom::Page {
               UpdateSelection,
               (searchbox::mojom::OmniboxPopupSelectionPtr,
                searchbox::mojom::OmniboxPopupSelectionPtr));
+  MOCK_METHOD(void,
+              StepSelection,
+              (searchbox::mojom::SelectionDirection,
+               searchbox::mojom::SelectionStep));
+  MOCK_METHOD(void, OpenCurrentSelection, (WindowOpenDisposition));
+  MOCK_METHOD(void, SetAimButtonVisible, (bool visible));
   MOCK_METHOD(void, SetInputText, (const std::string& input_text));
-  MOCK_METHOD(void, SetThumbnail, (const std::string& thumbnail_url));
+  MOCK_METHOD(void,
+              SetThumbnail,
+              (const std::string& thumbnail_url, bool is_deletable));
+  MOCK_METHOD(void,
+              OnContextualInputStatusChanged,
+              (const base::UnguessableToken&,
+               contextual_search::ContextUploadStatus,
+               std::optional<contextual_search::ContextUploadErrorType>));
+  MOCK_METHOD(void, OnTabStripChanged, ());
+  MOCK_METHOD(void,
+              OnInputStateChanged,
+              (const omnibox::InputState&),
+              (override));
+  MOCK_METHOD(void,
+              AddFileContext,
+              (const base::UnguessableToken&,
+               searchbox::mojom::SelectedFileInfoPtr));
+  MOCK_METHOD(void,
+              UpdateAutoSuggestedTabContext,
+              (searchbox::mojom::TabInfoPtr,
+               const std::optional<std::string>&));
+  MOCK_METHOD(void, UpdateLensSearchEligibility, (bool eligible), (override));
+  MOCK_METHOD(void, UpdateAimPopupEligibility, (bool eligible), (override));
+#if !BUILDFLAG(IS_ANDROID)
+  MOCK_METHOD(void, UpdateSmartTabSharingActive, (bool active), (override));
+#endif
+  MOCK_METHOD(void, UpdateContentSharingPolicy, (bool enabled), (override));
+  MOCK_METHOD(void,
+              OnPermissionPromptChanged,
+              (bool, const gfx::Size&),
+              (override));
+  MOCK_METHOD(void,
+              SetRestoredTabIds,
+              (const std::vector<int32_t>& ids),
+              (override));
+  MOCK_METHOD(void,
+              SetAimThreadRestoredTabs,
+              (std::vector<searchbox::mojom::TabInfoPtr> tabs),
+              (override));
 };
+
+#if !BUILDFLAG(IS_ANDROID)
+class MockOmniboxPopupPage : public omnibox_popup::mojom::Page {
+ public:
+  MockOmniboxPopupPage();
+  ~MockOmniboxPopupPage() override;
+  mojo::PendingRemote<omnibox_popup::mojom::Page> BindAndGetRemote();
+  mojo::Receiver<omnibox_popup::mojom::Page> receiver_{this};
+
+  void FlushForTesting() { receiver_.FlushForTesting(); }
+
+  MOCK_METHOD(void, OnShow, (), (override));
+  MOCK_METHOD(void, OnContextMenuClosed, (), (override));
+  MOCK_METHOD(void,
+              SetInputState,
+              (omnibox_popup::mojom::OmniboxInputStatePtr state),
+              (override));
+  MOCK_METHOD(void, SetFocus, (bool is_focused), (override));
+};
+#endif
 
 class MockAutocompleteController : public AutocompleteController {
  public:
@@ -59,14 +152,14 @@ class MockAutocompleteController : public AutocompleteController {
 
 class MockOmniboxEditModel : public OmniboxEditModel {
  public:
-  MockOmniboxEditModel(OmniboxController* omnibox_controller,
-                       OmniboxView* view);
+  explicit MockOmniboxEditModel(OmniboxController* omnibox_controller);
   ~MockOmniboxEditModel() override;
   MockOmniboxEditModel(const MockOmniboxEditModel&) = delete;
   MockOmniboxEditModel& operator=(const MockOmniboxEditModel&) = delete;
 
   // OmniboxEditModel:
   MOCK_METHOD(void, SetUserText, (const std::u16string&), (override));
+  MOCK_METHOD(void, OpenAiMode, (AimActivation), (override));
 };
 
 class MockLensSearchboxClient : public LensSearchboxClient {
@@ -84,7 +177,7 @@ class MockLensSearchboxClient : public LensSearchboxClient {
               (),
               (override, const));
   MOCK_METHOD(std::string&, GetThumbnail, (), (override));
-  MOCK_METHOD(const lens::proto::LensOverlaySuggestInputs&,
+  MOCK_METHOD(lens::proto::LensOverlaySuggestInputs,
               GetLensSuggestInputs,
               (),
               (override, const));

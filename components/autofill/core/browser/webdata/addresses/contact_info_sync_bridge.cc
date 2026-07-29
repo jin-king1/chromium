@@ -5,19 +5,43 @@
 #include "components/autofill/core/browser/webdata/addresses/contact_info_sync_bridge.h"
 
 #include <algorithm>
+#include <memory>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "base/check.h"
-#include "base/uuid.h"
+#include "base/feature_list.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback.h"
+#include "base/functional/callback_helpers.h"
+#include "base/location.h"
+#include "base/metrics/histogram_functions.h"
+#include "base/sequence_checker.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
+#include "components/autofill/core/browser/data_quality/addresses/address_import_requirement_utils.h"
+#include "components/autofill/core/browser/webdata/addresses/address_autofill_table.h"
 #include "components/autofill/core/browser/webdata/addresses/contact_info_sync_util.h"
+#include "components/autofill/core/browser/webdata/autofill_change.h"
+#include "components/autofill/core/browser/webdata/autofill_sync_metadata_table.h"
 #include "components/autofill/core/browser/webdata/autofill_webdata_service.h"
+#include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/dense_set.h"
 #include "components/sync/base/data_type.h"
 #include "components/sync/base/deletion_origin.h"
-#include "components/sync/base/features.h"
 #include "components/sync/model/client_tag_based_data_type_processor.h"
-#include "components/sync/model/in_memory_metadata_change_list.h"
+#include "components/sync/model/data_batch.h"
+#include "components/sync/model/data_type_local_change_processor.h"
+#include "components/sync/model/data_type_sync_bridge.h"
+#include "components/sync/model/entity_change.h"
+#include "components/sync/model/metadata_batch.h"
+#include "components/sync/model/metadata_change_list.h"
+#include "components/sync/model/model_error.h"
+#include "components/sync/model/mutable_data_batch.h"
 #include "components/sync/model/sync_metadata_store_change_list.h"
+#include "components/sync/protocol/contact_info_specifics.pb.h"
+#include "components/sync/protocol/entity_data.h"
 #include "components/webdata/common/web_database.h"
 
 namespace autofill {
@@ -34,6 +58,21 @@ DenseSet<AutofillProfile::RecordType> kAccountRecordTypes = {
     AutofillProfile::RecordType::kAccountHome,
     AutofillProfile::RecordType::kAccountWork};
 
+// H/W addresses need to meet Autofill's completeness requirements since they
+// are read from a source that doesn't enforce them.
+// This is not checked as part of the bridge's IsEntityDataValid(), since H/W
+// addresses that fail to meet the requirements after an update need to be
+// removed from local storage.
+bool IsIncompleteHomeAndWorkAddress(const AutofillProfile& profile) {
+  if (!profile.IsHomeAndWorkProfile()) {
+    return false;
+  }
+  const bool is_incomplete = !IsMinimumAddress(profile);
+  base::UmaHistogramBoolean("Autofill.HomeAndWork.ProfileFiltered",
+                            is_incomplete);
+  return is_incomplete;
+}
+
 }  // namespace
 
 ContactInfoSyncBridge::ContactInfoSyncBridge(
@@ -44,7 +83,8 @@ ContactInfoSyncBridge::ContactInfoSyncBridge(
   if (!web_data_backend_ || !web_data_backend_->GetDatabase() ||
       !GetAutofillTable()) {
     DataTypeSyncBridge::change_processor()->ReportError(
-        {FROM_HERE, "Failed to load AutofillWebDatabase."});
+        {FROM_HERE, syncer::ModelError::Type::
+                        kContactInfoFailedToLoadAutofillWebDatabase});
     return;
   }
   scoped_observation_.Observe(web_data_backend_.get());
@@ -57,7 +97,7 @@ ContactInfoSyncBridge::~ContactInfoSyncBridge() = default;
 void ContactInfoSyncBridge::CreateForWebDataServiceAndBackend(
     AutofillWebDataBackend* web_data_backend,
     AutofillWebDataService* web_data_service) {
-  web_data_service->GetDBUserData()->SetUserData(
+  web_data_service->GetDBUserData().SetUserData(
       &kContactInfoSyncBridgeUserDataKey,
       std::make_unique<ContactInfoSyncBridge>(
           std::make_unique<syncer::ClientTagBasedDataTypeProcessor>(
@@ -70,18 +110,10 @@ void ContactInfoSyncBridge::CreateForWebDataServiceAndBackend(
 syncer::DataTypeSyncBridge* ContactInfoSyncBridge::FromWebDataService(
     AutofillWebDataService* web_data_service) {
   return static_cast<ContactInfoSyncBridge*>(
-      web_data_service->GetDBUserData()->GetUserData(
+      web_data_service->GetDBUserData().GetUserData(
           &kContactInfoSyncBridgeUserDataKey));
 }
 
-std::unique_ptr<syncer::MetadataChangeList>
-ContactInfoSyncBridge::CreateMetadataChangeList() {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  return std::make_unique<syncer::SyncMetadataStoreChangeList>(
-      GetSyncMetadataStore(), syncer::CONTACT_INFO,
-      base::BindRepeating(&syncer::DataTypeLocalChangeProcessor::ReportError,
-                          change_processor()->GetWeakPtr()));
-}
 
 std::optional<syncer::ModelError> ContactInfoSyncBridge::MergeFullSyncData(
     std::unique_ptr<syncer::MetadataChangeList> metadata_change_list,
@@ -103,41 +135,55 @@ ContactInfoSyncBridge::ApplyIncrementalSyncChanges(
     syncer::EntityChangeList entity_changes) {
   auto transaction = web_data_backend_->GetDatabase()->AcquireTransaction();
 
+  std::unique_ptr<syncer::SyncMetadataStoreChangeList>
+      sync_metadata_store_change_list =
+          ApplyMetadataChanges(std::move(metadata_change_list));
+  if (change_processor()->GetError().has_value()) {
+    return change_processor()->GetError();
+  }
+
   for (const std::unique_ptr<syncer::EntityChange>& change : entity_changes) {
     switch (change->type()) {
       case syncer::EntityChange::ACTION_DELETE:
         if (!GetAutofillTable()->RemoveAutofillProfile(change->storage_key())) {
-          return syncer::ModelError(FROM_HERE,
-                                    "Failed to delete profile from table.");
+          return syncer::ModelError(
+              FROM_HERE, syncer::ModelError::Type::
+                             kContactInfoFailedToDeleteProfileForRemoteDelete);
         }
         break;
       case syncer::EntityChange::ACTION_ADD:
       case syncer::EntityChange::ACTION_UPDATE: {
         // Deserialize the ContactInfoSpecifics and add/update them in the DB.
         DCHECK(change->data().specifics.has_contact_info());
-        std::optional<AutofillProfile> remote =
-            CreateAutofillProfileFromContactInfoSpecifics(
-                change->data().specifics.contact_info());
-        // Since the specifics are guaranteed to be valid by
-        // `IsEntityDataValid()`, the conversion will succeed.
-        DCHECK(remote);
-        if (!EnsureUniquenessOfHomeAndWork(*remote)) {
-          return syncer::ModelError(FROM_HERE,
-                                    "Failed to ensure uniqueness of H/W.");
+        AutofillProfile remote = CreateAutofillProfileFromContactInfoSpecifics(
+            change->data().specifics.contact_info());
+        if (IsIncompleteHomeAndWorkAddress(remote)) {
+          // In case H/W was updated and doesn't meet the completeness
+          // requirements anymore, remove it.
+          // This change doesn't need to be synced back, since H/W is read-only.
+          sync_metadata_store_change_list->ClearMetadata(remote.guid());
+          if (!GetAutofillTable()->RemoveAutofillProfile(remote.guid())) {
+            return syncer::ModelError(
+                FROM_HERE, syncer::ModelError::Type::
+                               kContactInfoFailedToDeleteIncompleteHwProfile);
+          }
+          continue;
         }
         // Since the distinction between adds and updates is not always clear,
         // we check the existence of the profile manually and act accordingly.
         // TODO(crbug.com/40100455): Consider adding an AddOrUpdate() function
         // to AutofillTable's API.
-        if (GetAutofillTable()->GetAutofillProfile(remote->guid())) {
-          if (!GetAutofillTable()->UpdateAutofillProfile(*remote)) {
-            return syncer::ModelError(FROM_HERE,
-                                      "Failed to update profile in table.");
+        if (GetAutofillTable()->GetAutofillProfile(remote.guid())) {
+          if (!GetAutofillTable()->UpdateAutofillProfile(remote)) {
+            return syncer::ModelError(
+                FROM_HERE, syncer::ModelError::Type::
+                               kContactInfoFailedToUpdateProfileInTable);
           }
         } else {
-          if (!GetAutofillTable()->AddAutofillProfile(*remote)) {
-            return syncer::ModelError(FROM_HERE,
-                                      "Failed to add profile to table.");
+          if (!GetAutofillTable()->AddAutofillProfile(remote)) {
+            return syncer::ModelError(
+                FROM_HERE, syncer::ModelError::Type::
+                               kContactInfoFailedToAddProfileToTable);
           }
         }
         break;
@@ -156,8 +202,9 @@ ContactInfoSyncBridge::ApplyIncrementalSyncChanges(
   // False positives can occur here if an update doesn't change the profile.
   // Since such false positives are fine, and since AutofillTable's API
   // currently doesn't provide a way to detect such cases, we don't distinguish.
-  if (!entity_changes.empty())
+  if (!entity_changes.empty()) {
     web_data_backend_->NotifyOnAutofillChangedBySync(syncer::CONTACT_INFO);
+  }
 
   return std::nullopt;
 }
@@ -188,12 +235,12 @@ bool ContactInfoSyncBridge::IsEntityDataValid(
 }
 
 std::string ContactInfoSyncBridge::GetClientTag(
-    const syncer::EntityData& entity_data) {
+    const syncer::EntityData& entity_data) const {
   return GetStorageKey(entity_data);
 }
 
 std::string ContactInfoSyncBridge::GetStorageKey(
-    const syncer::EntityData& entity_data) {
+    const syncer::EntityData& entity_data) const {
   DCHECK(IsEntityDataValid(entity_data));
   return entity_data.specifics.contact_info().guid();
 }
@@ -201,16 +248,40 @@ std::string ContactInfoSyncBridge::GetStorageKey(
 void ContactInfoSyncBridge::AutofillProfileChanged(
     const AutofillProfileChange& change) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (!change.data_model().IsAccountProfile()) {
-    return;
+  // Determine if the profile change should be uploaded to CONTACT_INFO.
+  switch (change.data_model().record_type()) {
+    case AutofillProfile::RecordType::kAccount:
+      break;
+    case AutofillProfile::RecordType::kAccountHome:
+    case AutofillProfile::RecordType::kAccountWork:
+      // Home and work record types are read-only on the client side. Changes
+      // are only persisted locally, but not uploaded.
+      return;
+    case AutofillProfile::RecordType::kAccountNameEmail:
+      // Name and email record type should not be synced.
+      return;
+    case AutofillProfile::RecordType::kLocalOrSyncable:
+      // kLocalOrSyncable addresses are synced through AUTOFILL_PROFILE.
+      return;
   }
   if (!change_processor()->IsTrackingMetadata()) {
     pending_account_profile_changes_.push(change);
     return;
   }
 
-  std::unique_ptr<syncer::MetadataChangeList> metadata_change_list =
-      CreateMetadataChangeList();
+  // AutofillProfileChanged() is called as part of a write operation
+  // triggered through AutofillWebDataService. Model changes were already
+  // applied, but not committed yet. They will be committed after all
+  // AutofillWebDataServiceObserverOnDBSequence were notified.
+  // As a result, since this code path executes in the same transaction
+  // that was used to update model data, metadata changes can be written to
+  // the database directly and don't need to be committed from within this
+  // function.
+  syncer::SyncMetadataStoreChangeList metadata_change_list(
+      GetSyncMetadataStore(), syncer::CONTACT_INFO,
+      base::BindRepeating(&syncer::DataTypeLocalChangeProcessor::ReportError,
+                          change_processor()->GetWeakPtr()));
+
   switch (change.type()) {
     case AutofillProfileChange::ADD:
     case AutofillProfileChange::UPDATE:
@@ -220,19 +291,24 @@ void ContactInfoSyncBridge::AutofillProfileChanged(
               change.data_model(),
               GetPossiblyTrimmedContactInfoSpecificsDataFromProcessor(
                   change.key())),
-          metadata_change_list.get());
+          &metadata_change_list);
       break;
     case AutofillProfileChange::REMOVE:
       change_processor()->Delete(change.key(),
                                  syncer::DeletionOrigin::Unspecified(),
-                                 metadata_change_list.get());
+                                 &metadata_change_list);
+      break;
+    case AutofillProfileChange::HIDE_IN_AUTOFILL:
+      auto entity_data = CreateContactInfoEntityDataFromAutofillProfile(
+          change.data_model(),
+          GetPossiblyTrimmedContactInfoSpecificsDataFromProcessor(
+              change.key()));
+      entity_data->specifics.mutable_contact_info()->set_invisible_in_autofill(
+          true);
+      change_processor()->Put(change.key(), std::move(entity_data),
+                              &metadata_change_list);
       break;
   }
-
-  // Local changes (written by the processor via the metadata change list) don't
-  // need to be committed, because the open WebDatabase transaction is committed
-  // by the AutofillWebDataService when the original local write operation (that
-  // triggered this notification to the bridge) finishes.
 }
 
 void ContactInfoSyncBridge::ApplyDisableSyncChanges(
@@ -241,8 +317,11 @@ void ContactInfoSyncBridge::ApplyDisableSyncChanges(
 
   if (!GetAutofillTable()->RemoveAllAutofillProfiles(kAccountRecordTypes)) {
     change_processor()->ReportError(
-        {FROM_HERE, "Failed to delete profiles from table."});
+        {FROM_HERE, syncer::ModelError::Type::
+                        kContactInfoFailedToDeleteProfilesOnDisableSync});
   }
+
+  ApplyMetadataChanges(std::move(delete_metadata_change_list));
 
   // Commits changes through CommitChanges(...) or through the scoped
   // sql::Transaction `transaction` depending on the
@@ -281,6 +360,20 @@ ContactInfoSyncBridge::GetPossiblyTrimmedContactInfoSpecificsDataFromProcessor(
   return change_processor()
       ->GetPossiblyTrimmedRemoteSpecifics(storage_key)
       .contact_info();
+}
+
+std::unique_ptr<syncer::SyncMetadataStoreChangeList>
+ContactInfoSyncBridge::ApplyMetadataChanges(
+    std::unique_ptr<syncer::MetadataChangeList> metadata_change_list) {
+  auto sync_metadata_store_change_list =
+      std::make_unique<syncer::SyncMetadataStoreChangeList>(
+          GetSyncMetadataStore(), syncer::CONTACT_INFO,
+          base::BindRepeating(
+              &syncer::DataTypeLocalChangeProcessor::ReportError,
+              change_processor()->GetWeakPtr()));
+  metadata_change_list->TransferChangesTo(
+      sync_metadata_store_change_list.get());
+  return sync_metadata_store_change_list;
 }
 
 // TODO(crbug.com/40253286): Consider moving this logic to processor.
@@ -324,7 +417,8 @@ ContactInfoSyncBridge::GetDataAndFilter(
   std::vector<AutofillProfile> profiles;
   if (!GetAutofillTable()->GetAutofillProfiles(kAccountRecordTypes, profiles)) {
     change_processor()->ReportError(
-        {FROM_HERE, "Failed to load profiles from table."});
+        {FROM_HERE,
+         syncer::ModelError::Type::kContactInfoFailedToLoadProfilesFromTable});
     return nullptr;
   }
   auto batch = std::make_unique<syncer::MutableDataBatch>();
@@ -346,7 +440,8 @@ void ContactInfoSyncBridge::LoadMetadata() {
   if (!GetSyncMetadataStore()->GetAllSyncMetadata(syncer::CONTACT_INFO,
                                                   batch.get())) {
     change_processor()->ReportError(
-        {FROM_HERE, "Failed reading CONTACT_INFO metadata from WebDatabase."});
+        {FROM_HERE, syncer::ModelError::Type::
+                        kContactInfoFailedToReadMetadataFromWebDatabase});
     return;
   } else if (SyncMetadataCacheContainsSupportedFields(
                  batch->GetAllMetadata())) {
@@ -361,22 +456,6 @@ void ContactInfoSyncBridge::LoadMetadata() {
     batch = std::make_unique<syncer::MetadataBatch>();
   }
   change_processor()->ModelReadyToSync(std::move(batch));
-}
-
-bool ContactInfoSyncBridge::EnsureUniquenessOfHomeAndWork(
-    const AutofillProfile& profile) {
-  if (profile.record_type() != AutofillProfile::RecordType::kAccountHome &&
-      profile.record_type() != AutofillProfile::RecordType::kAccountWork) {
-    return true;
-  }
-  std::vector<AutofillProfile> existing_profiles;
-  AddressAutofillTable& table = *GetAutofillTable();
-  return table.GetAutofillProfiles({profile.record_type()},
-                                   existing_profiles) &&
-         std::ranges::all_of(existing_profiles, [&](const AutofillProfile& p) {
-           return p.guid() == profile.guid() ||
-                  table.UpdateAutofillProfile(p.DowngradeToAccountProfile());
-         });
 }
 
 void ContactInfoSyncBridge::FlushPendingAccountProfileChanges() {

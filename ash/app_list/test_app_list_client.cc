@@ -11,9 +11,13 @@
 #include "ash/public/cpp/app_list/app_list_controller.h"
 #include "ash/public/cpp/app_list/app_list_types.h"
 #include "base/functional/bind.h"
+#include "base/notimplemented.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
-#include "chromeos/ash/services/assistant/public/cpp/features.h"
+#include "chromeos/ui/vector_icons/vector_icons.h"
+#include "ui/base/themed_vector_icon.h"
+#include "ui/gfx/color_palette.h"
+#include "ui/gfx/image/image.h"
 #include "ui/menus/simple_menu_model.h"
 
 namespace ash {
@@ -155,14 +159,10 @@ bool TestAppListClient::HasReordered() {
   return false;
 }
 
-void TestAppListClient::GetAssistantNewEntryPointEligibility(
-    GetAssistantNewEntryPointEligibilityCallback callback) {
-  std::move(callback).Run(ash::assistant::features::IsNewEntryPointEnabled());
-}
-
-std::optional<std::string> TestAppListClient::GetAssistantNewEntryPointName() {
-  // TODO(crbug.com/388361414): update the string
-  return "New entry point";
+gfx::Image TestAppListClient::GetGeminiIcon() {
+  // Use `kMahiSparkIcon` as a placeholder.
+  return gfx::Image(ui::ThemedVectorIcon(&chromeos::kMahiSparkIcon)
+                        .GetImageSkia(gfx::kPlaceholderColor));
 }
 
 }  // namespace ash

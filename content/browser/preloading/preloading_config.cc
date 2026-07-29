@@ -32,31 +32,43 @@ constexpr base::FeatureParam<std::string> kPreloadingConfigParam{
 [{
   "preloading_type": "NoStatePrefetch",
   "preloading_predictor": "LinkRel",
-  "sampling_likelihood": 0.005824
+  "sampling_likelihood": 0.004488
 }, {
   "preloading_type": "Preconnect",
   "preloading_predictor": "PointerDownOnAnchor",
-  "sampling_likelihood": 0.000101
+  "sampling_likelihood": 0.000079
 }, {
   "preloading_type": "Prefetch",
   "preloading_predictor": "DefaultSearchEngine",
-  "sampling_likelihood": 0.005859
+  "sampling_likelihood": 0.004766
+}, {
+  "preloading_type": "Prefetch",
+  "preloading_predictor": "EagerViewportHeuristic",
+  "sampling_likelihood": 0.694040
+}, {
+  "preloading_type": "Prefetch",
+  "preloading_predictor": "MouseHoverOnNewTabPage",
+  "sampling_likelihood": 1.000000
+}, {
+  "preloading_type": "Prefetch",
+  "preloading_predictor": "MouseHoverOrMouseDownOnBookmarkBar",
+  "sampling_likelihood": 0.060283
 }, {
   "preloading_type": "Prefetch",
   "preloading_predictor": "OmniboxMousePredictor",
-  "sampling_likelihood": 1.000000
+  "sampling_likelihood": 0.199292
 }, {
   "preloading_type": "Prefetch",
   "preloading_predictor": "OmniboxSearchPredictor",
-  "sampling_likelihood": 1.000000
+  "sampling_likelihood": 0.393545
 }, {
   "preloading_type": "Prefetch",
   "preloading_predictor": "OmniboxTouchDownPredirector",
-  "sampling_likelihood": 0.010634
+  "sampling_likelihood": 0.007095
 }, {
   "preloading_type": "Prefetch",
   "preloading_predictor": "SpeculationRules",
-  "sampling_likelihood": 0.001351
+  "sampling_likelihood": 0.000496
 }, {
   "preloading_type": "Prefetch",
   "preloading_predictor": "SpeculationRulesFromIsolatedWorld",
@@ -64,51 +76,55 @@ constexpr base::FeatureParam<std::string> kPreloadingConfigParam{
 }, {
   "preloading_type": "Prefetch",
   "preloading_predictor": "UrlPointerDownOnAnchor",
-  "sampling_likelihood": 0.172040
+  "sampling_likelihood": 0.001239
 }, {
   "preloading_type": "Prefetch",
   "preloading_predictor": "UrlPointerHoverOnAnchor",
-  "sampling_likelihood": 0.027961
+  "sampling_likelihood": 0.022203
+}, {
+  "preloading_type": "Prefetch",
+  "preloading_predictor": "ViewportHeuristic",
+  "sampling_likelihood": 0.147695
+}, {
+  "preloading_type": "Prerender",
+  "preloading_predictor": "PrewarmDefaultSearchEngine",
+  "sampling_likelihood": 0.002293
 }, {
   "preloading_type": "Prerender",
   "preloading_predictor": "BackButtonHover",
-  "sampling_likelihood": 0.006930
+  "sampling_likelihood": 0.004640
 }, {
   "preloading_type": "Prerender",
   "preloading_predictor": "BackGestureNavigation",
-  "sampling_likelihood": 0.222866
+  "sampling_likelihood": 0.094236
 }, {
   "preloading_type": "Prerender",
   "preloading_predictor": "DefaultSearchEngine",
-  "sampling_likelihood": 0.008452
+  "sampling_likelihood": 0.004665
+}, {
+  "preloading_type": "Prerender",
+  "preloading_predictor": "EagerViewportHeuristic",
+  "sampling_likelihood": 0.544737
 }, {
   "preloading_type": "Prerender",
   "preloading_predictor": "MouseBackButton",
-  "sampling_likelihood": 0.071273
-}, {
-  "preloading_type": "Prerender",
-  "preloading_predictor": "MouseHoverOnNewTabPage",
-  "sampling_likelihood": 1.000000
+  "sampling_likelihood": 0.054798
 }, {
   "preloading_type": "Prerender",
   "preloading_predictor": "MouseHoverOrMouseDownOnBookmarkBar",
-  "sampling_likelihood": 0.020043
+  "sampling_likelihood": 0.016420
 }, {
   "preloading_type": "Prerender",
   "preloading_predictor": "MouseHoverOrMouseDownOnNewTabPage",
-  "sampling_likelihood": 0.027658
+  "sampling_likelihood": 0.023500
 }, {
   "preloading_type": "Prerender",
   "preloading_predictor": "OmniboxDirectURLInput",
-  "sampling_likelihood": 0.005690
-}, {
-  "preloading_type": "Prerender",
-  "preloading_predictor": "PointerDownOnNewTabPage",
-  "sampling_likelihood": 1.000000
+  "sampling_likelihood": 0.005976
 }, {
   "preloading_type": "Prerender",
   "preloading_predictor": "SpeculationRules",
-  "sampling_likelihood": 0.068397
+  "sampling_likelihood": 0.022402
 }, {
   "preloading_type": "Prerender",
   "preloading_predictor": "SpeculationRulesFromIsolatedWorld",
@@ -116,15 +132,39 @@ constexpr base::FeatureParam<std::string> kPreloadingConfigParam{
 }, {
   "preloading_type": "Prerender",
   "preloading_predictor": "TouchOnNewTabPage",
-  "sampling_likelihood": 0.032771
+  "sampling_likelihood": 0.018563
+}, {
+  "preloading_type": "PrerenderUntilScript",
+  "preloading_predictor": "SpeculationRules",
+  "sampling_likelihood": 0.228063
+}, {
+  "preloading_type": "PrerenderUntilScript",
+  "preloading_predictor": "SpeculationRulesFromIsolatedWorld",
+  "sampling_likelihood": 1.000000
+}, {
+  "preloading_type": "PrerenderUntilScript",
+  "preloading_predictor": "UrlPointerDownOnAnchor",
+  "sampling_likelihood": 0.510323
+}, {
+  "preloading_type": "PrerenderUntilScript",
+  "preloading_predictor": "UrlPointerHoverOnAnchor",
+  "sampling_likelihood": 0.996708
+}, {
+  "preloading_type": "PrerenderUntilScript",
+  "preloading_predictor": "ViewportHeuristic",
+  "sampling_likelihood": 1.000000
 }, {
   "preloading_type": "Prerender",
   "preloading_predictor": "UrlPointerDownOnAnchor",
-  "sampling_likelihood": 0.225458
+  "sampling_likelihood": 0.082085
 }, {
   "preloading_type": "Prerender",
   "preloading_predictor": "UrlPointerHoverOnAnchor",
-  "sampling_likelihood": 0.739199
+  "sampling_likelihood": 0.233435
+}, {
+  "preloading_type": "Prerender",
+  "preloading_predictor": "ViewportHeuristic",
+  "sampling_likelihood": 0.306197
 }]
 )"};
 
@@ -163,18 +203,18 @@ void PreloadingConfig::ParseConfig() {
   }
   // Throughout parsing the config, if we fail to parse, we silently skip the
   // config and use the default values.
-  std::optional<base::Value> config_value =
-      base::JSONReader::Read(kPreloadingConfigParam.Get());
+  std::optional<base::Value> config_value = base::JSONReader::Read(
+      kPreloadingConfigParam.Get(), base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   if (!config_value) {
     return;
   }
-  base::Value::List* entries = config_value->GetIfList();
+  base::ListValue* entries = config_value->GetIfList();
   if (!entries) {
     return;
   }
 
   for (const base::Value& entry : *entries) {
-    const base::Value::Dict* config_dict = entry.GetIfDict();
+    const base::DictValue* config_dict = entry.GetIfDict();
     DCHECK(config_dict);
     if (!config_dict) {
       continue;
@@ -241,7 +281,7 @@ PreloadingConfig::Key PreloadingConfig::Key::FromEnums(
 }
 
 PreloadingConfig::Entry PreloadingConfig::Entry::FromDict(
-    const base::Value::Dict* dict) {
+    const base::DictValue* dict) {
   Entry entry;
   std::optional<bool> holdback = dict->FindBool("holdback");
   if (holdback) {

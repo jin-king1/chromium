@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_APPS_APP_SHIM_APP_SHIM_HOST_MAC_H_
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -17,6 +18,7 @@
 #include "chrome/browser/web_applications/os_integration/mac/app_shim_launch.h"
 #include "chrome/common/mac/app_shim.mojom.h"
 #include "components/metrics/histogram_child_process.h"
+#include "content/public/browser/scoped_accessibility_mode.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
@@ -135,6 +137,10 @@ class AppShimHost : public chrome::mojom::AppShimHost,
   // Returns kNullProcessId if no process has connected to this host yet.
   base::ProcessId GetAppShimPid() const;
 
+  // Returns a weak pointer from a factory that is invalidated when a new launch
+  // is initiated or when the bootstrap connects.
+  base::WeakPtr<AppShimHost> GetLaunchWeakPtr();
+
  protected:
   void ChannelError(uint32_t custom_reason, const std::string& description);
 
@@ -171,6 +177,8 @@ class AppShimHost : public chrome::mojom::AppShimHost,
   void BindChildHistogramFetcherFactory(
       mojo::PendingReceiver<metrics::mojom::ChildHistogramFetcherFactory>
           factory) override;
+  bool IsWebiumRenderer() const override;
+  uint64_t GetProcessIdForHistogram() const override;
 
   // Weak, owns |this|.
   const raw_ptr<Client> client_;
@@ -204,6 +212,37 @@ class AppShimHost : public chrome::mojom::AppShimHost,
 
   // This class is only ever to be used on the UI thread.
   THREAD_CHECKER(thread_checker_);
+
+  // Will be created if accessibility APIs are needed, e.g. if the VoiceOver
+  // screen reader is enabled.
+  std::unique_ptr<content::ScopedAccessibilityMode> process_accessibility_mode_;
+
+ private:
+  // LINT.IfChange(AppShimLaunchResult)
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  enum class LaunchResult {
+    kSuccess = 0,
+    kFailedProcessCreation = 1,
+    kFailedTerminatedBeforeConnection = 2,
+    kSuccessAfterRecreate = 3,
+    kMaxValue = kSuccessAfterRecreate,
+  };
+  // LINT.ThenChange(//tools/metrics/histograms/enums.xml:AppShimLaunchResult)
+
+  void MaybeRecordLaunchResult(LaunchResult result);
+
+  // If a launch was initiated by Chrome, this stores the launch mode.
+  // This is used to log the Apps.AppShim.LaunchResult.{LaunchMode} metric
+  // when the launch succeeds (OnBootstrapConnected) or fails
+  // (OnShimProcessTerminated). If this is nullopt, no launch is pending
+  // or the launch was initiated externally (in which case we don't log).
+  std::optional<web_app::ShimLaunchMode> pending_chrome_initiated_launch_mode_;
+
+  // True if we have attempted to recreate the shim during this launch process.
+  // Used to distinguish between success on first try vs success after recreate
+  // for metrics.
+  bool shim_recreated_ = false;
 
   // This weak factory is used for launch callbacks only.
   base::WeakPtrFactory<AppShimHost> launch_weak_factory_;

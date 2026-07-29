@@ -7,7 +7,6 @@
 #include <utility>
 #include <vector>
 
-#include "base/android/build_info.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/memory/scoped_refptr.h"
@@ -50,7 +49,7 @@ namespace {
 // screen shortcut.
 GURL GetShortcutUrl(content::WebContents* web_contents) {
   return dom_distiller::url_utils::GetOriginalUrlFromDistillerUrl(
-      web_contents->GetVisibleURL());
+      web_contents->GetLastCommittedURL());
 }
 
 InstallableParams ParamsToFetchInstallableData() {
@@ -212,11 +211,7 @@ void AddToHomescreenDataFetcher::OnDidPerformInstallableCheck(
 
   installable_status_code_ = data.GetFirstError();
 
-  // Desktop Android is allowed to install incompatible sites as apps.
-  // Regular Android installs them as shortcuts.
-  // TODO(b/362975239): Fix the compatibility check on desktop Android.
-  if (!webapk_compatible &&
-      !base::android::BuildInfo::GetInstance()->is_desktop()) {
+  if (!webapk_compatible) {
     PrepareToAddShortcut();
     return;
   }
@@ -224,8 +219,8 @@ void AddToHomescreenDataFetcher::OnDidPerformInstallableCheck(
   shortcut_info_.UpdateDisplayMode(webapk_compatible);
 
   AddToHomescreenParams::AppType app_type =
-      data.manifest_url->is_empty() ? AddToHomescreenParams::AppType::WEBAPK_DIY
-                                    : AddToHomescreenParams::AppType::WEBAPK;
+      AddToHomescreenParams::GetWebAppInstallType(
+          /*has_manifest=*/!data.manifest_url->is_empty());
 
   observer_->OnUserTitleAvailable(
       webapk_compatible ? shortcut_info_.name : shortcut_info_.user_title,

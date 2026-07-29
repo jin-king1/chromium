@@ -58,9 +58,9 @@ enum MobileSessionCallerApp {
   CALLER_APP_GOOGLE_MAPS = 10,
   // Includes being launched from Smart App Banner.
   CALLER_APP_NOT_AVAILABLE = 11,
-  CALLER_APP_GOOGLE_CHROME_TODAY_EXTENSION = 12,
-  CALLER_APP_GOOGLE_CHROME_SEARCH_EXTENSION = 13,
-  CALLER_APP_GOOGLE_CHROME_CONTENT_EXTENSION = 14,
+  // CALLER_APP_GOOGLE_CHROME_TODAY_EXTENSION = 12,   // DEPRECATED
+  // CALLER_APP_GOOGLE_CHROME_SEARCH_EXTENSION = 13,  // DEPRECATED
+  // CALLER_APP_GOOGLE_CHROME_CONTENT_EXTENSION = 14, // DEPRECATED
   CALLER_APP_GOOGLE_CHROME_SHARE_EXTENSION = 15,
   CALLER_APP_GOOGLE_CHROME = 16,
   // An application launched Chrome with an http/https URL as the default
@@ -126,9 +126,8 @@ enum MobileSessionStartAction {
 };
 // LINT.ThenChange(/tools/metrics/histograms/metadata/ios/enums.xml)
 
-// Values of the UMA iOS.SearchExtension.Action histogram.
-// LINT.IfChange
-enum SearchExtensionAction {
+// The action triggered by an extension.
+enum ExtensionAction {
   ACTION_NO_ACTION,
   ACTION_NEW_SEARCH,
   ACTION_NEW_INCOGNITO_SEARCH,
@@ -138,9 +137,8 @@ enum SearchExtensionAction {
   ACTION_SEARCH_TEXT,
   ACTION_SEARCH_IMAGE,
   ACTION_LENS,
-  SEARCH_EXTENSION_ACTION_COUNT,
+  EXTENSION_ACTION_COUNT,
 };
-// LINT.ThenChange(/tools/metrics/histograms/metadata/ios/enums.xml)
 
 // Values of the UMA IOS.ExternalAction histogram.
 // These values are persisted to logs. Entries should not be renumbered and
@@ -156,7 +154,14 @@ enum class IOSExternalAction {
   // Logged when Chrome is passed a "DefaultBrowserSettings" action, but instead
   // will show the NTP, since Chrome is already set as default browser.
   ACTION_SKIPPED_DEFAULT_BROWSER_SETTINGS_FOR_NTP = 3,
-  kMaxValue = ACTION_SKIPPED_DEFAULT_BROWSER_SETTINGS_FOR_NTP,
+  // Logged when Chrome is passed a "AppStoreGeminiPromo" action.
+  ACTION_APP_STORE_GEMINI_PROMO = 4,
+  // Logged when Chrome is receiving a post opening action when triggering
+  // external actions from the App Switcher. Also logged when Chrome is passed
+  // an "AppSwitcherTesting" action which is purely to force this external
+  // action in testing.
+  ACTION_START_GEMINI_AI_SUMMARIZATION = 5,
+  kMaxValue = ACTION_START_GEMINI_AI_SUMMARIZATION,
 };
 // LINT.ThenChange(/tools/metrics/histograms/metadata/ios/enums.xml)
 

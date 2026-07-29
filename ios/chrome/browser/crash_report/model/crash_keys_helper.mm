@@ -18,6 +18,8 @@ namespace {
 const char kCrashedInBackground[] = "crashed_in_background";
 const char kFreeDiskInKB[] = "free_disk_in_kb";
 const char kFreeMemoryInKB[] = "free_memory_in_kb";
+const char kMemoryLimitBytesRemainingInKB[] =
+    "memory_limit_bytes_remaining_in_kb";
 const char kMemoryWarningInProgress[] = "memory_warning_in_progress";
 const char kMemoryWarningCount[] = "memory_warning_count";
 const char kGridToVisibleTabAnimation[] = "grid_to_visible_tab_animation";
@@ -43,6 +45,7 @@ char const kForegroundScenes[] = "fgScenes";
 char const kDestroyingAndRebuildingIncognitoBrowserState[] =
     "destroyingAndRebuildingOTR";
 char const kVoiceOverRunning[] = "voiceOver";
+char const kIsReaderModeActive[] = "readerMode";
 
 }  // namespace
 
@@ -110,6 +113,16 @@ void SetCurrentFreeMemoryInKB(int value) {
       setReportParameterValue:base::SysUTF8ToNSString(
                                   base::NumberToString(value))
                        forKey:base::SysUTF8ToNSString(kFreeMemoryInKB)];
+}
+
+void SetCurrentMemoryLimitBytesRemainingInKB(int value) {
+  static crash_reporter::CrashKeyString<16> key(kMemoryLimitBytesRemainingInKB);
+  key.Set(base::NumberToString(value));
+  [[PreviousSessionInfo sharedInstance]
+      setReportParameterValue:base::SysUTF8ToNSString(
+                                  base::NumberToString(value))
+                       forKey:base::SysUTF8ToNSString(
+                                  kMemoryLimitBytesRemainingInKB)];
 }
 
 void SetCurrentFreeDiskInKB(int value) {
@@ -251,6 +264,22 @@ void SetVoiceOverRunning(bool running) {
   } else {
     [[CrashReportUserApplicationState sharedInstance]
         removeValue:kVoiceOverRunning];
+  }
+}
+
+void SetCurrentlyInReaderMode(bool is_reader_mode_active) {
+  static crash_reporter::CrashKeyString<4> key(kIsReaderModeActive);
+  if (is_reader_mode_active) {
+    key.Set("yes");
+    [[PreviousSessionInfo sharedInstance]
+        setReportParameterValue:@"yes"
+                         forKey:base::SysUTF8ToNSString(kIsReaderModeActive)];
+
+  } else {
+    key.Clear();
+    [[PreviousSessionInfo sharedInstance]
+        removeReportParameterForKey:base::SysUTF8ToNSString(
+                                        kIsReaderModeActive)];
   }
 }
 

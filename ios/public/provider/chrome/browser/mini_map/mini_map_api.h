@@ -27,6 +27,11 @@ using MiniMapControllerCompletionWithString = void (^)(NSString*);
 - (void)presentDirectionsWithPresentingViewController:
     (UIViewController*)viewController;
 
+// Presents the MiniMapController in native preview mode on top of
+// viewController.
+- (void)presentMapsNativePreviewWithPresentingViewController:
+    (UIViewController*)viewController;
+
 // Configure the footer view of the minimap controller.
 // All the fields are required.
 // If this is not called before the presentation, no footer view is presented.
@@ -45,6 +50,32 @@ using MiniMapControllerCompletionWithString = void (^)(NSString*);
                        actionHandler:
                            (void (^)(NSURL*, UIViewController*))actionHandler;
 
+// Configure the address for which the maps will be displayed.
+// Exactly one of `configureAddress:` or `configureURL: `must be called before
+// presenting.
+- (void)configureAddress:(NSString*)address;
+
+// Configure the Universal link URL for which the map will be displayed.
+// Exactly one of `configureAddress:` or `configureURL: `must be called before
+// presenting.
+- (void)configureURL:(NSURL*)url;
+
+// `completion` is called after the minimap is dismissed with an optional URL.
+// Note: exactly one of `completion` or `completionWithQuery` will be called.
+- (void)configureCompletion:(MiniMapControllerCompletionWithURL)completion;
+
+// `completionWithQuery` is called in case of an error when resolving the map
+// with a query to open in a new tab.
+// Note: exactly one of `completion` or `completionWithQuery` will be called.
+- (void)configureCompletionWithSearchQuery:
+    (MiniMapControllerCompletionWithString)completionWithQuery;
+
+// `failureCompletion` is called when Mini Map fails to load.
+- (void)configureFailureCompletion:(void (^)(void))failureCompletion;
+
+// Configure the incognito state of the minimap controller.
+- (void)configureIncognito:(BOOL)isIncognito;
+
 @end
 
 namespace ios {
@@ -55,10 +86,10 @@ namespace provider {
 // If present, it indicates that the user requested to open the URL.
 // In case of error, `completion_with_query` is called with a query to open in
 // a new tab.
-id<MiniMapController> CreateMiniMapController(
-    NSString* address,
-    MiniMapControllerCompletionWithURL completion,
-    MiniMapControllerCompletionWithString completion_with_query);
+id<MiniMapController> CreateMiniMapController();
+
+// Checks whether MiniMap can handle `url`.
+BOOL MiniMapCanHandleURL(NSURL* url);
 
 }  // namespace provider
 }  // namespace ios

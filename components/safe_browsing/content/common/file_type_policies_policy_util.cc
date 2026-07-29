@@ -5,7 +5,7 @@
 #include "components/safe_browsing/content/common/file_type_policies_policy_util.h"
 
 #include "base/strings/string_util.h"
-#include "components/policy/core/browser/url_blocklist_manager.h"
+#include "components/policy/core/browser/url_list/url_blocklist_manager.h"
 #include "components/prefs/pref_service.h"
 #include "components/safe_browsing/content/common/file_type_policies_prefs.h"
 #include "components/url_matcher/url_matcher.h"
@@ -32,7 +32,7 @@ FileTypePoliciesOverrideResult ShouldOverrideFileTypePolicies(
 
   // If the download is a local file, suppress "dangerous file" warnings because
   // they are not helpful at this point; the file is already on disk.
-  if (url.SchemeIsFile() && url.host_piece().empty()) {
+  if (url.SchemeIsFile() && url.host().empty()) {
     return FileTypePoliciesOverrideResult::kOverrideAsNotDangerous;
   }
 
@@ -44,19 +44,19 @@ FileTypePoliciesOverrideResult ShouldOverrideFileTypePolicies(
               kExemptDomainFileTypePairsFromFileTypeDownloadWarnings)) {
     return FileTypePoliciesOverrideResult::kDoNotOverride;
   }
-  const base::Value::List& heuristic_overrides = prefs->GetList(
+  const base::ListValue& heuristic_overrides = prefs->GetList(
       file_type::prefs::kExemptDomainFileTypePairsFromFileTypeDownloadWarnings);
 
   const std::string lower_extension = base::ToLowerASCII(extension);
 
-  base::Value::List domains_for_extension;
+  base::ListValue domains_for_extension;
   for (const base::Value& entry : heuristic_overrides) {
-    const base::Value::Dict& extension_domain_patterns_dict = entry.GetDict();
+    const base::DictValue& extension_domain_patterns_dict = entry.GetDict();
     const std::string* extension_for_this_entry =
         extension_domain_patterns_dict.FindString(kFileExtensionNameKey);
     if (extension_for_this_entry &&
         base::ToLowerASCII(*extension_for_this_entry) == lower_extension) {
-      const base::Value::List* domains_for_this_entry =
+      const base::ListValue* domains_for_this_entry =
           extension_domain_patterns_dict.FindList(kDomainListKey);
       if (domains_for_this_entry) {
         for (const base::Value& domain : *domains_for_this_entry) {

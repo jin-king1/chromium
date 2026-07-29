@@ -16,6 +16,7 @@
 #include "third_party/blink/renderer/core/page/chrome_client.h"
 #include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/core/paint/paint_layer_scrollable_area.h"
+#include "third_party/perfetto/include/perfetto/tracing/track_event_args.h"
 #include "ui/gfx/delegated_ink_metadata.h"
 
 namespace blink {
@@ -56,7 +57,7 @@ void DelegatedInkTrailPresenter::updateInkTrailStartPoint(
   }
 
   Color color;
-  if (!CSSParser::ParseColor(color, style->color(), true /*strict*/)) {
+  if (!CSSParser::ParseColor(color, style->color())) {
     exception_state.ThrowTypeError("Unknown color.");
     return;
   }
@@ -98,8 +99,8 @@ void DelegatedInkTrailPresenter::updateInkTrailStartPoint(
   while (layout_view->GetFrame()->OwnerLayoutObject()) {
     PhysicalRect frame_visual_viewport_absolute =
         layout_view->LocalToAbsoluteRect(
-            PhysicalRect(
-                layout_view->GetScrollableArea()->VisibleContentRect()),
+            PhysicalRect(layout_view->GetScrollableArea()->VisibleContentRect(
+                kExcludeScrollbars)),
             kTraverseDocumentBoundaries);
     border_box_rect_absolute.Intersect(frame_visual_viewport_absolute);
 
@@ -107,7 +108,7 @@ void DelegatedInkTrailPresenter::updateInkTrailStartPoint(
   }
 
   border_box_rect_absolute.Intersect(
-      PhysicalRect(visual_viewport.VisibleContentRect()));
+      PhysicalRect(visual_viewport.VisibleContentRect(kExcludeScrollbars)));
 
   gfx::RectF area = gfx::RectF(border_box_rect_absolute);
   area = visual_viewport.RootFrameToViewport(area);
@@ -134,11 +135,10 @@ void DelegatedInkTrailPresenter::updateInkTrailStartPoint(
           point_visual_viewport, diameter_in_physical_pixels, color.Rgb(),
           evt->PlatformTimeStamp(), area, is_hovering);
 
-  TRACE_EVENT_WITH_FLOW1("delegated_ink_trails",
-                         "DelegatedInkTrailPresenter::updateInkTrailStartPoint",
-                         TRACE_ID_GLOBAL(metadata->trace_id()),
-                         TRACE_EVENT_FLAG_FLOW_OUT, "metadata",
-                         metadata->ToString());
+  TRACE_EVENT("delegated_ink_trails",
+              "DelegatedInkTrailPresenter::updateInkTrailStartPoint",
+              perfetto::Flow::Global(metadata->trace_id()), "metadata",
+              metadata->ToString());
 
   if (last_delegated_ink_metadata_timestamp_ == metadata->timestamp())
     return;

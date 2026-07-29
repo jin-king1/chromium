@@ -40,6 +40,10 @@ component("display") {
     "display_transform.h",
     "display_util.cc",
     "display_util.h",
+    "headless/headless_screen_manager.cc",
+    "headless/headless_screen_manager.h",
+    "headless/headless_screen_util.cc",
+    "headless/headless_screen_util.h",
     "scoped_display_for_new_windows.cc",
     "scoped_display_for_new_windows.h",
     "screen.cc",
@@ -64,11 +68,21 @@ component("display") {
     sources += [
       "mac/ca_display_link_mac.h",
       "mac/ca_display_link_mac.mm",
+      "mac/ca_metal_display_link_mac.h",
+      "mac/ca_metal_display_link_mac.mm",
       "mac/cv_display_link_mac.h",
       "mac/cv_display_link_mac.mm",
       "mac/display_link_mac.h",
       "mac/display_link_mac.mm",
+      "mac/external_display_link_mac.h",
+      "mac/external_display_link_mac.mm",
       "mac/screen_mac.mm",
+      "mac/screen_mac_headless.h",
+      "mac/screen_mac_headless.mm",
+      "mac/screen_utils_mac.h",
+      "mac/screen_utils_mac.mm",
+      "mac/vsync_provider_mac.cc",
+      "mac/vsync_provider_mac.h",
     ]
   }
 
@@ -94,6 +108,8 @@ component("display") {
       "win/screen_win.h",
       "win/screen_win_display.cc",
       "win/screen_win_display.h",
+      "win/screen_win_headless.cc",
+      "win/screen_win_headless.h",
       "win/uwp_text_scale_factor.cc",
       "win/uwp_text_scale_factor.h",
     ]
@@ -110,14 +126,15 @@ component("display") {
   public_deps = [
     ":display_features",
     "//ui/display/types",
+    "//ui/gfx",
     "//ui/gfx:color_space",
-    "//ui/gfx:gfx",
   ]
 
   deps = [
     "//base",
     "//base:i18n",
     "//components/device_event_log",
+    "//components/viz/common/resources:shared_image_format",
     "//mojo/public/cpp/bindings:struct_traits",
     "//ui/display/mojom:mojom_shared_cpp_sources",
     "//ui/display/util",
@@ -132,7 +149,10 @@ component("display") {
   if (is_win) {
     # Don't conflict with Windows' "display.dll".
     output_name = "ui_display"
-    deps += [ "//ui/gfx/mojom:dxgi_info" ]
+    deps += [
+      "//components/headless/screen_info",
+      "//ui/gfx/mojom:dxgi_info",
+    ]
     libs = [ "shcore.lib" ]
     ldflags = [ "/DELAYLOAD:shcore.dll" ]
   }
@@ -142,11 +162,13 @@ component("display") {
   }
 
   if (is_mac) {
+    deps += [ "//components/headless/screen_info" ]
     frameworks = [
       "AppKit.framework",
       "CoreGraphics.framework",
       "QuartzCore.framework",
       "IOKit.framework",
+      "Metal.framework",
     ]
   }
 }
@@ -220,6 +242,10 @@ static_library("test_support") {
       "mac/test/virtual_display_util_mac.h",
       "mac/test/virtual_display_util_mac.mm",
     ]
+
+    # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+    # enable the diagnostic by removing this line.
+    configs += [ "//build/config/compiler:no_exit_time_destructors" ]
   }
 
   if (is_linux && ozone_platform_x11 && enable_remoting) {
@@ -230,7 +256,7 @@ static_library("test_support") {
     deps += [
       "//remoting/host:display_layout",
       "//remoting/host/linux:x11_display_utils",
-      "//ui/gfx/x:x",
+      "//ui/gfx/x",
     ]
   }
 
@@ -274,10 +300,11 @@ test("display_unittests") {
     "display_layout_unittest.cc",
     "display_list_unittest.cc",
     "display_unittest.cc",
+    "headless/headless_screen_util_unittest.cc",
     "mojom/display_mojom_traits_unittest.cc",
     "mojom/screen_infos_mojom_traits_unittest.cc",
     "screen_unittest.cc",
-    "unified_desktop_utils_unittests.cc",
+    "unified_desktop_utils_unittest.cc",
     "util/display_util_unittest.cc",
     "util/edid_parser_unittest.cc",
   ]
@@ -285,6 +312,7 @@ test("display_unittests") {
   if (is_win) {
     sources += [
       "win/scaling_util_unittest.cc",
+      "win/screen_win_headless_unittest.cc",
       "win/screen_win_unittest.cc",
     ]
   }
@@ -295,6 +323,7 @@ test("display_unittests") {
     "//base",
     "//base/test:test_support",
     "//cc/base",
+    "//components/viz/common/resources:shared_image_format",
     "//mojo/public/cpp/test_support:test_utils",
     "//testing/gmock",
     "//testing/gtest",
@@ -312,6 +341,10 @@ test("display_unittests") {
     # Do not run display_change_notifier_unittest.cc on Android because it
     # does not compile display_observer.cc
     sources += [ "display_change_notifier_unittest.cc" ]
+  }
+
+  if (is_win) {
+    deps += [ "//components/headless/screen_info" ]
   }
 
   if (is_chromeos) {
@@ -349,4 +382,8 @@ test("display_unittests") {
   } else {
     deps += [ "//mojo/core/test:run_all_unittests" ]
   }
+
+  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+  # enable the diagnostic by removing this line.
+  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }

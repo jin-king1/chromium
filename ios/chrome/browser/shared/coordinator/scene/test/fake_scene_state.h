@@ -8,37 +8,33 @@
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "url/gurl.h"
 
+@protocol BrowserProvider;
 class ProfileIOS;
 
-// Test double for SceneState, created with appropriate interface objects backed
-// by a browser. No incognito interface is created by default.
-// Any test using objects of this class must include a TaskEnvironment member
-// because of the embedded test profile.
+// Test double for SceneState that create a regular and an incognito Browsers
+// and connect them to be accessible via the BrowserProviderInterface.
 @interface FakeSceneState : SceneState
 
-// Creates an array of `count` instances, without any associated AppState.
-+ (NSArray<FakeSceneState*>*)sceneArrayWithCount:(int)count
-                                         profile:(ProfileIOS*)profile;
+// Designated initializer. The `profile` must not be null.
+- (instancetype)initWithProfile:(ProfileIOS*)profile NS_DESIGNATED_INITIALIZER;
 
-// Initializer.
-- (instancetype)initWithAppState:(AppState*)appState
-                         profile:(ProfileIOS*)profile NS_DESIGNATED_INITIALIZER;
+- (instancetype)init NS_UNAVAILABLE;
 
-- (instancetype)initWithAppState:(AppState*)appState NS_UNAVAILABLE;
+// Updates the current BrowserProvider. Must be either -mainBrowserProvider
+// or -incognitoBrowserProvider from -browserProviderInterface.
+- (void)setCurrentBrowserProvider:(id<BrowserProvider>)browserProvider;
 
-// Window for the associated scene, if any.
-// This is redeclared relative to FakeScene.window, except this is now readwrite
-// and backed by an instance variable.
-@property(nonatomic, strong, readwrite) UIWindow* window;
+// Destroys and recreates the off-the-record Profile and Browser.
+- (void)destroyAndRecreateOffTheRecordProfile;
 
-// Re-declare appState as readwrite.
-@property(nonatomic, weak, readwrite) AppState* appState;
+// Appends a suitable web state test double to the receiver's main interface.
+- (void)appendWebStateWithURL:(const GURL&)URL;
 
-// Append a suitable web state test double to the receiver's main interface.
-- (void)appendWebStateWithURL:(const GURL)URL;
+// Appends `count` web states, all with `url` as the current URL, to the
+- (void)appendWebStatesWithURL:(const GURL&)URL count:(int)count;
 
-// Append `count` web states, all with `url` as the current URL, to the
-- (void)appendWebStatesWithURL:(const GURL)URL count:(int)count;
+// Must be called before -dealloc.
+- (void)shutdown;
 
 @end
 

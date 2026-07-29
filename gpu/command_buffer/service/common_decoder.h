@@ -10,22 +10,20 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
+#include "base/containers/span.h"
 #include "base/memory/raw_ptr.h"
 #include "gpu/command_buffer/common/buffer.h"
 #include "gpu/command_buffer/common/cmd_buffer_common.h"
 #include "gpu/command_buffer/common/constants.h"
-#include "gpu/gpu_export.h"
+#include "gpu/command_buffer/service/gpu_command_buffer_service_export.h"
 
 // Forwardly declare a few GL types to avoid including GL header files.
 using GLsizei = int;
 using GLint = int;
-
-namespace gfx {
-class ColorSpace;
-}  // namespace gfx
 
 namespace gpu {
 
@@ -34,7 +32,7 @@ class DecoderClient;
 
 // This class is a helper base class for implementing the common parts of the
 // o3d/gl2 command buffer decoder.
-class GPU_EXPORT CommonDecoder {
+class GPU_COMMAND_BUFFER_SERVICE_EXPORT CommonDecoder {
  public:
   using Error = error::Error;
 
@@ -62,7 +60,7 @@ class GPU_EXPORT CommonDecoder {
   // arbitary size, the service puts the string in a bucket. The client can
   // then query the size of a bucket and request sections of the bucket to
   // be passed across shared memory.
-  class GPU_EXPORT Bucket {
+  class GPU_COMMAND_BUFFER_SERVICE_EXPORT Bucket {
    public:
     Bucket();
 
@@ -160,6 +158,43 @@ class GPU_EXPORT CommonDecoder {
     return static_cast<T>(GetAddressAndCheckSize(shm_id, offset, size));
   }
 
+  template <typename T = uint8_t>
+  std::optional<base::span<T>> GetSharedMemoryAsSpan(uint32_t shm_id,
+                                                     uint32_t offset,
+                                                     size_t element_count) {
+    // Prevent integer overflow exploits on large element counts.
+    base::CheckedNumeric<uint32_t> checked_size_in_bytes =
+        base::CheckedNumeric<size_t>(element_count) * sizeof(T);
+    uint32_t size_in_bytes;
+    if (!checked_size_in_bytes.AssignIfValid(&size_in_bytes)) {
+      return std::nullopt;
+    }
+
+    std::optional<base::span<uint8_t>> byte_span =
+        GetSharedMemoryAsByteSpan(shm_id, offset, size_in_bytes);
+    if (!byte_span.has_value()) {
+      return std::nullopt;
+    }
+
+    // Protect against partial reads or out-of-bounds shared memory access.
+    if (byte_span->size_bytes() != size_in_bytes) {
+      return std::nullopt;
+    }
+
+    // Allow valid zero-count draw calls to pass without triggering alignment
+    // checks.
+    if (element_count == 0) {
+      return base::span<T>();
+    }
+
+    // Prevent undefined behavior from unaligned hardware memory access.
+    if (reinterpret_cast<uintptr_t>(byte_span->data()) % alignof(T) != 0) {
+      return std::nullopt;
+    }
+
+    return base::subtle::reinterpret_span<T>(*byte_span);
+  }
+
   void* GetAddressAndSize(unsigned int shm_id,
                           unsigned int offset,
                           unsigned int minimum_size,
@@ -199,13 +234,6 @@ class GPU_EXPORT CommonDecoder {
   // watchdog checks in CommandExecutor().
   virtual void ExitCommandProcessingEarly() {}
 
-  // Read a serialized gfx::ColorSpace. Return true on success and false if the
-  // serialization was invalid.
-  bool ReadColorSpace(uint32_t shm_id,
-                      uint32_t shm_offset,
-                      uint32_t color_space_size,
-                      gfx::ColorSpace* color_space);
-
  private:
   // Generate a member function prototype for each command in an automated and
   // typesafe way.
@@ -216,6 +244,11 @@ class GPU_EXPORT CommonDecoder {
   COMMON_COMMAND_BUFFER_CMDS(COMMON_COMMAND_BUFFER_CMD_OP)
 
   #undef COMMON_COMMAND_BUFFER_CMD_OP
+
+  std::optional<base::span<uint8_t>> GetSharedMemoryAsByteSpan(
+      uint32_t shm_id,
+      uint32_t offset,
+      uint32_t size_in_bytes);
 
   raw_ptr<CommandBufferServiceBase, DanglingUntriaged> command_buffer_service_;
   raw_ptr<DecoderClient, DanglingUntriaged> client_;

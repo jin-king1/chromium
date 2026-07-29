@@ -12,7 +12,10 @@
 #include <vector>
 
 #include "base/base_export.h"
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/files/file_path.h"
+#include "base/strings/cstring_view.h"
 #include "base/win/access_control_list.h"
 #include "base/win/access_token.h"
 #include "base/win/sid.h"
@@ -78,7 +81,7 @@ class BASE_EXPORT SecurityDescriptor {
   // |object_type| specifies the type of object the name represents.
   // |security_info| indicates what parts to read.
   static std::optional<SecurityDescriptor> FromName(
-      const std::wstring& name,
+      wcstring_view name,
       SecurityObjectType object_type,
       SECURITY_INFORMATION security_info);
 
@@ -93,7 +96,11 @@ class BASE_EXPORT SecurityDescriptor {
 
   // Create from a string representation of a security descriptor.
   // |sddl| the security descriptor in SDDL format.
-  static std::optional<SecurityDescriptor> FromSddl(const std::wstring& sddl);
+  static std::optional<SecurityDescriptor> FromSddl(wcstring_view sddl);
+
+  // Create a security descriptor with an empty DACL. This is a convenience
+  // method when you need a security descriptor which doesn't grant any access.
+  static SecurityDescriptor CreateWithEmptyDacl();
 
   SecurityDescriptor();
   SecurityDescriptor(const SecurityDescriptor&) = delete;
@@ -113,7 +120,7 @@ class BASE_EXPORT SecurityDescriptor {
   // SetNamedSecurityInfo API.
   // |object_type| specifies the type of object name represents.
   // |security_info| indicates what parts to write.
-  bool WriteToName(const std::wstring& name,
+  bool WriteToName(wcstring_view name,
                    SecurityObjectType object_type,
                    SECURITY_INFORMATION security_info) const;
 
@@ -130,10 +137,9 @@ class BASE_EXPORT SecurityDescriptor {
   // |security_info| determines what parts are included in the string.
   std::optional<std::wstring> ToSddl(SECURITY_INFORMATION security_info) const;
 
-  // Create an reference to the absolute security descriptor of this instance.
-  // |sd| the SECURITY_DESCRIPTOR structure to populate. This is is only valid
-  // as long as this object is in scope and not modified.
-  void ToAbsolute(SECURITY_DESCRIPTOR& sd);
+  // Create a reference to the absolute security descriptor of this instance.
+  // This is is only valid as long as this object is in scope and not modified.
+  SECURITY_DESCRIPTOR ToAbsolute() LIFETIME_BOUND;
 
   // Create a self-relative security descriptor in a single buffer.
   std::optional<SelfRelative> ToSelfRelative() const;
@@ -154,7 +160,7 @@ class BASE_EXPORT SecurityDescriptor {
   // |entries| the list of entries to set in the ACL.
   // Returns true if successful, false on error, with the Win32 last error set.
   // If DACL is not present a NULL ACL will be added first.
-  bool SetDaclEntries(const std::vector<ExplicitAccessEntry>& entries);
+  bool SetDaclEntries(base::span<const ExplicitAccessEntry> entries);
 
   // Set one entry in the DACL.
   // |sid| the SID for the entry.
@@ -165,6 +171,19 @@ class BASE_EXPORT SecurityDescriptor {
   // error, with the Win32 last error set.
   // If DACL is not present a NULL ACL will be added first.
   bool SetDaclEntry(const Sid& sid,
+                    SecurityAccessMode mode,
+                    DWORD access_mask,
+                    DWORD inheritance);
+
+  // Set one entry in the DACL using the user SID from an access token.
+  // |token| the access token whose user SID is used for the entry.
+  // |mode| the operation to perform on the ACL, e.g. grant access.
+  // |access_mask| the entries access mask.
+  // |inheritance| inheritance flags.
+  // Returns true if successful, false on
+  // error, with the Win32 last error set.
+  // If DACL is not present a NULL ACL will be added first.
+  bool SetDaclEntry(const AccessToken& token,
                     SecurityAccessMode mode,
                     DWORD access_mask,
                     DWORD inheritance);
@@ -231,6 +250,10 @@ class BASE_EXPORT SecurityDescriptor {
     dacl_protected_ = dacl_protected;
   }
 
+  // Gets dacl_auto_inherited member, this is only for information purposes as
+  // the flag can't be directly written to a file.
+  bool dacl_auto_inherited() const { return dacl_auto_inherited_; }
+
   // Get, set and clear sacl member.
   const std::optional<AccessControlList>& sacl() const { return sacl_; }
   std::optional<AccessControlList>& sacl() { return sacl_; }
@@ -243,20 +266,28 @@ class BASE_EXPORT SecurityDescriptor {
     sacl_protected_ = sacl_protected;
   }
 
+  // Gets dacl_auto_inherited member, this is only for information purposes as
+  // the flag can't be directly written to a file.
+  bool sacl_auto_inherited() const { return sacl_auto_inherited_; }
+
  private:
-  SecurityDescriptor(std::optional<Sid>&& owner,
-                     std::optional<Sid>&& group,
-                     std::optional<AccessControlList>&& dacl,
+  SecurityDescriptor(std::optional<Sid> owner,
+                     std::optional<Sid> group,
+                     std::optional<AccessControlList> dacl,
                      bool dacl_protected,
-                     std::optional<AccessControlList>&& sacl,
-                     bool sacl_protected);
+                     bool dacl_auto_inherited,
+                     std::optional<AccessControlList> sacl,
+                     bool sacl_protected,
+                     bool sacl_auto_inherited);
 
   std::optional<Sid> owner_;
   std::optional<Sid> group_;
   std::optional<AccessControlList> dacl_;
   bool dacl_protected_ = false;
+  bool dacl_auto_inherited_ = false;
   std::optional<AccessControlList> sacl_;
   bool sacl_protected_ = false;
+  bool sacl_auto_inherited_ = false;
 };
 
 }  // namespace base::win

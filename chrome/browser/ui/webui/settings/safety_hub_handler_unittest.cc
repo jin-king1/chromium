@@ -12,20 +12,23 @@
 #include "base/functional/bind.h"
 #include "base/json/values_util.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/gtest_util.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/simple_test_clock.h"
 #include "base/time/clock.h"
 #include "base/time/time.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
-#include "chrome/browser/extensions/cws_info_service.h"
 #include "chrome/browser/extensions/cws_info_service_factory.h"
 #include "chrome/browser/history/history_service_factory.h"
 #include "chrome/browser/password_manager/password_manager_test_util.h"
 #include "chrome/browser/permissions/notifications_engagement_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/safe_browsing/test_safe_browsing_service.h"
+#include "chrome/browser/ui/desktop_to_mobile_promos/ios_promo_trigger_service.h"
+#include "chrome/browser/ui/desktop_to_mobile_promos/ios_promo_trigger_service_factory.h"
 #include "chrome/browser/ui/safety_hub/mock_safe_browsing_database_manager.h"
 #include "chrome/browser/ui/safety_hub/notification_permission_review_service_factory.h"
 #include "chrome/browser/ui/safety_hub/password_status_check_service.h"
@@ -33,7 +36,7 @@
 #include "chrome/browser/ui/safety_hub/safety_hub_constants.h"
 #include "chrome/browser/ui/safety_hub/safety_hub_test_util.h"
 #include "chrome/browser/ui/safety_hub/safety_hub_util.h"
-#include "chrome/browser/ui/safety_hub/unused_site_permissions_service.h"
+#include "chrome/browser/ui/safety_hub/unused_site_permissions_manager.h"
 #include "chrome/browser/ui/webui/settings/site_settings_helper.h"
 #include "chrome/browser/ui/webui/version/version_ui.h"
 #include "chrome/browser/upgrade_detector/build_state.h"
@@ -51,15 +54,19 @@
 #include "components/content_settings/core/common/content_settings_types.h"
 #include "components/content_settings/core/common/features.h"
 #include "components/crx_file/id_util.h"
+#include "components/desktop_to_mobile_promos/features.h"
+#include "components/password_manager/core/browser/password_manager_test_utils.h"
 #include "components/password_manager/core/browser/password_store/test_password_store.h"
 #include "components/permissions/constants.h"
 #include "components/safe_browsing/core/common/features.h"
 #include "components/safe_browsing/core/common/safe_browsing_prefs.h"
+#include "components/sync_preferences/features.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/common/content_features.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/test_web_ui.h"
+#include "extensions/browser/cws_info_service.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_prefs_factory.h"
 #include "extensions/browser/extension_registry.h"
@@ -67,6 +74,7 @@
 #include "extensions/common/extension_id.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/ozone/public/ozone_platform.h"
 #include "url/gurl.h"
 
 using extensions::mojom::ManifestLocation;
@@ -82,21 +90,47 @@ constexpr char16_t kUsername[] = u"bob";
 constexpr char16_t kCompromisedPassword[] = u"fnlsr4@cm^mdls@fkspnsg3d";
 constexpr ContentSettingsType kUnusedRegularPermission =
     ContentSettingsType::GEOLOCATION;
-constexpr ContentSettingsType kUnusedChooserPermission =
-    ContentSettingsType::FILE_SYSTEM_ACCESS_CHOOSER_DATA;
 const base::TimeDelta kLifetime = base::Days(30);
+
+namespace {
+
+class MockIOSPromoTriggerService : public IOSPromoTriggerService {
+ public:
+  explicit MockIOSPromoTriggerService(Profile* profile)
+      : IOSPromoTriggerService(profile) {}
+  ~MockIOSPromoTriggerService() override = default;
+
+  MOCK_METHOD(void,
+              NotifyPromoShouldBeShown,
+              (desktop_to_mobile_promos::PromoType promo_type),
+              (override));
+  MOCK_METHOD(const syncer::DeviceInfo*, GetIOSDeviceToRemind, (), (override));
+  MOCK_METHOD(void,
+              SetReminderForIOSDevice,
+              (desktop_to_mobile_promos::PromoType promo_type,
+               const std::string& device_guid),
+              (override));
+};
+
+std::unique_ptr<KeyedService> BuildMockIOSPromoTriggerService(
+    content::BrowserContext* context) {
+  return std::make_unique<MockIOSPromoTriggerService>(
+      Profile::FromBrowserContext(context));
+}
+
+}  // namespace
 
 class SafetyHubHandlerTest : public testing::Test {
  public:
   SafetyHubHandlerTest() {
-    feature_list_.InitWithFeatures(
+    feature_list_.InitWithFeaturesAndParameters(
         /*enabled_features=*/
-        {content_settings::features::kSafetyCheckUnusedSitePermissions,
-         content_settings::features::
-             kSafetyCheckUnusedSitePermissionsForSupportedChooserPermissions,
-         features::kSafetyHubExtensionsUwSTrigger,
-         features::kSafetyHubExtensionsOffStoreTrigger, features::kSafetyHub,
-         safe_browsing::kSafetyHubAbusiveNotificationRevocation},
+        {{content_settings::features::kSafetyCheckUnusedSitePermissions, {}},
+         {features::kSafetyHubExtensionsUwSTrigger, {}},
+         {features::kSafetyHubExtensionsOffStoreTrigger, {}},
+         {kMobilePromoOnDesktopWithReminder,
+          {{kMobilePromoOnDesktopPromoTypeParam, "2"}}},
+         {sync_preferences::features::kEnableCrossDevicePrefTracker, {}}},
         /*disabled_features=*/{});
   }
 
@@ -105,6 +139,10 @@ class SafetyHubHandlerTest : public testing::Test {
     base::Time time;
     ASSERT_TRUE(base::Time::FromString("2022-09-07 13:00", &time));
     clock_.SetNow(time);
+
+    safety_hub_test_util::CreateRevokedPermissionsService(profile());
+    safety_hub_test_util::CreateNotificationPermissionsReviewService(profile());
+
     hcsm_ = HostContentSettingsMapFactory::GetForProfile(profile());
     hcsm_->SetClockForTesting(&clock_);
 
@@ -117,7 +155,7 @@ class SafetyHubHandlerTest : public testing::Test {
 
     // Run password check to fetch latest result from disk.
     safety_hub_test_util::UpdatePasswordCheckServiceAsync(
-        PasswordStatusCheckServiceFactory::GetForProfile(profile()));
+        safety_hub_test_util::CreateAndUsePasswordStatusService(profile()));
   }
 
   void TearDown() override {
@@ -147,21 +185,11 @@ class SafetyHubHandlerTest : public testing::Test {
   }
 
   void AddRevokedPermission() {
-    auto dict = base::Value::Dict()
-                    .Set(permissions::kRevokedKey,
-                         base::Value::List()
-                             .Append(UnusedSitePermissionsService::
-                                         ConvertContentSettingsTypeToKey(
-                                             kUnusedRegularPermission))
-                             .Append(UnusedSitePermissionsService::
-                                         ConvertContentSettingsTypeToKey(
-                                             kUnusedChooserPermission)))
-                    .Set(permissions::kRevokedChooserPermissionsKey,
-                         base::Value::Dict().Set(
-                             UnusedSitePermissionsService::
-                                 ConvertContentSettingsTypeToKey(
-                                     kUnusedChooserPermission),
-                             base::Value::Dict().Set("foo", "bar")));
+    auto dict = base::DictValue().Set(
+        permissions::kRevokedKey,
+        base::ListValue().Append(
+            UnusedSitePermissionsManager::ConvertContentSettingsTypeToKey(
+                kUnusedRegularPermission)));
 
     content_settings::ContentSettingConstraints constraint(clock()->Now());
     constraint.set_lifetime(kLifetime);
@@ -181,8 +209,8 @@ class SafetyHubHandlerTest : public testing::Test {
     hcsm()->SetWebsiteSettingDefaultScope(
         GURL(kAbusiveTestSite), GURL(kAbusiveTestSite),
         ContentSettingsType::REVOKED_ABUSIVE_NOTIFICATION_PERMISSIONS,
-        base::Value(base::Value::Dict().Set(
-            safety_hub::kRevokedStatusDictKeyStr, safety_hub::kRevokeStr)),
+        base::Value(base::DictValue().Set(safety_hub::kRevokedStatusDictKeyStr,
+                                          safety_hub::kRevokeStr)),
         constraint);
   }
 
@@ -196,29 +224,20 @@ class SafetyHubHandlerTest : public testing::Test {
     hcsm()->SetWebsiteSettingDefaultScope(
         GURL(kAbusiveAndUnusedTestSite), GURL(kAbusiveAndUnusedTestSite),
         ContentSettingsType::REVOKED_ABUSIVE_NOTIFICATION_PERMISSIONS,
-        base::Value(base::Value::Dict().Set(
-            safety_hub::kRevokedStatusDictKeyStr, safety_hub::kRevokeStr)),
+        base::Value(base::DictValue().Set(safety_hub::kRevokedStatusDictKeyStr,
+                                          safety_hub::kRevokeStr)),
         constraint);
 
     // Setup unused permissions.
     auto dict =
-        base::Value::Dict()
+        base::DictValue()
             .Set(permissions::kRevokedKey,
-                 base::Value::List()
-                     .Append(UnusedSitePermissionsService::
-                                 ConvertContentSettingsTypeToKey(
-                                     kUnusedRegularPermission))
-                     .Append(UnusedSitePermissionsService::
-                                 ConvertContentSettingsTypeToKey(
-                                     kUnusedChooserPermission)))
-            .Set(permissions::kRevokedChooserPermissionsKey,
-                 base::Value::Dict().Set(UnusedSitePermissionsService::
-                                             ConvertContentSettingsTypeToKey(
-                                                 kUnusedChooserPermission),
-                                         base::Value::Dict().Set("foo", "bar")))
-            .Set(safety_hub::kAbusiveRevocationExpirationKey,
+                 base::ListValue().Append(UnusedSitePermissionsManager::
+                                              ConvertContentSettingsTypeToKey(
+                                                  kUnusedRegularPermission)))
+            .Set(safety_hub::kExpirationKey,
                  base::TimeToValue(constraint.expiration()))
-            .Set(safety_hub::kAbusiveRevocationLifetimeKey,
+            .Set(safety_hub::kLifetimeKey,
                  base::TimeDeltaToValue(constraint.lifetime()));
     hcsm()->SetWebsiteSettingDefaultScope(
         GURL(kAbusiveAndUnusedTestSite), GURL(kAbusiveAndUnusedTestSite),
@@ -227,8 +246,8 @@ class SafetyHubHandlerTest : public testing::Test {
   }
 
   void CreateLeakedCredential() {
-    profile_store().AddLogin(
-        MakeForm(kUsername, kCompromisedPassword, kUsedTestSite, true));
+    profile_store().AddLogin(password_manager::FromPasswordForm(
+        MakeForm(kUsername, kCompromisedPassword, kUsedTestSite, true)));
     PasswordStatusCheckService* password_service =
         PasswordStatusCheckServiceFactory::GetForProfile(profile());
     safety_hub_test_util::UpdatePasswordCheckServiceAsync(password_service);
@@ -236,8 +255,8 @@ class SafetyHubHandlerTest : public testing::Test {
   }
 
   void FixLeakedCredential() {
-    profile_store().UpdateLogin(
-        MakeForm(kUsername, u"new_fnlsr4@cm^mls@fkspnsg3d"));
+    profile_store().UpdateLogin(password_manager::FromPasswordForm(
+        MakeForm(kUsername, u"new_fnlsr4@cm^mls@fkspnsg3d")));
     PasswordStatusCheckService* password_service =
         PasswordStatusCheckServiceFactory::GetForProfile(profile());
     safety_hub_test_util::UpdatePasswordCheckServiceAsync(password_service);
@@ -271,9 +290,6 @@ class SafetyHubHandlerTest : public testing::Test {
     EXPECT_EQ(ContentSetting::CONTENT_SETTING_ASK,
               hcsm()->GetContentSetting(GURL(url), GURL(url),
                                         kUnusedRegularPermission));
-    EXPECT_EQ(base::Value(),
-              hcsm()->GetWebsiteSetting(GURL(url), GURL(url),
-                                        kUnusedChooserPermission));
   }
 
   void ExpectRevokedAbusiveNotificationPermission(const std::string& url) {
@@ -325,7 +341,7 @@ class SafetyHubHandlerTest : public testing::Test {
   void ValidateHandleSafeBrowsingCardData(std::string header,
                                           std::string subheader,
                                           SafetyHubCardState state) {
-    base::Value::List args;
+    base::ListValue args;
     args.Append("getSafeBrowsingState");
 
     handler()->HandleGetSafeBrowsingCardData(args);
@@ -347,7 +363,7 @@ class SafetyHubHandlerTest : public testing::Test {
   }
 
   void ValidateEntryPointHasRecommendationsAndHeader(bool hasRecommendations) {
-    base::Value::List args;
+    base::ListValue args;
     args.Append("getSafetyHubEntryPointData");
 
     handler()->HandleGetSafetyHubEntryPointData(args);
@@ -409,13 +425,13 @@ class SafetyHubHandlerTest : public testing::Test {
         isModuleRecommended
             ? AddNotificationPermissionsForReview()
             : handler()->HandleIgnoreOriginsForNotificationPermissionReview(
-                  base::Value::List().Append(GetOriginList(1)));
+                  base::ListValue().Append(GetOriginList(1)));
         break;
       case SafetyHubHandler::SafetyHubModule::kUnusedSitePermissions:
         isModuleRecommended
             ? AddRevokedPermission()
             : handler()->HandleAcknowledgeRevokedUnusedSitePermissionsList(
-                  base::Value::List());
+                  base::ListValue());
         break;
       default:
         NOTREACHED()
@@ -452,7 +468,7 @@ class SafetyHubHandlerTest : public testing::Test {
     }
 
     // Send a message to handler to get the current state of the subheader.
-    base::Value::List args;
+    base::ListValue args;
     args.Append("getSafetyHubEntryPointData");
     handler()->HandleGetSafetyHubEntryPointData(args);
     const content::TestWebUI::CallData& data = *web_ui()->call_data().back();
@@ -476,8 +492,8 @@ class SafetyHubHandlerTest : public testing::Test {
     }
   }
 
-  base::Value::List GetOriginList(int size) {
-    base::Value::List origins;
+  base::ListValue GetOriginList(int size) {
+    base::ListValue origins;
     for (int i = 0; i < size; i++) {
       origins.Append("https://example" + base::NumberToString(i) + ".org:443");
     }
@@ -580,17 +596,11 @@ TEST_F(SafetyHubHandlerTest, PopulateUnusedSitePermissionsData) {
   const auto lifetime = base::ValueToTimeDelta(
       *revoked_permission_dict.Find(safety_hub::kLifetimeKey));
   EXPECT_EQ(lifetime, kLifetime);
-
-  const auto* chooser_permissions_data = revoked_permission_dict.FindDict(
-      safety_hub::kSafetyHubChooserPermissionsData);
-  EXPECT_TRUE(chooser_permissions_data->contains(
-      UnusedSitePermissionsService::ConvertContentSettingsTypeToKey(
-          kUnusedChooserPermission)));
 }
 
 TEST_F(SafetyHubHandlerTest, HandleAllowPermissionsAgainForUnusedSite) {
   AddUnusedPermission();
-  base::Value::List initial_unused_site_permissions =
+  base::ListValue initial_unused_site_permissions =
       handler()->PopulateUnusedSitePermissionsData();
   ExpectRevokedUnusedSitePermission(kUnusedTestSite);
   EXPECT_EQ(hcsm()
@@ -600,7 +610,7 @@ TEST_F(SafetyHubHandlerTest, HandleAllowPermissionsAgainForUnusedSite) {
             1U);
 
   // Allow the revoked permission for the unused site again.
-  base::Value::List args;
+  base::ListValue args;
   args.Append(base::Value(kUnusedTestSite));
   handler()->HandleAllowPermissionsAgainForUnusedSite(args);
 
@@ -614,10 +624,6 @@ TEST_F(SafetyHubHandlerTest, HandleAllowPermissionsAgainForUnusedSite) {
       ContentSetting::CONTENT_SETTING_ALLOW,
       hcsm()->GetContentSetting(GURL(kUnusedTestSite), GURL(kUnusedTestSite),
                                 kUnusedRegularPermission));
-  EXPECT_EQ(
-      base::Value::Dict().Set("foo", "bar"),
-      hcsm()->GetWebsiteSetting(GURL(kUnusedTestSite), GURL(kUnusedTestSite),
-                                kUnusedChooserPermission));
 
   // Undoing restores the initial state.
   handler()->HandleUndoAllowPermissionsAgainForUnusedSite(
@@ -637,14 +643,14 @@ TEST_F(SafetyHubHandlerTest,
       handler()->PopulateUnusedSitePermissionsData();
   EXPECT_GT(revoked_permissions_before.size(), 0U);
   // Acknowledging revoked permissions from unused sites clears the list.
-  base::Value::List args;
+  base::ListValue args;
   handler()->HandleAcknowledgeRevokedUnusedSitePermissionsList(args);
   const auto& revoked_permissions_after =
       handler()->PopulateUnusedSitePermissionsData();
   EXPECT_EQ(revoked_permissions_after.size(), 0U);
 
   // Undo reverts the list to its initial state.
-  base::Value::List undo_args;
+  base::ListValue undo_args;
   undo_args.Append(revoked_permissions_before.Clone());
   handler()->HandleUndoAcknowledgeRevokedUnusedSitePermissionsList(undo_args);
   EXPECT_EQ(revoked_permissions_before,
@@ -673,23 +679,31 @@ TEST_F(SafetyHubHandlerTest, PopulateAbusiveAndUnusedSitePermissionsData) {
   // Unused site url should have unused permissions in permission list.
   auto* revoked_permission_list_unused =
       revoked_permissions[0].GetDict().FindList(site_settings::kPermissions);
-  EXPECT_EQ((*revoked_permission_list_unused)[0], "location");
-  EXPECT_EQ((*revoked_permission_list_unused)[1],
-            "file-system-access-handles-data");
+  EXPECT_EQ(revoked_permission_list_unused->size(), 1u);
+  EXPECT_EQ(*(*revoked_permission_list_unused)[0].GetDict().FindString(
+                site_settings::kType),
+            "location");
 
   // Abusive and unused site url should have both notifications and unused
   // permissions in permission list.
   auto* revoked_permission_list_abusive_and_unused =
       revoked_permissions[1].GetDict().FindList(site_settings::kPermissions);
-  EXPECT_EQ((*revoked_permission_list_abusive_and_unused)[0], "location");
-  EXPECT_EQ((*revoked_permission_list_abusive_and_unused)[1], "notifications");
-  EXPECT_EQ((*revoked_permission_list_abusive_and_unused)[2],
-            "file-system-access-handles-data");
+  EXPECT_EQ(revoked_permission_list_abusive_and_unused->size(), 2u);
+  EXPECT_EQ(
+      *(*revoked_permission_list_abusive_and_unused)[0].GetDict().FindString(
+          site_settings::kType),
+      "location");
+  EXPECT_EQ(
+      *(*revoked_permission_list_abusive_and_unused)[1].GetDict().FindString(
+          site_settings::kType),
+      "notifications");
 
   // Abusive notification url should have notifications in permission list.
   auto* revoked_permission_list_abusive =
       revoked_permissions[2].GetDict().FindList(site_settings::kPermissions);
-  EXPECT_EQ((*revoked_permission_list_abusive)[0], "notifications");
+  EXPECT_EQ(*(*revoked_permission_list_abusive)[0].GetDict().FindString(
+                site_settings::kType),
+            "notifications");
 
   // Notifications should not be allowed.
   ExpectRevokedAbusiveNotificationPermission(kAbusiveAndUnusedTestSite);
@@ -698,12 +712,12 @@ TEST_F(SafetyHubHandlerTest, PopulateAbusiveAndUnusedSitePermissionsData) {
 
 TEST_F(SafetyHubHandlerTest, HandleAllowPermissionsAgainForAbusiveSite) {
   AddAbusiveNotificationPermission();
-  base::Value::List initial_abusive_site_permissions =
+  base::ListValue initial_abusive_site_permissions =
       handler()->PopulateUnusedSitePermissionsData();
   ExpectRevokedAbusiveNotificationPermission(kAbusiveTestSite);
 
   // Allow the revoked permission for the unused site again.
-  base::Value::List args;
+  base::ListValue args;
   args.Append(base::Value(kAbusiveTestSite));
   handler()->HandleAllowPermissionsAgainForUnusedSite(args);
 
@@ -725,11 +739,11 @@ TEST_F(SafetyHubHandlerTest, HandleAllowPermissionsAgainForAbusiveSite) {
 TEST_F(SafetyHubHandlerTest,
        HandleAllowPermissionsAgainForAbusiveAndUnusedSite) {
   AddAbusiveAndUnusedNotificationPermission();
-  base::Value::List initial_abusive_and_unused_site_permissions =
+  base::ListValue initial_abusive_and_unused_site_permissions =
       handler()->PopulateUnusedSitePermissionsData();
 
   // Allow the revoked permission for the unused site again.
-  base::Value::List args;
+  base::ListValue args;
   args.Append(base::Value(kAbusiveAndUnusedTestSite));
   handler()->HandleAllowPermissionsAgainForUnusedSite(args);
 
@@ -787,7 +801,7 @@ TEST_F(SafetyHubHandlerTest,
       2U);
 
   // Acknowledging revoked permissions clears the list.
-  base::Value::List args;
+  base::ListValue args;
   handler()->HandleAcknowledgeRevokedUnusedSitePermissionsList(args);
   const auto& revoked_permissions_after =
       handler()->PopulateUnusedSitePermissionsData();
@@ -802,7 +816,7 @@ TEST_F(SafetyHubHandlerTest,
       0U);
 
   // Undo reverts the list to its initial state.
-  base::Value::List undo_args;
+  base::ListValue undo_args;
   undo_args.Append(revoked_permissions_before.Clone());
   handler()->HandleUndoAcknowledgeRevokedUnusedSitePermissionsList(undo_args);
   EXPECT_EQ(revoked_permissions_before,
@@ -826,7 +840,7 @@ TEST_F(SafetyHubHandlerTest,
           ContentSettingsType::NOTIFICATION_PERMISSION_REVIEW);
   ASSERT_EQ(0U, ignored_patterns.size());
 
-  base::Value::List args;
+  base::ListValue args;
   args.Append(GetOriginList(1));
   handler()->HandleIgnoreOriginsForNotificationPermissionReview(args);
 
@@ -840,7 +854,7 @@ TEST_F(SafetyHubHandlerTest,
 
 TEST_F(SafetyHubHandlerTest,
        HandleUndoIgnoreOriginsForNotificationPermissionReview) {
-  base::Value::List args;
+  base::ListValue args;
   args.Append(GetOriginList(1));
   handler()->HandleIgnoreOriginsForNotificationPermissionReview(args);
 
@@ -860,8 +874,8 @@ TEST_F(SafetyHubHandlerTest,
 }
 
 TEST_F(SafetyHubHandlerTest, HandleAllowNotificationPermissionForOrigins) {
-  base::Value::List args;
-  base::Value::List origins = GetOriginList(2);
+  base::ListValue args;
+  base::ListValue origins = GetOriginList(2);
   args.Append(origins.Clone());
   handler()->HandleAllowNotificationPermissionForOrigins(args);
 
@@ -883,8 +897,8 @@ TEST_F(SafetyHubHandlerTest, HandleAllowNotificationPermissionForOrigins) {
 }
 
 TEST_F(SafetyHubHandlerTest, HandleBlockNotificationPermissionForOrigins) {
-  base::Value::List args;
-  base::Value::List origins = GetOriginList(2);
+  base::ListValue args;
+  base::ListValue origins = GetOriginList(2);
   args.Append(origins.Clone());
 
   handler()->HandleBlockNotificationPermissionForOrigins(args);
@@ -909,8 +923,8 @@ TEST_F(SafetyHubHandlerTest, HandleBlockNotificationPermissionForOrigins) {
 TEST_F(SafetyHubHandlerTest, HandleResetNotificationPermissionForOrigins) {
   HostContentSettingsMap* content_settings =
       HostContentSettingsMapFactory::GetForProfile(profile());
-  base::Value::List args;
-  base::Value::List origins = GetOriginList(1);
+  base::ListValue args;
+  base::ListValue origins = GetOriginList(1);
   args.Append(origins.Clone());
 
   content_settings->SetContentSettingCustomScope(
@@ -1029,12 +1043,14 @@ TEST_F(SafetyHubHandlerTest, RevokeAllContentSettingTypes) {
       base::MakeFixedFlatSet<ContentSettingsType>({
           // clang-format off
           ContentSettingsType::MIDI,
-          ContentSettingsType::DURABLE_STORAGE,
+          ContentSettingsType::PERSISTENT_STORAGE,
           ContentSettingsType::NFC,
           ContentSettingsType::FILE_SYSTEM_READ_GUARD,
           ContentSettingsType::CAMERA_PAN_TILT_ZOOM,
           ContentSettingsType::FILE_SYSTEM_ACCESS_EXTENDED_PERMISSION,
           ContentSettingsType::POINTER_LOCK,
+          ContentSettingsType::LOCAL_NETWORK_ACCESS,
+          ContentSettingsType::SUB_APPS_WITHOUT_PROMPTS,
           // clang-format on
       });
 
@@ -1058,10 +1074,10 @@ TEST_F(SafetyHubHandlerTest, RevokeAllContentSettingTypes) {
     }
 
     // Add the permission to revoked permission list.
-    auto dict = base::Value::Dict().Set(
+    auto dict = base::DictValue().Set(
         permissions::kRevokedKey,
-        base::Value::List().Append(
-            UnusedSitePermissionsService::ConvertContentSettingsTypeToKey(
+        base::ListValue().Append(
+            UnusedSitePermissionsManager::ConvertContentSettingsTypeToKey(
                 type)));
     hcsm()->SetWebsiteSettingDefaultScope(
         GURL(kUnusedTestSite), GURL(kUnusedTestSite),
@@ -1071,7 +1087,7 @@ TEST_F(SafetyHubHandlerTest, RevokeAllContentSettingTypes) {
     // Unless the permission in kNoNameTypes, it should be shown on the UI.
     const auto& revoked_permissions =
         handler()->PopulateUnusedSitePermissionsData();
-    if (base::Contains(kNoNameTypes, type)) {
+    if (kNoNameTypes.contains(type)) {
       EXPECT_EQ(revoked_permissions.size(), 0U);
     } else {
       EXPECT_EQ(revoked_permissions.size(), 1U);
@@ -1079,15 +1095,14 @@ TEST_F(SafetyHubHandlerTest, RevokeAllContentSettingTypes) {
   }
 }
 
-TEST_F(SafetyHubHandlerTest, VersionCardUpToDate_ThenOutOfDate) {
-  base::Value::List args;
+TEST_F(SafetyHubHandlerTest, VersionCardUpToDate) {
+  base::ListValue args;
   args.Append("getVersionCardData");
   handler()->HandleGetVersionCardData(args);
 
   const content::TestWebUI::CallData& data = *web_ui()->call_data().back();
   ASSERT_TRUE(data.arg3()->is_dict());
 
-  // Check that the version card data reflects 'up to date' state.
   EXPECT_EQ(l10n_util::GetStringUTF16(
                 IDS_SETTINGS_SAFETY_HUB_VERSION_CARD_HEADER_UPDATED),
             base::UTF8ToUTF16(*data.arg3()->GetDict().FindString("header")));
@@ -1095,36 +1110,8 @@ TEST_F(SafetyHubHandlerTest, VersionCardUpToDate_ThenOutOfDate) {
             base::UTF8ToUTF16(*data.arg3()->GetDict().FindString("subheader")));
   EXPECT_EQ(static_cast<int>(SafetyHubCardState::kSafe),
             *data.arg3()->GetDict().FindInt("state"));
-
-  // New Chrome version is available.
-  g_browser_process->GetBuildState()->SetUpdate(
-      BuildState::UpdateType::kNormalUpdate,
-      base::Version({CHROME_VERSION_MAJOR, CHROME_VERSION_MINOR,
-                     CHROME_VERSION_BUILD, CHROME_VERSION_PATCH + 1}),
-      std::nullopt);
-
-  // Check that a version update event was fired.
-  const content::TestWebUI::CallData& event_data =
-      *web_ui()->call_data().back();
-  EXPECT_EQ("cr.webUIListenerCallback", event_data.function_name());
-  ASSERT_TRUE(event_data.arg1()->is_string());
-  EXPECT_EQ("chrome-version-maybe-changed", event_data.arg1()->GetString());
-
-  // Check that the version card data now reflects 'waiting update' state.
-  ASSERT_TRUE(event_data.arg2()->is_dict());
-  EXPECT_EQ(l10n_util::GetStringUTF8(
-                IDS_SETTINGS_SAFETY_HUB_VERSION_CARD_HEADER_RESTART),
-            *event_data.arg2()->GetDict().FindString("header"));
-  EXPECT_EQ(l10n_util::GetStringUTF8(
-                IDS_SETTINGS_SAFETY_HUB_VERSION_CARD_SUBHEADER_RESTART),
-            *event_data.arg2()->GetDict().FindString("subheader"));
-  EXPECT_EQ(static_cast<int>(SafetyHubCardState::kWarning),
-            *event_data.arg2()->GetDict().FindInt("state"));
 }
 
-// There is no need to test 'Version card is in OutOfDate state then is in
-// UpToDate state' scenario since such change implies a browser relaunch. Which
-// in turn leads to a simple 'Version card is UpToDate' case tested above.
 TEST_F(SafetyHubHandlerTest, VersionCardOutOfDate) {
   // An update is available, the version card should let the user know.
   g_browser_process->GetBuildState()->SetUpdate(
@@ -1133,7 +1120,7 @@ TEST_F(SafetyHubHandlerTest, VersionCardOutOfDate) {
                      CHROME_VERSION_BUILD, CHROME_VERSION_PATCH + 1}),
       std::nullopt);
 
-  base::Value::List args;
+  base::ListValue args;
   args.Append("getVersionCardData");
   handler()->HandleGetVersionCardData(args);
 
@@ -1152,6 +1139,18 @@ TEST_F(SafetyHubHandlerTest, VersionCardOutOfDate) {
 
 TEST_F(SafetyHubHandlerTest,
        HandleGetSafetyHubEntryPointData_HasRecommendationsAndHeader) {
+  base::test::ScopedFeatureList disable_notification_autorevocation;
+  disable_notification_autorevocation.InitAndDisableFeature(
+      features::kSafetyHubDisruptiveNotificationRevocation);
+
+#if BUILDFLAG(IS_LINUX)
+  // TODO(crbug.com/490024783): This is one of several tests failing on Linux
+  // builders with Ozone Wayland. Diagnose, fix, and unskip this test.
+  if (ui::OzonePlatform::RunningOnWaylandForTest()) {
+    GTEST_SKIP();
+  }
+#endif
+
   std::vector<SafetyHubHandler::SafetyHubModule> modules;
   modules.push_back(SafetyHubHandler::SafetyHubModule::kPasswords);
   modules.push_back(SafetyHubHandler::SafetyHubModule::kVersion);
@@ -1222,11 +1221,6 @@ TEST_F(SafetyHubHandlerTest,
 
   ValidateEntryPointSubheader(
       l10n_util::GetStringUTF8(
-          IDS_SETTINGS_SAFETY_HUB_NOTIFICATIONS_MODULE_UPPERCASE_NAME),
-      SafetyHubHandler::SafetyHubModule::kNotifications);
-
-  ValidateEntryPointSubheader(
-      l10n_util::GetStringUTF8(
           IDS_SETTINGS_SAFETY_HUB_PERMISSIONS_MODULE_UPPERCASE_NAME),
       SafetyHubHandler::SafetyHubModule::kUnusedSitePermissions);
 }
@@ -1270,16 +1264,6 @@ TEST_F(SafetyHubHandlerTest,
   ValidateEntryPointSubheader(expected_subheader,
                               SafetyHubHandler::SafetyHubModule::kExtensions);
 
-  // The expected subheader should be "Passwords, notifications"
-  expected_subheader =
-      l10n_util::GetStringUTF8(IDS_SETTINGS_SAFETY_HUB_PASSWORDS_MODULE_NAME) +
-      l10n_util::GetStringUTF8(IDS_SETTINGS_SAFETY_HUB_MODULE_NAME_SEPARATOR) +
-      " " +
-      l10n_util::GetStringUTF8(
-          IDS_SETTINGS_SAFETY_HUB_NOTIFICATIONS_MODULE_LOWERCASE_NAME);
-  ValidateEntryPointSubheader(
-      expected_subheader, SafetyHubHandler::SafetyHubModule::kNotifications);
-
   // The expected subheader should be "Passwords, permissions"
   expected_subheader =
       l10n_util::GetStringUTF8(IDS_SETTINGS_SAFETY_HUB_PASSWORDS_MODULE_NAME) +
@@ -1294,6 +1278,13 @@ TEST_F(SafetyHubHandlerTest,
 
 TEST_F(SafetyHubHandlerTest,
        HandleGetSafetyHubEntryPointData_Subheader_AllModules) {
+  // Disruptive notification revocation disables the notification review module.
+  // TODO(https://crbug.com/496616827): Adapt this test when removing the
+  // notification review module logic.
+  base::test::ScopedFeatureList disable_notification_autorevocation;
+  disable_notification_autorevocation.InitAndDisableFeature(
+      features::kSafetyHubDisruptiveNotificationRevocation);
+
   AddUnusedPermission();
   SetupTestToShowOrHideRecommendationForModule(
       SafetyHubHandler::SafetyHubModule::kPasswords, true);
@@ -1360,69 +1351,67 @@ TEST_F(SafetyHubHandlerTest, ExtensionPrefAndInitialization) {
   EXPECT_EQ(2u, web_ui()->call_data().size());
 }
 
-class SafetyHubHandlerEitherAbusiveOrUnusedPermissionRevocationDisabledTest
+TEST_F(SafetyHubHandlerTest, OnSafeBrowsingEnhancedChanged) {
+  auto* mock_service = static_cast<MockIOSPromoTriggerService*>(
+      IOSPromoTriggerServiceFactory::GetInstance()->SetTestingFactoryAndUse(
+          profile(), base::BindRepeating(&BuildMockIOSPromoTriggerService)));
+
+  // Turn off enhanced safe browsing. The promo should not be triggered.
+  EXPECT_CALL(*mock_service, NotifyPromoShouldBeShown(testing::_)).Times(0);
+  profile()->GetPrefs()->SetBoolean(prefs::kSafeBrowsingEnhanced, false);
+  testing::Mock::VerifyAndClearExpectations(mock_service);
+
+  // Turn on enhanced safe browsing. The promo should be triggered.
+  EXPECT_CALL(*mock_service,
+              NotifyPromoShouldBeShown(
+                  desktop_to_mobile_promos::PromoType::kEnhancedBrowsing));
+  profile()->GetPrefs()->SetBoolean(prefs::kSafeBrowsingEnhanced, true);
+}
+
+class SafetyHubHandlerUnusedPermissionRevocationDisabledTest
     : public testing::Test,
       public testing::WithParamInterface<bool> {
  public:
-  SafetyHubHandlerEitherAbusiveOrUnusedPermissionRevocationDisabledTest() {
-    std::vector<base::test::FeatureRef> enabled_features;
-    std::vector<base::test::FeatureRef> disabled_features;
-    disabled_features.push_back(
-        content_settings::features::
-            kSafetyCheckUnusedSitePermissionsForSupportedChooserPermissions);
-
-    if (IsUnusedPermissionRevocationDisabled()) {
-      enabled_features.push_back(
-          safe_browsing::kSafetyHubAbusiveNotificationRevocation);
-      disabled_features.push_back(
-          content_settings::features::kSafetyCheckUnusedSitePermissions);
-    } else {
-      enabled_features.push_back(
-          content_settings::features::kSafetyCheckUnusedSitePermissions);
-      disabled_features.push_back(
-          safe_browsing::kSafetyHubAbusiveNotificationRevocation);
-    }
-    feature_list_.InitWithFeatures(enabled_features, disabled_features);
+  SafetyHubHandlerUnusedPermissionRevocationDisabledTest() {
+    feature_list_.InitWithFeatures(
+        /*enabled_features=*/{},
+        /*disabled_features=*/
+        {content_settings::features::kSafetyCheckUnusedSitePermissions});
   }
 
-  // If the test parameter is true, enable abusive notification revocation and
-  // disable unused site permission revocation. Otherwise, do the opposite
-  // (enable unused site permission revocation and disable abusive notification
-  // revocation). This allows cleaner and easier testing of the same scenarios
-  // for the two different feature treatments, since SafetyHubHandler already
-  // tests when both features are enabled.
-  bool IsUnusedPermissionRevocationDisabled() { return GetParam(); }
+  // If the test parameter is true, enable safe browsing and expect that abusive
+  // notifications are auto-revoked. Otherwise, disabling safe browsing should
+  // not have any permissions revoked.
+  bool IsSafeBrowsingEnabled() { return GetParam(); }
 
   void SetUp() override {
     // Set clock for HostContentSettingsMap.
     base::Time time;
     ASSERT_TRUE(base::Time::FromString("2022-09-07 13:00", &time));
     clock_.SetNow(time);
+
+    safety_hub_test_util::CreateRevokedPermissionsService(profile());
+    safety_hub_test_util::CreateNotificationPermissionsReviewService(profile());
+
     hcsm_ = HostContentSettingsMapFactory::GetForProfile(profile());
     hcsm_->SetClockForTesting(&clock_);
 
-    if (IsUnusedPermissionRevocationDisabled()) {
+    if (IsSafeBrowsingEnabled()) {
       SetUpSafeBrowsingService();
     }
+
     handler_ = std::make_unique<SafetyHubHandler>(profile());
     handler()->set_web_ui(web_ui());
     handler()->AllowJavascript();
 
-    if (IsUnusedPermissionRevocationDisabled()) {
+    if (IsSafeBrowsingEnabled()) {
       AddAbusiveNotificationPermission();
-    } else {
-      AddRevokedUnusedPermission();
     }
   }
 
   void TearDown() override {
-    if (IsUnusedPermissionRevocationDisabled()) {
+    if (IsSafeBrowsingEnabled()) {
       TestingBrowserProcess::GetGlobal()->SetSafeBrowsingService(nullptr);
-    } else {
-      auto* partition = profile()->GetDefaultStoragePartition();
-      if (partition) {
-        partition->WaitForDeletionTasksForTesting();
-      }
     }
   }
 
@@ -1435,22 +1424,6 @@ class SafetyHubHandlerEitherAbusiveOrUnusedPermissionRevocationDisabledTest
     return mock_database_manager_.get();
   }
 
-  void AddRevokedUnusedPermission() {
-    auto dict = base::Value::Dict().Set(
-        permissions::kRevokedKey,
-        base::Value::List().Append(
-            UnusedSitePermissionsService::ConvertContentSettingsTypeToKey(
-                kUnusedRegularPermission)));
-
-    content_settings::ContentSettingConstraints constraint(clock()->Now());
-    constraint.set_lifetime(kLifetime);
-
-    hcsm()->SetWebsiteSettingDefaultScope(
-        GURL(kUnusedTestSite), GURL(kUnusedTestSite),
-        ContentSettingsType::REVOKED_UNUSED_SITE_PERMISSIONS,
-        base::Value(dict.Clone()), constraint);
-  }
-
   void AddAbusiveNotificationPermission() {
     mock_database_manager()->SetThreatTypeForUrl(
         GURL(kAbusiveTestSite),
@@ -1458,14 +1431,8 @@ class SafetyHubHandlerEitherAbusiveOrUnusedPermissionRevocationDisabledTest
     hcsm()->SetWebsiteSettingDefaultScope(
         GURL(kAbusiveTestSite), GURL(kAbusiveTestSite),
         ContentSettingsType::REVOKED_ABUSIVE_NOTIFICATION_PERMISSIONS,
-        base::Value(base::Value::Dict().Set(
-            safety_hub::kRevokedStatusDictKeyStr, safety_hub::kRevokeStr)));
-  }
-
-  void ExpectRevokedUnusedSitePermission(const std::string& url) {
-    EXPECT_EQ(ContentSetting::CONTENT_SETTING_ASK,
-              hcsm()->GetContentSetting(GURL(url), GURL(url),
-                                        kUnusedRegularPermission));
+        base::Value(base::DictValue().Set(safety_hub::kRevokedStatusDictKeyStr,
+                                          safety_hub::kRevokeStr)));
   }
 
   void ExpectRevokedAbusiveNotificationPermission(const std::string& url) {
@@ -1498,131 +1465,131 @@ class SafetyHubHandlerEitherAbusiveOrUnusedPermissionRevocationDisabledTest
       safe_browsing_factory_;
 };
 
-TEST_P(SafetyHubHandlerEitherAbusiveOrUnusedPermissionRevocationDisabledTest,
+TEST_P(SafetyHubHandlerUnusedPermissionRevocationDisabledTest,
        PopulateSitePermissionsData) {
-  // Revoked permissions list should contain the url.
   const auto& revoked_permissions =
       handler()->PopulateUnusedSitePermissionsData();
-  EXPECT_EQ(revoked_permissions.size(), 1UL);
-  EXPECT_EQ(GURL(IsUnusedPermissionRevocationDisabled() ? kAbusiveTestSite
-                                                        : kUnusedTestSite),
-            GURL(*revoked_permissions[0].GetDict().FindString(
-                site_settings::kOrigin)));
+  if (IsSafeBrowsingEnabled()) {
+    // Revoked permissions list should contain the url.
+    EXPECT_EQ(revoked_permissions.size(), 1UL);
+    EXPECT_EQ(GURL(kAbusiveTestSite),
+              GURL(*revoked_permissions[0].GetDict().FindString(
+                  site_settings::kOrigin)));
 
-  auto* revoked_permission_list =
-      revoked_permissions[0].GetDict().FindList(site_settings::kPermissions);
-  if (IsUnusedPermissionRevocationDisabled()) {
-    EXPECT_EQ((*revoked_permission_list)[0], "notifications");
+    auto* revoked_permission_list =
+        revoked_permissions[0].GetDict().FindList(site_settings::kPermissions);
+    EXPECT_EQ(*(*revoked_permission_list)[0].GetDict().FindString(
+                  site_settings::kType),
+              "notifications");
     // Notifications should not be allowed.
     ExpectRevokedAbusiveNotificationPermission(kAbusiveTestSite);
   } else {
-    EXPECT_EQ((*revoked_permission_list)[0], "location");
+    EXPECT_EQ(revoked_permissions.size(), 0UL);
   }
 }
 
-TEST_P(SafetyHubHandlerEitherAbusiveOrUnusedPermissionRevocationDisabledTest,
+TEST_P(SafetyHubHandlerUnusedPermissionRevocationDisabledTest,
        HandleAllowPermissionsAgainForSite) {
-  base::Value::List initial_permissions =
+  base::ListValue initial_permissions =
       handler()->PopulateUnusedSitePermissionsData();
-  if (IsUnusedPermissionRevocationDisabled()) {
+  if (IsSafeBrowsingEnabled()) {
     ExpectRevokedAbusiveNotificationPermission(kAbusiveTestSite);
+    EXPECT_FALSE(
+        safety_hub_util::GetRevokedAbusiveNotificationPermissions(hcsm())
+            .empty());
   } else {
-    ExpectRevokedUnusedSitePermission(kUnusedTestSite);
-  }
-
-  // Allow the revoked permission for the unused site again.
-  base::Value::List args;
-  args.Append(base::Value(IsUnusedPermissionRevocationDisabled()
-                              ? kAbusiveTestSite
-                              : kUnusedTestSite));
-  handler()->HandleAllowPermissionsAgainForUnusedSite(args);
-
-  if (IsUnusedPermissionRevocationDisabled()) {
-    // Check there is no origin in revoked permissions list.
     EXPECT_TRUE(
         safety_hub_util::GetRevokedAbusiveNotificationPermissions(hcsm())
             .empty());
-    // Check if the permissions of url is regranted.
-    EXPECT_EQ(ContentSetting::CONTENT_SETTING_ALLOW,
-              hcsm()->GetContentSetting(GURL(kAbusiveTestSite),
-                                        GURL(kAbusiveTestSite),
-                                        ContentSettingsType::NOTIFICATIONS));
-  } else {
-    // Check there is no origin in revoked permissions list.
-    ContentSettingsForOneType revoked_permissions_list =
-        hcsm()->GetSettingsForOneType(
-            ContentSettingsType::REVOKED_UNUSED_SITE_PERMISSIONS);
-    EXPECT_TRUE(revoked_permissions_list.empty());
-    // Check if the permissions of url is regranted.
-    EXPECT_EQ(
-        ContentSetting::CONTENT_SETTING_ALLOW,
-        hcsm()->GetContentSetting(GURL(kUnusedTestSite), GURL(kUnusedTestSite),
-                                  kUnusedRegularPermission));
   }
+
+  // Allow the revoked permission for the abusive notification site again.
+  base::ListValue args;
+  args.Append(base::Value(kAbusiveTestSite));
+  handler()->HandleAllowPermissionsAgainForUnusedSite(args);
+
+  // Check there is no origin in revoked permissions list.
+  EXPECT_TRUE(safety_hub_util::GetRevokedAbusiveNotificationPermissions(hcsm())
+                  .empty());
+  // Check if the permissions of url is regranted.
+  EXPECT_EQ(
+      IsSafeBrowsingEnabled() ? ContentSetting::CONTENT_SETTING_ALLOW
+                              : ContentSetting::CONTENT_SETTING_ASK,
+      hcsm()->GetContentSetting(GURL(kAbusiveTestSite), GURL(kAbusiveTestSite),
+                                ContentSettingsType::NOTIFICATIONS));
+
+  // Check there is no origin in revoked permissions list.
+  ContentSettingsForOneType revoked_permissions_list =
+      hcsm()->GetSettingsForOneType(
+          ContentSettingsType::REVOKED_UNUSED_SITE_PERMISSIONS);
+  EXPECT_TRUE(revoked_permissions_list.empty());
 
   // Undoing restores the initial state.
-  handler()->HandleUndoAllowPermissionsAgainForUnusedSite(
-      std::move(initial_permissions));
-  if (IsUnusedPermissionRevocationDisabled()) {
+  if (IsSafeBrowsingEnabled()) {
+    handler()->HandleUndoAllowPermissionsAgainForUnusedSite(
+        std::move(initial_permissions));
     ExpectRevokedAbusiveNotificationPermission(kAbusiveTestSite);
+    EXPECT_FALSE(
+        safety_hub_util::GetRevokedAbusiveNotificationPermissions(hcsm())
+            .empty());
   } else {
-    ExpectRevokedUnusedSitePermission(kUnusedTestSite);
+    EXPECT_TRUE(
+        safety_hub_util::GetRevokedAbusiveNotificationPermissions(hcsm())
+            .empty());
   }
+  EXPECT_EQ(
+      ContentSetting::CONTENT_SETTING_ASK,
+      hcsm()->GetContentSetting(GURL(kAbusiveTestSite), GURL(kAbusiveTestSite),
+                                ContentSettingsType::NOTIFICATIONS));
 }
 
-TEST_P(SafetyHubHandlerEitherAbusiveOrUnusedPermissionRevocationDisabledTest,
+TEST_P(SafetyHubHandlerUnusedPermissionRevocationDisabledTest,
        HandleAcknowledgeRevokedSitePermissionsList) {
   const auto& revoked_permissions_before =
       handler()->PopulateUnusedSitePermissionsData();
-  EXPECT_EQ(revoked_permissions_before.size(), 1U);
-  if (IsUnusedPermissionRevocationDisabled()) {
+  if (IsSafeBrowsingEnabled()) {
+    EXPECT_EQ(revoked_permissions_before.size(), 1U);
     ExpectRevokedAbusiveNotificationPermission(kAbusiveTestSite);
     EXPECT_EQ(safety_hub_util::GetRevokedAbusiveNotificationPermissions(hcsm())
                   .size(),
               1U);
   } else {
-    ContentSettingsForOneType revoked_permissions_list =
-        hcsm()->GetSettingsForOneType(
-            ContentSettingsType::REVOKED_UNUSED_SITE_PERMISSIONS);
-    EXPECT_EQ(1U, revoked_permissions_list.size());
+    EXPECT_EQ(revoked_permissions_before.size(), 0U);
+    EXPECT_EQ(safety_hub_util::GetRevokedAbusiveNotificationPermissions(hcsm())
+                  .size(),
+              0U);
   }
+  ContentSettingsForOneType revoked_permissions_list =
+      hcsm()->GetSettingsForOneType(
+          ContentSettingsType::REVOKED_UNUSED_SITE_PERMISSIONS);
+  EXPECT_EQ(0U, revoked_permissions_list.size());
 
   // Acknowledging revoked permissions clears the list.
-  base::Value::List args;
+  base::ListValue args;
   handler()->HandleAcknowledgeRevokedUnusedSitePermissionsList(args);
   const auto& revoked_permissions_after =
       handler()->PopulateUnusedSitePermissionsData();
   EXPECT_TRUE(revoked_permissions_after.empty());
-  if (IsUnusedPermissionRevocationDisabled()) {
-    EXPECT_TRUE(
-        safety_hub_util::GetRevokedAbusiveNotificationPermissions(hcsm())
-            .empty());
-  } else {
-    ContentSettingsForOneType revoked_permissions_list =
-        hcsm()->GetSettingsForOneType(
-            ContentSettingsType::REVOKED_UNUSED_SITE_PERMISSIONS);
-    EXPECT_TRUE(revoked_permissions_list.empty());
-  }
+  EXPECT_TRUE(safety_hub_util::GetRevokedAbusiveNotificationPermissions(hcsm())
+                  .empty());
+  revoked_permissions_list = hcsm()->GetSettingsForOneType(
+      ContentSettingsType::REVOKED_UNUSED_SITE_PERMISSIONS);
+  EXPECT_TRUE(revoked_permissions_list.empty());
 
   // Undo reverts the list to its initial state.
-  base::Value::List undo_args;
+  base::ListValue undo_args;
   undo_args.Append(revoked_permissions_before.Clone());
   handler()->HandleUndoAcknowledgeRevokedUnusedSitePermissionsList(undo_args);
   EXPECT_EQ(revoked_permissions_before,
             handler()->PopulateUnusedSitePermissionsData());
-  if (IsUnusedPermissionRevocationDisabled()) {
-    EXPECT_EQ(safety_hub_util::GetRevokedAbusiveNotificationPermissions(hcsm())
-                  .size(),
-              1U);
-  } else {
-    ContentSettingsForOneType revoked_permissions_list =
-        hcsm()->GetSettingsForOneType(
-            ContentSettingsType::REVOKED_UNUSED_SITE_PERMISSIONS);
-    EXPECT_EQ(1U, revoked_permissions_list.size());
-  }
+  EXPECT_EQ(
+      safety_hub_util::GetRevokedAbusiveNotificationPermissions(hcsm()).size(),
+      IsSafeBrowsingEnabled() ? 1U : 0U);
+  revoked_permissions_list = hcsm()->GetSettingsForOneType(
+      ContentSettingsType::REVOKED_UNUSED_SITE_PERMISSIONS);
+  EXPECT_EQ(0U, revoked_permissions_list.size());
 }
 
-INSTANTIATE_TEST_SUITE_P(
-    All,
-    SafetyHubHandlerEitherAbusiveOrUnusedPermissionRevocationDisabledTest,
-    testing::Bool());
+INSTANTIATE_TEST_SUITE_P(All,
+                         SafetyHubHandlerUnusedPermissionRevocationDisabledTest,
+                         testing::Bool());

@@ -11,12 +11,20 @@
 #include <tuple>
 #include <vector>
 
+#include "base/callback_list.h"
+#include "base/containers/flat_map.h"
 #include "base/memory/raw_ptr.h"
 #include "base/task/sequenced_task_runner_helpers.h"
 #include "base/time/time.h"
 #include "content/common/content_export.h"
 #include "content/public/browser/global_routing_id.h"
 #include "content/public/browser/host_zoom_map.h"
+
+#if BUILDFLAG(IS_ANDROID)
+#include <jni.h>
+
+#include "base/android/scoped_java_ref.h"
+#endif
 
 namespace content {
 
@@ -92,15 +100,20 @@ class CONTENT_EXPORT HostZoomMapImpl : public HostZoomMap {
                                              const std::string& host) override;
   void SetSystemFontScaleForTesting(float scale);
   void SetShouldAdjustForOSLevelForTesting(bool shouldAdjustForOSLevel);
-#endif
 
-  double GetZoomLevelForPreviewAndHost(const std::string& host) override;
-  void SetZoomLevelForPreviewAndHost(const std::string& host,
-                                     double level) override;
+  // Notifies all JNI observers about a zoom level change.
+  void NotifyJniObservers(const ZoomLevelChange& change);
+  // Manages the lifecycle of JNI observers.
+  int64_t AddJniZoomLevelObserver(
+      JNIEnv* env,
+      const base::android::JavaRef<jobject>& j_callback);
+  void RemoveJniZoomLevelObserver(int64_t subscription_key);
+#endif
 
   void SetIndependentZoomForFrameTreeNode(WebContents* web_contents,
                                           FrameTreeNodeId ftn_id) override;
   void ClearIndependentZoomForFrameTreeNode(FrameTreeNodeId ftn_id) override;
+  bool IsIndependentZoomFrameTreeNode(FrameTreeNodeId ftn_id) const;
 
  private:
   struct ZoomLevel {
@@ -138,6 +151,15 @@ class CONTENT_EXPORT HostZoomMapImpl : public HostZoomMap {
       zoom_level_changed_callbacks_;
 
 #if BUILDFLAG(IS_ANDROID)
+  // Map of unique keys to Java callbacks.
+  base::flat_map<int64_t, base::android::ScopedJavaGlobalRef<jobject>>
+      jni_callbacks_;
+  // A monotonically increasing unique integer assigned to each JNI callback
+  // subscription.
+  int64_t next_jni_subscription_key_ = 1;
+  // Subscription for the single C++ observer that fans out to Java observers.
+  base::CallbackListSubscription jni_callbacks_subscription_;
+
   // Callback called when Java-side UI updates the default zoom level.
   HostZoomMap::DefaultZoomChangedCallback default_zoom_level_pref_callback_;
 #endif
@@ -155,8 +177,6 @@ class CONTENT_EXPORT HostZoomMapImpl : public HostZoomMap {
   // not enabled it means that GuestViews will have their own WebContents, and
   // so the use of a single zoom level for an entire WebContents suffices.
   IndependentZoomFrameTreeNodes independent_zoom_frame_tree_nodes_;
-
-  HostZoomLevels host_zoom_levels_for_preview_;
 
   raw_ptr<base::Clock> clock_;
 };

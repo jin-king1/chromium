@@ -31,11 +31,11 @@
 #ifndef THIRD_PARTY_BLINK_PUBLIC_PLATFORM_WEB_DRAG_DATA_H_
 #define THIRD_PARTY_BLINK_PUBLIC_PLATFORM_WEB_DRAG_DATA_H_
 
+#include <variant>
 #include <vector>
 
 #include "base/memory/scoped_refptr.h"
 #include "services/network/public/mojom/referrer_policy.mojom-shared.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 #include "third_party/blink/public/mojom/file_system_access/file_system_access_data_transfer_token.mojom-shared.h"
 #include "third_party/blink/public/platform/cross_variant_mojo_util.h"
 #include "third_party/blink/public/platform/web_blob_info.h"
@@ -93,7 +93,7 @@ class BLINK_PLATFORM_EXPORT WebDragData {
     WebBlobInfo blob_info;
   };
 
-  using Item = absl::
+  using Item = std::
       variant<StringItem, FilenameItem, BinaryDataItem, FileSystemFileItem>;
 
   WebDragData() = default;
@@ -123,6 +123,12 @@ class BLINK_PLATFORM_EXPORT WebDragData {
     force_default_action_ = force_default_action;
   }
 
+  WebString SourceEffectAllowed() const { return source_effect_allowed_; }
+
+  void SetSourceEffectAllowed(const WebString& source_effect_allowed) {
+    source_effect_allowed_ = source_effect_allowed;
+  }
+
   network::mojom::ReferrerPolicy ReferrerPolicy() const {
     return referrer_policy_;
   }
@@ -138,6 +144,9 @@ class BLINK_PLATFORM_EXPORT WebDragData {
   // If true, the renderer always performs the default action for the drop.
   // See DragData::force_default_action for complete details.
   bool force_default_action_ = false;
+
+  // Raw source DataTransfer.effectAllowed value.
+  WebString source_effect_allowed_;
 
   // Used for items where string_type == "downloadurl". Stores the referrer
   // policy for usage when dragging a link out of the webview results in a

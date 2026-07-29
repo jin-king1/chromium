@@ -76,6 +76,33 @@ void SimulatePlaybackState(bool is_playing) {
       ->MediaSessionInfoChanged(std::move(session_info));
 }
 
+// Dependent on `focus_gained`, the media with `id_observed` will either gain or
+// lose audio focus.
+void SimulateAudioFocusChange(bool focus_gained,
+                              const base::UnguessableToken& id_observed) {
+  media_session::mojom::AudioFocusRequestStatePtr focus(
+      media_session::mojom::AudioFocusRequestState::New());
+  auto* controller = FocusModeController::Get();
+  focus->request_id = id_observed;
+
+  auto* sounds_controller = controller->focus_mode_sounds_controller();
+  if (focus_gained) {
+    sounds_controller->OnFocusGained(std::move(focus));
+    SimulatePlaybackState(/*is_playing=*/true);
+  } else {
+    sounds_controller->OnFocusLost(std::move(focus));
+  }
+}
+
+// Simulate playing a newly selected playlist during an active session.
+void SimulateStartPlaying() {
+  auto* controller = FocusModeController::Get();
+  controller->SetMediaSessionRequestIdForTesting(/*create_media_widget=*/true);
+  SimulateAudioFocusChange(
+      /*focus_gained=*/true,
+      /*id_observed=*/controller->GetMediaSessionRequestId());
+}
+
 QuickSettingsView* OpenQuickSettings() {
   UnifiedSystemTray* system_tray = Shell::GetPrimaryRootWindowController()
                                        ->shelf()
@@ -112,10 +139,7 @@ PillButton* GetToggleFocusButton(QuickSettingsView* quick_settings) {
 
 class FocusModeBrowserTest : public InProcessBrowserTest {
  public:
-  FocusModeBrowserTest() {
-    feature_list_.InitWithFeatures(
-        {features::kFocusMode, features::kFocusModeYTM}, {});
-  }
+  FocusModeBrowserTest() = default;
   ~FocusModeBrowserTest() override = default;
   FocusModeBrowserTest(const FocusModeBrowserTest&) = delete;
   FocusModeBrowserTest& operator=(const FocusModeBrowserTest&) = delete;
@@ -126,9 +150,6 @@ class FocusModeBrowserTest : public InProcessBrowserTest {
         ->focus_mode_sounds_controller()
         ->SetIsMinorUserForTesting(false);
   }
-
- protected:
-  base::test::ScopedFeatureList feature_list_;
 };
 
 // Tests basic create/close media widget functionality.
@@ -256,6 +277,60 @@ IN_PROC_BROWSER_TEST_F(FocusModeBrowserTest, PauseMusicDuringEndingMoment) {
   EXPECT_TRUE(controller->in_focus_session());
   EXPECT_TRUE(FindMediaWidget());
   EXPECT_NE(old_playlist_id, sounds_controller->selected_playlist().id);
+}
+
+// Tests that the ending moment will pause the playlist even if it is not the
+// initial track. This is because when the next track is played, it loses and
+// regains focus, which means that the media controller is reset.
+// Regression test for crbug.com/380173752
+IN_PROC_BROWSER_TEST_F(FocusModeBrowserTest, PauseNextTrackDuringEndingMoment) {
+  auto* controller = FocusModeController::Get();
+  EXPECT_FALSE(controller->in_focus_session());
+
+  // Toggle on focus mode.
+  controller->ToggleFocusMode();
+  EXPECT_TRUE(controller->in_focus_session());
+  auto* sounds_controller = controller->focus_mode_sounds_controller();
+  sounds_controller->set_simulate_playback_for_testing();
+
+  // Select a playlist with a type and verify that a media widget is created.
+  focus_mode_util::SelectedPlaylist selected_playlist;
+  selected_playlist.id = "id0";
+  selected_playlist.type = focus_mode_util::SoundType::kSoundscape;
+  sounds_controller->TogglePlaylist(selected_playlist);
+  EXPECT_TRUE(FindMediaWidget());
+
+  // Simulate the playlist is playing.
+  SimulateStartPlaying();
+  EXPECT_EQ(focus_mode_util::SoundState::kPlaying,
+            sounds_controller->selected_playlist().state);
+
+  // Simulate going to the next track, which includes audio focus changes.
+  SimulateAudioFocusChange(
+      /*focus_gained=*/false,
+      /*id_observed=*/controller->GetMediaSessionRequestId());
+  // Verify that we have lost audio focus.
+  EXPECT_FALSE(sounds_controller->has_audio_focus_for_testing());
+  SimulateAudioFocusChange(
+      /*focus_gained=*/true,
+      /*id_observed=*/controller->GetMediaSessionRequestId());
+  // Verify that we have gained audio focus.
+  EXPECT_TRUE(sounds_controller->has_audio_focus_for_testing());
+
+  // Triggering the ending moment should pause the playlist.
+  controller->TriggerEndingMomentImmediately();
+  base::RunLoop().RunUntilIdle();
+  EXPECT_TRUE(controller->in_ending_moment());
+  EXPECT_TRUE(FindMediaWidget());
+  EXPECT_EQ(focus_mode_util::SoundState::kPaused,
+            sounds_controller->selected_playlist().state);
+
+  // Extending the session will resume the playlist.
+  controller->ExtendSessionDuration();
+  base::RunLoop().RunUntilIdle();
+  EXPECT_TRUE(controller->in_focus_session());
+  EXPECT_EQ(focus_mode_util::SoundState::kPlaying,
+            sounds_controller->selected_playlist().state);
 }
 
 IN_PROC_BROWSER_TEST_F(FocusModeBrowserTest,
@@ -487,21 +562,28 @@ class FocusModeSpokenFeedbackTest : public LoggedInSpokenFeedbackTest {
   FocusModeSpokenFeedbackTest& operator=(const FocusModeSpokenFeedbackTest&) =
       delete;
   ~FocusModeSpokenFeedbackTest() override = default;
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_{features::kFocusMode};
 };
+
+INSTANTIATE_TEST_SUITE_P(
+    ManifestV2,
+    FocusModeSpokenFeedbackTest,
+    ::testing::Values(SpokenFeedbackTestConfig(ManifestVersion::kTwo)));
+
+INSTANTIATE_TEST_SUITE_P(
+    ManifestV3,
+    FocusModeSpokenFeedbackTest,
+    ::testing::Values(SpokenFeedbackTestConfig(ManifestVersion::kThree)));
 
 // Tests that when using `Search + Left/Right Arrow` key to navigate on the
 // focus panel, the user update the timer texfield and start a focus session,
 // which should also update the session duration for the controller.
-IN_PROC_BROWSER_TEST_F(FocusModeSpokenFeedbackTest,
+IN_PROC_BROWSER_TEST_P(FocusModeSpokenFeedbackTest,
                        AfterA11yFocusRingOnTimerTextfield) {
-  EnableChromeVox();
+  chromevox_test_utils()->EnableChromeVox();
 
   // Set a session duration with 25 min and let the timer textfield gain the
   // focus.
-  sm_.Call([] {
+  sm()->Call([] {
     auto* focus_mode_controller = FocusModeController::Get();
     focus_mode_controller->SetInactiveSessionDuration(base::Minutes(25));
     EXPECT_EQ(base::Minutes(25), focus_mode_controller->session_duration());
@@ -512,27 +594,27 @@ IN_PROC_BROWSER_TEST_F(FocusModeSpokenFeedbackTest,
     auto* timer_textfield = GetTimerTextfield(quick_settings);
     timer_textfield->RequestFocus();
   });
-  sm_.ExpectSpeechPattern("Edit timer*");
+  sm()->ExpectSpeechPattern("Edit timer*");
 
   // Update the session duration from 25 min to 250 min by appending a `0` key
   // to the end of the text.
-  sm_.Call([this] { SendKeyPress(ui::VKEY_0); });
+  sm()->Call([this] { SendKeyPress(ui::VKEY_0); });
 
   // Press `Search + Left Arrow` keys to the `Start Focus` button..
-  sm_.Call([this] {
+  sm()->Call([this] {
     SendKeyPressWithSearch(ui::VKEY_LEFT);
     SendKeyPressWithSearch(ui::VKEY_LEFT);
   });
-  sm_.ExpectSpeechPattern("Start Focus*");
+  sm()->ExpectSpeechPattern("Start Focus*");
 
   // Press `Enter` key to start a focus session and Verify the session
   // duration..
-  sm_.Call([this] {
+  sm()->Call([this] {
     SendKeyPress(ui::VKEY_RETURN);
     EXPECT_EQ(base::Minutes(250),
               FocusModeController::Get()->session_duration());
   });
-  sm_.Replay();
+  sm()->Replay();
 }
 
 }  // namespace ash

@@ -25,15 +25,19 @@ import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.profiles.ProfileManager;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
 import org.chromium.components.collaboration.CollaborationControllerDelegate;
 import org.chromium.components.collaboration.CollaborationService;
+import org.chromium.components.collaboration.CollaborationServiceLeaveOrDeleteEntryPoint;
+import org.chromium.components.collaboration.CollaborationServiceShareOrManageEntryPoint;
 import org.chromium.components.collaboration.CollaborationStatus;
 import org.chromium.components.collaboration.ServiceStatus;
 import org.chromium.components.collaboration.SigninStatus;
 import org.chromium.components.collaboration.SyncStatus;
 import org.chromium.components.data_sharing.GroupData;
 import org.chromium.components.data_sharing.member_role.MemberRole;
+import org.chromium.components.tab_group_sync.EitherId.EitherGroupId;
 import org.chromium.url.GURL;
 
 import java.util.concurrent.CountDownLatch;
@@ -44,7 +48,8 @@ import java.util.concurrent.TimeoutException;
 @Batch(value = PER_CLASS)
 public class CollaborationServiceFactoryTest {
     @Rule
-    public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
+    public FreshCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.freshChromeTabbedActivityRule();
 
     @Test
     @MediumTest
@@ -61,7 +66,15 @@ public class CollaborationServiceFactoryTest {
 
                     @Override
                     public void startShareOrManageFlow(
-                            CollaborationControllerDelegate delegate, String syncId) {}
+                            CollaborationControllerDelegate delegate,
+                            EitherGroupId eitherId,
+                            @CollaborationServiceShareOrManageEntryPoint int entry) {}
+
+                    @Override
+                    public void startLeaveOrDeleteFlow(
+                            CollaborationControllerDelegate delegate,
+                            EitherGroupId eitherId,
+                            @CollaborationServiceLeaveOrDeleteEntryPoint int entry) {}
 
                     @Override
                     public ServiceStatus getServiceStatus() {
@@ -100,7 +113,7 @@ public class CollaborationServiceFactoryTest {
 
         CollaborationServiceFactory.setForTesting(testService);
         LibraryLoader.getInstance().ensureInitialized();
-        mActivityTestRule.startMainActivityOnBlankPage();
+        mActivityTestRule.startOnBlankPage();
         CountDownLatch countDownLatch = new CountDownLatch(2); // 2 method calls to wait for.
 
         ThreadUtils.runOnUiThreadBlocking(
@@ -145,7 +158,7 @@ public class CollaborationServiceFactoryTest {
     @EnableFeatures(ChromeFeatureList.DATA_SHARING)
     public void testServiceCreation_RealService() throws TimeoutException {
         LibraryLoader.getInstance().ensureInitialized();
-        mActivityTestRule.startMainActivityOnBlankPage();
+        mActivityTestRule.startOnBlankPage();
 
         ThreadUtils.runOnUiThreadBlocking(
                 new Runnable() {
@@ -161,10 +174,10 @@ public class CollaborationServiceFactoryTest {
 
     @Test
     @MediumTest
-    @DisableFeatures(ChromeFeatureList.DATA_SHARING)
+    @DisableFeatures({ChromeFeatureList.DATA_SHARING, ChromeFeatureList.DATA_SHARING_JOIN_ONLY})
     public void testServiceCreation_EmptyService() throws TimeoutException {
         LibraryLoader.getInstance().ensureInitialized();
-        mActivityTestRule.startMainActivityOnBlankPage();
+        mActivityTestRule.startOnBlankPage();
 
         ThreadUtils.runOnUiThreadBlocking(
                 new Runnable() {

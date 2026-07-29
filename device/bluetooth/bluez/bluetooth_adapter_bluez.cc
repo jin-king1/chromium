@@ -12,7 +12,6 @@
 #include <string>
 #include <utility>
 
-#include "base/containers/contains.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
@@ -63,6 +62,7 @@
 #include "base/unguessable_token.h"
 #include "chromeos/ash/services/nearby/public/cpp/nearby_client_uuids.h"
 #include "device/bluetooth/bluetooth_adapter_factory.h"
+#include "device/bluetooth/bluez/ble_scan_parser/ble_scan_parser.h"
 #include "device/bluetooth/bluez/bluetooth_low_energy_scan_session_bluez.h"
 #include "device/bluetooth/chromeos/bluetooth_connection_logger.h"
 #include "device/bluetooth/chromeos/bluetooth_utils.h"
@@ -126,24 +126,6 @@ UMABluetoothDiscoverySessionOutcome TranslateDiscoveryErrorToUMA(
     return UMABluetoothDiscoverySessionOutcome::UNKNOWN;
   }
 }
-
-#if BUILDFLAG(IS_CHROMEOS)
-device::BluetoothDevice::ServiceDataMap ConvertServiceDataMap(
-    const base::flat_map<std::string, std::vector<uint8_t>>& input) {
-  device::BluetoothDevice::ServiceDataMap output;
-  for (auto& i : input) {
-    output[BluetoothUUID(i.first)] = i.second;
-  }
-
-  return output;
-}
-
-device::BluetoothDevice::ManufacturerDataMap ConvertManufacturerDataMap(
-    const base::flat_map<uint16_t, std::vector<uint8_t>>& input) {
-  return device::BluetoothDevice::ManufacturerDataMap(input.begin(),
-                                                      input.end());
-}
-#endif  // BUILDFLAG(IS_CHROMEOS)
 
 bool IsBatteryDisplayBlocklisted(const BluetoothDevice* device) {
   if (!device->GetName())
@@ -558,7 +540,7 @@ BluetoothAdapterBlueZ::RetrieveGattConnectedDevicesWithDiscoveryFilter(
 
       UUIDSet intersection;
       for (const BluetoothUUID& uuid : filter_uuids) {
-        if (base::Contains(device_uuids, uuid)) {
+        if (device_uuids.contains(uuid)) {
           intersection.insert(uuid);
         }
       }
@@ -648,7 +630,7 @@ bool BluetoothAdapterBlueZ::IsExtendedAdvertisementsAvailable() const {
   // Based on the implementation of kernel bluez, if the controller supports Ext
   // Advertisement, it must support HardwareOffload.
   // (net/bluetooth/mgmt.c:get_supported_adv_flags)
-  return base::Contains(
+  return std::ranges::contains(
       properties->supported_features.value(),
       bluetooth_advertising_manager::kSupportedFeaturesHardwareOffload);
 }
@@ -1408,48 +1390,25 @@ void BluetoothAdapterBlueZ::NotifyDeviceAdvertisementReceived(
     observer.DeviceAdvertisementReceived(this, device, rssi, eir);
 
 #if BUILDFLAG(IS_CHROMEOS)
-  if (ble_scan_parser_.is_bound()) {
-    ScanRecordCallback callback =
-        base::BindOnce(&BluetoothAdapterBlueZ::OnAdvertisementReceived,
-                       weak_ptr_factory_.GetWeakPtr(), device->GetAddress(),
-                       device->GetName() ? *(device->GetName()) : std::string(),
-                       rssi, device->GetAppearance(), device->object_path());
-    ble_scan_parser_->Parse(eir, std::move(callback));
-  }
-#endif  // BUILDFLAG(IS_CHROMEOS)
-}
-
-#if BUILDFLAG(IS_CHROMEOS)
-void BluetoothAdapterBlueZ::OnAdvertisementReceived(
-    std::string device_address,
-    std::string device_name,
-    uint8_t rssi,
-    uint16_t device_appearance,
-    const dbus::ObjectPath& device_path,
-    ScanRecordPtr scan_record) {
-  // Ignore the packet if it could not be parsed successfully.
-  if (!scan_record)
+  std::optional<ScanRecord> record = ParseBleScan(eir);
+  if (!record) {
+    // Ignore the packet if it could not be parsed successfully.
     return;
+  }
 
-  auto service_data_map = ConvertServiceDataMap(scan_record->service_data_map);
-  auto manufacturer_data_map =
-      ConvertManufacturerDataMap(scan_record->manufacturer_data_map);
+  const std::string device_address = device->GetAddress();
+  const std::string device_name = device->GetName().value_or("");
+  const uint16_t device_appearance = device->GetAppearance();
   for (auto& observer : observers_) {
     observer.DeviceAdvertisementReceived(
-        device_address, device_name, scan_record->advertisement_name, rssi,
-        scan_record->tx_power, device_appearance, scan_record->service_uuids,
-        service_data_map, manufacturer_data_map);
+        device_address, device_name, record->advertisement_name, rssi,
+        record->tx_power, device_appearance, record->service_uuids,
+        record->service_data_map, record->manufacturer_data_map);
   }
 
-  BluetoothDeviceBlueZ* device = GetDeviceWithPath(device_path);
-  if (!device) {
-    BLUETOOTH_LOG(ERROR) << "Device " << device_path.value() << " not found!";
-    return;
-  }
-
-  device->SetAdvertisedUUIDs(scan_record->service_uuids);
-}
+  device->SetAdvertisedUUIDs(record->service_uuids);
 #endif  // BUILDFLAG(IS_CHROMEOS)
+}
 
 void BluetoothAdapterBlueZ::NotifyDeviceConnectedStateChanged(
     BluetoothDeviceBlueZ* device,
@@ -1559,8 +1518,9 @@ void BluetoothAdapterBlueZ::RemoveLocalGattService(
     return;
   }
 
-  if (registered_gatt_services_.count(service->object_path()) != 0) {
-    registered_gatt_services_.erase(service->object_path());
+  if (auto it = registered_gatt_services_.find(service->object_path());
+      it != registered_gatt_services_.end()) {
+    registered_gatt_services_.erase(it);
     UpdateRegisteredApplication(true, base::DoNothing(), base::DoNothing());
   }
 
@@ -1571,7 +1531,7 @@ void BluetoothAdapterBlueZ::RegisterGattService(
     BluetoothLocalGattServiceBlueZ* service,
     base::OnceClosure callback,
     device::BluetoothGattService::ErrorCallback error_callback) {
-  if (registered_gatt_services_.count(service->object_path()) > 0) {
+  if (registered_gatt_services_.contains(service->object_path())) {
     BLUETOOTH_LOG(ERROR)
         << "Re-registering a service that is already registered!";
     std::move(error_callback)
@@ -1596,7 +1556,7 @@ void BluetoothAdapterBlueZ::UnregisterGattService(
     device::BluetoothGattService::ErrorCallback error_callback) {
   DCHECK(bluez::BluezDBusManager::Get());
 
-  if (registered_gatt_services_.count(service->object_path()) == 0) {
+  if (!registered_gatt_services_.contains(service->object_path())) {
     BLUETOOTH_LOG(ERROR)
         << "Unregistering a service that isn't registered! path: "
         << service->object_path().value();
@@ -1612,17 +1572,18 @@ void BluetoothAdapterBlueZ::UnregisterGattService(
 
 bool BluetoothAdapterBlueZ::IsGattServiceRegistered(
     BluetoothLocalGattServiceBlueZ* service) {
-  return registered_gatt_services_.count(service->object_path()) != 0;
+  return registered_gatt_services_.contains(service->object_path());
 }
 
 bool BluetoothAdapterBlueZ::SendValueChanged(
     BluetoothLocalGattCharacteristicBlueZ* characteristic,
     const std::vector<uint8_t>& value) {
-  if (registered_gatt_services_.count(
+  if (!registered_gatt_services_.contains(
           static_cast<BluetoothLocalGattServiceBlueZ*>(
               characteristic->GetService())
-              ->object_path()) == 0)
+              ->object_path())) {
     return false;
+  }
   gatt_application_provider_->SendValueChanged(characteristic->object_path(),
                                                value);
   return true;
@@ -1637,6 +1598,15 @@ void BluetoothAdapterBlueZ::SetServiceAllowList(const UUIDList& uuids,
       ->SetServiceAllowList(object_path_, uuids, std::move(callback),
                             base::BindOnce(&SetServiceAllowListErrorCallback,
                                            std::move(error_callback)));
+}
+
+void BluetoothAdapterBlueZ::SetSimpleSecurePairingEnabled(
+    bool enabled,
+    base::OnceClosure callback,
+    ErrorCallback error_callback) {
+  // TODO(b/428178579) - Implement DBUS changes and wire them up the bluetooth
+  // stack.
+  std::move(error_callback).Run();
 }
 
 std::unique_ptr<device::BluetoothLowEnergyScanSession>
@@ -1698,9 +1668,9 @@ BluetoothAdapterBlueZ::GetLowEnergyScanSessionHardwareOffloadingStatus() {
     return LowEnergyScanSessionHardwareOffloadingStatus::kUndetermined;
   }
 
-  return base::Contains(properties->supported_features.value(),
-                        bluetooth_advertisement_monitor_manager::
-                            kSupportedFeaturesControllerPatterns)
+  return std::ranges::contains(properties->supported_features.value(),
+                               bluetooth_advertisement_monitor_manager::
+                                   kSupportedFeaturesControllerPatterns)
              ? LowEnergyScanSessionHardwareOffloadingStatus::kSupported
              : LowEnergyScanSessionHardwareOffloadingStatus::kNotSupported;
 }
@@ -1742,6 +1712,7 @@ void BluetoothAdapterBlueZ::SetStandardChromeOSAdapterName() {
   std::string alias = ash::GetDeviceBluetoothName(GetAddress());
   SetName(alias, base::DoNothing(), base::DoNothing());
 }
+
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 dbus::ObjectPath BluetoothAdapterBlueZ::GetApplicationObjectPath() const {
@@ -1888,10 +1859,6 @@ void BluetoothAdapterBlueZ::StartScanWithFilter(
 }
 
 void BluetoothAdapterBlueZ::StopScan(DiscoverySessionResultCallback callback) {
-#if BUILDFLAG(IS_CHROMEOS)
-  ble_scan_parser_.reset();
-#endif  // BUILDFLAG(IS_CHROMEOS)
-
   // Not having an adapter qualifies as not scanning so we callback a success
   if (!IsPresent()) {
     std::move(callback).Run(
@@ -1979,26 +1946,6 @@ void BluetoothAdapterBlueZ::OnStartDiscovery(
     DiscoverySessionResultCallback callback) {
   // Report success on the original request and increment the count.
   BLUETOOTH_LOG(EVENT) << __func__;
-
-#if BUILDFLAG(IS_CHROMEOS)
-  device::BluetoothAdapterFactory::BleScanParserCallback
-      ble_scan_parser_callback =
-          device::BluetoothAdapterFactory::GetBleScanParserCallback();
-  if (ble_scan_parser_callback) {
-    // To avoid repeatedly restarting a crashed data decoder service,
-    // don't add a connection error handler here. Wait to establish a
-    // new connection after all discovery sessions are stopped.
-    ble_scan_parser_.Bind(ble_scan_parser_callback.Run());
-  } else {
-#if DCHECK_IS_ON()
-    static bool logged_once = false;
-    DLOG_IF(ERROR, !logged_once)
-        << "Attempted to connect to "
-           "unconfigured BluetoothAdapterFactory::GetBleScanParserCallback()";
-    logged_once = true;
-#endif  // DCHECK_IS_ON()
-  }
-#endif  // BUILDFLAG(IS_CHROMEOS)
 
   if (IsPresent()) {
     std::move(callback).Run(false,

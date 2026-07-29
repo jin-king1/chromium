@@ -13,13 +13,15 @@
 #include "ui/aura/window.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/display/screen.h"
-#include "ui/views/native_window_tracker.h"
+#include "ui/events/event.h"
+#include "ui/native_window_tracker/native_window_tracker.h"
+#include "ui/views/widget/widget.h"
 
 namespace eye_dropper {
 namespace {
 gfx::Point ClampToDisplay(const gfx::Point& point) {
   gfx::Rect bounds =
-      display::Screen::GetScreen()->GetDisplayNearestPoint(point).bounds();
+      display::Screen::Get()->GetDisplayNearestPoint(point).bounds();
   return gfx::Point(std::clamp(point.x(), bounds.x(), bounds.right() - 1),
                     std::clamp(point.y(), bounds.y(), bounds.bottom() - 1));
 }
@@ -38,7 +40,7 @@ class EyeDropperView::PreEventDispatchHandler::KeyboardHandler
 
   raw_ptr<EyeDropperView> view_;
   raw_ptr<aura::Window> parent_;
-  std::unique_ptr<views::NativeWindowTracker> parent_tracker_;
+  std::unique_ptr<ui::NativeWindowTracker> parent_tracker_;
 };
 
 EyeDropperView::PreEventDispatchHandler::KeyboardHandler::KeyboardHandler(
@@ -46,7 +48,7 @@ EyeDropperView::PreEventDispatchHandler::KeyboardHandler::KeyboardHandler(
     aura::Window* parent)
     : view_(view),
       parent_(parent),
-      parent_tracker_(views::NativeWindowTracker::Create(parent)) {
+      parent_tracker_(ui::NativeWindowTracker::Create(parent)) {
   // Because the eye dropper is not focused in order to not dismiss the color
   // popup, we need to listen for key events on the parent window that has
   // focus.
@@ -204,13 +206,4 @@ void EyeDropperView::ShowCursor() {
   aura::client::GetCursorClient(GetWidget()->GetNativeWindow()->GetRootWindow())
       ->UnlockCursor();
 }
-
-gfx::Size EyeDropperView::GetSize() const {
-  return gfx::Size(100, 100);
-}
-
-float EyeDropperView::GetDiameter() const {
-  return 90;
-}
-
 }  // namespace eye_dropper

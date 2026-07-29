@@ -4,6 +4,10 @@
 
 #include "chromeos/ash/components/boca/spotlight/spotlight_service.h"
 
+#include <memory>
+
+#include "ash/constants/ash_features.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "chromeos/ash/components/boca/boca_app_client.h"
 #include "chromeos/ash/components/boca/proto/session.pb.h"
@@ -26,7 +30,6 @@ using ::net::test_server::HttpRequest;
 using ::net::test_server::HttpResponse;
 using ::testing::_;
 using ::testing::DoAll;
-using ::testing::Invoke;
 using ::testing::NiceMock;
 using ::testing::Return;
 using ::testing::SaveArg;
@@ -89,9 +92,11 @@ class MockSessionManager : public BocaSessionManager {
   explicit MockSessionManager(SessionClientImpl* session_client_impl)
       : BocaSessionManager(
             session_client_impl,
+            /*pref_service=*/nullptr,
             AccountId::FromUserEmailGaiaId(kUserEmail, GaiaId(kGaiaId)),
             /*=is_producer*/ false) {}
   MOCK_METHOD((::boca::Session*), GetCurrentSession, (), (override));
+  MOCK_METHOD((std::string), GetDeviceRobotEmail, (), (override));
 
   ~MockSessionManager() override = default;
 };
@@ -100,6 +105,9 @@ class SpotlightServiceTest : public testing::Test {
  public:
   SpotlightServiceTest() = default;
   void SetUp() override {
+    scoped_feature_list_.InitWithFeatures(
+        /*enabled_features=*/{ash::features::kBoca},
+        /*disabled_features=*/{ash::features::kBocaSpotlightRobotRequester});
     ON_CALL(boca_app_client_, GetIdentityManager())
         .WillByDefault(Return(identity_test_env_.identity_manager()));
 
@@ -127,6 +135,7 @@ class SpotlightServiceTest : public testing::Test {
   content::BrowserTaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME,
       base::test::TaskEnvironment::MainThreadType::IO};
+  base::test::ScopedFeatureList scoped_feature_list_;
   scoped_refptr<network::TestSharedURLLoaderFactory>
       test_shared_loader_factory_ =
           base::MakeRefCounted<network::TestSharedURLLoaderFactory>(
@@ -163,6 +172,42 @@ TEST_F(SpotlightServiceTest, TestViewScreenSucceed) {
       "{\"hostDevice\":{\"deviceInfo\":{\"deviceId\":\"device1\"},\"user\":{"
       "\"gaiaId\":\"student\"}},\"teacherClientDevice\":{\"deviceInfo\":{"
       "\"deviceId\":\"device0\"},\"user\":{\"gaiaId\":\"123\"}}}";
+  ASSERT_TRUE(http_request.has_content);
+  EXPECT_EQ(contentData, http_request.content);
+  EXPECT_TRUE(result.value());
+}
+
+TEST_F(SpotlightServiceTest, TestViewScreenSucceedWithRobotEmail) {
+  scoped_feature_list_.Reset();
+  scoped_feature_list_.InitWithFeatures(
+      /*enabled_features=*/{ash::features::kBoca,
+                            ash::features::kBocaSpotlightRobotRequester},
+      /*disabled_features=*/{});
+  auto session = GetCommonTestSession();
+  EXPECT_CALL(*boca_session_manager_, GetCurrentSession())
+      .WillOnce(Return(&session));
+  EXPECT_CALL(*boca_session_manager_, GetDeviceRobotEmail())
+      .WillOnce(Return("robot@email.com"));
+  base::test::TestFuture<base::expected<bool, google_apis::ApiErrorCode>>
+      future;
+
+  net::test_server::HttpRequest http_request;
+  EXPECT_CALL(request_handler_, HandleRequest(_))
+      .WillOnce(DoAll(SaveArg<0>(&http_request),
+                      Return(MockRequestHandler::CreateSuccessfulResponse())));
+  spotlight_service_.ViewScreen(kStudentId, test_server_.base_url().spec(),
+                                future.GetCallback());
+  auto result = future.Get();
+  EXPECT_EQ(net::test_server::METHOD_POST, http_request.method);
+
+  EXPECT_EQ("/v1/sessions/session_id/viewScreen:initiate",
+            http_request.relative_url);
+  EXPECT_EQ("application/json", http_request.headers["Content-Type"]);
+  auto* contentData =
+      "{\"hostDevice\":{\"deviceInfo\":{\"deviceId\":\"device1\"},\"user\":{"
+      "\"gaiaId\":\"student\"}},\"teacherClientDevice\":{\"deviceInfo\":{"
+      "\"deviceId\":\"device0\"},\"serviceAccount\":{"
+      "\"email\":\"robot@email.com\"},\"user\":{\"gaiaId\":\"123\"}}}";
   ASSERT_TRUE(http_request.has_content);
   EXPECT_EQ(contentData, http_request.content);
   EXPECT_TRUE(result.value());

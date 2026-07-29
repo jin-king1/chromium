@@ -5,7 +5,7 @@
 #ifndef IOS_CHROME_BROWSER_SETTINGS_UI_BUNDLED_PASSWORD_PASSWORD_MANAGER_VIEW_CONTROLLER_ITEMS_H_
 #define IOS_CHROME_BROWSER_SETTINGS_UI_BUNDLED_PASSWORD_PASSWORD_MANAGER_VIEW_CONTROLLER_ITEMS_H_
 
-#import "ios/chrome/browser/shared/ui/table_view/cells/table_view_cell.h"
+#import "ios/chrome/browser/shared/ui/table_view/cells/legacy_table_view_cell.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_item.h"
 
 @protocol TableViewFaviconDataSource;
@@ -34,9 +34,9 @@ typedef NS_ENUM(NSInteger, FaviconType) {
 
 @property(nonatomic, assign) BOOL showLocalOnlyIcon;
 
-@property(nonatomic, strong, readonly) NSString* title;
+@property(nonatomic, copy, readonly) NSString* title;
 
-@property(nonatomic, strong, readonly) NSString* detailText;
+@property(nonatomic, copy, readonly) NSString* detailText;
 
 @end
 
@@ -49,12 +49,12 @@ typedef NS_ENUM(NSInteger, FaviconType) {
 
 @property(nonatomic, assign) password_manager::CredentialUIEntry credential;
 
-@property(nonatomic, strong, readonly) NSString* title;
+@property(nonatomic, copy, readonly) NSString* title;
 
 @end
 
 // Common cell for AffiliatedGroupTableViewItem and BlockedSiteTableViewItem.
-@interface PasswordFormContentCell : TableViewCell
+@interface PasswordFormContentCell : LegacyTableViewCell
 
 @property(nonatomic, assign, readonly) FaviconType faviconTypeForMetrics;
 

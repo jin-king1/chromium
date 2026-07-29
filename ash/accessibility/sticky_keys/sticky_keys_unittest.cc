@@ -2,13 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
+#include <array>
 
 #include "ash/accessibility/sticky_keys/sticky_keys_controller.h"
-
 #include "ash/shell.h"
 #include "ash/test/ash_test_base.h"
 #include "base/functional/bind.h"
@@ -37,8 +33,14 @@ class StickyKeysTest : public AshTestBase {
 
     // |target_| owned by root window of shell. It is still safe to delete
     // it ourselves.
-    target_ = CreateTestWindowInShellWithId(0);
+    target_ = CreateTestWindowInShell({.window_id = 0}).release();
     root_window_ = target_->GetRootWindow();
+  }
+
+  void TearDown() override {
+    root_window_ = nullptr;
+    target_ = nullptr;
+    AshTestBase::TearDown();
   }
 
   virtual void OnShortcutPressed() {
@@ -192,9 +194,9 @@ class StickyKeysTest : public AshTestBase {
 
  private:
   // Owned by root window of shell, but we can still delete |target_| safely.
-  raw_ptr<aura::Window, DanglingUntriaged> target_ = nullptr;
+  raw_ptr<aura::Window> target_ = nullptr;
   // The root window of |target_|. Not owned.
-  raw_ptr<aura::Window, DanglingUntriaged> root_window_ = nullptr;
+  raw_ptr<aura::Window> root_window_ = nullptr;
 };
 
 TEST_F(StickyKeysTest, BasicOneshotScenarioTest) {
@@ -678,8 +680,8 @@ TEST_F(StickyKeysTest, ScrollEventOneshot) {
   std::unique_ptr<ui::KeyEvent> kev;
   StickyKeysHandler sticky_key(ui::EF_CONTROL_DOWN);
 
-  int scroll_deltas[] = {-10, 10};
-  for (int i = 0; i < 2; ++i) {
+  constexpr std::array<int, 2> scroll_deltas = {-10, 10};
+  for (int delta : scroll_deltas) {
     // Enable sticky keys.
     EXPECT_EQ(STICKY_KEY_STATE_DISABLED, sticky_key.current_state());
     SendActivateStickyKeyPattern(&sticky_key, ui::VKEY_CONTROL);
@@ -696,7 +698,7 @@ TEST_F(StickyKeysTest, ScrollEventOneshot) {
 
     // Scrolls should all be modified but not disable sticky keys.
     for (int j = 0; j < 3; ++j) {
-      ev.reset(GenerateScrollEvent(scroll_deltas[i]));
+      ev.reset(GenerateScrollEvent(delta));
       released = false;
       mod_down_flags = 0;
       sticky_key.HandleScrollEvent(*ev.get(), &mod_down_flags, &released);
@@ -705,7 +707,7 @@ TEST_F(StickyKeysTest, ScrollEventOneshot) {
     }
 
     // Fling start event ends scroll sequence.
-    ev.reset(GenerateFlingScrollEvent(scroll_deltas[i], false));
+    ev.reset(GenerateFlingScrollEvent(delta, false));
     released = false;
     mod_down_flags = 0;
     sticky_key.HandleScrollEvent(*ev.get(), &mod_down_flags, &released);
@@ -728,8 +730,8 @@ TEST_F(StickyKeysTest, ScrollDirectionChanged) {
   StickyKeysHandler sticky_key(ui::EF_CONTROL_DOWN);
 
   // Test direction change with both boundary value and negative value.
-  const int direction_change_values[2] = {0, -10};
-  for (int i = 0; i < 2; ++i) {
+  constexpr std::array<int, 2> direction_change_values = {0, -10};
+  for (int value : direction_change_values) {
     SendActivateStickyKeyPattern(&sticky_key, ui::VKEY_CONTROL);
     EXPECT_EQ(STICKY_KEY_STATE_ENABLED, sticky_key.current_state());
 
@@ -751,7 +753,7 @@ TEST_F(StickyKeysTest, ScrollDirectionChanged) {
       EXPECT_EQ(STICKY_KEY_STATE_ENABLED, sticky_key.current_state());
     }
 
-    ev.reset(GenerateScrollEvent(direction_change_values[i]));
+    ev.reset(GenerateScrollEvent(value));
     released = false;
     mod_down_flags = 0;
     sticky_key.HandleScrollEvent(*ev.get(), &mod_down_flags, &released);

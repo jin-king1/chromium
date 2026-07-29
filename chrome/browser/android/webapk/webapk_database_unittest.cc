@@ -70,7 +70,7 @@ class WebApkDatabaseTest : public ::testing::Test {
   void SetUp() override {
     ASSERT_TRUE(testing_profile_manager_.SetUp());
     profile_ = testing_profile_manager_.CreateTestingProfile(
-        TestingProfile::kDefaultProfileUserName, true);
+        TestingProfile::kDefaultProfileUserName);
 
     data_type_store_service_ = std::make_unique<FakeDataTypeStoreService>();
 
@@ -111,8 +111,8 @@ class WebApkDatabaseTest : public ::testing::Test {
 
     for (uint32_t i = 0; i < num_apps; ++i) {
       std::unique_ptr<WebApkProto> proto = CreateWebApkProto(i, false);
-      const webapps::AppId app_id =
-          GenerateAppIdFromManifestId(GURL(proto->sync_data().manifest_id()));
+      const webapps::AppId app_id = GenerateAppIdFromManifestId(
+          webapps::ManifestId(GURL(proto->sync_data().manifest_id())));
 
       registry.emplace(app_id, std::move(proto));
     }

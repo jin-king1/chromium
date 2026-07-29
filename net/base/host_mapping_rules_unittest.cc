@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "net/base/host_mapping_rules.h"
 
 #include <string.h>
@@ -135,7 +130,7 @@ TEST(HostMappingRulesTest, RewritesAnyStandardUrlWithPort) {
   const char kScheme[] = "foo";
   url::ScopedSchemeRegistryForTests scoped_registry;
   AddStandardScheme(kScheme, url::SCHEME_WITH_HOST_AND_PORT);
-  ASSERT_TRUE(url::IsStandard(kScheme, url::Component(0, strlen(kScheme))));
+  ASSERT_TRUE(url::IsStandard(kScheme));
 
   HostMappingRules rules;
   rules.AddRuleFromString("MAP initial.test replacement.test:1000");
@@ -149,7 +144,7 @@ TEST(HostMappingRulesTest, RewritesAnyStandardUrlWithoutPort) {
   const char kScheme[] = "foo";
   url::ScopedSchemeRegistryForTests scoped_registry;
   AddStandardScheme(kScheme, url::SCHEME_WITH_HOST);
-  ASSERT_TRUE(url::IsStandard(kScheme, url::Component(0, strlen(kScheme))));
+  ASSERT_TRUE(url::IsStandard(kScheme));
 
   HostMappingRules rules;
   rules.AddRuleFromString("MAP initial.test replacement.test:1000");

@@ -9,6 +9,7 @@
 
 #include "base/check.h"
 #include "base/check_deref.h"
+#include "base/feature_list.h"
 #include "base/functional/callback_helpers.h"
 #include "base/time/time.h"
 #include "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
@@ -18,8 +19,11 @@
 #include "components/facilitated_payments/core/browser/network_api/facilitated_payments_network_interface.h"
 #include "components/facilitated_payments/core/features/features.h"
 #include "components/facilitated_payments/core/metrics/facilitated_payments_metrics.h"
+#include "components/facilitated_payments/core/mojom/pix_code_validator.mojom.h"
 #include "components/facilitated_payments/core/utils/facilitated_payments_ui_utils.h"
 #include "components/facilitated_payments/core/utils/facilitated_payments_utils.h"
+#include "components/facilitated_payments/core/validation/pix_code_validator.h"
+#include "components/optimization_guide/core/hints/optimization_guide_decider.h"
 
 namespace payments::facilitated {
 namespace {
@@ -27,6 +31,24 @@ namespace {
 static constexpr base::TimeDelta kProgressScreenDismissDelay = base::Seconds(2);
 static constexpr FacilitatedPaymentsType kPaymentsType =
     FacilitatedPaymentsType::kPix;
+// Experiment and control IDs for iframe.
+constexpr int64_t kIframeExperimentId = 3397365;
+constexpr int64_t kIframeControlId = 3397366;
+
+PixCodeValidationResult ConvertPixQrCodeTypeToValidationResult(
+    base::expected<mojom::PixQrCodeType, std::string> pix_qr_code_type) {
+  if (!pix_qr_code_type.has_value()) {
+    return PixCodeValidationResult::kValidatorFailed;
+  }
+  switch (pix_qr_code_type.value()) {
+    case mojom::PixQrCodeType::kDynamic:
+      return PixCodeValidationResult::kDynamic;
+    case mojom::PixQrCodeType::kStatic:
+      return PixCodeValidationResult::kStatic;
+    case mojom::PixQrCodeType::kInvalid:
+      return PixCodeValidationResult::kInvalid;
+  }
+}
 
 }  // namespace
 
@@ -35,13 +57,12 @@ PixManager::PixManager(
     FacilitatedPaymentsApiClientCreator api_client_creator,
     optimization_guide::OptimizationGuideDecider* optimization_guide_decider)
     : client_(CHECK_DEREF(client)),
-      api_client_creator_(std::move(api_client_creator)),
+      api_client_creator_(api_client_creator),
       optimization_guide_decider_(optimization_guide_decider),
       initiate_payment_request_details_(
           std::make_unique<
               FacilitatedPaymentsInitiatePaymentRequestDetails>()) {
   DCHECK(optimization_guide_decider_);
-  RegisterPixAllowlist();
 }
 
 PixManager::~PixManager() {
@@ -50,42 +71,90 @@ PixManager::~PixManager() {
 
 void PixManager::Reset() {
   has_payflow_started_ = false;
+  pix_code_is_in_iframe_ = false;
   ukm_source_id_ = 0;
   initiate_payment_request_details_ =
       std::make_unique<FacilitatedPaymentsInitiatePaymentRequestDetails>();
   ui_state_ = UiState::kHidden;
+  pix_payment_page_main_frame_origin_ = url::Origin();
   weak_ptr_factory_.InvalidateWeakPtrs();
 }
 
-void PixManager::OnPixCodeCopiedToClipboard(const GURL& render_frame_host_url,
-                                            const std::string& pix_code,
-                                            ukm::SourceId ukm_source_id) {
+void PixManager::OnPixCodeCopiedToClipboard(
+    const GURL& main_frame_url,
+    const std::optional<GURL>& iframe_url,
+    const url::Origin& main_frame_origin,
+    bool is_same_origin,
+    std::optional<PixCodeRustValidationResult> rust_validation_result,
+    std::string pix_code,
+    ukm::SourceId ukm_source_id) {
+  pix_code_is_in_iframe_ = iframe_url.has_value();
   if (has_payflow_started_) {
+    // Log that a new flow trigger was ignored because one is already active.
+    LogPixFlowExitedReason(PixFlowExitedReason::kFlowAlreadyStarted);
     return;
   }
   has_payflow_started_ = true;
   client_->SetUiEventListener(base::BindRepeating(
-      &PixManager::OnUiEvent, weak_ptr_factory_.GetWeakPtr()));
+      &PixManager::OnUiScreenEvent, weak_ptr_factory_.GetWeakPtr()));
   pix_code_copied_timestamp_ = base::TimeTicks::Now();
   ukm_source_id_ = ukm_source_id;
-  // Check whether the domain for the render_frame_host_url is allowlisted.
-  if (!IsMerchantAllowlisted(render_frame_host_url)) {
+  LogPixCodeCopied(ukm_source_id_, pix_code_is_in_iframe_);
+  // TODO(crbug.com/479520609): Stop populating experiment IDs once backend
+  // experiment is fully enabled without the integrator trigger.
+  if (base::FeatureList::IsEnabled(kEnableIframeForPix)) {
+    initiate_payment_request_details_->chrome_experiment_ids_.push_back(
+        kIframeExperimentId);
+  } else {
+    initiate_payment_request_details_->chrome_experiment_ids_.push_back(
+        kIframeControlId);
+  }
+  // If the copy event happened inside an iframe, check whether the iframe URL
+  // is allowlisted. Otherwise, check whether the main frame URL is allowlisted.
+  if (pix_code_is_in_iframe_) {
+    LogPixCodeCopiedInIframe();
+    std::optional<PixFlowExitedReason> exited_reason = GetExitedReasonForIframe(
+        iframe_url.value(), main_frame_url, is_same_origin);
+    if (exited_reason.has_value()) {
+      LogPixFlowExitedReason(exited_reason.value());
+      return;
+    }
+    // Set psp hostname to initiate payment request details.
+    initiate_payment_request_details_->psp_hostname_ = iframe_url->GetHost();
+  } else if (!IsMerchantAllowlisted(main_frame_url)) {
     // The merchant is not part of the allowlist, ignore the copy event.
+    LogPixFlowExitedReason(PixFlowExitedReason::kMerchantNotAllowlisted);
     return;
   }
-  LogPixCodeCopied(ukm_source_id_);
   initiate_payment_request_details_->merchant_payment_page_hostname_ =
-      render_frame_host_url.host();
-  // Trigger Pix code validation.
-  utility_process_validator_.ValidatePixCode(
-      pix_code, base::BindOnce(&PixManager::OnPixCodeValidated,
-                               weak_ptr_factory_.GetWeakPtr(), pix_code,
-                               base::TimeTicks::Now()));
-}
-
-void PixManager::RegisterPixAllowlist() const {
-  optimization_guide_decider_->RegisterOptimizationTypes(
-      {optimization_guide::proto::PIX_MERCHANT_ORIGINS_ALLOWLIST});
+      main_frame_url.GetHost();
+  pix_payment_page_main_frame_origin_ = main_frame_origin;
+  if (base::FeatureList::IsEnabled(kUseRustPixCodeValidator)) {
+    // This logic is duplicated into faciliated_payments_metrics.h, but it's
+    // temporary and will be cleaned up once the validator is fully switched
+    // over to Rust.
+    mojom::PixQrCodeType mapped_type = [&]() {
+      switch (*rust_validation_result) {
+        case PixCodeRustValidationResult::kStatic:
+          return mojom::PixQrCodeType::kStatic;
+        case PixCodeRustValidationResult::kDynamic:
+          return mojom::PixQrCodeType::kDynamic;
+        case PixCodeRustValidationResult::kNonPixMerchantPresentedCode:
+        case PixCodeRustValidationResult::kEmptyAdditionalDataFieldTemplate:
+        case PixCodeRustValidationResult::kNonFinalCrc:
+        case PixCodeRustValidationResult::kUnknownPixCodeType:
+          return mojom::PixQrCodeType::kInvalid;
+      }
+    }();
+    OnPixCodeValidated(rust_validation_result, std::move(pix_code),
+                       base::TimeTicks::Now(), mapped_type);
+  } else {
+    utility_process_validator_.ValidatePixCode(
+        pix_code,
+        base::BindOnce(&PixManager::OnPixCodeValidated,
+                       weak_ptr_factory_.GetWeakPtr(), rust_validation_result,
+                       pix_code, base::TimeTicks::Now()));
+  }
 }
 
 bool PixManager::IsMerchantAllowlisted(const GURL& url) const {
@@ -96,10 +165,10 @@ bool PixManager::IsMerchantAllowlisted(const GURL& url) const {
     // allowlist.
     return true;
   }
-  // Since the optimization guide decider integration corresponding to PIX
+  // Since the optimization guide decider integration corresponding to Pix
   // merchant lists are allowlists for the question "Can this site be
   // optimized?", a match on the allowlist answers the question with "yes".
-  // Therefore, `kTrue` indicates that `url` is allowed for detecting PIX code
+  // Therefore, `kTrue` indicates that `url` is allowed for detecting Pix code
   // on copy events. If the optimization type was not registered in time when we
   // queried it, it will be `kUnknown`.
   return optimization_guide_decider_->CanApplyOptimization(
@@ -108,25 +177,62 @@ bool PixManager::IsMerchantAllowlisted(const GURL& url) const {
          optimization_guide::OptimizationGuideDecision::kTrue;
 }
 
+bool PixManager::IsIframeUrlAllowlisted(const GURL& url) const {
+  return optimization_guide_decider_->CanApplyOptimization(
+             url, optimization_guide::proto::PIX_PSP_ALLOWLIST,
+             /*optimization_metadata=*/nullptr) ==
+         optimization_guide::OptimizationGuideDecision::kTrue;
+}
+
+std::optional<PixFlowExitedReason> PixManager::GetExitedReasonForIframe(
+    const GURL& iframe_url,
+    const GURL& main_frame_url,
+    bool is_same_origin) const {
+  if (IsIframeUrlAllowlisted(iframe_url)) {
+    return std::nullopt;
+  }
+  if (is_same_origin && IsMerchantAllowlisted(main_frame_url)) {
+    return std::nullopt;
+  }
+  return is_same_origin ? PixFlowExitedReason::kSameOriginMerchantNotAllowlisted
+                        : PixFlowExitedReason::kIframeUrlNotAllowlisted;
+}
+
 void PixManager::OnPixCodeValidated(
+    std::optional<PixCodeRustValidationResult> rust_validation_result,
     std::string pix_code,
     base::TimeTicks start_time,
-    base::expected<bool, std::string> is_pix_code_valid) {
+    base::expected<mojom::PixQrCodeType, std::string> pix_qr_code_type) {
   LogPaymentCodeValidationResultAndLatency(
-      is_pix_code_valid, (base::TimeTicks::Now() - start_time));
-  if (!is_pix_code_valid.has_value()) {
+      ConvertPixQrCodeTypeToValidationResult(pix_qr_code_type),
+      rust_validation_result, base::TimeTicks::Now() - start_time);
+  if (!pix_qr_code_type.has_value()) {
     // Pix code validator encountered an error.
     LogPixFlowExitedReason(PixFlowExitedReason::kCodeValidatorFailed);
     return;
   }
 
-  if (!is_pix_code_valid.value()) {
+  if (pix_qr_code_type.value() == mojom::PixQrCodeType::kInvalid) {
     // Pix code is not valid.
     LogPixFlowExitedReason(PixFlowExitedReason::kInvalidCode);
     return;
   }
-  // If a valid PIX code is found, and the user has Google wallet linked PIX
-  // accounts, verify that the payments API is available, and then show the PIX
+
+  OnValidPixCode(std::move(pix_code), *pix_qr_code_type);
+}
+
+void PixManager::OnValidPixCode(std::string pix_code,
+                                mojom::PixQrCodeType pix_qr_code_type) {
+  if (pix_qr_code_type == mojom::PixQrCodeType::kStatic &&
+      !base::FeatureList::IsEnabled(
+          payments::facilitated::kEnableStaticQrCodeForPix)) {
+    // Pix code is static and not supported.
+    LogPixFlowExitedReason(PixFlowExitedReason::kStaticCode);
+    return;
+  }
+
+  // If a valid Pix code is found, and the user has Google Wallet linked Pix
+  // accounts, verify that the payments API is available, and then show the Pix
   // payment prompt.
   auto* payments_data_manager = client_->GetPaymentsDataManager();
   if (!payments_data_manager) {
@@ -136,13 +242,25 @@ void PixManager::OnPixCodeValidated(
     return;
   }
 
+  if (!payments_data_manager->IsAutofillPaymentMethodsEnabled()) {
+    LogPixFlowExitedReason(
+        PixFlowExitedReason::kAutofillPaymentMethodsDisabled);
+    return;
+  }
+
+  // Pix pref is shown only if the user has linked Pix accounts.
   if (!payments_data_manager->IsFacilitatedPaymentsPixUserPrefEnabled()) {
     LogPixFlowExitedReason(PixFlowExitedReason::kUserOptedOut);
     return;
   }
 
+  // If the user has no linked Pix accounts, initialize the Pix account linking
+  // flow.
   if (!payments_data_manager->HasMaskedBankAccounts()) {
     LogPixFlowExitedReason(PixFlowExitedReason::kNoLinkedAccount);
+    if (base::FeatureList::IsEnabled(kEnablePixAccountLinkingNative)) {
+      client_->InitPixAccountLinkingFlow(pix_payment_page_main_frame_origin_);
+    }
     return;
   }
 
@@ -154,6 +272,12 @@ void PixManager::OnPixCodeValidated(
     return;
   }
 
+  if (!base::FeatureList::IsEnabled(kEnablePixInCct) &&
+      client_->IsInChromeCustomTabMode() &&
+      client_->GetDeviceDelegate()->IsPixSupportAvailableViaGboard()) {
+    LogPixFlowExitedReason(PixFlowExitedReason::kCctWithGboardAsDefaultIme);
+    return;
+  }
   if (!GetApiClient()) {
     return;
   }
@@ -167,7 +291,7 @@ void PixManager::OnPixCodeValidated(
 FacilitatedPaymentsApiClient* PixManager::GetApiClient() {
   if (!api_client_) {
     if (api_client_creator_) {
-      api_client_ = std::move(api_client_creator_).Run();
+      api_client_ = api_client_creator_.Run();
     }
   }
 
@@ -242,7 +366,7 @@ void PixManager::OnGetClientToken(base::TimeTicks start_time,
 }
 
 void PixManager::SendInitiatePaymentRequest() {
-  if (FacilitatedPaymentsNetworkInterface* payments_network_interface =
+  if (auto* payments_network_interface =
           client_->GetFacilitatedPaymentsNetworkInterface()) {
     LogInitiatePaymentAttempt(kPaymentsType);
     payments_network_interface->InitiatePayment(
@@ -317,9 +441,10 @@ void PixManager::OnPurchaseActionResult(base::TimeTicks start_time,
   LogInitiatePurchaseActionResultUkm(result, ukm_source_id_);
   LogPixTransactionResultAndLatency(
       result, base::TimeTicks::Now() - pix_code_copied_timestamp_);
+  LogPixTransactionResultPerFrameType(pix_code_is_in_iframe_, result);
 }
 
-void PixManager::OnUiEvent(UiEvent ui_event_type) {
+void PixManager::OnUiScreenEvent(UiEvent ui_event_type) {
   switch (ui_event_type) {
     case UiEvent::kNewScreenShown: {
       CHECK_NE(ui_state_, UiState::kHidden);
@@ -331,6 +456,10 @@ void PixManager::OnUiEvent(UiEvent ui_event_type) {
       }
       break;
     }
+    case UiEvent::kScreenCouldNotBeShown:
+      // TODO(crbug.com/427597144): Handle the "failure to show" case separately
+      // if required.
+      [[fallthrough]];  // Intentional fallthrough.
     case UiEvent::kScreenClosedNotByUser: {
       if (ui_state_ == UiState::kFopSelector) {
         LogPixFlowExitedReason(

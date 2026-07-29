@@ -19,8 +19,8 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ssl/cert_verifier_browser_test.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_navigator.h"
-#include "chrome/browser/ui/browser_navigator_params.h"
+#include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/common/url_constants.h"
 #include "components/affiliations/core/browser/affiliation_service_impl.h"
 #include "components/affiliations/core/browser/hash_affiliation_fetcher.h"
@@ -136,7 +136,7 @@ class WellKnownChangePasswordNavigationThrottleBrowserTest
 
     auto entries = test_recorder_->GetEntriesByName(UkmBuilder::kEntryName);
     // Expect one recorded metric.
-    ASSERT_EQ(1, static_cast<int>(entries.size()));
+    ASSERT_EQ(1u, entries.size());
     test_recorder_->ExpectEntryMetric(
         entries[0], UkmBuilder::kWellKnownChangePasswordResultName,
         static_cast<int64_t>(expected));
@@ -179,7 +179,7 @@ class WellKnownChangePasswordNavigationThrottleBrowserTest
   MockAffiliationService* url_service() {
     return static_cast<MockAffiliationService*>(
         AffiliationServiceFactory::GetInstance()->GetForProfile(
-            browser()->profile()));
+            browser()->GetProfile()));
   }
 
   ResponseDelayParams response_delays() const {
@@ -206,8 +206,8 @@ class WellKnownChangePasswordNavigationThrottleBrowserTest
   // `path_response_map_`.
   std::unique_ptr<HttpResponse> HandleRequest(const HttpRequest& request) {
     GURL absolute_url = test_server_->GetURL(request.relative_url);
-    std::string path = absolute_url.path();
-    auto it = path_response_map_.find(absolute_url.path_piece());
+    std::string path = absolute_url.GetPath();
+    auto it = path_response_map_.find(absolute_url.path());
     if (it == path_response_map_.end()) {
       return nullptr;
     }
@@ -549,14 +549,23 @@ IN_PROC_BROWSER_TEST_P(PrerenderingChangePasswordNavigationThrottleBrowserTest,
 
   URLLoaderInterceptor interceptor(base::BindLambdaForTesting(
       [&](URLLoaderInterceptor::RequestParams* params) {
-        // We should cancel the prerender in WillStartRequest so we should
-        // never receive this request.
-        EXPECT_NE(params->url_request.url, kWellKnownUrl);
+        // If prerender triggers prefetch ahead of prerender, the prefetch sends
+        // a request and the prerender is throttled.
+        //
+        // We only check request counts if prefetch ahead of prerender is not
+        // triggered.
+        if (!content::test::PrerenderTestHelper::
+                IsPrerender2FallbackPrefetchSpecRulesEnabled()) {
+          // We should cancel the prerender in WillStartRequest so we should
+          // never receive this request.
+          EXPECT_NE(params->url_request.url, kWellKnownUrl);
 
-        // If the non-existing-resource path is requested it means the throttle
-        // is running so fail the test.
-        EXPECT_NE(params->url_request.url.path(),
-                  kWellKnownNotExistingResourcePath);
+          // If the non-existing-resource path is requested it means the
+          // throttle is running so fail the test.
+          EXPECT_NE(params->url_request.url.GetPath(),
+                    kWellKnownNotExistingResourcePath);
+        }
+
         std::string speculation_script = base::ReplaceStringPlaceholders(
             R"(
                 <script type="speculationrules">

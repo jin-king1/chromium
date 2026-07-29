@@ -13,7 +13,6 @@
 #include <utility>
 #include <vector>
 
-#include "base/containers/contains.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/trace_event/trace_event.h"
@@ -150,12 +149,8 @@ void PictureLayerTilingSet::UpdateTilingsToCurrentRasterSourceForActivation(
     tiling->CreateMissingTilesInLiveTilesRect();
 
     // |this| is active set and |tiling| is not in the pending set, which means
-    // it is now NON_IDEAL_RESOLUTION. The exception is for LOW_RESOLUTION
-    // tilings, which are computed and created entirely on the active tree.
-    // Since the pending tree does not have them, we should just leave them as
-    // low resolution to not lose them.
-    if (tiling->resolution() != LOW_RESOLUTION)
-      tiling->set_resolution(NON_IDEAL_RESOLUTION);
+    // it is now NON_IDEAL_RESOLUTION.
+    tiling->set_resolution(NON_IDEAL_RESOLUTION);
 
     all_tiles_done_ &= tiling->all_tiles_done();
   }
@@ -241,37 +236,7 @@ void PictureLayerTilingSet::VerifyTilings(
 #endif
 }
 
-void PictureLayerTilingSet::CleanUpTilings(
-    float min_acceptable_high_res_scale_key,
-    float max_acceptable_high_res_scale_key,
-    const std::vector<raw_ptr<PictureLayerTiling, VectorExperimental>>&
-        needed_tilings,
-    PictureLayerTilingSet* twin_set) {
-  std::vector<PictureLayerTiling*> to_remove;
-  for (const auto& tiling : tilings_) {
-    // Keep all tilings within the min/max scales.
-    if (tiling->contents_scale_key() >= min_acceptable_high_res_scale_key &&
-        tiling->contents_scale_key() <= max_acceptable_high_res_scale_key) {
-      continue;
-    }
 
-    // Keep low resolution tilings.
-    if (tiling->resolution() == LOW_RESOLUTION)
-      continue;
-
-    // Don't remove tilings that are required.
-    if (base::Contains(needed_tilings, tiling.get())) {
-      continue;
-    }
-
-    to_remove.push_back(tiling.get());
-  }
-
-  for (auto* tiling : to_remove) {
-    DCHECK_NE(HIGH_RESOLUTION, tiling->resolution());
-    Remove(tiling);
-  }
-}
 
 void PictureLayerTilingSet::RemoveNonIdealTilings() {
   std::erase_if(tilings_, [](const std::unique_ptr<PictureLayerTiling>& t) {
@@ -417,7 +382,7 @@ bool PictureLayerTilingSet::TilingsNeedUpdate(
 
   // Finally, if some state changed (either frame time or visible rect), then we
   // need to inform the tilings of the change.
-  const auto& last_frame = visible_rect_history_.front();
+  const auto& last_frame = visible_rect_history_.back();
   if (current_frame_time_in_seconds != last_frame.frame_time_in_seconds)
     return true;
 
@@ -440,7 +405,7 @@ gfx::Rect PictureLayerTilingSet::ComputeSkewport(
     return skewport;
 
   // Use the oldest recorded history to get a stable skewport.
-  const auto& historical_frame = visible_rect_history_.back();
+  const auto& historical_frame = visible_rect_history_.front();
   double time_delta =
       current_frame_time_in_seconds - historical_frame.frame_time_in_seconds;
   if (time_delta == 0.)
@@ -541,10 +506,15 @@ void PictureLayerTilingSet::UpdatePriorityRects(
   // Finally, update our visible rect history. Note that we use the original
   // visible rect here, since we want as accurate of a history as possible for
   // stable skewports.
-  if (visible_rect_history_.size() == 2)
-    visible_rect_history_.pop_back();
-  visible_rect_history_.push_front(FrameVisibleRect(
-      visible_rect_in_layer_space_, current_frame_time_in_seconds));
+  const auto frame_visible_rect = FrameVisibleRect(
+      visible_rect_in_layer_space_, current_frame_time_in_seconds);
+  if (visible_rect_history_.size() < 2) {
+    visible_rect_history_.reserve(2);
+    visible_rect_history_.push_back(frame_visible_rect);
+  } else {
+    DCHECK_EQ(visible_rect_history_.size(), 2u);
+    visible_rect_history_ = {visible_rect_history_[1], frame_visible_rect};
+  }
 }
 
 bool PictureLayerTilingSet::UpdateTilePriorities(
@@ -586,7 +556,7 @@ void PictureLayerTilingSet::GetAllPrioritizedTilesForTracing(
 PictureLayerTilingSet::CoverageIterator PictureLayerTilingSet::Cover(
     const gfx::Rect& coverage_rect,
     float coverage_scale,
-    float ideal_contents_scale) {
+    float ideal_contents_scale) const {
   return CoverageIterator(tilings_, coverage_rect, coverage_scale,
                           ideal_contents_scale);
 }
@@ -614,13 +584,10 @@ PictureLayerTilingSet::TilingRange PictureLayerTilingSet::GetTilingRange(
   // compute them only when the tiling set has changed instead.
   size_t tilings_size = tilings_.size();
   TilingRange high_res_range(0, 0);
-  TilingRange low_res_range(tilings_size, tilings_size);
   for (size_t i = 0; i < tilings_size; ++i) {
     const PictureLayerTiling* tiling = tilings_[i].get();
     if (tiling->resolution() == HIGH_RESOLUTION)
       high_res_range = TilingRange(i, i + 1);
-    if (tiling->resolution() == LOW_RESOLUTION)
-      low_res_range = TilingRange(i, i + 1);
   }
 
   TilingRange range(0, 0);
@@ -631,23 +598,8 @@ PictureLayerTilingSet::TilingRange PictureLayerTilingSet::GetTilingRange(
     case HIGH_RES:
       range = high_res_range;
       break;
-    case BETWEEN_HIGH_AND_LOW_RES:
-      // TODO(vmpstr): This code assumes that high res tiling will come before
-      // low res tiling, however there are cases where this assumption is
-      // violated. As a result, it's better to be safe in these situations,
-      // since otherwise we can end up accessing a tiling that doesn't exist.
-      // See crbug.com/429397 for high res tiling appearing after low res
-      // tiling discussion/fixes.
-      if (high_res_range.start <= low_res_range.start)
-        range = TilingRange(high_res_range.end, low_res_range.start);
-      else
-        range = TilingRange(low_res_range.end, high_res_range.start);
-      break;
-    case LOW_RES:
-      range = low_res_range;
-      break;
-    case LOWER_THAN_LOW_RES:
-      range = TilingRange(low_res_range.end, tilings_size);
+    case LOWER_THAN_HIGH_RES:
+      range = TilingRange(high_res_range.end, tilings_size);
       break;
   }
 

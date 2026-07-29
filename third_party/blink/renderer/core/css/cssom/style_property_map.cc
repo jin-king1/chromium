@@ -20,6 +20,7 @@
 #include "third_party/blink/renderer/core/style_property_shorthand.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 
 namespace blink {
 
@@ -64,7 +65,8 @@ const CSSValue* StyleValueToCSSValue(
   // TODO(https://crbug.com/545324): Move this into a method on
   // CSSProperty when there are more of these cases.
   switch (property_id) {
-    case CSSPropertyID::kAnchorScope: {
+    case CSSPropertyID::kAnchorScope:
+    case CSSPropertyID::kTriggerScope: {
       // The 'all' keyword is tree-scoped.
       if (const auto* ident =
               DynamicTo<CSSIdentifierValue>(style_value.ToCSSValue());
@@ -148,6 +150,21 @@ const CSSValue* StyleValueToCSSValue(
       }
       break;
     }
+    case CSSPropertyID::kGridLanesDirection: {
+      const auto* value = style_value.ToCSSValue();
+      // Only 'normal' is stored as an identifier, the other keywords are
+      // wrapped in a list.
+      const auto* identifier_value = DynamicTo<CSSIdentifierValue>(value);
+      if (identifier_value && !value->IsCSSWideKeyword() &&
+          identifier_value->GetValueID() != CSSValueID::kNormal) {
+        DCHECK(identifier_value->GetValueID() == CSSValueID::kRow ||
+               identifier_value->GetValueID() == CSSValueID::kColumn);
+        CSSValueList* list = CSSValueList::CreateSpaceSeparated();
+        list->Append(*style_value.ToCSSValue());
+        return list;
+      }
+      break;
+    }
     case CSSPropertyID::kOffsetRotate: {
       // level 1 only accepts single values, which are stored internally
       // as a single element list.
@@ -174,7 +191,9 @@ const CSSValue* StyleValueToCSSValue(
       }
       break;
     }
-    case CSSPropertyID::kTextDecorationLine: {
+    case CSSPropertyID::kTextDecorationLine:
+    case CSSPropertyID::kTextTransform:
+    case CSSPropertyID::kHangingPunctuation: {
       // level 1 only accepts single keywords
       const auto* value = style_value.ToCSSValue();
       // only 'none' is stored as an identifier, the other keywords are
@@ -278,6 +297,16 @@ const CSSValue* CoerceStyleValuesOrStrings(
     if (css_value->IsCSSWideKeyword() || css_value->IsUnparsedDeclaration()) {
       return style_values.size() == 1U ? css_value : nullptr;
     }
+
+    // Flatten lists of values into the result list.
+    if (css_value->IsValueList()) {
+      const auto* value_list = DynamicTo<CSSValueList>(css_value);
+      for (const auto& value : *value_list) {
+        result->Append(*value);
+      }
+      continue;
+    }
+
     result->Append(*css_value);
   }
 
@@ -294,7 +323,8 @@ void StylePropertyMap::set(
   const CSSPropertyID property_id =
       CssPropertyID(execution_context, property_name);
   if (property_id == CSSPropertyID::kInvalid) {
-    exception_state.ThrowTypeError("Invalid propertyName: " + property_name);
+    exception_state.ThrowTypeError(
+        StrCat({"Invalid propertyName: ", property_name}));
     return;
   }
 
@@ -304,7 +334,8 @@ void StylePropertyMap::set(
   // Descriptors (like 'src') have CSSProperty instances, but are not
   // valid properties in this context.
   if (!property.IsProperty()) {
-    exception_state.ThrowTypeError("Invalid propertyName: " + property_name);
+    exception_state.ThrowTypeError(
+        StrCat({"Invalid propertyName: ", property_name}));
     return;
   }
 
@@ -376,7 +407,8 @@ void StylePropertyMap::append(
       CssPropertyID(execution_context, property_name);
 
   if (property_id == CSSPropertyID::kInvalid) {
-    exception_state.ThrowTypeError("Invalid propertyName: " + property_name);
+    exception_state.ThrowTypeError(
+        StrCat({"Invalid propertyName: ", property_name}));
     return;
   }
 
@@ -439,7 +471,8 @@ void StylePropertyMap::remove(const ExecutionContext* execution_context,
                               ExceptionState& exception_state) {
   CSSPropertyID property_id = CssPropertyID(execution_context, property_name);
   if (property_id == CSSPropertyID::kInvalid) {
-    exception_state.ThrowTypeError("Invalid property name: " + property_name);
+    exception_state.ThrowTypeError(
+        StrCat({"Invalid property name: ", property_name}));
     return;
   }
 

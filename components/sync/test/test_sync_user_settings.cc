@@ -6,7 +6,7 @@
 
 #include "components/sync/base/passphrase_enums.h"
 #include "components/sync/base/user_selectable_type.h"
-#include "components/sync/engine/nigori/nigori.h"
+#include "components/sync/model/crypto/nigori.h"
 #include "components/sync/service/sync_prefs.h"
 #include "components/sync/service/sync_service.h"
 #include "components/sync/service/sync_user_settings_impl.h"
@@ -48,12 +48,9 @@ bool TestSyncUserSettings::IsInitialSyncFeatureSetupComplete() const {
   return initial_sync_feature_setup_complete_;
 }
 
-#if !BUILDFLAG(IS_CHROMEOS)
-void TestSyncUserSettings::SetInitialSyncFeatureSetupComplete(
-    SyncFirstSetupCompleteSource source) {
-  SetInitialSyncFeatureSetupComplete();
+void TestSyncUserSettings::SetInitialSyncFeatureSetupComplete() {
+  initial_sync_feature_setup_complete_ = true;
 }
-#endif  // !BUILDFLAG(IS_CHROMEOS)
 
 bool TestSyncUserSettings::IsSyncEverythingEnabled() const {
   return sync_everything_enabled_;
@@ -67,8 +64,10 @@ void TestSyncUserSettings::SetSelectedTypes(bool sync_everything,
 
   if (sync_everything_enabled_) {
     selected_types_.PutAll(UserSelectableTypeSet::All());
+    disabled_types_.Clear();
   } else {
     selected_types_ = types;
+    disabled_types_.RemoveAll(types);
   }
 }
 
@@ -76,6 +75,7 @@ void TestSyncUserSettings::SetSelectedType(UserSelectableType type,
                                            bool is_type_on) {
   if (is_type_on) {
     selected_types_.Put(type);
+    disabled_types_.Remove(type);
   } else {
     selected_types_.Remove(type);
   }
@@ -86,15 +86,19 @@ void TestSyncUserSettings::ResetSelectedType(UserSelectableType type) {
   // default value. Since `selected_types_` is populated with all types by
   // default, this can be considered resetting.
   selected_types_.Put(type);
+  disabled_types_.Remove(type);
 }
 
 void TestSyncUserSettings::KeepAccountSettingsPrefsOnlyForUsers(
-    const std::vector<signin::GaiaIdHash>& available_gaia_ids) {}
+    const std::vector<GaiaId>& available_gaia_ids) {}
 
 UserSelectableTypeSet TestSyncUserSettings::GetSelectedTypes() const {
-  if (service_->GetAccountInfo().IsEmpty()) {
+  if (service_->GetAccountInfo().IsEmpty() && !service_->IsLocalSyncEnabled()) {
     return {};
   }
+
+  // TODO(crbug.com/350494796): remove data types that are not available for
+  // local sync.
   return selected_types_;
 }
 
@@ -113,8 +117,11 @@ TestSyncUserSettings::GetTypePrefStateForAccount(
     UserSelectableType type) const {
   if (selected_types_.Has(type)) {
     return SyncUserSettings::UserSelectableTypePrefState::kEnabledOrDefault;
+  } else if (disabled_types_.Has(type)) {
+    return SyncUserSettings::UserSelectableTypePrefState::kDisabled;
   }
-  return SyncUserSettings::UserSelectableTypePrefState::kDisabled;
+
+  return SyncUserSettings::UserSelectableTypePrefState::kNotApplicable;
 }
 
 DataTypeSet TestSyncUserSettings::GetPreferredDataTypes() const {
@@ -125,6 +132,9 @@ DataTypeSet TestSyncUserSettings::GetPreferredDataTypes() const {
   types.PutAll(UserSelectableOsTypesToDataTypes(GetSelectedOsTypes()));
 #endif
   types.PutAll(ControlTypes());
+  if (service_->IsLocalSyncEnabled()) {
+    types.RetainAll(LocalSyncSupportedTypes());
+  }
   return types;
 }
 
@@ -138,9 +148,12 @@ bool TestSyncUserSettings::IsSyncFeatureDisabledViaDashboard() const {
   return sync_feature_disabled_via_dashboard_;
 }
 
-void TestSyncUserSettings::SetSyncFeatureDisabledViaDashboard(
-    bool disabled_via_dashboard) {
-  sync_feature_disabled_via_dashboard_ = disabled_via_dashboard;
+void TestSyncUserSettings::ClearSyncFeatureDisabledViaDashboard() {
+  sync_feature_disabled_via_dashboard_ = false;
+}
+
+void TestSyncUserSettings::SetSyncFeatureDisabledViaDashboard() {
+  sync_feature_disabled_via_dashboard_ = true;
 }
 
 bool TestSyncUserSettings::IsSyncAllOsTypesEnabled() const {
@@ -218,6 +231,10 @@ bool TestSyncUserSettings::IsTrustedVaultKeyRequired() const {
   return trusted_vault_key_required_;
 }
 
+bool TestSyncUserSettings::IsKeystoreKeyRequiredForTesting() const {
+  return false;
+}
+
 bool TestSyncUserSettings::IsTrustedVaultKeyRequiredForPreferredDataTypes()
     const {
   return IsTrustedVaultKeyRequired() && IsEncryptedDatatypePreferred();
@@ -255,22 +272,10 @@ bool TestSyncUserSettings::SetDecryptionPassphrase(
   return true;
 }
 
-void TestSyncUserSettings::SetExplicitPassphraseDecryptionNigoriKey(
-    std::unique_ptr<Nigori> nigori) {}
-
-std::unique_ptr<Nigori>
-TestSyncUserSettings::GetExplicitPassphraseDecryptionNigoriKey() const {
-  return nullptr;
-}
-
 void TestSyncUserSettings::SetRegisteredSelectableTypes(
     UserSelectableTypeSet types) {
   registered_selectable_types_ = types;
   selected_types_ = Intersection(selected_types_, types);
-}
-
-void TestSyncUserSettings::SetInitialSyncFeatureSetupComplete() {
-  initial_sync_feature_setup_complete_ = true;
 }
 
 void TestSyncUserSettings::ClearInitialSyncFeatureSetupComplete() {
@@ -339,6 +344,11 @@ void TestSyncUserSettings::SetPassphraseType(PassphraseType type) {
 void TestSyncUserSettings::SetExplicitPassphraseTime(base::Time t) {
   CHECK(IsUsingExplicitPassphrase());
   explicit_passphrase_time_ = t;
+}
+
+void TestSyncUserSettings::SetDisabledType(UserSelectableType type) {
+  selected_types_.Remove(type);
+  disabled_types_.Put(type);
 }
 
 const std::string& TestSyncUserSettings::GetEncryptionPassphrase() const {

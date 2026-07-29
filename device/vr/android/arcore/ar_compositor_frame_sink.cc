@@ -7,10 +7,8 @@
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
-#include "base/not_fatal_until.h"
 #include "base/task/bind_post_task.h"
 #include "base/task/single_thread_task_runner.h"
-#include "components/viz/common/features.h"
 #include "components/viz/common/quads/compositor_frame.h"
 #include "components/viz/common/quads/surface_draw_quad.h"
 #include "components/viz/common/quads/texture_draw_quad.h"
@@ -20,6 +18,7 @@
 #include "device/vr/android/web_xr_presentation_state.h"
 #include "device/vr/public/cpp/xr_frame_sink_client.h"
 #include "ui/android/window_android.h"
+#include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/video_types.h"
 #include "ui/gl/gl_bindings.h"
 
@@ -33,7 +32,7 @@ class ArCoreHostDisplayClient : public viz::HostDisplayClient {
       : HostDisplayClient(gfx::kNullAcceleratedWidget),
         main_thread_task_runner_(main_thread_task_runner),
         root_window_(root_window) {
-    // TODO(crbug.com/40758616): Ideally, we'd DCHECK here, but the UTs
+    // Ideally, we'd DCHECK(root_window_) here, but the unit tests
     // don't create a root_window.
   }
 
@@ -222,7 +221,6 @@ void ArCompositorFrameSink::RequestBeginFrame(base::TimeDelta interval,
                                   next_begin_frame_id_++,
                                   base::TimeTicks::Now(), deadline, interval,
                                   viz::BeginFrameArgs::NORMAL),
-      true,
       base::BindOnce(&ArCompositorFrameSink::OnFrameSubmitAck,
                      base::Unretained(this)));
   can_issue_new_begin_frame_ = false;
@@ -270,13 +268,13 @@ void ArCompositorFrameSink::DidReceiveCompositorFrameAck(
 void ArCompositorFrameSink::ReclaimResources(
     std::vector<viz::ReturnedResource> resources) {
   DVLOG(3) << __func__ << " resources.size()=" << resources.size();
-  for (const auto& resource : resources) {
+  for (auto& resource : resources) {
     DVLOG(3) << __func__ << " Reclaimed: " << resource.id;
     if (resource.id == viz::kInvalidResourceId)
       continue;
 
     auto it = id_to_frame_map_.find(resource.id);
-    CHECK(it != id_to_frame_map_.end(), base::NotFatalUntil::M130);
+    CHECK(it != id_to_frame_map_.end());
     auto* rendering_frame = it->second.get();
 
     // While we now know that this resource is associated with this frame, we
@@ -284,11 +282,11 @@ void ArCompositorFrameSink::ReclaimResources(
     // we've got all of the resources associated with a frame cleared before we
     // actually clear the frame. First determine which buffer this ResourceId
     // was associated with and then clear it.
+    WebXrSharedBuffer* matched_buffer = nullptr;
     if (resource.id == rendering_frame->shared_buffer->id) {
-      rendering_frame->shared_buffer->id = viz::kInvalidResourceId;
-    }
-    if (resource.id == rendering_frame->camera_image_shared_buffer->id) {
-      rendering_frame->camera_image_shared_buffer->id = viz::kInvalidResourceId;
+      matched_buffer = rendering_frame->shared_buffer.get();
+    } else if (resource.id == rendering_frame->camera_image_shared_buffer->id) {
+      matched_buffer = rendering_frame->camera_image_shared_buffer.get();
     }
 
     // In order to keep our map size small we can remove this association as it
@@ -300,7 +298,12 @@ void ArCompositorFrameSink::ReclaimResources(
     // token to determine when the frame is *actually* done. Given that each
     // frame can have multiple buffers associated with it, we'll store the token
     // until we get all of the buffers associated with the frame returned.
-    rendering_frame->reclaimed_sync_tokens.push_back(resource.sync_token);
+    if (matched_buffer) {
+      matched_buffer->id = viz::kInvalidResourceId;
+      matched_buffer->reclaimed_sync_token =
+          matched_buffer->shared_image->EndExport(
+              std::move(resource.shared_image_export_result));
+    }
 
     // Once we've cleared all of the buffers on the frame that were passed to
     // viz, we can tell our parent that the frame is ready to be reclaimed
@@ -318,16 +321,9 @@ void ArCompositorFrameSink::ReclaimResources(
 void ArCompositorFrameSink::OnBeginFrame(
     const viz::BeginFrameArgs& args,
     const viz::FrameTimingDetailsMap& timing_details,
-    bool frame_ack,
     std::vector<viz::ReturnedResource> resources) {
-  // TODO(crbug.com/40250552): Determine why the timing of this Ack leads to
-  // frame production stopping in tests.
-  if (features::IsOnBeginFrameAcksEnabled()) {
-    if (frame_ack) {
-      DidReceiveCompositorFrameAck(std::move(resources));
-    } else if (!resources.empty()) {
-      ReclaimResources(std::move(resources));
-    }
+  if (!resources.empty()) {
+    ReclaimResources(std::move(resources));
   }
   on_begin_frame_.Run(args, timing_details);
 }
@@ -444,28 +440,35 @@ viz::CompositorFrame ArCompositorFrameSink::CreateFrame(WebXrFrame* xr_frame,
 
     viz::TextureDrawQuad* xr_content_quad =
         render_pass->CreateAndAppendDrawQuad<viz::TextureDrawQuad>();
-    xr_content_quad->SetNew(
-        xr_content_quad_state,
-        /*rect=*/output_rect,
-        /*visible_rect=*/output_rect,
-        /*needs_blending=*/true, renderer_buffer->id,
-        /*premultiplied_alpha=*/true,
-        /*uv_top_left=*/xr_frame->bounds_left.origin(),
-        /*uv_bottom_right=*/xr_frame->bounds_left.bottom_right(),
-        /*background_color=*/SkColors::kTransparent,
-        /*nearest_neighbor=*/false,
-        /*secure_output_only=*/false, gfx::ProtectedVideoType::kClear);
+    const gfx::Size shared_image_size = renderer_buffer->shared_image->size();
+    const gfx::PointF uv_top_left =
+        gfx::ScalePoint(xr_frame->bounds_left.origin(),
+                        shared_image_size.width(), shared_image_size.height());
+    const gfx::PointF uv_bottom_right =
+        gfx::ScalePoint(xr_frame->bounds_left.bottom_right(),
+                        shared_image_size.width(), shared_image_size.height());
+    xr_content_quad->SetNew(xr_content_quad_state,
+                            /*rect=*/output_rect,
+                            /*visible_rect=*/output_rect,
+                            /*needs_blending=*/true, renderer_buffer->id,
+                            /*top_left=*/
+                            uv_top_left,
+                            /*bottom_right=*/
+                            uv_bottom_right,
+                            /*background=*/SkColors::kTransparent,
+                            /*nearest*/ false,
+                            /*secure_output=*/false,
+                            gfx::ProtectedVideoType::kClear,
+                            /*is_tex_coords_normalized=*/false);
 
-    auto renderer_resource = viz::TransferableResource::MakeGpu(
+    viz::TransferableResource::MetadataOverride render_resource_overrides = {
+        .is_overlay_candidate = false,
+    };
+
+    auto renderer_resource = viz::TransferableResource::Make(
         renderer_buffer->shared_image,
-        renderer_buffer->shared_image->GetTextureTarget(),
-        renderer_buffer->sync_token, renderer_buffer->size,
-        viz::SinglePlaneFormat::kRGBA_8888,
-        /*is_overlay_candidate=*/false,
-        viz::TransferableResource::ResourceSource::kAR);
-    renderer_resource.origin = frame_type == FrameType::kHasWebGlContent
-                                   ? kBottomLeft_GrSurfaceOrigin
-                                   : kTopLeft_GrSurfaceOrigin;
+        viz::TransferableResource::ResourceSource::kAR,
+        renderer_buffer->sync_token, render_resource_overrides);
 
     renderer_resource.id = renderer_buffer->id;
     id_to_frame_map_[renderer_buffer->id] = xr_frame;
@@ -488,27 +491,32 @@ viz::CompositorFrame ArCompositorFrameSink::CreateFrame(WebXrFrame* xr_frame,
 
   viz::TextureDrawQuad* camera_quad =
       render_pass->CreateAndAppendDrawQuad<viz::TextureDrawQuad>();
+
+  const gfx::Size shared_image_size = camera_buffer->shared_image->size();
+  const gfx::PointF uv_bottom_right(shared_image_size.width(),
+                                    shared_image_size.height());
+
   // UV from 0,0 to 1,1 because the camera texture is fullscreen.
   camera_quad->SetNew(camera_quad_state,
                       /*rect=*/output_rect,
                       /*visible_rect=*/output_rect,
                       /*needs_blending=*/true, camera_buffer->id,
-                      /*premultiplied_alpha=*/true,
-                      /*uv_top_left=*/gfx::PointF(0.f, 0.f),
-                      /*uv_bottom_right=*/gfx::PointF(1.f, 1.f),
-                      /*background_color=*/SkColors::kTransparent,
-                      /*nearest_neighbor=*/false,
-                      /*secure_output_only=*/false,
-                      gfx::ProtectedVideoType::kClear);
+                      /*top_left=*/gfx::PointF(0.f, 0.f),
+                      /*bottom_right=*/uv_bottom_right,
+                      /*background=*/SkColors::kTransparent,
+                      /*nearest*/ false,
+                      /*secure_output=*/false, gfx::ProtectedVideoType::kClear,
+                      /*is_tex_coords_normalized=*/false);
+
+  viz::TransferableResource::MetadataOverride camera_resource_overrides = {
+      .is_overlay_candidate = false,
+  };
+
   // Additionally append to the resource_list
-  auto camera_resource = viz::TransferableResource::MakeGpu(
+  auto camera_resource = viz::TransferableResource::Make(
       camera_buffer->shared_image,
-      camera_buffer->shared_image->GetTextureTarget(),
-      camera_buffer->sync_token, camera_buffer->size,
-      viz::SinglePlaneFormat::kRGBA_8888,
-      /*is_overlay_candidate=*/false,
-      viz::TransferableResource::ResourceSource::kAR);
-  camera_resource.origin = kBottomLeft_GrSurfaceOrigin;
+      viz::TransferableResource::ResourceSource::kAR, camera_buffer->sync_token,
+      camera_resource_overrides);
 
   camera_resource.id = camera_buffer->id;
   id_to_frame_map_[camera_buffer->id] = xr_frame;

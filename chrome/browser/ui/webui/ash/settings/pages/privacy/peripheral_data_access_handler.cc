@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "ash/constants/ash_pref_names.h"
+#include "base/check_deref.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
@@ -61,7 +62,8 @@ PeripheralDataAccessHandler::PeripheralDataAccessHandler(Profile* profile) {
   DCHECK(pref);
   // If the user has a managed policy or is a guest profile, prevent user
   // configuration of the setting.
-  auto* user = BrowserContextHelper::Get()->GetUserByBrowserContext(profile);
+  const auto& user = CHECK_DEREF(
+      BrowserContextHelper::Get()->GetUserByBrowserContext(profile));
   is_user_configurable_ = !pref->IsManaged() && !IsGuestModeActive(user);
 
   peripheral_data_access_subscription_ =
@@ -92,7 +94,7 @@ void PeripheralDataAccessHandler::OnJavascriptAllowed() {}
 void PeripheralDataAccessHandler::OnJavascriptDisallowed() {}
 
 void PeripheralDataAccessHandler::HandleThunderboltSupported(
-    const base::Value::List& args) {
+    const base::ListValue& args) {
   AllowJavascript();
   CHECK_EQ(1u, args.size());
   const std::string& callback_id = args[0].GetString();
@@ -106,7 +108,7 @@ void PeripheralDataAccessHandler::HandleThunderboltSupported(
 }
 
 void PeripheralDataAccessHandler::HandleGetPolicyState(
-    const base::Value::List& args) {
+    const base::ListValue& args) {
   AllowJavascript();
   CHECK_EQ(1u, args.size());
   const std::string& callback_id = args[0].GetString();
@@ -115,7 +117,7 @@ void PeripheralDataAccessHandler::HandleGetPolicyState(
                                      ? local_state_pref_name
                                      : cros_setting_pref_name;
 
-  base::Value::Dict response;
+  base::DictValue response;
   response.Set("prefName", pref_name);
   response.Set("isUserConfigurable", is_user_configurable_);
   ResolveJavascriptCallback(base::Value(callback_id), response);

@@ -17,7 +17,6 @@
 #include "base/i18n/string_compare.h"
 #include "base/memory/singleton.h"
 #include "base/metrics/field_trial_params.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/branding_buildflags.h"
 #include "build/build_config.h"
@@ -30,7 +29,6 @@
 #include "chrome/browser/ui/translate/partial_translate_bubble_model.h"
 #include "chrome/browser/ui/translate/partial_translate_bubble_ui_action_logger.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
-#include "chrome/browser/ui/views/translate/translate_icon_view.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/grit/theme_resources.h"
@@ -42,7 +40,6 @@
 #include "components/translate/core/browser/translate_prefs.h"
 #include "components/translate/core/browser/translate_ui_delegate.h"
 #include "components/translate/core/common/translate_constants.h"
-#include "components/vector_icons/vector_icons.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -53,6 +50,7 @@
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/base/mojom/menu_source_type.mojom.h"
 #include "ui/base/resource/resource_bundle.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/paint_vector_icon.h"
 #include "ui/gfx/text_constants.h"
@@ -79,6 +77,7 @@
 #include "ui/views/layout/flex_layout_types.h"
 #include "ui/views/layout/flex_layout_view.h"
 #include "ui/views/layout/layout_types.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/style/platform_style.h"
 #include "ui/views/style/typography.h"
 #include "ui/views/view_class_properties.h"
@@ -283,7 +282,7 @@ void PartialTranslateBubbleView::ShowOptionsMenu(views::Button* source) {
   options_menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
 
   options_menu_model_->AddItemWithStringId(
-      OptionsMenuItem::CHANGE_TARGET_LANGUAGE,
+      static_cast<int>(OptionsMenuItem::kChangeTargetLanguage),
       IDS_TRANSLATE_BUBBLE_CHANGE_TARGET_LANGUAGE);
   options_menu_model_->SetElementIdentifierAt(
       options_menu_model_->GetItemCount() - 1, kChangeTargetLanguage);
@@ -291,7 +290,7 @@ void PartialTranslateBubbleView::ShowOptionsMenu(views::Button* source) {
   auto source_language =
       model_->GetSourceLanguageNameAt(model_->GetSourceLanguageIndex());
   options_menu_model_->AddItem(
-      OptionsMenuItem::CHANGE_SOURCE_LANGUAGE,
+      static_cast<int>(OptionsMenuItem::kChangeSourceLanguage),
       l10n_util::GetStringFUTF16(
           IDS_PARTIAL_TRANSLATE_BUBBLE_CHANGE_SOURCE_LANGUAGE,
           source_language));
@@ -309,14 +308,14 @@ void PartialTranslateBubbleView::ShowOptionsMenu(views::Button* source) {
 void PartialTranslateBubbleView::ExecuteCommand(int command_id,
                                                 int event_flags) {
   switch (command_id) {
-    case OptionsMenuItem::CHANGE_TARGET_LANGUAGE:
+    case static_cast<int>(OptionsMenuItem::kChangeTargetLanguage):
       translate::ReportPartialTranslateBubbleUiAction(
           translate::PartialTranslateBubbleUiEvent::
               CHANGE_TARGET_LANGUAGE_OPTION_CLICKED);
       SwitchView(PartialTranslateBubbleModel::VIEW_STATE_TARGET_LANGUAGE);
       break;
 
-    case OptionsMenuItem::CHANGE_SOURCE_LANGUAGE:
+    case static_cast<int>(OptionsMenuItem::kChangeSourceLanguage):
       translate::ReportPartialTranslateBubbleUiAction(
           translate::PartialTranslateBubbleUiEvent::
               CHANGE_SOURCE_LANGUAGE_OPTION_CLICKED);
@@ -350,11 +349,11 @@ void PartialTranslateBubbleView::SetViewState(
 }
 
 PartialTranslateBubbleView::PartialTranslateBubbleView(
-    views::View* anchor_view,
+    views::BubbleAnchor anchor,
     std::unique_ptr<PartialTranslateBubbleModel> model,
     content::WebContents* web_contents,
     base::OnceClosure on_closing)
-    : LocationBarBubbleDelegateView(anchor_view,
+    : LocationBarBubbleDelegateView(anchor,
                                     web_contents,
                                     /*autosize=*/true),
       model_(std::move(model)),
@@ -538,7 +537,8 @@ std::unique_ptr<views::View> PartialTranslateBubbleView::CreateView() {
                                views::MaximumFlexSizeRule::kPreferred));
   padding_view->SetProperty(
       views::kFlexBehaviorKey,
-      views::FlexSpecification(views::MinimumFlexSizeRule::kScaleToZero,
+      views::FlexSpecification(views::LayoutOrientation::kHorizontal,
+                               views::MinimumFlexSizeRule::kScaleToZero,
                                views::MaximumFlexSizeRule::kUnbounded)
           .WithOrder(2));
   options_menu->SetProperty(views::kElementIdentifierKey, kOptionsMenuButton);
@@ -556,6 +556,7 @@ std::unique_ptr<views::View> PartialTranslateBubbleView::CreateView() {
   partial_text_label->SizeToFit(tab_view_top_row_->GetPreferredSize().width());
   partial_text_label->SetHorizontalAlignment(
       gfx::HorizontalAlignment::ALIGN_LEFT);
+  partial_text_label->SetSelectable(true);
   partial_text_label->SetProperty(views::kMarginsKey,
                                   gfx::Insets::VH(vertical_spacing, 0));
   partial_text_label_ = view->AddChildView(std::move(partial_text_label));
@@ -615,7 +616,8 @@ std::unique_ptr<views::View> PartialTranslateBubbleView::CreateViewErrorNoTitle(
   error_message_label->SetProperty(views::kElementIdentifierKey, kErrorMessage);
   error_message_label->SetProperty(
       views::kFlexBehaviorKey,
-      views::FlexSpecification(views::MinimumFlexSizeRule::kScaleToZero,
+      views::FlexSpecification(views::LayoutOrientation::kHorizontal,
+                               views::MinimumFlexSizeRule::kScaleToZero,
                                views::MaximumFlexSizeRule::kUnbounded));
 
   title_row->AddChildView(std::move(error_message_label));
@@ -827,8 +829,8 @@ std::unique_ptr<views::View> PartialTranslateBubbleView::CreateViewAdvanced(
                         horizontal_spacing * 4));
   language_title_label->SetProperty(views::kCrossAxisAlignmentKey,
                                     views::LayoutAlignment::kStart);
-  auto* title_row = form_view->AddChildView(std::make_unique<views::View>());
-  title_row->SetLayoutManager(std::make_unique<views::FlexLayout>());
+  auto* title_row =
+      form_view->AddChildView(std::make_unique<views::FlexLayoutView>());
   auto* title_label = title_row->AddChildView(std::move(language_title_label));
   auto* padding_view = title_row->AddChildView(std::make_unique<views::View>());
   title_row->AddChildView(CreateCloseButton());
@@ -841,7 +843,8 @@ std::unique_ptr<views::View> PartialTranslateBubbleView::CreateViewAdvanced(
   // when the bubble expands.
   padding_view->SetProperty(
       views::kFlexBehaviorKey,
-      views::FlexSpecification(views::MinimumFlexSizeRule::kScaleToZero,
+      views::FlexSpecification(views::LayoutOrientation::kHorizontal,
+                               views::MinimumFlexSizeRule::kScaleToZero,
                                views::MaximumFlexSizeRule::kUnbounded)
           .WithOrder(2));
 
@@ -876,7 +879,9 @@ PartialTranslateBubbleView::CreateOptionsMenuButton() {
   // Three dots options menu button
   auto tab_translate_options_button =
       views::CreateVectorImageButtonWithNativeTheme(
-          views::Button::PressedCallback(), kBrowserToolsIcon);
+          views::Button::PressedCallback(), features::IsRoundedIconsEnabled()
+                                                ? kMoreVertIcon
+                                                : kBrowserToolsOldIcon);
   tab_translate_options_button->SetCallback(base::BindRepeating(
       &PartialTranslateBubbleView::ShowOptionsMenu, base::Unretained(this),
       base::Unretained(tab_translate_options_button.get())));

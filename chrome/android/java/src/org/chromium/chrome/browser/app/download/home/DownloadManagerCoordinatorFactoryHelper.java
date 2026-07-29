@@ -8,22 +8,28 @@ import android.app.Activity;
 import android.content.Context;
 
 import org.chromium.base.Callback;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.download.DownloadMetrics;
+import org.chromium.chrome.browser.download.DownloadStartupUtils;
+import org.chromium.chrome.browser.download.DownloadUtils;
 import org.chromium.chrome.browser.download.home.DownloadManagerCoordinator;
 import org.chromium.chrome.browser.download.home.DownloadManagerCoordinatorFactory;
 import org.chromium.chrome.browser.download.home.DownloadManagerUiConfig;
 import org.chromium.chrome.browser.download.items.OfflineContentAggregatorFactory;
 import org.chromium.chrome.browser.download.settings.DownloadSettings;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
-import org.chromium.chrome.browser.profiles.OtrProfileId;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.settings.SettingsNavigationFactory;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.components.browser_ui.settings.SettingsNavigation;
 import org.chromium.components.browser_ui.util.GlobalDiscardableReferencePool;
+import org.chromium.components.offline_items_collection.OfflineItem;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 
 /** A helper class to build and return an {@link DownloadManagerCoordinator}. */
+@NullMarked
 class DownloadManagerCoordinatorFactoryHelper {
     /**
      * Returns an instance of a {@link DownloadManagerCoordinator} to be used in the UI.
@@ -38,15 +44,33 @@ class DownloadManagerCoordinatorFactoryHelper {
             Activity activity,
             DownloadManagerUiConfig config,
             SnackbarManager snackbarManager,
-            ModalDialogManager modalDialogManager) {
+            @Nullable ModalDialogManager modalDialogManager) {
         Profile profile =
-                OtrProfileId.isOffTheRecord(config.otrProfileId)
+                config.otrProfileId != null
                         ? ProfileManager.getLastUsedRegularProfile()
                                 .getOffTheRecordProfile(
                                         config.otrProfileId, /* createIfNeeded= */ true)
                         : ProfileManager.getLastUsedRegularProfile();
+        assert profile != null;
+
+        DownloadStartupUtils.ensureDownloadSystemInitialized(
+                /* isFullBrowserStarted= */ true,
+                /* isOffTheRecord= */ config.otrProfileId != null);
+
         Callback<Context> settingsLaunchHelper =
                 DownloadManagerCoordinatorFactoryHelper::settingsLaunchHelper;
+        Callback<OfflineItem> openWithHandler =
+                item -> {
+                    if (item.filePath == null || item.mimeType == null) return;
+                    DownloadUtils.openFileWithExternalApps(
+                            item.filePath,
+                            item.mimeType,
+                            item.originalUrl != null ? item.originalUrl.getSpec() : null,
+                            item.referrerUrl != null ? item.referrerUrl.getSpec() : null,
+                            activity,
+                            DownloadMetrics.OpenWithExternalAppsSource.DOWNLOAD_HOME_MENU);
+                };
+
         return DownloadManagerCoordinatorFactory.create(
                 activity,
                 config,
@@ -54,9 +78,11 @@ class DownloadManagerCoordinatorFactoryHelper {
                 settingsLaunchHelper,
                 snackbarManager,
                 modalDialogManager,
+                new DownloadHelpPageLauncherImpl(profile),
                 TrackerFactory.getTrackerForProfile(profile),
                 new FaviconProviderImpl(profile),
                 OfflineContentAggregatorFactory.get(),
+                openWithHandler,
                 GlobalDiscardableReferencePool.getReferencePool());
     }
 

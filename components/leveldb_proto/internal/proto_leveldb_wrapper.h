@@ -15,7 +15,7 @@
 #include "base/functional/callback.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
-#include "base/strings/string_util.h"
+#include "base/sequence_checker.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/threading/thread_checker.h"
 #include "components/leveldb_proto/internal/proto_leveldb_wrapper_metrics.h"
@@ -140,8 +140,6 @@ class COMPONENT_EXPORT(LEVELDB_PROTO) ProtoLevelDBWrapper {
                         Callbacks::InitStatusCallback callback);
 
   void SetMetricsId(const std::string& id);
-
-  bool GetApproximateMemoryUse(uint64_t* approx_mem_use);
 
   const scoped_refptr<base::SequencedTaskRunner>& task_runner();
 

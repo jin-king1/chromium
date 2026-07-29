@@ -70,10 +70,9 @@ class COMPONENT_EXPORT(CHROMEOS_ASH_COMPONENTS_SETTINGS) CrosSettings {
   bool GetInteger(std::string_view path, int* out_value) const;
   bool GetDouble(std::string_view path, double* out_value) const;
   bool GetString(std::string_view path, std::string* out_value) const;
-  bool GetList(std::string_view path,
-               const base::Value::List** out_value) const;
+  bool GetList(std::string_view path, const base::ListValue** out_value) const;
   bool GetDictionary(std::string_view path,
-                     const base::Value::Dict** out_value) const;
+                     const base::DictValue** out_value) const;
 
   // Checks if the given username is on the list of users allowed to sign-in to
   // this device. |wildcard_match| may be nullptr. If it's present, it'll be set
@@ -94,7 +93,7 @@ class COMPONENT_EXPORT(CHROMEOS_ASH_COMPONENTS_SETTINGS) CrosSettings {
                        bool* wildcard_match) const;
 
   // Same as above, but receives already populated user list.
-  static bool FindEmailInList(const base::Value::List& list,
+  static bool FindEmailInList(const base::ListValue& list,
                               const std::string& email,
                               bool* wildcard_match);
 
@@ -110,7 +109,7 @@ class COMPONENT_EXPORT(CHROMEOS_ASH_COMPONENTS_SETTINGS) CrosSettings {
 
   // Add an observer Callback for changes for the given |path|.
   [[nodiscard]] base::CallbackListSubscription AddSettingsObserver(
-      const std::string& path,
+      std::string_view path,
       base::RepeatingClosure callback);
 
   // Returns the provider that handles settings with the |path| or prefix.
@@ -122,19 +121,8 @@ class COMPONENT_EXPORT(CHROMEOS_ASH_COMPONENTS_SETTINGS) CrosSettings {
   }
 
  private:
-  friend class CrosSettingsTest;
-
-  // Allows accessing to SetInstance.
   friend class CrosSettingsHolder;
-  friend class ScopedTestingCrosSettings;
-
-  // Sets `cros_settings` as a global instance. This does not take ownership,
-  // so the caller still has the responsibility to destroy the instance
-  // on appropriate timing. Also, the caller has the responsibility to call
-  // `SetInstance(nullptr)` before destroying the instance.
-  // If this is called while the global instance is already set, this will
-  // cause crash.
-  static void SetInstance(CrosSettings* cros_settings);
+  friend class CrosSettingsTest;
 
   // Fires system setting change callback.
   void FireObservers(const std::string& path);
@@ -147,7 +135,7 @@ class COMPONENT_EXPORT(CHROMEOS_ASH_COMPONENTS_SETTINGS) CrosSettings {
 
   // A map from settings names to a list of observers. Observers get fired in
   // the order they are added.
-  std::map<std::string, std::unique_ptr<base::RepeatingClosureList>>
+  std::map<std::string, base::RepeatingClosureList, std::less<>>
       settings_observers_;
 
   SEQUENCE_CHECKER(sequence_checker_);

@@ -2,13 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "media/audio/mac/audio_loopback_input_mac.h"
-#include "media/audio/mac/audio_loopback_input_mac_impl.h"
 
 #include <ScreenCaptureKit/ScreenCaptureKit.h>
 
@@ -23,9 +18,10 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/task_environment.h"
 #include "media/audio/audio_io.h"
+#include "media/audio/mac/audio_loopback_input_mac_impl.h"
+#include "media/base/audio_bus.h"
 #include "media/base/audio_parameters.h"
 #include "media/base/limits.h"
-#include "media/base/mac/audio_latency_mac.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/platform_test.h"
@@ -36,6 +32,8 @@ using ::testing::_;
 
 namespace media {
 
+using Error = AudioInputStream::AudioInputCallback::Error;
+
 constexpr int kSampleRate = 48000;
 constexpr int kFramesPerBuffer = 480;
 
@@ -44,15 +42,14 @@ constexpr gfx::Rect kDisplaySecondary(-1920, 10, 1920, 1080);
 
 class SCKAudioInputStreamTest : public PlatformTest {
  protected:
-  static SCDisplay* API_AVAILABLE(macos(13.0)) CreateSCDisplay(CGRect frame) {
+  static SCDisplay* CreateSCDisplay(CGRect frame) {
     id display = OCMClassMock([SCDisplay class]);
     OCMStub([display frame]).andReturn(frame);
     return display;
   }
 
   // Reports 2 displays when enumerating shareable content.
-  static void API_AVAILABLE(macos(13.0))
-      ShareableContentSuccess(NSInvocation* invocation) {
+  static void ShareableContentSuccess(NSInvocation* invocation) {
     void (^handler)(SCShareableContent* _Nullable, NSError* _Nullable);
     [invocation getArgument:&handler atIndex:2];
 
@@ -73,13 +70,12 @@ class SCKAudioInputStreamTest : public PlatformTest {
 
   ~SCKAudioInputStreamTest() override = default;
 
-  void API_AVAILABLE(macos(13.0)) SetUp() override {
+  void SetUp() override {
     stream_delegates_.clear();
     playing_stream_count_ = 0;
   }
 
-  void API_AVAILABLE(macos(13.0))
-      SetUpShareableContentMock(void (^handler)(NSInvocation* invocation)) {
+  void SetUpShareableContentMock(void (^handler)(NSInvocation* invocation)) {
     shareable_content_mock_ = OCMClassMock([SCShareableContent class]);
     OCMStub([shareable_content_mock_
                 getShareableContentWithCompletionHandler:[OCMArg any]])
@@ -87,59 +83,54 @@ class SCKAudioInputStreamTest : public PlatformTest {
   }
 
   // Mocks instance methods of an SCStream.
-  API_AVAILABLE(macos(13.0))
+
   void StartSCStreamMocking(SCStream* stream,
                             SCContentFilter* filter,
                             SCStreamConfiguration* config,
                             id<SCStreamDelegate> delegate) {
-    if (@available(macOS 13.0, *)) {
-      EXPECT_TRUE(stream);
-      EXPECT_TRUE(filter);
-      EXPECT_TRUE(config);
-      EXPECT_TRUE(delegate);
+    EXPECT_TRUE(stream);
+    EXPECT_TRUE(filter);
+    EXPECT_TRUE(config);
+    EXPECT_TRUE(delegate);
 
-      stream_delegates_.emplace_back(delegate);
+    stream_delegates_.emplace_back(delegate);
 
-      scstream_mock_ = OCMPartialMock(stream);
+    scstream_mock_ = OCMPartialMock(stream);
 
-      OCMStub([scstream_mock_ addStreamOutput:[OCMArg any]
-                                         type:SCStreamOutputTypeAudio
-                           sampleHandlerQueue:[OCMArg any]
-                                        error:[OCMArg anyObjectRef]])
-          .andDo(^(NSInvocation* invocation) {
-            __unsafe_unretained id<SCStreamOutput> stream_output;
-            [invocation getArgument:&stream_output atIndex:2];
-            stream_outputs_.emplace_back(stream_output);
-          })
-          .andReturn(TRUE);
+    OCMStub([scstream_mock_ addStreamOutput:[OCMArg any]
+                                       type:SCStreamOutputTypeAudio
+                         sampleHandlerQueue:[OCMArg any]
+                                      error:[OCMArg anyObjectRef]])
+        .andDo(^(NSInvocation* invocation) {
+          __unsafe_unretained id<SCStreamOutput> stream_output;
+          [invocation getArgument:&stream_output atIndex:2];
+          stream_outputs_.emplace_back(stream_output);
+        })
+        .andReturn(TRUE);
 
-      OCMStub([scstream_mock_ removeStreamOutput:[OCMArg any]
-                                            type:SCStreamOutputTypeAudio
-                                           error:[OCMArg anyObjectRef]])
-          .andDo(^(NSInvocation* invocation) {
-            __unsafe_unretained id<SCStreamOutput> stream_output;
-            [invocation getArgument:&stream_output atIndex:2];
-            stream_outputs_.erase(
-                std::remove(stream_outputs_.begin(), stream_outputs_.end(),
-                            stream_output),
-                stream_outputs_.end());
-          })
-          .andReturn(TRUE);
+    OCMStub([scstream_mock_ removeStreamOutput:[OCMArg any]
+                                          type:SCStreamOutputTypeAudio
+                                         error:[OCMArg anyObjectRef]])
+        .andDo(^(NSInvocation* invocation) {
+          __unsafe_unretained id<SCStreamOutput> stream_output;
+          [invocation getArgument:&stream_output atIndex:2];
+          std::erase(stream_outputs_, stream_output);
+        })
+        .andReturn(TRUE);
 
-      OCMStub([scstream_mock_ startCaptureWithCompletionHandler:[OCMArg any]])
-          .andDo(^(NSInvocation* invocation) {
-            playing_stream_count_++;
-          });
+    OCMStub([scstream_mock_ startCaptureWithCompletionHandler:[OCMArg any]])
+        .andDo(^(NSInvocation* invocation) {
+          playing_stream_count_++;
+        });
 
-      OCMStub([scstream_mock_ stopCaptureWithCompletionHandler:[OCMArg any]])
-          .andDo(^(NSInvocation* invocation) {
-            playing_stream_count_--;
-          });
-    }
+    OCMStub([scstream_mock_ stopCaptureWithCompletionHandler:[OCMArg any]])
+        .andDo(^(NSInvocation* invocation) {
+          playing_stream_count_--;
+        });
   }
 
   // Create an instance of SCKAudioInputStream with default parameters.
-  API_AVAILABLE(macos(13.0))
+
   SCKAudioInputStream* CreateAudioInputStream() {
     const auto params = AudioParameters(AudioParameters::AUDIO_PCM_LOW_LATENCY,
                                         ChannelLayoutConfig::Stereo(),
@@ -204,17 +195,15 @@ class SCKAudioInputStreamTest : public PlatformTest {
 
   // Send an audio sample packet to the registered SCStreamOutput.
   void SendAudioSample(std::array<float, 2 * kFramesPerBuffer> buffer) {
-    if (@available(macOS 13.0, *)) {
-      for (auto& stream_output : stream_outputs_) {
-        EXPECT_TRUE(stream_output);
+    for (auto& stream_output : stream_outputs_) {
+      EXPECT_TRUE(stream_output);
 
-        // Pass |stream| as a variable to bypass the nullability check as
-        // |stream| is not needed.
-        SCStream* stream = nil;
-        [stream_output stream:stream
-            didOutputSampleBuffer:CreateStereoAudioSampleBuffer(buffer).get()
-                           ofType:SCStreamOutputTypeAudio];
-      }
+      // Pass |stream| as a variable to bypass the nullability check as
+      // |stream| is not needed.
+      SCStream* stream = nil;
+      [stream_output stream:stream
+          didOutputSampleBuffer:CreateStereoAudioSampleBuffer(buffer).get()
+                         ofType:SCStreamOutputTypeAudio];
     }
   }
 
@@ -231,17 +220,15 @@ class SCKAudioInputStreamTest : public PlatformTest {
 
   // Send an error to the registered SCStreamDelegate.
   void SendError() {
-    if (@available(macOS 13.0, *)) {
-      for (auto& stream_delegate : stream_delegates_) {
-        // Pass |stream| as a variable to bypass the nullability check as
-        // |stream| is not needed.
-        SCStream* stream = nil;
-        [stream_delegate
-                      stream:stream
-            didStopWithError:[NSError errorWithDomain:SCStreamErrorDomain
-                                                 code:SCStreamErrorInternalError
-                                             userInfo:nil]];
-      }
+    for (auto& stream_delegate : stream_delegates_) {
+      // Pass |stream| as a variable to bypass the nullability check as
+      // |stream| is not needed.
+      SCStream* stream = nil;
+      [stream_delegate
+                    stream:stream
+          didStopWithError:[NSError errorWithDomain:SCStreamErrorDomain
+                                               code:SCStreamErrorInternalError
+                                           userInfo:nil]];
     }
   }
 
@@ -258,9 +245,9 @@ class SCKAudioInputStreamTest : public PlatformTest {
 
   // Keep track of open SCStream related objects.
   // Must be __unsafe_unretained as they come from an NSInvocation.
-  API_AVAILABLE(macos(13.0))
+
   std::vector<__unsafe_unretained id<SCStreamDelegate>> stream_delegates_;
-  API_AVAILABLE(macos(13.0))
+
   std::vector<__unsafe_unretained id<SCStreamOutput>> stream_outputs_;
 
   // Number of currently playing streams; incremented on a successful start of
@@ -275,7 +262,7 @@ class MockAudioInputCallback : public AudioInputStream::AudioInputCallback {
                     base::TimeTicks capture_time,
                     double volume,
                     const AudioGlitchInfo& glitch_info));
-  MOCK_METHOD0(OnError, void());
+  MOCK_METHOD1(OnError, void(Error));
 };
 
 class FakeAudioInputCallback : public AudioInputStream::AudioInputCallback {
@@ -290,13 +277,12 @@ class FakeAudioInputCallback : public AudioInputStream::AudioInputCallback {
               double volume,
               const AudioGlitchInfo& glitch_info) override {
     EXPECT_GE(capture_time, base::TimeTicks());
-    for (int i = 0; i < src->channels(); i++) {
-      channel_data_.insert(channel_data_.end(), src->channel(i),
-                           src->channel(i) + src->frames());
+    for (auto channel : src->AllChannels()) {
+      std::ranges::copy(channel, std::back_inserter(channel_data_));
     }
   }
 
-  void OnError() override {}
+  void OnError(Error error_code) override {}
 
   std::vector<float> channel_data() const { return channel_data_; }
 
@@ -306,36 +292,33 @@ class FakeAudioInputCallback : public AudioInputStream::AudioInputCallback {
 
 // Test starting a single stream.
 TEST_F(SCKAudioInputStreamTest, StartOneStream) {
-  if (@available(macOS 13.0, *)) {
-    SetUpShareableContentMock(^(NSInvocation* invocation) {
-      ShareableContentSuccess(invocation);
-    });
+  SetUpShareableContentMock(^(NSInvocation* invocation) {
+    ShareableContentSuccess(invocation);
+  });
 
-    SCKAudioInputStream* stream = CreateAudioInputStream();
+  SCKAudioInputStream* stream = CreateAudioInputStream();
 
-    EXPECT_EQ(stream->Open(), AudioInputStream::OpenOutcome::kSuccess);
-    EXPECT_EQ(stream_delegates_.size(), 1u);
-    EXPECT_EQ(stream_outputs_.size(), 1u);
-    EXPECT_EQ(playing_stream_count_, 0);
+  EXPECT_EQ(stream->Open(), AudioInputStream::OpenOutcome::kSuccess);
+  EXPECT_EQ(stream_delegates_.size(), 1u);
+  EXPECT_EQ(stream_outputs_.size(), 1u);
+  EXPECT_EQ(playing_stream_count_, 0);
 
-    MockAudioInputCallback sink;
-    stream->Start(&sink);
-    EXPECT_EQ(playing_stream_count_, 1);
+  MockAudioInputCallback sink;
+  stream->Start(&sink);
+  EXPECT_EQ(playing_stream_count_, 1);
 
-    stream->Stop();
-    EXPECT_EQ(playing_stream_count_, 0);
+  stream->Stop();
+  EXPECT_EQ(playing_stream_count_, 0);
 
-    stream->Close();
-    EXPECT_TRUE(stream_outputs_.empty());
+  stream->Close();
+  EXPECT_TRUE(stream_outputs_.empty());
 
-    // Remove dangling references to stream delegates.
-    stream_delegates_.clear();
-  }
+  // Remove dangling references to stream delegates.
+  stream_delegates_.clear();
 }
 
 // Test opening and starting two streams simultaneously.
 TEST_F(SCKAudioInputStreamTest, StartTwoStreams) {
-  if (@available(macOS 13.0, *)) {
     SetUpShareableContentMock(^(NSInvocation* invocation) {
       ShareableContentSuccess(invocation);
     });
@@ -376,12 +359,10 @@ TEST_F(SCKAudioInputStreamTest, StartTwoStreams) {
 
     // Remove dangling references to stream delegates.
     stream_delegates_.clear();
-  }
 }
 
 // Test Start(), Stop(), Start(), Stop().
 TEST_F(SCKAudioInputStreamTest, StreamPausing) {
-  if (@available(macOS 13.0, *)) {
     SetUpShareableContentMock(^(NSInvocation* invocation) {
       ShareableContentSuccess(invocation);
     });
@@ -405,12 +386,10 @@ TEST_F(SCKAudioInputStreamTest, StreamPausing) {
 
     // Remove dangling references to stream delegates.
     stream_delegates_.clear();
-  }
 }
 
 // Test that the stream can only be opened once.
 TEST_F(SCKAudioInputStreamTest, DoubleOpenStart) {
-  if (@available(macOS 13.0, *)) {
     SetUpShareableContentMock(^(NSInvocation* invocation) {
       ShareableContentSuccess(invocation);
     });
@@ -431,12 +410,10 @@ TEST_F(SCKAudioInputStreamTest, DoubleOpenStart) {
 
     // Remove dangling references to stream delegates.
     stream_delegates_.clear();
-  }
 }
 
 // Test that Open() fails if shareable content enumeration times out.
 TEST_F(SCKAudioInputStreamTest, OpenTimeout) {
-  if (@available(macOS 13.0, *)) {
     SetUpShareableContentMock(^(NSInvocation* invocation){
         // Don't invoke the handler.
     });
@@ -449,12 +426,10 @@ TEST_F(SCKAudioInputStreamTest, OpenTimeout) {
     EXPECT_TRUE(stream_outputs_.empty());
     // Remove dangling references to stream delegates.
     stream_delegates_.clear();
-  }
 }
 
 // Test Open() with system screen capture permissions denied.
 TEST_F(SCKAudioInputStreamTest, ScreenCapturePermissionsDenied) {
-  if (@available(macOS 13.0, *)) {
     SetUpShareableContentMock(^(NSInvocation* invocation) {
       void (^handler)(SCShareableContent* _Nullable, NSError* _Nullable);
       [invocation getArgument:&handler atIndex:2];
@@ -476,13 +451,11 @@ TEST_F(SCKAudioInputStreamTest, ScreenCapturePermissionsDenied) {
     EXPECT_TRUE(stream_outputs_.empty());
     // Remove dangling references to stream delegates.
     stream_delegates_.clear();
-  }
 }
 
 // Test that no samples and errors are received by the callbacks after the
 // stream is stopped.
 TEST_F(SCKAudioInputStreamTest, NoStreamSamplesAfterStop) {
-  if (@available(macOS 13.0, *)) {
     SetUpShareableContentMock(^(NSInvocation* invocation) {
       ShareableContentSuccess(invocation);
     });
@@ -502,11 +475,9 @@ TEST_F(SCKAudioInputStreamTest, NoStreamSamplesAfterStop) {
     EXPECT_TRUE(stream_outputs_.empty());
     // Remove dangling references to stream delegates.
     stream_delegates_.clear();
-  }
 }
 
 TEST_F(SCKAudioInputStreamTest, CaptureSamples) {
-  if (@available(macOS 13.0, *)) {
     SetUpShareableContentMock(^(NSInvocation* invocation) {
       ShareableContentSuccess(invocation);
     });
@@ -538,11 +509,9 @@ TEST_F(SCKAudioInputStreamTest, CaptureSamples) {
     EXPECT_TRUE(stream_outputs_.empty());
     // Remove dangling references to stream delegates.
     stream_delegates_.clear();
-  }
 }
 
 TEST_F(SCKAudioInputStreamTest, ReportErrorToClient) {
-  if (@available(macOS 13.0, *)) {
     SetUpShareableContentMock(^(NSInvocation* invocation) {
       ShareableContentSuccess(invocation);
     });
@@ -552,7 +521,7 @@ TEST_F(SCKAudioInputStreamTest, ReportErrorToClient) {
     EXPECT_EQ(stream->Open(), AudioInputStream::OpenOutcome::kSuccess);
 
     MockAudioInputCallback sink;
-    EXPECT_CALL(sink, OnError()).Times(1);
+    EXPECT_CALL(sink, OnError(Error::kRuntimeError)).Times(1);
 
     stream->Start(&sink);
     SendError();
@@ -563,6 +532,5 @@ TEST_F(SCKAudioInputStreamTest, ReportErrorToClient) {
     // Remove dangling references to stream delegates.
     stream_delegates_.clear();
   }
-}
 
 }  // namespace media

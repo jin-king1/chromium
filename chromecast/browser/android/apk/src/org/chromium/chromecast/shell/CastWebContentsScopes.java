@@ -13,7 +13,6 @@ import android.widget.FrameLayout;
 import androidx.annotation.ColorInt;
 import androidx.annotation.Nullable;
 
-import org.chromium.base.supplier.Supplier;
 import org.chromium.chromecast.base.Observer;
 import org.chromium.components.embedder_support.view.ContentView;
 import org.chromium.components.embedder_support.view.ContentViewRenderView;
@@ -22,6 +21,8 @@ import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.base.ActivityWindowAndroid;
 import org.chromium.ui.base.IntentRequestTracker;
 import org.chromium.ui.base.WindowAndroid;
+
+import java.util.function.Supplier;
 
 class CastWebContentsScopes {
     interface WindowTokenProvider {
@@ -43,7 +44,7 @@ class CastWebContentsScopes {
                             /* listenToActivityState= */ true,
                             IntentRequestTracker.createFromActivity(activity),
                             /* insetObserver= */ null,
-                            /* trackOcclusion= */ true);
+                            /* occlusionTrackingAllowed= */ true);
                 },
                 backgroundColor);
     }
@@ -54,7 +55,7 @@ class CastWebContentsScopes {
         return onLayoutInternal(
                 activity,
                 layout,
-                () -> new WindowAndroid(activity, /* trackOcclusion= */ false),
+                () -> new WindowAndroid(activity, /* occlusionTrackingAllowed= */ false),
                 backgroundColor);
     }
 
@@ -68,7 +69,7 @@ class CastWebContentsScopes {
                 context,
                 layout,
                 () ->
-                        new WindowAndroid(context, /* trackOcclusion= */ false) {
+                        new WindowAndroid(context, /* occlusionTrackingAllowed= */ false) {
                             @Override
                             public IBinder getWindowToken() {
                                 return windowTokenProvider.provideWindowToken();
@@ -131,7 +132,7 @@ class CastWebContentsScopes {
 
     public static Observer<WebContents> withoutLayout(Context context) {
         return (WebContents webContents) -> {
-            WindowAndroid window = new WindowAndroid(context, /* trackOcclusion= */ false);
+            WindowAndroid window = new WindowAndroid(context, /* occlusionTrackingAllowed= */ false);
             ContentView contentView = ContentView.createContentView(context, webContents);
             WebContentsRegistry.initializeWebContents(webContents, contentView, window);
             // Enable display of current webContents.

@@ -5,6 +5,7 @@
 #ifndef COMPONENTS_INPUT_PASSTHROUGH_TOUCH_EVENT_QUEUE_H_
 #define COMPONENTS_INPUT_PASSTHROUGH_TOUCH_EVENT_QUEUE_H_
 
+#include <optional>
 #include <set>
 #include <string>
 
@@ -12,6 +13,7 @@
 #include "base/feature_list.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/time/time.h"
 #include "components/input/dispatch_to_renderer_callback.h"
@@ -19,6 +21,10 @@
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/mojom/input/input_event_result.mojom-shared.h"
 #include "ui/events/blink/blink_features.h"
+
+namespace base {
+class SequencedTaskRunner;
+} // namespace base
 
 namespace content {
 class InputRouterImplTestBase;
@@ -106,7 +112,7 @@ class COMPONENT_EXPORT(INPUT) PassthroughTouchEventQueue {
   void QueueEvent(const TouchEventWithLatencyInfo& event,
                   DispatchToRendererCallback& dispatch_callback);
 
-  void PrependTouchScrollNotification();
+  void PrependTouchScrollNotification(uint32_t primary_unique_touch_event_id);
 
   void ProcessTouchAck(blink::mojom::InputEventResultSource ack_source,
                        blink::mojom::InputEventResultState ack_result,
@@ -134,6 +140,8 @@ class COMPONENT_EXPORT(INPUT) PassthroughTouchEventQueue {
   // Empties the queue of touch events. This may result in any number of gesture
   // events being sent to the renderer.
   void FlushQueue();
+
+  void OnTouchActionFromMain();
 
  protected:
   void SendTouchCancelEventForTouchEvent(
@@ -229,6 +237,9 @@ class COMPONENT_EXPORT(INPUT) PassthroughTouchEventQueue {
   PreFilterResult FilterBeforeForwardingImpl(const blink::WebTouchEvent& event);
   bool ShouldFilterForEvent(const blink::WebTouchEvent& event);
 
+  void SetAckStateForPendingTouchMovesFromSequence(
+      uint32_t primary_unique_touch_event_id);
+
   void AckTouchEventToClient(
       const TouchEventWithLatencyInfo& acked_event,
       blink::mojom::InputEventResultSource ack_source,
@@ -270,6 +281,9 @@ class COMPONENT_EXPORT(INPUT) PassthroughTouchEventQueue {
 
   // Event is saved to compare pointer positions for new touchmove events.
   std::unique_ptr<blink::WebTouchEvent> last_sent_touchevent_;
+  // Whether any touchmove event in the current sequence has moved beyond the
+  // slop region.
+  bool any_touchmove_moved_beyond_slop_region_ = false;
 
   // Stores outstanding touches that have been sent to the renderer but have
   // not yet been ack'd by the renderer. The set is explicitly ordered based
@@ -278,11 +292,15 @@ class COMPONENT_EXPORT(INPUT) PassthroughTouchEventQueue {
            TouchEventWithLatencyInfoAndAckStateComparator>
       outstanding_touches_;
 
+  std::optional<uint32_t> curr_sequence_down_event_id_ = std::nullopt;
+
   // Whether we should allow events to bypass normal queue filter rules.
   const bool skip_touch_filter_;
   // What events types are allowed to bypass the filter.
   const std::string events_to_always_forward_;
   static const base::FeatureParam<std::string> kSkipTouchEventFilterType;
+
+  base::WeakPtrFactory<PassthroughTouchEventQueue> weak_ptr_factory_{this};
 };
 
 }  // namespace input

@@ -5,10 +5,10 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_WTF_TEXT_CHARACTER_VISITOR_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_WTF_TEXT_CHARACTER_VISITOR_H_
 
-namespace WTF {
+namespace blink {
 
-// Visits the characters of a WTF::String, WTF::AtomicString, StringView or
-// compatible type.
+// Visits the characters of a String, AtomicString, StringView or compatible
+// type.
 //
 // Intended to be used with a generic lambda or other functor overloaded to
 // handle either LChar* or UChar*. Reduces code duplication in many cases.
@@ -23,10 +23,10 @@ namespace WTF {
 //   if (string.IsNull())
 //     return false;
 //
-//   return WTF::VisitCharacters(string, [&](auto chars) {
+//   return VisitCharacters(string, [&](auto chars) {
 //     bool contains_space = false;
 //     for (auto ch : chars)
-//       contains_space |= IsASCIISpace(ch);
+//       contains_space |= IsAsciiSpace(ch);
 //     return contains_space;
 //   });
 //
@@ -38,6 +38,6 @@ decltype(auto) VisitCharacters(const StringType& string,
   return string.Is8Bit() ? functor(string.Span8()) : functor(string.Span16());
 }
 
-}  // namespace WTF
+}  // namespace blink
 
 #endif  // THIRD_PARTY_BLINK_RENDERER_PLATFORM_WTF_TEXT_CHARACTER_VISITOR_H_

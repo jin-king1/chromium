@@ -73,12 +73,14 @@ suite('CrActionMenu', function() {
   }
 
   test('open-changed event fires', async function() {
-    let whenFired = eventToPromise('open-changed', menu);
+    let whenFired =
+        eventToPromise<CustomEvent<{value: boolean}>>('open-changed', menu);
     menu.showAt(dots);
     let event = await whenFired;
     assertTrue(event.detail.value);
 
-    whenFired = eventToPromise('open-changed', menu);
+    whenFired =
+        eventToPromise<CustomEvent<{value: boolean}>>('open-changed', menu);
     menu.close();
     event = await whenFired;
     assertFalse(event.detail.value);
@@ -246,6 +248,32 @@ suite('CrActionMenu', function() {
     assertFalse(dialog.open);
   });
 
+  test('auto-close on focusout', function() {
+    menu.autoCloseOnFocusout = true;
+    menu.showAt(dots);
+    assertTrue(menu.open);
+
+    // Focus out to an external element.
+    menu.dispatchEvent(new FocusEvent('focusout', {
+      relatedTarget: dots,
+      bubbles: true,
+      composed: true,
+    }));
+    assertFalse(menu.open);
+
+    // Reset and test with autoCloseOnFocusout = false.
+    menu.autoCloseOnFocusout = false;
+    menu.showAt(dots);
+    assertTrue(menu.open);
+
+    menu.dispatchEvent(new FocusEvent('focusout', {
+      relatedTarget: dots,
+      bubbles: true,
+      composed: true,
+    }));
+    assertTrue(menu.open);
+  });
+
   /** @param key The key to use for closing. */
   function testFocusAfterClosing(key: string): Promise<void> {
     return new Promise<void>(function(resolve) {
@@ -351,6 +379,7 @@ suite('CrActionMenu', function() {
     assertTrue(dialog.open);
     assertEquals(`${config.left}px`, dialog.style.left);
     assertEquals(`${config.top}px`, dialog.style.top);
+    assertTrue(menu.getDialog().matches(':modal'));
     menu.close();
 
     // Align the menu's bottom-right to the anchor's top-left.
@@ -476,6 +505,7 @@ suite('CrActionMenu', function() {
     });
 
     // Still anchored at the right place after content size changes.
+    items[0]!.style.whiteSpace = 'nowrap';  // prevent text wrapping
     items[0]!.textContent = 'this is a long string to make menu wide';
   }
 
@@ -551,9 +581,9 @@ suite('CrActionMenu', function() {
     const containerTop = 10000;
     const containerWidth = 500;
 
-    class TestElement extends CrLitElement {
+    class TestDummyElement extends CrLitElement {
       static get is() {
-        return 'test-element';
+        return 'test-dummy';
       }
 
       static override get styles() {
@@ -592,22 +622,22 @@ suite('CrActionMenu', function() {
       }
     }
 
-    customElements.define(TestElement.is, TestElement);
+    customElements.define(TestDummyElement.is, TestDummyElement);
 
     setup(function() {
       document.body.scrollTop = 0;
       document.body.scrollLeft = 0;
       document.body.innerHTML = getTrustedHtml(`
         <style>
-          test-element {
+          test-dummy {
             height: ${bodyHeight}px;
             width: ${bodyWidth}px;
           }
         </style>
-        <test-element></test-element>`);
+        <test-dummy></test-dummy>`);
 
       const testElement =
-          document.body.querySelector<TestElement>('test-element')!;
+          document.body.querySelector<TestDummyElement>('test-dummy')!;
       menu = testElement.shadowRoot.querySelector('cr-action-menu')!;
       dialog = menu.getDialog();
       dots = testElement.shadowRoot.querySelector('#dots')!;
@@ -682,6 +712,54 @@ suite('CrActionMenu', function() {
       await new Promise(resolve => requestAnimationFrame(resolve));
       assertEquals(
           menu.querySelector('.dropdown-item'), getDeepActiveElement());
+    });
+  });
+
+  suite('NonModal', function() {
+    let menu: CrActionMenuElement;
+    let dots: HTMLElement;
+
+    setup(function() {
+      document.body.innerHTML = getTrustedStaticHtml`
+        <button id="dots">...</button>
+        <cr-action-menu non-modal>
+          <button class="dropdown-item">Item</button>
+        </cr-action-menu>
+      `;
+      menu = document.querySelector('cr-action-menu')!;
+      dots = document.querySelector('#dots')!;
+    });
+
+    test('verifies opening and positioning', function() {
+      // Use showAtPosition directly to test exact coordinates.
+      // showAt() adds alignment logic relative to the anchor (e.g. right-align)
+      // which makes asserting specific pixel values difficult.
+      menu.showAtPosition({top: 100, left: 200});
+
+      assertTrue(menu.getDialog().open);
+      assertEquals('100px', menu.getDialog().style.top);
+      assertEquals('200px', menu.getDialog().style.left);
+      assertFalse(menu.getDialog().matches(':modal'));
+    });
+
+    test('close on Tab key', async function() {
+      // showAsNonModal doesn't use the native dialog focus trap.
+      // We must verify our custom 'Tab' handler works.
+      menu.showAt(dots);
+      assertTrue(menu.getDialog().open);
+
+      const whenFired = eventToPromise('tabkeyclose', menu);
+      keyDownOn(menu, 0, [], 'Tab');
+
+      await whenFired;
+      assertFalse(menu.getDialog().open);
+    });
+
+    test('close on Escape key', function() {
+      menu.showAt(dots);
+      assertTrue(menu.getDialog().open);
+      keyDownOn(menu, 0, [], 'Escape');
+      assertFalse(menu.getDialog().open);
     });
   });
 });

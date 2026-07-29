@@ -12,28 +12,29 @@
 
 #include "base/auto_reset.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "chrome/browser/ui/views/toolbar/pinned_toolbar_actions_container_layout.h"
 #include "chrome/browser/ui/views/toolbar/pinned_toolbar_button_status_indicator.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_button.h"
 #include "ui/base/metadata/metadata_header_macros.h"
-#include "ui/menus/simple_menu_model.h"
 #include "ui/views/controls/button/button.h"
 #include "ui/views/controls/button/label_button.h"
 
 class Browser;
 class PinnedToolbarActionsContainer;
 
-class PinnedActionToolbarButton : public ToolbarButton,
-                                  public ui::SimpleMenuModel::Delegate {
+class PinnedActionToolbarButton : public ToolbarButton {
   METADATA_HEADER(PinnedActionToolbarButton, ToolbarButton)
 
  public:
-  PinnedActionToolbarButton(Browser* browser,
-                            actions::ActionId action_id,
-                            PinnedToolbarActionsContainer* container);
+  PinnedActionToolbarButton(
+      Browser* browser,
+      actions::ActionId action_id,
+      base::WeakPtr<PinnedToolbarActionsContainer> container);
   ~PinnedActionToolbarButton() override;
 
   actions::ActionId GetActionId() { return action_id_; }
+  Browser* browser() { return browser_; }
 
   void AddHighlight();
   void ResetHighlight();
@@ -43,7 +44,7 @@ class PinnedActionToolbarButton : public ToolbarButton,
       bool needs_delayed_destruction);
   void SetIconVisibility(bool is_visible);
   bool NeedsDelayedDestruction() { return needs_delayed_destruction_; }
-  void SetIsPinnable(bool is_pinnable) { is_pinnable_ = is_pinnable; }
+  void SetIsPermanent() { permanent_ = true; }
   void SetIsActionShowingBubble(bool showing_bubble) {
     is_action_showing_bubble_ = showing_bubble;
   }
@@ -55,6 +56,7 @@ class PinnedActionToolbarButton : public ToolbarButton,
   bool ShouldShowEphemerallyInToolbar();
   bool IsIconVisible() { return is_icon_visible_; }
   bool IsPinned() { return pinned_; }
+  bool IsPermanent() { return permanent_; }
   views::View* GetImageContainerView() { return image_container_view(); }
 
   bool ShouldSkipExecutionForTesting() { return skip_execution_; }
@@ -71,24 +73,15 @@ class PinnedActionToolbarButton : public ToolbarButton,
   bool OnMousePressed(const ui::MouseEvent& event) override;
   void OnMouseReleased(const ui::MouseEvent& event) override;
 
-  void UpdatePinnedStateForContextMenu();
   void UpdateStatusIndicator();
   void HideStatusIndicator();
   PinnedToolbarButtonStatusIndicator* GetStatusIndicatorForTesting() {
     return status_indicator_;
   }
 
-  // ui::SimpleMenuModel::Delegate:
-  bool IsItemForCommandIdDynamic(int command_id) const override;
-  std::u16string GetLabelForCommandId(int command_id) const override;
-  ui::ImageModel GetIconForCommandId(int command_id) const override;
-  void ExecuteCommand(int command_id, int event_flags) override;
-  bool IsCommandIdEnabled(int command_id) const override;
-
  private:
-  std::unique_ptr<ui::SimpleMenuModel> CreateMenuModel();
-
   void OnAnchorCountChanged(size_t anchor_count);
+  void UpdateFlexPriority();
 
   raw_ptr<Browser> browser_;
   raw_ptr<PinnedToolbarButtonStatusIndicator> status_indicator_;
@@ -100,7 +93,7 @@ class PinnedActionToolbarButton : public ToolbarButton,
   std::optional<Button::ScopedAnchorHighlight> anchor_higlight_;
   bool pinned_ = false;
   bool needs_delayed_destruction_ = false;
-  bool is_pinnable_ = false;
+  bool permanent_ = false;
   bool is_icon_visible_ = true;
   bool action_engaged_ = false;
   // Set when the action is currently showing an associated bubble.
@@ -115,7 +108,11 @@ class PinnedActionToolbarButton : public ToolbarButton,
   // is pinned or active. This is used in cases like when the recent download
   // button should be visible after a download.
   bool should_show_in_toolbar_ = false;
-  raw_ptr<PinnedToolbarActionsContainer> container_;
+
+  // Track the owning container using a weak pointer, because if this were a raw
+  // pointer, it would point to the wrong type during teardown (as child views
+  // aren't destructed until the `views::View` destructor).
+  base::WeakPtr<PinnedToolbarActionsContainer> container_;
 };
 
 class PinnedActionToolbarButtonActionViewInterface
@@ -137,5 +134,15 @@ class PinnedActionToolbarButtonActionViewInterface
 extern const ui::ClassProperty<
     std::underlying_type_t<PinnedToolbarActionFlexPriority>>* const
     kToolbarButtonFlexPriorityKey;
+
+using CreateCustomPinnedActionToolbarButtonCallback =
+    base::RepeatingCallback<std::unique_ptr<PinnedActionToolbarButton>(
+        Browser* browser,
+        actions::ActionId action_id,
+        base::WeakPtr<PinnedToolbarActionsContainer> container)>;
+
+extern const ui::ClassProperty<
+    CreateCustomPinnedActionToolbarButtonCallback*>* const
+    kCustomPinnedActionToolbarButtonFactoryKey;
 
 #endif  // CHROME_BROWSER_UI_VIEWS_TOOLBAR_PINNED_ACTION_TOOLBAR_BUTTON_H_

@@ -6,6 +6,7 @@
 #define SERVICES_DEVICE_COMPUTE_PRESSURE_VIRTUAL_PROBES_MANAGER_H_
 
 #include "base/containers/enum_set.h"
+#include "base/sequence_checker.h"
 #include "services/device/compute_pressure/probes_manager.h"
 #include "services/device/public/mojom/pressure_manager.mojom-forward.h"
 #include "services/device/public/mojom/pressure_update.mojom-shared.h"
@@ -42,10 +43,7 @@ class VirtualProbesManager final : public ProbesManager {
  private:
   SEQUENCE_CHECKER(sequence_checker_);
 
-  base::EnumSet<mojom::PressureSource,
-                mojom::PressureSource::kMinValue,
-                mojom::PressureSource::kMaxValue>
-      overridden_sources_;
+  base::EnumSet<mojom::PressureSource> overridden_sources_;
 };
 
 }  // namespace device

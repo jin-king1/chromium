@@ -7,7 +7,6 @@
 #include <cstdint>
 
 #include "base/check_is_test.h"
-#include "base/containers/contains.h"
 #include "base/containers/fixed_flat_set.h"
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_functions.h"
@@ -15,6 +14,7 @@
 #include "base/strings/stringprintf.h"
 #include "base/system/sys_info.h"
 #include "base/types/expected.h"
+#include "base/types/expected_macros.h"
 #include "chromeos/components/kiosk/kiosk_utils.h"
 #include "chromeos/components/magic_boost/public/cpp/magic_boost_state.h"
 #include "chromeos/components/quick_answers/public/cpp/quick_answers_prefs.h"
@@ -41,16 +41,21 @@ QuickAnswersState::Error ToQuickAnswersStateError(
   NOTREACHED() << "Unknown MagicBoostState::Error enum class value provided.";
 }
 
-quick_answers::prefs::ConsentStatus ToQuickAnswersPrefsConsentStatus(
-    chromeos::HMRConsentStatus consent_status) {
-  switch (consent_status) {
+quick_answers::prefs::ConsentStatus ToQuickAnswersStateConsentStatus(
+    bool magic_boost_enabled,
+    bool hmr_enabled,
+    chromeos::HMRConsentStatus hmr_consent_status) {
+  if (!magic_boost_enabled || !hmr_enabled) {
+    return quick_answers::prefs::ConsentStatus::kRejected;
+  }
+
+  switch (hmr_consent_status) {
     case chromeos::HMRConsentStatus::kUnset:
-      return quick_answers::prefs::ConsentStatus::kUnknown;
     case chromeos::HMRConsentStatus::kPendingDisclaimer:
-      // Quick Answers capability is available from `kPendingDisclaimer` state.
-      // See comments in `chromeos::HMRConsentStatus` for details of those
-      // states.
-      return quick_answers::prefs::ConsentStatus::kAccepted;
+      // Quick Answers capability is NOT available from `kPendingDisclaimer`
+      // state. See comments in `chromeos::HMRConsentStatus` for details of
+      // those states.
+      return quick_answers::prefs::ConsentStatus::kUnknown;
     case chromeos::HMRConsentStatus::kApproved:
       return quick_answers::prefs::ConsentStatus::kAccepted;
     case chromeos::HMRConsentStatus::kDeclined:
@@ -63,14 +68,6 @@ quick_answers::prefs::ConsentStatus ToQuickAnswersPrefsConsentStatus(
 base::expected<bool, QuickAnswersState::Error> ToQuickAnswersStateIsEnabled(
     base::expected<bool, chromeos::MagicBoostState::Error> is_enabled) {
   return is_enabled.transform_error(&ToQuickAnswersStateError);
-}
-
-base::expected<quick_answers::prefs::ConsentStatus, QuickAnswersState::Error>
-ToQuickAnswersStateConsentStatus(
-    base::expected<chromeos::HMRConsentStatus, chromeos::MagicBoostState::Error>
-        consent_status) {
-  return consent_status.transform_error(&ToQuickAnswersStateError)
-      .transform(&ToQuickAnswersPrefsConsentStatus);
 }
 
 }  // namespace
@@ -186,15 +183,9 @@ void QuickAnswersState::RemoveObserver(QuickAnswersStateObserver* observer) {
   observers_.RemoveObserver(observer);
 }
 
-void QuickAnswersState::OnMagicBoostEnabledUpdated(bool enabled) {
-  // MagicBoost's availability check includes an async operation. It can return
-  // false for a short period even if a user/device is eligible.
-  // `MagicBoostState` does not have an interface to allow clients to listen
-  // availability change. As a workaround, we are currently using
-  // `OnMagicBoostEnabled` as a signal. See
-  // `SearchSection::OnMagicBoostEnabledUpdated` as an example.
-  // TODO(b/383612536): allow clients to observe MagicBoostState availability
-  // change
+void QuickAnswersState::OnUserEligibleForGenAIFeaturesUpdated(bool eligible) {
+  // Gen-AI features' eligibility check includes an async operation. It can
+  // return false for a short period even if a user/device is eligible.
   MaybeNotifyFeatureTypeChanged();
 }
 
@@ -244,7 +235,7 @@ bool QuickAnswersState::ShouldUseQuickAnswersTextAnnotator() {
          use_text_annotator_for_testing_;
 }
 
-bool QuickAnswersState::IsSupportedLanguage(const std::string& language) const {
+bool QuickAnswersState::IsSupportedLanguage(std::string_view language) const {
   return kSupportedLanguages.contains(language);
 }
 
@@ -257,9 +248,24 @@ QuickAnswersState::GetFeatureTypeExpected() const {
     return base::unexpected(QuickAnswersState::Error::kUninitialized);
   }
 
-  return magic_boost_state->IsMagicBoostAvailable()
-             ? QuickAnswersState::FeatureType::kHmr
-             : QuickAnswersState::FeatureType::kQuickAnswers;
+  return magic_boost_state->is_user_eligible_for_genai_features()
+      .transform([](bool available) {
+        if (available) {
+          return QuickAnswersState::FeatureType::kHmr;
+        } else {
+          return QuickAnswersState::FeatureType::kQuickAnswers;
+        }
+      })
+      .transform_error([](chromeos::MagicBoostState::Error error) {
+        // Use `switch` statement as it gets a compile error when
+        // `MagicBoostState::Error` enum class value added.
+        switch (error) {
+          case chromeos::MagicBoostState::Error::kUninitialized:
+            return QuickAnswersState::Error::kUninitialized;
+        }
+        CHECK(false)
+            << "Unknown MagicBoostState::Error enum class value provided.";
+      });
 }
 
 base::expected<bool, QuickAnswersState::Error>
@@ -347,13 +353,26 @@ QuickAnswersState::GetConsentStatusExpectedAs(
         return base::unexpected(QuickAnswersState::Error::kUninitialized);
       }
 
-      return ToQuickAnswersStateConsentStatus(
-          magic_boost_state->hmr_consent_status());
+      ASSIGN_OR_RETURN(bool magic_boost_enabled_value,
+                       magic_boost_state->magic_boost_enabled(),
+                       &ToQuickAnswersStateError);
+      ASSIGN_OR_RETURN(bool hmr_enabled_value, magic_boost_state->hmr_enabled(),
+                       &ToQuickAnswersStateError);
+      ASSIGN_OR_RETURN(chromeos::HMRConsentStatus hmr_consent_status_value,
+                       magic_boost_state->hmr_consent_status(),
+                       &ToQuickAnswersStateError);
+
+      return ToQuickAnswersStateConsentStatus(magic_boost_enabled_value,
+                                              hmr_enabled_value,
+                                              hmr_consent_status_value);
     }
     case QuickAnswersState::FeatureType::kQuickAnswers: {
       return quick_answers_consent_status_;
     }
   }
+
+  NOTREACHED() << "Invalid FeatureType provided: "
+               << static_cast<int>(feature_type);
 }
 
 base::expected<bool, QuickAnswersState::Error>

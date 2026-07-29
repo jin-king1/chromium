@@ -14,14 +14,18 @@
 #include "content/browser/speech/tts_controller_impl.h"
 #include "content/public/browser/tts_utterance.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/color/color_id.h"
 #include "ui/views/background.h"
+#include "ui/views/border.h"
 #include "ui/views/controls/button/button.h"
 #include "ui/views/controls/button/image_button.h"
 #include "ui/views/controls/separator.h"
 #include "ui/views/layout/box_layout_view.h"
 #include "ui/views/layout/flex_layout.h"
 #include "ui/views/layout/flex_layout_view.h"
+#include "ui/views/layout/layout_provider.h"
+#include "ui/views/metadata/view_factory.h"
 
 namespace {
 
@@ -74,10 +78,6 @@ void QuickAnswersUtteranceEventDelegate::OnTtsEvent(
           quick_answers::TtsEngineEvent::TTS_EVENT_OTHER);
       break;
   }
-
-  if (utterance->IsFinished()) {
-    delete this;
-  }
 }
 
 gfx::FontList GetFontList(TypographyToken token) {
@@ -111,9 +111,13 @@ const gfx::VectorIcon& GetResultTypeIcon(ResultType result_type) {
     case ResultType::kDefinitionResult:
       return chromeos::kDictionaryIcon;
     case ResultType::kTranslationResult:
-      return omnibox::kAnswerTranslationIcon;
+      return features::IsRoundedIconsEnabled()
+                 ? omnibox::kTranslateIcon
+                 : omnibox::kAnswerTranslationOldIcon;
     case ResultType::kUnitConversionResult:
-      return omnibox::kAnswerCalculatorIcon;
+      return features::IsRoundedIconsEnabled()
+                 ? omnibox::kEqualIcon
+                 : omnibox::kAnswerCalculatorOldIcon;
     default:
       return omnibox::kAnswerDefaultIcon;
   }
@@ -203,19 +207,17 @@ std::unique_ptr<views::ImageButton> CreateImageButtonView(
 GURL GetDetailsUrlForQuery(const std::string& query) {
   // TODO(b/240619915): Refactor so that we can access the request metadata
   // instead of just the query itself.
-  if (base::StartsWith(query, kTranslationQueryPrefix)) {
-    auto query_text = base::EscapeUrlEncodedData(
-        query.substr(strlen(kTranslationQueryPrefix)), /*use_plus=*/true);
-    auto device_language =
-        l10n_util::GetLanguage(QuickAnswersState::Get()->application_locale());
-    auto translate_url =
-        base::StringPrintf(kGoogleTranslateUrlTemplate, device_language.c_str(),
-                           query_text.c_str());
-    return GURL(translate_url);
-  } else {
+  auto remainder = base::RemovePrefix(query, kTranslationQueryPrefix);
+  if (!remainder) {
     return GURL(kGoogleSearchUrlPrefix +
                 base::EscapeUrlEncodedData(query, /*use_plus=*/true));
   }
+  auto query_text = base::EscapeUrlEncodedData(*remainder, /*use_plus=*/true);
+  auto device_language =
+      l10n_util::GetLanguage(QuickAnswersState::Get()->application_locale());
+  auto translate_url = base::StringPrintf(kGoogleTranslateUrlTemplate,
+                                          device_language, query_text);
+  return GURL(translate_url);
 }
 
 void GenerateTTSAudio(content::BrowserContext* browser_context,
@@ -233,9 +235,47 @@ void GenerateTTSAudio(content::BrowserContext* browser_context,
   // TtsController will use the default TTS engine if the Google TTS engine
   // is not available.
   tts_utterance->SetEngineId(kGoogleTtsEngineId);
-  tts_utterance->SetEventDelegate(new QuickAnswersUtteranceEventDelegate());
+  tts_utterance->SetEventDelegate(
+      std::make_unique<QuickAnswersUtteranceEventDelegate>());
 
   tts_controller->SpeakOrEnqueue(std::move(tts_utterance));
+}
+
+const gfx::Insets GetMainViewInsets(Design design) {
+  switch (design) {
+    case Design::kCurrent:
+      return kMainViewInsets;
+    case Design::kRefresh:
+    case Design::kMagicBoost:
+      return gfx::Insets::TLBR(12, 16, 16, 16);
+  }
+
+  NOTREACHED() << "Invalid design enum value provided";
+}
+
+const gfx::Insets GetButtonsViewInsets(Design design) {
+  switch (design) {
+    case Design::kCurrent:
+      return gfx::Insets(kButtonsViewMarginDip);
+    case Design::kRefresh:
+    case Design::kMagicBoost:
+      // Buttons view is rendered as a layer on top of main view. For `kRefresh`
+      // and `kMagicBoost`, they share the same insets.
+      return GetMainViewInsets(design);
+  }
+
+  NOTREACHED() << "Invalid design enum value provided";
+}
+
+// TODO: crbug.com/340629098 - A temporary solution until buttons view is merged
+// into headers. See another comment for buttons view in
+// `QuickAnswersView::QuickAnswersView` about details.
+int GetButtonsViewOcclusion(Design design) {
+  gfx::Insets insets_icon_button =
+      views::LayoutProvider::Get()->GetInsetsMetric(
+          views::InsetsMetric::INSETS_ICON_BUTTON);
+  return insets_icon_button.left() + kGoogleIconSizeDip +
+         insets_icon_button.right() + GetButtonsViewInsets(design).right();
 }
 
 }  // namespace quick_answers

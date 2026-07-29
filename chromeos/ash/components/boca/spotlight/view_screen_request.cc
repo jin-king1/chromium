@@ -4,13 +4,11 @@
 
 #include "chromeos/ash/components/boca/spotlight/view_screen_request.h"
 
-// Copyright 2024 The Chromium Authors
-// Use of this source code is governed by a BSD-style license that can be
-// found in the LICENSE file.
-
+#include <optional>
 #include <string>
 
 #include "base/json/json_writer.h"
+#include "base/strings/string_util.h"
 #include "base/types/expected.h"
 #include "base/values.h"
 #include "chromeos/ash/components/boca/session_api/constants.h"
@@ -27,17 +25,21 @@ bool ParseResponse(std::string json) {
 }
 }  // namespace
 
-ViewScreenParam::ViewScreenParam(std::string teacher_gaia_id_param,
-                                 std::string teacher_device_id_param,
-                                 std::string student_gaia_id_param,
-                                 std::string student_device_id_param)
+ViewScreenParam::ViewScreenParam(
+    std::string teacher_gaia_id_param,
+    std::string teacher_device_id_param,
+    std::optional<std::string> teacher_device_robot_id_param,
+    std::string student_gaia_id_param,
+    std::string student_device_id_param)
     : teacher_gaia_id(teacher_gaia_id_param),
       teacher_device_id(teacher_device_id_param),
+      teacher_device_robot_id(teacher_device_robot_id_param),
       student_gaia_id(student_gaia_id_param),
       student_device_id(student_device_id_param) {}
 ViewScreenParam::ViewScreenParam(ViewScreenParam&& param)
     : teacher_gaia_id(std::move(param.teacher_gaia_id)),
       teacher_device_id(std::move(param.teacher_device_id)),
+      teacher_device_robot_id(std::move(param.teacher_device_robot_id)),
       student_gaia_id(std::move(param.student_gaia_id)),
       student_device_id(std::move(param.student_device_id)) {}
 ViewScreenParam& ViewScreenParam::ViewScreenParam::operator=(
@@ -83,29 +85,36 @@ google_apis::HttpRequestMethod ViewScreenRequest::GetRequestType() const {
 bool ViewScreenRequest::GetContentData(std::string* upload_content_type,
                                        std::string* upload_content) {
   *upload_content_type = boca::kContentTypeApplicationJson;
-  base::Value::Dict root;
-  base::Value::Dict teacher_info;
-  base::Value::Dict teacher;
+  base::DictValue root;
+  base::DictValue teacher_info;
+  base::DictValue teacher;
   teacher.Set(kGaiaId, view_screen_param_.teacher_gaia_id);
   teacher_info.Set(kUser, std::move(teacher));
 
-  base::Value::Dict teacher_device;
+  base::DictValue teacher_device;
   teacher_device.Set(kDeviceId, view_screen_param_.teacher_device_id);
   teacher_info.Set(kDeviceInfo, std::move(teacher_device));
 
+  if (view_screen_param_.teacher_device_robot_id.has_value()) {
+    base::DictValue teacher_service_account;
+    teacher_service_account.Set(
+        kEmail, view_screen_param_.teacher_device_robot_id.value());
+    teacher_info.Set(kServiceAccount, std::move(teacher_service_account));
+  }
+
   root.Set(kTeacherClientDevice, std::move(teacher_info));
 
-  base::Value::Dict host_device_info;
-  base::Value::Dict host;
+  base::DictValue host_device_info;
+  base::DictValue host;
   host.Set(kGaiaId, view_screen_param_.student_gaia_id);
   host_device_info.Set(kUser, std::move(host));
 
-  base::Value::Dict host_device;
+  base::DictValue host_device;
   host_device.Set(kDeviceId, view_screen_param_.student_device_id);
   host_device_info.Set(kDeviceInfo, std::move(host_device));
   root.Set(kHostDevice, std::move(host_device_info));
 
-  base::JSONWriter::Write(root, upload_content);
+  *upload_content = base::WriteJson(root).value_or("");
   return true;
 }
 

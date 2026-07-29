@@ -10,7 +10,6 @@
 #include "third_party/blink/renderer/bindings/core/v8/v8_typedefs.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_audio_sample_format.h"
 #include "third_party/blink/renderer/modules/modules_export.h"
-#include "third_party/blink/renderer/modules/webaudio/audio_buffer.h"
 #include "third_party/blink/renderer/modules/webcodecs/array_buffer_util.h"
 #include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
 
@@ -62,7 +61,8 @@ class MODULES_EXPORT AudioData final : public ScriptWrappable {
                    AudioDataCopyToOptions* copy_to_options);
 
   void CopyToInterleaved(base::span<uint8_t> dest,
-                         AudioDataCopyToOptions* copy_to_options);
+                         AudioDataCopyToOptions* copy_to_options,
+                         ExceptionState& exception_state);
 
   void CopyToPlanar(base::span<uint8_t> dest,
                     AudioDataCopyToOptions* copy_to_options,

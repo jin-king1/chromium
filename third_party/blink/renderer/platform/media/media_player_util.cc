@@ -13,6 +13,7 @@
 #include "base/metrics/histogram_macros.h"
 #include "base/task/bind_post_task.h"
 #include "media/base/media_log.h"
+#include "media/mojo/mojom/media_metrics_provider.mojom-blink.h"
 #include "third_party/blink/public/common/scheme_registry.h"
 #include "third_party/blink/public/platform/url_conversion.h"
 #include "third_party/blink/public/platform/web_media_player_encrypted_media_client.h"
@@ -110,7 +111,7 @@ void ReportMetrics(WebMediaPlayer::LoadType load_type,
 media::OutputDeviceStatusCB ConvertToOutputDeviceStatusCB(
     WebSetSinkIdCompleteCallback callback) {
   return base::BindPostTaskToCurrentDefault(
-      WTF::BindOnce(RunSetSinkIdCallback, std::move(callback)));
+      blink::BindOnce(RunSetSinkIdCallback, std::move(callback)));
 }
 
 }  // namespace blink

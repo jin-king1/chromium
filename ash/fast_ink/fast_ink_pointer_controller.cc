@@ -61,6 +61,15 @@ bool FastInkPointerController::CanStartNewGesture(ui::LocatedEvent* event) {
   if (IsPointerInExcludedWindows(event))
     return false;
 
+  // If the input device changes (e.g., from mouse to touch), we treat it as a
+  // new gesture. This ensures that if the previous gesture's view is being kept
+  // alive (e.g. fading out), it gets reset and reused for the new gesture.
+  bool is_touch_event = event->IsTouchEvent();
+  if (pointer_view_created_by_touch_.has_value() &&
+      pointer_view_created_by_touch_.value() != is_touch_event) {
+    return true;
+  }
+
   // 1) The stylus/finger is pressed.
   // 2) The stylus/finger is moving, but the pointer session has not started yet
   // (most likely because the preceding press event was consumed by another
@@ -95,7 +104,7 @@ bool FastInkPointerController::ShouldProcessEvent(ui::LocatedEvent* event) {
 }
 
 bool FastInkPointerController::IsEnabledForMouseEvent() const {
-  return !has_seen_stylus_;
+  return !has_seen_stylus_ && !pointer_view_created_by_touch_.value_or(false);
 }
 
 bool FastInkPointerController::IsPointerInExcludedWindows(
@@ -118,16 +127,22 @@ bool FastInkPointerController::MaybeCreatePointerView(
     bool can_start_new_gesture) {
   aura::Window* root_window =
       static_cast<aura::Window*>(event->target())->GetRootWindow();
+  views::View* pointer_view = GetPointerView();
+  const bool has_valid_view =
+      pointer_view && !pointer_view->GetWidget()->IsClosed() &&
+      pointer_view->GetWidget()->GetNativeWindow()->GetRootWindow() ==
+          root_window;
+
   if (can_start_new_gesture) {
-    DestroyPointerView();
-    CreatePointerView(presentation_delay_, root_window);
+    if (!has_valid_view) {
+      DestroyPointerView();
+      CreatePointerView(presentation_delay_, root_window);
+    } else {
+      ResetPointerView();
+    }
+    pointer_view_created_by_touch_ = event->IsTouchEvent();
   } else {
-    views::View* pointer_view = GetPointerView();
-    if (!pointer_view)
-      return false;
-    views::Widget* widget = pointer_view->GetWidget();
-    if (widget->IsClosed() ||
-        widget->GetNativeWindow()->GetRootWindow() != root_window) {
+    if (!has_valid_view) {
       // The pointer widget is no longer valid, end the current pointer session.
       DestroyPointerView();
       return false;
@@ -196,6 +211,14 @@ void FastInkPointerController::OnHasSeenStylusPrefChanged() {
   auto* local_state = pref_change_registrar_local_->prefs();
   has_seen_stylus_ =
       local_state && local_state->GetBoolean(prefs::kHasSeenStylus);
+}
+
+void FastInkPointerController::DestroyPointerView() {
+  pointer_view_created_by_touch_.reset();
+}
+
+void FastInkPointerController::ResetPointerView() {
+  pointer_view_created_by_touch_.reset();
 }
 
 }  // namespace ash

@@ -13,6 +13,7 @@
 #include "base/files/file.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/memory/raw_ptr.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
@@ -28,8 +29,8 @@
 #include "chrome/browser/ash/policy/dlp/test/mock_files_policy_notification_manager.h"
 #include "chrome/browser/notifications/notification_display_service_impl.h"
 #include "chrome/browser/notifications/notification_platform_bridge_delegator.h"
+#include "chrome/browser/ui/settings_window_manager_chromeos.h"
 #include "chrome/common/extensions/api/file_manager_private.h"
-#include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
@@ -37,6 +38,7 @@
 #include "chromeos/ash/components/disks/disk.h"
 #include "chromeos/ash/components/disks/fake_disk_mount_manager.h"
 #include "chromeos/ash/experiences/arc/arc_prefs.h"
+#include "components/prefs/pref_service.h"
 #include "content/public/test/browser_task_environment.h"
 #include "storage/browser/file_system/file_system_url.h"
 #include "storage/browser/quota/quota_manager_proxy.h"
@@ -181,6 +183,8 @@ class SystemNotificationManagerTest
  public:
   void SetUp() override {
     testing::Test::SetUp();
+    settings_window_manager_ =
+        std::make_unique<chrome::SettingsWindowManager>();
     ASSERT_TRUE(profile_manager_.SetUp());
     profile_ = profile_manager_.CreateTestingProfile("testing_profile");
     display_service_ = static_cast<NotificationDisplayServiceImpl*>(
@@ -199,6 +203,7 @@ class SystemNotificationManagerTest
         profile_,
         base::BindLambdaForTesting([this](content::BrowserContext* context) {
           return std::unique_ptr<KeyedService>(std::make_unique<VolumeManager>(
+              TestingBrowserProcess::GetGlobal()->local_state(),
               Profile::FromBrowserContext(context), nullptr, nullptr,
               &disk_mount_manager_, nullptr,
               VolumeManager::GetMtpStorageInfoCallback()));
@@ -225,6 +230,7 @@ class SystemNotificationManagerTest
     io_task_controller->RemoveObserver(this);
     profile_ = nullptr;
     profile_manager_.DeleteAllTestingProfiles();
+    settings_window_manager_.reset();
   }
 
   // IOTaskController::Observer override:
@@ -271,6 +277,7 @@ class SystemNotificationManagerTest
 
   content::BrowserTaskEnvironment task_environment_;
   ash::disks::FakeDiskMountManager disk_mount_manager_;
+  std::unique_ptr<chrome::SettingsWindowManager> settings_window_manager_;
   TestingProfileManager profile_manager_{TestingBrowserProcess::GetGlobal()};
   // Externally owned raw pointers:
   // profile_ is owned by TestingProfileManager.
@@ -654,7 +661,7 @@ constexpr char kDeviceFailNotificationId[] = "swa-device-fail-id";
 // In the notification generation logic there is a distinction
 // between parent and child volumes found by the volume is_parent()
 // method. Both parent and child unknown volume filesystems generate
-// the same nofication.
+// the same notification.
 TEST_F(SystemNotificationManagerTest, DeviceUnsupportedDefault) {
   base::HistogramTester histogram_tester;
   std::unique_ptr<Volume> volume(Volume::CreateForTesting(
@@ -1125,7 +1132,7 @@ std::u16string kGoogleDrive = u"Google Drive";
 
 // Tests the bulk-pinning notifications.
 TEST_F(SystemNotificationManagerTest, BulkPinningNotification) {
-  using List = base::Value::List;
+  using List = base::ListValue;
   const std::string_view event_name = "unused-event-name";
 
   // Event with no args should be ignored.

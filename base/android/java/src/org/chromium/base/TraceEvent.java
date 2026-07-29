@@ -9,7 +9,6 @@ import android.content.res.Resources.NotFoundException;
 import android.os.Looper;
 import android.os.MessageQueue;
 import android.os.SystemClock;
-import android.util.Log;
 import android.util.Printer;
 import android.view.View;
 import android.view.ViewGroup;
@@ -18,6 +17,7 @@ import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.task.PostTask;
@@ -50,12 +50,11 @@ public class TraceEvent implements AutoCloseable {
     private static volatile boolean sUiThreadReady;
     private static boolean sEventNameFilteringEnabled;
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     static class BasicLooperMonitor implements Printer {
-        @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
-        static final String LOOPER_TASK_PREFIX = "Looper.dispatch: ";
+        @VisibleForTesting static final String LOOPER_TASK_PREFIX = "Looper.dispatch: ";
 
-        @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+        @VisibleForTesting
         static final String FILTERED_EVENT_NAME = LOOPER_TASK_PREFIX + "EVENT_NAME_FILTERED";
 
         private static final int SHORTEST_LOG_PREFIX_LENGTH = "<<<<< Finished to ".length();
@@ -99,7 +98,7 @@ public class TraceEvent implements AutoCloseable {
             mCurrentTarget = null;
         }
 
-        @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+        @VisibleForTesting
         static String getTraceEventName(String line) {
             if (sEventNameFilteringEnabled) {
                 return FILTERED_EVENT_NAME;
@@ -132,7 +131,7 @@ public class TraceEvent implements AutoCloseable {
             if (end == -1) {
                 end = logLine.length();
             }
-            return start != -1 ? logLine.substring(start + 2, end) : "";
+            return start != -1 && (end - start) >= 2 ? logLine.substring(start + 2, end) : "";
         }
     }
 
@@ -320,8 +319,11 @@ public class TraceEvent implements AutoCloseable {
         // by other applications
         if (sEnabled != enabled) {
             sEnabled = enabled;
-            ThreadUtils.getUiThreadLooper()
-                    .setMessageLogging(enabled ? LooperMonitorHolder.sInstance : null);
+            // UI Thread may not be set by this point.
+            if (sUiThreadReady) {
+                ThreadUtils.getUiThreadLooper()
+                        .setMessageLogging(enabled ? LooperMonitorHolder.sInstance : null);
+            }
         }
 
         if (sEnabled) {
@@ -356,7 +358,10 @@ public class TraceEvent implements AutoCloseable {
             EarlyTraceEvent.maybeEnableInBrowserProcess();
         }
         if (EarlyTraceEvent.enabled()) {
-            ThreadUtils.getUiThreadLooper().setMessageLogging(LooperMonitorHolder.sInstance);
+            // UI Thread may not be set by this point.
+            if (sUiThreadReady) {
+                ThreadUtils.getUiThreadLooper().setMessageLogging(LooperMonitorHolder.sInstance);
+            }
         }
     }
 
@@ -369,6 +374,7 @@ public class TraceEvent implements AutoCloseable {
         sUiThreadReady = true;
         if (sEnabled) {
             ViewHierarchyDumper.updateEnabledState();
+            ThreadUtils.getUiThreadLooper().setMessageLogging(LooperMonitorHolder.sInstance);
         }
     }
 
@@ -469,14 +475,19 @@ public class TraceEvent implements AutoCloseable {
     /**
      * Records a 'WebView.Startup.CreationTime.StartChromiumLocked' event with the
      * 'android_webview.timeline' category starting at `startTimeMs` with the duration of
-     * `durationMs`. `callSite` and `fromUIThread` are set as the arguments for the event.
+     * `durationMs`. `startCallSite`, `finishCallSite` and `startupMode are set as the arguments for
+     * the event.
      */
     public static void webViewStartupStartChromiumLocked(
-            long startTimeMs, long durationMs, int callSite, boolean fromUIThread) {
+            long startTimeMs,
+            long durationMs,
+            int startCallSite,
+            int finishCallSite,
+            int startupMode) {
         if (sEnabled) {
             TraceEventJni.get()
                     .webViewStartupStartChromiumLocked(
-                            startTimeMs, durationMs, callSite, fromUIThread);
+                            startTimeMs, durationMs, startCallSite, finishCallSite, startupMode);
         }
     }
 
@@ -499,11 +510,10 @@ public class TraceEvent implements AutoCloseable {
         }
     }
 
-    /** Records 'Startup.TimeToFirstVisibleContent2' event with the 'interactions' category. */
-    public static void startupTimeToFirstVisibleContent2(
-            long activityId, long startTimeMs, long durationMs) {
+    /** Records 'Startup.Android.Cold.TimeToFirstFrame2' event with the 'startup' category. */
+    public static void startupTimeToFirstFrame2(long startTimeMs, long durationMs) {
         if (!sEnabled) return;
-        TraceEventJni.get().startupTimeToFirstVisibleContent2(activityId, startTimeMs, durationMs);
+        TraceEventJni.get().startupTimeToFirstFrame2(startTimeMs, durationMs);
     }
 
     /**
@@ -665,15 +675,15 @@ public class TraceEvent implements AutoCloseable {
 
         void initViewHierarchyDump(long id, Object list);
 
-        long startActivityDump(String name, long dumpProtoPtr);
+        long startActivityDump(@JniType("std::string") String name, long dumpProtoPtr);
 
         void addViewDump(
                 int id,
                 int parentId,
                 boolean isShown,
                 boolean isDirty,
-                String className,
-                String resourceName,
+                @JniType("std::string") String className,
+                @JniType("std::string") String resourceName,
                 long activityProtoPtr);
 
         void instantAndroidIPC(String name, long durMs);
@@ -690,13 +700,17 @@ public class TraceEvent implements AutoCloseable {
         void webViewStartupNotFirstInstance(long startTimeMs, long durationMs);
 
         void webViewStartupStartChromiumLocked(
-                long startTimeMs, long durationMs, int callSite, boolean fromUIThread);
+                long startTimeMs,
+                long durationMs,
+                int startCallSite,
+                int finishCallSite,
+                int startupMode);
 
         void startupActivityStart(long activityId, long startTimeMs);
 
         void startupLaunchCause(long activityId, long startTimeMs, int launchCause);
 
-        void startupTimeToFirstVisibleContent2(long activityId, long startTimeMs, long durationMs);
+        void startupTimeToFirstFrame2(long startTimeMs, long durationMs);
     }
 
     /**
@@ -711,6 +725,7 @@ public class TraceEvent implements AutoCloseable {
 
         // Convert the Object back into the ArrayList of ActivityInfo, lifetime of this object is
         // maintained by the Runnable that we are running in currently.
+        @SuppressWarnings("unchecked")
         ArrayList<ActivityInfo> activities = (ArrayList<ActivityInfo>) list;
 
         for (ActivityInfo activity : activities) {
@@ -764,13 +779,13 @@ public class TraceEvent implements AutoCloseable {
             mRes = res;
         }
 
-        private int mId;
-        private int mParentId;
-        private boolean mIsShown;
-        private boolean mIsDirty;
-        private String mClassName;
+        private final int mId;
+        private final int mParentId;
+        private final boolean mIsShown;
+        private final boolean mIsDirty;
+        private final String mClassName;
         // One can use mRes to resolve mId to a resource name.
-        private android.content.res.Resources mRes;
+        private final android.content.res.Resources mRes;
     }
 
     /**

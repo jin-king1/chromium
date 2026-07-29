@@ -10,21 +10,22 @@
 import 'chrome://resources/cr_elements/cr_button/cr_button.js';
 import 'chrome://resources/cr_elements/cr_link_row/cr_link_row.js';
 import './privacy_guide_fragment_shared.css.js';
+import '../../icons.html.js';
+import '../../privacy_icons.html.js';
 import '../../settings_shared.css.js';
 
 import {I18nMixin} from 'chrome://resources/cr_elements/i18n_mixin.js';
 import {WebUiListenerMixin} from 'chrome://resources/cr_elements/web_ui_listener_mixin.js';
+import {assert} from 'chrome://resources/js/assert.js';
 import {OpenWindowProxyImpl} from 'chrome://resources/js/open_window_proxy.js';
 import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
 import type {UpdateSyncStateEvent} from '../../clear_browsing_data_dialog/clear_browsing_data_browser_proxy.js';
 import {ClearBrowsingDataBrowserProxyImpl} from '../../clear_browsing_data_dialog/clear_browsing_data_browser_proxy.js';
-import {HatsBrowserProxyImpl, TrustSafetyInteraction} from '../../hats_browser_proxy.js';
 import {loadTimeData} from '../../i18n_setup.js';
 import type {MetricsBrowserProxy} from '../../metrics_browser_proxy.js';
 import {MetricsBrowserProxyImpl, PrivacyGuideInteractions, PrivacyGuideStepsEligibleAndReached} from '../../metrics_browser_proxy.js';
-import type {PrivacySandboxBrowserProxy} from '../../privacy_sandbox/privacy_sandbox_browser_proxy.js';
-import {PrivacySandboxBrowserProxyImpl} from '../../privacy_sandbox/privacy_sandbox_browser_proxy.js';
+import {HatsBrowserProxyImpl, TrustSafetyInteraction} from '../hats_browser_proxy.js';
 
 import {getTemplate} from './privacy_guide_completion_fragment.html.js';
 
@@ -49,50 +50,29 @@ export class PrivacyGuideCompletionFragmentElement extends
 
   static get properties() {
     return {
-      isNoLinkLayout: {
+      isNoLinkLayout_: {
         reflectToAttribute: true,
         type: Boolean,
-        computed: 'computeIsNoLinkLayout_(shouldShowWaa_,' +
-            'shouldShowPrivacySandbox_)',
-      },
-
-      subheader_: {
-        type: String,
-        computed: 'computeSubheader_(isNoLinkLayout)',
+        computed: 'computeIsNoLinkLayout_(shouldShowWaa_)',
       },
 
       shouldShowAiSettings_: {
         type: Boolean,
-        value: () =>
-            loadTimeData.getBoolean('enableAiSettingsInPrivacyGuide') &&
-            loadTimeData.getBoolean('showAdvancedFeaturesMainControl'),
-      },
-
-      shouldShowPrivacySandbox_: {
-        type: Boolean,
-        value: () => !loadTimeData.getBoolean('isPrivacySandboxRestricted') ||
-            loadTimeData.getBoolean('isPrivacySandboxRestrictedNoticeEnabled'),
+        value: () => loadTimeData.getBoolean('showAiPage'),
       },
 
       shouldShowWaa_: {
         type: Boolean,
         value: false,
       },
-
-      shouldShowV2AdPrivacySubLabel_: {
-        type: Boolean,
-        value: false,
-      },
     };
   }
 
-  private shouldShowPrivacySandbox_: boolean;
-  private shouldShowWaa_: boolean;
+  declare private isNoLinkLayout_: boolean;
+  declare private shouldShowAiSettings_: boolean;
+  declare private shouldShowWaa_: boolean;
   private metricsBrowserProxy_: MetricsBrowserProxy =
       MetricsBrowserProxyImpl.getInstance();
-  private shouldShowV2AdPrivacySubLabel_: boolean;
-  private privacySandboxBrowserProxy_: PrivacySandboxBrowserProxy =
-      PrivacySandboxBrowserProxyImpl.getInstance();
 
   override ready() {
     super.ready();
@@ -103,15 +83,13 @@ export class PrivacyGuideCompletionFragmentElement extends
         (event: UpdateSyncStateEvent) => this.updateWaaLink_(event.signedIn));
     ClearBrowsingDataBrowserProxyImpl.getInstance().getSyncState().then(
         (status: UpdateSyncStateEvent) => this.updateWaaLink_(status.signedIn));
-    this.privacySandboxBrowserProxy_
-        .shouldShowPrivacySandboxAdTopicsContentParity()
-        .then(state => {
-          this.shouldShowV2AdPrivacySubLabel_ = state;
-        });
   }
 
   override focus() {
-    this.shadowRoot!.querySelector<HTMLElement>('.headline')!.focus();
+    const header = this.shadowRoot!.querySelector<HTMLElement>(
+        '.welcome-completion-header-label');
+    assert(header);
+    header.focus();
   }
 
   private onViewEnterStart_() {
@@ -123,10 +101,10 @@ export class PrivacyGuideCompletionFragmentElement extends
   }
 
   private computeIsNoLinkLayout_() {
-    return !this.shouldShowWaa_ && !this.shouldShowPrivacySandbox_;
+    return !this.shouldShowWaa_;
   }
 
-  private computeSubheader_(): string {
+  private getSubheader_(): string {
     return this.computeIsNoLinkLayout_() ?
         this.i18n('privacyGuideCompletionCardSubHeaderNoLinks') :
         this.i18n('privacyGuideCompletionCardSubHeader');
@@ -153,19 +131,6 @@ export class PrivacyGuideCompletionFragmentElement extends
         new CustomEvent('close', {bubbles: true, composed: true}));
   }
 
-  private onPrivacySandboxClick_() {
-    this.metricsBrowserProxy_.recordPrivacyGuideEntryExitHistogram(
-        PrivacyGuideInteractions.PRIVACY_SANDBOX_COMPLETION_LINK);
-    this.metricsBrowserProxy_.recordAction(
-        'Settings.PrivacyGuide.CompletionPSClick');
-    // Create a MouseEvent directly to avoid Polymer failing to synthesise a
-    // click event if this function was called in response to a touch event.
-    // See crbug.com/1253883 for details.
-    // TODO(crbug.com/40162029): Replace this with an ordinary OpenWindowProxy call.
-    this.shadowRoot!.querySelector<HTMLAnchorElement>('#privacySandboxLink')!
-        .dispatchEvent(new MouseEvent('click'));
-  }
-
   private onAiRowClick_() {
     this.metricsBrowserProxy_.recordPrivacyGuideEntryExitHistogram(
         PrivacyGuideInteractions.AI_SETTINGS_COMPLETION_LINK);
@@ -184,13 +149,6 @@ export class PrivacyGuideCompletionFragmentElement extends
         'Settings.PrivacyGuide.CompletionSWAAClick');
     OpenWindowProxyImpl.getInstance().openUrl(
         loadTimeData.getString('activityControlsUrlInPrivacyGuide'));
-  }
-
-  private computePrivacySandboxRowSubLabel_(): string {
-    return this.i18n(
-        this.shouldShowV2AdPrivacySubLabel_ ?
-            'privacyGuideCompletionCardPrivacySandboxSubLabelAdTopics' :
-            'privacyGuideCompletionCardPrivacySandboxSubLabel');
   }
 }
 

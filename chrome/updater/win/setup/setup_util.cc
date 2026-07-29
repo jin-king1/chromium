@@ -20,6 +20,7 @@
 
 #include "base/check.h"
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
 #include "base/containers/flat_map.h"
 #include "base/files/file_path.h"
 #include "base/logging.h"
@@ -37,7 +38,7 @@
 #include "chrome/updater/app/server/win/updater_internal_idl.h"
 #include "chrome/updater/app/server/win/updater_legacy_idl.h"
 #include "chrome/updater/constants.h"
-#include "chrome/updater/updater_scope.h"
+#include "chrome/updater/get_updater_scope.h"
 #include "chrome/updater/util/util.h"
 #include "chrome/updater/util/win_util.h"
 #include "chrome/updater/win/task_scheduler.h"
@@ -84,9 +85,9 @@ void AddInstallComProgIdWorkItems(UpdaterScope scope,
 std::wstring GetTaskName(UpdaterScope scope) {
   scoped_refptr<TaskScheduler> task_scheduler =
       TaskScheduler::CreateInstance(scope);
-  return task_scheduler
-             ? task_scheduler->FindFirstTaskName(GetTaskNamePrefix(scope))
-             : std::wstring();
+  return task_scheduler ? task_scheduler->FindFirstTaskName(
+                              GetTaskNamePrefix(scope) + L"{")
+                        : std::wstring();
 }
 
 void UnregisterWakeTask(UpdaterScope scope) {
@@ -426,7 +427,7 @@ void AddComServiceWorkItems(const base::FilePath& com_service_path,
 
   const std::wstring language = base::UTF8ToWide(GetTagLanguage());
   list->AddWorkItem(new installer::InstallServiceWorkItem(
-      GetServiceName(internal_service).c_str(),
+      GetServiceName(internal_service),
       GetLocalizedString(internal_service
                              ? IDS_INTERNAL_UPDATER_SERVICE_DISPLAY_NAME_BASE
                              : IDS_UPDATER_SERVICE_DISPLAY_NAME_BASE,
@@ -448,7 +449,7 @@ void AddComServiceWorkItems(const base::FilePath& com_service_path,
 
 std::wstring GetProgIdForClsid(REFCLSID clsid) {
   auto clsid_comparator = [](REFCLSID a, REFCLSID b) {
-    return std::memcmp(&a, &b, sizeof(a)) < 0;
+    return UNSAFE_TODO(std::memcmp(&a, &b, sizeof(a))) < 0;
   };
 
   const base::flat_map<CLSID, std::wstring, decltype(clsid_comparator)>
@@ -622,7 +623,12 @@ std::wstring GetComTypeLibResourceIndex(REFIID iid) {
       {__uuidof(IProcessLauncher2System), kUpdaterLegacySystemIndex},
   };
   const auto index = kTypeLibIndexes.find(iid);
-  CHECK(index != kTypeLibIndexes.end()) << StringFromGuid(iid);
+  if (index == kTypeLibIndexes.end()) {
+    base::debug::Alias(&iid);
+    VLOG(1) << "index == kTypeLibIndexes.end() for interface: "
+            << StringFromGuid(iid);
+    CHECK(false) << StringFromGuid(iid);
+  }
   return index->second;
 }
 

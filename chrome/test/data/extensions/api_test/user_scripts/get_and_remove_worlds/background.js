@@ -2,20 +2,20 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import {waitForUserScriptsAPIAllowed} from '/_test_resources/test_util/user_script_test_util.js';
+
 const otherWorldId = 'some other id';
 
-const configForDefaultWorld =
-    {
-      csp: 'test csp',
-      messaging: true,
-    };
+const configForDefaultWorld = {
+  csp: 'test csp',
+  messaging: true,
+};
 
-const configForOtherWorld =
-    {
-      csp: 'another csp',
-      messaging: false,
-      worldId: otherWorldId,
-    };
+const configForOtherWorld = {
+  csp: 'another csp',
+  messaging: false,
+  worldId: otherWorldId,
+};
 
 function sortWorlds(worlds) {
   function worldIdOrDefault(id) {
@@ -30,6 +30,8 @@ function sortWorlds(worlds) {
 }
 
 chrome.test.runTests([
+  waitForUserScriptsAPIAllowed,
+
   async function noWorldsReturnedWhenNoneConfigured() {
     const worlds = await chrome.userScripts.getWorldConfigurations();
     chrome.test.assertEq([], worlds);
@@ -52,7 +54,7 @@ chrome.test.runTests([
   },
 
   async function emptyWorldIdMapsToDefaultWorld() {
-    let defaultWorldWithEmptyIdConfig = { ...configForDefaultWorld };
+    const defaultWorldWithEmptyIdConfig = {...configForDefaultWorld};
     defaultWorldWithEmptyIdConfig.worldId = '';
 
     // Assign a config for a world with ''. This will map to the default world

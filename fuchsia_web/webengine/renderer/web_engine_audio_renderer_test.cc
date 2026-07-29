@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "fuchsia_web/webengine/renderer/web_engine_audio_renderer.h"
 
 #include <fuchsia/media/audio/cpp/fidl_test_base.h>
@@ -15,6 +10,7 @@
 
 #include <optional>
 
+#include "base/compiler_specific.h"
 #include "base/containers/queue.h"
 #include "base/fuchsia/fuchsia_logging.h"
 #include "base/logging.h"
@@ -698,9 +694,10 @@ void WebEngineAudioRendererTestBase::TestPcmStream(
     size_t bytes_per_sample_input,
     fuchsia::media::AudioSampleFormat fuchsia_sample_format,
     size_t bytes_per_sample_output) {
-  media::AudioDecoderConfig config(
-      media::AudioCodec::kPCM, sample_format, media::CHANNEL_LAYOUT_STEREO,
-      kDefaultSampleRate, {}, media::EncryptionScheme::kUnencrypted);
+  media::AudioDecoderConfig config(media::AudioCodec::kPCM, sample_format,
+                                   media::ChannelLayoutConfig::Stereo(),
+                                   kDefaultSampleRate, {},
+                                   media::EncryptionScheme::kUnencrypted);
 
   demuxer_stream_ = std::make_unique<TestDemuxerStream>(config);
 
@@ -716,7 +713,7 @@ void WebEngineAudioRendererTestBase::TestPcmStream(
   buffer->set_timestamp(demuxer_stream_pos_);
   buffer->set_duration(kPacketDuration);
   for (size_t i = 0; i < input_buffer_size; ++i) {
-    buffer->writable_data()[i] = i;
+    UNSAFE_TODO(buffer->writable_data()[i]) = i;
   }
   demuxer_stream_->QueueReadResult(TestDemuxerStream::ReadResult(buffer));
 
@@ -758,9 +755,10 @@ class WebEngineAudioRendererTest
     auto encryption_scheme = GetParam().simulate_fuchsia_cdm
                                  ? media::EncryptionScheme::kCenc
                                  : media::EncryptionScheme::kUnencrypted;
-    return media::AudioDecoderConfig(
-        media::AudioCodec::kPCM, media::kSampleFormatF32,
-        media::CHANNEL_LAYOUT_MONO, kDefaultSampleRate, {}, encryption_scheme);
+    return media::AudioDecoderConfig(media::AudioCodec::kPCM,
+                                     media::kSampleFormatF32,
+                                     media::ChannelLayoutConfig::Mono(),
+                                     kDefaultSampleRate, {}, encryption_scheme);
   }
 };
 
@@ -915,9 +913,10 @@ class WebEngineAudioRendererConfgChangeTest
     auto encryption_scheme = GetParam().encrypted_head
                                  ? media::EncryptionScheme::kCenc
                                  : media::EncryptionScheme::kUnencrypted;
-    return media::AudioDecoderConfig(
-        media::AudioCodec::kPCM, media::kSampleFormatF32,
-        media::CHANNEL_LAYOUT_MONO, kDefaultSampleRate, {}, encryption_scheme);
+    return media::AudioDecoderConfig(media::AudioCodec::kPCM,
+                                     media::kSampleFormatF32,
+                                     media::ChannelLayoutConfig::Mono(),
+                                     kDefaultSampleRate, {}, encryption_scheme);
   }
 };
 
@@ -950,7 +949,7 @@ TEST_P(WebEngineAudioRendererConfgChangeTest, ConfigChange) {
                                    : media::EncryptionScheme::kUnencrypted;
   media::AudioDecoderConfig updated_config(
       media::AudioCodec::kOpus, media::kSampleFormatF32,
-      media::CHANNEL_LAYOUT_STEREO, kNewSampleRate, kArbitraryExtraData,
+      media::ChannelLayoutConfig::Stereo(), kNewSampleRate, kArbitraryExtraData,
       mew_encryption_scheme);
 
   demuxer_stream_->QueueReadResult(

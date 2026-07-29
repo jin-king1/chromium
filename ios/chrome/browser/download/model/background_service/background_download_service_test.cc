@@ -16,6 +16,7 @@
 #include "components/download/public/background_service/test/mock_client.h"
 #include "ios/chrome/browser/download/model/background_service/background_download_service_factory.h"
 #include "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
+#include "ios/web/public/test/web_task_environment.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -143,17 +144,18 @@ class BackgroundDownloadServiceTest
   // service. A pointer to the FakeClient object is kept in the test fixture
   // instance to allow test cases to manipulate it.
   std::unique_ptr<KeyedService> MakeBackgroundDowloadService(
-      web::BrowserState* browser_state) {
+      ProfileIOS* profile) {
     DCHECK(!fake_client_);
     auto fake_client = std::make_unique<NiceMock<FakeClient>>();
     fake_client_ = fake_client.get();
     auto clients = std::make_unique<download::DownloadClientMap>();
     clients->emplace(download::DownloadClient::TEST, std::move(fake_client));
     return BackgroundDownloadServiceFactory::GetInstance()
-        ->BuildServiceWithClients(browser_state, std::move(clients));
+        ->BuildServiceWithClients(profile, std::move(clients));
   }
 
  private:
+  web::WebTaskEnvironment task_environment_;
   std::unique_ptr<ProfileIOS> profile_;
   raw_ptr<download::BackgroundDownloadService> service_;
   raw_ptr<FakeClient> fake_client_ = nullptr;

@@ -14,8 +14,9 @@
 #include "base/i18n/time_formatting.h"
 #include "base/strings/utf_string_conversions.h"
 #include "components/history_clusters/core/history_clusters_util.h"
-#include "components/history_embeddings/history_embeddings_features.h"
-#include "components/history_embeddings/history_embeddings_service.h"
+#include "components/history_embeddings/core/history_embeddings_features.h"
+#include "components/history_embeddings/core/history_embeddings_search.h"
+#include "components/omnibox/browser/autocomplete_enums.h"
 #include "components/omnibox/browser/autocomplete_input.h"
 #include "components/omnibox/browser/autocomplete_match.h"
 #include "components/omnibox/browser/autocomplete_match_classification.h"
@@ -84,29 +85,28 @@ void HistoryEmbeddingsProvider::Start(const AutocompleteInput& input,
     return;
   }
 
-  history_embeddings::HistoryEmbeddingsService* service =
-      client()->GetHistoryEmbeddingsService();
-  CHECK(service);
+  history_embeddings::HistoryEmbeddingsSearch* search =
+      client()->GetHistoryEmbeddingsSearch();
+  CHECK(search);
   done_ = false;
   client()->GetOmniboxTriggeredFeatureService()->FeatureTriggered(
       metrics::OmniboxEventProto_Feature_HISTORY_EMBEDDINGS_FEATURE);
-  service->Search(
+  search->Search(
       nullptr, base::UTF16ToUTF8(input_.text()), {}, provider_max_matches_,
-      /*skip_answering=*/false,
+      /*skip_answering=*/false, /*url_id_filter=*/{},
       base::BindRepeating(&HistoryEmbeddingsProvider::OnReceivedSearchResult,
                           weak_factory_.GetWeakPtr()));
 }
 
-void HistoryEmbeddingsProvider::Stop(bool clear_cached_results,
-                                     bool due_to_user_inactivity) {
+void HistoryEmbeddingsProvider::Stop(AutocompleteStopReason stop_reason) {
   // TODO(crbug.com/364303536): Ignore the stop timer since we know answers take
-  //   longer than 1500ms to generate. This inadvertently also ignores stops
-  //   caused by user action. A real fix is for providers to inform the
-  //   controller that they expect a slow response and the controller to
-  //   accommodate it by updating its stop, debounce, and cache timers'
-  //   behaviors.
-  if (!due_to_user_inactivity && !done_) {
-    done_ = true;
+  //   longer than 1500ms to generate.
+  if (stop_reason == AutocompleteStopReason::kInactivity) {
+    return;
+  }
+
+  // Erase the abandoned placeholder answer.
+  if (!done_) {
     size_t erased_count = std::erase_if(matches_, [&](const auto& match) {
       return match.type == AutocompleteMatchType::HISTORY_EMBEDDINGS_ANSWER;
     });
@@ -114,6 +114,8 @@ void HistoryEmbeddingsProvider::Stop(bool clear_cached_results,
     if (erased_count)
       NotifyListeners(!matches_.empty());
   }
+
+  AutocompleteProvider::Stop(stop_reason);
 
   // TODO(b/333770460): Once `HistoryEmbeddingsService` has a stop API, we
   //   should call it here.
@@ -142,7 +144,7 @@ void HistoryEmbeddingsProvider::OnReceivedSearchResult(
 
   bool answers_enabled =
       history_embeddings::GetFeatureParameters().answers_in_omnibox_scoped &&
-      input_.InKeywordMode();
+      input_.in_keyword_mode();
   if (answers_enabled) {
     auto optional_match = CreateAnswerMatch(
         search_result.answerer_result,

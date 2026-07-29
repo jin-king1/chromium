@@ -18,6 +18,7 @@ import androidx.annotation.OptIn;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.LargeTest;
 import androidx.test.filters.MediumTest;
+import androidx.test.filters.SmallTest;
 
 import org.jni_zero.JNINamespace;
 import org.jni_zero.NativeMethods;
@@ -33,9 +34,13 @@ import org.chromium.base.Log;
 import org.chromium.base.PathUtils;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.DoNotBatch;
-import org.chromium.net.CronetTestRule.CronetImplementation;
+import org.chromium.net.CronetTestFramework.CronetImplementation;
+import org.chromium.net.CronetTestRule.BoolFlag;
 import org.chromium.net.CronetTestRule.DisableAutomaticNetLog;
+import org.chromium.net.CronetTestRule.Flags;
 import org.chromium.net.CronetTestRule.IgnoreFor;
+import org.chromium.net.CronetTestRule.RequiresMinAndroidApi;
+import org.chromium.net.CronetTestRule.StringFlag;
 import org.chromium.net.impl.CronetUrlRequestContext;
 
 import java.io.File;
@@ -43,6 +48,7 @@ import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.CountDownLatch;
 
 /** Tests for experimental options. */
@@ -65,6 +71,20 @@ public class ExperimentalOptionsTest {
 
     private static final String TAG = ExperimentalOptionsTest.class.getSimpleName();
     private CountDownLatch mHangingUrlLatch;
+
+    private static final String OVERRIDE_CONNECTION_OPTIONS =
+            "ChromiumBaseFeature_OverrideConnectionOptions";
+    private static final String CONNECTION_OPTIONS_VALUE_ON =
+            OVERRIDE_CONNECTION_OPTIONS + "_PARAM_ForceOn";
+    private static final String CONNECTION_OPTIONS_VALUE_OFF =
+            OVERRIDE_CONNECTION_OPTIONS + "_PARAM_ForceOff";
+
+    private static final String OVERRIDE_CLIENT_CONNECTION_OPTIONS =
+            "ChromiumBaseFeature_OverrideClientConnectionOptions";
+    private static final String CLIENT_CONNECTION_OPTIONS_VALUE_ON =
+            OVERRIDE_CLIENT_CONNECTION_OPTIONS + "_PARAM_ForceOn";
+    private static final String CLIENT_CONNECTION_OPTIONS_VALUE_OFF =
+            OVERRIDE_CLIENT_CONNECTION_OPTIONS + "_PARAM_ForceOff";
 
     @Before
     public void setUp() throws Exception {
@@ -179,7 +199,7 @@ public class ExperimentalOptionsTest {
             fileInputStream = new FileInputStream(file);
             byte[] data = new byte[(int) file.length()];
             fileInputStream.read(data);
-            String actual = new String(data, "UTF-8");
+            String actual = new String(data, StandardCharsets.UTF_8);
             boolean contains = actual.contains(content);
             if (!contains) {
                 Log.i(TAG, "file content [%s]", actual);
@@ -202,9 +222,10 @@ public class ExperimentalOptionsTest {
     // Tests that basic Cronet functionality works when host cache persistence is enabled, and that
     // persistence works.
     public void testHostCachePersistence() throws Exception {
-        NativeTestServer.startNativeTestServer(mTestRule.getTestFramework().getContext());
-
-        String realUrl = NativeTestServer.getFileURL("/echo?status=200");
+        NativeTestServer nativeTestServer =
+                NativeTestServer.createNativeTestServer(mTestRule.getTestFramework().getContext());
+        nativeTestServer.start();
+        String realUrl = nativeTestServer.getFileURL("/echo?status=200");
         URL javaUrl = new URL(realUrl);
         String realHost = javaUrl.getHost();
         int realPort = javaUrl.getPort();
@@ -256,7 +277,7 @@ public class ExperimentalOptionsTest {
         callback.blockForDone();
         assertThat(callback.getResponseInfoWithChecks()).hasHttpStatusCodeThat().isEqualTo(200);
         context.shutdown();
-        NativeTestServer.shutdownNativeTestServer();
+        nativeTestServer.close();
     }
 
     @Test
@@ -264,22 +285,281 @@ public class ExperimentalOptionsTest {
     // Experimental options should be specified through a JSON compliant string. When that is not
     // the case building a Cronet engine should fail.
     public void testWrongJsonExperimentalOptions() throws Exception {
+        CronetTestFramework cronetTestFramework = mTestRule.getTestFramework();
         IllegalArgumentException e =
                 assertThrows(
                         IllegalArgumentException.class,
                         () ->
-                                mTestRule
-                                        .getTestFramework()
-                                        .applyEngineBuilderPatch(
-                                                (builder) ->
-                                                        builder.setExperimentalOptions(
-                                                                "Not a serialized JSON object")));
+                                cronetTestFramework.applyEngineBuilderPatch(
+                                        builder ->
+                                                builder.setExperimentalOptions(
+                                                        "Not a serialized JSON object")));
         // The top level exception is a side effect of using applyEngineBuilderPatch
         assertThat(e).hasCauseThat().isInstanceOf(IllegalArgumentException.class);
         assertThat(e)
                 .hasCauseThat()
                 .hasMessageThat()
                 .contains("Experimental options parsing failed");
+    }
+
+    @Test
+    @SmallTest
+    @Flags(boolFlags = {@BoolFlag(name = OVERRIDE_CLIENT_CONNECTION_OPTIONS, value = false)})
+    @RequiresMinAndroidApi(Build.VERSION_CODES.N)
+    public void testFetchingClientConnectionOptionsWithFlagDisabledHasNoEffect() {
+        mTestRule
+                .getTestFramework()
+                .applyEngineBuilderPatch(
+                        (builder) -> {
+                            builder.setQuicOptions(
+                                    QuicOptions.builder()
+                                            .addClientConnectionOption("ABCD")
+                                            .build());
+                        });
+        ExperimentalCronetEngine cronetEngine = mTestRule.getTestFramework().startEngine();
+        String[] copts = CronetTestUtil.nativeGetClientConnectionOptions(cronetEngine);
+        assertThat(copts).asList().containsExactly("ABCD").inOrder();
+    }
+
+    @Test
+    @SmallTest
+    @Flags(
+            stringFlags = {@StringFlag(name = CLIENT_CONNECTION_OPTIONS_VALUE_ON, value = "WXYZ")},
+            boolFlags = {@BoolFlag(name = OVERRIDE_CLIENT_CONNECTION_OPTIONS, value = false)})
+    @RequiresMinAndroidApi(Build.VERSION_CODES.N)
+    public void testFetchingClientConnectionOptionsWithFlagDisabledButValuesEnabledHasNoEffect() {
+        mTestRule
+                .getTestFramework()
+                .applyEngineBuilderPatch(
+                        (builder) -> {
+                            builder.setQuicOptions(
+                                    QuicOptions.builder()
+                                            .addClientConnectionOption("ABCD")
+                                            .build());
+                        });
+        ExperimentalCronetEngine cronetEngine = mTestRule.getTestFramework().startEngine();
+        String[] copts = CronetTestUtil.nativeGetClientConnectionOptions(cronetEngine);
+        assertThat(copts).asList().containsExactly("ABCD").inOrder();
+    }
+
+    @Test
+    @SmallTest
+    @Flags(
+            stringFlags = {@StringFlag(name = CONNECTION_OPTIONS_VALUE_ON, value = "WXYZ")},
+            boolFlags = {@BoolFlag(name = OVERRIDE_CONNECTION_OPTIONS, value = true)})
+    @RequiresMinAndroidApi(Build.VERSION_CODES.N)
+    public void testFetchingConnectionOptionsWithForceValueOnShouldHaveEffect() {
+        mTestRule
+                .getTestFramework()
+                .applyEngineBuilderPatch(
+                        (builder) -> {
+                            builder.setQuicOptions(
+                                    QuicOptions.builder().addConnectionOption("ABCD").build());
+                        });
+        ExperimentalCronetEngine cronetEngine = mTestRule.getTestFramework().startEngine();
+        String[] copts = CronetTestUtil.nativeGetConnectionOptions(cronetEngine);
+        assertThat(copts).asList().containsExactly("ABCD", "WXYZ").inOrder();
+    }
+
+    @Test
+    @SmallTest
+    @Flags(
+            stringFlags = {
+                @StringFlag(name = CLIENT_CONNECTION_OPTIONS_VALUE_ON, value = "WXYZ,1234")
+            },
+            boolFlags = {@BoolFlag(name = OVERRIDE_CLIENT_CONNECTION_OPTIONS, value = true)})
+    @RequiresMinAndroidApi(Build.VERSION_CODES.N)
+    public void
+            testFetchingClientConnectionOptionsWithNoDeclaredFlagsForceValueOnShouldHaveEffect() {
+        mTestRule
+                .getTestFramework()
+                .applyEngineBuilderPatch(
+                        (builder) -> {
+                            builder.setQuicOptions(QuicOptions.builder().build());
+                        });
+        ExperimentalCronetEngine cronetEngine = mTestRule.getTestFramework().startEngine();
+        String[] copts = CronetTestUtil.nativeGetClientConnectionOptions(cronetEngine);
+        assertThat(copts).asList().containsExactly("WXYZ", "1234").inOrder();
+    }
+
+    @Test
+    @SmallTest
+    @Flags(
+            stringFlags = {@StringFlag(name = CONNECTION_OPTIONS_VALUE_ON, value = "WXYZ,1234")},
+            boolFlags = {@BoolFlag(name = OVERRIDE_CONNECTION_OPTIONS, value = true)})
+    @RequiresMinAndroidApi(Build.VERSION_CODES.N)
+    public void testFetchingConnectionOptionsWithNoDeclaredFlagsForceValueOnShouldHaveEffect() {
+        mTestRule
+                .getTestFramework()
+                .applyEngineBuilderPatch(
+                        (builder) -> {
+                            builder.setQuicOptions(QuicOptions.builder().build());
+                        });
+        ExperimentalCronetEngine cronetEngine = mTestRule.getTestFramework().startEngine();
+        String[] copts = CronetTestUtil.nativeGetConnectionOptions(cronetEngine);
+        assertThat(copts).asList().containsExactly("WXYZ", "1234").inOrder();
+    }
+
+    @Test
+    @SmallTest
+    @Flags(
+            stringFlags = {@StringFlag(name = CONNECTION_OPTIONS_VALUE_OFF, value = "ABCD")},
+            boolFlags = {@BoolFlag(name = OVERRIDE_CONNECTION_OPTIONS, value = true)})
+    @RequiresMinAndroidApi(Build.VERSION_CODES.N)
+    public void testFetchingConnectionOptionsWithForceValueOffShouldHaveEffect() {
+        mTestRule
+                .getTestFramework()
+                .applyEngineBuilderPatch(
+                        (builder) -> {
+                            builder.setQuicOptions(
+                                    QuicOptions.builder().addConnectionOption("ABCD").build());
+                        });
+        ExperimentalCronetEngine cronetEngine = mTestRule.getTestFramework().startEngine();
+        String[] copts = CronetTestUtil.nativeGetConnectionOptions(cronetEngine);
+        assertThat(copts).asList().isEmpty();
+    }
+
+    @Test
+    @SmallTest
+    @Flags(
+            stringFlags = {@StringFlag(name = CONNECTION_OPTIONS_VALUE_OFF, value = "WXYZ,1234")},
+            boolFlags = {@BoolFlag(name = OVERRIDE_CONNECTION_OPTIONS, value = true)})
+    @RequiresMinAndroidApi(Build.VERSION_CODES.N)
+    public void testFetchingConnectionOptionsWithForceValueOffDoesNotChangeOrder() {
+        mTestRule
+                .getTestFramework()
+                .applyEngineBuilderPatch(
+                        (builder) -> {
+                            builder.setQuicOptions(
+                                    QuicOptions.builder()
+                                            .addConnectionOption("ABCD,WXYZ,1234,5678")
+                                            .build());
+                        });
+        ExperimentalCronetEngine cronetEngine = mTestRule.getTestFramework().startEngine();
+        String[] copts = CronetTestUtil.nativeGetConnectionOptions(cronetEngine);
+        assertThat(copts).asList().containsExactly("ABCD", "5678").inOrder();
+    }
+
+    @Test
+    @SmallTest
+    @Flags(
+            stringFlags = {@StringFlag(name = CLIENT_CONNECTION_OPTIONS_VALUE_ON, value = "WXYZ")},
+            boolFlags = {@BoolFlag(name = OVERRIDE_CLIENT_CONNECTION_OPTIONS, value = true)})
+    @RequiresMinAndroidApi(Build.VERSION_CODES.N)
+    public void testFetchingClientConnectionOptionsWithFlagEnabledAffectsFinalTags() {
+        mTestRule
+                .getTestFramework()
+                .applyEngineBuilderPatch(
+                        (builder) -> {
+                            builder.setQuicOptions(
+                                    QuicOptions.builder()
+                                            .addClientConnectionOption("ABCD")
+                                            .build());
+                        });
+        ExperimentalCronetEngine cronetEngine = mTestRule.getTestFramework().startEngine();
+        String[] copts = CronetTestUtil.nativeGetClientConnectionOptions(cronetEngine);
+        assertThat(copts).asList().containsExactly("ABCD", "WXYZ").inOrder();
+    }
+
+    @Test
+    @SmallTest
+    @Flags(
+            stringFlags = {@StringFlag(name = CONNECTION_OPTIONS_VALUE_ON, value = "WXYZ")},
+            boolFlags = {@BoolFlag(name = OVERRIDE_CONNECTION_OPTIONS, value = false)})
+    @RequiresMinAndroidApi(Build.VERSION_CODES.N)
+    public void testFetchingConnectionOptionsWithFlagDisabledHasNoEffect() {
+        mTestRule
+                .getTestFramework()
+                .applyEngineBuilderPatch(
+                        (builder) -> {
+                            builder.setQuicOptions(
+                                    QuicOptions.builder().addConnectionOption("ABCD").build());
+                        });
+        ExperimentalCronetEngine cronetEngine = mTestRule.getTestFramework().startEngine();
+        String[] copts = CronetTestUtil.nativeGetConnectionOptions(cronetEngine);
+        assertThat(copts).asList().containsExactly("ABCD").inOrder();
+    }
+
+    @Test
+    @SmallTest
+    @Flags(
+            stringFlags = {@StringFlag(name = CONNECTION_OPTIONS_VALUE_ON, value = "WXYZ")},
+            boolFlags = {@BoolFlag(name = OVERRIDE_CONNECTION_OPTIONS, value = true)})
+    @RequiresMinAndroidApi(Build.VERSION_CODES.N)
+    public void testFetchingConnectionOptionsWithFlagEnabledHasEffect() {
+        mTestRule
+                .getTestFramework()
+                .applyEngineBuilderPatch(
+                        (builder) -> {
+                            builder.setQuicOptions(
+                                    QuicOptions.builder().addConnectionOption("ABCD").build());
+                        });
+        ExperimentalCronetEngine cronetEngine = mTestRule.getTestFramework().startEngine();
+        String[] copts = CronetTestUtil.nativeGetConnectionOptions(cronetEngine);
+        assertThat(copts).asList().containsExactly("ABCD", "WXYZ").inOrder();
+    }
+
+    @Test
+    @SmallTest
+    @Flags(
+            stringFlags = {@StringFlag(name = CONNECTION_OPTIONS_VALUE_OFF, value = "ABCD")},
+            boolFlags = {@BoolFlag(name = OVERRIDE_CONNECTION_OPTIONS, value = true)})
+    @RequiresMinAndroidApi(Build.VERSION_CODES.N)
+    public void testFetchingConnectionOptionsWithForceOffHasEffect() {
+        mTestRule
+                .getTestFramework()
+                .applyEngineBuilderPatch(
+                        (builder) -> {
+                            builder.setQuicOptions(
+                                    QuicOptions.builder().addConnectionOption("ABCD").build());
+                        });
+        ExperimentalCronetEngine cronetEngine = mTestRule.getTestFramework().startEngine();
+        String[] copts = CronetTestUtil.nativeGetConnectionOptions(cronetEngine);
+        assertThat(copts).asList().isEmpty();
+    }
+
+    @Test
+    @SmallTest
+    @Flags(
+            stringFlags = {
+                @StringFlag(name = CONNECTION_OPTIONS_VALUE_OFF, value = "ABCD"),
+                @StringFlag(name = CONNECTION_OPTIONS_VALUE_ON, value = "1234,5678")
+            },
+            boolFlags = {@BoolFlag(name = OVERRIDE_CONNECTION_OPTIONS, value = true)})
+    @RequiresMinAndroidApi(Build.VERSION_CODES.N)
+    public void testFetchingConnectionOptionsWithForceOnAndOffHasEffect() {
+        mTestRule
+                .getTestFramework()
+                .applyEngineBuilderPatch(
+                        (builder) -> {
+                            builder.setQuicOptions(
+                                    QuicOptions.builder().addConnectionOption("ABCD").build());
+                        });
+        ExperimentalCronetEngine cronetEngine = mTestRule.getTestFramework().startEngine();
+        String[] copts = CronetTestUtil.nativeGetConnectionOptions(cronetEngine);
+        assertThat(copts).asList().containsExactly("1234", "5678").inOrder();
+    }
+
+    @Test
+    @SmallTest
+    @Flags(
+            stringFlags = {
+                @StringFlag(name = CONNECTION_OPTIONS_VALUE_OFF, value = "ABCD"),
+                @StringFlag(name = CONNECTION_OPTIONS_VALUE_ON, value = "ABCD")
+            },
+            boolFlags = {@BoolFlag(name = OVERRIDE_CONNECTION_OPTIONS, value = true)})
+    @RequiresMinAndroidApi(Build.VERSION_CODES.N)
+    public void testFetchingConnectionOptionsForceOffOverridesForceOn() {
+        mTestRule
+                .getTestFramework()
+                .applyEngineBuilderPatch(
+                        (builder) -> {
+                            builder.setQuicOptions(
+                                    QuicOptions.builder().addConnectionOption("WXYZ").build());
+                        });
+        ExperimentalCronetEngine cronetEngine = mTestRule.getTestFramework().startEngine();
+        String[] copts = CronetTestUtil.nativeGetConnectionOptions(cronetEngine);
+        assertThat(copts).asList().containsExactly("WXYZ").inOrder();
     }
 
     @Test
@@ -354,7 +634,7 @@ public class ExperimentalOptionsTest {
         cronetEngine.shutdown();
     }
 
-    @NativeMethods("cronet_tests")
+    @NativeMethods
     interface Natives {
         // Sets a host cache entry with hostname "host-cache-test-host" and an AddressList
         // containing the provided address.

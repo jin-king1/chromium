@@ -2,16 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "services/network/cookie_manager.h"
 
 #include <optional>
 #include <utility>
 
+#include "base/dcheck_is_on.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
@@ -33,7 +29,6 @@
 #include "net/url_request/url_request_context.h"
 #include "services/network/cookie_access_delegate_impl.h"
 #include "services/network/session_cleanup_cookie_store.h"
-#include "services/network/tpcd/metadata/manager.h"
 #include "url/gurl.h"
 
 using CookieDeletionInfo = net::CookieDeletionInfo;
@@ -63,8 +58,7 @@ CookieManager::CookieManager(
     net::URLRequestContext* url_request_context,
     FirstPartySetsAccessDelegate* const first_party_sets_access_delegate,
     scoped_refptr<SessionCleanupCookieStore> session_cleanup_cookie_store,
-    mojom::CookieManagerParamsPtr params,
-    network::tpcd::metadata::Manager* tpcd_metadata_manager)
+    mojom::CookieManagerParamsPtr params)
     : cookie_store_(url_request_context->cookie_store()),
       session_cleanup_cookie_store_(std::move(session_cleanup_cookie_store)) {
   mojom::CookieAccessDelegateType cookie_access_delegate_type =
@@ -75,7 +69,6 @@ CookieManager::CookieManager(
     // Don't wait for callback, the work happens synchronously.
     AllowFileSchemeCookies(params->allow_file_scheme_cookies,
                            base::DoNothing());
-    cookie_settings_.set_tpcd_metadata_manager(tpcd_metadata_manager);
   }
   cookie_store_->SetCookieAccessDelegate(
       std::make_unique<CookieAccessDelegateImpl>(
@@ -151,7 +144,8 @@ void CookieManager::SetCanonicalCookie(const net::CanonicalCookie& cookie,
         cookie.CreationDate(), adjusted_expiry_date, cookie.LastAccessDate(),
         cookie.LastUpdateDate(), cookie.SecureAttribute(), cookie.IsHttpOnly(),
         cookie.SameSite(), cookie.Priority(), cookie_partition_key,
-        cookie.SourceScheme(), cookie.SourcePort(), cookie.SourceType());
+        cookie.SourceScheme(), cookie.SourcePort(), cookie.SourceType(),
+        net::CanonicalCookieFromStorageCallSite::kCookieManager);
     if (!cookie_ptr) {
       net::CookieInclusionStatus cookie_inclusion_status;
       cookie_inclusion_status.AddExclusionReason(
@@ -161,9 +155,14 @@ void CookieManager::SetCanonicalCookie(const net::CanonicalCookie& cookie,
       return;
     }
   }
-  DCHECK(cookie_ptr->IsCanonical());
+  if constexpr (DCHECK_IS_ON()) {
+    net::CanonicalCookie::CanonicalizationResult result =
+        cookie_ptr->IsCanonical();
+    DCHECK(result) << result;
+  }
   cookie_store_->SetCanonicalCookieAsync(std::move(cookie_ptr), source_url,
-                                         cookie_options, std::move(callback));
+                                         cookie_options, std::move(callback),
+                                         /*cookie_access_result=*/std::nullopt);
 }
 
 void CookieManager::DeleteCanonicalCookie(
@@ -173,14 +172,6 @@ void CookieManager::DeleteCanonicalCookie(
       cookie, base::BindOnce([](uint32_t num_deleted) {
                 return num_deleted > 0;
               }).Then(std::move(callback)));
-}
-
-void CookieManager::SiteHasCookieInOtherPartition(
-    const net::SchemefulSite& schemeful_site,
-    const std::optional<net::CookiePartitionKey>& cookie_partition_key,
-    SiteHasCookieInOtherPartitionCallback callback) {
-  std::move(callback).Run(cookie_store_->SiteHasCookieInOtherPartition(
-      schemeful_site, cookie_partition_key));
 }
 
 void CookieManager::SetContentSettings(
@@ -355,14 +346,13 @@ void CookieManager::AllowFileSchemeCookies(
     AllowFileSchemeCookiesCallback callback) {
   OnSettingsWillChange();
 
-  std::vector<std::string> cookieable_schemes(
-      net::CookieMonster::kDefaultCookieableSchemes,
-      net::CookieMonster::kDefaultCookieableSchemes +
-          net::CookieMonster::kDefaultCookieableSchemesCount);
+  std::vector<std::string> cookieable_schemes =
+      net::CookieMonster::GetDefaultCookieableSchemes();
   if (allow) {
-    cookieable_schemes.push_back(url::kFileScheme);
+    cookieable_schemes.emplace_back(url::kFileScheme);
   }
-  cookie_store_->SetCookieableSchemes(cookieable_schemes, std::move(callback));
+  cookie_store_->SetCookieableSchemes(std::move(cookieable_schemes),
+                                      std::move(callback));
 }
 
 void CookieManager::SetForceKeepSessionState() {
@@ -373,16 +363,6 @@ void CookieManager::SetForceKeepSessionState() {
 void CookieManager::BlockThirdPartyCookies(bool block) {
   OnSettingsWillChange();
   cookie_settings_.set_block_third_party_cookies(block);
-}
-
-void CookieManager::SetMitigationsEnabledFor3pcd(bool enable) {
-  OnSettingsWillChange();
-  cookie_settings_.set_mitigations_enabled_for_3pcd(enable);
-}
-
-void CookieManager::SetTrackingProtectionEnabledFor3pcd(bool enable) {
-  OnSettingsWillChange();
-  cookie_settings_.set_tracking_protection_enabled_for_3pcd(enable);
 }
 
 void CookieManager::OnSettingsWillChange() {
@@ -396,11 +376,15 @@ void CookieManager::ConfigureCookieSettings(
     const network::mojom::CookieManagerParams& params,
     CookieSettings* out) {
   out->set_block_third_party_cookies(params.block_third_party_cookies);
-  out->set_mitigations_enabled_for_3pcd(params.mitigations_enabled_for_3pcd);
-  out->set_tracking_protection_enabled_for_3pcd(
-      params.tracking_protection_enabled_for_3pcd);
   out->set_secure_origin_cookies_allowed_schemes(
       params.secure_origin_cookies_allowed_schemes);
+  std::vector<url::Origin> filtered_origins;
+  for (const auto& origin : params.secure_origin_cookies_allowed_origins) {
+    if (!origin.opaque()) {
+      filtered_origins.push_back(origin);
+    }
+  }
+  out->set_secure_origin_cookies_allowed_origins(filtered_origins);
   out->set_matching_scheme_cookies_allowed_schemes(
       params.matching_scheme_cookies_allowed_schemes);
   out->set_third_party_cookies_allowed_schemes(

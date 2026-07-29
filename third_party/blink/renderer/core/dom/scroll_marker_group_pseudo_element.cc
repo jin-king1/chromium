@@ -5,6 +5,7 @@
 #include "third_party/blink/renderer/core/dom/scroll_marker_group_pseudo_element.h"
 
 #include "third_party/blink/renderer/bindings/core/v8/v8_scroll_axis.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_scroll_into_view_options.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/focus_params.h"
 #include "third_party/blink/renderer/core/dom/scroll_marker_pseudo_element.h"
@@ -12,6 +13,36 @@
 #include "third_party/blink/renderer/core/scroll/scroll_into_view_util.h"
 
 namespace blink {
+
+// static
+mojom::blink::ScrollIntoViewParamsPtr
+ScrollMarkerGroupPseudoElement::CreateScrollIntoViewParamsForScrollMarkerTarget(
+    Element* scroll_target) {
+  const ComputedStyle& computed_style = *scroll_target->GetComputedStyle();
+  ScrollIntoViewOptions* options = ScrollIntoViewOptions::Create();
+
+  // Per https://www.w3.org/TR/css-overflow-5/#scroll-marker-activation
+  // default to 'start' if scroll-snap-align is 'none'.
+
+  cc::SnapAlignment alignment_block =
+      computed_style.GetScrollSnapAlign().alignment_block;
+  options->setBlock(
+      alignment_block == cc::SnapAlignment::kNone
+          ? V8ScrollLogicalPosition::Enum::kStart
+          : scroll_into_view_util::SnapAlignmentToV8ScrollLogicalPosition(
+                alignment_block));
+
+  cc::SnapAlignment alignment_inline =
+      computed_style.GetScrollSnapAlign().alignment_inline;
+  options->setInlinePosition(
+      alignment_inline == cc::SnapAlignment::kNone
+          ? V8ScrollLogicalPosition::Enum::kStart
+          : scroll_into_view_util::SnapAlignmentToV8ScrollLogicalPosition(
+                alignment_inline));
+
+  return scroll_into_view_util::CreateScrollIntoViewParams(*options,
+                                                           computed_style);
+}
 
 ScrollMarkerGroupPseudoElement::ScrollMarkerGroupPseudoElement(
     Element* originating_element,
@@ -44,7 +75,7 @@ ScrollMarkerGroupPseudoElement::FindPreviousScrollMarker(
 }
 
 void ScrollMarkerGroupPseudoElement::RemoveFromFocusGroup(
-    const ScrollMarkerPseudoElement& scroll_marker) {
+    ScrollMarkerPseudoElement& scroll_marker) {
   scroll_marker_group_data_->RemoveFromFocusGroup(scroll_marker);
 }
 
@@ -59,35 +90,56 @@ void ScrollMarkerGroupPseudoElement::ActivatePrevScrollMarker() {
 void ScrollMarkerGroupPseudoElement::ActivateScrollMarker(
     ScrollMarkerPseudoElement* scroll_marker,
     bool apply_snap_alignment) {
-  if (!scroll_marker || scroll_marker == Selected()) {
+  if (!scroll_marker) {
     return;
   }
   // parentElement is ::column for column scroll marker and
   // ultimate originating element for regular scroll marker.
   mojom::blink::ScrollIntoViewParamsPtr params =
-      scroll_into_view_util::CreateScrollIntoViewParams(
-          *scroll_marker->parentElement()->GetComputedStyle());
-  scroll_marker->ScrollIntoViewNoVisualUpdate(std::move(params),
-                                              &UltimateOriginatingElement());
-  GetDocument().SetFocusedElement(scroll_marker,
-                                  FocusParams(SelectionBehaviorOnFocus::kNone,
-                                              mojom::blink::FocusType::kNone,
-                                              /*capabilities=*/nullptr));
+      CreateScrollIntoViewParamsForScrollMarkerTarget(
+          scroll_marker->parentElement());
+  scroll_marker->ScrollIntoViewNoVisualUpdate(
+      std::move(params), &UltimateOriginatingElement(),
+      /* include_self = */ scroll_marker->UltimateOriginatingElement() ==
+          UltimateOriginatingElement());
+  const bool tabs_mode =
+      ScrollMarkerGroupMode() == ScrollMarkerGroup::ScrollMarkerMode::kTabs;
+  const bool links_mode =
+      ScrollMarkerGroupMode() == ScrollMarkerGroup::ScrollMarkerMode::kLinks;
+  // If the scroller's scroll-marker-group property is set to `tabs`,
+  // we retain focus on the ::scroll-marker.
+  if (tabs_mode ||
+      !RuntimeEnabledFeatures::CSSScrollMarkerGroupModesEnabled()) {
+    GetDocument().SetFocusedElement(scroll_marker,
+                                    FocusParams(SelectionBehaviorOnFocus::kNone,
+                                                mojom::blink::FocusType::kNone,
+                                                /*capabilities=*/nullptr));
+  }
+  if (links_mode &&
+      RuntimeEnabledFeatures::CSSScrollMarkerGroupModesEnabled()) {
+    // If the scroller's scroll-marker-group property is set to `links`,
+    // we lose focus from ::scroll-marker upon activation.
+    GetDocument().ClearFocusedElement();
+  }
   SetSelected(*scroll_marker, apply_snap_alignment);
-  // - per https://drafts.csswg.org/css-overflow-5/#scroll-target-focus
+  // If the scroller's scroll-marker-group property is set to `links`,
+  // per https://drafts.csswg.org/css-overflow-5/#scroll-target-focus
   // we want to start our search from scroll target of ::scroll-marker,
   // which is ultimate originating element for regular scroll marker
   // and TODO(378698659): the first element in ::column's view for column
   // scroll marker, but it's not clear yet what how to implement that.
-  GetDocument().SetSequentialFocusNavigationStartingPoint(
-      &scroll_marker->UltimateOriginatingElement());
+  if (links_mode ||
+      !RuntimeEnabledFeatures::CSSScrollMarkerGroupModesEnabled()) {
+    GetDocument().SetSequentialFocusNavigationStartingPoint(
+        &scroll_marker->UltimateOriginatingElement());
+  }
 }
 
-bool ScrollMarkerGroupPseudoElement::SetSelected(
+void ScrollMarkerGroupPseudoElement::SetSelected(
     ScrollMarkerPseudoElement& scroll_marker,
     bool apply_snap_alignment) {
-  return scroll_marker_group_data_->SetSelected(&scroll_marker,
-                                                apply_snap_alignment);
+  return scroll_marker_group_data_->MaybeSetPendingSelectedMarker(
+      &scroll_marker, apply_snap_alignment);
 }
 
 ScrollMarkerPseudoElement* ScrollMarkerGroupPseudoElement::Selected() const {
@@ -107,6 +159,24 @@ bool ScrollMarkerGroupPseudoElement::SelectedMarkerIsPinned() const {
   return scroll_marker_group_data_->SelectedMarkerIsPinned();
 }
 
+ScrollMarkerPseudoElement* ScrollMarkerGroupPseudoElement::First() const {
+  HeapVector<Member<Element>>& focus_group =
+      scroll_marker_group_data_->ScrollMarkers();
+  if (!focus_group.size()) {
+    return nullptr;
+  }
+  return To<ScrollMarkerPseudoElement>(focus_group.front().Get());
+}
+
+ScrollMarkerPseudoElement* ScrollMarkerGroupPseudoElement::Last() const {
+  HeapVector<Member<Element>>& focus_group =
+      scroll_marker_group_data_->ScrollMarkers();
+  if (!focus_group.size()) {
+    return nullptr;
+  }
+  return To<ScrollMarkerPseudoElement>(focus_group.back().Get());
+}
+
 void ScrollMarkerGroupPseudoElement::Dispose() {
   HeapVector<Member<Element>> focus_group =
       scroll_marker_group_data_->ScrollMarkers();
@@ -115,9 +185,12 @@ void ScrollMarkerGroupPseudoElement::Dispose() {
   }
   if (ScrollMarkerPseudoElement* selected = Selected()) {
     selected->SetSelected(false);
-    scroll_marker_group_data_->SetSelected(nullptr);
   }
   scroll_marker_group_data_->ClearFocusGroup();
+  if (GetLayoutBox() && GetLayoutBox()->GetFrameView()) {
+    GetLayoutBox()->GetFrameView()->RemovePendingScrollMarkerSelectionUpdate(
+        this);
+  }
   PseudoElement::Dispose();
 }
 
@@ -125,18 +198,17 @@ void ScrollMarkerGroupPseudoElement::ClearFocusGroup() {
   scroll_marker_group_data_->ClearFocusGroup();
 }
 
-bool ScrollMarkerGroupPseudoElement::UpdateSelectedScrollMarker(
-    const ScrollOffset& offset) {
+void ScrollMarkerGroupPseudoElement::UpdateSelectedScrollMarker() {
   // Implements scroll tracking for scroll marker controls as per
   // https://drafts.csswg.org/css-overflow-5/#scroll-container-scroll.
   auto* scroller =
       DynamicTo<LayoutBox>(UltimateOriginatingElement().GetLayoutObject());
-  if (!scroller || !scroller->IsScrollContainer()) {
-    return false;
+  if (!scroller ||
+      (!scroller->IsScrollContainer() && !scroller->IsDocumentElement())) {
+    return;
   }
 
-  return scroll_marker_group_data_->UpdateSelectedScrollMarker(offset,
-                                                               scroller);
+  scroll_marker_group_data_->UpdateSelectedScrollMarker();
 }
 
 void ScrollMarkerGroupPseudoElement::DetachLayoutTree(
@@ -147,9 +219,21 @@ void ScrollMarkerGroupPseudoElement::DetachLayoutTree(
     To<ScrollMarkerPseudoElement>(scroll_marker)
         ->DetachLayoutTree(performing_reattach);
   }
-  scroll_marker_group_data_->SetSelected(nullptr);
   scroll_marker_group_data_->ClearFocusGroup();
   PseudoElement::DetachLayoutTree(performing_reattach);
+}
+
+void ScrollMarkerGroupPseudoElement::ScrollSelectedIntoView(bool apply_snap) {
+  if (ScrollMarkerPseudoElement* selected = Selected()) {
+    selected->ScrollIntoView(apply_snap);
+  }
+}
+
+ScrollMarkerGroup::ScrollMarkerMode
+ScrollMarkerGroupPseudoElement::ScrollMarkerGroupMode() const {
+  const ComputedStyle& parent_style = parentElement()->ComputedStyleRef();
+  CHECK(parent_style.ScrollMarkerGroupMode().has_value());
+  return parent_style.ScrollMarkerGroupMode().value();
 }
 
 }  // namespace blink

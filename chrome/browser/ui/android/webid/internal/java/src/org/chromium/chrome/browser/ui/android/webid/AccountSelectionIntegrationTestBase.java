@@ -15,7 +15,8 @@ import android.graphics.Color;
 import org.junit.Before;
 import org.junit.Rule;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.ScalableTimeout;
@@ -26,7 +27,9 @@ import org.chromium.chrome.browser.ui.android.webid.data.ClientIdMetadata;
 import org.chromium.chrome.browser.ui.android.webid.data.IdentityCredentialTokenError;
 import org.chromium.chrome.browser.ui.android.webid.data.IdentityProviderData;
 import org.chromium.chrome.browser.ui.android.webid.data.IdentityProviderMetadata;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController.SheetState;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetControllerProvider;
@@ -39,6 +42,7 @@ import java.util.List;
 
 /** Common test fixtures for AccountSelectionIntegration Android Javatests. */
 public class AccountSelectionIntegrationTestBase {
+    @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
     protected static final String EXAMPLE_ETLD_PLUS_ONE = "example.com";
     protected static final String TEST_ETLD_PLUS_ONE_2 = "two.com";
     protected static final GURL TEST_URL = JUnitTestGURLs.URL_1;
@@ -76,8 +80,10 @@ public class AccountSelectionIntegrationTestBase {
     @Mock AccountSelectionComponent.Delegate mMockBridge;
 
     @Rule
-    public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
+    public FreshCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.freshChromeTabbedActivityRule();
 
+    WebPageStation mPage;
     BottomSheetController mBottomSheetController;
 
     String mTestUrlTermsOfService;
@@ -95,8 +101,7 @@ public class AccountSelectionIntegrationTestBase {
 
     @Before
     public void setUp() throws InterruptedException {
-        MockitoAnnotations.initMocks(this);
-        mActivityTestRule.startMainActivityOnBlankPage();
+        mPage = mActivityTestRule.startOnBlankPage();
 
         mTestUrlTermsOfService =
                 mActivityTestRule.getTestServer().getURL("/chrome/test/data/title1.html");
@@ -131,10 +136,12 @@ public class AccountSelectionIntegrationTestBase {
                         "Ana Doe",
                         "Ana",
                         /* secondaryDescription= */ null,
-                        null,
-                        /* isSignIn= */ true,
+                        /* pictureBitmap= */ null,
+                        /* circledBadgedPictureBitmap= */ null,
+                        /* isIdpClaimedSignIn= */ true,
                         /* isBrowserTrustedSignIn= */ true,
                         /* isFilteredOut= */ false,
+                        /* fields= */ new int[0],
                         mIdpData);
         mNewBob =
                 new Account(
@@ -143,10 +150,12 @@ public class AccountSelectionIntegrationTestBase {
                         "Bob",
                         "",
                         /* secondaryDescription= */ null,
-                        null,
-                        /* isSignIn= */ false,
+                        /* pictureBitmap= */ null,
+                        /* circledBadgedPictureBitmap= */ null,
+                        /* isIdpClaimedSignIn= */ false,
                         /* isBrowserTrustedSignIn= */ false,
                         /* isFilteredOut= */ false,
+                        DEFAULT_DISCLOSURE_FIELDS,
                         mIdpData);
 
         mReturningAnaWithAddAccount =
@@ -156,10 +165,12 @@ public class AccountSelectionIntegrationTestBase {
                         "Ana Doe",
                         "Ana",
                         /* secondaryDescription= */ null,
-                        null,
-                        /* isSignIn= */ true,
+                        /* pictureBitmap= */ null,
+                        /* circledBadgedPictureBitmap= */ null,
+                        /* isIdpClaimedSignIn= */ true,
                         /* isBrowserTrustedSignIn= */ true,
                         /* isFilteredOut= */ false,
+                        /* fields= */ new int[0],
                         mIdpDataWithAddAccount);
         mNewBobWithAddAccount =
                 new Account(
@@ -168,10 +179,12 @@ public class AccountSelectionIntegrationTestBase {
                         "Bob",
                         "",
                         /* secondaryDescription= */ null,
-                        null,
-                        /* isSignIn= */ false,
+                        /* pictureBitmap= */ null,
+                        /* circledBadgedPictureBitmap= */ null,
+                        /* isIdpClaimedSignIn= */ false,
                         /* isBrowserTrustedSignIn= */ false,
                         /* isFilteredOut= */ false,
+                        DEFAULT_DISCLOSURE_FIELDS,
                         mIdpDataWithAddAccount);
 
         mNewAccountsReturningAna = Arrays.asList(mReturningAna);
@@ -188,6 +201,7 @@ public class AccountSelectionIntegrationTestBase {
                                     mActivityTestRule.getActivity().getWindowAndroid(),
                                     mBottomSheetController,
                                     mRpMode,
+                                    /* canShowUi= */ true,
                                     mMockBridge);
                 });
     }

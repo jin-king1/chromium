@@ -242,7 +242,8 @@ class PaintOpHelper {
       case PaintOpType::kSaveLayerFilters: {
         const auto& op = static_cast<const SaveLayerFiltersOp&>(base_op);
         str << "flags=" << ToString(op.flags)
-            << ", filters=" << ToString(op.filters);
+            << ", filters=" << ToString(op.filters)
+            << ", backdrop_filter=" << ToString(op.backdrop_filter);
         break;
       }
       case PaintOpType::kScale: {
@@ -438,10 +439,6 @@ class PaintOpHelper {
   }
 
   static std::string ToString(const SkData& data) { return "<SkData>"; }
-
-  static std::string ToString(const ThreadsafePath& path) {
-    return ToString(static_cast<const SkPath&>(path));
-  }
 
   static std::string ToString(const SkPath& path) {
     // TODO(vmpstr): SkPath has a dump function which we can use here?

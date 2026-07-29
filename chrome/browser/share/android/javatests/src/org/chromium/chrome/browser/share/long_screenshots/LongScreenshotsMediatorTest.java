@@ -4,6 +4,7 @@
 
 package org.chromium.chrome.browser.share.long_screenshots;
 
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -23,7 +24,8 @@ import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Captor;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.BaseActivityTestRule;
@@ -57,6 +59,8 @@ public class LongScreenshotsMediatorTest {
     private Bitmap mBitmap;
     private LongScreenshotsMediator mMediator;
 
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
+
     @Rule
     public BaseActivityTestRule<BlankUiTestActivity> mActivityTestRule =
             new BaseActivityTestRule<>(BlankUiTestActivity.class);
@@ -76,8 +80,6 @@ public class LongScreenshotsMediatorTest {
     public void setUp() {
         mActivityTestRule.launchActivity(null);
         mActivity = mActivityTestRule.getActivity();
-
-        MockitoAnnotations.initMocks(this);
 
         mBitmap = Bitmap.createBitmap(800, 600, Bitmap.Config.ARGB_8888);
 
@@ -162,7 +164,7 @@ public class LongScreenshotsMediatorTest {
 
     @Test
     @MediumTest
-    @DisabledTest(message = "https://crbug.com/1275758")
+    @DisabledTest(message = "https://crbug.com/40207207")
     public void testOnCompositorReady_VeryLargeBitmap_Scales() {
         // Very large size should trigger scaling.
         int bitmapDimension = 1 + MAX_ALLOWABLE_SCREENSHOT_DIMENSION;
@@ -233,12 +235,11 @@ public class LongScreenshotsMediatorTest {
         Exception exception =
                 Assert.assertThrows(
                         RuntimeException.class,
-                        () -> {
-                            ThreadUtils.runOnUiThreadBlocking(
-                                    () -> {
-                                        Assert.assertTrue(mMediator.getDialog().isShowing());
-                                    });
-                        });
+                        () ->
+                                ThreadUtils.runOnUiThreadBlocking(
+                                        () -> {
+                                            Assert.assertTrue(mMediator.getDialog().isShowing());
+                                        }));
         String expectedMessage = "trying to draw too large";
         String actualMessage = exception.getMessage();
         Assert.assertTrue(
@@ -246,5 +247,43 @@ public class LongScreenshotsMediatorTest {
                         + "Expected Canvas error: Android limits may have changed "
                         + "on this platform.",
                 actualMessage.contains(expectedMessage));
+    }
+
+    @Test
+    @MediumTest
+    public void testGetScreenshot_NullFullBitmap() {
+        Assert.assertNull(mMediator.getScreenshot());
+    }
+
+    @Test
+    @MediumTest
+    public void testOnStatusChange_FailureCallsDoneCallback() {
+        Runnable doneCallback = mock(Runnable.class);
+        mMediator.capture(doneCallback);
+
+        verify(mManager).addBitmapGeneratorObserver(mBitmapGeneratorObserverCaptor.capture());
+        BitmapGeneratorObserver generatorObserver = mBitmapGeneratorObserverCaptor.getValue();
+
+        generatorObserver.onStatusChange(EntryStatus.GENERATION_ERROR);
+        verify(doneCallback).run();
+    }
+
+    @Test
+    @MediumTest
+    public void testOnEntry_FailureCallsDoneCallback() {
+        Runnable doneCallback = mock(Runnable.class);
+        mMediator.capture(doneCallback);
+
+        verify(mManager).addBitmapGeneratorObserver(mBitmapGeneratorObserverCaptor.capture());
+        BitmapGeneratorObserver generatorObserver = mBitmapGeneratorObserverCaptor.getValue();
+
+        when(mManager.generateFullpageEntry()).thenReturn(mLongScreenshotsEntry);
+        generatorObserver.onCompositorReady(new Size(100, 100), new Point(0, 0));
+
+        verify(mLongScreenshotsEntry).setListener(mEntryListenerCaptor.capture());
+        EntryListener entryListener = mEntryListenerCaptor.getValue();
+
+        entryListener.onResult(EntryStatus.GENERATION_ERROR);
+        verify(doneCallback).run();
     }
 }

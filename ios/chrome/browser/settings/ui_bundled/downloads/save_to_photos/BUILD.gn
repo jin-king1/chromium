@@ -27,12 +27,14 @@ source_set("save_to_photos") {
     "//ios/chrome/browser/authentication/ui_bundled/views",
     "//ios/chrome/browser/photos/model",
     "//ios/chrome/browser/settings/ui_bundled:settings_root",
+    "//ios/chrome/browser/shared/model/application_context",
     "//ios/chrome/browser/shared/model/prefs:pref_names",
     "//ios/chrome/browser/shared/public/features",
     "//ios/chrome/browser/shared/ui/table_view",
     "//ios/chrome/browser/shared/ui/table_view:utils",
     "//ios/chrome/browser/shared/ui/table_view/cells",
     "//ios/chrome/browser/signin/model",
+    "//ios/chrome/browser/signin/model/avatar",
     "//ios/chrome/common/ui/colors",
     "//ui/base",
   ]
@@ -45,7 +47,10 @@ source_set("test_support") {
     "fake_save_to_photos_settings_mutator.h",
     "fake_save_to_photos_settings_mutator.mm",
   ]
-  deps = [ ":save_to_photos" ]
+  deps = [
+    ":save_to_photos",
+    "//google_apis",
+  ]
 }
 
 source_set("unit_tests") {
@@ -73,7 +78,9 @@ source_set("unit_tests") {
     "//ios/chrome/browser/signin/model:fake_system_identity",
     "//ios/chrome/browser/signin/model:fake_system_identity_manager",
     "//ios/chrome/browser/signin/model:test_support",
+    "//ios/chrome/browser/signin/model/avatar",
     "//ios/chrome/common/ui/colors",
+    "//ios/web/public/test",
     "//testing/gtest",
     "//ui/base",
   ]

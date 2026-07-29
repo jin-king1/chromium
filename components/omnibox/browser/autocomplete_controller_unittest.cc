@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "base/base64url.h"
 #include "base/json/json_reader.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/strings/utf_string_conversions.h"
@@ -16,9 +17,11 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
+#include "build/android_buildflags.h"
 #include "build/build_config.h"
-#include "components/omnibox/browser/actions/omnibox_answer_action.h"
+#include "components/omnibox/browser/actions/contextual_search_action.h"
 #include "components/omnibox/browser/autocomplete_controller.h"
+#include "components/omnibox/browser/autocomplete_enums.h"
 #include "components/omnibox/browser/autocomplete_match.h"
 #include "components/omnibox/browser/autocomplete_match_test_util.h"
 #include "components/omnibox/browser/autocomplete_match_type.h"
@@ -29,17 +32,25 @@
 #include "components/omnibox/browser/fake_tab_matcher.h"
 #include "components/omnibox/browser/keyword_provider.h"
 #include "components/omnibox/browser/omnibox_field_trial.h"
+#include "components/omnibox/browser/search_suggestion_parser.h"
 #include "components/omnibox/browser/test_scheme_classifier.h"
+#include "components/omnibox/browser/zero_suggest_provider.h"
 #include "components/omnibox/common/omnibox_feature_configs.h"
 #include "components/omnibox/common/omnibox_features.h"
 #include "components/search_engines/enterprise/enterprise_search_manager.h"
 #include "components/search_engines/template_url_data.h"
 #include "components/search_engines/template_url_starter_pack_data.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
+#include "net/base/url_util.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/omnibox_proto/answer_type.pb.h"
+#include "third_party/omnibox_proto/chrome_searchbox_stats.pb.h"
 #include "third_party/omnibox_proto/rich_answer_template.pb.h"
+
+using ::testing::ElementsAre;
+using ::testing::Pair;
+using ::testing::WhenSorted;
 
 class AutocompleteControllerTest : public testing::Test {
  public:
@@ -52,6 +63,14 @@ class AutocompleteControllerTest : public testing::Test {
   void SetAutocompleteMatches(const std::vector<AutocompleteMatch>& matches) {
     controller_.internal_result_.ClearMatches();
     controller_.internal_result_.AppendMatches(matches);
+  }
+
+  void UpdateSearchboxStats() {
+    controller_.UpdateSearchboxStats(&controller_.internal_result_);
+  }
+
+  void UpdateShownInSession() {
+    controller_.UpdateShownInSession(&controller_.internal_result_);
   }
 
   void MaybeRemoveCompanyEntityImages() {
@@ -79,6 +98,213 @@ class AutocompleteControllerTest : public testing::Test {
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
   FakeAutocompleteController controller_;
 };
+
+TEST_F(AutocompleteControllerTest, UpdateShownInSessionOmitAsyncMatches) {
+  std::vector<AutocompleteMatch> matches;
+
+  AutocompleteInput input(u"abc", 3u, metrics::OmniboxEventProto::OTHER,
+                          TestSchemeClassifier());
+  input.set_omit_asynchronous_matches(true);
+  controller_.input_ = input;
+
+  matches.push_back(CreateSearchMatch(u"abc"));
+  SetAutocompleteMatches(matches);
+
+  UpdateShownInSession();
+
+  for (size_t i = 0; i < controller_.internal_result_.size(); i++) {
+    const auto* match = controller_.internal_result_.match_at(i);
+    ASSERT_FALSE(match->session);
+  }
+}
+
+TEST_F(AutocompleteControllerTest, UpdateShownInSessionTypedThenZeroPrefix) {
+  std::vector<AutocompleteMatch> matches;
+
+  AutocompleteInput typed_input(u"abc", 3u, metrics::OmniboxEventProto::OTHER,
+                                TestSchemeClassifier());
+  controller_.input_ = typed_input;
+
+  matches.push_back(CreateSearchMatch(u"abc"));
+  SetAutocompleteMatches(matches);
+
+  UpdateSearchboxStats();
+  UpdateShownInSession();
+
+  for (size_t i = 0; i < controller_.internal_result_.size(); i++) {
+    const auto* match = controller_.internal_result_.match_at(i);
+
+    ASSERT_FALSE(match->session->zero_prefix_suggestions_shown_in_session);
+    ASSERT_FALSE(
+        match->session->zero_prefix_search_suggestions_shown_in_session);
+    ASSERT_FALSE(match->session->zero_prefix_url_suggestions_shown_in_session);
+
+    ASSERT_TRUE(match->session->typed_suggestions_shown_in_session);
+    ASSERT_TRUE(match->session->typed_search_suggestions_shown_in_session);
+    ASSERT_FALSE(match->session->typed_url_suggestions_shown_in_session);
+  }
+
+  matches.push_back(
+      CreateHistoryURLMatch(/*destination_url=*/"https://www.abc.com/"));
+  SetAutocompleteMatches(matches);
+
+  UpdateSearchboxStats();
+  UpdateShownInSession();
+
+  for (size_t i = 0; i < controller_.internal_result_.size(); i++) {
+    const auto* match = controller_.internal_result_.match_at(i);
+
+    ASSERT_FALSE(match->session->zero_prefix_suggestions_shown_in_session);
+    ASSERT_FALSE(
+        match->session->zero_prefix_search_suggestions_shown_in_session);
+    ASSERT_FALSE(match->session->zero_prefix_url_suggestions_shown_in_session);
+
+    ASSERT_TRUE(match->session->typed_suggestions_shown_in_session);
+    ASSERT_TRUE(match->session->typed_search_suggestions_shown_in_session);
+    ASSERT_TRUE(match->session->typed_url_suggestions_shown_in_session);
+  }
+
+  matches.clear();
+
+  AutocompleteInput zero_prefix_input(
+      u"", 0u, metrics::OmniboxEventProto::OTHER, TestSchemeClassifier());
+  zero_prefix_input.set_focus_type(
+      metrics::OmniboxFocusType::INTERACTION_FOCUS);
+  controller_.input_ = zero_prefix_input;
+
+  matches.push_back(CreateZeroPrefixSearchMatch(u"abc"));
+  SetAutocompleteMatches(matches);
+
+  UpdateSearchboxStats();
+  UpdateShownInSession();
+
+  for (size_t i = 0; i < controller_.internal_result_.size(); i++) {
+    const auto* match = controller_.internal_result_.match_at(i);
+
+    ASSERT_TRUE(match->session->zero_prefix_suggestions_shown_in_session);
+    ASSERT_TRUE(
+        match->session->zero_prefix_search_suggestions_shown_in_session);
+    ASSERT_FALSE(match->session->zero_prefix_url_suggestions_shown_in_session);
+
+    ASSERT_TRUE(match->session->typed_suggestions_shown_in_session);
+    ASSERT_TRUE(match->session->typed_search_suggestions_shown_in_session);
+    ASSERT_TRUE(match->session->typed_url_suggestions_shown_in_session);
+  }
+
+  matches.push_back(CreateHistoryURLMatch(
+      /*destination_url=*/"https://www.abc.com/", /*is_zero_prefix=*/true));
+  SetAutocompleteMatches(matches);
+
+  UpdateSearchboxStats();
+  UpdateShownInSession();
+
+  for (size_t i = 0; i < controller_.internal_result_.size(); i++) {
+    const auto* match = controller_.internal_result_.match_at(i);
+
+    ASSERT_TRUE(match->session->zero_prefix_suggestions_shown_in_session);
+    ASSERT_TRUE(
+        match->session->zero_prefix_search_suggestions_shown_in_session);
+    ASSERT_TRUE(match->session->zero_prefix_url_suggestions_shown_in_session);
+
+    ASSERT_TRUE(match->session->typed_suggestions_shown_in_session);
+    ASSERT_TRUE(match->session->typed_search_suggestions_shown_in_session);
+    ASSERT_TRUE(match->session->typed_url_suggestions_shown_in_session);
+  }
+}
+
+TEST_F(AutocompleteControllerTest, UpdateShownInSessionZeroPrefixThenTyped) {
+  std::vector<AutocompleteMatch> matches;
+
+  AutocompleteInput zero_prefix_input(
+      u"", 0u, metrics::OmniboxEventProto::OTHER, TestSchemeClassifier());
+  zero_prefix_input.set_focus_type(
+      metrics::OmniboxFocusType::INTERACTION_FOCUS);
+  controller_.input_ = zero_prefix_input;
+
+  matches.push_back(CreateZeroPrefixSearchMatch(u"abc"));
+  SetAutocompleteMatches(matches);
+
+  UpdateSearchboxStats();
+  UpdateShownInSession();
+
+  for (size_t i = 0; i < controller_.internal_result_.size(); i++) {
+    const auto* match = controller_.internal_result_.match_at(i);
+
+    ASSERT_TRUE(match->session->zero_prefix_suggestions_shown_in_session);
+    ASSERT_TRUE(
+        match->session->zero_prefix_search_suggestions_shown_in_session);
+    ASSERT_FALSE(match->session->zero_prefix_url_suggestions_shown_in_session);
+
+    ASSERT_FALSE(match->session->typed_suggestions_shown_in_session);
+    ASSERT_FALSE(match->session->typed_search_suggestions_shown_in_session);
+    ASSERT_FALSE(match->session->typed_url_suggestions_shown_in_session);
+  }
+
+  matches.push_back(CreateHistoryURLMatch(
+      /*destination_url=*/"https://www.abc.com/", /*is_zero_prefix=*/true));
+  SetAutocompleteMatches(matches);
+
+  UpdateSearchboxStats();
+  UpdateShownInSession();
+
+  for (size_t i = 0; i < controller_.internal_result_.size(); i++) {
+    const auto* match = controller_.internal_result_.match_at(i);
+
+    ASSERT_TRUE(match->session->zero_prefix_suggestions_shown_in_session);
+    ASSERT_TRUE(
+        match->session->zero_prefix_search_suggestions_shown_in_session);
+    ASSERT_TRUE(match->session->zero_prefix_url_suggestions_shown_in_session);
+
+    ASSERT_FALSE(match->session->typed_suggestions_shown_in_session);
+    ASSERT_FALSE(match->session->typed_search_suggestions_shown_in_session);
+    ASSERT_FALSE(match->session->typed_url_suggestions_shown_in_session);
+  }
+
+  matches.clear();
+
+  AutocompleteInput typed_input(u"abc", 3u, metrics::OmniboxEventProto::OTHER,
+                                TestSchemeClassifier());
+  controller_.input_ = typed_input;
+
+  matches.push_back(CreateSearchMatch(u"abc"));
+  SetAutocompleteMatches(matches);
+
+  UpdateSearchboxStats();
+  UpdateShownInSession();
+
+  for (size_t i = 0; i < controller_.internal_result_.size(); i++) {
+    const auto* match = controller_.internal_result_.match_at(i);
+
+    ASSERT_TRUE(match->session->zero_prefix_suggestions_shown_in_session);
+    ASSERT_TRUE(
+        match->session->zero_prefix_search_suggestions_shown_in_session);
+    ASSERT_TRUE(match->session->zero_prefix_url_suggestions_shown_in_session);
+
+    ASSERT_TRUE(match->session->typed_suggestions_shown_in_session);
+    ASSERT_TRUE(match->session->typed_search_suggestions_shown_in_session);
+    ASSERT_FALSE(match->session->typed_url_suggestions_shown_in_session);
+  }
+
+  matches.push_back(
+      CreateHistoryURLMatch(/*destination_url=*/"https://www.abc.com/"));
+  SetAutocompleteMatches(matches);
+
+  UpdateSearchboxStats();
+  UpdateShownInSession();
+
+  for (size_t i = 0; i < controller_.internal_result_.size(); i++) {
+    const auto* match = controller_.internal_result_.match_at(i);
+
+    ASSERT_TRUE(match->session->zero_prefix_suggestions_shown_in_session);
+    ASSERT_TRUE(
+        match->session->zero_prefix_search_suggestions_shown_in_session);
+    ASSERT_TRUE(match->session->zero_prefix_url_suggestions_shown_in_session);
+
+    ASSERT_TRUE(match->session->typed_suggestions_shown_in_session);
+    ASSERT_TRUE(match->session->typed_search_suggestions_shown_in_session);
+    ASSERT_TRUE(match->session->typed_url_suggestions_shown_in_session);
+  }
+}
 
 TEST_F(AutocompleteControllerTest, RemoveCompanyEntityImage) {
   base::HistogramTester histogram_tester;
@@ -161,7 +387,8 @@ TEST_F(AutocompleteControllerTest, CompanyEntityImageNotRemoved) {
 }
 
 // Desktop has some special handling for bare '@' inputs.
-#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+#if !(BUILDFLAG(IS_IOS) || \
+      (BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_DESKTOP_ANDROID)))
 TEST_F(AutocompleteControllerTest, FilterMatchesForInstantKeywordWithBareAt) {
   SetAutocompleteMatches({
       CreateSearchMatch(u"@"),
@@ -560,7 +787,7 @@ TEST_F(AutocompleteControllerTest, UpdateResult_ZPSEnabledAndShownInSession) {
   }
   {
     SCOPED_TRACE("Stop with clear_result=false is called due to user idleness");
-    controller_.Stop(/*clear_result=*/false);
+    controller_.Stop(AutocompleteStopReason::kInteraction);
     // Stop with clear_result=false does not clear the internal result set and
     // does not notify `OnResultChanged()`.
     EXPECT_FALSE(controller_.internal_result_.empty());
@@ -619,7 +846,7 @@ TEST_F(AutocompleteControllerTest, UpdateResult_ZPSEnabledAndShownInSession) {
   }
   {
     SCOPED_TRACE("Stop with clear_result=true is called due to popup closing");
-    controller_.Stop(/*clear_result=*/true);
+    controller_.Stop(AutocompleteStopReason::kClobbered);
     // Stop with clear_result=true clears the internal result set and notifies
     // `OnResultChanged()`.
     EXPECT_TRUE(controller_.internal_result_.empty());
@@ -641,8 +868,7 @@ TEST_F(AutocompleteControllerTest, UpdateResult_ZPSEnabledAndShownInSession) {
 
 // Android and iOS aren't ready for ML and won't pass this test because they
 // have their own grouping code.
-#if BUILDFLAG(BUILD_WITH_TFLITE_LIB) && !BUILDFLAG(IS_ANDROID) && \
-    !BUILDFLAG(IS_IOS)
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 TEST_F(AutocompleteControllerTest, MlRanking) {
   OmniboxFieldTrial::ScopedMLConfigForTesting scoped_ml_config;
   scoped_ml_config.GetMLConfig().ml_url_scoring = true;
@@ -1568,8 +1794,7 @@ TEST_F(AutocompleteControllerTest, UpdateResult_MLRanking_AllMatches) {
           "history 800 .2",
       }));
 }
-#endif  //  BUILDFLAG(BUILD_WITH_TFLITE_LIB) && !BUILDFLAG(IS_ANDROID) &&
-        //  !BUILDFLAG(IS_IOS)
+#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 
 TEST_F(AutocompleteControllerTest, UpdateResult_NotifyingAndTimers) {
   {
@@ -1695,34 +1920,34 @@ TEST_F(AutocompleteControllerTest, ExplicitStop) {
 
   {
     SCOPED_TRACE(
-        "Stop with clear_result=false and no pending changes should not notify"
+        "Stop with `kInteraction` and no pending changes should not notify "
         "`OnResultChanged()` - there's no change to notify of.");
     controller_.SimulateAutocompletePass(true, false, matches);
-    controller_.Stop(false);
+    controller_.Stop(AutocompleteStopReason::kInteraction);
     controller_.ExpectStopAfter(0, true);
     EXPECT_FALSE(controller_.published_result_.empty());
     controller_.ExpectNoNotificationOrStop();
   }
   {
     SCOPED_TRACE(
-        "Stop with clear_result=false and pending changes should not notify"
-        "`OnResultChanged()` - the last pending change should be abandoned to "
-        "avoid changes as the user's e.g. down arrowing..");
+        "Stop with `kInteraction` and pending changes should not notify "
+        "`OnResultChanged()` - the last pending change should be "
+        "abandoned to avoid changes as the user's e.g. down arrowing.");
     controller_.SimulateAutocompletePass(true, false, matches);
     controller_.SimulateAutocompletePass(false, false, matches);
-    controller_.Stop(false);
+    controller_.Stop(AutocompleteStopReason::kInteraction);
     EXPECT_FALSE(controller_.published_result_.empty());
     controller_.ExpectStopAfter(0, true);
     controller_.ExpectNoNotificationOrStop();
   }
   {
     SCOPED_TRACE(
-        "Stop with clear_result=true and no pending notifications should "
-        "notify `OnResultChanged()` - observers should know the results were "
+        "Stop with `kClobbered` and no pending notifications should notify "
+        "`OnResultChanged()` - observers should know the results were "
         "cleared.");
     controller_.SimulateAutocompletePass(true, false, matches);
     controller_.observer_->last_default_match_changed = true;
-    controller_.Stop(true);
+    controller_.Stop(AutocompleteStopReason::kClobbered);
     EXPECT_TRUE(controller_.published_result_.empty());
     controller_.ExpectOnResultChanged(
         0, AutocompleteController::UpdateType::kStop);
@@ -1731,13 +1956,13 @@ TEST_F(AutocompleteControllerTest, ExplicitStop) {
   }
   {
     SCOPED_TRACE(
-        "Stop with clear_result=true and pending notifications should notify "
-        "`OnResultChanged()` - observers should know the results were "
+        "Stop with `kClobbered` and pending notifications should notify "
+        "`OnResultChanged()` - observers should know the results were cleared."
         "cleared.");
     controller_.SimulateAutocompletePass(true, false, matches);
     controller_.SimulateAutocompletePass(false, false, matches);
     controller_.observer_->last_default_match_changed = true;
-    controller_.Stop(true);
+    controller_.Stop(AutocompleteStopReason::kClobbered);
     EXPECT_TRUE(controller_.published_result_.empty());
     controller_.ExpectOnResultChanged(
         0, AutocompleteController::UpdateType::kStop);
@@ -1806,7 +2031,7 @@ TEST_F(AutocompleteControllerTest, UpdateResult_ForceAllowedToBeDefault) {
     auto enabled_config = set_feature(true);
     EXPECT_THAT(controller_.SimulateCleanAutocompletePass({
                     CreateSearchMatch("search", true, 200),
-                    CreateKeywordHintMatch("keyword", 1000),
+                    CreateSearchMatch("keyword", false, 1000),
                 }),
                 testing::ElementsAreArray({
                     "search",
@@ -1835,6 +2060,109 @@ TEST_F(AutocompleteControllerTest, UpdateResult_ForceAllowedToBeDefault) {
   }
 }
 
+// Feature not enabled on Android and iOS.
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+TEST_F(AutocompleteControllerTest, UpdateResult_ContextualSuggestionsAndLens) {
+  // Enable contextual suggestions.
+  omnibox_feature_configs::ScopedConfigForTesting<
+      omnibox_feature_configs::ContextualSearch>
+      contextual_search_config;
+  contextual_search_config.Get().contextual_zps_limit = 3;
+  contextual_search_config.Get().show_open_lens_action = true;
+  contextual_search_config.Get().use_apc_paywall_signal = true;
+  contextual_search_config.Get().show_suggestions_on_no_apc = true;
+
+  // Populate TemplateURLService with a keyword.
+  TemplateURLData turl_data;
+  turl_data.SetShortName(u"Keyword");
+  turl_data.SetKeyword(u"keyword");
+  turl_data.SetURL("https://google.com/search?q={searchTerms}");
+  controller_.template_url_service_->Add(
+      std::make_unique<TemplateURL>(turl_data));
+
+  // Create a zero-suggest input.
+  AutocompleteInput zps_input(u"", 0u, metrics::OmniboxEventProto::OTHER,
+                              TestSchemeClassifier());
+  zps_input.set_focus_type(metrics::OmniboxFocusType::INTERACTION_FOCUS);
+
+  std::vector<AutocompleteMatch> provider_matches = {
+      CreatePersonalizedZeroPrefixMatch("zps_base", 1450),
+      CreateContextualSearchMatch(u"zps_contextual 1"),
+      CreateContextualSearchMatch(u"zps_contextual 2"),
+      CreateLensActionMatch(u"lens")};
+
+  // Helper to check results
+  auto check_results = [&](bool expect_contextual, bool expect_lens) {
+    bool actual_contextual = false;
+    bool actual_lens = false;
+    for (const auto& match : controller_.published_result_) {
+      if (match.subtypes.count(omnibox::SUBTYPE_CONTEXTUAL_SEARCH)) {
+        actual_contextual = true;
+      }
+      if (match.takeover_action &&
+          match.takeover_action->ActionId() ==
+              OmniboxActionId::CONTEXTUAL_SEARCH_OPEN_LENS) {
+        actual_lens = true;
+      }
+    }
+    EXPECT_EQ(actual_contextual, expect_contextual);
+    EXPECT_EQ(actual_lens, expect_lens);
+  };
+
+  // Lens is active. No contextual suggestions nor Lens entrypoint.
+  {
+    SCOPED_TRACE("Lens is active");
+    EXPECT_CALL(*provider_client(), AreLensEntrypointsVisible())
+        .WillRepeatedly(testing::Return(false));
+    EXPECT_CALL(*provider_client(), IsPagePaywalled())
+        .WillRepeatedly(testing::Return(false));
+
+    controller_.SimulateAutocompletePass(/*sync=*/true, /*done=*/true,
+                                         provider_matches, zps_input);
+    check_results(/*expect_contextual=*/false, /*expect_lens=*/false);
+  }
+
+  // Lens is inactive. Contextual suggestions and Lens entrypoint.
+  {
+    SCOPED_TRACE("Lens is inactive");
+    EXPECT_CALL(*provider_client(), AreLensEntrypointsVisible())
+        .WillRepeatedly(testing::Return(true));
+    EXPECT_CALL(*provider_client(), IsPagePaywalled())
+        .WillRepeatedly(testing::Return(false));
+
+    controller_.SimulateAutocompletePass(/*sync=*/true, /*done=*/true,
+                                         provider_matches, zps_input);
+    check_results(/*expect_contextual=*/true, /*expect_lens=*/true);
+  }
+
+  // Page is paywalled. No contextual suggestions but has Lens entrypoint.
+  {
+    SCOPED_TRACE("Page is paywalled");
+    EXPECT_CALL(*provider_client(), AreLensEntrypointsVisible())
+        .WillRepeatedly(testing::Return(true));
+    EXPECT_CALL(*provider_client(), IsPagePaywalled())
+        .WillRepeatedly(testing::Return(true));
+
+    controller_.SimulateAutocompletePass(/*sync=*/true, /*done=*/true,
+                                         provider_matches, zps_input);
+    check_results(/*expect_contextual=*/false, /*expect_lens=*/true);
+  }
+
+  // Paywall is unknown. Contextual suggestions and Lens entrypoint.
+  {
+    SCOPED_TRACE("Paywall status is unknown");
+    EXPECT_CALL(*provider_client(), AreLensEntrypointsVisible())
+        .WillRepeatedly(testing::Return(true));
+    EXPECT_CALL(*provider_client(), IsPagePaywalled())
+        .WillRepeatedly(testing::Return(std::nullopt));
+
+    controller_.SimulateAutocompletePass(/*sync=*/true, /*done=*/true,
+                                         provider_matches, zps_input);
+    check_results(/*expect_contextual=*/true, /*expect_lens=*/true);
+  }
+}
+#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+
 TEST_F(AutocompleteControllerTest, ExtraHeaders) {
   // Populate TemplateURLService with a keyword.
   {
@@ -1847,7 +2175,8 @@ TEST_F(AutocompleteControllerTest, ExtraHeaders) {
   }
 
   // Populate template URL service with starter pack entries.
-  for (auto& turl_data : TemplateURLStarterPackData::GetStarterPackEngines()) {
+  for (auto& turl_data :
+       template_url_starter_pack_data::GetStarterPackEngines()) {
     controller_.template_url_service_->Add(
         std::make_unique<TemplateURL>(std::move(*turl_data)));
   }
@@ -1864,7 +2193,9 @@ TEST_F(AutocompleteControllerTest, ExtraHeaders) {
         std::make_unique<TemplateURLRef::SearchTermsArgs>(u"search term");
 
     controller_.SetMatchDestinationURL(&match);
-    EXPECT_EQ(match.extra_headers, "X-Omnibox-Gemini:search%20term");
+    EXPECT_THAT(
+        match.extra_headers,
+        WhenSorted(ElementsAre(Pair("X-Omnibox-Gemini", "search%20term"))));
     EXPECT_EQ(match.destination_url, expected_gemini_url);
   }
   {
@@ -1881,7 +2212,9 @@ TEST_F(AutocompleteControllerTest, ExtraHeaders) {
         std::make_unique<TemplateURLRef::SearchTermsArgs>(u"search term?");
 
     controller_.SetMatchDestinationURL(&match);
-    EXPECT_EQ(match.extra_headers, "X-Omnibox-Gemini:search%20term%3F");
+    EXPECT_THAT(
+        match.extra_headers,
+        WhenSorted(ElementsAre(Pair("X-Omnibox-Gemini", "search%20term%3F"))));
     EXPECT_EQ(match.destination_url, "https://example.com/");
   }
   {
@@ -1892,7 +2225,9 @@ TEST_F(AutocompleteControllerTest, ExtraHeaders) {
         std::make_unique<TemplateURLRef::SearchTermsArgs>(u"search term\n");
 
     controller_.SetMatchDestinationURL(&match);
-    EXPECT_EQ(match.extra_headers, "X-Omnibox-Gemini:search%20term%0A");
+    EXPECT_THAT(
+        match.extra_headers,
+        WhenSorted(ElementsAre(Pair("X-Omnibox-Gemini", "search%20term%0A"))));
     EXPECT_EQ(match.destination_url, expected_gemini_url);
   }
   {
@@ -1903,8 +2238,10 @@ TEST_F(AutocompleteControllerTest, ExtraHeaders) {
         u"what is http://example.com for?");
 
     controller_.SetMatchDestinationURL(&match);
-    EXPECT_EQ(match.extra_headers,
-              "X-Omnibox-Gemini:what%20is%20http%3A%2F%2Fexample.com%20for%3F");
+    EXPECT_THAT(match.extra_headers,
+                WhenSorted(ElementsAre(
+                    Pair("X-Omnibox-Gemini",
+                         "what%20is%20http%3A%2F%2Fexample.com%20for%3F"))));
     EXPECT_EQ(match.destination_url, expected_gemini_url);
   }
   {
@@ -1915,9 +2252,10 @@ TEST_F(AutocompleteControllerTest, ExtraHeaders) {
         std::make_unique<TemplateURLRef::SearchTermsArgs>(u"こんにちは\n");
 
     controller_.SetMatchDestinationURL(&match);
-    EXPECT_EQ(
-        match.extra_headers,
-        "X-Omnibox-Gemini:%E3%81%93%E3%82%93%E3%81%AB%E3%81%A1%E3%81%AF%0A");
+    EXPECT_THAT(match.extra_headers,
+                WhenSorted(ElementsAre(
+                    Pair("X-Omnibox-Gemini",
+                         "%E3%81%93%E3%82%93%E3%81%AB%E3%81%A1%E3%81%AF%0A"))));
     EXPECT_EQ(match.destination_url, expected_gemini_url);
   }
   {
@@ -1928,7 +2266,7 @@ TEST_F(AutocompleteControllerTest, ExtraHeaders) {
         std::make_unique<TemplateURLRef::SearchTermsArgs>(u"search term");
 
     controller_.SetMatchDestinationURL(&match);
-    EXPECT_EQ(match.extra_headers, "");
+    EXPECT_TRUE(match.extra_headers.empty());
     EXPECT_EQ(match.destination_url, "chrome://bookmarks/?q=search+term");
   }
   {
@@ -1936,7 +2274,7 @@ TEST_F(AutocompleteControllerTest, ExtraHeaders) {
     auto match = CreateSearchMatch("search term", true, 1300);
 
     controller_.SetMatchDestinationURL(&match);
-    EXPECT_EQ(match.extra_headers, "");
+    EXPECT_TRUE(match.extra_headers.empty());
     EXPECT_EQ(match.destination_url, "https://google.com/search?q=search+term");
   }
 }
@@ -1949,7 +2287,7 @@ TEST_F(AutocompleteControllerTest, ShouldRunProvider_StarterPack) {
 
   // Populate template URL service with starter pack entries.
   std::vector<std::unique_ptr<TemplateURLData>> turls =
-      TemplateURLStarterPackData::GetStarterPackEngines();
+      template_url_starter_pack_data::GetStarterPackEngines();
   for (auto& turl : turls) {
     controller_.template_url_service_->Add(
         std::make_unique<TemplateURL>(std::move(*turl)));
@@ -1964,8 +2302,7 @@ TEST_F(AutocompleteControllerTest, ShouldRunProvider_StarterPack) {
   }
 
   // Enter keyword mode.
-  controller_.input_.set_keyword_mode_entry_method(
-      metrics::OmniboxEventProto_KeywordModeEntryMethod_TAB);
+  controller_.input_.set_in_keyword_mode(true);
 
   // In @tabs, run search, keyword, and open tab provider only.
   controller_.input_.UpdateText(u"@tabs", 0, {});
@@ -2039,8 +2376,7 @@ TEST_F(AutocompleteControllerTest,
   // In keyword mode, all limit provider params on by default, limit document
   // and history cluster suggestions as well.
   controller_.input_.UpdateText(u"keyword", 0, {});
-  controller_.input_.set_keyword_mode_entry_method(
-      metrics::OmniboxEventProto_KeywordModeEntryMethod_TAB);
+  controller_.input_.set_in_keyword_mode(true);
   excluded_provider_types = {
       AutocompleteProvider::TYPE_OPEN_TAB,
       AutocompleteProvider::TYPE_HISTORY_CLUSTER_PROVIDER,
@@ -2187,8 +2523,7 @@ TEST_F(AutocompleteControllerTest,
   EXPECT_TRUE(controller_.ShouldRunProvider(document_provider.get()));
 
   // Enter keyword mode.
-  controller_.input_.set_keyword_mode_entry_method(
-      metrics::OmniboxEventProto_KeywordModeEntryMethod_TAB);
+  controller_.input_.set_in_keyword_mode(true);
 
   // Aggregator not ran when in site search mode, regardless of
   // `enterprise_search_aggregator_settings.require_shortcut` pref value.
@@ -2230,29 +2565,11 @@ TEST_F(AutocompleteControllerTest,
 
 #if BUILDFLAG(IS_ANDROID)
 TEST_F(AutocompleteControllerTest, ShouldRunProvider_AndroidHubSearch) {
-  // For Lens searchboxes, run search provider only.
+  // Include bookmarks and history as default providers for hub search.
   std::set<AutocompleteProvider::Type> expected_provider_types = {
-      AutocompleteProvider::TYPE_SEARCH, AutocompleteProvider::TYPE_OPEN_TAB};
-
-  controller_.input_ =
-      AutocompleteInput(u"a", 1u, metrics::OmniboxEventProto::ANDROID_HUB,
-                        TestSchemeClassifier());
-  for (auto& provider : controller_.providers()) {
-    EXPECT_EQ(controller_.ShouldRunProvider(provider.get()),
-              expected_provider_types.contains(provider->type()))
-        << "Provider Type: "
-        << AutocompleteProvider::TypeToString(provider->type());
-  }
-
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeatureWithParameters(
-      omnibox::kAndroidHubSearch, {{"enable_bookmark_provider", "true"},
-                                   {"enable_history_provider", "true"}});
-
-  expected_provider_types = {AutocompleteProvider::TYPE_SEARCH,
-                             AutocompleteProvider::TYPE_OPEN_TAB,
-                             AutocompleteProvider::TYPE_BOOKMARK,
-                             AutocompleteProvider::TYPE_HISTORY_QUICK};
+      AutocompleteProvider::TYPE_SEARCH, AutocompleteProvider::TYPE_OPEN_TAB,
+      AutocompleteProvider::TYPE_BOOKMARK,
+      AutocompleteProvider::TYPE_HISTORY_QUICK};
 
   controller_.input_ =
       AutocompleteInput(u"a", 1u, metrics::OmniboxEventProto::ANDROID_HUB,
@@ -2266,41 +2583,7 @@ TEST_F(AutocompleteControllerTest, ShouldRunProvider_AndroidHubSearch) {
 }
 #endif
 
-TEST_F(AutocompleteControllerTest, UpdateSearchboxStatsForAnswerAction) {
-  // Populate TemplateURLService with a keyword.
-  TemplateURLData turl_data;
-  turl_data.SetShortName(u"Keyword");
-  turl_data.SetKeyword(u"keyword");
-  turl_data.SetURL("https://google.com/search?q={searchTerms}");
-  controller_.template_url_service_->Add(
-      std::make_unique<TemplateURL>(turl_data));
-
-  omnibox::SuggestionEnhancement enhancement;
-  enhancement.set_display_text("Similar and opposite words");
-  auto answer_action = base::MakeRefCounted<OmniboxAnswerAction>(
-      std::move(enhancement), TemplateURLRef::SearchTermsArgs(),
-      omnibox::ANSWER_TYPE_DICTIONARY);
-  AutocompleteMatch match1 = CreateSearchMatch("match1", true, 1300);
-  match1.actions.push_back(answer_action);
-
-  controller_.Stop(true);
-  EXPECT_THAT(controller_.SimulateAutocompletePass(
-                  /*sync=*/true, /*done=*/true,
-                  {match1, CreateSearchMatch("match2", true, 1200),
-                   CreateSearchMatch("match3", true, 1100)}),
-              testing::ElementsAreArray({
-                  "match1",
-                  "match2",
-                  "match3",
-              }));
-
-  EXPECT_EQ(
-      answer_action->search_terms_args.searchbox_stats.SerializeAsString(),
-      controller_.published_result_.match_at(0)
-          ->search_terms_args->searchbox_stats.SerializeAsString());
-}
-
-// Anroid and iOS have different handling for pedals.
+// Android and iOS have different handling for pedals.
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 TEST_F(AutocompleteControllerTest, NoActionsAttachedToLensSearchboxMatches) {
   std::unordered_map<OmniboxPedalId, scoped_refptr<OmniboxPedal>> pedals;
@@ -2360,6 +2643,235 @@ TEST_F(AutocompleteControllerTest, NoActionsAttachedToLensSearchboxMatches) {
 }
 #endif
 
+// Android and iOS have different handling for pedals.
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+TEST_F(AutocompleteControllerTest, NoActionsAttachedToNtpComposeboxMatches) {
+  // Create input with lens searchbox page classification.
+  controller_.input_ = AutocompleteInput(
+      u"Clear History", metrics::OmniboxEventProto::NTP_COMPOSEBOX,
+      TestSchemeClassifier());
+
+  SetAutocompleteMatches(
+      {CreateSearchMatch(u"search 2"),
+       CreateHistoryURLMatch(
+           /*destination_url=*/"http://this-site-matches.com")});
+
+  static_cast<FakeTabMatcher&>(
+      const_cast<TabMatcher&>(provider_client()->GetTabMatcher()))
+      .set_url_substring_match("matches");
+
+  controller_.AttachActions();
+
+  // For a Lens Searchbox, AttachActions shouldn't attach a switch to this tab
+  // action to the last match.
+  EXPECT_FALSE(
+      controller_.internal_result_.match_at(1)->has_tab_match.value_or(false));
+
+  controller_.input_ =
+      AutocompleteInput(u"Clear History", metrics::OmniboxEventProto::OTHER,
+                        TestSchemeClassifier());
+
+  SetAutocompleteMatches(
+      {CreateSearchMatch(u"Clear History"),
+       CreateHistoryURLMatch(
+           /*destination_url=*/"http://this-site-matches.com")});
+
+  controller_.AttachActions();
+
+  // For any other page classification, AttachActions should attach a switch
+  // to this tab action to the relevant matches.
+  EXPECT_TRUE(
+      controller_.internal_result_.match_at(1)->has_tab_match.value_or(false));
+}
+#endif
+
+// Feature not enabled on Android and iOS.
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+TEST_F(AutocompleteControllerTest,
+       ContextualSearchActionAttachedPageKeywordMode) {
+  // Create a pedal provider to ensure that the contextual search action takes
+  // precedence over the pedal.
+  std::unordered_map<OmniboxPedalId, scoped_refptr<OmniboxPedal>> pedals;
+  const auto add = [&](OmniboxPedal* pedal) {
+    pedals.insert(
+        std::make_pair(pedal->PedalId(), base::WrapRefCounted(pedal)));
+  };
+  add(new TestOmniboxPedalClearBrowsingData());
+  provider_client()->set_pedal_provider(std::make_unique<OmniboxPedalProvider>(
+      *provider_client(), std::move(pedals)));
+  EXPECT_NE(nullptr, provider_client()->GetPedalProvider());
+
+  // Populate template URL service with starter pack entries.
+  for (auto& turl_data :
+       template_url_starter_pack_data::GetStarterPackEngines()) {
+    controller_.template_url_service_->Add(
+        std::make_unique<TemplateURL>(std::move(*turl_data)));
+  }
+
+  // Create input with lens searchbox page classification.
+  controller_.input_ =
+      AutocompleteInput(u"@page Summar", metrics::OmniboxEventProto::OTHER,
+                        TestSchemeClassifier());
+  controller_.input_.set_in_keyword_mode(true);
+
+  SetAutocompleteMatches({CreateContextualSearchMatch(u"Summary"),
+                          CreateContextualSearchMatch(u"Summarize this page")});
+
+  static_cast<FakeTabMatcher&>(
+      const_cast<TabMatcher&>(provider_client()->GetTabMatcher()))
+      .set_url_substring_match("matches");
+
+  controller_.AttachActions();
+
+  // The takeover action should be for the contextual search action, not pedals.
+  ASSERT_TRUE(controller_.internal_result_.match_at(0)->takeover_action);
+  EXPECT_EQ(
+      OmniboxActionId::CONTEXTUAL_SEARCH_FULFILLMENT,
+      controller_.internal_result_.match_at(0)->takeover_action->ActionId());
+  ASSERT_TRUE(controller_.internal_result_.match_at(1)->takeover_action);
+  EXPECT_EQ(
+      OmniboxActionId::CONTEXTUAL_SEARCH_FULFILLMENT,
+      controller_.internal_result_.match_at(1)->takeover_action->ActionId());
+}
+
+TEST_F(AutocompleteControllerTest, ContextualQueryAppendsSearchboxStats) {
+  omnibox_feature_configs::ScopedConfigForTesting<
+      omnibox_feature_configs::ContextualSearch>
+      contextual_search_config;
+  contextual_search_config.Get().contextual_zero_suggest_lens_fulfillment =
+      true;
+  TemplateURLData turl_data;
+  turl_data.SetShortName(u"Contextual");
+  turl_data.SetKeyword(u"contextual");
+  turl_data.SetURL(
+      "https://google.com/search?q={searchTerms}&{google:assistedQueryStats}");
+  controller_.template_url_service_->Add(
+      std::make_unique<TemplateURL>(turl_data));
+
+  // Inject zero suggest provider to supply fake experiment stats.
+  scoped_refptr<ZeroSuggestProvider> zero_suggest_provider =
+      base::MakeRefCounted<ZeroSuggestProvider>(provider_client(),
+                                                &controller_);
+  controller_.providers_.push_back(zero_suggest_provider);
+  controller_.zero_suggest_provider_ = zero_suggest_provider.get();
+
+  omnibox::metrics::ChromeSearchboxStats::ExperimentStatsV2 stat;
+  stat.set_type_int(12345);
+  stat.set_string_value("dummy:stat");
+  const_cast<SearchSuggestionParser::ExperimentStatsV2s&>(
+      zero_suggest_provider->experiment_stats_v2s())
+      .push_back(stat);
+
+  // Create input with lens searchbox page classification.
+  controller_.input_ = AutocompleteInput(u"", metrics::OmniboxEventProto::OTHER,
+                                         TestSchemeClassifier());
+  controller_.input_.set_focus_type(
+      metrics::OmniboxFocusType::INTERACTION_FOCUS);
+
+  SetAutocompleteMatches(
+      {CreateZeroSuggestContextualSearchMatch(u"Summary"),
+       CreateZeroSuggestContextualSearchMatch(u"Summarize this page")});
+
+  controller_.AttachActions();
+  UpdateSearchboxStats();
+
+  // The takeover action should be for the contextual search action, not pedals.
+  ASSERT_TRUE(controller_.internal_result_.match_at(0)->takeover_action);
+  auto* contextual_takover_action_0 =
+      ContextualSearchFulfillmentAction::FromAction(
+          controller_.internal_result_.match_at(0)->takeover_action.get());
+  EXPECT_EQ(OmniboxActionId::CONTEXTUAL_SEARCH_FULFILLMENT,
+            contextual_takover_action_0->ActionId());
+
+  const GURL fulfillment_url =
+      contextual_takover_action_0->get_fulfillment_url_for_testing();
+  EXPECT_TRUE(fulfillment_url.spec().contains("gs_lcrp="));
+
+  // Manually decode and verify the proto contains our specific
+  // ExperimentStatsV2.
+  std::string encoded_proto;
+  EXPECT_TRUE(
+      net::GetValueForKeyInQuery(fulfillment_url, "gs_lcrp", &encoded_proto));
+
+  std::string serialized_proto;
+  EXPECT_TRUE(base::Base64UrlDecode(
+      encoded_proto, base::Base64UrlDecodePolicy::DISALLOW_PADDING,
+      &serialized_proto));
+
+  omnibox::metrics::ChromeSearchboxStats stats;
+  EXPECT_TRUE(stats.ParseFromString(serialized_proto));
+
+  // Confirm experiment stats were included properly into the encoded proto URL.
+  ASSERT_EQ(1, stats.experiment_stats_v2_size());
+  EXPECT_EQ(12345, stats.experiment_stats_v2(0).type_int());
+  // Verify that the ':' colon replacement was enforced logic side.
+  EXPECT_EQ("dummy,stat", stats.experiment_stats_v2(0).string_value());
+}
+
+TEST_F(AutocompleteControllerTest,
+       ContextualSearchActionAttachedInZeroSuggest) {
+  omnibox_feature_configs::ScopedConfigForTesting<
+      omnibox_feature_configs::ContextualSearch>
+      contextual_search_config;
+  contextual_search_config.Get().contextual_zero_suggest_lens_fulfillment =
+      true;
+
+  EXPECT_CALL(*provider_client(), IsLensEnabled())
+      .WillRepeatedly(testing::Return(true));
+
+  // Create a pedal provider to ensure that the contextual search action takes
+  // precedence over the pedal.
+  std::unordered_map<OmniboxPedalId, scoped_refptr<OmniboxPedal>> pedals;
+  const auto add = [&](OmniboxPedal* pedal) {
+    pedals.insert(
+        std::make_pair(pedal->PedalId(), base::WrapRefCounted(pedal)));
+  };
+  add(new TestOmniboxPedalClearBrowsingData());
+  provider_client()->set_pedal_provider(std::make_unique<OmniboxPedalProvider>(
+      *provider_client(), std::move(pedals)));
+  EXPECT_NE(nullptr, provider_client()->GetPedalProvider());
+
+  // Create input for zero suggest.
+  controller_.input_ = AutocompleteInput(u"", metrics::OmniboxEventProto::OTHER,
+                                         TestSchemeClassifier());
+  controller_.input_.set_focus_type(
+      metrics::OmniboxFocusType::INTERACTION_FOCUS);
+
+  // Create ZPS matches.
+  auto contextual_search_match_1 =
+      CreatePersonalizedZeroPrefixMatch("contextual search match 1", 1450);
+  contextual_search_match_1.subtypes.insert(omnibox::SUBTYPE_CONTEXTUAL_SEARCH);
+  auto contextual_search_match_2 =
+      CreatePersonalizedZeroPrefixMatch("contextual search match 2", 1450);
+  contextual_search_match_2.subtypes.insert(omnibox::SUBTYPE_CONTEXTUAL_SEARCH);
+
+  SetAutocompleteMatches(
+      {CreatePersonalizedZeroPrefixMatch("normal zps match 1", 1200),
+       contextual_search_match_1, contextual_search_match_2,
+       CreatePersonalizedZeroPrefixMatch("noormal zps match 1", 1550)});
+
+  static_cast<FakeTabMatcher&>(
+      const_cast<TabMatcher&>(provider_client()->GetTabMatcher()))
+      .set_url_substring_match("matches");
+
+  controller_.AttachActions();
+
+  // The takeover action should be for the contextual suggestions, but not
+  // others.
+  EXPECT_FALSE(controller_.internal_result_.match_at(0)->takeover_action);
+  EXPECT_FALSE(controller_.internal_result_.match_at(3)->takeover_action);
+
+  ASSERT_TRUE(controller_.internal_result_.match_at(1)->takeover_action);
+  EXPECT_EQ(
+      OmniboxActionId::CONTEXTUAL_SEARCH_FULFILLMENT,
+      controller_.internal_result_.match_at(1)->takeover_action->ActionId());
+  ASSERT_TRUE(controller_.internal_result_.match_at(2)->takeover_action);
+  EXPECT_EQ(
+      OmniboxActionId::CONTEXTUAL_SEARCH_FULFILLMENT,
+      controller_.internal_result_.match_at(2)->takeover_action->ActionId());
+}
+#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+
 TEST_F(AutocompleteControllerTest, UpdateAssociatedKeywords) {
   controller_.keyword_provider_ =
       new KeywordProvider(provider_client(), nullptr);
@@ -2388,8 +2900,13 @@ TEST_F(AutocompleteControllerTest, UpdateAssociatedKeywords) {
 
   auto test = [&](const std::u16string input_text,
                   const std::u16string input_keyword,
-                  std::vector<MatchData> match_datas) {
+                  std::vector<MatchData> match_datas,
+                  bool is_zero_suggest = false) {
     controller_.input_ = FakeAutocompleteController::CreateInput(input_text);
+    if (is_zero_suggest) {
+      controller_.input_.set_focus_type(
+          metrics::OmniboxFocusType::INTERACTION_FOCUS);
+    }
     AutocompleteResult result;
     for (const auto& match_data : match_datas) {
       AutocompleteMatch match;
@@ -2405,8 +2922,7 @@ TEST_F(AutocompleteControllerTest, UpdateAssociatedKeywords) {
 
     std::vector<std::u16string> attached_keywords;
     for (const auto& match : result) {
-      attached_keywords.push_back(
-          match.associated_keyword ? match.associated_keyword->keyword : u"");
+      attached_keywords.push_back(match.associated_keyword);
     }
     return attached_keywords;
   };
@@ -2472,4 +2988,438 @@ TEST_F(AutocompleteControllerTest, UpdateAssociatedKeywords) {
       test(u"input", u"",
            {{u"keywo"}, {u"keyword_0_underscore"}, {u"keyword_0 space"}}),
       testing::ElementsAreArray({u"", u"", u"keyword_0"}));
+
+  EXPECT_THAT(test(u"", u"",
+                   {{u"keywo", AutocompleteMatchType::Type::NAVSUGGEST},
+                    {u"keyword_0_underscore"},
+                    {u"keyword_0 space"}},
+                   /*is_zero_suggest=*/true),
+              testing::ElementsAreArray({u"", u"", u""}));
+}
+
+// Helper function to create a basic AutocompleteMatch for testing default match
+// changes.
+AutocompleteMatch CreateDefaultMatch(std::u16string fill_into_edit,
+                                     GURL icon_url,
+                                     std::u16string associated_keyword,
+                                     std::u16string keyword) {
+  AutocompleteMatch match;
+  match.fill_into_edit = fill_into_edit;
+  match.icon_url = icon_url;
+  match.associated_keyword = associated_keyword;
+  match.keyword = keyword;
+
+  // Set other fields to make it a plausible default match
+  match.relevance = 1000;
+  match.allowed_to_be_default_match = true;
+  match.destination_url =
+      GURL("https://foo.com/" + base::UTF16ToUTF8(match.fill_into_edit));
+
+  return match;
+}
+
+TEST_F(AutocompleteControllerTest, CheckWhetherDefaultMatchChanged) {
+  // Helper lambda to set the internal default match
+  auto set_current_default = [&](std::optional<AutocompleteMatch> match) {
+    controller_.internal_result_.ClearMatches();  // Clear previous matches
+    if (match) {
+      controller_.internal_result_.AppendMatches({*match});
+    }
+  };
+
+  // Helper lambda to call the private method under test
+  auto check_change =
+      [&](std::optional<AutocompleteMatch> last_default_match,
+          const std::u16string& last_default_associated_keyword) {
+        // Reset timestamp before check
+        controller_.last_time_default_match_changed_ = base::TimeTicks();
+        bool changed = controller_.CheckWhetherDefaultMatchChanged(
+            last_default_match, last_default_associated_keyword);
+        // Check if timestamp was updated only if a change was detected
+        if (changed) {
+          EXPECT_NE(controller_.last_time_default_match_changed_,
+                    base::TimeTicks());
+        } else {
+          EXPECT_EQ(controller_.last_time_default_match_changed_,
+                    base::TimeTicks());
+        }
+        return changed;
+      };
+
+  {
+    // No change: Both null
+    set_current_default(std::nullopt);
+    EXPECT_FALSE(check_change(std::nullopt, u""));
+  }
+  {
+    // No change: Both exist and are identical
+    auto match = CreateDefaultMatch(u"test1", GURL("https://www.foo.com/icon1"),
+                                    u"assoc1", u"key1");
+    set_current_default(match);
+    EXPECT_FALSE(check_change(match, u"assoc1"));
+  }
+  {
+    // No change: Irrelevant fields differ (e.g., relevance)
+    auto match = CreateDefaultMatch(u"test1", GURL("https://www.foo.com/icon1"),
+                                    u"assoc1", u"key1");
+    auto match_different_relevance = match;
+    match_different_relevance.relevance = 900;
+    set_current_default(match);
+    EXPECT_FALSE(check_change(match_different_relevance, u"assoc1"));
+  }
+  {
+    // Change: Existence (last had value, current doesn't)
+    auto match = CreateDefaultMatch(u"test1", GURL("https://www.foo.com/icon1"),
+                                    u"assoc1", u"key1");
+    set_current_default(std::nullopt);
+    EXPECT_TRUE(check_change(match, u"assoc1"));
+  }
+  {
+    // Change: Existence (last didn't have value, current does)
+    auto match = CreateDefaultMatch(u"test1", GURL("https://www.foo.com/icon1"),
+                                    u"assoc1", u"key1");
+    set_current_default(match);
+    EXPECT_TRUE(check_change(std::nullopt, u""));
+  }
+  {
+    // Change: fill_into_edit differs
+    auto match = CreateDefaultMatch(u"test1", GURL("https://www.foo.com/icon1"),
+                                    u"assoc1", u"key1");
+    auto match_different_fill_into_edit = CreateDefaultMatch(
+        u"test2", GURL("https://www.foo.com/icon1"), u"assoc1", u"key1");
+    set_current_default(match_different_fill_into_edit);
+    EXPECT_TRUE(check_change(match, u"assoc1"));
+  }
+  {
+    // Change: icon_url differs
+    auto match = CreateDefaultMatch(u"test1", GURL("https://www.foo.com/icon1"),
+                                    u"assoc1", u"key1");
+    auto match_different_icon_url = CreateDefaultMatch(
+        u"test1", GURL("https://www.foo.com/icon2"), u"assoc1", u"key1");
+    set_current_default(match_different_icon_url);
+    EXPECT_TRUE(check_change(match, u"assoc1"));
+  }
+  {
+    // Change: associated_keyword existence differs (last had, current doesn't)
+    auto match = CreateDefaultMatch(u"test1", GURL("https://www.foo.com/icon1"),
+                                    u"assoc1", u"key1");
+    auto match_no_associated_keyword = CreateDefaultMatch(
+        u"test1", GURL("https://www.foo.com/icon1"), u"", u"key1");
+    set_current_default(match_no_associated_keyword);
+    EXPECT_TRUE(check_change(match, u"assoc1"));
+  }
+  {
+    // Change: associated_keyword existence differs (last didn't, current does)
+    auto match = CreateDefaultMatch(u"test1", GURL("https://www.foo.com/icon1"),
+                                    u"assoc1", u"key1");
+    auto match_no_associated_keyword = CreateDefaultMatch(
+        u"test1", GURL("https://www.foo.com/icon1"), u"", u"key1");
+    set_current_default(match);
+    EXPECT_TRUE(
+        check_change(match_no_associated_keyword, u""));  // double check this
+  }
+  {
+    // Change: associated_keyword differs
+    auto match = CreateDefaultMatch(u"test1", GURL("https://www.foo.com/icon1"),
+                                    u"assoc1", u"key1");
+    auto match_different_associated_keyword = CreateDefaultMatch(
+        u"test1", GURL("https://www.foo.com/icon1"), u"assoc2", u"key1");
+    set_current_default(match_different_associated_keyword);
+    EXPECT_TRUE(check_change(match, u"assoc1"));
+  }
+  {
+    // No change: associated_keyword same
+    auto match = CreateDefaultMatch(u"test1", GURL("https://www.foo.com/icon1"),
+                                    u"assoc1", u"key1");
+    set_current_default(match);
+    EXPECT_FALSE(check_change(match, u"assoc1"));
+  }
+  {
+    // Change: keyword differs
+    auto match = CreateDefaultMatch(u"test1", GURL("https://www.foo.com/icon1"),
+                                    u"assoc1", u"key1");
+    auto match_different_keyword = CreateDefaultMatch(
+        u"test1", GURL("https://www.foo.com/icon1"), u"assoc1", u"key2");
+    set_current_default(match_different_keyword);
+    EXPECT_TRUE(check_change(match, u"assoc1"));
+  }
+  {
+    // No change: keyword same
+    auto match = CreateDefaultMatch(u"test1", GURL("https://www.foo.com/icon1"),
+                                    u"assoc1", u"key1");
+    set_current_default(match);
+    EXPECT_FALSE(check_change(match, u"assoc1"));
+  }
+}
+
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+TEST_F(AutocompleteControllerTest,
+       AttachContextualSearchOpenLensActionToMatches) {
+  omnibox_feature_configs::ScopedConfigForTesting<
+      omnibox_feature_configs::ContextualSearch>
+      contextual_search_config;
+  contextual_search_config.Get().contextual_zero_suggest_lens_fulfillment =
+      true;
+  contextual_search_config.Get().suggestions_fulfilled_by_lens_supported = true;
+
+  // Create a zero-suggest input.
+  controller_.input_ = AutocompleteInput(u"", metrics::OmniboxEventProto::OTHER,
+                                         TestSchemeClassifier());
+  controller_.input_.set_focus_type(
+      metrics::OmniboxFocusType::INTERACTION_FOCUS);
+
+  ACMatches matches;
+
+  // Match 1: Contextual search suggestion with Lens action.
+  AutocompleteMatch match1;
+  match1.subtypes.insert(omnibox::SuggestSubtype::SUBTYPE_CONTEXTUAL_SEARCH);
+  match1.suggest_template = omnibox::SuggestTemplateInfo();
+  auto* action1 = match1.suggest_template->add_action_suggestions();
+  action1->set_action_type(
+      omnibox::SuggestTemplateInfo_TemplateAction_ActionType_CHROME_LENS);
+  matches.push_back(match1);
+
+  // Match 2: Contextual search suggestion without Lens action.
+  AutocompleteMatch match2;
+  match2.subtypes.insert(omnibox::SuggestSubtype::SUBTYPE_CONTEXTUAL_SEARCH);
+  matches.push_back(match2);
+
+  // Match 3: Non-contextual search suggestion with Lens action.
+  AutocompleteMatch match3;
+  match3.suggest_template = omnibox::SuggestTemplateInfo();
+  auto* action3 = match3.suggest_template->add_action_suggestions();
+  action3->set_action_type(
+      omnibox::SuggestTemplateInfo_TemplateAction_ActionType_CHROME_LENS);
+  matches.push_back(match3);
+
+  // Match 4: Non-contextual search suggestion without Lens action.
+  AutocompleteMatch match4;
+  matches.push_back(match4);
+
+  SetAutocompleteMatches(matches);
+  controller_.AttachActions();
+
+  ASSERT_EQ(4u, controller_.internal_result_.size());
+
+  // Match 1 should have the open Lens takeover action.
+  EXPECT_TRUE(controller_.internal_result_.match_at(0)->takeover_action);
+  EXPECT_EQ(
+      controller_.internal_result_.match_at(0)->takeover_action->ActionId(),
+      OmniboxActionId::CONTEXTUAL_SEARCH_OPEN_LENS);
+
+  // Others should not.
+  EXPECT_FALSE(
+      controller_.internal_result_.match_at(1)->takeover_action->ActionId() ==
+      OmniboxActionId::CONTEXTUAL_SEARCH_OPEN_LENS);
+  EXPECT_FALSE(controller_.internal_result_.match_at(2)->takeover_action);
+  EXPECT_FALSE(controller_.internal_result_.match_at(3)->takeover_action);
+}
+
+TEST_F(AutocompleteControllerTest,
+       ContextualSearchOpenLensActionAttachedPageKeywordMode) {
+  omnibox_feature_configs::ScopedConfigForTesting<
+      omnibox_feature_configs::ContextualSearch>
+      contextual_search_config;
+  contextual_search_config.Get().suggestions_fulfilled_by_lens_supported = true;
+
+  // Create a pedal provider to ensure that the contextual search action takes
+  // precedence over the pedal.
+  std::unordered_map<OmniboxPedalId, scoped_refptr<OmniboxPedal>> pedals;
+  const auto add = [&](OmniboxPedal* pedal) {
+    pedals.insert(
+        std::make_pair(pedal->PedalId(), base::WrapRefCounted(pedal)));
+  };
+  add(new TestOmniboxPedalClearBrowsingData());
+  provider_client()->set_pedal_provider(std::make_unique<OmniboxPedalProvider>(
+      *provider_client(), std::move(pedals)));
+  EXPECT_NE(nullptr, provider_client()->GetPedalProvider());
+
+  // Populate template URL service with starter pack entries.
+  for (auto& turl_data :
+       template_url_starter_pack_data::GetStarterPackEngines()) {
+    controller_.template_url_service_->Add(
+        std::make_unique<TemplateURL>(std::move(*turl_data)));
+  }
+
+  // Create input with lens searchbox page classification.
+  controller_.input_ =
+      AutocompleteInput(u"@page Summar", metrics::OmniboxEventProto::OTHER,
+                        TestSchemeClassifier());
+  controller_.input_.set_in_keyword_mode(true);
+
+  AutocompleteMatch match1 = CreateContextualSearchMatch(u"Summary");
+  match1.suggest_template = omnibox::SuggestTemplateInfo();
+  auto* action1 = match1.suggest_template->add_action_suggestions();
+  action1->set_action_type(
+      omnibox::SuggestTemplateInfo_TemplateAction_ActionType_CHROME_LENS);
+
+  AutocompleteMatch match2 =
+      CreateContextualSearchMatch(u"Summarize this page");
+  match2.suggest_template = omnibox::SuggestTemplateInfo();
+  auto* action2 = match2.suggest_template->add_action_suggestions();
+  action2->set_action_type(
+      omnibox::SuggestTemplateInfo_TemplateAction_ActionType_CHROME_LENS);
+
+  SetAutocompleteMatches({match1, match2});
+
+  static_cast<FakeTabMatcher&>(
+      const_cast<TabMatcher&>(provider_client()->GetTabMatcher()))
+      .set_url_substring_match("matches");
+
+  controller_.AttachActions();
+
+  // The takeover action should be for the contextual search action, not pedals.
+  ASSERT_TRUE(controller_.internal_result_.match_at(0)->takeover_action);
+  EXPECT_EQ(
+      OmniboxActionId::CONTEXTUAL_SEARCH_OPEN_LENS,
+      controller_.internal_result_.match_at(0)->takeover_action->ActionId());
+  ASSERT_TRUE(controller_.internal_result_.match_at(1)->takeover_action);
+  EXPECT_EQ(
+      OmniboxActionId::CONTEXTUAL_SEARCH_OPEN_LENS,
+      controller_.internal_result_.match_at(1)->takeover_action->ActionId());
+}
+
+TEST_F(AutocompleteControllerTest, SmartComposeClearedWithNewResults) {
+  auto match1 = CreateSearchMatch("match1", true, 1300);
+  EXPECT_THAT(controller_.SimulateAutocompletePass(true, false, {match1}),
+              testing::ElementsAreArray({
+                  "match1",
+              }));
+
+  controller_.internal_result_.set_smart_compose_inline_hint("smart compose!");
+
+  // Verify smart compose field is set initially
+  ASSERT_TRUE(
+      !controller_.internal_result_.smart_compose_inline_hint().empty());
+
+  EXPECT_THAT(controller_.SimulateAutocompletePass(true, false, {match1}),
+              testing::ElementsAreArray({
+                  "match1",
+              }));
+
+  // Smart compose field should not be set after autocomplete pass with no
+  // smart compose result.
+  ASSERT_TRUE(controller_.internal_result_.smart_compose_inline_hint().empty());
+}
+#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+
+
+TEST_F(AutocompleteControllerTest, IncludesSmartComposeStatsInAdditionalStats) {
+  omnibox::metrics::SmartComposeStats stats;
+  stats.set_enabled(true);
+  stats.set_shown_count(1);
+  stats.set_accepted_count(2);
+  stats.set_characters_accepted(3);
+  stats.set_shown_length(4);
+  controller_.SetSmartComposeStats(stats);
+
+  TemplateURLRef::SearchTermsArgs search_terms_args(u"test");
+  controller_.UpdateSearchTermsArgsWithAdditionalSearchboxStats(
+      base::TimeDelta(), search_terms_args);
+
+  ASSERT_TRUE(search_terms_args.searchbox_stats.has_smart_compose_stats());
+  EXPECT_TRUE(
+      search_terms_args.searchbox_stats.smart_compose_stats().enabled());
+  EXPECT_EQ(
+      search_terms_args.searchbox_stats.smart_compose_stats().shown_count(), 1);
+  EXPECT_EQ(
+      search_terms_args.searchbox_stats.smart_compose_stats().accepted_count(),
+      2);
+  EXPECT_EQ(search_terms_args.searchbox_stats.smart_compose_stats()
+                .characters_accepted(),
+            3);
+  EXPECT_EQ(
+      search_terms_args.searchbox_stats.smart_compose_stats().shown_length(),
+      4);
+}
+
+TEST_F(AutocompleteControllerTest, PersistsExperimentStatsV2InSession) {
+  // Inject zero suggest provider to supply fake experiment stats.
+  scoped_refptr<ZeroSuggestProvider> zero_suggest_provider =
+      base::MakeRefCounted<ZeroSuggestProvider>(provider_client(),
+                                                &controller_);
+  controller_.providers_.push_back(zero_suggest_provider);
+  controller_.zero_suggest_provider_ = zero_suggest_provider.get();
+
+  omnibox::metrics::ChromeSearchboxStats::ExperimentStatsV2 stat;
+  stat.set_type_int(12345);
+  stat.set_string_value("dummy:stat");
+  const_cast<SearchSuggestionParser::ExperimentStatsV2s&>(
+      zero_suggest_provider->experiment_stats_v2s())
+      .push_back(stat);
+
+  // Set initial matches (simulating zero-suggest run).
+  TemplateURLData turl_data;
+  turl_data.SetShortName(u"Search");
+  turl_data.SetKeyword(u"search");
+  turl_data.SetURL("https://google.com/search?q={searchTerms}");
+  controller_.template_url_service_->Add(
+      std::make_unique<TemplateURL>(turl_data));
+  AutocompleteMatch match(nullptr, 1100, false,
+                          AutocompleteMatchType::SEARCH_SUGGEST);
+  match.keyword = u"search";
+  match.destination_url = GURL("https://google.com/search?q=foo");
+  match.search_terms_args =
+      std::make_unique<TemplateURLRef::SearchTermsArgs>(u"foo");
+  SetAutocompleteMatches({match});
+
+  // This should populate session-level experiment stats and searchbox_stats.
+  UpdateSearchboxStats();
+
+  ASSERT_EQ(1U,
+            controller_.internal_result_.session().experiment_stats_v2s.size());
+  EXPECT_EQ(12345, controller_.internal_result_.session()
+                       .experiment_stats_v2s[0]
+                       .type_int());
+  EXPECT_EQ("dummy,stat", controller_.internal_result_.session()
+                              .experiment_stats_v2s[0]
+                              .string_value());
+
+  // Run another pass while the provider is still active, to verify that
+  // duplicates are not added to the session data.
+  UpdateSearchboxStats();
+  ASSERT_EQ(1U,
+            controller_.internal_result_.session().experiment_stats_v2s.size());
+
+  // Now, simulate the user typing (which clobbers/stops zero suggest provider).
+  zero_suggest_provider->Stop(AutocompleteStopReason::kClobbered);
+  ASSERT_TRUE(zero_suggest_provider->experiment_stats_v2s().empty());
+
+  // Run another autocomplete pass (e.g. typing query "foo").
+  AutocompleteMatch typed_match(nullptr, 1100, false,
+                                AutocompleteMatchType::SEARCH_SUGGEST);
+  typed_match.keyword = u"search";
+  typed_match.destination_url = GURL("https://google.com/search?q=foo");
+  typed_match.search_terms_args =
+      std::make_unique<TemplateURLRef::SearchTermsArgs>(u"foo");
+  SetAutocompleteMatches({typed_match});
+
+  UpdateSearchboxStats();
+
+  // The session data should still persist the stats.
+  ASSERT_EQ(1U,
+            controller_.internal_result_.session().experiment_stats_v2s.size());
+
+  // And the final searchbox_stats of the match should contain the persisted
+  // stats.
+  const auto& stats = controller_.internal_result_.match_at(0)
+                          ->search_terms_args->searchbox_stats;
+  ASSERT_EQ(1, stats.experiment_stats_v2_size());
+  EXPECT_EQ(12345, stats.experiment_stats_v2(0).type_int());
+  EXPECT_EQ("dummy,stat", stats.experiment_stats_v2(0).string_value());
+}
+
+TEST_F(AutocompleteControllerTest,
+       MaybeProcessInlineLocationSuggestionMatch_ResetsPermission) {
+  AutocompleteMatch match(nullptr, 1100, false,
+                          AutocompleteMatchType::SEARCH_SUGGEST);
+  match.subtypes.insert(omnibox::SUBTYPE_LOCATION_SUGGEST_TRIGGER);
+  match.extra_headers[kXGeoHeader] = "w test";
+  match.destination_url = GURL("https://www.google.com/search?q=coffee");
+
+  controller_.MaybeProcessInlineLocationSuggestionMatch(match);
+
+  EXPECT_EQ(1, provider_client()->reset_geolocation_call_count());
+  EXPECT_EQ(match.destination_url,
+            provider_client()->last_reset_geolocation_url());
 }

@@ -64,11 +64,7 @@ template("in_process_fuzzer") {
 
       msan_options = sanitizer_options
 
-      # Again, these are full browser tests, so it needs a fairly high memory
-      # limit so that it runs correctly.
       libfuzzer_options = [
-        "rss_limit_mb=8192",
-
         # We can't allow libfuzzer to fork because these fuzzers may have
         # pre-existing threads. See crbug.com/325928325
         "fork=0",
@@ -96,12 +92,16 @@ template("in_process_fuzzer") {
         # using this option doesn't help.
         "fork_server=0",
 
-        "rss_limit_mb=8192",
-
         # This value is the one used by CF for Centipede fuzzers.
         # Default computed timeout per batch is ridiculously low (1127, which
         # means ~1.1 sec per input average) for those fuzzers.
         "timeout_per_batch=8400",
+
+        # Those big fuzzers are likely to be flaky on test case sequence
+        # execution, but unlikely to crash while executing inputs one-by-one.
+        # Since those are super slow, let's not waste time re-running the whole
+        # batches.
+        "batch_triage_suspect_only=1",
       ]
 
       if (defined(invoker.asan_options)) {

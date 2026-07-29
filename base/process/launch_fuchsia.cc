@@ -15,6 +15,7 @@
 #include <tuple>
 
 #include "base/command_line.h"
+#include "base/containers/span.h"
 #include "base/files/file_util.h"
 #include "base/fuchsia/default_job.h"
 #include "base/fuchsia/file_utils.h"
@@ -24,7 +25,7 @@
 #include "base/process/environment_internal.h"
 #include "base/scoped_generic.h"
 #include "base/threading/scoped_blocking_call.h"
-#include "base/trace_event/base_tracing.h"
+#include "base/trace_event/trace_event.h"
 
 namespace base {
 
@@ -183,11 +184,17 @@ Process LaunchProcess(const std::vector<std::string>& argv,
   // By default the calling process' environment is copied, and the collated
   // modifications applied, to create the new process' environment. If
   // |clear_environment| is set then only the collated modifications are used.
-  char* const kEmptyEnviron = nullptr;
-  char* const* old_environ =
-      options.clear_environment ? &kEmptyEnviron : environ;
-  base::HeapArray<char*> new_environ =
-      internal::AlterEnvironment(old_environ, environ_modifications);
+  base::span<const char* const> old_environ;
+  if (!options.clear_environment) {
+    old_environ = internal::GetEnvironment();
+  }
+  // SAFETY: AlterEnvironment() requires each string in the input span to be
+  // null-terminated. internal::GetEnvironment() promises in its header
+  // contract (see environment_internal.h) that each string it returns is
+  // null-terminated, satisfying this requirement. See:
+  // https://man7.org/linux/man-pages/man7/environ.7.html
+  base::HeapArray<char*> new_environ = UNSAFE_BUFFERS(
+      internal::AlterEnvironment(old_environ, environ_modifications));
 
   // Always clone the library loader service and UTC clock to new processes,
   // in addition to any flags specified by the caller.
@@ -301,6 +308,12 @@ bool GetAppOutputWithExitCode(const CommandLine& cl,
   // launched and the exit code was waited upon successfully, but not
   // necessarily that the exit code was EXIT_SUCCESS.
   return GetAppOutputInternal(cl, false, output, exit_code);
+}
+
+bool GetAppOutputWithExitCode(const std::vector<std::string>& argv,
+                              std::string* output,
+                              int* exit_code) {
+  return GetAppOutputWithExitCode(CommandLine(argv), output, exit_code);
 }
 
 void RaiseProcessToHighPriority() {

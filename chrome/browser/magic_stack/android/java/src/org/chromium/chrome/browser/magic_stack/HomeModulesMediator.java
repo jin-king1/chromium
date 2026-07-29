@@ -4,21 +4,24 @@
 
 package org.chromium.chrome.browser.magic_stack;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.os.Handler;
 import android.os.SystemClock;
 
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
 
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.magic_stack.ModuleDelegate.ModuleType;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.segmentation_platform.client_util.HomeModulesRankingHelper;
+import org.chromium.components.segmentation_platform.InputContext;
 import org.chromium.components.segmentation_platform.PredictionOptions;
+import org.chromium.ui.modelutil.MVCListAdapter;
 import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
 import org.chromium.ui.modelutil.PropertyModel;
-import org.chromium.ui.modelutil.SimpleRecyclerViewAdapter;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -27,9 +30,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
-import java.util.function.Supplier;
 
 /** The mediator which implements the logic to add, update and remove modules. */
+@NullMarked
 public class HomeModulesMediator {
     private static final int INVALID_INDEX = -1;
 
@@ -39,7 +42,7 @@ public class HomeModulesMediator {
     // Freshness score was logged older than 24h are considered stale, and rejected.
     static final long FRESHNESS_THRESHOLD_MS = TimeUnit.HOURS.toMillis(24);
 
-    private final Supplier<Profile> mProfileSupplier;
+    private final MonotonicObservableSupplier<Profile> mProfileSupplier;
     private final ModelList mModel;
     private final ModuleRegistry mModuleRegistry;
     private final ModuleDelegateHost mModuleDelegateHost;
@@ -57,7 +60,7 @@ public class HomeModulesMediator {
      * An array of cached responses (data) from modules. The size of the array is the number of
      * modules to show.
      */
-    @Nullable private SimpleRecyclerViewAdapter.ListItem[] mModuleFetchResultsCache;
+    private MVCListAdapter.@Nullable ListItem @Nullable [] mModuleFetchResultsCache;
 
     /**
      * An array of cached responses from modules to indicate whether they have data to show. There
@@ -65,7 +68,7 @@ public class HomeModulesMediator {
      * show; 3) false: module doesn't have data to show. The size of the array is the number of
      * modules to show.
      */
-    @Nullable private Boolean[] mModuleFetchResultsIndicator;
+    private Boolean @Nullable [] mModuleFetchResultsIndicator;
 
     /** The ranking index of the module whose response that the magic stack is waiting for. */
     private int mModuleResultsWaitingIndex;
@@ -74,20 +77,22 @@ public class HomeModulesMediator {
     private boolean mIsFetchingModules;
 
     private boolean mIsShown;
-    private Runnable mOnHomeModulesChangedCallback;
-    private long[] mShowModuleStartTimeMs;
-    private List<Integer> mModuleListToShow;
-    private Set<Integer> mEnabledModuleSet;
+    private @Nullable Runnable mOnHomeModulesChangedCallback;
+    private @Nullable ModuleDelegate mModuleDelegate;
+    private long @Nullable [] mShowModuleStartTimeMs;
+    private @Nullable List<Integer> mModuleListToShow;
+    private @Nullable Set<Integer> mEnabledModuleSet;
+    private @Nullable List<String> mLatestOrderedLabels;
 
     /**
      * @param model The instance of {@link ModelList} of the RecyclerView.
      */
     public HomeModulesMediator(
-            @NonNull Supplier<Profile> profileSupplier,
-            @NonNull ModelList model,
-            @NonNull ModuleRegistry moduleRegistry,
-            @NonNull ModuleDelegateHost moduleDelegateHost,
-            @NonNull HomeModulesConfigManager homeModulesConfigManager) {
+            MonotonicObservableSupplier<Profile> profileSupplier,
+            ModelList model,
+            ModuleRegistry moduleRegistry,
+            ModuleDelegateHost moduleDelegateHost,
+            HomeModulesConfigManager homeModulesConfigManager) {
         mProfileSupplier = profileSupplier;
         mModel = model;
         mModuleRegistry = moduleRegistry;
@@ -95,31 +100,132 @@ public class HomeModulesMediator {
         mHomeModulesConfigManager = homeModulesConfigManager;
     }
 
-    /** Shows the magic stack with profile ready. */
-    void showModules(Runnable onHomeModulesChangedCallback, ModuleDelegate moduleDelegate) {
+    /**
+     * Shows the magic stack with profile ready.
+     *
+     * @param onHomeModulesChangedCallback The callback to notify when the magic stack's visibility
+     *     changes.
+     * @param moduleDelegate The instance of the magic stack {@link ModuleDelegate}.
+     * @param useCachedSegmentationRanking Whether to use the cached ordered labels from the
+     *     Segmentation Platform. If true, bypasses the async fetch and performs a synchronous,
+     *     surgical rebuild using the latest eligibility and manual rankings combined with the
+     *     cached dynamic ranks.
+     */
+    void showModules(
+            Runnable onHomeModulesChangedCallback,
+            ModuleDelegate moduleDelegate,
+            boolean useCachedSegmentationRanking) {
         long segmentationServiceCallTimeMs = SystemClock.elapsedRealtime();
+        Profile profile = mProfileSupplier.get();
+        assert profile != null;
+
+        mOnHomeModulesChangedCallback = onHomeModulesChangedCallback;
+        mModuleDelegate = moduleDelegate;
+
+        // 0. Get the set of currently enabled (eligible) modules.
+        mEnabledModuleSet = null;
+        Set<Integer> enabledModuleSet = getFilteredEnabledModuleSet();
+
+        // 1. Get the sorted list of manually ranked modules, filtered by eligibility.
+        List<Integer> manuallyRankedModules = getSortedManuallyRankedModules(enabledModuleSet);
+
+        if (useCachedSegmentationRanking) {
+            // 2. Perform a synchronous rebuild using cached segmentation results.
+            List<String> orderedLabels =
+                    mLatestOrderedLabels != null ? mLatestOrderedLabels : List.of();
+            List<Integer> modulesToShow =
+                    getCombinedRankedModules(
+                            orderedLabels, manuallyRankedModules, enabledModuleSet);
+            hide();
+            buildModulesAndShow(modulesToShow, moduleDelegate, onHomeModulesChangedCallback);
+            return;
+        }
+
+        // 3. Create InputContext for segmentation, excluding manually ranked ones, to perform an
+        // async fetch.
+        InputContext inputContext = createInputContextForSegmentation();
+
         HomeModulesRankingHelper.fetchModulesRank(
-                mProfileSupplier.get(),
-                mModuleRegistry.createInputContext(),
+                profile,
+                inputContext,
                 (orderedLabels) -> {
                     // It is possible that the result is received after the magic stack has been
                     // hidden, exit now.
                     if (mHomeModulesConfigManager == null) {
                         return;
                     }
+                    mLatestOrderedLabels = orderedLabels;
                     long durationMs = SystemClock.elapsedRealtime() - segmentationServiceCallTimeMs;
+                    List<Integer> modulesToShow =
+                            getCombinedRankedModules(
+                                    orderedLabels, manuallyRankedModules, enabledModuleSet);
                     buildModulesAndShow(
-                            filterEnabledModuleList(orderedLabels, getFilteredEnabledModuleSet()),
+                            modulesToShow,
                             moduleDelegate,
                             onHomeModulesChangedCallback,
                             durationMs);
                 });
     }
 
+    /** Re-evaluates eligibility and re-renders the magic stack. */
+    void refreshModules() {
+        if (!mIsShown || mOnHomeModulesChangedCallback == null || mModuleDelegate == null) {
+            return;
+        }
+        showModules(
+                mOnHomeModulesChangedCallback,
+                mModuleDelegate,
+                /* useCachedSegmentationRanking= */ true);
+    }
+
+    /**
+     * Returns a sorted list of module types that have manual ranking.
+     *
+     * @param enabledModuleSet The set of currently enabled (eligible) modules.
+     * @return A list of {@link ModuleType}s, sorted by their manual rank.
+     */
+    @VisibleForTesting
+    List<Integer> getSortedManuallyRankedModules(Set<Integer> enabledModuleSet) {
+        Map<Integer, Integer> rankMap = new HashMap<>();
+        for (@ModuleType int moduleType : enabledModuleSet) {
+            ModuleProviderBuilder builder = mModuleRegistry.getModuleProviderBuilder(moduleType);
+            Integer manualOrder = builder.getManualRank();
+            if (manualOrder != null) {
+                rankMap.put(moduleType, manualOrder);
+            }
+        }
+
+        return HomeModulesUtils.sortModulesByRank(rankMap);
+    }
+
+    /**
+     * Creates an InputContext for the segmentation platform, excluding manually ranked modules.
+     *
+     * @return An {@link InputContext} containing signals from non-manually ranked modules.
+     */
+    @VisibleForTesting
+    InputContext createInputContextForSegmentation() {
+        InputContext inputContext = new InputContext();
+        for (@ModuleType int moduleType : mModuleRegistry.getAllRegisteredModuleTypes()) {
+            ModuleProviderBuilder builder = mModuleRegistry.getModuleProviderBuilder(moduleType);
+            if (builder.getManualRank() == null) {
+                inputContext.mergeFrom(builder.createInputContext());
+            }
+        }
+        return inputContext;
+    }
+
     /** Called to notify that a module view is created. */
     void onModuleViewCreated(@ModuleType int moduleType) {
+        Profile profile = mProfileSupplier.get();
+        assert profile != null;
+        ModuleProviderBuilder builder = mModuleRegistry.getModuleProviderBuilder(moduleType);
+        if (builder.getManualRank() != null) {
+            return;
+        }
+
         HomeModulesRankingHelper.notifyCardShown(
-                mProfileSupplier.get(), HomeModulesMetricsUtils.getModuleName(moduleType));
+                profile, HomeModulesMetricsUtils.getModuleName(moduleType));
 
         if (HomeModulesUtils.belongsToEducationalTipModule(moduleType)) {
             HomeModulesUtils.increaseImpressionCountBeforeInteraction(moduleType);
@@ -128,8 +234,15 @@ public class HomeModulesMediator {
 
     /** Called to notify that a module was clicked. */
     void onModuleClicked(@ModuleType int moduleType) {
+        Profile profile = mProfileSupplier.get();
+        assert profile != null;
+        ModuleProviderBuilder builder = mModuleRegistry.getModuleProviderBuilder(moduleType);
+        if (builder.getManualRank() != null) {
+            return;
+        }
+
         HomeModulesRankingHelper.notifyCardInteracted(
-                mProfileSupplier.get(), HomeModulesMetricsUtils.getModuleName(moduleType));
+                profile, HomeModulesMetricsUtils.getModuleName(moduleType));
 
         if (HomeModulesUtils.belongsToEducationalTipModule(moduleType)) {
             HomeModulesMetricsUtils.recordEducationalTipModuleImpressionCountBeforeInteraction(
@@ -170,9 +283,9 @@ public class HomeModulesMediator {
      */
     @VisibleForTesting
     void buildModulesAndShow(
-            @NonNull @ModuleType List<Integer> moduleList,
-            @NonNull ModuleDelegate moduleDelegate,
-            @NonNull Runnable onHomeModulesChangedCallback) {
+            @ModuleType List<Integer> moduleList,
+            ModuleDelegate moduleDelegate,
+            Runnable onHomeModulesChangedCallback) {
         if (mIsShown) {
             updateModules();
             return;
@@ -186,7 +299,7 @@ public class HomeModulesMediator {
         cacheRanking(mModuleListToShow);
 
         mModuleResultsWaitingIndex = 0;
-        mModuleFetchResultsCache = new SimpleRecyclerViewAdapter.ListItem[mModuleListToShow.size()];
+        mModuleFetchResultsCache = new MVCListAdapter.ListItem[mModuleListToShow.size()];
         mModuleFetchResultsIndicator = new Boolean[mModuleListToShow.size()];
         mShowModuleStartTimeMs = new long[mModuleListToShow.size()];
         boolean hasModuleBuilt = false;
@@ -231,7 +344,7 @@ public class HomeModulesMediator {
      * @param moduleList The list of modules sorted by ranking.
      */
     @VisibleForTesting
-    void cacheRanking(@NonNull @ModuleType List<Integer> moduleList) {
+    void cacheRanking(@ModuleType List<Integer> moduleList) {
         for (int i = 0; i < moduleList.size(); i++) {
             mModuleTypeToRankingIndexMap.put(moduleList.get(i), i);
         }
@@ -244,7 +357,7 @@ public class HomeModulesMediator {
      * @param moduleProvider The newly created instance of the module.
      */
     @VisibleForTesting
-    void onModuleBuilt(int moduleType, @NonNull ModuleProvider moduleProvider) {
+    void onModuleBuilt(int moduleType, ModuleProvider moduleProvider) {
         mModuleTypeToModuleProviderMap.put(moduleType, moduleProvider);
         moduleProvider.showModule();
     }
@@ -261,6 +374,10 @@ public class HomeModulesMediator {
     @VisibleForTesting
     void addToRecyclerViewOrCache(
             @ModuleType int moduleType, @Nullable PropertyModel propertyModel) {
+        assumeNonNull(mModuleFetchResultsIndicator);
+        assumeNonNull(mModuleFetchResultsCache);
+        assumeNonNull(mShowModuleStartTimeMs);
+
         if (!mModuleTypeToRankingIndexMap.containsKey(moduleType)) {
             // TODO(b/326081541): add an assert here to prevent a module add itself to the magic
             // stack after sending a onDataFetchFailed() response.
@@ -290,7 +407,7 @@ public class HomeModulesMediator {
             if (propertyModel != null) {
                 // This module is the highest ranking one that we are waiting for, adds its data to
                 // the RecyclerView.
-                append(new SimpleRecyclerViewAdapter.ListItem(moduleType, propertyModel));
+                append(new MVCListAdapter.ListItem(moduleType, propertyModel));
             }
             // Stores the responses based on whether the module has data or not and increases the
             // waiting index for the next highest ranking module.
@@ -304,7 +421,7 @@ public class HomeModulesMediator {
             mModuleFetchResultsIndicator[index] = propertyModel != null;
             mModuleFetchResultsCache[index] =
                     propertyModel != null
-                            ? new SimpleRecyclerViewAdapter.ListItem(moduleType, propertyModel)
+                            ? new MVCListAdapter.ListItem(moduleType, propertyModel)
                             : null;
         }
 
@@ -322,13 +439,13 @@ public class HomeModulesMediator {
 
     /** Updates the data of an existing module on the RecyclerView. */
     private void updateRecyclerView(
-            @ModuleType int moduleType, int index, @NonNull PropertyModel propertyModel) {
+            @ModuleType int moduleType, int index, PropertyModel propertyModel) {
         int position = findModuleIndexInRecyclerView(moduleType, index);
         if (position == INVALID_INDEX) {
             return;
         }
 
-        mModel.update(position, new SimpleRecyclerViewAdapter.ListItem(moduleType, propertyModel));
+        mModel.update(position, new MVCListAdapter.ListItem(moduleType, propertyModel));
     }
 
     /**
@@ -351,13 +468,18 @@ public class HomeModulesMediator {
 
     /** Adds the cached responses to the RecyclerView if exist. */
     private void maybeMoveEarlyReceivedModulesToRecyclerView() {
+        assumeNonNull(mModuleFetchResultsIndicator);
+        assumeNonNull(mModuleFetchResultsCache);
+
         while (mModuleResultsWaitingIndex < mModuleFetchResultsIndicator.length) {
             if (mModuleFetchResultsIndicator[mModuleResultsWaitingIndex] == null) {
                 return;
             }
 
             if (mModuleFetchResultsIndicator[mModuleResultsWaitingIndex]) {
-                append(mModuleFetchResultsCache[mModuleResultsWaitingIndex]);
+                MVCListAdapter.ListItem item = mModuleFetchResultsCache[mModuleResultsWaitingIndex];
+                assumeNonNull(item);
+                append(item);
             }
             mModuleResultsWaitingIndex++;
         }
@@ -377,6 +499,10 @@ public class HomeModulesMediator {
 
         // Will reject any late responses from modules.
         mIsFetchingModules = false;
+
+        assumeNonNull(mModuleFetchResultsIndicator);
+        assumeNonNull(mModuleListToShow);
+        assumeNonNull(mModuleFetchResultsCache);
 
         while (mModuleResultsWaitingIndex < mModuleFetchResultsIndicator.length) {
             var hasResult = mModuleFetchResultsIndicator[mModuleResultsWaitingIndex];
@@ -404,15 +530,17 @@ public class HomeModulesMediator {
      * @param item The item to add.
      */
     @VisibleForTesting
-    void append(@NonNull SimpleRecyclerViewAdapter.ListItem item) {
+    void append(MVCListAdapter.ListItem item) {
         mModel.add(item);
 
         HomeModulesMetricsUtils.recordModuleBuiltPosition(
                 item.type, mModel.size() - 1, mModuleDelegateHost.isHomeSurface());
 
+        assumeNonNull(mOnHomeModulesChangedCallback);
         mOnHomeModulesChangedCallback.run();
         if (mModel.size() == 1) {
             // We use the build time of the first module as the starting time.
+            assumeNonNull(mShowModuleStartTimeMs);
             long duration = SystemClock.elapsedRealtime() - mShowModuleStartTimeMs[0];
             HomeModulesMetricsUtils.recordFirstModuleShownDuration(duration);
         }
@@ -420,7 +548,7 @@ public class HomeModulesMediator {
 
     // Called to hide the module when a module responds without any data to show.
     private void hideModuleOnDataFetchFailed(@ModuleType int moduleType) {
-        ModuleProvider moduleProvider = mModuleTypeToModuleProviderMap.get(moduleType);
+        ModuleProvider moduleProvider = getModuleProvider(moduleType);
         moduleProvider.hideModule();
         mModuleTypeToModuleProviderMap.remove(moduleType);
     }
@@ -436,7 +564,9 @@ public class HomeModulesMediator {
             return false;
         }
 
-        return remove(moduleType, mModuleTypeToRankingIndexMap.get(moduleType));
+        Integer index = mModuleTypeToRankingIndexMap.get(moduleType);
+        assumeNonNull(index);
+        return remove(moduleType, index);
     }
 
     /**
@@ -453,9 +583,12 @@ public class HomeModulesMediator {
         }
 
         mModel.removeAt(position);
-        ModuleProvider moduleProvider = mModuleTypeToModuleProviderMap.get(moduleType);
+        ModuleProvider moduleProvider = getModuleProvider(moduleType);
         moduleProvider.hideModule();
         mModuleTypeToModuleProviderMap.remove(moduleType);
+
+        assumeNonNull(mModuleFetchResultsIndicator);
+        assumeNonNull(mModuleFetchResultsCache);
         mModuleFetchResultsIndicator[index] = false;
         mModuleFetchResultsCache[index] = null;
 
@@ -490,7 +623,7 @@ public class HomeModulesMediator {
         if (forceHide) {
             for (int i = 0; i < mModel.size(); i++) {
                 int moduleType = mModel.get(i).type;
-                ModuleProvider moduleProvider = mModuleTypeToModuleProviderMap.get(moduleType);
+                ModuleProvider moduleProvider = getModuleProvider(moduleType);
                 moduleProvider.hideModule();
             }
             mModel.clear();
@@ -514,20 +647,29 @@ public class HomeModulesMediator {
         mModuleTypeToModuleProviderMap.clear();
         mModuleTypeToRankingIndexMap.clear();
         mModuleListToShow = null;
+        mEnabledModuleSet = null;
 
         mModel.clear();
+
+        assumeNonNull(mOnHomeModulesChangedCallback);
         mOnHomeModulesChangedCallback.run();
+        mOnHomeModulesChangedCallback = null;
+
+        mHandler.removeCallbacksAndMessages(null);
     }
 
     /** Returns the instance of a module {@link ModuleProvider} of the given type. */
     ModuleProvider getModuleProvider(int moduleType) {
-        return mModuleTypeToModuleProviderMap.get(moduleType);
+        ModuleProvider moduleProvider = mModuleTypeToModuleProviderMap.get(moduleType);
+        assert moduleProvider != null : "No ModuleProvider for moduleType: " + moduleType;
+        return moduleProvider;
     }
 
     /* Gets the rank of the module based on the given type. */
     int getModuleRank(@ModuleType int moduleType) {
-        return findModuleIndexInRecyclerView(
-                moduleType, mModuleTypeToRankingIndexMap.get(moduleType));
+        Integer index = mModuleTypeToRankingIndexMap.get(moduleType);
+        assumeNonNull(index);
+        return findModuleIndexInRecyclerView(moduleType, index);
     }
 
     /**
@@ -535,7 +677,7 @@ public class HomeModulesMediator {
      * hidden or destroyed.
      */
     void recordMagicStackScroll(boolean hasHomeModulesBeenScrolled) {
-        if (mModel.size() < 1) {
+        if (mModel.isEmpty()) {
             return;
         }
 
@@ -558,18 +700,12 @@ public class HomeModulesMediator {
      * enabled.
      */
     void onModuleConfigChanged(@ModuleType int moduleType, boolean isEnabled) {
-        // The single tab module and the tab resumption modules are controlled by the same
-        // preference key. Once it is turned on or off, both modules will be enabled or disabled.
-        // The educational tip modules are also controlled by the same preference key. Once it is
+        // The educational tip modules are controlled by the same preference key. Once it is
         // turned on or off, all of the educational tip modules will be enabled or disabled.
         if (isEnabled) {
             // If the mEnabledModuleSet hasn't been initialized yet, skip here.
             if (mEnabledModuleSet != null) {
-                if (moduleType == ModuleType.SINGLE_TAB
-                        || moduleType == ModuleType.TAB_RESUMPTION) {
-                    mEnabledModuleSet.add(ModuleType.SINGLE_TAB);
-                    mEnabledModuleSet.add(ModuleType.TAB_RESUMPTION);
-                } else if (HomeModulesUtils.belongsToEducationalTipModule(moduleType)) {
+                if (HomeModulesUtils.belongsToEducationalTipModule(moduleType)) {
                     mEnabledModuleSet.addAll(HomeModulesUtils.getEducationalTipModuleList());
                 } else {
                     mEnabledModuleSet.add(moduleType);
@@ -578,17 +714,41 @@ public class HomeModulesMediator {
         } else {
             // If the mEnabledModuleSet hasn't been initialized yet, skip here.
             if (mEnabledModuleSet != null) {
-                if (moduleType == ModuleType.SINGLE_TAB
-                        || moduleType == ModuleType.TAB_RESUMPTION) {
-                    mEnabledModuleSet.remove(ModuleType.SINGLE_TAB);
-                    mEnabledModuleSet.remove(ModuleType.TAB_RESUMPTION);
-                } else if (HomeModulesUtils.belongsToEducationalTipModule(moduleType)) {
+                if (HomeModulesUtils.belongsToEducationalTipModule(moduleType)) {
                     mEnabledModuleSet.removeAll(HomeModulesUtils.getEducationalTipModuleList());
                 } else {
                     mEnabledModuleSet.remove(moduleType);
                 }
             }
         }
+    }
+
+    /**
+     * Combines manually ranked modules with segmentation platform ranked modules.
+     *
+     * @param orderedLabels A list of module labels ordered by the segmentation platform.
+     * @param manuallyRankedModules A list of {@link ModuleType}s that have manual ordering.
+     * @return A single list with manually ranked modules first, followed by enabled modules from
+     *     orderedLabels.
+     */
+    @VisibleForTesting
+    List<Integer> getCombinedRankedModules(
+            List<String> orderedLabels,
+            List<Integer> manuallyRankedModules,
+            Set<Integer> enabledModuleSet) {
+        List<Integer> combinedList = new ArrayList<>(manuallyRankedModules);
+        // Deduplicate to prevent internal errors caused by multiple instances of the same module
+        // type if it's returned by both manual and segmentation ranking.
+        Set<Integer> manuallyRankedModulesSet = new HashSet<>(manuallyRankedModules);
+
+        List<Integer> filteredEnabledModules =
+                filterEnabledModuleList(orderedLabels, enabledModuleSet);
+        for (Integer moduleType : filteredEnabledModules) {
+            if (!manuallyRankedModulesSet.contains(moduleType)) {
+                combinedList.add(moduleType);
+            }
+        }
+        return combinedList;
     }
 
     /**
@@ -600,18 +760,13 @@ public class HomeModulesMediator {
     Set<Integer> getFilteredEnabledModuleSet() {
         ensureEnabledModuleSetCreated();
         Set<Integer> set = new HashSet<>(mEnabledModuleSet);
-        assert !set.contains(ModuleType.DEPRECATED_EDUCATIONAL_TIP);
+        assert !set.contains(ModuleType.DEPRECATED_EDUCATIONAL_TIP)
+                && !set.contains(ModuleType.DEPRECATED_TAB_RESUMPTION)
+                && !set.contains(ModuleType.DEPRECATED_TIPS_NOTIFICATIONS_PROMO);
 
-        boolean combinedTabModules =
-                combinedTabModules() && set.contains(ModuleType.TAB_RESUMPTION);
         boolean isHomeSurface = mModuleDelegateHost.isHomeSurface();
-        boolean addAll = ChromeFeatureList.sMagicStackAndroidShowAllModules.getValue();
 
-        if (combinedTabModules) {
-            set.remove(ModuleType.SINGLE_TAB);
-        } else if (isHomeSurface && !addAll) {
-            set.remove(ModuleType.TAB_RESUMPTION);
-        } else if (!isHomeSurface) {
+        if (!isHomeSurface) {
             set.remove(ModuleType.SINGLE_TAB);
         }
 
@@ -662,13 +817,11 @@ public class HomeModulesMediator {
             return;
         }
 
-        mEnabledModuleSet = mHomeModulesConfigManager.getEnabledModuleSet();
+        mEnabledModuleSet = mModuleRegistry.getEnabledModuleSet();
     }
 
-    @VisibleForTesting
-    boolean combinedTabModules() {
-        return ChromeFeatureList.sTabResumptionModuleAndroidCombineTabs.getValue()
-                && ChromeFeatureList.sTabResumptionModuleAndroid.isEnabled();
+    void setModuleListToShowForTesting(List<Integer> moduleList) {
+        mModuleListToShow = moduleList;
     }
 
     Map<Integer, ModuleProvider> getModuleTypeToModuleProviderMapForTesting() {
@@ -679,11 +832,11 @@ public class HomeModulesMediator {
         return mModuleTypeToRankingIndexMap;
     }
 
-    SimpleRecyclerViewAdapter.ListItem[] getModuleFetchResultsCacheForTesting() {
+    MVCListAdapter.@Nullable ListItem @Nullable [] getModuleFetchResultsCacheForTesting() {
         return mModuleFetchResultsCache;
     }
 
-    Boolean[] getModuleFetchResultsIndicatorForTesting() {
+    Boolean @Nullable [] getModuleFetchResultsIndicatorForTesting() {
         return mModuleFetchResultsIndicator;
     }
 

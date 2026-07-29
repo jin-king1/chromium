@@ -35,6 +35,7 @@
 #include "third_party/blink/renderer/core/editing/visible_position.h"
 #include "third_party/blink/renderer/core/editing/visible_selection.h"
 #include "third_party/blink/renderer/core/editing/visible_units.h"
+#include "third_party/blink/renderer/core/html/custom/custom_element_registry.h"
 #include "third_party/blink/renderer/core/html/html_br_element.h"
 #include "third_party/blink/renderer/core/html/html_element.h"
 #include "third_party/blink/renderer/core/html/html_li_element.h"
@@ -50,7 +51,7 @@ namespace blink {
 // Returns true if |node| is UL, OL, or BLOCKQUOTE with "display:block".
 // "Outdent" command considers <BLOCKQUOTE style="display:inline"> makes
 // indentation.
-static bool IsHTMLListOrBlockquoteElement(const Node* node) {
+static bool IsHtmlListOrBlockquoteElement(const Node* node) {
   const auto* element = DynamicTo<HTMLElement>(node);
   if (!element)
     return false;
@@ -99,8 +100,8 @@ bool IndentOutdentCommand::TryIndentingAsListItem(
   // list element will change visibility of list item, e.g. :first-child
   // CSS selector.
   auto* new_list = To<HTMLElement>(GetDocument().CreateElement(
-      list_element->TagQName(), CreateElementFlags::ByCloneNode(),
-      g_null_atom));
+      list_element->TagQName(), CreateElementFlags::ByCloneNode(), g_null_atom,
+      CustomElementRegistry::DefaultRegistry(GetDocument())));
   InsertNodeBefore(new_list, selected_list_item, editing_state);
   if (editing_state->IsAborted())
     return false;
@@ -116,11 +117,9 @@ bool IndentOutdentCommand::TryIndentingAsListItem(
       end.AnchorNode()->IsDescendantOf(selected_list_item->lastChild());
 
   const VisiblePosition& start_of_paragraph_to_move =
-      (RuntimeEnabledFeatures::
-           AdjustStartOfParagraphToMoveDuringIndentEnabled() &&
-       !should_keep_selected_list)
-          ? VisiblePosition::BeforeNode(*selected_list_item->firstChild())
-          : CreateVisiblePosition(start);
+      should_keep_selected_list
+          ? CreateVisiblePosition(start)
+          : VisiblePosition::BeforeNode(*selected_list_item->firstChild());
 
   const VisiblePosition& end_of_paragraph_to_move =
       should_keep_selected_list
@@ -285,7 +284,7 @@ void IndentOutdentCommand::OutdentParagraph(EditingState* editing_state) {
 
   auto* enclosing_element = To<HTMLElement>(
       EnclosingNodeOfType(visible_start_of_paragraph.DeepEquivalent(),
-                          &IsHTMLListOrBlockquoteElement));
+                          &IsHtmlListOrBlockquoteElement));
   // We can't outdent if there is no place to go!
   if (!enclosing_element || !IsEditable(*enclosing_element->parentNode()))
     return;
@@ -403,7 +402,7 @@ void IndentOutdentCommand::OutdentParagraph(EditingState* editing_state) {
           PreviousCandidate(visible_start_of_paragraph.DeepEquivalent());
       auto* const previous_element_is_blockquote =
           To<HTMLElement>(EnclosingNodeOfType(previous_element,
-                                              &IsHTMLListOrBlockquoteElement));
+                                              &IsHtmlListOrBlockquoteElement));
       const bool is_previous_blockquote_same =
           !previous_element_is_blockquote ||
           (enclosing_element == previous_element_is_blockquote);
@@ -508,15 +507,24 @@ void IndentOutdentCommand::OutdentRegion(
             .ToPositionWithAffinity();
     if (end_of_current_paragraph.DeepEquivalent() ==
         end_of_last_paragraph.DeepEquivalent()) {
-      SelectionInDOMTree::Builder builder;
+      SelectionInDomTree::Builder builder;
       if (original_selection_end.IsNotNull())
         builder.Collapse(original_selection_end);
       SetEndingSelection(SelectionForUndoStep::From(builder.Build()));
+      if (RuntimeEnabledFeatures::EditingUseDomPositionApiEnabled()) {
+        SetEndingDomSelection(SelectionForUndoStep::From(builder.Build()));
+      }
     } else {
       SetEndingSelection(SelectionForUndoStep::From(
-          SelectionInDOMTree::Builder()
+          SelectionInDomTree::Builder()
               .Collapse(end_of_current_paragraph.DeepEquivalent())
               .Build()));
+      if (RuntimeEnabledFeatures::EditingUseDomPositionApiEnabled()) {
+        SetEndingDomSelection(SelectionForUndoStep::From(
+            SelectionInDomTree::Builder()
+                .Collapse(end_of_current_paragraph.DeepEquivalent())
+                .Build()));
+      }
     }
 
     OutdentParagraph(editing_state);
@@ -554,9 +562,15 @@ void IndentOutdentCommand::SetEndingSelectionToListChildIfListItem() {
   Node* list_child_node = EnclosingListChild(selection_node);
   if (list_child_node && IsA<HTMLLIElement>(*list_child_node)) {
     SetEndingSelection(SelectionForUndoStep::From(
-        SelectionInDOMTree::Builder()
+        SelectionInDomTree::Builder()
             .Collapse(Position::LastPositionInNode(*list_child_node))
             .Build()));
+    if (RuntimeEnabledFeatures::EditingUseDomPositionApiEnabled()) {
+      SetEndingDomSelection(SelectionForUndoStep::From(
+          SelectionInDomTree::Builder()
+              .Collapse(Position::LastPositionInNode(*list_child_node))
+              .Build()));
+    }
   }
 }
 

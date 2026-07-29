@@ -4,10 +4,12 @@
 
 #include "base/feature_list.h"
 #include "base/test/bind.h"
+#include "base/test/run_until.h"
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/themes/theme_service_factory.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/interaction/browser_elements.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -23,6 +25,12 @@
 #if BUILDFLAG(IS_MAC)
 #include "ui/base/interaction/interaction_test_util_mac.h"
 #endif
+
+#if BUILDFLAG(IS_WIN)
+#include "base/test/test_reg_util_win.h"
+#include "chrome/browser/win/isolated_browser_support.h"
+#include "chrome/install_static/test/scoped_install_details.h"
+#endif  // BUILDFLAG(IS_WIN)
 
 namespace {
 DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kWebContentsInteractionTestUtilTestId);
@@ -108,29 +116,32 @@ IN_PROC_BROWSER_TEST_F(SettingsInteractiveUiTest,
 
   const GURL cookie_setting_url("chrome://settings/privacy");
   const WebContentsInteractionTestUtil::DeepQuery cookies_link_row = {
-      "settings-ui", "settings-main", "settings-basic-page",
-      "settings-privacy-page", "cr-link-row#thirdPartyCookiesLinkRow"};
+      "settings-ui",
+      "settings-main",
+      "settings-privacy-page-index",
+      "settings-privacy-page",
+      "cr-link-row#thirdPartyCookiesLinkRow"};
   const WebContentsInteractionTestUtil::DeepQuery
       cookies_setting_page_help_icon = {
           "settings-ui",
           "settings-main",
-          "settings-basic-page",
-          "settings-privacy-page",
+          "settings-privacy-page-index",
+          "settings-cookies-page",
           "settings-subpage",
           "div#headerLine cr-icon-button[iron-icon='cr:help-outline']"};
 
   auto util = WebContentsInteractionTestUtil::ForExistingTabInBrowser(
       browser(), kWebContentsInteractionTestUtilTestId);
   util->LoadPage(cookie_setting_url);
+  const auto context = BrowserElements::From(browser())->GetContext();
   auto util2 = WebContentsInteractionTestUtil::ForNextTabInContext(
-      browser()->window()->GetElementContext(),
-      kWebContentsInteractionTestUtilTestId2);
+      context, kWebContentsInteractionTestUtilTestId2);
 
   auto sequence =
       ui::InteractionSequence::Builder()
           .SetCompletedCallback(completed.Get())
           .SetAbortedCallback(aborted.Get())
-          .SetContext(browser()->window()->GetElementContext())
+          .SetContext(context)
           // Click on 'Cookies and other site data'.
           .AddStep(WaitFor(cookies_link_row))
           .AddStep(Click(cookies_link_row))
@@ -171,7 +182,7 @@ IN_PROC_BROWSER_TEST_F(ThemeSettingsInteractiveUiTest,
 
   const GURL appearance_setting_url("chrome://settings/appearance");
   const WebContentsInteractionTestUtil::DeepQuery reset_to_default_btn = {
-      "settings-ui", "settings-main", "settings-basic-page",
+      "settings-ui", "settings-main", "settings-appearance-page-index",
       "settings-appearance-page", "cr-button#useDefault"};
 
   auto util = WebContentsInteractionTestUtil::ForExistingTabInBrowser(
@@ -182,7 +193,7 @@ IN_PROC_BROWSER_TEST_F(ThemeSettingsInteractiveUiTest,
       ui::InteractionSequence::Builder()
           .SetCompletedCallback(completed.Get())
           .SetAbortedCallback(aborted.Get())
-          .SetContext(browser()->window()->GetElementContext())
+          .SetContext(BrowserElements::From(browser())->GetContext())
           // Verify the current theme is not set as default.
           .AddStep(ui::InteractionSequence::StepBuilder()
                        .SetElementID(kWebContentsInteractionTestUtilTestId)
@@ -191,7 +202,7 @@ IN_PROC_BROWSER_TEST_F(ThemeSettingsInteractiveUiTest,
                                ui::TrackedElement* element) {
                              auto* theme_service =
                                  ThemeServiceFactory::GetForProfile(
-                                     browser()->profile());
+                                     browser()->GetProfile());
                              ASSERT_FALSE(theme_service->UsingDefaultTheme());
                            }))
                        .Build())
@@ -209,7 +220,7 @@ IN_PROC_BROWSER_TEST_F(ThemeSettingsInteractiveUiTest,
                            [&](ui::InteractionSequence*, ui::TrackedElement*) {
                              auto* theme_service =
                                  ThemeServiceFactory::GetForProfile(
-                                     browser()->profile());
+                                     browser()->GetProfile());
                              EXPECT_TRUE(theme_service->UsingDefaultTheme());
                            }))
                        .Build())
@@ -217,3 +228,55 @@ IN_PROC_BROWSER_TEST_F(ThemeSettingsInteractiveUiTest,
 
   EXPECT_CALL_IN_SCOPE(completed, Run, sequence->RunSynchronouslyForTesting());
 }
+
+#if BUILDFLAG(IS_WIN)
+class SystemSettingsInteractiveUiTest : public SettingsInteractiveUiTest {
+ protected:
+  void SetUpInProcessBrowserTestFixture() override {
+    ASSERT_NO_FATAL_FAILURE(
+        registry_override_manager_.OverrideRegistry(HKEY_CURRENT_USER));
+    scoped_feature_list_.InitAndEnableFeature(
+        features::kProcessIsolationSettings);
+    SettingsInteractiveUiTest::SetUpInProcessBrowserTestFixture();
+  }
+
+  install_static::ScopedInstallDetails scoped_install_details_{
+      /*system_level=*/true};
+  registry_util::RegistryOverrideManager registry_override_manager_;
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(SystemSettingsInteractiveUiTest,
+                       TogglesProcessIsolation) {
+  UNCALLED_MOCK_CALLBACK(ui::InteractionSequence::CompletedCallback, completed);
+  UNCALLED_MOCK_CALLBACK(ui::InteractionSequence::AbortedCallback, aborted);
+
+  // Check initial state.
+  EXPECT_FALSE(chrome::IsIsolationEnabled());
+
+  const GURL system_settings_url("chrome://settings/system");
+  const WebContentsInteractionTestUtil::DeepQuery toggle = {
+      "settings-ui", "settings-main", "settings-system-page", "#isolationState",
+      "#control"};
+
+  auto util = WebContentsInteractionTestUtil::ForExistingTabInBrowser(
+      browser(), kWebContentsInteractionTestUtilTestId);
+  util->LoadPage(system_settings_url);
+
+  auto sequence =
+      ui::InteractionSequence::Builder()
+          .SetCompletedCallback(completed.Get())
+          .SetAbortedCallback(aborted.Get())
+          .SetContext(BrowserElements::From(browser())->GetContext())
+          .AddStep(WaitFor(toggle))
+          .AddStep(Click(toggle))
+          .Build();
+
+  EXPECT_CALL_IN_SCOPE(completed, Run, sequence->RunSynchronouslyForTesting());
+
+  // Wait until it actually takes effect via the asynchronous SetIsolationState.
+  EXPECT_TRUE(
+      base::test::RunUntil([]() { return chrome::IsIsolationEnabled(); }));
+}
+
+#endif  // BUILDFLAG(IS_WIN)

@@ -13,9 +13,7 @@
 #include "ash/wm/window_state.h"
 #include "base/command_line.h"
 #include "base/containers/adapters.h"
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
-#include "base/metrics/histogram_functions.h"
 #include "chromeos/ui/base/display_util.h"
 #include "ui/display/manager/display_manager.h"
 #include "ui/wm/core/coordinate_conversion.h"
@@ -23,11 +21,6 @@
 namespace ash {
 
 namespace {
-
-// This controls the UMA histogram `kNumOfWindowsRestoredOnDisplayAdded` and
-// `kNumOfWindowsRestoredOnScreenRotation`. It should not be changed without
-// deprecating these two metrics.
-constexpr int kMaxRestoredWindowCount = 50;
 
 display::DisplayManager* GetDisplayManager() {
   return Shell::Get()->display_manager();
@@ -93,11 +86,6 @@ void PersistentWindowController::WindowTracker::OnWindowDestroying(
 // -----------------------------------------------------------------------------
 // PersistentWindowController:
 
-constexpr char
-    PersistentWindowController::kNumOfWindowsRestoredOnDisplayAdded[];
-constexpr char
-    PersistentWindowController::kNumOfWindowsRestoredOnScreenRotation[];
-
 PersistentWindowController::PersistentWindowController() {
   display_manager_observation_.Observe(Shell::Get()->display_manager());
   Shell::Get()->session_controller()->AddObserver(this);
@@ -138,7 +126,7 @@ void PersistentWindowController::OnDisplayMetricsChanged(
   }
 
   const bool was_landscape_before_rotation =
-      base::Contains(is_landscape_orientation_map_, display.id())
+      is_landscape_orientation_map_.contains(display.id())
           ? is_landscape_orientation_map_[display.id()]
           : false;
   for (aura::Window* window : GetWindowList()) {
@@ -185,7 +173,7 @@ void PersistentWindowController::OnWillProcessDisplayChanges() {
             window_state->persistent_window_info_of_display_removal();
         info) {
       info->set_display_id_after_removal(
-          display::Screen::GetScreen()->GetDisplayNearestWindow(window).id());
+          display::Screen::Get()->GetDisplayNearestWindow(window).id());
       continue;
     }
     // Place the window that needs persistent window info into the temporary
@@ -213,19 +201,19 @@ void PersistentWindowController::OnDidProcessDisplayChanges(
     std::move(screen_rotation_restore_callback_).Run();
   }
 
-  if (display::Screen::GetScreen()) {
-    for (const auto& display : display::Screen::GetScreen()->GetAllDisplays()) {
+  if (display::Screen::Get()) {
+    for (const auto& display : display::Screen::Get()->GetAllDisplays()) {
       is_landscape_orientation_map_[display.id()] = display.is_landscape();
     }
   }
 }
 
 void PersistentWindowController::OnFirstSessionStarted() {
-  if (!display::Screen::GetScreen()) {
+  if (!display::Screen::Get()) {
     return;
   }
 
-  for (const auto& display : display::Screen::GetScreen()->GetAllDisplays()) {
+  for (const auto& display : display::Screen::Get()->GetAllDisplays()) {
     is_landscape_orientation_map_[display.id()] = display.is_landscape();
   }
 }
@@ -236,7 +224,6 @@ void PersistentWindowController::
     return;
   }
 
-  int window_restored_count = 0;
   // Maybe add the windows to a new display via SetBoundsInScreen() depending on
   // their persistent window info. Go backwards so that if they do get added to
   // another root window's container, the stacking order will match the MRU
@@ -298,14 +285,6 @@ void PersistentWindowController::
     }
     // Reset persistent window info every time the window bounds have restored.
     window_state->reset_persistent_window_info_of_display_removal();
-
-    ++window_restored_count;
-  }
-
-  if (window_restored_count != 0) {
-    base::UmaHistogramExactLinear(kNumOfWindowsRestoredOnDisplayAdded,
-                                  window_restored_count,
-                                  kMaxRestoredWindowCount);
   }
 }
 
@@ -315,7 +294,6 @@ void PersistentWindowController::
     return;
   }
 
-  int window_restored_count = 0;
   for (aura::Window* window : GetWindowList()) {
     WindowState* window_state = WindowState::Get(window);
     if (!window_state->persistent_window_info_of_screen_rotation()) {
@@ -337,14 +315,7 @@ void PersistentWindowController::
     if (display_manager->GetDisplayForId(display_id).is_landscape() ==
         info->is_landscape()) {
       window->SetBounds(info->window_bounds_in_screen());
-      ++window_restored_count;
     }
-  }
-
-  if (window_restored_count != 0) {
-    base::UmaHistogramExactLinear(kNumOfWindowsRestoredOnScreenRotation,
-                                  window_restored_count,
-                                  kMaxRestoredWindowCount);
   }
 }
 

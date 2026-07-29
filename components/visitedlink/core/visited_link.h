@@ -28,15 +28,18 @@ struct VisitedLink {
   // A VisitedLink is valid if its components are valid and not opaque.
   bool IsValid() const;
 
+  friend bool operator==(const VisitedLink&, const VisitedLink&) = default;
+  friend auto operator<=>(const VisitedLink& lhs,
+                          const VisitedLink& rhs) = default;
+
   GURL link_url;
   net::SchemefulSite top_level_site;
   url::Origin frame_origin;
-
- private:
-  friend bool operator==(const VisitedLink& lhs, const VisitedLink& rhs);
-  friend bool operator!=(const VisitedLink& lhs, const VisitedLink& rhs);
-  friend bool operator<(const VisitedLink& lhs, const VisitedLink& rhs);
 };
+
+// Creates a VisitedLink for pseudo-partitioning by using the URL for
+// each field in the VisitedLink.
+VisitedLink CreatePseudoPartitionedLink(const GURL& url);
 
 }  // namespace visitedlink
 

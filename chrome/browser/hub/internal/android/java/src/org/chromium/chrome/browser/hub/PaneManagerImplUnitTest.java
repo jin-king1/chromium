@@ -24,13 +24,19 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.base.supplier.LazyOneshotSupplier;
 import org.chromium.base.supplier.LazyOneshotSupplierImpl;
-import org.chromium.base.supplier.ObservableSupplierImpl;
-import org.chromium.base.supplier.Supplier;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
+import org.chromium.base.supplier.SettableNonNullObservableSupplier;
+import org.chromium.base.supplier.SettableNullableObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.RobolectricUtil;
+import org.chromium.chrome.browser.ui.actions.button.DisplayButtonData;
+
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 
 /** Unit tests for {@link PaneManagerImpl}. */
 @RunWith(BaseRobolectricTestRunner.class)
@@ -41,25 +47,26 @@ public class PaneManagerImplUnitTest {
     @Mock private Pane mTabSwitcherPane;
     @Mock private Pane mIncognitoTabSwitcherPane;
     @Mock private Supplier<Pane> mPaneSupplier;
-    @Mock private Runnable mRunnable;
 
-    private final ObservableSupplierImpl<Boolean> mHubVisibilitySupplier =
-            new ObservableSupplierImpl<>();
-    private final ObservableSupplierImpl<DisplayButtonData>
-            mTabSwitcherPaneReferenceButtonDataSupplier = new ObservableSupplierImpl<>();
-    private final ObservableSupplierImpl<DisplayButtonData>
-            mIncognitoTabSwitcherPaneReferenceButtonDataSupplier = new ObservableSupplierImpl<>();
+    private final SettableNonNullObservableSupplier<Boolean> mHubVisibilitySupplier =
+            ObservableSuppliers.createNonNull(false);
+    private SettableMonotonicObservableSupplier<DisplayButtonData>
+            mTabSwitcherPaneReferenceButtonDataSupplier;
+    private SettableNullableObservableSupplier<DisplayButtonData>
+            mIncognitoTabSwitcherPaneReferenceButtonDataSupplier;
 
     @Before
     public void setUp() {
+        mTabSwitcherPaneReferenceButtonDataSupplier =
+                ObservableSuppliers.createMonotonic(mReferenceButtonData);
+        mIncognitoTabSwitcherPaneReferenceButtonDataSupplier =
+                ObservableSuppliers.createNullable(mReferenceButtonData);
         when(mTabSwitcherPane.getPaneId()).thenReturn(PaneId.TAB_SWITCHER);
         when(mTabSwitcherPane.getReferenceButtonDataSupplier())
                 .thenReturn(mTabSwitcherPaneReferenceButtonDataSupplier);
-        mTabSwitcherPaneReferenceButtonDataSupplier.set(mReferenceButtonData);
         when(mIncognitoTabSwitcherPane.getPaneId()).thenReturn(PaneId.INCOGNITO_TAB_SWITCHER);
         when(mIncognitoTabSwitcherPane.getReferenceButtonDataSupplier())
                 .thenReturn(mIncognitoTabSwitcherPaneReferenceButtonDataSupplier);
-        mIncognitoTabSwitcherPaneReferenceButtonDataSupplier.set(mReferenceButtonData);
     }
 
     @Test
@@ -73,7 +80,9 @@ public class PaneManagerImplUnitTest {
                         .registerPane(
                                 PaneId.INCOGNITO_TAB_SWITCHER,
                                 LazyOneshotSupplier.fromValue(mIncognitoTabSwitcherPane));
-        PaneManagerImpl paneManager = new PaneManagerImpl(builder, mHubVisibilitySupplier);
+        PaneManagerImpl paneManager =
+                new PaneManagerImpl(
+                        builder, mHubVisibilitySupplier, /* defaultPaneId= */ PaneId.TAB_SWITCHER);
 
         assertNull(paneManager.getFocusedPaneSupplier().get());
 
@@ -107,7 +116,9 @@ public class PaneManagerImplUnitTest {
                         .registerPane(
                                 PaneId.TAB_SWITCHER,
                                 LazyOneshotSupplier.fromValue(mTabSwitcherPane));
-        PaneManagerImpl paneManager = new PaneManagerImpl(builder, mHubVisibilitySupplier);
+        PaneManagerImpl paneManager =
+                new PaneManagerImpl(
+                        builder, mHubVisibilitySupplier, /* defaultPaneId= */ PaneId.TAB_SWITCHER);
 
         assertNull(paneManager.getFocusedPaneSupplier().get());
 
@@ -132,7 +143,9 @@ public class PaneManagerImplUnitTest {
                                 PaneId.TAB_SWITCHER,
                                 LazyOneshotSupplier.fromValue(mTabSwitcherPane))
                         .registerPane(PaneId.BOOKMARKS, LazyOneshotSupplier.fromValue(null));
-        PaneManagerImpl paneManager = new PaneManagerImpl(builder, mHubVisibilitySupplier);
+        PaneManagerImpl paneManager =
+                new PaneManagerImpl(
+                        builder, mHubVisibilitySupplier, /* defaultPaneId= */ PaneId.TAB_SWITCHER);
 
         assertNull(paneManager.getFocusedPaneSupplier().get());
 
@@ -156,7 +169,9 @@ public class PaneManagerImplUnitTest {
                         .registerPane(
                                 PaneId.TAB_SWITCHER,
                                 LazyOneshotSupplier.fromSupplier(mPaneSupplier));
-        PaneManagerImpl paneManager = new PaneManagerImpl(builder, mHubVisibilitySupplier);
+        PaneManagerImpl paneManager =
+                new PaneManagerImpl(
+                        builder, mHubVisibilitySupplier, /* defaultPaneId= */ PaneId.TAB_SWITCHER);
         verifyNoInteractions(mPaneSupplier);
 
         paneManager.focusPane(PaneId.TAB_SWITCHER);
@@ -173,7 +188,9 @@ public class PaneManagerImplUnitTest {
                         .registerPane(
                                 PaneId.TAB_SWITCHER,
                                 LazyOneshotSupplier.fromValue(mTabSwitcherPane));
-        PaneManagerImpl paneManager = new PaneManagerImpl(builder, mHubVisibilitySupplier);
+        PaneManagerImpl paneManager =
+                new PaneManagerImpl(
+                        builder, mHubVisibilitySupplier, /* defaultPaneId= */ PaneId.TAB_SWITCHER);
 
         paneManager.destroy();
         verifyNoInteractions(mTabSwitcherPane);
@@ -188,8 +205,10 @@ public class PaneManagerImplUnitTest {
                                 PaneId.TAB_SWITCHER,
                                 LazyOneshotSupplier.fromValue(mTabSwitcherPane));
         mHubVisibilitySupplier.set(true);
-        PaneManagerImpl paneManager = new PaneManagerImpl(builder, mHubVisibilitySupplier);
-        ShadowLooper.runUiThreadTasks();
+        PaneManagerImpl paneManager =
+                new PaneManagerImpl(
+                        builder, mHubVisibilitySupplier, /* defaultPaneId= */ PaneId.TAB_SWITCHER);
+        RobolectricUtil.runAllBackgroundAndUi();
 
         verify(mTabSwitcherPane).notifyLoadHint(eq(LoadHint.WARM));
 
@@ -197,7 +216,7 @@ public class PaneManagerImplUnitTest {
         verify(mTabSwitcherPane).notifyLoadHint(eq(LoadHint.HOT));
 
         paneManager.focusPane(PaneId.TAB_SWITCHER);
-        ShadowLooper.runUiThreadTasks();
+        RobolectricUtil.runAllBackgroundAndUi();
         // Not notified a second time.
         verify(mTabSwitcherPane).notifyLoadHint(eq(LoadHint.HOT));
 
@@ -216,14 +235,16 @@ public class PaneManagerImplUnitTest {
                                 PaneId.INCOGNITO_TAB_SWITCHER,
                                 LazyOneshotSupplier.fromValue(mIncognitoTabSwitcherPane));
         mHubVisibilitySupplier.set(false);
-        PaneManagerImpl paneManager = new PaneManagerImpl(builder, mHubVisibilitySupplier);
-        ShadowLooper.runUiThreadTasks();
+        PaneManagerImpl paneManager =
+                new PaneManagerImpl(
+                        builder, mHubVisibilitySupplier, /* defaultPaneId= */ PaneId.TAB_SWITCHER);
+        RobolectricUtil.runAllBackgroundAndUi();
 
         verify(mTabSwitcherPane).notifyLoadHint(eq(LoadHint.COLD));
         verify(mIncognitoTabSwitcherPane).notifyLoadHint(eq(LoadHint.COLD));
 
         mHubVisibilitySupplier.set(true);
-        ShadowLooper.runUiThreadTasks();
+        RobolectricUtil.runAllBackgroundAndUi();
         verify(mTabSwitcherPane).notifyLoadHint(eq(LoadHint.WARM));
         verify(mIncognitoTabSwitcherPane).notifyLoadHint(eq(LoadHint.WARM));
 
@@ -242,8 +263,10 @@ public class PaneManagerImplUnitTest {
                                 PaneId.INCOGNITO_TAB_SWITCHER,
                                 LazyOneshotSupplier.fromValue(mIncognitoTabSwitcherPane));
         mHubVisibilitySupplier.set(true);
-        PaneManagerImpl paneManager = new PaneManagerImpl(builder, mHubVisibilitySupplier);
-        ShadowLooper.runUiThreadTasks();
+        PaneManagerImpl paneManager =
+                new PaneManagerImpl(
+                        builder, mHubVisibilitySupplier, /* defaultPaneId= */ PaneId.TAB_SWITCHER);
+        RobolectricUtil.runAllBackgroundAndUi();
 
         verify(mTabSwitcherPane).notifyLoadHint(eq(LoadHint.WARM));
         verify(mIncognitoTabSwitcherPane).notifyLoadHint(eq(LoadHint.WARM));
@@ -252,25 +275,25 @@ public class PaneManagerImplUnitTest {
         verify(mIncognitoTabSwitcherPane).notifyLoadHint(eq(LoadHint.HOT));
 
         mHubVisibilitySupplier.set(false);
-        ShadowLooper.runUiThreadTasks();
+        RobolectricUtil.runAllBackgroundAndUi();
         verify(mTabSwitcherPane).notifyLoadHint(eq(LoadHint.COLD));
         verify(mIncognitoTabSwitcherPane, times(2)).notifyLoadHint(eq(LoadHint.WARM));
         verify(mIncognitoTabSwitcherPane).notifyLoadHint(eq(LoadHint.COLD));
 
         paneManager.focusPane(PaneId.TAB_SWITCHER);
-        ShadowLooper.runUiThreadTasks();
+        RobolectricUtil.runAllBackgroundAndUi();
         // Not counted again.
         verify(mTabSwitcherPane).notifyLoadHint(eq(LoadHint.COLD));
         verify(mIncognitoTabSwitcherPane).notifyLoadHint(eq(LoadHint.COLD));
 
         mHubVisibilitySupplier.set(true);
         verify(mTabSwitcherPane).notifyLoadHint(eq(LoadHint.HOT));
-        ShadowLooper.runUiThreadTasks();
+        RobolectricUtil.runAllBackgroundAndUi();
         verify(mIncognitoTabSwitcherPane, times(3)).notifyLoadHint(eq(LoadHint.WARM));
 
         paneManager.focusPane(PaneId.INCOGNITO_TAB_SWITCHER);
         verify(mIncognitoTabSwitcherPane, times(2)).notifyLoadHint(eq(LoadHint.HOT));
-        ShadowLooper.runUiThreadTasks();
+        RobolectricUtil.runAllBackgroundAndUi();
         verify(mTabSwitcherPane, times(2)).notifyLoadHint(eq(LoadHint.WARM));
 
         paneManager.destroy();
@@ -279,22 +302,23 @@ public class PaneManagerImplUnitTest {
     @Test
     @SmallTest
     public void testGetPaneById() {
+        final AtomicBoolean called = new AtomicBoolean();
         LazyOneshotSupplierImpl<Pane> supplier =
                 new LazyOneshotSupplierImpl<>() {
                     @Override
                     public void doSet() {
-                        mRunnable.run();
-                        // Don't call set. We'll do that manually. Call mRunnable so we can verify
-                        // called.
+                        called.set(true);
                     }
                 };
 
         PaneListBuilder builder =
                 new PaneListBuilder(new DefaultPaneOrderController())
                         .registerPane(PaneId.TAB_SWITCHER, supplier);
-        PaneManager paneManager = new PaneManagerImpl(builder, mHubVisibilitySupplier);
+        PaneManager paneManager =
+                new PaneManagerImpl(
+                        builder, mHubVisibilitySupplier, /* defaultPaneId= */ PaneId.TAB_SWITCHER);
         assertNull(paneManager.getPaneForId(PaneId.TAB_SWITCHER));
-        verify(mRunnable).run();
+        assertTrue(called.get());
 
         supplier.set(mTabSwitcherPane);
         assertEquals(mTabSwitcherPane, paneManager.getPaneForId(PaneId.TAB_SWITCHER));

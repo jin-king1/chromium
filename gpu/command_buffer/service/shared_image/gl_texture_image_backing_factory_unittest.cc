@@ -10,9 +10,9 @@
 #include "build/build_config.h"
 #include "cc/test/pixel_comparator.h"
 #include "cc/test/pixel_test_utils.h"
-#include "components/viz/common/resources/resource_sizes.h"
 #include "components/viz/common/resources/shared_image_format.h"
 #include "gpu/command_buffer/common/mailbox.h"
+#include "gpu/command_buffer/common/shared_image_info.h"
 #include "gpu/command_buffer/common/shared_image_usage.h"
 #include "gpu/command_buffer/service/service_utils.h"
 #include "gpu/command_buffer/service/shared_context_state.h"
@@ -33,7 +33,8 @@
 #include "third_party/skia/include/gpu/ganesh/GrBackendSurface.h"
 #include "third_party/skia/include/private/chromium/GrPromiseImageTexture.h"
 #include "ui/gfx/color_space.h"
-#include "ui/gfx/gpu_memory_buffer.h"
+#include "ui/gfx/gpu_memory_buffer_handle.h"
+#include "ui/gl/gl_implementation.h"
 #include "ui/gl/gl_version_info.h"
 #include "ui/gl/progress_reporter.h"
 
@@ -205,66 +206,6 @@ TEST_F(GLTextureImageBackingFactoryTest, InvalidUsageWithANGLEMetal) {
   }
 }
 
-// Tests that GLES2 usages, which would normally be disallowed with ANGLE-Metal
-// due to WebGL potentially being on different GPU from raster, are allowed if
-// the client specifies that the GLES2 usage is for raster only.
-TEST_F(GLTextureImageBackingFactoryTest,
-       GLES2UsageAllowedWithANGLEMetalIfRasterOnly) {
-  auto format = viz::SinglePlaneFormat::kRGBA_8888;
-  gfx::Size size(256, 256);
-
-  backing_factory()->ForceSetUsingANGLEMetalForTesting(true);
-  backing_factory()->EnableSupportForAllMetalUsagesForTesting(false);
-
-  for (gpu::SharedImageUsageSet gles2_usage :
-       {SHARED_IMAGE_USAGE_GLES2_READ, SHARED_IMAGE_USAGE_GLES2_WRITE}) {
-    bool supported = backing_factory_->CanCreateSharedImage(
-        gles2_usage | SHARED_IMAGE_USAGE_GLES2_FOR_RASTER_ONLY, format, size,
-        /*thread_safe=*/false, gfx::EMPTY_BUFFER, GrContextType::kGL, {});
-    EXPECT_TRUE(supported) << CreateLabelForSharedImageUsage(gles2_usage);
-  }
-
-  backing_factory()->ForceSetUsingANGLEMetalForTesting(false);
-  backing_factory()->EnableSupportForAllMetalUsagesForTesting(true);
-}
-
-// This test verifies that GLTextureImageBackingFactory using ANGLE-Metal allows
-// creation of an I420 SI with usages that together specify that it will be used
-// conceptually only for raster over GLES2. Regression test for
-// crbug.com/328472684.
-TEST_F(GLTextureImageBackingFactoryTest,
-       I420SIUsedOnlyForRasterOverGLESAllowedWithANGLEMetal) {
-#if BUILDFLAG(IS_ANDROID)
-  // NOTE: This test fails with the validating command decoder (used only on
-  // Android), for which multiplanar formats are not supported. Note that
-  // Android always uses OOP-C and thus does not encounter the production use
-  // case for which this regression test exists (2-copy upload of pure SW video
-  // frames to WebGL with non-OOP-C).
-  if (!use_passthrough()) {
-    GTEST_SKIP();
-  }
-#endif
-  auto format = viz::MultiPlaneFormat::kI420;
-  gfx::Size size(256, 256);
-  gpu::SharedImageUsageSet usage =
-      gpu::SHARED_IMAGE_USAGE_GLES2_READ | gpu::SHARED_IMAGE_USAGE_GLES2_WRITE |
-      gpu::SHARED_IMAGE_USAGE_GLES2_FOR_RASTER_ONLY |
-      gpu::SHARED_IMAGE_USAGE_RASTER_READ |
-      gpu::SHARED_IMAGE_USAGE_RASTER_WRITE |
-      gpu::SHARED_IMAGE_USAGE_RASTER_OVER_GLES2_ONLY;
-
-  backing_factory()->ForceSetUsingANGLEMetalForTesting(true);
-  backing_factory()->EnableSupportForAllMetalUsagesForTesting(false);
-
-  bool supported = backing_factory_->CanCreateSharedImage(
-      usage, format, size,
-      /*thread_safe=*/false, gfx::EMPTY_BUFFER, GrContextType::kGL, {});
-  EXPECT_TRUE(supported);
-
-  backing_factory()->ForceSetUsingANGLEMetalForTesting(false);
-  backing_factory()->EnableSupportForAllMetalUsagesForTesting(true);
-}
-
 // Tests that GLTextureImageBackingFactory will not create SharedImages with
 // Skia usages when Skia is using Graphite (as in that case Skia is not
 // necessarily using GL).
@@ -284,60 +225,21 @@ TEST_F(GLTextureImageBackingFactoryTest, InvalidUsageWithGraphite) {
     supported = backing_factory_->CanCreateSharedImage(
         graphite_invalid_usage, format, size, /*thread_safe=*/false,
         gfx::EMPTY_BUFFER, GrContextType::kGraphiteDawn, {});
+    if (gl::GetGLImplementation() == gl::kGLImplementationEGLANGLE &&
+        gl::GetANGLEImplementation() == gl::ANGLEImplementation::kOpenGL) {
+      EXPECT_TRUE(supported)
+          << CreateLabelForSharedImageUsage(graphite_invalid_usage);
+    } else {
+      EXPECT_FALSE(supported)
+          << CreateLabelForSharedImageUsage(graphite_invalid_usage);
+    }
+
+    supported = backing_factory_->CanCreateSharedImage(
+        graphite_invalid_usage, format, size, /*thread_safe=*/false,
+        gfx::EMPTY_BUFFER, GrContextType::kVulkan, {});
     EXPECT_FALSE(supported)
         << CreateLabelForSharedImageUsage(graphite_invalid_usage);
   }
-}
-
-// Tests that GLTextureImageBackingFactory will allow creation of SharedImages
-// with Skia usages when Skia is using Graphite if the client specifies that
-// raster usage is over the GLES2 interface only, as in that case Skia is by
-// definition using GL.
-TEST_F(GLTextureImageBackingFactoryTest,
-       RasterUsageWithGraphiteAllowedWhenOverGLES2Only) {
-  auto format = viz::SinglePlaneFormat::kRGBA_8888;
-  gfx::Size size(256, 256);
-
-  for (gpu::SharedImageUsageSet raster_usage :
-       {SHARED_IMAGE_USAGE_RASTER_READ, SHARED_IMAGE_USAGE_RASTER_WRITE}) {
-    bool supported = backing_factory_->CanCreateSharedImage(
-        raster_usage | SHARED_IMAGE_USAGE_RASTER_OVER_GLES2_ONLY, format, size,
-        /*thread_safe=*/false, gfx::EMPTY_BUFFER, GrContextType::kGraphiteDawn,
-        {});
-    EXPECT_TRUE(supported) << CreateLabelForSharedImageUsage(raster_usage);
-  }
-}
-
-// This test verifies that GLTextureImageBackingFactory using Graphite allows
-// creation of an I420 SI with usages that together specify that it will be used
-// conceptually only for raster over GLES2. Regression test for
-// crbug.com/328472684.
-TEST_F(GLTextureImageBackingFactoryTest,
-       I420SIUsedOnlyForRasterOverGLESAllowedWithGraphite) {
-#if BUILDFLAG(IS_ANDROID)
-  // NOTE: This test fails with the validating command decoder (used only on
-  // Android), for which multiplanar formats are not supported. Note that
-  // Android always uses OOP-C and thus does not encounter the production use
-  // case for which this regression test exists (2-copy upload of pure SW video
-  // frames to WebGL with non-OOP-C).
-  if (!use_passthrough()) {
-    GTEST_SKIP();
-  }
-#endif
-  auto format = viz::MultiPlaneFormat::kI420;
-  gfx::Size size(256, 256);
-  gpu::SharedImageUsageSet usage =
-      gpu::SHARED_IMAGE_USAGE_GLES2_READ | gpu::SHARED_IMAGE_USAGE_GLES2_WRITE |
-      gpu::SHARED_IMAGE_USAGE_GLES2_FOR_RASTER_ONLY |
-      gpu::SHARED_IMAGE_USAGE_RASTER_READ |
-      gpu::SHARED_IMAGE_USAGE_RASTER_WRITE |
-      gpu::SHARED_IMAGE_USAGE_RASTER_OVER_GLES2_ONLY;
-
-  bool supported = backing_factory_->CanCreateSharedImage(
-      usage, format, size,
-      /*thread_safe=*/false, gfx::EMPTY_BUFFER, GrContextType::kGraphiteDawn,
-      {});
-  EXPECT_TRUE(supported);
 }
 
 // Ensures that GLTextureImageBacking registers it's estimated size
@@ -360,8 +262,10 @@ TEST_F(GLTextureImageBackingFactoryTest, EstimatedSize) {
   ASSERT_TRUE(supported);
 
   auto backing = backing_factory_->CreateSharedImage(
-      mailbox, format, surface_handle, size, color_space, surface_origin,
-      alpha_type, usage, "TestLabel", /*is_thread_safe=*/false);
+      mailbox,
+      {format, size, color_space, surface_origin, alpha_type, usage,
+       "TestLabel"},
+      surface_handle, /*is_thread_safe=*/false);
   ASSERT_TRUE(backing);
 
   size_t backing_estimated_size = backing->GetEstimatedSize();
@@ -441,8 +345,10 @@ TEST_F(GLTextureImageBackingFactoryTest, ProduceVideo) {
   ASSERT_TRUE(supported);
 
   auto backing = backing_factory_->CreateSharedImage(
-      mailbox, format, surface_handle, size, color_space, surface_origin,
-      alpha_type, usage, "TestLabel", /*is_thread_safe=*/false);
+      mailbox,
+      {format, size, color_space, surface_origin, alpha_type, usage,
+       "TestLabel"},
+      surface_handle, /*is_thread_safe=*/false);
   ASSERT_TRUE(backing);
   std::unique_ptr<SharedImageRepresentationFactoryRef> shared_image =
       shared_image_manager_.Register(std::move(backing), &memory_type_tracker_);
@@ -471,7 +377,9 @@ TEST_F(GLTextureImageBackingFactoryTest, ProduceVideo) {
       d3d11_device, mailbox, &memory_type_tracker_);
   EXPECT_NE(representation, nullptr);
   auto read_access = representation->BeginScopedReadAccess();
-  EXPECT_NE(read_access->GetD3D11Texture(), nullptr);
+  D3D11TextureAndArrayIndex input_texture = read_access->GetD3D11Texture();
+  EXPECT_NE(input_texture.texture, nullptr);
+  EXPECT_EQ(input_texture.array_index, 0u);
 }
 #endif
 
@@ -519,8 +427,10 @@ TEST_P(GLTextureImageBackingFactoryWithFormatTest, Basic) {
   ASSERT_TRUE(supported);
 
   auto backing = backing_factory_->CreateSharedImage(
-      mailbox, format, surface_handle, size, color_space, surface_origin,
-      alpha_type, usage, "TestLabel", /*is_thread_safe=*/false);
+      mailbox,
+      {format, size, color_space, surface_origin, alpha_type, usage,
+       "TestLabel"},
+      surface_handle, /*is_thread_safe=*/false);
   ASSERT_TRUE(backing);
 
   // Check clearing.
@@ -646,8 +556,8 @@ TEST_P(GLTextureImageBackingFactoryInitialDataTest, InitialData) {
   GrSurfaceOrigin surface_origin = kTopLeft_GrSurfaceOrigin;
   SkAlphaType alpha_type = kPremul_SkAlphaType;
   gpu::SharedImageUsageSet usage = SHARED_IMAGE_USAGE_GLES2_READ;
-  std::vector<uint8_t> initial_data(
-      viz::ResourceSizes::CheckedSizeInBytes<unsigned int>(size, format));
+  size_t required_size = format.MaybeEstimatedSizeInBytes(size).value();
+  std::vector<uint8_t> initial_data(required_size);
 
   bool supported = backing_factory_->CanCreateSharedImage(
       usage, format, size, /*thread_safe=*/false, gfx::EMPTY_BUFFER,
@@ -655,8 +565,10 @@ TEST_P(GLTextureImageBackingFactoryInitialDataTest, InitialData) {
   ASSERT_TRUE(supported);
 
   auto backing = backing_factory_->CreateSharedImage(
-      mailbox, format, size, color_space, surface_origin, alpha_type, usage,
-      "TestLabel", /*is_thread_safe=*/false, initial_data);
+      mailbox,
+      {format, size, color_space, surface_origin, alpha_type, usage,
+       "TestLabel"},
+      /*is_thread_safe=*/false, initial_data);
   ASSERT_TRUE(backing);
   EXPECT_TRUE(backing->IsCleared());
 
@@ -702,8 +614,7 @@ TEST_P(GLTextureImageBackingFactoryInitialDataTest, InitialDataWrongSize) {
   // Note: The specific usage doesn't matter here as long as it's supported by
   // GLTextureImageBacking.
   gpu::SharedImageUsageSet usage = SHARED_IMAGE_USAGE_GLES2_READ;
-  size_t required_size =
-      viz::ResourceSizes::CheckedSizeInBytes<size_t>(size, format);
+  size_t required_size = format.MaybeEstimatedSizeInBytes(size).value();
   std::vector<uint8_t> initial_data_small(required_size / 2);
   std::vector<uint8_t> initial_data_large(required_size * 2);
   bool supported = backing_factory_->CanCreateSharedImage(
@@ -758,8 +669,10 @@ TEST_P(GLTextureImageBackingFactoryWithUploadTest, UploadFromMemory) {
   ASSERT_TRUE(supported);
 
   auto backing = backing_factory_->CreateSharedImage(
-      mailbox, format, surface_handle, size, color_space, surface_origin,
-      alpha_type, usage, "TestLabel", /*is_thread_safe=*/false);
+      mailbox,
+      {format, size, color_space, surface_origin, alpha_type, usage,
+       "TestLabel"},
+      surface_handle, /*is_thread_safe=*/false);
   ASSERT_TRUE(backing);
 
   // Upload from bitmap with expected stride.
@@ -801,8 +714,10 @@ TEST_P(GLTextureImageBackingFactoryWithReadbackTest, ReadbackToMemory) {
   ASSERT_TRUE(supported);
 
   auto backing = backing_factory_->CreateSharedImage(
-      mailbox, format, surface_handle, size, color_space, surface_origin,
-      alpha_type, usage, "TestLabel", /*is_thread_safe=*/false);
+      mailbox,
+      {format, size, color_space, surface_origin, alpha_type, usage,
+       "TestLabel"},
+      surface_handle, /*is_thread_safe=*/false);
   ASSERT_TRUE(backing);
 
   std::vector<SkBitmap> src_bitmaps =

@@ -5,13 +5,10 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_SINGLE_FIELD_FILLERS_MOCK_SINGLE_FIELD_FILL_ROUTER_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_SINGLE_FIELD_FILLERS_MOCK_SINGLE_FIELD_FILL_ROUTER_H_
 
-#include "base/memory/weak_ptr.h"
 #include "components/autofill/core/browser/single_field_fillers/single_field_fill_router.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
 namespace autofill {
-
-class AutofillClient;
 
 class MockSingleFieldFillRouter : public SingleFieldFillRouter {
  public:
@@ -27,18 +24,13 @@ class MockSingleFieldFillRouter : public SingleFieldFillRouter {
                const FormStructure* form_structure,
                bool is_autocomplete_enabled),
               (override));
-  MOCK_METHOD(bool,
-              OnGetSingleFieldSuggestions,
-              (const FormStructure* form_structure,
-               const FormFieldData& field,
-               const AutofillField* autofill_field,
-               const AutofillClient& client,
-               SingleFieldFillRouter::OnSuggestionsReturnedCallback callback),
-              (override));
   MOCK_METHOD(void, CancelPendingQueries, (), (override));
   MOCK_METHOD(void,
               OnRemoveCurrentSingleFieldSuggestion,
-              (const std::u16string&, const std::u16string&, SuggestionType),
+              (const std::u16string&,
+               const std::u16string&,
+               const std::u16string&,
+               SuggestionType),
               (override));
   MOCK_METHOD(void,
               OnSingleFieldSuggestionSelected,

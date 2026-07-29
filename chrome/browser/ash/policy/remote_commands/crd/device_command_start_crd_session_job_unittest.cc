@@ -8,10 +8,12 @@
 #include <optional>
 #include <utility>
 
+#include "ash/constants/ash_pref_names.h"
 #include "base/check_deref.h"
 #include "base/json/json_writer.h"
 #include "base/memory/raw_ptr.h"
 #include "base/notreached.h"
+#include "base/strings/strcat.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
@@ -19,23 +21,26 @@
 #include "base/test/values_test_util.h"
 #include "base/time/time.h"
 #include "chrome/browser/ash/app_mode/kiosk_chrome_app_manager.h"
-#include "chrome/browser/ash/app_mode/web_app/web_kiosk_app_manager.h"
+#include "chrome/browser/ash/app_mode/kiosk_cryptohome_remover.h"
+#include "chrome/browser/ash/app_mode/web_app/kiosk_web_app_manager.h"
 #include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
 #include "chrome/browser/ash/policy/remote_commands/crd/crd_remote_command_utils.h"
 #include "chrome/browser/ash/policy/remote_commands/crd/fake_start_crd_session_job_delegate.h"
+#include "chrome/browser/ash/policy/remote_commands/crd/start_crd_session_job_delegate.h"
 #include "chrome/browser/ash/policy/remote_commands/fake_cros_network_config.h"
 #include "chrome/browser/ash/policy/remote_commands/user_session_type_test_util.h"
 #include "chrome/browser/ash/settings/device_settings_test_helper.h"
 #include "chrome/browser/prefs/browser_prefs.h"
-#include "chrome/common/pref_names.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile_manager.h"
 #include "chromeos/ash/services/network_config/in_process_instance.h"
 #include "chromeos/services/network_config/public/mojom/cros_network_config.mojom.h"
+#include "components/policy/policy_constants.h"
 #include "components/policy/proto/device_management_backend.pb.h"
 #include "components/prefs/pref_service.h"
 #include "components/user_manager/scoped_user_manager.h"
 #include "remoting/host/chromeos/features.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "ui/base/user_activity/user_activity_detector.h"
 
 namespace policy {
@@ -46,12 +51,11 @@ using base::test::IsJson;
 using base::test::TestFuture;
 using chromeos::network_config::mojom::NetworkType;
 using chromeos::network_config::mojom::OncSource;
-using remoting::features::kEnableCrdAdminRemoteAccessV2;
-using remoting::features::kEnableCrdFileTransferForKiosk;
+using remoting::features::kAutoApproveEnterpriseSharedSessions;
 using remoting::features::kEnableCrdSharedSessionToUnattendedDevice;
 using test::TestSessionType;
 
-using Payload = base::Value::Dict;
+using Payload = base::DictValue;
 
 namespace em = ::enterprise_management;
 
@@ -60,14 +64,15 @@ constexpr char kResultMessageFieldName[] = "message";
 constexpr char kResultAccessCodeFieldName[] = "accessCode";
 constexpr char kResultLastActivityFieldName[] = "lastActivitySec";
 
+constexpr int kAutoApproveDeviceIdlenessCutoff = 300;
+constexpr base::TimeDelta kAutoApproveConnectionTimeout = base::Seconds(30);
+constexpr base::TimeDelta kMaximumSessionDuration = base::Hours(8);
+
 constexpr RemoteCommandJob::UniqueIDType kUniqueID = 123456789;
 
 // Common template used in all UMA histograms for session result logs.
 constexpr char kHistogramResultTemplate[] =
     "Enterprise.DeviceRemoteCommand.Crd.%s.%s.Result";
-// Common template used in all UMA histograms for session duration logs.
-constexpr char kHistogramDurationTemplate[] =
-    "Enterprise.DeviceRemoteCommand.Crd.%s.%s.SessionDuration";
 
 // Created for session type logged to UMA.
 const char* SessionTypeToUmaString(TestSessionType session_type) {
@@ -89,6 +94,17 @@ const char* SessionTypeToUmaString(TestSessionType session_type) {
     case TestSessionType::kNoSession:
       return "NoUserSession";
   }
+}
+
+bool IsCrdCrashKeySet(CrdSessionType crd_session_type,
+                      UserSessionType user_session_type) {
+  return crash_reporter::GetCrashKeyValue(kCrdCrashKeyName) ==
+         base::StrCat({CrdSessionTypeToString(crd_session_type), "-",
+                       UserSessionTypeToString(user_session_type)});
+}
+
+bool HasCrdCrashKey() {
+  return crash_reporter::GetCrashKeyValue(kCrdCrashKeyName) != "";
 }
 
 // Macro expecting success. We are using a macro because a function would
@@ -138,13 +154,11 @@ bool SupportsRemoteSupport(TestSessionType user_session_type) {
     case TestSessionType::kAutoLaunchedKioskSession:
     case TestSessionType::kManagedGuestSession:
     case TestSessionType::kAffiliatedUserSession:
+    case TestSessionType::kNoSession:
       return true;
 
     case TestSessionType::kGuestSession:
     case TestSessionType::kUnaffiliatedUserSession:
-    // TODO(b:393521569) Update session type supported on default enabled
-    // state for CRD unattended feature flag.
-    case TestSessionType::kNoSession:
       return false;
   }
 }
@@ -217,13 +231,19 @@ class DeviceCommandStartCrdSessionJobTest : public ash::DeviceSettingsTestBase {
     ASSERT_TRUE(profile_manager_.SetUp());
 
     user_activity_detector_ = ui::UserActivityDetector::Get();
-    web_kiosk_app_manager_ = std::make_unique<ash::WebKioskAppManager>();
-    kiosk_chrome_app_manager_ = std::make_unique<ash::KioskChromeAppManager>();
+    kiosk_web_app_manager_ = std::make_unique<ash::KioskWebAppManager>(
+        TestingBrowserProcess::GetGlobal()->local_state(),
+        TestingBrowserProcess::GetGlobal()->shared_url_loader_factory(),
+        &kiosk_cryptohome_remover_);
+    kiosk_chrome_app_manager_ = std::make_unique<ash::KioskChromeAppManager>(
+        TestingBrowserProcess::GetGlobal()->local_state(),
+        TestingBrowserProcess::GetGlobal()->shared_url_loader_factory(),
+        &kiosk_cryptohome_remover_);
   }
 
   void TearDown() override {
     kiosk_chrome_app_manager_.reset();
-    web_kiosk_app_manager_.reset();
+    kiosk_web_app_manager_.reset();
 
     profile_ = nullptr;
 
@@ -252,6 +272,10 @@ class DeviceCommandStartCrdSessionJobTest : public ash::DeviceSettingsTestBase {
     StartSessionOfType(TestSessionType::kAffiliatedUserSession);
   }
 
+  void LogInAsManagedGuestSessionUser() {
+    StartSessionOfType(TestSessionType::kManagedGuestSession);
+  }
+
   void SetDeviceIdleTime(int idle_time_in_sec) {
     user_activity_detector_->set_last_activity_time_for_test(
         base::TimeTicks::Now() - base::Seconds(idle_time_in_sec));
@@ -268,7 +292,9 @@ class DeviceCommandStartCrdSessionJobTest : public ash::DeviceSettingsTestBase {
   FakeStartCrdSessionJobDelegate& delegate() { return delegate_; }
 
   DeviceCommandStartCrdSessionJob CreateJob() {
-    return DeviceCommandStartCrdSessionJob{delegate_, robot_account_id_};
+    return DeviceCommandStartCrdSessionJob{
+        TestingBrowserProcess::GetGlobal()->local_state(), delegate_,
+        robot_account_id_};
   }
 
   Result RunJobAndWaitForResult(const Payload& payload = Payload()) {
@@ -306,19 +332,19 @@ class DeviceCommandStartCrdSessionJobTest : public ash::DeviceSettingsTestBase {
 
   void SetKioskTroubleshootingPolicyValue(bool enabled) {
     ASSERT_TRUE(profile_);
-    profile_->GetPrefs()->SetBoolean(prefs::kKioskTroubleshootingToolsEnabled,
-                                     enabled);
+    profile_->GetPrefs()->SetBoolean(
+        ash::prefs::kKioskTroubleshootingToolsEnabled, enabled);
   }
 
   void SetDeviceAllowEnterpriseRemoteAccessPolicyValue(bool enabled) {
-    profile_manager_.local_state()->Get()->SetBoolean(
-        prefs::kDeviceAllowEnterpriseRemoteAccessConnections, enabled);
+    TestingBrowserProcess::GetGlobal()->local_state()->SetBoolean(
+        ash::prefs::kDeviceAllowEnterpriseRemoteAccessConnections, enabled);
   }
 
   void SetRemoteAccessHostAllowEnterpriseRemoteSupportConnections(
       bool enabled) {
-    profile_manager_.local_state()->Get()->SetBoolean(
-        prefs::kRemoteAccessHostAllowEnterpriseRemoteSupportConnections,
+    TestingBrowserProcess::GetGlobal()->local_state()->SetBoolean(
+        ash::prefs::kRemoteAccessHostAllowEnterpriseRemoteSupportConnections,
         enabled);
   }
 
@@ -332,6 +358,12 @@ class DeviceCommandStartCrdSessionJobTest : public ash::DeviceSettingsTestBase {
 
   test::FakeCrosNetworkConfig& fake_cros_network_config() {
     return fake_cros_network_config_;
+  }
+
+  void AddActiveManagedNetwork() {
+    fake_cros_network_config().AddActiveNetwork(
+        CreateNetwork(NetworkType::kWiFi)
+            .SetOncSource(OncSource::kDevicePolicy));
   }
 
   ash::FakeChromeUserManager& user_manager() { return *user_manager_; }
@@ -350,7 +382,9 @@ class DeviceCommandStartCrdSessionJobTest : public ash::DeviceSettingsTestBase {
   user_manager::TypedScopedUserManager<ash::FakeChromeUserManager>
       user_manager_{std::make_unique<ash::FakeChromeUserManager>()};
 
-  std::unique_ptr<ash::WebKioskAppManager> web_kiosk_app_manager_;
+  ash::KioskCryptohomeRemover kiosk_cryptohome_remover_{
+      TestingBrowserProcess::GetGlobal()->local_state()};
+  std::unique_ptr<ash::KioskWebAppManager> kiosk_web_app_manager_;
   std::unique_ptr<ash::KioskChromeAppManager> kiosk_chrome_app_manager_;
 
   // Parameters passed to the constructor of `DeviceCommandStartCrdSessionJob`
@@ -435,13 +469,11 @@ TEST_P(DeviceCommandStartCrdSessionJobTestParameterized,
       case TestSessionType::kAutoLaunchedKioskSession:
       case TestSessionType::kManagedGuestSession:
       case TestSessionType::kAffiliatedUserSession:
+      case TestSessionType::kNoSession:
         return true;
 
       case TestSessionType::kGuestSession:
       case TestSessionType::kUnaffiliatedUserSession:
-      // TODO(b:393521569) Update session type supported on default enabled
-      // state for CRD unattended feature flag.
-      case TestSessionType::kNoSession:
         return false;
     }
   }();
@@ -451,6 +483,44 @@ TEST_P(DeviceCommandStartCrdSessionJobTestParameterized,
   } else {
     EXPECT_ERROR(result,
                  StartCrdSessionResultCode::FAILURE_UNSUPPORTED_USER_TYPE);
+  }
+}
+
+TEST_P(DeviceCommandStartCrdSessionJobTestParameterized,
+       TestAddCrashKeysForRemoteSupportSessions) {
+  TestSessionType user_session_type = GetParam();
+  SCOPED_TRACE(base::StringPrintf("Testing session type %s",
+                                  SessionTypeToString(user_session_type)));
+
+  StartSessionOfType(user_session_type);
+
+  DeviceCommandStartCrdSessionJob job{CreateJob()};
+  InitializeJob(job);
+  RunJob(job);
+
+  bool is_supported = [&]() {
+    switch (user_session_type) {
+      case TestSessionType::kManuallyLaunchedWebKioskSession:
+      case TestSessionType::kManuallyLaunchedKioskSession:
+      case TestSessionType::kAutoLaunchedWebKioskSession:
+      case TestSessionType::kAutoLaunchedKioskSession:
+      case TestSessionType::kManagedGuestSession:
+      case TestSessionType::kAffiliatedUserSession:
+      case TestSessionType::kNoSession:
+        return true;
+
+      case TestSessionType::kGuestSession:
+      case TestSessionType::kUnaffiliatedUserSession:
+        return false;
+    }
+  }();
+
+  if (is_supported) {
+    EXPECT_TRUE(IsCrdCrashKeySet(
+        CrdSessionType::REMOTE_SUPPORT_SESSION,
+        test::SessionTypeToUserSessionType(user_session_type)));
+  } else {
+    EXPECT_FALSE(HasCrdCrashKey());
   }
 }
 
@@ -472,13 +542,11 @@ TEST_P(DeviceCommandStartCrdSessionJobTestParameterized,
       case TestSessionType::kAutoLaunchedKioskSession:
       case TestSessionType::kManagedGuestSession:
       case TestSessionType::kAffiliatedUserSession:
+      case TestSessionType::kNoSession:
         return true;
 
       case TestSessionType::kGuestSession:
       case TestSessionType::kUnaffiliatedUserSession:
-      case TestSessionType::kNoSession:
-        // TODO(b:393521569) Update session type supported on default enabled
-        // state for CRD unattended feature flag.
         return false;
     }
   }();
@@ -580,6 +648,68 @@ TEST_F(DeviceCommandStartCrdSessionJobTest, ShouldPassAdminEmailToDelegate) {
   EXPECT_EQ("email@admin.com", delegate().session_parameters().admin_email);
 }
 
+TEST_F(DeviceCommandStartCrdSessionJobTest, ShouldPassRequestOriginToDelegate) {
+  LogInAsAffiliatedUser();
+  Result result = RunJobAndWaitForResult();
+
+  EXPECT_SUCCESS(result);
+  EXPECT_EQ(StartCrdSessionJobDelegate::RequestOrigin::kEnterpriseAdmin,
+            delegate().session_parameters().request_origin);
+}
+
+TEST_F(DeviceCommandStartCrdSessionJobTest, ShouldPassAudioPlaybackToDelegate) {
+  LogInAsAffiliatedUser();
+  Result result = RunJobAndWaitForResult();
+
+  EXPECT_SUCCESS(result);
+  EXPECT_EQ(StartCrdSessionJobDelegate::AudioPlayback::kLocalOnly,
+            delegate().session_parameters().audio_playback);
+}
+
+TEST_F(DeviceCommandStartCrdSessionJobTest, ShouldCheckNetworkManagedStatus) {
+  LogInAsKioskUser();
+
+  MockCrosNetworkConfig network_config_mock;
+  ash::network_config::OverrideInProcessInstanceForTesting(
+      &network_config_mock);
+
+  TestFuture<chromeos::network_config::mojom::NetworkFilterPtr,
+             MockCrosNetworkConfig::GetNetworkStateListCallback>
+      network_check_future;
+  EXPECT_CALL(network_config_mock, GetNetworkStateList)
+      .WillOnce([&](auto filter, auto callback) {
+        network_check_future.SetValue(std::move(filter), std::move(callback));
+      });
+
+  DeviceCommandStartCrdSessionJob job{CreateJob()};
+  InitializeJob(job);
+  RunJob(job);
+
+  ASSERT_TRUE(network_check_future.Wait());
+
+  auto callback = std::get<1>(network_check_future.Take());
+  // We must invoke the callback to satisfy the Mojom contract
+  std::move(callback).Run({});
+}
+
+TEST_F(DeviceCommandStartCrdSessionJobTest,
+       ShouldPassAllowRemoteInputToDelegate) {
+  LogInAsKioskUser();
+
+  EXPECT_SUCCESS(RunJobAndWaitForResult());
+
+  EXPECT_TRUE(delegate().session_parameters().allow_remote_input);
+}
+
+TEST_F(DeviceCommandStartCrdSessionJobTest,
+       ShouldPassAllowClipboardSyncToDelegate) {
+  LogInAsKioskUser();
+
+  EXPECT_SUCCESS(RunJobAndWaitForResult());
+
+  EXPECT_TRUE(delegate().session_parameters().allow_clipboard_sync);
+}
+
 TEST_P(DeviceCommandStartCrdSessionJobTestBoolParameterized,
        ShouldPassAllowTroubleshootingToolsToDelegateForKiosk) {
   LogInAsKioskUser();
@@ -624,15 +754,16 @@ TEST_P(DeviceCommandStartCrdSessionJobTestBoolParameterized,
 }
 
 TEST_F(DeviceCommandStartCrdSessionJobTest,
-       AllowRemoteSupportSessionAtLoginScreenIfEnabledByFeatureFlag) {
-  EnableFeature(kEnableCrdSharedSessionToUnattendedDevice);
+       DontAllowRemoteSupportSessionAtLoginScreenIfDisabledByFeatureFlag) {
+  DisableFeature(kEnableCrdSharedSessionToUnattendedDevice);
 
   StartSessionOfType(TestSessionType::kNoSession);
 
   Result result = RunJobAndWaitForResult(
       Payload().Set("crdSessionType", CrdSessionType::REMOTE_SUPPORT_SESSION));
 
-  EXPECT_SUCCESS(result);
+  EXPECT_ERROR(result,
+               StartCrdSessionResultCode::FAILURE_UNSUPPORTED_USER_TYPE);
 }
 
 TEST_F(DeviceCommandStartCrdSessionJobTest,
@@ -668,13 +799,11 @@ TEST_P(DeviceCommandStartCrdSessionJobTestParameterized,
 
       case TestSessionType::kManagedGuestSession:
       case TestSessionType::kAffiliatedUserSession:
+      case TestSessionType::kNoSession:
         return false;
 
       case TestSessionType::kGuestSession:
       case TestSessionType::kUnaffiliatedUserSession:
-      // TODO(b:393521569) Update session type supported on default enabled
-      // state for CRD unattended feature flag.
-      case TestSessionType::kNoSession:
         // Unsupported session types
         NOTREACHED();
     }
@@ -705,17 +834,6 @@ TEST_P(DeviceCommandStartCrdSessionJobTestParameterized,
   EXPECT_FALSE(delegate().session_parameters().terminate_upon_input);
 }
 
-TEST_F(DeviceCommandStartCrdSessionJobTest,
-       ShouldNotTerminateUponInputForRemoteSupportAtLoginScreen) {
-  EnableFeature(kEnableCrdSharedSessionToUnattendedDevice);
-
-  StartSessionOfType(TestSessionType::kNoSession);
-  Result result = RunJobAndWaitForResult();
-
-  EXPECT_SUCCESS(result);
-  EXPECT_FALSE(delegate().session_parameters().terminate_upon_input);
-}
-
 TEST_P(DeviceCommandStartCrdSessionJobTestParameterized,
        TestShowConfirmationDialogForRemoteSupport) {
   TestSessionType user_session_type = GetParam();
@@ -740,13 +858,11 @@ TEST_P(DeviceCommandStartCrdSessionJobTestParameterized,
 
       case TestSessionType::kManagedGuestSession:
       case TestSessionType::kAffiliatedUserSession:
+      case TestSessionType::kNoSession:
         return true;
 
       case TestSessionType::kGuestSession:
       case TestSessionType::kUnaffiliatedUserSession:
-      // TODO(b:393521569) Update session type supported on default enabled
-      // state for CRD unattended feature flag.
-      case TestSessionType::kNoSession:
         // Unsupported session types
         NOTREACHED();
     }
@@ -768,31 +884,101 @@ TEST_F(DeviceCommandStartCrdSessionJobTest,
   EXPECT_TRUE(delegate().session_parameters().show_confirmation_dialog);
 }
 
-TEST_P(DeviceCommandStartCrdSessionJobTestParameterized,
-       ShouldSendSessionDurationLogForRemoteSupport) {
-  TestSessionType user_session_type = GetParam();
-  SCOPED_TRACE(base::StringPrintf("Testing session type %s",
-                                  SessionTypeToString(user_session_type)));
-  base::TimeDelta duration = base::Seconds(1);
+TEST_F(DeviceCommandStartCrdSessionJobTest,
+       TestConnectionAutoApproveTimeoutForSharedSessions) {
+  AddActiveManagedNetwork();
+  SetDeviceIdleTime(kAutoApproveDeviceIdlenessCutoff);
 
-  if (!SupportsRemoteSupport(user_session_type)) {
-    return;
-  }
-  base::HistogramTester histogram_tester;
-  StartSessionOfType(user_session_type);
-  RunJobAndWaitForResult();
-  delegate().TerminateCrdSession(duration);
+  LogInAsAffiliatedUser();
+  Result result = RunJobAndWaitForResult();
 
-  histogram_tester.ExpectUniqueTimeSample(
-      base::StringPrintf(kHistogramDurationTemplate, "RemoteSupport",
-                         SessionTypeToUmaString(user_session_type)),
-      duration, /*expected_bucket_count=*/1);
+  EXPECT_SUCCESS(result);
+  EXPECT_EQ(delegate().session_parameters().connection_auto_accept_timeout,
+            kAutoApproveConnectionTimeout);
+}
+
+TEST_F(DeviceCommandStartCrdSessionJobTest,
+       ShouldSetAutoAcceptTimeOutIfMgsIsIdleSinceBoot) {
+  AddActiveManagedNetwork();
+  base::TimeTicks never;
+  ASSERT_TRUE(never.is_null());
+  SetLastDeviceActivityTime(never);
+
+  LogInAsManagedGuestSessionUser();
+  Result result = RunJobAndWaitForResult();
+
+  EXPECT_SUCCESS(result);
+  EXPECT_EQ(delegate().session_parameters().connection_auto_accept_timeout,
+            kAutoApproveConnectionTimeout);
+}
+
+TEST_F(DeviceCommandStartCrdSessionJobTest,
+       ShouldNotSetAutoAcceptTimeOutIfMgsIsConnectedToUnmanagedNetwork) {
+  base::TimeTicks never;
+  ASSERT_TRUE(never.is_null());
+  SetLastDeviceActivityTime(never);
+
+  LogInAsManagedGuestSessionUser();
+  Result result = RunJobAndWaitForResult();
+
+  EXPECT_SUCCESS(result);
+  EXPECT_EQ(delegate().session_parameters().connection_auto_accept_timeout,
+            std::nullopt);
+}
+
+TEST_F(DeviceCommandStartCrdSessionJobTest,
+       ShouldNotSetConnectionAutoApproveTimeoutIfDisabledByFeatureFlag) {
+  DisableFeature(kAutoApproveEnterpriseSharedSessions);
+  AddActiveManagedNetwork();
+  SetDeviceIdleTime(kAutoApproveDeviceIdlenessCutoff);
+
+  LogInAsAffiliatedUser();
+  Result result = RunJobAndWaitForResult();
+
+  EXPECT_SUCCESS(result);
+  EXPECT_EQ(delegate().session_parameters().connection_auto_accept_timeout,
+            std::nullopt);
+}
+
+TEST_F(DeviceCommandStartCrdSessionJobTest,
+       LimitSessionDurationForSharedCrdSession) {
+  LogInAsKioskUser();
+
+  EXPECT_SUCCESS(RunJobAndWaitForResult(Payload()));
+
+  EXPECT_EQ(delegate().session_parameters().maximum_session_duration,
+            kMaximumSessionDuration);
+}
+
+TEST_F(
+    DeviceCommandStartCrdSessionJobTest,
+    ShouldNotSetConnectionAutoApproveTimeoutIfDeviceIsIdleMoreThanTheCutoff) {
+  AddActiveManagedNetwork();
+  SetDeviceIdleTime(kAutoApproveDeviceIdlenessCutoff + 1);
+
+  LogInAsAffiliatedUser();
+  Result result = RunJobAndWaitForResult();
+
+  EXPECT_SUCCESS(result);
+  EXPECT_EQ(delegate().session_parameters().connection_auto_accept_timeout,
+            std::nullopt);
+}
+
+TEST_F(
+    DeviceCommandStartCrdSessionJobTest,
+    ShouldNotSetConnectionAutoApproveTimeoutIfDeviceIsNotConnectedToManagedNetwork) {
+  SetDeviceIdleTime(kAutoApproveDeviceIdlenessCutoff);
+
+  LogInAsAffiliatedUser();
+  Result result = RunJobAndWaitForResult();
+
+  EXPECT_SUCCESS(result);
+  EXPECT_EQ(delegate().session_parameters().connection_auto_accept_timeout,
+            std::nullopt);
 }
 
 TEST_P(DeviceCommandStartCrdSessionJobTestParameterized,
-       ShouldAllowFileTransferForKioskSessionsWhenFeatureIsEnabled) {
-  EnableFeature(kEnableCrdFileTransferForKiosk);
-
+       ShouldAllowFileTransferForKioskSessions) {
   TestSessionType user_session_type = GetParam();
   SCOPED_TRACE(base::StringPrintf("Testing session type %s",
                                   SessionTypeToString(user_session_type)));
@@ -806,24 +992,6 @@ TEST_P(DeviceCommandStartCrdSessionJobTestParameterized,
 
   EXPECT_EQ(delegate().session_parameters().allow_file_transfer,
             supports_file_transfer);
-}
-
-TEST_P(DeviceCommandStartCrdSessionJobTestParameterized,
-       ShouldNotAllowFileTransferForAnySessionWhenFeatureIsNotEnabled) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndDisableFeature(kEnableCrdFileTransferForKiosk);
-
-  TestSessionType user_session_type = GetParam();
-  SCOPED_TRACE(base::StringPrintf("Testing session type %s",
-                                  SessionTypeToString(user_session_type)));
-  if (!SupportsRemoteSupport(user_session_type)) {
-    return;
-  }
-
-  StartSessionOfType(user_session_type);
-  RunJobAndWaitForResult();
-
-  EXPECT_EQ(delegate().session_parameters().allow_file_transfer, false);
 }
 
 TEST_F(DeviceCommandStartCrdSessionJobTest,
@@ -914,12 +1082,6 @@ class DeviceCommandStartCrdSessionJobRemoteAccessTest
     return Payload().Set("crdSessionType",
                          CrdSessionType::REMOTE_ACCESS_SESSION);
   }
-
-  void AddActiveManagedNetwork() {
-    fake_cros_network_config().AddActiveNetwork(
-        CreateNetwork(NetworkType::kWiFi)
-            .SetOncSource(OncSource::kDevicePolicy));
-  }
 };
 
 // Fixture for tests parameterized over the possible session types
@@ -988,6 +1150,28 @@ TEST_P(DeviceCommandStartCrdSessionJobRemoteAccessTestParameterized,
   } else {
     EXPECT_ERROR(result,
                  StartCrdSessionResultCode::FAILURE_UNSUPPORTED_USER_TYPE);
+  }
+}
+
+TEST_P(DeviceCommandStartCrdSessionJobRemoteAccessTestParameterized,
+       ShouldSetCrashKeyForRemoteAccessSession) {
+  TestSessionType user_session_type = GetParam();
+  SCOPED_TRACE(base::StringPrintf("Testing session type %s",
+                                  SessionTypeToString(user_session_type)));
+  StartSessionOfType(user_session_type);
+  AddActiveManagedNetwork();
+
+  DeviceCommandStartCrdSessionJob job{CreateJob()};
+  InitializeJob(job, Payload().Set("crdSessionType",
+                                   CrdSessionType::REMOTE_ACCESS_SESSION));
+  RunJob(job);
+
+  if (SupportsRemoteAccess(user_session_type)) {
+    EXPECT_TRUE(IsCrdCrashKeySet(
+        CrdSessionType::REMOTE_ACCESS_SESSION,
+        test::SessionTypeToUserSessionType(user_session_type)));
+  } else {
+    EXPECT_FALSE(HasCrdCrashKey());
   }
 }
 
@@ -1111,11 +1295,9 @@ TEST_P(DeviceCommandStartCrdSessionJobRemoteAccessTestParameterized,
 }
 
 TEST_P(DeviceCommandStartCrdSessionJobRemoteAccessTestParameterized,
-       ShouldAllowReconnectionsForRemoteAccessSessionsIfV2FeatureIsEnabled) {
+       ShouldAllowReconnectionsForRemoteAccessSessions) {
   TestSessionType user_session_type = GetParam();
   if (SupportsRemoteAccess(user_session_type)) {
-    EnableFeature(kEnableCrdAdminRemoteAccessV2);
-
     SCOPED_TRACE(base::StringPrintf("Testing session type %s",
                                     SessionTypeToString(user_session_type)));
     StartSessionOfType(user_session_type);
@@ -1130,7 +1312,7 @@ TEST_P(DeviceCommandStartCrdSessionJobRemoteAccessTestParameterized,
 }
 
 TEST_P(DeviceCommandStartCrdSessionJobRemoteAccessTestParameterized,
-       ShouldNeverAllowFileTransferForRemoteAccessWhenFeatureIsEnabled) {
+       ShouldNeverAllowFileTransferForRemoteAccess) {
   TestSessionType user_session_type = GetParam();
   SCOPED_TRACE(base::StringPrintf("Testing session type %s",
                                   SessionTypeToString(user_session_type)));
@@ -1138,7 +1320,6 @@ TEST_P(DeviceCommandStartCrdSessionJobRemoteAccessTestParameterized,
     return;
   }
 
-  EnableFeature(kEnableCrdFileTransferForKiosk);
   StartSessionOfType(user_session_type);
   AddActiveManagedNetwork();
   RunJobAndWaitForResult(
@@ -1147,32 +1328,10 @@ TEST_P(DeviceCommandStartCrdSessionJobRemoteAccessTestParameterized,
   EXPECT_EQ(delegate().session_parameters().allow_file_transfer, false);
 }
 
-TEST_P(
-    DeviceCommandStartCrdSessionJobRemoteAccessTestParameterized,
-    ShouldNotAllowReconnectionsForRemoteAccessSessionsIfV2FeatureIsDisabled) {
-  TestSessionType user_session_type = GetParam();
-  if (SupportsRemoteAccess(user_session_type)) {
-    DisableFeature(kEnableCrdAdminRemoteAccessV2);
-
-    SCOPED_TRACE(base::StringPrintf("Testing session type %s",
-                                    SessionTypeToString(user_session_type)));
-    StartSessionOfType(user_session_type);
-    AddActiveManagedNetwork();
-
-    Result result = RunJobAndWaitForResult(
-        Payload().Set("crdSessionType", CrdSessionType::REMOTE_ACCESS_SESSION));
-
-    EXPECT_SUCCESS(result);
-    EXPECT_FALSE(delegate().session_parameters().allow_reconnections);
-  }
-}
-
 TEST_P(DeviceCommandStartCrdSessionJobRemoteAccessTestParameterized,
        ShouldNeverAllowReconnectionsForRemoteSupport) {
   TestSessionType user_session_type = GetParam();
   if (SupportsRemoteSupport(user_session_type)) {
-    EnableFeature(kEnableCrdAdminRemoteAccessV2);
-
     SCOPED_TRACE(base::StringPrintf("Testing session type %s",
                                     SessionTypeToString(user_session_type)));
     StartSessionOfType(user_session_type);
@@ -1203,16 +1362,6 @@ TEST_F(DeviceCommandStartCrdSessionJobRemoteAccessTest,
 }
 
 TEST_F(DeviceCommandStartCrdSessionJobRemoteAccessTest,
-       ShouldNotTerminateUponInputEvenIfEnabledByCrdUnattendedFeatureFlag) {
-  EnableFeature(kEnableCrdSharedSessionToUnattendedDevice);
-
-  AddActiveManagedNetwork();
-
-  EXPECT_SUCCESS(RunJobAndWaitForResult());
-  EXPECT_FALSE(delegate().session_parameters().terminate_upon_input);
-}
-
-TEST_F(DeviceCommandStartCrdSessionJobRemoteAccessTest,
        ShouldNotShowConfirmationDialog) {
   AddActiveManagedNetwork();
 
@@ -1221,13 +1370,24 @@ TEST_F(DeviceCommandStartCrdSessionJobRemoteAccessTest,
 }
 
 TEST_F(DeviceCommandStartCrdSessionJobRemoteAccessTest,
-       ShouldNotShowConfirmationDialogEvenIfEnabledByCrdUnattendedFeatureFlag) {
-  EnableFeature(kEnableCrdSharedSessionToUnattendedDevice);
-
+       ShouldNotLimitSessionDuration) {
   AddActiveManagedNetwork();
 
   EXPECT_SUCCESS(RunJobAndWaitForResult(RemoteAccessPayload()));
-  EXPECT_FALSE(delegate().session_parameters().show_confirmation_dialog);
+
+  EXPECT_EQ(delegate().session_parameters().maximum_session_duration,
+            std::nullopt);
+}
+
+TEST_F(DeviceCommandStartCrdSessionJobRemoteAccessTest,
+       ShouldNotSetConnectionAutoApproveTimeout) {
+  AddActiveManagedNetwork();
+  SetDeviceIdleTime(kAutoApproveDeviceIdlenessCutoff);
+
+  EXPECT_SUCCESS(RunJobAndWaitForResult(RemoteAccessPayload()));
+
+  EXPECT_EQ(delegate().session_parameters().connection_auto_accept_timeout,
+            std::nullopt);
 }
 
 TEST_F(DeviceCommandStartCrdSessionJobRemoteAccessTest,
@@ -1401,7 +1561,8 @@ TEST_P(DeviceCommandStartCrdSessionJobRemoteAccessTestParameterized,
   histogram_tester.ExpectUniqueSample(
       base::StringPrintf(kHistogramResultTemplate, "RemoteAccess",
                          SessionTypeToUmaString(user_session_type)),
-      ExtendedStartCrdSessionResultCode::kSuccess, /*expected_bucket_count=*/1);
+      ExtendedStartCrdSessionResultCode::kSuccess,
+      /*expected_bucket_count=*/1);
 }
 
 TEST_F(DeviceCommandStartCrdSessionJobRemoteAccessTest,
@@ -1416,29 +1577,6 @@ TEST_F(DeviceCommandStartCrdSessionJobRemoteAccessTest,
                          SessionTypeToUmaString(TestSessionType::kNoSession)),
       ExtendedStartCrdSessionResultCode::kFailureUnmanagedEnvironment,
       /*expected_bucket_count=*/1);
-}
-
-TEST_P(DeviceCommandStartCrdSessionJobRemoteAccessTestParameterized,
-       ShouldSendSessionDurationUmaLogWhenCrdSessionFinish) {
-  base::HistogramTester histogram_tester;
-  TestSessionType user_session_type = GetParam();
-  SCOPED_TRACE(base::StringPrintf("Testing session type %s",
-                                  SessionTypeToString(user_session_type)));
-  base::TimeDelta duration = base::Seconds(1);
-
-  if (!SupportsRemoteAccess(user_session_type)) {
-    // This test is only about the cases where remote access is supported.
-    return;
-  }
-  AddActiveManagedNetwork();
-  StartSessionOfType(user_session_type);
-  Result result = RunJobAndWaitForResult(RemoteAccessPayload());
-  delegate().TerminateCrdSession(duration);
-
-  histogram_tester.ExpectUniqueTimeSample(
-      base::StringPrintf(kHistogramDurationTemplate, "RemoteAccess",
-                         SessionTypeToUmaString(user_session_type)),
-      duration, /*expected_bucket_count=*/1);
 }
 
 INSTANTIATE_TEST_SUITE_P(

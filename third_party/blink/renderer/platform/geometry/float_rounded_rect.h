@@ -52,8 +52,7 @@ class QuadF;
 namespace blink {
 
 // Represents a rect with rounded corners, where the rounding of each corner is
-// controlled by 3 variables: x radius, y radius, and a superellipse parameter
-// for the curvature.
+// controlled by x radius and y radius.
 //
 // A simple example of a rounded corner is:
 // <div style="width: 50px; height: 50px; border-radius: 10px;"/>
@@ -63,15 +62,10 @@ namespace blink {
 // <div style="... border-top-right-radius: 25px 10px;"/>
 // Here, the radii_.top_right_ will be 25x10.
 //
-// The superellipse parameters control the curvature of each corner:
-// <div style="... border-radius: 10px; corner-shape: bevel;"/>
-// Here, the superelipsii_.top_right_ will be 1.
-//
 // We don't use gfx::RRectF in blink because gfx::RRectF is based on SkRRect
 // which always keeps the radii constrained within the size of the rect, but
 // in blink sometimes we need to keep the unconstrained status of a rounded
-// rect. See ConstrainRadii(). Additionally, gfx::RRectF and SkRRect lack
-// control over curvature.
+// rect. See ConstrainRadii().
 
 class PLATFORM_EXPORT FloatRoundedRect {
   DISALLOW_NEW();
@@ -119,65 +113,21 @@ class PLATFORM_EXPORT FloatRoundedRect {
     }
 
     String ToString() const;
+    void Scale(float factor);
 
    private:
     friend class FloatRoundedRect;
-    void Scale(float factor);
     void Outset(const gfx::OutsetsF& outsets);
-    void OutsetForMarginOrShadow(const gfx::OutsetsF&);
+    void OutsetWithCornerCorrection(const gfx::OutsetsF&);
+    void OutsetWithCornerCorrectionUsingCoverageFactor(
+        const gfx::OutsetsF&,
+        const gfx::SizeF& box_size);
     void OutsetForShapeMargin(float outset);
 
     gfx::SizeF top_left_;
     gfx::SizeF top_right_;
     gfx::SizeF bottom_left_;
     gfx::SizeF bottom_right_;
-  };
-
-  // A corner curvature is the exponent of a superellipse quadrant.
-  // e.g. 2 is round, 1 is bevel/angled, infinity is defunct/straight.
-  class CornerCurvature {
-   public:
-    static constexpr float kRound = 2;
-    static constexpr float kBevel = 1;
-
-    constexpr CornerCurvature() = default;
-    constexpr CornerCurvature(float top_left,
-                              float top_right,
-                              float bottom_right,
-                              float bottom_left)
-        : top_left_(top_left),
-          top_right_(top_right),
-          bottom_right_(bottom_right),
-          bottom_left_(bottom_left) {
-      DCHECK_GE(top_left, 0);
-      DCHECK_GE(top_right, 0);
-      DCHECK_GE(bottom_right, 0);
-      DCHECK_GE(bottom_left, 0);
-    }
-
-    constexpr bool IsRound() const {
-      return (top_left_ == kRound) && IsUniform();
-    }
-
-    constexpr bool IsUniform() const {
-      return top_left_ == top_right_ && top_left_ == bottom_right_ &&
-             top_left_ == bottom_left_;
-    }
-
-    constexpr float TopLeft() const { return top_left_; }
-    constexpr float TopRight() const { return top_right_; }
-    constexpr float BottomRight() const { return bottom_right_; }
-    constexpr float BottomLeft() const { return bottom_left_; }
-
-    constexpr bool operator==(const CornerCurvature&) const = default;
-
-    String ToString() const;
-
-   private:
-    float top_left_ = kRound;
-    float top_right_ = kRound;
-    float bottom_right_ = kRound;
-    float bottom_left_ = kRound;
   };
 
   constexpr FloatRoundedRect() = default;
@@ -200,20 +150,11 @@ class PLATFORM_EXPORT FloatRoundedRect {
 
   constexpr const gfx::RectF& Rect() const { return rect_; }
   constexpr const Radii& GetRadii() const { return radii_; }
-  constexpr const CornerCurvature& GetCornerCurvature() const {
-    return corner_curvature_;
-  }
   constexpr bool IsRounded() const { return !radii_.IsZero(); }
-  constexpr bool HasSimpleRoundedCurvature() const {
-    return !IsRounded() || corner_curvature_.IsRound();
-  }
   constexpr bool IsEmpty() const { return rect_.IsEmpty(); }
 
   void SetRect(const gfx::RectF& rect) { rect_ = rect; }
   void SetRadii(const Radii& radii) { radii_ = radii; }
-  void SetCornerCurvature(const CornerCurvature& curvature) {
-    corner_curvature_ = curvature;
-  }
 
   void Move(const gfx::Vector2dF& offset) { rect_.Offset(offset); }
 
@@ -226,18 +167,9 @@ class PLATFORM_EXPORT FloatRoundedRect {
   void Inset(const gfx::InsetsF& insets) { Outset(insets.ToOutsets()); }
   void Inset(float inset) { Inset(gfx::InsetsF(inset)); }
 
-  // Inflates (or shrinks if |outset| is negative) the rect and the corners
-  // based on the margin edge algorithm in
-  // https://drafts.csswg.org/css-backgrounds-3/#corner-shaping which is the
-  // same as the shadow spread algorithm in
-  // https://drafts.csswg.org/css-backgrounds-3/#shadow-shape.
-  // TODO(wangxianzhu): Consider merging this into Outset()/Inset() to apply
-  // the margin/shadow algorithm to all outsets except shape-margin. For now
-  // this is blocked by a problem of the algorithm
-  // (https://github.com/w3c/csswg-drafts/issues/7103).
-  void OutsetForMarginOrShadow(const gfx::OutsetsF& outsets);
-  void OutsetForMarginOrShadow(float outset) {
-    OutsetForMarginOrShadow(gfx::OutsetsF(outset));
+  void OutsetWithCornerCorrection(const gfx::OutsetsF& outsets);
+  void OutsetWithCornerCorrection(float outset) {
+    OutsetWithCornerCorrection(gfx::OutsetsF(outset));
   }
 
   // Inflates the rounded rect by the specified amount on each side and corner
@@ -268,10 +200,6 @@ class PLATFORM_EXPORT FloatRoundedRect {
                       radii_.BottomRight().height());
   }
 
-  bool XInterceptsAtY(float y,
-                      float& min_x_intercept,
-                      float& max_x_intercept) const;
-
   // Tests whether the quad intersects any part of this rounded rectangle.
   // This only works for convex quads.
   // This intersection is edge-inclusive and will return true even if the
@@ -296,11 +224,9 @@ class PLATFORM_EXPORT FloatRoundedRect {
  private:
   gfx::RectF rect_;
   Radii radii_;
-  CornerCurvature corner_curvature_;
 };
 
 inline FloatRoundedRect::operator SkRRect() const {
-  CHECK(HasSimpleRoundedCurvature());
   SkRRect rrect;
 
   if (IsRounded()) {

@@ -9,13 +9,13 @@
 namespace content {
 
 using DigitalIdentityInterstitialAbortCallback =
-    content::DigitalIdentityProvider::DigitalIdentityInterstitialAbortCallback;
+    DigitalIdentityProvider::DigitalIdentityInterstitialAbortCallback;
 
 StubDigitalIdentityProvider::StubDigitalIdentityProvider() = default;
 StubDigitalIdentityProvider::~StubDigitalIdentityProvider() = default;
 
-bool StubDigitalIdentityProvider::IsLowRiskOrigin(
-    const url::Origin& to_check) const {
+bool StubDigitalIdentityProvider::IsLastCommittedOriginLowRisk(
+    RenderFrameHost& render_frame_host) const {
   return false;
 }
 

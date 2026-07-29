@@ -9,6 +9,7 @@
 
 #include "base/base64.h"
 #include "components/autofill/core/browser/field_types.h"
+#include "components/autofill/core/browser/proto/server.pb.h"
 #include "components/autofill/core/common/signatures.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -45,14 +46,18 @@ Matcher<FieldSuggestion> HasPredictions(auto predictions_matcher) {
                   std::move(predictions_matcher));
 }
 
-Matcher<FieldSuggestion> HasFormatString(auto optional_format_string_matcher) {
+Matcher<FieldSuggestion> HasFormatString(
+    Matcher<std::optional<std::pair<FormatString_Type, std::string>>>
+        optional_format_string_matcher) {
   return ResultOf(
       "format_string",
-      [](const FieldSuggestion& fs) -> std::optional<std::string> {
+      [](const FieldSuggestion& fs)
+          -> std::optional<std::pair<FormatString_Type, std::string>> {
         if (!fs.has_format_string()) {
           return std::nullopt;
         }
-        return fs.format_string();
+        return std::pair(fs.format_string().type(),
+                         fs.format_string().format_string());
       },
       std::move(optional_format_string_matcher));
 }
@@ -239,13 +244,15 @@ TEST(ServerPredictionOverridesTest, Json) {
       "12345": {
         "123": [
           { "predictions": ["PASSPORT_NUMBER"] },
-          { "predictions": ["PASSPORT_EXPIRATION_DATE_TAG"], "format_string": "DD/MM/YYYY" }
+          { "predictions": ["PASSPORT_EXPIRATION_DATE"],
+            "format_string_type": "DATE",
+            "format_string": "DD/MM/YYYY" }
         ]
       },
       "67890": {
         "123": [
-          { "predictions": ["NAME_FIRST", "PASSPORT_NAME_TAG"] },
-          { "predictions": ["NAME_LAST", "PASSPORT_NAME_TAG"] }
+          { "predictions": ["NAME_FIRST", "PASSPORT_NUMBER"] },
+          { "predictions": ["NAME_LAST", "PASSPORT_NUMBER"] }
         ],
         "456": [
           { "predictions": ["ADDRESS_HOME_COUNTRY", 170] }
@@ -270,25 +277,26 @@ TEST(ServerPredictionOverridesTest, Json) {
           Pair(form_and_field(12345, 123),
                ElementsAre(AllOf(HasPredictions(ElementsAre(
                                      EqualsPrediction(PASSPORT_NUMBER))),
-                                 HasFormatString(std::nullopt)),
+                                 HasFormatString(Eq(std::nullopt))),
                            AllOf(HasPredictions(ElementsAre(EqualsPrediction(
-                                     PASSPORT_EXPIRATION_DATE_TAG))),
-                                 HasFormatString(Eq("DD/MM/YYYY"))))),
+                                     PASSPORT_EXPIRATION_DATE))),
+                                 HasFormatString(Optional(Pair(
+                                     FormatString_Type_DATE, "DD/MM/YYYY")))))),
           Pair(form_and_field(67890, 123),
                ElementsAre(AllOf(HasPredictions(ElementsAre(
                                      EqualsPrediction(NAME_FIRST),
-                                     EqualsPrediction(PASSPORT_NAME_TAG))),
-                                 HasFormatString(std::nullopt)),
+                                     EqualsPrediction(PASSPORT_NUMBER))),
+                                 HasFormatString(Eq(std::nullopt))),
                            AllOf(HasPredictions(ElementsAre(
                                      EqualsPrediction(NAME_LAST),
-                                     EqualsPrediction(PASSPORT_NAME_TAG))),
-                                 HasFormatString(std::nullopt)))),
+                                     EqualsPrediction(PASSPORT_NUMBER))),
+                                 HasFormatString(Eq(std::nullopt))))),
           Pair(form_and_field(67890, 456),
                ElementsAre(
                    AllOf(HasPredictions(ElementsAre(
                              EqualsPrediction(ADDRESS_HOME_COUNTRY),
-                             EqualsPrediction(PASSPORT_ISSUING_COUNTRY_TAG))),
-                         HasFormatString(std::nullopt))))));
+                             EqualsPrediction(PASSPORT_ISSUING_COUNTRY))),
+                         HasFormatString(Eq(std::nullopt)))))));
 }
 
 }  // namespace

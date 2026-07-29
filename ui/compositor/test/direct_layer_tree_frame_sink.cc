@@ -11,7 +11,6 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
-#include "cc/tiles/image_decode_cache_utils.h"
 #include "cc/trees/layer_tree_frame_sink_client.h"
 #include "components/viz/common/features.h"
 #include "components/viz/common/hit_test/hit_test_region_list.h"
@@ -34,12 +33,11 @@ DirectLayerTreeFrameSink::DirectLayerTreeFrameSink(
     viz::FrameSinkManagerImpl* frame_sink_manager,
     viz::Display* display,
     scoped_refptr<viz::RasterContextProvider> context_provider,
-    scoped_refptr<cc::RasterContextProviderWrapper>
-        worker_context_provider_wrapper,
+    scoped_refptr<viz::RasterContextProvider> worker_context_provider,
     scoped_refptr<base::SingleThreadTaskRunner> compositor_task_runner,
     gfx::AcceleratedWidget widget)
     : LayerTreeFrameSink(std::move(context_provider),
-                         std::move(worker_context_provider_wrapper),
+                         std::move(worker_context_provider),
                          std::move(compositor_task_runner),
                          /*shared_image_interface=*/nullptr),
       frame_sink_id_(frame_sink_id),
@@ -138,6 +136,10 @@ void DirectLayerTreeFrameSink::DidNotProduceFrame(
   support_->DidNotProduceFrame(ack);
 }
 
+void DirectLayerTreeFrameSink::NotifyNewLocalSurfaceIdExpectedWhilePaused() {
+  support_->NotifyNewLocalSurfaceIdExpectedWhilePaused();
+}
+
 void DirectLayerTreeFrameSink::DisplayOutputSurfaceLost() {
   is_lost_ = true;
   client_->DidLoseLayerTreeFrameSink();
@@ -152,12 +154,12 @@ void DirectLayerTreeFrameSink::DisplayWillDrawAndSwap(
 }
 
 void DirectLayerTreeFrameSink::DisplayDidReceiveCALayerParams(
-    const gfx::CALayerParams& ca_layer_params) {
+    gfx::CALayerParams ca_layer_params) {
 #if BUILDFLAG(IS_APPLE)
   ui::CALayerFrameSink* ca_layer_frame_sink =
       ui::CALayerFrameSink::FromAcceleratedWidget(widget_);
   if (ca_layer_frame_sink) {
-    ca_layer_frame_sink->UpdateCALayerTree(ca_layer_params);
+    ca_layer_frame_sink->UpdateCALayerTree(std::move(ca_layer_params));
   } else {
     DLOG(WARNING) << "Received frame for non-existent widget.";
   }
@@ -166,13 +168,6 @@ void DirectLayerTreeFrameSink::DisplayDidReceiveCALayerParams(
   (void)widget_;
   NOTREACHED();
 #endif
-}
-
-base::TimeDelta
-DirectLayerTreeFrameSink::GetPreferredFrameIntervalForFrameSinkId(
-    const viz::FrameSinkId& id,
-    viz::mojom::CompositorFrameSinkType* type) {
-  return frame_sink_manager_->GetPreferredFrameIntervalForFrameSinkId(id, type);
 }
 
 void DirectLayerTreeFrameSink::DidReceiveCompositorFrameAck(
@@ -189,20 +184,18 @@ void DirectLayerTreeFrameSink::DidReceiveCompositorFrameAck(
 void DirectLayerTreeFrameSink::DidReceiveCompositorFrameAckInternal(
     std::vector<viz::ReturnedResource> resources) {
   client_->ReclaimResources(std::move(resources));
+  if (base::FeatureList::IsEnabled(features::kNoCompositorFrameAcks)) {
+    return;
+  }
   client_->DidReceiveCompositorFrameAck();
 }
 
 void DirectLayerTreeFrameSink::OnBeginFrame(
     const viz::BeginFrameArgs& args,
     const viz::FrameTimingDetailsMap& timing_details,
-    bool frame_ack,
     std::vector<viz::ReturnedResource> resources) {
-  if (features::IsOnBeginFrameAcksEnabled()) {
-    if (frame_ack) {
-      DidReceiveCompositorFrameAck(std::move(resources));
-    } else if (!resources.empty()) {
-      ReclaimResources(std::move(resources));
-    }
+  if (!resources.empty()) {
+    ReclaimResources(std::move(resources));
   }
   for (const auto& pair : timing_details)
     client_->DidPresentCompositorFrame(pair.first, pair.second);

@@ -6,21 +6,21 @@
 
 #include <memory>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include "base/containers/flat_map.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
-#include "base/functional/overloaded.h"
 #include "base/metrics/user_metrics_action.h"
 #include "chrome/browser/content_settings/cookie_settings_factory.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/favicon/favicon_service_factory.h"
 #include "chrome/browser/history/history_service_factory.h"
-#include "chrome/browser/privacy_sandbox/tracking_protection_settings_factory.h"
+#include "chrome/browser/infobars/infobar_features.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/collected_cookies_infobar_delegate.h"
 #include "chrome/browser/ui/ui_features.h"
@@ -47,7 +47,6 @@
 #include "components/infobars/content/content_infobar_manager.h"
 #include "components/omnibox/browser/favicon_cache.h"
 #include "components/privacy_sandbox/privacy_sandbox_features.h"
-#include "components/privacy_sandbox/tracking_protection_settings.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/webapps/common/web_app_id.h"
 #include "content/public/browser/browsing_data_filter_builder.h"
@@ -55,6 +54,7 @@
 #include "content/public/browser/web_contents.h"
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
 #include "net/cookies/cookie_util.h"
+#include "third_party/abseil-cpp/absl/functional/overload.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/dialog_model.h"
 #include "ui/views/bubble/bubble_dialog_model_host.h"
@@ -153,8 +153,6 @@ class PageSpecificSiteDataDialogModelDelegate : public ui::DialogModelDelegate {
         HistoryServiceFactory::GetForProfile(
             profile, ServiceAccessType::EXPLICIT_ACCESS));
     cookie_settings_ = CookieSettingsFactory::GetForProfile(profile);
-    tracking_protection_settings_ =
-        TrackingProtectionSettingsFactory::GetForProfile(profile);
     host_content_settings_map_ =
         HostContentSettingsMapFactory::GetForProfile(profile);
 
@@ -175,9 +173,15 @@ class PageSpecificSiteDataDialogModelDelegate : public ui::DialogModelDelegate {
     }
 
     if (status_changed_) {
-      CollectedCookiesInfoBarDelegate::Create(
-          infobars::ContentInfoBarManager::FromWebContents(
-              web_contents_.get()));
+      if (infobars::IsInfoBarMigrated(
+              infobars::InfoBarDelegate::COLLECTED_COOKIES_INFOBAR_DELEGATE)) {
+        PageSpecificSiteDataDialogController::ShowCollectedCookiesInfoBar(
+            web_contents_.get());
+      } else {
+        CollectedCookiesInfoBarDelegate::Create(
+            infobars::ContentInfoBarManager::FromWebContents(
+                web_contents_.get()));
+      }
     }
 
     // Reset the dialog reference in the user data. If the dialog is opened
@@ -228,7 +232,7 @@ class PageSpecificSiteDataDialogModelDelegate : public ui::DialogModelDelegate {
     }
 
     std::vector<PageSpecificSiteDataDialogSite> sites;
-    for (auto site : sites_map) {
+    for (const auto& site : sites_map) {
       sites.push_back(site.second);
     }
 
@@ -316,7 +320,9 @@ class PageSpecificSiteDataDialogModelDelegate : public ui::DialogModelDelegate {
   }
 
   void OnManageOnDeviceSiteDataClicked() {
-    Browser* browser = chrome::FindBrowserWithTab(web_contents_.get());
+    BrowserWindowInterface* browser =
+        GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
+            web_contents_.get());
     chrome::ShowSettingsSubPage(browser, chrome::kOnDeviceSiteDataSubpage);
   }
 
@@ -337,14 +343,14 @@ class PageSpecificSiteDataDialogModelDelegate : public ui::DialogModelDelegate {
     // url::Origin, so here we convert host name to origin with some assumptions
     // (which might not be true). We should either convert to work only with
     // host names or BDM should return origins.
-    url::Origin entry_origin = absl::visit(
-        base::Overloaded{[&](const std::string& host) {
-                           GURL current_url = web_contents_->GetVisibleURL();
-                           GURL site_url = net::cookie_util::CookieOriginToURL(
-                               host, current_url.SchemeIsCryptographic());
-                           return url::Origin::Create(site_url);
-                         },
-                         [](const url::Origin& origin) { return origin; }},
+    url::Origin entry_origin = std::visit(
+        absl::Overload{[&](const std::string& host) {
+                         GURL current_url = web_contents_->GetVisibleURL();
+                         GURL site_url = net::cookie_util::CookieOriginToURL(
+                             host, current_url.SchemeIsCryptographic());
+                         return url::Origin::Create(site_url);
+                       },
+                       [](const url::Origin& origin) { return origin; }},
         *entry.data_owner);
     return CreateSite(entry_origin, from_allowed_model,
                       IsBrowsingDataEntryViewFullyPartitioned(entry) &&
@@ -388,20 +394,13 @@ class PageSpecificSiteDataDialogModelDelegate : public ui::DialogModelDelegate {
         host_content_settings_map_->GetContentSetting(
             current_url, GURL(), ContentSettingsType::COOKIES);
 
-    // Check for either a COOKIES or TRACKING_PROTECTION site exception.
+    // Check for a COOKIES site exception.
     content_settings::SettingInfo info;
     host_content_settings_map_->GetContentSetting(
         site_origin.GetURL(), current_url, ContentSettingsType::COOKIES, &info);
     bool has_site_level_exception =
         info.primary_pattern != ContentSettingsPattern::Wildcard() ||
         info.secondary_pattern != ContentSettingsPattern::Wildcard();
-
-    if (base::FeatureList::IsEnabled(
-            privacy_sandbox::kTrackingProtectionContentSettingFor3pcb)) {
-      has_site_level_exception |=
-          tracking_protection_settings_->HasTrackingProtectionException(
-              current_url);
-    }
 
     // Partitioned access is displayed when all of these conditions are met:
     return
@@ -450,8 +449,6 @@ class PageSpecificSiteDataDialogModelDelegate : public ui::DialogModelDelegate {
       blocked_browsing_data_model_for_testing_ = nullptr;
   std::unique_ptr<FaviconCache> favicon_cache_;
   scoped_refptr<content_settings::CookieSettings> cookie_settings_;
-  raw_ptr<privacy_sandbox::TrackingProtectionSettings>
-      tracking_protection_settings_;
   raw_ptr<HostContentSettingsMap> host_content_settings_map_;
 
   // Whether user has done any changes to the site data, deleted site data for a

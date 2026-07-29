@@ -27,11 +27,12 @@ import android.widget.RadioButton;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.SwitchCompat;
 
-import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
 import org.robolectric.annotation.Config;
 
@@ -44,8 +45,9 @@ import org.chromium.chrome.browser.readaloud.player.expanded.MenuItem.Action;
 @RunWith(BaseRobolectricTestRunner.class)
 @Config(manifest = Config.NONE)
 public class MenuUnitTest {
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     private final Activity mActivity;
-    private Menu mMenu;
+    private final Menu mMenu;
     @Mock Callback<Integer> mHandler;
     @Mock Callback<Boolean> mToggleHandler;
 
@@ -55,11 +57,6 @@ public class MenuUnitTest {
         mActivity.setTheme(R.style.Theme_BrowserUI_DayNight);
         mMenu = (Menu) mActivity.getLayoutInflater().inflate(R.layout.readaloud_menu, null);
         assertNotNull(mMenu);
-    }
-
-    @Before
-    public void setUp() {
-        MockitoAnnotations.initMocks(this);
     }
 
     @Test
@@ -83,7 +80,7 @@ public class MenuUnitTest {
         // addItem and setValue
         MenuItem item = mMenu.addItem(1, 0, "Toggle action", /* header= */ null, Action.TOGGLE);
         item.setValue(true);
-        SwitchCompat toggle = (SwitchCompat) item.findViewById(R.id.toggle_switch);
+        SwitchCompat toggle = item.findViewById(R.id.toggle_switch);
         assertTrue(toggle.isChecked());
         item.setValue(false);
         assertFalse(toggle.isChecked());
@@ -101,7 +98,7 @@ public class MenuUnitTest {
         // addItem and setValue
         MenuItem item = mMenu.addItem(1, 0, "Radio action", /* header= */ null, Action.RADIO);
         item.setValue(true);
-        RadioButton radioButton = (RadioButton) item.findViewById(R.id.readaloud_radio_button);
+        RadioButton radioButton = item.findViewById(R.id.readaloud_radio_button);
         assertTrue(radioButton.isChecked());
         item.setValue(false);
         assertFalse(radioButton.isChecked());
@@ -144,11 +141,12 @@ public class MenuUnitTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked") // Mockito.reset varargs of generic Callback type.
     public void testAddPlayButton_OnPlayButtonClicked() {
         mMenu.setPlayButtonClickHandler(mHandler);
         MenuItem item = mMenu.addItem(1, 0, "test item", /* header= */ null, Action.NONE);
         item.addPlayButton();
-        ImageView playButton = (ImageView) item.findViewById(R.id.play_button);
+        ImageView playButton = item.findViewById(R.id.play_button);
         assertEquals(View.VISIBLE, playButton.getVisibility());
 
         assertTrue(playButton.performClick());
@@ -184,7 +182,7 @@ public class MenuUnitTest {
                 (LinearLayout)
                         mActivity.getLayoutInflater().inflate(R.layout.readaloud_menu_item, null);
         item.getLayoutSupplier().set(layout);
-        SwitchCompat button = (SwitchCompat) item.findViewById(R.id.toggle_switch);
+        SwitchCompat button = item.findViewById(R.id.toggle_switch);
         assertNotNull(button);
 
         // tests if onInitializeAccessibilityEvent is properly setting the event's checked state to

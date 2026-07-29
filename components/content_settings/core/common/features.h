@@ -26,23 +26,16 @@ namespace features {
 COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
 BASE_DECLARE_FEATURE(kSafetyCheckUnusedSitePermissions);
 
-// When enabled, allowlisted website settings are considered for Safety Check,
-// in addition to content settings that are included by default.
-COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
-BASE_DECLARE_FEATURE(
-    kSafetyCheckUnusedSitePermissionsForSupportedChooserPermissions);
-
 // Lets the HostContentSettingsMap actively monitor when content settings expire
 // and delete them instantly. This also notifies observers that will, in turn,
 // terminate access to capabilities gated on those settings right away.
 COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
 BASE_DECLARE_FEATURE(kActiveContentSettingExpiry);
 
-// Determines the frequency at which permissions of sites are checked whether
-// they are unused.
+// Enables early querying of storage access permissions to populate the renderer
+// cache and eliminate synchronous IPCs during initial page load.
 COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
-extern const base::FeatureParam<base::TimeDelta>
-    kSafetyCheckUnusedSitePermissionsRepeatedUpdateInterval;
+BASE_DECLARE_FEATURE(kEagerStorageAccessPermissionCheck);
 
 // When enabled, site permissions will be considered as unused immediately in
 // order to facilitate testing.
@@ -55,196 +48,26 @@ COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
 extern const base::FeatureParam<bool>
     kSafetyCheckUnusedSitePermissionsWithDelay;
 
-// Determines the time interval after which sites are considered to be unused
-// and its permissions will be revoked.
+// When enabled, allows users to choose between approximate and precise location
+// in geolocation permission prompts.
+//
+// Enabling this feature will migrate geolocation permissions from
+// ContentSettingsType::GEOLOCATION to
+// ContentSettingsType::GEOLOCATION_WITH_OPTIONS. When the feature is enabled,
+// ContentSettingType::GEOLOCATION_WITH_OPTIONS should be used in place of
+// ContentSettingsType::GEOLOCATION. The correct ContentSettingsType for
+// geolocation can always be retrieved using
+// content_settings::GeolocationContentSettingsType().
 COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
-extern const base::FeatureParam<base::TimeDelta>
-    kSafetyCheckUnusedSitePermissionsRevocationThreshold;
-
-// Determines the time interval after which the revoked permissions of unused
-// sites are cleaned up and no longer shown to users, starting from the point
-// in time that permissions for a site were revoked.
-COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
-extern const base::FeatureParam<base::TimeDelta>
-    kSafetyCheckUnusedSitePermissionsRevocationCleanUpThreshold;
-
-// Feature to enable the feedback button in the User Bypass UI.
-COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
-BASE_DECLARE_FEATURE(kUserBypassFeedback);
-
-// Feature to enable the User Bypass UI.
-COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
-BASE_DECLARE_FEATURE(kUserBypassUI);
-
-// Determines the time interval after which a user bypass exception expires.
-// Note that it affects only new exceptions, previously created exceptions won't
-// be updated to use a new expiration.
-COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
-extern const base::FeatureParam<base::TimeDelta>
-    kUserBypassUIExceptionExpiration;
-
-// Determines how many refreshes within `kUserBypassUIReloadTime` are required
-// before a high confidence signal is returned.
-COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
-extern const base::FeatureParam<int> kUserBypassUIReloadCount;
-
-// Determines how long a user has to make `kUserBypassUIReloadCount` refreshes
-// before a high confidence signal is returned.
-COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
-extern const base::FeatureParam<base::TimeDelta> kUserBypassUIReloadTime;
-
-// The reloading bubble will be shown until either the page full reloads or this
-// timeout is reached.
-COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
-extern const base::FeatureParam<base::TimeDelta>
-    kUserBypassUIReloadBubbleTimeout;
+BASE_DECLARE_FEATURE(kApproximateGeolocationPermission);
 
 // Move activity indicators to the left-hand side of Omnibox.
 COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
 BASE_DECLARE_FEATURE(kLeftHandSideActivityIndicators);
 
-#if BUILDFLAG(IS_CHROMEOS)
-// Shows warnings if camera, microphone or geolocation is blocked in the OS.
+// Move sensor activity indicators to the left-hand side of Omnibox.
 COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
-BASE_DECLARE_FEATURE(kCrosSystemLevelPermissionBlockedWarnings);
-#endif
-
-// Feature to enable redesigned tracking protection UX + prefs for 3PCD.
-COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
-BASE_DECLARE_FEATURE(kTrackingProtection3pcd);
-
-// Forces unpartitioned storage access with third-party cookie blocking.
-COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
-BASE_DECLARE_FEATURE(kNativeUnpartitionedStoragePermittedWhen3PCOff);
-
-////////////////////////////////////////////////////////////
-// Start of third-party cookie access heuristics features //
-////////////////////////////////////////////////////////////
-
-// The content module implements the third-party cookie (3PC or TPC) access
-// heuristics described here:
-// https://github.com/amaliev/3pcd-exemption-heuristics/blob/main/explainer.md
-//
-// At a high level, the heuristics are enabled/disabled by the
-// kTpcdHeuristicsGrants Feature.
-//
-// The heuristics can be tweaked through the FeatureParams declared below. They
-// affect when the heuristics apply and how long the temporary cookie access
-// lasts.
-//
-// The heuristics grant third-party cookie access via calls to
-// ContentBrowserClient::GrantCookieAccessDueToHeuristic(). Embedders should
-// take these calls, kTpcdHeuristicsGrants, and kTpcdReadHeuristicsGrants into
-// account in their implementation of
-// ContentBrowserClient::IsFullCookieAccessAllowed().
-
-COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
-extern const char kTpcdReadHeuristicsGrantsName[];
-
-// Enables writing and reading temporary storage access grants from 3PCD
-// heuristics.
-COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
-BASE_DECLARE_FEATURE(kTpcdHeuristicsGrants);
-
-// Whether 3PCD heuristics grants should be considered to override cookie access
-// behavior.
-COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
-extern const base::FeatureParam<bool> kTpcdReadHeuristicsGrants;
-
-COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
-extern const char kTpcdWriteRedirectHeuristicGrantsName[];
-COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
-extern const char kTpcdRedirectHeuristicRequireABAFlowName[];
-COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
-extern const char kTpcdRedirectHeuristicRequireCurrentInteractionName[];
-
-// The duration of the storage access grant created when observing the Redirect
-// With Current Interaction scenario. If set to zero duration, do not create a
-// grant.
-COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
-extern const base::FeatureParam<base::TimeDelta>
-    kTpcdWriteRedirectHeuristicGrants;
-
-// Whether to require an A-B-A flow (where the first party preceded the
-// third-party redirect in the tab history) when applying the Redirect
-// heuristic.
-COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
-extern const base::FeatureParam<bool> kTpcdRedirectHeuristicRequireABAFlow;
-
-// Whether to require the third-party interaction to be in the current
-// navigation when applying the Redirect heuristic.
-COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
-extern const base::FeatureParam<bool>
-    kTpcdRedirectHeuristicRequireCurrentInteraction;
-
-COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
-extern const char kTpcdPopupHeuristicEnableForIframeInitiatorName[];
-COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
-extern const char kTpcdWritePopupCurrentInteractionHeuristicsGrantsName[];
-COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
-extern const char kTpcdWritePopupPastInteractionHeuristicsGrantsName[];
-COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
-extern const char kTpcdBackfillPopupHeuristicsGrantsName[];
-COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
-extern const char kTpcdPopupHeuristicDisableForAdTaggedPopupsName[];
-
-enum class EnableForIframeTypes { kNone = 0, kFirstParty = 1, kAll = 2 };
-
-// Whether to enable writing Popup heuristic grants when the popup is opened via
-// an iframe initiator.
-
-// * kNone: Ignore popups initiated from iframes.
-// * kFirstPartyIframes: Only write grants for popups initiated from 1P iframes,
-// or nested tree of all 1P iframes.
-// * kAllIframes: Write grants for popups initiated from any frame.
-constexpr base::FeatureParam<EnableForIframeTypes>::Option
-    kEnableForIframeTypesOptions[] = {
-        {EnableForIframeTypes::kNone, "none"},
-        {EnableForIframeTypes::kFirstParty, "first-party"},
-        {EnableForIframeTypes::kAll, "all"},
-};
-COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
-extern const base::FeatureParam<EnableForIframeTypes>
-    kTpcdPopupHeuristicEnableForIframeInitiator;
-
-// The duration of the storage access grant created when observing the Popup
-// With Current Interaction scenario. If set to zero duration, do not create a
-// grant.
-COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
-extern const base::FeatureParam<base::TimeDelta>
-    kTpcdWritePopupCurrentInteractionHeuristicsGrants;
-
-// The duration of the storage access grant created when observing the Popup
-// With Past Interaction scenario. If set to zero duration, do not create a
-// grant.
-COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
-extern const base::FeatureParam<base::TimeDelta>
-    kTpcdWritePopupPastInteractionHeuristicsGrants;
-
-// The lookback and duration of the storage access grants created when
-// backfilling the Popup With Current Interaction scenario on onboarding to
-// 3PCD. If set to zero duration, to not create backfill grants.
-COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
-extern const base::FeatureParam<base::TimeDelta>
-    kTpcdBackfillPopupHeuristicsGrants;
-
-// Whether to disable writing Popup heuristic grants when the popup is opened
-// via an ad-tagged frame.
-COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
-extern const base::FeatureParam<bool>
-    kTpcdPopupHeuristicDisableForAdTaggedPopups;
-
-//////////////////////////////////////////////////////////
-// End of third-party cookie access heuristics features //
-//////////////////////////////////////////////////////////
-
-// Whether we should partition content settings (by StoragePartitions for
-// non-ios platforms).
-COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
-BASE_DECLARE_FEATURE(kContentSettingsPartitioning);
-
-COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
-extern const char kUseTestMetadataName[];
+BASE_DECLARE_FEATURE(kLeftHandSideSensorActivityIndicators);
 
 }  // namespace features
 }  // namespace content_settings

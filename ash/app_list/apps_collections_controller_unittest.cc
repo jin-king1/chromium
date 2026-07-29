@@ -26,7 +26,7 @@
 #include "ash/wm/tablet_mode/tablet_mode_controller_test_api.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
-#include "ui/compositor/scoped_animation_duration_scale_mode.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/views/controls/button/label_button.h"
 #include "ui/views/controls/menu/menu_item_view.h"
 #include "ui/views/controls/menu/submenu_view.h"
@@ -177,7 +177,7 @@ TEST_F(AppsCollectionsControllerTest,
 
   // Cache the current context menu view.
   views::MenuItemView* reorder_submenu =
-      context_menu->root_for_testing()->GetSubmenu()->GetMenuItemAt(2);
+      context_menu->root_for_testing()->GetSubmenu()->GetMenuItemAt(3);
   ASSERT_EQ(reorder_submenu->title(), u"Sort by");
   GetEventGenerator()->GestureTapAt(
       reorder_submenu->GetBoundsInScreen().CenterPoint());
@@ -274,10 +274,10 @@ INSTANTIATE_TEST_SUITE_P(
         /*is_managed_user=*/::testing::Bool(),
         ::testing::Values(user_manager::UserType::kChild,
                           user_manager::UserType::kGuest,
-                          user_manager::UserType::kKioskApp,
+                          user_manager::UserType::kKioskChromeApp,
                           user_manager::UserType::kPublicAccount,
                           user_manager::UserType::kRegular,
-                          user_manager::UserType::kWebKioskApp),
+                          user_manager::UserType::kKioskWebApp),
         /*is_user_first_login_to_chromeos=*/
         ::testing::Values(std::make_optional(true),
                           std::make_optional(false),

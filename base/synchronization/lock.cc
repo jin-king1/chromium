@@ -6,27 +6,26 @@
 // is functionally a wrapper around the LockImpl class, so the only
 // real intelligence in the class is in the debugging logic.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40284755): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "base/synchronization/lock.h"
 
 #include <cstdint>
 
+#include "base/feature_list.h"
+#include "base/features.h"
+
 #if DCHECK_IS_ON()
 #include <array>
-#include <memory>
 
-#include "base/functional/function_ref.h"
+#include "base/check_op.h"
 #include "base/synchronization/lock_subtle.h"
 #include "base/threading/platform_thread.h"
+#endif  // DCHECK_IS_ON()
 
 namespace base {
 
 namespace {
 
+#if DCHECK_IS_ON()
 // List of locks held by a thread.
 //
 // As of May 2024, no more than 5 locks were held simultaneously by a thread in
@@ -42,15 +41,23 @@ thread_local std::array<uintptr_t, kHeldLocksCapacity>
 
 // Number of non-nullptr elements in `g_tracked_locks_held_by_thread`.
 thread_local size_t g_num_tracked_locks_held_by_thread = 0;
+#endif  // DCHECK_IS_ON()
+
+#if BUILDFLAG(IS_POSIX)
+int GetBaseLockSpinCount() {
+#if defined(ARCH_CPU_X86_FAMILY)
+  return base::features::kSpinCountX86.Get();
+#elif defined(ARCH_CPU_ARM_FAMILY)
+  return base::features::kSpinCountArm.Get();
+#else
+  return 0;
+#endif  // defined(ARCH_CPU_X86_FAMILY)
+}
+#endif  // BUILDFLAG(IS_POSIX)
 
 }  // namespace
 
-Lock::Lock() = default;
-
-Lock::Lock(FunctionRef<void()> check_invariants)
-    : check_invariants_(
-          std::make_unique<FunctionRef<void()>>(check_invariants)) {}
-
+#if DCHECK_IS_ON()
 Lock::~Lock() {
   DCHECK(owning_thread_ref_.is_null());
 }
@@ -92,18 +99,12 @@ void Lock::AssertNotHeld() const {
 
 void Lock::CheckHeldAndUnmark() {
   DCHECK_EQ(owning_thread_ref_, PlatformThread::CurrentRef());
-  if (check_invariants_) {
-    (*check_invariants_)();
-  }
   owning_thread_ref_ = PlatformThreadRef();
 }
 
 void Lock::CheckUnheldAndMark() {
   DCHECK(owning_thread_ref_.is_null());
   owning_thread_ref_ = PlatformThread::CurrentRef();
-  if (check_invariants_) {
-    (*check_invariants_)();
-  }
 }
 
 void Lock::AddToLocksHeldOnCurrentThread() {
@@ -145,12 +146,20 @@ void Lock::RemoveFromLocksHeldOnCurrentThread() {
 namespace subtle {
 
 span<const uintptr_t> GetTrackedLocksHeldByCurrentThread() {
-  return span<const uintptr_t>(g_tracked_locks_held_by_thread.begin(),
-                               g_num_tracked_locks_held_by_thread);
+  return span(g_tracked_locks_held_by_thread)
+      .first(g_num_tracked_locks_held_by_thread);
 }
 
 }  // namespace subtle
+#endif  // DCHECK_IS_ON()
+
+#if BUILDFLAG(IS_POSIX)
+// static
+void Lock::InitializeFeatures() {
+  if (FeatureList::IsEnabled(base::features::kBaseLockTrySpin)) {
+    base::internal::LockImpl::SetTrySpinCount(GetBaseLockSpinCount());
+  }
+}
+#endif  // BUILDFLAG(IS_POSIX)
 
 }  // namespace base
-
-#endif  // DCHECK_IS_ON()

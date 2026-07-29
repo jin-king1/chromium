@@ -5,19 +5,25 @@
 #include "components/privacy_sandbox/privacy_sandbox_test_util.h"
 
 #include <tuple>
+#include <variant>
 
 #include "base/feature_list.h"
+#include "base/metrics/metrics_hashes.h"
+#include "base/strings/string_util.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_feature_list.h"
 #include "components/content_settings/core/browser/cookie_settings.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "components/content_settings/core/common/pref_names.h"
 #include "components/content_settings/core/test/content_settings_mock_provider.h"
 #include "components/content_settings/core/test/content_settings_test_utils.h"
+#include "components/metrics/dwa/dwa_recorder.h"
 #include "components/privacy_sandbox/privacy_sandbox_attestations/privacy_sandbox_attestations.h"
 #include "components/privacy_sandbox/privacy_sandbox_features.h"
 #include "components/privacy_sandbox/privacy_sandbox_prefs.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "content/public/test/browser_task_environment.h"
+#include "net/base/registry_controlled_domains/registry_controlled_domain.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "url/origin.h"
@@ -37,13 +43,13 @@ std::map<T, TestCaseItemValue> UnpackKeys(
 
   for (const auto& [test_key, value] : test_key_to_test_value) {
     // If test_key is a single key, set the value in the map directly.
-    if (absl::holds_alternative<T>(test_key)) {
-      auto key = absl::get<T>(test_key);
+    if (std::holds_alternative<T>(test_key)) {
+      auto key = std::get<T>(test_key);
       EXPECT_EQ(0u, unpacked_map.count(key))
           << "Duplicate test key " << static_cast<int>(key);
       unpacked_map[key] = value;
     } else {
-      auto keys = absl::get<MultipleKeys<T>>(test_key);
+      auto keys = std::get<MultipleKeys<T>>(test_key);
       for (auto key : keys) {
         EXPECT_EQ(0u, unpacked_map.count(key))
             << "Duplicate test key " << static_cast<int>(key);
@@ -57,8 +63,8 @@ std::map<T, TestCaseItemValue> UnpackKeys(
 
 template <typename T>
 T GetItemValue(const TestCaseItemValue& value) {
-  EXPECT_TRUE(absl::holds_alternative<T>(value));
-  return absl::get<T>(value);
+  EXPECT_TRUE(std::holds_alternative<T>(value));
+  return std::get<T>(value);
 }
 
 template <typename V, typename K>
@@ -118,8 +124,7 @@ void ApplyTestState(
       user_content_setting_provider->SetWebsiteSetting(
           ContentSettingsPattern::Wildcard(),
           ContentSettingsPattern::Wildcard(), ContentSettingsType::COOKIES,
-          base::Value(content_setting), /*constraints=*/{},
-          content_settings::PartitionKey::GetDefaultForTesting());
+          base::Value(content_setting), /*constraints=*/{});
       return;
     }
     case (StateKey::kSiteDataUserExceptions): {
@@ -130,8 +135,7 @@ void ApplyTestState(
         user_content_setting_provider->SetWebsiteSetting(
             ContentSettingsPattern::FromString(primary_pattern),
             ContentSettingsPattern::Wildcard(), ContentSettingsType::COOKIES,
-            base::Value(content_setting), /*constraints=*/{},
-            content_settings::PartitionKey::GetDefaultForTesting());
+            base::Value(content_setting), /*constraints=*/{});
       }
       return;
     }
@@ -296,18 +300,6 @@ void ApplyTestState(
           GetItemValue<std::string>(value), false);
       return;
     }
-    case (StateKey::kBlockAll3pcToggleEnabledUserPrefValue): {
-      SCOPED_TRACE("State Setup: Block all 3pc toggle enabled");
-      testing_pref_service->SetUserPref(prefs::kBlockAll3pcToggleEnabled,
-                                        base::Value(GetItemValue<bool>(value)));
-      return;
-    }
-    case (StateKey::kTrackingProtection3pcdEnabledUserPrefValue): {
-      SCOPED_TRACE("State Setup: Tracking protection 3pcd enabled");
-      testing_pref_service->SetUserPref(prefs::kTrackingProtection3pcdEnabled,
-                                        base::Value(GetItemValue<bool>(value)));
-      return;
-    }
     default:
       NOTREACHED();
   }
@@ -323,10 +315,8 @@ void ProvideInput(const std::pair<InputKey, TestCaseItemValue>& input,
       return;
     }
     case (InputKey::kPromptAction): {
-      // TODO(crbug.com/359902106): Test various SurfaceTypes like we do for
-      // PromptAction here.
-      privacy_sandbox_service->PromptActionOccurred(
-          GetItemValue<int>(input_value), /*kDesktop*/ 0);
+      // OutputKey::kPromptAction is not used.
+      // TODO(crbug.com/474716334): Remove this case when the enum is removed.
       return;
     }
     default: {
@@ -367,9 +357,10 @@ void CheckOutput(
       auto fledge_auction_party_origin = GetItemValueForKey<url::Origin>(
           InputKey::kFledgeAuctionPartyOrigin, input);
       auto return_value = GetItemValue<bool>(output_value);
-      ASSERT_EQ(return_value, privacy_sandbox_settings->IsFledgeAllowed(
-                                  top_frame_origin, fledge_auction_party_origin,
-                                  content::InterestGroupApiOperation::kJoin));
+      ASSERT_EQ(return_value,
+                privacy_sandbox_settings->IsFledgeAllowed(
+                    top_frame_origin, fledge_auction_party_origin,
+                    privacy_sandbox::InterestGroupApiOperation::kJoin));
       return;
     }
     case (OutputKey::kIsFledgeLeaveAllowed): {
@@ -379,9 +370,10 @@ void CheckOutput(
       auto fledge_auction_party_origin = GetItemValueForKey<url::Origin>(
           InputKey::kFledgeAuctionPartyOrigin, input);
       auto return_value = GetItemValue<bool>(output_value);
-      ASSERT_EQ(return_value, privacy_sandbox_settings->IsFledgeAllowed(
-                                  top_frame_origin, fledge_auction_party_origin,
-                                  content::InterestGroupApiOperation::kLeave));
+      ASSERT_EQ(return_value,
+                privacy_sandbox_settings->IsFledgeAllowed(
+                    top_frame_origin, fledge_auction_party_origin,
+                    privacy_sandbox::InterestGroupApiOperation::kLeave));
       return;
     }
     case (OutputKey::kIsFledgeUpdateAllowed): {
@@ -391,9 +383,10 @@ void CheckOutput(
       auto fledge_auction_party_origin = GetItemValueForKey<url::Origin>(
           InputKey::kFledgeAuctionPartyOrigin, input);
       auto return_value = GetItemValue<bool>(output_value);
-      ASSERT_EQ(return_value, privacy_sandbox_settings->IsFledgeAllowed(
-                                  top_frame_origin, fledge_auction_party_origin,
-                                  content::InterestGroupApiOperation::kUpdate));
+      ASSERT_EQ(return_value,
+                privacy_sandbox_settings->IsFledgeAllowed(
+                    top_frame_origin, fledge_auction_party_origin,
+                    privacy_sandbox::InterestGroupApiOperation::kUpdate));
       return;
     }
     case (OutputKey::kIsFledgeSellAllowed): {
@@ -403,9 +396,10 @@ void CheckOutput(
       auto fledge_auction_party_origin = GetItemValueForKey<url::Origin>(
           InputKey::kFledgeAuctionPartyOrigin, input);
       auto return_value = GetItemValue<bool>(output_value);
-      ASSERT_EQ(return_value, privacy_sandbox_settings->IsFledgeAllowed(
-                                  top_frame_origin, fledge_auction_party_origin,
-                                  content::InterestGroupApiOperation::kSell));
+      ASSERT_EQ(return_value,
+                privacy_sandbox_settings->IsFledgeAllowed(
+                    top_frame_origin, fledge_auction_party_origin,
+                    privacy_sandbox::InterestGroupApiOperation::kSell));
       return;
     }
     case (OutputKey::kIsFledgeBuyAllowed): {
@@ -415,9 +409,10 @@ void CheckOutput(
       auto fledge_auction_party_origin = GetItemValueForKey<url::Origin>(
           InputKey::kFledgeAuctionPartyOrigin, input);
       auto return_value = GetItemValue<bool>(output_value);
-      ASSERT_EQ(return_value, privacy_sandbox_settings->IsFledgeAllowed(
-                                  top_frame_origin, fledge_auction_party_origin,
-                                  content::InterestGroupApiOperation::kBuy));
+      ASSERT_EQ(return_value,
+                privacy_sandbox_settings->IsFledgeAllowed(
+                    top_frame_origin, fledge_auction_party_origin,
+                    privacy_sandbox::InterestGroupApiOperation::kBuy));
       return;
     }
     case (OutputKey::kIsEventReportingDestinationAttestedForFledge): {
@@ -484,32 +479,6 @@ void CheckOutput(
       histogram_tester.ExpectUniqueSample(
           "PrivacySandbox.IsPrivacySandboxReportingDestinationAttested",
           histogram_value, 1);
-      return;
-    }
-    case (OutputKey::kIsAttributionReportingAllowed): {
-      SCOPED_TRACE("Check Output: IsAttributionReportingAllowed()");
-      auto top_frame_origin =
-          GetItemValueForKey<url::Origin>(InputKey::kTopFrameOrigin, input);
-      auto reporting_origin = GetItemValueForKey<url::Origin>(
-          InputKey::kAdMeasurementReportingOrigin, input);
-      auto return_value = GetItemValue<bool>(output_value);
-      ASSERT_EQ(return_value,
-                privacy_sandbox_settings->IsAttributionReportingAllowed(
-                    top_frame_origin, reporting_origin));
-      return;
-    }
-    case (OutputKey::kMaySendAttributionReport): {
-      SCOPED_TRACE("Check Output: MaySendAttributionReport()");
-      auto source_origin = GetItemValueForKey<url::Origin>(
-          InputKey::kAdMeasurementSourceOrigin, input);
-      auto destination_origin = GetItemValueForKey<url::Origin>(
-          InputKey::kAdMeasurementDestinationOrigin, input);
-      auto reporting_origin = GetItemValueForKey<url::Origin>(
-          InputKey::kAdMeasurementReportingOrigin, input);
-      auto return_value = GetItemValue<bool>(output_value);
-      ASSERT_EQ(return_value,
-                privacy_sandbox_settings->MaySendAttributionReport(
-                    source_origin, destination_origin, reporting_origin));
       return;
     }
 
@@ -601,7 +570,7 @@ void CheckOutput(
           InputKey::kFledgeAuctionPartyOrigin, input);
       std::ignore = privacy_sandbox_settings->IsFledgeAllowed(
           top_frame_origin, fledge_auction_party_origin,
-          content::InterestGroupApiOperation::kJoin);
+          privacy_sandbox::InterestGroupApiOperation::kJoin);
       auto histogram_value = GetItemValue<int>(output_value);
       histogram_tester.ExpectUniqueSample("PrivacySandbox.IsFledgeJoinAllowed",
                                           histogram_value, 1);
@@ -616,7 +585,7 @@ void CheckOutput(
           InputKey::kFledgeAuctionPartyOrigin, input);
       std::ignore = privacy_sandbox_settings->IsFledgeAllowed(
           top_frame_origin, fledge_auction_party_origin,
-          content::InterestGroupApiOperation::kLeave);
+          privacy_sandbox::InterestGroupApiOperation::kLeave);
       auto histogram_value = GetItemValue<int>(output_value);
       histogram_tester.ExpectUniqueSample("PrivacySandbox.IsFledgeLeaveAllowed",
                                           histogram_value, 1);
@@ -631,7 +600,7 @@ void CheckOutput(
           InputKey::kFledgeAuctionPartyOrigin, input);
       std::ignore = privacy_sandbox_settings->IsFledgeAllowed(
           top_frame_origin, fledge_auction_party_origin,
-          content::InterestGroupApiOperation::kUpdate);
+          privacy_sandbox::InterestGroupApiOperation::kUpdate);
       auto histogram_value = GetItemValue<int>(output_value);
       histogram_tester.ExpectUniqueSample(
           "PrivacySandbox.IsFledgeUpdateAllowed", histogram_value, 1);
@@ -646,7 +615,7 @@ void CheckOutput(
           InputKey::kFledgeAuctionPartyOrigin, input);
       std::ignore = privacy_sandbox_settings->IsFledgeAllowed(
           top_frame_origin, fledge_auction_party_origin,
-          content::InterestGroupApiOperation::kSell);
+          privacy_sandbox::InterestGroupApiOperation::kSell);
       auto histogram_value = GetItemValue<int>(output_value);
       histogram_tester.ExpectUniqueSample("PrivacySandbox.IsFledgeSellAllowed",
                                           histogram_value, 1);
@@ -661,41 +630,10 @@ void CheckOutput(
           InputKey::kFledgeAuctionPartyOrigin, input);
       std::ignore = privacy_sandbox_settings->IsFledgeAllowed(
           top_frame_origin, fledge_auction_party_origin,
-          content::InterestGroupApiOperation::kBuy);
+          privacy_sandbox::InterestGroupApiOperation::kBuy);
       auto histogram_value = GetItemValue<int>(output_value);
       histogram_tester.ExpectUniqueSample("PrivacySandbox.IsFledgeBuyAllowed",
                                           histogram_value, 1);
-      return;
-    }
-    case (OutputKey::kIsAttributionReportingAllowedMetric): {
-      SCOPED_TRACE(
-          "Check Output: PrivacySandbox.IsAttributionReportingAllowed");
-      base::HistogramTester histogram_tester;
-      auto top_frame_origin =
-          GetItemValueForKey<url::Origin>(InputKey::kTopFrameOrigin, input);
-      auto reporting_origin = GetItemValueForKey<url::Origin>(
-          InputKey::kAdMeasurementReportingOrigin, input);
-      std::ignore = privacy_sandbox_settings->IsAttributionReportingAllowed(
-          top_frame_origin, reporting_origin);
-      auto histogram_value = GetItemValue<int>(output_value);
-      histogram_tester.ExpectUniqueSample(
-          "PrivacySandbox.IsAttributionReportingAllowed", histogram_value, 1);
-      return;
-    }
-    case (OutputKey::kMaySendAttributionReportMetric): {
-      SCOPED_TRACE("Check Output: PrivacySandbox.MaySendAttributionReport");
-      base::HistogramTester histogram_tester;
-      auto source_origin = GetItemValueForKey<url::Origin>(
-          InputKey::kAdMeasurementSourceOrigin, input);
-      auto destination_origin = GetItemValueForKey<url::Origin>(
-          InputKey::kAdMeasurementDestinationOrigin, input);
-      auto reporting_origin = GetItemValueForKey<url::Origin>(
-          InputKey::kAdMeasurementReportingOrigin, input);
-      std::ignore = privacy_sandbox_settings->MaySendAttributionReport(
-          source_origin, destination_origin, reporting_origin);
-      auto histogram_value = GetItemValue<int>(output_value);
-      histogram_tester.ExpectUniqueSample(
-          "PrivacySandbox.MaySendAttributionReport", histogram_value, 1);
       return;
     }
     case (OutputKey::kIsSharedStorageAllowedMetric): {
@@ -737,12 +675,47 @@ void CheckOutput(
           GetItemValueForKey<url::Origin>(InputKey::kTopFrameOrigin, input);
       auto reporting_origin = GetItemValueForKey<url::Origin>(
           InputKey::kAdMeasurementReportingOrigin, input);
+
+      base::test::ScopedFeatureList scoped_feature_list_{
+          metrics::dwa::kDwaFeature};
+
+      // Ensures that metrics are only counted for this call.
+      // TODO(crbug.com/403946431): Consider implementing a scoped object to
+      // improve ergonomics.
+      metrics::dwa::DwaRecorder::Get()->EnableRecording();
+      metrics::dwa::DwaRecorder::Get()->Purge();
+      ASSERT_THAT(metrics::dwa::DwaRecorder::Get()->GetEntriesForTesting(),
+                  testing::IsEmpty());
+
       std::ignore = privacy_sandbox_settings->IsPrivateAggregationAllowed(
           top_frame_origin, reporting_origin,
           /*out_block_is_site_setting_specific=*/nullptr);
       auto histogram_value = GetItemValue<int>(output_value);
       histogram_tester.ExpectUniqueSample(
           "PrivacySandbox.IsPrivateAggregationAllowed", histogram_value, 1);
+
+      ASSERT_THAT(metrics::dwa::DwaRecorder::Get()->GetEntriesForTesting(),
+                  testing::SizeIs(1));
+      EXPECT_THAT(
+          metrics::dwa::DwaRecorder::Get()
+              ->GetEntriesForTesting()[0]
+              ->event_hash,
+          base::HashMetricName("PrivacySandbox.IsPrivateAggregationAllowed"));
+
+      // DWA content sanitization extracts the eTLD+1 from the provided
+      // reporting origin.
+      EXPECT_THAT(
+          metrics::dwa::DwaRecorder::Get()
+              ->GetEntriesForTesting()[0]
+              ->content_hash,
+          base::HashMetricName(
+              net::registry_controlled_domains::GetDomainAndRegistry(
+                  reporting_origin.GetURL(), net::registry_controlled_domains::
+                                                 INCLUDE_PRIVATE_REGISTRIES)));
+      EXPECT_THAT(
+          metrics::dwa::DwaRecorder::Get()->GetEntriesForTesting()[0]->metrics,
+          testing::UnorderedElementsAre(
+              testing::Pair(base::HashMetricName("Status"), histogram_value)));
       return;
     }
     case (OutputKey::kTopicsConsentGiven): {
@@ -811,14 +784,8 @@ void CheckOutput(
       return;
     }
     case (OutputKey::kPromptType): {
-      SCOPED_TRACE("Check Output: PrivacySandboxService.GetRequiredPromptType");
-      auto prompt_type = GetItemValue<int>(output_value);
-      auto force_chrome_build =
-          GetItemValueForKey<bool>(InputKey::kForceChromeBuild, input);
-      privacy_sandbox_service->ForceChromeBuildForTests(force_chrome_build);
-      // TODO(crbug.com/359902106): Test various SurfaceTypes here.
-      EXPECT_EQ(prompt_type,
-                privacy_sandbox_service->GetRequiredPromptType(/*kDesktop*/ 0));
+      // OutputKey::kPromptType is not used.
+      // TODO(crbug.com/474716334): Remove this case when the enum is removed.
       return;
     }
     case (OutputKey::kM1PromptSuppressedReason): {
@@ -880,38 +847,6 @@ void CheckOutput(
       bool expected = GetItemValue<bool>(output_value);
       EXPECT_EQ(expected, testing_pref_service->GetBoolean(
                               prefs::kPrivacySandboxM1AdMeasurementEnabled));
-      return;
-    }
-    case (OutputKey::kIsAttributionReportingEverAllowed): {
-      SCOPED_TRACE("Check Output: Is Attribution Reporting Ever Allowed");
-      bool expected = GetItemValue<bool>(output_value);
-      ASSERT_EQ(expected,
-                privacy_sandbox_settings->IsAttributionReportingEverAllowed());
-      return;
-    }
-    case (OutputKey::kIsAttributionReportingEverAllowedMetric): {
-      SCOPED_TRACE(
-          "Check Output: PrivacySandbox.IsAttributionReportingEverAllowed");
-      base::HistogramTester histogram_tester;
-      std::ignore =
-          privacy_sandbox_settings->IsAttributionReportingEverAllowed();
-      auto histogram_value = GetItemValue<int>(output_value);
-      histogram_tester.ExpectUniqueSample(
-          "PrivacySandbox.IsAttributionReportingEverAllowed", histogram_value,
-          1);
-      return;
-    }
-    case (OutputKey::kIsCookieDeprecationLabelAllowedForContext): {
-      SCOPED_TRACE("Check Output: IsCookieDeprecatioinAllowedForContext");
-      auto top_frame_origin =
-          GetItemValueForKey<url::Origin>(InputKey::kTopFrameOrigin, input);
-      auto context_origin =
-          GetItemValueForKey<url::Origin>(InputKey::kAccessingOrigin, input);
-      auto return_value = GetItemValue<bool>(output_value);
-      ASSERT_EQ(
-          return_value,
-          privacy_sandbox_settings->IsCookieDeprecationLabelAllowedForContext(
-              top_frame_origin, context_origin));
       return;
     }
     case (OutputKey::kIsSharedStorageAllowedDebugMessage): {
@@ -1027,34 +962,6 @@ void CheckOutput(
       }
       return;
     }
-    case (OutputKey::kIsFencedStorageReadAllowed): {
-      SCOPED_TRACE("Check Output: IsFencedStorageReadAllowed()");
-      auto top_frame_origin =
-          GetItemValueForKey<url::Origin>(InputKey::kTopFrameOrigin, input);
-      auto accessing_origin =
-          GetItemValueForKey<url::Origin>(InputKey::kAccessingOrigin, input);
-      auto return_value = GetItemValue<bool>(output_value);
-      ASSERT_EQ(return_value,
-                privacy_sandbox_settings->IsFencedStorageReadAllowed(
-                    top_frame_origin, accessing_origin,
-                    /*console_frame=*/nullptr));
-      return;
-    }
-    case (OutputKey::kIsFencedStorageReadAllowedMetric): {
-      SCOPED_TRACE("Check Output: PrivacySandbox.IsFencedStorageReadAllowed");
-      base::HistogramTester histogram_tester;
-      auto top_frame_origin =
-          GetItemValueForKey<url::Origin>(InputKey::kTopFrameOrigin, input);
-      auto accessing_origin =
-          GetItemValueForKey<url::Origin>(InputKey::kAccessingOrigin, input);
-      std::ignore = privacy_sandbox_settings->IsFencedStorageReadAllowed(
-          top_frame_origin, accessing_origin,
-          /*console_frame=*/nullptr);
-      auto histogram_value = GetItemValue<int>(output_value);
-      histogram_tester.ExpectUniqueSample(
-          "PrivacySandbox.IsFencedStorageReadAllowed", histogram_value, 1);
-      return;
-    }
   }
 }
 
@@ -1107,6 +1014,16 @@ void RunTestCase(
     CheckOutput(inputs, output, privacy_sandbox_settings,
                 privacy_sandbox_service, testing_pref_service);
   }
+}
+
+// static
+bool PrivacySandboxSettingsTestPeer::IsAllowed(Status status) {
+  return privacy_sandbox::PrivacySandboxSettingsImpl::IsAllowed(status);
+}
+
+bool PrivacySandboxSettingsTestPeer::IsFledgeJoiningAllowed(
+    const url::Origin& top_frame_origin) const {
+  return pss_impl_->IsFledgeJoiningAllowed(top_frame_origin);
 }
 
 }  // namespace privacy_sandbox_test_util

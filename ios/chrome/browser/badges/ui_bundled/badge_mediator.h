@@ -11,28 +11,35 @@
 
 @protocol BadgeConsumer;
 @protocol BrowserCoordinatorCommands;
+@protocol LocationBarBadgeCommands;
 class OverlayPresenter;
 class WebStateList;
 
 // A mediator object that updates the consumer when the state of badges changes.
 @interface BadgeMediator : NSObject <BadgeDelegate>
 
+// The dispatcher for badge related actions.
+@property(nonatomic, weak)
+    id<BrowserCoordinatorCommands, LocationBarBadgeCommands>
+        dispatcher;
+
+// The consumer being set up by this mediator.  Setting to a new value updates
+// the new consumer.
+@property(nonatomic, weak) id<BadgeConsumer> consumer;
+
+// Whether this badge mediator is active or not. This is used to become delegate
+// or not for the BadgeTabHelper.
+@property(nonatomic, assign) BOOL active;
+
 - (instancetype)initWithWebStateList:(WebStateList*)webStateList
                     overlayPresenter:(OverlayPresenter*)overlayPresenter
-                         isIncognito:(BOOL)isIncognito
+
     NS_DESIGNATED_INITIALIZER;
 
 - (instancetype)init NS_UNAVAILABLE;
 
 // Stops observing all objects.
 - (void)disconnect;
-
-// The dispatcher for badge related actions.
-@property(nonatomic, weak) id<BrowserCoordinatorCommands> dispatcher;
-
-// The consumer being set up by this mediator.  Setting to a new value updates
-// the new consumer.
-@property(nonatomic, weak) id<BadgeConsumer> consumer;
 
 @end
 

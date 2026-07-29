@@ -20,15 +20,14 @@
 #include "components/policy/core/common/cloud/cloud_policy_constants.h"
 #include "components/policy/core/common/cloud/cloud_policy_service.h"
 #include "components/policy/core/common/cloud/user_cloud_policy_store.h"
+#include "components/policy/core/common/policy_logger.h"
 
 namespace policy {
 
 namespace {
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
-BASE_FEATURE(kRetryWithKeyReset,
-             "RetryWithKeyReset",
-             base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kRetryWithKeyReset, base::FEATURE_ENABLED_BY_DEFAULT);
 #endif
 
 base::Clock* clock_for_testing_ = nullptr;
@@ -240,9 +239,10 @@ void CloudPolicyRefreshScheduler::OnStoreError(CloudPolicyStore* store) {
 }
 
 void CloudPolicyRefreshScheduler::OnConnectionChanged(
-    network::mojom::ConnectionType type) {
-  if (type == network::mojom::ConnectionType::CONNECTION_NONE)
+    net::NetworkChangeNotifier::ConnectionType type) {
+  if (type == net::NetworkChangeNotifier::ConnectionType::CONNECTION_NONE) {
     return;
+  }
 
   if (client_->last_dm_status() == DM_STATUS_REQUEST_FAILED) {
     RefreshSoon(PolicyFetchReason::kRetryAfterStatusRequestFailed);
@@ -457,8 +457,8 @@ void CloudPolicyRefreshScheduler::UpdateLastRefresh() {
 
 void CloudPolicyRefreshScheduler::OnPolicyRefreshed(bool success) {
   // Next policy fetch is scheduled in OnPolicyFetched() callback.
-  VLOG(1) << "Scheduled policy refresh "
-          << (success ? "successful" : "unsuccessful");
+  VLOG_POLICY(1, POLICY_FETCHING) << "Scheduled policy refresh "
+                                  << (success ? "successful" : "unsuccessful");
 }
 
 // static

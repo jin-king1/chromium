@@ -53,17 +53,19 @@ class CONTENT_EXPORT WebContentsNSViewBridge : public mojom::WebContentsNSView {
   // mojom::WebContentsNSViewBridge:
   void SetParentNSView(uint64_t parent_ns_view_id) override;
   void ResetParentNSView() override;
-  void SetBounds(const gfx::Rect& bounds_in_window) override;
+  void SetBounds(const gfx::Rect& bounds_in_superview,
+                 int32_t superview_height) override;
   void SetVisible(bool visible) override;
   void MakeFirstResponder() override;
   void TakeFocus(bool reverse) override;
-  void StartDrag(const content::DropData& drop_data,
+  void StartDrag(content::ChildProcessId render_process_id,
+                 const blink::DocumentToken& document_token,
                  const url::Origin& source_origin,
+                 const content::DropData& drop_data,
                  uint32_t operation_mask,
                  const gfx::ImageSkia& image,
                  const gfx::Vector2d& image_offset,
                  bool is_privileged) override;
-  void UpdateWindowControlsOverlay(const gfx::Rect& bounding_rect) override;
   void Destroy() override;
 
  private:
@@ -74,6 +76,6 @@ class CONTENT_EXPORT WebContentsNSViewBridge : public mojom::WebContentsNSView {
   std::unique_ptr<ScopedNSViewIdMapping> view_id_;
 };
 
-}  // namespace content
+}  // namespace remote_cocoa
 
 #endif  // CONTENT_APP_SHIM_REMOTE_COCOA_WEB_CONTENTS_NS_VIEW_BRIDGE_H_

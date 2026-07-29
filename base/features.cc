@@ -4,9 +4,16 @@
 
 #include "base/features.h"
 
+#include <atomic>
+
+#include "base/debug/stack_trace.h"
+#include "base/files/file_path.h"
+#include "base/synchronization/lock.h"
 #include "base/task/sequence_manager/sequence_manager_impl.h"
+#include "base/task/thread_pool/job_task_source.h"
 #include "base/threading/platform_thread.h"
 #include "build/blink_buildflags.h"
+#include "build/build_config.h"
 #include "build/buildflag.h"
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
@@ -34,26 +41,26 @@
 
 namespace base::features {
 
+namespace {
+
+// An atomic is used because this can be queried racily by a thread checking if
+// an optimization is enabled and a thread initializing this from the
+// FeatureList. All operations use std::memory_order_relaxed because there are
+// no dependent memory operations.
+std::atomic_bool g_is_reduce_ppms_enabled{false};
+
+}  // namespace
+
 // Alphabetical:
 
 // Controls caching within BASE_FEATURE_PARAM(). This is feature-controlled
 // so that ScopedFeatureList can disable it to turn off caching.
-BASE_FEATURE(kFeatureParamWithCache,
-             "FeatureParamWithCache",
-             FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kFeatureParamWithCache, FEATURE_ENABLED_BY_DEFAULT);
 
-// Use the Rust JSON parser. Enabled everywhere.
-BASE_FEATURE(kUseRustJsonParser,
-             "UseRustJsonParser",
-             FEATURE_ENABLED_BY_DEFAULT);
-
-// If true, use the Rust JSON parser in-thread; otherwise, it runs in a thread
-// pool.
-BASE_FEATURE_PARAM(bool,
-                   kUseRustJsonParserInCurrentSequence,
-                   &kUseRustJsonParser,
-                   "UseRustJsonParserInCurrentSequence",
-                   true);
+// Whether a fast implementation of FilePath::IsParent is used. This feature
+// exists to ensure that the fast implementation can be disabled quickly if
+// issues are found with it.
+BASE_FEATURE(kFastFilePathIsParent, FEATURE_ENABLED_BY_DEFAULT);
 
 // Use non default low memory device threshold.
 // Value should be given via |LowMemoryDeviceThresholdMB|.
@@ -68,21 +75,56 @@ BASE_FEATURE_PARAM(bool,
 // Updated Desktop default threshold to match the Android 2021 definition.
 #define LOW_MEMORY_DEVICE_THRESHOLD_MB 2048
 #endif
-BASE_FEATURE(kLowEndMemoryExperiment,
-             "LowEndMemoryExperiment",
-             FEATURE_DISABLED_BY_DEFAULT);
-BASE_FEATURE_PARAM(size_t,
+BASE_FEATURE(kLowEndMemoryExperiment, FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE_PARAM(int,
                    kLowMemoryDeviceThresholdMB,
                    &kLowEndMemoryExperiment,
-                   "LowMemoryDeviceThresholdMB",
                    LOW_MEMORY_DEVICE_THRESHOLD_MB);
+
+// Controls whether lock acquisition times are recorded and reported by a
+// given thread.
+BASE_FEATURE(kRecordLockAcquisitionTime, FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE_PARAM(std::string,
+                   kRecordLockAcquisitionTimeAllowedThreads,
+                   &kRecordLockAcquisitionTime,
+                   "RecordLockAcquisitionTimeAllowedThreads",
+                   "CrBrowserMain,CrRendererMain");
+
+BASE_FEATURE(kReducePPMs, FEATURE_ENABLED_BY_DEFAULT);
+
+// Apply base::ScopedBestEffortExecutionFence to registered task queues as well
+// as the thread pool.
+BASE_FEATURE(kScopedBestEffortExecutionFenceForTaskQueue,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Use simdutf for base::Base64Encode() and base::Base64EncodeAppend().
+BASE_FEATURE(kSimdutfBase64Encode, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Whether to restrict the max gap between the frame pointer and the stack end
+// for stack scanning. If the gap is beyond the given gap threshold, the stack
+// end is treated as unreliable. Stack scanning stops when that happens.
+// This feature is only in effect when BUILDFLAG(CAN_UNWIND_WITH_FRAME_POINTERS)
+// is on and `TraceStackFramePointers` would run stack scanning. Default gap
+// threshold is an absurdly large 100MB.
+// The feature is enabled by default on ChromeOS where crashes caused by
+// unreliable stack end are found. See https://crbug.com/402542102
+BASE_FEATURE(kStackScanMaxFramePointerToStackEndGap,
+#if BUILDFLAG(IS_CHROMEOS)
+             FEATURE_ENABLED_BY_DEFAULT
+#else
+             FEATURE_DISABLED_BY_DEFAULT
+#endif
+);
+BASE_FEATURE_PARAM(int,
+                   kStackScanMaxFramePointerToStackEndGapThresholdMB,
+                   &kStackScanMaxFramePointerToStackEndGap,
+                   "StackScanMaxFramePointerToStackEndGapThresholdMB",
+                   100);
 
 #if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_CHROMEOS)
 // Force to enable LowEndDeviceMode partially on Android 3Gb devices.
 // (see PartialLowEndModeOnMidRangeDevices below)
-BASE_FEATURE(kPartialLowEndModeOn3GbDevices,
-             "PartialLowEndModeOn3GbDevices",
-             FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kPartialLowEndModeOn3GbDevices, FEATURE_DISABLED_BY_DEFAULT);
 
 // Used to enable LowEndDeviceMode partially on Android and ChromeOS mid-range
 // devices. Such devices aren't considered low-end, but we'd like experiment
@@ -94,7 +136,6 @@ BASE_FEATURE(kPartialLowEndModeOn3GbDevices,
 // devices, where we didn't ship yet. However, we first need a larger
 // population to collect data.
 BASE_FEATURE(kPartialLowEndModeOnMidRangeDevices,
-             "PartialLowEndModeOnMidRangeDevices",
 #if BUILDFLAG(IS_ANDROID)
              FEATURE_ENABLED_BY_DEFAULT);
 #elif BUILDFLAG(IS_CHROMEOS)
@@ -104,27 +145,112 @@ BASE_FEATURE(kPartialLowEndModeOnMidRangeDevices,
 #endif  // BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(IS_ANDROID)
-// Whether to report frame metrics to the Android.FrameTimeline.* histograms.
-BASE_FEATURE(kCollectAndroidFrameTimelineMetrics,
-             "CollectAndroidFrameTimelineMetrics",
-             FEATURE_DISABLED_BY_DEFAULT);
+// Enable not perceptible binding without cpu priority boosting.
+BASE_FEATURE(kBackgroundNotPerceptibleBinding, FEATURE_ENABLED_BY_DEFAULT);
 
 // If enabled, post registering PowerMonitor broadcast receiver to a background
 // thread,
 BASE_FEATURE(kPostPowerMonitorBroadcastReceiverInitToBackground,
-             "PostPowerMonitorBroadcastReceiverInitToBackground",
              FEATURE_ENABLED_BY_DEFAULT);
 // If enabled, getMyMemoryState IPC will be posted to background.
-BASE_FEATURE(kPostGetMyMemoryStateToBackground,
-             "PostGetMyMemoryStateToBackground",
-             FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kPostGetMyMemoryStateToBackground, FEATURE_ENABLED_BY_DEFAULT);
+
+// Use a single connection and rebindService() to manage the binding to a child
+// process service.
+BASE_FEATURE(kRebindingChildServiceConnectionController,
+             FEATURE_DISABLED_BY_DEFAULT);
+
+// Use a batch API to rebind service connections.
+BASE_FEATURE(kRebindServiceBatchApi, FEATURE_DISABLED_BY_DEFAULT);
+
+// Use shared service connection to rebind a service binding to update the LRU
+// in the ProcessList of OomAdjuster.
+BASE_FEATURE(kUseSharedRebindServiceConnection, FEATURE_ENABLED_BY_DEFAULT);
+
+// Kill switch for Android VirtualKeyboard API geometry and inset fixes.
+BASE_FEATURE(kVirtualKeyboardGeometryAndInsetFixes, FEATURE_ENABLED_BY_DEFAULT);
+
+// Use madvise MADV_WILLNEED to prefetch the native library. This replaces the
+// default mechanism of pre-reading the memory from a forked process.
+BASE_FEATURE(kLibraryPrefetcherMadvise, FEATURE_DISABLED_BY_DEFAULT);
+
+// If enabled, only the ordered text section will be prefetched.
+BASE_FEATURE(kLibraryPrefetcherOnlyOrderedText, FEATURE_DISABLED_BY_DEFAULT);
+
+// When enabled, after start up the thread pool in PostTask.java will be
+// shutdown after pre-native to stop consuming resources.
+BASE_FEATURE(kShutdownPreNativeThreadPoolAfterStartup,
+             FEATURE_DISABLED_BY_DEFAULT);
+
+// If > 0, split the madvise range into chunks of this many bytes, rounded up to
+// a page size. The default of 1 therefore rounds to a whole page.
+BASE_FEATURE_PARAM(size_t,
+                   kLibraryPrefetcherMadviseLength,
+                   &kLibraryPrefetcherMadvise,
+                   "length",
+                   1);
+
+// Whether to fall back to the fork-and-read method if madvise is not supported.
+// Does not trigger fork-and-read if madvise failed during the actual prefetch.
+BASE_FEATURE_PARAM(bool,
+                   kLibraryPrefetcherMadviseFallback,
+                   &kLibraryPrefetcherMadvise,
+                   "fallback",
+                   true);
 #endif  // BUILDFLAG(IS_ANDROID)
 
-void Init(EmitThreadControllerProfilerMetadata
-              emit_thread_controller_profiler_metadata) {
+// When enabled, GetTerminationStatus() returns
+// TERMINATION_STATUS_EVICTED_FOR_MEMORY for processes terminated due to commit
+// failures. Otherwise, it returns TERMINATION_STATUS_OOM.
+BASE_FEATURE(kUseTerminationStatusMemoryExhaustion, FEATURE_ENABLED_BY_DEFAULT);
+
+#if BUILDFLAG(IS_WIN)
+// When enabled, use ABOVE_NORMAL_PRIORITY_CLASS for Priority::kUserBlocking on
+// Windows.
+BASE_FEATURE(kUserBlockingAboveNormalPriority, FEATURE_DISABLED_BY_DEFAULT);
+
+// When enabled, retries CreateFileMapping on a commit limit failure (OOM).
+// If retrying fails, the function returns failure as usual and reports the
+// last error code.
+BASE_FEATURE(kRetryCreateFileMappingOnCommitLimit, FEATURE_DISABLED_BY_DEFAULT);
+
+
+// Prevents base::DeletePathRecursively on Windows from traversing NTFS reparse
+// points (such as directory junctions). This protects against TOCTOU
+// vulnerabilities and prevents deleting files outside the target directory.
+BASE_FEATURE(kPreventReparsePointTraversal, FEATURE_ENABLED_BY_DEFAULT);
+#endif  // BUILDFLAG(IS_WIN)
+
+#if BUILDFLAG(IS_POSIX)
+// If enabled, threads acquiring a base::Lock will try to acquire it in user
+// space. The `kSpinCount` parameter represents the maximum number of pause
+// instructions (yields) that will be executed with an exponential backoff
+// before blocking in the kernel.
+BASE_FEATURE(kBaseLockTrySpin, FEATURE_DISABLED_BY_DEFAULT);
+#if defined(ARCH_CPU_X86_FAMILY)
+BASE_FEATURE_PARAM(int, kSpinCountX86, &kBaseLockTrySpin, "spin_count_x86", 0);
+#elif defined(ARCH_CPU_ARM_FAMILY)
+BASE_FEATURE_PARAM(int, kSpinCountArm, &kBaseLockTrySpin, "spin_count_arm", 0);
+#endif  // defined(ARCH_CPU_X86_FAMILY)
+#endif  // BUILDFLAG(IS_POSIX)
+
+bool IsReducePPMsEnabled() {
+  return g_is_reduce_ppms_enabled.load(std::memory_order_relaxed);
+}
+
+void Init() {
+  g_is_reduce_ppms_enabled.store(FeatureList::IsEnabled(kReducePPMs),
+                                 std::memory_order_relaxed);
+#if BUILDFLAG(IS_POSIX)
+  base::Lock::InitializeFeatures();
+#endif  // BUILDFLAG(IS_POSIX)
+
   sequence_manager::internal::SequenceManagerImpl::InitializeFeatures();
-  sequence_manager::internal::ThreadController::InitializeFeatures(
-      emit_thread_controller_profiler_metadata);
+  sequence_manager::internal::ThreadController::InitializeFeatures();
+  base::internal::JobTaskSource::InitializeFeatures();
+
+  debug::StackTrace::InitializeFeatures();
+  FilePath::InitializeFeatures();
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
   MessagePumpEpoll::InitializeFeatures();
@@ -135,7 +261,6 @@ void Init(EmitThreadControllerProfilerMetadata
 #endif
 
 #if BUILDFLAG(IS_APPLE)
-  File::InitializeFeatures();
   MessagePumpCFRunLoopBase::InitializeFeatures();
 
 // Kqueue is not used for ios blink.

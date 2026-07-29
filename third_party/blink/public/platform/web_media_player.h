@@ -37,9 +37,10 @@
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
 #include "components/viz/common/surfaces/surface_id.h"
+#include "media/base/picture_in_picture_events_info.h"
 #include "media/base/video_frame.h"
 #include "media/base/video_frame_metadata.h"
-#include "third_party/blink/public/common/media/display_type.h"
+#include "media/base/video_spatial_format.h"
 #include "third_party/blink/public/platform/web_audio_source_provider_impl.h"
 #include "third_party/blink/public/platform/web_content_decryption_module.h"
 #include "third_party/blink/public/platform/web_media_source.h"
@@ -56,6 +57,11 @@ class PaintFlags;
 
 namespace media {
 class PaintCanvasVideoRenderer;
+class VideoFrameSharedImageCache;
+}
+
+namespace viz {
+class FrameSinkId;
 }
 
 namespace blink {
@@ -121,6 +127,55 @@ class WebMediaPlayer {
   // of pre-rendering)
   enum LoadTiming { kImmediate, kDeferred };
 
+  enum class DisplayType {
+    // Playback is happening inline.
+    kInline,
+    // Playback is happening either with the video fullscreen. It may also be
+    // set when Blink detects that the video is effectively fullscreen even if
+    // the element is not.
+    kFullscreen,
+    // Playback is happening in a video Picture-in-Picture window.
+    kVideoPictureInPicture,
+    // Playback is happening in a document Picture-in-Picture window.
+    kDocumentPictureInPicture,
+  };
+
+  // This is the reason supplied to `WebMediaPlayer::Pause()`. A
+  // `WebMediaPlayer` can be paused for many reasons that affect the internal
+  // state — including resumption strategies — differently. For example, a
+  // player can be paused to optimize a background tab, in which case
+  // foregrounding the tab could resume playback. Conversely, a non-optimized
+  // backgrounded tab can pause its media explicitly via
+  // `HTMLMediaElement::pause()`; in that case, foregrounding the tab should NOT
+  // resume playback.
+  enum class PauseReason {
+    // The player's tab is in the background.
+    kPageHidden,
+    // The player's frame is frozen.
+    kFrameFrozen,
+    // The player's frame is not rendered.
+    kFrameHidden,
+    // The player has been backgrounded for too long and will be paused to save
+    // resources.
+    kSuspendedPlayerIdleTimeout,
+    // The remote cast device has requested to pause the media.
+    kRemotePlayStateChange,
+    kEndOfPlayback,
+    // HTMLMediaElement::pause() was called.
+    kPauseCalled,
+    // The Browser process has requested to pause the media.
+    // TODO(crbug.com/40623496): Make sure that this is only used when there is
+    // a user gesture.
+    kPauseRequestedByUser,
+    kPauseRequestedInternally,
+    // The media element has been removed from the document.
+    kRemovedFromDocument,
+    // The Autoplay policy has requested to pause the media. This can happen
+    // when a muted HTMLMediaElement has started autoplaying and is not rendered
+    // in the viewport anymore.
+    kAutoplayAutoPause,
+  };
+
   // For video.requestVideoFrameCallback(). https://wicg.github.io/video-rvfc/
   struct VideoFramePresentationMetadata {
     uint32_t presented_frames;
@@ -136,6 +191,11 @@ class WebMediaPlayer {
 
   virtual ~WebMediaPlayer() = default;
 
+  // Called just before the WebMediaPlayer is posted for destruction such that
+  // the WebMediaPlayer can clear any references to WebMediaPlayerClient and
+  // perform any other necessary cleanup.
+  virtual void Shutdown() = 0;
+
   virtual LoadTiming Load(LoadType,
                           const WebMediaPlayerSource&,
                           CorsMode,
@@ -143,7 +203,10 @@ class WebMediaPlayer {
 
   // Playback controls.
   virtual void Play() = 0;
-  virtual void Pause() = 0;
+  // Unlocks background video playback without requiring a user activation token
+  // when authorized by the system (e.g. audio focus regain).
+  virtual void UnlockBackgroundPlayback() {}
+  virtual void Pause(PauseReason pause_reason) = 0;
   virtual void Seek(double seconds) = 0;
   virtual void SetRate(double) = 0;
   virtual void SetVolume(double) = 0;
@@ -202,10 +265,21 @@ class WebMediaPlayer {
   virtual bool HasVideo() const = 0;
   virtual bool HasAudio() const = 0;
 
+  // Returns true if video frames from this player have recently been consumed
+  // by an external caller, such as canvas drawImage() or captureStream().
+  virtual bool IsVideoBeingCaptured() const = 0;
+
   // Dimension of the video.
   virtual gfx::Size NaturalSize() const = 0;
 
   virtual gfx::Size VisibleSize() const = 0;
+
+  virtual media::VideoTransformation GetVideoTransformation() const {
+    return media::kNoTransformation;
+  }
+
+  // Spatial format of the video.
+  virtual media::VideoSpatialFormat GetSpatialFormat() const { return {}; }
 
   // Getters of playback state.
   virtual bool Paused() const = 0;
@@ -242,14 +316,6 @@ class WebMediaPlayer {
   virtual uint64_t AudioDecodedByteCount() const = 0;
   virtual uint64_t VideoDecodedByteCount() const = 0;
 
-  // Returns false if any of the HTTP responses which make up the video data
-  // loaded so far have failed the TAO check as defined by Fetch
-  // (https://fetch.spec.whatwg.org/#tao-check), or true otherwise. Video
-  // streams which do not originate from HTTP responses should return true here.
-  // This check is used to determine if timing information from those responses
-  // may be exposed to the page in Largest Contentful Paint performance entries.
-  virtual bool PassedTimingAllowOriginCheck() const = 0;
-
   // Set the volume multiplier to control audio ducking.
   // Output volume should be set to |player_volume| * |multiplier|. The range
   // of |multiplier| is [0, 1], where 1 indicates normal (non-ducked) playback.
@@ -276,7 +342,10 @@ class WebMediaPlayer {
   virtual bool HasReadableVideoFrame() const = 0;
 
   // Renders the current frame into the provided cc::PaintCanvas.
-  virtual void Paint(cc::PaintCanvas*, const gfx::Rect&, cc::PaintFlags&) = 0;
+  virtual void Paint(cc::PaintCanvas*,
+                     const gfx::Rect&,
+                     const cc::PaintFlags&,
+                     bool force_pixel_readback) = 0;
 
   // Similar to Paint(), but just returns the frame directly instead of trying
   // to upload or convert it. Note: This may kick off a process to update the
@@ -295,6 +364,14 @@ class WebMediaPlayer {
   // the underlying frame is unchanged). May only be used on the main thread and
   // should not be held outside the scope of a single call site.
   virtual media::PaintCanvasVideoRenderer* GetPaintCanvasVideoRenderer() {
+    return nullptr;
+  }
+
+  virtual media::VideoFrameSharedImageCache* GetRGBSharedImageCache() {
+    return nullptr;
+  }
+
+  virtual media::VideoFrameSharedImageCache* GetYUVSharedImageCache() {
     return nullptr;
   }
 
@@ -335,7 +412,7 @@ class WebMediaPlayer {
   virtual void SetIsEffectivelyFullscreen(WebFullscreenVideoStatus) {}
 
   virtual void EnabledAudioTracksChanged(
-      const std::vector<TrackId>& enabled_track_ids) {}
+      std::optional<TrackId> enabled_track_id) {}
   virtual void SelectedVideoTrackChanged(
       std::optional<TrackId> selected_track_id) {}
 
@@ -394,10 +471,37 @@ class WebMediaPlayer {
   virtual void RegisterFrameSinkHierarchy() {}
   virtual void UnregisterFrameSinkHierarchy() {}
 
+  // Reparents the video frame's SurfaceLayer to a new compositor FrameSink.
+  // This is used by Document Picture-in-Picture to ensure the video
+  // continues receiving vsyncs from the active PiP window's compositor,
+  // rather than relying on the opener window which may be backgrounded
+  // or suspended.
+  virtual void ReparentFrameSinkHierarchy(
+      const viz::FrameSinkId& new_parent_frame_sink_id) {}
+
   // Records the `MediaVideoVisibilityTracker` occlusion state, at the time that
   // HTMLVideoElement visibility is reported. The state is recorded using
   // `MediaLogEvent` s.
   virtual void RecordVideoOcclusionState(std::string_view occlusion_state) {}
+
+  // Sets the occlusion ratio of the video element at playback start.
+  virtual void SetVisibilityRatioAtPlaybackStart(double ratio) {}
+
+  // Request the media player to record auto picture in picture related
+  // information. This information helps identify why a request to enter picture
+  // in picture automatically is denied/accepted.
+  virtual void RecordAutoPictureInPictureInfo(
+      const media::PictureInPictureEventsInfo::AutoPipInfo&
+          auto_picture_in_picture_info) = 0;
+
+  // Called when the media element's frame becomes hidden. This happens when:
+  // - The frame visibility property is set to "hidden";
+  // - The frame display property is set to "none";
+  // - The frame rendered area is 0 (width or height is 0).
+  virtual void OnFrameHidden() {}
+  // Called when the media element's frame becomes visible. See the comment for
+  // `OnFrameHidden()` for details.
+  virtual void OnFrameShown() {}
 };
 
 }  // namespace blink

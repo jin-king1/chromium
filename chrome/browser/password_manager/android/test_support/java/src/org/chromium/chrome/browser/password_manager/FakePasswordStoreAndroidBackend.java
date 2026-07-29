@@ -19,12 +19,12 @@ import org.chromium.components.password_manager.core.browser.proto.ListPasswords
 import org.chromium.components.password_manager.core.browser.proto.ListPasswordsWithUiInfoResult;
 import org.chromium.components.password_manager.core.browser.proto.ListPasswordsWithUiInfoResult.PasswordWithUiInfo;
 import org.chromium.components.password_manager.core.browser.proto.PasswordWithLocalData;
+import org.chromium.components.sync.protocol.DeletionOrigin;
 import org.chromium.components.sync.protocol.PasswordSpecificsData;
 
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -33,17 +33,17 @@ import java.util.function.Predicate;
 /** Fake {@link PasswordStoreAndroidBackend} to be used in integration tests. */
 public class FakePasswordStoreAndroidBackend implements PasswordStoreAndroidBackend {
     private final Map<Account, List<PasswordWithLocalData>> mSavedPasswords = new HashMap<>();
-    private SequencedTaskRunner mTaskRunner =
+    private final SequencedTaskRunner mTaskRunner =
             PostTask.createSequencedTaskRunner(TaskTraits.UI_USER_BLOCKING);
 
     public static final Account sLocalDefaultAccount = new Account("Test user", "Local");
 
     public FakePasswordStoreAndroidBackend() {
-        mSavedPasswords.put(sLocalDefaultAccount, new LinkedList<>());
+        mSavedPasswords.put(sLocalDefaultAccount, new ArrayList<>());
     }
 
     public void setSyncingAccount(Account syncingAccount) {
-        mSavedPasswords.put(syncingAccount, new LinkedList<>());
+        mSavedPasswords.put(syncingAccount, new ArrayList<>());
     }
 
     @Override
@@ -222,6 +222,34 @@ public class FakePasswordStoreAndroidBackend implements PasswordStoreAndroidBack
     }
 
     @Override
+    public void removeLogin(
+            byte[] pwdSpecificsData,
+            byte[] deletionOriginData,
+            Optional<Account> syncingAccount,
+            Runnable successCallback,
+            Callback<Exception> failureCallback) {
+        mTaskRunner.execute(
+                () -> {
+                    PasswordSpecificsData parsedPassword =
+                            parsePwdSpecificDataOrFail(pwdSpecificsData, failureCallback);
+                    if (parsedPassword == null) return;
+                    DeletionOrigin parsedDeletionOrigin =
+                            parseDeletionOriginOrFail(deletionOriginData, failureCallback);
+                    if (parsedDeletionOrigin == null) return;
+                    Account account = getAccountOrFail(syncingAccount, failureCallback);
+                    if (account == null) return;
+                    List<PasswordWithLocalData> pwdsToRemove =
+                            filterPasswords(
+                                    mSavedPasswords.get(account),
+                                    p ->
+                                            hasSameUniqueKey(
+                                                    parsedPassword, p.getPasswordSpecificsData()));
+                    mSavedPasswords.get(account).removeAll(pwdsToRemove);
+                    successCallback.run();
+                });
+    }
+
+    @Override
     public void getAllLoginsWithBrandingInfo(
             Optional<Account> syncingAccount,
             Callback<byte[]> loginsReply,
@@ -287,6 +315,16 @@ public class FakePasswordStoreAndroidBackend implements PasswordStoreAndroidBack
             byte[] pwdWithLocalData, Callback<Exception> failureCallback) {
         try {
             return PasswordSpecificsData.parseFrom(pwdWithLocalData);
+        } catch (Exception parsingError) {
+            failureCallback.onResult(parsingError);
+            return null;
+        }
+    }
+
+    private static @Nullable DeletionOrigin parseDeletionOriginOrFail(
+            byte[] deletionOriginData, Callback<Exception> failureCallback) {
+        try {
+            return DeletionOrigin.parseFrom(deletionOriginData);
         } catch (Exception parsingError) {
             failureCallback.onResult(parsingError);
             return null;

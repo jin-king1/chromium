@@ -9,6 +9,7 @@
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/imagebitmap/image_bitmap.h"
+#include "third_party/blink/renderer/core/keywords.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
 #include "third_party/blink/renderer/core/loader/image_loader.h"
 #include "third_party/blink/renderer/core/svg/graphics/svg_image_for_container.h"
@@ -23,10 +24,10 @@ Image::ImageDecodingMode ImageElementBase::ParseImageDecodingMode(
   if (async_attr_value.IsNull())
     return Image::kUnspecifiedDecode;
 
-  const auto& value = async_attr_value.LowerASCII();
-  if (value == "async")
+  const auto& value = async_attr_value.ToAsciiLower();
+  if (value == keywords::kAsync)
     return Image::kAsyncDecode;
-  if (value == "sync")
+  if (value == keywords::kSync)
     return Image::kSyncDecode;
   return Image::kUnspecifiedDecode;
 }
@@ -47,19 +48,13 @@ mojom::blink::PreferredColorScheme ImageElementBase::PreferredColorScheme()
       style);
 }
 
-bool ImageElementBase::IsSVGSource() const {
-  return CachedImage() && IsA<SVGImage>(CachedImage()->GetImage());
-}
-
 bool ImageElementBase::IsImageElement() const {
   return CachedImage() && !IsA<SVGImage>(CachedImage()->GetImage());
 }
 
 scoped_refptr<Image> ImageElementBase::GetSourceImageForCanvas(
-    FlushReason,
     SourceImageStatus* status,
-    const gfx::SizeF& default_object_size,
-    const AlphaDisposition alpha_disposition) {
+    const gfx::SizeF& default_object_size) {
   ImageResourceContent* image_content = CachedImage();
   if (!GetImageLoader().ImageComplete() || !image_content) {
     *status = kIncompleteSourceImageStatus;
@@ -75,6 +70,10 @@ scoped_refptr<Image> ImageElementBase::GetSourceImageForCanvas(
 
   if (auto* svg_image = DynamicTo<SVGImage>(source_image.get())) {
     UseCounter::Count(GetElement().GetDocument(), WebFeature::kSVGInCanvas2D);
+    if (svg_image->HasSVGForeignObject()) {
+      UseCounter::Count(GetElement().GetDocument(),
+                        WebFeature::kSVGForeignObjectDrawnIntoCanvas);
+    }
     const SVGImageViewInfo* view_info =
         SVGImageForContainer::CreateViewInfo(*svg_image, GetElement());
     const gfx::SizeF image_size = SVGImageForContainer::ConcreteObjectSize(
@@ -97,7 +96,7 @@ scoped_refptr<Image> ImageElementBase::GetSourceImageForCanvas(
 }
 
 bool ImageElementBase::WouldTaintOrigin() const {
-  return CachedImage() && !CachedImage()->IsAccessAllowed();
+  return CachedImage() && !CachedImage()->IsCorsSameOrigin();
 }
 
 gfx::SizeF ImageElementBase::ElementSize(
@@ -135,7 +134,7 @@ bool ImageElementBase::IsOpaque() const {
   if (!GetImageLoader().ImageComplete() || !image_content)
     return false;
   Image* image = image_content->GetImage();
-  return image->CurrentFrameKnownToBeOpaque();
+  return image->IsOpaque();
 }
 
 static bool HasDimensionsForImage(SVGImage& svg_image,

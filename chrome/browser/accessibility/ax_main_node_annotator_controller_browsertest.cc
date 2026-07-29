@@ -7,7 +7,6 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "build/build_config.h"
-#include "chrome/browser/accessibility/accessibility_state_utils.h"
 #include "chrome/browser/accessibility/ax_main_node_annotator_controller_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/screen_ai/screen_ai_install_state.h"
@@ -28,9 +27,11 @@
 #include "services/screen_ai/public/cpp/utilities.h"
 #include "ui/accessibility/accessibility_features.h"
 #include "ui/accessibility/ax_features.mojom-features.h"
+#include "ui/accessibility/platform/ax_platform.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ash/accessibility/accessibility_manager.h"
+#include "chrome/browser/ash/accessibility/chromevox_test_utils.h"
 #include "chrome/browser/ash/accessibility/speech_monitor.h"
 #include "extensions/browser/browsertest_util.h"
 #include "extensions/common/constants.h"
@@ -53,6 +54,8 @@ class AXMainNodeAnnotatorControllerBrowserTest : public InProcessBrowserTest {
   // InProcessBrowserTest overrides:
   void SetUpOnMainThread() override {
     InProcessBrowserTest::SetUpOnMainThread();
+    content::BrowserAccessibilityState::GetInstance()
+        ->SetActivationFromPlatformEnabled(true);
 
 #if BUILDFLAG(ENABLE_SCREEN_AI_BROWSERTESTS)
     screen_ai::ScreenAIInstallState::GetInstance()->SetComponentFolder(
@@ -71,7 +74,7 @@ class AXMainNodeAnnotatorControllerBrowserTest : public InProcessBrowserTest {
 #if BUILDFLAG(ENABLE_SCREEN_AI_BROWSERTESTS)
     base::test::TestFuture<bool> future;
     screen_ai::ScreenAIServiceRouterFactory::GetForBrowserContext(
-        browser()->profile())
+        browser()->GetProfile())
         ->GetServiceStateAsync(
             screen_ai::ScreenAIServiceRouter::Service::kMainContentExtraction,
             future.GetCallback());
@@ -79,54 +82,49 @@ class AXMainNodeAnnotatorControllerBrowserTest : public InProcessBrowserTest {
     ASSERT_TRUE(future.Get<bool>()) << "Service initialization failed.";
 #else
     screen_ai::AXMainNodeAnnotatorControllerFactory::GetForProfile(
-        browser()->profile())
+        browser()->GetProfile())
         ->set_service_ready_for_testing();
 #endif
   }
 
   void CompleteServiceInitialization() {
     screen_ai::AXMainNodeAnnotatorControllerFactory::GetForProfile(
-        browser()->profile())
+        browser()->GetProfile())
         ->complete_service_intialization_for_testing();
   }
 
   void EnableScreenReader(bool enabled) {
 #if BUILDFLAG(IS_CHROMEOS)
-    // Enable Chromevox.
-    ash::AccessibilityManager::Get()->EnableSpokenFeedback(enabled);
-    if (enabled) {
-      // Block until Chromevox is fully loaded.
-      speech_monitor_.ExpectSpeechPattern("*");
-      speech_monitor_.Call([this]() { DisableEarcons(); });
-      speech_monitor_.Replay();
+    if (!enabled) {
+      ash::AccessibilityManager::Get()->EnableSpokenFeedback(false);
+      return;
     }
+
+    if (!chromevox_test_utils_) {
+      chromevox_test_utils_ = std::make_unique<ash::ChromeVoxTestUtils>();
+    }
+
+    chromevox_test_utils_->EnableChromeVox();
+    // Note: we can safely call `Replay` here since none of these tests make
+    // speech assertions.
+    chromevox_test_utils_->sm()->Replay();
 #else
     // Spoof a screen reader.
     if (!enabled) {
-      screen_reader_override_.reset();
-    } else if (!screen_reader_override_) {
-      screen_reader_override_.emplace(ui::AXMode::kWebContents |
-                                      ui::AXMode::kScreenReader);
+      ax_mode_override_.reset();
+    } else if (!ax_mode_override_) {
+      ax_mode_override_.emplace(ui::AXMode::kWebContents |
+                                ui::AXMode::kExtendedProperties |
+                                ui::AXMode::kScreenReader);
     }
 #endif  // BUILDFLAG(IS_CHROMEOS)
   }
 
  private:
 #if BUILDFLAG(IS_CHROMEOS)
-  void DisableEarcons() {
-    // Playing earcons from within a test is not only annoying if you're
-    // running the test locally, but seems to cause crashes
-    // (http://crbug.com/396507). Work around this by just telling
-    // ChromeVox to not ever play earcons (prerecorded sound effects).
-    extensions::browsertest_util::ExecuteScriptInBackgroundPageNoWait(
-        browser()->profile(), extension_misc::kChromeVoxExtensionId,
-        "ChromeVox.earcons.playEarcon = function() {};");
-  }
-
-  ash::test::SpeechMonitor speech_monitor_;
+  std::unique_ptr<ash::ChromeVoxTestUtils> chromevox_test_utils_;
 #else
-  std::optional<content::ScopedAccessibilityModeOverride>
-      screen_reader_override_;
+  std::optional<content::ScopedAccessibilityModeOverride> ax_mode_override_;
 #endif
 
   base::test::ScopedFeatureList scoped_feature_list_;
@@ -142,30 +140,30 @@ IN_PROC_BROWSER_TEST_F(AXMainNodeAnnotatorControllerBrowserTest,
       content::BrowserAccessibilityState::GetInstance()->GetAccessibilityMode();
   EXPECT_FALSE(ax_mode.has_mode(ui::AXMode::kAnnotateMainNode));
 
-  chrome::NewTab(browser());
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
   content::WebContents* web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
   ax_mode = web_contents->GetAccessibilityMode();
   EXPECT_FALSE(ax_mode.has_mode(ui::AXMode::kAnnotateMainNode));
 
-  browser()->profile()->GetPrefs()->SetBoolean(
+  browser()->GetProfile()->GetPrefs()->SetBoolean(
       prefs::kAccessibilityMainNodeAnnotationsEnabled, true);
 
-  chrome::NewTab(browser());
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
   web_contents = browser()->tab_strip_model()->GetActiveWebContents();
   // Wait for ChromeVox to attach to the new tab if needed.
   if (!web_contents->GetAccessibilityMode().has_mode(
-          ui::AXMode::kScreenReader)) {
+          ui::AXMode::kExtendedProperties)) {
     content::AccessibilityNotificationWaiter waiter(web_contents);
     ASSERT_TRUE(waiter.WaitForNotification());
   }
   ax_mode = web_contents->GetAccessibilityMode();
   EXPECT_TRUE(ax_mode.has_mode(ui::AXMode::kAnnotateMainNode));
 
-  browser()->profile()->GetPrefs()->SetBoolean(
+  browser()->GetProfile()->GetPrefs()->SetBoolean(
       prefs::kAccessibilityMainNodeAnnotationsEnabled, false);
 
-  chrome::NewTab(browser());
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
   web_contents = browser()->tab_strip_model()->GetActiveWebContents();
   ax_mode = web_contents->GetAccessibilityMode();
   EXPECT_FALSE(ax_mode.has_mode(ui::AXMode::kAnnotateMainNode));
@@ -182,13 +180,13 @@ IN_PROC_BROWSER_TEST_F(AXMainNodeAnnotatorControllerBrowserTest,
   ui::AXMode ax_mode = web_contents->GetAccessibilityMode();
   EXPECT_FALSE(ax_mode.has_mode(ui::AXMode::kAnnotateMainNode));
 
-  browser()->profile()->GetPrefs()->SetBoolean(
+  browser()->GetProfile()->GetPrefs()->SetBoolean(
       prefs::kAccessibilityMainNodeAnnotationsEnabled, true);
 
   ax_mode = web_contents->GetAccessibilityMode();
   EXPECT_TRUE(ax_mode.has_mode(ui::AXMode::kAnnotateMainNode));
 
-  browser()->profile()->GetPrefs()->SetBoolean(
+  browser()->GetProfile()->GetPrefs()->SetBoolean(
       prefs::kAccessibilityMainNodeAnnotationsEnabled, false);
 
   ax_mode = web_contents->GetAccessibilityMode();
@@ -204,14 +202,14 @@ IN_PROC_BROWSER_TEST_F(AXMainNodeAnnotatorControllerBrowserTest,
   ui::AXMode ax_mode = web_contents->GetAccessibilityMode();
   EXPECT_FALSE(ax_mode.has_mode(ui::AXMode::kAnnotateMainNode));
 
-  browser()->profile()->GetPrefs()->SetBoolean(
+  browser()->GetProfile()->GetPrefs()->SetBoolean(
       prefs::kAccessibilityMainNodeAnnotationsEnabled, true);
 
   ax_mode = web_contents->GetAccessibilityMode();
   EXPECT_FALSE(ax_mode.has_mode(ui::AXMode::kAnnotateMainNode));
 
   // Reset state.
-  browser()->profile()->GetPrefs()->SetBoolean(
+  browser()->GetProfile()->GetPrefs()->SetBoolean(
       prefs::kAccessibilityMainNodeAnnotationsEnabled, false);
 }
 
@@ -228,7 +226,7 @@ IN_PROC_BROWSER_TEST_F(AXMainNodeAnnotatorControllerBrowserTest,
   EXPECT_FALSE(web_contents->GetAccessibilityMode().has_mode(
       ui::AXMode::kAnnotateMainNode));
 
-  browser()->profile()->GetPrefs()->SetBoolean(
+  browser()->GetProfile()->GetPrefs()->SetBoolean(
       prefs::kAccessibilityMainNodeAnnotationsEnabled, true);
 
   // Now the feature is on.
@@ -242,14 +240,15 @@ IN_PROC_BROWSER_TEST_F(AXMainNodeAnnotatorControllerBrowserTest,
                        EnabledByPreference) {
   // If the test is run with --force-renderer-accessibility, then initializing
   // the class causes the service to kick off. We need to force it to complete.
-  if (accessibility_state_utils::IsScreenReaderEnabled()) {
+  bool screen_reader = ui::AXPlatform::GetInstance().IsScreenReaderActive();
+  if (screen_reader) {
     CompleteServiceInitialization();
   } else {
     Connect();
   }
 
   // The preference was set for the profile by PRE_EnabledByPreference.
-  ASSERT_TRUE(browser()->profile()->GetPrefs()->GetBoolean(
+  ASSERT_TRUE(browser()->GetProfile()->GetPrefs()->GetBoolean(
       prefs::kAccessibilityMainNodeAnnotationsEnabled));
 
   auto* const web_contents =
@@ -257,7 +256,7 @@ IN_PROC_BROWSER_TEST_F(AXMainNodeAnnotatorControllerBrowserTest,
 
   // If the test is run without --force-renderer-accessibility, then no screen
   // reader should have been detected yet, and the feature should be off.
-  if (!accessibility_state_utils::IsScreenReaderEnabled()) {
+  if (!screen_reader) {
     EXPECT_FALSE(web_contents->GetAccessibilityMode().has_mode(
         ui::AXMode::kAnnotateMainNode));
     EnableScreenReader(true);

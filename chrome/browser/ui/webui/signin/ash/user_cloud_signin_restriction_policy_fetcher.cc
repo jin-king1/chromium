@@ -189,7 +189,7 @@ void UserCloudSigninRestrictionPolicyFetcher::FetchUserInfo() {
 }
 
 void UserCloudSigninRestrictionPolicyFetcher::OnGetUserInfoSuccess(
-    const base::Value::Dict& user_info) {
+    const base::DictValue& user_info) {
   // No need to check for hosted domain when fetching value of
   // SecondaryAccountAllowedInArcPolicy since call to fetch its value is only
   // made after establishing that SecondaryGoogleAccountUsage is called on a
@@ -241,7 +241,7 @@ void UserCloudSigninRestrictionPolicyFetcher::FinalizeResult(
   }
 
   if (IsFetchingArcPolicy()) {
-    std::optional<bool> policy_value = std::nullopt;
+    std::optional<bool> policy_value;
     if (policy) {
       policy_value = policy.value() == "true";
       base::UmaHistogramBoolean(kSecondaryAccountAllowedInArcValueHistogramName,
@@ -257,7 +257,7 @@ void UserCloudSigninRestrictionPolicyFetcher::FinalizeResult(
 
 void UserCloudSigninRestrictionPolicyFetcher::
     OnSecondaryGoogleAccountUsageResult(
-        std::unique_ptr<std::string> response_body) {
+        std::optional<std::string> response_body) {
   const char* histogram_name =
       IsFetchingArcPolicy() ? kSecondaryAccountAllowedInArcLatencyHistogramName
                             : kSecondaryGoogleAccountUsageLatencyHistogramName;

@@ -119,11 +119,9 @@ class SurfaceAggregatorPerfTest : public VizPerfTest {
                 {SinglePlaneFormat::kBGRA_8888, size, gfx::ColorSpace(),
                  gpu::SHARED_IMAGE_USAGE_CPU_WRITE_ONLY,
                  "SurfaceAggregatorPerfTest"});
-        auto sync_token = shared_image_interface->GenVerifiedSyncToken();
-        TransferableResource resource =
-            TransferableResource::MakeSoftwareSharedImage(
-                shared_image, sync_token, size, SinglePlaneFormat::kBGRA_8888,
-                TransferableResource::ResourceSource::kTileRasterTask);
+        TransferableResource resource = TransferableResource::Make(
+            shared_image, TransferableResource::ResourceSource::kTileRasterTask,
+            shared_image->creation_sync_token());
 
         resource.id = ResourceId(j);
         frame_builder.AddTransferableResource(resource);
@@ -134,16 +132,15 @@ class SurfaceAggregatorPerfTest : public VizPerfTest {
         gfx::Rect visible_rect =
             j % 2 == 0 ? gfx::Rect(0, 0, 1, 2) : gfx::Rect(0, 1, 1, 1);
         bool needs_blending = false;
-        bool premultiplied_alpha = false;
-        const gfx::PointF uv_top_left;
-        const gfx::PointF uv_bottom_right;
+        const gfx::PointF tex_coord_top_left;
+        const gfx::PointF tex_coord_bottom_right(1, 2);
         SkColor4f background_color = SkColors::kGreen;
         bool nearest_neighbor = false;
         quad->SetAll(sqs, rect, visible_rect, needs_blending, ResourceId(j),
-                     gfx::Size(), premultiplied_alpha, uv_top_left,
-                     uv_bottom_right, background_color, nearest_neighbor,
-                     /*secure_output_only=*/false,
-                     gfx::ProtectedVideoType::kClear);
+                     tex_coord_top_left, tex_coord_bottom_right,
+                     background_color, nearest_neighbor,
+                     /*secure_output=*/false, gfx::ProtectedVideoType::kClear,
+                     /*is_tex_coords_normalized=*/false);
       }
       sqs = pass->CreateAndAppendSharedQuadState();
       sqs->opacity = opacity;
@@ -247,13 +244,11 @@ class SurfaceAggregatorPerfTest : public VizPerfTest {
                     {SinglePlaneFormat::kBGRA_8888, quad->rect.size(),
                      gfx::ColorSpace(), gpu::SHARED_IMAGE_USAGE_CPU_WRITE_ONLY,
                      "SurfaceAggregatorPerfTest"});
-            auto sync_token = shared_image_interface->GenVerifiedSyncToken();
 
-            created_resources[resource_id] =
-                TransferableResource::MakeSoftwareSharedImage(
-                    shared_image, sync_token, quad->rect.size(),
-                    SinglePlaneFormat::kBGRA_8888,
-                    TransferableResource::ResourceSource::kTileRasterTask);
+            created_resources[resource_id] = TransferableResource::Make(
+                shared_image,
+                TransferableResource::ResourceSource::kTileRasterTask,
+                shared_image->creation_sync_token());
 
             created_resources[resource_id].id = resource_id;
           }
@@ -430,7 +425,7 @@ class SurfaceAggregatorPerfTest : public VizPerfTest {
           auto& frame_sink = entry.second;
           bool is_root = frame_sink->is_root();
           frame_sink.reset();
-          manager_.InvalidateFrameSinkId(frame_sink_id);
+          manager_.InvalidateFrameSinkId(frame_sink_id, {});
           frame_sink = std::make_unique<CompositorFrameSinkSupport>(
               nullptr, &manager_, frame_sink_id, is_root);
         }
@@ -507,7 +502,7 @@ class SurfaceAggregatorPerfTest : public VizPerfTest {
   }
 
   std::string GetHistogramStats(base::HistogramBase* histogram) {
-    base::Value::Dict graph_dict = histogram->ToGraphDict();
+    base::DictValue graph_dict = histogram->ToGraphDict();
     // The header contains the sample count and the mean.
     return *graph_dict.FindString("header");
   }

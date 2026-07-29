@@ -7,11 +7,10 @@ package org.chromium.components.media_router.caf;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mock;
 
 import androidx.mediarouter.media.MediaRouter;
 
-import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 
@@ -20,17 +19,17 @@ import java.util.List;
 
 /** Test helper for MediaRouter-related functionalities. */
 public class MediaRouterTestHelper {
-    @Mock private ShadowMediaRouter.ShadowImplementation mShadowMediaRouter;
-    @Mock private MediaRouter.RouteInfo mDefaultRoute;
-    @Mock private MediaRouter.RouteInfo mCastRoute;
-    @Mock private MediaRouter.RouteInfo mOtherCastRoute;
+    private final ShadowMediaRouter.ShadowImplementation mShadowMediaRouter =
+            mock(ShadowMediaRouter.ShadowImplementation.class);
+    private final MediaRouter.RouteInfo mDefaultRoute = mock(MediaRouter.RouteInfo.class);
+    private final MediaRouter.RouteInfo mCastRoute = mock(MediaRouter.RouteInfo.class);
+    private final MediaRouter.RouteInfo mOtherCastRoute = mock(MediaRouter.RouteInfo.class);
 
     public MediaRouterTestHelper() {
-        MockitoAnnotations.initMocks(this);
         setUpRoutes();
         ShadowMediaRouter.setImplementation(mShadowMediaRouter);
         doAnswer(
-                        new Answer<Void>() {
+                        new Answer<>() {
                             @Override
                             public Void answer(InvocationOnMock invocation) {
                                 selectRoute(getDefaultRoute());
@@ -84,7 +83,7 @@ public class MediaRouterTestHelper {
 
     private void setUpRouteStubs(MediaRouter.RouteInfo routeInfo) {
         doAnswer(
-                        new Answer<Void>() {
+                        new Answer<>() {
                             @Override
                             public Void answer(InvocationOnMock invocation) {
                                 selectRoute(routeInfo);

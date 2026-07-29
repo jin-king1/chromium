@@ -53,13 +53,18 @@ class OpenXrController {
   mojom::XRInputSourceDescriptionPtr GetDescription(
       XrTime predicted_display_time);
 
+  mojom::XRHandedness GetHandness() const;
   std::optional<GamepadButton> GetButton(OpenXrButtonType type) const;
   std::optional<Gamepad> GetWebXRGamepad() const;
+
+  XrSpace GetInputSpace(mojom::XRInputSourceSpaceType space_type) const;
 
   std::optional<gfx::Transform> GetMojoFromGripTransform(
       XrTime predicted_display_time,
       XrSpace local_space,
       bool* emulated_position) const;
+
+  std::optional<gfx::Transform> GetMojoFromJoint(XrHandJointEXT joint) const;
 
   // Returns true if this controller can supply HandTracking data.
   bool IsHandTrackingEnabled() const;
@@ -69,7 +74,7 @@ class OpenXrController {
   // data.
   XrResult UpdateInteractionProfile();
 
-  XrResult Update(XrSpace base_space, XrTime predicted_display_time);
+  void Update(XrSpace base_space, XrTime predicted_display_time);
 
  private:
   XrResult InitializeControllerActions();
@@ -102,7 +107,6 @@ class OpenXrController {
       XrTime predicted_display_time) const;
 
   mojom::XRTargetRayMode GetTargetRayMode() const;
-  mojom::XRHandedness GetHandness() const;
   std::vector<double> GetAxis(OpenXrAxisType type) const;
 
   template <typename T>

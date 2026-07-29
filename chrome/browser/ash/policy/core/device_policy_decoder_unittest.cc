@@ -13,10 +13,10 @@
 #include "base/time/time.h"
 #include "base/values.h"
 #include "chrome/browser/ash/policy/core/device_local_account.h"
+#include "chromeos/ash/components/policy/device_local_account/device_local_account_type.h"
 #include "chromeos/ash/components/policy/weekly_time/weekly_time.h"
 #include "chromeos/ash/components/policy/weekly_time/weekly_time_interval.h"
 #include "chromeos/ash/components/settings/cros_settings_names.h"
-#include "components/policy/core/common/device_local_account_type.h"
 #include "components/policy/core/common/policy_bundle.h"
 #include "components/policy/policy_constants.h"
 #include "components/policy/proto/chrome_device_policy.pb.h"
@@ -144,13 +144,13 @@ class DevicePolicyDecoderTest : public testing::Test {
 
 base::Value DevicePolicyDecoderTest::GetWallpaperDict() const {
   return base::Value(
-      base::Value::Dict()
+      base::DictValue()
           .Set(kWallpaperUrlPropertyName, kWallpaperUrlPropertyValue)
           .Set(kWallpaperHashPropertyName, kWallpaperHashPropertyValue));
 }
 
 base::Value DevicePolicyDecoderTest::GetBluetoothServiceAllowedList() const {
-  return base::Value(base::Value::List()
+  return base::Value(base::ListValue()
                          .Append(kValidBluetoothServiceUUID4)
                          .Append(kValidBluetoothServiceUUID8)
                          .Append(kValidBluetoothServiceUUID32));
@@ -494,7 +494,7 @@ TEST_F(DevicePolicyDecoderTest,
       device_policy, key::kReportDeviceSignalStrengthEventDrivenTelemetry);
 
   auto signal_strength_telemetry_list =
-      base::Value::List().Append("network_telemetry").Append("https_latency");
+      base::ListValue().Append("network_telemetry").Append("https_latency");
   device_policy.mutable_device_reporting()
       ->mutable_report_signal_strength_event_driven_telemetry()
       ->add_entries("network_telemetry");
@@ -615,6 +615,47 @@ TEST_F(DevicePolicyDecoderTest, DeviceHindiInscriptLayoutEnabled) {
       std::move(device_hindi_inscript_layout_enabled_value));
 }
 
+TEST_F(DevicePolicyDecoderTest, DeviceUserInitiatedFirmwareUpdatesEnabled) {
+  em::ChromeDeviceSettingsProto device_policy;
+
+  DecodeUnsetDevicePolicyTestHelper(
+      device_policy, key::kDeviceUserInitiatedFirmwareUpdatesEnabled);
+
+  base::Value device_user_initiated_firmware_updates_enabled_value(true);
+
+  em::BooleanPolicyProto* proto =
+      device_policy.mutable_deviceuserinitiatedfirmwareupdatesenabled();
+  proto->set_value(
+      device_user_initiated_firmware_updates_enabled_value.GetBool());
+
+  DecodeDevicePolicyTestHelper(
+      device_policy, key::kDeviceUserInitiatedFirmwareUpdatesEnabled,
+      std::move(device_user_initiated_firmware_updates_enabled_value));
+}
+
+TEST_F(DevicePolicyDecoderTest,
+       DeviceUserInitiatedFlexSystemFirmwareUpdatesEnabled) {
+  em::ChromeDeviceSettingsProto device_policy;
+
+  DecodeUnsetDevicePolicyTestHelper(
+      device_policy, key::kDeviceUserInitiatedFlexSystemFirmwareUpdatesEnabled);
+
+  base::Value device_user_initiated_flex_system_firmware_updates_enabled_value(
+      true);
+
+  em::BooleanPolicyProto* proto =
+      device_policy
+          .mutable_deviceuserinitiatedflexsystemfirmwareupdatesenabled();
+  proto->set_value(
+      device_user_initiated_flex_system_firmware_updates_enabled_value
+          .GetBool());
+
+  DecodeDevicePolicyTestHelper(
+      device_policy, key::kDeviceUserInitiatedFlexSystemFirmwareUpdatesEnabled,
+      std::move(
+          device_user_initiated_flex_system_firmware_updates_enabled_value));
+}
+
 TEST_F(DevicePolicyDecoderTest, DeviceSystemAecEnabled) {
   em::ChromeDeviceSettingsProto device_policy;
 
@@ -644,8 +685,8 @@ TEST_F(DevicePolicyDecoderTest,
 
   DecodeDevicePolicyTestHelper(
       device_policy, key::kDeviceLocalAccounts,
-      base::Value(base::Value::List().Append(
-          base::Value::Dict()
+      base::Value(base::ListValue().Append(
+          base::DictValue()
               .Set(ash::kAccountsPrefDeviceLocalAccountsKeyId,
                    kDeviceLocalAccountKioskAccountId)
               .Set(ash::kAccountsPrefDeviceLocalAccountsKeyType,
@@ -670,8 +711,8 @@ TEST_F(DevicePolicyDecoderTest,
 
   DecodeDevicePolicyTestHelper(
       device_policy, key::kDeviceLocalAccounts,
-      base::Value(base::Value::List().Append(
-          base::Value::Dict()
+      base::Value(base::ListValue().Append(
+          base::DictValue()
               .Set(ash::kAccountsPrefDeviceLocalAccountsKeyId,
                    kDeviceLocalAccountKioskAccountId)
               .Set(ash::kAccountsPrefDeviceLocalAccountsKeyType,
@@ -721,7 +762,7 @@ TEST_F(DevicePolicyDecoderTest, DecodeDeviceAuthenticationURLBlocklist) {
           ->mutable_value();
 
   auto blocklist_items =
-      base::Value::List().Append("example.com").Append("*.example.com");
+      base::ListValue().Append("example.com").Append("*.example.com");
 
   for (auto& item : blocklist_items) {
     blocklist->add_entries(item.GetString());
@@ -742,7 +783,7 @@ TEST_F(DevicePolicyDecoderTest, DecodeDeviceAuthenticationURLAllowlist) {
       device_policy.mutable_device_authentication_url_allowlist()
           ->mutable_value();
 
-  auto allowlist_items = base::Value::List()
+  auto allowlist_items = base::ListValue()
                              .Append("allow.example.com")
                              .Append("*.allow.example.com");
 
@@ -890,21 +931,6 @@ TEST_F(DevicePolicyDecoderTest, DeviceAllowEnterpriseRemoteAccessConnections) {
       std::move(value));
 }
 
-TEST_F(DevicePolicyDecoderTest, DevicePostQuantumKeyAgreementEnabled) {
-  em::ChromeDeviceSettingsProto device_policy;
-
-  DecodeUnsetDevicePolicyTestHelper(device_policy,
-                                    key::kDevicePostQuantumKeyAgreementEnabled);
-
-  base::Value devicepostquantumkeyagreementenabled(true);
-  device_policy.mutable_devicepostquantumkeyagreementenabled()->set_value(
-      devicepostquantumkeyagreementenabled.GetBool());
-
-  DecodeDevicePolicyTestHelper(device_policy,
-                               key::kDevicePostQuantumKeyAgreementEnabled,
-                               std::move(devicepostquantumkeyagreementenabled));
-}
-
 TEST_F(DevicePolicyDecoderTest, DecodeDeviceRestrictionSchedule) {
   em::ChromeDeviceSettingsProto device_policy;
 
@@ -962,4 +988,75 @@ TEST_F(DevicePolicyDecoderTest, DevicePowerBatteryChargingOptimization) {
                                key::kDevicePowerBatteryChargingOptimization,
                                std::move(expected_value));
 }
+
+TEST_F(DevicePolicyDecoderTest,
+       DecodeDeviceBluetoothJustWorksPairingEnabledSuccess) {
+  em::ChromeDeviceSettingsProto device_policy;
+
+  DecodeUnsetDevicePolicyTestHelper(
+      device_policy, key::kDeviceBluetoothJustWorksPairingEnabled);
+
+  base::Value device_bluetooth_just_works_pairing_enabled_value(true);
+
+  em::BooleanPolicyProto* proto =
+      device_policy.mutable_devicebluetoothjustworkspairingenabled();
+  proto->set_value(device_bluetooth_just_works_pairing_enabled_value.GetBool());
+
+  DecodeDevicePolicyTestHelper(
+      device_policy, key::kDeviceBluetoothJustWorksPairingEnabled,
+      std::move(device_bluetooth_just_works_pairing_enabled_value));
+}
+
+TEST_F(DevicePolicyDecoderTest, DeviceLoginScreenSecurityKeyPermitAttestation) {
+  em::ChromeDeviceSettingsProto device_policy;
+
+  DecodeUnsetDevicePolicyTestHelper(
+      device_policy, key::kDeviceLoginScreenSecurityKeyPermitAttestation);
+
+  em::StringList* list =
+      device_policy.mutable_deviceloginscreensecuritykeypermitattestation()
+          ->mutable_value();
+
+  auto list_items = base::ListValue().Append("example.com").Append("foo.com");
+
+  for (auto& item : list_items) {
+    list->add_entries(item.GetString());
+  }
+
+  DecodeDevicePolicyTestHelper(
+      device_policy, key::kDeviceLoginScreenSecurityKeyPermitAttestation,
+      base::Value(std::move(list_items)));
+}
+
+TEST_F(DevicePolicyDecoderTest,
+       DecodeDeviceLoginScreenPreferSlowKexAlgorithms) {
+  em::ChromeDeviceSettingsProto device_policy;
+
+  DecodeUnsetDevicePolicyTestHelper(
+      device_policy, key::kDeviceLoginScreenPreferSlowKexAlgorithms);
+
+  base::Value deviceloginscreenpreferslowkexalgorithms("cnsa2");
+  device_policy.mutable_deviceloginscreenpreferslowkexalgorithms()->set_value(
+      deviceloginscreenpreferslowkexalgorithms.GetString());
+
+  DecodeDevicePolicyTestHelper(
+      device_policy, key::kDeviceLoginScreenPreferSlowKexAlgorithms,
+      std::move(deviceloginscreenpreferslowkexalgorithms));
+}
+
+TEST_F(DevicePolicyDecoderTest, DecodeDeviceLoginScreenPreferSlowCiphers) {
+  em::ChromeDeviceSettingsProto device_policy;
+
+  DecodeUnsetDevicePolicyTestHelper(device_policy,
+                                    key::kDeviceLoginScreenPreferSlowCiphers);
+
+  base::Value deviceloginscreenpreferslowciphers("cnsa");
+  device_policy.mutable_deviceloginscreenpreferslowciphers()->set_value(
+      deviceloginscreenpreferslowciphers.GetString());
+
+  DecodeDevicePolicyTestHelper(device_policy,
+                               key::kDeviceLoginScreenPreferSlowCiphers,
+                               std::move(deviceloginscreenpreferslowciphers));
+}
+
 }  // namespace policy

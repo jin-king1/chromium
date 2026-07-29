@@ -2,10 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {TestRunner} from 'test_runner';
-import {NetworkTestRunner} from 'network_test_runner';
-
+import * as TextUtils from 'devtools/core/text_utils/text_utils.js';
 import * as Workspace from 'devtools/models/workspace/workspace.js';
+import {NetworkTestRunner} from 'network_test_runner';
+import {TestRunner} from 'test_runner';
 
 (async function() {
   'use strict';
@@ -38,7 +38,7 @@ import * as Workspace from 'devtools/models/workspace/workspace.js';
     if (!uiSourceCode)
       return;
     uiSourceCode.addRevision('');
-    uiSourceCode.requestContent().then(step3);
+    uiSourceCode.requestContentData().then(TextUtils.ContentData.ContentData.asDeferredContent).then(step3);
   }
 
   function step3({content}) {

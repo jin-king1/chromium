@@ -4,6 +4,7 @@
 
 #include "ui/base/interaction/interactive_test_internal.h"
 
+#include <cstdlib>
 #include <iterator>
 #include <memory>
 #include <ostream>
@@ -14,23 +15,137 @@
 
 #include "base/callback_list.h"
 #include "base/check.h"
-#include "base/containers/contains.h"
+#include "base/containers/adapters.h"
+#include "base/containers/map_util.h"
 #include "base/functional/bind.h"
-#include "base/functional/overloaded.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
+#include "base/types/pass_key.h"
+#include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/functional/overload.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/interaction/element_test_util.h"
-#include "ui/base/interaction/framework_specific_implementation.h"
+#include "ui/base/interaction/element_tracker.h"
+#include "ui/base/interaction/safe_castable.h"
+#include "ui/gfx/native_ui_types.h"
+
+#if BUILDFLAG(IS_MAC)
+#include "ui/base/interaction/interaction_test_util_mac.h"
+#elif BUILDFLAG(IS_ANDROID)
+#include "ui/android/window_android.h"
+#elif USE_AURA
+#include "ui/aura/window.h"
+#endif
+
+#if !BUILDFLAG(IS_IOS)
+#include "ui/native_window_tracker/native_window_tracker.h"
+#endif
 
 namespace ui::test::internal {
 
+namespace {
+
+// Basic implementation of the framework for dumping generic elements.
+class InteractiveTestPrivateFrameworkImpl
+    : public InteractiveTestPrivateFrameworkBase {
+ public:
+  DECLARE_SAFE_CAST_TARGET()
+
+  explicit InteractiveTestPrivateFrameworkImpl(
+      InteractiveTestPrivate& test_impl)
+      : InteractiveTestPrivateFrameworkBase(test_impl) {}
+  ~InteractiveTestPrivateFrameworkImpl() override = default;
+
+  std::vector<DebugTreeNode> DebugDumpElements(
+      std::set<const ui::TrackedElement*>& elements) const override {
+    std::vector<DebugTreeNode> nodes;
+    for (auto* el : elements) {
+      if (el->identifier() == kInteractiveTestPivotElementId) {
+        nodes.insert(nodes.begin(),
+                     DebugTreeNode("Pivot element (part of test automation)"));
+      } else {
+        nodes.emplace_back(
+            base::StringPrintf("%s - %s at %s", el->GetSafeCastableClassName(),
+                               el->identifier().GetName().c_str(),
+                               DebugDumpBounds(el->GetScreenBounds())));
+      }
+    }
+    elements.clear();
+    return nodes;
+  }
+
+  std::string DebugDescribeContext(ui::ElementContext context) const override {
+    std::ostringstream oss;
+    oss << context;
+    return oss.str();
+  }
+
+  gfx::NativeWindow GetNativeWindowFromElement(
+      const TrackedElement* el) const override {
+#if BUILDFLAG(IS_MAC)
+    return InteractionTestUtilMac::GetNativeWindowFor(el);
+#elif BUILDFLAG(IS_ANDROID)
+    const auto view = el->GetNativeView();
+    return view ? view->GetWindowAndroid() : gfx::NativeWindow();
+#elif USE_AURA
+    const auto view = el->GetNativeView();
+    return view ? view->GetToplevelWindow() : gfx::NativeWindow();
+#else
+    return gfx::NativeWindow();
+#endif
+  }
+};
+
+DEFINE_SAFE_CAST_TARGET(InteractiveTestPrivateFrameworkImpl)
+
+}  // namespace
+
 DEFINE_ELEMENT_IDENTIFIER_VALUE(kInteractiveTestPivotElementId);
 DEFINE_CUSTOM_ELEMENT_EVENT_TYPE(kInteractiveTestPivotEventType);
+DEFINE_STATE_IDENTIFIER_VALUE(PollingStateObserver<bool>,
+                              kInteractiveTestPollUntilState);
 
-const char kInteractiveTestFailedMessagePrefix[] = "Interactive test failed ";
-const char kNoCheckDescriptionSpecified[] = "[no description specified]";
+// Caches the last-known native window associated with a context.
+// Useful for executing ClickMouse() and ReleaseMouse() commands, as no target
+// element is provided for those commands. A NativeWindowTracker is used to
+// prevent using a cached value after the native window has been destroyed.
+class InteractiveTestPrivate::NativeWindowReference {
+ public:
+  NativeWindowReference() = default;
+  ~NativeWindowReference() = default;
+  NativeWindowReference(NativeWindowReference&& other) = default;
+  NativeWindowReference& operator=(NativeWindowReference&& other) = default;
+
+  bool IsValid() const {
+#if BUILDFLAG(IS_IOS)
+    // iOS uses a weak reference already.
+    return static_cast<bool>(window_);
+#else
+    return window_ && tracker_ && !tracker_->WasNativeWindowDestroyed();
+#endif
+  }
+
+  gfx::NativeWindow GetWindow() const {
+    return IsValid() ? window_ : gfx::NativeWindow();
+  }
+
+  void SetWindow(gfx::NativeWindow window) {
+    if (window_ == window) {
+      return;
+    }
+    window_ = window;
+#if !BUILDFLAG(IS_IOS)
+    tracker_ = window ? ui::NativeWindowTracker::Create(window) : nullptr;
+#endif
+  }
+
+ private:
+  gfx::NativeWindow window_ = gfx::NativeWindow();
+#if !BUILDFLAG(IS_IOS)
+  std::unique_ptr<ui::NativeWindowTracker> tracker_;
+#endif
+};
 
 StateObserverElement::StateObserverElement(ElementIdentifier id,
                                            ElementContext context)
@@ -38,7 +153,7 @@ StateObserverElement::StateObserverElement(ElementIdentifier id,
 
 StateObserverElement::~StateObserverElement() = default;
 
-DEFINE_FRAMEWORK_SPECIFIC_METADATA(StateObserverElement)
+DEFINE_SAFE_CAST_TARGET(StateObserverElement)
 
 // static
 bool InteractiveTestPrivate::allow_interactive_test_verbs_ = false;
@@ -91,9 +206,10 @@ void InteractiveTestPrivate::AdditionalContext::Clear() {
   owner_->additional_context_data_.erase(handle_);
 }
 
-InteractiveTestPrivate::InteractiveTestPrivate(
-    std::unique_ptr<InteractionTestUtil> test_util)
-    : test_util_(std::move(test_util)) {}
+InteractiveTestPrivate::InteractiveTestPrivate() {
+  MaybeRegisterFrameworkImpl<InteractiveTestPrivateFrameworkImpl>();
+}
+
 InteractiveTestPrivate::~InteractiveTestPrivate() = default;
 
 void InteractiveTestPrivate::Init(ElementContext initial_context) {
@@ -122,7 +238,8 @@ void InteractiveTestPrivate::OnElementAdded(TrackedElement* el) {
 }
 
 void InteractiveTestPrivate::MaybeAddPivotElement(ElementContext context) {
-  if (!base::Contains(pivot_elements_, context)) {
+  CHECK(context) << "Attempted to run steps in an invalid (null) context.";
+  if (!pivot_elements_.contains(context)) {
     auto pivot =
         std::make_unique<TestElement>(kInteractiveTestPivotElementId, context);
     auto* const el = pivot.get();
@@ -135,17 +252,88 @@ base::WeakPtr<InteractiveTestPrivate> InteractiveTestPrivate::GetAsWeakPtr() {
   return weak_ptr_factory_.GetWeakPtr();
 }
 
+void InteractiveTestPrivate::SetDefaultContext(
+    ElementContext context,
+    gfx::NativeWindow default_context_window) {
+  default_context_ = context;
+  if (default_context_window) {
+    if (!default_context_window_) {
+      default_context_window_ = std::make_unique<NativeWindowReference>();
+    }
+    default_context_window_->SetWindow(default_context_window);
+  } else {
+    default_context_window_.reset();
+  }
+  for (auto& framework : framework_implementations_) {
+    framework.OnDefaultContextSet();
+  }
+}
+
+gfx::NativeWindow InteractiveTestPrivate::GetDefaultContextWindow() const {
+  return default_context_window_ ? default_context_window_->GetWindow()
+                                 : gfx::NativeWindow();
+}
+
+gfx::NativeWindow InteractiveTestPrivate::GetNativeWindowFor(
+    const ui::TrackedElement* el) const {
+  gfx::NativeWindow window = gfx::NativeWindow();
+
+  for (auto& framework : base::Reversed(framework_implementations_)) {
+    window = framework.GetNativeWindowFromElement(el);
+    if (window) {
+      break;
+    }
+  }
+
+  if (window) {
+    // Want to remember the last window hit within each context so that verbs
+    // which do not target a real element use the same window as the previous
+    // action.
+    const auto emplace_result = most_recent_windows_.try_emplace(
+        el->context(), NativeWindowReference());
+    emplace_result.first->second.SetWindow(window);
+  } else {
+    // If the element does not correspond to a specific native window (because
+    // it is a pivot, test element, or for some other reason), fall back to the
+    // most recent window for that context.
+    if (auto* const entry =
+            base::FindOrNull(most_recent_windows_, el->context())) {
+      window = entry->GetWindow();
+    }
+  }
+
+  // If we still don't know what window to use, use the default one for the
+  // current context. We don't check this one before the most recent windows
+  // cache because it will always return the primary window for the context, but
+  // the mouse could be over a child window.
+  if (!window) {
+    for (auto& framework : base::Reversed(framework_implementations_)) {
+      window = framework.GetNativeWindowFromContext(el->context());
+      if (window) {
+        break;
+      }
+    }
+  }
+
+  return window;
+}
+
 void InteractiveTestPrivate::HandleActionResult(
     InteractionSequence* seq,
     const TrackedElement* el,
     const std::string& operation_name,
-    ActionResult result) {
+    ActionResult result,
+    bool defer_failure) {
   switch (result) {
     case ActionResult::kSucceeded:
       break;
     case ActionResult::kFailed:
-      LOG(ERROR) << operation_name << " failed for " << *el;
-      seq->FailForTesting();
+      if (defer_failure) {
+        ReportDeferredFailure(operation_name, el->context());
+      } else {
+        LOG(ERROR) << operation_name << " failed for " << *el;
+        seq->FailForTesting();
+      }
       break;
     case ActionResult::kNotAttempted:
       LOG(ERROR) << operation_name << " could not be applied to " << *el;
@@ -186,14 +374,16 @@ TrackedElement* InteractiveTestPrivate::GetPivotElement(
   return it->second.get();
 }
 
-bool InteractiveTestPrivate::RemoveStateObserver(ElementIdentifier id,
+bool InteractiveTestPrivate::RemoveStateObserver(UntypedStateIdentifier id,
                                                  ElementContext context) {
   using It = decltype(state_observer_elements_.begin());
   It found = state_observer_elements_.end();
+  const auto element_id = StateToElementId(id);
   for (It it = state_observer_elements_.begin();
        it != state_observer_elements_.end(); ++it) {
     auto& entry = **it;
-    if (entry.identifier() == id && (!context || entry.context() == context)) {
+    if (entry.identifier() == element_id &&
+        (!context || entry.context() == context)) {
       CHECK(found == state_observer_elements_.end())
           << "RemoveStateObserver: Duplicate entries found for " << id;
       found = it;
@@ -221,17 +411,53 @@ std::vector<std::string> InteractiveTestPrivate::GetAdditionalContext() const {
   return entries;
 }
 
-void InteractiveTestPrivate::DoTestSetUp() {}
+void InteractiveTestPrivate::DoTestSetUp() {
+  temporary_storage_.emplace();
+  for (auto& framework : framework_implementations_) {
+    framework.DoTestSetUp();
+  }
+}
 void InteractiveTestPrivate::DoTestTearDown() {
+  for (auto& framework : base::Reversed(framework_implementations_)) {
+    framework.DoTestTearDown();
+  }
   state_observer_elements_.clear();
+  temporary_storage_.reset();
 }
 
 void InteractiveTestPrivate::OnSequenceComplete() {
-  success_ = true;
+  for (auto& framework : base::Reversed(framework_implementations_)) {
+    framework.OnSequenceComplete();
+  }
+
+  if (deferred_failures_.empty()) {
+    success_ = true;
+  } else {
+    std::ostringstream full_error_message;
+    full_error_message
+        << "Interactive test failed.\n"
+           "Some steps reported errors (see test log for more details):";
+    for (const auto& failure : deferred_failures_) {
+      full_error_message << "\n" << failure;
+    }
+    if (aborted_callback_for_testing_) {
+      InteractionSequence::AbortedData data;
+      data.aborted_reason =
+          InteractionSequence::AbortedReason::kFailedForTesting;
+      data.context = default_context();
+      data.step_description = full_error_message.str();
+      std::move(aborted_callback_for_testing_).Run(data);
+      return;
+    }
+    GTEST_FAIL() << full_error_message.str();
+  }
 }
 
 void InteractiveTestPrivate::OnSequenceAborted(
     const InteractionSequence::AbortedData& data) {
+  for (auto& framework : base::Reversed(framework_implementations_)) {
+    framework.OnSequenceAborted(data);
+  }
   if (aborted_callback_for_testing_) {
     std::move(aborted_callback_for_testing_).Run(data);
     return;
@@ -263,20 +489,77 @@ void InteractiveTestPrivate::OnSequenceAborted(
       }
     }
     DebugDumpElements(data.context).PrintTo(additional_message);
+    if (!deferred_failures_.empty()) {
+      additional_message << "\n" << "Some prior steps also failed:";
+      for (const auto& failure : deferred_failures_) {
+        additional_message << "\n" << failure;
+      }
+    }
     GTEST_FAIL() << "Interactive test failed " << data
                  << additional_message.str();
   }
 }
 
-InteractiveTestPrivate::DebugTreeNode::DebugTreeNode() = default;
-InteractiveTestPrivate::DebugTreeNode::DebugTreeNode(std::string initial_text)
+void InteractiveTestPrivate::ReportDeferredFailure(
+    std::string_view error_message,
+    ElementContext current_context) {
+  std::ostringstream full_error_message;
+  full_error_message << error_message << "\n";
+  DebugDumpContext(current_context).PrintTo(full_error_message);
+  deferred_failures_.push_back(full_error_message.str());
+}
+
+InteractiveTestPrivateFrameworkBase::InteractiveTestPrivateFrameworkBase(
+    InteractiveTestPrivate& test_impl)
+    : test_impl_(test_impl) {}
+InteractiveTestPrivateFrameworkBase::~InteractiveTestPrivateFrameworkBase() =
+    default;
+InteractiveTestPrivateFrameworkBase::DebugTreeNode::DebugTreeNode() = default;
+InteractiveTestPrivateFrameworkBase::DebugTreeNode::DebugTreeNode(
+    std::string initial_text)
     : text(initial_text) {}
-InteractiveTestPrivate::DebugTreeNode::DebugTreeNode(DebugTreeNode&&) noexcept =
-    default;
-InteractiveTestPrivate::DebugTreeNode&
-InteractiveTestPrivate::DebugTreeNode::operator=(DebugTreeNode&&) noexcept =
-    default;
-InteractiveTestPrivate::DebugTreeNode::~DebugTreeNode() = default;
+InteractiveTestPrivateFrameworkBase::DebugTreeNode::DebugTreeNode(
+    DebugTreeNode&&) noexcept = default;
+InteractiveTestPrivateFrameworkBase::DebugTreeNode&
+InteractiveTestPrivateFrameworkBase::DebugTreeNode::operator=(
+    DebugTreeNode&&) noexcept = default;
+InteractiveTestPrivateFrameworkBase::DebugTreeNode::~DebugTreeNode() = default;
+
+std::vector<InteractiveTestPrivateFrameworkBase::DebugTreeNode>
+InteractiveTestPrivateFrameworkBase::DebugDumpElements(
+    std::set<const ui::TrackedElement*>& el) const {
+  return {};
+}
+std::string InteractiveTestPrivateFrameworkBase::DebugDescribeContext(
+    ui::ElementContext context) const {
+  return std::string();
+}
+
+// static
+std::string InteractiveTestPrivateFrameworkBase::DebugDumpBounds(
+    const gfx::Rect& bounds) {
+  return base::StringPrintf("x:%d-%d y:%d-%d (%dx%d)", bounds.x(),
+                            bounds.right(), bounds.y(), bounds.bottom(),
+                            bounds.width(), bounds.height());
+}
+
+gfx::NativeWindow
+InteractiveTestPrivateFrameworkBase::GetNativeWindowFromElement(
+    const TrackedElement* el) const {
+  // Default answer is "no window is associated with this element".
+  // Other framework implementations will provide ways to convert specific
+  // types of elements to their native windows.
+  return gfx::NativeWindow();
+}
+
+gfx::NativeWindow
+InteractiveTestPrivateFrameworkBase::GetNativeWindowFromContext(
+    ElementContext) const {
+  // Default answer is "no window is associated with this context".
+  // Other framework implementations will provide ways to convert specific
+  // contexts to their native windows.
+  return gfx::NativeWindow();
+}
 
 namespace {
 void PrintDebugTree(std::ostream& stream,
@@ -309,6 +592,13 @@ void InteractiveTestPrivate::DebugTreeNode::PrintTo(
   PrintDebugTree(stream, *this, "", true);
 }
 
+// static
+ElementIdentifier InteractiveTestPrivate::StateToElementId(
+    UntypedStateIdentifier id) {
+  return ElementIdentifier::FromRawValue(
+      id.GetRawValue(base::PassKey<InteractiveTestPrivate>()));
+}
+
 InteractiveTestPrivate::DebugTreeNode InteractiveTestPrivate::DebugDumpElements(
     ui::ElementContext current_context) const {
   DebugTreeNode node("UI Elements");
@@ -325,55 +615,37 @@ InteractiveTestPrivate::DebugTreeNode InteractiveTestPrivate::DebugDumpElements(
 
 InteractiveTestPrivate::DebugTreeNode InteractiveTestPrivate::DebugDumpContext(
     ui::ElementContext context) const {
-  DebugTreeNode node(DebugDescribeContext(context).c_str());
-  auto* const tracker = ui::ElementTracker::GetElementTracker();
-  for (const auto* const element : tracker->GetAllElementsForTesting(context)) {
-    node.children.emplace_back(DebugDumpElement(element));
+  std::string context_description;
+  for (auto& framework_implementation :
+       base::Reversed(framework_implementations_)) {
+    context_description =
+        framework_implementation.DebugDescribeContext(context);
+    if (!context_description.empty()) {
+      break;
+    }
+  }
+  CHECK(!context_description.empty());
+  DebugTreeNode node(context_description);
+  auto element_list =
+      ui::ElementTracker::GetElementTracker()->GetAllElementsForTesting(
+          context);
+  std::set<const ui::TrackedElement*> elements(element_list.begin(),
+                                               element_list.end());
+  std::vector<std::vector<DebugTreeNode>> temp;
+  for (auto& framework_implementation :
+       base::Reversed(framework_implementations_)) {
+    temp.push_back(framework_implementation.DebugDumpElements(elements));
+  }
+  CHECK(elements.empty());
+  for (auto& nodes : base::Reversed(temp)) {
+    std::move(nodes.begin(), nodes.end(), std::back_inserter(node.children));
   }
   return node;
 }
-
-InteractiveTestPrivate::DebugTreeNode InteractiveTestPrivate::DebugDumpElement(
-    const ui::TrackedElement* el) const {
-  if (el->identifier() == kInteractiveTestPivotElementId) {
-    return DebugTreeNode("Pivot element (part of test automation)");
-  }
-  return DebugTreeNode(
-      base::StringPrintf("%s - %s at %s", el->GetImplementationName(),
-                         el->identifier().GetName().c_str(),
-                         DebugDumpBounds(el->GetScreenBounds())));
-}
-
-std::string InteractiveTestPrivate::DebugDescribeContext(
-    ui::ElementContext context) const {
-  std::ostringstream oss;
-  oss << context;
-  return oss.str();
-}
-
-std::string InteractiveTestPrivate::DebugDumpBounds(
-    const gfx::Rect& bounds) const {
-  return base::StringPrintf("x:%d-%d y:%d-%d (%dx%d)", bounds.x(),
-                            bounds.right(), bounds.y(), bounds.bottom(),
-                            bounds.width(), bounds.height());
-}
-
-void SpecifyElement(ui::InteractionSequence::StepBuilder& builder,
-                    ElementSpecifier element) {
-  std::visit(
-      base::Overloaded{
-          [&builder](ElementIdentifier id) { builder.SetElementID(id); },
-          [&builder](std::string_view name) { builder.SetElementName(name); }},
-      element);
-}
-
 std::string DescribeElement(ElementSpecifier element) {
-  return std::visit(
-      base::Overloaded{[](ElementIdentifier id) { return id.GetName(); },
-                       [](std::string_view name) {
-                         return base::StringPrintf("\"%s\"", name.data());
-                       }},
-      element);
+  std::ostringstream oss;
+  oss << element;
+  return oss.str();
 }
 
 InteractionSequence::Builder BuildSubsequence(

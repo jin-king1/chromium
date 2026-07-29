@@ -43,21 +43,13 @@ class DocumentLayout final {
 
     ~Options();
 
-    friend bool operator==(const Options& lhs, const Options& rhs) {
-      return lhs.direction() == rhs.direction() &&
-             lhs.default_page_orientation() == rhs.default_page_orientation() &&
-             lhs.page_spread() == rhs.page_spread();
-    }
+    friend constexpr bool operator==(const Options&, const Options&) = default;
 
-    friend bool operator!=(const Options& lhs, const Options& rhs) {
-      return !(lhs == rhs);
-    }
+    // Serializes layout options to a base::DictValue.
+    base::DictValue ToValue() const;
 
-    // Serializes layout options to a base::Value::Dict.
-    base::Value::Dict ToValue() const;
-
-    // Deserializes layout options from a base::Value::Dict.
-    void FromValue(const base::Value::Dict& value);
+    // Deserializes layout options from a base::DictValue.
+    void FromValue(const base::DictValue& value);
 
     // Page layout direction. This is tied to the direction of the user's UI,
     // rather than the direction of individual pages.

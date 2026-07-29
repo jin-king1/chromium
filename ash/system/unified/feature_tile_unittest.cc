@@ -16,11 +16,13 @@
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/test/scoped_feature_list.h"
 #include "components/vector_icons/vector_icons.h"
 #include "ui/accessibility/ax_enums.mojom-shared.h"
 #include "ui/accessibility/ax_node_data.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/chromeos/styles/cros_tokens_color_mappings.h"
 #include "ui/gfx/geometry/rrect_f.h"
 #include "ui/views/accessibility/view_accessibility.h"
@@ -55,7 +57,9 @@ class MockFeaturePodController : public FeaturePodControllerBase {
         togglable_,
         compact ? FeatureTile::TileType::kCompact
                 : FeatureTile::TileType::kPrimary);
-    tile->SetVectorIcon(vector_icons::kDogfoodIcon);
+    tile->SetVectorIcon(::features::IsRoundedIconsEnabled()
+                            ? vector_icons::kPetsIcon
+                            : vector_icons::kDogfoodOldIcon);
     tile->SetIconClickCallback(
         base::BindRepeating(&MockFeaturePodController::OnIconPressed,
                             weak_ptr_factory_.GetWeakPtr()));

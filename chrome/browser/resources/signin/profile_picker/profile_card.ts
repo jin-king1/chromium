@@ -52,11 +52,16 @@ export class ProfileCardElement extends ProfileCardElementBase {
     return {
       profileState: {type: Object},
       pattern_: {type: String},
+      disabled: {type: Boolean},
+      webuiRoundedIconsEnabled_: {type: Boolean},
     };
   }
 
-  profileState: ProfileState = createDummyProfileState();
-  protected pattern_: string = '.*\\S.*';
+  accessor profileState: ProfileState = createDummyProfileState();
+  accessor disabled: boolean = false;
+  protected accessor pattern_: string = '.*\\S.*';
+  protected accessor webuiRoundedIconsEnabled_: boolean =
+      loadTimeData.getBoolean('webuiRoundedIconsEnabled');
   private manageProfilesBrowserProxy_: ManageProfilesBrowserProxy =
       ManageProfilesBrowserProxyImpl.getInstance();
 
@@ -124,24 +129,24 @@ export class ProfileCardElement extends ProfileCardElementBase {
   }
 
   protected onProfileClick_() {
+    this.fire('disable-all-picker-buttons');
+
     this.manageProfilesBrowserProxy_.launchSelectedProfile(
         this.profileState.profilePath);
   }
 
-  protected onNameInputPointerEnter_() {
-    this.dispatchEvent(new CustomEvent(
-        'toggle-drag', {composed: true, detail: {toggle: false}}));
+  protected onNameInputPointerenter_() {
+    this.fire('toggle-drag', {toggle: false});
   }
 
-  protected onNameInputPointerLeave_() {
-    this.dispatchEvent(new CustomEvent(
-        'toggle-drag', {composed: true, detail: {toggle: true}}));
+  protected onNameInputPointerleave_() {
+    this.fire('toggle-drag', {toggle: true});
   }
 
   /**
    * Handler for when the profile name field is changed, then blurred.
    */
-  protected onProfileNameChanged_(event: Event) {
+  protected onProfileNameChange_(event: Event) {
     const target = event.target as CrInputElement;
 
     if (target.invalid) {

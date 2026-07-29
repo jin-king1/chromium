@@ -26,15 +26,11 @@
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "third_party/blink/renderer/modules/webaudio/audio_buffer.h"
 
 #include <memory>
 
+#include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_audio_buffer_options.h"
 #include "third_party/blink/renderer/modules/webaudio/base_audio_context.h"
@@ -42,8 +38,21 @@
 #include "third_party/blink/renderer/platform/audio/audio_utilities.h"
 #include "third_party/blink/renderer/platform/bindings/exception_messages.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
+#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 
 namespace blink {
+
+namespace {
+
+DOMFloat32Array* CreateFloat32ArrayOrNull(
+    uint32_t length,
+    AudioBuffer::InitializationPolicy policy) {
+  return policy == AudioBuffer::InitializationPolicy::kZeroInitialize
+             ? DOMFloat32Array::CreateOrNull(length)
+             : DOMFloat32Array::CreateUninitializedOrNull(length);
+}
+
+}  // namespace
 
 AudioBuffer* AudioBuffer::Create(unsigned number_of_channels,
                                  uint32_t number_of_frames,
@@ -105,9 +114,9 @@ AudioBuffer* AudioBuffer::Create(unsigned number_of_channels,
   if (!audio_buffer) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kNotSupportedError,
-        "createBuffer(" + String::Number(number_of_channels) + ", " +
-            String::Number(number_of_frames) + ", " +
-            String::Number(sample_rate) + ") failed.");
+        StrCat({"createBuffer(", String::Number(number_of_channels), ", ",
+                String::Number(number_of_frames), ", ",
+                String::Number(sample_rate), ") failed."}));
   }
 
   return audio_buffer;
@@ -154,14 +163,6 @@ bool AudioBuffer::CreatedSuccessfully(
   return numberOfChannels() == desired_number_of_channels;
 }
 
-DOMFloat32Array* AudioBuffer::CreateFloat32ArrayOrNull(
-    uint32_t length,
-    InitializationPolicy policy) {
-  return policy == InitializationPolicy::kZeroInitialize
-             ? DOMFloat32Array::CreateOrNull(length)
-             : DOMFloat32Array::CreateUninitializedOrNull(length);
-}
-
 AudioBuffer::AudioBuffer(unsigned number_of_channels,
                          uint32_t number_of_frames,
                          float sample_rate,
@@ -195,10 +196,7 @@ AudioBuffer::AudioBuffer(AudioBus* bus)
     if (!channel_data_array) {
       return;
     }
-
-    const float* src = bus->Channel(i)->Data();
-    float* dst = channel_data_array->Data();
-    memmove(dst, src, length_ * sizeof(*dst));
+    channel_data_array->AsSpan().copy_from(bus->Channel(i)->Span());
     channels_.push_back(channel_data_array);
   }
 }
@@ -209,9 +207,9 @@ NotShared<DOMFloat32Array> AudioBuffer::getChannelData(
   if (channel_index >= channels_.size()) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kIndexSizeError,
-        "channel index (" + String::Number(channel_index) +
-            ") exceeds number of channels (" +
-            String::Number(channels_.size()) + ")");
+        StrCat({"channel index (", String::Number(channel_index),
+                ") exceeds number of channels (",
+                String::Number(channels_.size()), ")"}));
     return NotShared<DOMFloat32Array>(nullptr);
   }
 
@@ -236,6 +234,10 @@ void AudioBuffer::copyFromChannel(NotShared<DOMFloat32Array> destination,
                                   int32_t channel_number,
                                   size_t buffer_offset,
                                   ExceptionState& exception_state) {
+  if (!destination->length()) {
+    return;
+  }
+
   if (channel_number < 0 ||
       static_cast<uint32_t>(channel_number) >= channels_.size()) {
     exception_state.ThrowDOMException(
@@ -255,7 +257,7 @@ void AudioBuffer::copyFromChannel(NotShared<DOMFloat32Array> destination,
   // We don't need to copy anything if a) the buffer offset is past the end of
   // the AudioBuffer or b) the internal `Data()` of is a zero-length
   // `Float32Array`, which can result a nullptr.
-  if (buffer_offset >= src.size() || dst.size() <= 0) {
+  if (buffer_offset >= src.size() || dst.empty()) {
     return;
   }
 
@@ -277,6 +279,10 @@ void AudioBuffer::copyToChannel(NotShared<DOMFloat32Array> source,
                                 int32_t channel_number,
                                 size_t buffer_offset,
                                 ExceptionState& exception_state) {
+  if (!source->length()) {
+    return;
+  }
+
   if (channel_number < 0 ||
       static_cast<uint32_t>(channel_number) >= channels_.size()) {
     exception_state.ThrowDOMException(
@@ -310,8 +316,7 @@ void AudioBuffer::copyToChannel(NotShared<DOMFloat32Array> source,
 void AudioBuffer::Zero() {
   for (unsigned i = 0; i < channels_.size(); ++i) {
     if (NotShared<DOMFloat32Array> array = getChannelData(i)) {
-      float* data = array->Data();
-      memset(data, 0, length() * sizeof(*data));
+      std::ranges::fill(array->AsSpan(), 0.0f);
     }
   }
 }
@@ -323,16 +328,17 @@ std::unique_ptr<SharedAudioBuffer> AudioBuffer::CreateSharedAudioBuffer() {
 SharedAudioBuffer::SharedAudioBuffer(AudioBuffer* buffer)
     : sample_rate_(buffer->sampleRate()), length_(buffer->length()) {
   channels_.resize(buffer->numberOfChannels());
+  channel_spans_.resize(buffer->numberOfChannels());
   for (unsigned int i = 0; i < buffer->numberOfChannels(); ++i) {
-    buffer->getChannelData(i)->buffer()->ShareNonSharedForInternalUse(
-        channels_[i]);
+    NotShared<DOMFloat32Array> channel_data = buffer->getChannelData(i);
+    channel_spans_[i] = channel_data->AsSpan();
+    channel_data->buffer()->ShareNonSharedForInternalUse(channels_[i]);
   }
 }
 
 void SharedAudioBuffer::Zero() {
   for (auto& channel : channels_) {
-    float* data = static_cast<float*>(channel.Data());
-    memset(data, 0, length() * sizeof(*data));
+    std::ranges::fill(channel.ByteSpan(), 0);
   }
 }
 

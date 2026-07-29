@@ -4,7 +4,14 @@
 
 #include "content/browser/renderer_host/navigation_transitions/navigation_transition_config.h"
 
+#include "base/android/callback_android.h"
+#include "base/auto_reset.h"
+#include "base/byte_size.h"
+#include "base/debug/crash_logging.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/system/sys_info.h"
+#include "base/time/time.h"
+#include "base/types/pass_key.h"
 #include "content/public/common/content_features.h"
 #include "third_party/blink/public/common/features.h"
 #include "ui/display/screen.h"
@@ -12,53 +19,59 @@
 namespace content {
 namespace {
 
-const base::FeatureParam<int> kMaxScreenshotCount{
-    &blink::features::kBackForwardTransitions, "max-screenshot-count", 20};
+const int kMaxScreenshotCount = 20;
 
-const base::FeatureParam<int> kMaxCacheSize{
-    &blink::features::kBackForwardTransitions, "max-cache-size", -1};
+static int g_min_required_physical_ram_mb = 7200;
 
-const base::FeatureParam<double> kPercentageOfRamToUse{
-    &blink::features::kBackForwardTransitions, "percentage-of-ram-to-use", 2.5};
+const double kPercentageOfRamToUse = 0.5;
 
-const base::FeatureParam<base::TimeDelta> kInvisibleCacheCleanupDelay{
-    &blink::features::kBackForwardTransitions, "invisible-cache-cleanup-delay",
-    base::Minutes(7)};
+const base::TimeDelta kInvisibleCacheCleanupDelay = base::Minutes(7);
 
-const base::FeatureParam<bool> kTransferScreenshotInBackgroundPriority{
-    &blink::features::kBackForwardTransitions,
-    "transfer-screenshot-in-background-priority", false};
+// SendResult is an expensive operation and the start of a navigation is a busy
+// time. Delaying SendResult reduces chances of contention.
+// The value can be based on human reaction times and LCP latencies and it can
+// be adjusted based on the incidence of the value SentScreenshotRequest in
+// Navigation.GestureTransition.CacheHitOrMissReason.
+const base::TimeDelta kScreenshotSendResultDelay = base::Milliseconds(400);
 
 size_t GetMaxCacheSizeInBytes() {
   constexpr int kLowEndMax = 32 * 1024 * 1024;  // 32MB
   constexpr int kOtherMax = 128 * 1024 * 1024;  // 128MB
-  const size_t default_size =
-      base::SysInfo::IsLowEndDevice() ? kLowEndMax : kOtherMax;
-
-  int size = kMaxCacheSize.Get();
-  return size < 0 ? default_size : static_cast<size_t>(size);
+  return base::SysInfo::IsLowEndDevice() ? kLowEndMax : kOtherMax;
 }
 
 }  // namespace
 
 // static
-bool NavigationTransitionConfig::AreBackForwardTransitionsEnabled() {
-  return base::FeatureList::IsEnabled(blink::features::kBackForwardTransitions);
+bool NavigationTransitionConfig::SupportsBackForwardTransitions(
+    base::PassKey<ContentBrowserClient>) {
+  return base::SysInfo::AmountOfTotalPhysicalMemory() >=
+         base::MiBU(
+             base::checked_cast<uint64_t>(g_min_required_physical_ram_mb));
 }
 
 // static
 size_t NavigationTransitionConfig::ComputeCacheSizeInBytes() {
+  // TODO(crbug.com/429140103): Convert the return type to ByteSize.
+
   // Assume 4 bytes per pixel. This value estimates the max number of bytes of
   // the physical screen's uncompressed bitmap.
-  const size_t display_size_in_bytes = 4 * display::Screen::GetScreen()
-                                               ->GetPrimaryDisplay()
-                                               .GetSizeInPixel()
-                                               .Area64();
+  // Assume one pixel for unit tests that don't have or need a screen.
+  size_t display_size_in_bytes = 4;
+  if (auto* screen = display::Screen::Get(); screen) {
+    for (const auto& display : display::Screen::Get()->GetAllDisplays()) {
+      display_size_in_bytes =
+          std::max(display_size_in_bytes,
+                   static_cast<size_t>(4 * display.GetSizeInPixel().Area64()));
+    }
+  }
+
   size_t memory_required_for_max_screenshots =
-      display_size_in_bytes * kMaxScreenshotCount.Get();
+      display_size_in_bytes * kMaxScreenshotCount;
 
   size_t physical_memory_budget =
-      (base::SysInfo::AmountOfPhysicalMemory() * kPercentageOfRamToUse.Get()) /
+      (base::SysInfo::AmountOfTotalPhysicalMemory().InBytes() *
+       kPercentageOfRamToUse) /
       100;
   physical_memory_budget =
       std::min(physical_memory_budget, GetMaxCacheSizeInBytes());
@@ -69,19 +82,34 @@ size_t NavigationTransitionConfig::ComputeCacheSizeInBytes() {
   physical_memory_budget =
       std::max(display_size_in_bytes, physical_memory_budget);
 
+  static auto* const display_size_key = base::debug::AllocateCrashKeyString(
+      "dnt_display_size_bytes", base::debug::CrashKeySize::Size32);
+  static auto* const budget_key = base::debug::AllocateCrashKeyString(
+      "dnt_budget_bytes", base::debug::CrashKeySize::Size32);
+
+  base::debug::SetCrashKeyString(display_size_key,
+                                 base::NumberToString(display_size_in_bytes));
+  base::debug::SetCrashKeyString(budget_key,
+                                 base::NumberToString(physical_memory_budget));
+
   return physical_memory_budget;
 }
 
 // static
 base::TimeDelta
 NavigationTransitionConfig::GetCleanupDelayForInvisibleCaches() {
-  return kInvisibleCacheCleanupDelay.Get();
+  return kInvisibleCacheCleanupDelay;
 }
 
 // static
-bool NavigationTransitionConfig::
-    ShouldTransferScreenshotInBackgroundPriority() {
-  return kTransferScreenshotInBackgroundPriority.Get();
+base::TimeDelta NavigationTransitionConfig::ScreenshotSendResultDelay() {
+  return kScreenshotSendResultDelay;
+}
+
+// static
+base::AutoReset<int>
+NavigationTransitionConfig::SetMinRequiredPhysicalRamMbForTesting(int mb) {
+  return base::AutoReset<int>(&g_min_required_physical_ram_mb, mb);
 }
 
 }  // namespace content

@@ -11,7 +11,7 @@ import {FakeShimlessRmaService} from 'chrome://shimless-rma/fake_shimless_rma_se
 import {setShimlessRmaServiceForTesting} from 'chrome://shimless-rma/mojo_interface_provider.js';
 import {RebootPage} from 'chrome://shimless-rma/reboot_page.js';
 import {RmadErrorCode} from 'chrome://shimless-rma/shimless_rma.mojom-webui.js';
-import {assertEquals} from 'chrome://webui-test/chromeos/chai_assert.js';
+import {assertEquals} from 'chrome://webui-test/chai_assert.js';
 import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
 
 suite('rebootPageTest', function() {
@@ -62,16 +62,16 @@ suite('rebootPageTest', function() {
     const instructions =
         strictQuery('#instructions', component.shadowRoot, HTMLElement);
     assertEquals(
-        loadTimeData.getString('rebootPageTitle'), title.textContent!.trim());
+        loadTimeData.getString('rebootPageTitle'), title.textContent.trim());
     assertEquals(
         loadTimeData.getStringF('rebootPageMessage', delayDuration),
-        instructions.textContent!.trim());
+        instructions.textContent.trim());
 
     component.errorCode = RmadErrorCode.kExpectShutdown;
     assertEquals(
-        loadTimeData.getString('shutdownPageTitle'), title.textContent!.trim());
+        loadTimeData.getString('shutdownPageTitle'), title.textContent.trim());
     assertEquals(
         loadTimeData.getStringF('shutdownPageMessage', delayDuration),
-        instructions.textContent!.trim());
+        instructions.textContent.trim());
   });
 });

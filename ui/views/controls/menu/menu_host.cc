@@ -11,7 +11,7 @@
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/notreached.h"
+#include "base/notimplemented.h"
 #include "base/scoped_observation.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
@@ -21,6 +21,7 @@
 #include "ui/events/gestures/gesture_recognizer.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/native_theme/native_theme.h"
 #include "ui/views/controls/menu/menu_controller.h"
 #include "ui/views/controls/menu/menu_host_root_view.h"
@@ -141,7 +142,11 @@ void MenuHost::InitMenuHost(const InitParams& init_params) {
   params.opacity = (bubble_border || corner_radius)
                        ? Widget::InitParams::WindowOpacity::kTranslucent
                        : Widget::InitParams::WindowOpacity::kOpaque;
-  params.corner_radius = corner_radius;
+  // bubble_border draws rounded corners if it exists. Otherwise, let the
+  // platform draw the corners.
+  if (!bubble_border) {
+    params.rounded_corners = gfx::RoundedCornersF(corner_radius);
+  }
   params.parent = init_params.parent ? init_params.parent->GetNativeView()
                                      : gfx::NativeView();
   params.context = init_params.context ? init_params.context->GetNativeWindow()
@@ -209,6 +214,13 @@ void MenuHost::ShowMenuHost(bool do_capture) {
   // process of showing.
   base::AutoReset<bool> reseter(&ignore_capture_lost_, true);
   ShowInactive();
+
+  // ShowInactive() can trigger events that cause the menu to be destroyed
+  // (e.g., focus changes on macOS). If that happened, bail out early to avoid
+  // accessing the now-dangling parent_menu_item_ pointer in submenu_.
+  if (destroying_ || !submenu_) {
+    return;
+  }
 
   if (do_capture) {
     MenuController* menu_controller =
@@ -327,14 +339,13 @@ void MenuHost::OnOwnerClosing() {
   }
 }
 
-void MenuHost::OnDragWillStart() {
+void MenuHost::OnDragDropWillStart() {
   MenuController* menu_controller =
       submenu_->GetMenuItem()->GetMenuController();
   DCHECK(menu_controller);
-  menu_controller->OnDragWillStart();
+  menu_controller->OnDragDropWillStart();
 }
-
-void MenuHost::OnDragComplete() {
+void MenuHost::OnDragDropCompleted() {
   // If we are being destroyed there is no guarantee that the menu items are
   // available.
   if (destroying_) {
@@ -349,10 +360,10 @@ void MenuHost::OnDragComplete() {
   bool should_close =
       menu_controller->exit_type() != MenuController::ExitType::kNone;
   if (auto* const delegate = submenu_->GetMenuItem()->GetDelegate()) {
-    should_close |= delegate->ShouldCloseOnDragComplete();
+    should_close |= delegate->ShouldCloseOnDragDropCompleted();
   }
 
-  menu_controller->OnDragComplete(should_close);
+  menu_controller->OnDragDropCompleted(should_close);
 }
 
 Widget* MenuHost::GetPrimaryWindowWidget() {
@@ -372,7 +383,7 @@ gfx::Insets MenuHost::GetCustomInsetsInDIP() const {
 void MenuHost::OnWidgetDestroying(Widget* widget) {
   DCHECK_EQ(GetOwner(), widget);
   owner_observation_.Reset();
-  native_view_for_gestures_ = nullptr;
+  native_view_for_gestures_ = gfx::NativeView();
 }
 
 Widget* MenuHost::GetOwner() {

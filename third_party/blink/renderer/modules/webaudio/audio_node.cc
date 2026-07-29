@@ -37,8 +37,10 @@
 #include "third_party/blink/renderer/modules/webaudio/audio_node_wiring.h"
 #include "third_party/blink/renderer/modules/webaudio/audio_param.h"
 #include "third_party/blink/renderer/modules/webaudio/base_audio_context.h"
+#include "third_party/blink/renderer/modules/webaudio/script_processor_handler.h"
 #include "third_party/blink/renderer/platform/bindings/exception_messages.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
+#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 
 #if DEBUG_AUDIONODE_REFERENCES
 #include <stdio.h>
@@ -68,7 +70,8 @@ void AudioNode::Dispose() {
           this, Handler().GetNodeType(), handler_.get(),
           context()->currentTime());
 #endif
-  DeferredTaskHandler::GraphAutoLocker locker(context());
+  DeferredTaskHandler::GraphAutoLocker locker(
+      context()->GetDeferredTaskHandler());
   Handler().Dispose();
 
   // Add the handler to the orphan list.  This keeps the handler alive until it
@@ -77,7 +80,8 @@ void AudioNode::Dispose() {
   // the handler still needs to be added in case the context is resumed.
   DCHECK(context());
   if (context()->IsPullingAudioGraph() ||
-      context()->ContextState() == V8AudioContextState::Enum::kSuspended) {
+      context()->ContextState() == V8AudioContextState::Enum::kSuspended ||
+      context()->ContextState() == V8AudioContextState::Enum::kInterrupted) {
     context()->GetDeferredTaskHandler().AddRenderingOrphanHandler(
         std::move(handler_));
   }
@@ -136,7 +140,7 @@ void AudioNode::HandleChannelOptions(const AudioNodeOptions* options,
   }
 }
 
-String AudioNode::GetNodeName() const {
+const char* AudioNode::GetNodeName() const {
   return Handler().NodeTypeName();
 }
 
@@ -149,7 +153,8 @@ AudioNode* AudioNode::connect(AudioNode* destination,
                               unsigned input_index,
                               ExceptionState& exception_state) {
   DCHECK(IsMainThread());
-  DeferredTaskHandler::GraphAutoLocker locker(context());
+  DeferredTaskHandler::GraphAutoLocker locker(
+      context()->GetDeferredTaskHandler());
 
   context()->WarnForConnectionIfContextClosed();
 
@@ -163,18 +168,18 @@ AudioNode* AudioNode::connect(AudioNode* destination,
   if (output_index >= numberOfOutputs()) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kIndexSizeError,
-        "output index (" + String::Number(output_index) +
-            ") exceeds number of outputs (" +
-            String::Number(numberOfOutputs()) + ").");
+        StrCat({"output index (", String::Number(output_index),
+                ") exceeds number of outputs (",
+                String::Number(numberOfOutputs()), ")."}));
     return nullptr;
   }
 
   if (destination && input_index >= destination->numberOfInputs()) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kIndexSizeError,
-        "input index (" + String::Number(input_index) +
-            ") exceeds number of inputs (" +
-            String::Number(destination->numberOfInputs()) + ").");
+        StrCat({"input index (", String::Number(input_index),
+                ") exceeds number of inputs (",
+                String::Number(destination->numberOfInputs()), ")."}));
     return nullptr;
   }
 
@@ -191,7 +196,8 @@ AudioNode* AudioNode::connect(AudioNode* destination,
   // receive?  Just disallow this.
   if (Handler().GetNodeType() ==
           AudioHandler::NodeType::kNodeTypeScriptProcessor &&
-      Handler().NumberOfOutputChannels() == 0) {
+      static_cast<ScriptProcessorHandler&>(Handler())
+          .NumberOfOutputChannels() == 0) {
     exception_state.ThrowDOMException(DOMExceptionCode::kInvalidAccessError,
                                       "cannot connect a ScriptProcessorNode "
                                       "with 0 output channels to any "
@@ -200,19 +206,22 @@ AudioNode* AudioNode::connect(AudioNode* destination,
   }
 
   SendLogMessage(
-      __func__, String::Format(
-                    "({output=[index:%u, type:%s, handler:0x%" PRIXPTR "]} --> "
-                    "{input=[index:%u, type:%s, handler:0x%" PRIXPTR "]})",
-                    output_index, Handler().NodeTypeName().Utf8().c_str(),
-                    reinterpret_cast<uintptr_t>(&Handler()), input_index,
-                    destination->Handler().NodeTypeName().Utf8().c_str(),
-                    reinterpret_cast<uintptr_t>(&destination->Handler())));
+      __func__,
+      StrCat(
+          {"({output=[index:", String::Number(output_index),
+           ", type:", Handler().NodeTypeName(), ", handler:0x",
+           String::Format("%" PRIXPTR, reinterpret_cast<uintptr_t>(&Handler())),
+           "]} --> {input=[index:", String::Number(input_index),
+           ", type:", destination->Handler().NodeTypeName(), ", handler:0x",
+           String::Format("%" PRIXPTR,
+                          reinterpret_cast<uintptr_t>(&destination->Handler())),
+           "]})"}));
 
   AudioNodeWiring::Connect(Handler().Output(output_index),
                            destination->Handler().Input(input_index));
   if (!connected_nodes_[output_index]) {
     connected_nodes_[output_index] =
-        MakeGarbageCollected<HeapHashSet<Member<AudioNode>>>();
+        MakeGarbageCollected<GCedHeapHashSet<Member<AudioNode>>>();
   }
   connected_nodes_[output_index]->insert(destination);
 
@@ -227,7 +236,8 @@ void AudioNode::connect(AudioParam* param,
                         unsigned output_index,
                         ExceptionState& exception_state) {
   DCHECK(IsMainThread());
-  DeferredTaskHandler::GraphAutoLocker locker(context());
+  DeferredTaskHandler::GraphAutoLocker locker(
+      context()->GetDeferredTaskHandler());
 
   context()->WarnForConnectionIfContextClosed();
 
@@ -240,9 +250,9 @@ void AudioNode::connect(AudioParam* param,
   if (output_index >= numberOfOutputs()) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kIndexSizeError,
-        "output index (" + String::Number(output_index) +
-            ") exceeds number of outputs (" +
-            String::Number(numberOfOutputs()) + ").");
+        StrCat({"output index (", String::Number(output_index),
+                ") exceeds number of outputs (",
+                String::Number(numberOfOutputs()), ")."}));
     return;
   }
 
@@ -257,7 +267,7 @@ void AudioNode::connect(AudioParam* param,
   AudioNodeWiring::Connect(Handler().Output(output_index), param->Handler());
   if (!connected_params_[output_index]) {
     connected_params_[output_index] =
-        MakeGarbageCollected<HeapHashSet<Member<AudioParam>>>();
+        MakeGarbageCollected<GCedHeapHashSet<Member<AudioParam>>>();
   }
   connected_params_[output_index]->insert(param);
 
@@ -300,7 +310,8 @@ bool AudioNode::DisconnectFromOutputIfConnected(unsigned output_index,
 
 void AudioNode::disconnect() {
   DCHECK(IsMainThread());
-  DeferredTaskHandler::GraphAutoLocker locker(context());
+  DeferredTaskHandler::GraphAutoLocker locker(
+      context()->GetDeferredTaskHandler());
 
   // Disconnect all outgoing connections.
   for (unsigned i = 0; i < numberOfOutputs(); ++i) {
@@ -315,7 +326,8 @@ void AudioNode::disconnect() {
 void AudioNode::disconnect(unsigned output_index,
                            ExceptionState& exception_state) {
   DCHECK(IsMainThread());
-  DeferredTaskHandler::GraphAutoLocker locker(context());
+  DeferredTaskHandler::GraphAutoLocker locker(
+      context()->GetDeferredTaskHandler());
 
   // Sanity check on the output index.
   if (output_index >= numberOfOutputs()) {
@@ -347,7 +359,8 @@ void AudioNode::disconnect(AudioNode* destination,
     return;
   }
 
-  DeferredTaskHandler::GraphAutoLocker locker(context());
+  DeferredTaskHandler::GraphAutoLocker locker(
+      context()->GetDeferredTaskHandler());
 
   unsigned number_of_disconnections = 0;
 
@@ -390,7 +403,8 @@ void AudioNode::disconnect(AudioNode* destination,
     return;
   }
 
-  DeferredTaskHandler::GraphAutoLocker locker(context());
+  DeferredTaskHandler::GraphAutoLocker locker(
+      context()->GetDeferredTaskHandler());
 
   if (output_index >= numberOfOutputs()) {
     // The output index is out of range. Throw an exception.
@@ -418,8 +432,8 @@ void AudioNode::disconnect(AudioNode* destination,
   if (number_of_disconnections == 0) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kInvalidAccessError,
-        "output (" + String::Number(output_index) +
-            ") is not connected to the given destination.");
+        StrCat({"output (", String::Number(output_index),
+                ") is not connected to the given destination."}));
   }
 
   Handler().UpdatePullStatusIfNeeded();
@@ -441,7 +455,8 @@ void AudioNode::disconnect(AudioNode* destination,
     return;
   }
 
-  DeferredTaskHandler::GraphAutoLocker locker(context());
+  DeferredTaskHandler::GraphAutoLocker locker(
+      context()->GetDeferredTaskHandler());
 
   if (output_index >= numberOfOutputs()) {
     exception_state.ThrowDOMException(
@@ -468,9 +483,9 @@ void AudioNode::disconnect(AudioNode* destination,
                                        input_index)) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kInvalidAccessError,
-        "output (" + String::Number(output_index) +
-            ") is not connected to the input (" + String::Number(input_index) +
-            ") of the destination.");
+        StrCat({"output (", String::Number(output_index),
+                ") is not connected to the input (",
+                String::Number(input_index), ") of the destination."}));
     return;
   }
 
@@ -492,7 +507,8 @@ void AudioNode::disconnect(AudioParam* destination_param,
     return;
   }
 
-  DeferredTaskHandler::GraphAutoLocker locker(context());
+  DeferredTaskHandler::GraphAutoLocker locker(
+      context()->GetDeferredTaskHandler());
 
   // The number of disconnection made.
   unsigned number_of_disconnections = 0;
@@ -522,7 +538,8 @@ void AudioNode::disconnect(AudioParam* destination_param,
                            unsigned output_index,
                            ExceptionState& exception_state) {
   DCHECK(IsMainThread());
-  DeferredTaskHandler::GraphAutoLocker locker(context());
+  DeferredTaskHandler::GraphAutoLocker locker(
+      context()->GetDeferredTaskHandler());
 
   if (context() != destination_param->Context()) {
     exception_state.ThrowDOMException(
@@ -547,8 +564,8 @@ void AudioNode::disconnect(AudioParam* destination_param,
   if (!DisconnectFromOutputIfConnected(output_index, *destination_param)) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kInvalidAccessError,
-        "specified destination AudioParam and node output (" +
-            String::Number(output_index) + ") are not connected.");
+        StrCat({"specified destination AudioParam and node output (",
+                String::Number(output_index), ") are not connected."}));
     return;
   }
 
@@ -608,11 +625,11 @@ void AudioNode::DidAddOutput(unsigned number_of_outputs) {
   DCHECK_EQ(number_of_outputs, connected_params_.size());
 }
 
-void AudioNode::SendLogMessage(const char* const function_name,
+void AudioNode::SendLogMessage(const String& function_name,
                                const String& message) {
-  WebRtcLogMessage(
-      String::Format("[WA]AN::%s %s", function_name, message.Utf8().c_str())
-          .Utf8());
+  WebRtcLogMessage(String::Format("[WA]AN::%s %s", function_name.Utf8().c_str(),
+                                  message.Utf8().c_str())
+                       .Utf8());
 }
 
 }  // namespace blink

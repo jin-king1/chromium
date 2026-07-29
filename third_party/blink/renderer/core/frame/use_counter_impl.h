@@ -28,6 +28,7 @@
 
 #include <bitset>
 
+#include "base/time/time.h"
 #include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom-blink-forward.h"
 #include "third_party/blink/public/common/use_counter/use_counter_feature_tracker.h"
 #include "third_party/blink/renderer/core/core_export.h"
@@ -77,6 +78,9 @@ class CORE_EXPORT UseCounterImpl final {
     kExtensionContext,
     // Context for file:// URLs.
     kFileContext,
+    // Counters for about:blank and about:srcdoc pages, which can host
+    // non-trivial html content.
+    kAboutBlankOrSrcdoc,
     // Context when counters should be disabled (eg, internal pages such as
     // about, devtools, etc).
     kDisabledContext
@@ -129,6 +133,12 @@ class CORE_EXPORT UseCounterImpl final {
   bool IsWebDXFeatureCounted(WebDXFeature) const;
   bool IsCounted(CSSPropertyID unresolved_property, CSSPropertyType) const;
 
+  // Inherits selected UseCounters recorded on a pre-XSLT document loader
+  // into a new document loader committed via an XSLT transformation, ensuring
+  // initial parsing metrics (e.g. kXmlCAPAlert) are preserved when the new
+  // document replaces the initial XML document.
+  void InheritXsltUseCountersFrom(const UseCounterImpl& other);
+
   // Retains a reference to the observer to notify of UseCounterImpl changes.
   void AddObserver(Observer*);
 
@@ -141,6 +151,11 @@ class CORE_EXPORT UseCounterImpl final {
 
   void ClearMeasurementForTesting(WebFeature);
   void ClearMeasurementForTesting(WebDXFeature);
+
+  // Record total taken time by recording UseCounter metrics. This is only
+  // recorded in the outermost main frame, not initial empty document, and the
+  // URL is HTTP or HTTPS.
+  void ReportTotalTakenTime(const LocalFrame* frame, bool did_commit_load);
 
   void Trace(Visitor*) const;
 
@@ -179,6 +194,10 @@ class CORE_EXPORT UseCounterImpl final {
   UseCounterFeatureTracker feature_tracker_;
 
   HeapHashSet<Member<Observer>> observers_;
+
+  // Stores the total time taken by `DidObserveNewFeatureUsage()` for the
+  // measurement purpose.
+  base::TimeDelta total_taken_time_for_reporting_;
 };
 
 }  // namespace blink

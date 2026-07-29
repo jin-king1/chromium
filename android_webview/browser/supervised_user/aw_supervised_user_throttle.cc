@@ -11,17 +11,17 @@
 namespace android_webview {
 
 // static
-std::unique_ptr<AwSupervisedUserThrottle> AwSupervisedUserThrottle::Create(
-    content::NavigationHandle* navigation_handle,
+void AwSupervisedUserThrottle::CreateAndAdd(
+    content::NavigationThrottleRegistry& registry,
     AwSupervisedUserUrlClassifier* url_classifier) {
-  return base::WrapUnique<AwSupervisedUserThrottle>(
-      new AwSupervisedUserThrottle(navigation_handle, url_classifier));
+  registry.AddThrottle(base::WrapUnique<AwSupervisedUserThrottle>(
+      new AwSupervisedUserThrottle(registry, url_classifier)));
 }
 
 AwSupervisedUserThrottle::AwSupervisedUserThrottle(
-    content::NavigationHandle* navigation_handle,
+    content::NavigationThrottleRegistry& registry,
     AwSupervisedUserUrlClassifier* url_classifier)
-    : NavigationThrottle(navigation_handle), url_classifier_(url_classifier) {
+    : NavigationThrottle(registry), url_classifier_(url_classifier) {
   DCHECK(url_classifier_);
   DETACH_FROM_SEQUENCE(sequence_checker_);
 }
@@ -99,6 +99,16 @@ void AwSupervisedUserThrottle::OnShouldBlockUrlResult(bool shouldBlockUrl) {
     blocked_ = true;
     pending_checks_ = 0;
 
+    // Cancel non-visible requests (such as prerendered content) with a network
+    // error (but without a blocking page).
+    if (navigation_handle()->IsInPrerenderedMainFrame()) {
+      CancelDeferredNavigation(content::NavigationThrottle::ThrottleCheckResult(
+          NavigationThrottle::CANCEL, net::ERR_BLOCKED_BY_CLIENT));
+      return;
+    }
+
+    // Cancel visible requests (such as HTML content) with both a network error
+    // and with a blocking page.
     std::unique_ptr<security_interstitials::SecurityInterstitialPage>
         blocking_page = AwSupervisedUserBlockingPage::CreateBlockingPage(
             navigation_handle()->GetWebContents(),
@@ -108,7 +118,8 @@ void AwSupervisedUserThrottle::OnShouldBlockUrlResult(bool shouldBlockUrl) {
     security_interstitials::SecurityInterstitialTabHelper::
         AssociateBlockingPage(navigation_handle(), std::move(blocking_page));
     CancelDeferredNavigation(content::NavigationThrottle::ThrottleCheckResult(
-        CANCEL, net::ERR_BLOCKED_BY_CLIENT, error_page_content));
+        NavigationThrottle::CANCEL, net::ERR_BLOCKED_BY_CLIENT,
+        error_page_content));
 
   } else {
     if (pending_checks_ == 0 && deferred_) {

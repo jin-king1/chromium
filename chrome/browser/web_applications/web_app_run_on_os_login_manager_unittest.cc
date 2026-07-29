@@ -25,14 +25,13 @@
 #include "chrome/browser/web_applications/test/web_app_test_utils.h"
 #include "chrome/browser/web_applications/web_app_command_manager.h"
 #include "chrome/browser/web_applications/web_app_constants.h"
-#include "chrome/browser/web_applications/web_app_database_factory.h"
 #include "chrome/browser/web_applications/web_app_management_type.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/web_applications/web_app_registry_update.h"
 #include "chrome/browser/web_applications/web_app_sync_bridge.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/testing_browser_process.h"
+#include "components/prefs/pref_service.h"
 #include "components/services/app_service/public/cpp/app_launch_util.h"
 #include "components/webapps/common/web_app_id.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -62,12 +61,11 @@ class WebAppRunOnOsLoginManagerTestBase : public WebAppTest {
   void SetUp() override {
     WebAppTest::SetUp();
 
-    provider_ = FakeWebAppProvider::Get(profile());
-
     // Set up policy before managers are started.
     SetWebAppSettingsPref();
 
-    ui_manager_ = static_cast<FakeWebAppUiManager*>(&provider_->GetUiManager());
+    ui_manager_ =
+        static_cast<FakeWebAppUiManager*>(&fake_provider().GetUiManager());
     ui_manager_->SetOnLaunchWebAppCallback(base::BindLambdaForTesting(
         [this](apps::AppLaunchParams params,
                LaunchWebAppWindowSetting launch_setting) {
@@ -98,7 +96,7 @@ class WebAppRunOnOsLoginManagerTestBase : public WebAppTest {
 
   void TearDown() override {
     ui_manager_ = nullptr;
-    provider_->Shutdown();
+    fake_provider().Shutdown();
     WebAppTest::TearDown();
   }
 
@@ -106,7 +104,7 @@ class WebAppRunOnOsLoginManagerTestBase : public WebAppTest {
   virtual void SetWebAppSettingsPref() = 0;
 
   void AwaitAllCommandsComplete() {
-    provider_->command_manager().AwaitAllCommandsCompleteForTesting();
+    fake_provider().command_manager().AwaitAllCommandsCompleteForTesting();
   }
 
   const std::vector<apps::AppLaunchParams>& launched_apps() {
@@ -118,10 +116,7 @@ class WebAppRunOnOsLoginManagerTestBase : public WebAppTest {
   raw_ptr<FakeWebAppUiManager> ui_manager_ = nullptr;
   std::unique_ptr<NotificationDisplayServiceTester> tester_;
   std::vector<apps::AppLaunchParams> launched_apps_;
-  raw_ptr<FakeWebAppProvider, DanglingUntriaged> provider_ = nullptr;
   std::unique_ptr<base::AutoReset<bool>> skip_run_on_os_login_startup_;
-  base::test::ScopedFeatureList scoped_feature_list_{
-      features::kDesktopPWAsRunOnOsLogin};
 };
 
 class WebAppRunOnOsLoginManagerParameterizedTest
@@ -159,7 +154,7 @@ class WebAppRunOnOsLoginManagerParameterizedTest
 
     ui_manager_->SetNumWindowsForApp(web_app->app_id(), 0);
 
-    WebAppSyncBridge& sync_bridge = provider_->sync_bridge_unsafe();
+    WebAppSyncBridge& sync_bridge = fake_provider().sync_bridge_unsafe();
     ScopedRegistryUpdate update = sync_bridge.BeginUpdate();
     update->CreateApp(std::move(web_app));
   }
@@ -179,9 +174,9 @@ class WebAppRunOnOsLoginManagerSimpleSettingsTest
   void SetWebAppSettingsPref() override {
     profile()->GetPrefs()->SetList(
         prefs::kWebAppSettings,
-        base::Value::List().Append(base::Value::Dict()
-                                       .Set(kManifestId, kTestApp)
-                                       .Set(kRunOnOsLogin, kRunWindowed)));
+        base::ListValue().Append(base::DictValue()
+                                     .Set(kManifestId, kTestApp)
+                                     .Set(kRunOnOsLogin, kRunWindowed)));
   }
 
   void InstallWebApp() {
@@ -198,7 +193,7 @@ class WebAppRunOnOsLoginManagerSimpleSettingsTest
 
     ui_manager_->SetNumWindowsForApp(app_id_, 0);
 
-    WebAppSyncBridge& sync_bridge = provider_->sync_bridge_unsafe();
+    WebAppSyncBridge& sync_bridge = fake_provider().sync_bridge_unsafe();
     ScopedRegistryUpdate update = sync_bridge.BeginUpdate();
     update->CreateApp(std::move(web_app));
   }
@@ -211,7 +206,7 @@ class WebAppRunOnOsLoginManagerSimpleSettingsTest
 
 TEST_F(WebAppRunOnOsLoginManagerSimpleSettingsTest, SimpleAppStarted) {
   InstallWebApp();
-  provider_->run_on_os_login_manager().RunAppsOnOsLoginForTesting();
+  fake_provider().run_on_os_login_manager().RunAppsOnOsLoginForTesting();
 
   AwaitAllCommandsComplete();
 
@@ -223,7 +218,7 @@ TEST_F(WebAppRunOnOsLoginManagerSimpleSettingsTest, SimpleAppStarted) {
 TEST_F(WebAppRunOnOsLoginManagerSimpleSettingsTest, NoDuplicateAppStarted) {
   InstallWebApp();
   OpenWindowForTestApp();
-  provider_->run_on_os_login_manager().RunAppsOnOsLoginForTesting();
+  fake_provider().run_on_os_login_manager().RunAppsOnOsLoginForTesting();
 
   AwaitAllCommandsComplete();
 
@@ -235,7 +230,7 @@ TEST_F(WebAppRunOnOsLoginManagerSimpleSettingsTest, NoDuplicateAppStarted) {
 TEST_P(WebAppRunOnOsLoginManagerParameterizedTest, WebAppRunOnOsLogin) {
   // Arrange: Install PWA, then perform ROOL
   InstallWebApp();
-  provider_->run_on_os_login_manager().RunAppsOnOsLoginForTesting();
+  fake_provider().run_on_os_login_manager().RunAppsOnOsLoginForTesting();
 
   bool launch_by_policy = GetPolicyRunOnOsLoginValue() == "run_windowed";
   bool launch_by_user_mode =

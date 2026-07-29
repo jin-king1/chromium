@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
+#include "base/sequence_checker.h"
 #include "components/sync/engine/data_type_processor.h"
 #include "components/sync/model/data_type_activation_request.h"
 #include "components/sync/model/data_type_controller_delegate.h"
@@ -52,7 +53,7 @@ class NigoriDataTypeProcessor : public DataTypeProcessor,
   void OnSyncStarting(const DataTypeActivationRequest& request,
                       StartCallback callback) override;
   void OnSyncStopping(SyncStopMetadataFate metadata_fate) override;
-  void HasUnsyncedData(base::OnceCallback<void(bool)> callback) override;
+  void GetUnsyncedDataCount(base::OnceCallback<void(size_t)> callback) override;
   void GetAllNodesForDebugging(AllNodesCallback callback) override;
   void GetTypeEntitiesCountForDebugging(
       base::OnceCallback<void(const TypeEntitiesCount&)> callback)

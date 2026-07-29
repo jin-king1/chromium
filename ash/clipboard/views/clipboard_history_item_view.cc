@@ -21,7 +21,7 @@
 #include "base/metrics/histogram_macros.h"
 #include "base/notreached.h"
 #include "base/unguessable_token.h"
-#include "chromeos/crosapi/mojom/clipboard_history.mojom.h"
+#include "chromeos/ui/clipboard_history/clipboard_history_types.h"
 #include "ui/accessibility/ax_node_data.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/clipboard/clipboard_data.h"
@@ -39,7 +39,7 @@
 #include "ui/views/layout/box_layout_view.h"
 #include "ui/views/layout/fill_layout.h"
 #include "ui/views/layout/layout_types.h"
-#include "ui/views/metadata/view_factory_internal.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/view_targeter_delegate.h"
 #include "ui/views/view_utils.h"
@@ -82,7 +82,8 @@ ClipboardHistoryItemView::ContentsView::~ContentsView() = default;
 
 void ClipboardHistoryItemView::ContentsView::OnViewVisibilityChanged(
     views::View* observed_view,
-    views::View* starting_view) {
+    views::View* starting_view,
+    bool visible) {
   is_delete_button_visible_ = observed_view->GetVisible();
   SetClipPath(GetClipPath());
 }
@@ -200,15 +201,15 @@ ClipboardHistoryItemView::CreateFromClipboardHistoryItem(
 
   std::unique_ptr<ClipboardHistoryItemView> item_view;
   switch (display_format) {
-    case crosapi::mojom::ClipboardHistoryDisplayFormat::kUnknown:
+    case chromeos::clipboard_history::DisplayFormat::kUnknown:
       NOTREACHED();
-    case crosapi::mojom::ClipboardHistoryDisplayFormat::kText:
-    case crosapi::mojom::ClipboardHistoryDisplayFormat::kFile:
+    case chromeos::clipboard_history::DisplayFormat::kText:
+    case chromeos::clipboard_history::DisplayFormat::kFile:
       item_view = std::make_unique<ClipboardHistoryTextItemView>(
           item_id, clipboard_history, container);
       break;
-    case crosapi::mojom::ClipboardHistoryDisplayFormat::kPng:
-    case crosapi::mojom::ClipboardHistoryDisplayFormat::kHtml:
+    case chromeos::clipboard_history::DisplayFormat::kPng:
+    case chromeos::clipboard_history::DisplayFormat::kHtml:
       item_view = std::make_unique<ClipboardHistoryBitmapItemView>(
           item_id, clipboard_history, container);
       break;

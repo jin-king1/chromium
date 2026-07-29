@@ -97,7 +97,7 @@ views::View* AshWebViewImpl::GetInitiallyFocusedView() {
 }
 
 void AshWebViewImpl::SetCornerRadii(const gfx::RoundedCornersF& corner_radii) {
-  web_view_->holder()->SetCornerRadii(corner_radii);
+  web_view_->holder()->SetNativeViewCornerRadii(corner_radii);
 }
 
 const base::UnguessableToken& AshWebViewImpl::GetMediaSessionRequestId() {
@@ -112,11 +112,13 @@ void AshWebViewImpl::AddedToWidget() {
   // Apply rounded corners. This can't be done earlier since it
   // requires `web_view_->holder()->native_view()` to be initialized.
   if (params_.rounded_corners.has_value()) {
-    web_view_->holder()->SetCornerRadii(params_.rounded_corners.value());
+    web_view_->holder()->SetNativeViewCornerRadii(
+        params_.rounded_corners.value());
   }
 }
 
 bool AshWebViewImpl::IsWebContentsCreationOverridden(
+    content::RenderFrameHost* opener,
     content::SiteInstance* source_site_instance,
     content::mojom::WindowContainerType window_container_type,
     const GURL& opener_url,
@@ -129,8 +131,8 @@ bool AshWebViewImpl::IsWebContentsCreationOverridden(
     return true;
   }
   return content::WebContentsDelegate::IsWebContentsCreationOverridden(
-      source_site_instance, window_container_type, opener_url, frame_name,
-      target_url);
+      opener, source_site_instance, window_container_type, opener_url,
+      frame_name, target_url);
 }
 
 content::WebContents* AshWebViewImpl::OpenURLFromTab(
@@ -230,7 +232,7 @@ void AshWebViewImpl::DidStopLoading() {
 }
 
 void AshWebViewImpl::OnFocusChangedInPage(
-    content::FocusedNodeDetails* details) {
+    const content::FocusedNodeDetails& details) {
   // When navigating to the |web_contents_|, it may not focus it. Request focus
   // as needed. This is a workaround to get a non-empty rect of the focused
   // node. See details in b/177047240.
@@ -240,7 +242,7 @@ void AshWebViewImpl::OnFocusChangedInPage(
   }
 
   for (auto& observer : observers_) {
-    observer.DidChangeFocusedNode(details->node_bounds_in_screen);
+    observer.DidChangeFocusedNode(details.node_bounds_in_screen);
   }
 }
 

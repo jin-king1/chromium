@@ -46,15 +46,11 @@ MATCHER(HasTheSameAccountIdTokenPair, "") {
              testing::AllOf(
                  testing::Property("oauth_token()",
                                    &OAuthMultiloginTokenResponse::oauth_token,
-                                   token_pair.second)
-#if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
-                     ,
+                                   token_pair.second),
                  testing::Property(
                      "token_binding_assertion()",
                      &OAuthMultiloginTokenResponse::token_binding_assertion,
-                     testing::IsEmpty())
-#endif  // BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
-                     ),
+                     testing::IsEmpty())),
              response_pair.second, result_listener);
 }
 
@@ -71,17 +67,11 @@ class OAuthMultiloginTokenFetcherTest : public testing::Test {
   ~OAuthMultiloginTokenFetcherTest() override = default;
 
   std::unique_ptr<OAuthMultiloginTokenFetcher> CreateFetcher(
-      const std::vector<AccountParams>& account_params
-#if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
-      ,
-      const std::string& ephemeral_public_key = std::string()
-#endif  // BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
-  ) {
+      const std::vector<AccountParams>& account_params,
+      const std::string& ephemeral_public_key = std::string()) {
     return std::make_unique<OAuthMultiloginTokenFetcher>(
         &test_signin_client_, &token_service_, account_params,
-#if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
         ephemeral_public_key,
-#endif  // BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
         base::BindOnce(&OAuthMultiloginTokenFetcherTest::OnSuccess,
                        base::Unretained(this)),
         base::BindOnce(&OAuthMultiloginTokenFetcherTest::OnFailure,
@@ -157,7 +147,8 @@ TEST_F(OAuthMultiloginTokenFetcherTest, OneAccountPersistentError) {
   EXPECT_EQ(FetchStatus::kPending, GetFetchStatus());
   token_service().IssueErrorForAllPendingRequestsForAccount(
       kAccountId,
-      GoogleServiceAuthError(GoogleServiceAuthError::INVALID_GAIA_CREDENTIALS));
+      GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+          GoogleServiceAuthError::InvalidGaiaCredentialsReason::UNKNOWN));
   EXPECT_EQ(FetchStatus::kFailure, GetFetchStatus());
   EXPECT_EQ(GoogleServiceAuthError::INVALID_GAIA_CREDENTIALS, error().state());
 }
@@ -168,8 +159,7 @@ TEST_F(OAuthMultiloginTokenFetcherTest, OneAccountTransientError) {
       CreateFetcher({{.account_id = kAccountId}});
   // Connection failure will be retried.
   token_service().IssueErrorForAllPendingRequestsForAccount(
-      kAccountId,
-      GoogleServiceAuthError(GoogleServiceAuthError::CONNECTION_FAILED));
+      kAccountId, GoogleServiceAuthError::FromConnectionError(net::ERR_FAILED));
   EXPECT_EQ(FetchStatus::kPending, GetFetchStatus());
   // Success on retry.
   OAuth2AccessTokenConsumer::TokenResponse success_response;
@@ -188,12 +178,10 @@ TEST_F(OAuthMultiloginTokenFetcherTest, OneAccountTransientErrorMaxRetries) {
       CreateFetcher({{.account_id = kAccountId}});
   // Repeated connection failures.
   token_service().IssueErrorForAllPendingRequestsForAccount(
-      kAccountId,
-      GoogleServiceAuthError(GoogleServiceAuthError::CONNECTION_FAILED));
+      kAccountId, GoogleServiceAuthError::FromConnectionError(net::ERR_FAILED));
   EXPECT_EQ(FetchStatus::kPending, GetFetchStatus());
   token_service().IssueErrorForAllPendingRequestsForAccount(
-      kAccountId,
-      GoogleServiceAuthError(GoogleServiceAuthError::CONNECTION_FAILED));
+      kAccountId, GoogleServiceAuthError::FromConnectionError(net::ERR_FAILED));
   // Stop retrying, and fail.
   EXPECT_EQ(FetchStatus::kFailure, GetFetchStatus());
   EXPECT_EQ(GoogleServiceAuthError::CONNECTION_FAILED, error().state());
@@ -247,14 +235,11 @@ TEST_F(OAuthMultiloginTokenFetcherTest, MultipleAccountsTransientError) {
                      {.account_id = account_3}});
   // Connection failures will be retried.
   token_service().IssueErrorForAllPendingRequestsForAccount(
-      account_1,
-      GoogleServiceAuthError(GoogleServiceAuthError::CONNECTION_FAILED));
+      account_1, GoogleServiceAuthError::FromConnectionError(net::ERR_FAILED));
   token_service().IssueErrorForAllPendingRequestsForAccount(
-      account_2,
-      GoogleServiceAuthError(GoogleServiceAuthError::CONNECTION_FAILED));
+      account_2, GoogleServiceAuthError::FromConnectionError(net::ERR_FAILED));
   token_service().IssueErrorForAllPendingRequestsForAccount(
-      account_3,
-      GoogleServiceAuthError(GoogleServiceAuthError::CONNECTION_FAILED));
+      account_3, GoogleServiceAuthError::FromConnectionError(net::ERR_FAILED));
   // Success on retry.
   OAuth2AccessTokenConsumer::TokenResponse success_response;
   success_response.access_token = kAccessToken;
@@ -291,13 +276,13 @@ TEST_F(OAuthMultiloginTokenFetcherTest, MultipleAccountsPersistentError) {
   EXPECT_EQ(FetchStatus::kPending, GetFetchStatus());
   token_service().IssueErrorForAllPendingRequestsForAccount(
       account_2,
-      GoogleServiceAuthError(GoogleServiceAuthError::INVALID_GAIA_CREDENTIALS));
+      GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+          GoogleServiceAuthError::InvalidGaiaCredentialsReason::UNKNOWN));
   // Fail as soon as one of the accounts is in error.
   EXPECT_EQ(FetchStatus::kFailure, GetFetchStatus());
   EXPECT_EQ(GoogleServiceAuthError::INVALID_GAIA_CREDENTIALS, error().state());
 }
 
-#if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
 TEST_F(OAuthMultiloginTokenFetcherTest,
        OneAccountWithTokenBindingChallengeSuccess) {
   // `OAuthMultiloginHelperTest` provides a better coverage for the challenge
@@ -319,6 +304,5 @@ TEST_F(OAuthMultiloginTokenFetcherTest,
               UnorderedPointwise(HasTheSameAccountIdTokenPair(),
                                  {std::make_pair(kAccountId, kAccessToken)}));
 }
-#endif  // BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
 
 }  // namespace signin

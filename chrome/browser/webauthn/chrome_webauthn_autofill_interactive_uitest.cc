@@ -4,6 +4,7 @@
 
 #include <memory>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include "base/feature_list.h"
@@ -12,13 +13,14 @@
 #include "base/memory/weak_ptr.h"
 #include "base/run_loop.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/scoped_logging_settings.h"
+#include "base/time/time.h"
 #include "build/build_config.h"
-#include "chrome/browser/password_manager/profile_password_store_factory.h"
+#include "chrome/browser/password_manager/factories/profile_password_store_factory.h"
 #include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
 #include "chrome/browser/ssl/cert_verifier_browser_test.h"
-#include "chrome/browser/sync/device_info_sync_service_factory.h"
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/ui/autofill/autofill_popup_controller_impl.h"
 #include "chrome/browser/ui/autofill/autofill_popup_controller_impl_test_api.h"
@@ -26,7 +28,12 @@
 #include "chrome/browser/ui/autofill/chrome_autofill_client.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/webauthn/chrome_authenticator_request_delegate.h"
+#include "chrome/browser/webauthn/gpm_enclave_controller.h"
 #include "chrome/browser/webauthn/passkey_model_factory.h"
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+#include "chrome/browser/signin/dice_tab_helper.h"
+#include "components/signin/public/base/signin_metrics.h"
+#endif
 #include "chrome/browser/webauthn/test_util.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -34,8 +41,10 @@
 #include "components/autofill/core/browser/suggestions/suggestion_type.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
-#include "components/network_session_configurator/common/network_switches.h"
+#include "components/password_manager/core/browser/features/password_features.h"
+#include "components/password_manager/core/browser/password_store/password_form_converters.h"
 #include "components/password_manager/core/browser/password_store/password_store_interface.h"
+#include "components/signin/public/base/signin_switches.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/sync/base/features.h"
 #include "components/sync/test/test_sync_service.h"
@@ -43,21 +52,21 @@
 #include "components/sync_device_info/fake_device_info_sync_service.h"
 #include "components/sync_device_info/fake_device_info_tracker.h"
 #include "components/trusted_vault/proto/vault.pb.h"
-#include "components/trusted_vault/test/mock_trusted_vault_connection.h"
+#include "components/trusted_vault/test/mock_trusted_vault_throttling_connection.h"
 #include "components/trusted_vault/trusted_vault_connection.h"
 #include "components/webauthn/core/browser/test_passkey_model.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/scoped_authenticator_environment_for_testing.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "crypto/scoped_fake_unexportable_key_provider.h"
 #include "crypto/scoped_fake_user_verifying_key_provider.h"
-#include "crypto/scoped_mock_unexportable_key_provider.h"
 #include "device/bluetooth/bluetooth_adapter_factory.h"
 #include "device/bluetooth/test/mock_bluetooth_adapter.h"
 #include "device/fido/cable/v2_handshake.h"
-#include "device/fido/features.h"
 #include "device/fido/fido_request_handler_base.h"
-#include "device/fido/fido_transport_protocol.h"
+#include "device/fido/public/features.h"
+#include "device/fido/public/fido_transport_protocol.h"
 #include "device/fido/virtual_ctap2_device.h"
 #include "device/fido/virtual_fido_device_factory.h"
 #include "net/dns/mock_host_resolver.h"
@@ -82,7 +91,6 @@ static constexpr char kRpId[] = "example.com";
 static constexpr uint8_t kCredentialID1[] = {1, 2,  3,  4,  5,  6,  7,  8,
                                              9, 10, 11, 12, 13, 14, 15, 16};
 static constexpr uint8_t kCredentialID2[] = {2, 3, 4, 5};
-static constexpr char16_t kPhoneName[] = u"Flandre's Pixel 7";
 
 static constexpr char kConditionalUIRequest[] = R"((() => {
 window.requestAbortController = new AbortController();
@@ -112,50 +120,6 @@ static constexpr char kConditionalUIRequestFiltered[] = R"((() => {
            e => window.domAutomationController.send('error ' + e));
 })())";
 
-sync_pb::WebauthnCredentialSpecifics CreatePasskey() {
-  sync_pb::WebauthnCredentialSpecifics passkey;
-  passkey.set_sync_id(base::RandBytesAsString(16));
-  passkey.set_credential_id(kCredentialID1, 16);
-  passkey.set_rp_id(kRpId);
-  passkey.set_user_id({1, 2, 3, 4});
-  passkey.set_user_name("flandre");
-  passkey.set_user_display_name("Flandre Scarlet");
-  return passkey;
-}
-
-syncer::DeviceInfo CreateDeviceInfo() {
-  syncer::DeviceInfo::PhoneAsASecurityKeyInfo paask_info;
-  paask_info.contact_id = std::vector<uint8_t>({1, 2, 3});
-  std::ranges::fill(paask_info.peer_public_key_x962, 0);
-  paask_info.peer_public_key_x962[0] = 1;
-  std::ranges::fill(paask_info.secret, 0);
-  paask_info.secret[0] = 2;
-  paask_info.id = device::cablev2::sync::IDNow();
-  paask_info.tunnel_server_domain = 0;
-  return syncer::DeviceInfo(
-      /*guid=*/"guid",
-      /*client_name=*/base::UTF16ToUTF8(kPhoneName),
-      /*chrome_version=*/"chrome_version",
-      /*sync_user_agent=*/"sync_user_agent",
-      sync_pb::SyncEnums_DeviceType_TYPE_LINUX,
-      syncer::DeviceInfo::OsType::kLinux,
-      syncer::DeviceInfo::FormFactor::kDesktop,
-      /*signin_scoped_device_id=*/"signin_scoped_device_id",
-      /*manufacturer_name=*/"manufacturer_name",
-      /*model_name=*/"",
-      /*full_hardware_class=*/"full_hardware_class",
-      /*last_updated_timestamp=*/base::Time::Now(),
-      /*pulse_interval=*/base::TimeDelta(),
-      /*send_tab_to_self_receiving_enabled=*/
-      false,
-      /*send_tab_to_self_receiving_type=*/
-      sync_pb::
-          SyncEnums_SendTabReceivingType_SEND_TAB_RECEIVING_TYPE_CHROME_OR_UNSPECIFIED,
-      /*sharing_info=*/std::nullopt, std::move(paask_info),
-      /*fcm_registration_token=*/"fcm_token", syncer::DataTypeSet(),
-      /*floating_workspace_last_signin_timestamp=*/base::Time::Now());
-}
-
 // Autofill integration tests. This file contains end-to-end tests for
 // integration between WebAuthn and Autofill. These tests are sensitive to focus
 // changes, so they are interactive UI tests.
@@ -180,10 +144,8 @@ class WebAuthnAutofillIntegrationTest : public CertVerifierBrowserTest {
 
     // ChromeAuthenticatorRequestDelegate::TestObserver:
     void Created(ChromeAuthenticatorRequestDelegate* delegate) override {
-      std::unique_ptr<
-          testing::NiceMock<trusted_vault::MockTrustedVaultConnection>>
-          connection = std::make_unique<
-              testing::NiceMock<trusted_vault::MockTrustedVaultConnection>>();
+      auto connection = std::make_unique<testing::NiceMock<
+          trusted_vault::MockTrustedVaultThrottlingConnection>>();
       ON_CALL(*connection, DownloadAuthenticationFactorsRegistrationState(
                                testing::_, testing::_, testing::_))
           .WillByDefault(
@@ -203,21 +165,12 @@ class WebAuthnAutofillIntegrationTest : public CertVerifierBrowserTest {
                     trusted_vault::TrustedVaultConnection::Request>();
               });
 
-      delegate->SetTrustedVaultConnectionForTesting(std::move(connection));
+      GpmTrustedVaultConnectionProvider::SetOverrideForFrame(
+          delegate->GetRenderFrameHost(), std::move(connection));
     }
 
     void UIShown(ChromeAuthenticatorRequestDelegate* delegate) override {
       run_loop_->QuitWhenIdle();
-    }
-
-    std::vector<std::unique_ptr<device::cablev2::Pairing>>
-    GetCablePairingsFromSyncedDevices() override {
-      std::vector<std::unique_ptr<device::cablev2::Pairing>> ret;
-      ret.emplace_back(TestPhone(base::UTF16ToUTF8(kPhoneName).c_str(),
-                                 /*public_key=*/0,
-                                 /*last_updated=*/base::Time::FromTimeT(1),
-                                 /*channel_priority=*/1));
-      return ret;
     }
 
    private:
@@ -232,14 +185,8 @@ class WebAuthnAutofillIntegrationTest : public CertVerifierBrowserTest {
   WebAuthnAutofillIntegrationTest& operator=(
       const WebAuthnAutofillIntegrationTest&) = delete;
 
-  void SetUpCommandLine(base::CommandLine* command_line) override {
-    CertVerifierBrowserTest::SetUpCommandLine(command_line);
-    command_line->AppendSwitch(switches::kIgnoreCertificateErrors);
-  }
-
   void SetUp() override {
-    scoped_feature_list_.InitWithFeatures({device::kWebAuthnHybridLinking},
-                                          /*disabled_features=*/{});
+    https_server_.SetCertHostnames({kRpId});
     ASSERT_TRUE(https_server_.InitializeAndListen());
 
     create_services_subscription_ =
@@ -272,7 +219,7 @@ class WebAuthnAutofillIntegrationTest : public CertVerifierBrowserTest {
     // popup to appear after aborting the request.
     password_manager::PasswordStoreInterface* password_store =
         ProfilePasswordStoreFactory::GetForProfile(
-            browser()->profile(), ServiceAccessType::EXPLICIT_ACCESS)
+            browser()->GetProfile(), ServiceAccessType::EXPLICIT_ACCESS)
             .get();
     password_manager::PasswordForm signin_form;
     GURL url = https_server_.GetURL(kRpId, "/");
@@ -282,7 +229,8 @@ class WebAuthnAutofillIntegrationTest : public CertVerifierBrowserTest {
     signin_form.username_value = u"remilia";
     signin_form.password_value = u"shouldbeusingapasskeyinstead";
     base::RunLoop run_loop;
-    password_store->AddLogin(signin_form, run_loop.QuitClosure());
+    password_store->AddLogin(password_manager::FromPasswordForm(signin_form),
+                             run_loop.QuitClosure());
 
     // Mock bluetooth support to allow discovery of fake hybrid devices.
     mock_bluetooth_adapter_ =
@@ -299,16 +247,16 @@ class WebAuthnAutofillIntegrationTest : public CertVerifierBrowserTest {
 
     identity_test_env_adaptor_ =
         std::make_unique<IdentityTestEnvironmentProfileAdaptor>(
-            browser()->profile());
+            browser()->GetProfile());
     identity_test_env_adaptor_->identity_test_env()->SetPrimaryAccount(
-        "test@gmail.com", signin::ConsentLevel::kSync);
+        "test@gmail.com", signin::ConsentLevel::kSignin);
 
     delegate_observer_ = std::make_unique<DelegateObserver>(this);
     ChromeAuthenticatorRequestDelegate::SetGlobalObserverForTesting(
         delegate_observer_.get());
 
-    mock_hw_provider_ =
-        std::make_unique<crypto::ScopedMockUnexportableKeyProvider>();
+    fake_hw_provider_ =
+        std::make_unique<crypto::ScopedFakeUnexportableKeyProvider>();
     fake_uv_provider_ =
         std::make_unique<crypto::ScopedFakeUserVerifyingKeyProvider>();
 
@@ -336,11 +284,6 @@ class WebAuthnAutofillIntegrationTest : public CertVerifierBrowserTest {
             [](content::BrowserContext*) -> std::unique_ptr<KeyedService> {
               return std::make_unique<webauthn::TestPasskeyModel>();
             }));
-    DeviceInfoSyncServiceFactory::GetInstance()->SetTestingFactory(
-        context, base::BindRepeating([](content::BrowserContext* context)
-                                         -> std::unique_ptr<KeyedService> {
-          return std::make_unique<syncer::FakeDeviceInfoSyncService>();
-        }));
     // Disable the sync service by injecting a test fake. The sync service fails
     // to start when overriding the DeviceInfoSyncService with a test fake.
     SyncServiceFactory::GetInstance()->SetTestingFactory(
@@ -349,6 +292,41 @@ class WebAuthnAutofillIntegrationTest : public CertVerifierBrowserTest {
             [](content::BrowserContext*) -> std::unique_ptr<KeyedService> {
               return std::make_unique<syncer::TestSyncService>();
             }));
+  }
+
+  base::WeakPtr<autofill::AutofillSuggestionController>
+  GetSuggestionsControllerForWebContents(content::WebContents* web_contents) {
+    return autofill::ChromeAutofillClient::FromWebContentsForTesting(
+               web_contents)
+        ->suggestion_controller_for_testing();
+  }
+
+  bool HasWebauthnSuggestionInPopup(content::WebContents* web_contents) {
+    base::WeakPtr<autofill::AutofillSuggestionController>
+        suggestion_controller =
+            GetSuggestionsControllerForWebContents(web_contents);
+    if (!suggestion_controller) {
+      return false;  // No popup is open.
+    }
+    return std::ranges::count(suggestion_controller->GetSuggestions(),
+                              autofill::SuggestionType::kWebauthnCredential,
+                              &autofill::Suggestion::type) != 0;
+  }
+
+  // Interact with the username field until the popup shows up. This has the
+  // effect of waiting for the browser to send the renderer the password
+  // information, and waiting for the UI to render.
+  void TapUsernameFieldUntilPopupWithWebauthnSuggestionAppears(
+      content::WebContents* web_contents) {
+    base::TimeTicks start_time = base::TimeTicks::Now();
+    while (!HasWebauthnSuggestionInPopup(web_contents)) {
+      if (base::TimeTicks::Now() - start_time > base::Seconds(2)) {
+        ASSERT_TRUE(GetSuggestionsControllerForWebContents(web_contents))
+            << "Timed out waiting for suggestion popup.";
+        FAIL() << "Timed out waiting for WebAuthn suggestion in popup.";
+      }
+      content::SimulateMouseClickOrTapElementWithId(web_contents, "username");
+    }
   }
 
   void RunSelectAccountTest(const char* request) {
@@ -365,41 +343,33 @@ class WebAuthnAutofillIntegrationTest : public CertVerifierBrowserTest {
 
     delegate_observer_->WaitForUI();
 
-    // Interact with the username field until the popup shows up. This has the
-    // effect of waiting for the browser to send the renderer the password
-    // information, and waiting for the UI to render.
-    base::WeakPtr<autofill::AutofillSuggestionController> suggestion_controller;
-    while (!suggestion_controller) {
-      content::SimulateMouseClickOrTapElementWithId(web_contents, "username");
-      suggestion_controller =
-          autofill_client->suggestion_controller_for_testing();
-    }
+    TapUsernameFieldUntilPopupWithWebauthnSuggestionAppears(web_contents);
+    base::WeakPtr<autofill::AutofillSuggestionController>
+        suggestion_controller =
+            autofill_client->suggestion_controller_for_testing();
+    const std::vector<autofill::Suggestion>& suggestions =
+        suggestion_controller->GetSuggestions();
 
     // Find the webauthn credential on the suggestions list.
-    auto suggestions = suggestion_controller->GetSuggestions();
-    size_t suggestion_index = 0;
-    size_t webauthn_entry_count = 0;
-    autofill::Suggestion webauthn_entry;
-    for (size_t i = 0; i < suggestions.size(); ++i) {
-      if (suggestions[i].type ==
-          autofill::SuggestionType::kWebauthnCredential) {
-        webauthn_entry = suggestions[i];
-        suggestion_index = i;
-        webauthn_entry_count++;
-      }
-    }
-    ASSERT_EQ(webauthn_entry_count, 1u);
-    ASSERT_LT(suggestion_index, suggestions.size())
-        << "WebAuthn entry not found";
-    EXPECT_EQ(webauthn_entry.main_text.value, u"flandre");
-    EXPECT_EQ(webauthn_entry.labels.at(0).at(0).value, GetDeviceString());
-    EXPECT_EQ(webauthn_entry.icon, autofill::Suggestion::Icon::kGlobe);
+    auto it = std::ranges::find(suggestions,
+                                autofill::SuggestionType::kWebauthnCredential,
+                                &autofill::Suggestion::type);
+    ASSERT_EQ(std::ranges::count(suggestions,
+                                 autofill::SuggestionType::kWebauthnCredential,
+                                 &autofill::Suggestion::type),
+              1u);
+    ASSERT_NE(it, suggestions.end()) << "WebAuthn entry not found";
+    EXPECT_EQ(it->main_text.value, u"flandre");
+    EXPECT_EQ(it->labels.at(0).at(0).value, GetDeviceString());
+    EXPECT_EQ(it->icon, autofill::Suggestion::Icon::kGlobe);
 
     // Click the credential.
     test_api(static_cast<autofill::AutofillPopupControllerImpl&>(
                  *suggestion_controller))
         .DisableThreshold(true);
-    suggestion_controller->AcceptSuggestion(suggestion_index);
+    suggestion_controller->AcceptSuggestion(
+        it - suggestions.begin(),
+        autofill::AutofillMetrics::SuggestionAcceptedMethod::kMouse);
     std::string result;
     ASSERT_TRUE(message_queue.WaitForMessage(&result));
     EXPECT_EQ(result, "\"webauthn: OK\"");
@@ -419,33 +389,21 @@ class WebAuthnAutofillIntegrationTest : public CertVerifierBrowserTest {
 
     delegate_observer_->WaitForUI();
 
-    // Interact with the username field until the popup shows up. This has the
-    // effect of waiting for the browser to send the renderer the password
-    // information, and waiting for the UI to render.
-    base::WeakPtr<autofill::AutofillSuggestionController> suggestion_controller;
-    while (!suggestion_controller) {
-      content::SimulateMouseClickOrTapElementWithId(web_contents, "username");
-      suggestion_controller =
-          autofill_client->suggestion_controller_for_testing();
-    }
+    TapUsernameFieldUntilPopupWithWebauthnSuggestionAppears(web_contents);
+    base::WeakPtr<autofill::AutofillSuggestionController>
+        suggestion_controller =
+            autofill_client->suggestion_controller_for_testing();
 
     // Find the webauthn credential on the suggestions list.
-    auto suggestions = suggestion_controller->GetSuggestions();
-    size_t suggestion_index;
-    autofill::Suggestion webauthn_entry;
-    for (suggestion_index = 0; suggestion_index < suggestions.size();
-         ++suggestion_index) {
-      if (suggestions[suggestion_index].type ==
-          autofill::SuggestionType::kWebauthnCredential) {
-        webauthn_entry = suggestions[suggestion_index];
-        break;
-      }
-    }
-    ASSERT_LT(suggestion_index, suggestions.size())
-        << "WebAuthn entry not found";
-    EXPECT_EQ(webauthn_entry.main_text.value, u"flandre");
-    EXPECT_EQ(webauthn_entry.labels.at(0).at(0).value, GetDeviceString());
-    EXPECT_EQ(webauthn_entry.icon, autofill::Suggestion::Icon::kGlobe);
+    const std::vector<autofill::Suggestion>& suggestions =
+        suggestion_controller->GetSuggestions();
+    auto it = std::ranges::find(suggestions,
+                                autofill::SuggestionType::kWebauthnCredential,
+                                &autofill::Suggestion::type);
+    ASSERT_NE(it, suggestions.end()) << "WebAuthn entry not found";
+    EXPECT_EQ(it->main_text.value, u"flandre");
+    EXPECT_EQ(it->labels.at(0).at(0).value, GetDeviceString());
+    EXPECT_EQ(it->icon, autofill::Suggestion::Icon::kGlobe);
 
     // Abort the request.
     content::ExecuteScriptAsync(web_contents,
@@ -485,7 +443,7 @@ class WebAuthnAutofillIntegrationTest : public CertVerifierBrowserTest {
   std::unique_ptr<DelegateObserver> delegate_observer_;
   base::test::ScopedFeatureList scoped_feature_list_;
   logging::ScopedVmoduleSwitches scoped_vmodule_;
-  std::unique_ptr<crypto::ScopedMockUnexportableKeyProvider> mock_hw_provider_;
+  std::unique_ptr<crypto::ScopedFakeUnexportableKeyProvider> fake_hw_provider_;
   std::unique_ptr<crypto::ScopedFakeUserVerifyingKeyProvider> fake_uv_provider_;
 
 #if BUILDFLAG(IS_WIN)
@@ -562,84 +520,6 @@ IN_PROC_BROWSER_TEST_F(WebAuthnDevtoolsAutofillIntegrationTest,
   RunSelectAccountTest(kConditionalUIRequestFiltered);
 }
 
-// TODO(crbug.com/372493822): remove when hybrid linking flag is removed.
-IN_PROC_BROWSER_TEST_F(WebAuthnDevtoolsAutofillIntegrationTest, GPMPasskeys) {
-  // Have the virtual device masquerade as a phone.
-  virtual_device_factory_->SetTransport(device::FidoTransportProtocol::kHybrid);
-
-  // Inject a fake phone from sync.
-  syncer::DeviceInfo device_info = CreateDeviceInfo();
-  auto* tracker = static_cast<syncer::FakeDeviceInfoTracker*>(
-      DeviceInfoSyncServiceFactory::GetForProfile(browser()->profile())
-          ->GetDeviceInfoTracker());
-  tracker->Add(&device_info);
-
-  // Inject a GPM passkey.
-  PasskeyModelFactory::GetForProfile(browser()->profile())
-      ->AddNewPasskeyForTesting(CreatePasskey());
-
-  // Make sure input events cannot close the autofill popup.
-  content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
-  autofill::ChromeAutofillClient* autofill_client =
-      autofill::ChromeAutofillClient::FromWebContentsForTesting(web_contents);
-  autofill_client->SetKeepPopupOpenForTesting(true);
-
-  // Execute the Conditional UI request.
-  content::DOMMessageQueue message_queue(web_contents);
-  content::ExecuteScriptAsync(web_contents, kConditionalUIRequest);
-
-  delegate_observer_->WaitForUI();
-
-  // Interact with the username field until the popup shows up. This has the
-  // effect of waiting for the browser to send the renderer the password
-  // information, and waiting for the UI to render.
-  base::WeakPtr<autofill::AutofillSuggestionController> suggestion_controller;
-  while (!suggestion_controller) {
-    content::SimulateMouseClickOrTapElementWithId(web_contents, "username");
-    suggestion_controller =
-        autofill_client->suggestion_controller_for_testing();
-  }
-
-  // Find the webauthn credential on the suggestions list.
-  auto suggestions = suggestion_controller->GetSuggestions();
-  size_t suggestion_index = 0;
-  size_t webauthn_entry_count = 0;
-  autofill::Suggestion webauthn_entry;
-  for (size_t i = 0; i < suggestions.size(); ++i) {
-    if (suggestions[i].type == autofill::SuggestionType::kWebauthnCredential) {
-      webauthn_entry = suggestions[i];
-      suggestion_index = i;
-      webauthn_entry_count++;
-    }
-  }
-  ASSERT_EQ(webauthn_entry_count, 1u);
-  ASSERT_LT(suggestion_index, suggestions.size()) << "WebAuthn entry not found";
-  EXPECT_EQ(webauthn_entry.main_text.value, u"flandre");
-  EXPECT_EQ(webauthn_entry.labels.at(0).at(0).value,
-            l10n_util::GetStringUTF16(
-                IDS_PASSWORD_MANAGER_PASSKEY_FROM_GOOGLE_PASSWORD_MANAGER));
-  EXPECT_EQ(webauthn_entry.icon, autofill::Suggestion::Icon::kGlobe);
-
-  // Click the credential.
-  test_api(static_cast<autofill::AutofillPopupControllerImpl&>(
-               *suggestion_controller))
-      .DisableThreshold(true);
-  suggestion_controller->AcceptSuggestion(suggestion_index);
-  std::string result;
-  ASSERT_TRUE(message_queue.WaitForMessage(&result));
-  EXPECT_EQ(result, "\"webauthn: OK\"");
-
-  // Tapping a GPM passkey will not automatically hide the popup
-  // because the enclave might still be loading. Manually hide the
-  // popup so that the autofill client can be destroyed, avoiding
-  // a DCHECK on test tear down.
-  autofill_client->HideAutofillSuggestions(
-      autofill::SuggestionHidingReason::kTabGone);
-  // The tracker outlives the test. Clean up the device_info to avoid flakiness.
-  tracker->Remove(&device_info);
-}
-
 #if BUILDFLAG(IS_WIN)
 // Autofill integration test using the Windows fake API.
 class WebAuthnWindowsAutofillIntegrationTest
@@ -708,4 +588,214 @@ IN_PROC_BROWSER_TEST_F(WebAuthnWindowsAutofillIntegrationTest, Abort) {
 }
 #endif  // BUILDFLAG(IS_WIN)
 
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+class WebAuthnMagiChromeQrAutofillIntegrationTest
+    : public WebAuthnAutofillIntegrationTest {
+ public:
+  WebAuthnMagiChromeQrAutofillIntegrationTest() {
+    scoped_feature_list_.InitAndEnableFeatureWithParameters(
+        switches::kMagiChromePasskeySignIn, {{"flow_type", "autofill"}});
+  }
+
+  void SetUpOnMainThread() override {
+    WebAuthnAutofillIntegrationTest::SetUpOnMainThread();
+
+    // Set up a fake virtual device supporting hybrid.
+    auto virtual_device_factory =
+        std::make_unique<device::test::VirtualFidoDeviceFactory>();
+    virtual_device_factory->SetTransport(
+        device::FidoTransportProtocol::kHybrid);
+    virtual_device_factory_ = virtual_device_factory.get();
+    virtual_device_factory->mutable_state()->InjectResidentKey(
+        kCredentialID1, kRpId, std::vector<uint8_t>{5, 6, 7, 8}, "flandre",
+        "Flandre Scarlet");
+    virtual_device_factory->mutable_state()->fingerprints_enrolled = true;
+    virtual_device_factory->mutable_state()->simulate_press_callback =
+        base::BindLambdaForTesting(
+            [](device::VirtualFidoDevice* device) { return false; });
+    device::VirtualCtap2Device::Config config;
+    config.resident_key_support = true;
+    config.internal_uv_support = true;
+    virtual_device_factory->SetCtap2Config(std::move(config));
+    scoped_auth_env_ =
+        std::make_unique<content::ScopedAuthenticatorEnvironmentForTesting>(
+            std::move(virtual_device_factory));
+  }
+
+  void InitializeChromeSigninFlow() {
+    content::WebContents* web_contents =
+        browser()->tab_strip_model()->GetActiveWebContents();
+    DiceTabHelper::CreateForWebContents(web_contents);
+    DiceTabHelper::FromWebContents(web_contents)
+        ->InitializeSigninFlow(
+            https_server_.GetURL(kRpId, "/webauthn_conditional_mediation.html"),
+            signin_metrics::AccessPoint::kSettings,
+            signin_metrics::Reason::kSigninPrimaryAccount,
+            signin_metrics::PromoAction::PROMO_ACTION_NO_SIGNIN_PROMO, GURL(),
+            /*record_signin_started_metrics=*/false, base::DoNothing(),
+            base::DoNothing(), base::DoNothing(), base::DoNothing());
+  }
+
+  void PostRunTestOnMainThread() override {
+    virtual_device_factory_ = nullptr;
+    scoped_auth_env_.reset();
+    WebAuthnAutofillIntegrationTest::PostRunTestOnMainThread();
+  }
+
+  std::u16string GetDeviceString() override {
+    return l10n_util::GetStringUTF16(IDS_PASSWORD_MANAGER_USE_GENERIC_DEVICE);
+  }
+
+  bool HasWebauthnQrCodeSuggestionInPopup(content::WebContents* web_contents) {
+    base::WeakPtr<autofill::AutofillSuggestionController>
+        suggestion_controller =
+            GetSuggestionsControllerForWebContents(web_contents);
+    if (!suggestion_controller) {
+      return false;  // No popup is open.
+    }
+    return std::ranges::any_of(
+        suggestion_controller->GetSuggestions(), [](const auto& suggestion) {
+          return suggestion.type ==
+                 autofill::SuggestionType::kWebauthnPasskeyQrCode;
+        });
+  }
+
+  [[nodiscard]] testing::AssertionResult
+  TapUsernameFieldUntilPopupWithWebauthnQrCodeSuggestionAppears(
+      content::WebContents* web_contents) {
+    base::TimeTicks start_time = base::TimeTicks::Now();
+    while (!HasWebauthnQrCodeSuggestionInPopup(web_contents)) {
+      if (base::TimeTicks::Now() - start_time > base::Seconds(5)) {
+        return testing::AssertionFailure()
+               << "Timed out waiting for WebAuthn QR Code suggestion in popup.";
+      }
+      content::SimulateMouseClickOrTapElementWithId(web_contents, "username");
+    }
+    return testing::AssertionSuccess();
+  }
+
+  bool HasWebauthnSignInWithAnotherDeviceInPopup(
+      content::WebContents* web_contents) {
+    base::WeakPtr<autofill::AutofillSuggestionController>
+        suggestion_controller =
+            GetSuggestionsControllerForWebContents(web_contents);
+    if (!suggestion_controller) {
+      return false;
+    }
+    return std::ranges::any_of(
+        suggestion_controller->GetSuggestions(), [](const auto& suggestion) {
+          return suggestion.type ==
+                 autofill::SuggestionType::kWebauthnSignInWithAnotherDevice;
+        });
+  }
+
+  [[nodiscard]] testing::AssertionResult
+  TapUsernameFieldUntilPopupWithSignInWithAnotherDeviceAppears(
+      content::WebContents* web_contents) {
+    base::TimeTicks start_time = base::TimeTicks::Now();
+    while (!HasWebauthnSignInWithAnotherDeviceInPopup(web_contents)) {
+      if (base::TimeTicks::Now() - start_time > base::Seconds(5)) {
+        return testing::AssertionFailure()
+               << "Timed out waiting for WebAuthn Sign In With Another Device "
+                  "suggestion in popup.";
+      }
+      content::SimulateMouseClickOrTapElementWithId(web_contents, "username");
+    }
+    return testing::AssertionSuccess();
+  }
+
+ private:
+  std::unique_ptr<content::ScopedAuthenticatorEnvironmentForTesting>
+      scoped_auth_env_;
+  raw_ptr<device::test::VirtualFidoDeviceFactory> virtual_device_factory_;
+};
+
+IN_PROC_BROWSER_TEST_F(WebAuthnMagiChromeQrAutofillIntegrationTest,
+                       ShowQrCodeSuggestion) {
+  InitializeChromeSigninFlow();
+
+  // Make sure input events cannot close the autofill popup.
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  autofill::ChromeAutofillClient* autofill_client =
+      autofill::ChromeAutofillClient::FromWebContentsForTesting(web_contents);
+  autofill_client->SetKeepPopupOpenForTesting(true);
+
+  // Execute the Conditional UI request.
+  content::DOMMessageQueue message_queue(web_contents);
+  content::ExecuteScriptAsync(web_contents, kConditionalUIRequest);
+
+  delegate_observer_->WaitForUI();
+
+  ASSERT_TRUE(TapUsernameFieldUntilPopupWithWebauthnQrCodeSuggestionAppears(
+      web_contents));
+  base::WeakPtr<autofill::AutofillSuggestionController> suggestion_controller =
+      autofill_client->suggestion_controller_for_testing();
+  const std::vector<autofill::Suggestion>& suggestions =
+      suggestion_controller->GetSuggestions();
+
+  // Find the webauthn QR code suggestion on the suggestions list.
+  auto it = std::ranges::find(suggestions,
+                              autofill::SuggestionType::kWebauthnPasskeyQrCode,
+                              &autofill::Suggestion::type);
+  ASSERT_NE(it, suggestions.end()) << "WebAuthn QR Code suggestion not found";
+
+  // Both inline QR code and "Sign in with another device..." should be present.
+  auto another_device_it = std::ranges::find(
+      suggestions, autofill::SuggestionType::kWebauthnSignInWithAnotherDevice,
+      &autofill::Suggestion::type);
+  EXPECT_NE(another_device_it, suggestions.end())
+      << "'Sign in with another device...' suggestion should still be present";
+
+  // Main text of QR suggestion should be correct:
+  EXPECT_EQ(
+      it->main_text.value,
+      l10n_util::GetStringUTF16(IDS_PASSWORD_MANAGER_PASSKEY_QR_CODE_TITLE));
+
+  // Suggestion payload should not be empty (it contains the CaBLE string)
+  const autofill::Suggestion::Guid* qr_guid_payload =
+      std::get_if<autofill::Suggestion::Guid>(&it->payload);
+  ASSERT_TRUE(qr_guid_payload) << "QR Suggestion payload must be a Guid";
+  EXPECT_FALSE(qr_guid_payload->value().empty())
+      << "QR string payload is empty";
+  EXPECT_THAT(qr_guid_payload->value(), testing::StartsWith("FIDO:/"));
+}
+
+IN_PROC_BROWSER_TEST_F(WebAuthnMagiChromeQrAutofillIntegrationTest,
+                       NoQrCodeSuggestionOnRegularPage) {
+  // Do NOT call InitializeChromeSigninFlow() to simulate a regular page.
+
+  // Make sure input events cannot close the autofill popup.
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  autofill::ChromeAutofillClient* autofill_client =
+      autofill::ChromeAutofillClient::FromWebContentsForTesting(web_contents);
+  autofill_client->SetKeepPopupOpenForTesting(true);
+
+  // Execute the Conditional UI request.
+  content::ExecuteScriptAsync(web_contents, kConditionalUIRequest);
+
+  delegate_observer_->WaitForUI();
+
+  ASSERT_TRUE(TapUsernameFieldUntilPopupWithSignInWithAnotherDeviceAppears(web_contents));
+  base::WeakPtr<autofill::AutofillSuggestionController> suggestion_controller =
+      autofill_client->suggestion_controller_for_testing();
+  const std::vector<autofill::Suggestion>& suggestions =
+      suggestion_controller->GetSuggestions();
+
+  // Find the standard hybrid suggestion on the suggestions list.
+  auto another_device_it = std::ranges::find(
+      suggestions, autofill::SuggestionType::kWebauthnSignInWithAnotherDevice,
+      &autofill::Suggestion::type);
+  ASSERT_NE(another_device_it, suggestions.end())
+      << "Standard hybrid suggestion not found";
+
+  // The inlined QR suggestion should NOT be present.
+  auto qr_it = std::ranges::find(
+      suggestions, autofill::SuggestionType::kWebauthnPasskeyQrCode,
+      &autofill::Suggestion::type);
+  EXPECT_EQ(qr_it, suggestions.end())
+      << "Passkey QR Code suggestion should not be present on a regular page";
+}
+#endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 }  // namespace

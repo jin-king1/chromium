@@ -24,11 +24,6 @@
  * Boston, MA 02110-1301, USA.
  */
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "third_party/blink/renderer/core/xml/parser/xml_document_parser.h"
 
 #include <libxml/parser.h>
@@ -41,6 +36,7 @@
 #include <type_traits>
 
 #include "base/auto_reset.h"
+#include "base/compiler_specific.h"
 #include "base/containers/heap_array.h"
 #include "base/numerics/safe_conversions.h"
 #include "third_party/blink/renderer/core/css/style_engine.h"
@@ -59,7 +55,9 @@
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/html/custom/ce_reactions_scope.h"
+#include "third_party/blink/renderer/core/html/custom/custom_element_registry.h"
 #include "third_party/blink/renderer/core/html/html_html_element.h"
+#include "third_party/blink/renderer/core/html/html_iframe_element.h"
 #include "third_party/blink/renderer/core/html/html_template_element.h"
 #include "third_party/blink/renderer/core/html/parser/html_construction_site.h"
 #include "third_party/blink/renderer/core/html/parser/html_entity_parser.h"
@@ -72,8 +70,10 @@
 #include "third_party/blink/renderer/core/xml/document_xml_tree_viewer.h"
 #include "third_party/blink/renderer/core/xml/document_xslt.h"
 #include "third_party/blink/renderer/core/xml/parser/shared_buffer_reader.h"
+#include "third_party/blink/renderer/core/xml/parser/xhtml_subset.h"
 #include "third_party/blink/renderer/core/xml/parser/xml_document_parser_scope.h"
 #include "third_party/blink/renderer/core/xml/parser/xml_parser_input.h"
+#include "third_party/blink/renderer/core/xml/xslt_processor.h"
 #include "third_party/blink/renderer/core/xmlns_names.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/instrumentation/tracing/trace_event.h"
@@ -88,6 +88,7 @@
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/weborigin/security_origin.h"
 #include "third_party/blink/renderer/platform/wtf/shared_buffer.h"
+#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 #include "third_party/blink/renderer/platform/wtf/text/utf8.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 #include "third_party/blink/renderer/platform/wtf/wtf.h"
@@ -98,31 +99,61 @@ namespace blink {
 static const unsigned kMaxXMLTreeDepth = 5000;
 
 static inline String ToString(base::span<const xmlChar> string) {
-  return String::FromUTF8(string);
+  return String::FromUtf8(string);
 }
 
 static inline String ToString(const xmlChar* string) {
-  return String::FromUTF8(reinterpret_cast<const char*>(string));
+  if (!string) {
+    return String();
+  }
+  return String::FromUtf8(reinterpret_cast<const char*>(string));
 }
 
 static inline AtomicString ToAtomicString(base::span<const xmlChar> string) {
-  return AtomicString::FromUTF8(string);
+  return AtomicString::FromUtf8(string);
 }
 
 static inline AtomicString ToAtomicString(const xmlChar* string) {
-  return AtomicString::FromUTF8(reinterpret_cast<const char*>(string));
+  if (!string) {
+    return AtomicString();
+  }
+  return AtomicString::FromUtf8(reinterpret_cast<const char*>(string));
 }
 
 static inline bool HasNoStyleInformation(Document* document) {
   if (document->SawElementsInKnownNamespaces() ||
-      DocumentXSLT::HasTransformSourceDocument(*document))
+      DocumentXSLT::HasTransformSourceDocument(*document)) {
     return false;
+  }
 
   if (!document->GetFrame() || !document->GetFrame()->GetPage())
     return false;
 
-  if (!document->IsInMainFrame() || document->GetFrame()->IsInFencedFrameTree())
+  if (document->GetFrame()->IsInFencedFrameTree()) {
     return false;  // This document has style information from a parent.
+  }
+
+  if (!document->IsInMainFrame()) {
+    if (!RuntimeEnabledFeatures::XMLViewerForIframesEnabled()) {
+      return false;
+    }
+    auto* owner = document->GetFrame()->DeprecatedLocalOwner();
+    if (!owner || !IsA<HTMLIFrameElement>(*owner)) {
+      return false;
+    }
+
+    // Script-created blob XML documents can be embedded in iframes as
+    // ordinary content. Do not replace them with the XML tree viewer.
+    if (document->Url().ProtocolIs("blob")) {
+      return false;
+    }
+
+    // SVG documents have their own rendering path and should not use the XML
+    // tree viewer.
+    if (document->contentType() == "image/svg+xml") {
+      return false;
+    }
+  }
 
   if (SVGImage::IsInSVGImage(document))
     return false;
@@ -159,7 +190,7 @@ struct xmlSAX2Attributes {
     // SAFETY: ValueLength() returns the distance between `end` and
     // `value`. libxml provides the attribute value as a sequence of xmlChars
     // that start at `value` and end at `end`.
-    return UNSAFE_BUFFERS(base::span(value, ValueLength()));
+    return UNSAFE_BUFFERS(base::span(base::unchecked, value, ValueLength()));
   }
 
   size_t ValueLength() const { return static_cast<size_t>(end - value); }
@@ -373,6 +404,7 @@ void XMLDocumentParser::PopCurrentNode() {
 void XMLDocumentParser::ClearCurrentNodeStack() {
   current_node_ = nullptr;
   leaf_text_node_ = nullptr;
+  ancestor_resetting_namespace_ = nullptr;
 
   if (current_node_stack_.size()) {  // Aborted parsing.
     current_node_stack_.clear();
@@ -387,7 +419,7 @@ void XMLDocumentParser::Append(const String& input_source) {
   if (IsStopped() || saw_xsl_transform_)
     return;
 
-  if (parser_paused_) {
+  if (parser_paused_ || in_parse_chunk_) {
     pending_src_.Append(source);
     return;
   }
@@ -406,7 +438,6 @@ void XMLDocumentParser::HandleError(XMLErrors::ErrorType type,
 }
 
 void XMLDocumentParser::CreateLeafTextNodeIfNeeded() {
-  is_start_of_new_chunk_ = false;
   if (leaf_text_node_)
     return;
 
@@ -419,7 +450,6 @@ bool XMLDocumentParser::UpdateLeafTextNode() {
   if (IsStopped())
     return false;
 
-  is_start_of_new_chunk_ = false;
   if (!leaf_text_node_)
     return true;
 
@@ -427,7 +457,10 @@ bool XMLDocumentParser::UpdateLeafTextNode() {
   buffered_text_.clear();
   leaf_text_node_ = nullptr;
 
-  // Mutation event handlers executed by appendData() might detach this parser.
+  // Synchronous event handlers executed by appendData() might detach this
+  // parser.
+  // TODO(358407357): it's possible that no synchronous event handlers can run
+  // here, so this could just be `return true`.
   return !IsStopped();
 }
 
@@ -511,6 +544,10 @@ bool XMLDocumentParser::ParseDocumentFragment(
     Element* context_element,
     ParserContentPolicy parser_content_policy,
     ExceptionState& exception_state) {
+  // TODO(https://crbug.com/441911594): Add a
+  // CHECK(!RuntimeEnabledFeatures::XMLParsingRustEnabled()) here when there is
+  // a Rust implementation for this.
+
   if (!chunk.length())
     return true;
 
@@ -585,15 +622,11 @@ static void SwitchEncoding(xmlParserCtxtPtr ctxt, bool is_8bit) {
 }
 
 static void ParseChunk(xmlParserCtxtPtr ctxt, const String& chunk) {
-  bool is_8bit = chunk.Is8Bit();
   // Reset the encoding for each chunk to reflect if it is Latin-1 or UTF-16.
-  SwitchEncoding(ctxt, is_8bit);
-  if (is_8bit)
-    xmlParseChunk(ctxt, reinterpret_cast<const char*>(chunk.Characters8()),
-                  sizeof(LChar) * chunk.length(), 0);
-  else
-    xmlParseChunk(ctxt, reinterpret_cast<const char*>(chunk.Characters16()),
-                  sizeof(UChar) * chunk.length(), 0);
+  SwitchEncoding(ctxt, chunk.Is8Bit());
+  auto byte_span = base::as_chars(chunk.RawByteSpan());
+  xmlParseChunk(ctxt, byte_span.data(),
+                base::checked_cast<int>(byte_span.size()), 0);
 }
 
 static void FinishParsing(xmlParserCtxtPtr ctxt) {
@@ -611,9 +644,10 @@ static bool IsLibxmlDefaultCatalogFile(const String& url_string) {
 
   // On Windows, libxml with catalogs enabled computes a URL relative
   // to where its DLL resides.
-  if (url_string.StartsWithIgnoringASCIICase("file:///") &&
-      url_string.EndsWithIgnoringASCIICase("/etc/catalog"))
+  if (url_string.StartsWithIgnoringAsciiCase("file:///") &&
+      url_string.EndsWithIgnoringAsciiCase("/etc/catalog")) {
     return true;
+  }
   return false;
 }
 
@@ -626,12 +660,15 @@ static bool ShouldAllowExternalLoad(const KURL& url) {
 
   // The most common DTD. There isn't much point in hammering www.w3c.org by
   // requesting this URL for every XHTML document.
-  if (url_string.StartsWithIgnoringASCIICase("http://www.w3.org/TR/xhtml"))
+  if (url_string.StartsWithIgnoringAsciiCase("http://www.w3.org/TR/xhtml")) {
     return false;
+  }
 
   // Similarly, there isn't much point in requesting the SVG DTD.
-  if (url_string.StartsWithIgnoringASCIICase("http://www.w3.org/Graphics/SVG"))
+  if (url_string.StartsWithIgnoringAsciiCase(
+          "http://www.w3.org/Graphics/SVG")) {
     return false;
+  }
 
   // The libxml doesn't give us a lot of context for deciding whether to allow
   // this request. In the worst case, this load could be for an external
@@ -645,10 +682,10 @@ static bool ShouldAllowExternalLoad(const KURL& url) {
     // FIXME: This is copy/pasted. We should probably build console logging into
     // canRequest().
     if (!url.IsNull()) {
-      String message = "Unsafe attempt to load URL " + url.ElidedString() +
-                       " from frame with URL " +
-                       current_context->Url().ElidedString() +
-                       ". Domains, protocols and ports must match.\n";
+      String message = StrCat({"Unsafe attempt to load URL ",
+                               url.ElidedString(), " from frame with URL ",
+                               current_context->Url().ElidedString(),
+                               ". Domains, protocols and ports must match.\n"});
       current_context->AddConsoleMessage(MakeGarbageCollected<ConsoleMessage>(
           mojom::blink::ConsoleMessageSource::kSecurity,
           mojom::blink::ConsoleMessageLevel::kError, message));
@@ -664,7 +701,7 @@ static void* OpenFunc(const char* uri) {
   DCHECK(document);
   CHECK(IsMainThread());
 
-  KURL url(NullURL(), uri);
+  KURL url(NullUrl(), uri);
 
   // If the document has no ExecutionContext, it's detached. Detached documents
   // aren't allowed to fetch.
@@ -718,8 +755,8 @@ static int ReadFunc(void* context, char* buffer, int len) {
 
   SharedBufferReader* data = static_cast<SharedBufferReader*>(context);
   // SAFETY: libxml provides `buffer` that points to at least `len` bytes.
-  auto buffer_span =
-      UNSAFE_BUFFERS(base::span(buffer, base::checked_cast<size_t>(len)));
+  auto buffer_span = UNSAFE_BUFFERS(
+      base::span(base::unchecked, buffer, base::checked_cast<size_t>(len)));
   return base::checked_cast<int>(data->ReadData(buffer_span));
 }
 
@@ -740,7 +777,8 @@ static void ErrorFunc(void*, const char*, ...) {
   // FIXME: It would be nice to display error messages somewhere.
 }
 
-static void InitializeLibXMLIfNecessary() {
+// static
+void XMLDocumentParser::EnsureLibXMLInitialized() {
   static bool did_init = false;
   if (did_init)
     return;
@@ -754,10 +792,21 @@ static void InitializeLibXMLIfNecessary() {
 scoped_refptr<XMLParserContext> XMLParserContext::CreateStringParser(
     xmlSAXHandlerPtr handlers,
     void* user_data) {
-  InitializeLibXMLIfNecessary();
+  XMLDocumentParser::EnsureLibXMLInitialized();
   xmlParserCtxtPtr parser =
       xmlCreatePushParserCtxt(handlers, nullptr, nullptr, 0, nullptr);
-  xmlCtxtUseOptions(parser, XML_PARSE_HUGE | XML_PARSE_NOENT);
+
+  int32_t options = XML_PARSE_HUGE | XML_PARSE_NOENT;
+
+  // See https://crbug.com/455813733: We choose to prevent network loads of
+  // external entities and DTDs here, but not in xmlReadMemory of
+  // XmlDocPtrForString and in XSLTStyleSheet::Parse in order not to overlap
+  // with XSLT deprecation.
+  if (RuntimeEnabledFeatures::XMLNoExternalEntitiesEnabled()) {
+    options |= XML_PARSE_NO_XXE;
+  }
+
+  xmlCtxtUseOptions(parser, options);
   parser->_private = user_data;
   return base::AdoptRef(new XMLParserContext(parser));
 }
@@ -767,7 +816,7 @@ scoped_refptr<XMLParserContext> XMLParserContext::CreateMemoryParser(
     xmlSAXHandlerPtr handlers,
     void* user_data,
     const std::string& chunk) {
-  InitializeLibXMLIfNecessary();
+  XMLDocumentParser::EnsureLibXMLInitialized();
 
   // appendFragmentSource() checks that the length doesn't overflow an int.
   xmlParserCtxtPtr parser = xmlCreateMemoryParserCtxt(
@@ -777,25 +826,24 @@ scoped_refptr<XMLParserContext> XMLParserContext::CreateMemoryParser(
     return nullptr;
 
   // Copy the sax handler
-  memcpy(parser->sax, handlers, sizeof(xmlSAXHandler));
+  UNSAFE_TODO(memcpy(parser->sax, handlers, sizeof(xmlSAXHandler)));
 
   // Set parser options.
   // XML_PARSE_NODICT: default dictionary option.
   // XML_PARSE_NOENT: force entities substitutions.
   // XML_PARSE_HUGE: don't impose arbitrary limits on document size.
-  xmlCtxtUseOptions(parser,
-                    XML_PARSE_NODICT | XML_PARSE_NOENT | XML_PARSE_HUGE);
+  int32_t options = XML_PARSE_NODICT | XML_PARSE_NOENT | XML_PARSE_HUGE;
 
-#if LIBXML_VERSION < 21300
-  // Internal initialization required before libxml2 2.13.
-  // Fixed with https://gitlab.gnome.org/GNOME/libxml2/-/commit/8c5848bd
-  parser->sax2 = 1;
-  parser->instate = XML_PARSER_CONTENT;  // We are parsing a CONTENT
-  parser->depth = 0;
-  parser->str_xml = xmlDictLookup(parser->dict, BAD_CAST "xml", 3);
-  parser->str_xmlns = xmlDictLookup(parser->dict, BAD_CAST "xmlns", 5);
-  parser->str_xml_ns = xmlDictLookup(parser->dict, XML_XML_NAMESPACE, 36);
-#endif
+  // See https://crbug.com/455813733: We choose to prevent network loads of
+  // external entities and DTDs here, but not in xmlReadMemory of
+  // XmlDocPtrForString and in XSLTStyleSheet::Parse in order not to overlap
+  // with XSLT deprecation.
+  if (RuntimeEnabledFeatures::XMLNoExternalEntitiesEnabled()) {
+    options |= XML_PARSE_NO_XXE;
+  }
+
+  xmlCtxtUseOptions(parser, options);
+
   parser->_private = user_data;
 
   return base::AdoptRef(new XMLParserContext(parser));
@@ -829,6 +877,7 @@ XMLDocumentParser::XMLDocumentParser(Document& document,
                                       // documents without frames.
       script_start_position_(TextPosition::BelowRangePosition()),
       parsing_fragment_(false) {
+  CHECK(!RuntimeEnabledFeatures::XMLParsingRustEnabled());
   // This is XML being used as a document resource.
   if (frame_view && IsA<XMLDocument>(document))
     UseCounter::Count(document, WebFeature::kXMLDocument);
@@ -854,6 +903,11 @@ XMLDocumentParser::XMLDocumentParser(DocumentFragment* fragment,
       script_runner_(nullptr),  // Don't execute scripts for document fragments.
       script_start_position_(TextPosition::BelowRangePosition()),
       parsing_fragment_(true) {
+  // TODO(https://crbug.com/441911594): Add a
+  // CHECK(!RuntimeEnabledFeatures::XMLParsingRustEnabled()) here when there is
+  // a Rust implementation for ParseDocumentFagment() and this is no longer
+  // reached.
+
   // Step 2 of
   // https://html.spec.whatwg.org/C/#xml-fragment-parsing-algorithm
   // The following code collects prefix-namespace mapping in scope on
@@ -898,6 +952,7 @@ XMLDocumentParser::~XMLDocumentParser() = default;
 void XMLDocumentParser::Trace(Visitor* visitor) const {
   visitor->Trace(current_node_);
   visitor->Trace(current_node_stack_);
+  visitor->Trace(ancestor_resetting_namespace_);
   visitor->Trace(leaf_text_node_);
   visitor->Trace(xml_errors_);
   visitor->Trace(document_);
@@ -915,13 +970,19 @@ void XMLDocumentParser::DoWrite(const String& parse_string) {
   // Protect the libxml context from deletion during a callback
   scoped_refptr<XMLParserContext> context = context_;
 
+  // libxml2's push parser is not re-entrant: xmlParseEndTag2 holds multiple
+  // raw pointers inside ctxt, and a nested xmlParseChunk can xmlRealloc()
+  // those buffers. Crash safely rather than corrupt the heap. (Append()
+  // routes re-entrant data to pending_src_ so this should be unreachable.)
+  CHECK(!in_parse_chunk_);
+  base::AutoReset<bool> reentrancy_guard(&in_parse_chunk_, true);
+
   // libXML throws an error if you try to switch the encoding for an empty
   // string.
   if (parse_string.length()) {
     XMLDocumentParserScope scope(GetDocument());
     base::AutoReset<bool> encoding_scope(&is_currently_parsing8_bit_chunk_,
                                          parse_string.Is8Bit());
-    is_start_of_new_chunk_ = true;
     ParseChunk(context->Context(), parse_string);
 
     // JavaScript (which may be run under the parseChunk callstack) may
@@ -944,18 +1005,23 @@ void XMLDocumentParser::DoWrite(const String& parse_string) {
 static inline bool HandleNamespaceAttributes(
     Vector<Attribute, kAttributePrealloc>& prefixed_attributes,
     base::span<const xmlSAX2Namespace> namespaces,
+    bool& encountered_namespace_reset,
     ExceptionState& exception_state) {
   for (const auto& ns : namespaces) {
     AtomicString namespace_q_name = g_xmlns_atom;
     AtomicString namespace_uri = ToAtomicString(ns.uri);
     if (ns.prefix) {
-      namespace_q_name = WTF::g_xmlns_with_colon + ToAtomicString(ns.prefix);
+      namespace_q_name =
+          AtomicString(StrCat({g_xmlns_with_colon, ToAtomicString(ns.prefix)}));
     }
     std::optional<QualifiedName> parsed_name = Element::ParseAttributeName(
         xmlns_names::kNamespaceURI, namespace_q_name, exception_state);
     if (!parsed_name) {
       DCHECK(exception_state.HadException());
       return false;
+    }
+    if (parsed_name->LocalName() == g_xmlns_atom) {
+      encountered_namespace_reset = namespace_uri.empty();
     }
     prefixed_attributes.push_back(Attribute(*parsed_name, namespace_uri));
   }
@@ -986,15 +1052,16 @@ static inline bool HandleElementAttributes(
         } else {
           exception_state.ThrowDOMException(
               DOMExceptionCode::kNamespaceError,
-              "Namespace prefix " + attr_prefix + " for attribute " +
-                  ToString(attr.localname) + " is not declared.");
+              StrCat({"Namespace prefix ", attr_prefix, " for attribute ",
+                      ToString(attr.localname), " is not declared."}));
           return false;
         }
       }
     }
     AtomicString attr_q_name =
         attr_prefix.empty() ? ToAtomicString(attr.localname)
-                            : attr_prefix + ":" + ToString(attr.localname);
+                            : AtomicString(StrCat({attr_prefix, ":",
+                                                   ToString(attr.localname)}));
 
     std::optional<QualifiedName> parsed_name =
         Element::ParseAttributeName(attr_uri, attr_q_name, exception_state);
@@ -1029,6 +1096,27 @@ void XMLDocumentParser::StartElementNs(
   if (!UpdateLeafTextNode())
     return;
 
+  bool is_first_element = !saw_first_element_;
+  saw_first_element_ = true;
+
+  if (!parsing_fragment_ && is_first_element && local_name == "alert" &&
+      IsCAPAlertNamespace(uri)) {
+    UseCounter::Count(document_, WebFeature::kXmlCAPAlert);
+  }
+
+  Vector<Attribute, kAttributePrealloc> prefixed_attributes;
+  bool encountered_namespace_reset = false;
+  if (!HandleNamespaceAttributes(prefixed_attributes, namespaces,
+                                 encountered_namespace_reset,
+                                 IGNORE_EXCEPTION)) {
+    StopParsing();
+    return;
+  }
+
+  // Needed for fragment parsing. If the parser library reports an empty NS url,
+  // resolve it against the initially preserved namespace hierarchy that is
+  // built when creating an XMLDocumentParser with the fragment-parsing
+  // constructor.
   AtomicString adjusted_uri = uri;
   if (parsing_fragment_ && adjusted_uri.IsNull()) {
     if (!prefix.IsNull()) {
@@ -1036,18 +1124,11 @@ void XMLDocumentParser::StartElementNs(
       if (it != prefix_to_namespace_map_.end())
         adjusted_uri = it->value;
     } else {
-      adjusted_uri = default_namespace_uri_;
+      adjusted_uri =
+          encountered_namespace_reset || ancestor_resetting_namespace_
+              ? g_null_atom
+              : default_namespace_uri_;
     }
-  }
-
-  bool is_first_element = !saw_first_element_;
-  saw_first_element_ = true;
-
-  Vector<Attribute, kAttributePrealloc> prefixed_attributes;
-  if (!HandleNamespaceAttributes(prefixed_attributes, namespaces,
-                                 IGNORE_EXCEPTION)) {
-    StopParsing();
-    return;
   }
 
   v8::Isolate* isolate = document_->GetAgent().isolate();
@@ -1065,16 +1146,35 @@ void XMLDocumentParser::StartElementNs(
   }
 
   AtomicString is;
+  bool has_customelementregistry_attr = false;
   for (const auto& attr : prefixed_attributes) {
     if (attr.GetName() == html_names::kIsAttr) {
       is = attr.Value();
-      break;
+    } else if (RuntimeEnabledFeatures::ScopedCustomElementRegistryEnabled() &&
+               attr.GetName() == html_names::kCustomelementregistryAttr) {
+      has_customelementregistry_attr = true;
     }
   }
 
   QualifiedName q_name(prefix, local_name, adjusted_uri);
-  if (!prefix.empty() && adjusted_uri.empty())
-    q_name = QualifiedName(g_null_atom, prefix + ":" + local_name, g_null_atom);
+  if (!prefix.empty() && adjusted_uri.empty()) {
+    q_name = QualifiedName(g_null_atom,
+                           AtomicString(StrCat({prefix, ":", local_name})),
+                           g_null_atom);
+  }
+
+  CustomElementRegistry* registry = nullptr;
+  if (RuntimeEnabledFeatures::ScopedCustomElementRegistryEnabled() &&
+      !has_customelementregistry_attr) {
+    // If the element doesn't have the customelementregistry attribute, then
+    // it should inherit its registry from its parent.
+    if (auto* parent_element = DynamicTo<Element>(current_node_.Get())) {
+      registry = parent_element->customElementRegistry();
+    } else {
+      registry =
+          CustomElementRegistry::DefaultRegistry(current_node_->GetDocument());
+    }
+  }
 
   // If we are constructing a custom element, then we must run extra steps as
   // described in the HTML spec below. This is similar to the steps in
@@ -1086,10 +1186,10 @@ void XMLDocumentParser::StartElementNs(
       throw_on_dynamic_markup_insertions;
   if (!parsing_fragment_) {
     if (HTMLConstructionSite::LookUpCustomElementDefinition(*document_, q_name,
-                                                            is)) {
+                                                            is, registry)) {
       throw_on_dynamic_markup_insertions.emplace(document_);
       document_->GetAgent().event_loop()->PerformMicrotaskCheckpoint();
-      reactions.emplace();
+      reactions.emplace(isolate);
     }
   }
 
@@ -1097,7 +1197,7 @@ void XMLDocumentParser::StartElementNs(
       q_name,
       parsing_fragment_ ? CreateElementFlags::ByFragmentParser(document_)
                         : CreateElementFlags::ByParser(document_),
-      is);
+      is, registry);
   // Check IsStopped() because custom element constructors may synchronously
   // trigger removal of the document and cancellation of this parser.
   if (IsStopped()) {
@@ -1109,6 +1209,11 @@ void XMLDocumentParser::StartElementNs(
   }
 
   SetAttributes(new_element, prefixed_attributes, GetParserContentPolicy());
+
+  if (parsing_fragment_ && encountered_namespace_reset &&
+      !ancestor_resetting_namespace_) {
+    ancestor_resetting_namespace_ = new_element;
+  }
 
   new_element->BeginParsingChildren();
 
@@ -1157,8 +1262,21 @@ void XMLDocumentParser::EndElementNs() {
   ContainerNode* n = current_node_;
   auto* element = DynamicTo<Element>(n);
   if (!element) {
+    // Check if the current node is the DocumentFragment for an
+    // HTMLTemplateElement that is ancestor_resetting_namespace_.
+    if (auto* resetting_template = DynamicTo<HTMLTemplateElement>(
+            ancestor_resetting_namespace_.Get())) {
+      if (resetting_template->content() == current_node_) {
+        ancestor_resetting_namespace_ = nullptr;
+      }
+    }
+
     PopCurrentNode();
     return;
+  }
+
+  if (ancestor_resetting_namespace_ == n) {
+    ancestor_resetting_namespace_ = nullptr;
   }
 
   element->FinishParsingChildren();
@@ -1222,7 +1340,7 @@ void XMLDocumentParser::Characters(base::span<const xmlChar> chars) {
   }
 
   CreateLeafTextNodeIfNeeded();
-  buffered_text_.AppendSpan(chars);
+  buffered_text_.append_range(chars);
 }
 
 void XMLDocumentParser::GetError(XMLErrors::ErrorType type,
@@ -1232,7 +1350,8 @@ void XMLDocumentParser::GetError(XMLErrors::ErrorType type,
     return;
 
   char formatted_message[1024];
-  vsnprintf(formatted_message, sizeof(formatted_message) - 1, message, args);
+  UNSAFE_TODO(vsnprintf(formatted_message, sizeof(formatted_message) - 1,
+                        message, args));
 
   if (parser_paused_) {
     pending_callbacks_.push_back(std::make_unique<PendingErrorCallback>(
@@ -1275,6 +1394,9 @@ void XMLDocumentParser::GetProcessingInstruction(const String& target,
   CheckIfBlockingStyleSheetAdded();
 
   saw_xsl_transform_ = !saw_first_element_ && pi->IsXSL();
+  CHECK(!saw_xsl_transform_ ||
+        XSLTProcessor::IsXSLTEnabled(
+            GetDocument() ? GetDocument()->GetExecutionContext() : nullptr));
   if (saw_xsl_transform_ &&
       !DocumentXSLT::HasTransformSourceDocument(*GetDocument())) {
     // This behavior is very tricky. We call stopParsing() here because we
@@ -1297,35 +1419,11 @@ void XMLDocumentParser::CdataBlock(const String& text) {
     return;
   }
 
-  // `is_start_of_new_chunk_` is reset by UpdateLeafTextNode(). If it was set
-  // when we entered this method, this CDATA block appears at the beginning of
-  // the current input chunk.
-  const bool is_start_of_new_chunk = is_start_of_new_chunk_;
   if (!UpdateLeafTextNode())
     return;
 
-  // If the most recent child is already a CDATA node *AND* this is the first
-  // parse event emitted from the current input chunk, we append this text to
-  // the existing node. Otherwise we append a new CDATA node.
-  // TODO(https://crbug.com/36431): Unfortunately, when a CDATA straddles
-  // multiple input chunks, libxml starts to emit CDATA nodes in 300 byte
-  // chunks. The MergeAdjacentCDataSections REF is an attempt to keep these
-  // within a single node. However, this will also merge actual adjacent CDATA
-  // sections into a single node, e.g.: `<![CDATA[foo]]><![CDATA[bar]]>` will
-  // now produce one node. The REF is added to easily reverse in case this
-  // isn't web compatible. Otherwise, we can remove `is_start_of_new_chunk_`
-  // and this REF.
-  CDATASection* cdata_tail =
-      current_node_ ? DynamicTo<CDATASection>(current_node_->lastChild())
-                    : nullptr;
-  if (cdata_tail &&
-      (RuntimeEnabledFeatures::XMLParserMergeAdjacentCDataSectionsEnabled() ||
-       is_start_of_new_chunk)) {
-    cdata_tail->ParserAppendData(text);
-  } else {
-    current_node_->ParserAppendChild(
-        CDATASection::Create(current_node_->GetDocument(), text));
-  }
+  current_node_->ParserAppendChild(
+      CDATASection::Create(current_node_->GetDocument(), text));
 }
 
 void XMLDocumentParser::Comment(const String& text) {
@@ -1419,7 +1517,8 @@ static void StartElementNsHandler(void* closure,
   // xmlChar* for each 'nb_namespaces'. The xmlSAX2Namespace struct
   // encapsulates these two pointers.
   auto namespaces = UNSAFE_BUFFERS(
-      base::span(reinterpret_cast<const xmlSAX2Namespace*>(libxml_namespaces),
+      base::span(base::unchecked,
+                 reinterpret_cast<const xmlSAX2Namespace*>(libxml_namespaces),
                  base::checked_cast<size_t>(nb_namespaces)));
   // SAFETY: libxml provides `libxml_attributes` which points to 5 const
   // xmlChar* for each 'nb_attributes' . The xmlSAX2Attributes struct
@@ -1441,8 +1540,8 @@ static void EndElementNsHandler(void* closure,
 
 static void CharactersHandler(void* closure, const xmlChar* chars, int length) {
   // SAFETY: libxml provides `chars` that point at `length` xmlChars.
-  auto chars_span =
-      UNSAFE_BUFFERS(base::span(chars, base::checked_cast<size_t>(length)));
+  auto chars_span = UNSAFE_BUFFERS(
+      base::span(base::unchecked, chars, base::checked_cast<size_t>(length)));
   GetParser(closure)->Characters(chars_span);
 }
 
@@ -1455,8 +1554,8 @@ static void ProcessingInstructionHandler(void* closure,
 
 static void CdataBlockHandler(void* closure, const xmlChar* text, int length) {
   // SAFETY: libxml provides `text` that point at `length` xmlChars.
-  auto text_span =
-      UNSAFE_BUFFERS(base::span(text, base::checked_cast<size_t>(length)));
+  auto text_span = UNSAFE_BUFFERS(
+      base::span(base::unchecked, text, base::checked_cast<size_t>(length)));
   GetParser(closure)->CdataBlock(ToString(text_span));
 }
 
@@ -1468,7 +1567,8 @@ PRINTF_FORMAT(2, 3)
 static void WarningHandler(void* closure, const char* message, ...) {
   va_list args;
   va_start(args, message);
-  GetParser(closure)->GetError(XMLErrors::kErrorTypeWarning, message, args);
+  UNSAFE_TODO(GetParser(closure))
+      ->GetError(XMLErrors::kErrorTypeWarning, message, args);
   va_end(args);
 }
 
@@ -1476,7 +1576,8 @@ PRINTF_FORMAT(2, 3)
 static void NormalErrorHandler(void* closure, const char* message, ...) {
   va_list args;
   va_start(args, message);
-  GetParser(closure)->GetError(XMLErrors::kErrorTypeNonFatal, message, args);
+  UNSAFE_TODO(GetParser(closure))
+      ->GetError(XMLErrors::kErrorTypeNonFatal, message, args);
   va_end(args);
 }
 
@@ -1507,8 +1608,8 @@ static base::span<const char, N - 1> CopyToEntityBuffer(
     base::span<const char, N> expanded_entity_chars) {
   auto entity_buffer =
       base::as_writable_chars(base::span(g_shared_xhtml_entity_result));
-  entity_buffer.first<N>().copy_from(expanded_entity_chars);
-  return entity_buffer.first<N - 1>();
+  entity_buffer.template first<N>().copy_from(expanded_entity_chars);
+  return entity_buffer.template first<N - 1>();
 }
 
 static base::span<const char> ConvertUTF16EntityToUTF8(
@@ -1516,9 +1617,9 @@ static base::span<const char> ConvertUTF16EntityToUTF8(
   auto utf16_entity = base::span(entity.data).first(entity.length);
   auto entity_buffer =
       base::as_writable_bytes(base::span(g_shared_xhtml_entity_result));
-  WTF::unicode::ConversionResult conversion_result =
-      WTF::unicode::ConvertUTF16ToUTF8(utf16_entity, entity_buffer);
-  if (conversion_result.status != WTF::unicode::kConversionOK) {
+  unicode::ConversionResult conversion_result =
+      unicode::ConvertUtf16ToUtf8(utf16_entity, entity_buffer);
+  if (!conversion_result.IsSuccess()) {
     return {};
   }
 
@@ -1618,18 +1719,8 @@ static void ExternalSubsetHandler(void* closure,
                                   const xmlChar*) {
   // https://html.spec.whatwg.org/C/#parsing-xhtml-documents:named-character-references
   String ext_id = ToString(external_id);
-  if (ext_id == "-//W3C//DTD XHTML 1.0 Transitional//EN" ||
-      ext_id == "-//W3C//DTD XHTML 1.1//EN" ||
-      ext_id == "-//W3C//DTD XHTML 1.0 Strict//EN" ||
-      ext_id == "-//W3C//DTD XHTML 1.0 Frameset//EN" ||
-      ext_id == "-//W3C//DTD XHTML Basic 1.0//EN" ||
-      ext_id == "-//W3C//DTD XHTML 1.1 plus MathML 2.0//EN" ||
-      ext_id == "-//W3C//DTD XHTML 1.1 plus MathML 2.0 plus SVG 1.1//EN" ||
-      ext_id == "-//W3C//DTD MathML 2.0//EN" ||
-      ext_id == "-//WAPFORUM//DTD XHTML Mobile 1.0//EN" ||
-      ext_id == "-//WAPFORUM//DTD XHTML Mobile 1.1//EN" ||
-      ext_id == "-//WAPFORUM//DTD XHTML Mobile 1.2//EN") {
-    // Controls if we replace entities or not.
+  // Controls if we replace entities or not.
+  if (MatchesXHTMLSubsetDTD(ext_id)) {
     GetParser(closure)->SetIsXHTMLDocument(true);
   }
 }
@@ -1641,8 +1732,7 @@ static void IgnorableWhitespaceHandler(void*, const xmlChar*, int) {
 }
 
 void XMLDocumentParser::InitializeParserContext(const std::string& chunk) {
-  xmlSAXHandler sax;
-  memset(&sax, 0, sizeof(sax));
+  xmlSAXHandler sax = {};
 
   // According to http://xmlsoft.org/html/libxml-tree.html#xmlSAXHandler and
   // http://xmlsoft.org/html/libxml-parser.html#fatalErrorSAXFunc the SAX
@@ -1695,7 +1785,9 @@ void XMLDocumentParser::DoEnd() {
                          HasNoStyleInformation(GetDocument());
   if (xml_viewer_mode) {
     GetDocument()->SetIsViewSource(true);
-    TransformDocumentToXMLTreeView(*GetDocument());
+    TransformDocumentToXMLTreeView(
+        *GetDocument(),
+        /*preserve_document_element=*/!GetDocument()->IsInMainFrame());
   } else if (saw_xsl_transform_) {
     xmlDocPtr doc = XmlDocPtrForString(
         GetDocument(), original_source_for_transform_.ToString(),
@@ -1710,6 +1802,11 @@ xmlDocPtr XmlDocPtrForString(Document* document,
                              const String& url) {
   if (source.empty())
     return nullptr;
+
+  // In situations where the XMLDocumentParserRs is used as the primary parser,
+  // this might be the first call into libxml2.
+  XMLDocumentParser::EnsureLibXMLInitialized();
+
   // Parse in a single chunk into an xmlDocPtr
   // FIXME: Hook up error handlers so that a failure to parse the main
   // document results in good error messages.
@@ -1796,24 +1893,6 @@ bool XMLDocumentParser::AppendFragmentSource(const String& chunk) {
   xmlParseContent(Context());
   EndDocument();  // Close any open text nodes.
 
-#if LIBXML_VERSION < 21400
-  // FIXME: If this code is actually needed, it should probably move to
-  // finish()
-  // XMLDocumentParserQt has a similar check (m_stream.error() ==
-  // QXmlStreamReader::PrematureEndOfDocumentError) in doEnd(). Check if all
-  // the chunk has been processed.
-  int64_t bytes_processed = xmlByteConsumed(Context());
-  if (bytes_processed == -1 ||
-      bytes_processed != static_cast<int64_t>(chunk_as_utf8.length())) {
-    // FIXME: I don't believe we can hit this case without also having seen
-    // an error or a null byte. If we hit this DCHECK, we've found a test
-    // case which demonstrates the need for this code.
-    DCHECK(saw_error_ ||
-           (bytes_processed >= 0 && !chunk_as_utf8.data()[bytes_processed]));
-    return false;
-  }
-#endif
-
   // No error if the chunk is well formed or it is not but we have no error.
   return Context()->wellFormed || !xmlCtxtGetLastError(Context());
 }
@@ -1860,8 +1939,10 @@ static void AttributesStartElementNsHandler(void* closure,
                                             int nb_attributes,
                                             int /*nbDefaulted*/,
                                             const xmlChar** libxml_attributes) {
-  if (strcmp(reinterpret_cast<const char*>(xml_local_name), "attrs") != 0)
+  if (UNSAFE_TODO(strcmp(reinterpret_cast<const char*>(xml_local_name),
+                         "attrs")) != 0) {
     return;
+  }
 
   xmlParserCtxtPtr ctxt = static_cast<xmlParserCtxtPtr>(closure);
   AttributeParseState* state =
@@ -1880,23 +1961,24 @@ static void AttributesStartElementNsHandler(void* closure,
     String attr_prefix = ToString(attr.prefix);
     String attr_q_name = attr_prefix.empty()
                              ? attr_local_name
-                             : attr_prefix + ":" + attr_local_name;
+                             : StrCat({attr_prefix, ":", attr_local_name});
 
     state->attributes.Set(attr_q_name, ToString(attr.ValueSpan()));
   }
 }
 
 HashMap<String, String> ParseAttributes(const String& string, bool& attrs_ok) {
+  CHECK(!RuntimeEnabledFeatures::XMLParsingRustEnabled());
   AttributeParseState state;
   state.got_attributes = false;
 
-  xmlSAXHandler sax;
-  memset(&sax, 0, sizeof(sax));
+  xmlSAXHandler sax = {};
   sax.startElementNs = AttributesStartElementNsHandler;
   sax.initialized = XML_SAX2_MAGIC;
   scoped_refptr<XMLParserContext> parser =
       XMLParserContext::CreateStringParser(&sax, &state);
-  String parse_string = "<?xml version=\"1.0\"?><attrs " + string + " />";
+  String parse_string =
+      StrCat({"<?xml version=\"1.0\"?><attrs ", string, " />"});
   ParseChunk(parser->Context(), parse_string);
   FinishParsing(parser->Context());
   attrs_ok = state.got_attributes;

@@ -6,18 +6,25 @@
 
 #import "base/feature_list.h"
 
+BASE_FEATURE(kAutofillBottomSheetNewBlur, base::FEATURE_DISABLED_BY_DEFAULT);
+
 BASE_FEATURE(kStatelessFormSuggestionController,
-             "StatelessFormSuggestionController",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kStatelessFormSuggestionControllerWithRequestDeduping,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kThrottleFormInputAccessorySuggestionRefresh,
-             "ThrottleFormInputAccessorySuggestionRefresh",
              base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kAutofillThrottleOptionalSuggestionRefresh,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kSuppressKeyboardWillShowSuggestionRefresh,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kFormInputAccessorySkipInputViewReloadInBackground,
-             "FormInputAccessorySkipInputViewReloadInBackground",
              base::FEATURE_ENABLED_BY_DEFAULT);
 
-BASE_FEATURE(kSkipKeyboardAccessoryResetForSameDocumentNavigation,
-             "SkipKeyboardAccessoryResetForSameDocumentNavigation",
+BASE_FEATURE(kFormInputAccessoryPassThroughTouches,
              base::FEATURE_ENABLED_BY_DEFAULT);

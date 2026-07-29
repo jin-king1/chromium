@@ -2,7 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/strings/stringprintf.h"
+#include "base/test/scoped_feature_list.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension_builder.h"
+#include "extensions/common/extension_features.h"
 #include "extensions/common/features/feature_developer_mode_only.h"
 #include "extensions/common/mojom/context_type.mojom.h"
 #include "extensions/renderer/bindings/api_binding_test_util.h"
@@ -11,18 +15,15 @@
 #include "extensions/renderer/native_extension_bindings_system_test_base.h"
 #include "extensions/renderer/script_context.h"
 
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
+
 namespace extensions {
 
 namespace {
 
-constexpr char kCallUserScriptsRegister[] =
+constexpr char kCallDebuggerGetTargets[] =
     R"((function() {
-         chrome.userScripts.register(
-             [{
-                id: 'script',
-                matches: ['*://*/*'],
-                js: [{file: 'script.js'}],
-             }]);
+         chrome.debugger.getTargets();
        });)";
 
 }  // namespace
@@ -60,18 +61,34 @@ TEST_F(NativeExtensionBindingsSystemUnittest, InitializeContext) {
   ASSERT_TRUE(query->IsFunction());
 }
 
-TEST_F(NativeExtensionBindingsSystemUnittest,
-       RestrictDeveloperModeAPIsUserIsInDeveloperMode) {
+// Tests that Developer Mode controls API visibility.
+class DeveloperModeBindingsSystemUnittest
+    : public NativeExtensionBindingsSystemUnittest {
+ public:
+  DeveloperModeBindingsSystemUnittest() {
+    // Ensure chrome.debugger is controlled by Developer Mode.
+    scoped_feature_list_.InitAndEnableFeature(
+        extensions_features::kDebuggerAPIRestrictedToDevMode);
+  }
 
+  DeveloperModeBindingsSystemUnittest(
+      const DeveloperModeBindingsSystemUnittest&) = delete;
+  DeveloperModeBindingsSystemUnittest& operator=(
+      const DeveloperModeBindingsSystemUnittest&) = delete;
+  ~DeveloperModeBindingsSystemUnittest() override = default;
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+TEST_F(DeveloperModeBindingsSystemUnittest,
+       RestrictDeveloperModeAPIsUserIsInDeveloperMode) {
   // With kDeveloperModeRestriction enabled, developer mode-only APIs
   // should be available if and only if the user is in dev mode.
   SetCurrentDeveloperMode(kRendererProfileId, true);
 
   scoped_refptr<const Extension> extension =
-      ExtensionBuilder("foo")
-          .AddAPIPermission("userScripts")
-          .SetManifestVersion(3)
-          .Build();
+      ExtensionBuilder("foo").AddAPIPermission("debugger").Build();
   RegisterExtension(extension);
 
   v8::HandleScope handle_scope(isolate());
@@ -83,52 +100,43 @@ TEST_F(NativeExtensionBindingsSystemUnittest,
 
   bindings_system()->UpdateBindingsForContext(script_context);
 
-  // chrome.userScripts.getTargets should exist.
   v8::Local<v8::Value> chrome =
       GetPropertyFromObject(context->Global(), context, "chrome");
   ASSERT_FALSE(chrome.IsEmpty());
   ASSERT_TRUE(chrome->IsObject());
+  v8::Local<v8::Value> api = GetPropertyFromObject(
+      v8::Local<v8::Object>::Cast(chrome), context, "debugger");
+  ASSERT_FALSE(api.IsEmpty());
+  ASSERT_TRUE(api->IsObject());
 
-  v8::Local<v8::Value> user_scripts_api = GetPropertyFromObject(
-      v8::Local<v8::Object>::Cast(chrome), context, "userScripts");
-  ASSERT_FALSE(user_scripts_api.IsEmpty());
-  ASSERT_TRUE(user_scripts_api->IsObject());
-
-  v8::Local<v8::Object> user_scripts_object =
-      v8::Local<v8::Object>::Cast(user_scripts_api);
-  v8::Local<v8::Value> user_scripts_register =
-      GetPropertyFromObject(user_scripts_object, context, "register");
-  ASSERT_FALSE(user_scripts_register.IsEmpty());
+  // `debugger.getTargets` should exist.
+  v8::Local<v8::Object> api_object = v8::Local<v8::Object>::Cast(api);
+  v8::Local<v8::Value> api_method_call =
+      GetPropertyFromObject(api_object, context, "getTargets");
+  ASSERT_FALSE(api_method_call.IsEmpty());
 
   {
-    v8::Local<v8::Function> call_register =
-        FunctionFromString(context, kCallUserScriptsRegister);
-    RunFunctionOnGlobal(call_register, context, 0, nullptr);
+    v8::Local<v8::Function> call_api_method =
+        FunctionFromString(context, kCallDebuggerGetTargets);
+    RunFunctionOnGlobal(call_api_method, context, 0, nullptr);
   }
 
   // Validate the params that would be sent to the browser.
-  EXPECT_EQ(extension->id(), last_params().extension_id);
-  EXPECT_EQ("userScripts.register", last_params().name);
-  EXPECT_EQ(extension->url(), last_params().source_url);
   EXPECT_TRUE(last_params().has_callback);
+  EXPECT_EQ("debugger.getTargets", last_params().name);
   // No need to look at the full arguments, but sanity check their general
   // shape.
-  EXPECT_EQ(1u, last_params().arguments.size());
-  EXPECT_EQ(base::Value::Type::LIST, last_params().arguments[0].type());
+  EXPECT_EQ(0u, last_params().arguments.size());
 }
 
-TEST_F(NativeExtensionBindingsSystemUnittest,
+TEST_F(DeveloperModeBindingsSystemUnittest,
        RestrictDeveloperModeAPIsUserIsNotInDeveloperModeAndHasPermission) {
-
   // With kDeveloperModeRestriction enabled, developer mode-only APIs
   // should not be available if the user is not in dev mode.
   SetCurrentDeveloperMode(kRendererProfileId, false);
 
   scoped_refptr<const Extension> extension =
-      ExtensionBuilder("foo")
-          .AddAPIPermission("userScripts")
-          .SetManifestVersion(3)
-          .Build();
+      ExtensionBuilder("foo").AddAPIPermission("debugger").Build();
   RegisterExtension(extension);
 
   v8::HandleScope handle_scope(isolate());
@@ -146,18 +154,19 @@ TEST_F(NativeExtensionBindingsSystemUnittest,
   ASSERT_TRUE(chrome->IsObject());
 
   {
-    v8::Local<v8::Function> call_user_scripts_register =
-        FunctionFromString(context, kCallUserScriptsRegister);
-    RunFunctionAndExpectError(call_user_scripts_register, context, 0, nullptr,
-                              "Uncaught Error: The 'userScripts' API is only "
-                              "available for users in developer mode.");
+    v8::Local<v8::Function> call_api_method =
+        FunctionFromString(context, kCallDebuggerGetTargets);
+    std::string expected_error =
+        "Uncaught Error: The 'debugger' API is only available for users in "
+        "developer mode.";
+    RunFunctionAndExpectError(call_api_method, context, 0, nullptr,
+                              expected_error);
   }
 }
 
 TEST_F(
-    NativeExtensionBindingsSystemUnittest,
+    DeveloperModeBindingsSystemUnittest,
     RestrictDeveloperModeAPIsUserIsNotInDeveloperModeAndDoesNotHavePermission) {
-
   SetCurrentDeveloperMode(kRendererProfileId, false);
 
   scoped_refptr<const Extension> extension = ExtensionBuilder("foo").Build();
@@ -177,10 +186,10 @@ TEST_F(
   ASSERT_FALSE(chrome.IsEmpty());
   ASSERT_TRUE(chrome->IsObject());
 
-  v8::Local<v8::Value> user_scripts = GetPropertyFromObject(
-      v8::Local<v8::Object>::Cast(chrome), context, "userScripts");
-  ASSERT_FALSE(user_scripts.IsEmpty());
-  EXPECT_TRUE(user_scripts->IsUndefined());
+  v8::Local<v8::Value> api = GetPropertyFromObject(
+      v8::Local<v8::Object>::Cast(chrome), context, "debugger");
+  ASSERT_FALSE(api.IsEmpty());
+  EXPECT_TRUE(api->IsUndefined());
 }
 
 }  // namespace extensions

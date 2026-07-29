@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "chrome/test/chromedriver/chrome/heap_snapshot_taker.h"
 
@@ -27,7 +23,7 @@ HeapSnapshotTaker::~HeapSnapshotTaker() = default;
 
 Status HeapSnapshotTaker::TakeSnapshot(std::unique_ptr<base::Value>* snapshot) {
   Status status1 = TakeSnapshotInternal();
-  base::Value::Dict params;
+  base::DictValue params;
   Status status2 = client_->SendCommand("Debugger.disable", params);
 
   Status status3(kOk);
@@ -45,7 +41,7 @@ Status HeapSnapshotTaker::TakeSnapshot(std::unique_ptr<base::Value>* snapshot) {
 }
 
 Status HeapSnapshotTaker::TakeSnapshotInternal() {
-  base::Value::Dict params;
+  base::DictValue params;
   const auto kMethods = std::to_array<const char*>({
       "Debugger.enable",
       "HeapProfiler.collectGarbage",
@@ -66,7 +62,7 @@ bool HeapSnapshotTaker::ListensToConnections() const {
 
 Status HeapSnapshotTaker::OnEvent(DevToolsClient* client,
                                   const std::string& method,
-                                  const base::Value::Dict& params) {
+                                  const base::DictValue& params) {
   if (method == "HeapProfiler.addHeapSnapshotChunk") {
     const std::string* chunk = params.FindString("chunk");
     if (!chunk) {

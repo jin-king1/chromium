@@ -5,9 +5,11 @@
 #ifndef COMPONENTS_SYNC_PROTOCOL_PROTO_ENUM_CONVERSIONS_H_
 #define COMPONENTS_SYNC_PROTOCOL_PROTO_ENUM_CONVERSIONS_H_
 
+#include "components/sync/protocol/ai_thread_specifics.pb.h"
 #include "components/sync/protocol/app_list_specifics.pb.h"
 #include "components/sync/protocol/app_specifics.pb.h"
 #include "components/sync/protocol/autofill_specifics.pb.h"
+#include "components/sync/protocol/autofill_valuable_metadata_specifics.pb.h"
 #include "components/sync/protocol/contact_info_specifics.pb.h"
 #include "components/sync/protocol/cookie_specifics.pb.h"
 #include "components/sync/protocol/data_type_state.pb.h"
@@ -20,10 +22,13 @@
 #include "components/sync/protocol/reading_list_specifics.pb.h"
 #include "components/sync/protocol/saved_tab_group_specifics.pb.h"
 #include "components/sync/protocol/session_specifics.pb.h"
+#include "components/sync/protocol/shared_comment_specifics.pb.h"
 #include "components/sync/protocol/shared_tab_group_data_specifics.pb.h"
 #include "components/sync/protocol/sharing_message_specifics.pb.h"
+#include "components/sync/protocol/skill_specifics.pb.h"
 #include "components/sync/protocol/sync.pb.h"
 #include "components/sync/protocol/sync_enums.pb.h"
+#include "components/sync/protocol/theme_types.pb.h"
 #include "components/sync/protocol/user_consent_types.pb.h"
 #include "components/sync/protocol/user_event_specifics.pb.h"
 #include "components/sync/protocol/web_apk_specifics.pb.h"
@@ -40,6 +45,8 @@ namespace syncer {
 
 // The returned strings (which don't have to be freed) are in ASCII.
 // The result of passing in an invalid enum value is undefined.
+
+const char* ProtoEnumToString(sync_pb::AiThreadSpecifics::ThreadType type);
 
 const char* ProtoEnumToString(
     sync_pb::AppListSpecifics::AppListItemType item_type);
@@ -70,6 +77,9 @@ const char* ProtoEnumToString(sync_pb::NigoriSpecifics::PassphraseType type);
 
 const char* ProtoEnumToString(
     sync_pb::PaymentInstrument::SupportedRail supported_rail);
+
+const char* ProtoEnumToString(
+    sync_pb::PaymentInstrument::ActionRequired action_required);
 
 const char* ProtoEnumToString(
     sync_pb::PowerBookmarkSpecifics::PowerType power_type);
@@ -121,6 +131,9 @@ const char* ProtoEnumToString(sync_pb::SyncEnums::PasswordState state);
 const char* ProtoEnumToString(sync_pb::UserConsentTypes::ConsentStatus status);
 
 const char* ProtoEnumToString(
+    sync_pb::SyncEnums::GlicExperimentalTriggeringState state);
+
+const char* ProtoEnumToString(
     sync_pb::GaiaPasswordReuse::PasswordReuseDetected::SafeBrowsingStatus::
         ReportingPopulation safe_browsing_reporting_population);
 
@@ -144,6 +157,13 @@ const char* ProtoEnumToString(
 const char* ProtoEnumToString(
     sync_pb::WalletMaskedCreditCard::CardInfoRetrievalEnrollmentState
         card_info_retrieval_enrollment_state);
+
+const char* ProtoEnumToString(
+    sync_pb::WalletMaskedCreditCard::CardBenefitSource
+        card_benefit_source);
+
+const char* ProtoEnumToString(
+    sync_pb::WalletMaskedCreditCard::CardCreationSource card_creation_source);
 
 const char* ProtoEnumToString(
     sync_pb::WalletMaskedCreditCard::VirtualCardEnrollmentState
@@ -231,11 +251,17 @@ const char* ProtoEnumToString(
         ChimeChannelConfiguration::ChimeChannelType channel_type);
 
 const char* ProtoEnumToString(
-    sync_pb::ThemeSpecifics::UserColorTheme::BrowserColorVariant
-        browser_color_variant);
+    sync_pb::UserColorTheme::BrowserColorVariant browser_color_variant);
 
 const char* ProtoEnumToString(
     sync_pb::ThemeSpecifics::BrowserColorScheme browser_color_scheme);
+
+const char* ProtoEnumToString(sync_pb::SharedUrlContext::Source source);
+
+const char* ProtoEnumToString(sync_pb::SkillSource skill_source);
+
+const char* ProtoEnumToString(
+    sync_pb::AutofillValuableMetadataSpecifics::PassType pass_type);
 
 }  // namespace syncer
 

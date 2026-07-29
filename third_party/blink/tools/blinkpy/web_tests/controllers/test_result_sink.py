@@ -28,28 +28,6 @@ logging.getLogger("urllib3").setLevel(logging.WARNING)
 _log = logging.getLogger(__name__)
 
 
-# A map from the enum values of typ.ResultType to ResultSink.Status.
-# The enum values of ResultSink.Status can be found at
-# https://godoc.org/go.chromium.org/luci/resultdb/proto/sink/v1#pkg-variables.
-_result_type_to_sink_status = {
-    ResultType.Pass:
-    'PASS',
-    ResultType.Failure:
-    'FAIL',
-    # timeout is just a special case of a reason to abort a test result.
-    ResultType.Timeout:
-    'ABORT',
-    # 'Aborted' is a web_tests-specific type given on TestResults with a device
-    # failure.
-    'Aborted':
-    'ABORT',
-    ResultType.Crash:
-    'CRASH',
-    ResultType.Skip:
-    'SKIP',
-}
-
-
 class TestResultSinkClosed(Exception):
     """Raises if sink() is called over a closed TestResultSink instance."""
 
@@ -103,20 +81,6 @@ class TestResultSink:
     def _send(self, data):
         self._session.post(self._url, data=json.dumps(data)).raise_for_status()
 
-    def _status(self, result):
-        """Returns the TestStatus enum value corresponding to the result type.
-
-        Args:
-            result: The TestResult object to find the status of.
-        Returns:
-            The corresponding enum value.
-        """
-        status = _result_type_to_sink_status.get(
-            'Aborted' if result.device_failed else result.type)
-
-        assert status is not None, 'unsupported result.type %r' % result.type
-        return status
-
     def _tags(self, result):
         """Returns a list of tags that should be added into a given test result.
 
@@ -140,7 +104,6 @@ class TestResultSink:
 
         tags = [
             pair('test_name', result.test_name),
-            pair('web_tests_device_failed', str(result.device_failed)),
             # Used by `//third_party/blink/tools/run_slow_test_analyzer.py`.
             pair('web_tests_base_timeout',
                  str(int(self._port.timeout_ms() / 1000))),
@@ -253,10 +216,7 @@ class TestResultSink:
         summaries, artifacts = self._artifacts(result)
         r = {
             'artifacts': artifacts,
-            'duration': '%ss' % result.total_run_time,
-            # device failures are never expected.
-            'expected': not result.device_failed and result.is_expected,
-            'status': self._status(result),
+            'duration': '%.9fs' % result.total_run_time,
             # TODO(crbug/1093659): web_tests report TestResult with the start
             # time.
             # 'startTime': result.start_time
@@ -273,16 +233,68 @@ class TestResultSink:
                     # skip: 'line'
                 },
             },
+            'frameworkExtensions': {
+                'webTest': {
+                    'isExpected': result.is_expected,
+                    'status': result.type,
+                },
+            },
         }
+
+        test_split = result.test_name.rsplit('/', 1)
+        if test_split:
+            # Source comes from:
+            # infra/go/src/go.chromium.org/luci/resultdb/sink/proto/v1/test_result.proto
+            fine_name = test_split[0] if len(test_split) > 1 else '/'
+            case_name = test_split[1] if len(test_split) > 1 else test_split[0]
+            struct_test_dict = {
+                'coarseName': None,  # Not used for webtests.
+                'fineName': fine_name,
+                'caseNameComponents': [case_name],
+            }
+            r['testIdStructured'] = struct_test_dict
+
+        if result.is_expected:
+            if result.type == ResultType.Skip:
+                r['statusV2'] = 'SKIPPED'
+                # ResultDB requires a skipped reason message to be uploaded for all skipped tests.
+                r['skippedReason'] = {
+                    # TODO(crbug.com/410893293): Improve this to report the actual skip reason.
+                    'kind':
+                    'OTHER',
+                    'reasonMessage':
+                    'Test was skipped for one of the reasons in https://source.chromium.org/chromium/chromium/src/+/main:third_party/blink/tools/blinkpy/web_tests/port/base.py?q=skips_test',
+                }
+            else:
+                # Expected failure, timeout, crash, pass all
+                # represent logically "passing" tests.
+                r['statusV2'] = 'PASSED'
+        else: # not result.is_expected
+            if result.type == ResultType.Skip:
+                r['statusV2'] = 'EXECUTION_ERRORED'
+            else:
+                # Unexpected pass, failure, crash and timeout
+                # represent logically "failing" tests.
+                r['statusV2'] = 'FAILED'
+                kind = 'ORDINARY'
+                if result.type == ResultType.Crash:
+                    kind = 'CRASH'
+                elif result.type == ResultType.Timeout:
+                    kind = 'TIMEOUT'
+
+                r['failureReason'] = {
+                    'kind': kind,
+                }
+
         if summaries:
             r['summaryHtml'] = '\n'.join(summaries)
 
-        if result.failure_reason:
+        if r['statusV2'] == 'FAILED' and result.failure_reason:
             primary_error_message = _truncate_to_utf8_bytes(
                 result.failure_reason.primary_error_message, 1024)
-            r['failureReason'] = {
-                'primaryErrorMessage': primary_error_message,
-            }
+            r['failureReason']['errors'] = [{
+                'message': primary_error_message,
+            }]
 
         self._send({'testResults': [r]})
 

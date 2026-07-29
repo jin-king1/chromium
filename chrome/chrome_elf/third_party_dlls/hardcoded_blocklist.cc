@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "chrome/chrome_elf/third_party_dlls/hardcoded_blocklist.h"
 
@@ -25,7 +21,7 @@ constexpr size_t kDllBlocklistMaxSize = 64u;
 const char* const kDllBlocklist[kDllBlocklistMaxSize] = {
     "949ba8b6a9.dll",           // Coupon Time.
     "activedetect32.dll",       // Lenovo One Key Theater.
-                                // See crbug.com/379218.
+                                // See crbug.com/40368185.
     "activedetect64.dll",       // Lenovo One Key Theater.
     "bitguard.dll",             // Unknown (suspected malware).
     "bsvc.dll",                 // Unknown (suspected adware).
@@ -55,11 +51,11 @@ const char* const kDllBlocklist[kDllBlocklistMaxSize] = {
     "wajam_goblin_64.dll",      // Wajam Internet Technologies.
     "wajam_goblin.dll",         // Wajam Internet Technologies.
     "windowsapihookdll32.dll",  // Lenovo One Key Theater.
-                                // See crbug.com/379218.
+                                // See crbug.com/40368185.
     "windowsapihookdll64.dll",  // Lenovo One Key Theater.
     "virtualcamera.ax",         // %PROGRAMFILES%\ASUS\VirtualCamera.
-                                // See crbug.com/422522.
-    "ycwebcamerasource.ax",     // CyberLink Youcam, crbug.com/424159
+                                // See crbug.com/40388725.
+    "ycwebcamerasource.ax",     // CyberLink Youcam, crbug.com/40389522
     // Keep this null pointer here to mark the end of the list.
     nullptr,
 };

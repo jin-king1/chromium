@@ -2,19 +2,23 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/feedback/system_logs/log_sources/related_website_sets_source.h"
+
 #include <memory>
 
 #include "base/test/bind.h"
 #include "base/version.h"
-#include "chrome/browser/feedback/system_logs/log_sources/related_website_sets_source.h"
 #include "chrome/browser/first_party_sets/first_party_sets_policy_service.h"
 #include "chrome/browser/first_party_sets/first_party_sets_policy_service_factory.h"
 #include "chrome/browser/first_party_sets/scoped_mock_first_party_sets_handler.h"
 #include "chrome/common/pref_names.h"
-#include "chrome/test/base/browser_with_test_window_test.h"
 #include "chrome/test/base/testing_browser_process.h"
+#include "chrome/test/base/testing_profile.h"
+#include "chrome/test/base/testing_profile_manager.h"
 #include "components/feedback/system_logs/system_logs_source.h"
+#include "components/prefs/pref_service.h"
 #include "components/privacy_sandbox/privacy_sandbox_prefs.h"
+#include "content/public/test/browser_task_environment.h"
 #include "net/first_party_sets/global_first_party_sets.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -26,10 +30,14 @@ constexpr char kRelatedWebsiteSetsDisabled[] = "Disabled";
 
 }  // namespace
 
-class RelatedWebsiteSetsSourceTest : public BrowserWithTestWindowTest {
+class RelatedWebsiteSetsSourceTest : public testing::Test {
  public:
   void SetUp() override {
-    BrowserWithTestWindowTest::SetUp();
+    profile_manager_ = std::make_unique<TestingProfileManager>(
+        TestingBrowserProcess::GetGlobal());
+    ASSERT_TRUE(profile_manager_->SetUp());
+    profile_ = profile_manager_->CreateTestingProfile("TestProfile");
+
     // Set the active profile.
     PrefService* local_state = g_browser_process->local_state();
     local_state->SetString(::prefs::kProfileLastUsed,
@@ -47,6 +55,9 @@ class RelatedWebsiteSetsSourceTest : public BrowserWithTestWindowTest {
     service_->WaitForFirstInitCompleteForTesting(run_loop.QuitClosure());
     run_loop.Run();
     service_->ResetForTesting();
+
+    // Explicitly enable Related Website Sets.
+    SetRwsEnabledViaPref(true);
   }
 
   void TearDown() override {
@@ -55,7 +66,10 @@ class RelatedWebsiteSetsSourceTest : public BrowserWithTestWindowTest {
     // tests if the factory has already created a service for the testing
     // profile being used.
     service_->ResetForTesting();
-    BrowserWithTestWindowTest::TearDown();
+    service_ = nullptr;
+    profile_ = nullptr;
+    profile_manager_->DeleteAllTestingProfiles();
+    profile_manager_.reset();
   }
 
   std::unique_ptr<SystemLogsResponse> GetRelatedWebsiteSetsSource(
@@ -87,10 +101,14 @@ class RelatedWebsiteSetsSourceTest : public BrowserWithTestWindowTest {
 
   first_party_sets::FirstPartySetsPolicyService* service() { return service_; }
 
+  Profile* profile() { return profile_; }
+
  private:
+  content::BrowserTaskEnvironment task_environment_;
   first_party_sets::ScopedMockFirstPartySetsHandler first_party_sets_handler_;
-  raw_ptr<first_party_sets::FirstPartySetsPolicyService, DanglingUntriaged>
-      service_;
+  std::unique_ptr<TestingProfileManager> profile_manager_;
+  raw_ptr<Profile> profile_ = nullptr;
+  raw_ptr<first_party_sets::FirstPartySetsPolicyService> service_ = nullptr;
 };
 
 TEST_F(RelatedWebsiteSetsSourceTest, RWS_Disabled) {
@@ -109,7 +127,7 @@ TEST_F(RelatedWebsiteSetsSourceTest, RWS_NotReady) {
 TEST_F(RelatedWebsiteSetsSourceTest, RWS_Empty) {
   service()->InitForTesting();
   auto response = GetRelatedWebsiteSetsSource(service());
-  EXPECT_EQ(base::Value::List().DebugString(),
+  EXPECT_EQ(base::ListValue().DebugString(),
             response->at(RelatedWebsiteSetsSource::kSetsInfoField));
 }
 
@@ -142,14 +160,12 @@ TEST_F(RelatedWebsiteSetsSourceTest, RWS) {
   // { primary: "https://primary1.test",
   // associatedSites: ["https://associate.test"}
   // and alias { "https://primary1.com": "https://primary1.test" }.
-  SetGlobalSets(net::GlobalFirstPartySets(
+  SetGlobalSets(net::GlobalFirstPartySets::CreateForTesting(
       base::Version("0.0"),
       {{primary1_site,
-        {net::FirstPartySetEntry(primary1_site, net::SiteType::kPrimary,
-                                 std::nullopt)}},
+        {net::FirstPartySetEntry(primary1_site, net::SiteType::kPrimary)}},
        {associate_site,
-        {net::FirstPartySetEntry(primary1_site, net::SiteType::kAssociated,
-                                 0)}}},
+        {net::FirstPartySetEntry(primary1_site, net::SiteType::kAssociated)}}},
       {{primary1_cctld, primary1_site}}));
 
   // The context config of the profile adds a new set:
@@ -159,28 +175,27 @@ TEST_F(RelatedWebsiteSetsSourceTest, RWS) {
       net::FirstPartySetsContextConfig::Create(
           {{primary2_site,
             net::FirstPartySetEntryOverride(net::FirstPartySetEntry(
-                primary2_site, net::SiteType::kPrimary, std::nullopt))},
+                primary2_site, net::SiteType::kPrimary))},
            {service_site,
             net::FirstPartySetEntryOverride(net::FirstPartySetEntry(
-                primary2_site, net::SiteType::kService, std::nullopt))}})
+                primary2_site, net::SiteType::kService))}})
           .value());
 
   service()->InitForTesting();
-  base::Value::List expected =
-      base::Value::List()  //
+  base::ListValue expected =
+      base::ListValue()  //
           .Append(
-              base::Value::Dict()
+              base::DictValue()
                   .Set("AssociatedSites",
-                       base::Value::List().Append(associate_site.Serialize()))
-                  .Set("PrimarySites", base::Value::List()
+                       base::ListValue().Append(associate_site.Serialize()))
+                  .Set("PrimarySites", base::ListValue()
                                            .Append(primary1_cctld.Serialize())
                                            .Append(primary1_site.Serialize())))
-          .Append(
-              base::Value::Dict()
-                  .Set("PrimarySites",
-                       base::Value::List().Append(primary2_site.Serialize()))
-                  .Set("ServiceSites",
-                       base::Value::List().Append(service_site.Serialize())));
+          .Append(base::DictValue()
+                      .Set("PrimarySites",
+                           base::ListValue().Append(primary2_site.Serialize()))
+                      .Set("ServiceSites",
+                           base::ListValue().Append(service_site.Serialize())));
   auto response = GetRelatedWebsiteSetsSource(service());
   EXPECT_EQ(expected.DebugString(),
             response->at(RelatedWebsiteSetsSource::kSetsInfoField));
@@ -196,27 +211,23 @@ TEST_F(RelatedWebsiteSetsSourceTest, SubsetsAreSorted) {
   const net::SchemefulSite service2(GURL("https://service2.test"));
   const net::SchemefulSite service3(GURL("https://service3.test"));
 
-  SetGlobalSets(net::GlobalFirstPartySets(
+  SetGlobalSets(net::GlobalFirstPartySets::CreateForTesting(
       base::Version("0.0"),
       {
           {primary,
-           {net::FirstPartySetEntry(primary, net::SiteType::kPrimary,
-                                    std::nullopt)}},
+           {net::FirstPartySetEntry(primary, net::SiteType::kPrimary)}},
           {associated3,
-           {net::FirstPartySetEntry(primary, net::SiteType::kAssociated, 2)}},
+           {net::FirstPartySetEntry(primary, net::SiteType::kAssociated)}},
           {associated1,
-           {net::FirstPartySetEntry(primary, net::SiteType::kAssociated, 0)}},
+           {net::FirstPartySetEntry(primary, net::SiteType::kAssociated)}},
           {associated2,
-           {net::FirstPartySetEntry(primary, net::SiteType::kAssociated, 1)}},
+           {net::FirstPartySetEntry(primary, net::SiteType::kAssociated)}},
           {service2,
-           {net::FirstPartySetEntry(primary, net::SiteType::kService,
-                                    std::nullopt)}},
+           {net::FirstPartySetEntry(primary, net::SiteType::kService)}},
           {service1,
-           {net::FirstPartySetEntry(primary, net::SiteType::kService,
-                                    std::nullopt)}},
+           {net::FirstPartySetEntry(primary, net::SiteType::kService)}},
           {service3,
-           {net::FirstPartySetEntry(primary, net::SiteType::kService,
-                                    std::nullopt)}},
+           {net::FirstPartySetEntry(primary, net::SiteType::kService)}},
       },
       {}));
 
@@ -225,16 +236,16 @@ TEST_F(RelatedWebsiteSetsSourceTest, SubsetsAreSorted) {
   EXPECT_EQ(
       GetRelatedWebsiteSetsSource(service())->at(
           RelatedWebsiteSetsSource::kSetsInfoField),
-      base::Value::List()
+      base::ListValue()
           .Append(
-              base::Value::Dict()
-                  .Set("AssociatedSites", base::Value::List()
+              base::DictValue()
+                  .Set("AssociatedSites", base::ListValue()
                                               .Append(associated1.Serialize())
                                               .Append(associated2.Serialize())
                                               .Append(associated3.Serialize()))
                   .Set("PrimarySites",
-                       base::Value::List().Append(primary.Serialize()))
-                  .Set("ServiceSites", base::Value::List()
+                       base::ListValue().Append(primary.Serialize()))
+                  .Set("ServiceSites", base::ListValue()
                                            .Append(service1.Serialize())
                                            .Append(service2.Serialize())
                                            .Append(service3.Serialize())))

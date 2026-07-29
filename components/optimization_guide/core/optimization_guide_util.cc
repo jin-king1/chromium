@@ -6,10 +6,10 @@
 
 #include "base/containers/flat_set.h"
 #include "base/notreached.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "build/build_config.h"
 #include "components/optimization_guide/core/model_execution/feature_keys.h"
-#include "components/optimization_guide/core/optimization_guide_decision.h"
 #include "components/optimization_guide/core/optimization_guide_enums.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/optimization_guide/core/optimization_guide_logger.h"
@@ -69,8 +69,6 @@ std::string_view GetStringNameForModelExecutionFeature(
   switch (feature) {
     case proto::ModelExecutionFeature::MODEL_EXECUTION_FEATURE_WALLPAPER_SEARCH:
       return "WallpaperSearch";
-    case proto::ModelExecutionFeature::MODEL_EXECUTION_FEATURE_TAB_ORGANIZATION:
-      return "TabOrganization";
     case proto::ModelExecutionFeature::MODEL_EXECUTION_FEATURE_COMPOSE:
       return "Compose";
     case proto::ModelExecutionFeature::MODEL_EXECUTION_FEATURE_TEST:
@@ -90,12 +88,6 @@ std::string_view GetStringNameForModelExecutionFeature(
         MODEL_EXECUTION_FEATURE_FORMS_CLASSIFICATIONS:
       return "FormsClassifications";
     case proto::ModelExecutionFeature::
-        MODEL_EXECUTION_FEATURE_FORMS_PREDICTIONS:
-      return "FormsPredictions";
-    case proto::ModelExecutionFeature::
-        MODEL_EXECUTION_FEATURE_FORMS_ANNOTATIONS:
-      return "FormsAnnotations";
-    case proto::ModelExecutionFeature::
         MODEL_EXECUTION_FEATURE_BLING_PROTOTYPING:
       return "BlingPrototyping";
     case proto::ModelExecutionFeature::
@@ -111,6 +103,60 @@ std::string_view GetStringNameForModelExecutionFeature(
     case proto::ModelExecutionFeature::
         MODEL_EXECUTION_FEATURE_ENHANCED_CALENDAR:
       return "EnhancedCalendar";
+    case proto::ModelExecutionFeature::
+        MODEL_EXECUTION_FEATURE_ZERO_STATE_SUGGESTIONS:
+      return "ZeroStateSuggestions";
+    case proto::ModelExecutionFeature::MODEL_EXECUTION_FEATURE_PROOFREADER_API:
+      return "ProofreaderApi";
+    case proto::ModelExecutionFeature::
+        MODEL_EXECUTION_FEATURE_WALLETABLE_PASS_EXTRACTION:
+      return "WalletablePassExtraction";
+    case proto::ModelExecutionFeature::
+        MODEL_EXECUTION_FEATURE_AMOUNT_EXTRACTION:
+      return "AmountExtraction";
+    case proto::ModelExecutionFeature::
+        MODEL_EXECUTION_FEATURE_ON_DEVICE_SPEECH_RECOGNITION:
+      return "OnDeviceSpeechRecognition";
+    case proto::ModelExecutionFeature::
+        MODEL_EXECUTION_FEATURE_ON_DEVICE_SPEECH_RECOGNITION_TINY_GEMMA:
+      return "SpeechRecognitionSmallExpertModel";
+    case proto::ModelExecutionFeature::
+        MODEL_EXECUTION_FEATURE_IOS_SMART_TAB_GROUPING:
+      return "IosSmartTabGrouping";
+    case proto::ModelExecutionFeature::MODEL_EXECUTION_FEATURE_SKILLS:
+      return "Skills";
+    case proto::ModelExecutionFeature::
+        MODEL_EXECUTION_FEATURE_GEMINI_ANTISCAM_PROTECTION:
+      return "GeminiAntiscamProtection";
+    case proto::ModelExecutionFeature::MODEL_EXECUTION_FEATURE_CLASSIFIER:
+      return "Classifier";
+    case proto::ModelExecutionFeature::
+        MODEL_EXECUTION_FEATURE_CONTENT_ANNOTATION:
+      return "ContentAnnotation";
+    case proto::ModelExecutionFeature::MODEL_EXECUTION_FEATURE_FINDS:
+      return "Finds";
+    case proto::ModelExecutionFeature::
+        MODEL_EXECUTION_FEATURE_ANNOTATION_REDUCER_ONE_P_RESOLVER:
+      return "AnnotationReducerOnePResolver";
+    case proto::ModelExecutionFeature::
+        MODEL_EXECUTION_FEATURE_ANNOTATION_REDUCER_QUERY_CLASSIFIER:
+      return "AnnotationReducerQueryClassifier";
+    case proto::ModelExecutionFeature::
+        MODEL_EXECUTION_FEATURE_CONTEXTUAL_CUEING:
+      return "ContextualCueing";
+    case proto::ModelExecutionFeature::MODEL_EXECUTION_FEATURE_UPDATER_CHAT:
+      return "UpdaterChat";
+    case proto::ModelExecutionFeature::
+        MODEL_EXECUTION_FEATURE_CARD_RECOMMENDATIONS:
+      return "CardRecommendations";
+    case proto::ModelExecutionFeature::MODEL_EXECUTION_FEATURE_CONTEXT_HUB:
+      return "ContextHub";
+    case proto::ModelExecutionFeature::
+        MODEL_EXECUTION_FEATURE_READ_ALOUD_GENERATE_TEXT:
+      return "ReadAloudGenerateText";
+    case proto::ModelExecutionFeature::
+        MODEL_EXECUTION_FEATURE_READ_ALOUD_SYNTHESIZE:
+      return "ReadAloudSynthesize";
     case proto::ModelExecutionFeature::MODEL_EXECUTION_FEATURE_UNSPECIFIED:
       return "Unknown";
       // Must be in sync with the ModelExecutionFeature variant in
@@ -132,23 +178,28 @@ bool IsHostValidToFetchFromRemoteOptimizationGuide(const std::string& host) {
   return true;
 }
 
-std::string GetStringForOptimizationGuideDecision(
-    OptimizationGuideDecision decision) {
-  switch (decision) {
-    case OptimizationGuideDecision::kUnknown:
-      return "Unknown";
-    case OptimizationGuideDecision::kTrue:
-      return "True";
-    case OptimizationGuideDecision::kFalse:
-      return "False";
-  }
-  NOTREACHED();
-}
-
 optimization_guide::proto::OriginInfo GetClientOriginInfo() {
   optimization_guide::proto::OriginInfo origin_info;
   origin_info.set_platform(GetPlatform());
   return origin_info;
+}
+
+optimization_guide::proto::ChromePlatform GetChromePlatform() {
+#if BUILDFLAG(IS_WIN)
+  return optimization_guide::proto::CHROME_PLATFORM_WINDOWS;
+#elif BUILDFLAG(IS_IOS)
+  return optimization_guide::proto::CHROME_PLATFORM_IOS;
+#elif BUILDFLAG(IS_MAC)
+  return optimization_guide::proto::CHROME_PLATFORM_MAC;
+#elif BUILDFLAG(IS_CHROMEOS)
+  return optimization_guide::proto::CHROME_PLATFORM_CHROMEOS;
+#elif BUILDFLAG(IS_ANDROID)
+  return optimization_guide::proto::CHROME_PLATFORM_ANDROID;
+#elif BUILDFLAG(IS_LINUX)
+  return optimization_guide::proto::CHROME_PLATFORM_LINUX;
+#else
+  return optimization_guide::proto::CHROME_PLATFORM_UNKNOWN;
+#endif
 }
 
 void LogFeatureFlagsInfo(OptimizationGuideLogger* optimization_guide_logger,
@@ -162,12 +213,6 @@ void LogFeatureFlagsInfo(OptimizationGuideLogger* optimization_guide_logger,
         optimization_guide_common::mojom::LogSource::SERVICE_AND_SETTINGS,
         optimization_guide_logger, "FEATURE_FLAG Hints component disabled");
   }
-  if (!optimization_guide::features::IsRemoteFetchingEnabled()) {
-    OPTIMIZATION_GUIDE_LOG(
-        optimization_guide_common::mojom::LogSource::SERVICE_AND_SETTINGS,
-        optimization_guide_logger,
-        "FEATURE_FLAG remote fetching feature disabled");
-  }
   if (!optimization_guide::IsUserPermittedToFetchFromRemoteOptimizationGuide(
           is_off_the_record, pref_service)) {
     OPTIMIZATION_GUIDE_LOG(
@@ -180,12 +225,6 @@ void LogFeatureFlagsInfo(OptimizationGuideLogger* optimization_guide_logger,
         optimization_guide_common::mojom::LogSource::SERVICE_AND_SETTINGS,
         optimization_guide_logger,
         "FEATURE_FLAG remote push notification feature disabled");
-  }
-  if (!optimization_guide::features::IsModelDownloadingEnabled()) {
-    OPTIMIZATION_GUIDE_LOG(
-        optimization_guide_common::mojom::LogSource::SERVICE_AND_SETTINGS,
-        optimization_guide_logger,
-        "FEATURE_FLAG model downloading feature disabled");
   }
 }
 

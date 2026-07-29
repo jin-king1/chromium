@@ -133,7 +133,7 @@ struct BLINK_COMMON_EXPORT
     return data.enable_encrypted_media;
   }
 
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
   static const bool& use_overlay_scrollbar(
       const ::blink::RendererPreferences& data) {
     return data.use_overlay_scrollbar;
@@ -148,6 +148,11 @@ struct BLINK_COMMON_EXPORT
   static const std::vector<::blink::WebRtcIpHandlingUrlEntry>&
   webrtc_ip_handling_urls(const ::blink::RendererPreferences& data) {
     return data.webrtc_ip_handling_urls;
+  }
+
+  static const std::optional<bool> webrtc_post_quantum_key_agreement(
+      const ::blink::RendererPreferences& data) {
+    return data.webrtc_post_quantum_key_agreement;
   }
 
   static const uint16_t& webrtc_udp_min_port(
@@ -194,6 +199,13 @@ struct BLINK_COMMON_EXPORT
   }
 #endif
 
+#if BUILDFLAG(IS_LINUX)
+  static const bool& middle_click_paste_allowed(
+      const ::blink::RendererPreferences& data) {
+    return data.middle_click_paste_allowed;
+  }
+#endif
+
 #if BUILDFLAG(IS_WIN)
   static const std::u16string& caption_font_family_name(
       const ::blink::RendererPreferences& data) {
@@ -235,22 +247,6 @@ struct BLINK_COMMON_EXPORT
       const ::blink::RendererPreferences& data) {
     return data.message_font_height;
   }
-  static const int32_t& vertical_scroll_bar_width_in_dips(
-      const ::blink::RendererPreferences& data) {
-    return data.vertical_scroll_bar_width_in_dips;
-  }
-  static const int32_t& horizontal_scroll_bar_height_in_dips(
-      const ::blink::RendererPreferences& data) {
-    return data.horizontal_scroll_bar_height_in_dips;
-  }
-  static const int32_t& arrow_bitmap_height_vertical_scroll_bar_in_dips(
-      const ::blink::RendererPreferences& data) {
-    return data.arrow_bitmap_height_vertical_scroll_bar_in_dips;
-  }
-  static const int32_t& arrow_bitmap_width_horizontal_scroll_bar_in_dips(
-      const ::blink::RendererPreferences& data) {
-    return data.arrow_bitmap_width_horizontal_scroll_bar_in_dips;
-  }
 #endif
 
   static const bool& plugin_fullscreen_allowed(
@@ -270,9 +266,29 @@ struct BLINK_COMMON_EXPORT
   }
 #endif  // BUILDFLAG(IS_ANDROID)
 
+  static int32_t autofill_shortcut_key_code(
+      const ::blink::RendererPreferences& data) {
+    return static_cast<int32_t>(data.autofill_shortcut_key_code);
+  }
+
+  static int32_t autofill_shortcut_modifiers(
+      const ::blink::RendererPreferences& data) {
+    return data.autofill_shortcut_modifiers;
+  }
+
+  static const std::string& autofill_trigger_string(
+      const ::blink::RendererPreferences& data) {
+    return data.autofill_trigger_string;
+  }
+
   static const std::vector<uint16_t>& explicitly_allowed_network_ports(
       const ::blink::RendererPreferences& data) {
     return data.explicitly_allowed_network_ports;
+  }
+
+  static bool view_source_line_wrap_enabled(
+      const ::blink::RendererPreferences& data) {
+    return data.view_source_line_wrap_enabled;
   }
 
   static bool Read(blink::mojom::RendererPreferencesDataView,

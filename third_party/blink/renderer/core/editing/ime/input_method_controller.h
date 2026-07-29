@@ -27,6 +27,7 @@
 #define THIRD_PARTY_BLINK_RENDERER_CORE_EDITING_IME_INPUT_METHOD_CONTROLLER_H_
 
 #include "base/gtest_prod_util.h"
+#include "third_party/blink/public/mojom/input/input_handler.mojom-blink.h"
 #include "third_party/blink/public/platform/web_text_input_info.h"
 #include "third_party/blink/public/platform/web_text_input_type.h"
 #include "third_party/blink/renderer/core/core_export.h"
@@ -46,6 +47,7 @@ namespace blink {
 
 class Editor;
 class EditContext;
+class FrameSelection;
 class LocalDOMWindow;
 class LocalFrame;
 class Range;
@@ -60,8 +62,6 @@ class CORE_EXPORT InputMethodController final
     kKeepSelection,
   };
 
-  enum class MoveCaretBehavior { kDoNotMove, kMoveCaretAfterText };
-
   explicit InputMethodController(LocalDOMWindow&, LocalFrame&);
   InputMethodController(const InputMethodController&) = delete;
   InputMethodController& operator=(const InputMethodController&) = delete;
@@ -70,19 +70,21 @@ class CORE_EXPORT InputMethodController final
 
   // international text input composition
   bool HasComposition() const;
-  void SetComposition(const String& text,
-                      const Vector<ImeTextSpan>& ime_text_spans,
-                      int selection_start,
-                      int selection_end);
+  void SetComposition(
+      const String& text,
+      const Vector<ImeTextSpan>& ime_text_spans,
+      int selection_start,
+      int selection_end,
+      mojom::blink::ImeState ime_state = mojom::blink::ImeState::kNone);
   void SetCompositionFromExistingText(const Vector<ImeTextSpan>& ime_text_spans,
-                                      unsigned composition_start,
-                                      unsigned composition_end);
+                                      wtf_size_t composition_start,
+                                      wtf_size_t composition_end);
   void AddImeTextSpansToExistingText(const Vector<ImeTextSpan>& ime_text_spans,
-                                     unsigned text_start,
-                                     unsigned text_end);
+                                     wtf_size_t text_start,
+                                     wtf_size_t text_end);
   void ClearImeTextSpansByType(ImeTextSpan::Type type,
-                               unsigned text_start,
-                               unsigned text_end);
+                               wtf_size_t text_start,
+                               wtf_size_t text_end);
 
   // Deletes ongoing composing text if any, inserts specified text, and
   // changes the selection according to relativeCaretPosition, which is
@@ -91,11 +93,16 @@ class CORE_EXPORT InputMethodController final
                   const Vector<ImeTextSpan>& ime_text_spans,
                   int relative_caret_position);
 
-  // Replaces the text in the specified range and possibly changes the selection
-  // or the caret position.
+  // Replaces the text in the specified range and keep the current selection.
+  bool ReplaceTextAndKeepSelection(const String& text,
+                                   const Vector<ImeTextSpan>& ime_text_spans,
+                                   PlainTextRange range);
+
+  // Replaces the text in the specified range and move the caret position. The
+  // relative_caret_position is relative to the end of the text being replaced.
   bool ReplaceTextAndMoveCaret(const String&,
                                PlainTextRange,
-                               MoveCaretBehavior);
+                               int relative_caret_position);
 
   // Inserts ongoing composing text; changes the selection to the end of
   // the inserting text if DoNotKeepSelection, or holds the selection if
@@ -189,6 +196,7 @@ class CORE_EXPORT InputMethodController final
 
   Editor& GetEditor() const;
   LocalFrame& GetFrame() const;
+  FrameSelection& Selection() const;
 
   String ComposingText() const;
   void SelectComposition() const;
@@ -200,7 +208,7 @@ class CORE_EXPORT InputMethodController final
 
   void AddImeTextSpans(const Vector<ImeTextSpan>& ime_text_spans,
                        ContainerNode* base_element,
-                       unsigned offset_in_plain_chars);
+                       wtf_size_t offset_in_plain_chars);
 
   bool InsertText(const String&);
   bool InsertTextAndMoveCaret(const String&,

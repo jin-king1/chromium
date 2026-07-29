@@ -6,6 +6,7 @@
 
 #include "base/metrics/histogram_functions.h"
 #include "chrome/browser/storage_access_api/storage_access_api_service.h"
+#include "chrome/browser/storage_access_api/storage_access_api_utils.h"
 #include "components/guest_view/buildflags/buildflags.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents_observer.h"
@@ -14,15 +15,6 @@
 #if BUILDFLAG(ENABLE_GUEST_VIEW)
 #include "components/guest_view/browser/guest_view_base.h"
 #endif
-
-namespace {
-
-void RecordRenewalDeltaSample(base::TimeDelta delta) {
-  base::UmaHistogramCounts1000(
-      "API.StorageAccess.PermissionRenewedDeltaToExpiration", delta.InHours());
-}
-
-}  // namespace
 
 StorageAccessAPITabHelper::~StorageAccessAPITabHelper() = default;
 
@@ -42,19 +34,14 @@ void StorageAccessAPITabHelper::FrameReceivedUserActivation(
   }
 #endif
 
-  if (rfh->GetLastCommittedOrigin().opaque() ||
-      rfh->GetParentOrOuterDocument()->GetLastCommittedOrigin().opaque()) {
+  if (rfh->GetParentOrOuterDocument()->GetLastCommittedOrigin().opaque() ||
+      IsAccessRestrictedInFrame(rfh)) {
     return;
   }
 
-  std::optional<base::TimeDelta> delta_to_expiration =
-      service_->RenewPermissionGrant(
-          rfh->GetLastCommittedOrigin(),
-          rfh->GetParentOrOuterDocument()->GetLastCommittedOrigin());
-
-  if (delta_to_expiration.has_value()) {
-    RecordRenewalDeltaSample(delta_to_expiration.value());
-  }
+  service_->RenewPermissionGrant(
+      rfh->GetLastCommittedOrigin(),
+      rfh->GetParentOrOuterDocument()->GetLastCommittedOrigin());
 }
 
 StorageAccessAPITabHelper::StorageAccessAPITabHelper(

@@ -4,26 +4,78 @@
 
 #include "components/autofill/core/browser/crowdsourcing/votes_uploader.h"
 
+#include <stddef.h>
+
+#include <algorithm>
+#include <list>
+#include <map>
+#include <memory>
+#include <optional>
+#include <set>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "base/check.h"
+#include "base/check_op.h"
 #include "base/containers/to_vector.h"
+#include "base/feature_list.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback_forward.h"
+#include "base/functional/callback_helpers.h"
+#include "base/location.h"
 #include "base/memory/weak_ptr.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
+#include "base/time/time.h"
+#include "base/timer/timer.h"
+#include "base/types/zip.h"
 #include "components/autofill/core/browser/crowdsourcing/autofill_crowdsourcing_encoding.h"
 #include "components/autofill/core/browser/crowdsourcing/autofill_crowdsourcing_manager.h"
 #include "components/autofill/core/browser/crowdsourcing/determine_possible_field_types.h"
 #include "components/autofill/core/browser/crowdsourcing/randomized_encoder.h"
+#include "components/autofill/core/browser/data_manager/autofill_ai/entity_data_manager.h"
 #include "components/autofill/core/browser/data_manager/personal_data_manager.h"
+#include "components/autofill/core/browser/data_manager/valuables/valuables_data_manager.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
+#include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
+#include "components/autofill/core/browser/data_model/valuables/loyalty_card.h"
 #include "components/autofill/core/browser/form_import/form_data_importer.h"
+#include "components/autofill/core/browser/form_qualifiers.h"
 #include "components/autofill/core/browser/form_structure.h"
+#include "components/autofill/core/browser/form_types.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
+#include "components/autofill/core/browser/foundations/autofill_driver.h"
 #include "components/autofill/core/browser/metrics/autofill_metrics.h"
 #include "components/autofill/core/browser/metrics/field_filling_stats_and_score_metrics.h"
 #include "components/autofill/core/browser/metrics/form_interactions_ukm_logger.h"
 #include "components/autofill/core/browser/metrics/quality_metrics.h"
+#include "components/autofill/core/browser/proto/server.pb.h"
+#include "components/autofill/core/browser/suggestions/suggestion_util.h"
+#include "components/autofill/core/common/autofill_constants.h"
+#include "components/autofill/core/common/autofill_features.h"
+#include "components/autofill/core/common/language_code.h"
+#include "components/autofill/core/common/signatures.h"
+#include "components/autofill/core/common/unique_ids.h"
+#include "components/one_time_tokens/core/browser/one_time_token_service.h"
+#include "services/metrics/public/cpp/ukm_source_id.h"
 
 namespace autofill {
+
+using one_time_tokens::OneTimeToken;
+
+struct VotesUploader::VoteData {
+  bool empty() const;
+
+  std::vector<AutofillProfile> profiles;
+  std::vector<CreditCard> credit_cards;
+  std::vector<EntityInstance> entities;
+  std::vector<LoyaltyCard> loyalty_cards;
+  std::vector<OneTimeToken> otps;
+};
 
 namespace {
 
@@ -72,6 +124,11 @@ struct VotesUploader::PendingVote {
   FormSignature form_signature;
   base::OnceClosure upload_vote;
 };
+
+bool VotesUploader::VoteData::empty() const {
+  return profiles.empty() && credit_cards.empty() && entities.empty() &&
+         loyalty_cards.empty() && otps.empty();
+}
 
 VotesUploader::VotesUploader(AutofillClient* client) : client_(*client) {
   driver_observer_.Observe(&client_->GetAutofillDriverFactory());
@@ -162,9 +219,7 @@ void VotesUploader::OnAutofillDriverStateChanged(
     case kInactive:
       if (old_state == kActive) {
         // Case (1): The frame has become inactive (i.e., entered bfcache).
-        if (base::FeatureList::IsEnabled(features::kAutofillVoteWhenInactive)) {
-          delayed_flush_queued_votes_for_frame(driver.GetFrameToken());
-        }
+        delayed_flush_queued_votes_for_frame(driver.GetFrameToken());
       }
       break;
     case kActive:
@@ -194,99 +249,202 @@ bool VotesUploader::MaybeStartVoteUploadProcess(
     base::TimeTicks initial_interaction_timestamp,
     const std::u16string& last_unlocked_credit_card_cvc,
     ukm::SourceId ukm_source_id) {
-  // Only upload server statistics and UMA metrics if at least some local data
-  // is available to use as a baseline.
   std::vector<const AutofillProfile*> profiles =
       client_->GetPersonalDataManager().address_data_manager().GetProfiles();
-  if (observed_submission && form->IsAutofillable()) {
+  std::vector<CreditCard> credit_cards =
+      base::ToVector(client_->GetPersonalDataManager()
+                         .payments_data_manager()
+                         .GetCreditCards(),
+                     [](const auto* ptr) { return *ptr; });
+
+  std::vector<EntityInstance> entities;
+  if (EntityDataManager* edm = client_->GetEntityDataManager()) {
+    entities = base::ToVector(edm->GetEntityInstances());
+  }
+
+  std::vector<LoyaltyCard> loyalty_cards;
+  if (ValuablesDataManager* valuables_data_manager =
+          client_->GetValuablesDataManager()) {
+    loyalty_cards = valuables_data_manager->GetLoyaltyCards();
+  }
+
+  if (observed_submission && IsAutofillable(*form)) {
     AutofillMetrics::LogNumberOfProfilesAtAutofillableFormSubmission(
         profiles.size());
   }
 
-  const std::vector<const CreditCard*>& credit_cards =
-      client_->GetPersonalDataManager()
-          .payments_data_manager()
-          .GetCreditCards();
+  std::vector<OneTimeToken> otps;
+  one_time_tokens::OneTimeTokenService* token_service =
+      client_->GetOneTimeTokenService();
+  if (token_service) {
+    otps = token_service->GetCachedOneTimeTokens();
+  }
 
-  if (profiles.empty() && credit_cards.empty()) {
+  VoteData vote_data = {
+      .profiles = base::ToVector(profiles, [](const auto* p) { return *p; }),
+      .credit_cards = std::move(credit_cards),
+      .entities = std::move(entities),
+      .loyalty_cards = std::move(loyalty_cards),
+      .otps = std::move(otps)};
+
+  bool has_potential_otp_field = std::ranges::any_of(
+      form->fields(), [](const std::unique_ptr<AutofillField>& field) {
+        return OneTimeToken::IsPotentialOtp(field->value());
+      });
+
+  if (vote_data.empty() &&
+      (!has_potential_otp_field ||
+       !base::FeatureList::IsEnabled(
+           features::kAutofillSmsOtpCrowdsourcingFetchFromGmscore))) {
     return false;
   }
 
-  if (form->field_count() * (profiles.size() + credit_cards.size()) >=
+  if (form->field_count() *
+          (vote_data.profiles.size() + vote_data.credit_cards.size() +
+           vote_data.entities.size() + vote_data.loyalty_cards.size()) >=
       kMaxTypeMatchingCalls) {
     return false;
   }
 
-  // Copy the profile and credit card data, so that it can be accessed on a
-  // separate thread.
-  std::vector<AutofillProfile> copied_profiles = base::ToVector(
-      profiles, [](const AutofillProfile* profile) { return *profile; });
-  std::vector<CreditCard> copied_credit_cards = base::ToVector(
-      credit_cards, [](const CreditCard* card) { return *card; });
-
-  if (form->IsAutofillable()) {
-    // Associate the form signatures of recently submitted
-    // address/credit card forms to `submitted_form`, if it is an
-    // address/credit card form itself. This information is attached to
-    // the vote.
-    if (std::optional<FormStructure::FormAssociations> associations =
-            client_->GetFormDataImporter()->GetFormAssociations(
-                form->form_signature())) {
-      form->set_form_associations(*associations);
-    }
+  FormStructure::FormAssociations form_associations;
+  if (IsAutofillable(*form)) {
+    form_associations = client_->GetFormDataImporter()->GetFormAssociations(
+        form->form_signature());
   }
-
-  // Annotate the form with the source language of the page.
-  form->set_current_page_language(current_page_language);
-
-  // Attach the Randomized Encoder.
-  form->set_randomized_encoder(RandomizedEncoder::Create(client_->GetPrefs()));
 
   // Determine |ADDRESS_HOME_STATE| as a possible types for the fields in the
   // |form| with the help of |AlternativeStateNameMap|.
   // |AlternativeStateNameMap| can only be accessed on the main UI thread.
-  PreProcessStateMatchingTypes(*client_, copied_profiles, *form);
+  std::set<FieldGlobalId> fields_that_match_state =
+      PreProcessStateMatchingTypes(profiles, *form, client_->GetAppLocale());
 
-  // TODO(crbug.com/368306576): Bound the size of `copied_profiles` and
-  // `copied_credit_cards` by `kMaxDataConsideredForPossibleTypes` and make
-  // the call to DeterminePossibleFieldTypesForUpload() synchronous.
+  if (token_service && vote_data.otps.empty() && has_potential_otp_field &&
+      base::FeatureList::IsEnabled(
+          features::kAutofillSmsOtpCrowdsourcingFetchFromGmscore)) {
+    // This is the 80 percentile latency of the otp success retrieval flow. The
+    // longer the timeout, the more risk we have of losing votes because the
+    // tab might be closed before we submit the votes.
+    constexpr base::TimeDelta kOtpSubscriptionTimeout = base::Milliseconds(600);
+    // The rest of the upload process is continued in `StartVoteUploadProcess`,
+    // which will be called after a timeout, or when RequestOneTimeToken
+    // returns.
+    token_service->RequestOneTimeToken(
+        kOtpSubscriptionTimeout,
+        base::BindOnce(
+            [](base::WeakPtr<VotesUploader> weak_ptr,
+               std::unique_ptr<FormStructure> form, bool observed_submission,
+               LanguageCode current_page_language,
+               base::TimeTicks initial_interaction_timestamp,
+               const std::u16string& last_unlocked_credit_card_cvc,
+               ukm::SourceId ukm_source_id,
+               FormStructure::FormAssociations form_associations,
+               std::set<FieldGlobalId> fields_that_match_state,
+               VoteData current_vote_data, std::optional<OneTimeToken> token) {
+              if (!weak_ptr) {
+                return;
+              }
+              if (token) {
+                current_vote_data.otps.push_back(std::move(*token));
+              }
+              weak_ptr->StartVoteUploadProcess(
+                  std::move(form), observed_submission, current_page_language,
+                  initial_interaction_timestamp, last_unlocked_credit_card_cvc,
+                  ukm_source_id, std::move(current_vote_data),
+                  std::move(form_associations),
+                  std::move(fields_that_match_state));
+            },
+            weak_ptr_factory_.GetWeakPtr(), std::move(form),
+            observed_submission, current_page_language,
+            initial_interaction_timestamp, last_unlocked_credit_card_cvc,
+            ukm_source_id, std::move(form_associations),
+            std::move(fields_that_match_state), std::move(vote_data)));
+    return true;
+  }
+
+  StartVoteUploadProcess(std::move(form), observed_submission,
+                         current_page_language, initial_interaction_timestamp,
+                         last_unlocked_credit_card_cvc, ukm_source_id,
+                         std::move(vote_data), std::move(form_associations),
+                         std::move(fields_that_match_state));
+  return true;
+}
+
+void VotesUploader::StartVoteUploadProcess(
+    std::unique_ptr<FormStructure> form,
+    bool observed_submission,
+    LanguageCode current_page_language,
+    base::TimeTicks initial_interaction_timestamp,
+    const std::u16string& last_unlocked_credit_card_cvc,
+    ukm::SourceId ukm_source_id,
+    VoteData vote_data,
+    FormStructure::FormAssociations form_associations,
+    std::set<FieldGlobalId> fields_that_match_state) {
   task_runner().PostTaskAndReplyWithResult(
       FROM_HERE,
       base::BindOnce(
-          [](const std::vector<AutofillProfile>& profiles,
-             const std::vector<CreditCard>& credit_cards,
+          [](VoteData vote_data,
              const std::u16string& last_unlocked_credit_card_cvc,
-             const std::string& app_locale,
-             std::unique_ptr<FormStructure> form) {
-            DeterminePossibleFieldTypesForUpload(profiles, credit_cards,
-                                                 last_unlocked_credit_card_cvc,
-                                                 app_locale, form.get());
-            return form;
+             const std::string& app_locale, bool observed_submission,
+             std::unique_ptr<FormStructure> form,
+             std::optional<RandomizedEncoder> randomized_encoder,
+             LanguageCode current_page_language,
+             FormStructure::FormAssociations form_associations,
+             std::set<FieldGlobalId> fields_that_match_state) {
+            std::vector<PossibleTypes> possible_types =
+                DeterminePossibleFieldTypesForUpload(
+                    vote_data.profiles, vote_data.credit_cards,
+                    vote_data.entities, vote_data.loyalty_cards,
+                    fields_that_match_state, last_unlocked_credit_card_cvc,
+                    vote_data.otps, app_locale, *form);
+
+            for (auto [field, pt] : base::zip(form->fields(), possible_types)) {
+              field->set_possible_types(pt.types);
+            }
+
+            EncodeUploadRequestOptions options;
+            options.encoder = std::move(randomized_encoder);
+            options.current_page_language = std::move(current_page_language);
+            options.form_associations = std::move(form_associations);
+            options.observed_submission = observed_submission;
+            options.available_field_types = DetermineAvailableFieldTypes(
+                vote_data.profiles, vote_data.credit_cards, vote_data.entities,
+                vote_data.loyalty_cards, last_unlocked_credit_card_cvc,
+                vote_data.otps, app_locale);
+            for (auto [field, dates_and_formats] :
+                 base::zip(form->fields(), possible_types)) {
+              options.fields[field->global_id()].format_strings =
+                  std::move(dates_and_formats).formats;
+            }
+
+            std::vector<AutofillUploadContents> upload_contents =
+                EncodeUploadRequest(*form, options);
+            return std::pair(std::move(form), std::move(upload_contents));
           },
-          std::move(copied_profiles), std::move(copied_credit_cards),
-          last_unlocked_credit_card_cvc, client_->GetAppLocale(),
-          std::move(form)),
+          std::move(vote_data), last_unlocked_credit_card_cvc,
+          client_->GetAppLocale(), observed_submission, std::move(form),
+          RandomizedEncoder::Create(client_->GetPrefs()),
+          std::move(current_page_language), std::move(form_associations),
+          std::move(fields_that_match_state)),
       base::BindOnce(&VotesUploader::OnFieldTypesDetermined,
                      weak_ptr_factory_.GetWeakPtr(),
                      initial_interaction_timestamp, base::TimeTicks::Now(),
-                     observed_submission, last_unlocked_credit_card_cvc,
-                     ukm_source_id));
-  return true;
+                     observed_submission, ukm_source_id));
 }
 
 void VotesUploader::OnFieldTypesDetermined(
     base::TimeTicks initial_interaction_timestamp,
     base::TimeTicks submission_timestamp,
     bool observed_submission,
-    const std::u16string& last_unlocked_credit_card_cvc,
     ukm::SourceId ukm_source_id,
-    std::unique_ptr<FormStructure> form) {
+    std::pair<std::unique_ptr<FormStructure>,
+              std::vector<AutofillUploadContents>> form_and_upload_contents) {
+  auto& [form, upload_contents] = form_and_upload_contents;
   LocalFrameToken frame = form->global_id().frame_token;
   WipePendingVotesForForm(form->form_signature());
   if (observed_submission) {
-    UploadVote(std::move(form), initial_interaction_timestamp,
-               submission_timestamp, observed_submission,
-               last_unlocked_credit_card_cvc, ukm_source_id);
+    UploadVote(std::move(form), std::move(upload_contents),
+               initial_interaction_timestamp, submission_timestamp,
+               observed_submission, ukm_source_id);
     FlushPendingVotesForFrame(frame);
   } else {
     FlushOldestPendingVotesIfNecessary();
@@ -295,9 +453,9 @@ void VotesUploader::OnFieldTypesDetermined(
          .form_signature = form->form_signature(),
          .upload_vote = base::BindOnce(
              &VotesUploader::UploadVote, weak_ptr_factory_.GetWeakPtr(),
-             std::move(form), initial_interaction_timestamp,
-             submission_timestamp, observed_submission,
-             last_unlocked_credit_card_cvc, ukm_source_id)});
+             std::move(form), std::move(upload_contents),
+             initial_interaction_timestamp, submission_timestamp,
+             observed_submission, ukm_source_id)});
   }
 }
 
@@ -317,16 +475,16 @@ void VotesUploader::FlushOldestPendingVotesIfNecessary() {
 
 void VotesUploader::UploadVote(
     std::unique_ptr<FormStructure> submitted_form,
+    std::vector<AutofillUploadContents> upload_contents,
     base::TimeTicks initial_interaction_timestamp,
     base::TimeTicks submission_timestamp,
     bool observed_submission,
-    const std::u16string& last_unlocked_credit_card_cvc,
     ukm::SourceId ukm_source_id) {
   auto count_types = [&submitted_form](FormType type) {
     return std::ranges::count_if(
         submitted_form->fields(),
         [=](const std::unique_ptr<AutofillField>& field) {
-          return FieldTypeGroupToFormType(field->Type().group()) == type;
+          return field->Type().GetFormTypes().contains(type);
         });
   };
 
@@ -363,44 +521,29 @@ void VotesUploader::UploadVote(
 
   // If the form is submitted, we don't need to send pending votes from blur
   // (un-focus) events.
-  if (submitted_form->ShouldRunHeuristics() ||
-      submitted_form->ShouldRunHeuristicsForSingleFields() ||
-      submitted_form->ShouldBeQueried()) {
+  if (ShouldRunHeuristics(
+          *submitted_form,
+          /*ignore_small_forms=*/!client_->IsTabInActorMode()) ||
+      ShouldRunHeuristicsForSingleFields(*submitted_form) ||
+      ShouldBeQueried(*submitted_form)) {
     autofill_metrics::LogQualityMetrics(
         *submitted_form, submitted_form->form_parsed_timestamp(),
         initial_interaction_timestamp, submission_timestamp,
         client_->GetFormInteractionsUkmLogger(), ukm_source_id,
-        observed_submission);
+        observed_submission, GetAcUnrecognizedBehavior(*client_));
   }
-  if (!submitted_form->ShouldBeUploaded()) {
+  if (!ShouldBeUploaded(*submitted_form)) {
     return;
   }
   if (autofill_metrics::ShouldRecordUkm() &&
-      submitted_form->ShouldUploadUkm(
-          /*require_classified_field=*/true)) {
+      ShouldUploadUkm(*submitted_form,
+                      /*require_classified_field=*/true)) {
     AutofillMetrics::LogAutofillFieldInfoAfterSubmission(
         client_->GetUkmRecorder(), ukm_source_id, *submitted_form,
         submission_timestamp);
   }
-  const PersonalDataManager& pdm = client_->GetPersonalDataManager();
-  FieldTypeSet non_empty_types;
-  for (const AutofillProfile* profile :
-       pdm.address_data_manager().GetProfiles()) {
-    profile->GetNonEmptyTypes(client_->GetAppLocale(), &non_empty_types);
-  }
-  for (const CreditCard* card : pdm.payments_data_manager().GetCreditCards()) {
-    card->GetNonEmptyTypes(client_->GetAppLocale(), &non_empty_types);
-  }
-  // As CVC is not stored, treat it separately.
-  if (!last_unlocked_credit_card_cvc.empty() ||
-      non_empty_types.contains(CREDIT_CARD_NUMBER)) {
-    non_empty_types.insert(CREDIT_CARD_VERIFICATION_CODE);
-  }
   client_->GetCrowdsourcingManager().StartUploadRequest(
-      /*upload_contents=*/EncodeUploadRequest(*submitted_form, non_empty_types,
-                                              /*login_form_signature=*/{},
-                                              observed_submission),
-      submitted_form->submission_source(),
+      std::move(upload_contents), submitted_form->submission_source(),
       /*is_password_manager_upload=*/false);
 }
 

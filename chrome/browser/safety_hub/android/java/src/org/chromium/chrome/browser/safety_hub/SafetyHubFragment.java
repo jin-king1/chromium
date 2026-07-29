@@ -4,25 +4,26 @@
 
 package org.chromium.chrome.browser.safety_hub;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
 import static org.chromium.chrome.browser.safety_hub.SafetyHubMetricUtils.getDashboardModuleTypeForModuleOption;
 import static org.chromium.chrome.browser.safety_hub.SafetyHubMetricUtils.recordDashboardInteractions;
 import static org.chromium.chrome.browser.safety_hub.SafetyHubMetricUtils.recordModuleState;
 
-import android.app.Activity;
 import android.os.Bundle;
 import android.view.Menu;
 import android.view.MenuInflater;
 import android.view.MenuItem;
-import android.view.ViewStub;
 
 import androidx.annotation.VisibleForTesting;
 import androidx.fragment.app.Fragment;
 
 import org.chromium.base.CallbackController;
-import org.chromium.base.supplier.ObservableSupplier;
-import org.chromium.base.supplier.ObservableSupplierImpl;
-import org.chromium.base.task.PostTask;
-import org.chromium.base.task.TaskTraits;
+import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
+import org.chromium.build.annotations.Initializer;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.password_manager.PasswordStoreBridge;
 import org.chromium.chrome.browser.safety_hub.SafetyHubMetricUtils.DashboardInteractions;
@@ -30,9 +31,9 @@ import org.chromium.chrome.browser.safety_hub.SafetyHubMetricUtils.DashboardModu
 import org.chromium.chrome.browser.safety_hub.SafetyHubMetricUtils.LifecycleEvent;
 import org.chromium.chrome.browser.safety_hub.SafetyHubModuleMediator.ModuleOption;
 import org.chromium.chrome.browser.safety_hub.SafetyHubModuleMediator.ModuleState;
+import org.chromium.chrome.browser.settings.search.ChromeBaseSearchIndexProvider;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
-import org.chromium.components.browser_ui.settings.ExpandablePreferenceGroup;
 import org.chromium.components.browser_ui.settings.SettingsUtils;
 import org.chromium.components.browser_ui.site_settings.SiteSettingsCategory;
 import org.chromium.components.browser_ui.util.TraceEventVectorDrawableCompat;
@@ -43,9 +44,11 @@ import java.util.Arrays;
 import java.util.List;
 
 /** Fragment containing Safety hub. */
+@NullMarked
 public class SafetyHubFragment extends SafetyHubBaseFragment
         implements SafetyHubModuleMediatorDelegate {
-    private static final String PREF_PASSWORDS = "passwords_account";
+    private static final String PREF_UNIFIED_PASSWORDS = "passwords_unified";
+    private static final String PREF_ACCOUNT_PASSWORDS = "passwords_account";
     private static final String PREF_LOCAL_PASSWORDS = "passwords_local";
     private static final String PREF_UPDATE = "update_check";
     private static final String PREF_UNUSED_PERMISSIONS = "permissions";
@@ -70,25 +73,16 @@ public class SafetyHubFragment extends SafetyHubBaseFragment
     @VisibleForTesting
     static final String HELP_CENTER_URL = "https://support.google.com/chrome?p=safety_check";
 
-    private static final int ORGANIC_HATS_SURVEY_DELAY_MS = 10000;
+    private final SettableMonotonicObservableSupplier<String> mPageTitle =
+            ObservableSuppliers.createMonotonic();
 
-    private final ObservableSupplierImpl<String> mPageTitle = new ObservableSupplierImpl<>();
-
-    private SafetyHubModuleDelegate mDelegate;
-    private CallbackController mCallbackController;
+    private @Nullable SafetyHubModuleDelegate mDelegate;
+    private @Nullable CallbackController mCallbackController;
     private List<SafetyHubModuleMediator> mModuleMediators;
-    private SafetyHubBrowserStateModuleMediator mBrowserStateModuleMediator;
+    private @Nullable SafetyHubBrowserStateModuleMediator mBrowserStateModuleMediator;
 
     @Override
-    public void onCreatePreferences(Bundle bundle, String s) {
-        if (ChromeFeatureList.sSafetyHubAndroidOrganicSurvey.isEnabled()) {
-            mCallbackController = new CallbackController();
-            PostTask.postDelayedTask(
-                    TaskTraits.UI_DEFAULT,
-                    mCallbackController.makeCancelable(this::triggerOrganicHatsSurvey),
-                    ORGANIC_HATS_SURVEY_DELAY_MS);
-        }
-
+    public void onCreatePreferences(@Nullable Bundle bundle, @Nullable String s) {
         SettingsUtils.addPreferencesFromResource(this, R.xml.safety_hub_preferences);
         mPageTitle.set(getString(R.string.prefs_safety_check));
         setHasOptionsMenu(true);
@@ -100,15 +94,13 @@ public class SafetyHubFragment extends SafetyHubBaseFragment
         recordAllModulesState(LifecycleEvent.ON_IMPRESSION);
 
         // Notify the magic stack to dismiss the active module.
-        if (ChromeFeatureList.sSafetyHubMagicStack.isEnabled()) {
-            MagicStackBridge.getForProfile(getProfile()).dismissActiveModule();
-        }
+        MagicStackBridge.getForProfile(getProfile()).dismissActiveModule();
     }
 
     private void setUpModuleMediators() {
         SafetyHubFetchService safetyHubFetchService =
                 SafetyHubFetchServiceFactory.getForProfile(getProfile());
-
+        assert mDelegate != null;
         SafetyHubModuleMediator updateCheckModuleMediator =
                 new SafetyHubUpdateCheckModuleMediator(
                         findPreference(PREF_UPDATE), this, mDelegate, safetyHubFetchService);
@@ -120,11 +112,21 @@ public class SafetyHubFragment extends SafetyHubBaseFragment
         SafetyHubModuleMediator safeBrowsingModuleMediator =
                 new SafetyHubSafeBrowsingModuleMediator(
                         findPreference(PREF_SAFE_BROWSING), this, getProfile());
-        SafetyHubModuleMediator notificationsModuleMediator =
-                new SafetyHubNotificationsModuleMediator(
-                        findPreference(PREF_NOTIFICATIONS_REVIEW),
-                        this,
-                        NotificationPermissionReviewBridge.getForProfile(getProfile()));
+
+        mModuleMediators =
+                new ArrayList<>(
+                        Arrays.asList(
+                                updateCheckModuleMediator,
+                                permissionsRevocationModuleMediator,
+                                safeBrowsingModuleMediator));
+        if (shouldShowNotificationModule()) {
+            SafetyHubModuleMediator notificationsModuleMediator =
+                    new SafetyHubNotificationsModuleMediator(
+                            findPreference(PREF_NOTIFICATIONS_REVIEW),
+                            this,
+                            NotificationPermissionReviewBridge.getForProfile(getProfile()));
+            mModuleMediators.add(notificationsModuleMediator);
+        }
 
         SafetyHubAccountPasswordsDataSource accountPasswordsDataSource =
                 new SafetyHubAccountPasswordsDataSource(
@@ -133,36 +135,39 @@ public class SafetyHubFragment extends SafetyHubBaseFragment
                         safetyHubFetchService,
                         IdentityServicesProvider.get().getSigninManager(getProfile()),
                         getProfile());
-        SafetyHubAccountPasswordsModuleMediator accountPasswordsModuleMediator =
-                new SafetyHubAccountPasswordsModuleMediator(
-                        findPreference(PREF_PASSWORDS),
-                        accountPasswordsDataSource,
-                        /* mediatorDelegate= */ this,
-                        mDelegate);
+        SafetyHubLocalPasswordsDataSource localPasswordsDataSource =
+                new SafetyHubLocalPasswordsDataSource(
+                        mDelegate,
+                        UserPrefs.get(getProfile()),
+                        safetyHubFetchService,
+                        new PasswordStoreBridge(getProfile()));
 
-        mModuleMediators =
-                new ArrayList<SafetyHubModuleMediator>(
-                        Arrays.asList(
-                                updateCheckModuleMediator,
-                                permissionsRevocationModuleMediator,
-                                safeBrowsingModuleMediator,
-                                notificationsModuleMediator,
-                                accountPasswordsModuleMediator));
-
-        if (ChromeFeatureList.isEnabled(ChromeFeatureList.SAFETY_HUB_LOCAL_PASSWORDS_MODULE)) {
-            SafetyHubLocalPasswordsDataSource localPasswordsDataSource =
-                    new SafetyHubLocalPasswordsDataSource(
-                            mDelegate,
-                            UserPrefs.get(getProfile()),
-                            safetyHubFetchService,
-                            new PasswordStoreBridge(getProfile()));
-            SafetyHubLocalPasswordsModuleMediator localPasswordsModuleMediator =
-                    new SafetyHubLocalPasswordsModuleMediator(
-                            findPreference(PREF_LOCAL_PASSWORDS),
+        if (shouldShowUnifiedPasswords()) {
+            SafetyHubPasswordsModuleMediator passwordsModuleMediator =
+                    new SafetyHubPasswordsModuleMediator(
+                            findPreference(PREF_UNIFIED_PASSWORDS),
+                            accountPasswordsDataSource,
                             localPasswordsDataSource,
                             /* mediatorDelegate= */ this,
                             mDelegate);
-            mModuleMediators.add(localPasswordsModuleMediator);
+            mModuleMediators.add(passwordsModuleMediator);
+        } else {
+            SafetyHubAccountPasswordsModuleMediator accountPasswordsModuleMediator =
+                    new SafetyHubAccountPasswordsModuleMediator(
+                            findPreference(PREF_ACCOUNT_PASSWORDS),
+                            accountPasswordsDataSource,
+                            /* mediatorDelegate= */ this,
+                            mDelegate);
+            mModuleMediators.add(accountPasswordsModuleMediator);
+            if (shouldShowLocalPasswords()) {
+                SafetyHubLocalPasswordsModuleMediator localPasswordsModuleMediator =
+                        new SafetyHubLocalPasswordsModuleMediator(
+                                findPreference(PREF_LOCAL_PASSWORDS),
+                                localPasswordsDataSource,
+                                /* mediatorDelegate= */ this,
+                                mDelegate);
+                mModuleMediators.add(localPasswordsModuleMediator);
+            }
         }
 
         mBrowserStateModuleMediator =
@@ -175,9 +180,30 @@ public class SafetyHubFragment extends SafetyHubBaseFragment
         }
     }
 
+    private static boolean shouldShowNotificationModule() {
+        return !ChromeFeatureList.isEnabled(
+                        ChromeFeatureList.SAFETY_HUB_DISRUPTIVE_NOTIFICATION_REVOCATION)
+                || ChromeFeatureList.getFieldTrialParamByFeatureAsBoolean(
+                        ChromeFeatureList.SAFETY_HUB_DISRUPTIVE_NOTIFICATION_REVOCATION,
+                        "shadow_run",
+                        true);
+    }
+
+    private static boolean shouldShowUnifiedPasswords() {
+        return ChromeFeatureList.isEnabled(ChromeFeatureList.SAFETY_HUB_UNIFIED_PASSWORDS_MODULE)
+                && ChromeFeatureList.isEnabled(ChromeFeatureList.SAFETY_HUB_LOCAL_PASSWORDS_MODULE);
+    }
+
+    private static boolean shouldShowLocalPasswords() {
+        return !shouldShowUnifiedPasswords()
+                && ChromeFeatureList.isEnabled(ChromeFeatureList.SAFETY_HUB_LOCAL_PASSWORDS_MODULE);
+    }
+
     private void setUpSafetyTipsModule() {
-        ExpandablePreferenceGroup safetyTipsPreference = findPreference(PREF_SAFETY_TIPS);
+        SafetyHubExpandablePreferenceCategory safetyTipsPreference =
+                findPreference(PREF_SAFETY_TIPS);
         safetyTipsPreference.setExpanded(false);
+        safetyTipsPreference.setOnExpandedListener(this::notifyPreferencesUpdated);
 
         findPreference(PREF_SAFETY_TIPS_SAFETY_TOOLS)
                 .setOnPreferenceClickListener(
@@ -210,7 +236,7 @@ public class SafetyHubFragment extends SafetyHubBaseFragment
     }
 
     @Override
-    public ObservableSupplier<String> getPageTitle() {
+    public MonotonicObservableSupplier<String> getPageTitle() {
         return mPageTitle;
     }
 
@@ -237,10 +263,10 @@ public class SafetyHubFragment extends SafetyHubBaseFragment
     public void onCreateOptionsMenu(Menu menu, MenuInflater inflater) {
         menu.clear();
         MenuItem help =
-                menu.add(Menu.NONE, R.id.menu_id_targeted_help, Menu.NONE, R.string.menu_help);
+                menu.add(Menu.NONE, R.id.menu_id_targeted_help, Menu.NONE, getHelpMenuStringRes());
         help.setIcon(
                 TraceEventVectorDrawableCompat.create(
-                        getResources(), R.drawable.ic_help_and_feedback, getActivity().getTheme()));
+                        getResources(), R.drawable.ic_help_24dp, getActivity().getTheme()));
     }
 
     @Override
@@ -254,14 +280,19 @@ public class SafetyHubFragment extends SafetyHubBaseFragment
     }
 
     @Override
-    public void onResume() {
-        super.onResume();
+    public void onStart() {
+        super.onStart();
         updateAllModules();
 
         for (SafetyHubModuleMediator moduleMediator : mModuleMediators) {
+            // Fetch the passwords again to get the latest result.
             if (moduleMediator.getOption() == ModuleOption.ACCOUNT_PASSWORDS) {
-                // Fetch the passwords again to get the latest result.
                 ((SafetyHubAccountPasswordsModuleMediator) moduleMediator)
+                        .triggerNewCredentialFetch();
+                break;
+            }
+            if (moduleMediator.getOption() == ModuleOption.LOCAL_PASSWORDS) {
+                ((SafetyHubLocalPasswordsModuleMediator) moduleMediator)
                         .triggerNewCredentialFetch();
                 break;
             }
@@ -286,6 +317,11 @@ public class SafetyHubFragment extends SafetyHubBaseFragment
             mBrowserStateModuleMediator.destroy();
             mBrowserStateModuleMediator = null;
         }
+
+        if (mDelegate != null) {
+            mDelegate.destroy();
+            mDelegate = null;
+        }
     }
 
     private void updateAllModules() {
@@ -298,11 +334,13 @@ public class SafetyHubFragment extends SafetyHubBaseFragment
 
     @Override
     public void onUpdateNeeded() {
+        assumeNonNull(mBrowserStateModuleMediator);
         // `mBrowserStateModuleMediator` needs to be updated after all the other modules change, as
         // it depends on them.
         mBrowserStateModuleMediator.updateModule();
 
         updateAllModulesExpandState();
+        notifyPreferencesUpdated();
     }
 
     private void updateAllModulesExpandState() {
@@ -322,6 +360,7 @@ public class SafetyHubFragment extends SafetyHubBaseFragment
         return false;
     }
 
+    @Initializer
     public void setDelegate(SafetyHubModuleDelegate safetyHubModuleDelegate) {
         mDelegate = safetyHubModuleDelegate;
     }
@@ -334,6 +373,7 @@ public class SafetyHubFragment extends SafetyHubBaseFragment
                     getDashboardModuleTypeForModuleOption(moduleMediator.getOption()),
                     event);
         }
+        assumeNonNull(mBrowserStateModuleMediator);
         @ModuleState
         int browserState =
                 mBrowserStateModuleMediator.isBrowserStateSafe()
@@ -342,14 +382,19 @@ public class SafetyHubFragment extends SafetyHubBaseFragment
         recordModuleState(browserState, DashboardModuleType.BROWSER_STATE, event);
     }
 
-    private void triggerOrganicHatsSurvey() {
-        Activity activity = getActivity();
-        ViewStub hatsSurveyViewStub = activity.findViewById(R.id.hats_survey_container_stub);
-        if (hatsSurveyViewStub != null && hatsSurveyViewStub.getParent() != null) {
-            hatsSurveyViewStub.inflate();
-        }
-        SafetyHubHatsHelper safetyHubHatsHelper = SafetyHubHatsHelper.getForProfile(getProfile());
-        assert safetyHubHatsHelper != null && activity != null;
-        safetyHubHatsHelper.triggerOrganicHatsSurvey(activity);
+    @Override
+    public @AnimationType int getAnimationType() {
+        return AnimationType.PROPERTY;
     }
+
+    @Override
+    public @Nullable String getMainMenuKey() {
+        return "safety_hub";
+    }
+
+    public static final ChromeBaseSearchIndexProvider SEARCH_INDEX_DATA_PROVIDER =
+            new ChromeBaseSearchIndexProvider(
+                    SafetyHubFragment.class.getName(),
+                    R.xml.safety_hub_preferences,
+                    /* isSearchable= */ false);
 }

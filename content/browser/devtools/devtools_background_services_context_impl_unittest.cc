@@ -14,6 +14,7 @@
 #include "base/time/time.h"
 #include "content/browser/devtools/devtools_background_services.pb.h"
 #include "content/browser/service_worker/embedded_worker_test_helper.h"
+#include "content/browser/service_worker/service_worker_context_core.h"
 #include "content/public/browser/content_browser_client.h"
 #include "content/public/common/content_client.h"
 #include "content/public/test/browser_task_environment.h"
@@ -125,7 +126,7 @@ class DevToolsBackgroundServicesContextTest
   mojo::Remote<storage::mojom::ServiceWorkerStorageControl>& storage_control() {
     return embedded_worker_test_helper_.context()
         ->registry()
-        ->GetRemoteStorageControl();
+        .GetRemoteStorageControl();
   }
 
  protected:
@@ -227,9 +228,12 @@ class DevToolsBackgroundServicesContextTest
       blink::mojom::ServiceWorkerRegistrationOptions options;
       options.scope = origin_.GetURL();
       base::RunLoop run_loop;
+      auto fetch_client_settings_object =
+          blink::mojom::FetchClientSettingsObject::New();
+      fetch_client_settings_object->policy_container_policies =
+          blink::mojom::PolicyContainerPolicies::New();
       embedded_worker_test_helper_.context()->RegisterServiceWorker(
-          script_url, key, options,
-          blink::mojom::FetchClientSettingsObject::New(),
+          script_url, key, options, std::move(fetch_client_settings_object),
           base::BindOnce(&DidRegisterServiceWorker,
                          &service_worker_registration_id,
                          run_loop.QuitClosure()),
@@ -247,7 +251,7 @@ class DevToolsBackgroundServicesContextTest
 
     {
       base::RunLoop run_loop;
-      embedded_worker_test_helper_.context()->registry()->FindRegistrationForId(
+      embedded_worker_test_helper_.context()->registry().FindRegistrationForId(
           service_worker_registration_id, key,
           base::BindOnce(&DidFindServiceWorkerRegistration,
                          &service_worker_registration_,

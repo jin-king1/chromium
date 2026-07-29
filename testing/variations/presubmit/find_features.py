@@ -13,9 +13,16 @@ import multiprocessing
 import pathlib
 import re
 
-BASE_FEATURE_PATTERN = br'BASE_FEATURE\((.*?),(.*?),(.*?)\);'
+from typing import List, Set
+
+BASE_FEATURE_PATTERN = br'BASE_(?:RUNTIME_MUTABLE_)?FEATURE\((.*?)\);'
 BASE_FEATURE_RE = re.compile(BASE_FEATURE_PATTERN,
                              flags=re.MULTILINE + re.DOTALL)
+
+# Example: base_feature!(FooFeature, FeatureState::Disabled);
+RUST_BASE_FEATURE_PATTERN = br'base_feature!\((.*?)\);'
+RUST_BASE_FEATURE_RE = re.compile(RUST_BASE_FEATURE_PATTERN,
+                                  flags=re.MULTILINE + re.DOTALL)
 
 # Only search these directories for flags. If your flag is outside these root
 # directories, then add the directory here.
@@ -47,8 +54,6 @@ DIRECTORIES_TO_SEARCH = [
     'ipc',
     'media',
     'mojo',
-    'native_client',
-    'native_client_sdk',
     'net',
     'pdf',
     'ppapi',
@@ -69,37 +74,90 @@ DIRECTORIES_TO_SEARCH = [
 ]
 
 
-def _FindFeaturesInFile(filepath):
+def _FindFeaturesInFile(filepath: str) -> List[str]:
   # Work on bytes to avoid utf-8 decode errors outside feature declarations
   file_contents = pathlib.Path(filepath).read_bytes()
+  feature_names = []
+
+  if filepath.endswith('.rs'):
+    matches = RUST_BASE_FEATURE_RE.finditer(file_contents)
+    for m in matches:
+      # The Rust `base_feature!` macro takes the identifier as the first
+      # argument and its FeatureState as its second argument, e.g.:
+      #     chromium::import! {"//base:feature";}
+      #     base_feature!(FooFeature, FeatureState::Disabled)
+      #     base_feature!(BarFeature, FeatureState::Enabled)
+      args = [arg.strip() for arg in m.group(1).split(b',')]
+      if len(args) >= 1:
+        feature_name = args[0]
+        feature_names.append(feature_name.decode('utf-8'))
+    return feature_names
+
   matches = BASE_FEATURE_RE.finditer(file_contents)
-  # Remove whitespace and surrounding " from the second argument
-  # which is the feature name.
-  return [m.group(2).strip().strip(b'"').decode('utf-8') for m in matches]
+  for m in matches:
+    # Split the arguments to handle both 2- and 3-argument versions of
+    # BASE_FEATURE.
+    args = [arg.strip() for arg in m.group(1).split(b',')]
+    if len(args) == 3:
+      # 3-arg: BASE_FEATURE(kMyFeature, "MyFeature", ...), name is the 2nd arg.
+      feature_name = args[1].strip(b'"')
+    elif len(args) == 2:
+      # 2-arg: BASE_FEATURE(kMyFeature, ...)
+      feature_name = args[0]
+      if not feature_name.startswith(b'k'):
+        continue
+      feature_name = feature_name[1:]
+    else:
+      # Should not happen with valid C++ code.
+      continue
+    feature_names.append(feature_name.decode('utf-8'))
+  return feature_names
 
 
-def FindDeclaredFeatures(input_api):
-  """Finds all declared feature names in the source code.
+def FindFeatureSymbolNamesInFile(filepath: str) -> List[str]:
+  """Finds the C++ symbol/identifier names of features in a file.
 
-  This function will scan all *.cc and *.mm files and look for features
-  defined with the BASE_FEATURE macro. It will extract the feature names.
-
-  Args:
-    input_api: InputApi instance for opening files
-  Returns:
-    Set of defined feature names in the source tree.
+  Unlike _FindFeaturesInFile, this returns the C++ symbol name (e.g.
+  kMyFeature) as it appears as the symbol in the binary, rather than the
+  feature's string name (e.g. MyFeature).
   """
-  # Features are supposed to be defined in .cc files.
+  # Work on bytes to avoid utf-8 decode errors outside feature declarations
+  file_contents = pathlib.Path(filepath).read_bytes()
+  symbol_names = []
+
+  if filepath.endswith('.rs'):
+    matches = RUST_BASE_FEATURE_RE.finditer(file_contents)
+    for m in matches:
+      args = [arg.strip() for arg in m.group(1).split(b',')]
+      if len(args) >= 1:
+        symbol_names.append(args[0].decode('utf-8'))
+    return symbol_names
+
+  matches = BASE_FEATURE_RE.finditer(file_contents)
+  for m in matches:
+    # Split the arguments to handle both 2- and 3-argument versions of
+    # BASE_FEATURE.
+    args = [arg.strip() for arg in m.group(1).split(b',')]
+    if len(args) >= 2:
+      symbol_names.append(args[0].decode('utf-8'))
+  return symbol_names
+
+
+def _FindDeclaredFeaturesImpl(repository_root: pathlib.Path) -> Set[str]:
+  # Features are supposed to be defined in .cc or .rs files.
   # Iterate over the search folders in the root.
-  root = pathlib.Path(input_api.change.RepositoryRoot())
-  glob_patterns = [
-      str(p / pathlib.Path('**/*.cc')) for p in root.iterdir()
-      if p.is_dir() and p.name in DIRECTORIES_TO_SEARCH
-  ]
+  root = pathlib.Path(repository_root)
+  glob_patterns = []
+  for extension in ['cc', 'rs']:
+    glob_patterns.extend([
+        str(p / pathlib.Path(f'**/*.{extension}')) for p in root.iterdir()
+        if p.is_dir() and p.name in DIRECTORIES_TO_SEARCH
+    ])
 
   # blink is the only directory in third_party that should be searched.
-  blink_glob = str(root / pathlib.Path('third_party/blink/**/*.cc'))
-  glob_patterns.append(blink_glob)
+  for extension in ['cc', 'rs']:
+    blink_glob = str(root / pathlib.Path(f'third_party/blink/**/*.{extension}'))
+    glob_patterns.append(blink_glob)
 
   # Additional features for iOS can be found in mm files in the ios directory.
   mm_glob = str(root / pathlib.Path('ios/**/*.mm'))
@@ -124,3 +182,22 @@ def FindDeclaredFeatures(input_api):
   for feature_list in found_features:
     feature_names.update(feature_list)
   return feature_names
+
+
+def FindDeclaredFeatures(input_api) -> Set[str]:
+  """Finds all declared feature names in the source code.
+
+  This function will scan all *.cc, *.mm and *.rs files and look for features
+  defined with the BASE_FEATURE macro (C++) or base_feature! macro (Rust). It
+  will extract the feature names.
+
+  Args:
+    input_api: InputApi instance for opening files
+  Returns:
+    Set of defined feature names in the source tree.
+  """
+  return _FindDeclaredFeaturesImpl(input_api.change.RepositoryRoot())
+
+
+if __name__ == '__main__':
+  print(_FindDeclaredFeaturesImpl(pathlib.Path('.')))

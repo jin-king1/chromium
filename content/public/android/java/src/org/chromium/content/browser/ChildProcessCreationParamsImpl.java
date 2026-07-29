@@ -4,12 +4,15 @@
 
 package org.chromium.content.browser;
 
+import android.os.Build;
 import android.os.Bundle;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.base.library_loader.LibraryProcessType;
+import org.chromium.build.BuildConfig;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.content_public.browser.JavalessRenderersFeatureList;
 
 /** Implementation of the interface {@link ChildProcessCreationParams}. */
 @NullMarked
@@ -20,6 +23,8 @@ public class ChildProcessCreationParamsImpl {
             "org.chromium.content.app.PrivilegedProcessService";
     private static final String SANDBOXED_SERVICES_NAME =
             "org.chromium.content.app.SandboxedProcessService";
+    private static final String NATIVE_SANDBOXED_SERVICES_NAME =
+            "org.chromium.content.app.NativeOnlySandboxedProcessService";
 
     // Members should all be immutable to avoid worrying about thread safety.
     private static @Nullable String sPackageNameForPrivilegedService;
@@ -30,8 +35,7 @@ public class ChildProcessCreationParamsImpl {
     // Use only the explicit WebContents.setImportance signal, and ignore other implicit
     // signals in content.
     private static boolean sIgnoreVisibilityForImportance;
-    private static @Nullable String sPrivilegedServicesName;
-    private static @Nullable String sSandboxedServicesName;
+    private static @Nullable Boolean sForceNativeSandboxedService;
 
     private static boolean sInitialized;
 
@@ -40,29 +44,32 @@ public class ChildProcessCreationParamsImpl {
     /** Set params. This should be called once on start up. */
     public static void set(
             String privilegedPackageName,
-            String privilegedServicesName,
             String sandboxedPackageName,
-            String sandboxedServicesName,
             boolean isExternalSandboxedService,
             int libraryProcessType,
             boolean bindToCallerCheck,
-            boolean ignoreVisibilityForImportance) {
+            boolean ignoreVisibilityForImportance,
+            boolean forceNativeSandboxedService) {
         assert !sInitialized;
+        if (forceNativeSandboxedService && !isNativeSandboxedServiceSupported()) {
+            throw new IllegalStateException("Native sandboxed service forced but not available");
+        }
         sPackageNameForPrivilegedService = privilegedPackageName;
-        sPrivilegedServicesName =
-                privilegedServicesName == null ? PRIVILEGED_SERVICES_NAME : privilegedServicesName;
         sPackageNameForSandboxedService = sandboxedPackageName;
-        sSandboxedServicesName =
-                sandboxedServicesName == null ? SANDBOXED_SERVICES_NAME : sandboxedServicesName;
         sIsSandboxedServiceExternal = isExternalSandboxedService;
         sLibraryProcessType = libraryProcessType;
         sBindToCallerCheck = bindToCallerCheck;
         sIgnoreVisibilityForImportance = ignoreVisibilityForImportance;
+        sForceNativeSandboxedService = forceNativeSandboxedService;
         sInitialized = true;
     }
 
     public static void addIntentExtras(Bundle extras) {
         if (sInitialized) extras.putInt(EXTRA_LIBRARY_PROCESS_TYPE, sLibraryProcessType);
+    }
+
+    public static int getLibraryProcessType() {
+        return sInitialized ? sLibraryProcessType : LibraryProcessType.PROCESS_CHILD;
     }
 
     public static String getPackageNameForPrivilegedService() {
@@ -94,10 +101,26 @@ public class ChildProcessCreationParamsImpl {
     }
 
     public static String getPrivilegedServicesName() {
-        return sPrivilegedServicesName != null ? sPrivilegedServicesName : PRIVILEGED_SERVICES_NAME;
+        return PRIVILEGED_SERVICES_NAME;
+    }
+
+    private static boolean isNativeSandboxedServiceSupported() {
+        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.CINNAMON_BUN
+                // Incremental install disables isolated processes, which are required for
+                // javaless renderers.
+                && !BuildConfig.IS_INCREMENTAL_INSTALL;
+    }
+
+    public static boolean isNativeSandboxedServiceEnabled() {
+        if (sForceNativeSandboxedService != null) {
+            return sForceNativeSandboxedService;
+        }
+        return isNativeSandboxedServiceSupported() && JavalessRenderersFeatureList.isEnabled();
     }
 
     public static String getSandboxedServicesName() {
-        return sSandboxedServicesName != null ? sSandboxedServicesName : SANDBOXED_SERVICES_NAME;
+        return isNativeSandboxedServiceEnabled()
+                ? NATIVE_SANDBOXED_SERVICES_NAME
+                : SANDBOXED_SERVICES_NAME;
     }
 }

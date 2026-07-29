@@ -14,7 +14,6 @@ import org.mockito.Mockito;
 import org.chromium.base.ObserverList;
 import org.chromium.base.ObserverList.RewindableIterator;
 import org.chromium.base.ThreadUtils;
-import org.chromium.content_public.browser.ChildProcessImportance;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.common.ResourceRequestBody;
@@ -45,7 +44,8 @@ public class TabTestUtils {
             @Nullable TabDelegateFactory delegateFactory,
             boolean initiallyHidden,
             TabState tabState,
-            boolean initializeRenderer) {
+            boolean initializeRenderer,
+            boolean isPinned) {
         ((TabImpl) tab)
                 .initialize(
                         parent,
@@ -56,7 +56,8 @@ public class TabTestUtils {
                         delegateFactory,
                         initiallyHidden,
                         tabState,
-                        initializeRenderer);
+                        initializeRenderer,
+                        isPinned);
     }
 
     /** Set the last hidden timestamp. */
@@ -154,18 +155,6 @@ public class TabTestUtils {
     }
 
     /**
-     * Swap {@link WebContents} object being used in a tab.
-     * @param tab {@link Tab} object.
-     * @param webContents {@link WebContents} to swap in.
-     * @param didStartLoad Whether the content started loading.
-     * @param didFinishLoad Whether the content finished loading.
-     */
-    public static void swapWebContents(
-            Tab tab, WebContents webContents, boolean didStartLoad, boolean didFinishLoad) {
-        ((TabImpl) tab).swapWebContents(webContents, didStartLoad, didFinishLoad);
-    }
-
-    /**
      * @param tab {@link Tab} object.
      * @return {@link TabDelegateFactory} for a given tab.
      */
@@ -227,11 +216,12 @@ public class TabTestUtils {
         TabImplJni.setInstanceForTesting(tabImplJni);
     }
 
+
     /**
      * @param tab {@link Tab} object.
-     * @return {@link @ChildProcessImportance int} object for a given tab.
+     * @return {@link WebContents} object for a given tab.
      */
-    public static @ChildProcessImportance int getImportance(Tab tab) {
-        return ((TabImpl) tab).getImportance();
+    public static @Nullable WebContents getWebContents(Tab tab) {
+        return ((TabImpl) tab).getWebContents();
     }
 }

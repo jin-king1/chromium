@@ -17,7 +17,6 @@
 #include "chrome/browser/ui/webui/ash/login/oobe_ui.h"
 #include "chrome/grit/branded_strings.h"
 #include "chrome/grit/chrome_unscaled_resources.h"
-#include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/components/network/network_state_handler.h"
 #include "components/login/localized_values_builder.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -29,8 +28,6 @@
 namespace ash {
 
 namespace {
-
-constexpr const char kUserActionConfigureNetwork[] = "configure-network";
 
 std::string NameOrDefault(std::string_view name) {
   return name.empty() ? l10n_util::GetStringUTF8(IDS_SHORT_PRODUCT_NAME)
@@ -44,15 +41,15 @@ gfx::ImageSkia IconOrDefault(gfx::ImageSkia icon) {
              : icon;
 }
 
-base::Value::Dict ConvertDataToDict(const AppLaunchSplashScreen::Data& data) {
-  return base::Value::Dict()
+base::DictValue ConvertDataToDict(const AppLaunchSplashScreen::Data& data) {
+  return base::DictValue()
       .Set("name", data.name)
       .Set("iconURL", webui::GetBitmapDataUrl(*data.icon.bitmap()))
       .Set("url", data.url.spec());
 }
 
-base::Value::Dict GetScreenData(const AppLaunchSplashScreen::Data& data) {
-  return base::Value::Dict()
+base::DictValue GetScreenData(const AppLaunchSplashScreen::Data& data) {
+  return base::DictValue()
       .Set("shortcutEnabled",
            !KioskChromeAppManager::Get()->GetDisableBailoutShortcut())
       .Set("appInfo", ConvertDataToDict(data));
@@ -89,13 +86,8 @@ void AppLaunchSplashScreen::ShowImpl() {
   }
 
   UpdateAppLaunchState(state_);
-  base::Value::Dict screen_data = GetScreenData(app_data_);
+  base::DictValue screen_data = GetScreenData(app_data_);
   view_->Show(std::move(screen_data));
-
-  if (toggle_network_config_on_show_.has_value()) {
-    ToggleNetworkConfig(toggle_network_config_on_show_.value());
-    toggle_network_config_on_show_.reset();
-  }
 }
 
 void AppLaunchSplashScreen::HideImpl() {}
@@ -115,6 +107,8 @@ void AppLaunchSplashScreen::UpdateAppLaunchState(
 void AppLaunchSplashScreen::ShowNetworkConfigureUI(
     NetworkStateInformer::State network_state,
     const std::string& network_name) {
+  error_screen_->SetHideCallback(base::BindOnce(
+      &AppLaunchSplashScreen::OnErrorScreenHidden, weak_factory_.GetWeakPtr()));
   error_screen_->SetUIState(NetworkError::UI_STATE_KIOSK_MODE);
   error_screen_->SetIsPersistentError(true);
   error_screen_->AllowGuestSignin(false);
@@ -152,12 +146,10 @@ void AppLaunchSplashScreen::ShowNetworkConfigureUI(
   }
 }
 
-void AppLaunchSplashScreen::ToggleNetworkConfig(bool visible) {
-  if (is_hidden()) {
-    toggle_network_config_on_show_ = visible;
-    return;
+void AppLaunchSplashScreen::HideThrobber() {
+  if (view_) {
+    view_->HideThrobber();
   }
-  view_->ToggleNetworkConfig(visible);
 }
 
 void AppLaunchSplashScreen::SetDelegate(Delegate* delegate) {
@@ -170,7 +162,7 @@ void AppLaunchSplashScreen::SetAppData(Data data) {
     return;
   }
 
-  base::Value::Dict screen_data = GetScreenData(app_data_);
+  base::DictValue screen_data = GetScreenData(app_data_);
   view_->SetAppData(std::move(screen_data));
 }
 
@@ -179,35 +171,22 @@ void AppLaunchSplashScreen::ShowErrorMessage(KioskAppLaunchError::Error error) {
       KioskAppLaunchError::GetErrorMessage(error));
 }
 
-void AppLaunchSplashScreen::HandleConfigureNetwork() {
-  if (delegate_) {
-    delegate_->OnConfigureNetwork();
-  } else {
-    LOG(WARNING) << "No delegate set to handle network configuration.";
-  }
+void AppLaunchSplashScreen::OnErrorScreenHidden() {
+  // Reset `ErrorScreen` state to default. We don't update other parameters such
+  // as `UIState` and`ErrorState` as those should be updated by the next caller
+  // of the `ErrorScreen`.
+  error_screen_->SetParentScreen(OOBE_SCREEN_UNKNOWN);
+  error_screen_->SetIsPersistentError(false);
+  Show(context());
 }
+
 void AppLaunchSplashScreen::ContinueAppLaunch() {
   if (!delegate_) {
     return;
   }
 
   delegate_->OnNetworkConfigFinished();
-
-  // Reset ErrorScreen state to default. We don't update other parameters such
-  // as SetUIState/SetErrorState as those should be updated by the next caller
-  // of the ErrorScreen.
-  error_screen_->SetParentScreen(OOBE_SCREEN_UNKNOWN);
-  error_screen_->SetIsPersistentError(false);
   error_screen_->Hide();
-}
-
-void AppLaunchSplashScreen::OnUserAction(const base::Value::List& args) {
-  const std::string& action_id = args[0].GetString();
-  if (action_id == kUserActionConfigureNetwork) {
-    HandleConfigureNetwork();
-  } else {
-    BaseScreen::OnUserAction(args);
-  }
 }
 
 }  // namespace ash

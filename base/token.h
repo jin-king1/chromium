@@ -12,6 +12,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "base/base_export.h"
 #include "base/containers/span.h"
@@ -55,6 +56,11 @@ class BASE_EXPORT Token {
   friend constexpr bool operator==(const Token& lhs,
                                    const Token& rhs) = default;
 
+  template <typename H>
+  friend H AbslHashValue(H h, const Token& token) {
+    return H::combine(std::move(h), token.words_);
+  }
+
   // Generates a string representation of this Token useful for e.g. logging.
   std::string ToString() const;
 
@@ -73,7 +79,7 @@ class BASE_EXPORT Token {
 
 // For use in std::unordered_map.
 struct BASE_EXPORT TokenHash {
-  size_t operator()(const Token& token) const;
+  static size_t operator()(const Token& token);
 };
 
 class Pickle;

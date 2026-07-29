@@ -11,6 +11,7 @@
 #include <string_view>
 #include <utility>
 
+#include "ash/constants/ash_features.h"
 #include "ash/system/privacy_hub/privacy_hub_controller.h"
 #include "base/containers/fixed_flat_map.h"
 #include "base/functional/callback.h"
@@ -26,10 +27,10 @@
 #include "chrome/browser/policy/chrome_browser_policy_connector.h"
 #include "chromeos/ash/components/dbus/dbus_thread_manager.h"
 #include "chromeos/ash/components/dbus/update_engine/update_engine_client.h"
+#include "chromeos/ash/components/policy/device_local_account/device_local_account_type.h"
 #include "chromeos/ash/components/settings/cros_settings_names.h"
 #include "components/policy/core/browser/policy_error_map.h"
 #include "components/policy/core/common/chrome_schema.h"
-#include "components/policy/core/common/device_local_account_type.h"
 #include "components/policy/core/common/external_data_fetcher.h"
 #include "components/policy/core/common/external_data_manager.h"
 #include "components/policy/core/common/policy_map.h"
@@ -100,7 +101,7 @@ void SetDeviceDlcPredownloadListPolicy(
     const RepeatedPtrField<std::string>& raw_policy_value,
     PolicyMap* policies) {
   std::string warning;
-  base::Value::List decoded_dlc_list =
+  base::ListValue decoded_dlc_list =
       policy::DeviceDlcPredownloadListPolicyHandler::
           DecodeDeviceDlcPredownloadListPolicy(raw_policy_value, warning);
   policies->Set(key::kDeviceDlcPredownloadList, POLICY_LEVEL_MANDATORY,
@@ -260,7 +261,7 @@ void DecodeLoginPolicies(const em::ChromeDeviceSettingsProto& policy,
 
   if (policy.has_user_allowlist()) {
     const em::UserAllowlistProto& container(policy.user_allowlist());
-    base::Value::List allowlist;
+    base::ListValue allowlist;
     for (const auto& entry : container.user_allowlist()) {
       allowlist.Append(entry);
     }
@@ -335,7 +336,7 @@ void DecodeLoginPolicies(const em::ChromeDeviceSettingsProto& policy,
   if (policy.has_login_video_capture_allowed_urls()) {
     const em::LoginVideoCaptureAllowedUrlsProto& container(
         policy.login_video_capture_allowed_urls());
-    base::Value::List urls;
+    base::ListValue urls;
     for (const auto& entry : container.urls()) {
       urls.Append(entry);
     }
@@ -347,23 +348,13 @@ void DecodeLoginPolicies(const em::ChromeDeviceSettingsProto& policy,
   if (policy.has_device_login_screen_extensions()) {
     const em::DeviceLoginScreenExtensionsProto& proto(
         policy.device_login_screen_extensions());
-    base::Value::List apps;
+    base::ListValue apps;
     for (const auto& app : proto.device_login_screen_extensions()) {
       apps.Append(app);
     }
     policies->Set(key::kDeviceLoginScreenExtensions, POLICY_LEVEL_MANDATORY,
                   POLICY_SCOPE_MACHINE, POLICY_SOURCE_CLOUD,
                   base::Value(std::move(apps)), nullptr);
-  }
-
-  if (policy.has_login_screen_extension_manifest_v2_availability()) {
-    const em::LoginScreenExtensionManifestV2AvailabilityProto& proto(
-        policy.login_screen_extension_manifest_v2_availability());
-    policies->Set(
-        key::kDeviceLoginScreenExtensionManifestV2Availability,
-        POLICY_LEVEL_MANDATORY, POLICY_SCOPE_MACHINE, POLICY_SOURCE_CLOUD,
-        base::Value(proto.login_screen_extension_manifest_v2_availability()),
-        nullptr);
   }
 
   if (policy.has_login_screen_power_management()) {
@@ -384,7 +375,7 @@ void DecodeLoginPolicies(const em::ChromeDeviceSettingsProto& policy,
   }
 
   if (policy.has_login_screen_locales()) {
-    base::Value::List locales;
+    base::ListValue locales;
     const em::LoginScreenLocalesProto& login_screen_locales(
         policy.login_screen_locales());
     for (const auto& locale : login_screen_locales.login_screen_locales()) {
@@ -396,7 +387,7 @@ void DecodeLoginPolicies(const em::ChromeDeviceSettingsProto& policy,
   }
 
   if (policy.has_login_screen_input_methods()) {
-    base::Value::List input_methods;
+    base::ListValue input_methods;
     const em::LoginScreenInputMethodsProto& login_screen_input_methods(
         policy.login_screen_input_methods());
     for (const auto& input_method :
@@ -409,7 +400,7 @@ void DecodeLoginPolicies(const em::ChromeDeviceSettingsProto& policy,
   }
 
   if (policy.has_device_login_screen_auto_select_certificate_for_urls()) {
-    base::Value::List rules;
+    base::ListValue rules;
     const em::DeviceLoginScreenAutoSelectCertificateForUrls& proto_rules(
         policy.device_login_screen_auto_select_certificate_for_urls());
     for (const auto& rule :
@@ -498,7 +489,7 @@ void DecodeLoginPolicies(const em::ChromeDeviceSettingsProto& policy,
     auto policy_level = GetPolicyLevel(container.has_policy_options(),
                                        container.policy_options());
     if (policy_level) {
-      base::Value::List urls;
+      base::ListValue urls;
 
       if (container.has_value()) {
         for (const std::string& entry : container.value().entries()) {
@@ -515,7 +506,7 @@ void DecodeLoginPolicies(const em::ChromeDeviceSettingsProto& policy,
   if (policy.has_device_login_screen_context_aware_access_signals_allowlist()) {
     const em::StringListPolicyProto& container(
         policy.device_login_screen_context_aware_access_signals_allowlist());
-    base::Value::List allowlist;
+    base::ListValue allowlist;
     if (container.has_value()) {
       for (const std::string& entry : container.value().entries()) {
         allowlist.Append(entry);
@@ -619,7 +610,7 @@ void DecodeLoginPolicies(const em::ChromeDeviceSettingsProto& policy,
   if (policy.has_device_screensaver_login_screen_images()) {
     const em::DeviceScreensaverLoginScreenImagesProto& container(
         policy.device_screensaver_login_screen_images());
-    base::Value::List image_urls;
+    base::ListValue image_urls;
     for (const auto& entry :
          container.device_screensaver_login_screen_images()) {
       image_urls.Append(entry);
@@ -634,7 +625,7 @@ void DecodeLoginPolicies(const em::ChromeDeviceSettingsProto& policy,
     const em::StringListPolicyProto& container(
         policy.device_authentication_url_blocklist());
 
-    base::Value::List blocklist;
+    base::ListValue blocklist;
     if (container.has_value()) {
       for (const auto& entry : container.value().entries()) {
         blocklist.Append(entry);
@@ -651,7 +642,7 @@ void DecodeLoginPolicies(const em::ChromeDeviceSettingsProto& policy,
     const em::StringListPolicyProto& container(
         policy.device_authentication_url_allowlist());
 
-    base::Value::List allowlist;
+    base::ListValue allowlist;
     if (container.has_value()) {
       for (const auto& entry : container.value().entries()) {
         allowlist.Append(entry);
@@ -675,24 +666,52 @@ void DecodeLoginPolicies(const em::ChromeDeviceSettingsProto& policy,
       }
     }
   }
+
+  if (policy.has_deviceloginscreensecuritykeypermitattestation()) {
+    const em::StringListPolicyProto& container(
+        policy.deviceloginscreensecuritykeypermitattestation());
+
+    base::ListValue list;
+    if (container.has_value()) {
+      for (const auto& entry : container.value().entries()) {
+        list.Append(entry);
+      }
+    }
+
+    policies->Set(key::kDeviceLoginScreenSecurityKeyPermitAttestation,
+                  POLICY_LEVEL_MANDATORY, POLICY_SCOPE_MACHINE,
+                  POLICY_SOURCE_CLOUD, base::Value(std::move(list)), nullptr);
+  }
+
+  if (policy.has_deviceonlinepasswordmismatchbehavior()) {
+    const em::IntegerPolicyProto& container(
+        policy.deviceonlinepasswordmismatchbehavior());
+    if (container.has_value()) {
+      if (auto value = DecodeIntegerValue(container.value())) {
+        policies->Set(key::kDeviceOnlinePasswordMismatchBehavior,
+                      POLICY_LEVEL_MANDATORY, POLICY_SCOPE_MACHINE,
+                      POLICY_SOURCE_CLOUD, std::move(*value), nullptr);
+      }
+    }
+  }
 }
 
-base::Value::Dict DecodeDeviceLocalAccountInfoProto(
+base::DictValue DecodeDeviceLocalAccountInfoProto(
     const em::DeviceLocalAccountInfoProto& entry) {
   if (!entry.has_type()) {
     if (entry.has_deprecated_public_session_id()) {
       // Deprecated public session specification.
-      return base::Value::Dict()
+      return base::DictValue()
           .Set(ash::kAccountsPrefDeviceLocalAccountsKeyId,
                entry.deprecated_public_session_id())
           .Set(ash::kAccountsPrefDeviceLocalAccountsKeyType,
                static_cast<int>(DeviceLocalAccountType::kPublicSession));
     } else {
-      return base::Value::Dict();
+      return base::DictValue();
     }
   }
 
-  base::Value::Dict entry_dict;
+  base::DictValue entry_dict;
   if (entry.has_account_id()) {
     entry_dict.Set(ash::kAccountsPrefDeviceLocalAccountsKeyId,
                    entry.account_id());
@@ -736,6 +755,40 @@ base::Value::Dict DecodeDeviceLocalAccountInfoProto(
       entry_dict.Set(ash::kAccountsPrefDeviceLocalAccountsKeyIwaKioskUpdateUrl,
                      entry.isolated_kiosk_app().update_manifest_url());
     }
+    if (entry.isolated_kiosk_app().has_update_channel()) {
+      entry_dict.Set(
+          ash::kAccountsPrefDeviceLocalAccountsKeyIwaKioskUpdateChannel,
+          entry.isolated_kiosk_app().update_channel());
+    }
+    if (entry.isolated_kiosk_app().has_pinned_version()) {
+      entry_dict.Set(
+          ash::kAccountsPrefDeviceLocalAccountsKeyIwaKioskPinnedVersion,
+          entry.isolated_kiosk_app().pinned_version());
+    }
+    if (entry.isolated_kiosk_app().has_allow_downgrades()) {
+      entry_dict.Set(
+          ash::kAccountsPrefDeviceLocalAccountsKeyIwaKioskAllowDowngrades,
+          entry.isolated_kiosk_app().allow_downgrades());
+    }
+  }
+  if (ash::features::IsHeliumArcvmKioskEnabled()) {
+    if (entry.arcvm_kiosk_app().has_package_name()) {
+      entry_dict.Set(ash::kAccountsPrefDeviceLocalAccountsKeyArcvmKioskPackage,
+                     entry.arcvm_kiosk_app().package_name());
+    }
+    if (entry.arcvm_kiosk_app().has_class_name()) {
+      entry_dict.Set(ash::kAccountsPrefDeviceLocalAccountsKeyArcvmKioskClass,
+                     entry.arcvm_kiosk_app().class_name());
+    }
+    if (entry.arcvm_kiosk_app().has_action()) {
+      entry_dict.Set(ash::kAccountsPrefDeviceLocalAccountsKeyArcvmKioskAction,
+                     entry.arcvm_kiosk_app().action());
+    }
+    if (entry.arcvm_kiosk_app().has_display_name()) {
+      entry_dict.Set(
+          ash::kAccountsPrefDeviceLocalAccountsKeyArcvmKioskDisplayName,
+          entry.arcvm_kiosk_app().display_name());
+    }
   }
   return entry_dict;
 }
@@ -749,7 +802,7 @@ void DecodeDeviceLocalAccountsPolicy(
   const em::DeviceLocalAccountsProto& container(policy.device_local_accounts());
   const RepeatedPtrField<em::DeviceLocalAccountInfoProto>& accounts =
       container.account();
-  base::Value::List account_list;
+  base::ListValue account_list;
   for (const auto& entry : accounts) {
     account_list.Append(DecodeDeviceLocalAccountInfoProto(entry));
   }
@@ -817,7 +870,7 @@ void DecodeNetworkPolicies(const em::ChromeDeviceSettingsProto& policy,
                                        : 0;
 
     auto throttling_status =
-        base::Value::Dict()
+        base::DictValue()
             .Set("enabled", enabled)
             .Set("upload_rate_kbits", static_cast<int>(upload_rate_kbits))
             .Set("download_rate_kbits", static_cast<int>(download_rate_kbits));
@@ -872,14 +925,24 @@ void DecodeNetworkPolicies(const em::ChromeDeviceSettingsProto& policy,
     }
   }
 
-  if (policy.has_devicepostquantumkeyagreementenabled()) {
-    const em::BooleanPolicyProto& container(
-        policy.devicepostquantumkeyagreementenabled());
+  if (policy.has_deviceloginscreenpreferslowkexalgorithms()) {
+    const em::StringPolicyProto& container(
+        policy.deviceloginscreenpreferslowkexalgorithms());
     if (container.has_value()) {
-      policies->Set(key::kDevicePostQuantumKeyAgreementEnabled,
+      policies->Set(key::kDeviceLoginScreenPreferSlowKexAlgorithms,
                     POLICY_LEVEL_MANDATORY, POLICY_SCOPE_MACHINE,
                     POLICY_SOURCE_CLOUD, base::Value(container.value()),
-                    nullptr);
+                    /*external_data_fetcher=*/nullptr);
+    }
+  }
+  if (policy.has_deviceloginscreenpreferslowciphers()) {
+    const em::StringPolicyProto& container(
+        policy.deviceloginscreenpreferslowciphers());
+    if (container.has_value()) {
+      policies->Set(key::kDeviceLoginScreenPreferSlowCiphers,
+                    POLICY_LEVEL_MANDATORY, POLICY_SCOPE_MACHINE,
+                    POLICY_SOURCE_CLOUD, base::Value(container.value()),
+                    /*external_data_fetcher=*/nullptr);
     }
   }
 }
@@ -1068,7 +1131,7 @@ void DecodeReportingPolicies(const em::ChromeDeviceSettingsProto& policy,
           container.device_report_runtime_counters_checking_rate_ms());
     }
     if (container.has_report_signal_strength_event_driven_telemetry()) {
-      base::Value::List signal_strength_telemetry_list;
+      base::ListValue signal_strength_telemetry_list;
       for (const std::string& telemetry_entry :
            container.report_signal_strength_event_driven_telemetry()
                .entries()) {
@@ -1187,7 +1250,7 @@ void DecodeAutoUpdatePolicies(const em::ChromeDeviceSettingsProto& policy,
     }
 
     if (container.allowed_connection_types_size()) {
-      base::Value::List allowed_connection_types;
+      base::ListValue allowed_connection_types;
       for (const auto& entry : container.allowed_connection_types()) {
         if (auto value = DecodeConnectionType(entry)) {
           allowed_connection_types.Append(std::move(*value));
@@ -1360,6 +1423,18 @@ void DecodeAccessibilityPolicies(const em::ChromeDeviceSettingsProto& policy,
             POLICY_SCOPE_MACHINE, POLICY_SOURCE_CLOUD,
             base::Value(container.login_screen_high_contrast_enabled()),
             nullptr);
+      }
+    }
+
+    if (container.has_login_screen_face_gaze_enabled()) {
+      auto policy_level =
+          GetPolicyLevel(container.has_login_screen_face_gaze_enabled_options(),
+                         container.login_screen_face_gaze_enabled_options());
+      if (policy_level) {
+        policies->Set(
+            key::kDeviceLoginScreenFaceGazeEnabled, policy_level.value(),
+            POLICY_SCOPE_MACHINE, POLICY_SOURCE_CLOUD,
+            base::Value(container.login_screen_face_gaze_enabled()), nullptr);
       }
     }
 
@@ -1587,6 +1662,7 @@ void DecodeGenericPolicies(const em::ChromeDeviceSettingsProto& policy,
     }
   }
 
+
   if (policy.has_device_login_screen_geolocation_access_level() &&
       policy.device_login_screen_geolocation_access_level()
           .has_geolocation_access_level()) {
@@ -1746,9 +1822,9 @@ void DecodeGenericPolicies(const em::ChromeDeviceSettingsProto& policy,
   if (policy.has_usb_detachable_allowlist()) {
     const em::UsbDetachableAllowlistProto& container(
         policy.usb_detachable_allowlist());
-    base::Value::List allowlist;
+    base::ListValue allowlist;
     for (const auto& entry : container.id()) {
-      base::Value::Dict ids;
+      base::DictValue ids;
       if (entry.has_vendor_id()) {
         ids.Set("vid", base::StringPrintf("%04X", entry.vendor_id()));
       }
@@ -1816,7 +1892,7 @@ void DecodeGenericPolicies(const em::ChromeDeviceSettingsProto& policy,
   if (policy.has_device_printers_blocklist()) {
     const em::DevicePrintersBlocklistProto& container(
         policy.device_printers_blocklist());
-    base::Value::List blocklist;
+    base::ListValue blocklist;
     for (const auto& entry : container.blocklist()) {
       blocklist.Append(entry);
     }
@@ -1829,7 +1905,7 @@ void DecodeGenericPolicies(const em::ChromeDeviceSettingsProto& policy,
   if (policy.has_device_printers_allowlist()) {
     const em::DevicePrintersAllowlistProto& container(
         policy.device_printers_allowlist());
-    base::Value::List allowlist;
+    base::ListValue allowlist;
     for (const auto& entry : container.allowlist()) {
       allowlist.Append(entry);
     }
@@ -1842,7 +1918,7 @@ void DecodeGenericPolicies(const em::ChromeDeviceSettingsProto& policy,
   if (policy.has_external_print_servers_allowlist()) {
     const em::DeviceExternalPrintServersAllowlistProto& container(
         policy.external_print_servers_allowlist());
-    base::Value::List allowlist;
+    base::ListValue allowlist;
     for (const auto& entry : container.allowlist()) {
       allowlist.Append(entry);
     }
@@ -1859,6 +1935,28 @@ void DecodeGenericPolicies(const em::ChromeDeviceSettingsProto& policy,
                   ash::tpm_firmware_update::DecodeSettingsProto(
                       policy.tpm_firmware_update_settings()),
                   nullptr);
+  }
+
+  if (policy.has_deviceuserinitiatedfirmwareupdatesenabled()) {
+    const em::BooleanPolicyProto& container(
+        policy.deviceuserinitiatedfirmwareupdatesenabled());
+    if (container.has_value()) {
+      policies->Set(key::kDeviceUserInitiatedFirmwareUpdatesEnabled,
+                    POLICY_LEVEL_MANDATORY, POLICY_SCOPE_MACHINE,
+                    POLICY_SOURCE_CLOUD, base::Value(container.value()),
+                    nullptr);
+    }
+  }
+
+  if (policy.has_deviceuserinitiatedflexsystemfirmwareupdatesenabled()) {
+    const em::BooleanPolicyProto& container(
+        policy.deviceuserinitiatedflexsystemfirmwareupdatesenabled());
+    if (container.has_value()) {
+      policies->Set(key::kDeviceUserInitiatedFlexSystemFirmwareUpdatesEnabled,
+                    POLICY_LEVEL_MANDATORY, POLICY_SCOPE_MACHINE,
+                    POLICY_SOURCE_CLOUD, base::Value(container.value()),
+                    nullptr);
+    }
   }
 
   if (policy.has_device_minimum_version()) {
@@ -2125,7 +2223,7 @@ void DecodeGenericPolicies(const em::ChromeDeviceSettingsProto& policy,
   if (policy.has_device_allowed_bluetooth_services()) {
     const em::DeviceAllowedBluetoothServicesProto& container(
         policy.device_allowed_bluetooth_services());
-    base::Value::List allowlist;
+    base::ListValue allowlist;
     for (const auto& entry : container.allowlist()) {
       allowlist.Append(entry);
     }
@@ -2242,17 +2340,6 @@ void DecodeGenericPolicies(const em::ChromeDeviceSettingsProto& policy,
     }
   }
 
-  if (policy.has_devicenativeclientforceallowed()) {
-    const em::BooleanPolicyProto& container(
-        policy.devicenativeclientforceallowed());
-    if (container.has_value()) {
-      policies->Set(policy::key::kDeviceNativeClientForceAllowed,
-                    POLICY_LEVEL_MANDATORY, POLICY_SCOPE_MACHINE,
-                    POLICY_SOURCE_CLOUD, base::Value(container.value()),
-                    nullptr);
-    }
-  }
-
   if (policy.has_device_dlc_predownload_list()) {
     SetDeviceDlcPredownloadListPolicy(
         policy.device_dlc_predownload_list().value().entries(), policies);
@@ -2320,6 +2407,17 @@ void DecodeGenericPolicies(const em::ChromeDeviceSettingsProto& policy,
                           policies);
     }
   }
+
+  if (policy.has_devicebluetoothjustworkspairingenabled()) {
+    const em::BooleanPolicyProto& container(
+        policy.devicebluetoothjustworkspairingenabled());
+    if (container.has_value()) {
+      policies->Set(key::kDeviceBluetoothJustWorksPairingEnabled,
+                    POLICY_LEVEL_MANDATORY, POLICY_SCOPE_MACHINE,
+                    POLICY_SOURCE_CLOUD, base::Value(container.value()),
+                    nullptr);
+    }
+  }
 }
 
 // TODO(b/324221325): Move other Kiosk-related policies to this function.
@@ -2331,6 +2429,17 @@ void DecodeKioskPolicies(const em::ChromeDeviceSettingsProto& policy,
     if (container.has_value()) {
       SetJsonDevicePolicy(key::kDeviceWeeklyScheduledSuspend, container.value(),
                           policies);
+    }
+  }
+  if (policy.has_deviceweeklyscheduledresuspenddelayms()) {
+    const em::IntegerPolicyProto& container(
+        policy.deviceweeklyscheduledresuspenddelayms());
+    if (container.has_value()) {
+      if (auto value = DecodeIntegerValue(container.value())) {
+        policies->Set(key::kDeviceWeeklyScheduledResuspendDelayMs,
+                      POLICY_LEVEL_MANDATORY, POLICY_SCOPE_MACHINE,
+                      POLICY_SOURCE_CLOUD, std::move(*value), nullptr);
+      }
     }
   }
 }

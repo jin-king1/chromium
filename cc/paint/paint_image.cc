@@ -16,7 +16,9 @@
 #include "cc/paint/paint_image_generator.h"
 #include "cc/paint/paint_record.h"
 #include "cc/paint/skia_paint_image_generator.h"
+#include "cc/paint/texture_backing.h"
 #include "third_party/skia/include/core/SkBitmap.h"
+#include "third_party/skia/include/core/SkCPURecorder.h"
 #include "third_party/skia/include/core/SkColorSpace.h"
 #include "third_party/skia/include/core/SkImage.h"
 #include "third_party/skia/include/core/SkImageInfo.h"
@@ -46,6 +48,13 @@ ImageHeaderMetadata::ImageHeaderMetadata(const ImageHeaderMetadata& other) =
 ImageHeaderMetadata& ImageHeaderMetadata::operator=(
     const ImageHeaderMetadata& other) = default;
 ImageHeaderMetadata::ImageHeaderMetadata::~ImageHeaderMetadata() = default;
+
+AnimatedImageFrameIndexMap::AnimatedImageFrameIndexMap() = default;
+AnimatedImageFrameIndexMap::AnimatedImageFrameIndexMap(
+    base::sorted_unique_t sorted_unique,
+    const std::vector<std::pair<int, size_t>>& entries)
+    : base::flat_map<int, size_t>(sorted_unique, entries) {}
+AnimatedImageFrameIndexMap::~AnimatedImageFrameIndexMap() = default;
 
 PaintImage::PaintImage() = default;
 PaintImage::PaintImage(const PaintImage& other) = default;
@@ -194,6 +203,17 @@ gpu::Mailbox PaintImage::GetMailbox() const {
   return texture_backing_->GetMailbox();
 }
 
+void PaintImage::BindTextureBacking(
+    scoped_refptr<TextureBackingContext> context) const {
+  DCHECK(texture_backing_);
+  texture_backing_->Bind(std::move(context));
+}
+
+void PaintImage::UnbindTextureBacking() const {
+  DCHECK(texture_backing_);
+  texture_backing_->Unbind();
+}
+
 const scoped_refptr<PaintWorkletInput> PaintImage::GetPaintWorkletInput()
     const {
   if (!IsPaintWorklet()) {
@@ -225,8 +245,10 @@ void PaintImage::CreateSkImage() {
         std::make_unique<SkiaPaintImageGenerator>(paint_image_generator_,
                                                   kDefaultFrameIndex,
                                                   kDefaultGeneratorClientId));
-  } else if (texture_backing_) {
-    cached_sk_image_ = texture_backing_->GetAcceleratedSkImage();
+    if (reinterpret_as_srgb_) {
+      cached_sk_image_ =
+          cached_sk_image_->reinterpretColorSpace(SkColorSpace::MakeSRGB());
+    }
   }
 }
 
@@ -239,8 +261,12 @@ SkISize PaintImage::GetSupportedDecodeSize(const SkISize& requested_size,
       }
       return SkISize::Make(width(), height());
     case AuxImage::kGainmap:
-      return gainmap_paint_image_generator_->GetSupportedDecodeSize(
-          requested_size);
+      if (gainmap_paint_image_generator_) {
+        return gainmap_paint_image_generator_->GetSupportedDecodeSize(
+            requested_size);
+      }
+      // Note that this is different from the default image behavior.
+      return SkISize(0, 0);
   }
 }
 
@@ -302,8 +328,7 @@ bool PaintImage::DecodeFromSkImage(SkPixmap pixmap,
   auto image = GetSkImageForFrame(frame_index, client_id);
   DCHECK(image);
   if (color_space) {
-    image = image->makeColorSpace(static_cast<GrDirectContext*>(nullptr),
-                                  color_space);
+    image = image->makeColorSpace(skcpu::Recorder::TODO(), color_space, {});
     if (!image)
       return false;
   }
@@ -338,26 +363,18 @@ bool PaintImage::IsTextureBacked() const {
   return false;
 }
 
-void PaintImage::FlushPendingSkiaOps() {
-  if (texture_backing_)
-    texture_backing_->FlushPendingSkiaOps();
-}
-
 gfx::Size PaintImage::GetSize(AuxImage aux_image) const {
   return gfx::SkISizeToSize(GetSkISize(aux_image));
 }
 
-gfx::ContentColorUsage PaintImage::GetContentColorUsage(bool* is_hlg) const {
-  if (is_hlg)
-    *is_hlg = false;
-
+gfx::ContentColorUsage PaintImage::GetContentColorUsage() const {
   // Right now, JS paint worklets can only be in sRGB
   if (IsPaintWorklet()) {
     return gfx::ContentColorUsage::kSRGB;
   }
 
   // Gainmap images are always HDR.
-  if (HasGainmap()) {
+  if (HasGainmapInfo()) {
     return gfx::ContentColorUsage::kHDR;
   }
 
@@ -369,15 +386,11 @@ gfx::ContentColorUsage PaintImage::GetContentColorUsage(bool* is_hlg) const {
   }
 
   skcms_TransferFunction fn;
-  if (!color_space->isNumericalTransferFn(&fn)) {
-    if (skcms_TransferFunction_isPQish(&fn))
-      return gfx::ContentColorUsage::kHDR;
-
-    if (skcms_TransferFunction_isHLGish(&fn)) {
-      if (is_hlg)
-        *is_hlg = true;
-      return gfx::ContentColorUsage::kHDR;
-    }
+  color_space->transferFn(&fn);
+  if (skcms_TransferFunction_isPQish(&fn) ||
+      skcms_TransferFunction_isHLGish(&fn) ||
+      skcms_TransferFunction_isPQ(&fn) || skcms_TransferFunction_isHLG(&fn)) {
+    return gfx::ContentColorUsage::kHDR;
   }
 
   // If it's not HDR and not SRGB, report it as WCG.
@@ -468,7 +481,7 @@ std::string PaintImage::ToString() const {
       << " completion_state_: " << static_cast<int>(completion_state_)
       << " is_multipart_: " << is_multipart_
       << " may_be_lcp_candidate_: " << may_be_lcp_candidate_
-      << " has gainmap: " << HasGainmap() << " is YUV: "
+      << " has gainmap: " << HasGainmapInfo() << " is YUV: "
       << IsYuv(SkYUVAPixmapInfo::SupportedDataTypes::All(), AuxImage::kDefault);
   return str.str();
 }

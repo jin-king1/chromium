@@ -80,7 +80,6 @@ class DummyNode {
           observed_only_on_changes_{false};
   ObservedProperty::NotifiesOnlyOnChangesWithPreviousValue<
       bool,
-      bool,
       &DummyObserver::NotifyOnlyOnChangesWithPreviousValueConst>
       observed_only_on_changes_with_previous_value_{false};
 
@@ -163,6 +162,11 @@ TEST_F(GraphPropertiesDeathTest, DeathOnInvalidSet) {
   EXPECT_DCHECK_DEATH(node_.SetObservedAlways(true));
   EXPECT_DCHECK_DEATH(node_.SetObservedOnlyOnChanges(true));
   EXPECT_DCHECK_DEATH(node_.SetObservedOnlyOnChangesWithPreviousValue(true));
+}
+
+TEST(GraphPropertiesHelperTest, YesNoStateToString) {
+  EXPECT_STREQ(YesNoStateToString(true).value, "yes");
+  EXPECT_EQ(YesNoStateToString(false).value, nullptr);
 }
 
 }  // namespace performance_manager

@@ -70,8 +70,6 @@ constexpr net::NetworkTrafficAnnotationTag kTrafficAnnotation =
 bool IsFeatureEnabled(const std::string& name) {
   if (name == kAppPreloadServiceEnableTestApps.name) {
     return base::FeatureList::IsEnabled(kAppPreloadServiceEnableTestApps);
-  } else if (name == ash::features::kHelpAppWelcomeTips.name) {
-    return base::FeatureList::IsEnabled(ash::features::kHelpAppWelcomeTips);
   } else if (name == chromeos::features::kCloudGamingDevice.name) {
     return base::FeatureList::IsEnabled(chromeos::features::kCloudGamingDevice);
   } else if (!name.empty()) {
@@ -103,13 +101,11 @@ void ParseLauncherOrdering(
         item_map[*parsed] = LauncherItemData(item.type(), item.order());
       }
     }
-    // Add packages for both chrome and lacros for TYPE_CHROME.
+    // Add packages for ash chrome for TYPE_CHROME.
     if (item.type() ==
         proto::AppPreloadListResponse_LauncherType_LAUNCHER_TYPE_CHROME) {
       item_map[PackageId(PackageType::kChromeApp,
                          app_constants::kChromeAppId)] =
-          LauncherItemData(item.type(), item.order());
-      item_map[PackageId(PackageType::kSystem, app_constants::kLacrosChrome)] =
           LauncherItemData(item.type(), item.order());
     }
     // Add nested child folder.

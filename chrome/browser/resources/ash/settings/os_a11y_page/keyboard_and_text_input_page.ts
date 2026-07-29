@@ -114,25 +114,6 @@ export class SettingsKeyboardAndTextInputPageElement extends
         },
       },
 
-      /**
-       * Used by DeepLinkingMixin to focus this page's deep links.
-       */
-      supportedSettingIds: {
-        type: Object,
-        value: () => new Set<Setting>([
-          Setting.kBounceKeys,
-          Setting.kCaretBlinkInterval,
-          Setting.kCaretBrowsing,
-          Setting.kDictation,
-          Setting.kEnableSwitchAccess,
-          Setting.kHighlightKeyboardFocus,
-          Setting.kHighlightTextCaret,
-          Setting.kOnScreenKeyboard,
-          Setting.kSlowKeys,
-          Setting.kStickyKeys,
-        ]),
-      },
-
       focusHighlightEnabledVirtualPref_: {
         type: Object,
         computed: 'computeEnabledWithConflictingFeature_(' +
@@ -147,24 +128,10 @@ export class SettingsKeyboardAndTextInputPageElement extends
             'prefs.settings.accessibility.value)',
       },
 
-      isSlowKeysFeatureEnabled_: {
-        type: Boolean,
-        value() {
-          return loadTimeData.getBoolean('isAccessibilitySlowKeysEnabled');
-        },
-      },
-
       slowKeysDelayVirtualPref_: {
         type: Object,
         computed: 'computeSlowKeysDelayVirtualPref_(' +
             'prefs.settings.a11y.slow_keys_delay_ms.value)',
-      },
-
-      isBounceKeysFeatureEnabled_: {
-        type: Boolean,
-        value() {
-          return loadTimeData.getBoolean('isAccessibilityBounceKeysEnabled');
-        },
       },
 
       bounceKeysDelayVirtualPref_: {
@@ -186,28 +153,43 @@ export class SettingsKeyboardAndTextInputPageElement extends
     ];
   }
 
-  private dictationLearnMoreUrl_: string;
-  private dictationLocaleMenuSubtitle_: string;
-  private dictationLocaleOptions_: LocaleInfo[];
+  // DeepLinkingMixin override
+  override supportedSettingIds = new Set<Setting>([
+    Setting.kBounceKeys,
+    Setting.kCaretBlinkInterval,
+    Setting.kCaretBrowsing,
+    Setting.kDictation,
+    Setting.kEnableSwitchAccess,
+    Setting.kHighlightKeyboardFocus,
+    Setting.kHighlightTextCaret,
+    Setting.kOnScreenKeyboard,
+    Setting.kSlowKeys,
+    Setting.kStickyKeys,
+  ]);
+
+  declare private dictationLearnMoreUrl_: string;
+  declare private dictationLocaleMenuSubtitle_: string;
+  declare private dictationLocaleOptions_: LocaleInfo[];
   private dictationLocaleSubtitleOverride_: string;
-  private dictationLocalesList_: LocaleInfo[];
-  private isKioskModeActive_: boolean;
+  declare private dictationLocalesList_: LocaleInfo[];
+  declare private isKioskModeActive_: boolean;
   private focusHighlightEnabledPref_:
+      chrome.settingsPrivate.PrefObject<boolean>;
+  declare private focusHighlightEnabledVirtualPref_:
       chrome.settingsPrivate.PrefObject<boolean>;
   private keyboardAndTextInputBrowserProxy_:
       KeyboardAndTextInputPageBrowserProxy;
-  private stickyKeysEnabledVirtualPref_:
+  declare private stickyKeysEnabledVirtualPref_:
       chrome.settingsPrivate.PrefObject<boolean>;
-  private showDictationLocaleMenu_: boolean;
+  declare private showDictationLocaleMenu_: boolean;
   private useDictationLocaleSubtitleOverride_: boolean;
-  private caretBlinkIntervalVirtualPref_:
+  declare private caretBlinkIntervalVirtualPref_:
       chrome.settingsPrivate.PrefObject<number>;
   private defaultCaretBlinkRateMs_: number;
   private caretBlinkIntervalOffSliderValue_ = 40;
-  private isSlowKeysFeatureEnabled_: boolean;
-  private slowKeysDelayVirtualPref_: chrome.settingsPrivate.PrefObject<number>;
-  private isBounceKeysFeatureEnabled_: boolean;
-  private bounceKeysDelayVirtualPref_:
+  declare private slowKeysDelayVirtualPref_:
+      chrome.settingsPrivate.PrefObject<number>;
+  declare private bounceKeysDelayVirtualPref_:
       chrome.settingsPrivate.PrefObject<number>;
   private millisInSec_ = 1000;
   private filterKeysSliderMinMillis_ = 0;
@@ -455,7 +437,7 @@ export class SettingsKeyboardAndTextInputPageElement extends
 
   private computeSlowKeysDelayVirtualPref_():
       chrome.settingsPrivate.PrefObject<number> {
-    const delayMillis = (this.isSlowKeysFeatureEnabled_ && this.prefs) ?
+    const delayMillis = this.prefs ?
         this.getPref<number>('settings.a11y.slow_keys_delay_ms').value :
         loadTimeData.getInteger('defaultSlowKeysDelayMillis');
     const delaySecs = delayMillis / this.millisInSec_;
@@ -467,9 +449,6 @@ export class SettingsKeyboardAndTextInputPageElement extends
   }
 
   private updateSlowKeysDelayFromVirtualPref_(): void {
-    if (!this.isSlowKeysFeatureEnabled_) {
-      return;
-    }
     const delaySecs = this.slowKeysDelayVirtualPref_.value;
     const delayMillis = Math.round(delaySecs * this.millisInSec_);
     this.setPrefValue('settings.a11y.slow_keys_delay_ms', delayMillis);
@@ -483,7 +462,7 @@ export class SettingsKeyboardAndTextInputPageElement extends
 
   private computeBounceKeysDelayVirtualPref_():
       chrome.settingsPrivate.PrefObject<number> {
-    const delayMillis = (this.isBounceKeysFeatureEnabled_ && this.prefs) ?
+    const delayMillis = this.prefs ?
         this.getPref<number>('settings.a11y.bounce_keys_delay_ms').value :
         loadTimeData.getInteger('defaultBounceKeysDelayMillis');
     const delaySecs = delayMillis / this.millisInSec_;
@@ -495,9 +474,6 @@ export class SettingsKeyboardAndTextInputPageElement extends
   }
 
   private updateBounceKeysDelayFromVirtualPref_(): void {
-    if (!this.isBounceKeysFeatureEnabled_) {
-      return;
-    }
     const delaySecs = this.bounceKeysDelayVirtualPref_.value;
     const delayMillis = Math.round(delaySecs * this.millisInSec_);
     this.setPrefValue('settings.a11y.bounce_keys_delay_ms', delayMillis);

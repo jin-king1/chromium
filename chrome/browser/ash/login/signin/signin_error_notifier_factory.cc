@@ -28,7 +28,7 @@ SigninErrorNotifierFactory::SigninErrorNotifierFactory()
               .Build()) {
   DependsOn(SigninErrorControllerFactory::GetInstance());
   DependsOn(NotificationDisplayServiceFactory::GetInstance());
-  DependsOn(SupervisedUserServiceFactory::GetInstance());
+  DependsOn(supervised_user::SupervisedUserServiceFactory::GetInstance());
 }
 
 SigninErrorNotifierFactory::~SigninErrorNotifierFactory() = default;
@@ -54,8 +54,14 @@ SigninErrorNotifierFactory::BuildServiceInstanceForBrowserContext(
     return nullptr;
 
   Profile* profile = static_cast<Profile*>(context);
+
+  // NOTE: Allow g_browser_process here as this class is initialized lazily with
+  // base::NoDestructor.
+  PrefService* local_state = g_browser_process->local_state();
+
   return std::make_unique<SigninErrorNotifier>(
-      SigninErrorControllerFactory::GetForProfile(profile), profile);
+      local_state, SigninErrorControllerFactory::GetForProfile(profile),
+      profile);
 }
 
 }  // namespace ash

@@ -23,6 +23,7 @@
 #include "ash/constants/ash_switches.h"
 #include "ash/shell.h"
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
@@ -150,8 +151,7 @@ std::vector<std::string> GenerateUpgradeProps(
     const std::string& serial_number,
     const std::string& prefix) {
   std::vector<std::string> result = {
-      base::StringPrintf("%s.disable_boot_completed=%d", prefix.c_str(),
-                         upgrade_params.skip_boot_completed_broadcast),
+      base::StringPrintf("%s.disable_boot_completed=0", prefix.c_str()),
       base::StringPrintf("%s.enable_adb_sideloading=%d", prefix.c_str(),
                          upgrade_params.is_adb_sideloading_enabled),
       base::StringPrintf("%s.copy_packages_cache=%d", prefix.c_str(),
@@ -179,19 +179,6 @@ std::vector<std::string> GenerateUpgradeProps(
           "%s.preferred_languages=%s", prefix.c_str(),
           base::JoinString(upgrade_params.preferred_languages, ",").c_str()));
     }
-  }
-
-  if (upgrade_params.enable_priority_app_lmk_delay &&
-      !upgrade_params.priority_app_lmk_delay_list.empty()) {
-    result.push_back(base::StringPrintf(
-        "%s.arc.lmk.enable_priority_app_delay=%d", prefix.c_str(),
-        upgrade_params.enable_priority_app_lmk_delay));
-    result.push_back(
-        base::StringPrintf("%s.arc.lmk.priority_apps=%s", prefix.c_str(),
-                           upgrade_params.priority_app_lmk_delay_list.c_str()));
-    result.push_back(base::StringPrintf(
-        "%s.arc.lmk.priority_app_delay_duration_sec=%d", prefix.c_str(),
-        upgrade_params.priority_app_lmk_delay_second));
   }
 
   if (upgrade_params.enable_lmk_perceptible_min_state_update) {
@@ -233,11 +220,11 @@ void AppendParamsFromStartParams(
 }
 
 int GetDefaultVmMemoryMiB(ArcVmClientAdapterDelegate* delegate) {
-  base::SystemMemoryInfoKB info;
+  base::SystemMemoryInfo info;
   if (!delegate->GetSystemMemoryInfo(&info)) {
     return 0;
   }
-  const int sys_memory_mb = info.total / 1024;
+  const int sys_memory_mb = info.total.InMiB();
   int vm_memory_mb;
   if (sys_memory_mb >= 4096) {
     // On devices with >=4GB RAM, reserve 1GB for other processes.
@@ -397,24 +384,17 @@ vm_tools::concierge::StartArcVmRequest CreateStartArcVmRequest(
   // Add ignore_dev_conf setting for dev mode.
   request.set_ignore_dev_conf(IsArcVmDevConfIgnored());
 
-  // Add enable_rt_vcpu.
-  request.set_enable_rt_vcpu(IsArcVmRtVcpuEnabled(cpus));
-
   // Add hugepages.
   request.set_use_hugepages(IsArcVmUseHugePages());
 
-  // Request guest memory locking, if configured.
-  request.set_lock_guest_memory(base::FeatureList::IsEnabled(kLockGuestMemory));
-
   // Controls whether WebView Zygote is lazily initialized in ARC.
-  request.set_enable_web_view_zygote_lazy_init(
-      base::FeatureList::IsEnabled(arc::kEnableLazyWebViewInit));
+  request.set_enable_web_view_zygote_lazy_init(false);
 
   // Specify VM Memory.
   if (base::FeatureList::IsEnabled(kVmMemorySize)) {
-    base::SystemMemoryInfoKB info;
+    base::SystemMemoryInfo info;
     if (delegate->GetSystemMemoryInfo(&info)) {
-      const int ram_mib = info.total / 1024;
+      const int ram_mib = info.total.InMiB();
       const int shift_mib = kVmMemorySizeShiftMiB.Get();
       const int max_mib = kVmMemorySizeMaxMiB.Get();
       const int ram_percentage = kVmMemorySizePercentage.Get();
@@ -510,7 +490,7 @@ vm_tools::concierge::StartArcVmRequest CreateStartArcVmRequest(
   }
 
   auto orientation = display::PanelOrientation::kNormal;
-  if (auto* screen = display::Screen::GetScreen()) {
+  if (auto* screen = display::Screen::Get()) {
     const auto display_id = screen->GetPrimaryDisplay().id();
     if (auto* shell = ash::Shell::Get()) {
       const auto& info = shell->display_manager()->GetDisplayInfo(display_id);
@@ -649,7 +629,7 @@ bool SendUpgradePropsToArcVmBootNotificationServer(
 }  // namespace
 
 bool ArcVmClientAdapterDelegate::GetSystemMemoryInfo(
-    base::SystemMemoryInfoKB* info) {
+    base::SystemMemoryInfo* info) {
   // Call the base function by default.
   return base::GetSystemMemoryInfo(info);
 }
@@ -1376,10 +1356,11 @@ void SetArcVmBootNotificationServerAddressForTesting(
   DCHECK_GE(sizeof(address->sun_path), new_address.size());
   DCHECK_GT(connect_timeout_limit, connect_sleep_duration_initial);
 
-  memset(address->sun_path, 0, sizeof(address->sun_path));
+  UNSAFE_TODO(memset(address->sun_path, 0, sizeof(address->sun_path)));
   // |new_address| may contain '\0' if it is an abstract socket address, so use
   // memcpy instead of strcpy.
-  memcpy(address->sun_path, new_address.data(), new_address.size());
+  UNSAFE_TODO(
+      memcpy(address->sun_path, new_address.data(), new_address.size()));
 
   g_connect_timeout_limit_for_testing = connect_timeout_limit;
   g_connect_sleep_duration_initial_for_testing = connect_sleep_duration_initial;

@@ -6,6 +6,7 @@
 #define BASE_SAMPLING_HEAP_PROFILER_POISSON_ALLOCATION_SAMPLER_H_
 
 #include <atomic>
+#include <optional>
 #include <vector>
 
 #include "base/allocator/dispatcher/notification_data.h"
@@ -17,6 +18,7 @@
 #include "base/memory/raw_ptr_exclusion.h"
 #include "base/no_destructor.h"
 #include "base/sampling_heap_profiler/lock_free_address_hash_set.h"
+#include "base/sampling_heap_profiler/lock_free_bloom_filter.h"
 #include "base/synchronization/lock.h"
 #include "base/thread_annotations.h"
 
@@ -26,12 +28,17 @@ class SamplingHeapProfilerTest;
 
 // Stats about the allocation sampler.
 struct BASE_EXPORT PoissonAllocationSamplerStats {
+  using AddressCacheBucketStats = LockFreeAddressHashSet::BucketStats;
+
   PoissonAllocationSamplerStats(
       size_t address_cache_hits,
       size_t address_cache_misses,
       size_t address_cache_max_size,
       float address_cache_max_load_factor,
-      std::vector<size_t> address_cache_bucket_lengths);
+      AddressCacheBucketStats address_cache_bucket_stats,
+      size_t bloom_filter_hits,
+      size_t bloom_filter_misses,
+      size_t bloom_filter_max_saturation);
   ~PoissonAllocationSamplerStats();
 
   PoissonAllocationSamplerStats(const PoissonAllocationSamplerStats&);
@@ -42,7 +49,10 @@ struct BASE_EXPORT PoissonAllocationSamplerStats {
   size_t address_cache_misses;
   size_t address_cache_max_size;
   float address_cache_max_load_factor;
-  std::vector<size_t> address_cache_bucket_lengths;
+  AddressCacheBucketStats address_cache_bucket_stats;
+  size_t bloom_filter_hits;
+  size_t bloom_filter_misses;
+  size_t bloom_filter_max_saturation;
 };
 
 // This singleton class implements Poisson sampling of the incoming allocations
@@ -154,6 +164,10 @@ class BASE_EXPORT PoissonAllocationSampler {
   // Returns the current mean sampling interval, in bytes.
   size_t SamplingInterval() const;
 
+  // Sets the max load factor before rebalancing the LockFreeAddressHashSet, or
+  // resets it to the default if `load_factor` is nulloptr.
+  void SetTargetHashSetLoadFactor(std::optional<float> load_factor);
+
   // Returns statistics about the allocation sampler, and resets the running
   // counts so that each call to this returns only stats about the period
   // between calls.
@@ -225,7 +239,7 @@ class BASE_EXPORT PoissonAllocationSampler {
                           const char* context);
   void DoRecordFree(void* address);
 
-  void BalanceAddressesHashSet();
+  void BalanceAddressesHashSet() EXCLUSIVE_LOCKS_REQUIRED(mutex_);
 
   Lock mutex_;
 
@@ -256,12 +270,22 @@ class BASE_EXPORT PoissonAllocationSampler {
   std::atomic<size_t> address_cache_hits_;
   std::atomic<size_t> address_cache_misses_;
   size_t address_cache_max_size_ GUARDED_BY(mutex_) = 0;
+  // The max load factor that's observed in sampled_addresses_set().
   float address_cache_max_load_factor_ GUARDED_BY(mutex_) = 0;
+  std::atomic<size_t> bloom_filter_hits_;
+  std::atomic<size_t> bloom_filter_misses_;
+  size_t bloom_filter_max_saturation_ GUARDED_BY(mutex_) = 0;
+
+  // The load factor that will trigger rebalancing in sampled_addresses_set().
+  // By definition `address_cache_max_load_factor_` will never exceed this.
+  float address_cache_target_load_factor_ GUARDED_BY(mutex_) = 1.0;
 
   friend class NoDestructor<PoissonAllocationSampler>;
   friend class PoissonAllocationSamplerStateTest;
   friend class SamplingHeapProfilerTest;
   FRIEND_TEST_ALL_PREFIXES(PoissonAllocationSamplerTest, MuteHooksWithoutInit);
+  FRIEND_TEST_ALL_PREFIXES(PoissonAllocationSamplerLoadFactorTest,
+                           BalanceSampledAddressesSet);
   FRIEND_TEST_ALL_PREFIXES(SamplingHeapProfilerTest, HookedAllocatorMuted);
 };
 
@@ -363,11 +387,28 @@ ALWAYS_INLINE void PoissonAllocationSampler::OnFree(
   if (address == nullptr) [[unlikely]] {
     return;
   }
-  if (!sampled_addresses_set().Contains(address)) [[likely]] {
-    address_cache_misses_.fetch_add(1, std::memory_order_relaxed);
-    return;
+  const LockFreeAddressHashSet& address_cache = sampled_addresses_set();
+  switch (address_cache.Contains(address)) {
+    [[likely]] case LockFreeAddressHashSet::ContainsResult::kNotFound:
+      if (address_cache.HasBloomFilter()) {
+        bloom_filter_misses_.fetch_add(1, std::memory_order_relaxed);
+      } else {
+        address_cache_misses_.fetch_add(1, std::memory_order_relaxed);
+      }
+      return;
+    case LockFreeAddressHashSet::ContainsResult::
+        kNotFoundButMatchedInBloomFilter:
+      bloom_filter_hits_.fetch_add(1, std::memory_order_relaxed);
+      address_cache_misses_.fetch_add(1, std::memory_order_relaxed);
+      return;
+    [[unlikely]] case LockFreeAddressHashSet::ContainsResult::kFound:
+      if (address_cache.HasBloomFilter()) {
+        bloom_filter_hits_.fetch_add(1, std::memory_order_relaxed);
+      }
+      address_cache_hits_.fetch_add(1, std::memory_order_relaxed);
+      // Continue after switch.
+      break;
   }
-  address_cache_hits_.fetch_add(1, std::memory_order_relaxed);
   if (ScopedMuteThreadSamples::IsMuted()) [[unlikely]] {
     return;
   }

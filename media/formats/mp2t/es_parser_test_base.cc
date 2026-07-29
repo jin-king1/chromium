@@ -8,6 +8,7 @@
 
 #include "base/check_op.h"
 #include "base/containers/extend.h"
+#include "base/containers/span.h"
 #include "base/files/memory_mapped_file.h"
 #include "base/format_macros.h"
 #include "base/strings/cstring_view.h"
@@ -51,7 +52,7 @@ std::vector<EsParserTestBase::Packet> EsParserTestBase::LoadPacketsFromFiles(
 
     Packet packet;
     packet.offset = stream_.size();
-    packet.size = stream.length();
+    packet.size = stream.bytes().size();
 
     base::Extend(stream_, stream.bytes());
     packets.push_back(packet);
@@ -94,7 +95,9 @@ bool EsParserTestBase::ProcessPesPackets(EsParser* es_parser,
     }
 
     DCHECK_LT(cur_pes_offset, stream_.size());
-    if (!es_parser->Parse(&stream_[cur_pes_offset], cur_pes_size, pts, dts)) {
+    if (!es_parser->Parse(
+            base::as_byte_span(stream_).subspan(cur_pes_offset, cur_pes_size),
+            pts, dts)) {
       return false;
     }
   }

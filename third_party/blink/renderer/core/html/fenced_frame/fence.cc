@@ -13,8 +13,6 @@
 #include "third_party/blink/public/common/frame/frame_policy.h"
 #include "third_party/blink/public/mojom/fenced_frame/fenced_frame.mojom-blink.h"
 #include "third_party/blink/public/mojom/frame/frame.mojom-blink.h"
-#include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
-#include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_fence_event.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_fenceevent_string.h"
 #include "third_party/blink/renderer/core/dom/events/event.h"
@@ -23,7 +21,6 @@
 #include "third_party/blink/renderer/core/inspector/console_message.h"
 #include "third_party/blink/renderer/core/loader/document_loader.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
-#include "third_party/blink/renderer/platform/bindings/script_state.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
@@ -49,7 +46,7 @@ blink::FencedFrame::ReportingDestination ToPublicDestination(
 }
 
 std::optional<mojom::blink::AutomaticBeaconType> GetAutomaticBeaconType(
-    const WTF::String& input) {
+    const String& input) {
   if (input == blink::kDeprecatedFencedFrameTopNavigationBeaconType) {
     return mojom::blink::AutomaticBeaconType::kDeprecatedTopNavigation;
   }
@@ -92,7 +89,7 @@ void Fence::reportEvent(const FenceEvent* event,
     return;
   }
 
-  if (event->getEventTypeOr("").StartsWith(
+  if (event->getEventTypeOr("").starts_with(
           blink::kFencedFrameReservedPAEventPrefix)) {
     AddConsoleMessage("Reserved events cannot be triggered manually.");
     return;
@@ -158,7 +155,7 @@ void Fence::reportEventToDestinationEnum(const FenceEvent* event,
     }
   }
 
-  WTF::Vector<blink::FencedFrame::ReportingDestination> destinations;
+  Vector<blink::FencedFrame::ReportingDestination> destinations;
   destinations.reserve(event->destination().size());
   std::ranges::transform(event->destination(), std::back_inserter(destinations),
                          ToPublicDestination);
@@ -266,8 +263,8 @@ void Fence::setReportEventDataForAutomaticBeacons(
   std::optional<mojom::blink::AutomaticBeaconType> beacon_type =
       GetAutomaticBeaconType(event->eventType());
   if (!beacon_type.has_value()) {
-    AddConsoleMessage(event->eventType() +
-                      " is not a valid automatic beacon event type.");
+    AddConsoleMessage(StrCat(
+        {event->eventType(), " is not a valid automatic beacon event type."}));
     return;
   }
   if (event->hasEventData() &&
@@ -279,8 +276,8 @@ void Fence::setReportEventDataForAutomaticBeacons(
   }
   if (event->eventType() ==
       blink::kDeprecatedFencedFrameTopNavigationBeaconType) {
-    AddConsoleMessage(event->eventType() + " is deprecated in favor of " +
-                          kFencedFrameTopNavigationCommitBeaconType + ".",
+    AddConsoleMessage(StrCat({event->eventType(), " is deprecated in favor of ",
+                              kFencedFrameTopNavigationCommitBeaconType, "."}),
                       mojom::blink::ConsoleMessageLevel::kWarning);
   }
   LocalFrame* frame = DomWindow()->GetFrame();
@@ -310,7 +307,7 @@ void Fence::setReportEventDataForAutomaticBeacons(
     }
   }
 
-  WTF::Vector<blink::FencedFrame::ReportingDestination> destinations;
+  Vector<blink::FencedFrame::ReportingDestination> destinations;
   destinations.reserve(event->destination().size());
   std::ranges::transform(event->destination(), std::back_inserter(destinations),
                          ToPublicDestination);
@@ -342,119 +339,9 @@ HeapVector<Member<FencedFrameConfig>> Fence::getNestedConfigs(
   return out;
 }
 
-ScriptPromise<IDLUndefined> Fence::disableUntrustedNetwork(
-    ScriptState* script_state,
-    ExceptionState& exception_state) {
-  if (!DomWindow()) {
-    exception_state.ThrowSecurityError(
-        "May not use a Fence object associated with a Document that is not "
-        "fully active.");
-    return EmptyPromise();
-  }
-  LocalFrame* frame = DomWindow()->GetFrame();
-  DCHECK(frame->GetDocument());
-  CHECK(frame->GetDocument()->Loader()->FencedFrameProperties().has_value());
-  bool can_disable_untrusted_network = frame->GetDocument()
-                                           ->Loader()
-                                           ->FencedFrameProperties()
-                                           ->can_disable_untrusted_network();
-  if (!can_disable_untrusted_network) {
-    exception_state.ThrowTypeError(
-        "This frame is not allowed to disable untrusted network.");
-    return EmptyPromise();
-  }
-
-  auto* resolver = MakeGarbageCollected<ScriptPromiseResolver<IDLUndefined>>(
-      script_state, exception_state.GetContext());
-  auto promise = resolver->Promise();
-  frame->GetLocalFrameHostRemote().DisableUntrustedNetworkInFencedFrame(
-      WTF::BindOnce(
-          [](ScriptPromiseResolver<IDLUndefined>* resolver) {
-            resolver->Resolve();
-          },
-          WrapPersistent(resolver)));
-  return promise;
-}
-
 void Fence::reportPrivateAggregationEvent(const String& event,
                                           ExceptionState& exception_state) {
-  if (!base::FeatureList::IsEnabled(blink::features::kPrivateAggregationApi) ||
-      !blink::features::kPrivateAggregationApiEnabledInProtectedAudience
-           .Get() ||
-      !blink::features::kPrivateAggregationApiProtectedAudienceExtensionsEnabled
-           .Get()) {
-    exception_state.ThrowSecurityError(
-        "FLEDGE extensions must be enabled to use reportEvent() for private "
-        "aggregation events.");
-    return;
-  }
-  if (!DomWindow()) {
-    exception_state.ThrowSecurityError(
-        "May not use a Fence object associated with a Document that is not "
-        "fully active.");
-    return;
-  }
-
-  if (event.StartsWith(blink::kFencedFrameReservedPAEventPrefix)) {
-    AddConsoleMessage("Reserved events cannot be triggered manually.");
-    return;
-  }
-
-  LocalFrame* frame = DomWindow()->GetFrame();
-  DCHECK(frame->GetDocument());
-
-  const auto& properties =
-      frame->GetDocument()->Loader()->FencedFrameProperties();
-  if (!properties.has_value()) {
-    AddConsoleMessage("This frame was not loaded with a FencedFrameConfig.");
-    return;
-  }
-
-  frame->GetLocalFrameHostRemote()
-      .SendPrivateAggregationRequestsForFencedFrameEvent(event);
-}
-
-void Fence::notifyEvent(const Event* triggering_event,
-                        ExceptionState& exception_state) {
-  if (!DomWindow()) {
-    exception_state.ThrowSecurityError(
-        "May not use a Fence object associated with a Document that is not "
-        "fully active.");
-    return;
-  }
-
-  LocalFrame* frame = DomWindow()->GetFrame();
-  CHECK(frame);
-  // notifyEvent is not allowed in iframes.
-  if (!frame->IsFencedFrameRoot()) {
-    exception_state.ThrowSecurityError(
-        "notifyEvent is only available in fenced frame "
-        "roots.");
-    return;
-  }
-
-  if (!triggering_event || !triggering_event->isTrusted() ||
-      !triggering_event->IsBeingDispatched()) {
-    exception_state.ThrowSecurityError(
-        "The triggering_event object is in an invalid "
-        "state.");
-    return;
-  }
-
-  if (!CanNotifyEventTypeAcrossFence(triggering_event->type().Ascii())) {
-    exception_state.ThrowSecurityError(
-        "notifyEvent called with an unsupported event type.");
-    return;
-  }
-
-  frame->GetLocalFrameHostRemote()
-      .ForwardFencedFrameEventAndUserActivationToEmbedder(
-          triggering_event->type());
-
-  // The browser process checks and consumes user activation as part of the
-  // above IPC, so this just needs to update the renderer's state.
-  LocalFrame::ConsumeTransientUserActivation(
-      frame, UserActivationUpdateSource::kBrowser);
+  // Silent no-op. Private Aggregation in Protected Audience is deprecated.
 }
 
 void Fence::AddConsoleMessage(const String& message,

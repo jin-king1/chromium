@@ -1,6 +1,5 @@
 include_rules = [
   "+chrome/browser/sharing",
-  "+components/session_proto_db",
   "+components/sharing_message",
-  "+components/version_info",
+  "+components/one_time_tokens",
 ]

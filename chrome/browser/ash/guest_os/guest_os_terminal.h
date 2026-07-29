@@ -7,7 +7,7 @@
 
 #include <vector>
 
-#include "base/containers/fixed_flat_map.h"
+#include "base/containers/flat_map.h"
 #include "base/functional/callback.h"
 #include "base/values.h"
 #include "components/services/app_service/public/cpp/intent.h"
@@ -178,7 +178,7 @@ std::string ShortcutIdFromContainerId(Profile* profile,
 
 // Parse Intent extras from shortcut ID.
 base::flat_map<std::string, std::string> ExtrasFromShortcutId(
-    const base::Value::Dict& shortcut);
+    const base::DictValue& shortcut);
 
 // Returns list of SSH connections {<profile-id>, <description>}.
 std::vector<std::pair<std::string, std::string>> GetSSHConnections(

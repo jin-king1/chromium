@@ -8,7 +8,6 @@
 #include <memory>
 
 #include "base/component_export.h"
-#include "base/functional/callback.h"
 #include "base/functional/callback_forward.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
@@ -19,6 +18,10 @@
 #include "components/session_manager/core/session_manager.h"
 #include "components/session_manager/core/session_manager_observer.h"
 #include "google_apis/gaia/gaia_id.h"
+
+namespace network {
+class SharedURLLoaderFactory;
+}  // namespace network
 
 namespace ash {
 
@@ -34,7 +37,9 @@ class TimeboundUserContextHolder
   static constexpr base::TimeDelta kCredentialsVlidityPeriod =
       base::Minutes(10);
 
-  explicit TimeboundUserContextHolder(
+  // `shared_url_loader_factory` must be non-null.
+  TimeboundUserContextHolder(
+      scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
       std::unique_ptr<UserContext> user_context);
   TimeboundUserContextHolder(const TimeboundUserContextHolder& other) = delete;
   TimeboundUserContextHolder(const TimeboundUserContextHolder&& other) = delete;

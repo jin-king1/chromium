@@ -29,7 +29,9 @@
 #include "chromeos/ash/components/login/auth/auth_performer.h"
 #include "chromeos/ash/components/login/auth/public/cryptohome_key_constants.h"
 #include "chromeos/ash/components/login/auth/public/user_context.h"
+#include "chromeos/ash/components/osauth/public/auth_policy_connector.h"
 #include "chromeos/ash/components/osauth/public/auth_session_storage.h"
+#include "chromeos/ash/components/osauth/public/common_types.h"
 #include "components/prefs/pref_service.h"
 #include "components/user_manager/user_manager.h"
 #include "ui/display/screen.h"
@@ -77,15 +79,7 @@ void RecordUserAction(const std::string& action_id) {
 // is only available between the Show/Hide calls. During `MaybeSkip`
 // WizardController provides a reference to it.
 bool IsInSetupMode(PinSetupMode mode, WizardContext& context) {
-  const bool mode_matches =
-      context.knowledge_factor_setup.pin_setup_mode == mode;
-  if (mode == PinSetupMode::kSetupAsPrimaryFactor ||
-      mode == PinSetupMode::kAlreadyPerformed) {
-    // These modes are only available when PasswordlessSetup is enabled.
-    return mode_matches && ash::features::IsAllowPasswordlessSetupEnabled();
-  } else {
-    return mode_matches;
-  }
+  return context.knowledge_factor_setup.pin_setup_mode == mode;
 }
 
 // Returns `true` if the active Profile is enterprise managed.
@@ -93,6 +87,13 @@ bool IsUserEnterpriseManaged() {
   Profile* profile = ProfileManager::GetPrimaryUserProfile();
   return profile->GetProfilePolicyConnector()->IsManaged() &&
          !profile->IsChild();
+}
+
+bool IsPinProhibitedAsMainFactorByPolicy(AccountId account) {
+  auto allowed_auth_factors =
+      AuthPolicyConnector::Get()->AllowedLocalAuthFactors(account);
+  return allowed_auth_factors.has_value() &&
+         !allowed_auth_factors->Has(ash::AshAuthFactor::kCryptohomePin);
 }
 
 }  // namespace
@@ -121,13 +122,16 @@ std::string PinSetupScreen::GetResultString(Result result) {
   // LINT.ThenChange(//tools/metrics/histograms/metadata/oobe/histograms.xml)
 }
 
-PinSetupScreen::PinSetupScreen(base::WeakPtr<PinSetupScreenView> view,
+PinSetupScreen::PinSetupScreen(PrefService* local_state,
+                               base::WeakPtr<PinSetupScreenView> view,
                                const ScreenExitCallback& exit_callback)
-    : BaseScreen(PinSetupScreenView::kScreenId, OobeScreenPriority::DEFAULT),
+    : BaseOSAuthSetupScreen(PinSetupScreenView::kScreenId,
+                            OobeScreenPriority::DEFAULT),
       view_(std::move(view)),
       exit_callback_(exit_callback),
       auth_performer_(UserDataAuthClient::Get()),
-      cryptohome_pin_engine_(&auth_performer_) {
+      cryptohome_pin_engine_(local_state, &auth_performer_) {
+  CHECK(local_state);
   DCHECK(view_);
 
   quick_unlock::PinBackend::GetInstance()->HasLoginSupport(base::BindOnce(
@@ -160,15 +164,37 @@ std::optional<PinSetupScreen::SkipReason> PinSetupScreen::GetSkipReason(
   AccountId account_id = ash::AuthSessionStorage::Get()
                              ->Peek(context.extra_factors_token.value())
                              ->GetAccountId();
-  if (cryptohome_pin_engine_.ShouldSkipSetupBecauseOfPolicy(account_id)) {
-    return SkipReason::kNotAllowedByPolicy;
+  bool should_skip_setup_because_of_quick_unlock_policy =
+      cryptohome_pin_engine_.ShouldSkipSetupBecauseOfPolicy(account_id);
+
+  if (features::IsManagedLocalPinAndPasswordEnabled()) {
+    const bool is_secondary_setup_mode =
+        IsInSetupMode(PinSetupMode::kSetupAsSecondaryFactor, context);
+    const bool is_primary_or_recovery_setup_mode =
+        IsInSetupMode(PinSetupMode::kRecovery, context) ||
+        IsInSetupMode(PinSetupMode::kSetupAsPrimaryFactor, context);
+
+    // Only skip due to quick unlock policy in secondary setup mode.
+    if (should_skip_setup_because_of_quick_unlock_policy &&
+        is_secondary_setup_mode) {
+      return SkipReason::kNotAllowedByPolicy;
+    }
+    // In case of recovery or primary mode, always use the
+    // AllowedLocalAuthFactors policy value.
+    if (is_primary_or_recovery_setup_mode &&
+        IsPinProhibitedAsMainFactorByPolicy(account_id)) {
+      return SkipReason::kNotAllowedByPolicyAsPrimaryFactor;
+    }
+  } else {
+    if (should_skip_setup_because_of_quick_unlock_policy) {
+      return SkipReason::kNotAllowedByPolicy;
+    }
   }
 
   // Hardware capability check. In order for the screen to be shown, the device
   // needs to support PIN for login, OR be a tablet device.
-  const bool is_device_a_tablet =
-      display::Screen::GetScreen()->InTabletMode() ||
-      switches::ShouldOobeUseTabletModeFirstRun();
+  const bool is_device_a_tablet = display::Screen::Get()->InTabletMode() ||
+                                  switches::ShouldOobeUseTabletModeFirstRun();
   const bool has_login_support =
       hardware_support_.value() == HardwareSupport::kLoginCompatible;
   if (!(is_device_a_tablet || has_login_support)) {
@@ -182,7 +208,8 @@ std::optional<PinSetupScreen::SkipReason> PinSetupScreen::GetSkipReason(
       return SkipReason::kNotSupportedAsPrimaryFactor;
     }
 
-    if (IsUserEnterpriseManaged()) {
+    if (IsUserEnterpriseManaged() &&
+        !features::IsManagedLocalPinAndPasswordEnabled()) {
       return SkipReason::kNotSupportedAsPrimaryFactorForManagedUsers;
     }
   }
@@ -218,6 +245,22 @@ void PinSetupScreen::ShowImpl() {
   CHECK(context()->extra_factors_token);
   CHECK(!IsInSetupMode(PinSetupMode::kAlreadyPerformed, *context()));
 
+  InspectContextAndContinue(
+      base::BindOnce(&PinSetupScreen::InspectContext,
+                     weak_ptr_factory_.GetWeakPtr()),
+      base::BindOnce(&PinSetupScreen::DoShow, weak_ptr_factory_.GetWeakPtr()));
+}
+
+void PinSetupScreen::InspectContext(UserContext* user_context) {
+  if (!user_context) {
+    return;
+  }
+  account_id_ = user_context->GetAccountId();
+  is_saml_flow_ =
+      user_context->GetAuthFlow() == UserContext::AUTH_FLOW_GAIA_WITH_SAML;
+}
+
+void PinSetupScreen::DoShow() {
   // When the screen is being shown offering PIN as a secondary factor
   // factor, a timer is used for invalidating the AuthSession.
   // TODO(b/365059362): Replace legacy timer logic with a AuthSessionStorage
@@ -251,10 +294,24 @@ void PinSetupScreen::ShowImpl() {
       hardware_support_.value() == HardwareSupport::kLoginCompatible;
   const bool is_recovery_mode =
       IsInSetupMode(PinSetupMode::kRecovery, *context());
+
+  bool cannot_skip_flow = false;
+  if (features::IsManagedLocalPinAndPasswordEnabled() &&
+      using_pin_as_main_factor) {
+    CHECK(account_id_.has_value());
+    CHECK(is_saml_flow_.has_value());
+    auto allowed_factors = AuthPolicyConnector::Get()->AllowedLocalAuthFactors(
+        account_id_.value());
+    if (is_saml_flow_.value() && allowed_factors.has_value() &&
+        !allowed_factors->Has(ash::AshAuthFactor::kLocalPassword)) {
+      cannot_skip_flow = true;
+    }
+  }
+
   if (view_) {
     // TODO(b/365059362): Wrap arguments in a struct. Also consolidate states.
     view_->Show(token, is_child_account, has_login_support,
-                using_pin_as_main_factor, is_recovery_mode);
+                using_pin_as_main_factor, is_recovery_mode, cannot_skip_flow);
   }
 }
 
@@ -263,15 +320,14 @@ void PinSetupScreen::HideImpl() {
   session_refresher_.reset();
 }
 
-void PinSetupScreen::OnUserAction(const base::Value::List& args) {
+void PinSetupScreen::OnUserAction(const base::ListValue& args) {
   const std::string& action_id = args[0].GetString();
   if (action_id == kUserActionDoneButtonClicked) {
     RecordUserAction(action_id);
     token_lifetime_timeout_.Stop();
     if (IsInSetupMode(PinSetupMode::kSetupAsPrimaryFactor, *context())) {
       exit_callback_.Run(Result::kDoneAsMainFactor);
-    } else if (IsInSetupMode(PinSetupMode::kRecovery, *context()) &&
-               features::IsAllowPasswordlessRecoveryEnabled()) {
+    } else if (IsInSetupMode(PinSetupMode::kRecovery, *context())) {
       exit_callback_.Run(Result::kDoneRecoveryReset);
     } else {
       CHECK(IsInSetupMode(PinSetupMode::kSetupAsSecondaryFactor, *context()));
@@ -292,7 +348,7 @@ void PinSetupScreen::OnUserAction(const base::Value::List& args) {
     }
     return;
   }
-  BaseScreen::OnUserAction(args);
+  BaseOSAuthSetupScreen::OnUserAction(args);
 }
 
 void PinSetupScreen::DetermineHardwareSupport() {

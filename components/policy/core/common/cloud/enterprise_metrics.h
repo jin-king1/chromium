@@ -18,7 +18,9 @@ namespace policy {
 // Hence,
 //   (a) existing enumerated constants should never be deleted or reordered, and
 //   (b) new constants should only be appended at the end of the enumeration
-//       (update tools/metrics/histograms/enums.xml as well).
+//       (update tools/metrics/histograms/metadata/enterprise/enums.xml as
+//       well).
+// LINT.IfChange(MetricEnrollment)
 enum MetricEnrollment {
   // User pressed 'Cancel' during the enrollment process.
   kMetricEnrollmentCancelled = 0,
@@ -99,8 +101,8 @@ enum MetricEnrollment {
   kMetricEnrollmentRegisterPolicyHttpError = 39,
   // Registration / policy fetch failed: can't decode DM server response.
   kMetricEnrollmentRegisterPolicyResponseInvalid = 40,
-  // OAuth token fetch failed: account not signed up.
-  kMetricEnrollmentAccountNotSignedUp = 41,
+  // OAuth token fetch failed: account not found.
+  kMetricEnrollmentAccountNotFound = 41,
   /* kMetricEnrollmentAccountDeleted = 42 REMOVED */
   /* kMetricEnrollmentAccountDisabled = 43 REMOVED */
   // Re-enrollment pre-check failed: domain does not match install attributes.
@@ -139,7 +141,7 @@ enum MetricEnrollment {
   kMetricEnrollmentRegisterEnterpriseAccountIsNotEligibleToEnroll = 60,
   // Enrollment failed: Enterprise TOS has not been accepted.
   kMetricEnrollmentRegisterEnterpriseTosHasNotBeenAccepted = 61,
-  // Too many requests are uploadede within a short time.
+  // Too many requests are uploaded within a short time.
   kMetricEnrollmentTooManyRequests = 62,
   // Enrollment failed: illegal account for packaged EDU license.
   kMetricEnrollmentIllegalAccountForPackagedEDULicense = 63,
@@ -159,16 +161,21 @@ enum MetricEnrollment {
   kMetricEnrollmentRegistrationCertificateFetchNotAvailable = 68,
   // Enrollment failed: Organization unit enrollment limit exceeded.
   kMetricEnrollmentOrgUnitEnrollmentLimitExceeded = 69,
+  // Device management error
+  kMetricEnrollmentDeviceManagementError = 70,
   // Max value for use with enumeration histogram UMA functions.
-  kMaxValue = kMetricEnrollmentOrgUnitEnrollmentLimitExceeded
+  kMaxValue = kMetricEnrollmentDeviceManagementError
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/enterprise/enums.xml:EnterpriseEnrollmentType)
 
 // Events related to policy refresh.
 // This enum is used to define the buckets for an enumerated UMA histogram.
 // Hence,
 //   (a) existing enumerated constants should never be deleted or reordered, and
 //   (b) new constants should only be appended at the end of the enumeration
-//       (update tools/metrics/histograms/enums.xml as well).
+//       (update tools/metrics/histograms/metadata/enterprise/enums.xml as
+//       well).
+// LINT.IfChange(MetricPolicyRefresh)
 enum MetricPolicyRefresh {
   // A refresh occurred while the policy was not invalidated and the policy was
   // changed. Invalidations were enabled.
@@ -188,13 +195,16 @@ enum MetricPolicyRefresh {
 
   METRIC_POLICY_REFRESH_SIZE  // Must be the last.
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/enterprise/enums.xml:EnterprisePolicyRefresh)
 
 // Types of policy invalidations.
 // This enum is used to define the buckets for an enumerated UMA histogram.
 // Hence,
 //   (a) existing enumerated constants should never be deleted or reordered, and
 //   (b) new constants should only be appended at the end of the enumeration
-//       (update tools/metrics/histograms/enums.xml as well).
+//       (update tools/metrics/histograms/metadata/enterprise/enums.xml as
+//       well).
+// LINT.IfChange(PolicyInvalidationType)
 enum PolicyInvalidationType {
   // The invalidation contained no payload.
   POLICY_INVALIDATION_TYPE_NO_PAYLOAD = 0,
@@ -207,10 +217,12 @@ enum PolicyInvalidationType {
 
   POLICY_INVALIDATION_TYPE_SIZE  // Must be the last.
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/enterprise/enums.xml:EnterprisePolicyInvalidations)
 
 // Result of the Device ID field validation in policy protobufs.
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
+// LINT.IfChange(PolicyDeviceIdValidity)
 enum class PolicyDeviceIdValidity {
   kValid = 0,
   kActualIdUnknown = 1,
@@ -218,6 +230,7 @@ enum class PolicyDeviceIdValidity {
   kInvalid = 3,
   kMaxValue = kInvalid,  // Must be the last.
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/enterprise/enums.xml:EnterprisePolicyDeviceIdValidity)
 
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
@@ -225,6 +238,14 @@ enum class PolicyPromotionBannerAction {
   kBannerDismissed = 0,
   kBannerRedirected = 1,
   kMaxValue = kBannerRedirected,  // Must be the last.
+};
+
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+enum class ManagementPromotionBannerAction {
+  kManagementBannerDismissed = 0,
+  kManagementRedirected = 1,
+  kMaxValue = kManagementRedirected,  // Must be the last.
 };
 
 // Names for the UMA counters. They are shared from here since the events
@@ -253,8 +274,22 @@ inline constexpr char kMetricDeviceLocalAccountPolicyInvalidations[] =
 inline constexpr char kMetricCBCMPolicyRefresh[] =
     "Enterprise.CBCMPolicyRefresh";
 
+inline constexpr char kMetricUserExtensionInstallPolicyRefresh[] =
+    "Enterprise.ExtensionInstallPolicyRefresh";
+inline constexpr char kMetricDeviceExtensionInstallPolicyRefresh[] =
+    "Enterprise.DeviceExtensionInstallPolicyRefresh";
+inline constexpr char kMetricCBCMExtensionInstallPolicyRefresh[] =
+    "Enterprise.CBCMExtensionInstallPolicyRefresh";
+
 inline constexpr char kMetricCBCMPolicyInvalidations[] =
     "Enterprise.CBCMPolicyInvalidations";
+
+inline constexpr char kMetricUserExtensionInstallPolicyInvalidations[] =
+    "Enterprise.ExtensionInstallPolicyInvalidations";
+inline constexpr char kMetricDeviceExtensionInstallPolicyInvalidations[] =
+    "Enterprise.DeviceExtensionInstallPolicyInvalidations";
+inline constexpr char kMetricCBCMExtensionInstallPolicyInvalidations[] =
+    "Enterprise.CBCMExtensionInstallPolicyInvalidations";
 
 inline constexpr char kMetricUserRemoteCommandInvalidations[] =
     "Enterprise.UserRemoteCommandInvalidations";
@@ -285,6 +320,8 @@ inline constexpr char kMetricUserRemoteCommandReceived[] =
 // Enterprise.UserRemoteCommand.Executed.BrowserRotateAttestationCredential
 // Enterprise.UserRemoteCommand.Executed.FetchCrdAvailabilityInfo
 // Enterprise.UserRemoteCommand.Executed.FetchSupportPacket
+// Enterprise.UserRemoteCommand.Executed.BrowserExtensionUpdateCheck
+// Enterprise.UserRemoteCommand.Executed.QueryGeolocation
 inline constexpr char kMetricUserRemoteCommandExecutedTemplate[] =
     "Enterprise.UserRemoteCommand.Executed.%s";
 
@@ -365,6 +402,9 @@ inline constexpr char kMetricDeviceRemoteCommandCrdSessionDurationTemplate[] =
 // Enterprise.DeviceRemoteCommand.Executed.DeviceResetEuicc
 // Enterprise.DeviceRemoteCommand.Executed.BrowserRotateAttestationCredential
 // Enterprise.DeviceRemoteCommand.Executed.FetchCrdAvailabilityInfo
+// Enterprise.DeviceRemoteCommand.Executed.BrowserExtensionUpdateCheck
+// Enterprise.DeviceRemoteCommand.Executed.FetchSupportPacket
+// Enterprise.DeviceRemoteCommand.Executed.QueryGeolocation
 inline constexpr char kMetricDeviceRemoteCommandExecutedTemplate[] =
     "Enterprise.DeviceRemoteCommand.Executed.%s";
 
@@ -389,6 +429,9 @@ inline constexpr char kMetricCBCMRemoteCommandReceived[] =
 // Enterprise.CBCMRemoteCommand.Executed.DeviceResetEuicc
 // Enterprise.CBCMRemoteCommand.Executed.BrowserRotateAttestationCredential
 // Enterprise.CBCMRemoteCommand.Executed.FetchCrdAvailabilityInfo
+// Enterprise.CBCMRemoteCommand.Executed.BrowserExtensionUpdateCheck
+// Enterprise.CBCMRemoteCommand.Executed.FetchSupportPacket
+// Enterprise.CBCMRemoteCommand.Executed.QueryGeolocation
 inline constexpr char kMetricCBCMRemoteCommandExecutedTemplate[] =
     "Enterprise.CBCMRemoteCommand.Executed.%s";
 
@@ -400,20 +443,6 @@ inline constexpr char kUMAPsmNetworkErrorCode[] =
     "Enterprise.AutoEnrollmentPsmRequestNetworkErrorCode";
 inline constexpr char kUMAPsmDmServerRequestStatus[] =
     "Enterprise.AutoEnrollmentPsmDmServerRequestStatus";
-
-// DeviceAutoEnrollmentRequest i.e. hash dance request UMA histogram names.
-inline constexpr char kUMAHashDanceSuccessTime[] =
-    "Enterprise.AutoEnrollmentHashDanceSuccessTime";
-// The following histogram names where added before PSM (private set membership)
-// existed. They are only recorded for hash dance.
-inline constexpr char kUMAHashDanceProtocolTime[] =
-    "Enterprise.AutoEnrollmentProtocolTime";
-inline constexpr char kUMAHashDanceBucketDownloadTime[] =
-    "Enterprise.AutoEnrollmentBucketDownloadTime";
-inline constexpr char kUMAHashDanceRequestStatus[] =
-    "Enterprise.AutoEnrollmentRequestStatus";
-inline constexpr char kUMAHashDanceNetworkErrorCode[] =
-    "Enterprise.AutoEnrollmentRequestNetworkErrorCode";
 
 // The following UMA suffixes are used by Hash dance and PSM protocols.
 // Suffix for initial enrollment.
@@ -430,9 +459,6 @@ inline constexpr char kUMAStateDeterminationOnFlex[] =
     "Enterprise.StateDetermination.OnFlex";
 inline constexpr char kUMAStateDeterminationOwnershipStatus[] =
     "Enterprise.StateDetermination.OwnershipStatus";
-inline constexpr char
-    kUMAStateDeterminationOwnershipStatusDuringEnrollmentRecovery[] =
-        "Enterprise.StateDetermination.OwnershipStatusDuringEnrollmentRecovery";
 inline constexpr char kUMAStateDeterminationPsmReportedAvailableState[] =
     "Enterprise.StateDetermination.PsmReportedAvailableState";
 inline constexpr char kUMAStateDeterminationPsmRlweOprfRequestDmStatusCode[] =
@@ -453,8 +479,6 @@ inline constexpr char kUMAStateDeterminationStateRequestNetworkErrorCode[] =
     "Enterprise.StateDetermination.StateRequest.NetworkErrorCode";
 inline constexpr char kUMAStateDeterminationStateReturned[] =
     "Enterprise.StateDetermination.StateReturned";
-inline constexpr char kUMAStateDeterminationStepDuration[] =
-    "Enterprise.StateDetermination.StepDuration";
 inline constexpr char kUMAStateDeterminationTotalDurationByState[] =
     "Enterprise.StateDetermination.TotalDurationByState";
 inline constexpr char kUMAStateDeterminationTotalDuration[] =
@@ -476,18 +500,17 @@ inline constexpr char kUMASuffixEnrollment[] = ".Enrollment";
 inline constexpr char kUMASuffixNoEnrollment[] = ".NoEnrollment";
 inline constexpr char kUMASuffixServerError[] = ".ServerError";
 
-// Suffixes added to kUMAStateDeterminationStepDuration.
-inline constexpr char kUMASuffixOPRFRequest[] = ".OPRFRequest";
-inline constexpr char kUMASuffixOwnershipCheck[] = ".OwnershipCheck";
-inline constexpr char kUMASuffixQueryRequest[] = ".QueryRequest";
-inline constexpr char kUMASuffixStateKeysRetrieval[] = ".StateKeysRetrieval";
-inline constexpr char kUMASuffixStateRequest[] = ".StateRequest";
-
 // Histograms for the promotion banner on chrome://policy
 inline constexpr char kUMAPolicyBannerDisplayed[] =
     "Enterprise.PolicyPromotionBannerDisplayed";
 inline constexpr char kUMAPolicyBannerAction[] =
     "Enterprise.PolicyPromotionBannerAction";
+
+// Histograms for the promotion banner on chrome://management
+inline constexpr char kUMAManagementBannerDisplayed[] =
+    "Enterprise.ManagementPromotionBannerDisplayed";
+inline constexpr char kUMAManagementBannerAction[] =
+    "Enterprise.ManagementPromotionBannerAction";
 }  // namespace policy
 
 #endif  // COMPONENTS_POLICY_CORE_COMMON_CLOUD_ENTERPRISE_METRICS_H_

@@ -4,24 +4,32 @@
 
 #import "ios/chrome/browser/signin/model/signin_util.h"
 
+#import "base/check.h"
+#import "base/check_is_test.h"
 #import "base/containers/to_vector.h"
+#import "base/functional/callback_helpers.h"
 #import "base/no_destructor.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/values.h"
 #import "components/prefs/pref_service.h"
 #import "components/prefs/scoped_user_pref_update.h"
 #import "components/signin/public/identity_manager/account_capabilities.h"
+#import "components/signin/public/identity_manager/account_info.h"
 #import "components/signin/public/identity_manager/tribool.h"
 #import "google_apis/gaia/core_account_id.h"
 #import "google_apis/gaia/gaia_auth_util.h"
 #import "google_apis/gaia/gaia_id.h"
-#import "ios/chrome/app/tests_hook.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
+#import "ios/chrome/browser/shared/model/profile/profile_ios.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/public/features/system_flags.h"
+#import "ios/chrome/browser/shared/ui/symbols/symbols.h"
+#import "ios/chrome/browser/signin/model/constants.h"
 #import "ios/chrome/browser/signin/model/signin_util_internal.h"
 #import "ios/chrome/browser/signin/model/system_identity.h"
 #import "ios/chrome/browser/signin/model/system_identity_manager.h"
+#import "ios/chrome/browser/subscription_eligibility/model/subscription_eligibility_service_factory.h"
 #import "ios/public/provider/chrome/browser/signin/signin_error_api.h"
 #import "ios/public/provider/chrome/browser/signin/signin_identity_api.h"
 
@@ -35,32 +43,62 @@ const char kAccountInfoKeyGivenName[] = "given_name";
 const char kAccountInfoKeyPictureUrl[] = "picture_url";
 const char kHistorySyncEnabled[] = "history_sync_enabled";
 
-// Copies a string value from a dictionary if the given key is present.
-void CopyStringFromDict(std::string& to,
-                        const base::Value::Dict& dict,
-                        const char* key) {
-  const std::string* found = dict.FindString(key);
-  if (found) {
-    to = *found;
+// Information about the device restore. The value is loaded by
+// `LoadDeviceRestoreData()`.
+static std::optional<signin::RestoreData> g_restore_data;
+static_assert(
+    std::is_trivially_destructible<std::optional<signin::RestoreData>>::value);
+
+// Returns a non-empty string found in `dict` by `key` or nullptr if a string is
+// not found or `key` contains an empty string.
+const std::string* FindStringIfNonEmpty(const base::DictValue& dict,
+                                        std::string_view key) {
+  const std::string* value = dict.FindString(key);
+  if (!value) {
+    return nullptr;
   }
+  return value->empty() ? nullptr : value;
 }
 
 // Returns an AccountInfo from the values in a dictionary.
-AccountInfo DictToAccountInfo(const base::Value::Dict& dict) {
-  AccountInfo account;
-  const std::string* account_id_str = dict.FindString(kAccountInfoKeyAccountId);
-  if (account_id_str) {
-    account.account_id = CoreAccountId::FromString(*account_id_str);
+AccountInfo DictToAccountInfo(const base::DictValue& dict) {
+  const std::string* gaia_id = FindStringIfNonEmpty(dict, kAccountInfoKeyGaia);
+  const std::string* email = FindStringIfNonEmpty(dict, kAccountInfoKeyEmail);
+  if (!gaia_id || !email) {
+    return AccountInfo();
   }
-  const std::string* gaia_id_str = dict.FindString(kAccountInfoKeyGaia);
-  if (gaia_id_str) {
-    account.gaia = GaiaId(*gaia_id_str);
+
+  AccountInfo::Builder builder(GaiaId(*gaia_id), *email);
+  if (const std::string* account_id =
+          FindStringIfNonEmpty(dict, kAccountInfoKeyAccountId)) {
+    builder.SetAccountId(CoreAccountId::FromString(*account_id));
   }
-  CopyStringFromDict(account.email, dict, kAccountInfoKeyEmail);
-  CopyStringFromDict(account.full_name, dict, kAccountInfoKeyFullName);
-  CopyStringFromDict(account.given_name, dict, kAccountInfoKeyGivenName);
-  CopyStringFromDict(account.picture_url, dict, kAccountInfoKeyPictureUrl);
-  return account;
+  if (const std::string* full_name =
+          FindStringIfNonEmpty(dict, kAccountInfoKeyFullName)) {
+    builder.SetFullName(*full_name);
+  }
+  if (const std::string* given_name =
+          FindStringIfNonEmpty(dict, kAccountInfoKeyGivenName)) {
+    builder.SetGivenName(*given_name);
+  }
+  if (const std::string* picture_url =
+          FindStringIfNonEmpty(dict, kAccountInfoKeyPictureUrl)) {
+    builder.SetAvatarUrl(*picture_url);
+  }
+  return builder.Build();
+}
+
+// Loads data related to the device restore. This method needs to be called
+// before IO is disallowed on UI thread. This method is called by
+// `IsFirstSessionAfterDeviceRestore()` or `LastDeviceRestoreTimestamp()`.
+const signin::RestoreData& LoadDeviceRestoreData(
+    base::OnceClosure completion = base::DoNothing()) {
+  if (!g_restore_data.has_value()) {
+    g_restore_data = LoadDeviceRestoreDataInternal(std::move(completion));
+  } else {
+    std::move(completion).Run();
+  }
+  return g_restore_data.value();
 }
 
 }  // namespace
@@ -78,7 +116,8 @@ bool ShouldHandleSigninError(NSError* error) {
          ios::provider::SigninErrorCategory::kUserCancellationError;
 }
 
-CGSize GetSizeForIdentityAvatarSize(IdentityAvatarSize avatar_size) {
+CGSize GetSizeForIdentityAvatarSize(IdentityAvatarSize avatar_size,
+                                    AITierRingSize ring_size) {
   CGFloat size = 0;
   switch (avatar_size) {
     case IdentityAvatarSize::TableViewIcon:
@@ -95,33 +134,44 @@ CGSize GetSizeForIdentityAvatarSize(IdentityAvatarSize avatar_size) {
       break;
   }
   DCHECK_NE(size, 0);
+  if (IsAiAvatarRingIosEnabled()) {
+    switch (ring_size) {
+      case AITierRingSize::kNoRing:
+      case AITierRingSize::kImageSize:
+        break;
+      case AITierRingSize::kViewSize:
+        size -= (2 * (kAiTierRingWidth + kAiTierAndAvatarDistance));
+    }
+  }
   return CGSizeMake(size, size);
 }
 
-signin::Tribool IsFirstSessionAfterDeviceRestore() {
-  if (SimulatePostDeviceRestore()) {
-    return signin::Tribool::kTrue;
-  }
-  static signin::Tribool is_first_session_after_device_restore =
-      signin::Tribool::kUnknown;
-  static dispatch_once_t once;
-  dispatch_once(&once, ^{
-    is_first_session_after_device_restore =
-        IsFirstSessionAfterDeviceRestoreInternal();
-  });
-  return is_first_session_after_device_restore;
+signin::Tribool IsFirstSessionAfterDeviceRestore(base::OnceClosure completion) {
+  const signin::RestoreData& restore_data =
+      LoadDeviceRestoreData(std::move(completion));
+  return restore_data.is_first_session_after_device_restore;
+}
+
+std::optional<base::Time> LastDeviceRestoreTimestamp() {
+  const signin::RestoreData& restore_data = LoadDeviceRestoreData();
+  return restore_data.last_restore_timestamp;
 }
 
 void StorePreRestoreIdentity(PrefService* profile_pref,
                              AccountInfo account,
                              bool history_sync_enabled) {
+  std::string avatar_url_to_set;
+  if (std::optional<std::string_view> avatar_url = account.GetAvatarUrl()) {
+    avatar_url_to_set =
+        avatar_url->empty() ? kNoPictureURLFound : std::string(*avatar_url);
+  }
   ScopedDictPrefUpdate update(profile_pref, prefs::kIosPreRestoreAccountInfo);
-  update->Set(kAccountInfoKeyAccountId, account.account_id.ToString());
-  update->Set(kAccountInfoKeyGaia, account.gaia.ToString());
-  update->Set(kAccountInfoKeyEmail, account.email);
-  update->Set(kAccountInfoKeyFullName, account.full_name);
-  update->Set(kAccountInfoKeyGivenName, account.given_name);
-  update->Set(kAccountInfoKeyPictureUrl, account.picture_url);
+  update->Set(kAccountInfoKeyAccountId, account.GetAccountId().ToString());
+  update->Set(kAccountInfoKeyGaia, account.GetGaiaId().ToString());
+  update->Set(kAccountInfoKeyEmail, account.GetEmail());
+  update->Set(kAccountInfoKeyFullName, account.GetFullName().value_or(""));
+  update->Set(kAccountInfoKeyGivenName, account.GetGivenName().value_or(""));
+  update->Set(kAccountInfoKeyPictureUrl, avatar_url_to_set);
   update->Set(kHistorySyncEnabled, history_sync_enabled);
 }
 
@@ -130,7 +180,7 @@ void ClearPreRestoreIdentity(PrefService* profile_pref) {
 }
 
 std::optional<AccountInfo> GetPreRestoreIdentity(PrefService* profile_pref) {
-  const base::Value::Dict& dict =
+  const base::DictValue& dict =
       profile_pref->GetDict(prefs::kIosPreRestoreAccountInfo);
   if (dict.empty()) {
     return std::optional<AccountInfo>();
@@ -139,7 +189,7 @@ std::optional<AccountInfo> GetPreRestoreIdentity(PrefService* profile_pref) {
 }
 
 bool GetPreRestoreHistorySyncEnabled(PrefService* profile_pref) {
-  const base::Value::Dict& dict =
+  const base::DictValue& dict =
       profile_pref->GetDict(prefs::kIosPreRestoreAccountInfo);
   if (dict.empty()) {
     return false;
@@ -164,9 +214,23 @@ void RunSystemCapabilitiesPrefetch(NSArray<id<SystemIdentity>>* identities) {
   }
 }
 
-bool SimulatePostDeviceRestore() {
-  // We simulate post device restore if required either by experimental settings
-  // or test flag.
-  return tests_hook::SimulatePostDeviceRestore() ||
-         experimental_flags::SimulatePostDeviceRestore();
+void ResetDeviceRestoreDataForTesting() {
+  CHECK_IS_TEST();
+  g_restore_data.reset();
+}
+
+NSString* UserGivenNameFullNameOrEmail(id<SystemIdentity> identity) {
+  NSString* name = identity.userGivenName;
+  if (name) {
+    return name;
+  }
+  return UserFullNameOrEmail(identity);
+}
+
+NSString* UserFullNameOrEmail(id<SystemIdentity> identity) {
+  NSString* name = identity.userFullName;
+  if (name) {
+    return name;
+  }
+  return identity.userEmail;
 }

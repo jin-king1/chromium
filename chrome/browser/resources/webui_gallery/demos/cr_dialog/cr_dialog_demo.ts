@@ -38,6 +38,7 @@ export class CrDialogDemoElement extends CrLitElement {
     return {
       autofocusInput_: {type: Boolean},
       isDialogOpen_: {type: Boolean},
+      noCancel_: {type: Boolean},
       showHeader_: {type: Boolean},
       showFooter_: {type: Boolean},
       showInputs_: {type: Boolean},
@@ -46,69 +47,81 @@ export class CrDialogDemoElement extends CrLitElement {
     };
   }
 
-  protected autofocusInput_: boolean = false;
-  protected isDialogOpen_: boolean = false;
-  protected showHeader_: boolean = false;
-  protected showFooter_: boolean = false;
-  protected showInputs_: boolean = false;
-  protected showScrollingBody_: boolean = false;
-  protected statusTexts_: string[] = [];
+  protected accessor autofocusInput_: boolean = false;
+  protected accessor isDialogOpen_: boolean = false;
+  protected accessor noCancel_: boolean = false;
+  protected accessor showHeader_: boolean = false;
+  protected accessor showFooter_: boolean = false;
+  protected accessor showInputs_: boolean = false;
+  protected accessor showScrollingBody_: boolean = false;
+  protected accessor statusTexts_: string[] = [];
 
   private getDialog_(): CrDialogElement|null {
     return this.shadowRoot.querySelector('cr-dialog');
   }
 
-  protected openDialog_() {
+  protected onOpenDialogClick_() {
     this.isDialogOpen_ = true;
   }
 
-  protected onClickCancel_() {
+  protected onCancelClick_() {
     const dialog = this.getDialog_();
     if (dialog) {
       dialog.cancel();
     }
   }
 
-  protected onClickConfirm_() {
+  protected onConfirmClick_() {
     const dialog = this.getDialog_();
     if (dialog) {
       dialog.close();
     }
   }
 
-  protected onOpenDialog_() {
+  protected onDialogCrDialogOpen_() {
     this.statusTexts_ =
         ['Dialog was opened and fired a `cr-dialog-open` event.'];
   }
 
-  protected onCancelDialog_() {
+  protected onDialogCancel_() {
     this.statusTexts_.push('Dialog was canceled and fired a `cancel` event.');
     this.requestUpdate();
   }
 
-  protected onCloseDialog_() {
+  protected onDialogClose_() {
     this.isDialogOpen_ = false;
     this.statusTexts_.push('Dialog was closed and fired a `close` event.');
   }
 
-  protected onShowHeaderChanged_(e: CustomEvent<{value: boolean}>) {
+  protected onShowHeaderCheckedChanged_(e: CustomEvent<{value: boolean}>) {
     this.showHeader_ = e.detail.value;
   }
 
-  protected onShowFooterChanged_(e: CustomEvent<{value: boolean}>) {
+  protected onShowFooterCheckedChanged_(e: CustomEvent<{value: boolean}>) {
     this.showFooter_ = e.detail.value;
   }
 
-  protected onShowScrollingBodyChanged_(e: CustomEvent<{value: boolean}>) {
+  protected onShowScrollingBodyCheckedChanged_(
+      e: CustomEvent<{value: boolean}>) {
     this.showScrollingBody_ = e.detail.value;
   }
 
-  protected onShowInputsChanged_(e: CustomEvent<{value: boolean}>) {
+  protected onShowInputsCheckedChanged_(e: CustomEvent<{value: boolean}>) {
     this.showInputs_ = e.detail.value;
   }
 
-  protected onAutofocusInputChanged_(e: CustomEvent<{value: boolean}>) {
+  protected onAutofocusInputCheckedChanged_(e: CustomEvent<{value: boolean}>) {
     this.autofocusInput_ = e.detail.value;
+  }
+
+  protected onNoCancelCheckedChanged_(e: CustomEvent<{value: boolean}>) {
+    this.noCancel_ = e.detail.value;
+  }
+}
+
+declare global {
+  interface HTMLElementTagNameMap {
+    'cr-dialog-demo': CrDialogDemoElement;
   }
 }
 

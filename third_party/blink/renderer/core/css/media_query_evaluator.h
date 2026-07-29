@@ -38,14 +38,21 @@
 
 namespace blink {
 
+class CSSValue;
+class Document;
 class LocalFrame;
 class MediaQuery;
-class MediaQueryExpNode;
+class ConditionalExpNode;
 class MediaQueryFeatureExpNode;
+enum class MediaQueryOperator;
 class MediaQuerySet;
 class MediaQuerySetResult;
 class MediaValues;
 struct MediaQueryResultFlags;
+class StyleRuleCustomMedia;
+
+using CustomMediaRulesMap =
+    HeapHashMap<AtomicString, Member<StyleRuleCustomMedia>>;
 
 // Class that evaluates css media queries as defined in
 // CSS3 Module "Media Queries" (http://www.w3.org/TR/css3-mediaqueries/)
@@ -83,19 +90,39 @@ class CORE_EXPORT MediaQueryEvaluator final
 
   const MediaValues& GetMediaValues() const { return *media_values_; }
 
+  const Document* GetDocument() const;
+
   bool MediaTypeMatch(const String& media_type_to_match) const;
 
   // Evaluates a list of media queries.
   bool Eval(const MediaQuerySet&) const;
-  bool Eval(const MediaQuerySet&, MediaQueryResultFlags*) const;
+  // Custom media cycles must be filtered out before calling Eval;
+  // `CustomMediaRulesMap` should not contain cycles.
+  bool Eval(const MediaQuerySet&,
+            MediaQueryResultFlags*,
+            const CustomMediaRulesMap* = nullptr) const;
 
   // Evaluates media query.
-  bool Eval(const MediaQuery&) const;
-  bool Eval(const MediaQuery&, MediaQueryResultFlags*) const;
+  KleeneValue Eval(const MediaQuery&) const;
+  KleeneValue Eval(const MediaQuery&, MediaQueryResultFlags*) const;
+  // Custom media cycles must be filtered out before calling Eval;
+  // `CustomMediaRulesMap` should not contain cycles.
+  KleeneValue Eval(const MediaQuery&,
+                   MediaQueryResultFlags*,
+                   const CustomMediaRulesMap*) const;
 
   // https://drafts.csswg.org/mediaqueries-4/#evaluating
-  KleeneValue Eval(const MediaQueryExpNode&) const;
-  KleeneValue Eval(const MediaQueryExpNode&, MediaQueryResultFlags*) const;
+  KleeneValue Eval(const ConditionalExpNode&) const;
+  // Custom media cycles must be filtered out before calling Eval;
+  // `CustomMediaRulesMap` should not contain cycles.
+  KleeneValue Eval(const ConditionalExpNode&,
+                   MediaQueryResultFlags*,
+                   const CustomMediaRulesMap* = nullptr) const;
+
+  static KleeneValue EvalStyleRange(const CSSValue& reference_value,
+                                    const CSSValue& query_value,
+                                    MediaQueryOperator op,
+                                    bool reverse_op);
 
   // Returns true if any of the media queries in the results lists changed its
   // evaluation.
@@ -107,9 +134,15 @@ class CORE_EXPORT MediaQueryEvaluator final
 
  private:
   KleeneValue EvalFeature(const MediaQueryFeatureExpNode&,
-                          MediaQueryResultFlags*) const;
+                          MediaQueryResultFlags*,
+                          const CustomMediaRulesMap*) const;
   KleeneValue EvalStyleFeature(const MediaQueryFeatureExpNode&,
                                MediaQueryResultFlags*) const;
+  // Evaluates a custom media query.
+  // https://drafts.csswg.org/mediaqueries-5/#custom-mq
+  KleeneValue EvalCustomMedia(const StyleRuleCustomMedia*,
+                              MediaQueryResultFlags*,
+                              const CustomMediaRulesMap*) const;
 
   const String MediaType() const;
 

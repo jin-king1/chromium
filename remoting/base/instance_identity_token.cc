@@ -17,8 +17,8 @@
 
 namespace remoting {
 
-InstanceIdentityToken::InstanceIdentityToken(base::Value::Dict header,
-                                             base::Value::Dict payload)
+InstanceIdentityToken::InstanceIdentityToken(base::DictValue header,
+                                             base::DictValue payload)
     : header_(std::move(header)), payload_(std::move(payload)) {}
 
 InstanceIdentityToken::~InstanceIdentityToken() = default;
@@ -30,16 +30,16 @@ std::optional<InstanceIdentityToken> InstanceIdentityToken::Create(
   //   1) Base64 encoded JSON header
   //   2) Base64 encoded JSON payload
   //   3) Signature bytes
-  auto parts =
-      base::SplitString(jwt, ".", base::WhitespaceHandling::KEEP_WHITESPACE,
-                        base::SplitResult::SPLIT_WANT_NONEMPTY);
+  std::vector<std::string_view> parts = base::SplitStringPiece(
+      jwt, ".", base::WhitespaceHandling::KEEP_WHITESPACE,
+      base::SplitResult::SPLIT_WANT_NONEMPTY);
   // Return early if the token is malformed or missing the signature.
   if (parts.size() != 3) {
     LOG(WARNING) << "Invalid instance identity token: " << jwt;
     return std::nullopt;
   }
   // Parse and validate the header.
-  auto encoded_header = parts[0];
+  std::string_view encoded_header = parts[0];
   std::string decoded_header;
   if (!base::Base64Decode(encoded_header, &decoded_header,
                           base::Base64DecodePolicy::kForgiving)) {
@@ -47,7 +47,8 @@ std::optional<InstanceIdentityToken> InstanceIdentityToken::Create(
                  << encoded_header;
     return std::nullopt;
   }
-  auto header = base::JSONReader::ReadDict(decoded_header);
+  auto header = base::JSONReader::ReadDict(
+      decoded_header, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   if (!header.has_value()) {
     LOG(WARNING) << "Failed to parse instance identity token header: "
                  << decoded_header;
@@ -60,7 +61,7 @@ std::optional<InstanceIdentityToken> InstanceIdentityToken::Create(
   }
 
   // Parse and validate the payload.
-  auto encoded_payload = parts[1];
+  std::string_view encoded_payload = parts[1];
   std::string decoded_payload;
   if (!base::Base64Decode(encoded_payload, &decoded_payload,
                           base::Base64DecodePolicy::kForgiving)) {
@@ -68,7 +69,8 @@ std::optional<InstanceIdentityToken> InstanceIdentityToken::Create(
                  << encoded_payload;
     return std::nullopt;
   }
-  auto payload = base::JSONReader::ReadDict(decoded_payload);
+  auto payload = base::JSONReader::ReadDict(
+      decoded_payload, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   if (!payload.has_value()) {
     LOG(WARNING) << "Failed to parse instance identity token payload: "
                  << decoded_payload;

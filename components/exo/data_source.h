@@ -10,7 +10,9 @@
 
 #include "base/containers/flat_set.h"
 #include "base/functional/callback.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "components/exo/surface.h"
 
@@ -137,7 +139,7 @@ class DataSource {
                           const std::string& mime_type,
                           const std::vector<uint8_t>& data);
 
-  const raw_ptr<DataSourceDelegate, DanglingUntriaged> delegate_;
+  base::WeakPtr<DataSourceDelegate> delegate_;
   base::ObserverList<DataSourceObserver> observers_;
 
   // Mime types which has been offered.

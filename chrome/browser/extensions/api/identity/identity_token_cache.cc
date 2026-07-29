@@ -7,8 +7,12 @@
 #include <algorithm>
 #include <map>
 #include <set>
+#include <variant>
 
 #include "chrome/browser/extensions/api/identity/identity_constants.h"
+#include "extensions/buildflags/buildflags.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace extensions {
 
@@ -56,8 +60,9 @@ IdentityTokenCacheValue IdentityTokenCacheValue::CreateToken(
   time_to_live -= base::Minutes(20);
 
   base::TimeDelta zero_delta;
-  if (time_to_live < zero_delta)
+  if (time_to_live < zero_delta) {
     time_to_live = zero_delta;
+  }
 
   cache_value.expiration_time_ = base::Time::Now() + time_to_live;
   return cache_value;
@@ -65,22 +70,23 @@ IdentityTokenCacheValue IdentityTokenCacheValue::CreateToken(
 
 IdentityTokenCacheValue::CacheValueStatus IdentityTokenCacheValue::status()
     const {
-  if (is_expired())
+  if (is_expired()) {
     return IdentityTokenCacheValue::CACHE_STATUS_NOTFOUND;
+  }
 
   return GetStatusInternal();
 }
 
 IdentityTokenCacheValue::CacheValueStatus
 IdentityTokenCacheValue::GetStatusInternal() const {
-  if (absl::holds_alternative<RemoteConsentResolutionData>(value_)) {
+  if (std::holds_alternative<RemoteConsentResolutionData>(value_)) {
     return CACHE_STATUS_REMOTE_CONSENT;
-  } else if (absl::holds_alternative<std::string>(value_)) {
+  } else if (std::holds_alternative<std::string>(value_)) {
     return CACHE_STATUS_REMOTE_CONSENT_APPROVED;
-  } else if (absl::holds_alternative<TokenValue>(value_)) {
+  } else if (std::holds_alternative<TokenValue>(value_)) {
     return CACHE_STATUS_TOKEN;
   } else {
-    DCHECK(absl::holds_alternative<absl::monostate>(value_));
+    DCHECK(std::holds_alternative<std::monostate>(value_));
     return CACHE_STATUS_NOTFOUND;
   }
 }
@@ -96,19 +102,19 @@ const base::Time& IdentityTokenCacheValue::expiration_time() const {
 
 const RemoteConsentResolutionData& IdentityTokenCacheValue::resolution_data()
     const {
-  return absl::get<RemoteConsentResolutionData>(value_);
+  return std::get<RemoteConsentResolutionData>(value_);
 }
 
 const std::string& IdentityTokenCacheValue::consent_result() const {
-  return absl::get<std::string>(value_);
+  return std::get<std::string>(value_);
 }
 
 const std::string& IdentityTokenCacheValue::token() const {
-  return absl::get<TokenValue>(value_).token;
+  return std::get<TokenValue>(value_).token;
 }
 
 const std::set<std::string>& IdentityTokenCacheValue::granted_scopes() const {
-  return absl::get<TokenValue>(value_).granted_scopes;
+  return std::get<TokenValue>(value_).granted_scopes;
 }
 
 IdentityTokenCacheValue::TokenValue::TokenValue(
@@ -132,12 +138,6 @@ IdentityTokenCache::AccessTokensKey::AccessTokensKey(
     const CoreAccountId& account_id)
     : extension_id(extension_id), account_id(account_id) {}
 
-bool IdentityTokenCache::AccessTokensKey::operator<(
-    const AccessTokensKey& rhs) const {
-  return std::tie(extension_id, account_id) <
-         std::tie(rhs.extension_id, rhs.account_id);
-}
-
 // Ensure that the access tokens are ordered by scope sizes.
 bool IdentityTokenCache::ScopesSizeCompare::operator()(
     const IdentityTokenCacheValue& lhs,
@@ -153,8 +153,9 @@ IdentityTokenCache::~IdentityTokenCache() = default;
 
 void IdentityTokenCache::SetToken(const ExtensionTokenKey& key,
                                   const IdentityTokenCacheValue& token_data) {
-  if (token_data.status() == IdentityTokenCacheValue::CACHE_STATUS_NOTFOUND)
+  if (token_data.status() == IdentityTokenCacheValue::CACHE_STATUS_NOTFOUND) {
     return;
+  }
 
   if (token_data.status() != IdentityTokenCacheValue::CACHE_STATUS_TOKEN) {
     const IdentityTokenCacheValue& cached_value = GetToken(key);
@@ -189,8 +190,9 @@ void IdentityTokenCache::EraseAccessToken(const std::string& extension_id,
             return cached_token.token() == token;
           });
       if (num_erased > 0) {
-        if (cached_tokens.size() == 0)
+        if (cached_tokens.size() == 0) {
           access_tokens_cache_.erase(entry_it);
+        }
         // A token is in the cache at most once, so stop searching if erased.
         return;
       }
@@ -261,10 +263,11 @@ void IdentityTokenCache::EraseStaleTokens() {
       return value.status() == IdentityTokenCacheValue::CACHE_STATUS_NOTFOUND;
     });
 
-    if (cached_tokens.empty())
+    if (cached_tokens.empty()) {
       it = access_tokens_cache_.erase(it);
-    else
+    } else {
       ++it;
+    }
   }
 
   std::erase_if(intermediate_value_cache_, [](const auto& key_value_pair) {

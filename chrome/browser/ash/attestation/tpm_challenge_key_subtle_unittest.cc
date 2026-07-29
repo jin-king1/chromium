@@ -22,10 +22,9 @@
 #include "chrome/browser/ash/platform_keys/key_permissions/key_permissions_manager_impl.h"
 #include "chrome/browser/ash/platform_keys/key_permissions/mock_key_permissions_manager.h"
 #include "chrome/browser/ash/platform_keys/key_permissions/user_private_token_kpm_service_factory.h"
-#include "chrome/browser/chromeos/platform_keys/platform_keys.h"
+#include "chrome/browser/ash/settings/scoped_cros_settings_test_helper.h"
 #include "chrome/browser/policy/profile_policy_connector.h"
 #include "chrome/common/chrome_constants.h"
-#include "chrome/common/pref_names.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
@@ -34,6 +33,8 @@
 #include "chromeos/ash/components/dbus/attestation/fake_attestation_client.h"
 #include "chromeos/ash/components/dbus/attestation/interface.pb.h"
 #include "chromeos/ash/components/dbus/constants/attestation_constants.h"
+#include "chromeos/ash/components/install_attributes/stub_install_attributes.h"
+#include "chromeos/ash/components/platform_keys/platform_keys.h"
 #include "chromeos/components/kiosk/kiosk_test_utils.h"
 #include "chromeos/dbus/tpm_manager/tpm_manager_client.h"
 #include "components/prefs/pref_service.h"
@@ -482,7 +483,7 @@ class KioskTpmChallengeKeySubtleTest : public TpmChallengeKeySubtleTestBase {
   ~KioskTpmChallengeKeySubtleTest() override = default;
 
   TestingProfile* CreateKioskProfile() override {
-    chromeos::SetUpFakeKioskSession();
+    chromeos::SetUpFakeChromeAppKioskSession();
     auto* user = fake_user_manager_->GetActiveUser();
     kiosk_user_email_ = user->GetAccountId().GetUserEmail();
     auto* testing_profile =

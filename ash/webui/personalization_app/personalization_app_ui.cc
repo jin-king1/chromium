@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "ash/webui/personalization_app/personalization_app_ui.h"
 
@@ -31,14 +27,12 @@
 #include "ash/webui/personalization_app/personalization_app_user_provider.h"
 #include "ash/webui/personalization_app/personalization_app_wallpaper_provider.h"
 #include "base/check.h"
-#include "base/containers/contains.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "chromeos/strings/grit/chromeos_strings.h"
-#include "components/manta/features.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui_data_source.h"
@@ -46,7 +40,6 @@
 #include "services/network/public/mojom/content_security_policy.mojom-shared.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/chromeos/devicetype_utils.h"
-#include "ui/webui/color_change_listener/color_change_handler.h"
 #include "ui/webui/mojo_web_ui_controller.h"
 #include "ui/webui/resources/grit/webui_resources.h"
 
@@ -71,7 +64,7 @@ AmbientBackendController* GetAmbientBackendController() {
 }
 
 void AddResources(content::WebUIDataSource* source) {
-  source->AddResourcePath("", IDR_ASH_PERSONALIZATION_APP_INDEX_HTML);
+  source->SetDefaultResource(IDR_ASH_PERSONALIZATION_APP_INDEX_HTML);
   source->AddResourcePaths(kAshPersonalizationAppResources);
   source->AddResourcePath("test_loader.html", IDR_WEBUI_TEST_LOADER_HTML);
   source->AddResourcePath("test_loader.js", IDR_WEBUI_JS_TEST_LOADER_JS);
@@ -96,6 +89,8 @@ void AddStrings(content::WebUIDataSource* source) {
        IDS_PERSONALIZATION_APP_WALLPAPER_DESCRIPTION_DIALOG_OPEN},
       {"descriptionDialogLearnMore",
        IDS_PERSONALIZATION_APP_WALLPAPER_DESCRIPTION_LEARN_MORE},
+      {"descriptionDialogLearnMoreAriaLabel",
+       IDS_PERSONALIZATION_APP_WALLPAPER_DESCRIPTION_LEARN_MORE_ARIA_LABEL},
       {"descriptionDialogClose",
        IDS_PERSONALIZATION_APP_WALLPAPER_DESCRIPTION_DIALOG_CLOSE},
       {"myImagesLabel", IDS_PERSONALIZATION_APP_MY_IMAGES},
@@ -341,7 +336,6 @@ void AddStrings(content::WebUIDataSource* source) {
       {"keyboardZonesTitle", IDS_PERSONALIZATION_APP_KEYBOARD_ZONES_TITLE},
 
       // Google Photos strings
-      // TODO(b/229149314): Finalize error and retry strings.
       {"googlePhotosLabel", IDS_PERSONALIZATION_APP_GOOGLE_PHOTOS},
       {"googlePhotosError", IDS_PERSONALIZATION_APP_GOOGLE_PHOTOS_ERROR},
       {"googlePhotosTryAgain", IDS_PERSONALIZATION_APP_GOOGLE_PHOTOS_TRY_AGAIN},
@@ -521,18 +515,9 @@ void PersonalizationAppUI::BindInterface(
   user_provider_->BindInterface(std::move(receiver));
 }
 
-void PersonalizationAppUI::BindInterface(
-    mojo::PendingReceiver<color_change_listener::mojom::PageHandler> receiver) {
-  color_provider_handler_ = std::make_unique<ui::ColorChangeHandler>(
-      web_ui()->GetWebContents(), std::move(receiver));
-}
-
 void PersonalizationAppUI::AddBooleans(content::WebUIDataSource* source) {
   source->AddBoolean("isGooglePhotosIntegrationEnabled",
                      wallpaper_provider_->IsEligibleForGooglePhotos());
-
-  source->AddBoolean("isGooglePhotosSharedAlbumsEnabled",
-                     features::IsWallpaperGooglePhotosSharedAlbumsEnabled());
 
   source->AddBoolean("isAmbientModeAllowed", IsAmbientModeAllowed());
 
@@ -553,8 +538,7 @@ void PersonalizationAppUI::AddBooleans(content::WebUIDataSource* source) {
                      features::IsCrosPrivacyHubLocationEnabled());
 
   const bool common_sea_pen_requirements =
-      sea_pen_provider_->IsEligibleForSeaPen() &&
-      manta::features::IsMantaServiceEnabled();
+      sea_pen_provider_->IsEligibleForSeaPen();
   source->AddBoolean("isSeaPenEnabled",
                      ::ash::features::IsSeaPenEnabled() &&
                          common_sea_pen_requirements);
@@ -575,15 +559,13 @@ void PersonalizationAppUI::AddBooleans(content::WebUIDataSource* source) {
 
 void PersonalizationAppUI::AddIntegers(content::WebUIDataSource* source) {
   source->AddInteger("keyboardBacklightZoneCount",
-                     features::IsMultiZoneRgbKeyboardEnabled()
-                         ? Shell::Get()->rgb_keyboard_manager()->GetZoneCount()
-                         : 0);
+                     Shell::Get()->rgb_keyboard_manager()->GetZoneCount());
 }
 
 void PersonalizationAppUI::HandleWebUIRequest(
     const std::string& path,
     content::WebUIDataSource::GotDataCallback callback) {
-  DCHECK(base::Contains(path, "?key="))
+  DCHECK(path.contains("?key="))
       << "wallpaper key must be provided to prevent browser cache collisions";
   wallpaper_provider_->GetWallpaperAsJpegBytes(std::move(callback));
 }

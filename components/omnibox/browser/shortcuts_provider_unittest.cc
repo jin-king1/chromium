@@ -23,7 +23,11 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
+#include "components/history/core/browser/history_database_params.h"
+#include "components/history/core/browser/history_service.h"
 #include "components/history/core/browser/url_database.h"
+#include "components/history/core/test/history_service_test_util.h"
+#include "components/history/core/test/test_history_database.h"
 #include "components/omnibox/browser/autocomplete_input.h"
 #include "components/omnibox/browser/autocomplete_match.h"
 #include "components/omnibox/browser/autocomplete_provider.h"
@@ -244,8 +248,15 @@ void VerifyMatches(ACMatches matches,
 
 class MockHistoryService : public history::HistoryService {
  public:
-  MockHistoryService() = default;
+  MockHistoryService() {
+    CHECK(history_dir_.CreateUniqueTempDir());
+    Init(history::TestHistoryDatabaseParamsForPath(history_dir_.GetPath()));
+  }
+
   MOCK_METHOD1(DeleteURLs, void(const std::vector<GURL>&));
+
+ private:
+  base::ScopedTempDir history_dir_;
 };
 
 // ShortcutsProviderTest ------------------------------------------------------
@@ -281,18 +292,7 @@ ShortcutsProviderTest::ShortcutsProviderTest() {
   // `scoped_feature_list_` needs to be initialized as early as possible, to
   // avoid data races caused by tasks on other threads accessing it.
   scoped_feature_list_.Reset();
-  scoped_feature_list_.InitWithFeaturesAndParameters(
-      // Even though these are enabled by default on desktop, they aren't
-      // enabled by default on mobile. To avoid having 2 sets of tests around,
-      // explicitly enable them for all platforms for tests.
-      {{omnibox::kRichAutocompletion,
-        {{"RichAutocompletionAutocompleteTitlesShortcutProvider", "true"},
-         {"RichAutocompletionAutocompleteTitlesMinChar", "3"},
-         {"RichAutocompletionAutocompleteShortcutText", "true"},
-         {"RichAutocompletionAutocompleteShortcutTextMinChar", "3"}}},
-       {omnibox::kLogUrlScoringSignals, {}}},
-      {});
-  RichAutocompletionParams::ClearParamsForTesting();
+  scoped_feature_list_.InitAndEnableFeature(omnibox::kLogUrlScoringSignals);
 }
 
 void ShortcutsProviderTest::SetUp() {
@@ -307,12 +307,15 @@ void ShortcutsProviderTest::SetUp() {
   ASSERT_TRUE(client_->GetShortcutsBackend());
   provider_ = base::MakeRefCounted<ShortcutsProvider>(client_.get());
   PopulateShortcutsBackendWithTestData(client_->GetShortcutsBackend(),
-                                       shortcut_test_db,
-                                       std::size(shortcut_test_db));
+                                       shortcut_test_db);
 }
 
 void ShortcutsProviderTest::TearDown() {
   provider_ = nullptr;
+  if (client_) {
+    history::BlockUntilHistoryProcessesPendingRequests(
+        client_->GetHistoryService());
+  }
   client_.reset();
   task_environment_.RunUntilIdle();
   scoped_feature_list_.Reset();
@@ -530,16 +533,20 @@ TEST_F(ShortcutsProviderTest, SimpleSingleMatchKeyword) {
                               "https://google.com/navigation", false, false),
       create_keyword_shortcut("yahoo.com search on google.com", "google.com",
                               "https://google.com/q=yahoo.com", true, true),
+      create_keyword_shortcut("search on yahoo.com", "yahoo.com",
+                              "https://yahoo.com/q=search", false, true),
+      create_keyword_shortcut("search on google.com", "google.com",
+                              "https://google.com/q=search", false, true),
   };
   PopulateShortcutsBackendWithTestData(client_->GetShortcutsBackend(),
-                                       shortcuts, std::size(shortcuts));
+                                       shortcuts);
 
-  const auto test = [&](const std::u16string text, bool prefer_keyword,
+  const auto test = [&](const std::u16string text, bool in_keyword_mode,
                         std::string expected_url, bool allowed_to_be_default,
                         std::u16string expected_autocompletion) {
     AutocompleteInput input(text, metrics::OmniboxEventProto::OTHER,
                             TestSchemeClassifier());
-    input.set_prefer_keyword(prefer_keyword);
+    input.set_in_keyword_mode(in_keyword_mode);
 
     ExpectedURLs expected_urls;
     expected_urls.push_back(
@@ -578,6 +585,20 @@ TEST_F(ShortcutsProviderTest, SimpleSingleMatchKeyword) {
   // default.
   test(u"google.com non-ex", false, "https://google.com/non-explicit-keyword",
        true, u"plicit keyword");
+
+  // When the input is NOT in keyword mode, a match without a keyword can be
+  // default.
+  test(u"google.com navigat", false, "https://google.com/navigation", true,
+       u"ion");
+
+  // When the input is NOT in keyword mode, a match from a keyword other than
+  // default search provider can not be default.
+  test(u"search on y", false, "https://yahoo.com/q=search", false, u"");
+
+  // When the input is NOT in keyword mode, a match from the default search
+  // provider can be default.
+  test(u"search on g", false, "https://google.com/q=search", true,
+       u"oogle.com");
 }
 
 TEST_F(ShortcutsProviderTest, MultiMatch) {
@@ -588,7 +609,7 @@ TEST_F(ShortcutsProviderTest, MultiMatch) {
       MakeShortcutData("prefix-long-shortcut-text-length", 2),
   };
   PopulateShortcutsBackendWithTestData(client_->GetShortcutsBackend(),
-                                       shortcut_data, std::size(shortcut_data));
+                                       shortcut_data);
 
   AutocompleteInput input(u"prefix", metrics::OmniboxEventProto::OTHER,
                           TestSchemeClassifier());
@@ -683,8 +704,7 @@ TEST_F(ShortcutsProviderTest, DeleteMatch) {
   scoped_refptr<ShortcutsBackend> backend = client_->GetShortcutsBackend();
   size_t original_shortcuts_count = backend->shortcuts_map().size();
 
-  PopulateShortcutsBackendWithTestData(backend, shortcuts_to_test_delete,
-                                       std::size(shortcuts_to_test_delete));
+  PopulateShortcutsBackendWithTestData(backend, shortcuts_to_test_delete);
 
   EXPECT_EQ(original_shortcuts_count + 4, backend->shortcuts_map().size());
   EXPECT_FALSE(backend->shortcuts_map().end() ==
@@ -746,7 +766,7 @@ TEST_F(ShortcutsProviderTest, DoAutocompleteAggregateShortcuts) {
       MakeShortcutData("zebra8", "https://wikipedia.org/zebra-d", 1, 10),
   };
   PopulateShortcutsBackendWithTestData(client_->GetShortcutsBackend(),
-                                       shortcut_data, std::size(shortcut_data));
+                                       shortcut_data);
 
   {
     SCOPED_TRACE("Input 'wi'");
@@ -859,7 +879,7 @@ TEST_F(ShortcutsProviderTest, DoAutocompleteWithScoringSignals) {
       MakeShortcutData("wilson7", "https://wikipedia.org/wilson7-other", 2, 2),
   };
   PopulateShortcutsBackendWithTestData(client_->GetShortcutsBackend(),
-                                       shortcut_data, std::size(shortcut_data));
+                                       shortcut_data);
 
   // When multiple shortcuts with the same destination URL match the input,
   // they should be scored together (i.e. their visit counts summed, the most
@@ -995,7 +1015,7 @@ TEST_F(ShortcutsProviderTest, ScoreBoost) {
   };
 
   PopulateShortcutsBackendWithTestData(client_->GetShortcutsBackend(),
-                                       shortcut_data, std::size(shortcut_data));
+                                       shortcut_data);
 
   {
     // Searches shouldn't be boosted since the appropriate param is not set.
@@ -1125,7 +1145,7 @@ TEST_F(ShortcutsProviderTest, HistoryClusterSuggestions) {
       create_test_data("text_cluster_3", true),
   };
   PopulateShortcutsBackendWithTestData(client_->GetShortcutsBackend(),
-                                       test_data, std::size(test_data));
+                                       test_data);
 
   AutocompleteInput input(u"tex", metrics::OmniboxEventProto::OTHER,
                           TestSchemeClassifier());

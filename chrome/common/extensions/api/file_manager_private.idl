@@ -90,7 +90,8 @@ enum MountError {
   unsupported_filesystem,
   need_password,
   cancelled,
-  busy
+  busy,
+  corrupted
 };
 
 // Filesystem to format to.
@@ -98,13 +99,6 @@ enum FormatFileSystemType { vfat, exfat, ntfs };
 
 // File transfer progress state.
 enum TransferState { in_progress, queued, completed, failed };
-
-// The response when starting installing a Linux package.
-enum InstallLinuxPackageStatus {
-  started,
-  failed,
-  install_already_active
-};
 
 // Specifies type of event that is raised.
 enum FileWatchEventType { changed, error };
@@ -427,10 +421,12 @@ enum DefaultLocation {
   onedrive
 };
 
-enum CloudProvider {
+// The value of the SkyVault LocalFilesMigrationDestination policy.
+enum MigrationDestination {
   not_specified,
   google_drive,
-  onedrive
+  onedrive,
+  delete
 };
 
 // These three fields together uniquely identify a task.
@@ -858,7 +854,6 @@ dictionary GetVolumeRootOptions {
 dictionary Preferences {
   boolean driveEnabled;
   boolean driveSyncEnabledOnMeteredNetwork;
-  boolean searchSuggestEnabled;
   boolean use24hourClock;
   DOMString timezone;
   boolean arcEnabled;
@@ -871,7 +866,8 @@ dictionary Preferences {
   boolean driveFsBulkPinningEnabled;
   boolean localUserFilesAllowed;
   DefaultLocation defaultLocation;
-  CloudProvider skyVaultMigrationDestination;
+  MigrationDestination skyVaultMigrationDestination;
+  DOMString? skyVaultMigrationStartTime;
 };
 
 dictionary PreferencesChange {
@@ -982,7 +978,7 @@ dictionary Provider {
   ProviderSource source;
 };
 
-// chrome/common/extensions/api/file_system_provider.idl:Action
+// chrome/common/extensions/api/file_system_provider.webidl:Action
 // Information about an action for an entry.
 dictionary FileSystemProviderAction {
   // The identifier of the action. Any string or $(ref:CommonActionId) for
@@ -991,17 +987,6 @@ dictionary FileSystemProviderAction {
 
   // The title of the action. It may be ignored for common actions.
   DOMString? title;
-};
-
-// Information about a Linux package in response to GetLinuxPackageInfo.
-dictionary LinuxPackageInfo {
-  DOMString name;
-  DOMString version;
-
-  // A one-line summary of the project. Almost always present.
-  DOMString? summary;
-  // A longer description of the project. Almost always present.
-  DOMString? description;
 };
 
 // Payload data for crostini event.
@@ -1354,15 +1339,6 @@ dictionary BulkPinProgress {
   boolean emptiedQueue;
 };
 
-// Represents a custom view of files to be displayed.
-dictionary MaterializedView {
-  // Unique indentifier for the view.
-  long viewId;
-
-  // Name of the view displayed to the user.
-  DOMString name;
-};
-
 // Used by EntryData to store the file system of the entry.
 dictionary FileSystemData {
   // Name of the file system. Will be unique.
@@ -1385,6 +1361,12 @@ dictionary EntryData {
 
   // Information about the filesystem the entry is located in.
   FileSystemData filesystem;
+};
+
+dictionary GrantAccessOptions {
+  // If true, access is granted solely to the ImageLoader extension
+  // (for thumbnailing/metadata loading) and not to the calling app/process.
+  boolean? forThumbnailing;
 };
 
 // Callback that does not take arguments.
@@ -1515,12 +1497,6 @@ callback GetVolumeRootCallback =
 callback GetCrostiniSharedPathsCallback =
     void(CrostiniSharedPathResponse response);
 
-// |linux_package_info| Package info for the queried package.
-callback GetLinuxPackageInfoCallback =
-    void(LinuxPackageInfo linux_package_info);
-
-callback InstallLinuxPackageCallback = void(InstallLinuxPackageStatus status);
-
 // |apps| List of Android picker apps.
 callback GetAndroidPickerAppsCallback = void(AndroidApp[] apps);
 
@@ -1533,10 +1509,6 @@ callback ListMountableGuestsCallback = void(MountableGuest[] guest);
 callback ParseTrashInfoFilesCallback = void(ParsedTrashInfoFile[] files);
 
 callback GetBulkPinProgressCallback = void(BulkPinProgress progress);
-
-callback GetMaterializedViewsCallback = void(MaterializedView[] views);
-
-callback ReadMaterializedViewCallback = void(EntryData[] files);
 
 interface Functions {
   // Cancels file selection.
@@ -1626,9 +1598,12 @@ interface Functions {
   // effort operation. Some files may not be granted access if the url is
   // invalid or not backed by the external file system.
   // |entryUrls| Urls for the entries to be accessed.
+  // |options| Options for granting access.
   // |callback|
   [doesNotSupportPromises]
-  static void grantAccess(DOMString[] entryUrls, SimpleCallback callback);
+  static void grantAccess(DOMString[] entryUrls,
+                          optional GrantAccessOptions options,
+                          SimpleCallback callback);
 
   // Selects multiple files.
   // |selectedPaths| Array of selected paths
@@ -1940,16 +1915,6 @@ interface Functions {
                                      DOMString vmName,
                                      GetCrostiniSharedPathsCallback callback);
 
-  // Requests information about a Linux package. |entry| is a .deb file.
-  [nocompile, doesNotSupportPromises]
-  static void getLinuxPackageInfo([instanceOf=Entry] object entry,
-                                  GetLinuxPackageInfoCallback callback);
-
-  // Starts installation of a Linux package.
-  [nocompile, doesNotSupportPromises]
-  static void installLinuxPackage([instanceOf=Entry] object entry,
-                                  InstallLinuxPackageCallback callback);
-
   // Imports a Crostini Image File (.tini). This overrides the existing Linux
   // apps and files.
   [nocompile]
@@ -2079,13 +2044,6 @@ interface Functions {
   // drive.
   [doesNotSupportPromises]
   static void calculateBulkPinRequiredSpace(SimpleCallback callback);
-
-  // Returns a list of views that can be displayed to the user.
-  static void getMaterializedViews(GetMaterializedViewsCallback callback);
-
-  // Returns the list of entries contained in the view identified by `viewId`.
-  static void readMaterializedView(long viewId,
-                                   ReadMaterializedViewCallback callback);
 };
 
 // Events supported by fileManagerPrivate API. These events are broadcasted.

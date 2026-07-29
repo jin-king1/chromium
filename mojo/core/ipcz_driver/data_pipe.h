@@ -12,6 +12,7 @@
 #include <utility>
 
 #include "base/containers/span.h"
+#include "base/memory/ref_counted.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/synchronization/lock.h"
 #include "mojo/core/ipcz_driver/object.h"
@@ -41,6 +42,9 @@ class DataPipe : public Object<DataPipe> {
   enum class EndpointType : uint32_t {
     kProducer,
     kConsumer,
+    // For ValidateEnum().
+    kMinValue = kProducer,
+    kMaxValue = kConsumer,
   };
 
   struct Config {

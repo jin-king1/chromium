@@ -15,6 +15,7 @@
 #include "ash/app_list/model/app_list_model_export.h"
 #include "ash/public/cpp/app_list/app_list_types.h"
 #include "ash/public/cpp/shelf_types.h"
+#include "base/gtest_prod_util.h"
 #include "base/observer_list.h"
 #include "components/sync/model/string_ordinal.h"
 #include "ui/gfx/image/image_skia.h"
@@ -210,7 +211,13 @@ class APP_LIST_MODEL_EXPORT AppListItem {
   // Whether this item currently has a notification badge that should be shown.
   bool has_notification_badge_ = false;
 
-  base::ObserverList<AppListItemObserver> observers_;
+  // TODO(crbug.com/484371187): Investigate if reentrancy can be removed.
+  base::ObserverList<
+      AppListItemObserver,
+      /*check_empty=*/false,
+      /*reentrancy=*/
+      base::ObserverListReentrancyPolicy::kAllowReentrancyUntriaged>
+      observers_;
 };
 
 }  // namespace ash

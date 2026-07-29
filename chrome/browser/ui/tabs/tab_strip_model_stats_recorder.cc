@@ -12,10 +12,9 @@
 #include "base/metrics/histogram_macros.h"
 #include "base/notreached.h"
 #include "base/supports_user_data.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_list.h"
 #include "chrome/browser/ui/browser_tab_strip_tracker.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "content/public/browser/web_contents.h"
 
 TabStripModelStatsRecorder::TabStripModelStatsRecorder()
     : browser_tab_strip_tracker_(
@@ -129,8 +128,7 @@ void TabStripModelStatsRecorder::OnTabStripModelChanged(
     const TabStripSelectionChange& selection) {
   if (change.type() == TabStripModelChange::kRemoved) {
     for (const auto& contents : change.GetRemove()->contents) {
-      if (contents.remove_reason ==
-          TabStripModelChange::RemoveReason::kDeleted) {
+      if (TabRemoveReasonUtils::WillDeleteTab(contents.remove_reason)) {
         OnTabClosing(contents.contents);
       }
     }
@@ -138,6 +136,15 @@ void TabStripModelStatsRecorder::OnTabStripModelChanged(
     auto* replace = change.GetReplace();
     OnTabReplaced(replace->old_contents, replace->new_contents);
   }
+
+// This potentially causes a CFI issue on ChromeOS. For more information:
+// crbug.com/457294205
+#if !BUILDFLAG(IS_CHROMEOS)
+  if (selection.selection_changed()) {
+    UMA_HISTOGRAM_COUNTS_1000("Tabs.Selections.Count",
+                              selection.new_model.selected_indices().size());
+  }
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
   if (!selection.active_tab_changed() || tab_strip_model->empty()) {
     return;

@@ -10,7 +10,6 @@
 #include <string>
 #include <vector>
 
-#include "base/gtest_prod_util.h"
 #include "base/json/json_reader.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/singleton.h"
@@ -58,7 +57,8 @@ class CONTENT_EXPORT TtsControllerImpl
   void Stop(const GURL& source_url) override;
   void Pause() override;
   void Resume() override;
-  void UpdateLanguageStatus(const std::string& lang,
+  void UpdateLanguageStatus(BrowserContext* browser_context,
+                            const std::string& lang,
                             LanguageInstallStatus install_status,
                             const std::string& error) override;
   void AddUpdateLanguageStatusDelegate(
@@ -195,6 +195,7 @@ class CONTENT_EXPORT TtsControllerImpl
 
   // WebContentsObserver methods
   void WebContentsDestroyed() override;
+  void PrimaryPageChanged(Page& page) override;
   void OnVisibilityChanged(Visibility visibility) override;
 
   // net::NetworkChangeNotifier::NetworkChangeObserver

@@ -4,13 +4,15 @@
 
 #include "partition_alloc/thread_isolation/thread_isolation.h"
 
+#include "partition_alloc/partition_alloc_base/compiler_specific.h"
+
 #if PA_BUILDFLAG(ENABLE_THREAD_ISOLATION)
 
 #include "partition_alloc/address_pool_manager.h"
+#include "partition_alloc/internal/reservation_offset_table_internal.h"
 #include "partition_alloc/page_allocator.h"
 #include "partition_alloc/partition_alloc_check.h"
 #include "partition_alloc/partition_alloc_constants.h"
-#include "partition_alloc/reservation_offset_table.h"
 
 #if PA_BUILDFLAG(ENABLE_PKEYS)
 #include "partition_alloc/thread_isolation/pkey.h"
@@ -20,7 +22,7 @@ namespace partition_alloc::internal {
 
 #if PA_BUILDFLAG(DCHECKS_ARE_ON) || \
     PA_BUILDFLAG(ENABLE_PARTITION_LOCK_REENTRANCY_CHECK)
-PA_CONSTINIT ThreadIsolationSettings ThreadIsolationSettings::settings;
+constinit ThreadIsolationSettings ThreadIsolationSettings::settings;
 #endif
 
 void WriteProtectThreadIsolatedMemory(ThreadIsolationOption thread_isolation,
@@ -52,7 +54,8 @@ void WriteProtectThreadIsolatedVariable(ThreadIsolationOption thread_isolation,
                                         T& var,
                                         size_t offset = 0,
                                         bool read_only = false) {
-  WriteProtectThreadIsolatedMemory(thread_isolation, (char*)&var + offset,
+  WriteProtectThreadIsolatedMemory(thread_isolation,
+                                   PA_UNSAFE_TODO((char*)&var + offset),
                                    sizeof(T) - offset, read_only);
 }
 
@@ -75,11 +78,11 @@ void WriteProtectThreadIsolatedGlobals(ThreadIsolationOption thread_isolation) {
       thread_isolation, *pool,
       offsetof(AddressPoolManager::Pool, alloc_bitset_));
 
-  uint16_t* pkey_reservation_offset_table =
-      GetReservationOffsetTable(kThreadIsolatedPoolHandle);
+  auto pkey_reservation_offset_table =
+      ReservationOffsetTable::Get(kThreadIsolatedPoolHandle);
   WriteProtectThreadIsolatedMemory(
-      thread_isolation, pkey_reservation_offset_table,
-      ReservationOffsetTable::kReservationOffsetTableLength);
+      thread_isolation, pkey_reservation_offset_table.GetData(),
+      ReservationOffsetTable::kThreadIsolatedOffsetTableLength);
 
 #if PA_BUILDFLAG(DCHECKS_ARE_ON)
   WriteProtectThreadIsolatedVariable(thread_isolation,

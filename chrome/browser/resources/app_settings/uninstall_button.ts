@@ -7,9 +7,10 @@ import '//resources/cr_elements/policy/cr_tooltip_icon.js';
 import '//resources/cr_elements/icons.html.js';
 
 import type {App} from 'chrome://resources/cr_components/app_management/app_management.mojom-webui.js';
-import {BrowserProxy} from 'chrome://resources/cr_components/app_management/browser_proxy.js';
-import {AppManagementUserAction, InstallReason} from 'chrome://resources/cr_components/app_management/constants.js';
+import {browserProxyFactory, InstallReason} from 'chrome://resources/cr_components/app_management/app_management.mojom-webui.js';
+import {AppManagementUserAction} from 'chrome://resources/cr_components/app_management/constants.js';
 import {recordAppManagementUserAction} from 'chrome://resources/cr_components/app_management/util.js';
+import {assertNotReachedCase} from 'chrome://resources/js/assert.js';
 import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
 import {getCss} from './uninstall_button.css.js';
@@ -37,15 +38,15 @@ export class UninstallButtonElement extends CrLitElement {
     };
   }
 
-  app: App = createDummyApp();
-  uninstallLabel: string = '';
-  policyLabel: string = '';
+  accessor app: App = createDummyApp();
+  accessor uninstallLabel: string = '';
+  accessor policyLabel: string = '';
 
   /**
    * Returns true if the button should be disabled due to app install type.
    *
-   * If the compiler complains about the "lack of ending return statement",
-   * you maybe just added a new InstallReason and need to add a new case.
+   * If the compiler complains about the "Argument ... is not assignable to
+   * parameter of type 'never', you need to add a new 'case' below.
    */
   protected getDisableState_(): boolean {
     switch (this.app.installReason) {
@@ -62,6 +63,8 @@ export class UninstallButtonElement extends CrLitElement {
       case InstallReason.kSubApp:
       case InstallReason.kCommandLine:
         return false;
+      default:
+        assertNotReachedCase(this.app.installReason);
     }
   }
 
@@ -80,7 +83,7 @@ export class UninstallButtonElement extends CrLitElement {
   }
 
   protected onClick_() {
-    BrowserProxy.getInstance().handler.uninstall(this.app.id);
+    browserProxyFactory.getInstance().handler.uninstall(this.app.id);
     recordAppManagementUserAction(
         this.app.type, AppManagementUserAction.UNINSTALL_DIALOG_LAUNCHED);
   }

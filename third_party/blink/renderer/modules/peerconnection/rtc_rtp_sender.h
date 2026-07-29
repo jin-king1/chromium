@@ -15,8 +15,8 @@
 #include "third_party/blink/renderer/bindings/modules/v8/v8_rtc_set_parameter_options.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context_lifecycle_observer.h"
 #include "third_party/blink/renderer/modules/mediastream/media_stream.h"
+#include "third_party/blink/renderer/modules/modules_export.h"
 #include "third_party/blink/renderer/modules/peerconnection/rtc_rtp_script_transform.h"
-#include "third_party/blink/renderer/modules/peerconnection/rtc_rtp_send_stream.h"
 #include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/heap/member.h"
@@ -55,8 +55,9 @@ RTCRtpCodecParameters* ToRtpCodecParameters(
     const webrtc::RtpCodecParameters& codecs);
 
 // https://w3c.github.io/webrtc-pc/#rtcrtpsender-interface
-class RTCRtpSender final : public ScriptWrappable,
-                           public ExecutionContextLifecycleObserver {
+class MODULES_EXPORT RTCRtpSender final
+    : public ScriptWrappable,
+      public ExecutionContextLifecycleObserver {
   DEFINE_WRAPPERTYPEINFO();
 
  public:
@@ -111,11 +112,6 @@ class RTCRtpSender final : public ScriptWrappable,
   void set_transceiver(RTCRtpTransceiver*);
   void set_transport(RTCDtlsTransport*);
 
-  ScriptPromise<IDLSequence<RTCRtpSendStream>> replaceSendStreams() {
-    // TODO(crbug.com/345101934): Implement me.
-    return {};
-  }
-
   // ExecutionContextLifecycleObserver
   void ContextDestroyed() override;
 
@@ -124,27 +120,21 @@ class RTCRtpSender final : public ScriptWrappable,
  private:
   // Insertable Streams audio support methods
   RTCInsertableStreams* CreateEncodedAudioStreams(ScriptState*);
-  void RegisterEncodedAudioStreamCallback();
   void UnregisterEncodedAudioStreamCallback();
   void SetAudioUnderlyingSource(
       RTCEncodedAudioUnderlyingSource* new_underlying_source,
       scoped_refptr<base::SingleThreadTaskRunner> task_runner);
   void SetAudioUnderlyingSink(
       RTCEncodedAudioUnderlyingSink* new_underlying_sink);
-  void OnAudioFrameFromEncoder(
-      std::unique_ptr<webrtc::TransformableAudioFrameInterface> frame);
 
   // Insertable Streams video support methods
   RTCInsertableStreams* CreateEncodedVideoStreams(ScriptState*);
-  void RegisterEncodedVideoStreamCallback();
   void UnregisterEncodedVideoStreamCallback();
   void SetVideoUnderlyingSource(
       RTCEncodedVideoUnderlyingSource* new_underlying_source,
       scoped_refptr<base::SingleThreadTaskRunner> task_runner);
   void SetVideoUnderlyingSink(
       RTCEncodedVideoUnderlyingSink* new_underlying_sink);
-  void OnVideoFrameFromEncoder(
-      std::unique_ptr<webrtc::TransformableVideoFrameInterface> frame);
 
   void LogMessage(const std::string& message);
 

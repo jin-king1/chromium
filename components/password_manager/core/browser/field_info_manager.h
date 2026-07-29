@@ -16,6 +16,7 @@
 #include "components/autofill/core/common/unique_ids.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/password_manager/core/browser/form_parsing/password_field_prediction.h"
+#include "components/password_manager/core/browser/password_manager_driver.h"
 
 namespace password_manager {
 
@@ -24,7 +25,7 @@ struct FormPredictions;
 struct FieldInfo {
   // Id of the PasswordManagerDriver which corresponds to the frame of the
   // field. Paired with the |field_id|, this identifies a field globally.
-  int driver_id = -1;
+  DriverId driver_id;
 
   // The renderer id of a field.
   autofill::FieldRendererId field_id;
@@ -45,7 +46,7 @@ struct FieldInfo {
   // Predictions for the form containing the field.
   std::optional<FormPredictions> stored_predictions;
 
-  FieldInfo(int driver_id,
+  FieldInfo(DriverId driver_id,
             autofill::FieldRendererId field_id,
             std::string signon_realm,
             std::u16string value,
@@ -69,12 +70,17 @@ class FieldInfoManager : public KeyedService {
   void AddFieldInfo(const FieldInfo& new_info,
                     const std::optional<FormPredictions>& predictions);
 
-  // Retrieves field info for the given |signon_realm|.
-  std::vector<FieldInfo> GetFieldInfo(const std::string& signon_realm);
+  // Retrieves field info for the given `signon_realm`. If
+  // `num_fields_to_consider` is set, only the last `num_fields_to_consider`
+  // fields are considered.
+  std::vector<FieldInfo> GetFieldInfo(
+      const std::string& signon_realm,
+      std::optional<size_t> num_fields_to_consider = std::nullopt);
 
   // Propagates signatures and field type received from the server.
   void ProcessServerPredictions(
-      const std::map<autofill::FormSignature, FormPredictions>& predictions);
+      const std::map<std::pair<autofill::FormSignature, DriverId>,
+                     FormPredictions>& predictions);
 
  private:
   struct FieldInfoEntry {

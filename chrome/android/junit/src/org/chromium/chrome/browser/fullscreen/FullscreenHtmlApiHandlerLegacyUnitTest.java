@@ -4,6 +4,8 @@
 
 package org.chromium.chrome.browser.fullscreen;
 
+import static android.view.Display.INVALID_DISPLAY;
+
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.doReturn;
@@ -16,55 +18,73 @@ import android.view.View.OnLayoutChangeListener;
 
 import org.junit.Assert;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.Mockito;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
 
 import org.chromium.base.ActivityState;
 import org.chromium.base.UserDataHost;
-import org.chromium.base.supplier.ObservableSupplierImpl;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableNonNullObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.util.Features;
 import org.chromium.cc.input.BrowserControlsState;
 import org.chromium.chrome.browser.ActivityTabProvider;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.multiwindow.MultiWindowModeStateDispatcher;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabBrowserControlsConstraintsHelper;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.components.embedder_support.view.ContentView;
 import org.chromium.content_public.browser.WebContents;
+import org.chromium.ui.base.UiAndroidFeatures;
 
 /** Unit tests for {@link FullscreenHtmlApiHandlerLegacy}. */
+@Features.EnableFeatures({
+    ChromeFeatureList.DISPLAY_EDGE_TO_EDGE_FULLSCREEN,
+    ChromeFeatureList.ENABLE_FULLSCREEN_TO_ANY_SCREEN_ANDROID,
+    UiAndroidFeatures.MAXIMUM_WINDOW_FOR_GESTURE_NAV_DETECTION
+})
+@Features.DisableFeatures({ChromeFeatureList.ENABLE_EXCLUSIVE_ACCESS_MANAGER})
 @RunWith(BaseRobolectricTestRunner.class)
 public class FullscreenHtmlApiHandlerLegacyUnitTest {
     private static final int DEVICE_WIDTH = 900;
     private static final int DEVICE_HEIGHT = 1600;
     private static final int SYSTEM_UI_HEIGHT = 100;
 
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     private Activity mActivity;
     @Mock private TabBrowserControlsConstraintsHelper mTabBrowserControlsConstraintsHelper;
     @Mock private Tab mTab;
     @Mock private WebContents mWebContents;
     @Mock private ContentView mContentView;
-    @Mock private ActivityTabProvider mActivityTabProvider;
     @Mock private TabModelSelector mTabModelSelector;
+    @Mock private MultiWindowModeStateDispatcher mMultiWindowModeStateDispatcher;
 
+    private final ActivityTabProvider mActivityTabProvider = new ActivityTabProvider();
     private FullscreenHtmlApiHandlerLegacy mFullscreenHtmlApiHandlerLegacy;
-    private ObservableSupplierImpl<Boolean> mAreControlsHidden;
+    private SettableNonNullObservableSupplier<Boolean> mAreControlsHidden;
     private UserDataHost mHost;
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
         mActivity = Robolectric.buildActivity(Activity.class).setup().get();
         mHost = new UserDataHost();
         doReturn(mHost).when(mTab).getUserDataHost();
+        doReturn(ObservableSuppliers.createMonotonic())
+                .when(mTabModelSelector)
+                .getCurrentTabModelSupplier();
 
-        mAreControlsHidden = new ObservableSupplierImpl<Boolean>();
+        mAreControlsHidden = ObservableSuppliers.createNonNull(false);
         mFullscreenHtmlApiHandlerLegacy =
-                new FullscreenHtmlApiHandlerLegacy(mActivity, mAreControlsHidden, false) {
+                new FullscreenHtmlApiHandlerLegacy(
+                        mActivity, mAreControlsHidden, false, mMultiWindowModeStateDispatcher) {
                     // This needs a PopupController, which isn't available in the test since we
                     // can't mock statics in this version of mockito.  Even if we could mock it, it
                     // casts to WebContentsImpl and other things that we can't reference due to
@@ -87,7 +107,7 @@ public class FullscreenHtmlApiHandlerLegacyUnitTest {
         mAreControlsHidden.set(false);
         mFullscreenHtmlApiHandlerLegacy.setTabForTesting(mTab);
         mFullscreenHtmlApiHandlerLegacy.onEnterFullscreen(
-                mTab, new FullscreenOptions(false, false));
+                mTab, new FullscreenOptions(false, false, INVALID_DISPLAY));
 
         TabBrowserControlsConstraintsHelper.setForTesting(
                 mTab, mTabBrowserControlsConstraintsHelper);
@@ -116,7 +136,7 @@ public class FullscreenHtmlApiHandlerLegacyUnitTest {
         mAreControlsHidden.set(false);
         mFullscreenHtmlApiHandlerLegacy.setTabForTesting(mTab);
         mFullscreenHtmlApiHandlerLegacy.onEnterFullscreen(
-                mTab, new FullscreenOptions(false, false));
+                mTab, new FullscreenOptions(false, false, INVALID_DISPLAY));
 
         mAreControlsHidden.set(true);
         TabBrowserControlsConstraintsHelper.setForTesting(
@@ -141,7 +161,7 @@ public class FullscreenHtmlApiHandlerLegacyUnitTest {
         mFullscreenHtmlApiHandlerLegacy.setTabForTesting(mTab);
         FullscreenManager.Observer observer = Mockito.mock(FullscreenManager.Observer.class);
         mFullscreenHtmlApiHandlerLegacy.addObserver(observer);
-        FullscreenOptions fullscreenOptions = new FullscreenOptions(false, false);
+        FullscreenOptions fullscreenOptions = new FullscreenOptions(false, false, INVALID_DISPLAY);
         mFullscreenHtmlApiHandlerLegacy.onEnterFullscreen(mTab, fullscreenOptions);
         verify(observer).onEnterFullscreen(mTab, fullscreenOptions);
         Assert.assertEquals(
@@ -171,7 +191,7 @@ public class FullscreenHtmlApiHandlerLegacyUnitTest {
         mFullscreenHtmlApiHandlerLegacy.setTabForTesting(mTab);
         FullscreenManager.Observer observer = Mockito.mock(FullscreenManager.Observer.class);
         mFullscreenHtmlApiHandlerLegacy.addObserver(observer);
-        FullscreenOptions fullscreenOptions = new FullscreenOptions(false, false);
+        FullscreenOptions fullscreenOptions = new FullscreenOptions(false, false, INVALID_DISPLAY);
 
         mFullscreenHtmlApiHandlerLegacy.onEnterFullscreen(mTab, fullscreenOptions);
         mFullscreenHtmlApiHandlerLegacy.onEnterFullscreen(mTab, fullscreenOptions);
@@ -206,7 +226,7 @@ public class FullscreenHtmlApiHandlerLegacyUnitTest {
         mFullscreenHtmlApiHandlerLegacy.setTabForTesting(mTab);
         FullscreenManager.Observer observer = Mockito.mock(FullscreenManager.Observer.class);
         mFullscreenHtmlApiHandlerLegacy.addObserver(observer);
-        FullscreenOptions fullscreenOptions = new FullscreenOptions(false, false);
+        FullscreenOptions fullscreenOptions = new FullscreenOptions(false, false, INVALID_DISPLAY);
 
         mFullscreenHtmlApiHandlerLegacy.onEnterFullscreen(mTab, fullscreenOptions);
         mFullscreenHtmlApiHandlerLegacy.onEnterFullscreen(mTab, fullscreenOptions);
@@ -238,7 +258,7 @@ public class FullscreenHtmlApiHandlerLegacyUnitTest {
         mFullscreenHtmlApiHandlerLegacy.setTabForTesting(mTab);
         FullscreenManager.Observer observer = Mockito.mock(FullscreenManager.Observer.class);
         mFullscreenHtmlApiHandlerLegacy.addObserver(observer);
-        FullscreenOptions fullscreenOptions = new FullscreenOptions(false, false);
+        FullscreenOptions fullscreenOptions = new FullscreenOptions(false, false, INVALID_DISPLAY);
 
         // Before the tab becomes interactable, fullscreen exit gets requested.
         mFullscreenHtmlApiHandlerLegacy.onEnterFullscreen(mTab, fullscreenOptions);
@@ -258,7 +278,7 @@ public class FullscreenHtmlApiHandlerLegacyUnitTest {
         mFullscreenHtmlApiHandlerLegacy.initialize(mActivityTabProvider, mTabModelSelector);
         FullscreenManager.Observer observer = Mockito.mock(FullscreenManager.Observer.class);
         mFullscreenHtmlApiHandlerLegacy.addObserver(observer);
-        FullscreenOptions fullscreenOptions = new FullscreenOptions(false, false);
+        FullscreenOptions fullscreenOptions = new FullscreenOptions(false, false, INVALID_DISPLAY);
         mFullscreenHtmlApiHandlerLegacy.onEnterFullscreen(mTab, fullscreenOptions);
         verify(observer, never()).onEnterFullscreen(mTab, fullscreenOptions);
 
@@ -287,7 +307,7 @@ public class FullscreenHtmlApiHandlerLegacyUnitTest {
 
         mFullscreenHtmlApiHandlerLegacy.setTabForTesting(mTab);
 
-        FullscreenOptions fullscreenOptions = new FullscreenOptions(false, false);
+        FullscreenOptions fullscreenOptions = new FullscreenOptions(false, false, INVALID_DISPLAY);
         mFullscreenHtmlApiHandlerLegacy.onEnterFullscreen(mTab, fullscreenOptions);
 
         // Catch the layout listener, which is an implementation detail but what can one do?  Note
@@ -343,7 +363,7 @@ public class FullscreenHtmlApiHandlerLegacyUnitTest {
 
         mFullscreenHtmlApiHandlerLegacy.setTabForTesting(mTab);
 
-        FullscreenOptions fullscreenOptions = new FullscreenOptions(false, false);
+        FullscreenOptions fullscreenOptions = new FullscreenOptions(false, false, INVALID_DISPLAY);
         mFullscreenHtmlApiHandlerLegacy.onEnterFullscreen(mTab, fullscreenOptions);
 
         ArgumentCaptor<OnLayoutChangeListener> arg =
@@ -372,7 +392,8 @@ public class FullscreenHtmlApiHandlerLegacyUnitTest {
     @Test
     public void testFullscreenObserverNotifiedWhenActivityStopped() {
         mFullscreenHtmlApiHandlerLegacy =
-                new FullscreenHtmlApiHandlerLegacy(mActivity, mAreControlsHidden, true) {
+                new FullscreenHtmlApiHandlerLegacy(
+                        mActivity, mAreControlsHidden, true, mMultiWindowModeStateDispatcher) {
                     @Override
                     public void destroySelectActionMode(Tab tab) {}
                 };
@@ -388,7 +409,7 @@ public class FullscreenHtmlApiHandlerLegacyUnitTest {
 
         FullscreenManager.Observer observer = Mockito.mock(FullscreenManager.Observer.class);
         mFullscreenHtmlApiHandlerLegacy.addObserver(observer);
-        FullscreenOptions fullscreenOptions = new FullscreenOptions(false, false);
+        FullscreenOptions fullscreenOptions = new FullscreenOptions(false, false, INVALID_DISPLAY);
 
         mFullscreenHtmlApiHandlerLegacy.onEnterFullscreen(mTab, fullscreenOptions);
         verify(observer, times(1)).onEnterFullscreen(mTab, fullscreenOptions);
@@ -411,7 +432,7 @@ public class FullscreenHtmlApiHandlerLegacyUnitTest {
 
         FullscreenManager.Observer observer = Mockito.mock(FullscreenManager.Observer.class);
         mFullscreenHtmlApiHandlerLegacy.addObserver(observer);
-        FullscreenOptions fullscreenOptions = new FullscreenOptions(false, false);
+        FullscreenOptions fullscreenOptions = new FullscreenOptions(false, false, INVALID_DISPLAY);
 
         // Enter full screen.
         mFullscreenHtmlApiHandlerLegacy.onEnterFullscreen(mTab, fullscreenOptions);

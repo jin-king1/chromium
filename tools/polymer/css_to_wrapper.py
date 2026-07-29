@@ -55,12 +55,14 @@ _LIT_STYLE_TEMPLATE = """import {css, CSSResultGroup} from '%(scheme)s//resource
 %(imports)s
 
 let instance: CSSResultGroup|null = null;
-export function getCss() {
+export function getCss(): CSSResultGroup {
   return instance || (instance = [...[%(deps)s], css`%(content)s`]);
 }"""
 
-# TODO(crbug.com/384446045): Remove when the oldest supported iOS version is
+# TODO(dpapad): Remove when the oldest supported iOS version is
 # 16.4 or above. CSSStyleSheet constructor is not supported before that.
+# See https://chromium.googlesource.com/chromium/src/+/HEAD/ios/web/README.md#minimum-deployment-version
+# for what is the currently minimum supported version.
 _LIT_VARS_IOS_TEMPLATE = """%(imports)s
 export {};
 
@@ -212,24 +214,15 @@ def main(argv):
   wrapper_in_folder = in_folder
 
   if args.minify:
-    # Minify the CSS files with html-minifier before generating the wrapper
+    # Minify the CSS files with a postcss plugin before generating the wrapper
     # .ts files.
-    # Note: Passing all CSS files to html-minifier all at once because
-    # passing them individually takes a lot longer.
     # Storing the output in a temporary folder, which is used further below when
     # creating the final wrapper files.
     tmp_out_dir = tempfile.mkdtemp(dir=out_folder)
     try:
       wrapper_in_folder = tmp_out_dir
-
-      # Using the programmatic Node API to invoke html-minifier, because the
-      # built-in command line API does not support explicitly specifying
-      # multiple files to be processed, and only supports specifying an input
-      # folder, which would lead to potentially processing unnecessary HTML
-      # files that are not part of the build (stale), or handled by other
-      # css_to_wrapper targets.
       node.RunNode(
-          [path.join(_HERE_PATH, 'html_minifier.js'), in_folder, tmp_out_dir] +
+          [path.join(_HERE_PATH, 'css_minifier.js'), in_folder, tmp_out_dir] +
           args.in_files)
     except RuntimeError as err:
       shutil.rmtree(tmp_out_dir)

@@ -87,7 +87,6 @@ class CONTENT_EXPORT FrameTree {
     NodeIterator& AdvanceSkippingChildren();
 
     bool operator==(const NodeIterator& rhs) const;
-    bool operator!=(const NodeIterator& rhs) const { return !(*this == rhs); }
 
     FrameTreeNode* operator*() { return current_node_; }
 
@@ -95,7 +94,7 @@ class CONTENT_EXPORT FrameTree {
     friend class FrameTreeTest;
     friend class NodeRange;
 
-    NodeIterator(const std::vector<raw_ptr<FrameTreeNode, VectorExperimental>>&
+    NodeIterator(const std::vector<raw_ptr<FrameTreeNode, DanglingUntriaged>>&
                      starting_nodes,
                  const FrameTreeNode* root_of_subtree_to_skip,
                  bool should_descend_into_inner_trees,
@@ -111,7 +110,7 @@ class CONTENT_EXPORT FrameTree {
 
     const bool should_descend_into_inner_trees_;
     const bool include_delegate_nodes_for_inner_frame_trees_;
-    base::circular_deque<FrameTreeNode*> queue_;
+    base::circular_deque<raw_ptr<FrameTreeNode, DanglingUntriaged>> queue_;
   };
 
   class CONTENT_EXPORT NodeRange {
@@ -125,13 +124,13 @@ class CONTENT_EXPORT FrameTree {
    private:
     friend class FrameTree;
 
-    NodeRange(const std::vector<raw_ptr<FrameTreeNode, VectorExperimental>>&
+    NodeRange(const std::vector<raw_ptr<FrameTreeNode, DanglingUntriaged>>&
                   starting_nodes,
               const FrameTreeNode* root_of_subtree_to_skip,
               bool should_descend_into_inner_trees,
               bool include_delegate_nodes_for_inner_frame_trees);
 
-    const std::vector<raw_ptr<FrameTreeNode, VectorExperimental>>
+    const std::vector<raw_ptr<FrameTreeNode, DanglingUntriaged>>
         starting_nodes_;
     const raw_ptr<const FrameTreeNode> root_of_subtree_to_skip_;
     const bool should_descend_into_inner_trees_;
@@ -194,12 +193,13 @@ class CONTENT_EXPORT FrameTree {
     virtual void SetFocusedFrame(FrameTreeNode* node,
                                  SiteInstanceGroup* source) = 0;
 
-    // Returns this FrameTree's picture-in-picture FrameTree if it has one.
-    virtual FrameTree* GetOwnedPictureInPictureFrameTree() = 0;
+    // Returns this FrameTree's document picture-in-picture FrameTree if it has
+    // one.
+    virtual FrameTree* GetOwnedDocumentPictureInPictureFrameTree() = 0;
 
     // Returns this FrameTree's opener if this FrameTree represents a
-    // picture-in-picture window.
-    virtual FrameTree* GetPictureInPictureOpenerFrameTree() = 0;
+    // document picture-in-picture window.
+    virtual FrameTree* GetDocumentPictureInPictureOpenerFrameTree() = 0;
 
     // Called when the visibility of the RenderFrameProxyHost changes.
     // This method should only handle visibility for inner WebContents and
@@ -210,6 +210,10 @@ class CONTENT_EXPORT FrameTree {
     virtual bool OnRenderFrameProxyVisibilityChanged(
         RenderFrameProxyHost* render_frame_proxy_host,
         blink::mojom::FrameVisibility visibility) = 0;
+
+    // Returns the PrerenderHostId hosting this FrameTree. Returns an invalid ID
+    // when this FrameTree is not being prerendered.
+    virtual PrerenderHostId GetPrerenderHostId() = 0;
   };
 
   // Type of FrameTree instance.
@@ -395,7 +399,8 @@ class CONTENT_EXPORT FrameTree {
       const blink::mojom::FrameOwnerProperties& frame_owner_properties,
       bool was_discarded,
       blink::FrameOwnerElementType owner_type,
-      bool is_dummy_frame_for_inner_tree);
+      bool is_dummy_frame_for_inner_tree,
+      std::unique_ptr<base::UnguessableToken> sandbox_origin_token = nullptr);
 
   // Removes a frame from the frame tree. |child|, its children, and objects
   // owned by their RenderFrameHostManagers are immediately deleted. The root
@@ -413,14 +418,22 @@ class CONTENT_EXPORT FrameTree {
   // temporarily created for |source| in cross-SiteInstanceGroup cases (to allow
   // a remote-to-local swap to the new RenderFrameHost in |source|), but the
   // subtree rooted at source is skipped.
+  //
   // |source_new_browsing_context_state| is the BrowsingContextState used by the
   // speculative frame host, which may differ from the BrowsingContextState in
   // |source| during cross-origin cross- browsing-instance navigations.
+  //
+  // |navigation_metrics_token| is a token identifying the navigation for which
+  // these proxies are being created, if any. It allows metrics code and trace
+  // events to tie together different IPCs and events pertaining to a particular
+  // navigation. It's nullopt for non-navigation cases such as creating proxies
+  // for a new subframe.
   void CreateProxiesForSiteInstanceGroup(
       FrameTreeNode* source,
       SiteInstanceGroup* site_instance_group,
       const scoped_refptr<BrowsingContextState>&
-          source_new_browsing_context_state);
+          source_new_browsing_context_state,
+      const std::optional<base::UnguessableToken>& navigation_metrics_token);
 
   // Convenience accessor for the main frame's RenderFrameHostImpl.
   RenderFrameHostImpl* GetMainFrame() const;
@@ -506,11 +519,22 @@ class CONTENT_EXPORT FrameTree {
 
   // Returns true if at least one of the nodes in this frame tree or nodes in
   // any inner frame tree of the same WebContents is loading.
-  bool IsLoadingIncludingInnerFrameTrees() const;
+  // `exclude_ad_subframes` indicates whether ad subframes are excluded from the
+  // query.
+  //
+  // Note: For top-level navigation, even if only ad subframes remain loading,
+  // the main frame is still considered loading by this function. See comments
+  // on `WebContents::IsLoadingExcludingAdSubframes()`.
+  //
+  // TODO(crbug.com/461821799): Expand this to work with top-level navigation.
+  bool IsLoadingIncludingInnerFrameTrees(
+      bool exclude_ad_subframes = false) const;
 
   // Returns the LoadingState for the FrameTree as a whole, indicating whether
   // a load is in progress, as well as whether loading UI should be shown.
-  LoadingState GetLoadingState() const;
+  // `exclude_ad_subframes` indicates whether ad subframes are excluded from the
+  // query.
+  LoadingState GetLoadingState(bool exclude_ad_subframes = false) const;
 
   // Set page-level focus in all SiteInstances involved in rendering
   // this FrameTree, not including the current main frame's
@@ -581,7 +605,7 @@ class CONTENT_EXPORT FrameTree {
   // Discards the frame tree. The root frame is transitioned to an empty
   // document in blink and BFCache entries are cleared. The tree is configured
   // to reload when activated.
-  void Discard();
+  void Discard(base::OnceClosure on_discarded_cb = base::NullCallback());
 
  private:
   friend class FrameTreeTest;
@@ -653,18 +677,15 @@ class CONTENT_EXPORT FrameTree {
   // RenderFrameHost has an associated RenderViewHost, but it cannot be put in
   // `render_view_host_map_` when it is created, as the existing RenderViewHost
   // will be incorrectly overwritten.
-  // TODO(yangsharon, crbug.com/1336305): Expand support to include
-  // cross-SiteInstanceGroup main-frame navigations, so all main-frame
-  // navigations use speculative RenderViewHost.
+  // TODO(crbug.com/40228869): Expand support to include cross-SiteInstanceGroup
+  // main-frame navigations, so all main-frame navigations use speculative
+  // RenderViewHost.
   base::WeakPtr<RenderViewHostImpl> speculative_render_view_host_;
 
   // Indicates type of frame tree.
   const Type type_;
 
   FrameTreeNodeId focused_frame_tree_node_id_;
-
-  // Overall load progress.
-  double load_progress_;
 
   // Whether the initial empty page has been accessed by another page, making it
   // unsafe to show the pending URL. Usually false unless another window tries
@@ -673,10 +694,8 @@ class CONTENT_EXPORT FrameTree {
 
   bool is_being_destroyed_ = false;
 
-#if DCHECK_IS_ON()
   // Whether Shutdown() was called.
   bool was_shut_down_ = false;
-#endif
 
   // The root FrameTreeNode.
   //

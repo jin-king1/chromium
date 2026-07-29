@@ -11,20 +11,23 @@
 #include <utility>
 
 #include "base/auto_reset.h"
+#include "base/logging.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/autofill/personal_data_manager_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/account_consistency_mode_manager.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/sync/sync_service_factory.h"
+#include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/autofill/autofill_bubble_base.h"
 #include "chrome/browser/ui/autofill/autofill_bubble_controller_base.h"
 #include "chrome/browser/ui/autofill/autofill_bubble_handler.h"
-#include "chrome/browser/ui/autofill/payments/payments_ui_constants.h"
+#include "chrome/browser/ui/autofill/payments/save_card_bubble_controller.h"
 #include "chrome/browser/ui/autofill/payments/save_card_ui.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/hats/trust_safety_sentiment_service.h"
 #include "chrome/browser/ui/hats/trust_safety_sentiment_service_factory.h"
@@ -36,6 +39,7 @@
 #include "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #include "components/autofill/core/browser/metrics/autofill_metrics.h"
 #include "components/autofill/core/browser/metrics/payments/credit_card_save_metrics.h"
+#include "components/autofill/core/browser/metrics/payments/credit_card_save_metrics_desktop.h"
 #include "components/autofill/core/browser/metrics/payments/manage_cards_prompt_metrics.h"
 #include "components/autofill/core/browser/payments/payments_autofill_client.h"
 #include "components/autofill/core/browser/studies/autofill_experiments.h"
@@ -43,18 +47,43 @@
 #include "components/autofill/core/browser/ui/payments/save_payment_method_and_virtual_card_enroll_confirmation_ui_params.h"
 #include "components/autofill/core/common/autofill_clock.h"
 #include "components/autofill/core/common/autofill_constants.h"
-#include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/signin/public/base/signin_buildflags.h"
 #include "components/signin/public/base/signin_pref_names.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/sync/service/sync_service.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/navigation_handle.h"
+#include "content/public/browser/visibility.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/resource/resource_bundle.h"
 
 namespace autofill {
+
+namespace {
+
+// SaveCardPromptMetricType will be either LegacySaveCardPromptResult or
+// SaveCardPromptResultDesktop.
+template <typename SaveCardPromptMetricType>
+SaveCardPromptMetricType GetMetric(PaymentsUiClosedReason reason) {
+  switch (reason) {
+    case PaymentsUiClosedReason::kAccepted:
+      return SaveCardPromptMetricType::kAccepted;
+    case PaymentsUiClosedReason::kCancelled:
+      return SaveCardPromptMetricType::kCancelled;
+    case PaymentsUiClosedReason::kClosed:
+      return SaveCardPromptMetricType::kClosed;
+    case PaymentsUiClosedReason::kNotInteracted:
+      return SaveCardPromptMetricType::kNotInteracted;
+    case PaymentsUiClosedReason::kLostFocus:
+      return SaveCardPromptMetricType::kLostFocus;
+    case PaymentsUiClosedReason::kUnknown:
+      return SaveCardPromptMetricType::kUnknown;
+  }
+}
+
+}  // namespace
 
 static bool g_ignore_window_activation_for_testing = false;
 
@@ -81,16 +110,6 @@ SaveCardBubbleController* SaveCardBubbleController::GetOrCreate(
   return SaveCardBubbleControllerImpl::FromWebContents(web_contents);
 }
 
-// static
-SaveCardBubbleController* SaveCardBubbleController::Get(
-    content::WebContents* web_contents) {
-  if (!web_contents) {
-    return nullptr;
-  }
-
-  return SaveCardBubbleControllerImpl::FromWebContents(web_contents);
-}
-
 void SaveCardBubbleControllerImpl::OfferLocalSave(
     const CreditCard& card,
     payments::PaymentsAutofillClient::SaveCreditCardOptions options,
@@ -98,33 +117,43 @@ void SaveCardBubbleControllerImpl::OfferLocalSave(
         save_card_prompt_callback) {
   // If the confirmation view is still showing, close it before showing the new
   // offer.
-  if (current_bubble_type_ == BubbleType::UPLOAD_COMPLETED) {
-    HideBubble();
+  if (current_bubble_type_ == PaymentsBubbleType::kUploadComplete) {
+    HideBubble(/*initiated_by_bubble_manager=*/false);
   }
 
   // Don't show the bubble if it's already visible.
-  if (bubble_view()) {
+  if (bubble_view() || !MaySetUpBubble()) {
     return;
   }
 
+  SetupLocalSave(card, options, std::move(save_card_prompt_callback));
+
+  if (options.show_prompt) {
+    CheckPreconditionsBeforeShowing();
+    QueueOrShowBubble();
+  } else {
+    ShowIconOnly();
+  }
+}
+
+void SaveCardBubbleControllerImpl::SetupLocalSave(
+    CreditCard card,
+    payments::PaymentsAutofillClient::SaveCreditCardOptions options,
+    payments::PaymentsAutofillClient::LocalSaveCardPromptCallback
+        save_card_prompt_callback) {
+  was_bubble_shown_ = false;
   is_upload_save_ = false;
   is_reshow_ = false;
   is_triggered_by_user_gesture_ = false;
   options_ = options;
-  card_ = card;
+  card_ = std::move(card);
   local_save_card_prompt_callback_ = std::move(save_card_prompt_callback);
   legal_message_lines_.clear();
   current_bubble_type_ =
       options.card_save_type ==
               payments::PaymentsAutofillClient::CardSaveType::kCvcSaveOnly
-          ? BubbleType::LOCAL_CVC_SAVE
-          : BubbleType::LOCAL_SAVE;
-
-  if (options.show_prompt) {
-    ShowBubble();
-  } else {
-    ShowIconOnly();
-  }
+          ? PaymentsBubbleType::kLocalCvcSave
+          : PaymentsBubbleType::kLocalSave;
 }
 
 void SaveCardBubbleControllerImpl::OfferUploadSave(
@@ -135,41 +164,53 @@ void SaveCardBubbleControllerImpl::OfferUploadSave(
         save_card_prompt_callback) {
   // If the confirmation view is still showing, close it before showing the new
   // offer.
-  if (current_bubble_type_ == BubbleType::UPLOAD_COMPLETED) {
-    HideBubble();
+  if (current_bubble_type_ == PaymentsBubbleType::kUploadComplete) {
+    HideBubble(/*initiated_by_bubble_manager=*/false);
   }
 
   // Don't show the bubble if it's already visible.
-  if (bubble_view()) {
+  if (bubble_view() || !MaySetUpBubble()) {
     return;
   }
 
+  SetupUploadSave(card, legal_message_lines, options,
+                  std::move(save_card_prompt_callback));
+
+  if (options_.show_prompt) {
+    CheckPreconditionsBeforeShowing();
+    QueueOrShowBubble();
+  } else {
+    ShowIconOnly();
+  }
+}
+
+void SaveCardBubbleControllerImpl::SetupUploadSave(
+    CreditCard card,
+    LegalMessageLines legal_message_lines,
+    payments::PaymentsAutofillClient::SaveCreditCardOptions options,
+    payments::PaymentsAutofillClient::UploadSaveCardPromptCallback
+        save_card_prompt_callback) {
+  was_bubble_shown_ = false;
   is_upload_save_ = true;
   is_reshow_ = false;
   is_triggered_by_user_gesture_ = false;
   options_ = options;
-  card_ = card;
+  card_ = std::move(card);
   upload_save_card_prompt_callback_ = std::move(save_card_prompt_callback);
   current_bubble_type_ =
       options.card_save_type ==
               payments::PaymentsAutofillClient::CardSaveType::kCvcSaveOnly
-          ? BubbleType::UPLOAD_CVC_SAVE
-          : BubbleType::UPLOAD_SAVE;
+          ? PaymentsBubbleType::kUploadCvcSave
+          : PaymentsBubbleType::kUploadSave;
 
   // Reset legal_message_lines for CVC only upload as there is no legal message
   // for this case.
-  // TODO(crbug.com/40931101): Refactor ConfirmSaveCreditCardToCloud to change
+  // TODO(crbug.com/40931101): Refactor ShowSaveCreditCardToCloud to change
   // legal_message_lines_ to optional.
-  if (current_bubble_type_ == BubbleType::UPLOAD_CVC_SAVE) {
+  if (current_bubble_type_ == PaymentsBubbleType::kUploadCvcSave) {
     legal_message_lines_.clear();
   } else {
-    legal_message_lines_ = legal_message_lines;
-  }
-
-  if (options_.show_prompt) {
-    ShowBubble();
-  } else {
-    ShowIconOnly();
+    legal_message_lines_ = std::move(legal_message_lines);
   }
 }
 
@@ -177,8 +218,9 @@ void SaveCardBubbleControllerImpl::OfferUploadSave(
 void SaveCardBubbleControllerImpl::ShowBubbleForManageCardsForTesting(
     const CreditCard& card) {
   card_ = card;
-  current_bubble_type_ = BubbleType::MANAGE_CARDS;
-  ShowBubble();
+  current_bubble_type_ = PaymentsBubbleType::kManageCards;
+  CheckPreconditionsBeforeShowing();
+  QueueOrShowBubble();
 }
 
 void SaveCardBubbleControllerImpl::ReshowBubble(
@@ -190,29 +232,34 @@ void SaveCardBubbleControllerImpl::ReshowBubble(
 
   is_reshow_ = true;
   is_triggered_by_user_gesture_ = is_triggered_by_user_gesture;
-  ShowBubble();
+  CheckPreconditionsBeforeShowing();
+  QueueOrShowBubble(/*force_show=*/true);
 }
 
 void SaveCardBubbleControllerImpl::ShowConfirmationBubbleView(
     bool card_saved,
+    bool is_for_save_and_fill,
     std::optional<
         payments::PaymentsAutofillClient::OnConfirmationClosedCallback>
         on_confirmation_closed_callback) {
+  DoNotShowNextQueuedBubbleGuard guard = DoNotShowNextQueuedBubble();
+
   // Hide the current bubble if still showing.
-  HideBubble();
+  HideBubble(/*initiated_by_bubble_manager=*/false);
 
   is_reshow_ = false;
   is_triggered_by_user_gesture_ = false;
-  current_bubble_type_ = BubbleType::UPLOAD_COMPLETED;
+  current_bubble_type_ = PaymentsBubbleType::kUploadComplete;
   confirmation_ui_params_ =
       card_saved ? SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams::
-                       CreateForSaveCardSuccess()
+                       CreateForSaveCardSuccess(is_for_save_and_fill)
                  : SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams::
-                       CreateForSaveCardFailure();
+                       CreateForSaveCardFailure(is_for_save_and_fill);
   on_confirmation_closed_callback_ = std::move(on_confirmation_closed_callback);
 
   // Show upload confirmation bubble.
-  ShowBubble();
+  CheckPreconditionsBeforeShowing();
+  QueueOrShowBubble();
 
   // Auto close confirmation bubble when card saved is successful.
   if (card_saved) {
@@ -227,7 +274,9 @@ base::OnceClosure SaveCardBubbleControllerImpl::
     GetShowConfirmationForCardSuccessfullySavedCallback() {
   return base::BindOnce(
       &SaveCardBubbleControllerImpl::ShowConfirmationBubbleView,
-      weak_ptr_factory_.GetWeakPtr(), true, std::nullopt);
+      weak_ptr_factory_.GetWeakPtr(), /*card_saved=*/true,
+      /*is_for_save_and_fill=*/true,
+      /*on_confirmation_closed_callback=*/std::nullopt);
 }
 
 base::OnceClosure
@@ -238,35 +287,36 @@ SaveCardBubbleControllerImpl::GetEndSaveCardPromptFlowCallback() {
 
 std::u16string SaveCardBubbleControllerImpl::GetWindowTitle() const {
   switch (current_bubble_type_) {
-    case BubbleType::LOCAL_SAVE:
+    case PaymentsBubbleType::kLocalSave:
       return l10n_util::GetStringUTF16(
           IDS_AUTOFILL_SAVE_CARD_PROMPT_TITLE_LOCAL);
-    case BubbleType::LOCAL_CVC_SAVE:
+    case PaymentsBubbleType::kLocalCvcSave:
       return l10n_util::GetStringUTF16(
           IDS_AUTOFILL_SAVE_CVC_PROMPT_TITLE_LOCAL);
-    case BubbleType::UPLOAD_SAVE:
-    case BubbleType::UPLOAD_IN_PROGRESS:
+    case PaymentsBubbleType::kUploadSave:
+    case PaymentsBubbleType::kUploadInProgress:
       return l10n_util::GetStringUTF16(
-          IDS_AUTOFILL_SAVE_CARD_PROMPT_TITLE_TO_CLOUD_SECURITY);
-    case BubbleType::UPLOAD_CVC_SAVE:
+          base::FeatureList::IsEnabled(
+              features::kAutofillEnableWalletBrandingV2)
+              ? IDS_AUTOFILL_SAVE_CARD_IN_GOOGLE_WALLET_PROMPT_TITLE
+              : IDS_AUTOFILL_SAVE_CARD_PROMPT_TITLE_TO_CLOUD_SECURITY);
+    case PaymentsBubbleType::kUploadCvcSave:
       return l10n_util::GetStringUTF16(
           IDS_AUTOFILL_SAVE_CVC_PROMPT_TITLE_TO_CLOUD);
-    case BubbleType::MANAGE_CARDS:
+    case PaymentsBubbleType::kManageCards:
       return l10n_util::GetStringUTF16(
           options_.card_save_type ==
                   payments::PaymentsAutofillClient::CardSaveType::kCvcSaveOnly
               ? IDS_AUTOFILL_CVC_SAVED
               : IDS_AUTOFILL_CARD_SAVED);
-    case BubbleType::UPLOAD_COMPLETED:
-    case BubbleType::INACTIVE:
+    case PaymentsBubbleType::kUploadComplete:
+    case PaymentsBubbleType::kInactive:
       NOTREACHED();
   }
 }
 
 std::u16string SaveCardBubbleControllerImpl::GetExplanatoryMessage() const {
-  if (current_bubble_type_ == BubbleType::LOCAL_SAVE &&
-      base::FeatureList::IsEnabled(
-          features::kAutofillEnableCvcStorageAndFilling)) {
+  if (current_bubble_type_ == PaymentsBubbleType::kLocalSave) {
     CHECK_NE(options_.card_save_type,
              payments::PaymentsAutofillClient::CardSaveType::kCvcSaveOnly);
     return l10n_util::GetStringUTF16(
@@ -276,58 +326,65 @@ std::u16string SaveCardBubbleControllerImpl::GetExplanatoryMessage() const {
             : IDS_AUTOFILL_SAVE_CARD_WITH_CVC_PROMPT_EXPLANATION_LOCAL);
   }
 
-  if (current_bubble_type_ == BubbleType::LOCAL_CVC_SAVE) {
+  if (current_bubble_type_ == PaymentsBubbleType::kLocalCvcSave) {
     return l10n_util::GetStringUTF16(
         IDS_AUTOFILL_SAVE_CVC_PROMPT_EXPLANATION_LOCAL);
   }
 
-  if (current_bubble_type_ == BubbleType::UPLOAD_CVC_SAVE) {
+  if (current_bubble_type_ == PaymentsBubbleType::kUploadCvcSave) {
     return l10n_util::GetStringUTF16(
-        IDS_AUTOFILL_SAVE_CVC_PROMPT_EXPLANATION_UPLOAD);
+        base::FeatureList::IsEnabled(features::kAutofillEnableWalletBranding)
+            ? IDS_AUTOFILL_SAVE_CVC_TO_WALLET_PROMPT_EXPLANATION_UPLOAD
+            : IDS_AUTOFILL_SAVE_CVC_PROMPT_EXPLANATION_UPLOAD);
   }
 
-  if (current_bubble_type_ != BubbleType::UPLOAD_SAVE &&
-      current_bubble_type_ != BubbleType::UPLOAD_IN_PROGRESS) {
+  if (current_bubble_type_ != PaymentsBubbleType::kUploadSave &&
+      current_bubble_type_ != PaymentsBubbleType::kUploadInProgress) {
     return std::u16string();
   }
 
   return l10n_util::GetStringUTF16(
-      IDS_AUTOFILL_SAVE_CARD_PROMPT_UPLOAD_EXPLANATION_SECURITY);
+      base::FeatureList::IsEnabled(features::kAutofillEnableWalletBranding)
+          ? (base::FeatureList::IsEnabled(
+                 features::kAutofillEnableWalletBrandingV2)
+                 ? IDS_AUTOFILL_SAVE_CARD_PROMPT_UPLOAD_TO_WALLET_V2_EXPLANATION
+                 : IDS_AUTOFILL_SAVE_CARD_PROMPT_UPLOAD_TO_WALLET_EXPLANATION_SECURITY)
+          : IDS_AUTOFILL_SAVE_CARD_PROMPT_UPLOAD_EXPLANATION_SECURITY);
 }
 
 std::u16string SaveCardBubbleControllerImpl::GetAcceptButtonText() const {
   switch (current_bubble_type_) {
-    case BubbleType::LOCAL_SAVE:
-    case BubbleType::LOCAL_CVC_SAVE:
+    case PaymentsBubbleType::kLocalSave:
+    case PaymentsBubbleType::kLocalCvcSave:
       return l10n_util::GetStringUTF16(
           IDS_AUTOFILL_SAVE_CARD_BUBBLE_LOCAL_SAVE_ACCEPT);
-    case BubbleType::UPLOAD_SAVE:
-    case BubbleType::UPLOAD_CVC_SAVE:
+    case PaymentsBubbleType::kUploadSave:
+    case PaymentsBubbleType::kUploadCvcSave:
       return l10n_util::GetStringUTF16(
           IDS_AUTOFILL_SAVE_CARD_BUBBLE_UPLOAD_SAVE_ACCEPT);
-    case BubbleType::MANAGE_CARDS:
+    case PaymentsBubbleType::kManageCards:
       return l10n_util::GetStringUTF16(IDS_AUTOFILL_DONE);
-    case BubbleType::UPLOAD_IN_PROGRESS:
-    case BubbleType::UPLOAD_COMPLETED:
-    case BubbleType::INACTIVE:
+    case PaymentsBubbleType::kUploadInProgress:
+    case PaymentsBubbleType::kUploadComplete:
+    case PaymentsBubbleType::kInactive:
       return std::u16string();
   }
 }
 
 std::u16string SaveCardBubbleControllerImpl::GetDeclineButtonText() const {
   switch (current_bubble_type_) {
-    case BubbleType::LOCAL_SAVE:
-    case BubbleType::LOCAL_CVC_SAVE:
+    case PaymentsBubbleType::kLocalSave:
+    case PaymentsBubbleType::kLocalCvcSave:
       return l10n_util::GetStringUTF16(
           IDS_AUTOFILL_NO_THANKS_DESKTOP_LOCAL_SAVE);
-    case BubbleType::UPLOAD_SAVE:
-    case BubbleType::UPLOAD_CVC_SAVE:
+    case PaymentsBubbleType::kUploadSave:
+    case PaymentsBubbleType::kUploadCvcSave:
       return l10n_util::GetStringUTF16(
           IDS_AUTOFILL_NO_THANKS_DESKTOP_UPLOAD_SAVE);
-    case BubbleType::UPLOAD_IN_PROGRESS:
-    case BubbleType::UPLOAD_COMPLETED:
-    case BubbleType::MANAGE_CARDS:
-    case BubbleType::INACTIVE:
+    case PaymentsBubbleType::kUploadInProgress:
+    case PaymentsBubbleType::kUploadComplete:
+    case PaymentsBubbleType::kManageCards:
+    case PaymentsBubbleType::kInactive:
       return std::u16string();
   }
 }
@@ -393,7 +450,7 @@ void SaveCardBubbleControllerImpl::OnSaveButton(
     const payments::PaymentsAutofillClient::UserProvidedCardDetails&
         user_provided_card_details) {
   switch (current_bubble_type_) {
-    case BubbleType::UPLOAD_SAVE: {
+    case PaymentsBubbleType::kUploadSave: {
       CHECK(!upload_save_card_prompt_callback_.is_null());
       if (auto* sentiment_service =
               TrustSafetySentimentServiceFactory::GetForProfile(GetProfile())) {
@@ -405,7 +462,7 @@ void SaveCardBubbleControllerImpl::OnSaveButton(
         // without edits.
         autofill_metrics::LogSaveCardCardholderNameWasEdited(
             user_provided_card_details.cardholder_name !=
-            base::UTF8ToUTF16(GetAccountInfo().full_name));
+            base::UTF8ToUTF16(GetAccountInfo().GetFullName().value_or("")));
         // Trim the cardholder name provided by the user and send it in the
         // callback so it can be included in the final request.
         CHECK(ShouldRequestNameFromUser());
@@ -417,15 +474,21 @@ void SaveCardBubbleControllerImpl::OnSaveButton(
       // because we don't immediately close the bubble (at which time the other
       // metrics are logged) after OnSaveButton() and logging now aligns the
       // timing of the log with the other cases.
+      autofill_metrics::LogSaveCreditCardPromptResultMetricDesktop(
+          autofill_metrics::SaveCardPromptResultDesktop::kAccepted,
+          is_upload_save_, options_,
+          /*has_saved_cards=*/
+          !payments_data_manager_->GetCreditCards().empty());
       autofill_metrics::LogSaveCardPromptResultMetric(
-          autofill_metrics::SaveCardPromptResult::kAccepted, is_upload_save_,
-          is_reshow_, options_,
+          autofill_metrics::LegacySaveCardPromptResult::kAccepted,
+          is_upload_save_, is_reshow_, options_,
           payments_data_manager_->GetPaymentsSigninStateForMetrics(),
           /*has_saved_cards=*/
           !payments_data_manager_->GetCreditCards().empty());
       autofill_metrics::LogCreditCardUploadLoadingViewShownMetric(
           /*is_shown=*/true);
-      current_bubble_type_ = BubbleType::UPLOAD_IN_PROGRESS;
+
+      current_bubble_type_ = PaymentsBubbleType::kUploadInProgress;
 
       std::move(upload_save_card_prompt_callback_)
           .Run(payments::PaymentsAutofillClient::SaveCardOfferUserDecision::
@@ -433,7 +496,7 @@ void SaveCardBubbleControllerImpl::OnSaveButton(
                user_provided_card_details);
       break;
     }
-    case BubbleType::UPLOAD_CVC_SAVE: {
+    case PaymentsBubbleType::kUploadCvcSave: {
       CHECK(!upload_save_card_prompt_callback_.is_null());
       if (auto* sentiment_service =
               TrustSafetySentimentServiceFactory::GetForProfile(GetProfile())) {
@@ -445,8 +508,8 @@ void SaveCardBubbleControllerImpl::OnSaveButton(
                /*user_provided_card_details=*/{});
       break;
     }
-    case BubbleType::LOCAL_SAVE:
-    case BubbleType::LOCAL_CVC_SAVE:
+    case PaymentsBubbleType::kLocalSave:
+    case PaymentsBubbleType::kLocalCvcSave:
       CHECK(!local_save_card_prompt_callback_.is_null());
       if (auto* sentiment_service =
               TrustSafetySentimentServiceFactory::GetForProfile(GetProfile())) {
@@ -459,13 +522,13 @@ void SaveCardBubbleControllerImpl::OnSaveButton(
           .Run(payments::PaymentsAutofillClient::SaveCardOfferUserDecision::
                    kAccepted);
       break;
-    case BubbleType::MANAGE_CARDS:
+    case PaymentsBubbleType::kManageCards:
       CHECK(!is_upload_save_);
       LogManageCardsPromptMetric(ManageCardsPromptMetric::kManageCardsDone);
       return;
-    case BubbleType::UPLOAD_IN_PROGRESS:
-    case BubbleType::UPLOAD_COMPLETED:
-    case BubbleType::INACTIVE:
+    case PaymentsBubbleType::kUploadInProgress:
+    case PaymentsBubbleType::kUploadComplete:
+    case PaymentsBubbleType::kInactive:
       NOTREACHED();
   }
 }
@@ -476,7 +539,7 @@ void SaveCardBubbleControllerImpl::OnLegalMessageLinkClicked(const GURL& url) {
 }
 
 void SaveCardBubbleControllerImpl::OnManageCardsClicked() {
-  CHECK(current_bubble_type_ == BubbleType::MANAGE_CARDS);
+  CHECK(current_bubble_type_ == PaymentsBubbleType::kManageCards);
   CHECK(!is_upload_save_);
 
   LogManageCardsPromptMetric(ManageCardsPromptMetric::kManageCardsManageCards);
@@ -485,13 +548,64 @@ void SaveCardBubbleControllerImpl::OnManageCardsClicked() {
 }
 
 void SaveCardBubbleControllerImpl::ShowPaymentsSettingsPage() {
-  chrome::ShowSettingsSubPage(chrome::FindBrowserWithTab(web_contents()),
+  tabs::TabInterface* tab = tabs::TabInterface::GetFromContents(web_contents());
+  CHECK(tab);
+  CHECK(tab->GetBrowserWindowInterface());
+  chrome::ShowSettingsSubPage(tab->GetBrowserWindowInterface(),
                               chrome::kPaymentsSubPage);
+}
+
+void SaveCardBubbleControllerImpl::OnBubbleDiscarded() {
+  LogBubbleCloseMetrics(was_bubble_shown_
+                            ? PaymentsUiClosedReason::kNotInteracted
+                            : PaymentsUiClosedReason::kUnknown);
+}
+
+void SaveCardBubbleControllerImpl::LogBubbleCloseMetrics(
+    PaymentsUiClosedReason closed_reason) {
+  autofill_metrics::LegacySaveCardPromptResult legacy_metric =
+      GetMetric<autofill_metrics::LegacySaveCardPromptResult>(closed_reason);
+
+  // Log save card prompt result according to the closed reason.
+  switch (current_bubble_type_) {
+    case PaymentsBubbleType::kLocalCvcSave:
+    case PaymentsBubbleType::kUploadCvcSave:
+      autofill_metrics::LogSaveCvcPromptResultMetric(
+          legacy_metric, is_upload_save_, is_reshow_);
+      break;
+    case PaymentsBubbleType::kLocalSave:
+    case PaymentsBubbleType::kUploadSave:
+      if (!is_reshow_) {
+        autofill_metrics::LogSaveCreditCardPromptResultMetricDesktop(
+            GetMetric<autofill_metrics::SaveCardPromptResultDesktop>(
+                closed_reason),
+            is_upload_save_,
+            /*save_credit_card_options=*/options_, /*has_saved_cards=*/
+            !payments_data_manager_->GetCreditCards().empty());
+      }
+      autofill_metrics::LogSaveCardPromptResultMetric(
+          legacy_metric, is_upload_save_, is_reshow_, options_,
+          payments_data_manager_->GetPaymentsSigninStateForMetrics(),
+          /*has_saved_cards=*/
+          !payments_data_manager_->GetCreditCards().empty());
+      break;
+    case PaymentsBubbleType::kUploadInProgress:
+      autofill_metrics::LogCreditCardUploadLoadingViewResultMetric(
+          legacy_metric);
+      break;
+    case PaymentsBubbleType::kUploadComplete:
+      autofill_metrics::LogCreditCardUploadConfirmationViewResultMetric(
+          legacy_metric, confirmation_ui_params_->is_success);
+      break;
+    case PaymentsBubbleType::kInactive:
+    case PaymentsBubbleType::kManageCards:
+      break;
+  }
 }
 
 void SaveCardBubbleControllerImpl::OnBubbleClosed(
     PaymentsUiClosedReason closed_reason) {
-  set_bubble_view(nullptr);
+  ResetBubbleViewAndInformBubbleManager();
 
   // If the dialog should be re-shown, do not change the bubble type or log
   // metrics.
@@ -501,56 +615,15 @@ void SaveCardBubbleControllerImpl::OnBubbleClosed(
     return;
   }
 
-  auto get_metric = [](PaymentsUiClosedReason reason) {
-    switch (reason) {
-      case PaymentsUiClosedReason::kAccepted:
-        return autofill_metrics::SaveCardPromptResult::kAccepted;
-      case PaymentsUiClosedReason::kCancelled:
-        return autofill_metrics::SaveCardPromptResult::kCancelled;
-      case PaymentsUiClosedReason::kClosed:
-        return autofill_metrics::SaveCardPromptResult::kClosed;
-      case PaymentsUiClosedReason::kNotInteracted:
-        return autofill_metrics::SaveCardPromptResult::kNotInteracted;
-      case PaymentsUiClosedReason::kLostFocus:
-        return autofill_metrics::SaveCardPromptResult::kLostFocus;
-      case PaymentsUiClosedReason::kUnknown:
-        return autofill_metrics::SaveCardPromptResult::kUnknown;
-    }
-  };
-
-  // Log save card prompt result according to the closed reason.
-  switch (current_bubble_type_) {
-    case BubbleType::LOCAL_CVC_SAVE:
-    case BubbleType::UPLOAD_CVC_SAVE:
-      autofill_metrics::LogSaveCvcPromptResultMetric(
-          get_metric(closed_reason), is_upload_save_, is_reshow_);
-      break;
-    case BubbleType::LOCAL_SAVE:
-    case BubbleType::UPLOAD_SAVE:
-      autofill_metrics::LogSaveCardPromptResultMetric(
-          get_metric(closed_reason), is_upload_save_, is_reshow_, options_,
-          payments_data_manager_->GetPaymentsSigninStateForMetrics(),
-          /*has_saved_cards=*/
-          !payments_data_manager_->GetCreditCards().empty());
-      break;
-    case BubbleType::UPLOAD_IN_PROGRESS:
-      autofill_metrics::LogCreditCardUploadLoadingViewResultMetric(
-          get_metric(closed_reason));
-      break;
-    case BubbleType::UPLOAD_COMPLETED:
-      autofill_metrics::LogCreditCardUploadConfirmationViewResultMetric(
-          get_metric(closed_reason), confirmation_ui_params_->is_success);
-      break;
-    case BubbleType::INACTIVE:
-    case BubbleType::MANAGE_CARDS:
-      break;
+  if (!bubble_hide_initiated_by_bubble_manager_) {
+    LogBubbleCloseMetrics(closed_reason);
   }
 
   // If the bubble is closed with the current_bubble_type_ as
-  // UPLOAD_COMPLETED, transition the current_bubble_type_ to INACTIVE, reset
+  // kUploadComplete, transition the current_bubble_type_ to kInactive, reset
   // the confirmation_ui_model and run `on_confirmation_closed_callback_`.
-  if (current_bubble_type_ == BubbleType::UPLOAD_COMPLETED) {
-    current_bubble_type_ = BubbleType::INACTIVE;
+  if (current_bubble_type_ == PaymentsBubbleType::kUploadComplete) {
+    current_bubble_type_ = PaymentsBubbleType::kInactive;
     confirmation_ui_params_.reset();
 
     UpdatePageActionIcon();
@@ -571,18 +644,18 @@ void SaveCardBubbleControllerImpl::OnBubbleClosed(
     case PaymentsUiClosedReason::kAccepted:
       user_decision = SaveCardOfferUserDecision::kAccepted;
       switch (current_bubble_type_) {
-        case BubbleType::LOCAL_SAVE:
-        case BubbleType::LOCAL_CVC_SAVE:
-          current_bubble_type_ = BubbleType::MANAGE_CARDS;
+        case PaymentsBubbleType::kLocalSave:
+        case PaymentsBubbleType::kLocalCvcSave:
+          current_bubble_type_ = PaymentsBubbleType::kManageCards;
           break;
-        case BubbleType::UPLOAD_SAVE:
-        case BubbleType::UPLOAD_CVC_SAVE:
-        case BubbleType::MANAGE_CARDS:
-          current_bubble_type_ = BubbleType::INACTIVE;
+        case PaymentsBubbleType::kUploadSave:
+        case PaymentsBubbleType::kUploadCvcSave:
+        case PaymentsBubbleType::kManageCards:
+          current_bubble_type_ = PaymentsBubbleType::kInactive;
           break;
-        case BubbleType::INACTIVE:
-        case BubbleType::UPLOAD_IN_PROGRESS:
-        case BubbleType::UPLOAD_COMPLETED:
+        case PaymentsBubbleType::kInactive:
+        case PaymentsBubbleType::kUploadInProgress:
+        case PaymentsBubbleType::kUploadComplete:
           NOTREACHED();
       }
       break;
@@ -600,19 +673,19 @@ void SaveCardBubbleControllerImpl::OnBubbleClosed(
 
   if (user_decision && *user_decision != SaveCardOfferUserDecision::kAccepted) {
     switch (current_bubble_type_) {
-      case BubbleType::LOCAL_SAVE:
-      case BubbleType::LOCAL_CVC_SAVE:
+      case PaymentsBubbleType::kLocalSave:
+      case PaymentsBubbleType::kLocalCvcSave:
         std::move(local_save_card_prompt_callback_).Run(*user_decision);
         break;
-      case BubbleType::UPLOAD_SAVE:
-      case BubbleType::UPLOAD_CVC_SAVE:
+      case PaymentsBubbleType::kUploadSave:
+      case PaymentsBubbleType::kUploadCvcSave:
         std::move(upload_save_card_prompt_callback_)
             .Run(*user_decision, /*user_provided_card_details=*/{});
         break;
       default:
         break;
     }
-    current_bubble_type_ = BubbleType::INACTIVE;
+    current_bubble_type_ = PaymentsBubbleType::kInactive;
   }
 
   UpdatePageActionIcon();
@@ -627,7 +700,7 @@ bool SaveCardBubbleControllerImpl::IsUploadSave() const {
   return is_upload_save_;
 }
 
-BubbleType SaveCardBubbleControllerImpl::GetBubbleType() const {
+PaymentsBubbleType SaveCardBubbleControllerImpl::GetPaymentsBubbleType() const {
   return current_bubble_type_;
 }
 
@@ -640,28 +713,28 @@ bool SaveCardBubbleControllerImpl::
 }
 
 void SaveCardBubbleControllerImpl::HideSaveCardBubble() {
-  HideBubble();
+  HideBubble(/*initiated_by_bubble_manager=*/false);
 }
 
 std::u16string SaveCardBubbleControllerImpl::GetSavePaymentIconTooltipText()
     const {
   switch (current_bubble_type_) {
-    case BubbleType::LOCAL_SAVE:
-    case BubbleType::UPLOAD_SAVE:
+    case PaymentsBubbleType::kLocalSave:
+    case PaymentsBubbleType::kUploadSave:
       return l10n_util::GetStringUTF16(IDS_TOOLTIP_SAVE_CREDIT_CARD);
-    case BubbleType::LOCAL_CVC_SAVE:
-    case BubbleType::UPLOAD_CVC_SAVE:
+    case PaymentsBubbleType::kLocalCvcSave:
+    case PaymentsBubbleType::kUploadCvcSave:
       return l10n_util::GetStringUTF16(IDS_TOOLTIP_SAVE_CVC);
-    case BubbleType::MANAGE_CARDS:
+    case PaymentsBubbleType::kManageCards:
       return l10n_util::GetStringUTF16(
           options_.card_save_type ==
                   payments::PaymentsAutofillClient::CardSaveType::kCvcSaveOnly
               ? IDS_TOOLTIP_SAVE_CVC
               : IDS_TOOLTIP_SAVE_CREDIT_CARD);
-    case BubbleType::UPLOAD_IN_PROGRESS:
+    case PaymentsBubbleType::kUploadInProgress:
       return l10n_util::GetStringUTF16(IDS_TOOLTIP_SAVE_CREDIT_CARD_PENDING);
-    case BubbleType::UPLOAD_COMPLETED:
-    case BubbleType::INACTIVE:
+    case PaymentsBubbleType::kUploadComplete:
+    case PaymentsBubbleType::kInactive:
       return std::u16string();
   }
 }
@@ -683,7 +756,7 @@ void SaveCardBubbleControllerImpl::OnAnimationEnded() {
 }
 
 bool SaveCardBubbleControllerImpl::IsIconVisible() const {
-  if (current_bubble_type_ == BubbleType::INACTIVE) {
+  if (current_bubble_type_ == PaymentsBubbleType::kInactive) {
     CHECK(!bubble_view());
     // If there is no bubble to show, then there should be no icon.
     return false;
@@ -710,17 +783,49 @@ SaveCardBubbleControllerImpl::IgnoreWindowActivationForTesting() {
 
 void SaveCardBubbleControllerImpl::OnVisibilityChanged(
     content::Visibility visibility) {
+  if (IsBubbleManagerEnabled()) {
+    // BubbleManager will handle the effects of tab changes.
+    return;
+  }
+
   if (visibility == content::Visibility::VISIBLE &&
       (was_url_opened_ ||
-       current_bubble_type_ == BubbleType::UPLOAD_COMPLETED)) {
+       current_bubble_type_ == PaymentsBubbleType::kUploadComplete)) {
     ReshowBubble(/*is_user_gesture=*/false);
   } else if (visibility == content::Visibility::HIDDEN) {
-    HideBubble();
+    HideBubble(/*initiated_by_bubble_manager=*/false);
   }
 }
 
-PageActionIconType SaveCardBubbleControllerImpl::GetPageActionIconType() {
+bool SaveCardBubbleControllerImpl::ShouldReshowOnTabVisible() const {
+  return was_url_opened_ ||
+         current_bubble_type_ == PaymentsBubbleType::kUploadComplete;
+}
+
+std::optional<PageActionIconType>
+SaveCardBubbleControllerImpl::GetPageActionIconType() {
   return PageActionIconType::kSaveCard;
+}
+
+#if !BUILDFLAG(IS_ANDROID)
+std::optional<actions::ActionId>
+SaveCardBubbleControllerImpl::GetActionIdForPageAction() {
+  return kActionShowPaymentsBubbleOrPage;
+}
+
+std::optional<std::u16string>
+SaveCardBubbleControllerImpl::GetPageActionTooltipText() {
+  return GetSavePaymentIconTooltipText();
+}
+#endif  // !BUILDFLAG(IS_ANDROID)
+
+AutofillBubbleHandler*
+SaveCardBubbleControllerImpl::GetAutofillBubbleHandler() {
+  tabs::TabInterface* tab = tabs::TabInterface::GetFromContents(web_contents());
+  CHECK(tab);
+  BrowserWindowInterface* browser = tab->GetBrowserWindowInterface();
+  CHECK(browser);
+  return AutofillBubbleHandler::Get(browser->GetUnownedUserDataHost());
 }
 
 void SaveCardBubbleControllerImpl::DoShowBubble() {
@@ -728,15 +833,13 @@ void SaveCardBubbleControllerImpl::DoShowBubble() {
     return;
   }
 
-  Browser* browser = chrome::FindBrowserWithTab(web_contents());
-  if (current_bubble_type_ == BubbleType::UPLOAD_COMPLETED) {
-    set_bubble_view(browser->window()
-                        ->GetAutofillBubbleHandler()
-                        ->ShowSaveCardConfirmationBubble(web_contents(), this));
+  AutofillBubbleHandler* autofill_bubble_handler = GetAutofillBubbleHandler();
+  if (current_bubble_type_ == PaymentsBubbleType::kUploadComplete) {
+    SetBubbleView(*autofill_bubble_handler->ShowSaveCardConfirmationBubble(
+        web_contents(), this));
   } else {
-    set_bubble_view(
-        browser->window()->GetAutofillBubbleHandler()->ShowSaveCreditCardBubble(
-            web_contents(), this, is_triggered_by_user_gesture_));
+    SetBubbleView(*autofill_bubble_handler->ShowSaveCreditCardBubble(
+        web_contents(), this, is_triggered_by_user_gesture_));
   }
   CHECK(bubble_view());
 
@@ -749,62 +852,84 @@ void SaveCardBubbleControllerImpl::DoShowBubble() {
   }
 
   switch (current_bubble_type_) {
-    case BubbleType::UPLOAD_SAVE:
-    case BubbleType::LOCAL_SAVE:
+    case PaymentsBubbleType::kUploadSave:
+    case PaymentsBubbleType::kLocalSave:
+      if (!is_reshow_) {
+        autofill_metrics::LogSaveCreditCardPromptOfferMetricDesktop(
+            autofill_metrics::SaveCardPromptOffer::kShown, is_upload_save_,
+            /*save_credit_card_options=*/options_);
+      }
       autofill_metrics::LogSaveCardPromptOfferMetric(
           autofill_metrics::SaveCardPromptOffer::kShown, is_upload_save_,
           is_reshow_, options_,
           payments_data_manager_->GetPaymentsSigninStateForMetrics());
       break;
-    case BubbleType::UPLOAD_CVC_SAVE:
-    case BubbleType::LOCAL_CVC_SAVE:
+    case PaymentsBubbleType::kUploadCvcSave:
+    case PaymentsBubbleType::kLocalCvcSave:
       autofill_metrics::LogSaveCvcPromptOfferMetric(
           autofill_metrics::SaveCardPromptOffer::kShown, is_upload_save_,
           is_reshow_);
       break;
-    case BubbleType::MANAGE_CARDS:
+    case PaymentsBubbleType::kManageCards:
       CHECK(!is_upload_save_);
       LogManageCardsPromptMetric(ManageCardsPromptMetric::kManageCardsShown);
       break;
-    case BubbleType::UPLOAD_COMPLETED:
+    case PaymentsBubbleType::kUploadComplete:
       autofill_metrics::LogCreditCardUploadConfirmationViewShownMetric(
           /*is_shown=*/true, confirmation_ui_params_->is_success);
       break;
-    case BubbleType::UPLOAD_IN_PROGRESS:
+    case PaymentsBubbleType::kUploadInProgress:
       break;
-    case BubbleType::INACTIVE:
+    case PaymentsBubbleType::kInactive:
       NOTREACHED();
   }
 }
 
-void SaveCardBubbleControllerImpl::ShowBubble() {
-  CHECK(current_bubble_type_ != BubbleType::INACTIVE);
-  // Upload save callback should not be null for UPLOAD_SAVE or
-  // UPLOAD_CVC_SAVE state.
+bool SaveCardBubbleControllerImpl::CanBeReshown() const {
+  if (was_url_opened_ &&
+      current_bubble_type_ == PaymentsBubbleType::kUploadComplete) {
+    return true;
+  }
+  return current_bubble_type_ != PaymentsBubbleType::kUploadComplete &&
+         current_bubble_type_ != PaymentsBubbleType::kInactive;
+}
+
+BubbleType SaveCardBubbleControllerImpl::GetBubbleType() const {
+  return BubbleType::kSaveUpdateCard;
+}
+
+base::WeakPtr<BubbleControllerBase>
+SaveCardBubbleControllerImpl::GetBubbleControllerBaseWeakPtr() {
+  return weak_ptr_factory_.GetWeakPtr();
+}
+
+void SaveCardBubbleControllerImpl::CheckPreconditionsBeforeShowing() {
+  CHECK(current_bubble_type_ != PaymentsBubbleType::kInactive);
+  // Upload save callback should not be null for kUploadSave or
+  // kUploadCvcSave state.
   CHECK(!upload_save_card_prompt_callback_.is_null() ||
-        (current_bubble_type_ != BubbleType::UPLOAD_SAVE &&
-         current_bubble_type_ != BubbleType::UPLOAD_CVC_SAVE));
-  // Local save callback should not be null for LOCAL_SAVE or LOCAL_CVC_SAVE
+        (current_bubble_type_ != PaymentsBubbleType::kUploadSave &&
+         current_bubble_type_ != PaymentsBubbleType::kUploadCvcSave));
+  // Local save callback should not be null for kLocalSave or kLocalCvcSave
   // state.
   CHECK(!local_save_card_prompt_callback_.is_null() ||
-        (current_bubble_type_ != BubbleType::LOCAL_SAVE &&
-         current_bubble_type_ != BubbleType::LOCAL_CVC_SAVE));
+        (current_bubble_type_ != PaymentsBubbleType::kLocalSave &&
+         current_bubble_type_ != PaymentsBubbleType::kLocalCvcSave));
   CHECK(!bubble_view());
-  Show();
 }
 
 void SaveCardBubbleControllerImpl::ShowIconOnly() {
-  CHECK(current_bubble_type_ != BubbleType::INACTIVE);
-  // Upload save callback should not be null for UPLOAD_SAVE or
-  // UPLOAD_CVC_SAVE state.
+  CHECK(current_bubble_type_ != PaymentsBubbleType::kInactive);
+  // Upload save callback should not be null for kUploadSave or
+  // kUploadCvcSave state.
   CHECK(!upload_save_card_prompt_callback_.is_null() ||
-        (current_bubble_type_ != BubbleType::UPLOAD_SAVE &&
-         current_bubble_type_ != BubbleType::UPLOAD_CVC_SAVE));
-  // Local save callback should not be null for LOCAL_SAVE or LOCAL_CVC_SAVE
+        (current_bubble_type_ != PaymentsBubbleType::kUploadSave &&
+         current_bubble_type_ != PaymentsBubbleType::kUploadCvcSave));
+  // Local save callback should not be null for kLocalSave or kLocalCvcSave
   // state.
   CHECK(!local_save_card_prompt_callback_.is_null() ||
-        current_bubble_type_ != BubbleType::LOCAL_SAVE &&
-            current_bubble_type_ != BubbleType::LOCAL_CVC_SAVE);
+        current_bubble_type_ != PaymentsBubbleType::kLocalSave &&
+            current_bubble_type_ != PaymentsBubbleType::kLocalCvcSave);
   CHECK(!bubble_view());
 
   // Show the icon only. The bubble can still be displayed if the user
@@ -812,23 +937,34 @@ void SaveCardBubbleControllerImpl::ShowIconOnly() {
   UpdatePageActionIcon();
 
   switch (current_bubble_type_) {
-    case BubbleType::UPLOAD_SAVE:
-    case BubbleType::LOCAL_SAVE:
+    case PaymentsBubbleType::kUploadSave:
+    case PaymentsBubbleType::kLocalSave:
+      if (!is_reshow_) {
+        autofill_metrics::LogSaveCreditCardPromptOfferMetricDesktop(
+            options_.save_card_prompt_offer_decision.value_or(
+                autofill_metrics::SaveCardPromptOffer::
+                    kNotShownMaxStrikesReached),
+            is_upload_save_, /*save_credit_card_options=*/options_);
+      }
       autofill_metrics::LogSaveCardPromptOfferMetric(
-          autofill_metrics::SaveCardPromptOffer::kNotShownMaxStrikesReached,
+          options_.save_card_prompt_offer_decision.value_or(
+              autofill_metrics::SaveCardPromptOffer::
+                  kNotShownMaxStrikesReached),
           is_upload_save_, is_reshow_, options_,
           payments_data_manager_->GetPaymentsSigninStateForMetrics());
       break;
-    case BubbleType::UPLOAD_CVC_SAVE:
-    case BubbleType::LOCAL_CVC_SAVE:
+    case PaymentsBubbleType::kUploadCvcSave:
+    case PaymentsBubbleType::kLocalCvcSave:
       autofill_metrics::LogSaveCvcPromptOfferMetric(
-          autofill_metrics::SaveCardPromptOffer::kNotShownMaxStrikesReached,
+          options_.save_card_prompt_offer_decision.value_or(
+              autofill_metrics::SaveCardPromptOffer::
+                  kNotShownMaxStrikesReached),
           is_upload_save_, is_reshow_);
       break;
-    case BubbleType::UPLOAD_IN_PROGRESS:
-    case BubbleType::UPLOAD_COMPLETED:
-    case BubbleType::MANAGE_CARDS:
-    case BubbleType::INACTIVE:
+    case PaymentsBubbleType::kUploadInProgress:
+    case PaymentsBubbleType::kUploadComplete:
+    case PaymentsBubbleType::kManageCards:
+    case PaymentsBubbleType::kInactive:
       NOTREACHED();
   }
 }
@@ -848,15 +984,15 @@ bool SaveCardBubbleControllerImpl::IsWebContentsActive() {
     return true;
   }
 
-  Browser* active_browser = chrome::FindBrowserWithActiveWindow();
-  return active_browser &&
-         active_browser->tab_strip_model()->GetActiveWebContents() ==
-             web_contents();
+  // Return false if the tab is inactive, occluded by another window, or out
+  // of screen bounds.
+  return web_contents() &&
+         web_contents()->GetVisibility() == content::Visibility::VISIBLE;
 }
 
 void SaveCardBubbleControllerImpl::EndSaveCardPromptFlow() {
-  HideBubble();
-  current_bubble_type_ = BubbleType::INACTIVE;
+  HideBubble(/*initiated_by_bubble_manager=*/false);
+  current_bubble_type_ = PaymentsBubbleType::kInactive;
   confirmation_ui_params_.reset();
   UpdatePageActionIcon();
 }

@@ -18,44 +18,52 @@
 #import "ios/chrome/browser/web/model/choose_file/fake_choose_file_controller.h"
 #import "ios/chrome/test/app/chrome_test_util.h"
 
-namespace {
+@implementation DriveFilePickerAppInterface {
+  // DriveListResult object which can be edited and will be passed to the
+  // current DriveService when `-[DriveFilePickerAppInterface
+  // endDriveListResult]` is called.
+  std::unique_ptr<DriveListResult> _driveListResult;
+}
 
-// DriveListResult object which can be edited and will be passed to the current
-// DriveService when `-[DriveFilePickerAppInterface endDriveListResult]` is
-// called.
-std::unique_ptr<DriveListResult> gDriveListResult;
-
-}  // namespace
-
-@implementation DriveFilePickerAppInterface
++ (instancetype)sharedInstance {
+  static DriveFilePickerAppInterface* instance =
+      [[DriveFilePickerAppInterface alloc] init];
+  return instance;
+}
 
 + (void)startChoosingSingleFileInCurrentWebState {
   Browser* currentBrowser = chrome_test_util::GetCurrentBrowser();
   WebStateList* webStateList = currentBrowser->GetWebStateList();
-  ChooseFileTabHelper* tab_helper = ChooseFileTabHelper::GetOrCreateForWebState(
-      webStateList->GetActiveWebState());
-  auto controller = std::make_unique<FakeChooseFileController>(ChooseFileEvent(
-      false /*allow_multiple_files*/, false /*has_selected_file*/,
-      std::vector<std::string>{}, std::vector<std::string>{},
-      webStateList->GetActiveWebState()));
+  ChooseFileTabHelper* tab_helper =
+      ChooseFileTabHelper::FromWebState(webStateList->GetActiveWebState());
+  auto controller = std::make_unique<FakeChooseFileController>(
+      ChooseFileEvent::Builder()
+          .SetAllowMultipleFiles(false)
+          .SetHasSelectedFile(false)
+          .SetWebState(webStateList->GetActiveWebState())
+          .Build());
   tab_helper->StartChoosingFiles(std::move(controller));
 }
 
 + (void)startChoosingMultipleFilesInCurrentWebState {
   Browser* currentBrowser = chrome_test_util::GetCurrentBrowser();
   WebStateList* webStateList = currentBrowser->GetWebStateList();
-  ChooseFileTabHelper* tab_helper = ChooseFileTabHelper::GetOrCreateForWebState(
-      webStateList->GetActiveWebState());
-  auto controller = std::make_unique<FakeChooseFileController>(ChooseFileEvent(
-      true /*allow_multiple_files*/, false /*has_selected_file*/,
-      std::vector<std::string>{}, std::vector<std::string>{},
-      webStateList->GetActiveWebState()));
+  ChooseFileTabHelper* tab_helper =
+      ChooseFileTabHelper::FromWebState(webStateList->GetActiveWebState());
+  auto controller = std::make_unique<FakeChooseFileController>(
+      ChooseFileEvent::Builder()
+          .SetAllowMultipleFiles(true)
+          .SetHasSelectedFile(false)
+          .SetWebState(webStateList->GetActiveWebState())
+          .Build());
   tab_helper->StartChoosingFiles(std::move(controller));
 }
 
 + (void)beginDriveListResult {
-  CHECK(!gDriveListResult);
-  gDriveListResult = std::make_unique<DriveListResult>();
+  DriveFilePickerAppInterface* shared =
+      [DriveFilePickerAppInterface sharedInstance];
+  CHECK(!shared->_driveListResult);
+  shared->_driveListResult = std::make_unique<DriveListResult>();
 }
 
 + (void)addDriveItemWithIdentifier:(NSString*)identifier
@@ -63,21 +71,25 @@ std::unique_ptr<DriveListResult> gDriveListResult;
                           isFolder:(BOOL)isFolder
                           mimeType:(NSString*)mimeType
                        canDownload:(BOOL)canDownload {
-  CHECK(gDriveListResult);
+  DriveFilePickerAppInterface* shared =
+      [DriveFilePickerAppInterface sharedInstance];
+  CHECK(shared->_driveListResult);
   DriveItem newItem;
   newItem.identifier = [identifier copy];
   newItem.name = [name copy];
   newItem.is_folder = isFolder;
   newItem.mime_type = [mimeType copy];
   newItem.can_download = canDownload;
-  gDriveListResult->items.push_back(newItem);
+  shared->_driveListResult->items.push_back(newItem);
 }
 
 + (void)endDriveListResult {
-  CHECK(gDriveListResult);
+  DriveFilePickerAppInterface* shared =
+      [DriveFilePickerAppInterface sharedInstance];
+  CHECK(shared->_driveListResult);
   auto testDriveList = std::make_unique<TestDriveList>(nil);
-  testDriveList->SetDriveListResult(*gDriveListResult);
-  gDriveListResult.reset();
+  testDriveList->SetDriveListResult(*shared->_driveListResult);
+  shared->_driveListResult.reset();
   ProfileIOS* currentProfile =
       chrome_test_util::GetCurrentBrowser()->GetProfile();
   drive::TestDriveService* driveService = static_cast<drive::TestDriveService*>(

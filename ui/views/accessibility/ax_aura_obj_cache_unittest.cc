@@ -48,6 +48,8 @@ bool HasNodeWithName(const ui::AXTree& tree, const std::string& name) {
   return HasNodeWithName(tree.root(), name);
 }
 
+}  // namespace
+
 class AXAuraObjCacheTest : public WidgetTest {
  public:
   AXAuraObjCacheTest() = default;
@@ -379,7 +381,7 @@ TEST_F(AXAuraObjCacheTest, VirtualViews) {
   virtual_label->SetName("Label");
   parent->GetViewAccessibility().AddVirtualChildView(std::move(virtual_label));
 
-  AXVirtualViewWrapper* wrapper = virtual_label_ptr->GetOrCreateWrapper(&cache);
+  AXAuraObjWrapper* wrapper = virtual_label_ptr->GetOrCreateWrapper(&cache);
   ui::AXNodeID id = wrapper->GetUniqueId();
   AXAuraObjWrapper* wrapper2 = cache.Get(id);
   EXPECT_EQ(wrapper, wrapper2);
@@ -388,5 +390,4 @@ TEST_F(AXAuraObjCacheTest, VirtualViews) {
   EXPECT_EQ(nullptr, cache.Get(id));
 }
 
-}  // namespace
 }  // namespace views::test

@@ -5,9 +5,10 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_MEDIASTREAM_MEDIA_STREAM_AUDIO_DELIVERER_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_MEDIASTREAM_MEDIA_STREAM_AUDIO_DELIVERER_H_
 
+#include <inttypes.h>
+
 #include <algorithm>
 
-#include "base/containers/contains.h"
 #include "base/synchronization/lock.h"
 #include "base/threading/thread_checker.h"
 #include "base/trace_event/trace_event.h"
@@ -56,8 +57,8 @@ class MediaStreamAudioDeliverer {
     DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
     DCHECK(consumer);
     base::AutoLock auto_lock(consumers_lock_);
-    DCHECK(!base::Contains(consumers_, consumer));
-    DCHECK(!base::Contains(pending_consumers_, consumer));
+    DCHECK(!std::ranges::contains(consumers_, consumer));
+    DCHECK(!std::ranges::contains(pending_consumers_, consumer));
     pending_consumers_.push_back(consumer);
     SendLogMessage(
         String::Format("%s => (number of consumer: active=%u, pending=%u)",
@@ -94,8 +95,7 @@ class MediaStreamAudioDeliverer {
     DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
     base::AutoLock auto_lock(consumers_lock_);
     *consumer_list = consumers_;
-    consumer_list->AppendRange(pending_consumers_.begin(),
-                               pending_consumers_.end());
+    consumer_list->append_range(pending_consumers_);
   }
 
   // Change the format of the audio passed in the next call to OnData(). This
@@ -112,7 +112,7 @@ class MediaStreamAudioDeliverer {
                                     params.AsHumanReadableString().c_str()));
       params_ = params;
     }
-    pending_consumers_.AppendRange(consumers_.begin(), consumers_.end());
+    pending_consumers_.append_range(consumers_);
     consumers_.clear();
   }
 
@@ -134,8 +134,7 @@ class MediaStreamAudioDeliverer {
       DCHECK(params.IsValid());
       for (Consumer* consumer : pending_consumers_)
         consumer->OnSetFormat(params);
-      consumers_.AppendRange(pending_consumers_.begin(),
-                             pending_consumers_.end());
+      consumers_.append_range(pending_consumers_);
       pending_consumers_.clear();
       SendLogMessage(String::Format("%s => (number of active consumers=%u)",
                                     __func__, consumers_.size()));
@@ -159,7 +158,7 @@ class MediaStreamAudioDeliverer {
   }
 
  private:
-  void SendLogMessage(const WTF::String& message) {
+  void SendLogMessage(const String& message) {
     WebRtcLogMessage(String::Format("MSAD::%s [this=0x%" PRIXPTR "]",
                                     message.Utf8().c_str(),
                                     reinterpret_cast<uintptr_t>(this))

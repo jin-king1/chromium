@@ -29,7 +29,7 @@
 #include "ui/gfx/geometry/rrect_f.h"
 #include "ui/gfx/geometry/size_f.h"
 #include "ui/gfx/geometry/transform.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 
 class SkPath;
 
@@ -45,7 +45,6 @@ class TracedValue;
 
 namespace gfx {
 class ColorSpace;
-class GpuFence;
 struct PresentationFeedback;
 }  // namespace gfx
 
@@ -111,9 +110,6 @@ class Surface final : public ui::PropertyHandler {
   static Surface* AsSurface(const aura::Window* window);
 
   aura::Window* window() const { return window_.get(); }
-
-  std::vector<raw_ptr<aura::Window, VectorExperimental>> GetChildWindows()
-      const;
 
   void set_leave_enter_callback(LeaveEnterCallback callback) {
     leave_enter_callback_ = callback;
@@ -291,21 +287,6 @@ class Surface final : public ui::PropertyHandler {
 
   // Returns whether this surface or any of its subsurfaces contains a video.
   bool ContainsVideo();
-
-  // Request that the attached surface buffer at the next commit is associated
-  // with a gpu fence to be signaled when the buffer is ready for use.
-  void SetAcquireFence(std::unique_ptr<gfx::GpuFence> gpu_fence);
-  // Returns whether the surface has an uncommitted acquire fence.
-  bool HasPendingAcquireFence() const;
-  // Returns whether the surface has a committed acquire fence.
-  bool HasAcquireFence() const;
-
-  // Request a callback when the buffer attached at the next commit is
-  // no longer used by that commit.
-  void SetPerCommitBufferReleaseCallback(
-      Buffer::PerCommitExplicitReleaseCallback callback);
-  // Whether the surface has an uncommitted per-commit buffer release callback.
-  bool HasPendingPerCommitBufferReleaseCallback() const;
 
   // Surface state (damage regions, attached buffers, etc.) is double-buffered.
   // A Commit() call atomically applies all pending state, replacing the
@@ -514,7 +495,6 @@ class Surface final : public ui::PropertyHandler {
     ~State();
 
     bool operator==(const State& other) const;
-    bool operator!=(const State& other) const { return !(*this == other); }
 
     cc::Region opaque_region;
     std::optional<cc::Region> input_region;
@@ -565,14 +545,13 @@ class Surface final : public ui::PropertyHandler {
   //    subtree) is committed.
   // 3. State is committed.
   // Some fields are persisted between commits (e.g. which buffer is attached),
-  // and some fields are not (e.g. acquire fence). For fields that are
-  // persisted, they either need to be copyable, or if they are move only, they
-  // need to be wrapped in std::optional and only copied on commit if they
-  // have been changed. Not doing this can lead to broken behaviour, such as
-  // losing the attached buffer if some unrelated field is updated in a commit.
-  // If you add new fields to this struct, please document whether the field
-  // should be persisted between commits.
-  // See crbug.com/1283305 for context.
+  // and some fields are not. For fields that are persisted, they either need to
+  // be copyable, or if they are move only, they need to be wrapped in
+  // std::optional and only copied on commit if they have been changed. Not
+  // doing this can lead to broken behaviour, such as losing the attached buffer
+  // if some unrelated field is updated in a commit. If you add new fields to
+  // this struct, please document whether the field should be persisted between
+  // commits. See crbug.com/1283305 for context.
   struct ExtendedState {
     ExtendedState();
     ~ExtendedState();
@@ -596,15 +575,6 @@ class Surface final : public ui::PropertyHandler {
     // contents have been presented.
     // Not persisted between commits.
     std::list<PresentationCallback> presentation_callbacks;
-    // The acquire gpu fence to associate with the surface buffer.
-    // Not persisted between commits.
-    std::unique_ptr<gfx::GpuFence> acquire_fence;
-    // Callback to notify about the per-commit buffer release. The wayland
-    // Exo backend uses this callback to implement the immediate_release
-    // event of the explicit sync protocol.
-    // Not persisted between commits.
-    Buffer::PerCommitExplicitReleaseCallback
-        per_commit_explicit_release_callback_;
     // The hint for overlay prioritization
     // Persisted between commits.
     OverlayPriority overlay_priority_hint = OverlayPriority::REGULAR;
@@ -762,7 +732,7 @@ class Surface final : public ui::PropertyHandler {
   SubSurfaceEntryList render_layers_;
 
   // The last resource that was sent to a surface.
-  viz::TransferableResource current_resource_;
+  std::optional<viz::TransferableResource> current_resource_;
 
   // Whether the last resource that was sent to a surface has an alpha channel.
   bool current_resource_has_alpha_ = false;
@@ -788,7 +758,7 @@ class Surface final : public ui::PropertyHandler {
   raw_ptr<SurfaceDelegate> delegate_ = nullptr;
 
   // Surface observer list. Surface does not own the observers.
-  base::ObserverList<SurfaceObserver, true>::Unchecked observers_;
+  base::ObserverList<SurfaceObserver, true> observers_;
 
   std::unique_ptr<ash::OutputProtectionDelegate> output_protection_;
 

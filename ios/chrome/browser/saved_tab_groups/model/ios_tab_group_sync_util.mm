@@ -20,7 +20,6 @@
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/web_state_list/browser_util.h"
 #import "ios/chrome/browser/shared/model/web_state_list/tab_group.h"
-#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/web/public/navigation/navigation_context.h"
 #import "ios/web/public/navigation/navigation_item.h"
 #import "ios/web/public/navigation/navigation_manager.h"
@@ -100,7 +99,7 @@ void CloseTabGroupLocally(const TabGroup* tab_group,
                                              ClosingSource::kClosedByUser);
   }
   CloseAllWebStatesInGroup(*web_state_list, tab_group,
-                           WebStateList::CLOSE_USER_ACTION);
+                           WebStateList::ClosingReason::kUserAction);
 }
 
 // Moves tab group across browsers.
@@ -160,8 +159,7 @@ void MoveTabGroupAcrossBrowsers(const TabGroup* source_tab_group,
       destination_tab_group));
   // Check that the source browser has one less group.
   CHECK_EQ(source_group_count,
-           source_browser->GetWebStateList()->GetGroups().size() + 1,
-           base::NotFatalUntil::M128);
+           source_browser->GetWebStateList()->GetGroups().size() + 1);
 }
 
 void MoveTabGroupToBrowser(const TabGroup* source_tab_group,
@@ -199,19 +197,14 @@ void MoveTabGroupToBrowser(const TabGroup* source_tab_group,
     return;
   }
 
-  if (!IsTabGroupSyncEnabled()) {
-    MoveTabGroupAcrossBrowsers(source_tab_group, source_browser,
-                               destination_browser,
-                               destination_tab_group_index);
-    return;
-  }
-
   // Lock tab group sync service observer.
   CHECK_EQ(source_browser->GetProfile(), destination_browser->GetProfile());
   auto* sync_service = tab_groups::TabGroupSyncServiceFactory::GetForProfile(
       source_browser->GetProfile());
-  auto lock = sync_service->CreateScopedLocalObserverPauser();
-
+  std::unique_ptr<ScopedLocalObservationPauser> lock;
+  if (sync_service) {
+    lock = sync_service->CreateScopedLocalObserverPauser();
+  }
   MoveTabGroupAcrossBrowsers(source_tab_group, source_browser,
                              destination_browser, destination_tab_group_index);
 }
@@ -293,14 +286,13 @@ bool IsSaveableNavigation(web::NavigationContext* navigation_context) {
 
 bool IsTabGroupShared(const TabGroup* tab_group,
                       TabGroupSyncService* sync_service) {
-  BOOL shared = false;
-  if (sync_service && tab_group) {
-    std::optional<tab_groups::SavedTabGroup> saved_group =
-        sync_service->GetGroup(tab_group->tab_group_id());
-    shared =
-        saved_group.has_value() && saved_group->collaboration_id().has_value();
+  if (!sync_service || !tab_group) {
+    return false;
   }
-  return shared;
+
+  std::optional<tab_groups::SavedTabGroup> saved_group =
+      sync_service->GetGroup(tab_group->tab_group_id());
+  return saved_group.has_value() && saved_group->collaboration_id().has_value();
 }
 
 data_sharing::MemberRole GetUserRoleForGroup(
@@ -311,9 +303,9 @@ data_sharing::MemberRole GetUserRoleForGroup(
     return data_sharing::MemberRole::kUnknown;
   }
 
-  CollaborationId collab_id =
+  syncer::CollaborationId collab_id =
       GetTabGroupCollabID(tab_group, tab_group_sync_service);
-  if (collab_id == CollaborationId()) {
+  if (collab_id == syncer::CollaborationId()) {
     return data_sharing::MemberRole::kUnknown;
   }
 
@@ -321,16 +313,16 @@ data_sharing::MemberRole GetUserRoleForGroup(
   return collaboration_service->GetCurrentUserRoleForGroup(group_id);
 }
 
-CollaborationId GetTabGroupCollabID(
+syncer::CollaborationId GetTabGroupCollabID(
     const TabGroup* tab_group,
     TabGroupSyncService* tab_group_sync_service) {
   if (!tab_group) {
-    return CollaborationId();
+    return syncer::CollaborationId();
   }
   return GetTabGroupCollabID(tab_group->tab_group_id(), tab_group_sync_service);
 }
 
-CollaborationId GetTabGroupCollabID(
+syncer::CollaborationId GetTabGroupCollabID(
     const tab_groups::EitherGroupID& tab_group_id,
     TabGroupSyncService* tab_group_sync_service) {
   if (tab_group_sync_service) {
@@ -341,7 +333,7 @@ CollaborationId GetTabGroupCollabID(
       return saved_group->collaboration_id().value();
     }
   }
-  return CollaborationId();
+  return syncer::CollaborationId();
 }
 
 }  // namespace utils

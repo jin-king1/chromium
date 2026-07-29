@@ -7,25 +7,37 @@
 #include <string_view>
 
 #include "chrome/browser/ui/layout_constants.h"
-#include "chrome/browser/ui/views/desktop_capture/desktop_media_picker_views.h"
 #include "components/vector_icons/vector_icons.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/views/accessibility/view_accessibility.h"
+#include "ui/views/background.h"
+#include "ui/views/border.h"
 #include "ui/views/controls/image_view.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/view_class_properties.h"
 
 ShareAudioView::ShareAudioView(const std::u16string& label_text,
-                               bool audio_offered) {
+                               bool audio_offered,
+                               AudioSharingToggleStyle style,
+                               base::RepeatingClosure audio_check_callback)
+    : audio_check_callback_(audio_check_callback) {
+  const bool is_boxed = style == AudioSharingToggleStyle::kBoxed;
   SetProperty(views::kMarginsKey, gfx::Insets::TLBR(8, 16, 16, 16));
+  if (is_boxed) {
+    SetBackground(views::CreateRoundedRectBackground(ui::kColorSysSurface1, 8));
+    SetBorder(
+        views::CreateRoundedRectBorder(1, 8, ui::kColorSysNeutralOutline));
+  }
 
   views::ImageView* audio_icon_view =
       AddChildView(std::make_unique<views::ImageView>());
   audio_icon_view->SetImage(ui::ImageModel::FromVectorIcon(
-      vector_icons::kVolumeUpIcon,
+      features::IsRoundedIconsEnabled() ? vector_icons::kVolumeUpFilledIcon
+                                        : vector_icons::kVolumeUpOldIcon,
       audio_offered ? ui::kColorIcon : ui::kColorIconDisabled,
-      GetLayoutConstant(PAGE_INFO_ICON_SIZE)));
+      GetLayoutConstant(LayoutConstant::kPageInfoIconSize)));
 
   audio_toggle_label_ = AddChildView(std::make_unique<views::Label>());
   audio_toggle_label_->SetHorizontalAlignment(
@@ -33,8 +45,10 @@ ShareAudioView::ShareAudioView(const std::u16string& label_text,
   audio_toggle_label_->SetText(label_text);
 
   if (audio_offered) {
-    audio_toggle_button_ =
-        AddChildView(std::make_unique<views::ToggleButton>());
+    // Unretained is safe since this owns the ToggleButton.
+    audio_toggle_button_ = AddChildView(std::make_unique<views::ToggleButton>(
+        base::BindRepeating(&ShareAudioView::OnAudioToggleButtonPressed,
+                            base::Unretained(this))));
     audio_toggle_button_->GetViewAccessibility().SetName(label_text);
   } else {
     audio_toggle_label_->SetTextStyle(views::style::TextStyle::STYLE_DISABLED);
@@ -42,7 +56,8 @@ ShareAudioView::ShareAudioView(const std::u16string& label_text,
 
   views::BoxLayout* audio_toggle_layout =
       SetLayoutManager(std::make_unique<views::BoxLayout>(
-          views::BoxLayout::Orientation::kHorizontal));
+          views::BoxLayout::Orientation::kHorizontal,
+          is_boxed ? gfx::Insets::VH(8, 12) : gfx::Insets(0)));
   audio_toggle_layout->set_cross_axis_alignment(
       views::BoxLayout::CrossAxisAlignment::kCenter);
   audio_toggle_layout->set_between_child_spacing(8);
@@ -67,6 +82,12 @@ void ShareAudioView::SetAudioSharingApprovedByUser(bool is_on) {
 std::u16string_view ShareAudioView::GetAudioLabelText() const {
   return audio_toggle_label_ ? audio_toggle_label_->GetText()
                              : std::u16string_view();
+}
+
+void ShareAudioView::OnAudioToggleButtonPressed() {
+  if (audio_check_callback_) {
+    audio_check_callback_.Run();
+  }
 }
 
 BEGIN_METADATA(ShareAudioView)

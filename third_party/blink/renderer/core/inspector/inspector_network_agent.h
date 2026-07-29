@@ -31,15 +31,18 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_INSPECTOR_INSPECTOR_NETWORK_AGENT_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_INSPECTOR_INSPECTOR_NETWORK_AGENT_H_
 
+#include <memory>
 #include <optional>
 
 #include "base/containers/span.h"
 #include "base/containers/span_or_size.h"
 #include "base/unguessable_token.h"
+#include "components/url_pattern/simple_url_pattern_matcher.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/inspector/inspected_frames.h"
 #include "third_party/blink/renderer/core/inspector/inspector_base_agent.h"
 #include "third_party/blink/renderer/core/inspector/inspector_page_agent.h"
+#include "third_party/blink/renderer/core/inspector/inspector_session_state.h"
 #include "third_party/blink/renderer/core/inspector/protocol/network.h"
 #include "third_party/blink/renderer/core/workers/worker_or_worklet_global_scope.h"
 #include "third_party/blink/renderer/platform/blob/blob_data.h"
@@ -57,6 +60,10 @@ class WebSocketHandshakeRequest;
 }  // namespace blink
 }  // namespace mojom
 }  // namespace network
+
+namespace url_pattern {
+class SimpleUrlPatternMatcher;
+}
 
 namespace blink {
 
@@ -84,11 +91,14 @@ class CORE_EXPORT InspectorNetworkAgent final
  public:
   // TODO(horo): Extract the logic for frames and for workers into different
   // classes.
-  InspectorNetworkAgent(InspectedFrames*,
-                        WorkerOrWorkletGlobalScope*,
-                        v8_inspector::V8InspectorSession*);
+  InspectorNetworkAgent(InspectedFrames*, WorkerOrWorkletGlobalScope*);
   ~InspectorNetworkAgent() override;
   void Trace(Visitor*) const override;
+
+  void Init(CoreProbeSink*,
+            protocol::UberDispatcher*,
+            InspectorSessionState*,
+            V8SessionHolder) override;
 
   void Restore() override;
 
@@ -195,14 +205,15 @@ class CORE_EXPORT InspectorNetworkAgent final
       network::mojom::blink::WebSocketHandshakeRequest*,
       network::mojom::blink::WebSocketHandshakeResponse*);
   void DidCloseWebSocket(ExecutionContext*, uint64_t identifier);
-  void DidReceiveWebSocketMessage(uint64_t identifier,
-                                  int op_code,
-                                  bool masked,
-                                  const Vector<base::span<const char>>& data);
+  void DidReceiveWebSocketMessage(
+      uint64_t identifier,
+      int op_code,
+      bool masked,
+      const Vector<base::span<const uint8_t>>& data);
   void DidSendWebSocketMessage(uint64_t identifier,
                                int op_code,
                                bool masked,
-                               base::span<const char> payload);
+                               base::span<const uint8_t> payload);
   void DidReceiveWebSocketMessageError(uint64_t identifier, const String&);
 
   void WebTransportCreated(ExecutionContext*,
@@ -211,15 +222,73 @@ class CORE_EXPORT InspectorNetworkAgent final
   void WebTransportConnectionEstablished(uint64_t transport_id);
   void WebTransportClosed(uint64_t transport_id);
 
+  void DirectTCPSocketCreated(ExecutionContext*,
+                              uint64_t identifier,
+                              const String& remote_addr,
+                              uint16_t remote_port,
+                              protocol::Network::DirectTCPSocketOptions&);
+
+  void DirectTCPSocketOpened(uint64_t identifier,
+                             const String& remote_addr,
+                             uint16_t remote_port,
+                             std::optional<String> local_addr,
+                             std::optional<uint16_t> local_port);
+
+  void DirectTCPSocketAborted(uint64_t identifier, int net_error);
+
+  void DirectTCPSocketClosed(uint64_t identifier);
+
+  void DirectTCPSocketChunkSent(uint64_t identifier,
+                                base::span<const uint8_t> data);
+
+  void DirectTCPSocketChunkReceived(uint64_t identifier,
+                                    base::span<const uint8_t> data);
+
+  void DirectUDPSocketCreated(ExecutionContext*,
+                              uint64_t identifier,
+                              protocol::Network::DirectUDPSocketOptions&);
+
+  void DirectUDPSocketOpened(uint64_t identifier,
+                             const String& local_addr,
+                             uint16_t local_port,
+                             std::optional<String> remote_addr,
+                             std::optional<uint16_t> remote_port);
+
+  void DirectUDPSocketAborted(uint64_t identifier, int net_error);
+
+  void DirectUDPSocketClosed(uint64_t identifier);
+
+  void DirectUDPSocketChunkSent(uint64_t identifier,
+                                base::span<const uint8_t> data,
+                                std::optional<String> remote_addr,
+                                std::optional<uint16_t> remote_port);
+
+  void DirectUDPSocketChunkReceived(uint64_t identifier,
+                                    base::span<const uint8_t> data,
+                                    std::optional<String> remote_addr,
+                                    std::optional<uint16_t> remote_port);
+
+  void DirectUDPSocketJoinedMulticastGroup(uint64_t identifier,
+                                           const String& ip_address);
+
+  void DirectUDPSocketLeftMulticastGroup(uint64_t identifier,
+                                         const String& ip_address);
+
   void SetDevToolsIds(ResourceRequest& request, const FetchInitiatorInfo&);
   void IsCacheDisabled(bool* is_cache_disabled) const;
   void ShouldApplyDevtoolsCookieSettingOverrides(
       bool* should_apply_devtools_overrides) const;
 
   // Called from frontend
-  protocol::Response enable(std::optional<int> total_buffer_size,
-                            std::optional<int> resource_buffer_size,
-                            std::optional<int> max_post_data_size) override;
+  protocol::Response enable(
+      std::optional<int> total_buffer_size,
+      std::optional<int> resource_buffer_size,
+      std::optional<int> max_post_data_size,
+      std::optional<bool> report_direct_socket_traffic,
+      std::optional<bool> enable_durable_messages) override;
+  protocol::Response configureDurableMessages(
+      std::optional<int> max_total_buffer_size,
+      std::optional<int> max_resource_buffer_size) override;
   protocol::Response disable() override;
   protocol::Response setExtraHTTPHeaders(
       std::unique_ptr<protocol::Network::Headers>) override;
@@ -236,6 +305,8 @@ class CORE_EXPORT InspectorNetworkAgent final
           matches) override;
 
   protocol::Response setBlockedURLs(
+      std::unique_ptr<protocol::Array<protocol::Network::BlockPattern>>
+          url_patterns,
       std::unique_ptr<protocol::Array<String>> urls) override;
   protocol::Response replayXHR(const String& request_id) override;
   protocol::Response streamResourceContent(
@@ -252,6 +323,18 @@ class CORE_EXPORT InspectorNetworkAgent final
       std::optional<double> packet_loss,
       std::optional<int> packet_queue_length,
       std::optional<bool> packet_reordering) override;
+  protocol::Response emulateNetworkConditionsByRule(
+      std::optional<bool> offline,
+      std::optional<bool> emulate_offline_service_worker,
+      std::unique_ptr<protocol::Array<protocol::Network::NetworkConditions>>
+          matched_network_conditions,
+      std::unique_ptr<protocol::Array<String>>* rule_ids_result) override;
+  protocol::Response overrideNetworkState(
+      bool offline,
+      double latency,
+      double download_throughput,
+      double upload_throughput,
+      std::optional<String> connection_type) override;
   protocol::Response setCacheDisabled(bool) override;
   protocol::Response setBypassServiceWorker(bool) override;
   protocol::Response getCertificate(
@@ -287,13 +370,15 @@ class CORE_EXPORT InspectorNetworkAgent final
  private:
   String RequestId(DocumentLoader*, uint64_t identifier);
   void Enable();
-  void WillSendRequestInternal(DocumentLoader*,
-                               const KURL& fetch_context_url,
-                               const ResourceRequest&,
-                               const ResourceResponse& redirect_response,
-                               const ResourceLoaderOptions&,
-                               InspectorPageAgent::ResourceType,
-                               base::TimeTicks timestamp);
+  void WillSendRequestInternal(
+      DocumentLoader*,
+      const KURL& fetch_context_url,
+      const ResourceRequest&,
+      const ResourceResponse& redirect_response,
+      const ResourceLoaderOptions&,
+      InspectorPageAgent::ResourceType,
+      base::TimeTicks timestamp,
+      std::optional<RenderBlockingBehavior> render_blocking_behavior);
 
   bool CanGetResponseBodyBlob(const String& request_id);
   void GetResponseBodyBlob(const String& request_id,
@@ -306,9 +391,10 @@ class CORE_EXPORT InspectorNetworkAgent final
   Member<InspectedFrames> inspected_frames_;
   // This is null while inspecting frames.
   Member<WorkerOrWorkletGlobalScope> worker_or_worklet_global_scope_;
-  v8_inspector::V8InspectorSession* v8_session_;
   Member<NetworkResourcesData> resources_data_;
-  const base::UnguessableToken devtools_token_;
+  // Token used for throttling in the network service. The token should be
+  // the same for all requests in a CDP target.
+  const base::UnguessableToken devtools_throttling_token_;
 
   // Stores the pending request type till an identifier for the load is
   // generated by the loader and passed to the inspector via the
@@ -322,17 +408,30 @@ class CORE_EXPORT InspectorNetworkAgent final
 
   HashSet<String> streaming_request_ids_;
 
+  struct URLPatternMatcher {
+    std::unique_ptr<::url_pattern::SimpleUrlPatternMatcher> matcher;
+    bool block;
+
+    static URLPatternMatcher Create(const String& pattern, bool block);
+  };
+
+  Vector<URLPatternMatcher> blocked_pattern_matchers_;
+
   HeapHashSet<Member<XMLHttpRequest>> replay_xhrs_;
+  HashMap<String, String> extra_request_headers_;
+
   InspectorAgentState::Boolean enabled_;
   InspectorAgentState::Boolean cache_disabled_;
   InspectorAgentState::Boolean bypass_service_worker_;
   InspectorAgentState::BooleanMap blocked_urls_;
-  InspectorAgentState::StringMap extra_request_headers_;
+  InspectorAgentState::Bytes blocked_patterns_cbor_;
   InspectorAgentState::Boolean attach_debug_stack_enabled_;
   InspectorAgentState::Integer total_buffer_size_;
   InspectorAgentState::Integer resource_buffer_size_;
   InspectorAgentState::Integer max_post_data_size_;
   InspectorAgentState::BooleanMap accepted_encodings_;
+  InspectorAgentState::Boolean report_direct_socket_traffic_;
+  InspectorAgentState::Boolean is_durable_messages_enabled_;
 };
 
 }  // namespace blink

@@ -10,7 +10,7 @@
 
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
-#include "ash/multi_user/multi_user_window_manager_impl.h"
+#include "ash/multi_user/multi_user_window_manager.h"
 #include "ash/public/cpp/app_types_util.h"
 #include "ash/public/cpp/input_device_settings_controller.h"
 #include "ash/public/cpp/shell_window_ids.h"
@@ -29,6 +29,7 @@
 #include "ash/wm/overview/overview_grid.h"
 #include "ash/wm/overview/overview_session.h"
 #include "ash/wm/overview/overview_utils.h"
+#include "ash/wm/scoped_windows_mover.h"
 #include "ash/wm/snap_group/snap_group.h"
 #include "ash/wm/snap_group/snap_group_controller.h"
 #include "ash/wm/splitview/split_view_controller.h"
@@ -39,16 +40,14 @@
 #include "ash/wm/wm_constants.h"
 #include "ash/wm/wm_event.h"
 #include "base/containers/adapters.h"
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
-#include "chromeos/constants/chromeos_features.h"
 #include "chromeos/ui/base/app_types.h"
 #include "chromeos/ui/base/chromeos_ui_constants.h"
 #include "chromeos/ui/base/window_properties.h"
 #include "chromeos/ui/base/window_state_type.h"
 #include "chromeos/ui/frame/caption_buttons/snap_controller.h"
-#include "chromeos/ui/frame/interior_resize_handler_targeter.h"
+#include "chromeos/ui/frame/immersive/immersive_fullscreen_controller.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
 #include "ui/aura/client/aura_constants.h"
@@ -67,6 +66,7 @@
 #include "ui/display/display.h"
 #include "ui/display/screen.h"
 #include "ui/events/event.h"
+#include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/gfx/geometry/transform_util.h"
@@ -153,16 +153,10 @@ aura::Window* FindTopMostChild(aura::Window* parent,
 
 }  // namespace
 
-int GetMiniWindowRoundedCornerRadius() {
-  return chromeos::features::IsRoundedWindowsEnabled()
-             ? chromeos::features::RoundedWindowsRadius()
-             : kWindowMiniViewCornerRadius;
-}
-
 gfx::RoundedCornersF GetMiniWindowRoundedCorners(const aura::Window* window,
                                                  bool include_header_rounding,
                                                  std::optional<float> scale) {
-  const int corner_radius = window_util::GetMiniWindowRoundedCornerRadius();
+  const int corner_radius = kWindowMiniViewCornerRadius;
   const float scaled_corner_radius = corner_radius / scale.value_or(1.0f);
 
   if (SnapGroupController* snap_group_controller = SnapGroupController::Get()) {
@@ -310,7 +304,7 @@ bool IsWindowUserPositionable(aura::Window* window) {
 }
 
 void PinWindow(aura::Window* window, bool trusted) {
-  WMEvent event(trusted ? WM_EVENT_TRUSTED_PIN : WM_EVENT_PIN);
+  WMEvent event(trusted ? WM_EVENT_LOCKED_FULLSCREEN : WM_EVENT_PIN);
   WindowState::Get(window)->OnWMEvent(&event);
 }
 
@@ -321,6 +315,20 @@ void SetAutoHideShelf(aura::Window* window, bool autohide) {
     Shelf::ForWindow(root_window)->UpdateVisibilityState();
 }
 
+void UpdateUiForImmersiveFullscreen(
+    chromeos::ImmersiveFullscreenController* controller,
+    bool entering) {
+  aura::Window* window = controller->widget()->GetNativeWindow();
+  WindowState* window_state = WindowState::Get(window);
+
+  // Auto hide the shelf in immersive fullscreen instead of hiding it.
+  window_state->SetHideShelfWhenFullscreen(!entering);
+
+  for (aura::Window* root_window : Shell::GetAllRootWindows()) {
+    Shelf::ForWindow(root_window)->UpdateVisibilityState();
+  }
+}
+
 bool MoveWindowToDisplay(aura::Window* window, int64_t display_id) {
   DCHECK(window);
 
@@ -329,12 +337,23 @@ bool MoveWindowToDisplay(aura::Window* window, int64_t display_id) {
     NOTREACHED();
   }
 
+  ScopedWindowsMover mover(display_id);
+  // If snapped , breake it.
+  if (auto* snap_group =
+          SnapGroupController::Get()->GetSnapGroupForGivenWindow(window)) {
+    mover.add_window(snap_group->window1() == window ? snap_group->window2()
+                                                     : snap_group->window1());
+    SnapGroupController::Get()->RemoveSnapGroup(
+        snap_group, SnapGroupExitPoint::kMoveToAnotherDisplay);
+  }
+
   WindowState* window_state = WindowState::Get(window);
   if (window_state->allow_set_bounds_direct()) {
     display::Display display;
-    if (!display::Screen::GetScreen()->GetDisplayWithDisplayId(display_id,
-                                                               &display))
+    if (!display::Screen::Get()->GetDisplayWithDisplayId(display_id,
+                                                         &display)) {
       return false;
+    }
     gfx::Rect bounds = window->bounds();
     gfx::Rect work_area_in_display(display.size());
     work_area_in_display.Inset(display.GetWorkAreaInsets());
@@ -382,18 +401,15 @@ void CloseWidgetForWindow(aura::Window* window) {
   widget->Close();
 }
 
-void InstallResizeHandleWindowTargeterForWindow(aura::Window* window) {
-  window->SetEventTargeter(
-      std::make_unique<chromeos::InteriorResizeHandleTargeter>(
-          base::BindRepeating([](const aura::Window* window) {
-            const WindowState* window_state = WindowState::Get(window);
-            return window_state ? window_state->GetStateType()
-                                : chromeos::WindowStateType::kDefault;
-          })));
-}
-
 bool IsDraggingTabs(const aura::Window* window) {
   return window->GetProperty(ash::kIsDraggingTabsKey);
+}
+
+const WindowState* GetTabDraggingSourceWindowState(
+    const aura::Window* drag_window) {
+  base::WeakPtr<aura::Window>* weak_ptr =
+      drag_window->GetProperty(ash::kTabDraggingSourceWindowKey);
+  return weak_ptr ? WindowState::Get(weak_ptr->get()) : nullptr;
 }
 
 bool ShouldExcludeForCycleList(const aura::Window* window) {
@@ -424,7 +440,7 @@ bool ShouldExcludeForOverview(const aura::Window* window) {
     return true;
   }
 
-  if (display::Screen::GetScreen()->InTabletMode()) {
+  if (display::Screen::Get()->InTabletMode()) {
     return window == SplitViewController::Get(window->GetRootWindow())
                          ->GetDefaultSnappedWindow();
   }
@@ -472,7 +488,7 @@ void EnsureTransientRoots(
   for (auto it = out_window_list->begin(); it != out_window_list->end();) {
     aura::Window* transient_root = ::wm::GetTransientRoot(*it);
     if (*it != transient_root) {
-      if (base::Contains(*out_window_list, transient_root)) {
+      if (std::ranges::contains(*out_window_list, transient_root)) {
         it = out_window_list->erase(it);
       } else {
         *it = transient_root;
@@ -518,7 +534,7 @@ void MinimizeAndHideWithoutAnimation(
 
 aura::Window* GetRootWindowAt(const gfx::Point& point_in_screen) {
   const display::Display& display =
-      display::Screen::GetScreen()->GetDisplayNearestPoint(point_in_screen);
+      display::Screen::Get()->GetDisplayNearestPoint(point_in_screen);
   DCHECK(display.is_valid());
   RootWindowController* root_window_controller =
       Shell::GetRootWindowControllerWithDisplayId(display.id());
@@ -528,7 +544,7 @@ aura::Window* GetRootWindowAt(const gfx::Point& point_in_screen) {
 
 aura::Window* GetRootWindowMatching(const gfx::Rect& rect_in_screen) {
   const display::Display& display =
-      display::Screen::GetScreen()->GetDisplayMatching(rect_in_screen);
+      display::Screen::Get()->GetDisplayMatching(rect_in_screen);
   RootWindowController* root_window_controller =
       Shell::GetRootWindowControllerWithDisplayId(display.id());
   return root_window_controller ? root_window_controller->GetRootWindow()
@@ -625,7 +641,7 @@ bool ShouldMinimizeTopWindowOnBack() {
     return false;
   }
 
-  if (!display::Screen::GetScreen()->InTabletMode()) {
+  if (!display::Screen::Get()->InTabletMode()) {
     return false;
   }
 
@@ -766,7 +782,7 @@ views::DialogDelegate* AsDialogDelegate(aura::Window* transient_window) {
 
 bool ShouldShowForCurrentUser(aura::Window* window) {
   MultiUserWindowManager* multi_user_window_manager =
-      MultiUserWindowManagerImpl::Get();
+      MultiUserWindowManager::Get();
   if (!multi_user_window_manager)
     return true;
 
@@ -840,13 +856,14 @@ void RegisterProfilePrefs(PrefRegistrySimple* registry) {
 bool IsInFasterSplitScreenSetupSession(const aura::Window* window) {
   SplitViewOverviewSession* split_view_overview_session =
       RootWindowController::ForWindow(window)->split_view_overview_session();
-  return !Shell::Get()->IsInTabletMode() && split_view_overview_session &&
+  return !display::Screen::Get()->InTabletMode() &&
+         split_view_overview_session &&
          split_view_overview_session->setup_type() ==
              SplitViewOverviewSetupType::kSnapThenAutomaticOverview;
 }
 
 bool IsInFasterSplitScreenSetupSession() {
-  if (!IsInOverviewSession() || display::Screen::GetScreen()->InTabletMode()) {
+  if (!IsInOverviewSession() || display::Screen::Get()->InTabletMode()) {
     return false;
   }
   auto* overview_session = GetOverviewSession();

@@ -2,17 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "services/device/hid/input_service_linux.h"
 
 #include <memory>
 
+#include "base/check.h"
+#include "base/compiler_specific.h"
 #include "base/functional/bind.h"
+#include "base/logging.h"
 #include "base/memory/weak_ptr.h"
+#include "base/notreached.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/task/thread_pool.h"
@@ -115,6 +114,9 @@ class InputServiceLinuxImpl::BlockingTaskRunnerHelper
                   UdevWatcher::Filter(kSubsystemHid, ""),
                   UdevWatcher::Filter(kSubsystemInput, ""),
               }});
+    if (!watcher_) {
+      return;
+    }
     watcher_->EnumerateExistingDevices();
   }
 
@@ -176,10 +178,10 @@ void InputServiceLinuxImpl::BlockingTaskRunnerHelper::OnDeviceAdded(
   const char* subsystem = udev_device_get_subsystem(device.get());
   if (!subsystem)
     return;
-  if (strcmp(subsystem, kSubsystemHid) == 0) {
+  if (UNSAFE_TODO(strcmp(subsystem, kSubsystemHid)) == 0) {
     info->subsystem = mojom::InputDeviceSubsystem::SUBSYSTEM_HID;
     info->name = GetParentDeviceName(device.get(), kSubsystemHid);
-  } else if (strcmp(subsystem, kSubsystemInput) == 0) {
+  } else if (UNSAFE_TODO(strcmp(subsystem, kSubsystemInput)) == 0) {
     info->subsystem = mojom::InputDeviceSubsystem::SUBSYSTEM_INPUT;
     info->name = GetParentDeviceName(device.get(), kSubsystemInput);
   } else {

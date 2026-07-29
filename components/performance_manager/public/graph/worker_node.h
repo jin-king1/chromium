@@ -5,11 +5,12 @@
 #ifndef COMPONENTS_PERFORMANCE_MANAGER_PUBLIC_GRAPH_WORKER_NODE_H_
 #define COMPONENTS_PERFORMANCE_MANAGER_PUBLIC_GRAPH_WORKER_NODE_H_
 
-#include <string>
-
+#include "base/byte_size.h"
 #include "base/containers/flat_set.h"
+#include "base/memory/raw_ptr.h"
 #include "base/observer_list_types.h"
 #include "base/types/token_type.h"
+#include "base/unguessable_token.h"
 #include "components/performance_manager/public/execution_context_priority/execution_context_priority.h"
 #include "components/performance_manager/public/graph/node.h"
 #include "components/performance_manager/public/graph/node_set_view.h"
@@ -54,7 +55,7 @@ using execution_context_priority::PriorityAndReason;
 // or a service worker is registered to handle their network requests.
 class WorkerNode : public TypedNode<WorkerNode> {
  public:
-  using NodeSet = base::flat_set<const Node*>;
+  using NodeSet = base::flat_set<raw_ptr<const Node>>;
   template <class ReturnType>
   using NodeSetView = NodeSetView<NodeSet, ReturnType>;
 
@@ -78,7 +79,7 @@ class WorkerNode : public TypedNode<WorkerNode> {
   virtual WorkerType GetWorkerType() const = 0;
 
   // Returns the unique ID of the browser context that this worker belongs to.
-  virtual const std::string& GetBrowserContextID() const = 0;
+  virtual const base::UnguessableToken& GetBrowserContextID() const = 0;
 
   // Returns the process node to which this worker belongs. This is a constant
   // over the lifetime of the frame, except that it will always be null during
@@ -93,8 +94,7 @@ class WorkerNode : public TypedNode<WorkerNode> {
   virtual resource_attribution::WorkerContext GetResourceContext() const = 0;
 
   // Returns the URL of the worker script. This is the final response URL which
-  // takes into account redirections. Note that for dedicated workers, this will
-  // be empty unless the PlzDedicatedWorker feature is enabled.
+  // takes into account redirections.
   virtual const GURL& GetURL() const = 0;
 
   // Returns the worker's security origin. This will be set even if GetURL() is
@@ -128,15 +128,15 @@ class WorkerNode : public TypedNode<WorkerNode> {
   // TODO(joenotcharles): Move the resource usage estimates to a separate
   // class.
 
-  // Returns the most recently estimated resident set of the worker, in
-  // kilobytes. This is an estimate because RSS is computed by process, and a
-  // process can host multiple workers.
-  virtual uint64_t GetResidentSetKbEstimate() const = 0;
+  // Returns the most recently estimated resident set of the worker. This is an
+  // estimate because RSS is computed by process, and a process can host
+  // multiple workers.
+  virtual base::ByteSize GetResidentSetEstimate() const = 0;
 
-  // Returns the most recently estimated private footprint of the worker, in
-  // kilobytes. This is an estimate because PMF is computed by process, and a
-  // process can host multiple workers.
-  virtual uint64_t GetPrivateFootprintKbEstimate() const = 0;
+  // Returns the most recently estimated private footprint of the worker. This
+  // is an estimate because PMF is computed by process, and a process can host
+  // multiple workers.
+  virtual base::ByteSize GetPrivateFootprintEstimate() const = 0;
 };
 
 // Observer interface for worker nodes.
@@ -199,9 +199,7 @@ class WorkerNodeObserver : public base::CheckedObserver {
   // Notifications of property changes.
 
   // Invoked when the final url of the worker script has been determined, which
-  // happens when the script has finished loading. Note that for dedicated
-  // workers, this won't be called unless the PlzDedicatedWorker feature is
-  // enabled.
+  // happens when the script has finished loading.
   virtual void OnFinalResponseURLDetermined(const WorkerNode* worker_node) {}
 
   // Invoked before |client_frame_node| becomes a client of |worker_node|. This

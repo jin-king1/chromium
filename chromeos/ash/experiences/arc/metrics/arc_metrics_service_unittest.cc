@@ -12,6 +12,8 @@
 #include <vector>
 
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
+#include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/histogram_samples.h"
 #include "base/run_loop.h"
@@ -27,6 +29,7 @@
 #include "chromeos/ui/base/app_types.h"
 #include "chromeos/ui/base/window_properties.h"
 #include "components/prefs/testing_pref_service.h"
+#include "components/session_manager/core/fake_session_manager_delegate.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/user_prefs/test/test_browser_context_with_prefs.h"
 #include "content/public/test/browser_task_environment.h"
@@ -141,12 +144,10 @@ class ArcMetricsServiceTest : public testing::Test {
 
  private:
   void CreateFakeWindows() {
-    fake_arc_window_.reset(aura::test::CreateTestWindowWithId(
-        /*id=*/0, nullptr));
+    fake_arc_window_ = aura::test::CreateTestWindow({.bounds = {100, 100}});
     fake_arc_window_->SetProperty(chromeos::kAppTypeKey,
                                   chromeos::AppType::ARC_APP);
-    fake_non_arc_window_.reset(aura::test::CreateTestWindowWithId(
-        /*id=*/1, nullptr));
+    fake_non_arc_window_ = aura::test::CreateTestWindow({.bounds = {100, 100}});
   }
 
   content::BrowserTaskEnvironment task_environment_{
@@ -155,7 +156,8 @@ class ArcMetricsServiceTest : public testing::Test {
                                          /*register_screen=*/true};
 
   TestingPrefServiceSimple local_state_;
-  session_manager::SessionManager session_manager_;
+  session_manager::SessionManager session_manager_{
+      std::make_unique<session_manager::FakeSessionManagerDelegate>()};
 
   std::unique_ptr<ArcServiceManager> arc_service_manager_;
   std::unique_ptr<user_prefs::TestBrowserContextWithPrefs> context_;
@@ -485,6 +487,77 @@ TEST_F(ArcMetricsServiceTest, ReportApkCacheHit) {
   tester.ExpectTotalCount("Arc.AppInstall.CacheHit", 2);
 }
 
+TEST_F(ArcMetricsServiceTest, ReportCertificateSigningResult_ResultOk) {
+  base::HistogramTester tester;
+
+  service()->ReportCertificateSigningResult(
+      arc::mojom::CertificateSigningResult::kOk);
+
+  tester.ExpectUniqueSample(
+      "Arc.Attestation.CertificateSigning.Result",
+      static_cast<int>(mojom::CertificateSigningResult::kOk), 1);
+}
+
+TEST_F(ArcMetricsServiceTest,
+       ReportCertificateSigningResult_ResultDeviceNotRegistered) {
+  base::HistogramTester tester;
+
+  service()->ReportCertificateSigningResult(
+      arc::mojom::CertificateSigningResult::kDeviceNotRegistered);
+
+  tester.ExpectUniqueSample(
+      "Arc.Attestation.CertificateSigning.Result",
+      static_cast<int>(mojom::CertificateSigningResult::kDeviceNotRegistered),
+      1);
+}
+
+TEST_F(ArcMetricsServiceTest, ReportGmsAppKill_ValidBootType) {
+  constexpr uint64_t kArcStartTimeMs = 10;
+  SetArcStartTimeInMs(kArcStartTimeMs);
+  std::vector<mojom::BootProgressEventPtr> events(
+      GetBootProgressEvents(kArcStartTimeMs, 1 /* step_in_ms */));
+  service()->ReportBootProgress(std::move(events), mojom::BootType::FIRST_BOOT);
+  base::HistogramTester tester;
+  int expected_count = 1;
+  mojom::AppKillType expected_type = mojom::AppKillType::GMS_UPDATE_KILL;
+
+  service()->ReportAppKill(mojom::AppKill::New(expected_type, expected_count));
+
+  tester.ExpectUniqueSample("Arc.App.GmsCoreKill.FirstBoot",
+                            static_cast<int>(expected_type), expected_count);
+}
+
+TEST_F(ArcMetricsServiceTest, ReportGmsAppKill_NoBootType) {
+  base::HistogramTester tester;
+  base::HistogramTester::CountsMap empty_counts;
+
+  service()->ReportAppKill(
+      mojom::AppKill::New(mojom::AppKillType::GMS_UPDATE_KILL, 1));
+
+  EXPECT_THAT(tester.GetTotalCountsForPrefix("Arc.App.GmsCoreKill."),
+              testing::ContainerEq(empty_counts));
+}
+
+TEST_F(ArcMetricsServiceTest, ReportGmsAppKill_ReportSavedMetrics) {
+  base::HistogramTester tester;
+  // Boot type is empty so this metric will be saved to be reported later.
+  int expected_count = 1;
+  mojom::AppKillType expected_type = mojom::AppKillType::GMS_UPDATE_KILL;
+  service()->ReportAppKill(mojom::AppKill::New(expected_type, expected_count));
+  constexpr uint64_t kArcStartTimeMs = 10;
+  SetArcStartTimeInMs(kArcStartTimeMs);
+  std::vector<mojom::BootProgressEventPtr> events(
+      GetBootProgressEvents(kArcStartTimeMs, 1 /* step_in_ms */));
+
+  // Update boot type and call ReportBootProgress multiple times.
+  service()->ReportBootProgress(std::move(events), mojom::BootType::FIRST_BOOT);
+  service()->ReportBootProgress(std::move(events), mojom::BootType::FIRST_BOOT);
+
+  // Ensure only one metric was reported.
+  tester.ExpectUniqueSample("Arc.App.GmsCoreKill.FirstBoot",
+                            static_cast<int>(expected_type), expected_count);
+}
+
 class ArcVmArcMetricsServiceTest
     : public ArcMetricsServiceTest,
       public testing::WithParamInterface<
@@ -539,7 +612,7 @@ static std::optional<vm_tools::concierge::ListVmsResponse> VmsList(
 
 struct KillCounterInfo {
   const char* name;
-  uint32_t mojom::LowMemoryKillCounts::*const member;
+  uint32_t mojom::LowMemoryKillCounts::* const member;
 };
 
 // Store a list of the different kill counter names and which field in the
@@ -792,18 +865,17 @@ static void ExpectOneSampleAppKillDailyCounts(
 }
 
 TEST_P(ArcVmArcMetricsServiceTest, AppLowMemoryDailyKills) {
-  printf("GetParam() VMs:");
+  LOG(INFO) << "GetParam() VMs:";
   if (GetParam()) {
     for (int i = 0; i < GetParam()->vms_size(); i++) {
       const auto& vm = GetParam()->vms(i);
       if (!vm.has_vm_info()) {
         continue;
       }
-      printf(" %s", VmKillCounterPrefix(vm.vm_info().vm_type()));
+      LOG(INFO) << " " << VmKillCounterPrefix(vm.vm_info().vm_type());
     }
   }
-
-  printf("\n");
+  LOG(INFO) << '\n';
 
   // The test code sets the initial counts to 0.
   auto c0 = mojom::LowMemoryKillCounts::New(0, 0, 0, 0, 0, 0, 0);

@@ -4,27 +4,47 @@
 
 package org.chromium.net.impl;
 
+import android.os.Build;
+
+import androidx.annotation.RequiresApi;
+
 import org.chromium.net.ConnectionCloseSource;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 /** Base class for implementing a CronetLogger. */
 public abstract class CronetLogger {
     // TODO(b/313418339): align the naming with the atom definition.
     public static enum CronetSource {
         // Safe default, don't use explicitly.
-        CRONET_SOURCE_UNSPECIFIED,
+        CRONET_SOURCE_UNSPECIFIED("Unspecified"),
         // The library is bundled with the application.
-        CRONET_SOURCE_STATICALLY_LINKED,
+        CRONET_SOURCE_STATICALLY_LINKED("Statically Linked"),
         // The library is loaded from GooglePlayServices.
-        CRONET_SOURCE_PLAY_SERVICES,
+        CRONET_SOURCE_PLAY_SERVICES("Play Services"),
         // The application is using the fallback implementation.
-        CRONET_SOURCE_FALLBACK,
-        // The library is loaded through the bootclasspath.
-        CRONET_SOURCE_PLATFORM,
+        CRONET_SOURCE_FALLBACK("Fallback"),
+        // The library was built from the Android Platform repository.
+        // TODO(https://crbug.com/460049393): a more useful and less confusing definition would be
+        // "the library was loaded from the Android device bootclasspath through HttpEngine". In
+        // production the two definitions are equivalent, but that is not true in test code running
+        // against STATICALLY_LINKED in AOSP.
+        CRONET_SOURCE_PLATFORM("HttpEngine"),
         // The application is using the fake implementation.
-        CRONET_SOURCE_FAKE,
+        CRONET_SOURCE_FAKE("Fake");
+
+        private final String mString;
+
+        CronetSource(String string) {
+            mString = string;
+        }
+
+        @Override
+        public String toString() {
+            return mString;
+        }
     }
 
     /** Generates a new unique ID suitable for use as reference for cross-linking log events. */
@@ -58,6 +78,99 @@ public abstract class CronetLogger {
      */
     public abstract void logCronetTrafficInfo(long cronetEngineId, CronetTrafficInfo trafficInfo);
 
+    /** See {@link CronetAdaptiveRequestContext}'s documentation. */
+    public abstract void logCronetAdaptiveTrafficAlternateNetworkComputation(
+            CronetSource cronetSource,
+            long numberOfAvailableNetworks,
+            boolean defaultNetworkIsKnown,
+            boolean fallbackNetworkCacheHit);
+
+    /** See {@link CronetAdaptiveNetworkBidirectionalStream}'s documentation. */
+    public enum CronetAdaptiveTrafficWinner {
+        CRONET_ADAPTIVE_TRAFFIC_WINNER_UNKNOWN,
+        CRONET_ADAPTIVE_TRAFFIC_WINNER_MAIN,
+        CRONET_ADAPTIVE_TRAFFIC_WINNER_FALLBACK
+    }
+
+    /** See {@link CronetAdaptiveNetworkBidirectionalStream}'s documentation. */
+    public enum CronetAdaptiveTrafficRequestState {
+        CRONET_ADAPTIVE_TRAFFIC_REQUEST_STATE_UNKNOWN,
+        CRONET_ADAPTIVE_TRAFFIC_REQUEST_STATE_NOT_STARTED,
+        CRONET_ADAPTIVE_TRAFFIC_REQUEST_STATE_STARTED,
+        CRONET_ADAPTIVE_TRAFFIC_REQUEST_STATE_SUCCEEDED,
+        CRONET_ADAPTIVE_TRAFFIC_REQUEST_STATE_FAILED,
+        CRONET_ADAPTIVE_TRAFFIC_REQUEST_STATE_CANCELLED,
+    }
+
+    /** See {@link CronetAdaptiveNetworkBidirectionalStream}'s documentation. */
+    public static final class CronetAdaptiveTrafficTerminatedInfo {
+        private final AtomicReference<CronetLogger.CronetAdaptiveTrafficRequestState>
+                mMainRequestState =
+                        new AtomicReference<>(
+                                CronetLogger.CronetAdaptiveTrafficRequestState
+                                        .CRONET_ADAPTIVE_TRAFFIC_REQUEST_STATE_UNKNOWN);
+        private final AtomicReference<CronetLogger.CronetAdaptiveTrafficRequestState>
+                mFallbackRequestState =
+                        new AtomicReference<>(
+                                CronetLogger.CronetAdaptiveTrafficRequestState
+                                        .CRONET_ADAPTIVE_TRAFFIC_REQUEST_STATE_UNKNOWN);
+        private final AtomicReference<CronetLogger.CronetAdaptiveTrafficWinner> mWinner =
+                new AtomicReference<>(
+                        CronetLogger.CronetAdaptiveTrafficWinner
+                                .CRONET_ADAPTIVE_TRAFFIC_WINNER_UNKNOWN);
+
+        private final CronetSource mCronetSource;
+
+        public CronetAdaptiveTrafficTerminatedInfo(CronetSource cronetSource) {
+            mCronetSource = cronetSource;
+        }
+
+        public CronetSource getCronetSource() {
+            return mCronetSource;
+        }
+
+        public CronetLogger.CronetAdaptiveTrafficRequestState getMainRequestState() {
+            return mMainRequestState.get();
+        }
+
+        public void setMainRequestState(CronetLogger.CronetAdaptiveTrafficRequestState state) {
+            mMainRequestState.set(state);
+        }
+
+        public CronetLogger.CronetAdaptiveTrafficRequestState getFallbackRequestState() {
+            return mFallbackRequestState.get();
+        }
+
+        public void setFallbackRequestState(CronetLogger.CronetAdaptiveTrafficRequestState state) {
+            mFallbackRequestState.set(state);
+        }
+
+        public CronetLogger.CronetAdaptiveTrafficWinner getWinner() {
+            return mWinner.get();
+        }
+
+        public void setWinner(CronetLogger.CronetAdaptiveTrafficWinner winner) {
+            if (mWinner.getAndSet(winner)
+                    != CronetLogger.CronetAdaptiveTrafficWinner
+                            .CRONET_ADAPTIVE_TRAFFIC_WINNER_UNKNOWN) {
+                throw new IllegalStateException("Winner is already set");
+            }
+        }
+    }
+
+    /** See {@link CronetAdaptiveNetworkBidirectionalStream}'s documentation. */
+    public abstract void logCronetAdaptiveTrafficTerminated(
+            CronetAdaptiveTrafficTerminatedInfo info);
+
+    /**
+     * Logs a Cronet UMA histogram sample.
+     *
+     * @param metricHash the hash of the histogram name, converted from unsigned 64-bit integer to
+     *     signed 64-bit integer with two's complement wraparound.
+     * @param value the sample value.
+     */
+    public abstract void logCronetUmaHistogram(long metricHash, int value, CronetSource source);
+
     // TODO(crbug.com/41494309): consider using AutoValue for this.
     public static final class CronetEngineBuilderInitializedInfo {
         public long cronetInitializationRef;
@@ -84,6 +197,8 @@ public abstract class CronetLogger {
         public Boolean httpFlagsSuccessful;
         public List<Long> httpFlagsNames;
         public List<Long> httpFlagsValues;
+        public String cronetImplVersion;
+        public CronetSource source = CronetSource.CRONET_SOURCE_UNSPECIFIED;
     }
 
     /** Aggregates the information about a CronetEngine configuration. */
@@ -185,9 +300,9 @@ public abstract class CronetLogger {
     }
 
     /**
-     * Aggregates the information about request and response traffic for a
-     * particular CronetEngine.
+     * Aggregates the information about request and response traffic for a particular CronetEngine.
      */
+    @RequiresApi(Build.VERSION_CODES.O)
     public static class CronetTrafficInfo {
         public static enum RequestTerminalState {
             SUCCEEDED,
@@ -207,7 +322,6 @@ public abstract class CronetLogger {
         private final long mResponseHeaderSizeInBytes;
         private final long mResponseBodySizeInBytes;
         private final int mResponseStatusCode;
-        private final Duration mHeadersLatency;
         private final Duration mTotalLatency;
         private final String mNegotiatedProtocol;
         private final boolean mWasConnectionMigrationAttempted;
@@ -221,9 +335,18 @@ public abstract class CronetLogger {
         private final int mUid;
         private final int mNetworkInternalErrorCode;
         private final int mQuicErrorCode;
-        private final @ConnectionCloseSource int mSource;
+        private final @ConnectionCloseSource int mConnectionCloseSource;
         private final RequestFailureReason mFailureReason;
         private final boolean mSocketReused;
+        private final String mCronetVersion;
+        private final CronetSource mCronetSource;
+        private final long mTimeToEstablishDnsMicros;
+        private final long mTimeToEstablishSSLMicros;
+        private final long mTimeToConnectMicros;
+        private final long mTimeToSendFirstByteMicros;
+        private final long mTimeToReceiveHeaderLastByteMicros;
+        private final Boolean mIsProxied;
+        private final boolean mIsAdaptiveNetworkStream;
 
         public CronetTrafficInfo(
                 long requestHeaderSizeInBytes,
@@ -231,7 +354,6 @@ public abstract class CronetLogger {
                 long responseHeaderSizeInBytes,
                 long responseBodySizeInBytes,
                 int responseStatusCode,
-                Duration headersLatency,
                 Duration totalLatency,
                 String negotiatedProtocol,
                 boolean wasConnectionMigrationAttempted,
@@ -245,15 +367,23 @@ public abstract class CronetLogger {
                 int uid,
                 int networkInternalErrorCode,
                 int quicErrorCode,
-                @ConnectionCloseSource int source,
+                @ConnectionCloseSource int connectionCloseSource,
                 RequestFailureReason failureReason,
-                boolean sockedReused) {
+                boolean socketReused,
+                String cronetVersion,
+                CronetSource cronetSource,
+                long timeToEstablishDnsMicros,
+                long timeToEstablishSSLMicros,
+                long timeToConnectMicros,
+                long timeToSendFirstByteMicros,
+                long timeToReceiveHeaderLastByteMicros,
+                Boolean isProxied,
+                boolean isAdaptiveNetworkStream) {
             mRequestHeaderSizeInBytes = requestHeaderSizeInBytes;
             mRequestBodySizeInBytes = requestBodySizeInBytes;
             mResponseHeaderSizeInBytes = responseHeaderSizeInBytes;
             mResponseBodySizeInBytes = responseBodySizeInBytes;
             mResponseStatusCode = responseStatusCode;
-            mHeadersLatency = headersLatency;
             mTotalLatency = totalLatency;
             mNegotiatedProtocol = negotiatedProtocol;
             mWasConnectionMigrationAttempted = wasConnectionMigrationAttempted;
@@ -267,9 +397,18 @@ public abstract class CronetLogger {
             mUid = uid;
             mNetworkInternalErrorCode = networkInternalErrorCode;
             mQuicErrorCode = quicErrorCode;
-            mSource = source;
+            mConnectionCloseSource = connectionCloseSource;
             mFailureReason = failureReason;
-            mSocketReused = sockedReused;
+            mSocketReused = socketReused;
+            mCronetVersion = cronetVersion;
+            mCronetSource = cronetSource;
+            mTimeToEstablishDnsMicros = timeToEstablishDnsMicros;
+            mTimeToEstablishSSLMicros = timeToEstablishSSLMicros;
+            mTimeToConnectMicros = timeToConnectMicros;
+            mTimeToSendFirstByteMicros = timeToSendFirstByteMicros;
+            mTimeToReceiveHeaderLastByteMicros = timeToReceiveHeaderLastByteMicros;
+            mIsProxied = isProxied;
+            mIsAdaptiveNetworkStream = isAdaptiveNetworkStream;
         }
 
         /**
@@ -300,18 +439,7 @@ public abstract class CronetLogger {
         }
 
         /**
-         * The time it took from starting the request to receiving the full set of
-         * response headers.
-         *
-         * @return The time to get response headers
-         */
-        public Duration getHeadersLatency() {
-            return mHeadersLatency;
-        }
-
-        /**
-         * The time it took from starting the request to receiving the entire
-         * response.
+         * The time it took from starting the request to receiving the entire response.
          *
          * @return The time to get total response
          */
@@ -371,7 +499,7 @@ public abstract class CronetLogger {
         }
 
         public @ConnectionCloseSource int getConnectionCloseSource() {
-            return mSource;
+            return mConnectionCloseSource;
         }
 
         public RequestFailureReason getFailureReason() {
@@ -380,6 +508,42 @@ public abstract class CronetLogger {
 
         public boolean getIsSocketReused() {
             return mSocketReused;
+        }
+
+        public String getCronetVersion() {
+            return mCronetVersion;
+        }
+
+        public CronetSource getCronetSource() {
+            return mCronetSource;
+        }
+
+        public long getTimeToEstablishDNSMicros() {
+            return mTimeToEstablishDnsMicros;
+        }
+
+        public long getTimeToEstablishSSLMicros() {
+            return mTimeToEstablishSSLMicros;
+        }
+
+        public long getTimeToConnectMicros() {
+            return mTimeToConnectMicros;
+        }
+
+        public long getTimeToSendFirstByteMicros() {
+            return mTimeToSendFirstByteMicros;
+        }
+
+        public long getTimeToReceiveHeaderLastByteMicros() {
+            return mTimeToReceiveHeaderLastByteMicros;
+        }
+
+        public Boolean isProxied() {
+            return mIsProxied;
+        }
+
+        public boolean isAdaptiveNetworkStream() {
+            return mIsAdaptiveNetworkStream;
         }
     }
 

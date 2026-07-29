@@ -4,10 +4,6 @@
 
 package org.chromium.chrome.browser.contextualsearch;
 
-import static org.chromium.base.test.util.Restriction.RESTRICTION_TYPE_NON_LOW_END_DEVICE;
-
-import android.os.Build.VERSION_CODES;
-
 import androidx.test.filters.SmallTest;
 
 import org.hamcrest.MatcherAssert;
@@ -18,7 +14,6 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
-import org.mockito.MockitoAnnotations;
 
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
@@ -38,7 +33,7 @@ import org.chromium.ui.base.DeviceFormFactor;
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @EnableFeatures(ChromeFeatureList.CONTEXTUAL_SEARCH_DISABLE_ONLINE_DETECTION)
-@Restriction(RESTRICTION_TYPE_NON_LOW_END_DEVICE)
+@DisableIf.Device(DeviceFormFactor.DESKTOP) // Explicitly not supported.
 @Batch(Batch.PER_CLASS)
 public class ContextualSearchCriticalTest extends ContextualSearchInstrumentationBase {
 
@@ -47,7 +42,6 @@ public class ContextualSearchCriticalTest extends ContextualSearchInstrumentatio
     @Override
     @Before
     public void setUp() throws Exception {
-        MockitoAnnotations.initMocks(this);
 
         mTestPage = "/chrome/test/data/android/contextualsearch/tap_test.html";
         mContextualSearchManagerNatives = Mockito.spy(new ContextualSearchManagerJni());
@@ -63,7 +57,7 @@ public class ContextualSearchCriticalTest extends ContextualSearchInstrumentatio
     @Test
     @SmallTest
     @Feature({"ContextualSearch"})
-    // Previously disabled:  https://crbug.com/1058297
+    // Previously disabled:  https://crbug.com/40121079
     public void testResolveCausesOneLowPriorityRequest() throws Exception {
         simulateSlowResolveSearch("states");
 
@@ -117,7 +111,7 @@ public class ContextualSearchCriticalTest extends ContextualSearchInstrumentatio
     @SmallTest
     @Feature({"ContextualSearch"})
     @DisabledTest(message = "Flaky, crbug.com/40757167")
-    // Previously flaky and disabled 4/2021.  https://crbug.com/1192285
+    // Previously flaky and disabled 4/2021.  https://crbug.com/40757167
     public void testResolveDisablePreload() throws Exception {
         simulateSlowResolveSearch("intelligence");
 
@@ -137,8 +131,8 @@ public class ContextualSearchCriticalTest extends ContextualSearchInstrumentatio
     @Test
     @SmallTest
     @Feature({"ContextualSearch"})
-    // Previously disabled: crbug.com/765403
-    @DisableIf.Build(sdk_is_greater_than = VERSION_CODES.P, message = "crbug.com/377363763")
+    // Previously disabled: crbug.com/40540137
+    @DisabledTest(message = "crbug.com/377363763")
     public void testSearchTermResolutionError() throws Exception {
         simulateSlowResolveSearch("states");
         assertSearchTermRequested();
@@ -274,7 +268,7 @@ public class ContextualSearchCriticalTest extends ContextualSearchInstrumentatio
     @Test
     @SmallTest
     @Feature({"ContextualSearch"})
-    @DisabledTest(message = "crbug.com/1404658")
+    @DisabledTest(message = "crbug.com/40886219")
     public void testChainedSearchCreatesNewContent() throws Exception {
         // This test depends on preloading the content - which is loaded and not made visible.
         // We only preload when the user has decided to accept the privacy opt-in.
@@ -312,7 +306,7 @@ public class ContextualSearchCriticalTest extends ContextualSearchInstrumentatio
 
     /** Tests that chained searches load correctly. */
     @Test
-    @DisabledTest(message = "crbug.com/549805")
+    @DisabledTest(message = "crbug.com/40442750")
     @SmallTest
     @Feature({"ContextualSearch"})
     @Restriction(DeviceFormFactor.PHONE)
@@ -446,8 +440,7 @@ public class ContextualSearchCriticalTest extends ContextualSearchInstrumentatio
         // Now check that the URL has been removed from history.
         ArgumentCaptor<String> urlCaptor = ArgumentCaptor.forClass(String.class);
         Mockito.verify(mContextualSearchManagerNatives)
-                .removeLastHistoryEntry(
-                        Mockito.anyLong(), Mockito.any(), urlCaptor.capture(), Mockito.anyLong());
+                .removeLastHistoryEntry(Mockito.anyLong(), urlCaptor.capture(), Mockito.anyLong());
         Assert.assertEquals(url, urlCaptor.getValue());
     }
 
@@ -472,8 +465,7 @@ public class ContextualSearchCriticalTest extends ContextualSearchInstrumentatio
 
         // Now check that the URL has not been removed from history, since the Content was seen.
         Mockito.verify(mContextualSearchManagerNatives, Mockito.never())
-                .removeLastHistoryEntry(
-                        Mockito.anyLong(), Mockito.any(), Mockito.any(), Mockito.anyLong());
+                .removeLastHistoryEntry(Mockito.anyLong(), Mockito.any(), Mockito.anyLong());
     }
 
     /**
@@ -512,8 +504,7 @@ public class ContextualSearchCriticalTest extends ContextualSearchInstrumentatio
 
         ArgumentCaptor<String> urlCaptor = ArgumentCaptor.forClass(String.class);
         Mockito.verify(mContextualSearchManagerNatives, Mockito.times(3))
-                .removeLastHistoryEntry(
-                        Mockito.anyLong(), Mockito.any(), urlCaptor.capture(), Mockito.anyLong());
+                .removeLastHistoryEntry(Mockito.anyLong(), urlCaptor.capture(), Mockito.anyLong());
         MatcherAssert.assertThat(
                 urlCaptor.getAllValues(), Matchers.containsInAnyOrder(url1, url2, url3));
     }

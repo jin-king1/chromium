@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #import "chrome/browser/web_applications/os_integration/mac/web_app_shortcut_creator.h"
 
 #import <Cocoa/Cocoa.h>
@@ -20,23 +15,31 @@
 #include "base/apple/bridging.h"
 #include "base/apple/bundle_locations.h"
 #include "base/apple/foundation_util.h"
+#include "base/base_switches.h"
 #include "base/check.h"
 #include "base/check_is_test.h"
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
+#include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/safe_base_name.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/mac/mac_util.h"
+#include "base/memory/shared_memory_switch.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/process/launch.h"
+#include "base/strings/string_util.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/synchronization/lock.h"
 #include "base/version_info/version_info.h"
+#include "build/buildflag.h"
 #include "chrome/browser/shortcuts/platform_util_mac.h"
 #include "chrome/browser/web_applications/mojom/web_app_shortcut_copier.mojom.h"
 #include "chrome/browser/web_applications/os_integration/mac/bundle_info_plist.h"
@@ -45,16 +48,20 @@
 #include "chrome/browser/web_applications/os_integration/mac/web_app_auto_login_util.h"
 #include "chrome/browser/web_applications/os_integration/mac/web_app_shortcut_mac.h"
 #include "chrome/browser/web_applications/os_integration/os_integration_test_override.h"
+#include "chrome/common/chrome_features.h"
 #import "chrome/common/mac/app_mode_common.h"
 #include "components/variations/active_field_trials.h"
+#include "components/variations/variations_switches.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/common/content_descriptors.h"
 #include "content/public/common/content_switches.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/bindings/sync_call_restrictions.h"
 #include "mojo/public/cpp/platform/platform_channel.h"
 #include "mojo/public/cpp/system/invitation.h"
 
-#if defined(COMPONENT_BUILD) || defined(ADDRESS_SANITIZER)
+#if defined(COMPONENT_BUILD) || defined(ADDRESS_SANITIZER) || \
+    defined(UNDEFINED_SANITIZER)
 #include <mach-o/loader.h>
 
 #include "base/base_paths.h"
@@ -86,9 +93,7 @@ OSStatus SecCodeSignerAddSignatureWithErrors(SecCodeSignerRef signer,
 
 namespace web_app {
 
-BASE_FEATURE(kWebAppMaskableIconsOnMac,
-             "WebAppMaskableIconsOnMac",
-             base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kWebAppMaskableIconsOnMac, base::FEATURE_ENABLED_BY_DEFAULT);
 
 class WebAppShortcutCopierSyncCallHelper {
   mojo::SyncCallRestrictions::ScopedAllowSyncCall scoped_allow_;
@@ -124,7 +129,45 @@ void RecordCreateShortcut(CreateShortcutResult result) {
   base::UmaHistogramEnumeration("Apps.CreateShortcuts.Mac.Result2", result);
 }
 
-#if defined(COMPONENT_BUILD) || defined(ADDRESS_SANITIZER)
+// Result of updating the app shortcut's signature.
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+enum class UpdateSignatureResult {
+  kSuccess = 0,
+  kFailToCreateStaticCodeObject = 1,
+  kFailToCreateCodeSigner = 2,
+  kFailToAddSignature = 3,
+  kFailToCopySigningInformation = 4,
+  kMaxValue = kFailToCopySigningInformation,
+};
+
+// Records the result of updating the app shortcut's signature to UMA.
+void RecordUpdateSignatureResult(UpdateSignatureResult result) {
+  base::UmaHistogramEnumeration(
+      "Apps.CreateShortcuts.Mac.UpdateSignatureResult", result);
+}
+
+// Result of copying the app shortcut.
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+enum class CopyShortcutResult {
+  kSuccess = 0,
+  kFailToLaunchCopier = 1,
+  kFailToSendMojoInvitation = 2,
+  kFailToEstablishMojoConnection = 3,
+  kFailToCallCopyWebAppShortcut = 4,
+  kCopyShortcutFailed = 5,
+  kMaxValue = kCopyShortcutFailed,
+};
+
+// Records the result of copying the app shortcut to UMA.
+void RecordCopyShortcutResult(CopyShortcutResult result) {
+  base::UmaHistogramEnumeration("Apps.CreateShortcuts.Mac.CopyShortcutResult",
+                                result);
+}
+
+#if defined(COMPONENT_BUILD) || defined(ADDRESS_SANITIZER) || \
+    defined(UNDEFINED_SANITIZER)
 // Adds `new_rpath` to the paths the binary at `executable_path` will look at
 // when loading shared libraries. Assumes there is enough room in the headers of
 // the binary to fit the added path.
@@ -172,7 +215,7 @@ bool AddPathToRPath(const base::FilePath& executable_path,
       LOG(ERROR) << "Reached end of commands before getting all commands";
       return false;
     }
-    memcpy(&cmd, &*commands_it, sizeof cmd);
+    UNSAFE_TODO(memcpy(&cmd, &*commands_it, sizeof cmd));
     if (commands.end() - commands_it < cmd.cmdsize) {
       LOG(ERROR) << "Command ends past the end of the load commands";
       return false;
@@ -182,9 +225,11 @@ bool AddPathToRPath(const base::FilePath& executable_path,
     if (cmd.cmd == LC_RPATH) {
       // Insert the new command, padding the extra space with `0` bytes.
       auto it = commands.insert(commands_it, new_rpath_command.cmdsize, 0);
-      memcpy(&*it, &new_rpath_command, sizeof new_rpath_command);
-      memcpy(&*it + sizeof new_rpath_command, new_rpath.value().data(),
-             new_rpath.value().size());
+      UNSAFE_TODO({
+        memcpy(&*it, &new_rpath_command, sizeof new_rpath_command);
+        memcpy(&*it + sizeof new_rpath_command, new_rpath.value().data(),
+               new_rpath.value().size());
+      });
 
       header.ncmds++;
       header.sizeofcmds += new_rpath_command.cmdsize;
@@ -219,7 +264,7 @@ bool AddPathToRPath(const base::FilePath& executable_path,
 #endif
 
 // Returns a reference to the static UpdateShortcuts lock.
-// See https://crbug.com/1090548 for more info.
+// See https://crbug.com/40133807 for more info.
 base::Lock& GetUpdateShortcutsLock() {
   static base::NoDestructor<base::Lock> lock;
   return *lock;
@@ -256,11 +301,15 @@ bool CopyStagingBundleToDestination(bool use_ad_hoc_signing_for_web_app_shims,
   channel.PrepareToPassRemoteEndpoint(&options, &command_line);
 
   // Ensure that the helper tool sees the same feature state as the browser.
-  variations::PopulateLaunchOptionsWithVariationsInfo(&command_line, &options);
+  base::shared_memory::SharedMemorySwitch shared_memory_switch(
+      switches::kFieldTrialHandle, 'fldt', kFieldTrialDescriptor);
+  variations::PopulateLaunchOptionsWithVariationsInfo(
+      &shared_memory_switch, &command_line, &options);
 
   base::Process copier_process = base::LaunchProcess(command_line, options);
   if (!copier_process.IsValid()) {
     LOG(ERROR) << "Failed to launch web_app_shortcut_copier.";
+    RecordCopyShortcutResult(CopyShortcutResult::kFailToLaunchCopier);
     return false;
   }
   channel.RemoteProcessLaunchAttempted();
@@ -269,6 +318,7 @@ bool CopyStagingBundleToDestination(bool use_ad_hoc_signing_for_web_app_shims,
       channel.TakeLocalEndpoint(), {}, copier_process.Handle());
   if (!pipe) {
     LOG(ERROR) << "Failed to send Mojo invitation to web_app_shortcut_copier.";
+    RecordCopyShortcutResult(CopyShortcutResult::kFailToSendMojoInvitation);
     return false;
   }
   mojo::PendingRemote<mojom::WebAppShortcutCopier> pending_remote(
@@ -276,6 +326,8 @@ bool CopyStagingBundleToDestination(bool use_ad_hoc_signing_for_web_app_shims,
   if (!pending_remote) {
     LOG(ERROR)
         << "Failed to establish Mojo connection with web_app_shortcut_copier.";
+    RecordCopyShortcutResult(
+        CopyShortcutResult::kFailToEstablishMojoConnection);
     return false;
   }
 
@@ -285,7 +337,13 @@ bool CopyStagingBundleToDestination(bool use_ad_hoc_signing_for_web_app_shims,
   if (!copier->CopyWebAppShortcut(staging_path, dst_app_path, &copy_result)) {
     LOG(ERROR)
         << "Failed to call CopyWebAppShortcut in web_app_shortcut_copier.";
+    RecordCopyShortcutResult(CopyShortcutResult::kFailToCallCopyWebAppShortcut);
     return false;
+  }
+  if (copy_result) {
+    RecordCopyShortcutResult(CopyShortcutResult::kSuccess);
+  } else {
+    RecordCopyShortcutResult(CopyShortcutResult::kCopyShortcutFailed);
   }
   return copy_result;
 }
@@ -371,7 +429,8 @@ NSData* AppShimEntitlements() {
   // The magic constant and length are expected to be big endian.
   uint32_t* entitlement_header = reinterpret_cast<uint32_t*>(entitlement_bytes);
   entitlement_header[0] = CFSwapInt32HostToBig(kSecCodeMagicEntitlement);
-  entitlement_header[1] = CFSwapInt32HostToBig(sizeof(entitlement_bytes) - 1);
+  UNSAFE_TODO(entitlement_header[1] =
+                  CFSwapInt32HostToBig(sizeof(entitlement_bytes) - 1));
 
   return [NSData dataWithBytes:static_cast<void*>(entitlement_bytes)
                         length:sizeof(entitlement_bytes) - 1];
@@ -497,7 +556,8 @@ bool WebAppShortcutCreator::CreateShortcuts(
     WebAppAutoLoginUtil::GetInstance()->AddToLoginItems(updated_app_paths[0],
                                                         false);
   }
-  if (creation_reason == SHORTCUT_CREATION_BY_USER) {
+  if (creation_reason == SHORTCUT_CREATION_BY_USER &&
+      !base::FeatureList::IsEnabled(features::kWebAppInstallDialog)) {
     RevealAppShimInFinder(updated_app_paths[0]);
   }
   RecordCreateShortcut(CreateShortcutResult::kSuccess);
@@ -523,7 +583,7 @@ bool WebAppShortcutCreator::UpdateShortcuts(
   // UpdateShortcuts call at a time will run at once past here.  Not
   // protecting against that can result in multiple CreateShortcutsAt()
   // calls deleting and creating the app shim folder at once.
-  // See https://crbug.com/1090548 for more info.
+  // See https://crbug.com/40133807 for more info.
   base::AutoLock auto_lock(GetUpdateShortcutsLock());
 
   // Get the list of paths to (re)create by bundle id (wherever it was moved
@@ -562,7 +622,7 @@ void WebAppShortcutCreator::RevealAppShimInFinder(
       app_path);
   // Perform the call to NSWorkspace on the UI thread. Calling it on the IO
   // thread appears to cause crashes.
-  // https://crbug.com/1067367
+  // https://crbug.com/40124995
   content::GetUIThreadTaskRunner({})->PostTask(FROM_HERE, std::move(closure));
 }
 
@@ -643,7 +703,8 @@ bool WebAppShortcutCreator::BuildShortcut(
     return false;
   }
 
-#if defined(COMPONENT_BUILD) || defined(ADDRESS_SANITIZER)
+#if defined(COMPONENT_BUILD) || defined(ADDRESS_SANITIZER) || \
+    defined(UNDEFINED_SANITIZER)
   // Test bots could have the build in a different path than where it was on a
   // build bot. If this is the case in a component build, we'll need to fix the
   // rpath of app_mode_loader to make sure it can still find its dynamic
@@ -710,7 +771,7 @@ void WebAppShortcutCreator::CreateShortcutsAt(
   // we must guarantee that no more than one CreateShortcutsAt() call will
   // ever run at a time.  We have an UpdateShortcuts lock for this purpose,
   // so check that lock has been acquired on this thread before proceeding.
-  // See https://crbug.com/1090548 for more info.
+  // See https://crbug.com/40133807 for more info.
   GetUpdateShortcutsLock().AssertAcquired();
 
   base::ScopedTempDir scoped_temp_dir;
@@ -952,7 +1013,7 @@ bool WebAppShortcutCreator::UpdatePlist(const base::FilePath& app_path) const {
   // changes, instead of relying on localization, then this will need to change
   // to use GetShortcutBaseName, most likely only for non-legacy-apps
   // (in other words, revert to what the code looked like before on these
-  // lines). See also crbug.com/1021804.
+  // lines). See also crbug.com/40657267.
   base::FilePath app_name = app_path.BaseName().RemoveFinalExtension();
   plist[base::apple::CFToNSPtrCast(kCFBundleNameKey)] =
       base::apple::FilePathToNSString(app_name);
@@ -1013,6 +1074,8 @@ bool WebAppShortcutCreator::UpdateSignature(
   base::apple::ScopedCFTypeRef<SecStaticCodeRef> app_code;
   if (SecStaticCodeCreateWithPath(app_url.get(), kSecCSDefaultFlags,
                                   app_code.InitializeInto()) != errSecSuccess) {
+    RecordUpdateSignatureResult(
+        UpdateSignatureResult::kFailToCreateStaticCodeObject);
     return false;
   }
 
@@ -1032,6 +1095,7 @@ bool WebAppShortcutCreator::UpdateSignature(
   if (SecCodeSignerCreate(base::apple::NSToCFPtrCast(signer_params),
                           kSecCSDefaultFlags,
                           signer.InitializeInto()) != errSecSuccess) {
+    RecordUpdateSignatureResult(UpdateSignatureResult::kFailToCreateCodeSigner);
     return false;
   }
 
@@ -1040,6 +1104,7 @@ bool WebAppShortcutCreator::UpdateSignature(
           signer.get(), app_code.get(), kSecCSDefaultFlags,
           errors.InitializeInto()) != errSecSuccess) {
     LOG(ERROR) << "Failed to sign web app shim: " << errors.get();
+    RecordUpdateSignatureResult(UpdateSignatureResult::kFailToAddSignature);
     return false;
   }
 
@@ -1048,6 +1113,8 @@ bool WebAppShortcutCreator::UpdateSignature(
                                     app_shim_info.InitializeInto()) !=
       errSecSuccess) {
     LOG(ERROR) << "Failed to copy signing information from web app shim";
+    RecordUpdateSignatureResult(
+        UpdateSignatureResult::kFailToCopySigningInformation);
     return false;
   }
 
@@ -1057,10 +1124,12 @@ bool WebAppShortcutCreator::UpdateSignature(
   std::vector<uint8_t> cd_hash(cd_hash_span.begin(), cd_hash_span.end());
 
   content::GetUIThreadTaskRunner()->PostTask(
-      FROM_HERE, base::BindOnce(&AppShimRegistry::SaveCdHashForApp,
-                                base::Unretained(AppShimRegistry::Get()),
-                                info_->app_id, std::move(cd_hash)));
+      FROM_HERE,
+      base::BindOnce(&AppShimRegistry::SaveCdHashForApp,
+                     base::Unretained(AppShimRegistry::Get()), info_->app_id,
+                     std::move(cd_hash), base::DoNothing()));
 
+  RecordUpdateSignatureResult(UpdateSignatureResult::kSuccess);
   return true;
 }
 

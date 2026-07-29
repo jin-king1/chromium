@@ -16,14 +16,8 @@
 #include "components/server_certificate_database/server_certificate_database.h"
 #include "components/server_certificate_database/server_certificate_database.pb.h"
 #include "content/public/browser/web_ui_message_handler.h"
-#include "crypto/crypto_buildflags.h"
-#include "net/cert/x509_certificate.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/web_dialogs/web_dialog_delegate.h"
-
-#if BUILDFLAG(USE_NSS_CERTS)
-#include "net/cert/scoped_nss_types.h"
-#endif
 
 namespace content {
 class WebContents;
@@ -44,16 +38,8 @@ class ConstrainedWebDialogDelegate;
 // "View" from the Certificate Manager.
 class CertificateViewerDialog : public ui::WebDialogDelegate {
  public:
-#if BUILDFLAG(USE_NSS_CERTS)
-  static CertificateViewerDialog* ShowConstrained(
-      net::ScopedCERTCertificateList nss_certs,
-      content::WebContents* web_contents,
-      gfx::NativeWindow parent);
-#endif
-
   static CertificateViewerDialog* ShowConstrained(
       std::vector<bssl::UniquePtr<CRYPTO_BUFFER>> certs,
-      std::vector<std::string> cert_nicknames,
       content::WebContents* web_contents,
       gfx::NativeWindow parent);
 
@@ -70,6 +56,11 @@ class CertificateViewerDialog : public ui::WebDialogDelegate {
       content::WebContents* web_contents,
       gfx::NativeWindow parent);
 
+  using MockShowCallback = base::RepeatingCallback<void(
+      std::vector<bssl::UniquePtr<CRYPTO_BUFFER>> certs,
+      content::WebContents* web_contents)>;
+  static void MockForTesting(MockShowCallback callback);
+
   CertificateViewerDialog(const CertificateViewerDialog&) = delete;
   CertificateViewerDialog& operator=(const CertificateViewerDialog&) = delete;
 
@@ -84,7 +75,6 @@ class CertificateViewerDialog : public ui::WebDialogDelegate {
   // If |modifications_callback| is not null, |cert_metadata| must be present.
   static CertificateViewerDialog* ShowConstrained(
       std::vector<bssl::UniquePtr<CRYPTO_BUFFER>> certs,
-      std::vector<std::string> cert_nicknames,
       std::optional<
           chrome_browser_server_certificate_database::CertificateMetadata>
           cert_metadata,
@@ -97,7 +87,6 @@ class CertificateViewerDialog : public ui::WebDialogDelegate {
   // viewer.
   CertificateViewerDialog(
       std::vector<bssl::UniquePtr<CRYPTO_BUFFER>> certs,
-      std::vector<std::string> cert_nicknames,
       std::optional<
           chrome_browser_server_certificate_database::CertificateMetadata>
           cert_metadata,
@@ -133,23 +122,23 @@ class CertificateViewerDialogHandler : public content::WebUIMessageHandler {
   // chain.
   //
   // The input is an integer index to the certificate in the chain to export.
-  void HandleExportCertificate(const base::Value::List& args);
+  void HandleExportCertificate(const base::ListValue& args);
 
   // Gets the details for a specific certificate in the certificate chain.
   // Responds with a tree structure containing the fields and values for certain
   // nodes.
   //
   // The input is an integer index to the certificate in the chain to view.
-  void HandleRequestCertificateFields(const base::Value::List& args);
+  void HandleRequestCertificateFields(const base::ListValue& args);
 
   // Update the trust state of the certificate.
-  void HandleUpdateTrustState(const base::Value::List& args);
+  void HandleUpdateTrustState(const base::ListValue& args);
   void UpdateTrustStateDone(const base::Value& callback_id,
                             CertificateTrust::CertificateTrustType new_trust,
                             bool success);
 
-  void HandleAddConstraint(const base::Value::List& args);
-  void HandleDeleteConstraint(const base::Value::List& args);
+  void HandleAddConstraint(const base::ListValue& args);
+  void HandleDeleteConstraint(const base::ListValue& args);
   void UpdateConstraintsDone(
       const base::Value& callback_id,
       const chrome_browser_server_certificate_database::Constraints

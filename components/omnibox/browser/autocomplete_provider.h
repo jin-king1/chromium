@@ -15,6 +15,7 @@
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
+#include "components/omnibox/browser/autocomplete_enums.h"
 #include "components/omnibox/browser/autocomplete_match.h"
 #include "components/omnibox/browser/in_memory_url_index_types.h"
 #include "components/omnibox/browser/suggestion_group_util.h"
@@ -179,6 +180,11 @@ class AutocompleteProvider
     TYPE_HISTORY_EMBEDDINGS = 1 << 21,
     TYPE_ENTERPRISE_SEARCH_AGGREGATOR = 1 << 22,
     TYPE_UNSCOPED_EXTENSION = 1 << 23,
+    TYPE_RECENTLY_CLOSED_TABS = 1 << 24,
+    TYPE_CONTEXTUAL_SEARCH = 1 << 25,
+    TYPE_TAB_GROUP = 1 << 26,
+    TYPE_CROSS_DEVICE_TAB = 1 << 27,
+
     // When adding a value here, also update:
     // - omnibox_event.proto
     // - `AutocompleteProvider::AsOmniboxEventProviderType`
@@ -193,6 +199,15 @@ class AutocompleteProvider
 
   // Returns a string describing a particular AutocompleteProvider type.
   static const char* TypeToString(Type type);
+
+  // Returns a localized string date that is formatted based on whether
+  // `modified_time` is within the current day or year. For time within the
+  // current day, return the time of day. (Ex. '12:45 PM') For time within the
+  // current year, return the abbreviated date. (Ex. 'Jan 02') Otherwise, return
+  // the full date. (Ex. '10/7/24')
+  static const std::u16string LocalizedLastModifiedString(
+      base::Time now,
+      base::Time modified_time);
 
   // Used to communicate async matches to consumers (usually the
   // `AutocompleteController`). Consumers invoke `AddListener()` to register
@@ -237,25 +252,12 @@ class AutocompleteProvider
   // AutocompleteController::Start().
   virtual void Start(const AutocompleteInput& input, bool minimal_changes) = 0;
 
-  // Advises the provider to stop processing.  This may be called even if the
-  // provider is already done.  If the provider caches any results, it should
-  // clear the cache based on the value of `clear_cached_results`.  Normally,
-  // once this is called, the provider should not send more notifications to
-  // the controller.
-  //
-  // If `user_inactivity_timer` is true, Stop() is being called because it's
-  // been a long time since the user started the current query, and returning
-  // further asynchronous results would normally just be disruptive.  Most
-  // providers should still stop processing in this case, but continuing is
-  // legal if there's a good reason the user is likely to want even long-
-  // delayed asynchronous results, e.g. the user has explicitly invoked a
-  // keyword extension and the extension is still processing the request.
-  //
-  // The default implementation sets `done_` to true and clears `matches_` if
-  // `clear_cached_results` is true. Overridden functions must call
-  // `AutocompleteProvider::Stop()` with the same arguments passed to the
-  // function.
-  virtual void Stop(bool clear_cached_results, bool due_to_user_inactivity);
+  // Advises the provider to stop processing. This may be called even if the
+  // provider is already done. Normally, once this is called, the provider
+  // should not send more notifications to the controller. Overridden functions
+  // must call `AutocompleteProvider::Stop()` with the same `stop_reason` passed
+  // to the function.
+  virtual void Stop(AutocompleteStopReason stop_reason);
 
   // Returns the enum equivalent to the name of this provider.
   // TODO(derat): Make metrics use AutocompleteProvider::Type directly, or at
@@ -307,6 +309,11 @@ class AutocompleteProvider
     return provider_max_matches_in_keyword_mode_;
   }
 
+  // Get the smart compose completion;
+  const std::string& get_smart_compose_inline_hint() const {
+    return smart_compose_inline_hint_;
+  }
+
   // Returns the set of matches for the current query.
   const ACMatches& matches() const { return matches_; }
 
@@ -341,6 +348,8 @@ class AutocompleteProvider
   FRIEND_TEST_ALL_PREFIXES(BookmarkProviderTest, InlineAutocompletion);
   FRIEND_TEST_ALL_PREFIXES(AutocompleteResultTest,
                            DemoteOnDeviceSearchSuggestions);
+  FRIEND_TEST_ALL_PREFIXES(OmniboxPopupSuggestionGroupHeadersTest,
+                           ShowSuggestionGroupHeadersByPageContext);
 
   virtual ~AutocompleteProvider();
 
@@ -358,7 +367,7 @@ class AutocompleteProvider
       std::pair<AutocompleteInput, const TemplateURL*>;
   static AdjustedInputAndStarterPackKeyword AdjustInputForStarterPackKeyword(
       const AutocompleteInput& input,
-      TemplateURLService* turl_service);
+      const TemplateURLService* turl_service);
 
   // Fixes up user URL input to make it more possible to match against.  Among
   // many other things, this takes care of the following:
@@ -384,6 +393,12 @@ class AutocompleteProvider
   const size_t provider_max_matches_in_keyword_mode_{7};
 
   ACMatches matches_;
+  // The smart compose inline hint. This hint is currently only provided in the
+  // composebox when a user is typing. The user must explicitly press tab to
+  // accept and have this hint fill in the input. Pressing enter with the hint
+  // present does not accept the hint during navigation. Inline autocomplete
+  // is not available for all composebox inputs.
+  std::string smart_compose_inline_hint_;
   // A map of suggestion group IDs to suggestion group information.
   // `omnibox::BuildDefaultGroupsForInput(AutocompleteInput)` will generate
   // static groups. Providers can set this to create dynamic groups; e.g. the

@@ -15,19 +15,25 @@
 #include "android_webview/browser/aw_web_ui_controller_factory.h"
 #include "android_webview/browser/metrics/aw_metrics_service_accessor.h"
 #include "android_webview/browser/metrics/aw_metrics_service_client.h"
+#include "android_webview/browser/metrics/memory_metrics_logger.h"
 #include "android_webview/browser/metrics/system_state_util.h"
 #include "android_webview/browser/network_service/aw_network_change_notifier_factory.h"
+#include "android_webview/common/aw_cached_flags.h"
 #include "android_webview/common/aw_descriptors.h"
+#include "android_webview/common/aw_features.h"
 #include "android_webview/common/aw_paths.h"
 #include "android_webview/common/aw_resource.h"
 #include "android_webview/common/aw_switches.h"
 #include "android_webview/common/crash_reporter/aw_crash_reporter_client.h"
 #include "base/android/apk_assets.h"
-#include "base/android/build_info.h"
+#include "base/android/apk_info.h"
 #include "base/android/bundle_utils.h"
 #include "base/android/memory_pressure_listener_android.h"
+#include "base/android/path_utils.h"
 #include "base/base_paths_android.h"
+#include "base/byte_size.h"
 #include "base/command_line.h"
+#include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/callback_helpers.h"
@@ -36,16 +42,20 @@
 #include "base/message_loop/message_pump_type.h"
 #include "base/path_service.h"
 #include "base/task/current_thread.h"
+#include "base/task/thread_pool.h"
 #include "base/trace_event/named_trigger.h"
 #include "components/crash/content/browser/child_exit_observer_android.h"
 #include "components/crash/core/common/crash_key.h"
-#include "components/embedder_support/android/metrics/memory_metrics_logger.h"
 #include "components/embedder_support/origin_trials/component_updater_utils.h"
 #include "components/embedder_support/origin_trials/origin_trials_settings_storage.h"
+#include "components/heap_profiling/in_process/browser_process_snapshot_controller.h"
+#include "components/heap_profiling/in_process/mojom/snapshot_controller.mojom.h"
 #include "components/heap_profiling/multi_process/supervisor.h"
 #include "components/metrics/android_metrics_helper.h"
 #include "components/metrics/content/subprocess_metrics_provider.h"
 #include "components/metrics/metrics_service.h"
+#include "components/performance_manager/embedder/graph_features.h"
+#include "components/performance_manager/embedder/performance_manager_lifetime.h"
 #include "components/services/heap_profiling/public/cpp/settings.h"
 #include "components/tracing/common/background_tracing_utils.h"
 #include "components/user_prefs/user_prefs.h"
@@ -55,14 +65,18 @@
 #include "components/variations/variations_ids_provider.h"
 #include "components/version_info/version_info_values.h"
 #include "content/public/browser/android/synchronous_compositor.h"
+#include "content/public/browser/browser_child_process_host.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/child_process_host.h"
+#include "content/public/browser/network_service_instance.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/synthetic_trial_syncer.h"
 #include "content/public/common/content_client.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/common/result_codes.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "net/android/network_change_notifier_factory_android.h"
 #include "net/base/network_change_notifier.h"
 #include "third_party/blink/public/common/origin_trials/origin_trials_settings_provider.h"
@@ -72,6 +86,22 @@
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "android_webview/browser_jni_headers/AwBrowserMainParts_jni.h"
 #include "android_webview/browser_jni_headers/AwInterfaceRegistrar_jni.h"
+
+namespace {
+
+void BindHeapSnapshotControllerToProcessHost(
+    int child_process_id,
+    mojo::PendingReceiver<heap_profiling::mojom::SnapshotController> receiver) {
+  if (auto* bcph = content::BrowserChildProcessHost::FromID(child_process_id)) {
+    bcph->GetHost()->BindReceiver(std::move(receiver));
+  } else if (auto* rph = content::RenderProcessHost::FromID(child_process_id)) {
+    if (!rph->GetBrowserContext()->IsOffTheRecord()) {
+      rph->BindReceiver(std::move(receiver));
+    }
+  }
+}
+
+}  // namespace
 
 namespace android_webview {
 
@@ -154,6 +184,15 @@ AwBrowserMainParts::AwBrowserMainParts(AwContentBrowserClient* browser_client)
 AwBrowserMainParts::~AwBrowserMainParts() {
 }
 
+void AwBrowserMainParts::PreCreateMainMessageLoop() {
+  // WebView should not override the main thread name.
+  // This switch is set here instead of
+  // `android_webview/lib/aw_main_delegate.cc` because it must be available in
+  // `BrowserMainLoop::CreateMainMessageLoop`.
+  base::CommandLine::ForCurrentProcess()->AppendSwitch(
+      switches::kDisableMainThreadNameOverride);
+}
+
 int AwBrowserMainParts::PreEarlyInitialization() {
   // Network change notifier factory must be singleton, only set factory
   // instance while it is not been created.
@@ -173,8 +212,7 @@ int AwBrowserMainParts::PreEarlyInitialization() {
         base::MessagePumpType::UI);
   }
 
-  browser_process_ = std::make_unique<AwBrowserProcess>(
-      browser_client_->aw_feature_list_creator());
+  browser_process_ = std::make_unique<AwBrowserProcess>(browser_client_);
 
   auto* origin_trials_settings_storage =
       browser_process_->GetOriginTrialsSettingsStorage();
@@ -182,6 +220,14 @@ int AwBrowserMainParts::PreEarlyInitialization() {
       browser_process_->local_state(), origin_trials_settings_storage);
   blink::OriginTrialsSettingsProvider::Get()->SetSettings(
       origin_trials_settings_storage->GetSettings());
+
+  if (base::FeatureList::IsEnabled(
+          features::kWebViewCacheSizeLimitDerivedFromAppCacheQuota)) {
+    base::ThreadPool::PostTask(
+        FROM_HERE, {base::TaskPriority::BEST_EFFORT, base::MayBlock()},
+        base::BindOnce(&AwBrowserProcess::FetchHostAppCacheQuota,
+                       base::Unretained(browser_process_.get())));
+  }
 
   return content::RESULT_CODE_NORMAL_EXIT;
 }
@@ -244,16 +290,37 @@ void AwBrowserMainParts::RegisterSyntheticTrials() {
     case ApkType::TRICHROME:
       apk_type_string = "Trichrome";
       break;
-    case ApkType::MONOCHROME:
-      apk_type_string = "Monochrome";
-      break;
     case ApkType::STANDALONE:
       apk_type_string = "Standalone";
+      break;
+    case ApkType::UNKNOWN:
+      apk_type_string = "Unknown";
       break;
   }
   AwMetricsServiceAccessor::RegisterSyntheticFieldTrial(
       metrics, kWebViewApkTypeTrial, apk_type_string,
-      variations::SyntheticTrialAnnotationMode::kNextLog);
+      variations::SyntheticTrialAnnotationMode::kCurrentLog);
+
+  // We use 3393823 as an id reported for all WebView traffic to help analyse data on the
+  // server-side for WebView embedders.
+  std::vector<std::string> forced_variation_ids = {"3393823"};
+
+  // Configure experiment to measure impact of using a native renderer zygote.
+  std::string native_zygote_group;
+  if (AwBrowserProcess::IsNativeWebViewZygoteEnabled()) {
+    native_zygote_group = "Enabled";
+    forced_variation_ids.emplace_back("101000092");
+  } else {
+    native_zygote_group = "Disabled";
+    forced_variation_ids.emplace_back("101000091");
+  }
+  AwMetricsServiceAccessor::RegisterSyntheticFieldTrial(
+      metrics, "WebViewNativeZygote", native_zygote_group,
+      variations::SyntheticTrialAnnotationMode::kCurrentLog);
+
+  variations::VariationsIdsProvider::GetInstance()->ForceVariationIds(
+      base::PassKey<AwBrowserMainParts>(), forced_variation_ids,
+      /*command_line_variation_ids=*/"");
 
   // Set up experiment for 64-bit WebView.
   //
@@ -275,9 +342,8 @@ void AwBrowserMainParts::RegisterSyntheticTrials() {
   //    represented mainly by version codes ending with 41 and 42, which
   //    dominate, but we want to filter them out nonetheless because it's harder
   //    to set up experiment for them.)
-  std::string version_code =
-      base::android::BuildInfo::GetInstance()->package_version_code();
-  size_t ram_mb = base::SysInfo::AmountOfPhysicalMemoryMB();
+  std::string version_code = base::android::apk_info::package_version_code();
+  size_t ram_mb = base::SysInfo::AmountOfTotalPhysicalMemory().InMiB();
   auto cpu_abi_bitness_support =
       metrics::AndroidMetricsHelper::GetInstance()->cpu_abi_bitness_support();
   bool is_device_of_interest =
@@ -317,26 +383,59 @@ void AwBrowserMainParts::RegisterSyntheticTrials() {
       metrics, "WebViewPartitionedCookiesMetrics",
       partitioned_cookies_enablement_state ? "Control" : "Disabled",
       variations::SyntheticTrialAnnotationMode::kCurrentLog);
+
+  bool in_seed_experiment =
+      android_webview::CachedFlags::IsCachedFeatureOverridden(
+          features::kWebViewReducedSeedExpiration) ||
+      android_webview::CachedFlags::IsCachedFeatureOverridden(
+          features::kWebViewReducedSeedRequestPeriod);
+  bool reduced_seed_expiration = android_webview::CachedFlags::IsEnabled(
+      features::kWebViewReducedSeedExpiration);
+  bool reduced_seed_request_period = android_webview::CachedFlags::IsEnabled(
+      features::kWebViewReducedSeedRequestPeriod);
+
+  std::string group = "Default";
+  if (in_seed_experiment) {
+    if (reduced_seed_expiration && reduced_seed_request_period) {
+      group = "BothEnabled";
+    } else if (reduced_seed_expiration) {
+      group = "ReducedSeedExpiration";
+    } else if (reduced_seed_request_period) {
+      group = "ReducedSeedRequestPeriod";
+    } else {
+      group = "Control";
+    }
+  }
+  AwMetricsServiceAccessor::RegisterSyntheticFieldTrial(
+      metrics, "WebViewFasterFinchSeed", group,
+      variations::SyntheticTrialAnnotationMode::kCurrentLog);
+
 }
 
 int AwBrowserMainParts::PreMainMessageLoopRun() {
   TRACE_EVENT0("startup", "AwBrowserMainParts::PreMainMessageLoopRun");
   AwBrowserProcess::GetInstance()->PreMainMessageLoopRun();
-  browser_client_->InitBrowserContext();
+  browser_client_->InitBrowserContextStore();
   content::WebUIControllerFactory::RegisterFactory(
       AwWebUIControllerFactory::GetInstance());
   content::RenderFrameHost::AllowInjectingJavaScript();
   metrics_logger_ = std::make_unique<metrics::MemoryMetricsLogger>();
 
-  // Requesting the |OriginTrialsControllerDelegate| will initialize
-  // it if the feature is enabled.
-  //
-  // This should be done as soon as possible in the start-up process, in order
-  // to load the database from disk.
-  AwBrowserContext::GetDefault()->GetOriginTrialsControllerDelegate();
-
   Java_AwInterfaceRegistrar_registerMojoInterfaces(
       base::android::AttachCurrentThread());
+
+  // The global NetworkService instance (network::NetworkService) is profile
+  // agnostic and operates asynchronously on a dedicated IO/Network thread.
+  // Unlike initializing a full StoragePartition or NetworkContext, invoking
+  // content::GetNetworkService() does not touch profile storage paths, SQLite
+  // cookie databases, or app quota limits. Eagerly warming up the service here
+  // during native browser process startup spins up the background thread and
+  // IPC pipelines ahead of time, eliminating thread spin-up latency on the
+  // critical path of the first navigation or socket preconnect API call.
+  if (base::FeatureList::IsEnabled(features::kWebViewWarmupNetworkService)) {
+    TRACE_EVENT0("startup", "AwBrowserMainParts::WarmupNetworkService");
+    content::GetNetworkService();
+  }
 
   return content::RESULT_CODE_NORMAL_EXIT;
 }
@@ -347,9 +446,22 @@ void AwBrowserMainParts::WillRunMainMessageLoop(
 }
 
 void AwBrowserMainParts::PostCreateThreads() {
+  if (base::FeatureList::IsEnabled(features::kWebViewMemoryProfilingClient)) {
+    if (auto* snapshot_controller =
+            heap_profiling::BrowserProcessSnapshotController::GetInstance()) {
+      snapshot_controller->SetBindRemoteForChildProcessCallback(
+          base::BindRepeating(&BindHeapSnapshotControllerToProcessHost));
+    }
+  }
+
   heap_profiling::Mode mode = heap_profiling::GetModeForStartup();
   if (mode != heap_profiling::Mode::kNone)
     heap_profiling::Supervisor::GetInstance()->Start(base::NullCallback());
+
+  // TODO(crbug.com/524981399): Enable standard graph features.
+  performance_manager_lifetime_ =
+      std::make_unique<performance_manager::PerformanceManagerLifetime>(
+          performance_manager::GraphFeatures::WithNone(), base::DoNothing());
 
   tracing::SetupSystemTracingFromFieldTrial();
   tracing::SetupBackgroundTracingFromCommandLine();
@@ -358,4 +470,12 @@ void AwBrowserMainParts::PostCreateThreads() {
       base::trace_event::kStartupTracingTriggerName);
 }
 
+bool AwBrowserMainParts::runStartupTasksAsync() {
+  return Java_AwBrowserMainParts_runStartupTasksAsync(
+      base::android::AttachCurrentThread());
+}
+
 }  // namespace android_webview
+
+DEFINE_JNI(AwBrowserMainParts)
+DEFINE_JNI(AwInterfaceRegistrar)

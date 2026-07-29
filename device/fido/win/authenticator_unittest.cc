@@ -14,20 +14,24 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
+#include "crypto/sha2.h"
 #include "device/fido/authenticator_get_assertion_response.h"
 #include "device/fido/authenticator_make_credential_response.h"
 #include "device/fido/ctap_get_assertion_request.h"
 #include "device/fido/ctap_make_credential_request.h"
-#include "device/fido/features.h"
-#include "device/fido/fido_constants.h"
+#include "device/fido/fido_authenticator.h"
 #include "device/fido/fido_request_handler_base.h"
 #include "device/fido/fido_test_data.h"
-#include "device/fido/fido_transport_protocol.h"
-#include "device/fido/fido_types.h"
-#include "device/fido/public_key_credential_descriptor.h"
-#include "device/fido/public_key_credential_rp_entity.h"
-#include "device/fido/public_key_credential_user_entity.h"
+#include "device/fido/prf_input.h"
+#include "device/fido/public/features.h"
+#include "device/fido/public/fido_constants.h"
+#include "device/fido/public/fido_transport_protocol.h"
+#include "device/fido/public/fido_types.h"
+#include "device/fido/public/public_key_credential_descriptor.h"
+#include "device/fido/public/public_key_credential_rp_entity.h"
+#include "device/fido/public/public_key_credential_user_entity.h"
 #include "device/fido/win/fake_webauthn_api.h"
+#include "device/fido/win/util.h"
 #include "device/fido/win/webauthn_api.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -62,11 +66,16 @@ const std::vector<uint8_t> kLargeBlob = {'b', 'l', 'o', 'b'};
 const std::vector<uint8_t> kUserId2 = {1, 1, 1, 1};
 constexpr char kUserName2[] = "chloe";
 constexpr char kUserDisplayName2[] = "Chloe";
+const std::vector<uint8_t> kPrfEval1 = {'o', 'n', 'e'};
+const std::vector<uint8_t> kPrfEval2 = {'t', 'w', 'o'};
 
 class WinAuthenticatorTest : public testing::Test,
                              WinWebAuthnApiAuthenticator::TestObserver {
  public:
   void SetUp() override {
+    scoped_feature_list_.InitWithFeatures(
+        {device::kWebAuthnHelloSignal, device::kWebAuthnWinPrfOnCreate},
+        /*disabled_features=*/{});
     fake_webauthn_api_ = std::make_unique<FakeWinWebAuthnApi>();
     fake_webauthn_api_->set_supports_silent_discovery(true);
     authenticator_ = std::make_unique<WinWebAuthnApiAuthenticator>(
@@ -110,8 +119,7 @@ class WinAuthenticatorTest : public testing::Test,
   base::test::TaskEnvironment task_environment;
   base::RunLoop signal_unknown_credential_run_loop_;
   base::RunLoop signal_all_accepted_credentials_run_loop_;
-  base::test::ScopedFeatureList scoped_feature_list_{
-      device::kWebAuthnHelloSignal};
+  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 // Tests getting credential information for an empty allow-list request that has
@@ -173,6 +181,29 @@ TEST_F(WinAuthenticatorTest, GetCredentialInformationForRequest_NoCredentials) {
   EXPECT_EQ(
       std::get<1>(future.Get()),
       FidoRequestHandlerBase::RecognizedCredential::kNoRecognizedCredential);
+}
+
+// Tests getting credential information for an empty allow-list request when
+// under RDP. Windows will report that there are no credentials, but the
+// Authenticator should relay this as an unknown result.
+TEST_F(WinAuthenticatorTest, GetCredentialInformationForRequest_Rdp) {
+  fido::win::ScopedIsRdpSessionOverride scoped_rdp_override(true);
+  PublicKeyCredentialRpEntity rp(kRpId);
+  PublicKeyCredentialUserEntity user(kUserId, kUserName, kUserDisplayName);
+  fake_webauthn_api_->InjectDiscoverableCredential(kCredentialId, rp, user,
+                                                   kProviderName);
+  fake_webauthn_api_->set_simulate_rdp(true);
+
+  CtapGetAssertionRequest request(kRpId, /*client_data_json=*/"");
+  GetCredentialFuture future;
+  authenticator_->GetPlatformCredentialInfoForRequest(
+      std::move(request), CtapGetAssertionOptions(), future.GetCallback());
+  EXPECT_TRUE(future.Wait());
+
+  EXPECT_EQ(std::get<0>(future.Get()),
+            std::vector<DiscoverableCredentialMetadata>{});
+  EXPECT_EQ(std::get<1>(future.Get()),
+            FidoRequestHandlerBase::RecognizedCredential::kUnknown);
 }
 
 // Tests the authenticator handling of an unexpected error from the Windows API.
@@ -707,6 +738,232 @@ TEST_F(WinAuthenticatorTest, SignalAllAcceptedCredentials_NotFound) {
       fake_webauthn_api_.get(), kRpId, kUserId, {kCredentialId2});
   WaitForSignalAllAcceptedCredentials();
   EXPECT_TRUE(fake_webauthn_api_->registrations().empty());
+}
+
+// Regression test for crbug.com/512385679.
+// Tests that Chrome allows passing the hmac secret extension on create to the
+// Windows WebAuthn DLL version >= 2.
+TEST_F(WinAuthenticatorTest, HmacSecret) {
+  SetVersion(WEBAUTHN_API_VERSION_2);
+  EXPECT_EQ(authenticator_->Options().supports_hmac_secret, true);
+  PublicKeyCredentialRpEntity rp(kRpId);
+  PublicKeyCredentialUserEntity user(std::vector<uint8_t>{1, 2, 3, 4},
+                                     kUserName, kUserDisplayName);
+  CtapMakeCredentialRequest mc_request(
+      test_data::kClientDataJson, rp, user,
+      PublicKeyCredentialParams({{CredentialType::kPublicKey, -257}}));
+  mc_request.hmac_secret = true;
+  MakeCredentialFuture mc_future;
+  authenticator_->MakeCredential(std::move(mc_request), MakeCredentialOptions(),
+                                 mc_future.GetCallback());
+  ASSERT_TRUE(mc_future.Wait());
+  ASSERT_EQ(std::get<0>(mc_future.Get()), MakeCredentialStatus::kSuccess);
+  const AuthenticatorMakeCredentialResponse& response =
+      *std::get<1>(mc_future.Get());
+
+  const cbor::Value& extensions =
+      *response.attestation_object.authenticator_data().extensions();
+  const cbor::Value::MapValue& extensions_map = extensions.GetMap();
+  const auto hmac_secret_it =
+      extensions_map.find(cbor::Value(device::kExtensionHmacSecret));
+  ASSERT_NE(hmac_secret_it, extensions_map.end());
+}
+
+TEST_F(WinAuthenticatorTest, HmacSecretMakeCredentialAvailability) {
+  for (bool available : {false, true}) {
+    SCOPED_TRACE(available);
+    SetVersion(available ? WEBAUTHN_API_VERSION_8 : WEBAUTHN_API_VERSION_7);
+    EXPECT_EQ(authenticator_->Options().supports_hmac_secret_mc, available);
+  }
+}
+
+// Tests attempting to use PRF on get assertion when the Windows WebAuthn DLL
+// version does not support it.
+TEST_F(WinAuthenticatorTest, PrfOnGetAssertionNotSupported) {
+  SetVersion(WEBAUTHN_API_VERSION_5);
+
+  // Make a credential with PRF enabled and evaluated.
+  PublicKeyCredentialRpEntity rp(kRpId);
+  PublicKeyCredentialUserEntity user(std::vector<uint8_t>{1, 2, 3, 4},
+                                     kUserName, kUserDisplayName);
+  fake_webauthn_api_->InjectDiscoverableCredential(kCredentialId, rp, user,
+                                                   kProviderName);
+
+  CtapGetAssertionRequest ga_request(kRpId, test_data::kClientDataJson);
+  CtapGetAssertionOptions ga_options;
+  auto& prf_input_it = ga_options.prf_inputs.emplace_back();
+  prf_input_it.input1 = kPrfEval1;
+  prf_input_it.input2 = kPrfEval2;
+  prf_input_it.HashInputsIntoSalts();
+  GetAssertionFuture ga_future;
+  authenticator_->GetAssertion(std::move(ga_request), std::move(ga_options),
+                               ga_future.GetCallback());
+  ASSERT_EQ(std::get<0>(ga_future.Get()), GetAssertionStatus::kSuccess);
+  const AuthenticatorGetAssertionResponse& ga_response =
+      std::get<1>(ga_future.Get()).at(0);
+  EXPECT_FALSE(ga_response.hmac_secret.has_value());
+}
+
+// Tests attempting to use PRF on create when the Windows WebAuthn DLL version
+// does not support it.
+TEST_F(WinAuthenticatorTest, PrfOnMakeCredentialNotSupported) {
+  SetVersion(WEBAUTHN_API_VERSION_7);
+
+  // Make a credential with PRF enabled and evaluated.
+  PublicKeyCredentialRpEntity rp(kRpId);
+  PublicKeyCredentialUserEntity user(std::vector<uint8_t>{1, 2, 3, 4},
+                                     kUserName, kUserDisplayName);
+  CtapMakeCredentialRequest mc_request(
+      test_data::kClientDataJson, rp, user,
+      PublicKeyCredentialParams({{CredentialType::kPublicKey, -257}}));
+  mc_request.resident_key_required = true;
+  mc_request.prf_input.emplace();
+  mc_request.prf_input->input1 = kPrfEval1;
+  mc_request.prf_input->input2 = kPrfEval2;
+  mc_request.prf_input->HashInputsIntoSalts();
+  MakeCredentialFuture mc_future;
+  authenticator_->MakeCredential(std::move(mc_request), MakeCredentialOptions(),
+                                 mc_future.GetCallback());
+  EXPECT_TRUE(mc_future.Wait());
+  ASSERT_EQ(std::get<0>(mc_future.Get()), MakeCredentialStatus::kSuccess);
+  const AuthenticatorMakeCredentialResponse& response =
+      *std::get<1>(mc_future.Get());
+  EXPECT_FALSE(response.prf_enabled);
+  EXPECT_FALSE(response.prf_results.has_value());
+}
+
+// Tests making a credential with PRF enabled and getting it evaluated, then
+// evaluating it on the same value for get assertion.
+TEST_F(WinAuthenticatorTest, PrfRoundtripOneValue) {
+  SetVersion(WEBAUTHN_API_VERSION_8);
+
+  // Make a credential with PRF enabled and evaluated.
+  PublicKeyCredentialRpEntity rp(kRpId);
+  PublicKeyCredentialUserEntity user(std::vector<uint8_t>{1, 2, 3, 4},
+                                     kUserName, kUserDisplayName);
+  CtapMakeCredentialRequest mc_request(
+      test_data::kClientDataJson, rp, user,
+      PublicKeyCredentialParams({{CredentialType::kPublicKey, -257}}));
+  mc_request.resident_key_required = true;
+  mc_request.prf = true;
+  mc_request.prf_input.emplace();
+  mc_request.prf_input->input1 = kPrfEval1;
+  mc_request.prf_input->HashInputsIntoSalts();
+  MakeCredentialFuture mc_future;
+  authenticator_->MakeCredential(std::move(mc_request), MakeCredentialOptions(),
+                                 mc_future.GetCallback());
+  EXPECT_TRUE(mc_future.Wait());
+  ASSERT_EQ(std::get<0>(mc_future.Get()), MakeCredentialStatus::kSuccess);
+  const AuthenticatorMakeCredentialResponse& response =
+      *std::get<1>(mc_future.Get());
+  EXPECT_TRUE(response.prf_enabled);
+  EXPECT_EQ(response.prf_results->size(), crypto::kSHA256Length);
+  {
+    // Get an assertion with the credential and the same evaluation point.
+    CtapGetAssertionRequest ga_request(kRpId, test_data::kClientDataJson);
+    CtapGetAssertionOptions ga_options;
+    auto& prf_input_it = ga_options.prf_inputs.emplace_back();
+    prf_input_it.input1 = kPrfEval1;
+    prf_input_it.HashInputsIntoSalts();
+    GetAssertionFuture ga_future;
+    authenticator_->GetAssertion(std::move(ga_request), std::move(ga_options),
+                                 ga_future.GetCallback());
+    ASSERT_EQ(std::get<0>(ga_future.Get()), GetAssertionStatus::kSuccess);
+    const AuthenticatorGetAssertionResponse& ga_response =
+        std::get<1>(ga_future.Get()).at(0);
+    EXPECT_EQ(ga_response.hmac_secret->size(), crypto::kSHA256Length);
+
+    // Since the function was evaluated over the same value, it should have the
+    // same result.
+    EXPECT_EQ(*ga_response.hmac_secret, *response.prf_results);
+  }
+  {
+    // Get an assertion with the credential and a different evaluation point.
+    CtapGetAssertionRequest ga_request(kRpId, test_data::kClientDataJson);
+    CtapGetAssertionOptions ga_options;
+    auto& prf_input_it = ga_options.prf_inputs.emplace_back();
+    prf_input_it.input1 = kPrfEval2;
+    prf_input_it.HashInputsIntoSalts();
+    GetAssertionFuture ga_future;
+    authenticator_->GetAssertion(std::move(ga_request), std::move(ga_options),
+                                 ga_future.GetCallback());
+    ASSERT_EQ(std::get<0>(ga_future.Get()), GetAssertionStatus::kSuccess);
+    const AuthenticatorGetAssertionResponse& ga_response =
+        std::get<1>(ga_future.Get()).at(0);
+    EXPECT_EQ(ga_response.hmac_secret->size(), crypto::kSHA256Length);
+
+    // Since the function was evaluated over the same value, it should have the
+    // same result.
+    EXPECT_NE(*ga_response.hmac_secret, *response.prf_results);
+  }
+}
+
+// Tests making a credential with PRF enabled and getting it evaluated on two
+// points, then evaluating it on the same values for get assertion.
+TEST_F(WinAuthenticatorTest, PrfRoundtripTwoValues) {
+  SetVersion(WEBAUTHN_API_VERSION_8);
+
+  // Make a credential with PRF enabled and evaluated.
+  PublicKeyCredentialRpEntity rp(kRpId);
+  PublicKeyCredentialUserEntity user(std::vector<uint8_t>{1, 2, 3, 4},
+                                     kUserName, kUserDisplayName);
+  CtapMakeCredentialRequest mc_request(
+      test_data::kClientDataJson, rp, user,
+      PublicKeyCredentialParams({{CredentialType::kPublicKey, -257}}));
+  mc_request.resident_key_required = true;
+  mc_request.prf_input.emplace();
+  mc_request.prf_input->input1 = kPrfEval1;
+  mc_request.prf_input->input2 = kPrfEval2;
+  mc_request.prf_input->HashInputsIntoSalts();
+  MakeCredentialFuture mc_future;
+  authenticator_->MakeCredential(std::move(mc_request), MakeCredentialOptions(),
+                                 mc_future.GetCallback());
+  EXPECT_TRUE(mc_future.Wait());
+  ASSERT_EQ(std::get<0>(mc_future.Get()), MakeCredentialStatus::kSuccess);
+  const AuthenticatorMakeCredentialResponse& response =
+      *std::get<1>(mc_future.Get());
+  EXPECT_TRUE(response.prf_enabled);
+  EXPECT_EQ(response.prf_results->size(), crypto::kSHA256Length * 2);
+  {
+    // Get an assertion with the credential and the same evaluation points.
+    CtapGetAssertionRequest ga_request(kRpId, test_data::kClientDataJson);
+    CtapGetAssertionOptions ga_options;
+    auto& prf_input_it = ga_options.prf_inputs.emplace_back();
+    prf_input_it.input1 = kPrfEval1;
+    prf_input_it.input2 = kPrfEval2;
+    prf_input_it.HashInputsIntoSalts();
+    GetAssertionFuture ga_future;
+    authenticator_->GetAssertion(std::move(ga_request), std::move(ga_options),
+                                 ga_future.GetCallback());
+    ASSERT_EQ(std::get<0>(ga_future.Get()), GetAssertionStatus::kSuccess);
+    const AuthenticatorGetAssertionResponse& ga_response =
+        std::get<1>(ga_future.Get()).at(0);
+    EXPECT_EQ(ga_response.hmac_secret->size(), crypto::kSHA256Length * 2);
+
+    // Since the function was evaluated over the same values, it should have the
+    // same result.
+    EXPECT_EQ(*ga_response.hmac_secret, *response.prf_results);
+  }
+  {
+    // Get an assertion with the credential and different evaluation points.
+    CtapGetAssertionRequest ga_request(kRpId, test_data::kClientDataJson);
+    CtapGetAssertionOptions ga_options;
+    auto& prf_input_it = ga_options.prf_inputs.emplace_back();
+    prf_input_it.input1 = kPrfEval2;
+    prf_input_it.input2 = kPrfEval1;
+    prf_input_it.HashInputsIntoSalts();
+    GetAssertionFuture ga_future;
+    authenticator_->GetAssertion(std::move(ga_request), std::move(ga_options),
+                                 ga_future.GetCallback());
+    ASSERT_EQ(std::get<0>(ga_future.Get()), GetAssertionStatus::kSuccess);
+    const AuthenticatorGetAssertionResponse& ga_response =
+        std::get<1>(ga_future.Get()).at(0);
+    EXPECT_EQ(ga_response.hmac_secret->size(), crypto::kSHA256Length * 2);
+
+    // Since the function was evaluated over the same value, it should have the
+    // same result.
+    EXPECT_NE(*ga_response.hmac_secret, *response.prf_results);
+  }
 }
 
 }  // namespace

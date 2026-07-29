@@ -12,8 +12,6 @@
 
 namespace content_settings {
 
-class PartitionKey;
-
 class ObservableProvider : public ProviderInterface {
  public:
   ObservableProvider();
@@ -26,14 +24,18 @@ class ObservableProvider : public ProviderInterface {
   // See `content_settings::Observer` for details.
   void NotifyObservers(const ContentSettingsPattern& primary_pattern,
                        const ContentSettingsPattern& secondary_pattern,
-                       ContentSettingsType content_type,
-                       const PartitionKey* partition_key);
+                       ContentSettingsType content_type);
   void RemoveAllObservers();
   bool CalledOnValidThread();
 
  private:
   base::ThreadChecker thread_checker_;
-  base::ObserverList<Observer, true>::Unchecked observer_list_;
+  // TODO(crbug.com/484371187): Investigate if reentrancy can be removed.
+  base::ObserverList<
+      Observer,
+      /*check_empty=*/true,
+      base::ObserverListReentrancyPolicy::kAllowReentrancyUntriaged>::Unchecked
+      observer_list_;
 };
 
 }  // namespace content_settings

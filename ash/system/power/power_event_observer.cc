@@ -23,6 +23,7 @@
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/scoped_multi_source_observation.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "chromeos/ash/components/feature_usage/feature_usage_metrics.h"
 #include "ui/aura/window.h"
@@ -31,6 +32,7 @@
 #include "ui/compositor/compositor.h"
 #include "ui/compositor/compositor_observer.h"
 #include "ui/display/manager/display_configurator.h"
+#include "ui/gfx/presentation_feedback.h"
 
 // TODO(b/248107965): Remove after figuring out the root cause of the bug
 #undef ENABLED_VLOG_LEVEL
@@ -82,27 +84,30 @@ class CompositorWatcher : public ui::CompositorObserver {
 
   // ui::CompositorObserver:
   void OnCompositingDidCommit(ui::Compositor* compositor) override {
-    if (!pending_compositing_.count(compositor) ||
-        pending_compositing_[compositor].state !=
-            CompositingState::kWaitingForCommit) {
-      return;
+    if (auto it = pending_compositing_.find(compositor);
+        it != pending_compositing_.end() &&
+        it->second.state == CompositingState::kWaitingForCommit) {
+      it->second.state = CompositingState::kWaitingForStarted;
     }
-    pending_compositing_[compositor].state =
-        CompositingState::kWaitingForStarted;
   }
   void OnCompositingStarted(ui::Compositor* compositor,
                             base::TimeTicks start_time) override {
-    if (!pending_compositing_.count(compositor) ||
-        pending_compositing_[compositor].state !=
-            CompositingState::kWaitingForStarted) {
+    if (auto it = pending_compositing_.find(compositor);
+        it != pending_compositing_.end() &&
+        it->second.state == CompositingState::kWaitingForStarted) {
+      pending_compositing_[compositor].state =
+          CompositingState::kWaitingForEnded;
+    }
+  }
+  void OnDidPresentCompositorFrame(
+      ui::Compositor* compositor,
+      uint32_t frame_token,
+      const gfx::PresentationFeedback& feedback) override {
+    auto it = pending_compositing_.find(compositor);
+    if (it == pending_compositing_.end()) {
       return;
     }
-    pending_compositing_[compositor].state = CompositingState::kWaitingForEnded;
-  }
-  void OnCompositingAckDeprecated(ui::Compositor* compositor) override {
-    if (!pending_compositing_.count(compositor))
-      return;
-    CompositorInfo& compositor_info = pending_compositing_[compositor];
+    CompositorInfo& compositor_info = it->second;
     if (compositor_info.state != CompositingState::kWaitingForEnded)
       return;
 
@@ -114,10 +119,11 @@ class CompositorWatcher : public ui::CompositorObserver {
     }
 
     compositor_observations_.RemoveObservation(compositor);
-    pending_compositing_.erase(compositor);
+    pending_compositing_.erase(it);
 
     RunCallbackIfAllCompositingEnded();
   }
+
   void OnCompositingShuttingDown(ui::Compositor* compositor) override {
     compositor_observations_.RemoveObservation(compositor);
     pending_compositing_.erase(compositor);
@@ -156,7 +162,7 @@ class CompositorWatcher : public ui::CompositorObserver {
       if (!compositor->IsVisible())
         continue;
 
-      DCHECK(!pending_compositing_.count(compositor));
+      DCHECK(!pending_compositing_.contains(compositor));
 
       compositor_observations_.AddObservation(compositor);
       pending_compositing_[compositor].state =
@@ -186,16 +192,13 @@ class CompositorWatcher : public ui::CompositorObserver {
   // with the compositor. It starts observing the compositor's compositing
   // cycles.
   void StartObservingCompositing(ui::Compositor* compositor) {
-    if (!pending_compositing_.count(compositor) ||
-        pending_compositing_[compositor].state !=
-            CompositingState::kWaitingForWallpaperAnimation) {
-      return;
+    if (auto it = pending_compositing_.find(compositor);
+        it != pending_compositing_.end() &&
+        it->second.state == CompositingState::kWaitingForWallpaperAnimation) {
+      it->second.state = CompositingState::kWaitingForCommit;
+      // Schedule a draw to force at least one more compositing cycle.
+      compositor->ScheduleDraw();
     }
-
-    pending_compositing_[compositor].state =
-        CompositingState::kWaitingForCommit;
-    // Schedule a draw to force at least one more compositing cycle.
-    compositor->ScheduleDraw();
   }
 
   // If all observed root window compositors have gone through a compositing

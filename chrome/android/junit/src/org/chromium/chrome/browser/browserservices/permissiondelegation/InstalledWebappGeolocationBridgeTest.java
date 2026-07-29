@@ -21,14 +21,16 @@ import android.os.Bundle;
 import androidx.browser.trusted.TrustedWebActivityCallback;
 
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
-import org.robolectric.annotation.LooperMode;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.RobolectricUtil;
 import org.chromium.base.test.util.Feature;
 import org.chromium.chrome.browser.browserservices.TrustedWebActivityClient;
 import org.chromium.url.GURL;
@@ -37,10 +39,10 @@ import org.chromium.url.JUnitTestGURLs;
 /** Tests for {@link InstalledWebappGeolocationBridge}. */
 @RunWith(BaseRobolectricTestRunner.class)
 @Config(manifest = Config.NONE)
-@LooperMode(LooperMode.Mode.LEGACY)
 public class InstalledWebappGeolocationBridgeTest {
     private static final long NATIVE_POINTER = 12;
 
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     private GURL mScope;
     private GURL mOtherScope;
 
@@ -53,7 +55,6 @@ public class InstalledWebappGeolocationBridgeTest {
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
         InstalledWebappGeolocationBridgeJni.setInstanceForTesting(mNativeMock);
 
         mScope = JUnitTestGURLs.URL_1;
@@ -67,7 +68,7 @@ public class InstalledWebappGeolocationBridgeTest {
     @Feature("TrustedWebActivities")
     public void getLocationError_whenClientDoesntHaveService() {
         uninstallTrustedWebActivityService(mScope);
-        mGeolocation.start(false /* HighAccuracy */);
+        mGeolocation.start(/* highAccuracy= */ false);
         verifyGetLocationError();
     }
 
@@ -75,7 +76,7 @@ public class InstalledWebappGeolocationBridgeTest {
     @Feature("TrustedWebActivities")
     public void getLocationUpdate_afterStartListening() {
         installTrustedWebActivityService(mScope);
-        mGeolocation.start(false /* HighAccuracy */);
+        mGeolocation.start(/* highAccuracy= */ false);
         verifyGetLocationUpdate();
     }
 
@@ -84,7 +85,7 @@ public class InstalledWebappGeolocationBridgeTest {
     public void noLocationUpdate_stopBeforeStart() {
         installTrustedWebActivityService(mScope);
         mGeolocation.stopAndDestroy();
-        mGeolocation.start(false /* HighAccuracy */);
+        mGeolocation.start(/* highAccuracy= */ false);
         verifyNoLocationUpdate();
     }
 
@@ -93,7 +94,7 @@ public class InstalledWebappGeolocationBridgeTest {
     public void getLocationError_whenOnlytherClientHasService() {
         installTrustedWebActivityService(mOtherScope);
         uninstallTrustedWebActivityService(mScope);
-        mGeolocation.start(false /* HighAccuracy */);
+        mGeolocation.start(/* highAccuracy= */ false);
         verifyGetLocationError();
         verifyNoLocationUpdate();
     }
@@ -102,9 +103,9 @@ public class InstalledWebappGeolocationBridgeTest {
     @Feature("TrustedWebActivities")
     public void changeHighAccuracyAfterStart() {
         installTrustedWebActivityService(mScope);
-        mGeolocation.start(false /* HighAccuracy */);
+        mGeolocation.start(/* highAccuracy= */ false);
         assertFalse(mIsHighAccuracy);
-        mGeolocation.start(true /* HighAccuracy */);
+        mGeolocation.start(/* highAccuracy= */ true);
         assertTrue(mIsHighAccuracy);
     }
 
@@ -155,6 +156,7 @@ public class InstalledWebappGeolocationBridgeTest {
 
     // Verify native gets location update with correct value.
     private void verifyGetLocationUpdate() {
+        RobolectricUtil.runAllBackgroundAndUi();
         verify(mNativeMock)
                 .onNewLocationAvailable(
                         eq(NATIVE_POINTER),
@@ -172,10 +174,12 @@ public class InstalledWebappGeolocationBridgeTest {
     }
 
     private void verifyGetLocationError() {
+        RobolectricUtil.runAllBackgroundAndUi();
         verify(mNativeMock).onNewErrorAvailable(eq(NATIVE_POINTER), anyString());
     }
 
     private void verifyNoLocationUpdate() {
+        RobolectricUtil.runAllBackgroundAndUi();
         verify(mNativeMock, never())
                 .onNewLocationAvailable(
                         anyInt(),

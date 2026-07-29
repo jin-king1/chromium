@@ -7,11 +7,11 @@
 
 #include <vector>
 
-#include "base/feature_list.h"
 #include "base/functional/callback.h"
 #include "third_party/blink/public/platform/web_string.h"
 #include "third_party/blink/renderer/platform/allow_discouraged_type.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
+#include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/hash_map.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "third_party/webrtc/api/scoped_refptr.h"
@@ -29,8 +29,6 @@ enum class NonStandardGroupId;
 }  // namespace webrtc
 
 namespace blink {
-
-PLATFORM_EXPORT BASE_DECLARE_FEATURE(WebRtcUnshipDeprecatedStats);
 
 // A thin wrapper around a webrtc::RTCStatsReport.
 // TODO(https://crbug.com/1443999): Delete this class, it does not provide any
@@ -59,10 +57,10 @@ class PLATFORM_EXPORT RTCStatsReportPlatform {
 };
 
 using RTCStatsReportCallback =
-    base::OnceCallback<void(std::unique_ptr<RTCStatsReportPlatform>)>;
+    CrossThreadOnceFunction<void(std::unique_ptr<RTCStatsReportPlatform>)>;
 
 PLATFORM_EXPORT
-rtc::scoped_refptr<webrtc::RTCStatsCollectorCallback>
+webrtc::scoped_refptr<webrtc::RTCStatsCollectorCallback>
 CreateRTCStatsCollectorCallback(
     scoped_refptr<base::SingleThreadTaskRunner> main_thread,
     RTCStatsReportCallback callback);
@@ -75,16 +73,14 @@ class PLATFORM_EXPORT RTCStatsCollectorCallbackImpl
     : public webrtc::RTCStatsCollectorCallback {
  public:
   void OnStatsDelivered(
-      const rtc::scoped_refptr<const webrtc::RTCStatsReport>& report) override;
+      const webrtc::scoped_refptr<const webrtc::RTCStatsReport>& report)
+      override;
 
  protected:
   RTCStatsCollectorCallbackImpl(
       scoped_refptr<base::SingleThreadTaskRunner> main_thread,
       RTCStatsReportCallback callback);
   ~RTCStatsCollectorCallbackImpl() override;
-
-  void OnStatsDeliveredOnMainThread(
-      rtc::scoped_refptr<const webrtc::RTCStatsReport> report);
 
   const scoped_refptr<base::SingleThreadTaskRunner> main_thread_;
   RTCStatsReportCallback callback_;

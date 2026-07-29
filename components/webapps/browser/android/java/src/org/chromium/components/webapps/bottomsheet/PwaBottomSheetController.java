@@ -19,7 +19,6 @@ import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
 import org.jni_zero.NativeMethods;
 
-import org.chromium.base.UnownedUserData;
 import org.chromium.build.annotations.EnsuresNonNullIf;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -31,8 +30,6 @@ import org.chromium.components.browser_ui.bottomsheet.BottomSheetControllerProvi
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetObserver;
 import org.chromium.components.browser_ui.bottomsheet.EmptyBottomSheetObserver;
 import org.chromium.components.webapps.AddToHomescreenProperties;
-import org.chromium.components.webapps.AddToHomescreenViewDelegate;
-import org.chromium.components.webapps.AppType;
 import org.chromium.components.webapps.InstallTrigger;
 import org.chromium.components.webapps.R;
 import org.chromium.components.webapps.WebappInstallSource;
@@ -41,6 +38,7 @@ import org.chromium.content_public.browser.Visibility;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.browser.WebContentsObserver;
 import org.chromium.ui.base.WindowAndroid;
+import org.chromium.ui.edge_to_edge.EdgeToEdgeStateProvider;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
 
@@ -49,8 +47,7 @@ import java.util.ArrayList;
 /** This class controls the Bottom Sheet PWA install functionality. */
 @JNINamespace("webapps")
 @NullMarked
-public class PwaBottomSheetController
-        implements UnownedUserData, AddToHomescreenViewDelegate, View.OnClickListener {
+public class PwaBottomSheetController implements View.OnClickListener {
     private final Context mContext;
 
     /** A pointer to the native version of this class. It's lifetime is controlled by this class. */
@@ -113,7 +110,7 @@ public class PwaBottomSheetController
     private @Nullable WebContentsObserver mWebContentsObserver;
 
     /** The ViewHolder for the view's Screenshots RecyclerView. */
-    private static class ScreenshotViewHolder extends RecyclerView.ViewHolder {
+    static class ScreenshotViewHolder extends RecyclerView.ViewHolder {
         public ScreenshotViewHolder(View itemView) {
             super(itemView);
         }
@@ -121,12 +118,14 @@ public class PwaBottomSheetController
 
     /** The Adapter for the view's Screenshots RecyclerView. */
     static class ScreenshotsAdapter extends RecyclerView.Adapter<ScreenshotViewHolder> {
-        private Context mContext;
-        private ArrayList<Bitmap> mScreenshots;
+        private final Context mContext;
+        private final ArrayList<Bitmap> mScreenshots;
+        private final boolean mShouldPadForDialogContent;
 
-        public ScreenshotsAdapter(Context context) {
+        public ScreenshotsAdapter(Context context, boolean shouldPadForDialogContent) {
             mContext = context;
             mScreenshots = new ArrayList<Bitmap>();
+            mShouldPadForDialogContent = shouldPadForDialogContent;
         }
 
         @SuppressWarnings("NotifyDataSetChanged")
@@ -154,7 +153,8 @@ public class PwaBottomSheetController
                     mContext.getString(R.string.pwa_install_bottom_sheet_screenshot));
             view.setOnClickListener(
                     v -> {
-                        final ImageZoomView dialog = new ImageZoomView(mContext, bitmap);
+                        final ImageZoomView dialog =
+                                new ImageZoomView(mContext, bitmap, mShouldPadForDialogContent);
                         dialog.show();
                     });
         }
@@ -172,24 +172,6 @@ public class PwaBottomSheetController
      */
     public PwaBottomSheetController(Context context) {
         mContext = context;
-    }
-
-    // AddToHomescreenViewDelegate:
-
-    @Override
-    public void onAddToHomescreen(String title, @AppType int type) {
-        onAddToHomescreen();
-    }
-
-    @Override
-    public boolean onAppDetailsRequested() {
-        return false;
-    }
-
-    @Override
-    public void onViewDismissed() {
-        // The bottom sheet observer OnSheetStateChanged() method is used instead to track when the
-        // sheet is dismissed.
     }
 
     private void createWebContentsObserver(WebContents webContents) {
@@ -241,10 +223,12 @@ public class PwaBottomSheetController
         }
         mBottomSheetController = bottomSheetController;
 
-        mScreenshotAdapter = new ScreenshotsAdapter(mContext);
+        boolean shouldPadForDialogContent =
+                EdgeToEdgeStateProvider.isEdgeToEdgeEnabledForWindow(windowAndroid);
+        mScreenshotAdapter = new ScreenshotsAdapter(mContext, shouldPadForDialogContent);
         PwaInstallBottomSheetView view =
                 new PwaInstallBottomSheetView(mContext, mScreenshotAdapter);
-        mPwaBottomSheetContent = new PwaInstallBottomSheetContent(view, this);
+        mPwaBottomSheetContent = new PwaInstallBottomSheetContent(view);
         mModel =
                 new PropertyModel.Builder(AddToHomescreenProperties.ALL_KEYS)
                         .with(AddToHomescreenProperties.ICON, new Pair<>(icon, isAdaptiveIcon))

@@ -23,8 +23,21 @@ source_set("child_process_bridge") {
     ":child_process_bridge_header",
     "//base",
     "//gpu/ipc/common",
+    "//sandbox/policy",
   ]
   frameworks = [ "Foundation.framework" ]
+
+  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+  # enable the diagnostic by removing this line.
+  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
+}
+
+source_set("app_side_shim") {
+  sources = [ "child_process.mm" ]
+
+  deps = [ "//base/allocator:early_zone_registration_apple" ]
+
+  public_deps = [ ":child_process_bridge_header" ]
 }
 
 swift_source_set("content_process") {
@@ -38,7 +51,7 @@ swift_source_set("content_process") {
     "BrowserEngineKit.framework",
   ]
 
-  deps = [ ":child_process_bridge_header" ]
+  deps = [ ":app_side_shim" ]
 }
 
 swift_source_set("network_process") {
@@ -52,7 +65,7 @@ swift_source_set("network_process") {
     "BrowserEngineKit.framework",
   ]
 
-  deps = [ ":child_process_bridge_header" ]
+  deps = [ ":app_side_shim" ]
 }
 
 swift_source_set("gpu_process") {
@@ -66,5 +79,5 @@ swift_source_set("gpu_process") {
     "BrowserEngineKit.framework",
   ]
 
-  deps = [ ":child_process_bridge_header" ]
+  deps = [ ":app_side_shim" ]
 }

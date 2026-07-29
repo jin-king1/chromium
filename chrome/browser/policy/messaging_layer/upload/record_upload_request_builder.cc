@@ -23,14 +23,11 @@ namespace reporting {
 // Feature that controls if the configuration file should be requested
 // from the server.
 BASE_FEATURE(kShouldRequestConfigurationFile,
-             "ShouldRequestConfigurationFile",
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Feature used in the tast tests to let the server know that the events are
 // coming from an automated client test. Only used in tast tests.
-BASE_FEATURE(kClientAutomatedTest,
-             "ClientAutomatedTest",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kClientAutomatedTest, base::FEATURE_DISABLED_BY_DEFAULT);
 
 UploadEncryptedReportingRequestBuilder::UploadEncryptedReportingRequestBuilder(
     bool is_generation_guid_required,
@@ -67,11 +64,11 @@ UploadEncryptedReportingRequestBuilder::AddRecord(
     // Some errors were already detected.
     return *this;
   }
-  base::Value::List* records_list =
+  base::ListValue* records_list =
       result_->FindList(GetEncryptedRecordListPath());
   if (!records_list) {
     records_list =
-        &result_->Set(GetEncryptedRecordListPath(), base::Value::List())
+        &result_->Set(GetEncryptedRecordListPath(), base::ListValue())
              ->GetList();
   }
 
@@ -102,8 +99,7 @@ UploadEncryptedReportingRequestBuilder::SetRequestId(
   return *this;
 }
 
-std::optional<base::Value::Dict>
-UploadEncryptedReportingRequestBuilder::Build() {
+std::optional<base::DictValue> UploadEncryptedReportingRequestBuilder::Build() {
   if (result_.has_value()) {
     if (result_->empty()) {
       // Request is empty.
@@ -150,7 +146,7 @@ EncryptedRecordDictionaryBuilder::EncryptedRecordDictionaryBuilder(
     EncryptedRecord record,
     ScopedReservation& scoped_reservation,
     bool is_generation_guid_required) {
-  base::Value::Dict record_dictionary;
+  base::DictValue record_dictionary;
 
   // A record without sequence information cannot be uploaded - deny it.
   if (!record.has_sequence_information()) {
@@ -219,7 +215,7 @@ EncryptedRecordDictionaryBuilder::EncryptedRecordDictionaryBuilder(
 
 EncryptedRecordDictionaryBuilder::~EncryptedRecordDictionaryBuilder() = default;
 
-std::optional<base::Value::Dict> EncryptedRecordDictionaryBuilder::Build() {
+std::optional<base::DictValue> EncryptedRecordDictionaryBuilder::Build() {
   return std::move(result_);
 }
 
@@ -279,7 +275,7 @@ SequenceInformationDictionaryBuilder::SequenceInformationDictionaryBuilder(
 SequenceInformationDictionaryBuilder::~SequenceInformationDictionaryBuilder() =
     default;
 
-std::optional<base::Value::Dict> SequenceInformationDictionaryBuilder::Build() {
+std::optional<base::DictValue> SequenceInformationDictionaryBuilder::Build() {
   return std::move(result_);
 }
 
@@ -307,7 +303,7 @@ std::string_view SequenceInformationDictionaryBuilder::GetGenerationGuidPath() {
 
 EncryptionInfoDictionaryBuilder::EncryptionInfoDictionaryBuilder(
     const EncryptionInfo& encryption_info) {
-  base::Value::Dict encryption_info_dictionary;
+  base::DictValue encryption_info_dictionary;
 
   // EncryptionInfo requires both fields are set.
   if (!encryption_info.has_encryption_key() ||
@@ -325,7 +321,7 @@ EncryptionInfoDictionaryBuilder::EncryptionInfoDictionaryBuilder(
 
 EncryptionInfoDictionaryBuilder::~EncryptionInfoDictionaryBuilder() = default;
 
-std::optional<base::Value::Dict> EncryptionInfoDictionaryBuilder::Build() {
+std::optional<base::DictValue> EncryptionInfoDictionaryBuilder::Build() {
   return std::move(result_);
 }
 
@@ -342,7 +338,7 @@ std::string_view EncryptionInfoDictionaryBuilder::GetPublicKeyIdPath() {
 CompressionInformationDictionaryBuilder::
     CompressionInformationDictionaryBuilder(
         const CompressionInformation& compression_information) {
-  base::Value::Dict compression_information_dictionary;
+  base::DictValue compression_information_dictionary;
 
   // Ensure that compression_algorithm is valid.
   if (!CompressionInformation::CompressionAlgorithm_IsValid(
@@ -359,7 +355,7 @@ CompressionInformationDictionaryBuilder::
 CompressionInformationDictionaryBuilder::
     ~CompressionInformationDictionaryBuilder() = default;
 
-std::optional<base::Value::Dict>
+std::optional<base::DictValue>
 CompressionInformationDictionaryBuilder::Build() {
   return std::move(result_);
 }

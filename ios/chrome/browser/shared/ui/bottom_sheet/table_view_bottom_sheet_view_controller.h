@@ -15,8 +15,11 @@
 // Height of the parent view controller.
 @property(nonatomic, assign) CGFloat parentViewControllerHeight;
 
-// Request to relaod data from the table view's data source.
+// Requests to reload data from the table view's data source.
 - (void)reloadTableViewData;
+
+// Requests to reconfigure a given cell from the table view's data source.
+- (void)reconfigureCellAtIndexPath:(NSIndexPath*)indexPath;
 
 // Returns the currently selected row.
 - (NSInteger)selectedRow;
@@ -24,15 +27,12 @@
 // Returns the width of the table view.
 - (CGFloat)tableViewWidth;
 
-// Returns the cell's separator inset for the provided index path.
-- (UIEdgeInsets)separatorInsetForTableViewWidth:(CGFloat)tableViewWidth
-                                    atIndexPath:(NSIndexPath*)indexPath;
-
 // Returns the cell's accessory type for the provided index path.
 - (UITableViewCellAccessoryType)accessoryType:(NSIndexPath*)indexPath;
 
-// Sets appropriate margin sizes for password and payment autofill bottom sheets
-- (void)adjustTransactionsPrimaryActionButtonHorizontalConstraints;
+// Sets appropriate margin sizes for the primary and secondary buttons in the
+// password and payment autofill bottom sheets
+- (void)adjustTransactionsButtonHorizontalConstraints;
 
 @end
 

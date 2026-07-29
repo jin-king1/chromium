@@ -28,7 +28,7 @@ bool DeserializeFromJavaByteBuffer(
     mojo::StructPtr<T>* out) {
   DCHECK(out);
   base::span<const uint8_t> native_buffer =
-      base::android::JavaByteBufferToSpan(env, jbuffer.obj());
+      base::android::JavaByteBufferToSpan(env, jbuffer);
   return T::Deserialize(native_buffer.data(), native_buffer.size(), out);
 }
 
@@ -42,7 +42,7 @@ bool DeserializeFromJavaByteBufferArray(
     std::vector<mojo::StructPtr<T>>* out) {
   DCHECK(out);
   out->clear();
-  for (const auto& jbuffer : jbuffers.ReadElements<jobject>()) {
+  for (const auto& jbuffer : jbuffers.CreateView(env)) {
     mojo::StructPtr<T> data;
     if (!DeserializeFromJavaByteBuffer(env, jbuffer, &data)) {
       out->clear();

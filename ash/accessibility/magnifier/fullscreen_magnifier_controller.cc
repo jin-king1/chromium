@@ -12,6 +12,7 @@
 #include "ash/accessibility/accessibility_controller.h"
 #include "ash/accessibility/accessibility_delegate.h"
 #include "ash/accessibility/magnifier/magnifier_utils.h"
+#include "ash/display/cros_display_config.h"
 #include "ash/display/cursor_window_controller.h"
 #include "ash/display/root_window_transformers.h"
 #include "ash/display/window_tree_host_manager.h"
@@ -316,7 +317,7 @@ void FullscreenMagnifierController::OnMouseEvent(ui::MouseEvent* event) {
   gfx::Point root_location = event->root_location();
 
   if (event->type() == ui::EventType::kMouseDragged) {
-    auto* screen = display::Screen::GetScreen();
+    auto* screen = display::Screen::Get();
     const gfx::Point cursor_screen_location = screen->GetCursorScreenPoint();
 
     auto* window = screen->GetWindowAtScreenPoint(cursor_screen_location);
@@ -486,6 +487,10 @@ const std::string& FullscreenMagnifierController::GetName() const {
   return name;
 }
 
+base::WeakPtr<ui::GestureConsumer> FullscreenMagnifierController::GetWeakPtr() {
+  return weak_ptr_factory_.GetWeakPtr();
+}
+
 bool FullscreenMagnifierController::Redraw(
     const gfx::PointF& position_in_physical_pixels,
     float scale,
@@ -546,7 +551,7 @@ bool FullscreenMagnifierController::RedrawDIP(
   root_layer_settings.SetTransitionDuration(duration);
 
   display::Display display =
-      display::Screen::GetScreen()->GetDisplayNearestWindow(root_window_);
+      display::Screen::Get()->GetDisplayNearestWindow(root_window_);
   std::unique_ptr<RootWindowTransformer> transformer(
       CreateRootWindowTransformerForDisplay(display));
 
@@ -568,6 +573,12 @@ bool FullscreenMagnifierController::RedrawDIP(
 
     if (display_identification_highlight)
       undo_transform_windows.push_back(display_identification_highlight);
+
+    // Do not magnify overlay if calibration tool is running too.
+    if (Shell::Get()->cros_display_config()->IsCalibrating()) {
+      undo_transform_windows.push_back(
+          root_window_->GetChildById(kShellWindowId_OverlayContainer));
+    }
 
     for (auto* window : undo_transform_windows) {
       ui::ScopedLayerAnimationSettings layer_settings(
@@ -819,7 +830,7 @@ bool FullscreenMagnifierController::ProcessGestures() {
       // about scale or translation. We'll take care of the scale below).
       // https://crbug.com/867537.
       const auto display =
-          display::Screen::GetScreen()->GetDisplayNearestWindow(root_window_);
+          display::Screen::Get()->GetDisplayNearestWindow(root_window_);
       gfx::Transform rotation_transform;
       rotation_transform.Rotate(display.PanelRotationAsDegree());
       gfx::Transform rotation_inverse_transform =

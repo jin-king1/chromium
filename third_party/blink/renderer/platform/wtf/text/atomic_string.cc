@@ -21,11 +21,6 @@
  *
  */
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 
 #include "base/numerics/safe_conversions.h"
@@ -36,92 +31,81 @@
 #include "third_party/blink/renderer/platform/wtf/text/string_impl.h"
 #include "third_party/perfetto/include/perfetto/tracing/traced_value.h"
 
-namespace WTF {
+namespace blink {
 
 ASSERT_SIZE(AtomicString, String);
 
 AtomicString::AtomicString(base::span<const LChar> chars)
-    : string_(AtomicStringTable::Instance().Add(
-          chars.data(),
-          base::checked_cast<wtf_size_t>(chars.size()))) {}
+    : string_(AtomicStringTable::Instance().Add(chars)) {}
 
 AtomicString::AtomicString(base::span<const UChar> chars,
                            AtomicStringUCharEncoding encoding)
-    : string_(AtomicStringTable::Instance().Add(
-          chars.data(),
-          base::checked_cast<wtf_size_t>(chars.size()),
-          encoding)) {}
+    : string_(AtomicStringTable::Instance().Add(chars, encoding)) {}
 
 AtomicString::AtomicString(const UChar* chars)
     : string_(AtomicStringTable::Instance().Add(
-          chars,
-          chars ? LengthOfNullTerminatedString(chars) : 0,
+          // SAFETY: safe when `chars` points to a null-terminated cstring.
+          UNSAFE_BUFFERS({base::unchecked, chars,
+                          chars ? LengthOfNullTerminatedString(chars) : 0}),
           AtomicStringUCharEncoding::kUnknown)) {}
 
 AtomicString::AtomicString(const StringView& string_view)
     : string_(AtomicStringTable::Instance().Add(string_view)) {}
 
-scoped_refptr<StringImpl> AtomicString::AddSlowCase(
-    scoped_refptr<StringImpl>&& string) {
-  DCHECK(!string->IsAtomic());
+String AtomicString::AddSlowCase(String&& string) {
+  DCHECK(!string.Impl()->IsAtomic());
   return AtomicStringTable::Instance().Add(std::move(string));
 }
 
-scoped_refptr<StringImpl> AtomicString::AddSlowCase(StringImpl* string) {
+String AtomicString::AddSlowCase(StringImpl* string) {
   DCHECK(!string->IsAtomic());
   return AtomicStringTable::Instance().Add(string);
 }
 
-AtomicString AtomicString::FromUTF8(base::span<const uint8_t> bytes) {
+bool AtomicString::contains(const StringView& value) const {
+  return string_.find(value) != npos;
+}
+
+bool AtomicString::ContainsIgnoringAsciiCase(const StringView& value) const {
+  return string_.FindIgnoringAsciiCase(value) != npos;
+}
+
+AtomicString AtomicString::FromUtf8(base::span<const uint8_t> bytes) {
   if (!bytes.data()) {
     return g_null_atom;
   }
   if (bytes.empty()) {
     return g_empty_atom;
   }
-  return AtomicString(AtomicStringTable::Instance().AddUTF8(
-      bytes.data(), bytes.data() + bytes.size()));
+  return AtomicString(AtomicStringTable::Instance().AddUtf8(bytes));
 }
 
-AtomicString AtomicString::FromUTF8(const char* chars) {
-  if (!chars)
-    return g_null_atom;
-  if (!*chars)
-    return g_empty_atom;
-  return AtomicString(AtomicStringTable::Instance().AddUTF8(
-      reinterpret_cast<const uint8_t*>(chars), nullptr));
-}
-
-AtomicString AtomicString::FromUTF8(std::string_view utf8_string) {
-  return FromUTF8(base::as_byte_span(utf8_string));
-}
-
-AtomicString AtomicString::LowerASCII(AtomicString source) {
-  if (source.IsLowerASCII()) [[likely]] {
+AtomicString AtomicString::ToAsciiLower(AtomicString source) {
+  if (source.ContainsNoAsciiUpper()) [[likely]] {
     return source;
   }
   StringImpl* impl = source.Impl();
-  // if impl is null, then IsLowerASCII() should have returned true.
+  // if impl is null, then ContainsNoAsciiUpper() should have returned true.
   DCHECK(impl);
-  scoped_refptr<StringImpl> new_impl = impl->LowerASCII();
+  String new_impl = impl->ToAsciiLower();
   return AtomicString(String(std::move(new_impl)));
 }
 
-AtomicString AtomicString::LowerASCII() const {
-  return AtomicString::LowerASCII(*this);
+AtomicString AtomicString::ToAsciiLower() const {
+  return AtomicString::ToAsciiLower(*this);
 }
 
-AtomicString AtomicString::UpperASCII() const {
+AtomicString AtomicString::ToAsciiUpper() const {
   StringImpl* impl = Impl();
   if (!impl) [[unlikely]] {
     return *this;
   }
-  return AtomicString(impl->UpperASCII());
+  return AtomicString(impl->ToAsciiUpper());
 }
 
 AtomicString AtomicString::Number(double number, unsigned precision) {
-  NumberToStringBuffer buffer;
-  return AtomicString(NumberToFixedPrecisionString(number, precision, buffer));
+  DoubleToStringConverter converter;
+  return AtomicString(converter.ToStringWithFixedPrecision(number, precision));
 }
 
 std::ostream& operator<<(std::ostream& out, const AtomicString& s) {
@@ -138,4 +122,4 @@ void AtomicString::Show() const {
 }
 #endif
 
-}  // namespace WTF
+}  // namespace blink

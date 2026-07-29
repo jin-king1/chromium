@@ -10,7 +10,6 @@
 #include <vector>
 
 #include "base/check_op.h"
-#include "base/containers/to_vector.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/task/bind_post_task.h"
@@ -71,7 +70,7 @@ bool PerformanceDetectionManager::DiscardTabs(
 
   std::vector<const PageNode*> eligible_nodes;
   std::vector<resource_attribution::PageContext> eligible_page_contexts;
-  for (resource_attribution::PageContext context : tabs) {
+  for (const resource_attribution::PageContext& context : tabs) {
     const PageNode* page_node = context.GetPageNode();
     if (page_node) {
       eligible_nodes.emplace_back(page_node);
@@ -84,16 +83,16 @@ bool PerformanceDetectionManager::DiscardTabs(
 
   RecordCpuUsageBeforeDiscard(
       health_tracker->GetTotalCpuPercentUsage(eligible_page_contexts));
+  health_level_before_discard_ = health_tracker->GetCurrentHealthLevel();
 
   policies::PageDiscardingHelper* const helper =
       policies::PageDiscardingHelper::GetFromGraph(graph);
   CHECK(helper);
-  std::optional<base::TimeTicks> first_discarded_at =
-      helper->ImmediatelyDiscardMultiplePages(
-          eligible_nodes, ::mojom::LifecycleUnitDiscardReason::SUGGESTED);
+  const bool had_successful_discard = helper->ImmediatelyDiscardMultiplePages(
+      eligible_nodes, ::mojom::LifecycleUnitDiscardReason::SUGGESTED);
 
   OnDiscardComplete();
-  return first_discarded_at.has_value();
+  return had_successful_discard;
 }
 
 void PerformanceDetectionManager::ForceTabCpuDataRefresh() {
@@ -110,30 +109,41 @@ void PerformanceDetectionManager::OnDiscardComplete() {
   // If a timer is still running and another discard occurs, we will restart the
   // timer instead to record the health status after the most recent discard.
   // This may cause different counts for the one, two, and four minute timers.
-  one_minute_discard_timer_.Start(
+  discard_timer_.Start(
       FROM_HERE, base::Minutes(1),
       base::BindRepeating(&PerformanceDetectionManager::RecordCpuHealthStatus,
                           base::Unretained(this), base::Minutes(1)));
-  two_minute_discard_timer_.Start(
-      FROM_HERE, base::Minutes(2),
-      base::BindRepeating(&PerformanceDetectionManager::RecordCpuHealthStatus,
-                          base::Unretained(this), base::Minutes(2)));
-  four_minute_discard_timer_.Start(
-      FROM_HERE, base::Minutes(4),
-      base::BindRepeating(&PerformanceDetectionManager::RecordCpuHealthStatus,
-                          base::Unretained(this), base::Minutes(4)));
 }
 
 void PerformanceDetectionManager::RecordCpuHealthStatus(
     base::TimeDelta time_after_discard) {
-  Graph* graph = PerformanceManager::GetGraph();
+  if (time_after_discard == base::Minutes(1)) {
+    // Start the timer for another minute to record health status 2 minutes
+    // after discard
+    discard_timer_.Start(
+        FROM_HERE, base::Minutes(1),
+        base::BindRepeating(&PerformanceDetectionManager::RecordCpuHealthStatus,
+                            base::Unretained(this), base::Minutes(2)));
+  } else if (time_after_discard == base::Minutes(2)) {
+    // Start the timer for another 2 minutes to record health status 4 minutes
+    // after discard
+    discard_timer_.Start(
+        FROM_HERE, base::Minutes(2),
+        base::BindRepeating(&PerformanceDetectionManager::RecordCpuHealthStatus,
+                            base::Unretained(this), base::Minutes(4)));
+  }
 
+  Graph* const graph = PerformanceManager::GetGraph();
   CpuHealthTracker* const health_tracker =
       performance_manager::user_tuning::CpuHealthTracker::GetFromGraph(graph);
-  PerformanceDetectionManager::HealthLevel health_level =
+  PerformanceDetectionManager::HealthLevel current_health_level =
       health_tracker->GetCurrentHealthLevel();
 
-  RecordCpuHealthStatusAfterDiscard(time_after_discard, health_level);
+  CHECK(health_level_before_discard_.has_value());
+  RecordCpuHealthStatusChange(time_after_discard,
+                              health_level_before_discard_.value(),
+                              current_health_level);
+  RecordCpuHealthStatusAfterDiscard(time_after_discard, current_health_level);
 }
 
 void PerformanceDetectionManager::NotifyActionableTabObserversForTesting(
@@ -162,8 +172,7 @@ PerformanceDetectionManager::PerformanceDetectionManager() {
   CHECK(!g_performance_detection_manager);
   g_performance_detection_manager = this;
 
-  const std::vector<ResourceType> resource_types =
-      base::ToVector(ResourceTypeSet::All());
+  const auto resource_types = ResourceTypeSet::All();
   current_health_status_ = base::MakeFlatMap<ResourceType, HealthLevel>(
       resource_types, {}, [](ResourceType type) {
         return std::make_pair(type, HealthLevel::kHealthy);

@@ -2,10 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "base/containers/contains.h"
+#include <algorithm>
+
+#include "base/strings/string_number_conversions.h"
+#include "base/strings/stringprintf.h"
 #include "base/threading/platform_thread.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
+#include "content/browser/back_forward_cache/back_forward_cache_disable.h"
 #include "content/browser/back_forward_cache_browsertest.h"
 #include "content/browser/bluetooth/bluetooth_adapter_factory_wrapper.h"
 #include "content/browser/bluetooth/test/mock_bluetooth_delegate.h"
@@ -14,7 +18,6 @@
 #include "content/browser/generic_sensor/web_contents_sensor_provider_proxy.h"
 #include "content/browser/hid/hid_test_utils.h"
 #include "content/browser/presentation/presentation_test_utils.h"
-#include "content/browser/renderer_host/back_forward_cache_disable.h"
 #include "content/browser/renderer_host/media/media_devices_dispatcher_host.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/browser/web_contents/web_contents_impl.h"
@@ -37,7 +40,7 @@
 #include "device/bluetooth/test/mock_bluetooth_adapter.h"
 #include "net/test/embedded_test_server/controllable_http_response.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
-#include "net/test/spawned_test_server/spawned_test_server.h"
+#include "net/test/embedded_test_server/install_default_websocket_handlers.h"
 #include "net/test/test_data_directory.h"
 #include "services/device/public/cpp/test/fake_hid_manager.h"
 #include "services/device/public/cpp/test/fake_sensor_and_provider.h"
@@ -69,6 +72,68 @@ using ::testing::UnorderedElementsAreArray;
 
 using NotRestoredReason = BackForwardCacheMetrics::NotRestoredReason;
 
+namespace {
+
+template <typename T>
+struct GetInterfaceFromBinder;
+
+template <typename T, typename Interface>
+struct GetInterfaceFromBinder<void (T::*)(mojo::PendingReceiver<Interface>)> {
+  using type = Interface;
+};
+
+template <typename T>
+class TestReceiverContentBrowserClient
+    : public ContentBrowserTestContentBrowserClient {
+ public:
+  TestReceiverContentBrowserClient() = default;
+  ~TestReceiverContentBrowserClient() override = default;
+
+  using TInterface =
+      typename GetInterfaceFromBinder<decltype(&T::BindReceiver)>::type;
+
+  void RegisterBrowserInterfaceBindersForFrame(
+      content::RenderFrameHost* render_frame_host,
+      mojo::BinderMapWithContext<content::RenderFrameHost*>* map) override {
+    ContentBrowserTestContentBrowserClient::
+        RegisterBrowserInterfaceBindersForFrame(render_frame_host, map);
+    map->Add<TInterface>(base::BindRepeating(
+        &TestReceiverContentBrowserClient::Bind, weak_factory_.GetWeakPtr()));
+  }
+
+  T& Manager() { return manager_; }
+
+ private:
+  void Bind(content::RenderFrameHost* render_frame_host,
+            mojo::PendingReceiver<TInterface> receiver) {
+    manager_.BindReceiver(std::move(receiver));
+  }
+
+  T manager_;
+  base::WeakPtrFactory<TestReceiverContentBrowserClient<T>> weak_factory_{this};
+};
+
+template <typename T>
+class BackForwardCacheBinderBrowserTest : public BackForwardCacheBrowserTest {
+ protected:
+  using BrowserClient = TestReceiverContentBrowserClient<T>;
+
+  void SetUpOnMainThread() override {
+    BackForwardCacheBrowserTest::SetUpOnMainThread();
+    browser_client_ = std::make_unique<BrowserClient>();
+    // Create a new renderer now that RegisterBrowserInterfaceBindersForFrame
+    // is overridden.
+    RecreateWindow();
+  }
+
+  T& Manager() { return browser_client_->Manager(); }
+
+ private:
+  std::unique_ptr<BrowserClient> browser_client_;
+};
+
+}  // namespace
+
 IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
                        PageWithDedicatedWorkerCachedOrNot) {
   ASSERT_TRUE(embedded_test_server()->Start());
@@ -92,10 +157,8 @@ IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
   ExpectRestored(FROM_HERE);
 }
 
-// The bool parameter is used for switching PlzDedicatedWorker.
 class BackForwardCacheWithDedicatedWorkerBrowserTest
-    : public BackForwardCacheBrowserTest,
-      public testing::WithParamInterface<bool> {
+    : public BackForwardCacheBrowserTest {
  public:
   const int kMaxBufferedBytesPerProcess = 10000;
   const base::TimeDelta kGracePeriodToFinishLoading = base::Seconds(5);
@@ -103,11 +166,6 @@ class BackForwardCacheWithDedicatedWorkerBrowserTest
   BackForwardCacheWithDedicatedWorkerBrowserTest() { server_.Start(); }
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
-    if (IsPlzDedicatedWorkerEnabled()) {
-      EnableFeatureAndSetParams(blink::features::kPlzDedicatedWorker, "", "");
-    } else {
-      DisableFeature(blink::features::kPlzDedicatedWorker);
-    }
     // Disable the feature to test eviction for dedicated worker.
     DisableFeature(
         blink::features::kAllowDatapipeDrainedAsBytesConsumerInBFCache);
@@ -122,8 +180,6 @@ class BackForwardCacheWithDedicatedWorkerBrowserTest
 
     server_.SetUpCommandLine(command_line);
   }
-
-  bool IsPlzDedicatedWorkerEnabled() { return GetParam(); }
 
   int port() const { return server_.server_address().port(); }
 
@@ -142,12 +198,8 @@ class BackForwardCacheWithDedicatedWorkerBrowserTest
   WebTransportSimpleTestServer server_;
 };
 
-INSTANTIATE_TEST_SUITE_P(All,
-                         BackForwardCacheWithDedicatedWorkerBrowserTest,
-                         testing::Bool());
-
 // Confirms that a page using a dedicated worker is cached.
-IN_PROC_BROWSER_TEST_P(BackForwardCacheWithDedicatedWorkerBrowserTest,
+IN_PROC_BROWSER_TEST_F(BackForwardCacheWithDedicatedWorkerBrowserTest,
                        CacheWithDedicatedWorker) {
   CreateHttpsServer();
   ASSERT_TRUE(https_server()->Start());
@@ -170,7 +222,7 @@ IN_PROC_BROWSER_TEST_P(BackForwardCacheWithDedicatedWorkerBrowserTest,
 // Confirms that an active page using a dedicated worker that calls
 // importScripts won't trigger an eviction IPC, causing the page to reload.
 // Regression test for https://crbug.com/1305041.
-IN_PROC_BROWSER_TEST_P(
+IN_PROC_BROWSER_TEST_F(
     BackForwardCacheWithDedicatedWorkerBrowserTest,
     PageWithDedicatedWorkerAndImportScriptsWontTriggerReload) {
   CreateHttpsServer();
@@ -191,41 +243,9 @@ IN_PROC_BROWSER_TEST_P(
       web_contents()->GetPrimaryFrameTree().root()->navigation_request());
 }
 
-// Confirms that a page using a dedicated worker with WebTransport is not
-// cached.
-IN_PROC_BROWSER_TEST_P(BackForwardCacheWithDedicatedWorkerBrowserTest,
-                       DoNotCacheWithDedicatedWorkerWithWebTransport) {
-  CreateHttpsServer();
-  ASSERT_TRUE(https_server()->Start());
-
-  EXPECT_TRUE(NavigateToURL(
-      shell(), https_server()->GetURL(
-                   "a.test",
-                   "/back_forward_cache/"
-                   "page_with_dedicated_worker_and_webtransport.html")));
-  // Open a WebTransport.
-  EXPECT_EQ("opened",
-            EvalJs(current_frame_host(),
-                   JsReplace("window.testOpenWebTransport($1);", port())));
-  RenderFrameDeletedObserver delete_observer_rfh(current_frame_host());
-
-  // Navigate away.
-  EXPECT_TRUE(
-      NavigateToURL(shell(), https_server()->GetURL("b.test", "/title1.html")));
-  delete_observer_rfh.WaitUntilDeleted();
-
-  // Go back to the original page. The page was not cached as the worker used
-  // WebTransport.
-  ASSERT_TRUE(HistoryGoBack(web_contents()));
-  ExpectNotRestored(
-      {NotRestoredReason::kBlocklistedFeatures},
-      {blink::scheduler::WebSchedulerTrackedFeature::kWebTransport}, {}, {}, {},
-      FROM_HERE);
-}
-
 // Confirms that a page using a dedicated worker with a closed WebTransport is
 // cached as WebTransport is not a sticky feature.
-IN_PROC_BROWSER_TEST_P(BackForwardCacheWithDedicatedWorkerBrowserTest,
+IN_PROC_BROWSER_TEST_F(BackForwardCacheWithDedicatedWorkerBrowserTest,
                        CacheWithDedicatedWorkerWithWebTransportClosed) {
   CreateHttpsServer();
   ASSERT_TRUE(https_server()->Start());
@@ -253,63 +273,8 @@ IN_PROC_BROWSER_TEST_P(BackForwardCacheWithDedicatedWorkerBrowserTest,
   ExpectRestored(FROM_HERE);
 }
 
-// TODO(crbug.com/40823301): Flaky on Linux.
-#if BUILDFLAG(IS_LINUX)
-#define MAYBE_DoNotCacheWithDedicatedWorkerWithWebTransportAndDocumentWithBlockingFeature \
-  DISABLED_DoNotCacheWithDedicatedWorkerWithWebTransportAndDocumentWithBlockingFeature
-#else
-#define MAYBE_DoNotCacheWithDedicatedWorkerWithWebTransportAndDocumentWithBlockingFeature \
-  DoNotCacheWithDedicatedWorkerWithWebTransportAndDocumentWithBlockingFeature
-#endif
-IN_PROC_BROWSER_TEST_P(
-    BackForwardCacheWithDedicatedWorkerBrowserTest,
-    MAYBE_DoNotCacheWithDedicatedWorkerWithWebTransportAndDocumentWithBlockingFeature) {
-  CreateHttpsServer();
-  ASSERT_TRUE(https_server()->Start());
-
-  EXPECT_TRUE(NavigateToURL(
-      shell(), https_server()->GetURL(
-                   "a.test",
-                   "/back_forward_cache/"
-                   "page_with_dedicated_worker_and_webtransport.html")));
-
-  // Open a WebTransport in the dedicated worker.
-  EXPECT_EQ("opened",
-            EvalJs(current_frame_host(),
-                   JsReplace("window.testOpenWebTransport($1);", port())));
-  // testOpenWebTransport sends the IPC (BackForwardCacheController.
-  // DidChangeBackForwardCacheDisablingFeatures) from a renderer. Run a script
-  // to wait for the IPC reaching to the browser.
-  EXPECT_EQ(42, EvalJs(current_frame_host(), "42;"));
-  EXPECT_TRUE(
-      DedicatedWorkerHostsForDocument::GetOrCreateForCurrentDocument(
-          current_frame_host())
-          ->GetBackForwardCacheDisablingFeatures()
-          .HasAll(
-              {blink::scheduler::WebSchedulerTrackedFeature::kWebTransport}));
-
-  // Use a blocking feature in the frame.
-  EXPECT_TRUE(ExecJs(current_frame_host(), kBlockingScript));
-  RenderFrameDeletedObserver delete_observer_rfh(current_frame_host());
-
-  // Navigate away.
-  EXPECT_TRUE(
-      NavigateToURL(shell(), https_server()->GetURL("b.test", "/title1.html")));
-  delete_observer_rfh.WaitUntilDeleted();
-
-  // Go back to the original page. The page was not cached due to WebTransport
-  // and a broadcast channel, which came from the dedicated worker and the frame
-  // respectively. Confirm both are recorded.
-  ASSERT_TRUE(HistoryGoBack(web_contents()));
-  ExpectNotRestored(
-      {NotRestoredReason::kBlocklistedFeatures},
-      {blink::scheduler::WebSchedulerTrackedFeature::kWebTransport,
-       kBlockingReasonEnum},
-      {}, {}, {}, FROM_HERE);
-}
-
 // TODO(crbug.com/40821593): Disabled due to being flaky.
-IN_PROC_BROWSER_TEST_P(
+IN_PROC_BROWSER_TEST_F(
     BackForwardCacheWithDedicatedWorkerBrowserTest,
     DISABLED_DoNotCacheWithDedicatedWorkerWithClosedWebTransportAndDocumentWithBroadcastChannel) {
   CreateHttpsServer();
@@ -371,7 +336,7 @@ IN_PROC_BROWSER_TEST_P(
 // Tests the case when the page starts fetching in a dedicated worker, goes to
 // BFcache, and then a redirection happens. The cached page should evicted in
 // this case.
-IN_PROC_BROWSER_TEST_P(BackForwardCacheWithDedicatedWorkerBrowserTest,
+IN_PROC_BROWSER_TEST_F(BackForwardCacheWithDedicatedWorkerBrowserTest,
                        FetchRedirectedWhileStoring) {
   CreateHttpsServer();
 
@@ -439,7 +404,7 @@ IN_PROC_BROWSER_TEST_P(BackForwardCacheWithDedicatedWorkerBrowserTest,
 // Tests the case when the page starts fetching in a nested dedicated worker,
 // goes to BFcache, and then a redirection happens. The cached page should
 // evicted in this case.
-IN_PROC_BROWSER_TEST_P(BackForwardCacheWithDedicatedWorkerBrowserTest,
+IN_PROC_BROWSER_TEST_F(BackForwardCacheWithDedicatedWorkerBrowserTest,
                        FetchRedirectedWhileStoring_Nested) {
   CreateHttpsServer();
 
@@ -515,7 +480,7 @@ IN_PROC_BROWSER_TEST_P(BackForwardCacheWithDedicatedWorkerBrowserTest,
 // Tests the case when the page starts fetching in a dedicated worker, goes to
 // BFcache, and then the response amount reaches the threshold. The cached page
 // should evicted in this case.
-IN_PROC_BROWSER_TEST_P(
+IN_PROC_BROWSER_TEST_F(
     BackForwardCacheWithDedicatedWorkerBrowserTest,
     FetchStillLoading_ResponseStartedWhileFrozen_ExceedsPerProcessBytesLimit) {
   CreateHttpsServer();
@@ -574,7 +539,7 @@ IN_PROC_BROWSER_TEST_P(
 // Tests the case when the page starts fetching in a nested dedicated worker,
 // goes to BFcache, and then the response amount reaches the threshold. The
 // cached page should evicted in this case.
-IN_PROC_BROWSER_TEST_P(
+IN_PROC_BROWSER_TEST_F(
     BackForwardCacheWithDedicatedWorkerBrowserTest,
     FetchStillLoading_ResponseStartedWhileFrozen_ExceedsPerProcessBytesLimit_Nested) {
   CreateHttpsServer();
@@ -635,11 +600,20 @@ IN_PROC_BROWSER_TEST_P(
                     {}, FROM_HERE);
 }
 
+// TODO(crbug.com/469570289): enable the flaky test.
+#if BUILDFLAG(IS_LINUX)
+#define MAYBE_PageWithDrainedDatapipeRequestsForFetchShouldBeEvicted \
+  DISABLED_PageWithDrainedDatapipeRequestsForFetchShouldBeEvicted
+#else
+#define MAYBE_PageWithDrainedDatapipeRequestsForFetchShouldBeEvicted \
+  PageWithDrainedDatapipeRequestsForFetchShouldBeEvicted
+#endif  // BUILDFLAG(IS_LINUX)
 // Tests the case when fetching started in a dedicated worker and the header was
 // received before the page is frozen, but parts of the response body is
 // received when the page is frozen.
-IN_PROC_BROWSER_TEST_P(BackForwardCacheWithDedicatedWorkerBrowserTest,
-                       PageWithDrainedDatapipeRequestsForFetchShouldBeEvicted) {
+IN_PROC_BROWSER_TEST_F(
+    BackForwardCacheWithDedicatedWorkerBrowserTest,
+    MAYBE_PageWithDrainedDatapipeRequestsForFetchShouldBeEvicted) {
   CreateHttpsServer();
 
   net::test_server::ControllableHttpResponse fetch_response(https_server(),
@@ -687,9 +661,18 @@ IN_PROC_BROWSER_TEST_P(BackForwardCacheWithDedicatedWorkerBrowserTest,
 // Tests the case when fetching started in a nested dedicated worker and the
 // header was received before the page is frozen, but parts of the response body
 // is received when the page is frozen.
-IN_PROC_BROWSER_TEST_P(
+//
+// TODO(crbug.com/448724259): Flaky on MacOS.
+#if BUILDFLAG(IS_MAC)
+#define MAYBE_PageWithDrainedDatapipeRequestsForFetchShouldBeEvicted_Nested \
+  DISABLED_PageWithDrainedDatapipeRequestsForFetchShouldBeEvicted_Nested
+#else
+#define MAYBE_PageWithDrainedDatapipeRequestsForFetchShouldBeEvicted_Nested \
+  PageWithDrainedDatapipeRequestsForFetchShouldBeEvicted_Nested
+#endif
+IN_PROC_BROWSER_TEST_F(
     BackForwardCacheWithDedicatedWorkerBrowserTest,
-    PageWithDrainedDatapipeRequestsForFetchShouldBeEvicted_Nested) {
+    MAYBE_PageWithDrainedDatapipeRequestsForFetchShouldBeEvicted_Nested) {
   CreateHttpsServer();
 
   net::test_server::ControllableHttpResponse fetch_response(https_server(),
@@ -743,7 +726,7 @@ IN_PROC_BROWSER_TEST_P(
 // Tests the case when fetch started in a dedicated worker, but the response
 // never ends after the page is frozen. This should result in an eviction due to
 // timeout.
-IN_PROC_BROWSER_TEST_P(BackForwardCacheWithDedicatedWorkerBrowserTest,
+IN_PROC_BROWSER_TEST_F(BackForwardCacheWithDedicatedWorkerBrowserTest,
                        ImageStillLoading_ResponseStartedWhileFrozen_Timeout) {
   CreateHttpsServer();
 
@@ -799,7 +782,7 @@ IN_PROC_BROWSER_TEST_P(BackForwardCacheWithDedicatedWorkerBrowserTest,
 // Tests the case when fetch started in a nested dedicated worker, but the
 // response never ends after the page is frozen. This should result in an
 // eviction due to timeout.
-IN_PROC_BROWSER_TEST_P(
+IN_PROC_BROWSER_TEST_F(
     BackForwardCacheWithDedicatedWorkerBrowserTest,
     ImageStillLoading_ResponseStartedWhileFrozen_Timeout_Nested) {
   CreateHttpsServer();
@@ -861,7 +844,7 @@ IN_PROC_BROWSER_TEST_P(
 
 // Tests that dedicated workers in back/forward cache are not visible to a
 // service worker.
-IN_PROC_BROWSER_TEST_P(BackForwardCacheWithDedicatedWorkerBrowserTest,
+IN_PROC_BROWSER_TEST_F(BackForwardCacheWithDedicatedWorkerBrowserTest,
                        ServiceWorkerClientMatchAll) {
   CreateHttpsServer();
   ASSERT_TRUE(https_server()->Start());
@@ -885,10 +868,9 @@ IN_PROC_BROWSER_TEST_P(BackForwardCacheWithDedicatedWorkerBrowserTest,
   // Confirm there is no worker client.
   EXPECT_EQ(0, CountWorkerClients(rfh_a.get()));
 
-  // Call fetch in a dedicated worker. If the PlzDedicatedWorker is enabled, the
-  // number of worker clients should be 1. If PlzDedicatedWorker is disabled,
-  // worker clients are not supported, so the number should be 0.
-  int expected_number = IsPlzDedicatedWorkerEnabled() ? 1 : 0;
+  // Call fetch in a dedicated worker and verify that we see the expected number
+  // of worker clients.
+  const int kExpectedWorkerClientCount = 1;
   std::string dedicated_worker_script = JsReplace(
       R"(
     (async() => {
@@ -897,7 +879,7 @@ IN_PROC_BROWSER_TEST_P(BackForwardCacheWithDedicatedWorkerBrowserTest,
     })();
   )",
       https_server()->GetURL("a.test", "/service_worker/count_worker_clients"));
-  EXPECT_EQ(base::NumberToString(expected_number),
+  EXPECT_EQ(base::NumberToString(kExpectedWorkerClientCount),
             EvalJs(rfh_a.get(), JsReplace(R"(
     new Promise(async (resolve) => {
       const blobURL = URL.createObjectURL(new Blob([$1]));
@@ -919,12 +901,13 @@ IN_PROC_BROWSER_TEST_P(BackForwardCacheWithDedicatedWorkerBrowserTest,
 
   // Restore from the back/forward cache.
   ASSERT_TRUE(HistoryGoBack(web_contents()));
-  EXPECT_EQ(expected_number, CountWorkerClients(current_frame_host()));
+  EXPECT_EQ(kExpectedWorkerClientCount,
+            CountWorkerClients(current_frame_host()));
 }
 
 // Tests that dedicated workers, including a nested dedicated workers, in
 // back/forward cache are not visible to a service worker.
-IN_PROC_BROWSER_TEST_P(BackForwardCacheWithDedicatedWorkerBrowserTest,
+IN_PROC_BROWSER_TEST_F(BackForwardCacheWithDedicatedWorkerBrowserTest,
                        ServiceWorkerClientMatchAll_Nested) {
   CreateHttpsServer();
   ASSERT_TRUE(https_server()->Start());
@@ -948,10 +931,9 @@ IN_PROC_BROWSER_TEST_P(BackForwardCacheWithDedicatedWorkerBrowserTest,
   // Confirm there is no worker client.
   EXPECT_EQ(0, CountWorkerClients(rfh_a.get()));
 
-  // Call fetch in a dedicated worker. If the PlzDedicatedWorker is enabled, the
-  // number of worker clients should be 2. If PlzDedicatedWorker is disabled,
-  // worker clients are not supported, so the number should be 0.
-  int expected_number = IsPlzDedicatedWorkerEnabled() ? 2 : 0;
+  // Call fetch in a dedicated worker and verify that we see the expected number
+  // of worker clients.
+  const int kExpectedWorkerClientCount = 2;
   std::string child_worker_script = JsReplace(
       R"(
     (async() => {
@@ -969,7 +951,7 @@ IN_PROC_BROWSER_TEST_P(BackForwardCacheWithDedicatedWorkerBrowserTest,
     });
   )",
       child_worker_script);
-  EXPECT_EQ(base::NumberToString(expected_number),
+  EXPECT_EQ(base::NumberToString(kExpectedWorkerClientCount),
             EvalJs(rfh_a.get(), JsReplace(R"(
     new Promise(async (resolve) => {
       const blobURL = URL.createObjectURL(new Blob([$1]));
@@ -991,13 +973,14 @@ IN_PROC_BROWSER_TEST_P(BackForwardCacheWithDedicatedWorkerBrowserTest,
 
   // Restore from the back/forward cache.
   ASSERT_TRUE(HistoryGoBack(web_contents()));
-  EXPECT_EQ(expected_number, CountWorkerClients(current_frame_host()));
+  EXPECT_EQ(kExpectedWorkerClientCount,
+            CountWorkerClients(current_frame_host()));
 }
 
 // Tests that dedicated workers in back/forward cache are not visible to a
 // service worker. This works correctly even if a dedicated worker is not loaded
 // completely when the page is put into back/forward cache,
-IN_PROC_BROWSER_TEST_P(BackForwardCacheWithDedicatedWorkerBrowserTest,
+IN_PROC_BROWSER_TEST_F(BackForwardCacheWithDedicatedWorkerBrowserTest,
                        ServiceWorkerClientMatchAll_LoadWorkerAfterRestoring) {
   CreateHttpsServer();
 
@@ -1067,43 +1050,7 @@ IN_PROC_BROWSER_TEST_P(BackForwardCacheWithDedicatedWorkerBrowserTest,
     });
   )")));
 
-  // If the PlzDedicatedWorker is enabled, the number of worker clients should
-  // be 1. If PlzDedicatedWorker is disabled, worker clients are not supported,
-  // so the number should be 0.
-  EXPECT_EQ(IsPlzDedicatedWorkerEnabled() ? 1 : 0,
-            CountWorkerClients(current_frame_host()));
-}
-
-// TODO(crbug.com/40290702): Shared workers are not available on Android.
-#if BUILDFLAG(IS_ANDROID)
-#define MAYBE_PageWithSharedWorkerNotCached \
-  DISABLED_PageWithSharedWorkerNotCached
-#else
-#define MAYBE_PageWithSharedWorkerNotCached PageWithSharedWorkerNotCached
-#endif
-IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
-                       MAYBE_PageWithSharedWorkerNotCached) {
-  ASSERT_TRUE(embedded_test_server()->Start());
-
-  EXPECT_TRUE(NavigateToURL(
-      shell(),
-      embedded_test_server()->GetURL(
-          "a.com", "/back_forward_cache/page_with_shared_worker.html")));
-  RenderFrameDeletedObserver delete_observer_rfh_a(current_frame_host());
-
-  // Navigate away.
-  EXPECT_TRUE(NavigateToURL(
-      shell(), embedded_test_server()->GetURL("b.com", "/title1.html")));
-
-  // The page with the unsupported feature should be deleted (not cached).
-  delete_observer_rfh_a.WaitUntilDeleted();
-
-  // Go back.
-  ASSERT_TRUE(HistoryGoBack(web_contents()));
-  ExpectNotRestored(
-      {NotRestoredReason::kBlocklistedFeatures},
-      {blink::scheduler::WebSchedulerTrackedFeature::kSharedWorker}, {}, {}, {},
-      FROM_HERE);
+  EXPECT_EQ(1, CountWorkerClients(current_frame_host()));
 }
 
 IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
@@ -1700,6 +1647,7 @@ IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
           service_worker_javascript_file_url.GetWithoutFilename(),
           /*payment_method_identifier=*/
           url::Origin::Create(service_worker_javascript_file_url).Serialize(),
+          shell()->web_contents()->GetPrimaryMainFrame()->GetGlobalId(),
           base::BindOnce(&OnInstallPaymentApp, run_loop.QuitClosure(),
                          &success));
   run_loop.Run();
@@ -1747,15 +1695,16 @@ IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
   std::vector<base::Bucket> blocklist_values = histogram_tester().GetAllSamples(
       "BackForwardCache.HistoryNavigationOutcome."
       "BlocklistedFeature");
-  EXPECT_TRUE(base::Contains(blocklist_values, sample, &base::Bucket::min));
+  EXPECT_TRUE(
+      std::ranges::contains(blocklist_values, sample, &base::Bucket::min));
 
   std::vector<base::Bucket> all_sites_blocklist_values =
       histogram_tester().GetAllSamples(
           "BackForwardCache.AllSites.HistoryNavigationOutcome."
           "BlocklistedFeature");
 
-  EXPECT_TRUE(
-      base::Contains(all_sites_blocklist_values, sample, &base::Bucket::min));
+  EXPECT_TRUE(std::ranges::contains(all_sites_blocklist_values, sample,
+                                    &base::Bucket::min));
 }
 
 // Pages with acquired keyboard lock should not enter BackForwardCache.
@@ -1872,31 +1821,11 @@ IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
   ExpectRestored(FROM_HERE);
 }
 
-class BackForwardCacheNonStickyDoubleFixBrowserTest
-    : public BackForwardCacheBrowserTest,
-      public testing::WithParamInterface<bool> {
- protected:
-  void SetUpCommandLine(base::CommandLine* command_line) override {
-    if (IsBackForwardCacheNonStickyDoubleFixEnabled()) {
-      EnableFeatureAndSetParams(kBackForwardCacheNonStickyDoubleFix, "", "");
-    } else {
-      DisableFeature(kBackForwardCacheNonStickyDoubleFix);
-    }
-    BackForwardCacheBrowserTest::SetUpCommandLine(command_line);
-  }
-
-  bool IsBackForwardCacheNonStickyDoubleFixEnabled() { return GetParam(); }
-};
-
-INSTANTIATE_TEST_SUITE_P(All,
-                         BackForwardCacheNonStickyDoubleFixBrowserTest,
-                         testing::Bool());
-
 // If pages released keyboard lock during pagehide, they can enter
 // BackForwardCache. This also covers the case of entering BFCache for a
 // second time. KeyboardLock is a good feature to use as it will always
 // block BFCache. See https://crbug.com/360183659
-IN_PROC_BROWSER_TEST_P(BackForwardCacheNonStickyDoubleFixBrowserTest,
+IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
                        CacheIfKeyboardLockReleasedInPagehide) {
   ASSERT_TRUE(embedded_test_server()->Start());
 
@@ -1933,16 +1862,7 @@ IN_PROC_BROWSER_TEST_P(BackForwardCacheNonStickyDoubleFixBrowserTest,
 
   // Go back again.
   ASSERT_TRUE(HistoryGoBack(web_contents()));
-  if (IsBackForwardCacheNonStickyDoubleFixEnabled()) {
-    // The page should be restored from BackForwardCache.
-    ExpectRestored(FROM_HERE);
-  } else {
-    // The page should not be restored from BackForwardCache.
-    ExpectNotRestored(
-        {NotRestoredReason::kBlocklistedFeatures},
-        {blink::scheduler::WebSchedulerTrackedFeature::kKeyboardLock}, {}, {},
-        {}, FROM_HERE);
-  }
+  ExpectRestored(FROM_HERE);
 }
 
 IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
@@ -2230,45 +2150,24 @@ IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
 
 // Use a blocklisted feature in multiple locations from an external JavaScript
 // file and make sure all the JavaScript location details are captured.
-// TODO(crbug.com/40241677): WebSocket server is flaky Android.
-#if BUILDFLAG(IS_ANDROID)
-#define MAYBE_MultipleBlocksFromJavaScriptFile \
-  DISABLED_MultipleBlocksFromJavaScriptFile
-#else
-#define MAYBE_MultipleBlocksFromJavaScriptFile MultipleBlocksFromJavaScriptFile
-#endif
 IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
-                       MAYBE_MultipleBlocksFromJavaScriptFile) {
-  net::SpawnedTestServer ws_server(net::SpawnedTestServer::TYPE_WS,
-                                   net::GetWebSocketTestDataDirectory());
-  ASSERT_TRUE(ws_server.Start());
-
+                       MultipleBlocksFromJavaScriptFile) {
   ASSERT_TRUE(embedded_test_server()->Start());
 
-  // 1) Navigate to a page with multiple WebSocket usage.
+  // 1) Navigate to a page with multiple WebRTC usage.
   GURL url_a(embedded_test_server()->GetURL(
-      "a.com", "/back_forward_cache/page_with_websocket_external_script.html"));
+      "a.com", "/back_forward_cache/page_with_webrtc_external_script.html"));
   GURL url_js(embedded_test_server()->GetURL(
-      "a.com", "/back_forward_cache/websocket_external_script.js"));
+      "a.com", "/back_forward_cache/webrtc_external_script.js"));
   GURL url_b(embedded_test_server()->GetURL("b.com", "/title1.html"));
   ASSERT_TRUE(NavigateToURL(shell(), url_a));
 
   RenderFrameHostImplWrapper rfh_a(current_frame_host());
-  // Open WebSocket connections.
-  const char scriptA[] = R"(
-    openWebSocketConnectionA($1);
-  )";
-  const char scriptB[] = R"(
-    openWebSocketConnectionB($1);
-  )";
-  ASSERT_EQ(123, EvalJs(rfh_a.get(),
-                        JsReplace(scriptA,
-                                  ws_server.GetURL("echo-with-no-extension"))));
-  ASSERT_EQ(123, EvalJs(rfh_a.get(),
-                        JsReplace(scriptB,
-                                  ws_server.GetURL("echo-with-no-extension"))));
-  ASSERT_EQ(true, EvalJs(rfh_a.get(), "isSocketAOpen()"));
-  ASSERT_EQ(true, EvalJs(rfh_a.get(), "isSocketBOpen()"));
+  // Open WebRTC connections.
+  ASSERT_TRUE(ExecJs(rfh_a.get(), "openWebRTCConnectionA()"));
+  ASSERT_TRUE(ExecJs(rfh_a.get(), "openWebRTCConnectionB()"));
+  ASSERT_EQ("stable", EvalJs(rfh_a.get(), "pcA.signalingState"));
+  ASSERT_EQ("stable", EvalJs(rfh_a.get(), "pcB.signalingState"));
 
   // Call this to access tree result later.
   rfh_a->GetBackForwardCacheMetrics()->SetObserverForTesting(this);
@@ -2280,127 +2179,86 @@ IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
   ASSERT_TRUE(HistoryGoBack(web_contents()));
   ASSERT_EQ(url_a.spec(), current_frame_host()->GetLastCommittedURL());
   ExpectNotRestored({NotRestoredReason::kBlocklistedFeatures},
-                    {blink::scheduler::WebSchedulerTrackedFeature::kWebSocket},
+                    {blink::scheduler::WebSchedulerTrackedFeature::kWebRTC},
                     {}, {}, {}, FROM_HERE);
   auto& map = GetTreeResult()->GetBlockingDetailsMap();
-  // Only WebSocket should be reported.
-  EXPECT_EQ(static_cast<int>(map.size()), 1);
+  // Only WebRTC should be reported.
+  EXPECT_EQ(map.size(), 1u);
   EXPECT_TRUE(
-      map.contains(blink::scheduler::WebSchedulerTrackedFeature::kWebSocket));
+      map.contains(blink::scheduler::WebSchedulerTrackedFeature::kWebRTC));
   // Both socketA and socketB's JavaScript locations should be reported.
   EXPECT_THAT(
-      map.at(blink::scheduler::WebSchedulerTrackedFeature::kWebSocket),
+      map.at(blink::scheduler::WebSchedulerTrackedFeature::kWebRTC),
       testing::UnorderedElementsAre(
-          MatchesBlockingDetails(MatchesSourceLocation(url_js, "", 10, 15)),
-          MatchesBlockingDetails(MatchesSourceLocation(url_js, "", 17, 15))));
+          MatchesBlockingDetails(MatchesSourceLocation(url_js, "", 11, 9)),
+          MatchesBlockingDetails(MatchesSourceLocation(url_js, "", 20, 9))));
 }
 
 // Use a blocklisted feature in multiple locations from an external JavaScript
 // file but stop using one of them before navigating away. Make sure that only
 // the one still in use is reported.
-// TODO(crbug.com/40241677): WebSocket server is flaky Android.
-#if BUILDFLAG(IS_ANDROID)
-#define MAYBE_BlockAndUnblockFromJavaScriptFile \
-  DISABLED_BlockAndUnblockFromJavaScriptFile
-#else
-#define MAYBE_BlockAndUnblockFromJavaScriptFile \
-  BlockAndUnblockFromJavaScriptFile
-#endif
 IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
-                       MAYBE_BlockAndUnblockFromJavaScriptFile) {
-  net::SpawnedTestServer ws_server(net::SpawnedTestServer::TYPE_WS,
-                                   net::GetWebSocketTestDataDirectory());
-  ASSERT_TRUE(ws_server.Start());
-
+                       BlockAndUnblockFromJavaScriptFile) {
   ASSERT_TRUE(embedded_test_server()->Start());
 
-  // 1) Navigate to a page with multiple WebSocket usage.
+  // 1) Navigate to a page with multiple WebRTC usage.
   GURL url_a(embedded_test_server()->GetURL(
-      "a.com", "/back_forward_cache/page_with_websocket_external_script.html"));
+      "a.com", "/back_forward_cache/page_with_webrtc_external_script.html"));
   GURL url_js(embedded_test_server()->GetURL(
-      "a.com", "/back_forward_cache/websocket_external_script.js"));
+      "a.com", "/back_forward_cache/webrtc_external_script.js"));
   GURL url_b(embedded_test_server()->GetURL("b.com", "/title1.html"));
   ASSERT_TRUE(NavigateToURL(shell(), url_a));
   RenderFrameHostImplWrapper rfh_a(current_frame_host());
   // Call this to access tree result later.
   rfh_a->GetBackForwardCacheMetrics()->SetObserverForTesting(this);
-  // Open WebSocket connections socketA and socketB, but close socketA
-  // immediately..
-  const char scriptA[] = R"(
-    openWebSocketConnectionA($1);
-  )";
-  const char scriptB[] = R"(
-    openWebSocketConnectionB($1);
-  )";
-  ASSERT_EQ(123, EvalJs(rfh_a.get(),
-                        JsReplace(scriptA,
-                                  ws_server.GetURL("echo-with-no-extension"))));
-  ASSERT_EQ(123, EvalJs(rfh_a.get(),
-                        JsReplace(scriptB,
-                                  ws_server.GetURL("echo-with-no-extension"))));
-  ASSERT_EQ(true, EvalJs(rfh_a.get(), "isSocketAOpen()"));
-  ASSERT_EQ(true, EvalJs(rfh_a.get(), "isSocketBOpen()"));
-  ASSERT_TRUE(ExecJs(rfh_a.get(), "closeConnection();"));
-  ASSERT_EQ(false, EvalJs(rfh_a.get(), "isSocketAOpen()"));
-  ASSERT_EQ(true, EvalJs(rfh_a.get(), "isSocketBOpen()"));
+  // Open WebRTC connections pcA and pcB, but close pcA immediately.
+  ASSERT_TRUE(ExecJs(rfh_a.get(), "openWebRTCConnectionA()"));
+  ASSERT_TRUE(ExecJs(rfh_a.get(), "openWebRTCConnectionB()"));
+  ASSERT_EQ("stable", EvalJs(rfh_a.get(), "pcA.signalingState"));
+  ASSERT_EQ("stable", EvalJs(rfh_a.get(), "pcB.signalingState"));
+  ASSERT_TRUE(ExecJs(rfh_a.get(), "closeConnectionA()"));
+  ASSERT_EQ("closed", EvalJs(rfh_a.get(), "pcA.signalingState"));
+  ASSERT_EQ("stable", EvalJs(rfh_a.get(), "pcB.signalingState"));
 
   // 2) Navigate to b.com.
   ASSERT_TRUE(NavigateToURL(shell(), url_b));
 
-  // 3) Go back and ensure that the socketB's detail is captured.
+  // 3) Go back and ensure that the pcB's detail is captured.
   ASSERT_TRUE(HistoryGoBack(web_contents()));
   ASSERT_EQ(url_a.spec(), current_frame_host()->GetLastCommittedURL());
   ExpectNotRestored({NotRestoredReason::kBlocklistedFeatures},
-                    {blink::scheduler::WebSchedulerTrackedFeature::kWebSocket},
+                    {blink::scheduler::WebSchedulerTrackedFeature::kWebRTC},
                     {}, {}, {}, FROM_HERE);
   auto& map = GetTreeResult()->GetBlockingDetailsMap();
-  // Only WebSocket should be reported.
-  EXPECT_EQ(static_cast<int>(map.size()), 1);
+  // Only WebRTC should be reported.
+  EXPECT_EQ(map.size(), 1u);
   EXPECT_TRUE(
-      map.contains(blink::scheduler::WebSchedulerTrackedFeature::kWebSocket));
-  // Only socketB's JavaScript locations should be reported.
-  EXPECT_THAT(map.at(blink::scheduler::WebSchedulerTrackedFeature::kWebSocket),
+      map.contains(blink::scheduler::WebSchedulerTrackedFeature::kWebRTC));
+  // Only pcB's JavaScript locations should be reported.
+  EXPECT_THAT(map.at(blink::scheduler::WebSchedulerTrackedFeature::kWebRTC),
               testing::UnorderedElementsAre(MatchesBlockingDetails(
-                  MatchesSourceLocation(url_js, "", 17, 15))));
+                  MatchesSourceLocation(url_js, "", 20, 9))));
 }
 
 // Use a blocklisted feature in multiple places from HTML file and make sure all
 // the JavaScript locations detail are captured.
-// TODO(crbug.com/40241677): WebSocket server is flaky Android.
-#if BUILDFLAG(IS_ANDROID)
-#define MAYBE_MultipleBlocksFromHTMLFile DISABLED_MultipleBlocksFromHTMLFile
-#else
-#define MAYBE_MultipleBlocksFromHTMLFile MultipleBlocksFromHTMLFile
-#endif
 IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
-                       MAYBE_MultipleBlocksFromHTMLFile) {
-  net::SpawnedTestServer ws_server(net::SpawnedTestServer::TYPE_WS,
-                                   net::GetWebSocketTestDataDirectory());
-  ASSERT_TRUE(ws_server.Start());
+                       MultipleBlocksFromHTMLFile) {
   ASSERT_TRUE(embedded_test_server()->Start());
 
-  // 1) Navigate to a page with multiple WebSocket usage.
+  // 1) Navigate to a page with multiple WebRTC usage.
   GURL url_a(embedded_test_server()->GetURL(
-      "a.com", "/back_forward_cache/page_with_websocket_inline_script.html"));
+      "a.com", "/back_forward_cache/page_with_webrtc_inline_script.html"));
   GURL url_b(embedded_test_server()->GetURL("b.com", "/title1.html"));
   ASSERT_TRUE(NavigateToURL(shell(), url_a));
 
   RenderFrameHostImplWrapper rfh_a(current_frame_host());
-  // Open WebSocket connections.
-  const char scriptA[] = R"(
-    openWebSocketConnectionA($1);
-  )";
-  const char scriptB[] = R"(
-    openWebSocketConnectionB($1);
-  )";
-  ASSERT_EQ(123, EvalJs(rfh_a.get(),
-                        JsReplace(scriptA,
-                                  ws_server.GetURL("echo-with-no-extension"))));
-  ASSERT_EQ(123, EvalJs(rfh_a.get(),
-                        JsReplace(scriptB,
-                                  ws_server.GetURL("echo-with-no-extension"))));
-  ASSERT_EQ(true, EvalJs(rfh_a.get(), "isSocketAOpen()"));
-  ASSERT_EQ(true, EvalJs(rfh_a.get(), "isSocketBOpen()"));
+  // Open WebRTC connections.
+  ASSERT_TRUE(ExecJs(rfh_a.get(), "openWebRTCConnectionA()"));
+  ASSERT_TRUE(ExecJs(rfh_a.get(), "openWebRTCConnectionB()"));
+  ASSERT_EQ("stable", EvalJs(rfh_a.get(), "pcA.signalingState"));
+  ASSERT_EQ("stable", EvalJs(rfh_a.get(), "pcB.signalingState"));
+
   // Call this to access tree result later.
   rfh_a->GetBackForwardCacheMetrics()->SetObserverForTesting(this);
 
@@ -2411,65 +2269,45 @@ IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
   ASSERT_TRUE(HistoryGoBack(web_contents()));
   ASSERT_EQ(url_a.spec(), current_frame_host()->GetLastCommittedURL());
   ExpectNotRestored({NotRestoredReason::kBlocklistedFeatures},
-                    {blink::scheduler::WebSchedulerTrackedFeature::kWebSocket},
+                    {blink::scheduler::WebSchedulerTrackedFeature::kWebRTC},
                     {}, {}, {}, FROM_HERE);
   auto& map = GetTreeResult()->GetBlockingDetailsMap();
-  // Only WebSocket should be reported.
-  EXPECT_EQ(static_cast<int>(map.size()), 1);
+  // Only WebRTC should be reported.
+  EXPECT_EQ(map.size(), 1u);
   EXPECT_TRUE(
-      map.contains(blink::scheduler::WebSchedulerTrackedFeature::kWebSocket));
-  // Both socketA and socketB's JavaScript locations should be reported.
+      map.contains(blink::scheduler::WebSchedulerTrackedFeature::kWebRTC));
+  // Both pcA and pcB's JavaScript locations should be reported.
   EXPECT_THAT(
-      map.at(blink::scheduler::WebSchedulerTrackedFeature::kWebSocket),
+      map.at(blink::scheduler::WebSchedulerTrackedFeature::kWebRTC),
       testing::UnorderedElementsAre(
-          MatchesBlockingDetails(MatchesSourceLocation(url_a, "", 11, 15)),
-          MatchesBlockingDetails(MatchesSourceLocation(url_a, "", 18, 15))));
+          MatchesBlockingDetails(MatchesSourceLocation(url_a, "", 12, 9)),
+          MatchesBlockingDetails(MatchesSourceLocation(url_a, "", 21, 9))));
 }
 
 // Use a blocklisted feature in multiple locations from HTML file but stop using
 // one of them before navigating away. Make sure that only the one still in use
 // is reported.
-// TODO(crbug.com/40241677): WebSocket server is flaky Android.
-#if BUILDFLAG(IS_ANDROID)
-#define MAYBE_BlockAndUnblockFromHTMLFile DISABLED_BlockAndUnblockFromHTMLFile
-#else
-#define MAYBE_BlockAndUnblockFromHTMLFile BlockAndUnblockFromHTMLFile
-#endif
 IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
-                       MAYBE_BlockAndUnblockFromHTMLFile) {
-  net::SpawnedTestServer ws_server(net::SpawnedTestServer::TYPE_WS,
-                                   net::GetWebSocketTestDataDirectory());
-  ASSERT_TRUE(ws_server.Start());
+                       BlockAndUnblockFromHTMLFile) {
   ASSERT_TRUE(embedded_test_server()->Start());
 
-  // 1) Navigate to a page with multiple broadcast channel usage.
+  // 1) Navigate to a page with multiple WebRTC channel usage.
   GURL url_a(embedded_test_server()->GetURL(
-      "a.com", "/back_forward_cache/page_with_websocket_inline_script.html"));
+      "a.com", "/back_forward_cache/page_with_webrtc_inline_script.html"));
   GURL url_b(embedded_test_server()->GetURL("b.com", "/title1.html"));
   ASSERT_TRUE(NavigateToURL(shell(), url_a));
 
   RenderFrameHostImplWrapper rfh_a(current_frame_host());
   // Call this to access tree result later.
   rfh_a->GetBackForwardCacheMetrics()->SetObserverForTesting(this);
-  // Open WebSocket connections socketA and socketB, but close socketA
-  // immediately.
-  const char scriptA[] = R"(
-    openWebSocketConnectionA($1);
-  )";
-  const char scriptB[] = R"(
-    openWebSocketConnectionB($1);
-  )";
-  ASSERT_EQ(123, EvalJs(rfh_a.get(),
-                        JsReplace(scriptA,
-                                  ws_server.GetURL("echo-with-no-extension"))));
-  ASSERT_EQ(123, EvalJs(rfh_a.get(),
-                        JsReplace(scriptB,
-                                  ws_server.GetURL("echo-with-no-extension"))));
-  ASSERT_EQ(true, EvalJs(rfh_a.get(), "isSocketAOpen()"));
-  ASSERT_EQ(true, EvalJs(rfh_a.get(), "isSocketBOpen()"));
-  ASSERT_TRUE(ExecJs(rfh_a.get(), "closeConnection();"));
-  ASSERT_EQ(false, EvalJs(rfh_a.get(), "isSocketAOpen()"));
-  ASSERT_EQ(true, EvalJs(rfh_a.get(), "isSocketBOpen()"));
+  // Open WebRTC connections pcA and pcB, but close pcA immediately.
+  ASSERT_TRUE(ExecJs(rfh_a.get(), "openWebRTCConnectionA()"));
+  ASSERT_TRUE(ExecJs(rfh_a.get(), "openWebRTCConnectionB()"));
+  ASSERT_EQ("stable", EvalJs(rfh_a.get(), "pcA.signalingState"));
+  ASSERT_EQ("stable", EvalJs(rfh_a.get(), "pcB.signalingState"));
+  ASSERT_TRUE(ExecJs(rfh_a.get(), "closeConnectionA()"));
+  ASSERT_EQ("closed", EvalJs(rfh_a.get(), "pcA.signalingState"));
+  ASSERT_EQ("stable", EvalJs(rfh_a.get(), "pcB.signalingState"));
 
   // 2) Navigate to b.com.
   ASSERT_TRUE(NavigateToURL(shell(), url_b));
@@ -2478,31 +2316,22 @@ IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
   ASSERT_TRUE(HistoryGoBack(web_contents()));
   ASSERT_EQ(url_a.spec(), current_frame_host()->GetLastCommittedURL());
   ExpectNotRestored({NotRestoredReason::kBlocklistedFeatures},
-                    {blink::scheduler::WebSchedulerTrackedFeature::kWebSocket},
+                    {blink::scheduler::WebSchedulerTrackedFeature::kWebRTC},
                     {}, {}, {}, FROM_HERE);
   auto& map = GetTreeResult()->GetBlockingDetailsMap();
-  // Only WebSocket should be reported.
-  EXPECT_EQ(static_cast<int>(map.size()), 1);
+  // Only WebRTC should be reported.
+  EXPECT_EQ(map.size(), 1u);
   EXPECT_TRUE(
-      map.contains(blink::scheduler::WebSchedulerTrackedFeature::kWebSocket));
-  // Only socketB's JavaScript locations should be reported.
-  EXPECT_THAT(map.at(blink::scheduler::WebSchedulerTrackedFeature::kWebSocket),
+      map.contains(blink::scheduler::WebSchedulerTrackedFeature::kWebRTC));
+  // Only pcB's JavaScript locations should be reported.
+  EXPECT_THAT(map.at(blink::scheduler::WebSchedulerTrackedFeature::kWebRTC),
               testing::UnorderedElementsAre(MatchesBlockingDetails(
-                  MatchesSourceLocation(url_a, "", 18, 15))));
+                  MatchesSourceLocation(url_a, "", 21, 9))));
 }
 
 // Test that details for sticky feature are captured.
-// TODO(crbug.com/40241677): WebSocket server is flaky Android.
-#if BUILDFLAG(IS_ANDROID)
-#define MAYBE_StickyFeaturesWithDetails DISABLED_StickyFeaturesWithDetails
-#else
-#define MAYBE_StickyFeaturesWithDetails StickyFeaturesWithDetails
-#endif
 IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
-                       MAYBE_StickyFeaturesWithDetails) {
-  net::SpawnedTestServer ws_server(net::SpawnedTestServer::TYPE_WS,
-                                   net::GetWebSocketTestDataDirectory());
-  ASSERT_TRUE(ws_server.Start());
+                       StickyFeaturesWithDetails) {
   ASSERT_TRUE(embedded_test_server()->Start());
   GURL url_a_no_store(embedded_test_server()->GetURL(
       "a.com", "/set-header?Cache-Control: no-store"));
@@ -2514,15 +2343,15 @@ IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
   // Call this to access tree result later.
   rfh_a->GetBackForwardCacheMetrics()->SetObserverForTesting(this);
 
-  // Open a WebSocket.
+  // Open a WebRTC connection.
   const char script[] = R"(
       new Promise(resolve => {
-        const socket = new WebSocket($1);
-        socket.addEventListener('open', () => resolve(42));
+        const pc = new RTCPeerConnection();
+        pc.addIceCandidate({ candidate: "test", sdpMLineIndex: 0 }).finally(()=>{
+          resolve(42);
+        });
       });)";
-  ASSERT_EQ(42, EvalJs(rfh_a.get(),
-                       JsReplace(script,
-                                 ws_server.GetURL("echo-with-no-extension"))));
+  ASSERT_EQ(42, EvalJs(rfh_a.get(), script));
 
   // 3) Navigate away to `url_b`.
   ASSERT_TRUE(NavigateToURL(shell(), url_b));
@@ -2531,49 +2360,24 @@ IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
   ASSERT_TRUE(HistoryGoBack(web_contents()));
   ExpectNotRestored(
       {NotRestoredReason::kBlocklistedFeatures},
-      {blink::scheduler::WebSchedulerTrackedFeature::kWebSocket,
+      {blink::scheduler::WebSchedulerTrackedFeature::kWebRTC,
        blink::scheduler::WebSchedulerTrackedFeature::
            kMainResourceHasCacheControlNoStore,
-       blink::scheduler::WebSchedulerTrackedFeature::kWebSocketSticky},
+       blink::scheduler::WebSchedulerTrackedFeature::kWebRTCSticky},
       {}, {}, {}, FROM_HERE);
   auto& map = GetTreeResult()->GetBlockingDetailsMap();
-  EXPECT_EQ(static_cast<int>(map.size()), 3);
+  EXPECT_EQ(map.size(), 3u);
   EXPECT_TRUE(
-      map.contains(blink::scheduler::WebSchedulerTrackedFeature::kWebSocket));
+      map.contains(blink::scheduler::WebSchedulerTrackedFeature::kWebRTC));
   EXPECT_TRUE(map.contains(
-      blink::scheduler::WebSchedulerTrackedFeature::kWebSocketSticky));
-  EXPECT_THAT(map.at(blink::scheduler::WebSchedulerTrackedFeature::kWebSocket),
+      blink::scheduler::WebSchedulerTrackedFeature::kWebRTCSticky));
+  EXPECT_THAT(map.at(blink::scheduler::WebSchedulerTrackedFeature::kWebRTC),
               testing::UnorderedElementsAre(MatchesBlockingDetails(
-                  MatchesSourceLocation(GURL::EmptyGURL(), "", 3, 24))));
+                  MatchesSourceLocation(GURL::EmptyGURL(), "", 4, 12))));
   EXPECT_THAT(
-      map.at(blink::scheduler::WebSchedulerTrackedFeature::kWebSocketSticky),
+      map.at(blink::scheduler::WebSchedulerTrackedFeature::kWebRTCSticky),
       testing::UnorderedElementsAre(MatchesBlockingDetails(
-          MatchesSourceLocation(GURL::EmptyGURL(), "", 3, 24))));
-}
-
-// TODO(crbug.com/40834769): WebSQL does not work on Fuchsia.
-// TODO(crbug.com/337202186): Flaky timeouts on all other platforms.
-IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
-                       DISABLED_DoesNotCacheIfWebDatabase) {
-  ASSERT_TRUE(embedded_test_server()->Start());
-
-  // 1) Navigate to a page with WebDatabase usage.
-  GURL url(embedded_test_server()->GetURL("/simple_database.html"));
-  EXPECT_TRUE(NavigateToURL(shell(), url));
-  RenderFrameHostImpl* rfh_a = current_frame_host();
-  RenderFrameDeletedObserver deleted(rfh_a);
-
-  // 2) Navigate away.
-  shell()->LoadURL(embedded_test_server()->GetURL("b.com", "/title1.html"));
-  // The page uses WebDatabase so it should be deleted.
-  deleted.WaitUntilDeleted();
-
-  // 3) Go back to the page with WebDatabase.
-  ASSERT_TRUE(HistoryGoBack(web_contents()));
-  ExpectNotRestored(
-      {NotRestoredReason::kBlocklistedFeatures},
-      {blink::scheduler::WebSchedulerTrackedFeature::kWebDatabase}, {}, {}, {},
-      FROM_HERE);
+          MatchesSourceLocation(GURL::EmptyGURL(), "", 4, 12))));
 }
 
 IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
@@ -2903,8 +2707,11 @@ IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
 // Verifies that transactions from a single client/render frame and a dedicated
 // worker belonging to the frame cannot disable BFCache for that client.
 // Regression test for https://crbug.com/343519262.
-IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
-                       IndexedDBClientWithDedicatedWorkerDoesntBlockSelf) {
+//
+// TODO(https://crbug.com/422753550): Reactivate test.
+IN_PROC_BROWSER_TEST_F(
+    BackForwardCacheBrowserTest,
+    DISABLED_IndexedDBClientWithDedicatedWorkerDoesntBlockSelf) {
   ASSERT_TRUE(embedded_test_server()->Start());
 
   // 1) Use IDB and spam transactions.
@@ -3022,9 +2829,17 @@ IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
                     FROM_HERE);
 }
 
+// TODO(crbug.com/448785237): Flaky on MacOS.
+#if BUILDFLAG(IS_MAC)
+#define MAYBE_DoNotCacheIfIndexedDBTransactionHoldingLocksAndBlockingOthers \
+  DISABLED_DoNotCacheIfIndexedDBTransactionHoldingLocksAndBlockingOthers
+#else
+#define MAYBE_DoNotCacheIfIndexedDBTransactionHoldingLocksAndBlockingOthers \
+  DoNotCacheIfIndexedDBTransactionHoldingLocksAndBlockingOthers
+#endif
 IN_PROC_BROWSER_TEST_F(
     BackForwardCacheBrowserTest,
-    DoNotCacheIfIndexedDBTransactionHoldingLocksAndBlockingOthers) {
+    MAYBE_DoNotCacheIfIndexedDBTransactionHoldingLocksAndBlockingOthers) {
   ASSERT_TRUE(embedded_test_server()->Start());
 
   Shell* tab_holding_locks = shell();
@@ -3277,10 +3092,6 @@ IN_PROC_BROWSER_TEST_P(BackForwardCacheWithBroadcastChannelTest,
 // Pages with WebSocket should be cached if the connection is closed.
 IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
                        MAYBE_WebSocketCachedIfClosed) {
-  net::SpawnedTestServer ws_server(net::SpawnedTestServer::TYPE_WS,
-                                   net::GetWebSocketTestDataDirectory());
-  ASSERT_TRUE(ws_server.Start());
-
   ASSERT_TRUE(embedded_test_server()->Start());
 
   GURL url_a(embedded_test_server()->GetURL("a.com", "/title1.html"));
@@ -3301,8 +3112,9 @@ IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
         socket.addEventListener('open', () => resolve(42));
       });)";
   ASSERT_EQ(42, EvalJs(rfh_a.get(),
-                       JsReplace(script,
-                                 ws_server.GetURL("echo-with-no-extension"))));
+                       JsReplace(script, net::test_server::GetWebSocketURL(
+                                             *embedded_test_server(),
+                                             "/echo-with-no-extension"))));
 
   // 2) Navigate to B.
   ASSERT_TRUE(NavigateToURL(shell(), url_b));
@@ -3326,41 +3138,6 @@ class WebTransportBackForwardCacheBrowserTest
  private:
   WebTransportSimpleTestServer server_;
 };
-
-// Pages with active WebTransport should not be cached.
-// TODO(yhirano): Update this test once
-// https://github.com/w3c/webtransport/issues/326 is resolved.
-IN_PROC_BROWSER_TEST_F(WebTransportBackForwardCacheBrowserTest,
-                       ActiveWebTransportEvictsPage) {
-  CreateHttpsServer();
-  ASSERT_TRUE(https_server()->Start());
-
-  GURL url_a(https_server()->GetURL("a.test", "/title1.html"));
-  GURL url_b(https_server()->GetURL("b.test", "/title1.html"));
-
-  // 1) Navigate to A.
-  ASSERT_TRUE(NavigateToURL(shell(), url_a));
-  RenderFrameHostImplWrapper rfh_a(current_frame_host());
-
-  // Establish a WebTransport session.
-  const char script[] = R"(
-      let transport = new WebTransport('https://localhost:$1/echo');
-      )";
-  ASSERT_TRUE(ExecJs(rfh_a.get(), JsReplace(script, port())));
-
-  // 2) Navigate to B.
-  ASSERT_TRUE(NavigateToURL(shell(), url_b));
-
-  // Confirm A is evicted.
-  ASSERT_TRUE(rfh_a.WaitUntilRenderFrameDeleted());
-
-  // 3) Go back.
-  ASSERT_TRUE(HistoryGoBack(web_contents()));
-  ExpectNotRestored(
-      {NotRestoredReason::kBlocklistedFeatures},
-      {blink::scheduler::WebSchedulerTrackedFeature::kWebTransport}, {}, {}, {},
-      FROM_HERE);
-}
 
 // Pages with inactive WebTransport should be cached.
 IN_PROC_BROWSER_TEST_F(WebTransportBackForwardCacheBrowserTest,
@@ -3392,46 +3169,6 @@ IN_PROC_BROWSER_TEST_F(WebTransportBackForwardCacheBrowserTest,
   // 3) Navigate back.
   ASSERT_TRUE(HistoryGoBack(web_contents()));
   ExpectRestored(FROM_HERE);
-}
-
-// Disabled on Android, since we have problems starting up the websocket test
-// server in the host
-// TODO(crbug.com/40241677): Re-enable the test after solving the WS server.
-#if BUILDFLAG(IS_ANDROID)
-#define MAYBE_WebSocketNotCached DISABLED_WebSocketNotCached
-#else
-#define MAYBE_WebSocketNotCached WebSocketNotCached
-#endif
-IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest, MAYBE_WebSocketNotCached) {
-  net::SpawnedTestServer ws_server(net::SpawnedTestServer::TYPE_WS,
-                                   net::GetWebSocketTestDataDirectory());
-  ASSERT_TRUE(ws_server.Start());
-
-  ASSERT_TRUE(embedded_test_server()->Start());
-
-  GURL url_a(embedded_test_server()->GetURL("a.com", "/title1.html"));
-  GURL url_b(embedded_test_server()->GetURL("b.com", "/title1.html"));
-
-  // 1) Navigate to A.
-  ASSERT_TRUE(NavigateToURL(shell(), url_a));
-  RenderFrameHostImpl* rfh_a = current_frame_host();
-  RenderFrameDeletedObserver delete_observer_rfh_a(rfh_a);
-
-  // Open a WebSocket.
-  const char script[] = R"(
-      new Promise(resolve => {
-        const socket = new WebSocket($1);
-        socket.addEventListener('open', () => resolve(42));
-      });)";
-  ASSERT_EQ(
-      42, EvalJs(rfh_a, JsReplace(script,
-                                  ws_server.GetURL("echo-with-no-extension"))));
-
-  // 2) Navigate to B.
-  ASSERT_TRUE(NavigateToURL(shell(), url_b));
-
-  // Confirm A is evicted.
-  delete_observer_rfh_a.WaitUntilDeleted();
 }
 
 namespace {
@@ -3487,31 +3224,15 @@ std::unique_ptr<net::test_server::HttpResponse> RequestHandlerForUpdateWorker(
 
 class TestVibrationManager : public device::mojom::VibrationManager {
  public:
-  TestVibrationManager() {
-    OverrideVibrationManagerBinderForTesting(base::BindRepeating(
-        &TestVibrationManager::BindVibrationManager, base::Unretained(this)));
-  }
+  TestVibrationManager() = default;
+  ~TestVibrationManager() override = default;
 
-  ~TestVibrationManager() override {
-    OverrideVibrationManagerBinderForTesting(base::NullCallback());
-  }
-
-  void BindVibrationManager(
-      mojo::PendingReceiver<device::mojom::VibrationManager> receiver,
-      mojo::PendingRemote<device::mojom::VibrationManagerListener> listener) {
+  void BindReceiver(
+      mojo::PendingReceiver<device::mojom::VibrationManager> receiver) {
     receiver_.Bind(std::move(receiver));
   }
 
-  bool TriggerVibrate(RenderFrameHostImpl* rfh, int duration) {
-    return EvalJs(rfh, JsReplace("navigator.vibrate($1)", duration))
-        .ExtractBool();
-  }
-
-  bool TriggerShortVibrationSequence(RenderFrameHostImpl* rfh) {
-    return EvalJs(rfh, "navigator.vibrate([10] * 1000)").ExtractBool();
-  }
-
-  bool WaitForCancel() {
+  [[nodiscard]] bool WaitForCancel() {
     run_loop_.Run();
     return IsCancelled();
   }
@@ -3536,25 +3257,38 @@ class TestVibrationManager : public device::mojom::VibrationManager {
   mojo::Receiver<device::mojom::VibrationManager> receiver_{this};
 };
 
+class BackForwardCacheVibrationBrowserTest
+    : public BackForwardCacheBinderBrowserTest<TestVibrationManager> {
+ protected:
+  [[nodiscard]] EvalJsResult TriggerVibrate(RenderFrameHostImpl* rfh,
+                                            int duration) {
+    return EvalJs(rfh, JsReplace("navigator.vibrate($1)", duration));
+  }
+
+  [[nodiscard]] EvalJsResult TriggerShortVibrationSequence(
+      RenderFrameHostImpl* rfh) {
+    return EvalJs(rfh, "navigator.vibrate([10] * 1000)");
+  }
+};
+
 // Tests that vibration stops after the page enters bfcache.
-IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
+IN_PROC_BROWSER_TEST_F(BackForwardCacheVibrationBrowserTest,
                        VibrationStopsAfterEnteringCache) {
   ASSERT_TRUE(embedded_test_server()->Start());
-  TestVibrationManager vibration_manager;
 
   // 1) Navigate to a page with a long vibration.
   GURL url(embedded_test_server()->GetURL("a.com", "/title1.html"));
   EXPECT_TRUE(NavigateToURL(shell(), url));
   RenderFrameHostImpl* rfh_a = current_frame_host();
-  ASSERT_TRUE(vibration_manager.TriggerVibrate(rfh_a, 10000));
-  EXPECT_FALSE(vibration_manager.IsCancelled());
+  ASSERT_EQ(true, TriggerVibrate(rfh_a, 10000));
+  EXPECT_FALSE(Manager().IsCancelled());
 
   // 2) Navigate away and expect the vibration to be canceled.
   EXPECT_TRUE(NavigateToURL(
       shell(), embedded_test_server()->GetURL("b.com", "/title1.html")));
   EXPECT_NE(current_frame_host(), rfh_a);
   EXPECT_TRUE(rfh_a->IsInBackForwardCache());
-  EXPECT_TRUE(vibration_manager.WaitForCancel());
+  EXPECT_TRUE(Manager().WaitForCancel());
 
   // 3) Go back to A.
   ASSERT_TRUE(HistoryGoBack(web_contents()));
@@ -3563,24 +3297,23 @@ IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
 
 // Tests that the short vibration sequence on the page stops after it enters
 // bfcache.
-IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
+IN_PROC_BROWSER_TEST_F(BackForwardCacheVibrationBrowserTest,
                        ShortVibrationSequenceStopsAfterEnteringCache) {
   ASSERT_TRUE(embedded_test_server()->Start());
-  TestVibrationManager vibration_manager;
 
   // 1) Navigate to a page with a long vibration.
   GURL url(embedded_test_server()->GetURL("a.com", "/title1.html"));
   EXPECT_TRUE(NavigateToURL(shell(), url));
   RenderFrameHostImpl* rfh_a = current_frame_host();
-  ASSERT_TRUE(vibration_manager.TriggerShortVibrationSequence(rfh_a));
-  EXPECT_FALSE(vibration_manager.IsCancelled());
+  ASSERT_EQ(true, TriggerShortVibrationSequence(rfh_a));
+  EXPECT_FALSE(Manager().IsCancelled());
 
   // 2) Navigate away and expect the vibration to be canceled.
   EXPECT_TRUE(NavigateToURL(
       shell(), embedded_test_server()->GetURL("b.com", "/title1.html")));
   EXPECT_NE(current_frame_host(), rfh_a);
   EXPECT_TRUE(rfh_a->IsInBackForwardCache());
-  EXPECT_TRUE(vibration_manager.WaitForCancel());
+  EXPECT_TRUE(Manager().WaitForCancel());
 
   // 3) Go back to A.
   ASSERT_TRUE(HistoryGoBack(web_contents()));
@@ -4522,9 +4255,7 @@ IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest, VideoSuspendAndResume) {
             EvalJs(rfh_a, "video.testObserverEvents"));
 }
 
-class SensorBackForwardCacheBrowserTest
-    : public BackForwardCacheBrowserTest,
-      public testing::WithParamInterface<bool> {
+class SensorBackForwardCacheBrowserTest : public BackForwardCacheBrowserTest {
  protected:
   SensorBackForwardCacheBrowserTest() {
     WebContentsSensorProviderProxy::OverrideSensorProviderBinderForTesting(
@@ -4543,11 +4274,6 @@ class SensorBackForwardCacheBrowserTest
     provider_->SetAccelerometerData(1.0, 2.0, 3.0);
 
     BackForwardCacheBrowserTest::SetUpOnMainThread();
-  }
-
-  void SetUpCommandLine(base::CommandLine* command_line) override {
-    EnableFeatureAndSetParams(features::kAllowSensorsToEnterBfcache, "", "");
-    BackForwardCacheBrowserTest::SetUpCommandLine(command_line);
   }
 
   std::unique_ptr<device::FakeSensorProvider> provider_;
@@ -5156,62 +4882,24 @@ IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
 }
 #endif  // !BUILDFLAG(IS_ANDROID)
 
-IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest, WebLocksNotCached) {
-  ASSERT_TRUE(embedded_test_server()->Start());
-  GURL url_a(embedded_test_server()->GetURL("/title1.html"));
-  GURL url_b(embedded_test_server()->GetURL("b.com", "/title1.html"));
-
-  // 1) Navigate to A.
-  ASSERT_TRUE(NavigateToURL(shell(), url_a));
-  RenderFrameHostImpl* rfh_a = current_frame_host();
-  RenderFrameDeletedObserver delete_observer_rfh_a(rfh_a);
-
-  // Wait for the page to acquire a lock and ensure that it continues to do so.
-  EXPECT_TRUE(ExecJs(rfh_a, R"(
-    const never_resolved = new Promise(resolve => {});
-    new Promise(continue_test => {
-      navigator.locks.request('test', async () => {
-        continue_test();
-        await never_resolved;
-      });
-    })
-  )"));
-
-  // 2) Navigate to B.
-  ASSERT_TRUE(NavigateToURL(shell(), url_b));
-
-  // - Page A should not be in the cache.
-  delete_observer_rfh_a.WaitUntilDeleted();
-
-  // 3) Go back.
-  ASSERT_TRUE(HistoryGoBack(web_contents()));
-  ExpectNotRestored({NotRestoredReason::kBlocklistedFeatures},
-                    {blink::scheduler::WebSchedulerTrackedFeature::kWebLocks},
-                    {}, {}, {}, FROM_HERE);
-}
-
 enum TestAuthenticatorBehavior {
   kErrorOut,
   kStallRequest,
 };
 
-// An implementation of blink::mojom::Authenticator that stalls all requests.
+// An implementation of blink::mojom::Authenticator that errors all requests,
+// this can be modified to stall all requests through SetBehavior.
 class TestAuthenticator : public blink::mojom::Authenticator {
  public:
-  explicit TestAuthenticator(TestAuthenticatorBehavior behavior)
-      : behavior_(behavior) {
-    OverrideAuthenticatorBinderForTesting(base::BindRepeating(
-        &TestAuthenticator::BindAuthenticator, base::Unretained(this)));
-  }
+  TestAuthenticator() = default;
+  ~TestAuthenticator() override = default;
 
-  ~TestAuthenticator() override {
-    OverrideVibrationManagerBinderForTesting(base::NullCallback());
-  }
-
-  void BindAuthenticator(
+  void BindReceiver(
       mojo::PendingReceiver<blink::mojom::Authenticator> receiver) {
     receiver_.Bind(std::move(receiver));
   }
+
+  void SetBehavior(TestAuthenticatorBehavior behavior) { behavior_ = behavior; }
 
  private:
   // blink::mojom::Authenticator:
@@ -5225,7 +4913,7 @@ class TestAuthenticator : public blink::mojom::Authenticator {
                               nullptr, nullptr);
     }
   }
-  void GetCredential(blink::mojom::PublicKeyCredentialRequestOptionsPtr options,
+  void GetCredential(blink::mojom::GetCredentialOptionsPtr options,
                      GetCredentialCallback callback) override {
     if (behavior_ == kStallRequest) {
       pending_get_credential_callback_ = std::move(callback);
@@ -5250,15 +4938,27 @@ class TestAuthenticator : public blink::mojom::Authenticator {
 
   MakeCredentialCallback pending_make_credential_callback_;
   GetCredentialCallback pending_get_credential_callback_;
-  TestAuthenticatorBehavior behavior_;
+  TestAuthenticatorBehavior behavior_ = TestAuthenticatorBehavior::kErrorOut;
   mojo::Receiver<blink::mojom::Authenticator> receiver_{this};
 };
 
+class BackForwardCacheWebAuthnBrowserTest
+    : public BackForwardCacheBinderBrowserTest<TestAuthenticator> {
+ protected:
+  void SetUpOnMainThread() override {
+    BackForwardCacheBinderBrowserTest<TestAuthenticator>::SetUpOnMainThread();
+    ASSERT_TRUE(CreateHttpsServer()->Start());
+  }
+
+  void SetBehavior(TestAuthenticatorBehavior behavior) {
+    Manager().SetBehavior(behavior);
+  }
+};
+
 // Tests that an ongoing WebAuthn get assertion request disables BFcache.
-IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
-                       WebAuthnGetAssertion_NoCachingDuringRequest) {
-  TestAuthenticator test_authenticator(kStallRequest);
-  ASSERT_TRUE(CreateHttpsServer()->Start());
+IN_PROC_BROWSER_TEST_F(BackForwardCacheWebAuthnBrowserTest,
+                       GetAssertion_NoCachingDuringRequest) {
+  SetBehavior(kStallRequest);
   GURL url_a(https_server()->GetURL("a.com", "/title1.html"));
   GURL url_b(https_server()->GetURL("b.com", "/title1.html"));
 
@@ -5292,10 +4992,8 @@ IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
 
 // Tests that after a WebAuthn get assertion request completes, BFcache is not
 // disabled.
-IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
-                       WebAuthnGetAssertion_CacheAfterRequest) {
-  TestAuthenticator test_authenticator(kErrorOut);
-  ASSERT_TRUE(CreateHttpsServer()->Start());
+IN_PROC_BROWSER_TEST_F(BackForwardCacheWebAuthnBrowserTest,
+                       GetAssertion_CacheAfterRequest) {
   GURL url_a(https_server()->GetURL("a.com", "/title1.html"));
   GURL url_b(https_server()->GetURL("b.com", "/title1.html"));
 
@@ -5321,10 +5019,9 @@ IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
 }
 
 // Tests that an ongoing WebAuthn make credential request disables BFcache.
-IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
-                       WebAuthnMakeCredential_NoCachingDuringRequest) {
-  TestAuthenticator test_authenticator(kStallRequest);
-  ASSERT_TRUE(CreateHttpsServer()->Start());
+IN_PROC_BROWSER_TEST_F(BackForwardCacheWebAuthnBrowserTest,
+                       MakeCredential_NoCachingDuringRequest) {
+  SetBehavior(kStallRequest);
   GURL url_a(https_server()->GetURL("a.com", "/title1.html"));
   GURL url_b(https_server()->GetURL("b.com", "/title1.html"));
 
@@ -5364,10 +5061,8 @@ IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
 
 // Tests that after a WebAuthn make credential request completes, BFcache is not
 // disabled.
-IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
-                       WebAuthnMakeCredential_CacheAfterRequest) {
-  TestAuthenticator test_authenticator(kErrorOut);
-  ASSERT_TRUE(CreateHttpsServer()->Start());
+IN_PROC_BROWSER_TEST_F(BackForwardCacheWebAuthnBrowserTest,
+                       MakeCredential_CacheAfterRequest) {
   GURL url_a(https_server()->GetURL("a.com", "/title1.html"));
   GURL url_b(https_server()->GetURL("b.com", "/title1.html"));
 
@@ -5813,26 +5508,8 @@ class BackForwardCacheBrowserTestWithMediaSession
   }
 };
 
-class BackForwardCacheBrowserTestWithMediaSessionNoTestingConfig
-    : public BackForwardCacheBrowserTestWithMediaSession {
- public:
-  void SetUpCommandLine(base::CommandLine* command_line) override {
-    DisableFeature(features::kBackForwardCacheMediaSessionService);
-
-    // The MediaSessionEnterPictureInPicture feature depends on the
-    // BackForwardCacheMediaSessionService feature, so we need to also disable
-    // it here.
-    // TODO(crbug.com/41483582): Remove these tests since the
-    // BackForwardCacheMediaSessionService feature has been launched.
-    DisableFeature(blink::features::kMediaSessionEnterPictureInPicture);
-
-    BackForwardCacheBrowserTestWithMediaSession::SetUpCommandLine(command_line);
-  }
-};
-
-IN_PROC_BROWSER_TEST_F(
-    BackForwardCacheBrowserTestWithMediaSessionNoTestingConfig,
-    CacheWhenMediaSessionPlaybackStateIsChanged) {
+IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTestWithMediaSession,
+                       CacheWhenMediaSessionPlaybackStateIsChanged) {
   ASSERT_TRUE(embedded_test_server()->Start());
 
   // 1) Navigate to a page.
@@ -5875,30 +5552,6 @@ IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTestWithMediaSession,
 
   // The page is restored since a MediaSession service is not used.
   ExpectRestored(FROM_HERE);
-}
-
-IN_PROC_BROWSER_TEST_F(
-    BackForwardCacheBrowserTestWithMediaSessionNoTestingConfig,
-    DontCacheWhenMediaSessionServiceIsUsed) {
-  ASSERT_TRUE(embedded_test_server()->Start());
-
-  // Navigate to a page using MediaSession.
-  EXPECT_TRUE(NavigateToURL(
-      shell(), embedded_test_server()->GetURL(
-                   "a.test", "/media/session/media-session.html")));
-  RenderFrameHostWrapper rfh_a(current_frame_host());
-  // Register a callback explicitly to use a MediaSession service.
-  EXPECT_TRUE(ExecJs(rfh_a.get(), R"(
-    navigator.mediaSession.setActionHandler('play', () => {});
-  )"));
-
-  PlayVideoNavigateAndGoBack();
-
-  // The page is not restored since a MediaSession service is used.
-  auto reason = BackForwardCacheDisable::DisabledReason(
-      BackForwardCacheDisable::DisabledReasonId::kMediaSessionService);
-  ExpectNotRestored({NotRestoredReason::kDisableForRenderFrameHostCalled}, {},
-                    {}, {reason}, {}, FROM_HERE);
 }
 
 #if BUILDFLAG(ENABLE_VR)

@@ -31,7 +31,9 @@ import org.chromium.chrome.browser.offlinepages.evaluation.OfflinePageEvaluation
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.components.offlinepages.BackgroundSavePageResult;
 
 import java.io.BufferedReader;
@@ -62,7 +64,10 @@ import java.util.concurrent.TimeUnit;
 public class OfflinePageSavePageLaterEvaluationTest {
     /** Class which is used to calculate time difference. */
     @Rule
-    public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
+    public FreshCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.freshChromeTabbedActivityRule();
+
+    private WebPageStation mStartingPage;
 
     static class TimeDelta {
         public void setStartTime(Long startTime) {
@@ -117,8 +122,8 @@ public class OfflinePageSavePageLaterEvaluationTest {
 
     @Before
     public void setUp() throws Exception {
-        mActivityTestRule.startMainActivityOnBlankPage();
-        mRequestMetadata = new LongSparseArray<RequestMetadata>();
+        mStartingPage = mActivityTestRule.startOnBlankPage();
+        mRequestMetadata = new LongSparseArray<>();
         mCount = 0;
     }
 
@@ -129,7 +134,7 @@ public class OfflinePageSavePageLaterEvaluationTest {
                         ContextUtils.getApplicationContext()
                                 .getSystemService(Context.NOTIFICATION_SERVICE);
         notificationManager.cancelAll();
-        final Semaphore mClearingSemaphore = new Semaphore(0);
+        final Semaphore clearingSemaphore = new Semaphore(0);
         PostTask.runOrPostTask(
                 TaskTraits.UI_DEFAULT,
                 () -> {
@@ -138,23 +143,23 @@ public class OfflinePageSavePageLaterEvaluationTest {
                             new Callback<SavePageRequest[]>() {
                                 @Override
                                 public void onResult(SavePageRequest[] results) {
-                                    ArrayList<Long> ids = new ArrayList<Long>(results.length);
+                                    ArrayList<Long> ids = new ArrayList<>(results.length);
                                     for (int i = 0; i < results.length; i++) {
                                         ids.add(results[i].getRequestId());
                                     }
                                     mBridge.removeRequestsFromQueue(
                                             ids,
-                                            new Callback<Integer>() {
+                                            new Callback<>() {
                                                 @Override
                                                 public void onResult(Integer removedCount) {
-                                                    mClearingSemaphore.release();
+                                                    clearingSemaphore.release();
                                                 }
                                             });
                                 }
                             });
                 });
         checkTrue(
-                mClearingSemaphore.tryAcquire(REMOVE_REQUESTS_TIMEOUT_MS, TimeUnit.MILLISECONDS),
+                clearingSemaphore.tryAcquire(REMOVE_REQUESTS_TIMEOUT_MS, TimeUnit.MILLISECONDS),
                 "Timed out when clearing remaining requests!");
         mBridge.closeLog();
         mBridge.destroy();
@@ -224,7 +229,7 @@ public class OfflinePageSavePageLaterEvaluationTest {
         PostTask.runOrPostTask(
                 TaskTraits.UI_DEFAULT,
                 () -> {
-                    // TODO (https://crbug.com/714249):  Add incognito mode tests to check that
+                    // TODO (https://crbug.com/40516851):  Add incognito mode tests to check that
                     // OfflinePageEvaluationBridge is null for incognito.
                     Profile profile = ProfileManager.getLastUsedRegularProfile();
                     mBridge = new OfflinePageEvaluationBridge(profile, useTestingScheduler);
@@ -367,7 +372,7 @@ public class OfflinePageSavePageLaterEvaluationTest {
     }
 
     private void getUrlListFromInputFile(String inputFilePath) throws IOException {
-        mUrls = new ArrayList<String>();
+        mUrls = new ArrayList<>();
         try {
             BufferedReader bufferedReader = getInputStream(inputFilePath);
             try {

@@ -2,28 +2,25 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "third_party/blink/renderer/platform/blob/blob_bytes_provider.h"
 
 #include <algorithm>
 #include <memory>
 #include <utility>
 
+#include "base/compiler_specific.h"
 #include "base/containers/heap_array.h"
 #include "base/containers/span.h"
 #include "base/files/file.h"
 #include "base/files/file_util.h"
-#include "base/functional/bind.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/run_loop.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/public/platform/scheduler/test/renderer_scheduler_test_support.h"
+#include "third_party/blink/renderer/platform/wtf/functional.h"
 
 namespace blink {
 
@@ -36,21 +33,21 @@ class BlobBytesProviderTest : public testing::Test {
     for (wtf_size_t i = 0; i < test_bytes1_.size(); ++i)
       test_bytes1_[i] = i % 191;
     test_data1_ = RawData::Create();
-    test_data1_->MutableData()->AppendVector(test_bytes1_);
+    test_data1_->MutableData().append_range(test_bytes1_);
     test_bytes2_.resize(64);
     for (wtf_size_t i = 0; i < test_bytes2_.size(); ++i)
       test_bytes2_[i] = i;
     test_data2_ = RawData::Create();
-    test_data2_->MutableData()->AppendVector(test_bytes2_);
+    test_data2_->MutableData().append_range(test_bytes2_);
     test_bytes3_.resize(32);
     for (wtf_size_t i = 0; i < test_bytes3_.size(); ++i)
       test_bytes3_[i] = (i + 10) % 137;
     test_data3_ = RawData::Create();
-    test_data3_->MutableData()->AppendVector(test_bytes3_);
+    test_data3_->MutableData().append_range(test_bytes3_);
 
-    combined_bytes_.AppendVector(test_bytes1_);
-    combined_bytes_.AppendVector(test_bytes2_);
-    combined_bytes_.AppendVector(test_bytes3_);
+    combined_bytes_.append_range(test_bytes1_);
+    combined_bytes_.append_range(test_bytes2_);
+    combined_bytes_.append_range(test_bytes3_);
   }
 
   void TearDown() override {
@@ -82,16 +79,16 @@ TEST_F(BlobBytesProviderTest, Consolidation) {
   auto data = CreateProvider();
   DCHECK_CALLED_ON_VALID_SEQUENCE(data->sequence_checker_);
 
-  data->AppendData(base::span_from_cstring("abc"));
-  data->AppendData(base::span_from_cstring("def"));
-  data->AppendData(base::span_from_cstring("ps1"));
-  data->AppendData(base::span_from_cstring("ps2"));
+  data->AppendData(base::byte_span_from_cstring("abc"));
+  data->AppendData(base::byte_span_from_cstring("def"));
+  data->AppendData(base::byte_span_from_cstring("ps1"));
+  data->AppendData(base::byte_span_from_cstring("ps2"));
 
   EXPECT_EQ(1u, data->data_.size());
-  EXPECT_EQ(12u, data->data_[0]->size());
-  EXPECT_EQ(0, memcmp(data->data_[0]->data(), "abcdefps1ps2", 12));
+  EXPECT_EQ(base::span(*data->data_[0]),
+            base::span_from_cstring("abcdefps1ps2"));
 
-  auto large_data = base::HeapArray<char>::WithSize(
+  auto large_data = base::HeapArray<uint8_t>::WithSize(
       BlobBytesProvider::kMaxConsolidatedItemSizeInBytes);
   data->AppendData(large_data);
 
@@ -105,9 +102,9 @@ TEST_F(BlobBytesProviderTest, RequestAsReply) {
   auto provider = CreateProvider(test_data1_);
   Vector<uint8_t> received_bytes;
   provider->RequestAsReply(
-      base::BindOnce([](Vector<uint8_t>* bytes_out,
-                        const Vector<uint8_t>& bytes) { *bytes_out = bytes; },
-                     &received_bytes));
+      BindOnce([](Vector<uint8_t>* bytes_out,
+                  const Vector<uint8_t>& bytes) { *bytes_out = bytes; },
+               Unretained(&received_bytes)));
   EXPECT_EQ(test_bytes1_, received_bytes);
 
   received_bytes.clear();
@@ -116,9 +113,9 @@ TEST_F(BlobBytesProviderTest, RequestAsReply) {
   provider->AppendData(test_data2_);
   provider->AppendData(test_data3_);
   provider->RequestAsReply(
-      base::BindOnce([](Vector<uint8_t>* bytes_out,
-                        const Vector<uint8_t>& bytes) { *bytes_out = bytes; },
-                     &received_bytes));
+      BindOnce([](Vector<uint8_t>* bytes_out,
+                  const Vector<uint8_t>& bytes) { *bytes_out = bytes; },
+               Unretained(&received_bytes)));
   EXPECT_EQ(combined_bytes_, received_bytes);
 }
 
@@ -145,8 +142,7 @@ class RequestAsFile : public BlobBytesProviderTest,
 
     auto combined_bytes_span =
         base::span(combined_bytes_).subspan(GetParam().offset, GetParam().size);
-    sliced_data_.AppendRange(combined_bytes_span.begin(),
-                             combined_bytes_span.end());
+    sliced_data_.append_range(combined_bytes_span);
   }
 
   base::File DoRequestAsFile(uint64_t source_offset,
@@ -159,12 +155,12 @@ class RequestAsFile : public BlobBytesProviderTest,
         source_offset, source_length,
         base::File(path, base::File::FLAG_OPEN | base::File::FLAG_WRITE),
         file_offset,
-        base::BindOnce(
+        blink::BindOnce(
             [](std::optional<base::Time>* received_modified,
                std::optional<base::Time> modified) {
               *received_modified = modified;
             },
-            &received_modified));
+            blink::Unretained(&received_modified)));
     base::File file(path, base::File::FLAG_OPEN | base::File::FLAG_READ |
                               base::File::FLAG_DELETE_ON_CLOSE);
     base::File::Info info;
@@ -229,7 +225,7 @@ TEST_P(RequestAsFile, OffsetInNonEmptyFile) {
   test_provider_->RequestAsFile(
       test.offset, test.size,
       base::File(path, base::File::FLAG_OPEN | base::File::FLAG_WRITE),
-      file_offset, base::BindOnce([](std::optional<base::Time> last_modified) {
+      file_offset, BindOnce([](std::optional<base::Time> last_modified) {
         EXPECT_TRUE(last_modified);
       }));
 
@@ -274,12 +270,12 @@ TEST_F(BlobBytesProviderTest, RequestAsFile_MultipleChunks) {
     provider->RequestAsFile(
         i, 16, base::File(path, base::File::FLAG_OPEN | base::File::FLAG_WRITE),
         combined_bytes_.size() - i - 16,
-        base::BindOnce([](std::optional<base::Time> last_modified) {
+        BindOnce([](std::optional<base::Time> last_modified) {
           EXPECT_TRUE(last_modified);
         }));
     auto combined_bytes_chunk = base::span(combined_bytes_).subspan(i, 16u);
     expected_data.insert(0, combined_bytes_chunk.data(),
-                         combined_bytes_chunk.size());
+                         static_cast<wtf_size_t>(combined_bytes_chunk.size()));
   }
 
   base::File file(path, base::File::FLAG_OPEN | base::File::FLAG_READ |
@@ -296,11 +292,10 @@ TEST_F(BlobBytesProviderTest, RequestAsFile_MultipleChunks) {
 TEST_F(BlobBytesProviderTest, RequestAsFile_InvaldFile) {
   auto provider = CreateProvider(test_data1_);
 
-  provider->RequestAsFile(
-      0, 16, base::File(), 0,
-      base::BindOnce([](std::optional<base::Time> last_modified) {
-        EXPECT_FALSE(last_modified);
-      }));
+  provider->RequestAsFile(0, 16, base::File(), 0,
+                          BindOnce([](std::optional<base::Time> last_modified) {
+                            EXPECT_FALSE(last_modified);
+                          }));
 }
 
 TEST_F(BlobBytesProviderTest, RequestAsFile_UnwritableFile) {
@@ -310,7 +305,7 @@ TEST_F(BlobBytesProviderTest, RequestAsFile_UnwritableFile) {
   base::CreateTemporaryFile(&path);
   provider->RequestAsFile(
       0, 16, base::File(path, base::File::FLAG_OPEN | base::File::FLAG_READ), 0,
-      base::BindOnce([](std::optional<base::Time> last_modified) {
+      BindOnce([](std::optional<base::Time> last_modified) {
         EXPECT_FALSE(last_modified);
       }));
 
@@ -341,7 +336,7 @@ TEST_F(BlobBytesProviderTest, RequestAsStream) {
   watcher.Watch(
       consumer_handle.get(), MOJO_HANDLE_SIGNAL_READABLE,
       MOJO_WATCH_CONDITION_SATISFIED,
-      base::BindRepeating(
+      blink::BindRepeating(
           [](mojo::DataPipeConsumerHandle pipe,
              base::RepeatingClosure quit_closure, Vector<uint8_t>* bytes_out,
              MojoResult result, const mojo::HandleSignalsState& state) {
@@ -358,14 +353,15 @@ TEST_F(BlobBytesProviderTest, RequestAsStream) {
               return;
             EXPECT_EQ(MOJO_RESULT_OK, query_result);
 
-            Vector<uint8_t> bytes(num_bytes);
+            Vector<uint8_t> bytes(base::checked_cast<wtf_size_t>(num_bytes));
             EXPECT_EQ(
                 MOJO_RESULT_OK,
                 pipe.ReadData(MOJO_READ_DATA_FLAG_ALL_OR_NONE,
                               base::as_writable_byte_span(bytes), num_bytes));
-            bytes_out->AppendVector(bytes);
+            bytes_out->append_range(bytes);
           },
-          consumer_handle.get(), loop.QuitClosure(), &received_data));
+          consumer_handle.get(), loop.QuitClosure(),
+          blink::Unretained(&received_data)));
   loop.Run();
 
   EXPECT_EQ(combined_bytes_, received_data);

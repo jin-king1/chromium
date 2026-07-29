@@ -10,7 +10,6 @@
 #include <utility>
 #include <vector>
 
-#include "ash/constants/ash_features.h"
 #include "ash/constants/notifier_catalogs.h"
 #include "ash/metrics/histogram_macros.h"
 #include "ash/public/cpp/desk_template.h"
@@ -18,7 +17,6 @@
 #include "ash/public/cpp/saved_desk_delegate.h"
 #include "ash/public/cpp/shelf_config.h"
 #include "ash/public/cpp/window_properties.h"
-#include "ash/resources/vector_icons/vector_icons.h"
 #include "ash/root_window_controller.h"
 #include "ash/rotator/screen_rotation_animator.h"
 #include "ash/screen_util.h"
@@ -87,6 +85,7 @@
 #include "ash/wm/workspace_controller.h"
 #include "base/containers/adapters.h"
 #include "base/containers/unique_ptr_adapters.h"
+#include "base/debug/crash_logging.h"
 #include "base/debug/dump_without_crashing.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
@@ -127,10 +126,6 @@ constexpr int kNoItemsIndicatorHeightDp = 32;
 constexpr int kNoItemsIndicatorHorizontalPaddingDp = 16;
 constexpr int kNoItemsIndicatorRoundingDp = 16;
 constexpr int kNoItemsIndicatorVerticalPaddingDp = 8;
-
-// Distance from the bottom of the save desk as template button to the top of
-// the first overview item.
-constexpr int kSaveDeskAsTemplateOverviewItemSpacingDp = 45;
 
 // Distance from the bottom of the last overview item to the top of the split
 // view setup view toast widget.
@@ -303,37 +298,6 @@ class ShutdownAnimationMetricsTrackerObserver : public OverviewObserver,
   raw_ptr<ui::Compositor> compositor_;
   OverviewExitMetricsTracker metrics_tracker_;
 };
-
-// Creates `save_desk_button_container_widget_`. It contains SaveDeskAsTemplate
-// button and save for later button.
-std::unique_ptr<views::Widget> CreateSaveDeskButtonContainerWidget(
-    aura::Window* root_window) {
-  views::Widget::InitParams params(
-      views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET,
-      views::Widget::InitParams::TYPE_POPUP);
-  params.activatable = views::Widget::InitParams::Activatable::kYes;
-  params.opacity = views::Widget::InitParams::WindowOpacity::kTranslucent;
-  params.name = "SaveDeskButtonContainerWidget";
-  params.accept_events = true;
-  // This widget is hidden during window dragging, but will become visible on
-  // mouse/touch release. Place it in the active desk container so it remains
-  // beneath the dragged window when it is animating back to the overview grid.
-  params.parent = desks_util::GetActiveDeskContainerForRoot(root_window);
-  params.init_properties_container.SetProperty(kHideInDeskMiniViewKey, true);
-  // This should not show up in the MRU list. Otherwise, it will be treated as
-  // unsupported crostini app.
-  params.init_properties_container.SetProperty(kOverviewUiKey, true);
-
-  auto widget = std::make_unique<views::Widget>();
-  widget->set_focus_on_creation(false);
-  widget->Init(std::move(params));
-  // Turn off default widget animations.
-  widget->SetVisibilityAnimationTransition(views::Widget::ANIMATE_NONE);
-
-  aura::Window* window = widget->GetNativeWindow();
-  window->parent()->StackChildAtBottom(window);
-  return widget;
-}
 
 float GetWantedDropTargetOpacity(
     SplitViewDragIndicators::WindowDraggingState window_dragging_state) {
@@ -511,20 +475,17 @@ bool ShouldAnimateWallpaper(OverviewGrid* grid) {
 
 // Returns true if the birch bar should be shown in current state.
 bool ShouldShowBirchBar(aura::Window* root_window) {
-  // The birch bar should not be shown in tablet mode, partial split view,
-  // the forest feature is disabled, non-primary users, or the birch bars are
-  // disabled by users. We don't need to worry about showing/hiding the bar
-  // dynamically on primary/secondary user switch because we exit overview when
-  // we switch users.
-  return features::IsForestFeatureEnabled() &&
-         Shell::Get()->session_controller()->IsUserPrimary() &&
+  // The birch bar should not be shown in tablet mode, partial split view, for
+  // non-primary users, or the birch bars are disabled by users. We don't need
+  // to worry about showing/hiding the bar dynamically on primary/secondary user
+  // switch because we exit overview when we switch users.
+  return Shell::Get()->session_controller()->IsUserPrimary() &&
          BirchBarController::Get()->GetShowBirchSuggestions() &&
          !SplitViewController::Get(root_window)->InSplitViewMode();
 }
 
 bool ShouldShowInformedRestoreDialog(aura::Window* root_window) {
   return root_window == Shell::GetPrimaryRootWindow() &&
-         features::IsForestFeatureEnabled() &&
          !!Shell::Get()->informed_restore_controller()->contents_data();
 }
 
@@ -659,9 +620,9 @@ void OverviewGrid::Shutdown(OverviewEnterExitType exit_type) {
       SplitViewController::Get(root_window_)->InSplitViewMode();
   SnapGroupController* snap_group_controller = SnapGroupController::Get();
   const bool should_report_split_view_metrics =
-      in_split_view ||
-      (snap_group_controller &&
-       snap_group_controller->GetTopmostVisibleSnapGroup(root_window_));
+      in_split_view || (snap_group_controller &&
+                        snap_group_controller->GetTopmostVisibleSnapGroup(
+                            root_window_, /*topwindow_only=*/true));
   // OverviewGrid in splitscreen does not include the window to be activated.
   if (!item_list_.empty() || should_report_split_view_metrics) {
     const bool minimized_in_tablet =
@@ -669,7 +630,7 @@ void OverviewGrid::Shutdown(OverviewEnterExitType exit_type) {
         OverviewEnterExitType::kFadeOutExit;
     const bool single_animation_in_clamshell =
         (animate_count == 1 && !has_non_cover_animating) &&
-        !display::Screen::GetScreen()->InTabletMode();
+        !display::Screen::Get()->InTabletMode();
     // The following instance self-destructs when shutdown animation ends.
     new ShutdownAnimationMetricsTrackerObserver(
         root_window_->layer()->GetCompositor(),
@@ -749,18 +710,17 @@ void OverviewGrid::PrepareForOverview() {
   OverviewEnterExitType enter_exit_type =
       overview_session_->enter_exit_overview_type();
 
-  if (features::IsForestFeatureEnabled()) {
-    auto animation_type =
-        ScopedOverviewWallpaperClipper::AnimationType::kEnterOverview;
-    if (!should_animate_wallpaper) {
-      animation_type = ScopedOverviewWallpaperClipper::AnimationType::kNone;
-    } else if (enter_exit_type == OverviewEnterExitType::kInformedRestore) {
-      animation_type =
-          ScopedOverviewWallpaperClipper::AnimationType::kEnterInformedRestore;
-    }
-    scoped_overview_wallpaper_clipper_ =
-        std::make_unique<ScopedOverviewWallpaperClipper>(this, animation_type);
+  // Perform clipping on the wallpaper.
+  auto animation_type =
+      ScopedOverviewWallpaperClipper::AnimationType::kEnterOverview;
+  if (!should_animate_wallpaper) {
+    animation_type = ScopedOverviewWallpaperClipper::AnimationType::kNone;
+  } else if (enter_exit_type == OverviewEnterExitType::kInformedRestore) {
+    animation_type =
+        ScopedOverviewWallpaperClipper::AnimationType::kEnterInformedRestore;
   }
+  scoped_overview_wallpaper_clipper_ =
+      std::make_unique<ScopedOverviewWallpaperClipper>(this, animation_type);
 
   // TODO(b/326434696): Currently this will return false if there is no restore
   // data in the pine contents data. Show the zero-state dialog.
@@ -790,7 +750,7 @@ void OverviewGrid::PrepareForOverview() {
   }
 
   SplitViewController::Get(root_window_)->AddObserver(this);
-  if (display::Screen::GetScreen()->InTabletMode()) {
+  if (display::Screen::Get()->InTabletMode()) {
     if (auto* animator = RootWindowController::ForWindow(root_window_)
                              ->GetScreenRotationAnimator()) {
       animator->AddObserver(this);
@@ -944,7 +904,7 @@ void OverviewGrid::PositionWindows(
       !item_list_.empty()) {
     bool single_animation_in_clamshell =
         animate_count == 1 && !has_non_cover_animating &&
-        !display::Screen::GetScreen()->InTabletMode();
+        !display::Screen::Get()->InTabletMode();
     bool minimized_in_tablet = overview_session_->enter_exit_overview_type() ==
                                OverviewEnterExitType::kFadeInEnter;
     metrics_tracker_ = std::make_unique<OverviewEnterMetricsTracker>(
@@ -1059,7 +1019,7 @@ void OverviewGrid::RemoveItem(OverviewItemBase* overview_item,
   auto iter = std::ranges::find(base::Reversed(item_list_), overview_item,
                                 &std::unique_ptr<OverviewItemBase>::get);
   CHECK(iter != item_list_.rend());
-
+  CHECK_EQ(iter->get(), overview_item);
   UpdateNumSavedDeskUnsupportedWindows(overview_item->GetWindows(),
                                        /*increment=*/false);
 
@@ -1067,6 +1027,10 @@ void OverviewGrid::RemoveItem(OverviewItemBase* overview_item,
   // iterating through the `item_list_`.
   std::unique_ptr<OverviewItemBase> tmp = std::move(*iter);
   item_list_.erase(std::next(iter).base());
+
+  if (!item_destroying) {
+    tmp->Shutdown();
+  }
   tmp.reset();
 
   if (overview_session_)
@@ -1510,8 +1474,6 @@ void OverviewGrid::CalculateWindowListAnimationStates(
     }
   }
 
-  // TODO(sammiequon): Investigate the bounds used here and if we need to
-  // consider tucked windows.
   gfx::Rect grid_bounds = GetGridEffectiveBounds();
   for (size_t i = 0; i < items.size(); ++i) {
     const bool minimized =
@@ -1523,7 +1485,7 @@ void OverviewGrid::CalculateWindowListAnimationStates(
                   : items[i]->GetWindow()->GetBoundsInRootWindow();
     if (!src_bounds_temp.IsEmpty()) {
       if (transition == OverviewTransition::kEnter &&
-          display::Screen::GetScreen()->InTabletMode()) {
+          display::Screen::Get()->InTabletMode()) {
         BackdropController* backdrop_controller =
             GetActiveWorkspaceController(root_window_)
                 ->layout_manager()
@@ -1763,10 +1725,6 @@ gfx::Rect OverviewGrid::GetGridEffectiveBounds() const {
 }
 
 gfx::Insets OverviewGrid::GetGridHorizontalPaddings() const {
-  if (!features::IsForestFeatureEnabled()) {
-    return gfx::Insets();
-  }
-
   // Use compact paddings for partial overview.
   if (SplitViewController::Get(root_window_)->InSplitViewMode()) {
     return gfx::Insets::VH(0, kCompactPaddingForEffectiveBounds);
@@ -1794,11 +1752,8 @@ gfx::Insets OverviewGrid::GetGridHorizontalPaddings() const {
 }
 
 gfx::Insets OverviewGrid::GetGridVerticalPaddings() const {
-  const bool forest_enabled = features::IsForestFeatureEnabled();
-
   // Use compact paddings for partial overview.
-  if (forest_enabled &&
-      SplitViewController::Get(root_window_)->InSplitViewMode()) {
+  if (SplitViewController::Get(root_window_)->InSplitViewMode()) {
     return gfx::Insets::VH(kCompactPaddingForEffectiveBounds, 0);
   }
 
@@ -1813,14 +1768,8 @@ gfx::Insets OverviewGrid::GetGridVerticalPaddings() const {
   const bool has_desk_bar =
       desks_bar_view_ || desks_util::ShouldDesksBarBeCreated();
 
-  const int no_desk_bar_padding =
-      forest_enabled ? kSpaciousPaddingForEffectiveBounds : 0;
   vertical_paddings.set_top(has_desk_bar ? GetDesksBarHeight()
-                                         : no_desk_bar_padding);
-
-  if (!forest_enabled) {
-    return vertical_paddings;
-  }
+                                         : kSpaciousPaddingForEffectiveBounds);
 
   // Calculate the bottom padding according to the existence of birch bar,
   // shelf, and home launcher.
@@ -1934,17 +1883,6 @@ bool OverviewGrid::MaybeDropItemOnDeskMiniViewOrNewDeskButton(
       DesksCreationRemovalSource::kDragToNewDeskButton);
 
   auto* target_desk = desks_controller->desks().back().get();
-
-  // When creating a new desk by by dragging and dropping a lacros browser
-  // window to new desk button, set the desk's default profile based on the
-  // profile lacros window is logged into.
-  const auto windows = dragged_item->GetWindows();
-  if (chromeos::features::IsDeskProfilesEnabled() && windows.size() == 1) {
-    if (auto lacros_profile_id = windows[0]->GetProperty(kLacrosProfileId);
-        lacros_profile_id != 0) {
-      target_desk->SetLacrosProfileId(lacros_profile_id);
-    }
-  }
 
   return desks_controller->MoveWindowFromActiveDeskTo(
       dragged_item->GetWindow(), target_desk, root_window_,
@@ -2143,8 +2081,6 @@ int OverviewGrid::CalculateWidthAndMaybeSetUnclippedBounds(
 
     // Find the width so that it matches height and matches the aspect ratio of
     // |split_view_bounds|.
-    // TODO(sammiequon): Check to see if we can unify this with the `width`
-    // calculation in the above branch where we do the clamp and the max.
     width = target_aspect_ratio * window_height;
     // The unclipped height is the height which matches |width| but keeps the
     // aspect ratio of |target_bounds|. Clipping takes the overview header into
@@ -2415,8 +2351,8 @@ void OverviewGrid::UpdateSaveDeskButtons() {
   // scroll is in progress.
   const bool target_visible =
       !no_items && !overview_session_->GetCurrentDraggedOverviewItem() &&
-      !display::Screen::GetScreen()->InTabletMode() &&
-      !IsShowingSavedDeskLibrary() && desks_widget_ &&
+      !display::Screen::Get()->InTabletMode() && !IsShowingSavedDeskLibrary() &&
+      desks_widget_ &&
       (!features::IsContinuousOverviewScrollAnimationEnabled() ||
        !OverviewController::Get()->is_continuous_scroll_in_progress());
 
@@ -2427,113 +2363,9 @@ void OverviewGrid::UpdateSaveDeskButtons() {
   // viable to be shown, then we want to record a histogram for holdback
   // purposes.
   if (target_visible && visibility_changed) {
-    if (features::IsSavedDeskUiRevampEnabled()) {
-      base::UmaHistogramBoolean(kShowSavedDeskButtonsRevampEnabledHistogramName,
-                                true);
-    } else {
-      base::UmaHistogramBoolean(
-          kShowSavedDeskButtonsRevampDisabledHistogramName, true);
-    }
+    base::UmaHistogramBoolean(kShowSavedDeskButtonsRevampEnabledHistogramName,
+                              true);
   }
-
-  // If the UI revamp is enabled, we return as the buttons will not be shown.
-  if (features::IsSavedDeskUiRevampEnabled()) {
-    return;
-  }
-
-  // Adds or removes the widget from the accessibility focus order when exiting
-  // the scope. Skip the update if the widget's visibility hasn't changed.
-  absl::Cleanup update_accessibility_focus = [this, visibility_changed] {
-    if (visibility_changed) {
-      overview_session_->UpdateAccessibilityFocus();
-    }
-  };
-
-  if (!target_visible) {
-    if (visibility_changed && save_desk_button_container_widget_) {
-      PerformFadeOutLayer(
-          save_desk_button_container_widget_->GetLayer(),
-          /*animate=*/true,
-          base::BindOnce(&OverviewGrid::OnSaveDeskButtonContainerFadedOut,
-                         weak_ptr_factory_.GetWeakPtr()));
-    }
-    return;
-  }
-
-  // Create `save_desk_button_container_widget_`.
-  if (!save_desk_button_container_widget_) {
-    save_desk_button_container_widget_ =
-        CreateSaveDeskButtonContainerWidget(root_window_);
-    save_desk_button_container_widget_->SetContentsView(
-        std::make_unique<SavedDeskSaveDeskButtonContainer>(
-            base::BindRepeating(
-                &OverviewGrid::OnSaveDeskAsTemplateButtonPressed,
-                weak_ptr_factory_.GetWeakPtr()),
-            base::BindRepeating(&OverviewGrid::OnSaveDeskForLaterButtonPressed,
-                                weak_ptr_factory_.GetWeakPtr())));
-  }
-
-  // If a desk animation is in progress, we don't want to animate
-  // `save_desk_button_container_widget_`.
-  const bool in_desk_animation = DesksController::Get()->animation();
-
-  // There may be an existing animation in progress triggered by
-  // `PerformFadeOutLayer()` above, which animates a widget to 0.f before
-  // calling `OnSaveDeskButtonContainerFadedOut()` to hide the widget on
-  // animation end. Stop animating so that the callbacks associated get fired,
-  // otherwise we may end up trying to show a widget that's already shown.
-  // `StopAnimating()` is a no-op if there is no animation in progress.
-  if (visibility_changed) {
-    save_desk_button_container_widget_->GetLayer()
-        ->GetAnimator()
-        ->StopAnimating();
-    save_desk_button_container_widget_->ShowInactive();
-    PerformFadeInLayer(save_desk_button_container_widget_->GetLayer(),
-                       /*animate=*/!in_desk_animation);
-  }
-
-  // Enable/disable button and update tooltip.
-  auto* container = views::AsViewClass<SavedDeskSaveDeskButtonContainer>(
-      save_desk_button_container_widget_->GetContentsView());
-  CHECK(container);
-
-  SaveDeskOptionStatus template_status =
-      GetEnableStateAndTooltipIDForTemplateType(DeskTemplateType::kTemplate);
-  SaveDeskOptionStatus save_later_status =
-      GetEnableStateAndTooltipIDForTemplateType(
-          DeskTemplateType::kSaveAndRecall);
-
-  container->UpdateButtonEnableStateAndTooltip(DeskTemplateType::kTemplate,
-                                               template_status);
-  container->UpdateButtonEnableStateAndTooltip(DeskTemplateType::kSaveAndRecall,
-                                               save_later_status);
-
-  // Set the widget position above the overview item window and default width
-  // and height.
-  gfx::RectF first_overview_item_bounds;
-  if (item_list_.front()->animating_to_close()) {
-    CHECK_GT(item_list_.size(), 1u);
-    first_overview_item_bounds = item_list_[1]->target_bounds();
-  } else {
-    first_overview_item_bounds = item_list_.front()->target_bounds();
-  }
-
-  // Animate the widget so it moves with the items. The widget's size isn't
-  // changing, so its ok to use a bounds animation as opposed to a transform
-  // animation. If the visibility has changed, skip the bounds animation and use
-  // the fade animation from above. Align the widget so it is visually aligned
-  // with the first overview item.
-  ScopedOverviewAnimationSettings settings(
-      visibility_changed || in_desk_animation
-          ? OVERVIEW_ANIMATION_NONE
-          : OVERVIEW_ANIMATION_LAYOUT_OVERVIEW_ITEMS_IN_OVERVIEW,
-      save_desk_button_container_widget_->GetNativeWindow());
-  gfx::Point available_origin =
-      gfx::ToRoundedPoint(first_overview_item_bounds.origin()) +
-      gfx::Vector2d(0, -kSaveDeskAsTemplateOverviewItemSpacingDp);
-  save_desk_button_container_widget_->SetBounds(gfx::Rect(
-      available_origin, save_desk_button_container_widget_->GetContentsView()
-                            ->GetPreferredSize()));
 }
 
 void OverviewGrid::EnableSaveDeskButtonContainer() {
@@ -2696,7 +2528,8 @@ void OverviewGrid::OnSplitViewStateChanged(
   const bool both_snapped_windows =
       state == SplitViewController::State::kBothSnapped ||
       (snap_group_controller &&
-       snap_group_controller->GetTopmostVisibleSnapGroup(root_window_));
+       snap_group_controller->GetTopmostVisibleSnapGroup(
+           root_window_, /*topwindow_only=*/true));
   if (both_snapped_windows || unsnappable_window_activated ||
       (split_view_controller->InClamshellSplitViewMode() &&
        overview_session_->IsEmpty())) {
@@ -3125,6 +2958,7 @@ bool OverviewGrid::FitWindowRectsInBounds(
   // determine each item's scale.
   for (size_t i = 0u; i < item_count; ++i) {
     const auto& item = item_list_[i];
+    CHECK(item.get());
     if (ShouldExcludeItemFromGridLayout(item.get(), ignored_items)) {
       continue;
     }
@@ -3170,10 +3004,6 @@ bool OverviewGrid::FitWindowRectsInBounds(
 void OverviewGrid::MaybeCenterOverviewItems(
     const base::flat_set<OverviewItemBase*>& ignored_items,
     std::vector<gfx::RectF>& out_window_rects) {
-  if (!features::IsForestFeatureEnabled()) {
-    return;
-  }
-
   if (out_window_rects.empty()) {
     return;
   }
@@ -3494,7 +3324,7 @@ int OverviewGrid::GetDesksBarHeight() const {
 }
 
 bool OverviewGrid::ShouldUseScrollingLayout(size_t ignored_items_size) const {
-  if (Shell::Get()->IsInTabletMode()) {
+  if (display::Screen::Get()->InTabletMode()) {
     return item_list_.size() - ignored_items_size >=
            kMinimumItemsForScrollingLayout;
   }
@@ -3509,6 +3339,7 @@ void OverviewGrid::AddDropTargetImpl(OverviewItemBase* dragged_item,
 
   auto drop_target = std::make_unique<OverviewDropTarget>(this);
   drop_target_ = drop_target.get();
+  CHECK(drop_target);
   item_list_.insert(item_list_.begin() + position, std::move(drop_target));
 
   base::flat_set<OverviewItemBase*> ignored_items;

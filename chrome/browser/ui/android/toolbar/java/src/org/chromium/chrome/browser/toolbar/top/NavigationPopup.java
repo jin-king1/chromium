@@ -4,10 +4,13 @@
 
 package org.chromium.chrome.browser.toolbar.top;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.content.Context;
 import android.content.res.Resources;
 import android.graphics.Bitmap;
 import android.text.TextUtils;
+import android.util.TypedValue;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.View.OnLayoutChangeListener;
@@ -19,33 +22,39 @@ import android.widget.ListPopupWindow;
 import android.widget.PopupWindow;
 import android.widget.TextView;
 
+import androidx.annotation.DrawableRes;
 import androidx.annotation.IntDef;
-import androidx.annotation.Nullable;
 import androidx.appcompat.content.res.AppCompatResources;
 import androidx.core.widget.ImageViewCompat;
 
+import org.chromium.base.MathUtils;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.metrics.RecordUserAction;
-import org.chromium.base.supplier.Supplier;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.toolbar.R;
 import org.chromium.chrome.browser.ui.favicon.FaviconHelper;
 import org.chromium.chrome.browser.ui.favicon.FaviconHelper.DefaultFaviconHelper;
 import org.chromium.chrome.browser.ui.favicon.FaviconHelper.FaviconImageCallback;
-import org.chromium.components.embedder_support.util.UrlConstants;
+import org.chromium.chrome.browser.url_constants.UrlConstantResolver;
+import org.chromium.chrome.browser.url_constants.UrlConstantResolverFactory;
 import org.chromium.components.embedder_support.util.UrlUtilities;
 import org.chromium.content_public.browser.NavigationController;
 import org.chromium.content_public.browser.NavigationEntry;
 import org.chromium.content_public.browser.NavigationHistory;
+import org.chromium.ui.UiUtils;
 import org.chromium.url.GURL;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.function.Supplier;
 
 /** A popup that handles displaying the navigation history for a given tab. */
+@NullMarked
 public class NavigationPopup implements AdapterView.OnItemClickListener {
     private static final int MAXIMUM_HISTORY_ITEMS = 8;
     private static final int FULL_HISTORY_ENTRY_INDEX = -1;
@@ -73,12 +82,12 @@ public class NavigationPopup implements AdapterView.OnItemClickListener {
     private final Context mContext;
     private final ListPopupWindow mPopup;
     private final NavigationController mNavigationController;
-    private NavigationHistory mHistory;
+    private final NavigationHistory mHistory;
     private final NavigationAdapter mAdapter;
     private final @Type int mType;
     private final int mFaviconSize;
-    @Nullable private final OnLayoutChangeListener mAnchorViewLayoutChangeListener;
-    private final Supplier<Tab> mCurrentTabSupplier;
+    private final @Nullable OnLayoutChangeListener mAnchorViewLayoutChangeListener;
+    private final Supplier<@Nullable Tab> mCurrentTabSupplier;
     private final HistoryDelegate mHistoryDelegate;
 
     private DefaultFaviconHelper mDefaultFaviconHelper;
@@ -86,7 +95,7 @@ public class NavigationPopup implements AdapterView.OnItemClickListener {
     /** Loads the favicons asynchronously. */
     private FaviconHelper mFaviconHelper;
 
-    private Runnable mOnDismissCallback;
+    private @Nullable Runnable mOnDismissCallback;
 
     private boolean mInitialized;
 
@@ -100,12 +109,13 @@ public class NavigationPopup implements AdapterView.OnItemClickListener {
      * @param currentTabSupplier Supplies the current tab.
      * @param historyDelegate Delegate used to display navigation history.
      */
+    @SuppressWarnings("NullAway")
     public NavigationPopup(
             Profile profile,
             Context context,
-            NavigationController navigationController,
+            @Nullable NavigationController navigationController,
             @Type int type,
-            Supplier<Tab> currentTabSupplier,
+            Supplier<@Nullable Tab> currentTabSupplier,
             HistoryDelegate historyDelegate) {
         mProfile = profile;
         mContext = context;
@@ -122,10 +132,12 @@ public class NavigationPopup implements AdapterView.OnItemClickListener {
                 mNavigationController.getDirectedNavigationHistory(
                         isForward, MAXIMUM_HISTORY_ITEMS);
         if (!shouldUseIncognitoResources()) {
+            UrlConstantResolver urlConstantResolver =
+                    UrlConstantResolverFactory.getForProfile(profile);
             mHistory.addEntry(
                     new NavigationEntry(
                             FULL_HISTORY_ENTRY_INDEX,
-                            new GURL(UrlConstants.HISTORY_URL),
+                            new GURL(urlConstantResolver.getHistoryPageUrl()),
                             GURL.emptyGURL(),
                             GURL.emptyGURL(),
                             resources.getString(R.string.show_full_history),
@@ -150,9 +162,6 @@ public class NavigationPopup implements AdapterView.OnItemClickListener {
         mPopup.setHeight(ViewGroup.LayoutParams.WRAP_CONTENT);
         mPopup.setOnItemClickListener(this);
         mPopup.setAdapter(mAdapter);
-        mPopup.setWidth(
-                resources.getDimensionPixelSize(
-                        anchorToBottom ? R.dimen.navigation_popup_width : R.dimen.menu_width));
 
         if (anchorToBottom) {
             // By default ListPopupWindow uses the top & bottom padding of the background to
@@ -199,12 +208,43 @@ public class NavigationPopup implements AdapterView.OnItemClickListener {
             mPopup.getAnchorView().removeOnLayoutChangeListener(mAnchorViewLayoutChangeListener);
         }
         mPopup.setAnchorView(anchorView);
-        if (mType == Type.ANDROID_SYSTEM_BACK) {
+        Resources resources = mContext.getResources();
+        boolean isAndroidSystemBack = mType == Type.ANDROID_SYSTEM_BACK;
+        int contentWidth = UiUtils.computeListAdapterContentDimensions(mAdapter, null)[0];
+        int minWidth = resources.getDimensionPixelSize(R.dimen.navigation_popup_tablet_min_width);
+        int maxWidth =
+                // Take the smaller of...
+                Math.min(
+                        // ... a fixed upper bound, and...
+                        resources.getDimensionPixelSize(R.dimen.navigation_popup_tablet_max_width),
+                        // ... the width of the screen minus a margin.
+                        resources.getDisplayMetrics().widthPixels
+                                - resources.getDimensionPixelSize(
+                                        R.dimen.navigation_popup_tablet_width_margin));
+        mPopup.setWidth(
+                isAndroidSystemBack
+                        ? resources.getDimensionPixelSize(R.dimen.navigation_popup_width)
+                        : MathUtils.clamp(contentWidth, minWidth, maxWidth));
+        if (isAndroidSystemBack) {
             anchorView.addOnLayoutChangeListener(mAnchorViewLayoutChangeListener);
             centerPopupOverAnchorViewAndShow();
         } else {
             mPopup.show();
         }
+
+        // Set clipToOutline to true to contain the mouse hover effect inside the
+        // popup's outline. Also set the background of the list view to popup_bg_shape
+        // to make its shape the same as the popup.
+        assumeNonNull(mPopup.getListView());
+        TypedValue typedValue = new TypedValue();
+        @DrawableRes
+        int bgResId =
+                mContext.getTheme().resolveAttribute(R.attr.popupBgShape, typedValue, true)
+                        ? typedValue.resourceId
+                        : 0;
+        assert bgResId != 0;
+        mPopup.getListView().setBackgroundResource(bgResId);
+        mPopup.getListView().setClipToOutline(true);
     }
 
     /** Dismisses the popup. */
@@ -222,6 +262,7 @@ public class NavigationPopup implements AdapterView.OnItemClickListener {
 
     private void centerPopupOverAnchorViewAndShow() {
         assert mInitialized;
+        assumeNonNull(mPopup.getAnchorView());
         int horizontalOffset = (mPopup.getAnchorView().getWidth() - mPopup.getWidth()) / 2;
         if (horizontalOffset > 0) mPopup.setHorizontalOffset(horizontalOffset);
         mPopup.show();
@@ -232,6 +273,7 @@ public class NavigationPopup implements AdapterView.OnItemClickListener {
         mInitialized = false;
         if (mDefaultFaviconHelper != null) mDefaultFaviconHelper.clearCache();
         if (mAnchorViewLayoutChangeListener != null) {
+            assumeNonNull(mPopup.getAnchorView());
             mPopup.getAnchorView().removeOnLayoutChangeListener(mAnchorViewLayoutChangeListener);
         }
         if (mOnDismissCallback != null) mOnDismissCallback.run();
@@ -252,7 +294,7 @@ public class NavigationPopup implements AdapterView.OnItemClickListener {
                         (bitmap, iconUrl) ->
                                 NavigationPopup.this.onFaviconAvailable(pageUrl, bitmap);
                 mFaviconHelper.getLocalFaviconImageForURL(
-                        mProfile, pageUrl, mFaviconSize, imageCallback);
+                        mProfile, pageUrl, mFaviconSize, /* fallbackToHost= */ true, imageCallback);
                 requestedUrls.add(pageUrl);
             }
         }
@@ -266,7 +308,12 @@ public class NavigationPopup implements AdapterView.OnItemClickListener {
     private void onFaviconAvailable(GURL pageUrl, Bitmap favicon) {
         if (favicon == null) {
             if (mDefaultFaviconHelper == null) mDefaultFaviconHelper = new DefaultFaviconHelper();
-            favicon = mDefaultFaviconHelper.getDefaultFaviconBitmap(mContext, pageUrl, true);
+            favicon =
+                    mDefaultFaviconHelper.getDefaultFaviconBitmap(
+                            mContext,
+                            pageUrl,
+                            /* useDarkIcon= */ true,
+                            /* useIncognitoNtpIcon= */ false);
         }
         if (UrlUtilities.isNtpUrl(pageUrl) && shouldUseIncognitoResources()) {
             favicon =
@@ -286,6 +333,7 @@ public class NavigationPopup implements AdapterView.OnItemClickListener {
         if (entry.getIndex() == FULL_HISTORY_ENTRY_INDEX) {
             RecordUserAction.record(buildComputedAction("ShowFullHistory"));
             Tab currentTab = mCurrentTabSupplier.get();
+            assert currentTab != null;
             mHistoryDelegate.show(currentTab);
         } else {
             // 1-based index to keep in line with Desktop implementation.
@@ -298,7 +346,7 @@ public class NavigationPopup implements AdapterView.OnItemClickListener {
     }
 
     private class NavigationAdapter extends BaseAdapter {
-        private Integer mTopPadding;
+        private @Nullable Integer mTopPadding;
 
         @Override
         public int getCount() {
@@ -319,12 +367,13 @@ public class NavigationPopup implements AdapterView.OnItemClickListener {
         public View getView(int position, View convertView, ViewGroup parent) {
             EntryViewHolder viewHolder;
             if (convertView == null) {
-                LayoutInflater inflater = LayoutInflater.from(parent.getContext());
+                LayoutInflater inflater = LayoutInflater.from(mContext);
                 convertView = inflater.inflate(R.layout.navigation_popup_item, parent, false);
-                viewHolder = new EntryViewHolder();
-                viewHolder.mContainer = convertView;
-                viewHolder.mImageView = convertView.findViewById(R.id.favicon_img);
-                viewHolder.mTextView = convertView.findViewById(R.id.entry_title);
+                viewHolder =
+                        new EntryViewHolder(
+                                /* container= */ convertView,
+                                /* imageView= */ convertView.findViewById(R.id.favicon_img),
+                                /* textView= */ convertView.findViewById(R.id.entry_title));
                 convertView.setTag(viewHolder);
             } else {
                 viewHolder = (EntryViewHolder) convertView.getTag();
@@ -337,8 +386,7 @@ public class NavigationPopup implements AdapterView.OnItemClickListener {
             if (entry.getIndex() == FULL_HISTORY_ENTRY_INDEX) {
                 ImageViewCompat.setImageTintList(
                         viewHolder.mImageView,
-                        AppCompatResources.getColorStateList(
-                                mContext, R.color.default_icon_color_accent1_tint_list));
+                        mContext.getColorStateList(R.color.default_icon_color_accent1_tint_list));
             } else {
                 ImageViewCompat.setImageTintList(viewHolder.mImageView, null);
             }
@@ -378,8 +426,14 @@ public class NavigationPopup implements AdapterView.OnItemClickListener {
     }
 
     private static class EntryViewHolder {
-        View mContainer;
-        ImageView mImageView;
-        TextView mTextView;
+        private EntryViewHolder(View container, ImageView imageView, TextView textView) {
+            mContainer = container;
+            mImageView = imageView;
+            mTextView = textView;
+        }
+
+        final View mContainer;
+        final ImageView mImageView;
+        final TextView mTextView;
     }
 }

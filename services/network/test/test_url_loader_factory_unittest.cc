@@ -4,9 +4,11 @@
 
 #include "services/network/test/test_url_loader_factory.h"
 
+#include "base/byte_size.h"
 #include "base/test/bind.h"
 #include "base/test/task_environment.h"
 #include "mojo/public/cpp/system/data_pipe_utils.h"
+#include "net/http/http_response_headers.h"
 #include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 #include "services/network/test/test_url_loader_client.h"
 #include "services/network/test/test_utils.h"
@@ -41,9 +43,8 @@ class TestURLLoaderFactoryTest : public testing::Test {
     EXPECT_TRUE(client->response_body().is_valid());
     EXPECT_TRUE(
         mojo::BlockingCopyToString(client->response_body_release(), &response));
-    EXPECT_EQ(
-        static_cast<size_t>(client->completion_status().decoded_body_length),
-        response.length());
+    EXPECT_EQ(client->completion_status().decoded_body_length.InBytes(),
+              response.length());
     return response;
   }
 

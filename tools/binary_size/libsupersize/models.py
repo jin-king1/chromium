@@ -54,6 +54,9 @@ SECTION_PAK_TRANSLATIONS = '.pak.translations'
 SECTION_PART_END = '.part.end'
 SECTION_RELRO_PADDING = '.relro_padding'
 SECTION_RODATA = '.rodata'
+SECTION_TBSS = '.tbss'
+SECTION_TDATA = '.tdata'
+SECTION_TDATA_REL_RO = '.tdata.rel.ro'
 SECTION_TEXT = '.text'
 # Used by SymbolGroup when they contain a mix of sections.
 SECTION_MULTIPLE = '.*'
@@ -67,21 +70,22 @@ DEX_SECTIONS = (
     SECTION_DEX,
     SECTION_DEX_METHOD,
 )
-NATIVE_SECTIONS = (
-    SECTION_BSS,
-    SECTION_BSS_REL_RO,
-    SECTION_DATA,
-    SECTION_DATA_REL_RO,
-    SECTION_DATA_REL_RO_LOCAL,
-    SECTION_PART_END,
-    SECTION_RODATA,
-    SECTION_TEXT,
-)
 BSS_SECTIONS = (
     SECTION_BSS,
     SECTION_BSS_REL_RO,
     SECTION_PART_END,
     SECTION_RELRO_PADDING,
+    SECTION_TBSS,
+    'google_malloc_bss',
+)
+NATIVE_SECTIONS = BSS_SECTIONS + (
+    SECTION_DATA,
+    SECTION_DATA_REL_RO,
+    SECTION_DATA_REL_RO_LOCAL,
+    SECTION_RODATA,
+    SECTION_TDATA,
+    SECTION_TDATA_REL_RO,
+    SECTION_TEXT,
 )
 PAK_SECTIONS = (
     SECTION_PAK_NONTRANSLATED,
@@ -91,23 +95,27 @@ PAK_SECTIONS = (
 CONTAINER_MULTIPLE = '*'
 CONTAINER_NAME_EMPTY = '(empty)'
 
+# Never remove from this map. It needs historic entries to diff against
+# old .size files.
 SECTION_NAME_TO_SECTION = {
+    n: 'b'
+    for n in BSS_SECTIONS
+} | {
     SECTION_ARSC: 'a',
-    SECTION_BSS: 'b',
-    SECTION_BSS_REL_RO: 'b',
     SECTION_DATA: 'd',
     SECTION_DATA_REL_RO_LOCAL: 'R',
     SECTION_DATA_REL_RO: 'R',
-    SECTION_DEX: 'x',
     SECTION_DEX_METHOD: 'm',
+    SECTION_DEX: 'x',
+    SECTION_MULTIPLE: '*',
     SECTION_OTHER: 'o',
-    SECTION_PART_END: 'b',
     SECTION_PAK_NONTRANSLATED: 'P',
     SECTION_PAK_TRANSLATIONS: 'p',
-    SECTION_RELRO_PADDING: 'b',
+    SECTION_PART_END: 'b',
     SECTION_RODATA: 'r',
+    SECTION_TDATA: 'd',
+    SECTION_TDATA_REL_RO: 'R',
     SECTION_TEXT: 't',
-    SECTION_MULTIPLE: '*',
 }
 
 SECTION_TO_SECTION_NAME = collections.OrderedDict((
@@ -1570,6 +1578,9 @@ class DeltaSymbolGroup(SymbolGroup):
     for sym in self:
       ret[sym.diff_status] += 1
     return tuple(ret)
+
+  def GroupedByDiffStatus(self):
+    return self.GroupedBy(lambda s: s.diff_status)
 
   def CountUniqueSymbols(self):
     """Returns (num_unique_before_symbols, num_unique_after_symbols)."""

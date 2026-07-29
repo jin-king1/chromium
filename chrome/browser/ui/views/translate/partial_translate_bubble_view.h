@@ -5,7 +5,6 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_TRANSLATE_PARTIAL_TRANSLATE_BUBBLE_VIEW_H_
 #define CHROME_BROWSER_UI_VIEWS_TRANSLATE_PARTIAL_TRANSLATE_BUBBLE_VIEW_H_
 
-#include <map>
 #include <memory>
 #include <string>
 
@@ -20,6 +19,7 @@
 #include "components/language/core/common/language_experiments.h"
 #include "components/translate/core/common/translate_errors.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "ui/actions/actions.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/menus/simple_menu_model.h"
@@ -29,7 +29,7 @@
 #include "ui/views/controls/tabbed_pane/tabbed_pane.h"
 #include "ui/views/controls/tabbed_pane/tabbed_pane_listener.h"
 #include "ui/views/controls/throbber.h"
-#include "ui/views/window/non_client_view.h"
+#include "ui/views/window/frame_view.h"
 
 namespace views {
 class Combobox;
@@ -37,6 +37,8 @@ class LabelButton;
 class View;
 }  // namespace views
 
+// The bubble shown when translating a partial text (e.g. selecting a some
+// text from the contents).
 class PartialTranslateBubbleView : public LocationBarBubbleDelegateView,
                                    public ui::SimpleMenuModel::Delegate,
                                    public views::TabbedPaneListener {
@@ -44,7 +46,7 @@ class PartialTranslateBubbleView : public LocationBarBubbleDelegateView,
 
  public:
   // Item IDs for the option button's menu.
-  enum OptionsMenuItem { CHANGE_TARGET_LANGUAGE, CHANGE_SOURCE_LANGUAGE };
+  enum class OptionsMenuItem { kChangeTargetLanguage, kChangeSourceLanguage };
 
   // Element IDs for ui::ElementTracker
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kIdentifier);
@@ -60,7 +62,7 @@ class PartialTranslateBubbleView : public LocationBarBubbleDelegateView,
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kSourceLanguageDoneButton);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kErrorMessage);
 
-  PartialTranslateBubbleView(views::View* anchor_view,
+  PartialTranslateBubbleView(views::BubbleAnchor anchor,
                              std::unique_ptr<PartialTranslateBubbleModel> model,
                              content::WebContents* web_contents,
                              base::OnceClosure on_closing);
@@ -127,6 +129,8 @@ class PartialTranslateBubbleView : public LocationBarBubbleDelegateView,
                            SourceLanguageTabSelectedLogged);
   FRIEND_TEST_ALL_PREFIXES(PartialTranslateBubbleViewTest,
                            TranslateFullPageButton);
+  FRIEND_TEST_ALL_PREFIXES(PartialTranslateBubbleViewTest,
+                           TranslatedTextIsSelectable);
 
   // views::TabbedPaneListener:
   void TabSelectedAt(int index) override;

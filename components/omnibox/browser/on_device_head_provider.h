@@ -11,15 +11,11 @@
 #include "base/memory/raw_ptr.h"
 #include "base/sequence_checker.h"
 #include "base/task/sequenced_task_runner.h"
+#include "components/omnibox/browser/autocomplete_enums.h"
 #include "components/omnibox/browser/autocomplete_provider.h"
 #include "components/omnibox/browser/autocomplete_provider_client.h"
 #include "components/omnibox/browser/on_device_head_model.h"
-#include "components/optimization_guide/machine_learning_tflite_buildflags.h"
-
-// TODO(crbug.com/40241602): clean up this build flag guard later if possible.
-#if BUILDFLAG(BUILD_WITH_TFLITE_LIB)
 #include "components/omnibox/browser/on_device_tail_model_executor.h"
-#endif
 
 class AutocompleteProviderListener;
 
@@ -38,7 +34,7 @@ class OnDeviceHeadProvider : public AutocompleteProvider {
                                       AutocompleteProviderListener* listener);
 
   void Start(const AutocompleteInput& input, bool minimal_changes) override;
-  void Stop(bool clear_cached_results, bool due_to_user_inactivity) override;
+  void Stop(AutocompleteStopReason stop_reason) override;
   void AddProviderInfo(ProvidersInfo* provider_info) const override;
 
   AutocompleteProviderClient* client() { return client_; }
@@ -70,12 +66,10 @@ class OnDeviceHeadProvider : public AutocompleteProvider {
   // Helper function to be called when searches to the head model is done.
   void HeadModelSearchDone(std::unique_ptr<OnDeviceHeadProviderParams> params);
 
-#if BUILDFLAG(BUILD_WITH_TFLITE_LIB)
   // Helper function to be called when searches to the tail model is done.
   void TailModelSearchDone(
       std::unique_ptr<OnDeviceHeadProviderParams> params,
       std::vector<OnDeviceTailModelExecutor::Prediction> predictions);
-#endif
 
   // Helper functions to read head model filename from the static
   // OnDeviceModelUpdateListener instance.

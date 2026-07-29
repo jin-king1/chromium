@@ -4,11 +4,6 @@
 
 #include "ui/views/accessibility/ax_root_obj_wrapper.h"
 
-#include <utility>
-
-#include "base/containers/contains.h"
-#include "base/memory/raw_ptr.h"
-#include "base/strings/utf_string_conversions.h"
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/accessibility/ax_node_data.h"
 #include "ui/accessibility/platform/ax_unique_id.h"
@@ -24,12 +19,6 @@ AXRootObjWrapper::AXRootObjWrapper(views::AXAuraObjCache::Delegate* delegate,
 
 AXRootObjWrapper::~AXRootObjWrapper() = default;
 
-bool AXRootObjWrapper::HasChild(views::AXAuraObjWrapper* child) {
-  std::vector<raw_ptr<views::AXAuraObjWrapper, VectorExperimental>> children;
-  GetChildren(&children);
-  return base::Contains(children, child);
-}
-
 views::AXAuraObjWrapper* AXRootObjWrapper::GetParent() {
   return nullptr;
 }
@@ -44,7 +33,7 @@ void AXRootObjWrapper::Serialize(ui::AXNodeData* out_node_data) {
   out_node_data->id = unique_id_.Get();
   out_node_data->role = ax::mojom::Role::kDesktop;
 
-  display::Screen* screen = display::Screen::GetScreen();
+  display::Screen* screen = display::Screen::Get();
   if (!screen) {
     return;
   }

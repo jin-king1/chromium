@@ -35,8 +35,8 @@ chromium-metrics-reviews@google.com.
 </enum>
 
 <enum name="ChromeOSEfiManagementEvent">
-  <int value="0" label="RequiredEntryManagementFailed"/>
-  <int value="1" label="OptionalEntryManagementFailed"/>
+  <int value="1" label="RequiredEntryManagementFailed"/>
+  <int value="2" label="OptionalEntryManagementFailed"/>
 </enum>
 
 <enum name="ChromeOSRecoveryReason">
@@ -128,6 +128,29 @@ chromium-metrics-reviews@google.com.
       label="User requested recovery for training memory and rebooting."/>
   <int value="200" label="User requested network based recovery"/>
   <int value="255" label="Unspecified/unknown error in user-mode"/>
+</enum>
+
+<enum name="DeterminePhysicalSectorSizeResult">
+  <summary>
+    The result of an attempt to determine the size of a physical sector of the
+    disk to which a file is to be written.
+  </summary>
+  <int value="0" label="Success">
+    The size was determined and recorded in
+    Setup.Install.UnbufferedFileWriter.PhysicalSectorSize.
+  </int>
+  <int value="1" label="DriveInfoFailed">GetFileDriveInfo() failed.</int>
+  <int value="2" label="NoSizeValue">
+    GetFileDriveInfo() did not report the sector size.
+  </int>
+  <int value="3" label="GreaterThanFourK">
+    The device reported a sector size larger than 4096, which has been recorded
+    in Setup.Install.UnbufferedFileWriter.PhysicalSectorSize.
+  </int>
+  <int value="4" label="NotPowerOfTwo">
+    The device reported a sector size that is not a power of two, which has been
+    recorded in Setup.Install.UnbufferedFileWriter.PhysicalSectorSize.
+  </int>
 </enum>
 
 <enum name="SetupInstallResult">

@@ -2,11 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {stringToMojoString16} from 'chrome://resources/js/mojo_type_util.js';
 import type {BluetoothDeviceProperties, BluetoothDeviceStatusObserverInterface, BluetoothDiscoveryDelegateInterface, BluetoothSystemProperties, CrosBluetoothConfigInterface, DiscoverySessionStatusObserverInterface, PairedBluetoothDeviceProperties, SystemPropertiesObserverInterface} from 'chrome://resources/mojo/chromeos/ash/services/bluetooth_config/public/mojom/cros_bluetooth_config.mojom-webui.js';
 import {AudioOutputCapability, BluetoothModificationState, BluetoothSystemState, DeviceConnectionState, DevicePairingHandlerReceiver, DeviceType} from 'chrome://resources/mojo/chromeos/ash/services/bluetooth_config/public/mojom/cros_bluetooth_config.mojom-webui.js';
-
-import {assertFalse, assertNotReached, assertTrue} from '../chai_assert.js';
+import {assertFalse, assertNotReached, assertTrue} from 'chrome://webui-test/chai_assert.js';
 
 import {FakeDevicePairingHandler} from './fake_device_pairing_handler.js';
 
@@ -24,7 +22,7 @@ export function createDefaultBluetoothDevice(
     deviceProperties: {
       id: id,
       address: id,
-      publicName: stringToMojoString16(publicName),
+      publicName: publicName,
       deviceType: deviceType,
       audioCapability: audioCapability,
       connectionState: connectionState,
@@ -157,9 +155,8 @@ export class FakeBluetoothConfig implements CrosBluetoothConfigInterface {
     assertTrue(!!device);
     // device uses ! flag because the compilar currently fails when
     // running test locally.
-    device!.deviceProperties.connectionState =
-        DeviceConnectionState.kConnecting;
-    this.updatePairedDevice(device!);
+    device.deviceProperties.connectionState = DeviceConnectionState.kConnecting;
+    this.updatePairedDevice(device);
 
     return new Promise((resolve) => {
       this.pendingConnectRequest = {
@@ -331,7 +328,7 @@ export class FakeBluetoothConfig implements CrosBluetoothConfigInterface {
     }
 
     this.updatePairedDevice(device!);
-    this.pendingConnectRequest!.callback({success});
+    this.pendingConnectRequest.callback({success});
     this.pendingConnectRequest = null;
   }
 
@@ -348,7 +345,7 @@ export class FakeBluetoothConfig implements CrosBluetoothConfigInterface {
           DeviceConnectionState.kNotConnected;
       this.updatePairedDevice(device!);
     }
-    this.pendingDisconnectRequest!.callback({success});
+    this.pendingDisconnectRequest.callback({success});
     this.pendingDisconnectRequest = null;
   }
 
@@ -365,7 +362,7 @@ export class FakeBluetoothConfig implements CrosBluetoothConfigInterface {
         this.appendToDiscoveredDeviceList([device.deviceProperties]);
       }
     }
-    this.pendingForgetRequest!.callback({success});
+    this.pendingForgetRequest.callback({success});
     this.pendingForgetRequest = null;
   }
 

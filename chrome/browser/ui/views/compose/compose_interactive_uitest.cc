@@ -24,7 +24,6 @@
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/compose/core/browser/compose_features.h"
 #include "components/compose/core/browser/config.h"
-#include "components/optimization_guide/core/mock_optimization_guide_model_executor.h"
 #include "components/optimization_guide/core/model_quality/model_quality_log_entry.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/optimization_guide/core/optimization_guide_proto_util.h"
@@ -46,7 +45,6 @@
 
 namespace {
 
-using ::optimization_guide::MockSession;
 using ::testing::_;
 using ::testing::An;
 using ::testing::NiceMock;
@@ -127,8 +125,6 @@ class MAYBE_ComposeInteractiveUiTest : public InteractiveBrowserTest {
         WaitForElementToLoad(kTextarea),
         MoveMouseTo(kContentPageTabId, kTextarea),
         ClickMouse(ui_controls::RIGHT),
-        WaitForShow(RenderViewContextMenu::kComposeMenuItem),
-        // Required to fully render the menu before selection.
         SelectMenuItem(RenderViewContextMenu::kComposeMenuItem),
         WaitForShow(ComposeDialogView::kComposeDialogId),
         InstrumentNonTabWebView(kComposeWebContents, kComposeWebviewElementId));
@@ -152,7 +148,7 @@ class MAYBE_ComposeInteractiveUiTest : public InteractiveBrowserTest {
     return Do([this]() {
       identity_test_environment_adaptor_->identity_test_env()
           ->MakePrimaryAccountAvailable("test@example.com",
-                                        signin::ConsentLevel::kSync);
+                                        signin::ConsentLevel::kSignin);
     });
   }
 
@@ -163,7 +159,7 @@ class MAYBE_ComposeInteractiveUiTest : public InteractiveBrowserTest {
     compose::ResetConfigForTesting();
     identity_test_environment_adaptor_ =
         std::make_unique<IdentityTestEnvironmentProfileAdaptor>(
-            browser()->profile());
+            browser()->GetProfile());
     host_resolver()->AddRule("*", "127.0.0.1");
 
     // Add content/test/data for cross_site_iframe_factory.html
@@ -181,7 +177,6 @@ class MAYBE_ComposeInteractiveUiTest : public InteractiveBrowserTest {
   void TearDownOnMainThread() override {
     base::RunLoop().RunUntilIdle();
     mock_optimization_guide_keyed_service_ = nullptr;
-    testing::Mock::VerifyAndClear(&session());
     InteractiveBrowserTest::TearDownOnMainThread();
   }
 
@@ -191,19 +186,19 @@ class MAYBE_ComposeInteractiveUiTest : public InteractiveBrowserTest {
     mock_optimization_guide_keyed_service_ =
         static_cast<testing::NiceMock<MockOptimizationGuideKeyedService>*>(
             OptimizationGuideKeyedServiceFactory::GetForProfile(
-                browser()->profile()));
+                browser()->GetProfile()));
     ASSERT_TRUE(mock_optimization_guide_keyed_service_);
     ON_CALL(
         *mock_optimization_guide_keyed_service_,
         CanApplyOptimization(
             _, _, An<optimization_guide::OptimizationGuideDecisionCallback>()))
-        .WillByDefault(testing::Invoke(
+        .WillByDefault(
             [](const GURL&, optimization_guide::proto::OptimizationType type,
                optimization_guide::OptimizationGuideDecisionCallback callback) {
               std::move(callback).Run(
                   optimization_guide::OptimizationGuideDecision::kTrue,
                   optimization_guide::OptimizationMetadata());
-            }));
+            });
     ON_CALL(*mock_optimization_guide_keyed_service_,
             CanApplyOptimization(
                 _, _, An<optimization_guide::OptimizationMetadata*>()))
@@ -212,30 +207,11 @@ class MAYBE_ComposeInteractiveUiTest : public InteractiveBrowserTest {
     ON_CALL(*mock_optimization_guide_keyed_service_,
             ShouldFeatureBeCurrentlyEnabledForUser)
         .WillByDefault(Return(true));
-    ON_CALL(*mock_optimization_guide_keyed_service_, StartSession(_, _))
-        .WillByDefault([&] {
-          return std::make_unique<NiceMock<MockSession>>(&session());
-        });
-    ON_CALL(session(), ExecuteModel(_, _))
-        .WillByDefault(testing::WithArg<1>(testing::Invoke(
-            [&](optimization_guide::
-                    OptimizationGuideModelExecutionResultStreamingCallback
-                        callback) {
-              base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
-                  FROM_HERE,
-                  base::BindOnce(
-                      std::move(callback),
-                      OptimizationGuideStreamingResult(
-                          ComposeResponse(true, "Cucumbers"), true, false,
-                          std::make_unique<
-                              optimization_guide::ModelQualityLogEntry>(
-                              nullptr))));
-            })));
   }
 
   void SetUpAccount() {
     // Turn on MSBB.
-    PrefService* prefs = browser()->profile()->GetPrefs();
+    PrefService* prefs = browser()->GetProfile()->GetPrefs();
     prefs->SetBoolean(
         unified_consent::prefs::kUrlKeyedAnonymizedDataCollectionEnabled, true);
   }
@@ -245,7 +221,6 @@ class MAYBE_ComposeInteractiveUiTest : public InteractiveBrowserTest {
   content::test::FencedFrameTestHelper& fenced_frame_test_helper() {
     return fenced_frame_test_helper_;
   }
-  optimization_guide::MockSession& session() { return session_; }
 
  private:
   static void OnWillCreateBrowserContextServices(
@@ -260,35 +235,6 @@ class MAYBE_ComposeInteractiveUiTest : public InteractiveBrowserTest {
         }));
   }
 
-  optimization_guide::StreamingResponse OptimizationGuideResponse(
-      const optimization_guide::proto::ComposeResponse compose_response,
-      bool is_complete = true) {
-    return optimization_guide::StreamingResponse{
-        .response = optimization_guide::AnyWrapProto(compose_response),
-        .is_complete = is_complete,
-    };
-  }
-
-  optimization_guide::OptimizationGuideModelStreamingExecutionResult
-  OptimizationGuideStreamingResult(
-      const optimization_guide::proto::ComposeResponse compose_response,
-      bool is_complete = true,
-      bool provided_by_on_device = false,
-      std::unique_ptr<optimization_guide::ModelQualityLogEntry> log_entry =
-          nullptr) {
-    return optimization_guide::OptimizationGuideModelStreamingExecutionResult(
-        base::ok(OptimizationGuideResponse(compose_response, is_complete)),
-        provided_by_on_device, std::move(log_entry));
-  }
-
-  optimization_guide::proto::ComposeResponse ComposeResponse(
-      bool ok,
-      std::string output) {
-    optimization_guide::proto::ComposeResponse response;
-    response.set_output(ok ? output : "");
-    return response;
-  }
-
   content::test::FencedFrameTestHelper fenced_frame_test_helper_;
   base::test::ScopedFeatureList feature_list_;
   net::EmbeddedTestServer https_server_{net::EmbeddedTestServer::TYPE_HTTPS};
@@ -297,10 +243,9 @@ class MAYBE_ComposeInteractiveUiTest : public InteractiveBrowserTest {
       mock_optimization_guide_keyed_service_;
   std::unique_ptr<IdentityTestEnvironmentProfileAdaptor>
       identity_test_environment_adaptor_;
-  testing::NiceMock<optimization_guide::MockSession> session_;
 };
 
-// Flaky on all platforms: https://crbug.com/1517430
+// Flaky on all platforms: https://crbug.com/41490408
 IN_PROC_BROWSER_TEST_F(MAYBE_ComposeInteractiveUiTest,
                        DISABLED_OpenAndCloseCompose) {
   RunTestSequence(

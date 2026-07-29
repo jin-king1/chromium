@@ -8,8 +8,8 @@
 #include "base/functional/bind.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/scoped_refptr.h"
-#include "base/metrics/histogram_functions.h"
 #include "components/safe_browsing/content/browser/web_ui/safe_browsing_ui.h"
+#include "components/safe_browsing/core/browser/db/v5_get_hash_protocol_manager.h"
 #include "components/safe_browsing/core/browser/hashprefix_realtime/hash_realtime_service.h"
 #include "components/safe_browsing/core/browser/realtime/url_lookup_service_base.h"
 #include "components/safe_browsing/core/browser/safe_browsing_url_checker_impl.h"
@@ -67,7 +67,9 @@ UrlCheckerHolder::UrlCheckerHolder(
     bool is_async_check,
     bool check_allowlist_before_hash_database,
     SessionID tab_id,
-    std::optional<internal::ReferringAppInfo> referring_app_info)
+    std::optional<internal::ReferringAppInfo> referring_app_info,
+    base::WeakPtr<safe_browsing::V5GetHashProtocolManager>
+        v5_get_hash_protocol_manager)
     : delegate_getter_(std::move(delegate_getter)),
       frame_tree_node_id_(frame_tree_node_id),
       navigation_id_(navigation_id),
@@ -80,18 +82,15 @@ UrlCheckerHolder::UrlCheckerHolder(
       url_lookup_service_(url_lookup_service),
       hash_realtime_service_(hash_realtime_service),
       hash_realtime_selection_(hash_realtime_selection),
-      creation_time_(base::TimeTicks::Now()),
       is_async_check_(is_async_check),
       check_allowlist_before_hash_database_(
           check_allowlist_before_hash_database),
       tab_id_(tab_id),
-      referring_app_info_(referring_app_info) {}
+      referring_app_info_(referring_app_info),
+      v5_get_hash_protocol_manager_(v5_get_hash_protocol_manager) {}
 
 UrlCheckerHolder::~UrlCheckerHolder() {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  base::UmaHistogramMediumTimes(
-      "SafeBrowsing.BrowserThrottle.CheckerOnIOLifetime",
-      base::TimeTicks::Now() - creation_time_);
 }
 
 void UrlCheckerHolder::Start(const StartParams& params) {
@@ -111,7 +110,8 @@ void UrlCheckerHolder::Start(const StartParams& params) {
         can_check_high_confidence_allowlist_, url_lookup_service_metric_suffix_,
         content::GetUIThreadTaskRunner({}), url_lookup_service_,
         hash_realtime_service_, hash_realtime_selection_, is_async_check_,
-        check_allowlist_before_hash_database_, tab_id_, referring_app_info_);
+        check_allowlist_before_hash_database_, tab_id_, referring_app_info_,
+        v5_get_hash_protocol_manager_);
   }
 
   CheckUrl(params.url, params.method);

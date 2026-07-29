@@ -14,7 +14,7 @@
 #include "base/functional/bind.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/unsafe_shared_memory_region.h"
-#include "base/metrics/histogram_macros.h"
+#include "base/task/common/task_annotator.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/unguessable_token.h"
 #include "build/build_config.h"
@@ -38,9 +38,7 @@ namespace {
 // preferred 4:2:0 pixel format on Windows according to:
 // https://learn.microsoft.com/en-us/windows-hardware/drivers/display/4-2-0-video-pixel-formats
 // https://learn.microsoft.com/en-us/windows/win32/medfound/recommended-8-bit-yuv-formats-for-video-rendering#nv12
-BASE_FEATURE(kUseNV12OutputFormat,
-             "UseNV12OutputFormat",
-             base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kUseNV12OutputFormat, base::FEATURE_ENABLED_BY_DEFAULT);
 
 }  // namespace
 #endif
@@ -90,11 +88,23 @@ MojoGpuVideoAcceleratorFactories::MojoGpuVideoAcceleratorFactories(
   task_runner_->PostTask(
       FROM_HERE,
       base::BindOnce(&MojoGpuVideoAcceleratorFactories::BindOnTaskRunner,
-                     base::Unretained(this)));
+                     task_runner_weak_factory_.GetWeakPtr()));
 }
 
 MojoGpuVideoAcceleratorFactories::~MojoGpuVideoAcceleratorFactories() {
   DCHECK(task_runner_->RunsTasksInCurrentSequence());
+
+  // If we have a context provider still, ensure that we have removed ourselves
+  // from its observer list.
+  if (context_provider_) {
+    context_provider_->RemoveObserver(this);
+    context_provider_ = nullptr;
+  }
+
+  // `context_provider_lost_` is a pointer to a boolean, and should be
+  // deleted on the main thread.
+  main_thread_task_runner_->DeleteSoon(FROM_HERE,
+                                       std::move(context_provider_lost_));
 }
 
 void MojoGpuVideoAcceleratorFactories::BindOnTaskRunner() {
@@ -112,7 +122,7 @@ void MojoGpuVideoAcceleratorFactories::BindOnTaskRunner() {
   // Request the channel token.
   context_provider_->GetCommandBufferProxy()->GetGpuChannel().GetChannelToken(
       base::BindOnce(&MojoGpuVideoAcceleratorFactories::OnChannelTokenReady,
-                     base::Unretained(this)));
+                     task_runner_weak_factory_.GetWeakPtr()));
 }
 
 bool MojoGpuVideoAcceleratorFactories::IsDecoderSupportKnown() {
@@ -138,8 +148,7 @@ bool MojoGpuVideoAcceleratorFactories::CheckContextLost() {
   if (context_provider_lost_on_media_thread_) {
     return true;
   }
-  if (context_provider_->ContextGL()->GetGraphicsResetStatusKHR() !=
-      GL_NO_ERROR) {
+  if (context_provider_->IsLost()) {
     OnContextLost();
     return true;
   }
@@ -212,19 +221,7 @@ MojoGpuVideoAcceleratorFactories::IsDecoderConfigSupported(
     return Supported::kFalse;
   }
 
-  auto supported_decoder_configs =
-      codec_factory_->GetSupportedVideoDecoderConfigs();
-  if (!supported_decoder_configs) {
-    return Supported::kUnknown;
-  }
-
-  // Iterate over the supported configs.
-  for (const auto& supported : *supported_decoder_configs) {
-    if (supported.Matches(config)) {
-      return Supported::kTrue;
-    }
-  }
-  return Supported::kFalse;
+  return codec_factory_->IsDecoderConfigSupported(config);
 }
 
 media::VideoDecoderType MojoGpuVideoAcceleratorFactories::GetDecoderType() {
@@ -256,22 +253,14 @@ MojoGpuVideoAcceleratorFactories::CreateVideoEncodeAccelerator() {
   return codec_factory_->CreateVideoEncodeAccelerator();
 }
 
-bool MojoGpuVideoAcceleratorFactories::ShouldUseGpuMemoryBuffersForVideoFrames(
-    bool for_media_stream) const {
+bool MojoGpuVideoAcceleratorFactories::
+    ShouldUseMappableSharedImagesForVideoFrames(bool for_media_stream) const {
   return for_media_stream ? enable_media_stream_gpu_memory_buffers_
                           : enable_video_gpu_memory_buffers_;
 }
 
 media::GpuVideoAcceleratorFactories::OutputFormat
 MojoGpuVideoAcceleratorFactories::VideoFrameOutputFormat(
-    media::VideoPixelFormat pixel_format) {
-  auto format = VideoFrameOutputFormatImpl(pixel_format);
-  UMA_HISTOGRAM_ENUMERATION("Media.GPU.OutputFormat", format);
-  return format;
-}
-
-media::GpuVideoAcceleratorFactories::OutputFormat
-MojoGpuVideoAcceleratorFactories::VideoFrameOutputFormatImpl(
     media::VideoPixelFormat pixel_format) {
   using OutputFormat = media::GpuVideoAcceleratorFactories::OutputFormat;
 
@@ -294,7 +283,8 @@ MojoGpuVideoAcceleratorFactories::VideoFrameOutputFormatImpl(
       context_provider_->SharedImageInterface()->GetCapabilities();
   const size_t bit_depth = media::BitDepth(pixel_format);
   if (bit_depth > 8) {
-    if (capabilities.image_ycbcr_p010 && bit_depth == 10) {
+    if (shared_image_capabilities.supports_ycbcr_p010_sampling &&
+        bit_depth == 10) {
       return OutputFormat::P010;
     }
 
@@ -336,13 +326,11 @@ MojoGpuVideoAcceleratorFactories::VideoFrameOutputFormatImpl(
 #if BUILDFLAG(IS_FUCHSIA)
   // Hardware support for NV12 GMBs is expected to be present on all supported
   // Fuchsia devices.
-  CHECK(capabilities.image_ycbcr_420v);
-  CHECK(shared_image_capabilities.supports_native_nv12_mappable_shared_images);
+  CHECK(shared_image_capabilities.supports_ycbcr_nv12_sampling);
   return OutputFormat::NV12;
 #else
 
-  if (capabilities.image_ycbcr_420v &&
-      shared_image_capabilities.supports_native_nv12_mappable_shared_images) {
+  if (shared_image_capabilities.supports_ycbcr_nv12_sampling) {
     return OutputFormat::NV12;
   }
 
@@ -411,7 +399,7 @@ MojoGpuVideoAcceleratorFactories::GetRenderingColorSpace() const {
 
 bool MojoGpuVideoAcceleratorFactories::CheckContextProviderLostOnMainThread() {
   DCHECK(main_thread_task_runner_->RunsTasksInCurrentSequence());
-  return context_provider_lost_;
+  return *context_provider_lost_;
 }
 
 void MojoGpuVideoAcceleratorFactories::OnContextLost() {
@@ -422,18 +410,19 @@ void MojoGpuVideoAcceleratorFactories::OnContextLost() {
   // it notifying about the loss, and we'd be destroying it while it's on
   // the stack.
   context_provider_lost_on_media_thread_ = true;
+
   // Inform the main thread of the loss as well, so that this class can be
   // replaced.
   main_thread_task_runner_->PostTask(
-      FROM_HERE,
-      base::BindOnce(
-          &MojoGpuVideoAcceleratorFactories::SetContextProviderLostOnMainThread,
-          base::Unretained(this)));
-}
+      FROM_HERE, base::BindOnce(
+                     [](bool* context_provider_lost) {
+                       *context_provider_lost = true;
 
-void MojoGpuVideoAcceleratorFactories::SetContextProviderLostOnMainThread() {
-  DCHECK(main_thread_task_runner_->RunsTasksInCurrentSequence());
-  context_provider_lost_ = true;
+                       // Use of Unretained here is safe, because
+                       // `context_provider_lost_` is deleted on the main thread
+                       // using DeleteSoon().
+                     },
+                     base::Unretained(context_provider_lost_.get())));
 }
 
 }  // namespace media

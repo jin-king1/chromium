@@ -7,12 +7,17 @@
 
 #include <string>
 
+#include "base/feature_list.h"
 #include "base/memory/raw_ptr.h"
+#include "base/types/expected.h"
+#include "base/unguessable_token.h"
 #include "build/build_config.h"
 #include "chrome/browser/media/webrtc/desktop_media_picker.h"
+#include "chrome/browser/ui/views/desktop_capture/audio_capture_permission_checker.h"
 #include "chrome/browser/ui/views/desktop_capture/desktop_media_list_controller.h"
 #include "chrome/browser/ui/views/desktop_capture/desktop_media_pane_view.h"
 #include "chrome/browser/ui/views/desktop_capture/screen_capture_permission_checker.h"
+#include "third_party/blink/public/mojom/mediastream/media_stream.mojom.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
@@ -27,6 +32,10 @@ class MdTextButton;
 }  // namespace views
 
 class DesktopMediaPickerImpl;
+
+
+const DesktopMediaSourceViewStyle& GetGenericScreenStyle();
+const DesktopMediaSourceViewStyle& GetSingleScreenStyle();
 
 // Dialog view used for DesktopMediaPickerImpl.
 //
@@ -65,6 +74,7 @@ class DesktopMediaPickerDialogView : public views::DialogDelegateView,
   // views::DialogDelegateView:
   gfx::Size CalculatePreferredSize(
       const views::SizeBounds& /*available_size*/) const override;
+  void AddedToWidget() override;
   std::u16string GetWindowTitle() const override;
   bool IsDialogButtonEnabled(ui::mojom::DialogButton button) const override;
   views::View* GetInitiallyFocusedView() override;
@@ -75,6 +85,7 @@ class DesktopMediaPickerDialogView : public views::DialogDelegateView,
 
  private:
   friend class DesktopMediaPickerViewsTestApi;
+  friend class DesktopMediaPickerAudioPermissionTest;
 
   struct DisplaySurfaceCategory {
     DisplaySurfaceCategory(
@@ -102,6 +113,10 @@ class DesktopMediaPickerDialogView : public views::DialogDelegateView,
 
   // Whether audio-capture is supported for display surfaces of type `type`.
   bool AudioSupported(DesktopMediaList::Type type) const;
+
+  // Returns true if the GetDisplayMediaAudioSelection feature is enabled and
+  // the request source is getDisplayMedia.
+  bool IsAudioSelectionFeatureEnabled() const;
 
   // Whether audio-capture is requested for display surfaces of type `type`.
   //
@@ -165,19 +180,54 @@ class DesktopMediaPickerDialogView : public views::DialogDelegateView,
   //   but no such sources were available.
   std::optional<int> CountSourcesOfType(DesktopMediaList::Type type);
 
+  int GetLabelForWindowPaneAudioToggle() const;
+
+  // Returns true if `window_audio_type_offered_` is not
+  // `content::DesktopMediaID::AudioType::AUDIO_TYPE_NONE`.
+  bool IsWindowAudioOffered() const;
+
+  // Called when the user toggles the audio sharing checkbox in the active pane.
+  // Updates the OK button label and the audio recommendation visibility.
+  void OnAudioShareToggled();
+
+  // Updates the OK (Share) button label based on whether audio sharing is
+  // currently approved by the user (e.g. "Share" vs "Share with Audio").
+  // Only applies if GetDisplayMediaAudioSelection feature is enabled.
+  void UpdateOkButtonLabel();
+
 #if BUILDFLAG(IS_MAC)
   void OnPermissionUpdate(bool has_permission);
-  void RecordPermissionInteractionUma() const;
+  void OnAudioSharingApprovedByUserUpdate();
+  void OnAudioPermissionUpdate();
+  // Checks and updates the system audio permission warning banner state for the
+  // pane at the given `index`. Shows the warning if the user has approved
+  // sharing audio but system-level audio capture permission is denied.
+  // Otherwise, hides it.
+  void UpdateAudioPermissionsWarningState(int index);
+  void RecordUserActionOnDeniedAudioPermissionUma(
+      std::optional<content::DesktopMediaID> source) const;
 #endif
 
   const raw_ptr<content::WebContents, AcrossTasksDanglingUntriaged>
       web_contents_;
   const DesktopMediaPicker::Params::RequestSource request_source_;
+  const bool audio_selection_preferred_;
   const std::u16string app_name_;
   const bool audio_requested_;
-  const bool exclude_system_audio_requested_;  // JS-exposed as systemAudio.
-  const bool is_system_audio_offered_;
-  const bool suppress_local_audio_playback_;  // Effective only if audio shared.
+  // JS-exposed as systemAudio.
+  const bool screen_exclude_system_audio_requested_;
+  // Indicates whether audio is currently being offered for screen captures.
+  const bool is_screen_audio_offered_;
+  // JS-exposed as windowAudio.
+  const blink::mojom::WindowAudioPreference window_audio_type_requested_;
+  // Indicates whether audio is currently being offered for window captures.
+  const content::DesktopMediaID::AudioType window_audio_type_offered_;
+  // If set to true, audio is captured, but is no longer played out over the
+  // user's local speakers. Effective only if audio shared.
+  const bool suppress_local_audio_playback_;
+  // If set to true, audio produced by Chromium should be excluded from the
+  // captured audio track. Effective only if audio shared.
+  const bool restrict_own_audio_;
   const content::GlobalRenderFrameHostId capturer_global_id_;
 
   raw_ptr<DesktopMediaPickerImpl> parent_;
@@ -192,11 +242,21 @@ class DesktopMediaPickerDialogView : public views::DialogDelegateView,
 
   std::optional<content::DesktopMediaID> accepted_source_;
 
+#if BUILDFLAG(IS_WIN)
+  // Track the session ID for excluding Picture-in-Picture windows from screen
+  // capture while this picker is open (Windows only).
+  std::optional<base::UnguessableToken> pip_exclusion_session_id_;
+
+  // Set to true when the user accepts/confirms the dialog, indicating that
+  // the actual screen capture session is about to start.
+  bool accepted_ = false;
+#endif
+
 #if BUILDFLAG(IS_MAC)
   std::unique_ptr<ScreenCapturePermissionChecker>
       screen_capture_permission_checker_;
-  std::optional<bool> initial_permission_state_;
-  bool permission_pane_was_shown_ = false;
+  std::unique_ptr<AudioCapturePermissionChecker>
+      audio_capture_permission_checker_;
 #endif
 
   // For recording dialog-duration UMA histograms.
@@ -216,7 +276,9 @@ class DesktopMediaPickerImpl : public DesktopMediaPicker {
   DesktopMediaPickerImpl& operator=(const DesktopMediaPickerImpl&) = delete;
   ~DesktopMediaPickerImpl() override;
 
-  void NotifyDialogResult(const content::DesktopMediaID& source);
+  void NotifyDialogResult(
+      base::expected<content::DesktopMediaID,
+                     blink::mojom::MediaStreamRequestResult> result);
 
   // DesktopMediaPicker:
   void Show(const DesktopMediaPicker::Params& params,

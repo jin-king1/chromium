@@ -4,8 +4,6 @@
 
 source_set("browser") {
   sources = [
-    "all_web_state_list_observation_registrar.h",
-    "all_web_state_list_observation_registrar.mm",
     "browser.h",
     "browser_list.h",
     "browser_list.mm",
@@ -16,6 +14,7 @@ source_set("browser") {
     "browser_list_observer_bridge.h",
     "browser_list_observer_bridge.mm",
     "browser_observer.h",
+    "browser_observer.mm",
     "browser_observer_bridge.h",
     "browser_observer_bridge.mm",
     "browser_provider.h",
@@ -31,10 +30,23 @@ source_set("browser") {
   ]
 }
 
+source_set("utils") {
+  sources = [
+    "browser_list_utils.h",
+    "browser_list_utils.mm",
+  ]
+
+  deps = [
+    ":browser",
+    "//base",
+    "//ios/chrome/browser/shared/coordinator/scene:scene_state_header",
+    "//ios/chrome/browser/shared/coordinator/scene/state",
+  ]
+}
+
 source_set("unit_tests") {
   testonly = true
   sources = [
-    "all_web_state_list_observation_registrar_unittest.mm",
     "browser_list_factory_unittest.mm",
     "browser_list_unittest.mm",
   ]

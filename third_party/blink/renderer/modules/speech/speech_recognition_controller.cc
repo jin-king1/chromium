@@ -35,6 +35,7 @@
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/modules/speech/speech_grammar_list.h"
 #include "third_party/blink/renderer/modules/speech/speech_recognition.h"
+#include "third_party/blink/renderer/modules/speech/speech_recognition_phrase.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 
 namespace blink {
@@ -69,29 +70,31 @@ SpeechRecognitionController::BuildStartSpeechRecognitionRequestParams(
     mojo::PendingRemote<media::mojom::blink::SpeechRecognitionSessionClient>
         session_client,
     const SpeechGrammarList& grammars,
-    const SpeechRecognitionContext* context,
+    const V8ObservableArraySpeechRecognitionPhrase* phrases,
     const String& lang,
     bool continuous,
     bool interim_results,
     uint32_t max_alternatives,
+    bool unspoken_punctuation,
     bool on_device,
     bool allow_cloud_fallback,
+    media::mojom::blink::SpeechRecognitionQuality quality,
     mojo::PendingReceiver<media::mojom::blink::SpeechRecognitionAudioForwarder>
         audio_forwarder,
     std::optional<media::AudioParameters> audio_parameters) {
   media::mojom::blink::StartSpeechRecognitionRequestParamsPtr params =
       media::mojom::blink::StartSpeechRecognitionRequestParams::New();
+  params->quality = quality;
   for (unsigned i = 0; i < grammars.length(); i++) {
     SpeechGrammar* grammar = grammars.item(i);
     params->grammars.push_back(
         media::mojom::blink::SpeechRecognitionGrammar::New(grammar->src(),
                                                            grammar->weight()));
   }
-  if (context && context->phrases()) {
+  if (!phrases->empty()) {
     params->recognition_context =
         media::mojom::blink::SpeechRecognitionRecognitionContext::New();
-    for (unsigned i = 0; i < context->phrases()->length(); i++) {
-      SpeechRecognitionPhrase* phrase = context->phrases()->item(i);
+    for (const auto& phrase : *phrases) {
       params->recognition_context->phrases.push_back(
           media::mojom::blink::SpeechRecognitionPhrase::New(phrase->phrase(),
                                                             phrase->boost()));
@@ -101,6 +104,7 @@ SpeechRecognitionController::BuildStartSpeechRecognitionRequestParams(
   params->max_hypotheses = max_alternatives;
   params->continuous = continuous;
   params->interim_results = interim_results;
+  params->unspoken_punctuation = unspoken_punctuation;
   params->on_device = on_device;
   params->allow_cloud_fallback = allow_cloud_fallback;
   params->client = std::move(session_client);
@@ -120,18 +124,21 @@ void SpeechRecognitionController::Start(
   GetSpeechRecognizer()->Start(std::move(params));
 }
 
-void SpeechRecognitionController::OnDeviceWebSpeechAvailable(
-    const String& language,
-    base::OnceCallback<void(bool)> callback) {
-  GetOnDeviceSpeechRecognition()->OnDeviceWebSpeechAvailable(
-      language, std::move(callback));
+void SpeechRecognitionController::AvailableOnDevice(
+    const Vector<String>& languages,
+    media::mojom::blink::SpeechRecognitionQuality quality,
+    base::OnceCallback<void(media::mojom::blink::AvailabilityStatus)>
+        callback) {
+  GetOnDeviceSpeechRecognition()->Available(languages, quality,
+                                            std::move(callback));
 }
 
-void SpeechRecognitionController::InstallOnDeviceSpeechRecognition(
-    const String& language,
+void SpeechRecognitionController::Install(
+    const Vector<String>& languages,
+    media::mojom::blink::SpeechRecognitionQuality quality,
     base::OnceCallback<void(bool)> callback) {
-  GetOnDeviceSpeechRecognition()->InstallOnDeviceSpeechRecognition(
-      language, std::move(callback));
+  GetOnDeviceSpeechRecognition()->Install(languages, quality,
+                                          std::move(callback));
 }
 
 void SpeechRecognitionController::Trace(Visitor* visitor) const {

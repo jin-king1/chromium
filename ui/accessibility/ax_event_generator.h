@@ -51,6 +51,7 @@ class AX_EXPORT AXEventGenerator : public AXTreeObserver {
     CHILDREN_CHANGED,
     COLLAPSED,
     CONTROLS_CHANGED,
+    DEFAULT_ACTION_VERB_CHANGED,
     DETAILS_CHANGED,
     DESCRIBED_BY_CHANGED,
     DESCRIPTION_CHANGED,
@@ -65,8 +66,10 @@ class AX_EXPORT AXEventGenerator : public AXTreeObserver {
     FOCUS_CHANGED,
     FLOW_FROM_CHANGED,
     FLOW_TO_CHANGED,
+    GRAMMAR_MARKER_CHANGED,
     HASPOPUP_CHANGED,
     HIERARCHICAL_LEVEL_CHANGED,
+    HIGHLIGHT_MARKER_CHANGED,
     IGNORED_CHANGED,
     IMAGE_ANNOTATION_CHANGED,
     INVALID_STATUS_CHANGED,
@@ -112,10 +115,13 @@ class AX_EXPORT AXEventGenerator : public AXTreeObserver {
     SELECTED_VALUE_CHANGED,
     SET_SIZE_CHANGED,
     SORT_CHANGED,
+    SPELLING_MARKER_CHANGED,
     STATE_CHANGED,
     SUBTREE_CREATED,
     TEXT_ATTRIBUTE_CHANGED,
     TEXT_SELECTION_CHANGED,
+    VALUE_IN_SPIN_BUTTON_DECREMENTED,
+    VALUE_IN_SPIN_BUTTON_INCREMENTED,
     VALUE_IN_TEXT_FIELD_CHANGED,
 
     // This event is fired for the exact set of attributes that affect the
@@ -178,7 +184,6 @@ class AX_EXPORT AXEventGenerator : public AXTreeObserver {
 
    private:
     AX_EXPORT friend bool operator==(const Iterator& lhs, const Iterator& rhs);
-    AX_EXPORT friend bool operator!=(const Iterator& lhs, const Iterator& rhs);
     AX_EXPORT friend void swap(Iterator& lhs, Iterator& rhs);
 
     std::map<AXNodeID, std::set<EventParams>>::const_iterator map_iter_;

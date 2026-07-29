@@ -20,9 +20,7 @@ class CustomStateIterationSource : public CustomStateSet::IterationSource {
     CustomStateSet::IterationSource::Trace(visitor);
   }
 
-  bool FetchNextItem(ScriptState*,
-                     String& out_value,
-                     ExceptionState&) override {
+  bool FetchNextItem(ScriptState*, String& out_value) override {
     if (index_ >= states_->list_.size())
       return false;
     out_value = states_->list_[index_++];
@@ -70,8 +68,9 @@ bool CustomStateSet::deleteForBinding(ScriptState*,
                                       const String& value,
                                       ExceptionState&) {
   wtf_size_t index = list_.Find(value);
-  if (index == WTF::kNotFound)
+  if (index == kNotFound) {
     return false;
+  }
   list_.EraseAt(index);
   for (auto& iterator : iterators_)
     iterator->DidEraseAt(index);
@@ -90,8 +89,7 @@ bool CustomStateSet::Has(const String& value) const {
 }
 
 CustomStateSet::IterationSource* CustomStateSet::CreateIterationSource(
-    ScriptState*,
-    ExceptionState&) {
+    ScriptState*) {
   auto* iterator = MakeGarbageCollected<CustomStateIterationSource>(*this);
   iterators_.insert(iterator);
   return iterator;
@@ -99,9 +97,9 @@ CustomStateSet::IterationSource* CustomStateSet::CreateIterationSource(
 
 void CustomStateSet::InvalidateStyle() const {
   // TOOD(tkent): The following line invalidates all of rulesets with any
-  // custom state pseudo classes though we should invalidate only rulesets
+  // custom state pseudo-classes though we should invalidate only rulesets
   // with the updated state ideally. We can improve style resolution
-  // performance in documents with various custom state pseudo classes by
+  // performance in documents with various custom state pseudo-classes by
   // having blink::InvalidationSet for each of states.
   element_->PseudoStateChanged(CSSSelector::kPseudoState);
 }

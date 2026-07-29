@@ -133,7 +133,7 @@ TextIteratorBehavior::Builder::SetEmitsPunctuationForReplacedElements(
 }
 
 TextIteratorBehavior::Builder&
-TextIteratorBehavior::Builder::SetIgnoresCSSTextTransforms(bool value) {
+TextIteratorBehavior::Builder::SetIgnoresCssTextTransforms(bool value) {
   behavior_.values_.bits.ignores_css_text_transforms = value;
   return *this;
 }
@@ -148,10 +148,6 @@ TextIteratorBehavior::TextIteratorBehavior() {
 
 bool TextIteratorBehavior::operator==(const TextIteratorBehavior& other) const {
   return values_.all == other.values_.all;
-}
-
-bool TextIteratorBehavior::operator!=(const TextIteratorBehavior& other) const {
-  return !operator==(other);
 }
 
 // static

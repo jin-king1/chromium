@@ -107,12 +107,6 @@ class FakeDeviceManager {
 
 class AcceleratorAliasConverterTest : public AshTestBase {
  public:
-  void SetUp() override {
-    scoped_feature_list_.InitAndEnableFeature(
-        features::kInputDeviceSettingsSplit);
-    AshTestBase::SetUp();
-  }
-
   void TearDown() override {
     AshTestBase::TearDown();
     scoped_feature_list_.Reset();
@@ -156,16 +150,6 @@ class AcceleratorAliasConverterTest : public AshTestBase {
 
   void SetTopRowAsFKeysForKeyboard(const ui::InputDevice& keyboard,
                                    bool enabled) {
-    if (!features::IsInputDeviceSettingsSplitEnabled()) {
-      // Top row keys not fKeys prevents remapping.
-      Shell::Get()->session_controller()->GetActivePrefService()->SetBoolean(
-          prefs::kSendFunctionKeys, enabled);
-      EXPECT_EQ(
-          enabled,
-          Shell::Get()->keyboard_controller()->AreTopRowKeysFunctionKeys());
-      return;
-    }
-
     auto settings = Shell::Get()
                         ->input_device_settings_controller()
                         ->GetKeyboardSettings(keyboard.id)
@@ -464,6 +448,34 @@ TEST_F(AcceleratorAliasConverterTest, CheckSettingsKeyAlias) {
   AcceleratorAliasConverter accelerator_alias_converter_;
 
   const ui::Accelerator accelerator{ui::VKEY_SETTINGS, ui::EF_NONE};
+  std::vector<ui::Accelerator> accelerator_aliases =
+      accelerator_alias_converter_.CreateAcceleratorAlias(accelerator);
+  EXPECT_EQ(0u, accelerator_aliases.size());
+
+  ui::KeyboardDevice wilco_keyboard(
+      /*id=*/2, /*type=*/ui::InputDeviceType::INPUT_DEVICE_BLUETOOTH,
+      /*name=*/kKbdTopRowLayoutWilcoTag);
+  wilco_keyboard.sys_path = base::FilePath("path2");
+  fake_keyboard_manager_->AddFakeKeyboard(wilco_keyboard,
+                                          kKbdTopRowLayoutWilcoTag);
+  accelerator_aliases =
+      accelerator_alias_converter_.CreateAcceleratorAlias(accelerator);
+  EXPECT_EQ(1u, accelerator_aliases.size());
+  EXPECT_EQ(accelerator, accelerator_aliases[0]);
+}
+
+TEST_F(AcceleratorAliasConverterTest, CheckCameraAccessToggleKeyAlias) {
+  std::unique_ptr<FakeDeviceManager> fake_keyboard_manager_ =
+      std::make_unique<FakeDeviceManager>();
+  ui::KeyboardDevice fake_keyboard(
+      /*id=*/1, /*type=*/ui::InputDeviceType::INPUT_DEVICE_INTERNAL,
+      /*name=*/kKbdTopRowLayout1Tag);
+  fake_keyboard.sys_path = base::FilePath("path");
+  fake_keyboard_manager_->AddFakeKeyboard(fake_keyboard, kKbdTopRowLayout1Tag);
+
+  AcceleratorAliasConverter accelerator_alias_converter_;
+
+  const ui::Accelerator accelerator{ui::VKEY_CAMERA_ACCESS_TOGGLE, ui::EF_NONE};
   std::vector<ui::Accelerator> accelerator_aliases =
       accelerator_alias_converter_.CreateAcceleratorAlias(accelerator);
   EXPECT_EQ(0u, accelerator_aliases.size());
@@ -1048,8 +1060,7 @@ class SixPackAliasAltTest
       public testing::WithParamInterface<AcceleratorAliasConverterTestData> {
   void SetUp() override {
     scoped_feature_list_.InitWithFeatures(
-        {ash::features::kInputDeviceSettingsSplit,
-         ash::features::kAltClickAndSixPackCustomization},
+        {ash::features::kAltClickAndSixPackCustomization},
         /*disabled_features=*/{});
     AcceleratorAliasConverterTest::SetUp();
     AcceleratorAliasConverterTestData test_data = GetParam();
@@ -1149,8 +1160,7 @@ class SixPackAliasSearchTest
       public testing::WithParamInterface<AcceleratorAliasConverterTestData> {
   void SetUp() override {
     scoped_feature_list_.InitWithFeatures(
-        {ash::features::kInputDeviceSettingsSplit,
-         ash::features::kAltClickAndSixPackCustomization},
+        {ash::features::kAltClickAndSixPackCustomization},
         /*disabled_features=*/{});
     AcceleratorAliasConverterTest::SetUp();
     AcceleratorAliasConverterTestData test_data = GetParam();
@@ -1292,8 +1302,7 @@ class ExtendedFKeysAliasAltTest
  public:
   void SetUp() override {
     scoped_feature_list_.InitWithFeatures(
-        {ash::features::kInputDeviceSettingsSplit,
-         ash::features::kAltClickAndSixPackCustomization,
+        {ash::features::kAltClickAndSixPackCustomization,
          ::features::kSupportF11AndF12KeyShortcuts},
         /*disabled_features=*/{});
     AcceleratorAliasConverterTest::SetUp();
@@ -1380,8 +1389,7 @@ class ExtendedFKeysAliasShiftTest
  public:
   void SetUp() override {
     scoped_feature_list_.InitWithFeatures(
-        {ash::features::kInputDeviceSettingsSplit,
-         ash::features::kAltClickAndSixPackCustomization,
+        {ash::features::kAltClickAndSixPackCustomization,
          ::features::kSupportF11AndF12KeyShortcuts},
         /*disabled_features=*/{});
     AcceleratorAliasConverterTest::SetUp();
@@ -1463,8 +1471,7 @@ class ExtendedFKeysAliasCtrlShiftTest
  public:
   void SetUp() override {
     scoped_feature_list_.InitWithFeatures(
-        {ash::features::kInputDeviceSettingsSplit,
-         ash::features::kAltClickAndSixPackCustomization,
+        {ash::features::kAltClickAndSixPackCustomization,
          ::features::kSupportF11AndF12KeyShortcuts},
         /*disabled_features=*/{});
     AcceleratorAliasConverterTest::SetUp();
@@ -1557,8 +1564,7 @@ class ExtendedFKeysAliasTest : public AcceleratorAliasConverterTest {
  public:
   void SetUp() override {
     scoped_feature_list_.InitWithFeatures(
-        {ash::features::kInputDeviceSettingsSplit,
-         ash::features::kAltClickAndSixPackCustomization,
+        {ash::features::kAltClickAndSixPackCustomization,
          ::features::kSupportF11AndF12KeyShortcuts},
         /*disabled_features=*/{});
     AcceleratorAliasConverterTest::SetUp();

@@ -11,6 +11,7 @@
 #include <string>
 #include <string_view>
 
+#include "base/containers/span.h"
 #include "base/gtest_prod_util.h"
 #include "mojo/public/cpp/bindings/struct_traits.h"
 
@@ -103,7 +104,7 @@ class ContentSettingsPattern {
                                               // *:443 etc.
     kMaxValue = kCustomScope
   };
-  // LINT.ThenChange(//tools/metrics/histograms/enums.xml:ContentSettingPatternScope)
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/privacy/enums.xml:ContentSettingPatternScope)
 
   struct PatternParts {
     PatternParts();
@@ -210,14 +211,11 @@ class ContentSettingsPattern {
 
   // Sets schemes that do not support domain wildcards and ports.
   // Needs to be called by the embedder before using ContentSettingsPattern.
-  // |schemes| can't be NULL, and the pointed to strings must remain alive
-  // until the app terminates.
+  // The pointed to strings must remain alive until the app terminates.
   // The method should only be called once. If called again, the parameters
   // must have values equal to the parameter values of the first call.
-  // The |count| parameter represents the number of strings that
-  // |schemes| points to.
-  static void SetNonWildcardDomainNonPortSchemes(const char* const* schemes,
-                                                 size_t count);
+  static void SetNonWildcardDomainNonPortSchemes(
+      base::span<const char* const> schemes);
 
   // Compares |scheme| against the schemes set by the embedder.
   static bool IsNonWildcardDomainNonPortScheme(std::string_view scheme);
@@ -269,7 +267,10 @@ class ContentSettingsPattern {
   GURL ToRepresentativeUrl() const;
 
   // Returns scheme type of pattern.
-  ContentSettingsPattern::SchemeType GetScheme() const;
+  ContentSettingsPattern::SchemeType GetSchemeType() const;
+
+  // Returns the scheme of the pattern as a string.
+  const std::string& GetScheme() const;
 
   // Returns the host of a pattern.
   const std::string& GetHost() const;

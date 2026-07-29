@@ -8,14 +8,21 @@
 #include <stddef.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <limits>
 #include <string>
 #include <type_traits>
 
 #include "base/component_export.h"
-
+#include "base/containers/span.h"
 namespace device {
+
+enum class GamepadButtonType {
+  kNonStandard = 0,
+  kStandard = 1,
+  kTrackpad = 2,
+};
 
 class GamepadButton {
  public:
@@ -27,13 +34,15 @@ class GamepadButton {
       : used(true), pressed(pressed), touched(touched), value(value) {}
   bool operator==(const GamepadButton& other) const {
     return this->used == other.used && this->pressed == other.pressed &&
-           this->touched == other.touched && this->value == other.value;
+           this->touched == other.touched && this->value == other.value &&
+           this->type == other.type;
   }
   // Whether the button is actually reported by the gamepad at all.
   bool used = false;
   bool pressed = false;
   bool touched = false;
   double value = 0.0;
+  GamepadButtonType type = GamepadButtonType::kNonStandard;
 };
 
 enum class GamepadHapticActuatorType {
@@ -42,7 +51,7 @@ enum class GamepadHapticActuatorType {
   kTriggerRumble = 2
 };
 
-enum class GamepadHapticEffectType { kDualRumble = 0 };
+enum class GamepadHapticEffectType { kDualRumble = 0, kTriggerRumble = 1 };
 
 enum class GamepadHapticsResult {
   kError = 0,
@@ -67,7 +76,7 @@ class GamepadHapticActuator {
   static constexpr double kMaxEffectDurationMillis = 5000.0;
 
   bool not_null = false;
-  GamepadHapticActuatorType type;
+  GamepadHapticActuatorType type = GamepadHapticActuatorType::kVibration;
 };
 
 class GamepadEffectParameters {
@@ -113,11 +122,7 @@ enum class GamepadHand { kNone = 0, kLeft = 1, kRight = 2 };
 // memory between hardware polling threads and the rest of the browser. See
 // also gamepads.h.
 //
-// TODO(crbug.com/355003174): It's a template to avoid the clang plugin that
-// prevents inline ctors, as we need the class to be trivially copyable for use
-// in shared memory.
-template <class T>
-class GamepadImpl {
+class COMPONENT_EXPORT(GAMEPAD_PUBLIC) Gamepad {
  public:
   static constexpr size_t kIdLengthCap = 128;
   static constexpr size_t kAxesLengthCap = 16;
@@ -127,16 +132,18 @@ class GamepadImpl {
   // If src is too long, then the contents of id will be truncated to
   // kIdLengthCap-1. id will be null-terminated and any extra space in the
   // buffer will be zeroed out.
-  void SetID(const std::u16string& src) {
-    std::ranges::fill(id, 0);
-    src.copy(id, kIdLengthCap - 1);
+  inline void SetID(const std::u16string& src) {
+    id.fill(0);
+    for (size_t i = 0; i < std::min(src.length(), kIdLengthCap - 1); ++i) {
+      id[i] = src[i];
+    }
   }
 
   // Is there a gamepad connected at this index?
   bool connected = false;
 
   // Device identifier (based on manufacturer, model, etc.).
-  char16_t id[kIdLengthCap] = {};
+  std::array<uint16_t, kIdLengthCap> id = {};
 
   // Time value representing the last time the data for this gamepad was
   // updated. Measured as TimeTicks::Now().since_origin().InMicroseconds().
@@ -153,13 +160,13 @@ class GamepadImpl {
                 "axes_used is not large enough");
 
   // Normalized values representing axes, in the range [-1..1].
-  double axes[kAxesLengthCap] = {};
+  std::array<double, kAxesLengthCap> axes = {};
 
   // Number of valid entries in the buttons array.
   unsigned buttons_length = 0;
 
   // Button states
-  GamepadButton buttons[kButtonsLengthCap] = {};
+  std::array<GamepadButton, kButtonsLengthCap> buttons = {};
 
   // Number of valid entries in the touch_events array.
   uint32_t touch_events_length = 0;
@@ -167,7 +174,7 @@ class GamepadImpl {
   // Touch events states
   bool supports_touch_events_ = false;
 
-  GamepadTouch touch_events[kTouchEventsLengthCap] = {};
+  std::array<GamepadTouch, kTouchEventsLengthCap> touch_events = {};
 
   GamepadHapticActuator vibration_actuator;
 
@@ -176,14 +183,12 @@ class GamepadImpl {
 
   GamepadPose pose;
 
-  GamepadHand hand;
+  GamepadHand hand = GamepadHand::kNone;
 
   unsigned display_id = 0;
 
   bool is_xr = false;
 };
-
-using Gamepad = GamepadImpl<void>;
 
 static_assert(std::is_trivially_copyable_v<Gamepad>);
 

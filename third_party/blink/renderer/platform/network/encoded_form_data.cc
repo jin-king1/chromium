@@ -167,7 +167,7 @@ void EncodedFormData::AppendData(base::span<const uint8_t> bytes) {
   if (elements_.empty() || elements_.back().type_ != FormDataElement::kData)
     elements_.push_back(FormDataElement());
   FormDataElement& e = elements_.back();
-  e.data_.AppendSpan(bytes);
+  e.data_.append_range(bytes);
 }
 
 void EncodedFormData::AppendData(SegmentedBuffer&& buffer) {
@@ -208,7 +208,7 @@ void EncodedFormData::Flatten(Vector<char>& data) const {
   data.clear();
   for (const FormDataElement& e : elements_) {
     if (e.type_ == FormDataElement::kData)
-      data.AppendVector(e.data_);
+      data.append_range(e.data_);
   }
 }
 
@@ -216,6 +216,10 @@ String EncodedFormData::FlattenToString() const {
   Vector<char> bytes;
   Flatten(bytes);
   return Latin1Encoding().Decode(base::as_byte_span(bytes));
+}
+
+String EncodedFormData::FormatContentTypeWithBoundary() const {
+  return StrCat({"multipart/form-data; boundary=", boundary_});
 }
 
 uint64_t EncodedFormData::SizeInBytes() const {

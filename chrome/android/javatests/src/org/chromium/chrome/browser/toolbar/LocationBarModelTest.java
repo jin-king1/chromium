@@ -5,7 +5,6 @@
 package org.chromium.chrome.browser.toolbar;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
 import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
@@ -18,6 +17,7 @@ import androidx.test.filters.MediumTest;
 import androidx.test.filters.SmallTest;
 import androidx.test.platform.app.InstrumentationRegistry;
 
+import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
@@ -25,16 +25,20 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.supplier.Supplier;
+import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.test.params.ParameterAnnotations;
 import org.chromium.base.test.params.ParameterProvider;
 import org.chromium.base.test.params.ParameterSet;
 import org.chromium.base.test.params.ParameterizedRunner;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Feature;
+import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.UrlUtils;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
+import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider.ControlsPosition;
 import org.chromium.chrome.browser.dom_distiller.DomDistillerTabUtils;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.omnibox.LocationBarDataProvider;
 import org.chromium.chrome.browser.omnibox.NewTabPageDelegate;
@@ -44,11 +48,12 @@ import org.chromium.chrome.browser.tab.MockTab;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabSelectionType;
 import org.chromium.chrome.browser.toolbar.top.ToolbarLayout;
+import org.chromium.chrome.browser.url_constants.UrlConstantResolver;
 import org.chromium.chrome.test.ChromeJUnit4RunnerDelegate;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
-import org.chromium.chrome.test.R;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.util.ChromeTabUtils;
-import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.url.GURL;
 import org.chromium.url.JUnitTestGURLs;
 
@@ -63,11 +68,19 @@ import java.util.concurrent.atomic.AtomicReference;
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 public class LocationBarModelTest {
     @Rule
-    public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
+    public FreshCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.freshChromeTabbedActivityRule();
+
+    private WebPageStation mPage;
 
     @Before
     public void setUp() throws InterruptedException {
-        mActivityTestRule.startMainActivityOnBlankPage();
+        mPage = mActivityTestRule.startOnBlankPage();
+    }
+
+    @After
+    public void tearDown() {
+        mActivityTestRule.skipWindowAndTabStateCleanup();
     }
 
     /**
@@ -101,7 +114,7 @@ public class LocationBarModelTest {
                 () -> {
                     TestLocationBarModel model =
                             new TestLocationBarModel(mActivityTestRule.getActivity());
-                    model.setVisibleGurl(UrlConstants.ntpGurl());
+                    model.setVisibleGurl(UrlConstantResolver.getOriginalNtpGurl());
                     assertDisplayAndEditText(model, "", null);
 
                     model.setVisibleGurl(JUnitTestGURLs.CHROME_ABOUT);
@@ -117,7 +130,7 @@ public class LocationBarModelTest {
                     model.setDisplayUrl("one.com");
                     assertDisplayAndEditText(model, "one.com", "https://one.com");
 
-                    // https://crbug.com/1214481
+                    // https://crbug.com/40056044
                     model.setVisibleGurl(GURL.emptyGURL());
                     model.setDisplayUrl("about:blank");
                     model.setFullUrl("about:blank");
@@ -149,6 +162,8 @@ public class LocationBarModelTest {
     @Test
     @MediumTest
     @ParameterAnnotations.UseMethodParameter(IncognitoTransitionParamProvider.class)
+    // TODO(crbug.com/457847264): Restrict to phones after launch.
+    @DisableFeatures(ChromeFeatureList.ANDROID_OPEN_INCOGNITO_AS_WINDOW)
     public void testOnIncognitoStateChange_toolbarDataProvider(
             boolean fromIncognito, boolean toIncognito) {
         AtomicReference<Integer> incognitoStateObserverCallCount =
@@ -162,17 +177,11 @@ public class LocationBarModelTest {
         ChromeTabbedActivity activity = mActivityTestRule.getActivity();
         LocationBarModel locationBarModel =
                 activity.getToolbarManager().getLocationBarModelForTesting();
-        Supplier<Boolean> isIncognitoSupplier =
-                activity.getToolbarManager()
-                        .getTabSwitcherButtonCoordinatorForTesting()
-                        .getIsIncognitoSupplier();
         ToolbarDataProvider.Observer observer =
                 new ToolbarDataProvider.Observer() {
                     @Override
                     public void onIncognitoStateChanged() {
                         assertEquals(toIncognito, locationBarModel.isIncognito());
-                        assertNotNull(isIncognitoSupplier);
-                        assertEquals(toIncognito, isIncognitoSupplier.get());
                         incognitoStateObserverCallCount.set(Integer.valueOf(1));
                     }
                 };
@@ -208,6 +217,8 @@ public class LocationBarModelTest {
     @Test
     @MediumTest
     @ParameterAnnotations.UseMethodParameter(IncognitoTransitionParamProvider.class)
+    // TODO(crbug.com/457847264): Restrict to phones after launch.
+    @DisableFeatures(ChromeFeatureList.ANDROID_OPEN_INCOGNITO_AS_WINDOW)
     public void testOnIncognitoStateChange_switchTab(boolean fromIncognito, boolean toIncognito) {
         // Add a regular tab next to the one created in setup.
         mActivityTestRule.loadUrlInNewTab("about:blank", /* incognito= */ false);
@@ -258,6 +269,8 @@ public class LocationBarModelTest {
     @Test
     @MediumTest
     @ParameterAnnotations.UseMethodParameter(IncognitoTransitionParamProvider.class)
+    // TODO(crbug.com/457847264): Restrict to phones after launch.
+    @DisableFeatures(ChromeFeatureList.ANDROID_OPEN_INCOGNITO_AS_WINDOW)
     public void testOnIncognitoStateChange_newTab(boolean fromIncognito, boolean toIncognito) {
         // Add a regular tab next to the one created in setup.
         mActivityTestRule.loadUrlInNewTab("about:blank", /* incognito= */ false);
@@ -346,7 +359,8 @@ public class LocationBarModelTest {
                     context,
                     NewTabPageDelegate.EMPTY,
                     DomDistillerTabUtils::getFormattedUrlFromOriginalDistillerUrl,
-                    new LocationBarModel.OfflineStatus() {});
+                    new LocationBarModel.OfflineStatus() {},
+                    ObservableSuppliers.createNonNull(ControlsPosition.TOP));
             initializeWithNative();
 
             Tab tab =

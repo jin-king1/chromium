@@ -7,6 +7,10 @@ package org.chromium.chrome.browser;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.lenient;
+
+import static org.chromium.chrome.browser.url_constants.UrlConstantResolver.getOriginalNativeNtpUrl;
 
 import android.app.Activity;
 import android.app.ActivityOptions;
@@ -15,6 +19,7 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
+import android.os.Bundle;
 import android.os.PowerManager;
 import android.provider.Browser;
 import android.view.Display;
@@ -30,6 +35,7 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Captor;
+import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
@@ -44,11 +50,12 @@ import org.robolectric.shadows.ShadowPowerManager;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.base.IntentUtils;
+import org.chromium.base.Token;
 import org.chromium.base.library_loader.LibraryLoader;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Feature;
+import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
-import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.chrome.browser.IntentHandler.ExternalAppId;
 import org.chromium.chrome.browser.app.tabmodel.AsyncTabParamsManagerSingleton;
 import org.chromium.chrome.browser.customtabs.CustomTabsConnection;
@@ -56,15 +63,19 @@ import org.chromium.chrome.browser.customtabs.CustomTabsIntentTestUtils;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.AsyncTabCreationParams;
+import org.chromium.chrome.browser.tabmodel.MultiTabMetadata;
+import org.chromium.chrome.browser.tabmodel.TabGroupMetadata;
 import org.chromium.chrome.browser.webapps.WebappLauncherActivity;
 import org.chromium.chrome.test.util.browser.webapps.WebappTestHelper;
-import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.components.external_intents.ExternalNavigationHandler;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.content_public.common.Referrer;
+import org.chromium.url.GURL;
 
+import java.util.AbstractMap.SimpleImmutableEntry;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Robolectric tests for IntentHandler. These tests do not require use of the native library (other
@@ -72,6 +83,7 @@ import java.util.List;
  */
 @RunWith(BaseRobolectricTestRunner.class)
 @Config(manifest = Config.NONE)
+@EnableFeatures(ChromeFeatureList.SEND_TAB_TO_SELF_PROPAGATE_SCROLL_POSITION)
 public class IntentHandlerRobolectricTest {
     private static final String[] ACCEPTED_NON_HTTP_AND_HTTPS_URLS = {
         "chrome://newtab",
@@ -188,17 +200,20 @@ public class IntentHandlerRobolectricTest {
 
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.STRICT_STUBS);
 
+    @Mock IntentHandler.Natives mNativeMock;
+    @Mock ExternalIntentUrlChecker.Natives mExternalIntentUrlCheckerNativeMock;
+
     @Captor ArgumentCaptor<LoadUrlParams> mLoadUrlParamsCaptor;
 
     private ShadowPowerManager mShadowPowerManager;
     private ShadowKeyguardManager mShadowKeyguardManager;
 
     private void processUrls(String[] urls, boolean isValid) {
-        List<String> failedTests = new ArrayList<String>();
+        List<String> failedTests = new ArrayList<>();
 
         for (String url : urls) {
             mIntent.setData(Uri.parse(url));
-            if (IntentHandler.intentHasValidUrl(mIntent) != isValid) {
+            if (IntentHandler.isSchemeValid(url) != isValid) {
                 failedTests.add(url);
             }
         }
@@ -229,6 +244,18 @@ public class IntentHandlerRobolectricTest {
     public void setUp() {
         // To allow use of Origin.
         LibraryLoader.getInstance().ensureMainDexInitialized();
+
+        IntentHandlerJni.setInstanceForTesting(mNativeMock);
+
+        ExternalIntentUrlCheckerJni.setInstanceForTesting(mExternalIntentUrlCheckerNativeMock);
+        lenient()
+                .when(mExternalIntentUrlCheckerNativeMock.validateUrl(any()))
+                .thenAnswer(
+                        invocation -> {
+                            GURL url = invocation.getArgument(0);
+                            return url.getSpec().startsWith(GOOGLE_URL);
+                        });
+
         IntentHandler.setTestIntentsEnabled(false);
         mIntent = new Intent();
         Context appContext = ApplicationProvider.getApplicationContext();
@@ -241,6 +268,7 @@ public class IntentHandlerRobolectricTest {
 
     @Test
     @SmallTest
+    @EnableFeatures(ChromeFeatureList.SEND_TAB_TO_SELF_PROPAGATE_SCROLL_POSITION)
     public void testNewIntentInitiator() throws Exception {
         Intent intent = new Intent(Intent.ACTION_VIEW);
         intent.setData(Uri.parse(GOOGLE_URL));
@@ -252,6 +280,20 @@ public class IntentHandlerRobolectricTest {
         IntentUtils.addTrustedIntentExtras(intent);
         params = IntentHandler.createLoadUrlParamsForIntent(GOOGLE_URL, intent, 0);
         Assert.assertNull(params.getInitiatorOrigin());
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"Android-AppBase"})
+    public void testGoogleChromeScheme() {
+        processUrls(new String[] {"googlechrome://navigate?url=https://www.google.com"}, true);
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"Android-AppBase"})
+    public void testGoogleChromeScheme_Invalid() {
+        processUrls(new String[] {"googlechrome://navigate?url=javascript:alert(1)"}, false);
     }
 
     @Test
@@ -302,7 +344,7 @@ public class IntentHandlerRobolectricTest {
     @SmallTest
     @Feature({"Android-AppBase"})
     public void testRejectedGoogleChromeSchemeUrls() {
-        List<String> failedTests = new ArrayList<String>();
+        List<String> failedTests = new ArrayList<>();
 
         for (String url : REJECTED_GOOGLECHROME_URLS) {
             mIntent.setData(Uri.parse(url));
@@ -336,8 +378,9 @@ public class IntentHandlerRobolectricTest {
     @Feature({"Android-AppBase"})
     public void testNullUrlIntent() {
         mIntent.setData(null);
+        String url = IntentHandler.getUrlFromIntent(mIntent);
         Assert.assertTrue(
-                "Intent with null data should be valid", IntentHandler.intentHasValidUrl(mIntent));
+                "Intent with null data should be valid", IntentHandler.isSchemeValid(url));
     }
 
     @Test
@@ -428,15 +471,32 @@ public class IntentHandlerRobolectricTest {
         Context context = ApplicationProvider.getApplicationContext();
         Intent intent = IntentHandler.createTrustedOpenNewTabIntent(context, true);
 
-        Assert.assertEquals(Intent.ACTION_VIEW, intent.getAction());
-        Assert.assertEquals(intent.getData(), Uri.parse(UrlConstants.NTP_URL));
-        Assert.assertTrue(intent.getBooleanExtra(Browser.EXTRA_CREATE_NEW_TAB, false));
-        Assert.assertTrue(IntentHandler.wasIntentSenderChrome(intent));
-        Assert.assertTrue(
-                intent.getBooleanExtra(IntentHandler.EXTRA_OPEN_NEW_INCOGNITO_TAB, false));
+        assertEquals(Intent.ACTION_VIEW, intent.getAction());
+        assertEquals(intent.getData(), Uri.parse(getOriginalNativeNtpUrl()));
+        assertTrue(intent.getBooleanExtra(Browser.EXTRA_CREATE_NEW_TAB, false));
+        assertTrue(IntentHandler.wasIntentSenderChrome(intent));
+        assertTrue(intent.getBooleanExtra(IntentHandler.EXTRA_OPEN_NEW_INCOGNITO_TAB, false));
 
         intent = IntentHandler.createTrustedOpenNewTabIntent(context, false);
         assertFalse(intent.getBooleanExtra(IntentHandler.EXTRA_OPEN_NEW_INCOGNITO_TAB, true));
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"Android-AppBase"})
+    public void testCreateTrustedOpenNewWindowIntent() {
+        Context context = ApplicationProvider.getApplicationContext();
+        Intent intent = IntentHandler.createTrustedOpenNewWindowIntent(context, true);
+
+        assertEquals(
+                Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_MULTIPLE_TASK,
+                intent.getFlags());
+        assertTrue(intent.getBooleanExtra(IntentHandler.EXTRA_PREFER_NEW, false));
+        assertTrue(IntentHandler.wasIntentSenderChrome(intent));
+        assertTrue(intent.getBooleanExtra(IntentHandler.EXTRA_OPEN_NEW_INCOGNITO_WINDOW, false));
+
+        intent = IntentHandler.createTrustedOpenNewWindowIntent(context, false);
+        assertFalse(intent.getBooleanExtra(IntentHandler.EXTRA_OPEN_NEW_INCOGNITO_WINDOW, true));
     }
 
     /** Test that IntentHandler#shouldIgnoreIntent() returns false for Webapp launch intents. */
@@ -483,9 +543,13 @@ public class IntentHandlerRobolectricTest {
         Context context = ApplicationProvider.getApplicationContext();
         Intent intent = IntentHandler.createTrustedOpenNewTabIntent(context, true);
         assertFalse(IntentHandler.shouldIgnoreIntent(intent, null));
+        intent = IntentHandler.createTrustedOpenNewWindowIntent(context, true);
+        assertFalse(IntentHandler.shouldIgnoreIntent(intent, null));
     }
 
-    /** Test that IntentHandler#shouldIgnoreIntent() returns false for Incognito Custom Tab Intents. */
+    /**
+     * Test that IntentHandler#shouldIgnoreIntent() returns false for Incognito Custom Tab Intents.
+     */
     @Test
     @SmallTest
     @Feature({"Android-AppBase"})
@@ -519,16 +583,20 @@ public class IntentHandlerRobolectricTest {
         intent.setPackage(ContextUtils.getApplicationContext().getPackageName());
         intent.putExtra("key", true);
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-        assertEquals(intent, IntentHandler.rewriteFromHistoryIntent(intent));
-
-        intent.addFlags(Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY);
-        Intent newIntent = IntentHandler.rewriteFromHistoryIntent(intent);
+        assertEquals(intent, IntentHandler.rewriteFromHistoryIntent(intent, null));
 
         Intent expected = new Intent(intent);
         expected.setAction(Intent.ACTION_MAIN);
         expected.removeExtra("key");
         expected.addCategory(Intent.CATEGORY_LAUNCHER);
         expected.setData(null);
+
+        Intent newIntent = IntentHandler.rewriteFromHistoryIntent(intent, new Bundle());
+        assertEquals(expected.toUri(0), newIntent.toUri(0));
+
+        intent.addFlags(Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY);
+        expected.addFlags(Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY);
+        newIntent = IntentHandler.rewriteFromHistoryIntent(intent, null);
         assertEquals(expected.toUri(0), newIntent.toUri(0));
     }
 
@@ -540,11 +608,7 @@ public class IntentHandlerRobolectricTest {
         Assert.assertNull(IntentHandler.getUrlFromShareIntent(intent));
         for (Object[] shareCase : SHARE_INTENT_CASES) {
             intent.putExtra(Intent.EXTRA_TEXT, (String) shareCase[0]);
-            var histogramWatcher =
-                    HistogramWatcher.newSingleRecordWatcher(
-                            IntentHandler.SHARE_INTENT_HISTOGRAM, (int) shareCase[2]);
             Assert.assertEquals((String) shareCase[1], IntentHandler.getUrlFromShareIntent(intent));
-            histogramWatcher.assertExpected((String) shareCase[0]);
         }
     }
 
@@ -621,22 +685,22 @@ public class IntentHandlerRobolectricTest {
                         null,
                         ActivityOptions.makeBasic().setLaunchDisplayId(extDisplayId).toBundle());
         Activity activity = controller.setup().get();
-        ShadowPowerManager mShadowPowerManagerAct =
+        ShadowPowerManager shadowPowerManagerAct =
                 Shadows.shadowOf((PowerManager) activity.getSystemService(Context.POWER_SERVICE));
 
         Intent intent = new Intent(Intent.ACTION_VIEW);
         intent.setData(Uri.parse(GOOGLE_URL));
         // Test with main screen on
         mShadowPowerManager.setIsInteractive(true);
-        mShadowPowerManagerAct.setIsInteractive(false);
+        shadowPowerManagerAct.setIsInteractive(false);
         Assert.assertTrue(IntentHandler.shouldIgnoreIntent(intent, activity));
-        mShadowPowerManagerAct.setIsInteractive(true);
+        shadowPowerManagerAct.setIsInteractive(true);
         Assert.assertFalse(IntentHandler.shouldIgnoreIntent(intent, activity));
         // Test with main screen off
         mShadowPowerManager.setIsInteractive(false);
-        mShadowPowerManagerAct.setIsInteractive(false);
+        shadowPowerManagerAct.setIsInteractive(false);
         Assert.assertTrue(IntentHandler.shouldIgnoreIntent(intent, activity));
-        mShadowPowerManagerAct.setIsInteractive(true);
+        shadowPowerManagerAct.setIsInteractive(true);
         Assert.assertFalse(IntentHandler.shouldIgnoreIntent(intent, activity));
     }
 
@@ -688,6 +752,9 @@ public class IntentHandlerRobolectricTest {
 
         untrustedIntent.setData(Uri.parse("chrome-native://newtab"));
         Assert.assertTrue(IntentHandler.shouldIgnoreIntent(untrustedIntent, null));
+
+        untrustedIntent.addCategory("com.fake.category");
+        Assert.assertTrue(IntentHandler.shouldIgnoreIntent(untrustedIntent, null));
     }
 
     @Test
@@ -735,9 +802,135 @@ public class IntentHandlerRobolectricTest {
                 ExternalAppId.PIXEL_LAUNCHER,
                 IntentHandler.determineExternalIntentSource(intent, activity));
 
-        intent.putExtra(IntentHandler.EXTRA_ACTIVITY_REFERRER, "android.app.launcher");
+        intent.putExtra(
+                IntentHandler.EXTRA_ACTIVITY_REFERRER,
+                "android-app://com.sec.android.app.launcher");
         assertEquals(
-                ExternalAppId.THIRD_PARTY_LAUNCHER,
+                ExternalAppId.SAMSUNG_LAUNCHER,
                 IntentHandler.determineExternalIntentSource(intent, activity));
+    }
+
+    @Test
+    @SmallTest
+    public void testScrollToTextFragment_Trusted() {
+        Intent intent = new Intent(Intent.ACTION_VIEW);
+        intent.setData(Uri.parse(GOOGLE_URL));
+        intent.putExtra(IntentHandler.EXTRA_SCROLL_TO_TEXT_FRAGMENT, "selector");
+        intent.setPackage(ContextUtils.getApplicationContext().getPackageName());
+        IntentUtils.addTrustedIntentExtras(intent);
+
+        LoadUrlParams params = IntentHandler.createLoadUrlParamsForIntent(GOOGLE_URL, intent, 0);
+        assertEquals("selector", params.getInternalScrollToTextFragment());
+    }
+
+    @Test
+    @SmallTest
+    public void testScrollToTextFragment_Untrusted() {
+        Intent intent = new Intent(Intent.ACTION_VIEW);
+        intent.setData(Uri.parse(GOOGLE_URL));
+        intent.putExtra(IntentHandler.EXTRA_SCROLL_TO_TEXT_FRAGMENT, "selector");
+
+        LoadUrlParams params = IntentHandler.createLoadUrlParamsForIntent(GOOGLE_URL, intent, 0);
+        Assert.assertNull(params.getInternalScrollToTextFragment());
+    }
+
+    @Test
+    @SmallTest
+    @DisableFeatures(ChromeFeatureList.SEND_TAB_TO_SELF_PROPAGATE_SCROLL_POSITION)
+    public void testScrollToTextFragment_FeatureDisabled() {
+        Intent intent = new Intent(Intent.ACTION_VIEW);
+        intent.setData(Uri.parse(GOOGLE_URL));
+        intent.putExtra(IntentHandler.EXTRA_SCROLL_TO_TEXT_FRAGMENT, "selector");
+        intent.setPackage(ContextUtils.getApplicationContext().getPackageName());
+        IntentUtils.addTrustedIntentExtras(intent);
+
+        LoadUrlParams params = IntentHandler.createLoadUrlParamsForIntent(GOOGLE_URL, intent, 0);
+        Assert.assertNull(params.getInternalScrollToTextFragment());
+    }
+
+    @Test
+    @SmallTest
+    public void testShouldIgnoreIntent_TabGroupMetadata() {
+        // Trusted source should be allowed.
+        Intent trustedIntent =
+                createTabGroupIntent(/* isIncognito= */ false, /* isTrusted= */ true);
+        Assert.assertFalse(IntentHandler.shouldIgnoreIntent(trustedIntent, null));
+
+        // Untrusted source should be ignored.
+        Intent untrustedIntent =
+                createTabGroupIntent(/* isIncognito= */ false, /* isTrusted= */ false);
+        Assert.assertTrue(IntentHandler.shouldIgnoreIntent(untrustedIntent, null));
+
+        // Untrusted incognito should also be ignored.
+        Intent untrustedIncognito =
+                createTabGroupIntent(/* isIncognito= */ true, /* isTrusted= */ false);
+        Assert.assertTrue(IntentHandler.shouldIgnoreIntent(untrustedIncognito, null));
+
+        // Untrusted Custom Tab should also be ignored.
+        Assert.assertTrue(
+                IntentHandler.shouldIgnoreIntent(untrustedIntent, /* isCustomTab= */ true));
+    }
+
+    @Test
+    @SmallTest
+    public void testShouldIgnoreIntent_MultiTabMetadata() {
+        // Trusted source should be allowed.
+        Intent trustedIntent =
+                createMultiTabIntent(/* isIncognito= */ false, /* isTrusted= */ true);
+        Assert.assertFalse(IntentHandler.shouldIgnoreIntent(trustedIntent, null));
+
+        // Untrusted source should be ignored.
+        Intent untrustedIntent =
+                createMultiTabIntent(/* isIncognito= */ false, /* isTrusted= */ false);
+        Assert.assertTrue(IntentHandler.shouldIgnoreIntent(untrustedIntent, null));
+
+        // Untrusted incognito should also be ignored.
+        Intent untrustedIncognito =
+                createMultiTabIntent(/* isIncognito= */ true, /* isTrusted= */ false);
+        Assert.assertTrue(IntentHandler.shouldIgnoreIntent(untrustedIncognito, null));
+
+        // Untrusted Custom Tab should also be ignored.
+        Assert.assertTrue(
+                IntentHandler.shouldIgnoreIntent(untrustedIntent, /* isCustomTab= */ true));
+    }
+
+    private Intent createTabGroupIntent(boolean isIncognito, boolean isTrusted) {
+        Intent intent = new Intent(Intent.ACTION_VIEW);
+        ArrayList<Map.Entry<Integer, String>> tabIdsToUrls = new ArrayList<>();
+        tabIdsToUrls.add(new SimpleImmutableEntry<>(1, "http://google.com"));
+        TabGroupMetadata metadata =
+                new TabGroupMetadata(
+                        /* selectedTabId= */ 1,
+                        /* sourceWindowId= */ 0,
+                        /* tabGroupId= */ new Token(1L, 2L),
+                        tabIdsToUrls,
+                        /* tabGroupColor= */ 0,
+                        /* tabGroupTitle= */ "Title",
+                        /* mhtmlTabTitle= */ null,
+                        /* tabGroupCollapsed= */ false,
+                        /* isGroupShared= */ false,
+                        isIncognito);
+        IntentHandler.setTabGroupMetadata(intent, metadata);
+        if (isTrusted) {
+            intent.setPackage(ContextUtils.getApplicationContext().getPackageName());
+            IntentUtils.addTrustedIntentExtras(intent);
+        }
+        return intent;
+    }
+
+    private Intent createMultiTabIntent(boolean isIncognito, boolean isTrusted) {
+        Intent intent = new Intent(Intent.ACTION_VIEW);
+        ArrayList<Integer> tabIds = new ArrayList<>();
+        tabIds.add(1);
+        ArrayList<String> urls = new ArrayList<>();
+        urls.add("http://google.com");
+        MultiTabMetadata metadata =
+                MultiTabMetadata.createForTesting(tabIds, urls, new boolean[] {false}, isIncognito);
+        IntentHandler.setMultiTabMetadata(intent, metadata);
+        if (isTrusted) {
+            intent.setPackage(ContextUtils.getApplicationContext().getPackageName());
+            IntentUtils.addTrustedIntentExtras(intent);
+        }
+        return intent;
     }
 }

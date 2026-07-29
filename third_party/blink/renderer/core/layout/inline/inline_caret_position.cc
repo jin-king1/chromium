@@ -158,7 +158,7 @@ InlineCaretPositionResolution TryResolveInlineCaretPositionInTextFragment(
 unsigned GetTextOffsetBefore(const Node& node) {
   // TODO(xiaochengh): Design more straightforward way to get text offset of
   // atomic inline box.
-  DCHECK(node.GetLayoutObject()->IsAtomicInlineLevel());
+  DCHECK(node.GetLayoutObject()->IsAtomicInline());
   const Position before_node = Position::BeforeNode(node);
   std::optional<unsigned> maybe_offset_before =
       OffsetMapping::GetFor(before_node)->GetTextContentOffset(before_node);
@@ -463,8 +463,8 @@ InlineCaretPosition ComputeInlineCaretPosition(
     if (auto* data = DynamicTo<Text>(position.AnchorNode())) {
       DCHECK_EQ(data->length(), 0u);
     } else {
-      // TODO(xiaochengh): Investigate if we reach here.
-      NOTREACHED();
+      // TODO(crbug.com/444003274): This branch is reachable unexpectedly,
+      // however we don't know how to reproduce it.
     }
   }
 
@@ -482,7 +482,7 @@ InlineCaretPosition ComputeInlineCaretPosition(
   // See AccessibilitySelectionTest.FromCurrentSelectionInTextareaWithAffinity
   const unsigned adjusted_offset =
       affinity == TextAffinity::kUpstream && offset &&
-              mapping->GetText()[offset - 1] == kZeroWidthSpaceCharacter
+              mapping->GetText()[offset - 1] == uchar::kZeroWidthSpace
           ? offset - 1
           : offset;
   return ComputeInlineCaretPosition(*context, adjusted_offset, affinity,

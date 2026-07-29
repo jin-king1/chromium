@@ -1,16 +1,40 @@
 // Copyright 2024 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
-
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "media/gpu/h265_builder.h"
 #include "media/filters/h26x_annex_b_bitstream_builder.h"
 
 namespace media {
+
+namespace {
+
+// SEI payload types (T-REC H.265 Table D.1).
+constexpr int kSEIPayloadTypeMasteringDisplayColourVolume = 137;
+constexpr int kSEIPayloadTypeContentLightLevelInfo = 144;
+
+// SEI payload sizes in bytes.
+// Mastering display colour volume: 3 * 2 * 2 (display primaries) + 2 * 2 (white
+// point) + 4 (max luminance) + 4 (min luminance).
+constexpr int kSEIPayloadSizeMasteringDisplayColourVolume = 24;
+// Content light level: 2 (max content) + 2 (max picture average).
+constexpr int kSEIPayloadSizeContentLightLevelInfo = 4;
+
+// D.2.1 / 7.3.5 sei_message() header: writes the payload type and payload size
+// using the 0xFF continuation form (last byte < 0xFF).
+void BuildPackedH265SEIMessageHeader(H26xAnnexBBitstreamBuilder& builder,
+                                     int payload_type,
+                                     int payload_size) {
+  for (; payload_type >= 0xFF; payload_type -= 0xFF) {
+    builder.AppendBits(8, 0xFF);
+  }
+  builder.AppendBits(8, payload_type);
+  for (; payload_size >= 0xFF; payload_size -= 0xFF) {
+    builder.AppendBits(8, 0xFF);
+  }
+  builder.AppendBits(8, payload_size);
+}
+
+}  // namespace
 
 void BuildPackedH265ProfileTierLevel(
     H26xAnnexBBitstreamBuilder& builder,
@@ -31,8 +55,9 @@ void BuildPackedH265ProfileTierLevel(
     builder.AppendBits(1,
                        profile_tier_level.general_frame_only_constraint_flag);
     CHECK_LT(profile_tier_level.general_profile_idc, 4);
-    // Check general_profile_compatibility_flag[ 2 ] == 0
-    CHECK(!(profile_tier_level.general_profile_compatibility_flags & 1 << 29));
+    // We are not using the encoder for still image encoding, so the
+    // general_one_picture_only_constraint_flag should always be set to 0. In
+    // that case simply appending 43 zero bits is fine.
     builder.AppendBits(43, 0);  // general_reserved_zero_43bits
     builder.AppendBits(1, 0);   // general_inbld_flag
   }
@@ -150,7 +175,30 @@ void BuildPackedH265SPS(H26xAnnexBBitstreamBuilder& builder,
 
   builder.AppendBits(1, sps.sps_temporal_mvp_enabled_flag);
   builder.AppendBits(1, sps.strong_intra_smoothing_enabled_flag);
-  builder.AppendBits(1, 0);  // vui_parameters_present_flag
+  builder.AppendBits(1, sps.vui_parameters_present_flag);
+  // The VEA sets vui_parameters_present_flag & colour_description_present_flag
+  // to true whenever it has a specified colour space to signal (SDR Rec.601/709
+  // as well as HDR BT.2020 PQ/HLG for the main10 profile).
+  if (sps.vui_parameters_present_flag &&
+      sps.vui_parameters.colour_description_present_flag) {
+    // E.2.1 VUI parameters syntax
+    builder.AppendBits(1, 0);  // aspect_ratio_info_present_flag
+    builder.AppendBits(1, 0);  // overscan_info_present_flag
+    builder.AppendBits(1, 1);  // video_signal_type_present_flag
+    builder.AppendBits(3, 5);  // video_format = Unspecified.
+    builder.AppendBits(1, sps.vui_parameters.video_full_range_flag);
+    builder.AppendBits(1, 1);  // colour_description_present_flag
+    builder.AppendBits(8, sps.vui_parameters.colour_primaries);
+    builder.AppendBits(8, sps.vui_parameters.transfer_characteristics);
+    builder.AppendBits(8, sps.vui_parameters.matrix_coeffs);
+    builder.AppendBits(1, 0);  // chroma_loc_info_present_flag
+    builder.AppendBits(1, 0);  // neutral_chroma_indication_flag
+    builder.AppendBits(1, 0);  // field_seq_flag
+    builder.AppendBits(1, 0);  // frame_field_info_present_flag
+    builder.AppendBits(1, 0);  // default_display_window_flag
+    builder.AppendBits(1, 0);  // vui_timing_info_present_flag
+    builder.AppendBits(1, 0);  // bitstream_restriction_flag
+  }
   builder.AppendBits(1, 0);  // sps_extension_present_flag
 
   builder.FinishNALU();
@@ -226,6 +274,44 @@ void BuildPackedH265PPS(H26xAnnexBBitstreamBuilder& builder,
 
   builder.AppendBits(1, pps.pps_extension_present_flag);
   CHECK(!pps.pps_extension_present_flag);
+
+  builder.FinishNALU();
+}
+
+void BuildPackedH265SEI(
+    H26xAnnexBBitstreamBuilder& builder,
+    const std::optional<H26xSEIMasteringDisplayInfo>& mastering_display,
+    const std::optional<H26xSEIContentLightLevelInfo>& content_light_level) {
+  if (!mastering_display.has_value() && !content_light_level.has_value()) {
+    return;
+  }
+
+  builder.BeginNALU(H265NALU::PREFIX_SEI_NUT);
+
+  if (mastering_display.has_value()) {
+    // D.2.28 Mastering display colour volume SEI message syntax.
+    BuildPackedH265SEIMessageHeader(
+        builder, kSEIPayloadTypeMasteringDisplayColourVolume,
+        kSEIPayloadSizeMasteringDisplayColourVolume);
+    for (const auto& primary : mastering_display->display_primaries) {
+      builder.AppendBits(16, primary[0]);  // display_primaries_x[c]
+      builder.AppendBits(16, primary[1]);  // display_primaries_y[c]
+    }
+    builder.AppendBits(16, mastering_display->white_points[0]);
+    builder.AppendBits(16, mastering_display->white_points[1]);
+    builder.AppendBits(32, mastering_display->max_luminance);
+    builder.AppendBits(32, mastering_display->min_luminance);
+  }
+
+  if (content_light_level.has_value()) {
+    // D.2.35 Content light level information SEI message syntax.
+    BuildPackedH265SEIMessageHeader(builder,
+                                    kSEIPayloadTypeContentLightLevelInfo,
+                                    kSEIPayloadSizeContentLightLevelInfo);
+    builder.AppendBits(16, content_light_level->max_content_light_level);
+    builder.AppendBits(16,
+                       content_light_level->max_picture_average_light_level);
+  }
 
   builder.FinishNALU();
 }

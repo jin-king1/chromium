@@ -9,6 +9,7 @@
 #include "third_party/blink/renderer/platform/graphics/paint/scroll_paint_property_node.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+#include "ui/gfx/geometry/rect_conversions.h"
 
 namespace blink {
 
@@ -52,6 +53,18 @@ gfx::Transform GeometryMapper::SourceToDestinationProjection(
   bool success = false;
   return SourceToDestinationProjectionInternal(source, destination,
                                                extra_result, success);
+}
+
+bool GeometryMapper::SourceToDestinationProjection(
+    const TransformPaintPropertyNode& source,
+    const TransformPaintPropertyNode& destination,
+    gfx::Transform& projection) {
+  ExtraProjectionResult extra_result;
+  bool success = false;
+  projection = SourceToDestinationProjectionInternal(source, destination,
+                                                     extra_result, success);
+  return !RuntimeEnabledFeatures::GeometryMapperSingularTransformFixEnabled() ||
+         success;
 }
 
 // Returns flatten(destination_to_screen)^-1 * flatten(source_to_screen)
@@ -209,6 +222,15 @@ bool GeometryMapper::LocalToAncestorVisualRect(
       local_state, ancestor_state, mapping_rect, clip_behavior, flags);
 }
 
+bool GeometryMapper::LocalToLocalRootViewportRect(
+    const PropertyTreeState& local_state,
+    FloatClipRect& mapping_rect,
+    OverlayScrollbarClipBehavior clip_behavior,
+    VisualRectFlags flags) {
+  return LocalToAncestorVisualRect(local_state, PropertyTreeState::Root(),
+                                   mapping_rect, clip_behavior, flags);
+}
+
 template <GeometryMapper::ForCompositingOverlap for_compositing_overlap>
 bool GeometryMapper::LocalToAncestorVisualRectInternal(
     const PropertyTreeState& local_state,
@@ -271,6 +293,10 @@ bool GeometryMapper::LocalToAncestorVisualRectInternal(
     rect_to_map.Map(projection);
   }
 
+  if (flags & VisualRectFlags::kSkipAncestorAndViewportClips) {
+    return true;
+  }
+
   FloatClipRect clip_rect =
       LocalToAncestorClipRectInternal<for_compositing_overlap>(
           local_state.Clip(), ancestor_state.Clip(), ancestor_state.Transform(),
@@ -325,8 +351,10 @@ bool GeometryMapper::SlowLocalToAncestorVisualRectWithPixelMovingFilters(
         rect_to_map = FloatClipRect(gfx::RectF());
         return false;
       }
-      if (!rect_to_map.IsInfinite())
-        rect_to_map.Rect() = filter->MapRect(rect_to_map.Rect());
+      if (!rect_to_map.IsInfinite()) {
+        rect_to_map.Rect() = gfx::RectF(
+            filter->MapRect(gfx::ToEnclosingRect(rect_to_map.Rect())));
+      }
     }
 
     last_state = new_state;

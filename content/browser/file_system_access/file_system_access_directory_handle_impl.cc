@@ -7,7 +7,6 @@
 #include <optional>
 
 #include "base/barrier_callback.h"
-#include "base/containers/contains.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/i18n/file_util_icu.h"
@@ -115,17 +114,17 @@ FileSystemAccessDirectoryHandleImpl::~FileSystemAccessDirectoryHandleImpl() =
     default;
 
 void FileSystemAccessDirectoryHandleImpl::GetPermissionStatus(
-    bool writable,
+    blink::mojom::FileSystemAccessPermissionMode mode,
     GetPermissionStatusCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DoGetPermissionStatus(writable, std::move(callback));
+  DoGetPermissionStatus(mode, std::move(callback));
 }
 
 void FileSystemAccessDirectoryHandleImpl::RequestPermission(
-    bool writable,
+    blink::mojom::FileSystemAccessPermissionMode mode,
     RequestPermissionCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DoRequestPermission(writable, std::move(callback));
+  DoRequestPermission(mode, std::move(callback));
 }
 
 void FileSystemAccessDirectoryHandleImpl::GetFile(const std::string& basename,
@@ -142,9 +141,8 @@ void FileSystemAccessDirectoryHandleImpl::GetFile(const std::string& basename,
   // before creating the returned handle.
   if (url().virtual_path().IsContentUri()) {
     std::string mime_type;
-    std::string ext = base::FilePath(basename).Extension();
-    if (ext.empty() ||
-        !net::GetWellKnownMimeTypeFromExtension(ext.substr(1), &mime_type)) {
+    if (!net::GetWellKnownMimeTypeFromFile(base::FilePath(basename),
+                                           &mime_type)) {
       mime_type = "application/octet-stream";
     }
     base::ThreadPool::PostTaskAndReplyWithResult(
@@ -249,7 +247,8 @@ void FileSystemAccessDirectoryHandleImpl::DoGetFile(
     // If `create` is true, write permission is required unconditionally, i.e.
     // even if the file already exists. This is intentional, and matches the
     // behavior that is specified in the spec.
-    RunWithWritePermission(
+    RunWithPermission(
+        blink::mojom::FileSystemAccessPermissionMode::kReadWrite,
         base::BindOnce(
             &FileSystemAccessDirectoryHandleImpl::GetFileWithWritePermission,
             weak_factory_.GetWeakPtr(), basename, url),
@@ -346,7 +345,8 @@ void FileSystemAccessDirectoryHandleImpl::GetDirectoryResolved(
     // If `create` is true, write permission is required unconditionally, i.e.
     // even if the file already exists. This is intentional, and matches the
     // behavior that is specified in the spec.
-    RunWithWritePermission(
+    RunWithPermission(
+        blink::mojom::FileSystemAccessPermissionMode::kReadWrite,
         base::BindOnce(&FileSystemAccessDirectoryHandleImpl::
                            GetDirectoryWithWritePermission,
                        weak_factory_.GetWeakPtr(), child_url),
@@ -398,9 +398,20 @@ void FileSystemAccessDirectoryHandleImpl::Move(
     MoveCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  // TODO(crbug.com/40198034): Implement move for directory handles.
-  std::move(callback).Run(file_system_access_error::FromStatus(
-      blink::mojom::FileSystemAccessStatus::kOperationAborted));
+  RenderFrameHost* rfh = RenderFrameHost::FromID(context().frame_id);
+  bool has_transient_user_activation = rfh && rfh->HasTransientUserActivation();
+
+  RunWithPermission(
+      FileSystemAccessManagerImpl::GetEffectiveWritePermissionMode(),
+      base::BindOnce(&FileSystemAccessHandleBase::DoMove,
+                     weak_factory_.GetWeakPtr(),
+                     std::move(destination_directory), new_entry_name,
+                     has_transient_user_activation),
+      base::BindOnce([](blink::mojom::FileSystemAccessErrorPtr result,
+                        MoveCallback callback) {
+        std::move(callback).Run(std::move(result));
+      }),
+      std::move(callback));
 }
 
 void FileSystemAccessDirectoryHandleImpl::Rename(
@@ -408,16 +419,27 @@ void FileSystemAccessDirectoryHandleImpl::Rename(
     RenameCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  // TODO(crbug.com/40198034): Implement rename for directory handles.
-  std::move(callback).Run(file_system_access_error::FromStatus(
-      blink::mojom::FileSystemAccessStatus::kOperationAborted));
+  RenderFrameHost* rfh = RenderFrameHost::FromID(context().frame_id);
+  bool has_transient_user_activation = rfh && rfh->HasTransientUserActivation();
+
+  RunWithPermission(
+      FileSystemAccessManagerImpl::GetEffectiveWritePermissionMode(),
+      base::BindOnce(&FileSystemAccessHandleBase::DoRename,
+                     weak_factory_.GetWeakPtr(), new_entry_name,
+                     has_transient_user_activation),
+      base::BindOnce([](blink::mojom::FileSystemAccessErrorPtr result,
+                        MoveCallback callback) {
+        std::move(callback).Run(std::move(result));
+      }),
+      std::move(callback));
 }
 
 void FileSystemAccessDirectoryHandleImpl::Remove(bool recurse,
                                                  RemoveCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  RunWithWritePermission(
+  RunWithPermission(
+      FileSystemAccessManagerImpl::GetEffectiveWritePermissionMode(),
       base::BindOnce(&FileSystemAccessHandleBase::DoRemove,
                      weak_factory_.GetWeakPtr(), url(), recurse),
       base::BindOnce([](blink::mojom::FileSystemAccessErrorPtr result,
@@ -488,7 +510,8 @@ void FileSystemAccessDirectoryHandleImpl::RemoveEntryResolved(
     return;
   }
 
-  RunWithWritePermission(
+  RunWithPermission(
+      FileSystemAccessManagerImpl::GetEffectiveWritePermissionMode(),
       base::BindOnce(&FileSystemAccessHandleBase::DoRemove,
                      weak_factory_.GetWeakPtr(), child_url, recurse),
       base::BindOnce([](blink::mojom::FileSystemAccessErrorPtr result,
@@ -596,7 +619,7 @@ void FileSystemAccessDirectoryHandleImpl::GetFileWithWritePermission(
     const storage::FileSystemURL& child_url,
     GetFileCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK_EQ(GetWritePermissionStatus(),
+  DCHECK_EQ(GetEffectiveWritePermissionStatus(),
             blink::mojom::PermissionStatus::GRANTED);
 
   manager()->DoFileSystemOperation(
@@ -664,7 +687,7 @@ void FileSystemAccessDirectoryHandleImpl::GetDirectoryWithWritePermission(
     const storage::FileSystemURL& child_url,
     GetDirectoryCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK_EQ(GetWritePermissionStatus(),
+  DCHECK_EQ(GetEffectiveWritePermissionStatus(),
             blink::mojom::PermissionStatus::GRANTED);
 
   manager()->DoFileSystemOperation(
@@ -800,7 +823,7 @@ void FileSystemAccessDirectoryHandleImpl::DidReadDirectory(
               child_url.type() == storage::FileSystemType::kFileSystemTypeLocal
                   ? PathType::kLocal
                   : PathType::kExternal,
-              child_url.path(), entry.name.AsUTF8Unsafe()),
+              child_url.path(), basename),
           HandleType::kFile, UserAction::kNone, context().frame_id,
           base::BindOnce(&FileSystemAccessDirectoryHandleImpl::
                              DidVerifySensitiveAccessForFileEntry,
@@ -897,8 +920,7 @@ FileSystemAccessDirectoryHandleImpl::GetChildURL(
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   const storage::FileSystemURL& parent = url();
-  if (!manager()->IsSafePathComponent(
-          parent.type(), context().storage_key.origin(), basename)) {
+  if (!manager()->IsSafePathComponent(parent.type(), basename)) {
     return file_system_access_error::FromStatus(
         FileSystemAccessStatus::kInvalidArgument, "Name is not allowed.");
   }

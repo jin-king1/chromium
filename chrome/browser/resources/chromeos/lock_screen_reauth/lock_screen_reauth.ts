@@ -24,6 +24,7 @@ import '//resources/polymer/v3_0/iron-icon/iron-icon.js';
 import type {AuthCompletedCredentials, AuthCompletedEvent, AuthDomainChangeEvent, AuthFlowChangeEvent, AuthParams, LoadAbortEvent} from '//lock-reauth/gaia_auth_host/authenticator.js';
 import {Authenticator, AuthFlow, AuthMode, SUPPORTED_PARAMS} from '//lock-reauth/gaia_auth_host/authenticator.js';
 import type {CrInputElement} from '//resources/ash/common/cr_elements/cr_input/cr_input.js';
+import {LoginOrUnlock, recordUmaHistogramForSamlRedirectEvent, SamlRedirectEvent} from '/components/online_auth_utils.js';
 import {I18nMixin} from 'chrome://resources/ash/common/cr_elements/i18n_mixin.js';
 import {assert} from 'chrome://resources/js/assert.js';
 import {sendWithPromise} from 'chrome://resources/js/cr.js';
@@ -147,18 +148,18 @@ class LockReauthElement extends LockReauthElementBase {
     };
   }
 
-  email: string;
-  authDomain: string;
+  declare email: string;
+  declare authDomain: string;
   isButtonsEnabled: boolean;
-  isErrorDisplayed: boolean;
-  isSigninFrameDisplayed: boolean;
-  isSaml: boolean;
-  isDefaultSsoProvider: boolean;
-  isConfirmPassword: boolean;
-  isManualInput: boolean;
-  isPasswordChanged: boolean;
-  passwordConfirmAttempt: number;
-  passwordChangeAttempt: number;
+  declare isErrorDisplayed: boolean;
+  declare isSigninFrameDisplayed: boolean;
+  declare isSaml: boolean;
+  declare isDefaultSsoProvider: boolean;
+  declare isConfirmPassword: boolean;
+  declare isManualInput: boolean;
+  declare isPasswordChanged: boolean;
+  declare passwordConfirmAttempt: number;
+  declare passwordChangeAttempt: number;
 
   /**
    * Saved authenticator load params.
@@ -191,7 +192,7 @@ class LockReauthElement extends LockReauthElementBase {
       'loadAbort': (e: LoadAbortEvent) =>
           void this.onLoadAbortMessage(e.detail),
       'getDeviceId': (_: Event) => {
-        sendWithPromise('getDeviceId')
+        sendWithPromise<string>('getDeviceId')
             .then(deviceId => authenticator.getDeviceIdResponse(deviceId));
       },
       'authFlowChange': (e: AuthFlowChangeEvent) => {
@@ -262,6 +263,13 @@ class LockReauthElement extends LockReauthElementBase {
     this.email = data.email;
     this.isDefaultSsoProvider = !!data.doSamlRedirect;
     this.isSaml = this.isDefaultSsoProvider;
+    if (data.doSamlRedirect) {
+      recordUmaHistogramForSamlRedirectEvent(
+          LoginOrUnlock.UNLOCK,
+          this.authenticatorParams.ssoProfile ?
+              SamlRedirectEvent.START_WITH_SSO_PROFILE :
+              SamlRedirectEvent.START_WITH_DOMAIN);
+    }
     this.doGaiaRedirect();
 
     chrome.send('authenticatorLoaded');
@@ -433,6 +441,9 @@ class LockReauthElement extends LockReauthElementBase {
    */
   private onChangeSigninProviderClicked() {
     this.resetState();
+    recordUmaHistogramForSamlRedirectEvent(
+        LoginOrUnlock.UNLOCK,
+        SamlRedirectEvent.CHANGE_TO_DEFAULT_GOOGLE_SIGN_IN);
     chrome.send('startOnlineAuth', /*force_reauth_gaia_page=*/[true]);
   }
 }

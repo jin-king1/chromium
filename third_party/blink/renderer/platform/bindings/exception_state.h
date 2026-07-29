@@ -71,10 +71,18 @@ class PLATFORM_EXPORT ExceptionState {
 
   ExceptionState(const ExceptionState&) = delete;
   ExceptionState& operator=(const ExceptionState&) = delete;
-  ~ExceptionState() = default;
+
+  ~ExceptionState() {
+    DCHECK(!had_exception_ || !isolate_ || isolate_->HasPendingException());
+  }
 
   // Throws a DOMException due to the given exception code.
   NOINLINE void ThrowDOMException(DOMExceptionCode, const String& message);
+
+  // Throws a constructed DOMException.
+  NOINLINE void ThrowDOMException(v8::Local<v8::Value> exception,
+                                  DOMExceptionCode code,
+                                  const String& message);
 
   // Throws a DOMException with SECURITY_ERR.
   NOINLINE void ThrowSecurityError(
@@ -84,6 +92,7 @@ class PLATFORM_EXPORT ExceptionState {
   // Throws an ECMAScript Error object.
   NOINLINE void ThrowRangeError(const String& message);
   NOINLINE void ThrowTypeError(const String& message);
+  NOINLINE void ThrowSyntaxError(const String& message);
 
   // Throws WebAssembly Error object.
   NOINLINE void ThrowWasmCompileError(const String& message);
@@ -98,6 +107,7 @@ class PLATFORM_EXPORT ExceptionState {
                                    const char* unsanitized_message = nullptr);
   NOINLINE void ThrowRangeError(const char* message);
   NOINLINE void ThrowTypeError(const char* message);
+  NOINLINE void ThrowSyntaxError(const char* message);
   NOINLINE void ThrowWasmCompileError(const char* message);
 
   // Report the given value as the exception being thrown, but rethrow it
@@ -110,7 +120,15 @@ class PLATFORM_EXPORT ExceptionState {
   // Returns the context of what Web API is currently being executed.
   const ExceptionContext& GetContext() const { return context_; }
 
+  v8::Isolate* GetIsolate() const { return isolate_; }
+
   ExceptionState& ReturnThis() { return *this; }
+
+  // A helper for correctly asserting no pending v8 exception (which,
+  // as it happens, involved properly excluding a termination exception).
+  static void AssertNoPendingException(v8::Isolate* isolate) {
+    CHECK(!isolate->HasPendingException() || isolate->IsExecutionTerminating());
+  }
 
  protected:
   // Delegated constructor for NonThrowableExceptionState
@@ -133,7 +151,7 @@ class PLATFORM_EXPORT ExceptionState {
   // Delegated constructor for DummyExceptionStateForTesting
   explicit ExceptionState(DummyExceptionStateForTesting& dummy_derived);
 
-  static constexpr ExceptionContext kEmptyContext;
+  static constexpr ExceptionContext kEmptyContext{};
 
  private:
   void SetExceptionInfo(ExceptionCode, const String&);
@@ -147,7 +165,7 @@ class PLATFORM_EXPORT ExceptionState {
   // responsible for ensuring `context_` outlives this object.
   ExceptionContext context_;
 
-  v8::Isolate* isolate_;
+  v8::Isolate* const isolate_;
 
   bool had_exception_ = false;
   bool swallow_all_exceptions_ = false;
@@ -221,9 +239,18 @@ class PLATFORM_EXPORT TryRethrowScope {
     }
   }
 
-  bool HasCaught() { return try_catch_.HasCaught(); }
-  v8::Local<v8::Value> GetException() { return try_catch_.Exception(); }
+  bool HasCaught() const { return try_catch_.HasCaught(); }
+  v8::Local<v8::Value> GetException() const { return try_catch_.Exception(); }
 
+  static v8::Local<v8::Value> TakeException(v8::TryCatch& try_catch) {
+    v8::Local<v8::Value> result = try_catch.Exception();
+    try_catch.Reset();
+    return result;
+  }
+
+  v8::Local<v8::Value> TakeException() { return TakeException(try_catch_); }
+
+ private:
   v8::TryCatch try_catch_;
   ExceptionState& exception_state_;
 };

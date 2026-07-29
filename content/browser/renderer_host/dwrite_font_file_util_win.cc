@@ -46,7 +46,7 @@ HRESULT FontFilePathAndTtcIndex(IDWriteFontFace* font_face,
   // plan to support Type 1 fonts, or generally other font formats different
   // from OpenType, hence no need to loop over file_count or retrieve multiple
   // files.
-  DCHECK_EQ(file_count, 1u);
+  CHECK_EQ(file_count, 1u, base::NotFatalUntil::M154);
   if (file_count > 1) {
     return kErrorFontFileUtilTooManyFilesPerFace;
   }
@@ -76,7 +76,7 @@ HRESULT FontFilePathAndTtcIndex(IDWriteFontFace* font_face,
     // happens, we can implement this by exposing the loader via ipc. That
     // will likely be by loading the font data into shared memory, although
     // we could proxy the stream reads directly instead.
-    DCHECK(false);
+    CHECK(false, base::NotFatalUntil::M154);
     return hr;
   } else if (FAILED(hr)) {
     return hr;
@@ -126,18 +126,11 @@ HRESULT AddFilesForFont(IDWriteFont* font,
     return hr;
   }
 
-  std::u16string file_path_folded =
-      base::i18n::FoldCase(base::WideToUTF16(file_path));
-
-  if (!file_path_folded.size())
+  if (!file_path.size()) {
     return kErrorFontFileUtilEmptyFilePath;
-
-  if (!base::StartsWith(file_path_folded, windows_fonts_path,
-                        base::CompareCase::SENSITIVE)) {
-    path_set->insert(file_path);
-  } else {
-    path_set->insert(file_path);
   }
+
+  path_set->insert(file_path);
   return S_OK;
 }
 
@@ -148,7 +141,7 @@ std::u16string GetWindowsFontsPath() {
   BOOL result = SHGetSpecialFolderPath(nullptr /* hwndOwner - reserved */,
                                        font_path_chars.data(), CSIDL_FONTS,
                                        FALSE /* fCreate */);
-  DCHECK(result);
+  CHECK(result, base::NotFatalUntil::M154);
   return base::i18n::FoldCase(base::AsStringPiece16(font_path_chars.data()));
 }
 

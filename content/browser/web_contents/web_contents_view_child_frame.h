@@ -11,6 +11,7 @@
 #include "build/build_config.h"
 #include "content/browser/renderer_host/render_view_host_delegate_view.h"
 #include "content/browser/web_contents/web_contents_view.h"
+#include "content/public/common/buildflags.h"
 
 namespace content {
 
@@ -44,6 +45,8 @@ class WebContentsViewChildFrame : public WebContentsView,
   void FocusThroughTabTraversal(bool reverse) override;
   DropData* GetDropData() const override;
   gfx::Rect GetViewBounds() const override;
+  void Resize(const gfx::Rect& new_bounds) override;
+  gfx::Size GetSize() const override;
   void CreateView(gfx::NativeView context) override;
   RenderWidgetHostViewBase* CreateViewForWidget(
       RenderWidgetHost* render_widget_host) override;
@@ -59,7 +62,6 @@ class WebContentsViewChildFrame : public WebContentsView,
 #endif
   void OnCapturerCountChanged() override;
   void FullscreenStateChanged(bool is_fullscreen) override;
-  void UpdateWindowControlsOverlay(const gfx::Rect& bounding_rect) override;
   BackForwardTransitionAnimationManager*
   GetBackForwardTransitionAnimationManager() override;
   void DestroyBackForwardTransitionAnimationManager() override;
@@ -67,14 +69,14 @@ class WebContentsViewChildFrame : public WebContentsView,
   // Backend implementation of RenderViewHostDelegateView.
   void ShowContextMenu(RenderFrameHost& render_frame_host,
                        const ContextMenuParams& params) override;
-  void StartDragging(const DropData& drop_data,
-                     const url::Origin& source_origin,
-                     blink::DragOperationsMask allowed_ops,
-                     const gfx::ImageSkia& image,
-                     const gfx::Vector2d& cursor_offset,
-                     const gfx::Rect& drag_obj_rect,
-                     const blink::mojom::DragEventSourceInfo& event_info,
-                     RenderWidgetHostImpl* source_rwh) override;
+  void StartDragging(
+      RenderFrameHost& source_rfh,
+      const DropData& drop_data,
+      blink::DragOperationsMask allowed_ops,
+      const gfx::ImageSkia& image,
+      const gfx::Vector2d& cursor_offset,
+      const gfx::Rect& drag_obj_rect,
+      const blink::mojom::DragEventSourceInfo& event_info) override;
   void UpdateDragOperation(ui::mojom::DragOperation operation,
                            bool document_is_handling_drag) override;
   void GotFocus(RenderWidgetHostImpl* render_widget_host) override;
@@ -97,6 +99,9 @@ class WebContentsViewChildFrame : public WebContentsView,
       RenderWidgetHost* render_widget_host);
 
  private:
+  enum class Type { kGuestView, kSurfaceEmbed };
+  Type GetType() const;
+
   WebContentsView* GetOuterView();
   const WebContentsView* GetOuterView() const;
 

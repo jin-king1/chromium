@@ -11,7 +11,6 @@
 #include "base/apple/foundation_util.h"
 #include "base/apple/scoped_cftyperef.h"
 #include "base/command_line.h"
-#include "base/files/file_util.h"
 #include "base/files/scoped_file.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
@@ -202,9 +201,7 @@ TEST_F(SandboxMacTest, SSLInitTest) {
 MULTIPROCESS_TEST_MAIN(BuiltinAvailable) {
   CheckCreateSeatbeltServer();
 
-  if (__builtin_available(macOS 11, *)) {
-    // Can't negate a __builtin_available condition. But success!
-  } else {
+  if (!__builtin_available(macOS 13, *)) {
     return 15;
   }
 
@@ -218,7 +215,7 @@ TEST_F(SandboxMacTest, BuiltinAvailable) {
 MULTIPROCESS_TEST_MAIN(NetworkProcessPrefs) {
   CheckCreateSeatbeltServer();
 
-  const std::string kBundleId = base::apple::BaseBundleID();
+  const std::string kBundleId(base::apple::BaseBundleID());
   const std::string kUserName = base::SysNSStringToUTF8(NSUserName());
   const std::vector<std::string> kPaths = {
       "/Library/Managed Preferences/.GlobalPreferences.plist",
@@ -245,6 +242,18 @@ MULTIPROCESS_TEST_MAIN(NetworkProcessPrefs) {
 
 TEST_F(SandboxMacTest, NetworkProcessPrefs) {
   ExecuteWithParams("NetworkProcessPrefs", sandbox::mojom::Sandbox::kNetwork);
+}
+
+MULTIPROCESS_TEST_MAIN(ProxyResolverProcess) {
+  CheckCreateSeatbeltServer();
+  return 0;
+}
+
+// Verifies the kProxyResolver seatbelt profile initializes successfully with
+// the required parameters supplied by SetupSandboxParameters().
+TEST_F(SandboxMacTest, ProxyResolverInitializesSandbox) {
+  ExecuteWithParams("ProxyResolverProcess",
+                    sandbox::mojom::Sandbox::kProxyResolver);
 }
 
 }  // namespace content

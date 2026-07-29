@@ -7,6 +7,7 @@
  * 'settings-safety-hub-card' is used by the top cards in Safety Hub settings
  * page.
  */
+import 'chrome://resources/cr_elements/cr_icon/cr_icon.js';
 import 'chrome://resources/cr_elements/cr_shared_style.css.js';
 import '../settings_shared.css.js';
 
@@ -40,7 +41,7 @@ export class SettingsSafetyHubCardElement extends PolymerElement {
     };
   }
 
-  data: CardInfo;
+  declare data: CardInfo;
 
   // Returns the icon for the card state.
   private getStatusIcon(state: CardState): string {

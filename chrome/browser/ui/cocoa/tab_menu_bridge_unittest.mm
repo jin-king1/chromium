@@ -6,21 +6,29 @@
 
 #import <Cocoa/Cocoa.h>
 
+#include <memory>
+
+#include "base/functional/callback_helpers.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "chrome/browser/favicon/favicon_utils.h"
 #include "chrome/browser/ui/tab_ui_helper.h"
+#include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
+#include "chrome/browser/ui/tabs/tab_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/test_tab_strip_model_delegate.h"
-#include "chrome/browser/ui/tabs/test_util.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/test/base/testing_profile.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/test/test_renderer_host.h"
 #include "content/public/test/web_contents_tester.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/gtest_mac.h"
 
+namespace {
 constexpr int kStaticItemCount = 4;
 
 class TabStripModelUiHelperDelegate : public TestTabStripModelDelegate {
@@ -29,9 +37,10 @@ class TabStripModelUiHelperDelegate : public TestTabStripModelDelegate {
     TestTabStripModelDelegate::WillAddWebContents(contents);
 
     favicon::CreateContentFaviconDriverForWebContents(contents);
-    TabUIHelper::CreateForWebContents(contents);
   }
 };
+
+}  // namespace
 
 class TabMenuBridgeTest : public ::testing::Test {
  public:
@@ -75,8 +84,19 @@ class TabMenuBridgeTest : public ::testing::Test {
     return model()->GetWebContentsAt(index);
   }
 
-  void AddModelTabNamed(const std::string& name) {
-    model()->AppendWebContents(CreateWebContents(name), true);
+  void AddModelTabNamed(const std::string& name,
+                        TabStripModel* tab_strip_model) {
+    std::unique_ptr<tabs::TabModel> tab_model =
+        std::make_unique<tabs::TabModel>(CreateWebContents(name),
+                                         tab_strip_model);
+    tabs::TabFeatures* const tab_features = tab_model->GetTabFeatures();
+
+    std::unique_ptr<TabUIHelper> tab_ui_helper =
+        tabs::TabFeatures::GetUserDataFactoryForTesting()
+            .CreateInstance<TabUIHelper>(*tab_model, *tab_model);
+
+    tab_features->SetTabUIHelperForTesting(std::move(tab_ui_helper));
+    tab_strip_model->AppendTab(std::move(tab_model), true);
   }
 
   int ModelIndexForTabNamed(const std::string& name) {
@@ -125,6 +145,14 @@ class TabMenuBridgeTest : public ::testing::Test {
     model()->ActivateTabAt(index);
   }
 
+  void AddModelTabToGroup(const std::vector<int>& tab_indices) {
+    model()->AddToNewGroup(tab_indices);
+  }
+
+  void RemoveModelTabFromGroup(const std::vector<int>& tab_indices) {
+    model()->RemoveFromGroup(tab_indices);
+  }
+
   NSMenuItem* MenuItemForTabNamed(const std::string& name) {
     return [menu() itemWithTitle:base::SysUTF8ToNSString(name)];
   }
@@ -160,6 +188,17 @@ class TabMenuBridgeTest : public ::testing::Test {
     EXPECT_EQ(name, active_items[0]);
   }
 
+  NSMenuItem* GetActiveMenuItem() {
+    for (int i = 0; i < menu().numberOfItems; ++i) {
+      NSMenuItem* item = [menu() itemAtIndex:i];
+      if (item.state == NSControlStateValueOn) {
+        return item;
+      }
+    }
+
+    return nullptr;
+  }
+
   TestingProfile* profile() { return profile_.get(); }
 
  private:
@@ -179,29 +218,32 @@ class TabMenuBridgeTest : public ::testing::Test {
   std::unique_ptr<TabStripModel> model_;
   NSMenuItem* __strong menu_root_;
   NSMenu* __strong menu_;
-  tabs::PreventTabFeatureInitialization prevent_;
+  tabs::TabModel::PreventFeatureInitializationForTesting prevent_;
 };
 
 TEST_F(TabMenuBridgeTest, CreatesBlankMenu) {
-  TabMenuBridge bridge(model(), menu_root());
-  bridge.BuildMenu();
+  TabMenuBridge bridge(menu_root());
+  bridge.SetTabStripModel(model());
+  bridge.SetForceRebuildMenuForTesting(true);
   EXPECT_EQ(menu().numberOfItems, kStaticItemCount);
   ExpectDynamicTabsInMenuAre({});
 }
 
 TEST_F(TabMenuBridgeTest, TracksModelUpdates) {
-  TabMenuBridge bridge(model(), menu_root());
-  bridge.BuildMenu();
+  TabStripModel* const tab_strip_model = model();
+  TabMenuBridge bridge(menu_root());
+  bridge.SetForceRebuildMenuForTesting(true);
+  bridge.SetTabStripModel(tab_strip_model);
 
-  AddModelTabNamed("Tab 1");
-  AddModelTabNamed("Tab 2");
-  AddModelTabNamed("Tab 3");
+  AddModelTabNamed("Tab 1", tab_strip_model);
+  AddModelTabNamed("Tab 2", tab_strip_model);
+  AddModelTabNamed("Tab 3", tab_strip_model);
   ExpectDynamicTabsInMenuAre({"Tab 1", "Tab 2", "Tab 3"});
 
   RemoveModelTabNamed("Tab 2");
   ExpectDynamicTabsInMenuAre({"Tab 1", "Tab 3"});
 
-  AddModelTabNamed("Tab 2");
+  AddModelTabNamed("Tab 2", tab_strip_model);
   ExpectDynamicTabsInMenuAre({"Tab 1", "Tab 3", "Tab 2"});
 
   RenameModelTabNamed("Tab 1", "Tab 4");
@@ -216,13 +258,15 @@ TEST_F(TabMenuBridgeTest, TracksModelUpdates) {
 // Tests that dynamic menu items added by the bridge are removed on
 // bridge destruction.
 TEST_F(TabMenuBridgeTest, RemoveDynamicMenuItemsOnDestruct) {
+  TabStripModel* const tab_strip_model = model();
   std::unique_ptr<TabMenuBridge> bridge =
-      std::make_unique<TabMenuBridge>(model(), menu_root());
-  bridge->BuildMenu();
+      std::make_unique<TabMenuBridge>(menu_root());
+  bridge->SetForceRebuildMenuForTesting(true);
+  bridge->SetTabStripModel(tab_strip_model);
 
-  AddModelTabNamed("Tab 1");
-  AddModelTabNamed("Tab 2");
-  AddModelTabNamed("Tab 3");
+  AddModelTabNamed("Tab 1", tab_strip_model);
+  AddModelTabNamed("Tab 2", tab_strip_model);
+  AddModelTabNamed("Tab 3", tab_strip_model);
   ExpectDynamicTabsInMenuAre({"Tab 1", "Tab 2", "Tab 3"});
 
   bridge.reset();
@@ -231,11 +275,13 @@ TEST_F(TabMenuBridgeTest, RemoveDynamicMenuItemsOnDestruct) {
 }
 
 TEST_F(TabMenuBridgeTest, ClickingMenuActivatesTab) {
-  TabMenuBridge bridge(model(), menu_root());
-  bridge.BuildMenu();
+  TabStripModel* const tab_strip_model = model();
+  TabMenuBridge bridge(menu_root());
+  bridge.SetForceRebuildMenuForTesting(true);
+  bridge.SetTabStripModel(tab_strip_model);
 
-  AddModelTabNamed("Tab 1");
-  AddModelTabNamed("Tab 2");
+  AddModelTabNamed("Tab 1", tab_strip_model);
+  AddModelTabNamed("Tab 2", tab_strip_model);
   EXPECT_EQ(ActiveTabName(), "Tab 2");
 
   NSMenuItem* tab1_item = MenuItemForTabNamed("Tab 1");
@@ -250,28 +296,19 @@ TEST_F(TabMenuBridgeTest, ClickingMenuActivatesTab) {
   ExpectDynamicTabsInMenuAre({"Tab 1", "Tab 2"});
 }
 
-// This is a regression test for a bug found during development. Previous
-// versions of TabMenuBridge had an RAII-like API where creating a TabMenuBridge
-// would fill in the dynamic menu during construction. Combining this with the
-// common pattern of:
-//    tab_menu_bridge_ = std::make_unique<TabMenuBridge>(...);
-// in the presence of an existing tab_menu_bridge_ led to there temporarily
-// being two TabMenuBridge instances at a time, meaning both of them had their
-// dynamic menu items installed. This, in turn, confused the menu index logic in
-// the new TabMenuBridge - it counted the old TabMenuBridge's dynamic items as
-// static items, and ended up with incorrect indexes. This test exercises that
-// behavior.
+// This is a regression test for a bug found during development.
 TEST_F(TabMenuBridgeTest, SwappingBridgeRecreatesMenu) {
-  auto bridge = std::make_unique<TabMenuBridge>(model(), menu_root());
-  bridge->BuildMenu();
+  TabStripModel* const tab_strip_model = model();
+  auto bridge = std::make_unique<TabMenuBridge>(menu_root());
+  bridge->SetForceRebuildMenuForTesting(true);
+  bridge->SetTabStripModel(tab_strip_model);
 
-  AddModelTabNamed("Tab 1");
+  AddModelTabNamed("Tab 1", tab_strip_model);
 
   auto model2 = std::make_unique<TabStripModel>(delegate(), profile());
-  model2->AppendWebContents(CreateWebContents("Tab 2"), true);
+  AddModelTabNamed("Tab 2", model2.get());
 
-  bridge = std::make_unique<TabMenuBridge>(model2.get(), menu_root());
-  bridge->BuildMenu();
+  bridge->SetTabStripModel(model2.get());
   ExpectDynamicTabsInMenuAre({"Tab 2"});
 
   // Simulate one of the tabs in the model being updated - if the computed
@@ -288,12 +325,14 @@ TEST_F(TabMenuBridgeTest, SwappingBridgeRecreatesMenu) {
 }
 
 TEST_F(TabMenuBridgeTest, ActiveItemTracksChanges) {
-  TabMenuBridge bridge(model(), menu_root());
-  bridge.BuildMenu();
+  TabStripModel* const tab_strip_model = model();
+  TabMenuBridge bridge(menu_root());
+  bridge.SetForceRebuildMenuForTesting(true);
+  bridge.SetTabStripModel(tab_strip_model);
 
-  AddModelTabNamed("Tab 1");
-  AddModelTabNamed("Tab 2");
-  AddModelTabNamed("Tab 3");
+  AddModelTabNamed("Tab 1", tab_strip_model);
+  AddModelTabNamed("Tab 2", tab_strip_model);
+  AddModelTabNamed("Tab 3", tab_strip_model);
   ExpectActiveMenuItemNameIs("Tab 3");
 
   ActivateModelTabNamed("Tab 2");
@@ -304,4 +343,62 @@ TEST_F(TabMenuBridgeTest, ActiveItemTracksChanges) {
 
   RemoveModelTabNamed("Tab 1");
   ExpectActiveMenuItemNameIs("Tab 3");
+}
+
+
+// Regression test: clicking a stale menu item after a tab has been closed
+// should not crash.
+TEST_F(TabMenuBridgeTest, ClickingStaleMenuItemDoesNotCrash) {
+  TabStripModel* const tab_strip_model = model();
+  TabMenuBridge bridge(menu_root());
+  bridge.SetForceRebuildMenuForTesting(true);
+  bridge.SetTabStripModel(tab_strip_model);
+
+  AddModelTabNamed("Tab 1", tab_strip_model);
+  AddModelTabNamed("Tab 2", tab_strip_model);
+  AddModelTabNamed("Tab 3", tab_strip_model);
+  ExpectDynamicTabsInMenuAre({"Tab 1", "Tab 2", "Tab 3"});
+
+  // Save a reference to the last menu item (corresponding to "Tab 3").
+  NSMenuItem* tab3_item = MenuItemForTabNamed("Tab 3");
+
+  // Close "Tab 3" - this rebuilds the menu, removing tab3_item.
+  RemoveModelTabNamed("Tab 3");
+  ExpectDynamicTabsInMenuAre({"Tab 1", "Tab 2"});
+
+  // Simulate the user clicking the now-stale menu item. This should not crash
+  // and should not change the active tab.
+  bridge.OnDynamicItemChosen(tab3_item);
+
+  // The active tab should not have changed.
+  EXPECT_EQ(ActiveTabName(), "Tab 2");
+}
+
+// Test that clicking a menu item activates the correct tab even if tabs have
+// been reordered since the menu was built.
+TEST_F(TabMenuBridgeTest, ClickingMenuItemAfterReorderActivatesCorrectTab) {
+  TabStripModel* const tab_strip_model = model();
+  TabMenuBridge bridge(menu_root());
+  bridge.SetForceRebuildMenuForTesting(true);
+  bridge.SetTabStripModel(tab_strip_model);
+
+  AddModelTabNamed("Tab 1", tab_strip_model);
+  AddModelTabNamed("Tab 2", tab_strip_model);
+  AddModelTabNamed("Tab 3", tab_strip_model);
+  ExpectDynamicTabsInMenuAre({"Tab 1", "Tab 2", "Tab 3"});
+
+  // Save a reference to the menu item for "Tab 1" (at model index 0).
+  NSMenuItem* tab1_item = MenuItemForTabNamed("Tab 1");
+
+  // Stop forcing rebuilds so the move makes the menu stale instead of
+  // rebuilding it (which would recycle NSMenuItems to different tabs).
+  bridge.SetForceRebuildMenuForTesting(false);
+
+  // Move "Tab 1" to the end (index 2). The menu items are now stale.
+  tab_strip_model->MoveWebContentsAt(0, 2, false);
+
+  // Clicking the saved menu item should still activate "Tab 1", not whatever
+  // is now at its old position.
+  bridge.OnDynamicItemChosen(tab1_item);
+  EXPECT_EQ(ActiveTabName(), "Tab 1");
 }

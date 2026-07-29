@@ -4,20 +4,12 @@
 
 package org.chromium.chrome.browser.omnibox.suggestions;
 
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoMoreInteractions;
-
-import android.app.Activity;
-
 import androidx.annotation.Nullable;
 import androidx.test.filters.MediumTest;
 
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
-import org.junit.BeforeClass;
-import org.junit.ClassRule;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -26,7 +18,6 @@ import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.test.util.ApplicationTestUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
@@ -34,16 +25,18 @@ import org.chromium.chrome.browser.omnibox.suggestions.action.OmniboxActionInSug
 import org.chromium.chrome.browser.omnibox.suggestions.base.BaseSuggestionView;
 import org.chromium.chrome.browser.tabmodel.IncognitoTabHostUtils;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.ReusedCtaTransitTestRule;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.util.OmniboxTestUtils;
 import org.chromium.chrome.test.util.OmniboxTestUtils.SuggestionInfo;
 import org.chromium.components.omnibox.AutocompleteMatch;
 import org.chromium.components.omnibox.AutocompleteMatchBuilder;
 import org.chromium.components.omnibox.AutocompleteResult;
-import org.chromium.components.omnibox.EntityInfoProto.ActionInfo;
 import org.chromium.components.omnibox.OmniboxSuggestionType;
+import org.chromium.components.omnibox.SuggestTemplateInfoProto.SuggestTemplateInfo.TemplateAction;
+import org.chromium.components.omnibox.action.ActionPresentationMode;
 import org.chromium.components.omnibox.action.OmniboxAction;
-import org.chromium.components.omnibox.action.OmniboxActionJni;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -59,28 +52,20 @@ import java.util.List;
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Batch(Batch.PER_CLASS)
 public class OmniboxActionsTest {
-    public static @ClassRule ChromeTabbedActivityTestRule sActivityTestRule =
-            new ChromeTabbedActivityTestRule();
+    public @Rule ReusedCtaTransitTestRule<WebPageStation> mActivityTestRule =
+            ChromeTransitTestRules.blankPageStartReusedActivityRule();
+
     public @Rule MockitoRule mMockitoRule = MockitoJUnit.rule();
-    private @Mock AutocompleteController.Natives mAutocompleteControllerJniMock;
-    private @Mock OmniboxActionJni mOmniboxActionJni;
+    private @Mock AutocompleteController mAutocompleteController;
 
+    private WebPageStation mStartingPage;
     private OmniboxTestUtils mOmniboxUtils;
-    private Activity mTargetActivity;
-
-    @BeforeClass
-    public static void beforeClass() {
-        sActivityTestRule.startMainActivityOnBlankPage();
-        sActivityTestRule.waitForActivityNativeInitializationComplete();
-        sActivityTestRule.waitForDeferredStartup();
-    }
 
     @Before
     public void setUp() throws InterruptedException {
-        sActivityTestRule.loadUrl("about:blank");
-        mOmniboxUtils = new OmniboxTestUtils(sActivityTestRule.getActivity());
-        AutocompleteControllerJni.setInstanceForTesting(mAutocompleteControllerJniMock);
-        OmniboxActionJni.setInstanceForTesting(mOmniboxActionJni);
+        AutocompleteController.setInstanceForTesting(mAutocompleteController);
+        mStartingPage = mActivityTestRule.start();
+        mOmniboxUtils = new OmniboxTestUtils(mActivityTestRule.getActivity());
     }
 
     @After
@@ -92,11 +77,6 @@ public class OmniboxActionsTest {
                 () -> {
                     IncognitoTabHostUtils.closeAllIncognitoTabs();
                 });
-        if (mTargetActivity != null) {
-            ApplicationTestUtils.finishActivity(mTargetActivity);
-        }
-        AutocompleteControllerJni.setInstanceForTesting(null);
-        OmniboxActionJni.setInstanceForTesting(null);
     }
 
     /**
@@ -117,15 +97,15 @@ public class OmniboxActionsTest {
         Assert.assertNotNull("No suggestions with actions", info);
     }
 
-    /** Returns a dummy AutocompleteMatch that features *all* of supplied actions. */
-    private AutocompleteMatch createDummySuggestion(@Nullable List<OmniboxAction> actions) {
+    /** Returns a fake AutocompleteMatch that features *all* of supplied actions. */
+    private AutocompleteMatch createFakeSuggestion(@Nullable List<OmniboxAction> actions) {
         return AutocompleteMatchBuilder.searchWithType(OmniboxSuggestionType.SEARCH_SUGGEST)
                 .setDisplayText("Suggestion")
                 .setActions(actions)
                 .build();
     }
 
-    private AutocompleteMatch createDummyActionInSuggest(ActionInfo.ActionType... types) {
+    private AutocompleteMatch createFakeActionInSuggest(TemplateAction.ActionType... types) {
         var actions = new ArrayList<OmniboxAction>();
         for (var type : types) {
             actions.add(
@@ -134,31 +114,23 @@ public class OmniboxActionsTest {
                             "hint",
                             "accessibility",
                             type.getNumber(),
-                            "https://www.google.com"));
+                            "https://www.google.com",
+                            /* tabId= */ 0,
+                            ActionPresentationMode.CHIP));
         }
 
-        return createDummySuggestion(actions);
+        return createFakeSuggestion(actions);
     }
 
     @Test
     @MediumTest
     public void testActionInSuggestShown() throws Exception {
         setSuggestions(
-                createDummySuggestion(null),
-                createDummyActionInSuggest(ActionInfo.ActionType.CALL),
-                createDummyActionInSuggest(ActionInfo.ActionType.DIRECTIONS));
+                createFakeSuggestion(null),
+                createFakeActionInSuggest(TemplateAction.ActionType.CALL),
+                createFakeActionInSuggest(TemplateAction.ActionType.DIRECTIONS));
 
         mOmniboxUtils.clearFocus();
-
-        verify(mOmniboxActionJni, times(1))
-                .recordActionShown(
-                        ActionInfo.ActionType.CALL_VALUE, /* position= */ 1, /* executed= */ false);
-        verify(mOmniboxActionJni, times(1))
-                .recordActionShown(
-                        ActionInfo.ActionType.DIRECTIONS_VALUE,
-                        /* position= */ 2,
-                        /* executed= */ false);
-        verifyNoMoreInteractions(mOmniboxActionJni);
     }
 
     @Test
@@ -166,21 +138,11 @@ public class OmniboxActionsTest {
     public void testActionInSuggestUsed_firstAction() throws Exception {
         // None of these actions have a linked intent, so no action will be taken.
         setSuggestions(
-                createDummySuggestion(null),
-                createDummyActionInSuggest(ActionInfo.ActionType.CALL),
-                createDummyActionInSuggest(ActionInfo.ActionType.DIRECTIONS));
+                createFakeSuggestion(null),
+                createFakeActionInSuggest(TemplateAction.ActionType.CALL),
+                createFakeActionInSuggest(TemplateAction.ActionType.DIRECTIONS));
 
         mOmniboxUtils.clickOnAction(1, 0);
-
-        verify(mOmniboxActionJni, times(1))
-                .recordActionShown(
-                        ActionInfo.ActionType.CALL_VALUE, /* position= */ 1, /* executed= */ true);
-        verify(mOmniboxActionJni, times(1))
-                .recordActionShown(
-                        ActionInfo.ActionType.DIRECTIONS_VALUE,
-                        /* position= */ 2,
-                        /* executed= */ false);
-        verifyNoMoreInteractions(mOmniboxActionJni);
     }
 
     @Test
@@ -188,27 +150,12 @@ public class OmniboxActionsTest {
     public void testActionInSuggestUsed_nthAction() throws Exception {
         // None of these actions have a linked intent, so no action will be taken.
         setSuggestions(
-                createDummySuggestion(null),
-                createDummyActionInSuggest(
-                        ActionInfo.ActionType.CALL,
-                        ActionInfo.ActionType.DIRECTIONS,
-                        ActionInfo.ActionType.REVIEWS));
+                createFakeSuggestion(null),
+                createFakeActionInSuggest(
+                        TemplateAction.ActionType.CALL,
+                        TemplateAction.ActionType.DIRECTIONS,
+                        TemplateAction.ActionType.REVIEWS));
 
         mOmniboxUtils.clickOnAction(1, 2);
-
-        verify(mOmniboxActionJni, times(1))
-                .recordActionShown(
-                        ActionInfo.ActionType.CALL_VALUE, /* position= */ 1, /* executed= */ false);
-        verify(mOmniboxActionJni, times(1))
-                .recordActionShown(
-                        ActionInfo.ActionType.DIRECTIONS_VALUE,
-                        /* position= */ 1,
-                        /* executed= */ false);
-        verify(mOmniboxActionJni, times(1))
-                .recordActionShown(
-                        ActionInfo.ActionType.REVIEWS_VALUE,
-                        /* position= */ 1,
-                        /* executed= */ true);
-        verifyNoMoreInteractions(mOmniboxActionJni);
     }
 }

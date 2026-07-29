@@ -22,6 +22,7 @@ import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
@@ -49,6 +50,8 @@ public final class AuxiliarySearchDonorTest {
     public BaseActivityTestRule<BlankUiTestActivity> mActivityTestRule =
             new BaseActivityTestRule<>(BlankUiTestActivity.class);
 
+    @Mock private AuxiliarySearchHooks mHooks;
+
     private int[] mIds;
     private String[] mUrls;
     private String[] mTitles;
@@ -59,6 +62,8 @@ public final class AuxiliarySearchDonorTest {
 
     @Before
     public void setUp() {
+        AuxiliarySearchControllerFactory.getInstance().setHooksForTesting(mHooks);
+
         mActivityTestRule.launchActivity(null);
         mAuxiliarySearchDonor = AuxiliarySearchDonor.getInstance();
 
@@ -75,18 +80,20 @@ public final class AuxiliarySearchDonorTest {
 
     @After
     public void tearDown() {
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> mAuxiliarySearchDonor.deleteAllTabs((result) -> {}));
+        ThreadUtils.runOnUiThreadBlocking(() -> mAuxiliarySearchDonor.deleteAll((result) -> {}));
     }
 
     @Test
     @MediumTest
     @EnableFeatures({
-        "AndroidAppIntegrationV2:content_ttl_hours/5",
-        "AndroidAppIntegrationWithFavicon:skip_schema_check/true"
+        "AndroidAppIntegrationMultiDataSource:multi_data_source_skip_schema_check/true"
     })
     @DisableIf.Build(sdk_is_less_than = VERSION_CODES.S, message = "The donation API is for S+.")
     public void testDonateTabs() {
+        testDonateTabsImpl();
+    }
+
+    private void testDonateTabsImpl() {
         ThreadUtils.runOnUiThreadBlocking(() -> mAuxiliarySearchDonor.createSessionAndInit());
         CriteriaHelper.pollUiThread(() -> mAuxiliarySearchDonor.getIsSchemaSetForTesting());
 
@@ -147,7 +154,7 @@ public final class AuxiliarySearchDonorTest {
                             assertEquals(
                                     mLastAccessTimestamps[i], webPage.getCreationTimestampMillis());
                             assertEquals(
-                                    mAuxiliarySearchDonor.getDocumentTtlMs(),
+                                    mAuxiliarySearchDonor.getTabDocumentTtlMs(),
                                     webPage.getDocumentTtlMillis());
                             assertTrue(
                                     Arrays.equals(
@@ -155,7 +162,7 @@ public final class AuxiliarySearchDonorTest {
                                             webPage.getFavicon().getBytes()));
                         }
                     } catch (AppSearchException e) {
-                        assert false;
+                        throw new AssertionError();
                     }
                 });
     }

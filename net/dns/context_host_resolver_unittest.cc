@@ -10,6 +10,7 @@
 
 #include "base/containers/fixed_flat_map.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
 #include "base/test/scoped_feature_list.h"
@@ -26,6 +27,7 @@
 #include "net/base/schemeful_site.h"
 #include "net/base/test_completion_callback.h"
 #include "net/dns/dns_config.h"
+#include "net/dns/dns_session.h"
 #include "net/dns/dns_test_util.h"
 #include "net/dns/dns_util.h"
 #include "net/dns/host_cache.h"
@@ -51,7 +53,6 @@
 #include "url/scheme_host_port.h"
 
 #if BUILDFLAG(IS_ANDROID)
-#include "base/android/build_info.h"
 #include "net/android/network_change_notifier_factory_android.h"
 #endif  // BUILDFLAG(IS_ANDROID)
 
@@ -92,7 +93,7 @@ class ContextHostResolverTest : public ::testing::Test,
     dns_client_ = dns_client.get();
     manager_->SetDnsClientForTesting(std::move(dns_client));
     manager_->SetInsecureDnsClientEnabled(
-        /*enabled=*/true,
+        InsecureDnsMode::kEnabledBuiltIn,
         /*additional_dns_types_enabled=*/true);
 
     // Ensure DnsClient is fully usable.
@@ -128,16 +129,15 @@ TEST_F(ContextHostResolverTest, Resolve) {
   auto resolver = std::make_unique<ContextHostResolver>(
       manager_.get(), std::move(resolve_context));
   std::unique_ptr<HostResolver::ResolveHostRequest> request =
-      resolver->CreateRequest(HostPortPair("example.com", 100),
-                              NetworkAnonymizationKey(), NetLogWithSource(),
-                              std::nullopt);
+      resolver->CreateRequest(
+          HostPortPair("example.com", 100), NetworkAnonymizationKey(),
+          handles::kInvalidNetworkHandle, NetLogWithSource(), std::nullopt);
 
   TestCompletionCallback callback;
   int rv = request->Start(callback.callback());
   EXPECT_THAT(callback.GetResult(rv), test::IsOk());
   EXPECT_THAT(request->GetResolveErrorInfo().error, test::IsError(net::OK));
-  EXPECT_THAT(request->GetAddressResults()->endpoints(),
-              testing::ElementsAre(kEndpoint));
+  EXPECT_THAT(request->GetAddressResults(), testing::ElementsAre(kEndpoint));
 }
 
 TEST_F(ContextHostResolverTest, ResolveWithScheme) {
@@ -161,14 +161,14 @@ TEST_F(ContextHostResolverTest, ResolveWithScheme) {
   std::unique_ptr<HostResolver::ResolveHostRequest> request =
       resolver->CreateRequest(
           url::SchemeHostPort(url::kHttpsScheme, "example.com", 100),
-          NetworkAnonymizationKey(), NetLogWithSource(), std::nullopt);
+          NetworkAnonymizationKey(), handles::kInvalidNetworkHandle,
+          NetLogWithSource(), std::nullopt);
 
   TestCompletionCallback callback;
   int rv = request->Start(callback.callback());
   EXPECT_THAT(callback.GetResult(rv), test::IsOk());
   EXPECT_THAT(request->GetResolveErrorInfo().error, test::IsError(net::OK));
-  EXPECT_THAT(request->GetAddressResults()->endpoints(),
-              testing::ElementsAre(kEndpoint));
+  EXPECT_THAT(request->GetAddressResults(), testing::ElementsAre(kEndpoint));
 }
 
 TEST_F(ContextHostResolverTest, ResolveWithSchemeAndIpLiteral) {
@@ -184,13 +184,14 @@ TEST_F(ContextHostResolverTest, ResolveWithSchemeAndIpLiteral) {
   std::unique_ptr<HostResolver::ResolveHostRequest> request =
       resolver->CreateRequest(
           url::SchemeHostPort(url::kHttpsScheme, "[1234::5678]", 100),
-          NetworkAnonymizationKey(), NetLogWithSource(), std::nullopt);
+          NetworkAnonymizationKey(), handles::kInvalidNetworkHandle,
+          NetLogWithSource(), std::nullopt);
 
   TestCompletionCallback callback;
   int rv = request->Start(callback.callback());
   EXPECT_THAT(callback.GetResult(rv), test::IsOk());
   EXPECT_THAT(request->GetResolveErrorInfo().error, test::IsError(net::OK));
-  EXPECT_THAT(request->GetAddressResults()->endpoints(),
+  EXPECT_THAT(request->GetAddressResults(),
               testing::ElementsAre(IPEndPoint(expected_address, 100)));
 }
 
@@ -213,9 +214,9 @@ TEST_F(ContextHostResolverTest, DestroyRequest) {
       std::make_unique<ResolveContext>(nullptr /* url_request_context */,
                                        false /* enable_caching */));
   std::unique_ptr<HostResolver::ResolveHostRequest> request =
-      resolver->CreateRequest(HostPortPair("example.com", 100),
-                              NetworkAnonymizationKey(), NetLogWithSource(),
-                              std::nullopt);
+      resolver->CreateRequest(
+          HostPortPair("example.com", 100), NetworkAnonymizationKey(),
+          handles::kInvalidNetworkHandle, NetLogWithSource(), std::nullopt);
 
   TestCompletionCallback callback;
   int rv = request->Start(callback.callback());
@@ -316,17 +317,17 @@ TEST_F(ContextHostResolverTest, DestroyResolver) {
       std::make_unique<ResolveContext>(nullptr /* url_request_context */,
                                        false /* enable_caching */));
   std::unique_ptr<HostResolver::ResolveHostRequest> request1 =
-      resolver1->CreateRequest(HostPortPair("example.com", 100),
-                               NetworkAnonymizationKey(), NetLogWithSource(),
-                               std::nullopt);
+      resolver1->CreateRequest(
+          HostPortPair("example.com", 100), NetworkAnonymizationKey(),
+          handles::kInvalidNetworkHandle, NetLogWithSource(), std::nullopt);
   auto resolver2 = std::make_unique<ContextHostResolver>(
       manager_.get(),
       std::make_unique<ResolveContext>(nullptr /* url_request_context */,
                                        false /* enable_caching */));
   std::unique_ptr<HostResolver::ResolveHostRequest> request2 =
-      resolver2->CreateRequest(HostPortPair("google.com", 100),
-                               NetworkAnonymizationKey(), NetLogWithSource(),
-                               std::nullopt);
+      resolver2->CreateRequest(
+          HostPortPair("google.com", 100), NetworkAnonymizationKey(),
+          handles::kInvalidNetworkHandle, NetLogWithSource(), std::nullopt);
 
   TestCompletionCallback callback1;
   int rv1 = request1->Start(callback1.callback());
@@ -340,8 +341,7 @@ TEST_F(ContextHostResolverTest, DestroyResolver) {
   dns_client_->CompleteDelayedTransactions();
 
   EXPECT_THAT(callback2.GetResult(rv2), test::IsOk());
-  EXPECT_THAT(request2->GetAddressResults()->endpoints(),
-              testing::ElementsAre(kEndpoint));
+  EXPECT_THAT(request2->GetAddressResults(), testing::ElementsAre(kEndpoint));
 
   // Ensure |request1| never completes.
   base::RunLoop().RunUntilIdle();
@@ -366,9 +366,9 @@ TEST_F(ContextHostResolverTest, DestroyResolver_CompletedRequests) {
       std::make_unique<ResolveContext>(nullptr /* url_request_context */,
                                        false /* enable_caching */));
   std::unique_ptr<HostResolver::ResolveHostRequest> request =
-      resolver->CreateRequest(HostPortPair("example.com", 100),
-                              NetworkAnonymizationKey(), NetLogWithSource(),
-                              std::nullopt);
+      resolver->CreateRequest(
+          HostPortPair("example.com", 100), NetworkAnonymizationKey(),
+          handles::kInvalidNetworkHandle, NetLogWithSource(), std::nullopt);
 
   // Complete request and then destroy the resolver.
   TestCompletionCallback callback;
@@ -378,8 +378,7 @@ TEST_F(ContextHostResolverTest, DestroyResolver_CompletedRequests) {
 
   // Expect completed results are still available.
   EXPECT_THAT(request->GetResolveErrorInfo().error, test::IsError(net::OK));
-  EXPECT_THAT(request->GetAddressResults()->endpoints(),
-              testing::ElementsAre(kEndpoint));
+  EXPECT_THAT(request->GetAddressResults(), testing::ElementsAre(kEndpoint));
 }
 
 // Test a request created before resolver destruction but not yet started.
@@ -400,9 +399,9 @@ TEST_F(ContextHostResolverTest, DestroyResolver_DelayedStartRequest) {
       std::make_unique<ResolveContext>(nullptr /* url_request_context */,
                                        false /* enable_caching */));
   std::unique_ptr<HostResolver::ResolveHostRequest> request =
-      resolver->CreateRequest(HostPortPair("example.com", 100),
-                              NetworkAnonymizationKey(), NetLogWithSource(),
-                              std::nullopt);
+      resolver->CreateRequest(
+          HostPortPair("example.com", 100), NetworkAnonymizationKey(),
+          handles::kInvalidNetworkHandle, NetLogWithSource(), std::nullopt);
 
   resolver = nullptr;
 
@@ -412,7 +411,7 @@ TEST_F(ContextHostResolverTest, DestroyResolver_DelayedStartRequest) {
   EXPECT_THAT(callback.GetResult(rv), test::IsError(ERR_NAME_NOT_RESOLVED));
   EXPECT_THAT(request->GetResolveErrorInfo().error,
               test::IsError(ERR_CONTEXT_SHUT_DOWN));
-  EXPECT_FALSE(request->GetAddressResults());
+  EXPECT_THAT(request->GetAddressResults(), testing::IsEmpty());
 }
 
 TEST_F(ContextHostResolverTest, DestroyResolver_DelayedStartDohProbeRequest) {
@@ -454,9 +453,9 @@ TEST_F(ContextHostResolverTest, OnShutdown_PendingRequest) {
   auto resolver = std::make_unique<ContextHostResolver>(
       manager_.get(), std::move(resolve_context));
   std::unique_ptr<HostResolver::ResolveHostRequest> request =
-      resolver->CreateRequest(HostPortPair("example.com", 100),
-                              NetworkAnonymizationKey(), NetLogWithSource(),
-                              std::nullopt);
+      resolver->CreateRequest(
+          HostPortPair("example.com", 100), NetworkAnonymizationKey(),
+          handles::kInvalidNetworkHandle, NetLogWithSource(), std::nullopt);
 
   TestCompletionCallback callback;
   int rv = request->Start(callback.callback());
@@ -489,9 +488,9 @@ TEST_F(ContextHostResolverTest, OnShutdown_CompletedRequests) {
   auto resolver = std::make_unique<ContextHostResolver>(
       manager_.get(), std::move(resolve_context));
   std::unique_ptr<HostResolver::ResolveHostRequest> request =
-      resolver->CreateRequest(HostPortPair("example.com", 100),
-                              NetworkAnonymizationKey(), NetLogWithSource(),
-                              std::nullopt);
+      resolver->CreateRequest(
+          HostPortPair("example.com", 100), NetworkAnonymizationKey(),
+          handles::kInvalidNetworkHandle, NetLogWithSource(), std::nullopt);
 
   // Complete request and then shutdown the resolver.
   TestCompletionCallback callback;
@@ -501,8 +500,7 @@ TEST_F(ContextHostResolverTest, OnShutdown_CompletedRequests) {
 
   // Expect completed results are still available.
   EXPECT_THAT(request->GetResolveErrorInfo().error, test::IsError(net::OK));
-  EXPECT_THAT(request->GetAddressResults()->endpoints(),
-              testing::ElementsAre(kEndpoint));
+  EXPECT_THAT(request->GetAddressResults(), testing::ElementsAre(kEndpoint));
 }
 
 TEST_F(ContextHostResolverTest, OnShutdown_SubsequentRequests) {
@@ -514,13 +512,13 @@ TEST_F(ContextHostResolverTest, OnShutdown_SubsequentRequests) {
   resolver->OnShutdown();
 
   std::unique_ptr<HostResolver::ResolveHostRequest> request1 =
-      resolver->CreateRequest(HostPortPair("example.com", 100),
-                              NetworkAnonymizationKey(), NetLogWithSource(),
-                              std::nullopt);
+      resolver->CreateRequest(
+          HostPortPair("example.com", 100), NetworkAnonymizationKey(),
+          handles::kInvalidNetworkHandle, NetLogWithSource(), std::nullopt);
   std::unique_ptr<HostResolver::ResolveHostRequest> request2 =
-      resolver->CreateRequest(HostPortPair("127.0.0.1", 100),
-                              NetworkAnonymizationKey(), NetLogWithSource(),
-                              std::nullopt);
+      resolver->CreateRequest(
+          HostPortPair("127.0.0.1", 100), NetworkAnonymizationKey(),
+          handles::kInvalidNetworkHandle, NetLogWithSource(), std::nullopt);
 
   TestCompletionCallback callback1;
   int rv1 = request1->Start(callback1.callback());
@@ -530,11 +528,11 @@ TEST_F(ContextHostResolverTest, OnShutdown_SubsequentRequests) {
   EXPECT_THAT(callback1.GetResult(rv1), test::IsError(ERR_CONTEXT_SHUT_DOWN));
   EXPECT_THAT(request1->GetResolveErrorInfo().error,
               test::IsError(ERR_CONTEXT_SHUT_DOWN));
-  EXPECT_FALSE(request1->GetAddressResults());
+  EXPECT_THAT(request1->GetAddressResults(), testing::IsEmpty());
   EXPECT_THAT(callback2.GetResult(rv2), test::IsError(ERR_CONTEXT_SHUT_DOWN));
   EXPECT_THAT(request2->GetResolveErrorInfo().error,
               test::IsError(ERR_CONTEXT_SHUT_DOWN));
-  EXPECT_FALSE(request2->GetAddressResults());
+  EXPECT_THAT(request2->GetAddressResults(), testing::IsEmpty());
 }
 
 TEST_F(ContextHostResolverTest, OnShutdown_SubsequentDohProbeRequest) {
@@ -575,9 +573,9 @@ TEST_F(ContextHostResolverTest, OnShutdown_DelayedStartRequest) {
   auto resolver = std::make_unique<ContextHostResolver>(
       manager_.get(), std::move(resolve_context));
   std::unique_ptr<HostResolver::ResolveHostRequest> request =
-      resolver->CreateRequest(HostPortPair("example.com", 100),
-                              NetworkAnonymizationKey(), NetLogWithSource(),
-                              std::nullopt);
+      resolver->CreateRequest(
+          HostPortPair("example.com", 100), NetworkAnonymizationKey(),
+          handles::kInvalidNetworkHandle, NetLogWithSource(), std::nullopt);
 
   resolver->OnShutdown();
 
@@ -587,7 +585,7 @@ TEST_F(ContextHostResolverTest, OnShutdown_DelayedStartRequest) {
   EXPECT_THAT(callback.GetResult(rv), test::IsError(ERR_NAME_NOT_RESOLVED));
   EXPECT_THAT(request->GetResolveErrorInfo().error,
               test::IsError(ERR_CONTEXT_SHUT_DOWN));
-  EXPECT_FALSE(request->GetAddressResults());
+  EXPECT_THAT(request->GetAddressResults(), testing::IsEmpty());
 }
 
 TEST_F(ContextHostResolverTest, OnShutdown_DelayedStartDohProbeRequest) {
@@ -626,7 +624,7 @@ TEST_F(ContextHostResolverTest, ResolveFromCache) {
   host_cache->Set(
       HostCache::Key("example.com", DnsQueryType::UNSPECIFIED,
                      0 /* host_resolver_flags */, HostResolverSource::ANY,
-                     NetworkAnonymizationKey()),
+                     NetworkAnonymizationKey(), handles::kInvalidNetworkHandle),
       HostCache::Entry(OK, expected,
                        /*aliases=*/std::set<std::string>({"example.com"}),
                        HostCache::Entry::SOURCE_DNS, base::Days(1)),
@@ -640,16 +638,15 @@ TEST_F(ContextHostResolverTest, ResolveFromCache) {
   parameters.cache_usage =
       HostResolver::ResolveHostParameters::CacheUsage::STALE_ALLOWED;
   std::unique_ptr<HostResolver::ResolveHostRequest> request =
-      resolver->CreateRequest(HostPortPair("example.com", 100),
-                              NetworkAnonymizationKey(), NetLogWithSource(),
-                              parameters);
+      resolver->CreateRequest(
+          HostPortPair("example.com", 100), NetworkAnonymizationKey(),
+          handles::kInvalidNetworkHandle, NetLogWithSource(), parameters);
 
   TestCompletionCallback callback;
   int rv = request->Start(callback.callback());
   EXPECT_THAT(callback.GetResult(rv), test::IsOk());
   EXPECT_THAT(request->GetResolveErrorInfo().error, test::IsError(net::OK));
-  EXPECT_THAT(request->GetAddressResults()->endpoints(),
-              testing::ElementsAre(kEndpoint));
+  EXPECT_THAT(request->GetAddressResults(), testing::ElementsAre(kEndpoint));
   ASSERT_TRUE(request->GetStaleInfo());
   EXPECT_EQ(0, request->GetStaleInfo().value().network_changes);
   EXPECT_FALSE(request->GetStaleInfo().value().is_stale());
@@ -677,9 +674,9 @@ TEST_F(ContextHostResolverTest, ResultsAddedToCache) {
       manager_.get(), std::move(resolve_context));
 
   std::unique_ptr<HostResolver::ResolveHostRequest> caching_request =
-      resolver->CreateRequest(HostPortPair("example.com", 103),
-                              NetworkAnonymizationKey(), NetLogWithSource(),
-                              std::nullopt);
+      resolver->CreateRequest(
+          HostPortPair("example.com", 103), NetworkAnonymizationKey(),
+          handles::kInvalidNetworkHandle, NetLogWithSource(), std::nullopt);
   TestCompletionCallback caching_callback;
   int rv = caching_request->Start(caching_callback.callback());
   EXPECT_THAT(caching_callback.GetResult(rv), test::IsOk());
@@ -688,25 +685,26 @@ TEST_F(ContextHostResolverTest, ResultsAddedToCache) {
   local_resolve_parameters.source = HostResolverSource::LOCAL_ONLY;
   std::unique_ptr<HostResolver::ResolveHostRequest> cached_request =
       resolver->CreateRequest(HostPortPair("example.com", 100),
-                              NetworkAnonymizationKey(), NetLogWithSource(),
-                              local_resolve_parameters);
+                              NetworkAnonymizationKey(),
+                              handles::kInvalidNetworkHandle,
+                              NetLogWithSource(), local_resolve_parameters);
 
   TestCompletionCallback callback;
   rv = cached_request->Start(callback.callback());
   EXPECT_THAT(callback.GetResult(rv), test::IsOk());
   EXPECT_THAT(cached_request->GetResolveErrorInfo().error,
               test::IsError(net::OK));
-  EXPECT_THAT(cached_request->GetAddressResults()->endpoints(),
+  EXPECT_THAT(cached_request->GetAddressResults(),
               testing::ElementsAre(kEndpoint));
 }
 
 // Do a lookup with a NetworkIsolationKey, and then make sure the entry added to
 // the cache is in fact using that NetworkIsolationKey.
 TEST_F(ContextHostResolverTest, ResultsAddedToCacheWithNetworkIsolationKey) {
-  const SchemefulSite kSite(GURL("https://origin.test/"));
-  const NetworkIsolationKey kNetworkIsolationKey(kSite, kSite);
-  auto kNetworkAnonymizationKey =
-      net::NetworkAnonymizationKey::CreateSameSite(kSite);
+  SchemefulSite site(GURL("https://origin.test/"));
+  const NetworkIsolationKey kNetworkIsolationKey(site, site);
+  const auto kNetworkAnonymizationKey =
+      net::NetworkAnonymizationKey::CreateSameSite(std::move(site));
 
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeature(
@@ -729,22 +727,24 @@ TEST_F(ContextHostResolverTest, ResultsAddedToCacheWithNetworkIsolationKey) {
       manager_.get(), std::move(resolve_context));
 
   std::unique_ptr<HostResolver::ResolveHostRequest> caching_request =
-      resolver->CreateRequest(HostPortPair("example.com", 103),
-                              kNetworkAnonymizationKey, NetLogWithSource(),
-                              std::nullopt);
+      resolver->CreateRequest(
+          HostPortPair("example.com", 103), kNetworkAnonymizationKey,
+          handles::kInvalidNetworkHandle, NetLogWithSource(), std::nullopt);
   TestCompletionCallback caching_callback;
   int rv = caching_request->Start(caching_callback.callback());
   EXPECT_THAT(caching_callback.GetResult(rv), test::IsOk());
 
   HostCache::Key cache_key("example.com", DnsQueryType::UNSPECIFIED,
                            0 /* host_resolver_flags */, HostResolverSource::ANY,
-                           kNetworkAnonymizationKey);
+                           kNetworkAnonymizationKey,
+                           handles::kInvalidNetworkHandle);
   EXPECT_TRUE(
       resolver->GetHostCache()->Lookup(cache_key, base::TimeTicks::Now()));
 
   HostCache::Key cache_key_with_empty_nak(
       "example.com", DnsQueryType::UNSPECIFIED, 0 /* host_resolver_flags */,
-      HostResolverSource::ANY, NetworkAnonymizationKey());
+      HostResolverSource::ANY, NetworkAnonymizationKey(),
+      handles::kInvalidNetworkHandle);
   EXPECT_FALSE(resolver->GetHostCache()->Lookup(cache_key_with_empty_nak,
                                                 base::TimeTicks::Now()));
 }
@@ -834,8 +834,8 @@ TEST_F(ContextHostResolverServiceEndpointTest, Resolve) {
       resolver->CreateServiceEndpointRequest(
           HostResolver::Host(
               url::SchemeHostPort(url::kHttpsScheme, "example.com", 100)),
-          NetworkAnonymizationKey(), NetLogWithSource(),
-          HostResolver::ResolveHostParameters());
+          NetworkAnonymizationKey(), handles::kInvalidNetworkHandle,
+          NetLogWithSource(), HostResolver::ResolveHostParameters());
 
   FakeServiceEndpontRequestDelegate delegate;
   int rv = request->Start(&delegate);
@@ -855,14 +855,14 @@ TEST_F(ContextHostResolverServiceEndpointTest, DestroyResolver) {
       resolver->CreateServiceEndpointRequest(
           HostResolver::Host(
               url::SchemeHostPort(url::kHttpsScheme, "example.com", 100)),
-          NetworkAnonymizationKey(), NetLogWithSource(),
-          HostResolver::ResolveHostParameters());
+          NetworkAnonymizationKey(), handles::kInvalidNetworkHandle,
+          NetLogWithSource(), HostResolver::ResolveHostParameters());
 
   resolver.reset();
 
   FakeServiceEndpontRequestDelegate delegate;
   int rv = request->Start(&delegate);
-  EXPECT_THAT(rv, test::IsError(ERR_CONTEXT_SHUT_DOWN));
+  EXPECT_THAT(rv, test::IsError(ERR_NAME_NOT_RESOLVED));
   EXPECT_THAT(request->GetResolveErrorInfo(),
               ResolveErrorInfo(ERR_CONTEXT_SHUT_DOWN));
 }
@@ -970,14 +970,15 @@ TEST_F(ContextHostResolverTest, ExistingNetworkBoundLookup) {
         manager.get(), std::move(resolve_context));
     std::unique_ptr<HostResolver::ResolveHostRequest> request =
         resolver->CreateRequest(host, NetworkAnonymizationKey(),
+                                handles::kInvalidNetworkHandle,
                                 NetLogWithSource(), std::nullopt);
 
     TestCompletionCallback callback;
     int rv = request->Start(callback.callback());
     EXPECT_THAT(callback.GetResult(rv), test::IsOk());
     EXPECT_THAT(request->GetResolveErrorInfo().error, test::IsError(net::OK));
-    ASSERT_EQ(1u, request->GetAddressResults()->endpoints().size());
-    EXPECT_THAT(request->GetAddressResults()->endpoints(),
+    ASSERT_EQ(1u, request->GetAddressResults().size());
+    EXPECT_THAT(request->GetAddressResults(),
                 testing::ElementsAre(
                     NetworkAwareHostResolverProc::ToIPEndPoint(expected_ipv4)));
   }
@@ -1003,6 +1004,7 @@ TEST_F(ContextHostResolverTest, NotExistingNetworkBoundLookup) {
       manager_.get(), std::move(resolve_context));
   std::unique_ptr<HostResolver::ResolveHostRequest> request =
       resolver->CreateRequest(host, NetworkAnonymizationKey(),
+                              handles::kInvalidNetworkHandle,
                               NetLogWithSource(), std::nullopt);
 
   TestCompletionCallback callback;
@@ -1052,6 +1054,136 @@ TEST_F(ContextHostResolverTest, NetworkBoundResolverCacheInvalidation) {
   GTEST_SKIP()
       << "Network-bound HostResolverManagers are supported only on Android";
 #endif  // BUILDFLAG(IS_ANDROID)
+}
+
+TEST_F(ContextHostResolverTest, OnShutdown_ReentrantRequest) {
+  // Set up delayed result for "example.com".
+  MockDnsClientRuleList rules;
+  rules.emplace_back("example.com", dns_protocol::kTypeA, /*secure=*/false,
+                     MockDnsClientRule::Result(BuildTestDnsAddressResponse(
+                         "example.com", IPAddress(2, 3, 4, 5))),
+                     /*delay=*/true);
+  rules.emplace_back(
+      "example.com", dns_protocol::kTypeAAAA, /*secure=*/false,
+      MockDnsClientRule::Result(MockDnsClientRule::ResultType::kEmpty),
+      /*delay=*/false);
+  SetMockDnsRules(std::move(rules));
+
+  auto context = CreateTestURLRequestContextBuilder()->Build();
+  auto resolve_context =
+      std::make_unique<ResolveContext>(context.get(), /*enable_caching=*/false);
+  auto resolver = std::make_unique<ContextHostResolver>(
+      manager_.get(), std::move(resolve_context));
+
+  std::unique_ptr<HostResolver::ResolveHostRequest> request =
+      resolver->CreateRequest(
+          HostPortPair("example.com", 100), NetworkAnonymizationKey(),
+          handles::kInvalidNetworkHandle, NetLogWithSource(),
+          /*optional_parameters=*/std::nullopt);
+
+  // We bind a base::ScopedClosureRunner to the request's callback so that when
+  // the callback is destroyed during OnShutdown() (which happens when
+  // HostResolverManager::Job is destroyed), it initiates a new request.
+  // This simulates a reentrant CreateRequest() call during shutdown.
+  base::ScopedClosureRunner run_on_destruction(base::BindOnce(
+      [](ContextHostResolver* resolver) {
+        std::unique_ptr<HostResolver::ResolveHostRequest> new_request =
+            resolver->CreateRequest(
+                HostPortPair("example.com", 100), NetworkAnonymizationKey(),
+                handles::kInvalidNetworkHandle, NetLogWithSource(),
+                /*optional_parameters=*/std::nullopt);
+      },
+      resolver.get()));
+  int rv = request->Start(base::BindOnce(
+      [](base::ScopedClosureRunner run_on_destruction, int rv) {},
+      std::move(run_on_destruction)));
+  EXPECT_THAT(rv, test::IsError(ERR_IO_PENDING));
+
+  // Trigger shutdown. This should not hit DCHECK.
+  resolver->OnShutdown();
+}
+
+TEST_F(ContextHostResolverServiceEndpointTest, OnShutdown_ReentrantRequest) {
+  std::unique_ptr<ContextHostResolver> resolver = CreateResolver();
+
+  std::unique_ptr<HostResolver::ServiceEndpointRequest> request =
+      resolver->CreateServiceEndpointRequest(
+          HostResolver::Host(
+              url::SchemeHostPort(url::kHttpsScheme, "example.com", 100)),
+          NetworkAnonymizationKey(), handles::kInvalidNetworkHandle,
+          NetLogWithSource(), HostResolver::ResolveHostParameters());
+
+  // A helper class that initiates a new request when it is called back. Similar
+  // to the base::ScopedClosureRunner usage in OnShutdown_ReentrantRequest
+  // above.
+  class ReentrantDelegate
+      : public HostResolver::ServiceEndpointRequest::Delegate {
+   public:
+    explicit ReentrantDelegate(ContextHostResolver* resolver)
+        : resolver_(resolver) {}
+    void OnServiceEndpointsUpdated() override {}
+    void OnServiceEndpointRequestFinished(int rv) override {
+      finished_called_ = true;
+      // This is expected to be called during OnShutdown().
+
+      std::unique_ptr<HostResolver::ResolveHostRequest> new_host_request =
+          resolver_->CreateRequest(
+              HostPortPair("example.com", 100), NetworkAnonymizationKey(),
+              handles::kInvalidNetworkHandle, NetLogWithSource(), std::nullopt);
+      std::unique_ptr<HostResolver::ServiceEndpointRequest>
+          new_service_request = resolver_->CreateServiceEndpointRequest(
+              HostResolver::Host(
+                  url::SchemeHostPort(url::kHttpsScheme, "example.com", 100)),
+              NetworkAnonymizationKey(), handles::kInvalidNetworkHandle,
+              NetLogWithSource(), HostResolver::ResolveHostParameters());
+
+      int new_rv = new_host_request->Start(base::DoNothing());
+      EXPECT_THAT(new_rv, test::IsError(ERR_CONTEXT_SHUT_DOWN));
+      FakeServiceEndpontRequestDelegate delegate;
+      new_rv = new_service_request->Start(&delegate);
+      EXPECT_THAT(new_rv, test::IsError(ERR_CONTEXT_SHUT_DOWN));
+    }
+
+    bool finished_called() const { return finished_called_; }
+
+   private:
+    raw_ptr<ContextHostResolver> resolver_;
+    bool finished_called_ = false;
+  };
+
+  ReentrantDelegate delegate(resolver.get());
+  int rv = request->Start(&delegate);
+  EXPECT_THAT(rv, test::IsError(ERR_IO_PENDING));
+
+  // Trigger shutdown. This should not hit DCHECK.
+  resolver->OnShutdown();
+  EXPECT_TRUE(delegate.finished_called());
+}
+
+TEST_F(ContextHostResolverTest, InvalidationInProgress) {
+  const url::SchemeHostPort host(url::kHttpsScheme, "example.com",
+                                 NetworkAwareHostResolverProc::kPort);
+
+  auto context = CreateTestURLRequestContextBuilder()->Build();
+  auto resolve_context = std::make_unique<ResolveContext>(
+      context.get(), false /* enable_caching */);
+  auto resolver = std::make_unique<ContextHostResolver>(
+      manager_.get(), std::move(resolve_context));
+
+  manager_->SetInvalidationInProgressForTesting();
+
+  std::unique_ptr<HostResolver::ResolveHostRequest> request =
+      resolver->CreateRequest(host, NetworkAnonymizationKey(),
+                              handles::kInvalidNetworkHandle,
+                              NetLogWithSource(), std::nullopt);
+
+  TestCompletionCallback callback;
+  int rv = request->Start(callback.callback());
+  EXPECT_THAT(callback.GetResult(rv),
+              test::IsError(ERR_DNS_CACHE_INVALIDATION_IN_PROGRESS));
+  EXPECT_THAT(request->GetResolveErrorInfo().error,
+              test::IsError(ERR_DNS_CACHE_INVALIDATION_IN_PROGRESS));
+  EXPECT_THAT(request->GetAddressResults(), testing::IsEmpty());
 }
 
 }  // namespace net

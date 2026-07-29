@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/common/profiler/core_unwinders.h"
 
 #include <memory>
@@ -14,6 +9,7 @@
 #include <vector>
 
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
@@ -72,9 +68,7 @@ extern char __executable_start;
 #endif  // UNWINDING_SUPPORTED
 
 // See `RequestUnwindPrerequisitesInstallation` below.
-BASE_FEATURE(kInstallAndroidUnwindDfm,
-             "InstallAndroidUnwindDfm",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kInstallAndroidUnwindDfm, base::FEATURE_DISABLED_BY_DEFAULT);
 
 namespace {
 
@@ -101,8 +95,7 @@ class ChromeUnwinderAndroid32Creator {
 
   std::unique_ptr<base::Unwinder> Create() {
     return std::make_unique<base::ChromeUnwinderAndroid32>(
-        base::CreateChromeUnwindInfoAndroid32(
-            {chrome_cfi_file_.data(), chrome_cfi_file_.length()}),
+        base::CreateChromeUnwindInfoAndroid32(chrome_cfi_file_.bytes()),
         /* chrome_module_base_address= */
         reinterpret_cast<uintptr_t>(&__executable_start),
         /* text_section_start_address= */ base::android::kStartOfText);
@@ -179,7 +172,7 @@ void RequestUnwindPrerequisitesInstallation(
   if (AreUnwindPrerequisitesAvailable(channel, prerequites_delegate)) {
     return;
   }
-#if UNWINDING_SUPPORTED && defined(OFFICIAL_BUILD) && \
+#if ARM32_UNWINDING_SUPPORTED && defined(OFFICIAL_BUILD) && \
     BUILDFLAG(GOOGLE_CHROME_BRANDING)
   ModuleUnwindPrerequisitesDelegate default_delegate;
   if (prerequites_delegate == nullptr) {
@@ -204,7 +197,7 @@ bool AreUnwindPrerequisitesAvailable(
     UnwindPrerequisitesDelegate* prerequites_delegate) {
 // While non-Android platforms do not need any specific prerequisites beyond
 // what is already bundled and available with Chrome for their platform-specific
-// unwinders to work, Android, in particular, requires a DFM to be installed.
+// unwinders to work, 32-bit Android requires a DFM to be installed.
 //
 // Therefore, unwind prerequisites for non-supported Android platforms are not
 // considered to be available by default, but prerequisites for non-Android
@@ -226,11 +219,16 @@ bool AreUnwindPrerequisitesAvailable(
     return false;
   }
 #endif  // defined(OFFICIAL_BUILD) && BUILDFLAG(GOOGLE_CHROME_BRANDING)
+#if ARM32_UNWINDING_SUPPORTED
   ModuleUnwindPrerequisitesDelegate default_delegate;
   if (prerequites_delegate == nullptr) {
     prerequites_delegate = &default_delegate;
   }
   return prerequites_delegate->AreAvailable(channel);
+#else   // ARM32_UNWINDING_SUPPORTED
+  // 64 bit unwinding does not require the stack_unwinder module.
+  return true;
+#endif  // ARM32_UNWINDING_SUPPORTED
 #else   // UNWINDING_SUPPORTED
   return false;
 #endif  // UNWINDING_SUPPORTED

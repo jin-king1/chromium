@@ -5,10 +5,13 @@
 #ifndef COMPONENTS_SEARCH_ENGINES_TEMPLATE_URL_PREPOPULATE_DATA_RESOLVER_H_
 #define COMPONENTS_SEARCH_ENGINES_TEMPLATE_URL_PREPOPULATE_DATA_RESOLVER_H_
 
+#include <optional>
 #include <vector>
 
 #include "base/memory/raw_ref.h"
 #include "components/keyed_service/core/keyed_service.h"
+#include "components/regional_capabilities/regional_capabilities_country_id.h"
+#include "components/search_engines/keyword_web_data_service.h"
 
 struct TemplateURLData;
 class PrefService;
@@ -18,6 +21,21 @@ class RegionalCapabilitiesService;
 }
 
 namespace TemplateURLPrepopulateData {
+
+struct PrepopulatedEngine;
+
+// Provides context on TemplateURLPrepopulateData's data set.
+struct BuiltinKeywordsMetadata {
+  // Country for which we are selecting the built-in prepopulate data.
+  regional_capabilities::CountryIdHolder country_id;
+
+  // Version of the built-in prepopulated keywords data.
+  int data_version;
+
+  // Whether the data is a post-migration version, see
+  // `switches::kPrepopulatedEnginesMigration`.
+  bool prepopulated_engines_migration_enabled;
+};
 
 // Resolves prepopulated engines using on various information from the browser
 // context, like country, state of some prefs, etc.
@@ -50,6 +68,51 @@ class Resolver : public KeyedService {
   // May return `nullptr` if for some reason there are no prepopulated search
   // engines available.
   std::unique_ptr<TemplateURLData> GetFallbackSearch() const;
+
+  // Computes whether updates relative to prepopulated search engines need to be
+  // made in the local search engines database.
+  //
+  // Returns `std::nullopt` when no updates are needed, or a `Metadata`
+  // providing country and data version info about the data to be merged in.
+  std::optional<BuiltinKeywordsMetadata> ComputeDatabaseUpdateRequirements(
+      const WDKeywordsResult::Metadata& keywords_database_metadata) const;
+
+  // Granular reasons for TemplateURLs to match (or not). See `IsMatch` to
+  // interpret the values.
+  // TODO(crbug.com/507355138): Remove the enum and revert to just using bool.
+  // LINT.IfChange(MigrationMatch)
+  enum class MigrationMatch {
+    kExactMatch = 0,
+    kHostMatch = 1,
+    kIdsDontMatch = 2,
+    kInvalidCheckedUrl = 3,
+    kUrlMismatch = 4,
+    kMaxValue = kUrlMismatch,
+  };
+  // LINT.ThenChange(/tools/metrics/histograms/metadata/omnibox/enums.xml:MigrationMatch)
+
+  // Interprets the output of `CompareEngineUnderMigration(checked_data,
+  // deprecated_engine)`.
+  // Returns true if `match` indicates that `deprecated_engine`'s migration
+  // instruction can be applied to `checked_data`.
+  static bool IsMatch(MigrationMatch match);
+
+  // Returns whether `deprecated_engine`'s migration instruction can be applied
+  // to `checked_data`. This needs to be checked to ensure that we are not
+  // incorrectly migrating custom or variant engine definitions.
+  // Use `IsMatch(MigrationMatch)` to interpret the output.
+  MigrationMatch CompareEngineUnderMigration(
+      const TemplateURLData& checked_data,
+      const PrepopulatedEngine* deprecated_engine) const;
+
+  // Searches the prepopulated engines for the newest representation of an
+  // engine under migration that could match `pre_migration_engine`.
+  // The returned `TemplateURLData` is the prepopulated data (see
+  // `GetPrepopulatedEngine(int)`) representing the new version of the engine
+  // that the prepopulated representation of `pre_migration_engine` points to
+  // through `PrepopulatedEngine::migrate_to_id`.
+  std::unique_ptr<TemplateURLData> TryGetMigratedEngine(
+      const TemplateURLData& pre_migration_engine) const;
 
  private:
   raw_ref<PrefService> profile_prefs_;

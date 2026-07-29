@@ -13,9 +13,12 @@ First, connect an Android device by following the
 [Plug in your Android device](/docs/android_build_instructions.md#Plug-in-your-Android-device)
 steps. Prefer using a device running a userdebug build.
 
-Alternatively, you can pass the --x86 flag to `gn` to test on a local emulator
--- make sure you substitute `out/Debug` for `out/Debug-x86` in the instructions
-below.
+> Note: If you encounter permission issues when the test script attempts to
+> clear previous test logs, try running `adb root` before starting.
+
+Alternatively, you can pass the --x64 flag to `gn` to test on a local emulator
+-- make sure you substitute `out/Debug-arm64` for `out/Debug-x64` in the
+instructions below.
 
 ### Running Cronet Java unit tests
 
@@ -39,8 +42,8 @@ To run C++ and Java unit tests of net/ functionality:
 
 ```shell
 $ ./components/cronet/tools/cr_cronet.py gn
-$ autoninja -C out/Debug net_unittests
-$ ./out/Debug/bin/run_net_unittests --fast-local-dev
+$ autoninja -C out/Debug-arm64 net_unittests
+$ ./out/Debug-arm64/bin/run_net_unittests --fast-local-dev
 ```
 
 For more information about running net_unittests, read
@@ -68,6 +71,13 @@ This will run both the Cronet Java unit tests and net_unittests.
 
 ## Debugging
 
+### Tracing
+
+Tracing makes it possible to see the operation of Cronet internals, from Cronet
+API all the way down to network sockets, and everything in-between. It is often
+the easiest way to troubleshoot Cronet. See the [tracing docs](tracing.md) for
+more information.
+
 ### Debug Log
 
 Messages from native (C++) code appear in the Android system log accessible with
@@ -94,8 +104,13 @@ $ adb shell setprop log.tag.chromium NONE
 
 ### Network Log
 
-NetLog is Chromium's network logging system. To create a NetLog dump, you can
-use the following pair of methods:
+*** promo
+An easier way to obtain a NetLog is to use [tracing](tracing.md), which is more
+user-friendly and does not require changes to app code.
+***
+
+[NetLog](/net/docs/net-log.md) is Chromium's network logging system. To create a
+NetLog dump, you can use the following pair of methods:
 
 ```
 CronetEngine.startNetLogToFile()
@@ -106,10 +121,8 @@ Unlike the Android system log which is line-based, the Chromium log is formatted
 in JSON.  As such, it will probably not be well-formed until you have called the
 `stopNetLog()` method, as filesystem buffers will not have been flushed.
 
-Retrieve the file from your device's file system, and import it to chrome
-browser at chrome://net-internals/#import, or
-http://catapult-project.github.io/catapult/netlog_viewer which helps to
-visualize the data.
+To visualize the resulting NetLog, retrieve the file from your device's file
+system, then feed it to [NetLog Viewer](https://netlog-viewer.appspot.com/).
 
 ### Symbolicating crash stacks
 

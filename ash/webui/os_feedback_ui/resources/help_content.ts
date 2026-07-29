@@ -13,7 +13,7 @@ import '//resources/polymer/v3_0/iron-icon/iron-icon.js';
 
 import {I18nMixin} from '//resources/ash/common/cr_elements/i18n_mixin.js';
 import {strictQuery} from '//resources/ash/common/typescript_utils/strict_query.js';
-import {mojoString16ToString} from '//resources/js/mojo_type_util.js';
+
 import {PolymerElement} from '//resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
 import type {SearchResult} from './feedback_types.js';
@@ -53,11 +53,12 @@ export class HelpContentElement extends HelpContentElementBase {
     };
   }
 
-  searchResult: SearchResult;
-  private isOnline = navigator.onLine;
+  declare searchResult: SearchResult;
+  declare private isOnline: boolean;
 
   constructor() {
     super();
+    this.isOnline = navigator.onLine;
     this.searchResult = {
       contentList: [],
       isQueryEmpty: true,
@@ -134,12 +135,12 @@ export class HelpContentElement extends HelpContentElementBase {
 
   /** Extract the url string from help content. */
   private getUrl(helpContent: HelpContent): string {
-    return helpContent.url.url;
+    return helpContent.url;
   }
 
   /** Extract the title as JS string from help content. */
   private getTitle(helpContent: HelpContent): string {
-    return mojoString16ToString(helpContent.title);
+    return helpContent.title;
   }
 
   private handleHelpContentClicked(e: Event): void {

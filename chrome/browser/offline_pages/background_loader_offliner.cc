@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/browser/offline_pages/background_loader_offliner.h"
 
 #include <memory>
@@ -14,10 +9,10 @@
 #include <utility>
 #include <vector>
 
+#include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/json/json_writer.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/system/sys_info.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
@@ -83,8 +78,8 @@ BackgroundLoaderOffliner::BackgroundLoaderOffliner(
     load_termination_listener_->set_offliner(this);
 
   for (int i = 0; i < ResourceDataType::RESOURCE_DATA_TYPE_COUNT; ++i) {
-    stats_[i].requested = 0;
-    stats_[i].completed = 0;
+    UNSAFE_TODO(stats_[i]).requested = 0;
+    UNSAFE_TODO(stats_[i]).completed = 0;
   }
 }
 
@@ -153,6 +148,7 @@ bool BackgroundLoaderOffliner::Cancel(CancelCallback callback) {
   // in RequestCoordinator this should not happen.
   if (!pending_request_)
     return false;
+  completion_callback_.Reset();
 
   // TODO(chili): We are not able to cancel a pending
   // OfflinePageModel::SaveSnapshot() operation. We will notify caller that
@@ -171,8 +167,9 @@ bool BackgroundLoaderOffliner::Cancel(CancelCallback callback) {
 }
 
 void BackgroundLoaderOffliner::TerminateLoadIfInProgress() {
-  if (!pending_request_)
+  if (!pending_request_ || !completion_callback_) {
     return;
+  }
 
   Cancel(base::BindOnce(HandleLoadTerminationCancel,
                         std::move(completion_callback_)));
@@ -220,9 +217,7 @@ void BackgroundLoaderOffliner::CanDownload(
   std::move(callback).Run(should_allow_downloads);
   SavePageRequest request(*pending_request_.get());
   std::move(completion_callback_).Run(request, final_status);
-  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
-      FROM_HERE, base::BindOnce(&BackgroundLoaderOffliner::ResetState,
-                                weak_ptr_factory_.GetWeakPtr()));
+  ResetState();
 }
 
 void BackgroundLoaderOffliner::MarkLoadStartTime() {
@@ -254,6 +249,7 @@ void BackgroundLoaderOffliner::PrimaryMainFrameRenderProcessGone(
     SavePageRequest request(*pending_request_.get());
     switch (status) {
       case base::TERMINATION_STATUS_OOM:
+      case base::TERMINATION_STATUS_EVICTED_FOR_MEMORY:
       case base::TERMINATION_STATUS_PROCESS_CRASHED:
       case base::TERMINATION_STATUS_STILL_RUNNING:
         std::move(completion_callback_)
@@ -311,7 +307,7 @@ void BackgroundLoaderOffliner::ObserveResourceLoading(
     bool started) {
   // Add the signal to extra data, and use for tracking.
 
-  RequestStats& found_stats = stats_[type];
+  RequestStats& found_stats = UNSAFE_TODO(stats_[type]);
   if (started)
     ++found_stats.requested;
   else
@@ -454,11 +450,16 @@ void BackgroundLoaderOffliner::ResetState() {
   is_low_bar_met_ = false;
   did_snapshot_on_last_retry_ = false;
   content::WebContentsObserver::Observe(nullptr);
-  loader_.reset();
+
+  // Delete the `loader_` asynchronously. We don't want to delete it
+  // synchronously when ResetState() is called from CanDownload() as it results
+  // in deleting a caller instance.
+  base::SingleThreadTaskRunner::GetCurrentDefault()->DeleteSoon(
+      FROM_HERE, std::move(loader_));
 
   for (int i = 0; i < ResourceDataType::RESOURCE_DATA_TYPE_COUNT; ++i) {
-    stats_[i].requested = 0;
-    stats_[i].completed = 0;
+    UNSAFE_TODO(stats_[i]).requested = 0;
+    UNSAFE_TODO(stats_[i]).completed = 0;
   }
 }
 

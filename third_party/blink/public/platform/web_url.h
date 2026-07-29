@@ -71,12 +71,12 @@ class BLINK_PLATFORM_EXPORT WebURL {
   operator KURL() const;
 #else
   WebURL(const GURL& url)
-      : string_(WebString::FromUTF8(url.possibly_invalid_spec())),
+      : string_(WebString::FromUtf8(url.possibly_invalid_spec())),
         parsed_(url.parsed_for_possibly_invalid_spec()),
         is_valid_(url.is_valid()) {}
 
   WebURL& operator=(const GURL& url) {
-    string_ = WebString::FromUTF8(url.possibly_invalid_spec());
+    string_ = WebString::FromUtf8(url.possibly_invalid_spec());
     parsed_ = url.parsed_for_possibly_invalid_spec();
     is_valid_ = url.is_valid();
     return *this;
@@ -98,8 +98,8 @@ class BLINK_PLATFORM_EXPORT WebURL {
 inline WebURL ToWebURL(const KURL& url) {
   return WebURL(url);
 }
-// To convert a std::vector<WebURL> to WTF::Vector<KURL>, use
-//   WTF::Vector<KURL>(std_vector_web_url).
+// To convert a std::vector<WebURL> to Vector<KURL>, use
+//   Vector<KURL>(std_vector_web_url).
 #else
 inline WebURL ToWebURL(const GURL& url) {
   return WebURL(url);
@@ -111,10 +111,6 @@ inline GURL ToGURL(const WebURL& url) {
 
 inline bool operator==(const WebURL& a, const WebURL& b) {
   return a.GetString().Equals(b.GetString());
-}
-
-inline bool operator!=(const WebURL& a, const WebURL& b) {
-  return !(a == b);
 }
 
 }  // namespace blink

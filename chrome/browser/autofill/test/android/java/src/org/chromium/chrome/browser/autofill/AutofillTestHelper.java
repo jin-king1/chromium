@@ -31,7 +31,9 @@ import org.chromium.components.autofill.AddressNormalizer;
 import org.chromium.components.autofill.AutofillProfile;
 import org.chromium.components.autofill.AutofillSuggestion;
 import org.chromium.components.autofill.IbanRecordType;
+import org.chromium.components.autofill.PaymentsPayload;
 import org.chromium.components.autofill.SubKeyRequester;
+import org.chromium.components.autofill.SuggestionType;
 import org.chromium.components.autofill.VirtualCardEnrollmentState;
 import org.chromium.components.autofill.payments.BankAccount;
 import org.chromium.components.autofill.payments.Ewallet;
@@ -92,11 +94,9 @@ public class AutofillTestHelper {
                 () -> getPersonalDataManagerForLastUsedProfile().getProfile(guid));
     }
 
-    List<AutofillProfile> getProfilesToSuggest(final boolean includeNameInLabel) {
+    List<AutofillProfile> getProfilesToSuggest() {
         return runOnUiThreadBlocking(
-                () ->
-                        getPersonalDataManagerForLastUsedProfile()
-                                .getProfilesToSuggest(includeNameInLabel));
+                () -> getPersonalDataManagerForLastUsedProfile().getProfilesToSuggest());
     }
 
     List<AutofillProfile> getProfilesForSettings() {
@@ -104,8 +104,15 @@ public class AutofillTestHelper {
                 () -> getPersonalDataManagerForLastUsedProfile().getProfilesForSettings());
     }
 
+    String getProfileDescriptionForEditor(String guid) {
+        return runOnUiThreadBlocking(
+                () ->
+                        getPersonalDataManagerForLastUsedProfile()
+                                .getProfileDescriptionForEditor(guid));
+    }
+
     int getNumberOfProfilesToSuggest() {
-        return getProfilesToSuggest(false).size();
+        return getProfilesToSuggest().size();
     }
 
     int getNumberOfProfilesForSettings() {
@@ -400,7 +407,7 @@ public class AutofillTestHelper {
     /** Creates a simple {@link CreditCard}. */
     public static CreditCard createLocalCreditCard(
             String name, String number, String month, String year) {
-        return new CreditCard("", "", true, name, number, "", month, year, "", 0, "", "");
+        return new CreditCard("", false, true, name, number, "", month, year, "", 0, "", "");
     }
 
     /** Creates a virtual credit card. */
@@ -415,7 +422,7 @@ public class AutofillTestHelper {
             String obfuscatedLastFourDigits) {
         return new CreditCard(
                 /* guid= */ "",
-                /* origin= */ "",
+                /* isUserConfirmed= */ false,
                 /* isLocal= */ false,
                 /* isVirtual= */ true,
                 /* name= */ name,
@@ -437,6 +444,7 @@ public class AutofillTestHelper {
                 /* obfuscatedLastFourDigits= */ obfuscatedLastFourDigits,
                 /* cvc= */ "",
                 /* issuerId= */ "",
+                /* benefitSource= */ "",
                 /* productTermsUrl= */ null);
     }
 
@@ -452,7 +460,7 @@ public class AutofillTestHelper {
             String network) {
         return new CreditCard(
                 /* guid= */ "",
-                /* origin= */ "",
+                /* isUserConfirmed= */ false,
                 /* isLocal= */ isLocal,
                 /* isVirtual= */ false,
                 /* name= */ name,
@@ -474,25 +482,51 @@ public class AutofillTestHelper {
                 /* obfuscatedLastFourDigits= */ obfuscatedLastFourDigits,
                 /* cvc= */ "",
                 /* issuerId= */ "",
+                /* benefitSource= */ "",
                 /* productTermsUrl= */ null);
     }
 
+    /**
+     * Creates a new {@code AutofillSuggestion} object using a builder pattern.
+     *
+     * @param label The main label of the suggestion.
+     * @param secondaryLabel The secondary label of the suggestion.
+     * @param subLabel The sublabel of the suggestion.
+     * @param secondarySubLabel The secondary sublabel of the suggestion.
+     * @param labelContentDescription The message to be announced for the main label of the
+     *     suggestion.
+     * @param suggestionType Type of the suggestion.
+     * @param customIconUrl The {@link GURL} for the custom icon.
+     * @param iconId The resource ID for the icon associated with the suggestion.
+     * @param applyDeactivatedStyle Whether to apply deactivated style to the suggestion.
+     * @param shouldDisplayTermsAvailable Whether to display terms message with the suggestion.
+     * @param guid The payment method identifier associated with the suggestion.
+     * @return A newly created, {@code AutofillSuggestion} object.
+     */
     public static AutofillSuggestion createCreditCardSuggestion(
             String label,
             String secondaryLabel,
             String subLabel,
             String secondarySubLabel,
             String labelContentDescription,
+            @SuggestionType int suggestionType,
+            GURL customIconUrl,
+            int iconId,
             boolean applyDeactivatedStyle,
-            boolean shouldDisplayTermsAvailable) {
+            boolean shouldDisplayTermsAvailable,
+            String guid) {
+        PaymentsPayload payload =
+                new PaymentsPayload(labelContentDescription, shouldDisplayTermsAvailable, guid);
         return new AutofillSuggestion.Builder()
                 .setLabel(label)
                 .setSecondaryLabel(secondaryLabel)
                 .setSubLabel(subLabel)
                 .setSecondarySubLabel(secondarySubLabel)
-                .setLabelContentDescription(labelContentDescription)
+                .setSuggestionType(suggestionType)
+                .setCustomIconUrl(customIconUrl)
+                .setIconId(iconId)
                 .setApplyDeactivatedStyle(applyDeactivatedStyle)
-                .setShouldDisplayTermsAvailable(shouldDisplayTermsAvailable)
+                .setPayload(payload)
                 .build();
     }
 
@@ -521,9 +555,8 @@ public class AutofillTestHelper {
         }
     }
 
-    // Creates an action which dispatches 2 motion events to the target view:
-    // MotionEvent.ACTION_DOWN and MotionEvent.ACTION_UP.
-    public static ViewAction createClickActionWithFlags(int flags) {
+    // Sends click event at the center of the `view` with the provided `flags`.
+    public static ViewAction createClickActionWithFlags(int flags, boolean expectClickToSucceed) {
         return new ViewAction() {
             @Override
             public Matcher<View> getConstraints() {
@@ -537,7 +570,7 @@ public class AutofillTestHelper {
 
             @Override
             public void perform(UiController uiController, View view) {
-                if (!singleTouchView(view, flags)) {
+                if (!singleTouchView(view, flags) && expectClickToSucceed) {
                     throw new PerformException.Builder()
                             .withActionDescription(this.getDescription())
                             .withViewDescription(HumanReadables.describe(view))
@@ -547,6 +580,10 @@ public class AutofillTestHelper {
                 uiController.loopMainThreadUntilIdle();
             }
         };
+    }
+
+    public static ViewAction createClickActionWithFlags(int flags) {
+        return createClickActionWithFlags(flags, true);
     }
 
     // Sends click event at the center of the `view` with the provided `flags`.
@@ -588,25 +625,19 @@ public class AutofillTestHelper {
         windowXY[0] += view.getWidth() / 2;
         windowXY[1] += view.getHeight() / 2;
 
-        final long initiationTime = SystemClock.uptimeMillis();
-        return dispatchMotionEvent(
-                        view,
-                        getMotionEvent(
-                                initiationTime,
-                                MotionEvent.ACTION_POINTER_DOWN,
-                                windowXY,
-                                InputDevice.SOURCE_MOUSE))
-                && dispatchMotionEvent(
-                        view,
-                        getMotionEvent(
-                                initiationTime,
-                                MotionEvent.ACTION_POINTER_UP,
-                                windowXY,
-                                InputDevice.SOURCE_MOUSE));
-    }
+        long downTime = SystemClock.uptimeMillis();
+        View rootView = view.getRootView();
+        if (!TouchCommon.dispatchTouchEvent(
+                rootView,
+                getMotionEvent(
+                        downTime, MotionEvent.ACTION_DOWN, windowXY, InputDevice.SOURCE_MOUSE))) {
+            return false;
+        }
 
-    private static boolean dispatchMotionEvent(View view, MotionEvent event) {
-        return runOnUiThreadBlocking(() -> view.getRootView().dispatchGenericMotionEvent(event));
+        return TouchCommon.dispatchTouchEvent(
+                rootView,
+                getMotionEvent(
+                        downTime, MotionEvent.ACTION_UP, windowXY, InputDevice.SOURCE_MOUSE));
     }
 
     private static MotionEvent getMotionEvent(
@@ -671,6 +702,6 @@ public class AutofillTestHelper {
 
         void addMaskedBankAccount(BankAccount bankAccount);
 
-        void addEwallet(Ewallet ewallet);
+        void addEwallet(@JniType("autofill::Ewallet") Ewallet ewallet);
     }
 }

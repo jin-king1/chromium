@@ -5,9 +5,9 @@
 #import "ios/chrome/browser/lens_overlay/model/lens_overlay_tab_helper.h"
 
 #import "base/check_op.h"
-#import "ios/chrome/browser/lens_overlay/coordinator/lens_overlay_availability.h"
 #import "ios/chrome/browser/lens_overlay/model/lens_overlay_snapshot_controller.h"
-#import "ios/chrome/browser/ntp/model/new_tab_page_tab_helper.h"
+#import "ios/chrome/browser/lens_overlay/public/lens_overlay_availability.h"
+#import "ios/chrome/browser/ntp/model/new_tab_page_util.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/public/commands/lens_overlay_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
@@ -25,7 +25,6 @@ const char kMimeTypePDF[] = "application/pdf";
 
 LensOverlayTabHelper::LensOverlayTabHelper(web::WebState* web_state)
     : web_state_(web_state) {
-  CHECK(IsLensOverlayAvailable(GetProfilePrefs()));
   web_state->AddObserver(this);
 }
 
@@ -34,6 +33,7 @@ LensOverlayTabHelper::~LensOverlayTabHelper() {
     web_state_->RemoveObserver(this);
     web_state_ = nullptr;
   }
+  ReleaseSnapshotAuxiliaryWindows();
 }
 
 void LensOverlayTabHelper::SetLensOverlayUIAttachedAndAlive(
@@ -65,6 +65,10 @@ bool LensOverlayTabHelper::IsLensOverlayInvokedOnCurrentNavigationItem() {
     return false;
   }
 
+  if (!IsLensOverlaySameTabNavigationEnabled(GetProfilePrefs())) {
+    return true;
+  }
+
   bool is_lens_overlay_invoked = false;
 
   if (web_state_->GetNavigationManager() &&
@@ -82,28 +86,33 @@ bool LensOverlayTabHelper::IsLensOverlayInvokedOnCurrentNavigationItem() {
 void LensOverlayTabHelper::DidStartNavigation(
     web::WebState* web_state,
     web::NavigationContext* navigation_context) {
+  BOOL usesSameTabNavigation =
+      IsLensOverlaySameTabNavigationEnabled(GetProfilePrefs());
+  if (!usesSameTabNavigation) {
+    // If a new navigation starts without same tab navigation enabled, proceed
+    // to destoroy the now stale Lens UI. This can also be caused by a reload
+    // or a back button navigation.
+    if (is_ui_attached_and_alive_) {
+      [commands_handler_
+          destroyLensUI:NO
+                 reason:lens::LensOverlayDismissalSource::kPageChanged];
+    }
+
+    return;
+  }
+
   const web::NavigationManager* navigation_manager =
       web_state_->GetNavigationManager();
   const web::NavigationItem* pending_item =
       navigation_manager ? navigation_manager->GetPendingItem() : nullptr;
 
-  if (IsLensOverlaySameTabNavigationEnabled(GetProfilePrefs()) &&
-      is_ui_attached_and_alive_ && navigation_context &&
+  if (is_ui_attached_and_alive_ && navigation_context &&
       !navigation_context->IsSameDocument() && pending_item) {
     if (invokation_navigation_id_ == pending_item->GetUniqueID()) {
       [commands_handler_ showLensUI:NO];
     } else {
       [commands_handler_ hideLensUI:NO completion:nil];
     }
-  }
-
-  if (web_state_ && snapshot_controller_) {
-    NewTabPageTabHelper* NTPHelper =
-        NewTabPageTabHelper::FromWebState(web_state_);
-    bool is_NTP = NTPHelper && NTPHelper->IsActive();
-    bool is_pdf = web_state_->GetContentsMimeType() == kMimeTypePDF;
-    snapshot_controller_->SetIsPDFDocument(is_pdf);
-    snapshot_controller_->SetIsNTP(is_NTP);
   }
 }
 
@@ -128,8 +137,9 @@ void LensOverlayTabHelper::DidFinishNavigation(
 }
 
 void LensOverlayTabHelper::WasShown(web::WebState* web_state) {
-  CHECK_EQ(web_state, web_state_, kLensOverlayNotFatalUntil);
+  CHECK_EQ(web_state, web_state_);
 
+  BOOL showAnimated = NO;
   if (IsLensOverlaySameTabNavigationEnabled(GetProfilePrefs())) {
     if (web_state_->GetNavigationManager()) {
       web::NavigationItem* visibleItem =
@@ -137,28 +147,28 @@ void LensOverlayTabHelper::WasShown(web::WebState* web_state) {
 
       if (is_ui_attached_and_alive_ && visibleItem &&
           invokation_navigation_id_ == visibleItem->GetUniqueID()) {
-        [commands_handler_ showLensUI:YES];
+        [commands_handler_ showLensUI:showAnimated];
       }
     }
   } else if (is_ui_attached_and_alive_) {
-    [commands_handler_ showLensUI:YES];
+    [commands_handler_ showLensUI:showAnimated];
   }
 }
 
 void LensOverlayTabHelper::WasHidden(web::WebState* web_state) {
-  CHECK_EQ(web_state, web_state_, kLensOverlayNotFatalUntil);
+  CHECK_EQ(web_state, web_state_);
 
   if (snapshot_controller_) {
     snapshot_controller_->CancelOngoingCaptures();
   }
 
   if (is_ui_attached_and_alive_) {
-    [commands_handler_ hideLensUI:YES completion:nil];
+    [commands_handler_ hideLensUI:NO completion:nil];
   }
 }
 
 void LensOverlayTabHelper::WebStateDestroyed(web::WebState* web_state) {
-  CHECK_EQ(web_state, web_state_, kLensOverlayNotFatalUntil);
+  CHECK_EQ(web_state, web_state_);
 
   if (snapshot_controller_) {
     snapshot_controller_->CancelOngoingCaptures();
@@ -224,9 +234,7 @@ void LensOverlayTabHelper::SetSnapshotController(
   snapshot_controller_->SetDelegate(weak_ptr_factory_.GetWeakPtr());
 
   if (web_state_ && snapshot_controller_) {
-    NewTabPageTabHelper* NTPHelper =
-        NewTabPageTabHelper::FromWebState(web_state_);
-    bool is_NTP = NTPHelper && NTPHelper->IsActive();
+    bool is_NTP = IsVisibleURLNewTabPage(web_state_);
     bool is_pdf = web_state_->GetContentsMimeType() == kMimeTypePDF;
     snapshot_controller_->SetIsPDFDocument(is_pdf);
     snapshot_controller_->SetIsNTP(is_NTP);
@@ -265,10 +273,8 @@ UIEdgeInsets LensOverlayTabHelper::GetSnapshotInsets() {
 }
 
 PrefService* LensOverlayTabHelper::GetProfilePrefs() {
-  CHECK(web_state_, kLensOverlayNotFatalUntil);
+  CHECK(web_state_);
   ProfileIOS* profile =
       ProfileIOS::FromBrowserState(web_state_->GetBrowserState());
   return profile->GetPrefs();
 }
-
-WEB_STATE_USER_DATA_KEY_IMPL(LensOverlayTabHelper)

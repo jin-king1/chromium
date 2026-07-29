@@ -10,7 +10,9 @@
 @protocol TabGridToolbarsGridDelegate
 
 - (void)closeAllButtonTapped:(id)sender;
-- (void)doneButtonTapped:(id)sender;
+- (void)closeOtherTabsButtonTapped:(id)sender;
+- (void)exitTabGridButtonTapped:(id)sender;
+- (void)exitSelectionButtonTapped:(id)sender;
 - (void)newTabButtonTapped:(id)sender;
 - (void)selectAllButtonTapped:(id)sender;
 - (void)searchButtonTapped:(id)sender;
@@ -18,10 +20,9 @@
 - (void)closeSelectedTabs:(id)sender;
 - (void)shareSelectedTabs:(id)sender;
 - (void)selectTabsButtonTapped:(id)sender;
-
-@optional
-// TODO(crbug.com/398183785): Remove once we got feedback.
-- (void)sendFeedbackGroupTapped:(id)sender;
+- (void)pageActionMenuEntrypointTapped:(id)sender;
+- (void)createNewTabGroupButtonTapped:(id)sender;
+- (void)deleteBrowsingDataButtonTapped:(id)sender;
 
 @end
 

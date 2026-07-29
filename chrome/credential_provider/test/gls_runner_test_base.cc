@@ -58,7 +58,7 @@ MULTIPROCESS_TEST_MAIN(gls_main) {
     if (!start_event_name.empty()) {
       base::win::ScopedHandle start_event_handle(
           ::CreateEvent(nullptr, false, false, start_event_name.c_str()));
-      if (start_event_handle.IsValid()) {
+      if (start_event_handle.is_valid()) {
         base::WaitableEvent start_event(std::move(start_event_handle));
         start_event.Wait();
       }
@@ -99,7 +99,7 @@ MULTIPROCESS_TEST_MAIN(gls_main) {
     expected_gaia_id = gaia_id_override;
   }
 
-  base::Value::Dict dict;
+  base::DictValue dict;
   if (!gaia_id_override.empty() && gaia_id_override != expected_gaia_id) {
     dict.Set(kKeyExitCode, kUiecEMailMissmatch);
   } else {

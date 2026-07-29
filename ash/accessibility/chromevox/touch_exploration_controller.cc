@@ -11,6 +11,7 @@
 
 #include "ash/accessibility/accessibility_controller.h"
 #include "ash/accessibility/chromevox/touch_accessibility_enabler.h"
+#include "ash/display/cros_display_config.h"
 #include "ash/public/cpp/shell_window_ids.h"
 #include "ash/shell.h"
 #include "ash/wm/container_finder.h"
@@ -139,6 +140,8 @@ ui::EventDispatchDetails TouchExplorationController::RewriteEvent(
   root_window_->GetHost()->ConvertPixelsToDIP(&root_location);
 
   bool exclude =
+      (Shell::HasInstance() &&
+       Shell::Get()->cros_display_config()->IsCalibrating()) ||
       IsTargetedToArcVirtualKeyboard(location) ||
       (!exclude_bounds_.IsEmpty() && exclude_bounds_.Contains(location));
   if (exclude) {
@@ -864,6 +867,10 @@ const std::string& TouchExplorationController::GetName() const {
   return name;
 }
 
+base::WeakPtr<ui::GestureConsumer> TouchExplorationController::GetWeakPtr() {
+  return weak_ptr_factory_.GetWeakPtr();
+}
+
 void TouchExplorationController::ProcessGestureEvents() {
   std::vector<std::unique_ptr<ui::GestureEvent>> gestures =
       gesture_provider_->GetAndResetPendingGestures();
@@ -1229,8 +1236,7 @@ bool TouchExplorationController::ShouldEnableVolumeSlideGesture(
   // Can be nullptr in unit tests.
   int edge = FindEdgesWithinInset(event.location(), kMaxDistanceFromEdge);
   return edge & RIGHT_EDGE && edge != BOTTOM_RIGHT_CORNER &&
-         (!Shell::HasInstance() ||
-          display::Screen::GetScreen()->InTabletMode() ||
+         (!Shell::HasInstance() || display::Screen::Get()->InTabletMode() ||
           Shell::Get()
               ->accessibility_controller()
               ->enable_chromevox_volume_slide_gesture());

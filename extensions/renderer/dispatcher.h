@@ -18,6 +18,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/scoped_observation.h"
 #include "base/timer/timer.h"
+#include "components/guest_view/buildflags/buildflags.h"
 #include "components/version_info/channel.h"
 #include "content/public/renderer/render_thread_observer.h"
 #include "extensions/common/event_filter.h"
@@ -52,9 +53,6 @@ namespace base {
 class SingleThreadTaskRunner;
 }
 
-namespace content {
-class RenderThread;
-}  // namespace content
 
 namespace extensions {
 
@@ -117,8 +115,6 @@ class Dispatcher : public content::RenderThreadObserver,
 
   bool activity_logging_enabled() const { return activity_logging_enabled_; }
 
-  void OnRenderThreadStarted(content::RenderThread* render_thread);
-
   void OnRenderFrameCreated(content::RenderFrame* render_frame);
 
   bool IsExtensionActive(const ExtensionId& extension_id) const;
@@ -164,28 +160,30 @@ class Dispatcher : public content::RenderThreadObserver,
   void DidStartServiceWorkerContextOnWorkerThread(
       int64_t service_worker_version_id,
       const GURL& service_worker_scope,
-      const GURL& script_url);
+      const GURL& script_url,
+      const blink::ServiceWorkerToken& service_worker_token);
 
   // Runs on a different thread and should not use any member variables.
   void WillDestroyServiceWorkerContextOnWorkerThread(
       v8::Local<v8::Context> v8_context,
       int64_t service_worker_version_id,
       const GURL& service_worker_scope,
-      const GURL& script_url);
+      const GURL& script_url,
+      const blink::ServiceWorkerToken& service_worker_token);
 
   // This method is not allowed to run JavaScript code in the frame.
   void DidCreateDocumentElement(blink::WebLocalFrame* frame);
 
   // These methods may run (untrusted) JavaScript code in the frame, and
-  // cause |render_frame| to become invalid.
+  // cause `render_frame` to become invalid.
   void RunScriptsAtDocumentStart(content::RenderFrame* render_frame);
   void RunScriptsAtDocumentEnd(content::RenderFrame* render_frame);
   void RunScriptsAtDocumentIdle(content::RenderFrame* render_frame);
 
-  // Dispatches the event named |event_name| to all render views.
+  // Dispatches the event named `event_name` to all render views.
   void DispatchEventHelper(const mojom::HostID& extension_id,
                            const std::string& event_name,
-                           const base::Value::List& event_args,
+                           const base::ListValue& event_args,
                            mojom::EventFilteringInfoPtr filtering_info) const;
 
   // Shared implementation of the various MessageInvoke IPCs.
@@ -193,7 +191,7 @@ class Dispatcher : public content::RenderThreadObserver,
                                 const ExtensionId& extension_id,
                                 const std::string& module_name,
                                 const std::string& function_name,
-                                const base::Value::List& args);
+                                const base::ListValue& args);
 
   void ExecuteDeclarativeScript(content::RenderFrame* render_frame,
                                 int tab_id,
@@ -201,13 +199,17 @@ class Dispatcher : public content::RenderThreadObserver,
                                 const std::string& script_id,
                                 const GURL& url);
 
-  // Executes the code described in |param| and calls |callback| if it's done.
+  // Executes the code described in `param` and calls `callback` if it's done.
   void ExecuteCode(mojom::ExecuteCodeParamsPtr param,
                    mojom::LocalFrame::ExecuteCodeCallback callback,
                    content::RenderFrame* render_frame);
 
   NativeExtensionBindingsSystem* bindings_system() {
     return bindings_system_.get();
+  }
+
+  ScriptInjectionManager* script_injection_manager() {
+    return script_injection_manager_.get();
   }
 
  private:
@@ -226,6 +228,7 @@ class Dispatcher : public content::RenderThreadObserver,
   // mojom::Renderer implementation:
   void ActivateExtension(const ExtensionId& extension_id) override;
   void SetActivityLoggingEnabled(bool enabled) override;
+  void SetPolicyActivityLoggingEnabled(bool enabled) override;
   void LoadExtensions(
       std::vector<mojom::ExtensionLoadedParamsPtr> loaded_extensions) override;
   void UnloadExtension(const ExtensionId& extension_id) override;
@@ -234,6 +237,8 @@ class Dispatcher : public content::RenderThreadObserver,
       mojom::Renderer::SuspendExtensionCallback callback) override;
   void CancelSuspendExtension(const ExtensionId& extension_id) override;
   void SetDeveloperMode(bool current_developer_mode) override;
+  void SetUserScriptsAllowed(const ExtensionId& extension_id,
+                             bool allowed) override;
   void SetSessionInfo(version_info::Channel channel,
                       mojom::FeatureSessionType session_type) override;
   void SetSystemFont(const std::string& font_family,
@@ -278,7 +283,7 @@ class Dispatcher : public content::RenderThreadObserver,
 
   // mojom::EventDispatcher implementation.
   void DispatchEvent(mojom::DispatchEventParamsPtr params,
-                     base::Value::List event_args,
+                     base::ListValue event_args,
                      DispatchEventCallback callback) override;
 
   // UserScriptSetManager::Observer implementation.
@@ -287,9 +292,12 @@ class Dispatcher : public content::RenderThreadObserver,
   // NativeExtensionBindingsSystem::Delegate implementation.
   ScriptContextSetIterable* GetScriptContextSet() override;
 
+  // Updates the DOM activity logging state for all active extensions.
+  void UpdateDOMActivityLogging();
+
   void UpdateActiveExtensions();
 
-  // Sets up the host permissions for |extension|.
+  // Sets up the host permissions for `extension`.
   void InitOriginPermissions(const Extension* extension);
 
   // Updates the host permissions for the extension url to include only those
@@ -304,7 +312,7 @@ class Dispatcher : public content::RenderThreadObserver,
   // changed and cached features should be re-calculated.
   void UpdateAllBindings(bool api_permissions_changed);
 
-  // Adds or removes bindings for every context belonging to |extension|, due to
+  // Adds or removes bindings for every context belonging to `extension`, due to
   // permissions change in the extension.
   void UpdateBindingsForExtension(const Extension& extension);
 
@@ -313,15 +321,17 @@ class Dispatcher : public content::RenderThreadObserver,
                               NativeExtensionBindingsSystem* bindings_system,
                               V8SchemaRegistry* v8_schema_registry);
 
-  // Inserts static source code into |source_map_|.
+  // Inserts static source code into `source_map_`.
   void PopulateSourceMap();
 
   // Returns whether the current renderer hosts a platform app.
   bool IsWithinPlatformApp();
 
+#if BUILDFLAG(ENABLE_GUEST_VIEW)
   // Requires the GuestView modules in the module system of the ScriptContext
-  // |context|.
+  // `context`.
   void RequireGuestViewModules(ScriptContext* context);
+#endif
 
   // Creates the NativeExtensionBindingsSystem. Note: this may be called on any
   // thread, and thus cannot mutate any state or rely on state which can be

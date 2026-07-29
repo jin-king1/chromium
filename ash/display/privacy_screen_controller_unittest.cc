@@ -67,9 +67,6 @@ class PrivacyScreenControllerTest : public NoSessionAshTestBase {
     // Create user 1 session and simulate its login.
     SimulateUserLogin({kUser1Email});
 
-    // Create user 2 session.
-    GetSessionControllerClient()->AddUserSession({kUser2Email});
-
     native_display_delegate_ =
         new display::test::TestNativeDisplayDelegate(logger_.get());
     display_manager()->configurator()->SetDelegateForTesting(
@@ -94,6 +91,7 @@ class PrivacyScreenControllerTest : public NoSessionAshTestBase {
     // destroy it first.
     display_change_observer_ = nullptr;
     controller()->RemoveObserver(observer());
+    native_display_delegate_ = nullptr;
     AshTestBase::TearDown();
   }
 
@@ -135,8 +133,7 @@ class PrivacyScreenControllerTest : public NoSessionAshTestBase {
 
  private:
   std::unique_ptr<display::test::ActionLogger> logger_;
-  raw_ptr<display::test::TestNativeDisplayDelegate,
-          DanglingUntriaged>
+  raw_ptr<display::test::TestNativeDisplayDelegate>
       native_display_delegate_;  // Not owned.
   std::unique_ptr<display::DisplayChangeObserver> display_change_observer_;
   std::unique_ptr<display::DisplayConfigurator::TestApi> test_api_;
@@ -230,7 +227,7 @@ TEST_F(PrivacyScreenControllerTest, TestEnableAndDisable) {
   // Switching accounts should trigger observers but should not notify ui.
   ::testing::Mock::VerifyAndClear(observer());
   EXPECT_CALL(*observer(), OnPrivacyScreenSettingChanged(false, false));
-  SwitchActiveUser(kUser2Email);
+  SimulateUserLogin({kUser2Email});
   EXPECT_FALSE(controller()->GetEnabled());
 
   // Switch back to user 1, expect it to be enabled.

@@ -16,20 +16,13 @@ namespace password_manager::features {
 // without a passcode set.
 BASE_DECLARE_FEATURE(kIOSEnablePasscodeSettings);
 
-// Feature switch for the logic that allows the user to delete all saved
-// credentials in PWM.
-BASE_DECLARE_FEATURE(kIOSEnableDeleteAllSavedCredentials);
-
-// Feature switch for adding or not Suggest Strong Password field in the add
-// password page.
-BASE_DECLARE_FEATURE(kSuggestStrongPasswordInAddPassword);
+// Enable a fix to mitigate an issue where child coordinators on the password
+// checkup UI (e.g. the password issues UI) are double started. Enabled by
+// default, act as a kill switch.
+BASE_DECLARE_FEATURE(kPasswordCheckupUIDoubleStartMitigation);
 
 // Helper function returning the status of `kIOSEnablePasscodeSettings`.
 bool IsPasscodeSettingsEnabled();
-
-// Helper function returning the status of
-// `kSuggestStrongPasswordInAddPassword`.
-bool IsSuggestStrongPasswordInAddPasswordEnabled();
 
 }  // namespace password_manager::features
 

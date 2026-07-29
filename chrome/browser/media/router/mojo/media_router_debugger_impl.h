@@ -7,6 +7,7 @@
 
 #include "base/gtest_prod_util.h"
 #include "base/memory/weak_ptr.h"
+#include "base/sequence_checker.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "components/media_router/browser/media_router_debugger.h"
@@ -36,7 +37,7 @@ class MediaRouterDebuggerImpl : public MediaRouterDebugger,
   ~MediaRouterDebuggerImpl() override;
 
   // MediaRouterDebugger implementation:
-  base::Value::Dict GetMirroringStats() final;
+  base::DictValue GetMirroringStats() final;
   void AddObserver(MirroringStatsObserver& obs) final;
   void RemoveObserver(MirroringStatsObserver& obs) final;
   void EnableRtcpReports() final;
@@ -46,7 +47,7 @@ class MediaRouterDebuggerImpl : public MediaRouterDebugger,
   // mojom::Debugger overrides:
   void ShouldFetchMirroringStats(
       ShouldFetchMirroringStatsCallback callback) override;
-  void OnMirroringStats(const base::Value json_stats) override;
+  void OnMirroringStats(base::Value json_stats) override;
   void BindReceiver(mojo::PendingReceiver<mojom::Debugger> receiver) override;
 
  protected:
@@ -54,13 +55,13 @@ class MediaRouterDebuggerImpl : public MediaRouterDebugger,
   FRIEND_TEST_ALL_PREFIXES(MediaRouterDebuggerImplTest,
                            ShouldFetchMirroringStatsFeatureDisabled);
 
-  void NotifyGetMirroringStats(const base::Value::Dict& json_logs);
+  void NotifyGetMirroringStats(base::DictValue json_logs);
   void LogMirroringStats();
 
   base::ObserverList<MirroringStatsObserver> observers_;
   bool is_rtcp_reports_enabled_ = false;
   mojo::ReceiverSet<mojom::Debugger> receivers_;
-  base::Value::Dict most_recent_mirroring_stats_;
+  base::DictValue most_recent_mirroring_stats_;
 
   SEQUENCE_CHECKER(sequence_checker_);
 

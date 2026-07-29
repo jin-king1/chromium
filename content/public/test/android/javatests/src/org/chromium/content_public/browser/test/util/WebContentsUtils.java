@@ -4,6 +4,8 @@
 
 package org.chromium.content_public.browser.test.util;
 
+import static org.chromium.build.NullUtil.assertNonNull;
+
 import androidx.annotation.Nullable;
 
 import org.jni_zero.CalledByNative;
@@ -76,7 +78,8 @@ public class WebContentsUtils {
      * @param webContents The WebContents in use.
      */
     public static ImeAdapter getImeAdapter(WebContents webContents) {
-        return ThreadUtils.runOnUiThreadBlocking(() -> ImeAdapter.fromWebContents(webContents));
+        return ThreadUtils.runOnUiThreadBlocking(
+                () -> assertNonNull(ImeAdapter.fromWebContents(webContents)));
     }
 
     /**
@@ -160,6 +163,15 @@ public class WebContentsUtils {
                 });
     }
 
+    /**
+     * Simulate the end of paint-holding on primary main frame of `webContents`.
+     *
+     * <p>See the corresponding method in content/public/test/browser_test_utils.h.
+     */
+    public static void simulateEndOfPaintHolding(final WebContents webContents) {
+        WebContentsUtilsJni.get().simulateEndOfPaintHolding(webContents);
+    }
+
     @CalledByNative
     private static void onEvaluateJavaScriptResult(String jsonResult, JavaScriptCallback callback) {
         callback.handleJavaScriptResult(jsonResult);
@@ -200,5 +212,7 @@ public class WebContentsUtils {
         void crashTab(WebContents webContents);
 
         void notifyCopyableViewInWebContents(WebContents webContents, Runnable doneCallback);
+
+        void simulateEndOfPaintHolding(WebContents webContents);
     }
 }

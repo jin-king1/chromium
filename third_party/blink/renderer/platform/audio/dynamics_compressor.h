@@ -29,7 +29,9 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_AUDIO_DYNAMICS_COMPRESSOR_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_AUDIO_DYNAMICS_COMPRESSOR_H_
 
+#include <array>
 #include <memory>
+
 #include "third_party/blink/renderer/platform/audio/audio_array.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
@@ -97,13 +99,9 @@ class PLATFORM_EXPORT DynamicsCompressor final {
   unsigned number_of_channels_;
 
   // parameters_ holds the tweakable compressor parameters.
-  float parameters_[kParamLast];
+  std::array<float, kParamLast> parameters_;
 
   float sample_rate_;
-
-  std::unique_ptr<const float*[]> source_channels_;
-  std::unique_ptr<float*[]> destination_channels_;
-
   float detector_average_;
   float compressor_gain_;
 

@@ -7,7 +7,6 @@
 #include <algorithm>
 #include <vector>
 
-#include "ash/constants/ash_features.h"
 #include "ash/public/cpp/holding_space/holding_space_controller.h"
 #include "ash/public/cpp/holding_space/holding_space_file.h"
 #include "ash/public/cpp/holding_space/holding_space_image.h"
@@ -24,15 +23,18 @@
 #include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/scoped_observation.h"
+#include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/bind.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/test/scoped_path_override.h"
 #include "base/unguessable_token.h"
 #include "chrome/browser/ash/drive/drive_integration_service.h"
+#include "chrome/browser/ash/drive/drive_integration_service_factory.h"
 #include "chrome/browser/ash/drive/drivefs_test_support.h"
 #include "chrome/browser/ash/file_manager/path_util.h"
 #include "chrome/browser/ash/file_manager/volume_manager.h"
+#include "chrome/browser/browser_process.h"
 #include "chrome/browser/extensions/component_loader.h"
 #include "chrome/browser/ui/ash/holding_space/holding_space_keyed_service_factory.h"
 #include "chrome/browser/ui/ash/holding_space/holding_space_test_util.h"
@@ -311,7 +313,8 @@ class HoldingSpaceKeyedServiceBrowserTest : public InProcessBrowserTest {
     fake_drivefs_helper_ =
         std::make_unique<drive::FakeDriveFsHelper>(profile, test_mount_point_);
     drive_integration_service_ = new drive::DriveIntegrationService(
-        profile, "", test_cache_root_.GetPath(),
+        g_browser_process->local_state(), profile, "",
+        test_cache_root_.GetPath(),
         fake_drivefs_helper_->CreateFakeDriveFsListenerFactory());
     return drive_integration_service_;
   }
@@ -355,7 +358,7 @@ IN_PROC_BROWSER_TEST_F(HoldingSpaceKeyedServiceBrowserTest,
                        AddItemDuringSuspension) {
   // Add a holding space item before service suspension.
   const auto* const holding_space_item = AddHoldingSpaceItem(
-      browser()->profile(), GetPredefinedTestFile(/*index=*/0));
+      browser()->GetProfile(), GetPredefinedTestFile(/*index=*/0));
   const auto* const holding_space_model =
       HoldingSpaceController::Get()->model();
   ASSERT_TRUE(holding_space_model);
@@ -373,7 +376,8 @@ IN_PROC_BROWSER_TEST_F(HoldingSpaceKeyedServiceBrowserTest,
   EXPECT_TRUE(holding_space_model->items().empty());
 
   // Try to add a new holding space item.
-  AddHoldingSpaceItem(browser()->profile(), GetPredefinedTestFile(/*index=*/1));
+  AddHoldingSpaceItem(browser()->GetProfile(),
+                      GetPredefinedTestFile(/*index=*/1));
 
   // Verify the absence of any new items.
   EXPECT_TRUE(holding_space_model->items().empty());
@@ -385,7 +389,7 @@ IN_PROC_BROWSER_TEST_F(HoldingSpaceKeyedServiceBrowserTest,
 
   // Add a holding space item after suspension. Verify that a new item is added.
   const HoldingSpaceItem* const item = AddHoldingSpaceItem(
-      browser()->profile(), GetPredefinedTestFile(/*index=*/1));
+      browser()->GetProfile(), GetPredefinedTestFile(/*index=*/1));
   ASSERT_TRUE(item);
   WaitForItemInitialization(item->id());
   EXPECT_TRUE(holding_space_model->GetItem(item->id()));
@@ -397,7 +401,7 @@ IN_PROC_BROWSER_TEST_F(HoldingSpaceKeyedServiceBrowserTest,
   // Verify holding space service exists.
   HoldingSpaceKeyedService* const holding_space_service =
       HoldingSpaceKeyedServiceFactory::GetInstance()->GetService(
-          browser()->profile());
+          browser()->GetProfile());
   ASSERT_TRUE(holding_space_service);
 
   // Verify holding space model exists.
@@ -406,7 +410,7 @@ IN_PROC_BROWSER_TEST_F(HoldingSpaceKeyedServiceBrowserTest,
 
   // Add an item to holding space.
   base::FilePath src = GetPredefinedTestFile(/*index=*/0);
-  auto* item = AddHoldingSpaceItem(browser()->profile(), src);
+  auto* item = AddHoldingSpaceItem(browser()->GetProfile(), src);
   std::string item_id = item->id();
 
   std::vector<const HoldingSpaceItem*> items_excluding_suggestions;
@@ -428,11 +432,11 @@ IN_PROC_BROWSER_TEST_F(HoldingSpaceKeyedServiceBrowserTest,
   std::vector<drivefs::mojom::FileChangePtr> changes;
   changes.push_back(CreateDriveFsChange(
       drivefs::mojom::FileChange::Type::kDelete,
-      ConvertAbsoluteFilePathToDrivePath(browser()->profile(), src),
+      ConvertAbsoluteFilePathToDrivePath(browser()->GetProfile(), src),
       /*stable_id=*/1));
   changes.push_back(CreateDriveFsChange(
       drivefs::mojom::FileChange::Type::kCreate,
-      ConvertAbsoluteFilePathToDrivePath(browser()->profile(), dst),
+      ConvertAbsoluteFilePathToDrivePath(browser()->GetProfile(), dst),
       /*stable_id=*/1));
 
   // Simulate the `changes` being sent from the server.
@@ -459,11 +463,11 @@ IN_PROC_BROWSER_TEST_F(HoldingSpaceKeyedServiceBrowserTest,
   // `kDelete` and `kCreate` changes refer to different documents.
   changes.push_back(CreateDriveFsChange(
       drivefs::mojom::FileChange::Type::kDelete,
-      ConvertAbsoluteFilePathToDrivePath(browser()->profile(), src),
+      ConvertAbsoluteFilePathToDrivePath(browser()->GetProfile(), src),
       /*stable_id=*/1));
   changes.push_back(CreateDriveFsChange(
       drivefs::mojom::FileChange::Type::kCreate,
-      ConvertAbsoluteFilePathToDrivePath(browser()->profile(), dst),
+      ConvertAbsoluteFilePathToDrivePath(browser()->GetProfile(), dst),
       /*stable_id=*/2));
 
   // Simulate the `changes` being sent from the server.
@@ -474,7 +478,7 @@ IN_PROC_BROWSER_TEST_F(HoldingSpaceKeyedServiceBrowserTest,
   WaitForItemRemovalById(item_id);
 
   // Add another holding space item, again pointing to `src`.
-  item = AddHoldingSpaceItem(browser()->profile(), src);
+  item = AddHoldingSpaceItem(browser()->GetProfile(), src);
   item_id = item->id();
 
   items_excluding_suggestions.clear();
@@ -495,10 +499,10 @@ IN_PROC_BROWSER_TEST_F(HoldingSpaceKeyedServiceBrowserTest,
   // `stable_id` is absent, we can't assume that to be the case.
   changes.push_back(CreateDriveFsChange(
       drivefs::mojom::FileChange::Type::kDelete,
-      ConvertAbsoluteFilePathToDrivePath(browser()->profile(), src)));
+      ConvertAbsoluteFilePathToDrivePath(browser()->GetProfile(), src)));
   changes.push_back(CreateDriveFsChange(
       drivefs::mojom::FileChange::Type::kCreate,
-      ConvertAbsoluteFilePathToDrivePath(browser()->profile(), dst)));
+      ConvertAbsoluteFilePathToDrivePath(browser()->GetProfile(), dst)));
 
   // Simulate the `changes` being sent from the server.
   drivefs_delegate()->OnFilesChanged(std::move(changes));
@@ -510,7 +514,7 @@ IN_PROC_BROWSER_TEST_F(HoldingSpaceKeyedServiceBrowserTest,
   WaitForItemRemovalById(item_id);
 
   // Add another holding space item, again pointing to `src`.
-  item = AddHoldingSpaceItem(browser()->profile(), src);
+  item = AddHoldingSpaceItem(browser()->GetProfile(), src);
   item_id = item->id();
 
   items_excluding_suggestions.clear();
@@ -530,15 +534,15 @@ IN_PROC_BROWSER_TEST_F(HoldingSpaceKeyedServiceBrowserTest,
   // with the same document.
   changes.push_back(CreateDriveFsChange(
       drivefs::mojom::FileChange::Type::kDelete,
-      ConvertAbsoluteFilePathToDrivePath(browser()->profile(), src),
+      ConvertAbsoluteFilePathToDrivePath(browser()->GetProfile(), src),
       /*stable_id=*/1));
   changes.push_back(CreateDriveFsChange(
       drivefs::mojom::FileChange::Type::kCreate,
-      ConvertAbsoluteFilePathToDrivePath(browser()->profile(), dst),
+      ConvertAbsoluteFilePathToDrivePath(browser()->GetProfile(), dst),
       /*stable_id=*/1));
   changes.push_back(CreateDriveFsChange(
       drivefs::mojom::FileChange::Type::kDelete,
-      ConvertAbsoluteFilePathToDrivePath(browser()->profile(), dst),
+      ConvertAbsoluteFilePathToDrivePath(browser()->GetProfile(), dst),
       /*stable_id=*/1));
 
   // Simulate the `changes` being sent from the server.
@@ -552,7 +556,7 @@ IN_PROC_BROWSER_TEST_F(HoldingSpaceKeyedServiceBrowserTest,
   // Add another holding space item, pointing to `src` in `src_dir`.
   base::FilePath src_dir = GetTestMountPoint().Append("src/");
   src = CreateTextFile(src_dir, /*relative_path=*/std::nullopt);
-  item = AddHoldingSpaceItem(browser()->profile(), src);
+  item = AddHoldingSpaceItem(browser()->GetProfile(), src);
   item_id = item->id();
 
   items_excluding_suggestions.clear();
@@ -577,11 +581,11 @@ IN_PROC_BROWSER_TEST_F(HoldingSpaceKeyedServiceBrowserTest,
   // `kCreate` change.
   changes.push_back(CreateDriveFsChange(
       drivefs::mojom::FileChange::Type::kDelete,
-      ConvertAbsoluteFilePathToDrivePath(browser()->profile(), src_dir),
+      ConvertAbsoluteFilePathToDrivePath(browser()->GetProfile(), src_dir),
       /*stable_id=*/1));
   changes.push_back(CreateDriveFsChange(
       drivefs::mojom::FileChange::Type::kCreate,
-      ConvertAbsoluteFilePathToDrivePath(browser()->profile(), dst_dir),
+      ConvertAbsoluteFilePathToDrivePath(browser()->GetProfile(), dst_dir),
       /*stable_id=*/1));
 
   // Simulate the `changes` being sent from the server.
@@ -607,7 +611,7 @@ IN_PROC_BROWSER_TEST_F(HoldingSpaceKeyedServiceBrowserTest,
   // Prep a batch of `changes` to indicate that `src_dir` has been deleted.
   changes.push_back(CreateDriveFsChange(
       drivefs::mojom::FileChange::Type::kDelete,
-      ConvertAbsoluteFilePathToDrivePath(browser()->profile(), src_dir)));
+      ConvertAbsoluteFilePathToDrivePath(browser()->GetProfile(), src_dir)));
 
   // Simulate the `changes` being sent from the server.
   drivefs_delegate()->OnFilesChanged(std::move(changes));
@@ -618,11 +622,57 @@ IN_PROC_BROWSER_TEST_F(HoldingSpaceKeyedServiceBrowserTest,
   WaitForItemRemovalById(item_id);
 }
 
+// Verifies that DriveFs file changes referencing paths outside of the Drive
+// mount point are ignored.
+IN_PROC_BROWSER_TEST_F(HoldingSpaceKeyedServiceBrowserTest,
+                       IgnoreDriveFsFileChangeReferencingParent) {
+  // Verify holding space service exists.
+  HoldingSpaceKeyedService* const holding_space_service =
+      HoldingSpaceKeyedServiceFactory::GetInstance()->GetService(
+          browser()->GetProfile());
+  ASSERT_TRUE(holding_space_service);
+
+  // Verify holding space model exists.
+  const auto* holding_space_model = holding_space_service->model_for_testing();
+  ASSERT_TRUE(holding_space_model);
+
+  // Add an item to holding space.
+  const base::FilePath src = GetPredefinedTestFile(/*index=*/0);
+  auto* item = AddHoldingSpaceItem(browser()->GetProfile(), src);
+  const std::string item_id = item->id();
+
+  // Verify the item exists in the model.
+  ASSERT_TRUE(holding_space_model->GetItem(item_id));
+  ASSERT_EQ(item->file().file_path, src);
+
+  // Prep a batch of `changes` to indicate that `src` has moved to a location
+  // that references parent directories. Note the consistent `stable_id` to link
+  // the `kDelete` with the `kCreate` change.
+  std::vector<drivefs::mojom::FileChangePtr> changes;
+  changes.push_back(CreateDriveFsChange(
+      drivefs::mojom::FileChange::Type::kDelete,
+      ConvertAbsoluteFilePathToDrivePath(browser()->GetProfile(), src),
+      /*stable_id=*/1));
+  changes.push_back(CreateDriveFsChange(
+      drivefs::mojom::FileChange::Type::kCreate,
+      base::FilePath("/root/../../outside.txt"), /*stable_id=*/1));
+
+  // Simulate the `changes` being sent from the server.
+  drivefs_delegate()->OnFilesChanged(std::move(changes));
+  drivefs_delegate().FlushForTesting();
+
+  // Because the `kCreate` change references parent directories, the entire
+  // batch of changes should be ignored.
+  auto* updated_item = holding_space_model->GetItem(item_id);
+  ASSERT_TRUE(updated_item);
+  EXPECT_EQ(updated_item->file().file_path, src);
+}
+
 // Verifies that drive files pinned to holding space are pinned for offline use.
 IN_PROC_BROWSER_TEST_F(HoldingSpaceKeyedServiceBrowserTest,
                        PinningDriveFilesOfflineAccess) {
   const GURL url = holding_space_util::ResolveFileSystemUrl(
-      browser()->profile(), GetPredefinedTestFile(/*index=*/0));
+      browser()->GetProfile(), GetPredefinedTestFile(/*index=*/0));
   storage::FileSystemURL file_system_url =
       storage::ExternalMountPoints::GetSystemInstance()->CrackURL(
           url, blink::StorageKey::CreateFirstParty(url::Origin::Create(url)));
@@ -632,7 +682,7 @@ IN_PROC_BROWSER_TEST_F(HoldingSpaceKeyedServiceBrowserTest,
   // Add item from HoldingSpaceKeyedService to handle the pinning behaviour.
   HoldingSpaceKeyedService* const holding_space_service =
       HoldingSpaceKeyedServiceFactory::GetInstance()->GetService(
-          browser()->profile());
+          browser()->GetProfile());
   holding_space_service->AddPinnedFiles({file_system_url});
 
   base::FilePath relative_path;
@@ -687,7 +737,7 @@ IN_PROC_BROWSER_TEST_P(HoldingSpaceKeyedServiceFlexibleFsBrowserTest,
                        RemovesItemsWhenBackingFileDisappears) {
   // Create an `in_progress_holding_space_item_to_delete`.
   const auto* in_progress_holding_space_item_to_delete = AddHoldingSpaceItem(
-      browser()->profile(),
+      browser()->GetProfile(),
       CreateTextFile(GetTestMountPoint(),
                      /*relative_path=*/std::nullopt),
       HoldingSpaceProgress(/*current_bytes=*/0, /*total_bytes=*/100));
@@ -703,8 +753,8 @@ IN_PROC_BROWSER_TEST_P(HoldingSpaceKeyedServiceFlexibleFsBrowserTest,
 
   // Create a completed `holding_space_item_to_delete`.
   const auto* holding_space_item_to_delete = AddHoldingSpaceItem(
-      browser()->profile(), CreateTextFile(GetTestMountPoint(),
-                                           /*relative_path=*/std::nullopt));
+      browser()->GetProfile(), CreateTextFile(GetTestMountPoint(),
+                                              /*relative_path=*/std::nullopt));
 
   // Delete its backing file and verify that it is removed from holding space.
   // Note that this guarantees that scheduled validity checks will have run.
@@ -722,7 +772,7 @@ IN_PROC_BROWSER_TEST_P(HoldingSpaceKeyedServiceFlexibleFsBrowserTest,
 
   // Create an `in_progress_holding_space_item_to_move`.
   const auto* in_progress_holding_space_item_to_move = AddHoldingSpaceItem(
-      browser()->profile(),
+      browser()->GetProfile(),
       CreateTextFile(GetTestMountPoint(),
                      /*relative_path=*/std::nullopt),
       HoldingSpaceProgress(/*current_bytes=*/0, /*total_bytes=*/100));
@@ -740,8 +790,8 @@ IN_PROC_BROWSER_TEST_P(HoldingSpaceKeyedServiceFlexibleFsBrowserTest,
 
   // Create a completed `holding_space_item_to_move`.
   const auto* holding_space_item_to_move = AddHoldingSpaceItem(
-      browser()->profile(), CreateTextFile(GetTestMountPoint(),
-                                           /*relative_path=*/std::nullopt));
+      browser()->GetProfile(), CreateTextFile(GetTestMountPoint(),
+                                              /*relative_path=*/std::nullopt));
 
   // Move its backing file and verify that it is removed from holding space.
   // Note that this guarantees that scheduled validity checks will have run.
@@ -765,7 +815,7 @@ IN_PROC_BROWSER_TEST_P(HoldingSpaceKeyedServiceFlexibleFsBrowserTest,
   // Add an `in_progress_holding_space_item_to_complete`. Because the item is
   // in-progress, no file system watch should have been registered.
   const auto* in_progress_holding_space_item_to_complete = AddHoldingSpaceItem(
-      browser()->profile(),
+      browser()->GetProfile(),
       CreateTextFile(GetTestMountPoint(),
                      /*relative_path=*/std::nullopt),
       HoldingSpaceProgress(/*current_bytes=*/0, /*total_bytes=*/100));
@@ -790,7 +840,7 @@ IN_PROC_BROWSER_TEST_P(HoldingSpaceKeyedServiceFlexibleFsBrowserTest,
 IN_PROC_BROWSER_TEST_P(HoldingSpaceKeyedServiceFlexibleFsBrowserTest,
                        ItemsNotRemovedDuringSuspend) {
   const auto* holding_space_item =
-      AddHoldingSpaceItem(browser()->profile(), GetPredefinedTestFile(0));
+      AddHoldingSpaceItem(browser()->GetProfile(), GetPredefinedTestFile(0));
 
   auto* holding_space_model = HoldingSpaceController::Get()->model();
   EXPECT_TRUE(holding_space_model);
@@ -816,7 +866,7 @@ IN_PROC_BROWSER_TEST_P(HoldingSpaceKeyedServiceFlexibleFsBrowserTest,
 IN_PROC_BROWSER_TEST_P(HoldingSpaceKeyedServiceFlexibleFsBrowserTest,
                        PRE_RestoreItemsOnRestart) {
   const auto* holding_space_item =
-      AddHoldingSpaceItem(browser()->profile(), GetPredefinedTestFile(0));
+      AddHoldingSpaceItem(browser()->GetProfile(), GetPredefinedTestFile(0));
 
   auto* holding_space_model = HoldingSpaceController::Get()->model();
   ASSERT_TRUE(holding_space_model);

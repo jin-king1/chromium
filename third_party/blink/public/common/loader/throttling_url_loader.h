@@ -19,6 +19,7 @@
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/bindings/unique_receiver_set.h"
+#include "services/network/public/cpp/http_request_headers_update_params.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/mojom/accept_ch_frame_observer.mojom.h"
@@ -103,6 +104,15 @@ class BLINK_COMMON_EXPORT ThrottlingURLLoader
   // Note that once |client_receiver_delegate| is set, the relevant throttle
   // callbacks like BeforeWillProcessResponse(), WillProcessResponse(), and
   // WillOnCompleteWithError(), will not be triggered by the returned object.
+  //
+  // Note that `CreateLoaderAndStart()` (or equivalently `Start()`) can notify
+  // `client` immediately & synchronously (e.g. via
+  // `URLLoaderThrottle::Delegate::CancelWithError()` inside
+  // `WillStartRequest()`) even before returning the
+  // `std::unique_ptr<ThrottlingURLLoader>`. To avoid this for the short-term,
+  // call `CreateLoader()` then `Start()`.
+  //
+  // TODO(https://crbug.com/433324863): Figure out a longer-term solution.
   static std::unique_ptr<ThrottlingURLLoader> CreateLoaderAndStart(
       scoped_refptr<network::SharedURLLoaderFactory> factory,
       std::vector<std::unique_ptr<URLLoaderThrottle>> throttles,
@@ -116,6 +126,19 @@ class BLINK_COMMON_EXPORT ThrottlingURLLoader
           std::nullopt,
       ClientReceiverDelegate* client_receiver_delegate = nullptr);
 
+  // See the comments at `CreateLoaderAndStart()` above for parameters.
+  static std::unique_ptr<ThrottlingURLLoader> CreateLoader(
+      std::vector<std::unique_ptr<URLLoaderThrottle>> throttles,
+      network::mojom::URLLoaderClient* client,
+      const net::NetworkTrafficAnnotationTag& traffic_annotation,
+      ClientReceiverDelegate* client_receiver_delegate);
+  void Start(scoped_refptr<network::SharedURLLoaderFactory> factory,
+             int32_t request_id,
+             uint32_t options,
+             network::ResourceRequest* url_request,
+             scoped_refptr<base::SequencedTaskRunner> task_runner,
+             std::optional<std::vector<std::string>> cors_exempt_header_list);
+
   ThrottlingURLLoader(const ThrottlingURLLoader&) = delete;
   ThrottlingURLLoader& operator=(const ThrottlingURLLoader&) = delete;
   ~ThrottlingURLLoader() override;
@@ -128,19 +151,15 @@ class BLINK_COMMON_EXPORT ThrottlingURLLoader
   // implementing similar logic to FollowRedirectForcingRestart(). If this is
   // called, a future request for the redirect should be guaranteed to be sent
   // with the same request_id.
-  // `removed_headers`, `modified_headers` and `modified_cors_exempt_headers`
-  // will be merged to corresponding members in the ThrottlingURLLoader, and
-  // then apply updates against `resource_request`.
+  // `headers_update_params` will be merged to
+  // `ThrottlingURLLoader::headers_update_params_`, and then apply updates
+  // against `resource_request`.
   void ResetForFollowRedirect(
       network::ResourceRequest& resource_request,
-      const std::vector<std::string>& removed_headers,
-      const net::HttpRequestHeaders& modified_headers,
-      const net::HttpRequestHeaders& modified_cors_exempt_headers);
+      network::HttpRequestHeadersUpdateParams headers_update_params);
 
   void FollowRedirect(
-      const std::vector<std::string>& removed_headers,
-      const net::HttpRequestHeaders& modified_headers,
-      const net::HttpRequestHeaders& modified_cors_exempt_headers);
+      network::HttpRequestHeadersUpdateParams headers_update_params);
   void SetPriority(net::RequestPriority priority, int32_t intra_priority_value);
 
   // Disconnect the forwarding URLLoaderClient and the URLLoader. Returns the
@@ -152,8 +171,6 @@ class BLINK_COMMON_EXPORT ThrottlingURLLoader
   void CancelWithExtendedError(int error_code,
                                int extended_reason_code,
                                std::string_view custom_reason);
-
-  bool response_intercepted() const { return response_intercepted_; }
 
   // Indicates a restart did occur due to a Critical-CH HTTP Header.
   void DidRestartForCriticalClientHint() {
@@ -168,13 +185,6 @@ class BLINK_COMMON_EXPORT ThrottlingURLLoader
       network::mojom::URLLoaderClient* client,
       const net::NetworkTrafficAnnotationTag& traffic_annotation,
       ClientReceiverDelegate* client_receiver_delegate);
-
-  void Start(scoped_refptr<network::SharedURLLoaderFactory> factory,
-             int32_t request_id,
-             uint32_t options,
-             network::ResourceRequest* url_request,
-             scoped_refptr<base::SequencedTaskRunner> task_runner,
-             std::optional<std::vector<std::string>> cors_exempt_header_list);
 
   void StartNow();
   void RestartWithURLResetNow();
@@ -211,6 +221,8 @@ class BLINK_COMMON_EXPORT ThrottlingURLLoader
 
   void Resume();
   void SetPriority(net::RequestPriority priority);
+  void MergeRequestHeaders(
+      network::HttpRequestHeadersUpdateParams headers_update_params);
   void UpdateRequestHeaders(network::ResourceRequest& resource_request);
   void UpdateDeferredResponseHead(
       network::mojom::URLResponseHeadPtr new_response_head,
@@ -226,6 +238,11 @@ class BLINK_COMMON_EXPORT ThrottlingURLLoader
 
   // Disconnects the client connection and releases the URLLoader.
   void DisconnectClient(std::string_view custom_description);
+
+  void ForwardResponseToClient(
+      network::mojom::URLResponseHeadPtr head,
+      mojo::ScopedDataPipeConsumerHandle body,
+      std::optional<mojo_base::BigBuffer> cached_metadata);
 
   enum DeferredStage {
     DEFERRED_NONE,
@@ -346,11 +363,11 @@ class BLINK_COMMON_EXPORT ThrottlingURLLoader
   // The latest request URL from where we expect a response
   GURL response_url_;
 
-  bool response_intercepted_ = false;
+  // Whether URLLoaderClient's OnReceiveResponse() has been called. It must be
+  // called at most once. It is added to debug crbug.com/463388771.
+  bool has_forwarded_response_ = false;
 
-  std::vector<std::string> removed_headers_;
-  net::HttpRequestHeaders modified_headers_;
-  net::HttpRequestHeaders modified_cors_exempt_headers_;
+  network::HttpRequestHeadersUpdateParams headers_update_params_;
 
   base::TimeTicks critical_ch_restart_time_;
 

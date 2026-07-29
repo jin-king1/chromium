@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "media/capture/video/chromeos/token_manager.h"
 
@@ -13,9 +9,9 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <string>
 
-#include "base/containers/contains.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/strings/string_number_conversions.h"
@@ -93,7 +89,7 @@ bool TokenManager::GenerateTestClientToken() {
 base::UnguessableToken TokenManager::GetTokenForTrustedClient(
     cros::mojom::CameraClientType type) {
   base::AutoLock l(client_token_map_lock_);
-  if (!base::Contains(kTrustedClientTypes, type)) {
+  if (!std::ranges::contains(kTrustedClientTypes, type)) {
     return base::UnguessableToken();
   }
   auto& token_set = client_token_map_[type];

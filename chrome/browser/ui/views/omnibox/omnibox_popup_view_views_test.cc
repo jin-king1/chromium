@@ -4,9 +4,11 @@
 
 #include "chrome/browser/ui/views/omnibox/omnibox_popup_view_views_test.h"
 
-#include "base/functional/callback_forward.h"
 #include "build/build_config.h"
+#include "chrome/browser/ui/omnibox/omnibox_next_features.h"
+#include "chrome/browser/ui/omnibox/omnibox_popup_state_manager.h"
 #include "content/public/test/test_utils.h"
+#include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/interaction/expect_call_in_scope.h"
 
 #if BUILDFLAG(IS_LINUX)
@@ -21,27 +23,40 @@ OmniboxPopupViewViewsTest::ThemeChangeWaiter::~ThemeChangeWaiter() {
   content::RunAllPendingInMessageLoop();
 }
 
+void OmniboxPopupViewViewsTest::SetUpOnMainThread() {
+  if (base::FeatureList::IsEnabled(omnibox::internal::kWebUIOmniboxPopup)) {
+    GTEST_SKIP() << "Views popup code shouldn't run when kWebUIOmniboxPopup "
+                    "is enabled.";
+  }
+}
+
 views::Widget* OmniboxPopupViewViewsTest::CreatePopupForTestQuery() {
   const auto* autocomplete_controller = controller()->autocomplete_controller();
   EXPECT_TRUE(autocomplete_controller->result().empty());
-  EXPECT_FALSE(popup_view()->IsOpen());
+  EXPECT_FALSE(controller()->IsPopupOpen());
   EXPECT_FALSE(GetPopupWidget());
 
-  // Verify that the on-shown callback is called at the correct time.
-  UNCALLED_MOCK_CALLBACK(base::RepeatingClosure, popup_callback);
-  const auto subscription = popup_view()->AddOpenListener(popup_callback.Get());
+  // Verify that the popup state manager callback is called when popup opens.
+  UNCALLED_MOCK_CALLBACK(
+      base::RepeatingCallback<void(OmniboxPopupState, OmniboxPopupState)>,
+      popup_callback);
+  const auto subscription =
+      controller()->popup_state_manager()->AddPopupStateChangedCallback(
+          popup_callback.Get());
 
-  EXPECT_CALL_IN_SCOPE(popup_callback, Run, {
-    edit_model()->SetUserText(u"foo");
-    AutocompleteInput input(
-        u"foo", metrics::OmniboxEventProto::BLANK,
-        ChromeAutocompleteSchemeClassifier(browser()->profile()));
-    input.set_omit_asynchronous_matches(true);
-    controller()->StartAutocomplete(input);
+  EXPECT_CALL_IN_SCOPE(
+      popup_callback,
+      Run(OmniboxPopupState::kNone, OmniboxPopupState::kClassic), {
+        edit_model()->SetUserText(u"foo");
+        AutocompleteInput input(
+            u"foo", metrics::OmniboxEventProto::BLANK,
+            ChromeAutocompleteSchemeClassifier(browser()->GetProfile()));
+        input.set_omit_asynchronous_matches(true);
+        controller()->StartAutocomplete(input);
 
-    EXPECT_FALSE(autocomplete_controller->result().empty());
-    EXPECT_TRUE(popup_view()->IsOpen());
-  });
+        EXPECT_FALSE(autocomplete_controller->result().empty());
+        EXPECT_TRUE(controller()->IsPopupOpen());
+      });
 
   views::Widget* popup = GetPopupWidget();
   EXPECT_TRUE(popup);
@@ -61,7 +76,7 @@ void OmniboxPopupViewViewsTest::UseDefaultTheme() {
   ui::NativeTheme::GetInstanceForNativeUi()->NotifyOnNativeThemeUpdated();
 
   ThemeService* theme_service =
-      ThemeServiceFactory::GetForProfile(browser()->profile());
+      ThemeServiceFactory::GetForProfile(browser()->GetProfile());
   if (!theme_service->UsingDefaultTheme()) {
     ThemeChangeWaiter wait(theme_service);
     theme_service->UseDefaultTheme();

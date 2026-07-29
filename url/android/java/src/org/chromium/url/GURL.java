@@ -25,6 +25,7 @@ import org.chromium.base.task.TaskTraits;
 import org.chromium.build.BuildConfig;
 import org.chromium.build.annotations.Contract;
 import org.chromium.build.annotations.Initializer;
+import org.chromium.build.annotations.MonotonicNonNull;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.url.mojom.Url;
@@ -64,7 +65,7 @@ public class GURL {
 
     // Right now this is only collecting reports on Canary which has a relatively small population.
     private static final int DEBUG_REPORT_PERCENTAGE = 10;
-    private static @Nullable ReportDebugThrowableCallback sReportCallback;
+    private static @MonotonicNonNull ReportDebugThrowableCallback sReportCallback;
 
     // TODO(crbug.com/40113773): Right now we return a new String with each request for a
     //      GURL component other than the spec itself. Should we cache return Strings (as
@@ -74,7 +75,7 @@ public class GURL {
     private Parsed mParsed;
 
     private static class Holder {
-        private static GURL sEmptyGURL = new GURL("");
+        private static final GURL sEmptyGURL = new GURL("");
     }
 
     @CalledByNative
@@ -133,7 +134,7 @@ public class GURL {
                 PostTask.postTask(
                         TaskTraits.BEST_EFFORT_MAY_BLOCK,
                         () -> {
-                            assumeNonNull(sReportCallback).run(throwable);
+                            sReportCallback.run(throwable);
                         });
             }
         }
@@ -189,46 +190,46 @@ public class GURL {
         return mSpec.substring(begin, begin + length);
     }
 
-    /** See native GURL::scheme(). */
+    /** See native GURL::GetScheme(). */
     public String getScheme() {
         return getComponent(mParsed.mSchemeBegin, mParsed.mSchemeLength);
     }
 
-    /** See native GURL::username(). */
+    /** See native GURL::GetUsername(). */
     public String getUsername() {
         return getComponent(mParsed.mUsernameBegin, mParsed.mUsernameLength);
     }
 
-    /** See native GURL::password(). */
+    /** See native GURL::GetPassword(). */
     public String getPassword() {
         return getComponent(mParsed.mPasswordBegin, mParsed.mPasswordLength);
     }
 
-    /** See native GURL::host(). */
+    /** See native GURL::GetHost(). */
     public String getHost() {
         return getComponent(mParsed.mHostBegin, mParsed.mHostLength);
     }
 
     /**
-     * See native GURL::port().
+     * See native GURL::GetHost().
      *
-     * Note: Do not convert this to an integer yourself. See native GURL::IntPort().
+     * <p>Note: Do not convert this to an integer yourself. See native GURL::IntPort().
      */
     public String getPort() {
         return getComponent(mParsed.mPortBegin, mParsed.mPortLength);
     }
 
-    /** See native GURL::path(). */
+    /** See native GURL::GetPath(). */
     public String getPath() {
         return getComponent(mParsed.mPathBegin, mParsed.mPathLength);
     }
 
-    /** See native GURL::query(). */
+    /** See native GURL::GetQuery(). */
     public String getQuery() {
         return getComponent(mParsed.mQueryBegin, mParsed.mQueryLength);
     }
 
-    /** See native GURL::ref(). */
+    /** See native GURL::GetRef(). */
     public String getRef() {
         return getComponent(mParsed.mRefBegin, mParsed.mRefLength);
     }
@@ -254,6 +255,11 @@ public class GURL {
     /** See native GURL::DomainIs(). */
     public boolean domainIs(String domain) {
         return getNatives().domainIs(this, domain);
+    }
+
+    /** See native GURL::EqualsIgnoringRef(). */
+    public boolean equalsIgnoringRef(GURL other) {
+        return getNatives().equalsIgnoringRef(this, other);
     }
 
     /**
@@ -430,6 +436,9 @@ public class GURL {
 
         /** Reconstructs the native GURL for this Java GURL, and calls GURL.DomainIs. */
         boolean domainIs(@JniType("GURL") GURL self, @JniType("std::string") String domain);
+
+        /** Reconstructs the native GURL for this Java GURL, and calls GURL.EqualsIgnoringRef. */
+        boolean equalsIgnoringRef(@JniType("GURL") GURL self, @JniType("GURL") GURL other);
 
         /** Reconstructs the native GURL for this Java GURL, assigning it to nativeGurl. */
         void initNative(

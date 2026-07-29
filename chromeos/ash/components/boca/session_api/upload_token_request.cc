@@ -5,6 +5,7 @@
 #include "chromeos/ash/components/boca/session_api/upload_token_request.h"
 
 #include "base/json/json_writer.h"
+#include "base/strings/string_util.h"
 #include "base/values.h"
 #include "chromeos/ash/components/boca/session_api/constants.h"
 #include "google_apis/gaia/gaia_id.h"
@@ -59,10 +60,10 @@ bool UploadTokenRequest::GetContentData(std::string* upload_content_type,
                                         std::string* upload_content) {
   *upload_content_type = boca::kContentTypeApplicationJson;
 
-  base::Value::Dict root;
+  base::DictValue root;
   root.Set("token", token_);
 
-  base::JSONWriter::Write(root, upload_content);
+  *upload_content = base::WriteJson(root).value_or("");
   return true;
 }
 

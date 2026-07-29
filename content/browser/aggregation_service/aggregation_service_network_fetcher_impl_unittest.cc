@@ -12,6 +12,7 @@
 #include "base/barrier_closure.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/no_destructor.h"
 #include "base/strings/string_util.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
@@ -23,7 +24,6 @@
 #include "net/base/load_flags.h"
 #include "net/base/net_errors.h"
 #include "net/http/http_status_code.h"
-#include "services/data_decoder/public/cpp/test_support/in_process_data_decoder.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/url_loader_completion_status.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
@@ -42,18 +42,6 @@ const char kExampleUrl[] =
 
 const aggregation_service::TestHpkeKey kExampleHpkeKey =
     aggregation_service::TestHpkeKey("abcd");
-const std::string kExampleValidJson = base::ReplaceStringPlaceholders(
-    R"({
-          "version": "",
-          "keys": [
-              {
-                  "id": "abcd",
-                  "key": "$1"
-              }
-          ]
-       })",
-    {kExampleHpkeKey.GetPublicKeyBase64()},
-    /*offsets=*/nullptr);
 const std::vector<PublicKey> kExamplePublicKeys = {
     kExampleHpkeKey.GetPublicKey()};
 
@@ -62,6 +50,23 @@ constexpr std::string_view kKeyFetcherStatusHistogramName =
 
 constexpr std::string_view kKeyFetcherHttpResponseOrNetErrorCodeHistogramName =
     "PrivacySandbox.AggregationService.KeyFetcher.HttpResponseOrNetErrorCode";
+
+const std::string& GetExampleValidJson() {
+  static const base::NoDestructor<std::string> s(
+      base::ReplaceStringPlaceholders(
+          R"({
+          "version": "",
+          "keys": [
+              {
+                  "id": "abcd",
+                  "key": "$1"
+              }
+          ]
+       })",
+          {kExampleHpkeKey.GetPublicKeyBase64()},
+          /*offsets=*/nullptr));
+  return *s;
+}
 
 }  // namespace
 
@@ -78,9 +83,6 @@ class AggregationServiceNetworkFetcherTest : public testing::Test {
   content::BrowserTaskEnvironment task_environment_;
   network::TestURLLoaderFactory test_url_loader_factory_;
   std::unique_ptr<AggregationServiceNetworkFetcherImpl> network_fetcher_;
-
- private:
-  data_decoder::test::InProcessDataDecoder in_process_data_decoder_;
 };
 
 TEST_F(AggregationServiceNetworkFetcherTest, RequestAttributes) {
@@ -115,7 +117,7 @@ TEST_F(AggregationServiceNetworkFetcherTest, FetchPublicKeys_Success) {
 
   EXPECT_EQ(test_url_loader_factory_.NumPending(), 1);
   EXPECT_TRUE(test_url_loader_factory_.SimulateResponseForPendingRequest(
-      kExampleUrl, kExampleValidJson));
+      kExampleUrl, GetExampleValidJson()));
   task_environment_.RunUntilQuit();
 
   // kSuccess = 0
@@ -179,7 +181,7 @@ TEST_F(AggregationServiceNetworkFetcherTest, FetchPublicKeysLargeBody_Failed) {
 
   EXPECT_EQ(test_url_loader_factory_.NumPending(), 1);
 
-  std::string response_body = kExampleValidJson + std::string(1000000, ' ');
+  std::string response_body = GetExampleValidJson() + std::string(1000000, ' ');
   EXPECT_TRUE(test_url_loader_factory_.SimulateResponseForPendingRequest(
       kExampleUrl, response_body));
   task_environment_.RunUntilQuit();
@@ -197,7 +199,7 @@ TEST_F(AggregationServiceNetworkFetcherTest,
   EXPECT_EQ(test_url_loader_factory_.NumPending(), 1);
   network_fetcher_.reset();
   EXPECT_FALSE(test_url_loader_factory_.SimulateResponseForPendingRequest(
-      kExampleUrl, kExampleValidJson));
+      kExampleUrl, GetExampleValidJson()));
 }
 
 TEST_F(AggregationServiceNetworkFetcherTest, FetchRequestHangs_TimesOut) {
@@ -217,7 +219,7 @@ TEST_F(AggregationServiceNetworkFetcherTest, FetchRequestHangs_TimesOut) {
 
   EXPECT_EQ(test_url_loader_factory_.NumPending(), 0);
   EXPECT_FALSE(test_url_loader_factory_.SimulateResponseForPendingRequest(
-      kExampleUrl, kExampleValidJson));
+      kExampleUrl, GetExampleValidJson()));
   task_environment_.RunUntilQuit();
 
   // kDownloadError = 1
@@ -294,7 +296,7 @@ TEST_F(AggregationServiceNetworkFetcherTest,
 
     // Simulate a second request with respoonse.
     EXPECT_TRUE(test_url_loader_factory_.SimulateResponseForPendingRequest(
-        kExampleUrl, kExampleValidJson));
+        kExampleUrl, GetExampleValidJson()));
     task_environment_.RunUntilQuit();
 
     // kSuccess = 0
@@ -345,7 +347,7 @@ TEST_F(AggregationServiceNetworkFetcherTest, MultipleRequests_AllCallbacksRun) {
 
   for (int i = 0; i < 10; i++) {
     EXPECT_TRUE(test_url_loader_factory_.SimulateResponseForPendingRequest(
-        kExampleUrl, kExampleValidJson));
+        kExampleUrl, GetExampleValidJson()));
   }
   task_environment_.RunUntilQuit();
 
@@ -387,7 +389,7 @@ TEST_F(AggregationServiceNetworkFetcherTest, VerifyExpiryTime) {
 
   EXPECT_TRUE(test_url_loader_factory_.SimulateResponseForPendingRequest(
       GURL(kExampleUrl), network::URLLoaderCompletionStatus(net::OK),
-      std::move(response_head), kExampleValidJson));
+      std::move(response_head), GetExampleValidJson()));
   task_environment_.RunUntilQuit();
 
   // kSuccess = 0
@@ -422,7 +424,7 @@ TEST_F(AggregationServiceNetworkFetcherTest, VerifyExpiredKeyOnFetch) {
 
   EXPECT_TRUE(test_url_loader_factory_.SimulateResponseForPendingRequest(
       GURL(kExampleUrl), network::URLLoaderCompletionStatus(net::OK),
-      std::move(response_head), kExampleValidJson));
+      std::move(response_head), GetExampleValidJson()));
   task_environment_.RunUntilQuit();
 
   // kExpiredKeyError = 4

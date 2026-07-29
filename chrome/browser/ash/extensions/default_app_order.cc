@@ -12,7 +12,7 @@
 #include "ash/public/cpp/app_list/internal_app_id_constants.h"
 #include "ash/webui/mall/app_id.h"
 #include "ash/webui/projector_app/public/cpp/projector_app_constants.h"
-#include "ash/webui/system_apps/public/system_web_app_type.h"
+#include "base/containers/span.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
@@ -25,8 +25,10 @@
 #include "chrome/browser/apps/app_service/policy_util.h"
 #include "chrome/browser/ash/guest_os/guest_os_terminal.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/web_applications/policy/app_service_web_app_policy.h"
 #include "chrome/common/extensions/extension_constants.h"
 #include "chromeos/ash/components/file_manager/app_id.h"
+#include "chromeos/ash/components/system_web_apps/system_web_app_type.h"
 #include "chromeos/ash/experiences/arc/app/arc_app_constants.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "components/app_constants/constants.h"
@@ -52,7 +54,7 @@ const char kImportDefaultOrderAttr[] = "import_default_order";
 
 // Reads external ordinal json file and returns the parsed value. Returns NULL
 // if the file does not exist or could not be parsed properly.
-std::unique_ptr<base::Value::List> ReadExternalOrdinalFile(
+std::unique_ptr<base::ListValue> ReadExternalOrdinalFile(
     const base::FilePath& path) {
   if (!base::PathExists(path))
     return nullptr;
@@ -70,25 +72,25 @@ std::unique_ptr<base::Value::List> ReadExternalOrdinalFile(
   if (!value->is_list())
     LOG(WARNING) << "Expect a JSON list in file " << path.value();
 
-  return std::make_unique<base::Value::List>(std::move(*value).TakeList());
+  return std::make_unique<base::ListValue>(std::move(*value).TakeList());
 }
 
-std::string GetLocaleSpecificStringImpl(const base::Value::Dict& root,
+std::string GetLocaleSpecificStringImpl(const base::DictValue& root,
                                         const std::string& locale,
                                         const std::string& dictionary_name,
                                         const std::string& entry_name) {
-  const base::Value::Dict* dict_content = root.FindDict(dictionary_name);
+  const base::DictValue* dict_content = root.FindDict(dictionary_name);
   if (!dict_content)
     return std::string();
 
-  const base::Value::Dict* locale_dict = dict_content->FindDict(locale);
+  const base::DictValue* locale_dict = dict_content->FindDict(locale);
   if (locale_dict) {
     const std::string* result = locale_dict->FindString(entry_name);
     if (result)
       return *result;
   }
 
-  const base::Value::Dict* default_dict = dict_content->FindDict(kDefaultAttr);
+  const base::DictValue* default_dict = dict_content->FindDict(kDefaultAttr);
   if (default_dict) {
     const std::string* result = default_dict->FindString(entry_name);
     if (result)
@@ -124,6 +126,7 @@ void GetDefault(std::vector<std::string>* app_ids) {
     ash::kGoogleMeetAppId,
 
     ash::kGoogleChatAppId,
+    ash::kOldGoogleChatAppId,
 
     extension_misc::kGoogleDocsAppId,
     ash::kGoogleDocsAppId,
@@ -145,6 +148,10 @@ void GetDefault(std::vector<std::string>* app_ids) {
     ash::kGoogleCalendarAppId,
 
     ash::kMessagesAppId,
+
+    ash::kNotebookLmAppId,
+
+    ash::kVidsAppId,
 
     arc::kYoutubeAppId,
     extension_misc::kYoutubeAppId,
@@ -216,7 +223,7 @@ void GetDefault(std::vector<std::string>* app_ids) {
 
 PackageId SystemPackageId(ash::SystemWebAppType type) {
   return PackageId(PackageType::kSystem,
-                   *apps_util::GetPolicyIdForSystemWebAppType(type));
+                   *web_app::GetPolicyIdForSystemWebAppType(type));
 }
 
 }  // namespace
@@ -266,7 +273,7 @@ void ExternalLoader::Load() {
   base::FilePath ordinals_file;
   CHECK(base::PathService::Get(ash::FILE_DEFAULT_APP_ORDER, &ordinals_file));
 
-  std::unique_ptr<base::Value::List> ordinals_value =
+  std::unique_ptr<base::ListValue> ordinals_value =
       ReadExternalOrdinalFile(ordinals_file);
   if (ordinals_value) {
     std::string locale = g_browser_process->GetApplicationLocale();
@@ -275,7 +282,7 @@ void ExternalLoader::Load() {
         std::string app_id = i.GetString();
         app_ids_.push_back(app_id);
       } else if (i.is_dict()) {
-        const base::Value::Dict& dict = i.GetDict();
+        const base::DictValue& dict = i.GetDict();
         if (dict.FindBool(kOemAppsFolderAttr).value_or(false)) {
           oem_apps_folder_name_ = GetLocaleSpecificStringImpl(
               dict, locale, kLocalizedContentAttr, kNameAttr);
@@ -306,10 +313,9 @@ void Get(std::vector<std::string>* app_ids) {
 }
 
 base::span<const apps::LauncherItem> GetAppPreloadServiceDefaults() {
-  static const base::NoDestructor<std::array<apps::LauncherItem, 20>>
+  static const base::NoDestructor<std::array<apps::LauncherItem, 19>>
       kPackageIds({
           PackageId(PackageType::kChromeApp, app_constants::kChromeAppId),
-          PackageId(PackageType::kSystem, app_constants::kLacrosChrome),
           PackageId(PackageType::kChromeApp, arc::kPlayStoreAppId),
           SystemPackageId(ash::SystemWebAppType::FILE_MANAGER),
           PackageId(PackageType::kWeb, ash::kGmailManifestId),

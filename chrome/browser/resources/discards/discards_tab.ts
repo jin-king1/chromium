@@ -3,123 +3,174 @@
 // found in the LICENSE file.
 
 import 'chrome://resources/js/action_link.js';
-import 'chrome://resources/cr_elements/action_link.css.js';
 import '/strings.m.js';
 
 import {assertNotReached} from 'chrome://resources/js/assert.js';
 import {getFaviconForPageURL} from 'chrome://resources/js/icon.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
-import type {TimeDelta} from 'chrome://resources/mojo/mojo/public/mojom/base/time.mojom-webui.js';
-import type {DomRepeatEvent} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
-import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
 import {boolToString, durationToString, getOrCreateDetailsProvider} from './discards.js';
 import type {DetailsProviderRemote, TabDiscardsInfo} from './discards.mojom-webui.js';
 import {CanFreeze, LifecycleUnitVisibility} from './discards.mojom-webui.js';
-import {getTemplate} from './discards_tab.html.js';
+import {getCss} from './discards_tab.css.js';
+import {getHtml} from './discards_tab.html.js';
 import {LifecycleUnitDiscardReason, LifecycleUnitLoadingState, LifecycleUnitState} from './lifecycle_unit_state.mojom-webui.js';
-import {SortedTableMixin} from './sorted_table_mixin.js';
+import {SortedTableMixinLit} from './sorted_table_mixin_lit.js';
 
-interface DictType {
-  [key: string]: (boolean|number|string);
+function compareByTitle(a: TabDiscardsInfo, b: TabDiscardsInfo): number {
+  const val1 = a.title.toLowerCase();
+  const val2 = b.title.toLowerCase();
+  if (val1 === val2) {
+    return 0;
+  }
+  return val1 > val2 ? 1 : -1;
+}
+
+function compareByTabUrl(a: TabDiscardsInfo, b: TabDiscardsInfo): number {
+  const val1 = a.tabUrl.toLowerCase();
+  const val2 = b.tabUrl.toLowerCase();
+  if (val1 === val2) {
+    return 0;
+  }
+  return val1 > val2 ? 1 : -1;
+}
+
+function compareByIsAutoDiscardable(
+    a: TabDiscardsInfo, b: TabDiscardsInfo): number {
+  const val1 = a.isAutoDiscardable;
+  const val2 = b.isAutoDiscardable;
+  if (val1 === val2) {
+    return 0;
+  }
+  return val1 > val2 ? 1 : -1;
+}
+
+function compareByCanDiscard(a: TabDiscardsInfo, b: TabDiscardsInfo): number {
+  const val1 = a.canDiscard;
+  const val2 = b.canDiscard;
+  if (val1 === val2) {
+    return 0;
+  }
+  return val1 > val2 ? 1 : -1;
+}
+
+function compareByState(a: TabDiscardsInfo, b: TabDiscardsInfo): number {
+  const val1 = a.state;
+  const val2 = b.state;
+  // If the keys are discarding state, then break ties using the discard
+  // reason.
+  if (val1 === val2 && val1 === LifecycleUnitState.DISCARDED) {
+    return a.discardReason - b.discardReason;
+  }
+  return val1 - val2;
+}
+
+function compareByVisibility(a: TabDiscardsInfo, b: TabDiscardsInfo): number {
+  return (a.visibility as number) - (b.visibility as number);
+}
+
+function compareByLoadingState(a: TabDiscardsInfo, b: TabDiscardsInfo): number {
+  return a.loadingState - b.loadingState;
+}
+
+function compareByDiscardCount(a: TabDiscardsInfo, b: TabDiscardsInfo): number {
+  return a.discardCount - b.discardCount;
+}
+
+function compareByUtilityRank(a: TabDiscardsInfo, b: TabDiscardsInfo): number {
+  return a.utilityRank - b.utilityRank;
+}
+
+function compareByLastActiveSeconds(
+    a: TabDiscardsInfo, b: TabDiscardsInfo): number {
+  return a.lastActiveSeconds - b.lastActiveSeconds;
+}
+
+function compareBySiteEngagementScore(
+    a: TabDiscardsInfo, b: TabDiscardsInfo): number {
+  return a.siteEngagementScore - b.siteEngagementScore;
+}
+
+function compareByCanFreeze(a: TabDiscardsInfo, b: TabDiscardsInfo): number {
+  return a.canFreeze - b.canFreeze;
 }
 
 /**
- * Compares two TabDiscardsInfos based on the data in the provided sort-key.
- * @param sortKey The key of the sort. See the "data-sort-key"
- *     attribute of the table headers for valid sort-keys.
- * @param a The first value being compared.
- * @param b The second value being compared.
- * @return A negative number if a < b, 0 if a === b, and a positive
+ * @param sortKey The sort key to get a function for.
+ * @return
+ *     A comparison function that compares two site data entries, returns
+ *     negative number if a < b, 0 if a === b, and a positive
  *     number if a > b.
  */
-export function compareTabDiscardsInfos(
-    sortKey: string, a: DictType, b: DictType): number {
-  let val1 = a[sortKey];
-  let val2 = b[sortKey];
-
-  // Compares strings.
-  if (sortKey === 'title' || sortKey === 'tabUrl') {
-    val1 = (val1 as string).toLowerCase();
-    val2 = (val2 as string).toLowerCase();
-    if (val1 === val2) {
-      return 0;
-    }
-    return val1 > val2 ? 1 : -1;
+export function getSortFunctionForKey(sortKey: string): (
+    a: TabDiscardsInfo, b: TabDiscardsInfo) => number {
+  switch (sortKey) {
+    case 'title':
+      return compareByTitle;
+    case 'tabUrl':
+      return compareByTabUrl;
+    case 'isAutoDiscardable':
+      return compareByIsAutoDiscardable;
+    case 'canDiscard':
+      return compareByCanDiscard;
+    case 'state':
+      return compareByState;
+    case 'visibility':
+      return compareByVisibility;
+    case 'loadingState':
+      return compareByLoadingState;
+    case 'discardCount':
+      return compareByDiscardCount;
+    case 'utilityRank':
+      return compareByUtilityRank;
+    case 'lastActiveSeconds':
+      return compareByLastActiveSeconds;
+    case 'siteEngagementScore':
+      return compareBySiteEngagementScore;
+    case 'canFreeze':
+      return compareByCanFreeze;
+    default:
+      assertNotReached('Unknown sortKey: ' + sortKey);
   }
-
-  // Compares boolean fields.
-  if (['isAutoDiscardable', 'canDiscard'].includes(sortKey)) {
-    if (val1 === val2) {
-      return 0;
-    }
-    return val1 ? 1 : -1;
-  }
-
-  // Compare lifecycle state. This is actually a compound key.
-  if (sortKey === 'state') {
-    // If the keys are discarding state, then break ties using the discard
-    // reason.
-    if (val1 === val2 && val1 === LifecycleUnitState.DISCARDED) {
-      val1 = a['discardReason'];
-      val2 = b['discardReason'];
-    }
-    return (val1 as LifecycleUnitState) - (val2 as LifecycleUnitState);
-  }
-
-  // Compares numeric fields.
-  // NOTE: visibility, loadingState and canFreeze are represented as a numeric
-  // value.
-  if ([
-        'visibility',
-        'loadingState',
-        'discardCount',
-        'utilityRank',
-        'lastActiveSeconds',
-        'siteEngagementScore',
-        'canFreeze',
-      ].includes(sortKey)) {
-    return (val1 as number) - (val2 as number);
-  }
-
-  assertNotReached('Unsupported sort key: ' + sortKey);
 }
 
-const DiscardsTabElementBase = SortedTableMixin(PolymerElement);
+const DiscardsTabElementBase = SortedTableMixinLit(CrLitElement);
 
-class DiscardsTabElement extends DiscardsTabElementBase {
+export class DiscardsTabElement extends DiscardsTabElementBase {
   static get is() {
     return 'discards-tab';
   }
 
-  static get template() {
-    return getTemplate();
+  static override get styles() {
+    return getCss();
   }
 
-  static get properties() {
+  override render() {
+    return getHtml.bind(this)();
+  }
+
+  static override get properties() {
     return {
-      tabInfos_: Array,
-      isPerformanceInterventionDemoModeEnabled_: {
-        readOnly: true,
-        type: Boolean,
-        value() {
-          return loadTimeData.getBoolean(
-              'isPerformanceInterventionDemoModeEnabled');
-        },
-      },
+      tabInfos_: {type: Array},
+      isPerformanceInterventionDemoModeEnabled_: {type: Boolean},
     };
   }
 
-  private tabInfos_: TabDiscardsInfo[];
-  private isPerformanceInterventionDemoModeEnabled_: boolean;
+  protected accessor tabInfos_: TabDiscardsInfo[] = [];
+  protected accessor isPerformanceInterventionDemoModeEnabled_: boolean =
+      loadTimeData.getBoolean('isPerformanceInterventionDemoModeEnabled');
 
   /** The current update timer if any. */
   private updateTimer_: number = 0;
 
   private discardsDetailsProvider_: DetailsProviderRemote|null = null;
 
+  override sortKey: string = 'utilityRank';
+
   override connectedCallback() {
-    this.setSortKey('utilityRank');
+    super.connectedCallback();
+
     this.discardsDetailsProvider_ = getOrCreateDetailsProvider();
 
     this.updateTable_();
@@ -136,17 +187,21 @@ class DiscardsTabElement extends DiscardsTabElementBase {
    * @private
    */
   private computeSortFunction_(sortKey: string, sortReverse: boolean):
-      (a: DictType, b: DictType) => number {
-    // Polymer 2.0 may invoke multi-property observers before all properties
-    // are defined.
-    if (!sortKey) {
-      return (_a: DictType, _b: DictType) => 0;
-    }
-
-    return function(a: DictType, b: DictType) {
-      const comp = compareTabDiscardsInfos(sortKey, a, b);
+      (a: TabDiscardsInfo, b: TabDiscardsInfo) => number {
+    const sortFunction = getSortFunctionForKey(sortKey);
+    return function(a: TabDiscardsInfo, b: TabDiscardsInfo) {
+      const comp = sortFunction(a, b);
       return sortReverse ? -comp : comp;
     };
+  }
+
+  protected getSortedTabInfos_(): TabDiscardsInfo[] {
+    if (!this.tabInfos_) {
+      return [];
+    }
+    const sortFunction =
+        this.computeSortFunction_(this.sortKey, this.sortReverse);
+    return this.tabInfos_.sort(sortFunction);
   }
 
   /**
@@ -155,7 +210,7 @@ class DiscardsTabElement extends DiscardsTabElementBase {
    * @param visibility A visibility value.
    * @return A string representation of the visibility.
    */
-  private visibilityToString_(visibility: LifecycleUnitVisibility): string {
+  protected visibilityToString_(visibility: LifecycleUnitVisibility): string {
     switch (visibility) {
       case LifecycleUnitVisibility.HIDDEN:
         return 'hidden';
@@ -163,6 +218,8 @@ class DiscardsTabElement extends DiscardsTabElementBase {
         return 'occluded';
       case LifecycleUnitVisibility.VISIBLE:
         return 'visible';
+      default:
+        assertNotReached();
     }
   }
 
@@ -172,7 +229,7 @@ class DiscardsTabElement extends DiscardsTabElementBase {
    * @param loadingState A loading state value.
    * @return A string representation of the loading state.
    */
-  private loadingStateToString_(loadingState: LifecycleUnitLoadingState):
+  protected loadingStateToString_(loadingState: LifecycleUnitLoadingState):
       string {
     switch (loadingState) {
       case LifecycleUnitLoadingState.UNLOADED:
@@ -181,6 +238,8 @@ class DiscardsTabElement extends DiscardsTabElementBase {
         return 'loading';
       case LifecycleUnitLoadingState.LOADED:
         return 'loaded';
+      default:
+        assertNotReached();
     }
   }
 
@@ -201,6 +260,8 @@ class DiscardsTabElement extends DiscardsTabElementBase {
         return 'suggested';
       case LifecycleUnitDiscardReason.FROZEN_WITH_GROWING_MEMORY:
         return 'frozen with growing memory';
+      default:
+        assertNotReached();
     }
   }
 
@@ -211,15 +272,15 @@ class DiscardsTabElement extends DiscardsTabElementBase {
    *     is only used if the state is discard related.
    * @param visibility A visibility value.
    * @param hasFocus Whether or not the tab has input focus.
-   * @param stateChangeTime Delta between Unix Epoch and the time at
-   *     which the lifecycle state has changed.
+   * @param stateChangeTime Wall-clock time at which the lifecycle state
+   *     last changed.
    * @return A string representation of the lifecycle state,
    *     augmented with the discard reason if appropriate.
    */
   private lifecycleStateToString_(
       state: LifecycleUnitState, reason: LifecycleUnitDiscardReason,
       visibility: LifecycleUnitVisibility, hasFocus: boolean,
-      stateChangeTime: TimeDelta): string {
+      stateChangeTime: Date): string {
     function pageLifecycleStateFromVisibilityAndFocus(): string {
       switch (visibility) {
         case LifecycleUnitVisibility.HIDDEN:
@@ -228,6 +289,8 @@ class DiscardsTabElement extends DiscardsTabElementBase {
           return 'hidden';
         case LifecycleUnitVisibility.VISIBLE:
           return hasFocus ? 'active' : 'passive';
+        default:
+          assertNotReached();
       }
     }
 
@@ -238,12 +301,11 @@ class DiscardsTabElement extends DiscardsTabElementBase {
         return 'frozen';
       case LifecycleUnitState.DISCARDED:
         return 'discarded (' + this.discardReasonToString_(reason) + ')' +
-            ((reason === LifecycleUnitDiscardReason.URGENT) ? ' at ' +
-                     // Must convert since Date constructor takes
-                     // milliseconds.
-                     (new Date(Number(stateChangeTime.microseconds) / 1000)
-                          .toLocaleString()) :
-                                                              '');
+            ((reason === LifecycleUnitDiscardReason.URGENT) ?
+                 ' at ' + stateChangeTime.toLocaleString() :
+                 '');
+      default:
+        assertNotReached();
     }
   }
 
@@ -272,7 +334,7 @@ class DiscardsTabElement extends DiscardsTabElementBase {
    * @param item The item in question.
    * @return The formatted site engagemetn score.
    */
-  private getSiteEngagementScore_(item: TabDiscardsInfo): string {
+  protected getSiteEngagementScore_(item: TabDiscardsInfo): string {
     return item.siteEngagementScore.toFixed(1);
   }
 
@@ -281,7 +343,7 @@ class DiscardsTabElement extends DiscardsTabElementBase {
    * @param item The item in question.
    * @return A style to retrieve and display the item's favicon.
    */
-  private getFavIconStyle_(item: TabDiscardsInfo): string {
+  protected getFavIconStyle_(item: TabDiscardsInfo): string {
     return 'background-image:' + getFaviconForPageURL(item.tabUrl, false);
   }
 
@@ -290,7 +352,7 @@ class DiscardsTabElement extends DiscardsTabElementBase {
    * @param item The item in question.
    * @return A human readable lifecycle state.
    */
-  private getLifeCycleState_(item: TabDiscardsInfo): string {
+  protected getLifeCycleState_(item: TabDiscardsInfo): string {
     if (item.loadingState !== LifecycleUnitLoadingState.UNLOADED ||
         item.discardCount > 0) {
       return this.lifecycleStateToString_(
@@ -307,7 +369,7 @@ class DiscardsTabElement extends DiscardsTabElementBase {
    * @param value A boolean value.
    * @return A string representing the bool.
    */
-  private boolToString_(value: boolean): string {
+  protected boolToString_(value: boolean): string {
     return boolToString(value);
   }
 
@@ -317,14 +379,16 @@ class DiscardsTabElement extends DiscardsTabElementBase {
    * @param value A CanFreeze value.
    * @return A string representing the CanFreeze value.
    */
-  private canFreezeToString_(canFreeze: CanFreeze): string {
+  protected canFreezeToString_(canFreeze: CanFreeze): string {
     switch (canFreeze) {
       case CanFreeze.YES:
         return '✔';
       case CanFreeze.NO:
         return '✘️';
-      case CanFreeze.UNKNOWN:
-        return '?';
+      case CanFreeze.VARIES:
+        return '~';
+      default:
+        assertNotReached();
     }
   }
 
@@ -333,7 +397,7 @@ class DiscardsTabElement extends DiscardsTabElementBase {
    * @param secondsAgo The duration to render.
    * @return An English string representing the duration.
    */
-  private durationToString_(secondsAgo: number): string {
+  protected durationToString_(secondsAgo: number): string {
     return durationToString(secondsAgo);
   }
 
@@ -342,7 +406,7 @@ class DiscardsTabElement extends DiscardsTabElementBase {
    * @param tab The tab.
    * @return true iff the tab can be loaded.
    */
-  private canLoadViaUi_(tab: TabDiscardsInfo): boolean {
+  protected canLoadViaUi_(tab: TabDiscardsInfo): boolean {
     return tab.loadingState === LifecycleUnitLoadingState.UNLOADED;
   }
 
@@ -352,7 +416,7 @@ class DiscardsTabElement extends DiscardsTabElementBase {
    * @param tab The tab.
    * @return true iff the tab can be discarded.
    */
-  private canDiscardViaUi_(tab: TabDiscardsInfo): boolean {
+  protected canDiscardViaUi_(tab: TabDiscardsInfo): boolean {
     return tab.visibility !== LifecycleUnitVisibility.VISIBLE &&
         tab.state !== LifecycleUnitState.DISCARDED;
   }
@@ -363,18 +427,26 @@ class DiscardsTabElement extends DiscardsTabElementBase {
    * @param tab The tab.
    * @return true iff the tab can be frozen.
    */
-  private canFreezeViaUi_(tab: TabDiscardsInfo): boolean {
+  // <if expr="not is_android">
+  protected canFreezeViaUi_(tab: TabDiscardsInfo): boolean {
     return tab.visibility !== LifecycleUnitVisibility.VISIBLE &&
         tab.state !== LifecycleUnitState.DISCARDED &&
         tab.state !== LifecycleUnitState.FROZEN;
   }
+  // </if>
+  // <if expr="is_android">
+  // TODO(crbug.com/40160563): Add FreezingPolicy to Android.
+  protected canFreezeViaUi_(_tab: TabDiscardsInfo): boolean {
+    return false;
+  }
+  // </if>
 
   /**
    * Tests whether a tab should show the reason why it cannot be discarded.
    * @param tab The tab.
    * @return true iff the tab should show the reason why it cannot be discarded.
    */
-  private shouldShowCannotDiscardReason_(tab: TabDiscardsInfo): boolean {
+  protected shouldShowCannotDiscardReason_(tab: TabDiscardsInfo): boolean {
     return !tab.canDiscard && tab.state !== LifecycleUnitState.DISCARDED;
   }
 
@@ -383,8 +455,8 @@ class DiscardsTabElement extends DiscardsTabElementBase {
    * @param tab The tab.
    * @return true iff the tab should show the reason why it cannot be frozen.
    */
-  private shouldShowCannotFreezeReason_(tab: TabDiscardsInfo): boolean {
-    return tab.canFreeze === CanFreeze.NO &&
+  protected shouldShowCannotFreezeReason_(tab: TabDiscardsInfo): boolean {
+    return tab.canFreeze !== CanFreeze.YES &&
         tab.state !== LifecycleUnitState.FROZEN &&
         tab.state !== LifecycleUnitState.DISCARDED;
   }
@@ -393,35 +465,46 @@ class DiscardsTabElement extends DiscardsTabElementBase {
    * Event handler that toggles the auto discardable flag on an item.
    * @param e The event.
    */
-  private toggleAutoDiscardable_(e: DomRepeatEvent<TabDiscardsInfo>) {
-    const item = e.model.item;
-    this.discardsDetailsProvider_!
-        .setAutoDiscardable(item.id, !item.isAutoDiscardable)
+  protected onToggleAutoDiscardableClick_(e: Event) {
+    // Uses dataset['id'] and dataset['isAutoDiscardable'] instead of
+    // dataset['index'] to avoid the following scenario:
+    // 1. The callback in updateTableImpl_() is called to update this.tabInfos_.
+    // 2. onToggleAutoDiscardableClick_() is called, then index and
+    //    this.tabInfos_ would not match.
+    // 3. render() is called.
+    const item = e.currentTarget as HTMLElement;
+    const id = Number(item.dataset['id']);
+    const isAutoDiscardable = item.dataset['isAutoDiscardable'] === 'true';
+    this.discardsDetailsProvider_!.setAutoDiscardable(id, !isAutoDiscardable)
         .then(this.updateTable_.bind(this));
   }
 
   /** Event handler that loads a tab. */
-  private loadTab_(e: DomRepeatEvent<TabDiscardsInfo>) {
-    this.discardsDetailsProvider_!.loadById(e.model.item.id);
+  protected onLoadTabClick_(e: Event) {
+    const id = Number((e.currentTarget as HTMLElement).dataset['id']);
+    this.discardsDetailsProvider_!.loadById(id);
   }
 
   /** Event handler that discards a given tab urgently. */
-  private urgentDiscardTab_(e: DomRepeatEvent<TabDiscardsInfo>) {
+  protected onUrgentDiscardTabClick_(e: Event) {
+    const id = Number((e.currentTarget as HTMLElement).dataset['id']);
     this.discardsDetailsProvider_!
-        .discardById(e.model.item.id, LifecycleUnitDiscardReason.URGENT)
+        .discardById(id, LifecycleUnitDiscardReason.URGENT)
         .then(this.updateTable_.bind(this));
   }
 
   /** Event handler that discards a given tab proactively. */
-  private proactiveDiscardTab_(e: DomRepeatEvent<TabDiscardsInfo>) {
+  protected onProactiveDiscardTabClick_(e: Event) {
+    const id = Number((e.currentTarget as HTMLElement).dataset['id']);
     this.discardsDetailsProvider_!
-        .discardById(e.model.item.id, LifecycleUnitDiscardReason.PROACTIVE)
+        .discardById(id, LifecycleUnitDiscardReason.PROACTIVE)
         .then(this.updateTable_.bind(this));
   }
 
   /** Event handler that freezes a tab. */
-  private freezeTab_(e: DomRepeatEvent<TabDiscardsInfo>) {
-    this.discardsDetailsProvider_!.freezeById(e.model.item.id);
+  protected onFreezeTabClick_(e: Event) {
+    const id = Number((e.currentTarget as HTMLElement).dataset['id']);
+    this.discardsDetailsProvider_!.freezeById(id);
   }
 
   /** Implementation function to discard the next discardable tab. */
@@ -432,16 +515,22 @@ class DiscardsTabElement extends DiscardsTabElementBase {
   }
 
   /** Event handler that discards the next discardable tab urgently. */
-  private discardUrgentNow_(_e: Event) {
+  protected onDiscardUrgentNowClick_(_e: Event) {
     this.discardImpl_();
   }
 
-  private toggleBatterySaverMode_(_e: Event) {
+  protected onToggleBatterySaverModeClick_(_e: Event) {
     this.discardsDetailsProvider_!.toggleBatterySaverMode();
   }
 
-  private refreshPerformanceTabCpuMeasurements_(_e: Event) {
+  protected onRefreshPerformanceTabCpuMeasurementsClick_(_e: Event) {
     this.discardsDetailsProvider_!.refreshPerformanceTabCpuMeasurements();
+  }
+}
+
+declare global {
+  interface HTMLElementTagNameMap {
+    'discards-tab': DiscardsTabElement;
   }
 }
 

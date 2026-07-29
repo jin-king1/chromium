@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chromeos/ash/components/chaps_util/chaps_util_impl.h"
 
 #include <pkcs11t.h>
@@ -19,9 +14,11 @@
 #include <vector>
 
 #include "base/base64.h"
+#include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/files/file_util.h"
 #include "base/memory/raw_ptr.h"
+#include "base/no_destructor.h"
 #include "chromeos/ash/components/chaps_util/chaps_slot_session.h"
 #include "crypto/nss_key_util.h"
 #include "crypto/scoped_nss_types.h"
@@ -48,23 +45,6 @@ constexpr CK_ATTRIBUTE_TYPE kForceSoftwareAttribute = CKA_VENDOR_DEFINED + 4;
 constexpr CK_ATTRIBUTE_TYPE kKeyInSoftware = CKA_VENDOR_DEFINED + 5;
 
 enum AttrValueType { kNotDefined, kCkBool, kCkUlong, kCkBytes };
-const std::optional<std::vector<CK_BYTE>> default_encoded_cert_label =
-    base::Base64Decode("dGVzdHVzZXJjZXJ0");
-// python print(base64.b64encode("default nickname".encode('utf-8'))).
-const std::optional<std::vector<CK_BYTE>> default_encoded_label =
-    base::Base64Decode("VW5rbm93biBvcmc=");
-const std::optional<std::vector<CK_BYTE>> cka_id_for_ec_key =
-    base::Base64Decode("9kVFdOhn8yYso7a/wG2uC0wdHWo=");
-const std::optional<std::vector<CK_BYTE>> cka_ex_point_ec_key =
-    base::Base64Decode(
-        "BP+"
-        "IQBEPm3e3ABQMhQaZlE0w8qIjn0tKH6jTEekQvtKoUhFo2nM4Q9VA3MLljVF7vabV8CuH9"
-        "/"
-        "UkKt2FMg2iHGM=");
-const std::optional<std::vector<CK_BYTE>> cka_ec_params_ec_key =
-    base::Base64Decode("BggqhkjOPQMBBw==");
-const std::optional<std::vector<CK_BYTE>> cka_value_ec_key =
-    base::Base64Decode("fvWtrgVAq5JApBuCPK92IUAQQnnEoLUrBgZ/KGFhz7E=");
 
 // Class helper to keep relations between all possible attribute's types,
 // attribute's names and attribute's value types.
@@ -97,44 +77,46 @@ class AttributesParsingOptions {
   GetPkcs12ObjectAttrMap() {
     // Map which keeps relation between PKCS12 object attribute type, attribute
     // name and attribute value's type.
-    static std::map<CK_ATTRIBUTE_TYPE, std::pair<AttrValueType, std::string>>
-        attr_map;
-    if (attr_map.empty()) {
-      attr_map[CKA_TOKEN] = {kCkBool, "CKA_TOKEN"};
-      attr_map[CKA_PRIVATE] = {kCkBool, "CKA_PRIVATE"};
-      attr_map[CKA_VERIFY] = {kCkBool, "CKA_VERIFY"};
-      attr_map[CKA_MODULUS_BITS] = {kCkUlong, "CKA_MODULUS_BITS"};
-      attr_map[CKA_PUBLIC_EXPONENT] = {kCkBytes, "CKA_PUBLIC_EXPONENT"};
-      attr_map[CKA_SENSITIVE] = {kCkBool, "CKA_SENSITIVE"};
-      attr_map[CKA_EXTRACTABLE] = {kCkBool, "CKA_EXTRACTABLE"};
-      attr_map[CKA_SIGN] = {kCkBool, "CKA_SIGN"};
-      attr_map[kForceSoftwareAttribute] = {kCkBool, "kForceSoftwareAttribute"};
-      attr_map[CKA_CLASS] = {kCkUlong, "CKA_CLASS"};
-      attr_map[CKA_KEY_TYPE] = {kCkUlong, "CKA_KEY_TYPE"};
-      attr_map[CKA_UNWRAP] = {kCkBool, "CKA_UNWRAP"};
-      attr_map[CKA_DECRYPT] = {kCkBool, "CKA_DECRYPT"};
-      attr_map[CKA_MODULUS] = {kCkBytes, "CKA_MODULUS"};
-      attr_map[CKA_SIGN_RECOVER] = {kCkBool, "CKA_SIGN_RECOVER"};
-      attr_map[CKA_ID] = {kCkBytes, "CKA_ID"};
-      attr_map[CKA_PUBLIC_EXPONENT] = {kCkBytes, "CKA_PUBLIC_EXPONENT"};
-      attr_map[CKA_PRIVATE_EXPONENT] = {kCkBytes, "CKA_PRIVATE_EXPONENT"};
-      attr_map[CKA_PRIME_1] = {kCkBytes, "CKA_PRIME_1"};
-      attr_map[CKA_PRIME_2] = {kCkBytes, "CKA_PRIME_2"};
-      attr_map[CKA_EXPONENT_1] = {kCkBytes, "CKA_EXPONENT_1"};
-      attr_map[CKA_EXPONENT_2] = {kCkBytes, "CKA_EXPONENT_2"};
-      attr_map[CKA_COEFFICIENT] = {kCkBytes, "CKA_COEFFICIENT"};
-      attr_map[CKA_LABEL] = {kCkBytes, "CKA_LABEL"};
-      attr_map[CKA_VALUE] = {kCkBytes, "CKA_VALUE"};
-      attr_map[CKA_ISSUER] = {kCkBytes, "CKA_ISSUER"};
-      attr_map[CKA_SUBJECT] = {kCkBytes, "CKA_SUBJECT"};
-      attr_map[CKA_SERIAL_NUMBER] = {kCkBytes, "CKA_SERIAL_NUMBER"};
-      attr_map[CKA_NSS_EMAIL] = {kCkBytes, "CKA_NSS_EMAIL"};
-      attr_map[CKA_CERTIFICATE_TYPE] = {kCkBytes, "CKA_CERTIFICATE_TYPE"};
-      attr_map[CKA_EC_POINT] = {kCkBytes, "CKA_EC_POINT"};
-      attr_map[CKA_DERIVE] = {kCkBool, "CKA_DERIVE"};
-      attr_map[CKA_EC_PARAMS] = {kCkBytes, "CKA_EC_PARAMS"};
-    }
-    return attr_map;
+    static const base::NoDestructor<
+        std::map<CK_ATTRIBUTE_TYPE, std::pair<AttrValueType, std::string>>>
+        attr_map([] {
+          std::map<CK_ATTRIBUTE_TYPE, std::pair<AttrValueType, std::string>> m;
+          m[CKA_TOKEN] = {kCkBool, "CKA_TOKEN"};
+          m[CKA_PRIVATE] = {kCkBool, "CKA_PRIVATE"};
+          m[CKA_VERIFY] = {kCkBool, "CKA_VERIFY"};
+          m[CKA_MODULUS_BITS] = {kCkUlong, "CKA_MODULUS_BITS"};
+          m[CKA_PUBLIC_EXPONENT] = {kCkBytes, "CKA_PUBLIC_EXPONENT"};
+          m[CKA_SENSITIVE] = {kCkBool, "CKA_SENSITIVE"};
+          m[CKA_EXTRACTABLE] = {kCkBool, "CKA_EXTRACTABLE"};
+          m[CKA_SIGN] = {kCkBool, "CKA_SIGN"};
+          m[kForceSoftwareAttribute] = {kCkBool, "kForceSoftwareAttribute"};
+          m[CKA_CLASS] = {kCkUlong, "CKA_CLASS"};
+          m[CKA_KEY_TYPE] = {kCkUlong, "CKA_KEY_TYPE"};
+          m[CKA_UNWRAP] = {kCkBool, "CKA_UNWRAP"};
+          m[CKA_DECRYPT] = {kCkBool, "CKA_DECRYPT"};
+          m[CKA_MODULUS] = {kCkBytes, "CKA_MODULUS"};
+          m[CKA_SIGN_RECOVER] = {kCkBool, "CKA_SIGN_RECOVER"};
+          m[CKA_ID] = {kCkBytes, "CKA_ID"};
+          m[CKA_PUBLIC_EXPONENT] = {kCkBytes, "CKA_PUBLIC_EXPONENT"};
+          m[CKA_PRIVATE_EXPONENT] = {kCkBytes, "CKA_PRIVATE_EXPONENT"};
+          m[CKA_PRIME_1] = {kCkBytes, "CKA_PRIME_1"};
+          m[CKA_PRIME_2] = {kCkBytes, "CKA_PRIME_2"};
+          m[CKA_EXPONENT_1] = {kCkBytes, "CKA_EXPONENT_1"};
+          m[CKA_EXPONENT_2] = {kCkBytes, "CKA_EXPONENT_2"};
+          m[CKA_COEFFICIENT] = {kCkBytes, "CKA_COEFFICIENT"};
+          m[CKA_LABEL] = {kCkBytes, "CKA_LABEL"};
+          m[CKA_VALUE] = {kCkBytes, "CKA_VALUE"};
+          m[CKA_ISSUER] = {kCkBytes, "CKA_ISSUER"};
+          m[CKA_SUBJECT] = {kCkBytes, "CKA_SUBJECT"};
+          m[CKA_SERIAL_NUMBER] = {kCkBytes, "CKA_SERIAL_NUMBER"};
+          m[CKA_NSS_EMAIL] = {kCkBytes, "CKA_NSS_EMAIL"};
+          m[CKA_CERTIFICATE_TYPE] = {kCkBytes, "CKA_CERTIFICATE_TYPE"};
+          m[CKA_EC_POINT] = {kCkBytes, "CKA_EC_POINT"};
+          m[CKA_DERIVE] = {kCkBool, "CKA_DERIVE"};
+          m[CKA_EC_PARAMS] = {kCkBytes, "CKA_EC_PARAMS"};
+          return m;
+        }());
+    return *attr_map;
   }
 };
 
@@ -185,7 +167,7 @@ class AttributeData {
       return std::nullopt;
     }
     CK_BBOOL value;
-    memcpy(&value, attribute.pValue, sizeof(CK_BBOOL));
+    UNSAFE_TODO(memcpy(&value, attribute.pValue, sizeof(CK_BBOOL)));
     return value;
   }
 
@@ -198,14 +180,14 @@ class AttributeData {
       return std::nullopt;
     }
     CK_ULONG value;
-    memcpy(&value, attribute.pValue, sizeof(CK_ULONG));
+    UNSAFE_TODO(memcpy(&value, attribute.pValue, sizeof(CK_ULONG)));
     return value;
   }
 
   static std::optional<std::vector<CK_BYTE>> ParseCkBytes(
       const CK_ATTRIBUTE& attribute) {
     std::vector<CK_BYTE> result(attribute.ulValueLen);
-    memcpy(result.data(), attribute.pValue, result.size());
+    UNSAFE_TODO(memcpy(result.data(), attribute.pValue, result.size()));
     return result;
   }
 };
@@ -219,7 +201,7 @@ struct ObjectAttributes {
                                     CK_ULONG attributes_count) {
     ObjectAttributes result;
     for (CK_ULONG i = 0; i < attributes_count; ++i) {
-      const CK_ATTRIBUTE& attr = attributes[i];
+      const CK_ATTRIBUTE& attr = UNSAFE_TODO(attributes[i]);
       if (result.parsed_attributes_map.contains(attr.type)) {
         ADD_FAILURE() << "Already stored attribute type:" << attr.type;
       }
@@ -372,7 +354,8 @@ class FakeChapsSlotSession : public ChapsSlotSession {
 
     // Remember the modulus.
     SECItem* modulus = &(public_key->u.rsa.modulus);
-    public_key_modulus_.assign(modulus->data, modulus->data + modulus->len);
+    public_key_modulus_.assign(modulus->data,
+                               UNSAFE_TODO(modulus->data + modulus->len));
     return CKR_OK;
   }
 
@@ -393,7 +376,8 @@ class FakeChapsSlotSession : public ChapsSlotSession {
       if (pTemplate[0].ulValueLen < kModulusBytes) {
         return CKR_BUFFER_TOO_SMALL;
       }
-      memcpy(pTemplate[0].pValue, public_key_modulus_.data(), kModulusBytes);
+      UNSAFE_TODO(memcpy(pTemplate[0].pValue, public_key_modulus_.data(),
+                         kModulusBytes));
       return CKR_OK;
     }
     if (hObject == private_key_handle_) {
@@ -404,8 +388,8 @@ class FakeChapsSlotSession : public ChapsSlotSession {
       if (pTemplate[0].ulValueLen < sizeof(key_in_software_value)) {
         return CKR_BUFFER_TOO_SMALL;
       }
-      memcpy(pTemplate[0].pValue, &key_in_software_value,
-             sizeof(key_in_software_value));
+      UNSAFE_TODO(memcpy(pTemplate[0].pValue, &key_in_software_value,
+                         sizeof(key_in_software_value)));
       return CKR_OK;
     }
     return CKR_OBJECT_HANDLE_INVALID;
@@ -427,10 +411,10 @@ class FakeChapsSlotSession : public ChapsSlotSession {
     uint8_t* data = reinterpret_cast<uint8_t*>(pTemplate[0].pValue);
     size_t length = pTemplate[0].ulValueLen;
     if (hObject == public_key_handle_) {
-      passed_data_->public_key_cka_id.assign(data, data + length);
+      passed_data_->public_key_cka_id.assign(data, UNSAFE_TODO(data + length));
       return CKR_OK;
     } else if (hObject == private_key_handle_) {
-      passed_data_->private_key_cka_id.assign(data, data + length);
+      passed_data_->private_key_cka_id.assign(data, UNSAFE_TODO(data + length));
       return CKR_OK;
     }
     return CKR_OBJECT_HANDLE_INVALID;
@@ -523,9 +507,9 @@ class ChapsUtilImplTest : public ::testing::Test {
   }
 
   static std::vector<uint8_t>& GetPkcs12Data(std::string file_name) {
-    static std::vector<uint8_t> pkcs12_data_;
-    pkcs12_data_ = ReadTestFile(file_name);
-    return pkcs12_data_;
+    static base::NoDestructor<std::vector<uint8_t>> pkcs12_data_;
+    *pkcs12_data_ = ReadTestFile(file_name);
+    return *pkcs12_data_;
   }
 
   static std::vector<uint8_t>& GetPkcs12Data() {
@@ -568,7 +552,7 @@ std::vector<uint8_t> GetExpectedCkaId(SECKEYPrivateKey* private_key) {
   crypto::ScopedSECItem cka_id_secitem(
       PK11_GetLowLevelKeyIDForPrivateKey(private_key));
   uint8_t* cka_id_data = reinterpret_cast<uint8_t*>(cka_id_secitem->data);
-  return {cka_id_data, cka_id_data + cka_id_secitem->len};
+  return {cka_id_data, UNSAFE_TODO(cka_id_data + cka_id_secitem->len)};
 }
 
 // Successfully generates a software-backed key pair. Also verifies CKA_ID

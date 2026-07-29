@@ -10,7 +10,6 @@
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/i18n/streaming_utf8_validator.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/numerics/checked_math.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
@@ -46,6 +45,12 @@ bool RarAnalyzer::ResumeExtraction() {
     }
   }
 
+  if (reader_.HasWriteError()) {
+    results()->analysis_result = ArchiveAnalysisResult::kDiskError;
+    results()->success = false;
+    return false;
+  }
+
   if (results()->encryption_info.password_status !=
           EncryptionInfo::kKnownIncorrect &&
       results()->encryption_info.is_encrypted) {
@@ -78,9 +83,15 @@ void RarAnalyzer::OnGetTempFile(base::File temp_file) {
     reader_.SetPassword(*password());
   }
 
+  CHECK(analysis_delegate_);
+  reader_.SetWriterDelegate(
+      analysis_delegate_->CreateRarWriterDelegate(temp_file_.Duplicate()));
+
   // `rar_file_` is consumed by the reader and cannot be used after
   // this point.
-  if (!reader_.Open(std::move(GetArchiveFile()), temp_file_.Duplicate())) {
+  std::unique_ptr<third_party_unrar::RarReaderDelegate> reader_delegate =
+      analysis_delegate_->CreateRarReaderDelegate(std::move(GetArchiveFile()));
+  if (!reader_.Open(std::move(reader_delegate), temp_file_.Duplicate())) {
     InitComplete(ArchiveAnalysisResult::kUnknown);
     return;
   }

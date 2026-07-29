@@ -12,8 +12,9 @@ export interface LocalizedString {
 }
 
 export type VendorCapabilitySelectOption = {
+  value: string,
   display_name?: string,
-  display_name_localized?: LocalizedString[], value: number|string|boolean,
+  display_name_localized?: LocalizedString[],
 }&OptionWithDefault;
 
 /**
@@ -40,26 +41,53 @@ interface SelectCapability {
 }
 
 interface TypedValueCapability {
-  default?: number|string|boolean;
+  default?: string;
   value_type?: VendorCapabilityValueType;
 }
 
 interface RangeCapability {
-  default: number;
+  default: string;
+}
+
+export enum VendorCapabilityType {
+  RANGE = 'RANGE',
+  SELECT = 'SELECT',
+  TYPED_VALUE = 'TYPED_VALUE',
+  UNKNOWN = 'UNKNOWN',
+}
+
+interface VendorCapabilityBase {
+  type: VendorCapabilityType;
+  id: string;
+  display_name?: string;
+  display_name_localized?: LocalizedString[];
+}
+
+interface VendorCapabilityUnknown extends VendorCapabilityBase {
+  type: VendorCapabilityType.UNKNOWN;
+  id: '';
+}
+
+interface VendorCapabilityRange extends VendorCapabilityBase {
+  type: VendorCapabilityType.RANGE;
+  range_cap: RangeCapability;
+}
+
+interface VendorCapabilitySelect extends VendorCapabilityBase {
+  type: VendorCapabilityType.SELECT;
+  select_cap: SelectCapability;
+}
+
+interface VendorCapabilityTypedValue extends VendorCapabilityBase {
+  type: VendorCapabilityType.TYPED_VALUE;
+  typed_value_cap: TypedValueCapability;
 }
 
 /**
  * Specifies a custom vendor capability.
  */
-export interface VendorCapability {
-  id: string;
-  display_name?: string;
-  display_name_localized?: LocalizedString[];
-  type: string;
-  select_cap?: SelectCapability;
-  typed_value_cap?: TypedValueCapability;
-  range_cap?: RangeCapability;
-}
+export type VendorCapability = VendorCapabilityUnknown|VendorCapabilityRange|
+    VendorCapabilitySelect|VendorCapabilityTypedValue;
 
 export interface CapabilityWithReset {
   reset_to_default?: boolean;
@@ -110,23 +138,10 @@ export type SelectOption = {
 export type MediaSizeOption = {
   type?: string,
   vendor_id?: string, height_microns: number, width_microns: number,
-  imageable_area_left_microns?: number,
-  imageable_area_bottom_microns?: number,
-  imageable_area_right_microns?: number,
-  imageable_area_top_microns?: number,
-  has_borderless_variant?: boolean,
 }&SelectOption;
 
 export type MediaSizeCapability = {
   option: MediaSizeOption[],
-}&CapabilityWithReset;
-
-export type MediaTypeOption = {
-  vendor_id: string,
-}&SelectOption;
-
-export type MediaTypeCapability = {
-  option: MediaTypeOption[],
 }&CapabilityWithReset;
 
 export type DpiOption = {
@@ -150,7 +165,6 @@ export interface CddCapabilities {
   duplex?: DuplexCapability;
   page_orientation?: PageOrientationCapability;
   media_size?: MediaSizeCapability;
-  media_type?: MediaTypeCapability;
   dpi?: DpiCapability;
 }
 

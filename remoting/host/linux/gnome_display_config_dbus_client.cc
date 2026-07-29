@@ -8,7 +8,11 @@
 #include <string>
 #include <utility>
 
+#include "base/functional/callback_helpers.h"
+#include "base/memory/ptr_util.h"
+#include "base/memory/weak_ptr.h"
 #include "remoting/base/logging.h"
+#include "remoting/host/linux/dbus_interfaces/org_gnome_Mutter_DisplayConfig.h"
 #include "third_party/webrtc/modules/portal/scoped_glib.h"
 
 namespace remoting {
@@ -27,10 +31,31 @@ std::string VariantToString(GVariant* variant) {
   }
 }
 
+struct CallbackInfo {
+  base::WeakPtr<GnomeDisplayConfigDBusClient> weak_ptr;
+  scoped_refptr<base::SequencedTaskRunner> task_runner;
+};
+
 }  // namespace
 
+GnomeDisplayConfigDBusClient::Subscription::Subscription() = default;
+GnomeDisplayConfigDBusClient::Subscription::~Subscription() = default;
+
+GnomeDisplayConfigDBusClient::PendingSubscription::PendingSubscription(
+    base::RepeatingClosure callback,
+    base::WeakPtr<Subscription> subscription)
+    : callback(std::move(callback)), subscription(std::move(subscription)) {}
+GnomeDisplayConfigDBusClient::PendingSubscription::PendingSubscription() =
+    default;
+GnomeDisplayConfigDBusClient::PendingSubscription::PendingSubscription(
+    PendingSubscription&&) = default;
+GnomeDisplayConfigDBusClient::PendingSubscription&
+GnomeDisplayConfigDBusClient::PendingSubscription::operator=(
+    PendingSubscription&&) = default;
+GnomeDisplayConfigDBusClient::PendingSubscription::~PendingSubscription() =
+    default;
+
 GnomeDisplayConfigDBusClient::GnomeDisplayConfigDBusClient() {
-  weak_ptr_ = weak_factory_.GetWeakPtr();
   DETACH_FROM_SEQUENCE(sequence_checker_);
 }
 
@@ -45,40 +70,65 @@ void GnomeDisplayConfigDBusClient::Init() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   caller_task_runner_ = base::SequencedTaskRunner::GetCurrentDefault();
   cancellable_ = TakeGObject(g_cancellable_new());
+  auto* info =
+      new CallbackInfo{weak_factory_.GetWeakPtr(), caller_task_runner_};
   g_bus_get(G_BUS_TYPE_SESSION, cancellable_.get(),
-            &GnomeDisplayConfigDBusClient::OnDBusGetReply, this);
+            &GnomeDisplayConfigDBusClient::OnDBusGetReply, info);
 }
 
 void GnomeDisplayConfigDBusClient::GetMonitorsConfig(
     GnomeDisplayConfigDBusClient::Callback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (!dbus_connection_) {
+  if (!dbus_connection_.is_initialized()) {
     // The DBus connection is not yet made. When the connection is made,
     // OnDBusGet() will check if there is any pending callback. If so, it
     // will trigger a new call to the DBus GetCurrentState() method.
-    pending_callback_ = std::move(callback);
+    pending_callbacks_.AddUnsafe(std::move(callback));
     return;
   }
 
-  bool need_new_call = pending_callback_.is_null();
-  pending_callback_ = std::move(callback);
+  bool need_new_call = pending_callbacks_.empty();
+  pending_callbacks_.AddUnsafe(std::move(callback));
   if (need_new_call) {
     CallDBusGetCurrentState();
   }
 }
 
 void GnomeDisplayConfigDBusClient::ApplyMonitorsConfig(
-    GnomeDisplayConfig config) {
+    const GnomeDisplayConfig& config) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   ScopedGVariant parameters = config.BuildMonitorsConfigParameters();
   HOST_LOG << "Applying monitors config: " << VariantToString(parameters.get());
   g_dbus_connection_call(
-      dbus_connection_.get(), kDisplayConfigInterfaceName,
+      dbus_connection_.raw(), kDisplayConfigInterfaceName,
       kDisplayConfigObjectPath, kDisplayConfigInterfaceName,
       "ApplyMonitorsConfig", parameters.get(),
       /*reply_type=*/nullptr, G_DBUS_CALL_FLAGS_NO_AUTO_START,
       /*timeout_msec=*/-1, cancellable_.get(),
-      &GnomeDisplayConfigDBusClient::OnApplyMonitorsConfigReply, this);
+      &GnomeDisplayConfigDBusClient::OnApplyMonitorsConfigReply, nullptr);
+}
+
+std::unique_ptr<GnomeDisplayConfigDBusClient::Subscription>
+GnomeDisplayConfigDBusClient::SubscribeMonitorsChanged(
+    base::RepeatingClosure on_changed) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  auto subscription = base::WrapUnique(new Subscription());
+  PendingSubscription pending_subscrition{
+      std::move(on_changed), subscription->weak_factory_.GetWeakPtr()};
+  if (!dbus_connection_.is_initialized()) {
+    // The DBus connection is not yet made. When the connection is made,
+    // OnDBusGet() will check if there is any pending subscription. If so, it
+    // will trigger a new call to SubscribeDBusMonitorsChanged().
+    pending_subscriptions_.push(std::move(pending_subscrition));
+    return subscription;
+  }
+
+  bool need_new_call = pending_subscriptions_.empty();
+  pending_subscriptions_.push(std::move(pending_subscrition));
+  if (need_new_call) {
+    SubscribeDBusMonitorsChanged();
+  }
+  return subscription;
 }
 
 void GnomeDisplayConfigDBusClient::FakeDisplayConfigForTest(
@@ -87,10 +137,16 @@ void GnomeDisplayConfigDBusClient::FakeDisplayConfigForTest(
   OnDisplayConfigCurrentState(std::move(config));
 }
 
+base::WeakPtr<GnomeDisplayConfigDBusClient>
+GnomeDisplayConfigDBusClient::GetWeakPtr() {
+  return weak_factory_.GetWeakPtr();
+}
+
 // static
 void GnomeDisplayConfigDBusClient::OnDBusGetReply(GObject* object,
                                                   GAsyncResult* result,
                                                   gpointer user_data) {
+  auto info = base::WrapUnique(static_cast<CallbackInfo*>(user_data));
   webrtc::Scoped<GError> error;
   ScopedGObject<GDBusConnection> dbus_connection =
       TakeGObject(g_bus_get_finish(result, error.receive()));
@@ -100,10 +156,9 @@ void GnomeDisplayConfigDBusClient::OnDBusGetReply(GObject* object,
     return;
   }
 
-  auto* that = static_cast<GnomeDisplayConfigDBusClient*>(user_data);
-  that->caller_task_runner_->PostTask(
+  info->task_runner->PostTask(
       FROM_HERE, base::BindOnce(&GnomeDisplayConfigDBusClient::OnDBusGet,
-                                that->weak_ptr_, std::move(dbus_connection)));
+                                info->weak_ptr, std::move(dbus_connection)));
 }
 
 // static
@@ -111,28 +166,27 @@ void GnomeDisplayConfigDBusClient::OnDisplayConfigCurrentStateReply(
     GObject* object,
     GAsyncResult* result,
     gpointer user_data) {
+  auto info = base::WrapUnique(static_cast<CallbackInfo*>(user_data));
   auto* connection = reinterpret_cast<GDBusConnection*>(object);
   webrtc::Scoped<GError> error;
   ScopedGVariant config = TakeGVariant(
       g_dbus_connection_call_finish(connection, result, error.receive()));
 
-  auto* that = static_cast<GnomeDisplayConfigDBusClient*>(user_data);
-
   if (!config) {
     LOG(ERROR) << "Failed to get current display configuration: "
                << error->message;
-    that->caller_task_runner_->PostTask(
+    info->task_runner->PostTask(
         FROM_HERE,
         base::BindOnce(
             &GnomeDisplayConfigDBusClient::OnDisplayConfigCurrentStateError,
-            that->weak_ptr_));
+            info->weak_ptr));
     return;
   }
 
-  that->caller_task_runner_->PostTask(
+  info->task_runner->PostTask(
       FROM_HERE,
       base::BindOnce(&GnomeDisplayConfigDBusClient::OnDisplayConfigCurrentState,
-                     that->weak_ptr_, std::move(config)));
+                     info->weak_ptr, std::move(config)));
 }
 
 // static
@@ -151,24 +205,47 @@ void GnomeDisplayConfigDBusClient::OnApplyMonitorsConfigReply(
 
 void GnomeDisplayConfigDBusClient::CallDBusGetCurrentState() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(dbus_connection_.get());
+  DCHECK(dbus_connection_.is_initialized());
+  auto* info =
+      new CallbackInfo{weak_factory_.GetWeakPtr(), caller_task_runner_};
   g_dbus_connection_call(
-      dbus_connection_.get(), kDisplayConfigInterfaceName,
+      dbus_connection_.raw(), kDisplayConfigInterfaceName,
       kDisplayConfigObjectPath, kDisplayConfigInterfaceName, "GetCurrentState",
       /*parameters=*/nullptr,
       /*reply_type=*/nullptr, G_DBUS_CALL_FLAGS_NO_AUTO_START,
       /*timeout_msec=*/-1, cancellable_.get(),
-      &GnomeDisplayConfigDBusClient::OnDisplayConfigCurrentStateReply, this);
+      &GnomeDisplayConfigDBusClient::OnDisplayConfigCurrentStateReply, info);
 }
 
 void GnomeDisplayConfigDBusClient::OnDBusGet(
     ScopedGObject<GDBusConnection> dbus_connection) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  dbus_connection_ = std::move(dbus_connection);
+  dbus_connection_ = GDBusConnectionRef(std::move(dbus_connection));
   HOST_LOG << "Got session D-Bus";
 
-  if (pending_callback_) {
+  if (!pending_callbacks_.empty()) {
     CallDBusGetCurrentState();
+  }
+  if (!pending_subscriptions_.empty()) {
+    SubscribeDBusMonitorsChanged();
+  }
+}
+
+void GnomeDisplayConfigDBusClient::SubscribeDBusMonitorsChanged() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  DCHECK(dbus_connection_.is_initialized());
+
+  while (!pending_subscriptions_.empty()) {
+    auto& pending_subscription = pending_subscriptions_.front();
+    if (pending_subscription.subscription) {
+      pending_subscription.subscription->signal_subscription_ =
+          dbus_connection_
+              .SignalSubscribe<org_gnome_Mutter_DisplayConfig::MonitorsChanged>(
+                  kDisplayConfigInterfaceName, kDisplayConfigObjectPath,
+                  base::IgnoreArgs<GVariantRef<"r">>(
+                      std::move(pending_subscription.callback)));
+    }
+    pending_subscriptions_.pop();
   }
 }
 
@@ -197,7 +274,7 @@ void GnomeDisplayConfigDBusClient::OnDisplayConfigCurrentState(
   if (!g_variant_check_format_string(config.get(), kCurrentStateFormat,
                                      /*copy_only=*/FALSE)) {
     LOG(ERROR) << __func__ << " : config has incorrect type.";
-    pending_callback_.Reset();
+    pending_callbacks_.Clear();
     return;
   }
 
@@ -229,8 +306,10 @@ void GnomeDisplayConfigDBusClient::OnDisplayConfigCurrentState(
   display_config.global_scale_required = global_scale_required;
   HOST_LOG << "Global scale required: "
            << (global_scale_required ? "yes" : "no");
+  g_variant_lookup(properties.get(), "layout-mode", "u",
+                   &display_config.layout_mode);
 
-  std::move(pending_callback_).Run(display_config);
+  std::move(pending_callbacks_).Notify(display_config);
 }
 
 void GnomeDisplayConfigDBusClient::OnDisplayConfigCurrentStateError() {
@@ -238,7 +317,7 @@ void GnomeDisplayConfigDBusClient::OnDisplayConfigCurrentStateError() {
 
   // Reset the callback, so that subsequent calls to GetMonitorsConfig() will
   // actually send a D-Bus request.
-  pending_callback_.Reset();
+  pending_callbacks_.Clear();
 }
 
 }  // namespace remoting

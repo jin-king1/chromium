@@ -35,6 +35,9 @@ extern const char kMediaBackgrounded[];
 // The user opened the Global Media Controls dialog.
 extern const char kGlobalMediaControlsOpened[];
 
+// A split tab has been created
+extern const char kSplitViewCreated[];
+
 // A side panel has been pinned.
 extern const char kSidePanelPinned[];
 
@@ -64,15 +67,23 @@ extern const char kFocusHelpBubbleAcceleratorPromoRead[];
 // Th user clicked the extensions request access button in the toolbar.
 extern const char kExtensionsRequestAccessButtonClicked[];
 
-// The user has opened the cookie controls bubble.
-extern const char kCookieControlsBubbleShown[];
+// The user has accepted the Glic onboarding.
+extern const char kGlicOnboardingCompleted[];
 
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_APPLE) || BUILDFLAG(IS_LINUX) ||
         // BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_FUCHSIA)
 
+#if BUILDFLAG(IS_WIN)
+// The search promotion was accepted by the user.
+extern const char kSearchPromotionAccepted[];
+#endif  // BUILDFLAG(IS_WIN)
+
 #if BUILDFLAG(IS_IOS)
 // The user has opened Chrome (cold start or from background).
 extern const char kChromeOpened[];
+
+// The user had at least one active session today.
+extern const char kChromeActiveSessionDay[];
 
 // The user has opened an incognito tab.
 extern const char kIncognitoTabOpened[];
@@ -123,6 +134,12 @@ extern const char kNonModalDefaultBrowserPromoAppSwitcherTrigger[];
 // The non-modal default browser promo from share was triggered.
 extern const char kNonModalDefaultBrowserPromoShareTrigger[];
 
+// The non-modal sign-in promo was triggered for save password.
+extern const char kNonModalSigninPromoPasswordTrigger[];
+
+// The non-modal sign-in promo was triggered for add bookmark.
+extern const char kNonModalSigninPromoBookmarkTrigger[];
+
 // The Password Manager widget promo was triggered.
 extern const char kPasswordManagerWidgetPromoTriggered[];
 
@@ -158,17 +175,20 @@ extern const char kBlueDotPromoOverflowMenuDismissed[];
 // The user snoozed the Credential Provider Extension Promo.
 extern const char kCredentialProviderExtensionPromoSnoozed[];
 
-// The user tapped Remind Me Later on the Docking Promo.
-extern const char kDockingPromoRemindMeLater[];
-
 // The user opened an url from omnibox.
 extern const char kOpenUrlFromOmnibox[];
 
 // The history item on overflow menu is used.
 extern const char kHistoryOnOverflowMenuUsed[];
 
+// The user has opened Settings via the Overflow Menu.
+extern const char kSettingsOnOverflowMenuUsed[];
+
 // The user has triggered the Lens button in the Omnibox keyboard.
 extern const char kLensButtonKeyboardUsed[];
+
+// The user has triggered the Lens button in the Composebox.
+extern const char kIOSLensButtonComposeboxUsed[];
 
 // The user has more than one gesture to refresh a page in iOS. This includes
 // but not limited to re-typing the URL in omnibox and refreshing from context
@@ -258,6 +278,9 @@ extern const char kMadeForIOSPromoTrigger[];
 // The stay safe default browser promo was triggered.
 extern const char kStaySafePromoTrigger[];
 
+// The default browser promos group was triggered.
+extern const char kDefaultBrowserPromosGroupTrigger[];
+
 // The tailored default browser promo group was triggered.
 extern const char kTailoredDefaultBrowserPromosGroupTrigger[];
 
@@ -281,8 +304,21 @@ extern const char
 // The user has tapped the Home customization menu's entrypoint.
 extern const char kHomeCustomizationMenuUsed[];
 
+// The user has opened the Home customization menu with background customization
+// enabled..
+extern const char kHomeBackgroundCustomizationMenuUsed[];
+
+// The user has seen the `kIPHHomeCustomizationMenuFeature` iph.
+extern const char kHomeCustomizationPromoTriggered[];
+
+// The user loaded an NTP with a custom background
+extern const char kNTPCustomBackgroundLoaded[];
+
 // The user has tapped on the lens overlay entrypoint.
 extern const char kLensOverlayEntrypointUsed[];
+
+// The user has tapped the Lens button.
+extern const char kIOSLensButtonUsed[];
 
 // The user has scheduled a tab reminder.
 extern const char kIOSTabReminderScheduled[];
@@ -299,6 +335,113 @@ extern const char kIOSReminderNotificationsOverflowMenuNewBadgeIPHTrigger[];
 // The user has executed an action that is a trigger for the Auto-deletion IPH.
 extern const char kIOSDownloadAutoDeletionIPHCriterionMet[];
 
+// The user has scrolled on the NTP while the feed is visible.
+extern const char kIOSScrolledOnFeed[];
+
+// The user has taken action on the feed.
+extern const char kIOSActionOnFeed[];
+
+// The Welcome Back promo was triggered.
+extern const char kIOSWelcomeBackPromoTrigger[];
+
+// The Welcome Back promo was used.
+extern const char kIOSWelcomeBackPromoUsed[];
+
+// The BWG promo was triggered.
+extern const char kIOSBWGPromoTrigger[];
+
+// The BWG promo was used.
+extern const char kIOSBWGPromoUsed[];
+
+// The page action menu IPH(In-Product Help) was triggered.
+extern const char kIOSPageActionMenuIPHTrigger[];
+
+// The page action menu IPH(In-Product Help) was used.
+extern const char kIOSPageActionMenuIPHUsed[];
+
+// The entry point of the import Safari data workflow has been displayed.
+extern const char kIOSSafariImportRemindMeLater[];
+
+// Event fired when the First Run Experience (FRE) is completed on iOS.
+extern const char kIOSFirstRunComplete[];
+
+// Event fired after the quiet period following FRE completion has elapsed.
+extern const char kIOSFREBadgeHoldbackPeriodElapsed[];
+
+// The user has tapped on the Reader Mode entrypoint.
+extern const char kIOSReaderModeUsed[];
+
+// The Reading Mode expanded omnibox entrypoint is presented.
+extern const char kIOSReaderModeChipExpanded[];
+
+// Event fired when the Reader Mode "What's new" badge is displayed.
+extern const char kIOSIPHBadgedReaderModeTriggered[];
+
+// Event fired when the AI Hub's "New" badge entrypoint is shown.
+extern const char kIOSAIHubNewBadgeTriggered[];
+
+// Event fired when the AI Hub's entry point is tapped.
+extern const char kIOSAIHubNewBadgeUsed[];
+
+// Event fired when a fullscreen promo is triggered, to manage group frequency.
+extern const char kIOSFullscreenPromosGroupTrigger[];
+
+// Event fired when the omnibox Gemini contextual cue chip is shown.
+extern const char kIOSGeminiContextualCueChipTriggered[];
+
+// Event fired when the omnibox Gemini contextual cue chip is tapped.
+extern const char kIOSGeminiContextualCueChipUsed[];
+
+// Event fired when the Gemini Image Remix IPH is triggered.
+extern const char kIOSGeminiImageRemixIPHTrigger[];
+
+// Event fired when the Gemini Promo is completed for the first time on iOS.
+extern const char kIOSGeminiPromoFirstCompletion[];
+
+// Event fired when the user first became eligible for Ask Gemini.
+extern const char kIOSGeminiEligiblity[];
+
+// The user has tapped on the Reader Mode options in-product help.
+extern const char kIOSIPHReaderModeOptionsUsed[];
+
+// The Reader Mode options entrypoint in-product help was triggered.
+extern const char kIOSIPHReaderModeOptionsTriggered[];
+
+// Event fired when the Gemini Fullscreen Promo is triggered.
+extern const char kIOSGeminiFullscreenPromoTriggered[];
+
+// Event fired when the user starts the Gemini flow without the seeing the
+// promo.
+extern const char kIOSGeminiFlowStartedNonPromo[];
+
+// Event fired when the Gemini consent is given.
+extern const char kIOSGeminiConsentGiven[];
+
+// Event fired when the user successfully switches to Gemini Live mode.
+extern const char kIOSGeminiLiveUsed[];
+
+// Event fired when the Gemini Live "New" badge is triggered.
+extern const char kIOSGeminiLiveNewBadgeTriggered[];
+
+// Event fired when the Gemini Live 1st-time IPH is triggered.
+extern const char kIOSGeminiLiveIPHTriggered[];
+
+// Event fired when the user taps the "What can Gemini do" suggestion chip.
+extern const char kIOSGeminiWhatCanGeminiDoTapped[];
+
+// Event fired when the "What can Gemini do" suggestion chip is shown to the
+// user. This is different from WhatCanGeminiDoTapped because it can be
+// triggered without the user tapping the chip.
+extern const char kIOSGeminiWhatCanGeminiDoTriggered[];
+
+// Event fired when the user pins a site to the most visited tile.
+extern const char kIOSPinMVTSiteUsed[];
+
+// Event fired on each foreground transition where no scene has a startup
+// parameter. This includes switching between two windows in multi-window mode
+// when the user opens Chrome from the icon.
+extern const char kIOSChromeOpenedFromIcon[];
+
 #endif  // BUILDFLAG(IS_IOS)
 
 // Android.
@@ -306,6 +449,8 @@ extern const char kIOSDownloadAutoDeletionIPHCriterionMet[];
 // The user has explicitly used the Install menu item under the App Menu.
 extern const char kPwaInstallMenuSelected[];
 #endif  // BUILDFLAG(IS_ANDROID)
+
+extern const char kTabSearchComboButtonUsed[];
 
 }  // namespace events
 

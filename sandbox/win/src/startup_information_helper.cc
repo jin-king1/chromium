@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "sandbox/win/src/startup_information_helper.h"
 
@@ -17,6 +13,7 @@
 #include "base/check.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/win/startup_information.h"
+#include "base/win/windows_handle_util.h"
 #include "base/win/windows_version.h"
 #include "sandbox/win/src/app_container.h"
 #include "sandbox/win/src/nt_internals.h"
@@ -64,7 +61,11 @@ void StartupInformationHelper::SetStdHandles(HANDLE stdout_handle,
 }
 
 void StartupInformationHelper::AddInheritedHandle(HANDLE handle) {
-  if (handle != INVALID_HANDLE_VALUE) {
+  // https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute
+  // "These handles must be created as inheritable handles and must not include
+  // pseudo handles such as those returned by the GetCurrentProcess or
+  // GetCurrentThread function."
+  if (handle && !base::win::IsPseudoHandle(handle)) {
     auto it = std::ranges::find(inherited_handle_list_, handle);
     if (it == inherited_handle_list_.end())
       inherited_handle_list_.push_back(handle);
@@ -161,7 +162,7 @@ bool StartupInformationHelper::BuildStartupInformation() {
       return false;
     }
     startup_info_.startup_info()->dwFlags |= STARTF_USESTDHANDLES;
-    startup_info_.startup_info()->hStdInput = INVALID_HANDLE_VALUE;
+    startup_info_.startup_info()->hStdInput = nullptr;
     startup_info_.startup_info()->hStdOutput = stdout_handle_;
     startup_info_.startup_info()->hStdError = stderr_handle_;
     // Allowing inheritance of handles is only secure now that we
@@ -204,12 +205,16 @@ bool StartupInformationHelper::BuildStartupInformation() {
   return true;
 }
 
-void StartupInformationHelper::SetFilterEnvironment(bool filter) {
-  filter_environment_ = filter;
+void StartupInformationHelper::SetEnvironment(std::wstring environment) {
+  DCHECK(!environment.empty() && environment.back() == L'\0');
+  environment_ = std::move(environment);
 }
 
-bool StartupInformationHelper::IsEnvironmentFiltered() {
-  return filter_environment_;
+wchar_t* StartupInformationHelper::GetEnvironment() {
+  if (environment_.empty()) {
+    return nullptr;
+  }
+  return const_cast<wchar_t*>(std::data(environment_));
 }
 
 }  // namespace sandbox

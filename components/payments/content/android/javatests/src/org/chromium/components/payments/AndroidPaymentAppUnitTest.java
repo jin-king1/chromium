@@ -11,6 +11,7 @@ import android.os.Bundle;
 import androidx.test.annotation.UiThreadTest;
 import androidx.test.filters.SmallTest;
 
+import org.chromium.components.payments.intent.WebPaymentIntentHelper;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
@@ -26,11 +27,10 @@ import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.content_public.browser.test.NativeLibraryTestUtils;
 import org.chromium.payments.mojom.PaymentCurrencyAmount;
-import org.chromium.payments.mojom.PaymentDetailsModifier;
+import org.chromium.payments.mojom.PaymentEventResponseType;
 import org.chromium.payments.mojom.PaymentItem;
 import org.chromium.payments.mojom.PaymentMethodData;
 import org.chromium.payments.mojom.PaymentOptions;
-import org.chromium.payments.mojom.PaymentShippingOption;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -96,6 +96,18 @@ public class AndroidPaymentAppUnitTest {
     @SmallTest
     @Test
     @UiThreadTest
+    public void testSetHasEnrolledInstrument() throws Exception {
+        AndroidPaymentApp app =
+                createApp(
+                        /* showReadyToPayDebugInfo= */ false);
+        Assert.assertFalse(app.hasEnrolledInstrument());
+        app.setHasEnrolledInstrument(true);
+        Assert.assertTrue(app.hasEnrolledInstrument());
+    }
+
+    @SmallTest
+    @Test
+    @UiThreadTest
     public void testSuccessfulPayment() throws Exception {
         AndroidPaymentApp app = createApp(/* showReadyToPayDebugInfo= */ false);
         queryReadyToPay(app);
@@ -120,6 +132,21 @@ public class AndroidPaymentAppUnitTest {
         Assert.assertNull(mPaymentDetails);
     }
 
+    @SmallTest
+    @Test
+    @UiThreadTest
+    public void testInternalAppErrorPayment() throws Exception {
+        AndroidPaymentApp app = createApp(/* showReadyToPayDebugInfo= */ false);
+        queryReadyToPay(app);
+        invokePaymentApp(app, WebPaymentIntentHelper.RESULT_INTERNAL_APP_ERROR);
+        Assert.assertEquals(
+                "Payment app returned RESULT_INTERNAL_APP_ERROR code. Native payment app"
+                        + " encountered an internal app error.",
+                mErrorMessage);
+        Assert.assertNull(mPaymentMethodName);
+        Assert.assertNull(mPaymentDetails);
+    }
+
     private AndroidPaymentApp createApp(boolean showReadyToPayDebugInfo) {
         AndroidPaymentApp app =
                 new AndroidPaymentApp(
@@ -135,7 +162,8 @@ public class AndroidPaymentAppUnitTest {
                         /* appToHide= */ null,
                         new SupportedDelegations(),
                         showReadyToPayDebugInfo,
-                        /* removeDeprecatedFields= */ false);
+                        /* removeDeprecatedFields= */ false,
+                        /* paymentDetailsUpdateServiceMaxRetryNumber= */ 0);
         app.addMethodName("https://company.com/pay");
         return app;
     }
@@ -147,7 +175,7 @@ public class AndroidPaymentAppUnitTest {
                 "https://merchant.com",
                 "https://psp.com",
                 /* certificateChain= */ null,
-                /* modifiers= */ new HashMap<String, PaymentDetailsModifier>(),
+                /* modifiers= */ new HashMap<>(),
                 new AndroidPaymentApp.IsReadyToPayCallback() {
                     @Override
                     public void onIsReadyToPayResponse(
@@ -174,10 +202,10 @@ public class AndroidPaymentAppUnitTest {
                 /* certificateChain= */ null,
                 mMethods,
                 total,
-                /* displayItems= */ new ArrayList<PaymentItem>(),
-                /* modifiers= */ new HashMap<String, PaymentDetailsModifier>(),
+                /* displayItems= */ new ArrayList<>(),
+                /* modifiers= */ new HashMap<>(),
                 new PaymentOptions(),
-                new ArrayList<PaymentShippingOption>(),
+                new ArrayList<>(),
                 new PaymentApp.InstrumentDetailsCallback() {
                     @Override
                     public void onInstrumentDetailsReady(
@@ -188,7 +216,8 @@ public class AndroidPaymentAppUnitTest {
                     }
 
                     @Override
-                    public void onInstrumentDetailsError(String errorMessage) {
+                    public void onInstrumentDetailsError(
+                            @PaymentEventResponseType.EnumType int error, String errorMessage) {
                         mErrorMessage = errorMessage;
                         mInvokePaymentAppFinished = true;
                     }

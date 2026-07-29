@@ -13,6 +13,7 @@ namespace blink {
 
 class WebGLFramebuffer;
 class WebGLTexture;
+class ExecutionContext;
 
 class WebGLShaderPixelLocalStorage final : public WebGLExtension {
   DEFINE_WRAPPERTYPEINFO();
@@ -21,7 +22,7 @@ class WebGLShaderPixelLocalStorage final : public WebGLExtension {
   static bool Supported(WebGLRenderingContextBase*);
   static const char* ExtensionName();
 
-  explicit WebGLShaderPixelLocalStorage(WebGLRenderingContextBase*);
+  WebGLShaderPixelLocalStorage(WebGLRenderingContextBase*, ExecutionContext*);
 
   WebGLExtensionName GetName() const override;
 
@@ -30,7 +31,8 @@ class WebGLShaderPixelLocalStorage final : public WebGLExtension {
   void framebufferTexturePixelLocalStorageWEBGL(GLint plane,
                                                 WebGLTexture*,
                                                 GLint level,
-                                                GLint layer);
+                                                GLint layer,
+                                                GLbitfield usage);
   void framebufferPixelLocalClearValuefvWEBGL(GLint plane,
                                               base::span<const GLfloat>,
                                               GLuint src_offset);
@@ -60,7 +62,7 @@ class WebGLShaderPixelLocalStorage final : public WebGLExtension {
                                size_t src_length,
                                GLuint src_offset);
 
-  const bool coherent_;
+  bool coherent_;
   GLint max_pls_planes_ = 0;
 };
 

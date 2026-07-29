@@ -32,6 +32,7 @@
 #include "ui/aura/window.h"
 #include "ui/events/event_utils.h"
 #include "ui/events/test/event_generator.h"
+#include "ui/gfx/animation/animation_test_api.h"
 #include "ui/wm/core/window_util.h"
 
 namespace {
@@ -121,10 +122,10 @@ class TabScrubberTest : public InProcessBrowserTest,
   }
 
   TabStrip* GetTabStrip(Browser* browser) {
-    aura::Window* window = browser->window()->GetNativeWindow();
+    aura::Window* window = browser->GetWindow()->GetNativeWindow();
     // This test depends on TabStrip impl.
-    TabStrip* tab_strip =
-        BrowserView::GetBrowserViewForNativeWindow(window)->tabstrip();
+    TabStrip* tab_strip = BrowserView::GetBrowserViewForNativeWindow(window)
+                              ->horizontal_tab_strip_for_testing();
     DCHECK(tab_strip);
     return tab_strip;
   }
@@ -254,18 +255,15 @@ class TabScrubberTest : public InProcessBrowserTest,
   }
 
   void AddTabs(Browser* browser, int num_tabs) {
-    TabStrip* tab_strip = GetTabStrip(browser);
     for (int i = 0; i < num_tabs; ++i) {
       AddBlankTabAndShow(browser);
     }
     ASSERT_EQ(num_tabs + 1, browser->tab_strip_model()->count());
     ASSERT_EQ(num_tabs, browser->tab_strip_model()->active_index());
-    tab_strip->StopAnimating(true);
-    ASSERT_FALSE(tab_strip->IsAnimating());
+    BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser);
+    CHECK(browser_view);
     // Perform any scheduled layouts so the tabstrip is in a steady state.
-    BrowserView::GetBrowserViewForBrowser(browser)
-        ->GetWidget()
-        ->LayoutRootViewIfNecessary();
+    browser_view->GetWidget()->LayoutRootViewIfNecessary();
   }
 
   // TabStripModelObserver overrides.
@@ -283,7 +281,7 @@ class TabScrubberTest : public InProcessBrowserTest,
 
   std::unique_ptr<ui::test::EventGenerator> CreateEventGenerator(
       Browser* browser) {
-    aura::Window* window = browser->window()->GetNativeWindow();
+    aura::Window* window = browser->GetWindow()->GetNativeWindow();
     aura::Window* root = window->GetRootWindow();
     return std::make_unique<ui::test::EventGenerator>(root, window);
   }
@@ -339,6 +337,10 @@ class TabScrubberTest : public InProcessBrowserTest,
   };
 
   std::unique_ptr<exo::WMHelper> wm_helper_;
+
+  const gfx::AnimationTestApi::RenderModeResetter disable_rich_animations_ =
+      gfx::AnimationTestApi::SetRichAnimationRenderMode(
+          gfx::Animation::RichAnimationRenderMode::FORCE_DISABLED);
 };
 
 // Swipe a single tab in each direction.
@@ -372,10 +374,10 @@ IN_PROC_BROWSER_TEST_F(TabScrubberTest, MultiBrowser) {
   Scrub(browser(), 0, EACH_TAB);
   EXPECT_EQ(0, browser()->tab_strip_model()->active_index());
 
-  Browser* browser2 = CreateBrowser(browser()->profile());
-  browser2->window()->Activate();
-  ASSERT_TRUE(browser2->window()->IsActive());
-  ASSERT_FALSE(browser()->window()->IsActive());
+  Browser* browser2 = CreateBrowser(browser()->GetProfile());
+  browser2->GetWindow()->Activate();
+  ASSERT_TRUE(browser2->GetWindow()->IsActive());
+  ASSERT_FALSE(browser()->GetWindow()->IsActive());
   AddTabs(browser2, 1);
 
   Scrub(browser2, 0, EACH_TAB);
@@ -388,15 +390,12 @@ IN_PROC_BROWSER_TEST_F(TabScrubberTest, FullScreenBrowser) {
   // to prevent any interference on this test.
   auto event_generator = CreateEventGenerator(browser());
   event_generator->MoveMouseTo(
-      gfx::Point(0, browser()->window()->GetBounds().height()));
+      gfx::Point(0, browser()->GetWindow()->GetBounds().height()));
   AddTabs(browser(), 6);
   browser()->tab_strip_model()->ActivateTabAt(4);
 
   chrome::ToggleFullscreenMode(browser());
-  BrowserView* browser_view = BrowserView::GetBrowserViewForNativeWindow(
-      browser()->window()->GetNativeWindow());
-  ImmersiveModeController* immersive_controller =
-      browser_view->immersive_mode_controller();
+  auto* const immersive_controller = ImmersiveModeController::From(browser());
   EXPECT_TRUE(immersive_controller->IsEnabled());
 
   ImmersiveRevealEndedWaiter waiter(immersive_controller);
@@ -489,8 +488,8 @@ IN_PROC_BROWSER_TEST_F(TabScrubberTest, MoveHighlighted) {
 
   SendScrubEvent(browser(), 0);
   EXPECT_TRUE(TabScrubber::GetInstance()->IsActivationPending());
-  browser()->tab_strip_model()->ToggleSelectionAt(0);
-  browser()->tab_strip_model()->ToggleSelectionAt(1);
+  browser()->tab_strip_model()->SelectTabAt(0);
+  browser()->tab_strip_model()->DeselectTabAt(1);
   browser()->tab_strip_model()->MoveSelectedTabsTo(1, std::nullopt);
   EXPECT_EQ(1, TabScrubber::GetInstance()->highlighted_tab());
 }
@@ -502,8 +501,8 @@ IN_PROC_BROWSER_TEST_F(TabScrubberTest, MoveBefore) {
 
   SendScrubEvent(browser(), 1);
   EXPECT_TRUE(TabScrubber::GetInstance()->IsActivationPending());
-  browser()->tab_strip_model()->ToggleSelectionAt(0);
-  browser()->tab_strip_model()->ToggleSelectionAt(2);
+  browser()->tab_strip_model()->SelectTabAt(0);
+  browser()->tab_strip_model()->SelectTabAt(2);
   browser()->tab_strip_model()->MoveSelectedTabsTo(2, std::nullopt);
   EXPECT_EQ(0, TabScrubber::GetInstance()->highlighted_tab());
 }
@@ -525,7 +524,7 @@ IN_PROC_BROWSER_TEST_F(TabScrubberTest, CloseBrowser) {
 
   SendScrubEvent(browser(), 0);
   EXPECT_TRUE(TabScrubber::GetInstance()->IsActivationPending());
-  browser()->window()->Close();
+  browser()->GetWindow()->Close();
   EXPECT_FALSE(TabScrubber::GetInstance()->IsActivationPending());
 }
 
@@ -574,8 +573,8 @@ IN_PROC_BROWSER_TEST_F(TabScrubberTest, RTLMoveBefore) {
 
   SendScrubEvent(browser(), 1);
   EXPECT_TRUE(TabScrubber::GetInstance()->IsActivationPending());
-  browser()->tab_strip_model()->ToggleSelectionAt(0);
-  browser()->tab_strip_model()->ToggleSelectionAt(2);
+  browser()->tab_strip_model()->SelectTabAt(0);
+  browser()->tab_strip_model()->SelectTabAt(2);
   browser()->tab_strip_model()->MoveSelectedTabsTo(2, std::nullopt);
   EXPECT_EQ(0, TabScrubber::GetInstance()->highlighted_tab());
 }
@@ -585,10 +584,10 @@ IN_PROC_BROWSER_TEST_F(TabScrubberTest, DisabledIfWindowCycleListOpen) {
   AddTabs(browser(), 4);
 
   // Create a second browser, but don't make it active.
-  Browser* browser2 = CreateBrowser(browser()->profile());
-  browser()->window()->Activate();
-  ASSERT_FALSE(browser2->window()->IsActive());
-  ASSERT_TRUE(browser()->window()->IsActive());
+  Browser* browser2 = CreateBrowser(browser()->GetProfile());
+  browser()->GetWindow()->Activate();
+  ASSERT_FALSE(browser2->GetWindow()->IsActive());
+  ASSERT_TRUE(browser()->GetWindow()->IsActive());
 
   // Open window cycle list. It should be open now so tab scrubber should be
   // disabled.

@@ -5,12 +5,17 @@
 #include "content/browser/android/nfc_host.h"
 
 #include "base/memory/raw_ptr.h"
+#include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/browser/web_contents/web_contents_impl.h"
+#include "content/public/browser/permission_descriptor_util.h"
 #include "content/public/test/mock_permission_controller.h"
+#include "content/public/test/permissions_test_utils.h"
 #include "content/public/test/test_browser_context.h"
 #include "content/test/test_render_view_host.h"
 #include "content/test/test_web_contents.h"
 #include "services/device/public/mojom/nfc.mojom.h"
+#include "mojo/public/cpp/test_support/fake_message_dispatch_context.h"
+#include "mojo/public/cpp/test_support/test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/permissions/permission_utils.h"
 
@@ -54,35 +59,64 @@ class NFCHostTest : public RenderViewHostImplTestHarness {
 
 TEST_F(NFCHostTest, GetNFCTwice) {
   constexpr MockPermissionController::SubscriptionId kSubscriptionId(42);
+  blink::mojom::PermissionDescriptorPtr descriptor;
 
   NavigateAndCommit(GURL(kTestUrl));
 
   EXPECT_CALL(mock_permission_controller(),
-              GetPermissionStatusForCurrentDocument(blink::PermissionType::NFC,
-                                                    main_rfh()))
-      .WillOnce(Return(blink::mojom::PermissionStatus::GRANTED))
-      .WillOnce(Return(blink::mojom::PermissionStatus::GRANTED));
+              GetPermissionStatusForCurrentDocument(testing::_, main_rfh()))
+      .WillRepeatedly([&](const blink::mojom::PermissionDescriptorPtr&
+                              permission_descriptor,
+                          content::RenderFrameHost* render_frame_host) {
+        descriptor = permission_descriptor->Clone();
+        return blink::mojom::PermissionStatus::GRANTED;
+      });
   EXPECT_CALL(mock_permission_controller(),
-              SubscribeToPermissionStatusChange(
-                  blink::PermissionType::NFC, /*render_process_host=*/nullptr,
-                  main_rfh(),
+              SubscribeToPermissionResultChange(
+                  PermissionDescriptorToPermissionTypeMatcher(
+                      blink::PermissionType::NFC),
+                  /*render_process_host=*/nullptr, main_rfh(),
                   main_rfh()->GetMainFrame()->GetLastCommittedOrigin().GetURL(),
                   /*should_include_device_status*/ false, _))
       .WillOnce(Return(kSubscriptionId));
 
   mojo::Remote<device::mojom::NFC> nfc1, nfc2;
-  contents()->GetNFC(main_rfh(), nfc1.BindNewPipeAndPassReceiver());
-  contents()->GetNFC(main_rfh(), nfc2.BindNewPipeAndPassReceiver());
+  contents()->GetNFC(static_cast<RenderFrameHostImpl*>(main_rfh()),
+                     nfc1.BindNewPipeAndPassReceiver());
+  contents()->GetNFC(static_cast<RenderFrameHostImpl*>(main_rfh()),
+                     nfc2.BindNewPipeAndPassReceiver());
 
   nfc1.FlushForTesting();
   nfc2.FlushForTesting();
+  EXPECT_EQ(blink::PermissionDescriptorToPermissionType(descriptor),
+            blink::PermissionType::NFC);
   EXPECT_TRUE(nfc1.is_bound());
   EXPECT_TRUE(nfc2.is_bound());
 
   EXPECT_CALL(mock_permission_controller(),
-              UnsubscribeFromPermissionStatusChange(kSubscriptionId));
+              UnsubscribeFromPermissionResultChange(kSubscriptionId));
 
   DeleteContents();
+}
+
+TEST_F(NFCHostTest, GetNFCFromDifferentWebContentsMainFrame) {
+  NavigateAndCommit(GURL(kTestUrl));
+
+  // Create a second WebContents.
+  std::unique_ptr<TestWebContents> second_web_contents =
+      TestWebContents::Create(browser_context(), nullptr);
+
+  mojo::Remote<device::mojom::NFC> nfc;
+  mojo::FakeMessageDispatchContext fake_dispatch_context;
+  mojo::test::BadMessageObserver bad_message_observer;
+
+  // Request NFC from the first WebContents, but passing the main frame of the
+  // second WebContents.
+  contents()->GetNFC(second_web_contents->GetPrimaryMainFrame(),
+                     nfc.BindNewPipeAndPassReceiver());
+
+  EXPECT_EQ("WebNFC not on primary main frame.",
+            bad_message_observer.WaitForBadMessage());
 }
 
 }  // namespace content

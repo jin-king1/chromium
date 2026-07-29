@@ -6,13 +6,12 @@
 #define COMPONENTS_TRANSLATE_CORE_COMMON_TRANSLATE_UTIL_H_
 
 #include "base/feature_list.h"
-#include "base/metrics/field_trial_params.h"
 #include "url/gurl.h"
 
 namespace translate {
 
-// Controls whether the TFLite-based language detection is enabled.
-BASE_DECLARE_FEATURE(kTFLiteLanguageDetectionEnabled);
+// The minimum score for the TFLite model prediction to be considered reliable.
+inline constexpr double kTFLiteReliabilityThreshold = 0.7;
 
 // Isolated world sets following security-origin by default.
 extern const char kSecurityOrigin[];
@@ -27,10 +26,6 @@ bool IsTFLiteLanguageDetectionEnabled();
 // Return the threshold used to determine if TFLite language detection model's
 // prediction is reliable.
 float GetTFLiteLanguageDetectionThreshold();
-
-// Feature flag used to control the auto-always and auto-never snackbar
-// parameters (i.e. threshold and maximum-number-of).
-BASE_DECLARE_FEATURE(kTranslateAutoSnackbars);
 
 // The number of times the user should consecutively translate for "Always
 // Translate" to automatically trigger.

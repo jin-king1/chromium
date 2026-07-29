@@ -15,6 +15,8 @@
 #include "ash/shell.h"
 #include "ash/style/rounded_container.h"
 #include "ash/style/switch.h"
+#include "ash/system/model/enterprise_domain_model.h"
+#include "ash/system/model/system_tray_model.h"
 #include "ash/system/tray/fake_detailed_view_delegate.h"
 #include "ash/system/tray/hover_highlight_view.h"
 #include "ash/test/ash_test_base.h"
@@ -161,7 +163,6 @@ class AccessibilityDetailedViewTest : public AshTestBase,
   AccessibilityDetailedViewTest() {
     scoped_feature_list_.InitWithFeatures(
         {ash::features::kOnDeviceSpeechRecognition,
-         ::features::kAccessibilityFaceGaze,
          ::features::kAccessibilityReducedAnimationsInKiosk},
         {});
   }
@@ -186,6 +187,7 @@ class AccessibilityDetailedViewTest : public AshTestBase,
 
   void CreateDetailedMenu() {
     // Create a widget for the detailed view so that tests can exercise focus.
+    detailed_menu_ = nullptr;
     widget_ = CreateFramelessTestWidget();
     widget_->SetFullscreen(true);
     // Use a fake delegate to fake out CloseBubble() calls, since these tests
@@ -196,8 +198,8 @@ class AccessibilityDetailedViewTest : public AshTestBase,
   }
 
   void CloseDetailMenu() {
-    widget_.reset();
     detailed_menu_ = nullptr;
+    widget_.reset();
     delegate_.reset();
   }
 
@@ -497,6 +499,11 @@ class AccessibilityDetailedViewTest : public AshTestBase,
     info.state = session_controller->GetSessionState();
     info.is_running_in_app_mode = true;
     session_controller->SetSessionInfo(info);
+
+    UserSession session;
+    session.session_id = 1;
+    session.user_info.type = user_manager::UserType::kKioskChromeApp;
+    session_controller->UpdateUserSession(session);
   }
 
   AccessibilityController* controller() { return controller_; }
@@ -633,8 +640,7 @@ class AccessibilityDetailedViewTest : public AshTestBase,
   raw_ptr<AccessibilityController> controller_ = nullptr;
   std::unique_ptr<views::Widget> widget_;
   std::unique_ptr<DetailedViewDelegate> delegate_;
-  raw_ptr<AccessibilityDetailedView, DanglingUntriaged> detailed_menu_ =
-      nullptr;
+  raw_ptr<AccessibilityDetailedView> detailed_menu_ = nullptr;
   base::test::ScopedFeatureList scoped_feature_list_;
 };
 
@@ -1383,6 +1389,25 @@ TEST_F(AccessibilityDetailedViewTest, KioskModeClickReducedAnimations) {
   EXPECT_FALSE(accessibility_controller->reduced_animations().enabled());
 }
 
+TEST_F(AccessibilityDetailedViewTest, FaceGazeKiosk) {
+  SetUpKioskSession();
+  CreateDetailedMenu();
+  EXPECT_TRUE(IsFaceGazeShownOnDetailMenu());
+}
+
+TEST_F(AccessibilityDetailedViewTest, FaceGazeEnterpriseKiosk) {
+  // Pretend that the device is an enterprise managed device that is in a kiosk
+  // session.
+  Shell::Get()
+      ->system_tray_model()
+      ->enterprise_domain()
+      ->SetDeviceEnterpriseInfo(DeviceEnterpriseInfo(
+          "info", ManagementDeviceMode::kChromeEnterprise));
+  SetUpKioskSession();
+  CreateDetailedMenu();
+  EXPECT_FALSE(IsFaceGazeShownOnDetailMenu());
+}
+
 class AccessibilityDetailedViewSodaTest
     : public AccessibilityDetailedViewTest,
       public testing::WithParamInterface<SodaFeature> {
@@ -1402,9 +1427,6 @@ class AccessibilityDetailedViewSodaTest
     // calling speech::SodaInstaller::GetInstance() returns a valid instance.
     std::vector<base::test::FeatureRef> enabled_features(
         {ash::features::kOnDeviceSpeechRecognition});
-    if (GetParam() == SodaFeature::kLiveCaption) {
-      enabled_features.push_back(media::kLiveCaptionMultiLanguage);
-    }
     scoped_feature_list_.InitWithFeatures(enabled_features, {});
     soda_installer_impl_ =
         std::make_unique<speech::SodaInstallerImplChromeOS>();
@@ -2662,6 +2684,19 @@ TEST_F(AccessibilityDetailedViewLoginScreenTest, FaceGaze) {
   // Reduced animations not available from the login screen.
   EXPECT_FALSE(IsReducedAnimationsShownOnDetailMenu());
   CloseDetailMenu();
+}
+
+TEST_F(AccessibilityDetailedViewLoginScreenTest, FaceGazeEnterprise) {
+  // Pretend that the device is an enterprise managed device.
+  // In this case, the FaceGaze quick settings option should be hidden on the
+  // login screen.
+  Shell::Get()
+      ->system_tray_model()
+      ->enterprise_domain()
+      ->SetDeviceEnterpriseInfo(DeviceEnterpriseInfo(
+          "info", ManagementDeviceMode::kChromeEnterprise));
+  CreateDetailedMenu();
+  EXPECT_FALSE(IsFaceGazeShownOnDetailMenu());
 }
 
 }  // namespace ash

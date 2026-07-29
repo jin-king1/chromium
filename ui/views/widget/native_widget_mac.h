@@ -16,7 +16,7 @@
 #include "ui/base/mojom/window_show_state.mojom-forward.h"
 #include "ui/base/window_open_disposition.h"
 #include "ui/color/color_provider_key.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/views/widget/native_widget_private.h"
 #include "ui/views/widget/widget_observer.h"
 
@@ -69,6 +69,18 @@ class VIEWS_EXPORT NativeWidgetMac : public internal::NativeWidgetPrivate,
   // Called when the backing NSWindow gains or loses key status.
   void OnWindowKeyStatusChanged(bool is_key, bool is_content_first_responder);
 
+  // Called when the window is about to move.
+  void OnWindowWillMove();
+
+  // Called when the window has moved.
+  void OnWindowDidEndMove();
+
+  // Called when the user will start resizing the window.
+  void OnWindowWillStartLiveResize();
+
+  // Called when the user ends resizing the window.
+  void OnWindowDidEndLiveResize();
+
   // The vertical position from which sheets should be anchored, from the top
   // of the content view.
   virtual int32_t SheetOffsetY();
@@ -117,11 +129,14 @@ class VIEWS_EXPORT NativeWidgetMac : public internal::NativeWidgetPrivate,
         const_cast<const NativeWidgetMac*>(this)->GetCompositor());
   }
 
+  gfx::NativeViewAccessible GetNativeViewAccessibleForNSView() const;
+  gfx::NativeViewAccessible GetNativeViewAccessibleForNSWindow() const;
+
   // internal::NativeWidgetPrivate:
   void InitNativeWidget(Widget::InitParams params) override;
   void OnWidgetInitDone() override;
   void ReparentNativeViewImpl(gfx::NativeView new_parent) override;
-  std::unique_ptr<NonClientFrameView> CreateNonClientFrameView() override;
+  std::unique_ptr<FrameView> CreateFrameView() override;
   bool ShouldUseNativeFrame() const override;
   bool ShouldWindowContentsBeTransparent() const override;
   void FrameTypeChanged() override;
@@ -149,7 +164,10 @@ class VIEWS_EXPORT NativeWidgetMac : public internal::NativeWidgetPrivate,
   void SetWindowIcons(const gfx::ImageSkia& window_icon,
                       const gfx::ImageSkia& app_icon) override;
   void InitModalType(ui::mojom::ModalType modal_type) override;
-  void SetColorMode(ui::ColorProviderKey::ColorMode color_mode) override;
+  // Suppress warning about hiding virtual WidgetObserver::OnWidgetThemeChanged.
+  // TODO(kerenzhu): Do not observe Widget in this class.
+  using WidgetObserver::OnWidgetThemeChanged;
+  void SetBackgroundColor(SkColor background_color) override;
   gfx::Rect GetWindowBoundsInScreen() const override;
   gfx::Rect GetClientAreaBoundsInScreen() const override;
   gfx::Rect GetRestoredBounds() const override;
@@ -167,6 +185,7 @@ class VIEWS_EXPORT NativeWidgetMac : public internal::NativeWidgetPrivate,
             const gfx::Rect& restore_bounds) override;
   void Hide() override;
   bool IsVisible() const override;
+  bool IsVisibleOnScreen() const override;
   void Activate() override;
   void Deactivate() override;
   bool IsActive() const override;
@@ -175,6 +194,7 @@ class VIEWS_EXPORT NativeWidgetMac : public internal::NativeWidgetPrivate,
   void SetActivationIndependence(bool independence) override;
   void SetVisibleOnAllWorkspaces(bool always_visible) override;
   bool IsVisibleOnAllWorkspaces() const override;
+  void MoveToActiveFullscreenSpace() override;
   void Maximize() override;
   void Minimize() override;
   bool IsMaximized() const override;
@@ -188,11 +208,11 @@ class VIEWS_EXPORT NativeWidgetMac : public internal::NativeWidgetPrivate,
   void SetAspectRatio(const gfx::SizeF& aspect_ratio,
                       const gfx::Size& excluded_margin) override;
   void FlashFrame(bool flash_frame) override;
-  void RunShellDrag(std::unique_ptr<ui::OSExchangeData> data,
-                    const gfx::Point& location,
-                    int operation,
-                    ui::mojom::DragEventSource source) override;
-  void CancelShellDrag(View* view) override;
+  void RunDragDropLoop(std::unique_ptr<ui::OSExchangeData> data,
+                       const gfx::Point& location,
+                       int operation,
+                       ui::mojom::DragEventSource source) override;
+  void CancelDragDropLoop(View* view) override;
   void SchedulePaintInRect(const gfx::Rect& rect) override;
   void ScheduleLayout() override;
   void SetCursor(const ui::Cursor& cursor) override;
@@ -217,6 +237,7 @@ class VIEWS_EXPORT NativeWidgetMac : public internal::NativeWidgetPrivate,
   void OnNativeViewHierarchyChanged() override;
   bool SetAllowScreenshots(bool allow) override;
   bool AreScreenshotsAllowed() override;
+  bool IsDesktopNativeWidget() const override;
   std::string GetName() const override;
   base::WeakPtr<internal::NativeWidgetPrivate> GetWeakPtr() override;
 

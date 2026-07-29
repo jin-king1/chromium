@@ -3,22 +3,25 @@
 // found in the LICENSE file.
 
 import {
+  POWER_BARS_PER_SECOND,
   POWER_SCALE_FACTOR,
   SAMPLE_RATE,
+  SAMPLES_PER_POWER_BAR,
   SAMPLES_PER_SLICE,
 } from './audio_constants.js';
-import {PlatformHandler} from './platform_handler.js';
+import type {PlatformHandler} from './platform_handler.js';
 import {computed, signal} from './reactive/signal.js';
-import {LanguageCode} from './soda/language_info.js';
+import type {LanguageCode} from './soda/language_info.js';
 import {SodaEventTransformer, Transcription} from './soda/soda.js';
-import {SodaSession} from './soda/types.js';
+import type {SodaSession} from './soda/types.js';
 import {
   assert,
   assertExists,
 } from './utils/assert.js';
-import {AsyncJobInfo, AsyncJobQueue} from './utils/async_job_queue.js';
+import type {AsyncJobInfo} from './utils/async_job_queue.js';
+import {AsyncJobQueue} from './utils/async_job_queue.js';
 import {InteriorMutableArray} from './utils/interior_mutable_array.js';
-import {Unsubscribe} from './utils/observer_list.js';
+import type {Unsubscribe} from './utils/observer_list.js';
 import {clamp} from './utils/utils.js';
 
 declare global {
@@ -31,6 +34,14 @@ declare global {
 const AUDIO_MIME_TYPE = 'audio/webm;codecs=opus';
 
 const TIME_SLICE_MS = 100;
+
+// Logical group size for each aggregated power data point.
+// Note that in implementation we only take one slice from each group to avoid
+// calculation overhead.
+const POWER_GROUP_SIZE = Math.round(SAMPLES_PER_POWER_BAR / SAMPLES_PER_SLICE);
+
+// The number of samples to calculate one power slice.
+const SAMPLE_SIZE = 16;
 
 interface RecordingProgress {
   // Length in seconds.
@@ -120,9 +131,11 @@ export class RecordingSession {
 
   private everMutedInternal = false;
 
+  private powerCounts = 0;
+
   readonly progress = computed<RecordingProgress>(() => {
     const powers = this.powers.value;
-    const length = (powers.length * SAMPLES_PER_SLICE) / SAMPLE_RATE;
+    const length = powers.length / POWER_BARS_PER_SECOND;
     return {
       length,
       powers,
@@ -153,19 +166,26 @@ export class RecordingSession {
     this.audioProcessor.port.addEventListener(
       'message',
       (ev: MessageEvent<Float32Array>) => {
+        this.powerCounts = (this.powerCounts + 1) % POWER_GROUP_SIZE;
         const samples = ev.data;
-        // Calculates the power of the slice. The value range is [0, 1].
-        const power = Math.sqrt(
-          samples.map((v) => v * v).reduce((x, y) => x + y, 0) / samples.length,
-        );
-        // Takes another `sqrt` to apply non-linear distortion, making small
-        // gain easier to be seen.
-        const scaledPower = clamp(
-          Math.floor(Math.sqrt(power) * POWER_SCALE_FACTOR),
-          0,
-          POWER_SCALE_FACTOR - 1,
-        );
-        this.powers.value = this.powers.value.push(scaledPower);
+        if (this.powerCounts === 0) {
+          // Calculates the power of the slice. The value range is [0, 1].
+          const squaredSum = samples
+            .slice(0, SAMPLE_SIZE)
+            .map((v) => v * v)
+            .reduce((x, y) => x + y, 0);
+          const power = Math.sqrt(
+            squaredSum / SAMPLE_SIZE,
+          );
+          // Takes another `sqrt` to apply non-linear distortion, making small
+          // gain easier to be seen.
+          const scaledPower = clamp(
+            Math.floor(Math.sqrt(power) * POWER_SCALE_FACTOR),
+            0,
+            POWER_SCALE_FACTOR - 1,
+          );
+          this.powers.value = this.powers.value.push(scaledPower);
+        }
         this.currentSodaSession?.session.addAudio(samples);
         this.processedSamples += samples.length;
       },
@@ -382,22 +402,27 @@ export class RecordingSession {
       this.initSystemAudioSourceNode(),
     ]);
 
-    // Resume the context and start the recorder & audio processor after we've
-    // initialized all sources.
-    await this.audioCtx.resume();
-
     this.audioProcessor.port.start();
     this.mediaRecorder.start(TIME_SLICE_MS);
+
+    // Resume the context after we've initialized all sources and started the
+    // recorder & audio processor, so they can catch the first block of samples.
+    await this.audioCtx.resume();
   }
 
   async finish(): Promise<Blob> {
     const stopped = new Promise((resolve) => {
       this.mediaRecorder.addEventListener('stop', resolve, {once: true});
     });
+    // Suspend the context first, so the worklet stops producing samples and
+    // we have a stable processedSamples count.
+    await this.audioCtx.suspend();
     this.mediaRecorder.stop();
-    this.audioProcessor.port.close();
-    await this.stopSodaSession().result;
     await stopped;
+    await this.stopSodaSession().result;
+    // Close the worklet port after stopping `mediaRecorder` and Soda session to
+    // make sure in-flight audio data is processed.
+    this.audioProcessor.port.close();
 
     this.closeMicAudioSourceNode();
     this.closeSystemAudioSourceNode();

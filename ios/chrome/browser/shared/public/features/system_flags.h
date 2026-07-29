@@ -10,6 +10,8 @@
 #import <optional>
 #import <string>
 
+#include "base/time/time.h"
+
 enum class UpdateChromeSafetyCheckState;
 enum class PasswordSafetyCheckState;
 enum class SafeBrowsingSafetyCheckState;
@@ -28,9 +30,6 @@ bool AlwaysDisplayFirstRun();
 // the FRE using tests_hook::DisableDefaultFirstRun
 bool NeverDisplayFirstRun();
 
-// Whether the Upgrade Promo UI will always be displayed.
-bool AlwaysDisplayUpgradePromo();
-
 // Returns the host name for an alternative Origin Server host for use by
 // `BrandCode` startup ping. Returns empty string if there is no alternative
 // host specified.
@@ -44,14 +43,13 @@ NSString* GetAlternateDiscoverFeedServerURL();
 // TODO(crbug.com/40173621): Remove after launch.
 bool ShouldResetNoticeCardOnFeedStart();
 
-// Returns true if the count of showing the First Follow modal should be reset
-// to zero.
-// TODO(crbug.com/40220465): Remove after launch.
-bool ShouldResetFirstFollowCount();
-
 // Returns true if the top of feed signin promo should be shown regardless of
 // dismissal conditions. The promo will still only show for signed out users.
 bool ShouldForceFeedSigninPromo();
+
+// Returns true if device locale conditions should be ignored when gating a
+// feature.
+bool ShouldIgnoreDeviceLocaleConditions();
 
 // Returns true if the top of feed notifications promo should be shown
 // regardless of dismissal conditions. It is only shown for signed in users.
@@ -60,21 +58,6 @@ bool ShouldForceContentNotificationsPromo();
 // Returns true if Tile Ablation should be forced regardless of the value of
 // `isTileAblationExperimentComplete`.
 bool ShouldIgnoreTileAblationConditions();
-
-// Should be called after the count has been reset so that the resetting flag
-// can be turned off.
-// TODO(crbug.com/40220465): Remove after launch.
-void DidResetFirstFollowCount();
-
-// Returns true if the First Follow modal should always be shown when the user
-// follows a channel.
-// TODO(crbug.com/40220465): Remove after launch.
-bool ShouldAlwaysShowFirstFollow();
-
-// Returns true if the Follow IPH should always be shown when the user
-// browsing a eligible website in non-incognito mode.
-// TODO(crbug.com/40230248): Remove after launch.
-bool ShouldAlwaysShowFollowIPH();
 
 // Whether memory debugging tools are enabled.
 bool IsMemoryDebuggingEnabled();
@@ -125,6 +108,10 @@ std::optional<int> GetSafetyCheckReusedPasswordsCount();
 // (Magic Stack) module.
 std::optional<int> GetSafetyCheckCompromisedPasswordsCount();
 
+// Returns the background duration needed before opening the Home Surface upon
+// app open.
+base::TimeDelta GetReturnToHomeSurfaceDuration();
+
 // Returns the forced number of days since first run.
 std::optional<int> GetFirstRunRecency();
 
@@ -173,10 +160,6 @@ bool ShouldUseInactiveTabsDemoThreshold();
 // tabs are immediately considered inactive.
 bool ShouldUseInactiveTabsTestThreshold();
 
-// Returns the override for Tab Resumption decoration.
-// Returns nil is not set.
-NSString* GetTabResumptionDecorationOverride();
-
 // Whether the first party incognito experience should be simulated.
 bool ShouldOpenInIncognitoOverride();
 
@@ -188,6 +171,45 @@ bool AlwaysShowTheFirstPartyIncognitoUI();
 
 // Enables the AI menu, which is a tool for debugging LLM queries.
 bool EnableAIPrototypingMenu();
+
+// Gets GWS URL base used to generate Lens result panel URLs. Returns nil if
+// there is no alternative URL specified.
+NSString* GetLensResultPanelGwsURL();
+
+// Gets GWS URL base used to generate Cobrowse URLs. Returns nil if there is no
+// alternative URL specified.
+NSString* GetCobrowseGwsURL();
+
+// Returns true if Composebox AIM eligibility should be disabled.
+bool ShouldForceDisableComposeboxAIM();
+
+// Returns true if Composebox Create Images eligibility should be disabled.
+bool ShouldForceDisableComposeboxCreateImages();
+
+// Returns true if Canvas eligibility should be disabled.
+bool ShouldForceDisableComposeboxCanvas();
+
+// Returns true if Deep Search eligibility should be disabled.
+bool ShouldForceDisableComposeboxDeepSearch();
+
+// Returns true if Composebox Pdf Upload eligibility should be disabled.
+bool ShouldForceDisableComposeboxPdfUpload();
+
+// Returns true if the Catalog items should be shown in Settings. Always true
+// in debug builds.
+bool ShouldShowCatalogItems();
+
+// Returns true if multi-profile forced migration should be considered done.
+bool ShouldForceMultiProfileForcedMigrationDone();
+
+// Returns true if Backend Promo debug tools should be shown in Settings.
+bool ShouldShowBackendPromoDebugTools();
+
+// Returns the selected push notification type to be force triggered.
+int GetForcedPushNotificationType();
+
+// Returns the delay in seconds before triggering the forced push notification.
+int GetForcedPushNotificationDelay();
 
 }  // namespace experimental_flags
 

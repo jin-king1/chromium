@@ -6,11 +6,10 @@
 
 #import "base/apple/foundation_util.h"
 #import "base/strings/sys_string_conversions.h"
-#import "ios/chrome/browser/search_engine_choice/ui_bundled/search_engine_choice_constants.h"
+#import "ios/chrome/browser/search_engine_choice/ui/search_engine_choice_constants.h"
 #import "ios/chrome/browser/settings/ui_bundled/cells/settings_cells_constants.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_url_item.h"
-#import "ios/chrome/browser/shared/ui/table_view/legacy_chrome_table_view_styler.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/favicon/favicon_view.h"
@@ -31,7 +30,7 @@ constexpr CGFloat kFaviconContainerBorderWidth = 1.5;
 }  // namespace
 
 @implementation SettingsSearchEngineItem {
-  raw_ptr<const TemplateURL> _templateURL;
+  raw_ptr<const TemplateURL, DanglingUntriaged> _templateURL;
 }
 
 @synthesize enabled = _enabled;
@@ -47,9 +46,8 @@ constexpr CGFloat kFaviconContainerBorderWidth = 1.5;
   return self;
 }
 
-- (void)configureCell:(TableViewCell*)tableCell
-           withStyler:(ChromeTableViewStyler*)styler {
-  [super configureCell:tableCell withStyler:styler];
+- (void)configureCell:(LegacyTableViewCell*)tableCell {
+  [super configureCell:tableCell];
   SettingsSearchEngineCell* cell =
       base::apple::ObjCCastStrict<SettingsSearchEngineCell>(tableCell);
   cell.accessibilityIdentifier = [NSString
@@ -68,9 +66,7 @@ constexpr CGFloat kFaviconContainerBorderWidth = 1.5;
     cell.userInteractionEnabled = NO;
     cell.accessibilityTraits |= UIAccessibilityTraitNotEnabled;
   }
-  if (styler.cellTitleColor) {
-    cell.textLabel.textColor = styler.cellTitleColor;
-  }
+
   cell.detailTextLabel.textColor = [UIColor colorNamed:kTextSecondaryColor];
 }
 
@@ -172,11 +168,8 @@ constexpr CGFloat kFaviconContainerBorderWidth = 1.5;
           constraintEqualToAnchor:contentView.trailingAnchor],
     ]];
     [self resetColors];
-
-    if (@available(iOS 17, *)) {
-      [self registerForTraitChanges:TraitCollectionSetForTraits(nil)
-                         withAction:@selector(resetColors)];
-    }
+    [self registerForTraitChanges:TraitCollectionSetForTraits(nil)
+                       withAction:@selector(resetColors)];
   }
   return self;
 }
@@ -189,18 +182,6 @@ constexpr CGFloat kFaviconContainerBorderWidth = 1.5;
   _detailTextLabel.text = nil;
   [_faviconView configureWithAttributes:nil];
 }
-
-#pragma mark - UITraitEnvironment
-
-#if !defined(__IPHONE_17_0) || __IPHONE_OS_VERSION_MIN_REQUIRED < __IPHONE_17_0
-- (void)traitCollectionDidChange:(UITraitCollection*)previousTraitCollection {
-  [super traitCollectionDidChange:previousTraitCollection];
-  if (@available(iOS 17, *)) {
-    return;
-  }
-  [self resetColors];
-}
-#endif
 
 #pragma mark - UIAccessibility
 

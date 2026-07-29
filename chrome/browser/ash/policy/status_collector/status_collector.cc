@@ -4,21 +4,31 @@
 
 #include "chrome/browser/ash/policy/status_collector/status_collector.h"
 
+#include <memory>
+#include <optional>
+#include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
+#include "ash/constants/ash_policy_pref_names.h"
+#include "ash/constants/ash_pref_names.h"
+#include "base/check.h"
+#include "base/logging.h"
+#include "base/time/clock.h"
 #include "base/time/time.h"
 #include "chrome/browser/ash/app_mode/isolated_web_app/kiosk_iwa_manager.h"
 #include "chrome/browser/ash/app_mode/kiosk_chrome_app_manager.h"
-#include "chrome/browser/ash/app_mode/web_app/web_kiosk_app_manager.h"
+#include "chrome/browser/ash/app_mode/web_app/kiosk_web_app_manager.h"
 #include "chrome/browser/ash/policy/core/device_local_account.h"
 #include "chrome/browser/ash/policy/core/user_cloud_policy_manager_ash.h"
-#include "chrome/browser/ash/policy/status_collector/activity_storage.h"
 #include "chrome/browser/ash/policy/status_collector/app_info_generator.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/common/pref_names.h"
 #include "chromeos/ash/components/system/statistics_provider.h"
 #include "components/prefs/pref_registry_simple.h"
+#include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
+#include "device_management_backend.pb.h"
 
 namespace policy {
 namespace {
@@ -72,13 +82,15 @@ StatusCollectorParams& StatusCollectorParams::operator=(
 // -----------------------------------------------------------------------------
 // static
 void StatusCollector::RegisterProfilePrefs(PrefRegistrySimple* registry) {
-  registry->RegisterBooleanPref(prefs::kReportArcStatusEnabled, false);
+  registry->RegisterBooleanPref(ash::prefs::kReportArcStatusEnabled, false);
 
   // TODO(crbug.com/40569404): move to ChildStatusCollector after migration.
-  registry->RegisterDictionaryPref(prefs::kUserActivityTimes);
-  registry->RegisterTimePref(prefs::kLastChildScreenTimeReset, base::Time());
-  registry->RegisterTimePref(prefs::kLastChildScreenTimeSaved, base::Time());
-  registry->RegisterIntegerPref(prefs::kChildScreenTimeMilliseconds, 0);
+  registry->RegisterDictionaryPref(ash::prefs::kUserActivityTimes);
+  registry->RegisterTimePref(ash::prefs::kLastChildScreenTimeReset,
+                             base::Time());
+  registry->RegisterTimePref(ash::prefs::kLastChildScreenTimeSaved,
+                             base::Time());
+  registry->RegisterIntegerPref(ash::prefs::kChildScreenTimeMilliseconds, 0);
 
   AppInfoGenerator::RegisterProfilePrefs(registry);
 }
@@ -121,14 +133,12 @@ StatusCollector::GetAutoLaunchedKioskSessionInfo() {
     return nullptr;
   }
 
-  ash::KioskChromeAppManager::App current_app;
+  auto app = ash::KioskChromeAppManager::Get()->GetApp(account->kiosk_app_id);
   const bool chrome_app_auto_launched_with_zero_delay =
-      ash::KioskChromeAppManager::Get()->GetApp(account->kiosk_app_id,
-                                                &current_app) &&
-      current_app.was_auto_launched_with_zero_delay;
+      app.has_value() && app->was_auto_launched_with_zero_delay;
 
   const bool web_app_auto_launched_with_zero_delay =
-      ash::WebKioskAppManager::Get()
+      ash::KioskWebAppManager::Get()
           ->current_app_was_auto_launched_with_zero_delay();
 
   const bool iwa_auto_launched_with_zero_delay =

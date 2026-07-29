@@ -16,6 +16,8 @@
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/test_timeouts.h"
@@ -51,11 +53,12 @@
 #include "ui/base/dragdrop/drop_target_event.h"
 #include "ui/base/dragdrop/mojom/drag_drop_types.mojom.h"
 #include "ui/base/dragdrop/os_exchange_data.h"
-#include "ui/compositor/scoped_animation_duration_scale_mode.h"
 #include "ui/events/base_event_utils.h"
 #include "ui/events/event_sink.h"
 #include "ui/events/event_utils.h"
 #include "ui/events/test/event_generator.h"
+#include "ui/gfx/geometry/transform.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 
 namespace content {
 
@@ -311,7 +314,7 @@ class WebContentsViewAuraTest : public ContentBrowserTest {
   }
 
   void WaitAFrame() {
-    while (!GetRenderWidgetHost()->RequestRepaintForTesting()) {
+    while (!GetRenderWidgetHost()->RequestRepaintOnNewSurface()) {
       GiveItSomeTime();
     }
     frame_observer_->WaitForAnyFrameSubmission();
@@ -413,7 +416,8 @@ class SpuriousMouseMoveEventObserver
   }
 
   void OnInputEvent(const RenderWidgetHost& widget,
-                    const blink::WebInputEvent& event) override {
+                    const blink::WebInputEvent& event,
+                    InputEventSource source) override {
     EXPECT_NE(blink::WebInputEvent::Type::kMouseMove, event.GetType())
         << "Unexpected mouse move event.";
   }
@@ -510,8 +514,8 @@ IN_PROC_BROWSER_TEST_F(WebContentsViewAuraTest,
 
   // This test triggers a large number of animations. Speed them up to ensure
   // the test completes within its time limit.
-  ui::ScopedAnimationDurationScaleMode fast_duration_mode(
-      ui::ScopedAnimationDurationScaleMode::FAST_DURATION);
+  gfx::ScopedAnimationDurationScaleMode fast_duration_mode(
+      gfx::ScopedAnimationDurationScaleMode::FAST_DURATION);
 
   // Make sure the page has both back/forward history.
   ASSERT_TRUE(content::ExecJs(main_frame, "navigate_next()"));
@@ -1101,6 +1105,32 @@ IN_PROC_BROWSER_TEST_F(WebContentsViewAuraTest, GetDropCallback_Cancelled) {
   EXPECT_TRUE(drag_dest_delegate_.GetOnDragLeaveCalled());
 }
 
+// This test simulates a drag and drop scenario where input events start being
+// ignored after the drag started. When this happens, we still need to keep
+// track of whether or not a drag and drop is ongoing in the window irrespective
+// of our intentions for the result of the drop.
+IN_PROC_BROWSER_TEST_F(WebContentsViewAuraTest,
+                       IgnoreInputs_OngoingDropGetsCleared) {
+  StartTestWithPage("/simple_page.html");
+  WebContentsImpl* contents = GetWebContentsImpl();
+  WebContentsViewAura* view = GetWebContentsViewAura();
+
+  base::RunLoop run_loop;
+  async_drop_closure_ = run_loop.QuitClosure();
+
+  PrepareWebContentsViewForDropTest(/*delegate_allows_drop=*/true);
+  SimulateDragEnterAndDrop(/*document_is_handling_drag=*/false);
+  EXPECT_TRUE(view->drag_in_progress_);
+  std::optional<WebContents::ScopedIgnoreInputEvents> ignore_inputs =
+      contents->IgnoreInputEvents(std::nullopt);
+  view->OnDragExited();
+  // Even though input events are being ignored, the flag should still be
+  // cleared.
+  EXPECT_FALSE(view->drag_in_progress_);
+  EXPECT_EQ(0, drag_dest_delegate_.GetOnDropCalledCount());
+  ignore_inputs.reset();
+}
+
 // Tests that the content is not focusable when inputs are ignored, and that it
 // is focusable when inputs are not ignored.
 IN_PROC_BROWSER_TEST_F(WebContentsViewAuraTest, IgnoreInputs_Focus) {
@@ -1137,15 +1167,113 @@ IN_PROC_BROWSER_TEST_F(WebContentsViewAuraTest,
 
   delegate->DelayedFinishOnPerformingDrop();
   async_drop_run_loop.Run();
-  end_drag_run_loop.Run();
-
+  EXPECT_EQ(1, drag_dest_delegate_.GetOnDropCalledCount());
   ASSERT_FALSE(view->drag_in_progress_);
+  end_drag_run_loop.Run();
 
   EXPECT_EQ(drop_target_widget_,
             RenderWidgetHostImpl::From(contents->GetPrimaryFrameTree()
                                            .root()
                                            ->current_frame_host()
                                            ->GetRenderWidgetHost()));
+}
+
+// This test is the same as `DragInProgressFinishesAfterDrop`, but it tests the
+// scenario where drag_in_progress_ should still be flipped even when drop is
+// blocked.
+IN_PROC_BROWSER_TEST_F(WebContentsViewAuraTest,
+                       DragInProgressFinishesAfterNoDrop) {
+  StartTestWithPage("/simple_page.html");
+  WebContentsImpl* contents = GetWebContentsImpl();
+  WebContentsViewAura* view = GetWebContentsViewAura();
+
+  base::RunLoop async_drop_run_loop;
+  async_drop_closure_ = async_drop_run_loop.QuitClosure();
+
+  base::RunLoop end_drag_run_loop;
+  async_end_drag_closure_ = end_drag_run_loop.QuitClosure();
+  view->end_drag_runner_.ReplaceClosure(base::BindOnce(
+      &WebContentsViewAuraTest::EndDrag, base::Unretained(this)));
+
+  TestWebContentsViewDelegate* delegate =
+      PrepareWebContentsViewForDropTest(/*delegate_allows_drop=*/false);
+  SimulateDragEnterAndDrop(/*document_is_handling_drag=*/true);
+  // `drag_in_progress_` should still be true before `CompleteDrop()` is called.
+  ASSERT_TRUE(view->drag_in_progress_);
+
+  delegate->DelayedFinishOnPerformingDrop();
+  async_drop_run_loop.Run();
+  EXPECT_EQ(0, drag_dest_delegate_.GetOnDropCalledCount());
+  ASSERT_FALSE(view->drag_in_progress_);
+  end_drag_run_loop.Run();
+
+  EXPECT_EQ(drop_target_widget_,
+            RenderWidgetHostImpl::From(contents->GetPrimaryFrameTree()
+                                           .root()
+                                           ->current_frame_host()
+                                           ->GetRenderWidgetHost()));
+}
+
+class WebContentsViewAuraTransformTest : public WebContentsViewAuraTest {
+ public:
+  void SetUpCommandLine(base::CommandLine* cmd) override {
+    WebContentsViewAuraTest::SetUpCommandLine(cmd);
+#if BUILDFLAG(IS_WIN)
+    cmd->AppendSwitch(switches::kDisableLegacyIntermediateWindow);
+#endif
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(WebContentsViewAuraTransformTest,
+                       WindowTransformDoesNotUpdateScreenRects) {
+  StartTestWithPage("/simple_page.html");
+  WebContentsImpl* contents = GetWebContentsImpl();
+
+  aura::Window* top_level = contents->GetNativeView()->GetToplevelWindow();
+  ASSERT_TRUE(top_level);
+  auto wait_for_coordinate = [this](const std::string& prop, int expected) {
+    static constexpr char script[] =
+        R"(new Promise((resolve) => {
+             function check() {
+               if (window.$1 === $2) {
+                 resolve(window.$1);
+               } else {
+                 requestAnimationFrame(check);
+               }
+             }
+             check();
+           });)";
+    std::string js = base::ReplaceStringPlaceholders(
+        script, {prop, base::NumberToString(expected)}, nullptr);
+    return EvalJs(shell(), js).ExtractInt();
+  };
+
+  int initial_x = EvalJs(shell(), "window.screenX").ExtractInt();
+  int initial_y = EvalJs(shell(), "window.screenY").ExtractInt();
+
+  gfx::Transform transform;
+  transform.Translate(100, 50);
+  top_level->SetTransform(transform);
+
+  // Move the window slightly to trigger the bounds update.
+  gfx::Rect new_bounds = top_level->bounds();
+  new_bounds.Offset(10, 10);
+  top_level->SetBounds(new_bounds);
+
+  // The new coordinates should remove the slight move, but not the transform.
+  int transformed_x = wait_for_coordinate("screenX", initial_x + 10);
+  int transformed_y = wait_for_coordinate("screenY", initial_y + 10);
+  EXPECT_EQ(transformed_x, initial_x + 10);
+  EXPECT_EQ(transformed_y, initial_y + 10);
+
+  top_level->SetTransform(gfx::Transform());
+  new_bounds.Offset(-10, -10);
+  top_level->SetBounds(new_bounds);
+
+  int restored_x = wait_for_coordinate("screenX", initial_x);
+  int restored_y = wait_for_coordinate("screenY", initial_y);
+  EXPECT_EQ(restored_x, initial_x);
+  EXPECT_EQ(restored_y, initial_y);
 }
 
 }  // namespace content

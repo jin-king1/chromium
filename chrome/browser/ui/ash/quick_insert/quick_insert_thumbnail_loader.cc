@@ -8,15 +8,16 @@
 
 #include "base/files/file_path.h"
 #include "chrome/browser/ash/drive/drive_integration_service.h"
+#include "chrome/browser/ash/drive/drive_integration_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "ipc/ipc_channel.h"
+#include "ipc/constants.mojom.h"
 #include "services/data_decoder/public/cpp/decode_image.h"
 #include "ui/gfx/geometry/size.h"
 
 namespace {
 
 constexpr int64_t kMaxImageSizeInBytes =
-    static_cast<int64_t>(IPC::Channel::kMaximumMessageSize);
+    static_cast<int64_t>(IPC::mojom::kChannelMaximumMessageSize);
 
 std::optional<base::FilePath> MaybeGetDriveFileRelativePath(
     drive::DriveIntegrationService& drive_integration,
@@ -43,7 +44,7 @@ void QuickInsertThumbnailLoader::Load(const base::FilePath& path,
           drive::DriveIntegrationServiceFactory::FindForProfile(profile_)) {
     if (std::optional<base::FilePath> relative_path =
             MaybeGetDriveFileRelativePath(*drive_integration, path);
-        relative_path.has_value()) {
+        relative_path) {
       drive_integration->GetThumbnail(
           *relative_path, /*crop_to_square=*/true,
           base::BindOnce(&QuickInsertThumbnailLoader::DecodeDriveThumbnail,
@@ -61,7 +62,7 @@ void QuickInsertThumbnailLoader::DecodeDriveThumbnail(
     LoadCallback callback,
     const gfx::Size& size,
     const std::optional<std::vector<uint8_t>>& bytes) {
-  if (!bytes.has_value()) {
+  if (!bytes) {
     std::move(callback).Run(nullptr, base::File::Error::FILE_ERROR_FAILED);
     return;
   }

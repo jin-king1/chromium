@@ -10,15 +10,22 @@
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/field_trial.h"
 #include "base/threading/thread_checker.h"
+#include "components/metrics/metrics_log_uploader.h"
 #include "components/variations/synthetic_trial_registry.h"
 
 namespace metrics {
 class MetricsService;
 class MetricsServiceClient;
+class ClonedInstallDetector;
+class ReportingService;
 }  // namespace metrics
 
 namespace metrics::structured {
 class StructuredMetricsService;
+}
+
+namespace search_engines {
+class SearchEngineChoiceServiceClient;
 }
 
 namespace ukm {
@@ -29,13 +36,15 @@ namespace metrics::dwa {
 class DwaService;
 }
 
+namespace metrics::private_metrics {
+class PumaService;
+}
+
 namespace variations {
 class EntropyProviders;
 class SyntheticTrialRegistry;
 class VariationsService;
 }  // namespace variations
-
-class IdentifiabilityStudyState;
 
 namespace metrics_services_manager {
 
@@ -78,13 +87,16 @@ class MetricsServicesManager {
   // Returns the DwaService, creating it if it hasn't been created yet.
   metrics::dwa::DwaService* GetDwaService();
 
-  // Returns the IdentifiabilityStudyState, if it has been created, and nullptr
-  // otherwise.
-  IdentifiabilityStudyState* GetIdentifiabilityStudyState();
+  // Returns the PumaService, creating it if it hasn't been created yet.
+  metrics::private_metrics::PumaService* GetPumaService();
 
   // Returns the StructuredMetricsService associated with the
   // |metrics_service_client_|.
   metrics::structured::StructuredMetricsService* GetStructuredMetricsService();
+
+  // Returns the ReportingService associated with the given service type.
+  metrics::ReportingService* GetReportingService(
+      metrics::MetricsLogUploader::MetricServiceType service_type);
 
   // Returns the VariationsService, creating it if it hasn't been created yet.
   variations::VariationsService* GetVariationsService();
@@ -99,7 +111,10 @@ class MetricsServicesManager {
   OnRendererUnresponsiveCb GetOnRendererUnresponsiveCb();
 
   // Updates the managed services when permissions for uploading metrics change.
-  void UpdateUploadPermissions(bool may_upload);
+  // Note: Normally, uploads will happen when collection is enabled, but the
+  // `may_upload` params allows disabling uploads separately from collection
+  // (e.g. if network is unavailable).
+  void UpdateUploadPermissions(bool may_upload = true);
 
   // Gets the current state of metric reporting.
   bool IsMetricsReportingEnabled() const;
@@ -117,7 +132,17 @@ class MetricsServicesManager {
   std::unique_ptr<const variations::EntropyProviders>
   CreateEntropyProvidersForTesting();
 
+  // Returns the ClonedInstallDetector associated with the `client_`.
+  metrics::ClonedInstallDetector* GetClonedInstallDetectorForTesting();
+
  private:
+  friend class search_engines::SearchEngineChoiceServiceClient;
+
+  // Returns the ClonedInstallDetector associated with the `client_`.
+  // Marked as private (exposed selectively via friend classes) for the metrics
+  // team to be able to control and monitor if/how this function gets called.
+  const metrics::ClonedInstallDetector& GetClonedInstallDetector() const;
+
   // Returns the MetricsServiceClient, creating it if it hasn't been
   // created yet (and additionally creating the MetricsService in that case).
   metrics::MetricsServiceClient* GetMetricsServiceClient();
@@ -134,6 +159,9 @@ class MetricsServicesManager {
   // Updates the state of DwaService to match current permissions.
   void UpdateDwaService();
 
+  // Updates the state of PumaService to match current permissions.
+  void UpdatePumaService();
+
   // Updates the managed services when permissions for recording/uploading
   // metrics change.
   void UpdatePermissions(bool current_may_record,
@@ -143,12 +171,14 @@ class MetricsServicesManager {
   // Called when loading state changed.
   void LoadingStateChanged(bool is_loading);
 
+
   // Used by |GetOnRendererUnresponsiveCb| to construct the callback that will
   // be run by |MetricsServicesWebContentsObserver|.
   void OnRendererUnresponsive();
 
   // The client passed in from the embedder.
   const std::unique_ptr<MetricsServicesManagerClient> client_;
+
 
   // Ensures that all functions are called from the same thread.
   base::ThreadChecker thread_checker_;

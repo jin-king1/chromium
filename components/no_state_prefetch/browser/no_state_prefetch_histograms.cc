@@ -9,7 +9,6 @@
 #include "base/check_op.h"
 #include "base/metrics/histogram.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/notreached.h"
 #include "components/no_state_prefetch/common/no_state_prefetch_utils.h"
 
@@ -24,6 +23,9 @@ std::string GetHistogramName(Origin origin, const std::string& name) {
 
 }  // namespace
 
+// These strings are persisted to logs. These should remain synchronized with
+// the token key PrerenderSource in
+// //tools/metrics/histograms/metadata/navigation/histograms.xml.
 std::string NoStatePrefetchHistograms::GetHistogramPrefix(Origin origin) {
   switch (origin) {
     case ORIGIN_NONE:
@@ -34,17 +36,13 @@ std::string NoStatePrefetchHistograms::GetHistogramPrefix(Origin origin) {
       return "webcross";
     case ORIGIN_LINK_REL_NEXT:
       return "webnext";
-    case ORIGIN_GWS_PRERENDER:
-      return "gws";
     case ORIGIN_NAVIGATION_PREDICTOR:
       return "navigationpredictor";
-    case ORIGIN_SAME_ORIGIN_SPECULATION:
-      return "sameoriginspeculation";
     case ORIGIN_MAX:
       NOTREACHED();
   }
 
-  // Dummy return value to make the compiler happy.
+  // Fake return value to make the compiler happy.
   return "none";
 }
 

@@ -15,7 +15,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import static org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.HeaderProperties.IDP_BRAND_ICON;
+import static org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.HeaderProperties.HEADER_ICON;
 import static org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.HeaderProperties.RP_BRAND_ICON;
 import static org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.HeaderProperties.TYPE;
 
@@ -29,6 +29,7 @@ import org.chromium.blink.mojom.RpMode;
 import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.AccountProperties;
 import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.HeaderProperties.HeaderType;
 import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.ItemProperties;
+import org.chromium.chrome.browser.ui.android.webid.data.RelyingPartyData;
 import org.chromium.content.webid.IdentityRequestDialogDismissReason;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modaldialog.ModalDialogProperties;
@@ -54,40 +55,44 @@ public class AccountSelectionButtonModeControllerTest extends AccountSelectionJU
                     .thenReturn(true);
             mIdpData.setRpContext(rpContext);
             mMediator.showAccounts(
-                    mTestEtldPlusOne,
+                    new RelyingPartyData(
+                            mTestEtldPlusOne, /* iframeForDisplay= */ "", /* rpIcon= */ null),
                     Arrays.asList(mNewUserAccount),
                     Arrays.asList(mIdpData),
-                    /* isAutoReauthn= */ false,
-                    /* newAccounts= */ Collections.EMPTY_LIST);
+                    /* newAccounts= */ Collections.emptyList());
             mMediator.showVerifySheet(mAnaAccount);
 
             // There is no account shown in the verify sheet on active mode.
             assertEquals(0, mSheetAccountItems.size());
             assertEquals(HeaderType.VERIFY, mModel.get(ItemProperties.HEADER).get(TYPE));
             verify(mMockDelegate).onAccountsDisplayed();
-            assertTrue(containsItemOfType(mModel, ItemProperties.SPINNER_ENABLED));
+            assertTrue(mModel.get(ItemProperties.SPINNER_ENABLED));
+            assertTrue(mModel.get(ItemProperties.DRAGBAR_HANDLE_VISIBLE));
         }
     }
 
     @Test
     public void testShowLoadingDialogAutoReauthn() {
-        mMediator.showLoadingDialog(mTestEtldPlusOne, mTestEtldPlusOne1, RpContext.SIGN_IN);
+        mMediator.showLoadingDialog(
+                new RelyingPartyData(
+                        mTestEtldPlusOne, /* iframeForDisplay= */ "", /* rpIcon= */ null),
+                mTestEtldPlusOne1,
+                RpContext.SIGN_IN);
         for (int rpContext : RP_CONTEXTS) {
             when(mMockBottomSheetController.requestShowContent(any(), anyBoolean()))
                     .thenReturn(true);
             mIdpData.setRpContext(rpContext);
-            // showVerifySheet is called in showAccounts when isAutoReauthn is true
-            mMediator.showAccounts(
-                    mTestEtldPlusOne,
-                    Arrays.asList(mAnaAccount),
-                    Arrays.asList(mIdpData),
-                    /* isAutoReauthn= */ true,
-                    /* newAccounts= */ Collections.EMPTY_LIST);
+            mMediator.showVerifyingDialog(
+                    new RelyingPartyData(
+                            mTestEtldPlusOne, /* iframeForDisplay= */ "", /* rpIcon= */ null),
+                    mAnaAccount,
+                    /* isAutoReauthn= */ true);
 
             // There is no account shown on the loading dialog in active mode.
             assertEquals(0, mSheetAccountItems.size());
             assertEquals(HeaderType.LOADING, mModel.get(ItemProperties.HEADER).get(TYPE));
-            assertTrue(containsItemOfType(mModel, ItemProperties.SPINNER_ENABLED));
+            assertTrue(mModel.get(ItemProperties.SPINNER_ENABLED));
+            assertTrue(mModel.get(ItemProperties.DRAGBAR_HANDLE_VISIBLE));
         }
     }
 
@@ -95,43 +100,49 @@ public class AccountSelectionButtonModeControllerTest extends AccountSelectionJU
     public void testShowLoadingDialog() {
         // Button flow can be triggered regardless of the requestShowContent result.
         when(mMockBottomSheetController.requestShowContent(any(), anyBoolean())).thenReturn(false);
-        mMediator.showLoadingDialog(mTestEtldPlusOne, mTestEtldPlusOne1, RpContext.SIGN_IN);
+        mMediator.showLoadingDialog(
+                new RelyingPartyData(
+                        mTestEtldPlusOne, /* iframeForDisplay= */ "", /* rpIcon= */ null),
+                mTestEtldPlusOne1,
+                RpContext.SIGN_IN);
         assertEquals(0, mSheetAccountItems.size());
         assertEquals(HeaderType.LOADING, mModel.get(ItemProperties.HEADER).get(TYPE));
         verify(mMockDelegate, never()).onAccountsDisplayed();
 
-        // For loading dialog, we expect header + spinner.
-        assertEquals(2, countAllItems());
-        assertTrue(containsItemOfType(mModel, ItemProperties.SPINNER_ENABLED));
+        // For loading dialog, we expect dragbar handle + header + spinner.
+        assertEquals(3, countAllItems());
+        assertTrue(mModel.get(ItemProperties.SPINNER_ENABLED));
+        assertTrue(mModel.get(ItemProperties.DRAGBAR_HANDLE_VISIBLE));
 
         // Switching to accounts dialog should disable the spinner.
         mMediator.showAccounts(
-                mTestEtldPlusOne,
+                new RelyingPartyData(
+                        mTestEtldPlusOne, /* iframeForDisplay= */ "", /* rpIcon= */ null),
                 Arrays.asList(mAnaAccount, mBobAccount),
                 Arrays.asList(mIdpData),
-                /* isAutoReauthn= */ false,
-                /* newAccounts= */ Collections.EMPTY_LIST);
+                /* newAccounts= */ Collections.emptyList());
         assertEquals(HeaderType.SIGN_IN, mModel.get(ItemProperties.HEADER).get(TYPE));
 
-        // For accounts dialog, we expect header + two accounts.
-        assertEquals(3, countAllItems());
-        assertFalse(containsItemOfType(mModel, ItemProperties.SPINNER_ENABLED));
+        // For accounts dialog, we expect dragbar handle + header + two accounts.
+        assertEquals(4, countAllItems());
+        assertFalse(mModel.get(ItemProperties.SPINNER_ENABLED));
+        assertTrue(mModel.get(ItemProperties.DRAGBAR_HANDLE_VISIBLE));
     }
 
     @Test
     public void testShowRequestPermissionDialog() {
         when(mMockBottomSheetController.requestShowContent(any(), anyBoolean())).thenReturn(true);
         mMediator.showAccounts(
-                mTestEtldPlusOne,
+                new RelyingPartyData(
+                        mTestEtldPlusOne, /* iframeForDisplay= */ "", /* rpIcon= */ null),
                 Arrays.asList(mNewUserAccount),
                 Arrays.asList(mIdpData),
-                /* isAutoReauthn= */ false,
-                /* newAccounts= */ Collections.EMPTY_LIST);
+                /* newAccounts= */ Collections.emptyList());
         mMediator.showRequestPermissionModalSheet(mNewUserAccount);
 
-        // For request permission dialog, we expect header + account chip + disclosure text +
-        // continue button.
-        assertEquals(4, countAllItems());
+        // For request permission dialog, we expect drag handlebar + header + account chip +
+        // disclosure text + continue button.
+        assertEquals(5, countAllItems());
 
         // There is no sheet account items because the account is shown in an account chip instead.
         assertEquals(0, mSheetAccountItems.size());
@@ -145,11 +156,11 @@ public class AccountSelectionButtonModeControllerTest extends AccountSelectionJU
     @Test
     public void testShowAccountsUsesRpIcon() {
         mMediator.showAccounts(
-                mTestEtldPlusOne,
+                new RelyingPartyData(
+                        mTestEtldPlusOne, /* iframeForDisplay= */ "", /* rpIcon= */ null),
                 Arrays.asList(mAnaAccount),
                 Arrays.asList(mIdpData),
-                /* isAutoReauthn= */ false,
-                /* newAccounts= */ Collections.EMPTY_LIST);
+                /* newAccounts= */ Collections.emptyList());
 
         assertNotNull(mModel.get(ItemProperties.HEADER).get(RP_BRAND_ICON));
     }
@@ -157,27 +168,31 @@ public class AccountSelectionButtonModeControllerTest extends AccountSelectionJU
     @Test
     public void testBrandIconNotPresent() {
         mMediator.showAccounts(
-                mTestEtldPlusOne,
-                Arrays.asList(mAnaAccount),
+                new RelyingPartyData(
+                        mTestEtldPlusOne, /* iframeForDisplay= */ "", /* rpIcon= */ null),
+                Arrays.asList(mAnaAccountWithoutBrandIcons),
                 Arrays.asList(mIdpDataWithoutIcons),
-                /* isAutoReauthn= */ false,
-                /* newAccounts= */ Collections.EMPTY_LIST);
+                /* newAccounts= */ Collections.emptyList());
 
         PropertyModel headerModel = mModel.get(ItemProperties.HEADER);
         // Unlike passive mode, brand icons should not be available because we do not show any
         // placeholder icon.
-        assertNull(headerModel.get(IDP_BRAND_ICON));
+        assertNull(headerModel.get(HEADER_ICON));
         assertNull(mModel.get(ItemProperties.HEADER).get(RP_BRAND_ICON));
     }
 
     @Test
     public void testNewAccountsIdpSingleNewAccountShowsRequestPermissionDialog() {
-        mMediator.showLoadingDialog(mTestEtldPlusOne, mTestEtldPlusOne2, RpContext.SIGN_IN);
+        mMediator.showLoadingDialog(
+                new RelyingPartyData(
+                        mTestEtldPlusOne, /* iframeForDisplay= */ "", /* rpIcon= */ null),
+                mTestEtldPlusOne2,
+                RpContext.SIGN_IN);
         mMediator.showAccounts(
-                mTestEtldPlusOne,
+                new RelyingPartyData(
+                        mTestEtldPlusOne, /* iframeForDisplay= */ "", /* rpIcon= */ null),
                 Arrays.asList(),
                 Arrays.asList(mIdpData),
-                /* isAutoReauthn= */ false,
                 mNewAccountsSingleNewAccount);
 
         // Request permission modal dialog is NOT skipped for a single newly signed-in new account.
@@ -190,14 +205,18 @@ public class AccountSelectionButtonModeControllerTest extends AccountSelectionJU
 
     @Test
     public void testNewAccountsIdpRequestPermissionFalseShowsAccountChooserDialog() {
-        mMediator.showLoadingDialog(mTestEtldPlusOne, mTestEtldPlusOne2, RpContext.SIGN_IN);
+        mMediator.showLoadingDialog(
+                new RelyingPartyData(
+                        mTestEtldPlusOne, /* iframeForDisplay= */ "", /* rpIcon= */ null),
+                mTestEtldPlusOne2,
+                RpContext.SIGN_IN);
         mIdpData.setDisclosureFields(new int[0]);
         mMediator.showAccounts(
-                mTestEtldPlusOne,
+                new RelyingPartyData(
+                        mTestEtldPlusOne, /* iframeForDisplay= */ "", /* rpIcon= */ null),
                 Arrays.asList(),
                 Arrays.asList(mIdpData),
-                /* isAutoReauthn= */ false,
-                mNewAccountsSingleNewAccount);
+                Arrays.asList(mNewUserAccountWithoutFields));
 
         // Account chooser dialog is shown for a single newly signed-in new account where request
         // permission is false. Since this is a new account and request permission is false, we need
@@ -209,12 +228,16 @@ public class AccountSelectionButtonModeControllerTest extends AccountSelectionJU
 
     @Test
     public void testNewAccountsIdpSingleReturningAccountShowsAccountChooserDialog() {
-        mMediator.showLoadingDialog(mTestEtldPlusOne, mTestEtldPlusOne2, RpContext.SIGN_IN);
+        mMediator.showLoadingDialog(
+                new RelyingPartyData(
+                        mTestEtldPlusOne, /* iframeForDisplay= */ "", /* rpIcon= */ null),
+                mTestEtldPlusOne2,
+                RpContext.SIGN_IN);
         mMediator.showAccounts(
-                mTestEtldPlusOne,
+                new RelyingPartyData(
+                        mTestEtldPlusOne, /* iframeForDisplay= */ "", /* rpIcon= */ null),
                 Arrays.asList(),
                 Arrays.asList(mIdpData),
-                /* isAutoReauthn= */ false,
                 mNewAccountsSingleReturningAccount);
 
         // Account chooser dialog is shown for a single newly signed-in returning account. Although
@@ -228,15 +251,20 @@ public class AccountSelectionButtonModeControllerTest extends AccountSelectionJU
     @Test
     public void testShowErrorDialogClickGotIt() {
         when(mMockBottomSheetController.requestShowContent(any(), anyBoolean())).thenReturn(true);
-        mMediator.showLoadingDialog(mTestEtldPlusOne, mTestEtldPlusOne2, RpContext.SIGN_IN);
+        mMediator.showLoadingDialog(
+                new RelyingPartyData(
+                        mTestEtldPlusOne, /* iframeForDisplay= */ "", /* rpIcon= */ null),
+                mTestEtldPlusOne2,
+                RpContext.SIGN_IN);
         mMediator.showAccounts(
-                mTestEtldPlusOne,
+                new RelyingPartyData(
+                        mTestEtldPlusOne, /* iframeForDisplay= */ "", /* rpIcon= */ null),
                 Arrays.asList(),
                 Arrays.asList(mIdpData),
-                /* isAutoReauthn= */ false,
                 mNewAccountsSingleReturningAccount);
         mMediator.showErrorDialog(
-                mTestEtldPlusOne,
+                new RelyingPartyData(
+                        mTestEtldPlusOne, /* iframeForDisplay= */ "", /* rpIcon= */ null),
                 mTestEtldPlusOne2,
                 mIdpMetadata,
                 RpContext.SIGN_IN,
@@ -265,15 +293,24 @@ public class AccountSelectionButtonModeControllerTest extends AccountSelectionJU
     @Test
     public void testShowErrorDialogClickMoreDetails() {
         when(mMockBottomSheetController.requestShowContent(any(), anyBoolean())).thenReturn(true);
-        mMediator.showLoadingDialog(mTestEtldPlusOne, mTestEtldPlusOne1, RpContext.SIGN_IN);
+        mMediator.showLoadingDialog(
+                new RelyingPartyData(
+                        mTestEtldPlusOne, /* iframeForDisplay= */ "", /* rpIcon= */ null),
+                mTestEtldPlusOne1,
+                RpContext.SIGN_IN);
         mMediator.showAccounts(
-                mTestEtldPlusOne,
+                new RelyingPartyData(
+                        mTestEtldPlusOne, /* iframeForDisplay= */ "", /* rpIcon= */ null),
                 Arrays.asList(),
                 Arrays.asList(mIdpData),
-                /* isAutoReauthn= */ false,
                 mNewAccountsSingleReturningAccount);
         mMediator.showErrorDialog(
-                mTestEtldPlusOne, mTestEtldPlusOne2, mIdpMetadata, RpContext.SIGN_IN, mTokenError);
+                new RelyingPartyData(
+                        mTestEtldPlusOne, /* iframeForDisplay= */ "", /* rpIcon= */ null),
+                mTestEtldPlusOne2,
+                mIdpMetadata,
+                RpContext.SIGN_IN,
+                mTokenError);
 
         assertEquals(
                 ModalDialogManager.ModalDialogType.APP, mMockModalDialogManager.getDialogType());
